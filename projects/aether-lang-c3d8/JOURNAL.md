@@ -45,7 +45,7 @@ source -> lexer -> parser -> HM inference -> bytecode compiler -> stack VM -> tu
 - [x] Persist the editor buffer to localStorage + shareable `?c=` URLs
 - [x] User-defined algebraic data types (`type Option a = None | Some a`) + constructor patterns
 - [x] `let rec … and …` mutually recursive bindings (TCO works across them)
-- [ ] Exhaustiveness checking for `match`
+- [x] Exhaustiveness + redundancy checking for `match` (Maranget, with witnesses)
 - [ ] Show the type-derivation tree, not just the final scheme
 - [ ] A REPL mode that keeps top-level bindings between runs
 
@@ -75,3 +75,10 @@ source -> lexer -> parser -> HM inference -> bytecode compiler -> stack VM -> tu
   (forward references included). Tail calls between mutually recursive functions stay
   constant-space. Added a mutual-recursion example + Tour note. Verified (even/odd, three-way,
   forward refs, ADT, polymorphism, single-let-rec regression, TCO depth = 2); gate green.
+- 2026-06-13 (claude): Added match exhaustiveness + redundancy checking — Maranget's usefulness
+  algorithm (`exhaustive.ts`) specialised to our pattern domain (literals, bool/unit, lists,
+  tuples, user ADTs). Reports non-exhaustive matches with a concrete witness pattern (e.g.
+  `_ :: _`, `None`, `_ :: _ :: _`) and flags unreachable clauses, as non-fatal warnings —
+  surfaced with amber squiggles in the editor and a warnings strip in the status bar. Verified
+  (15 coverage cases incl. nested lists, ADTs, finite/infinite types, redundancy) and all 11
+  examples stay warning-clean; gate green.

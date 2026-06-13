@@ -8,6 +8,7 @@ interface EditorProps {
   onChange: (next: string) => void
   errorSpan?: Span | null
   highlightSpan?: Span | null
+  warningSpans?: Span[]
 }
 
 interface Marked {
@@ -15,7 +16,12 @@ interface Marked {
   cls: string
 }
 
-function buildSegments(src: string, errorSpan?: Span | null, highlightSpan?: Span | null): Marked[] {
+function buildSegments(
+  src: string,
+  errorSpan: Span | null | undefined,
+  highlightSpan: Span | null | undefined,
+  warningSpans: Span[],
+): Marked[] {
   const segs = highlight(src)
   const out: Marked[] = []
   let offset = 0
@@ -28,19 +34,26 @@ function buildSegments(src: string, errorSpan?: Span | null, highlightSpan?: Spa
     let cls = `hl-${seg.cls}`
     if (intersects(errorSpan, start, end)) cls += ' hl-error'
     else if (intersects(highlightSpan, start, end)) cls += ' hl-active'
+    else if (warningSpans.some((w) => intersects(w, start, end))) cls += ' hl-warn'
     out.push({ text: seg.text, cls })
   }
   return out
 }
 
-export default function Editor({ value, onChange, errorSpan, highlightSpan }: EditorProps) {
+export default function Editor({
+  value,
+  onChange,
+  errorSpan,
+  highlightSpan,
+  warningSpans = [],
+}: EditorProps) {
   const taRef = useRef<HTMLTextAreaElement>(null)
   const preRef = useRef<HTMLPreElement>(null)
   const gutterRef = useRef<HTMLDivElement>(null)
 
   const segments = useMemo(
-    () => buildSegments(value, errorSpan, highlightSpan),
-    [value, errorSpan, highlightSpan],
+    () => buildSegments(value, errorSpan, highlightSpan, warningSpans),
+    [value, errorSpan, highlightSpan, warningSpans],
   )
   const lineCount = useMemo(() => value.split('\n').length, [value])
 

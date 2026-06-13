@@ -289,6 +289,10 @@ body {
   border-radius: 3px;
   box-shadow: 0 0 0 1px rgba(255, 207, 107, 0.4);
 }
+.hl-warn {
+  text-decoration: wavy underline var(--amber);
+  text-underline-offset: 3px;
+}
 
 /* ---------- status bar ---------- */
 .status-bar {
@@ -306,6 +310,20 @@ body {
 }
 .status-bar.error {
   color: var(--red);
+}
+.status-stack {
+  display: flex;
+  flex-direction: column;
+}
+.status-stack .status-bar {
+  border-top: 1px solid var(--line);
+}
+.status-bar.warn {
+  color: var(--amber);
+}
+.status-bar.warn .status-stage {
+  background: rgba(255, 207, 107, 0.16);
+  color: var(--amber);
 }
 .status-stage {
   text-transform: uppercase;

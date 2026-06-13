@@ -102,6 +102,10 @@ export default function Playground() {
 
   const editorError = analysis.error?.span ?? null
   const highlightSpan = tab === 'debug' ? debugSpan : null
+  const warningSpans = useMemo(
+    () => analysis.warnings.map((w) => w.span).filter((s): s is Span => s !== null),
+    [analysis],
+  )
 
   return (
     <div className="playground">
@@ -139,6 +143,7 @@ export default function Playground() {
           onChange={setCode}
           errorSpan={editorError}
           highlightSpan={highlightSpan}
+          warningSpans={warningSpans}
         />
 
         <StatusBar analysis={analysis} />
@@ -194,11 +199,24 @@ function StatusBar({ analysis }: { analysis: PipelineResult }) {
     )
   }
   return (
-    <div className="status-bar ok">
-      <span className="status-check">✓</span>
-      <span className="status-msg">
-        type-checks · <code>{analysis.programType}</code>
-      </span>
+    <div className="status-stack">
+      <div className="status-bar ok">
+        <span className="status-check">✓</span>
+        <span className="status-msg">
+          type-checks · <code>{analysis.programType}</code>
+        </span>
+      </div>
+      {analysis.warnings.map((w, i) => (
+        <div className="status-bar warn" key={i}>
+          <span className="status-stage">warning</span>
+          {w.span && w.span.line > 0 && (
+            <span className="status-loc">
+              {w.span.line}:{w.span.col}
+            </span>
+          )}
+          <span className="status-msg">{w.message}</span>
+        </div>
+      ))}
     </div>
   )
 }

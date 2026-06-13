@@ -86,6 +86,11 @@ len [10, 20, 30]   // => 3`}</pre>
           Bindings introduced by a pattern are in scope in that case's body. A value that matches
           no case raises a runtime error.
         </p>
+        <p>
+          Matches are checked for <strong>exhaustiveness</strong>: a missing case is flagged with a
+          witness it doesn't cover (e.g. <code>_ :: _</code> or <code>None</code>), and clauses that
+          can never be reached are warned about too.
+        </p>
       </section>
 
       <section>
