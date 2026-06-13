@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import type { KeyboardEvent } from 'react'
 import Editor from './Editor.tsx'
 import OutputView from './OutputView.tsx'
@@ -13,7 +13,13 @@ import type { PipelineResult } from '../lang/pipeline.ts'
 import type { Snapshot } from '../lang/vm.ts'
 import type { Span } from '../lang/lexer.ts'
 import { DEFAULT_CODE, EXAMPLES } from '../examples.ts'
-import { consumePendingCode } from '../share.ts'
+import {
+  buildShareUrl,
+  consumePendingCode,
+  loadSavedCode,
+  readShareParam,
+  saveCode,
+} from '../share.ts'
 
 type Tab = 'output' | 'canvas' | 'tokens' | 'ast' | 'types' | 'bytecode' | 'debug'
 
@@ -28,7 +34,10 @@ const TABS: { id: Tab; label: string }[] = [
 ]
 
 export default function Playground() {
-  const [code, setCode] = useState(() => consumePendingCode() ?? DEFAULT_CODE)
+  const [code, setCode] = useState(
+    () => consumePendingCode() ?? readShareParam() ?? loadSavedCode() ?? DEFAULT_CODE,
+  )
+  const [copied, setCopied] = useState(false)
   const [runResult, setRunResult] = useState<PipelineResult | null>(null)
   const [snapshots, setSnapshots] = useState<Snapshot[] | null>(null)
   const [traceNonce, setTraceNonce] = useState(0)
@@ -37,6 +46,24 @@ export default function Playground() {
 
   // live analysis (no execution) — drives the static panels & error squiggle
   const analysis = useMemo(() => runPipeline(code, { execute: false }), [code])
+
+  // persist the buffer so it survives reloads
+  useEffect(() => {
+    saveCode(code)
+  }, [code])
+
+  const share = useCallback(() => {
+    const url = buildShareUrl(code)
+    const done = (): void => {
+      setCopied(true)
+      window.setTimeout(() => setCopied(false), 1600)
+    }
+    if (navigator.clipboard?.writeText) {
+      navigator.clipboard.writeText(url).then(done, done)
+    } else {
+      done()
+    }
+  }, [code])
 
   const doRun = useCallback(
     (record: boolean) => {
@@ -101,6 +128,9 @@ export default function Playground() {
               </option>
             ))}
           </select>
+          <button className="btn" onClick={share} title="Copy a shareable link">
+            {copied ? '✓ copied' : '⇗ share'}
+          </button>
           <span className="kbd-hint">⌘/Ctrl ↵</span>
         </div>
 

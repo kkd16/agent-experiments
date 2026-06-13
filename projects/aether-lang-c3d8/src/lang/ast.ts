@@ -35,6 +35,27 @@ export type BinaryOp =
 
 export type UnaryOp = '-' | '!'
 
+/**
+ * Patterns used by `match`. `plist` is normalised into nested `pcons`/`pnil`
+ * by the parser, so the compiler only ever sees cons-cells.
+ */
+export type Pattern =
+  | { kind: 'pwild'; span: Span }
+  | { kind: 'pvar'; name: string; span: Span }
+  | { kind: 'pint'; value: number; span: Span }
+  | { kind: 'pfloat'; value: number; span: Span }
+  | { kind: 'pbool'; value: boolean; span: Span }
+  | { kind: 'pstr'; value: string; span: Span }
+  | { kind: 'punit'; span: Span }
+  | { kind: 'pnil'; span: Span }
+  | { kind: 'pcons'; head: Pattern; tail: Pattern; span: Span }
+  | { kind: 'ptuple'; elements: Pattern[]; span: Span }
+
+export interface MatchCase {
+  pattern: Pattern
+  body: Expr
+}
+
 export type Expr =
   | { kind: 'int'; value: number; span: Span }
   | { kind: 'float'; value: number; span: Span }
@@ -51,6 +72,7 @@ export type Expr =
   | { kind: 'list'; elements: Expr[]; span: Span }
   | { kind: 'tuple'; elements: Expr[]; span: Span }
   | { kind: 'seq'; first: Expr; rest: Expr; span: Span }
+  | { kind: 'match'; scrutinee: Expr; cases: MatchCase[]; span: Span }
 
 /** A short human-readable label for a node, used by the AST visualiser. */
 export function nodeLabel(e: Expr): string {
@@ -85,6 +107,34 @@ export function nodeLabel(e: Expr): string {
       return `tuple (${e.elements.length})`
     case 'seq':
       return 'seq ;'
+    case 'match':
+      return `match (${e.cases.length})`
+  }
+}
+
+/** A short human-readable label for a pattern, used by the AST visualiser. */
+export function patternLabel(p: Pattern): string {
+  switch (p.kind) {
+    case 'pwild':
+      return '_'
+    case 'pvar':
+      return p.name
+    case 'pint':
+      return String(p.value)
+    case 'pfloat':
+      return String(p.value)
+    case 'pbool':
+      return String(p.value)
+    case 'pstr':
+      return JSON.stringify(p.value)
+    case 'punit':
+      return '()'
+    case 'pnil':
+      return '[]'
+    case 'pcons':
+      return `${patternLabel(p.head)} :: ${patternLabel(p.tail)}`
+    case 'ptuple':
+      return `(${p.elements.map(patternLabel).join(', ')})`
   }
 }
 
@@ -108,6 +158,8 @@ export function children(e: Expr): Expr[] {
       return e.elements
     case 'seq':
       return [e.first, e.rest]
+    case 'match':
+      return [e.scrutinee, ...e.cases.map((c) => c.body)]
     default:
       return []
   }

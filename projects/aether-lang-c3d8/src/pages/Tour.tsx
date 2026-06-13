@@ -43,6 +43,24 @@ fact 5`}</pre>
       </section>
 
       <section>
+        <h2>Pattern matching</h2>
+        <p>
+          <code>match</code> destructures values against patterns, tried top to bottom. Patterns
+          can be literals, <code>_</code> (wildcard), variables, tuples, and lists
+          (<code>[]</code>, <code>h :: t</code>, <code>[a, b]</code>).
+        </p>
+        <pre className="snippet">{`let rec len xs =
+  match xs with
+  | []      -> 0
+  | _ :: t  -> 1 + len t in
+len [10, 20, 30]   // => 3`}</pre>
+        <p>
+          Bindings introduced by a pattern are in scope in that case's body. A value that matches
+          no case raises a runtime error.
+        </p>
+      </section>
+
+      <section>
         <h2>Operators</h2>
         <table className="op-table">
           <tbody>

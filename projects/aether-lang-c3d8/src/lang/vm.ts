@@ -223,6 +223,9 @@ export class VM {
       case Op.CALL:
         this.doCall(code[frame.ip++])
         return
+      case Op.TAILCALL:
+        this.doTailCall(frame, code[frame.ip++])
+        return
       case Op.CLOSURE:
         this.doClosure(frame, code[frame.ip++])
         return
@@ -300,6 +303,37 @@ export class VM {
         stack.push({ tag: 'tuple', items })
         return
       }
+      case Op.IS_NIL: {
+        const v = stack.pop() as Value
+        stack.push(v.tag === 'nil' ? TRUE : FALSE)
+        return
+      }
+      case Op.IS_CONS: {
+        const v = stack.pop() as Value
+        stack.push(v.tag === 'cons' ? TRUE : FALSE)
+        return
+      }
+      case Op.HEAD: {
+        const v = stack.pop() as Value
+        if (v.tag !== 'cons') throw new AetherRuntimeError('head of non-cons in match')
+        stack.push(v.head)
+        return
+      }
+      case Op.TAIL: {
+        const v = stack.pop() as Value
+        if (v.tag !== 'cons') throw new AetherRuntimeError('tail of non-cons in match')
+        stack.push(v.tail)
+        return
+      }
+      case Op.TUPLE_GET: {
+        const k = code[frame.ip++]
+        const v = stack.pop() as Value
+        if (v.tag !== 'tuple') throw new AetherRuntimeError('tuple access on non-tuple')
+        stack.push(v.items[k])
+        return
+      }
+      case Op.MATCH_FAIL:
+        throw new AetherRuntimeError('match: no pattern matched the value')
       default:
         throw new AetherRuntimeError(`bad opcode ${op}`)
     }
@@ -325,6 +359,27 @@ export class VM {
       return
     }
     throw new AetherRuntimeError(`cannot call a ${callee.tag}`)
+  }
+
+  // Tail call: if the callee is a closure, reuse the current frame instead of
+  // pushing a new one, giving constant-space tail recursion. Native callees
+  // fall back to a normal call (the following RETURN cleans up).
+  private doTailCall(frame: Frame, argc: number): void {
+    const stack = this.stack
+    const fnIndex = stack.length - argc - 1
+    const callee = stack[fnIndex]
+    if (callee.tag !== 'closure') {
+      this.doCall(argc)
+      return
+    }
+    this.closeUpvalues(frame.base)
+    // slide [callee, args] down so the callee sits where the current fn was
+    const window = stack.slice(fnIndex)
+    stack.length = frame.base - 1
+    for (const v of window) stack.push(v)
+    // base is unchanged: the callee now sits at base-1, its arg at base (slot 0)
+    frame.closure = callee
+    frame.ip = 0
   }
 
   private doClosure(frame: Frame, protoIdx: number): void {

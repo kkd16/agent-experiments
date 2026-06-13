@@ -5,7 +5,7 @@
 // are prefix forms whose bodies extend as far right as possible. Multi-argument
 // `fn a b -> e` and `let f a b = e` desugar to curried single-argument lambdas.
 
-import type { BinaryOp, Expr, UnaryOp } from './ast.ts'
+import type { BinaryOp, Expr, MatchCase, Pattern, UnaryOp } from './ast.ts'
 import type { Span, Token } from './lexer.ts'
 import { tokenize } from './lexer.ts'
 
@@ -116,6 +116,7 @@ class Parser {
       if (t.value === 'let') return this.parseLet()
       if (t.value === 'fn') return this.parseLambda()
       if (t.value === 'if') return this.parseIf()
+      if (t.value === 'match') return this.parseMatch()
     }
 
     if (t.kind === 'op' && (t.value === '-' || t.value === '!')) {
@@ -261,6 +262,114 @@ class Parser {
       recursive,
       span: this.spanFrom(start.span, body.span),
     }
+  }
+
+  private parseMatch(): Expr {
+    const start = this.expect('keyword', 'match')
+    const scrutinee = this.parseExpr(0)
+    this.expect('keyword', 'with')
+    const cases: MatchCase[] = []
+    // an optional leading '|' before the first case
+    if (this.at('op', '|')) this.next()
+    for (;;) {
+      const pattern = this.parsePattern()
+      this.expect('op', '->')
+      const body = this.parseExpr(0)
+      cases.push({ pattern, body })
+      if (this.at('op', '|')) {
+        this.next()
+        continue
+      }
+      break
+    }
+    if (cases.length === 0) {
+      throw new ParseError('match needs at least one case', start.span)
+    }
+    const last = cases[cases.length - 1].body
+    return { kind: 'match', scrutinee, cases, span: this.spanFrom(start.span, last.span) }
+  }
+
+  // pattern grammar: cons is right-associative and the only infix form
+  private parsePattern(): Pattern {
+    const left = this.parsePatternAtom()
+    if (this.at('op', '::')) {
+      this.next()
+      const tail = this.parsePattern()
+      return { kind: 'pcons', head: left, tail, span: this.spanFrom(left.span, tail.span) }
+    }
+    return left
+  }
+
+  private parsePatternAtom(): Pattern {
+    const t = this.peek()
+    switch (t.kind) {
+      case 'int':
+        this.next()
+        return { kind: 'pint', value: parseInt(t.value, 10), span: t.span }
+      case 'float':
+        this.next()
+        return { kind: 'pfloat', value: parseFloat(t.value), span: t.span }
+      case 'string':
+        this.next()
+        return { kind: 'pstr', value: t.value, span: t.span }
+      case 'ident':
+        this.next()
+        return t.value === '_'
+          ? { kind: 'pwild', span: t.span }
+          : { kind: 'pvar', name: t.value, span: t.span }
+      case 'keyword':
+        if (t.value === 'true' || t.value === 'false') {
+          this.next()
+          return { kind: 'pbool', value: t.value === 'true', span: t.span }
+        }
+        throw new ParseError(`unexpected keyword ${JSON.stringify(t.value)} in pattern`, t.span)
+      case 'punc':
+        if (t.value === '(') return this.parsePatternParen()
+        if (t.value === '[') return this.parsePatternList()
+        throw new ParseError(`unexpected ${JSON.stringify(t.value)} in pattern`, t.span)
+      default:
+        throw new ParseError(`unexpected ${JSON.stringify(t.value)} in pattern`, t.span)
+    }
+  }
+
+  private parsePatternParen(): Pattern {
+    const open = this.expect('punc', '(')
+    if (this.at('punc', ')')) {
+      const close = this.next()
+      return { kind: 'punit', span: this.spanFrom(open.span, close.span) }
+    }
+    const first = this.parsePattern()
+    if (this.at('punc', ',')) {
+      const elements = [first]
+      while (this.at('punc', ',')) {
+        this.next()
+        elements.push(this.parsePattern())
+      }
+      const close = this.expect('punc', ')')
+      return { kind: 'ptuple', elements, span: this.spanFrom(open.span, close.span) }
+    }
+    this.expect('punc', ')')
+    return first
+  }
+
+  // [a, b, c] desugars to a :: b :: c :: []
+  private parsePatternList(): Pattern {
+    const open = this.expect('punc', '[')
+    const elements: Pattern[] = []
+    if (!this.at('punc', ']')) {
+      elements.push(this.parsePattern())
+      while (this.at('punc', ',')) {
+        this.next()
+        elements.push(this.parsePattern())
+      }
+    }
+    const close = this.expect('punc', ']')
+    const span = this.spanFrom(open.span, close.span)
+    let acc: Pattern = { kind: 'pnil', span }
+    for (let i = elements.length - 1; i >= 0; i--) {
+      acc = { kind: 'pcons', head: elements[i], tail: acc, span }
+    }
+    return acc
   }
 
   private parseIf(): Expr {

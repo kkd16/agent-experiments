@@ -31,6 +31,8 @@ const KEYWORDS = new Set([
   'true',
   'false',
   'and',
+  'match',
+  'with',
 ])
 
 const OP_CHARS = new Set(['+', '-', '*', '/', '<', '>', '=', '!', '^', '|', '&', ':', '.'])

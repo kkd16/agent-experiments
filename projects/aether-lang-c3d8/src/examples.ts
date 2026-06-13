@@ -119,6 +119,35 @@ side 3`,
 spiral 4.0 59.5 140`,
   },
   {
+    id: 'patterns',
+    title: 'Pattern matching',
+    blurb: 'Destructure lists and tuples with match — run-length encoding.',
+    visual: false,
+    code: `// match destructures lists (::, [], [x, y]) and tuples.
+let rec encode xs =
+  match xs with
+  | [] -> []
+  | x :: rest ->
+      match encode rest with
+      | (n, y) :: tl ->
+          if x == y then (n + 1, y) :: tl
+          else (1, x) :: (n, y) :: tl
+      | other -> (1, x) :: other in
+
+let decode =
+  let rec go pairs =
+    match pairs with
+    | [] -> []
+    | (n, x) :: tl ->
+        let rec rep k = if k == 0 then [] else x :: rep (k - 1) in
+        rep n ++ go tl in
+  go in
+
+let data = [1, 1, 1, 2, 2, 3, 1, 1] in
+let packed = encode data in
+(packed, decode packed)`,
+  },
+  {
     id: 'church',
     title: 'Church numerals',
     blurb: 'Encoding numbers as higher-order functions — pure lambda calculus.',

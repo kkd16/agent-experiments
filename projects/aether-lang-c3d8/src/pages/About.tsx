@@ -17,12 +17,12 @@ const STAGES = [
   {
     n: 4,
     title: 'Compiler',
-    body: 'The typed AST is lowered to bytecode for a stack machine. Each function becomes its own proto; free variables are captured as clox-style upvalues (by reference), so closures and recursion compose. let opens a real local slot that is closed and slid off the stack at end of scope.',
+    body: 'The typed AST is lowered to bytecode for a stack machine. Each function becomes its own proto; free variables are captured as clox-style upvalues (by reference), so closures and recursion compose. let opens a real local slot that is closed and slid off the stack at end of scope, and match is compiled into a decision sequence of constructor tests plus variable extractions.',
   },
   {
     n: 5,
     title: 'Virtual machine',
-    body: 'An iterative stack VM with an explicit frame stack, so recursion depth is bounded by memory, not the host call stack. Builtins are curried native values. Optionally it records a per-instruction snapshot trace.',
+    body: 'An iterative stack VM with an explicit frame stack, so recursion depth is bounded by memory, not the host call stack. Calls in tail position reuse the current frame (tail-call optimisation), giving constant-space tail recursion — watch the call-frame count stay flat in the debugger. Builtins are curried native values; the VM can record a per-instruction snapshot trace.',
   },
   {
     n: 6,
