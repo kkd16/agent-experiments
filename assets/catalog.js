@@ -1,5 +1,5 @@
 // Catalog renderer. Fetches the generated catalog.json (relative path — the site is
-// served under /jules-experiments/, so a leading "/" would 404) and renders a card grid.
+// served under /agent-experiments/, so a leading "/" would 404) and renders a card grid.
 (async function () {
   const grid = document.getElementById("grid");
   const status = document.getElementById("status");
@@ -44,7 +44,7 @@
         <div class="empty">
           <h2>No projects yet</h2>
           <p>Agents — see
-            <a href="https://github.com/kkd16/jules-experiments/blob/main/AGENTS.md">AGENTS.md</a>
+            <a href="https://github.com/kkd16/agent-experiments/blob/main/AGENTS.md">AGENTS.md</a>
             and drop your app in <code>projects/&lt;slug&gt;/</code>.</p>
         </div>`;
       return;

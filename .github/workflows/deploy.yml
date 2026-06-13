@@ -12,32 +12,37 @@ permissions:
 
 # Serialize deploys. cancel-in-progress is intentionally FALSE: every run does a full
 # rescan and re-checks-out tip-of-main, so the last queued run is guaranteed to include
-# every merged project. Cancelling could leave the live site lagging main.
+# every merged project. (Flip to true to save Actions minutes when pushes are frequent,
+# at a small risk of the very last push's run being cancelled — see README.)
 concurrency:
   group: pages
   cancel-in-progress: false
 
+# Single straight pipeline: build the catalog and deploy in ONE job.
+# Pages-via-Actions still requires an artifact (deploy-pages deploys it; there is no
+# directory-deploy alternative), but we keep it tiny: only the site files, not the whole
+# repo / .git, and it auto-expires after 1 day so it never accumulates in storage.
 jobs:
-  build:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "20"
-      - name: Generate catalog.json
-        run: node scripts/build-catalog.mjs
-      - uses: actions/configure-pages@v5
-      - uses: actions/upload-pages-artifact@v3
-        with:
-          path: . # deploy the repo root (default is _site/, which would be empty)
-
   deploy:
-    needs: build
     runs-on: ubuntu-latest
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Generate catalog.json
+        run: node scripts/build-catalog.mjs
+      - name: Assemble _site (site files only — no .git, no scripts, no markdown)
+        run: |
+          mkdir -p _site
+          cp -r index.html assets projects catalog.json .nojekyll _site/
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+          retention-days: 1
       - id: deployment
         uses: actions/deploy-pages@v4

@@ -1,10 +1,10 @@
-# jules-experiments — Agent App Factory
+# agent-experiments — Agent App Factory
 
 A repo where autonomous coding agents (Jules, Claude, etc.) turn ideas into small
 self-contained frontend apps. Each app lives in its own folder, and a catalog homepage on
 GitHub Pages auto-discovers every project.
 
-**Live catalog:** <https://kkd16.github.io/jules-experiments/>
+**Live catalog:** <https://kkd16.github.io/agent-experiments/>
 
 ## How it works
 
@@ -38,7 +38,7 @@ python3 -m http.server                # serve the repo root
 ```
 
 > Note: locally the catalog and projects work from the server root (`/`). On GitHub Pages
-> they're served under `/jules-experiments/`, which is why projects must use **relative**
+> they're served under `/agent-experiments/`, which is why projects must use **relative**
 > asset paths (see AGENTS.md).
 
 ## What's intentionally simple (for now)

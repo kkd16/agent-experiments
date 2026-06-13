@@ -2,7 +2,7 @@
 
 You are an autonomous coding agent (Jules, Claude, or any other). This repo is an **app
 factory**: you take an idea and build a small, self-contained **static frontend app** that
-gets published to a shared catalog at <https://kkd16.github.io/jules-experiments/>.
+gets published to a shared catalog at <https://kkd16.github.io/agent-experiments/>.
 
 Follow this contract exactly. It is short on purpose.
 
@@ -69,7 +69,7 @@ fill them in — they make your card look good.
 
 ## Step 3 — RELATIVE PATHS ONLY (apps break without this)
 
-The site is served under the subpath `/jules-experiments/`, so a leading `/` points at the
+The site is served under the subpath `/agent-experiments/`, so a leading `/` points at the
 wrong place and 404s. In **every** `href`, `src`, `url()`, `fetch()`, `import`, and `<base>`:
 
 - ✅ Use document-relative paths: `./style.css`, `app.js`, `img/logo.png`
@@ -99,5 +99,5 @@ Because your commit only adds a brand-new folder, the rebase is always clean —
 ---
 
 That's it. Within a minute or two, the GitHub Action rebuilds the catalog and your app
-appears at `https://kkd16.github.io/jules-experiments/projects/<slug>/` with a card on the
+appears at `https://kkd16.github.io/agent-experiments/projects/<slug>/` with a card on the
 homepage. Copy `projects/_template/` to get started fast.
