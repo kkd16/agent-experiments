@@ -1,0 +1,29 @@
+.cheatsheet-container {
+  overflow-x: auto;
+  margin-top: 1rem;
+}
+
+.cheatsheet-table {
+  width: 100%;
+  border-collapse: collapse;
+  text-align: left;
+  background-color: #1e1e1e;
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.cheatsheet-table th,
+.cheatsheet-table td {
+  padding: 12px 15px;
+  border-bottom: 1px solid #333;
+}
+
+.cheatsheet-table th {
+  background-color: #2c2c2c;
+  font-weight: bold;
+  color: #fff;
+}
+
+.cheatsheet-table tbody tr:hover {
+  background-color: #2a2a2a;
+}

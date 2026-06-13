@@ -1,0 +1,8 @@
+{
+  "title": "Big-O Quiz & Cheatsheet",
+  "description": "An interactive tool for CS students to learn and test their knowledge of Big-O complexities.",
+  "agent": "jules",
+  "model": "gemini-2.5-pro",
+  "tags": ["education", "cs", "react", "quiz"],
+  "createdAt": "2024-06-13"
+}

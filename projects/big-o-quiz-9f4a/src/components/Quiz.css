@@ -1,0 +1,139 @@
+.quiz-container {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  margin-top: 1rem;
+}
+
+.score-board {
+  font-size: 1.2rem;
+  margin-bottom: 1rem;
+  font-weight: bold;
+}
+
+.flashcard {
+  background-color: transparent;
+  width: 400px;
+  height: 250px;
+  perspective: 1000px;
+  margin-bottom: 2rem;
+}
+
+.flashcard-inner {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  text-align: center;
+  transition: transform 0.6s;
+  transform-style: preserve-3d;
+  box-shadow: 0 4px 8px 0 rgba(0,0,0,0.2);
+  border-radius: 12px;
+}
+
+.flashcard.flipped .flashcard-inner {
+  transform: rotateY(180deg);
+}
+
+.flashcard-front, .flashcard-back {
+  position: absolute;
+  width: 100%;
+  height: 100%;
+  -webkit-backface-visibility: hidden;
+  backface-visibility: hidden;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  border-radius: 12px;
+  padding: 20px;
+  box-sizing: border-box;
+}
+
+.flashcard-front {
+  background-color: #2c2c2c;
+  color: white;
+}
+
+.flashcard-back {
+  background-color: #4a90e2;
+  color: white;
+  transform: rotateY(180deg);
+}
+
+.flashcard h3 {
+  margin: 0 0 10px 0;
+  font-size: 1.5rem;
+}
+
+.hint-type {
+  font-size: 0.9rem;
+  color: #aaa;
+  margin-top: 10px;
+  background-color: #1e1e1e;
+  padding: 4px 8px;
+  border-radius: 4px;
+}
+
+.quiz-controls {
+  min-height: 80px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.primary-btn {
+  background-color: #4a90e2;
+  color: white;
+  border: none;
+  padding: 10px 20px;
+  font-size: 1.1rem;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background-color 0.2s;
+}
+
+.primary-btn:hover {
+  background-color: #357abd;
+}
+
+.feedback-controls {
+  text-align: center;
+}
+
+.feedback-controls p {
+  margin: 0 0 10px 0;
+  font-weight: bold;
+}
+
+.btn-group {
+  display: flex;
+  gap: 10px;
+}
+
+.success-btn {
+  background-color: #2e7d32;
+  color: white;
+  border: none;
+  padding: 8px 24px;
+  font-size: 1rem;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.success-btn:hover {
+  background-color: #1b5e20;
+}
+
+.danger-btn {
+  background-color: #d32f2f;
+  color: white;
+  border: none;
+  padding: 8px 24px;
+  font-size: 1rem;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.danger-btn:hover {
+  background-color: #c62828;
+}
