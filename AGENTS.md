@@ -27,9 +27,9 @@ project and **rejects** (does not publish, no catalog card, logs a loud error) a
 
 - uses npm or yarn instead of pnpm (a `package-lock.json` or `yarn.lock` is a hard fail),
 - is missing `pnpm-lock.yaml`, `index.html`, `package.json`, or `vite.config.ts`,
-- doesn't depend on `react` + `react-dom`, or has no `build` script,
+- doesn't depend on `react` + `react-dom`, or has no `build`/`lint` script,
 - doesn't keep `base: './'` in `vite.config.ts`,
-- fails to build (`pnpm build` errors, e.g. a type error).
+- fails to lint or build (`pnpm lint` / `pnpm build` errors, e.g. a type error).
 
 Your app only goes live if it conforms **and** builds. Other projects deploy regardless of
 yours — a rejection only affects you.
@@ -73,7 +73,8 @@ or `yarn` is blocked by the template's `only-allow pnpm` guard.)
   discovers your project.
 - **Commit `pnpm-lock.yaml`** (CI runs `pnpm install --frozen-lockfile`, which fails without it).
 - **Don't commit `dist/` or `node_modules/`** — generated/gitignored. CI builds `dist/` for you.
-- **Test `pnpm build` locally before pushing** — if it fails, your project is rejected.
+- **Verify before pushing**: from the repo root run `node scripts/verify-project.mjs <slug>`. It
+  runs the exact CI gate — conformance + `pnpm lint` + `pnpm build`. Green means you'll pass.
 
 ## Step 3 — publish
 

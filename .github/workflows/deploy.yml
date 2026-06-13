@@ -56,7 +56,7 @@ jobs:
         if: steps.cache.outputs.cache-hit != 'true'
         continue-on-error: true
         working-directory: projects/${{ matrix.slug }}
-        run: pnpm install --frozen-lockfile && pnpm run build
+        run: pnpm install --frozen-lockfile && pnpm run lint && pnpm run build
       - name: Verify build output
         id: verify
         if: steps.cache.outputs.cache-hit != 'true' && steps.build.outcome == 'success'

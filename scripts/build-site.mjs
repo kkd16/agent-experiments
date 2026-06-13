@@ -32,7 +32,10 @@ async function main() {
       metas.push(await readMeta(PROJECTS_DIR, slug));
       continue;
     }
-    const ok = run('pnpm', ['install', '--frozen-lockfile'], dir) && run('pnpm', ['run', 'build'], dir);
+    const ok =
+      run('pnpm', ['install', '--frozen-lockfile'], dir) &&
+      run('pnpm', ['run', 'lint'], dir) &&
+      run('pnpm', ['run', 'build'], dir);
     if (!ok || !(await exists(join(dir, 'dist', 'index.html')))) {
       reportViolations(slug, ['build failed (or produced no dist/index.html)']);
       rejected.push(slug);

@@ -74,6 +74,7 @@ export async function validate(projectsDir, slug) {
     const deps = pkg.dependencies || {};
     if (!deps.react || !deps['react-dom']) errors.push('package.json must depend on react and react-dom');
     if (!pkg.scripts?.build) errors.push('package.json needs a "build" script');
+    if (!pkg.scripts?.lint) errors.push('package.json needs a "lint" script');
   }
 
   const candidates = ['vite.config.ts', 'vite.config.js', 'vite.config.mts', 'vite.config.mjs'];
