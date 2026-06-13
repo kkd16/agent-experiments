@@ -5,38 +5,110 @@ on:
     branches: [main]
   workflow_dispatch:
 
+# Minimal by default. Only the deploy job gets the Pages/OIDC token — the build jobs, which
+# run untrusted agent code, get contents:read ONLY and never see the deploy token.
 permissions:
   contents: read
-  pages: write
-  id-token: write
 
 concurrency:
   group: pages
-  cancel-in-progress: false # each run rescans tip-of-main, so the last queued run includes every project
+  cancel-in-progress: false # serialize; the last queued run reflects tip-of-main
 
 jobs:
-  deploy:
+  # 1. Validate every project; emit the matrix of conforming slugs. Non-conforming projects
+  #    are rejected here (::error:: annotation) and never enter the build matrix.
+  discover:
     runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.list.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+      - id: list
+        run: node scripts/discover-projects.mjs
+
+  # 2. One isolated job per project. Runs agent build code with contents:read ONLY (no
+  #    pages/id-token). dist/ is cached by source hash, so unchanged projects skip rebuilding.
+  #    A build failure is isolated: that leg uploads no artifact (rejected) but never blocks
+  #    the others or the deploy.
+  build:
+    needs: discover
+    if: ${{ needs.discover.outputs.matrix != '[]' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        slug: ${{ fromJSON(needs.discover.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 11
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          cache: pnpm
+          cache-dependency-path: projects/${{ matrix.slug }}/pnpm-lock.yaml
+      - name: Restore cached build
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: projects/${{ matrix.slug }}/dist
+          key: dist-v1-${{ matrix.slug }}-${{ hashFiles(format('projects/{0}/**', matrix.slug)) }}
+      - name: Build
+        id: build
+        if: steps.cache.outputs.cache-hit != 'true'
+        continue-on-error: true # a failed build rejects this project; it must not fail the job
+        working-directory: projects/${{ matrix.slug }}
+        run: pnpm install --frozen-lockfile && pnpm run build
+      - name: Flag rejected build
+        if: steps.cache.outputs.cache-hit != 'true' && steps.build.outcome != 'success'
+        run: |
+          echo "::error title=Rejected ${{ matrix.slug }}::${{ matrix.slug }}: build failed"
+      - name: Upload dist
+        if: steps.cache.outputs.cache-hit == 'true' || steps.build.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ matrix.slug }}
+          path: projects/${{ matrix.slug }}/dist
+          retention-days: 1
+          if-no-files-found: ignore
+
+  # 3. Collect the built artifacts and deploy. This job holds pages/id-token but runs NO agent
+  #    code — only artifact download, file assembly, and the official Pages actions.
+  deploy:
+    needs: [discover, build]
+    if: ${{ always() && needs.discover.result == 'success' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - uses: actions/checkout@v6
-      - uses: pnpm/action-setup@v6 # must precede setup-node so the pnpm cache resolves
-        with:
-          version: 11
       - uses: actions/setup-node@v6
         with:
-          node-version: "24" # LTS
-          cache: pnpm
-          cache-dependency-path: "**/pnpm-lock.yaml"
-      - name: Build all projects and assemble _site
-        run: node scripts/build-site.mjs
+          node-version: "24"
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        continue-on-error: true # tolerate zero artifacts (no conforming projects)
+        with:
+          path: _artifacts
+          pattern: dist-*
+      - name: Assemble _site
+        run: node scripts/assemble-site.mjs _artifacts
       - uses: actions/configure-pages@v6
       - uses: actions/upload-pages-artifact@v5
         with:
           path: _site
           retention-days: 1
-          include-hidden-files: "true" # v5 drops dotfiles otherwise (.nojekyll, .well-known)
+          include-hidden-files: "true"
       - id: deployment
         uses: actions/deploy-pages@v5

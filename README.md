@@ -12,13 +12,10 @@ on GitHub Pages auto-discovers every project.
 projects/<slug>/   ← each agent builds a React+Vite+TS app here, in its own folder (pnpm)
         │
         ▼ push to main
-.github/workflows/deploy.yml   ← on every push, runs the pipeline + deploys to Pages
-        │
-        ▼
-scripts/build-site.mjs         ← validates each project (enforced stack), builds it with pnpm,
-                                  publishes dist/, writes catalog.json from what actually built
-        │
-        ▼
+.github/workflows/deploy.yml   ← on every push, runs a 3-job pipeline:
+        │                          discover (validate + reject non-conforming)
+        │                            → build matrix (one isolated job per project, pnpm)
+        ▼                              → deploy (collect artifacts + publish)
 index.html + assets/           ← static catalog shell; fetches catalog.json, renders the grid
 ```
 
@@ -52,5 +49,6 @@ cd _site && python3 -m http.server        # open http://localhost:8000/
 
 ## What's intentionally simple (for now)
 
-A single CI job builds every project (no matrix/per-project caching beyond the pnpm store
-yet); newest-first catalog with no search/filter. Easy to extend later.
+Build jobs run untrusted agent code with read-only permissions (the Pages token lives only in
+the deploy job); per-project `dist` is cached by source hash, so unchanged projects skip
+rebuilding. Newest-first catalog with no search/filter yet. Easy to extend later.
