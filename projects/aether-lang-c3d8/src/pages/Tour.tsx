@@ -136,11 +136,12 @@ len [10, 20, 30]   // => 3`}</pre>
       <section>
         <h2>The prelude</h2>
         <p>These are written in Aether itself, on top of a few primitives:</p>
-        <pre className="snippet">{`map filter foldl foldr
-length append reverse sum range
+        <pre className="snippet">{`map filter foldl foldr length append reverse sum range
+take drop elem all any concat zip replicate
 // primitives:
 head tail empty print show
-sqrt sin cos floor toFloat pi`}</pre>
+sqrt sin cos floor toFloat pi
+strlen toUpper toLower chars join parseInt`}</pre>
       </section>
 
       <section>
