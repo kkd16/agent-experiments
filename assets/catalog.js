@@ -11,6 +11,11 @@
   const themeBtn = $("theme");
   const countEl = $("count");
   const clearBtn = $("clear");
+  const statusbarEl = $("statusbar");
+  const filtersEl = $("filters");
+  const filtersBtn = $("filtersBtn");
+  const filtersPop = $("filtersPop");
+  const filtersBadge = $("filtersBadge");
 
   const esc = (s) =>
     String(s).replace(
@@ -135,22 +140,22 @@
     const agents = Object.keys(agentCount).sort(byCount(agentCount));
     const chip = (kind, val, label, on, n) =>
       `<button type="button" class="chip" data-kind="${kind}" data-val="${esc(val)}" aria-pressed="${on}">${esc(label)}${n != null ? `<span class="n">${n}</span>` : ""}</button>`;
-    let html = `<span class="facet-group"><span class="facet-label">status</span>`;
-    html += [["all", "All"], ["active", "In progress"], ["shipped", "Shipped"]]
+
+    statusbarEl.innerHTML = [["all", "All"], ["active", "In progress"], ["shipped", "Shipped"]]
       .map(([v, l]) => chip("status", v, l, state.status === v))
       .join("");
-    html += `</span>`;
-    if (tags.length) {
-      html += `<span class="facet-sep"></span><span class="facet-group"><span class="facet-label">tags</span>`;
-      html += tags.map((t) => chip("tag", t, t, state.tags.has(t), tagCount[t])).join("");
-      html += `</span>`;
-    }
-    if (agents.length > 1) {
-      html += `<span class="facet-sep"></span><span class="facet-group"><span class="facet-label">agent</span>`;
-      html += agents.map((a) => chip("agent", a, a, state.agent === a, agentCount[a])).join("");
-      html += `</span>`;
-    }
+
+    const group = (label, chips) =>
+      `<div class="facet-group"><span class="facet-label">${label}</span><div class="facet-chips">${chips}</div></div>`;
+    let html = "";
+    if (tags.length) html += group("tags", tags.map((t) => chip("tag", t, t, state.tags.has(t), tagCount[t])).join(""));
+    if (agents.length > 1) html += group("agent", agents.map((a) => chip("agent", a, a, state.agent === a, agentCount[a])).join(""));
     facetsEl.innerHTML = html;
+    filtersEl.hidden = html === "";
+
+    const n = state.tags.size + (state.agent ? 1 : 0);
+    filtersBadge.textContent = String(n);
+    filtersBadge.hidden = n === 0;
   }
 
   function renderStats() {
@@ -244,7 +249,7 @@
   document.addEventListener("click", (e) => {
     if (e.target.closest("[data-clear]")) clearAll();
   });
-  facetsEl.addEventListener("click", (e) => {
+  function onChip(e) {
     const b = e.target.closest(".chip");
     if (!b) return;
     const { kind, val } = b.dataset;
@@ -253,6 +258,20 @@
     else if (kind === "status") state.status = val;
     writeHash(false);
     render();
+  }
+  statusbarEl.addEventListener("click", onChip);
+  facetsEl.addEventListener("click", onChip);
+
+  function openFilters(open) {
+    filtersPop.hidden = !open;
+    filtersBtn.setAttribute("aria-expanded", String(open));
+  }
+  filtersBtn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    openFilters(filtersPop.hidden);
+  });
+  document.addEventListener("click", (e) => {
+    if (!filtersEl.contains(e.target)) openFilters(false);
   });
   const rehydrate = () => {
     readHash();
@@ -261,6 +280,11 @@
   window.addEventListener("popstate", rehydrate);
   window.addEventListener("hashchange", rehydrate);
   document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && !filtersPop.hidden) {
+      openFilters(false);
+      filtersBtn.focus();
+      return;
+    }
     const typing = /^(input|textarea|select)$/i.test(document.activeElement.tagName || "");
     if (e.key === "/" && !typing) {
       e.preventDefault();
