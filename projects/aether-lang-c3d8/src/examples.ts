@@ -281,6 +281,23 @@ range 1 21
   |> join " "`,
   },
   {
+    id: 'guards',
+    title: 'Pattern guards',
+    blurb: 'Refine match clauses with `when` boolean guards.',
+    visual: false,
+    code: `// A guard (when …) lets a clause match only if a condition holds.
+let classify = fn n ->
+  match n with
+  | 0                 -> "zero"
+  | n when n < 0      -> "negative"
+  | n when n % 2 == 0 -> "even"
+  | _                 -> "odd" in
+
+[0, 0 - 4, 6, 7]
+  |> map classify
+  |> join ", "`,
+  },
+  {
     id: 'church',
     title: 'Church numerals',
     blurb: 'Encoding numbers as higher-order functions — pure lambda calculus.',

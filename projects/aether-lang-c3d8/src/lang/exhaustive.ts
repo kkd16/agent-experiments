@@ -248,19 +248,22 @@ export interface MatchAnalysis {
 
 export function analyzeMatch(
   patterns: Pattern[],
+  guarded: boolean[],
   scrutType: Type,
   typeCtors: Map<string, TypeCtorInfo>,
   convert: ConvertFn,
 ): MatchAnalysis {
+  // Only unguarded clauses are guaranteed to match, so only they contribute to
+  // coverage. A guarded clause is still redundant if a prior unguarded clause
+  // already covers its pattern.
   const rows: NPat[][] = []
   const redundant: number[] = []
   for (let i = 0; i < patterns.length; i++) {
     const row = [toNPat(patterns[i])]
-    // a clause is redundant if it is not useful against the clauses above it
     if (useful(rows, row, [scrutType], typeCtors, convert) === null) {
       redundant.push(i)
     }
-    rows.push(row)
+    if (!guarded[i]) rows.push(row)
   }
   const witness = useful(rows, [WILD], [scrutType], typeCtors, convert)
   const missing = witness ? [renderNPat(witness[0])] : []

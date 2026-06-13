@@ -350,9 +350,14 @@ class Parser {
     if (this.at('op', '|')) this.next()
     for (;;) {
       const pattern = this.parsePattern()
+      let guard: Expr | undefined
+      if (this.at('keyword', 'when')) {
+        this.next()
+        guard = this.parseExpr(0)
+      }
       this.expect('op', '->')
       const body = this.parseExpr(0)
-      cases.push({ pattern, body })
+      cases.push({ pattern, guard, body })
       if (this.at('op', '|')) {
         this.next()
         continue

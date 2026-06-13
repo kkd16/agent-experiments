@@ -87,9 +87,18 @@ len [10, 20, 30]   // => 3`}</pre>
           no case raises a runtime error.
         </p>
         <p>
+          A clause can carry a <strong>guard</strong> with <code>when</code> — it only matches when
+          the condition holds, otherwise the next clause is tried:
+        </p>
+        <pre className="snippet">{`match n with
+| 0            -> "zero"
+| n when n < 0 -> "negative"
+| _            -> "positive"`}</pre>
+        <p>
           Matches are checked for <strong>exhaustiveness</strong>: a missing case is flagged with a
           witness it doesn't cover (e.g. <code>_ :: _</code> or <code>None</code>), and clauses that
-          can never be reached are warned about too.
+          can never be reached are warned about too. (Guarded clauses don't count toward coverage,
+          since their guard might be false.)
         </p>
       </section>
 
