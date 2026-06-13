@@ -1,5 +1,4 @@
-// Catalog renderer. Fetches the generated catalog.json (relative path — the site is
-// served under /agent-experiments/, so a leading "/" would 404) and renders a card grid.
+// fetch path is relative on purpose — the site is served under /agent-experiments/
 (async function () {
   const grid = document.getElementById("grid");
   const status = document.getElementById("status");

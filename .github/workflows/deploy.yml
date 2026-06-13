@@ -3,25 +3,17 @@ name: Deploy catalog to Pages
 on:
   push:
     branches: [main]
-  workflow_dispatch: # manual trigger (used for the first deploy after enabling Pages)
+  workflow_dispatch:
 
 permissions:
   contents: read
   pages: write
   id-token: write
 
-# Serialize deploys. cancel-in-progress is intentionally FALSE: every run does a full
-# rescan and re-checks-out tip-of-main, so the last queued run is guaranteed to include
-# every merged project. (Flip to true to save Actions minutes when pushes are frequent,
-# at a small risk of the very last push's run being cancelled — see README.)
 concurrency:
   group: pages
-  cancel-in-progress: false
+  cancel-in-progress: false # each run rescans tip-of-main, so the last queued run includes every project
 
-# Single straight pipeline: build the catalog and deploy in ONE job.
-# Pages-via-Actions still requires an artifact (deploy-pages deploys it; there is no
-# directory-deploy alternative), but we keep it tiny: only the site files, not the whole
-# repo / .git, and it auto-expires after 1 day so it never accumulates in storage.
 jobs:
   deploy:
     runs-on: ubuntu-latest
@@ -32,10 +24,10 @@ jobs:
       - uses: actions/checkout@v6
       - uses: actions/setup-node@v6
         with:
-          node-version: "24" # current LTS (Node 26 exists but isn't LTS until Oct 2026)
+          node-version: "24" # LTS
       - name: Generate catalog.json
         run: node scripts/build-catalog.mjs
-      - name: Assemble _site (site files only — no .git, no scripts, no markdown)
+      - name: Assemble _site
         run: |
           mkdir -p _site
           cp -r index.html assets projects catalog.json .nojekyll _site/
@@ -44,6 +36,6 @@ jobs:
         with:
           path: _site
           retention-days: 1
-          include-hidden-files: "true" # v5 excludes dotfiles by default; keep .nojekyll & any project .well-known
+          include-hidden-files: "true" # v5 drops dotfiles otherwise (.nojekyll, .well-known)
       - id: deployment
         uses: actions/deploy-pages@v5

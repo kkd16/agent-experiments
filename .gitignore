@@ -1,9 +1,6 @@
-# Generated at build time by scripts/build-catalog.mjs and in CI.
-# Kept out of version control on purpose: it's the one shared file that would
-# otherwise cause merge conflicts between parallel agent sessions.
+# Generated in CI by scripts/build-catalog.mjs; never committed (avoids merge conflicts).
 /catalog.json
 
-# OS / editor noise
 .DS_Store
 Thumbs.db
 node_modules/
