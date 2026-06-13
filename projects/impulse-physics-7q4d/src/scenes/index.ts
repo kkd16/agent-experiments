@@ -1,0 +1,573 @@
+import {
+  Body,
+  BodyType,
+  Circle,
+  DistanceJoint,
+  MouseJoint,
+  Polygon,
+  PrismaticJoint,
+  RevoluteJoint,
+  Rng,
+  Vec2,
+  World,
+  crossSV,
+  type Shape,
+} from '../engine';
+
+export interface SceneCamera {
+  center: Vec2;
+  scale: number;
+}
+
+export interface BuildResult {
+  camera?: SceneCamera;
+  /** Optional per-step hook for animated/kinematic scenes. */
+  update?: (time: number, dt: number) => void;
+}
+
+export interface SceneDef {
+  id: string;
+  name: string;
+  description: string;
+  category: 'Stacking' | 'Joints' | 'Showcase' | 'Materials' | 'Stress';
+  build: (world: World, rng: Rng) => BuildResult;
+}
+
+const PALETTE = ['#6ea8ff', '#7CFFCB', '#ffd166', '#ff6b6b', '#c792ea', '#4dd2ff', '#ff9e64', '#9ece6a'];
+function colorFor(i: number): string {
+  return PALETTE[i % PALETTE.length];
+}
+
+// ---- Shared builders -------------------------------------------------------
+
+function ground(world: World, halfWidth = 30, y = 0, thickness = 0.5): Body {
+  return world.addBody(
+    new Body(Polygon.box(halfWidth, thickness), {
+      type: BodyType.Static,
+      position: new Vec2(0, y - thickness),
+      friction: 0.6,
+    }),
+  );
+}
+
+function walls(world: World, halfWidth: number, height: number, y = 0): void {
+  const t = 0.5;
+  world.addBody(new Body(Polygon.box(t, height), {
+    type: BodyType.Static,
+    position: new Vec2(-halfWidth - t, y + height),
+    friction: 0.4,
+  }));
+  world.addBody(new Body(Polygon.box(t, height), {
+    type: BodyType.Static,
+    position: new Vec2(halfWidth + t, y + height),
+    friction: 0.4,
+  }));
+}
+
+function box(world: World, x: number, y: number, hw: number, hh: number, i = 0, angle = 0): Body {
+  return world.addBody(
+    new Body(Polygon.box(hw, hh), { position: new Vec2(x, y), angle, color: colorFor(i) }),
+  );
+}
+
+function randomShape(rng: Rng, scale: number): Shape {
+  const kind = rng.int(0, 2);
+  if (kind === 0) return new Circle(rng.range(0.25, 0.5) * scale);
+  const sides = rng.int(3, 6);
+  return Polygon.regular(sides, rng.range(0.3, 0.55) * scale, rng.range(0, Math.PI));
+}
+
+// ---- Scenes ----------------------------------------------------------------
+
+const pyramid: SceneDef = {
+  id: 'pyramid',
+  name: 'Pyramid',
+  description: 'A 12-row box pyramid. Watch warm-started impulses settle it solid; toggle Contacts to see the manifolds holding it up.',
+  category: 'Stacking',
+  build: (world) => {
+    ground(world);
+    const rows = 12;
+    const size = 0.5;
+    const gap = 0.01;
+    for (let row = 0; row < rows; row++) {
+      const count = rows - row;
+      const y = size + row * (size * 2 + gap);
+      const x0 = -(count - 1) * (size + gap);
+      for (let col = 0; col < count; col++) {
+        box(world, x0 + col * (size * 2 + gap), y, size, size, row + col);
+      }
+    }
+    return { camera: { center: new Vec2(0, 6), scale: 36 } };
+  },
+};
+
+const stacks: SceneDef = {
+  id: 'stacks',
+  name: 'Towers',
+  description: 'Several tall single-column towers — a torture test for the solver. Tweak iterations in Controls and watch them wobble or hold.',
+  category: 'Stacking',
+  build: (world, rng) => {
+    ground(world);
+    const towers = 5;
+    const height = 14;
+    for (let t = 0; t < towers; t++) {
+      const x = (t - (towers - 1) / 2) * 3;
+      for (let i = 0; i < height; i++) {
+        // Tiny jitter so towers lean and the solver has to work.
+        box(world, x + rng.range(-0.01, 0.01), 0.5 + i, 0.5, 0.5, t * height + i);
+      }
+    }
+    return { camera: { center: new Vec2(0, 7), scale: 30 } };
+  },
+};
+
+const newtonsCradle: SceneDef = {
+  id: 'cradle',
+  name: "Newton's Cradle",
+  description: 'Five rigid pendulums in contact. Momentum tunnels through the chain via the contact solver — restitution near 1, friction 0.',
+  category: 'Joints',
+  build: (world) => {
+    const r = 0.5;
+    const n = 5;
+    const length = 4;
+    const topY = 9;
+    for (let i = 0; i < n; i++) {
+      const x = (i - (n - 1) / 2) * (2 * r);
+      const anchor = new Vec2(x, topY);
+      const ballPos = i === 0
+        ? new Vec2(x - length, topY) // lift the first ball horizontally
+        : new Vec2(x, topY - length);
+      const ball = world.addBody(
+        new Body(new Circle(r), {
+          position: ballPos,
+          restitution: 0.98,
+          friction: 0,
+          color: colorFor(i),
+          density: 4,
+        }),
+      );
+      const j = new DistanceJoint(
+        world.addBody(new Body(new Circle(0.05), { type: BodyType.Static, position: anchor })),
+        ball,
+        anchor,
+        ballPos,
+        length,
+      );
+      world.addJoint(j);
+    }
+    return { camera: { center: new Vec2(0, 5.5), scale: 42 } };
+  },
+};
+
+const ropeBridge: SceneDef = {
+  id: 'bridge',
+  name: 'Rope Bridge',
+  description: 'A chain of planks linked by revolute joints, pinned at both ends. Drop crates on it (click) and watch it sag and recover.',
+  category: 'Joints',
+  build: (world, rng) => {
+    ground(world, 30, -6);
+    const planks = 18;
+    const pw = 0.6;
+    const ph = 0.12;
+    const y = 6;
+    const startX = -planks * pw;
+    let prev = world.addBody(
+      new Body(new Circle(0.1), { type: BodyType.Static, position: new Vec2(startX - pw, y) }),
+    );
+    for (let i = 0; i < planks; i++) {
+      const x = startX + i * (2 * pw);
+      const plank = world.addBody(
+        new Body(Polygon.box(pw, ph), { position: new Vec2(x, y), density: 2, color: '#c0966b' }),
+      );
+      world.addJoint(new RevoluteJoint(prev, plank, new Vec2(x - pw, y)));
+      prev = plank;
+    }
+    const anchor = world.addBody(
+      new Body(new Circle(0.1), { type: BodyType.Static, position: new Vec2(startX + planks * 2 * pw - pw, y) }),
+    );
+    world.addJoint(new RevoluteJoint(prev, anchor, new Vec2(startX + planks * 2 * pw - pw, y)));
+    // A few crates to load the bridge.
+    for (let i = 0; i < 4; i++) {
+      box(world, rng.range(-3, 3), y + 2 + i * 1.2, 0.4, 0.4, i + 2);
+    }
+    return { camera: { center: new Vec2(0, 3), scale: 26 } };
+  },
+};
+
+const tumbler: SceneDef = {
+  id: 'tumbler',
+  name: 'Tumbler',
+  description: 'A kinematic square drum rotates, tumbling the debris inside. The four walls are scripted each frame; the contents are fully simulated.',
+  category: 'Showcase',
+  build: (world, rng) => {
+    const center = new Vec2(0, 6);
+    const half = 4;
+    const t = 0.3;
+    const omega = 0.6;
+    // Build four walls as kinematic bodies whose poses we drive each frame.
+    const offsets = [
+      new Vec2(0, half), new Vec2(0, -half), new Vec2(half, 0), new Vec2(-half, 0),
+    ];
+    const horizontal = [true, true, false, false];
+    const wallsK: Array<{ body: Body; offset: Vec2 }> = [];
+    for (let i = 0; i < 4; i++) {
+      const shape = horizontal[i] ? Polygon.box(half + t, t) : Polygon.box(t, half + t);
+      const body = world.addBody(
+        new Body(shape, {
+          type: BodyType.Kinematic,
+          position: center.add(offsets[i]),
+          friction: 0.4,
+          color: '#5a6478',
+        }),
+      );
+      wallsK.push({ body, offset: offsets[i] });
+    }
+    for (let i = 0; i < 60; i++) {
+      world.addBody(
+        new Body(randomShape(rng, 0.9), {
+          position: center.add(new Vec2(rng.range(-3, 3), rng.range(-3, 3))),
+          color: colorFor(i),
+          friction: 0.3,
+          restitution: 0.1,
+        }),
+      );
+    }
+    return {
+      camera: { center, scale: 34 },
+      update: (time) => {
+        const angle = omega * time;
+        for (const { body, offset } of wallsK) {
+          const r = offset.rotate(angle);
+          body.setTransform(center.add(r), angle);
+          body.angularVelocity = omega;
+          body.linearVelocity = crossSV(omega, r);
+        }
+      },
+    };
+  },
+};
+
+const dominoes: SceneDef = {
+  id: 'dominoes',
+  name: 'Dominoes',
+  description: 'A heavy ball rolls in and topples a row of dominoes — a chain reaction carried entirely by frictional contacts.',
+  category: 'Showcase',
+  build: (world) => {
+    ground(world, 30);
+    const count = 16;
+    for (let i = 0; i < count; i++) {
+      world.addBody(
+        new Body(Polygon.box(0.1, 0.9), {
+          position: new Vec2(-7 + i * 0.95, 0.9),
+          friction: 0.5,
+          color: colorFor(i),
+        }),
+      );
+    }
+    world.addBody(
+      new Body(new Circle(0.7), {
+        position: new Vec2(-10, 2.5),
+        linearVelocity: new Vec2(5, 0),
+        density: 6,
+        friction: 0.5,
+        color: '#ff6b6b',
+      }),
+    );
+    return { camera: { center: new Vec2(0, 2.5), scale: 34 } };
+  },
+};
+
+const ragdoll: SceneDef = {
+  id: 'ragdoll',
+  name: 'Ragdolls',
+  description: 'Articulated figures built from boxes and revolute joints with non-colliding limbs, dropped onto the floor.',
+  category: 'Joints',
+  build: (world, rng) => {
+    ground(world, 30);
+    walls(world, 14, 10);
+    const makeRagdoll = (ox: number, oy: number, tint: number): void => {
+      const torso = world.addBody(new Body(Polygon.box(0.35, 0.6), { position: new Vec2(ox, oy), color: colorFor(tint) }));
+      const head = world.addBody(new Body(new Circle(0.3), { position: new Vec2(ox, oy + 0.95), color: colorFor(tint + 1) }));
+      world.addJoint(new RevoluteJoint(torso, head, new Vec2(ox, oy + 0.65)));
+      const limb = (dx: number, dy: number, ang: number, t: number): Body => {
+        const upper = world.addBody(new Body(Polygon.box(0.12, 0.4), { position: new Vec2(ox + dx, oy + dy), angle: ang, color: colorFor(t) }));
+        world.addJoint(new RevoluteJoint(torso, upper, new Vec2(ox + dx * 0.5, oy + dy + 0.4)));
+        const lower = world.addBody(new Body(Polygon.box(0.1, 0.4), { position: new Vec2(ox + dx, oy + dy - 0.8), angle: ang, color: colorFor(t + 2) }));
+        world.addJoint(new RevoluteJoint(upper, lower, new Vec2(ox + dx, oy + dy - 0.4)));
+        return lower;
+      };
+      limb(-0.45, 0.4, 0, tint + 2); // arms
+      limb(0.45, 0.4, 0, tint + 3);
+      limb(-0.2, -0.9, 0, tint + 4); // legs
+      limb(0.2, -0.9, 0, tint + 5);
+    };
+    for (let i = 0; i < 3; i++) makeRagdoll(-4 + i * 4, 6 + rng.range(0, 2), i * 2);
+    return { camera: { center: new Vec2(0, 4), scale: 30 } };
+  },
+};
+
+const arch: SceneDef = {
+  id: 'arch',
+  name: 'Masonry Arch',
+  description: 'A self-supporting semicircular arch of wedge-shaped voussoirs — no joints, no glue. It stands purely on compression and friction.',
+  category: 'Showcase',
+  build: (world) => {
+    ground(world, 30);
+    const n = 13;
+    const inner = 4;
+    const outer = 5.6;
+    const cx = 0;
+    const cy = 0;
+    for (let i = 0; i < n; i++) {
+      const a0 = Math.PI * (i / n);
+      const a1 = Math.PI * ((i + 1) / n);
+      // Voussoir = trapezoid between inner and outer radius across the wedge.
+      const p0 = new Vec2(cx + Math.cos(a0) * inner, cy + Math.sin(a0) * inner);
+      const p1 = new Vec2(cx + Math.cos(a1) * inner, cy + Math.sin(a1) * inner);
+      const p2 = new Vec2(cx + Math.cos(a1) * outer, cy + Math.sin(a1) * outer);
+      const p3 = new Vec2(cx + Math.cos(a0) * outer, cy + Math.sin(a0) * outer);
+      const centroid = p0.add(p1).add(p2).add(p3).mul(0.25);
+      const local = [p0, p1, p2, p3].map((p) => p.sub(centroid));
+      world.addBody(
+        new Body(Polygon.fromVertices(local), {
+          position: centroid,
+          friction: 0.7,
+          density: 3,
+          color: i === Math.floor(n / 2) ? '#ffd166' : '#b0a08c',
+        }),
+      );
+    }
+    return { camera: { center: new Vec2(0, 3), scale: 34 } };
+  },
+};
+
+const springs: SceneDef = {
+  id: 'springs',
+  name: 'Soft Springs',
+  description: 'Masses hung from damped distance-joint springs (a soft constraint). Grab and fling them; they oscillate and settle.',
+  category: 'Joints',
+  build: (world) => {
+    const n = 7;
+    for (let i = 0; i < n; i++) {
+      const x = (i - (n - 1) / 2) * 1.6;
+      const anchorPos = new Vec2(x, 10);
+      const anchor = world.addBody(new Body(new Circle(0.08), { type: BodyType.Static, position: anchorPos }));
+      const mass = world.addBody(new Body(Polygon.box(0.4, 0.4), { position: new Vec2(x, 6 - i * 0.2), color: colorFor(i), density: 2 }));
+      const j = new DistanceJoint(anchor, mass, anchorPos, mass.worldCenter, 3.5);
+      j.frequencyHz = 2 + i * 0.4;
+      j.dampingRatio = 0.2;
+      world.addJoint(j);
+    }
+    return { camera: { center: new Vec2(0, 6), scale: 34 } };
+  },
+};
+
+const frictionRamps: SceneDef = {
+  id: 'friction',
+  name: 'Friction Ramps',
+  description: 'Identical boxes released on inclines of increasing friction. The low-friction box slides away; the high-friction box stays put.',
+  category: 'Materials',
+  build: (world) => {
+    ground(world, 30);
+    const frictions = [0.0, 0.1, 0.3, 0.6, 1.0];
+    for (let i = 0; i < frictions.length; i++) {
+      const x = (i - 2) * 5;
+      world.addBody(
+        new Body(Polygon.box(2.2, 0.2), {
+          type: BodyType.Static,
+          position: new Vec2(x, 3),
+          angle: -0.45,
+          friction: frictions[i],
+        }),
+      );
+      world.addBody(
+        new Body(Polygon.box(0.4, 0.4), {
+          position: new Vec2(x + 1, 4.2),
+          angle: -0.45,
+          friction: frictions[i],
+          color: colorFor(i),
+        }),
+      );
+    }
+    return { camera: { center: new Vec2(0, 3), scale: 26 } };
+  },
+};
+
+const restitution: SceneDef = {
+  id: 'restitution',
+  name: 'Bouncing',
+  description: 'A row of balls dropped from the same height with restitution from 0 to 0.95 — dead splat to near-perfect bounce.',
+  category: 'Materials',
+  build: (world) => {
+    ground(world, 30);
+    const values = [0, 0.3, 0.5, 0.7, 0.85, 0.95];
+    for (let i = 0; i < values.length; i++) {
+      const x = (i - (values.length - 1) / 2) * 2.2;
+      world.addBody(
+        new Body(new Circle(0.5), {
+          position: new Vec2(x, 9),
+          restitution: values[i],
+          friction: 0.2,
+          color: colorFor(i),
+        }),
+      );
+    }
+    return { camera: { center: new Vec2(0, 4.5), scale: 34 } };
+  },
+};
+
+const machine: SceneDef = {
+  id: 'machine',
+  name: 'Motors & Elevator',
+  description: 'A revolute motor spins a paddle wheel while a prismatic-joint elevator rides a motorised rail, ferrying boxes up and dumping them.',
+  category: 'Joints',
+  build: (world, rng) => {
+    ground(world, 30);
+    // Motorised paddle wheel.
+    const hub = world.addBody(new Body(new Circle(0.2), { type: BodyType.Static, position: new Vec2(-6, 4) }));
+    const wheel = world.addBody(new Body(Polygon.regular(4, 2.2), { position: new Vec2(-6, 4), density: 1, color: '#4dd2ff' }));
+    const motor = new RevoluteJoint(hub, wheel, new Vec2(-6, 4));
+    motor.enableMotor = true;
+    motor.motorSpeed = 1.5;
+    motor.maxMotorTorque = 800;
+    world.addJoint(motor);
+
+    // Prismatic elevator on a vertical rail with a motor that reverses.
+    const railBase = world.addBody(new Body(new Circle(0.1), { type: BodyType.Static, position: new Vec2(6, 1) }));
+    const platform = world.addBody(new Body(Polygon.box(1.4, 0.2), { position: new Vec2(6, 1.5), density: 4, color: '#9ece6a' }));
+    const slider = new PrismaticJoint(railBase, platform, new Vec2(6, 1.5), new Vec2(0, 1));
+    slider.enableMotor = true;
+    slider.motorSpeed = 2.5;
+    slider.maxMotorForce = 2000;
+    world.addJoint(slider, true);
+
+    for (let i = 0; i < 6; i++) {
+      box(world, -6 + rng.range(-1, 1), 7 + i, 0.3, 0.3, i);
+    }
+
+    let dir = 1;
+    return {
+      camera: { center: new Vec2(0, 4.5), scale: 26 },
+      update: () => {
+        // Reverse the elevator at the travel extremes.
+        if (platform.worldCenter.y > 7 && dir > 0) dir = -1;
+        if (platform.worldCenter.y < 1.4 && dir < 0) dir = 1;
+        slider.motorSpeed = 2.5 * dir;
+      },
+    };
+  },
+};
+
+const galton: SceneDef = {
+  id: 'galton',
+  name: 'Galton Board',
+  description: 'Hundreds of balls cascade through a lattice of pegs into bins, sculpting a bell curve out of pure collision.',
+  category: 'Stress',
+  build: (world, rng) => {
+    ground(world, 14, -8);
+    walls(world, 8, 18, -8);
+    // Peg lattice.
+    for (let row = 0; row < 10; row++) {
+      const count = row + 2;
+      const y = 7 - row * 1.1;
+      for (let i = 0; i < count; i++) {
+        const x = (i - (count - 1) / 2) * 1.5;
+        world.addBody(new Body(new Circle(0.12), { type: BodyType.Static, position: new Vec2(x, y), friction: 0.1, color: '#5a6478' }));
+      }
+    }
+    // Bin dividers.
+    for (let i = -7; i <= 7; i++) {
+      world.addBody(new Body(Polygon.box(0.06, 3), { type: BodyType.Static, position: new Vec2(i * 1.0, -5), color: '#5a6478' }));
+    }
+    let spawned = 0;
+    let acc = 0;
+    return {
+      camera: { center: new Vec2(0, 0), scale: 20 },
+      update: (_time, dt) => {
+        acc += dt;
+        if (spawned < 260 && acc > 0.04) {
+          acc = 0;
+          world.addBody(
+            new Body(new Circle(0.18), {
+              position: new Vec2(rng.range(-0.3, 0.3), 8.5),
+              restitution: 0.1,
+              friction: 0.05,
+              color: colorFor(spawned),
+            }),
+          );
+          spawned++;
+        }
+      },
+    };
+  },
+};
+
+const stress: SceneDef = {
+  id: 'stress',
+  name: 'Stress Test',
+  description: 'A deep pile of mixed shapes poured into a bin — exercises the dynamic-tree broadphase and island solver. Watch the HUD step time.',
+  category: 'Stress',
+  build: (world, rng) => {
+    ground(world, 16);
+    walls(world, 12, 20);
+    let count = 0;
+    let acc = 0;
+    return {
+      camera: { center: new Vec2(0, 8), scale: 18 },
+      update: (_time, dt) => {
+        acc += dt;
+        if (count < 350 && acc > 0.03) {
+          acc = 0;
+          for (let i = 0; i < 3; i++) {
+            world.addBody(
+              new Body(randomShape(rng, 0.8), {
+                position: new Vec2(rng.range(-10, 10), 18),
+                color: colorFor(count + i),
+                friction: 0.4,
+                restitution: 0.05,
+              }),
+            );
+          }
+          count += 3;
+        }
+      },
+    };
+  },
+};
+
+const sandbox: SceneDef = {
+  id: 'sandbox',
+  name: 'Sandbox',
+  description: 'An empty bin. Click to drop shapes, drag to fling them, scroll to zoom. Your playground — cycle the spawn shape in Controls.',
+  category: 'Showcase',
+  build: (world) => {
+    ground(world, 18);
+    walls(world, 14, 14);
+    return { camera: { center: new Vec2(0, 6), scale: 26 } };
+  },
+};
+
+export const SCENES: SceneDef[] = [
+  pyramid,
+  stacks,
+  arch,
+  newtonsCradle,
+  ropeBridge,
+  ragdoll,
+  springs,
+  machine,
+  tumbler,
+  dominoes,
+  galton,
+  frictionRamps,
+  restitution,
+  stress,
+  sandbox,
+];
+
+export function sceneById(id: string): SceneDef {
+  return SCENES.find((s) => s.id === id) ?? SCENES[0];
+}
+
+/** Re-exported so the interaction layer can build mouse joints. */
+export { MouseJoint };
