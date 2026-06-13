@@ -10,7 +10,9 @@ function App() {
     cohesion: 1.0,
     visualRange: 50,
     maxSpeed: 4,
-    maxForce: 0.05
+    maxForce: 0.05,
+    mouseInteraction: 'none',
+    mouseRadius: 150
   })
 
   const [numBoids, setNumBoids] = useState(150)
@@ -118,6 +120,36 @@ function App() {
               />
             </label>
           </div>
+
+          <div className="control-group">
+            <label>
+              Mouse Interaction
+              <select
+                value={params.mouseInteraction}
+                onChange={(e) => setParams(prev => ({ ...prev, mouseInteraction: e.target.value as 'none' | 'attract' | 'repel' }))}
+              >
+                <option value="none">None</option>
+                <option value="attract">Attract</option>
+                <option value="repel">Repel</option>
+              </select>
+            </label>
+          </div>
+
+          {params.mouseInteraction !== 'none' && (
+            <div className="control-group">
+              <label>
+                Mouse Radius: {params.mouseRadius}
+                <input
+                  type="range"
+                  min="50"
+                  max="300"
+                  step="10"
+                  value={params.mouseRadius}
+                  onChange={(e) => handleParamChange('mouseRadius', Number(e.target.value))}
+                />
+              </label>
+            </div>
+          )}
         </div>
       )}
     </div>

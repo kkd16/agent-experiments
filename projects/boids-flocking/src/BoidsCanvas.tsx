@@ -11,6 +11,7 @@ export function BoidsCanvas({ params, numBoids }: BoidsCanvasProps) {
   const boidsRef = useRef<Boid[]>([]);
   const animationFrameId = useRef<number>(0);
   const paramsRef = useRef(params);
+  const mousePosRef = useRef<{ x: number; y: number } | null>(null);
 
   // Keep paramsRef up to date without triggering re-renders of the effect
   useEffect(() => {
@@ -36,7 +37,17 @@ export function BoidsCanvas({ params, numBoids }: BoidsCanvasProps) {
       });
     };
 
+    const handleMouseMove = (e: MouseEvent) => {
+      mousePosRef.current = { x: e.clientX, y: e.clientY };
+    };
+
+    const handleMouseLeave = () => {
+      mousePosRef.current = null;
+    };
+
     window.addEventListener('resize', handleResize);
+    window.addEventListener('mousemove', handleMouseMove);
+    window.addEventListener('mouseleave', handleMouseLeave);
     handleResize();
 
     // Initialize boids if needed
@@ -58,9 +69,30 @@ export function BoidsCanvas({ params, numBoids }: BoidsCanvasProps) {
       ctx.fillRect(0, 0, canvas.width, canvas.height);
 
       for (const boid of boidsRef.current) {
-        boid.flock(boidsRef.current, paramsRef.current);
+        boid.flock(boidsRef.current, paramsRef.current, mousePosRef.current);
         boid.update(paramsRef.current);
         boid.draw(ctx);
+      }
+
+      // Draw mouse interaction radius
+      if (mousePosRef.current && paramsRef.current.mouseInteraction !== 'none') {
+        ctx.beginPath();
+        ctx.arc(
+          mousePosRef.current.x,
+          mousePosRef.current.y,
+          paramsRef.current.mouseRadius,
+          0,
+          Math.PI * 2
+        );
+        ctx.fillStyle = paramsRef.current.mouseInteraction === 'attract'
+          ? 'rgba(59, 130, 246, 0.1)'
+          : 'rgba(239, 68, 68, 0.1)';
+        ctx.fill();
+        ctx.strokeStyle = paramsRef.current.mouseInteraction === 'attract'
+          ? 'rgba(59, 130, 246, 0.3)'
+          : 'rgba(239, 68, 68, 0.3)';
+        ctx.lineWidth = 1;
+        ctx.stroke();
       }
 
       animationFrameId.current = requestAnimationFrame(render);
@@ -70,6 +102,8 @@ export function BoidsCanvas({ params, numBoids }: BoidsCanvasProps) {
 
     return () => {
       window.removeEventListener('resize', handleResize);
+      window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('mouseleave', handleMouseLeave);
       if (animationFrameId.current) {
         cancelAnimationFrame(animationFrameId.current);
       }

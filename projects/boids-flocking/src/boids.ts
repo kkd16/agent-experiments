@@ -76,6 +76,8 @@ export interface BoidParams {
   visualRange: number;
   maxSpeed: number;
   maxForce: number;
+  mouseInteraction: 'none' | 'attract' | 'repel';
+  mouseRadius: number;
 }
 
 export class Boid {
@@ -112,7 +114,7 @@ export class Boid {
     this.acceleration.add(force);
   }
 
-  flock(boids: Boid[], params: BoidParams) {
+  flock(boids: Boid[], params: BoidParams, mousePos: { x: number; y: number } | null = null) {
     const sep = this.separate(boids, params.visualRange / 2); // Separation distance is usually smaller
     const ali = this.align(boids, params.visualRange);
     const coh = this.cohere(boids, params.visualRange);
@@ -124,6 +126,24 @@ export class Boid {
     this.applyForce(sep);
     this.applyForce(ali);
     this.applyForce(coh);
+
+    if (mousePos && params.mouseInteraction !== 'none') {
+      const mouseVec = new Vector(mousePos.x, mousePos.y);
+      const d = Vector.dist(this.position, mouseVec);
+      if (d < params.mouseRadius) {
+        let mouseForce: Vector;
+        if (params.mouseInteraction === 'attract') {
+          mouseForce = this.seek(mouseVec, params.maxSpeed, params.maxForce);
+        } else {
+          mouseForce = this.flee(mouseVec, params.maxSpeed, params.maxForce);
+        }
+
+        // Weight the mouse force based on distance (stronger when closer)
+        const weight = 1 - (d / params.mouseRadius);
+        mouseForce.mult(weight * 2); // Multiplier for interaction strength
+        this.applyForce(mouseForce);
+      }
+    }
   }
 
   // Separation
@@ -202,12 +222,21 @@ export class Boid {
     return new Vector(0, 0);
   }
 
-  seek(target: Vector): Vector {
+  seek(target: Vector, maxSpeed: number = 5, maxForce: number = 0.05): Vector {
     const desired = Vector.sub(target, this.position);
     desired.normalize();
-    desired.mult(5); // Max speed
+    desired.mult(maxSpeed);
     const steer = Vector.sub(desired, this.velocity);
-    steer.limit(0.05);
+    steer.limit(maxForce);
+    return steer;
+  }
+
+  flee(target: Vector, maxSpeed: number = 5, maxForce: number = 0.05): Vector {
+    const desired = Vector.sub(this.position, target);
+    desired.normalize();
+    desired.mult(maxSpeed);
+    const steer = Vector.sub(desired, this.velocity);
+    steer.limit(maxForce);
     return steer;
   }
 
