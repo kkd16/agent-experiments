@@ -95,6 +95,7 @@ export type Expr =
   | { kind: 'letrec'; bindings: { name: string; value: Expr }[]; body: Expr; span: Span }
   | { kind: 'record'; fields: { label: string; value: Expr }[]; span: Span }
   | { kind: 'field'; record: Expr; label: string; span: Span }
+  | { kind: 'recordUpdate'; record: Expr; fields: { label: string; value: Expr }[]; span: Span }
 
 /** A short human-readable label for a node, used by the AST visualiser. */
 export function nodeLabel(e: Expr): string {
@@ -139,6 +140,8 @@ export function nodeLabel(e: Expr): string {
       return `record {${e.fields.map((f) => f.label).join(', ')}}`
     case 'field':
       return `.${e.label}`
+    case 'recordUpdate':
+      return `update {${e.fields.map((f) => f.label).join(', ')}}`
   }
 }
 
@@ -200,6 +203,8 @@ export function children(e: Expr): Expr[] {
       return e.fields.map((f) => f.value)
     case 'field':
       return [e.record]
+    case 'recordUpdate':
+      return [e.record, ...e.fields.map((f) => f.value)]
     default:
       return []
   }

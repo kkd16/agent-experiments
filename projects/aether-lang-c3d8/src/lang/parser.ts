@@ -192,27 +192,44 @@ class Parser {
     }
   }
 
+  private parseFieldAssignments(): { label: string; value: Expr }[] {
+    const fields: { label: string; value: Expr }[] = []
+    for (;;) {
+      if (!this.at('ident')) {
+        throw new ParseError('expected a field label', this.peek().span)
+      }
+      const label = this.next().value
+      this.expect('op', '=')
+      const value = this.parseExpr(0)
+      fields.push({ label, value })
+      if (this.at('punc', ',')) {
+        this.next()
+        continue
+      }
+      break
+    }
+    return fields
+  }
+
   private parseRecord(): Expr {
     const open = this.expect('punc', '{')
-    const fields: { label: string; value: Expr }[] = []
-    if (!this.at('punc', '}')) {
-      for (;;) {
-        if (!this.at('ident')) {
-          throw new ParseError('expected a field label', this.peek().span)
-        }
-        const label = this.next().value
-        this.expect('op', '=')
-        const value = this.parseExpr(0)
-        fields.push({ label, value })
-        if (this.at('punc', ',')) {
-          this.next()
-          continue
-        }
-        break
-      }
+    if (this.at('punc', '}')) {
+      const close = this.next()
+      return { kind: 'record', fields: [], span: this.spanFrom(open.span, close.span) }
     }
+    // record literal `{ label = … }` — an ident immediately followed by '='
+    const lookahead = this.toks[this.pos + 1]
+    if (this.at('ident') && lookahead && lookahead.kind === 'op' && lookahead.value === '=') {
+      const fields = this.parseFieldAssignments()
+      const close = this.expect('punc', '}')
+      return { kind: 'record', fields, span: this.spanFrom(open.span, close.span) }
+    }
+    // functional update `{ expr | label = …, … }`
+    const base = this.parseExpr(0)
+    this.expect('op', '|')
+    const fields = this.parseFieldAssignments()
     const close = this.expect('punc', '}')
-    return { kind: 'record', fields, span: this.spanFrom(open.span, close.span) }
+    return { kind: 'recordUpdate', record: base, fields, span: this.spanFrom(open.span, close.span) }
   }
 
   private parseParen(): Expr {

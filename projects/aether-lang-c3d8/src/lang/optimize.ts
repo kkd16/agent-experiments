@@ -64,6 +64,12 @@ function opt(e: Expr, bump: () => void): Expr {
       return { ...e, fields: e.fields.map((f) => ({ label: f.label, value: opt(f.value, bump) })) }
     case 'field':
       return { ...e, record: opt(e.record, bump) }
+    case 'recordUpdate':
+      return {
+        ...e,
+        record: opt(e.record, bump),
+        fields: e.fields.map((f) => ({ label: f.label, value: opt(f.value, bump) })),
+      }
     case 'if':
       return optIf(e, bump)
     case 'unop':

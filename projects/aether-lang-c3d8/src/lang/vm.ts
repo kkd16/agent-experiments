@@ -364,6 +364,18 @@ export class VM {
         stack.push(rec.fields[label])
         return
       }
+      case Op.RECORD_UPDATE: {
+        const n = code[frame.ip++]
+        const slice = stack.splice(stack.length - (2 * n + 1), 2 * n + 1)
+        const base = slice[0]
+        if (base.tag !== 'record') throw new AetherRuntimeError('update of non-record')
+        const fields: Record<string, Value> = { ...base.fields }
+        for (let i = 1; i < slice.length; i += 2) {
+          fields[(slice[i] as { s: string }).s] = slice[i + 1]
+        }
+        stack.push({ tag: 'record', fields })
+        return
+      }
       default:
         throw new AetherRuntimeError(`bad opcode ${op}`)
     }

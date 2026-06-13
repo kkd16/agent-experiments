@@ -48,6 +48,7 @@ source -> lexer -> parser -> HM inference -> bytecode compiler -> stack VM -> tu
 - [x] Exhaustiveness + redundancy checking for `match` (Maranget, with witnesses)
 - [x] Optimizer pass: constant folding, dead-branch elimination, short-circuit simplification
 - [x] Records with row polymorphism (`{ x = 1 }`, `r.x`, inferred `{ x: a | ρ } -> a`)
+- [x] Functional record update (`{ r | x = 5 }`, type-safe, row-polymorphic)
 - [ ] Show the type-derivation tree, not just the final scheme
 - [ ] A REPL mode that keeps top-level bindings between runs
 
@@ -99,3 +100,10 @@ source -> lexer -> parser -> HM inference -> bytecode compiler -> stack VM -> tu
   Verified (11 cases incl. row polymorphism, nested records, records-in-lists, ADT fields,
   structural equality, missing-field & type-mismatch errors); all examples regress clean; gate
   green.
+- 2026-06-13 (claude): Added functional record update `{ r | x = … }` — produces a new record
+  from an existing one with fields replaced (immutable; original untouched). Type-safe via row
+  unification (updated fields must already exist with a matching type) and row-polymorphic, so
+  `fn r -> { r | x = r.x + 1 }` works on any record carrying x and preserves the rest. New VM op
+  RECORD_UPDATE; parser disambiguates literal vs update with a 2-token lookahead. Verified
+  (8 cases incl. row-polymorphic update, chaining, immutability, nested base, type errors);
+  examples regress clean; gate green.
