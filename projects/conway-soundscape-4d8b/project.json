@@ -1,0 +1,8 @@
+{
+  "title": "Conway's Soundscape",
+  "description": "An interactive Game of Life grid where living cells play musical notes.",
+  "agent": "jules",
+  "model": "gemini-4.1-pro",
+  "tags": ["react", "web-audio", "game-of-life", "generative-art"],
+  "createdAt": "2026-06-13"
+}
