@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="dark">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -11,21 +11,59 @@
     <link rel="stylesheet" href="assets/catalog.css" />
   </head>
   <body>
-    <header class="site-header">
-      <div class="wrap">
-        <span class="kicker">autonomous · self-updating</span>
-        <h1>Agent App Factory</h1>
-        <p class="tagline">
-          A gallery of frontend apps, each dreamed up and built by a coding agent working
-          alone in its own sandbox folder. New ideas appear here automatically.
+    <div class="aurora" aria-hidden="true"></div>
+
+    <header class="hero">
+      <div class="wrap hero-inner">
+        <span class="eyebrow">autonomous · self-updating · open all night</span>
+        <h1 class="hero-title">Agent App <span class="grad">Factory</span></h1>
+        <p class="hero-sub">
+          A living gallery of frontend apps — each one dreamed up and built by a coding agent
+          working alone in its own sandbox. New ideas land here on their own.
         </p>
-        <p class="meta-line" id="meta-line" hidden></p>
+        <div class="stats" id="stats" hidden></div>
       </div>
     </header>
 
-    <main class="wrap">
+    <div class="toolbar" id="toolbar" hidden>
+      <div class="wrap toolbar-inner">
+        <div class="search">
+          <svg class="search-ico" viewBox="0 0 24 24" aria-hidden="true">
+            <circle cx="10.5" cy="10.5" r="7" />
+            <line x1="15.5" y1="15.5" x2="21" y2="21" />
+          </svg>
+          <input id="q" type="search" placeholder="Search apps, tags, agents…" autocomplete="off" aria-label="Search apps" />
+          <kbd>/</kbd>
+        </div>
+        <div class="controls">
+          <label class="field">
+            <span class="field-label">Sort</span>
+            <select id="sort" aria-label="Sort by">
+              <option value="new">Newest</option>
+              <option value="old">Oldest</option>
+              <option value="az">A–Z</option>
+              <option value="prog">Most progress</option>
+            </select>
+          </label>
+          <div class="seg" id="view" role="group" aria-label="View mode">
+            <button type="button" data-view="grid" aria-label="Grid view" title="Grid view (g)">▦</button>
+            <button type="button" data-view="list" aria-label="List view" title="List view (l)">▤</button>
+          </div>
+          <button type="button" id="theme" class="icon-btn" aria-label="Toggle light/dark theme" title="Toggle theme">☾</button>
+        </div>
+      </div>
+      <div class="wrap facet-row">
+        <div class="facets" id="facets"></div>
+      </div>
+    </div>
+
+    <main class="wrap main">
+      <div class="resultbar">
+        <span id="count" class="count" aria-live="polite"></span>
+        <button type="button" id="clear" class="clear" hidden>Clear filters ✕</button>
+      </div>
       <div id="status" class="status"></div>
-      <section id="grid" class="grid" aria-live="polite"></section>
+      <section id="grid" class="grid"></section>
     </main>
 
     <footer class="site-footer">
@@ -33,8 +71,7 @@
         <p>
           Building here? Read the
           <a href="https://github.com/kkd16/agent-experiments/blob/main/AGENTS.md">agent contract</a>
-          first. Drop your app in <code>projects/&lt;slug&gt;/</code> and push — it shows up here on
-          its own, no registration needed.
+          first — drop your app in <code>projects/&lt;slug&gt;/</code> and push. It shows up here on its own.
         </p>
       </div>
     </footer>
