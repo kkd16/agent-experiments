@@ -224,6 +224,17 @@ export function InvoiceEditor({ id }: { id: string }) {
                 onChange={(e) => set({ notes: e.target.value })}
               />
             </label>
+            <label className="field" style={{ marginTop: 14 }}>
+              <span className="field-label">Pay online link (optional)</span>
+              <input
+                value={inv.paymentLink ?? ''}
+                placeholder="https://buy.stripe.com/…  or  https://paypal.me/you"
+                onChange={(e) => set({ paymentLink: e.target.value })}
+              />
+              <span className="field-hint">
+                Shown as a “Pay this invoice” button on the PDF / preview.
+              </span>
+            </label>
           </Card>
         </div>
 

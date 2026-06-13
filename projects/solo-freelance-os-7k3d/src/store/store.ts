@@ -39,7 +39,8 @@ function migrate(state: AppState): AppState {
   return {
     version: 1,
     clients: state.clients ?? [],
-    invoices: state.invoices ?? [],
+    // Backfill fields added in later versions so older saved data stays valid.
+    invoices: (state.invoices ?? []).map((inv) => ({ ...inv, paymentLink: inv.paymentLink ?? '' })),
     time: state.time ?? [],
     expenses: state.expenses ?? [],
     settings: { ...seedState().settings, ...state.settings },
@@ -158,6 +159,7 @@ export const invoiceActions = {
       discount: 0,
       currency: state.settings.currency,
       notes: '',
+      paymentLink: state.settings.paymentLink,
       paidAt: null,
       createdAt: today,
     }

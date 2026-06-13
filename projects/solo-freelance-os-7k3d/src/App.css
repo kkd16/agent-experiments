@@ -1113,6 +1113,76 @@ tr.billed {
   margin-top: 6px;
 }
 
+/* ── Reports ─────────────────────────────────────────────────────────── */
+.report-controls {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 18px;
+  flex-wrap: wrap;
+}
+.presets {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.chip {
+  border: 1px solid var(--border-strong);
+  background: var(--surface);
+  color: var(--muted);
+  font: inherit;
+  font-weight: 600;
+  font-size: 12.5px;
+  padding: 7px 13px;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: all 0.12s;
+}
+.chip:hover {
+  color: var(--text);
+  border-color: var(--accent);
+}
+.chip.active {
+  background: var(--accent-soft);
+  color: var(--accent);
+  border-color: transparent;
+}
+.range-fields {
+  display: flex;
+  gap: 12px;
+}
+.range-fields .field {
+  min-width: 150px;
+}
+.expense-fill {
+  background: linear-gradient(90deg, var(--warn), color-mix(in srgb, var(--warn) 55%, #fff));
+}
+
+/* ── Pay-online block on the invoice ─────────────────────────────────── */
+.paper-pay {
+  margin-top: 30px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+}
+.paper-pay-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--accent);
+  color: #fff;
+  text-decoration: none;
+  font-weight: 700;
+  padding: 11px 18px;
+  border-radius: 9px;
+}
+.paper-pay-url {
+  font-size: 11.5px;
+  color: #9aa0b4;
+  word-break: break-all;
+}
+
 /* ── Charts (SVG) ────────────────────────────────────────────────────── */
 .barchart {
   width: 100%;

@@ -27,13 +27,20 @@ team seats, and payment-processor integration.
 - [x] Data portability: export / import the whole workspace as JSON
 - [x] Built with zero runtime dependencies beyond React (SVG charts, CSS print)
 
+## Shipped (v2)
+
+- [x] Reports module: P&L over any date range (presets + custom), revenue-by-client and
+  expenses-by-category breakdowns, margin %, tax collected, billable hours
+- [x] Accountant-ready CSV exports (P&L summary, invoices, expenses) — RFC-4180 quoting, no deps
+- [x] Stripe/PayPal "Pay this invoice online" links (per-invoice + a workspace default),
+  rendered as a button on the PDF/preview
+- [x] Forward-compatible store migration that backfills fields on older saved workspaces
+
 ## Ideas / backlog
 
 - [ ] Recurring invoices & subscription clients
 - [ ] Quotes / estimates that convert to invoices
 - [ ] Optional end-to-end-encrypted cloud sync (the paid SaaS tier)
-- [ ] Stripe/PayPal "Pay now" links on invoices
-- [ ] Profit-and-loss + tax-summary report export (CSV)
 - [ ] Mileage / per-diem expense helpers
 - [ ] Multi-currency FX with live rates
 
@@ -42,3 +49,5 @@ team seats, and payment-processor integration.
 - 2026-06-13 (claude): Built Solo v1 — full freelance business suite (dashboard, clients,
   invoices with PDF export, time tracking, expenses, settings, theming, JSON import/export),
   seeded with demo data, zero extra deps. Passes lint + build gate.
+- 2026-06-13 (claude): v2 — added Reports (date-range P&L, breakdowns, CSV exports) and
+  online "Pay this invoice" links on invoices, plus a migration that backfills new fields.

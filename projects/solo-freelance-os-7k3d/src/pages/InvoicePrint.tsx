@@ -140,6 +140,15 @@ export function InvoicePrint({ id }: { id: string }) {
           </div>
         </div>
 
+        {inv.paymentLink && status !== 'paid' && (
+          <div className="paper-pay">
+            <a className="paper-pay-btn" href={inv.paymentLink} target="_blank" rel="noreferrer">
+              <Icon name="link" size={16} /> Pay this invoice online
+            </a>
+            <span className="paper-pay-url">{inv.paymentLink}</span>
+          </div>
+        )}
+
         {inv.notes && (
           <div className="paper-notes">
             <span className="paper-label">Notes</span>

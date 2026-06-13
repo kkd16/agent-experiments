@@ -144,6 +144,13 @@ export function Settings() {
                   onChange={(e) => settingsActions.patch({ invoicePrefix: e.target.value })}
                 />
               </Field>
+              <Field label="Default pay-online link" hint="Pre-filled onto new invoices.">
+                <input
+                  value={settings.paymentLink}
+                  placeholder="https://buy.stripe.com/…"
+                  onChange={(e) => settingsActions.patch({ paymentLink: e.target.value })}
+                />
+              </Field>
             </div>
           </Card>
 

@@ -10,6 +10,7 @@ import { InvoiceEditor } from './pages/InvoiceEditor'
 import { InvoicePrint } from './pages/InvoicePrint'
 import { Time } from './pages/Time'
 import { Expenses } from './pages/Expenses'
+import { Reports } from './pages/Reports'
 import { Settings } from './pages/Settings'
 
 function Router({ path }: { path: string }) {
@@ -30,6 +31,8 @@ function Router({ path }: { path: string }) {
       return <Time />
     case '/expenses':
       return <Expenses />
+    case '/reports':
+      return <Reports />
     case '/settings':
       return <Settings />
     default:

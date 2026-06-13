@@ -52,6 +52,81 @@ function monthKey(d: Date): string {
   return `${d.getFullYear()}-${d.getMonth()}`
 }
 
+export interface RangeReport {
+  revenue: number
+  expenses: number
+  profit: number
+  taxCollected: number
+  paidInvoiceCount: number
+  billableHours: number
+  byClient: { id: string | null; name: string; revenue: number }[]
+  byExpenseCategory: { category: string; amount: number }[]
+}
+
+function inRange(iso: string, from: string, to: string): boolean {
+  return iso >= from && iso <= to
+}
+
+/**
+ * Cash-basis report for [from, to] (inclusive, YYYY-MM-DD). Revenue counts invoices marked
+ * paid within the window (by paid date, falling back to issue date).
+ */
+export function reportForRange(
+  state: AppState,
+  from: string,
+  to: string,
+): RangeReport {
+  const { invoices, expenses, time, clients } = state
+  const nameOf = (id: string | null) => {
+    const c = clients.find((x) => x.id === id)
+    return c ? c.company || c.name : 'No client'
+  }
+
+  let revenue = 0
+  let taxCollected = 0
+  let paidInvoiceCount = 0
+  const clientTotals = new Map<string | null, number>()
+
+  for (const inv of invoices) {
+    if (inv.status !== 'paid') continue
+    const when = (inv.paidAt ? inv.paidAt.slice(0, 10) : inv.issueDate)
+    if (!inRange(when, from, to)) continue
+    const total = invoiceTotal(inv)
+    revenue += total
+    taxCollected += invoiceTax(inv)
+    paidInvoiceCount += 1
+    clientTotals.set(inv.clientId, (clientTotals.get(inv.clientId) ?? 0) + total)
+  }
+
+  let expensesTotal = 0
+  const catTotals = new Map<string, number>()
+  for (const e of expenses) {
+    if (!inRange(e.date, from, to)) continue
+    expensesTotal += e.amount
+    catTotals.set(e.category, (catTotals.get(e.category) ?? 0) + e.amount)
+  }
+
+  let billableSeconds = 0
+  for (const t of time) {
+    if (t.billable && inRange(t.date, from, to)) billableSeconds += t.seconds
+  }
+
+  return {
+    revenue,
+    expenses: expensesTotal,
+    profit: revenue - expensesTotal,
+    taxCollected,
+    paidInvoiceCount,
+    billableHours: Math.round((billableSeconds / 3600) * 100) / 100,
+    byClient: [...clientTotals.entries()]
+      .map(([id, rev]) => ({ id, name: nameOf(id), revenue: rev }))
+      .sort((a, b) => b.revenue - a.revenue),
+    byExpenseCategory: [...catTotals.entries()]
+      .map(([category, amount]) => ({ category, amount }))
+      .sort((a, b) => b.amount - a.amount),
+  }
+}
+
 export function computeMetrics(state: AppState, monthsBack = 6, now = new Date()): Metrics {
   const { invoices, expenses, time } = state
 

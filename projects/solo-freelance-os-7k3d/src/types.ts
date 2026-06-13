@@ -40,6 +40,8 @@ export interface Invoice {
   discount: number
   currency: string
   notes: string
+  /** Optional "pay online" URL (Stripe/PayPal/bank link) surfaced on the invoice. */
+  paymentLink: string
   /** ISO timestamp the invoice was marked paid, if it has been. */
   paidAt: string | null
   createdAt: string
@@ -96,6 +98,8 @@ export interface Settings {
   /** Default tax rate (%) applied to new invoices. */
   taxRate: number
   invoicePrefix: string
+  /** Default "pay online" URL pre-filled onto new invoices (optional). */
+  paymentLink: string
   accent: string
   theme: 'light' | 'dark'
   /** Monotonic counter used to mint sequential invoice numbers. */

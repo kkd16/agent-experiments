@@ -11,6 +11,7 @@ const NAV: { path: string; label: string; icon: IconName }[] = [
   { path: '/clients', label: 'Clients', icon: 'clients' },
   { path: '/time', label: 'Time', icon: 'time' },
   { path: '/expenses', label: 'Expenses', icon: 'expenses' },
+  { path: '/reports', label: 'Reports', icon: 'reports' },
   { path: '/settings', label: 'Settings', icon: 'settings' },
 ]
 
