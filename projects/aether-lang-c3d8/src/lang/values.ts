@@ -22,6 +22,8 @@ export type Value =
   | { tag: 'data'; name: string; args: Value[] }
   // a partially-applied data constructor (still awaiting arguments)
   | { tag: 'ctor'; name: string; arity: number; args: Value[] }
+  // a record: label → value (insertion order preserved for display)
+  | { tag: 'record'; fields: Record<string, Value> }
 
 /**
  * A captured variable. While "open" it points at a live VM stack slot; when the
@@ -146,6 +148,15 @@ export function compareValues(a: Value, b: Value): number {
       }
       return a.args.length - bd.args.length
     }
+    case 'record': {
+      const br = (b as { fields: Record<string, Value> }).fields
+      const keys = Object.keys(a.fields).sort()
+      for (const k of keys) {
+        const c = compareValues(a.fields[k], br[k])
+        if (c !== 0) return c
+      }
+      return 0
+    }
     default:
       throw new AetherRuntimeError('cannot compare functions')
   }
@@ -185,6 +196,10 @@ export function valueToString(v: Value): string {
       return `<builtin ${v.name}>`
     case 'ctor':
       return `<ctor ${v.name}>`
+    case 'record': {
+      const fs = Object.entries(v.fields).map(([k, val]) => `${k} = ${valueToString(val)}`)
+      return `{ ${fs.join(', ')} }`
+    }
     case 'data': {
       if (v.args.length === 0) return v.name
       const parts = v.args.map((a) => {

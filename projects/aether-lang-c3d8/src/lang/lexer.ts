@@ -85,7 +85,7 @@ const OPERATORS = [
   '|',
 ]
 
-const PUNCT = new Set(['(', ')', '[', ']', ',', ';'])
+const PUNCT = new Set(['(', ')', '[', ']', ',', ';', '{', '}', '.'])
 
 function isIdentStart(ch: string): boolean {
   return /[A-Za-z_]/.test(ch)
