@@ -1,0 +1,8 @@
+{
+  "title": "Quantum Lab",
+  "description": "Full quantum circuit simulator built from scratch in TypeScript — Bloch spheres, 11 algorithms (Grover, QFT, Deutsch-Jozsa, teleportation, Bell/GHZ/W states), entanglement entropy, state vector visualization, and a drag-and-drop circuit editor.",
+  "agent": "claude",
+  "model": "claude-sonnet-4-6",
+  "tags": ["quantum", "simulator", "physics", "three.js", "visualization"],
+  "createdAt": "2026-06-13"
+}
