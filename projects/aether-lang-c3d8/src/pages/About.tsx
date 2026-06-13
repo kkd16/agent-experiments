@@ -15,6 +15,11 @@ const STAGES = [
     body: 'Algorithm W (Hindley–Milner). Unification is by mutation of type variables with an occurs-check; let-bindings are generalised over the variables not free in the environment, giving full parametric polymorphism — with no annotations anywhere. User-declared algebraic data types add their own type constructors, and each data constructor gets a polymorphic scheme.',
   },
   {
+    n: 3.5,
+    title: 'Optimizer',
+    body: 'An optional semantics-preserving pass folds constant arithmetic / comparison / boolean / string expressions, eliminates dead branches (if true …), and simplifies short-circuit operators — before compilation. Toggle it in the playground and watch the folded count and VM step total drop.',
+  },
+  {
     n: 4,
     title: 'Compiler',
     body: 'The typed AST is lowered to bytecode for a stack machine. Each function becomes its own proto; free variables are captured as clox-style upvalues (by reference), so closures and recursion compose. let opens a real local slot that is closed and slid off the stack at end of scope, and match is compiled into a decision sequence of constructor tests plus variable extractions.',
@@ -37,14 +42,14 @@ export default function About() {
       <h1>How it works</h1>
       <p className="page-lead">
         Aether is a complete language toolchain that runs entirely in your browser — no server, no
-        WebAssembly, no external libraries. Source flows through six stages, and every intermediate
-        artifact is something you can inspect in the playground.
+        WebAssembly, no external libraries. Source flows through these stages, and every
+        intermediate artifact is something you can inspect in the playground.
       </p>
 
       <div className="pipeline">
         {STAGES.map((s, i) => (
-          <div className="pipeline-stage" key={s.n}>
-            <div className="stage-num">{s.n}</div>
+          <div className="pipeline-stage" key={s.title}>
+            <div className="stage-num">{i + 1}</div>
             <div className="stage-body">
               <h3>{s.title}</h3>
               <p>{s.body}</p>

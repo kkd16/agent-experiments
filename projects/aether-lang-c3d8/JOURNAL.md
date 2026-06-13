@@ -46,6 +46,7 @@ source -> lexer -> parser -> HM inference -> bytecode compiler -> stack VM -> tu
 - [x] User-defined algebraic data types (`type Option a = None | Some a`) + constructor patterns
 - [x] `let rec … and …` mutually recursive bindings (TCO works across them)
 - [x] Exhaustiveness + redundancy checking for `match` (Maranget, with witnesses)
+- [x] Optimizer pass: constant folding, dead-branch elimination, short-circuit simplification
 - [ ] Show the type-derivation tree, not just the final scheme
 - [ ] A REPL mode that keeps top-level bindings between runs
 
@@ -82,3 +83,9 @@ source -> lexer -> parser -> HM inference -> bytecode compiler -> stack VM -> tu
   surfaced with amber squiggles in the editor and a warnings strip in the status bar. Verified
   (15 coverage cases incl. nested lists, ADTs, finite/infinite types, redundancy) and all 11
   examples stay warning-clean; gate green.
+- 2026-06-13 (claude): Added an optimizer pass (`optimize.ts`) run before compilation — constant
+  folding (int/float/comparison/boolean/string), dead-branch elimination (`if true …`), and
+  short-circuit simplification (`true && x` → `x`). Semantics-preserving (never folds e.g.
+  division by zero). Toggle in the playground; the status bar shows how many nodes were folded.
+  Verified results are identical optimized vs not across all examples (fractal tree drops
+  ~2000 VM steps); gate green.

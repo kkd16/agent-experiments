@@ -38,6 +38,7 @@ export default function Playground() {
     () => consumePendingCode() ?? readShareParam() ?? loadSavedCode() ?? DEFAULT_CODE,
   )
   const [copied, setCopied] = useState(false)
+  const [optimizeOn, setOptimizeOn] = useState(true)
   const [runResult, setRunResult] = useState<PipelineResult | null>(null)
   const [snapshots, setSnapshots] = useState<Snapshot[] | null>(null)
   const [traceNonce, setTraceNonce] = useState(0)
@@ -45,7 +46,10 @@ export default function Playground() {
   const [debugSpan, setDebugSpan] = useState<Span | null>(null)
 
   // live analysis (no execution) — drives the static panels & error squiggle
-  const analysis = useMemo(() => runPipeline(code, { execute: false }), [code])
+  const analysis = useMemo(
+    () => runPipeline(code, { execute: false, optimize: optimizeOn }),
+    [code, optimizeOn],
+  )
 
   // persist the buffer so it survives reloads
   useEffect(() => {
@@ -67,7 +71,7 @@ export default function Playground() {
 
   const doRun = useCallback(
     (record: boolean) => {
-      const res = runPipeline(code, { execute: true, record })
+      const res = runPipeline(code, { execute: true, record, optimize: optimizeOn })
       setRunResult(res)
       setSnapshots(record ? (res.run?.snapshots ?? []) : null)
       if (record) {
@@ -79,7 +83,7 @@ export default function Playground() {
         setTab('output')
       }
     },
-    [code],
+    [code, optimizeOn],
   )
 
   const onEditorKey = (e: KeyboardEvent<HTMLDivElement>): void => {
@@ -135,6 +139,14 @@ export default function Playground() {
           <button className="btn" onClick={share} title="Copy a shareable link">
             {copied ? '✓ copied' : '⇗ share'}
           </button>
+          <label className="opt-toggle" title="Constant folding & branch elimination">
+            <input
+              type="checkbox"
+              checked={optimizeOn}
+              onChange={(e) => setOptimizeOn(e.target.checked)}
+            />
+            optimize
+          </label>
           <span className="kbd-hint">⌘/Ctrl ↵</span>
         </div>
 
@@ -204,6 +216,9 @@ function StatusBar({ analysis }: { analysis: PipelineResult }) {
         <span className="status-check">✓</span>
         <span className="status-msg">
           type-checks · <code>{analysis.programType}</code>
+          {analysis.foldCount > 0 && (
+            <span className="status-fold"> · optimizer folded {analysis.foldCount}</span>
+          )}
         </span>
       </div>
       {analysis.warnings.map((w, i) => (

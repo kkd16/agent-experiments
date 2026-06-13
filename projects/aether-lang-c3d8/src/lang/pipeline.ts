@@ -14,6 +14,7 @@ import type { InferResult } from './infer.ts'
 import { resetVarCounter, schemeToString, typeToString } from './types.ts'
 import { GLOBALS, PRELUDE_DEFS } from './prelude.ts'
 import { CompileError, compile } from './compiler.ts'
+import { optimize } from './optimize.ts'
 import type { FnProto } from './bytecode.ts'
 import { VM } from './vm.ts'
 import type { RunResult } from './vm.ts'
@@ -67,6 +68,8 @@ export interface PipelineResult {
   programType: string | null
   bindingTypes: BindingType[]
   warnings: PipelineWarning[]
+  /** number of nodes the optimizer folded (0 if optimization is off) */
+  foldCount: number
   proto: FnProto | null
   run: RunResult | null
   error: PipelineError | null
@@ -75,11 +78,13 @@ export interface PipelineResult {
 export interface PipelineOptions {
   record?: boolean
   execute?: boolean
+  optimize?: boolean
 }
 
 export function runPipeline(source: string, opts: PipelineOptions = {}): PipelineResult {
   const execute = opts.execute ?? true
   const record = opts.record ?? false
+  const doOptimize = opts.optimize ?? true
   resetVarCounter()
 
   const result: PipelineResult = {
@@ -90,6 +95,7 @@ export function runPipeline(source: string, opts: PipelineOptions = {}): Pipelin
     programType: null,
     bindingTypes: [],
     warnings: [],
+    foldCount: 0,
     proto: null,
     run: null,
     error: null,
@@ -109,11 +115,18 @@ export function runPipeline(source: string, opts: PipelineOptions = {}): Pipelin
   let userAst: Expr
   try {
     userAst = parse(source)
-    result.ast = userAst
   } catch (e) {
     result.error = toError('parse', e)
     return result
   }
+
+  // 2b. optimize (constant folding, branch elimination, …)
+  if (doOptimize) {
+    const optimized = optimize(userAst)
+    userAst = optimized.expr
+    result.foldCount = optimized.folded
+  }
+  result.ast = userAst
 
   // 3. type-check (with prelude in scope)
   const program = withPrelude(userAst)
