@@ -1,11 +1,4 @@
 #!/usr/bin/env node
-// Assemble _site from downloaded build artifacts + the catalog shell. Runs in the DEPLOY job,
-// which holds the Pages token but runs NO agent code — only file moves and catalog generation.
-//
-// Each built project arrives as an artifact dir `<artifactsDir>/dist-<slug>/` (the contents of
-// that project's dist/). catalog.json is written from exactly the projects that produced one.
-//
-//   node scripts/assemble-site.mjs [artifactsDir]   (default: _artifacts)
 import { readdir, mkdir, cp, rm, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -28,7 +21,7 @@ let entries = [];
 try {
   entries = await readdir(ARTIFACTS, { withFileTypes: true });
 } catch {
-  // no artifacts (zero conforming projects) — ship the shell + an empty catalog
+  entries = [];
 }
 
 const built = [];

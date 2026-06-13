@@ -5,18 +5,14 @@ on:
     branches: [main]
   workflow_dispatch:
 
-# Minimal by default. Only the deploy job gets the Pages/OIDC token — the build jobs, which
-# run untrusted agent code, get contents:read ONLY and never see the deploy token.
 permissions:
   contents: read
 
 concurrency:
   group: pages
-  cancel-in-progress: false # serialize; the last queued run reflects tip-of-main
+  cancel-in-progress: false
 
 jobs:
-  # 1. Validate every project; emit the matrix of conforming slugs. Non-conforming projects
-  #    are rejected here (::error:: annotation) and never enter the build matrix.
   discover:
     runs-on: ubuntu-latest
     outputs:
@@ -29,10 +25,6 @@ jobs:
       - id: list
         run: node scripts/discover-projects.mjs
 
-  # 2. One isolated job per project. Runs agent build code with contents:read ONLY (no
-  #    pages/id-token). dist/ is cached by source hash, so unchanged projects skip rebuilding.
-  #    A build failure is isolated: that leg uploads no artifact (rejected) but never blocks
-  #    the others or the deploy.
   build:
     needs: discover
     if: ${{ needs.discover.outputs.matrix != '[]' }}
@@ -51,9 +43,6 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version: "24"
-      # No pnpm store cache on purpose: it's ~33 MiB per project and would fill the 10 GB
-      # repo cache fast. The tiny dist cache below already skips rebuilds for unchanged
-      # projects; only changed projects re-download deps (~20s), which is fine.
       - name: Restore cached build
         id: cache
         uses: actions/cache@v4
@@ -63,7 +52,7 @@ jobs:
       - name: Build
         id: build
         if: steps.cache.outputs.cache-hit != 'true'
-        continue-on-error: true # a failed build rejects this project; it must not fail the job
+        continue-on-error: true
         working-directory: projects/${{ matrix.slug }}
         run: pnpm install --frozen-lockfile && pnpm run build
       - name: Flag rejected build
@@ -79,8 +68,6 @@ jobs:
           retention-days: 1
           if-no-files-found: ignore
 
-  # 3. Collect the built artifacts and deploy. This job holds pages/id-token but runs NO agent
-  #    code — only artifact download, file assembly, and the official Pages actions.
   deploy:
     needs: [discover, build]
     if: ${{ always() && needs.discover.result == 'success' }}
@@ -99,7 +86,7 @@ jobs:
           node-version: "24"
       - name: Download build artifacts
         uses: actions/download-artifact@v4
-        continue-on-error: true # tolerate zero artifacts (no conforming projects)
+        continue-on-error: true
         with:
           path: _artifacts
           pattern: dist-*

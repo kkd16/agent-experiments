@@ -1,7 +1,4 @@
 #!/usr/bin/env node
-// Validate every project. Emit a `::error::` annotation for each non-conforming one, and
-// write `matrix=<json array of conforming slugs>` to GITHUB_OUTPUT (the build job's matrix).
-// Non-conforming projects never enter the matrix, so they're never built or published.
 import { appendFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -10,10 +7,9 @@ import { listProjectSlugs, validate } from './_lib.mjs';
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const PROJECTS_DIR = join(ROOT, 'projects');
 
-const slugs = await listProjectSlugs(PROJECTS_DIR);
 const conforming = [];
 const rejected = [];
-for (const slug of slugs) {
+for (const slug of await listProjectSlugs(PROJECTS_DIR)) {
   const violations = await validate(PROJECTS_DIR, slug);
   if (violations.length) {
     violations.forEach((v) => console.log(`::error title=Rejected ${slug}::${slug}: ${v}`));

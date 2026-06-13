@@ -1,10 +1,6 @@
 #!/usr/bin/env node
-// LOCAL all-in-one preview: validate + build (pnpm) + assemble _site + write catalog, in one
-// process. CI uses the matrix pipeline instead (discover-projects.mjs + assemble-site.mjs);
-// this is just for previewing the whole site on your machine.
-//
-//   node scripts/build-site.mjs                full build + assemble
-//   node scripts/build-site.mjs --catalog-only validate + catalog only (no builds)
+// Local preview only — CI uses discover-projects.mjs + assemble-site.mjs.
+//   node scripts/build-site.mjs [--catalog-only]
 import { mkdir, cp, rm, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';

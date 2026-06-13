@@ -1,4 +1,3 @@
-// Shared helpers for the build pipeline. Zero dependencies.
 import { readdir, readFile, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 
@@ -16,13 +15,12 @@ export function humanize(slug) {
   return (cleaned || slug).replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
-// Project dirs that count: real directories, not dotdirs or `_`-prefixed templates.
 export async function listProjectSlugs(projectsDir) {
   let dirents = [];
   try {
     dirents = await readdir(projectsDir, { withFileTypes: true });
   } catch {
-    // no projects/ yet
+    return [];
   }
   return dirents
     .filter((d) => d.isDirectory() && !d.name.startsWith('.') && !d.name.startsWith('_'))
@@ -35,7 +33,7 @@ export async function readMeta(projectsDir, slug) {
   try {
     meta = JSON.parse(await readFile(join(projectsDir, slug, 'project.json'), 'utf8'));
   } catch {
-    // missing/malformed project.json: fall back to defaults
+    meta = {};
   }
   const str = (v) => (typeof v === 'string' ? v.trim() : '');
   return {
@@ -49,7 +47,6 @@ export async function readMeta(projectsDir, slug) {
   };
 }
 
-// Returns an array of violation strings; empty means the project conforms to the stack.
 export async function validate(projectsDir, slug) {
   const dir = join(projectsDir, slug);
   const errors = [];
