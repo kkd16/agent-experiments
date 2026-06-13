@@ -98,16 +98,20 @@ export function typeToString(t: Type, names: Map<number, string> = new Map()): s
         const s = `${go(from, 2)} -> ${go(to, 1)}`
         return prec >= 2 ? `(${s})` : s
       }
-      case LIST:
-        return `List ${go(p.args[0], 3)}`
+      case LIST: {
+        const s = `List ${go(p.args[0], 3)}`
+        return prec >= 3 ? `(${s})` : s
+      }
       case TUPLE: {
         if (p.args.length === 0) return '()'
         const s = p.args.map((a) => go(a, 2)).join(', ')
         return `(${s})`
       }
-      default:
+      default: {
         if (p.args.length === 0) return p.name
-        return `${p.name} ${p.args.map((a) => go(a, 3)).join(' ')}`
+        const s = `${p.name} ${p.args.map((a) => go(a, 3)).join(' ')}`
+        return prec >= 3 ? `(${s})` : s
+      }
     }
   }
   return go(t, 0)

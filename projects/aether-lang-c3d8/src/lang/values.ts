@@ -18,6 +18,10 @@ export type Value =
   | { tag: 'tuple'; items: Value[] }
   | { tag: 'closure'; proto: FnProto; upvalues: Upvalue[] }
   | { tag: 'native'; name: string; arity: number; applied: Value[]; fn: NativeFn }
+  // a fully-applied data constructor (the runtime form of an ADT value)
+  | { tag: 'data'; name: string; args: Value[] }
+  // a partially-applied data constructor (still awaiting arguments)
+  | { tag: 'ctor'; name: string; arity: number; args: Value[] }
 
 /**
  * A captured variable. While "open" it points at a live VM stack slot; when the
@@ -132,6 +136,16 @@ export function compareValues(a: Value, b: Value): number {
       }
       return a.items.length - bs.length
     }
+    case 'data': {
+      const bd = b as { name: string; args: Value[] }
+      if (a.name !== bd.name) return a.name < bd.name ? -1 : 1
+      const n = Math.min(a.args.length, bd.args.length)
+      for (let i = 0; i < n; i++) {
+        const c = compareValues(a.args[i], bd.args[i])
+        if (c !== 0) return c
+      }
+      return a.args.length - bd.args.length
+    }
     default:
       throw new AetherRuntimeError('cannot compare functions')
   }
@@ -169,6 +183,18 @@ export function valueToString(v: Value): string {
       return `<fn ${v.proto.name}>`
     case 'native':
       return `<builtin ${v.name}>`
+    case 'ctor':
+      return `<ctor ${v.name}>`
+    case 'data': {
+      if (v.args.length === 0) return v.name
+      const parts = v.args.map((a) => {
+        const s = valueToString(a)
+        const needsParen =
+          (a.tag === 'data' && a.args.length > 0) || a.tag === 'ctor'
+        return needsParen ? `(${s})` : s
+      })
+      return `${v.name} ${parts.join(' ')}`
+    }
   }
 }
 

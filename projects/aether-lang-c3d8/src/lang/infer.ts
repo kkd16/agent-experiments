@@ -5,15 +5,17 @@
 // so `let id = fn x -> x` is inferred as `∀ a. a -> a`. Recursive bindings are
 // typed monomorphically while their own body is checked, then generalised.
 
-import type { BinaryOp, Expr, Pattern } from './ast.ts'
+import type { BinaryOp, Expr, Pattern, TypeExpr } from './ast.ts'
 import type { Span } from './lexer.ts'
 import type { Scheme, Type, TVar } from './types.ts'
 import {
+  ARROW,
   freeVars,
   freshVar,
   prune,
   tArrow,
   tBool,
+  tcon,
   tFloat,
   tInt,
   tList,
@@ -54,6 +56,7 @@ export interface InferResult {
 class Inferrer {
   nodeTypes = new Map<Expr, Type>()
   bindingSchemes = new Map<Expr, Scheme>()
+  ctorInfo = new Map<string, { arity: number; scheme: Scheme }>()
 
   occurs(v: TVar, t: Type): boolean {
     const p = prune(t)
@@ -196,6 +199,24 @@ class Inferrer {
         }
         return result
       }
+      case 'typedecl': {
+        const params = new Map<string, TVar>()
+        for (const p of e.params) params.set(p, freshVar())
+        const resultType: Type = tcon(
+          e.name,
+          e.params.map((p) => params.get(p) as Type),
+        )
+        let env2 = env
+        for (const ctor of e.ctors) {
+          const argTypes = ctor.args.map((a) => convertTypeExpr(a, params))
+          let schemeType: Type = resultType
+          for (let i = argTypes.length - 1; i >= 0; i--) schemeType = tArrow(argTypes[i], schemeType)
+          const scheme: Scheme = { vars: [...freeVars(schemeType)], type: schemeType }
+          this.ctorInfo.set(ctor.name, { arity: argTypes.length, scheme })
+          env2 = extend(env2, ctor.name, scheme)
+        }
+        return this.infer(env2, e.body)
+      }
     }
   }
 
@@ -238,6 +259,29 @@ class Inferrer {
         const elems = pat.elements.map(() => freshVar() as Type)
         this.unify(expected, tTuple(elems), pat.span)
         pat.elements.forEach((p, i) => this.inferPattern(p, elems[i], bindings))
+        return
+      }
+      case 'pcon': {
+        const info = this.ctorInfo.get(pat.name)
+        if (!info) throw new TypeCheckError(`unknown constructor: ${pat.name}`, pat.span)
+        if (pat.args.length !== info.arity) {
+          throw new TypeCheckError(
+            `constructor ${pat.name} expects ${info.arity} argument(s) but got ${pat.args.length}`,
+            pat.span,
+          )
+        }
+        let cur = this.instantiate(info.scheme)
+        const argTs: Type[] = []
+        for (let i = 0; i < info.arity; i++) {
+          const p = prune(cur)
+          if (p.kind !== 'con' || p.name !== ARROW) {
+            throw new TypeCheckError(`constructor ${pat.name} is not a function`, pat.span)
+          }
+          argTs.push(p.args[0])
+          cur = p.args[1]
+        }
+        this.unify(expected, cur, pat.span)
+        pat.args.forEach((p, i) => this.inferPattern(p, argTs[i], bindings))
         return
       }
     }
@@ -288,6 +332,41 @@ class Inferrer {
         this.unify(tl, tList(elem), e.left.span)
         this.unify(tr, tList(elem), e.right.span)
         return tList(elem)
+      }
+    }
+  }
+}
+
+// Convert a syntactic type expression (from a `type` declaration) into a real
+// type, mapping the declaration's parameter names to their type variables.
+function convertTypeExpr(te: TypeExpr, params: Map<string, TVar>): Type {
+  switch (te.kind) {
+    case 'tvar': {
+      const tv = params.get(te.name)
+      if (!tv) throw new TypeCheckError(`unbound type variable: ${te.name}`, te.span)
+      return tv
+    }
+    case 'tarrow':
+      return tArrow(convertTypeExpr(te.from, params), convertTypeExpr(te.to, params))
+    case 'ttuple':
+      return tTuple(te.elements.map((x) => convertTypeExpr(x, params)))
+    case 'tcon': {
+      const args = te.args.map((x) => convertTypeExpr(x, params))
+      switch (te.name) {
+        case 'Int':
+          return tInt
+        case 'Float':
+          return tFloat
+        case 'Bool':
+          return tBool
+        case 'String':
+          return tString
+        case 'Unit':
+          return tUnit
+        case 'List':
+          return tList(args[0] ?? freshVar())
+        default:
+          return tcon(te.name, args)
       }
     }
   }

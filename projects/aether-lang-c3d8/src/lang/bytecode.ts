@@ -53,6 +53,8 @@ export const Op = {
   TUPLE_GET: 41, // <k>      pop a tuple, push element k
   MATCH_FAIL: 42, //         raise: no pattern matched
   TAILCALL: 43, // <argc>    call in tail position, reusing the current frame
+  CTOR_TAG: 44, //           pop a data value, push its constructor name (String)
+  CTOR_GET: 45, // <k>       pop a data value, push its kth field
 } as const
 
 export type Op = (typeof Op)[keyof typeof Op]
@@ -77,6 +79,7 @@ const ONE_OPERAND = new Set<number>([
   Op.POP_BELOW,
   Op.TUPLE_GET,
   Op.TAILCALL,
+  Op.CTOR_GET,
 ])
 
 export function operandCount(op: number): number {

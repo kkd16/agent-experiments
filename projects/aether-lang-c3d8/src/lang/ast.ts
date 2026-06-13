@@ -36,6 +36,23 @@ export type BinaryOp =
 export type UnaryOp = '-' | '!'
 
 /**
+ * A syntactic type expression, as written in a `type` declaration's
+ * constructor arguments. Converted to a real `Type` when building constructor
+ * schemes. `tcon` covers builtins (Int, List, …) and user-declared types.
+ */
+export type TypeExpr =
+  | { kind: 'tvar'; name: string; span: Span }
+  | { kind: 'tcon'; name: string; args: TypeExpr[]; span: Span }
+  | { kind: 'tarrow'; from: TypeExpr; to: TypeExpr; span: Span }
+  | { kind: 'ttuple'; elements: TypeExpr[]; span: Span }
+
+export interface CtorDecl {
+  name: string
+  args: TypeExpr[]
+  span: Span
+}
+
+/**
  * Patterns used by `match`. `plist` is normalised into nested `pcons`/`pnil`
  * by the parser, so the compiler only ever sees cons-cells.
  */
@@ -50,6 +67,7 @@ export type Pattern =
   | { kind: 'pnil'; span: Span }
   | { kind: 'pcons'; head: Pattern; tail: Pattern; span: Span }
   | { kind: 'ptuple'; elements: Pattern[]; span: Span }
+  | { kind: 'pcon'; name: string; args: Pattern[]; span: Span }
 
 export interface MatchCase {
   pattern: Pattern
@@ -73,6 +91,7 @@ export type Expr =
   | { kind: 'tuple'; elements: Expr[]; span: Span }
   | { kind: 'seq'; first: Expr; rest: Expr; span: Span }
   | { kind: 'match'; scrutinee: Expr; cases: MatchCase[]; span: Span }
+  | { kind: 'typedecl'; name: string; params: string[]; ctors: CtorDecl[]; body: Expr; span: Span }
 
 /** A short human-readable label for a node, used by the AST visualiser. */
 export function nodeLabel(e: Expr): string {
@@ -109,6 +128,8 @@ export function nodeLabel(e: Expr): string {
       return 'seq ;'
     case 'match':
       return `match (${e.cases.length})`
+    case 'typedecl':
+      return `type ${e.name}`
   }
 }
 
@@ -135,6 +156,8 @@ export function patternLabel(p: Pattern): string {
       return `${patternLabel(p.head)} :: ${patternLabel(p.tail)}`
     case 'ptuple':
       return `(${p.elements.map(patternLabel).join(', ')})`
+    case 'pcon':
+      return p.args.length === 0 ? p.name : `${p.name} ${p.args.map(patternLabel).join(' ')}`
   }
 }
 
@@ -160,6 +183,8 @@ export function children(e: Expr): Expr[] {
       return [e.first, e.rest]
     case 'match':
       return [e.scrutinee, ...e.cases.map((c) => c.body)]
+    case 'typedecl':
+      return [e.body]
     default:
       return []
   }

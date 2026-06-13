@@ -43,7 +43,7 @@ source -> lexer -> parser -> HM inference -> bytecode compiler -> stack VM -> tu
 - [x] Pattern matching (`match … with`) over literals, tuples, and lists
 - [x] Tail-call optimisation in the VM (constant-space tail recursion)
 - [x] Persist the editor buffer to localStorage + shareable `?c=` URLs
-- [ ] User-defined algebraic data types (`type Option a = None | Some a`)
+- [x] User-defined algebraic data types (`type Option a = None | Some a`) + constructor patterns
 - [ ] `let … and …` mutually recursive bindings
 - [ ] Exhaustiveness checking for `match`
 - [ ] Show the type-derivation tree, not just the final scheme
@@ -62,3 +62,10 @@ source -> lexer -> parser -> HM inference -> bytecode compiler -> stack VM -> tu
   constant-space tail recursion, visible in the debugger). Added editor persistence +
   shareable `?c=` links and a run-length-encoding example. Verified (11 match cases + TCO
   depth checks + example regressions); gate green.
+- 2026-06-13 (claude): Added user-defined algebraic data types: `type Name p.. = C t.. | …`
+  declarations with a small type-expression grammar, constructor schemes fed into HM inference,
+  constructors as first-class curried values (`data`/`ctor` runtime values), and constructor
+  patterns in `match` (new ops CTOR_TAG/CTOR_GET). Fixed type pretty-printing to parenthesise
+  applied type constructors as arguments. Added an expression-interpreter example and an
+  Option/safe-lookup example. Verified (11 ADT cases incl. recursive Tree, Either, polymorphic
+  None, ctor-as-function, nested patterns, type errors); gate green.

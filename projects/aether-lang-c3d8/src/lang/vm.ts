@@ -334,6 +334,19 @@ export class VM {
       }
       case Op.MATCH_FAIL:
         throw new AetherRuntimeError('match: no pattern matched the value')
+      case Op.CTOR_TAG: {
+        const v = stack.pop() as Value
+        if (v.tag !== 'data') throw new AetherRuntimeError('constructor tag of non-data value')
+        stack.push(vstr(v.name))
+        return
+      }
+      case Op.CTOR_GET: {
+        const k = code[frame.ip++]
+        const v = stack.pop() as Value
+        if (v.tag !== 'data') throw new AetherRuntimeError('field access on non-data value')
+        stack.push(v.args[k])
+        return
+      }
       default:
         throw new AetherRuntimeError(`bad opcode ${op}`)
     }
@@ -355,6 +368,17 @@ export class VM {
         stack.push(callee.fn(applied, this.ctx))
       } else {
         stack.push({ tag: 'native', name: callee.name, arity: callee.arity, applied, fn: callee.fn })
+      }
+      return
+    }
+    if (callee.tag === 'ctor') {
+      const arg = stack[fnIndex + 1]
+      const args = [...callee.args, arg]
+      stack.length = fnIndex
+      if (args.length === callee.arity) {
+        stack.push({ tag: 'data', name: callee.name, args })
+      } else {
+        stack.push({ tag: 'ctor', name: callee.name, arity: callee.arity, args })
       }
       return
     }
