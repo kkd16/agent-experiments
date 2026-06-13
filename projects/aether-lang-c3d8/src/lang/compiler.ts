@@ -180,7 +180,28 @@ class Compiler {
       case 'typedecl':
         this.compileTypeDecl(c, e, tail)
         return
+      case 'letrec':
+        this.compileLetRec(c, e, tail)
+        return
     }
+  }
+
+  private compileLetRec(c: FnCompiler, e: Extract<Expr, { kind: 'letrec' }>, tail: boolean): void {
+    // reserve every slot first (placeholders) so each closure can capture the
+    // others by reference — including forward references
+    const slots: number[] = []
+    for (const b of e.bindings) {
+      c.op(Op.UNIT, e.span, +1)
+      slots.push(c.declareLocal(b.name))
+    }
+    e.bindings.forEach((b, i) => {
+      if (b.value.kind === 'lambda') this.compileLambda(c, b.value, b.name)
+      else this.compileExpr(c, b.value)
+      c.op(Op.SET_LOCAL, b.value.span, -1, slots[i])
+    })
+    this.compileExpr(c, e.body, tail)
+    c.op(Op.POP_BELOW, e.span, -e.bindings.length, e.bindings.length)
+    for (let k = 0; k < e.bindings.length; k++) c.locals.pop()
   }
 
   private compileTypeDecl(c: FnCompiler, e: Extract<Expr, { kind: 'typedecl' }>, tail: boolean): void {

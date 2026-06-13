@@ -40,6 +40,13 @@ fact 5`}</pre>
           Bindings are <strong>generalised</strong>: <code>let id = fn x -&gt; x</code> has type{' '}
           <code>∀ a. a -&gt; a</code> and can be applied at many types in the same scope.
         </p>
+        <p>
+          Define <strong>mutually recursive</strong> functions with <code>and</code> — each is in
+          scope for the others (and tail calls between them are still optimised):
+        </p>
+        <pre className="snippet">{`let rec isEven n = if n == 0 then true  else isOdd  (n - 1)
+and     isOdd  n = if n == 0 then false else isEven (n - 1) in
+isEven 10   // => true`}</pre>
       </section>
 
       <section>

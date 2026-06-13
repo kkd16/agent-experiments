@@ -192,6 +192,18 @@ let table = [(1, "one"), (2, "two"), (3, "three")] in
 , withDefault "?" (lookup 9 table) )`,
   },
   {
+    id: 'mutual',
+    title: 'Mutual recursion',
+    blurb: 'Two functions that call each other, defined with let rec … and ….',
+    visual: false,
+    code: `// Mutually recursive predicates — each is in scope for the other.
+let rec isEven n = if n == 0 then true  else isOdd  (n - 1)
+and     isOdd  n = if n == 0 then false else isEven (n - 1) in
+
+( filter isEven (range 0 12)
+, filter isOdd  (range 0 12) )`,
+  },
+  {
     id: 'church',
     title: 'Church numerals',
     blurb: 'Encoding numbers as higher-order functions — pure lambda calculus.',

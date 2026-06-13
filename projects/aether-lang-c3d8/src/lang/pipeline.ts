@@ -151,10 +151,15 @@ export function runPipeline(source: string, opts: PipelineOptions = {}): Pipelin
 function collectBindingTypes(userAst: Expr, inferred: InferResult): BindingType[] {
   const out: BindingType[] = []
   let node: Expr = userAst
-  while (node.kind === 'let' || node.kind === 'typedecl') {
+  while (node.kind === 'let' || node.kind === 'typedecl' || node.kind === 'letrec') {
     if (node.kind === 'let') {
       const scheme = inferred.bindingSchemes.get(node)
       out.push({ name: node.name, type: scheme ? schemeToString(scheme) : '?' })
+    } else if (node.kind === 'letrec') {
+      for (const b of node.bindings) {
+        const scheme = inferred.bindingSchemes.get(b.value)
+        out.push({ name: b.name, type: scheme ? schemeToString(scheme) : '?' })
+      }
     }
     node = node.body
   }

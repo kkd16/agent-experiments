@@ -232,18 +232,12 @@ class Parser {
     return acc
   }
 
-  private parseLet(): Expr {
-    const start = this.expect('keyword', 'let')
-    let recursive = false
-    if (this.at('keyword', 'rec')) {
-      this.next()
-      recursive = true
-    }
+  // one binding: `name params = value` (params desugar to curried lambdas)
+  private parseBinding(): { name: string; value: Expr } {
     if (!this.at('ident')) {
-      throw new ParseError('expected a name after let', this.peek().span)
+      throw new ParseError('expected a name', this.peek().span)
     }
     const name = this.next().value
-    // optional parameters: `let f a b = ...` sugar for `let f = fn a b -> ...`
     const params: string[] = []
     while (this.at('ident')) {
       params.push(this.next().value)
@@ -253,12 +247,34 @@ class Parser {
     for (let k = params.length - 1; k >= 0; k--) {
       value = { kind: 'lambda', param: params[k], body: value, span: value.span }
     }
+    return { name, value }
+  }
+
+  private parseLet(): Expr {
+    const start = this.expect('keyword', 'let')
+    let recursive = false
+    if (this.at('keyword', 'rec')) {
+      this.next()
+      recursive = true
+    }
+    const first = this.parseBinding()
+    // `let rec f = … and g = … in …` — a mutually recursive group
+    if (recursive && this.at('keyword', 'and')) {
+      const bindings = [first]
+      while (this.at('keyword', 'and')) {
+        this.next()
+        bindings.push(this.parseBinding())
+      }
+      this.expect('keyword', 'in')
+      const body = this.parseExpr(0)
+      return { kind: 'letrec', bindings, body, span: this.spanFrom(start.span, body.span) }
+    }
     this.expect('keyword', 'in')
     const body = this.parseExpr(0)
     return {
       kind: 'let',
-      name,
-      value,
+      name: first.name,
+      value: first.value,
       body,
       recursive,
       span: this.spanFrom(start.span, body.span),

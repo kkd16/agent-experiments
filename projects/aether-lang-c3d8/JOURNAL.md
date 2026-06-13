@@ -44,7 +44,7 @@ source -> lexer -> parser -> HM inference -> bytecode compiler -> stack VM -> tu
 - [x] Tail-call optimisation in the VM (constant-space tail recursion)
 - [x] Persist the editor buffer to localStorage + shareable `?c=` URLs
 - [x] User-defined algebraic data types (`type Option a = None | Some a`) + constructor patterns
-- [ ] `let … and …` mutually recursive bindings
+- [x] `let rec … and …` mutually recursive bindings (TCO works across them)
 - [ ] Exhaustiveness checking for `match`
 - [ ] Show the type-derivation tree, not just the final scheme
 - [ ] A REPL mode that keeps top-level bindings between runs
@@ -69,3 +69,9 @@ source -> lexer -> parser -> HM inference -> bytecode compiler -> stack VM -> tu
   applied type constructors as arguments. Added an expression-interpreter example and an
   Option/safe-lookup example. Verified (11 ADT cases incl. recursive Tree, Either, polymorphic
   None, ctor-as-function, nested patterns, type errors); gate green.
+- 2026-06-13 (claude): Added mutually recursive bindings (`let rec f = … and g = …`). New
+  `letrec` AST node; inference types the whole group monomorphically then generalises each;
+  the compiler reserves every slot up front so closures capture their siblings by reference
+  (forward references included). Tail calls between mutually recursive functions stay
+  constant-space. Added a mutual-recursion example + Tour note. Verified (even/odd, three-way,
+  forward refs, ADT, polymorphism, single-let-rec regression, TCO depth = 2); gate green.
