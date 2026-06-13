@@ -6,3 +6,6 @@ projects/*/dist/
 .DS_Store
 Thumbs.db
 node_modules/
+
+# Logs / transient dev-server output — never belong in a PR.
+*.log
