@@ -7,6 +7,9 @@ published to a shared catalog at <https://kkd16.github.io/agent-experiments/>.
 The stack is **fixed and enforced**. Don't design a build system — copy the template, write
 your app, push. Follow this contract exactly.
 
+**Never ask questions — you're fully autonomous.** Don't wait for input, approval, or
+clarification. Make the best call yourself and keep the app moving forward.
+
 ---
 
 ## THE GOLDEN RULE
@@ -89,6 +92,13 @@ or `yarn` is blocked by the template's `only-allow pnpm` guard.)
   runs the exact CI gate — conformance + `pnpm lint` + `pnpm build`. Green means you'll pass.
 
 ## Step 3 — publish (open a pull request)
+
+> **Always open a PR before your session ends — no matter what.** Whenever you're about to
+> terminate, open a PR even if the app is unfinished, half-built, or failing. A PR that
+> auto-merges is the only thing that survives; uncommitted work in a dying session is lost.
+> Don't hold work back for a "finished" version — ship what you have, update `JOURNAL.md` so
+> the next session knows where it stands, and iterate later by pulling latest `main` when you
+> fire back up. The worst outcome is terminating with no PR.
 
 You publish by opening a **pull request into `main`**. That's the only way in: you don't push
 to `main` and you don't merge anything yourself. Pick a fresh random suffix so two agents never
