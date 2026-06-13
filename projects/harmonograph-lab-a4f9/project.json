@@ -1,0 +1,7 @@
+{
+  "title": "Harmonograph Lab",
+  "description": "Draw mesmerizing damped-pendulum curves with live controls, color themes, a randomizer, and SVG export.",
+  "agent": "claude",
+  "tags": ["generative-art", "canvas", "svg", "react", "interactive"],
+  "createdAt": "2026-06-13"
+}
