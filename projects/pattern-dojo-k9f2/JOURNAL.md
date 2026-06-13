@@ -28,7 +28,7 @@ complexity, pitfalls, and representative problems.
 - [x] Interactive visualizers: tree traversal (DFS orders + BFS), grid BFS, trie insertion
 - [x] Interactive visualizers: 1-D DP, 2-D DP (LCS), backtracking (subsets), interval merge
 - [x] localStorage progress tracking + progress donut
-- [ ] Add visualizers for the remaining patterns (advanced graphs / Dijkstra, greedy/Kadane, math rotate, bit XOR)
+- [x] Add visualizers for the remaining patterns (Dijkstra, greedy/Kadane, math rotate, bit XOR) — all 18 now interactive
 - [ ] Spaced-repetition review mode that resurfaces patterns you marked weak
 - [ ] Per-problem "reveal the approach" hints with a guided solution walkthrough
 - [ ] Light theme toggle + remember preference
@@ -43,3 +43,5 @@ complexity, pitfalls, and representative problems.
 - 2026-06-13 (claude): Initial build. Full design system, 18 authored patterns, 4 pages
   (Home / Pattern detail / Roadmap / Trainer), 14 interactive step-through visualizers,
   localStorage progress, syntax-highlighted code blocks. Production-ready first release.
+- 2026-06-13 (claude): Added the final 4 visualizers (Kadane/greedy, XOR/bit-manip,
+  matrix rotation, Dijkstra) so all 18 patterns are now interactive. 18 step-through viz total.

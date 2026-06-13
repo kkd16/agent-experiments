@@ -748,6 +748,7 @@ def dijkstra(graph, src):              # graph: node -> [(nbr, weight)]
       { name: "Swim in Rising Water", difficulty: "hard", note: "Dijkstra on max-edge" },
     ],
     related: ["graphs", "heap-priority-queue", "greedy"],
+    visualizer: "dijkstra",
   },
 
   {
@@ -926,6 +927,7 @@ def dijkstra(graph, src):              # graph: node -> [(nbr, weight)]
       { name: "Hand of Straights", difficulty: "medium", note: "greedy grouping" },
     ],
     related: ["dp-1d", "intervals", "heap-priority-queue"],
+    visualizer: "greedy",
   },
 
   {
@@ -1045,6 +1047,7 @@ def dijkstra(graph, src):              # graph: node -> [(nbr, weight)]
       { name: "Happy Number", difficulty: "easy", note: "cycle detection" },
     ],
     related: ["arrays-hashing", "bit-manipulation"],
+    visualizer: "rotate",
   },
 
   {
@@ -1108,6 +1111,7 @@ def count_bits(n):
       { name: "Missing Number", difficulty: "easy", note: "XOR indices/values" },
     ],
     related: ["math-geometry", "arrays-hashing"],
+    visualizer: "bitxor",
   },
 ];
 

@@ -2,6 +2,7 @@ import { BinarySearchViz, HashMapViz, SlidingWindowViz, TwoPointersViz } from ".
 import { HeapViz, LinkedListViz, StackViz } from "./structViz";
 import { GraphViz, TreeTraversalViz, TrieViz } from "./treeGraphViz";
 import { BacktrackingViz, DP1DViz, DP2DViz, IntervalsViz } from "./dpViz";
+import { BitXorViz, DijkstraViz, GreedyViz, RotateMatrixViz } from "./extraViz";
 
 /**
  * Renders the visualizer for a pattern. A static switch (rather than a dynamic
@@ -38,6 +39,14 @@ export function Visualizer({ vizKey }: { vizKey?: string }) {
       return <BacktrackingViz />;
     case "intervals":
       return <IntervalsViz />;
+    case "greedy":
+      return <GreedyViz />;
+    case "bitxor":
+      return <BitXorViz />;
+    case "rotate":
+      return <RotateMatrixViz />;
+    case "dijkstra":
+      return <DijkstraViz />;
     default:
       return null;
   }
