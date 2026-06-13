@@ -34,9 +34,10 @@ jobs:
       PR: ${{ github.event.pull_request.number }}
       BASE: ${{ github.event.pull_request.base.ref }}
     steps:
+      # Check out main so gate scripts run from trusted code, not the PR's.
       - uses: actions/checkout@v6
         with:
-          ref: ${{ github.event.pull_request.head.sha }}
+          ref: ${{ github.event.pull_request.base.ref }}
           fetch-depth: 0
 
       - uses: actions/setup-node@v6
@@ -47,7 +48,8 @@ jobs:
         id: scope
         run: |
           git fetch origin "$BASE"
-          git diff --name-only "origin/$BASE...HEAD" > /tmp/changed.txt
+          git fetch --no-tags origin "+refs/pull/$PR/head:refs/remotes/origin/pr-head"
+          git diff --name-only "origin/$BASE...origin/pr-head" > /tmp/changed.txt
           echo "Changed files vs $BASE:"
           cat /tmp/changed.txt || true
           node scripts/changed-scope.mjs /tmp/changed.txt
@@ -65,6 +67,15 @@ jobs:
         if: steps.scope.outputs.slug != ''
         with:
           version: 11
+
+      # Overlay only the PR's project folder; everything else stays at main.
+      - name: Overlay the PR's project folder onto main
+        if: steps.scope.outputs.slug != ''
+        env:
+          SLUG: ${{ steps.scope.outputs.slug }}
+        run: |
+          rm -rf "projects/$SLUG"
+          git checkout origin/pr-head -- "projects/$SLUG"
 
       - name: Verify project (conformance + lint + build)
         if: steps.scope.outputs.slug != ''
