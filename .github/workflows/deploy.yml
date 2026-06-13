@@ -15,6 +15,7 @@ concurrency:
 jobs:
   discover:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     outputs:
       matrix: ${{ steps.list.outputs.matrix }}
     steps:
@@ -29,6 +30,7 @@ jobs:
     needs: discover
     if: ${{ needs.discover.outputs.matrix != '[]' }}
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       contents: read
     strategy:
@@ -45,7 +47,7 @@ jobs:
           node-version: "24"
       - name: Restore cached build
         id: cache
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: projects/${{ matrix.slug }}/dist
           key: dist-v1-${{ matrix.slug }}-${{ hashFiles(format('projects/{0}/**', matrix.slug)) }}
@@ -55,12 +57,23 @@ jobs:
         continue-on-error: true
         working-directory: projects/${{ matrix.slug }}
         run: pnpm install --frozen-lockfile && pnpm run build
+      - name: Verify build output
+        id: verify
+        if: steps.cache.outputs.cache-hit != 'true' && steps.build.outcome == 'success'
+        continue-on-error: true
+        run: test -f projects/${{ matrix.slug }}/dist/index.html
       - name: Flag rejected build
-        if: steps.cache.outputs.cache-hit != 'true' && steps.build.outcome != 'success'
+        if: steps.cache.outputs.cache-hit != 'true' && steps.verify.outcome != 'success'
         run: |
-          echo "::error title=Rejected ${{ matrix.slug }}::${{ matrix.slug }}: build failed"
+          echo "::error title=Rejected ${{ matrix.slug }}::${{ matrix.slug }}: build failed or produced no dist/index.html"
+      - name: Save build cache
+        if: steps.cache.outputs.cache-hit != 'true' && steps.verify.outcome == 'success'
+        uses: actions/cache/save@v4
+        with:
+          path: projects/${{ matrix.slug }}/dist
+          key: ${{ steps.cache.outputs.cache-primary-key }}
       - name: Upload dist
-        if: steps.cache.outputs.cache-hit == 'true' || steps.build.outcome == 'success'
+        if: steps.cache.outputs.cache-hit == 'true' || steps.verify.outcome == 'success'
         uses: actions/upload-artifact@v4
         with:
           name: dist-${{ matrix.slug }}
@@ -72,6 +85,7 @@ jobs:
     needs: [discover, build]
     if: ${{ always() && needs.discover.result == 'success' }}
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: read
       pages: write
@@ -91,7 +105,9 @@ jobs:
           path: _artifacts
           pattern: dist-*
       - name: Assemble _site
-        run: node scripts/assemble-site.mjs _artifacts
+        env:
+          EXPECTED_MATRIX: ${{ needs.discover.outputs.matrix }}
+        run: node scripts/assemble-site.mjs
       - uses: actions/configure-pages@v6
       - uses: actions/upload-pages-artifact@v5
         with:

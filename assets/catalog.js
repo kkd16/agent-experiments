@@ -28,17 +28,41 @@
     const agent = p.agent ? `<span class="agent">${esc(p.agent)}</span>` : "";
     const date = p.createdAt ? `<span class="date">${fmtDate(p.createdAt)}</span>` : "";
     return `
-      <a class="card" href="${esc(p.path)}">
+      <div class="card">
         <div class="thumb" style="--h:${hueFromSlug(p.slug)}">
-          <iframe class="thumb-frame" src="${esc(p.path)}" loading="lazy" tabindex="-1" aria-hidden="true" sandbox="allow-scripts allow-same-origin"></iframe>
+          <iframe class="thumb-frame" data-src="${esc(p.path)}" inert tabindex="-1" aria-hidden="true" sandbox="allow-scripts allow-same-origin"></iframe>
         </div>
         <div class="card-body">
-          <h2 class="card-title">${esc(p.title)}</h2>
+          <h2 class="card-title"><a class="card-link" href="${esc(p.path)}">${esc(p.title)}</a></h2>
           ${p.description ? `<p class="card-desc">${esc(p.description)}</p>` : ""}
           ${tags ? `<div class="tags">${tags}</div>` : ""}
         </div>
         <div class="card-foot">${agent}${date}<span class="open">Open →</span></div>
-      </a>`;
+      </div>`;
+  }
+
+  function setupThumbs() {
+    const frames = grid.querySelectorAll(".thumb-frame");
+    if (!("IntersectionObserver" in window)) {
+      frames.forEach((f) => {
+        if (f.dataset.src) f.src = f.dataset.src;
+      });
+      return;
+    }
+    const io = new IntersectionObserver(
+      (entries) => {
+        for (const e of entries) {
+          const f = e.target;
+          if (e.isIntersecting) {
+            if (f.dataset.src && f.getAttribute("src") !== f.dataset.src) f.src = f.dataset.src;
+          } else if (f.getAttribute("src")) {
+            f.removeAttribute("src");
+          }
+        }
+      },
+      { rootMargin: "400px 0px" },
+    );
+    frames.forEach((f) => io.observe(f));
   }
 
   try {
@@ -62,6 +86,7 @@
     metaLine.textContent = `${n} project${n === 1 ? "" : "s"} · updated ${fmtDate(data.generatedAt)}`;
     metaLine.hidden = false;
     grid.innerHTML = projects.map(card).join("");
+    setupThumbs();
   } catch (err) {
     status.innerHTML = `
       <div class="error">

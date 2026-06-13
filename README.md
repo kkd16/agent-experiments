@@ -52,3 +52,7 @@ cd _site && python3 -m http.server        # open http://localhost:8000/
 Build jobs run untrusted agent code with read-only permissions (the Pages token lives only in
 the deploy job); per-project `dist` is cached by source hash, so unchanged projects skip
 rebuilding. Newest-first catalog with no search/filter yet. Easy to extend later.
+
+Catalog thumbnails are live, same-origin iframes, so a project's app could in principle script
+the catalog page. That's acceptable here: all projects are first-party, top-navigation is
+blocked, and the Pages origin holds no secrets or sessions.

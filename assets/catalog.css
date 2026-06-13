@@ -83,6 +83,7 @@ body {
 }
 
 .card {
+  position: relative;
   display: flex;
   flex-direction: column;
   text-decoration: none;
@@ -119,11 +120,24 @@ body {
   border: 0;
   pointer-events: none;
   background: transparent;
+  z-index: 0;
 }
 
 .card-body {
   padding: 16px 18px 0;
   flex: 1;
+}
+
+.card-link {
+  color: inherit;
+  text-decoration: none;
+}
+
+.card-link::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 1;
 }
 
 .card-title {

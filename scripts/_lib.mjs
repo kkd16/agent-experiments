@@ -1,5 +1,7 @@
-import { readdir, readFile, stat } from 'node:fs/promises';
+import { readdir, readFile, stat, mkdir, cp, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
+
+export const SHELL = ['index.html', 'assets', '.nojekyll'];
 
 export async function exists(p) {
   try {
@@ -11,8 +13,12 @@ export async function exists(p) {
 }
 
 export function humanize(slug) {
-  const cleaned = slug.replace(/-[0-9a-z]{4,8}$/i, '').replace(/[-_]+/g, ' ').trim();
-  return (cleaned || slug).replace(/\b\w/g, (c) => c.toUpperCase());
+  const m = slug.match(/^(.*)-([0-9a-f]{4,8})$/i);
+  const base = m && /\d/.test(m[2]) && /[a-f]/i.test(m[2]) ? m[1] : slug;
+  return base
+    .replace(/[-_]+/g, ' ')
+    .trim()
+    .replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
 export async function listProjectSlugs(projectsDir) {
@@ -51,6 +57,8 @@ export async function validate(projectsDir, slug) {
   const dir = join(projectsDir, slug);
   const errors = [];
 
+  if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(slug))
+    errors.push('slug must be kebab-case (lowercase letters/digits, single hyphens)');
   if (!(await exists(join(dir, 'index.html')))) errors.push('missing index.html at the project root');
   if (await exists(join(dir, 'package-lock.json'))) errors.push('has package-lock.json — this repo is pnpm-only');
   if (await exists(join(dir, 'yarn.lock'))) errors.push('has yarn.lock — this repo is pnpm-only');
@@ -81,12 +89,35 @@ export async function validate(projectsDir, slug) {
   } else {
     const text = await readFile(cfg, 'utf8');
     if (!text.includes('react(')) errors.push('vite.config must use the react() plugin');
-    const m = text.match(/base\s*:\s*["']([^"']*)["']/);
+    const m = text.match(/base\s*:\s*[`"']([^`"']*)[`"']/);
     const base = m ? m[1] : null;
     if (base === null) errors.push("vite.config must set base: './'");
     else if (!(base === './' || base === '' || base === '.'))
       errors.push(`vite.config base must be relative ('./'), found '${base}'`);
+    const out = text.match(/outDir\s*:\s*[`"']([^`"']*)[`"']/);
+    if (out && out[1] !== 'dist') errors.push(`build output must use the default dist/ (found outDir '${out[1]}')`);
   }
 
   return errors;
+}
+
+export function reportViolations(slug, violations) {
+  violations.forEach((v) => console.log(`::error title=Rejected ${slug}::${slug}: ${v}`));
+}
+
+export async function copyShell(root, site) {
+  await rm(site, { recursive: true, force: true });
+  await mkdir(join(site, 'projects'), { recursive: true });
+  for (const item of SHELL) {
+    const src = join(root, item);
+    if (await exists(src)) await cp(src, join(site, item), { recursive: true });
+  }
+}
+
+export async function writeCatalog(site, metas) {
+  const projects = [...metas].sort(
+    (a, b) => (b.createdAt || '').localeCompare(a.createdAt || '') || a.slug.localeCompare(b.slug),
+  );
+  const catalog = { generatedAt: new Date().toISOString(), count: projects.length, projects };
+  await writeFile(join(site, 'catalog.json'), JSON.stringify(catalog, null, 2) + '\n');
 }

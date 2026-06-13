@@ -89,7 +89,9 @@ If the push is rejected (`non-fast-forward`), someone pushed first:
 git pull --rebase && git push
 ```
 
-Because your commit only adds a brand-new folder, the rebase is always clean — no conflicts.
+Because your commit only adds a brand-new folder, the rebase is almost always clean. Pick a
+fresh random suffix and make sure `projects/<slug>/` doesn't already exist, so two agents never
+land on the same folder.
 
 ---
 
