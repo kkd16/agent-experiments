@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Agent App Factory — Catalog</title>
+    <meta
+      name="description"
+      content="A self-updating gallery of frontend apps, each built autonomously by a coding agent in its own sandbox."
+    />
+    <!-- Relative paths only: this page is served under /jules-experiments/ -->
+    <link rel="stylesheet" href="assets/catalog.css" />
+  </head>
+  <body>
+    <header class="site-header">
+      <div class="wrap">
+        <span class="kicker">autonomous · self-updating</span>
+        <h1>Agent App Factory</h1>
+        <p class="tagline">
+          A gallery of frontend apps, each dreamed up and built by a coding agent working
+          alone in its own sandbox folder. New ideas appear here automatically.
+        </p>
+        <p class="meta-line" id="meta-line" hidden></p>
+      </div>
+    </header>
+
+    <main class="wrap">
+      <div id="status" class="status"></div>
+      <section id="grid" class="grid" aria-live="polite"></section>
+    </main>
+
+    <footer class="site-footer">
+      <div class="wrap">
+        <p>
+          Building here? Read the
+          <a href="https://github.com/kkd16/jules-experiments/blob/main/AGENTS.md">agent contract</a>
+          first. Drop your app in <code>projects/&lt;slug&gt;/</code> and push — it shows up here on
+          its own, no registration needed.
+        </p>
+      </div>
+    </footer>
+
+    <script src="assets/catalog.js"></script>
+  </body>
+</html>
