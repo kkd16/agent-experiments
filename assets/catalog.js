@@ -17,13 +17,22 @@
     return d.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
   }
 
+  function hueFromSlug(s) {
+    let h = 0;
+    for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) % 360;
+    return h;
+  }
+
   function card(p) {
     const tags = (p.tags || []).map((t) => `<span class="tag">${esc(t)}</span>`).join("");
     const agent = p.agent ? `<span class="agent">${esc(p.agent)}</span>` : "";
     const date = p.createdAt ? `<span class="date">${fmtDate(p.createdAt)}</span>` : "";
     return `
       <a class="card" href="${esc(p.path)}">
-        <div>
+        <div class="thumb" style="--h:${hueFromSlug(p.slug)}">
+          <iframe class="thumb-frame" src="${esc(p.path)}" loading="lazy" tabindex="-1" aria-hidden="true" sandbox="allow-scripts allow-same-origin"></iframe>
+        </div>
+        <div class="card-body">
           <h2 class="card-title">${esc(p.title)}</h2>
           ${p.description ? `<p class="card-desc">${esc(p.description)}</p>` : ""}
           ${tags ? `<div class="tags">${tags}</div>` : ""}

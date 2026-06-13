@@ -85,14 +85,12 @@ body {
 .card {
   display: flex;
   flex-direction: column;
-  justify-content: space-between;
-  gap: 18px;
   text-decoration: none;
   color: inherit;
   background: var(--card);
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  padding: 22px;
+  overflow: hidden;
   transition: transform 0.16s ease, border-color 0.16s ease, background 0.16s ease;
 }
 
@@ -100,6 +98,32 @@ body {
   transform: translateY(-3px);
   background: var(--card-hover);
   border-color: #3b4256;
+}
+
+.thumb {
+  position: relative;
+  aspect-ratio: 16 / 10;
+  overflow: hidden;
+  border-bottom: 1px solid var(--border);
+  background: linear-gradient(135deg, hsl(var(--h, 220) 60% 50%), hsl(calc(var(--h, 220) + 50) 55% 38%));
+}
+
+.thumb-frame {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 400%;
+  height: 400%;
+  transform: scale(0.25);
+  transform-origin: top left;
+  border: 0;
+  pointer-events: none;
+  background: transparent;
+}
+
+.card-body {
+  padding: 16px 18px 0;
+  flex: 1;
 }
 
 .card-title {
@@ -136,7 +160,8 @@ body {
   font-size: 0.78rem;
   color: var(--muted);
   border-top: 1px solid var(--border);
-  padding-top: 14px;
+  margin-top: 14px;
+  padding: 14px 18px;
 }
 
 .agent {
