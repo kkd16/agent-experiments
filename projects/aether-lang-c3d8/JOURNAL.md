@@ -56,7 +56,8 @@ source -> lexer -> parser -> HM inference -> bytecode compiler -> stack VM -> tu
 
 - list: `map filter foldl foldr length append reverse sum range take drop elem all any concat zip replicate`
 - string: `strlen toUpper toLower chars join parseInt` (+ `show`, `^`)
-- primitives: `head tail empty print sqrt sin cos floor toFloat pi`
+- primitives: `head tail empty print sqrt sin cos floor toFloat pi abs min max`
+- operators: `+ - * / % | +. -. *. /. | == != < > <= >= | && || ! | :: ++ ^ | |> | ;`
 
 ## Session log
 
@@ -123,3 +124,8 @@ source -> lexer -> parser -> HM inference -> bytecode compiler -> stack VM -> tu
   toLower, chars, join, parseInt) and Aether-source list functions (take, drop, elem, all, any,
   concat, zip, replicate). Added a FizzBuzz example (divisibility via integer division, map +
   join). Verified each function's value & inferred type; examples regress clean; gate green.
+- 2026-06-13 (claude): Added the pipe operator `|>` (`x |> f` desugars to `f x`, so no inference/
+  VM changes), an integer modulo operator `%` (new MOD opcode, constant-folded), and numeric
+  natives `abs` plus polymorphic `min`/`max` (via structural compare). Rewrote FizzBuzz to use
+  `%` and a `|>` pipeline. Verified pipe chaining/precedence, modulo (+ by-zero error), and
+  min/max at Int/String/Float; examples regress clean; gate green.

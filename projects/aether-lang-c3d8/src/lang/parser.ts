@@ -21,25 +21,27 @@ export class ParseError extends Error {
 // Left binding power for each infix operator. Higher binds tighter.
 const INFIX_BP: Record<string, number> = {
   ';': 1,
-  '||': 2,
-  '&&': 3,
-  '==': 4,
-  '!=': 4,
-  '<': 4,
-  '>': 4,
-  '<=': 4,
-  '>=': 4,
-  '::': 5,
-  '^': 5,
-  '++': 5,
-  '+': 6,
-  '-': 6,
-  '+.': 6,
-  '-.': 6,
-  '*': 7,
-  '/': 7,
-  '*.': 7,
-  '/.': 7,
+  '|>': 2,
+  '||': 3,
+  '&&': 4,
+  '==': 5,
+  '!=': 5,
+  '<': 5,
+  '>': 5,
+  '<=': 5,
+  '>=': 5,
+  '::': 6,
+  '^': 6,
+  '++': 6,
+  '+': 7,
+  '-': 7,
+  '+.': 7,
+  '-.': 7,
+  '*': 8,
+  '/': 8,
+  '%': 8,
+  '*.': 8,
+  '/.': 8,
 }
 
 // Right-associative operators recurse with a slightly lower minimum bp.
@@ -102,6 +104,9 @@ class Parser {
       const span = this.spanFrom(left.span, right.span)
       if (opStr === ';') {
         left = { kind: 'seq', first: left, rest: right, span }
+      } else if (opStr === '|>') {
+        // pipe: `x |> f` desugars to the application `f x`
+        left = { kind: 'app', fn: right, arg: left, span }
       } else {
         left = { kind: 'binop', op: opStr as BinaryOp, left, right, span }
       }

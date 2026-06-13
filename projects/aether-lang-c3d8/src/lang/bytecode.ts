@@ -58,6 +58,7 @@ export const Op = {
   MAKE_RECORD: 46, // <n>    pop n (label, value) pairs, push a record
   FIELD_GET: 47, // <ci>     pop a record, push field named constants[ci]
   RECORD_UPDATE: 48, // <n>  pop n (label,value) pairs + a base record, push updated copy
+  MOD: 49, //                integer modulo
 } as const
 
 export type Op = (typeof Op)[keyof typeof Op]

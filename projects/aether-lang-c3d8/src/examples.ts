@@ -226,19 +226,18 @@ let move = fn p dx dy -> { p | x = p.x +. dx, y = p.y +. dy } in
   {
     id: 'fizzbuzz',
     title: 'FizzBuzz',
-    blurb: 'Strings, ranges, map and join — divisibility via integer division.',
+    blurb: 'Modulo, the pipe operator, map and join.',
     visual: false,
-    code: `// No modulo operator, so test divisibility with integer division:
-// n is divisible by d exactly when (n / d) * d == n.
-let divBy = fn d n -> n / d * d == n in
-
-let fizzbuzz = fn n ->
-  if divBy 15 n then "FizzBuzz"
-  else if divBy 3 n then "Fizz"
-  else if divBy 5 n then "Buzz"
+    code: `let fizzbuzz = fn n ->
+  if n % 15 == 0 then "FizzBuzz"
+  else if n % 3 == 0 then "Fizz"
+  else if n % 5 == 0 then "Buzz"
   else show n in
 
-join " " (map fizzbuzz (range 1 21))`,
+// the pipe operator |> threads a value through a chain of functions
+range 1 21
+  |> map fizzbuzz
+  |> join " "`,
   },
   {
     id: 'church',

@@ -13,6 +13,7 @@ import type { NativeFn, Value } from './values.ts'
 import {
   AetherRuntimeError,
   UNIT,
+  compareValues,
   listFromArray,
   listToArray,
   vbool,
@@ -125,6 +126,26 @@ const PRIMITIVES: Primitive[] = [
       const n = Number.parseInt(str(a[0]), 10)
       return vint(Number.isNaN(n) ? 0 : n)
     },
+  },
+  // numeric helpers
+  { name: 'abs', arity: 1, scheme: mono(tArrow(tInt, tInt)), fn: (a) => vint(Math.abs(num(a[0]))) },
+  {
+    name: 'min',
+    arity: 2,
+    scheme: poly((tv) => {
+      const a = tv()
+      return tArrow(a, tArrow(a, a))
+    }),
+    fn: (a) => (compareValues(a[0], a[1]) <= 0 ? a[0] : a[1]),
+  },
+  {
+    name: 'max',
+    arity: 2,
+    scheme: poly((tv) => {
+      const a = tv()
+      return tArrow(a, tArrow(a, a))
+    }),
+    fn: (a) => (compareValues(a[0], a[1]) >= 0 ? a[0] : a[1]),
   },
   // turtle graphics — side effects emitted to the VM's effect log
   { name: 'forward', arity: 1, scheme: mono(tArrow(tFloat, tUnit)), fn: (a, c) => emitR(c, { op: 'forward', dist: num(a[0]) }) },

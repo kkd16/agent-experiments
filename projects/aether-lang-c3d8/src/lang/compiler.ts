@@ -408,6 +408,7 @@ const BINOP_OPCODE: Record<Exclude<BinaryOp, '&&' | '||'>, number> = {
   '-': Op.SUB,
   '*': Op.MUL,
   '/': Op.DIV,
+  '%': Op.MOD,
   '+.': Op.FADD,
   '-.': Op.FSUB,
   '*.': Op.FMUL,

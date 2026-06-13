@@ -121,13 +121,14 @@ len [10, 20, 30]   // => 3`}</pre>
         <h2>Operators</h2>
         <table className="op-table">
           <tbody>
-            <tr><td><code>+ - * /</code></td><td>integer arithmetic</td></tr>
+            <tr><td><code>+ - * / %</code></td><td>integer arithmetic (% is modulo)</td></tr>
             <tr><td><code>+. -. *. /.</code></td><td>floating-point arithmetic</td></tr>
             <tr><td><code>== != &lt; &gt; &lt;= &gt;=</code></td><td>structural comparison (polymorphic)</td></tr>
             <tr><td><code>&amp;&amp; ||</code></td><td>short-circuiting boolean</td></tr>
             <tr><td><code>::</code></td><td>cons (prepend to a list)</td></tr>
             <tr><td><code>++</code></td><td>list append</td></tr>
             <tr><td><code>^</code></td><td>string concatenation</td></tr>
+            <tr><td><code>|&gt;</code></td><td>pipe: <code>x |&gt; f</code> means <code>f x</code></td></tr>
             <tr><td><code>;</code></td><td>sequence (evaluate, discard, continue)</td></tr>
           </tbody>
         </table>
@@ -140,7 +141,7 @@ len [10, 20, 30]   // => 3`}</pre>
 take drop elem all any concat zip replicate
 // primitives:
 head tail empty print show
-sqrt sin cos floor toFloat pi
+sqrt sin cos floor toFloat pi abs min max
 strlen toUpper toLower chars join parseInt`}</pre>
       </section>
 
