@@ -23,6 +23,16 @@
     return h;
   }
 
+  function progressBar(pr) {
+    if (!pr || !pr.total) return "";
+    const pct = Math.round((pr.done / pr.total) * 100);
+    return `
+          <div class="progress" title="${pr.done} of ${pr.total} journal ideas done">
+            <div class="progress-track"><div class="progress-fill" style="width:${pct}%"></div></div>
+            <span class="progress-label">${pr.done}/${pr.total} ideas</span>
+          </div>`;
+  }
+
   function card(p) {
     const tags = (p.tags || []).map((t) => `<span class="tag">${esc(t)}</span>`).join("");
     const agent = p.agent ? `<span class="agent">${esc(p.agent)}</span>` : "";
@@ -36,6 +46,7 @@
           <h2 class="card-title"><a class="card-link" href="${esc(p.path)}">${esc(p.title)}</a></h2>
           ${p.description ? `<p class="card-desc">${esc(p.description)}</p>` : ""}
           ${tags ? `<div class="tags">${tags}</div>` : ""}
+          ${progressBar(p.progress)}
         </div>
         <div class="card-foot">${agent}${date}<span class="open">Open →</span></div>
       </div>`;

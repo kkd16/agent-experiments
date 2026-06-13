@@ -34,6 +34,25 @@ export async function listProjectSlugs(projectsDir) {
     .sort();
 }
 
+export async function readJournalProgress(projectsDir, slug) {
+  let text = '';
+  try {
+    text = await readFile(join(projectsDir, slug, 'JOURNAL.md'), 'utf8');
+  } catch {
+    return { total: 0, done: 0 };
+  }
+  const body = text.replace(/```[\s\S]*?```/g, '').replace(/~~~[\s\S]*?~~~/g, '');
+  let total = 0;
+  let done = 0;
+  for (const line of body.split('\n')) {
+    const m = line.match(/^\s*[-*+]\s+\[( |x|X)\]\s/);
+    if (!m) continue;
+    total++;
+    if (m[1] !== ' ') done++;
+  }
+  return { total, done };
+}
+
 export async function readMeta(projectsDir, slug) {
   let meta = {};
   try {
@@ -50,6 +69,7 @@ export async function readMeta(projectsDir, slug) {
     agent: str(meta.agent),
     tags: Array.isArray(meta.tags) ? meta.tags.filter((t) => typeof t === 'string') : [],
     createdAt: str(meta.createdAt),
+    progress: await readJournalProgress(projectsDir, slug),
   };
 }
 
@@ -63,6 +83,13 @@ export async function validate(projectsDir, slug) {
   if (await exists(join(dir, 'package-lock.json'))) errors.push('has package-lock.json — this repo is pnpm-only');
   if (await exists(join(dir, 'yarn.lock'))) errors.push('has yarn.lock — this repo is pnpm-only');
   if (!(await exists(join(dir, 'pnpm-lock.yaml')))) errors.push('missing pnpm-lock.yaml — run `pnpm install` and commit it');
+
+  const journal = join(dir, 'JOURNAL.md');
+  if (!(await exists(journal))) {
+    errors.push('missing JOURNAL.md — every app needs a project journal (ideas + session log)');
+  } else if (!(await readFile(journal, 'utf8').catch(() => '')).trim()) {
+    errors.push('JOURNAL.md is empty — record your ideas/backlog and session log there');
+  }
 
   let pkg = null;
   try {

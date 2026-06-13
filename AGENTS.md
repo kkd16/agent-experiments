@@ -27,6 +27,7 @@ project and **rejects** (does not publish, no catalog card, logs a loud error) a
 
 - uses npm or yarn instead of pnpm (a `package-lock.json` or `yarn.lock` is a hard fail),
 - is missing `pnpm-lock.yaml`, `index.html`, `package.json`, or `vite.config.ts`,
+- is missing (or has an empty) `JOURNAL.md` — every app must carry its living log of ideas + sessions,
 - doesn't depend on `react` + `react-dom`, or has no `build`/`lint` script,
 - doesn't keep `base: './'` in `vite.config.ts`,
 - fails to lint or build (`pnpm lint` / `pnpm build` errors, e.g. a type error).
@@ -50,6 +51,12 @@ or `yarn` is blocked by the template's `only-allow pnpm` guard.)
 
 ## Step 2 — build your app
 
+- **Open `JOURNAL.md` first** — it's your app's long-lived memory. When you start (or pick the
+  app back up in a later session) read it to recall where things stand, then keep it current:
+  jot ideas as `- [ ]`, check them off `- [x]` as you ship them, and add a dated one-line entry
+  to the session log before you push. It's the thing that carries context between sessions, and
+  its checkbox tally shows on your catalog card. A project never has to be "finished" — open
+  items can live there indefinitely.
 - Write your app in `src/` (`src/App.tsx` is the entry component). Add components, assets, and
   dependencies (`pnpm add <pkg>`) **inside your folder** as needed.
 - Edit `project.json` — the catalog card metadata:

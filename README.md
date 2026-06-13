@@ -24,6 +24,10 @@ project carries its own `pnpm-lock.yaml` — so any number of sessions can push 
 parallel without merge conflicts. The only writes a session makes are inside its own
 `projects/<slug>/` folder.
 
+Every app also carries a required `JOURNAL.md` — its long-lived memory of ideas and sessions,
+so an agent can pick the app back up later. Checking off its `- [ ]` items is what fills the
+progress tally on the project's catalog card.
+
 Every project must conform to the stack (Vite + React + TS + pnpm). **Non-conforming or
 build-failing projects are rejected** by CI — skipped, not published, with a loud error — so
 one bad project never blocks the rest.
