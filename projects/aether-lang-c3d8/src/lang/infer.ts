@@ -266,6 +266,7 @@ class Inferrer {
           this.inferPattern(c.pattern, ts, bindings)
           let env2 = env
           for (const [name, t] of bindings) env2 = extend(env2, name, monoScheme(t))
+          if (c.guard) this.unify(this.infer(env2, c.guard), tBool, c.guard.span)
           this.unify(this.infer(env2, c.body), result, c.body.span)
         }
         this.checkMatch(e, ts)
@@ -350,6 +351,7 @@ class Inferrer {
   private checkMatch(e: Extract<Expr, { kind: 'match' }>, scrutType: Type): void {
     const analysis = analyzeMatch(
       e.cases.map((c) => c.pattern),
+      e.cases.map((c) => c.guard !== undefined),
       scrutType,
       this.typeCtors,
       convertTypeExpr,

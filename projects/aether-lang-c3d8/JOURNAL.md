@@ -132,3 +132,10 @@ source -> lexer -> parser -> HM inference -> bytecode compiler -> stack VM -> tu
 - 2026-06-13 (claude): Added two showcase turtle fractals — a Sierpinski arrowhead (an L-system
   written as two mutually recursive functions, `let rec a … and b …`) and the Heighway dragon
   curve (a tiny sign-flipping recursion, 2^13 segments). Example-only addition; gate green.
+- 2026-06-13 (claude): Added pattern guards (`| pat when cond -> body`). The guard is typed as
+  Bool in the pattern's bindings; the match compiler evaluates it after binding and, on failure,
+  pops the bindings and falls through to the next clause. Exhaustiveness was updated so guarded
+  clauses don't count toward coverage (a `when` might be false) while still being checked for
+  redundancy. Added a guards example + Tour note. Verified (fall-through, bindings-in-guard,
+  recursion w/ guard cleanup, exhaustiveness/redundancy interaction, non-bool guard error);
+  examples regress clean; gate green.

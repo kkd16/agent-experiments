@@ -276,13 +276,29 @@ class Compiler {
         this.navigate(c, sslot, b.path, span)
         c.declareLocal(b.name)
       }
+      const k = binds.length
+
+      // guard — `when cond`: if false, clean up bindings and try the next case
+      let guardJump = -1
+      if (cs.guard) {
+        this.compileExpr(c, cs.guard)
+        guardJump = c.here()
+        c.op(Op.JUMP_IF_FALSE, span, -1, 0)
+      }
 
       this.compileExpr(c, cs.body, tail)
-      if (binds.length > 0) c.op(Op.POP_BELOW, span, -binds.length, binds.length)
-      for (let k = 0; k < binds.length; k++) c.locals.pop()
+      if (k > 0) c.op(Op.POP_BELOW, span, -k, k)
+      for (let i = 0; i < k; i++) c.locals.pop()
 
       endJumps.push(c.here())
       c.op(Op.JUMP, span, 0, 0)
+
+      if (guardJump >= 0) {
+        // guard-failure path: bindings are still on the stack — drop them
+        this.patch(c, guardJump)
+        c.height = baseHeight + k
+        for (let i = 0; i < k; i++) c.op(Op.POP, span, -1)
+      }
 
       for (const j of failJumps) this.patch(c, j)
       c.height = baseHeight // fall-through arrives with only the scrutinee live

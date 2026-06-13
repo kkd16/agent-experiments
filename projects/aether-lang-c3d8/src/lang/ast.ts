@@ -72,6 +72,8 @@ export type Pattern =
 
 export interface MatchCase {
   pattern: Pattern
+  /** optional `when` guard — the clause matches only if it evaluates true */
+  guard?: Expr
   body: Expr
 }
 
@@ -195,7 +197,7 @@ export function children(e: Expr): Expr[] {
     case 'seq':
       return [e.first, e.rest]
     case 'match':
-      return [e.scrutinee, ...e.cases.map((c) => c.body)]
+      return [e.scrutinee, ...e.cases.flatMap((c) => (c.guard ? [c.guard, c.body] : [c.body]))]
     case 'typedecl':
       return [e.body]
     case 'letrec':

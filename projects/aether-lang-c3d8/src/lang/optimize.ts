@@ -58,7 +58,11 @@ function opt(e: Expr, bump: () => void): Expr {
       return {
         ...e,
         scrutinee: opt(e.scrutinee, bump),
-        cases: e.cases.map((c) => ({ pattern: c.pattern, body: opt(c.body, bump) })),
+        cases: e.cases.map((c) => ({
+          pattern: c.pattern,
+          guard: c.guard ? opt(c.guard, bump) : undefined,
+          body: opt(c.body, bump),
+        })),
       }
     case 'record':
       return { ...e, fields: e.fields.map((f) => ({ label: f.label, value: opt(f.value, bump) })) }
