@@ -55,6 +55,8 @@ export const Op = {
   TAILCALL: 43, // <argc>    call in tail position, reusing the current frame
   CTOR_TAG: 44, //           pop a data value, push its constructor name (String)
   CTOR_GET: 45, // <k>       pop a data value, push its kth field
+  MAKE_RECORD: 46, // <n>    pop n (label, value) pairs, push a record
+  FIELD_GET: 47, // <ci>     pop a record, push field named constants[ci]
 } as const
 
 export type Op = (typeof Op)[keyof typeof Op]
@@ -80,6 +82,8 @@ const ONE_OPERAND = new Set<number>([
   Op.TUPLE_GET,
   Op.TAILCALL,
   Op.CTOR_GET,
+  Op.MAKE_RECORD,
+  Op.FIELD_GET,
 ])
 
 export function operandCount(op: number): number {
@@ -147,6 +151,12 @@ export function disassemble(proto: FnProto): DisasmLine[] {
         case Op.CALL:
         case Op.TAILCALL:
           comment = `${operand} arg${operand === 1 ? '' : 's'}`
+          break
+        case Op.FIELD_GET:
+          comment = `.${valuePreview(proto.constants[operand])}`
+          break
+        case Op.MAKE_RECORD:
+          comment = `${operand} field${operand === 1 ? '' : 's'}`
           break
       }
     }

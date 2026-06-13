@@ -60,6 +60,10 @@ function opt(e: Expr, bump: () => void): Expr {
         scrutinee: opt(e.scrutinee, bump),
         cases: e.cases.map((c) => ({ pattern: c.pattern, body: opt(c.body, bump) })),
       }
+    case 'record':
+      return { ...e, fields: e.fields.map((f) => ({ label: f.label, value: opt(f.value, bump) })) }
+    case 'field':
+      return { ...e, record: opt(e.record, bump) }
     case 'if':
       return optIf(e, bump)
     case 'unop':

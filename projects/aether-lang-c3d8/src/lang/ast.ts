@@ -93,6 +93,8 @@ export type Expr =
   | { kind: 'match'; scrutinee: Expr; cases: MatchCase[]; span: Span }
   | { kind: 'typedecl'; name: string; params: string[]; ctors: CtorDecl[]; body: Expr; span: Span }
   | { kind: 'letrec'; bindings: { name: string; value: Expr }[]; body: Expr; span: Span }
+  | { kind: 'record'; fields: { label: string; value: Expr }[]; span: Span }
+  | { kind: 'field'; record: Expr; label: string; span: Span }
 
 /** A short human-readable label for a node, used by the AST visualiser. */
 export function nodeLabel(e: Expr): string {
@@ -133,6 +135,10 @@ export function nodeLabel(e: Expr): string {
       return `type ${e.name}`
     case 'letrec':
       return `let rec…and (${e.bindings.length})`
+    case 'record':
+      return `record {${e.fields.map((f) => f.label).join(', ')}}`
+    case 'field':
+      return `.${e.label}`
   }
 }
 
@@ -190,6 +196,10 @@ export function children(e: Expr): Expr[] {
       return [e.body]
     case 'letrec':
       return [...e.bindings.map((b) => b.value), e.body]
+    case 'record':
+      return e.fields.map((f) => f.value)
+    case 'field':
+      return [e.record]
     default:
       return []
   }

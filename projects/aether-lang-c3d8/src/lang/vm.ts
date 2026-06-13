@@ -347,6 +347,23 @@ export class VM {
         stack.push(v.args[k])
         return
       }
+      case Op.MAKE_RECORD: {
+        const n = code[frame.ip++]
+        const slice = stack.splice(stack.length - 2 * n, 2 * n)
+        const fields: Record<string, Value> = {}
+        for (let i = 0; i < slice.length; i += 2) {
+          fields[(slice[i] as { s: string }).s] = slice[i + 1]
+        }
+        stack.push({ tag: 'record', fields })
+        return
+      }
+      case Op.FIELD_GET: {
+        const label = (proto.constants[code[frame.ip++]] as { s: string }).s
+        const rec = stack.pop() as Value
+        if (rec.tag !== 'record') throw new AetherRuntimeError('field access on non-record')
+        stack.push(rec.fields[label])
+        return
+      }
       default:
         throw new AetherRuntimeError(`bad opcode ${op}`)
     }

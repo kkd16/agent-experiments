@@ -204,6 +204,25 @@ and     isOdd  n = if n == 0 then false else isEven (n - 1) in
 , filter isOdd  (range 0 12) )`,
   },
   {
+    id: 'records',
+    title: 'Records & row polymorphism',
+    blurb: 'Structural records where one function works on any record with the right field.',
+    visual: false,
+    code: `// Records are structural; field access is row-polymorphic, so this
+// 'norm' works on ANY record that has x and y (whatever else it holds).
+let norm = fn p -> p.x *. p.x +. p.y *. p.y in
+
+let a = { x = 3.0, y = 4.0 } in
+let b = { x = 1.0, y = 2.0, label = "b", tag = 7 } in
+
+let move = fn p dx dy -> { x = p.x +. dx, y = p.y +. dy } in
+
+( norm a              // 25.0
+, norm b              // 5.0  — extra fields are fine
+, (move a 1.0 1.0).x  // 4.0
+)`,
+  },
+  {
     id: 'church',
     title: 'Church numerals',
     blurb: 'Encoding numbers as higher-order functions — pure lambda calculus.',

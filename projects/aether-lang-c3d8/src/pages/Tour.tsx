@@ -94,6 +94,23 @@ len [10, 20, 30]   // => 3`}</pre>
       </section>
 
       <section>
+        <h2>Records (row-polymorphic)</h2>
+        <p>
+          Records are structural: <code>{'{ x = 1, y = 2 }'}</code> has type{' '}
+          <code>{'{ x: Int, y: Int }'}</code>, and you read fields with <code>r.x</code>. Field
+          access is <strong>row-polymorphic</strong>, so a function constraining one field works on
+          any record that has it:
+        </p>
+        <pre className="snippet">{`let getX = fn r -> r.x in
+( getX { x = 1, y = 2 }        // 1
+, getX { x = 9, name = "z" } ) // 9 — extra fields are fine`}</pre>
+        <p>
+          That <code>getX</code> is inferred as <code>{'{ x: a | r } -> a'}</code> — the{' '}
+          <code>r</code> is a row variable standing for "any other fields".
+        </p>
+      </section>
+
+      <section>
         <h2>Operators</h2>
         <table className="op-table">
           <tbody>

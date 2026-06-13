@@ -143,11 +143,25 @@ class Parser {
     const t = this.peek()
     if (t.kind === 'int' || t.kind === 'float' || t.kind === 'string' || t.kind === 'ident') return true
     if (t.kind === 'keyword' && (t.value === 'true' || t.value === 'false')) return true
-    if (t.kind === 'punc' && (t.value === '(' || t.value === '[')) return true
+    if (t.kind === 'punc' && (t.value === '(' || t.value === '[' || t.value === '{')) return true
     return false
   }
 
+  // an atom plus any trailing `.field` accesses (which bind tightest)
   private parseAtom(): Expr {
+    let e = this.parsePrimary()
+    while (this.at('punc', '.')) {
+      this.next()
+      if (!this.at('ident')) {
+        throw new ParseError('expected a field name after "."', this.peek().span)
+      }
+      const name = this.next()
+      e = { kind: 'field', record: e, label: name.value, span: this.spanFrom(e.span, name.span) }
+    }
+    return e
+  }
+
+  private parsePrimary(): Expr {
     const t = this.peek()
     switch (t.kind) {
       case 'int':
@@ -171,10 +185,34 @@ class Parser {
       case 'punc':
         if (t.value === '(') return this.parseParen()
         if (t.value === '[') return this.parseList()
+        if (t.value === '{') return this.parseRecord()
         throw new ParseError(`unexpected ${JSON.stringify(t.value)}`, t.span)
       default:
         throw new ParseError(`unexpected ${JSON.stringify(t.value)}`, t.span)
     }
+  }
+
+  private parseRecord(): Expr {
+    const open = this.expect('punc', '{')
+    const fields: { label: string; value: Expr }[] = []
+    if (!this.at('punc', '}')) {
+      for (;;) {
+        if (!this.at('ident')) {
+          throw new ParseError('expected a field label', this.peek().span)
+        }
+        const label = this.next().value
+        this.expect('op', '=')
+        const value = this.parseExpr(0)
+        fields.push({ label, value })
+        if (this.at('punc', ',')) {
+          this.next()
+          continue
+        }
+        break
+      }
+    }
+    const close = this.expect('punc', '}')
+    return { kind: 'record', fields, span: this.spanFrom(open.span, close.span) }
   }
 
   private parseParen(): Expr {

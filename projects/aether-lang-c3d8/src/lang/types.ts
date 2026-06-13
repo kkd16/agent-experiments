@@ -37,6 +37,26 @@ export function freshVar(): TVar {
 export const ARROW = '->'
 export const LIST = 'List'
 export const TUPLE = '*'
+export const RECORD = 'Record'
+export const ROW_EMPTY = '{}'
+const ROW_PREFIX = 'row:'
+
+export function tRecord(row: Type): TCon {
+  return tcon(RECORD, [row])
+}
+export const tRowEmpty: TCon = tcon(ROW_EMPTY)
+export function rowExtend(label: string, field: Type, rest: Type): TCon {
+  return tcon(ROW_PREFIX + label, [field, rest])
+}
+export function isRow(t: Type): boolean {
+  return t.kind === 'con' && (t.name === ROW_EMPTY || t.name.startsWith(ROW_PREFIX))
+}
+export function rowLabelOf(name: string): string {
+  return name.slice(ROW_PREFIX.length)
+}
+export function isRowExtend(t: Type): t is TCon {
+  return t.kind === 'con' && t.name.startsWith(ROW_PREFIX)
+}
 
 export function tcon(name: string, args: Type[] = []): TCon {
   return { kind: 'con', name, args }
@@ -106,6 +126,18 @@ export function typeToString(t: Type, names: Map<number, string> = new Map()): s
         if (p.args.length === 0) return '()'
         const s = p.args.map((a) => go(a, 2)).join(', ')
         return `(${s})`
+      }
+      case RECORD: {
+        const fields: string[] = []
+        let row = prune(p.args[0])
+        let tail = ''
+        while (row.kind === 'con' && row.name.startsWith('row:')) {
+          fields.push(`${row.name.slice(4)}: ${go(row.args[0], 0)}`)
+          row = prune(row.args[1])
+        }
+        if (row.kind === 'var') tail = ` | ${nameOf(row.id)}`
+        if (fields.length === 0 && !tail) return '{}'
+        return `{ ${fields.join(', ')}${tail} }`
       }
       default: {
         if (p.args.length === 0) return p.name

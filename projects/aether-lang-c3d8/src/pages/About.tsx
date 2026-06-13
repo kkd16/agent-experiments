@@ -12,7 +12,7 @@ const STAGES = [
   {
     n: 3,
     title: 'Type inference',
-    body: 'Algorithm W (Hindley–Milner). Unification is by mutation of type variables with an occurs-check; let-bindings are generalised over the variables not free in the environment, giving full parametric polymorphism — with no annotations anywhere. User-declared algebraic data types add their own type constructors, and each data constructor gets a polymorphic scheme.',
+    body: 'Algorithm W (Hindley–Milner). Unification is by mutation of type variables with an occurs-check; let-bindings are generalised over the variables not free in the environment, giving full parametric polymorphism — with no annotations anywhere. User-declared algebraic data types add their own type constructors, each data constructor gets a polymorphic scheme, and records use row unification so field access is row-polymorphic.',
   },
   {
     n: 3.5,

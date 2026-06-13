@@ -12,15 +12,23 @@ import type { Span } from './lexer.ts'
 import type { Scheme, Type, TVar } from './types.ts'
 import {
   ARROW,
+  RECORD,
+  ROW_EMPTY,
   freeVars,
   freshVar,
+  isRow,
+  isRowExtend,
   prune,
+  rowExtend,
+  rowLabelOf,
   tArrow,
   tBool,
   tcon,
   tFloat,
   tInt,
   tList,
+  tRecord,
+  tRowEmpty,
   tString,
   tTuple,
   tUnit,
@@ -90,6 +98,15 @@ class Inferrer {
       this.unify(pb, pa, span)
       return
     }
+    // records & rows unify structurally regardless of field order
+    if (pa.name === RECORD && pb.name === RECORD) {
+      this.unifyRow(pa.args[0], pb.args[0], span)
+      return
+    }
+    if (isRow(pa) || isRow(pb)) {
+      this.unifyRow(pa, pb, span)
+      return
+    }
     if (pa.name !== pb.name || pa.args.length !== pb.args.length) {
       throw new TypeCheckError(
         `type mismatch: cannot unify ${describe(pa)} with ${describe(pb)}`,
@@ -97,6 +114,49 @@ class Inferrer {
       )
     }
     for (let i = 0; i < pa.args.length; i++) this.unify(pa.args[i], pb.args[i], span)
+  }
+
+  // Row unification (Rémy/Leijen): fields may appear in any order, and a tail
+  // row variable absorbs fields present only in the other row.
+  private unifyRow(r1: Type, r2: Type, span: Span | null): void {
+    const p1 = prune(r1)
+    if (p1.kind === 'var') {
+      this.unify(p1, r2, span)
+      return
+    }
+    if (isRowExtend(p1)) {
+      const label = rowLabelOf(p1.name)
+      const { field, rest } = this.rewriteRow(r2, label, span)
+      this.unify(p1.args[0], field, span)
+      this.unify(p1.args[1], rest, span)
+      return
+    }
+    // p1 is the empty row
+    const p2 = prune(r2)
+    if (p2.kind === 'var') {
+      p2.ref = p1
+      return
+    }
+    if (p2.kind === 'con' && p2.name === ROW_EMPTY) return
+    throw new TypeCheckError('records have different sets of fields', span)
+  }
+
+  // find `label` in a row, returning its field type and the remaining row;
+  // a tail variable is extended on demand
+  private rewriteRow(row: Type, label: string, span: Span | null): { field: Type; rest: Type } {
+    const p = prune(row)
+    if (isRowExtend(p)) {
+      if (rowLabelOf(p.name) === label) return { field: p.args[0], rest: p.args[1] }
+      const sub = this.rewriteRow(p.args[1], label, span)
+      return { field: sub.field, rest: rowExtend(rowLabelOf(p.name), p.args[0], sub.rest) }
+    }
+    if (p.kind === 'var') {
+      const field: Type = freshVar()
+      const rest: Type = freshVar()
+      p.ref = rowExtend(label, field, rest)
+      return { field, rest }
+    }
+    throw new TypeCheckError(`record has no field '${label}'`, span)
   }
 
   instantiate(scheme: Scheme): Type {
@@ -251,6 +311,28 @@ class Inferrer {
           env2 = extend(env2, ctor.name, scheme)
         }
         return this.infer(env2, e.body)
+      }
+      case 'record': {
+        const seen = new Set<string>()
+        const fieldTypes = e.fields.map((f) => {
+          if (seen.has(f.label)) {
+            throw new TypeCheckError(`duplicate field '${f.label}' in record`, e.span)
+          }
+          seen.add(f.label)
+          return { label: f.label, type: this.infer(env, f.value) }
+        })
+        let row: Type = tRowEmpty
+        for (let i = fieldTypes.length - 1; i >= 0; i--) {
+          row = rowExtend(fieldTypes[i].label, fieldTypes[i].type, row)
+        }
+        return tRecord(row)
+      }
+      case 'field': {
+        const tr = this.infer(env, e.record)
+        const field = freshVar()
+        const rest = freshVar()
+        this.unify(tr, tRecord(rowExtend(e.label, field, rest)), e.span)
+        return field
       }
     }
   }

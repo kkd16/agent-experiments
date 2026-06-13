@@ -47,6 +47,7 @@ source -> lexer -> parser -> HM inference -> bytecode compiler -> stack VM -> tu
 - [x] `let rec … and …` mutually recursive bindings (TCO works across them)
 - [x] Exhaustiveness + redundancy checking for `match` (Maranget, with witnesses)
 - [x] Optimizer pass: constant folding, dead-branch elimination, short-circuit simplification
+- [x] Records with row polymorphism (`{ x = 1 }`, `r.x`, inferred `{ x: a | ρ } -> a`)
 - [ ] Show the type-derivation tree, not just the final scheme
 - [ ] A REPL mode that keeps top-level bindings between runs
 
@@ -89,3 +90,12 @@ source -> lexer -> parser -> HM inference -> bytecode compiler -> stack VM -> tu
   division by zero). Toggle in the playground; the status bar shows how many nodes were folded.
   Verified results are identical optimized vs not across all examples (fractal tree drops
   ~2000 VM steps); gate green.
+- 2026-06-13 (claude): Added records with row polymorphism. Record literals `{ x = 1, y = 2 }`,
+  field access `r.x`, and a structural record type backed by rows (`Record` over a row of
+  `row:label` extensions ending in a closed `{}` or a row variable). Unification gained the
+  Rémy/Leijen row algorithm (rewrite-row + tail-variable extension) so `fn r -> r.x` infers
+  `{ x: a | ρ } -> a` and works on any record with that field. New VM ops MAKE_RECORD/FIELD_GET;
+  record runtime value with structural equality. Added a records example + Tour/Internals notes.
+  Verified (11 cases incl. row polymorphism, nested records, records-in-lists, ADT fields,
+  structural equality, missing-field & type-mismatch errors); all examples regress clean; gate
+  green.

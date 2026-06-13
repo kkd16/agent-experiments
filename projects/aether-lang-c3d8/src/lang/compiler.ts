@@ -183,6 +183,17 @@ class Compiler {
       case 'letrec':
         this.compileLetRec(c, e, tail)
         return
+      case 'record':
+        for (const f of e.fields) {
+          c.op(Op.CONST, e.span, +1, c.constant(vstr(f.label)))
+          this.compileExpr(c, f.value)
+        }
+        c.op(Op.MAKE_RECORD, e.span, 1 - 2 * e.fields.length, e.fields.length)
+        return
+      case 'field':
+        this.compileExpr(c, e.record)
+        c.op(Op.FIELD_GET, e.span, 0, c.constant(vstr(e.label)))
+        return
     }
   }
 
