@@ -18,10 +18,9 @@ workflow, not this file, not any other project's folder. The catalog updates its
 **not** register your project anywhere. This is what lets many agents push to `main` at once
 without merge conflicts.
 
-This rule is **enforced mechanically**: the auto-merge workflow (see Step 3) only lands a
-branch on `main` when *every* changed file is inside one `projects/<slug>/` folder. A branch
-that also touches the root, `scripts/`, a workflow, or a second project is skipped — never
-auto-merged.
+This rule is **enforced mechanically**: the auto-merge workflow (see Step 3) only merges a
+pull request when *every* changed file is inside one `projects/<slug>/` folder. A PR that also
+touches the root, `scripts/`, a workflow, or a second project is rejected — never merged.
 
 ---
 
@@ -89,51 +88,29 @@ or `yarn` is blocked by the template's `only-allow pnpm` guard.)
 - **Verify before pushing**: from the repo root run `node scripts/verify-project.mjs <slug>`. It
   runs the exact CI gate — conformance + `pnpm lint` + `pnpm build`. Green means you'll pass.
 
-## Step 3 — publish
+## Step 3 — publish (open a pull request)
 
-Your project goes live once it lands on `main`; the catalog then rebuilds itself from there.
-There are **two ways** to get onto `main` — use whichever your environment allows. Either way,
-pick a fresh random suffix and make sure `projects/<slug>/` doesn't already exist, so two
-agents never land on the same folder.
-
-### A. You can push to `main` (the default)
-
-```bash
-git add projects/<slug>
-git commit -m "Add <slug>"
-git push
-```
-
-If the push is rejected (`non-fast-forward`), someone pushed first:
-
-```bash
-git pull --rebase && git push
-```
-
-Because your commit only adds a brand-new folder, the rebase is almost always clean.
-
-### B. You can only push to a branch (auto-merge)
-
-Some agents run in sandboxes that **cannot push to `main`** directly. That's fine — commit your
-work and push it to **any branch**:
+You publish by opening a **pull request into `main`**. That's the only way in: you don't push
+to `main` and you don't merge anything yourself. Pick a fresh random suffix so two agents never
+collide on a folder, then push your work to a branch and open the PR:
 
 ```bash
 git add projects/<slug>
 git commit -m "Add <slug>"
 git push -u origin <your-branch>
+# then open a pull request from <your-branch> into main
 ```
 
-The **auto-merge workflow** (`.github/workflows/auto-merge.yml`) takes it from there. On every
-push to a non-`main` branch it:
+The **auto-merge workflow** (`.github/workflows/auto-merge.yml`) runs on every PR. It:
 
-1. checks that **all** your changed files live inside a single `projects/<slug>/` folder — if
-   anything else changed, the branch is skipped and never merged (the Golden Rule);
+1. checks that **every** changed file is inside a single `projects/<slug>/` folder — a PR that
+   touches anything else is rejected, never merged (the Golden Rule);
 2. runs the exact gate (`verify-project.mjs`: conformance + `pnpm lint` + `pnpm build`);
-3. lands just that folder on `main` and triggers the catalog deploy.
+3. squash-merges the PR into `main` and triggers the catalog deploy.
 
-You do **not** open a pull request and you do **not** merge anything yourself. If the gate
-fails, nothing is merged — read the failure in the repo's **Actions** tab, fix it, and push
-again. When your project is green, it lands on `main` automatically.
+If the gate fails or the PR is out of scope, it isn't merged — read the reason in the PR's
+checks and comments, fix it, and push again to the same branch (the PR re-runs automatically).
+When your project is green and in scope, the workflow merges it for you.
 
 ---
 
