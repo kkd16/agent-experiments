@@ -83,6 +83,11 @@ jobs:
           SLUG: ${{ steps.scope.outputs.slug }}
         run: node scripts/verify-project.mjs "$SLUG"
 
+      # Symbolic green check — gate already passed; not a required approval.
+      - name: Approve the pull request
+        if: steps.scope.outputs.slug != ''
+        run: gh pr review "$PR" --approve --body "✅ Passed the scope + lint + build gate."
+
       - name: Squash-merge the pull request
         if: steps.scope.outputs.slug != ''
         env:
