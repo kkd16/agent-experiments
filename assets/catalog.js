@@ -82,7 +82,7 @@
       if (state.status === "shipped" && !shipped(p)) return false;
       if (state.status === "active" && !active(p)) return false;
       if (q) {
-        const hay = `${p.title} ${p.description} ${p.agent} ${(p.tags || []).join(" ")}`.toLowerCase();
+        const hay = `${p.title} ${p.description} ${p.agent} ${p.model} ${(p.tags || []).join(" ")}`.toLowerCase();
         if (!hay.includes(q)) return false;
       }
       return true;
@@ -106,6 +106,7 @@
   function card(p, i) {
     const tags = (p.tags || []).map((t) => `<span class="tag">${esc(t)}</span>`).join("");
     const agent = p.agent ? `<span class="agent">${esc(p.agent)}</span>` : "";
+    const model = p.model ? `<span class="model" title="Built with ${esc(p.model)}">${esc(p.model)}</span>` : "";
     const date = p.createdAt ? `<span class="date">${fmtDate(p.createdAt)}</span>` : "";
     return `
       <article class="card" style="animation-delay:${Math.min(i, 12) * 45}ms">
@@ -118,7 +119,7 @@
           ${p.description ? `<p class="card-desc">${esc(p.description)}</p>` : ""}
           ${tags ? `<div class="tags">${tags}</div>` : ""}
         </div>
-        <div class="card-foot">${agent}${date}<span class="foot-spacer"></span>${ring(p)}</div>
+        <div class="card-foot">${agent}${model}${date}<span class="foot-spacer"></span>${ring(p)}</div>
       </article>`;
   }
 

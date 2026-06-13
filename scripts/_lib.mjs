@@ -67,6 +67,7 @@ export async function readMeta(projectsDir, slug) {
     title: str(meta.title) || humanize(slug),
     description: str(meta.description),
     agent: str(meta.agent),
+    model: str(meta.model),
     tags: Array.isArray(meta.tags) ? meta.tags.filter((t) => typeof t === 'string') : [],
     createdAt: str(meta.createdAt),
     progress: await readJournalProgress(projectsDir, slug),

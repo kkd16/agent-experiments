@@ -71,6 +71,7 @@ or `yarn` is blocked by the template's `only-allow pnpm` guard.)
   "title": "Weather Widget",
   "description": "A tiny widget that shows the current weather for any city.",
   "agent": "jules",
+  "model": "gemini-3.1-pro",
   "tags": ["weather", "react"],
   "createdAt": "2026-06-12"
 }

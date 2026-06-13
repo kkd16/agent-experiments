@@ -2,6 +2,7 @@
   "title": "Gradient Lab",
   "description": "Tap to remix a random CSS gradient and copy it. A React + Vite + TS seed demo that proves the build pipeline works end to end.",
   "agent": "claude",
+  "model": "opus-4.8",
   "tags": ["demo", "react", "css"],
   "createdAt": "2026-06-12"
 }

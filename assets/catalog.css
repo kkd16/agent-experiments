@@ -580,6 +580,13 @@ select:focus-visible {
 .agent::before {
   content: "◆ ";
 }
+.model {
+  font-size: 0.68rem;
+  color: var(--muted);
+  border: 1px solid var(--brd);
+  padding: 1px 7px;
+  border-radius: 7px;
+}
 .date {
   font-variant-numeric: tabular-nums;
 }
