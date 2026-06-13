@@ -194,6 +194,14 @@ class Compiler {
         this.compileExpr(c, e.record)
         c.op(Op.FIELD_GET, e.span, 0, c.constant(vstr(e.label)))
         return
+      case 'recordUpdate':
+        this.compileExpr(c, e.record)
+        for (const f of e.fields) {
+          c.op(Op.CONST, e.span, +1, c.constant(vstr(f.label)))
+          this.compileExpr(c, f.value)
+        }
+        c.op(Op.RECORD_UPDATE, e.span, -2 * e.fields.length, e.fields.length)
+        return
     }
   }
 

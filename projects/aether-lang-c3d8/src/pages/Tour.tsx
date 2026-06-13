@@ -108,6 +108,13 @@ len [10, 20, 30]   // => 3`}</pre>
           That <code>getX</code> is inferred as <code>{'{ x: a | r } -> a'}</code> — the{' '}
           <code>r</code> is a row variable standing for "any other fields".
         </p>
+        <p>
+          Make a modified copy with <strong>functional update</strong>{' '}
+          <code>{'{ r | field = … }'}</code> — every other field is carried over, and the field's
+          type is preserved:
+        </p>
+        <pre className="snippet">{`let p = { x = 1, y = 2, name = "p" } in
+{ p | x = 10 }    // { x = 10, y = 2, name = "p" }  (p is unchanged)`}</pre>
       </section>
 
       <section>

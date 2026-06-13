@@ -334,6 +334,16 @@ class Inferrer {
         this.unify(tr, tRecord(rowExtend(e.label, field, rest)), e.span)
         return field
       }
+      case 'recordUpdate': {
+        const tr = this.infer(env, e.record)
+        // each updated field must already exist with a matching type; the
+        // record's type is otherwise unchanged
+        for (const f of e.fields) {
+          const tv = this.infer(env, f.value)
+          this.unify(tr, tRecord(rowExtend(f.label, tv, freshVar())), f.value.span)
+        }
+        return tr
+      }
     }
   }
 

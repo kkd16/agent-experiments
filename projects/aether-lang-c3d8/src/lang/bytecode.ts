@@ -57,6 +57,7 @@ export const Op = {
   CTOR_GET: 45, // <k>       pop a data value, push its kth field
   MAKE_RECORD: 46, // <n>    pop n (label, value) pairs, push a record
   FIELD_GET: 47, // <ci>     pop a record, push field named constants[ci]
+  RECORD_UPDATE: 48, // <n>  pop n (label,value) pairs + a base record, push updated copy
 } as const
 
 export type Op = (typeof Op)[keyof typeof Op]
@@ -84,6 +85,7 @@ const ONE_OPERAND = new Set<number>([
   Op.CTOR_GET,
   Op.MAKE_RECORD,
   Op.FIELD_GET,
+  Op.RECORD_UPDATE,
 ])
 
 export function operandCount(op: number): number {
@@ -156,6 +158,7 @@ export function disassemble(proto: FnProto): DisasmLine[] {
           comment = `.${valuePreview(proto.constants[operand])}`
           break
         case Op.MAKE_RECORD:
+        case Op.RECORD_UPDATE:
           comment = `${operand} field${operand === 1 ? '' : 's'}`
           break
       }

@@ -215,11 +215,12 @@ let norm = fn p -> p.x *. p.x +. p.y *. p.y in
 let a = { x = 3.0, y = 4.0 } in
 let b = { x = 1.0, y = 2.0, label = "b", tag = 7 } in
 
-let move = fn p dx dy -> { x = p.x +. dx, y = p.y +. dy } in
+// functional update { r | … } keeps every other field (and is row-polymorphic)
+let move = fn p dx dy -> { p | x = p.x +. dx, y = p.y +. dy } in
 
-( norm a              // 25.0
-, norm b              // 5.0  — extra fields are fine
-, (move a 1.0 1.0).x  // 4.0
+( norm a                  // 25.0
+, norm b                  // 5.0  — extra fields are fine
+, (move b 1.0 1.0).label  // "b" — update preserved it
 )`,
   },
   {
