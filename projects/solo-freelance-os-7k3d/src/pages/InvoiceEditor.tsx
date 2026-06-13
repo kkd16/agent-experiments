@@ -1,15 +1,10 @@
 import { useState } from 'react'
 import { invoiceActions, useAppState } from '../store/store'
-import {
-  effectiveStatus,
-  invoiceSubtotal,
-  invoiceTax,
-  invoiceTotal,
-  itemTotal,
-} from '../lib/finance'
+import { effectiveStatus, invoiceSubtotal, invoiceTax, invoiceTotal } from '../lib/finance'
 import { CURRENCIES, clampNumber, formatDate, formatDuration, hours, money } from '../lib/format'
 import { navigate } from '../lib/router'
 import { Button, Card, IconButton, Modal, StatusBadge } from '../components/ui'
+import { LineItems } from '../components/LineItems'
 import { Icon } from '../components/Icon'
 import type { InvoiceStatus } from '../types'
 
@@ -151,67 +146,13 @@ export function InvoiceEditor({ id }: { id: string }) {
             <div className="card-head">
               <h3>Line items</h3>
             </div>
-            <table className="items-table">
-              <thead>
-                <tr>
-                  <th>Description</th>
-                  <th className="num qty">Qty</th>
-                  <th className="num price">Unit price</th>
-                  <th className="num">Amount</th>
-                  <th aria-label="remove" />
-                </tr>
-              </thead>
-              <tbody>
-                {inv.items.map((it) => (
-                  <tr key={it.id}>
-                    <td>
-                      <input
-                        value={it.description}
-                        placeholder="Describe the work…"
-                        onChange={(e) =>
-                          invoiceActions.patchItem(inv.id, it.id, { description: e.target.value })
-                        }
-                      />
-                    </td>
-                    <td className="num">
-                      <input
-                        type="number"
-                        className="num-input"
-                        value={it.quantity}
-                        onChange={(e) =>
-                          invoiceActions.patchItem(inv.id, it.id, {
-                            quantity: clampNumber(e.target.value),
-                          })
-                        }
-                      />
-                    </td>
-                    <td className="num">
-                      <input
-                        type="number"
-                        className="num-input"
-                        value={it.unitPrice}
-                        onChange={(e) =>
-                          invoiceActions.patchItem(inv.id, it.id, {
-                            unitPrice: clampNumber(e.target.value),
-                          })
-                        }
-                      />
-                    </td>
-                    <td className="num strong">{money(itemTotal(it), inv.currency)}</td>
-                    <td>
-                      <IconButton
-                        icon="x"
-                        label="Remove line"
-                        onClick={() => invoiceActions.removeItem(inv.id, it.id)}
-                      />
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-            <Button variant="ghost" icon="plus" onClick={() => invoiceActions.addItem(inv.id)}>
-              Add line item
-            </Button>
+            <LineItems
+              items={inv.items}
+              currency={inv.currency}
+              onPatch={(itemId, patch) => invoiceActions.patchItem(inv.id, itemId, patch)}
+              onRemove={(itemId) => invoiceActions.removeItem(inv.id, itemId)}
+              onAdd={() => invoiceActions.addItem(inv.id)}
+            />
           </Card>
 
           <Card>

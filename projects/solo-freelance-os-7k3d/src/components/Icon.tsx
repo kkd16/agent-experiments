@@ -28,6 +28,7 @@ export type IconName =
   | 'chevron-down'
   | 'reports'
   | 'link'
+  | 'estimates'
 
 const paths: Record<IconName, string> = {
   dashboard: 'M3 3h7v7H3zM14 3h7v4h-7zM14 10h7v11h-7zM3 13h7v8H3z',
@@ -60,6 +61,7 @@ const paths: Record<IconName, string> = {
   reports:
     'M21 21H4a1 1 0 0 1-1-1V3M7 14l4-4 3 3 5-6M19 10V7h-3',
   link: 'M10 13a5 5 0 0 0 7 0l3-3a5 5 0 0 0-7-7l-1.5 1.5M14 11a5 5 0 0 0-7 0l-3 3a5 5 0 0 0 7 7l1.5-1.5',
+  estimates: 'M6 2h9l5 5v15H6zM15 2v5h5M9 14l2 2 4-4',
 }
 
 const filled: Partial<Record<IconName, boolean>> = { play: true, pause: true, stop: true }

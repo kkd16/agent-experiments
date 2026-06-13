@@ -4,7 +4,7 @@ import { useEffect } from 'react'
 import type { ButtonHTMLAttributes, ReactNode } from 'react'
 import { Icon } from './Icon'
 import type { IconName } from './Icon'
-import type { InvoiceStatus } from '../types'
+import type { EstimateStatus, InvoiceStatus } from '../types'
 
 type Variant = 'primary' | 'ghost' | 'subtle' | 'danger'
 
@@ -119,6 +119,16 @@ export function StatusBadge({ status }: { status: InvoiceStatus }) {
     overdue: 'Overdue',
   }
   return <span className={`badge badge-${status}`}>{labels[status]}</span>
+}
+
+export function EstimateBadge({ status }: { status: EstimateStatus }) {
+  const labels: Record<EstimateStatus, string> = {
+    draft: 'Draft',
+    sent: 'Sent',
+    accepted: 'Accepted',
+    declined: 'Declined',
+  }
+  return <span className={`badge badge-est-${status}`}>{labels[status]}</span>
 }
 
 export function EmptyState({

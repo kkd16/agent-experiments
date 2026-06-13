@@ -8,17 +8,33 @@ export function itemTotal(item: InvoiceItem): number {
   return item.quantity * item.unitPrice
 }
 
+/** Shared money math for any line-item document (invoices and estimates). */
+export interface Totals {
+  subtotal: number
+  tax: number
+  total: number
+}
+export function totalsOf(doc: {
+  items: InvoiceItem[]
+  discount: number
+  taxRate: number
+}): Totals {
+  const subtotal = doc.items.reduce((sum, it) => sum + itemTotal(it), 0)
+  const taxable = Math.max(0, subtotal - doc.discount)
+  const tax = taxable * (doc.taxRate / 100)
+  return { subtotal, tax, total: taxable + tax }
+}
+
 export function invoiceSubtotal(inv: Invoice): number {
-  return inv.items.reduce((sum, it) => sum + itemTotal(it), 0)
+  return totalsOf(inv).subtotal
 }
 
 export function invoiceTax(inv: Invoice): number {
-  const taxable = Math.max(0, invoiceSubtotal(inv) - inv.discount)
-  return taxable * (inv.taxRate / 100)
+  return totalsOf(inv).tax
 }
 
 export function invoiceTotal(inv: Invoice): number {
-  return Math.max(0, invoiceSubtotal(inv) - inv.discount) + invoiceTax(inv)
+  return totalsOf(inv).total
 }
 
 /** An invoice is effectively overdue if it's been sent, isn't paid, and the due date passed. */

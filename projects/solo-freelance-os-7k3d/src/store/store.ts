@@ -9,6 +9,8 @@ import { useSyncExternalStore } from 'react'
 import type {
   AppState,
   Client,
+  Estimate,
+  EstimateStatus,
   Expense,
   Invoice,
   InvoiceItem,
@@ -47,6 +49,7 @@ function migrate(state: AppState): AppState {
       recurring: inv.recurring ?? 'none',
       nextRun: inv.nextRun ?? null,
     })),
+    estimates: state.estimates ?? [],
     time: state.time ?? [],
     expenses: state.expenses ?? [],
     settings: { ...seedState().settings, ...state.settings },
@@ -137,6 +140,9 @@ export const clientActions = {
       ...s,
       clients: s.clients.filter((c) => c.id !== id),
       invoices: s.invoices.map((inv) => (inv.clientId === id ? { ...inv, clientId: null } : inv)),
+      estimates: s.estimates.map((est) =>
+        est.clientId === id ? { ...est, clientId: null } : est,
+      ),
       time: s.time.map((t) => (t.clientId === id ? { ...t, clientId: null } : t)),
       expenses: s.expenses.map((e) => (e.clientId === id ? { ...e, clientId: null } : e)),
     }))
@@ -347,6 +353,116 @@ export const invoiceActions = {
   },
 }
 
+// ── Estimates / quotes ────────────────────────────────────────────────────────
+function nextEstimateNumber(s: AppState): { number: string; seq: number } {
+  const seq = s.settings.estimateSeq + 1
+  return { number: `${s.settings.estimatePrefix}${String(seq).padStart(4, '0')}`, seq }
+}
+
+export const estimateActions = {
+  create(clientId: string | null = null): Estimate {
+    const { number, seq } = nextEstimateNumber(state)
+    const today = todayISO()
+    const estimate: Estimate = {
+      id: uid('est_'),
+      number,
+      clientId,
+      status: 'draft',
+      issueDate: today,
+      expiryDate: addDays(today, 30),
+      items: [{ id: uid('it_'), description: '', quantity: 1, unitPrice: 0 }],
+      taxRate: state.settings.taxRate,
+      discount: 0,
+      currency: state.settings.currency,
+      notes: '',
+      convertedInvoiceId: null,
+      createdAt: today,
+    }
+    update((s) => ({
+      ...s,
+      estimates: [estimate, ...s.estimates],
+      settings: { ...s.settings, estimateSeq: seq },
+    }))
+    return estimate
+  },
+  patch(id: string, patch: Partial<Estimate>) {
+    update((s) => ({
+      ...s,
+      estimates: s.estimates.map((est) => (est.id === id ? { ...est, ...patch } : est)),
+    }))
+  },
+  setStatus(id: string, status: EstimateStatus) {
+    estimateActions.patch(id, { status })
+  },
+  remove(id: string) {
+    update((s) => ({ ...s, estimates: s.estimates.filter((est) => est.id !== id) }))
+  },
+  addItem(estimateId: string) {
+    const newItem: InvoiceItem = { id: uid('it_'), description: '', quantity: 1, unitPrice: 0 }
+    update((s) => ({
+      ...s,
+      estimates: s.estimates.map((est) =>
+        est.id === estimateId ? { ...est, items: [...est.items, newItem] } : est,
+      ),
+    }))
+  },
+  patchItem(estimateId: string, itemId: string, patch: Partial<InvoiceItem>) {
+    update((s) => ({
+      ...s,
+      estimates: s.estimates.map((est) =>
+        est.id === estimateId
+          ? { ...est, items: est.items.map((it) => (it.id === itemId ? { ...it, ...patch } : it)) }
+          : est,
+      ),
+    }))
+  },
+  removeItem(estimateId: string, itemId: string) {
+    update((s) => ({
+      ...s,
+      estimates: s.estimates.map((est) =>
+        est.id === estimateId
+          ? { ...est, items: est.items.filter((it) => it.id !== itemId) }
+          : est,
+      ),
+    }))
+  },
+  /** Accept an estimate and spin up a draft invoice from its contents. Returns the invoice id. */
+  convertToInvoice(estimateId: string): string | null {
+    const est = state.estimates.find((e) => e.id === estimateId)
+    if (!est) return null
+    if (est.convertedInvoiceId) return est.convertedInvoiceId
+    const { number, seq } = nextInvoiceNumber(state)
+    const today = todayISO()
+    const invoice: Invoice = {
+      id: uid('inv_'),
+      number,
+      clientId: est.clientId,
+      status: 'draft',
+      issueDate: today,
+      dueDate: addDays(today, 14),
+      items: est.items.map((it) => ({ ...it, id: uid('it_') })),
+      taxRate: est.taxRate,
+      discount: est.discount,
+      currency: est.currency,
+      notes: est.notes,
+      paymentLink: state.settings.paymentLink,
+      recurring: 'none',
+      nextRun: null,
+      paidAt: null,
+      createdAt: today,
+    }
+    update((s) => ({
+      ...s,
+      invoices: [invoice, ...s.invoices],
+      estimates: s.estimates.map((e) =>
+        e.id === estimateId ? { ...e, status: 'accepted', convertedInvoiceId: invoice.id } : e,
+      ),
+      settings: { ...s.settings, invoiceSeq: seq },
+    }))
+    return invoice.id
+  },
+}
+
 // ── Time tracking ─────────────────────────────────────────────────────────────
 export const timeActions = {
   add(partial: Partial<TimeEntry> = {}): TimeEntry {
@@ -429,6 +545,7 @@ export const workspaceActions = {
       version: 1,
       clients: [],
       invoices: [],
+      estimates: [],
       time: [],
       expenses: [],
       settings: state.settings,

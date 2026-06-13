@@ -531,6 +531,23 @@
   background: color-mix(in srgb, var(--danger) 14%, transparent);
   color: var(--danger);
 }
+.badge-est-draft {
+  background: var(--bg-sunken);
+  color: var(--muted);
+  border: 1px solid var(--border-strong);
+}
+.badge-est-sent {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.badge-est-accepted {
+  background: color-mix(in srgb, var(--ok) 15%, transparent);
+  color: var(--ok);
+}
+.badge-est-declined {
+  background: color-mix(in srgb, var(--danger) 14%, transparent);
+  color: var(--danger);
+}
 
 /* ── Tabs / filters ──────────────────────────────────────────────────── */
 .tabs {

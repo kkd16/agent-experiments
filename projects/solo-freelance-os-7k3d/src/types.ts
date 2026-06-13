@@ -53,6 +53,25 @@ export interface Invoice {
   createdAt: string
 }
 
+export type EstimateStatus = 'draft' | 'sent' | 'accepted' | 'declined'
+
+export interface Estimate {
+  id: ID
+  number: string
+  clientId: ID | null
+  status: EstimateStatus
+  issueDate: string // YYYY-MM-DD
+  expiryDate: string // YYYY-MM-DD
+  items: InvoiceItem[]
+  taxRate: number
+  discount: number
+  currency: string
+  notes: string
+  /** If accepted and converted, the id of the resulting invoice. */
+  convertedInvoiceId: ID | null
+  createdAt: string
+}
+
 export interface TimeEntry {
   id: ID
   clientId: ID | null
@@ -104,18 +123,22 @@ export interface Settings {
   /** Default tax rate (%) applied to new invoices. */
   taxRate: number
   invoicePrefix: string
+  estimatePrefix: string
   /** Default "pay online" URL pre-filled onto new invoices (optional). */
   paymentLink: string
   accent: string
   theme: 'light' | 'dark'
   /** Monotonic counter used to mint sequential invoice numbers. */
   invoiceSeq: number
+  /** Monotonic counter used to mint sequential estimate numbers. */
+  estimateSeq: number
 }
 
 export interface AppState {
   version: number
   clients: Client[]
   invoices: Invoice[]
+  estimates: Estimate[]
   time: TimeEntry[]
   expenses: Expense[]
   settings: Settings

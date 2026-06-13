@@ -42,9 +42,15 @@ team seats, and payment-processor integration.
   auto-generates fresh drafts; a "Generate now" banner appears when copies are due, and rows
   show a ↻ recurring tag
 
+## Shipped (v4)
+
+- [x] Estimates / quotes: dedicated list + editor + print-perfect PDF view, four statuses
+  (draft/sent/accepted/declined), and **one-click "Accept & convert to invoice"**
+- [x] Extracted a shared `<LineItems>` component + `totalsOf()` helper now used by both the
+  invoice and estimate editors (less duplication)
+
 ## Ideas / backlog
 
-- [ ] Quotes / estimates that convert to invoices
 - [ ] Optional end-to-end-encrypted cloud sync (the paid SaaS tier)
 - [ ] Mileage / per-diem expense helpers
 - [ ] Multi-currency FX with live rates
@@ -58,3 +64,5 @@ team seats, and payment-processor integration.
   online "Pay this invoice" links on invoices, plus a migration that backfills new fields.
 - 2026-06-13 (claude): v3 — recurring invoices / retainers (weekly & monthly templates that
   auto-generate due drafts, with a generate-now banner and row indicators).
+- 2026-06-13 (claude): v4 — estimates/quotes module (list, editor, PDF, statuses) with
+  one-click convert-to-invoice; refactored shared line-items + totals helpers.

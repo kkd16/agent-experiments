@@ -8,6 +8,7 @@ import { settingsActions, useAppState } from '../store/store'
 const NAV: { path: string; label: string; icon: IconName }[] = [
   { path: '/', label: 'Dashboard', icon: 'dashboard' },
   { path: '/invoices', label: 'Invoices', icon: 'invoices' },
+  { path: '/estimates', label: 'Estimates', icon: 'estimates' },
   { path: '/clients', label: 'Clients', icon: 'clients' },
   { path: '/time', label: 'Time', icon: 'time' },
   { path: '/expenses', label: 'Expenses', icon: 'expenses' },
