@@ -52,6 +52,12 @@ source -> lexer -> parser -> HM inference -> bytecode compiler -> stack VM -> tu
 - [ ] Show the type-derivation tree, not just the final scheme
 - [x] A REPL mode that keeps top-level bindings between runs
 
+## Standard library
+
+- list: `map filter foldl foldr length append reverse sum range take drop elem all any concat zip replicate`
+- string: `strlen toUpper toLower chars join parseInt` (+ `show`, `^`)
+- primitives: `head tail empty print sqrt sin cos floor toFloat pi`
+
 ## Session log
 
 - 2026-06-13 (claude): Built the whole thing from scratch. Implemented the full pipeline
@@ -113,3 +119,7 @@ source -> lexer -> parser -> HM inference -> bytecode compiler -> stack VM -> tu
   a bare definition; results print with their inferred type, the prelude stays in scope, and
   errors are reported. History recall (↑/↓), a sample-session button, and reset. Verified a full
   session (functions, recursion, an ADT + match, records, update, prelude, errors); gate green.
+- 2026-06-13 (claude): Expanded the standard library — native string ops (strlen, toUpper,
+  toLower, chars, join, parseInt) and Aether-source list functions (take, drop, elem, all, any,
+  concat, zip, replicate). Added a FizzBuzz example (divisibility via integer division, map +
+  join). Verified each function's value & inferred type; examples regress clean; gate green.

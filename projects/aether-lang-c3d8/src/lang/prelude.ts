@@ -13,6 +13,8 @@ import type { NativeFn, Value } from './values.ts'
 import {
   AetherRuntimeError,
   UNIT,
+  listFromArray,
+  listToArray,
   vbool,
   vfloat,
   vint,
@@ -31,6 +33,11 @@ function poly(build: (tv: () => TVar) => Type): Scheme {
 function num(v: Value): number {
   if (v.tag === 'int' || v.tag === 'float') return v.n
   throw new AetherRuntimeError(`expected a number, got ${v.tag}`)
+}
+
+function str(v: Value): string {
+  if (v.tag === 'str') return v.s
+  throw new AetherRuntimeError(`expected a string, got ${v.tag}`)
 }
 
 interface Primitive {
@@ -94,6 +101,31 @@ const PRIMITIVES: Primitive[] = [
   { name: 'cos', arity: 1, scheme: mono(tArrow(tFloat, tFloat)), fn: (a) => vfloat(Math.cos(num(a[0]))) },
   { name: 'floor', arity: 1, scheme: mono(tArrow(tFloat, tInt)), fn: (a) => vint(Math.floor(num(a[0]))) },
   { name: 'toFloat', arity: 1, scheme: mono(tArrow(tInt, tFloat)), fn: (a) => vfloat(num(a[0])) },
+  // string operations
+  { name: 'strlen', arity: 1, scheme: mono(tArrow(tString, tInt)), fn: (a) => vint(str(a[0]).length) },
+  { name: 'toUpper', arity: 1, scheme: mono(tArrow(tString, tString)), fn: (a) => vstr(str(a[0]).toUpperCase()) },
+  { name: 'toLower', arity: 1, scheme: mono(tArrow(tString, tString)), fn: (a) => vstr(str(a[0]).toLowerCase()) },
+  {
+    name: 'chars',
+    arity: 1,
+    scheme: mono(tArrow(tString, tList(tString))),
+    fn: (a) => listFromArray([...str(a[0])].map(vstr)),
+  },
+  {
+    name: 'join',
+    arity: 2,
+    scheme: mono(tArrow(tString, tArrow(tList(tString), tString))),
+    fn: (a) => vstr(listToArray(a[1]).map(str).join(str(a[0]))),
+  },
+  {
+    name: 'parseInt',
+    arity: 1,
+    scheme: mono(tArrow(tString, tInt)),
+    fn: (a) => {
+      const n = Number.parseInt(str(a[0]), 10)
+      return vint(Number.isNaN(n) ? 0 : n)
+    },
+  },
   // turtle graphics — side effects emitted to the VM's effect log
   { name: 'forward', arity: 1, scheme: mono(tArrow(tFloat, tUnit)), fn: (a, c) => emitR(c, { op: 'forward', dist: num(a[0]) }) },
   { name: 'back', arity: 1, scheme: mono(tArrow(tFloat, tUnit)), fn: (a, c) => emitR(c, { op: 'back', dist: num(a[0]) }) },
@@ -201,5 +233,53 @@ export const PRELUDE_DEFS: PreludeDef[] = [
     recursive: true,
     doc: 'range a b — the ints [a, b)',
     src: 'fn a b -> if a >= b then [] else a :: range (a + 1) b',
+  },
+  {
+    name: 'take',
+    recursive: true,
+    doc: 'take n xs — the first n elements',
+    src: 'fn n xs -> if n <= 0 then [] else if empty xs then [] else head xs :: take (n - 1) (tail xs)',
+  },
+  {
+    name: 'drop',
+    recursive: true,
+    doc: 'drop n xs — all but the first n elements',
+    src: 'fn n xs -> if n <= 0 then xs else if empty xs then [] else drop (n - 1) (tail xs)',
+  },
+  {
+    name: 'elem',
+    recursive: true,
+    doc: 'elem x xs — is x in xs?',
+    src: 'fn x xs -> if empty xs then false else if head xs == x then true else elem x (tail xs)',
+  },
+  {
+    name: 'all',
+    recursive: true,
+    doc: 'all p xs — does p hold for every element?',
+    src: 'fn p xs -> if empty xs then true else if p (head xs) then all p (tail xs) else false',
+  },
+  {
+    name: 'any',
+    recursive: true,
+    doc: 'any p xs — does p hold for some element?',
+    src: 'fn p xs -> if empty xs then false else if p (head xs) then true else any p (tail xs)',
+  },
+  {
+    name: 'concat',
+    recursive: true,
+    doc: 'concat xss — flatten a list of lists',
+    src: 'fn xss -> if empty xss then [] else head xss ++ concat (tail xss)',
+  },
+  {
+    name: 'zip',
+    recursive: true,
+    doc: 'zip xs ys — pair up elements',
+    src: 'fn xs ys -> if empty xs then [] else if empty ys then [] else (head xs, head ys) :: zip (tail xs) (tail ys)',
+  },
+  {
+    name: 'replicate',
+    recursive: true,
+    doc: 'replicate n x — a list of n copies of x',
+    src: 'fn n x -> if n <= 0 then [] else x :: replicate (n - 1) x',
   },
 ]

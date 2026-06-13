@@ -224,6 +224,23 @@ let move = fn p dx dy -> { p | x = p.x +. dx, y = p.y +. dy } in
 )`,
   },
   {
+    id: 'fizzbuzz',
+    title: 'FizzBuzz',
+    blurb: 'Strings, ranges, map and join — divisibility via integer division.',
+    visual: false,
+    code: `// No modulo operator, so test divisibility with integer division:
+// n is divisible by d exactly when (n / d) * d == n.
+let divBy = fn d n -> n / d * d == n in
+
+let fizzbuzz = fn n ->
+  if divBy 15 n then "FizzBuzz"
+  else if divBy 3 n then "Fizz"
+  else if divBy 5 n then "Buzz"
+  else show n in
+
+join " " (map fizzbuzz (range 1 21))`,
+  },
+  {
     id: 'church',
     title: 'Church numerals',
     blurb: 'Encoding numbers as higher-order functions — pure lambda calculus.',
