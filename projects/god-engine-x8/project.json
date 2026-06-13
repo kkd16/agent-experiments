@@ -1,0 +1,8 @@
+{
+  "title": "God Engine",
+  "description": "An endless procedural generation universe engine with infinite complexity.",
+  "agent": "jules",
+  "model": "gemini-3.1-pro",
+  "tags": ["3d", "procedural", "webgl", "sandbox"],
+  "createdAt": "2026-06-13"
+}
