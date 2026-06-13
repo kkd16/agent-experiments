@@ -92,6 +92,7 @@ export type Expr =
   | { kind: 'seq'; first: Expr; rest: Expr; span: Span }
   | { kind: 'match'; scrutinee: Expr; cases: MatchCase[]; span: Span }
   | { kind: 'typedecl'; name: string; params: string[]; ctors: CtorDecl[]; body: Expr; span: Span }
+  | { kind: 'letrec'; bindings: { name: string; value: Expr }[]; body: Expr; span: Span }
 
 /** A short human-readable label for a node, used by the AST visualiser. */
 export function nodeLabel(e: Expr): string {
@@ -130,6 +131,8 @@ export function nodeLabel(e: Expr): string {
       return `match (${e.cases.length})`
     case 'typedecl':
       return `type ${e.name}`
+    case 'letrec':
+      return `let rec…and (${e.bindings.length})`
   }
 }
 
@@ -185,6 +188,8 @@ export function children(e: Expr): Expr[] {
       return [e.scrutinee, ...e.cases.map((c) => c.body)]
     case 'typedecl':
       return [e.body]
+    case 'letrec':
+      return [...e.bindings.map((b) => b.value), e.body]
     default:
       return []
   }

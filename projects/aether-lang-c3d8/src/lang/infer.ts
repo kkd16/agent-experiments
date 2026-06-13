@@ -199,6 +199,25 @@ class Inferrer {
         }
         return result
       }
+      case 'letrec': {
+        // all names are in scope (monomorphically) while checking every binding
+        const tvs = e.bindings.map(() => freshVar() as Type)
+        let env1 = env
+        e.bindings.forEach((b, i) => {
+          env1 = extend(env1, b.name, monoScheme(tvs[i]))
+        })
+        e.bindings.forEach((b, i) => {
+          this.unify(this.infer(env1, b.value), tvs[i], b.value.span)
+        })
+        // then generalise each over the original environment
+        let env2 = env
+        e.bindings.forEach((b, i) => {
+          const scheme = this.generalize(env, tvs[i])
+          this.bindingSchemes.set(b.value, scheme)
+          env2 = extend(env2, b.name, scheme)
+        })
+        return this.infer(env2, e.body)
+      }
       case 'typedecl': {
         const params = new Map<string, TVar>()
         for (const p of e.params) params.set(p, freshVar())
