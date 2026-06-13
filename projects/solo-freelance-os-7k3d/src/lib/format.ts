@@ -72,6 +72,20 @@ export function addDays(iso: string, days: number): string {
   return d.toISOString().slice(0, 10)
 }
 
+export function daysBetween(fromISO: string, toISO: string): number {
+  const a = new Date(fromISO + 'T00:00:00').getTime()
+  const b = new Date(toISO + 'T00:00:00').getTime()
+  return Math.round((b - a) / 86_400_000)
+}
+
+/** Advance a date by one recurring interval ('weekly' = +7d, 'monthly' = +1 calendar month). */
+export function advanceByInterval(iso: string, interval: 'weekly' | 'monthly'): string {
+  const d = new Date(iso + 'T00:00:00')
+  if (interval === 'weekly') d.setDate(d.getDate() + 7)
+  else d.setMonth(d.getMonth() + 1)
+  return d.toISOString().slice(0, 10)
+}
+
 export function formatDate(iso: string): string {
   if (!iso) return '—'
   const d = new Date(iso + (iso.length === 10 ? 'T00:00:00' : ''))

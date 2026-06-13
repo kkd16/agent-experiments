@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react'
 import { invoiceActions, useAppState } from '../store/store'
-import { effectiveStatus, invoiceTotal } from '../lib/finance'
-import { formatDate, money } from '../lib/format'
+import { effectiveStatus, invoiceTotal, recurringDueCount } from '../lib/finance'
+import { formatDate, money, todayISO } from '../lib/format'
 import { navigate } from '../lib/router'
 import { Button, Card, EmptyState, PageHeader, StatusBadge, IconButton } from '../components/ui'
 import type { InvoiceStatus } from '../types'
@@ -15,8 +15,10 @@ const FILTERS: { key: InvoiceStatus | 'all'; label: string }[] = [
 ]
 
 export function Invoices() {
-  const { invoices, clients } = useAppState()
+  const state = useAppState()
+  const { invoices, clients } = state
   const [filter, setFilter] = useState<InvoiceStatus | 'all'>('all')
+  const dueRecurring = recurringDueCount(state, todayISO())
 
   const clientName = (id: string | null) => {
     const c = clients.find((x) => x.id === id)
@@ -57,6 +59,25 @@ export function Invoices() {
           </Button>
         }
       />
+
+      {dueRecurring > 0 && (
+        <Card className="nudge">
+          <div>
+            <strong>
+              {dueRecurring} recurring {dueRecurring === 1 ? 'invoice is' : 'invoices are'} due to
+              generate.
+            </strong>
+            <span className="muted"> New drafts will be created from your retainer templates.</span>
+          </div>
+          <Button
+            variant="primary"
+            icon="copy"
+            onClick={() => invoiceActions.runRecurring()}
+          >
+            Generate now
+          </Button>
+        </Card>
+      )}
 
       {invoices.length === 0 ? (
         <EmptyState
@@ -107,7 +128,14 @@ export function Invoices() {
               <tbody>
                 {rows.map(({ inv, status, total }) => (
                   <tr key={inv.id} onClick={() => navigate(`/invoices/${inv.id}`)}>
-                    <td className="mono">{inv.number}</td>
+                    <td className="mono">
+                      {inv.number}
+                      {inv.recurring !== 'none' && (
+                        <span className="recur-tag" title={`Recurring ${inv.recurring}`}>
+                          ↻ {inv.recurring}
+                        </span>
+                      )}
+                    </td>
                     <td>{clientName(inv.clientId)}</td>
                     <td className="muted">{formatDate(inv.issueDate)}</td>
                     <td className="muted">{formatDate(inv.dueDate)}</td>

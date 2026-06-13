@@ -36,9 +36,14 @@ team seats, and payment-processor integration.
   rendered as a button on the PDF/preview
 - [x] Forward-compatible store migration that backfills fields on older saved workspaces
 
+## Shipped (v3)
+
+- [x] Recurring invoices: turn any invoice into a weekly/monthly retainer template that
+  auto-generates fresh drafts; a "Generate now" banner appears when copies are due, and rows
+  show a ↻ recurring tag
+
 ## Ideas / backlog
 
-- [ ] Recurring invoices & subscription clients
 - [ ] Quotes / estimates that convert to invoices
 - [ ] Optional end-to-end-encrypted cloud sync (the paid SaaS tier)
 - [ ] Mileage / per-diem expense helpers
@@ -51,3 +56,5 @@ team seats, and payment-processor integration.
   seeded with demo data, zero extra deps. Passes lint + build gate.
 - 2026-06-13 (claude): v2 — added Reports (date-range P&L, breakdowns, CSV exports) and
   online "Pay this invoice" links on invoices, plus a migration that backfills new fields.
+- 2026-06-13 (claude): v3 — recurring invoices / retainers (weekly & monthly templates that
+  auto-generate due drafts, with a generate-now banner and row indicators).

@@ -28,6 +28,13 @@ export function isOverdue(inv: Invoice, now = new Date()): boolean {
   return due.getTime() < now.getTime()
 }
 
+/** How many recurring templates are due to generate at or before `today` (YYYY-MM-DD). */
+export function recurringDueCount(state: AppState, today: string): number {
+  return state.invoices.filter(
+    (inv) => inv.recurring !== 'none' && inv.nextRun != null && inv.nextRun <= today,
+  ).length
+}
+
 export function effectiveStatus(inv: Invoice, now = new Date()): Invoice['status'] {
   if (inv.status === 'sent' && isOverdue(inv, now)) return 'overdue'
   return inv.status

@@ -12,10 +12,11 @@ import type {
   Expense,
   Invoice,
   InvoiceItem,
+  RecurInterval,
   Settings,
   TimeEntry,
 } from '../types'
-import { addDays, todayISO, uid } from '../lib/format'
+import { addDays, advanceByInterval, daysBetween, todayISO, uid } from '../lib/format'
 import { invoiceTotal } from '../lib/finance'
 import { seedState } from './seed'
 
@@ -40,7 +41,12 @@ function migrate(state: AppState): AppState {
     version: 1,
     clients: state.clients ?? [],
     // Backfill fields added in later versions so older saved data stays valid.
-    invoices: (state.invoices ?? []).map((inv) => ({ ...inv, paymentLink: inv.paymentLink ?? '' })),
+    invoices: (state.invoices ?? []).map((inv) => ({
+      ...inv,
+      paymentLink: inv.paymentLink ?? '',
+      recurring: inv.recurring ?? 'none',
+      nextRun: inv.nextRun ?? null,
+    })),
     time: state.time ?? [],
     expenses: state.expenses ?? [],
     settings: { ...seedState().settings, ...state.settings },
@@ -160,6 +166,8 @@ export const invoiceActions = {
       currency: state.settings.currency,
       notes: '',
       paymentLink: state.settings.paymentLink,
+      recurring: 'none',
+      nextRun: null,
       paidAt: null,
       createdAt: today,
     }
@@ -203,6 +211,8 @@ export const invoiceActions = {
       status: 'draft',
       issueDate: today,
       dueDate: addDays(today, 14),
+      recurring: 'none',
+      nextRun: null,
       paidAt: null,
       createdAt: today,
       items: src.items.map((it) => ({ ...it, id: uid('it_') })),
@@ -277,6 +287,63 @@ export const invoiceActions = {
       ),
       time: s.time.map((t) => (ids.has(t.id) ? { ...t, invoicedIn: invoiceId } : t)),
     }))
+  },
+  /** Turn an invoice into (or out of) a recurring template. */
+  setRecurring(id: string, interval: RecurInterval) {
+    update((s) => ({
+      ...s,
+      invoices: s.invoices.map((inv) => {
+        if (inv.id !== id) return inv
+        if (interval === 'none') return { ...inv, recurring: 'none', nextRun: null }
+        // Schedule the next run one interval after the issue date (or today, whichever is later).
+        const base = inv.issueDate > todayISO() ? inv.issueDate : todayISO()
+        return { ...inv, recurring: interval, nextRun: advanceByInterval(base, interval) }
+      }),
+    }))
+  },
+  /**
+   * Generate any recurring invoices that have come due. Each template spawns fresh draft
+   * copies (new number/dates) for every elapsed period, then its nextRun is advanced.
+   */
+  runRecurring(): number {
+    const today = todayISO()
+    let generated = 0
+    update((s) => {
+      let seq = s.settings.invoiceSeq
+      const additions: Invoice[] = []
+      const invoices = s.invoices.map((tpl) => {
+        if (tpl.recurring === 'none' || !tpl.nextRun) return tpl
+        const term = Math.max(1, daysBetween(tpl.issueDate, tpl.dueDate))
+        let run = tpl.nextRun
+        let guard = 0
+        while (run <= today && guard < 36) {
+          seq += 1
+          additions.push({
+            ...tpl,
+            id: uid('inv_'),
+            number: `${s.settings.invoicePrefix}${String(seq).padStart(4, '0')}`,
+            status: 'draft',
+            issueDate: run,
+            dueDate: addDays(run, term),
+            recurring: 'none',
+            nextRun: null,
+            paidAt: null,
+            createdAt: today,
+            items: tpl.items.map((it) => ({ ...it, id: uid('it_') })),
+          })
+          generated += 1
+          run = advanceByInterval(run, tpl.recurring)
+          guard += 1
+        }
+        return { ...tpl, nextRun: run }
+      })
+      return {
+        ...s,
+        invoices: [...additions, ...invoices],
+        settings: { ...s.settings, invoiceSeq: seq },
+      }
+    })
+    return generated
   },
 }
 

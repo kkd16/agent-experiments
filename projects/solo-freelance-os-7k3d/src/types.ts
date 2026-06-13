@@ -5,6 +5,8 @@ export type ID = string
 
 export type InvoiceStatus = 'draft' | 'sent' | 'paid' | 'overdue'
 
+export type RecurInterval = 'none' | 'weekly' | 'monthly'
+
 export interface Client {
   id: ID
   name: string
@@ -42,6 +44,10 @@ export interface Invoice {
   notes: string
   /** Optional "pay online" URL (Stripe/PayPal/bank link) surfaced on the invoice. */
   paymentLink: string
+  /** If not 'none', this invoice is a template that spawns copies on a schedule. */
+  recurring: RecurInterval
+  /** Next date (YYYY-MM-DD) this recurring template should generate a copy, else null. */
+  nextRun: string | null
   /** ISO timestamp the invoice was marked paid, if it has been. */
   paidAt: string | null
   createdAt: string

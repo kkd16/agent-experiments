@@ -7,7 +7,7 @@ import {
   invoiceTotal,
   itemTotal,
 } from '../lib/finance'
-import { CURRENCIES, clampNumber, formatDuration, hours, money } from '../lib/format'
+import { CURRENCIES, clampNumber, formatDate, formatDuration, hours, money } from '../lib/format'
 import { navigate } from '../lib/router'
 import { Button, Card, IconButton, Modal, StatusBadge } from '../components/ui'
 import { Icon } from '../components/Icon'
@@ -300,6 +300,29 @@ export function InvoiceEditor({ id }: { id: string }) {
               <p className="muted small">
                 Paid on {new Date(inv.paidAt).toLocaleDateString()}.
               </p>
+            )}
+          </Card>
+
+          <Card className="status-control">
+            <h3>Recurring</h3>
+            <div className="seg">
+              {(['none', 'weekly', 'monthly'] as const).map((r) => (
+                <button
+                  key={r}
+                  className={`seg-btn ${inv.recurring === r ? 'active' : ''}`}
+                  onClick={() => invoiceActions.setRecurring(inv.id, r)}
+                >
+                  {r === 'none' ? 'Off' : r}
+                </button>
+              ))}
+            </div>
+            {inv.recurring !== 'none' && inv.nextRun ? (
+              <p className="muted small">
+                Generates a new draft {inv.recurring}, next on{' '}
+                <strong>{formatDate(inv.nextRun)}</strong>.
+              </p>
+            ) : (
+              <p className="muted small">Turn this invoice into an auto-generating retainer.</p>
             )}
           </Card>
         </aside>
