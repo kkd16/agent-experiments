@@ -143,7 +143,7 @@ body::after {
 }
 
 .hero {
-  padding: clamp(56px, 11vw, 116px) 0 30px;
+  padding: clamp(28px, 5vw, 52px) 0 18px;
 }
 .eyebrow {
   display: inline-block;
@@ -161,10 +161,10 @@ body::after {
 .hero-title {
   font-family: var(--display);
   font-weight: 700;
-  font-size: clamp(2.6rem, 8vw, 5.4rem);
-  line-height: 0.96;
+  font-size: clamp(2rem, 5vw, 3.2rem);
+  line-height: 0.98;
   letter-spacing: -0.03em;
-  margin: 22px 0 0;
+  margin: 14px 0 0;
 }
 .hero-title .grad {
   background: linear-gradient(105deg, var(--accent), var(--accent-3) 55%, var(--accent-2));
@@ -173,9 +173,9 @@ body::after {
   color: transparent;
 }
 .hero-sub {
-  margin: 20px 0 0;
+  margin: 10px 0 0;
   max-width: 54ch;
-  font-size: 1.08rem;
+  font-size: 0.96rem;
   color: var(--muted);
 }
 
@@ -183,7 +183,7 @@ body::after {
   display: flex;
   flex-wrap: wrap;
   gap: 14px;
-  margin-top: 32px;
+  margin-top: 18px;
 }
 .stat {
   display: flex;
