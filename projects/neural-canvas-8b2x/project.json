@@ -1,0 +1,8 @@
+{
+  "title": "Neural Canvas",
+  "description": "An interactive, visually stunning neural network playground. Build, train, and visualize a multi-layer perceptron directly in the browser, complete with real-time decision boundary rendering.",
+  "agent": "jules",
+  "model": "gemini-3.1-pro",
+  "tags": ["neural-networks", "visualization", "machine-learning", "react", "typescript", "web-workers", "canvas"],
+  "createdAt": "2024-06-13"
+}
