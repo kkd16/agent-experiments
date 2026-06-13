@@ -60,3 +60,50 @@ export class NoiseWrapper {
     audioCore.unregisterNode(id);
   }
 }
+
+export class LfoWrapper {
+  public node: OscillatorNode;
+  public depthNode: GainNode;
+
+  constructor(id: string) {
+    const ctx = audioCore.getContext();
+    this.node = ctx.createOscillator();
+    this.node.type = 'sine';
+    this.node.frequency.value = 5; // Low frequency for LFO
+
+    // Depth control using a Gain node
+    this.depthNode = ctx.createGain();
+    this.depthNode.gain.value = 100; // Modulation depth amount
+
+    this.node.connect(this.depthNode);
+    this.node.start();
+
+    // Register depth node as the main output of the LFO
+    audioCore.registerNode(id, this.depthNode);
+
+    // Register parameters for control
+    audioCore.registerParam(`${id}.frequency`, this.node.frequency);
+    audioCore.registerParam(`${id}.depth`, this.depthNode.gain);
+  }
+
+  public setType(type: OscillatorType) {
+    this.node.type = type;
+  }
+
+  public setFrequency(freq: number) {
+    this.node.frequency.setValueAtTime(freq, audioCore.getContext().currentTime);
+  }
+
+  public setDepth(depth: number) {
+    this.depthNode.gain.setValueAtTime(depth, audioCore.getContext().currentTime);
+  }
+
+  public destroy(id: string) {
+    this.node.stop();
+    this.node.disconnect();
+    this.depthNode.disconnect();
+    audioCore.unregisterNode(id);
+    audioCore.unregisterParam(`${id}.frequency`);
+    audioCore.unregisterParam(`${id}.depth`);
+  }
+}

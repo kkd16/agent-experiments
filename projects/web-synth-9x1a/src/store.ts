@@ -16,8 +16,9 @@ import {
 } from '@xyflow/react';
 
 import { audioCore } from './audio/core';
-import { OscillatorWrapper, NoiseWrapper } from './audio/nodes/sources';
-import { GainWrapper, FilterWrapper, DelayWrapper } from './audio/nodes/processors';
+import { OscillatorWrapper, NoiseWrapper, LfoWrapper } from './audio/nodes/sources';
+import { GainWrapper, FilterWrapper, DelayWrapper, ReverbWrapper } from './audio/nodes/processors';
+import { AnalyserWrapper } from './audio/nodes/visualizers';
 
 export type AppNode = Node;
 
@@ -114,6 +115,10 @@ export const useStore = create<AppState>((set, get) => ({
       case 'noiseNode':
         wrapper = new NoiseWrapper(id);
         break;
+      case 'lfoNode':
+        wrapper = new LfoWrapper(id);
+        initialData = { frequency: 5, type: 'sine', depth: 100 };
+        break;
       case 'gainNode':
         wrapper = new GainWrapper(id);
         initialData = { gain: 0.5 };
@@ -125,6 +130,13 @@ export const useStore = create<AppState>((set, get) => ({
       case 'delayNode':
         wrapper = new DelayWrapper(id);
         initialData = { delayTime: 0.5, feedback: 0.5 };
+        break;
+      case 'reverbNode':
+        wrapper = new ReverbWrapper(id);
+        initialData = { mix: 0.5, decay: 2.0 };
+        break;
+      case 'analyserNode':
+        wrapper = new AnalyserWrapper(id);
         break;
     }
 
@@ -159,6 +171,10 @@ export const useStore = create<AppState>((set, get) => ({
     if (wrapper instanceof OscillatorWrapper) {
       if (data.frequency !== undefined) wrapper.setFrequency(data.frequency);
       if (data.type !== undefined) wrapper.setType(data.type);
+    } else if (wrapper instanceof LfoWrapper) {
+      if (data.frequency !== undefined) wrapper.setFrequency(data.frequency);
+      if (data.type !== undefined) wrapper.setType(data.type);
+      if (data.depth !== undefined) wrapper.setDepth(data.depth);
     } else if (wrapper instanceof GainWrapper) {
       if (data.gain !== undefined) wrapper.setGain(data.gain);
     } else if (wrapper instanceof FilterWrapper) {
@@ -168,6 +184,9 @@ export const useStore = create<AppState>((set, get) => ({
     } else if (wrapper instanceof DelayWrapper) {
       if (data.delayTime !== undefined) wrapper.setDelayTime(data.delayTime);
       if (data.feedback !== undefined) wrapper.setFeedback(data.feedback);
+    } else if (wrapper instanceof ReverbWrapper) {
+      if (data.mix !== undefined) wrapper.setMix(data.mix);
+      if (data.decay !== undefined) wrapper.setDecay(data.decay);
     }
   },
 }));

@@ -3,19 +3,25 @@ import '@xyflow/react/dist/style.css';
 import { useStore } from './store';
 import { OscillatorNode } from './components/nodes/OscillatorNode';
 import { NoiseNode } from './components/nodes/NoiseNode';
+import { LfoNode } from './components/nodes/LfoNode';
 import { GainNode } from './components/nodes/GainNode';
 import { FilterNode } from './components/nodes/FilterNode';
 import { DelayNode } from './components/nodes/DelayNode';
+import { ReverbNode } from './components/nodes/ReverbNode';
+import { AnalyserNode } from './components/nodes/AnalyserNode';
 import { OutputNode } from './components/nodes/OutputNode';
-import { Settings, Waves, Sliders, AudioWaveform } from 'lucide-react';
+import { Settings, Waves, Sliders, AudioWaveform, Activity, MonitorPlay } from 'lucide-react';
 import { useState } from 'react';
 
 const nodeTypes = {
   oscillatorNode: OscillatorNode,
   noiseNode: NoiseNode,
+  lfoNode: LfoNode,
   gainNode: GainNode,
   filterNode: FilterNode,
   delayNode: DelayNode,
+  reverbNode: ReverbNode,
+  analyserNode: AnalyserNode,
   outputNode: OutputNode,
 };
 
@@ -49,6 +55,10 @@ export default function App() {
               <Waves size={18} className="mb-1 text-gray-400" />
               Noise
             </button>
+            <button onClick={() => handleAddNode('lfoNode')} className="flex flex-col items-center justify-center p-3 bg-gray-700 hover:bg-gray-600 rounded-lg text-xs transition-colors col-span-2">
+              <Activity size={18} className="mb-1 text-blue-400" />
+              LFO
+            </button>
           </div>
 
           <h2 className="text-xs font-semibold text-gray-400 uppercase mb-3">Processors</h2>
@@ -64,6 +74,18 @@ export default function App() {
             <button onClick={() => handleAddNode('delayNode')} className="flex flex-col items-center justify-center p-3 bg-gray-700 hover:bg-gray-600 rounded-lg text-xs transition-colors">
               <Settings size={18} className="mb-1 text-purple-400" />
               Delay
+            </button>
+            <button onClick={() => handleAddNode('reverbNode')} className="flex flex-col items-center justify-center p-3 bg-gray-700 hover:bg-gray-600 rounded-lg text-xs transition-colors">
+              <Settings size={18} className="mb-1 text-pink-400" />
+              Reverb
+            </button>
+          </div>
+
+          <h2 className="text-xs font-semibold text-gray-400 uppercase mb-3">Tools</h2>
+          <div className="grid grid-cols-1 gap-2">
+            <button onClick={() => handleAddNode('analyserNode')} className="flex flex-col items-center justify-center p-3 bg-gray-700 hover:bg-gray-600 rounded-lg text-xs transition-colors">
+              <MonitorPlay size={18} className="mb-1 text-teal-400" />
+              Oscilloscope
             </button>
           </div>
         </div>
