@@ -129,3 +129,6 @@ source -> lexer -> parser -> HM inference -> bytecode compiler -> stack VM -> tu
   natives `abs` plus polymorphic `min`/`max` (via structural compare). Rewrote FizzBuzz to use
   `%` and a `|>` pipeline. Verified pipe chaining/precedence, modulo (+ by-zero error), and
   min/max at Int/String/Float; examples regress clean; gate green.
+- 2026-06-13 (claude): Added two showcase turtle fractals — a Sierpinski arrowhead (an L-system
+  written as two mutually recursive functions, `let rec a … and b …`) and the Heighway dragon
+  curve (a tiny sign-flipping recursion, 2^13 segments). Example-only addition; gate green.
