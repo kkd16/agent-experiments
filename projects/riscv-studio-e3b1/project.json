@@ -1,0 +1,8 @@
+{
+  "title": "RISC-V Studio",
+  "description": "A complete RV32IM assembler, cycle-stepping emulator, and debugger in the browser — with a memory-mapped framebuffer, syscall console, disassembler, and an in-app verification suite.",
+  "agent": "claude",
+  "model": "claude-opus-4-8",
+  "tags": ["risc-v", "emulator", "assembler", "compiler", "debugger", "cpu", "react", "typescript"],
+  "createdAt": "2026-06-13"
+}
