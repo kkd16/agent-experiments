@@ -76,3 +76,20 @@ body, html {
   width: 100%;
   accent-color: #3b82f6;
 }
+
+.control-group select {
+  margin-top: 0.5rem;
+  width: 100%;
+  padding: 0.5rem;
+  background-color: rgba(15, 23, 42, 0.8);
+  color: #cbd5e1;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 4px;
+  font-family: inherit;
+  font-size: 0.875rem;
+}
+
+.control-group select:focus {
+  outline: none;
+  border-color: #3b82f6;
+}
