@@ -4,9 +4,11 @@ import Playground from './components/Playground.tsx'
 import ExamplesPage from './pages/ExamplesPage.tsx'
 import Tour from './pages/Tour.tsx'
 import About from './pages/About.tsx'
+import Repl from './pages/Repl.tsx'
 
 const NAV = [
   { path: '/', label: 'Playground' },
+  { path: '/repl', label: 'REPL' },
   { path: '/examples', label: 'Examples' },
   { path: '/tour', label: 'Language' },
   { path: '/about', label: 'Internals' },
@@ -47,10 +49,11 @@ export default function App() {
 
       <main className="app-main">
         {route === '/' && <Playground />}
+        {route === '/repl' && <Repl />}
         {route === '/examples' && <ExamplesPage />}
         {route === '/tour' && <Tour />}
         {route === '/about' && <About />}
-        {!['/', '/examples', '/tour', '/about'].includes(route) && (
+        {!['/', '/repl', '/examples', '/tour', '/about'].includes(route) && (
           <div className="page">
             <h1>Not found</h1>
             <button className="btn primary" onClick={() => navigate('/')}>

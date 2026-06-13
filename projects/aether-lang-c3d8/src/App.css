@@ -959,6 +959,93 @@ body {
   color: var(--fg-dim);
 }
 
+/* ---------- REPL ---------- */
+.repl-page {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.repl-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  margin-bottom: 0.8rem;
+}
+.repl-count {
+  margin-left: auto;
+  font-family: var(--mono);
+  font-size: 0.78rem;
+  color: var(--fg-faint);
+}
+.repl-console {
+  border: 1px solid var(--line);
+  border-radius: 10px 10px 0 0;
+  background: var(--bg-1);
+  padding: 0.8rem 1rem;
+  max-height: 55vh;
+  min-height: 220px;
+  overflow: auto;
+  font-family: var(--mono);
+  font-size: 0.86rem;
+}
+.repl-hint {
+  color: var(--fg-faint);
+}
+.repl-hint code {
+  background: var(--bg-2);
+}
+.repl-entry {
+  margin-bottom: 0.7rem;
+}
+.repl-in {
+  display: flex;
+  gap: 0.5rem;
+  color: var(--fg);
+}
+.repl-in pre,
+.repl-out {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.repl-caret {
+  color: var(--accent);
+  font-family: var(--mono);
+  user-select: none;
+}
+.repl-out {
+  color: var(--green);
+  padding-left: 1rem;
+  margin-top: 0.15rem;
+}
+.repl-out.err {
+  color: var(--red);
+}
+.repl-input-row {
+  display: flex;
+  gap: 0.5rem;
+  align-items: flex-start;
+  border: 1px solid var(--line-2);
+  border-top: none;
+  border-radius: 0 0 10px 10px;
+  background: var(--bg);
+  padding: 0.6rem 1rem;
+}
+.repl-input-row .repl-caret {
+  padding-top: 0.15rem;
+}
+.repl-input {
+  flex: 1;
+  background: transparent;
+  border: none;
+  outline: none;
+  resize: vertical;
+  color: var(--fg);
+  font-family: var(--mono);
+  font-size: 0.9rem;
+  line-height: 1.5;
+}
+
 /* ---------- responsive ---------- */
 @media (max-width: 880px) {
   .playground {

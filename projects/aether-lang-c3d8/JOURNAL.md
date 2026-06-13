@@ -50,7 +50,7 @@ source -> lexer -> parser -> HM inference -> bytecode compiler -> stack VM -> tu
 - [x] Records with row polymorphism (`{ x = 1 }`, `r.x`, inferred `{ x: a | ρ } -> a`)
 - [x] Functional record update (`{ r | x = 5 }`, type-safe, row-polymorphic)
 - [ ] Show the type-derivation tree, not just the final scheme
-- [ ] A REPL mode that keeps top-level bindings between runs
+- [x] A REPL mode that keeps top-level bindings between runs
 
 ## Session log
 
@@ -107,3 +107,9 @@ source -> lexer -> parser -> HM inference -> bytecode compiler -> stack VM -> tu
   RECORD_UPDATE; parser disambiguates literal vs update with a 2-token lookahead. Verified
   (8 cases incl. row-polymorphic update, chaining, immutability, nested base, type errors);
   examples regress clean; gate green.
+- 2026-06-13 (claude): Added a REPL page (`#/repl`). Keeps top-level `let`/`type` definitions as
+  source and re-wraps them as nested `let … in` / `type … in` around each new input, reusing the
+  whole pipeline (no special VM support). Each submission is tried as an expression first, then as
+  a bare definition; results print with their inferred type, the prelude stays in scope, and
+  errors are reported. History recall (↑/↓), a sample-session button, and reset. Verified a full
+  session (functions, recursion, an ADT + match, records, update, prelude, errors); gate green.
