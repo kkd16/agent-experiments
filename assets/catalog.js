@@ -1,7 +1,7 @@
 (function () {
   const $ = (id) => document.getElementById(id);
   const grid = $("grid");
-  const status = $("status");
+  const statusEl = $("status");
   const statsEl = $("stats");
   const toolbar = $("toolbar");
   const facetsEl = $("facets");
@@ -32,6 +32,13 @@
     let h = 0;
     for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) % 360;
     return h;
+  };
+  const debounce = (fn, ms) => {
+    let t;
+    return (...a) => {
+      clearTimeout(t);
+      t = setTimeout(() => fn(...a), ms);
+    };
   };
 
   const state = { all: [], q: "", tags: new Set(), agent: "", status: "all", sort: "new", view: "grid" };
@@ -72,6 +79,11 @@
     const url = location.pathname + location.search + (str ? "#" + str : "");
     history[replace ? "replaceState" : "pushState"](null, "", url);
   }
+
+  const commit = (replace = false) => {
+    writeHash(replace);
+    render();
+  };
 
   function syncControls() {
     if (document.activeElement !== qInput) qInput.value = state.q;
@@ -199,8 +211,7 @@
     state.tags = new Set();
     state.agent = "";
     state.status = "all";
-    writeHash(false);
-    render();
+    commit();
   }
 
   function render() {
@@ -211,9 +222,9 @@
     grid.className = "grid" + (state.view === "list" ? " list" : "") + (intro ? " intro" : "");
     if (!list.length) {
       grid.innerHTML = "";
-      status.innerHTML = `<div class="noresult"><h2>No matches</h2><p>Nothing fits those filters.</p><button type="button" class="clear" data-clear>Clear filters ✕</button></div>`;
+      statusEl.innerHTML = `<div class="noresult"><h2>No matches</h2><p>Nothing fits those filters.</p><button type="button" class="clear" data-clear>Clear filters ✕</button></div>`;
     } else {
-      status.innerHTML = "";
+      statusEl.innerHTML = "";
       grid.innerHTML = list.map(card).join("");
       setupThumbs();
     }
@@ -225,30 +236,26 @@
     clearBtn.hidden = !filtered();
   }
 
-  qInput.addEventListener("input", () => {
-    state.q = qInput.value;
-    writeHash(true);
-    render();
-  });
+  qInput.addEventListener(
+    "input",
+    debounce(() => {
+      state.q = qInput.value;
+      commit(true);
+    }, 120),
+  );
   sortSel.addEventListener("change", () => {
     state.sort = sortSel.value;
-    writeHash(false);
-    render();
+    commit();
   });
   viewSeg.addEventListener("click", (e) => {
     const b = e.target.closest("button");
     if (!b) return;
     state.view = b.dataset.view;
-    writeHash(false);
-    render();
+    commit();
   });
   themeBtn.addEventListener("click", () =>
     applyTheme(document.documentElement.getAttribute("data-theme") === "dark" ? "light" : "dark"),
   );
-  clearBtn.addEventListener("click", clearAll);
-  document.addEventListener("click", (e) => {
-    if (e.target.closest("[data-clear]")) clearAll();
-  });
   function onChip(e) {
     const b = e.target.closest(".chip");
     if (!b) return;
@@ -256,8 +263,9 @@
     if (kind === "tag") state.tags.has(val) ? state.tags.delete(val) : state.tags.add(val);
     else if (kind === "agent") state.agent = state.agent === val ? "" : val;
     else if (kind === "status") state.status = val;
-    writeHash(false);
-    render();
+    commit();
+    const sel = `.chip[data-kind="${kind}"][data-val="${CSS.escape(val)}"]`;
+    (filtersPop.querySelector(sel) || statusbarEl.querySelector(sel))?.focus({ preventScroll: true });
   }
   statusbarEl.addEventListener("click", onChip);
   facetsEl.addEventListener("click", onChip);
@@ -271,6 +279,10 @@
     openFilters(filtersPop.hidden);
   });
   document.addEventListener("click", (e) => {
+    if (e.target.closest("[data-clear]")) {
+      clearAll();
+      return;
+    }
     if (!filtersEl.contains(e.target)) openFilters(false);
   });
   const rehydrate = () => {
@@ -293,12 +305,10 @@
       state.q = "";
       qInput.value = "";
       qInput.blur();
-      writeHash(true);
-      render();
+      commit(true);
     } else if (!typing && (e.key === "g" || e.key === "l")) {
       state.view = e.key === "g" ? "grid" : "list";
-      writeHash(false);
-      render();
+      commit();
     }
   });
 
@@ -315,7 +325,7 @@
       const data = await res.json();
       state.all = Array.isArray(data.projects) ? data.projects : [];
       if (!state.all.length) {
-        status.innerHTML = `<div class="empty"><h2>No apps yet</h2><p>Agents — see <a href="https://github.com/kkd16/agent-experiments/blob/main/AGENTS.md">AGENTS.md</a> and drop your app in <code>projects/&lt;slug&gt;/</code>.</p></div>`;
+        statusEl.innerHTML = `<div class="empty"><h2>No apps yet</h2><p>Agents — see <a href="https://github.com/kkd16/agent-experiments/blob/main/AGENTS.md">AGENTS.md</a> and drop your app in <code>projects/&lt;slug&gt;/</code>.</p></div>`;
         return;
       }
       readHash();
@@ -323,7 +333,7 @@
       toolbar.hidden = false;
       render();
     } catch (err) {
-      status.innerHTML = `<div class="error"><h2>Couldn't load the catalog</h2><p>${esc(err.message)}. If you just deployed, give it a minute and refresh.</p></div>`;
+      statusEl.innerHTML = `<div class="error"><h2>Couldn't load the catalog</h2><p>${esc(err.message)}. If you just deployed, give it a minute and refresh.</p></div>`;
     }
   })();
 })();
