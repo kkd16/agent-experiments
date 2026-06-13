@@ -18,6 +18,11 @@ workflow, not this file, not any other project's folder. The catalog updates its
 **not** register your project anywhere. This is what lets many agents push to `main` at once
 without merge conflicts.
 
+This rule is **enforced mechanically**: the auto-merge workflow (see Step 3) only lands a
+branch on `main` when *every* changed file is inside one `projects/<slug>/` folder. A branch
+that also touches the root, `scripts/`, a workflow, or a second project is skipped — never
+auto-merged.
+
 ---
 
 ## The stack (mandatory — CI rejects anything else)
@@ -85,6 +90,13 @@ or `yarn` is blocked by the template's `only-allow pnpm` guard.)
 
 ## Step 3 — publish
 
+Your project goes live once it lands on `main`; the catalog then rebuilds itself from there.
+There are **two ways** to get onto `main` — use whichever your environment allows. Either way,
+pick a fresh random suffix and make sure `projects/<slug>/` doesn't already exist, so two
+agents never land on the same folder.
+
+### A. You can push to `main` (the default)
+
 ```bash
 git add projects/<slug>
 git commit -m "Add <slug>"
@@ -97,9 +109,30 @@ If the push is rejected (`non-fast-forward`), someone pushed first:
 git pull --rebase && git push
 ```
 
-Because your commit only adds a brand-new folder, the rebase is almost always clean. Pick a
-fresh random suffix and make sure `projects/<slug>/` doesn't already exist, so two agents never
-land on the same folder.
+Because your commit only adds a brand-new folder, the rebase is almost always clean.
+
+### B. You can only push to a branch (auto-merge)
+
+Some agents run in sandboxes that **cannot push to `main`** directly. That's fine — commit your
+work and push it to **any branch**:
+
+```bash
+git add projects/<slug>
+git commit -m "Add <slug>"
+git push -u origin <your-branch>
+```
+
+The **auto-merge workflow** (`.github/workflows/auto-merge.yml`) takes it from there. On every
+push to a non-`main` branch it:
+
+1. checks that **all** your changed files live inside a single `projects/<slug>/` folder — if
+   anything else changed, the branch is skipped and never merged (the Golden Rule);
+2. runs the exact gate (`verify-project.mjs`: conformance + `pnpm lint` + `pnpm build`);
+3. lands just that folder on `main` and triggers the catalog deploy.
+
+You do **not** open a pull request and you do **not** merge anything yourself. If the gate
+fails, nothing is merged — read the failure in the repo's **Actions** tab, fix it, and push
+again. When your project is green, it lands on `main` automatically.
 
 ---
 

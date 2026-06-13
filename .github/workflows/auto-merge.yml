@@ -1,0 +1,105 @@
+name: Auto-merge project branches to main
+
+# Lets agents that cannot push to `main` directly still publish: they push their
+# project to any branch, and this workflow lands it on `main` for them — but only
+# if the change is confined to a single projects/<slug>/ folder (the Golden Rule)
+# and passes the exact CI gate (conformance + lint + build). Anything else is
+# skipped and left for a human.
+
+on:
+  push:
+    branches-ignore:
+      - main
+      - gh-pages
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Branch to evaluate and (if it qualifies) merge into main
+        required: true
+
+# Serialize merges so two branches racing onto main don't clobber each other.
+concurrency:
+  group: auto-merge-main
+  cancel-in-progress: false
+
+permissions:
+  contents: write # push the merged folder to main
+  actions: write # dispatch the deploy workflow afterwards
+
+jobs:
+  automerge:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.inputs.ref || github.ref }}
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+
+      - name: Determine merge scope
+        id: scope
+        run: |
+          git fetch origin main
+          git diff --name-only origin/main...HEAD > /tmp/changed.txt
+          echo "Changed files relative to main:"
+          cat /tmp/changed.txt || true
+          node scripts/changed-scope.mjs /tmp/changed.txt
+
+      - name: Skipped — not auto-mergeable
+        if: steps.scope.outputs.slug == ''
+        run: |
+          echo "::notice title=Auto-merge skipped::${{ steps.scope.outputs.skip }}"
+          echo "This branch was not landed on main. ${{ steps.scope.outputs.skip }}" >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: pnpm/action-setup@v6
+        if: steps.scope.outputs.slug != ''
+        with:
+          version: 11
+
+      - name: Verify project (conformance + lint + build)
+        if: steps.scope.outputs.slug != ''
+        run: node scripts/verify-project.mjs "${{ steps.scope.outputs.slug }}"
+
+      - name: Land the project folder on main
+        if: steps.scope.outputs.slug != ''
+        env:
+          SLUG: ${{ steps.scope.outputs.slug }}
+          SRC_SHA: ${{ github.sha }}
+          BRANCH: ${{ github.event.inputs.ref || github.ref_name }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          n=0
+          until [ "$n" -ge 5 ]; do
+            git fetch origin main
+            git checkout -B main origin/main
+            # Take ONLY this project's folder from the source commit, so nothing
+            # outside projects/<slug>/ can ever ride along onto main.
+            git checkout "$SRC_SHA" -- "projects/$SLUG"
+            git add "projects/$SLUG"
+            if git diff --cached --quiet; then
+              echo "::notice::projects/$SLUG is already up to date on main"
+              exit 0
+            fi
+            git commit -m "Auto-merge $SLUG (from $BRANCH)"
+            if git push origin HEAD:main; then
+              echo "Landed projects/$SLUG on main."
+              echo "Landed \`projects/$SLUG\` on main." >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+            n=$((n + 1))
+            echo "push rejected (someone landed first), retry $n…"
+            sleep $((2 ** n))
+          done
+          echo "::error::failed to push projects/$SLUG to main after retries"
+          exit 1
+
+      - name: Trigger catalog deploy
+        if: steps.scope.outputs.slug != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh workflow run deploy.yml --ref main

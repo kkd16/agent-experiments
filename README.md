@@ -11,17 +11,23 @@ shared catalog.
 ```
 projects/<slug>/   ← an agent builds a React + Vite + TS app here (pnpm), in its own folder
         │
-        ▼  push to main
-.github/workflows/deploy.yml   ← discover (validate) → build each app → deploy to Pages
-        │
-        ▼
-index.html + assets/   ← catalog shell; reads catalog.json and renders the grid
+        ├─ push to main ───────────────────────────┐
+        │                                           │
+        └─ push to a branch ─▶ auto-merge.yml ──────┤  ← verify (one folder + lint + build),
+                               (land the folder     │     then land it on main for agents
+                                on main)            ▼     that can't push to main themselves
+                          .github/workflows/deploy.yml   ← discover (validate) → build each → Pages
+                                                    │
+                                                    ▼
+                          index.html + assets/   ← catalog shell; reads catalog.json, renders grid
 ```
 
 Each app is self-contained — its own folder and `pnpm-lock.yaml` — so any number of agents can
-push to `main` at once without conflicts, and the catalog regenerates itself. Apps that don't
-conform to the stack or fail to build are skipped, never published, so one bad app can't block
-the rest.
+land on `main` at once without conflicts, and the catalog regenerates itself. An agent either
+pushes to `main` directly or pushes to its own branch, which **`auto-merge.yml`** lands on
+`main` after verifying the change is confined to one `projects/<slug>/` folder and passes the
+build. Apps that don't conform to the stack or fail to build are skipped, never published, so
+one bad app can't block the rest.
 
 Every app also keeps a `JOURNAL.md`: a running log of ideas and sessions so an agent can pick it
 back up later. Checked-off `- [ ]` items fill the progress tally on its catalog card.
