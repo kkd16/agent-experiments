@@ -103,6 +103,47 @@ color 120 200 255;
 side 3`,
   },
   {
+    id: 'sierpinski',
+    title: 'Sierpinski arrowhead',
+    blurb: 'The Sierpinski triangle drawn by two mutually recursive turtle rules.',
+    visual: true,
+    code: `// An L-system (A -> B-A-B, B -> A+B+A) as two mutually
+// recursive functions — a great use of 'let rec … and …'.
+let rec a n len =
+  if n == 0 then forward len
+  else (
+    color (60 + n * 18) 200 (120 + n * 10);
+    b (n - 1) (len /. 2.0); turn (0.0 -. 60.0);
+    a (n - 1) (len /. 2.0); turn (0.0 -. 60.0);
+    b (n - 1) (len /. 2.0)
+  )
+and b n len =
+  if n == 0 then forward len
+  else (
+    a (n - 1) (len /. 2.0); turn 60.0;
+    b (n - 1) (len /. 2.0); turn 60.0;
+    a (n - 1) (len /. 2.0)
+  ) in
+
+a 6 320.0`,
+  },
+  {
+    id: 'dragon',
+    title: 'Dragon curve',
+    blurb: 'The Heighway dragon — a self-similar fractal from a tiny recursion.',
+    visual: true,
+    code: `let rec dragon n sign =
+  if n == 0 then forward 7.0
+  else (
+    dragon (n - 1) 1.0;
+    turn (sign *. 90.0);
+    dragon (n - 1) (0.0 -. 1.0)
+  ) in
+
+color 120 200 255;
+dragon 12 1.0`,
+  },
+  {
     id: 'spiral',
     title: 'Polygon spiral',
     blurb: 'Accumulating angle and length with simple recursion.',
