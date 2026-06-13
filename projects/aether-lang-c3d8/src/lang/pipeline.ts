@@ -151,9 +151,11 @@ export function runPipeline(source: string, opts: PipelineOptions = {}): Pipelin
 function collectBindingTypes(userAst: Expr, inferred: InferResult): BindingType[] {
   const out: BindingType[] = []
   let node: Expr = userAst
-  while (node.kind === 'let') {
-    const scheme = inferred.bindingSchemes.get(node)
-    out.push({ name: node.name, type: scheme ? schemeToString(scheme) : '?' })
+  while (node.kind === 'let' || node.kind === 'typedecl') {
+    if (node.kind === 'let') {
+      const scheme = inferred.bindingSchemes.get(node)
+      out.push({ name: node.name, type: scheme ? schemeToString(scheme) : '?' })
+    }
     node = node.body
   }
   return out

@@ -43,6 +43,27 @@ fact 5`}</pre>
       </section>
 
       <section>
+        <h2>Your own types</h2>
+        <p>
+          Declare algebraic data types with <code>type</code>; they can be polymorphic and
+          recursive. Constructors are ordinary (curried) functions, and you take them apart with
+          <code>match</code>.
+        </p>
+        <pre className="snippet">{`type Option a = None | Some a in
+type Tree a = Leaf | Node (Tree a) a (Tree a) in
+
+let rec size t =
+  match t with
+  | Leaf       -> 0
+  | Node l _ r -> 1 + size l + size r in
+size (Node Leaf 1 (Node Leaf 2 Leaf))   // => 2`}</pre>
+        <p>
+          Nullary constructors like <code>None</code> are values; constructors with arguments (like{' '}
+          <code>Some</code>) are functions you can even pass to <code>map</code>.
+        </p>
+      </section>
+
+      <section>
         <h2>Pattern matching</h2>
         <p>
           <code>match</code> destructures values against patterns, tried top to bottom. Patterns

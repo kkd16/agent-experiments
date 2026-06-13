@@ -148,6 +148,50 @@ let packed = encode data in
 (packed, decode packed)`,
   },
   {
+    id: 'adt',
+    title: 'Algebraic data types',
+    blurb: 'Declare your own types, then write a tiny expression interpreter.',
+    visual: false,
+    code: `// Define a recursive data type, then pattern-match over it.
+type Expr =
+  | Num Int
+  | Add Expr Expr
+  | Mul Expr Expr
+  | Neg Expr in
+
+let rec eval e =
+  match e with
+  | Num n     -> n
+  | Add a b   -> eval a + eval b
+  | Mul a b   -> eval a * eval b
+  | Neg x     -> 0 - eval x in
+
+// (3 + 4) * -(5)   ==>  -35
+let program = Mul (Add (Num 3) (Num 4)) (Neg (Num 5)) in
+eval program`,
+  },
+  {
+    id: 'maybe',
+    title: 'Option & safe lookup',
+    blurb: 'A polymorphic Option type for computations that can fail.',
+    visual: false,
+    code: `type Option a = None | Some a in
+
+let rec lookup key pairs =
+  match pairs with
+  | []           -> None
+  | (k, v) :: tl -> if k == key then Some v else lookup key tl in
+
+let withDefault d o =
+  match o with
+  | None   -> d
+  | Some x -> x in
+
+let table = [(1, "one"), (2, "two"), (3, "three")] in
+( withDefault "?" (lookup 2 table)
+, withDefault "?" (lookup 9 table) )`,
+  },
+  {
     id: 'church',
     title: 'Church numerals',
     blurb: 'Encoding numbers as higher-order functions — pure lambda calculus.',

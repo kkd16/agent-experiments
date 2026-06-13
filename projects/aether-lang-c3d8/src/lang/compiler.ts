@@ -177,7 +177,25 @@ class Compiler {
       case 'match':
         this.compileMatch(c, e, tail)
         return
+      case 'typedecl':
+        this.compileTypeDecl(c, e, tail)
+        return
     }
+  }
+
+  private compileTypeDecl(c: FnCompiler, e: Extract<Expr, { kind: 'typedecl' }>, tail: boolean): void {
+    // each constructor becomes a constant value bound as a local in the body's scope
+    for (const ctor of e.ctors) {
+      const v: Value =
+        ctor.args.length === 0
+          ? { tag: 'data', name: ctor.name, args: [] }
+          : { tag: 'ctor', name: ctor.name, arity: ctor.args.length, args: [] }
+      c.op(Op.CONST, e.span, +1, c.constant(v))
+      c.declareLocal(ctor.name)
+    }
+    this.compileExpr(c, e.body, tail)
+    if (e.ctors.length > 0) c.op(Op.POP_BELOW, e.span, -e.ctors.length, e.ctors.length)
+    for (let k = 0; k < e.ctors.length; k++) c.locals.pop()
   }
 
   private compileMatch(c: FnCompiler, e: Extract<Expr, { kind: 'match' }>, tail: boolean): void {
@@ -201,8 +219,13 @@ class Compiler {
           c.op(Op.EQ, span, -1)
         } else if (t.kind === 'nil') {
           c.op(Op.IS_NIL, span, 0)
-        } else {
+        } else if (t.kind === 'cons') {
           c.op(Op.IS_CONS, span, 0)
+        } else {
+          // constructor tag test: compare the value's tag name to the expected
+          c.op(Op.CTOR_TAG, span, 0)
+          c.op(Op.CONST, span, +1, c.constant(vstr(t.name)))
+          c.op(Op.EQ, span, -1)
         }
         failJumps.push(c.here())
         c.op(Op.JUMP_IF_FALSE, span, -1, 0)
@@ -237,7 +260,8 @@ class Compiler {
     for (const step of path) {
       if (step === 'head') c.op(Op.HEAD, span, 0)
       else if (step === 'tail') c.op(Op.TAIL, span, 0)
-      else c.op(Op.TUPLE_GET, span, 0, step.tuple)
+      else if ('tuple' in step) c.op(Op.TUPLE_GET, span, 0, step.tuple)
+      else c.op(Op.CTOR_GET, span, 0, step.ctor)
     }
   }
 
@@ -360,12 +384,13 @@ const BINOP_OPCODE: Record<Exclude<BinaryOp, '&&' | '||'>, number> = {
 }
 
 // A navigation step from the scrutinee value to a sub-value.
-type PatStep = 'head' | 'tail' | { tuple: number }
+type PatStep = 'head' | 'tail' | { tuple: number } | { ctor: number }
 
 type PatTest =
   | { path: PatStep[]; kind: 'lit'; value: Value }
   | { path: PatStep[]; kind: 'nil' }
   | { path: PatStep[]; kind: 'cons' }
+  | { path: PatStep[]; kind: 'ctor'; name: string }
 
 interface PatBind {
   path: PatStep[]
@@ -404,6 +429,10 @@ function analyzePattern(pat: Pattern, path: PatStep[], tests: PatTest[], binds: 
       return
     case 'ptuple':
       pat.elements.forEach((p, i) => analyzePattern(p, [...path, { tuple: i }], tests, binds))
+      return
+    case 'pcon':
+      tests.push({ path, kind: 'ctor', name: pat.name })
+      pat.args.forEach((p, i) => analyzePattern(p, [...path, { ctor: i }], tests, binds))
       return
   }
 }

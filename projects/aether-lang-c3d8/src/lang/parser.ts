@@ -5,7 +5,7 @@
 // are prefix forms whose bodies extend as far right as possible. Multi-argument
 // `fn a b -> e` and `let f a b = e` desugar to curried single-argument lambdas.
 
-import type { BinaryOp, Expr, MatchCase, Pattern, UnaryOp } from './ast.ts'
+import type { BinaryOp, CtorDecl, Expr, MatchCase, Pattern, TypeExpr, UnaryOp } from './ast.ts'
 import type { Span, Token } from './lexer.ts'
 import { tokenize } from './lexer.ts'
 
@@ -117,6 +117,7 @@ class Parser {
       if (t.value === 'fn') return this.parseLambda()
       if (t.value === 'if') return this.parseIf()
       if (t.value === 'match') return this.parseMatch()
+      if (t.value === 'type') return this.parseTypeDecl()
     }
 
     if (t.kind === 'op' && (t.value === '-' || t.value === '!')) {
@@ -300,7 +301,33 @@ class Parser {
     return left
   }
 
+  // an atom may be a constructor application `Some x` (uppercase head + args)
   private parsePatternAtom(): Pattern {
+    const t = this.peek()
+    if (t.kind === 'ident' && isUpper(t.value)) {
+      this.next()
+      const args: Pattern[] = []
+      let end = t.span
+      while (this.startsPatternArg()) {
+        const arg = this.parsePatternArg()
+        args.push(arg)
+        end = arg.span
+      }
+      return { kind: 'pcon', name: t.value, args, span: this.spanFrom(t.span, end) }
+    }
+    return this.parsePatternArg()
+  }
+
+  private startsPatternArg(): boolean {
+    const t = this.peek()
+    if (t.kind === 'int' || t.kind === 'float' || t.kind === 'string' || t.kind === 'ident') return true
+    if (t.kind === 'keyword' && (t.value === 'true' || t.value === 'false')) return true
+    if (t.kind === 'punc' && (t.value === '(' || t.value === '[')) return true
+    return false
+  }
+
+  // a single, atomic pattern (constructor arguments must be atomic — use parens)
+  private parsePatternArg(): Pattern {
     const t = this.peek()
     switch (t.kind) {
       case 'int':
@@ -314,6 +341,7 @@ class Parser {
         return { kind: 'pstr', value: t.value, span: t.span }
       case 'ident':
         this.next()
+        if (isUpper(t.value)) return { kind: 'pcon', name: t.value, args: [], span: t.span }
         return t.value === '_'
           ? { kind: 'pwild', span: t.span }
           : { kind: 'pvar', name: t.value, span: t.span }
@@ -372,6 +400,114 @@ class Parser {
     return acc
   }
 
+  // type Name p1 p2 = C1 t.. | C2 t.. in body
+  private parseTypeDecl(): Expr {
+    const start = this.expect('keyword', 'type')
+    if (!this.at('ident') || !isUpper(this.peek().value)) {
+      throw new ParseError('expected an uppercase type name after `type`', this.peek().span)
+    }
+    const name = this.next().value
+    const params: string[] = []
+    while (this.at('ident') && !isUpper(this.peek().value)) {
+      params.push(this.next().value)
+    }
+    this.expect('op', '=')
+    const ctors: CtorDecl[] = []
+    if (this.at('op', '|')) this.next()
+    for (;;) {
+      if (!this.at('ident') || !isUpper(this.peek().value)) {
+        throw new ParseError('expected an uppercase constructor name', this.peek().span)
+      }
+      const ctorTok = this.next()
+      const args: TypeExpr[] = []
+      let end = ctorTok.span
+      while (this.startsTypeAtom()) {
+        const a = this.parseTypeAtom()
+        args.push(a)
+        end = a.span
+      }
+      ctors.push({ name: ctorTok.value, args, span: this.spanFrom(ctorTok.span, end) })
+      if (this.at('op', '|')) {
+        this.next()
+        continue
+      }
+      break
+    }
+    this.expect('keyword', 'in')
+    const body = this.parseExpr(0)
+    return { kind: 'typedecl', name, params, ctors, body, span: this.spanFrom(start.span, body.span) }
+  }
+
+  private startsTypeAtom(): boolean {
+    const t = this.peek()
+    if (t.kind === 'ident') return true
+    if (t.kind === 'punc' && (t.value === '(' || t.value === '[')) return true
+    return false
+  }
+
+  private parseTypeAtom(): TypeExpr {
+    const t = this.peek()
+    if (t.kind === 'ident') {
+      this.next()
+      return isUpper(t.value)
+        ? { kind: 'tcon', name: t.value, args: [], span: t.span }
+        : { kind: 'tvar', name: t.value, span: t.span }
+    }
+    if (t.kind === 'punc' && t.value === '(') return this.parseTypeParen()
+    if (t.kind === 'punc' && t.value === '[') {
+      const open = this.next()
+      const inner = this.parseTypeExpr()
+      const close = this.expect('punc', ']')
+      return { kind: 'tcon', name: 'List', args: [inner], span: this.spanFrom(open.span, close.span) }
+    }
+    throw new ParseError(`expected a type, found ${JSON.stringify(t.value)}`, t.span)
+  }
+
+  private parseTypeParen(): TypeExpr {
+    const open = this.expect('punc', '(')
+    if (this.at('punc', ')')) {
+      const close = this.next()
+      return { kind: 'tcon', name: 'Unit', args: [], span: this.spanFrom(open.span, close.span) }
+    }
+    const first = this.parseTypeExpr()
+    if (this.at('punc', ',')) {
+      const elements = [first]
+      while (this.at('punc', ',')) {
+        this.next()
+        elements.push(this.parseTypeExpr())
+      }
+      const close = this.expect('punc', ')')
+      return { kind: 'ttuple', elements, span: this.spanFrom(open.span, close.span) }
+    }
+    this.expect('punc', ')')
+    return first
+  }
+
+  // full type expression (only valid inside parens / list / arrows)
+  private parseTypeExpr(): TypeExpr {
+    const left = this.parseTypeApp()
+    if (this.at('op', '->')) {
+      this.next()
+      const to = this.parseTypeExpr()
+      return { kind: 'tarrow', from: left, to, span: this.spanFrom(left.span, to.span) }
+    }
+    return left
+  }
+
+  private parseTypeApp(): TypeExpr {
+    const head = this.parseTypeAtom()
+    if (head.kind !== 'tcon') return head
+    const args: TypeExpr[] = [...head.args]
+    let end = head.span
+    while (this.startsTypeAtom()) {
+      const a = this.parseTypeAtom()
+      args.push(a)
+      end = a.span
+    }
+    if (args.length === head.args.length) return head
+    return { kind: 'tcon', name: head.name, args, span: this.spanFrom(head.span, end) }
+  }
+
   private parseIf(): Expr {
     const start = this.expect('keyword', 'if')
     const cond = this.parseExpr(0)
@@ -381,6 +517,10 @@ class Parser {
     const elseE = this.parseExpr(0)
     return { kind: 'if', cond, then: thenE, else: elseE, span: this.spanFrom(start.span, elseE.span) }
   }
+}
+
+function isUpper(name: string): boolean {
+  return /^[A-Z]/.test(name)
 }
 
 export function parse(src: string): Expr {
