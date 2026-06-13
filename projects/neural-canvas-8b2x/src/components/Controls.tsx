@@ -1,6 +1,7 @@
 import React from 'react';
 import type { Architecture } from '../worker';
 import type { ActivationType } from '../nn/Network';
+import { LossGraph } from './LossGraph';
 
 interface ControlsProps {
   arch: Architecture;
@@ -10,10 +11,11 @@ interface ControlsProps {
   onResetPoints: () => void;
   epoch: number;
   loss: number;
+  lossHistory: number[];
 }
 
 export const Controls: React.FC<ControlsProps> = ({
-  arch, onArchChange, isTraining, onToggleTraining, onResetPoints, epoch, loss
+  arch, onArchChange, isTraining, onToggleTraining, onResetPoints, epoch, loss, lossHistory
 }) => {
 
   const handleActivationChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
@@ -66,6 +68,8 @@ export const Controls: React.FC<ControlsProps> = ({
         <div><strong>Epochs:</strong> {epoch}</div>
         <div><strong>Loss:</strong> {loss.toFixed(4)}</div>
       </div>
+
+      <LossGraph lossHistory={lossHistory} />
 
       <div className="button-group">
         <button

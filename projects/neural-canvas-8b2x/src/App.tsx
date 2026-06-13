@@ -20,6 +20,7 @@ function App() {
   const [predictions, setPredictions] = useState<Float32Array | null>(null);
   const [epoch, setEpoch] = useState(0);
   const [loss, setLoss] = useState(0);
+  const [lossHistory, setLossHistory] = useState<number[]>([]);
 
   // Initialize Worker
   useEffect(() => {
@@ -33,6 +34,11 @@ function App() {
       } else if (msg.type === 'EPOCH') {
         setEpoch(msg.epoch);
         setLoss(msg.loss);
+        setLossHistory(prev => {
+          const newHistory = [...prev, msg.loss];
+          if (newHistory.length > 100) return newHistory.slice(newHistory.length - 100);
+          return newHistory;
+        });
         // Request new predictions to update UI
         worker.postMessage({ type: 'GET_PREDICTIONS', resolution: RESOLUTION } as WorkerMessage);
       }
@@ -89,6 +95,7 @@ function App() {
     }
     setEpoch(0);
     setLoss(0);
+    setLossHistory([]);
   };
 
   return (
@@ -107,6 +114,7 @@ function App() {
           onResetPoints={handleResetPoints}
           epoch={epoch}
           loss={loss}
+          lossHistory={lossHistory}
         />
         <Canvas
           points={points}

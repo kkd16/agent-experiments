@@ -53,10 +53,15 @@ header p {
   padding: 1.5rem;
   border-radius: 8px;
   width: 300px;
-  box-shadow: 0 4px 6px rgba(0,0,0,0.3);
+  box-shadow: 0 0 15px rgba(187, 134, 252, 0.2);
   display: flex;
   flex-direction: column;
   gap: 1rem;
+  transition: box-shadow 0.3s ease;
+}
+
+.controls:hover {
+  box-shadow: 0 0 25px rgba(187, 134, 252, 0.4);
 }
 
 .controls h2 {
@@ -108,13 +113,16 @@ input[type="text"], select {
   border-radius: 4px;
   cursor: pointer;
   font-weight: bold;
-  transition: background 0.2s;
+  transition: background 0.2s, transform 0.1s ease, box-shadow 0.2s ease;
+}
+.btn:active {
+  transform: scale(0.97);
 }
 
 .btn-start { background: #03dac6; color: #000; }
-.btn-start:hover { background: #01b8a6; }
+.btn-start:hover { background: #01b8a6; box-shadow: 0 0 10px rgba(3, 218, 198, 0.5); }
 .btn-stop { background: #cf6679; color: #fff; }
-.btn-stop:hover { background: #b04b5c; }
+.btn-stop:hover { background: #b04b5c; box-shadow: 0 0 10px rgba(207, 102, 121, 0.5); }
 .btn-reset { background: #333; color: white; }
 .btn-reset:hover { background: #444; }
 
@@ -122,10 +130,15 @@ input[type="text"], select {
   background: var(--panel-bg);
   padding: 1.5rem;
   border-radius: 8px;
-  box-shadow: 0 4px 6px rgba(0,0,0,0.3);
+  box-shadow: 0 0 15px rgba(3, 218, 198, 0.15);
   display: flex;
   flex-direction: column;
   align-items: center;
+  transition: box-shadow 0.3s ease;
+}
+
+.canvas-container:hover {
+  box-shadow: 0 0 25px rgba(3, 218, 198, 0.3);
 }
 
 canvas {
