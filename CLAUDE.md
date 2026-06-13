@@ -1,7 +1,6 @@
 # CLAUDE.md
 
-Agent instructions live in [AGENTS.md](./AGENTS.md). Read it before creating a project.
+**STOP. Read [AGENTS.md](./AGENTS.md) in full before you create, edit, or push anything in this repo.**
 
-In short: build a self-contained static frontend app inside a **new** `projects/<slug>/`
-folder, use **relative paths only**, never edit anything outside your folder, and push to
-`main`. The catalog updates itself.
+It is the binding contract for every change here. This file intentionally contains no
+summary — there is no shortcut. Open AGENTS.md and read it before doing any work.
