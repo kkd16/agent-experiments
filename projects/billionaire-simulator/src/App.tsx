@@ -45,27 +45,144 @@ const UPGRADES: Upgrade[] = [
     baseCost: 10000,
     incomeBoost: 500,
   },
+  {
+    id: 'factory',
+    name: 'Mega Factory',
+    description: 'Mass production at its finest. Earns $2,500/sec.',
+    baseCost: 75000,
+    incomeBoost: 2500,
+  },
+  {
+    id: 'conglomerate',
+    name: 'Global Conglomerate',
+    description: 'Own everything. Earns $15,000/sec.',
+    baseCost: 500000,
+    incomeBoost: 15000,
+  },
+  {
+    id: 'moonbase',
+    name: 'Moon Base',
+    description: 'Lunar mining operations. Earns $100,000/sec.',
+    baseCost: 4000000,
+    incomeBoost: 100000,
+  },
+  {
+    id: 'marscolony',
+    name: 'Mars Colony',
+    description: 'Multi-planetary species. Earns $750,000/sec.',
+    baseCost: 35000000,
+    incomeBoost: 750000,
+  },
+  {
+    id: 'dysonsphere',
+    name: 'Dyson Sphere',
+    description: 'Harness the power of a star. Earns $5,000,000/sec.',
+    baseCost: 300000000,
+    incomeBoost: 5000000,
+  },
 ];
 
 function App() {
-  const [money, setMoney] = useState(0);
-  const [passiveIncome, setPassiveIncome] = useState(0);
+  const [money, setMoney] = useState<number>(0);
+  const [lifetimeEarnings, setLifetimeEarnings] = useState<number>(0);
+  const [prestigePoints, setPrestigePoints] = useState<number>(0);
+  const [passiveIncome, setPassiveIncome] = useState<number>(0);
   const [ownedUpgrades, setOwnedUpgrades] = useState<{ [id: string]: number }>({});
   const clickValue = 1;
+  const prestigeMultiplier = 1 + (prestigePoints * 0.1); // 10% bonus per point
+
+  // Initialization state
+  const [isLoaded, setIsLoaded] = useState(false);
+
+  // Load game state
+  useEffect(() => {
+    const loadState = () => {
+      if (isLoaded) return;
+
+      try {
+        const savedState = localStorage.getItem('billionaireSimulatorState');
+        if (savedState) {
+          const { savedMoney, savedUpgrades, lastSaveTime, savedPrestigePoints, savedLifetimeEarnings } = JSON.parse(savedState);
+
+          // Ensure atomic update to avoid cascading renders
+          let finalMoney = savedMoney || 0;
+          let finalPassiveIncome = 0;
+
+          if (savedUpgrades) {
+            for (const upgrade of UPGRADES) {
+              if (savedUpgrades[upgrade.id]) {
+                finalPassiveIncome += upgrade.incomeBoost * savedUpgrades[upgrade.id];
+              }
+            }
+          }
+
+          let finalLifetimeEarnings = savedLifetimeEarnings || 0;
+
+          if (lastSaveTime) {
+            const now = Date.now();
+            const timeDiffSeconds = Math.floor((now - lastSaveTime) / 1000);
+            const offlineSeconds = Math.min(timeDiffSeconds, 24 * 60 * 60);
+
+            if (offlineSeconds > 0 && finalPassiveIncome > 0) {
+              const prestigeMultiplierInit = 1 + ((savedPrestigePoints || 0) * 0.1);
+              const offlineEarnings = offlineSeconds * (finalPassiveIncome * prestigeMultiplierInit);
+              finalMoney += offlineEarnings;
+              finalLifetimeEarnings += offlineEarnings;
+              console.log(`Earned ${offlineEarnings} while offline for ${offlineSeconds} seconds.`);
+            }
+          }
+
+          setOwnedUpgrades(savedUpgrades || {});
+          setPrestigePoints(savedPrestigePoints || 0);
+          setLifetimeEarnings(finalLifetimeEarnings);
+          setPassiveIncome(finalPassiveIncome);
+          setMoney(finalMoney);
+        }
+      } catch (e) {
+        console.warn("Could not load from localStorage", e);
+      } finally {
+        setIsLoaded(true);
+      }
+    };
+
+    // Defer the state update to avoid calling setState synchronously within the effect
+    const timeoutId = setTimeout(loadState, 0);
+    return () => clearTimeout(timeoutId);
+  }, [isLoaded]);
+
+  // Auto-save game state
+  useEffect(() => {
+    if (!isLoaded) return;
+
+    try {
+      const state = {
+        savedMoney: money,
+        savedUpgrades: ownedUpgrades,
+        savedPrestigePoints: prestigePoints,
+        savedLifetimeEarnings: lifetimeEarnings,
+        lastSaveTime: Date.now(),
+      };
+      localStorage.setItem('billionaireSimulatorState', JSON.stringify(state));
+    } catch (e) {
+      console.warn("Could not save to localStorage", e);
+    }
+  }, [money, ownedUpgrades, prestigePoints, lifetimeEarnings, isLoaded]);
 
   // Passive income effect
   useEffect(() => {
     if (passiveIncome === 0) return;
 
     const interval = setInterval(() => {
-      setMoney((prevMoney) => prevMoney + passiveIncome);
+      setMoney((prevMoney) => prevMoney + (passiveIncome * prestigeMultiplier));
+      setLifetimeEarnings((prevLifetime) => prevLifetime + (passiveIncome * prestigeMultiplier));
     }, 1000);
 
     return () => clearInterval(interval);
-  }, [passiveIncome]);
+  }, [passiveIncome, prestigeMultiplier]);
 
   const handleWork = () => {
-    setMoney((prevMoney) => prevMoney + clickValue);
+    setMoney((prevMoney) => prevMoney + (clickValue * prestigeMultiplier));
+    setLifetimeEarnings((prevLifetime) => prevLifetime + (clickValue * prestigeMultiplier));
   };
 
   const buyUpgrade = (upgrade: Upgrade) => {
@@ -95,13 +212,41 @@ function App() {
     }).format(amount);
   };
 
+  // Prestige calculation
+  // Base 1M earnings = 1 point, scaling quadratically
+  const calculatePendingPrestigePoints = () => {
+    const PRESTIGE_BASE = 1000000;
+    if (lifetimeEarnings < PRESTIGE_BASE) return 0;
+    return Math.floor(Math.sqrt(lifetimeEarnings / PRESTIGE_BASE));
+  };
+
+  const handlePrestige = () => {
+    const newPoints = calculatePendingPrestigePoints();
+    if (newPoints > 0) {
+      if (window.confirm(`Are you sure you want to prestige? You will gain ${newPoints} prestige points and a +${newPoints * 10}% income bonus, but lose all your money and upgrades.`)) {
+        setPrestigePoints(prev => prev + newPoints);
+        setMoney(0);
+        setPassiveIncome(0);
+        setOwnedUpgrades({});
+        setLifetimeEarnings(0); // Optional: reset lifetime so points are harder to earn, or keep it to accumulate. We'll reset it to make it a true run-based system.
+      }
+    }
+  };
+
+  const pendingPoints = calculatePendingPrestigePoints();
+
   return (
     <div className="game-container">
       <header className="game-header">
         <h1>Billionaire Simulator</h1>
         <div className="stats">
           <div className="money-display">{formatMoney(money)}</div>
-          <div className="income-display">{formatMoney(passiveIncome)} / sec</div>
+          <div className="income-display">{formatMoney(passiveIncome * prestigeMultiplier)} / sec</div>
+          {prestigePoints > 0 && (
+            <div className="prestige-display">
+              Prestige Bonus: +{prestigePoints * 10}%
+            </div>
+          )}
         </div>
       </header>
 
@@ -109,9 +254,26 @@ function App() {
         <section className="work-section">
           <button className="work-button" onClick={handleWork}>
             Work
-            <span className="click-value">+{formatMoney(clickValue)}</span>
+            <span className="click-value">+{formatMoney(clickValue * prestigeMultiplier)}</span>
           </button>
         </section>
+
+        {(lifetimeEarnings > 500000 || prestigePoints > 0) && (
+          <section className="prestige-section">
+            <h2>Prestige</h2>
+            <p className="prestige-desc">Reset progress to gain permanent bonuses.</p>
+            <button
+              className={`prestige-button ${pendingPoints === 0 ? 'disabled' : ''}`}
+              onClick={handlePrestige}
+              disabled={pendingPoints === 0}
+            >
+              Prestige Now
+              <span className="prestige-gain">
+                {pendingPoints > 0 ? `+${pendingPoints} Points` : `Reach ${formatMoney(1000000)} to prestige`}
+              </span>
+            </button>
+          </section>
+        )}
 
         <section className="upgrades-section">
           <h2>Investments</h2>

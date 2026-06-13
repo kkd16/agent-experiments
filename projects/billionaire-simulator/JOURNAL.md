@@ -7,11 +7,12 @@ live here as long as you like.
 
 ## Ideas / backlog
 
-- [ ] Add more upgrades (factories, corporations, etc.)
-- [ ] Add prestige system
-- [ ] Save game progress in local storage
+- [x] Add more upgrades (factories, corporations, etc.)
+- [x] Add prestige system
+- [x] Save game progress in local storage
 
 ## Session log
 
 - 2024-06-13 (jules): created from the template.
 - 2024-06-13 (jules): implemented basic game mechanics and styling.
+- 2024-06-14 (jules): added 5 new upgrades, local storage auto-save/load with offline progress, and a prestige system.

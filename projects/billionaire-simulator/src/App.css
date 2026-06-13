@@ -46,3 +46,227 @@
 .card button:hover {
   transform: translateY(-2px);
 }
+
+.game-container {
+  display: flex;
+  flex-direction: column;
+  max-width: 800px;
+  margin: 0 auto;
+  padding: 2rem;
+  background-color: #1a1a2e;
+  color: #e0e0e0;
+  min-height: 100vh;
+  box-sizing: border-box;
+}
+
+.game-header {
+  text-align: center;
+  margin-bottom: 2rem;
+  padding: 1.5rem;
+  background-color: #16213e;
+  border-radius: 12px;
+  box-shadow: 0 4px 6px rgba(0,0,0,0.3);
+}
+
+.stats {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 1rem;
+}
+
+.money-display {
+  font-size: 2.5rem;
+  font-weight: bold;
+  color: #4ade80;
+}
+
+.income-display {
+  font-size: 1.25rem;
+  color: #94a3b8;
+}
+
+.prestige-display {
+  font-size: 1.1rem;
+  font-weight: bold;
+  color: #c084fc;
+  background-color: rgba(192, 132, 252, 0.1);
+  padding: 0.25rem 0.75rem;
+  border-radius: 9999px;
+  margin-top: 0.5rem;
+}
+
+.game-main {
+  display: flex;
+  flex-direction: column;
+  gap: 2rem;
+}
+
+.work-section {
+  display: flex;
+  justify-content: center;
+}
+
+.work-button {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  background-color: #3b82f6;
+  color: white;
+  border: none;
+  border-radius: 50%;
+  width: 150px;
+  height: 150px;
+  font-size: 1.5rem;
+  font-weight: bold;
+  cursor: pointer;
+  transition: transform 0.1s, background-color 0.2s;
+  box-shadow: 0 6px 0 #2563eb;
+  padding-top: 2.5rem;
+}
+
+.work-button:active {
+  transform: translateY(6px);
+  box-shadow: 0 0 0 #2563eb;
+  background-color: #2563eb;
+}
+
+.click-value {
+  font-size: 1rem;
+  margin-top: 0.5rem;
+  opacity: 0.8;
+}
+
+.prestige-section {
+  background-color: #2a1b38;
+  border: 1px solid #4a2b5e;
+  border-radius: 12px;
+  padding: 1.5rem;
+  text-align: center;
+}
+
+.prestige-section h2 {
+  color: #d8b4e2;
+  margin-top: 0;
+}
+
+.prestige-desc {
+  color: #a78bfa;
+  margin-bottom: 1.5rem;
+}
+
+.prestige-button {
+  background-color: #9333ea;
+  color: white;
+  border: none;
+  border-radius: 8px;
+  padding: 1rem 2rem;
+  font-size: 1.2rem;
+  font-weight: bold;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: 100%;
+  max-width: 300px;
+  margin: 0 auto;
+  transition: background-color 0.2s, transform 0.1s;
+}
+
+.prestige-button:hover:not(.disabled) {
+  background-color: #a855f7;
+  transform: translateY(-2px);
+}
+
+.prestige-button.disabled {
+  background-color: #4c1d95;
+  color: #8b5cf6;
+  cursor: not-allowed;
+  opacity: 0.7;
+}
+
+.prestige-gain {
+  font-size: 0.9rem;
+  font-weight: normal;
+  margin-top: 0.25rem;
+  opacity: 0.9;
+}
+
+.upgrades-section {
+  background-color: #0f3460;
+  border-radius: 12px;
+  padding: 1.5rem;
+}
+
+.upgrades-list {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.upgrade-card {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  background-color: #1a1a2e;
+  border: 1px solid #2a2a4a;
+  border-radius: 8px;
+  padding: 1rem;
+  cursor: pointer;
+  transition: border-color 0.2s, background-color 0.2s;
+  color: white;
+  text-align: left;
+  width: 100%;
+}
+
+.upgrade-card:hover:not(.disabled) {
+  background-color: #252545;
+  border-color: #3b82f6;
+}
+
+.upgrade-card.disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  filter: grayscale(0.5);
+}
+
+.upgrade-info h3 {
+  margin: 0 0 0.25rem;
+  color: #f8fafc;
+}
+
+.upgrade-info p {
+  margin: 0 0 0.5rem;
+  font-size: 0.875rem;
+  color: #94a3b8;
+}
+
+.owned-count {
+  font-size: 0.875rem;
+  color: #cbd5e1;
+  background-color: #334155;
+  padding: 0.125rem 0.5rem;
+  border-radius: 9999px;
+}
+
+.upgrade-action {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 0.5rem;
+}
+
+.cost {
+  font-weight: bold;
+  color: #ef4444;
+}
+
+.upgrade-card:not(.disabled) .cost {
+  color: #4ade80;
+}
+
+.boost {
+  font-size: 0.875rem;
+  color: #60a5fa;
+}
