@@ -186,6 +186,22 @@ body {
   padding: 0.4rem 0.6rem;
   cursor: pointer;
 }
+.opt-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: 0.82rem;
+  color: var(--fg-dim);
+  cursor: pointer;
+  user-select: none;
+}
+.opt-toggle input {
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+.status-fold {
+  color: var(--amber);
+}
 .kbd-hint {
   margin-left: auto;
   font-family: var(--mono);
