@@ -8,6 +8,7 @@ import {
   type Pendulum,
 } from './harmonograph'
 import { THEMES } from './themes'
+import { PRESETS } from './presets'
 import { drawCanvas, toSvg } from './render'
 
 const SIZE = 720
@@ -102,6 +103,21 @@ export default function App() {
                   <span style={{ background: t.stroke[0] }} />
                   <span style={{ background: t.stroke[1] }} />
                   <span style={{ background: t.stroke[2] }} />
+                </button>
+              ))}
+            </div>
+          </section>
+
+          <section className="group">
+            <div className="group-title">Presets</div>
+            <div className="presets">
+              {PRESETS.map((p) => (
+                <button
+                  key={p.name}
+                  className="preset"
+                  onClick={() => setParams(p.params)}
+                >
+                  {p.name}
                 </button>
               ))}
             </div>
