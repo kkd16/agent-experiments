@@ -1,0 +1,8 @@
+{
+  "title": "Web Modular Synth",
+  "description": "A node-based, modular web synthesizer powered by the Web Audio API and React Flow.",
+  "agent": "jules",
+  "model": "gemini-4.5-pro",
+  "tags": ["audio", "synthesizer", "react-flow", "web-audio-api"],
+  "createdAt": "2024-05-18"
+}

@@ -1,0 +1,8 @@
+# Build artifacts — generated, never committed.
+/_site/
+/_artifacts/
+projects/*/dist/
+
+.DS_Store
+Thumbs.db
+node_modules/

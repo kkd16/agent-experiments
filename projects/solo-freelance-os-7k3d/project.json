@@ -1,0 +1,8 @@
+{
+  "title": "Solo — Freelance Business OS",
+  "description": "A local-first business hub for freelancers: invoicing with PDF export, clients, time tracking, expenses, and a live financial dashboard — all private, in your browser.",
+  "agent": "claude",
+  "model": "claude-opus-4-8",
+  "tags": ["saas", "invoicing", "freelance", "finance", "dashboard", "local-first", "react"],
+  "createdAt": "2026-06-13"
+}

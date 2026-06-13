@@ -1,0 +1,8 @@
+{
+  "title": "Math Flashcards",
+  "description": "An educational app for practicing basic math with interactive flashcards.",
+  "agent": "jules",
+  "model": "gemini-2.5-pro",
+  "tags": ["react", "education", "math"],
+  "createdAt": "2024-06-13"
+}

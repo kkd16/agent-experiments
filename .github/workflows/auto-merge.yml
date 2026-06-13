@@ -1,0 +1,109 @@
+name: Auto-merge project pull requests
+
+# Agents publish by opening a pull request into `main`. This workflow runs on
+# every PR and merges it automatically — but only if the change is confined to a
+# single projects/<slug>/ folder (the Golden Rule) and passes the exact CI gate
+# (conformance + lint + build). Anything else is rejected, never merged.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+    branches: [main]
+
+# One run per PR; a new push supersedes the previous run.
+concurrency:
+  group: auto-merge-pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write # squash-merge into main
+  pull-requests: write # merge + comment on the PR
+  actions: write # dispatch the deploy workflow afterwards
+
+jobs:
+  automerge:
+    # Same-repo, non-draft PRs only. Fork PRs get a read-only token and could run
+    # untrusted code, so they're never auto-merged.
+    if: >-
+      github.event.pull_request.draft == false &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      PR: ${{ github.event.pull_request.number }}
+      BASE: ${{ github.event.pull_request.base.ref }}
+    steps:
+      # Check out main so gate scripts run from trusted code, not the PR's.
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.base.ref }}
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+
+      - name: Determine merge scope
+        id: scope
+        run: |
+          git fetch origin "$BASE"
+          git fetch --no-tags origin "+refs/pull/$PR/head:refs/remotes/origin/pr-head"
+          git diff --name-only "origin/$BASE...origin/pr-head" > /tmp/changed.txt
+          echo "Changed files vs $BASE:"
+          cat /tmp/changed.txt || true
+          node scripts/changed-scope.mjs /tmp/changed.txt
+
+      - name: Reject — out of scope
+        if: steps.scope.outputs.slug == ''
+        env:
+          SKIP: ${{ steps.scope.outputs.skip }}
+        run: |
+          echo "::notice title=Not auto-merged::$SKIP"
+          printf '🚫 **Not auto-merged.** %s\n\nEvery PR must change exactly one `projects/<slug>/` folder and nothing else.\n' "$SKIP" > /tmp/body.md
+          gh pr comment "$PR" --body-file /tmp/body.md
+
+      - uses: pnpm/action-setup@v6
+        if: steps.scope.outputs.slug != ''
+        with:
+          version: 11
+
+      # Overlay only the PR's project folder; everything else stays at main.
+      - name: Overlay the PR's project folder onto main
+        if: steps.scope.outputs.slug != ''
+        env:
+          SLUG: ${{ steps.scope.outputs.slug }}
+        run: |
+          rm -rf "projects/$SLUG"
+          git checkout origin/pr-head -- "projects/$SLUG"
+
+      - name: Verify project (conformance + lint + build)
+        if: steps.scope.outputs.slug != ''
+        env:
+          SLUG: ${{ steps.scope.outputs.slug }}
+        run: node scripts/verify-project.mjs "$SLUG"
+
+      # Symbolic green check — gate already passed; not a required approval.
+      - name: Approve the pull request
+        if: steps.scope.outputs.slug != ''
+        run: gh pr review "$PR" --approve --body "✅ Passed the scope + lint + build gate."
+
+      - name: Squash-merge the pull request
+        if: steps.scope.outputs.slug != ''
+        env:
+          SLUG: ${{ steps.scope.outputs.slug }}
+        run: |
+          gh pr merge "$PR" --squash --delete-branch
+          echo "Merged PR #$PR (projects/$SLUG) into $BASE."
+
+      - name: Trigger catalog deploy
+        if: steps.scope.outputs.slug != ''
+        run: gh workflow run deploy.yml --ref main
+
+      - name: Report gate failure
+        if: failure() && steps.scope.outputs.slug != ''
+        env:
+          SLUG: ${{ steps.scope.outputs.slug }}
+        run: |
+          printf '❌ **Not auto-merged.** The verify gate (conformance + `pnpm lint` + `pnpm build`) failed for `%s`, or the merge hit a conflict. Check the workflow logs, fix it, and push again to this branch.\n' "$SLUG" > /tmp/body.md
+          gh pr comment "$PR" --body-file /tmp/body.md

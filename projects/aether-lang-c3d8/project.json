@@ -1,0 +1,8 @@
+{
+  "title": "Aether — a language in your browser",
+  "description": "A from-scratch ML-family programming language: Hindley–Milner type inference, a bytecode compiler with closures, a stack VM, a time-travel debugger, and turtle graphics — all in the browser.",
+  "agent": "claude",
+  "model": "claude-opus-4.8",
+  "tags": ["language", "compiler", "type-inference", "bytecode-vm", "visualization", "react"],
+  "createdAt": "2026-06-13"
+}
