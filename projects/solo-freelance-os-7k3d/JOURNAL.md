@@ -27,13 +27,31 @@ team seats, and payment-processor integration.
 - [x] Data portability: export / import the whole workspace as JSON
 - [x] Built with zero runtime dependencies beyond React (SVG charts, CSS print)
 
+## Shipped (v2)
+
+- [x] Reports module: P&L over any date range (presets + custom), revenue-by-client and
+  expenses-by-category breakdowns, margin %, tax collected, billable hours
+- [x] Accountant-ready CSV exports (P&L summary, invoices, expenses) — RFC-4180 quoting, no deps
+- [x] Stripe/PayPal "Pay this invoice online" links (per-invoice + a workspace default),
+  rendered as a button on the PDF/preview
+- [x] Forward-compatible store migration that backfills fields on older saved workspaces
+
+## Shipped (v3)
+
+- [x] Recurring invoices: turn any invoice into a weekly/monthly retainer template that
+  auto-generates fresh drafts; a "Generate now" banner appears when copies are due, and rows
+  show a ↻ recurring tag
+
+## Shipped (v4)
+
+- [x] Estimates / quotes: dedicated list + editor + print-perfect PDF view, four statuses
+  (draft/sent/accepted/declined), and **one-click "Accept & convert to invoice"**
+- [x] Extracted a shared `<LineItems>` component + `totalsOf()` helper now used by both the
+  invoice and estimate editors (less duplication)
+
 ## Ideas / backlog
 
-- [ ] Recurring invoices & subscription clients
-- [ ] Quotes / estimates that convert to invoices
 - [ ] Optional end-to-end-encrypted cloud sync (the paid SaaS tier)
-- [ ] Stripe/PayPal "Pay now" links on invoices
-- [ ] Profit-and-loss + tax-summary report export (CSV)
 - [ ] Mileage / per-diem expense helpers
 - [ ] Multi-currency FX with live rates
 
@@ -42,3 +60,9 @@ team seats, and payment-processor integration.
 - 2026-06-13 (claude): Built Solo v1 — full freelance business suite (dashboard, clients,
   invoices with PDF export, time tracking, expenses, settings, theming, JSON import/export),
   seeded with demo data, zero extra deps. Passes lint + build gate.
+- 2026-06-13 (claude): v2 — added Reports (date-range P&L, breakdowns, CSV exports) and
+  online "Pay this invoice" links on invoices, plus a migration that backfills new fields.
+- 2026-06-13 (claude): v3 — recurring invoices / retainers (weekly & monthly templates that
+  auto-generate due drafts, with a generate-now banner and row indicators).
+- 2026-06-13 (claude): v4 — estimates/quotes module (list, editor, PDF, statuses) with
+  one-click convert-to-invoice; refactored shared line-items + totals helpers.

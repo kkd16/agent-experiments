@@ -1,15 +1,10 @@
 import { useState } from 'react'
 import { invoiceActions, useAppState } from '../store/store'
-import {
-  effectiveStatus,
-  invoiceSubtotal,
-  invoiceTax,
-  invoiceTotal,
-  itemTotal,
-} from '../lib/finance'
-import { CURRENCIES, clampNumber, formatDuration, hours, money } from '../lib/format'
+import { effectiveStatus, invoiceSubtotal, invoiceTax, invoiceTotal } from '../lib/finance'
+import { CURRENCIES, clampNumber, formatDate, formatDuration, hours, money } from '../lib/format'
 import { navigate } from '../lib/router'
 import { Button, Card, IconButton, Modal, StatusBadge } from '../components/ui'
+import { LineItems } from '../components/LineItems'
 import { Icon } from '../components/Icon'
 import type { InvoiceStatus } from '../types'
 
@@ -151,67 +146,13 @@ export function InvoiceEditor({ id }: { id: string }) {
             <div className="card-head">
               <h3>Line items</h3>
             </div>
-            <table className="items-table">
-              <thead>
-                <tr>
-                  <th>Description</th>
-                  <th className="num qty">Qty</th>
-                  <th className="num price">Unit price</th>
-                  <th className="num">Amount</th>
-                  <th aria-label="remove" />
-                </tr>
-              </thead>
-              <tbody>
-                {inv.items.map((it) => (
-                  <tr key={it.id}>
-                    <td>
-                      <input
-                        value={it.description}
-                        placeholder="Describe the work…"
-                        onChange={(e) =>
-                          invoiceActions.patchItem(inv.id, it.id, { description: e.target.value })
-                        }
-                      />
-                    </td>
-                    <td className="num">
-                      <input
-                        type="number"
-                        className="num-input"
-                        value={it.quantity}
-                        onChange={(e) =>
-                          invoiceActions.patchItem(inv.id, it.id, {
-                            quantity: clampNumber(e.target.value),
-                          })
-                        }
-                      />
-                    </td>
-                    <td className="num">
-                      <input
-                        type="number"
-                        className="num-input"
-                        value={it.unitPrice}
-                        onChange={(e) =>
-                          invoiceActions.patchItem(inv.id, it.id, {
-                            unitPrice: clampNumber(e.target.value),
-                          })
-                        }
-                      />
-                    </td>
-                    <td className="num strong">{money(itemTotal(it), inv.currency)}</td>
-                    <td>
-                      <IconButton
-                        icon="x"
-                        label="Remove line"
-                        onClick={() => invoiceActions.removeItem(inv.id, it.id)}
-                      />
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-            <Button variant="ghost" icon="plus" onClick={() => invoiceActions.addItem(inv.id)}>
-              Add line item
-            </Button>
+            <LineItems
+              items={inv.items}
+              currency={inv.currency}
+              onPatch={(itemId, patch) => invoiceActions.patchItem(inv.id, itemId, patch)}
+              onRemove={(itemId) => invoiceActions.removeItem(inv.id, itemId)}
+              onAdd={() => invoiceActions.addItem(inv.id)}
+            />
           </Card>
 
           <Card>
@@ -223,6 +164,17 @@ export function InvoiceEditor({ id }: { id: string }) {
                 placeholder="Thanks for your business! Payment due within 14 days."
                 onChange={(e) => set({ notes: e.target.value })}
               />
+            </label>
+            <label className="field" style={{ marginTop: 14 }}>
+              <span className="field-label">Pay online link (optional)</span>
+              <input
+                value={inv.paymentLink ?? ''}
+                placeholder="https://buy.stripe.com/…  or  https://paypal.me/you"
+                onChange={(e) => set({ paymentLink: e.target.value })}
+              />
+              <span className="field-hint">
+                Shown as a “Pay this invoice” button on the PDF / preview.
+              </span>
             </label>
           </Card>
         </div>
@@ -289,6 +241,29 @@ export function InvoiceEditor({ id }: { id: string }) {
               <p className="muted small">
                 Paid on {new Date(inv.paidAt).toLocaleDateString()}.
               </p>
+            )}
+          </Card>
+
+          <Card className="status-control">
+            <h3>Recurring</h3>
+            <div className="seg">
+              {(['none', 'weekly', 'monthly'] as const).map((r) => (
+                <button
+                  key={r}
+                  className={`seg-btn ${inv.recurring === r ? 'active' : ''}`}
+                  onClick={() => invoiceActions.setRecurring(inv.id, r)}
+                >
+                  {r === 'none' ? 'Off' : r}
+                </button>
+              ))}
+            </div>
+            {inv.recurring !== 'none' && inv.nextRun ? (
+              <p className="muted small">
+                Generates a new draft {inv.recurring}, next on{' '}
+                <strong>{formatDate(inv.nextRun)}</strong>.
+              </p>
+            ) : (
+              <p className="muted small">Turn this invoice into an auto-generating retainer.</p>
             )}
           </Card>
         </aside>
