@@ -1,0 +1,125 @@
+# Aether
+
+A complete, statically-typed functional **programming language and toolchain that runs entirely in
+your browser** — no server, no WebAssembly, no parser generators, no runtime libraries beyond React
+for the UI. You write Aether source in the playground; it is lexed, parsed, type-inferred,
+optimized, compiled to bytecode, and run on a custom stack VM, with every intermediate stage
+inspectable and an interactive time-travel debugger.
+
+Live: <https://kkd16.github.io/agent-experiments/projects/aether-lang-c3d8/>
+
+```
+// functional code that draws — a fractal tree
+let rec tree len depth =
+  if depth == 0 then ()
+  else (
+    forward len;
+    push (); turn 28.0;  tree (len *. 0.72) (depth - 1); pop ();
+    push (); turn (0.0 -. 32.0); tree (len *. 0.72) (depth - 1); pop ();
+    back len
+  ) in
+tree 120.0 10
+```
+
+## The language
+
+Aether is an ML-family expression language. Everything is an expression; there are no statements.
+
+- **Literals** — `Int` (`42`), `Float` (`3.14`), `Bool` (`true`/`false`), `String` (`"hi"`),
+  `Unit` (`()`), lists (`[1, 2, 3]`), tuples (`(1, "a", true)`).
+- **Functions are curried** — `fn a b -> …`; `let f a b = …` is sugar for `let f = fn a b -> …`.
+  Partial application just works.
+- **Bindings** — `let x = e in body`, recursive `let rec f = … in …`, and mutually recursive
+  `let rec f = … and g = … in …`.
+- **Conditionals** — `if c then a else b`.
+- **Pattern matching** — `match e with | pat -> … | …`, over literals, `_`, variables, tuples,
+  lists (`[]`, `h :: t`, `[a, b]`), and constructors; clauses may carry a `when` guard. Matches
+  are checked for **exhaustiveness** (missing cases reported with a witness) and **redundancy**.
+- **Algebraic data types** — `type Option a = None | Some a in …`; polymorphic and recursive.
+  Constructors are ordinary curried functions.
+- **Records with row polymorphism** — `{ x = 1, y = 2 }`, field access `r.x`, and functional
+  update `{ r | x = 10 }`. A function like `fn r -> r.x` is inferred as `{ x: a | ρ } -> a`, so it
+  works on any record carrying that field.
+- **Type inference** — full Hindley–Milner (Algorithm W) with let-generalization; no type
+  annotations anywhere. `let id = fn x -> x` is `∀ a. a -> a`.
+
+### Operators
+
+| | |
+|---|---|
+| `+ - * / %` | integer arithmetic (`%` is modulo) |
+| `+. -. *. /.` | floating-point arithmetic |
+| `== != < > <= >=` | structural, polymorphic comparison |
+| `&& \|\|` | short-circuiting boolean |
+| `:: ++ ^` | list cons / list append / string concat |
+| `\|>` | pipe: `x \|> f` means `f x` |
+| `;` | sequence (evaluate, discard, continue) |
+
+### Standard library
+
+Written partly as TypeScript primitives and partly in Aether itself (compiled into every program):
+
+- **lists** — `map filter foldl foldr length append reverse sum range take drop elem all any concat zip replicate`
+- **strings** — `strlen toUpper toLower chars join parseInt` (plus `show`, `^`)
+- **numeric** — `abs min max sqrt sin cos floor toFloat pi`
+- **primitives** — `head tail empty print`
+- **turtle graphics** — `forward back turn penUp penDown push pop color width clear`
+
+## Architecture
+
+```
+source ─▶ lexer ─▶ parser ─▶ HM inference ─▶ optimizer ─▶ compiler ─▶ stack VM ─▶ turtle canvas
+                                                                            └─▶ time-travel trace
+```
+
+| File | Responsibility |
+|---|---|
+| `src/lang/lexer.ts` | hand-written scanner; precise source spans, nested block comments |
+| `src/lang/ast.ts` | the typed AST, patterns, and type-expression syntax |
+| `src/lang/parser.ts` | Pratt (precedence-climbing) parser; application is juxtaposition |
+| `src/lang/types.ts` | type representation (incl. rows), pretty-printing |
+| `src/lang/infer.ts` | Algorithm W: unification (with row unification), let-generalization |
+| `src/lang/exhaustive.ts` | Maranget's pattern-usefulness algorithm (exhaustiveness + redundancy) |
+| `src/lang/optimize.ts` | constant folding, dead-branch elimination, short-circuit simplification |
+| `src/lang/bytecode.ts` | opcodes + disassembler |
+| `src/lang/compiler.ts` | AST → bytecode; clox-style upvalues; tail-call detection |
+| `src/lang/vm.ts` | iterative stack VM; closures, currying, tail calls, snapshot trace |
+| `src/lang/values.ts` | runtime values, structural equality, upvalues |
+| `src/lang/prelude.ts` | primitive type schemes + native impls + the Aether-source library |
+| `src/lang/turtle.ts` | folds turtle effects into line segments for the canvas |
+| `src/lang/pipeline.ts` | orchestrates all stages and collects every artifact |
+| `src/repl.ts` | REPL evaluation (re-wraps accumulated definitions) |
+
+### Notable implementation points
+
+- **Closures & recursion** use clox-style upvalues (captured by reference), so mutual and
+  self-recursion compose; the VM is iterative with its own frame stack, so recursion depth is
+  bounded by memory rather than the JS call stack.
+- **Tail-call optimization** reuses the current frame for calls in tail position — constant-space
+  tail recursion, visible as a flat call-frame count in the debugger.
+- **Row unification** (Rémy/Leijen) gives row-polymorphic records with no annotations.
+- The **prelude** (`map`, `filter`, `fold`, …) is written in Aether and compiled into every
+  program; the visualizers show only your own source.
+
+## The app
+
+A two-pane **playground**: a syntax-highlighted editor with live type-checking, error squiggles,
+and exhaustiveness warnings, beside tabbed inspectors for every stage — Result, Canvas, Tokens,
+AST (hover for inferred types), Types, Bytecode disassembly, and a **time-travel Debugger** that
+scrubs through execution showing the value stack and call frames. Plus an interactive **REPL**, an
+**examples** gallery, a **language tour**, and an **internals** writeup. Programs are autosaved and
+shareable via URL.
+
+## Develop
+
+```bash
+pnpm install
+pnpm dev      # playground at localhost
+pnpm build    # type-check + production build
+pnpm lint
+```
+
+The whole language core is plain TypeScript with erasable types, so it can also be exercised
+outside the browser with Node's type stripping (`node --experimental-strip-types`).
+
+See [JOURNAL.md](./JOURNAL.md) for the development log and backlog.
