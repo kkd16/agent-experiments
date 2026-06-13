@@ -5,7 +5,7 @@
 // so `let id = fn x -> x` is inferred as `∀ a. a -> a`. Recursive bindings are
 // typed monomorphically while their own body is checked, then generalised.
 
-import type { BinaryOp, Expr } from './ast.ts'
+import type { BinaryOp, Expr, Pattern } from './ast.ts'
 import type { Span } from './lexer.ts'
 import type { Scheme, Type, TVar } from './types.ts'
 import {
@@ -18,6 +18,7 @@ import {
   tInt,
   tList,
   tString,
+  tTuple,
   tUnit,
 } from './types.ts'
 
@@ -183,6 +184,62 @@ class Inferrer {
       case 'seq':
         this.infer(env, e.first)
         return this.infer(env, e.rest)
+      case 'match': {
+        const ts = this.infer(env, e.scrutinee)
+        const result = freshVar()
+        for (const c of e.cases) {
+          const bindings = new Map<string, Type>()
+          this.inferPattern(c.pattern, ts, bindings)
+          let env2 = env
+          for (const [name, t] of bindings) env2 = extend(env2, name, monoScheme(t))
+          this.unify(this.infer(env2, c.body), result, c.body.span)
+        }
+        return result
+      }
+    }
+  }
+
+  private inferPattern(pat: Pattern, expected: Type, bindings: Map<string, Type>): void {
+    switch (pat.kind) {
+      case 'pwild':
+        return
+      case 'pvar':
+        if (bindings.has(pat.name)) {
+          throw new TypeCheckError(`variable ${pat.name} is bound twice in the same pattern`, pat.span)
+        }
+        bindings.set(pat.name, expected)
+        return
+      case 'pint':
+        this.unify(expected, tInt, pat.span)
+        return
+      case 'pfloat':
+        this.unify(expected, tFloat, pat.span)
+        return
+      case 'pbool':
+        this.unify(expected, tBool, pat.span)
+        return
+      case 'pstr':
+        this.unify(expected, tString, pat.span)
+        return
+      case 'punit':
+        this.unify(expected, tUnit, pat.span)
+        return
+      case 'pnil':
+        this.unify(expected, tList(freshVar()), pat.span)
+        return
+      case 'pcons': {
+        const elem = freshVar()
+        this.unify(expected, tList(elem), pat.span)
+        this.inferPattern(pat.head, elem, bindings)
+        this.inferPattern(pat.tail, tList(elem), bindings)
+        return
+      }
+      case 'ptuple': {
+        const elems = pat.elements.map(() => freshVar() as Type)
+        this.unify(expected, tTuple(elems), pat.span)
+        pat.elements.forEach((p, i) => this.inferPattern(p, elems[i], bindings))
+        return
+      }
     }
   }
 

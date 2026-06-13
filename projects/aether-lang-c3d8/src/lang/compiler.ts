@@ -6,13 +6,13 @@
 // a real local slot that is closed and slid off the stack when its scope ends;
 // `let rec` reserves the slot first so the closure can capture itself.
 
-import type { BinaryOp, Expr } from './ast.ts'
+import type { BinaryOp, Expr, Pattern } from './ast.ts'
 import type { Span } from './lexer.ts'
 import type { FnProto, UpvalueDesc } from './bytecode.ts'
 import { Op } from './bytecode.ts'
 import { GLOBAL_INDEX } from './prelude.ts'
 import type { Value } from './values.ts'
-import { vfloat, vint, vstr } from './values.ts'
+import { vbool, vfloat, vint, vstr } from './values.ts'
 
 export class CompileError extends Error {
   span: Span | null
@@ -111,12 +111,14 @@ class FnCompiler {
 class Compiler {
   compileProgram(program: Expr): FnProto {
     const main = new FnCompiler('main', 0, null)
-    this.compileExpr(main, program)
+    this.compileExpr(main, program, true)
     main.op(Op.RETURN, program.span, 0)
     return main.proto
   }
 
-  private compileExpr(c: FnCompiler, e: Expr): void {
+  // `tail` marks expressions whose value is the enclosing function's result, so
+  // calls there can reuse the current frame (tail-call optimisation).
+  private compileExpr(c: FnCompiler, e: Expr, tail = false): void {
     switch (e.kind) {
       case 'int':
         c.op(Op.CONST, e.span, +1, c.constant(vint(e.value)))
@@ -142,13 +144,13 @@ class Compiler {
       case 'app':
         this.compileExpr(c, e.fn)
         this.compileExpr(c, e.arg)
-        c.op(Op.CALL, e.span, -1, 1)
+        c.op(tail ? Op.TAILCALL : Op.CALL, e.span, -1, 1)
         return
       case 'let':
-        this.compileLet(c, e)
+        this.compileLet(c, e, tail)
         return
       case 'if':
-        this.compileIf(c, e.cond, e.then, e.else, e.span)
+        this.compileIf(c, e.cond, e.then, e.else, e.span, tail)
         return
       case 'binop':
         this.compileBinop(c, e)
@@ -170,8 +172,72 @@ class Compiler {
       case 'seq':
         this.compileExpr(c, e.first)
         c.op(Op.POP, e.first.span, -1)
-        this.compileExpr(c, e.rest)
+        this.compileExpr(c, e.rest, tail)
         return
+      case 'match':
+        this.compileMatch(c, e, tail)
+        return
+    }
+  }
+
+  private compileMatch(c: FnCompiler, e: Extract<Expr, { kind: 'match' }>, tail: boolean): void {
+    this.compileExpr(c, e.scrutinee)
+    const sslot = c.declareLocal('$match')
+    const baseHeight = c.height // scrutinee local only
+    const endJumps: number[] = []
+
+    for (const cs of e.cases) {
+      const tests: PatTest[] = []
+      const binds: PatBind[] = []
+      analyzePattern(cs.pattern, [], tests, binds)
+      const span = cs.pattern.span
+
+      // tests — each fails to the next case
+      const failJumps: number[] = []
+      for (const t of tests) {
+        this.navigate(c, sslot, t.path, span)
+        if (t.kind === 'lit') {
+          c.op(Op.CONST, span, +1, c.constant(t.value))
+          c.op(Op.EQ, span, -1)
+        } else if (t.kind === 'nil') {
+          c.op(Op.IS_NIL, span, 0)
+        } else {
+          c.op(Op.IS_CONS, span, 0)
+        }
+        failJumps.push(c.here())
+        c.op(Op.JUMP_IF_FALSE, span, -1, 0)
+      }
+
+      // bindings — extract each variable as a local
+      for (const b of binds) {
+        this.navigate(c, sslot, b.path, span)
+        c.declareLocal(b.name)
+      }
+
+      this.compileExpr(c, cs.body, tail)
+      if (binds.length > 0) c.op(Op.POP_BELOW, span, -binds.length, binds.length)
+      for (let k = 0; k < binds.length; k++) c.locals.pop()
+
+      endJumps.push(c.here())
+      c.op(Op.JUMP, span, 0, 0)
+
+      for (const j of failJumps) this.patch(c, j)
+      c.height = baseHeight // fall-through arrives with only the scrutinee live
+    }
+
+    c.op(Op.MATCH_FAIL, e.span, 0)
+    for (const j of endJumps) this.patch(c, j)
+    c.height = baseHeight + 1 // a matched case left: scrutinee, result
+    c.op(Op.POP_BELOW, e.span, -1, 1) // drop the scrutinee beneath the result
+    c.locals.pop()
+  }
+
+  private navigate(c: FnCompiler, sslot: number, path: PatStep[], span: Span): void {
+    c.op(Op.GET_LOCAL, span, +1, sslot)
+    for (const step of path) {
+      if (step === 'head') c.op(Op.HEAD, span, 0)
+      else if (step === 'tail') c.op(Op.TAIL, span, 0)
+      else c.op(Op.TUPLE_GET, span, 0, step.tuple)
     }
   }
 
@@ -197,14 +263,14 @@ class Compiler {
   private compileLambda(c: FnCompiler, e: Extract<Expr, { kind: 'lambda' }>, name: string): void {
     const child = new FnCompiler(name, 1, c)
     child.declareLocal(e.param)
-    this.compileExpr(child, e.body)
+    this.compileExpr(child, e.body, true) // a lambda body is in tail position
     child.op(Op.RETURN, e.body.span, 0)
     const idx = c.proto.childProtos.length
     c.proto.childProtos.push(child.proto)
     c.op(Op.CLOSURE, e.span, +1, idx)
   }
 
-  private compileLet(c: FnCompiler, e: Extract<Expr, { kind: 'let' }>): void {
+  private compileLet(c: FnCompiler, e: Extract<Expr, { kind: 'let' }>, tail: boolean): void {
     if (e.recursive) {
       // reserve the slot with a placeholder so the closure can capture itself
       c.op(Op.UNIT, e.span, +1)
@@ -219,25 +285,32 @@ class Compiler {
       this.compileExpr(c, e.value)
       c.declareLocal(e.name)
     }
-    this.compileExpr(c, e.body)
+    this.compileExpr(c, e.body, tail)
     // close the binding's scope: drop the local slot beneath the result
     c.op(Op.POP_BELOW, e.span, -1, 1)
     c.locals.pop()
   }
 
-  private compileIf(c: FnCompiler, cond: Expr, thenE: Expr, elseE: Expr, span: Span): void {
+  private compileIf(
+    c: FnCompiler,
+    cond: Expr,
+    thenE: Expr,
+    elseE: Expr,
+    span: Span,
+    tail = false,
+  ): void {
     this.compileExpr(c, cond)
     const jifAt = c.here()
     c.op(Op.JUMP_IF_FALSE, span, -1, 0) // operand patched below
     const heightAfterCond = c.height
-    this.compileExpr(c, thenE)
+    this.compileExpr(c, thenE, tail)
     const jmpAt = c.here()
     c.op(Op.JUMP, span, 0, 0)
     // patch JUMP_IF_FALSE to land here (start of else)
     this.patch(c, jifAt)
     // both branches produce one value at the same height
     c.height = heightAfterCond
-    this.compileExpr(c, elseE)
+    this.compileExpr(c, elseE, tail)
     this.patch(c, jmpAt)
   }
 
@@ -284,6 +357,55 @@ const BINOP_OPCODE: Record<Exclude<BinaryOp, '&&' | '||'>, number> = {
   '::': Op.CONS,
   '^': Op.CONCAT_STR,
   '++': Op.CONCAT_LIST,
+}
+
+// A navigation step from the scrutinee value to a sub-value.
+type PatStep = 'head' | 'tail' | { tuple: number }
+
+type PatTest =
+  | { path: PatStep[]; kind: 'lit'; value: Value }
+  | { path: PatStep[]; kind: 'nil' }
+  | { path: PatStep[]; kind: 'cons' }
+
+interface PatBind {
+  path: PatStep[]
+  name: string
+}
+
+// Flatten a pattern into the runtime tests it implies (outer constructors first)
+// and the variables it binds, each with an access path from the scrutinee.
+function analyzePattern(pat: Pattern, path: PatStep[], tests: PatTest[], binds: PatBind[]): void {
+  switch (pat.kind) {
+    case 'pwild':
+    case 'punit':
+      return
+    case 'pvar':
+      binds.push({ path, name: pat.name })
+      return
+    case 'pint':
+      tests.push({ path, kind: 'lit', value: vint(pat.value) })
+      return
+    case 'pfloat':
+      tests.push({ path, kind: 'lit', value: vfloat(pat.value) })
+      return
+    case 'pbool':
+      tests.push({ path, kind: 'lit', value: vbool(pat.value) })
+      return
+    case 'pstr':
+      tests.push({ path, kind: 'lit', value: vstr(pat.value) })
+      return
+    case 'pnil':
+      tests.push({ path, kind: 'nil' })
+      return
+    case 'pcons':
+      tests.push({ path, kind: 'cons' })
+      analyzePattern(pat.head, [...path, 'head'], tests, binds)
+      analyzePattern(pat.tail, [...path, 'tail'], tests, binds)
+      return
+    case 'ptuple':
+      pat.elements.forEach((p, i) => analyzePattern(p, [...path, { tuple: i }], tests, binds))
+      return
+  }
 }
 
 export function compile(program: Expr): FnProto {

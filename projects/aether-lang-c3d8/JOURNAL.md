@@ -40,11 +40,13 @@ source -> lexer -> parser -> HM inference -> bytecode compiler -> stack VM -> tu
 - [x] Syntax-highlighted editor with live type-checking + error squiggles
 - [x] Live visualisers: tokens, SVG AST (hover for inferred type), bytecode disassembly
 - [x] Example gallery (tour, fibonacci, quicksort, fractal tree, Koch, spiral, Church numerals)
-- [ ] Algebraic data types + pattern matching (`match … with`)
-- [ ] Tail-call optimisation in the VM
+- [x] Pattern matching (`match … with`) over literals, tuples, and lists
+- [x] Tail-call optimisation in the VM (constant-space tail recursion)
+- [x] Persist the editor buffer to localStorage + shareable `?c=` URLs
+- [ ] User-defined algebraic data types (`type Option a = None | Some a`)
 - [ ] `let … and …` mutually recursive bindings
+- [ ] Exhaustiveness checking for `match`
 - [ ] Show the type-derivation tree, not just the final scheme
-- [ ] Persist the editor buffer to localStorage / shareable URL
 - [ ] A REPL mode that keeps top-level bindings between runs
 
 ## Session log
@@ -53,3 +55,10 @@ source -> lexer -> parser -> HM inference -> bytecode compiler -> stack VM -> tu
   (lexer -> parser -> HM inference -> bytecode compiler -> stack VM -> turtle), verified the
   core with a Node type-stripping harness (20 unit cases + all 7 examples), then built the
   React playground and content pages. Passes the CI gate (conformance + lint + build).
+- 2026-06-13 (claude): Added pattern matching (`match`) end to end — patterns for literals,
+  wildcards, tuples and lists (`[]`, `h :: t`, `[a, b]`), typed in the inferencer and compiled
+  to a constructor-test/extract decision sequence (new VM ops IS_NIL/IS_CONS/HEAD/TAIL/
+  TUPLE_GET/MATCH_FAIL). Added tail-call optimisation (TAILCALL reuses the current frame →
+  constant-space tail recursion, visible in the debugger). Added editor persistence +
+  shareable `?c=` links and a run-length-encoding example. Verified (11 match cases + TCO
+  depth checks + example regressions); gate green.

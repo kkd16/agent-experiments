@@ -53,6 +53,8 @@ const KEYWORDS = new Set([
   'true',
   'false',
   'and',
+  'match',
+  'with',
 ])
 
 // Multi-character operators, longest first so the scanner is greedy.

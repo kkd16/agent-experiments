@@ -46,6 +46,13 @@ export const Op = {
   MAKE_TUPLE: 34, // <n>
   SET_LOCAL: 35, // <slot>  pop and store into an existing local (for let rec)
   POP_BELOW: 36, // <n>      drop n slots beneath the top (end of a let scope)
+  IS_NIL: 37, //             pop a list, push whether it is []
+  IS_CONS: 38, //            pop a list, push whether it is a cons cell
+  HEAD: 39, //               pop a cons, push its head
+  TAIL: 40, //               pop a cons, push its tail
+  TUPLE_GET: 41, // <k>      pop a tuple, push element k
+  MATCH_FAIL: 42, //         raise: no pattern matched
+  TAILCALL: 43, // <argc>    call in tail position, reusing the current frame
 } as const
 
 export type Op = (typeof Op)[keyof typeof Op]
@@ -68,6 +75,8 @@ const ONE_OPERAND = new Set<number>([
   Op.MAKE_TUPLE,
   Op.SET_LOCAL,
   Op.POP_BELOW,
+  Op.TUPLE_GET,
+  Op.TAILCALL,
 ])
 
 export function operandCount(op: number): number {
@@ -133,6 +142,7 @@ export function disassemble(proto: FnProto): DisasmLine[] {
           break
         }
         case Op.CALL:
+        case Op.TAILCALL:
           comment = `${operand} arg${operand === 1 ? '' : 's'}`
           break
       }
