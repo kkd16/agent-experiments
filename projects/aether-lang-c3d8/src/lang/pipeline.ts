@@ -53,6 +53,11 @@ export interface BindingType {
   type: string
 }
 
+export interface PipelineWarning {
+  message: string
+  span: Span | null
+}
+
 export interface PipelineResult {
   source: string
   tokens: Token[] | null
@@ -61,6 +66,7 @@ export interface PipelineResult {
   typeResult: InferResult | null
   programType: string | null
   bindingTypes: BindingType[]
+  warnings: PipelineWarning[]
   proto: FnProto | null
   run: RunResult | null
   error: PipelineError | null
@@ -83,6 +89,7 @@ export function runPipeline(source: string, opts: PipelineOptions = {}): Pipelin
     typeResult: null,
     programType: null,
     bindingTypes: [],
+    warnings: [],
     proto: null,
     run: null,
     error: null,
@@ -116,6 +123,7 @@ export function runPipeline(source: string, opts: PipelineOptions = {}): Pipelin
     result.typeResult = inferred
     result.programType = typeToString(inferred.type)
     result.bindingTypes = collectBindingTypes(userAst, inferred)
+    result.warnings = inferred.warnings
   } catch (e) {
     result.error = toError('type', e)
     return result

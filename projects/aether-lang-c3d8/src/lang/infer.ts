@@ -6,6 +6,8 @@
 // typed monomorphically while their own body is checked, then generalised.
 
 import type { BinaryOp, Expr, Pattern, TypeExpr } from './ast.ts'
+import type { TypeCtorInfo } from './exhaustive.ts'
+import { analyzeMatch } from './exhaustive.ts'
 import type { Span } from './lexer.ts'
 import type { Scheme, Type, TVar } from './types.ts'
 import {
@@ -45,18 +47,27 @@ function monoScheme(t: Type): Scheme {
   return { vars: [], type: t }
 }
 
+export interface InferWarning {
+  message: string
+  span: Span | null
+}
+
 export interface InferResult {
   type: Type
   /** inferred type for every visited node (pruned lazily at display time) */
   nodeTypes: Map<Expr, Type>
   /** generalised scheme for every `let`-bound name */
   bindingSchemes: Map<Expr, Scheme>
+  /** non-fatal warnings (e.g. non-exhaustive / redundant matches) */
+  warnings: InferWarning[]
 }
 
 class Inferrer {
   nodeTypes = new Map<Expr, Type>()
   bindingSchemes = new Map<Expr, Scheme>()
   ctorInfo = new Map<string, { arity: number; scheme: Scheme }>()
+  typeCtors = new Map<string, TypeCtorInfo>()
+  warnings: InferWarning[] = []
 
   occurs(v: TVar, t: Type): boolean {
     const p = prune(t)
@@ -197,6 +208,7 @@ class Inferrer {
           for (const [name, t] of bindings) env2 = extend(env2, name, monoScheme(t))
           this.unify(this.infer(env2, c.body), result, c.body.span)
         }
+        this.checkMatch(e, ts)
         return result
       }
       case 'letrec': {
@@ -219,7 +231,11 @@ class Inferrer {
         return this.infer(env2, e.body)
       }
       case 'typedecl': {
-        const params = new Map<string, TVar>()
+        this.typeCtors.set(e.name, {
+          params: e.params,
+          ctors: e.ctors.map((c) => ({ name: c.name, argTypeExprs: c.args })),
+        })
+        const params = new Map<string, Type>()
         for (const p of e.params) params.set(p, freshVar())
         const resultType: Type = tcon(
           e.name,
@@ -236,6 +252,27 @@ class Inferrer {
         }
         return this.infer(env2, e.body)
       }
+    }
+  }
+
+  private checkMatch(e: Extract<Expr, { kind: 'match' }>, scrutType: Type): void {
+    const analysis = analyzeMatch(
+      e.cases.map((c) => c.pattern),
+      scrutType,
+      this.typeCtors,
+      convertTypeExpr,
+    )
+    if (analysis.missing.length > 0) {
+      this.warnings.push({
+        message: `non-exhaustive match — not covered: ${analysis.missing.join(', ')}`,
+        span: e.span,
+      })
+    }
+    for (const idx of analysis.redundant) {
+      this.warnings.push({
+        message: 'redundant match clause — it can never be reached',
+        span: e.cases[idx].pattern.span,
+      })
     }
   }
 
@@ -358,7 +395,7 @@ class Inferrer {
 
 // Convert a syntactic type expression (from a `type` declaration) into a real
 // type, mapping the declaration's parameter names to their type variables.
-function convertTypeExpr(te: TypeExpr, params: Map<string, TVar>): Type {
+function convertTypeExpr(te: TypeExpr, params: Map<string, Type>): Type {
   switch (te.kind) {
     case 'tvar': {
       const tv = params.get(te.name)
@@ -409,7 +446,12 @@ function describe(t: Type): string {
 export function inferProgram(program: Expr, base: Env): InferResult {
   const inf = new Inferrer()
   const type = inf.infer(base, program)
-  return { type, nodeTypes: inf.nodeTypes, bindingSchemes: inf.bindingSchemes }
+  return {
+    type,
+    nodeTypes: inf.nodeTypes,
+    bindingSchemes: inf.bindingSchemes,
+    warnings: inf.warnings,
+  }
 }
 
 /** Build the base typing environment from the prelude globals. */

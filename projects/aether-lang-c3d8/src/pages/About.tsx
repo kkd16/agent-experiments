@@ -66,6 +66,11 @@ export default function About() {
             is written in Aether and compiled in with every program.
           </li>
           <li>
+            <code>match</code> is checked for exhaustiveness and redundancy using Maranget's
+            usefulness algorithm — non-exhaustive matches are reported with a concrete witness
+            pattern, and unreachable clauses are flagged.
+          </li>
+          <li>
             Routing is hash-based and the build uses a relative base, so everything works as a
             static bundle under a sub-path.
           </li>
