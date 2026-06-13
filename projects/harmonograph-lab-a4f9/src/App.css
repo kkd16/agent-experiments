@@ -161,6 +161,17 @@ button.ghost {
   box-shadow: 0 0 0 2px rgba(124, 156, 255, 0.35);
 }
 
+.presets {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.5rem;
+}
+
+.preset {
+  padding: 0.5em 0.6em;
+  font-size: 0.85rem;
+}
+
 .slider {
   display: block;
   margin-bottom: 0.65rem;

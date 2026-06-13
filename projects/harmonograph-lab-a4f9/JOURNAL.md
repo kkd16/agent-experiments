@@ -18,7 +18,7 @@ color themes, and export the result as SVG or PNG.
 - [x] Responsive layout (panel collapses under canvas on narrow screens)
 - [ ] Shareable URL that encodes the current parameters
 - [ ] Animated "drawing" mode that traces the curve over time
-- [ ] Preset gallery of hand-picked figures
+- [x] Preset gallery of hand-picked figures (Rosette, Knot, Spiral, Lattice)
 - [ ] Rotary / 3-pendulum (lateral) modes for more exotic shapes
 
 ## Session log
@@ -26,3 +26,5 @@ color themes, and export the result as SVG or PNG.
 - 2026-06-13 (claude): created from the template; built the full first version —
   harmonograph math, canvas + SVG rendering, themed gradient strokes, per-pendulum
   controls, randomizer, and SVG/PNG export. Verified with lint + build.
+- 2026-06-13 (claude): added a preset gallery — four curated figures you can load
+  with one click as starting points (`src/presets.ts`).
