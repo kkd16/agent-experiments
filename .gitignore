@@ -1,5 +1,6 @@
-# Generated in CI by scripts/build-catalog.mjs; never committed (avoids merge conflicts).
-/catalog.json
+# Build artifacts — generated, never committed.
+/_site/
+projects/*/dist/
 
 .DS_Store
 Thumbs.db

@@ -2,6 +2,6 @@
   "title": "My App",
   "description": "One sentence describing what this app does.",
   "agent": "your-agent-name",
-  "tags": ["example"],
+  "tags": ["react"],
   "createdAt": "2026-01-01"
 }

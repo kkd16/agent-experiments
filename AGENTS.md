@@ -1,10 +1,11 @@
 # Agent Contract
 
 You are an autonomous coding agent (Jules, Claude, or any other). This repo is an **app
-factory**: you take an idea and build a small, self-contained **static frontend app** that
-gets published to a shared catalog at <https://kkd16.github.io/agent-experiments/>.
+factory**: you take an idea and build a small **Vite + React + TypeScript** app that gets
+published to a shared catalog at <https://kkd16.github.io/agent-experiments/>.
 
-Follow this contract exactly. It is short on purpose.
+The stack is **fixed and enforced**. Don't design a build system — copy the template, write
+your app, push. Follow this contract exactly.
 
 ---
 
@@ -12,75 +13,69 @@ Follow this contract exactly. It is short on purpose.
 
 > **The only files you may create or edit live inside your own `projects/<slug>/` folder.**
 
-Never touch anything else — not `index.html` at the root, not `assets/`, not `scripts/`,
-not `catalog.json`, not the workflow, not this file, not any other project's folder. The
-catalog updates itself automatically; you do **not** register your project anywhere.
-
-This is what lets dozens of agents push to `main` at once without merge conflicts. Break
-this rule and you create conflicts for everyone.
+Never touch anything else — not the root `index.html`, not `assets/`, not `scripts/`, not the
+workflow, not this file, not any other project's folder. The catalog updates itself; you do
+**not** register your project anywhere. This is what lets many agents push to `main` at once
+without merge conflicts.
 
 ---
 
-## What to build
+## The stack (mandatory — CI rejects anything else)
 
-One **self-contained static frontend app**: plain HTML/CSS/JS, or a framework **pre-built
-to static files**. No server. No build step runs for you in CI — ship files that work as-is.
+Every project is a **Vite + React + TypeScript app built with pnpm**. CI validates each
+project and **rejects** (does not publish, no catalog card, logs a loud error) anything that:
 
-## Step 1 — pick a folder
+- uses npm or yarn instead of pnpm (a `package-lock.json` or `yarn.lock` is a hard fail),
+- is missing `pnpm-lock.yaml`, `index.html`, `package.json`, or `vite.config.ts`,
+- doesn't depend on `react` + `react-dom`, or has no `build` script,
+- doesn't keep `base: './'` in `vite.config.ts`,
+- fails to build (`pnpm build` errors, e.g. a type error).
 
-Create exactly one new folder:
+Your app only goes live if it conforms **and** builds. Other projects deploy regardless of
+yours — a rejection only affects you.
 
+## Step 1 — create your project from the template
+
+```bash
+cp -r projects/_template projects/<slug>      # then: rm -rf projects/<slug>/node_modules
+cd projects/<slug>
+pnpm install                                  # refreshes node_modules + pnpm-lock.yaml
 ```
-projects/<slug>/
-```
 
-`<slug>` = a short, descriptive, kebab-case name **plus a short random suffix** so two
-agents never collide on the same folder. Examples:
+`<slug>` = a short, descriptive, kebab-case name **plus a short random suffix** so two agents
+never collide on a folder. Examples: `weather-widget-7f3a`, `pixel-paint-19c2`.
 
-```
-projects/weather-widget-7f3a/
-projects/pixel-paint-19c2/
-projects/markdown-preview-a8d1/
-```
+Use **pnpm only**: `pnpm install`, `pnpm add <pkg>`, `pnpm dev`, `pnpm build`. (Running `npm`
+or `yarn` is blocked by the template's `only-allow pnpm` guard.)
 
-## Step 2 — add your files
+## Step 2 — build your app
 
-Required:
-
-- `projects/<slug>/index.html` — the entry point.
-- `projects/<slug>/project.json` — metadata for the catalog card (see schema below).
-
-Everything else your app needs (CSS, JS, images) goes **inside the same folder**.
-
-### `project.json` schema
+- Write your app in `src/` (`src/App.tsx` is the entry component). Add components, assets, and
+  dependencies (`pnpm add <pkg>`) **inside your folder** as needed.
+- Edit `project.json` — the catalog card metadata:
 
 ```json
 {
   "title": "Weather Widget",
   "description": "A tiny widget that shows the current weather for any city.",
   "agent": "jules",
-  "tags": ["weather", "vanilla-js"],
+  "tags": ["weather", "react"],
   "createdAt": "2026-06-12"
 }
 ```
 
-All fields are optional (a missing/broken `project.json` just falls back to the slug), but
-fill them in — they make your card look good.
+### Hard rules (these keep your app working on the live subpath)
 
-## Step 3 — RELATIVE PATHS ONLY (apps break without this)
+- **Keep `base: './'`** in `vite.config.ts`. The site is served under
+  `/agent-experiments/projects/<slug>/`; an absolute base 404s.
+- **Hash routing only** (`#/page`). History-API routes break on refresh under a relative base.
+- **Keep `index.html` at your folder root** — it's the Vite entry **and** how the catalog
+  discovers your project.
+- **Commit `pnpm-lock.yaml`** (CI runs `pnpm install --frozen-lockfile`, which fails without it).
+- **Don't commit `dist/` or `node_modules/`** — generated/gitignored. CI builds `dist/` for you.
+- **Test `pnpm build` locally before pushing** — if it fails, your project is rejected.
 
-The site is served under the subpath `/agent-experiments/`, so a leading `/` points at the
-wrong place and 404s. In **every** `href`, `src`, `url()`, `fetch()`, `import`, and `<base>`:
-
-- ✅ Use document-relative paths: `./style.css`, `app.js`, `img/logo.png`
-- ❌ Never a leading slash: `/style.css` resolves to `kkd16.github.io/style.css` → 404
-- ❌ Never reach outside your folder with `../`
-- ❌ No History-API routing (there's no server to rewrite). Use hash routes (`#/page`) or
-  multiple `.html` files instead.
-
-## Step 4 — publish
-
-Commit and push straight to `main`:
+## Step 3 — publish
 
 ```bash
 git add projects/<slug>
@@ -88,7 +83,7 @@ git commit -m "Add <slug>"
 git push
 ```
 
-If the push is rejected (`non-fast-forward`), someone else pushed first. Just:
+If the push is rejected (`non-fast-forward`), someone pushed first:
 
 ```bash
 git pull --rebase && git push
@@ -98,6 +93,5 @@ Because your commit only adds a brand-new folder, the rebase is always clean —
 
 ---
 
-That's it. Within a minute or two, the GitHub Action rebuilds the catalog and your app
-appears at `https://kkd16.github.io/agent-experiments/projects/<slug>/` with a card on the
-homepage. Copy `projects/_template/` to get started fast.
+Within a minute or two CI builds your app and it appears at
+`https://kkd16.github.io/agent-experiments/projects/<slug>/` with a card on the homepage.
