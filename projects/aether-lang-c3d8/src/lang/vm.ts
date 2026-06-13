@@ -243,6 +243,11 @@ export class VM {
           if (b === 0) throw new AetherRuntimeError('division by zero')
           return vint(Math.trunc(a / b))
         })
+      case Op.MOD:
+        return this.intBin((a, b) => {
+          if (b === 0) throw new AetherRuntimeError('modulo by zero')
+          return vint(a % b)
+        })
       case Op.NEG: {
         const v = stack.pop() as Value
         stack.push(vint(-(v as { n: number }).n))

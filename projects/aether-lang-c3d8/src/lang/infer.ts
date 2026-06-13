@@ -444,6 +444,7 @@ class Inferrer {
       case '-':
       case '*':
       case '/':
+      case '%':
         this.unify(tl, tInt, e.left.span)
         this.unify(tr, tInt, e.right.span)
         return tInt

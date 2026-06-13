@@ -150,6 +150,8 @@ function foldBinop(op: BinaryOp, l: Expr, r: Expr, span: Expr['span']): Expr | n
         return { kind: 'int', value: Math.trunc(l.value * r.value), span }
       case '/':
         return r.value === 0 ? null : { kind: 'int', value: Math.trunc(l.value / r.value), span }
+      case '%':
+        return r.value === 0 ? null : { kind: 'int', value: l.value % r.value, span }
     }
   }
   // float arithmetic (leave division by zero alone)

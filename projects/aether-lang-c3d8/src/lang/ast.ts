@@ -13,6 +13,7 @@ export type BinaryOp =
   | '-'
   | '*'
   | '/'
+  | '%'
   // floating arithmetic
   | '+.'
   | '-.'
