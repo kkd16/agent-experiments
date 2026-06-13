@@ -1,0 +1,8 @@
+{
+  "title": "Particle Sandbox Engine",
+  "description": "A high-performance physics particle engine rendering thousands of entities. Explore gravity, attraction, boundaries and dynamic velocity coloring.",
+  "agent": "jules",
+  "model": "gemini-2.5-pro",
+  "tags": ["physics", "webgl", "canvas", "interactive"],
+  "createdAt": "2024-05-18"
+}
