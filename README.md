@@ -1,62 +1,42 @@
-# agent-experiments — Agent App Factory
+# agent-experiments
 
-A repo where autonomous coding agents (Jules, Claude, etc.) turn ideas into small
-**Vite + React + TypeScript** apps. Each app lives in its own folder, and a catalog homepage
-on GitHub Pages auto-discovers every project.
+Autonomous coding agents (Jules, Claude, and others) turn ideas into small
+**Vite + React + TypeScript** apps. Each one lives in its own folder and is auto-published to a
+shared catalog.
 
-**Live catalog:** <https://kkd16.github.io/agent-experiments/>
+**Live catalog → <https://kkd16.github.io/agent-experiments/>**
 
 ## How it works
 
 ```
-projects/<slug>/   ← each agent builds a React+Vite+TS app here, in its own folder (pnpm)
+projects/<slug>/   ← an agent builds a React + Vite + TS app here (pnpm), in its own folder
         │
-        ▼ push to main
-.github/workflows/deploy.yml   ← on every push, runs a 3-job pipeline:
-        │                          discover (validate + reject non-conforming)
-        │                            → build matrix (one isolated job per project, pnpm)
-        ▼                              → deploy (collect artifacts + publish)
-index.html + assets/           ← static catalog shell; fetches catalog.json, renders the grid
+        ▼  push to main
+.github/workflows/deploy.yml   ← discover (validate) → build each app → deploy to Pages
+        │
+        ▼
+index.html + assets/   ← catalog shell; reads catalog.json and renders the grid
 ```
 
-The key idea: **no agent writes to a shared file.** The catalog is generated, and each
-project carries its own `pnpm-lock.yaml` — so any number of sessions can push to `main` in
-parallel without merge conflicts. The only writes a session makes are inside its own
-`projects/<slug>/` folder.
+Each app is self-contained — its own folder and `pnpm-lock.yaml` — so any number of agents can
+push to `main` at once without conflicts, and the catalog regenerates itself. Apps that don't
+conform to the stack or fail to build are skipped, never published, so one bad app can't block
+the rest.
 
-Every app also carries a required `JOURNAL.md` — its long-lived memory of ideas and sessions,
-so an agent can pick the app back up later. Checking off its `- [ ]` items is what fills the
-progress tally on the project's catalog card.
-
-Every project must conform to the stack (Vite + React + TS + pnpm). **Non-conforming or
-build-failing projects are rejected** by CI — skipped, not published, with a loud error — so
-one bad project never blocks the rest.
+Every app also keeps a `JOURNAL.md`: a running log of ideas and sessions so an agent can pick it
+back up later. Checked-off `- [ ]` items fill the progress tally on its catalog card.
 
 ## For agents
 
-See **[AGENTS.md](./AGENTS.md)** — the enforced contract. Copy `projects/_template/` to start.
+Read **[AGENTS.md](./AGENTS.md)** — the build contract — then copy `projects/_template/` to start.
 
 ## Preview locally
 
 ```bash
-# develop your app (hot reload)
+# one app, with hot reload
 cd projects/<slug> && pnpm install && pnpm dev
 
-# preview the whole site exactly as CI ships it
-node scripts/build-site.mjs               # builds every project → _site/
-#   fast catalog only (no builds):  node scripts/build-site.mjs --catalog-only
-cd _site && python3 -m http.server        # open http://localhost:8000/
+# the whole catalog, exactly as CI ships it
+node scripts/build-site.mjs            # add --catalog-only to skip the builds
+cd _site && python3 -m http.server     # → http://localhost:8000/
 ```
-
-> Apps are served under `/agent-experiments/projects/<slug>/`, which is why `vite.config.ts`
-> must keep `base: './'` and apps must use hash routing (see AGENTS.md).
-
-## What's intentionally simple (for now)
-
-Build jobs run untrusted agent code with read-only permissions (the Pages token lives only in
-the deploy job); per-project `dist` is cached by source hash, so unchanged projects skip
-rebuilding. Newest-first catalog with no search/filter yet. Easy to extend later.
-
-Catalog thumbnails are live, same-origin iframes, so a project's app could in principle script
-the catalog page. That's acceptable here: all projects are first-party, top-navigation is
-blocked, and the Pages origin holds no secrets or sessions.
