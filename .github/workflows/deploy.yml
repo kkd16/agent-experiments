@@ -51,8 +51,9 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version: "24"
-          cache: pnpm
-          cache-dependency-path: projects/${{ matrix.slug }}/pnpm-lock.yaml
+      # No pnpm store cache on purpose: it's ~33 MiB per project and would fill the 10 GB
+      # repo cache fast. The tiny dist cache below already skips rebuilds for unchanged
+      # projects; only changed projects re-download deps (~20s), which is fine.
       - name: Restore cached build
         id: cache
         uses: actions/cache@v4
