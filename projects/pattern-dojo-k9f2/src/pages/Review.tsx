@@ -3,6 +3,7 @@ import { patterns, patternById } from "../data/patterns";
 import { useSRS, gradePreviews, formatDue, masteryOf } from "../lib/srs";
 import type { Grade } from "../lib/srs";
 import { useStreak } from "../lib/streak";
+import { useSettings } from "../lib/settings";
 import { href, navigate } from "../lib/router";
 import { Difficulty } from "../components/ui";
 
@@ -24,10 +25,12 @@ function weakFirst(cards: { id: string; lapses: number; ease: number; due: numbe
 export default function Review() {
   const srs = useSRS();
   const { current: streak, recordToday } = useStreak();
+  const { settings } = useSettings();
+  const cap = settings.sessionSize;
 
   // Build a session queue ONCE per mount: due cards first, then optionally new
   // ones to learn ahead. We freeze the id list so grading doesn't reshuffle it.
-  const [queue, setQueue] = useState<string[]>(() => weakFirst(srs.dueCards()));
+  const [queue, setQueue] = useState<string[]>(() => weakFirst(srs.dueCards()).slice(0, cap)); // eslint-disable-line react-hooks/exhaustive-deps
   const [pos, setPos] = useState(0);
   const [flipped, setFlipped] = useState(false);
   const [reviewed, setReviewed] = useState(0);
@@ -36,7 +39,7 @@ export default function Review() {
   );
 
   const startAhead = () => {
-    const fresh = srs.newIds(patterns.map((p) => p.id)).slice(0, 6);
+    const fresh = srs.newIds(patterns.map((p) => p.id)).slice(0, settings.newPerDay);
     if (fresh.length) {
       setQueue(fresh);
       setPos(0);
@@ -121,7 +124,7 @@ export default function Review() {
               <button
                 className="btn primary lg"
                 onClick={() => {
-                  setQueue(weakFirst(srs.dueCards()));
+                  setQueue(weakFirst(srs.dueCards()).slice(0, cap));
                   setMode("due");
                 }}
               >
@@ -173,7 +176,7 @@ export default function Review() {
               <button
                 className="btn primary"
                 onClick={() => {
-                  setQueue(weakFirst(srs.dueCards()));
+                  setQueue(weakFirst(srs.dueCards()).slice(0, cap));
                   setPos(0);
                   setReviewed(0);
                 }}

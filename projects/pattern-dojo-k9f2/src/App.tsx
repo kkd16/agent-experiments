@@ -6,6 +6,7 @@ import Quiz from "./pages/Quiz";
 import Review from "./pages/Review";
 import Cheatsheet from "./pages/Cheatsheet";
 import Stats from "./pages/Stats";
+import Settings from "./pages/Settings";
 import CommandPalette from "./components/CommandPalette";
 import { useTheme } from "./lib/theme";
 import { useSRS } from "./lib/srs";
@@ -32,6 +33,7 @@ export default function App() {
   else if (route === "review") page = <Review />;
   else if (route === "cheatsheet") page = <Cheatsheet />;
   else if (route === "stats") page = <Stats />;
+  else if (route === "settings") page = <Settings />;
   else page = <Home />;
 
   const isActive = (path: string) => {
@@ -66,6 +68,14 @@ export default function App() {
             >
               ⌕
             </button>
+            <a
+              className={`icon-btn ${route === "settings" ? "active" : ""}`}
+              href={href("/settings")}
+              title="Settings"
+              aria-label="Settings"
+            >
+              ⚙
+            </a>
             <button
               className="icon-btn"
               onClick={toggle}

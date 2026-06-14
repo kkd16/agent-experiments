@@ -745,3 +745,74 @@ a.today-card:hover {
   background: var(--bg-soft);
   border: 1px solid var(--border-soft);
 }
+
+/* ---------------- Settings page ---------------- */
+.icon-btn.active {
+  color: var(--text);
+  border-color: var(--accent);
+}
+.settings-card {
+  margin-bottom: 18px;
+}
+.settings-card h2 {
+  font-size: 1.15rem;
+  margin-bottom: 14px;
+}
+.setting-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 14px 0;
+  border-top: 1px solid var(--border-soft);
+}
+.setting-row:first-of-type {
+  border-top: none;
+  padding-top: 0;
+}
+.setting-name {
+  font-weight: 650;
+}
+.setting-label .faint {
+  font-size: 0.83rem;
+}
+.setting-control {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-shrink: 0;
+}
+.setting-control input[type="range"] {
+  width: 160px;
+}
+.setting-value {
+  min-width: 28px;
+  text-align: right;
+  font-weight: 700;
+  color: var(--accent);
+}
+.seg-toggle {
+  display: inline-flex;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  overflow: hidden;
+}
+.seg-toggle button {
+  padding: 7px 14px;
+  border: none;
+  background: var(--bg-card);
+  color: var(--text-dim);
+  font-weight: 600;
+  font-size: 0.88rem;
+}
+.seg-toggle button.active {
+  background: var(--accent);
+  color: var(--on-accent);
+}
+@media (max-width: 560px) {
+  .setting-row {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 10px;
+  }
+}

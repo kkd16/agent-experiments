@@ -50,6 +50,7 @@ export default function CommandPalette() {
       { id: "go-quiz", label: "Pattern trainer", icon: "🎯", group: "Go to", run: () => navigate("/quiz") },
       { id: "go-cheat", label: "Complexity cheat-sheet", icon: "📋", group: "Go to", run: () => navigate("/cheatsheet") },
       { id: "go-stats", label: "Progress & stats", hint: "heatmap, backup", icon: "📊", group: "Go to", run: () => navigate("/stats") },
+      { id: "go-settings", label: "Settings", hint: "session size, theme", icon: "⚙️", group: "Go to", run: () => navigate("/settings") },
     ];
     const actions: Cmd[] = [
       {

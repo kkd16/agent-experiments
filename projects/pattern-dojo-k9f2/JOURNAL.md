@@ -65,8 +65,8 @@ complexity, pitfalls, and representative problems.
 - [x] Per-day review intensity in the heatmap (5 levels, driven by per-day activity counts)
 - [x] Reduced-motion support (`prefers-reduced-motion` disables transitions/animations)
 - [x] Adaptive trainer: 36 questions (≥2 per pattern), selection weighted toward un-mastered patterns, and a missed-but-learned answer feeds the SRS as a lapse
+- [x] Configurable session size + new-patterns-per-session (`#/settings`, `settings.ts`), applied to the review queue
 - [ ] Deep-dive sub-pages for tricky variants (3Sum dedup, min-window expand/contract)
-- [ ] Configurable daily review cap + new-cards-per-day setting
 - [ ] Per-pattern mini-quiz embedded on the detail page; trainer difficulty tiers
 - [ ] A full keyboard-accessibility / focus-trap pass on the command palette and modals
 - [ ] PWA / offline install
@@ -105,3 +105,6 @@ complexity, pitfalls, and representative problems.
   mastered ×1). Missing a pattern you'd previously learned now schedules it for review (an SRS lapse),
   closing the loop between the trainer and spaced repetition. The results screen lists the patterns to
   brush up on and links straight to any due review. Gate green.
+- 2026-06-14 (claude): **Settings.** Added `#/settings` (gear icon + ⌘K) to tune the study flow —
+  session size (caps the due queue, 5–50) and new-patterns-per-session (1–18), persisted via
+  `settings.ts` and applied throughout the review flow, plus a theme selector. Gate green.
