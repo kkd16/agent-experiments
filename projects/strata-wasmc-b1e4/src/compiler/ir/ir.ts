@@ -29,6 +29,7 @@ export type InstKind =
   | 'icmp'
   | 'fcmp'
   | 'cast'
+  | 'select'
   | 'call'
   | 'print'
   | 'gget'
@@ -119,6 +120,7 @@ export function isPureValue(inst: Inst): boolean {
     case 'icmp':
     case 'fcmp':
     case 'cast':
+    case 'select':
     case 'copy':
       return true;
     // loads and gget read mutable state; calls/prints/stores have effects.

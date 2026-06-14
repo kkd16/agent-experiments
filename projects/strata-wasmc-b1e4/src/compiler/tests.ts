@@ -570,6 +570,23 @@ fn main(){
 }`,
   },
   {
+    name: 'if-convert-select',
+    source: `fn absdiff(a: int, b: int) -> int { return a > b ? a - b : b - a; }
+fn clamp(x: int, lo: int, hi: int) -> int {
+  let y = x < lo ? lo : x;          // lowers to a diamond -> select
+  return y > hi ? hi : y;
+}
+fn maxf(a: float, b: float) -> float { return a > b ? a : b; }
+fn main(){
+  for (let i = -3; i <= 3; i = i + 1) { print(absdiff(i, 0)); print(clamp(i, -1, 1)); }
+  print(maxf(2.5, 1.5)); print(maxf(-1.0, -2.0));
+  // nested selects
+  let s = 0;
+  for (let i = 0; i < 10; i = i + 1) { s = s + (i % 2 == 0 ? i : -i); }
+  print(s);
+}`,
+  },
+  {
     name: 'str-csv-sum',
     source: `fn main(){
   let row = "10,20,30,40,5";
