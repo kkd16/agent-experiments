@@ -1,6 +1,7 @@
 import type { Block, Inst, IRFunc, IRModule, Operand, Phi } from '../ir/ir';
 import { eachOperand, hasSideEffect, isPureValue } from '../ir/ir';
 import { computeDom, succOfTerm } from '../ir/cfg';
+import { dumpModule } from '../irdump';
 import { i32, satTruncI32 } from '../interp';
 
 // The optimization pipeline. Every pass works on the SSA IR in place and
@@ -660,15 +661,29 @@ function pruneFunctions(mod: IRModule): number {
 // Pass manager
 // =====================================================================
 
-export function optimize(mod: IRModule, level: OptLevel): { mod: IRModule; log: PassStat[] } {
+export interface OptResult {
+  mod: IRModule;
+  log: PassStat[];
+  /** Textual IR after each step (snapshots[0] is the input). Aligned so
+   *  `snapshots[k + 1]` is the IR after `log[k]`. Empty unless requested. */
+  snapshots: string[];
+}
+
+export function optimize(mod: IRModule, level: OptLevel, snapshots = false): OptResult {
   const out = cloneModule(mod);
   const log: PassStat[] = [];
-  if (level === 0) return { mod: out, log };
+  const snaps: string[] = [];
+  const snap = (): void => {
+    if (snapshots) snaps.push(dumpModule(out));
+  };
+  snap(); // the input IR
+  if (level === 0) return { mod: out, log, snapshots: snaps };
 
   const record = (name: string, fnOp: (fn: IRFunc) => number) => {
     let total = 0;
     for (const fn of out.funcs) total += fnOp(fn);
     log.push({ name, changed: total });
+    snap();
   };
 
   const rounds = level >= 2 ? 4 : 1;
@@ -686,6 +701,9 @@ export function optimize(mod: IRModule, level: OptLevel): { mod: IRModule; log: 
   record('cfg-cleanup', (fn) => pruneUnreachable(fn));
   record('dead-code-elim (final)', dce);
   const removed = pruneFunctions(out);
-  if (removed > 0) log.push({ name: 'dead-function-elim', changed: removed });
-  return { mod: out, log };
+  if (removed > 0) {
+    log.push({ name: 'dead-function-elim', changed: removed });
+    snap();
+  }
+  return { mod: out, log, snapshots: snaps };
 }

@@ -123,10 +123,42 @@ export function IrPanel({ comp, fnIdx }: { comp: Compilation; fnIdx: number }) {
 
 // ---------------------------------------------------------------- Optimizer
 
+type DiffLine = { t: ' ' | '+' | '-'; s: string };
+function lineDiff(a: string, b: string): DiffLine[] {
+  const A = a.split('\n');
+  const B = b.split('\n');
+  const n = A.length;
+  const m = B.length;
+  const dp: Int32Array[] = Array.from({ length: n + 1 }, () => new Int32Array(m + 1));
+  for (let i = n - 1; i >= 0; i--)
+    for (let j = m - 1; j >= 0; j--)
+      dp[i][j] = A[i] === B[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
+  const out: DiffLine[] = [];
+  let i = 0;
+  let j = 0;
+  while (i < n && j < m) {
+    if (A[i] === B[j]) { out.push({ t: ' ', s: A[i] }); i++; j++; }
+    else if (dp[i + 1][j] >= dp[i][j + 1]) { out.push({ t: '-', s: A[i] }); i++; }
+    else { out.push({ t: '+', s: B[j] }); j++; }
+  }
+  while (i < n) out.push({ t: '-', s: A[i++] });
+  while (j < m) out.push({ t: '+', s: B[j++] });
+  return out;
+}
+
 export function OptPanel({ comp }: { comp: Compilation }) {
+  const [sel, setSel] = useState<number | null>(null);
   if (!comp.metrics || !comp.optLog) return <Empty />;
   const { ssaInsts, optInsts, reductionPct } = comp.metrics;
   const max = Math.max(ssaInsts, 1);
+  const snaps = comp.optSnapshots ?? [];
+  const preLog = comp.preLog ?? [];
+
+  const diff = sel !== null && snaps[sel] !== undefined && snaps[sel + 1] !== undefined
+    ? lineDiff(snaps[sel], snaps[sel + 1])
+    : null;
+  const changedLines = diff ? diff.filter((d) => d.t !== ' ').length : 0;
+
   return (
     <div className="panel-scroll opt-panel">
       <div className="opt-bars">
@@ -140,20 +172,52 @@ export function OptPanel({ comp }: { comp: Compilation }) {
         </div>
         <div className="opt-reduction">{reductionPct}% fewer IR instructions</div>
       </div>
+
+      {preLog.length > 0 && (
+        <div className="prelog">
+          <span className="prelog-label">pre-SSA:</span>
+          {preLog.map((p, i) => (
+            <span key={i} className="prelog-pill">{p.name} <b>×{p.changed}</b></span>
+          ))}
+        </div>
+      )}
+
       {comp.level === 0 ? (
         <p className="dim note">Optimizations are disabled at -O0. Switch to -O1/-O2/-O3 to run the pass pipeline.</p>
       ) : (
-        <table className="pass-table">
-          <thead><tr><th>pass</th><th>changes</th></tr></thead>
-          <tbody>
-            {comp.optLog.map((p, i) => (
-              <tr key={i} className={p.changed > 0 ? '' : 'dim'}>
-                <td className="mono">{p.name}</td>
-                <td className="num">{p.changed}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+        <>
+          <table className="pass-table">
+            <thead><tr><th>SSA pass</th><th>changes</th><th></th></tr></thead>
+            <tbody>
+              {comp.optLog.map((p, i) => (
+                <tr
+                  key={i}
+                  className={(p.changed > 0 ? '' : 'dim') + (sel === i ? ' pass-sel' : '') + (snaps.length ? ' pass-click' : '')}
+                  onClick={() => snaps.length && setSel(sel === i ? null : i)}
+                >
+                  <td className="mono">{p.name}</td>
+                  <td className="num">{p.changed}</td>
+                  <td className="dim diff-hint">{snaps.length ? (sel === i ? '▾ diff' : '▸ diff') : ''}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {diff && (
+            <div className="ir-diff">
+              <div className="ir-diff-head">
+                IR change from <b>{comp.optLog[sel!].name}</b> — {changedLines === 0 ? 'no instructions changed' : `${changedLines} line(s) changed`}
+              </div>
+              <pre className="code-pre diff-pre">
+                {diff.map((d, i) => (
+                  <div key={i} className={d.t === '+' ? 'diff-add' : d.t === '-' ? 'diff-del' : 'diff-ctx'}>
+                    {d.t}
+                    {d.s ? ' ' + d.s : ''}
+                  </div>
+                ))}
+              </pre>
+            </div>
+          )}
+        </>
       )}
       <div className="pass-legend">
         <b>Pipeline:</b>{comp.level >= 2 ? ' tail-call → loop → function inlining (pre-SSA) → ' : ' '}
@@ -162,7 +226,7 @@ export function OptPanel({ comp }: { comp: Compilation }) {
         {comp.level >= 2 ? ' loop-invariant code motion →' : ''} dead-code elimination,
         iterated to a fixed point{comp.level >= 2 ? ', then CFG cleanup + dead-function elimination' : ''}.
         The backend then <b>stackifies</b> — folding single-use pure values onto the wasm operand
-        stack so they never need a local.
+        stack so they never need a local. {snaps.length > 0 && 'Click a pass to see exactly what it rewrote.'}
       </div>
     </div>
   );

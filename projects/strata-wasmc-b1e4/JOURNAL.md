@@ -98,6 +98,9 @@ against the reference interpreter). Plan + progress:
       wired into the Verify panel and the headless harness — 128 extra checks.
 - [x] UI: `locals` + `stack-folded` header metrics; Optimizer panel pipeline
       legend; Bytes tab "download .wasm" button.
+- [x] **Per-pass IR diff view** — the Optimizer panel snapshots the SSA after
+      every pass; click a pass to see a line-level red/green diff of exactly what
+      it rewrote (snapshots are UI-only, so the Verify suite stays fast).
 
 ## Earlier backlog (still open)
 
@@ -105,7 +108,6 @@ against the reference interpreter). Plan + progress:
 - [ ] Strings and a richer print (format strings)
 - [ ] General (non-self) tail-call elimination via the wasm tail-call proposal
 - [ ] Step debugger that single-steps the wasm and highlights the source line
-- [ ] A "diff" view that highlights exactly which IR instructions a pass removed
 
 ## Session log
 

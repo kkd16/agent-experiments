@@ -42,7 +42,7 @@ export default function App() {
     setStage(s);
   };
 
-  const comp = useMemo(() => compile(source, level), [source, level]);
+  const comp = useMemo(() => compile(source, level, true), [source, level]);
   const funcs = comp.optimized?.funcs ?? [];
   const safeFnIdx = Math.min(fnIdx, Math.max(0, funcs.length - 1));
 

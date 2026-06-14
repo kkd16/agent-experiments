@@ -40,7 +40,9 @@ export interface Compilation {
   program?: Program;
   ssa?: IRModule; // unoptimized SSA
   optimized?: IRModule; // optimized at `level`
-  optLog?: PassStat[];
+  optLog?: PassStat[]; // SSA-level passes (aligned with optSnapshots)
+  preLog?: PassStat[]; // pre-SSA transforms (tail-call, inlining)
+  optSnapshots?: string[]; // textual IR after each SSA pass (UI only)
   wat?: string;
   bytes?: Uint8Array;
   metrics?: Metrics;
@@ -52,7 +54,7 @@ function countIR(mod: IRModule): number {
   return n;
 }
 
-export function compile(source: string, level: OptLevel): Compilation {
+export function compile(source: string, level: OptLevel, collectSnapshots = false): Compilation {
   const t0 = (globalThis.performance?.now?.() ?? Date.now());
   let tokens: Token[] = [];
   try {
@@ -66,9 +68,10 @@ export function compile(source: string, level: OptLevel): Compilation {
     const tco = level >= 2 ? tailCallOpt(pre) : 0;
     const inlined = level >= 2 ? inlineModule(pre) : 0;
     const ssa = toSSA(pre);
-    const { mod: optimized, log } = optimize(ssa, level);
-    if (inlined > 0) log.unshift({ name: 'inline (pre-SSA)', changed: inlined });
-    if (tco > 0) log.unshift({ name: 'tail-call → loop', changed: tco });
+    const { mod: optimized, log, snapshots } = optimize(ssa, level, collectSnapshots);
+    const preLog: PassStat[] = [];
+    if (tco > 0) preLog.push({ name: 'tail-call → loop', changed: tco });
+    if (inlined > 0) preLog.push({ name: 'inline (pre-SSA)', changed: inlined });
     const cg = codegen(optimized);
     const ssaInsts = countIR(ssa);
     const optInsts = countIR(optimized);
@@ -82,6 +85,8 @@ export function compile(source: string, level: OptLevel): Compilation {
       ssa,
       optimized,
       optLog: log,
+      preLog,
+      optSnapshots: snapshots,
       wat: cg.wat,
       bytes: cg.bytes,
       metrics: {
