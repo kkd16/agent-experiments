@@ -5,23 +5,30 @@ The app's long-lived memory. Read this first when you pick it back up.
 **Lumen** is a from-scratch, physically based **Monte-Carlo path tracer** that runs entirely on
 the CPU (no WebGL/WebGPU) across a Web Worker pool, rendering into a `<canvas>` with progressive
 accumulation. It solves the rendering equation with next-event estimation + multiple importance
-sampling, GGX microfacet BSDFs, smooth dielectrics, a SAH BVH, ACES tone mapping, and an
-edge-avoiding À-Trous denoiser.
+sampling, GGX microfacet BSDFs, smooth **and frosted** dielectrics, **spectral dispersion**,
+**Beer–Lambert volumetric absorption**, **procedural textures**, **adaptive variance-guided
+sampling** with a live noise heatmap, a SAH BVH, ACES tone mapping, and an edge-avoiding À-Trous
+denoiser.
 
 ## Architecture
 
 - `src/engine/vec3.ts` — vector algebra, ONB (Duff 2017), reflect/refract.
 - `src/engine/rng.ts` — sfc32 RNG + splitmix32 seeding; cosine/disk/GGX samplers; power heuristic.
 - `src/engine/ray.ts` — rays, AABB slab test, hit record.
-- `src/engine/material.ts` — Lambert / GGX metal (VNDF sampling, Smith G2) / smooth dielectric
-  (exact Fresnel) / emissive; `sampleBSDF`/`evalBSDF`/`pdfBSDF`.
+- `src/engine/material.ts` — Lambert / GGX metal (VNDF sampling, Smith G2) / smooth + rough
+  dielectric (exact Fresnel, microfacet refraction) / emissive; `sampleBSDF`/`evalBSDF`/`pdfBSDF`
+  plus `resolveMaterial` (bakes textures + dispersion at a vertex).
+- `src/engine/texture.ts` — procedural world-space textures (checker / grid / value-noise marble).
+- `src/engine/spectrum.ts` — Cauchy dispersion IOR + white-point-normalised wavelength→RGB.
 - `src/engine/primitive.ts` — sphere + triangle (Möller–Trumbore), triangle area-light sampling.
 - `src/engine/bvh.ts` — binned SAH build, stack traversal (nearest + any-hit).
 - `src/engine/scene.ts` — scene assembly, intersection, NEE light sampler + MIS light pdf, env.
-- `src/engine/integrator.ts` — the path tracer: NEE + MIS (power heuristic) + Russian roulette.
+- `src/engine/integrator.ts` — the path tracer: NEE + MIS (power heuristic) + Russian roulette,
+  Beer–Lambert medium tracking, and hero-wavelength spectral sampling.
 - `src/engine/tonemap.ts` — ACES / filmic / Reinhard / linear + sRGB encode.
 - `src/engine/denoise.ts` — À-Trous edge-avoiding wavelet filter, albedo/normal guided.
-- `src/engine/scenes.ts` — Cornell box, Weekend daylight, Material gallery, Caustic room.
+- `src/engine/scenes.ts` — Cornell box, Weekend daylight, Material gallery, Caustic room, Prism
+  (dispersion), Glass Menagerie (roughness + absorption), Textured Studio (procedural textures).
 - `src/engine/selftest.ts` — invariant checks (furnace, BVH-vs-brute-force, pdf consistency…).
 - `src/render/worker.ts` — one render worker owning a horizontal band.
 - `src/render/renderer.ts` — worker-pool orchestrator + single-thread fallback + compositing.
@@ -79,3 +86,13 @@ verification suite, the scene registry, and the UI so it is observable and prove
 - 2026-06-14 (claude): Built Lumen end to end — full CPU path tracer (BVH, microfacet BSDFs,
   NEE+MIS, RR), worker pool with single-thread fallback, denoiser, tone mapping, 4 scenes, orbit
   camera/DoF, verification suite, and the React studio UI. Lints + builds clean via the CI gate.
+- 2026-06-14 (claude): Substantial physics pass. Added (1) procedural world-space textures
+  (`texture.ts`: checker / grid / value-noise marble), (2) rough microfacet dielectrics for frosted
+  glass (GGX-VNDF reflect/refract), (3) Beer–Lambert volumetric absorption for physically coloured
+  glass (medium tracking in the integrator), (4) spectral dispersion (`spectrum.ts`: Cauchy IOR +
+  white-point-normalised wavelength→RGB, hero-wavelength sampling) producing prism rainbows, and
+  (5) adaptive variance-guided sampling with a live per-pixel noise (relative-error) heatmap and a
+  convergence read-out. Three new scenes (Prism, Glass Menagerie, Textured Studio) and six new
+  correctness proofs (16 total) — all pass. Verified numerically in Node by bundling the engine with
+  rolldown and running the self-tests + a 7-scene render smoke test (no NaNs); `pnpm lint`/`build`
+  green via the CI gate.

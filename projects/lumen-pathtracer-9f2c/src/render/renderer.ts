@@ -11,7 +11,7 @@ import { Camera } from '../engine/camera'
 import { Rng } from '../engine/rng'
 import { radiance } from '../engine/integrator'
 import type { GBuffer, RayStats } from '../engine/integrator'
-import { tonemapToBytes } from '../engine/tonemap'
+import { tonemapToBytes, noiseToBytes } from '../engine/tonemap'
 import { denoise } from '../engine/denoise'
 import type { DenoiseParams } from '../engine/denoise'
 import type {
@@ -29,6 +29,16 @@ export interface DisplaySettings {
   tonemap: ToneMapping
   denoiseEnabled: boolean
   denoise: DenoiseParams
+  showNoise: boolean // overlay the per-pixel relative-error heatmap instead
+}
+
+// Adaptive sampling: once a band's mean relative error falls below `threshold`
+// (after a warm-up), the renderer stops dispatching new passes to it. Clean
+// regions therefore stop accruing samples early while noisy ones keep refining
+// toward the target spp, so the whole frame reaches a uniform quality sooner.
+export interface AdaptiveSettings {
+  enabled: boolean
+  threshold: number
 }
 
 export interface RenderStats {
@@ -42,11 +52,16 @@ export interface RenderStats {
   triCount: number
   bvhNodes: number
   bvhDepth: number
+  noise: number // mean relative error across the image (0 = converged)
+  converged: number // fraction of bands that hit the adaptive threshold
   done: boolean
 }
 
 const GBUFFER_PASSES = 16 // accumulate denoise guides over the first N samples
 const DENOISE_THROTTLE_MS = 700
+const ADAPT_WARMUP = 24 // min samples before adaptive early-out may trigger
+const NOISE_HEATMAP_GAIN = 6 // scales relative error into the heatmap palette
+const NOISE_REFRESH_MS = 160 // throttle for the per-pixel noise recompute
 
 export class Renderer {
   private ctx: CanvasRenderingContext2D
@@ -64,13 +79,19 @@ export class Renderer {
   private mode: 'multithread' | 'singlethread' = 'singlethread'
 
   private accum = new Float32Array(0)
+  private accumSq = new Float32Array(0) // Σ of per-sample radiance² → variance
   private albAccum = new Float32Array(0)
   private norAccum = new Float32Array(0)
   private avg = new Float32Array(0)
+  private noise = new Float32Array(0) // per-pixel relative error (1 channel)
   private out = new Uint8ClampedArray(0)
   private image: ImageData | null = null
   private denoiseCache: Float32Array | null = null
   private lastDenoiseMs = 0
+  private adaptive: AdaptiveSettings = { enabled: false, threshold: 0.03 }
+  private bandConverged: boolean[] = []
+  private meanNoise = 0
+  private lastNoiseMs = 0
 
   private running = false
   private raf = 0
@@ -103,9 +124,11 @@ export class Renderer {
     this.height = height
     const n = width * height
     this.accum = new Float32Array(n * 3)
+    this.accumSq = new Float32Array(n * 3)
     this.albAccum = new Float32Array(n * 3)
     this.norAccum = new Float32Array(n * 3)
     this.avg = new Float32Array(n * 3)
+    this.noise = new Float32Array(n)
     this.out = new Uint8ClampedArray(n * 4)
     this.image = new ImageData(width, height)
     const canvas = this.ctx.canvas
@@ -125,6 +148,12 @@ export class Renderer {
   setDisplay(d: DisplaySettings): void {
     this.display = d
     this.denoiseCache = null // force recompute
+  }
+  // Adaptive sampling is applied live: re-arming a stopped band is fine because
+  // every passDone re-evaluates the convergence test before dispatching again.
+  setAdaptive(a: AdaptiveSettings): void {
+    this.adaptive = a
+    if (!a.enabled) this.bandConverged = this.bandConverged.map(() => false)
   }
 
   get currentMode(): 'multithread' | 'singlethread' {
@@ -160,9 +189,14 @@ export class Renderer {
 
   private resetBuffers(): void {
     this.accum.fill(0)
+    this.accumSq.fill(0)
     this.albAccum.fill(0)
     this.norAccum.fill(0)
+    this.noise.fill(0)
     this.bandSamples = []
+    this.bandConverged = []
+    this.meanNoise = 0
+    this.lastNoiseMs = 0
     this.denoiseCache = null
     this.stRow = 0
     this.stSample = 0
@@ -201,6 +235,7 @@ export class Renderer {
     this.bands = sliceBands(this.height, created.length)
     this.inFlight = new Array(created.length).fill(false)
     this.bandSamples = new Array(created.length).fill(0)
+    this.bandConverged = new Array(created.length).fill(false)
     const seed = (Math.random() * 0xffffffff) >>> 0
 
     created.forEach((w, i) => {
@@ -251,6 +286,7 @@ export class Renderer {
     this.stCamera = new Camera(this.sceneDef.camera, this.width / this.height)
     this.stRng = new Rng((Math.random() * 0xffffffff) >>> 0, 1)
     this.bandSamples = [0]
+    this.bandConverged = [false]
     this.bands = [{ start: 0, end: this.height }]
     this.readyMeta = {
       type: 'ready',
@@ -270,9 +306,25 @@ export class Renderer {
     }
     this.accumulatePass(msg)
     this.inFlight[index] = false
-    if (this.running && this.bandSamples[index] < this.targetSpp) {
+    if (this.running && this.shouldDispatch(index)) {
       this.dispatchPass(index)
     }
+  }
+
+  // A band keeps sampling until it reaches the target spp, unless adaptive
+  // sampling has declared it converged (its mean relative error fell below the
+  // threshold after a warm-up). A converged band stops accruing samples while the
+  // pool's still-noisy bands keep refining toward the target.
+  private shouldDispatch(index: number): boolean {
+    if (this.bandSamples[index] >= this.targetSpp) return false
+    if (this.adaptive.enabled && this.bandSamples[index] >= ADAPT_WARMUP) {
+      if (this.bandRelError(index) < this.adaptive.threshold) {
+        this.bandConverged[index] = true
+        return false
+      }
+    }
+    this.bandConverged[index] = false
+    return true
   }
 
   private dispatchPass(index: number): void {
@@ -292,7 +344,12 @@ export class Renderer {
     const rad = new Float32Array(msg.radiance)
     const rowOffset = msg.bandStart * this.width * 3
     const accum = this.accum
-    for (let i = 0; i < rad.length; i++) accum[rowOffset + i] += rad[i]
+    const accumSq = this.accumSq
+    for (let i = 0; i < rad.length; i++) {
+      const x = rad[i]
+      accum[rowOffset + i] += x
+      accumSq[rowOffset + i] += x * x
+    }
     if (msg.albedo && msg.normal) {
       const alb = new Float32Array(msg.albedo)
       const nor = new Float32Array(msg.normal)
@@ -346,6 +403,9 @@ export class Renderer {
         this.accum[idx] += L.x
         this.accum[idx + 1] += L.y
         this.accum[idx + 2] += L.z
+        this.accumSq[idx] += L.x * L.x
+        this.accumSq[idx + 1] += L.y * L.y
+        this.accumSq[idx + 2] += L.z * L.z
         if (gbuf) {
           this.albAccum[idx] += gbuf.albedo.x
           this.albAccum[idx + 1] += gbuf.albedo.y
@@ -361,9 +421,80 @@ export class Renderer {
         this.stSample++
         this.bandSamples[0] = this.stSample
         if (this.stSample >= this.targetSpp) break
+        if (
+          this.adaptive.enabled &&
+          this.stSample >= ADAPT_WARMUP &&
+          this.bandRelError(0) < this.adaptive.threshold
+        ) {
+          this.bandConverged[0] = true
+          this.stSample = this.targetSpp
+          break
+        }
       }
     }
     this.totalRays += stats.rays
+  }
+
+  // Mean luminance relative error over a band: the standard error of the Monte
+  // Carlo mean divided by the mean itself, averaged across the band's pixels.
+  // This is the live, unbiased noise estimate that drives both the heatmap and
+  // the adaptive early-out.
+  private bandRelError(bandIndex: number): number {
+    const b = this.bands[bandIndex]
+    if (!b) return 0
+    const n = Math.max(1, this.bandSamples[bandIndex])
+    if (n < 2) return 1
+    const w = this.width
+    let sum = 0
+    let count = 0
+    for (let y = b.start; y < b.end; y++) {
+      for (let x = 0; x < w; x++) {
+        const i = (y * w + x) * 3
+        // Luminance of the running mean and of the per-sample variance.
+        const mr = this.accum[i] / n
+        const mg = this.accum[i + 1] / n
+        const mb = this.accum[i + 2] / n
+        const meanLum = 0.2126 * mr + 0.7152 * mg + 0.0722 * mb
+        const vr = Math.max(0, this.accumSq[i] / n - mr * mr)
+        const vg = Math.max(0, this.accumSq[i + 1] / n - mg * mg)
+        const vb = Math.max(0, this.accumSq[i + 2] / n - mb * mb)
+        const varLum = 0.2126 * vr + 0.7152 * vg + 0.0722 * vb
+        const stdErr = Math.sqrt(varLum / n)
+        sum += stdErr / (meanLum + 1e-3)
+        count++
+      }
+    }
+    return count > 0 ? sum / count : 0
+  }
+
+  // Fill `this.noise` with the per-pixel relative error for the heatmap, and
+  // return the image-wide mean (also used as the headline convergence stat).
+  private buildNoise(): number {
+    const w = this.width
+    const noise = this.noise
+    let total = 0
+    for (let bi = 0; bi < this.bands.length; bi++) {
+      const b = this.bands[bi]
+      const n = Math.max(1, this.bandSamples[bi])
+      for (let y = b.start; y < b.end; y++) {
+        for (let x = 0; x < w; x++) {
+          const p = y * w + x
+          const i = p * 3
+          const mr = this.accum[i] / n
+          const mg = this.accum[i + 1] / n
+          const mb = this.accum[i + 2] / n
+          const meanLum = 0.2126 * mr + 0.7152 * mg + 0.0722 * mb
+          const vr = Math.max(0, this.accumSq[i] / n - mr * mr)
+          const vg = Math.max(0, this.accumSq[i + 1] / n - mg * mg)
+          const vb = Math.max(0, this.accumSq[i + 2] / n - mb * mb)
+          const varLum = 0.2126 * vr + 0.7152 * vg + 0.0722 * vb
+          const rel = n >= 2 ? Math.sqrt(varLum / n) / (meanLum + 1e-3) : 1
+          noise[p] = rel
+          total += rel
+        }
+      }
+    }
+    return noise.length > 0 ? total / noise.length : 0
   }
 
   // Build the averaged HDR buffer, optionally denoise, tone-map, and blit.
@@ -380,6 +511,19 @@ export class Renderer {
     }
     // Average each pixel by the number of samples its band has completed.
     this.buildAverage()
+    // Refresh the relative-error map (the convergence stat + heatmap source) on a
+    // throttle — it is an extra full-image pass, and ~6 Hz is plenty for a stat.
+    const t = now()
+    if (t - this.lastNoiseMs > NOISE_REFRESH_MS || this.lastNoiseMs === 0) {
+      this.meanNoise = this.buildNoise()
+      this.lastNoiseMs = t
+    }
+    if (this.display.showNoise) {
+      noiseToBytes(this.noise, this.out, NOISE_HEATMAP_GAIN)
+      this.image.data.set(this.out)
+      this.ctx.putImageData(this.image, 0, 0)
+      return
+    }
     // `Float32Array` (= Float32Array<ArrayBufferLike>) so the denoise result and
     // the raw average — backed by different buffer kinds — unify cleanly.
     let display: Float32Array = this.avg
@@ -442,7 +586,14 @@ export class Renderer {
   private emitStats(): void {
     const elapsed = now() - this.startTime
     const samples = this.minSamples()
-    const done = samples >= this.targetSpp
+    // A render is finished when every band has either reached the target sample
+    // count or been declared converged by adaptive sampling.
+    const nBands = this.bands.length || 1
+    const convergedCount = this.bandConverged.filter(Boolean).length
+    const allSettled =
+      this.bandSamples.length > 0 &&
+      this.bandSamples.every((s, i) => s >= this.targetSpp || this.bandConverged[i])
+    const done = samples >= this.targetSpp || allSettled
     if (done) this.running = false
     this.onStats({
       samples,
@@ -455,6 +606,8 @@ export class Renderer {
       triCount: this.readyMeta?.triCount ?? 0,
       bvhNodes: this.readyMeta?.bvhNodes ?? 0,
       bvhDepth: this.readyMeta?.bvhDepth ?? 0,
+      noise: this.meanNoise,
+      converged: convergedCount / nBands,
       done,
     })
   }

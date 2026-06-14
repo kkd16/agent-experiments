@@ -44,6 +44,32 @@ function mapChannel(x: number, op: ToneMapping): number {
   }
 }
 
+// A perceptual "inferno"-style ramp (black → purple → red → orange → yellow →
+// white) for visualising scalar fields. `t` is clamped to [0,1]. Returned as
+// 0..255 sRGB-ready bytes.
+function heat(t: number): [number, number, number] {
+  const x = t < 0 ? 0 : t > 1 ? 1 : t
+  // Polynomial fit to the inferno colormap (Mikhail Matrosov / fitting community).
+  const r = Math.sqrt(x) * (0.4 + x * (1.9 - x * 0.9))
+  const g = x * x * (x * (2.6 - x * 1.3) - 0.35)
+  const b = Math.sin(Math.PI * 0.85 * x) * (0.55 - 0.45 * x) + x * x * x * 0.7
+  return [clamp01(r) * 255, clamp01(g) * 255, clamp01(b) * 255]
+}
+
+// Render a per-pixel scalar noise field (e.g. relative error) as a heatmap into
+// an RGBA byte buffer. `gain` scales the field before the colour ramp so a small
+// target noise still spans the palette.
+export function noiseToBytes(noise: Float32Array, out: Uint8ClampedArray, gain: number): void {
+  const n = noise.length | 0
+  for (let i = 0; i < n; i++) {
+    const [r, g, b] = heat(noise[i] * gain)
+    out[i * 4] = r
+    out[i * 4 + 1] = g
+    out[i * 4 + 2] = b
+    out[i * 4 + 3] = 255
+  }
+}
+
 // Tone-map an averaged linear-RGB float buffer into an RGBA byte buffer.
 // `hdr` holds interleaved rgb already divided by the sample count.
 export function tonemapToBytes(

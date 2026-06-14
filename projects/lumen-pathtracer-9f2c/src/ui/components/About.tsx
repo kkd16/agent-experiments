@@ -27,8 +27,28 @@ export function About() {
         </Card>
         <Card title="Microfacet BSDFs">
           Surfaces are Lambertian diffuse, GGX/Trowbridge-Reitz metal with height-correlated Smith
-          shadowing, or smooth dielectric glass with exact Fresnel. Rough reflections use{' '}
-          <em>visible-normal (VNDF)</em> sampling for low variance.
+          shadowing, or dielectric glass — smooth or <em>frosted</em>, the latter refracting through a
+          microfacet interface. Rough lobes use <em>visible-normal (VNDF)</em> sampling for low variance.
+        </Card>
+        <Card title="Spectral dispersion">
+          Dispersive glass is given a wavelength-dependent index of refraction via Cauchy’s law, so a
+          path commits to a random <em>hero wavelength</em> on entry and refracts blue more sharply than
+          red. A white-point-normalised wavelength→RGB map fans white light into a real prism rainbow.
+        </Card>
+        <Card title="Volumetric absorption">
+          Coloured glass is not a surface tint but <em>Beer–Lambert</em> physics: the integrator tracks
+          the medium a ray is inside and attenuates its throughput by e^(−σ·d), so thicker glass and
+          longer chords darken and saturate exactly as real amber, emerald and sapphire do.
+        </Card>
+        <Card title="Procedural textures">
+          Checkerboards, blueprint grids and value-noise marble are evaluated analytically in world
+          space — no UVs, no image files — and resolved to a flat colour at each hit so the BSDF math
+          never has to know a texture was there.
+        </Card>
+        <Card title="Adaptive sampling & noise">
+          Every pixel tracks its own variance, yielding a live <em>relative-error</em> map you can view
+          as a heatmap. Adaptive sampling reads it to retire already-clean regions early, so the budget
+          concentrates where the image is still noisy.
         </Card>
         <Card title="SAH bounding volume hierarchy">
           A binned <em>surface-area-heuristic</em> BVH turns the brute-force O(n) ray/scene test into

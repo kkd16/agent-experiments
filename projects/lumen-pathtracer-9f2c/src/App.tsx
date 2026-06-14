@@ -12,7 +12,7 @@ import { Stats } from './ui/components/Stats'
 import { SelfTests } from './ui/components/SelfTests'
 import { About } from './ui/components/About'
 import { Renderer } from './render/renderer'
-import type { RenderStats, DisplaySettings } from './render/renderer'
+import type { RenderStats, DisplaySettings, AdaptiveSettings } from './render/renderer'
 import { SCENES } from './engine/scenes'
 import { orbitEye } from './engine/camera'
 import type { CameraDef } from './engine/camera'
@@ -34,11 +34,14 @@ const DEFAULTS: ControlState = {
   rrStart: 4,
   clampIndirect: 0,
   aperture: 0.1, // matches the Weekend scene's lens; reset per scene below
+  adaptive: false,
+  adaptiveThreshold: 0.03,
   exposure: 0,
   tonemap: 'aces',
   denoiseEnabled: false,
   denoiseIterations: 4,
   denoiseSigma: 0.5,
+  showNoise: false,
 }
 
 function deriveOrbit(cam: CameraDef): Orbit {
@@ -81,7 +84,12 @@ function buildDisplay(ctrl: ControlState): DisplaySettings {
       sigmaNormal: 0.25,
       sigmaAlbedo: 0.1,
     },
+    showNoise: ctrl.showNoise,
   }
+}
+
+function buildAdaptive(ctrl: ControlState): AdaptiveSettings {
+  return { enabled: ctrl.adaptive, threshold: ctrl.adaptiveThreshold }
 }
 
 export default function App() {
@@ -111,6 +119,7 @@ export default function App() {
     const canvas = canvasRef.current
     if (!canvas) return
     const r = new Renderer(canvas, buildScene(ctrl, orbit), buildDisplay(ctrl))
+    r.setAdaptive(buildAdaptive(ctrl))
     r.onStats = (st) => {
       setStats(st)
       if (st.done) setRunning(false)
@@ -156,7 +165,13 @@ export default function App() {
   useEffect(() => {
     rendererRef.current?.setDisplay(buildDisplay(ctrl))
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ctrl.exposure, ctrl.tonemap, ctrl.denoiseEnabled, ctrl.denoiseIterations, ctrl.denoiseSigma])
+  }, [ctrl.exposure, ctrl.tonemap, ctrl.denoiseEnabled, ctrl.denoiseIterations, ctrl.denoiseSigma, ctrl.showNoise])
+
+  // Adaptive sampling → applied live; the convergence test re-runs every pass.
+  useEffect(() => {
+    rendererRef.current?.setAdaptive(buildAdaptive(ctrl))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ctrl.adaptive, ctrl.adaptiveThreshold])
 
   const onRender = () => {
     const r = rendererRef.current

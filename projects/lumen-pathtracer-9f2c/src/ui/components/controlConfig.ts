@@ -25,9 +25,12 @@ export interface ControlState {
   rrStart: number
   clampIndirect: number
   aperture: number
+  adaptive: boolean
+  adaptiveThreshold: number
   exposure: number
   tonemap: ToneMapping
   denoiseEnabled: boolean
   denoiseIterations: number
   denoiseSigma: number
+  showNoise: boolean
 }
