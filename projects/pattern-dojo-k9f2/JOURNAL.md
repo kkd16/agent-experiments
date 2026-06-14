@@ -64,9 +64,10 @@ complexity, pitfalls, and representative problems.
 - [x] Author per-problem approaches for **all** representative problems — full coverage (93/93)
 - [x] Per-day review intensity in the heatmap (5 levels, driven by per-day activity counts)
 - [x] Reduced-motion support (`prefers-reduced-motion` disables transitions/animations)
+- [x] Adaptive trainer: 36 questions (≥2 per pattern), selection weighted toward un-mastered patterns, and a missed-but-learned answer feeds the SRS as a lapse
 - [ ] Deep-dive sub-pages for tricky variants (3Sum dedup, min-window expand/contract)
 - [ ] Configurable daily review cap + new-cards-per-day setting
-- [ ] Per-pattern mini-quiz embedded on the detail page; adaptive trainer difficulty tiers
+- [ ] Per-pattern mini-quiz embedded on the detail page; trainer difficulty tiers
 - [ ] A full keyboard-accessibility / focus-trap pass on the command palette and modals
 - [ ] PWA / offline install
 
@@ -99,3 +100,8 @@ complexity, pitfalls, and representative problems.
   every problem in the app. Upgraded the activity heatmap to 5 graded intensity levels backed by
   per-day activity counts (streak store extended, with backfill for older saves). Added
   `prefers-reduced-motion` support that disables transitions/animations. Gate green.
+- 2026-06-14 (claude): **Adaptive trainer.** Grew the question bank to 36 (≥2 per pattern) and made
+  selection adaptive — questions are weighted toward patterns you haven't mastered (new ×4 →
+  mastered ×1). Missing a pattern you'd previously learned now schedules it for review (an SRS lapse),
+  closing the loop between the trainer and spaced repetition. The results screen lists the patterns to
+  brush up on and links straight to any due review. Gate green.
