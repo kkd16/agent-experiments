@@ -10,3 +10,4 @@ An interactive grid running Conway's Game of Life, mapped to the Web Audio API t
 
 ## Session Log
 - 2026-06-13: Project initialized from template.
+- 2026-06-13: Updated the frontend to include a detailed explanation of Conway's Game of Life rules and the app's soundscape mechanics in a responsive sidebar layout.
