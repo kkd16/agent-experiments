@@ -9,6 +9,7 @@
 import {
   Body,
   BodyType,
+  Capsule,
   Circle,
   collide,
   computeMass,
@@ -17,6 +18,7 @@ import {
   epaPenetration,
   gjkDistance,
   Polygon,
+  PrismaticJoint,
   RevoluteJoint,
   Rng,
   Transform,
@@ -253,6 +255,113 @@ export function runVerification(): CheckResult[] {
       a.close('Ray hit at left face x=4', hit.point.x, 4, 1e-6);
       a.ok('Hit normal faces the ray', hit.normal.x < -0.99, hit.normal.toString());
     }
+  }
+  {
+    // Ray through the side of a horizontal capsule hits its top skin.
+    const w = new World(new Vec2(0, 0));
+    w.addBody(new Body(Capsule.of(2, 0.5), { type: BodyType.Static, position: new Vec2(0, 0) }));
+    const hit = w.rayCast(new Vec2(0, 3), new Vec2(0, -3));
+    a.ok('Ray hits capsule side', hit !== null, hit ? `at y=${hit.point.y.toFixed(2)}` : 'miss');
+    if (hit) a.close('Capsule hit at top skin y=0.5', hit.point.y, 0.5, 1e-3);
+  }
+
+  // ---- Capsule & rounded shapes -------------------------------------------
+  a.section('Capsules & rounded shapes');
+  {
+    // A vanishing-length capsule collapses to the solid-disc mass properties.
+    const m = computeMass(Capsule.of(1e-5, 1), 1);
+    a.close('Capsule→disc mass = π', m.mass, Math.PI, 1e-3);
+    a.close('Capsule→disc inertia = π/2', m.inertia, Math.PI / 2, 1e-3);
+  }
+  {
+    const cap = Capsule.of(2, 0.5); // straight length 2, radius 0.5
+    const m = computeMass(cap, 1);
+    a.close('Capsule mass = box + disc', m.mass, 2 * 0.5 * 2 + Math.PI * 0.25, 1e-9);
+    a.ok('Capsule centroid at origin', m.center.length() < 1e-9, m.center.toString());
+  }
+  {
+    // Two parallel stacked capsules → a stable 2-point manifold, normal +y.
+    const cap = Capsule.of(2, 0.4);
+    const man = collide(cap, new Transform(new Vec2(0, 0)), cap, new Transform(new Vec2(0, 0.75)));
+    a.ok('Parallel capsules give 2 points', man.points.length === 2, `got ${man.points.length}`);
+    a.ok('Capsule normal points +y', man.normal.y > 0.99, man.normal.toString());
+    a.close('Capsule penetration ≈ 0.05', man.points.length ? man.points[0].penetration : -1, 0.05, 1e-2);
+  }
+  {
+    // Cap-to-cap (collinear) capsules: a single point along the segment axis —
+    // exactly the contact pure SAT would miss but GJK resolves.
+    const cap = Capsule.of(2, 0.4);
+    const man = collide(cap, new Transform(new Vec2(0, 0)), cap, new Transform(new Vec2(2.7, 0)));
+    a.ok('Cap-to-cap contact found', man.points.length >= 1, `pts ${man.points.length}`);
+    a.ok('Cap-to-cap normal ≈ +x', man.normal.x > 0.95, man.normal.toString());
+  }
+  {
+    // A capsule settles flat on the ground at rest height = radius, level.
+    const w = new World(new Vec2(0, -10));
+    w.addBody(new Body(Polygon.box(10, 0.5), { type: BodyType.Static, position: new Vec2(0, -0.5) }));
+    const cap = w.addBody(new Body(Capsule.of(2, 0.4), { position: new Vec2(0, 3) }));
+    for (let i = 0; i < 400; i++) w.step(1 / 120);
+    a.close('Capsule rests at y = radius', cap.worldCenter.y, 0.4, 0.03);
+    a.ok('Capsule comes to rest level', Math.abs(cap.angle) < 0.05, `angle=${cap.angle.toFixed(3)}`);
+  }
+  {
+    // A rounded box rests on its skin: centre = half-height + skin radius.
+    const w = new World(new Vec2(0, -10));
+    w.addBody(new Body(Polygon.box(10, 0.5), { type: BodyType.Static, position: new Vec2(0, -0.5) }));
+    const r = w.addBody(new Body(Polygon.rounded(0.5, 0.5, 0.1), { position: new Vec2(0, 3) }));
+    for (let i = 0; i < 400; i++) w.step(1 / 120);
+    a.close('Rounded box rests at y = 0.6', r.worldCenter.y, 0.6, 0.03);
+  }
+
+  // ---- Continuous collision detection -------------------------------------
+  a.section('Continuous collision');
+  {
+    // A fast bullet vs a thin wall: with CCD it stops, without it tunnels.
+    const fire = (ccd: boolean): number => {
+      const w = new World(new Vec2(0, 0));
+      w.config.continuous = ccd;
+      w.addBody(new Body(Polygon.box(0.05, 3), { type: BodyType.Static, position: new Vec2(0, 0) }));
+      const b = w.addBody(
+        new Body(new Circle(0.15), { position: new Vec2(-5, 0), linearVelocity: new Vec2(900, 0), bullet: ccd }),
+      );
+      for (let i = 0; i < 30; i++) w.step(1 / 60);
+      return b.worldCenter.x;
+    };
+    a.ok('CCD bullet stops at the wall', fire(true) < 0.1, `x=${fire(true).toFixed(3)}`);
+    a.ok('Without CCD the body tunnels through', fire(false) > 1, `x=${fire(false).toFixed(2)}`);
+  }
+
+  // ---- Joint limits --------------------------------------------------------
+  a.section('Joint limits');
+  {
+    // A gravity-loaded arm hinged with limits cannot swing past the lower stop.
+    const w = new World(new Vec2(0, -10));
+    const anchor = w.addBody(new Body(new Circle(0.1), { type: BodyType.Static, position: new Vec2(0, 5) }));
+    const arm = w.addBody(new Body(Polygon.box(1, 0.1), { position: new Vec2(1, 5) }));
+    const j = new RevoluteJoint(anchor, arm, new Vec2(0, 5));
+    j.setLimits(-0.5, 0.5);
+    w.addJoint(j);
+    let minAngle = 0;
+    for (let i = 0; i < 600; i++) {
+      w.step(1 / 120);
+      minAngle = Math.min(minAngle, j.jointAngle());
+    }
+    a.ok('Revolute limit clamps the swing', minAngle > -0.6, `min angle ${minAngle.toFixed(3)}`);
+  }
+  {
+    // A prismatic carriage falls only as far as its lower translation stop.
+    const w = new World(new Vec2(0, -10));
+    const base = w.addBody(new Body(new Circle(0.1), { type: BodyType.Static, position: new Vec2(0, 5) }));
+    const car = w.addBody(new Body(Polygon.box(0.5, 0.3), { position: new Vec2(0, 5) }));
+    const j = new PrismaticJoint(base, car, new Vec2(0, 5), new Vec2(0, 1));
+    j.setLimits(-1, 0);
+    w.addJoint(j);
+    let minDrop = 0;
+    for (let i = 0; i < 600; i++) {
+      w.step(1 / 120);
+      minDrop = Math.min(minDrop, car.worldCenter.y - 5);
+    }
+    a.ok('Prismatic limit clamps the travel', minDrop > -1.1, `min drop ${minDrop.toFixed(3)}`);
   }
 
   return a.results;

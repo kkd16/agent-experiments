@@ -15,6 +15,7 @@ const INITIAL_VALUES: ControlValues = {
   baumgarte: 0.2,
   warmStarting: true,
   enableSleep: true,
+  continuous: true,
   showGjk: false,
   spawnKind: 'box',
 };
@@ -38,6 +39,7 @@ export default function App() {
       baumgarte: values.baumgarte,
       warmStarting: values.warmStarting,
       enableSleep: values.enableSleep,
+      continuous: values.continuous,
       debug,
       spawnKind: values.spawnKind,
       showGjk: values.showGjk,
@@ -81,7 +83,8 @@ export default function App() {
           <div>
             <h1>Impulse</h1>
             <p className="tagline">
-              A 2D rigid-body physics engine, from scratch — GJK/EPA, sequential impulses, joints, islands.
+              A 2D rigid-body physics engine, from scratch — GJK/EPA, capsules &amp; rounded
+              shapes, continuous collision, sequential impulses, joints with limits, islands.
             </p>
           </div>
         </div>

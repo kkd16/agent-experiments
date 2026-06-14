@@ -1,6 +1,7 @@
 import {
   Body,
   BodyType,
+  Capsule,
   Circle,
   DistanceJoint,
   MouseJoint,
@@ -71,8 +72,9 @@ function box(world: World, x: number, y: number, hw: number, hh: number, i = 0, 
 }
 
 function randomShape(rng: Rng, scale: number): Shape {
-  const kind = rng.int(0, 2);
+  const kind = rng.int(0, 3);
   if (kind === 0) return new Circle(rng.range(0.25, 0.5) * scale);
+  if (kind === 1) return Capsule.of(rng.range(0.7, 1.2) * scale, rng.range(0.18, 0.3) * scale);
   const sides = rng.int(3, 6);
   return Polygon.regular(sides, rng.range(0.3, 0.55) * scale, rng.range(0, Math.PI));
 }
@@ -547,18 +549,191 @@ const sandbox: SceneDef = {
   },
 };
 
+const bulletTest: SceneDef = {
+  id: 'bullets',
+  name: 'CCD Bullet Test',
+  description:
+    'Continuous collision detection in action. The top lane fires CCD "bullet" rounds that are swept to their time of impact and stop dead at the thin wall; the identical bottom-lane rounds have CCD off and tunnel straight through it.',
+  category: 'Showcase',
+  build: (world) => {
+    ground(world, 30, -3);
+    // A thin wall — thin enough that a fast body skips over it in one step.
+    world.addBody(new Body(Polygon.box(0.06, 1.3), { type: BodyType.Static, position: new Vec2(1.3, 6), friction: 0.3, color: '#5a6478' }));
+    world.addBody(new Body(Polygon.box(0.06, 1.3), { type: BodyType.Static, position: new Vec2(1.3, 2), friction: 0.3, color: '#5a6478' }));
+    let acc = 1.2;
+    return {
+      camera: { center: new Vec2(1, 4), scale: 44 },
+      update: (_t, dt) => {
+        acc += dt;
+        if (acc < 1.1) return;
+        acc = 0;
+        world.addBody(
+          new Body(new Circle(0.16), {
+            position: new Vec2(-5, 6),
+            linearVelocity: new Vec2(95, 0),
+            bullet: true,
+            restitution: 0.25,
+            density: 4,
+            color: '#7CFFCB',
+          }),
+        );
+        world.addBody(
+          new Body(new Circle(0.16), {
+            position: new Vec2(-5, 2),
+            linearVelocity: new Vec2(95, 0),
+            bullet: false,
+            restitution: 0.25,
+            density: 4,
+            color: '#ff6b6b',
+          }),
+        );
+      },
+    };
+  },
+};
+
+const capsulePile: SceneDef = {
+  id: 'capsules',
+  name: 'Capsule Pile',
+  description:
+    'Capsules — segments swept by a radius — poured into a bin. They roll on their caps yet rest flat on their sides, and the radius-aware narrowphase keeps the heap stable. Toggle Contacts to see the 1–2 point manifolds.',
+  category: 'Stress',
+  build: (world, rng) => {
+    ground(world, 14);
+    walls(world, 11, 16);
+    let count = 0;
+    let acc = 0;
+    return {
+      camera: { center: new Vec2(0, 6), scale: 22 },
+      update: (_time, dt) => {
+        acc += dt;
+        if (count < 90 && acc > 0.06) {
+          acc = 0;
+          world.addBody(
+            new Body(Capsule.of(rng.range(1.0, 1.8), rng.range(0.2, 0.34)), {
+              position: new Vec2(rng.range(-8, 8), 15),
+              angle: rng.range(0, Math.PI),
+              friction: 0.4,
+              restitution: 0.05,
+              color: colorFor(count),
+            }),
+          );
+          count++;
+        }
+      },
+    };
+  },
+};
+
+const roundedStack: SceneDef = {
+  id: 'rounded',
+  name: 'Rounded Stack',
+  description:
+    'A pyramid of rounded boxes — convex polygons carrying a skin radius. The rounded corners are handled by the same core+radius collision path as capsules, and the warm-started solver still settles the stack solid.',
+  category: 'Stacking',
+  build: (world) => {
+    ground(world);
+    const rows = 9;
+    const size = 0.55;
+    const skin = 0.12;
+    const gap = 0.02;
+    for (let row = 0; row < rows; row++) {
+      const count = rows - row;
+      const y = size + row * (size * 2 + gap);
+      const x0 = -(count - 1) * (size + gap);
+      for (let col = 0; col < count; col++) {
+        world.addBody(
+          new Body(Polygon.rounded(size - skin, size - skin, skin), {
+            position: new Vec2(x0 + col * (size * 2 + gap), y),
+            friction: 0.5,
+            color: colorFor(row + col),
+          }),
+        );
+      }
+    }
+    return { camera: { center: new Vec2(0, 5), scale: 34 } };
+  },
+};
+
+const limits: SceneDef = {
+  id: 'limits',
+  name: 'Joint Limits',
+  description:
+    'Revolute angle limits and prismatic travel stops. A motorised crane arm winds up against its angle limit and reverses; a piston bounces between its travel stops; weighted flaps swing only as far as their hinges allow.',
+  category: 'Joints',
+  build: (world, rng) => {
+    ground(world, 30);
+
+    // Motorised crane arm clamped to ±0.9 rad; the motor drives it into the limit.
+    const hub = world.addBody(new Body(new Circle(0.18), { type: BodyType.Static, position: new Vec2(-7, 7) }));
+    const arm = world.addBody(new Body(Polygon.box(1.8, 0.16), { position: new Vec2(-5.2, 7), density: 2, color: '#4dd2ff' }));
+    const crane = new RevoluteJoint(hub, arm, new Vec2(-7, 7));
+    crane.enableMotor = true;
+    crane.motorSpeed = 2;
+    crane.maxMotorTorque = 3000;
+    crane.setLimits(-0.9, 0.9);
+    world.addJoint(crane);
+
+    // Piston on a vertical rail with travel stops [0, 3.5]; motor reverses at the ends.
+    const base = world.addBody(new Body(new Circle(0.12), { type: BodyType.Static, position: new Vec2(0, 1) }));
+    const piston = world.addBody(new Body(Polygon.box(1.2, 0.2), { position: new Vec2(0, 1.5), density: 3, color: '#9ece6a' }));
+    const slider = new PrismaticJoint(base, piston, new Vec2(0, 1.5), new Vec2(0, 1));
+    slider.enableMotor = true;
+    slider.motorSpeed = 3;
+    slider.maxMotorForce = 4000;
+    slider.setLimits(0, 3.5);
+    world.addJoint(slider, true);
+
+    // Weighted flaps hinged at the top, limited to ±1 rad, knocked by rolling balls.
+    for (let i = 0; i < 3; i++) {
+      const x = 4 + i * 2.4;
+      const post = world.addBody(new Body(new Circle(0.1), { type: BodyType.Static, position: new Vec2(x, 7) }));
+      const flap = world.addBody(new Body(Polygon.box(0.13, 1.2), { position: new Vec2(x, 5.8), density: 2, color: colorFor(i + 3) }));
+      const hinge = new RevoluteJoint(post, flap, new Vec2(x, 7));
+      hinge.setLimits(-1.0, 1.0);
+      world.addJoint(hinge);
+      world.addBody(
+        new Body(new Circle(0.32), {
+          position: new Vec2(x - 1.4, 5 + rng.range(0, 0.5)),
+          linearVelocity: new Vec2(4.5, 0),
+          density: 3,
+          color: '#ffd166',
+        }),
+      );
+    }
+
+    let craneDir = 1;
+    let pistonDir = 1;
+    return {
+      camera: { center: new Vec2(0, 4), scale: 22 },
+      update: () => {
+        if (crane.jointAngle() > 0.85 && craneDir > 0) craneDir = -1;
+        if (crane.jointAngle() < -0.85 && craneDir < 0) craneDir = 1;
+        crane.motorSpeed = 2 * craneDir;
+        if (piston.worldCenter.y > 4.3 && pistonDir > 0) pistonDir = -1;
+        if (piston.worldCenter.y < 1.4 && pistonDir < 0) pistonDir = 1;
+        slider.motorSpeed = 3 * pistonDir;
+      },
+    };
+  },
+};
+
 export const SCENES: SceneDef[] = [
   pyramid,
   stacks,
+  roundedStack,
   arch,
   newtonsCradle,
   ropeBridge,
   ragdoll,
   springs,
   machine,
+  limits,
   tumbler,
   dominoes,
+  bulletTest,
   galton,
+  capsulePile,
   frictionRamps,
   restitution,
   stress,

@@ -4,6 +4,7 @@ export { Body, BodyType, type BodyDef } from './body';
 export { BroadPhase, DynamicTree, type ProxyPair } from './broadphase';
 export { gjkDistance, epaPenetration, type DistanceResult, type PenetrationResult } from './collision/gjk';
 export { collide, type Manifold, type ManifoldPoint } from './collision/manifold';
+export { timeOfImpact, type TOIResult } from './collision/toi';
 export { Contact, ContactSolver, DEFAULT_CONFIG, type SolverConfig } from './contact';
 export {
   clamp,
@@ -19,13 +20,17 @@ export {
 export { Rng } from './random';
 export {
   boundingRadius,
+  Capsule,
   Circle,
   computeAABB,
   computeMass,
   convexHull,
+  convexProxy,
   Polygon,
   polygonCentroid,
+  shapeRadius,
   shapeSupport,
+  type ConvexProxy,
   type MassData,
   type Shape,
 } from './shapes';

@@ -32,9 +32,10 @@ function support(
   sb: Shape,
   xb: Transform,
   dir: Vec2,
+  core = false,
 ): SupportPoint {
-  const wA = shapeSupport(sa, xa, dir);
-  const wB = shapeSupport(sb, xb, dir.neg());
+  const wA = shapeSupport(sa, xa, dir, core);
+  const wB = shapeSupport(sb, xb, dir.neg(), core);
   return { w: wA.sub(wB), wA, wB };
 }
 
@@ -59,11 +60,12 @@ export function gjkDistance(
   sb: Shape,
   xb: Transform,
   maxIters = 32,
+  core = false,
 ): DistanceResult {
   let dir = xa.position.sub(xb.position);
   if (dir.lengthSq() < 1e-12) dir = new Vec2(1, 0);
 
-  let simplex: SupportPoint[] = [support(sa, xa, sb, xb, dir)];
+  let simplex: SupportPoint[] = [support(sa, xa, sb, xb, dir, core)];
   dir = simplex[0].w.neg();
 
   let iterations = 0;
@@ -73,7 +75,7 @@ export function gjkDistance(
       return overlapResult(simplex, iterations);
     }
 
-    const p = support(sa, xa, sb, xb, dir);
+    const p = support(sa, xa, sb, xb, dir, core);
 
     // No progress toward the origin ⇒ converged on the closest feature.
     const progress = p.w.dot(dir.normalize());

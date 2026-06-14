@@ -22,6 +22,15 @@ export class PrismaticJoint implements Joint {
   motorSpeed = 0;
   maxMotorForce = 0;
 
+  /** Optional travel limits along the axis (metres from the reference anchor). */
+  enableLimit = false;
+  lowerTranslation = 0;
+  upperTranslation = 0;
+  private lowerImpulse = 0;
+  private upperImpulse = 0;
+  private translation = 0;
+  private invDt = 0;
+
   private rA = Vec2.ZERO;
   private rB = Vec2.ZERO;
   private axis = Vec2.ZERO;
@@ -35,6 +44,14 @@ export class PrismaticJoint implements Joint {
   private bias = Vec2.ZERO;
   private impulse = Vec2.ZERO; // (perpendicular, angular)
   private motorImpulse = 0;
+
+  /** Configure the travel limits in one call. */
+  setLimits(lower: number, upper: number): this {
+    this.enableLimit = true;
+    this.lowerTranslation = lower;
+    this.upperTranslation = upper;
+    return this;
+  }
 
   constructor(bodyA: Body, bodyB: Body, worldAnchor: Vec2, worldAxis: Vec2) {
     this.bodyA = bodyA;
@@ -77,6 +94,13 @@ export class PrismaticJoint implements Joint {
     this.motorMass = motorK > 0 ? 1 / motorK : 0;
     if (!this.enableMotor) this.motorImpulse = 0;
 
+    this.invDt = ctx.invDt;
+    this.translation = this.axis.dot(d);
+    if (!this.enableLimit) {
+      this.lowerImpulse = 0;
+      this.upperImpulse = 0;
+    }
+
     // Positional bias: perpendicular drift and angular drift.
     const c1 = d.dot(this.perp);
     const c2 = b.angle - a.angle - this.referenceAngle;
@@ -86,9 +110,10 @@ export class PrismaticJoint implements Joint {
   warmStart(): void {
     const a = this.bodyA;
     const b = this.bodyB;
-    const P = this.perp.mul(this.impulse.x).add(this.axis.mul(this.motorImpulse));
-    const lA = this.impulse.x * this.s1 + this.impulse.y + this.motorImpulse * this.a1;
-    const lB = this.impulse.x * this.s2 + this.impulse.y + this.motorImpulse * this.a2;
+    const axialImpulse = this.motorImpulse + this.lowerImpulse - this.upperImpulse;
+    const P = this.perp.mul(this.impulse.x).add(this.axis.mul(axialImpulse));
+    const lA = this.impulse.x * this.s1 + this.impulse.y + axialImpulse * this.a1;
+    const lB = this.impulse.x * this.s2 + this.impulse.y + axialImpulse * this.a2;
     a.linearVelocity = a.linearVelocity.sub(P.mul(a.invMass));
     a.angularVelocity -= a.invInertia * lA;
     b.linearVelocity = b.linearVelocity.add(P.mul(b.invMass));
@@ -115,6 +140,44 @@ export class PrismaticJoint implements Joint {
       a.angularVelocity -= a.invInertia * impulse * this.a1;
       b.linearVelocity = b.linearVelocity.add(P.mul(b.invMass));
       b.angularVelocity += b.invInertia * impulse * this.a2;
+    }
+
+    // Axis travel limits (speculative one-sided constraints).
+    if (this.enableLimit && this.motorMass > 0) {
+      const mA = a.invMass;
+      const mB = b.invMass;
+      const iA = a.invInertia;
+      const iB = b.invInertia;
+      const axialCdot = (): number =>
+        this.axis.dot(b.linearVelocity.sub(a.linearVelocity)) +
+        this.a2 * b.angularVelocity -
+        this.a1 * a.angularVelocity;
+      // Lower limit: C = translation - lower ≥ 0.
+      {
+        const c = this.translation - this.lowerTranslation;
+        let impulse = -this.motorMass * (axialCdot() + Math.max(c, 0) * this.invDt);
+        const old = this.lowerImpulse;
+        this.lowerImpulse = Math.max(old + impulse, 0);
+        impulse = this.lowerImpulse - old;
+        const P = this.axis.mul(impulse);
+        a.linearVelocity = a.linearVelocity.sub(P.mul(mA));
+        a.angularVelocity -= iA * impulse * this.a1;
+        b.linearVelocity = b.linearVelocity.add(P.mul(mB));
+        b.angularVelocity += iB * impulse * this.a2;
+      }
+      // Upper limit: C = upper - translation ≥ 0.
+      {
+        const c = this.upperTranslation - this.translation;
+        let impulse = -this.motorMass * (-axialCdot() + Math.max(c, 0) * this.invDt);
+        const old = this.upperImpulse;
+        this.upperImpulse = Math.max(old + impulse, 0);
+        impulse = this.upperImpulse - old;
+        const P = this.axis.mul(impulse);
+        a.linearVelocity = a.linearVelocity.add(P.mul(mA));
+        a.angularVelocity += iA * impulse * this.a1;
+        b.linearVelocity = b.linearVelocity.sub(P.mul(mB));
+        b.angularVelocity -= iB * impulse * this.a2;
+      }
     }
 
     // Coupled perpendicular + angular constraint.

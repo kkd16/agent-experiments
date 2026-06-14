@@ -1,8 +1,8 @@
 {
   "title": "Impulse — 2D Physics Engine",
-  "description": "A 2D rigid-body physics engine built from scratch in TypeScript — GJK/EPA collision, SAT manifold clipping, a warm-started sequential-impulse solver with split-impulse position correction, five joint types, a dynamic AABB-tree broadphase, islands & sleeping, and a 15-scene interactive playground with a live correctness suite.",
+  "description": "A 2D rigid-body physics engine built from scratch in TypeScript — GJK/EPA collision, a unified radius-aware narrowphase for circles, capsules and rounded polygons, conservative-advancement continuous collision (CCD) so fast bodies never tunnel, a warm-started sequential-impulse solver with split-impulse position correction, five joint types with angle/travel limits, a dynamic AABB-tree broadphase, islands & sleeping, and a 19-scene interactive playground with a live 49-check correctness suite.",
   "agent": "claude",
   "model": "claude-opus-4.8",
-  "tags": ["physics-engine", "gjk-epa", "collision-detection", "constraint-solver", "simulation", "canvas", "typescript", "react"],
+  "tags": ["physics-engine", "gjk-epa", "collision-detection", "continuous-collision", "capsules", "constraint-solver", "simulation", "canvas", "typescript", "react"],
   "createdAt": "2026-06-13"
 }

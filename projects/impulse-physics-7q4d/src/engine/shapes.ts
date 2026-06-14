@@ -1,5 +1,5 @@
 import { AABB } from './aabb';
-import { Transform, Vec2 } from './math';
+import { EPSILON, Transform, Vec2 } from './math';
 
 /** Mass, centroid and rotational inertia of a shape at a given density. */
 export interface MassData {
@@ -24,6 +24,44 @@ export class Circle {
 }
 
 /**
+ * A capsule (stadium): the segment from `p1` to `p2` swept by `radius`. Its
+ * convex *core* is the segment; the radius is a skin, exactly like the
+ * core+radius model used for rounded polygons. Capsules roll like wheels on
+ * their caps yet rest flat on their side, which makes them the natural shape for
+ * limbs, projectiles and wheels.
+ */
+export class Capsule {
+  readonly kind = 'capsule';
+  readonly p1: Vec2;
+  readonly p2: Vec2;
+  readonly radius: number;
+
+  constructor(p1: Vec2, p2: Vec2, radius: number) {
+    this.p1 = p1;
+    this.p2 = p2;
+    this.radius = radius;
+  }
+
+  /** A capsule of total length `length` along the local x-axis (default) or y. */
+  static of(length: number, radius: number, vertical = false): Capsule {
+    const h = Math.max(length, 0) * 0.5;
+    return vertical
+      ? new Capsule(new Vec2(0, -h), new Vec2(0, h), radius)
+      : new Capsule(new Vec2(-h, 0), new Vec2(h, 0), radius);
+  }
+
+  /** Midpoint of the core segment (the centroid for uniform density). */
+  center(): Vec2 {
+    return this.p1.add(this.p2).mul(0.5);
+  }
+
+  /** Length of the straight (core) section. */
+  length(): number {
+    return this.p1.distanceTo(this.p2);
+  }
+}
+
+/**
  * A convex polygon stored as CCW vertices with precomputed outward edge
  * normals. Construct via the factories so winding and convexity are guaranteed.
  */
@@ -32,11 +70,19 @@ export class Polygon {
   readonly vertices: readonly Vec2[];
   readonly normals: readonly Vec2[];
   readonly centroid: Vec2;
+  /** Optional skin radius — a positive value rounds every corner and edge. */
+  readonly radius: number;
 
-  private constructor(vertices: readonly Vec2[], normals: readonly Vec2[], centroid: Vec2) {
+  private constructor(
+    vertices: readonly Vec2[],
+    normals: readonly Vec2[],
+    centroid: Vec2,
+    radius: number,
+  ) {
     this.vertices = vertices;
     this.normals = normals;
     this.centroid = centroid;
+    this.radius = radius;
   }
 
   /** Axis-aligned box of half-width `hx` and half-height `hy`. */
@@ -49,22 +95,36 @@ export class Polygon {
     ]);
   }
 
+  /** A rounded box: the same hull as {@link box} carrying a skin `radius`. */
+  static rounded(hx: number, hy: number, radius: number): Polygon {
+    return Polygon.fromVertices(
+      [
+        new Vec2(-hx, -hy),
+        new Vec2(hx, -hy),
+        new Vec2(hx, hy),
+        new Vec2(-hx, hy),
+      ],
+      radius,
+    );
+  }
+
   /** A regular `n`-gon inscribed in a circle of the given radius. */
-  static regular(n: number, radius: number, phase = 0): Polygon {
+  static regular(n: number, radius: number, phase = 0, skin = 0): Polygon {
     const verts: Vec2[] = [];
     for (let i = 0; i < n; i++) {
       const a = phase + (i / n) * Math.PI * 2;
       verts.push(new Vec2(Math.cos(a) * radius, Math.sin(a) * radius));
     }
-    return Polygon.fromVertices(verts);
+    return Polygon.fromVertices(verts, skin);
   }
 
   /**
    * Build a convex polygon from an arbitrary point cloud. The points are
    * reduced to their convex hull (Andrew's monotone chain) wound CCW, then
-   * outward normals are computed per edge.
+   * outward normals are computed per edge. An optional `radius` rounds the
+   * hull into a capsule-like skin.
    */
-  static fromVertices(points: readonly Vec2[]): Polygon {
+  static fromVertices(points: readonly Vec2[], radius = 0): Polygon {
     const hull = convexHull(points);
     if (hull.length < 3) {
       throw new Error('Polygon needs at least 3 non-collinear vertices');
@@ -75,11 +135,16 @@ export class Polygon {
       // Right-hand perpendicular of a CCW edge points outward.
       normals.push(new Vec2(edge.y, -edge.x).normalize());
     }
-    return new Polygon(hull, normals, polygonCentroid(hull));
+    return new Polygon(hull, normals, polygonCentroid(hull), radius);
   }
 }
 
-export type Shape = Circle | Polygon;
+export type Shape = Circle | Polygon | Capsule;
+
+/** Skin radius of any shape under the unified core+radius collision model. */
+export function shapeRadius(shape: Shape): number {
+  return shape.radius;
+}
 
 /** Andrew's monotone-chain convex hull, returned in CCW order. */
 export function convexHull(points: readonly Vec2[]): Vec2[] {
@@ -143,6 +208,26 @@ export function computeMass(shape: Shape, density: number): MassData {
     return { mass, center: shape.center, inertia };
   }
 
+  if (shape.kind === 'capsule') {
+    // A capsule = a rectangle (the straight 2r×L core) plus a full disc (the two
+    // half-cap ends combined). Closed-form mass properties, with the two caps
+    // shifted to ±L/2 by the parallel-axis theorem. As L→0 this collapses to the
+    // solid-disc formula (verified in the suite).
+    const r = shape.radius;
+    const rr = r * r;
+    const length = shape.length();
+    const ll = length * length;
+    const circleMass = density * Math.PI * rr;
+    const boxMass = density * (2 * r * length);
+    const mass = circleMass + boxMass;
+    const h = 0.5 * length;
+    const lc = (4 * r) / (3 * Math.PI); // centroid of a semicircle from its flat edge
+    // Inertia about the capsule centre (midpoint of the segment).
+    const circleInertia = circleMass * (0.5 * rr + h * h + 2 * h * lc);
+    const boxInertia = (boxMass * (4 * rr + ll)) / 12;
+    return { mass, center: shape.center(), inertia: circleInertia + boxInertia };
+  }
+
   // Polygon: integrate area, first moment and second moment over a fan of
   // triangles anchored at the first vertex, then apply the parallel-axis
   // theorem to report inertia about the centroid.
@@ -179,16 +264,35 @@ export function computeAABB(shape: Shape, xf: Transform): AABB {
     const r = new Vec2(shape.radius, shape.radius);
     return new AABB(c.sub(r), c.add(r));
   }
+  if (shape.kind === 'capsule') {
+    const a = xf.apply(shape.p1);
+    const b = xf.apply(shape.p2);
+    const r = new Vec2(shape.radius, shape.radius);
+    return new AABB(a.min(b).sub(r), a.max(b).add(r));
+  }
   const world = shape.vertices.map((v) => xf.apply(v));
-  return AABB.fromPoints(world);
+  const aabb = AABB.fromPoints(world);
+  if (shape.radius <= 0) return aabb;
+  const r = new Vec2(shape.radius, shape.radius);
+  return new AABB(aabb.lower.sub(r), aabb.upper.add(r));
 }
 
 /**
  * GJK support: the farthest point of the shape (in world space) along `dir`.
+ * With `core` set the skin radius is ignored, so the support traces the shape's
+ * convex *core* (segment, hull or point) — which is what the radius-aware
+ * narrowphase and the time-of-impact solver measure between.
  */
-export function shapeSupport(shape: Shape, xf: Transform, dir: Vec2): Vec2 {
+export function shapeSupport(shape: Shape, xf: Transform, dir: Vec2, core = false): Vec2 {
   if (shape.kind === 'circle') {
-    return xf.apply(shape.center).add(dir.normalize().mul(shape.radius));
+    const c = xf.apply(shape.center);
+    return core ? c : c.add(dir.normalize().mul(shape.radius));
+  }
+  if (shape.kind === 'capsule') {
+    const a = xf.apply(shape.p1);
+    const b = xf.apply(shape.p2);
+    const pt = dir.dot(a) >= dir.dot(b) ? a : b;
+    return core ? pt : pt.add(dir.normalize().mul(shape.radius));
   }
   // Transform the direction into local space, find the extreme vertex.
   const localDir = xf.q.applyT(dir);
@@ -201,13 +305,45 @@ export function shapeSupport(shape: Shape, xf: Transform, dir: Vec2): Vec2 {
       best = shape.vertices[i];
     }
   }
-  return xf.apply(best);
+  const world = xf.apply(best);
+  return core || shape.radius <= 0 ? world : world.add(dir.normalize().mul(shape.radius));
 }
 
 /** Bounding radius of a shape from its local origin (used for broadphase margins). */
 export function boundingRadius(shape: Shape): number {
   if (shape.kind === 'circle') return shape.center.length() + shape.radius;
+  if (shape.kind === 'capsule') {
+    return Math.max(shape.p1.length(), shape.p2.length()) + shape.radius;
+  }
   let r = 0;
   for (const v of shape.vertices) r = Math.max(r, v.length());
-  return r;
+  return r + shape.radius;
+}
+
+/**
+ * The convex core of a shape as a world-space vertex/normal set used by the
+ * radius-aware manifold builder. Circles collapse to a single vertex (no faces);
+ * capsules become a 2-vertex segment with its two side normals; polygons keep
+ * their hull. The skin radius is returned separately.
+ */
+export interface ConvexProxy {
+  verts: Vec2[];
+  normals: Vec2[];
+  radius: number;
+}
+
+export function convexProxy(shape: Shape, xf: Transform): ConvexProxy {
+  if (shape.kind === 'circle') {
+    return { verts: [xf.apply(shape.center)], normals: [], radius: shape.radius };
+  }
+  if (shape.kind === 'capsule') {
+    const a = xf.apply(shape.p1);
+    const b = xf.apply(shape.p2);
+    const edge = b.sub(a);
+    const n = edge.lengthSq() > EPSILON ? new Vec2(edge.y, -edge.x).normalize() : new Vec2(0, -1);
+    return { verts: [a, b], normals: [n, n.neg()], radius: shape.radius };
+  }
+  const verts = shape.vertices.map((v) => xf.apply(v));
+  const normals = shape.normals.map((n) => xf.q.apply(n));
+  return { verts, normals, radius: shape.radius };
 }

@@ -2,9 +2,11 @@ import { AABB } from './aabb';
 import { Body, BodyType } from './body';
 import { BroadPhase } from './broadphase';
 import { gjkDistance } from './collision/gjk';
+import { timeOfImpact } from './collision/toi';
 import { Contact, ContactSolver, DEFAULT_CONFIG, type SolverConfig } from './contact';
 import { type Joint } from './joints/joint';
-import { Vec2 } from './math';
+import { clamp, Vec2 } from './math';
+import { boundingRadius, computeAABB } from './shapes';
 
 /** Per-step statistics surfaced to the UI HUD. */
 export interface StepStats {
@@ -187,6 +189,10 @@ export class World {
       b.torque = 0;
     }
 
+    // 6b. Continuous collision: sweep bullet bodies to their time of impact so
+    // fast/thin bodies stop at the wall instead of teleporting through it.
+    if (this.config.continuous) this.solveContinuous();
+
     // 7. Sleeping.
     if (this.enableSleep) this.updateSleep(islands, dt);
 
@@ -255,6 +261,40 @@ export class World {
     return [...groups.values()];
   }
 
+  /**
+   * Sweep every awake bullet body across the step and, if it would reach contact
+   * with another body, roll it back to that time of impact. The discrete solver
+   * then resolves the now-touching contact on the following step. Only bodies
+   * that moved more than their own size are tested (slow bodies can't tunnel).
+   */
+  private solveContinuous(): void {
+    for (const a of this.bodies) {
+      if (!a.bullet || a.type !== BodyType.Dynamic || !a.awake) continue;
+      const travel = a.worldCenter.sub(a.center0).length();
+      if (travel < boundingRadius(a.shape) * 0.5) continue;
+
+      // Swept AABB of A over the step, for a cheap broadphase-style reject.
+      const sweptA = computeAABB(a.shape, a.sweepTransform(0)).union(a.worldAABB());
+
+      let minT = 1;
+      let hit = false;
+      for (const b of this.bodies) {
+        if (b === a) continue;
+        // Resolve each bullet pair once; bullet-vs-bullet handled by id order.
+        if (b.bullet && b.type === BodyType.Dynamic && b.id < a.id) continue;
+        if (this.nonColliding.has(pairKey(a.id, b.id))) continue;
+        const sweptB = computeAABB(b.shape, b.sweepTransform(0)).union(b.worldAABB());
+        if (!sweptA.overlaps(sweptB)) continue;
+        const res = timeOfImpact(a, b);
+        if (res.hit && res.t < minT) {
+          minT = res.t;
+          hit = true;
+        }
+      }
+      if (hit && minT < 1) a.advanceTo(minT);
+    }
+  }
+
   private updateSleep(islands: Body[][], dt: number): void {
     const linTolSq = LINEAR_SLEEP_TOLERANCE * LINEAR_SLEEP_TOLERANCE;
     const angTolSq = ANGULAR_SLEEP_TOLERANCE * ANGULAR_SLEEP_TOLERANCE;
@@ -297,11 +337,19 @@ export class World {
 
   private pointInside(body: Body, point: Vec2): boolean {
     const local = body.localPoint(point);
-    if (body.shape.kind === 'circle') {
-      return local.sub(body.shape.center).lengthSq() <= body.shape.radius * body.shape.radius;
+    const shape = body.shape;
+    if (shape.kind === 'circle') {
+      return local.sub(shape.center).lengthSq() <= shape.radius * shape.radius;
     }
-    for (let i = 0; i < body.shape.vertices.length; i++) {
-      if (body.shape.normals[i].dot(local.sub(body.shape.vertices[i])) > 0) return false;
+    if (shape.kind === 'capsule') {
+      const ab = shape.p2.sub(shape.p1);
+      const t = ab.lengthSq() > 1e-12 ? clamp(local.sub(shape.p1).dot(ab) / ab.lengthSq(), 0, 1) : 0;
+      const closest = shape.p1.add(ab.mul(t));
+      return local.sub(closest).lengthSq() <= shape.radius * shape.radius;
+    }
+    for (let i = 0; i < shape.vertices.length; i++) {
+      const d = shape.normals[i].dot(local.sub(shape.vertices[i]));
+      if (d > shape.radius) return false;
     }
     return true;
   }
@@ -369,6 +417,18 @@ function rayShape(body: Body, origin: Vec2, target: Vec2): RayHit | null {
     };
   }
 
+  if (body.shape.kind === 'capsule') {
+    const hit = rayCapsuleLocal(p1, d, body.shape.p1, body.shape.p2, body.shape.radius);
+    if (!hit) return null;
+    const localHit = p1.add(d.mul(hit.t));
+    return {
+      body,
+      point: body.worldPoint(localHit),
+      normal: body.transform.q.apply(hit.normal),
+      fraction: hit.t,
+    };
+  }
+
   // Polygon: clip the ray against each face plane (slab method).
   let lower = 0;
   let upper = 1;
@@ -395,6 +455,66 @@ function rayShape(body: Body, origin: Vec2, target: Vec2): RayHit | null {
     normal: body.transform.q.apply(poly.normals[normalIdx]),
     fraction: lower,
   };
+}
+
+/**
+ * Ray vs capsule in the capsule's local frame: the minimum of the ray against
+ * the side cylinder (clamped to the segment span) and against the two end caps.
+ */
+function rayCapsuleLocal(
+  p: Vec2,
+  d: Vec2,
+  A: Vec2,
+  B: Vec2,
+  r: number,
+): { t: number; normal: Vec2 } | null {
+  const ab = B.sub(A);
+  const len = ab.length();
+  if (len < 1e-9) {
+    return raySphereLocal(p, d, A, r);
+  }
+  const u = ab.mul(1 / len);
+  let best: { t: number; normal: Vec2 } | null = null;
+  const consider = (cand: { t: number; normal: Vec2 } | null): void => {
+    if (cand && cand.t >= 0 && cand.t <= 1 && (best === null || cand.t < best.t)) best = cand;
+  };
+
+  // Side (infinite cylinder, then clamp the projection to [0, len]).
+  const m = p.sub(A);
+  const dPerp = d.sub(u.mul(d.dot(u)));
+  const mPerp = m.sub(u.mul(m.dot(u)));
+  const aq = dPerp.dot(dPerp);
+  if (aq > 1e-12) {
+    const bq = mPerp.dot(dPerp);
+    const cq = mPerp.dot(mPerp) - r * r;
+    const disc = bq * bq - aq * cq;
+    if (disc >= 0) {
+      const t = (-bq - Math.sqrt(disc)) / aq;
+      const hit = p.add(d.mul(t));
+      const s = hit.sub(A).dot(u);
+      if (s >= 0 && s <= len) {
+        const onAxis = A.add(u.mul(s));
+        consider({ t, normal: hit.sub(onAxis).normalize() });
+      }
+    }
+  }
+  // End caps.
+  consider(raySphereLocal(p, d, A, r));
+  consider(raySphereLocal(p, d, B, r));
+  return best;
+}
+
+function raySphereLocal(p: Vec2, d: Vec2, c: Vec2, r: number): { t: number; normal: Vec2 } | null {
+  const m = p.sub(c);
+  const aq = d.dot(d);
+  if (aq < 1e-12) return null;
+  const bq = m.dot(d);
+  const cq = m.dot(m) - r * r;
+  const disc = bq * bq - aq * cq;
+  if (disc < 0) return null;
+  const t = (-bq - Math.sqrt(disc)) / aq;
+  const hit = p.add(d.mul(t));
+  return { t, normal: hit.sub(c).normalize() };
 }
 
 function now(): number {
