@@ -7,6 +7,7 @@
 
 import { hashKey, orderValues, type SqlValue } from './types'
 import type { Row, Table, IndexHandle } from './catalog'
+import type { IndexKey } from './storage/btree'
 import type { Schema } from './schema'
 import type { Evaluator } from './eval'
 
@@ -74,7 +75,8 @@ export class SeqScan implements Operator {
   }
 }
 
-export type RangeBound = { value: SqlValue; inclusive: boolean } | null
+/** A range bound on a (possibly composite, possibly prefix) index key. */
+export type RangeBound = { key: IndexKey; inclusive: boolean } | null
 
 export class IndexScan implements Operator {
   readonly schema: Schema
@@ -88,23 +90,35 @@ export class IndexScan implements Operator {
   private rowids: number[] = []
   private pos = 0
 
-  constructor(table: Table, index: IndexHandle, schema: Schema, lo: RangeBound, hi: RangeBound) {
+  constructor(
+    table: Table,
+    index: IndexHandle,
+    schema: Schema,
+    lo: RangeBound,
+    hi: RangeBound,
+    estRows?: number,
+  ) {
     this.table = table
     this.index = index
     this.schema = schema
     this.lo = lo
     this.hi = hi
     const total = table.rowCount()
-    // Equality estimate: assume good selectivity; range: ~1/3 of the table.
-    const isEq = lo && hi && lo.value === hi.value
-    this.estRows = isEq ? Math.max(1, Math.round(total / Math.max(1, index.stats().entries || 1))) : Math.ceil(total / 3)
+    if (estRows !== undefined) {
+      this.estRows = Math.max(1, Math.round(estRows))
+    } else {
+      const isEq = lo && hi && keysEqual(lo.key, hi.key)
+      this.estRows = isEq
+        ? Math.max(1, Math.round(total / Math.max(1, index.stats().entries || 1)))
+        : Math.ceil(total / 3)
+    }
     const h = index.stats().height
     this.estCost = h * CPU_OP + this.estRows * CPU_TUPLE
   }
   open() {
     this.rowids = this.index.tree.range(
-      this.lo ? this.lo.value : null,
-      this.hi ? this.hi.value : null,
+      this.lo ? this.lo.key : null,
+      this.hi ? this.hi.key : null,
       this.lo ? this.lo.inclusive : true,
       this.hi ? this.hi.inclusive : true,
     )
@@ -125,7 +139,7 @@ export class IndexScan implements Operator {
   }
   plan(): PlanNode {
     const s = this.index.stats()
-    const bound = (b: RangeBound, sym: string) => (b ? `${sym}${b.inclusive ? '=' : ''} ${fmt(b.value)}` : '')
+    const bound = (b: RangeBound, sym: string) => (b ? `${sym}${b.inclusive ? '=' : ''} ${fmtKey(b.key)}` : '')
     const cond = [bound(this.lo, '>'), bound(this.hi, '<')].filter(Boolean).join(' AND ') || 'full'
     return {
       op: 'IndexScan',
@@ -133,14 +147,25 @@ export class IndexScan implements Operator {
       estRows: this.estRows,
       estCost: this.estCost,
       actualRows: this.actualRows,
-      extra: [`on ${this.index.meta.column} (${cond})`, `B+Tree h=${s.height} nodes=${s.nodes} order=${s.order}`],
+      extra: [
+        `on (${this.index.meta.columns.join(', ')}) ${cond}`,
+        `B+Tree h=${s.height} nodes=${s.nodes} order=${s.order}`,
+      ],
       children: [],
     }
   }
 }
 
+function keysEqual(a: IndexKey, b: IndexKey): boolean {
+  if (a.length !== b.length) return false
+  for (let i = 0; i < a.length; i++) if (orderValues(a[i], b[i]) !== 0) return false
+  return true
+}
 function fmt(v: SqlValue): string {
   return v === null ? 'NULL' : typeof v === 'string' ? `'${v}'` : String(v)
+}
+function fmtKey(k: IndexKey): string {
+  return k.length === 1 ? fmt(k[0]) : `(${k.map(fmt).join(', ')})`
 }
 
 export class Filter implements Operator {
@@ -404,41 +429,103 @@ export class HashJoin implements Operator {
   }
 }
 
-export interface SortKey {
-  eval: Evaluator
-  dir: 'ASC' | 'DESC'
-}
-
-export class Sort implements Operator {
+// Sort–merge join: sort both inputs on the join key, then sweep them in lockstep
+// emitting matches for each equal-key block. An alternative to HashJoin that the
+// planner picks when its cost model prefers it (typically large, comparably
+// sized inputs). Handles duplicate keys via block cross-products and supports
+// every outer-join flavour.
+export class MergeJoin implements Operator {
   readonly schema: Schema
   estRows: number
   estCost: number
   actualRows = 0
-  private readonly child: Operator
-  private readonly keys: SortKey[]
+  private readonly left: Operator
+  private readonly right: Operator
+  private readonly leftKey: Evaluator
+  private readonly rightKey: Evaluator
+  private readonly joinType: 'INNER' | 'LEFT' | 'RIGHT' | 'FULL'
+  private readonly leftWidth: number
+  private readonly rightWidth: number
   private rows: Row[] = []
   private pos = 0
 
-  constructor(child: Operator, keys: SortKey[]) {
-    this.child = child
-    this.keys = keys
-    this.schema = child.schema
-    this.estRows = child.estRows
-    const n = Math.max(1, child.estRows)
-    this.estCost = child.estCost + n * Math.log2(n + 1) * CPU_OP
+  constructor(
+    left: Operator,
+    right: Operator,
+    leftKey: Evaluator,
+    rightKey: Evaluator,
+    joinType: 'INNER' | 'LEFT' | 'RIGHT' | 'FULL',
+    schema: Schema,
+  ) {
+    this.left = left
+    this.right = right
+    this.leftKey = leftKey
+    this.rightKey = rightKey
+    this.joinType = joinType
+    this.schema = schema
+    this.leftWidth = left.schema.length
+    this.rightWidth = right.schema.length
+    this.estRows = Math.max(left.estRows, right.estRows)
+    const nl = Math.max(1, left.estRows)
+    const nr = Math.max(1, right.estRows)
+    this.estCost =
+      left.estCost +
+      right.estCost +
+      (nl * Math.log2(nl + 1) + nr * Math.log2(nr + 1)) * CPU_OP +
+      (nl + nr) * CPU_OP
   }
   open() {
-    this.child.open()
-    this.rows = []
-    for (let r = this.child.next(); r !== null; r = this.child.next()) this.rows.push(r)
-    this.child.close()
-    this.rows.sort((a, b) => {
-      for (const k of this.keys) {
-        const c = orderValues(k.eval(a), k.eval(b))
-        if (c !== 0) return k.dir === 'ASC' ? c : -c
+    const L = drain(this.left).map((r) => ({ r, k: this.leftKey(r) }))
+    const R = drain(this.right).map((r) => ({ r, k: this.rightKey(r) }))
+    L.sort((a, b) => orderValues(a.k, b.k))
+    R.sort((a, b) => orderValues(a.k, b.k))
+    const emitLeftNull = this.joinType === 'LEFT' || this.joinType === 'FULL'
+    const emitRightNull = this.joinType === 'RIGHT' || this.joinType === 'FULL'
+    const rNull = new Array(this.rightWidth).fill(null)
+    const lNull = new Array(this.leftWidth).fill(null)
+    const out: Row[] = []
+    let i = 0
+    let j = 0
+    while (i < L.length && j < R.length) {
+      const lk = L[i].k
+      const rk = R[j].k
+      // NULL keys never participate in an equijoin match.
+      if (lk === null) {
+        if (emitLeftNull) out.push(L[i].r.concat(rNull))
+        i++
+        continue
       }
-      return 0
-    })
+      if (rk === null) {
+        if (emitRightNull) out.push(lNull.concat(R[j].r))
+        j++
+        continue
+      }
+      const c = orderValues(lk, rk)
+      if (c < 0) {
+        if (emitLeftNull) out.push(L[i].r.concat(rNull))
+        i++
+      } else if (c > 0) {
+        if (emitRightNull) out.push(lNull.concat(R[j].r))
+        j++
+      } else {
+        let i2 = i
+        while (i2 < L.length && L[i2].k !== null && orderValues(L[i2].k, lk) === 0) i2++
+        let j2 = j
+        while (j2 < R.length && R[j2].k !== null && orderValues(R[j2].k, rk) === 0) j2++
+        for (let a = i; a < i2; a++) for (let b = j; b < j2; b++) out.push(L[a].r.concat(R[b].r))
+        i = i2
+        j = j2
+      }
+    }
+    while (i < L.length) {
+      if (emitLeftNull) out.push(L[i].r.concat(rNull))
+      i++
+    }
+    while (j < R.length) {
+      if (emitRightNull) out.push(lNull.concat(R[j].r))
+      j++
+    }
+    this.rows = out
     this.pos = 0
   }
   next(): Row | null {
@@ -451,15 +538,141 @@ export class Sort implements Operator {
   }
   plan(): PlanNode {
     return {
+      op: `MergeJoin (${this.joinType})`,
+      detail: '',
+      estRows: this.estRows,
+      estCost: this.estCost,
+      actualRows: this.actualRows,
+      extra: ['sort both inputs on the join key, then merge'],
+      children: [this.left.plan(), this.right.plan()],
+    }
+  }
+}
+
+export interface SortKey {
+  eval: Evaluator
+  dir: 'ASC' | 'DESC'
+}
+
+// Rows-per-sorted-run before the Sort spills to an external (run-generating)
+// merge sort. Small inputs sort in one pass; larger ones are split into sorted
+// runs that are then k-way merged — the classic external-sort algorithm, here
+// reported in EXPLAIN so you can watch it kick in.
+const SORT_RUN_SIZE = 1024
+
+export class Sort implements Operator {
+  readonly schema: Schema
+  estRows: number
+  estCost: number
+  actualRows = 0
+  private readonly child: Operator
+  private readonly keys: SortKey[]
+  private rows: Row[] = []
+  private pos = 0
+  // Diagnostics surfaced in EXPLAIN.
+  private runs = 1
+  private passes = 0
+  private external = false
+  private opened = false
+
+  constructor(child: Operator, keys: SortKey[]) {
+    this.child = child
+    this.keys = keys
+    this.schema = child.schema
+    this.estRows = child.estRows
+    const n = Math.max(1, child.estRows)
+    this.estCost = child.estCost + n * Math.log2(n + 1) * CPU_OP
+  }
+  private cmp = (a: Row, b: Row): number => {
+    for (const k of this.keys) {
+      const c = orderValues(k.eval(a), k.eval(b))
+      if (c !== 0) return k.dir === 'ASC' ? c : -c
+    }
+    return 0
+  }
+  open() {
+    this.opened = true
+    this.child.open()
+    const input: Row[] = []
+    for (let r = this.child.next(); r !== null; r = this.child.next()) input.push(r)
+    this.child.close()
+
+    if (input.length <= SORT_RUN_SIZE) {
+      input.sort(this.cmp)
+      this.rows = input
+      this.runs = 1
+      this.passes = 1
+      this.external = false
+      this.pos = 0
+      return
+    }
+
+    // --- external merge sort -------------------------------------------------
+    this.external = true
+    // Pass 0: cut the input into fixed-size runs and sort each in place.
+    let runs: Row[][] = []
+    for (let i = 0; i < input.length; i += SORT_RUN_SIZE) {
+      const run = input.slice(i, i + SORT_RUN_SIZE)
+      run.sort(this.cmp)
+      runs.push(run)
+    }
+    this.runs = runs.length
+    let passes = 1
+    // Merge passes: pairwise k-way (binary) merge until a single run remains.
+    while (runs.length > 1) {
+      const next: Row[][] = []
+      for (let i = 0; i < runs.length; i += 2) {
+        if (i + 1 < runs.length) next.push(mergeRuns(runs[i], runs[i + 1], this.cmp))
+        else next.push(runs[i])
+      }
+      runs = next
+      passes++
+    }
+    this.passes = passes
+    this.rows = runs[0] ?? []
+    this.pos = 0
+  }
+  next(): Row | null {
+    if (this.pos >= this.rows.length) return null
+    this.actualRows++
+    return this.rows[this.pos++]
+  }
+  close() {
+    this.rows = []
+  }
+  plan(): PlanNode {
+    // When EXPLAIN hasn't actually executed us, predict spilling from the
+    // estimated input size so the plan still shows the algorithm we'd use.
+    const willSpill = this.opened ? this.external : this.child.estRows > SORT_RUN_SIZE
+    const extra = willSpill
+      ? this.opened
+        ? [`external merge sort: ${this.runs} runs, ${this.passes} passes (run size ${SORT_RUN_SIZE})`]
+        : [`external merge sort (est. ${Math.ceil(this.child.estRows / SORT_RUN_SIZE)} runs, run size ${SORT_RUN_SIZE})`]
+      : ['in-memory sort']
+    return {
       op: 'Sort',
       detail: this.keys.map((_, i) => `key${i}`).join(', '),
       estRows: this.estRows,
       estCost: this.estCost,
       actualRows: this.actualRows,
-      extra: ['in-memory quicksort'],
+      extra,
       children: [this.child.plan()],
     }
   }
+}
+
+/** Stable merge of two already-sorted runs. */
+function mergeRuns(a: Row[], b: Row[], cmp: (x: Row, y: Row) => number): Row[] {
+  const out: Row[] = []
+  let i = 0
+  let j = 0
+  while (i < a.length && j < b.length) {
+    if (cmp(a[i], b[j]) <= 0) out.push(a[i++])
+    else out.push(b[j++])
+  }
+  while (i < a.length) out.push(a[i++])
+  while (j < b.length) out.push(b[j++])
+  return out
 }
 
 export class Distinct implements Operator {

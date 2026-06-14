@@ -13,6 +13,7 @@ interface Props {
 
 function TableCard({ table, onInsert }: { table: TableInfo; onInsert: (t: string) => void }) {
   const [open, setOpen] = useState(true)
+  const statFor = (name: string) => table.stats?.find((s) => s.column.toLowerCase() === name.toLowerCase())
   return (
     <div className="schema-table">
       <button className="schema-table-head" onClick={() => setOpen((o) => !o)}>
@@ -24,19 +25,26 @@ function TableCard({ table, onInsert }: { table: TableInfo; onInsert: (t: string
       </button>
       {open && (
         <div className="schema-cols">
-          {table.columns.map((c) => (
+          {table.columns.map((c) => {
+            const st = statFor(c.name)
+            return (
             <button key={c.name} className="schema-col" onClick={() => onInsert(c.name)}>
               <span className="schema-col-name">{c.name}</span>
               <span className="schema-col-type">{c.type}</span>
               {c.primaryKey && <span className="badge pk">PK</span>}
               {c.unique && !c.primaryKey && <span className="badge uq">UQ</span>}
               {c.notNull && !c.primaryKey && <span className="badge nn">NN</span>}
+              {st && <span className="schema-colstat" title="distinct values · nulls (from ANALYZE)">{st.ndistinct}d{st.nullCount ? ` · ${st.nullCount}∅` : ''}</span>}
             </button>
-          ))}
+            )
+          })}
           {table.indexes.map((idx) => (
-            <div key={idx.name} className="schema-index" title={`B+Tree on ${idx.column}`}>
+            <div key={idx.name} className="schema-index" title={`B+Tree on ${idx.columns.join(', ')}`}>
               <span className="idx-glyph">⌗</span>
-              <span className="idx-name">{idx.column}</span>
+              <span className="idx-name">
+                {idx.columns.join(', ')}
+                {idx.unique && <span className="badge uq">UQ</span>}
+              </span>
               <span className="idx-stats">
                 B+Tree h={idx.stats.height} · {idx.stats.nodes} nodes
               </span>

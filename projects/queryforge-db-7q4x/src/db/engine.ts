@@ -72,6 +72,8 @@ export class Engine {
         return this.dropTable(stmt, sql, t0)
       case 'create_index':
         return this.createIndex(stmt, sql, t0)
+      case 'analyze':
+        return this.analyze(stmt, sql, t0)
       case 'insert':
         return this.insert(stmt, sql, t0)
       case 'update':
@@ -114,11 +116,27 @@ export class Engine {
 
   private createIndex(stmt: Extract<Statement, { kind: 'create_index' }>, sql: string, t0: number): QueryResult {
     const table = this.db.getTable(stmt.table)
-    if (table.indexForColumn(stmt.column)) {
-      if (stmt.ifNotExists) return msg(`index on "${stmt.table}.${stmt.column}" already exists`, sql, t0)
+    if (table.hasIndexNamed(stmt.name)) {
+      if (stmt.ifNotExists) return msg(`index "${stmt.name}" already exists, skipped`, sql, t0)
+      throw new SqlError(`index "${stmt.name}" already exists`, 'ddl')
     }
-    table.createIndex(stmt.name, stmt.column, stmt.unique)
-    return msg(`index "${stmt.name}" created on ${stmt.table}.${stmt.column}`, sql, t0)
+    table.createIndex(stmt.name, stmt.columns, stmt.unique)
+    const cols = stmt.columns.join(', ')
+    return msg(`index "${stmt.name}" created on ${stmt.table} (${cols})`, sql, t0)
+  }
+
+  private analyze(stmt: Extract<Statement, { kind: 'analyze' }>, sql: string, t0: number): QueryResult {
+    if (stmt.table) {
+      const table = this.db.getTable(stmt.table)
+      const s = table.analyze()
+      return msg(`analyzed "${stmt.table}" (${s.rowCount} rows, ${s.columns.size} columns)`, sql, t0)
+    }
+    let n = 0
+    for (const t of this.db.tables.values()) {
+      t.analyze()
+      n++
+    }
+    return msg(`analyzed ${n} table${n === 1 ? '' : 's'}`, sql, t0)
   }
 
   // --- DML ------------------------------------------------------------------

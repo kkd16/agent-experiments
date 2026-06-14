@@ -72,6 +72,8 @@ export interface FuncExpr {
   distinct: boolean
   /** COUNT(*) */
   star: boolean
+  /** Aggregate `FILTER (WHERE …)` — only rows matching it are aggregated. */
+  filter?: Expr
 }
 export interface CaseExpr {
   kind: 'case'
@@ -110,9 +112,28 @@ export interface QuantifiedExpr {
   expr: Expr
   select: SelectStmt
 }
+export type FrameMode = 'ROWS' | 'RANGE'
+export type FrameBoundType =
+  | 'UNBOUNDED_PRECEDING'
+  | 'PRECEDING'
+  | 'CURRENT_ROW'
+  | 'FOLLOWING'
+  | 'UNBOUNDED_FOLLOWING'
+export interface FrameBound {
+  type: FrameBoundType
+  /** Row/value offset for N PRECEDING / N FOLLOWING. */
+  offset?: Expr
+}
+export interface WindowFrame {
+  mode: FrameMode
+  start: FrameBound
+  end: FrameBound
+}
 export interface WindowSpec {
   partitionBy: Expr[]
   orderBy: OrderItem[]
+  /** Explicit frame (ROWS/RANGE BETWEEN …); undefined → the standard default. */
+  frame?: WindowFrame
 }
 /** A window function call: `name(args) OVER (PARTITION BY … ORDER BY …)`. */
 export interface WindowFuncExpr {
@@ -168,9 +189,15 @@ export interface CreateIndexStmt {
   kind: 'create_index'
   name: string
   table: string
-  column: string
+  /** Indexed columns, in order (length 1 for a single-column index). */
+  columns: string[]
   unique: boolean
   ifNotExists: boolean
+}
+/** `ANALYZE [table]` — (re)gather optimizer statistics. */
+export interface AnalyzeStmt {
+  kind: 'analyze'
+  table?: string
 }
 export interface InsertStmt {
   kind: 'insert'
@@ -262,6 +289,7 @@ export type Statement =
   | CreateTableStmt
   | DropTableStmt
   | CreateIndexStmt
+  | AnalyzeStmt
   | InsertStmt
   | UpdateStmt
   | DeleteStmt
@@ -270,7 +298,11 @@ export type Statement =
   | TxnStmt
 
 // Aggregate function names recognised by the planner.
-export const AGGREGATES = new Set(['COUNT', 'SUM', 'AVG', 'MIN', 'MAX'])
+export const AGGREGATES = new Set([
+  'COUNT', 'SUM', 'AVG', 'MIN', 'MAX',
+  'STDDEV', 'STDDEV_SAMP', 'STDDEV_POP', 'VARIANCE', 'VAR_SAMP', 'VAR_POP',
+  'STRING_AGG', 'GROUP_CONCAT', 'MEDIAN',
+])
 
 export function isAggregate(name: string): boolean {
   return AGGREGATES.has(name.toUpperCase())

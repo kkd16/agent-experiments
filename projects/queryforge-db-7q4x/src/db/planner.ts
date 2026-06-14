@@ -27,15 +27,19 @@ import {
   type QuantifiedExpr,
   type SetOp,
   type SubqueryExpr,
+  type WindowFrame,
   type WindowFuncExpr,
 } from './ast'
-import { Database, Table, type Row } from './catalog'
+import { Database, Table, type IndexHandle, type Row } from './catalog'
+import type { IndexKey } from './storage/btree'
+import { eqSelectivity, nullSelectivity, rangeSelectivity, type ColumnStat } from './stats'
 import {
   Distinct,
   Filter,
   HashJoin,
   IndexScan,
   Limit,
+  MergeJoin,
   NestedLoopJoin,
   Project,
   SeqScan,
@@ -46,7 +50,7 @@ import {
   type SortKey,
 } from './operators'
 import { HashAggregate, type AggName, type AggSpec } from './aggregate'
-import { WindowExec, type WindowSpecExec } from './window'
+import { WindowExec, type FrameExec, type WindowSpecExec } from './window'
 
 // ---------------------------------------------------------------------------
 // Planning environment: the database plus an overlay of named relations
@@ -313,6 +317,7 @@ function inferType(e: Expr, schema: Schema, ctx: CompileCtx): ColumnType {
           'SUM', 'MIN', 'MAX', 'AVG', 'ABS', 'ROUND', 'SQRT', 'CEIL', 'CEILING', 'FLOOR', 'TRUNC',
           'POW', 'POWER', 'MOD', 'EXP', 'LN', 'LOG', 'LOG10', 'PI', 'SIN', 'COS', 'TAN', 'ASIN',
           'ACOS', 'ATAN', 'ATAN2', 'RADIANS', 'DEGREES', 'RANDOM', 'JULIANDAY',
+          'STDDEV', 'STDDEV_SAMP', 'STDDEV_POP', 'VARIANCE', 'VAR_SAMP', 'VAR_POP', 'MEDIAN',
         ].includes(e.name)
       )
         return 'REAL'
@@ -320,7 +325,7 @@ function inferType(e: Expr, schema: Schema, ctx: CompileCtx): ColumnType {
         [
           'UPPER', 'LOWER', 'INITCAP', 'TRIM', 'LTRIM', 'RTRIM', 'LPAD', 'RPAD', 'REPEAT', 'REVERSE',
           'LEFT', 'RIGHT', 'CONCAT', 'CONCAT_WS', 'SUBSTR', 'REPLACE', 'CHR', 'TYPEOF', 'NOW', 'DATE',
-          'DATETIME', 'STRFTIME', 'DATE_ADD',
+          'DATETIME', 'STRFTIME', 'DATE_ADD', 'STRING_AGG', 'GROUP_CONCAT',
         ].includes(e.name)
       )
         return 'TEXT'
@@ -356,78 +361,215 @@ function inferType(e: Expr, schema: Schema, ctx: CompileCtx): ColumnType {
   }
 }
 
+// --- statistics-based selectivity ------------------------------------------
+// A map from relation alias (lower-case) to the backing Table, so the optimizer
+// can look up column statistics for predicates over base/derived relations.
+type StatCtx = Map<string, Table>
+
+const DEFAULT_SEL = 0.3
+
+function statForColumn(sc: StatCtx, col: ColumnExpr): { stat: ColumnStat; rowCount: number } | null {
+  for (const [alias, t] of sc) {
+    if (col.table && col.table.toLowerCase() !== alias) continue
+    if (t.columnIndex(col.name) < 0) continue
+    const stat = t.ensureStats().columns.get(col.name.toLowerCase())
+    if (stat) return { stat, rowCount: t.rowCount() }
+  }
+  return null
+}
+
+const FLIP = { '<': '>', '<=': '>=', '>': '<', '>=': '<=', '=': '=' } as const
+
+/** Split a binary comparison into (column, op, const value) if it is sargable. */
+function asColumnCompare(p: Expr): { col: ColumnExpr; op: '=' | '<' | '<=' | '>' | '>='; value: SqlValue } | null {
+  if (p.kind !== 'binary') return null
+  if (!['=', '<', '<=', '>', '>='].includes(p.op)) return null
+  if (p.left.kind === 'column' && evalConst(p.right) !== undefined) {
+    return { col: p.left, op: p.op as '=', value: evalConst(p.right)! }
+  }
+  if (p.right.kind === 'column' && evalConst(p.left) !== undefined) {
+    return { col: p.right, op: FLIP[p.op as '='], value: evalConst(p.left)! }
+  }
+  return null
+}
+
+/** Estimate the fraction of rows a single predicate keeps (0..1). */
+function predSelectivity(p: Expr, sc: StatCtx): number {
+  switch (p.kind) {
+    case 'binary': {
+      if (p.op === 'AND') return predSelectivity(p.left, sc) * predSelectivity(p.right, sc)
+      if (p.op === 'OR') {
+        const a = predSelectivity(p.left, sc)
+        const b = predSelectivity(p.right, sc)
+        return Math.min(1, a + b - a * b)
+      }
+      const cmp = asColumnCompare(p)
+      if (cmp) {
+        const info = statForColumn(sc, cmp.col)
+        if (!info) return cmp.op === '=' ? 0.1 : DEFAULT_SEL
+        if (cmp.op === '=') return eqSelectivity(info.stat, cmp.value)
+        if (cmp.op === '<') return rangeSelectivity(info.stat, null, true, cmp.value, false)
+        if (cmp.op === '<=') return rangeSelectivity(info.stat, null, true, cmp.value, true)
+        if (cmp.op === '>') return rangeSelectivity(info.stat, cmp.value, false, null, true)
+        return rangeSelectivity(info.stat, cmp.value, true, null, true)
+      }
+      return DEFAULT_SEL
+    }
+    case 'between': {
+      if (p.expr.kind === 'column') {
+        const info = statForColumn(sc, p.expr)
+        const lo = evalConst(p.lo)
+        const hi = evalConst(p.hi)
+        if (info && lo !== undefined && hi !== undefined) {
+          const s = rangeSelectivity(info.stat, lo, true, hi, true)
+          return p.negated ? 1 - s : s
+        }
+      }
+      return p.negated ? 0.7 : 0.25
+    }
+    case 'isnull': {
+      if (p.expr.kind === 'column') {
+        const info = statForColumn(sc, p.expr)
+        if (info) return nullSelectivity(info.stat, p.negated)
+      }
+      return p.negated ? 0.9 : 0.1
+    }
+    case 'in': {
+      if (p.expr.kind === 'column') {
+        const info = statForColumn(sc, p.expr)
+        if (info) {
+          let s = 0
+          for (const item of p.list) {
+            const v = evalConst(item)
+            s += v === undefined ? 1 / Math.max(1, info.stat.ndistinct) : eqSelectivity(info.stat, v)
+          }
+          s = Math.min(1, s)
+          return p.negated ? 1 - s : s
+        }
+      }
+      return p.negated ? 0.7 : Math.min(0.5, 0.1 * p.list.length)
+    }
+    case 'like':
+      return p.negated ? 0.75 : 0.25
+    case 'unary':
+      if (p.op === 'NOT') return Math.max(0, 1 - predSelectivity(p.expr, sc))
+      return DEFAULT_SEL
+    default:
+      return DEFAULT_SEL
+  }
+}
+
+/** Combined selectivity of a conjunction of predicates (independence assumed). */
+function combinedSelectivity(preds: Expr[], sc: StatCtx): number {
+  let s = 1
+  for (const p of preds) s *= predSelectivity(p, sc)
+  return Math.max(0, Math.min(1, s))
+}
+
 // --- index selection --------------------------------------------------------
 interface IndexPlan {
   op: Operator
   consumed: Set<Expr>
 }
 
-function tryIndexScan(table: Table, baseSchema: Schema, preds: Expr[]): IndexPlan | null {
-  // Gather sargable comparisons grouped by indexed column.
-  interface Sarg {
-    pred: Expr
-    op: '=' | '<' | '<=' | '>' | '>='
-    value: SqlValue
+interface Sarg {
+  pred: Expr
+  op: '=' | '<' | '<=' | '>' | '>='
+  value: SqlValue
+}
+
+// Match an index against the available sargs: consume a leading run of equality
+// columns, then optionally one trailing range column. Returns the matched key
+// bounds and consumed predicates, or null if the leading column isn't covered.
+function matchIndex(index: IndexHandle, byColumn: Map<string, Sarg[]>): {
+  lo: RangeBound
+  hi: RangeBound
+  consumed: Set<Expr>
+  isEq: boolean
+} | null {
+  const eqPrefix: SqlValue[] = []
+  const consumed = new Set<Expr>()
+  let rangeLo: { value: SqlValue; inclusive: boolean } | null = null
+  let rangeHi: { value: SqlValue; inclusive: boolean } | null = null
+  let usedRange = false
+  for (const colName of index.meta.columns) {
+    const sargs = byColumn.get(colName.toLowerCase())
+    if (!sargs) break
+    const eq = sargs.find((s) => s.op === '=')
+    if (eq) {
+      eqPrefix.push(eq.value)
+      consumed.add(eq.pred)
+      continue
+    }
+    // No equality on this column — use it as the trailing range, then stop.
+    for (const s of sargs) {
+      if (s.op === '>') rangeLo = { value: s.value, inclusive: false }
+      else if (s.op === '>=') rangeLo = { value: s.value, inclusive: true }
+      else if (s.op === '<') rangeHi = { value: s.value, inclusive: false }
+      else if (s.op === '<=') rangeHi = { value: s.value, inclusive: true }
+      consumed.add(s.pred)
+      usedRange = true
+    }
+    break
   }
+  if (eqPrefix.length === 0 && !usedRange) return null
+
+  let lo: RangeBound
+  let hi: RangeBound
+  if (usedRange) {
+    const loKey: IndexKey = rangeLo ? [...eqPrefix, rangeLo.value] : [...eqPrefix]
+    const hiKey: IndexKey = rangeHi ? [...eqPrefix, rangeHi.value] : [...eqPrefix]
+    lo = { key: loKey, inclusive: rangeLo ? rangeLo.inclusive : true }
+    hi = { key: hiKey, inclusive: rangeHi ? rangeHi.inclusive : true }
+  } else {
+    // Pure equality-prefix scan: an exact prefix match on the index.
+    lo = { key: [...eqPrefix], inclusive: true }
+    hi = { key: [...eqPrefix], inclusive: true }
+  }
+  return { lo, hi, consumed, isEq: !usedRange }
+}
+
+function tryIndexScan(table: Table, baseSchema: Schema, preds: Expr[], sc: StatCtx): IndexPlan | null {
+  // Gather sargable comparisons grouped by indexed column name.
   const byColumn = new Map<string, Sarg[]>()
   for (const p of preds) {
-    if (p.kind !== 'binary') continue
-    const ops = ['=', '<', '<=', '>', '>=']
-    if (!ops.includes(p.op)) continue
-    let col: ColumnExpr | null = null
-    let constVal: SqlValue | undefined
-    let op = p.op as Sarg['op']
-    if (p.left.kind === 'column' && evalConst(p.right) !== undefined) {
-      col = p.left
-      constVal = evalConst(p.right)
-    } else if (p.right.kind === 'column' && evalConst(p.left) !== undefined) {
-      col = p.right
-      constVal = evalConst(p.left)
-      // flip operator direction
-      op = ({ '<': '>', '<=': '>=', '>': '<', '>=': '<=', '=': '=' } as const)[op]
-    }
-    if (!col || constVal === undefined) continue
-    // column must belong to this table and be indexed
+    const cmp = asColumnCompare(p)
+    if (!cmp) continue
     try {
-      resolveColumn(baseSchema, col.table, col.name)
+      resolveColumn(baseSchema, cmp.col.table, cmp.col.name)
     } catch {
       continue
     }
-    if (!table.indexForColumn(col.name)) continue
-    const key = col.name.toLowerCase()
+    if (table.columnIndex(cmp.col.name) < 0) continue
+    const key = cmp.col.name.toLowerCase()
     const list = byColumn.get(key) ?? []
-    list.push({ pred: p, op, value: constVal })
+    list.push({ pred: p, op: cmp.op, value: cmp.value })
     byColumn.set(key, list)
   }
   if (byColumn.size === 0) return null
 
-  // Prefer a column with an equality (best selectivity), else any range.
-  let chosen: { column: string; sargs: Sarg[] } | null = null
-  for (const [column, sargs] of byColumn) {
-    const hasEq = sargs.some((s) => s.op === '=')
-    if (hasEq) {
-      chosen = { column, sargs: sargs.filter((s) => s.op === '=').slice(0, 1) }
-      break
+  // Among all indexes, pick the match that consumes the most predicates
+  // (longest usable prefix), preferring an all-equality match.
+  let best: { index: IndexHandle; m: NonNullable<ReturnType<typeof matchIndex>> } | null = null
+  for (const index of table.allIndexes()) {
+    const m = matchIndex(index, byColumn)
+    if (!m) continue
+    if (
+      !best ||
+      m.consumed.size > best.m.consumed.size ||
+      (m.consumed.size === best.m.consumed.size && m.isEq && !best.m.isEq)
+    ) {
+      best = { index, m }
     }
-    if (!chosen) chosen = { column, sargs }
   }
-  if (!chosen) return null
-  const index = table.indexForColumn(chosen.column)!
+  if (!best) return null
 
-  let lo: RangeBound = null
-  let hi: RangeBound = null
-  const consumed = new Set<Expr>()
-  for (const s of chosen.sargs) {
-    consumed.add(s.pred)
-    if (s.op === '=') {
-      lo = { value: s.value, inclusive: true }
-      hi = { value: s.value, inclusive: true }
-    } else if (s.op === '>') lo = { value: s.value, inclusive: false }
-    else if (s.op === '>=') lo = { value: s.value, inclusive: true }
-    else if (s.op === '<') hi = { value: s.value, inclusive: false }
-    else if (s.op === '<=') hi = { value: s.value, inclusive: true }
+  const consumedPreds = [...best.m.consumed]
+  const estRows = Math.max(1, Math.round(table.rowCount() * combinedSelectivity(consumedPreds, sc)))
+  return {
+    op: new IndexScan(table, best.index, baseSchema, best.m.lo, best.m.hi, estRows),
+    consumed: best.m.consumed,
   }
-  return { op: new IndexScan(table, index, baseSchema, lo, hi), consumed }
 }
 
 // --- equijoin extraction ----------------------------------------------------
@@ -468,6 +610,25 @@ function extractEquiJoin(on: Expr, leftSchema: Schema, rightSchema: Schema): Equ
   return { leftKey, rightKey, residual }
 }
 
+// Cost-based pick between a hash join and a sort–merge join for an equijoin.
+// Hash join is the default; merge join wins for large, comparably-sized inputs
+// (its sort cost amortizes and it avoids building a big hash table) — the
+// classic sweet spot for sort–merge.
+const MERGE_JOIN_MIN_ROWS = 500
+function chooseEquiJoin(
+  left: Operator,
+  right: Operator,
+  leftKey: Evaluator,
+  rightKey: Evaluator,
+  type: 'INNER' | 'LEFT' | 'RIGHT' | 'FULL',
+  schema: Schema,
+): Operator {
+  const big = left.estRows >= MERGE_JOIN_MIN_ROWS && right.estRows >= MERGE_JOIN_MIN_ROWS
+  const balanced = Math.max(left.estRows, right.estRows) <= 4 * Math.min(left.estRows, right.estRows) + 1
+  if (big && balanced) return new MergeJoin(left, right, leftKey, rightKey, type, schema)
+  return new HashJoin(left, right, leftKey, rightKey, type, schema)
+}
+
 // ============================================================================
 // Public entry point: plan a (possibly compound, possibly WITH-prefixed) query.
 export function planSelect(stmt: SelectStmt, db: Database): Operator {
@@ -491,10 +652,13 @@ function planQuery(stmt: SelectStmt, env: PlanEnv): Operator {
       operands.push(rhs)
       ops.push({ op: so.op, all: so.all })
     }
+    // Unify the column types across all branches by position (INTEGER+REAL→REAL,
+    // anything+TEXT→TEXT) so the compound's reported schema is consistent.
+    const unified = unifyColumnTypes(operands.map((o) => o.schema))
     // Pass 1: collapse INTERSECT runs.
     for (let i = 0; i < ops.length; ) {
       if (ops[i].op === 'INTERSECT') {
-        const merged = new SetOpExec(operands[i], operands[i + 1], 'INTERSECT', ops[i].all, operands[i].schema)
+        const merged = new SetOpExec(operands[i], operands[i + 1], 'INTERSECT', ops[i].all, unified)
         operands.splice(i, 2, merged)
         ops.splice(i, 1)
       } else {
@@ -504,13 +668,32 @@ function planQuery(stmt: SelectStmt, env: PlanEnv): Operator {
     // Pass 2: fold remaining UNION/EXCEPT left to right.
     let op = operands[0]
     for (let i = 0; i < ops.length; i++) {
-      op = new SetOpExec(op, operands[i + 1], ops[i].op, ops[i].all, op.schema)
+      op = new SetOpExec(op, operands[i + 1], ops[i].op, ops[i].all, unified)
     }
     if (stmt.orderBy.length) op = new Sort(op, compoundSortKeys(stmt.orderBy, op.schema, env2))
     if (stmt.limit !== undefined) op = new Limit(op, stmt.limit, stmt.offset ?? 0)
     return op
   }
   return planCore(stmt, env2, true)
+}
+
+// Combine two SQL types into the one that can hold both (the wider type).
+const TYPE_RANK: Record<ColumnType, number> = { BOOLEAN: 0, INTEGER: 1, REAL: 2, TEXT: 3 }
+function widerType(a: ColumnType, b: ColumnType): ColumnType {
+  if (a === b) return a
+  // BOOLEAN combined with a number stays numeric; TEXT absorbs everything.
+  return TYPE_RANK[a] >= TYPE_RANK[b] ? a : b
+}
+
+// Unify a set of equal-arity schemas column-by-column, keeping the first
+// branch's column names but widening each type to fit every branch.
+function unifyColumnTypes(schemas: Schema[]): Schema {
+  const first = schemas[0]
+  return first.map((b, i) => {
+    let type = b.type
+    for (let s = 1; s < schemas.length; s++) type = widerType(type, schemas[s][i].type)
+    return { table: '', name: b.name, type }
+  })
 }
 
 // Resolve a named table or derived table to a (possibly transient) Table.
@@ -540,21 +723,25 @@ function planCore(stmt: SelectStmt, env: PlanEnv, embedOrderLimit: boolean): Ope
   // join should null-extend. Keep all WHERE predicates for the final stage then.
   const basePreserved = !stmt.joins.some((j) => j.type === 'RIGHT' || j.type === 'FULL')
 
+  // Relation alias -> Table, so selectivity estimation can find column stats.
+  const statTables: StatCtx = new Map()
+
   // --- base relation --------------------------------------------------------
   const base = relationFor(stmt.from, env)
+  statTables.set(base.alias.toLowerCase(), base.table)
   let schema: Schema = tableSchema(base.table, base.alias)
 
   let op: Operator
   if (basePreserved) {
     const baseApplicable = wherePreds.filter((p) => !consumed.has(p) && resolvableIn(p, schema, env))
-    const idx = tryIndexScan(base.table, schema, baseApplicable)
+    const idx = tryIndexScan(base.table, schema, baseApplicable, statTables)
     if (idx) {
       op = idx.op
       idx.consumed.forEach((p) => consumed.add(p))
     } else {
       op = new SeqScan(base.table, schema)
     }
-    op = applyPushdown(op, schema, wherePreds, consumed, env, false)
+    op = applyPushdown(op, schema, wherePreds, consumed, env, false, statTables)
   } else {
     op = new SeqScan(base.table, schema)
   }
@@ -562,13 +749,14 @@ function planCore(stmt: SelectStmt, env: PlanEnv, embedOrderLimit: boolean): Ope
   // --- joins ----------------------------------------------------------------
   for (const join of stmt.joins) {
     const right = relationFor(join, env)
+    statTables.set(right.alias.toLowerCase(), right.table)
     const rSchema = tableSchema(right.table, right.alias)
     // Only push WHERE predicates onto the right input for INNER joins; for an
     // outer join the right side may be null-extended, so its WHERE predicates
     // must run after the join (the final pushdown stage).
     let rightOp: Operator = new SeqScan(right.table, rSchema)
     if (join.type === 'INNER') {
-      rightOp = applyPushdown(rightOp, rSchema, wherePreds, consumed, env, false)
+      rightOp = applyPushdown(rightOp, rSchema, wherePreds, consumed, env, false, statTables)
     }
 
     const combined: Schema = [...schema, ...rSchema]
@@ -579,9 +767,9 @@ function planCore(stmt: SelectStmt, env: PlanEnv, embedOrderLimit: boolean): Ope
     } else {
       const equi = extractEquiJoin(join.on, schema, rSchema)
       if (equi && equi.residual.length === 0) {
-        op = new HashJoin(op, rightOp, equi.leftKey, equi.rightKey, outerType, combined)
+        op = chooseEquiJoin(op, rightOp, equi.leftKey, equi.rightKey, outerType, combined)
       } else if (equi && join.type === 'INNER') {
-        op = new HashJoin(op, rightOp, equi.leftKey, equi.rightKey, 'INNER', combined)
+        op = chooseEquiJoin(op, rightOp, equi.leftKey, equi.rightKey, 'INNER', combined)
         const resid = andAll(equi.residual)!
         op = new Filter(op, compileExpr(resid, exprCtx(combined, env)), exprLabel(resid))
       } else {
@@ -593,7 +781,7 @@ function planCore(stmt: SelectStmt, env: PlanEnv, embedOrderLimit: boolean): Ope
   }
 
   // Any remaining WHERE predicates (multi-table / subquery) apply now.
-  op = applyPushdown(op, schema, wherePreds, consumed, env, true)
+  op = applyPushdown(op, schema, wherePreds, consumed, env, true, statTables)
 
   // --- aggregation ----------------------------------------------------------
   const aggMap = new Map<string, Expr>()
@@ -614,12 +802,21 @@ function planCore(stmt: SelectStmt, env: PlanEnv, embedOrderLimit: boolean): Ope
     const aggSpecs: AggSpec[] = aggExprs.map((e, i) => {
       if (e.kind !== 'func') throw new SqlError('internal: non-func aggregate', 'plan')
       aggSlot.set(exprKey(e), stmt.groupBy.length + i)
+      // STRING_AGG(x, sep) / GROUP_CONCAT(x, sep): the (optional) 2nd arg is a
+      // constant separator, not an aggregated value.
+      const isStringAgg = e.name === 'STRING_AGG' || e.name === 'GROUP_CONCAT'
+      const sep =
+        isStringAgg && e.args[1] && e.args[1].kind === 'literal' && e.args[1].value !== null
+          ? String(e.args[1].value)
+          : undefined
       return {
         name: e.name as AggName,
         star: e.star,
         distinct: e.distinct,
         arg: e.star || e.args.length === 0 ? null : compileExpr(e.args[0], preCtx),
         label: exprLabel(e),
+        sep,
+        filter: e.filter ? compileExpr(e.filter, preCtx) : undefined,
       }
     })
 
@@ -1081,6 +1278,15 @@ interface WindowPlanResult {
   lookup: (e: Expr) => number | undefined
 }
 
+// Compile an AST window frame into executable bounds (offset exprs compiled).
+function compileFrame(frame: WindowFrame, ctx: CompileCtx): FrameExec {
+  const bound = (b: WindowFrame['start']) => ({
+    type: b.type,
+    offset: b.offset ? compileExpr(b.offset, ctx) : undefined,
+  })
+  return { mode: frame.mode, start: bound(frame.start), end: bound(frame.end) }
+}
+
 function collectWindows(e: Expr, out: Map<string, WindowFuncExpr>): void {
   if (e.kind === 'window') {
     out.set(exprKey(e), e)
@@ -1110,6 +1316,7 @@ function planWindowFns(
     args: w.args.map((a) => compileExpr(a, ctx)),
     partition: w.spec.partitionBy.map((p) => compileExpr(p, ctx)),
     order: w.spec.orderBy.map((o) => ({ eval: compileExpr(o.expr, ctx), dir: o.dir })),
+    frame: w.spec.frame ? compileFrame(w.spec.frame, ctx) : undefined,
     label: exprLabel(w),
   }))
   const winSchema: Schema = [
@@ -1164,6 +1371,7 @@ function applyPushdown(
   consumed: Set<Expr>,
   env: PlanEnv,
   final: boolean,
+  sc: StatCtx,
 ): Operator {
   // Predicates containing a subquery are only applied at the `final` stage,
   // where every (possibly correlated) input is in scope.
@@ -1174,7 +1382,8 @@ function applyPushdown(
   applicable.forEach((p) => consumed.add(p))
   const combined = andAll(applicable)!
   const pred = compileExpr(combined, exprCtx(schema, env))
-  return new Filter(op, pred, exprLabel(combined))
+  const selectivity = combinedSelectivity(applicable, sc)
+  return new Filter(op, pred, exprLabel(combined), selectivity)
 }
 
 // `Binding` re-exported so the engine can describe result columns.
