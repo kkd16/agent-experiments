@@ -252,6 +252,11 @@ class Parser {
       } while (this.accept(','))
       this.expect(')')
     }
+    // INSERT … SELECT
+    if (this.at('SELECT') || this.at('WITH')) {
+      const select = this.parseSubquerySelect()
+      return { kind: 'insert', table, columns, rows: [], select }
+    }
     this.expect('VALUES')
     const rows: Expr[][] = []
     do {
@@ -468,6 +473,14 @@ class Parser {
       this.accept('OUTER')
       this.expect('JOIN')
       type = 'LEFT'
+    } else if (this.accept('RIGHT')) {
+      this.accept('OUTER')
+      this.expect('JOIN')
+      type = 'RIGHT'
+    } else if (this.accept('FULL')) {
+      this.accept('OUTER')
+      this.expect('JOIN')
+      type = 'FULL'
     } else if (this.accept('JOIN')) {
       type = 'INNER'
     } else {

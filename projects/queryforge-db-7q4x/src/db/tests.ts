@@ -152,6 +152,38 @@ test('join', 'three-way join', () => {
   assert(rows.length === 15, 'three-way join should keep 15 rows')
 })
 
+test('join', 'RIGHT JOIN keeps unmatched right rows', () => {
+  const e = seeded()
+  e.execute("INSERT INTO customers (id, name) VALUES (90, 'Loner')")
+  const rows = rowsOf(e, 'SELECT c.name, o.id FROM orders o RIGHT JOIN customers c ON o.customer_id = c.id WHERE c.id = 90')
+  assert(rows.length === 1 && rows[0][1] === null, 'RIGHT JOIN should null-extend the order-less customer')
+})
+test('join', 'FULL JOIN keeps both sides', () => {
+  const e = new Engine()
+  e.execute('CREATE TABLE l (id INTEGER); CREATE TABLE r (id INTEGER)')
+  e.execute('INSERT INTO l (id) VALUES (1), (2)')
+  e.execute('INSERT INTO r (id) VALUES (2), (3)')
+  const rows = rowsOf(e, 'SELECT l.id, r.id FROM l FULL JOIN r ON l.id = r.id')
+  assert(rows.length === 3, `FULL JOIN of {1,2}×{2,3} should be 3 rows, got ${rows.length}`)
+  const nullsLeft = rows.filter((x) => x[0] === null).length
+  const nullsRight = rows.filter((x) => x[1] === null).length
+  assert(nullsLeft === 1 && nullsRight === 1, 'FULL JOIN should produce one null on each side')
+})
+test('join', 'LEFT JOIN + WHERE on right side filters correctly', () => {
+  const e = seeded()
+  e.execute("INSERT INTO customers (id, name) VALUES (92, 'Quiet')")
+  // The new customer has no orders; a WHERE on the right table must exclude it.
+  const rows = rowsOf(e, 'SELECT c.name FROM customers c LEFT JOIN orders o ON o.customer_id = c.id WHERE o.quantity > 100')
+  assert(rows.length === 0, 'WHERE on the nullable side must not leak null-extended rows')
+})
+test('dml', 'INSERT … SELECT', () => {
+  const e = seeded()
+  e.execute('CREATE TABLE audio (id INTEGER, name TEXT)')
+  const res = e.execute("INSERT INTO audio (id, name) SELECT id, name FROM products WHERE category = 'Audio'")[0]
+  assert(res.kind === 'message' && res.rowCount === 2, 'INSERT … SELECT should copy 2 audio products')
+  assert(scalar(e, 'SELECT COUNT(*) FROM audio') === 2, 'audio table should hold 2 rows')
+})
+
 // --- aggregation ------------------------------------------------------------
 test('agg', 'GROUP BY + HAVING', () => {
   const e = seeded()

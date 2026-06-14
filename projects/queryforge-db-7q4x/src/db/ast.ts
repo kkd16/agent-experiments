@@ -168,6 +168,8 @@ export interface InsertStmt {
   table: string
   columns?: string[]
   rows: Expr[][]
+  /** INSERT … SELECT — when present, `rows` is empty and this query supplies them. */
+  select?: SelectStmt
 }
 export interface UpdateStmt {
   kind: 'update'
@@ -191,7 +193,7 @@ export interface FromItem {
   subquery?: SelectStmt
   alias?: string
 }
-export type JoinType = 'INNER' | 'LEFT' | 'CROSS'
+export type JoinType = 'INNER' | 'LEFT' | 'RIGHT' | 'FULL' | 'CROSS'
 export interface JoinClause {
   type: JoinType
   table?: string

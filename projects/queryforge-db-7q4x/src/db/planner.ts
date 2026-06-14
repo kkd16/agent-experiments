@@ -506,43 +506,58 @@ function planCore(stmt: SelectStmt, env: PlanEnv, embedOrderLimit: boolean): Ope
     return planConstantSelect(stmt, env)
   }
 
+  // A RIGHT/FULL join makes the *base* (left-most) relation nullable, so we must
+  // not filter it early — predicate pushdown to it would drop rows that an outer
+  // join should null-extend. Keep all WHERE predicates for the final stage then.
+  const basePreserved = !stmt.joins.some((j) => j.type === 'RIGHT' || j.type === 'FULL')
+
   // --- base relation --------------------------------------------------------
   const base = relationFor(stmt.from, env)
   let schema: Schema = tableSchema(base.table, base.alias)
 
   let op: Operator
-  const baseApplicable = wherePreds.filter((p) => !consumed.has(p) && resolvableIn(p, schema, env))
-  const idx = tryIndexScan(base.table, schema, baseApplicable)
-  if (idx) {
-    op = idx.op
-    idx.consumed.forEach((p) => consumed.add(p))
+  if (basePreserved) {
+    const baseApplicable = wherePreds.filter((p) => !consumed.has(p) && resolvableIn(p, schema, env))
+    const idx = tryIndexScan(base.table, schema, baseApplicable)
+    if (idx) {
+      op = idx.op
+      idx.consumed.forEach((p) => consumed.add(p))
+    } else {
+      op = new SeqScan(base.table, schema)
+    }
+    op = applyPushdown(op, schema, wherePreds, consumed, env, false)
   } else {
     op = new SeqScan(base.table, schema)
   }
-  op = applyPushdown(op, schema, wherePreds, consumed, env, false)
 
   // --- joins ----------------------------------------------------------------
   for (const join of stmt.joins) {
     const right = relationFor(join, env)
     const rSchema = tableSchema(right.table, right.alias)
-    // Push WHERE predicates that reference only the right table onto its scan.
+    // Only push WHERE predicates onto the right input for INNER joins; for an
+    // outer join the right side may be null-extended, so its WHERE predicates
+    // must run after the join (the final pushdown stage).
     let rightOp: Operator = new SeqScan(right.table, rSchema)
-    rightOp = applyPushdown(rightOp, rSchema, wherePreds, consumed, env, false)
+    if (join.type === 'INNER') {
+      rightOp = applyPushdown(rightOp, rSchema, wherePreds, consumed, env, false)
+    }
 
     const combined: Schema = [...schema, ...rSchema]
+    const outerType: 'INNER' | 'LEFT' | 'RIGHT' | 'FULL' =
+      join.type === 'LEFT' || join.type === 'RIGHT' || join.type === 'FULL' ? join.type : 'INNER'
     if (join.type === 'CROSS' || !join.on) {
       op = new NestedLoopJoin(op, rightOp, null, 'CROSS', combined)
     } else {
       const equi = extractEquiJoin(join.on, schema, rSchema)
       if (equi && equi.residual.length === 0) {
-        op = new HashJoin(op, rightOp, equi.leftKey, equi.rightKey, join.type === 'LEFT' ? 'LEFT' : 'INNER', combined)
+        op = new HashJoin(op, rightOp, equi.leftKey, equi.rightKey, outerType, combined)
       } else if (equi && join.type === 'INNER') {
         op = new HashJoin(op, rightOp, equi.leftKey, equi.rightKey, 'INNER', combined)
         const resid = andAll(equi.residual)!
         op = new Filter(op, compileExpr(resid, exprCtx(combined, env)), exprLabel(resid))
       } else {
         const pred = compileExpr(join.on, exprCtx(combined, env))
-        op = new NestedLoopJoin(op, rightOp, pred, join.type === 'LEFT' ? 'LEFT' : 'INNER', combined)
+        op = new NestedLoopJoin(op, rightOp, pred, outerType, combined)
       }
     }
     schema = combined

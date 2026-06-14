@@ -231,6 +231,8 @@ export class Project implements Operator {
   }
 }
 
+export type JoinExecType = 'INNER' | 'LEFT' | 'RIGHT' | 'FULL' | 'CROSS'
+
 export class NestedLoopJoin implements Operator {
   readonly schema: Schema
   estRows: number
@@ -239,71 +241,59 @@ export class NestedLoopJoin implements Operator {
   private readonly left: Operator
   private readonly right: Operator
   private readonly pred: Evaluator | null
-  private readonly joinType: 'INNER' | 'LEFT' | 'CROSS'
+  private readonly joinType: JoinExecType
+  private readonly leftWidth: number
   private readonly rightWidth: number
-  private buffer: Row[] = []
-  private leftRow: Row | null = null
-  private rightIdx = 0
-  private matched = false
+  private rows: Row[] = []
+  private pos = 0
 
-  constructor(
-    left: Operator,
-    right: Operator,
-    pred: Evaluator | null,
-    joinType: 'INNER' | 'LEFT' | 'CROSS',
-    schema: Schema,
-  ) {
+  constructor(left: Operator, right: Operator, pred: Evaluator | null, joinType: JoinExecType, schema: Schema) {
     this.left = left
     this.right = right
     this.pred = pred
     this.joinType = joinType
     this.schema = schema
+    this.leftWidth = left.schema.length
     this.rightWidth = right.schema.length
     this.estRows =
       joinType === 'CROSS' ? left.estRows * right.estRows : Math.max(left.estRows, left.estRows * right.estRows * 0.3)
     this.estCost = left.estCost + left.estRows * right.estCost + left.estRows * right.estRows * CPU_OP
   }
   open() {
-    this.right.open()
-    this.buffer = []
-    for (let r = this.right.next(); r !== null; r = this.right.next()) this.buffer.push(r)
-    this.right.close()
-    this.left.open()
-    this.leftRow = this.left.next()
-    this.rightIdx = 0
-    this.matched = false
+    const rightRows = drain(this.right)
+    const leftRows = drain(this.left)
+    const emitLeftNull = this.joinType === 'LEFT' || this.joinType === 'FULL'
+    const emitRightNull = this.joinType === 'RIGHT' || this.joinType === 'FULL'
+    const rightMatched = new Array(rightRows.length).fill(false)
+    const out: Row[] = []
+    for (const l of leftRows) {
+      let matched = false
+      for (let j = 0; j < rightRows.length; j++) {
+        const combined = l.concat(rightRows[j])
+        if (this.pred === null || this.pred(combined) === true) {
+          matched = true
+          rightMatched[j] = true
+          out.push(combined)
+        }
+      }
+      if (!matched && emitLeftNull) out.push(l.concat(new Array(this.rightWidth).fill(null)))
+    }
+    if (emitRightNull) {
+      const leftNulls = new Array(this.leftWidth).fill(null)
+      for (let j = 0; j < rightRows.length; j++) {
+        if (!rightMatched[j]) out.push(leftNulls.concat(rightRows[j]))
+      }
+    }
+    this.rows = out
+    this.pos = 0
   }
   next(): Row | null {
-    for (;;) {
-      if (this.leftRow === null) return null
-      if (this.rightIdx < this.buffer.length) {
-        const rightRow = this.buffer[this.rightIdx++]
-        const combined = this.leftRow.concat(rightRow)
-        if (this.pred === null || this.pred(combined) === true) {
-          this.matched = true
-          this.actualRows++
-          return combined
-        }
-        continue
-      }
-      // Exhausted right side for this left row.
-      if (this.joinType === 'LEFT' && !this.matched) {
-        const nulls: Row = new Array(this.rightWidth).fill(null)
-        const combined = this.leftRow.concat(nulls)
-        this.leftRow = this.left.next()
-        this.rightIdx = 0
-        this.matched = false
-        this.actualRows++
-        return combined
-      }
-      this.leftRow = this.left.next()
-      this.rightIdx = 0
-      this.matched = false
-    }
+    if (this.pos >= this.rows.length) return null
+    this.actualRows++
+    return this.rows[this.pos++]
   }
   close() {
-    this.left.close()
-    this.buffer = []
+    this.rows = []
   }
   plan(): PlanNode {
     return {
@@ -327,13 +317,11 @@ export class HashJoin implements Operator {
   private readonly right: Operator
   private readonly leftKey: Evaluator
   private readonly rightKey: Evaluator
-  private readonly joinType: 'INNER' | 'LEFT'
+  private readonly joinType: 'INNER' | 'LEFT' | 'RIGHT' | 'FULL'
+  private readonly leftWidth: number
   private readonly rightWidth: number
-  private table = new Map<string, Row[]>()
-  private leftRow: Row | null = null
-  private bucket: Row[] = []
-  private bucketIdx = 0
-  private matched = false
+  private rows: Row[] = []
+  private pos = 0
   private buildSize = 0
 
   constructor(
@@ -341,7 +329,7 @@ export class HashJoin implements Operator {
     right: Operator,
     leftKey: Evaluator,
     rightKey: Evaluator,
-    joinType: 'INNER' | 'LEFT',
+    joinType: 'INNER' | 'LEFT' | 'RIGHT' | 'FULL',
     schema: Schema,
   ) {
     this.left = left
@@ -350,58 +338,58 @@ export class HashJoin implements Operator {
     this.rightKey = rightKey
     this.joinType = joinType
     this.schema = schema
+    this.leftWidth = left.schema.length
     this.rightWidth = right.schema.length
-    this.estRows = Math.max(left.estRows, Math.round(left.estRows * Math.max(1, right.estRows / Math.max(1, right.estRows))))
+    this.estRows = Math.max(left.estRows, right.estRows)
     this.estCost = left.estCost + right.estCost + (left.estRows + right.estRows) * CPU_OP
   }
   open() {
-    this.right.open()
-    this.table = new Map()
-    for (let r = this.right.next(); r !== null; r = this.right.next()) {
+    // Build a hash table on the right input (NULL keys never match but are kept
+    // so RIGHT/FULL can still emit them as unmatched).
+    const rightRows = drain(this.right)
+    this.buildSize = rightRows.length
+    const table = new Map<string, number[]>()
+    rightRows.forEach((r, i) => {
       const k = this.rightKey(r)
-      if (k === null) continue // NULL keys never match
+      if (k === null) return
       const key = hashKey([k])
-      const arr = this.table.get(key)
-      if (arr) arr.push(r)
-      else this.table.set(key, [r])
-      this.buildSize++
+      const arr = table.get(key)
+      if (arr) arr.push(i)
+      else table.set(key, [i])
+    })
+    const emitLeftNull = this.joinType === 'LEFT' || this.joinType === 'FULL'
+    const emitRightNull = this.joinType === 'RIGHT' || this.joinType === 'FULL'
+    const rightMatched = new Array(rightRows.length).fill(false)
+    const out: Row[] = []
+
+    for (const l of drain(this.left)) {
+      const k = this.leftKey(l)
+      const bucket = k === null ? undefined : table.get(hashKey([k]))
+      if (bucket && bucket.length) {
+        for (const j of bucket) {
+          rightMatched[j] = true
+          out.push(l.concat(rightRows[j]))
+        }
+      } else if (emitLeftNull) {
+        out.push(l.concat(new Array(this.rightWidth).fill(null)))
+      }
     }
-    this.right.close()
-    this.left.open()
-    this.advanceLeft()
-  }
-  private advanceLeft() {
-    this.leftRow = this.left.next()
-    this.matched = false
-    this.bucketIdx = 0
-    if (this.leftRow === null) {
-      this.bucket = []
-      return
+    if (emitRightNull) {
+      const leftNulls = new Array(this.leftWidth).fill(null)
+      rightRows.forEach((r, j) => {
+        if (!rightMatched[j]) out.push(leftNulls.concat(r))
+      })
     }
-    const k = this.leftKey(this.leftRow)
-    this.bucket = k === null ? [] : this.table.get(hashKey([k])) ?? []
+    this.rows = out
+    this.pos = 0
   }
   next(): Row | null {
-    for (;;) {
-      if (this.leftRow === null) return null
-      if (this.bucketIdx < this.bucket.length) {
-        const combined = this.leftRow.concat(this.bucket[this.bucketIdx++])
-        this.matched = true
-        this.actualRows++
-        return combined
-      }
-      if (this.joinType === 'LEFT' && !this.matched) {
-        const combined = this.leftRow.concat(new Array(this.rightWidth).fill(null))
-        this.advanceLeft()
-        this.actualRows++
-        return combined
-      }
-      this.advanceLeft()
-    }
+    if (this.pos >= this.rows.length) return null
+    this.actualRows++
+    return this.rows[this.pos++]
   }
   close() {
-    this.left.close()
-    this.table = new Map()
+    this.rows = []
   }
   plan(): PlanNode {
     return {

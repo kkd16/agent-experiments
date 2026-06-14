@@ -22,6 +22,7 @@ const SECTIONS: Section[] = [
     title: 'Data manipulation',
     entries: [
       { syntax: 'INSERT INTO t (cols…) VALUES (…), (…)', note: 'Multi-row inserts. Omitted columns default to NULL.' },
+      { syntax: 'INSERT INTO t (cols…) SELECT …', note: 'Populate a table from any query (joins, CTEs, subqueries included).' },
       { syntax: 'UPDATE t SET col = expr [, …] [WHERE pred]', note: 'Assignments may reference other columns of the same row.' },
       { syntax: 'DELETE FROM t [WHERE pred]', note: 'Index entries are maintained automatically.' },
     ],
@@ -30,7 +31,7 @@ const SECTIONS: Section[] = [
     title: 'Queries',
     entries: [
       { syntax: 'SELECT [DISTINCT] items FROM t [alias]', note: 'items can be *, table.*, expressions, or aggregates with AS aliases.' },
-      { syntax: '[INNER | LEFT] JOIN t2 ON pred / CROSS JOIN t2', note: 'Equijoins become HashJoins; everything else NestedLoop.' },
+      { syntax: '[INNER | LEFT | RIGHT | FULL] JOIN t2 ON pred · CROSS JOIN t2', note: 'Equijoins become HashJoins; everything else NestedLoop. Outer joins null-extend.' },
       { syntax: 'FROM (SELECT …) alias', note: 'Derived tables (subqueries in FROM) are materialized and scanned like a base table.' },
       { syntax: 'WHERE pred', note: 'Conjuncts are pushed down and may trigger index scans.' },
       { syntax: 'GROUP BY exprs [HAVING pred]', note: 'COUNT, SUM, AVG, MIN, MAX — with optional DISTINCT.' },
