@@ -1,8 +1,11 @@
 import { useMemo, useState } from "react";
 import { quiz } from "../data/quiz";
+import type { QuizQuestion } from "../data/quiz";
 import { patterns, patternById } from "../data/patterns";
 import { href } from "../lib/router";
 import { useStreak } from "../lib/streak";
+import { useSRS } from "../lib/srs";
+import type { Mastery } from "../lib/srs";
 
 function shuffle<T>(arr: T[]): T[] {
   const a = [...arr];
@@ -19,13 +22,40 @@ function choicesFor(answer: string): string[] {
   return shuffle([answer, ...others]);
 }
 
+/** Weight a question by how much its pattern still needs practice. */
+const MASTERY_WEIGHT: Record<Mastery, number> = { new: 4, learning: 3, young: 2, mastered: 1 };
+
+/** Adaptively pick `n` questions, biased toward patterns you haven't mastered. */
+function adaptivePick(masteryOf: (id: string) => Mastery, n: number): QuizQuestion[] {
+  const pool = quiz.map((q) => ({ q, w: MASTERY_WEIGHT[masteryOf(q.answer)] }));
+  const chosen: QuizQuestion[] = [];
+  while (chosen.length < n && pool.length) {
+    const total = pool.reduce((s, x) => s + x.w, 0);
+    let r = Math.random() * total;
+    let idx = 0;
+    for (let i = 0; i < pool.length; i++) {
+      r -= pool[i].w;
+      if (r <= 0) {
+        idx = i;
+        break;
+      }
+    }
+    chosen.push(pool[idx].q);
+    pool.splice(idx, 1);
+  }
+  return chosen;
+}
+
 export default function Quiz() {
-  const questions = useMemo(() => shuffle(quiz).slice(0, 10), []);
   const { recordToday } = useStreak();
+  const srs = useSRS();
+  // Freeze the adaptive selection at mount so grading mid-quiz doesn't reshuffle.
+  const questions = useMemo(() => adaptivePick(srs.masteryOf, 10), []); // eslint-disable-line react-hooks/exhaustive-deps
   const [idx, setIdx] = useState(0);
   const [picked, setPicked] = useState<string | null>(null);
   const [score, setScore] = useState(0);
   const [answered, setAnswered] = useState(0);
+  const [missed, setMissed] = useState<string[]>([]);
   const [finished, setFinished] = useState(false);
 
   const q = questions[idx];
@@ -37,7 +67,14 @@ export default function Quiz() {
     if (picked) return;
     setPicked(id);
     setAnswered((a) => a + 1);
-    if (id === q.answer) setScore((s) => s + 1);
+    if (id === q.answer) {
+      setScore((s) => s + 1);
+    } else {
+      setMissed((m) => (m.includes(q.answer) ? m : [...m, q.answer]));
+      // If you've already "learned" this pattern but misidentified it, it has
+      // faded — schedule it for review so spaced repetition resurfaces it.
+      if (srs.isLearned(q.answer)) srs.grade(q.answer, 0);
+    }
     recordToday();
   };
 
@@ -69,8 +106,25 @@ export default function Quiz() {
                 ? "Solid start. Revisit the patterns you missed and run the trainer again."
                 : "Pattern recognition is a muscle — review the roadmap and come back."}
           </p>
-          <div className="row" style={{ justifyContent: "center" }}>
+          {missed.length > 0 && (
+            <div className="quiz-missed">
+              <span className="faint">Brush up on:</span>
+              <div className="row" style={{ justifyContent: "center", marginTop: 8 }}>
+                {missed.map((id) => {
+                  const mp = patternById(id);
+                  if (!mp) return null;
+                  return (
+                    <a key={id} className="related-chip" href={href(`/pattern/${id}`)}>
+                      <span>{mp.icon}</span> {mp.name}
+                    </a>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+          <div className="row" style={{ justifyContent: "center", marginTop: 14 }}>
             <button className="btn primary" onClick={restart}>Try again</button>
+            {srs.counts.due > 0 && <a className="btn" href={href("/review")}>Review {srs.counts.due} due →</a>}
             <a className="btn" href={href("/roadmap")}>Review the roadmap</a>
           </div>
         </div>
@@ -89,6 +143,9 @@ export default function Quiz() {
         </span>
       </div>
       <h1 style={{ marginTop: 0 }}>Which pattern fits?</h1>
+      <p className="muted" style={{ marginTop: "-6px", fontSize: "0.86rem" }}>
+        Questions are weighted toward the patterns you haven't mastered yet.
+      </p>
 
       <div className="quiz-progress">
         <div className="quiz-progress-bar" style={{ width: `${(answered / questions.length) * 100}%` }} />
