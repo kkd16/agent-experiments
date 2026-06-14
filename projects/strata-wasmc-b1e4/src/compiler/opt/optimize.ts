@@ -634,6 +634,87 @@ export function peephole(fn: IRFunc): number {
 }
 
 // =====================================================================
+// If-conversion — collapse a control-flow diamond into a `select`
+// =====================================================================
+//
+// A side-effect-free diamond
+//
+//        C: condbr(cond, T, F)
+//        T: <pure>  br J         F: <pure>  br J
+//        J: phi(T:vt, F:vf), …
+//
+// becomes a single straight-line block: T's and F's (pure, non-trapping)
+// instructions are hoisted into C — they now run unconditionally, which is
+// sound precisely because they cannot trap or have side effects — and each phi
+// in J turns into `select(vt, vf, cond)`. Two blocks and a branch disappear,
+// and the wasm backend emits a branchless `select`. This is the shape ternaries
+// and simple if/else assignments lower to, so it fires often.
+
+const SPECULABLE = new Set(['ibin', 'fbin', 'icmp', 'fcmp', 'cast', 'copy', 'select']);
+
+function isSpeculable(b: Block): boolean {
+  if (b.phis.length > 0) return false;
+  return b.insts.every(
+    (i) => SPECULABLE.has(i.kind) && !(i.kind === 'ibin' && (i.sub === 'div_s' || i.sub === 'rem_s')),
+  );
+}
+
+export function ifConvert(fn: IRFunc): number {
+  let changed = 0;
+  let again = true;
+  while (again) {
+    again = false;
+    const byId = new Map(fn.blocks.map((b) => [b.id, b]));
+    for (const c of fn.blocks) {
+      if (c.term.op !== 'condbr' || c.term.t === c.term.f) continue;
+      const T = byId.get(c.term.t);
+      const F = byId.get(c.term.f);
+      if (!T || !F) continue;
+      // T and F must each be reached only from C and fall through to one join J.
+      if (T.preds.length !== 1 || T.preds[0] !== c.id) continue;
+      if (F.preds.length !== 1 || F.preds[0] !== c.id) continue;
+      if (T.term.op !== 'br' || F.term.op !== 'br' || T.term.target !== F.term.target) continue;
+      const J = byId.get(T.term.target);
+      if (!J || J.id === c.id || J.id === T.id || J.id === F.id) continue;
+      // J must merge exactly the two diamond arms.
+      if (J.preds.length !== 2 || !J.preds.includes(T.id) || !J.preds.includes(F.id)) continue;
+      if (!isSpeculable(T) || !isSpeculable(F)) continue;
+      if (T.insts.length + F.insts.length > 8) continue; // bound code growth
+
+      const cond = c.term.cond;
+      const selects: Inst[] = [];
+      let ok = true;
+      for (const phi of J.phis) {
+        const incT = phi.incomings.find((i) => i.pred === T.id);
+        const incF = phi.incomings.find((i) => i.pred === F.id);
+        if (!incT || !incF) { ok = false; break; }
+        selects.push({
+          res: phi.res,
+          ty: phi.ty,
+          kind: 'select',
+          sub: '',
+          args: [cloneOperand(incT.val), cloneOperand(incF.val), cloneOperand(cond)],
+        });
+      }
+      if (!ok) continue;
+
+      // Hoist both arms into C (order-independent: all pure), append the selects,
+      // and rewire C -> J directly. The phi results are reused as the select
+      // results, so every existing use keeps working untouched.
+      c.insts.push(...T.insts, ...F.insts, ...selects);
+      c.term = { op: 'br', target: J.id };
+      J.phis = [];
+      J.preds = [c.id];
+      fn.blocks = fn.blocks.filter((b) => b.id !== T.id && b.id !== F.id);
+      changed += 1 + selects.length;
+      again = true;
+      break; // CFG mutated — rebuild byId and rescan
+    }
+  }
+  return changed;
+}
+
+// =====================================================================
 // Whole-module dead-function elimination
 // =====================================================================
 //
@@ -692,6 +773,7 @@ export function optimize(mod: IRModule, level: OptLevel, snapshots = false): Opt
     const suffix = rounds > 1 ? ` (round ${r + 1})` : '';
     record('copy-propagation' + suffix, copyProp);
     record('sccp' + suffix, sccp);
+    record('if-convert' + suffix, ifConvert);
     record('strength-reduce' + suffix, peephole);
     if (level >= 2) record('gvn/cse' + suffix, gvn);
     record('algebraic-simplify' + suffix, algebraic);

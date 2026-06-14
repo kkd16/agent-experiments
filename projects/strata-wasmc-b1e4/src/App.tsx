@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import './App.css';
 import Editor from './ui/Editor';
 import CfgView from './ui/CfgView';
-import { AstPanel, HexPanel, IrPanel, OptPanel, RunPanel, TokensPanel, VerifyPanel, WatPanel } from './ui/Panels';
+import { AstPanel, DebugPanel, HexPanel, IrPanel, OptPanel, RunPanel, TokensPanel, VerifyPanel, WatPanel } from './ui/Panels';
 import { compile } from './compiler/pipeline';
 import type { OptLevel } from './compiler/opt/optimize';
 import { EXAMPLES } from './examples';
@@ -16,6 +16,7 @@ const STAGES = [
   { id: 'wat', label: 'WASM' },
   { id: 'hex', label: 'Bytes' },
   { id: 'run', label: 'Run' },
+  { id: 'debug', label: 'Debug' },
   { id: 'verify', label: 'Verify' },
 ] as const;
 type StageId = (typeof STAGES)[number]['id'];
@@ -31,6 +32,7 @@ export default function App() {
   const [stage, setStage] = useState<StageId>(stageFromHash);
   const [fnIdx, setFnIdx] = useState(0);
   const [exampleId, setExampleId] = useState(EXAMPLES[0].id);
+  const [debugLine, setDebugLine] = useState<number | undefined>(undefined);
 
   useEffect(() => {
     const onHash = () => setStage(stageFromHash());
@@ -97,7 +99,12 @@ export default function App() {
             </div>
           </div>
           <div className="example-blurb">{EXAMPLES.find((e) => e.id === exampleId)?.blurb}</div>
-          <Editor value={source} onChange={setSource} errorLine={comp.ok ? undefined : comp.error?.line} />
+          <Editor
+            value={source}
+            onChange={setSource}
+            errorLine={comp.ok ? undefined : comp.error?.line}
+            activeLine={stage === 'debug' ? debugLine : undefined}
+          />
           {!comp.ok && comp.error && (
             <div className="error-bar">
               <b>{comp.error.phase} error</b> at {comp.error.line}:{comp.error.col} — {comp.error.message}
@@ -130,6 +137,7 @@ export default function App() {
             {stage === 'wat' && <WatPanel comp={comp} />}
             {stage === 'hex' && <HexPanel comp={comp} />}
             {stage === 'run' && <RunPanel comp={comp} />}
+            {stage === 'debug' && <DebugPanel key={`${level}:${source}`} comp={comp} onActiveLine={setDebugLine} />}
             {stage === 'verify' && <VerifyPanel />}
           </div>
         </section>

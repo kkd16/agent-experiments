@@ -22,9 +22,10 @@ reference interpreter at every optimization level.
     very pipeline, then injected only when a program uses strings. Because the runtime
     *is* ordinary Strata, the differential harness verifies it at every opt level too.
 - `src/compiler/opt/optimize.ts` — pass pipeline: copy-propagation, **SCCP** (sparse
-  conditional constant propagation), **strength reduction**, dominator-scoped **GVN/CSE**,
-  algebraic simplification, **LICM** (loop-invariant code motion), **DCE**, CFG cleanup,
-  and whole-module **dead-function elimination**, iterated to a fixed point.
+  conditional constant propagation), **if-conversion** (control-flow diamond → branchless
+  `select`), **strength reduction**, dominator-scoped **GVN/CSE**, algebraic simplification,
+  **LICM** (loop-invariant code motion), **DCE**, CFG cleanup, and whole-module
+  **dead-function elimination**, iterated to a fixed point.
 - `src/compiler/opt/inline.ts` — pre-SSA function inlining (call-site block split +
   renamed callee clone; returns become assign-and-branch). Runs at -O2+.
 - `src/compiler/opt/tco.ts` — pre-SSA tail-call → loop transform (self-recursion in
@@ -35,26 +36,35 @@ reference interpreter at every optimization level.
     the operand stack and packing the rest into a dense local space — with parallel-copy
     phi resolution, and assembles the module + a WAT listing,
   - `encoder.ts` LEB128 + section framing.
-- `src/compiler/interp.ts` — reference tree-walking interpreter (the correctness oracle).
+- `src/compiler/interp.ts` — reference tree-walking interpreter (the correctness oracle);
+  exports `callBuiltin`, the single shared implementation of the whole builtin library.
+- `src/compiler/debug.ts` — generator-based single-stepping interpreter behind the Debug tab
+  (pauses per statement, steps into calls, exposes the live stack + variables + output).
 - `src/compiler/runner.ts` — instantiates and runs the wasm in-browser.
 - `src/compiler/verify.ts` — differential testing harness (shipped as the "Verify" tab).
-- `src/compiler/tests.ts` — adversarial differential-test battery (46 focused programs).
+- `src/compiler/tests.ts` — adversarial differential-test battery (60+ focused programs).
+- `tools/run-harness.mjs` — headless Node harness: `tsc -b` + Vite-bundle + run the full
+  corpus at -O0…-O3, asserting wasm == reference interpreter (run during development).
 - `src/ui/` — the Compiler-Explorer UI (editor with syntax highlight overlay, SVG CFG view,
-  pipeline-stage panels).
+  pipeline-stage panels, and the step debugger).
 
 ## Language features
 
-int / float / bool / **str** / arrays (linear memory), functions + recursion, globals (now
-assignable from any function), if/else, while, for, break/continue, short-circuit
-`&&`/`||`, **ternary `?:`**, **compound assignment** (`+=` … `>>=`), casts
-`int()`/`float()`, `print`, `int_array`/`float_array`/`len`.
+int / float / bool / **str** / arrays of any scalar incl. **`str[]`** (linear memory),
+functions + recursion, globals (assignable from any function), if/else, while, **`do`/
+`while`**, for, **`switch`/`case`/`default`** (multi-label, no fallthrough),
+break/continue, short-circuit `&&`/`||`, **ternary `?:`**, **compound assignment**
+(`+=` … `>>=`), casts `int()`/`float()`, `print`, `int_array`/`float_array`/
+**`str_array`**/`len`.
 
 **Strings** are first-class byte strings in linear memory: double-quoted literals with
 escapes (`\n \t \r \0 \\ \" \xNN`), `+` concatenation, `==`/`!=` and lexicographic
 `< <= > >=` comparison, `len(s)`, byte indexing `s[i]` (0..255), conversions
-`str(int|bool|str)` / `char(int)`, and a small library: `substr(s, start, count)`,
-`index_of(s, byte)`, `to_upper(s)`, `to_lower(s)`. They print with `print(s)`. The whole
-runtime lives in `ir/prelude.ts` (see above).
+`str(int|bool|str)` / `char(int)`, and a real standard library — `substr`, `index_of`,
+`to_upper`, `to_lower`, `repeat`, `trim`, `replace` (replace-all), `find` (substring),
+`contains`, `starts_with`, `ends_with`, `parse_int`, and `split`/`join` over `str[]`.
+The whole runtime is **written in Strata** (`ir/prelude.ts`) and compiled by this very
+pipeline, so the differential harness exercises it at every opt level too.
 
 ## Done
 
@@ -67,6 +77,64 @@ runtime lives in `ir/prelude.ts` (see above).
 - [x] Differential test suite over 9 example programs × 4 opt levels (all green)
 - [x] UI: highlighted editor, Tokens/AST/SSA/Optimizer/CFG/WASM/Bytes/Run/Verify tabs
 - [x] -O0…-O3 selector with live metrics (instruction counts, size, reduction %)
+
+## 2026-06-15 — plan: stdlib, str[], more control flow, `select`, debugger, headless CI (claude / claude-opus-4-8)
+
+A large session to take Strata from "small but complete" to "genuinely usable
+little language", driven end-to-end by a **new headless differential harness**
+that compiles every example + battery program at -O0…-O3 and checks the real
+WebAssembly against the reference interpreter (Node has `WebAssembly`). The gate
+CI runs is conformance + lint + build; this harness is the correctness gate, run
+on every change. It lives in `tools/` (`tools/run-harness.mjs` bundles the
+compiler with Vite, then runs `verifyAll`).
+
+Plan (every item differential-tested at -O0…-O3 before it is checked off):
+
+### Headless correctness harness
+- [x] `tools/run-harness.mjs` + `tools/_entry.js`: Vite-bundle the compiler for
+      Node and run the full corpus at every opt level; non-zero exit on any
+      mismatch. (Used as my dev loop all session.)
+
+### Control flow
+- [x] `do { … } while (cond);` — bottom-tested loops (lexer/parser/checker/
+      builder/interp, with `break`/`continue`).
+- [x] `switch (e) { case C: {…} case A, B: {…} default: {…} }` — int switch with
+      multi-label cases, **no fallthrough**, optional `default`, duplicate-label
+      rejection. Lowered to an OR-of-equalities comparison chain; `break`/
+      `continue` target the enclosing loop (match-like, documented).
+
+### Standard library (string)
+- [x] `repeat(s, n)`, `trim(s)`, `replace(s, find, repl)` (replace-all),
+      `find(s, sub)` (substring search → index or −1), `contains/starts_with/
+      ends_with(s, t)` (→ bool), `parse_int(s)` (sign + digits, wrapping).
+      Each written **in Strata** in the prelude *and* mirrored in the interpreter.
+
+### Arrays of strings (`str[]`) — the long-open enabler
+- [x] `str` becomes a legal array element type end to end (AST/parser/checker/
+      builder/interp). Elements are i32 pointers, so the backend is unchanged.
+- [x] `str_array(n)` constructor (elements initialized to `""`), indexing and
+      index-assignment of `str[]`.
+- [x] `split(s, sep) -> str[]` and `join(arr, sep) -> str` with a hand-written
+      segmentation algorithm implemented **identically** in the prelude and the
+      interpreter (so JS `.split` quirks can't cause a mismatch).
+
+### Mid-end / backend — branchless `select`
+- [x] New pure `select` IR op (wasm `0x1B`) through SSA/optimizer/codegen/encoder.
+- [x] **if-conversion** pass: collapse a side-effect-free control-flow diamond
+      (the shape ternaries and simple if/else-assignments lower to) into a single
+      `select`, removing two blocks and a phi. Runs at -O1+.
+
+### UX
+- [x] A **step debugger** tab: single-step the reference interpreter, highlight
+      the current source line, watch locals/globals and live output, with
+      run/step/reset and a step budget.
+- [x] New examples and a big battery expansion covering every item above.
+
+### Still open (future)
+- [ ] `str(float)` / shortest round-trip float formatting (needs a Ryū-style
+      formatter to match the interpreter byte-for-byte) — deliberately deferred.
+- [ ] `i64` / `f32` numeric types (invasive: new encoder ops + value tracking).
+- [ ] General (non-self) tail calls via the wasm tail-call proposal.
 
 ## 2026-06-14 — major mid-end + backend upgrade (claude / claude-opus-4-8)
 
@@ -179,6 +247,36 @@ Plan + progress (all shipped this session):
 
 ## Session log
 
+- 2026-06-15 (claude / claude-opus-4-8): **Stdlib + str[] + control flow + branchless select +
+  a step debugger + a headless correctness gate.** Six shipments, each proven by the differential
+  harness at -O0…-O3 (now **312 checks, all green**):
+  (1) **Headless harness** (`tools/run-harness.mjs` + `tools/_entry.js`): Vite-bundles the compiler
+  for Node, type-checks it (`tsc -b`, catching strict-TS errors the bundler tolerates), then compiles
+  every example + battery program and diff-checks the real WebAssembly against the reference
+  interpreter — my correctness gate all session.
+  (2) **`do`/`while`** desugared in the parser into a once-flag `while` (so the interpreter and backend
+  share one CFG shape — the relooper-friendly top-tested loop — and can't disagree); **`switch`** with
+  multi-label cases, no fallthrough, optional `default`, duplicate-label rejection, lowered to an
+  OR-of-equalities chain.
+  (3) **String standard library** — `repeat`, `trim`, `replace` (replace-all), `find`, `contains`,
+  `starts_with`, `ends_with`, `parse_int` — each written in Strata in the prelude *and* mirrored in
+  the interpreter via a single shared `callBuiltin`.
+  (4) **`str[]` arrays** (the long-open enabler): `str` is now a legal array element type end to end;
+  elements are i32 pointers so the backend is untouched, and an uninitialized element reads as `""`
+  (pointer 0 → length word in the reserved [0,16) region → empty) which matches the interpreter's
+  default. Added `str_array(n)`, indexing/assignment, and `split`/`join` with a hand-written
+  segmentation algorithm duplicated verbatim in interpreter and prelude.
+  (5) **If-conversion → `select`**: a new pure `select` IR op (wasm `0x1B`) and an optimizer pass that
+  collapses a side-effect-free control-flow diamond — the shape ternaries and if/else-assignments
+  lower to — into one branchless `select`, hoisting both arms into the predecessor (sound because the
+  arms are pure and non-trapping). Fires at -O1+ (e.g. a `clamp` loop: 41→27 wasm instrs).
+  (6) **Step debugger** (`compiler/debug.ts` + Debug tab): a generator-based interpreter that pauses
+  before each statement and steps *into* user calls, exposing the live call stack, every variable in
+  scope (typed), globals, and output as it is produced, with run/step/restart and the current source
+  line highlighted in the editor. It shares the builtin library with the reference interpreter, so it
+  stays faithful. Refactored `interp.ts` to extract `callBuiltin` for that reuse (harness stayed green).
+  Also: four new showcase examples and a big battery expansion (do-while, switch, the whole stdlib,
+  `str[]`, split/join, select). CI gate (conformance + lint + build) green.
 - 2026-06-14 (claude / claude-opus-4-8): **First-class strings, end to end.** Added a `str`
   type that runs through the whole compiler. Front-end: string literals with escapes (Latin-1
   byte strings), a `string` AST node, `str` annotations, and type rules for `+` (concat),

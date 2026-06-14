@@ -28,8 +28,27 @@ export interface SymbolTable {
 // Builtins available without declaration. `print`/`int`/`float` are special-
 // cased because they accept multiple argument types; array intrinsics return
 // handles into linear memory.
-const ARRAY_INTRINSICS = new Set(['int_array', 'float_array', 'len']);
-const STR_BUILTINS = new Set(['str', 'char', 'substr', 'index_of', 'to_upper', 'to_lower']);
+const ARRAY_INTRINSICS = new Set(['int_array', 'float_array', 'str_array', 'len']);
+const STR_BUILTINS = new Set([
+  'str', 'char', 'substr', 'index_of', 'to_upper', 'to_lower',
+  'repeat', 'trim', 'replace', 'find', 'contains', 'starts_with', 'ends_with', 'parse_int',
+  'split', 'join',
+]);
+
+// Table-driven signatures for the extended string library. Each entry lists the
+// expected argument types and the result type; the checker validates arity and
+// types uniformly. (`str`/`char`/`substr`/… keep their bespoke checks above for
+// historical error messages.)
+const STRING_FN_SIGS: Record<string, { params: ('str' | 'int')[]; ret: 'str' | 'int' | 'bool' }> = {
+  repeat: { params: ['str', 'int'], ret: 'str' },
+  trim: { params: ['str'], ret: 'str' },
+  replace: { params: ['str', 'str', 'str'], ret: 'str' },
+  find: { params: ['str', 'str'], ret: 'int' },
+  contains: { params: ['str', 'str'], ret: 'bool' },
+  starts_with: { params: ['str', 'str'], ret: 'bool' },
+  ends_with: { params: ['str', 'str'], ret: 'bool' },
+  parse_int: { params: ['str'], ret: 'int' },
+};
 
 // Low-level memory intrinsics. They are *not* part of the user-facing language —
 // they are only enabled while type-checking the internal string runtime prelude
@@ -167,6 +186,25 @@ class Checker {
         this.loopDepth++;
         this.checkBlock(s.body);
         this.loopDepth--;
+        break;
+      }
+      case 'switch': {
+        const dt = this.checkExpr(s.disc);
+        if (dt.kind !== 'int') throw new CompileError(`switch value must be int, found ${tyName(dt)}`, s.disc.span, 'type');
+        const seen = new Set<number>();
+        for (const c of s.cases) {
+          c.nums = c.values.map((v) => {
+            const t = this.checkExpr(v);
+            if (t.kind !== 'int') throw new CompileError('case label must be an int constant', v.span, 'type');
+            const n = foldIntConst(v);
+            if (n === null) throw new CompileError('case label must be a constant expression', v.span, 'type');
+            if (seen.has(n)) throw new CompileError(`duplicate case label ${n}`, v.span, 'type');
+            seen.add(n);
+            return n;
+          });
+          this.checkBlock(c.body);
+        }
+        if (s.default) this.checkBlock(s.default);
         break;
       }
       case 'for': {
@@ -374,6 +412,17 @@ class Checker {
       if (this.checkExpr(e.args[0]).kind !== 'str') throw new CompileError(`${name}() expects a str`, e.args[0].span, 'type');
       return T_STR;
     }
+    if (name in STRING_FN_SIGS) {
+      const sig = STRING_FN_SIGS[name];
+      if (e.args.length !== sig.params.length)
+        throw new CompileError(`${name}() expects ${sig.params.length} argument(s)`, e.span, 'type');
+      sig.params.forEach((want, i) => {
+        const got = this.checkExpr(e.args[i]);
+        if (got.kind !== want)
+          throw new CompileError(`${name}() argument ${i + 1} expects ${want}, found ${tyName(got)}`, e.args[i].span, 'type');
+      });
+      return sig.ret === 'str' ? T_STR : sig.ret === 'bool' ? T_BOOL : T_INT;
+    }
     if (name === 'int' || name === 'float') {
       if (e.args.length !== 1) throw new CompileError(`${name}() expects 1 argument`, e.span, 'type');
       const t = this.checkExpr(e.args[0]);
@@ -381,12 +430,25 @@ class Checker {
         throw new CompileError(`${name}() expects a numeric argument, found ${tyName(t)}`, e.span, 'type');
       return name === 'int' ? T_INT : T_FLOAT;
     }
-    if (name === 'int_array' || name === 'float_array') {
+    if (name === 'int_array' || name === 'float_array' || name === 'str_array') {
       if (e.args.length !== 1) throw new CompileError(`${name}() expects a length`, e.span, 'type');
       const t = this.checkExpr(e.args[0]);
       if (t.kind !== 'int') throw new CompileError(`${name}() length must be int`, e.span, 'type');
-      const elem: ScalarTy = name === 'int_array' ? { kind: 'int' } : { kind: 'float' };
+      const elem: ScalarTy = name === 'int_array' ? { kind: 'int' } : name === 'float_array' ? { kind: 'float' } : { kind: 'str' };
       return { kind: 'array', elem };
+    }
+    if (name === 'split') {
+      if (e.args.length !== 2) throw new CompileError('split() expects (str, separator)', e.span, 'type');
+      if (this.checkExpr(e.args[0]).kind !== 'str') throw new CompileError('split() argument 1 must be str', e.args[0].span, 'type');
+      if (this.checkExpr(e.args[1]).kind !== 'str') throw new CompileError('split() separator must be str', e.args[1].span, 'type');
+      return { kind: 'array', elem: { kind: 'str' } };
+    }
+    if (name === 'join') {
+      if (e.args.length !== 2) throw new CompileError('join() expects (str[], separator)', e.span, 'type');
+      const at = this.checkExpr(e.args[0]);
+      if (at.kind !== 'array' || at.elem.kind !== 'str') throw new CompileError('join() argument 1 must be str[]', e.args[0].span, 'type');
+      if (this.checkExpr(e.args[1]).kind !== 'str') throw new CompileError('join() separator must be str', e.args[1].span, 'type');
+      return T_STR;
     }
     if (name === 'len') {
       if (e.args.length !== 1) throw new CompileError('len() expects 1 argument', e.span, 'type');
@@ -411,4 +473,41 @@ class Checker {
 
 export function typecheck(prog: Program, opts?: { lowLevel?: boolean }): SymbolTable {
   return new Checker(opts?.lowLevel ?? false).check(prog);
+}
+
+// Fold a constant integer expression (switch case labels). Mirrors wasm i32
+// wrapping so a label like `1 << 4` agrees with the discriminant comparison.
+function foldIntConst(e: Expr): number | null {
+  switch (e.node) {
+    case 'int':
+      return e.value | 0;
+    case 'bool':
+      return e.value ? 1 : 0;
+    case 'unary': {
+      const v = foldIntConst(e.operand);
+      if (v === null) return null;
+      if (e.op === '-') return -v | 0;
+      if (e.op === '+') return v;
+      if (e.op === '~') return ~v;
+      return null;
+    }
+    case 'binary': {
+      const a = foldIntConst(e.left);
+      const b = foldIntConst(e.right);
+      if (a === null || b === null) return null;
+      switch (e.op) {
+        case '+': return (a + b) | 0;
+        case '-': return (a - b) | 0;
+        case '*': return Math.imul(a, b);
+        case '&': return a & b;
+        case '|': return a | b;
+        case '^': return a ^ b;
+        case '<<': return a << (b & 31);
+        case '>>': return a >> (b & 31);
+        default: return null;
+      }
+    }
+    default:
+      return null;
+  }
 }

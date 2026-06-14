@@ -1,9 +1,11 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import type { Compilation } from '../compiler/pipeline';
 import type { Block, Expr, FnDecl, Program, Stmt } from '../compiler/ast';
 import { tyName } from '../compiler/ast';
 import { dumpFunc } from '../compiler/irdump';
 import { interpret } from '../compiler/interp';
+import { Debugger } from '../compiler/debug';
+import type { DebugState } from '../compiler/debug';
 import { runWasm } from '../compiler/runner';
 import { verifyAll } from '../compiler/verify';
 import type { VerifyResult } from '../compiler/verify';
@@ -350,6 +352,115 @@ export function RunPanel({ comp }: { comp: Compilation }) {
         </div>
       )}
       {!out && <p className="dim note">Runs the compiled WebAssembly in your browser and diff-checks it against the independent tree-walking interpreter.</p>}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------- Debugger
+
+// The parent remounts this panel (via `key`) whenever the program text changes,
+// so the debugger is built once per program in a lazy `useState` initializer —
+// no refs read during render, no reset effect.
+export function DebugPanel({ comp, onActiveLine }: { comp: Compilation; onActiveLine?: (line: number | undefined) => void }) {
+  const [st, setSt] = useState<{ dbg: Debugger | null; snap: DebugState | null }>(() => {
+    const d = comp.ok && comp.program ? new Debugger(comp.program) : null;
+    return { dbg: d, snap: d ? d.state() : null };
+  });
+  const { dbg, snap } = st;
+
+  // Drive the editor's current-line highlight, and clear it on unmount.
+  useEffect(() => {
+    onActiveLine?.(snap && !snap.done && snap.line > 0 ? snap.line : undefined);
+  }, [snap, onActiveLine]);
+  useEffect(() => () => onActiveLine?.(undefined), [onActiveLine]);
+
+  const reset = () => {
+    if (comp.ok && comp.program) {
+      const d = new Debugger(comp.program);
+      setSt({ dbg: d, snap: d.state() });
+    }
+  };
+  const step = () => {
+    if (dbg) { dbg.step(); setSt({ dbg, snap: dbg.state() }); }
+  };
+  const run = () => {
+    if (dbg) { dbg.runToEnd(); setSt({ dbg, snap: dbg.state() }); }
+  };
+
+  if (!snap) {
+    return (
+      <div className="panel-scroll run-panel">
+        <p className="dim note">The program doesn’t compile yet — fix it on the left to start debugging.</p>
+      </div>
+    );
+  }
+
+  const current = snap.stack[snap.stack.length - 1];
+  return (
+    <div className="panel-scroll run-panel">
+      <div className="run-controls">
+        <button className="primary" onClick={step} disabled={snap.done}>▸ step</button>
+        <button onClick={run} disabled={snap.done}>⏩ run to end</button>
+        <button onClick={reset}>↺ restart</button>
+        <span className="dim">
+          {snap.steps} step{snap.steps === 1 ? '' : 's'}
+          {snap.done ? ' · finished' : current ? ` · ${current.fn}() @ line ${snap.line}` : ''}
+        </span>
+        {snap.done && snap.result !== undefined && <span className="badge ok">main() → {snap.result}</span>}
+        {snap.error && <span className="badge bad">trap: {snap.error}</span>}
+      </div>
+
+      <div className="dbg-cols">
+        <div className="dbg-col">
+          <div className="col-head">Call stack &amp; locals</div>
+          {snap.stack.length === 0 && <p className="dim note">not running</p>}
+          {snap.stack
+            .slice()
+            .reverse()
+            .map((fr, i) => (
+              <div key={i} className={'dbg-frame' + (i === 0 ? ' dbg-frame-cur' : '')}>
+                <div className="dbg-frame-head">
+                  <span className="mono">{fr.fn}()</span> <span className="dim">line {fr.line}</span>
+                </div>
+                {fr.vars.length === 0 ? (
+                  <div className="dim dbg-novars">no locals yet</div>
+                ) : (
+                  <table className="dbg-vars">
+                    <tbody>
+                      {fr.vars.map((v) => (
+                        <tr key={v.name}>
+                          <td className="mono dbg-vname">{v.name}</td>
+                          <td className="dim dbg-vty">{v.ty}</td>
+                          <td className="mono dbg-vval">{v.value}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
+              </div>
+            ))}
+          {snap.globals.length > 0 && (
+            <div className="dbg-frame">
+              <div className="dbg-frame-head"><span className="dim">globals</span></div>
+              <table className="dbg-vars">
+                <tbody>
+                  {snap.globals.map((v) => (
+                    <tr key={v.name}>
+                      <td className="mono dbg-vname">{v.name}</td>
+                      <td className="dim dbg-vty">{v.ty}</td>
+                      <td className="mono dbg-vval">{v.value}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+        <div className="dbg-col">
+          <div className="col-head">Output</div>
+          <pre className="code-pre out-pre">{snap.output.join('\n') || '(no output yet)'}</pre>
+        </div>
+      </div>
     </div>
   );
 }

@@ -332,6 +332,84 @@ fn main() {
 }
 `,
   },
+  {
+    id: 'control-flow',
+    title: 'do-while & switch',
+    blurb: 'Bottom-tested loops and multi-label switches — try -O0…-O3 to watch the CFG.',
+    source: `fn classify(n: int) -> str {
+  switch (n % 4) {
+    case 0: { return "zero"; }
+    case 1, 3: { return "odd"; }      // multi-label case, no fallthrough
+    default: { return "two"; }
+  }
+  return "?";
+}
+
+fn main() {
+  // do-while always runs the body once, then re-tests the condition.
+  let n = 1;
+  do {
+    print(str(n) + " -> " + classify(n));
+    n = n * 2;
+  } while (n <= 16);
+
+  for (let i = 0; i < 6; i = i + 1) { print(classify(i)); }
+}
+`,
+  },
+  {
+    id: 'text-toolkit-2',
+    title: 'String library & str[]',
+    blurb: 'split / join / trim / replace / parse_int and first-class arrays of strings.',
+    source: `// Reverse the word order of a sentence using split + str[] + join.
+fn reverse_words(s: str) -> str {
+  let w = split(trim(s), " ");
+  let out = str_array(len(w));
+  for (let i = 0; i < len(w); i = i + 1) { out[len(w) - 1 - i] = w[i]; }
+  return join(out, " ");
+}
+
+fn main() {
+  print(reverse_words("  the quick brown fox  "));
+  print(replace("a-b-c-d", "-", " :: "));
+  print(repeat("=", 12));
+  print(starts_with("strata.wasm", "strata"));
+  print(contains("hello world", "o w"));
+
+  // Parse and sum a CSV row.
+  let cells = split("12,34,5,-7,100", ",");
+  let total = 0;
+  for (let i = 0; i < len(cells); i = i + 1) { total += parse_int(cells[i]); }
+  print(join(cells, " + ") + " = " + str(total));
+}
+`,
+  },
+  {
+    id: 'select',
+    title: 'Branchless select',
+    blurb: 'Ternaries / if-else assignments fold into a wasm `select` at -O1+ — see the WASM tab.',
+    source: `// clamp() is two diamonds; if-conversion turns each into a branchless select.
+fn clamp(x: int, lo: int, hi: int) -> int {
+  let y = x < lo ? lo : x;
+  return y > hi ? hi : y;
+}
+
+fn main() {
+  for (let i = -3; i <= 7; i = i + 1) { print(clamp(i, 0, 4)); }
+
+  // running min / max with no branches in the loop body
+  let lo = 1000;
+  let hi = -1000;
+  let data = split("3,-1,9,4,-8,2,7", ",");
+  for (let i = 0; i < len(data); i = i + 1) {
+    let v = parse_int(data[i]);
+    lo = v < lo ? v : lo;
+    hi = v > hi ? v : hi;
+  }
+  print(lo); print(hi);
+}
+`,
+  },
 ];
 
 export const TEST_PROGRAMS: { name: string; source: string }[] = EXAMPLES.map((e) => ({ name: e.id, source: e.source }));

@@ -425,4 +425,176 @@ fn main(){
 }
 fn main(){ print(cap("hELLO")); print(cap("world")); print(cap("a")); print(cap("")); }`,
   },
+  {
+    name: 'do-while-basic',
+    source: `fn main(){
+  let i = 0;
+  do { print(i); i = i + 1; } while (i < 5);
+  // body always runs once even when the condition is false up front
+  let n = 10;
+  do { print(n); n = n + 1; } while (n < 5);
+}`,
+  },
+  {
+    name: 'do-while-break-continue',
+    source: `fn main(){
+  let i = 0;
+  do {
+    i = i + 1;
+    if (i == 3) { continue; }
+    if (i == 7) { break; }
+    print(i);
+  } while (i < 100);
+  print(-1); print(i);
+}`,
+  },
+  {
+    name: 'switch-basic',
+    source: `fn name(d: int) -> str {
+  switch (d) {
+    case 1: { return "one"; }
+    case 2: { return "two"; }
+    case 3, 4, 5: { return "many"; }
+    default: { return "other"; }
+  }
+  return "unreachable";
+}
+fn main(){ for (let i = 0; i < 7; i = i + 1) { print(name(i)); } }`,
+  },
+  {
+    name: 'switch-nodefault-fallthrough',
+    source: `fn main(){
+  let total = 0;
+  for (let i = 0; i < 6; i = i + 1) {
+    switch (i % 3) {
+      case 0: { total = total + 10; }
+      case 1: { total = total + 1; }
+    }
+    print(total);
+  }
+}`,
+  },
+  {
+    name: 'switch-expr-labels',
+    source: `fn main(){
+  for (let i = 0; i < 5; i = i + 1) {
+    switch (i) {
+      case 1 << 1: { print(100); }   // 2
+      case 1 + 2: { print(200); }    // 3
+      default: { print(i); }
+    }
+  }
+}`,
+  },
+  {
+    name: 'str-repeat-trim',
+    source: `fn main(){
+  print(repeat("ab", 3)); print(repeat("x", 0)); print(repeat("-", 1));
+  print("[" + trim("   hi  there   ") + "]");
+  print("[" + trim("\\t\\n  padded \\r\\n") + "]");
+  print("[" + trim("") + "]"); print("[" + trim("noedge") + "]");
+  print(len(repeat("abc", 4)));
+}`,
+  },
+  {
+    name: 'str-find-contains',
+    source: `fn main(){
+  print(find("hello world", "world")); print(find("hello", "xyz"));
+  print(find("aaaa", "aa")); print(find("abc", ""));
+  print(contains("banana", "nan")); print(contains("banana", "xyz"));
+  print(starts_with("strata", "str")); print(starts_with("strata", "rat"));
+  print(ends_with("compiler", "ler")); print(ends_with("compiler", "lex"));
+  print(starts_with("hi", "longer")); print(ends_with("hi", "longer"));
+}`,
+  },
+  {
+    name: 'str-replace',
+    source: `fn main(){
+  print(replace("a.b.c.d", ".", "/"));
+  print(replace("aaa", "a", "bb"));
+  print(replace("hello", "l", ""));
+  print(replace("xyz", "q", "Q"));
+  print(replace("ababab", "ab", "X"));
+  print(replace("abc", "", "Z"));
+  print(replace("the cat sat", "at", "OG"));
+}`,
+  },
+  {
+    name: 'str-parse-int',
+    source: `fn main(){
+  print(parse_int("123")); print(parse_int("-45")); print(parse_int("+7"));
+  print(parse_int("  8")); print(parse_int("99abc")); print(parse_int(""));
+  print(parse_int("0")); print(parse_int("-0")); print(parse_int("2147483647"));
+  // round-trip through str()
+  let n = -32768; print(parse_int(str(n)) == n);
+}`,
+  },
+  {
+    name: 'str-array-basic',
+    source: `fn main(){
+  let a = str_array(3);
+  print(len(a));
+  print("[" + a[0] + "]");          // uninitialized element reads as ""
+  a[0] = "alpha"; a[1] = "beta"; a[2] = "gamma";
+  for (let i = 0; i < len(a); i = i + 1) { print(a[i]); }
+  a[1] = a[0] + "-" + a[2];
+  print(a[1]);
+}`,
+  },
+  {
+    name: 'str-split-join',
+    source: `fn main(){
+  let parts = split("a,b,c,d", ",");
+  print(len(parts));
+  for (let i = 0; i < len(parts); i = i + 1) { print(parts[i]); }
+  print(join(parts, "/"));
+  print(join(split("one two three", " "), "_"));
+  print("[" + join(split(",", ","), "|") + "]");     // ["",""] -> "|"
+  print("[" + join(split("trailing,", ","), "|") + "]");
+  print(len(split("", ",")));                         // [""] -> 1
+  print(join(split("nosep", "X"), "+"));              // ["nosep"]
+}`,
+  },
+  {
+    name: 'str-split-words-roundtrip',
+    source: `fn rev_words(s: str) -> str {
+  let w = split(s, " ");
+  let out = str_array(len(w));
+  for (let i = 0; i < len(w); i = i + 1) { out[len(w) - 1 - i] = w[i]; }
+  return join(out, " ");
+}
+fn main(){
+  print(rev_words("the quick brown fox"));
+  print(rev_words("single"));
+  print(join(split("a.b.c", "."), "."));   // identity round-trip
+}`,
+  },
+  {
+    name: 'if-convert-select',
+    source: `fn absdiff(a: int, b: int) -> int { return a > b ? a - b : b - a; }
+fn clamp(x: int, lo: int, hi: int) -> int {
+  let y = x < lo ? lo : x;          // lowers to a diamond -> select
+  return y > hi ? hi : y;
+}
+fn maxf(a: float, b: float) -> float { return a > b ? a : b; }
+fn main(){
+  for (let i = -3; i <= 3; i = i + 1) { print(absdiff(i, 0)); print(clamp(i, -1, 1)); }
+  print(maxf(2.5, 1.5)); print(maxf(-1.0, -2.0));
+  // nested selects
+  let s = 0;
+  for (let i = 0; i < 10; i = i + 1) { s = s + (i % 2 == 0 ? i : -i); }
+  print(s);
+}`,
+  },
+  {
+    name: 'str-csv-sum',
+    source: `fn main(){
+  let row = "10,20,30,40,5";
+  let cells = split(row, ",");
+  let total = 0;
+  for (let i = 0; i < len(cells); i = i + 1) { total = total + parse_int(cells[i]); }
+  print(total);
+  print(join(cells, " + ") + " = " + str(total));
+}`,
+  },
 ];

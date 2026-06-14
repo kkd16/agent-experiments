@@ -11,8 +11,10 @@ import type { Block, Expr, Program, Stmt } from './ast';
 export type RtValue = number | ArrayVal | string;
 export interface ArrayVal {
   arr: true;
-  elem: 'int' | 'float';
-  data: number[];
+  elem: 'int' | 'float' | 'str';
+  // `int`/`float` arrays hold numbers; `str` arrays hold byte strings. A single
+  // union keeps the element accessors uniform.
+  data: (number | string)[];
 }
 
 // Strings are byte strings (Latin-1): every character is one byte. A JS string
@@ -57,6 +59,21 @@ export function formatFloat(x: number): string {
 }
 export function formatBool(x: number): string {
   return x !== 0 ? 'true' : 'false';
+}
+
+// Whitespace test matching the prelude's __is_ws: space (32) and \t\n\v\f\r.
+const isWs = (c: number): boolean => c === 32 || (c >= 9 && c <= 13);
+
+// First index of `sub` in `s` at or after `from`, else -1 (empty needle -> from).
+// Mirrors the prelude's __find_from byte-for-byte so the two never disagree.
+function findFrom(s: string, sub: string, from: number): number {
+  if (sub.length === 0) return from;
+  for (let i = from; i + sub.length <= s.length; i++) {
+    let j = 0;
+    while (j < sub.length && s.charCodeAt(i + j) === sub.charCodeAt(j)) j++;
+    if (j === sub.length) return i;
+  }
+  return -1;
 }
 
 interface Frame {
@@ -152,9 +169,10 @@ export class Interpreter {
       case 'index-assign': {
         const target = this.evalExpr(s.target, f) as ArrayVal;
         const idx = i32(this.evalExpr(s.index, f) as number);
-        const val = this.evalExpr(s.value, f) as number;
+        const val = this.evalExpr(s.value, f);
         if (idx < 0 || idx >= target.data.length) throw new Trap('array index out of bounds');
-        target.data[idx] = target.elem === 'int' ? i32(val) : val;
+        if (target.elem === 'str') target.data[idx] = val as string;
+        else target.data[idx] = target.elem === 'int' ? i32(val as number) : (val as number);
         break;
       }
       case 'expr':
@@ -176,6 +194,19 @@ export class Interpreter {
           }
         }
         break;
+      case 'switch': {
+        const d = i32(this.evalExpr(s.disc, f) as number);
+        let matched = false;
+        for (const c of s.cases) {
+          if (c.nums!.includes(d)) {
+            this.execBlock(c.body, f);
+            matched = true;
+            break;
+          }
+        }
+        if (!matched && s.default) this.execBlock(s.default, f);
+        break;
+      }
       case 'for': {
         f.vars.push(new Map());
         try {
@@ -325,77 +356,172 @@ export class Interpreter {
 
   private evalCall(e: Extract<Expr, { node: 'call' }>, f: Frame): RtValue {
     const name = e.callee;
-    if (name === 'print') {
-      const k = e.args[0].ty?.kind;
-      if (k === 'str') {
-        this.output.push(this.evalExpr(e.args[0], f) as string);
-        return 0;
+    // Strict left-to-right argument evaluation (no builtin is short-circuiting).
+    const argv = e.args.map((a) => this.evalExpr(a, f));
+    const argKinds = e.args.map((a) => a.ty?.kind);
+    const b = callBuiltin(name, argv, argKinds, this.output);
+    if (b.handled) return b.value;
+    const fn = this.fns.get(name);
+    if (!fn) throw new Trap(`call to undefined '${name}'`);
+    const r = this.call(fn, argv);
+    return r === undefined ? 0 : r;
+  }
+}
+
+// The complete builtin library, evaluated over already-computed argument values
+// and their static type kinds. Extracted so the tree-walking interpreter and the
+// generator-based debugger share one implementation (and so can never disagree
+// about a builtin). `print` appends to the supplied output sink. Returns
+// `{ handled: false }` for a name that is not a builtin (i.e. a user function).
+export interface BuiltinResult {
+  handled: boolean;
+  value: RtValue;
+}
+export function callBuiltin(
+  name: string,
+  argv: RtValue[],
+  argKinds: (string | undefined)[],
+  out: string[],
+): BuiltinResult {
+  const H = (value: RtValue): BuiltinResult => ({ handled: true, value });
+  switch (name) {
+    case 'print': {
+      const k = argKinds[0];
+      if (k === 'str') out.push(argv[0] as string);
+      else {
+        const v = argv[0] as number;
+        out.push(k === 'float' ? formatFloat(v) : k === 'bool' ? formatBool(v) : formatInt(v));
       }
-      const v = this.evalExpr(e.args[0], f) as number;
-      this.output.push(k === 'float' ? formatFloat(v) : k === 'bool' ? formatBool(v) : formatInt(v));
-      return 0;
+      return H(0);
     }
-    if (name === 'str') {
-      const k = e.args[0].ty?.kind;
-      const v = this.evalExpr(e.args[0], f);
-      if (k === 'str') return v;
-      if (k === 'bool') return formatBool(v as number);
-      return formatInt(v as number);
+    case 'str': {
+      const k = argKinds[0];
+      if (k === 'str') return H(argv[0]);
+      if (k === 'bool') return H(formatBool(argv[0] as number));
+      return H(formatInt(argv[0] as number));
     }
-    if (name === 'char') {
-      const n = i32(this.evalExpr(e.args[0], f) as number) & 0xff;
-      return String.fromCharCode(n);
-    }
-    if (name === 'substr') {
-      const s = this.evalExpr(e.args[0], f) as string;
-      let start = i32(this.evalExpr(e.args[1], f) as number);
-      let count = i32(this.evalExpr(e.args[2], f) as number);
+    case 'char':
+      return H(String.fromCharCode(i32(argv[0] as number) & 0xff));
+    case 'substr': {
+      const s = argv[0] as string;
+      let start = i32(argv[1] as number);
+      let count = i32(argv[2] as number);
       const n = s.length;
       if (start < 0) start = 0;
       if (start > n) start = n;
       if (count < 0) count = 0;
       if (start + count > n) count = n - start;
-      return s.substr(start, count);
+      return H(s.substr(start, count));
     }
-    if (name === 'index_of') {
-      const s = this.evalExpr(e.args[0], f) as string;
-      const c = i32(this.evalExpr(e.args[1], f) as number);
-      for (let i = 0; i < s.length; i++) if (s.charCodeAt(i) === c) return i;
-      return -1;
+    case 'index_of': {
+      const s = argv[0] as string;
+      const c = i32(argv[1] as number);
+      for (let i = 0; i < s.length; i++) if (s.charCodeAt(i) === c) return H(i);
+      return H(-1);
     }
-    if (name === 'to_upper' || name === 'to_lower') {
-      const s = this.evalExpr(e.args[0], f) as string;
-      let out = '';
+    case 'to_upper':
+    case 'to_lower': {
+      const s = argv[0] as string;
+      let r = '';
       for (let i = 0; i < s.length; i++) {
         let c = s.charCodeAt(i);
         if (name === 'to_upper' && c >= 97 && c <= 122) c -= 32;
         if (name === 'to_lower' && c >= 65 && c <= 90) c += 32;
-        out += String.fromCharCode(c);
+        r += String.fromCharCode(c);
       }
-      return out;
+      return H(r);
     }
-    if (name === 'int') {
-      const v = this.evalExpr(e.args[0], f) as number;
-      const k = e.args[0].ty?.kind;
-      return k === 'float' ? satTruncI32(v) : i32(v);
+    case 'repeat': {
+      const s = argv[0] as string;
+      let n = i32(argv[1] as number);
+      if (n < 0) n = 0;
+      return H(s.repeat(n));
     }
-    if (name === 'float') {
-      return this.evalExpr(e.args[0], f) as number;
+    case 'trim': {
+      const s = argv[0] as string;
+      let a = 0;
+      let b = s.length;
+      while (a < b && isWs(s.charCodeAt(a))) a++;
+      while (b > a && isWs(s.charCodeAt(b - 1))) b--;
+      return H(s.slice(a, b));
     }
-    if (name === 'int_array' || name === 'float_array') {
-      const n = i32(this.evalExpr(e.args[0], f) as number);
+    case 'find':
+      return H(findFrom(argv[0] as string, argv[1] as string, 0));
+    case 'contains':
+      return H(findFrom(argv[0] as string, argv[1] as string, 0) >= 0 ? 1 : 0);
+    case 'starts_with':
+      return H((argv[0] as string).startsWith(argv[1] as string) ? 1 : 0);
+    case 'ends_with':
+      return H((argv[0] as string).endsWith(argv[1] as string) ? 1 : 0);
+    case 'replace': {
+      const s = argv[0] as string;
+      const fnd = argv[1] as string;
+      const repl = argv[2] as string;
+      if (fnd.length === 0) return H(s);
+      let r = '';
+      let i = 0;
+      for (;;) {
+        const k = findFrom(s, fnd, i);
+        if (k < 0) { r += s.slice(i); break; }
+        r += s.slice(i, k) + repl;
+        i = k + fnd.length;
+      }
+      return H(r);
+    }
+    case 'parse_int': {
+      const s = argv[0] as string;
+      let i = 0;
+      let neg = false;
+      if (i < s.length) {
+        const c = s.charCodeAt(i);
+        if (c === 45) { neg = true; i++; }
+        else if (c === 43) { i++; }
+      }
+      let acc = 0;
+      while (i < s.length) {
+        const c = s.charCodeAt(i);
+        if (c < 48 || c > 57) break;
+        acc = i32(Math.imul(acc, 10) + (c - 48));
+        i++;
+      }
+      return H(neg ? i32(-acc) : acc);
+    }
+    case 'int':
+      return H(argKinds[0] === 'float' ? satTruncI32(argv[0] as number) : i32(argv[0] as number));
+    case 'float':
+      return H(argv[0] as number);
+    case 'int_array':
+    case 'float_array':
+    case 'str_array': {
+      const n = i32(argv[0] as number);
       if (n < 0) throw new Trap('negative array length');
-      return { arr: true, elem: name === 'int_array' ? 'int' : 'float', data: new Array(n).fill(0) };
+      if (name === 'str_array') return H({ arr: true, elem: 'str', data: new Array(n).fill('') });
+      return H({ arr: true, elem: name === 'int_array' ? 'int' : 'float', data: new Array(n).fill(0) });
     }
-    if (name === 'len') {
-      const v = this.evalExpr(e.args[0], f);
-      return typeof v === 'string' ? v.length : (v as ArrayVal).data.length;
+    case 'split': {
+      const s = argv[0] as string;
+      const sep = argv[1] as string;
+      const data: string[] = [];
+      if (sep.length === 0) data.push(s);
+      else {
+        let start = 0;
+        for (;;) {
+          const k = findFrom(s, sep, start);
+          if (k < 0) { data.push(s.slice(start)); break; }
+          data.push(s.slice(start, k));
+          start = k + sep.length;
+        }
+      }
+      return H({ arr: true, elem: 'str', data });
     }
-    const fn = this.fns.get(name);
-    if (!fn) throw new Trap(`call to undefined '${name}'`);
-    const args = e.args.map((a) => this.evalExpr(a, f));
-    const r = this.call(fn, args);
-    return r === undefined ? 0 : r;
+    case 'join':
+      return H(((argv[0] as ArrayVal).data as string[]).join(argv[1] as string));
+    case 'len': {
+      const v = argv[0];
+      return H(typeof v === 'string' ? v.length : (v as ArrayVal).data.length);
+    }
+    default:
+      return { handled: false, value: 0 };
   }
 }
 

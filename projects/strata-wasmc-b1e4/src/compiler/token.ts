@@ -13,7 +13,11 @@ export type TokenType =
   | 'if'
   | 'else'
   | 'while'
+  | 'do'
   | 'for'
+  | 'switch'
+  | 'case'
+  | 'default'
   | 'return'
   | 'break'
   | 'continue'
@@ -71,7 +75,11 @@ export const KEYWORDS: Record<string, TokenType> = {
   if: 'if',
   else: 'else',
   while: 'while',
+  do: 'do',
   for: 'for',
+  switch: 'switch',
+  case: 'case',
+  default: 'default',
   return: 'return',
   break: 'break',
   continue: 'continue',

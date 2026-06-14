@@ -31,6 +31,7 @@ type W =
   | { k: 'load'; mem: 'i32' | 'f64' | 'i8' }
   | { k: 'store'; mem: 'i32' | 'f64' | 'i8' }
   | { k: 'op'; c: number; name: string }
+  | { k: 'select' }
   | { k: 'trunc' }
   | { k: 'convert' };
 
@@ -66,7 +67,7 @@ interface Resolvers {
 // be recomputed at (i.e. sunk to) their single use without changing behavior.
 // Integer div_s/rem_s are deliberately absent — they can trap, so sinking them
 // past a side effect could reorder an observable trap.
-const STACKIFIABLE = new Set(['ibin', 'fbin', 'icmp', 'fcmp', 'cast', 'copy']);
+const STACKIFIABLE = new Set(['ibin', 'fbin', 'icmp', 'fcmp', 'cast', 'select', 'copy']);
 
 class FuncGen {
   fn: IRFunc;
@@ -327,6 +328,10 @@ class FuncGen {
       case 'cast':
         out.push(...this.pushOperand(inst.args[0]), inst.sub === 'i2f' ? { k: 'convert' } : { k: 'trunc' });
         break;
+      case 'select':
+        // wasm `select`: [a, b, cond] -> a if cond!=0 else b.
+        out.push(...this.pushOperand(inst.args[0]), ...this.pushOperand(inst.args[1]), ...this.pushOperand(inst.args[2]), { k: 'select' });
+        break;
       case 'copy':
         out.push(...this.pushOperand(inst.args[0]));
         break;
@@ -438,6 +443,7 @@ function encodeBody(w: ByteWriter, tree: W[]): void {
         w.u8(op); w.u32(align); w.u32(0); break;
       }
       case 'op': w.u8(n.c); break;
+      case 'select': w.u8(0x1b); break; // select (untyped)
       case 'trunc': w.u8(0xfc); w.u32(0x02); break; // i32.trunc_sat_f64_s
       case 'convert': w.u8(0xb7); break; // f64.convert_i32_s
     }
@@ -705,6 +711,7 @@ function watBody(tree: W[], lines: string[], depth: number): void {
       case 'load': lines.push(`${pad}${n.mem === 'f64' ? 'f64.load' : n.mem === 'i8' ? 'i32.load8_u' : 'i32.load'}`); break;
       case 'store': lines.push(`${pad}${n.mem === 'f64' ? 'f64.store' : n.mem === 'i8' ? 'i32.store8' : 'i32.store'}`); break;
       case 'op': lines.push(`${pad}${n.name}`); break;
+      case 'select': lines.push(`${pad}select`); break;
       case 'trunc': lines.push(`${pad}i32.trunc_sat_f64_s`); break;
       case 'convert': lines.push(`${pad}f64.convert_i32_s`); break;
     }
