@@ -33,9 +33,10 @@ export function SelfTests() {
         <h2>Verification suite</h2>
         <p>
           A path tracer is only as trustworthy as its math. These checks assert the invariants a
-          correct renderer must satisfy — energy conservation (white-furnace), exact BVH-vs-brute-force
-          agreement, sampler/pdf consistency, and the analytic Fresnel &amp; Snell laws. No pixels are
-          judged by eye.
+          correct renderer must satisfy — energy conservation (white-furnace, including frosted glass),
+          exact BVH-vs-brute-force agreement, sampler/pdf consistency, the analytic Fresnel &amp; Snell
+          laws, a neutral spectral white point, Cauchy dispersion ordering, and Beer–Lambert tinting. No
+          pixels are judged by eye.
         </p>
         <button className="btn primary" onClick={run} disabled={running} type="button">
           {running ? 'Running…' : 'Run verification'}

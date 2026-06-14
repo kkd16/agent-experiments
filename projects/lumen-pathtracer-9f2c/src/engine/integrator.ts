@@ -34,7 +34,8 @@ import type { Scene } from './scene'
 import type { Rng } from './rng'
 import { powerHeuristic } from './rng'
 import type { Material } from './material'
-import { evalBSDF, isDelta, pdfBSDF, sampleBSDF } from './material'
+import { evalBSDF, isDelta, pdfBSDF, resolveMaterial, sampleBSDF } from './material'
+import { LAMBDA_MAX, LAMBDA_MIN, wavelengthWeight } from './spectrum'
 import type { IntegratorSettings } from './types'
 
 export interface RayStats {
@@ -84,6 +85,11 @@ export function radiance(
   let prevPoint = ray.o
   let captured = false
   const clampI = settings.clampIndirect
+  // Beer–Lambert state: the absorption coefficient σ_a of the medium the ray is
+  // currently travelling through (null = vacuum). And the path's committed "hero"
+  // wavelength for spectral dispersion (0 = not yet chosen / achromatic).
+  let medium: Vec3 | null = null
+  let lambda = 0
 
   for (let depth = 0; depth <= settings.maxDepth; depth++) {
     stats.rays++
@@ -102,7 +108,18 @@ export function radiance(
       break
     }
 
-    const mat = scene.materials[hit.material]
+    // ---- Beer–Lambert: attenuate over the segment just travelled in a medium. ----
+    if (medium) {
+      beta = mul(beta, v(Math.exp(-medium.x * hit.t), Math.exp(-medium.y * hit.t), Math.exp(-medium.z * hit.t)))
+    }
+
+    const rawMat = scene.materials[hit.material]
+    // ---- Spectral dispersion: commit to one wavelength on first dispersive hit. ----
+    if (rawMat.kind === 'dielectric' && rawMat.cauchyB && lambda === 0) {
+      lambda = LAMBDA_MIN + rng.next() * (LAMBDA_MAX - LAMBDA_MIN)
+      beta = mul(beta, wavelengthWeight(lambda))
+    }
+    const mat = resolveMaterial(rawMat, hit.p, lambda)
     const wo = neg(r.d)
 
     if (gbuf && !captured) {
@@ -162,6 +179,11 @@ export function radiance(
     specularBounce = bs.specular
     prevPdf = bs.pdf
     prevPoint = hit.p
+    // ---- Track medium crossings for Beer–Lambert absorption. ----
+    if (bs.transmission && rawMat.kind === 'dielectric') {
+      // Entering through the front face starts the medium; exiting clears it.
+      medium = hit.frontFace ? rawMat.absorption ?? null : null
+    }
     r = makeRay(offsetOrigin(hit.p, hit.ng, bs.wi), bs.wi)
   }
 

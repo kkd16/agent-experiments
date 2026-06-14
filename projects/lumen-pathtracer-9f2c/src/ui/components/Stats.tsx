@@ -25,6 +25,7 @@ export function Stats(props: { stats: RenderStats | null }) {
         <Cell label="Threads" value={s ? `${s.workers} · ${s.mode === 'multithread' ? 'MT' : 'ST'}` : '—'} />
         <Cell label="Triangles" value={s ? fmt(s.triCount) : '—'} />
         <Cell label="BVH nodes" value={s ? `${fmt(s.bvhNodes)} · d${s.bvhDepth}` : '—'} />
+        <Cell label="Noise" value={s ? `${(s.noise * 100).toFixed(1)}%` : '—'} />
         <Cell label="Status" value={s ? (s.done ? 'Converged' : 'Rendering…') : 'Idle'} highlight={s?.done} />
       </div>
     </div>

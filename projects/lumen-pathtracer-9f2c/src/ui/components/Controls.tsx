@@ -93,9 +93,33 @@ export function Controls(props: {
           format={(v) => v.toFixed(2)}
           hint="Lens radius. 0 is a pinhole; larger blurs out-of-focus depths."
         />
+        <Toggle
+          label="Adaptive sampling"
+          value={state.adaptive}
+          onChange={(v) => set('adaptive', v)}
+          hint="Stop sampling bands once their estimated noise drops below the target — clean regions finish early."
+        />
+        {state.adaptive && (
+          <Slider
+            label="Noise target"
+            value={state.adaptiveThreshold}
+            min={0.005}
+            max={0.1}
+            step={0.005}
+            onChange={(v) => set('adaptiveThreshold', v)}
+            format={(v) => `${(v * 100).toFixed(1)}%`}
+            hint="Relative-error threshold below which a region is considered converged."
+          />
+        )}
       </Panel>
 
       <Panel title="Display" subtitle="Applied live — no re-render">
+        <Toggle
+          label="Noise heatmap"
+          value={state.showNoise}
+          onChange={(v) => set('showNoise', v)}
+          hint="Visualise per-pixel Monte-Carlo noise (relative error): dark = converged, bright = noisy."
+        />
         <Slider
           label="Exposure"
           value={state.exposure}
