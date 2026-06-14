@@ -141,6 +141,7 @@ class Parser {
       if (t.value === 'type') return this.parseTypeDecl()
       if (t.value === 'class') return this.parseClassDecl()
       if (t.value === 'instance') return this.parseInstanceDecl()
+      if (t.value === 'do') return this.parseDo()
     }
 
     if (t.kind === 'op' && (t.value === '-' || t.value === '!')) {
@@ -372,6 +373,53 @@ class Parser {
     let acc: Expr = body
     for (let k = params.length - 1; k >= 0; k--) {
       acc = { kind: 'lambda', param: params[k], body: acc, span }
+    }
+    return acc
+  }
+
+  // Monadic do-notation. `do { p <- e ; … ; r }` is a pure desugaring into the
+  // overloaded `bind` method (resolved through the type-class machinery), so no
+  // inference/compiler/VM/JS-backend changes are needed:
+  //   do { x <- e ; rest }  ⇒  bind e (fn x  -> <rest>)
+  //   do { e ; rest }       ⇒  bind e (fn _  -> <rest>)
+  //   do { e }              ⇒  e
+  private parseDo(): Expr {
+    const start = this.expect('keyword', 'do')
+    this.expect('punc', '{')
+    const stmts: { name: string | null; expr: Expr; span: Span }[] = []
+    while (!this.at('punc', '}')) {
+      const sStart = this.peek().span
+      let name: string | null = null
+      const t = this.peek()
+      const ahead = this.toks[this.pos + 1]
+      if (t.kind === 'ident' && ahead && ahead.kind === 'op' && ahead.value === '<-') {
+        name = this.next().value
+        this.next() // '<-'
+      }
+      const expr = this.parseExpr(1) // bp 1 stops at the ';' separator
+      stmts.push({ name, expr, span: this.spanFrom(sStart, expr.span) })
+      if (this.at('punc', ';')) {
+        this.next()
+      } else {
+        break
+      }
+    }
+    const close = this.expect('punc', '}')
+    if (stmts.length === 0) {
+      throw new ParseError('an empty do block has no value', start.span)
+    }
+    const last = stmts[stmts.length - 1]
+    if (last.name !== null) {
+      throw new ParseError('the last statement of a do block must be an expression', last.span)
+    }
+    let acc = last.expr
+    for (let i = stmts.length - 2; i >= 0; i--) {
+      const s = stmts[i]
+      const span = this.spanFrom(s.span, close.span)
+      const lam: Expr = { kind: 'lambda', param: s.name ?? '_', body: acc, span }
+      const bindVar: Expr = { kind: 'var', name: 'bind', span: s.span }
+      const applied: Expr = { kind: 'app', fn: bindVar, arg: s.expr, span }
+      acc = { kind: 'app', fn: applied, arg: lam, span }
     }
     return acc
   }

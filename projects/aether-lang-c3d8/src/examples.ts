@@ -486,6 +486,43 @@ let total = fn xs -> match mconcat (MkSum 0) (map MkSum xs) with MkSum n -> n in
 , mconcat [] [[1, 2], [3], [4, 5]] )`,
   },
   {
+    id: 'do-notation',
+    title: 'Monadic do-notation',
+    blurb: 'do { x <- e; … } desugars to bind — Option short-circuits, List branches.',
+    visual: false,
+    code: `// do-notation is pure sugar over a 'bind' in scope:
+//   do { x <- e ; rest }  ⇒  bind e (fn x -> rest)
+//   do { e ; rest }       ⇒  bind e (fn _ -> rest)
+// Pick a bind and the same do-block expresses different effects.
+
+type Opt a = None | Some a in
+
+// --- the Option (Maybe) monad: short-circuit on the first None ---
+let bind = fn m k -> match m with None -> None | Some x -> k x in
+let safeDiv = fn a b -> if b == 0 then None else Some (a / b) in
+
+let chain = fn x ->
+  do {
+    y <- safeDiv 100 x ;   // None here aborts the whole block
+    z <- safeDiv y 2 ;
+    Some (z + 1)
+  } in
+
+// --- the List monad: every bind branches (cartesian product) ---
+let pythag =
+  let bind = fn m k -> concat (map k m) in   // shadow bind locally
+  do {
+    a <- range 1 21 ;
+    b <- range a 21 ;
+    c <- range b 21 ;
+    if a * a + b * b == c * c then [ (a, b, c) ] else []
+  } in
+
+( chain 5      // Some 11
+, chain 0      // None  — division by zero short-circuits
+, pythag )     // every Pythagorean triple with sides ≤ 20`,
+  },
+  {
     id: 'property',
     title: 'Property-based testing',
     blurb: 'Open the Check tab: laws are tested on random inputs, failures shrink.',

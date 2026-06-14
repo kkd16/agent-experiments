@@ -1,9 +1,12 @@
 import { useMemo, useState } from 'react'
 import { TEST_CASES, runSuite } from '../lang/testSuite.ts'
 import type { TestResult } from '../lang/testSuite.ts'
+import { runPropertySuite } from '../lang/propertySuite.ts'
+import type { PropSelfResult } from '../lang/propertySuite.ts'
 
 export default function Tests() {
   const [results, setResults] = useState<TestResult[] | null>(null)
+  const [propResults, setPropResults] = useState<PropSelfResult[] | null>(null)
   const [running, setRunning] = useState(false)
 
   const run = (): void => {
@@ -11,6 +14,7 @@ export default function Tests() {
     // let the button paint its "running" state before the (synchronous) suite
     setTimeout(() => {
       setResults(runSuite())
+      setPropResults(runPropertySuite())
       setRunning(false)
     }, 10)
   }
@@ -76,6 +80,37 @@ export default function Tests() {
               </div>
             )
           })}
+        </div>
+      )}
+
+      {propResults && (
+        <div className="tests-results">
+          <div className="tests-group">
+            <h3 className="tests-group-head">
+              Aether Check — engine self-tests{' '}
+              <span className="tests-group-count">
+                {propResults.filter((r) => r.ok).length}/{propResults.length}
+              </span>
+            </h3>
+            <p className="panel-note tiny">
+              These assert the property engine itself: true laws pass, false ones are falsified and
+              shrunk, runtime crashes are caught with the offending input, recursive ADTs generate &
+              terminate, and ungeneratable arguments are skipped.
+            </p>
+            <table className="tests-table">
+              <tbody>
+                {propResults.map((r) => (
+                  <tr key={r.name} className={r.ok ? 'pass' : 'fail'}>
+                    <td className="tests-mark">{r.ok ? '✓' : '✗'}</td>
+                    <td className="tests-name">{r.name}</td>
+                    <td className="tests-detail">
+                      <code>{r.detail}</code>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </div>
       )}
 
