@@ -169,6 +169,10 @@ class Parser {
         return this.parseIf();
       case 'while':
         return this.parseWhile();
+      case 'do':
+        return this.parseDoWhile();
+      case 'switch':
+        return this.parseSwitch();
       case 'for':
         return this.parseFor();
       case 'return':
@@ -227,6 +231,71 @@ class Parser {
     this.expect(')');
     const body = this.parseBlock();
     return { node: 'while', cond, body, span: this.spanFrom(start) };
+  }
+
+  // `do { B } while (C);` is desugared here into an equivalent bottom-tested loop
+  // built only from `while` + a synthetic once-flag:
+  //
+  //   { let <once> = true; while (<once> || (C)) { <once> = false; B } }
+  //
+  // The flag forces the first iteration (C is short-circuited away while it is
+  // true) and is cleared at the top of the body, so every later header check
+  // evaluates C exactly once after the body — precise do-while semantics. Because
+  // the desugaring happens before type checking, the interpreter and the backend
+  // see the very same `while`, so they cannot disagree about it, and the CFG is
+  // the well-tested top-tested-loop shape the relooper already handles.
+  private dwCounter = 0;
+  private parseDoWhile(): Stmt {
+    const start = this.expect('do').span;
+    const body = this.parseBlock();
+    this.expect('while');
+    this.expect('(');
+    const cond = this.parseExpr();
+    this.expect(')');
+    this.expect(';');
+    const span = this.spanFrom(start);
+    // A name no user identifier can collide with (the lexer never emits '$').
+    const flag = `do$once$${this.dwCounter++}`;
+    const trueLit: Expr = { node: 'bool', value: true, span };
+    const falseLit: Expr = { node: 'bool', value: false, span };
+    const flagRef: Expr = { node: 'ident', name: flag, span };
+    const guard: Expr = { node: 'binary', op: '||', left: flagRef, right: cond, span };
+    const clear: Stmt = { node: 'assign', name: flag, value: falseLit, span };
+    const whileBody: Block = { stmts: [clear, ...body.stmts], span: body.span };
+    const whileStmt: Stmt = { node: 'while', cond: guard, body: whileBody, span };
+    const decl: Stmt = { node: 'let', name: flag, declTy: T_BOOL, init: trueLit, span };
+    const block: Block = { stmts: [decl, whileStmt], span };
+    return { node: 'block', block, span };
+  }
+
+  // switch (disc) { case 1: { … }  case 2, 3: { … }  default: { … } }
+  // Cases are constant int labels (comma-separated for multiple), each followed
+  // by a block. There is no fallthrough; `default` is optional and may appear in
+  // any position but matches last.
+  private parseSwitch(): Stmt {
+    const start = this.expect('switch').span;
+    this.expect('(');
+    const disc = this.parseExpr();
+    this.expect(')');
+    this.expect('{');
+    const cases: import('./ast').SwitchCase[] = [];
+    let dflt: Block | null = null;
+    while (!this.check('}') && !this.check('eof')) {
+      if (this.accept('default')) {
+        this.expect(':');
+        if (dflt) throw new CompileError('duplicate default in switch', this.spanFrom(start), 'parse');
+        dflt = this.parseBlock();
+        continue;
+      }
+      const caseStart = this.expect('case').span;
+      const values: Expr[] = [this.parseExpr()];
+      while (this.accept(',')) values.push(this.parseExpr());
+      this.expect(':');
+      const body = this.parseBlock();
+      cases.push({ values, body, span: this.spanFrom(caseStart) });
+    }
+    this.expect('}');
+    return { node: 'switch', disc, cases, default: dflt, span: this.spanFrom(start) };
   }
 
   private parseFor(): Stmt {

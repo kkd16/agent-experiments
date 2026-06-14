@@ -98,6 +98,14 @@ function retTypeOf(t: Ty): RetType {
 const VAR = (name: string): POperand => ({ tag: 'var', name });
 const CI = (n: number): POperand => ({ tag: 'const', ty: 'i32', num: n | 0 });
 
+// String builtins that lower 1:1 to a prelude function `__<name>` taking string
+// pointers / ints and returning an i32. The result's user-visible type (str/int/
+// bool) is decided by the type checker; at the IR level it is always i32.
+const STRING_HELPERS = new Set([
+  'substr', 'index_of', 'to_upper', 'to_lower',
+  'repeat', 'trim', 'replace', 'find', 'contains', 'starts_with', 'ends_with', 'parse_int',
+]);
+
 class FnBuilder {
   blocks: PBlock[] = [];
   varType = new Map<string, IRType>();
@@ -239,6 +247,9 @@ class FnBuilder {
       case 'while':
         this.lowerWhile(s);
         break;
+      case 'switch':
+        this.lowerSwitch(s);
+        break;
       case 'for':
         this.lowerFor(s);
         break;
@@ -292,6 +303,48 @@ class FnBuilder {
     this.setTerm({ op: 'br', target: header.id });
 
     this.switchTo(exit);
+  }
+
+  // switch lowers to a chain of equality tests (no fallthrough). The
+  // discriminant is evaluated once into a temp; each case tests `disc == label`
+  // (OR-ed for multi-label cases), branching to the case body or the next test.
+  private lowerSwitch(s: Extract<Stmt, { node: 'switch' }>): void {
+    const dv = this.temp('i32');
+    const d = this.lowerExpr(s.disc)!;
+    this.emit({ dest: dv, ty: 'i32', kind: 'copy', sub: '', args: [d] });
+
+    const join = this.newBlock();
+    const bodies = s.cases.map(() => this.newBlock());
+    const dflt = s.default ? this.newBlock() : null;
+
+    s.cases.forEach((c, i) => {
+      const nums = c.nums!;
+      let cond = this.def('i32', 'icmp', 'eq', [VAR(dv), CI(nums[0])]);
+      for (let k = 1; k < nums.length; k++) {
+        const c2 = this.def('i32', 'icmp', 'eq', [VAR(dv), CI(nums[k])]);
+        cond = this.def('i32', 'ibin', 'or', [cond, c2]);
+      }
+      const next = i + 1 < s.cases.length ? this.newBlock() : (dflt ?? join);
+      this.setTerm({ op: 'condbr', cond, t: bodies[i].id, f: next.id });
+      this.switchTo(next);
+    });
+    // If there were no cases, `cur` is still the block after the discriminant.
+    if (s.cases.length === 0) this.setTerm({ op: 'br', target: (dflt ?? join).id });
+
+    if (dflt) {
+      // After the last test we are positioned in `dflt`.
+      this.switchTo(dflt);
+      this.lowerBlock(s.default!);
+      this.setTerm({ op: 'br', target: join.id });
+    }
+
+    s.cases.forEach((c, i) => {
+      this.switchTo(bodies[i]);
+      this.lowerBlock(c.body);
+      this.setTerm({ op: 'br', target: join.id });
+    });
+
+    this.switchTo(join);
   }
 
   private lowerFor(s: Extract<Stmt, { node: 'for' }>): void {
@@ -504,7 +557,9 @@ class FnBuilder {
       this.usesMemory = true;
       return this.def('i32', 'call', '__char', [this.lowerExpr(e.args[0])!]);
     }
-    if (name === 'substr' || name === 'index_of' || name === 'to_upper' || name === 'to_lower') {
+    if (STRING_HELPERS.has(name)) {
+      // Every extended string helper is a prelude function `__<name>` returning
+      // an i32 (a string pointer, an int index, or a 0/1 bool).
       this.usesStrings = true;
       this.usesMemory = true;
       const args = e.args.map((a) => this.lowerExpr(a)!);

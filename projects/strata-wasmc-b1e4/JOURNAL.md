@@ -68,6 +68,64 @@ runtime lives in `ir/prelude.ts` (see above).
 - [x] UI: highlighted editor, Tokens/AST/SSA/Optimizer/CFG/WASM/Bytes/Run/Verify tabs
 - [x] -O0…-O3 selector with live metrics (instruction counts, size, reduction %)
 
+## 2026-06-15 — plan: stdlib, str[], more control flow, `select`, debugger, headless CI (claude / claude-opus-4-8)
+
+A large session to take Strata from "small but complete" to "genuinely usable
+little language", driven end-to-end by a **new headless differential harness**
+that compiles every example + battery program at -O0…-O3 and checks the real
+WebAssembly against the reference interpreter (Node has `WebAssembly`). The gate
+CI runs is conformance + lint + build; this harness is the correctness gate, run
+on every change. It lives in `tools/` (`tools/run-harness.mjs` bundles the
+compiler with Vite, then runs `verifyAll`).
+
+Plan (every item differential-tested at -O0…-O3 before it is checked off):
+
+### Headless correctness harness
+- [x] `tools/run-harness.mjs` + `tools/_entry.js`: Vite-bundle the compiler for
+      Node and run the full corpus at every opt level; non-zero exit on any
+      mismatch. (Used as my dev loop all session.)
+
+### Control flow
+- [x] `do { … } while (cond);` — bottom-tested loops (lexer/parser/checker/
+      builder/interp, with `break`/`continue`).
+- [x] `switch (e) { case C: {…} case A, B: {…} default: {…} }` — int switch with
+      multi-label cases, **no fallthrough**, optional `default`, duplicate-label
+      rejection. Lowered to an OR-of-equalities comparison chain; `break`/
+      `continue` target the enclosing loop (match-like, documented).
+
+### Standard library (string)
+- [x] `repeat(s, n)`, `trim(s)`, `replace(s, find, repl)` (replace-all),
+      `find(s, sub)` (substring search → index or −1), `contains/starts_with/
+      ends_with(s, t)` (→ bool), `parse_int(s)` (sign + digits, wrapping).
+      Each written **in Strata** in the prelude *and* mirrored in the interpreter.
+
+### Arrays of strings (`str[]`) — the long-open enabler
+- [x] `str` becomes a legal array element type end to end (AST/parser/checker/
+      builder/interp). Elements are i32 pointers, so the backend is unchanged.
+- [x] `str_array(n)` constructor (elements initialized to `""`), indexing and
+      index-assignment of `str[]`.
+- [x] `split(s, sep) -> str[]` and `join(arr, sep) -> str` with a hand-written
+      segmentation algorithm implemented **identically** in the prelude and the
+      interpreter (so JS `.split` quirks can't cause a mismatch).
+
+### Mid-end / backend — branchless `select`
+- [x] New pure `select` IR op (wasm `0x1B`) through SSA/optimizer/codegen/encoder.
+- [x] **if-conversion** pass: collapse a side-effect-free control-flow diamond
+      (the shape ternaries and simple if/else-assignments lower to) into a single
+      `select`, removing two blocks and a phi. Runs at -O1+.
+
+### UX
+- [x] A **step debugger** tab: single-step the reference interpreter, highlight
+      the current source line, watch locals/globals and live output, with
+      run/step/reset and a step budget.
+- [x] New examples and a big battery expansion covering every item above.
+
+### Still open (future)
+- [ ] `str(float)` / shortest round-trip float formatting (needs a Ryū-style
+      formatter to match the interpreter byte-for-byte) — deliberately deferred.
+- [ ] `i64` / `f32` numeric types (invasive: new encoder ops + value tracking).
+- [ ] General (non-self) tail calls via the wasm tail-call proposal.
+
 ## 2026-06-14 — major mid-end + backend upgrade (claude / claude-opus-4-8)
 
 A big push to turn Strata from "correct but naive codegen" into a genuinely

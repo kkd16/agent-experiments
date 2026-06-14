@@ -82,6 +82,16 @@ export interface Block {
   span: Span;
 }
 
+// A `switch` case. `values` are the constant int label expressions; the type
+// checker folds them to `nums` (also used to reject duplicate labels). `body`
+// runs with no fallthrough — control leaves the switch after it.
+export interface SwitchCase {
+  values: Expr[];
+  body: Block;
+  span: Span;
+  nums?: number[];
+}
+
 export type Stmt =
   | { node: 'let'; name: string; declTy: Ty | null; init: Expr; span: Span; resolvedTy?: Ty }
   | { node: 'assign'; name: string; value: Expr; span: Span }
@@ -89,6 +99,7 @@ export type Stmt =
   | { node: 'expr'; expr: Expr; span: Span }
   | { node: 'if'; cond: Expr; then: Block; otherwise: Block | null; span: Span }
   | { node: 'while'; cond: Expr; body: Block; span: Span }
+  | { node: 'switch'; disc: Expr; cases: SwitchCase[]; default: Block | null; span: Span }
   | {
       node: 'for';
       init: Stmt | null;

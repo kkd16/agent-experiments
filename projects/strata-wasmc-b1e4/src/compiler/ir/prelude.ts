@@ -149,4 +149,135 @@ fn __to_lower(s: int) -> int {
   }
   return p;
 }
+
+// ----- extended string library -----------------------------------------------
+
+// Whitespace test: space (32) and the control range tab..CR (bytes 9..13).
+fn __is_ws(c: int) -> int { return int(c == 32 || (c >= 9 && c <= 13)); }
+
+// Repeat s n times (n <= 0 -> empty string).
+fn __repeat(s: int, n: int) -> int {
+  let ls = __load32(s);
+  if (n < 0) { n = 0; }
+  let total = ls * n;
+  let p = __alloc(total + 8);
+  __store32(p, total);
+  let w = 0;
+  let k = 0;
+  while (k < n) {
+    let i = 0;
+    while (i < ls) { __store8(p + 8 + w, __load8(s + 8 + i)); w = w + 1; i = i + 1; }
+    k = k + 1;
+  }
+  return p;
+}
+
+// Strip leading/trailing whitespace.
+fn __trim(s: int) -> int {
+  let n = __load32(s);
+  let a = 0;
+  while (a < n && __is_ws(__load8(s + 8 + a)) != 0) { a = a + 1; }
+  let b = n;
+  while (b > a && __is_ws(__load8(s + 8 + b - 1)) != 0) { b = b - 1; }
+  return __substr(s, a, b - a);
+}
+
+// First index of substring 'sub' at or after 'from', or -1. An empty needle
+// matches at 'from' (mirrors the interpreter and JS indexOf).
+fn __find_from(s: int, sub: int, from: int) -> int {
+  let ns = __load32(s);
+  let nb = __load32(sub);
+  if (nb == 0) { return from; }
+  let i = from;
+  while (i + nb <= ns) {
+    let j = 0;
+    while (j < nb && __load8(s + 8 + i + j) == __load8(sub + 8 + j)) { j = j + 1; }
+    if (j == nb) { return i; }
+    i = i + 1;
+  }
+  return 0 - 1;
+}
+
+fn __find(s: int, sub: int) -> int { return __find_from(s, sub, 0); }
+fn __contains(s: int, sub: int) -> int { return int(__find_from(s, sub, 0) >= 0); }
+
+fn __starts_with(s: int, pre: int) -> int {
+  let np = __load32(pre);
+  if (np > __load32(s)) { return 0; }
+  let i = 0;
+  while (i < np) {
+    if (__load8(s + 8 + i) != __load8(pre + 8 + i)) { return 0; }
+    i = i + 1;
+  }
+  return 1;
+}
+
+fn __ends_with(s: int, suf: int) -> int {
+  let nf = __load32(suf);
+  let ns = __load32(s);
+  if (nf > ns) { return 0; }
+  let off = ns - nf;
+  let i = 0;
+  while (i < nf) {
+    if (__load8(s + 8 + off + i) != __load8(suf + 8 + i)) { return 0; }
+    i = i + 1;
+  }
+  return 1;
+}
+
+// Replace every non-overlapping occurrence of 'fnd' with 'repl' (two passes:
+// count, then fill). An empty needle returns the input unchanged.
+fn __replace(s: int, fnd: int, repl: int) -> int {
+  let ns = __load32(s);
+  let nf = __load32(fnd);
+  let nr = __load32(repl);
+  if (nf == 0) { return s; }
+  let count = 0;
+  let i = 0;
+  while (i + nf <= ns) {
+    let k = __find_from(s, fnd, i);
+    if (k < 0) { break; }
+    count = count + 1;
+    i = k + nf;
+  }
+  let outLen = ns + count * (nr - nf);
+  let p = __alloc(outLen + 8);
+  __store32(p, outLen);
+  let w = 0;
+  let r = 0;
+  while (r < ns) {
+    let k = __find_from(s, fnd, r);
+    if (k < 0) {
+      while (r < ns) { __store8(p + 8 + w, __load8(s + 8 + r)); w = w + 1; r = r + 1; }
+    } else {
+      while (r < k) { __store8(p + 8 + w, __load8(s + 8 + r)); w = w + 1; r = r + 1; }
+      let t = 0;
+      while (t < nr) { __store8(p + 8 + w, __load8(repl + 8 + t)); w = w + 1; t = t + 1; }
+      r = k + nf;
+    }
+  }
+  return p;
+}
+
+// Parse an optional sign followed by decimal digits; stop at the first non-digit.
+// Accumulation wraps as i32, exactly like the interpreter.
+fn __parse_int(s: int) -> int {
+  let n = __load32(s);
+  let i = 0;
+  let neg = 0;
+  if (i < n) {
+    let c = __load8(s + 8 + i);
+    if (c == 45) { neg = 1; i = i + 1; }
+    else if (c == 43) { i = i + 1; }
+  }
+  let acc = 0;
+  while (i < n) {
+    let c = __load8(s + 8 + i);
+    if (c < 48 || c > 57) { break; }
+    acc = acc * 10 + (c - 48);
+    i = i + 1;
+  }
+  if (neg != 0) { acc = 0 - acc; }
+  return acc;
+}
 `;

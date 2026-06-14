@@ -59,6 +59,21 @@ export function formatBool(x: number): string {
   return x !== 0 ? 'true' : 'false';
 }
 
+// Whitespace test matching the prelude's __is_ws: space (32) and \t\n\v\f\r.
+const isWs = (c: number): boolean => c === 32 || (c >= 9 && c <= 13);
+
+// First index of `sub` in `s` at or after `from`, else -1 (empty needle -> from).
+// Mirrors the prelude's __find_from byte-for-byte so the two never disagree.
+function findFrom(s: string, sub: string, from: number): number {
+  if (sub.length === 0) return from;
+  for (let i = from; i + sub.length <= s.length; i++) {
+    let j = 0;
+    while (j < sub.length && s.charCodeAt(i + j) === sub.charCodeAt(j)) j++;
+    if (j === sub.length) return i;
+  }
+  return -1;
+}
+
 interface Frame {
   vars: Map<string, RtValue>[];
 }
@@ -176,6 +191,19 @@ export class Interpreter {
           }
         }
         break;
+      case 'switch': {
+        const d = i32(this.evalExpr(s.disc, f) as number);
+        let matched = false;
+        for (const c of s.cases) {
+          if (c.nums!.includes(d)) {
+            this.execBlock(c.body, f);
+            matched = true;
+            break;
+          }
+        }
+        if (!matched && s.default) this.execBlock(s.default, f);
+        break;
+      }
       case 'for': {
         f.vars.push(new Map());
         try {
@@ -373,6 +401,74 @@ export class Interpreter {
         out += String.fromCharCode(c);
       }
       return out;
+    }
+    if (name === 'repeat') {
+      const s = this.evalExpr(e.args[0], f) as string;
+      let n = i32(this.evalExpr(e.args[1], f) as number);
+      if (n < 0) n = 0;
+      return s.repeat(n);
+    }
+    if (name === 'trim') {
+      const s = this.evalExpr(e.args[0], f) as string;
+      let a = 0;
+      let b = s.length;
+      while (a < b && isWs(s.charCodeAt(a))) a++;
+      while (b > a && isWs(s.charCodeAt(b - 1))) b--;
+      return s.slice(a, b);
+    }
+    if (name === 'find') {
+      const s = this.evalExpr(e.args[0], f) as string;
+      const sub = this.evalExpr(e.args[1], f) as string;
+      return findFrom(s, sub, 0);
+    }
+    if (name === 'contains') {
+      const s = this.evalExpr(e.args[0], f) as string;
+      const sub = this.evalExpr(e.args[1], f) as string;
+      return findFrom(s, sub, 0) >= 0 ? 1 : 0;
+    }
+    if (name === 'starts_with') {
+      const s = this.evalExpr(e.args[0], f) as string;
+      const pre = this.evalExpr(e.args[1], f) as string;
+      return s.startsWith(pre) ? 1 : 0;
+    }
+    if (name === 'ends_with') {
+      const s = this.evalExpr(e.args[0], f) as string;
+      const suf = this.evalExpr(e.args[1], f) as string;
+      return s.endsWith(suf) ? 1 : 0;
+    }
+    if (name === 'replace') {
+      const s = this.evalExpr(e.args[0], f) as string;
+      const fnd = this.evalExpr(e.args[1], f) as string;
+      const repl = this.evalExpr(e.args[2], f) as string;
+      if (fnd.length === 0) return s;
+      // Non-overlapping left-to-right, matching the prelude's two-pass replace.
+      let out = '';
+      let r = 0;
+      for (;;) {
+        const k = findFrom(s, fnd, r);
+        if (k < 0) { out += s.slice(r); break; }
+        out += s.slice(r, k) + repl;
+        r = k + fnd.length;
+      }
+      return out;
+    }
+    if (name === 'parse_int') {
+      const s = this.evalExpr(e.args[0], f) as string;
+      let i = 0;
+      let neg = false;
+      if (i < s.length) {
+        const c = s.charCodeAt(i);
+        if (c === 45) { neg = true; i++; }
+        else if (c === 43) { i++; }
+      }
+      let acc = 0;
+      while (i < s.length) {
+        const c = s.charCodeAt(i);
+        if (c < 48 || c > 57) break;
+        acc = i32(Math.imul(acc, 10) + (c - 48));
+        i++;
+      }
+      return neg ? i32(-acc) : acc;
     }
     if (name === 'int') {
       const v = this.evalExpr(e.args[0], f) as number;
