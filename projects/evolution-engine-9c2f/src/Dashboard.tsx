@@ -1,5 +1,5 @@
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
-import { Settings, Activity, Users, Database } from 'lucide-react';
+import { Settings, Activity, Users, Database, CloudSnow, Sun, Leaf, Wind } from 'lucide-react';
 import { type World } from './engine';
 
 interface DashboardProps {
@@ -30,10 +30,19 @@ export function Dashboard({ world, onUpdateMutation, onUpdateFoodSpawn }: Dashbo
             </div>
 
             <div className="p-4 border-b border-slate-700 space-y-4">
-                <h3 className="font-semibold text-slate-300 flex items-center gap-2">
-                    <Users className="w-4 h-4" />
-                    Live Stats
-                </h3>
+                <div className="flex justify-between items-center">
+                    <h3 className="font-semibold text-slate-300 flex items-center gap-2">
+                        <Users className="w-4 h-4" />
+                        Live Stats
+                    </h3>
+                    <div className="flex items-center gap-1 text-sm bg-slate-900 px-2 py-1 rounded border border-slate-700">
+                         {world.season === 'Spring' && <Leaf className="w-4 h-4 text-green-400" />}
+                         {world.season === 'Summer' && <Sun className="w-4 h-4 text-yellow-400" />}
+                         {world.season === 'Autumn' && <Wind className="w-4 h-4 text-orange-400" />}
+                         {world.season === 'Winter' && <CloudSnow className="w-4 h-4 text-blue-200" />}
+                         <span className="text-slate-300 font-medium">{world.season}</span>
+                    </div>
+                </div>
                 <div className="grid grid-cols-2 gap-2">
                     <div className="bg-slate-900 p-2 rounded border border-slate-700">
                         <div className="text-xs text-slate-400">Population</div>
@@ -98,7 +107,7 @@ export function Dashboard({ world, onUpdateMutation, onUpdateFoodSpawn }: Dashbo
                 <div className="space-y-4">
                     <div>
                         <label className="flex justify-between text-sm text-slate-300 mb-1">
-                            <span>Mutation Rate</span>
+                            <span>Base Mutation Rate</span>
                             <span>{(world.mutationRate * 100).toFixed(0)}%</span>
                         </label>
                         <input
@@ -113,15 +122,15 @@ export function Dashboard({ world, onUpdateMutation, onUpdateFoodSpawn }: Dashbo
                     </div>
                     <div>
                         <label className="flex justify-between text-sm text-slate-300 mb-1">
-                            <span>Food Spawn Rate</span>
-                            <span>{world.foodSpawnRate} / tick</span>
+                            <span>Base Food Spawn Rate</span>
+                            <span>{world.baseFoodSpawnRate} / tick</span>
                         </label>
                         <input
                             type="range"
                             min="0"
                             max="10"
                             step="1"
-                            value={world.foodSpawnRate}
+                            value={world.baseFoodSpawnRate}
                             onChange={(e) => onUpdateFoodSpawn(parseFloat(e.target.value))}
                             className="w-full accent-green-500"
                         />

@@ -13,12 +13,12 @@ live here as long as you like.
 - [x] High-performance Canvas renderer with zooming and panning
 - [x] Recharts dashboard for real-time tracking of population and generation metadata
 - [x] App Integration and control panels
-- [ ] Implement a spatial partition grid (QuadTree or simple Grid) to optimize collision detection and vision checks from O(N^2) to O(N log N)
+- [x] Implement a spatial partition grid (QuadTree) to optimize collision detection and vision checks from O(N^2) to O(N log N)
+- [x] Introduce environmental hazards (radiation zones that mutate entities faster but drain health)
+- [x] Introduce seasonal cycles that change food spawn rates globally and shift the optimal survival strategy
 - [ ] Upgrade the renderer to a 3D WebGL (Three.js) interface for a massive perspective shift
 - [ ] Implement advanced NEAT (NeuroEvolution of Augmenting Topologies) algorithm so the networks can grow in structural complexity, not just weight changes
 - [ ] Add distinct species clustering logic (measure genetic distance, color code by species, track speciation events in the dashboard)
-- [ ] Introduce environmental hazards (poison, radiation zones that mutate entities faster but drain health)
-- [ ] Introduce seasonal cycles that change food spawn rates globally and shift the optimal survival strategy
 - [ ] Add an entity inspector panel: click an entity to view its raw neural network structure, current vision inputs, and follow it with the camera
 - [ ] Export/Import save states to store successful lineages and run tournaments between agent populations
 - [ ] Implement multi-threading (Web Workers) to separate the engine tick loop from the React/Canvas render loop, allowing for 10x larger populations
@@ -26,3 +26,4 @@ live here as long as you like.
 ## Session log
 
 - 2024-02-16 (jules): Initialized Evolution Engine. Built core Neural Network math, simulation world, canvas renderer, and real-time Recharts dashboard. Planned out the next phase of massive improvements.
+- 2024-06-14 (jules): Implemented spatial partitioning with a QuadTree to drastically improve performance. Added environmental hazard zones (radiation) and global seasonal cycles that dynamically affect survival strategies. Updated the UI to reflect these massive changes.

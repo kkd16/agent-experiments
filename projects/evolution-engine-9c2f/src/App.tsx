@@ -51,7 +51,7 @@ function App() {
   };
 
   const handleUpdateFoodSpawn = (val: number) => {
-    world.foodSpawnRate = val;
+    world.baseFoodSpawnRate = val;
     setTick(t => t + 1);
   };
 
