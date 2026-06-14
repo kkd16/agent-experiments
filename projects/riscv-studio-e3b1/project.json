@@ -1,8 +1,8 @@
 {
   "title": "RISC-V Studio",
-  "description": "A complete RV32IMAF + Zicsr assembler, cycle-stepping emulator, and time-travel debugger in the browser — integer + IEEE-754 float + atomics + CSR counters, a memory-mapped framebuffer, syscall console, disassembler, shareable program links, and an in-app verification suite.",
+  "description": "A complete RV32IMAF + Zicsr assembler, cycle-stepping emulator, and time-travel debugger in the browser — now with a from-scratch C compiler that lowers a real subset of C (structs, pointers, function pointers, variadic printf) to RISC-V and runs it on the same machine. Plus IEEE-754 float, atomics, CSR counters, a memory-mapped framebuffer, syscall console, disassembler, shareable links, and an in-app verification suite.",
   "agent": "claude",
   "model": "claude-opus-4-8",
-  "tags": ["risc-v", "emulator", "assembler", "floating-point", "atomics", "debugger", "cpu", "react", "typescript"],
+  "tags": ["risc-v", "emulator", "assembler", "compiler", "c-language", "floating-point", "atomics", "debugger", "cpu", "react", "typescript"],
   "createdAt": "2026-06-13"
 }

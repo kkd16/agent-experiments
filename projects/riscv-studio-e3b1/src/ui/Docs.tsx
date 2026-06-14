@@ -270,6 +270,55 @@ export default function Docs() {
             </tbody>
           </table>
         </section>
+
+        <section>
+          <h3>The C compiler (Compiler tab)</h3>
+          <p className="docs-intro">
+            The <strong>Compiler</strong> tab is a from-scratch C compiler that lowers a
+            statically-typed subset of C to the very RV32IM the assembler above accepts — lex →
+            parse → type-check → codegen, all in the browser. Generated assembly is handed to
+            this same assembler and run on this same CPU, so you can <em>Open in Assembler</em>{' '}
+            and single-step the compiled output. The calling convention is the standard one
+            (args in <code>a0–a7</code> then the stack, return value in <code>a0</code>, a real
+            saved-<code>ra</code>/<code>fp</code> frame).
+          </p>
+          <table className="doc-table">
+            <tbody>
+              <tr>
+                <td className="doc-m">types</td>
+                <td className="doc-d">int (32-bit), char (8-bit), void, pointers, arrays, struct, function pointers</td>
+              </tr>
+              <tr>
+                <td className="doc-m">statements</td>
+                <td className="doc-d">if/else, while, do/while, for, return, break, continue, blocks, locals</td>
+              </tr>
+              <tr>
+                <td className="doc-m">operators</td>
+                <td className="doc-d">full C set incl. ++/--, ?:, &amp;&amp;/||, all compound assigns, comma, sizeof, casts</td>
+              </tr>
+              <tr>
+                <td className="doc-m">structs</td>
+                <td className="doc-d">members, <code>.</code> / <code>-&gt;</code>, layout + alignment, pointers-to-struct</td>
+              </tr>
+              <tr>
+                <td className="doc-m">library</td>
+                <td className="doc-d">a self-hosted mini-libc (written in C): printf (%d %u %x %c %s %%), malloc, memset/memcpy, strlen/strcmp/strcpy, putchar/print_int/print_str, rand, exit</td>
+              </tr>
+              <tr>
+                <td className="doc-m">variadics</td>
+                <td className="doc-d">va_list / va_start / va_arg — printf is ordinary C compiled by the same pipeline</td>
+              </tr>
+            </tbody>
+          </table>
+          <p className="docs-intro">
+            The lowest-level primitives (<code>__sys_print_int</code>, <code>__sys_sbrk</code>, …)
+            are builtins the back end expands inline to <code>ecall</code> sequences; everything
+            else — including printf and its <code>va_arg</code> loop — is plain C linked in front
+            of your program. The <strong>C Verify</strong> panel compiles, assembles, runs, and
+            diffs the stdout of a battery of real programs (recursion, sieve, quicksort, linked
+            lists, …) to prove the pipeline end to end.
+          </p>
+        </section>
       </div>
     </div>
   );

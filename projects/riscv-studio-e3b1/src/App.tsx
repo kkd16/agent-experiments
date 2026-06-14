@@ -14,6 +14,7 @@ import Framebuffer from './ui/Framebuffer';
 import Tests from './ui/Tests';
 import Examples from './ui/Examples';
 import Docs from './ui/Docs';
+import CCStudio from './ui/CCStudio';
 
 const TABS: { id: string; label: string }[] = [
   { id: 'registers', label: 'Registers' },
@@ -21,6 +22,7 @@ const TABS: { id: string; label: string }[] = [
   { id: 'memory', label: 'Memory' },
   { id: 'console', label: 'Console' },
   { id: 'display', label: 'Display' },
+  { id: 'cc', label: 'C Compiler' },
   { id: 'examples', label: 'Examples' },
   { id: 'verify', label: 'Verify' },
   { id: 'docs', label: 'Docs' },
@@ -78,6 +80,13 @@ export default function App() {
     setActiveExample(null);
   };
 
+  // The C compiler hands its generated assembly to the main debugger.
+  const onSendAsm = (asm: string) => {
+    vm.loadSource(asm);
+    setActiveExample(null);
+    navigate('console');
+  };
+
   const status = vm.cpu.status;
   const hasErrors = vm.assembly !== null && !vm.assembly.ok;
 
@@ -100,6 +109,7 @@ export default function App() {
         </nav>
       </header>
 
+      {route !== 'cc' && (
       <div className="toolbar">
         <div className="tool-group">
           <button className="run" onClick={vm.running ? vm.stop : vm.run} disabled={hasErrors}>
@@ -147,42 +157,49 @@ export default function App() {
           <span className="cyc">{vm.cpu.cycles.toLocaleString()} cyc</span>
         </div>
       </div>
+      )}
 
-      <main className="workspace">
-        <section className="left">
-          <Editor
-            source={vm.source}
-            onChange={onEdit}
-            breakpointLines={vm.breakpointLines}
-            onToggleBreakpoint={vm.toggleBreakpoint}
-            currentLine={vm.currentLine}
-            errorLines={errorLines}
-          />
-          {hasErrors && (
-            <div className="error-bar">
-              {vm.assembly!.errors.slice(0, 6).map((e, i) => (
-                <div key={i} className="err-item" onClick={() => navigate('registers')}>
-                  <span className="err-line">line {e.line}</span> {e.message}
-                </div>
-              ))}
-              {vm.assembly!.errors.length > 6 && (
-                <div className="err-item muted">+{vm.assembly!.errors.length - 6} more…</div>
-              )}
-            </div>
-          )}
-        </section>
+      {route === 'cc' ? (
+        <main className="workspace cc-full">
+          <CCStudio onSendAsm={onSendAsm} />
+        </main>
+      ) : (
+        <main className="workspace">
+          <section className="left">
+            <Editor
+              source={vm.source}
+              onChange={onEdit}
+              breakpointLines={vm.breakpointLines}
+              onToggleBreakpoint={vm.toggleBreakpoint}
+              currentLine={vm.currentLine}
+              errorLines={errorLines}
+            />
+            {hasErrors && (
+              <div className="error-bar">
+                {vm.assembly!.errors.slice(0, 6).map((e, i) => (
+                  <div key={i} className="err-item" onClick={() => navigate('registers')}>
+                    <span className="err-line">line {e.line}</span> {e.message}
+                  </div>
+                ))}
+                {vm.assembly!.errors.length > 6 && (
+                  <div className="err-item muted">+{vm.assembly!.errors.length - 6} more…</div>
+                )}
+              </div>
+            )}
+          </section>
 
-        <section className="right">
-          {route === 'registers' && <Registers cpu={vm.cpu} prevRegs={vm.prevRegs} />}
-          {route === 'disasm' && <Disasm cpu={vm.cpu} assembly={vm.assembly} />}
-          {route === 'memory' && <MemoryView cpu={vm.cpu} />}
-          {route === 'console' && <Console cpu={vm.cpu} />}
-          {route === 'display' && <Framebuffer cpu={vm.cpu} tick={vm.tick} />}
-          {route === 'examples' && <Examples onLoad={onLoadExample} activeId={activeExample} />}
-          {route === 'verify' && <Tests />}
-          {route === 'docs' && <Docs />}
-        </section>
-      </main>
+          <section className="right">
+            {route === 'registers' && <Registers cpu={vm.cpu} prevRegs={vm.prevRegs} />}
+            {route === 'disasm' && <Disasm cpu={vm.cpu} assembly={vm.assembly} />}
+            {route === 'memory' && <MemoryView cpu={vm.cpu} />}
+            {route === 'console' && <Console cpu={vm.cpu} />}
+            {route === 'display' && <Framebuffer cpu={vm.cpu} tick={vm.tick} />}
+            {route === 'examples' && <Examples onLoad={onLoadExample} activeId={activeExample} />}
+            {route === 'verify' && <Tests />}
+            {route === 'docs' && <Docs />}
+          </section>
+        </main>
+      )}
 
       <footer className="statusline">
         <span>
