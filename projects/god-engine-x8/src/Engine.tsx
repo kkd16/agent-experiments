@@ -171,9 +171,11 @@ export function ProceduralMesh() {
 export function ParticleSystem() {
   const particlesCount = useStore(state => state.particlesCount);
   const timeScale = useStore(state => state.timeScale);
+  const spiralParticles = useStore(state => state.spiralParticles);
   const pointsRef = useRef<THREE.Points>(null);
+  const spiralRef = useRef<THREE.Points>(null);
 
-  const [positions, randoms] = useMemo(() => {
+  const [positions, randoms, spiralPos] = useMemo(() => {
     const pos = new Float32Array(particlesCount * 3);
     const rand = new Float32Array(particlesCount);
     // Use a simple seeded PRNG to avoid React purity warnings
@@ -195,8 +197,16 @@ export function ParticleSystem() {
 
       rand[i] = random();
     }
-    return [pos, rand];
-  }, [particlesCount]);
+
+    const sPos = new Float32Array(spiralParticles * 3);
+    for (let i = 0; i < spiralParticles; i++) {
+      sPos[i * 3] = 0;
+      sPos[i * 3 + 1] = 0;
+      sPos[i * 3 + 2] = 0;
+    }
+
+    return [pos, rand, sPos];
+  }, [particlesCount, spiralParticles]);
 
   useFrame((state) => {
     if (pointsRef.current) {
@@ -211,19 +221,51 @@ export function ParticleSystem() {
       }
       pointsRef.current.geometry.attributes.position.needsUpdate = true;
     }
+
+    if (spiralRef.current) {
+      const sPositions = spiralRef.current.geometry.attributes.position.array as Float32Array;
+      const time = state.clock.elapsedTime * timeScale;
+
+      for (let i = 0; i < spiralParticles; i++) {
+        const i3 = i * 3;
+        const t = time * 2 + i * 0.1;
+        const radius = 2 + Math.sin(time + i * 0.05) * 1.5;
+
+        sPositions[i3] = Math.cos(t) * radius;
+        sPositions[i3 + 1] = Math.sin(t * 0.8) * radius * 0.5;
+        sPositions[i3 + 2] = Math.sin(t) * radius;
+      }
+
+      spiralRef.current.geometry.attributes.position.needsUpdate = true;
+      spiralRef.current.rotation.y -= 0.005 * timeScale;
+    }
   });
 
   return (
-    <Points ref={pointsRef} positions={positions}>
-      <PointMaterial
-        transparent
-        color="#88ccff"
-        size={0.05}
-        sizeAttenuation={true}
-        depthWrite={false}
-        blending={THREE.AdditiveBlending}
-        opacity={0.6}
-      />
-    </Points>
+    <group>
+      <Points ref={pointsRef} positions={positions}>
+        <PointMaterial
+          transparent
+          color="#88ccff"
+          size={0.05}
+          sizeAttenuation={true}
+          depthWrite={false}
+          blending={THREE.AdditiveBlending}
+          opacity={0.6}
+        />
+      </Points>
+
+      <Points ref={spiralRef} positions={spiralPos}>
+        <PointMaterial
+          transparent
+          color="#ff0088"
+          size={0.08}
+          sizeAttenuation={true}
+          depthWrite={false}
+          blending={THREE.AdditiveBlending}
+          opacity={0.8}
+        />
+      </Points>
+    </group>
   );
 }
