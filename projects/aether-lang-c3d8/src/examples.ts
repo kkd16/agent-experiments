@@ -486,6 +486,49 @@ let total = fn xs -> match mconcat (MkSum 0) (map MkSum xs) with MkSum n -> n in
 , mconcat [] [[1, 2], [3], [4, 5]] )`,
   },
   {
+    id: 'property',
+    title: 'Property-based testing',
+    blurb: 'Open the Check tab: laws are tested on random inputs, failures shrink.',
+    visual: false,
+    code: `// Aether Check — QuickCheck, driven by the type checker.
+// Open the "Check" tab and press "Run property tests": each prop_* function
+// is fed random inputs generated from its INFERRED type, and any failure is
+// shrunk to a minimal counterexample.
+
+let rec insert = fn x xs ->
+  match xs with
+    [] -> [x]
+  | h :: t -> if x <= h then x :: xs else h :: insert x t in
+
+let rec sort = fn xs ->
+  match xs with [] -> [] | h :: t -> insert h (sort t) in
+
+let rec isSorted = fn xs ->
+  match xs with
+    [] -> true
+  | x :: rest ->
+      match rest with [] -> true | y :: _ -> if x <= y then isSorted rest else false in
+
+// Laws that hold for every list (Check reports ✓ passed):
+let prop_rev_involutive = fn xs -> reverse (reverse xs) == xs in
+let prop_sort_is_sorted = fn xs -> isSorted (sort xs) in
+let prop_sort_keeps_len = fn xs -> length (sort xs) == length xs in
+
+// A deliberately BUGGY sort that drops duplicates. Check falsifies the
+// length law and shrinks to a minimal two-element list of equal values.
+let rec badInsert = fn x xs ->
+  match xs with
+    [] -> [x]
+  | h :: t ->
+      if x == h then xs
+      else if x <= h then x :: xs else h :: badInsert x t in
+let rec badSort = fn xs ->
+  match xs with [] -> [] | h :: t -> badInsert h (badSort t) in
+let prop_badsort_keeps_len = fn xs -> length (badSort xs) == length xs in
+
+sort [5, 3, 8, 1, 3, 9, 2]`,
+  },
+  {
     id: 'church',
     title: 'Church numerals',
     blurb: 'Encoding numbers as higher-order functions — pure lambda calculus.',

@@ -10,6 +10,7 @@ import BytecodePanel from './panels/BytecodePanel.tsx'
 import JsPanel from './panels/JsPanel.tsx'
 import DerivationPanel from './panels/DerivationPanel.tsx'
 import ClassesPanel from './panels/ClassesPanel.tsx'
+import CheckPanel from './panels/CheckPanel.tsx'
 import DebuggerPanel from './panels/DebuggerPanel.tsx'
 import { runPipeline } from '../lang/pipeline.ts'
 import type { PipelineResult } from '../lang/pipeline.ts'
@@ -31,6 +32,7 @@ type Tab =
   | 'ast'
   | 'types'
   | 'classes'
+  | 'check'
   | 'deriv'
   | 'bytecode'
   | 'js'
@@ -43,6 +45,7 @@ const TABS: { id: Tab; label: string }[] = [
   { id: 'ast', label: 'AST' },
   { id: 'types', label: 'Types' },
   { id: 'classes', label: 'Classes' },
+  { id: 'check', label: 'Check' },
   { id: 'deriv', label: 'Derivation' },
   { id: 'bytecode', label: 'Bytecode' },
   { id: 'js', label: 'JavaScript' },
@@ -202,6 +205,7 @@ export default function Playground() {
           {tab === 'classes' && (
             <ClassesPanel ast={analysis.ast} coreAst={analysis.coreAst} />
           )}
+          {tab === 'check' && <CheckPanel code={code} />}
           {tab === 'deriv' && (
             <DerivationPanel ast={analysis.ast} typeResult={analysis.typeResult} />
           )}
