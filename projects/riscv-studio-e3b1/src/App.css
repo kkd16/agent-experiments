@@ -842,3 +842,201 @@
     border-bottom: 1px solid var(--border);
   }
 }
+
+/* ----------------------------------------------------- C compiler tab */
+.workspace.cc-full {
+  display: block;
+  overflow: hidden;
+}
+.cc {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+.cc-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  flex-wrap: wrap;
+  padding: 0.5rem 0.75rem;
+  background: var(--bg-2);
+  border-bottom: 1px solid var(--border);
+}
+.cc-toolbar .run {
+  background: linear-gradient(135deg, var(--accent), #2f86c5);
+  color: #04121d;
+  font-weight: 600;
+  border: 0;
+}
+.cc-toolbar button {
+  padding: 0.35rem 0.7rem;
+  background: var(--bg-3);
+  color: var(--fg);
+  border: 1px solid var(--border-2);
+  border-radius: 6px;
+  cursor: pointer;
+}
+.cc-toolbar button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.cc-toolbar select {
+  padding: 0.35rem 0.5rem;
+  background: var(--bg-3);
+  color: var(--fg);
+  border: 1px solid var(--border-2);
+  border-radius: 6px;
+}
+.cc-toolbar .tool-status {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.cc-body {
+  flex: 1;
+  display: grid;
+  grid-template-columns: minmax(360px, 1fr) minmax(360px, 1fr);
+  min-height: 0;
+}
+.cc-left {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border-right: 1px solid var(--border);
+}
+.cc-right {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--panel);
+  overflow: hidden;
+}
+.cc-tabs {
+  display: flex;
+  gap: 0.25rem;
+  padding: 0.4rem 0.5rem 0;
+  border-bottom: 1px solid var(--border);
+  flex: 0 0 auto;
+}
+.cc-tabs button {
+  padding: 0.35rem 0.7rem;
+  background: transparent;
+  color: var(--fg-dim);
+  border: 1px solid transparent;
+  border-bottom: none;
+  border-radius: 6px 6px 0 0;
+  cursor: pointer;
+  font-size: 0.85rem;
+}
+.cc-tabs button.on {
+  color: var(--accent);
+  background: var(--bg-3);
+  border-color: var(--border-2);
+}
+.cc-panel {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 0.75rem;
+}
+
+.cc-hint {
+  color: var(--fg-dim);
+  font-size: 0.9rem;
+  line-height: 1.6;
+  max-width: 46ch;
+}
+.cc-hint code {
+  font-family: var(--mono);
+  color: var(--t-mnemonic);
+}
+
+.cc-asm,
+.cc-console {
+  margin: 0;
+  font-family: var(--mono);
+  font-size: 12.5px;
+  line-height: 1.55;
+  white-space: pre;
+  color: var(--fg);
+}
+.cc-console {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.cc-run-meta {
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  margin-bottom: 0.6rem;
+}
+.cc-run-error {
+  color: var(--err);
+  font-family: var(--mono);
+  font-size: 0.82rem;
+  margin-bottom: 0.6rem;
+  white-space: pre-wrap;
+}
+
+.cc-tokens {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  font-family: var(--mono);
+  font-size: 12px;
+}
+.cc-tok {
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: var(--bg-3);
+  border: 1px solid var(--border);
+  color: var(--fg-dim);
+}
+.cc-tok-keyword { color: var(--t-mnemonic); }
+.cc-tok-num { color: var(--t-num); }
+.cc-tok-str { color: var(--t-string); }
+.cc-tok-char { color: var(--t-string); }
+.cc-tok-ident { color: var(--fg); }
+.cc-tok-punct { color: var(--fg-faint); }
+
+.cc-verify-head {
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.75rem;
+}
+.cc-verify-head .run {
+  padding: 0.35rem 0.8rem;
+  background: linear-gradient(135deg, var(--accent), #2f86c5);
+  color: #04121d;
+  font-weight: 600;
+  border: 0;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.cc-verify-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  font-family: var(--mono);
+  font-size: 12.5px;
+}
+.cc-verify-list li {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  padding: 2px 0;
+}
+.cc-verify-list .mark { width: 1rem; }
+.cc-verify-list li.ok .mark { color: var(--green); }
+.cc-verify-list li.bad .mark { color: var(--err); }
+.cc-verify-list .name { color: var(--fg); }
+.cc-verify-list .detail { color: var(--err); white-space: pre-wrap; }
+
+.hl-line.err-line {
+  background: rgba(255, 107, 107, 0.08);
+}

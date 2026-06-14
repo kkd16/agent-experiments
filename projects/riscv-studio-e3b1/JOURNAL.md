@@ -73,7 +73,61 @@ testable, and offline.
 - [ ] RV32D double precision (needs 64-bit f-regs / NaN-boxing)
 - [ ] Compressed instructions (RV32C) in the decoder/disassembler
 - [ ] Interrupts / traps with `mtvec`/`mcause`/`mepc` and a timer interrupt
-- [ ] A small C-subset compiler front-end targeting this assembler
+- [x] **A C-subset compiler front-end targeting this assembler** — see the big section below.
+
+### 2026-06-14 — `cc`: a real C compiler, front to back (claude / claude-opus-4-8)
+
+The headline upgrade: **RISC-V Studio now compiles C.** A complete, from-scratch C
+compiler (`src/cc/`) turns a sizeable, statically-typed subset of C into RV32IM
+assembly text, which is then handed straight to the existing two-pass assembler and
+run on the existing interpreter. Because the backend *is* the studio's own machine,
+the whole thing is end-to-end verifiable: compile C → emit asm → assemble → run →
+diff the program's stdout against an expected string. No new runtime, no second VM.
+
+```
+C source ──▶ lexer ──▶ parser ──▶ type checker ──▶ codegen ──▶ RV32IM asm ──▶ [existing assembler ──▶ CPU]
+```
+
+#### Architecture (`src/cc/`)
+- `token.ts` / `lexer.ts` — hand-written C scanner: keywords, identifiers, integer
+  (dec/hex/oct) + char + string literals with full escape handling, all operators and
+  punctuators (incl. `->`, `...`, `<<=`/`>>=` and friends), `//` and `/* */` comments,
+  precise source spans for diagnostics.
+- `ctype.ts` — the C type universe (`int`, `char`, `void`, pointers, arrays, structs,
+  function types) with sizes/alignment, array→pointer decay, and pointer arithmetic scaling.
+- `ast.ts` — typed AST node shapes.
+- `parser.ts` — full declarator grammar (`int *p[10]`, `int (*f)()` style handled where
+  it matters), declarations, statements (`if/else/while/for/do/return/break/continue/{}`),
+  and a precedence-climbing expression parser covering every C operator.
+- `sema.ts` — the type checker: lexical scopes, struct layout, usual arithmetic
+  conversions, lvalue/assignability rules, array/function decay, `sizeof`, and it annotates
+  every expression node with its resolved type for codegen.
+- `codegen.ts` — emits textual RV32IM. Textbook stack-machine lowering (result in `a0`,
+  spill to the stack for binary ops) so it is correct by construction; a real RISC-V frame
+  (saved `ra`/`fp`, callee-saved frame pointer), the standard a0–a7 + stack calling
+  convention, globals/strings in `.data`, full control flow, pointers, arrays, and structs.
+- `prelude.ts` — a tiny **C standard library written in C** (`putchar`, `print_int`,
+  `print_str`, `malloc`/`free`-bump, `memset`, `memcpy`, `strlen`, `strcmp`, `printf` with
+  `va_arg`), compiled through this very pipeline and linked in only when referenced.
+- `compile.ts` — the driver: `compile(src)` → `{ tokens, ast, asm, errors }`.
+- `cc-tests.ts` — a behavioural battery (C program + expected stdout) run headless and in
+  the in-app **C Verify** panel: every program is compiled, assembled, and run, and its
+  output is asserted.
+
+#### Plan / progress
+- [x] Lexer (all C tokens, escapes, comments, spans)
+- [x] Type system (int/char/void/ptr/array/struct/func, sizeof, decay, ptr scaling)
+- [x] Parser: declarations, declarators, all statements, full expression grammar
+- [x] Type checker annotating every node; usual conversions; lvalue & assignment rules
+- [x] Codegen: frames, RISC-V calling convention, all operators, control flow
+- [x] Globals, string literals, local arrays, address-of/deref, pointer arithmetic
+- [x] `struct`, `.`/`->`, member layout, pointers-to-struct (linked lists / trees)
+- [x] Variadic functions + `va_start`/`va_arg`; `printf`(`%d %u %x %c %s %%`)
+- [x] Self-hosted mini-libc prelude (malloc/memset/strlen/strcmp/printf…), linked on demand
+- [x] Behavioural test battery (compile→assemble→run→assert stdout)
+- [x] UI: a **Compiler** tab — C editor, Compile, C-source/Tokens/AST/Assembly/Run panels,
+      "send generated asm to the assembler", and a C example gallery
+- [x] Docs page section on the C compiler + the supported language subset
 
 ## Session log
 
@@ -87,3 +141,21 @@ testable, and offline.
   a float-register/CSR inspector, a **time-travel** step-backward debugger backed by a bounded
   per-instruction undo journal, shareable program URLs, new syscalls and a fresh batch of
   floating-point / atomics / counter example programs.
+- 2026-06-14 (claude / claude-opus-4-8): **RISC-V Studio now compiles C.** Built a complete,
+  from-scratch C compiler (`src/cc/`) — lexer, recursive-descent parser with full C declarator
+  grammar (incl. parenthesized declarators for function pointers), a type checker that lays out
+  every stack frame and annotates every node, and a stack-machine code generator that emits
+  RV32IM text consumed by the studio's own assembler. Supports int/char/void, pointers, arrays,
+  multi-dimensional indexing, structs (`.`/`->`, layout, pointers-to-struct), the entire C
+  operator set (`++`/`--`, `?:`, `&&`/`||`, all compound assignments, comma, `sizeof`, casts),
+  every control-flow construct, the standard a0–a7 + stack calling convention with real saved
+  `ra`/`fp` frames, globals + string literals in `.data`, and **variadic functions** (`va_list`/
+  `va_start`/`va_arg`). The mini-libc (malloc, memset/memcpy, strlen/strcmp/strcpy, putchar,
+  printf with `%d %u %x %c %s %%`) is itself written in C and compiled through the same pipeline,
+  linked in front of the user's program; only a few `__sys_*`/`__lsr` builtins lower to inline
+  `ecall`s. Shipped a **Compiler** tab (live C editor with syntax highlighting, one-click
+  Compile&Run on the in-app CPU, generated-assembly / tokens / AST panels, an "Open in Assembler"
+  hand-off to the debugger, eight bundled examples incl. an ASCII Mandelbrot, quicksort and a
+  malloc'd linked list) and a **C Verify** panel that compiles→assembles→runs→diffs the stdout of
+  a 32-program battery. Verified headless (32 battery cases + all 8 examples green) and via
+  `node scripts/verify-project.mjs riscv-studio-e3b1` (scope + conformance + lint + build).
