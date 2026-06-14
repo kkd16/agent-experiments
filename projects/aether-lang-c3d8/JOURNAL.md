@@ -10,8 +10,10 @@ fractals, so "functional code → picture" is a first-class demo.
 ## Architecture
 
 ```
-source -> lexer -> parser -> HM inference -> bytecode compiler -> stack VM -> turtle canvas
-                                                                       \-> time-travel trace
+source -> lexer -> parser -> HM inference -> optimizer -+-> bytecode compiler -> stack VM -> turtle canvas
+                                                         |                            \-> time-travel trace
+                                                         +-> JavaScript backend -> run in browser (≡ VM)
+                                                         \-> derivation tree (the HM proof)
 ```
 
 - `src/lang/lexer.ts` — hand-written scanner; precise source spans, nested block comments.
@@ -22,6 +24,10 @@ source -> lexer -> parser -> HM inference -> bytecode compiler -> stack VM -> tu
   by-reference upvalues so closures and recursion compose.
 - `src/lang/vm.ts` — iterative stack VM (recursion bounded by memory, not the JS stack);
   curried native builtins; optional per-instruction snapshot trace for the debugger.
+- `src/lang/jsBackend.ts` — second backend: lowers the same typed AST to self-contained
+  JavaScript + a tagged runtime that mirrors the VM value model; runs in the browser and
+  matches the VM byte-for-byte.
+- `src/lang/derivation.ts` — reconstructs the HM proof tree from the inferred per-node types.
 - `src/lang/prelude.ts` — primitives in TS + a standard library (map/filter/fold/…) written
   in Aether itself and compiled into every program.
 - `src/lang/turtle.ts` — folds VM draw effects into line segments for the canvas.
@@ -49,8 +55,30 @@ source -> lexer -> parser -> HM inference -> bytecode compiler -> stack VM -> tu
 - [x] Optimizer pass: constant folding, dead-branch elimination, short-circuit simplification
 - [x] Records with row polymorphism (`{ x = 1 }`, `r.x`, inferred `{ x: a | ρ } -> a`)
 - [x] Functional record update (`{ r | x = 5 }`, type-safe, row-polymorphic)
-- [ ] Show the type-derivation tree, not just the final scheme
 - [x] A REPL mode that keeps top-level bindings between runs
+
+### Aether 2.0 — a second backend & deeper insight (shipped this session)
+
+- [x] **JavaScript backend** (`jsBackend.ts`) — a whole second compilation target beside the
+  bytecode VM: lower the typed AST to readable, self-contained JavaScript (a tiny tagged
+  runtime that mirrors the VM's value model exactly), then *run it* in the browser and show
+  the output. Alpha-renames every binder so Aether's free shadowing never collides.
+- [x] Prove the JS backend correct: its result + printed output + turtle drawing match the
+  VM byte-for-byte across every example (a live "matches the VM ✓" badge in the JS tab).
+- [x] The JS backend emits the same turtle effect log, so a functional fractal compiles to JS
+  and produces an identical drawing (effect counts compared in the equivalence check).
+- [x] **List comprehensions** — `[ e | x <- xs, guard, y <- ys ]`, lexer `<-` token + a
+  pure parser desugaring into `concat`/`map`/`if`, so both backends get it for free.
+- [x] **Type-derivation tree** (the long-standing backlog item) — reconstruct the HM proof
+  tree from the inferred per-node types and render it as an interactive, collapsible
+  natural-deduction derivation (Var / Abs / App / Let / If / Op / … rules).
+- [x] New examples: a comprehension-based primes sieve & Pythagorean triples; a "compile me
+  to JS" showcase; the landing tour now opens with a comprehension.
+- [x] Update the Tour / Internals (About) pages and README to cover the JS backend,
+  comprehensions, and the derivation view.
+- [x] Verify with an expanded Node type-stripping harness (106 checks: JS≡VM across every
+  example, comprehension semantics, shadowing, int-wrap/div, ADT/record show) + a
+  react-dom/server render smoke test for the new panels + the CI gate.
 
 ## Standard library
 
@@ -139,3 +167,25 @@ source -> lexer -> parser -> HM inference -> bytecode compiler -> stack VM -> tu
   redundancy. Added a guards example + Tour note. Verified (fall-through, bindings-in-guard,
   recursion w/ guard cleanup, exhaustiveness/redundancy interaction, non-bool guard error);
   examples regress clean; gate green.
+- 2026-06-14 (claude): **Aether 2.0 — a second backend & deeper insight.** Three substantial
+  additions, all sharing the existing front end:
+  (1) **JavaScript backend** (`jsBackend.ts`): the same type-checked AST is lowered to readable,
+  self-contained JavaScript paired with a tiny runtime that mirrors the VM's value model exactly
+  (tagged ints/floats so `show` formats identically, the same structural comparison driving
+  `==`/`<`, the same turtle effect log). Functions become curried arrow functions, `let`/`type`
+  flatten into a `const` spine, `match` becomes pattern tests with block-scoped bindings, and
+  every binder is alpha-renamed to a unique JS identifier so Aether's free shadowing (and prelude
+  overrides) never collide. A new JavaScript tab shows the generated code and runs it in-browser
+  via `new Function`, comparing result + stdout + draw-command count against the bytecode VM with
+  a live "matches the VM ✓" badge.
+  (2) **List comprehensions**: a `<-` lexer token plus a pure parser desugaring of
+  `[ e | x <- xs, guard, y <- ys ]` into `concat`/`map`/`if`, so they type-check under HM and run
+  on *both* backends with zero inference/compiler/VM changes.
+  (3) **Type-derivation tree** (`derivation.ts`, the long-open backlog item): reconstructs the HM
+  proof tree from the per-node types inference already records, rendered as a collapsible
+  natural-deduction derivation (one typing rule per step, premises justifying `expr : τ`).
+  Added comprehensions + JS-backend examples (primes, Pythagorean triples), refreshed the
+  Tour/About pages, README and card metadata. Verified with a 106-check Node type-stripping
+  harness (JS≡VM across every gallery example, comprehension semantics incl. dependent
+  generators, prelude/let shadowing, integer wraparound & truncating division, ADT/record `show`)
+  plus a react-dom/server render smoke test for the two new panels; full CI gate green.

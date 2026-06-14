@@ -127,6 +127,21 @@ len [10, 20, 30]   // => 3`}</pre>
       </section>
 
       <section>
+        <h2>List comprehensions</h2>
+        <p>
+          <code>[ e | x &lt;- xs, guard, y &lt;- ys ]</code> builds a list from one or more{' '}
+          <strong>generators</strong> (<code>x &lt;- xs</code>) and boolean <strong>guards</strong>.
+          It's pure sugar: the parser desugars it to <code>concat</code>, <code>map</code> and{' '}
+          <code>if</code>, so it's fully type-inferred and runs on both backends.
+        </p>
+        <pre className="snippet">{`[ x * x | x <- range 1 6 ]              // [1, 4, 9, 16, 25]
+[ x | x <- range 1 20, x % 3 == 0 ]    // [3, 6, 9, 12, 15, 18]
+[ (a, b, c)
+| c <- range 1 21, b <- range 1 c, a <- range 1 b
+, a * a + b * b == c * c ]             // Pythagorean triples`}</pre>
+      </section>
+
+      <section>
         <h2>Operators</h2>
         <table className="op-table">
           <tbody>
@@ -166,6 +181,23 @@ penUp ()        penDown ()
 push ()         pop ()        // save / restore state
 color 255 120 0  width 2.0
 back 50.0        clear ()`}</pre>
+      </section>
+
+      <section>
+        <h2>Two backends</h2>
+        <p>
+          The same type-checked program is compiled <strong>two ways</strong>. The{' '}
+          <strong>Bytecode</strong> tab shows it lowered to a stack machine run by a hand-written VM
+          (with the time-travel debugger). The <strong>JavaScript</strong> tab shows it lowered to
+          self-contained JavaScript and runs it right in your browser — a tiny runtime mirrors the
+          VM's value model exactly, so the result, printed output and turtle drawing match the VM{' '}
+          <em>byte-for-byte</em> (there's a live "matches the VM ✓" check).
+        </p>
+        <p>
+          The <strong>Derivation</strong> tab reconstructs the Hindley–Milner <em>proof tree</em>:
+          every step is one typing rule (Var, Abs, App, Let, If…) whose premises justify its
+          conclusion <code>expr : τ</code> — the "why", not just the final scheme.
+        </p>
       </section>
     </div>
   )

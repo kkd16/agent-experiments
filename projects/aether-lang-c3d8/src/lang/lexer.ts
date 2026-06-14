@@ -62,6 +62,7 @@ const KEYWORDS = new Set([
 // Multi-character operators, longest first so the scanner is greedy.
 const OPERATORS = [
   '->',
+  '<-',
   '::',
   '++',
   '|>',
