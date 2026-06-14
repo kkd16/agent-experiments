@@ -477,6 +477,66 @@ test('window', 'window over an aggregate', () => {
   assert(rows[0][2] === 1 && (rows[0][1] as number) === 3, 'Hardware (3 items) should rank 1')
 })
 
+// --- regressions (from code review) ----------------------------------------
+test('window', 'RANK with PARTITION BY but no ORDER BY is all 1', () => {
+  const e = new Engine()
+  e.execute('CREATE TABLE t (d TEXT, v INTEGER)')
+  e.execute("INSERT INTO t (d, v) VALUES ('a', 1), ('a', 2), ('a', 3)")
+  const rows = rowsOf(e, 'SELECT RANK() OVER (PARTITION BY d) AS r, DENSE_RANK() OVER (PARTITION BY d) AS dr FROM t')
+  assert(rows.every((x) => x[0] === 1 && x[1] === 1), 'with no ORDER BY every row is a peer → rank 1')
+})
+test('window', 'LAST_VALUE follows the running frame when ordered', () => {
+  const e = new Engine()
+  e.execute('CREATE TABLE t (v INTEGER)')
+  e.execute('INSERT INTO t (v) VALUES (5), (8), (3)')
+  const rows = rowsOf(e, 'SELECT v, LAST_VALUE(v) OVER (ORDER BY v) AS l FROM t ORDER BY v')
+  assert(eq(rows.map((r) => r[1]), [3, 5, 8]), 'LAST_VALUE should equal the current row under the default frame')
+})
+test('setop', 'INTERSECT binds tighter than UNION', () => {
+  const e = new Engine()
+  const rows = rowsOf(e, 'SELECT 1 UNION SELECT 2 INTERSECT SELECT 2 ORDER BY 1')
+  assert(eq(rows.map((r) => r[0]), [1, 2]), '1 UNION (2 INTERSECT 2) should be {1,2}')
+})
+test('cte', 'recursive CTE with an extra constant (anchor) branch terminates', () => {
+  const e = new Engine()
+  const rows = rowsOf(
+    e,
+    'WITH RECURSIVE t(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM t WHERE n < 3 UNION ALL SELECT 99) SELECT n FROM t ORDER BY n',
+  )
+  assert(eq(rows.map((r) => r[0]), [1, 2, 3, 99]), 'non-recursive branch must run once, not every iteration')
+})
+test('query', 'ORDER BY ordinal in a plain SELECT', () => {
+  const e = seeded()
+  const rows = rowsOf(e, 'SELECT name, price FROM products ORDER BY 2 DESC LIMIT 1')
+  assert(rows[0][1] === 549.5, 'ORDER BY 2 should sort by the 2nd output column')
+})
+test('subquery', 'nested subquery correlated to a grandparent row is not stale-cached', () => {
+  const e = seeded()
+  // The middle IN-subquery references only orders locally, but its inner scalar
+  // subquery is correlated to c.signup_year — so the middle must re-run per c.
+  const a = rowsOf(
+    e,
+    `SELECT c.name FROM customers c WHERE c.id IN (
+       SELECT o.customer_id FROM orders o
+       WHERE o.quantity > (SELECT AVG(quantity) FROM orders WHERE order_year = c.signup_year))`,
+  ).map((r) => r[0])
+  // Cross-check against the same logic written without the membership subquery.
+  const b = rowsOf(
+    e,
+    `SELECT DISTINCT c.name FROM customers c JOIN orders o ON o.customer_id = c.id
+     WHERE o.quantity > (SELECT AVG(quantity) FROM orders WHERE order_year = c.signup_year)`,
+  ).map((r) => r[0])
+  assert(eq([...a].sort(), [...b].sort()), 'correlated-through-nesting result must match the join form')
+})
+test('join', 'subquery in a JOIN ON predicate', () => {
+  const e = seeded()
+  const n = scalar(
+    e,
+    'SELECT COUNT(*) FROM orders o JOIN products p ON p.id = o.product_id AND p.price > (SELECT AVG(price) FROM products)',
+  )
+  assert(n === 7, `expected 7 orders of above-average products, got ${n}`)
+})
+
 export function runTests(): TestResult[] {
   return cases.map((c) => {
     try {

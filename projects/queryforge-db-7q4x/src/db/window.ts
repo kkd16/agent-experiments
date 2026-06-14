@@ -45,8 +45,9 @@ function computePartition(spec: WindowSpecExec, rows: Row[], out: SqlValue[]): v
   const ordered = spec.order.length > 0
   const arg0 = (i: number): SqlValue => (spec.args[0] ? spec.args[0](rows[i]) : null)
 
-  // Peer boundaries for ranking (rows with equal ORDER BY keys are peers).
-  const samePeer = (i: number, j: number) => ordered && cmpOrder(rows[i], rows[j], spec.order) === 0
+  // Peer boundaries for ranking. With no ORDER BY every row of the partition is
+  // a peer of every other (so RANK/DENSE_RANK are all 1, CUME_DIST all 1).
+  const samePeer = (i: number, j: number) => !ordered || cmpOrder(rows[i], rows[j], spec.order) === 0
 
   switch (spec.name) {
     case 'ROW_NUMBER':
@@ -98,20 +99,32 @@ function computePartition(spec: WindowSpecExec, rows: Row[], out: SqlValue[]): v
     }
     case 'LAG':
     case 'LEAD': {
+      // Offset is constant (read once); the default is evaluated per row.
       const offset = spec.args[1] ? Number(spec.args[1](rows[0])) : 1
-      const def: SqlValue = spec.args[2] ? spec.args[2](rows[0]) : null
       for (let i = 0; i < n; i++) {
         const j = spec.name === 'LAG' ? i - offset : i + offset
-        out[i] = j >= 0 && j < n ? arg0(j) : def
+        out[i] = j >= 0 && j < n ? arg0(j) : spec.args[2] ? spec.args[2](rows[i]) : null
       }
       return
     }
     case 'FIRST_VALUE':
+      // First row of the frame is always the partition start.
       for (let i = 0; i < n; i++) out[i] = arg0(0)
       return
-    case 'LAST_VALUE':
-      for (let i = 0; i < n; i++) out[i] = arg0(n - 1)
+    case 'LAST_VALUE': {
+      // Default frame ends at the current row, so LAST_VALUE returns the value
+      // at the end of the current row's peer group (the whole partition when
+      // unordered — samePeer is then always true).
+      let i = 0
+      while (i < n) {
+        let j = i
+        while (j + 1 < n && samePeer(j + 1, i)) j++
+        const v = arg0(j)
+        for (let k = i; k <= j; k++) out[k] = v
+        i = j + 1
+      }
       return
+    }
     case 'NTH_VALUE': {
       const k = spec.args[1] ? Number(spec.args[1](rows[0])) : 1
       const v = k >= 1 && k <= n ? arg0(k - 1) : null

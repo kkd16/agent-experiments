@@ -25,6 +25,7 @@ import {
   type SelectStmt,
   type ColumnExpr,
   type QuantifiedExpr,
+  type SetOp,
   type SubqueryExpr,
   type WindowFuncExpr,
 } from './ast'
@@ -443,7 +444,9 @@ function extractEquiJoin(on: Expr, leftSchema: Schema, rightSchema: Schema): Equ
   const leftCtx: CompileCtx = { resolve: (t, n) => resolveColumn(leftSchema, t, n) }
   const rightCtx: CompileCtx = { resolve: (t, n) => resolveColumn(rightSchema, t, n) }
   for (const part of parts) {
-    if (!leftKey && part.kind === 'binary' && part.op === '=') {
+    // A subquery is never a hash-join key — leave it to the residual filter,
+    // which is compiled with a subquery-aware context.
+    if (!leftKey && part.kind === 'binary' && part.op === '=' && !containsSubquery(part)) {
       const lInLeft = resolvableIn(part.left, leftSchema)
       const rInRight = resolvableIn(part.right, rightSchema)
       const lInRight = resolvableIn(part.left, rightSchema)
@@ -476,13 +479,32 @@ export function planSelect(stmt: SelectStmt, db: Database): Operator {
 function planQuery(stmt: SelectStmt, env: PlanEnv): Operator {
   const env2 = stmt.ctes && stmt.ctes.length ? withCtes(stmt, env) : env
   if (stmt.setOps && stmt.setOps.length) {
-    let op = planCore(stmt, env2, false)
+    // Plan every branch, then fold with set-operation precedence: INTERSECT
+    // binds tighter than UNION/EXCEPT (SQL standard).
+    const operands: Operator[] = [planCore(stmt, env2, false)]
+    const ops: { op: SetOp['op']; all: boolean }[] = []
     for (const so of stmt.setOps) {
       const rhs = planCore(so.select, env2, false)
-      if (rhs.schema.length !== op.schema.length) {
+      if (rhs.schema.length !== operands[0].schema.length) {
         throw new SqlError(`each ${so.op} query must return the same number of columns`, 'bind')
       }
-      op = new SetOpExec(op, rhs, so.op, so.all, op.schema)
+      operands.push(rhs)
+      ops.push({ op: so.op, all: so.all })
+    }
+    // Pass 1: collapse INTERSECT runs.
+    for (let i = 0; i < ops.length; ) {
+      if (ops[i].op === 'INTERSECT') {
+        const merged = new SetOpExec(operands[i], operands[i + 1], 'INTERSECT', ops[i].all, operands[i].schema)
+        operands.splice(i, 2, merged)
+        ops.splice(i, 1)
+      } else {
+        i++
+      }
+    }
+    // Pass 2: fold remaining UNION/EXCEPT left to right.
+    let op = operands[0]
+    for (let i = 0; i < ops.length; i++) {
+      op = new SetOpExec(op, operands[i + 1], ops[i].op, ops[i].all, op.schema)
     }
     if (stmt.orderBy.length) op = new Sort(op, compoundSortKeys(stmt.orderBy, op.schema, env2))
     if (stmt.limit !== undefined) op = new Limit(op, stmt.limit, stmt.offset ?? 0)
@@ -687,7 +709,14 @@ function planCore(stmt: SelectStmt, env: PlanEnv, embedOrderLimit: boolean): Ope
   if (embedOrderLimit && stmt.orderBy.length > 0) {
     const keys: SortKey[] = stmt.orderBy.map((o) => {
       let e = o.expr
-      if (e.kind === 'column' && !e.table && aliasMap.has(e.name.toLowerCase())) {
+      // ORDER BY <n> refers to the n-th output column (1-based).
+      if (e.kind === 'literal' && typeof e.value === 'number') {
+        const idx = e.value - 1
+        if (idx < 0 || idx >= projExprs.length) {
+          throw new SqlError(`ORDER BY position ${e.value} is out of range`, 'bind')
+        }
+        e = projExprs[idx]
+      } else if (e.kind === 'column' && !e.table && aliasMap.has(e.name.toLowerCase())) {
         e = aliasMap.get(e.name.toLowerCase())!
       }
       return { eval: compileExpr(e, outCtx), dir: o.dir }
@@ -770,6 +799,10 @@ function compileSubqueryExpr(
   env: PlanEnv,
   outerCtx: CompileCtx,
 ): Evaluator {
+  // `correlated` is set if this subquery — or anything nested inside it —
+  // references this scope OR any *enclosing* scope. That makes it unsafe to
+  // cache (its result varies as some outer row changes). We detect references to
+  // enclosing scopes by wrapping them so a hit also flips our flag.
   let correlated = false
   const scope: OuterScope = {
     resolve: (t, n) => {
@@ -779,7 +812,20 @@ function compileSubqueryExpr(
     },
     row: null,
   }
-  const innerEnv: PlanEnv = { db: env.db, relations: env.relations, outer: [...env.outer, scope] }
+  const wrappedOuter: OuterScope[] = env.outer.map((s) => ({
+    resolve: (t, n) => {
+      const i = s.resolve(t, n)
+      if (i !== null) correlated = true
+      return i
+    },
+    get row() {
+      return s.row
+    },
+    set row(v: Row | null) {
+      s.row = v
+    },
+  }))
+  const innerEnv: PlanEnv = { db: env.db, relations: env.relations, outer: [...wrappedOuter, scope] }
   const innerOp = planQuery(e.select, innerEnv)
 
   if (e.kind === 'subquery' || e.kind === 'in_subquery' || e.kind === 'quantified') {
@@ -966,7 +1012,7 @@ const MAX_RECURSION_ROWS = 100_000
 function materializeRecursive(cte: CteDef, env: PlanEnv): Table {
   const sel = cte.select
   const setOps = sel.setOps!
-  const anchorStmt: SelectStmt = {
+  const coreStmt: SelectStmt = {
     ...sel,
     setOps: undefined,
     ctes: undefined,
@@ -974,15 +1020,26 @@ function materializeRecursive(cte: CteDef, env: PlanEnv): Table {
     limit: undefined,
     offset: undefined,
   }
-  const anchorOp = planQuery(anchorStmt, env)
-  const anchorRows = drain(anchorOp)
+  // Split the branches into anchor terms (no self-reference, run once) and
+  // recursive terms (reference the CTE, iterated to a fixpoint).
+  const branches: SelectStmt[] = [coreStmt, ...setOps.map((s) => ({ ...s.select, ctes: undefined }))]
+  const anchors = branches.filter((b) => !referencesRelation(b, cte.name))
+  const recursives = branches.filter((b) => referencesRelation(b, cte.name))
+  if (anchors.length === 0) {
+    throw new SqlError('recursive CTE has no non-recursive (anchor) term', 'plan')
+  }
+  const distinct = setOps.some((s) => !s.all)
+
+  const anchorOps = anchors.map((b) => planQuery(b, env))
+  const anchorRows: Row[] = []
+  for (const op of anchorOps) for (const r of drain(op)) anchorRows.push(r)
+  const baseSchema = anchorOps[0].schema
   const cols = dataDrivenColumns(
     anchorRows,
-    anchorOp.schema,
-    anchorOp.schema.map((_, i) => cte.columns?.[i]),
+    baseSchema,
+    baseSchema.map((_, i) => cte.columns?.[i]),
   )
   const result = new Table(cte.name, cols)
-  const distinct = setOps.some((s) => !s.all)
   const seen = new Set<string>()
   let total = 0
   const add = (r: Row): boolean => {
@@ -1005,9 +1062,8 @@ function materializeRecursive(cte: CteDef, env: PlanEnv): Table {
     childRel.set(cte.name.toLowerCase(), wt)
     const childEnv: PlanEnv = { db: env.db, relations: childRel, outer: env.outer }
     const next: Row[] = []
-    for (const so of setOps) {
-      const branchStmt: SelectStmt = { ...so.select, ctes: undefined }
-      const op = planQuery(branchStmt, childEnv)
+    for (const b of recursives) {
+      const op = planQuery(b, childEnv)
       for (const r of drain(op)) if (add(r)) next.push(r)
     }
     frontier = next

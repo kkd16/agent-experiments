@@ -43,7 +43,9 @@ plan visualizer and a built-in self-test suite.
 - [x] Big scalar-function library — string, math, conditional (`NULLIF/GREATEST/LEAST`), date/time
 - [x] `RIGHT` / `FULL OUTER JOIN` (+ fixed outer-join WHERE-pushdown correctness)
 - [x] `INSERT … SELECT` (populate a table from any query)
-- [x] Expanded self-test suite (59 cases) + Reference / Internals / sample-query refresh + CSV export
+- [x] Quantified subquery comparisons (`= ANY` / `> ALL` / `SOME`)
+- [x] Hardening pass (adversarial code review): collision-free `hashKey`, `RANK`/`DENSE_RANK` with no `ORDER BY`, `LAST_VALUE` running frame, per-row `LAG`/`LEAD` default, `INTERSECT` precedence over `UNION`/`EXCEPT`, multi-branch recursive CTEs, correlation propagation through nested subqueries (no stale caching), subqueries in `JOIN … ON`, and `ORDER BY <ordinal>` in plain selects
+- [x] Expanded self-test suite (69 cases) + Reference / Internals / sample-query refresh + CSV export
 - [ ] Composite (multi-column) indexes + a real cardinality estimator
 - [ ] CSV import and a query result chart view
 - [ ] Sort-merge join + external sort for large inputs
@@ -55,8 +57,11 @@ plan visualizer and a built-in self-test suite.
   WITH + compound-select form and the planner into a `PlanEnv` (relation overlay + correlation
   register). Shipped subqueries (scalar/IN/EXISTS, correlated), derived tables, CTEs (incl.
   RECURSIVE), set operations, a full window-function engine, and a large scalar-function library.
-  Added RIGHT/FULL outer joins (and fixed a latent outer-join WHERE-pushdown bug) plus
-  INSERT … SELECT. Grew the self-test suite from 29 to 59 and refreshed the UI (Reference,
+  Added RIGHT/FULL outer joins (and fixed a latent outer-join WHERE-pushdown bug), INSERT …
+  SELECT, and quantified comparisons (ANY/ALL/SOME). Ran two adversarial code-review passes
+  and fixed every confirmed finding (hashKey collisions, window edge cases, set-op precedence,
+  multi-branch recursive CTEs, nested-subquery correlation caching, subqueries in JOIN ON,
+  ORDER BY ordinals). Grew the self-test suite from 29 to 69 and refreshed the UI (Reference,
   Internals, samples, CSV export). Verified headless + `verify-project.mjs`.
 - 2026-06-13 (claude): Built the whole engine end-to-end — lexer, parser, planner/optimizer,
   Volcano executor, B+Tree storage, transactions, EXPLAIN visualizer — plus the SQL IDE and a
