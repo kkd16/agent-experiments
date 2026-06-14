@@ -1,5 +1,6 @@
 import { Vector2D, random } from './math';
 import { NeuralNetwork } from './neural';
+import { QuadTree, Rectangle } from './quadtree';
 
 export class Entity {
     position: Vector2D;
@@ -64,7 +65,7 @@ export class Entity {
         this.acceleration = this.acceleration.add(force);
     }
 
-    update(worldWidth: number, worldHeight: number) {
+    update(worldWidth: number, worldHeight: number, passiveDrain: number = 0.1) {
         this.velocity = this.velocity.add(this.acceleration);
         this.velocity = this.velocity.limit(this.maxSpeed);
         this.position = this.position.add(this.velocity);
@@ -73,7 +74,7 @@ export class Entity {
         this.age++;
 
         // Passive energy drain
-        this.energy -= 0.1;
+        this.energy -= passiveDrain;
 
         // Wrap around edges
         if (this.position.x > worldWidth) this.position.x = 0;
@@ -128,16 +129,28 @@ export class Entity {
     }
 }
 
+export interface HazardZone {
+    position: Vector2D;
+    radius: number;
+    mutationMultiplier: number;
+    healthDrain: number;
+}
+
+export type Season = 'Spring' | 'Summer' | 'Autumn' | 'Winter';
+
 export class World {
     width: number;
     height: number;
     entities: Entity[];
     foods: Vector2D[];
+    hazards: HazardZone[];
 
     tickCount: number;
+    season: Season;
+    seasonLength: number = 1000;
 
     mutationRate: number = 0.1;
-    foodSpawnRate: number = 2; // per tick
+    baseFoodSpawnRate: number = 2; // per tick
 
     stats: {
         populationHistory: number[];
@@ -150,6 +163,7 @@ export class World {
         this.entities = [];
         this.foods = [];
         this.tickCount = 0;
+        this.season = 'Spring';
 
         this.stats = {
             populationHistory: [],
@@ -163,64 +177,133 @@ export class World {
         for (let i = 0; i < initialFood; i++) {
             this.foods.push(new Vector2D(random(0, this.width), random(0, this.height)));
         }
+
+        this.hazards = [];
+        for (let i = 0; i < 3; i++) {
+            this.hazards.push({
+                position: new Vector2D(random(0, this.width), random(0, this.height)),
+                radius: random(100, 300),
+                mutationMultiplier: 5, // 5x mutation rate
+                healthDrain: 0.5 // 0.5 health per tick
+            });
+        }
     }
 
     update() {
         this.tickCount++;
 
+        // Update Season
+        const seasonCycle = Math.floor(this.tickCount / this.seasonLength) % 4;
+        switch(seasonCycle) {
+            case 0: this.season = 'Spring'; break;
+            case 1: this.season = 'Summer'; break;
+            case 2: this.season = 'Autumn'; break;
+            case 3: this.season = 'Winter'; break;
+        }
+
+        // Apply seasonal effects
+        let currentFoodSpawnRate = this.baseFoodSpawnRate;
+        switch(this.season) {
+            case 'Spring': currentFoodSpawnRate *= 1.5; break;
+            case 'Summer': currentFoodSpawnRate *= 1.0; break;
+            case 'Autumn': currentFoodSpawnRate *= 0.5; break;
+            case 'Winter': currentFoodSpawnRate *= 0.1; break;
+        }
+
         // Spawn food
-        for (let i = 0; i < this.foodSpawnRate; i++) {
+        let foodToSpawn = Math.floor(currentFoodSpawnRate);
+        if (Math.random() < (currentFoodSpawnRate - foodToSpawn)) {
+            foodToSpawn++;
+        }
+
+        for (let i = 0; i < foodToSpawn; i++) {
              if (Math.random() < 0.5) { // Slow it down a bit
                  this.foods.push(new Vector2D(random(0, this.width), random(0, this.height)));
              }
         }
 
+        // Seasonal environmental effects
+        let passiveDrain = 0.1;
+        if (this.season === 'Winter') {
+            passiveDrain = 0.3; // Burn energy faster to stay warm
+        } else if (this.season === 'Summer') {
+            passiveDrain = 0.15; // Heat exhaustion
+        }
+
+        const boundary = new Rectangle(this.width / 2, this.height / 2, this.width / 2, this.height / 2);
+        const foodTree = new QuadTree<number>(boundary, 4);
+        for (let i = 0; i < this.foods.length; i++) {
+            foodTree.insert({ position: this.foods[i], data: i });
+        }
+
+        const entityTree = new QuadTree<Entity>(boundary, 4);
+        for (const entity of this.entities) {
+            entityTree.insert({ position: entity.position, data: entity });
+        }
+
         const newEntities: Entity[] = [];
+        const foodIndicesToRemove = new Set<number>();
 
         for (let i = this.entities.length - 1; i >= 0; i--) {
             const entity = this.entities[i];
 
-            // Find nearest food (O(n) naively, spatial partition later for optimization)
+            // Find nearest food (Optimized with QuadTree)
+            const searchRange = new Rectangle(entity.position.x, entity.position.y, 100, 100);
+            const nearbyFoods = foodTree.query(searchRange);
+
             let nearestFood: Vector2D | null = null;
             let minFoodDistSq = Infinity;
             let foodIndex = -1;
 
-            for (let j = 0; j < this.foods.length; j++) {
-                const distSq = entity.position.dist(this.foods[j]); // simplified dist check
+            for (const foodData of nearbyFoods) {
+                if (foodIndicesToRemove.has(foodData.data)) continue; // Already eaten in this tick
+                const distSq = entity.position.dist(foodData.position);
                 if (distSq < minFoodDistSq) {
                     minFoodDistSq = distSq;
-                    nearestFood = this.foods[j];
-                    foodIndex = j;
+                    nearestFood = foodData.position;
+                    foodIndex = foodData.data;
                 }
             }
 
             // Find nearest entity
+            const nearbyEntities = entityTree.query(searchRange);
             let nearestEntity: Entity | null = null;
             let minEntityDistSq = Infinity;
 
-            for (let j = 0; j < this.entities.length; j++) {
-                if (i !== j) {
-                    const distSq = entity.position.dist(this.entities[j].position);
-                    if (distSq < minEntityDistSq) {
-                        minEntityDistSq = distSq;
-                        nearestEntity = this.entities[j];
-                    }
+            for (const entityData of nearbyEntities) {
+                if (entityData.data === entity) continue;
+                const distSq = entity.position.dist(entityData.position);
+                if (distSq < minEntityDistSq) {
+                    minEntityDistSq = distSq;
+                    nearestEntity = entityData.data;
                 }
             }
 
             // Eat food if close enough
             if (nearestFood && minFoodDistSq < 15) {
-                this.foods.splice(foodIndex, 1);
+                foodIndicesToRemove.add(foodIndex);
                 entity.energy = Math.min(entity.energy + 20, entity.maxEnergy);
             }
 
             // Think and move
             entity.think(nearestFood, nearestEntity);
-            entity.update(this.width, this.height);
+            entity.update(this.width, this.height, passiveDrain);
+
+            // Hazard effects
+            let currentMutationRate = this.mutationRate;
+            for (const hazard of this.hazards) {
+                if (entity.position.dist(hazard.position) < hazard.radius) {
+                    entity.health -= hazard.healthDrain;
+                    currentMutationRate *= hazard.mutationMultiplier;
+                }
+            }
 
             // Reproduce
             if (entity.energy > entity.maxEnergy * 0.8 && entity.age > 100) {
-                newEntities.push(entity.reproduce());
+                const child = entity.reproduce();
+                // Apply potentially higher mutation rate from hazards
+                child.brain.mutate(currentMutationRate);
+                newEntities.push(child);
             }
 
             // Die
@@ -229,6 +312,12 @@ export class World {
                 // Turn into food
                 this.foods.push(new Vector2D(entity.position.x, entity.position.y));
             }
+        }
+
+        // Remove eaten food in reverse order to maintain correct indices
+        const indicesToRemove = Array.from(foodIndicesToRemove).sort((a, b) => b - a);
+        for (const index of indicesToRemove) {
+            this.foods.splice(index, 1);
         }
 
         this.entities.push(...newEntities);

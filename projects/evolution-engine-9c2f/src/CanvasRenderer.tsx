@@ -23,8 +23,19 @@ export function CanvasRenderer({ world, width, height }: CanvasRendererProps) {
     let animationFrameId: number;
 
     const render = () => {
-      // Clear background
-      ctx.fillStyle = '#0f172a'; // tailwind slate-900
+      // Clear background based on season
+      let bgColor = '#0f172a'; // Default slate-900 (Summer/Spring night)
+      if (world.season === 'Winter') {
+        bgColor = '#0f172a'; // Stay dark, but maybe add snow effect later
+      } else if (world.season === 'Autumn') {
+         bgColor = '#1e1b4b'; // Deep violet/brown tint
+      } else if (world.season === 'Spring') {
+         bgColor = '#064e3b'; // Very dark green tint
+      } else if (world.season === 'Summer') {
+         bgColor = '#3b0764'; // Very dark purple tint
+      }
+
+      ctx.fillStyle = bgColor;
       ctx.fillRect(0, 0, width, height);
 
       ctx.save();
@@ -34,7 +45,7 @@ export function CanvasRenderer({ world, width, height }: CanvasRendererProps) {
       ctx.scale(scale, scale);
 
       // Draw grid
-      ctx.strokeStyle = '#1e293b'; // slate-800
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.05)';
       ctx.lineWidth = 1 / scale;
       const gridSize = 100;
       for (let x = 0; x <= world.width; x += gridSize) {
@@ -51,9 +62,26 @@ export function CanvasRenderer({ world, width, height }: CanvasRendererProps) {
       }
 
       // Draw world bounds
-      ctx.strokeStyle = '#334155'; // slate-700
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.1)';
       ctx.lineWidth = 2 / scale;
       ctx.strokeRect(0, 0, world.width, world.height);
+
+      // Draw hazard zones
+      for (const hazard of world.hazards) {
+        ctx.fillStyle = 'rgba(168, 85, 247, 0.1)'; // purple-500 with low opacity
+        ctx.strokeStyle = 'rgba(168, 85, 247, 0.3)';
+        ctx.beginPath();
+        ctx.arc(hazard.position.x, hazard.position.y, hazard.radius, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+
+        // Hazard symbol (simple cross or asterisk)
+        ctx.fillStyle = 'rgba(168, 85, 247, 0.5)';
+        ctx.font = '20px monospace';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText('☢', hazard.position.x, hazard.position.y);
+      }
 
       // Draw food
       ctx.fillStyle = '#22c55e'; // green-500
