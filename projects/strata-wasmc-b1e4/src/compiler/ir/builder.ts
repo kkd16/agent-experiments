@@ -454,10 +454,15 @@ class FnBuilder {
 export function buildPreIR(prog: Program): PModule {
   const funcs: PFunc[] = [];
   let usesMemory = false;
+  // Only the entry point is exported, so the optimizer is free to delete a
+  // function once every call to it has been inlined. If a program has no `main`,
+  // fall back to exporting everything so it can still be driven externally.
+  const hasMain = prog.decls.some((d) => d.kind === 'fn' && d.name === 'main');
   for (const d of prog.decls) {
     if (d.kind !== 'fn') continue;
     const params = d.params.map((p) => ({ name: p.name, ty: irTypeOf(p.ty) }));
-    const fb = new FnBuilder(d.name, params, retTypeOf(d.retTy), d.body, true);
+    const exported = hasMain ? d.name === 'main' : true;
+    const fb = new FnBuilder(d.name, params, retTypeOf(d.retTy), d.body, exported);
     const { fn, usesMemory: m } = fb.build();
     usesMemory = usesMemory || m;
     funcs.push(fn);

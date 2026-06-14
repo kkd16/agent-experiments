@@ -446,6 +446,217 @@ export function dce(fn: IRFunc): number {
 }
 
 // =====================================================================
+// LICM — loop-invariant code motion
+// =====================================================================
+//
+// Detect natural loops from back edges, materialize a single preheader that
+// dominates each loop header, and hoist pure, non-trapping, loop-invariant
+// instructions into it. Only side-effect-free, non-trapping ops are hoisted:
+// the preheader runs once whenever the loop is entered (even for a zero-trip
+// loop), so speculating a trapping op there could invent a trap that the
+// original program never raised.
+
+const HOISTABLE = new Set(['ibin', 'fbin', 'icmp', 'fcmp', 'cast', 'copy']);
+
+function dominates(idom: Map<number, number>, a: number, b: number): boolean {
+  let n: number | undefined = b;
+  while (n !== undefined) {
+    if (n === a) return true;
+    const d = idom.get(n);
+    if (d === n) break; // reached entry
+    n = d;
+  }
+  return false;
+}
+
+function maxValueId(fn: IRFunc): number {
+  let m = -1;
+  for (const k of fn.valueType.keys()) if (k > m) m = k;
+  for (const b of fn.blocks) {
+    for (const p of b.phis) if (p.res > m) m = p.res;
+    for (const i of b.insts) if (i.res !== null && i.res > m) m = i.res;
+  }
+  return m;
+}
+
+function redirectTerm(t: Block['term'], from: number, to: number): Block['term'] {
+  if (t.op === 'br') return t.target === from ? { op: 'br', target: to } : t;
+  if (t.op === 'condbr') return { op: 'condbr', cond: t.cond, t: t.t === from ? to : t.t, f: t.f === from ? to : t.f };
+  return t;
+}
+
+/** Find an existing single preheader for `header`, or splice a fresh one in. */
+function getPreheader(fn: IRFunc, header: Block, loop: Set<number>, idCtr: { n: number }): Block | null {
+  const byId = new Map(fn.blocks.map((b) => [b.id, b]));
+  const outside = header.preds.filter((p) => !loop.has(p));
+  const latch = header.preds.filter((p) => loop.has(p));
+  if (outside.length === 0) return null;
+  if (outside.length === 1) {
+    const p = byId.get(outside[0]);
+    if (p && p.term.op === 'br' && p.term.target === header.id) return p; // already a preheader
+  }
+  // Create a new preheader carrying all outside entry edges.
+  const ph: Block = { id: idCtr.n++, phis: [], insts: [], term: { op: 'br', target: header.id }, preds: [...outside] };
+  for (const phi of header.phis) {
+    const outsideIncs = phi.incomings.filter((inc) => outside.includes(inc.pred));
+    const latchIncs = phi.incomings.filter((inc) => latch.includes(inc.pred));
+    const distinct = dedupeOperands(outsideIncs.map((i) => i.val));
+    let phVal: Operand;
+    if (distinct.length <= 1) {
+      phVal = distinct[0] ?? C(phi.ty, 0);
+    } else {
+      const res = idCtr.n++;
+      fn.valueType.set(res, phi.ty);
+      ph.phis.push({ res, ty: phi.ty, incomings: outsideIncs.map((i) => ({ pred: i.pred, val: i.val })) });
+      phVal = { tag: 'val', id: res };
+    }
+    phi.incomings = [{ pred: ph.id, val: phVal }, ...latchIncs];
+  }
+  header.preds = [ph.id, ...latch];
+  for (const pid of outside) {
+    const p = byId.get(pid)!;
+    p.term = redirectTerm(p.term, header.id, ph.id);
+  }
+  const hi = fn.blocks.indexOf(header);
+  fn.blocks.splice(hi, 0, ph);
+  return ph;
+}
+
+export function licm(fn: IRFunc): number {
+  const dom = computeDom(fn);
+  const byId = new Map(fn.blocks.map((b) => [b.id, b]));
+
+  // Collect natural loops (header -> set of body block ids), unioning back edges.
+  const loops = new Map<number, Set<number>>();
+  for (const b of fn.blocks) {
+    for (const s of succOfTerm(b.term)) {
+      if (!dominates(dom.idom, s, b.id)) continue; // not a back edge
+      let body = loops.get(s);
+      if (!body) loops.set(s, (body = new Set([s])));
+      const stack = [b.id];
+      while (stack.length) {
+        const n = stack.pop()!;
+        if (body.has(n)) continue;
+        body.add(n);
+        for (const p of byId.get(n)?.preds ?? []) if (!body.has(p)) stack.push(p);
+      }
+    }
+  }
+  if (loops.size === 0) return 0;
+
+  const idCtr = { n: maxValueId(fn) + 1 };
+  // Block ids and value ids share no namespace requirement for codegen, but to
+  // avoid any collision we seed the block-id counter past existing block ids.
+  for (const b of fn.blocks) if (b.id >= idCtr.n) idCtr.n = b.id + 1;
+
+  let changed = 0;
+  // Process headers outer-to-inner is unnecessary: we iterate each loop to a
+  // fixpoint, and the multi-round pass manager re-runs LICM so nested invariants
+  // bubble all the way out across rounds.
+  for (const [headerId, loop] of loops) {
+    const header = byId.get(headerId);
+    if (!header) continue;
+    const ph = getPreheader(fn, header, loop, idCtr);
+    if (!ph) continue;
+
+    // Values defined inside the loop are variant until proven hoistable.
+    const loopDefs = new Set<number>();
+    for (const id of loop) {
+      const b = byId.get(id)!;
+      for (const p of b.phis) loopDefs.add(p.res);
+      for (const i of b.insts) if (i.res !== null) loopDefs.add(i.res);
+    }
+    const invariant = (o: Operand): boolean => o.tag === 'const' || !loopDefs.has(o.id);
+
+    let again = true;
+    while (again) {
+      again = false;
+      for (const id of loop) {
+        if (id === ph.id) continue;
+        const b = byId.get(id)!;
+        const keep: Inst[] = [];
+        for (const inst of b.insts) {
+          const hoistable =
+            inst.res !== null &&
+            HOISTABLE.has(inst.kind) &&
+            !(inst.kind === 'ibin' && (inst.sub === 'div_s' || inst.sub === 'rem_s')) &&
+            inst.args.every(invariant);
+          if (hoistable) {
+            ph.insts.push(inst);
+            loopDefs.delete(inst.res!); // now defined in the preheader (outside the loop)
+            changed++;
+            again = true;
+          } else {
+            keep.push(inst);
+          }
+        }
+        b.insts = keep;
+      }
+    }
+  }
+  return changed;
+}
+
+// =====================================================================
+// Strength reduction / peephole
+// =====================================================================
+//
+// Integer-exact local rewrites that don't need both operands constant. `* 2^k`
+// becomes `<< k` (wrapping multiply by a power of two equals the shift mod 2^32),
+// and a handful of shift identities are normalized so later GVN/DCE can act.
+
+function log2Exact(n: number): number | null {
+  if (n <= 0 || (n & (n - 1)) !== 0) return null;
+  return Math.log2(n >>> 0) | 0;
+}
+
+export function peephole(fn: IRFunc): number {
+  let changed = 0;
+  for (const b of fn.blocks) {
+    for (const inst of b.insts) {
+      if (inst.kind !== 'ibin' || inst.res === null) continue;
+      const [x, y] = inst.args;
+      if (inst.sub === 'mul') {
+        // x * 2^k -> x << k  (canonicalize the power-of-two operand to the RHS)
+        if (y.tag === 'const') {
+          const k = log2Exact(y.num);
+          if (k !== null) { inst.sub = 'shl'; inst.args = [x, { tag: 'const', ty: 'i32', num: k }]; changed++; }
+        } else if (x.tag === 'const') {
+          const k = log2Exact(x.num);
+          if (k !== null) { inst.sub = 'shl'; inst.args = [y, { tag: 'const', ty: 'i32', num: k }]; changed++; }
+        }
+      }
+    }
+  }
+  return changed;
+}
+
+// =====================================================================
+// Whole-module dead-function elimination
+// =====================================================================
+//
+// After inlining, a callee can become unreachable: nothing calls it and it is
+// not exported. Drop such functions (transitively) so inlining is a net code-
+// size win rather than leaving an orphaned copy behind.
+
+function pruneFunctions(mod: IRModule): number {
+  const byName = new Map(mod.funcs.map((f) => [f.name, f]));
+  const live = new Set<string>();
+  const stack = mod.funcs.filter((f) => f.exported).map((f) => f.name);
+  while (stack.length) {
+    const name = stack.pop()!;
+    if (live.has(name)) continue;
+    live.add(name);
+    const fn = byName.get(name);
+    if (!fn) continue;
+    for (const b of fn.blocks) for (const i of b.insts) if (i.kind === 'call' && !live.has(i.sub)) stack.push(i.sub);
+  }
+  const before = mod.funcs.length;
+  mod.funcs = mod.funcs.filter((f) => live.has(f.name));
+  return before - mod.funcs.length;
+}
+
+// =====================================================================
 // Pass manager
 // =====================================================================
 
@@ -465,12 +676,16 @@ export function optimize(mod: IRModule, level: OptLevel): { mod: IRModule; log: 
     const suffix = rounds > 1 ? ` (round ${r + 1})` : '';
     record('copy-propagation' + suffix, copyProp);
     record('sccp' + suffix, sccp);
+    record('strength-reduce' + suffix, peephole);
     if (level >= 2) record('gvn/cse' + suffix, gvn);
     record('algebraic-simplify' + suffix, algebraic);
+    if (level >= 2) record('licm' + suffix, licm);
     record('dead-code-elim' + suffix, dce);
   }
   // a final cleanup pass that always runs
   record('cfg-cleanup', (fn) => pruneUnreachable(fn));
   record('dead-code-elim (final)', dce);
+  const removed = pruneFunctions(out);
+  if (removed > 0) log.push({ name: 'dead-function-elim', changed: removed });
   return { mod: out, log };
 }

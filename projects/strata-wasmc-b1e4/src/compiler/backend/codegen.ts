@@ -555,10 +555,11 @@ export function codegen(mod: IRModule): CodegenResult {
     sections.push(section(6, vec(items)));
   }
 
-  // export section: every function + memory
+  // export section: exported functions (typically just main) + memory
   {
     const items: number[][] = [];
     for (const fn of mod.funcs) {
+      if (!fn.exported) continue;
       const w = new ByteWriter();
       w.name(fn.name);
       w.u8(0x00);
@@ -643,7 +644,8 @@ function emitWAT(mod: IRModule, gens: FuncGen[], imports: PrintImport[]): string
     const fn = g.fn;
     const ps = fn.params.map((p) => `(param ${p.ty})`).join(' ');
     const rs = fn.retTy === 'void' ? '' : ` (result ${fn.retTy})`;
-    lines.push(`  (func $${fn.name} (export "${fn.name}")${ps ? ' ' + ps : ''}${rs}`);
+    const exp = fn.exported ? ` (export "${fn.name}")` : '';
+    lines.push(`  (func $${fn.name}${exp}${ps ? ' ' + ps : ''}${rs}`);
     const locals = g.localTypes();
     if (locals.length) lines.push(`    (local ${locals.join(' ')})`);
     watBody(g.wtree, lines, 2);
