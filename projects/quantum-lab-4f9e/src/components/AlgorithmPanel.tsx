@@ -1,5 +1,5 @@
 import { motion } from 'framer-motion';
-import { ALGORITHMS, type Algorithm } from '../quantum/algorithms';
+import { ALGORITHMS, ALGO_CATEGORY_ORDER, type Algorithm } from '../quantum/algorithms';
 
 interface Props {
   selectedAlgo: Algorithm | null;
@@ -14,9 +14,25 @@ const TAG_COLORS: Record<string, string> = {
 };
 
 export default function AlgorithmPanel({ selectedAlgo, onSelect }: Props) {
+  const categories = ALGO_CATEGORY_ORDER.filter((c) => ALGORITHMS.some((a) => a.category === c));
+  const uncategorized = ALGORITHMS.filter((a) => !a.category || !ALGO_CATEGORY_ORDER.includes(a.category));
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-      {ALGORITHMS.map((algo) => {
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+      {categories.map((cat) => (
+        <div key={cat}>
+          <div style={{ fontSize: 9, fontWeight: 700, color: '#475569', textTransform: 'uppercase', letterSpacing: '0.1em', margin: '0 0 6px 2px' }}>
+            {cat}
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            {ALGORITHMS.filter((a) => a.category === cat).map((algo) => renderCard(algo))}
+          </div>
+        </div>
+      ))}
+      {uncategorized.map((algo) => renderCard(algo))}
+    </div>
+  );
+
+  function renderCard(algo: Algorithm) {
         const isSelected = selectedAlgo?.name === algo.name;
         return (
           <motion.button
@@ -84,7 +100,5 @@ export default function AlgorithmPanel({ selectedAlgo, onSelect }: Props) {
             )}
           </motion.button>
         );
-      })}
-    </div>
-  );
+  }
 }

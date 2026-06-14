@@ -1,5 +1,6 @@
 import { Complex, C } from './Complex';
 import type { Matrix } from './Matrix';
+import { hermitianEig, vonNeumannEntropy } from './Hermitian';
 // Matrix utilities used only in standalone functions (tree-shaken as needed)
 import { getSingleGateMatrix } from './gates/single';
 import { GATE_CNOT, GATE_CZ, GATE_SWAP, GATE_TOFFOLI, GATE_FREDKIN, gateCPhase } from './gates/multi';
@@ -55,13 +56,14 @@ export class QuantumState {
     const numTargetQubits = targetQubits.length;
     const gateSize = 1 << numTargetQubits;
 
-    // Sort qubits in descending order (high qubit index = more significant bit)
-    const sortedTargets = [...targetQubits].sort((a, b) => b - a);
-
+    // Map each gate-matrix bit to a physical qubit in ARRAY ORDER: targetQubits[0] is
+    // the most-significant gate qubit (e.g. the control of a controlled gate). This
+    // respects the caller's intended control/target direction even when control <
+    // target. The base-index skip uses the same set (order-independent).
     for (let baseIdx = 0; baseIdx < size; baseIdx++) {
       // Extract bits for non-target qubits
       let isBase = true;
-      for (const q of sortedTargets) {
+      for (const q of targetQubits) {
         if ((baseIdx >> q) & 1) { isBase = false; break; }
       }
       if (!isBase) continue;
@@ -71,14 +73,14 @@ export class QuantumState {
         let rowIdx = baseIdx;
         for (let bi = 0; bi < numTargetQubits; bi++) {
           const bit = (rowBits >> (numTargetQubits - 1 - bi)) & 1;
-          rowIdx |= (bit << sortedTargets[bi]);
+          rowIdx |= (bit << targetQubits[bi]);
         }
 
         for (let colBits = 0; colBits < gateSize; colBits++) {
           let colIdx = baseIdx;
           for (let bi = 0; bi < numTargetQubits; bi++) {
             const bit = (colBits >> (numTargetQubits - 1 - bi)) & 1;
-            colIdx |= (bit << sortedTargets[bi]);
+            colIdx |= (bit << targetQubits[bi]);
           }
           newAmps[rowIdx] = newAmps[rowIdx].add(matrix[rowBits][colBits].mul(this.amplitudes[colIdx]));
         }
@@ -169,16 +171,17 @@ export class QuantumState {
     return '|' + index.toString(2).padStart(this.numQubits, '0') + '⟩';
   }
 
-  // Entanglement entropy of bipartition at cut
+  // Bipartite von Neumann entanglement entropy across the cut between qubits
+  // [0..cut-1] and the rest. Exact: diagonalises the reduced density matrix with a
+  // Hermitian eigensolver (the diagonal of ρ is NOT its spectrum unless ρ is already
+  // diagonal, which it generally is not for entangled states).
   entanglementEntropy(cut: number): number {
     const leftSize = 1 << cut;
     const rightSize = 1 << (this.numQubits - cut);
 
-    // Build reduced density matrix for left subsystem by tracing out right
     const rho: Complex[][] = Array.from({ length: leftSize }, () =>
       Array.from({ length: leftSize }, () => C(0))
     );
-
     for (let i = 0; i < leftSize; i++) {
       for (let j = 0; j < leftSize; j++) {
         for (let k = 0; k < rightSize; k++) {
@@ -188,15 +191,7 @@ export class QuantumState {
         }
       }
     }
-
-    // Compute von Neumann entropy S = -Tr(rho * log(rho)) via eigenvalues
-    // For now approximate with diagonal elements (valid for diagonal rho)
-    let entropy = 0;
-    for (let i = 0; i < leftSize; i++) {
-      const p = rho[i][i].re;
-      if (p > 1e-12) entropy -= p * Math.log2(p);
-    }
-    return Math.max(0, entropy);
+    return vonNeumannEntropy(hermitianEig(rho).values);
   }
 }
 
