@@ -125,6 +125,59 @@ WHERE country IN ('UK', 'USA')
 ORDER BY signup_year, name;`,
   },
   {
+    title: 'Window — rank within category',
+    sql: `SELECT name, category, price,
+       ROW_NUMBER() OVER (PARTITION BY category ORDER BY price DESC) AS rank_in_cat,
+       RANK()       OVER (ORDER BY price DESC)                       AS overall_rank,
+       ROUND(price - AVG(price) OVER (PARTITION BY category), 2)     AS vs_cat_avg
+FROM products
+ORDER BY category, rank_in_cat;`,
+  },
+  {
+    title: 'Correlated subquery + scalar subquery',
+    sql: `SELECT c.name,
+       (SELECT COUNT(*)        FROM orders o WHERE o.customer_id = c.id) AS orders,
+       (SELECT SUM(p.price * o.quantity)
+          FROM orders o JOIN products p ON o.product_id = p.id
+         WHERE o.customer_id = c.id)                                     AS spent
+FROM customers c
+WHERE EXISTS (SELECT 1 FROM orders o WHERE o.customer_id = c.id)
+ORDER BY spent DESC;`,
+  },
+  {
+    title: 'CTE — running revenue by year',
+    sql: `WITH yearly AS (
+  SELECT o.order_year AS yr, SUM(p.price * o.quantity) AS revenue
+  FROM orders o JOIN products p ON o.product_id = p.id
+  GROUP BY o.order_year
+)
+SELECT yr, revenue,
+       SUM(revenue) OVER (ORDER BY yr) AS cumulative
+FROM yearly
+ORDER BY yr;`,
+  },
+  {
+    title: 'WITH RECURSIVE — generate a series',
+    sql: `WITH RECURSIVE seq(n, fib, nxt) AS (
+  SELECT 1, 0, 1
+  UNION ALL
+  SELECT n + 1, nxt, fib + nxt FROM seq WHERE n < 12
+)
+SELECT n, fib AS fibonacci FROM seq;`,
+  },
+  {
+    title: 'Set operations — UNION / EXCEPT',
+    sql: `-- Cities that have a customer, plus a couple of prospects, minus one
+SELECT city FROM customers
+UNION
+SELECT 'Zurich'
+UNION
+SELECT 'Tokyo'
+EXCEPT
+SELECT 'London'
+ORDER BY city;`,
+  },
+  {
     title: 'Transaction: insert then rollback',
     sql: `BEGIN;
 INSERT INTO products (id, name, category, price, in_stock)

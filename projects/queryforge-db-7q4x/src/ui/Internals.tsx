@@ -24,7 +24,7 @@ const STAGES: Stage[] = [
     n: 3,
     name: 'Planner & optimizer',
     file: 'db/planner.ts',
-    body: 'Rule-based rewrites: predicate pushdown places filters as early as the schema allows; sargable predicates on indexed columns are turned into B+Tree IndexScans; equijoins become HashJoins, everything else NestedLoop. GROUP BY/HAVING compile to a HashAggregate.',
+    body: 'Rule-based rewrites: predicate pushdown places filters as early as the schema allows; sargable predicates on indexed columns are turned into B+Tree IndexScans; equijoins become HashJoins, everything else NestedLoop. GROUP BY/HAVING compile to a HashAggregate. A PlanEnv carries an overlay of named relations (CTEs and derived tables, materialized through the same executor) plus a stack of enclosing scopes that resolves correlated subqueries.',
   },
   {
     n: 4,
@@ -36,7 +36,7 @@ const STAGES: Stage[] = [
     n: 5,
     name: 'Execution (Volcano model)',
     file: 'db/operators.ts',
-    body: 'Physical operators implement open()/next()/close() and pull rows one at a time from their children. SeqScan, IndexScan, Filter, Project, HashJoin, NestedLoopJoin, HashAggregate, Sort, Distinct and Limit compose into the tree EXPLAIN renders.',
+    body: 'Physical operators implement open()/next()/close() and pull rows one at a time from their children. SeqScan, IndexScan, Filter, Project, HashJoin, NestedLoopJoin, HashAggregate, Window, SetOp (UNION/INTERSECT/EXCEPT), Sort, Distinct and Limit compose into the tree EXPLAIN renders. A WindowExec partitions and orders its buffered input to evaluate ranking, offset and running-aggregate window functions.',
   },
   {
     n: 6,
@@ -58,7 +58,9 @@ export function Internals() {
       <h1>How a query flows through QueryForge</h1>
       <p className="doc-lead">
         A complete relational database — lexer, parser, cost-aware planner, compiled expression engine, an
-        iterator-model executor, and a B+Tree storage layer — built from scratch in TypeScript.
+        iterator-model executor, and a B+Tree storage layer — built from scratch in TypeScript. It speaks a
+        broad SQL dialect: joins, aggregation, subqueries (correlated too), CTEs (including <code>WITH
+        RECURSIVE</code>), set operations and window functions.
       </p>
       <ol className="pipeline">
         {STAGES.map((s) => (

@@ -225,6 +225,205 @@ test('txn', 'COMMIT keeps changes', () => {
   assert(scalar(e, 'SELECT COUNT(*) FROM products') === 9, 'commit should keep 9 products')
 })
 
+// --- scalar function library ------------------------------------------------
+test('functions', 'string functions', () => {
+  const e = new Engine()
+  assert(scalar(e, "SELECT LEFT('hello', 3)") === 'hel', 'LEFT failed')
+  assert(scalar(e, "SELECT RIGHT('hello', 2)") === 'lo', 'RIGHT failed')
+  assert(scalar(e, "SELECT LPAD('7', 4, '0')") === '0007', 'LPAD failed')
+  assert(scalar(e, "SELECT REVERSE('abc')") === 'cba', 'REVERSE failed')
+  assert(scalar(e, "SELECT INITCAP('the DB')") === 'The Db', 'INITCAP failed')
+  assert(scalar(e, "SELECT INSTR('abcd', 'cd')") === 3, 'INSTR failed')
+  assert(scalar(e, "SELECT REPEAT('ab', 3)") === 'ababab', 'REPEAT failed')
+  assert(scalar(e, "SELECT CONCAT_WS('-', 'a', NULL, 'b')") === 'a-b', 'CONCAT_WS failed')
+})
+test('functions', 'numeric functions', () => {
+  const e = new Engine()
+  assert(scalar(e, 'SELECT SIGN(-4)') === -1, 'SIGN failed')
+  assert(scalar(e, 'SELECT TRUNC(3.789, 1)') === 3.7, 'TRUNC failed')
+  assert(scalar(e, 'SELECT POWER(2, 10)') === 1024, 'POWER failed')
+  assert(Math.abs((scalar(e, 'SELECT LN(EXP(1))') as number) - 1) < 1e-9, 'LN/EXP failed')
+  assert(scalar(e, 'SELECT LOG(2, 8)') === 3, 'LOG base 2 of 8 should be 3')
+})
+test('functions', 'conditional functions', () => {
+  const e = new Engine()
+  assert(scalar(e, 'SELECT NULLIF(5, 5)') === null, 'NULLIF equal should be NULL')
+  assert(scalar(e, 'SELECT NULLIF(5, 6)') === 5, 'NULLIF unequal should be lhs')
+  assert(scalar(e, 'SELECT GREATEST(3, 9, 2, NULL)') === 9, 'GREATEST failed')
+  assert(scalar(e, 'SELECT LEAST(3, 9, 2)') === 2, 'LEAST failed')
+})
+test('functions', 'date/time functions', () => {
+  const e = new Engine()
+  assert(scalar(e, "SELECT DATE_PART('year', '2021-07-04')") === 2021, 'DATE_PART year failed')
+  assert(scalar(e, "SELECT DATE_PART('month', '2021-07-04')") === 7, 'DATE_PART month failed')
+  assert(scalar(e, "SELECT STRFTIME('%Y/%m/%d', '2021-07-04')") === '2021/07/04', 'STRFTIME failed')
+  assert(scalar(e, "SELECT DATEDIFF('2021-01-11', '2021-01-01')") === 10, 'DATEDIFF failed')
+  assert(scalar(e, "SELECT DATE('2021-07-04 12:30:00')") === '2021-07-04', 'DATE truncation failed')
+})
+
+// --- subqueries -------------------------------------------------------------
+test('subquery', 'scalar subquery in WHERE', () => {
+  const e = seeded()
+  const rows = rowsOf(e, 'SELECT name FROM products WHERE price > (SELECT AVG(price) FROM products)')
+  assert(rows.length === 4, `expected 4 above-average products, got ${rows.length}`)
+})
+test('subquery', 'correlated scalar subquery in SELECT', () => {
+  const e = seeded()
+  assert(
+    scalar(e, 'SELECT (SELECT COUNT(*) FROM orders o WHERE o.customer_id = c.id) FROM customers c WHERE c.id = 1') === 3,
+    'customer 1 should have 3 orders',
+  )
+})
+test('subquery', 'IN subquery', () => {
+  const e = seeded()
+  const rows = rowsOf(e, 'SELECT name FROM customers WHERE id IN (SELECT customer_id FROM orders WHERE quantity >= 3)')
+  assert(rows.length === 3, `expected 3 customers, got ${rows.length}`)
+})
+test('subquery', 'NOT IN subquery', () => {
+  const e = seeded()
+  e.execute("INSERT INTO customers (id, name) VALUES (60, 'Lonely')")
+  const rows = rowsOf(e, 'SELECT name FROM customers WHERE id NOT IN (SELECT customer_id FROM orders)')
+  assert(rows.length === 1 && rows[0][0] === 'Lonely', 'NOT IN should isolate the order-less customer')
+})
+test('subquery', 'EXISTS / NOT EXISTS', () => {
+  const e = seeded()
+  assert(scalar(e, 'SELECT COUNT(*) FROM customers c WHERE EXISTS (SELECT 1 FROM orders o WHERE o.customer_id = c.id)') === 8, 'all 8 customers have orders')
+  e.execute("INSERT INTO customers (id, name) VALUES (61, 'NoOrders')")
+  const rows = rowsOf(e, 'SELECT name FROM customers c WHERE NOT EXISTS (SELECT 1 FROM orders o WHERE o.customer_id = c.id)')
+  assert(rows.length === 1 && rows[0][0] === 'NoOrders', 'NOT EXISTS should find the new customer')
+})
+
+// --- derived tables ---------------------------------------------------------
+test('derived', 'derived table in FROM', () => {
+  const e = seeded()
+  const rows = rowsOf(
+    e,
+    'SELECT category, n FROM (SELECT category, COUNT(*) AS n FROM products GROUP BY category) t WHERE n > 1 ORDER BY category',
+  )
+  assert(rows.length === 3 && rows.every((r) => (r[1] as number) > 1), 'derived table filter failed')
+})
+test('derived', 'derived table preserves numeric types', () => {
+  const e = seeded()
+  // If materialization coerced to TEXT, SUM would concatenate / error.
+  assert(scalar(e, 'SELECT SUM(p) FROM (SELECT price AS p FROM products) d') === 2203.4, 'derived numeric type lost')
+})
+
+// --- CTEs -------------------------------------------------------------------
+test('cte', 'simple WITH', () => {
+  const e = seeded()
+  const rows = rowsOf(e, 'WITH big AS (SELECT * FROM products WHERE price > 200) SELECT COUNT(*) FROM big')
+  assert(rows[0][0] === 4, 'expected 4 expensive products in CTE')
+})
+test('cte', 'multiple CTEs referencing each other', () => {
+  const e = seeded()
+  const rows = rowsOf(
+    e,
+    `WITH a AS (SELECT id, price FROM products WHERE price > 100),
+          b AS (SELECT id FROM a WHERE price < 400)
+     SELECT COUNT(*) FROM b`,
+  )
+  assert(rows[0][0] === 5, `expected 5 rows in chained CTE, got ${rows[0][0]}`)
+})
+test('cte', 'recursive sequence 1..5', () => {
+  const e = new Engine()
+  const rows = rowsOf(e, 'WITH RECURSIVE seq(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM seq WHERE n < 5) SELECT n FROM seq')
+  assert(eq(rows.map((r) => r[0]), [1, 2, 3, 4, 5]), 'recursive sequence wrong')
+})
+test('cte', 'recursive transitive closure', () => {
+  const e = new Engine()
+  e.execute('CREATE TABLE edge (src INTEGER, dst INTEGER)')
+  e.execute('INSERT INTO edge (src, dst) VALUES (1, 2), (2, 3), (3, 4), (1, 5)')
+  const rows = rowsOf(
+    e,
+    `WITH RECURSIVE reach(node) AS (
+       SELECT dst FROM edge WHERE src = 1
+       UNION
+       SELECT e.dst FROM edge e JOIN reach r ON e.src = r.node
+     )
+     SELECT COUNT(*) FROM reach`,
+  )
+  assert(rows[0][0] === 4, `expected 4 reachable nodes, got ${rows[0][0]}`)
+})
+
+// --- set operations ---------------------------------------------------------
+test('setop', 'UNION removes duplicates', () => {
+  const e = seeded()
+  const rows = rowsOf(e, 'SELECT country FROM customers UNION SELECT country FROM customers')
+  assert(rows.length === 2, 'UNION should collapse to 2 distinct countries')
+})
+test('setop', 'UNION ALL keeps duplicates', () => {
+  const e = new Engine()
+  const rows = rowsOf(e, 'SELECT 1 UNION ALL SELECT 1 UNION ALL SELECT 2')
+  assert(rows.length === 3, 'UNION ALL should keep 3 rows')
+})
+test('setop', 'INTERSECT', () => {
+  const e = seeded()
+  const rows = rowsOf(
+    e,
+    'SELECT customer_id FROM orders WHERE order_year = 2022 INTERSECT SELECT customer_id FROM orders WHERE order_year = 2023',
+  )
+  assert(rows.length === 5, `expected 5 customers active both years, got ${rows.length}`)
+})
+test('setop', 'EXCEPT', () => {
+  const e = new Engine()
+  const rows = rowsOf(e, 'SELECT 1 UNION SELECT 2 UNION SELECT 3 EXCEPT SELECT 2')
+  assert(eq(rows.map((r) => r[0]).sort(), [1, 3]), 'EXCEPT should remove 2')
+})
+test('setop', 'EXCEPT ALL multiset', () => {
+  const e = new Engine()
+  const rows = rowsOf(e, 'SELECT 1 UNION ALL SELECT 1 UNION ALL SELECT 1 EXCEPT ALL SELECT 1')
+  assert(rows.length === 2, 'EXCEPT ALL should leave two 1s')
+})
+
+// --- window functions -------------------------------------------------------
+test('window', 'ROW_NUMBER partitioned', () => {
+  const e = seeded()
+  const rows = rowsOf(
+    e,
+    'SELECT name, ROW_NUMBER() OVER (PARTITION BY category ORDER BY price DESC) AS rn FROM products ORDER BY category, rn',
+  )
+  const audio = rows.filter((r) => r[1] === 1)
+  assert(audio.length >= 4, 'each category should have a rank-1 row')
+})
+test('window', 'RANK with ties / DENSE_RANK', () => {
+  const e = new Engine()
+  e.execute('CREATE TABLE s (v INTEGER)')
+  e.execute('INSERT INTO s (v) VALUES (10), (10), (20), (30)')
+  const rows = rowsOf(e, 'SELECT v, RANK() OVER (ORDER BY v) AS r, DENSE_RANK() OVER (ORDER BY v) AS d FROM s ORDER BY v')
+  assert(eq(rows.map((r) => r[1]), [1, 1, 3, 4]), 'RANK ties wrong')
+  assert(eq(rows.map((r) => r[2]), [1, 1, 2, 3]), 'DENSE_RANK ties wrong')
+})
+test('window', 'running SUM (ordered aggregate window)', () => {
+  const e = new Engine()
+  e.execute('CREATE TABLE s (v INTEGER)')
+  e.execute('INSERT INTO s (v) VALUES (1), (2), (3), (4)')
+  const rows = rowsOf(e, 'SELECT v, SUM(v) OVER (ORDER BY v) AS running FROM s ORDER BY v')
+  assert(eq(rows.map((r) => r[1]), [1, 3, 6, 10]), 'running sum wrong')
+})
+test('window', 'LAG / LEAD', () => {
+  const e = new Engine()
+  e.execute('CREATE TABLE s (v INTEGER)')
+  e.execute('INSERT INTO s (v) VALUES (10), (20), (30)')
+  const rows = rowsOf(e, 'SELECT v, LAG(v) OVER (ORDER BY v) AS lg, LEAD(v) OVER (ORDER BY v) AS ld FROM s ORDER BY v')
+  assert(eq(rows.map((r) => r[1]), [null, 10, 20]), 'LAG wrong')
+  assert(eq(rows.map((r) => r[2]), [20, 30, null]), 'LEAD wrong')
+})
+test('window', 'NTILE buckets', () => {
+  const e = new Engine()
+  e.execute('CREATE TABLE s (v INTEGER)')
+  e.execute('INSERT INTO s (v) VALUES (1), (2), (3), (4)')
+  const rows = rowsOf(e, 'SELECT v, NTILE(2) OVER (ORDER BY v) AS bucket FROM s ORDER BY v')
+  assert(eq(rows.map((r) => r[1]), [1, 1, 2, 2]), 'NTILE split wrong')
+})
+test('window', 'window over an aggregate', () => {
+  const e = seeded()
+  const rows = rowsOf(
+    e,
+    'SELECT category, COUNT(*) AS n, RANK() OVER (ORDER BY COUNT(*) DESC) AS rk FROM products GROUP BY category ORDER BY rk, category',
+  )
+  assert(rows[0][2] === 1 && (rows[0][1] as number) === 3, 'Hardware (3 items) should rank 1')
+})
+
 export function runTests(): TestResult[] {
   return cases.map((c) => {
     try {
