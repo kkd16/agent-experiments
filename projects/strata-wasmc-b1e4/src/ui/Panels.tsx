@@ -1,0 +1,339 @@
+import { useState } from 'react';
+import type { Compilation } from '../compiler/pipeline';
+import type { Block, Expr, FnDecl, Program, Stmt } from '../compiler/ast';
+import { tyName } from '../compiler/ast';
+import { dumpFunc } from '../compiler/irdump';
+import { interpret } from '../compiler/interp';
+import { runWasm } from '../compiler/runner';
+import { verifyAll } from '../compiler/verify';
+import type { VerifyResult } from '../compiler/verify';
+import type { OptLevel } from '../compiler/opt/optimize';
+import { EXAMPLES, TEST_PROGRAMS } from '../examples';
+
+// ---------------------------------------------------------------- Tokens
+
+export function TokensPanel({ comp }: { comp: Compilation }) {
+  return (
+    <div className="panel-scroll">
+      <table className="tok-table">
+        <thead>
+          <tr><th>#</th><th>type</th><th>text</th><th>line:col</th></tr>
+        </thead>
+        <tbody>
+          {comp.tokens.map((t, i) => (
+            <tr key={i}>
+              <td className="dim">{i}</td>
+              <td className="t-kw">{t.type}</td>
+              <td className="mono">{t.type === 'eof' ? '⟂' : t.text}</td>
+              <td className="dim">{t.span.line}:{t.span.col}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------- AST
+
+function exprStr(e: Expr): string {
+  switch (e.node) {
+    case 'int': return String(e.value);
+    case 'float': return String(e.value);
+    case 'bool': return String(e.value);
+    case 'ident': return e.name;
+    case 'unary': return `${e.op}${exprStr(e.operand)}`;
+    case 'binary': return `(${exprStr(e.left)} ${e.op} ${exprStr(e.right)})`;
+    case 'call': return `${e.callee}(${e.args.map(exprStr).join(', ')})`;
+    case 'index': return `${exprStr(e.target)}[${exprStr(e.index)}]`;
+  }
+}
+
+function stmtLines(s: Stmt, depth: number, out: string[]): void {
+  const pad = '  '.repeat(depth);
+  const ty = (e: Expr) => (e.ty ? ` :${tyName(e.ty)}` : '');
+  switch (s.node) {
+    case 'let': out.push(`${pad}let ${s.name} = ${exprStr(s.init)}${ty(s.init)}`); break;
+    case 'assign': out.push(`${pad}${s.name} = ${exprStr(s.value)}`); break;
+    case 'index-assign': out.push(`${pad}${exprStr(s.target)}[${exprStr(s.index)}] = ${exprStr(s.value)}`); break;
+    case 'expr': out.push(`${pad}expr ${exprStr(s.expr)}`); break;
+    case 'return': out.push(`${pad}return ${s.value ? exprStr(s.value) : ''}`); break;
+    case 'break': out.push(`${pad}break`); break;
+    case 'continue': out.push(`${pad}continue`); break;
+    case 'if':
+      out.push(`${pad}if ${exprStr(s.cond)}`);
+      blockLines(s.then, depth + 1, out);
+      if (s.otherwise) { out.push(`${pad}else`); blockLines(s.otherwise, depth + 1, out); }
+      break;
+    case 'while':
+      out.push(`${pad}while ${exprStr(s.cond)}`);
+      blockLines(s.body, depth + 1, out);
+      break;
+    case 'for':
+      out.push(`${pad}for (${s.init ? 'init; ' : ''}${s.cond ? exprStr(s.cond) : 'true'}; ${s.update ? 'update' : ''})`);
+      if (s.init) stmtLines(s.init, depth + 1, out);
+      blockLines(s.body, depth + 1, out);
+      if (s.update) stmtLines(s.update, depth + 1, out);
+      break;
+    case 'block': blockLines(s.block, depth + 1, out); break;
+  }
+}
+function blockLines(b: Block, depth: number, out: string[]): void {
+  for (const s of b.stmts) stmtLines(s, depth, out);
+}
+function astLines(prog: Program): string {
+  const out: string[] = [];
+  for (const d of prog.decls) {
+    if (d.kind === 'fn') {
+      const f = d as FnDecl;
+      out.push(`fn ${f.name}(${f.params.map((p) => `${p.name}: ${tyName(p.ty)}`).join(', ')}) -> ${tyName(f.retTy)}`);
+      blockLines(f.body, 1, out);
+    } else {
+      out.push(`global ${d.name} = ${exprStr(d.init)}`);
+    }
+    out.push('');
+  }
+  return out.join('\n');
+}
+
+export function AstPanel({ comp }: { comp: Compilation }) {
+  if (!comp.program) return <Empty />;
+  return <pre className="panel-scroll code-pre">{astLines(comp.program)}</pre>;
+}
+
+// ---------------------------------------------------------------- IR (SSA)
+
+export function IrPanel({ comp, fnIdx }: { comp: Compilation; fnIdx: number }) {
+  const [showOpt, setShowOpt] = useState(true);
+  const mod = showOpt ? comp.optimized : comp.ssa;
+  if (!mod) return <Empty />;
+  const fn = mod.funcs[Math.min(fnIdx, mod.funcs.length - 1)];
+  return (
+    <div className="panel-scroll">
+      <div className="seg">
+        <button className={!showOpt ? 'on' : ''} onClick={() => setShowOpt(false)}>unoptimized</button>
+        <button className={showOpt ? 'on' : ''} onClick={() => setShowOpt(true)}>optimized (O{comp.level})</button>
+      </div>
+      <pre className="code-pre ir-pre">{fn ? dumpFunc(fn) : '(no function)'}</pre>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------- Optimizer
+
+export function OptPanel({ comp }: { comp: Compilation }) {
+  if (!comp.metrics || !comp.optLog) return <Empty />;
+  const { ssaInsts, optInsts, reductionPct } = comp.metrics;
+  const max = Math.max(ssaInsts, 1);
+  return (
+    <div className="panel-scroll opt-panel">
+      <div className="opt-bars">
+        <div className="opt-bar-row">
+          <span className="opt-label">SSA in</span>
+          <div className="bar"><div className="bar-fill bar-a" style={{ width: '100%' }}>{ssaInsts}</div></div>
+        </div>
+        <div className="opt-bar-row">
+          <span className="opt-label">after O{comp.level}</span>
+          <div className="bar"><div className="bar-fill bar-b" style={{ width: `${(optInsts / max) * 100}%` }}>{optInsts}</div></div>
+        </div>
+        <div className="opt-reduction">{reductionPct}% fewer IR instructions</div>
+      </div>
+      {comp.level === 0 ? (
+        <p className="dim note">Optimizations are disabled at -O0. Switch to -O1/-O2/-O3 to run the pass pipeline.</p>
+      ) : (
+        <table className="pass-table">
+          <thead><tr><th>pass</th><th>changes</th></tr></thead>
+          <tbody>
+            {comp.optLog.map((p, i) => (
+              <tr key={i} className={p.changed > 0 ? '' : 'dim'}>
+                <td className="mono">{p.name}</td>
+                <td className="num">{p.changed}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+      <div className="pass-legend">
+        <b>Pipeline:</b> copy-propagation → sparse conditional constant propagation →
+        {comp.level >= 2 ? ' global value numbering (CSE) →' : ''} algebraic simplification → dead-code elimination,
+        iterated to a fixed point{comp.level >= 2 ? ', then CFG cleanup' : ''}.
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------- WAT
+
+export function WatPanel({ comp }: { comp: Compilation }) {
+  if (!comp.wat) return <Empty />;
+  return <pre className="panel-scroll code-pre wat-pre">{comp.wat}</pre>;
+}
+
+// ---------------------------------------------------------------- Hex + sections
+
+const SECTION_NAMES: Record<number, string> = {
+  0: 'custom', 1: 'type', 2: 'import', 3: 'function', 4: 'table', 5: 'memory',
+  6: 'global', 7: 'export', 8: 'start', 9: 'element', 10: 'code', 11: 'data',
+};
+function decodeU32(bytes: Uint8Array, off: number): [number, number] {
+  let result = 0, shift = 0, p = off;
+  for (;;) {
+    const b = bytes[p++];
+    result |= (b & 0x7f) << shift;
+    if ((b & 0x80) === 0) break;
+    shift += 7;
+  }
+  return [result >>> 0, p];
+}
+function walkSections(bytes: Uint8Array): { id: number; name: string; size: number; offset: number }[] {
+  const out: { id: number; name: string; size: number; offset: number }[] = [];
+  let p = 8; // skip magic + version
+  while (p < bytes.length) {
+    const id = bytes[p++];
+    const [size, np] = decodeU32(bytes, p);
+    out.push({ id, name: SECTION_NAMES[id] ?? `#${id}`, size, offset: np });
+    p = np + size;
+  }
+  return out;
+}
+
+export function HexPanel({ comp }: { comp: Compilation }) {
+  if (!comp.bytes) return <Empty />;
+  const bytes = comp.bytes;
+  const sections = walkSections(bytes);
+  const rows: string[] = [];
+  for (let i = 0; i < bytes.length; i += 16) {
+    const slice = bytes.slice(i, i + 16);
+    const hex = Array.from(slice, (b) => b.toString(16).padStart(2, '0')).join(' ');
+    const ascii = Array.from(slice, (b) => (b >= 32 && b < 127 ? String.fromCharCode(b) : '·')).join('');
+    rows.push(`${i.toString(16).padStart(6, '0')}  ${hex.padEnd(47)}  ${ascii}`);
+  }
+  return (
+    <div className="panel-scroll">
+      <div className="section-list">
+        {sections.map((s, i) => (
+          <span key={i} className="section-pill">
+            <b>{s.name}</b> {s.size}B
+          </span>
+        ))}
+        <span className="section-pill total">total {bytes.length}B</span>
+      </div>
+      <pre className="code-pre hex-pre">{rows.join('\n')}</pre>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------- Run
+
+export function RunPanel({ comp }: { comp: Compilation }) {
+  const [out, setOut] = useState<{ wasm: string[]; ref: string[]; match: boolean; err?: string; ms: number; ret?: number } | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const run = async () => {
+    if (!comp.bytes || !comp.program) return;
+    setBusy(true);
+    const t0 = performance.now();
+    const r = await runWasm(comp.bytes);
+    const ref = interpret(comp.program);
+    const match = JSON.stringify(r.output) === JSON.stringify(ref.output) && (r.error ?? '') === (ref.error ?? '');
+    setOut({ wasm: r.output, ref: ref.output, match, err: r.error, ms: performance.now() - t0, ret: r.result });
+    setBusy(false);
+  };
+
+  return (
+    <div className="panel-scroll run-panel">
+      <div className="run-controls">
+        <button className="primary" onClick={run} disabled={busy || !comp.ok}>
+          {busy ? 'running…' : '▶ run main()'}
+        </button>
+        {out && (
+          <span className={'badge ' + (out.match ? 'ok' : 'bad')}>
+            {out.match ? '✓ wasm output matches reference interpreter' : '✗ MISMATCH vs interpreter'}
+          </span>
+        )}
+        {out && <span className="dim">{out.ms.toFixed(2)} ms{out.ret !== undefined ? ` · returned ${out.ret}` : ''}</span>}
+      </div>
+      {out && (
+        <div className="run-cols">
+          <div>
+            <div className="col-head">WebAssembly stdout</div>
+            <pre className="code-pre out-pre">{out.wasm.join('\n') || '(no output)'}{out.err ? `\n⚠ trap: ${out.err}` : ''}</pre>
+          </div>
+          <div>
+            <div className="col-head">Reference interpreter</div>
+            <pre className="code-pre out-pre">{out.ref.join('\n') || '(no output)'}</pre>
+          </div>
+        </div>
+      )}
+      {!out && <p className="dim note">Runs the compiled WebAssembly in your browser and diff-checks it against the independent tree-walking interpreter.</p>}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------- Verify suite
+
+export function VerifyPanel() {
+  const [results, setResults] = useState<VerifyResult[]>([]);
+  const [busy, setBusy] = useState(false);
+  const levels: OptLevel[] = [0, 1, 2, 3];
+
+  const run = async () => {
+    setBusy(true);
+    setResults([]);
+    const acc: VerifyResult[] = [];
+    await verifyAll(TEST_PROGRAMS, levels, (r) => {
+      acc.push(r);
+      setResults([...acc]);
+    });
+    setBusy(false);
+  };
+
+  const pass = results.filter((r) => r.pass).length;
+  const total = TEST_PROGRAMS.length * levels.length;
+  const titleOf = (id: string) => EXAMPLES.find((e) => e.id === id)?.title ?? id;
+
+  return (
+    <div className="panel-scroll verify-panel">
+      <div className="run-controls">
+        <button className="primary" onClick={run} disabled={busy}>
+          {busy ? 'verifying…' : `▶ run ${total} differential tests`}
+        </button>
+        {results.length > 0 && (
+          <span className={'badge ' + (pass === results.length ? 'ok' : 'bad')}>
+            {pass}/{results.length} pass
+          </span>
+        )}
+      </div>
+      <p className="dim note">
+        Every example is compiled at -O0…-O3, executed as WebAssembly, and its output compared to the reference
+        interpreter. Identical output at all levels is the proof that each optimization is sound.
+      </p>
+      {results.length > 0 && (
+        <table className="verify-table">
+          <thead><tr><th>program</th><th>O0</th><th>O1</th><th>O2</th><th>O3</th></tr></thead>
+          <tbody>
+            {TEST_PROGRAMS.map((p) => (
+              <tr key={p.name}>
+                <td className="mono">{titleOf(p.name)}</td>
+                {levels.map((lvl) => {
+                  const r = results.find((x) => x.name === p.name && x.level === lvl);
+                  return (
+                    <td key={lvl} className="cell-center">
+                      {r ? <span className={r.pass ? 'tick' : 'cross'} title={r.detail}>{r.pass ? '✓' : '✗'}</span> : '·'}
+                    </td>
+                  );
+                })}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </div>
+  );
+}
+
+// ----------------------------------------------------------------
+
+function Empty() {
+  return <div className="panel-scroll dim note">Fix the errors in your program to see this stage.</div>;
+}

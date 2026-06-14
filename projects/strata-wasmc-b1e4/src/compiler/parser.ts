@@ -1,0 +1,368 @@
+import type { Token, TokenType } from './token';
+import { tokenize } from './lexer';
+import { CompileError } from './diagnostics';
+import type { Span } from './diagnostics';
+import type {
+  BinaryOp,
+  Block,
+  Decl,
+  Expr,
+  FnDecl,
+  GlobalDecl,
+  Param,
+  Program,
+  Stmt,
+  Ty,
+  UnaryOp,
+} from './ast';
+import { T_BOOL, T_FLOAT, T_INT, T_VOID } from './ast';
+
+// Binding powers for the Pratt expression parser. Higher binds tighter. Each
+// entry is [left, right] so we can express left-associativity (left < right).
+const BINDING: Partial<Record<TokenType, [number, number]>> = {
+  '||': [1, 2],
+  '&&': [3, 4],
+  '|': [5, 6],
+  '^': [7, 8],
+  '&': [9, 10],
+  '==': [11, 12],
+  '!=': [11, 12],
+  '<': [13, 14],
+  '<=': [13, 14],
+  '>': [13, 14],
+  '>=': [13, 14],
+  '<<': [15, 16],
+  '>>': [15, 16],
+  '+': [17, 18],
+  '-': [17, 18],
+  '*': [19, 20],
+  '/': [19, 20],
+  '%': [19, 20],
+};
+
+class Parser {
+  private toks: Token[];
+  private pos = 0;
+  constructor(toks: Token[]) {
+    this.toks = toks;
+  }
+
+  private peek(): Token {
+    return this.toks[this.pos];
+  }
+  private next(): Token {
+    return this.toks[this.pos++];
+  }
+  private check(t: TokenType): boolean {
+    return this.peek().type === t;
+  }
+  private accept(t: TokenType): Token | null {
+    if (this.check(t)) return this.next();
+    return null;
+  }
+  private expect(t: TokenType): Token {
+    if (this.check(t)) return this.next();
+    const got = this.peek();
+    throw new CompileError(`expected '${t}' but found '${got.text || got.type}'`, got.span, 'parse');
+  }
+  private spanFrom(start: Span): Span {
+    const prev = this.toks[this.pos - 1] ?? this.peek();
+    return { start: start.start, end: prev.span.end, line: start.line, col: start.col };
+  }
+
+  parseProgram(): Program {
+    const decls: Decl[] = [];
+    while (!this.check('eof')) {
+      decls.push(this.parseDecl());
+    }
+    return { decls };
+  }
+
+  private parseDecl(): Decl {
+    if (this.check('fn')) return this.parseFn();
+    if (this.check('let')) return this.parseGlobal();
+    const t = this.peek();
+    throw new CompileError(`expected a function or global declaration, found '${t.text || t.type}'`, t.span, 'parse');
+  }
+
+  private parseType(): Ty {
+    const t = this.expect('ident');
+    let base: Ty;
+    switch (t.text) {
+      case 'int':
+        base = T_INT;
+        break;
+      case 'float':
+        base = T_FLOAT;
+        break;
+      case 'bool':
+        base = T_BOOL;
+        break;
+      case 'void':
+        base = T_VOID;
+        break;
+      default:
+        throw new CompileError(`unknown type '${t.text}'`, t.span, 'parse');
+    }
+    if (this.accept('[')) {
+      this.expect(']');
+      if (base.kind === 'void') throw new CompileError('cannot have an array of void', t.span, 'parse');
+      return { kind: 'array', elem: base as { kind: 'int' } | { kind: 'float' } | { kind: 'bool' } };
+    }
+    return base;
+  }
+
+  private parseFn(): FnDecl {
+    const start = this.expect('fn').span;
+    const nameTok = this.expect('ident');
+    this.expect('(');
+    const params: Param[] = [];
+    if (!this.check(')')) {
+      do {
+        const p = this.expect('ident');
+        this.expect(':');
+        const ty = this.parseType();
+        params.push({ name: p.text, ty, span: p.span });
+      } while (this.accept(','));
+    }
+    this.expect(')');
+    let retTy: Ty = T_VOID;
+    if (this.accept('->')) retTy = this.parseType();
+    const body = this.parseBlock();
+    return { kind: 'fn', name: nameTok.text, params, retTy, body, span: this.spanFrom(start) };
+  }
+
+  private parseGlobal(): GlobalDecl {
+    const start = this.expect('let').span;
+    const nameTok = this.expect('ident');
+    let declTy: Ty | null = null;
+    if (this.accept(':')) declTy = this.parseType();
+    this.expect('=');
+    const init = this.parseExpr();
+    this.expect(';');
+    return { kind: 'global', name: nameTok.text, declTy, init, span: this.spanFrom(start) };
+  }
+
+  private parseBlock(): Block {
+    const start = this.expect('{').span;
+    const stmts: Stmt[] = [];
+    while (!this.check('}') && !this.check('eof')) {
+      stmts.push(this.parseStmt());
+    }
+    this.expect('}');
+    return { stmts, span: this.spanFrom(start) };
+  }
+
+  private parseStmt(): Stmt {
+    const t = this.peek();
+    switch (t.type) {
+      case 'let':
+        return this.parseLet();
+      case 'if':
+        return this.parseIf();
+      case 'while':
+        return this.parseWhile();
+      case 'for':
+        return this.parseFor();
+      case 'return':
+        return this.parseReturn();
+      case 'break':
+        this.next();
+        this.expect(';');
+        return { node: 'break', span: this.spanFrom(t.span) };
+      case 'continue':
+        this.next();
+        this.expect(';');
+        return { node: 'continue', span: this.spanFrom(t.span) };
+      case '{': {
+        const block = this.parseBlock();
+        return { node: 'block', block, span: block.span };
+      }
+      default:
+        return this.parseSimpleStmt();
+    }
+  }
+
+  private parseLet(): Stmt {
+    const start = this.expect('let').span;
+    const nameTok = this.expect('ident');
+    let declTy: Ty | null = null;
+    if (this.accept(':')) declTy = this.parseType();
+    this.expect('=');
+    const init = this.parseExpr();
+    this.expect(';');
+    return { node: 'let', name: nameTok.text, declTy, init, span: this.spanFrom(start) };
+  }
+
+  private parseIf(): Stmt {
+    const start = this.expect('if').span;
+    this.expect('(');
+    const cond = this.parseExpr();
+    this.expect(')');
+    const then = this.parseBlock();
+    let otherwise: Block | null = null;
+    if (this.accept('else')) {
+      if (this.check('if')) {
+        // `else if` — wrap the nested if as a single-statement block.
+        const inner = this.parseIf();
+        otherwise = { stmts: [inner], span: inner.span };
+      } else {
+        otherwise = this.parseBlock();
+      }
+    }
+    return { node: 'if', cond, then, otherwise, span: this.spanFrom(start) };
+  }
+
+  private parseWhile(): Stmt {
+    const start = this.expect('while').span;
+    this.expect('(');
+    const cond = this.parseExpr();
+    this.expect(')');
+    const body = this.parseBlock();
+    return { node: 'while', cond, body, span: this.spanFrom(start) };
+  }
+
+  private parseFor(): Stmt {
+    const start = this.expect('for').span;
+    this.expect('(');
+    let init: Stmt | null = null;
+    if (!this.check(';')) {
+      init = this.check('let') ? this.parseLetNoSemi() : this.parseSimpleStmtNoSemi();
+    }
+    this.expect(';');
+    const cond = this.check(';') ? null : this.parseExpr();
+    this.expect(';');
+    const update = this.check(')') ? null : this.parseSimpleStmtNoSemi();
+    this.expect(')');
+    const body = this.parseBlock();
+    return { node: 'for', init, cond, update, body, span: this.spanFrom(start) };
+  }
+
+  private parseLetNoSemi(): Stmt {
+    const start = this.expect('let').span;
+    const nameTok = this.expect('ident');
+    let declTy: Ty | null = null;
+    if (this.accept(':')) declTy = this.parseType();
+    this.expect('=');
+    const init = this.parseExpr();
+    return { node: 'let', name: nameTok.text, declTy, init, span: this.spanFrom(start) };
+  }
+
+  private parseReturn(): Stmt {
+    const start = this.expect('return').span;
+    let value: Expr | null = null;
+    if (!this.check(';')) value = this.parseExpr();
+    this.expect(';');
+    return { node: 'return', value, span: this.spanFrom(start) };
+  }
+
+  // Assignment / index-assignment / bare expression statement.
+  private parseSimpleStmt(): Stmt {
+    const s = this.parseSimpleStmtNoSemi();
+    this.expect(';');
+    return s;
+  }
+
+  private parseSimpleStmtNoSemi(): Stmt {
+    const start = this.peek().span;
+    const lhs = this.parseExpr();
+    if (this.check('=')) {
+      this.next();
+      const value = this.parseExpr();
+      if (lhs.node === 'ident') {
+        return { node: 'assign', name: lhs.name, value, span: this.spanFrom(start) };
+      }
+      if (lhs.node === 'index') {
+        return { node: 'index-assign', target: lhs.target, index: lhs.index, value, span: this.spanFrom(start) };
+      }
+      throw new CompileError('invalid assignment target', lhs.span, 'parse');
+    }
+    return { node: 'expr', expr: lhs, span: this.spanFrom(start) };
+  }
+
+  // ----- expressions (Pratt) -----
+
+  private parseExpr(minBp = 0): Expr {
+    let left = this.parsePrefix();
+    for (;;) {
+      const op = this.peek().type;
+      const bp = BINDING[op];
+      if (!bp || bp[0] < minBp) break;
+      const opTok = this.next();
+      const right = this.parseExpr(bp[1]);
+      left = {
+        node: 'binary',
+        op: opTok.type as BinaryOp,
+        left,
+        right,
+        span: { start: left.span.start, end: right.span.end, line: left.span.line, col: left.span.col },
+      };
+    }
+    return left;
+  }
+
+  private parsePrefix(): Expr {
+    const t = this.peek();
+    if (t.type === '-' || t.type === '!' || t.type === '~' || t.type === '+') {
+      this.next();
+      const operand = this.parsePrefix();
+      return { node: 'unary', op: t.type as UnaryOp, operand, span: this.spanFrom(t.span) };
+    }
+    return this.parsePostfix();
+  }
+
+  private parsePostfix(): Expr {
+    let e = this.parsePrimary();
+    for (;;) {
+      if (this.check('[')) {
+        this.next();
+        const index = this.parseExpr();
+        this.expect(']');
+        e = { node: 'index', target: e, index, span: this.spanFrom(e.span) };
+      } else {
+        break;
+      }
+    }
+    return e;
+  }
+
+  private parsePrimary(): Expr {
+    const t = this.next();
+    switch (t.type) {
+      case 'int_lit':
+        return { node: 'int', value: t.value, span: t.span };
+      case 'float_lit':
+        return { node: 'float', value: t.value, span: t.span };
+      case 'true':
+        return { node: 'bool', value: true, span: t.span };
+      case 'false':
+        return { node: 'bool', value: false, span: t.span };
+      case '(': {
+        const e = this.parseExpr();
+        this.expect(')');
+        return e;
+      }
+      case 'ident': {
+        if (this.check('(')) {
+          this.next();
+          const args: Expr[] = [];
+          if (!this.check(')')) {
+            do {
+              args.push(this.parseExpr());
+            } while (this.accept(','));
+          }
+          this.expect(')');
+          return { node: 'call', callee: t.text, args, span: this.spanFrom(t.span) };
+        }
+        return { node: 'ident', name: t.text, span: t.span };
+      }
+      default:
+        throw new CompileError(`unexpected token '${t.text || t.type}' in expression`, t.span, 'parse');
+    }
+  }
+}
+
+export function parse(source: string): Program {
+  const toks = tokenize(source);
+  return new Parser(toks).parseProgram();
+}
