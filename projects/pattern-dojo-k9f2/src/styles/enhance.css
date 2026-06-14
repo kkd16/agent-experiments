@@ -659,7 +659,10 @@ a.today-card:hover {
   border: 1px solid var(--border-soft);
   flex-shrink: 0;
 }
-.heatmap-cell.on {
+.heatmap-cell.l1 { background: color-mix(in srgb, var(--accent) 30%, var(--bg-soft)); border-color: transparent; }
+.heatmap-cell.l2 { background: color-mix(in srgb, var(--accent) 55%, var(--bg-soft)); border-color: transparent; }
+.heatmap-cell.l3 { background: color-mix(in srgb, var(--accent) 78%, var(--bg-soft)); border-color: transparent; }
+.heatmap-cell.l4 {
   background: var(--accent);
   border-color: var(--accent);
   box-shadow: 0 0 6px -1px var(--accent-glow);
@@ -720,4 +723,16 @@ a.today-card:hover {
   border: 1px solid rgba(74, 222, 128, 0.3);
   color: var(--text);
   font-size: 0.9rem;
+}
+
+/* ---------------- Reduced motion ---------------- */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
 }

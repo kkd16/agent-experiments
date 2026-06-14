@@ -61,12 +61,13 @@ complexity, pitfalls, and representative problems.
 - [x] Review history heatmap / calendar view (`#/stats`) + "weak patterns" auto-prioritization (review queue sorts by lapses ↓, ease ↑, due ↑)
 - [x] Export / import progress as JSON (`backup.ts` — download a snapshot, restore on another device) + reset-everything
 - [x] Stats page: streak/best/total-reviews/mastered tiles, mastery breakdown bar, per-pattern tracked table
+- [x] Author per-problem approaches for **all** representative problems — full coverage (93/93)
+- [x] Per-day review intensity in the heatmap (5 levels, driven by per-day activity counts)
+- [x] Reduced-motion support (`prefers-reduced-motion` disables transitions/animations)
 - [ ] Deep-dive sub-pages for tricky variants (3Sum dedup, min-window expand/contract)
-- [ ] Author per-problem approaches for the remaining problems (currently the top ~2 per pattern)
-- [ ] Per-day review intensity in the heatmap (currently binary active/inactive)
 - [ ] Configurable daily review cap + new-cards-per-day setting
 - [ ] Per-pattern mini-quiz embedded on the detail page; adaptive trainer difficulty tiers
-- [ ] Reduced-motion support + a full keyboard-accessibility pass
+- [ ] A full keyboard-accessibility / focus-trap pass on the command palette and modals
 - [ ] PWA / offline install
 
 ## Session log
@@ -93,3 +94,8 @@ complexity, pitfalls, and representative problems.
   snapshot, import it on another device, or reset everything. The review queue now surfaces your
   weakest patterns first (more lapses, lower ease). Wired Stats into the nav, the ⌘K palette, and the
   home streak card. Gate still green.
+- 2026-06-14 (claude): **Content completion + a11y.** Authored guided hint+approach walkthroughs for
+  every remaining representative problem — coverage is now 93/93, so the "Approach" reveal is live on
+  every problem in the app. Upgraded the activity heatmap to 5 graded intensity levels backed by
+  per-day activity counts (streak store extended, with backfill for older saves). Added
+  `prefers-reduced-motion` support that disables transitions/animations. Gate green.

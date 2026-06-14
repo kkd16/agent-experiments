@@ -13,6 +13,7 @@ const EVENT = "pd-streak-change";
 interface StreakStore {
   v: 1;
   days: string[]; // sorted unique "YYYY-MM-DD"
+  counts: Record<string, number>; // activity events per day (drives heatmap intensity)
 }
 
 export function dayKey(d: Date = new Date()): string {
@@ -27,12 +28,18 @@ function read(): StreakStore {
     const raw = localStorage.getItem(KEY);
     if (raw) {
       const parsed = JSON.parse(raw) as StreakStore;
-      if (parsed && Array.isArray(parsed.days)) return parsed;
+      if (parsed && Array.isArray(parsed.days)) {
+        // Backfill counts for stores written before per-day intensity existed.
+        if (!parsed.counts || typeof parsed.counts !== "object") {
+          parsed.counts = Object.fromEntries(parsed.days.map((d) => [d, 1]));
+        }
+        return parsed;
+      }
     }
   } catch {
     /* ignore */
   }
-  return { v: 1, days: [] };
+  return { v: 1, days: [], counts: {} };
 }
 
 function write(s: StreakStore) {
@@ -95,12 +102,13 @@ export function useStreak() {
   const recordToday = useCallback(() => {
     const today = dayKey();
     const cur = read();
-    if (cur.days.includes(today)) return;
-    const next: StreakStore = { v: 1, days: [...cur.days, today].sort() };
+    const days = cur.days.includes(today) ? cur.days : [...cur.days, today].sort();
+    const counts = { ...cur.counts, [today]: (cur.counts[today] ?? 0) + 1 };
+    const next: StreakStore = { v: 1, days, counts };
     write(next);
     setStore(next);
   }, []);
 
   const { current, longest, activeToday } = computeStreaks(store.days);
-  return { current, longest, activeToday, days: store.days, recordToday };
+  return { current, longest, activeToday, days: store.days, counts: store.counts, recordToday };
 }
