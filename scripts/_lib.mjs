@@ -12,6 +12,26 @@ export async function exists(p) {
   }
 }
 
+export const SLUG_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+
+// Golden Rule: in scope only if every changed file is under one projects/<slug>/. → { slug } | { skip }
+export function classifyScope(files) {
+  if (files.length === 0) return { skip: 'no changed files (branch already merged or empty)' };
+  const slugs = new Set();
+  for (const f of files) {
+    const m = f.match(/^projects\/([^/]+)\/.+/);
+    if (!m) return { skip: `changes outside a project folder are never auto-merged (e.g. "${f}")` };
+    const slug = m[1];
+    if (slug.startsWith('_') || slug.startsWith('.'))
+      return { skip: `reserved folder "projects/${slug}/" cannot be auto-merged` };
+    if (!SLUG_RE.test(slug)) return { skip: `"${slug}" is not a kebab-case slug` };
+    slugs.add(slug);
+  }
+  if (slugs.size !== 1)
+    return { skip: `auto-merge handles exactly one project per branch (found ${slugs.size}: ${[...slugs].join(', ')})` };
+  return { slug: [...slugs][0] };
+}
+
 export function humanize(slug) {
   const m = slug.match(/^(.*)-([0-9a-f]{4,8})$/i);
   const base = m && /\d/.test(m[2]) && /[a-f]/i.test(m[2]) ? m[1] : slug;

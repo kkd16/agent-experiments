@@ -14,8 +14,7 @@
 //   slug=<slug>      → exactly one project folder changed; safe to merge
 //   skip=<reason>    → caller must NOT merge
 import { appendFile, readFile } from 'node:fs/promises';
-
-const SLUG_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+import { classifyScope } from './_lib.mjs';
 
 async function readInput() {
   const arg = process.argv[2];
@@ -25,29 +24,9 @@ async function readInput() {
   return Buffer.concat(chunks).toString('utf8');
 }
 
-function classify(files) {
-  if (files.length === 0) return { skip: 'no changed files (branch already merged or empty)' };
-
-  const slugs = new Set();
-  for (const f of files) {
-    const m = f.match(/^projects\/([^/]+)\/.+/);
-    if (!m) return { skip: `changes outside a project folder are never auto-merged (e.g. "${f}")` };
-    const slug = m[1];
-    if (slug.startsWith('_') || slug.startsWith('.'))
-      return { skip: `reserved folder "projects/${slug}/" cannot be auto-merged` };
-    if (!SLUG_RE.test(slug))
-      return { skip: `"${slug}" is not a kebab-case slug` };
-    slugs.add(slug);
-  }
-  if (slugs.size !== 1)
-    return { skip: `auto-merge handles exactly one project per branch (found ${slugs.size}: ${[...slugs].join(', ')})` };
-
-  return { slug: [...slugs][0] };
-}
-
 const raw = await readInput();
 const files = raw.split('\n').map((l) => l.trim()).filter(Boolean);
-const result = classify(files);
+const result = classifyScope(files);
 
 const line = result.slug ? `slug=${result.slug}\n` : `skip=${result.skip}\n`;
 if (process.env.GITHUB_OUTPUT) await appendFile(process.env.GITHUB_OUTPUT, line);
