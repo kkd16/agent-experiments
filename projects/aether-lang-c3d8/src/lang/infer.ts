@@ -6,6 +6,7 @@
 // typed monomorphically while their own body is checked, then generalised.
 
 import type { BinaryOp, Expr, Pattern, TypeExpr } from './ast.ts'
+import { cloneExpr } from './ast.ts'
 import type { TypeCtorInfo } from './exhaustive.ts'
 import { analyzeMatch } from './exhaustive.ts'
 import type { Span } from './lexer.ts'
@@ -80,7 +81,7 @@ export interface InferResult {
 interface ClassDef {
   name: string
   param: string
-  methods: Map<string, { type: TypeExpr; span: Span }>
+  methods: Map<string, { type: TypeExpr; span: Span; default?: Expr }>
 }
 
 interface InstanceDef {
@@ -683,7 +684,7 @@ class Inferrer {
     if (this.classes.has(e.name)) {
       throw new TypeCheckError(`class ${e.name} is already defined`, e.span)
     }
-    const methods = new Map<string, { type: TypeExpr; span: Span }>()
+    const methods = new Map<string, { type: TypeExpr; span: Span; default?: Expr }>()
     for (const m of e.methods) {
       if (methods.has(m.name)) {
         throw new TypeCheckError(`duplicate method ${m.name} in class ${e.name}`, m.span)
@@ -692,7 +693,7 @@ class Inferrer {
       if (owner) {
         throw new TypeCheckError(`method ${m.name} already belongs to class ${owner}`, m.span)
       }
-      methods.set(m.name, { type: m.type, span: m.span })
+      methods.set(m.name, { type: m.type, span: m.span, default: m.default })
       this.methodToClass.set(m.name, e.name)
     }
     this.classes.set(e.name, { name: e.name, param: e.param, methods })
@@ -760,22 +761,36 @@ class Inferrer {
     }
     this.addInstance(e.cls, def) // register before checking methods (recursive instances)
 
-    const seen = new Set<string>()
+    // index the instance's provided methods, validating names and duplicates
+    const provided = new Map<string, { value: Expr; span: Span }>()
     for (const impl of e.methods) {
-      const sig = cls.methods.get(impl.name)
-      if (!sig) throw new TypeCheckError(`class ${e.cls} has no method '${impl.name}'`, impl.span)
-      if (seen.has(impl.name)) {
+      if (!cls.methods.has(impl.name)) {
+        throw new TypeCheckError(`class ${e.cls} has no method '${impl.name}'`, impl.span)
+      }
+      if (provided.has(impl.name)) {
         throw new TypeCheckError(`duplicate method '${impl.name}' in instance`, impl.span)
       }
-      seen.add(impl.name)
-      const expected = this.methodSigType(sig.type, cls.param, headType)
-      const got = this.infer(env, impl.value)
-      this.unify(got, expected, impl.span)
+      provided.set(impl.name, { value: impl.value, span: impl.span })
     }
-    for (const m of cls.methods.keys()) {
-      if (!seen.has(m)) {
-        throw new TypeCheckError(`instance ${e.cls} ${headCon} is missing method '${m}'`, e.span)
+    // for every class method, take the instance's impl or fall back to the
+    // class default (cloned so its elaboration is independent per instance)
+    const finalMethods: { name: string; value: Expr }[] = []
+    for (const [mname, sig] of cls.methods) {
+      const p = provided.get(mname)
+      let value: Expr
+      let span = e.span
+      if (p) {
+        value = p.value
+        span = p.span
+      } else if (sig.default) {
+        value = cloneExpr(sig.default)
+      } else {
+        throw new TypeCheckError(`instance ${e.cls} ${headCon} is missing method '${mname}'`, e.span)
       }
+      const expected = this.methodSigType(sig.type, cls.param, headType)
+      const got = this.infer(env, value)
+      this.unify(got, expected, span)
+      finalMethods.push({ name: mname, value })
     }
 
     // discharge the method bodies' constraints. Ground ones resolve to other
@@ -804,7 +819,7 @@ class Inferrer {
     this.tables.instanceElab.set(e, {
       dictName,
       paramNames: context.map((c) => c.name),
-      methods: e.methods.map((m) => ({ name: m.name, value: m.value })),
+      methods: finalMethods,
     })
     this.tables.used = true
     return this.infer(env, e.body)

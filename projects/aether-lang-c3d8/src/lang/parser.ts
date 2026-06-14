@@ -623,7 +623,15 @@ class Parser {
       const mtok = this.next()
       this.expect('op', ':')
       const type = this.parseTypeExpr()
-      methods.push({ name: mtok.value, type, span: this.spanFrom(mtok.span, type.span) })
+      // an optional default implementation: `m : τ = <expr>`
+      let dflt: Expr | undefined
+      let end = type.span
+      if (this.at('op', '=')) {
+        this.next()
+        dflt = this.parseExpr(0)
+        end = dflt.span
+      }
+      methods.push({ name: mtok.value, type, default: dflt, span: this.spanFrom(mtok.span, end) })
       if (this.at('punc', ',')) this.next()
       else break
     }

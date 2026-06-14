@@ -53,10 +53,12 @@ export interface CtorDecl {
   span: Span
 }
 
-/** A method signature inside a `class` declaration: `name : <type>`. */
+/** A method signature inside a `class` declaration: `name : <type>`, with an
+ * optional default implementation used by instances that omit it. */
 export interface MethodSig {
   name: string
   type: TypeExpr
+  default?: Expr
   span: Span
 }
 
@@ -139,6 +141,78 @@ export type Expr =
       body: Expr
       span: Span
     }
+
+/** Structurally deep-copy an expression, giving every node a fresh identity.
+ * Used so a class default method can be elaborated independently per instance
+ * (the side-tables are keyed by node identity). */
+export function cloneExpr(e: Expr): Expr {
+  switch (e.kind) {
+    case 'int':
+    case 'float':
+    case 'bool':
+    case 'str':
+    case 'unit':
+    case 'var':
+      return { ...e }
+    case 'lambda':
+      return { ...e, body: cloneExpr(e.body) }
+    case 'app':
+      return { ...e, fn: cloneExpr(e.fn), arg: cloneExpr(e.arg) }
+    case 'let':
+      return { ...e, value: cloneExpr(e.value), body: cloneExpr(e.body) }
+    case 'if':
+      return { ...e, cond: cloneExpr(e.cond), then: cloneExpr(e.then), else: cloneExpr(e.else) }
+    case 'binop':
+      return { ...e, left: cloneExpr(e.left), right: cloneExpr(e.right) }
+    case 'unop':
+      return { ...e, operand: cloneExpr(e.operand) }
+    case 'list':
+    case 'tuple':
+      return { ...e, elements: e.elements.map(cloneExpr) }
+    case 'seq':
+      return { ...e, first: cloneExpr(e.first), rest: cloneExpr(e.rest) }
+    case 'match':
+      return {
+        ...e,
+        scrutinee: cloneExpr(e.scrutinee),
+        cases: e.cases.map((c) => ({
+          pattern: c.pattern,
+          guard: c.guard ? cloneExpr(c.guard) : undefined,
+          body: cloneExpr(c.body),
+        })),
+      }
+    case 'typedecl':
+      return { ...e, ctors: e.ctors.map((c) => ({ ...c })), body: cloneExpr(e.body) }
+    case 'letrec':
+      return {
+        ...e,
+        bindings: e.bindings.map((b) => ({ name: b.name, value: cloneExpr(b.value) })),
+        body: cloneExpr(e.body),
+      }
+    case 'record':
+      return { ...e, fields: e.fields.map((f) => ({ label: f.label, value: cloneExpr(f.value) })) }
+    case 'field':
+      return { ...e, record: cloneExpr(e.record) }
+    case 'recordUpdate':
+      return {
+        ...e,
+        record: cloneExpr(e.record),
+        fields: e.fields.map((f) => ({ label: f.label, value: cloneExpr(f.value) })),
+      }
+    case 'classdecl':
+      return {
+        ...e,
+        methods: e.methods.map((m) => ({ ...m, default: m.default ? cloneExpr(m.default) : undefined })),
+        body: cloneExpr(e.body),
+      }
+    case 'instancedecl':
+      return {
+        ...e,
+        methods: e.methods.map((m) => ({ ...m, value: cloneExpr(m.value) })),
+        body: cloneExpr(e.body),
+      }
+  }
+}
 
 /** A short human-readable label for a node, used by the AST visualiser. */
 export function nodeLabel(e: Expr): string {

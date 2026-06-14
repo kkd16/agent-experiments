@@ -1314,3 +1314,8 @@ body {
   overflow-x: auto;
   color: var(--fg);
 }
+.cls-default {
+  color: var(--fg-faint);
+  font-size: 0.78em;
+  font-style: italic;
+}

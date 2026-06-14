@@ -414,6 +414,44 @@ let describe = fn s -> name s ^ " of area " ^ show (area s) in
 , describe (MkRect 3.0 4.0) )`,
   },
   {
+    id: 'default-methods',
+    title: 'Classes with default methods',
+    blurb: 'Define `eq`, get `ne` for free — a default method an instance may override.',
+    visual: false,
+    code: `// A class method can carry a DEFAULT implementation (in terms of the
+// others). An instance only needs to supply what's missing — so an
+// "Eq" instance need only define eq, and ne comes along for free.
+
+class Eq a where
+  eq : a -> a -> Bool,
+  ne : a -> a -> Bool = fn x y -> if eq x y then false else true
+in
+
+// Colour as a small enum-like type
+type Colour = Red | Green | Blue in
+
+instance Eq Int where
+  eq = fn x y -> x == y
+in
+instance Eq Colour where
+  eq = fn x y -> match (x, y) with
+    | (Red, Red)     -> true
+    | (Green, Green) -> true
+    | (Blue, Blue)   -> true
+    | _              -> false
+in
+
+// a generic membership test, constrained by Eq (note: never names a type)
+let rec member = fn x xs ->
+  if empty xs then false
+  else eq x (head xs) || member x (tail xs) in
+
+( ne 3 4                       // true   — via the default
+, eq Green Green               // true
+, ne Red Blue                  // true   — default works for Colour too
+, member Blue [Red, Green, Blue] )`,
+  },
+  {
     id: 'semigroup',
     title: 'Semigroup & a generic fold',
     blurb: 'An associative `combine`, then `mconcat` folds any non-empty list of it.',

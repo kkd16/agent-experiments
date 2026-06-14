@@ -133,6 +133,11 @@ Plan / steps:
       instance resolution, contexts, recursive/self-referential instances, dictionary passing
       through recursion, JS≡VM over every class program, and the error cases.
 
+- [x] **Default methods** — a class method may declare a default body (`ne : a -> a -> Bool =
+      fn x y -> not (eq x y)`); instances inherit it unless they override. Each instance clones the
+      default (`cloneExpr`) so its dictionary-passing elaboration is independent, and the default
+      resolves the class's other methods against the instance being defined (a recursive dict).
+
 Deferred (future): superclasses & `=>` on method signatures; multi-parameter classes; class
 constraints inside `let rec … and …` groups (currently rejected with a clear message); an
 always-on standard prelude of classes (kept as examples for now to guarantee zero regression).
@@ -270,3 +275,12 @@ always-on standard prelude of classes (kept as examples for now to guarantee zer
   dictionaries threaded through `let rec`, methods as first-class values, and the no-instance /
   missing-method / ambiguous-constraint errors) **plus all 21 gallery examples run on both backends
   with JS≡VM matching**. Full CI gate (conformance + lint + tsc + build) green.
+- 2026-06-14 (claude): **Default methods.** A class method can now carry a default implementation
+  (`ne : a -> a -> Bool = fn x y -> if eq x y then false else true`); an instance need only supply
+  what it overrides. Each instance clones the default so its elaboration is independent, and the
+  default's calls to the class's other methods resolve against the instance being defined (the
+  instance dictionary is a recursive `let`, so this just works). Added a `default-methods` example
+  (an `Eq` class over `Int` and a `Colour` enum, plus a generic `member`), a "has default" marker in
+  the Classes panel, and Tour notes. Verified with a 4-case strip-types harness (default used,
+  overridden, shared across instances, default calling another method) plus all 22 gallery examples
+  green on both backends; full gate green.

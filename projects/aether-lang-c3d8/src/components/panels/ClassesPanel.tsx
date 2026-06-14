@@ -12,7 +12,7 @@ interface Props {
 interface ClassRow {
   name: string
   param: string
-  methods: { name: string; sig: string }[]
+  methods: { name: string; sig: string; hasDefault: boolean }[]
 }
 
 interface InstanceRow {
@@ -32,7 +32,11 @@ function collect(ast: Expr | null): { classes: ClassRow[]; instances: InstanceRo
       classes.push({
         name: node.name,
         param: node.param,
-        methods: node.methods.map((m) => ({ name: m.name, sig: typeExprToString(m.type) })),
+        methods: node.methods.map((m) => ({
+          name: m.name,
+          sig: typeExprToString(m.type),
+          hasDefault: m.default !== undefined,
+        })),
       })
       node = node.body
     } else if (node.kind === 'instancedecl') {
@@ -98,6 +102,7 @@ export default function ClassesPanel({ ast, coreAst }: Props) {
                       <td className="cls-colon">:</td>
                       <td className="cls-sig">
                         <code>{m.sig}</code>
+                        {m.hasDefault && <span className="cls-default"> · has default</span>}
                       </td>
                     </tr>
                   ))}

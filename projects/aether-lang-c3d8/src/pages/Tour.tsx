@@ -154,6 +154,16 @@ instance Disp Bool where disp = fn b -> if b then "yes" else "no" in
   disp = fn xs -> "[" ^ join ", " (map disp xs) ^ "]"
 in
 disp [1, 2, 3]                    // "[1, 2, 3]"`}</pre>
+        <p>
+          A method may declare a <strong>default</strong> in terms of the others, so an instance
+          only supplies what's missing — define <code>eq</code> and get <code>ne</code> free:
+        </p>
+        <pre className="snippet">{`class Eq a where
+  eq : a -> a -> Bool,
+  ne : a -> a -> Bool = fn x y -> if eq x y then false else true
+in
+instance Eq Int where eq = fn x y -> x == y in
+(eq 3 3, ne 3 4)                  // (true, true)`}</pre>
       </section>
 
       <section>
