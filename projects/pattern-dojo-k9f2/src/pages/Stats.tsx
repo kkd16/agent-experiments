@@ -17,22 +17,31 @@ const MASTERY_COLOR: Record<Mastery, string> = {
   mastered: "var(--good)",
 };
 
+/** Map an activity count to a heatmap intensity level 0–4. */
+function level(count: number): number {
+  if (count <= 0) return 0;
+  if (count === 1) return 1;
+  if (count <= 3) return 2;
+  if (count <= 6) return 3;
+  return 4;
+}
+
 /** Build a Sunday-aligned grid of the last WEEKS weeks ending this week. */
-function buildGrid(activeDays: Set<string>) {
+function buildGrid(counts: Record<string, number>) {
   const today = new Date();
   today.setHours(0, 0, 0, 0);
   // end at the upcoming Saturday so the current week is the last column
   const end = new Date(today.getTime() + (6 - today.getDay()) * DAY_MS);
   const start = new Date(end.getTime() - (WEEKS * 7 - 1) * DAY_MS);
-  const cols: { date: Date; active: boolean; future: boolean }[][] = [];
+  const cols: { date: Date; lvl: number; future: boolean }[][] = [];
   const cursor = new Date(start);
   for (let w = 0; w < WEEKS; w++) {
-    const col: { date: Date; active: boolean; future: boolean }[] = [];
+    const col: { date: Date; lvl: number; future: boolean }[] = [];
     for (let d = 0; d < 7; d++) {
       const date = new Date(cursor);
       col.push({
         date,
-        active: activeDays.has(dayKey(date)),
+        lvl: level(counts[dayKey(date)] ?? 0),
         future: date.getTime() > today.getTime(),
       });
       cursor.setTime(cursor.getTime() + DAY_MS);
@@ -44,12 +53,11 @@ function buildGrid(activeDays: Set<string>) {
 
 export default function Stats() {
   const srs = useSRS();
-  const { current, longest, days } = useStreak();
+  const { current, longest, counts: dayCounts } = useStreak();
   const [msg, setMsg] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
-  const activeDays = new Set(days);
-  const grid = buildGrid(activeDays);
+  const grid = buildGrid(dayCounts);
 
   const counts: Record<Mastery, number> = { new: 0, learning: 0, young: 0, mastered: 0 };
   for (const p of patterns) counts[srs.masteryOf(p.id)]++;
@@ -90,8 +98,8 @@ export default function Stats() {
               {col.map((cell, di) => (
                 <div
                   key={di}
-                  className={`heatmap-cell ${cell.active ? "on" : ""} ${cell.future ? "future" : ""}`}
-                  title={cell.future ? "" : `${dayKey(cell.date)}${cell.active ? " · active" : ""}`}
+                  className={`heatmap-cell l${cell.lvl} ${cell.future ? "future" : ""}`}
+                  title={cell.future ? "" : `${dayKey(cell.date)}${cell.lvl ? ` · ${dayCounts[dayKey(cell.date)]} action${dayCounts[dayKey(cell.date)] === 1 ? "" : "s"}` : ""}`}
                 />
               ))}
             </div>
@@ -100,7 +108,13 @@ export default function Stats() {
         <div className="heatmap-legend faint">
           <span>{WEEKS} weeks</span>
           <span className="row" style={{ gap: 6 }}>
-            less <span className="heatmap-cell" /> <span className="heatmap-cell on" /> more
+            less
+            <span className="heatmap-cell l0" />
+            <span className="heatmap-cell l1" />
+            <span className="heatmap-cell l2" />
+            <span className="heatmap-cell l3" />
+            <span className="heatmap-cell l4" />
+            more
           </span>
         </div>
       </section>
