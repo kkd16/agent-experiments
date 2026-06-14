@@ -60,6 +60,19 @@ export function evalRepl(defs: string[], input: string): ReplOutcome {
     return { display: errStr(r), ok: false, newDef: null }
   }
 
+  // 4. a class / instance declaration: `class Name a where …` / `instance …`
+  const className = trimmed.match(/^class\s+([A-Za-z_][A-Za-z0-9_']*)/)
+  if (className) {
+    const r = runPipeline(wrap(defs, `${trimmed}\nin 0`), { record: false })
+    if (!r.error) return { display: `class ${className[1]} defined`, ok: true, newDef: trimmed }
+    return { display: errStr(r), ok: false, newDef: null }
+  }
+  if (/^instance\b/.test(trimmed)) {
+    const r = runPipeline(wrap(defs, `${trimmed}\nin 0`), { record: false })
+    if (!r.error) return { display: 'instance defined', ok: true, newDef: trimmed }
+    return { display: errStr(r), ok: false, newDef: null }
+  }
+
   // otherwise report the original expression error
   return { display: errStr(asExpr), ok: false, newDef: null }
 }

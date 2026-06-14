@@ -35,6 +35,9 @@ const KEYWORDS = new Set([
   'with',
   'type',
   'when',
+  'class',
+  'instance',
+  'where',
 ])
 
 const OP_CHARS = new Set(['+', '-', '*', '/', '%', '<', '>', '=', '!', '^', '|', '&', ':', '.'])

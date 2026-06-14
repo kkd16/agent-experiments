@@ -9,6 +9,7 @@ import TypesPanel from './panels/TypesPanel.tsx'
 import BytecodePanel from './panels/BytecodePanel.tsx'
 import JsPanel from './panels/JsPanel.tsx'
 import DerivationPanel from './panels/DerivationPanel.tsx'
+import ClassesPanel from './panels/ClassesPanel.tsx'
 import DebuggerPanel from './panels/DebuggerPanel.tsx'
 import { runPipeline } from '../lang/pipeline.ts'
 import type { PipelineResult } from '../lang/pipeline.ts'
@@ -23,7 +24,17 @@ import {
   saveCode,
 } from '../share.ts'
 
-type Tab = 'output' | 'canvas' | 'tokens' | 'ast' | 'types' | 'deriv' | 'bytecode' | 'js' | 'debug'
+type Tab =
+  | 'output'
+  | 'canvas'
+  | 'tokens'
+  | 'ast'
+  | 'types'
+  | 'classes'
+  | 'deriv'
+  | 'bytecode'
+  | 'js'
+  | 'debug'
 
 const TABS: { id: Tab; label: string }[] = [
   { id: 'output', label: 'Result' },
@@ -31,6 +42,7 @@ const TABS: { id: Tab; label: string }[] = [
   { id: 'tokens', label: 'Tokens' },
   { id: 'ast', label: 'AST' },
   { id: 'types', label: 'Types' },
+  { id: 'classes', label: 'Classes' },
   { id: 'deriv', label: 'Derivation' },
   { id: 'bytecode', label: 'Bytecode' },
   { id: 'js', label: 'JavaScript' },
@@ -187,11 +199,14 @@ export default function Playground() {
           {tab === 'types' && (
             <TypesPanel programType={analysis.programType} bindingTypes={analysis.bindingTypes} />
           )}
+          {tab === 'classes' && (
+            <ClassesPanel ast={analysis.ast} coreAst={analysis.coreAst} />
+          )}
           {tab === 'deriv' && (
             <DerivationPanel ast={analysis.ast} typeResult={analysis.typeResult} />
           )}
           {tab === 'bytecode' && <BytecodePanel proto={analysis.proto} />}
-          {tab === 'js' && <JsPanel ast={analysis.ast} code={code} optimize={optimizeOn} />}
+          {tab === 'js' && <JsPanel ast={analysis.coreAst} code={code} optimize={optimizeOn} />}
           {tab === 'debug' && (
             <DebuggerPanel
               key={traceNonce}

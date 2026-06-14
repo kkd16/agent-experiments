@@ -347,6 +347,107 @@ let area = fn s ->
 , foldl (fn a x -> a + x) 0 (range 1 101) )`,
   },
   {
+    id: 'typeclasses',
+    title: 'Type classes',
+    blurb: 'Principled overloading: one `disp` works for ints, bools, lists and tuples.',
+    visual: false,
+    code: `// A type class declares an overloaded operation; instances implement it
+// for each type. Aether infers qualified types (open the Types tab:
+// disp gets used at many types) and compiles classes to DICTIONARY
+// PASSING — see the Classes tab for the elaborated core.
+
+class Disp a where
+  disp : a -> String
+in
+
+instance Disp Int  where disp = fn n -> show n in
+instance Disp Bool where disp = fn b -> if b then "yes" else "no" in
+
+// instances can have a context: to show a list, you must be able to
+// show its elements. The dictionary for the elements is passed in.
+instance Disp a => Disp (List a) where
+  disp = fn xs -> "[" ^ join ", " (map disp xs) ^ "]"
+in
+instance Disp a, Disp b => Disp (a, b) where
+  disp = fn p -> match p with (x, y) -> "(" ^ disp x ^ ", " ^ disp y ^ ")"
+in
+
+// a constrained, polymorphic helper — note it never names a concrete type
+let label = fn x -> "= " ^ disp x in
+
+( disp 42
+, disp true
+, disp [1, 2, 3]
+, disp [(1, true), (2, false)]
+, label [[1], [2, 3]] )`,
+  },
+  {
+    id: 'shapes',
+    title: 'Ad-hoc polymorphism (Shape)',
+    blurb: 'One `area` / `describe` dispatched across distinct Circle and Rect types.',
+    visual: false,
+    code: `// Unlike an ADT (one type, many constructors), a type class dispatches
+// across SEPARATE types. Circle and Rect are different types that both
+// have an instance of Shape.
+
+type Circle = MkCircle Float in
+type Rect   = MkRect Float Float in
+
+class Shape a where
+  area : a -> Float,
+  name : a -> String
+in
+
+instance Shape Circle where
+  area = fn c -> match c with MkCircle r -> pi *. r *. r,
+  name = fn c -> "circle"
+in
+instance Shape Rect where
+  area = fn s -> match s with MkRect w h -> w *. h,
+  name = fn s -> "rectangle"
+in
+
+// constrained polymorphism: describe works for ANY Shape
+let describe = fn s -> name s ^ " of area " ^ show (area s) in
+
+( describe (MkCircle 2.0)
+, describe (MkRect 3.0 4.0) )`,
+  },
+  {
+    id: 'semigroup',
+    title: 'Semigroup & a generic fold',
+    blurb: 'An associative `combine`, then `mconcat` folds any non-empty list of it.',
+    visual: false,
+    code: `// A Semigroup is anything with an associative "combine" (<>). One
+// generic mconcat then works for every instance, because the right
+// dictionary is threaded in for us.
+
+type Sum = MkSum Int in
+
+class Semigroup a where
+  combine : a -> a -> a
+in
+
+instance Semigroup String where combine = fn x y -> x ^ y in
+instance Semigroup Sum    where combine = fn x y ->
+  match (x, y) with (MkSum a, MkSum b) -> MkSum (a + b) in
+// a list is a Semigroup no matter what it holds — no context needed
+instance Semigroup (List a) where
+  combine = fn x y -> x ++ y
+in
+
+// mconcat : Semigroup a => a -> List a -> a   (folds with combine)
+let rec mconcat = fn seed xs ->
+  if empty xs then seed
+  else combine (head xs) (mconcat seed (tail xs)) in
+
+let total = fn xs -> match mconcat (MkSum 0) (map MkSum xs) with MkSum n -> n in
+
+( mconcat "" ["a", "b", "c"]
+, total [1, 2, 3, 4, 5]
+, mconcat [] [[1, 2], [3], [4, 5]] )`,
+  },
+  {
     id: 'church',
     title: 'Church numerals',
     blurb: 'Encoding numbers as higher-order functions — pure lambda calculus.',
