@@ -6,6 +6,7 @@ import { formatValue, type SqlValue } from '../db/types'
 import type { QueryResult, RowsResult } from '../db/engine'
 import type { RunError } from './useEngine'
 import { PlanTree } from './PlanTree'
+import { ChartView } from './Chart'
 
 function Cell({ v }: { v: SqlValue }) {
   if (v === null) return <span className="cell-null">NULL</span>
@@ -47,9 +48,33 @@ function CopyCsvButton({ res }: { res: RowsResult }) {
   )
 }
 
-function Grid({ res }: { res: RowsResult }) {
+function hasNumericColumn(res: RowsResult): boolean {
+  return res.columns.some((c) => c.type === 'INTEGER' || c.type === 'REAL') && res.rows.length > 0
+}
+
+function RowsView({ res }: { res: RowsResult }) {
+  const [mode, setMode] = useState<'table' | 'chart'>('table')
+  const chartable = hasNumericColumn(res)
   return (
     <div className="result-block">
+      {chartable && (
+        <div className="view-switch">
+          <button className={`view-tab ${mode === 'table' ? 'active' : ''}`} onClick={() => setMode('table')}>
+            Table
+          </button>
+          <button className={`view-tab ${mode === 'chart' ? 'active' : ''}`} onClick={() => setMode('chart')}>
+            Chart
+          </button>
+        </div>
+      )}
+      {mode === 'chart' && chartable ? <ChartView res={res} /> : <GridBody res={res} />}
+    </div>
+  )
+}
+
+function GridBody({ res }: { res: RowsResult }) {
+  return (
+    <>
       <div className="grid-wrap">
         <table className="grid">
           <thead>
@@ -90,12 +115,12 @@ function Grid({ res }: { res: RowsResult }) {
         </span>
         {res.rowCount > 0 && <CopyCsvButton res={res} />}
       </div>
-    </div>
+    </>
   )
 }
 
 function ResultView({ res }: { res: QueryResult }) {
-  if (res.kind === 'rows') return <Grid res={res} />
+  if (res.kind === 'rows') return <RowsView res={res} />
   if (res.kind === 'message') {
     return (
       <div className="result-block">

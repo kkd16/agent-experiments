@@ -14,7 +14,8 @@ const SECTIONS: Section[] = [
     title: 'Data definition',
     entries: [
       { syntax: 'CREATE TABLE t (col TYPE [PRIMARY KEY] [NOT NULL] [UNIQUE], …)', note: 'Types: INTEGER, REAL, TEXT, BOOLEAN. PK/UNIQUE auto-create a B+Tree index.' },
-      { syntax: 'CREATE [UNIQUE] INDEX name ON t (col)', note: 'Builds a B+Tree the planner can use for equality/range scans.' },
+      { syntax: 'CREATE [UNIQUE] INDEX name ON t (col1 [, col2, …])', note: 'Single- or multi-column B+Tree. A composite index answers an equality prefix plus one trailing range from one tree.' },
+      { syntax: 'ANALYZE [t]', note: 'Gather column statistics (distinct/null counts, min/max, equi-depth histograms, MCV list) that drive cost-based row estimates.' },
       { syntax: 'DROP TABLE [IF EXISTS] t', note: 'Removes a table and its indexes.' },
     ],
   },
@@ -31,10 +32,11 @@ const SECTIONS: Section[] = [
     title: 'Queries',
     entries: [
       { syntax: 'SELECT [DISTINCT] items FROM t [alias]', note: 'items can be *, table.*, expressions, or aggregates with AS aliases.' },
-      { syntax: '[INNER | LEFT | RIGHT | FULL] JOIN t2 ON pred · CROSS JOIN t2', note: 'Equijoins become HashJoins; everything else NestedLoop. Outer joins null-extend.' },
+      { syntax: '[INNER | LEFT | RIGHT | FULL] JOIN t2 ON pred · CROSS JOIN t2', note: 'Equijoins use a HashJoin or, for large balanced inputs, a sort–merge join (cost-based); everything else NestedLoop. Outer joins null-extend.' },
       { syntax: 'FROM (SELECT …) alias', note: 'Derived tables (subqueries in FROM) are materialized and scanned like a base table.' },
-      { syntax: 'WHERE pred', note: 'Conjuncts are pushed down and may trigger index scans.' },
-      { syntax: 'GROUP BY exprs [HAVING pred]', note: 'COUNT, SUM, AVG, MIN, MAX — with optional DISTINCT.' },
+      { syntax: 'WHERE pred', note: 'Conjuncts are pushed down, drive index scans, and feed histogram-based selectivity estimates.' },
+      { syntax: 'GROUP BY exprs [HAVING pred]', note: 'COUNT, SUM, AVG, MIN, MAX, STDDEV[_POP], VARIANCE/VAR_POP, MEDIAN, STRING_AGG/GROUP_CONCAT — with optional DISTINCT.' },
+      { syntax: 'agg(x) FILTER (WHERE pred)', note: 'Aggregate only the rows matching pred — e.g. COUNT(*) FILTER (WHERE country = \'UK\').' },
       { syntax: 'ORDER BY expr [ASC|DESC] [, …] LIMIT n [OFFSET m]', note: 'Sort keys may reference output aliases or ordinal positions.' },
       { syntax: 'EXPLAIN [ANALYZE] SELECT …', note: 'Show the physical plan; ANALYZE also runs it and reports actual rows.' },
     ],
@@ -66,6 +68,7 @@ const SECTIONS: Section[] = [
       { syntax: 'LAG(x[,n[,def]]) · LEAD(x[,n[,def]])', note: 'Value from a row n positions away in the partition order.' },
       { syntax: 'FIRST_VALUE(x) · LAST_VALUE(x) · NTH_VALUE(x,n)', note: 'Pick a value from the partition.' },
       { syntax: 'SUM/AVG/COUNT/MIN/MAX(x) OVER (…)', note: 'Ordered ⇒ running total; unordered ⇒ whole-partition aggregate.' },
+      { syntax: 'fn(x) OVER (ORDER BY … ROWS|RANGE BETWEEN a AND b)', note: 'Explicit frames: UNBOUNDED PRECEDING, n PRECEDING, CURRENT ROW, n FOLLOWING, UNBOUNDED FOLLOWING. ROWS = physical, RANGE = peer/value-based.' },
     ],
   },
   {

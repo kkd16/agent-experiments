@@ -126,6 +126,8 @@ class Parser {
         return this.parseDrop()
       case 'EXPLAIN':
         return this.parseExplain()
+      case 'ANALYZE':
+        return this.parseAnalyze()
       case 'BEGIN':
       case 'COMMIT':
       case 'ROLLBACK':
@@ -147,6 +149,13 @@ class Parser {
     this.expect('EXPLAIN')
     const analyze = this.accept('ANALYZE')
     return { kind: 'explain', analyze, statement: this.parseStatement() }
+  }
+
+  private parseAnalyze(): Statement {
+    this.expect('ANALYZE')
+    let table: string | undefined
+    if (this.atKind('ident')) table = this.parseIdent('table name')
+    return { kind: 'analyze', table }
   }
 
   private parseTypeName(): ColumnType {
@@ -227,9 +236,12 @@ class Parser {
     this.expect('ON')
     const table = this.parseIdent('table name')
     this.expect('(')
-    const column = this.parseIdent('column name')
+    const columns: string[] = []
+    do {
+      columns.push(this.parseIdent('column name'))
+    } while (this.accept(','))
     this.expect(')')
-    return { kind: 'create_index', name, table, column, unique, ifNotExists }
+    return { kind: 'create_index', name, table, columns, unique, ifNotExists }
   }
 
   private parseDrop(): Statement {
@@ -711,6 +723,17 @@ class Parser {
     }
     this.expect(')')
 
+    // Aggregate FILTER (WHERE pred) — disambiguated from a "filter" alias by the
+    // required opening parenthesis.
+    let filter: Expr | undefined
+    if (this.at('FILTER') && this.peek(1).value === '(') {
+      this.next() // FILTER
+      this.expect('(')
+      this.expect('WHERE')
+      filter = this.parseExpr()
+      this.expect(')')
+    }
+
     // Window form: name(args) OVER ( [PARTITION BY …] [ORDER BY …] )
     if (this.at('OVER')) {
       this.next()
@@ -731,11 +754,45 @@ class Parser {
           orderBy.push({ expr, dir })
         } while (this.accept(','))
       }
+      const frame = this.tryParseFrame()
       this.expect(')')
-      return { kind: 'window', name, args, spec: { partitionBy, orderBy } }
+      return { kind: 'window', name, args, spec: { partitionBy, orderBy, frame } }
     }
 
-    return { kind: 'func', name, args, distinct, star }
+    return { kind: 'func', name, args, distinct, star, filter }
+  }
+
+  // ROWS|RANGE [BETWEEN] <bound> [AND <bound>] — an explicit window frame.
+  private tryParseFrame(): import('./ast').WindowFrame | undefined {
+    let mode: 'ROWS' | 'RANGE'
+    if (this.accept('ROWS')) mode = 'ROWS'
+    else if (this.accept('RANGE')) mode = 'RANGE'
+    else return undefined
+    if (this.accept('BETWEEN')) {
+      const start = this.parseFrameBound()
+      this.expect('AND')
+      const end = this.parseFrameBound()
+      return { mode, start, end }
+    }
+    // Single-bound form: "<bound>" means BETWEEN <bound> AND CURRENT ROW.
+    const start = this.parseFrameBound()
+    return { mode, start, end: { type: 'CURRENT_ROW' } }
+  }
+
+  private parseFrameBound(): import('./ast').FrameBound {
+    if (this.accept('UNBOUNDED')) {
+      if (this.accept('PRECEDING')) return { type: 'UNBOUNDED_PRECEDING' }
+      this.expect('FOLLOWING')
+      return { type: 'UNBOUNDED_FOLLOWING' }
+    }
+    if (this.accept('CURRENT')) {
+      this.expect('ROW')
+      return { type: 'CURRENT_ROW' }
+    }
+    const offset = this.parseExpr(COMPARISON_PREC + 1)
+    if (this.accept('PRECEDING')) return { type: 'PRECEDING', offset }
+    this.expect('FOLLOWING')
+    return { type: 'FOLLOWING', offset }
   }
 
   private parseCase(): Expr {

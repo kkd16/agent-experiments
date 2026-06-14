@@ -1,11 +1,15 @@
 // The catalog: tables, their columns, heap storage and secondary indexes.
 //
 // A Table stores rows in a "heap" keyed by a monotonically increasing rowid
-// (the physical address), plus zero or more B+Tree indexes over individual
+// (the physical address), plus zero or more B+Tree indexes over one *or more*
 // columns. This mirrors how a real row-store works: the heap is the source of
 // truth, indexes are derived structures the planner may exploit.
+//
+// Each table also caches optimizer statistics (see ./stats); the cache is
+// dropped on any mutation so the next plan sees fresh numbers.
 
-import { BTree, type BTreeStats } from './storage/btree'
+import { BTree, type BTreeStats, type IndexKey } from './storage/btree'
+import { gatherTableStats, type TableStat } from './stats'
 import { SqlError, coerceTo, type ColumnType, type SqlValue } from './types'
 import type { ColumnDef } from './ast'
 
@@ -13,8 +17,10 @@ export type Row = SqlValue[]
 
 export interface IndexMeta {
   name: string
-  column: string
-  columnIndex: number
+  /** The indexed columns, in order (length 1 for a single-column index). */
+  columns: string[]
+  /** Positional indexes of `columns` within the table's row. */
+  columnIndexes: number[]
   unique: boolean
 }
 
@@ -28,6 +34,10 @@ export class IndexHandle {
   stats(): BTreeStats {
     return this.tree.stats()
   }
+  /** Build this index's key tuple from a heap row. */
+  keyOf(row: Row): IndexKey {
+    return this.meta.columnIndexes.map((i) => row[i])
+  }
 }
 
 export class Table {
@@ -35,7 +45,10 @@ export class Table {
   readonly columns: ColumnDef[]
   /** rowid -> row. A Map preserves insertion order for stable scans. */
   readonly heap = new Map<number, Row>()
+  /** index name (lower-case) -> handle. */
   readonly indexes = new Map<string, IndexHandle>()
+  /** Cached optimizer statistics (null = stale / not yet gathered). */
+  private statsCache: TableStat | null = null
   private nextRowId = 1
 
   constructor(name: string, columns: ColumnDef[]) {
@@ -62,13 +75,14 @@ export class Table {
     const rowid = this.nextRowId++
     this.heap.set(rowid, row)
     for (const idx of this.indexes.values()) {
-      const key = row[idx.meta.columnIndex]
-      if (idx.meta.unique && key !== null && idx.tree.search(key).length > 0) {
+      const key = idx.keyOf(row)
+      if (idx.meta.unique && key.every((k) => k !== null) && idx.tree.search(key).length > 0) {
         this.heap.delete(rowid)
-        throw new SqlError(`UNIQUE constraint violated on "${this.name}.${idx.meta.column}"`, 'constraint')
+        throw new SqlError(`UNIQUE constraint violated on "${this.name}.${idx.meta.columns.join(', ')}"`, 'constraint')
       }
       idx.tree.insert(key, rowid)
     }
+    this.statsCache = null
     return rowid
   }
 
@@ -77,26 +91,27 @@ export class Table {
   insertRawRow(row: Row): number {
     const rowid = this.nextRowId++
     this.heap.set(rowid, row)
-    for (const idx of this.indexes.values()) idx.tree.insert(row[idx.meta.columnIndex], rowid)
+    for (const idx of this.indexes.values()) idx.tree.insert(idx.keyOf(row), rowid)
+    this.statsCache = null
     return rowid
   }
 
   deleteRow(rowid: number): void {
     const row = this.heap.get(rowid)
     if (!row) return
-    for (const idx of this.indexes.values()) idx.tree.remove(row[idx.meta.columnIndex], rowid)
+    for (const idx of this.indexes.values()) idx.tree.remove(idx.keyOf(row), rowid)
     this.heap.delete(rowid)
+    this.statsCache = null
   }
 
   updateRow(rowid: number, newRow: Row): void {
     this.validateRow(newRow)
     const old = this.heap.get(rowid)
     if (!old) return
-    for (const idx of this.indexes.values()) {
-      idx.tree.remove(old[idx.meta.columnIndex], rowid)
-    }
+    for (const idx of this.indexes.values()) idx.tree.remove(idx.keyOf(old), rowid)
     this.heap.set(rowid, newRow)
-    for (const idx of this.indexes.values()) idx.tree.insert(newRow[idx.meta.columnIndex], rowid)
+    for (const idx of this.indexes.values()) idx.tree.insert(idx.keyOf(newRow), rowid)
+    this.statsCache = null
   }
 
   private validateRow(row: Row): void {
@@ -109,20 +124,65 @@ export class Table {
     }
   }
 
+  // --- statistics ---------------------------------------------------------
+  /** Return cached stats, gathering them lazily if stale. */
+  ensureStats(): TableStat {
+    if (!this.statsCache) {
+      this.statsCache = gatherTableStats(
+        this.heap.values(),
+        this.columns.map((c) => ({ name: c.name, type: c.type })),
+      )
+    }
+    return this.statsCache
+  }
+  /** Force a fresh stats gather (ANALYZE). */
+  analyze(): TableStat {
+    this.statsCache = null
+    return this.ensureStats()
+  }
+  hasStats(): boolean {
+    return this.statsCache !== null
+  }
+
   // --- indexes ------------------------------------------------------------
-  createIndex(name: string, column: string, unique: boolean): IndexHandle {
-    const columnIndex = this.columnIndex(column)
-    if (columnIndex < 0) throw new SqlError(`no column "${column}" to index on "${this.name}"`, 'bind')
+  createIndex(name: string, columns: string[], unique: boolean): IndexHandle {
+    const columnIndexes = columns.map((c) => {
+      const i = this.columnIndex(c)
+      if (i < 0) throw new SqlError(`no column "${c}" to index on "${this.name}"`, 'bind')
+      return i
+    })
     const tree = new BTree()
-    const handle = new IndexHandle({ name, column, columnIndex, unique }, tree)
+    const handle = new IndexHandle({ name, columns, columnIndexes, unique }, tree)
     // Backfill existing rows.
-    for (const [rowid, row] of this.heap) tree.insert(row[columnIndex], rowid)
-    this.indexes.set(column.toLowerCase(), handle)
+    for (const [rowid, row] of this.heap) tree.insert(handle.keyOf(row), rowid)
+    this.indexes.set(name.toLowerCase(), handle)
     return handle
   }
 
+  /** A single-column index on exactly `column`, if one exists. */
   indexForColumn(column: string): IndexHandle | undefined {
-    return this.indexes.get(column.toLowerCase())
+    const lc = column.toLowerCase()
+    for (const idx of this.indexes.values()) {
+      if (idx.meta.columns.length === 1 && idx.meta.columns[0].toLowerCase() === lc) return idx
+    }
+    return undefined
+  }
+
+  /** All indexes whose *leading* column is `column` (single or composite). */
+  indexesLeadingWith(column: string): IndexHandle[] {
+    const lc = column.toLowerCase()
+    const out: IndexHandle[] = []
+    for (const idx of this.indexes.values()) {
+      if (idx.meta.columns[0]?.toLowerCase() === lc) out.push(idx)
+    }
+    return out
+  }
+
+  allIndexes(): IndexHandle[] {
+    return [...this.indexes.values()]
+  }
+  hasIndexNamed(name: string): boolean {
+    return this.indexes.has(name.toLowerCase())
   }
 }
 
@@ -142,7 +202,7 @@ export class Database {
     this.tables.set(name.toLowerCase(), t)
     // Auto-index primary keys / unique columns.
     for (const c of columns) {
-      if (c.primaryKey || c.unique) t.createIndex(`${name}_${c.name}_idx`, c.name, true)
+      if (c.primaryKey || c.unique) t.createIndex(`${name}_${c.name}_idx`, [c.name], true)
     }
     return t
   }
@@ -160,12 +220,12 @@ export class Database {
         rows: [...t.heap.values()].map((r) => r.slice()),
         indexes: [...t.indexes.values()].map((i) => ({
           name: i.meta.name,
-          column: i.meta.column,
+          columns: i.meta.columns,
           unique: i.meta.unique,
         })),
       })
     }
-    return { version: 1, tables }
+    return { version: 2, tables }
   }
 
   static restore(snap: SerializedDb): Database {
@@ -174,18 +234,27 @@ export class Database {
       const table = db.createTable(t.name, t.columns)
       for (const row of t.rows) table.insertRow(row.slice())
       for (const idx of t.indexes) {
-        if (!table.indexForColumn(idx.column)) table.createIndex(idx.name, idx.column, idx.unique)
+        // Back-compat: v1 snapshots stored a single `column`.
+        const columns = idx.columns ?? (idx.column ? [idx.column] : [])
+        if (columns.length && !table.hasIndexNamed(idx.name)) table.createIndex(idx.name, columns, idx.unique)
       }
     }
     return db
   }
 }
 
+export interface SerializedIndex {
+  name: string
+  columns?: string[]
+  /** Legacy single-column form (v1 snapshots). */
+  column?: string
+  unique: boolean
+}
 export interface SerializedTable {
   name: string
   columns: ColumnDef[]
   rows: Row[]
-  indexes: { name: string; column: string; unique: boolean }[]
+  indexes: SerializedIndex[]
 }
 export interface SerializedDb {
   version: number

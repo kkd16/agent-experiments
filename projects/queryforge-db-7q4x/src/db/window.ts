@@ -17,18 +17,37 @@ import type { Row } from './catalog'
 import type { Schema } from './schema'
 import type { Evaluator } from './eval'
 import type { Operator, PlanNode } from './operators'
+import type { FrameBoundType, FrameMode } from './ast'
 
 export interface WindowOrderKey {
   eval: Evaluator
   dir: 'ASC' | 'DESC'
+}
+export interface FrameBoundExec {
+  type: FrameBoundType
+  /** Compiled offset for N PRECEDING / N FOLLOWING. */
+  offset?: Evaluator
+}
+export interface FrameExec {
+  mode: FrameMode
+  start: FrameBoundExec
+  end: FrameBoundExec
 }
 export interface WindowSpecExec {
   name: string
   args: Evaluator[]
   partition: Evaluator[]
   order: WindowOrderKey[]
+  /** Explicit frame; undefined → the function's standard default frame. */
+  frame?: FrameExec
   label: string
 }
+
+// Functions whose result depends on the window frame (everything except the
+// ranking/offset family, which always read the whole ordered partition).
+const FRAME_SENSITIVE = new Set([
+  'COUNT', 'SUM', 'AVG', 'MIN', 'MAX', 'FIRST_VALUE', 'LAST_VALUE', 'NTH_VALUE',
+])
 
 function cmpOrder(a: Row, b: Row, keys: WindowOrderKey[]): number {
   for (const k of keys) {
@@ -38,12 +57,115 @@ function cmpOrder(a: Row, b: Row, keys: WindowOrderKey[]): number {
   return 0
 }
 
+// Aggregate `arg0` over rows[s..e] (inclusive) for a frame-windowed function.
+function aggregateRange(spec: WindowSpecExec, rows: Row[], s: number, e: number): SqlValue {
+  const star = spec.args.length === 0
+  let count = 0
+  let sum = 0
+  let mn: SqlValue = null
+  let mx: SqlValue = null
+  for (let i = s; i <= e; i++) {
+    const v = star ? 1 : spec.args[0](rows[i])
+    if (!star && v === null) continue
+    count++
+    if (typeof v === 'number') sum += v
+    else if (typeof v === 'boolean') sum += v ? 1 : 0
+    if (mn === null || orderValues(v, mn) < 0) mn = v
+    if (mx === null || orderValues(v, mx) > 0) mx = v
+  }
+  switch (spec.name) {
+    case 'COUNT': return count
+    case 'SUM': return count === 0 ? null : sum
+    case 'AVG': return count === 0 ? null : sum / count
+    case 'MIN': return mn
+    default: return mx
+  }
+}
+
+// Resolve an explicit frame to [start, end] row indices for row `i`.
+function frameBounds(
+  frame: FrameExec,
+  rows: Row[],
+  i: number,
+  orderVal: (k: number) => number,
+  peerStart: (k: number) => number,
+  peerEnd: (k: number) => number,
+): [number, number] {
+  const n = rows.length
+  const offsetAt = (b: FrameBoundExec): number => (b.offset ? Number(b.offset(rows[i])) || 0 : 0)
+  const resolveStart = (b: FrameBoundExec): number => {
+    switch (b.type) {
+      case 'UNBOUNDED_PRECEDING': return 0
+      case 'UNBOUNDED_FOLLOWING': return n // empty (start past end)
+      case 'CURRENT_ROW': return frame.mode === 'RANGE' ? peerStart(i) : i
+      case 'PRECEDING':
+        if (frame.mode === 'ROWS') return i - offsetAt(b)
+        { const lo = orderVal(i) - offsetAt(b); let k = 0; while (k < n && orderVal(k) < lo) k++; return k }
+      case 'FOLLOWING':
+        if (frame.mode === 'ROWS') return i + offsetAt(b)
+        { const lo = orderVal(i) + offsetAt(b); let k = 0; while (k < n && orderVal(k) < lo) k++; return k }
+    }
+  }
+  const resolveEnd = (b: FrameBoundExec): number => {
+    switch (b.type) {
+      case 'UNBOUNDED_PRECEDING': return -1 // empty (end before start)
+      case 'UNBOUNDED_FOLLOWING': return n - 1
+      case 'CURRENT_ROW': return frame.mode === 'RANGE' ? peerEnd(i) : i
+      case 'PRECEDING':
+        if (frame.mode === 'ROWS') return i - offsetAt(b)
+        { const hi = orderVal(i) - offsetAt(b); let k = n - 1; while (k >= 0 && orderVal(k) > hi) k--; return k }
+      case 'FOLLOWING':
+        if (frame.mode === 'ROWS') return i + offsetAt(b)
+        { const hi = orderVal(i) + offsetAt(b); let k = n - 1; while (k >= 0 && orderVal(k) > hi) k--; return k }
+    }
+  }
+  const s = Math.max(0, resolveStart(frame.start))
+  const e = Math.min(n - 1, resolveEnd(frame.end))
+  return [s, e]
+}
+
 // Compute one window function's value for every row of one ordered partition.
 // `out` is filled positionally (parallel to `rows`).
 function computePartition(spec: WindowSpecExec, rows: Row[], out: SqlValue[]): void {
   const n = rows.length
   const ordered = spec.order.length > 0
   const arg0 = (i: number): SqlValue => (spec.args[0] ? spec.args[0](rows[i]) : null)
+
+  // Explicit frame on a frame-sensitive function: compute per-row.
+  if (spec.frame && FRAME_SENSITIVE.has(spec.name)) {
+    const ordEval = spec.order[0]?.eval
+    const orderVal = (k: number): number => {
+      if (!ordEval) return 0
+      const v = ordEval(rows[k])
+      return typeof v === 'number' ? v : typeof v === 'boolean' ? (v ? 1 : 0) : 0
+    }
+    const samePeer = (a: number, b: number) => !ordered || cmpOrder(rows[a], rows[b], spec.order) === 0
+    const peerStart = (k: number): number => {
+      let s = k
+      while (s > 0 && samePeer(s - 1, k)) s--
+      return s
+    }
+    const peerEnd = (k: number): number => {
+      let e = k
+      while (e + 1 < n && samePeer(e + 1, k)) e++
+      return e
+    }
+    for (let i = 0; i < n; i++) {
+      const [s, e] = frameBounds(spec.frame, rows, i, orderVal, peerStart, peerEnd)
+      if (s > e) {
+        out[i] = spec.name === 'COUNT' ? 0 : null
+        continue
+      }
+      if (spec.name === 'FIRST_VALUE') out[i] = arg0(s)
+      else if (spec.name === 'LAST_VALUE') out[i] = arg0(e)
+      else if (spec.name === 'NTH_VALUE') {
+        const k = spec.args[1] ? Number(spec.args[1](rows[i])) : 1
+        const idx = s + k - 1
+        out[i] = k >= 1 && idx <= e ? arg0(idx) : null
+      } else out[i] = aggregateRange(spec, rows, s, e)
+    }
+    return
+  }
 
   // Peer boundaries for ranking. With no ORDER BY every row of the partition is
   // a peer of every other (so RANK/DENSE_RANK are all 1, CUME_DIST all 1).

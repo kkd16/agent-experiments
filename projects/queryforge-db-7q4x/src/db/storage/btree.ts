@@ -1,18 +1,52 @@
-// A B+Tree index keyed on a single SqlValue.
+// A B+Tree index keyed on a *tuple* of SqlValues.
 //
 // This is a genuine B+Tree (not a JS Map wrapper): internal nodes hold
 // separator keys and child pointers, leaves hold the actual entries and are
-// chained in a doubly-ish linked list so range scans walk leaf-to-leaf. Each
-// key maps to a *set* of row ids, so the same structure serves both unique
-// and non-unique indexes.
+// chained in a singly-linked list so range scans walk leaf-to-leaf. Each key
+// maps to a *set* of row ids, so the same structure serves both unique and
+// non-unique indexes.
+//
+// Keys are arrays (`IndexKey`) so a single structure backs both single-column
+// and composite (multi-column) indexes. Tuples are compared lexicographically;
+// range bounds may be a *prefix* of the full key, which is exactly what lets
+// the planner answer `WHERE a = ? AND b BETWEEN ? AND ?` from one composite
+// B+Tree.
 //
 // The engine uses these for IndexScan, and the planner reports the tree's
 // height & node count in EXPLAIN so you can see the structure it's exploiting.
 
 import { orderValues, type SqlValue } from '../types'
 
+/** A composite index key: one value per indexed column (length 1 for the
+ *  common single-column case). */
+export type IndexKey = SqlValue[]
+
+/** Lexicographic tuple comparison. Shorter tuples sort before longer ones when
+ *  the shared prefix is equal (so a prefix is "less than" any extension of it). */
+export function compareKeys(a: IndexKey, b: IndexKey): number {
+  const n = Math.min(a.length, b.length)
+  for (let i = 0; i < n; i++) {
+    const c = orderValues(a[i], b[i])
+    if (c !== 0) return c
+  }
+  return a.length - b.length
+}
+
+// Compare a full key against a (possibly shorter) bound, treating the bound as
+// a prefix: the comparison only considers the bound's columns, so `[5, 9]`
+// compared to the bound `[5]` is "equal" (prefix match) and inclusivity then
+// decides whether it is in range.
+function compareToBound(key: IndexKey, bound: IndexKey): number {
+  const n = Math.min(key.length, bound.length)
+  for (let i = 0; i < n; i++) {
+    const c = orderValues(key[i], bound[i])
+    if (c !== 0) return c
+  }
+  return 0
+}
+
 export interface LeafEntry {
-  key: SqlValue
+  key: IndexKey
   rowids: number[]
 }
 
@@ -24,7 +58,7 @@ interface LeafNode {
 }
 interface InternalNode {
   leaf: false
-  keys: SqlValue[]
+  keys: IndexKey[]
   children: BTreeNode[]
 }
 type BTreeNode = LeafNode | InternalNode
@@ -50,38 +84,40 @@ export class BTree {
   }
 
   // --- search -------------------------------------------------------------
-  private findLeaf(key: SqlValue): LeafNode {
+  private findLeaf(key: IndexKey): LeafNode {
     let node = this.root
     while (!node.leaf) {
       let i = 0
-      while (i < node.keys.length && orderValues(key, node.keys[i]) >= 0) i++
+      while (i < node.keys.length && compareKeys(key, node.keys[i]) >= 0) i++
       node = node.children[i]
     }
     return node
   }
 
-  /** Exact-match lookup. Returns matching row ids (empty if none). */
-  search(key: SqlValue): number[] {
+  /** Exact-match lookup on a full key. Returns matching row ids (empty if none). */
+  search(key: IndexKey): number[] {
     const leaf = this.findLeaf(key)
-    const e = leaf.entries.find((x) => orderValues(x.key, key) === 0)
+    const e = leaf.entries.find((x) => compareKeys(x.key, key) === 0)
     return e ? e.rowids.slice() : []
   }
 
   /**
-   * Range scan [lo, hi] (inclusive). Pass null bounds for open ranges.
+   * Range scan [lo, hi] (inclusive by default). Pass null bounds for open
+   * ranges. Bounds may be a prefix of the full key (so a composite index on
+   * (a, b) answers `a = 5 AND b > 10` with lo=[5,10] exclusive, hi=[5]).
    * Walks the leaf chain — this is the operation IndexScan relies on.
    */
-  range(lo: SqlValue | null, hi: SqlValue | null, loInclusive = true, hiInclusive = true): number[] {
+  range(lo: IndexKey | null, hi: IndexKey | null, loInclusive = true, hiInclusive = true): number[] {
     const out: number[] = []
     let leaf: LeafNode | null = lo === null ? this.firstLeaf : this.findLeaf(lo)
     while (leaf) {
       for (const e of leaf.entries) {
         if (lo !== null) {
-          const c = orderValues(e.key, lo)
+          const c = compareToBound(e.key, lo)
           if (c < 0 || (c === 0 && !loInclusive)) continue
         }
         if (hi !== null) {
-          const c = orderValues(e.key, hi)
+          const c = compareToBound(e.key, hi)
           if (c > 0 || (c === 0 && !hiInclusive)) return out
         }
         out.push(...e.rowids)
@@ -92,7 +128,7 @@ export class BTree {
   }
 
   // --- insert -------------------------------------------------------------
-  insert(key: SqlValue, rowid: number): void {
+  insert(key: IndexKey, rowid: number): void {
     const result = this.insertInto(this.root, key, rowid)
     if (result) {
       // Root split: create a new root.
@@ -105,10 +141,10 @@ export class BTree {
     }
   }
 
-  private insertInto(node: BTreeNode, key: SqlValue, rowid: number): { separator: SqlValue; right: BTreeNode } | null {
+  private insertInto(node: BTreeNode, key: IndexKey, rowid: number): { separator: IndexKey; right: BTreeNode } | null {
     if (node.leaf) {
       const idx = this.leafIndex(node, key)
-      if (idx < node.entries.length && orderValues(node.entries[idx].key, key) === 0) {
+      if (idx < node.entries.length && compareKeys(node.entries[idx].key, key) === 0) {
         if (!node.entries[idx].rowids.includes(rowid)) node.entries[idx].rowids.push(rowid)
         return null
       }
@@ -118,7 +154,7 @@ export class BTree {
     }
 
     let i = 0
-    while (i < node.keys.length && orderValues(key, node.keys[i]) >= 0) i++
+    while (i < node.keys.length && compareKeys(key, node.keys[i]) >= 0) i++
     const split = this.insertInto(node.children[i], key, rowid)
     if (!split) return null
     node.keys.splice(i, 0, split.separator)
@@ -127,18 +163,18 @@ export class BTree {
     return null
   }
 
-  private leafIndex(node: LeafNode, key: SqlValue): number {
+  private leafIndex(node: LeafNode, key: IndexKey): number {
     let lo = 0
     let hi = node.entries.length
     while (lo < hi) {
       const mid = (lo + hi) >> 1
-      if (orderValues(node.entries[mid].key, key) < 0) lo = mid + 1
+      if (compareKeys(node.entries[mid].key, key) < 0) lo = mid + 1
       else hi = mid
     }
     return lo
   }
 
-  private splitLeaf(node: LeafNode): { separator: SqlValue; right: BTreeNode } {
+  private splitLeaf(node: LeafNode): { separator: IndexKey; right: BTreeNode } {
     const mid = node.entries.length >> 1
     const right: LeafNode = {
       leaf: true,
@@ -151,7 +187,7 @@ export class BTree {
     return { separator: right.entries[0].key, right }
   }
 
-  private splitInternal(node: InternalNode): { separator: SqlValue; right: BTreeNode } {
+  private splitInternal(node: InternalNode): { separator: IndexKey; right: BTreeNode } {
     const mid = node.keys.length >> 1
     const separator = node.keys[mid]
     const right: InternalNode = {
@@ -164,9 +200,9 @@ export class BTree {
   }
 
   // --- delete (lazy: remove from entry, drop empty entries) ---------------
-  remove(key: SqlValue, rowid: number): void {
+  remove(key: IndexKey, rowid: number): void {
     const leaf = this.findLeaf(key)
-    const idx = leaf.entries.findIndex((e) => orderValues(e.key, key) === 0)
+    const idx = leaf.entries.findIndex((e) => compareKeys(e.key, key) === 0)
     if (idx < 0) return
     const e = leaf.entries[idx]
     e.rowids = e.rowids.filter((r) => r !== rowid)

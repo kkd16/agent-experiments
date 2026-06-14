@@ -178,6 +178,50 @@ SELECT 'London'
 ORDER BY city;`,
   },
   {
+    title: 'Window frame — 3-row moving average',
+    sql: `-- An explicit ROWS frame: each row averages itself and its neighbours.
+WITH yearly AS (
+  SELECT o.order_year AS yr, SUM(p.price * o.quantity) AS revenue
+  FROM orders o JOIN products p ON o.product_id = p.id
+  GROUP BY o.order_year
+)
+SELECT yr, revenue,
+       ROUND(AVG(revenue) OVER (ORDER BY yr ROWS BETWEEN 1 PRECEDING AND 1 FOLLOWING), 1) AS moving_avg,
+       SUM(revenue) OVER (ORDER BY yr ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS cumulative
+FROM yearly ORDER BY yr;`,
+  },
+  {
+    title: 'Statistical aggregates per category',
+    sql: `SELECT category,
+       COUNT(*)               AS items,
+       ROUND(AVG(price), 1)   AS mean,
+       MEDIAN(price)          AS median,
+       ROUND(STDDEV_POP(price), 1) AS stddev,
+       GROUP_CONCAT(name)     AS products
+FROM products
+GROUP BY category
+ORDER BY items DESC, category;`,
+  },
+  {
+    title: 'Composite index + ANALYZE (EXPLAIN)',
+    sql: `CREATE INDEX IF NOT EXISTS idx_orders_cy ON orders (customer_id, order_year);
+ANALYZE;
+-- One B+Tree serves the equality prefix AND the trailing range:
+EXPLAIN ANALYZE
+SELECT id, quantity FROM orders
+WHERE customer_id = 1 AND order_year >= 2022;`,
+  },
+  {
+    title: 'Chart this — revenue by category',
+    sql: `-- Switch the result to the "Chart" tab to plot it.
+SELECT category,
+       ROUND(SUM(p.price * o.quantity), 0) AS revenue,
+       COUNT(*) AS orders
+FROM orders o JOIN products p ON o.product_id = p.id
+GROUP BY category
+ORDER BY revenue DESC;`,
+  },
+  {
     title: 'Transaction: insert then rollback',
     sql: `BEGIN;
 INSERT INTO products (id, name, category, price, in_stock)

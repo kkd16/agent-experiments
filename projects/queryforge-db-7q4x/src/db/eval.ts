@@ -552,7 +552,7 @@ export function exprKey(e: Expr): string {
     case 'isnull':
       return `isnull:${e.negated}(${exprKey(e.expr)})`
     case 'func':
-      return `fn:${e.name}:${e.distinct}:${e.star}(${e.args.map(exprKey).join(',')})`
+      return `fn:${e.name}:${e.distinct}:${e.star}:${e.filter ? exprKey(e.filter) : ''}(${e.args.map(exprKey).join(',')})`
     case 'case':
       return `case(${e.operand ? exprKey(e.operand) : ''};${e.whens
         .map((w) => `${exprKey(w.when)}=>${exprKey(w.then)}`)

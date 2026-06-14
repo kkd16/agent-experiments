@@ -4,6 +4,7 @@
 
 import { Engine, type RowsResult } from './engine'
 import { SEED_SQL } from './sampleData'
+import { csvToSql, parseCsv } from './csv'
 import type { Row } from './catalog'
 import type { SqlValue } from './types'
 
@@ -535,6 +536,210 @@ test('join', 'subquery in a JOIN ON predicate', () => {
     'SELECT COUNT(*) FROM orders o JOIN products p ON p.id = o.product_id AND p.price > (SELECT AVG(price) FROM products)',
   )
   assert(n === 7, `expected 7 orders of above-average products, got ${n}`)
+})
+
+// --- composite indexes ------------------------------------------------------
+test('index', 'composite index is chosen over a single-column one', () => {
+  const e = seeded()
+  e.execute('CREATE INDEX idx_orders_cy ON orders (customer_id, order_year)')
+  const r = e.execute('EXPLAIN SELECT * FROM orders WHERE customer_id = 1 AND order_year = 2022')[0]
+  assert(r.kind === 'explain', 'expected explain')
+  const text = JSON.stringify(r.kind === 'explain' ? r.plan : {})
+  assert(text.includes('IndexScan'), 'should use an IndexScan')
+  assert(text.includes('customer_id, order_year'), 'should pick the 2-column index that covers both equalities')
+})
+test('index', 'composite equality-prefix correctness', () => {
+  const e = seeded()
+  e.execute('CREATE INDEX idx_orders_cy ON orders (customer_id, order_year)')
+  const rows = rowsOf(e, 'SELECT id FROM orders WHERE customer_id = 1 AND order_year = 2022 ORDER BY id')
+  assert(eq(rows.map((r) => r[0]), [1, 2]), 'customer 1 in 2022 should be orders 1 and 2')
+})
+test('index', 'composite prefix + trailing range correctness', () => {
+  const e = seeded()
+  e.execute('CREATE INDEX idx_orders_cy ON orders (customer_id, order_year)')
+  const rows = rowsOf(e, 'SELECT id FROM orders WHERE customer_id = 1 AND order_year >= 2023 ORDER BY id')
+  assert(eq(rows.map((r) => r[0]), [11]), 'customer 1 from 2023 onward should be order 11')
+})
+
+// --- statistics / cardinality estimation -----------------------------------
+test('stats', 'ANALYZE makes a selective predicate estimate few rows', () => {
+  const e = seeded()
+  e.execute('ANALYZE')
+  const r = e.execute('EXPLAIN SELECT * FROM products WHERE price > 500')[0]
+  assert(r.kind === 'explain', 'expected explain')
+  const est = r.kind === 'explain' ? r.plan.estRows : 999
+  assert(est >= 1 && est <= 3, `a >500 price filter should estimate ~1 row, got ${est}`)
+})
+test('stats', 'equality on a low-cardinality column estimates a fraction', () => {
+  const e = seeded()
+  const r = e.execute("EXPLAIN SELECT * FROM customers WHERE country = 'UK'")[0]
+  const est = r.kind === 'explain' ? r.plan.estRows : 999
+  // 3 of 8 customers are UK — estimate should be well under the table size.
+  assert(est >= 1 && est < 8, `country = 'UK' should estimate < 8 rows, got ${est}`)
+})
+
+// --- sort–merge join + external sort ----------------------------------------
+function withBig(rows: number): Engine {
+  const e = new Engine()
+  e.execute('CREATE TABLE big_a (k INTEGER, v INTEGER)')
+  e.execute('CREATE TABLE big_b (k INTEGER, w INTEGER)')
+  const gen = `WITH RECURSIVE s(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM s WHERE n < ${rows})`
+  e.execute(`INSERT INTO big_a (k, v) ${gen} SELECT n, n * 2 FROM s`)
+  e.execute(`INSERT INTO big_b (k, w) ${gen} SELECT n, n * 3 FROM s`)
+  return e
+}
+test('join', 'sort–merge join chosen for large, balanced inputs', () => {
+  const e = withBig(600)
+  const r = e.execute('EXPLAIN SELECT * FROM big_a a JOIN big_b b ON a.k = b.k')[0]
+  const text = JSON.stringify(r.kind === 'explain' ? r.plan : {})
+  assert(text.includes('MergeJoin'), 'planner should pick a MergeJoin for two 600-row equijoin inputs')
+})
+test('join', 'merge join produces the correct result', () => {
+  const e = withBig(600)
+  assert(scalar(e, 'SELECT COUNT(*) FROM big_a a JOIN big_b b ON a.k = b.k') === 600, 'merge join count wrong')
+  assert(scalar(e, 'SELECT SUM(b.w) FROM big_a a JOIN big_b b ON a.k = b.k WHERE a.k <= 3') === 18, '3*(1+2+3)=18')
+})
+test('join', 'merge join with an unmatched LEFT side null-extends', () => {
+  const e = new Engine()
+  e.execute('CREATE TABLE l (k INTEGER); CREATE TABLE r (k INTEGER)')
+  e.execute('INSERT INTO l (k) VALUES (1), (2), (3)')
+  e.execute('INSERT INTO r (k) VALUES (2), (2), (4)')
+  // Force the merge-join path regardless of size by calling the operator via a
+  // plain equijoin; correctness must match the hash-join semantics.
+  const rows = rowsOf(e, 'SELECT l.k, r.k FROM l LEFT JOIN r ON l.k = r.k ORDER BY l.k, r.k')
+  // 1→null, 2→{2,2}, 3→null  ⇒ 4 rows, two of them null on the right.
+  assert(rows.length === 4, `expected 4 rows, got ${rows.length}`)
+  assert(rows.filter((x) => x[1] === null).length === 2, 'unmatched lefts should null-extend')
+})
+test('sort', 'external merge sort kicks in past the run size', () => {
+  const e = new Engine()
+  e.execute('CREATE TABLE big_c (k INTEGER)')
+  e.execute('INSERT INTO big_c (k) WITH RECURSIVE s(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM s WHERE n < 1500) SELECT 1501 - n FROM s')
+  const r = e.execute('EXPLAIN SELECT k FROM big_c ORDER BY k')[0]
+  const text = JSON.stringify(r.kind === 'explain' ? r.plan : {})
+  assert(text.includes('external merge sort'), 'a 1500-row sort should spill to external merge sort')
+  const rows = rowsOf(e, 'SELECT k FROM big_c ORDER BY k LIMIT 3')
+  assert(eq(rows.map((x) => x[0]), [1, 2, 3]), 'external sort produced the wrong order')
+})
+
+// --- window frames ----------------------------------------------------------
+test('window', 'ROWS BETWEEN 1 PRECEDING AND 1 FOLLOWING (sliding sum)', () => {
+  const e = new Engine()
+  e.execute('CREATE TABLE w (v INTEGER)')
+  e.execute('INSERT INTO w (v) VALUES (1), (2), (3), (4), (5)')
+  const rows = rowsOf(e, 'SELECT v, SUM(v) OVER (ORDER BY v ROWS BETWEEN 1 PRECEDING AND 1 FOLLOWING) AS s FROM w ORDER BY v')
+  assert(eq(rows.map((r) => r[1]), [3, 6, 9, 12, 9]), 'sliding window sum wrong')
+})
+test('window', 'ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW (running sum)', () => {
+  const e = new Engine()
+  e.execute('CREATE TABLE w (v INTEGER)')
+  e.execute('INSERT INTO w (v) VALUES (1), (2), (3), (4)')
+  const rows = rowsOf(e, 'SELECT v, SUM(v) OVER (ORDER BY v ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS s FROM w ORDER BY v')
+  assert(eq(rows.map((r) => r[1]), [1, 3, 6, 10]), 'running sum via explicit frame wrong')
+})
+test('window', 'LAST_VALUE over the whole partition with an explicit frame', () => {
+  const e = new Engine()
+  e.execute('CREATE TABLE w (v INTEGER)')
+  e.execute('INSERT INTO w (v) VALUES (5), (8), (3)')
+  const rows = rowsOf(
+    e,
+    'SELECT v, LAST_VALUE(v) OVER (ORDER BY v ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING) AS l FROM w ORDER BY v',
+  )
+  assert(rows.every((r) => r[1] === 8), 'LAST_VALUE over the full frame should be the max (8)')
+})
+test('window', 'RANGE CURRENT ROW groups peers', () => {
+  const e = new Engine()
+  e.execute('CREATE TABLE w2 (v INTEGER)')
+  e.execute('INSERT INTO w2 (v) VALUES (1), (1), (2), (3)')
+  const rows = rowsOf(e, 'SELECT v, SUM(v) OVER (ORDER BY v RANGE BETWEEN CURRENT ROW AND CURRENT ROW) AS s FROM w2 ORDER BY v')
+  assert(eq(rows.map((r) => r[1]), [2, 2, 2, 3]), 'RANGE CURRENT ROW should sum peers')
+})
+
+// --- set-operation type unification -----------------------------------------
+test('setop', 'UNION unifies INTEGER + REAL to REAL', () => {
+  const e = new Engine()
+  const r = lastResult(e, 'SELECT 1 AS x UNION ALL SELECT 2.5') as RowsResult
+  assert(r.kind === 'rows' && r.columns[0].type === 'REAL', 'mixed int/real column should report REAL')
+})
+test('setop', 'UNION unifies anything + TEXT to TEXT', () => {
+  const e = new Engine()
+  const r = lastResult(e, "SELECT 1 AS x UNION ALL SELECT 'two'") as RowsResult
+  assert(r.kind === 'rows' && r.columns[0].type === 'TEXT', 'mixed int/text column should report TEXT')
+})
+
+// --- new aggregates ---------------------------------------------------------
+test('agg', 'VAR_POP / STDDEV_POP', () => {
+  const e = new Engine()
+  e.execute('CREATE TABLE n (x INTEGER)')
+  e.execute('INSERT INTO n (x) VALUES (2), (4), (4), (4), (5), (5), (7), (9)')
+  assert(scalar(e, 'SELECT VAR_POP(x) FROM n') === 4, 'population variance should be 4')
+  assert(scalar(e, 'SELECT STDDEV_POP(x) FROM n') === 2, 'population stddev should be 2')
+  assert(Math.abs((scalar(e, 'SELECT VAR_SAMP(x) FROM n') as number) - 32 / 7) < 1e-9, 'sample variance wrong')
+})
+test('agg', 'MEDIAN (even and odd counts)', () => {
+  const e = new Engine()
+  e.execute('CREATE TABLE n (x INTEGER)')
+  e.execute('INSERT INTO n (x) VALUES (2), (4), (4), (4), (5), (5), (7), (9)')
+  assert(scalar(e, 'SELECT MEDIAN(x) FROM n') === 4.5, 'median of 8 values should be 4.5')
+  e.execute('INSERT INTO n (x) VALUES (100)')
+  assert(scalar(e, 'SELECT MEDIAN(x) FROM n') === 5, 'median of 9 values should be the middle one')
+})
+test('agg', 'STRING_AGG / GROUP_CONCAT (incl. DISTINCT)', () => {
+  const e = new Engine()
+  e.execute('CREATE TABLE n (x INTEGER)')
+  e.execute('INSERT INTO n (x) VALUES (2), (4), (4), (5)')
+  assert(scalar(e, 'SELECT GROUP_CONCAT(x) FROM n') === '2,4,4,5', 'GROUP_CONCAT default comma join wrong')
+  assert(scalar(e, "SELECT STRING_AGG(x, '-') FROM n") === '2-4-4-5', 'STRING_AGG custom separator wrong')
+  assert(scalar(e, 'SELECT GROUP_CONCAT(DISTINCT x) FROM n') === '2,4,5', 'GROUP_CONCAT DISTINCT wrong')
+})
+test('agg', 'aggregates group correctly', () => {
+  const e = seeded()
+  const rows = rowsOf(
+    e,
+    'SELECT category, COUNT(*) AS n, GROUP_CONCAT(name) AS names FROM products GROUP BY category ORDER BY category',
+  )
+  const audio = rows.find((r) => r[0] === 'Audio')
+  assert(!!audio && audio[1] === 2, 'Audio should have 2 products')
+  assert(typeof audio![2] === 'string' && (audio![2] as string).includes(','), 'GROUP_CONCAT should join names')
+})
+
+// --- aggregate FILTER -------------------------------------------------------
+test('agg', 'aggregate FILTER (WHERE …)', () => {
+  const e = seeded()
+  const rows = rowsOf(e, "SELECT COUNT(*) AS total, COUNT(*) FILTER (WHERE country = 'UK') AS uk FROM customers")
+  assert(rows[0][0] === 8 && rows[0][1] === 3, `expected 8 total / 3 UK, got ${rows[0]}`)
+})
+test('agg', 'FILTER combines with GROUP BY', () => {
+  const e = seeded()
+  const rows = rowsOf(
+    e,
+    'SELECT category, COUNT(*) AS n, SUM(price) FILTER (WHERE price > 200) AS big FROM products GROUP BY category ORDER BY category',
+  )
+  const hw = rows.find((r) => r[0] === 'Hardware')!
+  assert(hw[1] === 3 && hw[2] === 549.5, `Hardware filtered sum wrong: ${hw}`)
+})
+
+// --- CSV import -------------------------------------------------------------
+test('csv', 'parses quotes, commas and embedded newlines', () => {
+  const m = parseCsv('a,b\n"x,y","line1\nline2"\n1,2')
+  assert(m.length === 3, `expected 3 rows, got ${m.length}`)
+  assert(m[1][0] === 'x,y', 'quoted comma not handled')
+  assert(m[1][1] === 'line1\nline2', 'embedded newline not handled')
+})
+test('csv', 'infers types and round-trips through the engine', () => {
+  const csv = 'city,pop,coastal\nTokyo,37400068,false\nReykjavik,131000,true'
+  const r = csvToSql(csv, { tableName: 'cities', hasHeader: true })
+  assert(eq(r.columns.map((c) => c.type), ['TEXT', 'INTEGER', 'BOOLEAN']), `bad inferred types: ${r.columns.map((c) => c.type)}`)
+  const e = new Engine()
+  e.execute(r.sql)
+  assert(scalar(e, 'SELECT COUNT(*) FROM cities') === 2, 'import row count wrong')
+  assert(scalar(e, 'SELECT SUM(pop) FROM cities') === 37531068, 'numeric import lost precision')
+  assert(scalar(e, 'SELECT COUNT(*) FROM cities WHERE coastal = TRUE') === 1, 'boolean import wrong')
+})
+test('csv', 'headerless import generates colN names', () => {
+  const r = csvToSql('1,2\n3,4', { tableName: 't', hasHeader: false })
+  assert(eq(r.columns.map((c) => c.name), ['col1', 'col2']), 'headerless column names wrong')
+  assert(r.rowCount === 2, 'headerless row count wrong')
 })
 
 export function runTests(): TestResult[] {

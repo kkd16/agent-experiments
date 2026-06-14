@@ -8,6 +8,7 @@ import { SchemaPanel } from './ui/SchemaPanel'
 import { TestsPanel } from './ui/TestsPanel'
 import { Reference } from './ui/Reference'
 import { Internals } from './ui/Internals'
+import { CsvImport } from './ui/CsvImport'
 import { SAMPLE_QUERIES } from './db/sampleData'
 import type { QueryResult } from './db/engine'
 
@@ -23,6 +24,7 @@ function loadLastQuery(): string {
 
 const TABS = [
   { id: 'playground', label: 'Playground' },
+  { id: 'import', label: 'Import CSV' },
   { id: 'reference', label: 'Reference' },
   { id: 'internals', label: 'Internals' },
   { id: 'tests', label: 'Self-tests' },
@@ -62,6 +64,18 @@ export default function App() {
       navigate('playground')
     },
     [setQueryPersisted, navigate],
+  )
+  // Run an imported CSV's preview SELECT in the playground.
+  const previewQuery = useCallback(
+    (sql: string) => {
+      setQueryPersisted(sql)
+      const outcome = run(sql)
+      setResults(outcome.results)
+      setError(outcome.error)
+      setRan(true)
+      navigate('playground')
+    },
+    [run, setQueryPersisted, navigate],
   )
 
   const stmtCount = countStatements(query)
@@ -112,6 +126,7 @@ export default function App() {
         </div>
       ) : (
         <div className="doc-layout">
+          {route === 'import' && <CsvImport onRun={run} onPreview={previewQuery} />}
           {route === 'reference' && <Reference />}
           {route === 'internals' && <Internals />}
           {route === 'tests' && <TestsPanel />}
@@ -124,7 +139,7 @@ export default function App() {
           {schema.reduce((n, t) => n + t.rowCount, 0)} rows ·{' '}
           {schema.reduce((n, t) => n + t.indexes.length, 0)} indexes
         </span>
-        <span className="status-right">IndexScan · HashJoin · HashAggregate · Window · SetOp · B+Tree</span>
+        <span className="status-right">IndexScan · Hash/Merge Join · HashAggregate · Window frames · External Sort · stats · B+Tree</span>
       </footer>
     </div>
   )
