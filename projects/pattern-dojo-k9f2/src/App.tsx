@@ -5,6 +5,7 @@ import Roadmap from "./pages/Roadmap";
 import Quiz from "./pages/Quiz";
 import Review from "./pages/Review";
 import Cheatsheet from "./pages/Cheatsheet";
+import Stats from "./pages/Stats";
 import CommandPalette from "./components/CommandPalette";
 import { useTheme } from "./lib/theme";
 import { useSRS } from "./lib/srs";
@@ -15,6 +16,7 @@ const NAV = [
   { path: "/roadmap", label: "Roadmap" },
   { path: "/quiz", label: "Trainer" },
   { path: "/cheatsheet", label: "Cheat-sheet" },
+  { path: "/stats", label: "Stats" },
 ];
 
 export default function App() {
@@ -29,6 +31,7 @@ export default function App() {
   else if (route === "quiz") page = <Quiz />;
   else if (route === "review") page = <Review />;
   else if (route === "cheatsheet") page = <Cheatsheet />;
+  else if (route === "stats") page = <Stats />;
   else page = <Home />;
 
   const isActive = (path: string) => {

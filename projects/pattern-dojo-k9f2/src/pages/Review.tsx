@@ -13,13 +13,21 @@ const GRADE_META: { g: Grade; label: string; key: string; cls: string }[] = [
   { g: 3, label: "Easy", key: "4", cls: "easy" },
 ];
 
+/** Surface the patterns you struggle with first: more lapses, lower ease, more overdue. */
+function weakFirst(cards: { id: string; lapses: number; ease: number; due: number }[]): string[] {
+  return cards
+    .slice()
+    .sort((a, b) => b.lapses - a.lapses || a.ease - b.ease || a.due - b.due)
+    .map((c) => c.id);
+}
+
 export default function Review() {
   const srs = useSRS();
   const { current: streak, recordToday } = useStreak();
 
   // Build a session queue ONCE per mount: due cards first, then optionally new
   // ones to learn ahead. We freeze the id list so grading doesn't reshuffle it.
-  const [queue, setQueue] = useState<string[]>(() => srs.dueCards().map((c) => c.id));
+  const [queue, setQueue] = useState<string[]>(() => weakFirst(srs.dueCards()));
   const [pos, setPos] = useState(0);
   const [flipped, setFlipped] = useState(false);
   const [reviewed, setReviewed] = useState(0);
@@ -113,7 +121,7 @@ export default function Review() {
               <button
                 className="btn primary lg"
                 onClick={() => {
-                  setQueue(srs.dueCards().map((c) => c.id));
+                  setQueue(weakFirst(srs.dueCards()));
                   setMode("due");
                 }}
               >
@@ -165,7 +173,7 @@ export default function Review() {
               <button
                 className="btn primary"
                 onClick={() => {
-                  setQueue(srs.dueCards().map((c) => c.id));
+                  setQueue(weakFirst(srs.dueCards()));
                   setPos(0);
                   setReviewed(0);
                 }}
