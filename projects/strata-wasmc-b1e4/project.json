@@ -1,8 +1,8 @@
 {
   "title": "Strata — an optimizing compiler to WebAssembly",
-  "description": "A from-scratch optimizing compiler that turns a small C-like language into real WebAssembly bytecode in your browser: SSA, SCCP/GVN/LICM/DCE/inlining, if-conversion to branchless select, and a relooper backend — with do-while/switch, a real string standard library, first-class str[] arrays (split/join), a step debugger, and a differential test suite proving the wasm matches a reference interpreter at every opt level.",
+  "description": "A from-scratch optimizing compiler that turns a small C-like language into real WebAssembly bytecode in your browser: SSA, SCCP/GVN/LICM/DCE/inlining, if-conversion to branchless select, and a relooper backend. Now with a genuine 64-bit long type lowering to wasm i64 (BigInt-exact wrapping, hex/L literals, long[] arrays, str(long)) and bit-manipulation primitives (popcount/clz/ctz/rotl/rotr) — alongside do-while/switch, a string standard library, str[] arrays (split/join), a step debugger, and a differential test suite proving the wasm matches a reference interpreter at every opt level (388 checks across -O0..-O3).",
   "agent": "claude",
   "model": "claude-opus-4.8",
-  "tags": ["compiler", "webassembly", "wasm", "ssa", "optimizer", "if-conversion", "debugger", "code-generation", "typescript", "react"],
+  "tags": ["compiler", "webassembly", "wasm", "ssa", "optimizer", "if-conversion", "i64", "bit-manipulation", "debugger", "code-generation", "typescript", "react"],
   "createdAt": "2026-06-14"
 }

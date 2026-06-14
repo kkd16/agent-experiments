@@ -1,5 +1,5 @@
 import type { BinaryOp, Block, Expr, Program, Stmt, Ty } from '../ast';
-import type { IRType, RetType } from './ir';
+import type { ConstNum, IRType, RetType } from './ir';
 import { parse } from '../parser';
 import { typecheck } from '../types';
 import { STRING_PRELUDE } from './prelude';
@@ -9,7 +9,7 @@ import { STRING_PRELUDE } from './prelude';
 // assigned more than once ("pre-SSA"). Stage 2 (ssa.ts) renames these into pure
 // SSA with phi nodes. Keeping the two stages separate makes both far simpler.
 
-export type POperand = { tag: 'var'; name: string } | { tag: 'const'; ty: IRType; num: number };
+export type POperand = { tag: 'var'; name: string } | { tag: 'const'; ty: IRType; num: ConstNum };
 
 export interface PInst {
   dest: string | null;
@@ -44,7 +44,7 @@ export interface PFunc {
 
 export interface PModule {
   funcs: PFunc[];
-  globals: { name: string; ty: IRType; init: number; mutable: boolean }[];
+  globals: { name: string; ty: IRType; init: ConstNum; mutable: boolean }[];
   usesMemory: boolean;
   memPages: number;
   staticData?: { offset: number; bytes: number[] };
@@ -87,6 +87,8 @@ function irTypeOf(t: Ty): IRType {
   switch (t.kind) {
     case 'float':
       return 'f64';
+    case 'long':
+      return 'i64';
     default:
       return 'i32'; // int, bool, and array handles are all i32
   }
@@ -97,6 +99,7 @@ function retTypeOf(t: Ty): RetType {
 
 const VAR = (name: string): POperand => ({ tag: 'var', name });
 const CI = (n: number): POperand => ({ tag: 'const', ty: 'i32', num: n | 0 });
+const CL = (n: bigint): POperand => ({ tag: 'const', ty: 'i64', num: BigInt.asIntN(64, n) });
 
 // String builtins that lower 1:1 to a prelude function `__<name>` taking string
 // pointers / ints and returning an i32. The result's user-visible type (str/int/
@@ -380,6 +383,8 @@ class FnBuilder {
     switch (e.node) {
       case 'int':
         return CI(e.value);
+      case 'long':
+        return CL(e.value);
       case 'bool':
         return CI(e.value ? 1 : 0);
       case 'float':
@@ -446,18 +451,21 @@ class FnBuilder {
 
   private lowerUnary(e: Extract<Expr, { node: 'unary' }>): POperand {
     const v = this.lowerExpr(e.operand)!;
-    const isInt = irTypeOf(e.operand.ty!) === 'i32';
+    const ity = irTypeOf(e.operand.ty!);
     switch (e.op) {
       case '+':
         return v;
       case '-':
-        return isInt
-          ? this.def('i32', 'ibin', 'sub', [CI(0), v])
-          : this.def('f64', 'fbin', 'sub', [{ tag: 'const', ty: 'f64', num: 0 }, v]);
+        if (ity === 'f64') return this.def('f64', 'fbin', 'sub', [{ tag: 'const', ty: 'f64', num: 0 }, v]);
+        return ity === 'i64'
+          ? this.def('i64', 'ibin', 'sub', [CL(0n), v])
+          : this.def('i32', 'ibin', 'sub', [CI(0), v]);
       case '!':
         return this.def('i32', 'icmp', 'eq', [v, CI(0)]);
       case '~':
-        return this.def('i32', 'ibin', 'xor', [v, CI(-1)]);
+        return ity === 'i64'
+          ? this.def('i64', 'ibin', 'xor', [v, CL(-1n)])
+          : this.def('i32', 'ibin', 'xor', [v, CI(-1)]);
     }
   }
 
@@ -479,7 +487,10 @@ class FnBuilder {
     }
     const a = this.lowerExpr(e.left)!;
     const b = this.lowerExpr(e.right)!;
-    const isInt = irTypeOf(e.left.ty!) === 'i32';
+    // `i32` and `i64` share the same integer opcode names; the backend selects the
+    // concrete wasm op from the operand value type, so one `ity` covers both.
+    const ity = irTypeOf(e.left.ty!);
+    const isInt = ity !== 'f64';
     const op: BinaryOp = e.op;
     const intArith: Partial<Record<BinaryOp, string>> = {
       '+': 'add', '-': 'sub', '*': 'mul', '/': 'div_s', '%': 'rem_s',
@@ -492,10 +503,10 @@ class FnBuilder {
     const fcmp: Partial<Record<BinaryOp, string>> = {
       '==': 'eq', '!=': 'ne', '<': 'lt', '<=': 'le', '>': 'gt', '>=': 'ge',
     };
-    if (op in icmp && (op === '==' || op === '!=' || op === '<' || op === '<=' || op === '>' || op === '>=')) {
+    if (op === '==' || op === '!=' || op === '<' || op === '<=' || op === '>' || op === '>=') {
       return isInt ? this.def('i32', 'icmp', icmp[op]!, [a, b]) : this.def('i32', 'fcmp', fcmp[op]!, [a, b]);
     }
-    if (isInt) return this.def('i32', 'ibin', intArith[op]!, [a, b]);
+    if (isInt) return this.def(ity, 'ibin', intArith[op]!, [a, b]);
     return this.def('f64', 'fbin', floatArith[op]!, [a, b]);
   }
 
@@ -542,7 +553,8 @@ class FnBuilder {
       const v = this.lowerExpr(e.args[0])!;
       const k = e.args[0].ty!.kind;
       if (k === 'str') { this.usesStrings = true; this.usesMemory = true; }
-      this.emit({ dest: null, ty: 'void', kind: 'print', sub: k === 'float' ? 'float' : k === 'bool' ? 'bool' : k === 'str' ? 'str' : 'int', args: [v] });
+      const psub = k === 'float' ? 'float' : k === 'long' ? 'long' : k === 'bool' ? 'bool' : k === 'str' ? 'str' : 'int';
+      this.emit({ dest: null, ty: 'void', kind: 'print', sub: psub, args: [v] });
       return null;
     }
     if (name === 'str') {
@@ -551,7 +563,8 @@ class FnBuilder {
       if (k === 'str') return v; // identity
       this.usesStrings = true;
       this.usesMemory = true;
-      return this.def('i32', 'call', k === 'bool' ? '__bool_to_str' : '__int_to_str', [v]);
+      const helper = k === 'bool' ? '__bool_to_str' : k === 'long' ? '__long_to_str' : '__int_to_str';
+      return this.def('i32', 'call', helper, [v]);
     }
     if (name === 'char') {
       this.usesStrings = true;
@@ -566,22 +579,47 @@ class FnBuilder {
       const args = e.args.map((a) => this.lowerExpr(a)!);
       return this.def('i32', 'call', '__' + name, args);
     }
-    if (name === 'int') {
+    if (name === 'popcount' || name === 'clz' || name === 'ctz') {
+      const ity = irTypeOf(e.args[0].ty!);
       const v = this.lowerExpr(e.args[0])!;
-      return e.args[0].ty!.kind === 'float' ? this.def('i32', 'cast', 'f2i', [v]) : v;
+      return this.def(ity, 'iunary', name === 'popcount' ? 'popcnt' : name, [v]);
+    }
+    if (name === 'rotl' || name === 'rotr') {
+      const ity = irTypeOf(e.args[0].ty!);
+      const a = this.lowerExpr(e.args[0])!;
+      const b = this.lowerExpr(e.args[1])!;
+      return this.def(ity, 'ibin', name, [a, b]);
+    }
+    if (name === 'int') {
+      const k = e.args[0].ty!.kind;
+      const v = this.lowerExpr(e.args[0])!;
+      if (k === 'float') return this.def('i32', 'cast', 'f2i', [v]);
+      if (k === 'long') return this.def('i32', 'cast', 'l2i', [v]);
+      return v; // int/bool are already i32
     }
     if (name === 'float') {
+      const k = e.args[0].ty!.kind;
       const v = this.lowerExpr(e.args[0])!;
-      return e.args[0].ty!.kind === 'float' ? v : this.def('f64', 'cast', 'i2f', [v]);
+      if (k === 'float') return v;
+      if (k === 'long') return this.def('f64', 'cast', 'l2f', [v]);
+      return this.def('f64', 'cast', 'i2f', [v]);
     }
-    if (name === 'int_array' || name === 'float_array' || name === 'str_array') {
+    if (name === 'long') {
+      const k = e.args[0].ty!.kind;
+      const v = this.lowerExpr(e.args[0])!;
+      if (k === 'long') return v;
+      if (k === 'float') return this.def('i64', 'cast', 'f2l', [v]);
+      return this.def('i64', 'cast', 'i2l', [v]); // int/bool widen with sign extend
+    }
+    if (name === 'int_array' || name === 'long_array' || name === 'float_array' || name === 'str_array') {
       // A `str[]` is an array of i32 string pointers. Its elements are left as
       // zero, which the runtime reads as a pointer to address 0 — whose length
       // word lives in the reserved [0,16) region and is always 0, i.e. the empty
       // string. The interpreter initializes the same elements to "", so the two
       // agree on an uninitialized `str[]` element without any extra fill loop.
       if (name === 'str_array') this.usesStrings = true;
-      return this.lowerAlloc(name === 'float_array' ? 'f64' : 'i32', this.lowerExpr(e.args[0])!);
+      const elem: IRType = name === 'float_array' ? 'f64' : name === 'long_array' ? 'i64' : 'i32';
+      return this.lowerAlloc(elem, this.lowerExpr(e.args[0])!);
     }
     if (name === 'len') {
       const base = this.lowerExpr(e.args[0])!;
@@ -600,7 +638,7 @@ class FnBuilder {
 
   private lowerAlloc(elem: IRType, count: POperand): POperand {
     this.usesMemory = true;
-    const elemSize = elem === 'f64' ? 8 : 4;
+    const elemSize = elem === 'i32' ? 4 : 8; // i64 and f64 are 8 bytes
     const base = this.def('i32', 'gget', HEAP_GLOBAL, []);
     // header: store the length at base
     this.emit({ dest: null, ty: 'void', kind: 'store', sub: 'i32', args: [base, count] });
@@ -627,14 +665,14 @@ class FnBuilder {
   private arrayElemIR(target: Expr): IRType {
     const t = target.ty!;
     if (t.kind !== 'array') throw new Error('not an array');
-    return t.elem.kind === 'float' ? 'f64' : 'i32';
+    return t.elem.kind === 'float' ? 'f64' : t.elem.kind === 'long' ? 'i64' : 'i32';
   }
 
   private elemAddr(target: Expr, index: Expr): POperand {
     this.usesMemory = true;
     const base = this.lowerExpr(target)!;
     const idx = this.lowerExpr(index)!;
-    const elemSize = this.arrayElemIR(target) === 'f64' ? 8 : 4;
+    const elemSize = this.arrayElemIR(target) === 'i32' ? 4 : 8;
     const off = this.def('i32', 'ibin', 'mul', [idx, CI(elemSize)]);
     const dataStart = this.def('i32', 'ibin', 'add', [base, CI(ARRAY_HEADER)]);
     return this.def('i32', 'ibin', 'add', [dataStart, off]);
@@ -674,7 +712,7 @@ export function buildPreIR(prog: Program): PModule {
   const globals: PModule['globals'] = [];
   for (const d of prog.decls) {
     if (d.kind !== 'global') continue;
-    let init: number;
+    let init: ConstNum;
     if (d.init.node === 'string') {
       usesMemory = usesStrings = true;
       init = pool.intern(d.init.value);
@@ -709,28 +747,48 @@ export function buildPreIR(prog: Program): PModule {
 }
 
 // Globals must have constant initializers; fold the (already type-checked)
-// initializer expression to a literal here.
-function constInitValue(e: Expr): number {
+// initializer expression to a literal here. `long` initializers fold with BigInt
+// (64-bit wrapping) so the wasm `i64.const` and the interpreter agree.
+function constInitValue(e: Expr): ConstNum {
   switch (e.node) {
     case 'int':
       return e.value | 0;
+    case 'long':
+      return BigInt.asIntN(64, e.value);
     case 'bool':
       return e.value ? 1 : 0;
     case 'float':
       return e.value;
-    case 'unary':
-      if (e.op === '-') return -constInitValue(e.operand);
-      if (e.op === '+') return constInitValue(e.operand);
-      if (e.op === '~') return ~constInitValue(e.operand);
-      return 0;
+    case 'unary': {
+      const v = constInitValue(e.operand);
+      if (typeof v === 'bigint') {
+        if (e.op === '-') return BigInt.asIntN(64, -v);
+        if (e.op === '~') return BigInt.asIntN(64, ~v);
+        return v; // unary '+'
+      }
+      if (e.op === '-') return -v;
+      if (e.op === '~') return ~v;
+      return v;
+    }
     case 'binary': {
       const a = constInitValue(e.left);
       const b = constInitValue(e.right);
+      if (typeof a === 'bigint' && typeof b === 'bigint') {
+        switch (e.op) {
+          case '+': return BigInt.asIntN(64, a + b);
+          case '-': return BigInt.asIntN(64, a - b);
+          case '*': return BigInt.asIntN(64, a * b);
+          case '/': return b === 0n ? 0n : BigInt.asIntN(64, a / b);
+          default: return 0n;
+        }
+      }
+      const an = Number(a);
+      const bn = Number(b);
       switch (e.op) {
-        case '+': return a + b;
-        case '-': return a - b;
-        case '*': return a * b;
-        case '/': return e.left.ty!.kind === 'float' ? a / b : Math.trunc(a / b) | 0;
+        case '+': return an + bn;
+        case '-': return an - bn;
+        case '*': return an * bn;
+        case '/': return e.left.ty!.kind === 'float' ? an / bn : Math.trunc(an / bn) | 0;
         default: return 0;
       }
     }

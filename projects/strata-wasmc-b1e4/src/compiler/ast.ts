@@ -6,6 +6,7 @@ import type { Span } from './diagnostics';
 
 export type Ty =
   | { kind: 'int' }
+  | { kind: 'long' }
   | { kind: 'float' }
   | { kind: 'bool' }
   | { kind: 'str' }
@@ -15,9 +16,10 @@ export type Ty =
 // Array element types. `str` elements are i32 pointers into linear memory (just
 // like a bare `str`), so the wasm backend treats `str[]` exactly like an i32
 // array; only the type system and the interpreter track the element kind.
-export type ScalarTy = { kind: 'int' } | { kind: 'float' } | { kind: 'bool' } | { kind: 'str' };
+export type ScalarTy = { kind: 'int' } | { kind: 'long' } | { kind: 'float' } | { kind: 'bool' } | { kind: 'str' };
 
 export const T_INT: Ty = { kind: 'int' };
+export const T_LONG: Ty = { kind: 'long' };
 export const T_FLOAT: Ty = { kind: 'float' };
 export const T_BOOL: Ty = { kind: 'bool' };
 export const T_STR: Ty = { kind: 'str' };
@@ -66,6 +68,7 @@ export interface ExprBase {
 
 export type Expr =
   | (ExprBase & { node: 'int'; value: number })
+  | (ExprBase & { node: 'long'; value: bigint })
   | (ExprBase & { node: 'float'; value: number })
   | (ExprBase & { node: 'bool'; value: boolean })
   | (ExprBase & { node: 'string'; value: string })

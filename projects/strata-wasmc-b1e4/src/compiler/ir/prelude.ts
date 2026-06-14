@@ -74,6 +74,35 @@ fn __int_to_str(n: int) -> int {
   return p;
 }
 
+// Decimal rendering of a signed 64-bit integer — the long counterpart of
+// __int_to_str, matching the interpreter's formatLong including INT64_MIN (the
+// minus and the digits are produced without ever negating n, so no overflow).
+fn __long_to_str(n: long) -> int {
+  let buf = __alloc(24);
+  let pos = 24;
+  let neg = n < 0L;
+  if (n == 0L) { pos = pos - 1; __store8(buf + pos, 48); }
+  while (n != 0L) {
+    let d = n % 10L;
+    if (d < 0L) { d = 0L - d; }
+    pos = pos - 1;
+    __store8(buf + pos, 48 + int(d));
+    n = n / 10L;
+  }
+  let digits = 24 - pos;
+  let total = digits + (neg ? 1 : 0);
+  let p = __alloc(total + 8);
+  __store32(p, total);
+  let w = 8;
+  if (neg) { __store8(p + 8, 45); w = 9; }
+  let i = 0;
+  while (i < digits) {
+    __store8(p + w + i, __load8(buf + pos + i));
+    i = i + 1;
+  }
+  return p;
+}
+
 // Boolean rendering. The two results are ordinary string literals, so they are
 // interned into the static data segment like any other.
 fn __bool_to_str(b: int) -> str {

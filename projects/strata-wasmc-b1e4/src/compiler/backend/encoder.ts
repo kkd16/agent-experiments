@@ -34,6 +34,20 @@ export class ByteWriter {
       this.bytes.push(byte | 0x80);
     }
   }
+  /** Signed LEB128 of a 64-bit BigInt (used for i64.const). */
+  i64(value: bigint): void {
+    let v = BigInt.asIntN(64, value);
+    for (;;) {
+      const byte = Number(v & 0x7fn);
+      v >>= 7n;
+      const signBit = byte & 0x40;
+      if ((v === 0n && !signBit) || (v === -1n && signBit)) {
+        this.bytes.push(byte);
+        break;
+      }
+      this.bytes.push(byte | 0x80);
+    }
+  }
   f64(value: number): void {
     const buf = new ArrayBuffer(8);
     new DataView(buf).setFloat64(0, value, true);
@@ -69,4 +83,5 @@ export const WASM_VERSION = [0x01, 0x00, 0x00, 0x00];
 
 // Value types.
 export const VT_I32 = 0x7f;
+export const VT_I64 = 0x7e;
 export const VT_F64 = 0x7c;

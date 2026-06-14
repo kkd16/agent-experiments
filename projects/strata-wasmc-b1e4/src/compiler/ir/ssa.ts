@@ -1,5 +1,6 @@
 import type { PBlock, PFunc, PModule, POperand } from './builder';
 import type { Block, Inst, IRFunc, IRModule, IRType, Operand, Phi, Term } from './ir';
+import { zeroOf } from './ir';
 
 // Convert the pre-SSA CFG into pure SSA. The classic recipe (Cytron et al.):
 //   1. compute the dominator tree (Cooper–Harvey–Kennedy iterative algorithm),
@@ -118,7 +119,8 @@ function ssaFunc(pf: PFunc): IRFunc {
   const reaching = (v: string): Operand => {
     const id = top(v);
     if (id !== undefined) return { tag: 'val', id };
-    return { tag: 'const', ty: pf.varType.get(v) ?? 'i32', num: 0 };
+    const ty = pf.varType.get(v) ?? 'i32';
+    return { tag: 'const', ty, num: zeroOf(ty) };
   };
   const resolve = (o: POperand): Operand =>
     o.tag === 'const' ? { tag: 'const', ty: o.ty, num: o.num } : reaching(o.name);
@@ -177,7 +179,7 @@ function ssaFunc(pf: PFunc): IRFunc {
     const phis: Phi[] = phisByBlock.get(id)!.map((wp) => ({
       res: wp.res,
       ty: wp.ty,
-      incomings: b.preds.map((pred) => ({ pred, val: wp.incomings.get(pred) ?? { tag: 'const', ty: wp.ty, num: 0 } })),
+      incomings: b.preds.map((pred) => ({ pred, val: wp.incomings.get(pred) ?? { tag: 'const', ty: wp.ty, num: zeroOf(wp.ty) } })),
     }));
     return { id, phis, insts: renamedInsts.get(id)!, term: renamedTerm.get(id)!, preds: b.preds };
   });

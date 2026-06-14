@@ -7,16 +7,26 @@
 // `kind` selects the family and `sub` the specific opcode; this keeps the
 // optimizer's rewriting code small and uniform.
 
-export type IRType = 'i32' | 'f64';
+export type IRType = 'i32' | 'i64' | 'f64';
 export type RetType = IRType | 'void';
+
+// Constant payloads are `number` for i32/f64 and `bigint` for i64. The `ty`
+// discriminator tells consumers which to expect; helpers below build the right
+// shape so callers never have to remember the rule.
+export type ConstNum = number | bigint;
 
 export type Operand =
   | { tag: 'val'; id: number }
-  | { tag: 'const'; ty: IRType; num: number };
+  | { tag: 'const'; ty: IRType; num: ConstNum };
 
 export const valOp = (id: number): Operand => ({ tag: 'val', id });
 export const constI32 = (num: number): Operand => ({ tag: 'const', ty: 'i32', num: num | 0 });
+export const constI64 = (num: bigint): Operand => ({ tag: 'const', ty: 'i64', num: BigInt.asIntN(64, num) });
 export const constF64 = (num: number): Operand => ({ tag: 'const', ty: 'f64', num });
+
+/** The additive-identity constant of a value type (`0n` for i64, else `0`). */
+export const zeroOf = (ty: IRType): ConstNum => (ty === 'i64' ? 0n : 0);
+export const zeroConst = (ty: IRType): Operand => ({ tag: 'const', ty, num: zeroOf(ty) });
 
 export type IntBin = 'add' | 'sub' | 'mul' | 'div_s' | 'rem_s' | 'and' | 'or' | 'xor' | 'shl' | 'shr_s';
 export type FloatBin = 'add' | 'sub' | 'mul' | 'div';
@@ -25,6 +35,7 @@ export type FCmp = 'eq' | 'ne' | 'lt' | 'le' | 'gt' | 'ge';
 
 export type InstKind =
   | 'ibin'
+  | 'iunary'
   | 'fbin'
   | 'icmp'
   | 'fcmp'
@@ -79,7 +90,7 @@ export interface IRFunc {
 export interface IRGlobal {
   name: string;
   ty: IRType;
-  init: number;
+  init: ConstNum;
   mutable: boolean;
 }
 
@@ -116,6 +127,7 @@ export function hasSideEffect(inst: Inst): boolean {
 export function isPureValue(inst: Inst): boolean {
   switch (inst.kind) {
     case 'ibin':
+    case 'iunary':
     case 'fbin':
     case 'icmp':
     case 'fcmp':

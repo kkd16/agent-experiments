@@ -66,7 +66,7 @@ export function tailCallOpt(pm: PModule): number {
       const temps: { tmp: string; param: string; ty: IRType; val: POperand }[] = fn.params.map((p, i) => {
         const tmp = `%tco$${fn.name}$${tempCtr++}`;
         fn.varType.set(tmp, p.ty);
-        return { tmp, param: p.name, ty: p.ty, val: last.args[i] ?? { tag: 'const', ty: p.ty, num: 0 } };
+        return { tmp, param: p.name, ty: p.ty, val: last.args[i] ?? { tag: 'const', ty: p.ty, num: p.ty === 'i64' ? 0n : 0 } };
       });
 
       const header = ensurePreheader();

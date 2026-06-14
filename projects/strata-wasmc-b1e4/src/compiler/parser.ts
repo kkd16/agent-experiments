@@ -15,7 +15,15 @@ import type {
   Ty,
   UnaryOp,
 } from './ast';
-import { T_BOOL, T_FLOAT, T_INT, T_STR, T_VOID } from './ast';
+import { T_BOOL, T_FLOAT, T_INT, T_LONG, T_STR, T_VOID } from './ast';
+
+// Fold a `long_lit` spelling (decimal or `0x` hex, with an `L`/`l` suffix) into a
+// 64-bit-wrapped BigInt. The lexer guarantees the shape, so `BigInt()` cannot
+// throw here; `asIntN(64, …)` matches the i64 wrap the backend and oracle use.
+function foldLongLiteral(text: string): bigint {
+  const body = text.replace(/[lL]$/, '');
+  return BigInt.asIntN(64, BigInt(body));
+}
 
 // Binding powers for the Pratt expression parser. Higher binds tighter. Each
 // entry is [left, right] so we can express left-associativity (left < right).
@@ -94,6 +102,9 @@ class Parser {
     switch (t.text) {
       case 'int':
         base = T_INT;
+        break;
+      case 'long':
+        base = T_LONG;
         break;
       case 'float':
         base = T_FLOAT;
@@ -442,6 +453,8 @@ class Parser {
     switch (t.type) {
       case 'int_lit':
         return { node: 'int', value: t.value, span: t.span };
+      case 'long_lit':
+        return { node: 'long', value: foldLongLiteral(t.text), span: t.span };
       case 'float_lit':
         return { node: 'float', value: t.value, span: t.span };
       case 'str_lit':

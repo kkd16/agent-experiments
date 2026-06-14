@@ -4,6 +4,7 @@ import type { Span } from './diagnostics';
 // literal spelling as the type tag, which keeps the parser readable.
 export type TokenType =
   | 'int_lit'
+  | 'long_lit'
   | 'float_lit'
   | 'str_lit'
   | 'ident'
