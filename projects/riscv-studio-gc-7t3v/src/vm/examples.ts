@@ -506,6 +506,46 @@ done:
         ecall
 `;
 
+const TIMER_IRQ = `# Machine-mode timer interrupts (Zicsr + CLINT).
+# A free-running timer (mtime) drives periodic interrupts to a handler installed in
+# mtvec. The handler counts ticks and re-arms the next deadline; after 8 ticks main exits.
+.equ MTIME,    0x0200bff8        # CLINT mtime  (low word)
+.equ MTIMECMP, 0x02004000        # CLINT mtimecmp (low word)
+.equ PERIOD,   25                # cycles between interrupts
+.text
+main:
+        la   t0, on_timer
+        csrw mtvec, t0           # install the trap vector
+        li   s0, 0               # tick counter
+        li   s1, 8               # stop after 8 ticks
+        # arm the first deadline: mtimecmp = mtime + PERIOD
+        li   t0, MTIME
+        lw   t1, 0(t0)
+        addi t1, t1, PERIOD
+        li   t2, MTIMECMP
+        sw   t1, 0(t2)
+        li   t0, 0x80            # mie.MTIE (bit 7)
+        csrs mie, t0
+        csrsi mstatus, 0x8       # mstatus.MIE (bit 3) — globally enable interrupts
+spin:
+        blt  s0, s1, spin        # do nothing but wait for interrupts
+        mv   a0, s0              # print how many ticks we serviced
+        li   a7, 1
+        ecall
+        li   a7, 10
+        ecall
+
+# ---- interrupt handler -------------------------------------------------------
+on_timer:
+        addi s0, s0, 1           # one more tick
+        li   t0, MTIME           # re-arm: mtimecmp = mtime + PERIOD
+        lw   t1, 0(t0)
+        addi t1, t1, PERIOD
+        li   t2, MTIMECMP
+        sw   t1, 0(t2)
+        mret                     # return to the interrupted pc (mepc)
+`;
+
 export const EXAMPLES: readonly Example[] = [
   { id: 'hello', title: 'Hello, RISC-V', blurb: 'print_string syscall basics', focus: 'console', code: HELLO },
   { id: 'fib', title: 'Fibonacci', blurb: 'loops, registers, print_int', focus: 'console', code: FIB },
@@ -519,6 +559,7 @@ export const EXAMPLES: readonly Example[] = [
   { id: 'atomic', title: 'Atomic counter', blurb: 'RV32A amoadd.w read-modify-write', focus: 'console', code: ATOMIC },
   { id: 'counters', title: 'Cycle counter', blurb: 'Zicsr rdcycle hardware counter', focus: 'console', code: COUNTERS },
   { id: 'compressed', title: 'Compressed (RVC)', blurb: 'RV32C 16-bit instructions', focus: 'console', code: COMPRESSED },
+  { id: 'timerirq', title: 'Timer interrupts', blurb: 'mtvec/mret + CLINT timer (traps)', focus: 'console', code: TIMER_IRQ },
   { id: 'mandelbrot', title: 'Mandelbrot (fixed)', blurb: 'Q12 fixed-point fractal → framebuffer', focus: 'framebuffer', code: MANDELBROT },
   { id: 'mandelf', title: 'Mandelbrot (float)', blurb: 'RV32F fractal → framebuffer', focus: 'framebuffer', code: MANDEL_FLOAT },
   { id: 'rings', title: 'Colour rings', blurb: 'memory-mapped graphics', focus: 'framebuffer', code: RINGS },

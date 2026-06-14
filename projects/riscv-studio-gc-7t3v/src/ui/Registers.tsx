@@ -102,6 +102,43 @@ export default function Registers({ cpu, prevRegs }: Props) {
           <span className={`reg-val status-${cpu.status}`}>{cpu.status}</span>
         </div>
       </div>
+
+      <div className="reg-subhead">
+        <span>machine trap CSRs (Zicsr)</span>
+        <span className="reg-fcsr">
+          MIE={(cpu.mstatus >>> 3) & 1} · MPIE={(cpu.mstatus >>> 7) & 1} · MTIP=
+          {(cpu.mip >>> 7) & 1}
+        </span>
+      </div>
+      <div className="reg-grid mcsr-grid">
+        {(
+          [
+            ['mstatus', cpu.mstatus],
+            ['mtvec', cpu.mtvec],
+            ['mepc', cpu.mepc],
+            ['mcause', cpu.mcause],
+            ['mtval', cpu.mtval],
+            ['mie', cpu.mie],
+            ['mip', cpu.mip],
+            ['mscratch', cpu.mscratch],
+          ] as const
+        ).map(([name, val]) => (
+          <div key={name} className="reg-cell" title={`CSR ${name}`}>
+            <span className="reg-name">{name}</span>
+            <span className="reg-val">{hexWord(val)}</span>
+          </div>
+        ))}
+        <div className="reg-cell" title="CLINT free-running timer (= retired cycles)">
+          <span className="reg-name">mtime</span>
+          <span className="reg-val">{cpu.cycles.toLocaleString()}</span>
+        </div>
+        <div className="reg-cell" title="CLINT timer compare">
+          <span className="reg-name">mtimecmp</span>
+          <span className="reg-val">
+            {Number.isFinite(cpu.mtimecmp) ? cpu.mtimecmp.toLocaleString() : '∞'}
+          </span>
+        </div>
+      </div>
       {cpu.error && <div className="reg-error">⚠ {cpu.error}</div>}
     </div>
   );

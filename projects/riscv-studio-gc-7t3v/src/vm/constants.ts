@@ -17,6 +17,19 @@ export const STACK_TOP = 0x7fff_fff0;
 /** Initial global pointer (x3). */
 export const GLOBAL_POINTER = DATA_BASE;
 
+/**
+ * CLINT — the core-local interruptor. A small MMIO window holding the 64-bit machine timer
+ * (`mtime`, free-running = retired cycles) and its compare register (`mtimecmp`). When
+ * `mtime ≥ mtimecmp` the machine timer interrupt pending bit (`mip.MTIP`) is raised; writing a
+ * larger `mtimecmp` clears it. The layout matches the SiFive CLINT so bare-metal code ports.
+ */
+export const CLINT_BASE = 0x0200_0000;
+export const CLINT_SIZE = 0x0001_0000;
+export const MTIMECMP_LO = CLINT_BASE + 0x4000;
+export const MTIMECMP_HI = CLINT_BASE + 0x4004;
+export const MTIME_LO = CLINT_BASE + 0xbff8;
+export const MTIME_HI = CLINT_BASE + 0xbffc;
+
 /** Memory-mapped framebuffer: FB_W × FB_H bytes, one palette index per pixel. */
 export const FB_BASE = 0x2000_0000;
 export const FB_W = 128;

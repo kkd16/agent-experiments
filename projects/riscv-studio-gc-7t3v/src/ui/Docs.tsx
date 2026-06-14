@@ -114,6 +114,19 @@ const GROUPS: { title: string; items: InsDoc[] }[] = [
     ],
   },
   {
+    title: 'Machine-mode traps & interrupts',
+    items: [
+      { m: 'mstatus', desc: 'MIE (global enable), MPIE (previous), MPP (previous mode)' },
+      { m: 'mtvec', desc: 'trap-vector base (+ mode: 0 = direct, 1 = vectored for interrupts)' },
+      { m: 'mepc / mcause / mtval', desc: 'saved pc / cause (bit 31 = interrupt) / trap value' },
+      { m: 'mie / mip', desc: 'interrupt enable / pending (MTIE/MTIP = machine timer)' },
+      { m: 'mscratch / mhartid / misa', desc: 'scratch word / hart id (0) / ISA id (read-only)' },
+      { m: 'mret', desc: 'return from trap: restore MIE from MPIE, jump to mepc' },
+      { m: 'wfi', desc: 'wait-for-interrupt (a no-op here; the timer keeps ticking)' },
+      { m: 'mtime / mtimecmp', desc: 'CLINT MMIO 64-bit timer & compare (0x0200_bff8 / 0x0200_4000)' },
+    ],
+  },
+  {
     title: 'System',
     items: [
       { m: 'ecall', desc: 'environment call — dispatched on a7 (see syscalls)' },
@@ -274,6 +287,10 @@ export default function Docs() {
               <tr>
                 <td className="doc-m">{hexWord(DATA_BASE)}</td>
                 <td className="doc-d">.data — globals; the initial gp = {hexWord(GLOBAL_POINTER)}</td>
+              </tr>
+              <tr>
+                <td className="doc-m">0x02000000</td>
+                <td className="doc-d">CLINT — mtimecmp (+0x4000) &amp; mtime (+0xbff8), the machine timer (MMIO)</td>
               </tr>
               <tr>
                 <td className="doc-m">{hexWord(FB_BASE)}</td>

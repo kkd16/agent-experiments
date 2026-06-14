@@ -202,11 +202,25 @@ is to fork it into a new slug and grow it there. Everything below is new work in
       **every `c.*` form decompresses to bit-for-bit the same word its full-width equivalent
       assembles to**. Plus a bundled `Compressed (RVC)` example.
 
-**Milestone B — Traps & interrupts (machine mode).** *Planned.*
-- [ ] Machine CSRs (`mstatus/mie/mip/mtvec/mepc/mcause/mtval/mscratch/mhartid`), `mret`,
-      a CLINT-style memory-mapped timer (`mtime`/`mtimecmp`) raising a timer interrupt, and
-      trap entry for illegal-instruction / ecall / ebreak / interrupt when a handler is armed.
-- [ ] Time-travel undo extended to the trap CSRs + timer; CSR inspector; docs; examples; tests.
+**Milestone B — Traps & interrupts (machine mode).** *Shipped.*
+- [x] Machine CSRs `mstatus` (MIE/MPIE/MPP), `mie`/`mip` (MTIE/MTIP), `mtvec` (direct +
+      vectored), `mepc`, `mcause` (interrupt bit + code), `mtval`, `mscratch`, `misa` (RV32
+      IMAFDC, read-only), `mhartid` — wired through `csrr*`, the assembler's CSR name table and
+      the disassembler.
+- [x] `mret` (restore MIE←MPIE, resume at mepc) and `wfi` decode/encode/execute; the SYSTEM
+      decoder now distinguishes `ecall`/`ebreak`/`mret`/`wfi` by their full word.
+- [x] **CLINT** memory-mapped timer at the SiFive layout (`mtime` = free-running cycles,
+      `mtimecmp` 64-bit, lo/hi halves) intercepted on `lw`/`sw`; `mtime ≥ mtimecmp` raises
+      `mip.MTIP`.
+- [x] **Trap entry**: a machine timer interrupt is taken between instructions when armed
+      (`mstatus.MIE` + `mie.MTIE` + `mtvec ≠ 0`); illegal/unimplemented instructions vector to
+      the handler (`mcause = 2`) when one is installed, else fault as before — so every existing
+      program (and the C compiler's `ecall` I/O) is untouched.
+- [x] Time-travel undo extended to the full trap-CSR block + `mtimecmp`; a machine-trap-CSR
+      inspector panel (mstatus/mtvec/mepc/mcause/mtval/mie/mip/mscratch + mtime/mtimecmp);
+      a `Timer interrupts` example; docs (ISA group + memory map); **9 new self-tests**
+      (CSR round-trip, 5× timer IRQ, illegal-instruction vector, masking when MIE=0, mret
+      MIE-restore, mtime advance, time-travel across a trap, mret/wfi decode).
 
 **Milestone C — RV32D (double precision).** *Planned.*
 - [ ] 64-bit `f`-registers via NaN-boxing; `fld/fsd`, the full `*.d` arithmetic/compare/
@@ -220,4 +234,9 @@ is to fork it into a new slug and grow it there. Everything below is new work in
   compression-transparent disassembler, a bundled RVC example, and 11 new self-tests including
   a bit-for-bit equivalence proof for every compressed form. Gate green
   (`node scripts/verify-project.mjs riscv-studio-gc-7t3v`).
+- 2026-06-14 (claude / claude-opus-4-8): shipped **Milestone B (traps & interrupts)** —
+  machine-mode trap CSRs, `mret`/`wfi`, a CLINT memory-mapped timer raising the machine timer
+  interrupt, vectored/direct trap entry, illegal-instruction trapping (opt-in via `mtvec`),
+  time-travel across traps, a trap-CSR inspector, a Timer-interrupts example and docs. 55
+  self-tests green; gate green. The machine is now RV32IMAFC + Zicsr + traps.
 

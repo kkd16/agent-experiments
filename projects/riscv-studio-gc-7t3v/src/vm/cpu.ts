@@ -14,6 +14,12 @@ import {
   GLOBAL_POINTER,
   STACK_TOP,
   DEFAULT_MAX_STEPS,
+  CLINT_BASE,
+  CLINT_SIZE,
+  MTIMECMP_LO,
+  MTIMECMP_HI,
+  MTIME_LO,
+  MTIME_HI,
 } from './constants';
 import type { AssembleResult } from './assembler';
 import {
@@ -29,6 +35,18 @@ import {
 
 export type RunStatus = 'idle' | 'paused' | 'halted' | 'error' | 'ebreak';
 
+// mstatus / mie / mip field bits we model (machine mode only).
+const MSTATUS_MIE = 1 << 3;
+const MSTATUS_MPIE = 1 << 7;
+const MSTATUS_MPP = 3 << 11;
+const IRQ_M_TIMER = 7; // mcause code for a machine timer interrupt
+const MIP_MTIP = 1 << 7;
+const MIE_MTIE = 1 << 7;
+/** misa: MXL=1 (RV32) + the extensions this machine implements (IMAFDC). */
+const MISA = (1 << 30) | (1 << 0) | (1 << 2) | (1 << 3) | (1 << 5) | (1 << 8) | (1 << 12);
+/** A read-modify-write/Exception cause for an illegal instruction. */
+const EXC_ILLEGAL = 2;
+
 /** Everything needed to revert exactly one executed instruction. */
 interface UndoStep {
   pc: number;
@@ -40,6 +58,16 @@ interface UndoStep {
   heapPtr: number;
   fcsr: number;
   outLen: number;
+  // Machine-mode trap state (snapshotted whole; cheap, and a trap touches several at once).
+  mstatus: number;
+  mie: number;
+  mip: number;
+  mtvec: number;
+  mepc: number;
+  mcause: number;
+  mtval: number;
+  mscratch: number;
+  mtimecmp: number;
   reg?: { i: number; prev: number };
   freg?: { i: number; prev: number };
   mem?: { addr: number; prev: number[] };
@@ -65,6 +93,19 @@ export class Cpu {
   readonly fregs = new Uint32Array(32);
   /** Floating-point control & status register: frm = [7:5], fflags = [4:0]. */
   fcsr = 0;
+
+  // --- machine-mode trap CSRs (Zicsr, M-level) -------------------------------
+  mstatus = 0;
+  mie = 0;
+  mip = 0;
+  mtvec = 0;
+  mepc = 0;
+  mcause = 0;
+  mtval = 0;
+  mscratch = 0;
+  /** 64-bit timer compare; the timer interrupt fires when `cycles ≥ mtimecmp`. */
+  mtimecmp = Number.POSITIVE_INFINITY;
+
   pc = 0;
   entry = 0;
   /** Byte length of the instruction executing this step (2 for RV32C, else 4). */
@@ -113,6 +154,15 @@ export class Cpu {
     this.regs.fill(0);
     this.fregs.fill(0);
     this.fcsr = 0;
+    this.mstatus = 0;
+    this.mie = 0;
+    this.mip = 0;
+    this.mtvec = 0;
+    this.mepc = 0;
+    this.mcause = 0;
+    this.mtval = 0;
+    this.mscratch = 0;
+    this.mtimecmp = Number.POSITIVE_INFINITY;
     this.regs[SP] = STACK_TOP | 0;
     this.regs[GP] = GLOBAL_POINTER | 0;
     this.pc = this.entry >>> 0;
@@ -195,6 +245,15 @@ export class Cpu {
     if (this.recordHistory) this.beginRecord();
     this.status = 'idle';
 
+    // Service the timer and take any pending, enabled interrupt *before* fetching — a trap
+    // is its own step (no instruction retires) so the handler sees the interrupted pc in mepc.
+    this.updateTimer();
+    if (this.interruptPending()) {
+      this.enterTrap(true, IRQ_M_TIMER, 0, this.pc);
+      if (this.rec) this.commitRecord();
+      return true;
+    }
+
     // Variable-length fetch: a half-word whose low two bits are 0b11 is a 32-bit
     // instruction; anything else is a 16-bit RV32C instruction we decompress in place.
     const half = this.mem.readHalf(this.pc);
@@ -203,7 +262,10 @@ export class Cpu {
       this.instLen = 4;
       word = this.mem.readWord(this.pc);
       if (word === 0) {
-        this.fail('illegal instruction 0x00000000 (ran off the end of the program?)');
+        if (this.trapOrFail(word, 'illegal instruction 0x00000000 (ran off the end of the program?)')) {
+          if (this.rec) this.commitRecord();
+          return true;
+        }
         if (this.rec) this.commitRecord();
         return false;
       }
@@ -211,7 +273,10 @@ export class Cpu {
       this.instLen = 2;
       const dc = decompress(half, this.rvdEnabled);
       if (!dc) {
-        this.fail(`illegal compressed instruction 0x${half.toString(16).padStart(4, '0')}`);
+        if (this.trapOrFail(half, `illegal compressed instruction 0x${half.toString(16).padStart(4, '0')}`)) {
+          if (this.rec) this.commitRecord();
+          return true;
+        }
         if (this.rec) this.commitRecord();
         return false;
       }
@@ -227,6 +292,91 @@ export class Cpu {
     return true;
   }
 
+  // --- traps & interrupts (machine mode) ------------------------------------
+
+  /** Recompute the timer-interrupt-pending bit from the free-running timer vs. mtimecmp. */
+  private updateTimer(): void {
+    if (this.cycles >= this.mtimecmp) this.mip |= MIP_MTIP;
+    else this.mip &= ~MIP_MTIP;
+  }
+
+  /** Read the CLINT MMIO window (mtime / mtimecmp), or null if the address is elsewhere. */
+  private clintRead(addr: number): number | null {
+    if (addr < CLINT_BASE || addr >= CLINT_BASE + CLINT_SIZE) return null;
+    const cmp = Number.isFinite(this.mtimecmp) ? this.mtimecmp : 0xffff_ffff_ffff;
+    switch (addr) {
+      case MTIME_LO:
+        return this.cycles >>> 0;
+      case MTIME_HI:
+        return Math.floor(this.cycles / 0x1_0000_0000) >>> 0;
+      case MTIMECMP_LO:
+        return cmp >>> 0;
+      case MTIMECMP_HI:
+        return Math.floor(cmp / 0x1_0000_0000) >>> 0;
+      default:
+        return 0;
+    }
+  }
+
+  /** Write the CLINT MMIO window (mtimecmp halves). Returns true when the address was the CLINT. */
+  private clintWrite(addr: number, value: number): boolean {
+    if (addr < CLINT_BASE || addr >= CLINT_BASE + CLINT_SIZE) return false;
+    const v = value >>> 0;
+    if (addr === MTIMECMP_LO) {
+      const hi = Number.isFinite(this.mtimecmp) ? Math.floor(this.mtimecmp / 0x1_0000_0000) : 0;
+      this.mtimecmp = hi * 0x1_0000_0000 + v;
+    } else if (addr === MTIMECMP_HI) {
+      const lo = Number.isFinite(this.mtimecmp) ? this.mtimecmp >>> 0 : 0;
+      this.mtimecmp = v * 0x1_0000_0000 + lo;
+    }
+    this.updateTimer();
+    return true;
+  }
+
+  /** Whether an enabled machine interrupt is pending and globally enabled (handler armed). */
+  private interruptPending(): boolean {
+    if ((this.mstatus & MSTATUS_MIE) === 0) return false;
+    if (this.mtvec === 0) return false; // no vector installed → leave interrupts masked
+    return (this.mip & this.mie & MIP_MTIP) !== 0;
+  }
+
+  /**
+   * Enter a trap: save the interrupted pc and cause, disable interrupts, and jump to mtvec.
+   * Interrupts use vectored mode (base + 4·cause) when mtvec[1:0] = 1; exceptions are direct.
+   */
+  private enterTrap(isInterrupt: boolean, cause: number, tval: number, epc: number): void {
+    this.mepc = epc >>> 0;
+    this.mcause = ((isInterrupt ? 0x8000_0000 : 0) | cause) | 0;
+    this.mtval = tval | 0;
+    const mie = (this.mstatus & MSTATUS_MIE) ? 1 : 0;
+    // MPIE ← MIE, MIE ← 0, MPP ← 11 (machine).
+    this.mstatus = (this.mstatus & ~(MSTATUS_MIE | MSTATUS_MPIE | MSTATUS_MPP)) | (mie << 7) | MSTATUS_MPP;
+    const base = this.mtvec & ~3;
+    const vectored = (this.mtvec & 3) === 1;
+    this.pc = (isInterrupt && vectored ? base + 4 * cause : base) >>> 0;
+  }
+
+  /** Return from a machine trap: restore the interrupt-enable and resume at mepc. */
+  private mret(): void {
+    const mpie = (this.mstatus & MSTATUS_MPIE) ? 1 : 0;
+    this.mstatus = (this.mstatus & ~MSTATUS_MIE) | (mpie << 3);
+    this.mstatus = (this.mstatus | MSTATUS_MPIE) & ~MSTATUS_MPP;
+    this.pc = this.mepc >>> 0;
+  }
+
+  /**
+   * Handle an illegal instruction: trap to the handler if one is installed (mtvec ≠ 0),
+   * otherwise fail. Returns true when it was turned into a trap (pc already set).
+   */
+  private trapOrFail(raw: number, message: string): boolean {
+    if (this.mtvec !== 0) {
+      this.enterTrap(false, EXC_ILLEGAL, raw, this.pc);
+      return true;
+    }
+    this.fail(message);
+    return false;
+  }
+
   // --- undo journal ---------------------------------------------------------
 
   private beginRecord(): void {
@@ -240,6 +390,15 @@ export class Cpu {
       heapPtr: this.heapPtr,
       fcsr: this.fcsr,
       outLen: this.output.length,
+      mstatus: this.mstatus,
+      mie: this.mie,
+      mip: this.mip,
+      mtvec: this.mtvec,
+      mepc: this.mepc,
+      mcause: this.mcause,
+      mtval: this.mtval,
+      mscratch: this.mscratch,
+      mtimecmp: this.mtimecmp,
     };
   }
 
@@ -283,6 +442,15 @@ export class Cpu {
     this.reservation = u.reservation;
     this.heapPtr = u.heapPtr;
     this.fcsr = u.fcsr;
+    this.mstatus = u.mstatus;
+    this.mie = u.mie;
+    this.mip = u.mip;
+    this.mtvec = u.mtvec;
+    this.mepc = u.mepc;
+    this.mcause = u.mcause;
+    this.mtval = u.mtval;
+    this.mscratch = u.mscratch;
+    this.mtimecmp = u.mtimecmp;
     if (u.outLen < this.output.length) this.output = this.output.slice(0, u.outLen);
     return true;
   }
@@ -356,9 +524,12 @@ export class Cpu {
       case 'lh':
         this.set(rd, signExtend(this.mem.readHalf((a + imm) >>> 0), 16));
         return false;
-      case 'lw':
-        this.set(rd, this.mem.readWord((a + imm) >>> 0) | 0);
+      case 'lw': {
+        const addr = (a + imm) >>> 0;
+        const c = this.clintRead(addr);
+        this.set(rd, c !== null ? c : this.mem.readWord(addr) | 0);
         return false;
+      }
       case 'lbu':
         this.set(rd, this.mem.readByte((a + imm) >>> 0));
         return false;
@@ -379,9 +550,11 @@ export class Cpu {
         this.mem.writeHalf(addr, b & 0xffff);
         return false;
       }
-      case 'sw':
-        this.storeWord((a + imm) >>> 0, b);
+      case 'sw': {
+        const addr = (a + imm) >>> 0;
+        if (!this.clintWrite(addr, b)) this.storeWord(addr, b);
         return false;
+      }
 
       // ---- OP-IMM -----------------------------------------------------
       case 'addi':
@@ -479,12 +652,19 @@ export class Cpu {
       case 'ebreak':
         this.status = 'ebreak';
         return false;
+      case 'mret':
+        this.mret();
+        return true;
+      case 'wfi':
+        return false; // single-hart: behaves as a no-op (the timer keeps ticking)
       case 'fence':
         return false;
 
       default:
-        this.fail(`illegal / unimplemented instruction (0x${d.raw.toString(16).padStart(8, '0')})`);
-        return false;
+        return this.trapOrFail(
+          d.raw,
+          `illegal / unimplemented instruction (0x${d.raw.toString(16).padStart(8, '0')})`,
+        );
     }
   }
 
@@ -703,6 +883,28 @@ export class Cpu {
       case 0xc81:
       case 0xc82:
         return Math.floor(this.cycles / 0x1_0000_0000) >>> 0;
+      // --- machine-mode trap CSRs ---
+      case 0x300:
+        return this.mstatus | 0;
+      case 0x301:
+        return MISA | 0;
+      case 0x304:
+        return this.mie | 0;
+      case 0x305:
+        return this.mtvec | 0;
+      case 0x340:
+        return this.mscratch | 0;
+      case 0x341:
+        return this.mepc | 0;
+      case 0x342:
+        return this.mcause | 0;
+      case 0x343:
+        return this.mtval | 0;
+      case 0x344:
+        this.updateTimer();
+        return this.mip | 0;
+      case 0xf14:
+        return 0; // mhartid
       default:
         return 0; // unimplemented CSRs read as zero
     }
@@ -720,8 +922,32 @@ export class Cpu {
       case 0x003:
         this.fcsr = v & 0xff;
         break;
+      // --- machine-mode trap CSRs ---
+      case 0x300:
+        // Only MIE, MPIE and MPP are writable in this machine-only model.
+        this.mstatus = v & (MSTATUS_MIE | MSTATUS_MPIE | MSTATUS_MPP);
+        break;
+      case 0x304:
+        this.mie = v & MIE_MTIE; // only the machine timer interrupt is modelled
+        break;
+      case 0x305:
+        this.mtvec = v | 0;
+        break;
+      case 0x340:
+        this.mscratch = v | 0;
+        break;
+      case 0x341:
+        this.mepc = v & ~1; // IALIGN: instruction addresses are 2-byte aligned
+        break;
+      case 0x342:
+        this.mcause = v | 0;
+        break;
+      case 0x343:
+        this.mtval = v | 0;
+        break;
+      // mip.MTIP is read-only here (driven by the timer); mip writes are ignored.
       default:
-        break; // counters / unknown CSRs ignore writes
+        break; // counters / read-only / unknown CSRs ignore writes
     }
   }
 

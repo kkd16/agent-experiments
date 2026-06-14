@@ -842,6 +842,251 @@ const TESTS: Test[] = [
       eq(cpu.output, '55', 'compressed example output');
     },
   },
+
+  // --- Traps & interrupts (machine mode) -------------------------------------
+  {
+    name: 'traps: machine CSRs (mtvec/mscratch/mepc/mcause) read-write round-trip',
+    fn: () => {
+      const cpu = run(`
+        main:
+          li t0, 0x1234
+          csrw mtvec, t0
+          csrr a0, mtvec        # 0x1234
+          li a7, 34
+          ecall
+          li a0, ' '
+          li a7, 11
+          ecall
+          li t0, 0xABC
+          csrw mscratch, t0
+          csrr a0, mscratch
+          li a7, 34
+          ecall
+          li a7, 10
+          ecall
+      `);
+      eq(cpu.output, '0x00001234 0x00000abc', 'CSR round-trip');
+    },
+  },
+  {
+    name: 'traps: a machine timer interrupt is taken 5 times',
+    fn: () => {
+      const cpu = run(`
+        .equ MTIME,    0x0200bff8
+        .equ MTIMECMP, 0x02004000
+        main:
+          la t0, h
+          csrw mtvec, t0
+          li s0, 0
+          li t0, MTIME
+          lw t1, 0(t0)
+          addi t1, t1, 10
+          li t2, MTIMECMP
+          sw t1, 0(t2)
+          li t0, 0x80
+          csrs mie, t0
+          csrsi mstatus, 0x8
+        loop:
+          li t3, 5
+          blt s0, t3, loop
+          mv a0, s0
+          li a7, 1
+          ecall
+          li a7, 10
+          ecall
+        h:
+          addi s0, s0, 1
+          li t0, MTIME
+          lw t1, 0(t0)
+          addi t1, t1, 10
+          li t2, MTIMECMP
+          sw t1, 0(t2)
+          mret
+      `);
+      eq(cpu.output, '5', 'timer interrupt count');
+      eq(cpu.status, 'halted', 'status');
+    },
+  },
+  {
+    name: 'traps: an illegal instruction vectors to the handler (mcause = 2)',
+    fn: () => {
+      const cpu = run(`
+        main:
+          la t0, ih
+          csrw mtvec, t0
+          li s0, 0
+          .word 0xffffffff       # illegal -> trap
+          mv a0, s0              # set to mcause by the handler
+          li a7, 1
+          ecall
+          li a7, 10
+          ecall
+        ih:
+          csrr s0, mcause        # 2 = illegal instruction
+          csrr t1, mepc
+          addi t1, t1, 4         # skip the 4-byte illegal word
+          csrw mepc, t1
+          mret
+      `);
+      eq(cpu.output, '2', 'mcause is illegal-instruction');
+    },
+  },
+  {
+    name: 'traps: interrupts stay masked when mstatus.MIE is clear',
+    fn: () => {
+      // Same setup but without enabling MIE — the loop must run to its own bound, untouched.
+      const cpu = run(`
+        .equ MTIME,    0x0200bff8
+        .equ MTIMECMP, 0x02004000
+        main:
+          la t0, h
+          csrw mtvec, t0
+          li s0, 0
+          li t0, MTIME
+          lw t1, 0(t0)
+          addi t1, t1, 5
+          li t2, MTIMECMP
+          sw t1, 0(t2)
+          li t0, 0x80
+          csrs mie, t0          # timer enabled in mie...
+          # ...but mstatus.MIE left 0, so no interrupt should fire
+          li t3, 0
+        loop:
+          addi t3, t3, 1
+          li t4, 50
+          blt t3, t4, loop
+          mv a0, s0             # handler never ran -> 0
+          li a7, 1
+          ecall
+          li a7, 10
+          ecall
+        h:
+          addi s0, s0, 100
+          mret
+      `);
+      eq(cpu.output, '0', 'no interrupt while MIE=0');
+    },
+  },
+  {
+    name: 'traps: mret restores mstatus.MIE from MPIE',
+    fn: () => {
+      const result = assemble(`
+        main:
+          la t0, h
+          csrw mtvec, t0
+          .equ MTIME,    0x0200bff8
+          .equ MTIMECMP, 0x02004000
+          li t0, MTIME
+          lw t1, 0(t0)
+          addi t1, t1, 3
+          li t2, MTIMECMP
+          sw t1, 0(t2)
+          li t0, 0x80
+          csrs mie, t0
+          csrsi mstatus, 0x8
+        spin:
+          beqz s0, spin
+          li a7, 10
+          ecall
+        h:
+          li s0, 1
+          li t0, 0x80
+          csrc mie, t0          # disable the timer source (else it re-fires forever)
+          mret
+      `);
+      assert(result.ok, 'assembles');
+      const cpu = new Cpu();
+      cpu.load(result);
+      // Run until the interrupt has been taken and handled.
+      cpu.run(2_000_000);
+      eq(cpu.status, 'halted', 'program halts after the single interrupt');
+      // After mret, global interrupt enable must be back on (MPIE was 1 → MIE restored).
+      eq((cpu.mstatus >>> 3) & 1, 1, 'MIE restored after mret');
+    },
+  },
+  {
+    name: 'traps: CLINT mtime advances with cycles and is readable via lw',
+    fn: () => {
+      const cpu = run(`
+        .equ MTIME, 0x0200bff8
+        main:
+          li t0, MTIME
+          lw s0, 0(t0)          # t0_time
+          nop
+          nop
+          nop
+          lw s1, 0(t0)          # t1_time
+          sub a0, s1, s0        # elapsed cycles between the two loads (> 0)
+          li a7, 1
+          ecall
+          li a7, 10
+          ecall
+      `);
+      const n = parseInt(cpu.output, 10);
+      assert(n >= 4, `expected mtime to advance by the executed cycles, got ${cpu.output}`);
+    },
+  },
+  {
+    name: 'traps: time-travel steps back across a taken interrupt',
+    fn: () => {
+      const result = assemble(`
+        .equ MTIME,    0x0200bff8
+        .equ MTIMECMP, 0x02004000
+        main:
+          la t0, h
+          csrw mtvec, t0
+          li t0, MTIME
+          lw t1, 0(t0)
+          addi t1, t1, 2
+          li t2, MTIMECMP
+          sw t1, 0(t2)
+          li t0, 0x80
+          csrs mie, t0
+          csrsi mstatus, 0x8
+        spin:
+          j spin
+        h:
+          li s0, 7
+          mret
+      `);
+      assert(result.ok, 'assembles');
+      const cpu = new Cpu();
+      cpu.load(result);
+      // Step until the trap is taken (pc jumps to the handler 'h').
+      const hAddr = result.symbols.get('h')!;
+      let guard = 0;
+      while (cpu.pc !== (hAddr >>> 0) && guard++ < 1000) cpu.step();
+      eq(cpu.pc >>> 0, hAddr >>> 0, 'reached handler via trap');
+      const savedMepc = cpu.mepc;
+      const savedMstatus = cpu.mstatus;
+      cpu.stepBack(); // undo the trap entry
+      assert(cpu.pc !== (hAddr >>> 0), 'pc reverted out of the handler');
+      // Re-take it and confirm the trap state reproduces exactly.
+      cpu.step();
+      eq(cpu.pc >>> 0, hAddr >>> 0, 're-entered handler');
+      eq(cpu.mepc, savedMepc, 'mepc reproduced');
+      eq(cpu.mstatus, savedMstatus, 'mstatus reproduced');
+    },
+  },
+  {
+    name: 'mret / wfi decode & disassemble',
+    fn: () => {
+      const r = assemble('main:\n  mret\n  wfi\n');
+      assert(r.ok, 'assembles');
+      eq(r.instrs[0].word >>> 0, 0x30200073, 'mret encoding');
+      eq(r.instrs[1].word >>> 0, 0x10500073, 'wfi encoding');
+      eq(disassemble(r.instrs[0].word), 'mret', 'mret disasm');
+      eq(disassemble(r.instrs[1].word), 'wfi', 'wfi disasm');
+    },
+  },
+  {
+    name: 'example: timer-interrupt program services 8 ticks',
+    fn: () => {
+      const cpu = run(EXAMPLES.find((e) => e.id === 'timerirq')!.code);
+      eq(cpu.output, '8', 'timer example output');
+      eq(cpu.status, 'halted', 'status');
+    },
+  },
 ];
 
 export function runSelfTests(): TestResult[] {
