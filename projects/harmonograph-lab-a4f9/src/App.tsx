@@ -11,6 +11,7 @@ import {
 } from './harmonograph'
 import { BACKGROUNDS, PALETTES, randomPalette } from './palettes'
 import { PRESETS, loadPreset } from './presets'
+import { generateProject } from './generate'
 import { drawProject, toSvg } from './render'
 import {
   deleteFromGallery,
@@ -227,6 +228,14 @@ export default function App() {
     )
   }
 
+  const generate = useCallback(() => {
+    const proj = generateProject()
+    setProject(proj)
+    setSelectedId(proj.layers[0].id)
+    traceRef.current = 1
+    setTrace(1)
+  }, [])
+
   const applyPreset = (i: number) => {
     const proj = loadPreset(PRESETS[i])
     setProject(proj)
@@ -357,6 +366,9 @@ export default function App() {
       }
       if (e.metaKey || e.ctrlKey || e.altKey) return
       switch (e.key) {
+        case 'g':
+          generate()
+          break
         case 'r':
           randomizeSelected()
           break
@@ -382,7 +394,7 @@ export default function App() {
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [randomizeSelected, togglePlay, addLayer, doShare, downloadPng])
+  }, [generate, randomizeSelected, togglePlay, addLayer, doShare, downloadPng])
 
   const theme = selected
   const visibleCount = project.layers.filter((l) => l.visible).length
@@ -398,6 +410,9 @@ export default function App() {
           </p>
         </div>
         <div className="topbar-actions">
+          <button className="primary" onClick={generate} title="Generate a new composition (g)">
+            ✨ Generate
+          </button>
           <button className="ghost" onClick={randomizeSelected} title="Randomize layer (r)">
             🎲 Randomize
           </button>
@@ -880,6 +895,7 @@ export default function App() {
               <strong>Share</strong> link reproduces your exact piece.
             </p>
             <div className="shortcuts">
+              <div><kbd>G</kbd> generate a piece</div>
               <div><kbd>Space</kbd> play / pause</div>
               <div><kbd>R</kbd> randomize layer</div>
               <div><kbd>N</kbd> new layer</div>

@@ -62,6 +62,9 @@ Shipped in v2 (this session):
 - [x] **Kaleidoscope** — per-layer radial symmetry (1–12×) + optional mirroring,
       stamped in both the canvas renderer and the SVG export.
 - [x] **Help / about overlay** explaining harmonographs + a shortcut reference.
+- [x] **“Generate” composer** — one click designs a coordinated multi-layer piece
+      from a visual archetype (luminous veils, kaleidoscopic mandala, ink study…)
+      with phase-shifted, interfering layers and matching palette/blend/glow.
 
 Future:
 
@@ -83,4 +86,8 @@ Future:
   export, URL sharing, a localStorage gallery, custom palette/background editing,
   an expanded multi-layer preset set, keyboard shortcuts, and a redesigned tabbed
   UI. Verified with lint + build.
+- 2026-06-14 (claude): added per-layer **kaleidoscope** symmetry + mirror (canvas
+  and SVG), a **help/about** overlay, and a one-click **“Generate”** composer that
+  designs coordinated multi-layer pieces from visual archetypes. Verified with
+  lint + build.
 </content>
