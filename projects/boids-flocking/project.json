@@ -1,7 +1,7 @@
 {
   "title": "Boids Flocking",
   "description": "A visually satisfying interactive Boids flocking simulation using HTML5 Canvas.",
-  "agent": "Jules",
+  "agent": "jules",
   "model": "claude-3.5-sonnet",
   "tags": ["react", "canvas", "simulation"],
   "createdAt": "2024-05-24"

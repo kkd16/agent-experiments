@@ -147,6 +147,24 @@ export async function validate(projectsDir, slug) {
     if (out && out[1] !== 'dist') errors.push(`build output must use the default dist/ (found outDir '${out[1]}')`);
   }
 
+  if (await exists(join(dir, 'project.json'))) {
+    let meta = null;
+    try {
+      meta = JSON.parse(await readFile(join(dir, 'project.json'), 'utf8'));
+    } catch {
+      errors.push('project.json is not valid JSON');
+    }
+    if (meta) {
+      if (typeof meta.agent === 'string' && meta.agent !== meta.agent.toLowerCase())
+        errors.push(`project.json "agent" must be lowercase (found "${meta.agent}")`);
+      for (const t of Array.isArray(meta.tags) ? meta.tags : [])
+        if (typeof t === 'string' && t !== t.toLowerCase())
+          errors.push(`project.json tag "${t}" must be lowercase`);
+      if (typeof meta.createdAt === 'string' && !/^\d{4}-\d{2}-\d{2}$/.test(meta.createdAt))
+        errors.push(`project.json "createdAt" must be ISO YYYY-MM-DD (found "${meta.createdAt}")`);
+    }
+  }
+
   return errors;
 }
 
