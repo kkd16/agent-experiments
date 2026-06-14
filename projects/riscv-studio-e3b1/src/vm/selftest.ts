@@ -334,6 +334,296 @@ const TESTS: Test[] = [
       eq(cpu.output, '3', 'branches');
     },
   },
+
+  // --- RV32F floating point --------------------------------------------------
+  {
+    name: 'RV32F: integer→float→arithmetic→int (3*4+3 = 15)',
+    fn: () => {
+      const cpu = run(`
+        main:
+          li t0, 3
+          fcvt.s.w fa0, t0
+          li t1, 4
+          fcvt.s.w fa1, t1
+          fmul.s fa2, fa0, fa1
+          fadd.s fa2, fa2, fa0
+          fcvt.w.s a0, fa2
+          li a7, 1
+          ecall
+          li a7, 10
+          ecall
+      `);
+      eq(cpu.output, '15', 'fp arithmetic');
+    },
+  },
+  {
+    name: 'RV32F: fsqrt then square round-trips (sqrt(2)^2 ≈ 2)',
+    fn: () => {
+      const cpu = run(`
+        main:
+          li t0, 2
+          fcvt.s.w fa0, t0
+          fsqrt.s fa1, fa0
+          fmul.s fa2, fa1, fa1
+          fcvt.w.s a0, fa2
+          li a7, 1
+          ecall
+          li a7, 10
+          ecall
+      `);
+      eq(cpu.output, '2', 'sqrt round-trip');
+    },
+  },
+  {
+    name: 'RV32F: print_float renders pi bits as 3.14159…',
+    fn: () => {
+      const cpu = run(`
+        main:
+          li t0, 0x40490fdb
+          fmv.w.x fa0, t0
+          li a7, 2
+          ecall
+          li a7, 10
+          ecall
+      `);
+      assert(cpu.output.startsWith('3.14159'), `got: ${cpu.output}`);
+    },
+  },
+  {
+    name: 'RV32F: fmv.x.w / fmv.w.x preserve the bit pattern',
+    fn: () => {
+      const cpu = run(`
+        main:
+          li t0, 0x40490fdb
+          fmv.w.x fa0, t0
+          fmv.x.w a0, fa0
+          li a7, 34
+          ecall
+          li a7, 10
+          ecall
+      `);
+      eq(cpu.output, '0x40490fdb', 'bit move');
+    },
+  },
+  {
+    name: 'RV32F: compares (flt/fle/feq) and fclass of +0.0',
+    fn: () => {
+      const cpu = run(`
+        main:
+          li t0, 1
+          fcvt.s.w fa0, t0
+          li t1, 2
+          fcvt.s.w fa1, t1
+          flt.s a0, fa0, fa1     # 1
+          li a7, 1
+          ecall
+          li a0, ' '
+          li a7, 11
+          ecall
+          li t0, 0
+          fcvt.s.w fa0, t0
+          fclass.s a0, fa0       # +0.0 -> bit 4 = 16
+          li a7, 1
+          ecall
+          li a7, 10
+          ecall
+      `);
+      eq(cpu.output, '1 16', 'compare + fclass');
+    },
+  },
+  {
+    name: 'example: Newton √2 (float) ≈ 1.41421',
+    fn: () => {
+      const cpu = run(EXAMPLES.find((e) => e.id === 'newton')!.code);
+      assert(cpu.output.startsWith('1.4142'), `got: ${cpu.output}`);
+    },
+  },
+  {
+    name: 'example: Leibniz π (float) ≈ 3.14…',
+    fn: () => {
+      const cpu = run(EXAMPLES.find((e) => e.id === 'leibniz')!.code);
+      assert(cpu.output.startsWith('3.14'), `got: ${cpu.output}`);
+    },
+  },
+  {
+    name: 'example: float dot product (fmadd.s) == 70',
+    fn: () => {
+      const cpu = run(EXAMPLES.find((e) => e.id === 'dotprod')!.code);
+      eq(cpu.output, '70', 'dot product');
+    },
+  },
+
+  // --- RV32A atomics ---------------------------------------------------------
+  {
+    name: 'RV32A: amoadd.w returns the old value and updates memory',
+    fn: () => {
+      const cpu = run(`
+        .data
+        counter: .word 10
+        .text
+        main:
+          la t0, counter
+          li t1, 5
+          amoadd.w a0, t1, (t0)   # a0 = 10 (old), mem -> 15
+          li a7, 1
+          ecall
+          li a0, ' '
+          li a7, 11
+          ecall
+          lw a0, 0(t0)
+          li a7, 1
+          ecall
+          li a7, 10
+          ecall
+      `);
+      eq(cpu.output, '10 15', 'amoadd');
+    },
+  },
+  {
+    name: 'RV32A: amoswap.w swaps and lr/sc succeeds',
+    fn: () => {
+      const cpu = run(`
+        .data
+        slot: .word 7
+        .text
+        main:
+          la t0, slot
+          li t1, 42
+          amoswap.w a0, t1, (t0)  # a0 = 7 (old)
+          li a7, 1
+          ecall
+          li a0, ' '
+          li a7, 11
+          ecall
+          lr.w t2, (t0)
+          li t3, 99
+          sc.w a0, t3, (t0)       # success -> 0
+          li a7, 1
+          ecall
+          li a0, ' '
+          li a7, 11
+          ecall
+          lw a0, 0(t0)            # 99
+          li a7, 1
+          ecall
+          li a7, 10
+          ecall
+      `);
+      eq(cpu.output, '7 0 99', 'amoswap + lr/sc');
+    },
+  },
+  {
+    name: 'example: atomic counter (100 amoadd.w) == 100',
+    fn: () => {
+      const cpu = run(EXAMPLES.find((e) => e.id === 'atomic')!.code);
+      eq(cpu.output, '100', 'atomic counter');
+    },
+  },
+
+  // --- Zicsr + counters ------------------------------------------------------
+  {
+    name: 'Zicsr: rdcycle advances by the instructions executed between reads',
+    fn: () => {
+      const cpu = run(`
+        main:
+          rdcycle t0
+          nop
+          nop
+          rdcycle t1
+          sub a0, t1, t0      # 3 (nop, nop, rdcycle)
+          li a7, 1
+          ecall
+          li a7, 10
+          ecall
+      `);
+      eq(cpu.output, '3', 'rdcycle delta');
+    },
+  },
+  {
+    name: 'Zicsr: fcsr write-then-read round-trips',
+    fn: () => {
+      const cpu = run(`
+        main:
+          li t0, 0x1f
+          csrw fcsr, t0
+          csrr a0, fcsr
+          li a7, 1
+          ecall
+          li a7, 10
+          ecall
+      `);
+      eq(cpu.output, '31', 'fcsr round-trip');
+    },
+  },
+  {
+    name: 'example: cycle counter prints "<cycles> 500500"',
+    fn: () => {
+      const cpu = run(EXAMPLES.find((e) => e.id === 'counters')!.code);
+      assert(/^\d+ 500500$/.test(cpu.output), `got: ${cpu.output}`);
+    },
+  },
+
+  // --- time-travel debugger --------------------------------------------------
+  {
+    name: 'time-travel: stepBack reverts registers, pc and cycles',
+    fn: () => {
+      const result = assemble(`main:\n  li a0, 7\n  addi a0, a0, 5\n  li a7, 10\n  ecall\n`);
+      assert(result.ok, 'assembles');
+      const cpu = new Cpu();
+      cpu.load(result);
+      cpu.step(); // li a0, 7
+      cpu.step(); // addi a0, a0, 5 -> 12
+      eq(cpu.regs[10], 12, 'a0 after two steps');
+      eq(cpu.stepBack(), true, 'stepBack ok');
+      eq(cpu.regs[10], 7, 'a0 reverted');
+      cpu.stepBack();
+      eq(cpu.regs[10], 0, 'a0 back to start');
+      eq(cpu.pc, 0, 'pc back to start');
+      eq(cpu.stepBack(), false, 'nothing left to undo');
+    },
+  },
+  {
+    name: 'time-travel: stepBack restores memory written by a store',
+    fn: () => {
+      const result = assemble(`.data\nx: .word 0\n.text\nmain:\n  la t0, x\n  li t1, 99\n  sw t1, 0(t0)\n  li a7, 10\n  ecall\n`);
+      assert(result.ok, 'assembles');
+      const cpu = new Cpu();
+      cpu.load(result);
+      cpu.step(); // la part 1
+      cpu.step(); // la part 2
+      const addr = cpu.regs[5] >>> 0;
+      cpu.step(); // li t1, 99
+      cpu.step(); // sw
+      eq(cpu.mem.readWord(addr), 99, 'stored');
+      cpu.stepBack();
+      eq(cpu.mem.readWord(addr), 0, 'store reverted');
+    },
+  },
+
+  // --- new examples render to the framebuffer --------------------------------
+  {
+    name: 'example: float Mandelbrot fills the framebuffer (centre inside set)',
+    fn: () => {
+      const cpu = run(EXAMPLES.find((e) => e.id === 'mandelf')!.code, 30_000_000);
+      eq(cpu.status, 'halted', 'status');
+      eq(cpu.mem.readByte(FB_BASE + 64 * FB_W + 64), 0, 'centre pixel');
+      let nonzero = 0;
+      for (let i = 0; i < FB_W * FB_W; i++) if (cpu.mem.readByte(FB_BASE + i) !== 0) nonzero++;
+      assert(nonzero > 500, `expected a drawn fractal, got ${nonzero} coloured pixels`);
+    },
+  },
+  {
+    name: 'FP decode ⇄ disassemble round-trip for the dot-product program',
+    fn: () => {
+      const result = assemble(EXAMPLES.find((e) => e.id === 'dotprod')!.code);
+      assert(result.ok, 'assembles');
+      for (const ins of result.instrs) {
+        const d = decode(ins.word);
+        assert(d.mnemonic !== 'unknown' && d.mnemonic !== '?', `bad decode 0x${ins.word.toString(16)}`);
+        assert(disassemble(ins.word, ins.addr).length > 0, 'disassembly empty');
+      }
+    },
+  },
 ];
 
 export function runSelfTests(): TestResult[] {

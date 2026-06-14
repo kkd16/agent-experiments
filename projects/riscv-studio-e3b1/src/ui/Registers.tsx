@@ -1,11 +1,13 @@
-// Register file inspector: all 32 GPRs plus pc, with the values that changed since the last
-// step highlighted, and a selectable display radix.
+// Register file inspector: all 32 GPRs and 32 FP registers, plus pc, cycles, fcsr and the
+// hardware counters. Values that changed since the last step are highlighted, and the integer
+// view has a selectable display radix.
 
 import { useState } from 'react';
 import type { Cpu } from '../vm/cpu';
-import { ABI_NAMES, REG_ROLES } from '../vm/registers';
+import { ABI_NAMES, REG_ROLES, FREG_ABI_NAMES, FREG_ROLES } from '../vm/registers';
 import { formatWord, hexWord } from '../vm/format';
 import type { Radix } from '../vm/format';
+import { f32FromBits } from '../vm/fp';
 
 interface Props {
   cpu: Cpu;
@@ -14,8 +16,23 @@ interface Props {
 
 const RADII: Radix[] = ['hex', 'dec', 'udec', 'bin'];
 
+/** Compact single-precision rendering: integers keep a `.0`, others ~7 sig-figs. */
+function fmtFloat(bits: number): string {
+  const x = f32FromBits(bits);
+  if (Number.isNaN(x)) return 'NaN';
+  if (x === Infinity) return '∞';
+  if (x === -Infinity) return '-∞';
+  if (x === 0) return Object.is(x, -0) ? '-0.0' : '0.0';
+  if (Number.isInteger(x) && Math.abs(x) < 1e7) return `${x}.0`;
+  return String(Number(x.toPrecision(7)));
+}
+
 export default function Registers({ cpu, prevRegs }: Props) {
   const [radix, setRadix] = useState<Radix>('hex');
+  const [showFloat, setShowFloat] = useState(true);
+
+  const frm = (cpu.fcsr >>> 5) & 7;
+  const fflags = cpu.fcsr & 0x1f;
 
   return (
     <div className="panel regs">
@@ -27,6 +44,9 @@ export default function Registers({ cpu, prevRegs }: Props) {
               {r}
             </button>
           ))}
+          <button className={showFloat ? 'on' : ''} onClick={() => setShowFloat((v) => !v)}>
+            ƒ
+          </button>
         </div>
       </div>
       <div className="reg-grid">
@@ -44,13 +64,37 @@ export default function Registers({ cpu, prevRegs }: Props) {
           );
         })}
       </div>
+
+      {showFloat && (
+        <>
+          <div className="reg-subhead">
+            <span>float registers (RV32F)</span>
+            <span className="reg-fcsr">
+              fcsr=0x{cpu.fcsr.toString(16).padStart(2, '0')} · frm={frm} · fflags=
+              {fflags.toString(2).padStart(5, '0')}
+            </span>
+          </div>
+          <div className="reg-grid freg-grid">
+            {Array.from({ length: 32 }, (_, i) => (
+              <div key={i} className="reg-cell" title={FREG_ROLES[i]}>
+                <span className="reg-name">
+                  {FREG_ABI_NAMES[i]}
+                  <span className="reg-x">f{i}</span>
+                </span>
+                <span className="reg-val">{fmtFloat(cpu.fregs[i])}</span>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+
       <div className="reg-special">
         <div className="reg-cell pc">
           <span className="reg-name">pc</span>
           <span className="reg-val">{hexWord(cpu.pc)}</span>
         </div>
         <div className="reg-cell">
-          <span className="reg-name">cycles</span>
+          <span className="reg-name">cycle</span>
           <span className="reg-val">{cpu.cycles.toLocaleString()}</span>
         </div>
         <div className="reg-cell">

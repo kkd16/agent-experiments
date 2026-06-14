@@ -2,7 +2,7 @@
 // the register ABI, and the memory map. Most of it is generated from the same tables the
 // assembler and CPU use, so it can't drift out of date.
 
-import { ABI_NAMES, REG_ROLES } from '../vm/registers';
+import { ABI_NAMES, REG_ROLES, FREG_ABI_NAMES, FREG_ROLES } from '../vm/registers';
 import { SYSCALLS } from '../vm/syscalls';
 import { DATA_BASE, FB_BASE, GLOBAL_POINTER, STACK_TOP, TEXT_BASE } from '../vm/constants';
 import { hexWord } from '../vm/format';
@@ -66,6 +66,40 @@ const GROUPS: { title: string; items: InsDoc[] }[] = [
     ],
   },
   {
+    title: 'F extension — single-precision float (RV32F)',
+    items: [
+      { m: 'flw / fsw', desc: 'load / store a 32-bit float  —  flw fd, off(rs1)' },
+      { m: 'fadd / fsub / fmul / fdiv .s', desc: 'IEEE-754 arithmetic on f-registers' },
+      { m: 'fsqrt.s', desc: 'square root' },
+      { m: 'fmadd / fmsub / fnmadd / fnmsub .s', desc: 'fused multiply-add (rd = ±rs1·rs2 ± rs3)' },
+      { m: 'fmin / fmax .s', desc: 'minimum / maximum (NaN- and ±0-aware)' },
+      { m: 'fsgnj / fsgnjn / fsgnjx .s', desc: 'sign-injection (basis of fmv/fneg/fabs.s)' },
+      { m: 'feq / flt / fle .s', desc: 'compares → an integer 0/1 in rd' },
+      { m: 'fcvt.w.s / fcvt.wu.s', desc: 'float → signed / unsigned int (saturating)' },
+      { m: 'fcvt.s.w / fcvt.s.wu', desc: 'signed / unsigned int → float' },
+      { m: 'fmv.x.w / fmv.w.x', desc: 'copy raw bits between an x- and an f-register' },
+      { m: 'fclass.s', desc: 'classify rs1 → a 10-bit mask in rd' },
+    ],
+  },
+  {
+    title: 'A extension — atomics (RV32A)',
+    items: [
+      { m: 'lr.w / sc.w', desc: 'load-reserved / store-conditional (sc → 0 on success)' },
+      { m: 'amoswap.w', desc: 'atomic swap; rd = old memory value' },
+      { m: 'amoadd / amoand / amoor / amoxor .w', desc: 'atomic read-modify-write; rd = old value' },
+      { m: 'amomin / amomax / amominu / amomaxu .w', desc: 'atomic signed / unsigned min & max' },
+    ],
+  },
+  {
+    title: 'Zicsr — control & status registers',
+    items: [
+      { m: 'csrrw / csrrs / csrrc', desc: 'atomic read-then-write / set-bits / clear-bits' },
+      { m: 'csrrwi / csrrsi / csrrci', desc: 'the same, with a 5-bit immediate' },
+      { m: 'cycle / time / instret', desc: 'read-only hardware counters (plus the high words)' },
+      { m: 'fcsr / frm / fflags', desc: 'float control: rounding mode + accrued exceptions' },
+    ],
+  },
+  {
     title: 'System',
     items: [
       { m: 'ecall', desc: 'environment call — dispatched on a7 (see syscalls)' },
@@ -86,6 +120,10 @@ const PSEUDO: InsDoc[] = [
   { m: 'call sym', desc: 'lui+jalr; sets ra' },
   { m: 'beqz / bnez / blez / bgez / bltz / bgtz', desc: 'branch comparing rs against zero' },
   { m: 'bgt / ble / bgtu / bleu', desc: 'branches with swapped operands' },
+  { m: 'fmv.s / fneg.s / fabs.s', desc: 'float copy / negate / absolute (via fsgnj*.s)' },
+  { m: 'rdcycle / rdtime / rdinstret', desc: 'read a hardware counter into rd' },
+  { m: 'csrr / csrw / csrs / csrc', desc: 'read / write / set / clear a CSR' },
+  { m: 'frcsr / fscsr / frrm / fsrm / frflags / fsflags', desc: 'float CSR read/write shorthands' },
 ];
 
 const DIRECTIVES: InsDoc[] = [
@@ -103,14 +141,18 @@ export default function Docs() {
   return (
     <div className="panel docs">
       <div className="panel-head">
-        <h2>RV32IM reference</h2>
+        <h2>RV32IMAF + Zicsr reference</h2>
       </div>
       <div className="docs-scroll">
         <p className="docs-intro">
           This studio implements the <strong>RV32I</strong> base integer ISA plus the{' '}
-          <strong>M</strong> (multiply/divide) extension — every instruction below executes on
-          the built-in interpreter. The assembler accepts the full pseudo-instruction set and
-          common GNU/RARS directives.
+          <strong>M</strong> (multiply/divide), <strong>A</strong> (atomics) and{' '}
+          <strong>F</strong> (single-precision float) extensions, together with{' '}
+          <strong>Zicsr</strong> and the hardware counters — every instruction below executes on
+          the built-in interpreter. Float ops take an optional rounding-mode operand
+          (<code>rne·rtz·rdn·rup·rmm·dyn</code>); the debugger can also <strong>step backward</strong>{' '}
+          to undo instructions one at a time. The assembler accepts the full pseudo-instruction
+          set and common GNU/RARS directives.
         </p>
 
         {GROUPS.map((grp) => (
@@ -183,6 +225,22 @@ export default function Docs() {
                     x{i} / {name}
                   </td>
                   <td className="doc-d">{REG_ROLES[i]}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </section>
+
+        <section>
+          <h3>Float register ABI (RV32F)</h3>
+          <table className="doc-table reg-doc">
+            <tbody>
+              {FREG_ABI_NAMES.map((name, i) => (
+                <tr key={i}>
+                  <td className="doc-m">
+                    f{i} / {name}
+                  </td>
+                  <td className="doc-d">{FREG_ROLES[i]}</td>
                 </tr>
               ))}
             </tbody>
