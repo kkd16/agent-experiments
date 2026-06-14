@@ -39,6 +39,7 @@ import {
   Distinct,
   Filter,
   HashJoin,
+  IndexOnlyScan,
   IndexScan,
   Limit,
   MergeJoin,
@@ -538,7 +539,13 @@ function matchIndex(index: IndexHandle, byColumn: Map<string, Sarg[]>): {
   return { lo, hi, consumed, isEq: !usedRange }
 }
 
-function tryIndexScan(table: Table, baseSchema: Schema, preds: Expr[], sc: StatCtx): IndexPlan | null {
+function tryIndexScan(
+  table: Table,
+  baseSchema: Schema,
+  preds: Expr[],
+  sc: StatCtx,
+  coverCols: Set<string> | null = null,
+): IndexPlan | null {
   // Gather sargable comparisons grouped by indexed column name.
   const byColumn = new Map<string, Sarg[]>()
   for (const p of preds) {
@@ -575,10 +582,55 @@ function tryIndexScan(table: Table, baseSchema: Schema, preds: Expr[], sc: StatC
 
   const consumedPreds = [...best.m.consumed]
   const estRows = Math.max(1, Math.round(table.rowCount() * combinedSelectivity(consumedPreds, sc)))
+
+  // Index-only (covering) scan: if every column the query needs from this table
+  // is present in the chosen index, answer from the B+Tree and skip the heap.
+  if (coverCols && indexCovers(best.index, coverCols)) {
+    const alias = baseSchema.length ? baseSchema[0].table : table.name
+    const idxSchema: Schema = best.index.meta.columns.map((name) => ({
+      table: alias,
+      name,
+      type: table.columnType(name),
+    }))
+    return {
+      op: new IndexOnlyScan(best.index, idxSchema, best.m.lo, best.m.hi, estRows),
+      consumed: best.m.consumed,
+    }
+  }
   return {
     op: new IndexScan(table, best.index, baseSchema, best.m.lo, best.m.hi, estRows),
     consumed: best.m.consumed,
   }
+}
+
+/** Does `index` contain every column named in `cols` (a covering index)? */
+function indexCovers(index: IndexHandle, cols: Set<string>): boolean {
+  const have = new Set(index.meta.columns.map((c) => c.toLowerCase()))
+  for (const c of cols) if (!have.has(c)) return false
+  return true
+}
+
+// The set of column names a single-table query reads (for covering-index
+// detection). Returns ok=false when we can't see every reference — a `SELECT *`,
+// or any subquery whose (possibly correlated) columns collectColumns won't walk.
+function coveringColumns(stmt: SelectStmt): { names: Set<string>; ok: boolean } {
+  const names = new Set<string>()
+  const exprs: Expr[] = []
+  for (const it of stmt.columns) {
+    if (it.expr.kind === 'star') return { names, ok: false }
+    exprs.push(it.expr)
+  }
+  if (stmt.where) exprs.push(stmt.where)
+  exprs.push(...stmt.groupBy)
+  if (stmt.having) exprs.push(stmt.having)
+  for (const o of stmt.orderBy) exprs.push(o.expr)
+  for (const ex of exprs) {
+    if (containsSubquery(ex)) return { names, ok: false }
+    const cols: ColumnExpr[] = []
+    collectColumns(ex, cols)
+    for (const c of cols) names.add(c.name.toLowerCase())
+  }
+  return { names, ok: true }
 }
 
 // Build a single-column range bound for a sargable comparison (for bitmap scans).
@@ -629,8 +681,14 @@ function tryBitmapAnd(table: Table, baseSchema: Schema, preds: Expr[], sc: StatC
 // Pick the best index access path: a single (composite) index scan, or a bitmap
 // AND of several single-column indexes — whichever consumes more predicates
 // (ties favour the single scan, which avoids a heap re-fetch).
-function chooseIndexAccess(table: Table, schema: Schema, preds: Expr[], sc: StatCtx): IndexPlan | null {
-  const single = tryIndexScan(table, schema, preds, sc)
+function chooseIndexAccess(
+  table: Table,
+  schema: Schema,
+  preds: Expr[],
+  sc: StatCtx,
+  coverCols: Set<string> | null = null,
+): IndexPlan | null {
+  const single = tryIndexScan(table, schema, preds, sc, coverCols)
   const bitmap = tryBitmapAnd(table, schema, preds, sc)
   if (single && bitmap) return bitmap.consumed.size > single.consumed.size ? bitmap : single
   return single ?? bitmap
@@ -955,9 +1013,15 @@ function planCore(stmt: SelectStmt, env: PlanEnv, embedOrderLimit: boolean): Ope
 
     if (basePreserved) {
       const baseApplicable = wherePreds.filter((p) => !consumed.has(p) && resolvableIn(p, schema, env))
-      const idx = chooseIndexAccess(base.table, schema, baseApplicable, statTables)
+      // Covering-index detection only for a single base table (no joins / derived
+      // relation), where every column reference belongs to this table.
+      const cover = stmt.joins.length === 0 && !stmt.from!.subquery ? coveringColumns(stmt) : null
+      const idx = chooseIndexAccess(base.table, schema, baseApplicable, statTables, cover?.ok ? cover.names : null)
       if (idx) {
         op = idx.op
+        // A covering (index-only) scan emits only the indexed columns, so adopt
+        // the operator's own schema for downstream resolution.
+        schema = idx.op.schema
         idx.consumed.forEach((p) => consumed.add(p))
       } else {
         op = new SeqScan(base.table, schema)

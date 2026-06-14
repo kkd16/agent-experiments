@@ -659,6 +659,50 @@ test('index', 'a covering composite index is preferred over a bitmap AND', () =>
   assert(!text.includes('BitmapAnd'), 'no bitmap needed when one index covers both predicates')
 })
 
+// --- index-only (covering) scans --------------------------------------------
+function coverEngine(): Engine {
+  const e = new Engine()
+  e.execute('CREATE TABLE t (id INTEGER PRIMARY KEY, a INTEGER, b INTEGER, c TEXT)')
+  e.execute(
+    "INSERT INTO t (id, a, b, c) WITH RECURSIVE r(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM r WHERE n<100) SELECT n, n % 10, n * 2, 'x' FROM r",
+  )
+  e.execute('CREATE INDEX idx_ab ON t (a, b)')
+  return e
+}
+test('index', 'index-only scan when the index covers every needed column', () => {
+  const e = coverEngine()
+  const r = e.execute('EXPLAIN SELECT a, b FROM t WHERE a = 3')[0]
+  const text = JSON.stringify(r.kind === 'explain' ? r.plan : {})
+  assert(text.includes('IndexOnlyScan'), 'SELECT a, b over an (a, b) index should be index-only')
+  assert(text.includes('heap not touched'), 'plan should note the heap is skipped')
+})
+test('index', 'falls back to a heap IndexScan when a column is not covered', () => {
+  const e = coverEngine()
+  const text = JSON.stringify((e.execute('EXPLAIN SELECT a, c FROM t WHERE a = 3')[0] as { plan: unknown }).plan)
+  assert(!text.includes('IndexOnlyScan'), 'selecting an unindexed column (c) must read the heap')
+  assert(text.includes('IndexScan'), 'should still use the index for the predicate')
+})
+test('index', 'SELECT * is never index-only', () => {
+  const e = coverEngine()
+  const text = JSON.stringify((e.execute('EXPLAIN SELECT * FROM t WHERE a = 3')[0] as { plan: unknown }).plan)
+  assert(!text.includes('IndexOnlyScan'), 'SELECT * needs every column, so it cannot be covered')
+})
+test('index', 'index-only scan returns correct values (incl. extra covered filter)', () => {
+  const e = coverEngine()
+  let expectCount = 0
+  let expectSum = 0
+  for (let n = 1; n <= 100; n++) {
+    if (n % 10 === 3) {
+      expectSum += n * 2
+      if (n * 2 > 40) expectCount++
+    }
+  }
+  assert(scalar(e, 'SELECT SUM(b) FROM t WHERE a = 3') === expectSum, 'covering SUM(b) wrong')
+  assert(scalar(e, 'SELECT COUNT(*) FROM t WHERE a = 3 AND b > 40') === expectCount, 'covering filter on b wrong')
+  const rows = rowsOf(e, 'SELECT a, b FROM t WHERE a = 3 ORDER BY b LIMIT 2')
+  assert(eq(rows, [[3, 6], [3, 26]]), `index-only rows wrong: ${JSON.stringify(rows)}`)
+})
+
 // --- statistics / cardinality estimation -----------------------------------
 test('stats', 'ANALYZE makes a selective predicate estimate few rows', () => {
   const e = seeded()
