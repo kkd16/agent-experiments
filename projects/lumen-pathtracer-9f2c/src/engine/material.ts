@@ -18,12 +18,20 @@
 import type { Vec3 } from './vec3'
 import { dot, onb, scale, toWorld, v } from './vec3'
 import type { Rng } from './rng'
+import type { Texture } from './texture'
+import { evalTexture } from './texture'
+import { cauchyIor } from './spectrum'
 
 export type Material =
-  | { kind: 'diffuse'; albedo: Vec3 }
-  | { kind: 'metal'; albedo: Vec3; roughness: number }
-  // Smooth dielectric (glass/water). `tint` colours transmitted radiance.
-  | { kind: 'dielectric'; ior: number; tint: Vec3 }
+  // `tex`, when present, overrides `albedo` with a procedural pattern evaluated
+  // at the hit point (resolved away before any BSDF call — see resolveMaterial).
+  | { kind: 'diffuse'; albedo: Vec3; tex?: Texture }
+  | { kind: 'metal'; albedo: Vec3; roughness: number; tex?: Texture }
+  // Dielectric (glass/water). `tint` colours transmitted radiance; `roughness`
+  // (0 = smooth) frosts it via a microfacet interface; `absorption` is the
+  // Beer–Lambert coefficient σ_a (per world unit) applied to interior path
+  // segments by the integrator; `cauchyB` (µm²) turns on wavelength dispersion.
+  | { kind: 'dielectric'; ior: number; tint: Vec3; roughness?: number; absorption?: Vec3; cauchyB?: number }
   | { kind: 'emissive'; emission: Vec3 }
 
 export interface BsdfSample {
@@ -31,6 +39,25 @@ export interface BsdfSample {
   weight: Vec3 // f * |cosθ_i| / pdf  (already divided through)
   pdf: number
   specular: boolean
+  transmission?: boolean // true if the ray crossed the interface (refraction)
+}
+
+// Resolve any view-dependent material parameters into a plain, BSDF-ready
+// material at a specific surface point and (for dispersion) hero wavelength:
+//   • a procedural texture becomes a concrete albedo, and
+//   • a dispersive dielectric's IOR is shifted to the path's wavelength.
+// The hot BSDF code then never has to branch on textures or spectra.
+export function resolveMaterial(m: Material, p: Vec3, lambdaNm: number): Material {
+  switch (m.kind) {
+    case 'diffuse':
+      return m.tex ? { kind: 'diffuse', albedo: evalTexture(m.tex, p) } : m
+    case 'metal':
+      return m.tex ? { kind: 'metal', albedo: evalTexture(m.tex, p), roughness: m.roughness } : m
+    case 'dielectric':
+      return m.cauchyB && lambdaNm > 0 ? { ...m, ior: cauchyIor(m.ior, m.cauchyB, lambdaNm) } : m
+    default:
+      return m
+  }
 }
 
 const ROUGHNESS_DELTA = 1e-3 // below this a metal is treated as a perfect mirror
@@ -188,14 +215,16 @@ export function sampleBSDF(
       return { wi: toWorld(wi, t, b, n), weight, pdf, specular: false }
     }
     case 'dielectric': {
-      // Smooth dielectric: choose reflection or refraction stochastically by
-      // the Fresnel reflectance, giving an unbiased single sample per bounce.
       // `n` already faces the viewer, so it is the outward normal when the ray
       // hit the front and the inward normal when it hit the back.
-      const nl = n
       const etaI = frontFace ? 1 : m.ior
       const etaT = frontFace ? m.ior : 1
       const eta = etaI / etaT
+      const rough = m.roughness ?? 0
+      if (rough >= ROUGHNESS_DELTA) return sampleRoughDielectric(m, woW, n, eta, rough, rng)
+      // Smooth dielectric: choose reflection or refraction stochastically by the
+      // Fresnel reflectance, giving an unbiased single sample per bounce.
+      const nl = n
       const cosI = Math.abs(dot(woW, nl))
       const F = fresnelDielectric(cosI, eta)
       if (rng.next() < F) {
@@ -217,9 +246,56 @@ export function sampleBSDF(
         weight: scale(m.tint, radianceScale),
         pdf: 1 - F,
         specular: true,
+        transmission: true,
       }
     }
   }
+}
+
+// Rough (microfacet) dielectric — Walter et al. 2007 with Heitz VNDF sampling.
+// We sample a microfacet half-vector h from the distribution of visible normals,
+// evaluate Fresnel at the micro-angle, then stochastically reflect or refract the
+// view ray about h. As in the metal case the VNDF throughput collapses to the
+// Smith ratio G2(wo,wi)/G1(wo); choosing the lobe by Fresnel probability removes
+// the F factor from the weight. The result is a glossy/frosted glass. We flag it
+// `specular` so the integrator skips NEE (its transmission pdf is not derived for
+// MIS) — correct, just noisier for sharp caustics than the smooth case.
+function sampleRoughDielectric(
+  m: { tint: Vec3 },
+  woW: Vec3,
+  n: Vec3,
+  eta: number,
+  roughness: number,
+  rng: Rng,
+): BsdfSample | null {
+  const { t, b } = onb(n)
+  const wo = worldToLocal(woW, t, b, n)
+  if (wo.z <= 0) return null
+  const alpha = roughness * roughness
+  const h = sampleGGXVNDF(wo, alpha, rng.next(), rng.next()) // local, h.z > 0
+  const woDotH = dot(wo, h)
+  if (woDotH <= 0) return null
+  const F = fresnelDielectric(woDotH, eta)
+  const gv = g1(wo.z, alpha)
+  if (rng.next() < F) {
+    // Reflect wo about the microfacet normal h (stays in the upper hemisphere).
+    const wi = v(2 * woDotH * h.x - wo.x, 2 * woDotH * h.y - wo.y, 2 * woDotH * h.z - wo.z)
+    if (wi.z <= 0) return null
+    const weight = scale(v(1, 1, 1), g2(wo.z, wi.z, alpha) / gv)
+    return { wi: toWorld(wi, t, b, n), weight, pdf: 1, specular: true }
+  }
+  // Refract the incident ray (−wo) across the microfacet normal h.
+  const wi = refractDir(v(-wo.x, -wo.y, -wo.z), h, eta)
+  if (!wi || wi.z >= 0) {
+    // TIR through this microfacet → reflect instead.
+    const r = v(2 * woDotH * h.x - wo.x, 2 * woDotH * h.y - wo.y, 2 * woDotH * h.z - wo.z)
+    if (r.z <= 0) return null
+    const weight = scale(v(1, 1, 1), g2(wo.z, r.z, alpha) / gv)
+    return { wi: toWorld(r, t, b, n), weight, pdf: 1, specular: true }
+  }
+  const radianceScale = 1 / (eta * eta)
+  const weight = scale(m.tint, (g2(wo.z, Math.abs(wi.z), alpha) / gv) * radianceScale)
+  return { wi: toWorld(wi, t, b, n), weight, pdf: 1, specular: true, transmission: true }
 }
 
 export function evalBSDF(m: Material, woW: Vec3, wiW: Vec3, n: Vec3): Vec3 {

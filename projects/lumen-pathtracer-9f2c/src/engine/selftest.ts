@@ -6,7 +6,7 @@
 
 import { cross, dot, len, normalize, v, reflect, refract, luminance } from './vec3'
 import { Rng } from './rng'
-import { sampleBSDF, pdfBSDF, evalBSDF } from './material'
+import { sampleBSDF, pdfBSDF, evalBSDF, resolveMaterial } from './material'
 import type { Material } from './material'
 import { makeSphere, intersectPrim } from './primitive'
 import type { Primitive } from './primitive'
@@ -15,6 +15,9 @@ import { Scene } from './scene'
 import { radiance } from './integrator'
 import type { RayStats } from './integrator'
 import type { SceneDef } from './types'
+import { evalTexture } from './texture'
+import type { Texture } from './texture'
+import { cauchyIor, wavelengthWeight, LAMBDA_MIN, LAMBDA_MAX } from './spectrum'
 
 export interface TestResult {
   name: string
@@ -220,6 +223,145 @@ function testReciprocity(): { pass: boolean; detail: string } {
   return { pass: ok, detail: `f(wo,wi)=${a.x.toFixed(4)} vs f(wi,wo)=${b.x.toFixed(4)}` }
 }
 
+// 10 — Procedural texture sanity: the checker alternates between its two colours
+// on adjacent cells, and marble stays inside its [lo,hi] colour envelope.
+function testTexture(): { pass: boolean; detail: string } {
+  const checker: Texture = { kind: 'checker', even: v(1, 1, 1), odd: v(0, 0, 0), scale: 1 }
+  // Cells (0,0,0) and (1,0,0) differ in parity ⇒ must differ in colour.
+  const a = evalTexture(checker, v(0.5, 0.5, 0.5))
+  const b = evalTexture(checker, v(1.5, 0.5, 0.5))
+  const alternates = a.x !== b.x
+  // Marble must remain a convex blend of lo/hi (here [0,1]) at every sample.
+  const marble: Texture = { kind: 'marble', lo: v(0, 0, 0), hi: v(1, 1, 1), scale: 1.3, turbulence: 1 }
+  let inRange = true
+  const rng = new Rng(4242, 1)
+  for (let i = 0; i < 5000; i++) {
+    const p = v(rng.range(-9, 9), rng.range(-9, 9), rng.range(-9, 9))
+    const c = evalTexture(marble, p)
+    if (c.x < -1e-6 || c.x > 1 + 1e-6) inRange = false
+  }
+  return { pass: alternates && inRange, detail: `checker alternates=${alternates}, marble∈[lo,hi]=${inRange}` }
+}
+
+// 11 — Spectral white point: a flat (equal-energy) spectrum must integrate back
+// to neutral white, i.e. E_λ[wavelengthWeight] ≈ (1,1,1). This is what keeps
+// dispersive glass colour-neutral overall while tinting each refracted ray.
+function testSpectralWhitePoint(): { pass: boolean; detail: string } {
+  const rng = new Rng(909, 3)
+  let sx = 0
+  let sy = 0
+  let sz = 0
+  const N = 200000
+  for (let i = 0; i < N; i++) {
+    const lambda = LAMBDA_MIN + rng.next() * (LAMBDA_MAX - LAMBDA_MIN)
+    const w = wavelengthWeight(lambda)
+    sx += w.x
+    sy += w.y
+    sz += w.z
+  }
+  const mx = sx / N
+  const my = sy / N
+  const mz = sz / N
+  const ok = approx(mx, 1, 1e-2) && approx(my, 1, 1e-2) && approx(mz, 1, 1e-2)
+  return { pass: ok, detail: `mean weight=(${mx.toFixed(3)}, ${my.toFixed(3)}, ${mz.toFixed(3)})` }
+}
+
+// 12 — Cauchy dispersion: blue light (450 nm) must refract more strongly than red
+// (650 nm), i.e. carry a higher index of refraction, and n(589 nm) = base.
+function testDispersion(): { pass: boolean; detail: string } {
+  const base = 1.5
+  const b = 0.012
+  const nBlue = cauchyIor(base, b, 450)
+  const nRed = cauchyIor(base, b, 650)
+  const nD = cauchyIor(base, b, 589)
+  const ok = nBlue > nRed && approx(nD, base, 1e-6)
+  return { pass: ok, detail: `n(450)=${nBlue.toFixed(4)} > n(650)=${nRed.toFixed(4)}, n(589)=${nD.toFixed(4)}` }
+}
+
+// 13 — Rough dielectric energy conservation (white furnace). A *clear* frosted
+// glass sphere (no absorption) in a uniform unit environment must return ≈ 1: the
+// per-bounce radiance scaling (1/eta² entering, eta² leaving) cancels round-trip,
+// so the only deficit is the small single-scatter microfacet loss — never a gain.
+function testRoughDielectricEnergy(): { pass: boolean; detail: string } {
+  const def: SceneDef = {
+    name: 'rough-furnace',
+    materials: [{ kind: 'dielectric', ior: 1.5, tint: v(1, 1, 1), roughness: 0.3 }],
+    prims: [{ kind: 'sphere', center: v(0, 0, 0), radius: 1, material: 0 }],
+    camera: { eye: v(0, 0, 5), target: v(0, 0, 0), up: v(0, 1, 0), vfovDeg: 30, aperture: 0, focusDist: 5 },
+    env: { kind: 'solid', color: v(1, 1, 1) },
+  }
+  const scene = new Scene(def)
+  const rng = new Rng(13, 7)
+  const settings = { maxDepth: 24, rrStart: 10, clampIndirect: 0 }
+  const stats: RayStats = { rays: 0 }
+  const N = 30000
+  let sum = 0
+  for (let i = 0; i < N; i++) {
+    const L = radiance(scene, { o: v(0, 0, 5), d: v(0, 0, -1), tMax: Infinity }, settings, rng, stats)
+    sum += luminance(L)
+  }
+  const measured = sum / N
+  // Single-scatter microfacet loses a little energy; gains are forbidden.
+  return { pass: measured > 0.85 && measured <= 1.01, detail: `furnace reflectance=${measured.toFixed(4)} (≤1)` }
+}
+
+// 14 — Beer–Lambert absorption: a clear glass sphere in a white furnace tints the
+// transmitted light by the medium's absorption. Absorbing blue must leave the
+// exiting radiance redder (B < R), and stronger absorption must darken it.
+function testBeerLambert(): { pass: boolean; detail: string } {
+  const make = (absorption: ReturnType<typeof v> | undefined): SceneDef => ({
+    name: 'beer',
+    materials: [{ kind: 'dielectric', ior: 1.5, tint: v(1, 1, 1), absorption }],
+    prims: [{ kind: 'sphere', center: v(0, 0, 0), radius: 1, material: 0 }],
+    camera: { eye: v(0, 0, 5), target: v(0, 0, 0), up: v(0, 1, 0), vfovDeg: 30, aperture: 0, focusDist: 5 },
+    env: { kind: 'solid', color: v(1, 1, 1) },
+  })
+  const settings = { maxDepth: 16, rrStart: 8, clampIndirect: 0 }
+  const measure = (absorption: ReturnType<typeof v> | undefined): ReturnType<typeof v> => {
+    const scene = new Scene(make(absorption))
+    const rng = new Rng(2718, 5)
+    const stats: RayStats = { rays: 0 }
+    let r = 0
+    let g = 0
+    let bb = 0
+    const N = 8000
+    for (let i = 0; i < N; i++) {
+      const L = radiance(scene, { o: v(0, 0, 5), d: v(0, 0, -1), tMax: Infinity }, settings, rng, stats)
+      r += L.x
+      g += L.y
+      bb += L.z
+    }
+    return v(r / N, g / N, bb / N)
+  }
+  const clear = measure(undefined)
+  const blueAbsorbed = measure(v(0, 0, 3)) // strongly absorb the blue channel
+  // Clear glass in a unit furnace transmits ≈ white; absorbing blue reddens it
+  // and lowers its blue below the clear reference.
+  const reddened = blueAbsorbed.z < blueAbsorbed.x - 0.05
+  const darkenedBlue = blueAbsorbed.z < clear.z - 0.05
+  const ok = reddened && darkenedBlue && clear.x > 0.5
+  return {
+    pass: ok,
+    detail: `clear.z=${clear.z.toFixed(3)}, absorbed.z=${blueAbsorbed.z.toFixed(3)}, absorbed.x=${blueAbsorbed.x.toFixed(3)}`,
+  }
+}
+
+// 15 — resolveMaterial bakes a texture into a flat albedo at the hit point, so
+// the BSDF never sees the texture. Two points in opposite checker cells resolve
+// to the two checker colours.
+function testResolveTexture(): { pass: boolean; detail: string } {
+  const tex: Texture = { kind: 'checker', even: v(0.9, 0.1, 0.1), odd: v(0.1, 0.1, 0.9), scale: 1 }
+  const mat: Material = { kind: 'diffuse', albedo: v(0, 0, 0), tex }
+  const r0 = resolveMaterial(mat, v(0.5, 0.5, 0.5), 0)
+  const r1 = resolveMaterial(mat, v(1.5, 0.5, 0.5), 0)
+  const ok =
+    r0.kind === 'diffuse' &&
+    r1.kind === 'diffuse' &&
+    r0.tex === undefined &&
+    r0.albedo.x !== r1.albedo.x
+  return { pass: ok, detail: `cell0.r=${(r0 as { albedo: { x: number } }).albedo.x}, cell1.r=${(r1 as { albedo: { x: number } }).albedo.x}` }
+}
+
 export function runSelfTests(): TestResult[] {
   return [
     test('Vector algebra identities', testVectorMath),
@@ -232,5 +374,11 @@ export function runSelfTests(): TestResult[] {
     test('White furnace — mirror ρ=1', () => furnace({ kind: 'metal', albedo: v(1, 1, 1), roughness: 0 }, 1)),
     test('Rough-metal energy ≤ 1', testMetalEnergy),
     test('Diffuse Helmholtz reciprocity', testReciprocity),
+    test('Procedural texture parity & range', testTexture),
+    test('Spectral white point E_λ[w]=1', testSpectralWhitePoint),
+    test('Cauchy dispersion n(blue) > n(red)', testDispersion),
+    test('Rough dielectric energy ≤ 1', testRoughDielectricEnergy),
+    test('Beer–Lambert absorption tints glass', testBeerLambert),
+    test('resolveMaterial bakes texture albedo', testResolveTexture),
   ]
 }

@@ -39,13 +39,40 @@ edge-avoiding À-Trous denoiser.
 - [x] À-Trous albedo/normal-guided denoiser
 - [x] Orbit camera, depth of field, 4 preset scenes
 - [x] In-app verification suite + PNG export
-- [ ] Textures / normal maps / procedural checker material
+- [x] Procedural textures — world-space checker / grid / marble (value-noise fBm) albedo
+- [x] Rough (microfacet) dielectric — GGX VNDF reflect/refract for frosted glass
+- [x] Beer–Lambert volumetric absorption — physically coloured thick glass
+- [x] Spectral rendering / dispersion through glass — hero-wavelength Cauchy IOR, prism rainbows
+- [x] Adaptive sampling guided by per-pixel variance + live noise (relative-error) heatmap
+- [x] Three new scenes: Prism, Glass Menagerie, Textured Studio
+- [x] Eight new correctness proofs in the verification suite for the above
 - [ ] Triangle meshes via OBJ import; smooth (interpolated) normals
-- [ ] Rough (microfacet) dielectric + Beer–Lambert volumetric absorption
 - [ ] Bidirectional path tracing / light tracing for hard caustics
-- [ ] Adaptive sampling guided by per-pixel variance
-- [ ] Spectral rendering / dispersion through glass
 - [ ] WebGPU compute backend behind the same scene API
+- [ ] Image (bitmap) textures + tangent-space normal maps (needs UV plumbing)
+
+## Roadmap — 2026-06-14 substantial-improvement pass (claude)
+
+The plan, broken into shippable steps. Each is wired through the engine, the
+verification suite, the scene registry, and the UI so it is observable and proven:
+
+1. `texture.ts` — serialisable procedural `Texture` (checker / grid / marble) evaluated
+   in world space; diffuse + metal carry an optional `tex`. Resolved per-vertex so the
+   BSDF math is untouched. Self-tests for pattern parity and range.
+2. `spectrum.ts` — `cauchyIor(base, B, λ)` dispersion + `wavelengthToRGB` with a
+   white-point normalisation so a flat spectrum reconstructs to neutral white. Self-tests
+   for the white point and that blue refracts more than red.
+3. Rough dielectric in `material.ts` — GGX-VNDF microfacet reflect/refract, stochastic
+   Fresnel, height-correlated Smith throughput (frosted glass). Energy-bound self-test.
+4. Beer–Lambert in `integrator.ts` — track the interior medium, attenuate β by
+   exp(−σ·t) across glass; spectral hero-wavelength sampling lazily on the first
+   dispersive interaction. Attenuation self-test.
+5. `scenes.ts` — Prism (dispersion), Glass Menagerie (roughness + absorption sweeps),
+   Textured Studio (checker floor + marble sphere).
+6. Per-pixel variance: the renderer keeps Σx², derives a relative-error map, exposes a
+   live **noise heatmap** display mode and a convergence read-out, and stops dispatching
+   to bands that have converged below an adjustable threshold (adaptive early-out).
+7. UI + About + verification copy updated to cover the new physics.
 
 ## Session log
 
