@@ -268,14 +268,16 @@
   gap: 10px;
 }
 .problem-row {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 10px;
   padding: 12px 14px;
   background: var(--bg-card);
   border: 1px solid var(--border);
   border-radius: 10px;
+}
+.problem-row-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
 }
 
 .related-chip {

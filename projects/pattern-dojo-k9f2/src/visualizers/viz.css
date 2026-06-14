@@ -425,3 +425,21 @@
 .viz-readout span b {
   color: var(--accent);
 }
+
+/* ---------- Stepper share + keyboard hint ---------- */
+.viz-share {
+  margin-left: auto;
+}
+.viz-kbd-hint {
+  margin-top: 8px;
+  font-size: 0.78rem;
+  color: var(--text-faint);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.viz-kbd-hint .kbd {
+  font-size: 0.72rem;
+  padding: 1px 6px;
+}

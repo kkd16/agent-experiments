@@ -1,14 +1,27 @@
+import { useState } from "react";
 import { patterns, patternById, levelLabel } from "../data/patterns";
-import { useProgress } from "../lib/progress";
+import { useSRS, gradePreviews, formatDue, MASTERY_LABEL } from "../lib/srs";
+import type { Grade } from "../lib/srs";
+import { useStreak } from "../lib/streak";
+import { approachFor } from "../data/approaches";
+import type { Problem } from "../data/types";
 import CodeBlock from "../components/CodeBlock";
 import { Difficulty } from "../components/ui";
 import { Visualizer } from "../visualizers";
 import { hasVisualizer } from "../visualizers/keys";
 import { href, navigate } from "../lib/router";
 
+const GRADES: { g: Grade; label: string; cls: string }[] = [
+  { g: 0, label: "Again", cls: "again" },
+  { g: 1, label: "Hard", cls: "hard" },
+  { g: 2, label: "Good", cls: "good" },
+  { g: 3, label: "Easy", cls: "easy" },
+];
+
 export default function PatternDetail({ id }: { id: string }) {
   const p = patternById(id);
-  const { isDone, toggle } = useProgress();
+  const srs = useSRS();
+  const { recordToday } = useStreak();
 
   if (!p) {
     return (
@@ -26,7 +39,16 @@ export default function PatternDetail({ id }: { id: string }) {
   const prev = sorted[pos - 1];
   const next = sorted[pos + 1];
   const showViz = hasVisualizer(p.visualizer);
-  const done = isDone(p.id);
+
+  const card = srs.cardOrNew(p.id);
+  const tracked = srs.isLearned(p.id);
+  const mastery = srs.masteryOf(p.id);
+  const previews = gradePreviews(card);
+
+  const doGrade = (g: Grade) => {
+    srs.grade(p.id, g);
+    recordToday();
+  };
 
   return (
     <div className="container detail">
@@ -42,14 +64,53 @@ export default function PatternDetail({ id }: { id: string }) {
               {levelLabel[p.level]}
             </span>
             <span className="faint" style={{ fontSize: "0.82rem" }}>Pattern {p.order} of {patterns.length}</span>
+            {tracked && <span className={`mastery-badge ${mastery}`}>{MASTERY_LABEL[mastery]}</span>}
           </div>
           <h1 style={{ margin: "8px 0 4px" }}>{p.name}</h1>
           <p className="muted" style={{ margin: 0 }}>{p.tagline}</p>
         </div>
-        <button className={`btn ${done ? "" : "primary"}`} onClick={() => toggle(p.id)}>
-          {done ? "✓ Learned" : "Mark as learned"}
-        </button>
+        {!tracked && (
+          <button
+            className="btn primary"
+            onClick={() => {
+              srs.markLearned(p.id);
+              recordToday();
+            }}
+          >
+            Mark as learned
+          </button>
+        )}
       </header>
+
+      {tracked && (
+        <section className="study-box card">
+          <div className="study-status">
+            <span className="study-dot" data-m={mastery} />
+            <div>
+              <div style={{ fontWeight: 700 }}>
+                {MASTERY_LABEL[mastery]} · next review in {formatDue(card.due)}
+              </div>
+              <div className="faint" style={{ fontSize: "0.82rem" }}>
+                {card.reps} review{card.reps === 1 ? "" : "s"}
+                {card.lapses > 0 && ` · ${card.lapses} lapse${card.lapses === 1 ? "" : "s"}`}
+                {" · "}
+                <button className="linklike" onClick={() => srs.forget(p.id)}>reset</button>
+              </div>
+            </div>
+          </div>
+          <div className="study-grades">
+            <span className="grade-prompt">Recall it now? Grade yourself:</span>
+            <div className="grade-buttons compact">
+              {GRADES.map((m) => (
+                <button key={m.g} className={`grade-btn ${m.cls}`} onClick={() => doGrade(m.g)}>
+                  <span className="grade-label">{m.label}</span>
+                  <span className="grade-next">{previews[m.g]}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+        </section>
+      )}
 
       <section className="detail-block">
         <span className="eyebrow">The intuition</span>
@@ -68,7 +129,7 @@ export default function PatternDetail({ id }: { id: string }) {
           <span className="eyebrow">See it move</span>
           <h2>Interactive walkthrough</h2>
           <p className="muted" style={{ marginTop: 0 }}>
-            Press play, or step through one frame at a time. Watch what changes and read the caption.
+            Press play, or step through one frame at a time — use the keyboard, and share a link to any step.
           </p>
           <Visualizer vizKey={p.visualizer} />
         </section>
@@ -141,18 +202,12 @@ export default function PatternDetail({ id }: { id: string }) {
         <span className="eyebrow">Practice</span>
         <h2>Representative problems</h2>
         <p className="muted" style={{ marginTop: 0 }}>
-          These NeetCode-150 problems exercise different variants of the pattern. The goal isn't to
-          memorize them — it's to feel the pattern underneath.
+          These NeetCode-150 problems exercise different variants of the pattern. Stuck? Reveal a
+          hint first, then the guided approach — the goal is to feel the pattern underneath.
         </p>
         <div className="problem-grid">
           {p.problems.map((prob, i) => (
-            <div key={i} className="problem-row">
-              <div>
-                <div style={{ fontWeight: 600 }}>{prob.name}</div>
-                {prob.note && <div className="faint" style={{ fontSize: "0.8rem" }}>{prob.note}</div>}
-              </div>
-              <Difficulty d={prob.difficulty} />
-            </div>
+            <ProblemRow key={i} patternId={p.id} prob={prob} color={p.color} />
           ))}
         </div>
       </section>
@@ -193,6 +248,52 @@ export default function PatternDetail({ id }: { id: string }) {
           </a>
         )}
       </nav>
+    </div>
+  );
+}
+
+function ProblemRow({ patternId, prob, color }: { patternId: string; prob: Problem; color: string }) {
+  const [open, setOpen] = useState(false);
+  const a = approachFor(patternId, prob.name);
+  const hint = prob.hint ?? a?.hint;
+  const approach = prob.approach ?? a?.approach;
+  const hasGuide = !!(hint || approach);
+
+  return (
+    <div className={`problem-row ${open ? "open" : ""}`}>
+      <div className="problem-row-head">
+        <div>
+          <div style={{ fontWeight: 600 }}>{prob.name}</div>
+          {prob.note && <div className="faint" style={{ fontSize: "0.8rem" }}>{prob.note}</div>}
+        </div>
+        <div className="row" style={{ gap: 8 }}>
+          <Difficulty d={prob.difficulty} />
+          {hasGuide && (
+            <button
+              className="reveal-btn"
+              onClick={() => setOpen((o) => !o)}
+              aria-expanded={open}
+              style={open ? { borderColor: color, color } : undefined}
+            >
+              {open ? "Hide" : "Approach"} {open ? "▴" : "▾"}
+            </button>
+          )}
+        </div>
+      </div>
+      {open && hasGuide && (
+        <div className="problem-guide" style={{ borderColor: `${color}44` }}>
+          {hint && (
+            <div className="guide-hint">
+              <span className="guide-label">💡 Hint</span> {hint}
+            </div>
+          )}
+          {approach && (
+            <div className="guide-approach">
+              <span className="guide-label">🧭 Approach</span> {approach}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }

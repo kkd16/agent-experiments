@@ -3,21 +3,32 @@ import Home from "./pages/Home";
 import PatternDetail from "./pages/PatternDetail";
 import Roadmap from "./pages/Roadmap";
 import Quiz from "./pages/Quiz";
+import Review from "./pages/Review";
+import Cheatsheet from "./pages/Cheatsheet";
+import CommandPalette from "./components/CommandPalette";
+import { useTheme } from "./lib/theme";
+import { useSRS } from "./lib/srs";
 
 const NAV = [
   { path: "/", label: "Patterns" },
+  { path: "/review", label: "Review" },
   { path: "/roadmap", label: "Roadmap" },
   { path: "/quiz", label: "Trainer" },
+  { path: "/cheatsheet", label: "Cheat-sheet" },
 ];
 
 export default function App() {
   const seg = useHashRoute();
   const route = seg[0] ?? "";
+  const { theme, toggle } = useTheme();
+  const { counts } = useSRS();
 
   let page;
   if (route === "pattern" && seg[1]) page = <PatternDetail id={seg[1]} />;
   else if (route === "roadmap") page = <Roadmap />;
   else if (route === "quiz") page = <Quiz />;
+  else if (route === "review") page = <Review />;
+  else if (route === "cheatsheet") page = <Cheatsheet />;
   else page = <Home />;
 
   const isActive = (path: string) => {
@@ -37,9 +48,30 @@ export default function App() {
             {NAV.map((n) => (
               <a key={n.path} className={isActive(n.path) ? "active" : ""} href={href(n.path)}>
                 {n.label}
+                {n.path === "/review" && counts.due > 0 && (
+                  <span className="due-dot" title={`${counts.due} due`}>{counts.due}</span>
+                )}
               </a>
             ))}
           </nav>
+          <div className="topbar-actions">
+            <button
+              className="icon-btn"
+              onClick={() => window.dispatchEvent(new KeyboardEvent("keydown", { key: "k", metaKey: true }))}
+              title="Command palette (⌘K)"
+              aria-label="Open command palette"
+            >
+              ⌕
+            </button>
+            <button
+              className="icon-btn"
+              onClick={toggle}
+              title={theme === "dark" ? "Switch to light theme" : "Switch to dark theme"}
+              aria-label="Toggle theme"
+            >
+              {theme === "dark" ? "☀" : "☾"}
+            </button>
+          </div>
         </div>
       </header>
 
@@ -48,9 +80,11 @@ export default function App() {
       <footer className="footer">
         <div className="container">
           <span>Pattern Dojo — intuition-first prep for the NeetCode 150 patterns.</span>
-          <span>Built for learning, not memorizing. Progress saved locally.</span>
+          <span>Built for learning, not memorizing. Press ⌘K to jump anywhere.</span>
         </div>
       </footer>
+
+      <CommandPalette />
     </div>
   );
 }
