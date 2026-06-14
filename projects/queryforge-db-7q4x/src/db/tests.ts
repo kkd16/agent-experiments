@@ -362,6 +362,41 @@ test('derived', 'derived table preserves numeric types', () => {
   assert(scalar(e, 'SELECT SUM(p) FROM (SELECT price AS p FROM products) d') === 2203.4, 'derived numeric type lost')
 })
 
+// --- VALUES constructor -----------------------------------------------------
+test('values', 'top-level VALUES row set', () => {
+  const e = new Engine()
+  const rows = rowsOf(e, "VALUES (1, 'a'), (2, 'b'), (3, 'c')")
+  assert(rows.length === 3 && rows[1][1] === 'b', 'VALUES should yield the literal rows')
+})
+test('values', 'FROM (VALUES …) AS t(cols) with filter', () => {
+  const e = new Engine()
+  const rows = rowsOf(e, "SELECT x, y FROM (VALUES (1, 'a'), (2, 'b'), (3, 'c')) AS t(x, y) WHERE x >= 2 ORDER BY x")
+  assert(eq(rows, [[2, 'b'], [3, 'c']]), 'derived VALUES table with column aliases wrong')
+})
+test('values', 'VALUES joined against a base table', () => {
+  const e = seeded()
+  // Map category → display label via an inline VALUES table.
+  const rows = rowsOf(
+    e,
+    `SELECT p.name, lbl.label
+     FROM products p
+     JOIN (VALUES ('Audio', 'Sound'), ('Hardware', 'Gear')) AS lbl(cat, label) ON p.category = lbl.cat
+     ORDER BY p.name`,
+  )
+  assert(rows.length > 0 && rows.every((r) => r[1] === 'Sound' || r[1] === 'Gear'), 'VALUES join labels wrong')
+})
+test('values', 'VALUES type unification (INTEGER + REAL)', () => {
+  const e = new Engine()
+  const r = lastResult(e, 'SELECT n FROM (VALUES (1), (2.5), (3)) AS v(n) ORDER BY n') as RowsResult
+  assert(r.kind === 'rows' && r.columns[0].type === 'REAL', 'mixed numeric VALUES column should widen to REAL')
+  assert(eq(r.rows, [[1], [2.5], [3]]), 'VALUES rows wrong')
+})
+test('derived', 'derived table column aliases — FROM (SELECT …) t(cols)', () => {
+  const e = seeded()
+  const rows = rowsOf(e, 'SELECT label, total FROM (SELECT category, COUNT(*) FROM products GROUP BY category) AS s(label, total) WHERE total > 1 ORDER BY label')
+  assert(rows.length === 3 && rows.every((r) => (r[1] as number) > 1), 'derived column aliasing failed')
+})
+
 // --- CTEs -------------------------------------------------------------------
 test('cte', 'simple WITH', () => {
   const e = seeded()
@@ -649,6 +684,30 @@ test('index', 'bitmap AND returns the correct rows', () => {
   assert(scalar(e, 'SELECT COUNT(*) FROM t WHERE a = 3 AND b = 2') === expected, `bitmap AND count should be ${expected}`)
   const rows = rowsOf(e, 'SELECT id FROM t WHERE a = 3 AND b = 2 ORDER BY id')
   assert(rows.every((row) => ((row[0] as number) % 10 === 3 && (row[0] as number) % 7 === 2)), 'every row must satisfy both predicates')
+})
+test('index', 'bitmap OR turns an IN-list into index lookups', () => {
+  const e = bitmapEngine()
+  const r = e.execute('EXPLAIN SELECT id FROM t WHERE a IN (1, 3, 5)')[0]
+  const text = JSON.stringify(r.kind === 'explain' ? r.plan : {})
+  assert(text.includes('BitmapOr'), 'an IN-list over an indexed column should use a BitmapOr')
+  let expected = 0
+  for (let n = 1; n <= 300; n++) if ([1, 3, 5].includes(n % 10)) expected++
+  assert(scalar(e, 'SELECT COUNT(*) FROM t WHERE a IN (1, 3, 5)') === expected, `bitmap OR count should be ${expected}`)
+  const rows = rowsOf(e, 'SELECT a FROM t WHERE a IN (1, 3, 5)')
+  assert(rows.every((row) => [1, 3, 5].includes(row[0] as number)), 'every row must be in the IN-list')
+})
+test('grouping', 'GROUPING_ID returns the combined bitmap', () => {
+  const e = salesEngine()
+  const rows = rowsOf(
+    e,
+    'SELECT region, product, GROUPING_ID(region, product) AS gid, SUM(amount) AS s FROM sales GROUP BY ROLLUP(region, product) ORDER BY gid, region, product',
+  )
+  const detail = rows.find((r) => r[0] === 'N' && r[1] === 'A')!
+  assert(detail[2] === 0, 'detail row GROUPING_ID should be 0')
+  const sub = rows.find((r) => r[0] === 'N' && r[1] === null)!
+  assert(sub[2] === 1, 'region subtotal GROUPING_ID should be binary 01 = 1')
+  const grand = rows.find((r) => r[0] === null && r[1] === null)!
+  assert(grand[2] === 3, 'grand total GROUPING_ID should be binary 11 = 3')
 })
 test('index', 'a covering composite index is preferred over a bitmap AND', () => {
   const e = bitmapEngine()

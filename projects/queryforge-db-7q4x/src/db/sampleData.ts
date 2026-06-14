@@ -237,6 +237,24 @@ SELECT PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY price) AS median_price,
 FROM products;`,
   },
   {
+    title: 'VALUES — inline lookup table (join)',
+    sql: `-- A row-set literal joined against the catalog to relabel categories.
+SELECT p.name, p.category, lbl.label AS shelf
+FROM products p
+JOIN (VALUES ('Hardware', 'Workstation'),
+             ('Audio',    'Studio'),
+             ('Video',    'Streaming')) AS lbl(cat, label)
+  ON p.category = lbl.cat
+ORDER BY shelf, p.name;`,
+  },
+  {
+    title: 'Bitmap OR — IN-list via the index (EXPLAIN)',
+    sql: `CREATE INDEX IF NOT EXISTS idx_orders_product ON orders (product_id);
+-- An IN-list becomes a union of index lookups instead of a full scan.
+EXPLAIN ANALYZE
+SELECT id, customer_id FROM orders WHERE product_id IN (1, 5, 8);`,
+  },
+  {
     title: 'Index-only (covering) scan — EXPLAIN',
     sql: `CREATE INDEX IF NOT EXISTS idx_products_cat_price ON products (category, price);
 -- category & price both live in the index, so the heap is never touched.

@@ -36,6 +36,7 @@ import type { IndexKey } from './storage/btree'
 import { eqSelectivity, nullSelectivity, rangeSelectivity, type ColumnStat } from './stats'
 import {
   BitmapAnd,
+  BitmapOr,
   Distinct,
   Filter,
   HashJoin,
@@ -314,7 +315,7 @@ function inferType(e: Expr, schema: Schema, ctx: CompileCtx): ColumnType {
     case 'cast':
       return e.type
     case 'func':
-      if (e.name === 'COUNT' || e.name === 'GROUPING') return 'INTEGER'
+      if (e.name === 'COUNT' || e.name === 'GROUPING' || e.name === 'GROUPING_ID') return 'INTEGER'
       // Ordered-set aggregates that return one of the ordered values keep that
       // value's type; PERCENTILE_CONT interpolates and is always REAL.
       if (e.name === 'PERCENTILE_DISC' || e.name === 'MODE') {
@@ -678,9 +679,46 @@ function tryBitmapAnd(table: Table, baseSchema: Schema, preds: Expr[], sc: StatC
   return { op: new BitmapAnd(table, baseSchema, inputs, estRows), consumed }
 }
 
-// Pick the best index access path: a single (composite) index scan, or a bitmap
-// AND of several single-column indexes — whichever consumes more predicates
-// (ties favour the single scan, which avoids a heap re-fetch).
+// Union the row-id sets of a single index across the values of an `IN (…)` list
+// (or `a = 1 OR a = 2`) into one bitmap, then heap-fetch. Lets an IN-list use an
+// index instead of falling back to a sequential scan + filter.
+function tryBitmapOr(table: Table, baseSchema: Schema, preds: Expr[], sc: StatCtx): IndexPlan | null {
+  for (const p of preds) {
+    if (p.kind !== 'in' || p.negated || p.expr.kind !== 'column') continue
+    try {
+      resolveColumn(baseSchema, p.expr.table, p.expr.name)
+    } catch {
+      continue
+    }
+    const idx = table.indexForColumn(p.expr.name)
+    if (!idx) continue
+    const values: SqlValue[] = []
+    let allConst = true
+    for (const item of p.list) {
+      const v = evalConst(item)
+      if (v === undefined) {
+        allConst = false
+        break
+      }
+      values.push(v)
+    }
+    if (!allConst || values.length === 0) continue
+    const inputs: BitmapInput[] = values.map((v) => ({
+      index: idx,
+      lo: { key: [v], inclusive: true },
+      hi: { key: [v], inclusive: true },
+    }))
+    const estRows = Math.max(1, Math.round(table.rowCount() * combinedSelectivity([p], sc)))
+    const label = `${p.expr.name} IN (${values.length} values)`
+    return { op: new BitmapOr(table, baseSchema, inputs, estRows, label), consumed: new Set<Expr>([p]) }
+  }
+  return null
+}
+
+// Pick the best index access path: a single (composite) index scan, a bitmap AND
+// of several single-column indexes, or a bitmap OR over an IN-list — whichever
+// consumes the most predicates. Ties favour the single scan (no heap re-fetch),
+// then the AND, then the OR.
 function chooseIndexAccess(
   table: Table,
   schema: Schema,
@@ -688,10 +726,15 @@ function chooseIndexAccess(
   sc: StatCtx,
   coverCols: Set<string> | null = null,
 ): IndexPlan | null {
-  const single = tryIndexScan(table, schema, preds, sc, coverCols)
-  const bitmap = tryBitmapAnd(table, schema, preds, sc)
-  if (single && bitmap) return bitmap.consumed.size > single.consumed.size ? bitmap : single
-  return single ?? bitmap
+  const candidates = [
+    tryIndexScan(table, schema, preds, sc, coverCols),
+    tryBitmapAnd(table, schema, preds, sc),
+    tryBitmapOr(table, schema, preds, sc),
+  ].filter((c): c is IndexPlan => c !== null)
+  if (candidates.length === 0) return null
+  let best = candidates[0]
+  for (const c of candidates) if (c.consumed.size > best.consumed.size) best = c
+  return best
 }
 
 // --- equijoin extraction ----------------------------------------------------
@@ -968,7 +1011,7 @@ function unifyColumnTypes(schemas: Schema[]): Schema {
 function relationFor(item: FromItem | JoinClause, env: PlanEnv): { table: Table; alias: string } {
   if (item.subquery) {
     const alias = item.alias ?? '__derived'
-    const t = materialize(item.subquery, env, alias)
+    const t = materialize(item.subquery, env, alias, item.columnAliases)
     return { table: t, alias }
   }
   const t = envGetTable(env, item.table!)

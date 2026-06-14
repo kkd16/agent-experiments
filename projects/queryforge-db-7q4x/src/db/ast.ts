@@ -231,6 +231,8 @@ export interface FromItem {
   table?: string
   subquery?: SelectStmt
   alias?: string
+  /** Optional column aliases — `FROM (…) t (x, y)` (incl. VALUES constructors). */
+  columnAliases?: string[]
 }
 export type JoinType = 'INNER' | 'LEFT' | 'RIGHT' | 'FULL' | 'CROSS'
 export interface JoinClause {
@@ -238,6 +240,7 @@ export interface JoinClause {
   table?: string
   subquery?: SelectStmt
   alias?: string
+  columnAliases?: string[]
   on?: Expr
 }
 export interface OrderItem {

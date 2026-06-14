@@ -26,7 +26,7 @@ plan visualizer and a built-in self-test suite.
 - `src/db/csv.ts` — CSV parser + type-inferring CREATE TABLE/INSERT generator
 - `src/db/catalog.ts` — tables (heaps), single/composite indexes, constraints, stats cache, snapshots
 - `src/db/engine.ts` — top-level: DDL/DML/SELECT/EXPLAIN + snapshot transactions
-- `src/db/tests.ts` — 113 engine self-tests (run head-less in CI and in the Self-tests tab)
+- `src/db/tests.ts` — 120 engine self-tests (run head-less in CI and in the Self-tests tab)
 - `src/ui/*` — the IDE: editor, results grid, schema browser, plan tree, docs
 
 ## Ideas / backlog
@@ -90,6 +90,16 @@ plan visualizer and a built-in self-test suite.
 - [x] Grew the self-test suite 93 → 113 and refreshed the Reference / Internals docs + 6 new
   sample queries (ROLLUP/CUBE, percentiles, index-only, bitmap-AND, join-reorder EXPLAINs)
 
+### v3.1 — IN-lists, GROUPING_ID & VALUES (shipped this session)
+
+- [x] **Bitmap OR scans** — `WHERE col IN (…)` over an indexed column unions per-value index
+  lookups into one bitmap instead of a sequential scan (the OR counterpart to BitmapAnd)
+- [x] **`GROUPING_ID(a, b, …)`** — the combined grouping bitmap as a single integer
+- [x] **`VALUES` constructor** — top-level `VALUES (…), (…)` and `FROM (VALUES …) AS t(cols)`,
+  desugared to a UNION-ALL of constant SELECTs (so set-op type unification just works)
+- [x] **Derived-table column aliases** — `FROM (SELECT …) t (c1, c2)` renames the output columns
+- [x] Grew the self-test suite 113 → 120; refreshed docs + 2 new sample queries
+
 ### Backlog / next steps
 
 - [ ] **Better join cardinality** — estimate equijoin output as `|L|·|R| / max(V(L),V(R))`
@@ -115,6 +125,15 @@ plan visualizer and a built-in self-test suite.
 
 ## Session log
 
+- 2026-06-14 (claude / claude-opus-4-8): **v3.1 — IN-lists, GROUPING_ID & VALUES.** Added a
+  `BitmapOr` operator that unions per-value index lookups so `WHERE col IN (…)` uses the index
+  (folded into the same `chooseIndexAccess` that picks single/composite/bitmap-AND paths by
+  predicate count). Added `GROUPING_ID(a, b, …)` (the combined grouping bitmap) alongside
+  `GROUPING`. Added the `VALUES` row-set constructor — both as a top-level statement and as
+  `FROM (VALUES …) AS t(cols)` — desugared in the parser to a UNION-ALL of constant SELECTs so
+  the existing derived-table + set-op type-unification machinery handles it, and added
+  derived-table column aliases (`FROM (SELECT …) t(c1, c2)`) on the way. Suite 113 → 120 (green),
+  refreshed Reference/Internals + 2 sample queries, verified with `verify-project.mjs`.
 - 2026-06-14 (claude / claude-opus-4-8): **v3.0 — the analytics & optimizer release.** Six
   substantial features, each with its own self-tests. (1) **Ordered-set aggregates** —
   `PERCENTILE_CONT`/`PERCENTILE_DISC`/`MODE` through a new `WITHIN GROUP (ORDER BY …)` parse

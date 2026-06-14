@@ -112,6 +112,11 @@ class Parser {
     switch (kw) {
       case 'SELECT':
         return this.parseSelect()
+      case 'VALUES': {
+        const stmt = this.valuesToSelect(this.parseValuesRows())
+        this.parseTail(stmt)
+        return stmt
+      }
       case 'WITH':
         return this.parseWith()
       case 'INSERT':
@@ -334,10 +339,54 @@ class Parser {
     return stmt
   }
 
-  /** A query that may itself begin with WITH (used inside parentheses). */
+  /** A query that may itself begin with WITH or VALUES (used inside parens). */
   private parseSubquerySelect(): SelectStmt {
     if (this.at('WITH')) return this.parseWith()
+    if (this.at('VALUES')) {
+      const stmt = this.valuesToSelect(this.parseValuesRows())
+      this.parseTail(stmt)
+      return stmt
+    }
     return this.parseSelect()
+  }
+
+  // VALUES (…), (…), … — a row-set literal. Parsed into a list of constant rows.
+  private parseValuesRows(): Expr[][] {
+    this.expect('VALUES')
+    const rows: Expr[][] = []
+    do {
+      this.expect('(')
+      const row: Expr[] = []
+      do {
+        row.push(this.parseExpr())
+      } while (this.accept(','))
+      this.expect(')')
+      if (rows.length && row.length !== rows[0].length) {
+        throw this.err('every VALUES row must have the same number of columns')
+      }
+      rows.push(row)
+    } while (this.accept(','))
+    return rows
+  }
+
+  // Desugar a VALUES row-set into a UNION ALL of constant SELECTs, so the rest
+  // of the engine (derived tables, set-op type unification) handles it for free.
+  private valuesToSelect(rows: Expr[][]): SelectStmt {
+    const core = (row: Expr[], nameCols: boolean): SelectStmt => ({
+      kind: 'select',
+      distinct: false,
+      columns: row.map((expr, ci) => ({ expr, alias: nameCols ? `column${ci + 1}` : undefined })),
+      joins: [],
+      groupBy: [],
+      orderBy: [],
+      limit: undefined,
+      offset: undefined,
+    })
+    const first = core(rows[0], true)
+    if (rows.length > 1) {
+      first.setOps = rows.slice(1).map((r) => ({ op: 'UNION' as const, all: true, select: core(r, false) }))
+    }
+    return first
   }
 
   private parseSelect(): SelectStmt {
@@ -536,18 +585,31 @@ class Parser {
       this.next()
       const subquery = this.parseSubquerySelect()
       this.expect(')')
-      const alias = this.parseOptionalAlias()
-      return { subquery, alias }
+      const { alias, columnAliases } = this.parseOptionalAliasWithColumns()
+      return { subquery, alias, columnAliases }
     }
     const table = this.parseIdent('table name')
-    const alias = this.parseOptionalAlias()
-    return { table, alias }
+    const { alias, columnAliases } = this.parseOptionalAliasWithColumns()
+    return { table, alias, columnAliases }
   }
 
   private parseOptionalAlias(): string | undefined {
     if (this.accept('AS')) return this.parseIdent('alias')
     if (this.atKind('ident')) return identName(this.next())
     return undefined
+  }
+
+  // An optional relation alias plus optional column aliases: `t (x, y)`.
+  private parseOptionalAliasWithColumns(): { alias?: string; columnAliases?: string[] } {
+    const alias = this.parseOptionalAlias()
+    if (!alias || !this.at('(')) return { alias }
+    this.next()
+    const columnAliases: string[] = []
+    do {
+      columnAliases.push(this.parseIdent('column alias'))
+    } while (this.accept(','))
+    this.expect(')')
+    return { alias, columnAliases }
   }
 
   private tryParseJoin(): JoinClause | null {
@@ -584,13 +646,13 @@ class Parser {
     } else {
       table = this.parseIdent('table name')
     }
-    const alias = this.parseOptionalAlias()
+    const { alias, columnAliases } = this.parseOptionalAliasWithColumns()
     let on: Expr | undefined
     if (type !== 'CROSS') {
       this.expect('ON')
       on = this.parseExpr()
     }
-    return { type, table, subquery, alias, on }
+    return { type, table, subquery, alias, columnAliases, on }
   }
 
   // ========================================================================

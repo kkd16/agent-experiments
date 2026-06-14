@@ -42,7 +42,7 @@ const STAGES: Stage[] = [
     n: 6,
     name: 'Execution (Volcano model)',
     file: 'db/operators.ts',
-    body: 'Physical operators implement open()/next()/close() and pull rows one at a time from their children. SeqScan, IndexScan, IndexOnlyScan, BitmapAnd, Filter, Project, HashJoin, MergeJoin, NestedLoopJoin, HashAggregate (with ROLLUP/CUBE/GROUPING SETS), Window, SetOp (UNION/INTERSECT/EXCEPT), Sort, Distinct and Limit compose into the tree EXPLAIN renders. The Sort spills to an external (run-generating, k-way) merge sort past a threshold; a WindowExec partitions and orders its buffered input to evaluate ranking, offset and running-aggregate window functions over explicit ROWS/RANGE frames; ordered-set aggregates (PERCENTILE_CONT/DISC, MODE) buffer and order their WITHIN GROUP key.',
+    body: 'Physical operators implement open()/next()/close() and pull rows one at a time from their children. SeqScan, IndexScan, IndexOnlyScan, BitmapAnd, BitmapOr, Filter, Project, HashJoin, MergeJoin, NestedLoopJoin, HashAggregate (with ROLLUP/CUBE/GROUPING SETS), Window, SetOp (UNION/INTERSECT/EXCEPT), Sort, Distinct and Limit compose into the tree EXPLAIN renders. The Sort spills to an external (run-generating, k-way) merge sort past a threshold; a WindowExec partitions and orders its buffered input to evaluate ranking, offset and running-aggregate window functions over explicit ROWS/RANGE frames; ordered-set aggregates (PERCENTILE_CONT/DISC, MODE) buffer and order their WITHIN GROUP key.',
   },
   {
     n: 7,
