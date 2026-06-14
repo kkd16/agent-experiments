@@ -1,8 +1,23 @@
 import { Canvas } from '@react-three/fiber';
 import { OrbitControls, Stars, Environment } from '@react-three/drei';
+import { EffectComposer, Bloom, DepthOfField, Vignette } from '@react-three/postprocessing';
 import { ProceduralMesh, ParticleSystem } from './Engine';
+import { Evolution } from './Evolution';
+import { AudioSystem } from './Audio';
 import { Controls } from './Controls';
+import { useStore } from './store';
 import './index.css'; // Ensure tailwind is imported
+
+function Effects() {
+  const bloomIntensity = useStore(state => state.bloomIntensity);
+  return (
+    <EffectComposer>
+      <DepthOfField target={[0, 0, 0]} focalLength={0.02} bokehScale={2} height={480} />
+      <Bloom luminanceThreshold={0.2} luminanceSmoothing={0.9} height={300} intensity={bloomIntensity} />
+      <Vignette eskil={false} offset={0.1} darkness={1.1} />
+    </EffectComposer>
+  );
+}
 
 export default function App() {
   return (
@@ -16,6 +31,9 @@ export default function App() {
 
           <ProceduralMesh />
           <ParticleSystem />
+          <Evolution />
+
+          <Effects />
 
           <Stars radius={100} depth={50} count={5000} factor={4} saturation={0} fade speed={1} />
           <Environment preset="city" />
@@ -28,6 +46,9 @@ export default function App() {
           />
         </Canvas>
       </div>
+
+      {/* Audio System */}
+      <AudioSystem />
 
       {/* UI Overlay */}
       <Controls />
