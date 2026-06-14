@@ -13,6 +13,8 @@ export interface SolverConfig {
   /** Relative speed below which collisions are treated as inelastic. */
   restitutionThreshold: number;
   warmStarting: boolean;
+  /** Sweep `bullet` bodies to their time of impact so they can't tunnel. */
+  continuous: boolean;
 }
 
 export const DEFAULT_CONFIG: SolverConfig = {
@@ -22,6 +24,7 @@ export const DEFAULT_CONFIG: SolverConfig = {
   slop: 0.005,
   restitutionThreshold: 1.0,
   warmStarting: true,
+  continuous: true,
 };
 
 interface PersistentPoint {

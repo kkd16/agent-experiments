@@ -9,6 +9,7 @@ export interface ControlValues {
   baumgarte: number;
   warmStarting: boolean;
   enableSleep: boolean;
+  continuous: boolean;
   showGjk: boolean;
   spawnKind: SpawnKind;
 }
@@ -109,6 +110,7 @@ export default function ControlPanel({
           fmt={(v) => v.toFixed(2)} onChange={(v) => onChange({ baumgarte: v })} />
         <Toggle label="Warm starting" checked={values.warmStarting} onChange={(v) => onChange({ warmStarting: v })} />
         <Toggle label="Sleeping" checked={values.enableSleep} onChange={(v) => onChange({ enableSleep: v })} />
+        <Toggle label="Continuous (CCD)" checked={values.continuous} onChange={(v) => onChange({ continuous: v })} />
       </section>
 
       <section className="ctl-section">

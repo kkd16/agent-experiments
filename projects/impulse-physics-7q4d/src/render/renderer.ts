@@ -125,6 +125,9 @@ export class Renderer {
       stroke = COLORS.sleepStroke;
     }
 
+    const strokeStyle = hovered ? COLORS.hover : stroke;
+    const strokeWidth = hovered ? 2.5 : 1.5;
+
     ctx.beginPath();
     if (body.shape.kind === 'circle') {
       const c = camera.worldToScreen(body.worldPoint(body.shape.center));
@@ -137,13 +140,42 @@ export class Renderer {
         ctx.fill();
       }
       if (opts.outlines) {
-        ctx.strokeStyle = hovered ? COLORS.hover : stroke;
-        ctx.lineWidth = hovered ? 2.5 : 1.5;
+        ctx.strokeStyle = strokeStyle;
+        ctx.lineWidth = strokeWidth;
         ctx.stroke();
       }
       ctx.beginPath();
       ctx.moveTo(c.x, c.y);
       ctx.lineTo(edge.x, edge.y);
+      ctx.strokeStyle = withAlpha(stroke, 0.8);
+      ctx.lineWidth = 1;
+      ctx.stroke();
+      return;
+    }
+
+    if (body.shape.kind === 'capsule') {
+      const a = camera.worldToScreen(body.worldPoint(body.shape.p1));
+      const b = camera.worldToScreen(body.worldPoint(body.shape.p2));
+      const r = camera.toPixels(body.shape.radius);
+      const ang = Math.atan2(b.y - a.y, b.x - a.x);
+      // Stadium outline: a half-circle cap at each endpoint joined by the sides.
+      ctx.arc(b.x, b.y, r, ang - Math.PI / 2, ang + Math.PI / 2);
+      ctx.arc(a.x, a.y, r, ang + Math.PI / 2, ang + (3 * Math.PI) / 2);
+      ctx.closePath();
+      if (opts.fill) {
+        ctx.fillStyle = withAlpha(fill, 0.85);
+        ctx.fill();
+      }
+      if (opts.outlines) {
+        ctx.strokeStyle = strokeStyle;
+        ctx.lineWidth = strokeWidth;
+        ctx.stroke();
+      }
+      // Orientation spoke from the capsule centre toward p2.
+      const c = camera.worldToScreen(body.worldPoint(body.shape.center()));
+      ctx.beginPath();
+      ctx.moveTo(c.x, c.y);
+      ctx.lineTo(b.x, b.y);
       ctx.strokeStyle = withAlpha(stroke, 0.8);
       ctx.lineWidth = 1;
       ctx.stroke();
@@ -157,13 +189,24 @@ export class Renderer {
       else ctx.lineTo(s.x, s.y);
     }
     ctx.closePath();
+    const skin = camera.toPixels(body.shape.radius);
     if (opts.fill) {
       ctx.fillStyle = withAlpha(fill, 0.85);
+      // Rounded polygons: a round-joined stroke fattens the core out by its skin.
+      if (skin > 0.5) {
+        ctx.save();
+        ctx.lineJoin = 'round';
+        ctx.lineCap = 'round';
+        ctx.lineWidth = skin * 2;
+        ctx.strokeStyle = withAlpha(fill, 0.85);
+        ctx.stroke();
+        ctx.restore();
+      }
       ctx.fill();
     }
     if (opts.outlines) {
-      ctx.strokeStyle = hovered ? COLORS.hover : stroke;
-      ctx.lineWidth = hovered ? 2.5 : 1.5;
+      ctx.strokeStyle = strokeStyle;
+      ctx.lineWidth = strokeWidth;
       ctx.stroke();
     }
   }

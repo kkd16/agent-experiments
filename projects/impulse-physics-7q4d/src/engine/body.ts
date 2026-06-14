@@ -24,6 +24,12 @@ export interface BodyDef {
   gravityScale?: number;
   /** Bodies that never sleep (e.g. the player-controlled paddle). */
   allowSleep?: boolean;
+  /**
+   * Enable continuous collision detection for this body. Fast/thin "bullet"
+   * bodies are swept to their time of impact each step so they cannot tunnel
+   * through thin geometry.
+   */
+  bullet?: boolean;
   /** Free-form tag used by scenes and the renderer for coloring. */
   color?: string;
 }
@@ -81,6 +87,12 @@ export class Body {
   awake = true;
   sleepTime = 0;
 
+  /** Continuous-collision flag (swept to time of impact each step). */
+  bullet: boolean;
+  /** Center of mass / angle captured at the start of the step, for CCD sweeps. */
+  center0: Vec2;
+  angle0 = 0;
+
   color: string;
 
   /** Broadphase proxy id, assigned when the body is added to the world. */
@@ -100,9 +112,12 @@ export class Body {
     this.angularDamping = def.angularDamping ?? 0;
     this.gravityScale = def.gravityScale ?? 1;
     this.allowSleep = def.allowSleep ?? true;
+    this.bullet = def.bullet ?? false;
     this.color = def.color ?? '#6ea8ff';
     this.localCenter = Vec2.ZERO;
     this.worldCenter = this.transform.apply(this.localCenter);
+    this.center0 = this.worldCenter;
+    this.angle0 = this.angle;
     this.resetMassData();
   }
 
@@ -113,7 +128,12 @@ export class Body {
       this.invMass = 0;
       this.inertia = 0;
       this.invInertia = 0;
-      this.localCenter = this.shape.kind === 'circle' ? this.shape.center : Vec2.ZERO;
+      this.localCenter =
+        this.shape.kind === 'circle'
+          ? this.shape.center
+          : this.shape.kind === 'capsule'
+            ? this.shape.center()
+            : Vec2.ZERO;
       this.worldCenter = this.transform.apply(this.localCenter);
       return;
     }
@@ -235,10 +255,40 @@ export class Body {
    */
   integratePosition(dt: number): void {
     if (this.type === BodyType.Static) return;
+    // Capture the start-of-integration pose so CCD can sweep across this step.
+    this.center0 = this.worldCenter;
+    this.angle0 = this.angle;
     this.worldCenter = this.worldCenter.add(this.linearVelocity.add(this.pseudoLinear).mul(dt));
     const angle = this.angle + (this.angularVelocity + this.pseudoAngular) * dt;
     const q = Rot.fromAngle(angle);
     this.transform = new Transform(this.worldCenter.sub(q.apply(this.localCenter)), q);
+  }
+
+  /**
+   * The transform of this body interpolated to sweep fraction `t ∈ [0,1]`
+   * between its start-of-step pose (`center0/angle0`) and current pose. Used by
+   * the continuous-collision time-of-impact solver.
+   */
+  sweepTransform(t: number): Transform {
+    const c = this.center0.lerp(this.worldCenter, t);
+    const angle = this.angle0 + (this.angle - this.angle0) * t;
+    const q = Rot.fromAngle(angle);
+    return new Transform(c.sub(q.apply(this.localCenter)), q);
+  }
+
+  /** Hard-set the center of mass (used by the CCD solver to stop at impact). */
+  setWorldCenter(c: Vec2): void {
+    this.worldCenter = c;
+    this.synchronizeTransform();
+  }
+
+  /** Roll this body's pose back to sweep fraction `t` (the CCD impact pose). */
+  advanceTo(t: number): void {
+    const c = this.center0.lerp(this.worldCenter, t);
+    const angle = this.angle0 + (this.angle - this.angle0) * t;
+    const q = Rot.fromAngle(angle);
+    this.worldCenter = c;
+    this.transform = new Transform(c.sub(q.apply(this.localCenter)), q);
   }
 
   /** Clear the per-step pseudo-velocity accumulators. */

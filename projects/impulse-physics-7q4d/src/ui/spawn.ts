@@ -1,8 +1,16 @@
-import { Body, Circle, Polygon, Rng, Vec2, World, type Shape } from '../engine';
+import { Body, Capsule, Circle, Polygon, Rng, Vec2, World, type Shape } from '../engine';
 
-export type SpawnKind = 'circle' | 'box' | 'triangle' | 'pentagon' | 'random';
+export type SpawnKind = 'circle' | 'box' | 'capsule' | 'rounded' | 'triangle' | 'pentagon' | 'random';
 
-export const SPAWN_KINDS: SpawnKind[] = ['circle', 'box', 'triangle', 'pentagon', 'random'];
+export const SPAWN_KINDS: SpawnKind[] = [
+  'circle',
+  'box',
+  'capsule',
+  'rounded',
+  'triangle',
+  'pentagon',
+  'random',
+];
 
 const COLORS = ['#6ea8ff', '#7CFFCB', '#ffd166', '#ff6b6b', '#c792ea', '#4dd2ff', '#ff9e64', '#9ece6a'];
 
@@ -13,14 +21,19 @@ export function spawnShape(kind: SpawnKind, size: number, rng: Rng): Shape {
       return new Circle(size);
     case 'box':
       return Polygon.box(size, size);
+    case 'capsule':
+      return Capsule.of(size * 2.4, size * 0.7);
+    case 'rounded':
+      return Polygon.rounded(size, size, size * 0.35);
     case 'triangle':
       return Polygon.regular(3, size * 1.2, Math.PI / 2);
     case 'pentagon':
       return Polygon.regular(5, size * 1.1);
     case 'random': {
-      const pick = rng.int(0, 3);
+      const pick = rng.int(0, 4);
       if (pick === 0) return new Circle(size);
-      return Polygon.regular(pick + 2, size * 1.1, rng.range(0, Math.PI));
+      if (pick === 1) return Capsule.of(size * 2.4, size * 0.6);
+      return Polygon.regular(pick + 1, size * 1.1, rng.range(0, Math.PI));
     }
   }
 }
