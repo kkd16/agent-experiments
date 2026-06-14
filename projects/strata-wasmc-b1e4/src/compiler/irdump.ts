@@ -29,6 +29,8 @@ function inst(i: Inst): string {
       return `${dst}${i.kind === 'icmp' ? 'i' : 'f'}.cmp.${i.sub} ${a[0]}, ${a[1]}`;
     case 'cast':
       return `${dst}cast.${i.sub} ${a[0]}`;
+    case 'select':
+      return `${dst}select ${a[2]} ? ${a[0]} : ${a[1]}`;
     case 'copy':
       return `${dst}copy ${a[0]}`;
     case 'call':

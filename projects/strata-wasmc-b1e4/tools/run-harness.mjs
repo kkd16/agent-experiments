@@ -7,9 +7,23 @@ import { build } from 'vite';
 import { pathToFileURL } from 'node:url';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { execFileSync } from 'node:child_process';
 
 const here = dirname(fileURLToPath(import.meta.url));
+const projectRoot = resolve(here, '..');
 const outDir = resolve(here, '../node_modules/.harness');
+
+// Type-check the app exactly as the CI gate does, so the dev loop catches the
+// strict-TS errors the bundler (rolldown) silently tolerates. Pass --no-tsc to
+// skip (e.g. for a fast correctness-only re-run).
+if (!process.argv.includes('--no-tsc')) {
+  try {
+    execFileSync('node_modules/.bin/tsc', ['-b'], { cwd: projectRoot, stdio: 'inherit' });
+  } catch {
+    console.error('tsc failed — fix type errors above');
+    process.exit(1);
+  }
+}
 
 await build({
   configFile: false,
