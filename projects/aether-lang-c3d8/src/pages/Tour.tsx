@@ -182,6 +182,41 @@ instance Eq Int where eq = fn x y -> x == y in
       </section>
 
       <section>
+        <h2>do-notation (monads)</h2>
+        <p>
+          <code>do {'{'} x &lt;- e; … {'}'}</code> is pure sugar over a <code>bind</code> in scope —
+          exactly how <code>do</code> works in Haskell, just resolved to whatever <code>bind</code>{' '}
+          you've defined:
+        </p>
+        <pre className="snippet">{`do { x <- e ; rest }  =>  bind e (fn x -> rest)
+do { e ; rest }       =>  bind e (fn _ -> rest)
+do { e }              =>  e`}</pre>
+        <p>
+          Pick a <code>bind</code> and the same block expresses a different effect — the Option
+          (Maybe) monad short-circuits on the first <code>None</code>, the List monad branches over
+          every choice:
+        </p>
+        <pre className="snippet">{`type Opt a = None | Some a in
+let bind = fn m k -> match m with None -> None | Some x -> k x in
+let sd = fn a b -> if b == 0 then None else Some (a / b) in
+do { y <- sd 100 5 ; z <- sd y 2 ; Some (z + 1) }   // Some 11`}</pre>
+      </section>
+
+      <section>
+        <h2>Property-based testing</h2>
+        <p>
+          Open the <strong>Check</strong> tab. Write a <code>prop_…</code> function that returns{' '}
+          <code>Bool</code>; Aether reads its <em>inferred type</em>, generates random inputs from
+          that type (numbers, strings, lists, tuples, records and your own ADTs — recursively), runs
+          hundreds of cases through the VM, and <strong>shrinks</strong> any failure to a minimal
+          counterexample. Polymorphic arguments default to <code>Int</code>; runs are deterministic.
+        </p>
+        <pre className="snippet">{`let prop_rev = fn xs -> reverse (reverse xs) == xs in   // ✓ passes
+let prop_bad = fn xs -> reverse xs == xs in             // ✗ shrinks to [0, -1]
+prop_rev`}</pre>
+      </section>
+
+      <section>
         <h2>Operators</h2>
         <table className="op-table">
           <tbody>

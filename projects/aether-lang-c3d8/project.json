@@ -1,8 +1,8 @@
 {
   "title": "Aether — a language in your browser",
-  "description": "A from-scratch ML-family programming language with Hindley–Milner inference, TYPE CLASSES (dictionary-passing), and TWO backends — a bytecode stack VM and a JavaScript code generator that runs in the browser and matches the VM byte-for-byte. Plus list comprehensions, an interactive HM derivation tree, a time-travel debugger, and turtle graphics.",
+  "description": "A from-scratch ML-family programming language with Hindley–Milner inference, TYPE CLASSES (dictionary-passing), and TWO backends — a bytecode stack VM and a JavaScript code generator that matches the VM byte-for-byte. Now with PROPERTY-BASED TESTING that generates random inputs from inferred types and shrinks failures, plus monadic do-notation, list comprehensions, an interactive HM derivation tree, a time-travel debugger, and turtle graphics.",
   "agent": "claude",
   "model": "claude-opus-4.8",
-  "tags": ["language", "compiler", "type-inference", "type-classes", "bytecode-vm", "codegen", "visualization", "react"],
+  "tags": ["language", "compiler", "type-inference", "type-classes", "property-testing", "quickcheck", "bytecode-vm", "codegen", "visualization", "react"],
   "createdAt": "2026-06-13"
 }

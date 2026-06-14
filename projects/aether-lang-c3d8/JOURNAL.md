@@ -165,28 +165,39 @@ about behaviour**. Two headline features, both leaning on machinery the language
 
 Plan / steps:
 
-- [ ] **Expose constructor & type tables** from inference (`ctorInfo`, `typeCtors` on
+- [x] **Expose constructor & type tables** from inference (`ctorInfo`, `typeCtors` on
       `InferResult`) so the property engine can build generators for user-declared ADTs.
-- [ ] **`executeProgram(ast)`** in the pipeline — an AST-level entry (infer → elaborate →
+- [x] **`executeProgram(ast)`** in the pipeline — an AST-level entry (infer → elaborate →
       compile → run) so the property runner reuses the *exact* execution path, not a copy.
-- [ ] **`property.ts` — the generator core**: `GType`/`GValue` model; type→generator
+- [x] **`property.ts` — the generator core**: `GType`/`GValue` model; type→generator
       (defaulting leftover polymorphism to `Int`); size-bounded recursive ADT/list/record
       generation; a seeded `mulberry32` RNG for reproducibility.
-- [ ] **Integrated shrinking** — per-shape `shrink` (ints toward 0, lists drop/half + element
+- [x] **Integrated shrinking** — per-shape `shrink` (ints toward 0, lists drop/half + element
       shrinks, tuples/records componentwise, ADTs to sub-terms of the same type), driving a
       greedy minimisation loop to the smallest still-failing input.
-- [ ] **The runner** — discover `prop_*` bindings whose type is `… -> Bool`; batch-execute N
+- [x] **The runner** — discover `prop_*` bindings whose type is `… -> Bool`; batch-execute N
       cases per property in a single VM run for speed, fall back to per-case search to attribute a
       runtime error, then shrink. Graceful `skip` for higher-order/ungeneratable arguments.
-- [ ] **`do`-notation** end to end — lexer `do`/`<-` tokens, a parser desugaring into
+- [x] **`do`-notation** end to end — lexer `do`/`<-` tokens, a parser desugaring into
       `bind`/`then`, and a `Monad`/`Functor` example library (Option, List, a `State` monad).
-- [ ] **UI** — a "Check" inspector panel (per-property pass/fail, case count, shrunk
+- [x] **UI** — a "Check" inspector panel (per-property pass/fail, case count, shrunk
       counterexample, shrink count) and a dedicated `#/check`-style surfacing on the Tests page.
-- [ ] **Examples** — `Property testing` (reverse/sort/insert laws, a deliberately *buggy* sort
+- [x] **Examples** — `Property testing` (reverse/sort/insert laws, a deliberately *buggy* sort
       so shrinking shines), and `do-notation` (safe division pipeline + list non-determinism).
-- [ ] **Docs + verification** — Tour/About/README writeups; grow the self-test suite with
+- [x] **Docs + verification** — Tour/About/README writeups; grow the self-test suite with
       generator, shrinker and `do`-desugaring cases (all still proving JS≡VM where they produce a
       value), keep the CI gate green.
+
+Design note (monads & HKT): a *type-class* `Monad m` needs **higher-kinded** type variables
+(`m a -> (a -> m b) -> m b`), but Aether's `Type` is first-order — a `TCon`'s head is a string, not
+a unifiable variable — so `m := Opt` can't be expressed without adding kinds. Rather than risk that
+large change, `do`-notation desugars to a **plain `bind` in scope** (exactly how `do` is sugar for
+`>>=`). That's fully general at the value level: bind Option's `bind` and the block short-circuits,
+bind List's and it branches. Real higher-kinded type classes stay on the deferred list.
+
+Deferred (future, restated): higher-kinded types → genuine `Functor`/`Monad`/`Applicative` classes;
+superclasses & `=>` on method signatures; multi-parameter classes; shrinking that mutates several
+arguments at once (the current shrinker is per-argument greedy).
 
 ## Standard library
 
@@ -335,3 +346,17 @@ Plan / steps:
   it live: each case flows through the whole pipeline and, when it yields a value, is run on the VM
   *and* the JavaScript backend, so a green row proves the two backends agree byte-for-byte. The same
   module backs the offline Node check. Full gate green (18/18 in-app, all 22 gallery examples).
+- 2026-06-14 (claude): **Aether 4.0 — property-based testing + do-notation.** Shipped *Aether
+  Check* (`property.ts`): a from-scratch QuickCheck that reads each `prop_*`'s inferred type,
+  generates random inputs from it (numbers/strings/lists/tuples/records + recursive user ADTs with a
+  size budget so `Tree` terminates), batches hundreds of cases through the real VM (one compile per
+  round, with a per-case fallback to attribute a crash), and shrinks any failure to a minimal
+  counterexample — deterministic via a seeded mulberry32 RNG. Exposed `ctorInfo`/`typeCtors` from
+  inference and added `executeProgram` so the runner reuses the exact pipeline. Added a **Check**
+  tab, a `property` example (3 laws pass, a buggy dup-dropping sort is falsified at a 2-element
+  list) and an engine self-test suite (`propertySuite.ts`, 11 cases) surfaced on the Tests page.
+  Also added **`do`-notation** — a `do` keyword + a pure parser desugaring to `bind`
+  (`do { x <- e; rest }` ⇒ `bind e (fn x -> rest)`), so the same block is the Option or List monad
+  depending on the `bind` in scope; no inference/compiler/VM/JS changes, and the new do cases prove
+  JS≡VM. Docs (Tour/About/README) updated. Full gate green (22/22 pipeline + 11/11 engine
+  self-tests; 24 gallery examples).
