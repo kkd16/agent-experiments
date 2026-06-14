@@ -29,7 +29,7 @@ export interface SymbolTable {
 // cased because they accept multiple argument types; array intrinsics return
 // handles into linear memory.
 const ARRAY_INTRINSICS = new Set(['int_array', 'float_array', 'len']);
-const STR_BUILTINS = new Set(['str', 'char']);
+const STR_BUILTINS = new Set(['str', 'char', 'substr', 'index_of', 'to_upper', 'to_lower']);
 
 // Low-level memory intrinsics. They are *not* part of the user-facing language —
 // they are only enabled while type-checking the internal string runtime prelude
@@ -309,7 +309,8 @@ class Checker {
       case '>':
       case '>=':
         if (sameNumeric) return T_BOOL;
-        throw new CompileError(`'${op}' requires matching numeric operands, found ${tyName(lt)} and ${tyName(rt)}`, e.span, 'type');
+        if (lt.kind === 'str' && rt.kind === 'str') return T_BOOL; // lexicographic
+        throw new CompileError(`'${op}' requires matching numeric or string operands, found ${tyName(lt)} and ${tyName(rt)}`, e.span, 'type');
       case '==':
       case '!=':
         if (tyEqual(lt, rt) && lt.kind !== 'void' && lt.kind !== 'array') return T_BOOL;
@@ -353,6 +354,24 @@ class Checker {
       if (e.args.length !== 1) throw new CompileError('char() expects 1 argument', e.span, 'type');
       const t = this.checkExpr(e.args[0]);
       if (t.kind !== 'int') throw new CompileError(`char() expects an int, found ${tyName(t)}`, e.span, 'type');
+      return T_STR;
+    }
+    if (name === 'substr') {
+      if (e.args.length !== 3) throw new CompileError('substr() expects (str, start, count)', e.span, 'type');
+      if (this.checkExpr(e.args[0]).kind !== 'str') throw new CompileError('substr() argument 1 must be str', e.args[0].span, 'type');
+      if (this.checkExpr(e.args[1]).kind !== 'int') throw new CompileError('substr() start must be int', e.args[1].span, 'type');
+      if (this.checkExpr(e.args[2]).kind !== 'int') throw new CompileError('substr() count must be int', e.args[2].span, 'type');
+      return T_STR;
+    }
+    if (name === 'index_of') {
+      if (e.args.length !== 2) throw new CompileError('index_of() expects (str, charCode)', e.span, 'type');
+      if (this.checkExpr(e.args[0]).kind !== 'str') throw new CompileError('index_of() argument 1 must be str', e.args[0].span, 'type');
+      if (this.checkExpr(e.args[1]).kind !== 'int') throw new CompileError('index_of() charCode must be int', e.args[1].span, 'type');
+      return T_INT;
+    }
+    if (name === 'to_upper' || name === 'to_lower') {
+      if (e.args.length !== 1) throw new CompileError(`${name}() expects 1 argument`, e.span, 'type');
+      if (this.checkExpr(e.args[0]).kind !== 'str') throw new CompileError(`${name}() expects a str`, e.args[0].span, 'type');
       return T_STR;
     }
     if (name === 'int' || name === 'float') {

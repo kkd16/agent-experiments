@@ -290,6 +290,32 @@ fn main() {
 `,
   },
   {
+    id: 'toolkit',
+    title: 'Text toolkit',
+    blurb: 'Case folding, slicing, search and lexicographic ordering — the str library working together.',
+    source: `// A little text toolkit built on Strata's string library: case folding
+// (to_upper/to_lower), slicing (substr), search (index_of), and ordering.
+fn cap(s: str) -> str {
+  if (len(s) == 0) { return s; }
+  return to_upper(substr(s, 0, 1)) + to_lower(substr(s, 1, len(s) - 1));
+}
+
+fn main() {
+  let kv = "name=Strata";
+  let eq = index_of(kv, 61);              // '=' is byte 61
+  print(substr(kv, 0, eq));               // "name"
+  print(substr(kv, eq + 1, len(kv)));     // "Strata" (count clamps to the end)
+
+  print(cap("hELLO world"));              // "Hello world"
+  print(to_upper("shout"));               // "SHOUT"
+
+  print(to_lower("Apple") == to_lower("apple"));   // case-insensitive equal
+  print("apple" < "banana");              // lexicographic ordering
+  print("banana" < "apple");
+}
+`,
+  },
+  {
     id: 'syntax',
     title: 'Ternary & compound assign',
     blurb: 'The newer surface syntax: conditional expressions and `+= … >>=`.',

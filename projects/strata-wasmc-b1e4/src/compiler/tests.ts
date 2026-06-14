@@ -377,4 +377,52 @@ fn main(){
   print(pick(1, "yes", "no") + "/" + pick(0, "yes", "no"));
 }`,
   },
+  {
+    name: 'str-ordering',
+    source: `fn main(){
+  print("a" < "b"); print("b" < "a"); print("a" < "a");
+  print("ab" < "abc"); print("abc" < "ab");        // prefix ordering
+  print("apple" <= "apple"); print("apple" >= "apple");
+  print("Zoo" < "apple");                            // 'Z'(90) < 'a'(97)
+  print("" < "x"); print("x" > ""); print("" <= "");
+}`,
+  },
+  {
+    name: 'str-substr',
+    source: `fn main(){
+  let s = "Hello, World";
+  print(substr(s, 0, 5)); print(substr(s, 7, 5));
+  print(substr(s, 7, 100));    // count clamps to end
+  print(substr(s, -3, 4));     // start clamps to 0
+  print(len(substr(s, 5, -1))); // negative count -> empty
+  print(len(substr(s, 100, 5))); // start past end -> empty
+}`,
+  },
+  {
+    name: 'str-index-of',
+    source: `fn main(){
+  let s = "mississippi";
+  print(index_of(s, 115)); print(index_of(s, 112)); print(index_of(s, 122));
+  print(index_of("", 97)); print(index_of(s, 109));   // 'm' at 0
+  print(index_of(s, 321));   // out of byte range -> -1
+}`,
+  },
+  {
+    name: 'str-case',
+    source: `fn main(){
+  print(to_upper("Hello, World 123!"));
+  print(to_lower("Hello, World 123!"));
+  print(to_upper(to_lower("MiXeD")));
+  print(to_lower("Apple") == to_lower("apple"));
+  print(len(to_upper("")) == 0);
+}`,
+  },
+  {
+    name: 'str-titlecase',
+    source: `fn cap(s: str) -> str {
+  if (len(s) == 0) { return s; }
+  return to_upper(substr(s, 0, 1)) + to_lower(substr(s, 1, len(s) - 1));
+}
+fn main(){ print(cap("hELLO")); print(cap("world")); print(cap("a")); print(cap("")); }`,
+  },
 ];

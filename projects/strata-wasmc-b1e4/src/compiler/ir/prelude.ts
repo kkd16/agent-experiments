@@ -79,4 +79,74 @@ fn __int_to_str(n: int) -> int {
 fn __bool_to_str(b: int) -> str {
   return b != 0 ? "true" : "false";
 }
+
+// Lexicographic byte comparison: negative / zero / positive, like C's strcmp.
+fn __strcmp(a: int, b: int) -> int {
+  let la = __load32(a);
+  let lb = __load32(b);
+  let n = la < lb ? la : lb;
+  let i = 0;
+  while (i < n) {
+    let ca = __load8(a + 8 + i);
+    let cb = __load8(b + 8 + i);
+    if (ca != cb) { return ca - cb; }
+    i = i + 1;
+  }
+  return la - lb;
+}
+
+// Substring [start, start+count), with start/count clamped into range.
+fn __substr(s: int, start: int, count: int) -> int {
+  let n = __load32(s);
+  if (start < 0) { start = 0; }
+  if (start > n) { start = n; }
+  if (count < 0) { count = 0; }
+  if (start + count > n) { count = n - start; }
+  let p = __alloc(count + 8);
+  __store32(p, count);
+  let i = 0;
+  while (i < count) { __store8(p + 8 + i, __load8(s + 8 + start + i)); i = i + 1; }
+  return p;
+}
+
+// First index of byte c, or -1.
+fn __index_of(s: int, c: int) -> int {
+  let n = __load32(s);
+  let i = 0;
+  while (i < n) {
+    if (__load8(s + 8 + i) == c) { return i; }
+    i = i + 1;
+  }
+  return 0 - 1;
+}
+
+// ASCII upper-casing (bytes a-z) into a fresh string.
+fn __to_upper(s: int) -> int {
+  let n = __load32(s);
+  let p = __alloc(n + 8);
+  __store32(p, n);
+  let i = 0;
+  while (i < n) {
+    let c = __load8(s + 8 + i);
+    if (c >= 97 && c <= 122) { c = c - 32; }
+    __store8(p + 8 + i, c);
+    i = i + 1;
+  }
+  return p;
+}
+
+// ASCII lower-casing (bytes A-Z) into a fresh string.
+fn __to_lower(s: int) -> int {
+  let n = __load32(s);
+  let p = __alloc(n + 8);
+  __store32(p, n);
+  let i = 0;
+  while (i < n) {
+    let c = __load8(s + 8 + i);
+    if (c >= 65 && c <= 90) { c = c + 32; }
+    __store8(p + 8 + i, c);
+    i = i + 1;
+  }
+  return p;
+}
 `;

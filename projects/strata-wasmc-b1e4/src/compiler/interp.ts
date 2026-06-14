@@ -269,6 +269,10 @@ export class Interpreter {
         case '+': return sa + sb;
         case '==': return sa === sb ? 1 : 0;
         case '!=': return sa !== sb ? 1 : 0;
+        case '<': return sa < sb ? 1 : 0;
+        case '<=': return sa <= sb ? 1 : 0;
+        case '>': return sa > sb ? 1 : 0;
+        case '>=': return sa >= sb ? 1 : 0;
         default: throw new Trap(`unsupported string operator '${e.op}'`);
       }
     }
@@ -341,6 +345,34 @@ export class Interpreter {
     if (name === 'char') {
       const n = i32(this.evalExpr(e.args[0], f) as number) & 0xff;
       return String.fromCharCode(n);
+    }
+    if (name === 'substr') {
+      const s = this.evalExpr(e.args[0], f) as string;
+      let start = i32(this.evalExpr(e.args[1], f) as number);
+      let count = i32(this.evalExpr(e.args[2], f) as number);
+      const n = s.length;
+      if (start < 0) start = 0;
+      if (start > n) start = n;
+      if (count < 0) count = 0;
+      if (start + count > n) count = n - start;
+      return s.substr(start, count);
+    }
+    if (name === 'index_of') {
+      const s = this.evalExpr(e.args[0], f) as string;
+      const c = i32(this.evalExpr(e.args[1], f) as number);
+      for (let i = 0; i < s.length; i++) if (s.charCodeAt(i) === c) return i;
+      return -1;
+    }
+    if (name === 'to_upper' || name === 'to_lower') {
+      const s = this.evalExpr(e.args[0], f) as string;
+      let out = '';
+      for (let i = 0; i < s.length; i++) {
+        let c = s.charCodeAt(i);
+        if (name === 'to_upper' && c >= 97 && c <= 122) c -= 32;
+        if (name === 'to_lower' && c >= 65 && c <= 90) c += 32;
+        out += String.fromCharCode(c);
+      }
+      return out;
     }
     if (name === 'int') {
       const v = this.evalExpr(e.args[0], f) as number;

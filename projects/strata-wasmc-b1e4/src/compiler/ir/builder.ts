@@ -416,8 +416,12 @@ class FnBuilder {
       const a = this.lowerExpr(e.left)!;
       const b = this.lowerExpr(e.right)!;
       if (e.op === '+') return this.def('i32', 'call', '__strcat', [a, b]);
-      const eq = this.def('i32', 'call', '__streq', [a, b]);
-      return e.op === '==' ? eq : this.def('i32', 'icmp', 'eq', [eq, CI(0)]);
+      if (e.op === '==') return this.def('i32', 'call', '__streq', [a, b]);
+      if (e.op === '!=') return this.def('i32', 'icmp', 'eq', [this.def('i32', 'call', '__streq', [a, b]), CI(0)]);
+      // Ordering: __strcmp returns a sign; compare it against 0.
+      const cmp = this.def('i32', 'call', '__strcmp', [a, b]);
+      const sub: Record<string, string> = { '<': 'lt_s', '<=': 'le_s', '>': 'gt_s', '>=': 'ge_s' };
+      return this.def('i32', 'icmp', sub[e.op], [cmp, CI(0)]);
     }
     const a = this.lowerExpr(e.left)!;
     const b = this.lowerExpr(e.right)!;
@@ -499,6 +503,12 @@ class FnBuilder {
       this.usesStrings = true;
       this.usesMemory = true;
       return this.def('i32', 'call', '__char', [this.lowerExpr(e.args[0])!]);
+    }
+    if (name === 'substr' || name === 'index_of' || name === 'to_upper' || name === 'to_lower') {
+      this.usesStrings = true;
+      this.usesMemory = true;
+      const args = e.args.map((a) => this.lowerExpr(a)!);
+      return this.def('i32', 'call', '__' + name, args);
     }
     if (name === 'int') {
       const v = this.lowerExpr(e.args[0])!;

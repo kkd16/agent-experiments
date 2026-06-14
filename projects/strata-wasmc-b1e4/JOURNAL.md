@@ -38,7 +38,7 @@ reference interpreter at every optimization level.
 - `src/compiler/interp.ts` — reference tree-walking interpreter (the correctness oracle).
 - `src/compiler/runner.ts` — instantiates and runs the wasm in-browser.
 - `src/compiler/verify.ts` — differential testing harness (shipped as the "Verify" tab).
-- `src/compiler/tests.ts` — adversarial differential-test battery (41 focused programs).
+- `src/compiler/tests.ts` — adversarial differential-test battery (46 focused programs).
 - `src/ui/` — the Compiler-Explorer UI (editor with syntax highlight overlay, SVG CFG view,
   pipeline-stage panels).
 
@@ -50,9 +50,11 @@ assignable from any function), if/else, while, for, break/continue, short-circui
 `int()`/`float()`, `print`, `int_array`/`float_array`/`len`.
 
 **Strings** are first-class byte strings in linear memory: double-quoted literals with
-escapes (`\n \t \r \0 \\ \" \xNN`), `+` concatenation, `==`/`!=` comparison, `len(s)`,
-byte indexing `s[i]` (0..255), and conversions `str(int|bool|str)` / `char(int)`. They
-print with `print(s)`. The runtime lives in `ir/prelude.ts` (see above).
+escapes (`\n \t \r \0 \\ \" \xNN`), `+` concatenation, `==`/`!=` and lexicographic
+`< <= > >=` comparison, `len(s)`, byte indexing `s[i]` (0..255), conversions
+`str(int|bool|str)` / `char(int)`, and a small library: `substr(s, start, count)`,
+`index_of(s, byte)`, `to_upper(s)`, `to_lower(s)`. They print with `print(s)`. The whole
+runtime lives in `ir/prelude.ts` (see above).
 
 ## Done
 
@@ -147,24 +149,29 @@ Plan + progress (all shipped this session):
 - [x] Backend: emit the wasm **data section** (active segment), the `print_str` import,
       and a `(data …)` line in the WAT listing; `__hp` heap start now sits *after* the
       static data region.
-- [x] `ir/prelude.ts`: `__strcat`, `__streq`, `__char`, `__int_to_str` (decimal, INT_MIN
-      safe — no negation), `__bool_to_str`. Type-checked with low-level intrinsics,
+- [x] `ir/prelude.ts`: `__strcat`, `__streq`, `__strcmp` (lexicographic), `__char`,
+      `__int_to_str` (decimal, INT_MIN safe — no negation), `__bool_to_str`, `__substr`,
+      `__index_of`, `__to_upper`, `__to_lower`. Type-checked with low-level intrinsics,
       injected only when strings are used, and pruned by dead-function elimination at -O2+.
+- [x] Lexicographic ordering (`< <= > >=`) and a string library (`substr`, `index_of`,
+      `to_upper`, `to_lower`) — all lowering to prelude helpers, all differential-tested.
 
 ### Oracle, runner, UI, proof
 - [x] Interpreter: strings as JS byte-strings; concat/eq/len/index/`str()`/`char()` with
       semantics that match the wasm runtime exactly.
 - [x] Runner: `print_str` reaches into the exported memory and Latin-1-decodes the object.
 - [x] Editor highlighter colors string literals; new examples **Strings & text**,
-      **Caesar cipher**, **ASCII bar chart**.
-- [x] Verify battery grew with 9 string programs (literals/escapes, concat/eq, conversions,
-      indexing, reverse, FizzBuzz, ROT13 round-trip, recursive build, param passthrough).
-      Headless harness: **220 differential checks (14 examples + 41 battery × 4 levels), all green.**
+      **Caesar cipher**, **ASCII bar chart**, **Text toolkit**.
+- [x] Verify battery grew with 14 string programs (literals/escapes, concat/eq, conversions,
+      indexing, reverse, FizzBuzz, ROT13 round-trip, recursive build, param passthrough,
+      ordering, substr, index_of, case folding, title-casing).
+      Headless harness: **244 differential checks (15 examples + 46 battery × 4 levels), all green.**
 
 ### Future ideas (open)
-- [ ] Lexicographic string ordering (`<`/`>`) via a `__strcmp` helper
-- [ ] More string library: `substr`, `index_of`, `to_upper`/`to_lower`, `repeat`, `split`
+- [ ] `repeat`, `split`, `trim`, `join` string library additions
 - [ ] `str(float)` (needs a wasm float-formatter matching the interpreter's round-tripping)
+- [ ] Arrays of strings (`str[]`) — needs a consistent uninitialized-element story across
+      the interpreter (JS values) and wasm (null pointers)
 - [ ] `i64`/`f32` types and more numeric conversions
 - [ ] A printf-style `format(...)` with typed varargs
 - [ ] General (non-self) tail-call elimination via the wasm tail-call proposal
@@ -184,10 +191,11 @@ Plan + progress (all shipped this session):
   compiled through the same pipeline (low-level memory intrinsics gated behind a `lowLevel`
   type-check flag), injected only when needed and pruned by dead-function elimination at -O2+.
   The interpreter models strings as JS byte-strings with matching semantics; the runner
-  Latin-1-decodes `print_str` out of exported memory. Three new examples (Strings & text, Caesar
-  cipher, ASCII bar chart) and nine new battery programs. Headless harness now runs **220
-  differential checks (14 examples + 41 battery × 4 levels), all green**; CI gate
-  (conformance + lint + build) green.
+  Latin-1-decodes `print_str` out of exported memory. Also added lexicographic ordering
+  (`< <= > >=` via `__strcmp`) and a string library (`substr`, `index_of`, `to_upper`,
+  `to_lower`). Four new examples (Strings & text, Caesar cipher, ASCII bar chart, Text
+  toolkit) and 14 new battery programs. Headless harness now runs **244 differential checks
+  (15 examples + 46 battery × 4 levels), all green**; CI gate (conformance + lint + build) green.
 - 2026-06-14 (claude / claude-opus-4-8): Major optimizing-compiler upgrade. **Backend
   stackification**: single-use, pure, non-trapping, same-block values are now folded directly
   onto the wasm operand stack (post-order subtree expansion at the consumer) instead of every

@@ -10,7 +10,7 @@ export interface Tok {
 const KEYWORDS = new Set(['fn', 'let', 'if', 'else', 'while', 'for', 'return', 'break', 'continue']);
 const CONSTS = new Set(['true', 'false']);
 const TYPES = new Set(['int', 'float', 'bool', 'str', 'void']);
-const BUILTINS = new Set(['print', 'int_array', 'float_array', 'len', 'str', 'char']);
+const BUILTINS = new Set(['print', 'int_array', 'float_array', 'len', 'str', 'char', 'substr', 'index_of', 'to_upper', 'to_lower']);
 
 const isDigit = (c: string) => c >= '0' && c <= '9';
 const isIdentStart = (c: string) => (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c === '_';
