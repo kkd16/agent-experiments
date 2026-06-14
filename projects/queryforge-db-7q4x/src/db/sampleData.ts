@@ -203,6 +203,66 @@ GROUP BY category
 ORDER BY items DESC, category;`,
   },
   {
+    title: 'ROLLUP — subtotals with GROUPING()',
+    sql: `-- Revenue by country × category, with per-country subtotals and a grand
+-- total. GROUPING() flags which rows are roll-ups (1) vs. detail (0).
+SELECT c.country, p.category,
+       ROUND(SUM(p.price * o.quantity), 0) AS revenue,
+       GROUPING(c.country)  AS g_country,
+       GROUPING(p.category) AS g_category
+FROM orders o
+JOIN customers c ON o.customer_id = c.id
+JOIN products  p ON o.product_id = p.id
+GROUP BY ROLLUP(c.country, p.category)
+ORDER BY g_country, g_category, c.country, p.category;`,
+  },
+  {
+    title: 'CUBE — every dimension combination',
+    sql: `-- CUBE adds the all-region and all-year cross-tabs too.
+SELECT c.country, o.order_year,
+       COUNT(*) AS orders,
+       ROUND(SUM(p.price * o.quantity), 0) AS revenue
+FROM orders o
+JOIN customers c ON o.customer_id = c.id
+JOIN products  p ON o.product_id = p.id
+GROUP BY CUBE(c.country, o.order_year)
+ORDER BY c.country, o.order_year;`,
+  },
+  {
+    title: 'Ordered-set aggregates — percentiles & mode',
+    sql: `-- WITHIN GROUP (ORDER BY …) feeds the value to aggregate.
+SELECT PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY price) AS median_price,
+       PERCENTILE_DISC(0.9) WITHIN GROUP (ORDER BY price) AS p90_price,
+       MODE()               WITHIN GROUP (ORDER BY category) AS top_category
+FROM products;`,
+  },
+  {
+    title: 'Index-only (covering) scan — EXPLAIN',
+    sql: `CREATE INDEX IF NOT EXISTS idx_products_cat_price ON products (category, price);
+-- category & price both live in the index, so the heap is never touched.
+EXPLAIN ANALYZE
+SELECT category, price FROM products WHERE category = 'Hardware';`,
+  },
+  {
+    title: 'Bitmap AND of two indexes — EXPLAIN',
+    sql: `CREATE INDEX IF NOT EXISTS idx_products_category ON products (category);
+-- Two separate single-column indexes (category, price) are intersected.
+EXPLAIN ANALYZE
+SELECT name FROM products WHERE category = 'Hardware' AND price < 200;`,
+  },
+  {
+    title: 'Cost-based join reordering — EXPLAIN',
+    sql: `ANALYZE;
+-- The planner searches left-deep join orders and keeps the cheapest;
+-- the selective country filter shapes which table drives the join.
+EXPLAIN
+SELECT c.name, p.name
+FROM orders o
+JOIN customers c ON o.customer_id = c.id
+JOIN products  p ON o.product_id = p.id
+WHERE c.country = 'UK';`,
+  },
+  {
     title: 'Composite index + ANALYZE (EXPLAIN)',
     sql: `CREATE INDEX IF NOT EXISTS idx_orders_cy ON orders (customer_id, order_year);
 ANALYZE;
