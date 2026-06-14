@@ -88,13 +88,13 @@ export default function Home() {
             {due > 0 ? `pattern${due === 1 ? "" : "s"} due now →` : "all caught up — learn ahead →"}
           </div>
         </a>
-        <div className="today-card streak-card">
+        <a className="today-card streak-card" href={href("/stats")}>
           <span className="eyebrow">Daily streak</span>
           <div className="today-streak-num">{streak} {streak > 0 && "🔥"}</div>
           <div className="muted" style={{ fontSize: "0.85rem" }}>
-            {streak === 0 ? "review a pattern to start a streak" : `best: ${longest} day${longest === 1 ? "" : "s"}`}
+            {streak === 0 ? "review a pattern to start a streak →" : `best: ${longest} day${longest === 1 ? "" : "s"} · view stats →`}
           </div>
-        </div>
+        </a>
       </section>
 
       <section className="features">

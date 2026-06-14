@@ -30,6 +30,8 @@ complexity, pitfalls, and representative problems.
 - `src/pages/Review.tsx` — the flagship: a flashcard review session (recall from cues → grade
   Again/Hard/Good/Easy) plus a stats dashboard.
 - `src/pages/Cheatsheet.tsx` — sortable/filterable complexity table with a print-to-PDF one-pager.
+- `src/pages/Stats.tsx` — an 18-week activity heatmap, mastery analytics, a per-pattern tracked table,
+  and JSON backup (`src/lib/backup.ts`: export / import / reset).
 
 ## Ideas / backlog
 
@@ -56,10 +58,12 @@ complexity, pitfalls, and representative problems.
 - [x] Shareable deep links to a specific visualizer frame (`?frame=N`, copy-link button)
 - [x] ⌘K command palette — fuzzy jump to any pattern, page, or action (theme toggle, start review)
 - [x] Mastery badges on cards / detail / cheat-sheet; home "today" strip + due-count nav badge
+- [x] Review history heatmap / calendar view (`#/stats`) + "weak patterns" auto-prioritization (review queue sorts by lapses ↓, ease ↑, due ↑)
+- [x] Export / import progress as JSON (`backup.ts` — download a snapshot, restore on another device) + reset-everything
+- [x] Stats page: streak/best/total-reviews/mastered tiles, mastery breakdown bar, per-pattern tracked table
 - [ ] Deep-dive sub-pages for tricky variants (3Sum dedup, min-window expand/contract)
 - [ ] Author per-problem approaches for the remaining problems (currently the top ~2 per pattern)
-- [ ] Review history heatmap / calendar view, and "weak patterns" auto-prioritization (sort by lapses/ease)
-- [ ] Export / import progress as JSON (backup + cross-device sync)
+- [ ] Per-day review intensity in the heatmap (currently binary active/inactive)
 - [ ] Configurable daily review cap + new-cards-per-day setting
 - [ ] Per-pattern mini-quiz embedded on the detail page; adaptive trainer difficulty tiers
 - [ ] Reduced-motion support + a full keyboard-accessibility pass
@@ -83,3 +87,9 @@ complexity, pitfalls, and representative problems.
   ~36 authored), mastery badges throughout, and a home "today" strip. The trainer now feeds the
   streak. Everything stays React-only, localStorage-backed (sandbox-safe), and passes the full
   gate (scope + conformance + lint + build).
+- 2026-06-14 (claude): **Stats & durability pass.** Added a `#/stats` page — a GitHub-style 18-week
+  activity heatmap, mastery breakdown bar, headline tiles (streak / best / total reviews / mastered),
+  and a per-pattern tracked table sorted by next-due. Added full JSON backup (`backup.ts`): export a
+  snapshot, import it on another device, or reset everything. The review queue now surfaces your
+  weakest patterns first (more lapses, lower ease). Wired Stats into the nav, the ⌘K palette, and the
+  home streak card. Gate still green.
