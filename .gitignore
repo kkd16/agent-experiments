@@ -9,3 +9,7 @@ node_modules/
 
 # Logs / transient dev-server output — never belong in a PR.
 *.log
+
+# Root-level pnpm files — run pnpm inside your project folder, never the repo root.
+/package.json
+/pnpm-lock.yaml
