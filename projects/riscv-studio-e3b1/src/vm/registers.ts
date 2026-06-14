@@ -47,3 +47,42 @@ export function regIndex(token: string): number {
 export function regLabel(i: number): string {
   return `x${i}/${ABI_NAMES[i]}`;
 }
+
+// ---------------------------------------------------------------------------
+// Floating-point registers (RV32F): f0..f31 with their own ABI names.
+// ---------------------------------------------------------------------------
+
+/** ABI name for each float register index, e.g. FREG_ABI_NAMES[10] === 'fa0'. */
+export const FREG_ABI_NAMES: readonly string[] = [
+  'ft0', 'ft1', 'ft2', 'ft3', 'ft4', 'ft5', 'ft6', 'ft7',
+  'fs0', 'fs1', 'fa0', 'fa1', 'fa2', 'fa3', 'fa4', 'fa5',
+  'fa6', 'fa7', 'fs2', 'fs3', 'fs4', 'fs5', 'fs6', 'fs7',
+  'fs8', 'fs9', 'fs10', 'fs11', 'ft8', 'ft9', 'ft10', 'ft11',
+];
+
+/** One-line role per float register, surfaced in the float inspector. */
+export const FREG_ROLES: readonly string[] = [
+  'fp temporary', 'fp temporary', 'fp temporary', 'fp temporary',
+  'fp temporary', 'fp temporary', 'fp temporary', 'fp temporary',
+  'fp saved', 'fp saved', 'fp arg / return 0', 'fp arg / return 1',
+  'fp argument', 'fp argument', 'fp argument', 'fp argument',
+  'fp argument', 'fp argument', 'fp saved', 'fp saved',
+  'fp saved', 'fp saved', 'fp saved', 'fp saved',
+  'fp saved', 'fp saved', 'fp saved', 'fp saved',
+  'fp temporary', 'fp temporary', 'fp temporary', 'fp temporary',
+];
+
+const FNAME_TO_INDEX: Map<string, number> = (() => {
+  const m = new Map<string, number>();
+  for (let i = 0; i < REG_COUNT; i++) {
+    m.set(`f${i}`, i);
+    m.set(FREG_ABI_NAMES[i], i);
+  }
+  return m;
+})();
+
+/** Resolve a float-register token (`f5`, `fa0`, `ft0`) to its index, or -1 if invalid. */
+export function fregIndex(token: string): number {
+  const i = FNAME_TO_INDEX.get(token.trim().toLowerCase());
+  return i === undefined ? -1 : i;
+}

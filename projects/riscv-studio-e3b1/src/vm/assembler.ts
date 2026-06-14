@@ -16,9 +16,18 @@ import {
   DATA_BASE,
   TEXT_BASE,
 } from './constants';
-import { INSTRUCTIONS, OPC } from './isa';
+import {
+  INSTRUCTIONS,
+  OPC,
+  AMO_FUNCT5,
+  AMO_MNEMONICS,
+  CSR_FUNCT3,
+  CSR_MNEMONICS,
+  CSR_NUMBERS,
+} from './isa';
 import type { InstrSpec } from './isa';
-import { regIndex } from './registers';
+import { regIndex, fregIndex } from './registers';
+import { FP_SPECS, FP_MNEMONICS, rmFromName } from './fp';
 import { parseIntLiteral, signExtend, charCode, u32 } from './format';
 
 export interface AsmError {
@@ -59,6 +68,14 @@ interface MicroInstr {
   imm: ImmSrc;
   line: number;
   source: string;
+  /** Third source register for RV32F fused multiply-add (R4-type). */
+  rs3?: number;
+  /** Rounding mode (funct3) for RV32F ops; 7 = dynamic. */
+  rm?: number;
+  /** CSR address for Zicsr ops (also marks this micro as a CSR instruction). */
+  csr?: number;
+  /** Precomputed funct7 (funct5<<2 | aq<<1 | rl) for RV32A atomics. */
+  amoFunct7?: number;
 }
 
 type ByteSrc = { kind: 'lit'; values: number[] } | { kind: 'word'; imm: ImmSrc };
@@ -180,6 +197,26 @@ function parseReg(tok: string): number {
   const i = regIndex(tok);
   if (i < 0) throw new AsmFault(`expected a register, got '${tok}'`);
   return i;
+}
+
+function parseFReg(tok: string): number {
+  const i = fregIndex(tok);
+  if (i < 0) throw new AsmFault(`expected a float register, got '${tok}'`);
+  return i;
+}
+
+/** Parse an atomic memory operand: `(rs1)` or bare `rs1`. Atomics have no offset. */
+function parseAmoMem(tok: string): number {
+  const m = tok.trim().match(/^\(?\s*([A-Za-z0-9]+)\s*\)?$/);
+  if (!m) throw new AsmFault(`expected '(reg)', got '${tok}'`);
+  return parseReg(m[1]);
+}
+
+/** Resolve a CSR operand (symbolic name like `cycle`, or a numeric address). */
+function parseCsr(tok: string, consts: Map<string, number>): number {
+  const t = tok.trim().toLowerCase();
+  if (CSR_NUMBERS[t] !== undefined) return CSR_NUMBERS[t];
+  return parseImmValue(tok, consts) & 0xfff;
 }
 
 /** Resolve an immediate token to a number, consulting `.equ` constants. */
@@ -344,13 +381,250 @@ function expand(
       NEED(op, ops, 3);
       return [M('bgeu', { rs1: parseReg(ops[1]), rs2: parseReg(ops[0]), imm: relSym(ops[2]) })];
 
-    // ---- real instructions ----------------------------------------------
+    // ---- RV32F sign-injection pseudos -----------------------------------
+    case 'fmv.s':
+      NEED(op, ops, 2);
+      return [fpMicro('fsgnj.s', { rd: parseFReg(ops[0]), rs1: parseFReg(ops[1]), rs2: parseFReg(ops[1]) }, line, source)];
+    case 'fneg.s':
+      NEED(op, ops, 2);
+      return [fpMicro('fsgnjn.s', { rd: parseFReg(ops[0]), rs1: parseFReg(ops[1]), rs2: parseFReg(ops[1]) }, line, source)];
+    case 'fabs.s':
+      NEED(op, ops, 2);
+      return [fpMicro('fsgnjx.s', { rd: parseFReg(ops[0]), rs1: parseFReg(ops[1]), rs2: parseFReg(ops[1]) }, line, source)];
+
+    // ---- Zicsr counter / convenience pseudos ----------------------------
+    case 'rdcycle':
+      NEED(op, ops, 1);
+      return [csrMicro('csrrs', { rd: parseReg(ops[0]), rs1: 0, csr: CSR_NUMBERS.cycle }, line, source)];
+    case 'rdtime':
+      NEED(op, ops, 1);
+      return [csrMicro('csrrs', { rd: parseReg(ops[0]), rs1: 0, csr: CSR_NUMBERS.time }, line, source)];
+    case 'rdinstret':
+      NEED(op, ops, 1);
+      return [csrMicro('csrrs', { rd: parseReg(ops[0]), rs1: 0, csr: CSR_NUMBERS.instret }, line, source)];
+    case 'rdcycleh':
+      NEED(op, ops, 1);
+      return [csrMicro('csrrs', { rd: parseReg(ops[0]), rs1: 0, csr: CSR_NUMBERS.cycleh }, line, source)];
+    case 'rdtimeh':
+      NEED(op, ops, 1);
+      return [csrMicro('csrrs', { rd: parseReg(ops[0]), rs1: 0, csr: CSR_NUMBERS.timeh }, line, source)];
+    case 'rdinstreth':
+      NEED(op, ops, 1);
+      return [csrMicro('csrrs', { rd: parseReg(ops[0]), rs1: 0, csr: CSR_NUMBERS.instreth }, line, source)];
+    case 'csrr':
+      NEED(op, ops, 2);
+      return [csrMicro('csrrs', { rd: parseReg(ops[0]), rs1: 0, csr: parseCsr(ops[1], consts) }, line, source)];
+    case 'csrw':
+      NEED(op, ops, 2);
+      return [csrMicro('csrrw', { rd: 0, rs1: parseReg(ops[1]), csr: parseCsr(ops[0], consts) }, line, source)];
+    case 'csrs':
+      NEED(op, ops, 2);
+      return [csrMicro('csrrs', { rd: 0, rs1: parseReg(ops[1]), csr: parseCsr(ops[0], consts) }, line, source)];
+    case 'csrc':
+      NEED(op, ops, 2);
+      return [csrMicro('csrrc', { rd: 0, rs1: parseReg(ops[1]), csr: parseCsr(ops[0], consts) }, line, source)];
+    case 'csrwi':
+      NEED(op, ops, 2);
+      return [csrMicro('csrrwi', { rd: 0, rs1: parseImmValue(ops[1], consts) & 0x1f, csr: parseCsr(ops[0], consts) }, line, source)];
+    case 'csrsi':
+      NEED(op, ops, 2);
+      return [csrMicro('csrrsi', { rd: 0, rs1: parseImmValue(ops[1], consts) & 0x1f, csr: parseCsr(ops[0], consts) }, line, source)];
+    case 'csrci':
+      NEED(op, ops, 2);
+      return [csrMicro('csrrci', { rd: 0, rs1: parseImmValue(ops[1], consts) & 0x1f, csr: parseCsr(ops[0], consts) }, line, source)];
+    case 'frcsr':
+      NEED(op, ops, 1);
+      return [csrMicro('csrrs', { rd: parseReg(ops[0]), rs1: 0, csr: CSR_NUMBERS.fcsr }, line, source)];
+    case 'frrm':
+      NEED(op, ops, 1);
+      return [csrMicro('csrrs', { rd: parseReg(ops[0]), rs1: 0, csr: CSR_NUMBERS.frm }, line, source)];
+    case 'frflags':
+      NEED(op, ops, 1);
+      return [csrMicro('csrrs', { rd: parseReg(ops[0]), rs1: 0, csr: CSR_NUMBERS.fflags }, line, source)];
+    case 'fscsr':
+      return [csrSwapPseudo(ops, CSR_NUMBERS.fcsr, line, source)];
+    case 'fsrm':
+      return [csrSwapPseudo(ops, CSR_NUMBERS.frm, line, source)];
+    case 'fsflags':
+      return [csrSwapPseudo(ops, CSR_NUMBERS.fflags, line, source)];
+
+    // ---- real instructions (base, FP, atomic, CSR) ----------------------
     default:
-      return [expandReal(op, ops, consts, line, source)];
+      return expandOther(op, ops, consts, line, source);
   }
 
   function relSym(tok: string): ImmSrc {
     return { kind: 'sym', name: tok.trim(), reloc: 'rel' };
+  }
+}
+
+/** Build an FP/atomic/CSR micro-instruction (carries the extra fields). */
+function fpMicro(
+  mnemonic: string,
+  parts: { rd?: number; rs1?: number; rs2?: number; rs3?: number; rm?: number; imm?: ImmSrc },
+  line: number,
+  source: string,
+): MicroInstr {
+  return {
+    mnemonic,
+    rd: parts.rd ?? 0,
+    rs1: parts.rs1 ?? 0,
+    rs2: parts.rs2 ?? 0,
+    rs3: parts.rs3,
+    rm: parts.rm,
+    imm: parts.imm ?? { kind: 'num', value: 0 },
+    line,
+    source,
+  };
+}
+
+function amoMicro(
+  mnemonic: string,
+  parts: { rd?: number; rs1?: number; rs2?: number; amoFunct7: number },
+  line: number,
+  source: string,
+): MicroInstr {
+  return {
+    mnemonic,
+    rd: parts.rd ?? 0,
+    rs1: parts.rs1 ?? 0,
+    rs2: parts.rs2 ?? 0,
+    amoFunct7: parts.amoFunct7,
+    imm: { kind: 'num', value: 0 },
+    line,
+    source,
+  };
+}
+
+function csrMicro(
+  mnemonic: string,
+  parts: { rd?: number; rs1?: number; csr: number },
+  line: number,
+  source: string,
+): MicroInstr {
+  return {
+    mnemonic,
+    rd: parts.rd ?? 0,
+    rs1: parts.rs1 ?? 0,
+    rs2: 0,
+    csr: parts.csr,
+    imm: { kind: 'num', value: 0 },
+    line,
+    source,
+  };
+}
+
+/** `fscsr/fsrm/fsflags` come in `rd, rs` (read-and-write) or `rs` (write-only) forms. */
+function csrSwapPseudo(ops: string[], csr: number, line: number, source: string): MicroInstr {
+  if (ops.length === 2) {
+    return csrMicro('csrrw', { rd: parseReg(ops[0]), rs1: parseReg(ops[1]), csr }, line, source);
+  }
+  if (ops.length === 1) {
+    return csrMicro('csrrw', { rd: 0, rs1: parseReg(ops[0]), csr }, line, source);
+  }
+  throw new AsmFault(`expected 1 or 2 operands, got ${ops.length}`);
+}
+
+/** Dispatch a non-pseudo mnemonic to the FP, atomic, CSR, or base encoder. */
+function expandOther(
+  op: string,
+  ops: string[],
+  consts: Map<string, number>,
+  line: number,
+  source: string,
+): MicroInstr[] {
+  if (FP_MNEMONICS.has(op)) return [expandFp(op, ops, consts, line, source)];
+  if (CSR_MNEMONICS.has(op)) return [expandCsr(op, ops, consts, line, source)];
+  const amoBase = stripAmoSuffix(op).base;
+  if (AMO_MNEMONICS.has(amoBase)) return [expandAmo(op, ops, line, source)];
+  return [expandReal(op, ops, consts, line, source)];
+}
+
+function stripAmoSuffix(op: string): { base: string; aq: number; rl: number } {
+  if (op.endsWith('.aqrl')) return { base: op.slice(0, -5), aq: 1, rl: 1 };
+  if (op.endsWith('.aq')) return { base: op.slice(0, -3), aq: 1, rl: 0 };
+  if (op.endsWith('.rl')) return { base: op.slice(0, -3), aq: 0, rl: 1 };
+  return { base: op, aq: 0, rl: 0 };
+}
+
+function expandAmo(op: string, ops: string[], line: number, source: string): MicroInstr {
+  const { base, aq, rl } = stripAmoSuffix(op);
+  const funct5 = AMO_FUNCT5[base];
+  if (funct5 === undefined) throw new AsmFault(`unknown atomic '${op}'`);
+  const amoFunct7 = (funct5 << 2) | (aq << 1) | rl;
+  if (base === 'lr.w') {
+    NEED(base, ops, 2); // lr.w rd, (rs1)
+    return amoMicro(base, { rd: parseReg(ops[0]), rs1: parseAmoMem(ops[1]), amoFunct7 }, line, source);
+  }
+  // amo*.w / sc.w : rd, rs2, (rs1)
+  NEED(base, ops, 3);
+  return amoMicro(base, { rd: parseReg(ops[0]), rs2: parseReg(ops[1]), rs1: parseAmoMem(ops[2]), amoFunct7 }, line, source);
+}
+
+function expandCsr(op: string, ops: string[], consts: Map<string, number>, line: number, source: string): MicroInstr {
+  NEED(op, ops, 3);
+  const rd = parseReg(ops[0]);
+  const csr = parseCsr(ops[1], consts);
+  if (op.endsWith('i')) {
+    return csrMicro(op, { rd, rs1: parseImmValue(ops[2], consts) & 0x1f, csr }, line, source);
+  }
+  return csrMicro(op, { rd, rs1: parseReg(ops[2]), csr }, line, source);
+}
+
+function expandFp(op: string, ops: string[], consts: Map<string, number>, line: number, source: string): MicroInstr {
+  const spec = FP_SPECS[op];
+  // Peel an optional trailing rounding-mode token for the ops that take one.
+  let rm = 7; // dynamic by default
+  const list = ops.slice();
+  if (spec.hasRm && list.length > 0) {
+    const maybe = rmFromName(list[list.length - 1]);
+    if (maybe !== null) {
+      rm = maybe;
+      list.pop();
+    }
+  }
+  const mk = (parts: Parameters<typeof fpMicro>[1]) => fpMicro(op, { ...parts, rm }, line, source);
+
+  switch (spec.kind) {
+    case 'load': {
+      NEED(op, list, 2);
+      const mem = parseMem(list[1], consts);
+      return mk({ rd: parseFReg(list[0]), rs1: mem.reg, imm: mem.imm });
+    }
+    case 'store': {
+      NEED(op, list, 2);
+      const mem = parseMem(list[1], consts);
+      return mk({ rs2: parseFReg(list[0]), rs1: mem.reg, imm: mem.imm });
+    }
+    case 'r-rm':
+      NEED(op, list, 3);
+      return mk({ rd: parseFReg(list[0]), rs1: parseFReg(list[1]), rs2: parseFReg(list[2]) });
+    case 'sqrt':
+      NEED(op, list, 2);
+      return mk({ rd: parseFReg(list[0]), rs1: parseFReg(list[1]) });
+    case 'sgnj':
+    case 'minmax':
+      NEED(op, list, 3);
+      return mk({ rd: parseFReg(list[0]), rs1: parseFReg(list[1]), rs2: parseFReg(list[2]) });
+    case 'cmp':
+      NEED(op, list, 3);
+      return mk({ rd: parseReg(list[0]), rs1: parseFReg(list[1]), rs2: parseFReg(list[2]) });
+    case 'cvt.w':
+      NEED(op, list, 2);
+      return mk({ rd: parseReg(list[0]), rs1: parseFReg(list[1]) });
+    case 'cvt.s':
+      NEED(op, list, 2);
+      return mk({ rd: parseFReg(list[0]), rs1: parseReg(list[1]) });
+    case 'mv.x':
+    case 'fclass':
+      NEED(op, list, 2);
+      return mk({ rd: parseReg(list[0]), rs1: parseFReg(list[1]) });
+    case 'mv.f':
+      NEED(op, list, 2);
+      return mk({ rd: parseFReg(list[0]), rs1: parseReg(list[1]) });
+    case 'fma':
+      NEED(op, list, 4);
+      return mk({ rd: parseFReg(list[0]), rs1: parseFReg(list[1]), rs2: parseFReg(list[2]), rs3: parseFReg(list[3]) });
   }
 }
 
@@ -461,6 +735,10 @@ function checkRange(v: number, lo: number, hi: number, what: string): number {
 }
 
 function encode(m: MicroInstr, addr: number, symbols: Map<string, number>): number {
+  if (FP_SPECS[m.mnemonic]) return encodeFp(m, addr, symbols);
+  if (m.amoFunct7 !== undefined) return encodeAmo(m);
+  if (m.csr !== undefined) return encodeCsr(m);
+
   const spec = INSTRUCTIONS[m.mnemonic];
   const f3 = spec.funct3 ?? 0;
   const f7 = spec.funct7 ?? 0;
@@ -517,6 +795,73 @@ function encode(m: MicroInstr, addr: number, symbols: Map<string, number>): numb
     case 'FENCE':
       return 0x0ff0_000f;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Extension encoders (RV32F / RV32A / Zicsr)
+// ---------------------------------------------------------------------------
+
+function encodeFp(m: MicroInstr, addr: number, symbols: Map<string, number>): number {
+  const spec = FP_SPECS[m.mnemonic];
+  const opc = spec.opcode;
+  const rd = m.rd & 0x1f;
+  const rs1 = m.rs1 & 0x1f;
+  const rs2 = m.rs2 & 0x1f;
+  const rm = (m.rm ?? 7) & 7;
+  const f7 = spec.funct7 ?? 0;
+
+  switch (spec.kind) {
+    case 'load': {
+      const imm = checkRange(resolveImm(m.imm, addr, symbols), -2048, 2047, 'load offset');
+      return u32(((imm & 0xfff) << 20) | (rs1 << 15) | (2 << 12) | (rd << 7) | opc);
+    }
+    case 'store': {
+      const imm = checkRange(resolveImm(m.imm, addr, symbols), -2048, 2047, 'store offset');
+      const lo = imm & 0x1f;
+      const hi = (imm >> 5) & 0x7f;
+      return u32((hi << 25) | (rs2 << 20) | (rs1 << 15) | (2 << 12) | (lo << 7) | opc);
+    }
+    case 'r-rm':
+      return u32((f7 << 25) | (rs2 << 20) | (rs1 << 15) | (rm << 12) | (rd << 7) | opc);
+    case 'sqrt':
+      return u32((f7 << 25) | (rs1 << 15) | (rm << 12) | (rd << 7) | opc);
+    case 'sgnj':
+    case 'minmax':
+    case 'cmp':
+      return u32((f7 << 25) | (rs2 << 20) | (rs1 << 15) | ((spec.funct3 ?? 0) << 12) | (rd << 7) | opc);
+    case 'cvt.w':
+    case 'cvt.s':
+      return u32((f7 << 25) | ((spec.rs2 ?? 0) << 20) | (rs1 << 15) | (rm << 12) | (rd << 7) | opc);
+    case 'mv.x':
+    case 'fclass':
+      return u32((f7 << 25) | (rs1 << 15) | ((spec.funct3 ?? 0) << 12) | (rd << 7) | opc);
+    case 'mv.f':
+      return u32((f7 << 25) | (rs1 << 15) | (rd << 7) | opc);
+    case 'fma':
+      return u32(((m.rs3 ?? 0) & 0x1f) * 0x800_0000 + ((rs2 << 20) | (rs1 << 15) | (rm << 12) | (rd << 7) | opc));
+  }
+}
+
+function encodeAmo(m: MicroInstr): number {
+  return u32(
+    ((m.amoFunct7 ?? 0) << 25) |
+      ((m.rs2 & 0x1f) << 20) |
+      ((m.rs1 & 0x1f) << 15) |
+      (2 << 12) |
+      ((m.rd & 0x1f) << 7) |
+      OPC.AMO,
+  );
+}
+
+function encodeCsr(m: MicroInstr): number {
+  const funct3 = CSR_FUNCT3[m.mnemonic];
+  return u32(
+    (((m.csr ?? 0) & 0xfff) << 20) |
+      ((m.rs1 & 0x1f) << 15) |
+      (funct3 << 12) |
+      ((m.rd & 0x1f) << 7) |
+      OPC.SYSTEM,
+  );
 }
 
 // ---------------------------------------------------------------------------

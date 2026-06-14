@@ -455,6 +455,30 @@
   font-family: var(--mono);
   font-size: 0.78rem;
 }
+.panel.regs {
+  overflow: auto;
+}
+.reg-subhead {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.6rem;
+  padding: 0.4rem 0.8rem 0.2rem;
+  border-top: 1px solid var(--border);
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: var(--fg-dim);
+}
+.reg-fcsr {
+  font-family: var(--mono);
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--fg-faint);
+}
+.freg-grid .reg-name {
+  color: var(--t-num, var(--accent));
+}
 
 /* ----------------------------------------------------------------- memory */
 .mem,

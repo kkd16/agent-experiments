@@ -28,6 +28,7 @@ export const OPC = {
   OP: 0x33,
   MISC_MEM: 0x0f,
   SYSTEM: 0x73,
+  AMO: 0x2f,
 } as const;
 
 function r(name: string, funct3: number, funct7: number): InstrSpec {
@@ -115,5 +116,50 @@ export const INSTRUCTIONS: Record<string, InstrSpec> = {
   fence: { name: 'fence', format: 'FENCE', opcode: OPC.MISC_MEM, funct3: 0 },
 };
 
-/** Set of every recognised real mnemonic (lowercased). */
+/** Set of every recognised base (RV32IM) mnemonic (lowercased). */
 export const REAL_MNEMONICS: ReadonlySet<string> = new Set(Object.keys(INSTRUCTIONS));
+
+// ---------------------------------------------------------------------------
+// RV32A (atomics) and Zicsr encoding data — kept here as the single source of
+// truth, mirroring the INSTRUCTIONS table above.
+// ---------------------------------------------------------------------------
+
+/** AMO mnemonic → its 5-bit funct5 selector (bits 31:27 of the encoding). */
+export const AMO_FUNCT5: Record<string, number> = {
+  'amoadd.w': 0x00,
+  'amoswap.w': 0x01,
+  'lr.w': 0x02,
+  'sc.w': 0x03,
+  'amoxor.w': 0x04,
+  'amoor.w': 0x08,
+  'amoand.w': 0x0c,
+  'amomin.w': 0x10,
+  'amomax.w': 0x14,
+  'amominu.w': 0x18,
+  'amomaxu.w': 0x1c,
+};
+export const AMO_MNEMONICS: ReadonlySet<string> = new Set(Object.keys(AMO_FUNCT5));
+
+/** CSR op mnemonic → its funct3 selector. */
+export const CSR_FUNCT3: Record<string, number> = {
+  csrrw: 1,
+  csrrs: 2,
+  csrrc: 3,
+  csrrwi: 5,
+  csrrsi: 6,
+  csrrci: 7,
+};
+export const CSR_MNEMONICS: ReadonlySet<string> = new Set(Object.keys(CSR_FUNCT3));
+
+/** Symbolic CSR names the assembler accepts in place of a raw address. */
+export const CSR_NUMBERS: Record<string, number> = {
+  fflags: 0x001,
+  frm: 0x002,
+  fcsr: 0x003,
+  cycle: 0xc00,
+  time: 0xc01,
+  instret: 0xc02,
+  cycleh: 0xc80,
+  timeh: 0xc81,
+  instreth: 0xc82,
+};

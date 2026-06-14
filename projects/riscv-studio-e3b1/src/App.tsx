@@ -4,6 +4,7 @@ import { useVM } from './hooks/useVM';
 import { useHashRoute } from './router';
 import { DEFAULT_EXAMPLE, EXAMPLES } from './vm/examples';
 import type { Example } from './vm/examples';
+import { programFromUrl, buildShareUrl } from './vm/share';
 import Editor from './ui/Editor';
 import Registers from './ui/Registers';
 import MemoryView from './ui/MemoryView';
@@ -26,17 +27,38 @@ const TABS: { id: string; label: string }[] = [
 ];
 
 export default function App() {
-  const vm = useVM(DEFAULT_EXAMPLE.code);
+  // A shared `?prog=` link wins over the default example on first load.
+  const sharedProgram = useMemo(() => programFromUrl(), []);
+  const vm = useVM(sharedProgram ?? DEFAULT_EXAMPLE.code);
   const [route, navigate] = useHashRoute();
-  const [activeExample, setActiveExample] = useState<string | null>(DEFAULT_EXAMPLE.id);
+  const [activeExample, setActiveExample] = useState<string | null>(
+    sharedProgram ? null : DEFAULT_EXAMPLE.id,
+  );
+  const [shared, setShared] = useState(false);
   const didInit = useRef(false);
 
-  // Load the default program once on mount so the inspector is populated immediately.
+  // Load the initial program once on mount so the inspector is populated immediately.
   useEffect(() => {
     if (didInit.current) return;
     didInit.current = true;
-    vm.loadSource(DEFAULT_EXAMPLE.code);
-  }, [vm]);
+    vm.loadSource(sharedProgram ?? DEFAULT_EXAMPLE.code);
+  }, [vm, sharedProgram]);
+
+  const onShare = () => {
+    const url = buildShareUrl(vm.source);
+    try {
+      window.history.replaceState(null, '', url);
+    } catch {
+      /* ignore: sandboxed thumbnail */
+    }
+    try {
+      void navigator.clipboard?.writeText(url);
+    } catch {
+      /* clipboard may be unavailable */
+    }
+    setShared(true);
+    window.setTimeout(() => setShared(false), 1600);
+  };
 
   const errorLines = useMemo(() => {
     const m = new Map<number, string>();
@@ -66,7 +88,7 @@ export default function App() {
           <span className="logo">RV</span>
           <div>
             <h1>RISC-V Studio</h1>
-            <p>an RV32IM assembler, emulator &amp; debugger in your browser</p>
+            <p>an RV32IMAF + Zicsr assembler, emulator &amp; time-travel debugger</p>
           </div>
         </div>
         <nav className="tabs">
@@ -83,11 +105,21 @@ export default function App() {
           <button className="run" onClick={vm.running ? vm.stop : vm.run} disabled={hasErrors}>
             {vm.running ? '■ Stop' : '▶ Run'}
           </button>
+          <button
+            onClick={vm.stepBack}
+            disabled={vm.running || vm.historyDepth === 0}
+            title="Time-travel: undo the last instruction"
+          >
+            ⤺ Back
+          </button>
           <button onClick={vm.step} disabled={vm.running || hasErrors}>
             ⤳ Step
           </button>
           <button onClick={vm.reset}>↺ Reset</button>
           <button onClick={vm.assembleOnly}>⚙ Assemble</button>
+          <button onClick={onShare} title="Copy a shareable link to this program">
+            {shared ? '✓ Copied' : '🔗 Share'}
+          </button>
         </div>
         <div className="tool-group">
           <select
@@ -154,10 +186,11 @@ export default function App() {
 
       <footer className="statusline">
         <span>
-          {vm.assembly?.instrs.length ?? 0} instr · {vm.breakpointLines.size} breakpoints
+          {vm.assembly?.instrs.length ?? 0} instr · {vm.breakpointLines.size} breakpoints ·{' '}
+          {vm.historyDepth} undo
         </span>
         <span>
-          {vm.cpu.error ? <span className="err-text">{vm.cpu.error}</span> : 'RV32IM · little-endian · 32-bit'}
+          {vm.cpu.error ? <span className="err-text">{vm.cpu.error}</span> : 'RV32IMAF · Zicsr · little-endian · 32-bit'}
         </span>
       </footer>
     </div>

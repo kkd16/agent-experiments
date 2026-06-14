@@ -21,10 +21,13 @@ export interface VM {
   prevRegs: Int32Array;
   breakpointLines: ReadonlySet<number>;
   currentLine: number | null;
+  /** How many instructions can be reverted with `stepBack()` (time-travel depth). */
+  historyDepth: number;
   assembleOnly: () => AssembleResult;
   load: () => boolean;
   loadSource: (src: string) => void;
   step: () => void;
+  stepBack: () => void;
   run: () => void;
   stop: () => void;
   reset: () => void;
@@ -132,6 +135,15 @@ export function useVM(initialSource: string): VM {
     bump();
   }, [ensureFresh, cpu, snapshot, bump]);
 
+  /** Time-travel: revert exactly one executed instruction. */
+  const stepBack = useCallback(() => {
+    if (runningRef.current) return;
+    if (cpu.historyDepth() === 0) return;
+    snapshot();
+    cpu.stepBack();
+    bump();
+  }, [cpu, snapshot, bump]);
+
   const stop = useCallback(() => {
     cancelRun();
     cpu.pause();
@@ -181,6 +193,9 @@ export function useVM(initialSource: string): VM {
   // the highlighted line follows the pc as we step.
   const currentLine = assembly ? (assembly.addrToLine.get(cpu.pc >>> 0) ?? null) : null;
 
+  // Recomputed each render; `tick` bumps on every mutation so this stays current.
+  const historyDepth = cpu.historyDepth();
+
   return {
     source,
     setSource,
@@ -191,10 +206,12 @@ export function useVM(initialSource: string): VM {
     prevRegs,
     breakpointLines,
     currentLine,
+    historyDepth,
     assembleOnly,
     load,
     loadSource,
     step,
+    stepBack,
     run,
     stop,
     reset,

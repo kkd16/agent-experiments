@@ -1,8 +1,9 @@
 // A small lexer that classifies assembly tokens for the editor's syntax highlighting.
 // It is purely cosmetic and forgiving — anything it doesn't recognise becomes plain text.
 
-import { REAL_MNEMONICS } from '../vm/isa';
-import { regIndex } from '../vm/registers';
+import { REAL_MNEMONICS, AMO_MNEMONICS, CSR_MNEMONICS } from '../vm/isa';
+import { FP_MNEMONICS } from '../vm/fp';
+import { regIndex, fregIndex } from '../vm/registers';
 
 export type TokenKind =
   | 'comment'
@@ -25,9 +26,25 @@ const PSEUDO = new Set([
   'li', 'la', 'mv', 'not', 'neg', 'nop', 'j', 'jr', 'ret', 'call', 'tail',
   'seqz', 'snez', 'sltz', 'sgtz',
   'beqz', 'bnez', 'blez', 'bgez', 'bltz', 'bgtz', 'bgt', 'ble', 'bgtu', 'bleu',
+  // RV32F / Zicsr pseudos
+  'fmv.s', 'fneg.s', 'fabs.s',
+  'rdcycle', 'rdtime', 'rdinstret', 'rdcycleh', 'rdtimeh', 'rdinstreth',
+  'csrr', 'csrw', 'csrs', 'csrc', 'csrwi', 'csrsi', 'csrci',
+  'frcsr', 'fscsr', 'frrm', 'fsrm', 'frflags', 'fsflags',
 ]);
 
-const MNEMONICS = new Set<string>([...REAL_MNEMONICS, ...PSEUDO]);
+const MNEMONICS = new Set<string>([
+  ...REAL_MNEMONICS,
+  ...FP_MNEMONICS,
+  ...AMO_MNEMONICS,
+  ...CSR_MNEMONICS,
+  ...PSEUDO,
+]);
+
+// Atomics accept `.aq` / `.rl` ordering suffixes; recognise those too.
+const AMO_SUFFIXED = new Set<string>(
+  [...AMO_MNEMONICS].flatMap((m) => [`${m}.aq`, `${m}.rl`, `${m}.aqrl`]),
+);
 
 // A single regex whose alternatives are tried in priority order via the sticky flag.
 const SCANNER = new RegExp(
@@ -68,7 +85,8 @@ export function tokenizeLine(line: string): Token[] {
 }
 
 function classifyIdent(id: string): TokenKind {
-  if (regIndex(id) >= 0) return 'reg';
-  if (MNEMONICS.has(id.toLowerCase())) return 'mnemonic';
+  if (regIndex(id) >= 0 || fregIndex(id) >= 0) return 'reg';
+  const lower = id.toLowerCase();
+  if (MNEMONICS.has(lower) || AMO_SUFFIXED.has(lower)) return 'mnemonic';
   return 'text';
 }

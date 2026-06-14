@@ -6,8 +6,21 @@
 
 import { signExtend, u32 } from './format';
 import { OPC } from './isa';
+import { isFpOpcode, decodeFpMnemonic, FP_OPC } from './fp';
 
-export type DecodedFormat = 'R' | 'I' | 'S' | 'B' | 'U' | 'J' | 'SYS' | 'FENCE' | 'UNKNOWN';
+export type DecodedFormat =
+  | 'R'
+  | 'I'
+  | 'S'
+  | 'B'
+  | 'U'
+  | 'J'
+  | 'SYS'
+  | 'FENCE'
+  | 'AMO'
+  | 'CSR'
+  | 'FP'
+  | 'UNKNOWN';
 
 export interface DecodedInstruction {
   readonly raw: number;
@@ -17,6 +30,8 @@ export interface DecodedInstruction {
   readonly rs2: number;
   readonly funct3: number;
   readonly funct7: number;
+  /** Third source register (R4-type fused multiply-add); 0 otherwise. */
+  readonly rs3: number;
   /** Sign-extended immediate appropriate to the instruction format. */
   readonly imm: number;
   readonly format: DecodedFormat;
@@ -28,7 +43,7 @@ function bits(word: number, hi: number, lo: number): number {
   return (word >>> lo) & ((1 << (hi - lo + 1)) - 1);
 }
 
-function formatOf(opcode: number): DecodedFormat {
+function formatOf(opcode: number, funct3: number): DecodedFormat {
   switch (opcode) {
     case OPC.LUI:
     case OPC.AUIPC:
@@ -45,8 +60,10 @@ function formatOf(opcode: number): DecodedFormat {
       return 'S';
     case OPC.OP:
       return 'R';
+    case OPC.AMO:
+      return 'AMO';
     case OPC.SYSTEM:
-      return 'SYS';
+      return funct3 === 0 ? 'SYS' : 'CSR';
     case OPC.MISC_MEM:
       return 'FENCE';
     default:
@@ -87,9 +104,31 @@ export function decode(word: number): DecodedInstruction {
   const rd = bits(w, 11, 7);
   const rs1 = bits(w, 19, 15);
   const rs2 = bits(w, 24, 20);
+  const rs3 = bits(w, 31, 27);
   const funct3 = bits(w, 14, 12);
   const funct7 = bits(w, 31, 25);
-  const format = formatOf(opcode);
+
+  // Floating-point opcodes get their own decode path (loads/stores carry I/S immediates).
+  if (isFpOpcode(opcode)) {
+    let imm = 0;
+    if (opcode === FP_OPC.LOAD_FP) imm = immI(w);
+    else if (opcode === FP_OPC.STORE_FP) imm = immS(w);
+    return {
+      raw: w,
+      opcode,
+      rd,
+      rs1,
+      rs2,
+      rs3,
+      funct3,
+      funct7,
+      imm,
+      format: 'FP',
+      mnemonic: decodeFpMnemonic(opcode, funct7, funct3, rs2),
+    };
+  }
+
+  const format = formatOf(opcode, funct3);
 
   let imm = 0;
   switch (format) {
@@ -108,8 +147,12 @@ export function decode(word: number): DecodedInstruction {
     case 'J':
       imm = immJ(w);
       break;
+    case 'CSR':
+      // CSR address sits in the I-immediate slot (unsigned 12-bit).
+      imm = bits(w, 31, 20);
+      break;
     default:
-      break; // R / SYS / FENCE / UNKNOWN carry no immediate
+      break; // R / AMO / SYS / FENCE / UNKNOWN carry no decoded immediate
   }
 
   return {
@@ -118,6 +161,7 @@ export function decode(word: number): DecodedInstruction {
     rd,
     rs1,
     rs2,
+    rs3,
     funct3,
     funct7,
     imm,
@@ -154,8 +198,27 @@ function resolveMnemonic(opcode: number, funct3: number, funct7: number, w: numb
       if (funct3 === 0) return funct7 === 0x20 ? 'sub' : 'add';
       if (funct3 === 5) return funct7 === 0x20 ? 'sra' : 'srl';
       return { 1: 'sll', 2: 'slt', 3: 'sltu', 4: 'xor', 6: 'or', 7: 'and' }[funct3] ?? '?';
+    case OPC.AMO: {
+      const funct5 = (funct7 >> 2) & 0x1f;
+      return (
+        {
+          0x00: 'amoadd.w',
+          0x01: 'amoswap.w',
+          0x02: 'lr.w',
+          0x03: 'sc.w',
+          0x04: 'amoxor.w',
+          0x08: 'amoor.w',
+          0x0c: 'amoand.w',
+          0x10: 'amomin.w',
+          0x14: 'amomax.w',
+          0x18: 'amominu.w',
+          0x1c: 'amomaxu.w',
+        }[funct5] ?? 'unknown'
+      );
+    }
     case OPC.SYSTEM:
-      return (w & 0x0010_0000) !== 0 ? 'ebreak' : 'ecall';
+      if (funct3 === 0) return (w & 0x0010_0000) !== 0 ? 'ebreak' : 'ecall';
+      return { 1: 'csrrw', 2: 'csrrs', 3: 'csrrc', 5: 'csrrwi', 6: 'csrrsi', 7: 'csrrci' }[funct3] ?? 'unknown';
     case OPC.MISC_MEM:
       return 'fence';
     default:
