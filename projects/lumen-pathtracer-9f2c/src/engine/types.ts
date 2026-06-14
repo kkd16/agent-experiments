@@ -8,13 +8,29 @@ import type { CameraDef } from './camera'
 
 export type PrimDef =
   | { kind: 'sphere'; center: Vec3; radius: number; material: number }
-  | { kind: 'tri'; p0: Vec3; p1: Vec3; p2: Vec3; material: number }
+  // A triangle. `n0..n2`, when present, are per-vertex shading normals that the
+  // scene interpolates across the face (smooth shading); without them the flat
+  // geometric normal is used.
+  | { kind: 'tri'; p0: Vec3; p1: Vec3; p2: Vec3; material: number; n0?: Vec3; n1?: Vec3; n2?: Vec3 }
 
 // The environment radiance seen by escaping rays — also the scene's ambient fill.
+// An environment with a sun (`gradient` with a `sunDir`, or `sky`) is also a
+// *sampled* light: the integrator next-event-estimates its solar disc (see scene.ts).
 export type EnvDef =
   | { kind: 'solid'; color: Vec3 }
   // Vertical gradient blended by ray.dir.y, with an optional disc "sun".
   | { kind: 'gradient'; top: Vec3; bottom: Vec3; sunDir?: Vec3; sunColor?: Vec3; sunSize?: number }
+  // Preetham analytic daylight: physically based sky colour from sun position +
+  // turbidity, with a hard solar disc. See sky.ts.
+  | {
+      kind: 'sky'
+      sunDir: Vec3
+      turbidity: number
+      intensity: number
+      sunSize?: number
+      sunIntensity?: number
+      ground?: Vec3
+    }
 
 export interface SceneDef {
   name: string

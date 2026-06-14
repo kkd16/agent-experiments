@@ -9,7 +9,7 @@
 // simply contribute through BSDF sampling only (their NEE pdf is treated as 0).
 
 import type { Vec3 } from './vec3'
-import { add, dot, lerp, madd, normalize, scale, sub, v, clamp } from './vec3'
+import { add, dot, lerp, madd, neg, normalize, onb, scale, sub, toWorld, v, clamp } from './vec3'
 import type { Hit } from './ray'
 import { makeRay } from './ray'
 import type { Ray } from './ray'
@@ -19,6 +19,18 @@ import { makeSphere, makeTriangle, sampleTriangle, triangleDirPdf } from './prim
 import { Bvh } from './bvh'
 import type { Rng } from './rng'
 import type { SceneDef, EnvDef } from './types'
+import { makeSky, skyRadiance } from './sky'
+import type { SkyState } from './sky'
+
+// A directional "sun" the environment exposes as a sampled light: a cone of
+// half-angle `size` around `dir` (the direction toward the sun).
+interface EnvSun {
+  dir: Vec3
+  cosSize: number
+  solidAngle: number // 2π(1−cos size)
+}
+
+const ENV_PRIM_ID = -1 // sentinel primId for an environment light sample
 
 export interface LightSampleResult {
   wi: Vec3 // unit direction from the shade point toward the light
@@ -36,6 +48,9 @@ export class Scene {
   readonly env: EnvDef
   readonly cameraDef: SceneDef['camera']
   readonly buildMs: number
+  readonly sky: SkyState | null
+  readonly envSun: EnvSun | null
+  readonly hasEnvLight: boolean
 
   constructor(def: SceneDef) {
     const t0 = now()
@@ -45,7 +60,7 @@ export class Scene {
     this.prims = def.prims.map((p) =>
       p.kind === 'sphere'
         ? makeSphere(p.center, p.radius, p.material)
-        : makeTriangle(p.p0, p.p1, p.p2, p.material),
+        : makeTriangle(p.p0, p.p1, p.p2, p.material, p.n0, p.n1, p.n2),
     )
     this.bvh = new Bvh(this.prims)
     this.lights = []
@@ -55,7 +70,15 @@ export class Scene {
         this.lights.push(i)
       }
     }
+    this.sky = def.env.kind === 'sky' ? makeSky(def.env) : null
+    this.envSun = deriveEnvSun(def.env)
+    this.hasEnvLight = this.envSun !== null
     this.buildMs = now() - t0
+  }
+
+  // Number of explicitly sampled lights = emissive triangles + the sun, if any.
+  get numLights(): number {
+    return this.lights.length + (this.envSun ? 1 : 0)
   }
 
   get triangleCount(): number {
@@ -68,15 +91,33 @@ export class Scene {
     if (!res) return null
     const { hit, primId } = res
     const p = madd(ray.o, ray.d, hit.t)
+    // Front-face and ray offsets are decided by the *geometric* normal so smooth
+    // shading can never push the origin to the wrong side of a face.
     const frontFace = dot(ray.d, hit.ng) < 0
-    const n = frontFace ? hit.ng : scale(hit.ng, -1)
+    const ng = frontFace ? hit.ng : neg(hit.ng)
+    // Shading normal: for a smooth triangle, the barycentric blend of its vertex
+    // normals; otherwise the geometric normal. Oriented into the geometric
+    // hemisphere so the BSDF frame and the offsets agree.
+    let n = ng
+    const prim = this.prims[primId]
+    if (prim.kind === 'triangle' && prim.smooth) {
+      const w0 = 1 - hit.u - hit.v
+      const ns = normalize(
+        v(
+          prim.n0!.x * w0 + prim.n1!.x * hit.u + prim.n2!.x * hit.v,
+          prim.n0!.y * w0 + prim.n1!.y * hit.u + prim.n2!.y * hit.v,
+          prim.n0!.z * w0 + prim.n1!.z * hit.u + prim.n2!.z * hit.v,
+        ),
+      )
+      n = dot(ns, ng) < 0 ? neg(ns) : ns
+    }
     return {
       t: hit.t,
       p,
-      n, // oriented to face the incoming ray
-      ng: n,
+      n, // shading normal, oriented to face the incoming ray
+      ng, // geometric normal, oriented to face the incoming ray
       frontFace,
-      material: this.prims[primId].material,
+      material: prim.material,
       primId,
     }
   }
@@ -89,6 +130,7 @@ export class Scene {
   envRadiance(dir: Vec3): Vec3 {
     const e = this.env
     if (e.kind === 'solid') return e.color
+    if (e.kind === 'sky') return skyRadiance(this.sky!, dir, true)
     const tt = 0.5 * (dir.y + 1)
     let col = lerp(e.bottom, e.top, clamp(tt, 0, 1))
     if (e.sunDir && e.sunColor) {
@@ -107,10 +149,16 @@ export class Scene {
 
   // ---- Next-event estimation -------------------------------------------------
 
+  // Pick one of the scene's lights uniformly and sample a direction toward it.
+  // The pool spans the emissive triangles plus, if present, the environment sun;
+  // every returned pdf already folds in the 1/numLights selection probability.
   sampleLight(ref: Vec3, rng: Rng): LightSampleResult | null {
-    const nL = this.lights.length
+    const nTri = this.lights.length
+    const nL = nTri + (this.envSun ? 1 : 0)
     if (nL === 0) return null
-    const li = this.lights[rng.int(nL)]
+    const k = rng.int(nL)
+    if (k >= nTri) return this.sampleEnvLight(rng, nL)
+    const li = this.lights[k]
     const tri = this.prims[li] as Triangle
     const s = sampleTriangle(tri, rng)
     const toLight = sub(s.p, ref)
@@ -128,16 +176,42 @@ export class Scene {
     return { wi, dist, radiance, pdf, primId: li }
   }
 
+  // Sample a direction within the sun's cone (uniform in solid angle) and read
+  // the environment radiance there. The light is at infinity, so dist = ∞.
+  private sampleEnvLight(rng: Rng, nL: number): LightSampleResult | null {
+    const sun = this.envSun!
+    const u1 = rng.next()
+    const u2 = rng.next()
+    const cosT = 1 - u1 * (1 - sun.cosSize)
+    const sinT = Math.sqrt(Math.max(0, 1 - cosT * cosT))
+    const phi = 2 * Math.PI * u2
+    const { t, b } = onb(sun.dir)
+    const wi = normalize(
+      toWorld(v(Math.cos(phi) * sinT, Math.sin(phi) * sinT, cosT), t, b, sun.dir),
+    )
+    const pdf = 1 / sun.solidAngle / nL
+    return { wi, dist: Infinity, radiance: this.envRadiance(wi), pdf, primId: ENV_PRIM_ID }
+  }
+
   // Solid-angle pdf that sampleLight() would have used to generate direction wi
   // toward emissive triangle `primId` — needed to MIS-weight a BSDF hit on it.
   lightPdf(ref: Vec3, wi: Vec3, primId: number, dist: number): number {
-    const nL = this.lights.length
+    const nL = this.numLights
     if (nL === 0) return 0
     const prim = this.prims[primId]
     if (prim.kind !== 'triangle') return 0
     if (this.materials[prim.material].kind !== 'emissive') return 0
     const pdfTri = triangleDirPdf(prim, ref, wi, dist)
     return pdfTri / nL
+  }
+
+  // Solid-angle pdf that the env-light sampler assigns to direction wi: uniform
+  // inside the sun cone, zero outside. Used to MIS-weight an escaped BSDF ray.
+  envSunPdf(wi: Vec3): number {
+    const sun = this.envSun
+    if (!sun) return 0
+    if (dot(wi, sun.dir) < sun.cosSize) return 0
+    return 1 / sun.solidAngle / this.numLights
   }
 
   // Construct a primary ray helper (used by the self-test harness).
@@ -148,4 +222,23 @@ export class Scene {
 
 function now(): number {
   return typeof performance !== 'undefined' ? performance.now() : Date.now()
+}
+
+// Build the sampled sun cone for an environment, if it has one. A daylight
+// gradient with a `sunDir`, or any `sky`, contributes a sun the integrator can
+// next-event-estimate; a `solid` colour or a sun-less gradient contributes none.
+function deriveEnvSun(env: EnvDef): EnvSun | null {
+  if (env.kind === 'sky') {
+    const dir = normalize(env.sunDir)
+    const size = env.sunSize ?? 0.035
+    const cosSize = Math.cos(size)
+    return { dir, cosSize, solidAngle: 2 * Math.PI * (1 - cosSize) }
+  }
+  if (env.kind === 'gradient' && env.sunDir) {
+    const dir = normalize(env.sunDir)
+    const size = env.sunSize ?? 0.04
+    const cosSize = Math.cos(size)
+    return { dir, cosSize, solidAngle: 2 * Math.PI * (1 - cosSize) }
+  }
+  return null
 }

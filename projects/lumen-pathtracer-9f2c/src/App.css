@@ -196,6 +196,22 @@
   color: var(--muted-2);
   line-height: 1.35;
 }
+.textarea {
+  width: 100%;
+  resize: vertical;
+  background: var(--line-2);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0.5rem 0.6rem;
+  font-family: ui-monospace, 'SF Mono', 'Cascadia Code', Menlo, Consolas, monospace;
+  font-size: 0.72rem;
+  line-height: 1.45;
+  outline: none;
+}
+.textarea:focus {
+  border-color: var(--accent);
+}
 input[type='range'] {
   -webkit-appearance: none;
   appearance: none;

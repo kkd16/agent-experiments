@@ -25,6 +25,11 @@ export interface Triangle {
   ng: Vec3 // unit geometric normal
   area: number
   material: number
+  // Optional per-vertex shading normals for smooth shading (barycentric blend).
+  n0?: Vec3
+  n1?: Vec3
+  n2?: Vec3
+  smooth: boolean
 }
 
 export type Primitive = Sphere | Triangle
@@ -33,18 +38,31 @@ export function makeSphere(center: Vec3, radius: number, material: number): Sphe
   return { kind: 'sphere', center, radius, material }
 }
 
-export function makeTriangle(p0: Vec3, p1: Vec3, p2: Vec3, material: number): Triangle {
+export function makeTriangle(
+  p0: Vec3,
+  p1: Vec3,
+  p2: Vec3,
+  material: number,
+  n0?: Vec3,
+  n1?: Vec3,
+  n2?: Vec3,
+): Triangle {
   const e1 = sub(p1, p0)
   const e2 = sub(p2, p0)
   const nc = cross(e1, e2)
   const area = 0.5 * len(nc)
-  return { kind: 'triangle', p0, e1, e2, ng: normalize(nc), area, material }
+  const smooth = !!(n0 && n1 && n2)
+  return { kind: 'triangle', p0, e1, e2, ng: normalize(nc), area, material, n0, n1, n2, smooth }
 }
 
-// A local hit result before the scene fills in shading info.
+// A local hit result before the scene fills in shading info. For triangles `u`,`v`
+// are the Möller–Trumbore barycentrics (weights of p1, p2; p0 gets 1−u−v); the
+// scene uses them to interpolate smooth vertex normals.
 export interface PrimHit {
   t: number
   ng: Vec3 // geometric normal (outward / winding-defined; not yet ray-oriented)
+  u: number
+  v: number
 }
 
 const EPS = 1e-6
@@ -74,7 +92,7 @@ function intersectSphere(s: Sphere, o: Vec3, d: Vec3, tMin: number, tMax: number
   const pz = o.z + d.z * t
   const inv = 1 / s.radius
   const ng = v((px - s.center.x) * inv, (py - s.center.y) * inv, (pz - s.center.z) * inv)
-  return { t, ng }
+  return { t, ng, u: 0, v: 0 }
 }
 
 function intersectTriangle(tri: Triangle, o: Vec3, d: Vec3, tMin: number, tMax: number): PrimHit | null {
@@ -97,7 +115,7 @@ function intersectTriangle(tri: Triangle, o: Vec3, d: Vec3, tMin: number, tMax: 
   if (vv < 0 || u + vv > 1) return null
   const t = (tri.e2.x * qvx + tri.e2.y * qvy + tri.e2.z * qvz) * invDet
   if (t < tMin || t > tMax) return null
-  return { t, ng: tri.ng }
+  return { t, ng: tri.ng, u, v: vv }
 }
 
 export function primBounds(p: Primitive): Aabb {
@@ -113,7 +131,27 @@ export function primBounds(p: Primitive): Aabb {
   let box = aabbUnionPoint(aabbEmpty(), p.p0)
   box = aabbUnionPoint(box, p1)
   box = aabbUnionPoint(box, p2)
-  return box
+  // Pad any axis the triangle is perfectly flat on. An axis-aligned planar face
+  // (a floor quad, a wall, a coplanar mesh facet) otherwise has a zero-thickness
+  // slab on that axis, and the ray/AABB tangent test rejects it (tMax == tMin) —
+  // so the face would only ever be found when its BVH leaf happened to also hold
+  // a non-coplanar primitive. A tiny pad keeps the broad phase robust.
+  return padThin(box)
+}
+
+// Ensure every axis of a box has a minimum thickness so the slab test never sees
+// a degenerate (zero-width) interval. The pad scales with the box so it stays
+// negligible relative to the geometry at any scene size.
+function padThin(box: Aabb): Aabb {
+  const ext = v(box.max.x - box.min.x, box.max.y - box.min.y, box.max.z - box.min.z)
+  const maxExt = Math.max(ext.x, ext.y, ext.z)
+  const eps = Math.max(1e-5, maxExt * 1e-5)
+  const padAxis = (lo: number, hi: number): [number, number] =>
+    hi - lo < eps ? [(lo + hi) * 0.5 - eps * 0.5, (lo + hi) * 0.5 + eps * 0.5] : [lo, hi]
+  const [minx, maxx] = padAxis(box.min.x, box.max.x)
+  const [miny, maxy] = padAxis(box.min.y, box.max.y)
+  const [minz, maxz] = padAxis(box.min.z, box.max.z)
+  return { min: v(minx, miny, minz), max: v(maxx, maxy, maxz) }
 }
 
 // ---------------------------------------------------------------------------
