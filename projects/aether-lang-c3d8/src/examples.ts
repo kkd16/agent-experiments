@@ -551,6 +551,10 @@ let prop_rev_involutive = fn xs -> reverse (reverse xs) == xs in
 let prop_sort_is_sorted = fn xs -> isSorted (sort xs) in
 let prop_sort_keeps_len = fn xs -> length (sort xs) == length xs in
 
+// Higher-order: Check even generates random FUNCTIONS from their type.
+// (map fusion: mapping g then f equals mapping their composition.)
+let prop_map_fusion = fn f g xs -> map f (map g xs) == map (fn x -> f (g x)) xs in
+
 // A deliberately BUGGY sort that drops duplicates. Check falsifies the
 // length law and shrinks to a minimal two-element list of equal values.
 let rec badInsert = fn x xs ->

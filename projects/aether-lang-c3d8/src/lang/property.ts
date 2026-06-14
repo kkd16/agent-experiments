@@ -3,11 +3,12 @@
 // QuickCheck, written from scratch and driven entirely by the *inferred* types.
 // You write `prop_*` functions that return `Bool`; this module reads each
 // property's Hindley–Milner type, builds a random-value generator straight from
-// that type (numbers, strings, lists, tuples, records and your own ADTs —
-// recursively, with a size budget so recursive types like `Tree` terminate),
-// runs hundreds of cases through the *real* VM, and on a failure performs
-// integrated shrinking to a minimal counterexample. Everything is deterministic
-// (a seeded RNG), so the same program always yields the same report.
+// that type (numbers, strings, lists, tuples, records, your own ADTs —
+// recursively, with a size budget so recursive types like `Tree` terminate —
+// and even functions, generated as a finite key→value table), runs hundreds of
+// cases through the *real* VM, and on a failure performs integrated shrinking to
+// a minimal counterexample. Everything is deterministic (a seeded RNG), so the
+// same program always yields the same report.
 //
 // It reuses the exact execution path: a generated test is an ordinary Aether
 // program (`prop x y z` applied to literal arguments) handed to
@@ -47,6 +48,7 @@ type GType =
   | { k: 'tuple'; elems: GType[] }
   | { k: 'record'; fields: { label: string; type: GType }[] }
   | { k: 'data'; typeName: string; typeArgs: Type[] }
+  | { k: 'fn'; dom: GType; cod: GType }
 
 /** A generated value — enough information to render it, run it and shrink it. */
 type GValue =
@@ -59,6 +61,9 @@ type GValue =
   | { k: 'tuple'; items: GValue[] }
   | { k: 'record'; fields: { label: string; value: GValue }[] }
   | { k: 'data'; name: string; args: GValue[]; type: GType }
+  // a generated function: a finite table of key→value plus a default, rendered
+  // as `fn x -> if x == k1 then v1 else … else dflt`
+  | { k: 'fn'; entries: { key: GValue; val: GValue }[]; dflt: GValue; dom: GType; cod: GType }
 
 /** Constructor & type metadata needed to generate ADT values. */
 interface GenCtx {
@@ -122,8 +127,12 @@ function toGType(t: Type, ctx: GenCtx): GType {
       return { k: 'string' }
     case 'Unit':
       return { k: 'unit' }
-    case ARROW:
-      throw new GenError('functions')
+    case ARROW: {
+      const dom = toGType(p.args[0], ctx)
+      // the generated function decides via `==`, which cannot compare functions
+      if (!comparable(dom)) throw new GenError('functions taking functions')
+      return { k: 'fn', dom, cod: toGType(p.args[1], ctx) }
+    }
     case LIST:
       return { k: 'list', elem: toGType(p.args[0], ctx) }
     case TUPLE:
@@ -181,8 +190,26 @@ function mentions(t: GType, typeName: string): boolean {
       return t.elems.some((e) => mentions(e, typeName))
     case 'record':
       return t.fields.some((f) => mentions(f.type, typeName))
+    case 'fn':
+      return mentions(t.dom, typeName) || mentions(t.cod, typeName)
     default:
       return false
+  }
+}
+
+/** Can values of this type be compared with `==`? (Functions cannot.) */
+function comparable(t: GType): boolean {
+  switch (t.k) {
+    case 'fn':
+      return false
+    case 'list':
+      return comparable(t.elem)
+    case 'tuple':
+      return t.elems.every(comparable)
+    case 'record':
+      return t.fields.every((f) => comparable(f.type))
+    default:
+      return true
   }
 }
 function typeMentions(t: Type, typeName: string): boolean {
@@ -243,6 +270,17 @@ function genValue(t: GType, rng: () => number, size: number): GValue {
       const v = pool[randInt(rng, 0, pool.length - 1)]
       const args = v.argTypes.map((a) => genValue(a, rng, Math.max(0, size - 1)))
       return { k: 'data', name: v.name, args, type: t }
+    }
+    case 'fn': {
+      const n = randInt(rng, 0, Math.min(size, 4))
+      const entries: { key: GValue; val: GValue }[] = []
+      for (let i = 0; i < n; i++) {
+        entries.push({
+          key: genValue(t.dom, rng, Math.max(1, size - 1)),
+          val: genValue(t.cod, rng, Math.max(1, size - 1)),
+        })
+      }
+      return { k: 'fn', entries, dflt: genValue(t.cod, rng, Math.max(1, size - 1)), dom: t.dom, cod: t.cod }
     }
   }
 }
@@ -356,6 +394,23 @@ function shrink(v: GValue): GValue[] {
       })
       return out
     }
+    case 'fn': {
+      const out: GValue[] = []
+      // fewer table entries (simpler function)
+      v.entries.forEach((_, i) => {
+        out.push({ ...v, entries: v.entries.filter((_, j) => j !== i) })
+      })
+      // shrink the default, then each table value
+      for (const d of shrink(v.dflt)) out.push({ ...v, dflt: d })
+      v.entries.forEach((e, i) => {
+        for (const s of shrink(e.val)) {
+          const entries = v.entries.slice()
+          entries[i] = { key: e.key, val: s }
+          out.push({ ...v, entries })
+        }
+      })
+      return out
+    }
   }
 }
 
@@ -394,6 +449,24 @@ function toExpr(v: GValue): Expr {
       for (const a of v.args) e = { kind: 'app', fn: e, arg: toExpr(a), span: SYNTH }
       return e
     }
+    case 'fn': {
+      // fn __arg -> if __arg == k1 then v1 else … else dflt
+      const param = '__arg'
+      const argVar: Expr = { kind: 'var', name: param, span: SYNTH }
+      let body = toExpr(v.dflt)
+      for (let i = v.entries.length - 1; i >= 0; i--) {
+        const e = v.entries[i]
+        const cond: Expr = {
+          kind: 'binop',
+          op: '==',
+          left: argVar,
+          right: toExpr(e.key),
+          span: SYNTH,
+        }
+        body = { kind: 'if', cond, then: toExpr(e.val), else: body, span: SYNTH }
+      }
+      return { kind: 'lambda', param, body, span: SYNTH }
+    }
   }
 }
 
@@ -422,6 +495,11 @@ export function gvalueToString(v: GValue): string {
         return a.k === 'data' && a.args.length > 0 ? `(${s})` : s
       })
       return `${v.name} ${parts.join(' ')}`
+    }
+    case 'fn': {
+      const rows = v.entries.map((e) => `${gvalueToString(e.key)}→${gvalueToString(e.val)}`)
+      rows.push(`_→${gvalueToString(v.dflt)}`)
+      return `{${rows.join(', ')}}`
     }
   }
 }
@@ -671,6 +749,8 @@ function describeGType(t: GType): string {
       return `{ ${t.fields.map((f) => `${f.label}: ${describeGType(f.type)}`).join(', ')} }`
     case 'data':
       return t.typeName
+    case 'fn':
+      return `(${describeGType(t.dom)} -> ${describeGType(t.cod)})`
   }
 }
 

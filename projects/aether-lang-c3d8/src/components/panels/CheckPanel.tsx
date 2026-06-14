@@ -48,9 +48,10 @@ export default function CheckPanel({ code }: Props) {
       <p className="panel-note">
         <strong>Aether Check</strong> is property-based testing driven by the type checker. Write a{' '}
         <code>prop_…</code> function returning <code>Bool</code>; Check reads its{' '}
-        <em>inferred type</em>, generates random inputs from that type ({RUNS} per property), runs
-        them through the VM, and <strong>shrinks</strong> any failure to a minimal counterexample.
-        Polymorphic arguments default to <code>Int</code>; runs are deterministic.
+        <em>inferred type</em>, generates random inputs from that type — numbers, strings, lists,
+        tuples, records, your own ADTs, and even <strong>functions</strong> ({RUNS} per property) —
+        runs them through the VM, and <strong>shrinks</strong> any failure to a minimal
+        counterexample. Polymorphic arguments default to <code>Int</code>; runs are deterministic.
       </p>
 
       <div className="check-toolbar">

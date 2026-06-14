@@ -95,7 +95,7 @@ export default function Tests() {
             <p className="panel-note tiny">
               These assert the property engine itself: true laws pass, false ones are falsified and
               shrunk, runtime crashes are caught with the offending input, recursive ADTs generate &
-              terminate, and ungeneratable arguments are skipped.
+              terminate, and even <em>function</em> arguments are generated (higher-order laws).
             </p>
             <table className="tests-table">
               <tbody>

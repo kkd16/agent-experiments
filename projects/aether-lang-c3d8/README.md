@@ -61,10 +61,11 @@ Aether is an ML-family expression language. Everything is an expression; there a
 The **Check** tab is from-scratch QuickCheck, driven entirely by the type checker. Write a
 `prop_…` function returning `Bool`; Aether reads its **inferred type** and builds a random-value
 generator straight from that type — `Int`/`Float`/`Bool`/`String`/`Unit`, lists, tuples, records,
-and **your own ADTs**, recursively, with a size budget that guarantees recursive types like `Tree`
-terminate. It runs hundreds of cases through the real VM and, on a failure, performs **integrated
-shrinking** (ints toward zero, lists dropped & halved, ADTs replaced by sub-terms) down to a
-*minimal* counterexample. A runtime crash is caught and reported with the exact input that caused
+**your own ADTs** (recursively, with a size budget that guarantees recursive types like `Tree`
+terminate), and even **functions** (generated as a finite table `fn x -> if x == k then v … else d`,
+so higher-order laws like map fusion are testable). It runs hundreds of cases through the real VM
+and, on a failure, performs **integrated shrinking** (ints toward zero, lists dropped & halved, ADTs
+replaced by sub-terms, functions reduced to fewer entries) down to a *minimal* counterexample. A runtime crash is caught and reported with the exact input that caused
 it. Leftover polymorphism defaults to `Int`, and the RNG is seeded so every report is reproducible.
 
 ```

@@ -109,13 +109,22 @@ let prop_tree = fn t -> size t >= 0 in prop_tree`,
     },
   },
   {
-    name: 'higher-order argument is skipped, not crashed',
-    code: `let prop_ho = fn f -> f 1 == f 1 in prop_ho`,
+    name: 'higher-order law passes (map fusion, functions generated)',
+    code: `let prop_fusion = fn f g xs -> map f (map g xs) == map (fn x -> f (g x)) xs in prop_fusion`,
     check: (r) => {
       const o = only(r)
+      return { ok: o?.status === 'pass', detail: o?.status ?? 'no outcome' }
+    },
+  },
+  {
+    name: 'false higher-order law is falsified (generated function shrunk)',
+    code: `let prop_idem = fn f x -> f (f x) == f x in prop_idem`,
+    check: (r) => {
+      const o = only(r)
+      const ce = o?.counterexample?.[0] ?? ''
       return {
-        ok: o?.status === 'skip' && /function/.test(o.message ?? ''),
-        detail: o ? `${o.status} (${o.message})` : 'no outcome',
+        ok: o?.status === 'fail' && /→/.test(ce),
+        detail: o ? `${o.status} fn=${ce}` : 'no outcome',
       }
     },
   },

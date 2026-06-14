@@ -52,7 +52,7 @@ const STAGES = [
   {
     n: 9,
     title: 'Property-based testing (Aether Check)',
-    body: "The Check tab turns inferred types into machine-checked evidence about behaviour. Write a prop_… function returning Bool; Check reads its type, builds a random generator straight from that type — numbers, strings, lists, tuples, records and your own ADTs, recursively, with a size budget so recursive types like Tree always terminate — and runs hundreds of cases through the real VM. Leftover polymorphism defaults to Int and the RNG is seeded, so a report is reproducible. On a failure it performs integrated shrinking (ints toward zero, lists dropped and halved, ADTs replaced by sub-terms) down to a minimal counterexample, and a runtime crash is reported with the exact input that caused it.",
+    body: "The Check tab turns inferred types into machine-checked evidence about behaviour. Write a prop_… function returning Bool; Check reads its type, builds a random generator straight from that type — numbers, strings, lists, tuples, records, your own ADTs (recursively, with a size budget so types like Tree always terminate) and even functions (rendered as a finite table fn x -> if x == k then v … else default) — and runs hundreds of cases through the real VM. Leftover polymorphism defaults to Int and the RNG is seeded, so a report is reproducible. On a failure it performs integrated shrinking (ints toward zero, lists dropped and halved, ADTs replaced by sub-terms, functions reduced to fewer entries) down to a minimal counterexample, and a runtime crash is reported with the exact input that caused it.",
   },
 ]
 

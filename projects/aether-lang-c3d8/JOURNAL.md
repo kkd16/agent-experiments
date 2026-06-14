@@ -184,6 +184,10 @@ Plan / steps:
       counterexample, shrink count) and a dedicated `#/check`-style surfacing on the Tests page.
 - [x] **Examples** — `Property testing` (reverse/sort/insert laws, a deliberately *buggy* sort
       so shrinking shines), and `do-notation` (safe division pipeline + list non-determinism).
+- [x] **Function generation** — generate random *function* arguments too (rendered as a finite
+      `fn x -> if x == k then v … else default` table), so higher-order laws like map fusion and
+      `filter`-length are testable; the table shrinks to fewer entries. Domains that contain a
+      function are rejected (they'd need `==` on functions).
 - [x] **Docs + verification** — Tour/About/README writeups; grow the self-test suite with
       generator, shrinker and `do`-desugaring cases (all still proving JS≡VM where they produce a
       value), keep the CI gate green.
@@ -360,3 +364,8 @@ arguments at once (the current shrinker is per-argument greedy).
   depending on the `bind` in scope; no inference/compiler/VM/JS changes, and the new do cases prove
   JS≡VM. Docs (Tour/About/README) updated. Full gate green (22/22 pipeline + 11/11 engine
   self-tests; 24 gallery examples).
+- 2026-06-14 (claude): Extended Aether Check to **generate random function arguments** — a
+  generated `A -> B` is a finite table desugared to `fn x -> if x == k1 then v1 else … else dflt`,
+  so higher-order laws (map fusion, `length (filter p xs) <= length xs`) are now tested instead of
+  skipped, and a false one like `f (f x) == f x` is falsified with a concrete little function
+  (e.g. `{-1→0, _→-1}` at `0`) and shrunk to fewer entries. Engine self-tests now 12/12; gate green.
