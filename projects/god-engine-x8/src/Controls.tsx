@@ -1,6 +1,6 @@
 import type React from 'react';
 import { useStore } from './store';
-import { Sliders, RefreshCw, Layers, Clock, Zap, Palette, Box } from 'lucide-react';
+import { Sliders, RefreshCw, Layers, Clock, Zap, Palette, Box, Sun, Volume2, Activity, Sparkles } from 'lucide-react';
 
 export function Controls() {
   const {
@@ -9,6 +9,10 @@ export function Controls() {
     distortion, setDistortion,
     colorShift, setColorShift,
     particlesCount, setParticlesCount,
+    bloomIntensity, setBloomIntensity,
+    evolutionSpeed, setEvolutionSpeed,
+    spiralParticles, setSpiralParticles,
+    audioEnabled, toggleAudio,
     wireframe, toggleWireframe,
     reset
   } = useStore();
@@ -94,6 +98,58 @@ export function Controls() {
             <span>10k</span>
           </div>
         </ControlGroup>
+
+        <ControlGroup title="Bloom Intensity" icon={<Sun className="w-4 h-4" />}>
+          <input
+            type="range" min="0" max="5" step="0.1"
+            value={bloomIntensity} onChange={(e) => setBloomIntensity(parseFloat(e.target.value))}
+            className="w-full accent-cyan-400"
+          />
+          <div className="flex justify-between text-xs text-white/50 mt-1">
+            <span>0.0</span>
+            <span>{bloomIntensity.toFixed(1)}</span>
+            <span>5.0</span>
+          </div>
+        </ControlGroup>
+
+        <ControlGroup title="Evolution Speed" icon={<Activity className="w-4 h-4" />}>
+          <input
+            type="range" min="0" max="5" step="0.1"
+            value={evolutionSpeed} onChange={(e) => setEvolutionSpeed(parseFloat(e.target.value))}
+            className="w-full accent-cyan-400"
+          />
+          <div className="flex justify-between text-xs text-white/50 mt-1">
+            <span>0.0</span>
+            <span>{evolutionSpeed.toFixed(1)}</span>
+            <span>5.0</span>
+          </div>
+        </ControlGroup>
+
+        <ControlGroup title="Spiral Particles" icon={<Sparkles className="w-4 h-4" />}>
+          <input
+            type="range" min="0" max="2000" step="10"
+            value={spiralParticles} onChange={(e) => setSpiralParticles(parseInt(e.target.value))}
+            className="w-full accent-cyan-400"
+          />
+          <div className="flex justify-between text-xs text-white/50 mt-1">
+            <span>0</span>
+            <span>{spiralParticles}</span>
+            <span>2k</span>
+          </div>
+        </ControlGroup>
+
+        <div className="flex items-center justify-between pt-4 border-t border-white/10">
+          <div className="flex items-center gap-2">
+            <Volume2 className="w-4 h-4 text-white/70" />
+            <span className="text-white/80">Procedural Audio</span>
+          </div>
+          <button
+            onClick={toggleAudio}
+            className={`w-12 h-6 rounded-full p-1 transition-colors ${audioEnabled ? 'bg-cyan-500' : 'bg-white/20'}`}
+          >
+            <div className={`w-4 h-4 rounded-full bg-white transition-transform ${audioEnabled ? 'translate-x-6' : 'translate-x-0'}`} />
+          </button>
+        </div>
 
         <div className="flex items-center justify-between pt-4 border-t border-white/10">
           <div className="flex items-center gap-2">
