@@ -1,8 +1,10 @@
+import { useState } from 'react';
 import type React from 'react';
 import { useStore } from './store';
-import { Sliders, RefreshCw, Layers, Clock, Zap, Palette, Box, Sun, Volume2, Activity, Sparkles } from 'lucide-react';
+import { Sliders, RefreshCw, Layers, Clock, Zap, Palette, Box, Sun, Volume2, Activity, Sparkles, Save, Download } from 'lucide-react';
 
 export function Controls() {
+  const [newPresetName, setNewPresetName] = useState('');
   const {
     timeScale, setTimeScale,
     noiseScale, setNoiseScale,
@@ -14,7 +16,8 @@ export function Controls() {
     spiralParticles, setSpiralParticles,
     audioEnabled, toggleAudio,
     wireframe, toggleWireframe,
-    reset
+    reset,
+    presets, loadPreset, savePreset
   } = useStore();
 
   return (
@@ -137,6 +140,72 @@ export function Controls() {
             <span>2k</span>
           </div>
         </ControlGroup>
+
+        <ControlGroup title="Shader Complexity" icon={<Layers className="w-4 h-4" />}>
+          <input
+            type="range" min="0" max="2" step="0.05"
+            value={useStore(state => state.shaderComplexity)} onChange={(e) => useStore.getState().setShaderComplexity(parseFloat(e.target.value))}
+            className="w-full accent-cyan-400"
+          />
+          <div className="flex justify-between text-xs text-white/50 mt-1">
+            <span>0.0</span>
+            <span>{useStore(state => state.shaderComplexity).toFixed(2)}</span>
+            <span>2.0</span>
+          </div>
+        </ControlGroup>
+
+        {/* Presets Section */}
+        <div className="pt-4 border-t border-white/10 space-y-3">
+          <label className="flex items-center gap-2 text-white/80 font-medium text-sm">
+            <Download className="w-4 h-4" />
+            Presets
+          </label>
+          <div className="flex flex-wrap gap-2">
+            {Object.keys(presets).map((name) => (
+              <button
+                key={name}
+                onClick={() => loadPreset(name)}
+                className="px-2 py-1 text-xs bg-white/10 hover:bg-cyan-500/50 rounded transition-colors"
+              >
+                {name}
+              </button>
+            ))}
+          </div>
+          <div className="flex gap-2 mt-2">
+            <input
+              type="text"
+              value={newPresetName}
+              onChange={(e) => setNewPresetName(e.target.value)}
+              placeholder="Preset Name..."
+              className="flex-1 bg-black/50 border border-white/20 rounded px-2 py-1 text-xs outline-none focus:border-cyan-400 transition-colors"
+            />
+            <button
+              onClick={() => {
+                if (newPresetName.trim()) {
+                  savePreset(newPresetName.trim());
+                  setNewPresetName('');
+                }
+              }}
+              className="p-1.5 bg-cyan-600 hover:bg-cyan-500 rounded transition-colors"
+              title="Save Preset"
+            >
+              <Save className="w-4 h-4" />
+            </button>
+          </div>
+        </div>
+
+        <div className="flex items-center justify-between pt-4 border-t border-white/10">
+          <div className="flex items-center gap-2">
+            <RefreshCw className="w-4 h-4 text-white/70" />
+            <span className="text-white/80">Cinematic Camera</span>
+          </div>
+          <button
+            onClick={() => useStore.getState().setCinematicMode(!useStore.getState().cinematicMode)}
+            className={`w-12 h-6 rounded-full p-1 transition-colors ${useStore(state => state.cinematicMode) ? 'bg-cyan-500' : 'bg-white/20'}`}
+          >
+            <div className={`w-4 h-4 rounded-full bg-white transition-transform ${useStore(state => state.cinematicMode) ? 'translate-x-6' : 'translate-x-0'}`} />
+          </button>
+        </div>
 
         <div className="flex items-center justify-between pt-4 border-t border-white/10">
           <div className="flex items-center gap-2">
