@@ -84,6 +84,43 @@ export interface CastExpr {
   expr: Expr
   type: ColumnType
 }
+/** A scalar subquery: `(SELECT … )` yielding (at most) one row / one column. */
+export interface SubqueryExpr {
+  kind: 'subquery'
+  select: SelectStmt
+}
+/** `[NOT] EXISTS (SELECT …)`. */
+export interface ExistsExpr {
+  kind: 'exists'
+  select: SelectStmt
+  negated: boolean
+}
+/** `expr [NOT] IN (SELECT …)`. */
+export interface InSubqueryExpr {
+  kind: 'in_subquery'
+  expr: Expr
+  select: SelectStmt
+  negated: boolean
+}
+/** `expr <op> ANY|ALL (SELECT …)` (SOME is a synonym for ANY). */
+export interface QuantifiedExpr {
+  kind: 'quantified'
+  op: '=' | '<>' | '<' | '<=' | '>' | '>='
+  quantifier: 'ANY' | 'ALL'
+  expr: Expr
+  select: SelectStmt
+}
+export interface WindowSpec {
+  partitionBy: Expr[]
+  orderBy: OrderItem[]
+}
+/** A window function call: `name(args) OVER (PARTITION BY … ORDER BY …)`. */
+export interface WindowFuncExpr {
+  kind: 'window'
+  name: string
+  args: Expr[]
+  spec: WindowSpec
+}
 
 export type Expr =
   | LiteralExpr
@@ -98,6 +135,11 @@ export type Expr =
   | FuncExpr
   | CaseExpr
   | CastExpr
+  | SubqueryExpr
+  | ExistsExpr
+  | InSubqueryExpr
+  | QuantifiedExpr
+  | WindowFuncExpr
 
 // ---------------------------------------------------------------------------
 // Statements
@@ -135,6 +177,8 @@ export interface InsertStmt {
   table: string
   columns?: string[]
   rows: Expr[][]
+  /** INSERT … SELECT — when present, `rows` is empty and this query supplies them. */
+  select?: SelectStmt
 }
 export interface UpdateStmt {
   kind: 'update'
@@ -152,14 +196,17 @@ export interface SelectItem {
   expr: Expr
   alias?: string
 }
+/** A relation in FROM/JOIN: either a named table/CTE, or a derived table. */
 export interface FromItem {
-  table: string
+  table?: string
+  subquery?: SelectStmt
   alias?: string
 }
-export type JoinType = 'INNER' | 'LEFT' | 'CROSS'
+export type JoinType = 'INNER' | 'LEFT' | 'RIGHT' | 'FULL' | 'CROSS'
 export interface JoinClause {
   type: JoinType
-  table: string
+  table?: string
+  subquery?: SelectStmt
   alias?: string
   on?: Expr
 }
@@ -167,6 +214,21 @@ export interface OrderItem {
   expr: Expr
   dir: 'ASC' | 'DESC'
 }
+
+export type SetOpKind = 'UNION' | 'INTERSECT' | 'EXCEPT'
+/** A compound-query tail: `<core> UNION/INTERSECT/EXCEPT [ALL] <select>`. */
+export interface SetOp {
+  op: SetOpKind
+  all: boolean
+  select: SelectStmt
+}
+/** A common table expression (`WITH name [(cols)] AS (select)`). */
+export interface CteDef {
+  name: string
+  columns?: string[]
+  select: SelectStmt
+}
+
 export interface SelectStmt {
   kind: 'select'
   distinct: boolean
@@ -179,6 +241,12 @@ export interface SelectStmt {
   orderBy: OrderItem[]
   limit?: number
   offset?: number
+  /** CTEs attached to this query (WITH …). */
+  ctes?: CteDef[]
+  /** Whether the WITH was declared RECURSIVE. */
+  recursive?: boolean
+  /** Set-operation tail; when present, orderBy/limit/offset bind to the compound. */
+  setOps?: SetOp[]
 }
 export interface ExplainStmt {
   kind: 'explain'

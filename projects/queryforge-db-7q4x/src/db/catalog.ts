@@ -72,6 +72,15 @@ export class Table {
     return rowid
   }
 
+  /** Insert a row verbatim (no coercion / constraint checks). Used for
+   *  transient relations materialized from query results. */
+  insertRawRow(row: Row): number {
+    const rowid = this.nextRowId++
+    this.heap.set(rowid, row)
+    for (const idx of this.indexes.values()) idx.tree.insert(row[idx.meta.columnIndex], rowid)
+    return rowid
+  }
+
   deleteRow(rowid: number): void {
     const row = this.heap.get(rowid)
     if (!row) return

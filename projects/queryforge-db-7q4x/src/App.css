@@ -485,11 +485,19 @@ body {
   color: var(--txt);
 }
 .result-foot {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
   padding: 0.4rem 0.7rem;
   font-size: 0.72rem;
   color: var(--txt-faint);
   background: var(--bg-2);
   font-family: var(--mono);
+}
+.csv-btn {
+  margin-left: auto;
+  padding: 0.12rem 0.5rem;
+  font-size: 0.68rem;
 }
 .result-foot.inline {
   background: transparent;

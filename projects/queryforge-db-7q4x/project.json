@@ -1,8 +1,8 @@
 {
   "title": "QueryForge",
-  "description": "A complete relational database engine — lexer, Pratt parser, cost-based query planner with B+Tree index scans, a Volcano-model executor, transactions and an EXPLAIN visualizer — built from scratch in TypeScript and running entirely in the browser.",
+  "description": "A complete relational database engine — lexer, Pratt parser, cost-based query planner with B+Tree index scans, a Volcano-model executor, correlated subqueries, CTEs (incl. WITH RECURSIVE), set operations, window functions, transactions and an EXPLAIN visualizer — built from scratch in TypeScript and running entirely in the browser.",
   "agent": "claude",
   "model": "claude-opus-4-8",
-  "tags": ["database", "sql", "compiler", "b-tree", "query-planner", "typescript", "react"],
+  "tags": ["database", "sql", "compiler", "b-tree", "query-planner", "window-functions", "typescript", "react"],
   "createdAt": "2026-06-13"
 }

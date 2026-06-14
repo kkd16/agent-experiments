@@ -124,7 +124,7 @@ export default function App() {
           {schema.reduce((n, t) => n + t.rowCount, 0)} rows ·{' '}
           {schema.reduce((n, t) => n + t.indexes.length, 0)} indexes
         </span>
-        <span className="status-right">SeqScan · IndexScan · HashJoin · HashAggregate · B+Tree</span>
+        <span className="status-right">IndexScan · HashJoin · HashAggregate · Window · SetOp · B+Tree</span>
       </footer>
     </div>
   )

@@ -130,18 +130,34 @@ export class Engine {
       if (i < 0) throw new SqlError(`no column "${name}" in "${stmt.table}"`, 'bind')
       return i
     })
-    let count = 0
-    for (const rowExprs of stmt.rows) {
-      if (rowExprs.length !== targetCols.length) {
-        throw new SqlError(`INSERT has ${rowExprs.length} values for ${targetCols.length} columns`, 'bind')
-      }
+
+    const insertValues = (values: SqlValue[]): void => {
       const row: Row = new Array(table.columns.length).fill(null)
-      for (let i = 0; i < rowExprs.length; i++) {
-        const v = compileExpr(rowExprs[i], CONST_CTX)([])
-        row[colIndexes[i]] = coerceTo(table.columns[colIndexes[i]].type, v)
+      for (let i = 0; i < values.length; i++) {
+        row[colIndexes[i]] = coerceTo(table.columns[colIndexes[i]].type, values[i])
       }
       table.insertRow(row)
-      count++
+    }
+
+    let count = 0
+    if (stmt.select) {
+      // INSERT … SELECT — run the query and feed each result row in.
+      const rows = runOperator(planSelect(stmt.select, this.db))
+      for (const r of rows) {
+        if (r.length !== targetCols.length) {
+          throw new SqlError(`INSERT … SELECT produced ${r.length} columns for ${targetCols.length} target columns`, 'bind')
+        }
+        insertValues(r)
+        count++
+      }
+    } else {
+      for (const rowExprs of stmt.rows) {
+        if (rowExprs.length !== targetCols.length) {
+          throw new SqlError(`INSERT has ${rowExprs.length} values for ${targetCols.length} columns`, 'bind')
+        }
+        insertValues(rowExprs.map((e) => compileExpr(e, CONST_CTX)([])))
+        count++
+      }
     }
     return msg(`${count} row${count === 1 ? '' : 's'} inserted into "${stmt.table}"`, sql, t0, count)
   }
