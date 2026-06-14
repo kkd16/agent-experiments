@@ -5,6 +5,7 @@ import { ProceduralMesh, ParticleSystem } from './Engine';
 import { Evolution } from './Evolution';
 import { AudioSystem } from './Audio';
 import { Controls } from './Controls';
+import { CameraControl } from './CameraControl';
 import { useStore } from './store';
 import './index.css'; // Ensure tailwind is imported
 
@@ -20,6 +21,8 @@ function Effects() {
 }
 
 export default function App() {
+  const cinematicMode = useStore(state => state.cinematicMode);
+
   return (
     <div className="relative w-screen h-screen bg-black overflow-hidden">
       {/* 3D Canvas */}
@@ -34,16 +37,19 @@ export default function App() {
           <Evolution />
 
           <Effects />
+          <CameraControl />
 
           <Stars radius={100} depth={50} count={5000} factor={4} saturation={0} fade speed={1} />
           <Environment preset="city" />
-          <OrbitControls
-            enablePan={false}
-            maxDistance={20}
-            minDistance={3}
-            autoRotate
-            autoRotateSpeed={0.5}
-          />
+          {!cinematicMode && (
+            <OrbitControls
+              enablePan={false}
+              maxDistance={20}
+              minDistance={3}
+              autoRotate
+              autoRotateSpeed={0.5}
+            />
+          )}
         </Canvas>
       </div>
 

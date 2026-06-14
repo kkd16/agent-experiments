@@ -94,31 +94,71 @@ const vertexShader = `
 const fragmentShader = `
   uniform float uTime;
   uniform float uColorShift;
+  uniform float uShaderComplexity;
 
   varying vec2 vUv;
   varying vec3 vNormal;
   varying vec3 vPosition;
 
+  // Pseudo-random function
+  float random(vec3 st) {
+      return fract(sin(dot(st.xyz, vec3(12.9898, 78.233, 45.164))) * 43758.5453123);
+  }
+
+  // 3D Value Noise
+  float noise3D(vec3 p) {
+      vec3 i = floor(p);
+      vec3 f = fract(p);
+      f = f * f * (3.0 - 2.0 * f);
+
+      float n = mix(
+          mix(mix(random(i + vec3(0,0,0)), random(i + vec3(1,0,0)), f.x),
+              mix(random(i + vec3(0,1,0)), random(i + vec3(1,1,0)), f.x), f.y),
+          mix(mix(random(i + vec3(0,0,1)), random(i + vec3(1,0,1)), f.x),
+              mix(random(i + vec3(0,1,1)), random(i + vec3(1,1,1)), f.x), f.y), f.z
+      );
+      return n;
+  }
+
   void main() {
-    // Generate some dynamic colors based on position and time
+    // Advanced Shader Materials Logic
     vec3 color1 = vec3(0.1, 0.8, 0.9); // Cyan
     vec3 color2 = vec3(0.9, 0.1, 0.8); // Magenta
     vec3 color3 = vec3(0.8, 0.9, 0.1); // Yellow
 
-    float noise1 = sin(vPosition.x * 2.0 + uTime) * 0.5 + 0.5;
-    float noise2 = cos(vPosition.y * 3.0 - uTime * 0.5) * 0.5 + 0.5;
-    float noise3 = sin(vPosition.z * 1.5 + uTime * 1.2) * 0.5 + 0.5;
+    float t = uTime * 0.5;
+    float complexNoise = noise3D(vPosition * (3.0 + uShaderComplexity * 5.0) + t) * uShaderComplexity;
+
+    float noise1 = sin(vPosition.x * 2.0 + t) * 0.5 + 0.5;
+    float noise2 = cos(vPosition.y * 3.0 - t * 0.5) * 0.5 + 0.5;
+    float noise3 = sin(vPosition.z * 1.5 + t * 1.2) * 0.5 + 0.5;
+
+    // Distort noise fields with complexity
+    noise1 += complexNoise * 0.5;
+    noise2 -= complexNoise * 0.3;
 
     vec3 finalColor = mix(
-      mix(color1, color2, noise1 + uColorShift * 0.5),
+      mix(color1, color2, clamp(noise1 + uColorShift * 0.5, 0.0, 1.0)),
       color3,
-      noise2 * noise3
+      clamp(noise2 * noise3, 0.0, 1.0)
     );
 
-    // Add some lighting based on normal
-    float light = dot(vNormal, vec3(1.0, 1.0, 1.0)) * 0.5 + 0.5;
+    // Fresnel effect
+    vec3 viewDirection = normalize(cameraPosition - vPosition);
+    float fresnel = dot(viewDirection, vNormal);
+    fresnel = clamp(1.0 - fresnel, 0.0, 1.0);
+    fresnel = pow(fresnel, 3.0) * (0.5 + uShaderComplexity);
 
-    gl_FragColor = vec4(finalColor * light, 1.0);
+    // Add lighting and fresnel glow
+    float light = dot(vNormal, normalize(vec3(1.0, 1.0, 1.0))) * 0.5 + 0.5;
+
+    // Specular highlight
+    vec3 halfVector = normalize(normalize(vec3(1.0, 1.0, 1.0)) + viewDirection);
+    float specular = pow(max(dot(vNormal, halfVector), 0.0), 32.0) * uShaderComplexity;
+
+    vec3 outColor = finalColor * light + vec3(fresnel) + vec3(specular);
+
+    gl_FragColor = vec4(outColor, 1.0);
   }
 `;
 
@@ -130,6 +170,7 @@ export function ProceduralMesh() {
   const noiseScale = useStore(state => state.noiseScale);
   const distortion = useStore(state => state.distortion);
   const colorShift = useStore(state => state.colorShift);
+  const shaderComplexity = useStore(state => state.shaderComplexity);
   const wireframe = useStore(state => state.wireframe);
 
   const uniforms = useMemo(
@@ -138,8 +179,9 @@ export function ProceduralMesh() {
       uNoiseScale: { value: noiseScale },
       uDistortion: { value: distortion },
       uColorShift: { value: colorShift },
+      uShaderComplexity: { value: shaderComplexity },
     }),
-    [noiseScale, distortion, colorShift]
+    [noiseScale, distortion, colorShift, shaderComplexity]
   );
 
   useFrame(() => {
@@ -148,6 +190,7 @@ export function ProceduralMesh() {
       materialRef.current.uniforms.uNoiseScale.value = noiseScale;
       materialRef.current.uniforms.uDistortion.value = distortion;
       materialRef.current.uniforms.uColorShift.value = colorShift;
+      materialRef.current.uniforms.uShaderComplexity.value = shaderComplexity;
     }
     if (meshRef.current) {
       meshRef.current.rotation.x += 0.002 * timeScale;

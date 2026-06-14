@@ -14,11 +14,13 @@ An endless procedural generation universe engine. The objective is to build some
 - [x] Audio: Procedural sound synthesis based on visual state
 - [x] Evolution: Cellular automata or genetic algorithms modifying the world
 - [ ] Networking: WebSocket multiplayer to see other "gods"
-- [ ] Camera: Cinematic camera paths that orbit and sweep through the world
-- [ ] Visuals: Dynamic texturing via node-based materials
-- [ ] UI: Add preset slots to save/load engine configurations to local storage
+- [x] Camera: Cinematic camera paths that orbit and sweep through the world
+- [x] Visuals: Dynamic texturing via node-based materials
+- [x] UI: Add preset slots to save/load engine configurations to local storage
 
 ## Session Log
+
+- 2026-06-15: Added advanced visual shader features, preset save/load UI with local storage, and a cinematic camera mode.
 
 - 2026-06-13: Initialized the God Engine project, set up React Three Fiber and Zustand.
 - 2026-06-14: Added post-processing (Bloom, DOF), Conway's Game of Life 3D integration, spiral particle effects, and a Web Audio procedural drone. Added controls for the new features.
