@@ -402,28 +402,10 @@ select:focus-visible {
   background: var(--card-solid);
   box-shadow: 0 16px 44px rgba(0, 0, 0, 0.5);
 }
-.facets {
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-}
-.facet-group {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 7px;
-}
 .facet-chips {
   display: flex;
   flex-wrap: wrap;
   gap: 7px;
-}
-.facet-label {
-  font-family: var(--mono);
-  font-size: 0.68rem;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-  color: var(--faint);
 }
 .chip {
   font: inherit;

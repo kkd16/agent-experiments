@@ -4,7 +4,6 @@
   const statusEl = $("status");
   const statsEl = $("stats");
   const toolbar = $("toolbar");
-  const facetsEl = $("facets");
   const qInput = $("q");
   const sortSel = $("sort");
   const viewSeg = $("view");
@@ -12,10 +11,14 @@
   const countEl = $("count");
   const clearBtn = $("clear");
   const statusbarEl = $("statusbar");
-  const filtersEl = $("filters");
-  const filtersBtn = $("filtersBtn");
-  const filtersPop = $("filtersPop");
-  const filtersBadge = $("filtersBadge");
+  const tagFacetsEl = $("tagFacets");
+  const agentFacetsEl = $("agentFacets");
+  const tagFiltersBadge = $("tagFiltersBadge");
+  const agentFiltersBadge = $("agentFiltersBadge");
+  const dropdowns = [
+    { el: $("tagFilters"), btn: $("tagFiltersBtn"), pop: $("tagFiltersPop") },
+    { el: $("agentFilters"), btn: $("agentFiltersBtn"), pop: $("agentFiltersPop") },
+  ];
 
   const esc = (s) =>
     String(s).replace(
@@ -60,8 +63,10 @@
   function readHash() {
     const h = new URLSearchParams(location.hash.slice(1));
     state.q = h.get("q") || "";
-    state.tags = new Set((h.get("tags") || "").split(",").filter(Boolean));
-    state.agent = h.get("agent") || "";
+    state.tags = new Set(
+      (h.get("tags") || "").split(",").filter(Boolean).map((t) => t.toLowerCase()),
+    );
+    state.agent = (h.get("agent") || "").toLowerCase();
     state.status = h.get("status") || "all";
     state.sort = h.get("sort") || "new";
     state.view = h.get("view") === "list" ? "list" : "grid";
@@ -157,17 +162,17 @@
       .map(([v, l]) => chip("status", v, l, state.status === v))
       .join("");
 
-    const group = (label, chips) =>
-      `<div class="facet-group"><span class="facet-label">${label}</span><div class="facet-chips">${chips}</div></div>`;
-    let html = "";
-    if (tags.length) html += group("tags", tags.map((t) => chip("tag", t, t, state.tags.has(t), tagCount[t])).join(""));
-    if (agents.length > 1) html += group("agent", agents.map((a) => chip("agent", a, a, state.agent === a, agentCount[a])).join(""));
-    facetsEl.innerHTML = html;
-    filtersEl.hidden = html === "";
+    tagFacetsEl.innerHTML = tags.map((t) => chip("tag", t, t, state.tags.has(t), tagCount[t])).join("");
+    agentFacetsEl.innerHTML = agents.map((a) => chip("agent", a, a, state.agent === a, agentCount[a])).join("");
+    dropdowns[0].el.hidden = tags.length === 0;
+    dropdowns[1].el.hidden = agents.length <= 1;
 
-    const n = state.tags.size + (state.agent ? 1 : 0);
-    filtersBadge.textContent = String(n);
-    filtersBadge.hidden = n === 0;
+    const tagN = state.tags.size;
+    tagFiltersBadge.textContent = String(tagN);
+    tagFiltersBadge.hidden = tagN === 0;
+    const agentN = state.agent ? 1 : 0;
+    agentFiltersBadge.textContent = String(agentN);
+    agentFiltersBadge.hidden = agentN === 0;
   }
 
   function renderStats() {
@@ -265,25 +270,33 @@
     else if (kind === "status") state.status = val;
     commit();
     const sel = `.chip[data-kind="${kind}"][data-val="${CSS.escape(val)}"]`;
-    (filtersPop.querySelector(sel) || statusbarEl.querySelector(sel))?.focus({ preventScroll: true });
+    document.querySelector(sel)?.focus({ preventScroll: true });
   }
   statusbarEl.addEventListener("click", onChip);
-  facetsEl.addEventListener("click", onChip);
+  tagFacetsEl.addEventListener("click", onChip);
+  agentFacetsEl.addEventListener("click", onChip);
 
-  function openFilters(open) {
-    filtersPop.hidden = !open;
-    filtersBtn.setAttribute("aria-expanded", String(open));
+  function openDropdown(d, open) {
+    d.pop.hidden = !open;
+    d.btn.setAttribute("aria-expanded", String(open));
   }
-  filtersBtn.addEventListener("click", (e) => {
-    e.stopPropagation();
-    openFilters(filtersPop.hidden);
-  });
+  function closeDropdowns(except) {
+    for (const d of dropdowns) if (d !== except) openDropdown(d, false);
+  }
+  for (const d of dropdowns) {
+    d.btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const open = d.pop.hidden;
+      closeDropdowns(d);
+      openDropdown(d, open);
+    });
+  }
   document.addEventListener("click", (e) => {
     if (e.target.closest("[data-clear]")) {
       clearAll();
       return;
     }
-    if (!filtersEl.contains(e.target)) openFilters(false);
+    if (!dropdowns.some((d) => d.el.contains(e.target))) closeDropdowns();
   });
   const rehydrate = () => {
     readHash();
@@ -292,10 +305,13 @@
   window.addEventListener("popstate", rehydrate);
   window.addEventListener("hashchange", rehydrate);
   document.addEventListener("keydown", (e) => {
-    if (e.key === "Escape" && !filtersPop.hidden) {
-      openFilters(false);
-      filtersBtn.focus();
-      return;
+    if (e.key === "Escape") {
+      const open = dropdowns.find((d) => !d.pop.hidden);
+      if (open) {
+        openDropdown(open, false);
+        open.btn.focus();
+        return;
+      }
     }
     const typing = /^(input|textarea|select)$/i.test(document.activeElement.tagName || "");
     if (e.key === "/" && !typing) {
@@ -323,7 +339,12 @@
       const res = await fetch("catalog.json", { cache: "no-store" });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
-      state.all = Array.isArray(data.projects) ? data.projects : [];
+      const lc = (s) => (typeof s === "string" ? s.toLowerCase() : "");
+      state.all = (Array.isArray(data.projects) ? data.projects : []).map((p) => ({
+        ...p,
+        agent: lc(p.agent),
+        tags: [...new Set((p.tags || []).filter((t) => typeof t === "string").map(lc))],
+      }));
       if (!state.all.length) {
         statusEl.innerHTML = `<div class="empty"><h2>No apps yet</h2><p>Agents — see <a href="https://github.com/kkd16/agent-experiments/blob/main/AGENTS.md">AGENTS.md</a> and drop your app in <code>projects/&lt;slug&gt;/</code>.</p></div>`;
         return;

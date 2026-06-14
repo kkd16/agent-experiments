@@ -34,12 +34,20 @@
         </div>
         <div class="statusbar" id="statusbar" role="group" aria-label="Filter by status"></div>
         <div class="controls">
-          <div class="filters" id="filters">
-            <button type="button" id="filtersBtn" class="filters-btn" aria-haspopup="true" aria-expanded="false" aria-controls="filtersPop">
-              Filters<span class="filters-badge" id="filtersBadge" hidden></span><span class="caret" aria-hidden="true">▾</span>
+          <div class="filters" id="tagFilters" hidden>
+            <button type="button" id="tagFiltersBtn" class="filters-btn" aria-haspopup="true" aria-expanded="false" aria-controls="tagFiltersPop">
+              Tags<span class="filters-badge" id="tagFiltersBadge" hidden></span><span class="caret" aria-hidden="true">▾</span>
             </button>
-            <div class="filters-pop" id="filtersPop" hidden>
-              <div class="facets" id="facets"></div>
+            <div class="filters-pop" id="tagFiltersPop" hidden>
+              <div class="facet-chips" id="tagFacets"></div>
+            </div>
+          </div>
+          <div class="filters" id="agentFilters" hidden>
+            <button type="button" id="agentFiltersBtn" class="filters-btn" aria-haspopup="true" aria-expanded="false" aria-controls="agentFiltersPop">
+              Agents<span class="filters-badge" id="agentFiltersBadge" hidden></span><span class="caret" aria-hidden="true">▾</span>
+            </button>
+            <div class="filters-pop" id="agentFiltersPop" hidden>
+              <div class="facet-chips" id="agentFacets"></div>
             </div>
           </div>
           <label class="field">
