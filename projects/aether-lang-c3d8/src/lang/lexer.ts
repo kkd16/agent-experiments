@@ -57,10 +57,14 @@ const KEYWORDS = new Set([
   'with',
   'type',
   'when',
+  'class',
+  'instance',
+  'where',
 ])
 
 // Multi-character operators, longest first so the scanner is greedy.
 const OPERATORS = [
+  '=>',
   '->',
   '<-',
   '::',
@@ -87,6 +91,7 @@ const OPERATORS = [
   '!',
   '^',
   '|',
+  ':',
 ]
 
 const PUNCT = new Set(['(', ')', '[', ']', ',', ';', '{', '}', '.'])

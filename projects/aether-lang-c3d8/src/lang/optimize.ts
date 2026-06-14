@@ -48,6 +48,14 @@ function opt(e: Expr, bump: () => void): Expr {
       }
     case 'typedecl':
       return { ...e, body: opt(e.body, bump) }
+    case 'classdecl':
+      return { ...e, body: opt(e.body, bump) }
+    case 'instancedecl':
+      return {
+        ...e,
+        methods: e.methods.map((m) => ({ ...m, value: opt(m.value, bump) })),
+        body: opt(e.body, bump),
+      }
     case 'seq':
       return { ...e, first: opt(e.first, bump), rest: opt(e.rest, bump) }
     case 'list':

@@ -20,10 +20,24 @@ export interface TCon {
 
 export type Type = TVar | TCon
 
+/**
+ * A class-constraint predicate, e.g. `Disp a` or `Eq (List b)`. Used by the
+ * type-class machinery: a qualified scheme carries the predicates that must be
+ * satisfied (with a dictionary) before its body type can be used.
+ */
+export interface Pred {
+  /** the class name (e.g. `Disp`, `Eq`, `Ord`) */
+  cls: string
+  /** the type the class is applied to */
+  type: Type
+}
+
 export interface Scheme {
   /** quantified type-variable ids */
   vars: number[]
   type: Type
+  /** class constraints qualifying the body type (`(Disp a, Eq a) => …`) */
+  preds?: Pred[]
 }
 
 let varCounter = 0
@@ -156,6 +170,14 @@ function nextName(i: number): string {
   return suffix === 0 ? letter : `${letter}${suffix}`
 }
 
+/** Pretty-print a single predicate (`Disp a`, `Eq (List b)`). */
+export function predToString(p: Pred, names: Map<number, string> = new Map()): string {
+  const t = prune(p.type)
+  // parenthesise applied constructors so `Disp (List a)` reads right
+  const arg = t.kind === 'con' && t.args.length > 0 ? `(${typeToString(t, names)})` : typeToString(t, names)
+  return `${p.cls} ${arg}`
+}
+
 export function schemeToString(s: Scheme): string {
   const names = new Map<number, string>()
   // pre-seed quantified vars so they print first as a, b, c…
@@ -163,7 +185,13 @@ export function schemeToString(s: Scheme): string {
     const i = names.size
     names.set(id, nextName(i))
   })
-  const body = typeToString(s.type, names)
+  const preds = s.preds && s.preds.length > 0 ? s.preds : null
+  const ctx = preds
+    ? (preds.length === 1
+        ? predToString(preds[0], names)
+        : `(${preds.map((p) => predToString(p, names)).join(', ')})`) + ' => '
+    : ''
+  const body = ctx + typeToString(s.type, names)
   if (s.vars.length === 0) return body
   const quant = s.vars.map((id) => names.get(id)).join(' ')
   return `∀ ${quant}. ${body}`

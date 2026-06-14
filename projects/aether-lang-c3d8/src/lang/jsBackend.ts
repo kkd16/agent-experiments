@@ -339,6 +339,10 @@ class JsGen {
           .join(', ')} })`
       case 'match':
         return this.match(e, env)
+      case 'classdecl':
+      case 'instancedecl':
+        // removed by dictionary-passing elaboration before the JS backend runs
+        throw new Error(`internal: ${e.kind} survived elaboration`)
     }
   }
 

@@ -80,6 +80,56 @@ source -> lexer -> parser -> HM inference -> optimizer -+-> bytecode compiler ->
   example, comprehension semantics, shadowing, int-wrap/div, ADT/record show) + a
   react-dom/server render smoke test for the new panels + the CI gate.
 
+### Aether 3.0 — Type classes (planned + shipping this session)
+
+The headline gap in an ML-family language: **principled overloading**. Aether already has
+Hindley–Milner with let-polymorphism, ADTs, records with row polymorphism, two backends and a
+proof-tree view — but no way to say "this works for any type that supports `disp`/`eq`/…". This
+session adds **type classes with dictionary-passing**, the same machinery Haskell uses, done so
+that *both* existing backends (bytecode VM + JavaScript) get it for free.
+
+The key design choice: type classes are implemented as a **type-directed elaboration into the
+existing core AST**. After inference resolves which instance each constraint needs, an
+elaboration pass rewrites the program so that
+
+- every `instance` becomes a **dictionary** (a record of its method implementations),
+- every constrained binding gains extra **dictionary parameters** (`fn $d -> …`),
+- every method call becomes a **field access** on the right dictionary (`$d.disp x`),
+- every use site **applies** the resolved dictionaries (concrete instance dicts, or a dictionary
+  parameter passed down).
+
+Because elaboration produces ordinary core AST (lets, lambdas, records, field access), the
+bytecode compiler, the stack VM and the JavaScript backend need **zero changes** — they compile
+and run the dictionaries like any other code, and the JS≡VM equivalence check still holds.
+
+Plan / steps:
+
+- [ ] **Predicates in the type system** — `Pred { cls, type }`, qualified schemes
+      (`∀a. (Disp a) => a -> String`), and qualified pretty-printing in the Types panel.
+- [ ] **Surface syntax** — `class C a where m : τ ; … in body`, `instance C T where m = e ; … in
+      body`, the `=>` constraint arrow, and `class`/`instance`/`where` keywords. New AST nodes
+      `classdecl` / `instancedecl`; every AST walk (label, children, optimizer, derivation)
+      learns them.
+- [ ] **Constraint solving + instance resolution** (`classes.ts`) — context reduction for a
+      single-parameter class system: ground heads resolve to instance dictionaries (recursively
+      through instance contexts like `Disp a => Disp (List a)`); type-variable heads defer to a
+      dictionary parameter, captured at the nearest enclosing generalization. Clear errors for
+      missing/overlapping/ambiguous instances.
+- [ ] **Dictionary-passing elaboration** — turn the typed program into core AST: instance dicts
+      as records, constrained bindings as dictionary-abstracted lambdas, method uses as field
+      accesses, use sites as evidence applications. Identity on programs that use no classes.
+- [ ] **Both backends, unchanged** — the VM compiles the elaborated core; the JS backend lowers
+      the elaborated user AST, so overloaded programs still pass the byte-for-byte JS≡VM badge.
+- [ ] **A standard `class` library** — built-in `Disp` (overloaded show), `Eq`, `Ord`, and
+      `Semigroup`, with instances for `Int`/`Float`/`Bool`/`String`/`Unit`, lists, and tuples
+      (the recursive ones genuinely pass dictionaries).
+- [ ] **A "Classes" inspector panel** — show declared classes & instances, and the elaborated
+      core (dictionaries made visible) so the dictionary-passing is no longer a black box.
+- [ ] **Examples** — a shapes `area` class, an overloaded `disp`, a `Semigroup`/`combine`
+      showcase, and a constrained-polymorphism example that needs a passed dictionary.
+- [ ] **Docs + verification** — Tour/About/README writeups; extend the Node strip-types harness
+      to cover instance resolution, dictionary passing, JS≡VM over class programs, and error cases.
+
 ## Standard library
 
 - list: `map filter foldl foldr length append reverse sum range take drop elem all any concat zip replicate`

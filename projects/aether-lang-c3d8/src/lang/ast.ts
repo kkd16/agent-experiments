@@ -53,6 +53,29 @@ export interface CtorDecl {
   span: Span
 }
 
+/** A method signature inside a `class` declaration: `name : <type>`. */
+export interface MethodSig {
+  name: string
+  type: TypeExpr
+  span: Span
+}
+
+/** One method implementation inside an `instance`: `name = <expr>`. */
+export interface MethodImpl {
+  name: string
+  value: Expr
+  span: Span
+}
+
+/** A `=>`-context entry written on an instance, e.g. the `Disp a` in
+ * `instance Disp a => Disp (List a)`. Resolution derives the real context from
+ * inference; this is kept for display. */
+export interface ConstraintExpr {
+  cls: string
+  param: string
+  span: Span
+}
+
 /**
  * Patterns used by `match`. `plist` is normalised into nested `pcons`/`pnil`
  * by the parser, so the compiler only ever sees cons-cells.
@@ -99,6 +122,23 @@ export type Expr =
   | { kind: 'record'; fields: { label: string; value: Expr }[]; span: Span }
   | { kind: 'field'; record: Expr; label: string; span: Span }
   | { kind: 'recordUpdate'; record: Expr; fields: { label: string; value: Expr }[]; span: Span }
+  | {
+      kind: 'classdecl'
+      name: string
+      param: string
+      methods: MethodSig[]
+      body: Expr
+      span: Span
+    }
+  | {
+      kind: 'instancedecl'
+      cls: string
+      head: TypeExpr
+      context: ConstraintExpr[]
+      methods: MethodImpl[]
+      body: Expr
+      span: Span
+    }
 
 /** A short human-readable label for a node, used by the AST visualiser. */
 export function nodeLabel(e: Expr): string {
@@ -145,6 +185,10 @@ export function nodeLabel(e: Expr): string {
       return `.${e.label}`
     case 'recordUpdate':
       return `update {${e.fields.map((f) => f.label).join(', ')}}`
+    case 'classdecl':
+      return `class ${e.name} ${e.param}`
+    case 'instancedecl':
+      return `instance ${e.cls}`
   }
 }
 
@@ -208,6 +252,10 @@ export function children(e: Expr): Expr[] {
       return [e.record]
     case 'recordUpdate':
       return [e.record, ...e.fields.map((f) => f.value)]
+    case 'classdecl':
+      return [e.body]
+    case 'instancedecl':
+      return [...e.methods.map((m) => m.value), e.body]
     default:
       return []
   }
