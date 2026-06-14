@@ -70,12 +70,68 @@ quantum lab, all from scratch in TypeScript, fully tested and building green.
 - [x] **Export**: OpenQASM 2.0, JSON, shareable `#c=` URL, circuit depth/gate metrics.
 
 ### Future ideas
-- [ ] 7-qubit Steane code; surface-code patch
-- [ ] Schmidt decomposition display; randomized benchmarking
+- [ ] Surface-code patch; 5-qubit perfect [[5,1,3]] code
 - [ ] Interactive Bloch sphere gate application; Wigner functions
-- [ ] Parameter-shift gradients for VQE; larger QAOA graphs with code-splitting
+- [ ] Larger QAOA graphs with code-splitting
+
+## Quantum Lab 3.0 — Stabilizer engine, Schmidt, analytic gradients & RB (this session)
+
+A second from-scratch simulation paradigm sits alongside the state-vector and density-matrix
+engines: an **Aaronson–Gottesman stabilizer (CHP) tableau** that runs Clifford circuits in
+*polynomial* time, scaling to dozens of qubits where the 2ⁿ state vector cannot. Plus exact
+Schmidt decomposition, analytic parameter-shift gradients, randomized benchmarking and the
+7-qubit Steane code — everything verified against the existing exact engine.
+
+### Engine
+- [x] **Stabilizer tableau** (`Stabilizer.ts`) — destabilizer/stabilizer rows over GF(2) with
+      phase bits (Aaronson–Gottesman 2004). Clifford gates H, S, S†, X, Y, Z, CNOT, CZ, SWAP;
+      single-qubit measurement with correct deterministic/random branching. O(n²) per gate.
+- [x] **Stabilizer generators as Pauli strings** — read the n stabilizers of any Clifford state
+      (GHZ → +XXXX, +ZZII, +IZZI, +IIZZ; verified). Plus `pauliEigenvalue` for measuring an
+      arbitrary commuting Pauli observable (code syndromes), and non-Clifford gate detection.
+- [x] **Cross-check** — over 400 random Clifford circuits the tableau's full measurement
+      distribution matched the state vector to 7e-16, and every read-off generator stabilises |ψ⟩
+      exactly (verified in the self-test suite).
+- [x] **Schmidt decomposition** (`Schmidt.ts`) — bipartite |ψ⟩ = Σ λᵢ|aᵢ⟩|bᵢ⟩ via reduced-ρ
+      eigendecomposition; returns Schmidt coefficients, rank, and entropy (= entanglement entropy,
+      matched to 1e-15).
+- [x] **Analytic gradients** (`gradient.ts`) — exact parameter-shift rule (±π/2), a Nesterov
+      momentum gradient-descent VQE; gradient matches central differences to 5e-11 and reaches the
+      exact ground energy.
+- [x] **Randomized benchmarking** (`rb.ts`) — enumerated 24-element single-qubit Clifford group,
+      random sequences closed with the exact inverse, exact survival on the density-matrix engine
+      under any noise channel, log-linear decay fit → average error per Clifford (recovers f = 1−p).
+
+### Algorithms
+- [x] **Steane 7-qubit code** ([[7,1,3]] CSS code) — encode |0⟩ₗ (prep circuit verified against
+      all 6 stabilizers + logical operators), inject an arbitrary single-qubit error, read the
+      Hamming syndrome from the live tableau, correct, and verify recovery — all 21 single-qubit
+      errors located and corrected.
+
+### UI
+- [x] **Stabilizer Lab** page — GHZ / line-graph / ring-graph / Steane presets, qubit count scaled
+      to 30, live stabilizer generators (colour-coded Pauli strings) and a state-vector-vs-tableau
+      memory comparison.
+- [x] **Randomized benchmarking** card — channel + strength sliders, survival-vs-length scatter
+      with the fitted decay curve, extracted fidelity.
+- [x] **Gradient-descent VQE** in the Variational lab — Nelder–Mead vs analytic gradients raced on
+      one convergence plot.
+- [x] **Schmidt panel** — Schmidt spectrum bars + rank in the State-vector viz tab.
+- [x] Extended the in-browser self-test suite to 37 cases (stabilizer↔state-vector, Schmidt,
+      gradients, Steane recovery, RB) and refreshed the About page.
 
 ## Session log
 
 - 2026-06-13 (claude/claude-sonnet-4-6): Created full quantum circuit simulator from scratch. Implemented complex arithmetic, tensor product gate application, 11 pre-built algorithms (Grover, QFT, Deutsch-Jozsa, teleportation, Bell/GHZ/W states, Bernstein-Vazirani, Simon), Three.js Bloch spheres, drag-and-drop circuit editor, entanglement entropy, state vector visualization, and Monte Carlo measurement sampling.
-- 2026-06-14 (claude/claude-opus-4-8): **Quantum Lab 2.0.** Built an open-system + variational engine from scratch: a complex Hermitian Jacobi eigensolver, a full density-matrix simulator with Kraus noise channels (depolarizing, amplitude/phase damping, bit/phase flip), and exact von Neumann entropy/purity. Added QPE, the 3-qubit bit-flip & phase-flip codes, the 9-qubit Shor code, VQE (Nelder–Mead, matches exact diagonalisation), and QAOA MaxCut. Added a Density/Noise viz tab (ρ heatmap, spectrum, noisy Bloch spheres), an interactive Variational lab, a 23-case in-browser test suite, OpenQASM 2.0 / JSON export, shareable URLs, and circuit metrics. Fixed three latent bugs along the way: the diagonal-only entropy approximation, the sorted-qubit CNOT direction (control could not be the lower-indexed qubit), and the W-state circuit (which never actually produced |W₃⟩). Verified green: lint + tsc + build + 23/23 self-tests.
+- 2026-06-14 (claude/claude-opus-4-8): **Quantum Lab 3.0.** Added a second from-scratch simulation
+  paradigm — an Aaronson–Gottesman stabilizer (CHP) tableau (`Stabilizer.ts`) that runs Clifford
+  circuits in O(n²), scaling to 30 qubits where the state vector cannot, with live signed-Pauli
+  generators and an arbitrary-Pauli-observable eigenvalue routine. Built exact Schmidt decomposition
+  (`Schmidt.ts`), analytic parameter-shift gradients + a momentum gradient-descent VQE (`gradient.ts`),
+  single-qubit randomized benchmarking with a Clifford-group enumeration and decay fit (`rb.ts`), and
+  the Steane [[7,1,3]] code with live stabilizer-syndrome decoding (`steane.ts`). New **Stabilizer**
+  page (generators, memory comparison, Steane syndrome demo, RB plot), a Schmidt spectrum panel, and a
+  Nelder–Mead-vs-gradient VQE race in the Variational lab. Every module was numerically verified
+  against the exact engine (stabilizer↔state-vector to 7e-16, Schmidt entropy to 1e-15, gradients to
+  5e-11, all 21 Steane errors corrected, RB recovers f=1−p); the in-browser suite grew 23 → 37 cases,
+  all green, with lint + tsc + build passing. Built an open-system + variational engine from scratch: a complex Hermitian Jacobi eigensolver, a full density-matrix simulator with Kraus noise channels (depolarizing, amplitude/phase damping, bit/phase flip), and exact von Neumann entropy/purity. Added QPE, the 3-qubit bit-flip & phase-flip codes, the 9-qubit Shor code, VQE (Nelder–Mead, matches exact diagonalisation), and QAOA MaxCut. Added a Density/Noise viz tab (ρ heatmap, spectrum, noisy Bloch spheres), an interactive Variational lab, a 23-case in-browser test suite, OpenQASM 2.0 / JSON export, shareable URLs, and circuit metrics. Fixed three latent bugs along the way: the diagonal-only entropy approximation, the sorted-qubit CNOT direction (control could not be the lower-indexed qubit), and the W-state circuit (which never actually produced |W₃⟩). Verified green: lint + tsc + build + 23/23 self-tests.

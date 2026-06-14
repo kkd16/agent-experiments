@@ -12,13 +12,15 @@ import MeasurementPanel from './components/MeasurementPanel';
 import BlochSphere from './components/BlochSphere';
 import DensityLab from './components/DensityLab';
 import VariationalLab from './components/VariationalLab';
+import StabilizerLab from './components/StabilizerLab';
 import TestsPanel from './components/TestsPanel';
 import ExportPanel from './components/ExportPanel';
+import { schmidtDecompose } from './quantum/Schmidt';
 
-type Tab = 'builder' | 'algorithms' | 'variational' | 'tests' | 'about';
+type Tab = 'builder' | 'algorithms' | 'variational' | 'stabilizer' | 'tests' | 'about';
 type VizTab = 'state' | 'probabilities' | 'bloch' | 'density' | 'measure';
 
-const PAGE_TABS: Tab[] = ['about', 'variational', 'tests'];
+const PAGE_TABS: Tab[] = ['about', 'variational', 'stabilizer', 'tests'];
 
 // Parse a shared circuit from the URL hash (#c=…) once, before mount — sandbox-safe.
 function loadSharedCircuit(): { numQubits: number; ops: GateOp[] } | null {
@@ -130,7 +132,7 @@ export default function App() {
         </div>
 
         <nav style={{ display: 'flex', gap: 2, marginLeft: 'auto', flexWrap: 'wrap' }}>
-          {(['builder', 'algorithms', 'variational', 'tests', 'about'] as Tab[]).map((tab) => (
+          {(['builder', 'algorithms', 'variational', 'stabilizer', 'tests', 'about'] as Tab[]).map((tab) => (
             <button
               key={tab}
               onClick={() => setActiveTab(tab)}
@@ -148,7 +150,8 @@ export default function App() {
               }}
             >
               {tab === 'builder' ? '🔧 Builder' : tab === 'algorithms' ? '⚡ Algorithms'
-                : tab === 'variational' ? '🧬 Variational' : tab === 'tests' ? '🧪 Tests' : '📖 About'}
+                : tab === 'variational' ? '🧬 Variational' : tab === 'stabilizer' ? '🧱 Stabilizer'
+                : tab === 'tests' ? '🧪 Tests' : '📖 About'}
             </button>
           ))}
         </nav>
@@ -204,6 +207,7 @@ export default function App() {
             >
               {activeTab === 'about' && <AboutPage />}
               {activeTab === 'variational' && <VariationalLab />}
+              {activeTab === 'stabilizer' && <StabilizerLab />}
               {activeTab === 'tests' && <TestsPanel />}
             </motion.div>
           ) : (
@@ -352,6 +356,7 @@ export default function App() {
                           Complex amplitudes — bar width = probability, color = phase.
                         </p>
                         <StateVector state={quantumState} />
+                        <SchmidtPanel state={quantumState} numQubits={currentNumQubits} />
                       </motion.div>
                     )}
                     {vizTab === 'bloch' && (
@@ -425,6 +430,43 @@ function SectionTitle({ children }: { children: React.ReactNode }) {
     }}>
       {children}
     </h2>
+  );
+}
+
+function SchmidtPanel({ state, numQubits }: { state: QuantumState; numQubits: number }) {
+  if (numQubits < 2 || numQubits > 6) return null;
+  const cut = Math.floor(numQubits / 2);
+  const sd = schmidtDecompose(state, cut);
+  const maxW = Math.max(...sd.weights, 1e-9);
+  return (
+    <div style={{
+      marginTop: 14,
+      padding: '10px 12px',
+      background: 'rgba(124, 58, 237, 0.05)',
+      border: '1px solid rgba(124, 58, 237, 0.15)',
+      borderRadius: 8,
+    }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+        <div style={{ fontSize: 10, fontWeight: 700, color: '#a78bfa', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+          Schmidt decomposition · q0…{cut - 1} | q{cut}…{numQubits - 1}
+        </div>
+        <span style={{ fontSize: 9, color: '#64748b', fontFamily: 'monospace' }}>
+          rank {sd.rank}/{sd.maxRank} · S={sd.entropy.toFixed(3)}
+        </span>
+      </div>
+      {sd.coefficients.filter((c) => c > 1e-6).slice(0, 8).map((c, i) => (
+        <div key={i} style={{ display: 'grid', gridTemplateColumns: '28px 1fr 46px', gap: 6, alignItems: 'center', marginBottom: 3 }}>
+          <span style={{ fontSize: 9, color: '#64748b', fontFamily: 'monospace' }}>λ{i + 1}</span>
+          <div style={{ height: 7, background: 'rgba(255,255,255,0.05)', borderRadius: 2, overflow: 'hidden' }}>
+            <div style={{ height: '100%', width: `${(sd.weights[i] / maxW) * 100}%`, background: 'linear-gradient(90deg, #7c3aed, #67e8f9)', borderRadius: 2, transition: 'width 0.4s ease' }} />
+          </div>
+          <span style={{ fontSize: 9, color: '#a78bfa', fontFamily: 'monospace', textAlign: 'right' }}>{c.toFixed(3)}</span>
+        </div>
+      ))}
+      <div style={{ marginTop: 6, fontSize: 9, color: '#334155' }}>
+        |ψ⟩ = Σ λᵢ|aᵢ⟩|bᵢ⟩. Schmidt rank 1 ⇔ a product state across the cut; rank &gt; 1 ⇔ entangled.
+      </div>
+    </div>
   );
 }
 
@@ -515,16 +557,24 @@ function AboutPage() {
           content: 'Beyond pure states, the lab simulates open quantum systems with a full density-matrix engine: ρ evolves as ρ → UρU† under gates and ρ → Σ KρK† under Kraus noise channels — depolarizing, amplitude/phase damping, and bit/phase flips. Watch the purity Tr(ρ²) drop and Bloch vectors retract inside the sphere as decoherence sets in.',
         },
         {
+          title: 'Stabilizer Engine (Gottesman–Knill)',
+          content: 'A second simulation paradigm: the Aaronson–Gottesman stabilizer tableau tracks a Clifford state by its n Pauli generators instead of 2ⁿ amplitudes, so H/S/Pauli/CNOT/CZ/SWAP circuits run in polynomial time — a 30-qubit GHZ state is instant. The Stabilizer tab reads off the generators live (GHZ → +XX…X, +ZᵢZᵢ₊₁), with a memory comparison the state vector cannot win.',
+        },
+        {
           title: 'Quantum Error Correction',
-          content: 'The 3-qubit bit-flip and phase-flip codes and the 9-qubit Shor code reversibly correct single-qubit errors via majority-vote (Toffoli) decoders — demonstrating that correcting X and Z errors suffices to correct any error, the cornerstone of fault tolerance.',
+          content: 'The 3-qubit bit-flip and phase-flip codes and the 9-qubit Shor code reversibly correct single-qubit errors via majority-vote (Toffoli) decoders. The Steane [[7,1,3]] CSS code goes further with live syndrome decoding on the stabilizer tableau: inject any single-qubit Pauli error and watch the 3-bit Hamming syndrome pinpoint and correct it — verified across all 21 errors.',
         },
         {
           title: 'Variational Algorithms (VQE & QAOA)',
-          content: 'A hybrid quantum-classical loop: the simulator is the "QPU" and a from-scratch Nelder–Mead optimizer tunes circuit angles. VQE finds the ground-state energy of a transverse-field Ising Hamiltonian (matching exact diagonalization); QAOA solves MaxCut on small graphs.',
+          content: 'A hybrid quantum-classical loop: the simulator is the "QPU" and a from-scratch optimizer tunes circuit angles. VQE finds the ground-state energy of a transverse-field Ising Hamiltonian via BOTH derivative-free Nelder–Mead and exact analytic parameter-shift gradient descent (the method real hardware uses), matching exact diagonalization; QAOA solves MaxCut on small graphs.',
+        },
+        {
+          title: 'Randomized Benchmarking & Schmidt',
+          content: 'Randomized benchmarking sends random Clifford sequences through a noise channel and fits the survival-probability decay p(m)=½+A·fᵐ to extract the average gate fidelity — immune to SPAM errors. The Schmidt decomposition factorises any bipartite state |ψ⟩=Σλᵢ|aᵢ⟩|bᵢ⟩, exposing the Schmidt rank and the spectrum behind the entanglement entropy.',
         },
         {
           title: 'Phase Estimation & Tooling',
-          content: 'Quantum Phase Estimation recovers eigenphases via phase kickback + inverse QFT. Circuits export to OpenQASM 2.0 (Qiskit/IBM-compatible) and JSON, with shareable URLs, depth/gate metrics, and a 23-case in-browser self-test suite proving the engine correct.',
+          content: 'Quantum Phase Estimation recovers eigenphases via phase kickback + inverse QFT. Circuits export to OpenQASM 2.0 (Qiskit/IBM-compatible) and JSON, with shareable URLs, depth/gate metrics, and a 37-case in-browser self-test suite proving the engine correct against exact references.',
         },
       ].map(({ title, content }, i) => (
         <motion.div

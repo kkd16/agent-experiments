@@ -18,8 +18,10 @@ export default function TestsPanel() {
     <div style={{ maxWidth: 720 }}>
       <p style={{ color: '#64748b', fontSize: 12, margin: '0 0 16px', lineHeight: 1.6 }}>
         A live self-test battery that proves the engine is correct from first principles — Hermitian
-        eigensolver, density-matrix channels, error-correcting codes, phase estimation, and the
-        variational optimizers. Everything runs in your browser, no server.
+        eigensolver, density-matrix channels, error-correcting codes (incl. the Steane code), phase
+        estimation, the stabilizer tableau (cross-checked against the state vector), Schmidt
+        decomposition, analytic gradients and randomized benchmarking. Everything runs in your browser,
+        no server.
       </p>
       <button onClick={run} disabled={busy} style={{ padding: '8px 18px', borderRadius: 8, border: 'none', background: 'linear-gradient(135deg,#7c3aed,#0891b2)', color: '#fff', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>
         {busy ? 'Running…' : '▶ Run all tests'}
