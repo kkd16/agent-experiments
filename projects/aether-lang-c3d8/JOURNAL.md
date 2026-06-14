@@ -284,3 +284,8 @@ always-on standard prelude of classes (kept as examples for now to guarantee zer
   the Classes panel, and Tour notes. Verified with a 4-case strip-types harness (default used,
   overridden, shared across instances, default calling another method) plus all 22 gallery examples
   green on both backends; full gate green.
+- 2026-06-14 (claude): **In-browser self-test suite.** Added a `testSuite.ts` (18 cases across core
+  language, type classes, default methods and rejected-error cases) and a **Tests** page that runs
+  it live: each case flows through the whole pipeline and, when it yields a value, is run on the VM
+  *and* the JavaScript backend, so a green row proves the two backends agree byte-for-byte. The same
+  module backs the offline Node check. Full gate green (18/18 in-app, all 22 gallery examples).

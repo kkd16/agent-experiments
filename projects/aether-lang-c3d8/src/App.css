@@ -1319,3 +1319,76 @@ body {
   font-size: 0.78em;
   font-style: italic;
 }
+
+/* ---------- tests page ---------- */
+.tests-page .page-lead {
+  max-width: 60ch;
+}
+.tests-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  margin: 1.2rem 0 1.5rem;
+}
+.tests-badge {
+  font-family: var(--mono);
+  font-size: 0.85rem;
+  padding: 0.25rem 0.6rem;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+}
+.tests-badge.ok {
+  color: var(--green);
+  border-color: var(--green);
+}
+.tests-badge.bad {
+  color: var(--red);
+  border-color: var(--red);
+}
+.tests-group {
+  margin-bottom: 1.4rem;
+}
+.tests-group-head {
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--fg-faint);
+  margin: 0 0 0.5rem;
+}
+.tests-group-count {
+  color: var(--fg-dim);
+}
+.tests-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+.tests-table td {
+  padding: 0.3rem 0.5rem;
+  border-bottom: 1px solid var(--line);
+  vertical-align: baseline;
+}
+.tests-mark {
+  width: 1.4rem;
+  font-weight: 700;
+}
+.tests-table tr.pass .tests-mark {
+  color: var(--green);
+}
+.tests-table tr.fail .tests-mark {
+  color: var(--red);
+}
+.tests-name {
+  white-space: nowrap;
+  color: var(--fg);
+}
+.tests-detail code {
+  font-family: var(--mono);
+  font-size: 0.8rem;
+  color: var(--fg-dim);
+}
+.tests-type {
+  font-family: var(--mono);
+  font-size: 0.78rem;
+  color: var(--cyan);
+}

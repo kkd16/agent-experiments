@@ -103,6 +103,11 @@ export default function About() {
             and agree on every program — the JavaScript tab proves it live.
           </li>
           <li>
+            The <strong>Tests</strong> page runs a self-test suite live in your browser — every case
+            goes through the whole pipeline and, when it yields a value, is run on both the VM and
+            the JavaScript backend, so a green row is a proof the two backends agree.
+          </li>
+          <li>
             Routing is hash-based and the build uses a relative base, so everything works as a
             static bundle under a sub-path.
           </li>
