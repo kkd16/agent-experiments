@@ -10,6 +10,90 @@
   font-family: system-ui, -apple-system, sans-serif;
 }
 
+.layout {
+  display: flex;
+  flex-direction: column;
+  gap: 2rem;
+  width: 100%;
+  max-width: 1200px;
+}
+
+@media (min-width: 900px) {
+  .layout {
+    flex-direction: row;
+    align-items: flex-start;
+  }
+}
+
+.sidebar {
+  flex: 1;
+  min-width: 300px;
+}
+
+.main-content {
+  flex: 2;
+  display: flex;
+  justify-content: center;
+}
+
+.info-card {
+  background: #2a2a2a;
+  padding: 2rem;
+  border-radius: 12px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+  text-align: left;
+}
+
+.info-card h2 {
+  margin-top: 0;
+  margin-bottom: 1rem;
+  font-size: 1.5rem;
+  color: #fff;
+  border-bottom: 1px solid #444;
+  padding-bottom: 0.5rem;
+}
+
+.info-card h3 {
+  margin-top: 1.5rem;
+  margin-bottom: 0.5rem;
+  font-size: 1.2rem;
+  color: #ddd;
+}
+
+.info-card p {
+  color: #bbb;
+  line-height: 1.5;
+  margin-bottom: 1rem;
+  font-size: 0.95rem;
+}
+
+.rules-list {
+  list-style-type: none;
+  padding: 0;
+  margin: 0;
+  color: #bbb;
+  font-size: 0.95rem;
+}
+
+.rules-list li {
+  margin-bottom: 0.5rem;
+  line-height: 1.4;
+  position: relative;
+  padding-left: 1.2rem;
+}
+
+.rules-list li::before {
+  content: '•';
+  color: #646cff;
+  font-weight: bold;
+  position: absolute;
+  left: 0;
+}
+
+.rules-list strong {
+  color: #fff;
+}
+
 .card {
   background: #2a2a2a;
   padding: 2rem;
@@ -19,7 +103,7 @@
   flex-direction: column;
   align-items: center;
   gap: 1rem;
-  max-width: 90vw;
+  max-width: 100%;
 }
 
 h1 {
