@@ -59,6 +59,8 @@ Shipped in v2 (this session):
 - [x] **Expanded preset gallery** of curated multi-layer pieces.
 - [x] **Keyboard shortcuts** (randomize, play, export, add layer, share…).
 - [x] **Redesigned, tabbed, responsive UI.**
+- [x] **Kaleidoscope** — per-layer radial symmetry (1–12×) + optional mirroring,
+      stamped in both the canvas renderer and the SVG export.
 
 Future:
 

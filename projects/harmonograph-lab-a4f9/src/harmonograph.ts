@@ -181,6 +181,8 @@ export function defaultStyle(colors: string[]): LayerStyle {
     opacity: 1,
     blend: 'source-over',
     glow: 0,
+    symmetry: 1,
+    mirror: false,
   }
 }
 

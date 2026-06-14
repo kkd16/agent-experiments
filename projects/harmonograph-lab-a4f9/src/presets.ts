@@ -36,6 +36,8 @@ interface StyleOpts {
   opacity?: number
   blend?: BlendMode
   glow?: number
+  symmetry?: number
+  mirror?: boolean
 }
 
 function st(paletteId: string, o: StyleOpts = {}): LayerStyle {
@@ -47,6 +49,8 @@ function st(paletteId: string, o: StyleOpts = {}): LayerStyle {
     opacity: o.opacity ?? 1,
     blend: o.blend ?? 'source-over',
     glow: o.glow ?? 0,
+    symmetry: o.symmetry ?? 1,
+    mirror: o.mirror ?? false,
   }
 }
 
@@ -262,6 +266,34 @@ export const PRESETS: Preset[] = [
           steps: STEPS,
         },
         style: st('gold-ink', { colorMode: 'curvature', lineWidth: 0.8 }),
+      },
+    ],
+  },
+  {
+    name: 'Kaleidoscope',
+    background: '#080612',
+    vignette: 0.5,
+    layers: [
+      {
+        name: 'Wedge',
+        params: {
+          x1: pend(2, 0, 1, 0.0022),
+          x2: pend(5, PI / 3, 0.4, 0.0022),
+          y1: pend(3, PI / 2, 1, 0.0022),
+          y2: pend(4, 0, 0.4, 0.0022),
+          rotary: noRot(),
+          duration: 300,
+          steps: STEPS,
+        },
+        style: st('spectrum', {
+          colorMode: 'angle',
+          glow: 0.35,
+          lineWidth: 0.8,
+          symmetry: 6,
+          mirror: true,
+          blend: 'lighter',
+          opacity: 0.9,
+        }),
       },
     ],
   },

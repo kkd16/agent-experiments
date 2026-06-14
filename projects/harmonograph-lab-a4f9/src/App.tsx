@@ -704,6 +704,27 @@ export default function App() {
                     onChange={(v) => updateStyle({ blend: v })}
                   />
                 </section>
+
+                <section className="group">
+                  <div className="group-title">Kaleidoscope</div>
+                  <Slider
+                    label="Symmetry"
+                    value={theme.style.symmetry ?? 1}
+                    min={1}
+                    max={12}
+                    step={1}
+                    onChange={(v) => updateStyle({ symmetry: v })}
+                    fmt={(v) => (v <= 1 ? 'off' : `${v.toFixed(0)}×`)}
+                  />
+                  <label className="check">
+                    <input
+                      type="checkbox"
+                      checked={theme.style.mirror ?? false}
+                      onChange={(e) => updateStyle({ mirror: e.target.checked })}
+                    />
+                    Mirror each wedge
+                  </label>
+                </section>
               </>
             )}
 

@@ -41,6 +41,8 @@ export interface LayerStyle {
   opacity: number // 0..1
   blend: BlendMode
   glow: number // 0..1 soft-glow strength
+  symmetry: number // radial copies, 1 = none (kaleidoscope)
+  mirror: boolean // also draw a mirrored copy of each radial wedge
 }
 
 export interface Layer {

@@ -113,7 +113,21 @@ function layerLimit(n: number, trace: number): number {
   return Math.max(1, Math.floor(clamp01(trace) * (n - 1)))
 }
 
-function drawLayer(
+// The radial / mirror copies a layer is stamped through. Each copy is a 2D
+// transform (rotation + optional horizontal flip) about the canvas centre.
+function symmetryCopies(style: LayerStyle): { rot: number; flip: boolean }[] {
+  const sym = Math.max(1, Math.round(style.symmetry ?? 1))
+  const mirror = style.mirror ?? false
+  const copies: { rot: number; flip: boolean }[] = []
+  for (let k = 0; k < sym; k++) {
+    const rot = (k * 2 * Math.PI) / sym
+    copies.push({ rot, flip: false })
+    if (mirror) copies.push({ rot, flip: true })
+  }
+  return copies
+}
+
+function strokeCurve(
   ctx: CanvasRenderingContext2D,
   data: LayerData,
   style: LayerStyle,
@@ -123,16 +137,9 @@ function drawLayer(
 ) {
   const pts = data.points
   const n = pts.length
-  if (n < 2) return
   const limit = layerLimit(n, trace)
   const widthScale = size / FIELD
   const per = Math.max(1, Math.ceil(n / CHUNKS))
-
-  ctx.save()
-  ctx.globalCompositeOperation = style.blend
-  ctx.globalAlpha = style.opacity
-  ctx.lineJoin = 'round'
-  ctx.lineCap = 'round'
   if (style.glow > 0) ctx.shadowBlur = style.glow * 26 * widthScale
 
   for (let start = 0; start < limit; start += per) {
@@ -167,7 +174,34 @@ function drawLayer(
     ctx.arc(head.x, head.y, Math.max(style.lineWidth * widthScale * 1.6, 2.2), 0, Math.PI * 2)
     ctx.fill()
   }
-  ctx.restore()
+}
+
+function drawLayer(
+  ctx: CanvasRenderingContext2D,
+  data: LayerData,
+  style: LayerStyle,
+  tf: Transform,
+  size: number,
+  trace: number,
+) {
+  if (data.points.length < 2) return
+  const copies = symmetryCopies(style)
+  const dim = copies.length > 1 ? 0.92 : 1
+  const cx = size / 2
+  const cy = size / 2
+  for (const copy of copies) {
+    ctx.save()
+    ctx.globalCompositeOperation = style.blend
+    ctx.globalAlpha = style.opacity * dim
+    ctx.lineJoin = 'round'
+    ctx.lineCap = 'round'
+    ctx.translate(cx, cy)
+    ctx.rotate(copy.rot)
+    if (copy.flip) ctx.scale(-1, 1)
+    ctx.translate(-cx, -cy)
+    strokeCurve(ctx, data, style, tf, size, trace)
+    ctx.restore()
+  }
 }
 
 function drawVignette(ctx: CanvasRenderingContext2D, size: number, amount: number) {
@@ -268,8 +302,21 @@ export function toSvg(
       )
     }
 
+    const copies = symmetryCopies(style)
+    const dim = copies.length > 1 ? 0.92 : 1
+    const cx = size / 2
+    const cy = size / 2
+    const wedge = paths.join('\n')
+    const stamped = copies
+      .map((copy) => {
+        const deg = (copy.rot * 180) / Math.PI
+        const flip = copy.flip ? ' scale(-1 1)' : ''
+        const tform = `translate(${cx} ${cy}) rotate(${deg.toFixed(3)})${flip} translate(${-cx} ${-cy})`
+        return `<g transform="${tform}">\n${wedge}\n</g>`
+      })
+      .join('\n')
     groups.push(
-      `<g style="mix-blend-mode:${style.blend}" opacity="${style.opacity}"${filterAttr}>\n${paths.join('\n')}\n</g>`,
+      `<g style="mix-blend-mode:${style.blend}" opacity="${(style.opacity * dim).toFixed(3)}"${filterAttr}>\n${stamped}\n</g>`,
     )
   }
 
