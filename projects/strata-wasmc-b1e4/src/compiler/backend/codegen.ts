@@ -1,14 +1,17 @@
-import type { Block, IRFunc, IRModule, IRType, Operand, RetType, Term } from '../ir/ir';
+import type { Block, Inst, IRFunc, IRModule, IRType, Operand, RetType, Term } from '../ir/ir';
 import { ByteWriter, VT_F64, VT_I32, WASM_MAGIC, WASM_VERSION, section, vec } from './encoder';
 
-// The WebAssembly backend. Two responsibilities:
+// The WebAssembly backend. Three responsibilities:
 //   (1) Recover structured control flow (block / loop / if + br) from the SSA
 //       control-flow graph. Because Strata only has structured source, the CFG
 //       is reducible, so we can translate it directly off the dominator tree
 //       (Ramsey, "Beyond Relooper", ICFP 2022).
-//   (2) Emit code with a simple, always-correct value model: every SSA value
-//       gets its own local; phi nodes are resolved by parallel copies placed on
-//       the predecessor edges.
+//   (2) Schedule values onto the wasm operand stack ("stackification"): a pure,
+//       non-trapping value with a single use in the same block is *folded*
+//       directly into its consumer's operand slot, so it never touches a local.
+//       Everything else gets a local, and locals are packed into a dense index
+//       space. Phi nodes are resolved by parallel copies on predecessor edges.
+//   (3) Emit the module bytes (and a matching WAT listing) from that schedule.
 
 // Structured wasm instruction tree (encoded / pretty-printed below).
 type W =
@@ -59,6 +62,12 @@ interface Resolvers {
   callIndex: (name: string) => number;
 }
 
+// Pure value families that produce no side effect and never trap, so they may
+// be recomputed at (i.e. sunk to) their single use without changing behavior.
+// Integer div_s/rem_s are deliberately absent — they can trap, so sinking them
+// past a side effect could reorder an observable trap.
+const STACKIFIABLE = new Set(['ibin', 'fbin', 'icmp', 'fcmp', 'cast', 'copy']);
+
 class FuncGen {
   fn: IRFunc;
   private byId: Map<number, Block>;
@@ -66,9 +75,15 @@ class FuncGen {
   private idom = new Map<number, number>();
   private domChildren = new Map<number, number[]>();
   private nparams: number;
-  private maxId: number;
   private res: Resolvers;
-  scratch: IRType[] = [];
+  // Stackification state.
+  private inlined = new Set<number>(); // value ids folded onto the operand stack
+  private defOf = new Map<number, Inst>(); // id -> its (folded) defining instruction
+  private localIndex = new Map<number, number>(); // value id -> dense wasm local index
+  private localDeclTypes: IRType[] = []; // declared (non-param) local types, in index order
+  private nextLocal = 0;
+  scratch: IRType[] = []; // extra scratch locals for cyclic phi resolution
+  foldedCount = 0; // values kept on the stack (a metric the UI surfaces)
   wtree: W[] = [];
 
   constructor(fn: IRFunc, res: Resolvers) {
@@ -76,11 +91,77 @@ class FuncGen {
     this.res = res;
     this.byId = new Map(fn.blocks.map((b) => [b.id, b]));
     this.nparams = fn.params.length;
-    let max = this.nparams - 1;
-    for (const k of fn.valueType.keys()) if (k > max) max = k;
-    this.maxId = max;
     this.analyze();
+    this.computeStackification();
+    this.assignLocals();
     this.wtree = [...this.genTree(fn.entry, []), { k: 'unreachable' }];
+  }
+
+  // --- stackification: decide which values live on the operand stack ---
+  //
+  // A value is folded into its consumer (no local) when it is produced by a
+  // pure, non-trapping instruction and has exactly one use, and that use is a
+  // later instruction or the terminator of the *same* block. Such a value can be
+  // recomputed at the use site: pure ops have no observable order, and SSA
+  // guarantees their inputs are unchanged. Uses that flow through a phi (a
+  // predecessor-edge copy) are excluded so the parallel-copy resolver keeps
+  // seeing plain locals/consts.
+  private computeStackification(): void {
+    type Use = { block: number; where: 'inst' | 'term' | 'phi'; idx: number };
+    const uses = new Map<number, Use[]>();
+    const addUse = (id: number, u: Use): void => {
+      let l = uses.get(id);
+      if (!l) uses.set(id, (l = []));
+      l.push(u);
+    };
+    const addOp = (o: Operand, u: Use): void => {
+      if (o.tag === 'val') addUse(o.id, u);
+    };
+    for (const b of this.fn.blocks) {
+      for (const phi of b.phis) for (const inc of phi.incomings) addOp(inc.val, { block: b.id, where: 'phi', idx: -1 });
+      b.insts.forEach((inst, i) => {
+        for (const a of inst.args) addOp(a, { block: b.id, where: 'inst', idx: i });
+      });
+      if (b.term.op === 'condbr') addOp(b.term.cond, { block: b.id, where: 'term', idx: Infinity });
+      else if (b.term.op === 'ret' && b.term.value) addOp(b.term.value, { block: b.id, where: 'term', idx: Infinity });
+    }
+    for (const b of this.fn.blocks) {
+      b.insts.forEach((inst, i) => {
+        if (inst.res === null || !STACKIFIABLE.has(inst.kind)) return;
+        if (inst.kind === 'ibin' && (inst.sub === 'div_s' || inst.sub === 'rem_s')) return;
+        const us = uses.get(inst.res);
+        if (!us || us.length !== 1) return;
+        const u = us[0];
+        if (u.where === 'phi' || u.block !== b.id) return;
+        if (u.where === 'inst' && u.idx <= i) return; // use must follow the def
+        this.inlined.add(inst.res);
+        this.defOf.set(inst.res, inst);
+      });
+    }
+    this.foldedCount = this.inlined.size;
+  }
+
+  // Pack the values that *do* need a local into a dense index space: parameters
+  // occupy locals 0..n-1 (they are not re-declared), then every phi result and
+  // non-folded instruction result, in id order.
+  private assignLocals(): void {
+    for (let i = 0; i < this.nparams; i++) this.localIndex.set(i, i);
+    this.nextLocal = this.nparams;
+    const mat = new Set<number>();
+    for (const b of this.fn.blocks) {
+      for (const phi of b.phis) mat.add(phi.res);
+      for (const inst of b.insts) if (inst.res !== null && !this.inlined.has(inst.res)) mat.add(inst.res);
+    }
+    for (const id of [...mat].filter((id) => id >= this.nparams).sort((a, b) => a - b)) {
+      this.localIndex.set(id, this.nextLocal++);
+      this.localDeclTypes.push(this.fn.valueType.get(id) ?? 'i32');
+    }
+  }
+
+  private li(id: number): number {
+    const idx = this.localIndex.get(id);
+    if (idx === undefined) throw new Error(`codegen: no local for v${id}`);
+    return idx;
   }
 
   // --- dominators on the SSA CFG ---
@@ -206,62 +287,77 @@ class FuncGen {
   }
 
   // --- value emission ---
+  // Pushing an operand may recursively expand a folded subtree (post-order, so
+  // it lands on the stack exactly where the consumer needs it).
   private pushOperand(o: Operand): W[] {
     if (o.tag === 'const') return o.ty === 'f64' ? [{ k: 'f64c', v: o.num }] : [{ k: 'i32c', v: o.num | 0 }];
-    return [{ k: 'lget', i: o.id }];
+    if (this.inlined.has(o.id)) {
+      const out: W[] = [];
+      this.emitValue(this.defOf.get(o.id)!, out);
+      return out;
+    }
+    return [{ k: 'lget', i: this.li(o.id) }];
+  }
+
+  // Emit an instruction's operands followed by its opcode, leaving its result on
+  // the operand stack (no local.set). Shared by straight-line emission and by
+  // folded-subtree expansion.
+  private emitValue(inst: Inst, out: W[]): void {
+    switch (inst.kind) {
+      case 'ibin': {
+        const [c, name] = I_BIN[inst.sub];
+        out.push(...this.pushOperand(inst.args[0]), ...this.pushOperand(inst.args[1]), { k: 'op', c, name });
+        break;
+      }
+      case 'fbin': {
+        const [c, name] = F_BIN[inst.sub];
+        out.push(...this.pushOperand(inst.args[0]), ...this.pushOperand(inst.args[1]), { k: 'op', c, name });
+        break;
+      }
+      case 'icmp': {
+        const [c, name] = I_CMP[inst.sub];
+        out.push(...this.pushOperand(inst.args[0]), ...this.pushOperand(inst.args[1]), { k: 'op', c, name });
+        break;
+      }
+      case 'fcmp': {
+        const [c, name] = F_CMP[inst.sub];
+        out.push(...this.pushOperand(inst.args[0]), ...this.pushOperand(inst.args[1]), { k: 'op', c, name });
+        break;
+      }
+      case 'cast':
+        out.push(...this.pushOperand(inst.args[0]), inst.sub === 'i2f' ? { k: 'convert' } : { k: 'trunc' });
+        break;
+      case 'copy':
+        out.push(...this.pushOperand(inst.args[0]));
+        break;
+      case 'gget':
+        out.push({ k: 'gget', i: this.res.globalIndex(inst.sub) });
+        break;
+      case 'gset':
+        out.push(...this.pushOperand(inst.args[0]), { k: 'gset', i: this.res.globalIndex(inst.sub) });
+        break;
+      case 'load':
+        out.push(...this.pushOperand(inst.args[0]), { k: 'load', f64: inst.sub === 'f64' });
+        break;
+      case 'store':
+        out.push(...this.pushOperand(inst.args[0]), ...this.pushOperand(inst.args[1]), { k: 'store', f64: inst.sub === 'f64' });
+        break;
+      case 'print':
+        out.push(...this.pushOperand(inst.args[0]), { k: 'call', i: this.res.printIndex(inst.sub) });
+        break;
+      case 'call':
+        for (const a of inst.args) out.push(...this.pushOperand(a));
+        out.push({ k: 'call', i: this.res.callIndex(inst.sub) });
+        break;
+    }
   }
 
   private emitStraightLine(id: number): W[] {
     const out: W[] = [];
     for (const inst of this.byId.get(id)!.insts) {
-      switch (inst.kind) {
-        case 'ibin': {
-          const [c, name] = I_BIN[inst.sub];
-          out.push(...this.pushOperand(inst.args[0]), ...this.pushOperand(inst.args[1]), { k: 'op', c, name });
-          break;
-        }
-        case 'fbin': {
-          const [c, name] = F_BIN[inst.sub];
-          out.push(...this.pushOperand(inst.args[0]), ...this.pushOperand(inst.args[1]), { k: 'op', c, name });
-          break;
-        }
-        case 'icmp': {
-          const [c, name] = I_CMP[inst.sub];
-          out.push(...this.pushOperand(inst.args[0]), ...this.pushOperand(inst.args[1]), { k: 'op', c, name });
-          break;
-        }
-        case 'fcmp': {
-          const [c, name] = F_CMP[inst.sub];
-          out.push(...this.pushOperand(inst.args[0]), ...this.pushOperand(inst.args[1]), { k: 'op', c, name });
-          break;
-        }
-        case 'cast':
-          out.push(...this.pushOperand(inst.args[0]), inst.sub === 'i2f' ? { k: 'convert' } : { k: 'trunc' });
-          break;
-        case 'copy':
-          out.push(...this.pushOperand(inst.args[0]));
-          break;
-        case 'gget':
-          out.push({ k: 'gget', i: this.res.globalIndex(inst.sub) });
-          break;
-        case 'gset':
-          out.push(...this.pushOperand(inst.args[0]), { k: 'gset', i: this.res.globalIndex(inst.sub) });
-          break;
-        case 'load':
-          out.push(...this.pushOperand(inst.args[0]), { k: 'load', f64: inst.sub === 'f64' });
-          break;
-        case 'store':
-          out.push(...this.pushOperand(inst.args[0]), ...this.pushOperand(inst.args[1]), { k: 'store', f64: inst.sub === 'f64' });
-          break;
-        case 'print':
-          out.push(...this.pushOperand(inst.args[0]), { k: 'call', i: this.res.printIndex(inst.sub) });
-          break;
-        case 'call':
-          for (const a of inst.args) out.push(...this.pushOperand(a));
-          out.push({ k: 'call', i: this.res.callIndex(inst.sub) });
-          break;
-      }
-      if (inst.res !== null) out.push({ k: 'lset', i: inst.res });
+      if (inst.res !== null && this.inlined.has(inst.res)) continue; // folded into its single use
+      this.emitValue(inst, out);
+      if (inst.res !== null) out.push({ k: 'lset', i: this.li(inst.res) });
     }
     return out;
   }
@@ -280,28 +376,24 @@ class FuncGen {
     const conflict = copies.some((c) => c.src.tag === 'val' && dstSet.has(c.src.id));
     const out: W[] = [];
     if (!conflict) {
-      for (const c of copies) out.push(...this.pushOperand(c.src), { k: 'lset', i: c.dst });
+      for (const c of copies) out.push(...this.pushOperand(c.src), { k: 'lset', i: this.li(c.dst) });
       return out;
     }
     // Break cyclic/overlapping copies through scratch locals.
     const temps = copies.map((c) => this.allocScratch(c.ty));
     copies.forEach((c, i) => out.push(...this.pushOperand(c.src), { k: 'lset', i: temps[i] }));
-    copies.forEach((c, i) => out.push({ k: 'lget', i: temps[i] }, { k: 'lset', i: c.dst }));
+    copies.forEach((c, i) => out.push({ k: 'lget', i: temps[i] }, { k: 'lset', i: this.li(c.dst) }));
     return out;
   }
 
   private allocScratch(ty: IRType): number {
-    const idx = this.maxId + 1 + this.scratch.length;
     this.scratch.push(ty);
-    return idx;
+    return this.nextLocal++;
   }
 
-  /** Extra local declarations (everything beyond the parameters). */
+  /** Extra local declarations (everything beyond the parameters), in index order. */
   localTypes(): IRType[] {
-    const types: IRType[] = [];
-    for (let id = this.nparams; id <= this.maxId; id++) types.push(this.fn.valueType.get(id) ?? 'i32');
-    types.push(...this.scratch);
-    return types;
+    return [...this.localDeclTypes, ...this.scratch];
   }
 }
 
@@ -358,6 +450,8 @@ export interface CodegenResult {
   bytes: Uint8Array;
   wat: string;
   funcInstrCount: number;
+  localCount: number; // total declared locals across all functions (lower = better)
+  stackFolded: number; // values kept on the operand stack (no local at all)
 }
 
 export function codegen(mod: IRModule): CodegenResult {
@@ -483,6 +577,8 @@ export function codegen(mod: IRModule): CodegenResult {
 
   // code section
   let funcInstrCount = 0;
+  let localCount = 0;
+  let stackFolded = 0;
   const codeItems = gens.map((g) => {
     const body = new ByteWriter();
     const locals = g.localTypes();
@@ -498,6 +594,8 @@ export function codegen(mod: IRModule): CodegenResult {
     encodeBody(body, g.wtree);
     body.u8(0x0b);
     funcInstrCount += countInstrs(g.wtree);
+    localCount += locals.length;
+    stackFolded += g.foldedCount;
     const w = new ByteWriter();
     w.u32(body.bytes.length);
     w.raw(body.bytes);
@@ -514,6 +612,8 @@ export function codegen(mod: IRModule): CodegenResult {
     bytes: new Uint8Array(all.bytes),
     wat: emitWAT(mod, gens, imports),
     funcInstrCount,
+    localCount,
+    stackFolded,
   };
 }
 

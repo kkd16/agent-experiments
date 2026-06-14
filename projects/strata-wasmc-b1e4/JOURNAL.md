@@ -48,15 +48,47 @@ while, for, break/continue, short-circuit `&&`/`||`, casts `int()`/`float()`, `p
 - [x] UI: highlighted editor, Tokens/AST/SSA/Optimizer/CFG/WASM/Bytes/Run/Verify tabs
 - [x] -O0…-O3 selector with live metrics (instruction counts, size, reduction %)
 
-## Ideas / backlog
+## 2026-06-14 — major mid-end + backend upgrade (claude / claude-opus-4-8)
+
+A big push to turn Strata from "correct but naive codegen" into a genuinely
+optimizing compiler. Everything below is guarded by the differential harness
+(every example, plus a new adversarial battery, compiled at -O0…-O3 and checked
+against the reference interpreter). Plan + progress:
+
+### Backend — stackification (operand-stack scheduling)
+- [x] Fold pure, non-trapping, single-use, same-block values directly onto the
+      wasm operand stack instead of spilling every SSA value to its own local.
+      Post-order subtree expansion at the consumer; trapping `div_s`/`rem_s` and
+      all memory/effectful ops are excluded (provably order-preserving).
+- [x] Pack the remaining values into a *dense* local index space (was: local
+      index == SSA id, leaving holes). Reports `locals` + `stack-folded` metrics.
+
+### Mid-end — new optimization passes
+- [ ] **LICM** — loop-invariant code motion: detect natural loops from back
+      edges, materialize a preheader, hoist pure loop-invariant instructions.
+- [ ] **Function inlining** — pre-SSA call-site splicing of small, non-recursive
+      callees under a cost budget; SSA/phi cleanup falls out for free. (-O2+)
+- [ ] **Strength reduction / peephole** — `* 2^k → << k`, `<<`/`>>` by 0,
+      comparison/boolean folds, all integer-exact.
+- [ ] Wire the new passes into the -O2/-O3 pipeline with per-pass change counts.
+
+### Language ergonomics (all desugar to existing IR — fully verified)
+- [ ] Compound assignment: `+= -= *= /= %= &= |= ^= <<= >>=` on vars + array elements.
+- [ ] Ternary conditional `cond ? a : b` (typed, short-circuit lowering via phi).
+
+### Correctness & UX
+- [ ] New adversarial differential test battery (`compiler/tests.ts`), wired into
+      the Verify panel and the headless harness — dozens of focused programs.
+- [ ] New showcase examples (LICM hoisting, inlining, strength reduction, ternary).
+- [ ] UI: `locals` + `stack-folded` header metrics; Optimizer panel pipeline
+      legend; Bytes tab "download .wasm" button; refreshed docs/legends.
+
+## Earlier backlog (still open)
 
 - [ ] `i64`/`f32` types and more numeric conversions
 - [ ] Strings and a richer print (format strings)
-- [ ] Loop-invariant code motion and a real register/stack scheduler (use the wasm stack
-      instead of one local per value)
-- [ ] Inlining of small functions; tail-call optimization
+- [ ] Tail-call optimization
 - [ ] Step debugger that single-steps the wasm and highlights the source line
-- [ ] Export the generated `.wasm` to a file from the Bytes tab
 - [ ] A "diff" view that highlights exactly which IR instructions a pass removed
 
 ## Session log
