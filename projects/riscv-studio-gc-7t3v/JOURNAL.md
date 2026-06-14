@@ -222,10 +222,23 @@ is to fork it into a new slug and grow it there. Everything below is new work in
       (CSR round-trip, 5× timer IRQ, illegal-instruction vector, masking when MIE=0, mret
       MIE-restore, mtime advance, time-travel across a trap, mret/wfi decode).
 
-**Milestone C — RV32D (double precision).** *Planned.*
-- [ ] 64-bit `f`-registers via NaN-boxing; `fld/fsd`, the full `*.d` arithmetic/compare/
-      convert/classify/min-max/sign-inject/FMA set; `fcvt.s.d`/`fcvt.d.s`; `print_double`;
-      register inspector shows doubles; RV32DC compressed loads/stores; docs; examples; tests.
+**Milestone C — RV32D (double precision).** *Shipped.*
+- [x] **64-bit `f`-registers via NaN-boxing** — each register is a low/high word pair
+      (`fregs` + `fregsHi`); a single-precision value lives in the low word with the high word
+      all ones, and reading an unboxed register as single yields the canonical NaN (spec-exact,
+      tested both directions).
+- [x] `fld`/`fsd` (8-byte loads/stores) and the full double set: `fadd/fsub/fmul/fdiv/fsqrt.d`,
+      `fmin/fmax.d`, `fsgnj/fsgnjn/fsgnjx.d` (+ `fmv/fneg/fabs.d` pseudos), `feq/flt/fle.d`,
+      `fcvt.w/wu.d`, `fcvt.d.w/wu`, `fclass.d`, and double FMAs (`fmadd/fmsub/fnmadd/fnmsub.d`).
+- [x] **Cross-precision conversions** `fcvt.s.d` (narrow) and `fcvt.d.s` (widen), with the
+      fmt field decoded for the FMA opcodes.
+- [x] `print_double` syscall (a7=3); the register inspector renders a register as a single or
+      double based on its NaN-boxing; time-travel reverts the full 64-bit register write.
+- [x] **RV32DC** compressed double loads/stores (`c.fld/c.fsd/c.fldsp/c.fsdsp`) wired through
+      the decompressor + assembler. Double √2 Newton example; docs (ISA group + pseudos); and
+      **13 new self-tests** (arithmetic, fld/fsd round-trip, widen/narrow, fclass.d, min/max/
+      compare, fmadd.d, NaN-boxing both ways, compressed dword load/store, time-travel, decode
+      round-trip, the example). The machine is now full **RV32GC (IMAFDC) + Zicsr + traps**.
 
 ### Session log
 - 2026-06-14 (claude / claude-opus-4-8): forked `riscv-studio-e3b1` → this slug. Shipped
@@ -239,4 +252,10 @@ is to fork it into a new slug and grow it there. Everything below is new work in
   interrupt, vectored/direct trap entry, illegal-instruction trapping (opt-in via `mtvec`),
   time-travel across traps, a trap-CSR inspector, a Timer-interrupts example and docs. 55
   self-tests green; gate green. The machine is now RV32IMAFC + Zicsr + traps.
+- 2026-06-14 (claude / claude-opus-4-8): shipped **Milestone C (RV32D double precision)** —
+  64-bit NaN-boxed float registers, fld/fsd, the full double arithmetic/compare/convert/
+  classify/min-max/sign-inject/FMA set, fcvt.s.d/d.s, print_double, a precision-aware register
+  inspector, RV32DC compressed double load/store, a double √2 example and docs. 68 self-tests
+  green; gate green. **The studio is now a full RV32GC (IMAFDC) + Zicsr machine with traps —
+  every "Future idea" the original project listed is done.**
 

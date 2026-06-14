@@ -121,6 +121,9 @@ function renderFp(d: DecodedInstruction): string {
         if (m === 'fsgnj.s') return `fmv.s ${freg(d.rd)}, ${freg(d.rs1)}`;
         if (m === 'fsgnjn.s') return `fneg.s ${freg(d.rd)}, ${freg(d.rs1)}`;
         if (m === 'fsgnjx.s') return `fabs.s ${freg(d.rd)}, ${freg(d.rs1)}`;
+        if (m === 'fsgnj.d') return `fmv.d ${freg(d.rd)}, ${freg(d.rs1)}`;
+        if (m === 'fsgnjn.d') return `fneg.d ${freg(d.rd)}, ${freg(d.rs1)}`;
+        if (m === 'fsgnjx.d') return `fabs.d ${freg(d.rd)}, ${freg(d.rs1)}`;
       }
       return `${m} ${freg(d.rd)}, ${freg(d.rs1)}, ${freg(d.rs2)}`;
     case 'minmax':
@@ -131,6 +134,8 @@ function renderFp(d: DecodedInstruction): string {
       return `${m} ${reg(d.rd)}, ${freg(d.rs1)}${rmSuffix(d)}`;
     case 'cvt.s':
       return `${m} ${freg(d.rd)}, ${reg(d.rs1)}${rmSuffix(d)}`;
+    case 'cvt.f2f':
+      return `${m} ${freg(d.rd)}, ${freg(d.rs1)}${rmSuffix(d)}`;
     case 'mv.x':
     case 'fclass':
       return `${m} ${reg(d.rd)}, ${freg(d.rs1)}`;

@@ -400,6 +400,15 @@ function expand(
     case 'fabs.s':
       NEED(op, ops, 2);
       return [fpMicro('fsgnjx.s', { rd: parseFReg(ops[0]), rs1: parseFReg(ops[1]), rs2: parseFReg(ops[1]) }, line, source)];
+    case 'fmv.d':
+      NEED(op, ops, 2);
+      return [fpMicro('fsgnj.d', { rd: parseFReg(ops[0]), rs1: parseFReg(ops[1]), rs2: parseFReg(ops[1]) }, line, source)];
+    case 'fneg.d':
+      NEED(op, ops, 2);
+      return [fpMicro('fsgnjn.d', { rd: parseFReg(ops[0]), rs1: parseFReg(ops[1]), rs2: parseFReg(ops[1]) }, line, source)];
+    case 'fabs.d':
+      NEED(op, ops, 2);
+      return [fpMicro('fsgnjx.d', { rd: parseFReg(ops[0]), rs1: parseFReg(ops[1]), rs2: parseFReg(ops[1]) }, line, source)];
 
     // ---- Zicsr counter / convenience pseudos ----------------------------
     case 'rdcycle':
@@ -624,6 +633,10 @@ function expandFp(op: string, ops: string[], consts: Map<string, number>, line: 
     case 'cvt.s':
       NEED(op, list, 2);
       return mk({ rd: parseFReg(list[0]), rs1: parseReg(list[1]) });
+    case 'cvt.f2f':
+      // fcvt.s.d / fcvt.d.s — float → float precision conversion.
+      NEED(op, list, 2);
+      return mk({ rd: parseFReg(list[0]), rs1: parseFReg(list[1]) });
     case 'mv.x':
     case 'fclass':
       NEED(op, list, 2);
@@ -966,16 +979,17 @@ function encodeFp(m: MicroInstr, addr: number, symbols: Map<string, number>): nu
   const rm = (m.rm ?? 7) & 7;
   const f7 = spec.funct7 ?? 0;
 
+  const f3 = spec.funct3 ?? 0;
   switch (spec.kind) {
     case 'load': {
       const imm = checkRange(resolveImm(m.imm, addr, symbols), -2048, 2047, 'load offset');
-      return u32(((imm & 0xfff) << 20) | (rs1 << 15) | (2 << 12) | (rd << 7) | opc);
+      return u32(((imm & 0xfff) << 20) | (rs1 << 15) | (f3 << 12) | (rd << 7) | opc);
     }
     case 'store': {
       const imm = checkRange(resolveImm(m.imm, addr, symbols), -2048, 2047, 'store offset');
       const lo = imm & 0x1f;
       const hi = (imm >> 5) & 0x7f;
-      return u32((hi << 25) | (rs2 << 20) | (rs1 << 15) | (2 << 12) | (lo << 7) | opc);
+      return u32((hi << 25) | (rs2 << 20) | (rs1 << 15) | (f3 << 12) | (lo << 7) | opc);
     }
     case 'r-rm':
       return u32((f7 << 25) | (rs2 << 20) | (rs1 << 15) | (rm << 12) | (rd << 7) | opc);
@@ -984,17 +998,23 @@ function encodeFp(m: MicroInstr, addr: number, symbols: Map<string, number>): nu
     case 'sgnj':
     case 'minmax':
     case 'cmp':
-      return u32((f7 << 25) | (rs2 << 20) | (rs1 << 15) | ((spec.funct3 ?? 0) << 12) | (rd << 7) | opc);
+      return u32((f7 << 25) | (rs2 << 20) | (rs1 << 15) | (f3 << 12) | (rd << 7) | opc);
     case 'cvt.w':
     case 'cvt.s':
+    case 'cvt.f2f':
       return u32((f7 << 25) | ((spec.rs2 ?? 0) << 20) | (rs1 << 15) | (rm << 12) | (rd << 7) | opc);
     case 'mv.x':
     case 'fclass':
-      return u32((f7 << 25) | (rs1 << 15) | ((spec.funct3 ?? 0) << 12) | (rd << 7) | opc);
+      return u32((f7 << 25) | (rs1 << 15) | (f3 << 12) | (rd << 7) | opc);
     case 'mv.f':
       return u32((f7 << 25) | (rs1 << 15) | (rd << 7) | opc);
     case 'fma':
-      return u32(((m.rs3 ?? 0) & 0x1f) * 0x800_0000 + ((rs2 << 20) | (rs1 << 15) | (rm << 12) | (rd << 7) | opc));
+      // The format (fmt) rides in bits 26:25; rs3 in bits 31:27. Double sets fmt = 01.
+      return u32(
+        ((m.rs3 ?? 0) & 0x1f) * 0x800_0000 +
+          ((spec.dbl ? 1 : 0) << 25) +
+          ((rs2 << 20) | (rs1 << 15) | (rm << 12) | (rd << 7) | opc),
+      );
   }
 }
 

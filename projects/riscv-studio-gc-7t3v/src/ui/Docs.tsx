@@ -82,6 +82,22 @@ const GROUPS: { title: string; items: InsDoc[] }[] = [
     ],
   },
   {
+    title: 'D extension — double-precision float (RV32D)',
+    items: [
+      { m: 'fld / fsd', desc: 'load / store a 64-bit double — fld fd, off(rs1)' },
+      { m: 'fadd / fsub / fmul / fdiv .d', desc: 'IEEE-754 double arithmetic' },
+      { m: 'fsqrt.d', desc: 'double square root' },
+      { m: 'fmadd / fmsub / fnmadd / fnmsub .d', desc: 'fused multiply-add in double' },
+      { m: 'fmin / fmax .d', desc: 'minimum / maximum (NaN- and ±0-aware)' },
+      { m: 'fsgnj / fsgnjn / fsgnjx .d', desc: 'sign-injection (fmv/fneg/fabs.d)' },
+      { m: 'feq / flt / fle .d', desc: 'compares → an integer 0/1 in rd' },
+      { m: 'fcvt.w.d / fcvt.wu.d', desc: 'double → signed / unsigned int (saturating)' },
+      { m: 'fcvt.d.w / fcvt.d.wu', desc: 'signed / unsigned int → double' },
+      { m: 'fcvt.s.d / fcvt.d.s', desc: 'narrow double → single / widen single → double' },
+      { m: 'fclass.d', desc: 'classify rs1 → a 10-bit mask in rd' },
+    ],
+  },
+  {
     title: 'C extension — compressed 16-bit instructions (RV32C)',
     items: [
       { m: 'c.li / c.lui / c.mv', desc: 'load small immediate / upper immediate / register copy' },
@@ -148,6 +164,7 @@ const PSEUDO: InsDoc[] = [
   { m: 'beqz / bnez / blez / bgez / bltz / bgtz', desc: 'branch comparing rs against zero' },
   { m: 'bgt / ble / bgtu / bleu', desc: 'branches with swapped operands' },
   { m: 'fmv.s / fneg.s / fabs.s', desc: 'float copy / negate / absolute (via fsgnj*.s)' },
+  { m: 'fmv.d / fneg.d / fabs.d', desc: 'double copy / negate / absolute (via fsgnj*.d)' },
   { m: 'rdcycle / rdtime / rdinstret', desc: 'read a hardware counter into rd' },
   { m: 'csrr / csrw / csrs / csrc', desc: 'read / write / set / clear a CSR' },
   { m: 'frcsr / fscsr / frrm / fsrm / frflags / fsflags', desc: 'float CSR read/write shorthands' },

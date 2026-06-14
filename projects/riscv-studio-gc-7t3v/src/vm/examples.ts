@@ -546,6 +546,34 @@ on_timer:
         mret                     # return to the interrupted pc (mepc)
 `;
 
+const DOUBLE_SQRT = `# RV32D: Newton's method for sqrt(2) in DOUBLE precision.
+# Single precision (RV32F) only resolves ~7 digits; doubles carry ~15, so this
+# prints the full 1.4142135623730951.
+.text
+main:
+        li   t0, 2
+        fcvt.d.w fa0, t0         # x  = 2.0   (the radicand)
+        li   t0, 1
+        fcvt.d.w fs1, t0         # g  = 1.0   (initial guess)
+        li   t0, 2
+        fcvt.d.w fs2, t0         # two = 2.0  (constant divisor)
+        li   t1, 0
+        li   t2, 20              # iterations
+loop:
+        bge  t1, t2, done
+        fdiv.d ft0, fa0, fs1     # x / g
+        fadd.d ft0, fs1, ft0     # g + x/g
+        fdiv.d fs1, ft0, fs2     # g = (g + x/g) / 2
+        addi t1, t1, 1
+        j    loop
+done:
+        fmv.d fa0, fs1
+        li   a7, 3               # print_double
+        ecall
+        li   a7, 10
+        ecall
+`;
+
 export const EXAMPLES: readonly Example[] = [
   { id: 'hello', title: 'Hello, RISC-V', blurb: 'print_string syscall basics', focus: 'console', code: HELLO },
   { id: 'fib', title: 'Fibonacci', blurb: 'loops, registers, print_int', focus: 'console', code: FIB },
@@ -560,6 +588,7 @@ export const EXAMPLES: readonly Example[] = [
   { id: 'counters', title: 'Cycle counter', blurb: 'Zicsr rdcycle hardware counter', focus: 'console', code: COUNTERS },
   { id: 'compressed', title: 'Compressed (RVC)', blurb: 'RV32C 16-bit instructions', focus: 'console', code: COMPRESSED },
   { id: 'timerirq', title: 'Timer interrupts', blurb: 'mtvec/mret + CLINT timer (traps)', focus: 'console', code: TIMER_IRQ },
+  { id: 'double', title: 'Double precision √2', blurb: 'RV32D Newton iteration (15 digits)', focus: 'console', code: DOUBLE_SQRT },
   { id: 'mandelbrot', title: 'Mandelbrot (fixed)', blurb: 'Q12 fixed-point fractal → framebuffer', focus: 'framebuffer', code: MANDELBROT },
   { id: 'mandelf', title: 'Mandelbrot (float)', blurb: 'RV32F fractal → framebuffer', focus: 'framebuffer', code: MANDEL_FLOAT },
   { id: 'rings', title: 'Colour rings', blurb: 'memory-mapped graphics', focus: 'framebuffer', code: RINGS },

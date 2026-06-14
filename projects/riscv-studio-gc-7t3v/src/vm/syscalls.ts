@@ -4,7 +4,7 @@
 
 import type { Cpu } from './cpu';
 import { toHex } from './format';
-import { f32FromBits } from './fp';
+import { f32FromBits, f64FromBits } from './fp';
 
 export interface Syscall {
   readonly id: number;
@@ -16,6 +16,7 @@ export interface Syscall {
 export const SYSCALLS: readonly Syscall[] = [
   { id: 1, name: 'print_int', summary: 'print a0 as a signed decimal integer' },
   { id: 2, name: 'print_float', summary: 'print fa0 as a single-precision float' },
+  { id: 3, name: 'print_double', summary: 'print fa0 as a double-precision (RV32D) float' },
   { id: 4, name: 'print_string', summary: 'print the NUL-terminated string at address a0' },
   { id: 11, name: 'print_char', summary: 'print the low byte of a0 as a character' },
   { id: 34, name: 'print_hex', summary: 'print a0 as 0x-prefixed 8-digit hex' },
@@ -46,6 +47,15 @@ function formatFloat(x: number): string {
   return String(Number(x.toPrecision(7)));
 }
 
+/** Render a double-precision float (full ~15-digit precision). */
+function formatDouble(x: number): string {
+  if (Number.isNaN(x)) return 'nan';
+  if (x === Infinity) return 'inf';
+  if (x === -Infinity) return '-inf';
+  if (Number.isInteger(x)) return `${x}.0`;
+  return String(x);
+}
+
 /** Service an `ecall`. Mutates the CPU (output / exit) and reports whether to keep running. */
 export function handleEcall(cpu: Cpu): EcallResult {
   const which = cpu.regs[A7] | 0;
@@ -56,6 +66,9 @@ export function handleEcall(cpu: Cpu): EcallResult {
       return 'continue';
     case 2:
       cpu.print(formatFloat(f32FromBits(cpu.fregs[FA0])));
+      return 'continue';
+    case 3:
+      cpu.print(formatDouble(f64FromBits(cpu.fregs[FA0], cpu.fregsHi[FA0])));
       return 'continue';
     case 4:
       cpu.print(cpu.mem.readCString(a0 >>> 0));

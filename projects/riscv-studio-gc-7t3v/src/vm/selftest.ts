@@ -1087,6 +1087,279 @@ const TESTS: Test[] = [
       eq(cpu.status, 'halted', 'status');
     },
   },
+
+  // --- RV32D double precision ------------------------------------------------
+  {
+    name: 'RV32D: double arithmetic 3*4+2 == 14',
+    fn: () => {
+      const cpu = run(`
+        main:
+          li t0, 3
+          fcvt.d.w fa0, t0
+          li t1, 4
+          fcvt.d.w fa1, t1
+          fmul.d fa2, fa0, fa1
+          li t2, 2
+          fcvt.d.w fa3, t2
+          fadd.d fa2, fa2, fa3
+          fmv.d fa0, fa2
+          li a7, 3
+          ecall
+          li a7, 10
+          ecall
+      `);
+      eq(cpu.output, '14.0', 'double arithmetic');
+    },
+  },
+  {
+    name: 'RV32D: fld loads a π constant and print_double shows full precision',
+    fn: () => {
+      const cpu = run(`
+        .data
+        pi: .word 0x54442D18
+            .word 0x400921FB
+        .text
+        main:
+          la t0, pi
+          fld fa0, 0(t0)
+          li a7, 3
+          ecall
+          li a7, 10
+          ecall
+      `);
+      eq(cpu.output, '3.141592653589793', 'double π');
+    },
+  },
+  {
+    name: 'RV32D: fsd then fld round-trips a double through memory',
+    fn: () => {
+      const cpu = run(`
+        .data
+        src:  .word 0x54442D18
+              .word 0x400921FB
+        slot: .word 0
+              .word 0
+        .text
+        main:
+          la t0, src
+          fld fa0, 0(t0)
+          la t1, slot
+          fsd fa0, 0(t1)
+          fld fa1, 0(t1)
+          fmv.d fa0, fa1
+          li a7, 3
+          ecall
+          li a7, 10
+          ecall
+      `);
+      eq(cpu.output, '3.141592653589793', 'fsd/fld round-trip');
+    },
+  },
+  {
+    name: 'RV32D: fcvt.d.s widens then fcvt.s.d narrows back',
+    fn: () => {
+      const cpu = run(`
+        main:
+          li t0, 0x40490fdb       # single π bits
+          fmv.w.x fa0, t0
+          fcvt.d.s fa1, fa0       # widen single π -> double
+          fcvt.s.d fa2, fa1       # narrow back to single
+          fmv.s fa0, fa2
+          li a7, 2
+          ecall
+          li a7, 10
+          ecall
+      `);
+      assert(cpu.output.startsWith('3.14159'), `got: ${cpu.output}`);
+    },
+  },
+  {
+    name: 'RV32D: fclass.d of -0.0 (bit 3) and +∞ (bit 7)',
+    fn: () => {
+      const cpu = run(`
+        .data
+        negz: .word 0
+              .word 0x80000000
+        pinf: .word 0
+              .word 0x7FF00000
+        .text
+        main:
+          la t0, negz
+          fld fa0, 0(t0)
+          fclass.d a0, fa0        # -0.0 -> 1<<3 = 8
+          li a7, 1
+          ecall
+          li a0, ' '
+          li a7, 11
+          ecall
+          la t0, pinf
+          fld fa0, 0(t0)
+          fclass.d a0, fa0        # +inf -> 1<<7 = 128
+          li a7, 1
+          ecall
+          li a7, 10
+          ecall
+      `);
+      eq(cpu.output, '8 128', 'fclass.d');
+    },
+  },
+  {
+    name: 'RV32D: fmin.d / fmax.d and compares (flt.d/fle.d)',
+    fn: () => {
+      const cpu = run(`
+        main:
+          li t0, 3
+          fcvt.d.w fa0, t0        # 3.0
+          li t1, 7
+          fcvt.d.w fa1, t1        # 7.0
+          fmin.d fa2, fa0, fa1
+          fcvt.w.d a0, fa2        # 3
+          li a7, 1
+          ecall
+          li a0, ' '
+          li a7, 11
+          ecall
+          fmax.d fa2, fa0, fa1
+          fcvt.w.d a0, fa2        # 7
+          li a7, 1
+          ecall
+          li a0, ' '
+          li a7, 11
+          ecall
+          flt.d a0, fa0, fa1      # 1
+          li a7, 1
+          ecall
+          li a7, 10
+          ecall
+      `);
+      eq(cpu.output, '3 7 1', 'min/max/compare');
+    },
+  },
+  {
+    name: 'RV32D: fmadd.d fused multiply-add (2.5*4 + 1 = 11)',
+    fn: () => {
+      const cpu = run(`
+        .data
+        half: .word 0
+              .word 0x40040000     # 2.5
+        .text
+        main:
+          la t0, half
+          fld fa0, 0(t0)          # 2.5
+          li t1, 4
+          fcvt.d.w fa1, t1        # 4.0
+          li t2, 1
+          fcvt.d.w fa2, t2        # 1.0
+          fmadd.d fa3, fa0, fa1, fa2   # 2.5*4 + 1 = 11
+          fcvt.w.d a0, fa3
+          li a7, 1
+          ecall
+          li a7, 10
+          ecall
+      `);
+      eq(cpu.output, '11', 'fmadd.d');
+    },
+  },
+  {
+    name: 'RV32D: NaN-boxing — a single op on a register holding a double yields NaN',
+    fn: () => {
+      const cpu = run(`
+        .data
+        d: .word 0x54442D18
+           .word 0x400921FB
+        .text
+        main:
+          la t0, d
+          fld fa0, 0(t0)          # fa0 holds a double (NOT NaN-boxed)
+          fadd.s fa1, fa0, fa0    # used as single -> operands read as canonical NaN
+          fclass.s a0, fa1        # quiet NaN -> 1<<9 = 512
+          li a7, 1
+          ecall
+          li a7, 10
+          ecall
+      `);
+      eq(cpu.output, '512', 'unboxed double read as NaN under single ops');
+    },
+  },
+  {
+    name: 'RV32D: fmv writing a single NaN-boxes (double read of a boxed single is NaN)',
+    fn: () => {
+      const cpu = run(`
+        main:
+          li t0, 5
+          fcvt.s.w fa0, t0        # NaN-boxed single 5.0
+          fclass.d a0, fa0        # high half = 0xffffffff -> a NaN -> 1<<9 = 512
+          li a7, 1
+          ecall
+          li a7, 10
+          ecall
+      `);
+      eq(cpu.output, '512', 'boxed single read as double is NaN');
+    },
+  },
+  {
+    name: 'RV32DC: compressed double load/store (c.fsdsp / c.fldsp) round-trip',
+    fn: () => {
+      const cpu = run(`
+        .data
+        v: .word 0x54442D18
+           .word 0x400921FB
+        .text
+        main:
+          c.addi16sp -16
+          la t0, v
+          fld fa0, 0(t0)
+          c.fsdsp fa0, 0(sp)
+          c.fldsp fa1, 0(sp)
+          fmv.d fa0, fa1
+          c.addi16sp 16
+          li a7, 3
+          ecall
+          li a7, 10
+          ecall
+      `);
+      eq(cpu.output, '3.141592653589793', 'compressed double load/store');
+    },
+  },
+  {
+    name: 'RV32D: time-travel reverts a 64-bit float-register write',
+    fn: () => {
+      const cpu = new Cpu();
+      cpu.load(assemble(`
+        main:
+          li t0, 9
+          fcvt.d.w fa0, t0
+          li a7, 10
+          ecall
+      `));
+      cpu.step(); // li t0, 9
+      cpu.step(); // fcvt.d.w fa0, t0 -> 9.0
+      assert(cpu.fregsHi[10] !== 0 || cpu.fregs[10] !== 0, 'fa0 written');
+      cpu.stepBack();
+      eq(cpu.fregs[10], 0, 'fa0 low reverted');
+      eq(cpu.fregsHi[10], 0, 'fa0 high reverted');
+    },
+  },
+  {
+    name: 'RV32D: decode ⇄ disassemble round-trip for the double example',
+    fn: () => {
+      const result = assemble(EXAMPLES.find((e) => e.id === 'double')!.code);
+      assert(result.ok, `assembles: ${result.errors.map((e) => e.message).join('; ')}`);
+      for (const ins of result.instrs) {
+        const d = decode(ins.word);
+        assert(d.mnemonic !== 'unknown' && d.mnemonic !== '?', `bad decode 0x${ins.word.toString(16)}`);
+        assert(disassembleUnit(ins.word, ins.addr, ins.len).length > 0, 'disassembly empty');
+      }
+    },
+  },
+  {
+    name: 'example: double-precision Newton √2 ≈ 1.41421356237309…',
+    fn: () => {
+      const cpu = run(EXAMPLES.find((e) => e.id === 'double')!.code);
+      // 14+ correct digits — far beyond single precision's ~7 (the point of the demo).
+      assert(cpu.output.startsWith('1.41421356237309'), `got: ${cpu.output}`);
+    },
+  },
 ];
 
 export function runSelfTests(): TestResult[] {

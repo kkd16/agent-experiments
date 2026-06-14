@@ -11,7 +11,7 @@
 // IEEE-754 single <-> raw bits (a tiny "soft float" boundary)
 // ---------------------------------------------------------------------------
 
-const cvt = new DataView(new ArrayBuffer(4));
+const cvt = new DataView(new ArrayBuffer(8));
 
 /** Reinterpret a 32-bit pattern as the float it encodes. */
 export function f32FromBits(bits: number): number {
@@ -25,8 +25,23 @@ export function bitsFromF32(x: number): number {
   return cvt.getUint32(0, true);
 }
 
-/** The canonical quiet NaN RISC-V produces for invalid float results. */
+/** Reinterpret a 64-bit pattern (lo, hi little-endian halves) as the IEEE-754 double. */
+export function f64FromBits(lo: number, hi: number): number {
+  cvt.setUint32(0, lo >>> 0, true);
+  cvt.setUint32(4, hi >>> 0, true);
+  return cvt.getFloat64(0, true);
+}
+
+/** Raw 64-bit pattern of a double, as { lo, hi } little-endian halves. */
+export function bitsFromF64(x: number): { lo: number; hi: number } {
+  cvt.setFloat64(0, x, true);
+  return { lo: cvt.getUint32(0, true), hi: cvt.getUint32(4, true) };
+}
+
+/** The canonical quiet NaN RISC-V produces for invalid single-precision results. */
 export const CANONICAL_NAN = 0x7fc0_0000;
+/** High half of the canonical quiet NaN double (low half is 0). */
+export const CANONICAL_NAN_D_HI = 0x7ff8_0000;
 
 // ---------------------------------------------------------------------------
 // fcsr / rounding modes / accrued exception flags
@@ -138,6 +153,62 @@ export function fmaxBits(ab: number, bb: number): { bits: number; invalid: boole
   return { bits: a > b ? ab : bb, invalid: false };
 }
 
+/** The 10-bit classification mask returned by `fclass.d` (same bit meanings as `.s`). */
+export function fclassD(lo: number, hi: number): number {
+  const h = hi >>> 0;
+  const sign = (h >>> 31) & 1;
+  const exp = (h >>> 20) & 0x7ff;
+  const fracHi = h & 0xf_ffff;
+  const fracZero = fracHi === 0 && (lo >>> 0) === 0;
+  if (exp === 0x7ff) {
+    if (fracZero) return sign ? 1 << 0 : 1 << 7; // ±inf
+    return fracHi & 0x8_0000 ? 1 << 9 : 1 << 8; // quiet : signaling NaN
+  }
+  if (exp === 0) {
+    if (fracZero) return sign ? 1 << 3 : 1 << 4; // ±0
+    return sign ? 1 << 2 : 1 << 5; // ±subnormal
+  }
+  return sign ? 1 << 1 : 1 << 6; // ±normal
+}
+
+/** Whether the sign bit of a double (its high half) is set. */
+const dSign = (hi: number): boolean => (hi & 0x8000_0000) !== 0;
+
+/** IEEE min/max for doubles on raw {lo,hi} halves (NaN- and ±0-aware). */
+export function fminBitsD(
+  aLo: number, aHi: number, bLo: number, bHi: number,
+): { lo: number; hi: number; invalid: boolean } {
+  const a = f64FromBits(aLo, aHi);
+  const b = f64FromBits(bLo, bHi);
+  const an = Number.isNaN(a);
+  const bn = Number.isNaN(b);
+  if (an && bn) return { lo: 0, hi: CANONICAL_NAN_D_HI, invalid: true };
+  if (an) return { lo: bLo, hi: bHi, invalid: true };
+  if (bn) return { lo: aLo, hi: aHi, invalid: true };
+  if (a === 0 && b === 0) {
+    const neg = dSign(aHi) || dSign(bHi);
+    return { lo: 0, hi: neg ? 0x8000_0000 : 0, invalid: false };
+  }
+  return a < b ? { lo: aLo, hi: aHi, invalid: false } : { lo: bLo, hi: bHi, invalid: false };
+}
+
+export function fmaxBitsD(
+  aLo: number, aHi: number, bLo: number, bHi: number,
+): { lo: number; hi: number; invalid: boolean } {
+  const a = f64FromBits(aLo, aHi);
+  const b = f64FromBits(bLo, bHi);
+  const an = Number.isNaN(a);
+  const bn = Number.isNaN(b);
+  if (an && bn) return { lo: 0, hi: CANONICAL_NAN_D_HI, invalid: true };
+  if (an) return { lo: bLo, hi: bHi, invalid: true };
+  if (bn) return { lo: aLo, hi: aHi, invalid: true };
+  if (a === 0 && b === 0) {
+    const pos = !dSign(aHi) || !dSign(bHi);
+    return { lo: 0, hi: pos ? 0 : 0x8000_0000, invalid: false };
+  }
+  return a > b ? { lo: aLo, hi: aHi, invalid: false } : { lo: bLo, hi: bHi, invalid: false };
+}
+
 // ---------------------------------------------------------------------------
 // Instruction table
 // ---------------------------------------------------------------------------
@@ -154,17 +225,18 @@ export const FP_OPC = {
 
 /** How an FP instruction's operands are laid out + how it encodes. */
 export type FpKind =
-  | 'load' // flw   rd(f), off(rs1)
-  | 'store' // fsw   rs2(f), off(rs1)
+  | 'load' // flw/fld   rd(f), off(rs1)
+  | 'store' // fsw/fsd   rs2(f), off(rs1)
   | 'r-rm' // fadd/fsub/fmul/fdiv   rd(f), rs1(f), rs2(f) [, rm]
   | 'sqrt' // fsqrt  rd(f), rs1(f) [, rm]
   | 'sgnj' // fsgnj[n|x]  rd(f), rs1(f), rs2(f)
   | 'minmax' // fmin/fmax   rd(f), rs1(f), rs2(f)
   | 'cmp' // feq/flt/fle  rd(x), rs1(f), rs2(f)
-  | 'cvt.w' // fcvt.w.s/fcvt.wu.s   rd(x), rs1(f) [, rm]
-  | 'cvt.s' // fcvt.s.w/fcvt.s.wu   rd(f), rs1(x) [, rm]
+  | 'cvt.w' // fcvt.w.s/fcvt.wu.s (+ .d)   rd(x), rs1(f) [, rm]
+  | 'cvt.s' // fcvt.s.w/fcvt.s.wu (+ .d.w) rd(f), rs1(x) [, rm]
+  | 'cvt.f2f' // fcvt.s.d / fcvt.d.s   rd(f), rs1(f) [, rm]  (precision conversion)
   | 'mv.x' // fmv.x.w   rd(x), rs1(f)
-  | 'fclass' // fclass.s  rd(x), rs1(f)
+  | 'fclass' // fclass.s/.d  rd(x), rs1(f)
   | 'mv.f' // fmv.w.x   rd(f), rs1(x)
   | 'fma'; // fmadd/fmsub/fnmadd/fnmsub   rd(f), rs1(f), rs2(f), rs3(f) [, rm]
 
@@ -179,6 +251,8 @@ export interface FpSpec {
   readonly rs2?: number;
   /** True if funct3 carries a rounding mode (rather than a fixed selector). */
   readonly hasRm?: boolean;
+  /** True for the double-precision (D) form — the executor reads/writes 64-bit operands. */
+  readonly dbl?: boolean;
 }
 
 function fp(name: string, kind: FpKind, opcode: number, extra: Partial<FpSpec> = {}): FpSpec {
@@ -221,6 +295,43 @@ export const FP_SPECS: Record<string, FpSpec> = {
   'fmsub.s': fp('fmsub.s', 'fma', O.MSUB, { hasRm: true }),
   'fnmsub.s': fp('fnmsub.s', 'fma', O.NMSUB, { hasRm: true }),
   'fnmadd.s': fp('fnmadd.s', 'fma', O.NMADD, { hasRm: true }),
+
+  // --- RV32D double precision (fmt = 01) ---
+  'fld': fp('fld', 'load', O.LOAD_FP, { funct3: 3, dbl: true }),
+  'fsd': fp('fsd', 'store', O.STORE_FP, { funct3: 3, dbl: true }),
+
+  'fadd.d': fp('fadd.d', 'r-rm', O.OP_FP, { funct7: 0x01, hasRm: true, dbl: true }),
+  'fsub.d': fp('fsub.d', 'r-rm', O.OP_FP, { funct7: 0x05, hasRm: true, dbl: true }),
+  'fmul.d': fp('fmul.d', 'r-rm', O.OP_FP, { funct7: 0x09, hasRm: true, dbl: true }),
+  'fdiv.d': fp('fdiv.d', 'r-rm', O.OP_FP, { funct7: 0x0d, hasRm: true, dbl: true }),
+  'fsqrt.d': fp('fsqrt.d', 'sqrt', O.OP_FP, { funct7: 0x2d, rs2: 0, hasRm: true, dbl: true }),
+
+  'fsgnj.d': fp('fsgnj.d', 'sgnj', O.OP_FP, { funct7: 0x11, funct3: 0, dbl: true }),
+  'fsgnjn.d': fp('fsgnjn.d', 'sgnj', O.OP_FP, { funct7: 0x11, funct3: 1, dbl: true }),
+  'fsgnjx.d': fp('fsgnjx.d', 'sgnj', O.OP_FP, { funct7: 0x11, funct3: 2, dbl: true }),
+
+  'fmin.d': fp('fmin.d', 'minmax', O.OP_FP, { funct7: 0x15, funct3: 0, dbl: true }),
+  'fmax.d': fp('fmax.d', 'minmax', O.OP_FP, { funct7: 0x15, funct3: 1, dbl: true }),
+
+  'feq.d': fp('feq.d', 'cmp', O.OP_FP, { funct7: 0x51, funct3: 2, dbl: true }),
+  'flt.d': fp('flt.d', 'cmp', O.OP_FP, { funct7: 0x51, funct3: 1, dbl: true }),
+  'fle.d': fp('fle.d', 'cmp', O.OP_FP, { funct7: 0x51, funct3: 0, dbl: true }),
+
+  'fcvt.w.d': fp('fcvt.w.d', 'cvt.w', O.OP_FP, { funct7: 0x61, rs2: 0, hasRm: true, dbl: true }),
+  'fcvt.wu.d': fp('fcvt.wu.d', 'cvt.w', O.OP_FP, { funct7: 0x61, rs2: 1, hasRm: true, dbl: true }),
+  'fcvt.d.w': fp('fcvt.d.w', 'cvt.s', O.OP_FP, { funct7: 0x69, rs2: 0, hasRm: true, dbl: true }),
+  'fcvt.d.wu': fp('fcvt.d.wu', 'cvt.s', O.OP_FP, { funct7: 0x69, rs2: 1, hasRm: true, dbl: true }),
+
+  // Precision conversions: fcvt.s.d narrows (single result), fcvt.d.s widens (double result).
+  'fcvt.s.d': fp('fcvt.s.d', 'cvt.f2f', O.OP_FP, { funct7: 0x20, rs2: 1, hasRm: true }),
+  'fcvt.d.s': fp('fcvt.d.s', 'cvt.f2f', O.OP_FP, { funct7: 0x21, rs2: 0, hasRm: true, dbl: true }),
+
+  'fclass.d': fp('fclass.d', 'fclass', O.OP_FP, { funct7: 0x71, funct3: 1, rs2: 0, dbl: true }),
+
+  'fmadd.d': fp('fmadd.d', 'fma', O.MADD, { hasRm: true, dbl: true }),
+  'fmsub.d': fp('fmsub.d', 'fma', O.MSUB, { hasRm: true, dbl: true }),
+  'fnmsub.d': fp('fnmsub.d', 'fma', O.NMSUB, { hasRm: true, dbl: true }),
+  'fnmadd.d': fp('fnmadd.d', 'fma', O.NMADD, { hasRm: true, dbl: true }),
 };
 
 export const FP_MNEMONICS: ReadonlySet<string> = new Set(Object.keys(FP_SPECS));
@@ -245,19 +356,21 @@ export function decodeFpMnemonic(
   funct3: number,
   rs2: number,
 ): string {
+  // For the fused-multiply-add opcodes the format rides in bits 26:25 (= funct7 & 3).
+  const fmaD = (funct7 & 3) === 1;
   switch (opcode) {
     case O.LOAD_FP:
-      return funct3 === 2 ? 'flw' : '?';
+      return funct3 === 2 ? 'flw' : funct3 === 3 ? 'fld' : '?';
     case O.STORE_FP:
-      return funct3 === 2 ? 'fsw' : '?';
+      return funct3 === 2 ? 'fsw' : funct3 === 3 ? 'fsd' : '?';
     case O.MADD:
-      return 'fmadd.s';
+      return fmaD ? 'fmadd.d' : 'fmadd.s';
     case O.MSUB:
-      return 'fmsub.s';
+      return fmaD ? 'fmsub.d' : 'fmsub.s';
     case O.NMSUB:
-      return 'fnmsub.s';
+      return fmaD ? 'fnmsub.d' : 'fnmsub.s';
     case O.NMADD:
-      return 'fnmadd.s';
+      return fmaD ? 'fnmadd.d' : 'fnmadd.s';
     case O.OP_FP:
       switch (funct7) {
         case 0x00:
@@ -284,6 +397,33 @@ export function decodeFpMnemonic(
           return funct3 === 0 ? 'fmv.x.w' : 'fclass.s';
         case 0x78:
           return 'fmv.w.x';
+        // --- double precision (fmt = 01) ---
+        case 0x01:
+          return 'fadd.d';
+        case 0x05:
+          return 'fsub.d';
+        case 0x09:
+          return 'fmul.d';
+        case 0x0d:
+          return 'fdiv.d';
+        case 0x2d:
+          return 'fsqrt.d';
+        case 0x11:
+          return ['fsgnj.d', 'fsgnjn.d', 'fsgnjx.d'][funct3] ?? '?';
+        case 0x15:
+          return ['fmin.d', 'fmax.d'][funct3] ?? '?';
+        case 0x51:
+          return { 0: 'fle.d', 1: 'flt.d', 2: 'feq.d' }[funct3] ?? '?';
+        case 0x61:
+          return rs2 === 0 ? 'fcvt.w.d' : 'fcvt.wu.d';
+        case 0x69:
+          return rs2 === 0 ? 'fcvt.d.w' : 'fcvt.d.wu';
+        case 0x20:
+          return 'fcvt.s.d';
+        case 0x21:
+          return 'fcvt.d.s';
+        case 0x71:
+          return 'fclass.d';
         default:
           return '?';
       }
