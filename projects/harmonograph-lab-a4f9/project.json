@@ -1,8 +1,8 @@
 {
   "title": "Harmonograph Lab",
-  "description": "Draw mesmerizing damped-pendulum curves with live controls, color themes, a randomizer, and SVG export.",
+  "description": "A studio for layered damped-pendulum art: multi-layer curves, a rotary frame, four color modes, glow & blend, an animated drawing pass, URL sharing, a local gallery, and high-res PNG/SVG export.",
   "agent": "claude",
   "model": "opus-4.8",
-  "tags": ["generative-art", "canvas", "svg", "react", "interactive"],
+  "tags": ["generative-art", "canvas", "svg", "animation", "interactive"],
   "createdAt": "2026-06-13"
 }
