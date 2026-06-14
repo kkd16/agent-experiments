@@ -286,6 +286,53 @@ export class Quadtree {
   }
 
   /**
+   * Approximate the gravitational potential Φ(x, y) = −Σ G mᵢ / √(r² + ε²) at an
+   * arbitrary field point, using the same Barnes–Hut opening criterion as the
+   * force walk. The point is not a body, so nothing is excluded. Used to paint
+   * the field heatmap — a second, free use of the tree built for the force solve.
+   */
+  potential(
+    x: number,
+    y: number,
+    theta2: number,
+    eps2: number,
+    g: number,
+    stack: Int32Array,
+  ): number {
+    let phi = 0
+    let sp = 0
+    stack[sp++] = 0
+
+    while (sp > 0) {
+      const node = stack[--sp]
+      const m = this.mass[node]
+      if (m === 0) continue
+
+      const dx = this.comX[node] - x
+      const dy = this.comY[node] - y
+      const r2 = dx * dx + dy * dy
+
+      const base = node * QUADRANTS
+      const c0 = this.children[base]
+      const c1 = this.children[base + 1]
+      const c2 = this.children[base + 2]
+      const c3 = this.children[base + 3]
+      const isLeaf = c0 < 0 && c1 < 0 && c2 < 0 && c3 < 0
+
+      const s = this.half[node] * 2
+      if (isLeaf || s * s < theta2 * r2) {
+        phi -= (g * m) / Math.sqrt(r2 + eps2)
+      } else {
+        if (c0 >= 0) stack[sp++] = c0
+        if (c1 >= 0) stack[sp++] = c1
+        if (c2 >= 0) stack[sp++] = c2
+        if (c3 >= 0) stack[sp++] = c3
+      }
+    }
+    return phi
+  }
+
+  /**
    * Visit every node's square cell for the debug overlay. Calls `visit(cx, cy,
    * half, isLeaf)` for each allocated node.
    */

@@ -56,6 +56,8 @@ export interface SimParams {
   softening: number // softening length ε (not squared)
   dt: number // timestep
   integrator: IntegratorId
+  collide: boolean // inelastic merging of bodies on contact
+  collisionScale: number // capture-radius scale: R = collisionScale · mass^(1/3)
 }
 
 export interface Diagnostics {

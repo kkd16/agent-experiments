@@ -45,6 +45,8 @@ export class Simulation {
     softening: 2,
     dt: 0.05,
     integrator: 'velocity-verlet',
+    collide: false,
+    collisionScale: 0.8,
   }
 
   /** Total simulated time elapsed. */
@@ -52,11 +54,27 @@ export class Simulation {
   /** Number of steps taken since the last reset. */
   steps = 0
 
+  /** Total number of merge events since the last reset. */
+  mergeCount = 0
+  /**
+   * Recent accretion flashes for the renderer: world position, an age counted in
+   * steps (older = more faded), and the merged mass (drives the flash radius).
+   * Kept as parallel plain arrays — the list is short and the renderer only reads.
+   */
+  readonly flashX: number[] = []
+  readonly flashY: number[] = []
+  readonly flashAge: number[] = []
+  readonly flashMass: number[] = []
+
   private initialEnergy = NaN
   private accelDirty = true
+  private dead: Uint8Array
+  // A lazily-built second engine used only to forecast trajectories.
+  private predictor: Simulation | null = null
 
   constructor(capacity = 30000) {
     this.capacity = capacity
+    this.dead = new Uint8Array(capacity)
     const f = () => new Float64Array(capacity)
     this.posX = f()
     this.posY = f()
@@ -96,8 +114,17 @@ export class Simulation {
     this.mass.set(mass.subarray(0, this.count))
     this.time = 0
     this.steps = 0
+    this.mergeCount = 0
+    this.clearFlashes()
     this.initialEnergy = NaN
     this.accelDirty = true
+  }
+
+  private clearFlashes(): void {
+    this.flashX.length = 0
+    this.flashY.length = 0
+    this.flashAge.length = 0
+    this.flashMass.length = 0
   }
 
   /** Append a single body (e.g. from a user slingshot). Returns success. */
@@ -157,6 +184,9 @@ export class Simulation {
     if (n === 0) return
     const dt = this.params.dt
 
+    // Age and prune accretion flashes before any new merges spawn fresh ones.
+    if (this.flashAge.length > 0) this.ageFlashes()
+
     switch (this.params.integrator) {
       case 'euler':
         this.stepEuler(n, dt)
@@ -173,8 +203,186 @@ export class Simulation {
         break
     }
 
+    if (this.params.collide && this.count > 1) this.handleCollisions()
+
     this.time += dt
     this.steps++
+  }
+
+  /** Flash lifetime in steps; older flashes are dropped. */
+  private static readonly FLASH_LIFE = 28
+
+  private ageFlashes(): void {
+    const age = this.flashAge
+    for (let i = 0; i < age.length; i++) age[i]++
+    // Oldest flashes sit at the front (FIFO); drop those past their lifetime.
+    let drop = 0
+    while (drop < age.length && age[drop] > Simulation.FLASH_LIFE) drop++
+    if (drop > 0) {
+      this.flashX.splice(0, drop)
+      this.flashY.splice(0, drop)
+      this.flashAge.splice(0, drop)
+      this.flashMass.splice(0, drop)
+    }
+  }
+
+  private pushFlash(x: number, y: number, m: number): void {
+    this.flashX.push(x)
+    this.flashY.push(y)
+    this.flashAge.push(0)
+    this.flashMass.push(m)
+    const MAX = 200
+    if (this.flashX.length > MAX) {
+      const over = this.flashX.length - MAX
+      this.flashX.splice(0, over)
+      this.flashY.splice(0, over)
+      this.flashAge.splice(0, over)
+      this.flashMass.splice(0, over)
+    }
+  }
+
+  /**
+   * Perfectly-inelastic collisions. Each body has a capture radius
+   * R = collisionScale · mass^(1/3); two bodies merge when their centres fall
+   * within R_i + R_j. Neighbours are found with a uniform spatial hash whose cell
+   * size is twice the largest capture radius, so any colliding pair lies within a
+   * 3×3 block of cells. Merges conserve total mass, momentum and the centre of
+   * mass; the surviving array is then compacted in place. Returns the merge count.
+   */
+  private handleCollisions(): number {
+    const n = this.count
+    if (n < 2) return 0
+    const scale = this.params.collisionScale
+    if (scale <= 0) return 0
+    const { posX, posY, velX, velY, mass } = this
+    const dead = this.dead
+    for (let i = 0; i < n; i++) dead[i] = 0
+
+    let maxMass = 0
+    for (let i = 0; i < n; i++) if (mass[i] > maxMass) maxMass = mass[i]
+    const maxR = scale * Math.cbrt(maxMass)
+    const cell = Math.max(maxR * 2, 1e-6)
+    const inv = 1 / cell
+    // Pack a signed cell coordinate into one positive number; the offset keeps
+    // both axes non-negative for the spatial-coordinate ranges we ever simulate.
+    const OFF = 1 << 20
+    const STRIDE = 1 << 21
+    const key = (gx: number, gy: number) => (gx + OFF) * STRIDE + (gy + OFF)
+
+    const grid = new Map<number, number[]>()
+    for (let i = 0; i < n; i++) {
+      const gx = Math.floor(posX[i] * inv)
+      const gy = Math.floor(posY[i] * inv)
+      const k = key(gx, gy)
+      let bucket = grid.get(k)
+      if (!bucket) {
+        bucket = []
+        grid.set(k, bucket)
+      }
+      bucket.push(i)
+    }
+
+    let merges = 0
+    for (let i = 0; i < n; i++) {
+      if (dead[i]) continue
+      const gx = Math.floor(posX[i] * inv)
+      const gy = Math.floor(posY[i] * inv)
+      for (let ox = -1; ox <= 1; ox++) {
+        for (let oy = -1; oy <= 1; oy++) {
+          const bucket = grid.get(key(gx + ox, gy + oy))
+          if (!bucket) continue
+          for (let t = 0; t < bucket.length; t++) {
+            const j = bucket[t]
+            if (j === i || dead[j]) continue
+            const dx = posX[j] - posX[i]
+            const dy = posY[j] - posY[i]
+            const d2 = dx * dx + dy * dy
+            const sum = scale * (Math.cbrt(mass[i]) + Math.cbrt(mass[j]))
+            if (d2 < sum * sum) {
+              const mi = mass[i]
+              const mj = mass[j]
+              const M = mi + mj
+              posX[i] = (posX[i] * mi + posX[j] * mj) / M
+              posY[i] = (posY[i] * mi + posY[j] * mj) / M
+              velX[i] = (velX[i] * mi + velX[j] * mj) / M
+              velY[i] = (velY[i] * mi + velY[j] * mj) / M
+              mass[i] = M
+              dead[j] = 1
+              merges++
+              this.pushFlash(posX[i], posY[i], M)
+            }
+          }
+        }
+      }
+    }
+
+    if (merges > 0) {
+      let w = 0
+      for (let r = 0; r < n; r++) {
+        if (dead[r]) continue
+        if (w !== r) {
+          posX[w] = posX[r]
+          posY[w] = posY[r]
+          velX[w] = velX[r]
+          velY[w] = velY[r]
+          mass[w] = mass[r]
+          this.accX[w] = this.accX[r]
+          this.accY[w] = this.accY[r]
+        }
+        w++
+      }
+      this.count = w
+      this.accelDirty = true
+      this.mergeCount += merges
+    }
+    return merges
+  }
+
+  /** The `k` heaviest bodies, by descending mass — used to seed orbit forecasts. */
+  heaviestIndices(k: number): number[] {
+    const n = this.count
+    const idx = new Array<number>(n)
+    for (let i = 0; i < n; i++) idx[i] = i
+    idx.sort((a, b) => this.mass[b] - this.mass[a])
+    return idx.slice(0, Math.min(k, n))
+  }
+
+  /**
+   * Forecast the future paths of the given bodies by evolving a private copy of
+   * the whole system forward `steps` timesteps and sampling every `stride`
+   * steps. Gravity from all bodies is included, so the forecast is faithful (up
+   * to numerical error and any future collisions, which the shadow run ignores so
+   * that body indices stay stable). Returns one flat [x0,y0,x1,y1,…] path per
+   * index, in world coordinates.
+   */
+  predict(indices: number[], steps: number, stride: number): Float64Array[] {
+    if (this.count === 0 || indices.length === 0 || steps <= 0) return []
+    if (!this.predictor) this.predictor = new Simulation(this.capacity)
+    const p = this.predictor
+    p.setBodies(this.count, this.posX, this.posY, this.velX, this.velY, this.mass)
+    p.params = { ...this.params, collide: false }
+
+    const m = indices.length
+    const maxSamples = Math.floor(steps / stride) + 2
+    const paths = indices.map(() => new Float64Array(maxSamples * 2))
+    for (let k = 0; k < m; k++) {
+      const idx = indices[k]
+      paths[k][0] = p.posX[idx]
+      paths[k][1] = p.posY[idx]
+    }
+    let s = 1
+    for (let step = 1; step <= steps; step++) {
+      p.step()
+      if (step % stride === 0 && s < maxSamples) {
+        for (let k = 0; k < m; k++) {
+          const idx = indices[k]
+          paths[k][s * 2] = p.posX[idx]
+          paths[k][s * 2 + 1] = p.posY[idx]
+        }
+        s++
+      }
+    }
+    return paths.map((path) => path.subarray(0, s * 2))
   }
 
   // Explicit (forward) Euler — uses the acceleration at the *start* of the step

@@ -1,7 +1,7 @@
 // The control sidebar: presets, simulation parameters, integrator selection and
 // rendering options. Pure presentation — every value and setter is owned by App.
 
-import type { RenderOptions } from '../render/Renderer'
+import type { ColorBy, RenderOptions } from '../render/Renderer'
 import type { ColorMapId } from '../render/colormap'
 import { COLORMAP_IDS } from '../render/colormap'
 import { INTEGRATORS } from '../sim/types'
@@ -30,6 +30,10 @@ export interface SidebarProps {
   onSlingMass: (m: number) => void
   followCom: boolean
   onFollowCom: (v: boolean) => void
+  predict: boolean
+  onPredict: (v: boolean) => void
+  predictHorizon: number
+  onPredictHorizon: (n: number) => void
 }
 
 const integrator = INTEGRATORS.reduce<Record<string, (typeof INTEGRATORS)[number]>>((acc, it) => {
@@ -144,6 +148,45 @@ export function Sidebar(p: SidebarProps) {
           onChange={(v) => p.onSubSteps(Math.round(v))}
           title="Sub-steps per rendered frame — raises simulation speed"
         />
+        <Toggle
+          label="Collisions (merge)"
+          checked={p.params.collide}
+          onChange={(v) => p.onParams({ collide: v })}
+          title="Bodies that touch merge inelastically, conserving mass and momentum"
+        />
+        {p.params.collide && (
+          <Slider
+            label="Capture radius"
+            value={p.params.collisionScale}
+            min={0.1}
+            max={3}
+            step={0.1}
+            onChange={(v) => p.onParams({ collisionScale: v })}
+            format={(v) => v.toFixed(1)}
+            title="Merge distance scale: capture radius R = scale · mass^(1/3)"
+          />
+        )}
+      </Section>
+
+      <Section title="Forecast" defaultOpen={false}>
+        <Toggle
+          label="Predict orbits"
+          checked={p.predict}
+          onChange={p.onPredict}
+          title="Forecast future paths of the heaviest bodies (and the selected one) by evolving a shadow copy of the system"
+        />
+        {p.predict && (
+          <Slider
+            label="Horizon"
+            value={p.predictHorizon}
+            min={100}
+            max={1500}
+            step={50}
+            onChange={(v) => p.onPredictHorizon(Math.round(v))}
+            format={(v) => `${v} steps`}
+            title="How far ahead to forecast (effective length is capped for large N)"
+          />
+        )}
       </Section>
 
       <Section title="Rendering">
@@ -153,12 +196,13 @@ export function Sidebar(p: SidebarProps) {
           options={COLORMAP_IDS.map((id) => ({ value: id, label: id }))}
           onChange={(v) => p.onRender({ colorMap: v })}
         />
-        <Segmented<'speed' | 'mass'>
+        <Segmented<ColorBy>
           label="Colour by"
           value={p.render.colorBy}
           options={[
             { value: 'speed', label: 'Speed' },
             { value: 'mass', label: 'Mass' },
+            { value: 'accel', label: 'Accel.' },
           ]}
           onChange={(v) => p.onRender({ colorBy: v })}
         />
@@ -197,6 +241,18 @@ export function Sidebar(p: SidebarProps) {
           checked={p.render.showQuadtree}
           onChange={(v) => p.onRender({ showQuadtree: v })}
           title="Visualise the Barnes–Hut spatial subdivision"
+        />
+        <Toggle
+          label="Potential field"
+          checked={p.render.showField}
+          onChange={(v) => p.onRender({ showField: v })}
+          title="Heatmap of the gravitational potential, sampled through the Barnes–Hut tree (replaces motion trails while on)"
+        />
+        <Toggle
+          label="Legend & scale bar"
+          checked={p.render.showLegend}
+          onChange={(v) => p.onRender({ showLegend: v })}
+          title="Show the colour-bar legend and the world-unit scale bar"
         />
       </Section>
 

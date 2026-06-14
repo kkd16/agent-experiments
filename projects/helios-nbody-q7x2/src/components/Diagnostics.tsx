@@ -13,6 +13,9 @@ interface Props {
   exactEnergy: boolean
   collapsed: boolean
   onToggle: () => void
+  /** Cumulative merge events (only meaningful when collisions are enabled). */
+  mergeCount: number
+  collideOn: boolean
 }
 
 function fmt(v: number, digits = 2): string {
@@ -22,7 +25,16 @@ function fmt(v: number, digits = 2): string {
   return v.toFixed(digits)
 }
 
-export function DiagnosticsDock({ diag, energySeries, momentumSeries, exactEnergy, collapsed, onToggle }: Props) {
+export function DiagnosticsDock({
+  diag,
+  energySeries,
+  momentumSeries,
+  exactEnergy,
+  collapsed,
+  onToggle,
+  mergeCount,
+  collideOn,
+}: Props) {
   const drift = diag?.energyDrift
   const driftPct = drift != null && Number.isFinite(drift) ? drift * 100 : null
   const driftClass =
@@ -74,6 +86,7 @@ export function DiagnosticsDock({ diag, energySeries, momentumSeries, exactEnerg
               )}
             />
             <Stat label="L (ang. mom.)" value={fmt(diag?.angularMomentum ?? NaN)} />
+            {collideOn && <Stat label="Merges" value={mergeCount.toLocaleString()} />}
           </div>
         </div>
       )}

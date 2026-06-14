@@ -28,6 +28,8 @@ export function About({ onClose }: Props) {
           centre of mass. A node of width <code>s</code> seen at distance <code>d</code> is treated
           as a single point mass when <code>s/d &lt; θ</code>. Turn on <em>Show quadtree</em> to watch
           space subdivide around dense regions, and drag <em>θ</em> to trade accuracy for speed.
+          Flip on <em>Potential field</em> to sample that same tree across the screen and paint the
+          gravitational wells the bodies are falling into.
         </p>
 
         <h2>Symplectic integration</h2>
@@ -49,17 +51,39 @@ export function About({ onClose }: Props) {
           ε resolves tight encounters but demands a smaller timestep.
         </p>
 
+        <h2>Collisions &amp; accretion</h2>
+        <p>
+          Turn on <em>Collisions</em> and bodies that touch <strong>merge inelastically</strong>,
+          conserving total mass, momentum and the centre of mass — the merged body inherits a
+          larger capture radius <code>R = scale · m^(1/3)</code>, so a growing seed sweeps up its
+          neighbours faster and faster. Neighbours are found with a uniform spatial hash, so the
+          whole pass stays linear. Fling a heavy <em>Slingshot</em> body through a galaxy and watch
+          it accrete a trail of stars.
+        </p>
+
+        <h2>Forecasting orbits</h2>
+        <p>
+          <em>Predict orbits</em> evolves a hidden copy of the entire system forward in time and
+          draws the future paths of the heaviest bodies and whichever body you have selected. Because
+          it integrates the real N-body forces, the forecast bends as the system does. Click any body
+          to <strong>inspect</strong> its live mass, speed and two-body orbital energy relative to the
+          system's primary.
+        </p>
+
         <h2>Try this</h2>
         <ul>
           <li>Load <em>Galaxy Collision</em> and watch tidal tails and bridges form.</li>
-          <li>Run <em>Cold Collapse</em> to see violent relaxation build a smooth halo from chaos.</li>
-          <li>Switch the integrator to <em>Explicit Euler</em> on any scenario and watch the energy trace climb.</li>
-          <li>Set drag mode to <em>Slingshot</em>, crank up the spawn mass, and fling a rogue black hole through a galaxy.</li>
+          <li>Open <em>Figure-Eight</em>, turn on orbit prediction, then switch to <em>Explicit Euler</em> and watch the choreography unravel.</li>
+          <li>Run the <em>Pythagorean 3-Body</em> problem — deterministic, yet it ends by ejecting a body and leaving a binary.</li>
+          <li>Enable <em>Collisions</em> on <em>Cold Collapse</em> to watch a swarm accrete into a handful of massive clumps.</li>
+          <li>Click a planet in <em>Solar System</em> to read its orbital energy, then <em>Share</em> a permalink to your setup.</li>
         </ul>
 
         <p className="about-foot">
           Built with React + TypeScript and a hand-rolled Barnes–Hut engine running on typed arrays.
-          No WebGL, no physics library — just maths and a Canvas.
+          No WebGL, no physics library — just maths and a Canvas. Shortcuts: Space play/pause,
+          <code>.</code> step, <code>f</code> fit, <code>t</code> trails, <code>c</code> collisions,
+          <code>p</code> predict, <code>r</code> reseed, <code>s</code> share, <code>e</code> PNG.
         </p>
       </div>
     </div>
