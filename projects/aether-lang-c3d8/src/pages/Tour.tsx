@@ -127,6 +127,36 @@ len [10, 20, 30]   // => 3`}</pre>
       </section>
 
       <section>
+        <h2>Type classes (overloading)</h2>
+        <p>
+          A <strong>type class</strong> names an operation that many types can implement, and an{' '}
+          <strong>instance</strong> implements it for one type. Inference produces a{' '}
+          <em>qualified</em> type like <code>∀a. Disp a =&gt; a -&gt; String</code>: the{' '}
+          <code>Disp a =&gt;</code> means "for any <code>a</code> that has a <code>Disp</code>{' '}
+          instance".
+        </p>
+        <pre className="snippet">{`class Disp a where
+  disp : a -> String
+in
+instance Disp Int  where disp = fn n -> show n in
+instance Disp Bool where disp = fn b -> if b then "yes" else "no" in
+
+(disp 42, disp true)              // ("42", "yes")`}</pre>
+        <p>
+          Instances can carry a <strong>context</strong>: to show a list you must be able to show
+          its elements, written <code>instance Disp a =&gt; Disp (List a)</code>. Aether resolves
+          every constraint and compiles classes to <strong>dictionary passing</strong> — an instance
+          becomes a record of methods, a constrained function takes the dictionary as a hidden
+          argument, and a method call is a field access. Open the <strong>Classes</strong> tab to see
+          the elaborated core; both backends run it unchanged.
+        </p>
+        <pre className="snippet">{`instance Disp a => Disp (List a) where
+  disp = fn xs -> "[" ^ join ", " (map disp xs) ^ "]"
+in
+disp [1, 2, 3]                    // "[1, 2, 3]"`}</pre>
+      </section>
+
+      <section>
         <h2>List comprehensions</h2>
         <p>
           <code>[ e | x &lt;- xs, guard, y &lt;- ys ]</code> builds a list from one or more{' '}

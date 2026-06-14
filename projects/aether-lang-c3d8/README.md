@@ -45,6 +45,12 @@ Aether is an ML-family expression language. Everything is an expression; there a
   sugar over `concat` / `map` / `if`, so they're fully inferred and run on both backends.
 - **Type inference** — full Hindley–Milner (Algorithm W) with let-generalization; no type
   annotations anywhere. `let id = fn x -> x` is `∀ a. a -> a`.
+- **Type classes** — `class Disp a where disp : a -> String in …` and
+  `instance Disp Int where disp = … in …` add *principled overloading*. Inference produces
+  **qualified types** (`∀a. Disp a => a -> String`), resolves each constraint to an instance
+  (instances may carry a context, e.g. `instance Disp a => Disp (List a)`), and compiles classes to
+  **dictionary passing** — entirely as an elaboration into the core language, so both backends run
+  them unchanged. The **Classes** tab shows the elaborated core.
 
 ### Two backends
 
@@ -96,7 +102,9 @@ source ─▶ lexer ─▶ parser ─▶ HM inference ─▶ optimizer        �
 | `src/lang/ast.ts` | the typed AST, patterns, and type-expression syntax |
 | `src/lang/parser.ts` | Pratt (precedence-climbing) parser; application is juxtaposition |
 | `src/lang/types.ts` | type representation (incl. rows), pretty-printing |
-| `src/lang/infer.ts` | Algorithm W: unification (with row unification), let-generalization |
+| `src/lang/infer.ts` | Algorithm W: unification (with row unification), let-generalization, type-class constraint solving |
+| `src/lang/classes.ts` | type-class evidence + dictionary-passing elaboration into core AST |
+| `src/lang/unparse.ts` | core-AST pretty-printer (renders the elaborated dictionaries) |
 | `src/lang/exhaustive.ts` | Maranget's pattern-usefulness algorithm (exhaustiveness + redundancy) |
 | `src/lang/optimize.ts` | constant folding, dead-branch elimination, short-circuit simplification |
 | `src/lang/bytecode.ts` | opcodes + disassembler |
