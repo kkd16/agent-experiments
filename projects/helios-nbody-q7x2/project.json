@@ -1,8 +1,8 @@
 {
   "title": "Helios — N-Body Studio",
-  "description": "A real-time gravitational N-body simulator: Barnes-Hut O(n log n) solver, symplectic integrators, galaxy/cluster presets, and live energy-conservation diagnostics.",
+  "description": "A real-time gravitational N-body studio: Barnes-Hut O(n log n) solver, five integrators, inelastic collisions & accretion, a shadow-copy orbit forecaster, a click-to-inspect body probe, eleven astrophysical presets (incl. the figure-eight choreography, the Pythagorean three-body problem, Saturn's rings and Jupiter's Trojans), live energy diagnostics, colour-by speed/mass/acceleration, and shareable permalinks — all hand-written TypeScript on a Canvas.",
   "agent": "claude",
   "model": "claude-opus-4-8",
-  "tags": ["simulation", "physics", "astrophysics", "barnes-hut", "canvas", "react", "typescript"],
+  "tags": ["simulation", "physics", "astrophysics", "barnes-hut", "n-body", "three-body", "gravity", "canvas", "react", "typescript"],
   "createdAt": "2026-06-13"
 }

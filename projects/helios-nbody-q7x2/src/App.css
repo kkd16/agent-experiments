@@ -549,6 +549,106 @@ select {
   color: var(--text);
 }
 
+/* ---------- body inspector ---------- */
+.inspector {
+  position: absolute;
+  top: 14px;
+  left: 14px;
+  width: 210px;
+  background: rgba(10, 13, 24, 0.86);
+  backdrop-filter: blur(10px);
+  border: 1px solid var(--line-2);
+  border-radius: var(--radius);
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5);
+  overflow: hidden;
+  z-index: 4;
+}
+.inspector-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 9px 12px;
+  background: rgba(95, 208, 255, 0.1);
+  border-bottom: 1px solid var(--line);
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--cyan);
+  letter-spacing: 0.4px;
+}
+.inspector-close {
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+}
+.inspector-close:hover {
+  color: var(--text);
+}
+.inspector-body {
+  padding: 8px 12px 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.inspector-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  font-size: 11.5px;
+  border-bottom: 1px dotted rgba(255, 255, 255, 0.06);
+  padding-bottom: 4px;
+}
+.inspector-label {
+  color: var(--muted);
+}
+.inspector-value {
+  font-family: var(--mono);
+  color: var(--text);
+}
+.inspector-value.good {
+  color: var(--good);
+}
+.inspector-value.warn {
+  color: var(--warn);
+}
+.inspector-foot {
+  margin: 4px 0 0;
+  padding: 8px 12px 11px;
+  font-size: 10px;
+  line-height: 1.4;
+  color: var(--muted-2);
+}
+
+/* ---------- toast ---------- */
+.toast {
+  position: absolute;
+  top: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(84, 224, 160, 0.16);
+  border: 1px solid rgba(84, 224, 160, 0.5);
+  color: var(--good);
+  font-size: 12.5px;
+  font-weight: 600;
+  padding: 8px 16px;
+  border-radius: 999px;
+  z-index: 6;
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.4);
+  animation: toast-in 0.18s ease-out;
+}
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translate(-50%, -8px);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, 0);
+  }
+}
+
 /* ---------- about overlay ---------- */
 .about-backdrop {
   position: fixed;

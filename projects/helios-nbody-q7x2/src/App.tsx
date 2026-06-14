@@ -3,21 +3,26 @@ import './App.css'
 import { Simulation } from './sim/Simulation'
 import { Camera } from './render/Camera'
 import { Renderer } from './render/Renderer'
-import type { RenderOptions } from './render/Renderer'
+import type { RenderOptions, RenderOverlay } from './render/Renderer'
 import type { Diagnostics, SimParams } from './sim/types'
 import { presetById } from './sim/presets'
 import { Ring } from './util/ring'
 import { Sidebar } from './components/Sidebar'
 import type { Series } from './components/Plot'
 import { DiagnosticsDock } from './components/Diagnostics'
+import { Inspector } from './components/Inspector'
+import type { InspectInfo } from './components/Inspector'
 import { About } from './components/About'
 import {
   DEFAULT_PARAMS,
   DEFAULT_RENDER,
   EXACT_ENERGY_MAX,
+  decodeScenario,
+  encodeScenario,
   loadSettings,
   saveSettings,
 } from './state'
+import type { ScenarioConfig } from './state'
 
 interface Hud {
   fps: number
@@ -35,7 +40,21 @@ interface Sling {
 }
 
 const persisted = loadSettings()
+// A scenario can be supplied via the URL hash (a shared permalink). Parse once.
+const shared = (() => {
+  try {
+    return decodeScenario(window.location.hash)
+  } catch {
+    return null
+  }
+})()
+const sharedPreset = shared?.preset && presetById(shared.preset).id === shared.preset ? shared.preset : null
 const EMPTY_SERIES: Series = { color: '#888', data: new Float64Array(0), length: 0, start: 0 }
+
+// Trajectory forecasting: how many frames between shadow re-runs, and a budget on
+// total (steps × bodies) so a forecast never blows the frame on a huge system.
+const PREDICT_EVERY = 6
+const PREDICT_BUDGET = 400_000
 
 export default function App() {
   // ----- imperative engine singletons (live in refs, never re-created) -----
@@ -48,6 +67,9 @@ export default function App() {
 
   const energyRing = useRef(new Ring(240))
   const momentumRing = useRef(new Ring(240))
+  // Latest forecast paths, recomputed periodically and drawn every frame.
+  const trajRef = useRef<{ paths: Float64Array[]; colors: string[] } | null>(null)
+  const lastMergeRef = useRef(0)
 
   // Misc refs that must stay current inside the rAF loop / event handlers.
   const dprRef = useRef(1)
@@ -58,19 +80,23 @@ export default function App() {
     mode: 'pan' | 'slingshot'
     lastX: number
     lastY: number
+    downX: number
+    downY: number
+    moved: boolean
     startWX: number
     startWY: number
   } | null>(null)
 
   // ----- React state (UI) -----
-  const [presetId, setPresetId] = useState('spiral-galaxy')
-  const [count, setCount] = useState(() => presetById('spiral-galaxy').defaultCount)
-  const [seed, setSeed] = useState(1)
-  const [params, setParams] = useState<SimParams>({ ...DEFAULT_PARAMS })
-  const [subSteps, setSubSteps] = useState<number>(persisted?.subSteps ?? 1)
+  const [presetId, setPresetId] = useState(sharedPreset ?? 'spiral-galaxy')
+  const [count, setCount] = useState(() => shared?.count ?? presetById(sharedPreset ?? 'spiral-galaxy').defaultCount)
+  const [seed, setSeed] = useState(shared?.seed ?? 1)
+  const [params, setParams] = useState<SimParams>({ ...DEFAULT_PARAMS, ...(shared?.params ?? {}) })
+  const [subSteps, setSubSteps] = useState<number>(shared?.subSteps ?? persisted?.subSteps ?? 1)
   const [renderOpts, setRenderOpts] = useState<RenderOptions>({
     ...DEFAULT_RENDER,
     ...(persisted?.render ?? {}),
+    ...(shared?.render ?? {}),
   })
   const [running, setRunning] = useState(true)
   const [mode, setMode] = useState<'pan' | 'slingshot'>('pan')
@@ -79,17 +105,23 @@ export default function App() {
   const [showAbout, setShowAbout] = useState(false)
   const [diagCollapsed, setDiagCollapsed] = useState(false)
   const [sling, setSling] = useState<Sling | null>(null)
+  const [predict, setPredict] = useState(false)
+  const [predictHorizon, setPredictHorizon] = useState(600)
+  const [selectedIndex, setSelectedIndex] = useState(-1)
+  const [inspect, setInspect] = useState<InspectInfo | null>(null)
+  const [copied, setCopied] = useState(false)
 
   const [diag, setDiag] = useState<Diagnostics | null>(null)
   const [series, setSeries] = useState<{ energy: Series; momentum: Series } | null>(null)
   const [hud, setHud] = useState<Hud>({ fps: 0, n: 0, time: 0, steps: 0, exact: true })
+  const [mergeCount, setMergeCount] = useState(0)
 
   // Live-control mirror read by the animation loop and pointer handlers. Synced
   // from React state inside an effect (never written during render).
-  const liveRef = useRef({ running, subSteps, renderOpts, followCom, mode, slingMass })
+  const liveRef = useRef({ running, subSteps, renderOpts, followCom, mode, slingMass, predict, predictHorizon, selectedIndex })
   useEffect(() => {
-    liveRef.current = { running, subSteps, renderOpts, followCom, mode, slingMass }
-  }, [running, subSteps, renderOpts, followCom, mode, slingMass])
+    liveRef.current = { running, subSteps, renderOpts, followCom, mode, slingMass, predict, predictHorizon, selectedIndex }
+  }, [running, subSteps, renderOpts, followCom, mode, slingMass, predict, predictHorizon, selectedIndex])
 
   const preset = presetById(presetId)
 
@@ -108,11 +140,13 @@ export default function App() {
     cameraRef.current.fitExtent(res.viewExtent)
     energyRing.current.clear()
     momentumRing.current.clear()
+    trajRef.current = null
+    lastMergeRef.current = 0
     return res.params
   }, [])
 
-  // Initial build (once). The default scenario's recommended params already match
-  // DEFAULT_PARAMS, so no state update is needed here.
+  // Initial build (once). A shared permalink keeps its own params; otherwise the
+  // default scenario's recommended params already match DEFAULT_PARAMS.
   useEffect(() => {
     loadScenario(presetId, count, seed)
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -164,7 +198,30 @@ export default function App() {
         cam.centerX = cx
         cam.centerY = cy
       }
-      rendererRef.current!.render(sim, cam, ctrl.renderOpts)
+
+      // Recompute the orbit forecast periodically (cost-capped for large N).
+      if (ctrl.predict && sim.count > 0) {
+        if (frame % PREDICT_EVERY === 0) {
+          const steps = Math.max(20, Math.min(ctrl.predictHorizon, Math.floor(PREDICT_BUDGET / sim.count)))
+          const stride = Math.max(1, Math.floor(steps / 100))
+          const heavy = sim.heaviestIndices(8)
+          const sel = ctrl.selectedIndex
+          const indices = sel >= 0 && sel < sim.count && !heavy.includes(sel) ? [...heavy, sel] : heavy
+          const paths = sim.predict(indices, steps, stride)
+          const colors = indices.map((idx) =>
+            idx === sel ? 'rgba(255,212,121,0.95)' : 'rgba(120,180,255,0.6)',
+          )
+          trajRef.current = { paths, colors }
+        }
+      } else if (trajRef.current) {
+        trajRef.current = null
+      }
+
+      const overlay: RenderOverlay = {
+        trajectories: trajRef.current ?? undefined,
+        selected: ctrl.selectedIndex,
+      }
+      rendererRef.current!.render(sim, cam, ctrl.renderOpts, overlay)
 
       frame++
       if (frame % 7 === 0) {
@@ -181,6 +238,15 @@ export default function App() {
           momentum: momentumRing.current.series('#5fd0ff'),
         })
         setHud({ fps, n: sim.count, time: sim.time, steps: sim.steps, exact })
+        if (sim.mergeCount !== lastMergeRef.current) {
+          // Merges shuffle body indices — a stale selection would point elsewhere.
+          if (ctrl.selectedIndex >= 0) setSelectedIndex(-1)
+          lastMergeRef.current = sim.mergeCount
+          setMergeCount(sim.mergeCount)
+        }
+        const sel = ctrl.selectedIndex
+        if (sel >= 0 && sel < sim.count) setInspect(computeInspect(sim, sel, d.comX, d.comY))
+        else if (sel < 0) setInspect(null)
       }
     }
     raf = requestAnimationFrame(loop)
@@ -241,27 +307,90 @@ export default function App() {
     cam.fitExtent(ext * 1.1)
   }, [])
 
-  // ----- keyboard shortcuts -----
   const stepOnce = useCallback(() => {
     simRef.current?.step()
   }, [])
+
+  // ----- share / export (kept current via a ref for the keyboard handler) -----
+  const doShare = useCallback(() => {
+    const cfg: ScenarioConfig = { preset: presetId, count, seed, params, render: renderOpts, subSteps }
+    const frag = encodeScenario(cfg)
+    try {
+      window.history.replaceState(null, '', '#' + frag)
+    } catch {
+      /* ignore */
+    }
+    try {
+      const url = `${window.location.origin}${window.location.pathname}#${frag}`
+      navigator.clipboard?.writeText(url)
+    } catch {
+      /* clipboard unavailable */
+    }
+    setCopied(true)
+    window.setTimeout(() => setCopied(false), 1800)
+  }, [presetId, count, seed, params, renderOpts, subSteps])
+
+  const doExport = useCallback(() => {
+    const canvas = canvasRef.current
+    if (!canvas) return
+    try {
+      const url = canvas.toDataURL('image/png')
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `helios-${presetId}-${Date.now()}.png`
+      a.click()
+    } catch {
+      /* tainted/sandboxed canvas — ignore */
+    }
+  }, [presetId])
+
+  const handleReseed = useCallback(() => {
+    const sd = (Math.random() * 2 ** 31) | 0
+    setSeed(sd)
+    setSelectedIndex(-1)
+    const p = loadScenario(presetId, count, sd)
+    if (p) setParams((prev) => ({ ...prev, ...p }))
+  }, [presetId, count, loadScenario])
+
+  // Keep the latest action closures reachable from the (deps-free) key handler.
+  const actionsRef = useRef({ doShare, doExport, fitView, stepOnce, reseed: handleReseed })
+  useEffect(() => {
+    actionsRef.current = { doShare, doExport, fitView, stepOnce, reseed: handleReseed }
+  }, [doShare, doExport, fitView, stepOnce, handleReseed])
+
+  // ----- keyboard shortcuts -----
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.target instanceof HTMLInputElement || e.target instanceof HTMLSelectElement) return
+      const a = actionsRef.current
       if (e.code === 'Space') {
         e.preventDefault()
         setRunning((r) => !r)
       } else if (e.key === '.') {
-        stepOnce()
+        a.stepOnce()
       } else if (e.key === 'f') {
-        fitView()
+        a.fitView()
+      } else if (e.key === 't') {
+        setRenderOpts((r) => ({ ...r, trails: !r.trails }))
+      } else if (e.key === 'c') {
+        setParams((p) => ({ ...p, collide: !p.collide }))
+      } else if (e.key === 'p') {
+        setPredict((v) => !v)
+      } else if (e.key === 'r') {
+        a.reseed()
+      } else if (e.key === 's') {
+        a.doShare()
+      } else if (e.key === 'e') {
+        a.doExport()
+      } else if (e.key === 'Escape') {
+        setSelectedIndex(-1)
       }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [stepOnce, fitView])
+  }, [])
 
-  // ----- pointer interaction (pan / slingshot) -----
+  // ----- pointer interaction (pan / pick / slingshot) -----
   const deviceCoords = (e: React.PointerEvent) => {
     const rect = (e.currentTarget as HTMLCanvasElement).getBoundingClientRect()
     const dpr = dprRef.current
@@ -273,12 +402,41 @@ export default function App() {
     }
   }
 
+  const pickBody = (sx: number, sy: number) => {
+    const sim = simRef.current!
+    const cam = cameraRef.current
+    const thresh = 18 * dprRef.current
+    const thresh2 = thresh * thresh
+    let best = -1
+    let bestD2 = Infinity
+    for (let i = 0; i < sim.count; i++) {
+      const dx = cam.worldToScreenX(sim.posX[i]) - sx
+      const dy = cam.worldToScreenY(sim.posY[i]) - sy
+      const d2 = dx * dx + dy * dy
+      if (d2 < bestD2) {
+        bestD2 = d2
+        best = i
+      }
+    }
+    setSelectedIndex(best >= 0 && bestD2 <= thresh2 ? best : -1)
+  }
+
   const onPointerDown = (e: React.PointerEvent) => {
     ;(e.currentTarget as HTMLCanvasElement).setPointerCapture(e.pointerId)
     const { sx, sy, cssX, cssY } = deviceCoords(e)
     const cam = cameraRef.current
     if (liveRef.current.mode === 'pan') {
-      dragRef.current = { active: true, mode: 'pan', lastX: sx, lastY: sy, startWX: 0, startWY: 0 }
+      dragRef.current = {
+        active: true,
+        mode: 'pan',
+        lastX: sx,
+        lastY: sy,
+        downX: sx,
+        downY: sy,
+        moved: false,
+        startWX: 0,
+        startWY: 0,
+      }
       if (followCom) setFollowCom(false)
     } else {
       dragRef.current = {
@@ -286,6 +444,9 @@ export default function App() {
         mode: 'slingshot',
         lastX: sx,
         lastY: sy,
+        downX: sx,
+        downY: sy,
+        moved: false,
         startWX: cam.screenToWorldX(sx),
         startWY: cam.screenToWorldY(sy),
       }
@@ -301,6 +462,7 @@ export default function App() {
       cameraRef.current.panByPixels(sx - drag.lastX, sy - drag.lastY)
       drag.lastX = sx
       drag.lastY = sy
+      if (Math.hypot(sx - drag.downX, sy - drag.downY) > 4 * dprRef.current) drag.moved = true
     } else {
       setSling((s) => (s ? { ...s, x1: cssX, y1: cssY } : s))
     }
@@ -309,8 +471,8 @@ export default function App() {
   const onPointerUp = (e: React.PointerEvent) => {
     const drag = dragRef.current
     if (!drag?.active) return
+    const { sx, sy } = deviceCoords(e)
     if (drag.mode === 'slingshot') {
-      const { sx, sy } = deviceCoords(e)
       const cam = cameraRef.current
       const endWX = cam.screenToWorldX(sx)
       const endWY = cam.screenToWorldY(sy)
@@ -318,6 +480,9 @@ export default function App() {
       const vy = (endWY - drag.startWY) * 0.5
       simRef.current!.addBody(drag.startWX, drag.startWY, vx, vy, liveRef.current.slingMass)
       setSling(null)
+    } else if (!drag.moved) {
+      // A click without a drag selects (or deselects) the nearest body.
+      pickBody(sx, sy)
     }
     dragRef.current = null
   }
@@ -331,19 +496,19 @@ export default function App() {
     const n = def.defaultCount
     setPresetId(id)
     setCount(n)
+    setSelectedIndex(-1)
     firstSizedRef.current = true // keep current viewport; just refit
     applyParams(loadScenario(id, n, seed))
   }
   const handleCount = (n: number) => {
     setCount(n)
+    setSelectedIndex(-1)
     applyParams(loadScenario(presetId, n, seed))
   }
-  const handleReseed = () => {
-    const sd = (Math.random() * 2 ** 31) | 0
-    setSeed(sd)
-    applyParams(loadScenario(presetId, count, sd))
+  const handleReset = () => {
+    setSelectedIndex(-1)
+    applyParams(loadScenario(presetId, count, seed))
   }
-  const handleReset = () => applyParams(loadScenario(presetId, count, seed))
 
   return (
     <div className="app">
@@ -370,6 +535,12 @@ export default function App() {
           </button>
           <button type="button" className="btn" onClick={fitView} title="Fit view (f)">
             ⊡ Fit
+          </button>
+          <button type="button" className="btn" onClick={doShare} title="Copy a permalink to this scenario (s)">
+            🔗 Share
+          </button>
+          <button type="button" className="btn" onClick={doExport} title="Download the current frame as a PNG (e)">
+            ⤓ PNG
           </button>
         </div>
 
@@ -406,6 +577,10 @@ export default function App() {
           onSlingMass={setSlingMass}
           followCom={followCom}
           onFollowCom={setFollowCom}
+          predict={predict}
+          onPredict={setPredict}
+          predictHorizon={predictHorizon}
+          onPredictHorizon={setPredictHorizon}
         />
 
         <main className="stage" ref={containerRef}>
@@ -436,6 +611,8 @@ export default function App() {
               <circle cx={sling.x0} cy={sling.y0} r={4} fill="#ffd479" />
             </svg>
           )}
+          {inspect && <Inspector info={inspect} onClose={() => setSelectedIndex(-1)} />}
+          {copied && <div className="toast">Permalink copied to clipboard</div>}
           <DiagnosticsDock
             diag={diag}
             energySeries={series?.energy ?? EMPTY_SERIES}
@@ -443,6 +620,8 @@ export default function App() {
             exactEnergy={hud.exact}
             collapsed={diagCollapsed}
             onToggle={() => setDiagCollapsed((c) => !c)}
+            mergeCount={mergeCount}
+            collideOn={params.collide}
           />
         </main>
       </div>
@@ -450,6 +629,47 @@ export default function App() {
       {showAbout && <About onClose={() => setShowAbout(false)} />}
     </div>
   )
+}
+
+/** Live orbital readout for the selected body, relative to the heaviest body. */
+function computeInspect(sim: Simulation, sel: number, comX: number, comY: number): InspectInfo {
+  const m = sim.mass[sel]
+  const vx = sim.velX[sel]
+  const vy = sim.velY[sel]
+  const speed = Math.hypot(vx, vy)
+  const distCom = Math.hypot(sim.posX[sel] - comX, sim.posY[sel] - comY)
+
+  let hi = 0
+  let mm = -Infinity
+  for (let i = 0; i < sim.count; i++) {
+    if (sim.mass[i] > mm) {
+      mm = sim.mass[i]
+      hi = i
+    }
+  }
+
+  let distCentral: number | null = null
+  let specificEnergy: number | null = null
+  let semiMajor: number | null = null
+  let period: number | null = null
+  let bound: boolean | null = null
+  if (hi !== sel) {
+    const r = Math.hypot(sim.posX[sel] - sim.posX[hi], sim.posY[sel] - sim.posY[hi])
+    distCentral = r
+    const dvx = vx - sim.velX[hi]
+    const dvy = vy - sim.velY[hi]
+    const vrel2 = dvx * dvx + dvy * dvy
+    const mu = sim.params.g * (mm + m)
+    const eps = 0.5 * vrel2 - mu / Math.max(r, 1e-9)
+    specificEnergy = eps
+    bound = eps < 0
+    if (bound) {
+      const a = -mu / (2 * eps)
+      semiMajor = a
+      period = 2 * Math.PI * Math.sqrt((a * a * a) / mu)
+    }
+  }
+  return { index: sel, mass: m, speed, distCom, distCentral, specificEnergy, semiMajor, period, bound }
 }
 
 function HudStat({ label, value }: { label: string; value: string }) {
