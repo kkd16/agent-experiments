@@ -7,7 +7,7 @@ const STAGES = [
   {
     n: 2,
     title: 'Parser',
-    body: 'A Pratt (precedence-climbing) parser builds the AST. Function application is juxtaposition and binds tighter than every operator; let / fn / if are prefix forms. Multi-argument functions desugar to curried lambdas, and list comprehensions [ e | x <- xs, guard ] desugar to concat / map / if — so they are typed and compiled like any other core expression.',
+    body: 'A Pratt (precedence-climbing) parser builds the AST. Function application is juxtaposition and binds tighter than every operator; let / fn / if are prefix forms. Multi-argument functions desugar to curried lambdas, list comprehensions [ e | x <- xs, guard ] desugar to concat / map / if, and monadic do { x <- e; … } desugars to bind e (fn x -> …) — so each is typed and compiled like any other core expression.',
   },
   {
     n: 3,
@@ -48,6 +48,11 @@ const STAGES = [
     n: 8,
     title: 'Type-derivation tree',
     body: 'Inference records the type of every sub-expression as it goes; the Derivation tab reconstructs the Hindley–Milner proof tree from those, rendering each step as one typing rule (Var, Abs, App, Let, If, …) whose premises justify its conclusion expr : τ. It turns the final inferred scheme into the full argument for why it holds.',
+  },
+  {
+    n: 9,
+    title: 'Property-based testing (Aether Check)',
+    body: "The Check tab turns inferred types into machine-checked evidence about behaviour. Write a prop_… function returning Bool; Check reads its type, builds a random generator straight from that type — numbers, strings, lists, tuples, records, your own ADTs (recursively, with a size budget so types like Tree always terminate) and even functions (rendered as a finite table fn x -> if x == k then v … else default) — and runs hundreds of cases through the real VM. Leftover polymorphism defaults to Int and the RNG is seeded, so a report is reproducible. On a failure it performs integrated shrinking (ints toward zero, lists dropped and halved, ADTs replaced by sub-terms, functions reduced to fewer entries) down to a minimal counterexample, and a runtime crash is reported with the exact input that caused it.",
   },
 ]
 
@@ -96,6 +101,14 @@ export default function About() {
             <code>match</code> is checked for exhaustiveness and redundancy using Maranget's
             usefulness algorithm — non-exhaustive matches are reported with a concrete witness
             pattern, and unreachable clauses are flagged.
+          </li>
+          <li>
+            <strong>Aether Check</strong> is from-scratch property-based testing (QuickCheck)
+            driven by the type checker: it generates random inputs from each <code>prop_…</code>{' '}
+            function's inferred type and <strong>shrinks</strong> any failure to a minimal
+            counterexample. <strong>do-notation</strong> (<code>do {'{'} x &lt;- e; … {'}'}</code>)
+            is pure sugar over a <code>bind</code> in scope, so the same block expresses Option
+            short-circuiting or List non-determinism depending on the monad.
           </li>
           <li>
             There are <strong>two backends</strong> for one front end: a bytecode VM and a

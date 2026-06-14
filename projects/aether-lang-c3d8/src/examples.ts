@@ -486,6 +486,90 @@ let total = fn xs -> match mconcat (MkSum 0) (map MkSum xs) with MkSum n -> n in
 , mconcat [] [[1, 2], [3], [4, 5]] )`,
   },
   {
+    id: 'do-notation',
+    title: 'Monadic do-notation',
+    blurb: 'do { x <- e; … } desugars to bind — Option short-circuits, List branches.',
+    visual: false,
+    code: `// do-notation is pure sugar over a 'bind' in scope:
+//   do { x <- e ; rest }  ⇒  bind e (fn x -> rest)
+//   do { e ; rest }       ⇒  bind e (fn _ -> rest)
+// Pick a bind and the same do-block expresses different effects.
+
+type Opt a = None | Some a in
+
+// --- the Option (Maybe) monad: short-circuit on the first None ---
+let bind = fn m k -> match m with None -> None | Some x -> k x in
+let safeDiv = fn a b -> if b == 0 then None else Some (a / b) in
+
+let chain = fn x ->
+  do {
+    y <- safeDiv 100 x ;   // None here aborts the whole block
+    z <- safeDiv y 2 ;
+    Some (z + 1)
+  } in
+
+// --- the List monad: every bind branches (cartesian product) ---
+let pythag =
+  let bind = fn m k -> concat (map k m) in   // shadow bind locally
+  do {
+    a <- range 1 21 ;
+    b <- range a 21 ;
+    c <- range b 21 ;
+    if a * a + b * b == c * c then [ (a, b, c) ] else []
+  } in
+
+( chain 5      // Some 11
+, chain 0      // None  — division by zero short-circuits
+, pythag )     // every Pythagorean triple with sides ≤ 20`,
+  },
+  {
+    id: 'property',
+    title: 'Property-based testing',
+    blurb: 'Open the Check tab: laws are tested on random inputs, failures shrink.',
+    visual: false,
+    code: `// Aether Check — QuickCheck, driven by the type checker.
+// Open the "Check" tab and press "Run property tests": each prop_* function
+// is fed random inputs generated from its INFERRED type, and any failure is
+// shrunk to a minimal counterexample.
+
+let rec insert = fn x xs ->
+  match xs with
+    [] -> [x]
+  | h :: t -> if x <= h then x :: xs else h :: insert x t in
+
+let rec sort = fn xs ->
+  match xs with [] -> [] | h :: t -> insert h (sort t) in
+
+let rec isSorted = fn xs ->
+  match xs with
+    [] -> true
+  | x :: rest ->
+      match rest with [] -> true | y :: _ -> if x <= y then isSorted rest else false in
+
+// Laws that hold for every list (Check reports ✓ passed):
+let prop_rev_involutive = fn xs -> reverse (reverse xs) == xs in
+let prop_sort_is_sorted = fn xs -> isSorted (sort xs) in
+let prop_sort_keeps_len = fn xs -> length (sort xs) == length xs in
+
+// Higher-order: Check even generates random FUNCTIONS from their type.
+// (map fusion: mapping g then f equals mapping their composition.)
+let prop_map_fusion = fn f g xs -> map f (map g xs) == map (fn x -> f (g x)) xs in
+
+// A deliberately BUGGY sort that drops duplicates. Check falsifies the
+// length law and shrinks to a minimal two-element list of equal values.
+let rec badInsert = fn x xs ->
+  match xs with
+    [] -> [x]
+  | h :: t ->
+      if x == h then xs
+      else if x <= h then x :: xs else h :: badInsert x t in
+let rec badSort = fn xs ->
+  match xs with [] -> [] | h :: t -> badInsert h (badSort t) in
+let prop_badsort_keeps_len = fn xs -> length (badSort xs) == length xs in
+
+sort [5, 3, 8, 1, 3, 9, 2]`,
+  },
+  {
     id: 'church',
     title: 'Church numerals',
     blurb: 'Encoding numbers as higher-order functions — pure lambda calculus.',

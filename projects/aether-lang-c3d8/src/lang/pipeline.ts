@@ -208,6 +208,38 @@ function toError(stage: PipelineError['stage'], e: unknown): PipelineError {
   return { stage, message: String(e), span: null }
 }
 
+/**
+ * Run an already-parsed user AST through the real execution path
+ * (infer → dictionary-passing elaboration → compile → VM), with the prelude in
+ * scope. Used by the property-testing engine so generated test programs take the
+ * exact same route as the playground — no second interpreter to keep in sync.
+ */
+export function executeProgram(
+  userAst: Expr,
+): { result: import('./values.ts').Value | null; output: string[]; error: string | null } {
+  resetVarCounter()
+  const program = withPrelude(userAst)
+  let inferred: InferResult
+  try {
+    inferred = inferProgram(program, baseEnvFrom(GLOBALS))
+  } catch (e) {
+    return { result: null, output: [], error: toError('type', e).message }
+  }
+  let proto: FnProto
+  try {
+    proto = compile(elaborate(program, inferred.classTables))
+  } catch (e) {
+    return { result: null, output: [], error: toError('compile', e).message }
+  }
+  try {
+    const vm = new VM(proto, GLOBALS.map((g) => g.value))
+    const run = vm.execute(false)
+    return { result: run.result, output: run.output, error: run.error }
+  } catch (e) {
+    return { result: null, output: [], error: toError('run', e).message }
+  }
+}
+
 /** Pretty-print the inferred type of any node (for AST hovers). */
 export function nodeTypeString(inferred: InferResult | null, node: Expr): string | null {
   if (!inferred) return null

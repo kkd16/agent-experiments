@@ -1392,3 +1392,135 @@ body {
   font-size: 0.78rem;
   color: var(--cyan);
 }
+
+/* ── Aether Check (property-based testing) ─────────────────────────────── */
+.check-panel {
+  padding: 1rem 1.1rem;
+  overflow-y: auto;
+  height: 100%;
+}
+.check-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 0.9rem;
+  margin: 0.8rem 0 1rem;
+}
+.check-summary {
+  font-size: 0.85rem;
+  font-family: var(--mono);
+}
+.check-summary .ok {
+  color: var(--green);
+}
+.check-summary .bad {
+  color: var(--red);
+}
+.check-summary .muted {
+  color: var(--fg-faint);
+}
+.check-hint {
+  color: var(--fg-dim);
+  font-size: 0.88rem;
+}
+.check-egcode,
+.check-toplevel-error pre {
+  font-family: var(--mono);
+  font-size: 0.8rem;
+  background: var(--bg-1);
+  border: 1px solid var(--bg-3);
+  border-radius: 8px;
+  padding: 0.7rem 0.9rem;
+  white-space: pre-wrap;
+  color: var(--fg-dim);
+  margin-top: 0.5rem;
+}
+.check-toplevel-error {
+  color: var(--red);
+  font-size: 0.88rem;
+}
+.check-card {
+  border: 1px solid var(--bg-3);
+  border-radius: 10px;
+  padding: 0.7rem 0.85rem;
+  margin-bottom: 0.7rem;
+  background: var(--bg-1);
+}
+.check-card.pass {
+  border-left: 3px solid var(--green);
+}
+.check-card.fail {
+  border-left: 3px solid var(--red);
+}
+.check-card.skip,
+.check-card.error {
+  border-left: 3px solid var(--fg-faint);
+}
+.check-card-head {
+  display: flex;
+  align-items: baseline;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+}
+.check-badge {
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  padding: 0.1rem 0.45rem;
+  border-radius: 5px;
+}
+.check-badge.pass {
+  color: var(--green);
+  background: rgba(95, 211, 163, 0.12);
+}
+.check-badge.fail {
+  color: var(--red);
+  background: rgba(255, 107, 129, 0.12);
+}
+.check-badge.skip,
+.check-badge.error {
+  color: var(--fg-faint);
+  background: rgba(105, 113, 138, 0.12);
+}
+.check-name {
+  font-family: var(--mono);
+  font-weight: 600;
+  color: var(--fg);
+}
+.check-sig {
+  font-family: var(--mono);
+  font-size: 0.78rem;
+  color: var(--cyan);
+  margin-left: auto;
+}
+.check-detail {
+  margin-top: 0.5rem;
+  font-size: 0.85rem;
+}
+.check-detail.ok {
+  color: var(--fg-dim);
+}
+.check-detail.muted {
+  color: var(--fg-faint);
+}
+.check-detail code {
+  font-family: var(--mono);
+  color: var(--fg-dim);
+}
+.check-counterex {
+  margin-top: 0.35rem;
+}
+.check-call {
+  font-family: var(--mono);
+  font-size: 0.85rem;
+}
+.check-call code {
+  color: var(--amber);
+  margin-left: 0.4rem;
+}
+.check-runtime-err {
+  margin-top: 0.35rem;
+  font-size: 0.8rem;
+  color: var(--red);
+  font-family: var(--mono);
+}

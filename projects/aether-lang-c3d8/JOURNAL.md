@@ -142,6 +142,67 @@ Deferred (future): superclasses & `=>` on method signatures; multi-parameter cla
 constraints inside `let rec … and …` groups (currently rejected with a clear message); an
 always-on standard prelude of classes (kept as examples for now to guarantee zero regression).
 
+### Aether 4.0 — property-based testing & monadic `do`-notation (this session)
+
+A language is only as trustworthy as the evidence you can produce *about programs written in
+it*. Aether 3.0 could infer rich types; 4.0 turns those types into **machine-checked evidence
+about behaviour**. Two headline features, both leaning on machinery the language already has:
+
+1. **Aether Check** — a from-scratch, type-directed property-based testing engine (QuickCheck in
+   the browser). You write `prop_*` functions returning `Bool`; the engine reads each property's
+   *inferred* type, **generates random inputs from the type itself** (Int/Float/Bool/String/Unit,
+   lists, tuples, records and **your own ADTs** — recursively, with a size budget that guarantees
+   termination on recursive types like `Tree`), runs hundreds of cases through the real VM, and on
+   a failure performs **integrated shrinking** down to a minimal counterexample. It is fully
+   deterministic (seeded RNG) so the same code always produces the same report. This is the first
+   feature that *consumes* inference rather than just displaying it.
+
+2. **`do`-notation** — Haskell-style monadic sequencing as a pure parser desugaring
+   (`do { x <- e; …; r }` ⇒ `bind e (fn x -> …)`, `do { e; … }` ⇒ `then e (…)`), resolved through
+   the existing type-class + dictionary-passing machinery. No inference, compiler, VM or JS-backend
+   changes — a `Monad` class and its instances are ordinary Aether, so both backends run monadic
+   code and the JS≡VM badge still holds.
+
+Plan / steps:
+
+- [x] **Expose constructor & type tables** from inference (`ctorInfo`, `typeCtors` on
+      `InferResult`) so the property engine can build generators for user-declared ADTs.
+- [x] **`executeProgram(ast)`** in the pipeline — an AST-level entry (infer → elaborate →
+      compile → run) so the property runner reuses the *exact* execution path, not a copy.
+- [x] **`property.ts` — the generator core**: `GType`/`GValue` model; type→generator
+      (defaulting leftover polymorphism to `Int`); size-bounded recursive ADT/list/record
+      generation; a seeded `mulberry32` RNG for reproducibility.
+- [x] **Integrated shrinking** — per-shape `shrink` (ints toward 0, lists drop/half + element
+      shrinks, tuples/records componentwise, ADTs to sub-terms of the same type), driving a
+      greedy minimisation loop to the smallest still-failing input.
+- [x] **The runner** — discover `prop_*` bindings whose type is `… -> Bool`; batch-execute N
+      cases per property in a single VM run for speed, fall back to per-case search to attribute a
+      runtime error, then shrink. Graceful `skip` for higher-order/ungeneratable arguments.
+- [x] **`do`-notation** end to end — lexer `do`/`<-` tokens, a parser desugaring into
+      `bind`/`then`, and a `Monad`/`Functor` example library (Option, List, a `State` monad).
+- [x] **UI** — a "Check" inspector panel (per-property pass/fail, case count, shrunk
+      counterexample, shrink count) and a dedicated `#/check`-style surfacing on the Tests page.
+- [x] **Examples** — `Property testing` (reverse/sort/insert laws, a deliberately *buggy* sort
+      so shrinking shines), and `do-notation` (safe division pipeline + list non-determinism).
+- [x] **Function generation** — generate random *function* arguments too (rendered as a finite
+      `fn x -> if x == k then v … else default` table), so higher-order laws like map fusion and
+      `filter`-length are testable; the table shrinks to fewer entries. Domains that contain a
+      function are rejected (they'd need `==` on functions).
+- [x] **Docs + verification** — Tour/About/README writeups; grow the self-test suite with
+      generator, shrinker and `do`-desugaring cases (all still proving JS≡VM where they produce a
+      value), keep the CI gate green.
+
+Design note (monads & HKT): a *type-class* `Monad m` needs **higher-kinded** type variables
+(`m a -> (a -> m b) -> m b`), but Aether's `Type` is first-order — a `TCon`'s head is a string, not
+a unifiable variable — so `m := Opt` can't be expressed without adding kinds. Rather than risk that
+large change, `do`-notation desugars to a **plain `bind` in scope** (exactly how `do` is sugar for
+`>>=`). That's fully general at the value level: bind Option's `bind` and the block short-circuits,
+bind List's and it branches. Real higher-kinded type classes stay on the deferred list.
+
+Deferred (future, restated): higher-kinded types → genuine `Functor`/`Monad`/`Applicative` classes;
+superclasses & `=>` on method signatures; multi-parameter classes; shrinking that mutates several
+arguments at once (the current shrinker is per-argument greedy).
+
 ## Standard library
 
 - list: `map filter foldl foldr length append reverse sum range take drop elem all any concat zip replicate`
@@ -289,3 +350,22 @@ always-on standard prelude of classes (kept as examples for now to guarantee zer
   it live: each case flows through the whole pipeline and, when it yields a value, is run on the VM
   *and* the JavaScript backend, so a green row proves the two backends agree byte-for-byte. The same
   module backs the offline Node check. Full gate green (18/18 in-app, all 22 gallery examples).
+- 2026-06-14 (claude): **Aether 4.0 — property-based testing + do-notation.** Shipped *Aether
+  Check* (`property.ts`): a from-scratch QuickCheck that reads each `prop_*`'s inferred type,
+  generates random inputs from it (numbers/strings/lists/tuples/records + recursive user ADTs with a
+  size budget so `Tree` terminates), batches hundreds of cases through the real VM (one compile per
+  round, with a per-case fallback to attribute a crash), and shrinks any failure to a minimal
+  counterexample — deterministic via a seeded mulberry32 RNG. Exposed `ctorInfo`/`typeCtors` from
+  inference and added `executeProgram` so the runner reuses the exact pipeline. Added a **Check**
+  tab, a `property` example (3 laws pass, a buggy dup-dropping sort is falsified at a 2-element
+  list) and an engine self-test suite (`propertySuite.ts`, 11 cases) surfaced on the Tests page.
+  Also added **`do`-notation** — a `do` keyword + a pure parser desugaring to `bind`
+  (`do { x <- e; rest }` ⇒ `bind e (fn x -> rest)`), so the same block is the Option or List monad
+  depending on the `bind` in scope; no inference/compiler/VM/JS changes, and the new do cases prove
+  JS≡VM. Docs (Tour/About/README) updated. Full gate green (22/22 pipeline + 11/11 engine
+  self-tests; 24 gallery examples).
+- 2026-06-14 (claude): Extended Aether Check to **generate random function arguments** — a
+  generated `A -> B` is a finite table desugared to `fn x -> if x == k1 then v1 else … else dflt`,
+  so higher-order laws (map fusion, `length (filter p xs) <= length xs`) are now tested instead of
+  skipped, and a false one like `f (f x) == f x` is falsified with a concrete little function
+  (e.g. `{-1→0, _→-1}` at `0`) and shrunk to fewer entries. Engine self-tests now 12/12; gate green.

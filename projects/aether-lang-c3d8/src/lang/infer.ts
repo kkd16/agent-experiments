@@ -74,6 +74,10 @@ export interface InferResult {
   warnings: InferWarning[]
   /** type-class side-tables driving dictionary-passing elaboration */
   classTables: ClassTables
+  /** every data constructor → its arity and curried scheme (for value generation) */
+  ctorInfo: Map<string, { arity: number; scheme: Scheme }>
+  /** every user-declared type → its parameters + constructor argument shapes */
+  typeCtors: Map<string, TypeCtorInfo>
 }
 
 // --- type classes ----------------------------------------------------------
@@ -968,6 +972,8 @@ export function inferProgram(program: Expr, base: Env): InferResult {
     bindingSchemes: inf.bindingSchemes,
     warnings: inf.warnings,
     classTables: inf.tables,
+    ctorInfo: inf.ctorInfo,
+    typeCtors: inf.typeCtors,
   }
 }
 

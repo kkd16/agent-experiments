@@ -141,6 +141,41 @@ instance G Int where hi = fn n -> show n, bye = fn n -> "custom" in
     expected: '("5", "custom")',
   },
 
+  // ---- do-notation (desugars to `bind`; both backends run it) ----
+  {
+    group: 'do-notation',
+    name: 'Option monad short-circuits',
+    code: `type Opt a = None | Some a in
+let bind = fn m k -> match m with None -> None | Some x -> k x in
+let sd = fn a b -> if b == 0 then None else Some (a / b) in
+do { y <- sd 100 5 ; z <- sd y 2 ; Some (z + 1) }`,
+    expected: 'Some 11',
+  },
+  {
+    group: 'do-notation',
+    name: 'Option monad aborts on None',
+    code: `type Opt a = None | Some a in
+let bind = fn m k -> match m with None -> None | Some x -> k x in
+let sd = fn a b -> if b == 0 then None else Some (a / b) in
+do { y <- sd 100 0 ; z <- sd y 2 ; Some (z + 1) }`,
+    expected: 'None',
+  },
+  {
+    group: 'do-notation',
+    name: 'List monad branches (cartesian)',
+    code: `let bind = fn m k -> concat (map k m) in
+do { x <- [1, 2] ; y <- [10, 20] ; [ (x, y) ] }`,
+    expected: '[(1, 10), (1, 20), (2, 10), (2, 20)]',
+  },
+  {
+    group: 'do-notation',
+    name: 'discard statement (bind _)',
+    code: `type Opt a = None | Some a in
+let bind = fn m k -> match m with None -> None | Some x -> k x in
+do { Some 1 ; None ; Some 99 }`,
+    expected: 'None',
+  },
+
   // ---- errors (must be rejected) ----
   {
     group: 'errors',

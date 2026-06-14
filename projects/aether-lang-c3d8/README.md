@@ -43,6 +43,10 @@ Aether is an ML-family expression language. Everything is an expression; there a
   works on any record carrying that field.
 - **List comprehensions** — `[ e | x <- xs, guard, y <- ys ]` with generators and guards, pure
   sugar over `concat` / `map` / `if`, so they're fully inferred and run on both backends.
+- **do-notation** — `do { x <- e; …; r }` is pure sugar over a `bind` in scope
+  (`do { x <- e; rest }` ⇒ `bind e (fn x -> rest)`), so the same block expresses Option
+  short-circuiting or List non-determinism depending on the monad you bind — and both backends run
+  it with no special support.
 - **Type inference** — full Hindley–Milner (Algorithm W) with let-generalization; no type
   annotations anywhere. `let id = fn x -> x` is `∀ a. a -> a`.
 - **Type classes** — `class Disp a where disp : a -> String in …` and
@@ -51,6 +55,24 @@ Aether is an ML-family expression language. Everything is an expression; there a
   (instances may carry a context, e.g. `instance Disp a => Disp (List a)`), and compiles classes to
   **dictionary passing** — entirely as an elaboration into the core language, so both backends run
   them unchanged. The **Classes** tab shows the elaborated core.
+
+### Property-based testing (Aether Check)
+
+The **Check** tab is from-scratch QuickCheck, driven entirely by the type checker. Write a
+`prop_…` function returning `Bool`; Aether reads its **inferred type** and builds a random-value
+generator straight from that type — `Int`/`Float`/`Bool`/`String`/`Unit`, lists, tuples, records,
+**your own ADTs** (recursively, with a size budget that guarantees recursive types like `Tree`
+terminate), and even **functions** (generated as a finite table `fn x -> if x == k then v … else d`,
+so higher-order laws like map fusion are testable). It runs hundreds of cases through the real VM
+and, on a failure, performs **integrated shrinking** (ints toward zero, lists dropped & halved, ADTs
+replaced by sub-terms, functions reduced to fewer entries) down to a *minimal* counterexample. A runtime crash is caught and reported with the exact input that caused
+it. Leftover polymorphism defaults to `Int`, and the RNG is seeded so every report is reproducible.
+
+```
+let prop_rev = fn xs -> reverse (reverse xs) == xs in   // ✓ passes 200 cases
+let prop_bad = fn xs -> reverse xs == xs in             // ✗ falsified, shrinks to [0, -1]
+prop_rev
+```
 
 ### Two backends
 
@@ -92,8 +114,9 @@ Written partly as TypeScript primitives and partly in Aether itself (compiled in
                                                   ┌─▶ compiler ─▶ stack VM ─▶ turtle canvas
 source ─▶ lexer ─▶ parser ─▶ HM inference ─▶ optimizer        └─▶ time-travel trace
               │                    │           └─▶ JS backend ─▶ run in browser (≡ VM)
-              │                    └─▶ derivation tree (the HM proof)
-              └─▶ list comprehensions desugar here
+              │                    ├─▶ derivation tree (the HM proof)
+              │                    └─▶ Aether Check (generate from types, run, shrink)
+              └─▶ list comprehensions & do-notation desugar here
 ```
 
 | File | Responsibility |
@@ -116,6 +139,9 @@ source ─▶ lexer ─▶ parser ─▶ HM inference ─▶ optimizer        �
 | `src/lang/prelude.ts` | primitive type schemes + native impls + the Aether-source library |
 | `src/lang/turtle.ts` | folds turtle effects into line segments for the canvas |
 | `src/lang/pipeline.ts` | orchestrates all stages and collects every artifact |
+| `src/lang/property.ts` | type-directed property testing: generators, shrinking, the runner |
+| `src/lang/testSuite.ts` | the pipeline self-test battery (proves JS ≡ VM per case) |
+| `src/lang/propertySuite.ts` | self-tests for the property engine's own behaviour |
 | `src/repl.ts` | REPL evaluation (re-wraps accumulated definitions) |
 
 ### Notable implementation points
@@ -133,9 +159,10 @@ source ─▶ lexer ─▶ parser ─▶ HM inference ─▶ optimizer        �
 
 A two-pane **playground**: a syntax-highlighted editor with live type-checking, error squiggles,
 and exhaustiveness warnings, beside tabbed inspectors for every stage — Result, Canvas, Tokens,
-AST (hover for inferred types), Types, an interactive **Derivation** tree, Bytecode disassembly, a
-**JavaScript** backend (generated code + a one-click "run & compare against the VM"), and a
-**time-travel Debugger** that scrubs through execution showing the value stack and call frames.
+AST (hover for inferred types), Types, a **Classes** view, a **Check** tab (property-based testing
+that generates inputs from inferred types and shrinks failures), an interactive **Derivation** tree,
+Bytecode disassembly, a **JavaScript** backend (generated code + a one-click "run & compare against
+the VM"), and a **time-travel Debugger** that scrubs through execution showing the stack and frames.
 Plus an interactive **REPL**, an **examples** gallery, a **language tour**, and an **internals**
 writeup. Programs are autosaved and shareable via URL.
 
