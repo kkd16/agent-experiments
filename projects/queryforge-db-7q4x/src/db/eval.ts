@@ -13,7 +13,7 @@ import {
   type ColumnType,
   type SqlValue,
 } from './types'
-import type { Expr, ExistsExpr, InSubqueryExpr, SubqueryExpr, WindowFuncExpr } from './ast'
+import type { Expr, ExistsExpr, InSubqueryExpr, QuantifiedExpr, SubqueryExpr, WindowFuncExpr } from './ast'
 import type { Row } from './catalog'
 
 export type Evaluator = (row: Row) => SqlValue
@@ -41,7 +41,7 @@ export interface CompileCtx {
   /** Enclosing scopes (innermost last) for correlated column resolution. */
   outer?: OuterScope[]
   /** Compile a subquery-bearing expression. Provided by the planner. */
-  compileSubquery?: (expr: SubqueryExpr | ExistsExpr | InSubqueryExpr) => Evaluator
+  compileSubquery?: (expr: SubqueryExpr | ExistsExpr | InSubqueryExpr | QuantifiedExpr) => Evaluator
   /** Compile a window-function expression. Provided by the planner. */
   compileWindow?: (expr: WindowFuncExpr) => Evaluator
 }
@@ -443,7 +443,8 @@ export function compileExpr(expr: Expr, ctx: CompileCtx): Evaluator {
     }
     case 'subquery':
     case 'exists':
-    case 'in_subquery': {
+    case 'in_subquery':
+    case 'quantified': {
       if (!ctx.compileSubquery) throw new SqlError('subqueries are not allowed in this context', 'bind')
       return ctx.compileSubquery(expr)
     }
@@ -564,6 +565,8 @@ export function exprKey(e: Expr): string {
       return `exists:${e.negated}(${subqueryKey(e.select)})`
     case 'in_subquery':
       return `inq:${e.negated}(${exprKey(e.expr)};${subqueryKey(e.select)})`
+    case 'quantified':
+      return `quant:${e.op}:${e.quantifier}(${exprKey(e.expr)};${subqueryKey(e.select)})`
     case 'window':
       return `win:${e.name}(${e.args.map(exprKey).join(',')})[part:${e.spec.partitionBy
         .map(exprKey)

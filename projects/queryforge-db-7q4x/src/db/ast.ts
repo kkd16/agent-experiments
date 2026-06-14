@@ -102,6 +102,14 @@ export interface InSubqueryExpr {
   select: SelectStmt
   negated: boolean
 }
+/** `expr <op> ANY|ALL (SELECT …)` (SOME is a synonym for ANY). */
+export interface QuantifiedExpr {
+  kind: 'quantified'
+  op: '=' | '<>' | '<' | '<=' | '>' | '>='
+  quantifier: 'ANY' | 'ALL'
+  expr: Expr
+  select: SelectStmt
+}
 export interface WindowSpec {
   partitionBy: Expr[]
   orderBy: OrderItem[]
@@ -130,6 +138,7 @@ export type Expr =
   | SubqueryExpr
   | ExistsExpr
   | InSubqueryExpr
+  | QuantifiedExpr
   | WindowFuncExpr
 
 // ---------------------------------------------------------------------------

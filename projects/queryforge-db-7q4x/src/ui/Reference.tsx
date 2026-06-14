@@ -45,6 +45,7 @@ const SECTIONS: Section[] = [
       { syntax: 'WHERE x > (SELECT …)', note: 'Scalar subquery — must return one row / one column (0 rows → NULL).' },
       { syntax: 'WHERE x [NOT] IN (SELECT …)', note: 'Membership test with SQL NULL semantics.' },
       { syntax: 'WHERE [NOT] EXISTS (SELECT …)', note: 'True if the subquery yields ≥ 1 row.' },
+      { syntax: 'WHERE x <op> ANY|SOME|ALL (SELECT …)', note: 'Quantified comparison against every value the subquery returns.' },
       { syntax: '(SELECT … WHERE t.c = outer.c)', note: 'Correlated subqueries see the enclosing row; uncorrelated ones are executed once and cached.' },
     ],
   },

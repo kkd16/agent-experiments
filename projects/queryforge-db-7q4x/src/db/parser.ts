@@ -557,6 +557,19 @@ class Parser {
       // Treat only operator/keyword tokens as binary ops (not strings).
       if (t.kind === 'string') break
       this.next()
+      // Quantified comparison: <op> ANY|SOME|ALL (SELECT …)
+      if (
+        prec === COMPARISON_PREC &&
+        (this.at('ANY') || this.at('SOME') || this.at('ALL')) &&
+        this.peek(1).value === '('
+      ) {
+        const quantifier: 'ANY' | 'ALL' = this.accept('ALL') ? 'ALL' : (this.next(), 'ANY')
+        this.expect('(')
+        const select = this.parseSubquerySelect()
+        this.expect(')')
+        left = { kind: 'quantified', op: v as '=' | '<>' | '<' | '<=' | '>' | '>=', quantifier, expr: left, select }
+        continue
+      }
       const right = this.parseExpr(prec + 1)
       left = { kind: 'binary', op: v as BinaryOp, left, right }
     }

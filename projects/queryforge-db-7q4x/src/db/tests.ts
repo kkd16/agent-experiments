@@ -325,6 +325,17 @@ test('subquery', 'EXISTS / NOT EXISTS', () => {
   assert(rows.length === 1 && rows[0][0] === 'NoOrders', 'NOT EXISTS should find the new customer')
 })
 
+test('subquery', '> ALL quantified comparison', () => {
+  const e = seeded()
+  const rows = rowsOf(e, 'SELECT name FROM products WHERE price >= ALL (SELECT price FROM products)')
+  assert(rows.length === 1 && rows[0][0] === 'Ultrawide Monitor', '>= ALL should find the single priciest product')
+})
+test('subquery', '= ANY quantified comparison', () => {
+  const e = seeded()
+  const rows = rowsOf(e, 'SELECT name FROM customers WHERE id = ANY (SELECT customer_id FROM orders WHERE quantity >= 4)')
+  assert(rows.length === 2, `= ANY should match 2 customers, got ${rows.length}`)
+})
+
 // --- derived tables ---------------------------------------------------------
 test('derived', 'derived table in FROM', () => {
   const e = seeded()

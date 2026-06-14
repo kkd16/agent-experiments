@@ -10,7 +10,7 @@
 // Each operator carries an estimated row count + cost so EXPLAIN can show the
 // shape — and the reasoning — behind the chosen plan.
 
-import { SqlError, hashKey, valuesEqual, type ColumnType, type SqlValue } from './types'
+import { SqlError, compareValues, hashKey, valuesEqual, type ColumnType, type SqlValue } from './types'
 import { compileExpr, exprKey, type CompileCtx, type Evaluator, type OuterScope } from './eval'
 import { resolveColumn, type Binding, type Schema } from './schema'
 import {
@@ -24,6 +24,7 @@ import {
   type JoinClause,
   type SelectStmt,
   type ColumnExpr,
+  type QuantifiedExpr,
   type SubqueryExpr,
   type WindowFuncExpr,
 } from './ast'
@@ -123,6 +124,7 @@ function collectColumns(e: Expr, out: ColumnExpr[]): void {
       if (e.else) collectColumns(e.else, out)
       break
     case 'in_subquery':
+    case 'quantified':
       // Only the left-hand operand belongs to this scope; the subquery body is
       // opaque (and is never pushed down — see containsSubquery).
       collectColumns(e.expr, out)
@@ -147,6 +149,7 @@ function containsSubquery(e: Expr): boolean {
     case 'subquery':
     case 'exists':
     case 'in_subquery':
+    case 'quantified':
       return true
     case 'unary':
     case 'cast':
@@ -232,6 +235,7 @@ function collectChildren(e: Expr, out: Expr[]): void {
       if (e.else) out.push(e.else)
       break
     case 'in_subquery':
+    case 'quantified':
       out.push(e.expr)
       break
     case 'literal':
@@ -272,6 +276,8 @@ function exprLabel(e: Expr): string {
       return `${e.negated ? 'NOT ' : ''}EXISTS(…)`
     case 'in_subquery':
       return `${exprLabel(e.expr)} ${e.negated ? 'NOT ' : ''}IN (subquery)`
+    case 'quantified':
+      return `${exprLabel(e.expr)} ${e.op} ${e.quantifier} (subquery)`
     case 'window': {
       const args = e.args.length ? e.args.map(exprLabel).join(', ') : ''
       const parts: string[] = []
@@ -330,6 +336,7 @@ function inferType(e: Expr, schema: Schema, ctx: CompileCtx): ColumnType {
     case 'isnull':
     case 'exists':
     case 'in_subquery':
+    case 'quantified':
       return 'BOOLEAN'
     case 'window':
       if (['ROW_NUMBER', 'RANK', 'DENSE_RANK', 'NTILE', 'COUNT'].includes(e.name)) return 'INTEGER'
@@ -755,7 +762,7 @@ function exprCtx(
 // `row` the evaluator sets before each (re-)execution; uncorrelated subqueries
 // are executed once and cached.
 function compileSubqueryExpr(
-  e: SubqueryExpr | ExistsExpr | InSubqueryExpr,
+  e: SubqueryExpr | ExistsExpr | InSubqueryExpr | QuantifiedExpr,
   schema: Schema,
   env: PlanEnv,
   outerCtx: CompileCtx,
@@ -772,7 +779,7 @@ function compileSubqueryExpr(
   const innerEnv: PlanEnv = { db: env.db, relations: env.relations, outer: [...env.outer, scope] }
   const innerOp = planQuery(e.select, innerEnv)
 
-  if (e.kind === 'subquery' || e.kind === 'in_subquery') {
+  if (e.kind === 'subquery' || e.kind === 'in_subquery' || e.kind === 'quantified') {
     if (innerOp.schema.length !== 1) {
       throw new SqlError('a subquery used as a value must return exactly one column', 'bind')
     }
@@ -807,20 +814,48 @@ function compileSubqueryExpr(
       }
     }
   }
-  // in_subquery
   const lhs = compileExpr(e.expr, outerCtx)
+  const gatherVals = (row: Row, cache: { v: SqlValue[] | null }): SqlValue[] => {
+    if (!correlated && cache.v) return cache.v
+    scope.row = row
+    const vals = drain(innerOp).map((r) => r[0])
+    if (!correlated) cache.v = vals
+    return vals
+  }
+
+  if (e.kind === 'quantified') {
+    const cmp = comparator(e.op)
+    const isAny = e.quantifier === 'ANY'
+    const cache: { v: SqlValue[] | null } = { v: null }
+    return (row) => {
+      const x = lhs(row)
+      const vals = gatherVals(row, cache)
+      // Empty set: ANY → false, ALL → true (SQL standard).
+      if (vals.length === 0) return !isAny
+      if (x === null) return null
+      let sawNull = false
+      for (const y of vals) {
+        if (y === null) {
+          sawNull = true
+          continue
+        }
+        const c = compareValues(x, y)
+        const truth = c !== null && cmp(c)
+        if (isAny && truth) return true
+        if (!isAny && !truth) return false
+      }
+      // ANY: no match (NULL if a NULL was seen, else false).
+      // ALL: all matched (NULL if a NULL was seen, else true).
+      return sawNull ? null : !isAny
+    }
+  }
+
+  // in_subquery
   const neg = e.negated
-  let cachedVals: SqlValue[] | null = null
+  const cache: { v: SqlValue[] | null } = { v: null }
   return (row) => {
     const x = lhs(row)
-    let vals: SqlValue[]
-    if (!correlated && cachedVals) {
-      vals = cachedVals
-    } else {
-      scope.row = row
-      vals = drain(innerOp).map((r) => r[0])
-      if (!correlated) cachedVals = vals
-    }
+    const vals = gatherVals(row, cache)
     if (x === null) return null
     let sawNull = false
     for (const y of vals) {
@@ -832,6 +867,24 @@ function compileSubqueryExpr(
     }
     if (sawNull) return null
     return neg
+  }
+}
+
+// A comparison predicate over the sign of compareValues(lhs, rhs).
+function comparator(op: '=' | '<>' | '<' | '<=' | '>' | '>='): (c: number) => boolean {
+  switch (op) {
+    case '=':
+      return (c) => c === 0
+    case '<>':
+      return (c) => c !== 0
+    case '<':
+      return (c) => c < 0
+    case '<=':
+      return (c) => c <= 0
+    case '>':
+      return (c) => c > 0
+    case '>=':
+      return (c) => c >= 0
   }
 }
 
