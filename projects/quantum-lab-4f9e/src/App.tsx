@@ -2,23 +2,45 @@ import { useState, useCallback, useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { QuantumState, type GateOp } from './quantum/QuantumState';
 import { ALGORITHMS, type Algorithm } from './quantum/algorithms';
+import { NO_NOISE, isNoiseActive, type NoiseModel } from './quantum/noise';
+import { decodeFromHash } from './quantum/serialize';
 import CircuitEditor from './components/CircuitEditor';
 import StateVector from './components/StateVector';
 import ProbabilityChart from './components/ProbabilityChart';
 import AlgorithmPanel from './components/AlgorithmPanel';
 import MeasurementPanel from './components/MeasurementPanel';
 import BlochSphere from './components/BlochSphere';
+import DensityLab from './components/DensityLab';
+import VariationalLab from './components/VariationalLab';
+import TestsPanel from './components/TestsPanel';
+import ExportPanel from './components/ExportPanel';
 
-type Tab = 'builder' | 'algorithms' | 'about';
-type VizTab = 'state' | 'probabilities' | 'bloch' | 'measure';
+type Tab = 'builder' | 'algorithms' | 'variational' | 'tests' | 'about';
+type VizTab = 'state' | 'probabilities' | 'bloch' | 'density' | 'measure';
+
+const PAGE_TABS: Tab[] = ['about', 'variational', 'tests'];
+
+// Parse a shared circuit from the URL hash (#c=…) once, before mount — sandbox-safe.
+function loadSharedCircuit(): { numQubits: number; ops: GateOp[] } | null {
+  try {
+    const m = typeof location !== 'undefined' ? location.hash.match(/c=([^&]+)/) : null;
+    if (!m) return null;
+    const doc = decodeFromHash(m[1]);
+    return doc && doc.ops.length ? { numQubits: doc.numQubits, ops: doc.ops } : null;
+  } catch {
+    return null;
+  }
+}
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<Tab>('algorithms');
+  const shared = loadSharedCircuit();
+  const [activeTab, setActiveTab] = useState<Tab>(shared ? 'builder' : 'algorithms');
   const [vizTab, setVizTab] = useState<VizTab>('probabilities');
-  const [numQubits, setNumQubits] = useState(2);
-  const [ops, setOps] = useState<GateOp[]>([]);
+  const [numQubits, setNumQubits] = useState(shared?.numQubits ?? 2);
+  const [ops, setOps] = useState<GateOp[]>(shared?.ops ?? []);
   const [selectedAlgo, setSelectedAlgo] = useState<Algorithm | null>(ALGORITHMS[0]);
   const [stepIndex, setStepIndex] = useState<number | null>(null);
+  const [noise, setNoise] = useState<NoiseModel>(NO_NOISE);
 
   const currentOps = useMemo(() => {
     if (activeTab === 'algorithms' && selectedAlgo) {
@@ -47,7 +69,8 @@ export default function App() {
   }, []);
 
   const entropies = useMemo(() => {
-    if (currentNumQubits < 2) return [];
+    // Skip the O(2^n·…) eigensolves for very wide circuits (e.g. the 9-qubit Shor code).
+    if (currentNumQubits < 2 || currentNumQubits > 6) return [];
     return Array.from({ length: currentNumQubits - 1 }, (_, i) =>
       quantumState.entanglementEntropy(i + 1)
     );
@@ -106,13 +129,13 @@ export default function App() {
           </div>
         </div>
 
-        <nav style={{ display: 'flex', gap: 2, marginLeft: 'auto' }}>
-          {(['builder', 'algorithms', 'about'] as Tab[]).map((tab) => (
+        <nav style={{ display: 'flex', gap: 2, marginLeft: 'auto', flexWrap: 'wrap' }}>
+          {(['builder', 'algorithms', 'variational', 'tests', 'about'] as Tab[]).map((tab) => (
             <button
               key={tab}
               onClick={() => setActiveTab(tab)}
               style={{
-                padding: '5px 12px',
+                padding: '5px 11px',
                 borderRadius: 6,
                 border: 'none',
                 background: activeTab === tab ? 'rgba(124, 58, 237, 0.3)' : 'transparent',
@@ -124,7 +147,8 @@ export default function App() {
                 transition: 'all 0.15s',
               }}
             >
-              {tab === 'builder' ? '🔧 Builder' : tab === 'algorithms' ? '⚡ Algorithms' : '📖 About'}
+              {tab === 'builder' ? '🔧 Builder' : tab === 'algorithms' ? '⚡ Algorithms'
+                : tab === 'variational' ? '🧬 Variational' : tab === 'tests' ? '🧪 Tests' : '📖 About'}
             </button>
           ))}
         </nav>
@@ -152,20 +176,35 @@ export default function App() {
           }}>
             {maxEntropy > 0.1 ? `S≈${maxEntropy.toFixed(2)} bits` : 'separable'}
           </span>
+          {isNoiseActive(noise) && (
+            <span style={{
+              padding: '2px 7px',
+              background: 'rgba(220, 38, 38, 0.15)',
+              border: '1px solid rgba(220, 38, 38, 0.4)',
+              borderRadius: 4,
+              fontSize: 10,
+              color: '#f87171',
+              fontFamily: 'monospace',
+            }}>
+              ◉ noisy
+            </span>
+          )}
         </div>
       </header>
 
       <div style={{ position: 'relative', zIndex: 1, display: 'flex', flex: 1, overflow: 'hidden', minHeight: 0 }}>
         <AnimatePresence mode="wait">
-          {activeTab === 'about' ? (
+          {PAGE_TABS.includes(activeTab) ? (
             <motion.div
-              key="about"
+              key={activeTab}
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
               style={{ flex: 1, padding: '24px 32px', overflowY: 'auto' }}
             >
-              <AboutPage />
+              {activeTab === 'about' && <AboutPage />}
+              {activeTab === 'variational' && <VariationalLab />}
+              {activeTab === 'tests' && <TestsPanel />}
             </motion.div>
           ) : (
             <motion.div
@@ -261,6 +300,12 @@ export default function App() {
                     </motion.div>
                   )}
                 </AnimatePresence>
+
+                <ExportPanel
+                  numQubits={currentNumQubits}
+                  ops={currentOps}
+                  name={activeTab === 'algorithms' ? selectedAlgo?.name : 'custom-circuit'}
+                />
               </div>
 
               <div style={{ overflowY: 'auto', display: 'flex', flexDirection: 'column' }}>
@@ -270,7 +315,7 @@ export default function App() {
                   background: 'rgba(2, 6, 23, 0.4)',
                   flexShrink: 0,
                 }}>
-                  {(['probabilities', 'state', 'bloch', 'measure'] as VizTab[]).map((t) => (
+                  {(['probabilities', 'state', 'bloch', 'density', 'measure'] as VizTab[]).map((t) => (
                     <button
                       key={t}
                       onClick={() => setVizTab(t)}
@@ -286,7 +331,7 @@ export default function App() {
                         textTransform: 'capitalize',
                       }}
                     >
-                      {t === 'probabilities' ? '📊' : t === 'state' ? '🌊' : t === 'bloch' ? '🌐' : '⚡'} {t}
+                      {t === 'probabilities' ? '📊' : t === 'state' ? '🌊' : t === 'bloch' ? '🌐' : t === 'density' ? '🌫️' : '⚡'} {t}
                     </button>
                   ))}
                 </div>
@@ -329,6 +374,12 @@ export default function App() {
                             );
                           })}
                         </div>
+                      </motion.div>
+                    )}
+                    {vizTab === 'density' && (
+                      <motion.div key="density" initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
+                        <SectionTitle>Density Matrix & Noise</SectionTitle>
+                        <DensityLab numQubits={currentNumQubits} ops={currentOps} noise={noise} onNoiseChange={setNoise} />
                       </motion.div>
                     )}
                     {vizTab === 'measure' && (
@@ -457,7 +508,23 @@ function AboutPage() {
         },
         {
           title: 'Entanglement Entropy',
-          content: 'The bipartite entanglement entropy S = -Tr(ρ_A log₂ ρ_A) is computed for every contiguous bipartition. S=0 means the state is separable (product state). S=1 means maximally entangled (like a Bell pair). This is computed via partial trace of the density matrix.',
+          content: 'The bipartite entanglement entropy S = -Tr(ρ_A log₂ ρ_A) is computed for every contiguous bipartition via an exact Hermitian eigensolver (a complex cyclic-Jacobi diagonaliser written from scratch). S=0 means separable; S=1 means maximally entangled (a Bell pair).',
+        },
+        {
+          title: 'Open Systems & Noise (Density Matrix)',
+          content: 'Beyond pure states, the lab simulates open quantum systems with a full density-matrix engine: ρ evolves as ρ → UρU† under gates and ρ → Σ KρK† under Kraus noise channels — depolarizing, amplitude/phase damping, and bit/phase flips. Watch the purity Tr(ρ²) drop and Bloch vectors retract inside the sphere as decoherence sets in.',
+        },
+        {
+          title: 'Quantum Error Correction',
+          content: 'The 3-qubit bit-flip and phase-flip codes and the 9-qubit Shor code reversibly correct single-qubit errors via majority-vote (Toffoli) decoders — demonstrating that correcting X and Z errors suffices to correct any error, the cornerstone of fault tolerance.',
+        },
+        {
+          title: 'Variational Algorithms (VQE & QAOA)',
+          content: 'A hybrid quantum-classical loop: the simulator is the "QPU" and a from-scratch Nelder–Mead optimizer tunes circuit angles. VQE finds the ground-state energy of a transverse-field Ising Hamiltonian (matching exact diagonalization); QAOA solves MaxCut on small graphs.',
+        },
+        {
+          title: 'Phase Estimation & Tooling',
+          content: 'Quantum Phase Estimation recovers eigenphases via phase kickback + inverse QFT. Circuits export to OpenQASM 2.0 (Qiskit/IBM-compatible) and JSON, with shareable URLs, depth/gate metrics, and a 23-case in-browser self-test suite proving the engine correct.',
         },
       ].map(({ title, content }, i) => (
         <motion.div

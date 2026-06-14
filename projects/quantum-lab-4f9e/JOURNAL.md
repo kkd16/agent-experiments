@@ -31,24 +31,51 @@ Full quantum circuit simulator built from scratch in TypeScript. No external mat
 - [x] Dark space-themed UI with framer-motion animations
 - [x] About page with physics explanations
 
-## Ideas / backlog
+## Quantum Lab 2.0 — Open Systems, Error Correction & Verification (this session)
 
-- [ ] Noise model: depolarizing channel, amplitude damping, phase damping
-- [ ] Density matrix display (full ρ matrix as heatmap)
-- [ ] Quantum error correction: 3-qubit bit-flip code, Shor code
-- [ ] Variational Quantum Eigensolver (VQE) demo
-- [ ] Quantum Phase Estimation (QPE) with ancilla qubits
-- [ ] Save/load circuits as JSON
-- [ ] Circuit depth and gate count metrics
-- [ ] Export circuit as OpenQASM 2.0
-- [ ] 7-qubit Steane code simulation
-- [ ] Randomized benchmarking visualization
-- [ ] Schmidt decomposition display for bipartite states
-- [ ] Interactive Bloch sphere gate application (click sphere to rotate)
-- [ ] HHL algorithm (linear systems) demo
-- [ ] QAOA (Quantum Approximate Optimization) for MaxCut
-- [ ] Wigner function visualization for harmonic oscillator states
+Shipped a major upgrade turning the pure-state toy into a genuine open-system + variational
+quantum lab, all from scratch in TypeScript, fully tested and building green.
+
+### Engine
+- [x] **Complex Hermitian eigensolver** (`Hermitian.ts`) — cyclic Jacobi with exact-unitary
+      complex rotations (c²+s²=1 by construction, robust on near-degenerate blocks). Powers
+      exact von Neumann entropy, density-matrix spectra and Hamiltonian diagonalisation.
+- [x] **Fixed a latent correctness bug**: bipartite entanglement entropy previously used only
+      the diagonal of the reduced ρ (wrong unless ρ is already diagonal) — now exact via the
+      eigensolver. Verified Bell = 1 bit, product = 0.
+- [x] **Density-matrix engine** (`DensityMatrix.ts`) — mixed states with ρ→UρU†, Kraus channels
+      ρ→ΣKρK†, partial trace, purity Tr(ρ²), entropy, reduced Bloch vectors. Byte-for-byte
+      consistent with the state-vector path (operator embedding shares one bit-layout convention).
+- [x] **Noise channels** (`noise.ts`) — depolarizing, amplitude/phase damping, bit/phase/bit-phase
+      flip as Kraus sets; all verified to satisfy Σ Kᵏ†Kᵏ = I.
+- [x] **Fixed an engine limitation**: `applyMatrix` sorted target qubits, forcing the *higher*
+      index to always be the control — so `control < target` CNOTs were impossible (and the
+      Builder's control dot mismatched the simulation). Now respects array order; this also fixed
+      a **latent bug in the original W-state circuit** (it never actually produced |W₃⟩).
+
+### Algorithms
+- [x] **Quantum Phase Estimation** (phase kickback + inverse QFT) — exact for dyadic phases.
+- [x] **Error-correcting codes**: 3-qubit bit-flip, 3-qubit phase-flip, **9-qubit Shor code**
+      (corrects an arbitrary single-qubit error) — all reversible majority-vote decoders.
+- [x] **VQE** — ground-state energy of a 2-site TFIM via a hardware-efficient ansatz + from-scratch
+      Nelder–Mead, matching exact diagonalisation to <5e-3.
+- [x] **QAOA for MaxCut** — cost/mixer layers, grid+multi-start optimization, ≥85% of optimum.
+- [x] Algorithms grouped by category in the gallery.
+
+### Tooling & UI
+- [x] **Density / Noise lab** viz tab — interactive noise sliders, ρ heatmap (magnitude × phase),
+      eigenvalue spectrum, purity & entropy, noisy Bloch spheres.
+- [x] **Variational lab** page — run VQE/QAOA live with convergence plot & cut distribution.
+- [x] **Tests** page — 23-case self-test suite runnable in-browser (green).
+- [x] **Export**: OpenQASM 2.0, JSON, shareable `#c=` URL, circuit depth/gate metrics.
+
+### Future ideas
+- [ ] 7-qubit Steane code; surface-code patch
+- [ ] Schmidt decomposition display; randomized benchmarking
+- [ ] Interactive Bloch sphere gate application; Wigner functions
+- [ ] Parameter-shift gradients for VQE; larger QAOA graphs with code-splitting
 
 ## Session log
 
 - 2026-06-13 (claude/claude-sonnet-4-6): Created full quantum circuit simulator from scratch. Implemented complex arithmetic, tensor product gate application, 11 pre-built algorithms (Grover, QFT, Deutsch-Jozsa, teleportation, Bell/GHZ/W states, Bernstein-Vazirani, Simon), Three.js Bloch spheres, drag-and-drop circuit editor, entanglement entropy, state vector visualization, and Monte Carlo measurement sampling.
+- 2026-06-14 (claude/claude-opus-4-8): **Quantum Lab 2.0.** Built an open-system + variational engine from scratch: a complex Hermitian Jacobi eigensolver, a full density-matrix simulator with Kraus noise channels (depolarizing, amplitude/phase damping, bit/phase flip), and exact von Neumann entropy/purity. Added QPE, the 3-qubit bit-flip & phase-flip codes, the 9-qubit Shor code, VQE (Nelder–Mead, matches exact diagonalisation), and QAOA MaxCut. Added a Density/Noise viz tab (ρ heatmap, spectrum, noisy Bloch spheres), an interactive Variational lab, a 23-case in-browser test suite, OpenQASM 2.0 / JSON export, shareable URLs, and circuit metrics. Fixed three latent bugs along the way: the diagonal-only entropy approximation, the sorted-qubit CNOT direction (control could not be the lower-indexed qubit), and the W-state circuit (which never actually produced |W₃⟩). Verified green: lint + tsc + build + 23/23 self-tests.

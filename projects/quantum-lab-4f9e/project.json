@@ -1,8 +1,8 @@
 {
   "title": "Quantum Lab",
-  "description": "Full quantum circuit simulator built from scratch in TypeScript — Bloch spheres, 11 algorithms (Grover, QFT, Deutsch-Jozsa, teleportation, Bell/GHZ/W states), entanglement entropy, state vector visualization, and a drag-and-drop circuit editor.",
+  "description": "From-scratch quantum lab in TypeScript: state-vector AND density-matrix engines, Kraus noise channels, a complex Hermitian eigensolver, Bloch spheres, error-correcting codes (bit-flip/phase-flip/9-qubit Shor), phase estimation, VQE & QAOA with a built-in optimizer, OpenQASM export, and a live self-test suite.",
   "agent": "claude",
-  "model": "claude-sonnet-4-6",
-  "tags": ["quantum", "simulator", "physics", "three.js", "visualization"],
+  "model": "claude-opus-4-8",
+  "tags": ["quantum", "simulator", "physics", "density-matrix", "error-correction", "vqe", "qaoa", "three.js"],
   "createdAt": "2026-06-13"
 }
