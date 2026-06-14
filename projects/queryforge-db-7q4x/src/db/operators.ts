@@ -310,6 +310,71 @@ export class BitmapAnd implements Operator {
   }
 }
 
+// Bitmap OR scan: union the row-id sets of several index ranges (typically one
+// point lookup per value of an `IN (…)` list, or `a = 1 OR a = 2`), then fetch
+// the surviving heap rows in physical order. The OR counterpart to BitmapAnd.
+export class BitmapOr implements Operator {
+  readonly schema: Schema
+  estRows: number
+  estCost: number
+  actualRows = 0
+  private readonly table: Table
+  private readonly inputs: BitmapInput[]
+  private readonly label: string
+  private rows: Row[] = []
+  private pos = 0
+  private matched = 0
+
+  constructor(table: Table, schema: Schema, inputs: BitmapInput[], estRows: number, label: string) {
+    this.table = table
+    this.schema = schema
+    this.inputs = inputs
+    this.label = label
+    this.estRows = Math.max(1, Math.round(estRows))
+    const h = Math.max(1, ...inputs.map((i) => i.index.stats().height))
+    this.estCost = inputs.length * h * CPU_OP + this.estRows * CPU_TUPLE
+  }
+  open() {
+    const acc = new Set<number>()
+    for (const inp of this.inputs) {
+      const ids = inp.index.tree.range(
+        inp.lo ? inp.lo.key : null,
+        inp.hi ? inp.hi.key : null,
+        inp.lo ? inp.lo.inclusive : true,
+        inp.hi ? inp.hi.inclusive : true,
+      )
+      for (const id of ids) acc.add(id)
+    }
+    const rowids = [...acc].sort((a, b) => a - b)
+    this.matched = rowids.length
+    this.rows = []
+    for (const rid of rowids) {
+      const row = this.table.heap.get(rid)
+      if (row) this.rows.push(row)
+    }
+    this.pos = 0
+  }
+  next(): Row | null {
+    if (this.pos >= this.rows.length) return null
+    this.actualRows++
+    return this.rows[this.pos++]
+  }
+  close() {
+    this.rows = []
+  }
+  plan(): PlanNode {
+    return {
+      op: 'BitmapOr',
+      detail: `${this.table.name} via ${this.inputs[0].index.meta.name}`,
+      estRows: this.estRows,
+      estCost: this.estCost,
+      actualRows: this.actualRows,
+      extra: [`union ${this.inputs.length} index lookups (${this.label}) → ${this.matched || this.estRows} rows`],
+      children: [],
+    }
+  }
+}
+
 function keysEqual(a: IndexKey, b: IndexKey): boolean {
   if (a.length !== b.length) return false
   for (let i = 0; i < a.length; i++) if (orderValues(a[i], b[i]) !== 0) return false

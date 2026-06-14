@@ -437,10 +437,10 @@ export function compileExpr(expr: Expr, ctx: CompileCtx): Evaluator {
       }
     }
     case 'func': {
-      // GROUPING(col) is resolved against the active grouping set, not a value.
-      if (expr.name === 'GROUPING') {
+      // GROUPING/GROUPING_ID are resolved against the active grouping set.
+      if (expr.name === 'GROUPING' || expr.name === 'GROUPING_ID') {
         if (!ctx.compileGrouping) {
-          throw new SqlError('GROUPING() is only allowed with GROUP BY ROLLUP/CUBE/GROUPING SETS', 'bind')
+          throw new SqlError(`${expr.name}() is only allowed with GROUP BY ROLLUP/CUBE/GROUPING SETS`, 'bind')
         }
         return ctx.compileGrouping(expr)
       }
