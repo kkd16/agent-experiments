@@ -9,11 +9,11 @@ export interface Tok {
 
 const KEYWORDS = new Set(['fn', 'let', 'if', 'else', 'while', 'do', 'for', 'switch', 'case', 'default', 'return', 'break', 'continue']);
 const CONSTS = new Set(['true', 'false']);
-const TYPES = new Set(['int', 'float', 'bool', 'str', 'void']);
+const TYPES = new Set(['int', 'long', 'float', 'bool', 'str', 'void']);
 const BUILTINS = new Set([
-  'print', 'int_array', 'float_array', 'str_array', 'len', 'str', 'char', 'substr', 'index_of',
+  'print', 'int_array', 'long_array', 'float_array', 'str_array', 'len', 'str', 'char', 'substr', 'index_of',
   'to_upper', 'to_lower', 'repeat', 'trim', 'replace', 'find', 'contains', 'starts_with',
-  'ends_with', 'parse_int', 'split', 'join',
+  'ends_with', 'parse_int', 'split', 'join', 'popcount', 'clz', 'ctz', 'rotl', 'rotr',
 ]);
 
 const isDigit = (c: string) => c >= '0' && c <= '9';
@@ -63,7 +63,13 @@ export function highlight(src: string): Tok[] {
     }
     if (isDigit(c) || (c === '.' && isDigit(src[i + 1] ?? ''))) {
       let j = i;
-      while (j < n && (isDigit(src[j]) || src[j] === '.' || src[j] === 'e' || src[j] === 'E' || ((src[j] === '+' || src[j] === '-') && (src[j - 1] === 'e' || src[j - 1] === 'E')))) j++;
+      if (c === '0' && (src[i + 1] === 'x' || src[i + 1] === 'X')) {
+        j = i + 2;
+        while (j < n && /[0-9a-fA-F]/.test(src[j])) j++;
+      } else {
+        while (j < n && (isDigit(src[j]) || src[j] === '.' || src[j] === 'e' || src[j] === 'E' || ((src[j] === '+' || src[j] === '-') && (src[j - 1] === 'e' || src[j - 1] === 'E')))) j++;
+      }
+      if (src[j] === 'L' || src[j] === 'l') j++; // long suffix
       push('num', src.slice(i, j));
       i = j;
       continue;

@@ -1,7 +1,7 @@
 import type { Block, Expr, Program, Stmt, Ty } from './ast';
 import type { Span } from './diagnostics';
 import type { ArrayVal, RtValue } from './interp';
-import { Trap, callBuiltin, formatBool, formatFloat, formatInt, i32 } from './interp';
+import { Trap, asI64, callBuiltin, formatBool, formatFloat, formatInt, formatLong, I64_MIN, i32 } from './interp';
 
 // A generator-based, single-stepping tree-walking interpreter — the engine
 // behind the Debug tab. It mirrors the reference interpreter's semantics (and
@@ -64,11 +64,15 @@ function tyKindName(t: Ty): string {
 
 function fmtVal(v: RtValue, ty?: Ty): string {
   if (typeof v === 'string') return JSON.stringify(v);
+  if (typeof v === 'bigint') return formatLong(v);
   if (typeof v === 'object' && (v as ArrayVal).arr) {
     const a = v as ArrayVal;
-    const head = a.data
-      .slice(0, 8)
-      .map((x) => (a.elem === 'str' ? JSON.stringify(x) : a.elem === 'float' ? formatFloat(x as number) : formatInt(x as number)));
+    const head = a.data.slice(0, 8).map((x) =>
+      a.elem === 'str' ? JSON.stringify(x)
+      : a.elem === 'float' ? formatFloat(x as number)
+      : a.elem === 'long' ? formatLong(x as bigint)
+      : formatInt(x as number),
+    );
     const more = a.data.length > 8 ? ', …' : '';
     return `[${head.join(', ')}${more}]`;
   }
@@ -236,6 +240,7 @@ export class Debugger {
         const val = yield* this.evalExpr(s.value, f);
         if (idx < 0 || idx >= target.data.length) throw new Trap('array index out of bounds');
         if (target.elem === 'str') target.data[idx] = val as string;
+        else if (target.elem === 'long') target.data[idx] = asI64(val as bigint);
         else target.data[idx] = target.elem === 'int' ? i32(val as number) : (val as number);
         break;
       }
@@ -308,6 +313,8 @@ export class Debugger {
     switch (e.node) {
       case 'int':
         return i32(e.value);
+      case 'long':
+        return asI64(e.value);
       case 'float':
         return e.value;
       case 'bool':
@@ -320,6 +327,16 @@ export class Debugger {
         return rv.v;
       }
       case 'unary': {
+        if (e.operand.ty?.kind === 'long') {
+          const lv = (yield* this.evalExpr(e.operand, f)) as bigint;
+          switch (e.op) {
+            case '-': return asI64(-lv);
+            case '+': return lv;
+            case '~': return asI64(~lv);
+            case '!': return lv ? 0 : 1;
+          }
+          return 0n;
+        }
         const v = (yield* this.evalExpr(e.operand, f)) as number;
         const isInt = e.operand.ty?.kind === 'int' || e.operand.ty?.kind === 'bool';
         switch (e.op) {
@@ -369,6 +386,8 @@ export class Debugger {
       }
     }
 
+    if (e.left.ty?.kind === 'long') return yield* this.evalLongBinary(e, f);
+
     const a = (yield* this.evalExpr(e.left, f)) as number;
     const b = (yield* this.evalExpr(e.right, f)) as number;
     const isInt = e.left.ty?.kind === 'int' || e.left.ty?.kind === 'bool';
@@ -400,6 +419,36 @@ export class Debugger {
       case '!=': return a !== b ? 1 : 0;
     }
     return 0;
+  }
+
+  private *evalLongBinary(e: Extract<Expr, { node: 'binary' }>, f: RFrame): Generator<void, RtValue, void> {
+    const a = (yield* this.evalExpr(e.left, f)) as bigint;
+    const b = (yield* this.evalExpr(e.right, f)) as bigint;
+    switch (e.op) {
+      case '+': return asI64(a + b);
+      case '-': return asI64(a - b);
+      case '*': return asI64(a * b);
+      case '/':
+        if (b === 0n) throw new Trap('integer divide by zero');
+        if (a === I64_MIN && b === -1n) throw new Trap('integer overflow');
+        return asI64(a / b);
+      case '%':
+        if (b === 0n) throw new Trap('integer divide by zero');
+        if (a === I64_MIN && b === -1n) return 0n;
+        return asI64(a % b);
+      case '&': return asI64(a & b);
+      case '|': return asI64(a | b);
+      case '^': return asI64(a ^ b);
+      case '<<': return asI64(a << (b & 63n));
+      case '>>': return asI64(a >> (b & 63n));
+      case '<': return a < b ? 1 : 0;
+      case '<=': return a <= b ? 1 : 0;
+      case '>': return a > b ? 1 : 0;
+      case '>=': return a >= b ? 1 : 0;
+      case '==': return a === b ? 1 : 0;
+      case '!=': return a !== b ? 1 : 0;
+      default: return 0;
+    }
   }
 
   private *evalCall(e: Extract<Expr, { node: 'call' }>, f: RFrame): Generator<void, RtValue, void> {

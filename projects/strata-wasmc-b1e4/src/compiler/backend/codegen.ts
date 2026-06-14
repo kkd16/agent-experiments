@@ -1,5 +1,6 @@
 import type { Block, Inst, IRFunc, IRModule, IRType, Operand, RetType, Term } from '../ir/ir';
-import { ByteWriter, VT_F64, VT_I32, WASM_MAGIC, WASM_VERSION, section, vec } from './encoder';
+import { operandType } from '../ir/ir';
+import { ByteWriter, VT_F64, VT_I32, VT_I64, WASM_MAGIC, WASM_VERSION, section, vec } from './encoder';
 
 // The WebAssembly backend. Three responsibilities:
 //   (1) Recover structured control flow (block / loop / if + br) from the SSA
@@ -26,19 +27,34 @@ type W =
   | { k: 'gget'; i: number }
   | { k: 'gset'; i: number }
   | { k: 'i32c'; v: number }
+  | { k: 'i64c'; v: bigint }
   | { k: 'f64c'; v: number }
   | { k: 'call'; i: number }
-  | { k: 'load'; mem: 'i32' | 'f64' | 'i8' }
-  | { k: 'store'; mem: 'i32' | 'f64' | 'i8' }
+  | { k: 'load'; mem: 'i32' | 'i64' | 'f64' | 'i8' }
+  | { k: 'store'; mem: 'i32' | 'i64' | 'f64' | 'i8' }
   | { k: 'op'; c: number; name: string }
   | { k: 'select' }
-  | { k: 'trunc' }
-  | { k: 'convert' };
+  | { k: 'cast'; sub: string };
 
 const I_BIN: Record<string, [number, string]> = {
   add: [0x6a, 'i32.add'], sub: [0x6b, 'i32.sub'], mul: [0x6c, 'i32.mul'],
   div_s: [0x6d, 'i32.div_s'], rem_s: [0x6f, 'i32.rem_s'], and: [0x71, 'i32.and'],
   or: [0x72, 'i32.or'], xor: [0x73, 'i32.xor'], shl: [0x74, 'i32.shl'], shr_s: [0x75, 'i32.shr_s'],
+  rotl: [0x77, 'i32.rotl'], rotr: [0x78, 'i32.rotr'],
+};
+// The i64 counterparts, selected when an integer op's operands are i64.
+const I_BIN64: Record<string, [number, string]> = {
+  add: [0x7c, 'i64.add'], sub: [0x7d, 'i64.sub'], mul: [0x7e, 'i64.mul'],
+  div_s: [0x7f, 'i64.div_s'], rem_s: [0x81, 'i64.rem_s'], and: [0x83, 'i64.and'],
+  or: [0x84, 'i64.or'], xor: [0x85, 'i64.xor'], shl: [0x86, 'i64.shl'], shr_s: [0x87, 'i64.shr_s'],
+  rotl: [0x89, 'i64.rotl'], rotr: [0x8a, 'i64.rotr'],
+};
+// Unary integer ops (count leading/trailing zeros, population count).
+const I_UN: Record<string, [number, string]> = {
+  clz: [0x67, 'i32.clz'], ctz: [0x68, 'i32.ctz'], popcnt: [0x69, 'i32.popcnt'],
+};
+const I_UN64: Record<string, [number, string]> = {
+  clz: [0x79, 'i64.clz'], ctz: [0x7a, 'i64.ctz'], popcnt: [0x7b, 'i64.popcnt'],
 };
 const F_BIN: Record<string, [number, string]> = {
   add: [0xa0, 'f64.add'], sub: [0xa1, 'f64.sub'], mul: [0xa2, 'f64.mul'], div: [0xa3, 'f64.div'],
@@ -46,6 +62,20 @@ const F_BIN: Record<string, [number, string]> = {
 const I_CMP: Record<string, [number, string]> = {
   eq: [0x46, 'i32.eq'], ne: [0x47, 'i32.ne'], lt_s: [0x48, 'i32.lt_s'],
   gt_s: [0x4a, 'i32.gt_s'], le_s: [0x4c, 'i32.le_s'], ge_s: [0x4e, 'i32.ge_s'],
+};
+const I_CMP64: Record<string, [number, string]> = {
+  eq: [0x51, 'i64.eq'], ne: [0x52, 'i64.ne'], lt_s: [0x53, 'i64.lt_s'],
+  gt_s: [0x55, 'i64.gt_s'], le_s: [0x57, 'i64.le_s'], ge_s: [0x59, 'i64.ge_s'],
+};
+// Conversion opcodes keyed by IR cast sub. f2i/f2l use the saturating-truncation
+// prefix (0xfc), so they never trap on NaN/overflow — matching the interpreter.
+const CAST_OP: Record<string, { bytes: number[]; name: string }> = {
+  i2f: { bytes: [0xb7], name: 'f64.convert_i32_s' },
+  f2i: { bytes: [0xfc, 0x02], name: 'i32.trunc_sat_f64_s' },
+  i2l: { bytes: [0xac], name: 'i64.extend_i32_s' },
+  l2i: { bytes: [0xa7], name: 'i32.wrap_i64' },
+  l2f: { bytes: [0xb9], name: 'f64.convert_i64_s' },
+  f2l: { bytes: [0xfc, 0x06], name: 'i64.trunc_sat_f64_s' },
 };
 const F_CMP: Record<string, [number, string]> = {
   eq: [0x61, 'f64.eq'], ne: [0x62, 'f64.ne'], lt: [0x63, 'f64.lt'],
@@ -67,7 +97,7 @@ interface Resolvers {
 // be recomputed at (i.e. sunk to) their single use without changing behavior.
 // Integer div_s/rem_s are deliberately absent — they can trap, so sinking them
 // past a side effect could reorder an observable trap.
-const STACKIFIABLE = new Set(['ibin', 'fbin', 'icmp', 'fcmp', 'cast', 'select', 'copy']);
+const STACKIFIABLE = new Set(['ibin', 'iunary', 'fbin', 'icmp', 'fcmp', 'cast', 'select', 'copy']);
 
 class FuncGen {
   fn: IRFunc;
@@ -291,7 +321,11 @@ class FuncGen {
   // Pushing an operand may recursively expand a folded subtree (post-order, so
   // it lands on the stack exactly where the consumer needs it).
   private pushOperand(o: Operand): W[] {
-    if (o.tag === 'const') return o.ty === 'f64' ? [{ k: 'f64c', v: o.num }] : [{ k: 'i32c', v: o.num | 0 }];
+    if (o.tag === 'const') {
+      if (o.ty === 'f64') return [{ k: 'f64c', v: o.num as number }];
+      if (o.ty === 'i64') return [{ k: 'i64c', v: o.num as bigint }];
+      return [{ k: 'i32c', v: (o.num as number) | 0 }];
+    }
     if (this.inlined.has(o.id)) {
       const out: W[] = [];
       this.emitValue(this.defOf.get(o.id)!, out);
@@ -306,8 +340,13 @@ class FuncGen {
   private emitValue(inst: Inst, out: W[]): void {
     switch (inst.kind) {
       case 'ibin': {
-        const [c, name] = I_BIN[inst.sub];
+        const [c, name] = (operandType(this.fn, inst.args[0]) === 'i64' ? I_BIN64 : I_BIN)[inst.sub];
         out.push(...this.pushOperand(inst.args[0]), ...this.pushOperand(inst.args[1]), { k: 'op', c, name });
+        break;
+      }
+      case 'iunary': {
+        const [c, name] = (operandType(this.fn, inst.args[0]) === 'i64' ? I_UN64 : I_UN)[inst.sub];
+        out.push(...this.pushOperand(inst.args[0]), { k: 'op', c, name });
         break;
       }
       case 'fbin': {
@@ -316,7 +355,9 @@ class FuncGen {
         break;
       }
       case 'icmp': {
-        const [c, name] = I_CMP[inst.sub];
+        // Comparisons return i32 (bool) but their opcode depends on the operand
+        // width, so select the i64 table when the operands are i64.
+        const [c, name] = (operandType(this.fn, inst.args[0]) === 'i64' ? I_CMP64 : I_CMP)[inst.sub];
         out.push(...this.pushOperand(inst.args[0]), ...this.pushOperand(inst.args[1]), { k: 'op', c, name });
         break;
       }
@@ -326,7 +367,7 @@ class FuncGen {
         break;
       }
       case 'cast':
-        out.push(...this.pushOperand(inst.args[0]), inst.sub === 'i2f' ? { k: 'convert' } : { k: 'trunc' });
+        out.push(...this.pushOperand(inst.args[0]), { k: 'cast', sub: inst.sub });
         break;
       case 'select':
         // wasm `select`: [a, b, cond] -> a if cond!=0 else b.
@@ -342,10 +383,10 @@ class FuncGen {
         out.push(...this.pushOperand(inst.args[0]), { k: 'gset', i: this.res.globalIndex(inst.sub) });
         break;
       case 'load':
-        out.push(...this.pushOperand(inst.args[0]), { k: 'load', mem: inst.sub as 'i32' | 'f64' | 'i8' });
+        out.push(...this.pushOperand(inst.args[0]), { k: 'load', mem: inst.sub as 'i32' | 'i64' | 'f64' | 'i8' });
         break;
       case 'store':
-        out.push(...this.pushOperand(inst.args[0]), ...this.pushOperand(inst.args[1]), { k: 'store', mem: inst.sub as 'i32' | 'f64' | 'i8' });
+        out.push(...this.pushOperand(inst.args[0]), ...this.pushOperand(inst.args[1]), { k: 'store', mem: inst.sub as 'i32' | 'i64' | 'f64' | 'i8' });
         break;
       case 'print':
         out.push(...this.pushOperand(inst.args[0]), { k: 'call', i: this.res.printIndex(inst.sub) });
@@ -432,25 +473,25 @@ function encodeBody(w: ByteWriter, tree: W[]): void {
       case 'gget': w.u8(0x23); w.u32(n.i); break;
       case 'gset': w.u8(0x24); w.u32(n.i); break;
       case 'i32c': w.u8(0x41); w.i32(n.v); break;
+      case 'i64c': w.u8(0x42); w.i64(n.v); break;
       case 'f64c': w.u8(0x44); w.f64(n.v); break;
       case 'call': w.u8(0x10); w.u32(n.i); break;
       case 'load': {
-        const [op, align] = n.mem === 'f64' ? [0x2b, 3] : n.mem === 'i8' ? [0x2d, 0] : [0x28, 2];
+        const [op, align] = n.mem === 'i64' ? [0x29, 3] : n.mem === 'f64' ? [0x2b, 3] : n.mem === 'i8' ? [0x2d, 0] : [0x28, 2];
         w.u8(op); w.u32(align); w.u32(0); break;
       }
       case 'store': {
-        const [op, align] = n.mem === 'f64' ? [0x39, 3] : n.mem === 'i8' ? [0x3a, 0] : [0x36, 2];
+        const [op, align] = n.mem === 'i64' ? [0x37, 3] : n.mem === 'f64' ? [0x39, 3] : n.mem === 'i8' ? [0x3a, 0] : [0x36, 2];
         w.u8(op); w.u32(align); w.u32(0); break;
       }
       case 'op': w.u8(n.c); break;
-      case 'select': w.u8(0x1b); break; // select (untyped)
-      case 'trunc': w.u8(0xfc); w.u32(0x02); break; // i32.trunc_sat_f64_s
-      case 'convert': w.u8(0xb7); break; // f64.convert_i32_s
+      case 'select': w.u8(0x1b); break; // select (untyped — valid for numeric types incl. i64)
+      case 'cast': for (const b of CAST_OP[n.sub].bytes) w.u8(b); break;
     }
   }
 }
 
-const vt = (t: IRType): number => (t === 'f64' ? VT_F64 : VT_I32);
+const vt = (t: IRType): number => (t === 'f64' ? VT_F64 : t === 'i64' ? VT_I64 : VT_I32);
 
 interface PrintImport {
   kind: string;
@@ -470,9 +511,9 @@ export function codegen(mod: IRModule): CodegenResult {
   // discover which print imports are used
   const usedPrints = new Set<string>();
   for (const fn of mod.funcs) for (const b of fn.blocks) for (const i of b.insts) if (i.kind === 'print') usedPrints.add(i.sub);
-  const imports: PrintImport[] = (['int', 'float', 'bool', 'str'] as const)
+  const imports: PrintImport[] = (['int', 'long', 'float', 'bool', 'str'] as const)
     .filter((k) => usedPrints.has(k))
-    .map((k) => ({ kind: k, field: `print_${k}`, param: k === 'float' ? 'f64' : 'i32' }));
+    .map((k) => ({ kind: k, field: `print_${k}`, param: k === 'float' ? 'f64' : k === 'long' ? 'i64' : 'i32' }));
   const printIndexMap = new Map<string, number>();
   imports.forEach((im, i) => printIndexMap.set(im.kind, i));
   const importCount = imports.length;
@@ -560,7 +601,9 @@ export function codegen(mod: IRModule): CodegenResult {
       const w = new ByteWriter();
       w.u8(vt(g.ty));
       w.u8(g.mutable ? 0x01 : 0x00);
-      if (g.ty === 'f64') { w.u8(0x44); w.f64(g.init); } else { w.u8(0x41); w.i32(g.init | 0); }
+      if (g.ty === 'f64') { w.u8(0x44); w.f64(g.init as number); }
+      else if (g.ty === 'i64') { w.u8(0x42); w.i64(g.init as bigint); }
+      else { w.u8(0x41); w.i32((g.init as number) | 0); }
       w.u8(0x0b);
       return w.bytes;
     });
@@ -669,7 +712,9 @@ function emitWAT(mod: IRModule, gens: FuncGen[], imports: PrintImport[]): string
     lines.push(`  (data (i32.const ${mod.staticData.offset}) "${esc}")`);
   }
   for (const g of mod.globals) {
-    const init = g.ty === 'f64' ? `(f64.const ${g.init})` : `(i32.const ${g.init | 0})`;
+    const init = g.ty === 'f64' ? `(f64.const ${g.init})`
+      : g.ty === 'i64' ? `(i64.const ${g.init})`
+      : `(i32.const ${(g.init as number) | 0})`;
     lines.push(`  (global $${g.name} (mut ${g.ty}) ${init})`);
   }
   for (const g of gens) {
@@ -706,14 +751,14 @@ function watBody(tree: W[], lines: string[], depth: number): void {
       case 'gget': lines.push(`${pad}global.get ${n.i}`); break;
       case 'gset': lines.push(`${pad}global.set ${n.i}`); break;
       case 'i32c': lines.push(`${pad}i32.const ${n.v | 0}`); break;
+      case 'i64c': lines.push(`${pad}i64.const ${n.v}`); break;
       case 'f64c': lines.push(`${pad}f64.const ${n.v}`); break;
       case 'call': lines.push(`${pad}call ${n.i}`); break;
-      case 'load': lines.push(`${pad}${n.mem === 'f64' ? 'f64.load' : n.mem === 'i8' ? 'i32.load8_u' : 'i32.load'}`); break;
-      case 'store': lines.push(`${pad}${n.mem === 'f64' ? 'f64.store' : n.mem === 'i8' ? 'i32.store8' : 'i32.store'}`); break;
+      case 'load': lines.push(`${pad}${n.mem === 'i64' ? 'i64.load' : n.mem === 'f64' ? 'f64.load' : n.mem === 'i8' ? 'i32.load8_u' : 'i32.load'}`); break;
+      case 'store': lines.push(`${pad}${n.mem === 'i64' ? 'i64.store' : n.mem === 'f64' ? 'f64.store' : n.mem === 'i8' ? 'i32.store8' : 'i32.store'}`); break;
       case 'op': lines.push(`${pad}${n.name}`); break;
       case 'select': lines.push(`${pad}select`); break;
-      case 'trunc': lines.push(`${pad}i32.trunc_sat_f64_s`); break;
-      case 'convert': lines.push(`${pad}f64.convert_i32_s`); break;
+      case 'cast': lines.push(`${pad}${CAST_OP[n.sub].name}`); break;
     }
   }
 }

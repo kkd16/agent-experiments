@@ -42,6 +42,7 @@ export function TokensPanel({ comp }: { comp: Compilation }) {
 function exprStr(e: Expr): string {
   switch (e.node) {
     case 'int': return String(e.value);
+    case 'long': return `${e.value}L`;
     case 'float': return String(e.value);
     case 'bool': return String(e.value);
     case 'string': return JSON.stringify(e.value);

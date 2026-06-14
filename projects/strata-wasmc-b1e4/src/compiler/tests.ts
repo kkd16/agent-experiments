@@ -597,4 +597,189 @@ fn main(){
   print(join(cells, " + ") + " = " + str(total));
 }`,
   },
+
+  // --- 64-bit integers (long / i64) -------------------------------------------
+  {
+    name: 'long-arith-wrap',
+    source: `fn main(){
+  let a = 9223372036854775807L; print(a + 1L);   // wraps to INT64_MIN
+  print(-9223372036854775808L - 1L);             // wraps to INT64_MAX
+  let big = 3037000500L; print(big * big);        // squares just past 2^63 -> wraps
+  print(1000000000000L * 1000000000000L);         // 1e24 wraps mod 2^64
+  print(0L - 1L); print(-0L);
+}`,
+  },
+  {
+    name: 'long-div-rem',
+    source: `fn main(){
+  print(-7L / 2L); print(7L / -2L); print(-7L / -2L);
+  print(-7L % 2L); print(7L % -2L); print(-7L % -2L);
+  print(9223372036854775807L / 3L);
+  print(-9223372036854775808L / 2L);
+  print(-9223372036854775808L % 7L);
+}`,
+  },
+  {
+    name: 'long-shift-bitwise',
+    source: `fn main(){
+  print(1L << 62L); print(1L << 63L); print(1L << 64L);  // count masks to 6 bits: 64 -> 0
+  print(-1L >> 1L); print(-8L >> 2L); print(255L >> 9L);
+  print(7L & 5L); print(7L | 8L); print(6L ^ 3L); print(~0L); print(~1L);
+  print(-1L >> 63L);                                       // arithmetic shift -> -1
+  print(0xFFFFFFFFFFFFFFFFL); print(0x7FFFFFFFFFFFFFFFL);  // -1 and INT64_MAX
+}`,
+  },
+  {
+    name: 'long-conversions',
+    source: `fn main(){
+  print(long(5)); print(long(-7)); print(long(true)); print(long(false));
+  print(int(9223372036854775807L));   // wrap low 32 bits -> -1
+  print(int(4294967296L));            // 2^32 wraps -> 0
+  print(int(-1L));
+  print(float(9007199254740993L));    // 2^53+1 rounds to 2^53 in f64
+  print(long(3.9)); print(long(-3.9)); print(long(2.0));
+  print(long(1.0e18));                // in range, exact-integer f64
+  print(long(9.0e18) > 0L);
+}`,
+  },
+  {
+    name: 'long-str',
+    source: `fn main(){
+  print(str(0L)); print(str(42L)); print(str(-7L));
+  print(str(9223372036854775807L)); print(str(-9223372036854775808L));   // MAX / MIN
+  print("h=" + str(1099511628211L));
+  let line = "";
+  for (let i = 1; i <= 5; i = i + 1) { line = line + str(long(i) * 1000000000L) + " "; }
+  print(line);
+}`,
+  },
+  {
+    name: 'long-fnv1a',
+    source: `fn fnv1a(s: str) -> long {
+  let h = -3750763034362895579L;          // 14695981039346656037 (offset basis) as signed i64
+  for (let i = 0; i < len(s); i = i + 1) {
+    h = h ^ long(s[i]);
+    h = h * 1099511628211L;                // FNV-1a 64-bit prime; multiply wraps mod 2^64
+  }
+  return h;
+}
+fn main(){
+  print(fnv1a("")); print(fnv1a("a")); print(fnv1a("hello"));
+  print(fnv1a("The quick brown fox jumps over the lazy dog"));
+  print(fnv1a("hello") == fnv1a("hello"));
+}`,
+  },
+  {
+    name: 'long-xorshift',
+    source: `fn main(){
+  let x = 88172645463325252L;
+  for (let i = 0; i < 8; i = i + 1) {
+    x = x ^ (x << 13L);
+    x = x ^ (x >> 7L);
+    x = x ^ (x << 17L);
+    print(x);
+  }
+}`,
+  },
+  {
+    name: 'long-factorial',
+    source: `fn fact(n: int) -> long {
+  let r = 1L;
+  for (let i = 2; i <= n; i = i + 1) { r = r * long(i); }
+  return r;
+}
+fn main(){ for (let i = 0; i <= 20; i = i + 1) { print(fact(i)); } }`,
+  },
+  {
+    name: 'long-array',
+    source: `fn main(){
+  let n = 7; let a = long_array(n);
+  print(len(a)); print(a[0]);                 // uninitialized -> 0
+  a[0] = 1L;
+  for (let i = 1; i < n; i = i + 1) { a[i] = a[i - 1] * 1000000000L; }   // wraps
+  let s = 0L;
+  for (let i = 0; i < n; i = i + 1) { print(a[i]); s = s + a[i]; }
+  print(s);
+}`,
+  },
+  {
+    name: 'long-mixed-int',
+    source: `fn main(){
+  let i = 1000000;
+  print(i * i);                  // i32 multiply wraps
+  print(long(i) * long(i));      // exact 1e12 in i64
+  let big = 9223372036854775807L;
+  print(int(big)); print(big > 0L); print(long(int(big)));
+  for (let k = 0; k < 5; k = k + 1) { print(long(k) * long(k) * long(k)); }
+}`,
+  },
+  {
+    name: 'long-strength-reduce',
+    source: `fn f(x: long) -> long { return x * 8L + x * 1024L + 2L * x; }
+fn main(){ for (let i = -3; i < 4; i = i + 1) { print(f(long(i))); } }`,
+  },
+  {
+    name: 'long-select',
+    source: `fn maxl(a: long, b: long) -> long { return a > b ? a : b; }
+fn absl(x: long) -> long { return x < 0L ? 0L - x : x; }    // lowers to a diamond -> select
+fn main(){
+  print(maxl(5L, 9L)); print(maxl(-3L, -7L));
+  print(absl(-9223372036854775807L)); print(absl(42L));
+  let s = 0L;
+  for (let i = 0; i < 10; i = i + 1) { s = s + (i % 2 == 0 ? long(i) : 0L - long(i)); }
+  print(s);
+}`,
+  },
+  {
+    name: 'long-global-prng',
+    source: `let seed: long = 88172645463325252L;
+let prime: long = 6364136223846793005L;
+fn next() -> long { seed = seed * prime + 1442695040888963407L; return seed; }
+fn main(){ for (let i = 0; i < 6; i = i + 1) { print(next()); } }`,
+  },
+  {
+    name: 'long-tail-sum',
+    source: `fn sum(n: long, acc: long) -> long { if (n == 0L) { return acc; } return sum(n - 1L, acc + n); }
+fn main(){ for (let i = 0L; i < 10L; i = i + 1L) { print(sum(i * 90L, 0L)); } }`,
+  },
+
+  // --- bit-manipulation primitives (popcount / clz / ctz / rotl / rotr) -------
+  {
+    name: 'bitops-i32',
+    source: `fn main(){
+  print(popcount(0)); print(popcount(255)); print(popcount(-1)); print(popcount(0x55555555));
+  print(clz(1)); print(clz(0)); print(clz(-1)); print(clz(0x00010000));
+  print(ctz(1)); print(ctz(0)); print(ctz(8)); print(ctz(-2147483648));
+  print(rotl(1, 0)); print(rotl(1, 1)); print(rotl(1, 31)); print(rotl(1, 32)); print(rotl(-2147483648, 1));
+  print(rotr(1, 1)); print(rotr(1, 0)); print(rotr(2, 1)); print(rotr(1, 33));
+}`,
+  },
+  {
+    name: 'bitops-i64',
+    source: `fn main(){
+  print(popcount(0L)); print(popcount(-1L)); print(popcount(0xFFFFFFFFL)); print(popcount(0x5555555555555555L));
+  print(clz(1L)); print(clz(0L)); print(clz(-1L)); print(clz(0x0000000100000000L));
+  print(ctz(1L)); print(ctz(0L)); print(ctz(256L)); print(ctz(-9223372036854775808L));
+  print(rotl(1L, 0L)); print(rotl(1L, 1L)); print(rotl(1L, 63L)); print(rotl(1L, 64L)); print(rotl(1L, 65L));
+  print(rotr(1L, 1L)); print(rotr(2L, 1L)); print(rotr(0x8000000000000000L, 63L));
+}`,
+  },
+  {
+    name: 'bitops-mix',
+    source: `fn mix(h: long, k: long) -> long {
+  let x = k * -75363745605771443L;       // 0xFF51AFD7ED558CCD
+  x = rotl(x, 31L);
+  x = x * -4417276706812531889L;          // 0xC4CEB9FE1A85EC53
+  return rotl(h ^ x, 27L) * 5L + 1390208809L;
+}
+fn main(){
+  let h = 0L;
+  for (let i = 1; i <= 8; i = i + 1) { h = mix(h, long(i)); print(h); }
+  print(popcount(h)); print(clz(h)); print(ctz(h | 1L));
+  // hoist a loop-invariant rotate out of the loop, and CSE repeated ones
+  let acc = 0;
+  for (let i = 0; i < 12; i = i + 1) { acc = acc + rotl(0x01020304, 8) + popcount(i); }
+  print(acc);
+}`,
+  },
 ];

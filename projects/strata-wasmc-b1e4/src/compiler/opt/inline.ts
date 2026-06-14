@@ -126,7 +126,7 @@ function inlineAt(fn: PFunc, B: PBlock, i: number, callee: PFunc, uid: number): 
     ty: p.ty,
     kind: 'copy',
     sub: '',
-    args: [call.args[k] ?? { tag: 'const', ty: p.ty, num: 0 }],
+    args: [call.args[k] ?? { tag: 'const', ty: p.ty, num: p.ty === 'i64' ? 0n : 0 }],
   }));
   B.insts = [...B.insts.slice(0, i), ...binds];
   B.term = { op: 'br', target: blockMap.get(callee.entry)! };

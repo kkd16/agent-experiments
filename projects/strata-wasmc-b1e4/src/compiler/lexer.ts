@@ -97,6 +97,21 @@ export function tokenize(source: string): Token[] {
     // numbers
     if (isDigit(c) || (c === '.' && isDigit(source[i + 1] ?? ''))) {
       const start = i;
+      // Hexadecimal integer: `0x…`, optionally suffixed with `L`/`l` for a long.
+      if (c === '0' && (source[i + 1] === 'x' || source[i + 1] === 'X')) {
+        i += 2;
+        const hexStart = i;
+        const isHex = (ch: string): boolean => /[0-9a-fA-F]/.test(ch);
+        while (i < n && isHex(source[i])) i++;
+        if (i === hexStart) throw new CompileError('malformed hex literal (expected hex digits after 0x)', span(start, i), 'lex');
+        if (source[i] === 'L' || source[i] === 'l') {
+          i++;
+          push('long_lit', start, i); // parser folds the spelling to a BigInt
+        } else {
+          push('int_lit', start, i, Number(source.slice(start, i)));
+        }
+        continue;
+      }
       let isFloat = false;
       while (i < n && isDigit(source[i])) i++;
       if (source[i] === '.') {
@@ -110,6 +125,12 @@ export function tokenize(source: string): Token[] {
         if (source[i] === '+' || source[i] === '-') i++;
         if (!isDigit(source[i] ?? '')) throw new CompileError('malformed exponent', span(start, i), 'lex');
         while (i < n && isDigit(source[i])) i++;
+      }
+      // An `L`/`l` suffix promotes a decimal integer literal to a `long` (i64).
+      if (!isFloat && (source[i] === 'L' || source[i] === 'l')) {
+        i++;
+        push('long_lit', start, i);
+        continue;
       }
       const text = source.slice(start, i);
       const value = Number(text);

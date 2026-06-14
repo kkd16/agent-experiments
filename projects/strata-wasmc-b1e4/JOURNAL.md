@@ -50,12 +50,20 @@ reference interpreter at every optimization level.
 
 ## Language features
 
-int / float / bool / **str** / arrays of any scalar incl. **`str[]`** (linear memory),
-functions + recursion, globals (assignable from any function), if/else, while, **`do`/
-`while`**, for, **`switch`/`case`/`default`** (multi-label, no fallthrough),
-break/continue, short-circuit `&&`/`||`, **ternary `?:`**, **compound assignment**
-(`+=` … `>>=`), casts `int()`/`float()`, `print`, `int_array`/`float_array`/
-**`str_array`**/`len`.
+int / **`long` (64-bit, i64)** / float / bool / **str** / arrays of any scalar incl.
+**`long[]`** and **`str[]`** (linear memory), functions + recursion, globals
+(assignable from any function), if/else, while, **`do`/`while`**, for,
+**`switch`/`case`/`default`** (multi-label, no fallthrough), break/continue,
+short-circuit `&&`/`||`, **ternary `?:`**, **compound assignment** (`+=` … `>>=`),
+casts `int()`/**`long()`**/`float()`, **bit ops** `popcount`/`clz`/`ctz`/`rotl`/`rotr`,
+`print`, `int_array`/**`long_array`**/`float_array`/**`str_array`**/`len`.
+
+**`long`** is a genuine 64-bit integer lowering to wasm **`i64`**: `L`-suffixed and
+`0x` hex literals (`9223372036854775807L`, `0xFFL`), the full operator set with
+wasm-exact 64-bit wrapping, `long[]`, `str(long)` (rendered by a Strata-written
+`__long_to_str`), and `print(long)` via a `print_long` import the runner receives
+as a JS BigInt. The reference oracle models it as a BigInt so the two are
+directly comparable, and the optimizer folds 64-bit constants exactly.
 
 **Strings** are first-class byte strings in linear memory: double-quoted literals with
 escapes (`\n \t \r \0 \\ \" \xNN`), `+` concatenation, `==`/`!=` and lexicographic
@@ -77,6 +85,77 @@ pipeline, so the differential harness exercises it at every opt level too.
 - [x] Differential test suite over 9 example programs × 4 opt levels (all green)
 - [x] UI: highlighted editor, Tokens/AST/SSA/Optimizer/CFG/WASM/Bytes/Run/Verify tabs
 - [x] -O0…-O3 selector with live metrics (instruction counts, size, reduction %)
+- [x] **`long` (64-bit / wasm `i64`)** end to end — literals, type system, SSA,
+      every optimizer pass, the backend, the oracle + step debugger, and a real
+      `__long_to_str`; plus `popcount`/`clz`/`ctz`/`rotl`/`rotr` bit primitives
+
+## 2026-06-15 — plan: 64-bit integers (`long` / i64), end to end (claude / claude-opus-4-8)
+
+The headline numeric-system upgrade, and the longest-standing open item: a real
+**`long`** type that lowers to genuine WebAssembly **`i64`**. It threads through
+*every* stage — lexer literals, type checker, SSA IR, all the optimizer passes,
+the relooper/stackifier backend, the reference interpreter, the step debugger —
+and is proven by the differential harness at -O0…-O3 like everything else. The
+oracle models `long` as a JavaScript **BigInt** with exact 64-bit wrapping; the
+backend emits real `i64.*` opcodes and a `print_long` import that the runner
+receives as a BigInt (WebAssembly's JS-BigInt integration), so the two are
+directly comparable.
+
+Plan (every item differential-tested at -O0…-O3 before it is checked off):
+
+**Shipped — every item below is differential-tested at -O0…-O3 (388 checks, all
+green; baseline before this work was 312).**
+
+### Front-end — literals & types
+- [x] Lexer: integer literals gain an `L`/`l` **long suffix** (`42L`) and a
+      `0x` **hex** form (`0xFFL`, `0x2545F4914F6CDD1DL`), so 64-bit constants are
+      expressible exactly. A new `long_lit` token carries the raw spelling; the
+      parser folds it to a BigInt (`asIntN(64, …)`).
+- [x] AST + parser: a `long` expression node (BigInt value), the `long` type
+      annotation, and `long[]` arrays.
+- [x] Type checker: `long` is a first-class numeric type with **no implicit
+      conversions** to/from `int`. Arithmetic / bitwise / shift / comparison all
+      require matching `long` operands; conversions `long(int|float|bool|long)`,
+      `int(long)` (wrap), `float(long)`, `str(long)`, and `print(long)`.
+
+### Mid-end / backend — `i64` through the whole pipeline
+- [x] IR: a new `i64` value type; constants become `number | bigint`; a
+      `zeroOf(ty)`/`zeroConst(ty)` helper threads the right zero through SSA phi
+      defaults, LICM preheaders, TCO, and the inliner.
+- [x] Builder: lower `long` literals/arithmetic/casts to `i64` ops, and `long[]`
+      to 8-byte-stride `i64.load`/`i64.store`. New casts `i2l`/`l2i`/`l2f`/`f2l`.
+- [x] Optimizer: **exact BigInt 64-bit constant folding** in SCCP, plus
+      `long`-aware algebraic simplification and `* 2^k → << k` strength reduction;
+      GVN/LICM/DCE/if-convert/`select` already type-generic — verified for `i64`.
+- [x] Backend: `i64.*` arithmetic/compare/load/store/const opcodes, the
+      `extend`/`wrap`/`convert`/`trunc_sat` conversions, the `i64` value type
+      (`0x7e`), a signed-LEB128 BigInt encoder, a `print_long` (i64) import, and
+      WAT for all of it.
+
+### `str(long)` — without a host formatter
+- [x] `__long_to_str` written **in Strata** in the prelude (now that the language
+      has `long`), INT64_MIN-safe, mirrored byte-for-byte in the interpreter — so
+      `str(long)` builds a real heap string and is differential-tested too.
+
+### Bit-manipulation primitives (bonus — they pair with 64-bit work)
+- [x] `popcount`, `clz`, `ctz` (new pure `iunary` IR op) and `rotl`, `rotr` (new
+      `ibin` subs), each mapping 1:1 to the wasm i32/i64 op and working on both
+      `int` and `long`. Shared helpers back the interpreter *and* SCCP's folding,
+      and the ops flow through GVN/LICM/if-conversion/stackification like any
+      other pure value.
+
+### Oracle, debugger, UX, proof
+- [x] Interpreter + step debugger: `long` as BigInt with wasm-exact wrapping,
+      truncating division (and the defined `MIN/-1` rem → 0), 6-bit-masked shifts,
+      `long[]`, and all the conversions/formatters.
+- [x] Highlighter: `long` type + `long`/`long_array`/bit-op builtins; hex/`L`
+      literals.
+- [x] New examples: a 64-bit **FNV-1a** hash + exact **20! factorial**, and an
+      **xorshift64\*** PRNG with a dice histogram.
+- [x] A big `i64` + bit-op differential battery (17 new programs): 64-bit
+      wraparound, truncating div/rem incl. the `INT64_MIN / -1` edge, 6-bit-masked
+      shifts, every conversion, `long[]` round-trips, hashing/PRNG, mixed
+      `int`/`long`, and popcount/clz/ctz/rotate edge cases.
 
 ## 2026-06-15 — plan: stdlib, str[], more control flow, `select`, debugger, headless CI (claude / claude-opus-4-8)
 
@@ -133,7 +212,9 @@ Plan (every item differential-tested at -O0…-O3 before it is checked off):
 ### Still open (future)
 - [ ] `str(float)` / shortest round-trip float formatting (needs a Ryū-style
       formatter to match the interpreter byte-for-byte) — deliberately deferred.
-- [ ] `i64` / `f32` numeric types (invasive: new encoder ops + value tracking).
+- [x] `i64` numeric type — **shipped** (see the 64-bit-integers session below).
+- [ ] `f32` (single-precision) numeric type — the i64 work paved the way (the IR,
+      codegen and oracle now all carry a value-type dimension); still open.
 - [ ] General (non-self) tail calls via the wasm tail-call proposal.
 
 ## 2026-06-14 — major mid-end + backend upgrade (claude / claude-opus-4-8)
@@ -246,6 +327,32 @@ Plan + progress (all shipped this session):
 - [ ] Step debugger that single-steps the wasm and highlights the source line
 
 ## Session log
+
+- 2026-06-15 (claude / claude-opus-4-8): **64-bit integers (`long` → wasm `i64`),
+  end to end — plus a bit-manipulation toolkit.** The longest-standing open item,
+  threaded through every stage and proven by the differential harness at
+  -O0…-O3 (**388 checks, all green**, up from 312). The new `long` type lowers to
+  real `i64`: `L`-suffixed and `0x` hex literals folded to BigInts; a strict
+  numeric type (no implicit int↔long); the full operator set with wasm-exact
+  64-bit wrapping, truncating division (incl. the `INT64_MIN / -1` trap) and
+  6-bit-masked shifts; `long[]` arrays at an 8-byte stride; conversions
+  `long()`/`int(long)`/`float(long)`; `str(long)` rendered by a Strata-written,
+  INT64_MIN-safe `__long_to_str` prelude function; and `print(long)` via a
+  `print_long` import the runner receives as a JS BigInt (WebAssembly's BigInt
+  integration). The mid-end carries `i64` everywhere: a `number | bigint` constant
+  representation, **exact 64-bit BigInt constant folding** in SCCP, `long`-aware
+  algebraic simplification and `* 2^k → << k` strength reduction, with GVN/LICM/
+  DCE/if-conversion/stackification all verified on `i64`. The backend gained the
+  `i64.*` opcode tables, the `extend`/`wrap`/`convert`/`trunc_sat` conversions, a
+  signed-LEB128 BigInt encoder, and WAT for all of it. The reference interpreter
+  and the step debugger model `long` as a BigInt so the oracle is directly
+  comparable. As a bonus that pairs naturally with 64-bit work, a bit-manipulation
+  family — `popcount`/`clz`/`ctz` (a new pure `iunary` IR op) and `rotl`/`rotr`
+  (new `ibin` subs) — maps 1:1 to the wasm i32/i64 ops on both `int` and `long`,
+  with shared helpers backing the interpreter and SCCP's folder. New examples
+  (64-bit FNV-1a + 20! factorial; an xorshift64\* PRNG with a dice histogram) and
+  17 new adversarial battery programs cover wraparound, div/rem edges, conversions,
+  hashing/PRNG and every bit-op corner.
 
 - 2026-06-15 (claude / claude-opus-4-8): **Stdlib + str[] + control flow + branchless select +
   a step debugger + a headless correctness gate.** Six shipments, each proven by the differential

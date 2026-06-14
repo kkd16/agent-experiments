@@ -8,13 +8,13 @@ import type { Block, Expr, Program, Stmt } from './ast';
 // semantics (wrapping, truncating division, saturating float->int casts) so the
 // two implementations agree bit-for-bit.
 
-export type RtValue = number | ArrayVal | string;
+export type RtValue = number | bigint | ArrayVal | string;
 export interface ArrayVal {
   arr: true;
-  elem: 'int' | 'float' | 'str';
-  // `int`/`float` arrays hold numbers; `str` arrays hold byte strings. A single
-  // union keeps the element accessors uniform.
-  data: (number | string)[];
+  elem: 'int' | 'long' | 'float' | 'str';
+  // `int`/`float` arrays hold numbers; `long` arrays hold BigInts; `str` arrays
+  // hold byte strings. A single union keeps the element accessors uniform.
+  data: (number | bigint | string)[];
 }
 
 // Strings are byte strings (Latin-1): every character is one byte. A JS string
@@ -47,9 +47,41 @@ export const satTruncI32 = (x: number): number => {
   return Math.trunc(x);
 };
 
+// 64-bit integer helpers — the `long` type is modeled as a BigInt with explicit
+// `asIntN(64, …)` wrapping so it tracks wasm i64 bit-for-bit.
+export const I64_MIN = -(2n ** 63n);
+export const I64_MAX = 2n ** 63n - 1n;
+export const asI64 = (x: bigint): bigint => BigInt.asIntN(64, x);
+// Saturating f64 -> i64 truncation (wasm `i64.trunc_sat_f64_s`): NaN -> 0, and
+// out-of-range magnitudes clamp to the i64 bounds instead of trapping.
+export const satTruncI64 = (x: number): bigint => {
+  if (Number.isNaN(x)) return 0n;
+  if (x >= 9223372036854775808) return I64_MAX; // x >= 2^63
+  if (x < -9223372036854775808) return I64_MIN; // x < -2^63
+  return BigInt(Math.trunc(x));
+};
+
 export function formatInt(x: number): string {
   return String(i32(x));
 }
+export function formatLong(x: bigint): string {
+  return String(asI64(x));
+}
+
+// Bit-manipulation primitives shared by the builtin library *and* the optimizer's
+// constant folder, so the interpreter, SCCP and the real wasm op can never
+// disagree. Each mirrors its wasm counterpart exactly (counts are over the
+// unsigned bit pattern; rotate amounts are masked to the type's width).
+export const popcnt32 = (x: number): number => { let v = x >>> 0; let c = 0; while (v) { c += v & 1; v >>>= 1; } return c; };
+export const clz32 = (x: number): number => Math.clz32(x >>> 0);
+export const ctz32 = (x: number): number => { let v = x >>> 0; if (v === 0) return 32; let c = 0; while ((v & 1) === 0) { c++; v >>>= 1; } return c; };
+export const rotl32 = (a: number, b: number): number => { const n = b & 31; return n === 0 ? a | 0 : ((a << n) | (a >>> (32 - n))) | 0; };
+export const rotr32 = (a: number, b: number): number => { const n = b & 31; return n === 0 ? a | 0 : ((a >>> n) | (a << (32 - n))) | 0; };
+export const popcnt64 = (x: bigint): bigint => { let v = BigInt.asUintN(64, x); let c = 0n; while (v) { c += v & 1n; v >>= 1n; } return c; };
+export const clz64 = (x: bigint): bigint => { const v = BigInt.asUintN(64, x); if (v === 0n) return 64n; let c = 0n; let bit = 1n << 63n; while ((v & bit) === 0n) { c++; bit >>= 1n; } return c; };
+export const ctz64 = (x: bigint): bigint => { let v = BigInt.asUintN(64, x); if (v === 0n) return 64n; let c = 0n; while ((v & 1n) === 0n) { c++; v >>= 1n; } return c; };
+export const rotl64 = (a: bigint, b: bigint): bigint => { const n = b & 63n; if (n === 0n) return asI64(a); const u = BigInt.asUintN(64, a); return asI64((u << n) | (u >> (64n - n))); };
+export const rotr64 = (a: bigint, b: bigint): bigint => { const n = b & 63n; if (n === 0n) return asI64(a); const u = BigInt.asUintN(64, a); return asI64((u >> n) | (u << (64n - n))); };
 export function formatFloat(x: number): string {
   if (Number.isNaN(x)) return 'nan';
   if (x === Infinity) return 'inf';
@@ -172,6 +204,7 @@ export class Interpreter {
         const val = this.evalExpr(s.value, f);
         if (idx < 0 || idx >= target.data.length) throw new Trap('array index out of bounds');
         if (target.elem === 'str') target.data[idx] = val as string;
+        else if (target.elem === 'long') target.data[idx] = asI64(val as bigint);
         else target.data[idx] = target.elem === 'int' ? i32(val as number) : (val as number);
         break;
       }
@@ -242,6 +275,8 @@ export class Interpreter {
     switch (e.node) {
       case 'int':
         return i32(e.value);
+      case 'long':
+        return asI64(e.value);
       case 'float':
         return e.value;
       case 'bool':
@@ -273,6 +308,15 @@ export class Interpreter {
   }
 
   private evalUnary(e: Extract<Expr, { node: 'unary' }>, f: Frame): RtValue {
+    if (e.operand.ty?.kind === 'long') {
+      const v = this.evalExpr(e.operand, f) as bigint;
+      switch (e.op) {
+        case '-': return asI64(-v);
+        case '+': return v;
+        case '~': return asI64(~v);
+        case '!': return v ? 0 : 1; // not type-valid, kept total
+      }
+    }
     const v = this.evalExpr(e.operand, f) as number;
     const isInt = e.operand.ty?.kind === 'int' || e.operand.ty?.kind === 'bool';
     switch (e.op) {
@@ -307,6 +351,8 @@ export class Interpreter {
         default: throw new Trap(`unsupported string operator '${e.op}'`);
       }
     }
+
+    if (e.left.ty?.kind === 'long') return this.evalLongBinary(e, f);
 
     const a = this.evalExpr(e.left, f) as number;
     const b = this.evalExpr(e.right, f) as number;
@@ -354,6 +400,39 @@ export class Interpreter {
     }
   }
 
+  // 64-bit integer arithmetic, mirroring wasm i64: wrapping add/sub/mul, signed
+  // truncating division (with the `MIN/-1` overflow trap), sign-of-dividend
+  // remainder, and shift counts masked to 6 bits. Comparisons yield 0/1 (i32).
+  private evalLongBinary(e: Extract<Expr, { node: 'binary' }>, f: Frame): RtValue {
+    const a = this.evalExpr(e.left, f) as bigint;
+    const b = this.evalExpr(e.right, f) as bigint;
+    switch (e.op) {
+      case '+': return asI64(a + b);
+      case '-': return asI64(a - b);
+      case '*': return asI64(a * b);
+      case '/':
+        if (b === 0n) throw new Trap('integer divide by zero');
+        if (a === I64_MIN && b === -1n) throw new Trap('integer overflow');
+        return asI64(a / b);
+      case '%':
+        if (b === 0n) throw new Trap('integer divide by zero');
+        if (a === I64_MIN && b === -1n) return 0n;
+        return asI64(a % b);
+      case '&': return asI64(a & b);
+      case '|': return asI64(a | b);
+      case '^': return asI64(a ^ b);
+      case '<<': return asI64(a << (b & 63n));
+      case '>>': return asI64(a >> (b & 63n));
+      case '<': return a < b ? 1 : 0;
+      case '<=': return a <= b ? 1 : 0;
+      case '>': return a > b ? 1 : 0;
+      case '>=': return a >= b ? 1 : 0;
+      case '==': return a === b ? 1 : 0;
+      case '!=': return a !== b ? 1 : 0;
+      default: return 0;
+    }
+  }
+
   private evalCall(e: Extract<Expr, { node: 'call' }>, f: Frame): RtValue {
     const name = e.callee;
     // Strict left-to-right argument evaluation (no builtin is short-circuiting).
@@ -388,6 +467,7 @@ export function callBuiltin(
     case 'print': {
       const k = argKinds[0];
       if (k === 'str') out.push(argv[0] as string);
+      else if (k === 'long') out.push(formatLong(argv[0] as bigint));
       else {
         const v = argv[0] as number;
         out.push(k === 'float' ? formatFloat(v) : k === 'bool' ? formatBool(v) : formatInt(v));
@@ -397,6 +477,7 @@ export function callBuiltin(
     case 'str': {
       const k = argKinds[0];
       if (k === 'str') return H(argv[0]);
+      if (k === 'long') return H(formatLong(argv[0] as bigint));
       if (k === 'bool') return H(formatBool(argv[0] as number));
       return H(formatInt(argv[0] as number));
     }
@@ -487,15 +568,34 @@ export function callBuiltin(
       return H(neg ? i32(-acc) : acc);
     }
     case 'int':
-      return H(argKinds[0] === 'float' ? satTruncI32(argv[0] as number) : i32(argv[0] as number));
+      if (argKinds[0] === 'float') return H(satTruncI32(argv[0] as number));
+      if (argKinds[0] === 'long') return H(Number(BigInt.asIntN(32, argv[0] as bigint))); // wrap to low 32 bits
+      return H(i32(argv[0] as number));
     case 'float':
+      if (argKinds[0] === 'long') return H(Number(argv[0] as bigint)); // i64 -> f64, ties to even
       return H(argv[0] as number);
+    case 'long':
+      if (argKinds[0] === 'long') return H(asI64(argv[0] as bigint));
+      if (argKinds[0] === 'float') return H(satTruncI64(argv[0] as number));
+      return H(asI64(BigInt(i32(argv[0] as number)))); // int/bool widen, sign-extended
+    case 'popcount':
+      return H(argKinds[0] === 'long' ? popcnt64(argv[0] as bigint) : popcnt32(argv[0] as number));
+    case 'clz':
+      return H(argKinds[0] === 'long' ? clz64(argv[0] as bigint) : clz32(argv[0] as number));
+    case 'ctz':
+      return H(argKinds[0] === 'long' ? ctz64(argv[0] as bigint) : ctz32(argv[0] as number));
+    case 'rotl':
+      return H(argKinds[0] === 'long' ? rotl64(argv[0] as bigint, argv[1] as bigint) : rotl32(argv[0] as number, argv[1] as number));
+    case 'rotr':
+      return H(argKinds[0] === 'long' ? rotr64(argv[0] as bigint, argv[1] as bigint) : rotr32(argv[0] as number, argv[1] as number));
     case 'int_array':
+    case 'long_array':
     case 'float_array':
     case 'str_array': {
       const n = i32(argv[0] as number);
       if (n < 0) throw new Trap('negative array length');
       if (name === 'str_array') return H({ arr: true, elem: 'str', data: new Array(n).fill('') });
+      if (name === 'long_array') return H({ arr: true, elem: 'long', data: new Array(n).fill(0n) });
       return H({ arr: true, elem: name === 'int_array' ? 'int' : 'float', data: new Array(n).fill(0) });
     }
     case 'split': {

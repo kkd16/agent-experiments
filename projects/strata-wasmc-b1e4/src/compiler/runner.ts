@@ -1,4 +1,4 @@
-import { formatBool, formatFloat, formatInt } from './interp';
+import { formatBool, formatFloat, formatInt, formatLong } from './interp';
 
 // Instantiate a compiled module and run an exported function, capturing
 // everything it prints. The `print_*` imports route through the same formatters
@@ -25,6 +25,9 @@ export async function runWasm(bytes: Uint8Array, entry = 'main', args: number[] 
   };
   const env = {
     print_int: (x: number) => output.push(formatInt(x)),
+    // i64 arrives as a BigInt (WebAssembly's JS-BigInt integration, on by default
+    // in every current engine and in Node), so it formats exactly like the oracle.
+    print_long: (x: bigint) => output.push(formatLong(x)),
     print_float: (x: number) => output.push(formatFloat(x)),
     print_bool: (x: number) => output.push(formatBool(x)),
     print_str: (ptr: number) => output.push(readStr(ptr)),

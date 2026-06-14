@@ -8,7 +8,7 @@ import type {
   Stmt,
   Ty,
 } from './ast';
-import { T_BOOL, T_FLOAT, T_INT, T_STR, T_VOID, tyEqual, tyName } from './ast';
+import { T_BOOL, T_FLOAT, T_INT, T_LONG, T_STR, T_VOID, tyEqual, tyName } from './ast';
 
 // The type checker resolves every identifier, validates operators, and writes
 // the inferred `ty` back onto each expression node so later phases never have to
@@ -28,12 +28,16 @@ export interface SymbolTable {
 // Builtins available without declaration. `print`/`int`/`float` are special-
 // cased because they accept multiple argument types; array intrinsics return
 // handles into linear memory.
-const ARRAY_INTRINSICS = new Set(['int_array', 'float_array', 'str_array', 'len']);
+const ARRAY_INTRINSICS = new Set(['int_array', 'long_array', 'float_array', 'str_array', 'len']);
 const STR_BUILTINS = new Set([
   'str', 'char', 'substr', 'index_of', 'to_upper', 'to_lower',
   'repeat', 'trim', 'replace', 'find', 'contains', 'starts_with', 'ends_with', 'parse_int',
   'split', 'join',
 ]);
+// Bit-manipulation builtins that map 1:1 to wasm integer ops. `popcount`/`clz`/
+// `ctz` are unary; `rotl`/`rotr` are binary. All work on `int` (i32) and `long`
+// (i64), returning the operand's own type.
+const BIT_BUILTINS = new Set(['popcount', 'clz', 'ctz', 'rotl', 'rotr']);
 
 // Table-driven signatures for the extended string library. Each entry lists the
 // expected argument types and the result type; the checker validates arity and
@@ -100,7 +104,7 @@ class Checker {
       if (d.kind === 'fn') {
         if (!this.lowLevel && d.name.startsWith('__'))
           throw new CompileError(`names beginning with '__' are reserved`, d.span, 'type');
-        if (this.syms.functions.has(d.name) || ARRAY_INTRINSICS.has(d.name) || STR_BUILTINS.has(d.name) || d.name === 'print')
+        if (this.syms.functions.has(d.name) || ARRAY_INTRINSICS.has(d.name) || STR_BUILTINS.has(d.name) || BIT_BUILTINS.has(d.name) || d.name === 'print' || d.name === 'long')
           throw new CompileError(`duplicate or reserved function name '${d.name}'`, d.span, 'type');
         this.syms.functions.set(d.name, { params: d.params.map((p) => p.ty), ret: d.retTy });
       }
@@ -260,6 +264,8 @@ class Checker {
     switch (e.node) {
       case 'int':
         return T_INT;
+      case 'long':
+        return T_LONG;
       case 'float':
         return T_FLOAT;
       case 'bool':
@@ -306,14 +312,14 @@ class Checker {
     switch (e.op) {
       case '-':
       case '+':
-        if (t.kind === 'int' || t.kind === 'float') return t;
+        if (t.kind === 'int' || t.kind === 'long' || t.kind === 'float') return t;
         throw new CompileError(`unary '${e.op}' requires a numeric operand, found ${tyName(t)}`, e.span, 'type');
       case '!':
         if (t.kind === 'bool') return T_BOOL;
         throw new CompileError(`'!' requires a bool operand, found ${tyName(t)}`, e.span, 'type');
       case '~':
-        if (t.kind === 'int') return T_INT;
-        throw new CompileError(`'~' requires an int operand, found ${tyName(t)}`, e.span, 'type');
+        if (t.kind === 'int' || t.kind === 'long') return t;
+        throw new CompileError(`'~' requires an int or long operand, found ${tyName(t)}`, e.span, 'type');
     }
   }
 
@@ -321,7 +327,7 @@ class Checker {
     const op: BinaryOp = e.op;
     const lt = this.checkExpr(e.left);
     const rt = this.checkExpr(e.right);
-    const sameNumeric = (lt.kind === 'int' || lt.kind === 'float') && tyEqual(lt, rt);
+    const sameNumeric = (lt.kind === 'int' || lt.kind === 'long' || lt.kind === 'float') && tyEqual(lt, rt);
 
     switch (op) {
       case '+':
@@ -341,7 +347,8 @@ class Checker {
       case '<<':
       case '>>':
         if (lt.kind === 'int' && rt.kind === 'int') return T_INT;
-        throw new CompileError(`'${op}' requires int operands, found ${tyName(lt)} and ${tyName(rt)}`, e.span, 'type');
+        if (lt.kind === 'long' && rt.kind === 'long') return T_LONG;
+        throw new CompileError(`'${op}' requires matching int or long operands, found ${tyName(lt)} and ${tyName(rt)}`, e.span, 'type');
       case '<':
       case '<=':
       case '>':
@@ -377,15 +384,15 @@ class Checker {
     if (name === 'print') {
       if (e.args.length !== 1) throw new CompileError('print expects 1 argument', e.span, 'type');
       const t = this.checkExpr(e.args[0]);
-      if (t.kind !== 'int' && t.kind !== 'float' && t.kind !== 'bool' && t.kind !== 'str')
+      if (t.kind !== 'int' && t.kind !== 'long' && t.kind !== 'float' && t.kind !== 'bool' && t.kind !== 'str')
         throw new CompileError(`print expects a scalar or string, found ${tyName(t)}`, e.span, 'type');
       return T_VOID;
     }
     if (name === 'str') {
       if (e.args.length !== 1) throw new CompileError('str() expects 1 argument', e.span, 'type');
       const t = this.checkExpr(e.args[0]);
-      if (t.kind !== 'int' && t.kind !== 'bool' && t.kind !== 'str')
-        throw new CompileError(`str() expects an int, bool, or str, found ${tyName(t)}`, e.span, 'type');
+      if (t.kind !== 'int' && t.kind !== 'long' && t.kind !== 'bool' && t.kind !== 'str')
+        throw new CompileError(`str() expects an int, long, bool, or str, found ${tyName(t)}`, e.span, 'type');
       return T_STR;
     }
     if (name === 'char') {
@@ -423,18 +430,36 @@ class Checker {
       });
       return sig.ret === 'str' ? T_STR : sig.ret === 'bool' ? T_BOOL : T_INT;
     }
-    if (name === 'int' || name === 'float') {
+    if (name === 'popcount' || name === 'clz' || name === 'ctz') {
       if (e.args.length !== 1) throw new CompileError(`${name}() expects 1 argument`, e.span, 'type');
       const t = this.checkExpr(e.args[0]);
-      if (t.kind !== 'int' && t.kind !== 'float' && t.kind !== 'bool')
-        throw new CompileError(`${name}() expects a numeric argument, found ${tyName(t)}`, e.span, 'type');
-      return name === 'int' ? T_INT : T_FLOAT;
+      if (t.kind !== 'int' && t.kind !== 'long') throw new CompileError(`${name}() expects an int or long, found ${tyName(t)}`, e.args[0].span, 'type');
+      return t.kind === 'long' ? T_LONG : T_INT;
     }
-    if (name === 'int_array' || name === 'float_array' || name === 'str_array') {
+    if (name === 'rotl' || name === 'rotr') {
+      if (e.args.length !== 2) throw new CompileError(`${name}() expects (value, amount)`, e.span, 'type');
+      const t0 = this.checkExpr(e.args[0]);
+      const t1 = this.checkExpr(e.args[1]);
+      if (!((t0.kind === 'int' && t1.kind === 'int') || (t0.kind === 'long' && t1.kind === 'long')))
+        throw new CompileError(`${name}() expects two matching int or long operands, found ${tyName(t0)} and ${tyName(t1)}`, e.span, 'type');
+      return t0.kind === 'long' ? T_LONG : T_INT;
+    }
+    if (name === 'int' || name === 'float' || name === 'long') {
+      if (e.args.length !== 1) throw new CompileError(`${name}() expects 1 argument`, e.span, 'type');
+      const t = this.checkExpr(e.args[0]);
+      if (t.kind !== 'int' && t.kind !== 'long' && t.kind !== 'float' && t.kind !== 'bool')
+        throw new CompileError(`${name}() expects a numeric argument, found ${tyName(t)}`, e.span, 'type');
+      return name === 'int' ? T_INT : name === 'long' ? T_LONG : T_FLOAT;
+    }
+    if (name === 'int_array' || name === 'long_array' || name === 'float_array' || name === 'str_array') {
       if (e.args.length !== 1) throw new CompileError(`${name}() expects a length`, e.span, 'type');
       const t = this.checkExpr(e.args[0]);
       if (t.kind !== 'int') throw new CompileError(`${name}() length must be int`, e.span, 'type');
-      const elem: ScalarTy = name === 'int_array' ? { kind: 'int' } : name === 'float_array' ? { kind: 'float' } : { kind: 'str' };
+      const elem: ScalarTy =
+        name === 'int_array' ? { kind: 'int' }
+        : name === 'long_array' ? { kind: 'long' }
+        : name === 'float_array' ? { kind: 'float' }
+        : { kind: 'str' };
       return { kind: 'array', elem };
     }
     if (name === 'split') {

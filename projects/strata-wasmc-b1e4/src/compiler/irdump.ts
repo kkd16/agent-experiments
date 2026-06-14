@@ -3,7 +3,7 @@ import type { Inst, IRFunc, IRModule, Operand, Phi, Term } from './ir/ir';
 // Human-readable textual SSA, used by the dev harness and the IR panel in the UI.
 
 function op(o: Operand): string {
-  if (o.tag === 'const') return o.ty === 'f64' ? `${o.num}` : `${o.num | 0}`;
+  if (o.tag === 'const') return o.ty === 'i32' ? `${(o.num as number) | 0}` : `${o.num}`; // i64 prints with no suffix
   return `v${o.id}`;
 }
 
@@ -24,6 +24,8 @@ function inst(i: Inst): string {
     case 'ibin':
     case 'fbin':
       return `${dst}${i.kind === 'ibin' ? 'i' : 'f'}.${i.sub} ${a[0]}, ${a[1]}`;
+    case 'iunary':
+      return `${dst}i.${i.sub} ${a[0]}`;
     case 'icmp':
     case 'fcmp':
       return `${dst}${i.kind === 'icmp' ? 'i' : 'f'}.cmp.${i.sub} ${a[0]}, ${a[1]}`;

@@ -385,6 +385,74 @@ fn main() {
 `,
   },
   {
+    id: 'long-hash',
+    title: '64-bit hashing (long)',
+    blurb: 'The `long` type lowers to real wasm `i64`. FNV-1a + exact 20! — watch the i64 ops in the WASM tab.',
+    source: `// Strata's \`long\` is a genuine 64-bit integer (wasm i64). Literals take an
+// \`L\` suffix (decimal or 0x hex); arithmetic wraps mod 2^64, exactly like wasm.
+
+// FNV-1a, the classic 64-bit string hash. The offset basis 14695981039346656037
+// is written as its signed-i64 value; the multiply wraps — that's the algorithm.
+fn fnv1a(s: str) -> long {
+  let h = -3750763034362895579L;     // 0xCBF29CE484222325
+  for (let i = 0; i < len(s); i = i + 1) {
+    h = h ^ long(s[i]);
+    h = h * 0x100000001B3L;          // the 64-bit FNV prime, 1099511628211
+  }
+  return h;
+}
+
+// 20! is 2432902008176640000 — it overflows a 32-bit int but is exact in a long.
+fn fact(n: int) -> long {
+  let r = 1L;
+  for (let i = 2; i <= n; i = i + 1) { r = r * long(i); }
+  return r;
+}
+
+fn main() {
+  print(fnv1a("hello"));
+  print(fnv1a("world"));
+  print("fox -> " + str(fnv1a("The quick brown fox")));
+  print(fact(20));
+  print(int(20) * int(20));          // for contrast: 32-bit int can overflow
+  print(fact(13) > 6227020800L);     // 13! exceeds 2^32
+}
+`,
+  },
+  {
+    id: 'long-prng',
+    title: 'xorshift64 (long)',
+    blurb: 'A 64-bit PRNG built from i64 shifts/xor and a long global — deterministic across every -O level.',
+    source: `// George Marsaglia's xorshift*: a tiny, fast 64-bit pseudo-random generator.
+// State and constants are \`long\` (i64); the shifts and xors are real i64 ops.
+let state: long = 0x2545F4914F6CDD1DL;
+
+fn next() -> long {
+  let x = state;
+  x = x ^ (x << 13L);
+  x = x ^ (x >> 7L);
+  x = x ^ (x << 17L);
+  state = x;
+  return x;
+}
+
+// A bounded roll in [0, n): take the (wrapped) value modulo n, made non-negative.
+fn roll(n: int) -> int {
+  let r = int(next() % long(n));
+  return r < 0 ? r + n : r;
+}
+
+fn main() {
+  // raw 64-bit stream
+  for (let i = 0; i < 5; i = i + 1) { print(next()); }
+  // a histogram of 6000 dice rolls — should be ~1000 each
+  let counts = int_array(6);
+  for (let i = 0; i < 6000; i = i + 1) { counts[roll(6)] += 1; }
+  for (let f = 0; f < 6; f = f + 1) { print(counts[f]); }
+}
+`,
+  },
+  {
     id: 'select',
     title: 'Branchless select',
     blurb: 'Ternaries / if-else assignments fold into a wasm `select` at -O1+ — see the WASM tab.',

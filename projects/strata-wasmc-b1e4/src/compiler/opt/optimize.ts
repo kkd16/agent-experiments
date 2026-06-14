@@ -1,8 +1,8 @@
-import type { Block, Inst, IRFunc, IRModule, Operand, Phi } from '../ir/ir';
-import { eachOperand, hasSideEffect, isPureValue } from '../ir/ir';
+import type { Block, ConstNum, Inst, IRFunc, IRModule, IRType, Operand, Phi } from '../ir/ir';
+import { eachOperand, hasSideEffect, isPureValue, zeroOf } from '../ir/ir';
 import { computeDom, succOfTerm } from '../ir/cfg';
 import { dumpModule } from '../irdump';
-import { i32, satTruncI32 } from '../interp';
+import { i32, satTruncI32, rotl32, rotr32, rotl64, rotr64 } from '../interp';
 
 // The optimization pipeline. Every pass works on the SSA IR in place and
 // returns the number of changes it made, which the pass manager records so the
@@ -97,6 +97,8 @@ function evalIBin(sub: string, a: number, b: number): number | null {
     case 'xor': return i32(a ^ b);
     case 'shl': return i32(a << (b & 31));
     case 'shr_s': return i32(a >> (b & 31));
+    case 'rotl': return rotl32(a, b);
+    case 'rotr': return rotr32(a, b);
     default: return null;
   }
 }
@@ -132,13 +134,48 @@ function evalFCmp(sub: string, a: number, b: number): number {
   }
 }
 
-const C = (ty: 'i32' | 'f64', num: number): Operand => ({ tag: 'const', ty, num: ty === 'i32' ? i32(num) : num });
+// 64-bit integer constant folding. BigInt with explicit `asIntN(64, …)` wrapping
+// reproduces wasm i64 semantics exactly: truncating signed division (with the
+// `MIN/-1` trap surfaced as `null`), sign-magnitude remainder, and 6-bit-masked
+// shifts. Used by SCCP so `long` constants fold just like `int` ones.
+const W64 = (x: bigint): bigint => BigInt.asIntN(64, x);
+const I64_MIN = -(2n ** 63n);
+function evalIBin64(sub: string, a: bigint, b: bigint): bigint | null {
+  switch (sub) {
+    case 'add': return W64(a + b);
+    case 'sub': return W64(a - b);
+    case 'mul': return W64(a * b);
+    case 'div_s': return b === 0n || (a === I64_MIN && b === -1n) ? null : W64(a / b);
+    case 'rem_s': return b === 0n ? null : a === I64_MIN && b === -1n ? 0n : W64(a % b);
+    case 'and': return W64(a & b);
+    case 'or': return W64(a | b);
+    case 'xor': return W64(a ^ b);
+    case 'shl': return W64(a << (b & 63n));
+    case 'shr_s': return W64(a >> (b & 63n));
+    case 'rotl': return rotl64(a, b);
+    case 'rotr': return rotr64(a, b);
+    default: return null;
+  }
+}
+function evalICmp64(sub: string, a: bigint, b: bigint): number {
+  switch (sub) {
+    case 'eq': return a === b ? 1 : 0;
+    case 'ne': return a !== b ? 1 : 0;
+    case 'lt_s': return a < b ? 1 : 0;
+    case 'le_s': return a <= b ? 1 : 0;
+    case 'gt_s': return a > b ? 1 : 0;
+    case 'ge_s': return a >= b ? 1 : 0;
+    default: return 0;
+  }
+}
+
+const C = (ty: IRType, num: ConstNum): Operand => ({ tag: 'const', ty, num: ty === 'i32' ? i32(num as number) : num });
 
 // =====================================================================
 // SCCP — Sparse Conditional Constant Propagation
 // =====================================================================
 
-type Lat = { t: 'undef' } | { t: 'const'; ty: 'i32' | 'f64'; num: number } | { t: 'nac' };
+type Lat = { t: 'undef' } | { t: 'const'; ty: IRType; num: ConstNum } | { t: 'nac' };
 const UNDEF: Lat = { t: 'undef' };
 const NAC: Lat = { t: 'nac' };
 
@@ -176,7 +213,16 @@ export function sccp(fn: IRFunc): number {
         return a[0];
       case 'cast': {
         if (a[0].t !== 'const') return a[0];
-        return inst.sub === 'i2f' ? { t: 'const', ty: 'f64', num: a[0].num } : { t: 'const', ty: 'i32', num: satTruncI32(a[0].num) };
+        const n = a[0].num;
+        switch (inst.sub) {
+          case 'i2f': return { t: 'const', ty: 'f64', num: n as number };
+          case 'f2i': return { t: 'const', ty: 'i32', num: satTruncI32(n as number) };
+          case 'i2l': return { t: 'const', ty: 'i64', num: BigInt(n as number) }; // i32 widen, sign-extended
+          case 'l2i': return { t: 'const', ty: 'i32', num: Number(BigInt.asIntN(32, n as bigint)) };
+          // l2f / f2l involve float rounding; leave them unfolded (overdefined) so
+          // the result can only ever come from the real wasm op — never a mismatch.
+          default: return NAC;
+        }
       }
       case 'ibin':
       case 'icmp':
@@ -184,13 +230,23 @@ export function sccp(fn: IRFunc): number {
       case 'fcmp': {
         if (a[0].t === 'nac' || a[1].t === 'nac') return NAC;
         if (a[0].t !== 'const' || a[1].t !== 'const') return UNDEF;
+        const i64 = a[0].ty === 'i64'; // both integer operands share a type
         if (inst.kind === 'ibin') {
-          const r = evalIBin(inst.sub, a[0].num, a[1].num);
+          if (i64) {
+            const r = evalIBin64(inst.sub, a[0].num as bigint, a[1].num as bigint);
+            return r === null ? NAC : { t: 'const', ty: 'i64', num: r };
+          }
+          const r = evalIBin(inst.sub, a[0].num as number, a[1].num as number);
           return r === null ? NAC : { t: 'const', ty: 'i32', num: r };
         }
-        if (inst.kind === 'icmp') return { t: 'const', ty: 'i32', num: evalICmp(inst.sub, a[0].num, a[1].num) };
-        if (inst.kind === 'fbin') return { t: 'const', ty: 'f64', num: evalFBin(inst.sub, a[0].num, a[1].num) };
-        return { t: 'const', ty: 'i32', num: evalFCmp(inst.sub, a[0].num, a[1].num) };
+        if (inst.kind === 'icmp') {
+          const r = i64
+            ? evalICmp64(inst.sub, a[0].num as bigint, a[1].num as bigint)
+            : evalICmp(inst.sub, a[0].num as number, a[1].num as number);
+          return { t: 'const', ty: 'i32', num: r };
+        }
+        if (inst.kind === 'fbin') return { t: 'const', ty: 'f64', num: evalFBin(inst.sub, a[0].num as number, a[1].num as number) };
+        return { t: 'const', ty: 'i32', num: evalFCmp(inst.sub, a[0].num as number, a[1].num as number) };
       }
       default:
         return NAC; // load / gget / call produce unknown values
@@ -289,7 +345,7 @@ function pruneUnreachable(fn: IRFunc): number {
       phi.incomings = phi.incomings.filter((inc) => predSet.has(inc.pred));
       const uniq = dedupeOperands(phi.incomings.map((i) => i.val));
       if (phi.incomings.length <= 1 || uniq.length === 1) {
-        const v = phi.incomings.length ? phi.incomings[0].val : C(phi.ty, 0);
+        const v = phi.incomings.length ? phi.incomings[0].val : C(phi.ty, zeroOf(phi.ty));
         changed += replaceAllUses(fn, phi.res, uniq.length === 1 ? uniq[0] : v);
         changed++;
       } else {
@@ -343,21 +399,26 @@ export function copyProp(fn: IRFunc): number {
 
 export function algebraic(fn: IRFunc): number {
   let changed = 0;
-  const isC = (o: Operand, n: number): boolean => o.tag === 'const' && o.num === n;
+  // Type-aware constant test: an i64 constant carries a bigint, so compare with
+  // the matching literal kind. The identity rewrites then hold for `int` and
+  // `long` alike, and the produced zero matches the instruction's value type.
+  const isC = (o: Operand, n: number): boolean =>
+    o.tag === 'const' && (o.ty === 'i64' ? o.num === BigInt(n) : o.num === n);
   for (const b of fn.blocks) {
     for (const inst of b.insts) {
       if (inst.res === null) continue;
       let repl: Operand | null = null;
       if (inst.kind === 'ibin') {
         const [x, y] = inst.args;
+        const zero = C(inst.ty as IRType, zeroOf(inst.ty as IRType));
         switch (inst.sub) {
           case 'add': repl = isC(y, 0) ? x : isC(x, 0) ? y : null; break;
-          case 'sub': repl = isC(y, 0) ? x : sameVal(x, y) ? C('i32', 0) : null; break;
-          case 'mul': repl = isC(y, 1) ? x : isC(x, 1) ? y : isC(y, 0) || isC(x, 0) ? C('i32', 0) : null; break;
+          case 'sub': repl = isC(y, 0) ? x : sameVal(x, y) ? zero : null; break;
+          case 'mul': repl = isC(y, 1) ? x : isC(x, 1) ? y : isC(y, 0) || isC(x, 0) ? zero : null; break;
           case 'div_s': repl = isC(y, 1) ? x : null; break;
-          case 'and': repl = isC(y, 0) || isC(x, 0) ? C('i32', 0) : sameVal(x, y) ? x : null; break;
+          case 'and': repl = isC(y, 0) || isC(x, 0) ? zero : sameVal(x, y) ? x : null; break;
           case 'or': repl = isC(y, 0) ? x : isC(x, 0) ? y : sameVal(x, y) ? x : null; break;
-          case 'xor': repl = isC(y, 0) ? x : isC(x, 0) ? y : sameVal(x, y) ? C('i32', 0) : null; break;
+          case 'xor': repl = isC(y, 0) ? x : isC(x, 0) ? y : sameVal(x, y) ? zero : null; break;
           case 'shl':
           case 'shr_s': repl = isC(y, 0) ? x : null; break;
         }
@@ -458,7 +519,7 @@ export function dce(fn: IRFunc): number {
 // loop), so speculating a trapping op there could invent a trap that the
 // original program never raised.
 
-const HOISTABLE = new Set(['ibin', 'fbin', 'icmp', 'fcmp', 'cast', 'copy']);
+const HOISTABLE = new Set(['ibin', 'iunary', 'fbin', 'icmp', 'fcmp', 'cast', 'copy']);
 
 function dominates(idom: Map<number, number>, a: number, b: number): boolean {
   let n: number | undefined = b;
@@ -505,7 +566,7 @@ function getPreheader(fn: IRFunc, header: Block, loop: Set<number>, idCtr: { n: 
     const distinct = dedupeOperands(outsideIncs.map((i) => i.val));
     let phVal: Operand;
     if (distinct.length <= 1) {
-      phVal = distinct[0] ?? C(phi.ty, 0);
+      phVal = distinct[0] ?? C(phi.ty, zeroOf(phi.ty));
     } else {
       const res = idCtr.n++;
       fn.valueType.set(res, phi.ty);
@@ -611,23 +672,29 @@ function log2Exact(n: number): number | null {
   if (n <= 0 || (n & (n - 1)) !== 0) return null;
   return Math.log2(n >>> 0) | 0;
 }
+// Exact base-2 log of a positive power-of-two i64 constant, else null. Works on
+// the full 64-bit range (`n` is a BigInt), so `long` multiplies strength-reduce
+// to shifts just like `int` ones. The shift amount itself is a small integer.
+function log2Exact64(n: bigint): number | null {
+  if (n <= 0n || (n & (n - 1n)) !== 0n) return null;
+  return n.toString(2).length - 1;
+}
 
 export function peephole(fn: IRFunc): number {
   let changed = 0;
   for (const b of fn.blocks) {
     for (const inst of b.insts) {
-      if (inst.kind !== 'ibin' || inst.res === null) continue;
+      if (inst.kind !== 'ibin' || inst.res === null || inst.sub !== 'mul') continue;
       const [x, y] = inst.args;
-      if (inst.sub === 'mul') {
-        // x * 2^k -> x << k  (canonicalize the power-of-two operand to the RHS)
-        if (y.tag === 'const') {
-          const k = log2Exact(y.num);
-          if (k !== null) { inst.sub = 'shl'; inst.args = [x, { tag: 'const', ty: 'i32', num: k }]; changed++; }
-        } else if (x.tag === 'const') {
-          const k = log2Exact(x.num);
-          if (k !== null) { inst.sub = 'shl'; inst.args = [y, { tag: 'const', ty: 'i32', num: k }]; changed++; }
-        }
-      }
+      // x * 2^k -> x << k  (the shift count is a constant of the operand's type).
+      const isI64 = inst.ty === 'i64';
+      const powOf = (o: Operand): number | null =>
+        o.tag !== 'const' ? null : isI64 ? log2Exact64(o.num as bigint) : log2Exact(o.num as number);
+      const shiftCount = (k: number): Operand => ({ tag: 'const', ty: isI64 ? 'i64' : 'i32', num: isI64 ? BigInt(k) : k });
+      let k = powOf(y);
+      if (k !== null) { inst.sub = 'shl'; inst.args = [x, shiftCount(k)]; changed++; continue; }
+      k = powOf(x);
+      if (k !== null) { inst.sub = 'shl'; inst.args = [y, shiftCount(k)]; changed++; }
     }
   }
   return changed;
@@ -650,7 +717,7 @@ export function peephole(fn: IRFunc): number {
 // and the wasm backend emits a branchless `select`. This is the shape ternaries
 // and simple if/else assignments lower to, so it fires often.
 
-const SPECULABLE = new Set(['ibin', 'fbin', 'icmp', 'fcmp', 'cast', 'copy', 'select']);
+const SPECULABLE = new Set(['ibin', 'iunary', 'fbin', 'icmp', 'fcmp', 'cast', 'copy', 'select']);
 
 function isSpeculable(b: Block): boolean {
   if (b.phis.length > 0) return false;
