@@ -3,8 +3,28 @@ import { useEffect, useState } from "react";
 /** Parsed hash route, e.g. "#/pattern/two-pointers" -> ["pattern","two-pointers"]. */
 export function parseHash(): string[] {
   const raw = window.location.hash.replace(/^#\/?/, "").trim();
-  if (!raw) return [];
-  return raw.split("/").filter(Boolean).map(decodeURIComponent);
+  const path = raw.split("?")[0];
+  if (!path) return [];
+  return path.split("/").filter(Boolean).map(decodeURIComponent);
+}
+
+/** Parse the query portion of the hash, e.g. "#/pattern/x?frame=3" -> {frame:"3"}. */
+export function parseHashQuery(): Record<string, string> {
+  const raw = window.location.hash.replace(/^#\/?/, "");
+  const qi = raw.indexOf("?");
+  if (qi < 0) return {};
+  const out: Record<string, string> = {};
+  for (const pair of raw.slice(qi + 1).split("&")) {
+    if (!pair) continue;
+    const [k, v = ""] = pair.split("=");
+    out[decodeURIComponent(k)] = decodeURIComponent(v);
+  }
+  return out;
+}
+
+/** The current hash without its query string, e.g. "#/pattern/x?frame=3" -> "#/pattern/x". */
+export function currentPath(): string {
+  return window.location.hash.split("?")[0] || "#/";
 }
 
 /** Subscribe to hash changes; returns the current route segments. */

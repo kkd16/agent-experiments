@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { quiz } from "../data/quiz";
 import { patterns, patternById } from "../data/patterns";
 import { href } from "../lib/router";
+import { useStreak } from "../lib/streak";
 
 function shuffle<T>(arr: T[]): T[] {
   const a = [...arr];
@@ -20,6 +21,7 @@ function choicesFor(answer: string): string[] {
 
 export default function Quiz() {
   const questions = useMemo(() => shuffle(quiz).slice(0, 10), []);
+  const { recordToday } = useStreak();
   const [idx, setIdx] = useState(0);
   const [picked, setPicked] = useState<string | null>(null);
   const [score, setScore] = useState(0);
@@ -36,6 +38,7 @@ export default function Quiz() {
     setPicked(id);
     setAnswered((a) => a + 1);
     if (id === q.answer) setScore((s) => s + 1);
+    recordToday();
   };
 
   const advance = () => {

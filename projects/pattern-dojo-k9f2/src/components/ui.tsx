@@ -1,6 +1,13 @@
 import type { Pattern } from "../data/types";
 import { levelLabel } from "../data/patterns";
 import { href } from "../lib/router";
+import type { Mastery } from "../lib/srs";
+import { MASTERY_LABEL } from "../lib/srs";
+
+export function MasteryBadge({ m }: { m: Mastery }) {
+  if (m === "new") return null;
+  return <span className={`mastery-badge ${m}`}>{MASTERY_LABEL[m]}</span>;
+}
 
 export function ProgressDonut({ done, total }: { done: number; total: number }) {
   const pct = total === 0 ? 0 : Math.round((done / total) * 100);
@@ -39,7 +46,7 @@ export function ProgressDonut({ done, total }: { done: number; total: number }) 
   );
 }
 
-export function PatternCard({ p, done }: { p: Pattern; done: boolean }) {
+export function PatternCard({ p, done, mastery }: { p: Pattern; done: boolean; mastery?: Mastery }) {
   return (
     <a className="pattern-card" href={href(`/pattern/${p.id}`)} style={{ borderTopColor: p.color }}>
       <div className="pattern-card-top">
@@ -53,6 +60,7 @@ export function PatternCard({ p, done }: { p: Pattern; done: boolean }) {
       <div className="row" style={{ marginTop: "auto", gap: 6 }}>
         <span className="tag">{levelLabel[p.level]}</span>
         {p.visualizer && <span className="tag" style={{ color: p.color }}>interactive</span>}
+        {mastery && mastery !== "new" && <MasteryBadge m={mastery} />}
       </div>
     </a>
   );

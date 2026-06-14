@@ -1,8 +1,8 @@
 {
   "title": "Pattern Dojo",
-  "description": "Learn the 18 algorithm patterns behind the NeetCode 150 — intuitively and interactively, with step-through visualizers and a pattern-recognition trainer.",
+  "description": "Master the 18 algorithm patterns behind the NeetCode 150 — intuitively and interactively. 18 step-through visualizers (keyboard-driven, with shareable deep-links to any frame), a pattern-recognition trainer, and a full SM-2 spaced-repetition engine: mark a pattern learned and it enters a review schedule with mastery tracking, a daily review dashboard, pattern-of-the-day, streaks, guided per-problem approaches, a printable complexity cheat-sheet, a ⌘K command palette, and a light/dark theme.",
   "agent": "claude",
   "model": "claude-opus-4-8",
-  "tags": ["education", "algorithms", "interview-prep", "leetcode", "react", "interactive"],
+  "tags": ["education", "algorithms", "interview-prep", "leetcode", "react", "interactive", "spaced-repetition"],
   "createdAt": "2026-06-13"
 }

@@ -17,6 +17,13 @@
   --warn: #fbbf24;
   --bad: #fb7185;
 
+  /* surfaces that were hardcoded — now themeable */
+  --code-bg: #0a0f1f;
+  --on-accent: #07122b;
+  --topbar-bg: rgba(11, 16, 32, 0.72);
+  --body-glow-1: rgba(176, 124, 255, 0.12);
+  --body-glow-2: rgba(110, 168, 254, 0.12);
+
   --radius: 14px;
   --radius-sm: 9px;
   --shadow: 0 10px 30px -12px rgba(0, 0, 0, 0.6);
@@ -28,6 +35,41 @@
     monospace;
 
   color-scheme: dark;
+}
+
+/* ---------- Light theme ---------- */
+:root[data-theme="light"] {
+  --bg: #f5f7fc;
+  --bg-soft: #eef1f9;
+  --bg-card: #ffffff;
+  --bg-card-hover: #f4f6fc;
+  --border: #d6deef;
+  --border-soft: #e4e9f5;
+  --text: #16203a;
+  --text-dim: #4a5780;
+  --text-faint: #7c89ad;
+
+  --accent: #3f6fe0;
+  --accent-2: #8b5cf6;
+  --accent-glow: rgba(63, 111, 224, 0.28);
+  --good: #16a34a;
+  --warn: #d97706;
+  --bad: #e11d48;
+
+  --code-bg: #0e1426;
+  --on-accent: #ffffff;
+  --body-glow-1: rgba(139, 92, 246, 0.1);
+  --body-glow-2: rgba(63, 111, 224, 0.12);
+
+  --shadow: 0 12px 34px -16px rgba(40, 60, 110, 0.4);
+  --topbar-bg: rgba(245, 247, 252, 0.82);
+
+  color-scheme: light;
+}
+/* keep the syntax-highlighted code block legible on its dark surface in light mode */
+:root[data-theme="light"] .codeblock,
+:root[data-theme="light"] .codeblock-head {
+  border-color: #243154;
 }
 
 * {
@@ -44,12 +86,13 @@ body {
   margin: 0;
   font-family: var(--font);
   background:
-    radial-gradient(1200px 600px at 80% -10%, rgba(176, 124, 255, 0.12), transparent 60%),
-    radial-gradient(900px 500px at -10% 10%, rgba(110, 168, 254, 0.12), transparent 55%),
+    radial-gradient(1200px 600px at 80% -10%, var(--body-glow-1), transparent 60%),
+    radial-gradient(900px 500px at -10% 10%, var(--body-glow-2), transparent 55%),
     var(--bg);
   color: var(--text);
   -webkit-font-smoothing: antialiased;
   line-height: 1.55;
+  transition: background-color 0.25s ease, color 0.25s ease;
 }
 
 a {
@@ -102,7 +145,7 @@ button {
   top: 0;
   z-index: 50;
   backdrop-filter: blur(12px);
-  background: rgba(11, 16, 32, 0.72);
+  background: var(--topbar-bg);
   border-bottom: 1px solid var(--border-soft);
 }
 .topbar-inner {
@@ -203,7 +246,7 @@ main {
 .btn.primary {
   background: linear-gradient(135deg, var(--accent), var(--accent-2));
   border-color: transparent;
-  color: #07122b;
+  color: var(--on-accent);
   box-shadow: 0 8px 22px -8px var(--accent-glow);
 }
 .btn.primary:hover {
@@ -284,7 +327,7 @@ main {
 /* ---------- Code block ---------- */
 .codeblock {
   position: relative;
-  background: #0a0f1f;
+  background: var(--code-bg);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   overflow: hidden;

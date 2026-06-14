@@ -5,6 +5,10 @@ export interface Problem {
   difficulty: Difficulty;
   /** one-line note on which variant of the pattern it exercises */
   note?: string;
+  /** a nudge in the right direction without giving the approach away */
+  hint?: string;
+  /** the guided approach — how to actually attack it with this pattern */
+  approach?: string;
 }
 
 export interface ComplexityRow {
