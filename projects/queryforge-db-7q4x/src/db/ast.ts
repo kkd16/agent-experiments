@@ -74,6 +74,9 @@ export interface FuncExpr {
   star: boolean
   /** Aggregate `FILTER (WHERE …)` — only rows matching it are aggregated. */
   filter?: Expr
+  /** Ordered-set aggregate sort key: `… WITHIN GROUP (ORDER BY …)`
+   *  (PERCENTILE_CONT/PERCENTILE_DISC/MODE). */
+  withinGroup?: OrderItem[]
 }
 export interface CaseExpr {
   kind: 'case'
@@ -264,6 +267,10 @@ export interface SelectStmt {
   joins: JoinClause[]
   where?: Expr
   groupBy: Expr[]
+  /** Expanded grouping sets (ROLLUP/CUBE/GROUPING SETS). Each inner array is one
+   *  grouping set, listing the subset of grouping expressions that are active in
+   *  it; the rest are aggregated to NULL. Undefined for a plain GROUP BY. */
+  groupingSets?: Expr[][]
   having?: Expr
   orderBy: OrderItem[]
   limit?: number
@@ -302,7 +309,12 @@ export const AGGREGATES = new Set([
   'COUNT', 'SUM', 'AVG', 'MIN', 'MAX',
   'STDDEV', 'STDDEV_SAMP', 'STDDEV_POP', 'VARIANCE', 'VAR_SAMP', 'VAR_POP',
   'STRING_AGG', 'GROUP_CONCAT', 'MEDIAN',
+  'PERCENTILE_CONT', 'PERCENTILE_DISC', 'MODE',
 ])
+
+/** Ordered-set aggregates: their value to aggregate comes from a
+ *  `WITHIN GROUP (ORDER BY …)` clause rather than the parenthesized arguments. */
+export const ORDERED_SET_AGGREGATES = new Set(['PERCENTILE_CONT', 'PERCENTILE_DISC', 'MODE'])
 
 export function isAggregate(name: string): boolean {
   return AGGREGATES.has(name.toUpperCase())

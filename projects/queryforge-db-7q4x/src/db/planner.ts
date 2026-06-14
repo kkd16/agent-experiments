@@ -15,6 +15,7 @@ import { compileExpr, exprKey, type CompileCtx, type Evaluator, type OuterScope 
 import { resolveColumn, type Binding, type Schema } from './schema'
 import {
   isAggregate,
+  ORDERED_SET_AGGREGATES,
   type ColumnDef,
   type CteDef,
   type Expr,
@@ -310,7 +311,12 @@ function inferType(e: Expr, schema: Schema, ctx: CompileCtx): ColumnType {
     case 'cast':
       return e.type
     case 'func':
-      if (e.name === 'COUNT') return 'INTEGER'
+      if (e.name === 'COUNT' || e.name === 'GROUPING') return 'INTEGER'
+      // Ordered-set aggregates that return one of the ordered values keep that
+      // value's type; PERCENTILE_CONT interpolates and is always REAL.
+      if (e.name === 'PERCENTILE_DISC' || e.name === 'MODE') {
+        return e.withinGroup && e.withinGroup[0] ? inferType(e.withinGroup[0].expr, schema, ctx) : 'TEXT'
+      }
       if (['LENGTH', 'INSTR', 'ASCII', 'SIGN', 'DATE_PART', 'EXTRACT', 'DATEDIFF'].includes(e.name)) return 'INTEGER'
       if (
         [
@@ -318,6 +324,7 @@ function inferType(e: Expr, schema: Schema, ctx: CompileCtx): ColumnType {
           'POW', 'POWER', 'MOD', 'EXP', 'LN', 'LOG', 'LOG10', 'PI', 'SIN', 'COS', 'TAN', 'ASIN',
           'ACOS', 'ATAN', 'ATAN2', 'RADIANS', 'DEGREES', 'RANDOM', 'JULIANDAY',
           'STDDEV', 'STDDEV_SAMP', 'STDDEV_POP', 'VARIANCE', 'VAR_SAMP', 'VAR_POP', 'MEDIAN',
+          'PERCENTILE_CONT',
         ].includes(e.name)
       )
         return 'REAL'
@@ -809,6 +816,33 @@ function planCore(stmt: SelectStmt, env: PlanEnv, embedOrderLimit: boolean): Ope
         isStringAgg && e.args[1] && e.args[1].kind === 'literal' && e.args[1].value !== null
           ? String(e.args[1].value)
           : undefined
+
+      // Ordered-set aggregates (PERCENTILE_CONT/DISC, MODE): the aggregated value
+      // is the WITHIN GROUP (ORDER BY …) key; the call's argument is the fraction.
+      if (ORDERED_SET_AGGREGATES.has(e.name)) {
+        if (!e.withinGroup || e.withinGroup.length !== 1) {
+          throw new SqlError(`${e.name} requires WITHIN GROUP (ORDER BY <expr>)`, 'bind')
+        }
+        let fraction: number | undefined
+        if (e.name === 'PERCENTILE_CONT' || e.name === 'PERCENTILE_DISC') {
+          const fv = e.args.length ? evalConst(e.args[0]) : undefined
+          if (typeof fv !== 'number') {
+            throw new SqlError(`${e.name} expects a numeric fraction between 0 and 1`, 'bind')
+          }
+          fraction = fv
+        }
+        return {
+          name: e.name as AggName,
+          star: false,
+          distinct: false,
+          arg: compileExpr(e.withinGroup[0].expr, preCtx),
+          label: exprLabel(e),
+          fraction,
+          dir: e.withinGroup[0].dir,
+          filter: e.filter ? compileExpr(e.filter, preCtx) : undefined,
+        }
+      }
+
       return {
         name: e.name as AggName,
         star: e.star,
@@ -820,7 +854,8 @@ function planCore(stmt: SelectStmt, env: PlanEnv, embedOrderLimit: boolean): Ope
       }
     })
 
-    // Output schema of the aggregate: group keys then aggregates.
+    // Output schema of the aggregate: group keys, then aggregates, then a hidden
+    // grouping-set bitmap column (`__gset`) that powers the GROUPING() function.
     const aggSchema: Schema = [
       ...stmt.groupBy.map((g, i) => ({
         table: '',
@@ -828,8 +863,38 @@ function planCore(stmt: SelectStmt, env: PlanEnv, embedOrderLimit: boolean): Ope
         type: inferType(g, schema, preCtx),
       })),
       ...aggExprs.map((e) => ({ table: '', name: exprLabel(e), type: inferType(e, schema, preCtx) })),
+      { table: '', name: '__gset', type: 'INTEGER' as ColumnType },
     ]
-    op = new HashAggregate(op, groupEvals, aggSpecs, aggSchema)
+    // Map each expanded grouping set to slot indexes into the grouping keys.
+    const groupingSetsIdx: number[][] | undefined = stmt.groupingSets
+      ? stmt.groupingSets.map((set) =>
+          set.map((ge) => {
+            const slot = groupKeyMap.get(exprKey(ge))
+            if (slot === undefined) throw new SqlError('a grouping-set column must appear in GROUP BY', 'plan')
+            return slot
+          }),
+        )
+      : undefined
+    const gsetSlot = stmt.groupBy.length + aggExprs.length
+    op = new HashAggregate(op, groupEvals, aggSpecs, aggSchema, groupingSetsIdx, true)
+
+    // GROUPING(a, …) → an integer whose bits flag which arguments were rolled up
+    // (1 = aggregated away to NULL in this grouping set, 0 = present).
+    const compileGrouping = (e: Expr): Evaluator => {
+      if (e.kind !== 'func') throw new SqlError('internal: GROUPING must be a function', 'plan')
+      if (e.args.length === 0) throw new SqlError('GROUPING() requires at least one argument', 'bind')
+      const indices = e.args.map((arg) => {
+        const slot = groupKeyMap.get(exprKey(arg))
+        if (slot === undefined) throw new SqlError('GROUPING() argument must be a GROUP BY expression', 'bind')
+        return slot
+      })
+      return (row) => {
+        const bm = typeof row[gsetSlot] === 'number' ? (row[gsetSlot] as number) : 0
+        let result = 0
+        for (const i of indices) result = (result << 1) | ((bm & (1 << i)) === 0 ? 1 : 0)
+        return result
+      }
+    }
 
     const groupResolve = (t: string | undefined, n: string): number => {
       // A bare column is only valid post-grouping if it's a grouping key.
@@ -850,6 +915,7 @@ function planCore(stmt: SelectStmt, env: PlanEnv, embedOrderLimit: boolean): Ope
         if (ak !== undefined) return ak
         return undefined
       },
+      compileGrouping,
     })
     schema = aggSchema
   } else {
@@ -867,9 +933,11 @@ function planCore(stmt: SelectStmt, env: PlanEnv, embedOrderLimit: boolean): Ope
     op = new WindowExec(op, windowPlan.specs, windowPlan.schema)
     const prevResolve = outCtx.resolve
     const prevLookup = outCtx.lookup
+    const prevGrouping = outCtx.compileGrouping
     outCtx = exprCtx(windowPlan.schema, env, {
       resolve: prevResolve,
       lookup: (e) => windowPlan.lookup(e) ?? prevLookup?.(e),
+      compileGrouping: prevGrouping,
     })
     schema = windowPlan.schema
   }
@@ -884,7 +952,7 @@ function planCore(stmt: SelectStmt, env: PlanEnv, embedOrderLimit: boolean): Ope
       const want = item.expr.table?.toLowerCase()
       for (const b of schema) {
         if (want && b.table.toLowerCase() !== want) continue
-        if (!b.table && b.name.startsWith('__win')) continue // hide window scratch columns
+        if (!b.table && b.name.startsWith('__')) continue // hide internal scratch columns
         projExprs.push({ kind: 'column', table: b.table || undefined, name: b.name })
         projLabels.push(b.name)
         projTypes.push(b.type)
@@ -973,6 +1041,7 @@ function exprCtx(
     resolve?: CompileCtx['resolve']
     lookup?: CompileCtx['lookup']
     compileWindow?: CompileCtx['compileWindow']
+    compileGrouping?: CompileCtx['compileGrouping']
   },
 ): CompileCtx {
   const resolve = extra?.resolve ?? ((t: string | undefined, n: string) => resolveColumn(schema, t, n))
@@ -981,6 +1050,7 @@ function exprCtx(
     lookup: extra?.lookup,
     outer: env.outer.length ? env.outer : undefined,
     compileWindow: extra?.compileWindow,
+    compileGrouping: extra?.compileGrouping,
   }
   ctx.compileSubquery = (e) => compileSubqueryExpr(e, schema, env, ctx)
   return ctx

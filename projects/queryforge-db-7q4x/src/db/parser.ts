@@ -7,7 +7,7 @@ import {
   stringValue,
   type Token,
 } from './lexer'
-import { SCALAR_FUNCTION_NAMES } from './eval'
+import { SCALAR_FUNCTION_NAMES, exprKey } from './eval'
 import { SqlError, type ColumnType } from './types'
 import type {
   BinaryOp,
@@ -379,12 +379,12 @@ class Parser {
     const where = this.accept('WHERE') ? this.parseExpr() : undefined
 
     let groupBy: Expr[] = []
+    let groupingSets: Expr[][] | undefined
     if (this.accept('GROUP')) {
       this.expect('BY')
-      groupBy = []
-      do {
-        groupBy.push(this.parseExpr())
-      } while (this.accept(','))
+      const parsed = this.parseGroupBy()
+      groupBy = parsed.groupBy
+      groupingSets = parsed.groupingSets
     }
     const having = this.accept('HAVING') ? this.parseExpr() : undefined
 
@@ -396,11 +396,88 @@ class Parser {
       joins,
       where,
       groupBy,
+      groupingSets,
       having,
       orderBy: [],
       limit: undefined,
       offset: undefined,
     }
+  }
+
+  // GROUP BY <element>, … where each element is a plain expression or one of the
+  // multidimensional forms ROLLUP(…) / CUBE(…) / GROUPING SETS(…). We expand the
+  // elements into a flat list of grouping sets (their cross product) and a
+  // deduplicated union of all grouping expressions (`groupBy`).
+  private parseGroupBy(): { groupBy: Expr[]; groupingSets?: Expr[][] } {
+    // Each element contributes a list of "partial sets" (each a list of exprs);
+    // the final grouping sets are the cross product of every element's list.
+    const elementSets: Expr[][][] = []
+    let multidimensional = false
+    do {
+      if (this.at('ROLLUP') && this.peek(1).value === '(') {
+        this.next()
+        const cols = this.parseParenExprList()
+        // ROLLUP(a,b,c) → (a,b,c),(a,b),(a),()
+        const sets: Expr[][] = []
+        for (let k = cols.length; k >= 0; k--) sets.push(cols.slice(0, k))
+        elementSets.push(sets)
+        multidimensional = true
+      } else if (this.at('CUBE') && this.peek(1).value === '(') {
+        this.next()
+        const cols = this.parseParenExprList()
+        elementSets.push(powerSet(cols))
+        multidimensional = true
+      } else if (this.at('GROUPING') && this.peek(1).value === 'SETS') {
+        this.next() // GROUPING
+        this.next() // SETS
+        this.expect('(')
+        const sets: Expr[][] = []
+        do {
+          if (this.at('(')) sets.push(this.parseParenExprList())
+          else sets.push([this.parseExpr()])
+        } while (this.accept(','))
+        this.expect(')')
+        elementSets.push(sets)
+        multidimensional = true
+      } else {
+        // A plain grouping expression: always present (a single partial set).
+        elementSets.push([[this.parseExpr()]])
+      }
+    } while (this.accept(','))
+
+    // Cross product of the per-element partial-set lists.
+    let combos: Expr[][] = [[]]
+    for (const sets of elementSets) {
+      const next: Expr[][] = []
+      for (const combo of combos) for (const s of sets) next.push([...combo, ...s])
+      combos = next
+    }
+
+    // Deduplicate all grouping expressions into the union `groupBy`.
+    const groupBy: Expr[] = []
+    const seen = new Map<string, Expr>()
+    for (const set of combos) {
+      for (const ex of set) {
+        const k = exprKey(ex)
+        if (!seen.has(k)) {
+          seen.set(k, ex)
+          groupBy.push(ex)
+        }
+      }
+    }
+    return multidimensional ? { groupBy, groupingSets: combos } : { groupBy }
+  }
+
+  private parseParenExprList(): Expr[] {
+    this.expect('(')
+    const list: Expr[] = []
+    if (!this.at(')')) {
+      do {
+        list.push(this.parseExpr())
+      } while (this.accept(','))
+    }
+    this.expect(')')
+    return list
   }
 
   // ORDER BY / LIMIT / OFFSET — bind to the whole (possibly compound) query.
@@ -723,6 +800,25 @@ class Parser {
     }
     this.expect(')')
 
+    // Ordered-set aggregate tail: WITHIN GROUP (ORDER BY <key> [ASC|DESC], …).
+    // The aggregated value comes from this ORDER BY, not the call arguments
+    // (which carry the percentile fraction).
+    let withinGroup: OrderItem[] | undefined
+    if (this.at('WITHIN') && this.peek(1).value === 'GROUP') {
+      this.next() // WITHIN
+      this.next() // GROUP
+      this.expect('(')
+      this.expect('ORDER')
+      this.expect('BY')
+      withinGroup = []
+      do {
+        const expr = this.parseExpr()
+        const dir = this.accept('DESC') ? 'DESC' : (this.accept('ASC'), 'ASC')
+        withinGroup.push({ expr, dir })
+      } while (this.accept(','))
+      this.expect(')')
+    }
+
     // Aggregate FILTER (WHERE pred) — disambiguated from a "filter" alias by the
     // required opening parenthesis.
     let filter: Expr | undefined
@@ -759,7 +855,7 @@ class Parser {
       return { kind: 'window', name, args, spec: { partitionBy, orderBy, frame } }
     }
 
-    return { kind: 'func', name, args, distinct, star, filter }
+    return { kind: 'func', name, args, distinct, star, filter, withinGroup }
   }
 
   // ROWS|RANGE [BETWEEN] <bound> [AND <bound>] — an explicit window frame.
@@ -821,6 +917,19 @@ class Parser {
     this.expect(')')
     return { kind: 'cast', expr, type }
   }
+}
+
+// All 2^n subsets of `items`, ordered from the full set down to the empty set
+// (the conventional CUBE output order, grand total last).
+function powerSet(items: Expr[]): Expr[][] {
+  const out: Expr[][] = []
+  const n = items.length
+  for (let mask = (1 << n) - 1; mask >= 0; mask--) {
+    const set: Expr[] = []
+    for (let i = 0; i < n; i++) if (mask & (1 << i)) set.push(items[i])
+    out.push(set)
+  }
+  return out
 }
 
 export function parse(sql: string): Statement[] {

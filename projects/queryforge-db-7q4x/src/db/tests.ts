@@ -703,6 +703,110 @@ test('agg', 'aggregates group correctly', () => {
   assert(typeof audio![2] === 'string' && (audio![2] as string).includes(','), 'GROUP_CONCAT should join names')
 })
 
+// --- ordered-set aggregates (WITHIN GROUP) ----------------------------------
+test('agg', 'PERCENTILE_CONT interpolates', () => {
+  const e = new Engine()
+  e.execute('CREATE TABLE n (x INTEGER)')
+  e.execute('INSERT INTO n (x) VALUES (1), (2), (3), (4), (5), (6), (7), (8), (9), (10)')
+  assert(scalar(e, 'SELECT PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY x) FROM n') === 5.5, 'median (cont) of 1..10 should be 5.5')
+  assert(
+    Math.abs((scalar(e, 'SELECT PERCENTILE_CONT(0.9) WITHIN GROUP (ORDER BY x) FROM n') as number) - 9.1) < 1e-9,
+    'p90 (cont) of 1..10 should interpolate to 9.1',
+  )
+  assert(scalar(e, 'SELECT PERCENTILE_CONT(0) WITHIN GROUP (ORDER BY x) FROM n') === 1, 'p0 should be the min')
+  assert(scalar(e, 'SELECT PERCENTILE_CONT(1) WITHIN GROUP (ORDER BY x) FROM n') === 10, 'p100 should be the max')
+})
+test('agg', 'PERCENTILE_DISC picks an actual value (any type)', () => {
+  const e = new Engine()
+  e.execute('CREATE TABLE n (x INTEGER, s TEXT)')
+  e.execute("INSERT INTO n (x, s) VALUES (1, 'a'), (2, 'a'), (3, 'b'), (4, 'b'), (5, 'c')")
+  assert(scalar(e, 'SELECT PERCENTILE_DISC(0.5) WITHIN GROUP (ORDER BY x) FROM n') === 3, 'disc median of 1..5 should be 3')
+  assert(scalar(e, 'SELECT PERCENTILE_DISC(0.5) WITHIN GROUP (ORDER BY s) FROM n') === 'b', 'disc median over text should pick a real string')
+})
+test('agg', 'MODE returns the most frequent value', () => {
+  const e = new Engine()
+  e.execute('CREATE TABLE g (cat TEXT, v INTEGER)')
+  e.execute("INSERT INTO g (cat, v) VALUES ('a', 1), ('a', 1), ('a', 2), ('b', 5), ('b', 6), ('b', 6)")
+  const rows = rowsOf(e, 'SELECT cat, MODE() WITHIN GROUP (ORDER BY v) AS m FROM g GROUP BY cat ORDER BY cat')
+  assert(eq(rows.map((r) => r[1]), [1, 6]), 'MODE per group wrong')
+})
+test('agg', 'ordered-set aggregate with DESC + GROUP BY', () => {
+  const e = seeded()
+  // Median product price per category (continuous).
+  const rows = rowsOf(
+    e,
+    'SELECT category, PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY price) AS med FROM products GROUP BY category ORDER BY category',
+  )
+  const audio = rows.find((r) => r[0] === 'Audio')!
+  // Audio = {149.5, 199.5}? median is their average.
+  assert(typeof audio[1] === 'number', 'median price should be numeric')
+})
+
+// --- grouping sets / rollup / cube ------------------------------------------
+function salesEngine(): Engine {
+  const e = new Engine()
+  e.execute('CREATE TABLE sales (region TEXT, product TEXT, amount INTEGER)')
+  e.execute(
+    "INSERT INTO sales (region, product, amount) VALUES ('N','A',10),('N','B',20),('S','A',30),('S','B',40),('N','A',5)",
+  )
+  return e
+}
+test('grouping', 'ROLLUP produces hierarchical subtotals + grand total', () => {
+  const e = salesEngine()
+  const rows = rowsOf(
+    e,
+    'SELECT region, product, SUM(amount) AS s FROM sales GROUP BY ROLLUP(region, product) ORDER BY region, product',
+  )
+  // grand total + 2 region subtotals + 4 detail = 7 rows
+  assert(rows.length === 7, `ROLLUP should yield 7 rows, got ${rows.length}`)
+  const grand = rows.find((r) => r[0] === null && r[1] === null)!
+  assert(grand[2] === 105, `grand total should be 105, got ${grand[2]}`)
+  const north = rows.find((r) => r[0] === 'N' && r[1] === null)!
+  assert(north[2] === 35, `north subtotal should be 35, got ${north[2]}`)
+})
+test('grouping', 'CUBE adds every dimension combination', () => {
+  const e = salesEngine()
+  const rows = rowsOf(e, 'SELECT region, product, SUM(amount) AS s FROM sales GROUP BY CUBE(region, product)')
+  // grand + 2 region + 2 product + 4 detail = 9 rows
+  assert(rows.length === 9, `CUBE should yield 9 rows, got ${rows.length}`)
+  const prodA = rows.find((r) => r[0] === null && r[1] === 'A')!
+  assert(prodA[2] === 45, `product A across regions should be 45, got ${prodA[2]}`)
+})
+test('grouping', 'explicit GROUPING SETS', () => {
+  const e = salesEngine()
+  const rows = rowsOf(
+    e,
+    'SELECT region, SUM(amount) AS s FROM sales GROUP BY GROUPING SETS ((region), ()) ORDER BY region',
+  )
+  assert(rows.length === 3, `two-set grouping should yield 3 rows, got ${rows.length}`)
+  assert(rows.some((r) => r[0] === null && r[1] === 105), 'grand-total set missing')
+})
+test('grouping', 'GROUPING() flags rolled-up columns', () => {
+  const e = salesEngine()
+  const rows = rowsOf(
+    e,
+    `SELECT region, product, GROUPING(region) AS gr, GROUPING(product) AS gp,
+            GROUPING(region, product) AS g2, SUM(amount) AS s
+     FROM sales GROUP BY ROLLUP(region, product) ORDER BY g2, region, product`,
+  )
+  const detail = rows.find((r) => r[0] === 'N' && r[1] === 'A')!
+  assert(detail[2] === 0 && detail[3] === 0 && detail[4] === 0, 'detail rows should have all GROUPING bits clear')
+  const sub = rows.find((r) => r[0] === 'N' && r[1] === null)!
+  assert(sub[2] === 0 && sub[3] === 1 && sub[4] === 1, 'region subtotal: product is rolled up (bit set)')
+  const grand = rows.find((r) => r[2] === 1 && r[3] === 1)!
+  assert(grand[4] === 3, 'grand total GROUPING(region,product) should be binary 11 = 3')
+})
+test('grouping', 'HAVING can filter on GROUPING()', () => {
+  const e = salesEngine()
+  // Keep only the per-region subtotals (product rolled up, region present).
+  const rows = rowsOf(
+    e,
+    `SELECT region, SUM(amount) AS s FROM sales GROUP BY ROLLUP(region, product)
+     HAVING GROUPING(product) = 1 AND GROUPING(region) = 0 ORDER BY region`,
+  )
+  assert(eq(rows.map((r) => r[0]), ['N', 'S']), 'should keep exactly the two region subtotals')
+})
+
 // --- aggregate FILTER -------------------------------------------------------
 test('agg', 'aggregate FILTER (WHERE …)', () => {
   const e = seeded()
