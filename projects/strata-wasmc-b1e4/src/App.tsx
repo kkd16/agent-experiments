@@ -74,6 +74,8 @@ export default function App() {
           <Metric label={`O${level} insts`} value={m?.optInsts ?? '—'} />
           <Metric label="reduction" value={m ? `${m.reductionPct}%` : '—'} accent />
           <Metric label="wasm" value={m ? `${m.wasmBytes} B` : '—'} />
+          <Metric label="locals" value={m?.wasmLocals ?? '—'} />
+          <Metric label="stack-folded" value={m?.stackFolded ?? '—'} accent />
           <Metric label="compile" value={m ? `${m.compileMs.toFixed(1)} ms` : '—'} />
         </div>
       </header>

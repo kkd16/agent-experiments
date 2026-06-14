@@ -40,6 +40,9 @@ const BINDING: Partial<Record<TokenType, [number, number]>> = {
   '%': [19, 20],
 };
 
+// The conditional operator binds looser than every binary operator above.
+const TERNARY_BP = 0;
+
 class Parser {
   private toks: Token[];
   private pos = 0;
@@ -263,12 +266,27 @@ class Parser {
     return s;
   }
 
+  // Compound-assignment operators (`a += b` etc.) are lexed as the binary op
+  // token followed by `=`; we desugar them to `a = a <op> b`. Because the desugar
+  // happens before the AST is consumed by *both* the interpreter and the backend,
+  // the two can never disagree about its meaning.
+  private static readonly COMPOUND_OPS = new Set<TokenType>(['+', '-', '*', '/', '%', '&', '|', '^', '<<', '>>']);
+
   private parseSimpleStmtNoSemi(): Stmt {
     const start = this.peek().span;
     const lhs = this.parseExpr();
-    if (this.check('=')) {
-      this.next();
-      const value = this.parseExpr();
+
+    const op = this.peek().type;
+    const compound = Parser.COMPOUND_OPS.has(op) && this.toks[this.pos + 1]?.type === '=';
+    if (this.check('=') || compound) {
+      if (compound) {
+        this.next(); // the operator
+      }
+      this.next(); // '='
+      const rhs = this.parseExpr();
+      const value: Expr = compound
+        ? { node: 'binary', op: op as BinaryOp, left: lhs, right: rhs, span: this.spanFrom(start) }
+        : rhs;
       if (lhs.node === 'ident') {
         return { node: 'assign', name: lhs.name, value, span: this.spanFrom(start) };
       }
@@ -286,6 +304,27 @@ class Parser {
     let left = this.parsePrefix();
     for (;;) {
       const op = this.peek().type;
+      // Ternary `cond ? a : b` sits at the very bottom of the precedence ladder
+      // and is right-associative, so it only triggers when nothing tighter is in
+      // progress (minBp === 0 — e.g. at statement / paren / argument level).
+      if (op === '?') {
+        if (minBp > TERNARY_BP) break;
+        this.next();
+        const thenE = this.parseExpr(0);
+        this.expect(':');
+        const elseE = this.parseExpr(TERNARY_BP);
+        left = {
+          node: 'ternary',
+          cond: left,
+          then: thenE,
+          otherwise: elseE,
+          span: { start: left.span.start, end: elseE.span.end, line: left.span.line, col: left.span.col },
+        };
+        continue;
+      }
+      // Stop before a compound-assignment operator (`+=`, `<<=`, …) so the
+      // statement parser can desugar it; here it is not a binary operator.
+      if (Parser.COMPOUND_OPS.has(op) && this.toks[this.pos + 1]?.type === '=') break;
       const bp = BINDING[op];
       if (!bp || bp[0] < minBp) break;
       const opTok = this.next();

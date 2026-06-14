@@ -24,6 +24,8 @@ export interface Metrics {
   optInsts: number; // instructions + phis, after optimization
   wasmBytes: number;
   wasmInsts: number;
+  wasmLocals: number; // declared locals after stackification (lower = better)
+  stackFolded: number; // values kept on the operand stack (no local)
   reductionPct: number;
   compileMs: number;
 }
@@ -85,6 +87,8 @@ export function compile(source: string, level: OptLevel): Compilation {
         optInsts,
         wasmBytes: cg.bytes.length,
         wasmInsts: cg.funcInstrCount,
+        wasmLocals: cg.localCount,
+        stackFolded: cg.stackFolded,
         reductionPct: ssaInsts ? Math.round((1 - optInsts / ssaInsts) * 100) : 0,
         compileMs,
       },

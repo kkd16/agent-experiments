@@ -393,6 +393,25 @@
 .cell-center { text-align: center; }
 .tick { color: var(--green); font-weight: 700; }
 .cross { color: var(--red); font-weight: 700; }
+.verify-group td {
+  color: var(--accent2);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.7px;
+  padding-top: 14px;
+  border-bottom: 1px solid var(--border);
+}
+.dl-wasm {
+  background: var(--bg3);
+  border: 1px solid var(--accent);
+  color: var(--accent);
+  border-radius: 20px;
+  padding: 4px 12px;
+  font-size: 12px;
+  font-family: var(--mono);
+  cursor: pointer;
+}
+.dl-wasm:hover { background: var(--accent); color: #04201f; }
 
 /* cfg */
 .cfg-scroll { flex: 1; overflow: auto; padding: 16px; }

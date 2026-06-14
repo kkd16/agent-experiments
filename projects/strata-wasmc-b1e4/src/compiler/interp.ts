@@ -224,6 +224,8 @@ export class Interpreter {
       }
       case 'call':
         return this.evalCall(e, f);
+      case 'ternary':
+        return this.evalExpr(e.cond, f) ? this.evalExpr(e.then, f) : this.evalExpr(e.otherwise, f);
     }
   }
 

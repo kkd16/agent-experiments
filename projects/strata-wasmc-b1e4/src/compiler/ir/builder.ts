@@ -310,7 +310,32 @@ class FnBuilder {
       }
       case 'call':
         return this.lowerCall(e);
+      case 'ternary':
+        return this.lowerTernary(e);
     }
+  }
+
+  private lowerTernary(e: Extract<Expr, { node: 'ternary' }>): POperand {
+    const ty = irTypeOf(e.ty!);
+    const res = this.temp(ty);
+    const cond = this.lowerExpr(e.cond)!;
+    const thenB = this.newBlock();
+    const elseB = this.newBlock();
+    const join = this.newBlock();
+    this.setTerm({ op: 'condbr', cond, t: thenB.id, f: elseB.id });
+
+    this.switchTo(thenB);
+    const tv = this.lowerExpr(e.then)!;
+    this.emit({ dest: res, ty, kind: 'copy', sub: '', args: [tv] });
+    this.setTerm({ op: 'br', target: join.id });
+
+    this.switchTo(elseB);
+    const ev = this.lowerExpr(e.otherwise)!;
+    this.emit({ dest: res, ty, kind: 'copy', sub: '', args: [ev] });
+    this.setTerm({ op: 'br', target: join.id });
+
+    this.switchTo(join);
+    return VAR(res);
   }
 
   private lowerUnary(e: Extract<Expr, { node: 'unary' }>): POperand {
