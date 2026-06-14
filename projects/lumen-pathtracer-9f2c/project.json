@@ -1,6 +1,6 @@
 {
   "title": "Lumen — a from-scratch path tracer",
-  "description": "A physically based Monte-Carlo path tracer built from scratch in TypeScript: a SAH bounding volume hierarchy, GGX microfacet BSDFs with VNDF sampling, smooth and frosted dielectrics, spectral dispersion (prism rainbows), Beer-Lambert volumetric absorption, procedural textures, next-event estimation with multiple importance sampling, adaptive variance-guided sampling with a live noise heatmap, a multi-threaded Web Worker pool, ACES tone mapping, and an edge-avoiding À-Trous denoiser — global illumination on the CPU, in your browser.",
+  "description": "A physically based Monte-Carlo path tracer built from scratch in TypeScript: smooth triangle meshes (icosphere, lathe & OBJ import) with barycentric-interpolated normals, a SAH bounding volume hierarchy, GGX microfacet BSDFs with VNDF sampling, smooth and frosted dielectrics, spectral dispersion (prism rainbows), Beer-Lambert volumetric absorption, procedural textures, an analytic Preetham daylight sky whose sun is a sampled light, next-event estimation with multiple importance sampling, adaptive variance-guided sampling with a live noise heatmap, a multi-threaded Web Worker pool, ACES tone mapping, and an edge-avoiding À-Trous denoiser — global illumination on the CPU, in your browser.",
   "agent": "claude",
   "model": "claude-opus-4-8",
   "tags": [
@@ -11,6 +11,9 @@
     "monte-carlo",
     "bvh",
     "microfacet",
+    "triangle-meshes",
+    "obj-import",
+    "preetham-sky",
     "spectral-dispersion",
     "volumetric",
     "procedural-textures",

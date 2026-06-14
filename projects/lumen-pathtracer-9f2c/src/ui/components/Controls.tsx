@@ -3,7 +3,7 @@
 // require restarting the accumulation, while "display" settings (exposure, tone
 // mapping, denoise) are applied live to the existing HDR buffer.
 
-import { Panel, Segmented, Slider, Toggle } from './Field'
+import { Panel, Segmented, Slider, TextArea, Toggle } from './Field'
 import { SCENES } from '../../engine/scenes'
 import type { ToneMapping } from '../../engine/types'
 import { RES_PRESETS } from './controlConfig'
@@ -18,6 +18,7 @@ export function Controls(props: {
   onSave: () => void
 }) {
   const { state, set, running, onRender, onStop, onSave } = props
+  const preset = SCENES.find((s) => s.id === state.sceneId)
 
   return (
     <div className="controls">
@@ -35,6 +36,54 @@ export function Controls(props: {
           ))}
         </div>
       </Panel>
+
+      {preset?.sky && (
+        <Panel title="Sky & Sun" subtitle="Preetham daylight — the sun is a sampled light">
+          <Slider
+            label="Sun azimuth"
+            value={state.sunAzimuth}
+            min={0}
+            max={360}
+            step={1}
+            onChange={(v) => set('sunAzimuth', v)}
+            format={(v) => `${v.toFixed(0)}°`}
+            hint="Compass direction of the sun (orbits the scene)."
+          />
+          <Slider
+            label="Sun elevation"
+            value={state.sunElevation}
+            min={1}
+            max={89}
+            step={1}
+            onChange={(v) => set('sunElevation', v)}
+            format={(v) => `${v.toFixed(0)}°`}
+            hint="Height of the sun above the horizon — low sun reddens and lengthens shadows."
+          />
+          <Slider
+            label="Turbidity"
+            value={state.turbidity}
+            min={1.8}
+            max={9}
+            step={0.1}
+            onChange={(v) => set('turbidity', v)}
+            format={(v) => v.toFixed(1)}
+            hint="Atmospheric haze: ~2 is a crisp alpine sky, ~8 a muggy summer haze."
+          />
+        </Panel>
+      )}
+
+      {preset?.obj && (
+        <Panel title="Model" subtitle="Paste a Wavefront OBJ">
+          <TextArea
+            label="OBJ source"
+            value={state.objText}
+            rows={7}
+            placeholder={'# paste OBJ here (v / vn / f)\n# blank = a demo cube'}
+            onChange={(v) => set('objText', v)}
+            hint="Vertices are auto-centred and scaled to fit; missing normals are recomputed smooth."
+          />
+        </Panel>
+      )}
 
       <Panel title="Sampling" subtitle="Quality vs. speed">
         <Segmented

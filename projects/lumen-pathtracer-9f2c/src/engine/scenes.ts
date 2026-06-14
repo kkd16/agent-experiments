@@ -9,6 +9,8 @@ import { add, cross, dot, normalize, scale, sub, v } from './vec3'
 import type { Material } from './material'
 import type { PrimDef, SceneDef } from './types'
 import { Rng } from './rng'
+import { emitMesh, icosphere, surfaceOfRevolution, torus, transformMesh, uvSphere } from './mesh'
+import { CUBE_OBJ, parseObj } from './obj'
 
 // ---- small builders ----------------------------------------------------------
 
@@ -438,6 +440,174 @@ function texturedStudio(): SceneDef {
   }
 }
 
+// ---- Sun helpers -------------------------------------------------------------
+
+// A unit direction pointing toward the sun from an azimuth (degrees clockwise
+// from +Z, looking down) and an elevation (degrees above the horizon).
+export function sunFromAzEl(azDeg: number, elDeg: number): Vec3 {
+  const az = (azDeg * Math.PI) / 180
+  const el = (elDeg * Math.PI) / 180
+  const ce = Math.cos(el)
+  return normalize(v(ce * Math.sin(az), Math.sin(el), ce * Math.cos(az)))
+}
+
+// ---- Scene 8: Sky Studio — meshes under the Preetham daylight model ----------
+
+function skyStudio(): SceneDef {
+  // A geodesic glass sphere, a gold torus and a diffuse sphere on a soft checker
+  // floor, lit *only* by the analytic sky — no artificial lights. The sun is a
+  // sampled light (NEE), so crisp daylight shadows resolve in a handful of spp.
+  const materials: Material[] = [
+    {
+      kind: 'diffuse',
+      albedo: v(0.8, 0.8, 0.8),
+      tex: { kind: 'checker', even: v(0.78, 0.78, 0.8), odd: v(0.2, 0.21, 0.24), scale: 0.32 },
+    }, // 0 checker floor
+    { kind: 'dielectric', ior: 1.5, tint: v(1, 1, 1) }, // 1 glass
+    { kind: 'metal', albedo: v(1.0, 0.82, 0.43), roughness: 0.12 }, // 2 gold
+    { kind: 'diffuse', albedo: v(0.85, 0.25, 0.22) }, // 3 red clay
+    { kind: 'metal', albedo: v(0.95, 0.96, 0.98), roughness: 0.04 }, // 4 chrome
+  ]
+  const prims: PrimDef[] = []
+  const g = 60
+  prims.push(...quad(v(-g, 0, -g), v(g, 0, -g), v(g, 0, g), v(-g, 0, g), 0))
+  // Geodesic glass sphere.
+  prims.push(...emitMesh(transformMesh(icosphere(3), { scale: 1.5, translate: v(-3.1, 1.5, 0) }), 1))
+  // Gold torus, tipped toward the camera.
+  prims.push(
+    ...emitMesh(
+      transformMesh(torus(1.1, 0.42, 56, 28), {
+        translate: v(0, 1.0, 0),
+        rotate: { axis: v(1, 0, 0.25), angle: 1.15 },
+      }),
+      2,
+    ),
+  )
+  // Diffuse clay sphere + a small chrome geodesic sphere.
+  prims.push(...emitMesh(transformMesh(uvSphere(28, 56), { scale: 1.2, translate: v(3.1, 1.2, 0.4) }), 3))
+  prims.push(...emitMesh(transformMesh(icosphere(3), { scale: 0.7, translate: v(1.0, 0.7, 2.6) }), 4))
+
+  return {
+    name: 'Sky Studio',
+    materials,
+    prims,
+    camera: {
+      eye: v(0, 3.0, 11),
+      target: v(0, 1.1, 0),
+      up: v(0, 1, 0),
+      vfovDeg: 40,
+      aperture: 0.03,
+      focusDist: 11,
+    },
+    env: { kind: 'sky', sunDir: sunFromAzEl(135, 24), turbidity: 2.6, intensity: 1.0, sunSize: 0.04 },
+  }
+}
+
+// ---- Scene 9: Revolution — lathed surfaces of revolution --------------------
+
+// A goblet profile (radius as a function of height): a wide foot, a thin stem,
+// and a flared cup, all lathed into a single smooth surface.
+function gobletProfile(): { r: number; y: number }[] {
+  const pts: { r: number; y: number }[] = []
+  pts.push({ r: 0.0, y: 0.0 })
+  pts.push({ r: 0.9, y: 0.0 }) // foot rim
+  pts.push({ r: 0.85, y: 0.12 })
+  pts.push({ r: 0.16, y: 0.25 }) // into the stem
+  pts.push({ r: 0.13, y: 0.95 }) // stem
+  pts.push({ r: 0.2, y: 1.15 })
+  pts.push({ r: 0.95, y: 1.45 }) // cup flare
+  pts.push({ r: 1.05, y: 2.0 })
+  pts.push({ r: 1.0, y: 2.02 }) // lip
+  pts.push({ r: 0.18, y: 1.7 }) // hollow bowl (inner wall)
+  pts.push({ r: 0.12, y: 1.2 })
+  return pts
+}
+
+function revolution(): SceneDef {
+  const materials: Material[] = [
+    { kind: 'diffuse', albedo: v(0.55, 0.56, 0.6) }, // 0 floor
+    { kind: 'metal', albedo: v(0.95, 0.64, 0.54), roughness: 0.08 }, // 1 copper goblet
+    { kind: 'dielectric', ior: 1.5, tint: v(1, 1, 1) }, // 2 glass goblet
+    { kind: 'metal', albedo: v(0.97, 0.97, 0.99), roughness: 0.18 }, // 3 brushed torus
+    { kind: 'emissive', emission: v(9, 8.6, 8) }, // 4 key light
+  ]
+  const prims: PrimDef[] = []
+  const g = 40
+  prims.push(...quad(v(-g, 0, -g), v(g, 0, -g), v(g, 0, g), v(-g, 0, g), 0))
+  prims.push(...emitMesh(transformMesh(surfaceOfRevolution(gobletProfile(), 72), { translate: v(-2.2, 0, 0) }), 1))
+  prims.push(...emitMesh(transformMesh(surfaceOfRevolution(gobletProfile(), 72), { translate: v(0.6, 0, -0.4) }), 2))
+  prims.push(
+    ...emitMesh(
+      transformMesh(torus(0.9, 0.3, 56, 28), { translate: v(2.9, 0.95, 0.6), rotate: { axis: v(1, 0.2, 0), angle: 1.4 } }),
+      3,
+    ),
+  )
+  // A soft overhead key light (so glass and metal pick up highlights).
+  prims.push(...quad(v(-3, 7, -3), v(3, 7, -3), v(3, 7, 3), v(-3, 7, 3), 4))
+
+  return {
+    name: 'Revolution',
+    materials,
+    prims,
+    camera: {
+      eye: v(0, 2.6, 8.5),
+      target: v(0, 1.1, 0),
+      up: v(0, 1, 0),
+      vfovDeg: 42,
+      aperture: 0.04,
+      focusDist: 8.6,
+    },
+    env: { kind: 'sky', sunDir: sunFromAzEl(40, 16), turbidity: 3.2, intensity: 0.7, sunSize: 0.05 },
+  }
+}
+
+// ---- Scene 10: Custom OBJ — paste-your-own mesh on a turntable ---------------
+
+export function buildCustomScene(objText: string): SceneDef {
+  const materials: Material[] = [
+    {
+      kind: 'diffuse',
+      albedo: v(0.8, 0.8, 0.8),
+      tex: { kind: 'grid', base: v(0.12, 0.13, 0.16), line: v(0.4, 0.42, 0.5), scale: 0.5, width: 0.03 },
+    }, // 0 grid floor
+    { kind: 'metal', albedo: v(0.92, 0.78, 0.5), roughness: 0.16 }, // 1 hero metal
+  ]
+  const prims: PrimDef[] = []
+  const g = 50
+  prims.push(...quad(v(-g, 0, -g), v(g, 0, -g), v(g, 0, g), v(-g, 0, g), 0))
+  let triCount = 0
+  try {
+    const res = parseObj(objText && objText.trim().length > 0 ? objText : CUBE_OBJ, 1.6)
+    // Sit the fitted mesh on the floor (its fit box is centred on the origin).
+    const mesh = transformMesh(res.mesh, { translate: v(0, 1.7, 0), rotate: { axis: v(0, 1, 0), angle: 0.5 } })
+    prims.push(...emitMesh(mesh, 1))
+    triCount = res.faceCount
+  } catch {
+    // Malformed paste → fall back to the cube so the scene still renders.
+    const res = parseObj(CUBE_OBJ, 1.6)
+    prims.push(...emitMesh(transformMesh(res.mesh, { translate: v(0, 1.7, 0) }), 1))
+  }
+  void triCount
+  return {
+    name: 'Custom OBJ',
+    materials,
+    prims,
+    camera: {
+      eye: v(0, 2.4, 7),
+      target: v(0, 1.5, 0),
+      up: v(0, 1, 0),
+      vfovDeg: 44,
+      aperture: 0.02,
+      focusDist: 7,
+    },
+    env: { kind: 'sky', sunDir: sunFromAzEl(120, 30), turbidity: 2.4, intensity: 1.0, sunSize: 0.04 },
+  }
+}
+
+function customScene(): SceneDef {
+  return buildCustomScene(CUBE_OBJ)
+}
+
 // Simple HSV→RGB for the diffuse colour wheel.
 function hsv(h: number, s: number, val: number): Vec3 {
   const i = Math.floor(h * 6)
@@ -465,6 +635,8 @@ export interface ScenePreset {
   id: string
   label: string
   build: () => SceneDef
+  sky?: boolean // exposes interactive sun/turbidity controls
+  obj?: boolean // accepts a pasted OBJ model
 }
 
 export const SCENES: ScenePreset[] = [
@@ -475,6 +647,9 @@ export const SCENES: ScenePreset[] = [
   { id: 'prism', label: 'Prism', build: prismScene },
   { id: 'menagerie', label: 'Glass Menagerie', build: glassMenagerie },
   { id: 'textured', label: 'Textured Studio', build: texturedStudio },
+  { id: 'sky', label: 'Sky Studio', build: skyStudio, sky: true },
+  { id: 'revolution', label: 'Revolution', build: revolution, sky: true },
+  { id: 'custom', label: 'Custom OBJ', build: customScene, sky: true, obj: true },
 ]
 
 // Re-exports used by the orbit camera helper in the UI.

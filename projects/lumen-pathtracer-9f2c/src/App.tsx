@@ -13,7 +13,7 @@ import { SelfTests } from './ui/components/SelfTests'
 import { About } from './ui/components/About'
 import { Renderer } from './render/renderer'
 import type { RenderStats, DisplaySettings, AdaptiveSettings } from './render/renderer'
-import { SCENES } from './engine/scenes'
+import { SCENES, buildCustomScene, sunFromAzEl } from './engine/scenes'
 import { orbitEye } from './engine/camera'
 import type { CameraDef } from './engine/camera'
 import type { SceneDef } from './engine/types'
@@ -42,6 +42,10 @@ const DEFAULTS: ControlState = {
   denoiseIterations: 4,
   denoiseSigma: 0.5,
   showNoise: false,
+  sunAzimuth: 135,
+  sunElevation: 24,
+  turbidity: 2.6,
+  objText: '',
 }
 
 function deriveOrbit(cam: CameraDef): Orbit {
@@ -61,7 +65,16 @@ function sceneCamera(id: string): CameraDef {
 }
 
 function buildScene(ctrl: ControlState, orbit: Orbit): SceneDef {
-  const def = SCENES.find((s) => s.id === ctrl.sceneId)!.build()
+  const preset = SCENES.find((s) => s.id === ctrl.sceneId)!
+  const def = preset.obj ? buildCustomScene(ctrl.objText) : preset.build()
+  // Sky scenes: drive the sun position + turbidity from the live controls.
+  if (preset.sky && def.env.kind === 'sky') {
+    def.env = {
+      ...def.env,
+      sunDir: sunFromAzEl(ctrl.sunAzimuth, ctrl.sunElevation),
+      turbidity: ctrl.turbidity,
+    }
+  }
   const eye = orbitEye(orbit.target, orbit.radius, orbit.yaw, orbit.pitch)
   def.camera = {
     ...def.camera,
@@ -142,6 +155,10 @@ export default function App() {
     rr: ctrl.rrStart,
     c: ctrl.clampIndirect,
     a: ctrl.aperture,
+    az: ctrl.sunAzimuth,
+    el: ctrl.sunElevation,
+    tb: ctrl.turbidity,
+    obj: ctrl.objText,
     o: orbit,
   })
   useEffect(() => {
@@ -287,7 +304,7 @@ export default function App() {
       )}
 
       <footer className="footer">
-        Monte-Carlo path tracing · SAH BVH · GGX microfacets · MIS · À-Trous denoise — all in TypeScript on the CPU.
+        Monte-Carlo path tracing · SAH BVH · smooth meshes · Preetham sky + sun NEE · GGX microfacets · MIS · À-Trous denoise — all in TypeScript on the CPU.
       </footer>
     </div>
   )

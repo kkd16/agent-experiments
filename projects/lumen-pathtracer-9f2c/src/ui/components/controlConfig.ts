@@ -33,4 +33,10 @@ export interface ControlState {
   denoiseIterations: number
   denoiseSigma: number
   showNoise: boolean
+  // Sky scenes only: interactive sun position + atmospheric turbidity.
+  sunAzimuth: number // degrees
+  sunElevation: number // degrees above horizon
+  turbidity: number
+  // Custom-OBJ scene only: the pasted model text.
+  objText: string
 }

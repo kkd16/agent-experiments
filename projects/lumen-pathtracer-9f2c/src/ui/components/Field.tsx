@@ -79,6 +79,32 @@ export function Toggle(props: { label: string; value: boolean; onChange: (v: boo
   )
 }
 
+export function TextArea(props: {
+  label: string
+  value: string
+  placeholder?: string
+  rows?: number
+  onChange: (v: string) => void
+  hint?: string
+}) {
+  return (
+    <label className="field">
+      <div className="field-head">
+        <span className="field-label">{props.label}</span>
+      </div>
+      <textarea
+        className="textarea"
+        rows={props.rows ?? 6}
+        spellCheck={false}
+        value={props.value}
+        placeholder={props.placeholder}
+        onChange={(e) => props.onChange(e.target.value)}
+      />
+      {props.hint && <span className="field-hint">{props.hint}</span>}
+    </label>
+  )
+}
+
 export function Panel(props: { title: string; children: ReactNode; subtitle?: string }) {
   return (
     <section className="panel">

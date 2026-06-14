@@ -4,7 +4,7 @@
 // agreement, sampler/pdf consistency, and the analytic Fresnel/Snell laws. They
 // run in well under a second and surface as a pass/fail panel in the UI.
 
-import { cross, dot, len, normalize, v, reflect, refract, luminance } from './vec3'
+import { add, cross, dot, len, normalize, scale, sub, v, reflect, refract, luminance } from './vec3'
 import { Rng } from './rng'
 import { sampleBSDF, pdfBSDF, evalBSDF, resolveMaterial } from './material'
 import type { Material } from './material'
@@ -18,6 +18,9 @@ import type { SceneDef } from './types'
 import { evalTexture } from './texture'
 import type { Texture } from './texture'
 import { cauchyIor, wavelengthWeight, LAMBDA_MIN, LAMBDA_MAX } from './spectrum'
+import { icosphere, torus, meshTriangleCount } from './mesh'
+import { parseObj, CUBE_OBJ } from './obj'
+import { makeSky, skyRadiance } from './sky'
 
 export interface TestResult {
   name: string
@@ -362,6 +365,187 @@ function testResolveTexture(): { pass: boolean; detail: string } {
   return { pass: ok, detail: `cell0.r=${(r0 as { albedo: { x: number } }).albedo.x}, cell1.r=${(r1 as { albedo: { x: number } }).albedo.x}` }
 }
 
+// 16 — Smooth shading normal: a triangle carrying three vertex normals must
+// report, at a hit point, the barycentric blend of those normals (unit length,
+// oriented to face the ray). This is what turns flat triangles into curves.
+function testSmoothNormal(): { pass: boolean; detail: string } {
+  const n0 = normalize(v(0, 0, 1))
+  const n1 = normalize(v(1, 0, 1))
+  const n2 = normalize(v(0, 1, 1))
+  const def: SceneDef = {
+    name: 'smooth',
+    materials: [{ kind: 'diffuse', albedo: v(0.5, 0.5, 0.5) }],
+    prims: [{ kind: 'tri', p0: v(0, 0, 0), p1: v(1, 0, 0), p2: v(0, 1, 0), material: 0, n0, n1, n2 }],
+    camera: { eye: v(0, 0, 5), target: v(0, 0, 0), up: v(0, 1, 0), vfovDeg: 30, aperture: 0, focusDist: 5 },
+    env: { kind: 'solid', color: v(0, 0, 0) },
+  }
+  const scene = new Scene(def)
+  // Aim at barycentric (1-u-v, u, v) = (0.5, 0.25, 0.25): the point p0+0.25e1+0.25e2.
+  const hit = scene.intersect({ o: v(0.25, 0.25, 5), d: v(0, 0, -1), tMax: Infinity })
+  if (!hit) return { pass: false, detail: 'no hit' }
+  const expected = normalize(add(add(scale(n0, 0.5), scale(n1, 0.25)), scale(n2, 0.25)))
+  const err = len(sub(hit.n, expected))
+  const unit = len(hit.n)
+  return { pass: err < 1e-6 && approx(unit, 1, 1e-9), detail: `|Δn|=${err.toExponential(1)}, |n|=${unit.toFixed(6)}` }
+}
+
+// 17 — Icosphere integrity: vertex normals are radial (a unit sphere's normal is
+// its position), every face winds outward, and the closed mesh satisfies Euler's
+// V − E + F = 2 (with E = 3F/2 for a triangle mesh).
+function testIcosphere(): { pass: boolean; detail: string } {
+  const m = icosphere(2)
+  const F = meshTriangleCount(m)
+  const V = m.positions.length
+  const euler = V - (3 * F) / 2 + F // = V - F/2
+  let radialOk = true
+  for (let i = 0; i < V; i++) {
+    if (dot(m.normals[i], normalize(m.positions[i])) < 0.9999) radialOk = false
+  }
+  let outward = true
+  for (let i = 0; i < m.indices.length; i += 3) {
+    const a = m.positions[m.indices[i]]
+    const b = m.positions[m.indices[i + 1]]
+    const c = m.positions[m.indices[i + 2]]
+    const fn = cross(sub(b, a), sub(c, a))
+    const centroid = scale(add(add(a, b), c), 1 / 3)
+    if (dot(fn, centroid) <= 0) outward = false
+  }
+  const ok = euler === 2 && radialOk && outward
+  return { pass: ok, detail: `V=${V}, F=${F}, χ=${euler}, radial=${radialOk}, outward=${outward}` }
+}
+
+// 18 — OBJ round-trip: parsing the canonical unit cube must recover 8 vertices
+// and 12 triangles, fit to the unit box, and (with no `vn` in the file) recompute
+// outward-pointing area-weighted normals.
+function testObjCube(): { pass: boolean; detail: string } {
+  const r = parseObj(CUBE_OBJ, 1)
+  const counts = r.vertexCount === 8 && r.faceCount === 12
+  let maxCoord = 0
+  for (const p of r.mesh.positions) maxCoord = Math.max(maxCoord, Math.abs(p.x), Math.abs(p.y), Math.abs(p.z))
+  let outward = true
+  for (let i = 0; i < r.mesh.positions.length; i++) {
+    // Each cube corner's smooth normal should point away from the centre.
+    if (dot(r.mesh.normals[i], normalize(r.mesh.positions[i])) <= 0) outward = false
+  }
+  const ok = counts && approx(maxCoord, 1, 1e-9) && outward && !r.hadNormals
+  return { pass: ok, detail: `V=${r.vertexCount}, F=${r.faceCount}, fit=${maxCoord.toFixed(3)}, outward=${outward}` }
+}
+
+// 19 — Torus normals: every analytic vertex normal is unit length and equal to
+// the direction from the local tube centre to the vertex.
+function testTorusNormals(): { pass: boolean; detail: string } {
+  const R = 1
+  const m = torus(R, 0.35, 32, 16)
+  let maxUnitErr = 0
+  let maxDirErr = 0
+  for (let i = 0; i < m.positions.length; i++) {
+    const p = m.positions[i]
+    maxUnitErr = Math.max(maxUnitErr, Math.abs(len(m.normals[i]) - 1))
+    // Tube centre: the closest point on the major-radius circle in the XZ plane.
+    const ringLen = Math.hypot(p.x, p.z) || 1
+    const tubeCenter = v((p.x / ringLen) * R, 0, (p.z / ringLen) * R)
+    const expected = normalize(sub(p, tubeCenter))
+    maxDirErr = Math.max(maxDirErr, len(sub(m.normals[i], expected)))
+  }
+  const ok = maxUnitErr < 1e-9 && maxDirErr < 1e-6
+  return { pass: ok, detail: `max|‖n‖−1|=${maxUnitErr.toExponential(1)}, max dir err=${maxDirErr.toExponential(1)}` }
+}
+
+// 20 — Preetham sky: radiance is finite and non-negative everywhere, the sky is
+// brighter toward the sun than away from it, and the zenith differs from the
+// horizon (a real gradient, not a flat fill).
+function testSky(): { pass: boolean; detail: string } {
+  const sunDir = normalize(v(0.3, 0.5, 0.8))
+  const s = makeSky({ sunDir, turbidity: 3, intensity: 1 })
+  let finite = true
+  let nonNeg = true
+  const rng = new Rng(77, 2)
+  for (let i = 0; i < 4000; i++) {
+    const dir = normalize(v(rng.range(-1, 1), rng.range(0.02, 1), rng.range(-1, 1)))
+    const c = skyRadiance(s, dir, false)
+    if (!Number.isFinite(c.x) || !Number.isFinite(c.y) || !Number.isFinite(c.z)) finite = false
+    if (c.x < 0 || c.y < 0 || c.z < 0) nonNeg = false
+  }
+  // Sample near the sun vs. opposite it (both above the horizon, no disc).
+  const nearSun = luminance(skyRadiance(s, normalize(v(0.3, 0.45, 0.8)), false))
+  const awaySun = luminance(skyRadiance(s, normalize(v(-0.3, 0.45, -0.8)), false))
+  const zenith = luminance(skyRadiance(s, v(0, 1, 0), false))
+  const horizon = luminance(skyRadiance(s, normalize(v(1, 0.05, 0)), false))
+  const ok = finite && nonNeg && nearSun > awaySun && Math.abs(zenith - horizon) > 1e-4
+  return {
+    pass: ok,
+    detail: `finite=${finite}, ≥0=${nonNeg}, sun=${nearSun.toFixed(2)}>away=${awaySun.toFixed(2)}`,
+  }
+}
+
+// 21 — Environment-sun sampler ↔ pdf: every direction the env light sampler
+// returns lands inside the sun cone, its reported pdf equals envSunPdf for that
+// direction, and the mean of 1/pdf recovers the cone's solid angle 2π(1−cos σ).
+function testEnvSampler(): { pass: boolean; detail: string } {
+  const size = 0.2
+  const def: SceneDef = {
+    name: 'env',
+    materials: [],
+    prims: [],
+    camera: { eye: v(0, 0, 5), target: v(0, 0, 0), up: v(0, 1, 0), vfovDeg: 30, aperture: 0, focusDist: 5 },
+    env: { kind: 'gradient', top: v(1, 1, 1), bottom: v(1, 1, 1), sunDir: v(0, 1, 0), sunColor: v(0, 0, 0), sunSize: size },
+  }
+  const scene = new Scene(def)
+  const rng = new Rng(123, 4)
+  const cosSize = Math.cos(size)
+  let inCone = true
+  let maxPdfErr = 0
+  let invSum = 0
+  const N = 40000
+  for (let i = 0; i < N; i++) {
+    const ls = scene.sampleLight(v(0, 0, 0), rng)
+    if (!ls || ls.primId !== -1) {
+      inCone = false
+      continue
+    }
+    if (dot(ls.wi, v(0, 1, 0)) < cosSize - 1e-9) inCone = false
+    const p = scene.envSunPdf(ls.wi)
+    maxPdfErr = Math.max(maxPdfErr, Math.abs(p - ls.pdf) / Math.max(1e-9, ls.pdf))
+    invSum += 1 / ls.pdf
+  }
+  const measuredOmega = invSum / N
+  const expectedOmega = 2 * Math.PI * (1 - cosSize)
+  const ok = inCone && maxPdfErr < 1e-9 && approx(measuredOmega, expectedOmega, 5e-3)
+  return {
+    pass: ok,
+    detail: `cone=${inCone}, Δpdf=${maxPdfErr.toExponential(1)}, Ω=${measuredOmega.toFixed(4)} (exp ${expectedOmega.toFixed(4)})`,
+  }
+}
+
+// 22 — Environment-importance-sampled white furnace: a diffuse sphere of albedo ρ
+// inside a uniform unit environment that is *also* sampled as a full-sphere sun
+// must still reflect exactly ρ. This proves the env next-event estimator and its
+// MIS combination with BSDF sampling are unbiased and energy-conserving.
+function testEnvFurnace(): { pass: boolean; detail: string } {
+  const rho = 0.8
+  const def: SceneDef = {
+    name: 'env-furnace',
+    materials: [{ kind: 'diffuse', albedo: v(rho, rho, rho) }],
+    prims: [{ kind: 'sphere', center: v(0, 0, 0), radius: 1, material: 0 }],
+    camera: { eye: v(0, 0, 5), target: v(0, 0, 0), up: v(0, 1, 0), vfovDeg: 30, aperture: 0, focusDist: 5 },
+    // Uniform radiance 1, with a full-sphere (σ = π) sampled sun, colour 0 so the
+    // gradient alone sets the (uniform) radiance.
+    env: { kind: 'gradient', top: v(1, 1, 1), bottom: v(1, 1, 1), sunDir: v(0, 1, 0), sunColor: v(0, 0, 0), sunSize: Math.PI },
+  }
+  const scene = new Scene(def)
+  const rng = new Rng(4096, 6)
+  const settings = { maxDepth: 16, rrStart: 6, clampIndirect: 0 }
+  const stats: RayStats = { rays: 0 }
+  const N = 20000
+  let sum = 0
+  for (let i = 0; i < N; i++) {
+    const L = radiance(scene, { o: v(0, 0, 5), d: v(0, 0, -1), tMax: Infinity }, settings, rng, stats)
+    sum += luminance(L)
+  }
+  const measured = sum / N
+  return { pass: approx(measured, rho, 1.5e-2), detail: `reflectance=${measured.toFixed(4)}, expected≈${rho.toFixed(3)}` }
+}
+
 export function runSelfTests(): TestResult[] {
   return [
     test('Vector algebra identities', testVectorMath),
@@ -380,5 +564,12 @@ export function runSelfTests(): TestResult[] {
     test('Rough dielectric energy ≤ 1', testRoughDielectricEnergy),
     test('Beer–Lambert absorption tints glass', testBeerLambert),
     test('resolveMaterial bakes texture albedo', testResolveTexture),
+    test('Smooth normal barycentric interpolation', testSmoothNormal),
+    test('Icosphere radial normals + Euler χ=2', testIcosphere),
+    test('OBJ cube parse + auto-fit + normals', testObjCube),
+    test('Torus analytic normals', testTorusNormals),
+    test('Preetham sky positivity & ordering', testSky),
+    test('Env-sun sampler ↔ pdf + solid angle', testEnvSampler),
+    test('Env-sampled white furnace ρ=0.8', testEnvFurnace),
   ]
 }

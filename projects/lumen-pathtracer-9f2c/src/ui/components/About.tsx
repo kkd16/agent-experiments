@@ -40,6 +40,26 @@ export function About() {
           the medium a ray is inside and attenuates its throughput by e^(−σ·d), so thicker glass and
           longer chords darken and saturate exactly as real amber, emerald and sapphire do.
         </Card>
+        <Card title="Triangle meshes & smooth shading">
+          Geometry is no longer just spheres: an indexed mesh library builds icospheres, lathed
+          surfaces of revolution and tori, and any pasted <em>Wavefront OBJ</em>. Each triangle
+          carries per-vertex normals that are barycentrically interpolated at the hit point, so a few
+          hundred flat faces read as a perfectly curved surface — with the geometric normal still
+          driving ray offsets so smooth shading never leaks light through the surface.
+        </Card>
+        <Card title="Analytic daylight sky">
+          The sky is the <em>Preetham</em> all-weather model: a closed-form radiance for every
+          direction from just the sun's position and the atmospheric turbidity, assembled in CIE xyY
+          and converted to linear RGB, with a hard solar disc on top. Slide the sun around and watch
+          the whole scene's colour temperature and shadows follow.
+        </Card>
+        <Card title="Sun next-event estimation">
+          The sky isn't only a backdrop — its sun is a <em>sampled light</em>. The integrator
+          importance-samples the solar cone directly and MIS-weights it against BSDF sampling (and
+          weights escaped rays back), so crisp daylight shadows resolve in a handful of samples
+          instead of the thousands pure BSDF sampling would need. Sampling the whole sphere reduces
+          exactly to the white-furnace energy test.
+        </Card>
         <Card title="Procedural textures">
           Checkerboards, blueprint grids and value-noise marble are evaluated analytically in world
           space — no UVs, no image files — and resolved to a flat colour at each hit so the BSDF math

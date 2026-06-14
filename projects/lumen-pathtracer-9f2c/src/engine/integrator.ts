@@ -95,10 +95,19 @@ export function radiance(
     stats.rays++
     const hit = scene.intersect(r)
 
-    // ---- Escaped the scene: gather the environment. ----
+    // ---- Escaped the scene: gather the environment (MIS vs. sun NEE). ----
     if (!hit) {
       const env = scene.envRadiance(r.d)
-      let c = mul(beta, env)
+      // If the environment exposes a sampled sun and this ray came from a
+      // non-specular BSDF bounce, weight it against the light sampler that could
+      // also have produced this direction (power heuristic). Outside the sun cone
+      // the env pdf is 0, so w = 1 and the sky is gathered in full.
+      let w = 1
+      if (!specularBounce && scene.hasEnvLight) {
+        const ep = scene.envSunPdf(r.d)
+        if (ep > 0) w = powerHeuristic(1, prevPdf, 1, ep)
+      }
+      let c = scale(mul(beta, env), w)
       if (depth > 0 && clampI > 0) c = clampContribution(c, clampI)
       L = add(L, c)
       if (gbuf && !captured) {
