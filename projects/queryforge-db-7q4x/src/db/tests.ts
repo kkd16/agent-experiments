@@ -345,6 +345,16 @@ test('derived', 'derived table in FROM', () => {
   )
   assert(rows.length === 3 && rows.every((r) => (r[1] as number) > 1), 'derived table filter failed')
 })
+test('derived', 'qualified projection is referenceable by bare name', () => {
+  const e = seeded()
+  // The inner query projects c.id / c.name (qualified); the outer must see them
+  // under their unqualified names.
+  const rows = rowsOf(
+    e,
+    'SELECT name FROM (SELECT c.id, c.name FROM customers c WHERE c.country = \'UK\') t WHERE id = 1',
+  )
+  assert(rows.length === 1 && rows[0][0] === 'Ada Lovelace', 'unqualified projection name lost')
+})
 test('derived', 'derived table preserves numeric types', () => {
   const e = seeded()
   // If materialization coerced to TEXT, SUM would concatenate / error.

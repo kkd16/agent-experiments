@@ -673,7 +673,10 @@ function planCore(stmt: SelectStmt, env: PlanEnv, embedOrderLimit: boolean): Ope
       continue
     }
     projExprs.push(item.expr)
-    const label = item.alias ?? exprLabel(item.expr)
+    // A bare column projects under its *unqualified* name (SQL semantics) — so
+    // `SELECT c.id` yields a column named `id`, which keeps derived tables and
+    // CTEs referenceable.
+    const label = item.alias ?? (item.expr.kind === 'column' ? item.expr.name : exprLabel(item.expr))
     projLabels.push(label)
     projTypes.push(inferType(item.expr, schema, outCtx))
     if (item.alias) aliasMap.set(item.alias.toLowerCase(), item.expr)
