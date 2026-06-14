@@ -9,6 +9,11 @@ import type { BinaryOp, CtorDecl, Expr, MatchCase, Pattern, TypeExpr, UnaryOp } 
 import type { Span, Token } from './lexer.ts'
 import { tokenize } from './lexer.ts'
 
+// A list-comprehension qualifier: a generator `name <- src` or a boolean guard.
+type Qualifier =
+  | { kind: 'gen'; name: string; src: Expr }
+  | { kind: 'guard'; test: Expr }
+
 export class ParseError extends Error {
   span: Span
   constructor(message: string, span: Span) {
@@ -260,16 +265,82 @@ class Parser {
 
   private parseList(): Expr {
     const open = this.expect('punc', '[')
-    const elements: Expr[] = []
-    if (!this.at('punc', ']')) {
+    if (this.at('punc', ']')) {
+      const close = this.next()
+      return { kind: 'list', elements: [], span: this.spanFrom(open.span, close.span) }
+    }
+    const first = this.parseExpr(0)
+    // list comprehension: `[ e | qual, qual, … ]`
+    if (this.at('op', '|')) {
+      this.next()
+      const quals = this.parseQualifiers()
+      const close = this.expect('punc', ']')
+      const span = this.spanFrom(open.span, close.span)
+      return this.desugarComprehension(first, quals, 0, span)
+    }
+    // ordinary list literal
+    const elements: Expr[] = [first]
+    while (this.at('punc', ',')) {
+      this.next()
       elements.push(this.parseExpr(0))
-      while (this.at('punc', ',')) {
-        this.next()
-        elements.push(this.parseExpr(0))
-      }
     }
     const close = this.expect('punc', ']')
     return { kind: 'list', elements, span: this.spanFrom(open.span, close.span) }
+  }
+
+  // comprehension qualifiers: a `,`-separated list of generators (`x <- xs`)
+  // and boolean guards (any expression).
+  private parseQualifiers(): Qualifier[] {
+    const quals: Qualifier[] = []
+    for (;;) {
+      const t = this.peek()
+      const ahead = this.toks[this.pos + 1]
+      if (t.kind === 'ident' && ahead && ahead.kind === 'op' && ahead.value === '<-') {
+        const name = this.next().value
+        this.next() // '<-'
+        const src = this.parseExpr(0)
+        quals.push({ kind: 'gen', name, src })
+      } else {
+        quals.push({ kind: 'guard', test: this.parseExpr(0) })
+      }
+      if (this.at('punc', ',')) {
+        this.next()
+        continue
+      }
+      break
+    }
+    return quals
+  }
+
+  // Desugar `[ e | q0, q1, … ]` into core AST using `concat`, `map` and `if`:
+  //   [ e | ]            ⇒  [e]
+  //   [ e | b, Q ]       ⇒  if b then [ e | Q ] else []
+  //   [ e | x <- xs, Q ] ⇒  concat (map (fn x -> [ e | Q ]) xs)
+  private desugarComprehension(
+    elem: Expr,
+    quals: Qualifier[],
+    i: number,
+    span: Span,
+  ): Expr {
+    if (i >= quals.length) {
+      return { kind: 'list', elements: [elem], span: elem.span }
+    }
+    const q = quals[i]
+    const rest = this.desugarComprehension(elem, quals, i + 1, span)
+    if (q.kind === 'guard') {
+      const empty: Expr = { kind: 'list', elements: [], span }
+      return { kind: 'if', cond: q.test, then: rest, else: empty, span }
+    }
+    const lambda: Expr = { kind: 'lambda', param: q.name, body: rest, span }
+    const mapVar: Expr = { kind: 'var', name: 'map', span }
+    const concatVar: Expr = { kind: 'var', name: 'concat', span }
+    const mapped: Expr = {
+      kind: 'app',
+      fn: { kind: 'app', fn: mapVar, arg: lambda, span },
+      arg: q.src,
+      span,
+    }
+    return { kind: 'app', fn: concatVar, arg: mapped, span }
   }
 
   private parseLambda(): Expr {

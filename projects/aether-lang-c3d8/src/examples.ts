@@ -24,7 +24,7 @@ let compose = fn f g x -> f (g x) in
 let rec fact n =
   if n <= 1 then 1 else n * fact (n - 1) in
 
-let squares = map (fn x -> x * x) (range 1 8) in
+let squares = [ x * x | x <- range 1 8 ] in   // a list comprehension
 
 (id 42, compose (fn x -> x + 1) (fn x -> x * 2) 10, fact 6, squares)`,
   },
@@ -296,6 +296,55 @@ let classify = fn n ->
 [0, 0 - 4, 6, 7]
   |> map classify
   |> join ", "`,
+  },
+  {
+    id: 'comprehensions',
+    title: 'List comprehensions',
+    blurb: 'Primes and Pythagorean triples — generators & guards desugar to map/filter/concat.',
+    visual: false,
+    code: `// [ e | x <- xs, guard, y <- ys ] is sugar that desugars to
+// concat / map / filter — so it type-checks (HM) and runs on BOTH
+// the bytecode VM and the JavaScript backend.
+
+let isPrime = fn n ->
+  n > 1 && empty [ d | d <- range 2 n, n % d == 0 ] in
+
+let primes = [ n | n <- range 2 60, isPrime n ] in
+
+// every (a, b, c) with a <= b <= c and a*a + b*b == c*c
+let triples =
+  [ (a, b, c)
+  | c <- range 1 21
+  , b <- range 1 c
+  , a <- range 1 b
+  , a * a + b * b == c * c ] in
+
+(primes, triples)`,
+  },
+  {
+    id: 'js-backend',
+    title: 'Compile me to JavaScript',
+    blurb: 'Open the JavaScript tab, hit Run — this program is compiled to JS and matches the VM.',
+    visual: false,
+    code: `// Aether has two backends. This program is compiled to a stack-machine
+// bytecode AND (open the "JavaScript" tab) to self-contained JavaScript.
+// Press "Run JavaScript & compare" — the two backends agree byte-for-byte.
+
+let greet = fn name -> "Hello, " ^ name ^ "!" in
+
+type Shape =
+  | Circle Float
+  | Rect Float Float in
+
+let area = fn s ->
+  match s with
+  | Circle r   -> pi *. r *. r
+  | Rect w h   -> w *. h in
+
+( map greet ["Ada", "Alan", "Grace"]
+, [ n * n | n <- range 1 11 ]
+, map area [Circle 1.0, Rect 3.0 4.0]
+, foldl (fn a x -> a + x) 0 (range 1 101) )`,
   },
   {
     id: 'church',

@@ -3,8 +3,9 @@
 A complete, statically-typed functional **programming language and toolchain that runs entirely in
 your browser** — no server, no WebAssembly, no parser generators, no runtime libraries beyond React
 for the UI. You write Aether source in the playground; it is lexed, parsed, type-inferred,
-optimized, compiled to bytecode, and run on a custom stack VM, with every intermediate stage
-inspectable and an interactive time-travel debugger.
+optimized, and compiled **two ways** — to bytecode for a custom stack VM *and* to self-contained
+JavaScript — with every intermediate stage inspectable, an interactive time-travel debugger, and a
+live Hindley–Milner derivation tree.
 
 Live: <https://kkd16.github.io/agent-experiments/projects/aether-lang-c3d8/>
 
@@ -40,8 +41,22 @@ Aether is an ML-family expression language. Everything is an expression; there a
 - **Records with row polymorphism** — `{ x = 1, y = 2 }`, field access `r.x`, and functional
   update `{ r | x = 10 }`. A function like `fn r -> r.x` is inferred as `{ x: a | ρ } -> a`, so it
   works on any record carrying that field.
+- **List comprehensions** — `[ e | x <- xs, guard, y <- ys ]` with generators and guards, pure
+  sugar over `concat` / `map` / `if`, so they're fully inferred and run on both backends.
 - **Type inference** — full Hindley–Milner (Algorithm W) with let-generalization; no type
   annotations anywhere. `let id = fn x -> x` is `∀ a. a -> a`.
+
+### Two backends
+
+The same type-checked AST is compiled two independent ways, which share the front end and agree on
+every program:
+
+- **Bytecode VM** — lowered to a stack machine run by a hand-written, iterative VM, with a
+  time-travel debugger.
+- **JavaScript** — lowered to readable, self-contained JavaScript and run in your browser. A tiny
+  runtime mirrors the VM's value model exactly (tagged ints/floats, structural comparison, the
+  turtle effect log), so the result, printed output and drawing match the VM **byte-for-byte** —
+  there's a live equivalence check in the JavaScript tab.
 
 ### Operators
 
@@ -68,8 +83,11 @@ Written partly as TypeScript primitives and partly in Aether itself (compiled in
 ## Architecture
 
 ```
-source ─▶ lexer ─▶ parser ─▶ HM inference ─▶ optimizer ─▶ compiler ─▶ stack VM ─▶ turtle canvas
-                                                                            └─▶ time-travel trace
+                                                  ┌─▶ compiler ─▶ stack VM ─▶ turtle canvas
+source ─▶ lexer ─▶ parser ─▶ HM inference ─▶ optimizer        └─▶ time-travel trace
+              │                    │           └─▶ JS backend ─▶ run in browser (≡ VM)
+              │                    └─▶ derivation tree (the HM proof)
+              └─▶ list comprehensions desugar here
 ```
 
 | File | Responsibility |
@@ -84,6 +102,8 @@ source ─▶ lexer ─▶ parser ─▶ HM inference ─▶ optimizer ─▶ co
 | `src/lang/bytecode.ts` | opcodes + disassembler |
 | `src/lang/compiler.ts` | AST → bytecode; clox-style upvalues; tail-call detection |
 | `src/lang/vm.ts` | iterative stack VM; closures, currying, tail calls, snapshot trace |
+| `src/lang/jsBackend.ts` | AST → self-contained JavaScript (second backend); runs in the browser |
+| `src/lang/derivation.ts` | reconstructs the HM proof tree from the inferred per-node types |
 | `src/lang/values.ts` | runtime values, structural equality, upvalues |
 | `src/lang/prelude.ts` | primitive type schemes + native impls + the Aether-source library |
 | `src/lang/turtle.ts` | folds turtle effects into line segments for the canvas |
@@ -105,10 +125,11 @@ source ─▶ lexer ─▶ parser ─▶ HM inference ─▶ optimizer ─▶ co
 
 A two-pane **playground**: a syntax-highlighted editor with live type-checking, error squiggles,
 and exhaustiveness warnings, beside tabbed inspectors for every stage — Result, Canvas, Tokens,
-AST (hover for inferred types), Types, Bytecode disassembly, and a **time-travel Debugger** that
-scrubs through execution showing the value stack and call frames. Plus an interactive **REPL**, an
-**examples** gallery, a **language tour**, and an **internals** writeup. Programs are autosaved and
-shareable via URL.
+AST (hover for inferred types), Types, an interactive **Derivation** tree, Bytecode disassembly, a
+**JavaScript** backend (generated code + a one-click "run & compare against the VM"), and a
+**time-travel Debugger** that scrubs through execution showing the value stack and call frames.
+Plus an interactive **REPL**, an **examples** gallery, a **language tour**, and an **internals**
+writeup. Programs are autosaved and shareable via URL.
 
 ## Develop
 

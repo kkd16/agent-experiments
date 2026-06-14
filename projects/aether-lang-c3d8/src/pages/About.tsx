@@ -7,7 +7,7 @@ const STAGES = [
   {
     n: 2,
     title: 'Parser',
-    body: 'A Pratt (precedence-climbing) parser builds the AST. Function application is juxtaposition and binds tighter than every operator; let / fn / if are prefix forms. Multi-argument functions desugar to curried lambdas.',
+    body: 'A Pratt (precedence-climbing) parser builds the AST. Function application is juxtaposition and binds tighter than every operator; let / fn / if are prefix forms. Multi-argument functions desugar to curried lambdas, and list comprehensions [ e | x <- xs, guard ] desugar to concat / map / if — so they are typed and compiled like any other core expression.',
   },
   {
     n: 3,
@@ -33,6 +33,16 @@ const STAGES = [
     n: 6,
     title: 'Turtle & debugger',
     body: 'Drawing primitives emit a command stream that a separate interpreter folds into line segments for the canvas. The recorded VM trace powers the time-travel debugger: scrub through every instruction and watch the stack and call frames evolve.',
+  },
+  {
+    n: 7,
+    title: 'JavaScript backend',
+    body: "A second compilation target beside the VM: the very same typed AST is lowered to readable, self-contained JavaScript and run in your browser. Functions become curried arrow functions, let/type flatten into a const spine, match becomes pattern tests, and a tiny runtime mirrors the VM's value model exactly — tagged ints/floats, the same structural comparison, the same turtle effect log. The result is that the JS backend's value, printed output and drawing match the bytecode VM byte-for-byte (there's a live equivalence check in the JavaScript tab).",
+  },
+  {
+    n: 8,
+    title: 'Type-derivation tree',
+    body: 'Inference records the type of every sub-expression as it goes; the Derivation tab reconstructs the Hindley–Milner proof tree from those, rendering each step as one typing rule (Var, Abs, App, Let, If, …) whose premises justify its conclusion expr : τ. It turns the final inferred scheme into the full argument for why it holds.',
   },
 ]
 
@@ -74,6 +84,11 @@ export default function About() {
             <code>match</code> is checked for exhaustiveness and redundancy using Maranget's
             usefulness algorithm — non-exhaustive matches are reported with a concrete witness
             pattern, and unreachable clauses are flagged.
+          </li>
+          <li>
+            There are <strong>two backends</strong> for one front end: a bytecode VM and a
+            JavaScript code generator. They share the lexer, parser, type inferencer and optimizer,
+            and agree on every program — the JavaScript tab proves it live.
           </li>
           <li>
             Routing is hash-based and the build uses a relative base, so everything works as a
