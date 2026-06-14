@@ -24,7 +24,7 @@ const STAGES: Stage[] = [
     n: 3,
     name: 'Planner & cost-based optimizer',
     file: 'db/planner.ts',
-    body: 'Rule-based rewrites: predicate pushdown places filters as early as the schema allows; sargable predicates on indexed columns become B+Tree IndexScans — including composite indexes, where an equality prefix plus one trailing range is served from a single tree. Equijoins pick between a HashJoin and a sort–merge join by cost; everything else is NestedLoop. GROUP BY/HAVING compile to a HashAggregate. A PlanEnv carries an overlay of named relations (CTEs and derived tables, materialized through the same executor) plus a stack of enclosing scopes that resolves correlated subqueries.',
+    body: 'Rule-based rewrites: predicate pushdown places filters as early as the schema allows; sargable predicates on indexed columns become B+Tree IndexScans — including composite indexes (equality prefix plus one trailing range from a single tree), index-only scans when an index covers every column the query needs, and bitmap-AND scans that intersect several single-column indexes for a multi-predicate filter. A chain of INNER joins is reordered by a Selinger-style left-deep subset DP that keeps the cheapest order (and a transparent projection preserves SELECT * column order). Equijoins pick between a HashJoin and a sort–merge join by cost; everything else is NestedLoop. GROUP BY/HAVING compile to a HashAggregate — ROLLUP/CUBE/GROUPING SETS run as a single multi-set aggregate carrying a grouping bitmap for GROUPING(). A PlanEnv carries an overlay of named relations (CTEs and derived tables, materialized through the same executor) plus a stack of enclosing scopes that resolves correlated subqueries.',
   },
   {
     n: 4,
@@ -42,7 +42,7 @@ const STAGES: Stage[] = [
     n: 6,
     name: 'Execution (Volcano model)',
     file: 'db/operators.ts',
-    body: 'Physical operators implement open()/next()/close() and pull rows one at a time from their children. SeqScan, IndexScan, Filter, Project, HashJoin, MergeJoin, NestedLoopJoin, HashAggregate, Window, SetOp (UNION/INTERSECT/EXCEPT), Sort, Distinct and Limit compose into the tree EXPLAIN renders. The Sort spills to an external (run-generating, k-way) merge sort past a threshold; a WindowExec partitions and orders its buffered input to evaluate ranking, offset and running-aggregate window functions over explicit ROWS/RANGE frames.',
+    body: 'Physical operators implement open()/next()/close() and pull rows one at a time from their children. SeqScan, IndexScan, IndexOnlyScan, BitmapAnd, Filter, Project, HashJoin, MergeJoin, NestedLoopJoin, HashAggregate (with ROLLUP/CUBE/GROUPING SETS), Window, SetOp (UNION/INTERSECT/EXCEPT), Sort, Distinct and Limit compose into the tree EXPLAIN renders. The Sort spills to an external (run-generating, k-way) merge sort past a threshold; a WindowExec partitions and orders its buffered input to evaluate ranking, offset and running-aggregate window functions over explicit ROWS/RANGE frames; ordered-set aggregates (PERCENTILE_CONT/DISC, MODE) buffer and order their WITHIN GROUP key.',
   },
   {
     n: 7,

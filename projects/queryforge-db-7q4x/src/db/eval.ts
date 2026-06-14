@@ -13,7 +13,7 @@ import {
   type ColumnType,
   type SqlValue,
 } from './types'
-import type { Expr, ExistsExpr, InSubqueryExpr, QuantifiedExpr, SubqueryExpr, WindowFuncExpr } from './ast'
+import type { Expr, ExistsExpr, FuncExpr, InSubqueryExpr, QuantifiedExpr, SubqueryExpr, WindowFuncExpr } from './ast'
 import type { Row } from './catalog'
 
 export type Evaluator = (row: Row) => SqlValue
@@ -44,6 +44,9 @@ export interface CompileCtx {
   compileSubquery?: (expr: SubqueryExpr | ExistsExpr | InSubqueryExpr | QuantifiedExpr) => Evaluator
   /** Compile a window-function expression. Provided by the planner. */
   compileWindow?: (expr: WindowFuncExpr) => Evaluator
+  /** Compile a `GROUPING(…)` call against the active grouping set. Provided by
+   *  the planner for grouped queries using ROLLUP/CUBE/GROUPING SETS. */
+  compileGrouping?: (expr: FuncExpr) => Evaluator
 }
 
 // SQL three-valued logic helpers --------------------------------------------
@@ -434,6 +437,13 @@ export function compileExpr(expr: Expr, ctx: CompileCtx): Evaluator {
       }
     }
     case 'func': {
+      // GROUPING(col) is resolved against the active grouping set, not a value.
+      if (expr.name === 'GROUPING') {
+        if (!ctx.compileGrouping) {
+          throw new SqlError('GROUPING() is only allowed with GROUP BY ROLLUP/CUBE/GROUPING SETS', 'bind')
+        }
+        return ctx.compileGrouping(expr)
+      }
       const fn = SCALAR_FUNCTIONS[expr.name]
       if (!fn) {
         throw new SqlError(`unknown function ${expr.name}() in this context`, 'bind')
@@ -552,7 +562,9 @@ export function exprKey(e: Expr): string {
     case 'isnull':
       return `isnull:${e.negated}(${exprKey(e.expr)})`
     case 'func':
-      return `fn:${e.name}:${e.distinct}:${e.star}:${e.filter ? exprKey(e.filter) : ''}(${e.args.map(exprKey).join(',')})`
+      return `fn:${e.name}:${e.distinct}:${e.star}:${e.filter ? exprKey(e.filter) : ''}:${
+        e.withinGroup ? e.withinGroup.map((o) => `${exprKey(o.expr)}:${o.dir}`).join(',') : ''
+      }(${e.args.map(exprKey).join(',')})`
     case 'case':
       return `case(${e.operand ? exprKey(e.operand) : ''};${e.whens
         .map((w) => `${exprKey(w.when)}=>${exprKey(w.then)}`)

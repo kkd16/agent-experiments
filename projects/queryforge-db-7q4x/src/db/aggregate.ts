@@ -25,6 +25,9 @@ export type AggName =
   | 'STRING_AGG'
   | 'GROUP_CONCAT'
   | 'MEDIAN'
+  | 'PERCENTILE_CONT'
+  | 'PERCENTILE_DISC'
+  | 'MODE'
 
 export interface AggSpec {
   name: AggName
@@ -36,10 +39,21 @@ export interface AggSpec {
   sep?: string
   /** Aggregate FILTER (WHERE …) predicate — rows where it isn't true are skipped. */
   filter?: Evaluator
+  /** Percentile fraction (0..1) for PERCENTILE_CONT / PERCENTILE_DISC. */
+  fraction?: number
+  /** Sort direction of the WITHIN GROUP (ORDER BY …) key, for ordered-set aggs. */
+  dir?: 'ASC' | 'DESC'
 }
 
 function needsList(name: AggName): boolean {
-  return name === 'STRING_AGG' || name === 'GROUP_CONCAT' || name === 'MEDIAN'
+  return (
+    name === 'STRING_AGG' ||
+    name === 'GROUP_CONCAT' ||
+    name === 'MEDIAN' ||
+    name === 'PERCENTILE_CONT' ||
+    name === 'PERCENTILE_DISC' ||
+    name === 'MODE'
+  )
 }
 
 class Accumulator {
@@ -129,13 +143,70 @@ class Accumulator {
         const mid = nums.length >> 1
         return nums.length % 2 ? nums[mid] : (nums[mid - 1] + nums[mid]) / 2
       }
+      case 'PERCENTILE_CONT': {
+        // Continuous percentile with linear interpolation between neighbours.
+        if (!this.list) return null
+        const nums = this.list
+          .map((x) => (typeof x === 'number' ? x : typeof x === 'boolean' ? (x ? 1 : 0) : NaN))
+          .filter((x) => !Number.isNaN(x))
+          .sort((a, b) => a - b)
+        if (nums.length === 0) return null
+        if (spec.dir === 'DESC') nums.reverse()
+        const f = clampFraction(spec.fraction)
+        const rank = f * (nums.length - 1)
+        const lo = Math.floor(rank)
+        const hi = Math.ceil(rank)
+        if (lo === hi) return nums[lo]
+        return nums[lo] + (nums[hi] - nums[lo]) * (rank - lo)
+      }
+      case 'PERCENTILE_DISC': {
+        // Discrete percentile: the first value whose cumulative fraction ≥ f.
+        // Works for any orderable type (numbers, text, …), no interpolation.
+        if (!this.list) return null
+        const vals = this.list.filter((x) => x !== null)
+        if (vals.length === 0) return null
+        vals.sort(orderValues)
+        if (spec.dir === 'DESC') vals.reverse()
+        const f = clampFraction(spec.fraction)
+        let idx = Math.ceil(f * vals.length) - 1
+        if (idx < 0) idx = 0
+        if (idx >= vals.length) idx = vals.length - 1
+        return vals[idx]
+      }
+      case 'MODE': {
+        // The most frequent value; ties resolved toward the smallest value.
+        if (!this.list) return null
+        const vals = this.list.filter((x) => x !== null)
+        if (vals.length === 0) return null
+        const counts = new Map<string, { v: SqlValue; n: number }>()
+        for (const v of vals) {
+          const k = hashKey([v])
+          const e = counts.get(k)
+          if (e) e.n++
+          else counts.set(k, { v, n: 1 })
+        }
+        let best: { v: SqlValue; n: number } | null = null
+        for (const e of counts.values()) {
+          if (!best || e.n > best.n || (e.n === best.n && orderValues(e.v, best.v) < 0)) best = e
+        }
+        return best ? best.v : null
+      }
     }
   }
+}
+
+/** Clamp a percentile fraction into [0, 1] (defaulting a missing one to 0). */
+function clampFraction(f: number | undefined): number {
+  if (f === undefined || Number.isNaN(f)) return 0
+  return Math.max(0, Math.min(1, f))
 }
 
 interface Group {
   keys: SqlValue[]
   accs: Accumulator[]
+  /** Bitmap of grouping-expression indexes active in this group's grouping set
+   *  (bit i set ⇒ expression i participates; cleared ⇒ rolled up to NULL). */
+  bitmap: number
 }
 
 export class HashAggregate implements Operator {
@@ -146,16 +217,35 @@ export class HashAggregate implements Operator {
   private readonly child: Operator
   private readonly groupExprs: Evaluator[]
   private readonly aggs: AggSpec[]
+  /** One entry per grouping set: the indexes into `groupExprs` it groups on. */
+  private readonly groupingSets: number[][]
+  /** Append a trailing INTEGER column holding each row's grouping-set bitmap. */
+  private readonly emitGroupingCol: boolean
   private groups: Group[] = []
   private pos = 0
 
-  constructor(child: Operator, groupExprs: Evaluator[], aggs: AggSpec[], schema: Schema) {
+  constructor(
+    child: Operator,
+    groupExprs: Evaluator[],
+    aggs: AggSpec[],
+    schema: Schema,
+    groupingSets?: number[][],
+    emitGroupingCol = false,
+  ) {
     this.child = child
     this.groupExprs = groupExprs
     this.aggs = aggs
     this.schema = schema
-    this.estRows = groupExprs.length === 0 ? 1 : Math.max(1, Math.round(child.estRows * 0.5))
-    this.estCost = child.estCost + child.estRows * (aggs.length + groupExprs.length) * 0.0025
+    this.groupingSets = groupingSets ?? [groupExprs.map((_, i) => i)]
+    this.emitGroupingCol = emitGroupingCol
+    const sets = this.groupingSets.length
+    this.estRows = groupExprs.length === 0 ? sets : Math.max(1, Math.round(child.estRows * 0.5 * sets))
+    this.estCost = child.estCost + child.estRows * sets * (aggs.length + groupExprs.length) * 0.0025
+  }
+  private bitmapOf(set: number[]): number {
+    let bm = 0
+    for (const i of set) bm |= 1 << i
+    return bm
   }
   open() {
     this.child.open()
@@ -163,20 +253,36 @@ export class HashAggregate implements Operator {
     let any = false
     for (let r = this.child.next(); r !== null; r = this.child.next()) {
       any = true
-      const keys = this.groupExprs.map((g) => g(r))
-      const key = hashKey(keys)
-      let group = map.get(key)
-      if (!group) {
-        group = { keys, accs: this.aggs.map((a) => new Accumulator(a)) }
-        map.set(key, group)
+      const allKeys = this.groupExprs.map((g) => g(r))
+      // Each input row contributes to one group per grouping set.
+      for (let s = 0; s < this.groupingSets.length; s++) {
+        const set = this.groupingSets[s]
+        // Identity within a set is its included key values; prefix with the set
+        // index so two sets that collapse to the same key stay distinct.
+        const idKey = s + ' ' + hashKey(set.map((i) => allKeys[i]))
+        let group = map.get(idKey)
+        if (!group) {
+          const keys = this.groupExprs.map((_, i) => (set.includes(i) ? allKeys[i] : null))
+          group = { keys, accs: this.aggs.map((a) => new Accumulator(a)), bitmap: this.bitmapOf(set) }
+          map.set(idKey, group)
+        }
+        for (let i = 0; i < this.aggs.length; i++) group.accs[i].update(this.aggs[i], r)
       }
-      for (let i = 0; i < this.aggs.length; i++) group.accs[i].update(this.aggs[i], r)
     }
     this.child.close()
     this.groups = [...map.values()]
-    // Whole-table aggregate over an empty input still yields one row.
-    if (!any && this.groupExprs.length === 0) {
-      this.groups = [{ keys: [], accs: this.aggs.map((a) => new Accumulator(a)) }]
+    // A grand-total grouping set (the empty set) always yields exactly one row,
+    // even over an empty input — including the plain whole-table aggregate.
+    if (!any) {
+      for (let s = 0; s < this.groupingSets.length; s++) {
+        if (this.groupingSets[s].length === 0) {
+          this.groups.push({
+            keys: this.groupExprs.map(() => null),
+            accs: this.aggs.map((a) => new Accumulator(a)),
+            bitmap: 0,
+          })
+        }
+      }
     }
     this.pos = 0
   }
@@ -186,22 +292,27 @@ export class HashAggregate implements Operator {
     this.actualRows++
     const out: Row = g.keys.slice()
     for (let i = 0; i < this.aggs.length; i++) out.push(g.accs[i].finalize(this.aggs[i]))
+    if (this.emitGroupingCol) out.push(g.bitmap)
     return out
   }
   close() {
     this.groups = []
   }
   plan(): PlanNode {
+    const multi = this.groupingSets.length > 1
     const detail =
       (this.groupExprs.length ? `group by ${this.groupExprs.length} key(s); ` : 'whole table; ') +
       this.aggs.map((a) => a.label).join(', ')
+    const extra: string[] = []
+    if (this.groupExprs.length) extra.push('build hash table on grouping keys')
+    if (multi) extra.push(`${this.groupingSets.length} grouping sets (ROLLUP/CUBE/GROUPING SETS)`)
     return {
-      op: 'HashAggregate',
+      op: multi ? 'GroupingSetsAggregate' : 'HashAggregate',
       detail,
       estRows: this.estRows,
       estCost: this.estCost,
       actualRows: this.actualRows,
-      extra: this.groupExprs.length ? ['build hash table on grouping keys'] : [],
+      extra,
       children: [this.child.plan()],
     }
   }

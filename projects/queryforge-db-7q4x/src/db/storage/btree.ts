@@ -127,6 +127,31 @@ export class BTree {
     return out
   }
 
+  /**
+   * Like `range`, but yields the matching *keys* (one per row id) instead of the
+   * row ids. This is what an index-only / covering scan reads: every column it
+   * needs is already in the key, so the heap is never touched.
+   */
+  rangeKeys(lo: IndexKey | null, hi: IndexKey | null, loInclusive = true, hiInclusive = true): IndexKey[] {
+    const out: IndexKey[] = []
+    let leaf: LeafNode | null = lo === null ? this.firstLeaf : this.findLeaf(lo)
+    while (leaf) {
+      for (const e of leaf.entries) {
+        if (lo !== null) {
+          const c = compareToBound(e.key, lo)
+          if (c < 0 || (c === 0 && !loInclusive)) continue
+        }
+        if (hi !== null) {
+          const c = compareToBound(e.key, hi)
+          if (c > 0 || (c === 0 && !hiInclusive)) return out
+        }
+        for (let i = 0; i < e.rowids.length; i++) out.push(e.key)
+      }
+      leaf = leaf.next
+    }
+    return out
+  }
+
   // --- insert -------------------------------------------------------------
   insert(key: IndexKey, rowid: number): void {
     const result = this.insertInto(this.root, key, rowid)

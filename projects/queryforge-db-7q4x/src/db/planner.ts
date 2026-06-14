@@ -15,6 +15,7 @@ import { compileExpr, exprKey, type CompileCtx, type Evaluator, type OuterScope 
 import { resolveColumn, type Binding, type Schema } from './schema'
 import {
   isAggregate,
+  ORDERED_SET_AGGREGATES,
   type ColumnDef,
   type CteDef,
   type Expr,
@@ -34,9 +35,11 @@ import { Database, Table, type IndexHandle, type Row } from './catalog'
 import type { IndexKey } from './storage/btree'
 import { eqSelectivity, nullSelectivity, rangeSelectivity, type ColumnStat } from './stats'
 import {
+  BitmapAnd,
   Distinct,
   Filter,
   HashJoin,
+  IndexOnlyScan,
   IndexScan,
   Limit,
   MergeJoin,
@@ -45,6 +48,7 @@ import {
   SeqScan,
   SetOpExec,
   Sort,
+  type BitmapInput,
   type Operator,
   type RangeBound,
   type SortKey,
@@ -310,7 +314,12 @@ function inferType(e: Expr, schema: Schema, ctx: CompileCtx): ColumnType {
     case 'cast':
       return e.type
     case 'func':
-      if (e.name === 'COUNT') return 'INTEGER'
+      if (e.name === 'COUNT' || e.name === 'GROUPING') return 'INTEGER'
+      // Ordered-set aggregates that return one of the ordered values keep that
+      // value's type; PERCENTILE_CONT interpolates and is always REAL.
+      if (e.name === 'PERCENTILE_DISC' || e.name === 'MODE') {
+        return e.withinGroup && e.withinGroup[0] ? inferType(e.withinGroup[0].expr, schema, ctx) : 'TEXT'
+      }
       if (['LENGTH', 'INSTR', 'ASCII', 'SIGN', 'DATE_PART', 'EXTRACT', 'DATEDIFF'].includes(e.name)) return 'INTEGER'
       if (
         [
@@ -318,6 +327,7 @@ function inferType(e: Expr, schema: Schema, ctx: CompileCtx): ColumnType {
           'POW', 'POWER', 'MOD', 'EXP', 'LN', 'LOG', 'LOG10', 'PI', 'SIN', 'COS', 'TAN', 'ASIN',
           'ACOS', 'ATAN', 'ATAN2', 'RADIANS', 'DEGREES', 'RANDOM', 'JULIANDAY',
           'STDDEV', 'STDDEV_SAMP', 'STDDEV_POP', 'VARIANCE', 'VAR_SAMP', 'VAR_POP', 'MEDIAN',
+          'PERCENTILE_CONT',
         ].includes(e.name)
       )
         return 'REAL'
@@ -529,7 +539,13 @@ function matchIndex(index: IndexHandle, byColumn: Map<string, Sarg[]>): {
   return { lo, hi, consumed, isEq: !usedRange }
 }
 
-function tryIndexScan(table: Table, baseSchema: Schema, preds: Expr[], sc: StatCtx): IndexPlan | null {
+function tryIndexScan(
+  table: Table,
+  baseSchema: Schema,
+  preds: Expr[],
+  sc: StatCtx,
+  coverCols: Set<string> | null = null,
+): IndexPlan | null {
   // Gather sargable comparisons grouped by indexed column name.
   const byColumn = new Map<string, Sarg[]>()
   for (const p of preds) {
@@ -566,10 +582,116 @@ function tryIndexScan(table: Table, baseSchema: Schema, preds: Expr[], sc: StatC
 
   const consumedPreds = [...best.m.consumed]
   const estRows = Math.max(1, Math.round(table.rowCount() * combinedSelectivity(consumedPreds, sc)))
+
+  // Index-only (covering) scan: if every column the query needs from this table
+  // is present in the chosen index, answer from the B+Tree and skip the heap.
+  if (coverCols && indexCovers(best.index, coverCols)) {
+    const alias = baseSchema.length ? baseSchema[0].table : table.name
+    const idxSchema: Schema = best.index.meta.columns.map((name) => ({
+      table: alias,
+      name,
+      type: table.columnType(name),
+    }))
+    return {
+      op: new IndexOnlyScan(best.index, idxSchema, best.m.lo, best.m.hi, estRows),
+      consumed: best.m.consumed,
+    }
+  }
   return {
     op: new IndexScan(table, best.index, baseSchema, best.m.lo, best.m.hi, estRows),
     consumed: best.m.consumed,
   }
+}
+
+/** Does `index` contain every column named in `cols` (a covering index)? */
+function indexCovers(index: IndexHandle, cols: Set<string>): boolean {
+  const have = new Set(index.meta.columns.map((c) => c.toLowerCase()))
+  for (const c of cols) if (!have.has(c)) return false
+  return true
+}
+
+// The set of column names a single-table query reads (for covering-index
+// detection). Returns ok=false when we can't see every reference — a `SELECT *`,
+// or any subquery whose (possibly correlated) columns collectColumns won't walk.
+function coveringColumns(stmt: SelectStmt): { names: Set<string>; ok: boolean } {
+  const names = new Set<string>()
+  const exprs: Expr[] = []
+  for (const it of stmt.columns) {
+    if (it.expr.kind === 'star') return { names, ok: false }
+    exprs.push(it.expr)
+  }
+  if (stmt.where) exprs.push(stmt.where)
+  exprs.push(...stmt.groupBy)
+  if (stmt.having) exprs.push(stmt.having)
+  for (const o of stmt.orderBy) exprs.push(o.expr)
+  for (const ex of exprs) {
+    if (containsSubquery(ex)) return { names, ok: false }
+    const cols: ColumnExpr[] = []
+    collectColumns(ex, cols)
+    for (const c of cols) names.add(c.name.toLowerCase())
+  }
+  return { names, ok: true }
+}
+
+// Build a single-column range bound for a sargable comparison (for bitmap scans).
+function sargBound(op: '=' | '<' | '<=' | '>' | '>=', value: SqlValue): { lo: RangeBound; hi: RangeBound } {
+  switch (op) {
+    case '=':
+      return { lo: { key: [value], inclusive: true }, hi: { key: [value], inclusive: true } }
+    case '>':
+      return { lo: { key: [value], inclusive: false }, hi: null }
+    case '>=':
+      return { lo: { key: [value], inclusive: true }, hi: null }
+    case '<':
+      return { lo: null, hi: { key: [value], inclusive: false } }
+    case '<=':
+      return { lo: null, hi: { key: [value], inclusive: true } }
+  }
+}
+
+// Combine several single-column indexes for a multi-predicate filter: scan each
+// index, intersect the row-id bitmaps, then heap-fetch. Used when no single
+// (composite) index covers as many predicates as two or more separate ones do.
+function tryBitmapAnd(table: Table, baseSchema: Schema, preds: Expr[], sc: StatCtx): IndexPlan | null {
+  const inputs: BitmapInput[] = []
+  const consumed = new Set<Expr>()
+  const usedCols = new Set<string>()
+  for (const p of preds) {
+    const cmp = asColumnCompare(p)
+    if (!cmp) continue
+    try {
+      resolveColumn(baseSchema, cmp.col.table, cmp.col.name)
+    } catch {
+      continue
+    }
+    const col = cmp.col.name.toLowerCase()
+    if (usedCols.has(col)) continue
+    const idx = table.indexForColumn(cmp.col.name)
+    if (!idx) continue
+    const { lo, hi } = sargBound(cmp.op, cmp.value)
+    inputs.push({ index: idx, lo, hi })
+    consumed.add(p)
+    usedCols.add(col)
+  }
+  if (inputs.length < 2) return null
+  const estRows = Math.max(1, Math.round(table.rowCount() * combinedSelectivity([...consumed], sc)))
+  return { op: new BitmapAnd(table, baseSchema, inputs, estRows), consumed }
+}
+
+// Pick the best index access path: a single (composite) index scan, or a bitmap
+// AND of several single-column indexes — whichever consumes more predicates
+// (ties favour the single scan, which avoids a heap re-fetch).
+function chooseIndexAccess(
+  table: Table,
+  schema: Schema,
+  preds: Expr[],
+  sc: StatCtx,
+  coverCols: Set<string> | null = null,
+): IndexPlan | null {
+  const single = tryIndexScan(table, schema, preds, sc, coverCols)
+  const bitmap = tryBitmapAnd(table, schema, preds, sc)
+  if (single && bitmap) return bitmap.consumed.size > single.consumed.size ? bitmap : single
+  return single ?? bitmap
 }
 
 // --- equijoin extraction ----------------------------------------------------
@@ -627,6 +749,152 @@ function chooseEquiJoin(
   const balanced = Math.max(left.estRows, right.estRows) <= 4 * Math.min(left.estRows, right.estRows) + 1
   if (big && balanced) return new MergeJoin(left, right, leftKey, rightKey, type, schema)
   return new HashJoin(left, right, leftKey, rightKey, type, schema)
+}
+
+// --- cost-based join reordering ---------------------------------------------
+// Cap the search at this many relations so the 2^n subset DP stays cheap.
+const MAX_REORDER_RELS = 8
+
+/** Reorder only a pure chain of INNER joins (each with an ON predicate). Outer
+ *  joins and CROSS joins change the answer when reordered, so we leave them. */
+function canReorderJoins(stmt: SelectStmt): boolean {
+  const n = stmt.joins.length + 1
+  if (n < 3 || n > MAX_REORDER_RELS) return false
+  return stmt.joins.every((j) => j.type === 'INNER' && !!j.on)
+}
+
+interface JoinPlan {
+  op: Operator
+  schema: Schema
+  applied: Set<Expr>
+}
+
+// Extend a left-deep plan covering some relation subset by one more relation
+// leaf, applying every join/where predicate that first becomes resolvable here.
+function joinStep(left: JoinPlan, rightOp: Operator, rightSchema: Schema, pool: Expr[], env: PlanEnv): JoinPlan {
+  const combined: Schema = [...left.schema, ...rightSchema]
+  const applicable = pool.filter(
+    (p) => !left.applied.has(p) && resolvableIn(p, combined, env) && !resolvableIn(p, left.schema, env),
+  )
+  const applied = new Set(left.applied)
+  applicable.forEach((p) => applied.add(p))
+
+  let op: Operator
+  if (applicable.length === 0) {
+    // No connecting predicate yet — a (deprioritized) cartesian product.
+    op = new NestedLoopJoin(left.op, rightOp, null, 'CROSS', combined)
+  } else {
+    const onExpr = andAll(applicable)!
+    const equi = extractEquiJoin(onExpr, left.schema, rightSchema)
+    if (equi && equi.residual.length === 0) {
+      op = chooseEquiJoin(left.op, rightOp, equi.leftKey, equi.rightKey, 'INNER', combined)
+    } else if (equi) {
+      op = chooseEquiJoin(left.op, rightOp, equi.leftKey, equi.rightKey, 'INNER', combined)
+      const resid = andAll(equi.residual)!
+      op = new Filter(op, compileExpr(resid, exprCtx(combined, env)), exprLabel(resid))
+    } else {
+      op = new NestedLoopJoin(left.op, rightOp, compileExpr(onExpr, exprCtx(combined, env)), 'INNER', combined)
+    }
+  }
+  return { op, schema: combined, applied }
+}
+
+function schemasIdentical(a: Schema, b: Schema): boolean {
+  if (a.length !== b.length) return false
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false
+  return true
+}
+
+// Plan a chain of INNER joins by searching left-deep orders with a subset DP.
+// Returns null (so the caller falls back) if any predicate can't be placed.
+function planJoinOrder(
+  stmt: SelectStmt,
+  env: PlanEnv,
+  statTables: StatCtx,
+  wherePreds: Expr[],
+  consumed: Set<Expr>,
+): { op: Operator; schema: Schema } | null {
+  const items: (FromItem | JoinClause)[] = [stmt.from!, ...stmt.joins]
+  const n = items.length
+
+  const rels = items.map((it) => relationFor(it, env))
+  rels.forEach((r) => statTables.set(r.alias.toLowerCase(), r.table))
+  const relSchemas = rels.map((r) => tableSchema(r.table, r.alias))
+
+  // A local consumed set so a failed attempt leaves the caller's state intact.
+  const localConsumed = new Set(consumed)
+
+  // Each relation's leaf: an index/seq scan with single-relation WHERE filters.
+  const leaves: Operator[] = rels.map((r, i) => {
+    const sch = relSchemas[i]
+    const applicable = wherePreds.filter(
+      (p) => !localConsumed.has(p) && !containsSubquery(p) && resolvableIn(p, sch, env),
+    )
+    let leaf: Operator
+    const idx = chooseIndexAccess(r.table, sch, applicable, statTables)
+    if (idx) {
+      leaf = idx.op
+      idx.consumed.forEach((p) => localConsumed.add(p))
+    } else {
+      leaf = new SeqScan(r.table, sch)
+    }
+    return applyPushdown(leaf, sch, wherePreds, localConsumed, env, false, statTables)
+  })
+
+  // Predicate pool: every JOIN ON conjunct + every still-unconsumed,
+  // non-subquery WHERE conjunct (single-relation ones already sit in the leaves;
+  // multi-relation ones become join predicates).
+  const pool: Expr[] = []
+  for (const j of stmt.joins) for (const c of conjuncts(j.on)) pool.push(c)
+  const whereForPool: Expr[] = []
+  for (const p of wherePreds) {
+    if (localConsumed.has(p) || containsSubquery(p)) continue
+    pool.push(p)
+    whereForPool.push(p)
+  }
+
+  // Left-deep subset DP: dp[mask] = cheapest plan joining exactly that relation
+  // subset. Ascending mask order guarantees every subset is finalized before it
+  // is used to extend a larger one.
+  const dp = new Map<number, JoinPlan>()
+  for (let i = 0; i < n; i++) dp.set(1 << i, { op: leaves[i], schema: relSchemas[i], applied: new Set() })
+  const full = (1 << n) - 1
+  for (let mask = 1; mask <= full; mask++) {
+    const left = dp.get(mask)
+    if (!left) continue
+    for (let i = 0; i < n; i++) {
+      if (mask & (1 << i)) continue
+      const cand = joinStep(left, leaves[i], relSchemas[i], pool, env)
+      const newMask = mask | (1 << i)
+      const existing = dp.get(newMask)
+      if (!existing || cand.op.estCost < existing.op.estCost) dp.set(newMask, cand)
+    }
+  }
+
+  const finalPlan = dp.get(full)
+  if (!finalPlan) return null
+  // Never silently drop a predicate (e.g. an ambiguous unqualified column the
+  // resolver couldn't place): fall back to the written-order planner instead.
+  if (finalPlan.applied.size !== pool.length) return null
+
+  for (const p of localConsumed) consumed.add(p)
+  for (const p of whereForPool) consumed.add(p)
+
+  // Restore the written column order so SELECT * is unaffected by reordering.
+  const origSchema: Schema = relSchemas.flat()
+  let op = finalPlan.op
+  if (!schemasIdentical(op.schema, origSchema)) {
+    const pos = new Map<Binding, number>()
+    op.schema.forEach((b, i) => pos.set(b, i))
+    const perm = origSchema.map((b) => pos.get(b)!)
+    op = new Project(
+      op,
+      perm.map((i) => (row: Row) => row[i]),
+      origSchema,
+      origSchema.map((b) => b.name),
+    )
+  }
+  return { op, schema: origSchema }
 }
 
 // ============================================================================
@@ -726,58 +994,76 @@ function planCore(stmt: SelectStmt, env: PlanEnv, embedOrderLimit: boolean): Ope
   // Relation alias -> Table, so selectivity estimation can find column stats.
   const statTables: StatCtx = new Map()
 
-  // --- base relation --------------------------------------------------------
-  const base = relationFor(stmt.from, env)
-  statTables.set(base.alias.toLowerCase(), base.table)
-  let schema: Schema = tableSchema(base.table, base.alias)
-
   let op: Operator
-  if (basePreserved) {
-    const baseApplicable = wherePreds.filter((p) => !consumed.has(p) && resolvableIn(p, schema, env))
-    const idx = tryIndexScan(base.table, schema, baseApplicable, statTables)
-    if (idx) {
-      op = idx.op
-      idx.consumed.forEach((p) => consumed.add(p))
+  let schema: Schema
+
+  // --- cost-based join reordering -------------------------------------------
+  // For a chain of two or more INNER joins, search left-deep join orders with a
+  // Selinger-style subset DP and keep the cheapest. Outer joins / CROSS chains
+  // aren't freely reorderable, so they fall through to the written-order planner.
+  const reordered = canReorderJoins(stmt) ? planJoinOrder(stmt, env, statTables, wherePreds, consumed) : null
+  if (reordered) {
+    op = reordered.op
+    schema = reordered.schema
+  } else {
+    // --- base relation (written order) --------------------------------------
+    const base = relationFor(stmt.from, env)
+    statTables.set(base.alias.toLowerCase(), base.table)
+    schema = tableSchema(base.table, base.alias)
+
+    if (basePreserved) {
+      const baseApplicable = wherePreds.filter((p) => !consumed.has(p) && resolvableIn(p, schema, env))
+      // Covering-index detection only for a single base table (no joins / derived
+      // relation), where every column reference belongs to this table.
+      const cover = stmt.joins.length === 0 && !stmt.from!.subquery ? coveringColumns(stmt) : null
+      const idx = chooseIndexAccess(base.table, schema, baseApplicable, statTables, cover?.ok ? cover.names : null)
+      if (idx) {
+        op = idx.op
+        // A covering (index-only) scan emits only the indexed columns, so adopt
+        // the operator's own schema for downstream resolution.
+        schema = idx.op.schema
+        idx.consumed.forEach((p) => consumed.add(p))
+      } else {
+        op = new SeqScan(base.table, schema)
+      }
+      op = applyPushdown(op, schema, wherePreds, consumed, env, false, statTables)
     } else {
       op = new SeqScan(base.table, schema)
     }
-    op = applyPushdown(op, schema, wherePreds, consumed, env, false, statTables)
-  } else {
-    op = new SeqScan(base.table, schema)
-  }
 
-  // --- joins ----------------------------------------------------------------
-  for (const join of stmt.joins) {
-    const right = relationFor(join, env)
-    statTables.set(right.alias.toLowerCase(), right.table)
-    const rSchema = tableSchema(right.table, right.alias)
-    // Only push WHERE predicates onto the right input for INNER joins; for an
-    // outer join the right side may be null-extended, so its WHERE predicates
-    // must run after the join (the final pushdown stage).
-    let rightOp: Operator = new SeqScan(right.table, rSchema)
-    if (join.type === 'INNER') {
-      rightOp = applyPushdown(rightOp, rSchema, wherePreds, consumed, env, false, statTables)
-    }
-
-    const combined: Schema = [...schema, ...rSchema]
-    const outerType: 'INNER' | 'LEFT' | 'RIGHT' | 'FULL' =
-      join.type === 'LEFT' || join.type === 'RIGHT' || join.type === 'FULL' ? join.type : 'INNER'
-    if (join.type === 'CROSS' || !join.on) {
-      op = new NestedLoopJoin(op, rightOp, null, 'CROSS', combined)
-    } else {
-      const equi = extractEquiJoin(join.on, schema, rSchema)
-      if (equi && equi.residual.length === 0) {
-        op = chooseEquiJoin(op, rightOp, equi.leftKey, equi.rightKey, outerType, combined)
-      } else if (equi && join.type === 'INNER') {
-        op = chooseEquiJoin(op, rightOp, equi.leftKey, equi.rightKey, 'INNER', combined)
-        const resid = andAll(equi.residual)!
-        op = new Filter(op, compileExpr(resid, exprCtx(combined, env)), exprLabel(resid))
-      } else {
-        const pred = compileExpr(join.on, exprCtx(combined, env))
-        op = new NestedLoopJoin(op, rightOp, pred, outerType, combined)
+    // --- joins --------------------------------------------------------------
+    for (const join of stmt.joins) {
+      const right = relationFor(join, env)
+      statTables.set(right.alias.toLowerCase(), right.table)
+      const rSchema = tableSchema(right.table, right.alias)
+      // Only push WHERE predicates onto the right input for INNER joins; for an
+      // outer join the right side may be null-extended, so its WHERE predicates
+      // must run after the join (the final pushdown stage).
+      let rightOp: Operator = new SeqScan(right.table, rSchema)
+      if (join.type === 'INNER') {
+        rightOp = applyPushdown(rightOp, rSchema, wherePreds, consumed, env, false, statTables)
       }
+
+      const combined: Schema = [...schema, ...rSchema]
+      const outerType: 'INNER' | 'LEFT' | 'RIGHT' | 'FULL' =
+        join.type === 'LEFT' || join.type === 'RIGHT' || join.type === 'FULL' ? join.type : 'INNER'
+      if (join.type === 'CROSS' || !join.on) {
+        op = new NestedLoopJoin(op, rightOp, null, 'CROSS', combined)
+      } else {
+        const equi = extractEquiJoin(join.on, schema, rSchema)
+        if (equi && equi.residual.length === 0) {
+          op = chooseEquiJoin(op, rightOp, equi.leftKey, equi.rightKey, outerType, combined)
+        } else if (equi && join.type === 'INNER') {
+          op = chooseEquiJoin(op, rightOp, equi.leftKey, equi.rightKey, 'INNER', combined)
+          const resid = andAll(equi.residual)!
+          op = new Filter(op, compileExpr(resid, exprCtx(combined, env)), exprLabel(resid))
+        } else {
+          const pred = compileExpr(join.on, exprCtx(combined, env))
+          op = new NestedLoopJoin(op, rightOp, pred, outerType, combined)
+        }
+      }
+      schema = combined
     }
-    schema = combined
   }
 
   // Any remaining WHERE predicates (multi-table / subquery) apply now.
@@ -809,6 +1095,33 @@ function planCore(stmt: SelectStmt, env: PlanEnv, embedOrderLimit: boolean): Ope
         isStringAgg && e.args[1] && e.args[1].kind === 'literal' && e.args[1].value !== null
           ? String(e.args[1].value)
           : undefined
+
+      // Ordered-set aggregates (PERCENTILE_CONT/DISC, MODE): the aggregated value
+      // is the WITHIN GROUP (ORDER BY …) key; the call's argument is the fraction.
+      if (ORDERED_SET_AGGREGATES.has(e.name)) {
+        if (!e.withinGroup || e.withinGroup.length !== 1) {
+          throw new SqlError(`${e.name} requires WITHIN GROUP (ORDER BY <expr>)`, 'bind')
+        }
+        let fraction: number | undefined
+        if (e.name === 'PERCENTILE_CONT' || e.name === 'PERCENTILE_DISC') {
+          const fv = e.args.length ? evalConst(e.args[0]) : undefined
+          if (typeof fv !== 'number') {
+            throw new SqlError(`${e.name} expects a numeric fraction between 0 and 1`, 'bind')
+          }
+          fraction = fv
+        }
+        return {
+          name: e.name as AggName,
+          star: false,
+          distinct: false,
+          arg: compileExpr(e.withinGroup[0].expr, preCtx),
+          label: exprLabel(e),
+          fraction,
+          dir: e.withinGroup[0].dir,
+          filter: e.filter ? compileExpr(e.filter, preCtx) : undefined,
+        }
+      }
+
       return {
         name: e.name as AggName,
         star: e.star,
@@ -820,7 +1133,8 @@ function planCore(stmt: SelectStmt, env: PlanEnv, embedOrderLimit: boolean): Ope
       }
     })
 
-    // Output schema of the aggregate: group keys then aggregates.
+    // Output schema of the aggregate: group keys, then aggregates, then a hidden
+    // grouping-set bitmap column (`__gset`) that powers the GROUPING() function.
     const aggSchema: Schema = [
       ...stmt.groupBy.map((g, i) => ({
         table: '',
@@ -828,8 +1142,38 @@ function planCore(stmt: SelectStmt, env: PlanEnv, embedOrderLimit: boolean): Ope
         type: inferType(g, schema, preCtx),
       })),
       ...aggExprs.map((e) => ({ table: '', name: exprLabel(e), type: inferType(e, schema, preCtx) })),
+      { table: '', name: '__gset', type: 'INTEGER' as ColumnType },
     ]
-    op = new HashAggregate(op, groupEvals, aggSpecs, aggSchema)
+    // Map each expanded grouping set to slot indexes into the grouping keys.
+    const groupingSetsIdx: number[][] | undefined = stmt.groupingSets
+      ? stmt.groupingSets.map((set) =>
+          set.map((ge) => {
+            const slot = groupKeyMap.get(exprKey(ge))
+            if (slot === undefined) throw new SqlError('a grouping-set column must appear in GROUP BY', 'plan')
+            return slot
+          }),
+        )
+      : undefined
+    const gsetSlot = stmt.groupBy.length + aggExprs.length
+    op = new HashAggregate(op, groupEvals, aggSpecs, aggSchema, groupingSetsIdx, true)
+
+    // GROUPING(a, …) → an integer whose bits flag which arguments were rolled up
+    // (1 = aggregated away to NULL in this grouping set, 0 = present).
+    const compileGrouping = (e: Expr): Evaluator => {
+      if (e.kind !== 'func') throw new SqlError('internal: GROUPING must be a function', 'plan')
+      if (e.args.length === 0) throw new SqlError('GROUPING() requires at least one argument', 'bind')
+      const indices = e.args.map((arg) => {
+        const slot = groupKeyMap.get(exprKey(arg))
+        if (slot === undefined) throw new SqlError('GROUPING() argument must be a GROUP BY expression', 'bind')
+        return slot
+      })
+      return (row) => {
+        const bm = typeof row[gsetSlot] === 'number' ? (row[gsetSlot] as number) : 0
+        let result = 0
+        for (const i of indices) result = (result << 1) | ((bm & (1 << i)) === 0 ? 1 : 0)
+        return result
+      }
+    }
 
     const groupResolve = (t: string | undefined, n: string): number => {
       // A bare column is only valid post-grouping if it's a grouping key.
@@ -850,6 +1194,7 @@ function planCore(stmt: SelectStmt, env: PlanEnv, embedOrderLimit: boolean): Ope
         if (ak !== undefined) return ak
         return undefined
       },
+      compileGrouping,
     })
     schema = aggSchema
   } else {
@@ -867,9 +1212,11 @@ function planCore(stmt: SelectStmt, env: PlanEnv, embedOrderLimit: boolean): Ope
     op = new WindowExec(op, windowPlan.specs, windowPlan.schema)
     const prevResolve = outCtx.resolve
     const prevLookup = outCtx.lookup
+    const prevGrouping = outCtx.compileGrouping
     outCtx = exprCtx(windowPlan.schema, env, {
       resolve: prevResolve,
       lookup: (e) => windowPlan.lookup(e) ?? prevLookup?.(e),
+      compileGrouping: prevGrouping,
     })
     schema = windowPlan.schema
   }
@@ -884,7 +1231,7 @@ function planCore(stmt: SelectStmt, env: PlanEnv, embedOrderLimit: boolean): Ope
       const want = item.expr.table?.toLowerCase()
       for (const b of schema) {
         if (want && b.table.toLowerCase() !== want) continue
-        if (!b.table && b.name.startsWith('__win')) continue // hide window scratch columns
+        if (!b.table && b.name.startsWith('__')) continue // hide internal scratch columns
         projExprs.push({ kind: 'column', table: b.table || undefined, name: b.name })
         projLabels.push(b.name)
         projTypes.push(b.type)
@@ -973,6 +1320,7 @@ function exprCtx(
     resolve?: CompileCtx['resolve']
     lookup?: CompileCtx['lookup']
     compileWindow?: CompileCtx['compileWindow']
+    compileGrouping?: CompileCtx['compileGrouping']
   },
 ): CompileCtx {
   const resolve = extra?.resolve ?? ((t: string | undefined, n: string) => resolveColumn(schema, t, n))
@@ -981,6 +1329,7 @@ function exprCtx(
     lookup: extra?.lookup,
     outer: env.outer.length ? env.outer : undefined,
     compileWindow: extra?.compileWindow,
+    compileGrouping: extra?.compileGrouping,
   }
   ctx.compileSubquery = (e) => compileSubqueryExpr(e, schema, env, ctx)
   return ctx

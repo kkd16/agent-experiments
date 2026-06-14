@@ -156,6 +156,160 @@ export class IndexScan implements Operator {
   }
 }
 
+// Index-only (covering) scan: when every column the query needs from a table is
+// already stored in the index, we can answer straight from the B+Tree leaves and
+// skip the heap fetch entirely. The emitted row *is* the index key tuple.
+export class IndexOnlyScan implements Operator {
+  readonly schema: Schema
+  estRows: number
+  estCost: number
+  actualRows = 0
+  private readonly index: IndexHandle
+  private readonly lo: RangeBound
+  private readonly hi: RangeBound
+  private keys: IndexKey[] = []
+  private pos = 0
+
+  constructor(index: IndexHandle, schema: Schema, lo: RangeBound, hi: RangeBound, estRows: number) {
+    this.index = index
+    this.schema = schema
+    this.lo = lo
+    this.hi = hi
+    this.estRows = Math.max(1, Math.round(estRows))
+    const h = index.stats().height
+    // Cheaper than a heap-fetching IndexScan: no random heap access per row.
+    this.estCost = h * CPU_OP + this.estRows * CPU_TUPLE * 0.5
+  }
+  open() {
+    this.keys = this.index.tree.rangeKeys(
+      this.lo ? this.lo.key : null,
+      this.hi ? this.hi.key : null,
+      this.lo ? this.lo.inclusive : true,
+      this.hi ? this.hi.inclusive : true,
+    )
+    this.pos = 0
+  }
+  next(): Row | null {
+    if (this.pos >= this.keys.length) return null
+    this.actualRows++
+    return this.keys[this.pos++].slice()
+  }
+  close() {
+    this.keys = []
+  }
+  plan(): PlanNode {
+    const s = this.index.stats()
+    const bound = (b: RangeBound, sym: string) => (b ? `${sym}${b.inclusive ? '=' : ''} ${fmtKey(b.key)}` : '')
+    const cond = [bound(this.lo, '>'), bound(this.hi, '<')].filter(Boolean).join(' AND ') || 'full'
+    return {
+      op: 'IndexOnlyScan',
+      detail: `${this.index.meta.name}`,
+      estRows: this.estRows,
+      estCost: this.estCost,
+      actualRows: this.actualRows,
+      extra: [
+        `on (${this.index.meta.columns.join(', ')}) ${cond}`,
+        'covering: all needed columns come from the index — heap not touched',
+        `B+Tree h=${s.height} nodes=${s.nodes} order=${s.order}`,
+      ],
+      children: [],
+    }
+  }
+}
+
+/** One indexed predicate feeding a bitmap: a range over a single-column index. */
+export interface BitmapInput {
+  index: IndexHandle
+  lo: RangeBound
+  hi: RangeBound
+}
+
+// Bitmap AND scan: probe several single-column indexes, build a row-id set from
+// each, intersect them, then fetch the surviving heap rows in physical order.
+// This is how real engines combine independent indexes for a multi-predicate
+// filter (`WHERE a = ? AND b = ?`) when no single composite index covers both.
+export class BitmapAnd implements Operator {
+  readonly schema: Schema
+  estRows: number
+  estCost: number
+  actualRows = 0
+  private readonly table: Table
+  private readonly inputs: BitmapInput[]
+  private rows: Row[] = []
+  private pos = 0
+  private matched = 0
+
+  constructor(table: Table, schema: Schema, inputs: BitmapInput[], estRows: number) {
+    this.table = table
+    this.schema = schema
+    this.inputs = inputs
+    this.estRows = Math.max(1, Math.round(estRows))
+    const h = Math.max(1, ...inputs.map((i) => i.index.stats().height))
+    this.estCost = inputs.length * h * CPU_OP + this.estRows * CPU_TUPLE
+  }
+  open() {
+    let acc: Set<number> | null = null
+    for (const inp of this.inputs) {
+      const ids = inp.index.tree.range(
+        inp.lo ? inp.lo.key : null,
+        inp.hi ? inp.hi.key : null,
+        inp.lo ? inp.lo.inclusive : true,
+        inp.hi ? inp.hi.inclusive : true,
+      )
+      if (acc === null) {
+        acc = new Set(ids)
+      } else {
+        // Intersect, scanning the (already smaller) accumulator.
+        const probe = new Set(ids)
+        const next = new Set<number>()
+        for (const r of acc) if (probe.has(r)) next.add(r)
+        acc = next
+      }
+    }
+    // Fetch in physical (row-id) order — the bitmap heap scan pattern.
+    const rowids = acc ? [...acc].sort((a, b) => a - b) : []
+    this.matched = rowids.length
+    this.rows = []
+    for (const rid of rowids) {
+      const row = this.table.heap.get(rid)
+      if (row) this.rows.push(row)
+    }
+    this.pos = 0
+  }
+  next(): Row | null {
+    if (this.pos >= this.rows.length) return null
+    this.actualRows++
+    return this.rows[this.pos++]
+  }
+  close() {
+    this.rows = []
+  }
+  plan(): PlanNode {
+    const children: PlanNode[] = this.inputs.map((inp) => {
+      const bound = (b: RangeBound, sym: string) => (b ? `${sym}${b.inclusive ? '=' : ''} ${fmtKey(b.key)}` : '')
+      const cond = [bound(inp.lo, '>'), bound(inp.hi, '<')].filter(Boolean).join(' AND ') || 'full'
+      return {
+        op: 'BitmapIndexScan',
+        detail: `${this.table.name} via ${inp.index.meta.name}`,
+        estRows: 0,
+        estCost: 0,
+        actualRows: 0,
+        extra: [`on (${inp.index.meta.columns.join(', ')}) ${cond}`],
+        children: [],
+      }
+    })
+    return {
+      op: 'BitmapAnd',
+      detail: this.table.name,
+      estRows: this.estRows,
+      estCost: this.estCost,
+      actualRows: this.actualRows,
+      extra: [`intersect ${this.inputs.length} index bitmaps → ${this.matched || this.estRows} rows, then heap-fetch`],
+      children,
+    }
+  }
+}
+
 function keysEqual(a: IndexKey, b: IndexKey): boolean {
   if (a.length !== b.length) return false
   for (let i = 0; i < a.length; i++) if (orderValues(a[i], b[i]) !== 0) return false
