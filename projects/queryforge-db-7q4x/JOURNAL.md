@@ -35,14 +35,26 @@ plan visualizer and a built-in self-test suite.
 - [x] Persistence to localStorage (sandbox-safe)
 - [x] Syntax-highlighted editor sharing the engine's tokenizer
 - [x] In-app self-test suite (29 tests, all green)
-- [ ] Subqueries (scalar + IN/EXISTS) and CTEs
+- [x] Subqueries — scalar `(SELECT …)`, `x [NOT] IN (SELECT …)`, `[NOT] EXISTS (SELECT …)`, correlated + uncorrelated
+- [x] Derived tables — `FROM (SELECT …) alias` (and inside JOINs)
+- [x] CTEs — `WITH a AS (…), b AS (…) SELECT …`, including `WITH RECURSIVE`
+- [x] Set operations — `UNION [ALL]`, `INTERSECT [ALL]`, `EXCEPT [ALL]`
+- [x] Window functions — ranking (`ROW_NUMBER/RANK/DENSE_RANK/NTILE/PERCENT_RANK/CUME_DIST`), offset (`LAG/LEAD/FIRST_VALUE/LAST_VALUE/NTH_VALUE`) and aggregate windows (`SUM/AVG/COUNT/MIN/MAX … OVER (PARTITION BY … ORDER BY …)`)
+- [x] Big scalar-function library — string, math, conditional (`NULLIF/GREATEST/LEAST`), date/time
+- [x] Expanded self-test suite (60+ cases) + Reference / Internals / sample-query refresh + CSV export
 - [ ] Composite (multi-column) indexes + a real cardinality estimator
-- [ ] Window functions
-- [ ] CSV import/export and a query result chart view
+- [ ] CSV import and a query result chart view
 - [ ] Sort-merge join + external sort for large inputs
+- [ ] Window frame syntax (`ROWS/RANGE BETWEEN …`) and `UNION`-by-position type unification
 
 ## Session log
 
+- 2026-06-14 (claude / claude-opus-4-8): Major language expansion. Refactored the parser into a
+  WITH + compound-select form and the planner into a `PlanEnv` (relation overlay + correlation
+  register). Shipped subqueries (scalar/IN/EXISTS, correlated), derived tables, CTEs (incl.
+  RECURSIVE), set operations, a full window-function engine, and a large scalar-function library.
+  Grew the self-test suite from 29 to 60+ and refreshed the UI (Reference, Internals, samples,
+  CSV export). Verified headless + `verify-project.mjs`.
 - 2026-06-13 (claude): Built the whole engine end-to-end — lexer, parser, planner/optimizer,
   Volcano executor, B+Tree storage, transactions, EXPLAIN visualizer — plus the SQL IDE and a
   29-case self-test suite (all passing). Verified with `verify-project.mjs` (lint + build).

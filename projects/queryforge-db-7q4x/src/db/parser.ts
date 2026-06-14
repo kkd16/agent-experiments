@@ -7,17 +7,22 @@ import {
   stringValue,
   type Token,
 } from './lexer'
+import { SCALAR_FUNCTION_NAMES } from './eval'
 import { SqlError, type ColumnType } from './types'
 import type {
   BinaryOp,
   ColumnDef,
+  CteDef,
   Expr,
   ExplainStmt,
+  FromItem,
   JoinClause,
   JoinType,
   OrderItem,
   SelectItem,
   SelectStmt,
+  SetOp,
+  SetOpKind,
   Statement,
 } from './ast'
 
@@ -107,6 +112,8 @@ class Parser {
     switch (kw) {
       case 'SELECT':
         return this.parseSelect()
+      case 'WITH':
+        return this.parseWith()
       case 'INSERT':
         return this.parseInsert()
       case 'UPDATE':
@@ -282,11 +289,63 @@ class Parser {
   }
 
   // ========================================================================
-  // SELECT
+  // SELECT (with WITH-prefix, compound set operations, and a trailing tail)
   // ========================================================================
+  private parseWith(): SelectStmt {
+    this.expect('WITH')
+    const recursive = this.accept('RECURSIVE')
+    const ctes: CteDef[] = []
+    do {
+      const name = this.parseIdent('CTE name')
+      let columns: string[] | undefined
+      if (this.accept('(')) {
+        columns = []
+        do {
+          columns.push(this.parseIdent('column name'))
+        } while (this.accept(','))
+        this.expect(')')
+      }
+      this.expect('AS')
+      this.expect('(')
+      const select = this.parseSubquerySelect()
+      this.expect(')')
+      ctes.push({ name, columns, select })
+    } while (this.accept(','))
+    const stmt = this.parseSelect()
+    stmt.ctes = ctes
+    stmt.recursive = recursive
+    return stmt
+  }
+
+  /** A query that may itself begin with WITH (used inside parentheses). */
+  private parseSubquerySelect(): SelectStmt {
+    if (this.at('WITH')) return this.parseWith()
+    return this.parseSelect()
+  }
+
   private parseSelect(): SelectStmt {
+    const first = this.parseSelectCore()
+    const setOps: SetOp[] = []
+    for (;;) {
+      let op: SetOpKind
+      if (this.accept('UNION')) op = 'UNION'
+      else if (this.accept('INTERSECT')) op = 'INTERSECT'
+      else if (this.accept('EXCEPT')) op = 'EXCEPT'
+      else break
+      const all = this.accept('ALL')
+      if (!all) this.accept('DISTINCT')
+      setOps.push({ op, all, select: this.parseSelectCore() })
+    }
+    this.parseTail(first)
+    if (setOps.length) first.setOps = setOps
+    return first
+  }
+
+  // One SELECT branch: everything up to (but not including) ORDER BY/LIMIT.
+  private parseSelectCore(): SelectStmt {
     this.expect('SELECT')
     const distinct = this.accept('DISTINCT')
+    if (!distinct) this.accept('ALL') // SELECT ALL is the (default) opposite of DISTINCT
     const columns = this.parseSelectList()
 
     let from: SelectStmt['from']
@@ -312,26 +371,38 @@ class Parser {
     }
     const having = this.accept('HAVING') ? this.parseExpr() : undefined
 
-    let orderBy: OrderItem[] = []
+    return {
+      kind: 'select',
+      distinct,
+      columns,
+      from,
+      joins,
+      where,
+      groupBy,
+      having,
+      orderBy: [],
+      limit: undefined,
+      offset: undefined,
+    }
+  }
+
+  // ORDER BY / LIMIT / OFFSET — bind to the whole (possibly compound) query.
+  private parseTail(stmt: SelectStmt): void {
     if (this.accept('ORDER')) {
       this.expect('BY')
-      orderBy = []
+      const orderBy: OrderItem[] = []
       do {
         const expr = this.parseExpr()
         const dir = this.accept('DESC') ? 'DESC' : (this.accept('ASC'), 'ASC')
         orderBy.push({ expr, dir })
       } while (this.accept(','))
+      stmt.orderBy = orderBy
     }
-
-    let limit: number | undefined
-    let offset: number | undefined
     if (this.accept('LIMIT')) {
-      limit = this.parseIntLiteral('LIMIT')
-      if (this.accept('OFFSET')) offset = this.parseIntLiteral('OFFSET')
+      stmt.limit = this.parseIntLiteral('LIMIT')
+      if (this.accept('OFFSET')) stmt.offset = this.parseIntLiteral('OFFSET')
     }
-    if (this.accept('OFFSET')) offset = this.parseIntLiteral('OFFSET')
-
-    return { kind: 'select', distinct, columns, from, joins, where, groupBy, having, orderBy, limit, offset }
+    if (this.accept('OFFSET')) stmt.offset = this.parseIntLiteral('OFFSET')
   }
 
   private parseIntLiteral(what: string): number {
@@ -366,7 +437,14 @@ class Parser {
     return items
   }
 
-  private parseFromItem(): SelectStmt['from'] {
+  private parseFromItem(): FromItem {
+    if (this.at('(')) {
+      this.next()
+      const subquery = this.parseSubquerySelect()
+      this.expect(')')
+      const alias = this.parseOptionalAlias()
+      return { subquery, alias }
+    }
     const table = this.parseIdent('table name')
     const alias = this.parseOptionalAlias()
     return { table, alias }
@@ -395,14 +473,22 @@ class Parser {
     } else {
       return null
     }
-    const table = this.parseIdent('table name')
+    let table: string | undefined
+    let subquery: SelectStmt | undefined
+    if (this.at('(')) {
+      this.next()
+      subquery = this.parseSubquerySelect()
+      this.expect(')')
+    } else {
+      table = this.parseIdent('table name')
+    }
     const alias = this.parseOptionalAlias()
     let on: Expr | undefined
     if (type !== 'CROSS') {
       this.expect('ON')
       on = this.parseExpr()
     }
-    return { type, table, alias, on }
+    return { type, table, subquery, alias, on }
   }
 
   // ========================================================================
@@ -475,6 +561,11 @@ class Parser {
   private parseIn(expr: Expr, negated: boolean): Expr {
     this.expect('IN')
     this.expect('(')
+    if (this.at('SELECT') || this.at('WITH')) {
+      const select = this.parseSubquerySelect()
+      this.expect(')')
+      return { kind: 'in_subquery', expr, select, negated }
+    }
     const list: Expr[] = []
     do {
       list.push(this.parseExpr())
@@ -527,20 +618,35 @@ class Parser {
     }
     if (t.value === 'CASE') return this.parseCase()
     if (t.value === 'CAST') return this.parseCast()
-    if (this.accept('(')) {
+    if (t.value === 'EXISTS' && this.peek(1).value === '(') {
+      this.next()
+      this.expect('(')
+      const select = this.parseSubquerySelect()
+      this.expect(')')
+      return { kind: 'exists', select, negated: false }
+    }
+    if (this.at('(')) {
+      this.next()
+      // A parenthesized subquery vs. a grouped expression.
+      if (this.at('SELECT') || this.at('WITH')) {
+        const select = this.parseSubquerySelect()
+        this.expect(')')
+        return { kind: 'subquery', select }
+      }
       const e = this.parseExpr()
       this.expect(')')
       return e
     }
 
-    // Function call or column reference.
-    if (t.kind === 'ident' || this.isFunctionKeyword(t.value)) {
-      // function call: name(
-      if (this.peek(1).value === '(') {
-        return this.parseFunc()
-      }
+    // Function call (including keyword-named functions like LEFT/RIGHT).
+    if (this.peek(1).value === '(' && (t.kind === 'ident' || this.isFunctionName(t.value))) {
+      return this.parseFunc()
+    }
+
+    // Column reference.
+    if (t.kind === 'ident') {
       // qualified column table.col
-      if (t.kind === 'ident' && this.peek(1).value === '.') {
+      if (this.peek(1).value === '.') {
         const table = identName(this.next())
         this.next() // .
         const name = this.parseIdent('column name')
@@ -553,13 +659,17 @@ class Parser {
     throw this.err('expected an expression')
   }
 
-  private isFunctionKeyword(v: string): boolean {
+  private isFunctionName(v: string): boolean {
+    return this.isAggregateKeyword(v) || SCALAR_FUNCTION_NAMES.has(v)
+  }
+  private isAggregateKeyword(v: string): boolean {
     return v === 'COUNT' || v === 'SUM' || v === 'AVG' || v === 'MIN' || v === 'MAX'
   }
 
   private parseFunc(): Expr {
     const nameTok = this.next()
-    const name = nameTok.kind === 'ident' ? identName(nameTok) : nameTok.value
+    const rawName = nameTok.kind === 'ident' ? identName(nameTok) : nameTok.value
+    const name = rawName.toUpperCase()
     this.expect('(')
     let distinct = false
     let star = false
@@ -574,7 +684,32 @@ class Parser {
       } while (this.accept(','))
     }
     this.expect(')')
-    return { kind: 'func', name: name.toUpperCase(), args, distinct, star }
+
+    // Window form: name(args) OVER ( [PARTITION BY …] [ORDER BY …] )
+    if (this.at('OVER')) {
+      this.next()
+      this.expect('(')
+      const partitionBy: Expr[] = []
+      if (this.accept('PARTITION')) {
+        this.expect('BY')
+        do {
+          partitionBy.push(this.parseExpr())
+        } while (this.accept(','))
+      }
+      const orderBy: OrderItem[] = []
+      if (this.accept('ORDER')) {
+        this.expect('BY')
+        do {
+          const expr = this.parseExpr()
+          const dir = this.accept('DESC') ? 'DESC' : (this.accept('ASC'), 'ASC')
+          orderBy.push({ expr, dir })
+        } while (this.accept(','))
+      }
+      this.expect(')')
+      return { kind: 'window', name, args, spec: { partitionBy, orderBy } }
+    }
+
+    return { kind: 'func', name, args, distinct, star }
   }
 
   private parseCase(): Expr {

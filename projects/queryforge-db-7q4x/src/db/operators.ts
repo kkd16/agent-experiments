@@ -520,6 +520,138 @@ export class Distinct implements Operator {
   }
 }
 
+export type SetOpKind = 'UNION' | 'INTERSECT' | 'EXCEPT'
+
+// Set operations with full multiset (ALL) and set (DISTINCT) semantics.
+export class SetOpExec implements Operator {
+  readonly schema: Schema
+  estRows: number
+  estCost: number
+  actualRows = 0
+  private readonly left: Operator
+  private readonly right: Operator
+  private readonly op: SetOpKind
+  private readonly all: boolean
+  private rows: Row[] = []
+  private pos = 0
+
+  constructor(left: Operator, right: Operator, op: SetOpKind, all: boolean, schema: Schema) {
+    this.left = left
+    this.right = right
+    this.op = op
+    this.all = all
+    this.schema = schema
+    this.estRows = op === 'UNION' ? left.estRows + right.estRows : left.estRows
+    this.estCost = left.estCost + right.estCost + (left.estRows + right.estRows) * CPU_OP
+  }
+  open() {
+    const l = drain(this.left)
+    const r = drain(this.right)
+    this.rows = this.combine(l, r)
+    this.pos = 0
+  }
+  private combine(l: Row[], r: Row[]): Row[] {
+    if (this.op === 'UNION') {
+      const merged = l.concat(r)
+      return this.all ? merged : dedupe(merged)
+    }
+    // Count occurrences on the right for INTERSECT / EXCEPT.
+    const rCounts = new Map<string, number>()
+    for (const row of r) {
+      const k = hashKey(row)
+      rCounts.set(k, (rCounts.get(k) ?? 0) + 1)
+    }
+    if (this.op === 'EXCEPT') {
+      return this.all ? exceptAll(l, rCounts) : exceptDistinct(l, rCounts)
+    }
+    // INTERSECT
+    const out: Row[] = []
+    const taken = new Map<string, number>()
+    for (const row of l) {
+      const k = hashKey(row)
+      const avail = rCounts.get(k) ?? 0
+      const used = taken.get(k) ?? 0
+      if (used >= avail) continue
+      if (!this.all && used >= 1) continue // distinct: at most one
+      out.push(row)
+      taken.set(k, used + 1)
+    }
+    return out
+  }
+  next(): Row | null {
+    if (this.pos >= this.rows.length) return null
+    this.actualRows++
+    return this.rows[this.pos++]
+  }
+  close() {
+    this.rows = []
+  }
+  plan(): PlanNode {
+    return {
+      op: `${this.op}${this.all ? ' ALL' : ''}`,
+      detail: '',
+      estRows: this.estRows,
+      estCost: this.estCost,
+      actualRows: this.actualRows,
+      extra: [this.all ? 'multiset semantics' : 'distinct result'],
+      children: [this.left.plan(), this.right.plan()],
+    }
+  }
+}
+
+function drain(op: Operator): Row[] {
+  const rows: Row[] = []
+  op.open()
+  try {
+    for (let r = op.next(); r !== null; r = op.next()) rows.push(r)
+  } finally {
+    op.close()
+  }
+  return rows
+}
+function dedupe(rows: Row[]): Row[] {
+  const seen = new Set<string>()
+  const out: Row[] = []
+  for (const row of rows) {
+    const k = hashKey(row)
+    if (!seen.has(k)) {
+      seen.add(k)
+      out.push(row)
+    }
+  }
+  return out
+}
+// EXCEPT ALL: each left row is kept unless it is "cancelled" by a matching
+// right row (multiset difference).
+function exceptAll(l: Row[], rCounts: Map<string, number>): Row[] {
+  const used = new Map<string, number>()
+  const out: Row[] = []
+  for (const row of l) {
+    const k = hashKey(row)
+    const avail = rCounts.get(k) ?? 0
+    const taken = used.get(k) ?? 0
+    if (taken < avail) {
+      used.set(k, taken + 1)
+    } else {
+      out.push(row)
+    }
+  }
+  return out
+}
+// EXCEPT (distinct): distinct left rows that do not appear on the right.
+function exceptDistinct(l: Row[], rCounts: Map<string, number>): Row[] {
+  const emitted = new Set<string>()
+  const out: Row[] = []
+  for (const row of l) {
+    const k = hashKey(row)
+    if ((rCounts.get(k) ?? 0) > 0) continue
+    if (emitted.has(k)) continue
+    emitted.add(k)
+    out.push(row)
+  }
+  return out
+}
+
 export class Limit implements Operator {
   readonly schema: Schema
   estRows: number

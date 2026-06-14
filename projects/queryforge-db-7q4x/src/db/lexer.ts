@@ -40,6 +40,7 @@ export const KEYWORDS = new Set([
   'INTEGER', 'INT', 'REAL', 'FLOAT', 'TEXT', 'STRING', 'BOOLEAN', 'BOOL',
   'COUNT', 'SUM', 'AVG', 'MIN', 'MAX',
   'BEGIN', 'COMMIT', 'ROLLBACK', 'TRANSACTION',
+  'UNION', 'INTERSECT', 'EXCEPT', 'ALL', 'WITH', 'RECURSIVE', 'OVER', 'PARTITION',
 ])
 
 // Multi-character operators, longest first so the scanner is greedy.
