@@ -538,6 +538,68 @@ test('join', 'subquery in a JOIN ON predicate', () => {
   assert(n === 7, `expected 7 orders of above-average products, got ${n}`)
 })
 
+// --- cost-based join reordering ---------------------------------------------
+function deepestJoin(n: { op: string; children: { op: string; detail: string; children: unknown[] }[]; detail: string }): typeof n | null {
+  for (const c of n.children) {
+    const d = deepestJoin(c as typeof n)
+    if (d) return d
+  }
+  return /Join/.test(n.op) ? n : null
+}
+test('reorder', 'small relations are joined first (clique)', () => {
+  const e = new Engine()
+  e.execute('CREATE TABLE big (k INTEGER); CREATE TABLE s1 (k INTEGER); CREATE TABLE s2 (k INTEGER)')
+  e.execute('INSERT INTO big (k) WITH RECURSIVE r(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM r WHERE n<200) SELECT n FROM r')
+  e.execute('INSERT INTO s1 (k) VALUES (1)')
+  e.execute('INSERT INTO s2 (k) VALUES (1)')
+  const r = e.execute(
+    'EXPLAIN SELECT COUNT(*) FROM big b JOIN s1 ON b.k = s1.k JOIN s2 ON b.k = s2.k AND s1.k = s2.k',
+  )[0]
+  assert(r.kind === 'explain', 'expected explain')
+  const deepest = r.kind === 'explain' ? deepestJoin(r.plan as never) : null
+  assert(!!deepest, 'plan should contain a join')
+  const tables = deepest!.children.map((c) => c.detail).join(' | ')
+  // The two single-row tables should be joined together at the bottom, leaving
+  // the 200-row table for last — never the written (big-first) order.
+  assert(/s1/.test(tables) && /s2/.test(tables), `deepest join should pair s1 & s2, got: ${tables}`)
+})
+test('reorder', 'reordered join produces the correct result', () => {
+  const e = new Engine()
+  e.execute('CREATE TABLE big (k INTEGER); CREATE TABLE s1 (k INTEGER); CREATE TABLE s2 (k INTEGER)')
+  e.execute('INSERT INTO big (k) WITH RECURSIVE r(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM r WHERE n<200) SELECT n FROM r')
+  e.execute('INSERT INTO s1 (k) VALUES (1)')
+  e.execute('INSERT INTO s2 (k) VALUES (1)')
+  assert(
+    scalar(e, 'SELECT COUNT(*) FROM big b JOIN s1 ON b.k = s1.k JOIN s2 ON b.k = s2.k AND s1.k = s2.k') === 1,
+    'only k=1 should match across all three',
+  )
+})
+test('reorder', 'SELECT * keeps written column order despite reordering', () => {
+  const e = seeded()
+  // Reordering must be transparent: columns appear in FROM/JOIN order.
+  const res = lastResult(
+    e,
+    'SELECT * FROM orders o JOIN customers c ON o.customer_id = c.id JOIN products p ON o.product_id = p.id LIMIT 1',
+  ) as RowsResult
+  const names = res.columns.map((c) => c.name)
+  // orders cols, then customers cols, then products cols.
+  assert(names[0] === 'id' && names.indexOf('city') > names.indexOf('quantity'), 'columns should stay in written order')
+  assert(res.rows.length === 1, 'should still return rows')
+})
+test('reorder', 'three-way join result is order-independent', () => {
+  const e = seeded()
+  const n = scalar(
+    e,
+    "SELECT COUNT(*) FROM orders o JOIN customers c ON o.customer_id = c.id JOIN products p ON o.product_id = p.id WHERE c.country = 'UK'",
+  )
+  // Cross-check against a two-step formulation that can't be reordered the same way.
+  const m = scalar(
+    e,
+    "SELECT COUNT(*) FROM orders o JOIN products p ON o.product_id = p.id WHERE o.customer_id IN (SELECT id FROM customers WHERE country = 'UK')",
+  )
+  assert(n === m, `reordered join (${n}) must match the subquery formulation (${m})`)
+})
+
 // --- composite indexes ------------------------------------------------------
 test('index', 'composite index is chosen over a single-column one', () => {
   const e = seeded()

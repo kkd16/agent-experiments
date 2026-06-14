@@ -636,6 +636,152 @@ function chooseEquiJoin(
   return new HashJoin(left, right, leftKey, rightKey, type, schema)
 }
 
+// --- cost-based join reordering ---------------------------------------------
+// Cap the search at this many relations so the 2^n subset DP stays cheap.
+const MAX_REORDER_RELS = 8
+
+/** Reorder only a pure chain of INNER joins (each with an ON predicate). Outer
+ *  joins and CROSS joins change the answer when reordered, so we leave them. */
+function canReorderJoins(stmt: SelectStmt): boolean {
+  const n = stmt.joins.length + 1
+  if (n < 3 || n > MAX_REORDER_RELS) return false
+  return stmt.joins.every((j) => j.type === 'INNER' && !!j.on)
+}
+
+interface JoinPlan {
+  op: Operator
+  schema: Schema
+  applied: Set<Expr>
+}
+
+// Extend a left-deep plan covering some relation subset by one more relation
+// leaf, applying every join/where predicate that first becomes resolvable here.
+function joinStep(left: JoinPlan, rightOp: Operator, rightSchema: Schema, pool: Expr[], env: PlanEnv): JoinPlan {
+  const combined: Schema = [...left.schema, ...rightSchema]
+  const applicable = pool.filter(
+    (p) => !left.applied.has(p) && resolvableIn(p, combined, env) && !resolvableIn(p, left.schema, env),
+  )
+  const applied = new Set(left.applied)
+  applicable.forEach((p) => applied.add(p))
+
+  let op: Operator
+  if (applicable.length === 0) {
+    // No connecting predicate yet — a (deprioritized) cartesian product.
+    op = new NestedLoopJoin(left.op, rightOp, null, 'CROSS', combined)
+  } else {
+    const onExpr = andAll(applicable)!
+    const equi = extractEquiJoin(onExpr, left.schema, rightSchema)
+    if (equi && equi.residual.length === 0) {
+      op = chooseEquiJoin(left.op, rightOp, equi.leftKey, equi.rightKey, 'INNER', combined)
+    } else if (equi) {
+      op = chooseEquiJoin(left.op, rightOp, equi.leftKey, equi.rightKey, 'INNER', combined)
+      const resid = andAll(equi.residual)!
+      op = new Filter(op, compileExpr(resid, exprCtx(combined, env)), exprLabel(resid))
+    } else {
+      op = new NestedLoopJoin(left.op, rightOp, compileExpr(onExpr, exprCtx(combined, env)), 'INNER', combined)
+    }
+  }
+  return { op, schema: combined, applied }
+}
+
+function schemasIdentical(a: Schema, b: Schema): boolean {
+  if (a.length !== b.length) return false
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false
+  return true
+}
+
+// Plan a chain of INNER joins by searching left-deep orders with a subset DP.
+// Returns null (so the caller falls back) if any predicate can't be placed.
+function planJoinOrder(
+  stmt: SelectStmt,
+  env: PlanEnv,
+  statTables: StatCtx,
+  wherePreds: Expr[],
+  consumed: Set<Expr>,
+): { op: Operator; schema: Schema } | null {
+  const items: (FromItem | JoinClause)[] = [stmt.from!, ...stmt.joins]
+  const n = items.length
+
+  const rels = items.map((it) => relationFor(it, env))
+  rels.forEach((r) => statTables.set(r.alias.toLowerCase(), r.table))
+  const relSchemas = rels.map((r) => tableSchema(r.table, r.alias))
+
+  // A local consumed set so a failed attempt leaves the caller's state intact.
+  const localConsumed = new Set(consumed)
+
+  // Each relation's leaf: an index/seq scan with single-relation WHERE filters.
+  const leaves: Operator[] = rels.map((r, i) => {
+    const sch = relSchemas[i]
+    const applicable = wherePreds.filter(
+      (p) => !localConsumed.has(p) && !containsSubquery(p) && resolvableIn(p, sch, env),
+    )
+    let leaf: Operator
+    const idx = tryIndexScan(r.table, sch, applicable, statTables)
+    if (idx) {
+      leaf = idx.op
+      idx.consumed.forEach((p) => localConsumed.add(p))
+    } else {
+      leaf = new SeqScan(r.table, sch)
+    }
+    return applyPushdown(leaf, sch, wherePreds, localConsumed, env, false, statTables)
+  })
+
+  // Predicate pool: every JOIN ON conjunct + every still-unconsumed,
+  // non-subquery WHERE conjunct (single-relation ones already sit in the leaves;
+  // multi-relation ones become join predicates).
+  const pool: Expr[] = []
+  for (const j of stmt.joins) for (const c of conjuncts(j.on)) pool.push(c)
+  const whereForPool: Expr[] = []
+  for (const p of wherePreds) {
+    if (localConsumed.has(p) || containsSubquery(p)) continue
+    pool.push(p)
+    whereForPool.push(p)
+  }
+
+  // Left-deep subset DP: dp[mask] = cheapest plan joining exactly that relation
+  // subset. Ascending mask order guarantees every subset is finalized before it
+  // is used to extend a larger one.
+  const dp = new Map<number, JoinPlan>()
+  for (let i = 0; i < n; i++) dp.set(1 << i, { op: leaves[i], schema: relSchemas[i], applied: new Set() })
+  const full = (1 << n) - 1
+  for (let mask = 1; mask <= full; mask++) {
+    const left = dp.get(mask)
+    if (!left) continue
+    for (let i = 0; i < n; i++) {
+      if (mask & (1 << i)) continue
+      const cand = joinStep(left, leaves[i], relSchemas[i], pool, env)
+      const newMask = mask | (1 << i)
+      const existing = dp.get(newMask)
+      if (!existing || cand.op.estCost < existing.op.estCost) dp.set(newMask, cand)
+    }
+  }
+
+  const finalPlan = dp.get(full)
+  if (!finalPlan) return null
+  // Never silently drop a predicate (e.g. an ambiguous unqualified column the
+  // resolver couldn't place): fall back to the written-order planner instead.
+  if (finalPlan.applied.size !== pool.length) return null
+
+  for (const p of localConsumed) consumed.add(p)
+  for (const p of whereForPool) consumed.add(p)
+
+  // Restore the written column order so SELECT * is unaffected by reordering.
+  const origSchema: Schema = relSchemas.flat()
+  let op = finalPlan.op
+  if (!schemasIdentical(op.schema, origSchema)) {
+    const pos = new Map<Binding, number>()
+    op.schema.forEach((b, i) => pos.set(b, i))
+    const perm = origSchema.map((b) => pos.get(b)!)
+    op = new Project(
+      op,
+      perm.map((i) => (row: Row) => row[i]),
+      origSchema,
+      origSchema.map((b) => b.name),
+    )
+  }
+  return { op, schema: origSchema }
+}
+
 // ============================================================================
 // Public entry point: plan a (possibly compound, possibly WITH-prefixed) query.
 export function planSelect(stmt: SelectStmt, db: Database): Operator {
@@ -733,58 +879,70 @@ function planCore(stmt: SelectStmt, env: PlanEnv, embedOrderLimit: boolean): Ope
   // Relation alias -> Table, so selectivity estimation can find column stats.
   const statTables: StatCtx = new Map()
 
-  // --- base relation --------------------------------------------------------
-  const base = relationFor(stmt.from, env)
-  statTables.set(base.alias.toLowerCase(), base.table)
-  let schema: Schema = tableSchema(base.table, base.alias)
-
   let op: Operator
-  if (basePreserved) {
-    const baseApplicable = wherePreds.filter((p) => !consumed.has(p) && resolvableIn(p, schema, env))
-    const idx = tryIndexScan(base.table, schema, baseApplicable, statTables)
-    if (idx) {
-      op = idx.op
-      idx.consumed.forEach((p) => consumed.add(p))
+  let schema: Schema
+
+  // --- cost-based join reordering -------------------------------------------
+  // For a chain of two or more INNER joins, search left-deep join orders with a
+  // Selinger-style subset DP and keep the cheapest. Outer joins / CROSS chains
+  // aren't freely reorderable, so they fall through to the written-order planner.
+  const reordered = canReorderJoins(stmt) ? planJoinOrder(stmt, env, statTables, wherePreds, consumed) : null
+  if (reordered) {
+    op = reordered.op
+    schema = reordered.schema
+  } else {
+    // --- base relation (written order) --------------------------------------
+    const base = relationFor(stmt.from, env)
+    statTables.set(base.alias.toLowerCase(), base.table)
+    schema = tableSchema(base.table, base.alias)
+
+    if (basePreserved) {
+      const baseApplicable = wherePreds.filter((p) => !consumed.has(p) && resolvableIn(p, schema, env))
+      const idx = tryIndexScan(base.table, schema, baseApplicable, statTables)
+      if (idx) {
+        op = idx.op
+        idx.consumed.forEach((p) => consumed.add(p))
+      } else {
+        op = new SeqScan(base.table, schema)
+      }
+      op = applyPushdown(op, schema, wherePreds, consumed, env, false, statTables)
     } else {
       op = new SeqScan(base.table, schema)
     }
-    op = applyPushdown(op, schema, wherePreds, consumed, env, false, statTables)
-  } else {
-    op = new SeqScan(base.table, schema)
-  }
 
-  // --- joins ----------------------------------------------------------------
-  for (const join of stmt.joins) {
-    const right = relationFor(join, env)
-    statTables.set(right.alias.toLowerCase(), right.table)
-    const rSchema = tableSchema(right.table, right.alias)
-    // Only push WHERE predicates onto the right input for INNER joins; for an
-    // outer join the right side may be null-extended, so its WHERE predicates
-    // must run after the join (the final pushdown stage).
-    let rightOp: Operator = new SeqScan(right.table, rSchema)
-    if (join.type === 'INNER') {
-      rightOp = applyPushdown(rightOp, rSchema, wherePreds, consumed, env, false, statTables)
-    }
-
-    const combined: Schema = [...schema, ...rSchema]
-    const outerType: 'INNER' | 'LEFT' | 'RIGHT' | 'FULL' =
-      join.type === 'LEFT' || join.type === 'RIGHT' || join.type === 'FULL' ? join.type : 'INNER'
-    if (join.type === 'CROSS' || !join.on) {
-      op = new NestedLoopJoin(op, rightOp, null, 'CROSS', combined)
-    } else {
-      const equi = extractEquiJoin(join.on, schema, rSchema)
-      if (equi && equi.residual.length === 0) {
-        op = chooseEquiJoin(op, rightOp, equi.leftKey, equi.rightKey, outerType, combined)
-      } else if (equi && join.type === 'INNER') {
-        op = chooseEquiJoin(op, rightOp, equi.leftKey, equi.rightKey, 'INNER', combined)
-        const resid = andAll(equi.residual)!
-        op = new Filter(op, compileExpr(resid, exprCtx(combined, env)), exprLabel(resid))
-      } else {
-        const pred = compileExpr(join.on, exprCtx(combined, env))
-        op = new NestedLoopJoin(op, rightOp, pred, outerType, combined)
+    // --- joins --------------------------------------------------------------
+    for (const join of stmt.joins) {
+      const right = relationFor(join, env)
+      statTables.set(right.alias.toLowerCase(), right.table)
+      const rSchema = tableSchema(right.table, right.alias)
+      // Only push WHERE predicates onto the right input for INNER joins; for an
+      // outer join the right side may be null-extended, so its WHERE predicates
+      // must run after the join (the final pushdown stage).
+      let rightOp: Operator = new SeqScan(right.table, rSchema)
+      if (join.type === 'INNER') {
+        rightOp = applyPushdown(rightOp, rSchema, wherePreds, consumed, env, false, statTables)
       }
+
+      const combined: Schema = [...schema, ...rSchema]
+      const outerType: 'INNER' | 'LEFT' | 'RIGHT' | 'FULL' =
+        join.type === 'LEFT' || join.type === 'RIGHT' || join.type === 'FULL' ? join.type : 'INNER'
+      if (join.type === 'CROSS' || !join.on) {
+        op = new NestedLoopJoin(op, rightOp, null, 'CROSS', combined)
+      } else {
+        const equi = extractEquiJoin(join.on, schema, rSchema)
+        if (equi && equi.residual.length === 0) {
+          op = chooseEquiJoin(op, rightOp, equi.leftKey, equi.rightKey, outerType, combined)
+        } else if (equi && join.type === 'INNER') {
+          op = chooseEquiJoin(op, rightOp, equi.leftKey, equi.rightKey, 'INNER', combined)
+          const resid = andAll(equi.residual)!
+          op = new Filter(op, compileExpr(resid, exprCtx(combined, env)), exprLabel(resid))
+        } else {
+          const pred = compileExpr(join.on, exprCtx(combined, env))
+          op = new NestedLoopJoin(op, rightOp, pred, outerType, combined)
+        }
+      }
+      schema = combined
     }
-    schema = combined
   }
 
   // Any remaining WHERE predicates (multi-table / subquery) apply now.
