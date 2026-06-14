@@ -50,6 +50,7 @@ export type TokenType =
   | '<<'
   | '>>'
   | '~'
+  | '?'
   | 'eof';
 
 export interface Token {

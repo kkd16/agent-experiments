@@ -310,7 +310,32 @@ class FnBuilder {
       }
       case 'call':
         return this.lowerCall(e);
+      case 'ternary':
+        return this.lowerTernary(e);
     }
+  }
+
+  private lowerTernary(e: Extract<Expr, { node: 'ternary' }>): POperand {
+    const ty = irTypeOf(e.ty!);
+    const res = this.temp(ty);
+    const cond = this.lowerExpr(e.cond)!;
+    const thenB = this.newBlock();
+    const elseB = this.newBlock();
+    const join = this.newBlock();
+    this.setTerm({ op: 'condbr', cond, t: thenB.id, f: elseB.id });
+
+    this.switchTo(thenB);
+    const tv = this.lowerExpr(e.then)!;
+    this.emit({ dest: res, ty, kind: 'copy', sub: '', args: [tv] });
+    this.setTerm({ op: 'br', target: join.id });
+
+    this.switchTo(elseB);
+    const ev = this.lowerExpr(e.otherwise)!;
+    this.emit({ dest: res, ty, kind: 'copy', sub: '', args: [ev] });
+    this.setTerm({ op: 'br', target: join.id });
+
+    this.switchTo(join);
+    return VAR(res);
   }
 
   private lowerUnary(e: Extract<Expr, { node: 'unary' }>): POperand {
@@ -454,10 +479,15 @@ class FnBuilder {
 export function buildPreIR(prog: Program): PModule {
   const funcs: PFunc[] = [];
   let usesMemory = false;
+  // Only the entry point is exported, so the optimizer is free to delete a
+  // function once every call to it has been inlined. If a program has no `main`,
+  // fall back to exporting everything so it can still be driven externally.
+  const hasMain = prog.decls.some((d) => d.kind === 'fn' && d.name === 'main');
   for (const d of prog.decls) {
     if (d.kind !== 'fn') continue;
     const params = d.params.map((p) => ({ name: p.name, ty: irTypeOf(p.ty) }));
-    const fb = new FnBuilder(d.name, params, retTypeOf(d.retTy), d.body, true);
+    const exported = hasMain ? d.name === 'main' : true;
+    const fb = new FnBuilder(d.name, params, retTypeOf(d.retTy), d.body, exported);
     const { fn, usesMemory: m } = fb.build();
     usesMemory = usesMemory || m;
     funcs.push(fn);

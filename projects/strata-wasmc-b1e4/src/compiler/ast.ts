@@ -67,7 +67,8 @@ export type Expr =
   | (ExprBase & { node: 'unary'; op: UnaryOp; operand: Expr })
   | (ExprBase & { node: 'binary'; op: BinaryOp; left: Expr; right: Expr })
   | (ExprBase & { node: 'call'; callee: string; args: Expr[] })
-  | (ExprBase & { node: 'index'; target: Expr; index: Expr });
+  | (ExprBase & { node: 'index'; target: Expr; index: Expr })
+  | (ExprBase & { node: 'ternary'; cond: Expr; then: Expr; otherwise: Expr });
 
 // ---------------------------------------------------------------------------
 // Statements

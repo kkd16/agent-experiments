@@ -192,6 +192,41 @@ fn main() {
 }
 `,
   },
+  {
+    id: 'optshow',
+    title: 'Optimizer showcase',
+    blurb: 'Inlining + LICM + strength reduction — step -O0→-O3 and watch locals & bytes fall.',
+    source: `// scale() is tiny and non-recursive, so it is inlined at -O2+; once every
+// call is inlined the function itself is deleted (only main is exported).
+fn scale(x: int) -> int { return x * 8; }   // x*8 strength-reduces to x<<3
+
+fn main() {
+  let a = 17; let b = 4; let acc = 0;
+  for (let i = 0; i < 64; i = i + 1) {
+    let inv = a * b - (a + b);    // loop-invariant: hoisted to the preheader
+    acc += scale(i) + inv;        // call inlined; compound assignment
+  }
+  print(acc);
+}
+`,
+  },
+  {
+    id: 'syntax',
+    title: 'Ternary & compound assign',
+    blurb: 'The newer surface syntax: conditional expressions and `+= … >>=`.',
+    source: `fn sign(x: int) -> int { return x > 0 ? 1 : (x < 0 ? -1 : 0); }
+
+fn main() {
+  let bits = 0;
+  for (let i = -3; i <= 3; i = i + 1) {
+    print(sign(i));
+    bits <<= 1;
+    bits |= i % 2 == 0 ? 1 : 0;   // ternary inside a compound assignment
+  }
+  print(bits);
+}
+`,
+  },
 ];
 
 export const TEST_PROGRAMS: { name: string; source: string }[] = EXAMPLES.map((e) => ({ name: e.id, source: e.source }));

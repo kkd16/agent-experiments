@@ -8,6 +8,8 @@ import { typecheck } from './types';
 import { buildPreIR } from './ir/builder';
 import { toSSA } from './ir/ssa';
 import { optimize } from './opt/optimize';
+import { inlineModule } from './opt/inline';
+import { tailCallOpt } from './opt/tco';
 import { codegen } from './backend/codegen';
 import { CompileError } from './diagnostics';
 import type { DomInfo } from './ir/cfg';
@@ -23,6 +25,8 @@ export interface Metrics {
   optInsts: number; // instructions + phis, after optimization
   wasmBytes: number;
   wasmInsts: number;
+  wasmLocals: number; // declared locals after stackification (lower = better)
+  stackFolded: number; // values kept on the operand stack (no local)
   reductionPct: number;
   compileMs: number;
 }
@@ -36,7 +40,9 @@ export interface Compilation {
   program?: Program;
   ssa?: IRModule; // unoptimized SSA
   optimized?: IRModule; // optimized at `level`
-  optLog?: PassStat[];
+  optLog?: PassStat[]; // SSA-level passes (aligned with optSnapshots)
+  preLog?: PassStat[]; // pre-SSA transforms (tail-call, inlining)
+  optSnapshots?: string[]; // textual IR after each SSA pass (UI only)
   wat?: string;
   bytes?: Uint8Array;
   metrics?: Metrics;
@@ -48,15 +54,24 @@ function countIR(mod: IRModule): number {
   return n;
 }
 
-export function compile(source: string, level: OptLevel): Compilation {
+export function compile(source: string, level: OptLevel, collectSnapshots = false): Compilation {
   const t0 = (globalThis.performance?.now?.() ?? Date.now());
   let tokens: Token[] = [];
   try {
     tokens = tokenize(source);
     const program = parse(source);
     typecheck(program);
-    const ssa = toSSA(buildPreIR(program));
-    const { mod: optimized, log } = optimize(ssa, level);
+    const pre = buildPreIR(program);
+    // Pre-SSA transforms (at -O2+): turn self-tail-recursion into loops, then
+    // inline small non-recursive callees. SSA construction reconciles the merged
+    // control flow with phi nodes automatically.
+    const tco = level >= 2 ? tailCallOpt(pre) : 0;
+    const inlined = level >= 2 ? inlineModule(pre) : 0;
+    const ssa = toSSA(pre);
+    const { mod: optimized, log, snapshots } = optimize(ssa, level, collectSnapshots);
+    const preLog: PassStat[] = [];
+    if (tco > 0) preLog.push({ name: 'tail-call → loop', changed: tco });
+    if (inlined > 0) preLog.push({ name: 'inline (pre-SSA)', changed: inlined });
     const cg = codegen(optimized);
     const ssaInsts = countIR(ssa);
     const optInsts = countIR(optimized);
@@ -70,6 +85,8 @@ export function compile(source: string, level: OptLevel): Compilation {
       ssa,
       optimized,
       optLog: log,
+      preLog,
+      optSnapshots: snapshots,
       wat: cg.wat,
       bytes: cg.bytes,
       metrics: {
@@ -79,6 +96,8 @@ export function compile(source: string, level: OptLevel): Compilation {
         optInsts,
         wasmBytes: cg.bytes.length,
         wasmInsts: cg.funcInstrCount,
+        wasmLocals: cg.localCount,
+        stackFolded: cg.stackFolded,
         reductionPct: ssaInsts ? Math.round((1 - optInsts / ssaInsts) * 100) : 0,
         compileMs,
       },

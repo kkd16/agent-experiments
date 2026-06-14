@@ -339,8 +339,30 @@
 .pass-table th { text-align: left; color: var(--dim); padding: 5px 14px; border-bottom: 1px solid var(--border); }
 .pass-table td { padding: 4px 14px; border-bottom: 1px solid #161d28; }
 .pass-table td.num { color: var(--accent); }
-.pass-legend { font-size: 12.5px; color: var(--dim); line-height: 1.7; max-width: 75ch; }
+.pass-table tr.pass-click { cursor: pointer; }
+.pass-table tr.pass-click:hover td { background: #131a26; }
+.pass-table tr.pass-sel td { background: #15212e; }
+.pass-table tr.pass-sel td.mono { color: var(--accent); }
+.diff-hint { font-size: 11px; }
+.pass-legend { font-size: 12.5px; color: var(--dim); line-height: 1.7; max-width: 75ch; margin-top: 14px; }
 .pass-legend b { color: var(--text); }
+
+.prelog { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin: 14px 0 4px; }
+.prelog-label { font-size: 12px; color: var(--dim); text-transform: uppercase; letter-spacing: 0.6px; }
+.prelog-pill {
+  background: #15212e; border: 1px solid var(--border2); border-radius: 20px;
+  padding: 3px 11px; font-size: 12px; font-family: var(--mono); color: var(--accent2);
+}
+.prelog-pill b { color: var(--text); }
+
+.ir-diff { margin-top: 14px; }
+.ir-diff-head { font-size: 12.5px; color: var(--dim); margin-bottom: 6px; }
+.ir-diff-head b { color: var(--accent); }
+.diff-pre { font-size: 12px; line-height: 1.5; max-height: 46vh; overflow: auto; }
+.diff-pre > div { white-space: pre; }
+.diff-add { color: var(--green); background: #0e1f15; }
+.diff-del { color: var(--red); background: #1f1113; }
+.diff-ctx { color: #6b7a8d; }
 
 /* hex */
 .section-list { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 14px; }
@@ -393,6 +415,25 @@
 .cell-center { text-align: center; }
 .tick { color: var(--green); font-weight: 700; }
 .cross { color: var(--red); font-weight: 700; }
+.verify-group td {
+  color: var(--accent2);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.7px;
+  padding-top: 14px;
+  border-bottom: 1px solid var(--border);
+}
+.dl-wasm {
+  background: var(--bg3);
+  border: 1px solid var(--accent);
+  color: var(--accent);
+  border-radius: 20px;
+  padding: 4px 12px;
+  font-size: 12px;
+  font-family: var(--mono);
+  cursor: pointer;
+}
+.dl-wasm:hover { background: var(--accent); color: #04201f; }
 
 /* cfg */
 .cfg-scroll { flex: 1; overflow: auto; padding: 16px; }

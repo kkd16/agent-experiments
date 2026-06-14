@@ -9,6 +9,7 @@ import { verifyAll } from '../compiler/verify';
 import type { VerifyResult } from '../compiler/verify';
 import type { OptLevel } from '../compiler/opt/optimize';
 import { EXAMPLES, TEST_PROGRAMS } from '../examples';
+import { TESTS } from '../compiler/tests';
 
 // ---------------------------------------------------------------- Tokens
 
@@ -46,6 +47,7 @@ function exprStr(e: Expr): string {
     case 'binary': return `(${exprStr(e.left)} ${e.op} ${exprStr(e.right)})`;
     case 'call': return `${e.callee}(${e.args.map(exprStr).join(', ')})`;
     case 'index': return `${exprStr(e.target)}[${exprStr(e.index)}]`;
+    case 'ternary': return `(${exprStr(e.cond)} ? ${exprStr(e.then)} : ${exprStr(e.otherwise)})`;
   }
 }
 
@@ -121,10 +123,42 @@ export function IrPanel({ comp, fnIdx }: { comp: Compilation; fnIdx: number }) {
 
 // ---------------------------------------------------------------- Optimizer
 
+type DiffLine = { t: ' ' | '+' | '-'; s: string };
+function lineDiff(a: string, b: string): DiffLine[] {
+  const A = a.split('\n');
+  const B = b.split('\n');
+  const n = A.length;
+  const m = B.length;
+  const dp: Int32Array[] = Array.from({ length: n + 1 }, () => new Int32Array(m + 1));
+  for (let i = n - 1; i >= 0; i--)
+    for (let j = m - 1; j >= 0; j--)
+      dp[i][j] = A[i] === B[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
+  const out: DiffLine[] = [];
+  let i = 0;
+  let j = 0;
+  while (i < n && j < m) {
+    if (A[i] === B[j]) { out.push({ t: ' ', s: A[i] }); i++; j++; }
+    else if (dp[i + 1][j] >= dp[i][j + 1]) { out.push({ t: '-', s: A[i] }); i++; }
+    else { out.push({ t: '+', s: B[j] }); j++; }
+  }
+  while (i < n) out.push({ t: '-', s: A[i++] });
+  while (j < m) out.push({ t: '+', s: B[j++] });
+  return out;
+}
+
 export function OptPanel({ comp }: { comp: Compilation }) {
+  const [sel, setSel] = useState<number | null>(null);
   if (!comp.metrics || !comp.optLog) return <Empty />;
   const { ssaInsts, optInsts, reductionPct } = comp.metrics;
   const max = Math.max(ssaInsts, 1);
+  const snaps = comp.optSnapshots ?? [];
+  const preLog = comp.preLog ?? [];
+
+  const diff = sel !== null && snaps[sel] !== undefined && snaps[sel + 1] !== undefined
+    ? lineDiff(snaps[sel], snaps[sel + 1])
+    : null;
+  const changedLines = diff ? diff.filter((d) => d.t !== ' ').length : 0;
+
   return (
     <div className="panel-scroll opt-panel">
       <div className="opt-bars">
@@ -138,25 +172,61 @@ export function OptPanel({ comp }: { comp: Compilation }) {
         </div>
         <div className="opt-reduction">{reductionPct}% fewer IR instructions</div>
       </div>
+
+      {preLog.length > 0 && (
+        <div className="prelog">
+          <span className="prelog-label">pre-SSA:</span>
+          {preLog.map((p, i) => (
+            <span key={i} className="prelog-pill">{p.name} <b>×{p.changed}</b></span>
+          ))}
+        </div>
+      )}
+
       {comp.level === 0 ? (
         <p className="dim note">Optimizations are disabled at -O0. Switch to -O1/-O2/-O3 to run the pass pipeline.</p>
       ) : (
-        <table className="pass-table">
-          <thead><tr><th>pass</th><th>changes</th></tr></thead>
-          <tbody>
-            {comp.optLog.map((p, i) => (
-              <tr key={i} className={p.changed > 0 ? '' : 'dim'}>
-                <td className="mono">{p.name}</td>
-                <td className="num">{p.changed}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+        <>
+          <table className="pass-table">
+            <thead><tr><th>SSA pass</th><th>changes</th><th></th></tr></thead>
+            <tbody>
+              {comp.optLog.map((p, i) => (
+                <tr
+                  key={i}
+                  className={(p.changed > 0 ? '' : 'dim') + (sel === i ? ' pass-sel' : '') + (snaps.length ? ' pass-click' : '')}
+                  onClick={() => snaps.length && setSel(sel === i ? null : i)}
+                >
+                  <td className="mono">{p.name}</td>
+                  <td className="num">{p.changed}</td>
+                  <td className="dim diff-hint">{snaps.length ? (sel === i ? '▾ diff' : '▸ diff') : ''}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {diff && (
+            <div className="ir-diff">
+              <div className="ir-diff-head">
+                IR change from <b>{comp.optLog[sel!].name}</b> — {changedLines === 0 ? 'no instructions changed' : `${changedLines} line(s) changed`}
+              </div>
+              <pre className="code-pre diff-pre">
+                {diff.map((d, i) => (
+                  <div key={i} className={d.t === '+' ? 'diff-add' : d.t === '-' ? 'diff-del' : 'diff-ctx'}>
+                    {d.t}
+                    {d.s ? ' ' + d.s : ''}
+                  </div>
+                ))}
+              </pre>
+            </div>
+          )}
+        </>
       )}
       <div className="pass-legend">
-        <b>Pipeline:</b> copy-propagation → sparse conditional constant propagation →
-        {comp.level >= 2 ? ' global value numbering (CSE) →' : ''} algebraic simplification → dead-code elimination,
-        iterated to a fixed point{comp.level >= 2 ? ', then CFG cleanup' : ''}.
+        <b>Pipeline:</b>{comp.level >= 2 ? ' tail-call → loop → function inlining (pre-SSA) → ' : ' '}
+        copy-propagation → sparse conditional constant propagation → strength reduction →
+        {comp.level >= 2 ? ' global value numbering (CSE) →' : ''} algebraic simplification →
+        {comp.level >= 2 ? ' loop-invariant code motion →' : ''} dead-code elimination,
+        iterated to a fixed point{comp.level >= 2 ? ', then CFG cleanup + dead-function elimination' : ''}.
+        The backend then <b>stackifies</b> — folding single-use pure values onto the wasm operand
+        stack so they never need a local. {snaps.length > 0 && 'Click a pass to see exactly what it rewrote.'}
       </div>
     </div>
   );
@@ -208,6 +278,18 @@ export function HexPanel({ comp }: { comp: Compilation }) {
     const ascii = Array.from(slice, (b) => (b >= 32 && b < 127 ? String.fromCharCode(b) : '·')).join('');
     rows.push(`${i.toString(16).padStart(6, '0')}  ${hex.padEnd(47)}  ${ascii}`);
   }
+  const download = () => {
+    // Copy into a fresh ArrayBuffer-backed view so the Blob types cleanly.
+    const buf = new Uint8Array(bytes.length);
+    buf.set(bytes);
+    const url = URL.createObjectURL(new Blob([buf], { type: 'application/wasm' }));
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'strata.wasm';
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
   return (
     <div className="panel-scroll">
       <div className="section-list">
@@ -217,6 +299,7 @@ export function HexPanel({ comp }: { comp: Compilation }) {
           </span>
         ))}
         <span className="section-pill total">total {bytes.length}B</span>
+        <button className="dl-wasm" onClick={download} title="download the assembled module">⤓ strata.wasm</button>
       </div>
       <pre className="code-pre hex-pre">{rows.join('\n')}</pre>
     </div>
@@ -276,12 +359,15 @@ export function VerifyPanel() {
   const [results, setResults] = useState<VerifyResult[]>([]);
   const [busy, setBusy] = useState(false);
   const levels: OptLevel[] = [0, 1, 2, 3];
+  // The example gallery plus the adversarial battery, each run at every level.
+  const battery = TESTS.map((t) => ({ name: t.name, source: t.source }));
+  const programs = [...TEST_PROGRAMS, ...battery];
 
   const run = async () => {
     setBusy(true);
     setResults([]);
     const acc: VerifyResult[] = [];
-    await verifyAll(TEST_PROGRAMS, levels, (r) => {
+    await verifyAll(programs, levels, (r) => {
       acc.push(r);
       setResults([...acc]);
     });
@@ -289,8 +375,23 @@ export function VerifyPanel() {
   };
 
   const pass = results.filter((r) => r.pass).length;
-  const total = TEST_PROGRAMS.length * levels.length;
+  const total = programs.length * levels.length;
   const titleOf = (id: string) => EXAMPLES.find((e) => e.id === id)?.title ?? id;
+
+  const renderRows = (list: { name: string }[]) =>
+    list.map((p) => (
+      <tr key={p.name}>
+        <td className="mono">{titleOf(p.name)}</td>
+        {levels.map((lvl) => {
+          const r = results.find((x) => x.name === p.name && x.level === lvl);
+          return (
+            <td key={lvl} className="cell-center">
+              {r ? <span className={r.pass ? 'tick' : 'cross'} title={r.detail}>{r.pass ? '✓' : '✗'}</span> : '·'}
+            </td>
+          );
+        })}
+      </tr>
+    ));
 
   return (
     <div className="panel-scroll verify-panel">
@@ -305,26 +406,19 @@ export function VerifyPanel() {
         )}
       </div>
       <p className="dim note">
-        Every example is compiled at -O0…-O3, executed as WebAssembly, and its output compared to the reference
-        interpreter. Identical output at all levels is the proof that each optimization is sound.
+        Every program — the {TEST_PROGRAMS.length} examples plus a {battery.length}-program adversarial battery
+        (wrapping arithmetic, signed div/rem, shifts, floats &amp; ∞, casts, inlining, LICM, globals, ternary,
+        compound assignment…) — is compiled at -O0…-O3, executed as WebAssembly, and its output compared to the
+        reference interpreter. Identical output at every level is the proof that each optimization is sound.
       </p>
       {results.length > 0 && (
         <table className="verify-table">
           <thead><tr><th>program</th><th>O0</th><th>O1</th><th>O2</th><th>O3</th></tr></thead>
           <tbody>
-            {TEST_PROGRAMS.map((p) => (
-              <tr key={p.name}>
-                <td className="mono">{titleOf(p.name)}</td>
-                {levels.map((lvl) => {
-                  const r = results.find((x) => x.name === p.name && x.level === lvl);
-                  return (
-                    <td key={lvl} className="cell-center">
-                      {r ? <span className={r.pass ? 'tick' : 'cross'} title={r.detail}>{r.pass ? '✓' : '✗'}</span> : '·'}
-                    </td>
-                  );
-                })}
-              </tr>
-            ))}
+            <tr className="verify-group"><td colSpan={5}>examples</td></tr>
+            {renderRows(TEST_PROGRAMS)}
+            <tr className="verify-group"><td colSpan={5}>adversarial battery</td></tr>
+            {renderRows(battery)}
           </tbody>
         </table>
       )}

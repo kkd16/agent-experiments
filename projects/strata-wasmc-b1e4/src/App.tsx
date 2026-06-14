@@ -42,7 +42,7 @@ export default function App() {
     setStage(s);
   };
 
-  const comp = useMemo(() => compile(source, level), [source, level]);
+  const comp = useMemo(() => compile(source, level, true), [source, level]);
   const funcs = comp.optimized?.funcs ?? [];
   const safeFnIdx = Math.min(fnIdx, Math.max(0, funcs.length - 1));
 
@@ -74,6 +74,8 @@ export default function App() {
           <Metric label={`O${level} insts`} value={m?.optInsts ?? '—'} />
           <Metric label="reduction" value={m ? `${m.reductionPct}%` : '—'} accent />
           <Metric label="wasm" value={m ? `${m.wasmBytes} B` : '—'} />
+          <Metric label="locals" value={m?.wasmLocals ?? '—'} />
+          <Metric label="stack-folded" value={m?.stackFolded ?? '—'} accent />
           <Metric label="compile" value={m ? `${m.compileMs.toFixed(1)} ms` : '—'} />
         </div>
       </header>

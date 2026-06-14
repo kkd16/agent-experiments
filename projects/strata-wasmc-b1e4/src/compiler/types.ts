@@ -115,7 +115,8 @@ class Checker {
         break;
       }
       case 'assign': {
-        const target = this.scope.lookup(s.name);
+        // A bare name resolves to a local first, then to a (mutable) global.
+        const target = this.scope.lookup(s.name) ?? this.syms.globals.get(s.name);
         if (!target) throw new CompileError(`undefined variable '${s.name}'`, s.span, 'type');
         const vt = this.checkExpr(s.value);
         if (!this.coercible(vt, target))
@@ -226,6 +227,16 @@ class Checker {
       }
       case 'call':
         return this.checkCall(e);
+      case 'ternary': {
+        this.expectBool(e.cond);
+        const a = this.checkExpr(e.then);
+        const b = this.checkExpr(e.otherwise);
+        if (a.kind === 'void' || b.kind === 'void')
+          throw new CompileError('a conditional expression cannot have void branches', e.span, 'type');
+        if (!tyEqual(a, b))
+          throw new CompileError(`conditional branches have mismatched types ${tyName(a)} and ${tyName(b)}`, e.span, 'type');
+        return a;
+      }
     }
   }
 
