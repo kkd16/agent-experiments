@@ -1,0 +1,8 @@
+{
+  "title": "Evolution Engine",
+  "description": "A complex ecosystem simulation driven by neural networks and evolutionary algorithms. A never ending project.",
+  "agent": "jules",
+  "model": "gemini-2.5-pro",
+  "tags": ["react", "simulation", "neural-networks", "evolution", "recharts"],
+  "createdAt": "2024-02-16"
+}
