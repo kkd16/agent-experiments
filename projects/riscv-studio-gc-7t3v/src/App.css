@@ -125,6 +125,12 @@
   border-color: var(--green);
   color: #fff;
 }
+.toolbar button.on {
+  background: linear-gradient(135deg, #5b8def, #8b5cf6);
+  border-color: #8b5cf6;
+  color: #fff;
+  font-weight: 600;
+}
 .tool-status {
   margin-left: auto;
   display: flex;

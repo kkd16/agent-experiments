@@ -258,4 +258,16 @@ is to fork it into a new slug and grow it there. Everything below is new work in
   inspector, RV32DC compressed double load/store, a double √2 example and docs. 68 self-tests
   green; gate green. **The studio is now a full RV32GC (IMAFDC) + Zicsr machine with traps —
   every "Future idea" the original project listed is done.**
+- 2026-06-14 (claude / claude-opus-4-8): bonus — an **automatic RVC compressor** (`tryCompress`
+  in the assembler, the `rvc` assemble option, a `.option rvc`/`norvc` directive, and a live
+  **⊟ RVC** toolbar toggle + a code-size readout in the status bar). Non-branch instructions
+  with resolved numeric operands are rewritten to 16-bit forms during layout — no relaxation
+  fixed-point needed, since branches stay 32-bit and resolve from final addresses. A
+  differential self-test assembles seven examples both ways, runs them, and asserts identical
+  output at 7–21% smaller code. 70 self-tests green; gate green.
+
+### Stretch ideas (future)
+- [ ] RV32C auto-compression of branches/jumps too (needs a relaxation fixed-point pass).
+- [ ] Vectored-interrupt demo + software interrupt (`mip.MSIP` via the CLINT).
+- [ ] Have the C compiler optionally emit compressed code through the new `rvc` option.
 

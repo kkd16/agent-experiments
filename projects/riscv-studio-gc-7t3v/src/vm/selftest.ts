@@ -1360,6 +1360,53 @@ const TESTS: Test[] = [
       assert(cpu.output.startsWith('1.41421356237309'), `got: ${cpu.output}`);
     },
   },
+
+  // --- automatic RVC compression (the `rvc` assemble option) ------------------
+  {
+    name: 'auto-RVC: compressed builds run identically to uncompressed, but smaller',
+    fn: () => {
+      // The acid test for relaxation: for each example, assembling with auto-compression must
+      // produce a program that runs to *exactly* the same output — only smaller.
+      for (const id of ['fib', 'gcd', 'bubble', 'reverse', 'muldiv', 'counters', 'hello']) {
+        const code = EXAMPLES.find((e) => e.id === id)!.code;
+        const plain = assemble(code, { rvc: false });
+        const rvc = assemble(code, { rvc: true });
+        assert(plain.ok && rvc.ok, `${id} assembles both ways`);
+        const cpuA = new Cpu();
+        cpuA.load(plain);
+        cpuA.run(20_000_000);
+        const cpuB = new Cpu();
+        cpuB.load(rvc);
+        cpuB.run(20_000_000);
+        eq(cpuB.output, cpuA.output, `${id}: rvc output matches plain`);
+        eq(cpuB.status, cpuA.status, `${id}: rvc status matches plain`);
+        const bytesA = plain.instrs.reduce((s, i) => s + i.len, 0);
+        const bytesB = rvc.instrs.reduce((s, i) => s + i.len, 0);
+        assert(bytesB < bytesA, `${id}: rvc is smaller (${bytesA} → ${bytesB})`);
+      }
+    },
+  },
+  {
+    name: 'auto-RVC: the .option rvc directive enables compression inline',
+    fn: () => {
+      const result = assemble(`
+        .option rvc
+        main:
+          li a0, 5
+          addi a0, a0, 1
+          li a7, 10
+          ecall
+      `);
+      assert(result.ok, 'assembles');
+      // li a0,5 (→ c.li) and addi a0,a0,1 (→ c.addi) should both be 2 bytes.
+      const compressed = result.instrs.filter((i) => i.len === 2).length;
+      assert(compressed >= 2, `expected compression via .option, got ${compressed} compressed`);
+      const cpu = new Cpu();
+      cpu.load(result);
+      cpu.run(1000);
+      eq(cpu.status, 'halted', 'runs');
+    },
+  },
 ];
 
 export function runSelfTests(): TestResult[] {

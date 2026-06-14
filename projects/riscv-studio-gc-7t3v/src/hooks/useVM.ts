@@ -23,6 +23,9 @@ export interface VM {
   currentLine: number | null;
   /** How many instructions can be reverted with `stepBack()` (time-travel depth). */
   historyDepth: number;
+  /** When true, the assembler auto-emits RV32C 16-bit forms (relaxation). */
+  rvc: boolean;
+  setRvc: (v: boolean) => void;
   assembleOnly: () => AssembleResult;
   load: () => boolean;
   loadSource: (src: string) => void;
@@ -47,10 +50,19 @@ export function useVM(initialSource: string): VM {
   const [cpu] = useState(() => new Cpu());
   const [prevRegs, setPrevRegs] = useState<Int32Array>(() => new Int32Array(32));
 
+  const [rvc, setRvcState] = useState(false);
+
   const loadedSourceRef = useRef<string | null>(null);
   const rafRef = useRef<number | null>(null);
   const runningRef = useRef(false);
   const breakpointAddrsRef = useRef<ReadonlySet<number>>(new Set());
+  // Mirror the rvc option in a ref so the assemble callbacks read it without being recreated.
+  const rvcRef = useRef(false);
+
+  const setRvc = useCallback((v: boolean) => {
+    rvcRef.current = v;
+    setRvcState(v);
+  }, []);
 
   const bump = useCallback(() => setTick((t) => t + 1), []);
   const snapshot = useCallback(() => setPrevRegs(cpu.regs.slice()), [cpu]);
@@ -73,13 +85,13 @@ export function useVM(initialSource: string): VM {
   }, [breakpointAddrs]);
 
   const assembleOnly = useCallback((): AssembleResult => {
-    const result = assemble(source);
+    const result = assemble(source, { rvc: rvcRef.current });
     setAssembly(result);
     return result;
   }, [source]);
 
   const load = useCallback((): boolean => {
-    const result = assemble(source);
+    const result = assemble(source, { rvc: rvcRef.current });
     setAssembly(result);
     if (!result.ok) {
       loadedSourceRef.current = null;
@@ -104,7 +116,7 @@ export function useVM(initialSource: string): VM {
     (src: string) => {
       cancelRun();
       setSource(src);
-      const result = assemble(src);
+      const result = assemble(src, { rvc: rvcRef.current });
       setAssembly(result);
       if (result.ok) {
         cpu.load(result);
@@ -123,9 +135,15 @@ export function useVM(initialSource: string): VM {
     if (loadedSourceRef.current !== source || cpu.isStopped()) {
       return load();
     }
-    if (!assembly) setAssembly(assemble(source));
+    if (!assembly) setAssembly(assemble(source, { rvc: rvcRef.current }));
     return true;
   }, [source, cpu, load, assembly]);
+
+  // Re-assemble + reload whenever the rvc option flips (it changes code size & layout).
+  useEffect(() => {
+    if (loadedSourceRef.current !== null) load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rvc]);
 
   const step = useCallback(() => {
     if (!ensureFresh()) return;
@@ -207,6 +225,8 @@ export function useVM(initialSource: string): VM {
     breakpointLines,
     currentLine,
     historyDepth,
+    rvc,
+    setRvc,
     assembleOnly,
     load,
     loadSource,

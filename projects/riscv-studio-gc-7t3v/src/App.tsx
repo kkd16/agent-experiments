@@ -127,6 +127,13 @@ export default function App() {
           </button>
           <button onClick={vm.reset}>↺ Reset</button>
           <button onClick={vm.assembleOnly}>⚙ Assemble</button>
+          <button
+            className={vm.rvc ? 'on' : ''}
+            onClick={() => vm.setRvc(!vm.rvc)}
+            title="Auto-compress eligible instructions to RV32C 16-bit forms (relaxation)"
+          >
+            ⊟ RVC
+          </button>
           <button onClick={onShare} title="Copy a shareable link to this program">
             {shared ? '✓ Copied' : '🔗 Share'}
           </button>
@@ -203,7 +210,9 @@ export default function App() {
 
       <footer className="statusline">
         <span>
-          {vm.assembly?.instrs.length ?? 0} instr · {vm.breakpointLines.size} breakpoints ·{' '}
+          {vm.assembly?.instrs.length ?? 0} instr ·{' '}
+          {vm.assembly?.instrs.reduce((s, i) => s + i.len, 0) ?? 0} B
+          {vm.rvc ? ' (RVC)' : ''} · {vm.breakpointLines.size} breakpoints ·{' '}
           {vm.historyDepth} undo
         </span>
         <span>

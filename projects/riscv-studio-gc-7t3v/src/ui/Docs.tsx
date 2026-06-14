@@ -179,6 +179,7 @@ const DIRECTIVES: InsDoc[] = [
   { m: '.align n / .balign N', desc: 'align to 2ⁿ / N bytes' },
   { m: '.equ NAME, v  ·  NAME = v', desc: 'define an assembler constant' },
   { m: '.globl name', desc: 'mark a symbol global (accepted, informational)' },
+  { m: '.option rvc / norvc', desc: 'enable / disable automatic RV32C compression (= the ⊟ RVC toggle)' },
 ];
 
 export default function Docs() {
@@ -198,7 +199,10 @@ export default function Docs() {
           instructions are decoded and disassembled inline; float ops take an optional
           rounding-mode operand (<code>rne·rtz·rdn·rup·rmm·dyn</code>); and the debugger can
           <strong> step backward</strong> to undo instructions one at a time. The assembler
-          accepts the full pseudo-instruction set and common GNU/RARS directives.
+          accepts the full pseudo-instruction set and common GNU/RARS directives, and the
+          <strong> ⊟ RVC</strong> toggle (or <code>.option rvc</code>) auto-compresses eligible
+          instructions to 16-bit forms, shrinking code the way a real <code>-march=…c</code>{' '}
+          toolchain does.
         </p>
 
         {GROUPS.map((grp) => (

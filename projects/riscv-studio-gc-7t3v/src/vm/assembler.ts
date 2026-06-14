@@ -846,6 +846,74 @@ function expandCompressed(
 }
 
 // ---------------------------------------------------------------------------
+// Automatic RVC compression ("relaxation")
+// ---------------------------------------------------------------------------
+//
+// When enabled (the `rvc` assemble option or a `.option rvc` directive), each freshly
+// expanded *non-branch* instruction with a resolved numeric immediate is rewritten to its
+// 16-bit RV32C form when one exists and its operands fit. Branches/jumps are left 32-bit, so
+// no relaxation fixed-point is needed: the layout assigns final addresses with the chosen
+// sizes, and branch offsets are still resolved from those final addresses at encode time.
+
+const isRvcReg = (r: number): boolean => r >= 8 && r <= 15;
+
+function compressedMicro(m: MicroInstr, mnemonic: string, value = 0): MicroInstr {
+  return { ...m, mnemonic, compressed: true, imm: { kind: 'num', value } };
+}
+
+/** Return a compressed equivalent of `m`, or null if it cannot (safely) be compressed. */
+function tryCompress(m: MicroInstr): MicroInstr | null {
+  if (m.compressed || m.csr !== undefined || m.amoFunct7 !== undefined || FP_SPECS[m.mnemonic]) {
+    return null;
+  }
+  const n = m.imm.kind === 'num' ? m.imm.value : null;
+  const { rd, rs1, rs2 } = m;
+  const mk = (mn: string, value = 0) => compressedMicro(m, mn, value);
+
+  switch (m.mnemonic) {
+    case 'addi':
+      if (n === null) return null;
+      if (rd === 2 && rs1 === 2 && n !== 0 && n >= -512 && n <= 496 && n % 16 === 0) return mk('c.addi16sp', n);
+      if (isRvcReg(rd) && rs1 === 2 && n >= 4 && n <= 1020 && n % 4 === 0) return mk('c.addi4spn', n);
+      if (rd !== 0 && rs1 === 0 && n >= -32 && n <= 31) return mk('c.li', n);
+      if (rd !== 0 && rs1 === rd && n !== 0 && n >= -32 && n <= 31) return mk('c.addi', n);
+      return null;
+    case 'add':
+      if (rd !== 0 && rs1 === rd && rs2 !== 0) return mk('c.add');
+      if (rd !== 0 && rs1 === 0 && rs2 !== 0) return mk('c.mv');
+      return null;
+    case 'sub':
+      return isRvcReg(rd) && rs1 === rd && isRvcReg(rs2) ? mk('c.sub') : null;
+    case 'and':
+      return isRvcReg(rd) && rs1 === rd && isRvcReg(rs2) ? mk('c.and') : null;
+    case 'or':
+      return isRvcReg(rd) && rs1 === rd && isRvcReg(rs2) ? mk('c.or') : null;
+    case 'xor':
+      return isRvcReg(rd) && rs1 === rd && isRvcReg(rs2) ? mk('c.xor') : null;
+    case 'andi':
+      return n !== null && isRvcReg(rd) && rs1 === rd && n >= -32 && n <= 31 ? mk('c.andi', n) : null;
+    case 'slli':
+      return n !== null && rd !== 0 && rs1 === rd && n >= 1 && n <= 31 ? mk('c.slli', n) : null;
+    case 'srli':
+      return n !== null && isRvcReg(rd) && rs1 === rd && n >= 1 && n <= 31 ? mk('c.srli', n) : null;
+    case 'srai':
+      return n !== null && isRvcReg(rd) && rs1 === rd && n >= 1 && n <= 31 ? mk('c.srai', n) : null;
+    case 'lw':
+      if (n === null) return null;
+      if (rd !== 0 && rs1 === 2 && n >= 0 && n <= 252 && n % 4 === 0) return mk('c.lwsp', n);
+      if (isRvcReg(rd) && isRvcReg(rs1) && n >= 0 && n <= 124 && n % 4 === 0) return mk('c.lw', n);
+      return null;
+    case 'sw':
+      if (n === null) return null;
+      if (rs1 === 2 && n >= 0 && n <= 252 && n % 4 === 0) return mk('c.swsp', n);
+      if (isRvcReg(rs2) && isRvcReg(rs1) && n >= 0 && n <= 124 && n % 4 === 0) return mk('c.sw', n);
+      return null;
+    default:
+      return null;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Directives → data bytes
 // ---------------------------------------------------------------------------
 
@@ -1067,12 +1135,18 @@ function collectConstants(parsed: ParsedLine[], errors: AsmError[]): Map<string,
   return consts;
 }
 
-export function assemble(source: string): AssembleResult {
+export interface AssembleOptions {
+  /** Automatically emit RV32C 16-bit forms for eligible instructions ("relaxation"). */
+  rvc?: boolean;
+}
+
+export function assemble(source: string, options: AssembleOptions = {}): AssembleResult {
   const errors: AsmError[] = [];
   const parsed = parseLines(source);
   const consts = collectConstants(parsed, errors);
   const symbols = new Map<string, number>();
   const slots: Slot[] = [];
+  let rvc = options.rvc ?? false;
 
   let seg: 'text' | 'data' = 'text';
   let textLC = TEXT_BASE;
@@ -1107,6 +1181,11 @@ export function assemble(source: string): AssembleResult {
         seg = 'data';
       } else if (op === '.globl' || op === '.global' || op === '.equ' || op === '.set') {
         // metadata / already handled
+      } else if (op === '.option') {
+        // `.option rvc` / `.option norvc` toggle automatic compression for following code.
+        const a = (p.operands[0] ?? '').toLowerCase();
+        if (a === 'rvc') rvc = true;
+        else if (a === 'norvc') rvc = false;
       } else if (p.operands.length === 1 && p.operands[0].startsWith('=')) {
         // NAME = value, already collected
       } else if (op === '.align' || op === '.p2align') {
@@ -1150,8 +1229,9 @@ export function assemble(source: string): AssembleResult {
         setCur(align(cur(), 2));
         const micros = expand(op, p.operands, consts, p.line, p.raw.trim());
         for (const mi of micros) {
-          const size = mi.compressed ? 2 : 4;
-          slots.push({ addr: textLC, size, line: p.line, source: p.raw.trim(), micro: mi, bytes: null });
+          const use = rvc ? tryCompress(mi) ?? mi : mi;
+          const size = use.compressed ? 2 : 4;
+          slots.push({ addr: textLC, size, line: p.line, source: p.raw.trim(), micro: use, bytes: null });
           textLC += size;
         }
       }
