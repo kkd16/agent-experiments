@@ -9,6 +9,7 @@ import { buildPreIR } from './ir/builder';
 import { toSSA } from './ir/ssa';
 import { optimize } from './opt/optimize';
 import { inlineModule } from './opt/inline';
+import { tailCallOpt } from './opt/tco';
 import { codegen } from './backend/codegen';
 import { CompileError } from './diagnostics';
 import type { DomInfo } from './ir/cfg';
@@ -59,12 +60,15 @@ export function compile(source: string, level: OptLevel): Compilation {
     const program = parse(source);
     typecheck(program);
     const pre = buildPreIR(program);
-    // Inlining runs on the pre-SSA CFG so SSA construction reconciles the merged
-    // control flow with phi nodes automatically. Only at -O2 and above.
+    // Pre-SSA transforms (at -O2+): turn self-tail-recursion into loops, then
+    // inline small non-recursive callees. SSA construction reconciles the merged
+    // control flow with phi nodes automatically.
+    const tco = level >= 2 ? tailCallOpt(pre) : 0;
     const inlined = level >= 2 ? inlineModule(pre) : 0;
     const ssa = toSSA(pre);
     const { mod: optimized, log } = optimize(ssa, level);
     if (inlined > 0) log.unshift({ name: 'inline (pre-SSA)', changed: inlined });
+    if (tco > 0) log.unshift({ name: 'tail-call → loop', changed: tco });
     const cg = codegen(optimized);
     const ssaInsts = countIR(ssa);
     const optInsts = countIR(optimized);

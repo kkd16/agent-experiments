@@ -260,6 +260,25 @@ fn lcm(a: int, b: int) -> int { return a / gcd(a, b) * b; }
 fn main(){ for (let i = 1; i <= 8; i = i + 1) { print(lcm(i, 12)); } }`,
   },
   {
+    name: 'tail-sum',
+    source: `fn sum(n: int, acc: int) -> int { if (n == 0) { return acc; } return sum(n - 1, acc + n); }
+fn main(){ for (let i = 0; i < 10; i = i + 1) { print(sum(i * 90, 0)); } }`,
+  },
+  {
+    name: 'tail-gcd',
+    source: `fn gcd(a: int, b: int) -> int { if (b == 0) { return a; } return gcd(b, a % b); }
+fn main(){ for (let i = 1; i <= 12; i = i + 1) { print(gcd(i * 7, 84)); } }`,
+  },
+  {
+    name: 'tail-conditional',
+    source: `fn drop2(n: int) -> int {
+  if (n <= 0) { return 0; }
+  if (n == 1) { return 1; }
+  return drop2(n - 2);   // tail self-call from a third path
+}
+fn main(){ for (let i = 0; i < 12; i = i + 1) { print(drop2(i)); } }`,
+  },
+  {
     name: 'deep-expression',
     source: `fn main(){
   let x = 3; let y = 5; let z = 7;

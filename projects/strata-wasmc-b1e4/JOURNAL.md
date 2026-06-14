@@ -22,6 +22,8 @@ reference interpreter at every optimization level.
   and whole-module **dead-function elimination**, iterated to a fixed point.
 - `src/compiler/opt/inline.ts` — pre-SSA function inlining (call-site block split +
   renamed callee clone; returns become assign-and-branch). Runs at -O2+.
+- `src/compiler/opt/tco.ts` — pre-SSA tail-call → loop transform (self-recursion in
+  constant stack space). Runs at -O2+.
 - `src/compiler/backend/` — the wasm backend:
   - `codegen.ts` reconstructs structured control flow from the CFG (a relooper based on
     Ramsey's "Beyond Relooper"), then **stackifies** — folding single-use pure values onto
@@ -31,7 +33,7 @@ reference interpreter at every optimization level.
 - `src/compiler/interp.ts` — reference tree-walking interpreter (the correctness oracle).
 - `src/compiler/runner.ts` — instantiates and runs the wasm in-browser.
 - `src/compiler/verify.ts` — differential testing harness (shipped as the "Verify" tab).
-- `src/compiler/tests.ts` — adversarial differential-test battery (29 focused programs).
+- `src/compiler/tests.ts` — adversarial differential-test battery (32 focused programs).
 - `src/ui/` — the Compiler-Explorer UI (editor with syntax highlight overlay, SVG CFG view,
   pipeline-stage panels).
 
@@ -72,6 +74,10 @@ against the reference interpreter). Plan + progress:
 ### Mid-end — new optimization passes
 - [x] **LICM** — loop-invariant code motion: detect natural loops from back
       edges, materialize a preheader, hoist pure loop-invariant instructions.
+- [x] **Tail-call optimization** — a self-recursive call in tail position is
+      loopified (jump back to the entry through a fresh preheader, parameters
+      reassigned via a parallel copy). Self-recursion runs in constant stack
+      space — a 500k-deep `sum` stack-overflows at -O0 but loops cleanly at -O2.
 - [x] **Function inlining** — pre-SSA call-site splicing of small, non-recursive
       callees under a cost budget; SSA/phi cleanup falls out for free. (-O2+)
 - [x] **Dead-function elimination** — only `main` is exported, so a callee that
@@ -88,8 +94,8 @@ against the reference interpreter). Plan + progress:
       a function (the IR/interpreter already supported it).
 
 ### Correctness & UX
-- [x] New adversarial differential test battery (`compiler/tests.ts`, 29 programs),
-      wired into the Verify panel and the headless harness — 116 extra checks.
+- [x] New adversarial differential test battery (`compiler/tests.ts`, 32 programs),
+      wired into the Verify panel and the headless harness — 128 extra checks.
 - [x] UI: `locals` + `stack-folded` header metrics; Optimizer panel pipeline
       legend; Bytes tab "download .wasm" button.
 
@@ -97,7 +103,7 @@ against the reference interpreter). Plan + progress:
 
 - [ ] `i64`/`f32` types and more numeric conversions
 - [ ] Strings and a richer print (format strings)
-- [ ] Tail-call optimization
+- [ ] General (non-self) tail-call elimination via the wasm tail-call proposal
 - [ ] Step debugger that single-steps the wasm and highlights the source line
 - [ ] A "diff" view that highlights exactly which IR instructions a pass removed
 
@@ -111,13 +117,14 @@ against the reference interpreter). Plan + progress:
   order is preserved — proven by the differential harness staying green at every level (e.g.
   `cse` -O0 went from one-local-per-value to a single local with 12 values stack-folded).
   **New mid-end passes**: LICM (natural-loop detection from back edges + preheader insertion +
-  invariant hoisting, never hoisting trapping ops past a zero-trip guard), pre-SSA function
-  inlining of small non-recursive callees under a budget, strength reduction (`*2^k → <<k`), and
-  whole-module dead-function elimination (only `main` is exported, so a fully-inlined callee is
-  deleted — making inlining a net size win). **Language**: ternary `?:`, all ten compound
+  invariant hoisting, never hoisting trapping ops past a zero-trip guard), tail-call → loop
+  optimization (self-recursion in constant stack space — a 500k-deep `sum` overflows at -O0 but
+  loops cleanly at -O2), pre-SSA function inlining of small non-recursive callees under a budget,
+  strength reduction (`*2^k → <<k`), and whole-module dead-function elimination (only `main` is
+  exported, so a fully-inlined callee is deleted — making inlining a net size win). **Language**: ternary `?:`, all ten compound
   assignment operators, and a fix so globals are assignable from functions. **Correctness**: a
-  29-program adversarial battery (`tests.ts`) wired into the Verify panel and a private headless
-  Node harness; 152 differential checks (9 examples + 29 battery × 4 levels) all pass. **UI**:
+  32-program adversarial battery (`tests.ts`) wired into the Verify panel and a private headless
+  Node harness; 172 differential checks (11 examples + 32 battery × 4 levels) all pass. **UI**:
   `locals`/`stack-folded` header metrics, refreshed Optimizer legend, and a Bytes-tab
   download-`.wasm` button. Gate (conformance + lint + build) green.
 - 2026-06-14 (claude): Built the whole compiler end-to-end from the template. Wrote a Node

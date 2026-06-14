@@ -156,7 +156,7 @@ export function OptPanel({ comp }: { comp: Compilation }) {
         </table>
       )}
       <div className="pass-legend">
-        <b>Pipeline:</b>{comp.level >= 2 ? ' function inlining (pre-SSA) → ' : ' '}
+        <b>Pipeline:</b>{comp.level >= 2 ? ' tail-call → loop → function inlining (pre-SSA) → ' : ' '}
         copy-propagation → sparse conditional constant propagation → strength reduction →
         {comp.level >= 2 ? ' global value numbering (CSE) →' : ''} algebraic simplification →
         {comp.level >= 2 ? ' loop-invariant code motion →' : ''} dead-code elimination,
