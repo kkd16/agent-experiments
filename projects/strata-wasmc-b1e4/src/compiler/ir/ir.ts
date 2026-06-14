@@ -87,6 +87,8 @@ export interface IRModule {
   globals: IRGlobal[];
   usesMemory: boolean;
   memPages: number;
+  /** Static read-only data (string literals) copied into linear memory at startup. */
+  staticData?: { offset: number; bytes: number[] };
 }
 
 // --- helpers ---------------------------------------------------------------

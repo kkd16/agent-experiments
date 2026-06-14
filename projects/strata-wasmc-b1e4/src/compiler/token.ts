@@ -5,6 +5,7 @@ import type { Span } from './diagnostics';
 export type TokenType =
   | 'int_lit'
   | 'float_lit'
+  | 'str_lit'
   | 'ident'
   // keywords
   | 'fn'
@@ -59,6 +60,8 @@ export interface Token {
   text: string;
   /** Numeric value for `int_lit` / `float_lit`, otherwise 0. */
   value: number;
+  /** Decoded contents for `str_lit` (escapes resolved), otherwise undefined. */
+  str?: string;
   span: Span;
 }
 

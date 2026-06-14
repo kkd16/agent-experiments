@@ -12,14 +12,28 @@ export interface RunResult {
 
 export async function runWasm(bytes: Uint8Array, entry = 'main', args: number[] = []): Promise<RunResult> {
   const output: string[] = [];
+  // Set once the instance is live; `print_str` reaches back into linear memory to
+  // read a string object [i32 length][bytes…] and decode it (Latin-1, one byte
+  // per character — the same byte-string model the interpreter uses).
+  let mem: Uint8Array | null = null;
+  const readStr = (ptr: number): string => {
+    if (!mem) return '';
+    const len = mem[ptr] | (mem[ptr + 1] << 8) | (mem[ptr + 2] << 16) | (mem[ptr + 3] << 24);
+    let s = '';
+    for (let i = 0; i < len; i++) s += String.fromCharCode(mem[ptr + 8 + i]);
+    return s;
+  };
   const env = {
     print_int: (x: number) => output.push(formatInt(x)),
     print_float: (x: number) => output.push(formatFloat(x)),
     print_bool: (x: number) => output.push(formatBool(x)),
+    print_str: (ptr: number) => output.push(readStr(ptr)),
   };
   try {
     const module = await WebAssembly.compile(bytes as unknown as BufferSource);
     const instance = await WebAssembly.instantiate(module, { env });
+    const memory = instance.exports.memory as WebAssembly.Memory | undefined;
+    if (memory) mem = new Uint8Array(memory.buffer);
     const fn = instance.exports[entry] as ((...a: number[]) => number) | undefined;
     if (typeof fn !== 'function') return { output, result: undefined, error: `no export '${entry}'` };
     const result = fn(...args);

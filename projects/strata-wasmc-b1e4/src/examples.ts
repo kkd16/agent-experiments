@@ -211,6 +211,111 @@ fn main() {
 `,
   },
   {
+    id: 'strings',
+    title: 'Strings & text',
+    blurb: 'First-class str type: concat with +, str()/char() conversions, len & byte indexing — a real string runtime compiled to wasm.',
+    source: `// Strata strings are byte strings living in linear memory. Build them with
+// '+', convert numbers with str(), make characters with char(), and read
+// bytes by indexing. The whole string runtime is itself written in Strata and
+// compiled to wasm — the Verify tab proves it matches the interpreter.
+fn shout(s: str) -> str {
+  let out = "";
+  for (let i = 0; i < len(s); i = i + 1) {
+    let c = s[i];
+    if (c >= 97 && c <= 122) { c = c - 32; }   // lowercase -> uppercase
+    out = out + char(c);
+  }
+  return out + "!";
+}
+
+fn main() {
+  print("Hello, " + "Strata" + "!");
+  print(shout("functions return strings"));
+  for (let i = 1; i <= 15; i = i + 1) {       // FizzBuzz, the wordy way
+    let s = "";
+    if (i % 3 == 0) { s = s + "Fizz"; }
+    if (i % 5 == 0) { s = s + "Buzz"; }
+    print(s == "" ? str(i) : s);
+  }
+}
+`,
+  },
+  {
+    id: 'caesar',
+    title: 'Caesar cipher',
+    blurb: 'Encrypt then decrypt text with modular byte arithmetic; the round trip recovers the original.',
+    source: `// A Caesar cipher over the ASCII letters, then its inverse. Shifting by k and
+// then by 26-k recovers the original — pure string + byte arithmetic.
+fn shift(s: str, k: int) -> str {
+  let out = "";
+  for (let i = 0; i < len(s); i = i + 1) {
+    let c = s[i];
+    if (c >= 65 && c <= 90) { c = (c - 65 + k) % 26 + 65; }        // A-Z
+    else if (c >= 97 && c <= 122) { c = (c - 97 + k) % 26 + 97; }  // a-z
+    out = out + char(c);
+  }
+  return out;
+}
+
+fn main() {
+  let msg = "Attack at dawn";
+  let enc = shift(msg, 3);
+  let dec = shift(enc, 23);   // 26 - 3
+  print(msg);
+  print(enc);
+  print(dec);
+  print(dec == msg ? "round-trip OK" : "FAILED");
+}
+`,
+  },
+  {
+    id: 'barchart',
+    title: 'ASCII bar chart',
+    blurb: 'Render text bars from array data, with labels assembled by str() — strings + arrays together.',
+    source: `// A tiny horizontal bar chart. Each row mixes array data, number formatting
+// via str(), and a run of '#' characters built with char(35).
+fn bar(n: int) -> str {
+  let s = "";
+  for (let i = 0; i < n; i = i + 1) { s = s + char(35); }   // '#'
+  return s;
+}
+
+fn main() {
+  let data = int_array(5);
+  data[0] = 3; data[1] = 7; data[2] = 2; data[3] = 9; data[4] = 5;
+  for (let i = 0; i < 5; i = i + 1) {
+    print("row " + str(i) + " | " + bar(data[i]) + " " + str(data[i]));
+  }
+}
+`,
+  },
+  {
+    id: 'toolkit',
+    title: 'Text toolkit',
+    blurb: 'Case folding, slicing, search and lexicographic ordering — the str library working together.',
+    source: `// A little text toolkit built on Strata's string library: case folding
+// (to_upper/to_lower), slicing (substr), search (index_of), and ordering.
+fn cap(s: str) -> str {
+  if (len(s) == 0) { return s; }
+  return to_upper(substr(s, 0, 1)) + to_lower(substr(s, 1, len(s) - 1));
+}
+
+fn main() {
+  let kv = "name=Strata";
+  let eq = index_of(kv, 61);              // '=' is byte 61
+  print(substr(kv, 0, eq));               // "name"
+  print(substr(kv, eq + 1, len(kv)));     // "Strata" (count clamps to the end)
+
+  print(cap("hELLO world"));              // "Hello world"
+  print(to_upper("shout"));               // "SHOUT"
+
+  print(to_lower("Apple") == to_lower("apple"));   // case-insensitive equal
+  print("apple" < "banana");              // lexicographic ordering
+  print("banana" < "apple");
+}
+`,
+  },
+  {
     id: 'syntax',
     title: 'Ternary & compound assign',
     blurb: 'The newer surface syntax: conditional expressions and `+= … >>=`.',

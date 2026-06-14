@@ -9,8 +9,8 @@ export interface Tok {
 
 const KEYWORDS = new Set(['fn', 'let', 'if', 'else', 'while', 'for', 'return', 'break', 'continue']);
 const CONSTS = new Set(['true', 'false']);
-const TYPES = new Set(['int', 'float', 'bool', 'void']);
-const BUILTINS = new Set(['print', 'int_array', 'float_array', 'len']);
+const TYPES = new Set(['int', 'float', 'bool', 'str', 'void']);
+const BUILTINS = new Set(['print', 'int_array', 'float_array', 'len', 'str', 'char', 'substr', 'index_of', 'to_upper', 'to_lower']);
 
 const isDigit = (c: string) => c >= '0' && c <= '9';
 const isIdentStart = (c: string) => (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c === '_';
@@ -43,6 +43,17 @@ export function highlight(src: string): Tok[] {
       while (j < n && !(src[j] === '*' && src[j + 1] === '/')) j++;
       j = Math.min(n, j + 2);
       push('comment', src.slice(i, j));
+      i = j;
+      continue;
+    }
+    if (c === '"') {
+      let j = i + 1;
+      while (j < n && src[j] !== '"' && src[j] !== '\n') {
+        if (src[j] === '\\') j++; // skip escaped char
+        j++;
+      }
+      if (src[j] === '"') j++;
+      push('str', src.slice(i, j));
       i = j;
       continue;
     }

@@ -22,6 +22,7 @@ export function cloneModule(mod: IRModule): IRModule {
     globals: mod.globals.map((g) => ({ ...g })),
     usesMemory: mod.usesMemory,
     memPages: mod.memPages,
+    staticData: mod.staticData,
   };
 }
 function cloneOperand(o: Operand): Operand {

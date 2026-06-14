@@ -42,6 +42,7 @@ function exprStr(e: Expr): string {
     case 'int': return String(e.value);
     case 'float': return String(e.value);
     case 'bool': return String(e.value);
+    case 'string': return JSON.stringify(e.value);
     case 'ident': return e.name;
     case 'unary': return `${e.op}${exprStr(e.operand)}`;
     case 'binary': return `(${exprStr(e.left)} ${e.op} ${exprStr(e.right)})`;
@@ -408,8 +409,10 @@ export function VerifyPanel() {
       <p className="dim note">
         Every program — the {TEST_PROGRAMS.length} examples plus a {battery.length}-program adversarial battery
         (wrapping arithmetic, signed div/rem, shifts, floats &amp; ∞, casts, inlining, LICM, globals, ternary,
-        compound assignment…) — is compiled at -O0…-O3, executed as WebAssembly, and its output compared to the
-        reference interpreter. Identical output at every level is the proof that each optimization is sound.
+        compound assignment, and the full <b>string runtime</b>: literals, concat, equality, indexing, str()/char()…)
+        — is compiled at -O0…-O3, executed as WebAssembly, and its output compared to the reference interpreter.
+        Identical output at every level is the proof that each optimization — and the string runtime, which is itself
+        written in Strata and compiled the same way — is sound.
       </p>
       {results.length > 0 && (
         <table className="verify-table">

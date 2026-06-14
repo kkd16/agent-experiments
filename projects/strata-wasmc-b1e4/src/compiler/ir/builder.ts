@@ -1,5 +1,8 @@
 import type { BinaryOp, Block, Expr, Program, Stmt, Ty } from '../ast';
 import type { IRType, RetType } from './ir';
+import { parse } from '../parser';
+import { typecheck } from '../types';
+import { STRING_PRELUDE } from './prelude';
 
 // Stage 1 of lowering: the typed AST is translated into a control-flow graph of
 // basic blocks where local variables are still referenced *by name* and may be
@@ -44,11 +47,41 @@ export interface PModule {
   globals: { name: string; ty: IRType; init: number; mutable: boolean }[];
   usesMemory: boolean;
   memPages: number;
+  staticData?: { offset: number; bytes: number[] };
 }
 
 export const HEAP_GLOBAL = '__hp';
 const ARRAY_HEADER = 8; // bytes reserved before element data (length word + padding)
 const MEM_PAGES = 256; // 16 MiB linear memory
+const STR_DATA_BASE = 16; // static string data starts here; the heap follows it
+
+// Interns string literals into a single static data segment. Each entry is laid
+// out exactly like a runtime string/array object — an 8-byte header whose first
+// word is the byte length, followed by the (Latin-1) bytes — so `len`, indexing
+// and the string runtime treat literals and heap strings uniformly. Identical
+// literals are deduplicated, so `"x" == "x"` is even a pointer-equal fast path.
+export class StringPool {
+  private map = new Map<string, number>();
+  readonly bytes: number[] = [];
+  used = false;
+
+  intern(s: string): number {
+    this.used = true;
+    const hit = this.map.get(s);
+    if (hit !== undefined) return hit;
+    while (this.bytes.length % 8 !== 0) this.bytes.push(0); // 8-byte align each entry
+    const off = STR_DATA_BASE + this.bytes.length;
+    const n = s.length;
+    this.bytes.push(n & 0xff, (n >>> 8) & 0xff, (n >>> 16) & 0xff, (n >>> 24) & 0xff, 0, 0, 0, 0);
+    for (let i = 0; i < s.length; i++) this.bytes.push(s.charCodeAt(i) & 0xff);
+    this.map.set(s, off);
+    return off;
+  }
+
+  heapStart(): number {
+    return (STR_DATA_BASE + this.bytes.length + 7) & ~7;
+  }
+}
 
 function irTypeOf(t: Ty): IRType {
   switch (t.kind) {
@@ -69,6 +102,7 @@ class FnBuilder {
   blocks: PBlock[] = [];
   varType = new Map<string, IRType>();
   usesMemory = false;
+  usesStrings = false;
   private cur!: PBlock;
   private blockCounter = 0;
   private tempCounter = 0;
@@ -80,16 +114,18 @@ class FnBuilder {
   private retTy: RetType;
   private body: Block;
   private exported: boolean;
+  private pool: StringPool;
 
-  constructor(name: string, params: { name: string; ty: IRType }[], retTy: RetType, body: Block, exported: boolean) {
+  constructor(name: string, params: { name: string; ty: IRType }[], retTy: RetType, body: Block, exported: boolean, pool: StringPool) {
     this.name = name;
     this.params = params;
     this.retTy = retTy;
     this.body = body;
     this.exported = exported;
+    this.pool = pool;
   }
 
-  build(): { fn: PFunc; usesMemory: boolean } {
+  build(): { fn: PFunc; usesMemory: boolean; usesStrings: boolean } {
     const entry = this.newBlock();
     this.cur = entry;
     this.scopes = [new Map()];
@@ -111,7 +147,7 @@ class FnBuilder {
       varType: this.varType,
       exported: this.exported,
     };
-    return { fn, usesMemory: this.usesMemory };
+    return { fn, usesMemory: this.usesMemory, usesStrings: this.usesStrings };
   }
 
   // --- block & scope plumbing ---
@@ -294,6 +330,13 @@ class FnBuilder {
         return CI(e.value ? 1 : 0);
       case 'float':
         return { tag: 'const', ty: 'f64', num: e.value };
+      case 'string': {
+        // A string literal lowers to a constant pointer into the static data
+        // segment (the interned object's address).
+        this.usesStrings = true;
+        this.usesMemory = true;
+        return CI(this.pool.intern(e.value));
+      }
       case 'ident': {
         const u = this.resolve(e.name);
         if (u) return VAR(u);
@@ -304,6 +347,15 @@ class FnBuilder {
       case 'binary':
         return this.lowerBinary(e);
       case 'index': {
+        if (e.target.ty!.kind === 'str') {
+          // string[i] — read the i-th byte (unsigned) at base + header + i.
+          this.usesMemory = true;
+          const base = this.lowerExpr(e.target)!;
+          const idx = this.lowerExpr(e.index)!;
+          const dataStart = this.def('i32', 'ibin', 'add', [base, CI(ARRAY_HEADER)]);
+          const addr = this.def('i32', 'ibin', 'add', [dataStart, idx]);
+          return this.def('i32', 'load', 'i8', [addr]);
+        }
         const addr = this.elemAddr(e.target, e.index);
         const elem = this.arrayElemIR(e.target);
         return this.def(elem, 'load', elem, [addr]);
@@ -357,6 +409,20 @@ class FnBuilder {
 
   private lowerBinary(e: Extract<Expr, { node: 'binary' }>): POperand {
     if (e.op === '&&' || e.op === '||') return this.lowerShortCircuit(e);
+    // String operators dispatch to the runtime helpers (written in Strata).
+    if (e.left.ty!.kind === 'str') {
+      this.usesStrings = true;
+      this.usesMemory = true;
+      const a = this.lowerExpr(e.left)!;
+      const b = this.lowerExpr(e.right)!;
+      if (e.op === '+') return this.def('i32', 'call', '__strcat', [a, b]);
+      if (e.op === '==') return this.def('i32', 'call', '__streq', [a, b]);
+      if (e.op === '!=') return this.def('i32', 'icmp', 'eq', [this.def('i32', 'call', '__streq', [a, b]), CI(0)]);
+      // Ordering: __strcmp returns a sign; compare it against 0.
+      const cmp = this.def('i32', 'call', '__strcmp', [a, b]);
+      const sub: Record<string, string> = { '<': 'lt_s', '<=': 'le_s', '>': 'gt_s', '>=': 'ge_s' };
+      return this.def('i32', 'icmp', sub[e.op], [cmp, CI(0)]);
+    }
     const a = this.lowerExpr(e.left)!;
     const b = this.lowerExpr(e.right)!;
     const isInt = irTypeOf(e.left.ty!) === 'i32';
@@ -403,11 +469,46 @@ class FnBuilder {
 
   private lowerCall(e: Extract<Expr, { node: 'call' }>): POperand | null {
     const name = e.callee;
+    // Low-level memory intrinsics used by the string-runtime prelude.
+    if (name === '__load8' || name === '__load32') {
+      this.usesMemory = true;
+      return this.def('i32', 'load', name === '__load8' ? 'i8' : 'i32', [this.lowerExpr(e.args[0])!]);
+    }
+    if (name === '__store8' || name === '__store32') {
+      this.usesMemory = true;
+      const p = this.lowerExpr(e.args[0])!;
+      const v = this.lowerExpr(e.args[1])!;
+      this.emit({ dest: null, ty: 'void', kind: 'store', sub: name === '__store8' ? 'i8' : 'i32', args: [p, v] });
+      return null;
+    }
+    if (name === '__alloc') {
+      return this.lowerAllocBytes(this.lowerExpr(e.args[0])!);
+    }
     if (name === 'print') {
       const v = this.lowerExpr(e.args[0])!;
       const k = e.args[0].ty!.kind;
-      this.emit({ dest: null, ty: 'void', kind: 'print', sub: k === 'float' ? 'float' : k === 'bool' ? 'bool' : 'int', args: [v] });
+      if (k === 'str') { this.usesStrings = true; this.usesMemory = true; }
+      this.emit({ dest: null, ty: 'void', kind: 'print', sub: k === 'float' ? 'float' : k === 'bool' ? 'bool' : k === 'str' ? 'str' : 'int', args: [v] });
       return null;
+    }
+    if (name === 'str') {
+      const k = e.args[0].ty!.kind;
+      const v = this.lowerExpr(e.args[0])!;
+      if (k === 'str') return v; // identity
+      this.usesStrings = true;
+      this.usesMemory = true;
+      return this.def('i32', 'call', k === 'bool' ? '__bool_to_str' : '__int_to_str', [v]);
+    }
+    if (name === 'char') {
+      this.usesStrings = true;
+      this.usesMemory = true;
+      return this.def('i32', 'call', '__char', [this.lowerExpr(e.args[0])!]);
+    }
+    if (name === 'substr' || name === 'index_of' || name === 'to_upper' || name === 'to_lower') {
+      this.usesStrings = true;
+      this.usesMemory = true;
+      const args = e.args.map((a) => this.lowerExpr(a)!);
+      return this.def('i32', 'call', '__' + name, args);
     }
     if (name === 'int') {
       const v = this.lowerExpr(e.args[0])!;
@@ -449,6 +550,18 @@ class FnBuilder {
     return base;
   }
 
+  // Raw bump allocator: reserve `nBytes` (8-byte aligned) from the heap and
+  // return the old top. Used by the string runtime (which writes its own header).
+  private lowerAllocBytes(nBytes: POperand): POperand {
+    this.usesMemory = true;
+    const base = this.def('i32', 'gget', HEAP_GLOBAL, []);
+    const raw = this.def('i32', 'ibin', 'add', [nBytes, CI(7)]);
+    const aligned = this.def('i32', 'ibin', 'and', [raw, CI(~7)]);
+    const next = this.def('i32', 'ibin', 'add', [base, aligned]);
+    this.emit({ dest: null, ty: 'void', kind: 'gset', sub: HEAP_GLOBAL, args: [next] });
+    return base;
+  }
+
   private arrayElemIR(target: Expr): IRType {
     const t = target.ty!;
     if (t.kind !== 'array') throw new Error('not an array');
@@ -478,7 +591,9 @@ class FnBuilder {
 
 export function buildPreIR(prog: Program): PModule {
   const funcs: PFunc[] = [];
+  const pool = new StringPool();
   let usesMemory = false;
+  let usesStrings = false;
   // Only the entry point is exported, so the optimizer is free to delete a
   // function once every call to it has been inlined. If a program has no `main`,
   // fall back to exporting everything so it can still be driven externally.
@@ -487,22 +602,48 @@ export function buildPreIR(prog: Program): PModule {
     if (d.kind !== 'fn') continue;
     const params = d.params.map((p) => ({ name: p.name, ty: irTypeOf(p.ty) }));
     const exported = hasMain ? d.name === 'main' : true;
-    const fb = new FnBuilder(d.name, params, retTypeOf(d.retTy), d.body, exported);
-    const { fn, usesMemory: m } = fb.build();
+    const fb = new FnBuilder(d.name, params, retTypeOf(d.retTy), d.body, exported, pool);
+    const { fn, usesMemory: m, usesStrings: s } = fb.build();
     usesMemory = usesMemory || m;
+    usesStrings = usesStrings || s;
     funcs.push(fn);
   }
 
   const globals: PModule['globals'] = [];
   for (const d of prog.decls) {
     if (d.kind !== 'global') continue;
-    globals.push({ name: d.name, ty: irTypeOf(d.resolvedTy!), init: constInitValue(d.init), mutable: true });
-  }
-  if (usesMemory) {
-    globals.push({ name: HEAP_GLOBAL, ty: 'i32', init: 16, mutable: true });
+    let init: number;
+    if (d.init.node === 'string') {
+      usesMemory = usesStrings = true;
+      init = pool.intern(d.init.value);
+    } else {
+      init = constInitValue(d.init);
+    }
+    globals.push({ name: d.name, ty: irTypeOf(d.resolvedTy!), init, mutable: true });
   }
 
-  return { funcs, globals, usesMemory, memPages: MEM_PAGES };
+  // The string runtime is written in Strata and compiled through the same
+  // pipeline, so the backend that produces it is differential-tested too. It is
+  // only pulled in when a program actually uses strings; unused helpers are then
+  // removed by dead-function elimination at -O2+.
+  if (usesStrings) {
+    usesMemory = true;
+    const preludeProg = parse(STRING_PRELUDE);
+    typecheck(preludeProg, { lowLevel: true });
+    for (const d of preludeProg.decls) {
+      if (d.kind !== 'fn') continue;
+      const params = d.params.map((p) => ({ name: p.name, ty: irTypeOf(p.ty) }));
+      const fb = new FnBuilder(d.name, params, retTypeOf(d.retTy), d.body, false, pool);
+      funcs.push(fb.build().fn);
+    }
+  }
+
+  if (usesMemory) {
+    globals.push({ name: HEAP_GLOBAL, ty: 'i32', init: pool.heapStart(), mutable: true });
+  }
+
+  const staticData = pool.bytes.length ? { offset: STR_DATA_BASE, bytes: pool.bytes } : undefined;
+  return { funcs, globals, usesMemory, memPages: MEM_PAGES, staticData };
 }
 
 // Globals must have constant initializers; fold the (already type-checked)

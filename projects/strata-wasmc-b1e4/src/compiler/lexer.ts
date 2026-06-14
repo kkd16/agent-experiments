@@ -50,6 +50,50 @@ export function tokenize(source: string): Token[] {
       continue;
     }
 
+    // string literals — double-quoted, with C-style escapes. Strata strings are
+    // byte strings (Latin-1): every decoded character must fit in one byte, so a
+    // literal's length in characters equals its length in bytes. This keeps the
+    // tree-walking interpreter (JS strings) and the wasm backend (linear-memory
+    // byte buffers) byte-for-byte comparable.
+    if (c === '"') {
+      const start = i;
+      i++;
+      let out = '';
+      while (i < n && source[i] !== '"') {
+        let ch = source[i];
+        if (ch === '\n') throw new CompileError('unterminated string literal', span(start, i), 'lex');
+        if (ch === '\\') {
+          i++;
+          const e = source[i];
+          switch (e) {
+            case 'n': ch = '\n'; break;
+            case 't': ch = '\t'; break;
+            case 'r': ch = '\r'; break;
+            case '0': ch = '\0'; break;
+            case '\\': ch = '\\'; break;
+            case '"': ch = '"'; break;
+            case 'x': {
+              const hex = source.slice(i + 1, i + 3);
+              if (!/^[0-9a-fA-F]{2}$/.test(hex)) throw new CompileError('malformed \\x escape (expected two hex digits)', span(start, i + 1), 'lex');
+              ch = String.fromCharCode(parseInt(hex, 16));
+              i += 2;
+              break;
+            }
+            default:
+              throw new CompileError(`unknown escape '\\${e ?? ''}'`, span(start, i), 'lex');
+          }
+        } else if (ch.charCodeAt(0) > 0xff) {
+          throw new CompileError('non-Latin-1 character in string literal (Strata strings are byte strings)', span(start, i), 'lex');
+        }
+        out += ch;
+        i++;
+      }
+      if (i >= n) throw new CompileError('unterminated string literal', span(start, n), 'lex');
+      i++; // closing quote
+      tokens.push({ type: 'str_lit', text: source.slice(start, i), value: 0, str: out, span: span(start, i) });
+      continue;
+    }
+
     // numbers
     if (isDigit(c) || (c === '.' && isDigit(source[i + 1] ?? ''))) {
       const start = i;

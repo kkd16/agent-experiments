@@ -212,6 +212,7 @@
 .t-fn { color: var(--yellow); }
 .t-builtin { color: var(--blue); }
 .t-const { color: var(--orange); }
+.t-str { color: var(--green, #98c379); }
 .t-op { color: #9fb0c4; }
 .t-punct { color: #7e8da0; }
 .t-ident { color: var(--text); }
