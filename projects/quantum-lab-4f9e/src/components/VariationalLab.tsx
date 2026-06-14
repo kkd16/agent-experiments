@@ -3,6 +3,7 @@ import { motion } from 'framer-motion';
 import {
   runVQE, runQAOA, tfimHamiltonian, type VQEResult, type QAOAResult, type Graph,
 } from '../quantum/variational';
+import { runGradientVQE } from '../quantum/gradient';
 
 const GRAPHS: Record<string, Graph> = {
   'Triangle (K₃)': { n: 3, edges: [[0, 1], [1, 2], [2, 0]] },
@@ -12,6 +13,7 @@ const GRAPHS: Record<string, Graph> = {
 
 export default function VariationalLab() {
   const [vqe, setVqe] = useState<VQEResult | null>(null);
+  const [gvqe, setGvqe] = useState<VQEResult | null>(null);
   const [qaoa, setQaoa] = useState<{ res: QAOAResult; graph: string } | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [graphKey, setGraphKey] = useState<keyof typeof GRAPHS | string>('Square (C₄)');
@@ -19,7 +21,12 @@ export default function VariationalLab() {
 
   const doVQE = () => {
     setBusy('vqe');
-    setTimeout(() => { setVqe(runVQE(tfimHamiltonian())); setBusy(null); }, 20);
+    setTimeout(() => {
+      const terms = tfimHamiltonian();
+      setVqe(runVQE(terms));
+      setGvqe(runGradientVQE(terms));
+      setBusy(null);
+    }, 20);
   };
   const doQAOA = () => {
     setBusy('qaoa');
@@ -39,21 +46,30 @@ export default function VariationalLab() {
         <p style={{ fontSize: 12, color: '#94a3b8', margin: '0 0 10px', lineHeight: 1.6 }}>
           Finds the ground-state energy of the 2-site transverse-field Ising model
           <code style={{ color: '#67e8f9' }}> H = Z₀Z₁ + 0.6(X₀+X₁)</code> with a hardware-efficient
-          Ry–CNOT–Ry ansatz. The optimizer minimises ⟨ψ(θ)|H|ψ(θ)⟩.
+          Ry–CNOT–Ry ansatz. Two optimizers race: derivative-free <b style={{ color: '#a78bfa' }}>Nelder–Mead</b> vs
+          <b style={{ color: '#67e8f9' }}> analytic parameter-shift gradient descent</b> — the latter the
+          method real QPUs use, since there is no backprop through hardware.
         </p>
         <button onClick={doVQE} disabled={busy === 'vqe'} style={btn('#7c3aed')}>
           {busy === 'vqe' ? 'Optimizing…' : '▶ Run VQE'}
         </button>
-        {vqe && (
+        {vqe && gvqe && (
           <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} style={{ marginTop: 12 }}>
             <div style={{ display: 'flex', gap: 10, marginBottom: 10, flexWrap: 'wrap' }}>
-              <Metric label="VQE energy" value={vqe.energy.toFixed(5)} color="#a78bfa" />
-              <Metric label="Exact (diagonalised)" value={vqe.exact.toFixed(5)} color="#67e8f9" />
-              <Metric label="Error" value={Math.abs(vqe.energy - vqe.exact).toExponential(1)} color="#34d399" />
+              <Metric label="Nelder–Mead" value={vqe.energy.toFixed(5)} color="#a78bfa" />
+              <Metric label="Gradient descent" value={gvqe.energy.toFixed(5)} color="#67e8f9" />
+              <Metric label="Exact (diagonalised)" value={vqe.exact.toFixed(5)} color="#f1f5f9" />
+              <Metric label="Best error" value={Math.min(Math.abs(vqe.energy - vqe.exact), Math.abs(gvqe.energy - gvqe.exact)).toExponential(1)} color="#34d399" />
             </div>
-            <ConvergencePlot data={vqe.iterations.map((p) => p.energy)} exact={vqe.exact} />
+            <ConvergencePlot
+              series={[
+                { data: vqe.iterations.map((p) => p.energy), color: '#a78bfa', label: 'Nelder–Mead' },
+                { data: gvqe.iterations.map((p) => p.energy), color: '#67e8f9', label: 'gradient' },
+              ]}
+              exact={vqe.exact}
+            />
             <div style={{ fontSize: 10, color: '#475569', marginTop: 6, fontFamily: 'monospace' }}>
-              θ* = [{vqe.theta.map((t) => t.toFixed(3)).join(', ')}]
+              θ*(grad) = [{gvqe.theta.map((t) => t.toFixed(3)).join(', ')}]
             </div>
           </motion.div>
         )}
@@ -107,20 +123,27 @@ export default function VariationalLab() {
   );
 }
 
-function ConvergencePlot({ data, exact }: { data: number[]; exact: number }) {
-  const w = 480, h = 90, pad = 4;
-  const all = [...data, exact];
+function ConvergencePlot({ series, exact }: { series: { data: number[]; color: string; label: string }[]; exact: number }) {
+  const w = 480, h = 100, pad = 4;
+  const all = [...series.flatMap((s) => s.data), exact];
   const lo = Math.min(...all), hi = Math.max(...all);
   const span = hi - lo || 1;
-  const x = (i: number) => pad + (i / (data.length - 1 || 1)) * (w - 2 * pad);
+  const x = (i: number, n: number) => pad + (i / (n - 1 || 1)) * (w - 2 * pad);
   const y = (v: number) => pad + (1 - (v - lo) / span) * (h - 2 * pad);
-  const path = data.map((v, i) => `${i === 0 ? 'M' : 'L'}${x(i).toFixed(1)},${y(v).toFixed(1)}`).join(' ');
   return (
     <svg width="100%" viewBox={`0 0 ${w} ${h}`} style={{ background: 'rgba(2,6,23,0.5)', borderRadius: 6, border: '1px solid #1e293b' }}>
-      <line x1={pad} y1={y(exact)} x2={w - pad} y2={y(exact)} stroke="#67e8f9" strokeWidth={1} strokeDasharray="4 3" opacity={0.7} />
-      <text x={w - pad} y={y(exact) - 3} fontSize={9} fill="#67e8f9" textAnchor="end">exact ground</text>
-      <path d={path} fill="none" stroke="#a78bfa" strokeWidth={2} />
-      {data.map((v, i) => <circle key={i} cx={x(i)} cy={y(v)} r={2} fill="#a78bfa" />)}
+      <line x1={pad} y1={y(exact)} x2={w - pad} y2={y(exact)} stroke="#f1f5f9" strokeWidth={1} strokeDasharray="4 3" opacity={0.5} />
+      <text x={w - pad} y={y(exact) - 3} fontSize={9} fill="#cbd5e1" textAnchor="end">exact ground</text>
+      {series.map((s) => {
+        const path = s.data.map((v, i) => `${i === 0 ? 'M' : 'L'}${x(i, s.data.length).toFixed(1)},${y(v).toFixed(1)}`).join(' ');
+        return <path key={s.label} d={path} fill="none" stroke={s.color} strokeWidth={2} opacity={0.9} />;
+      })}
+      {series.map((s, si) => (
+        <g key={s.label}>
+          <rect x={pad + 6} y={pad + 4 + si * 13} width={10} height={3} fill={s.color} rx={1} />
+          <text x={pad + 20} y={pad + 8 + si * 13} fontSize={9} fill={s.color}>{s.label}</text>
+        </g>
+      ))}
     </svg>
   );
 }
