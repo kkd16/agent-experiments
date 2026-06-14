@@ -623,6 +623,42 @@ test('index', 'composite prefix + trailing range correctness', () => {
   assert(eq(rows.map((r) => r[0]), [11]), 'customer 1 from 2023 onward should be order 11')
 })
 
+// --- bitmap AND of multiple indexes -----------------------------------------
+function bitmapEngine(): Engine {
+  const e = new Engine()
+  e.execute('CREATE TABLE t (id INTEGER PRIMARY KEY, a INTEGER, b INTEGER)')
+  e.execute(
+    'INSERT INTO t (id, a, b) WITH RECURSIVE r(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM r WHERE n<300) SELECT n, n % 10, n % 7 FROM r',
+  )
+  e.execute('CREATE INDEX idx_a ON t (a)')
+  e.execute('CREATE INDEX idx_b ON t (b)')
+  return e
+}
+test('index', 'bitmap AND combines two single-column indexes', () => {
+  const e = bitmapEngine()
+  const r = e.execute('EXPLAIN SELECT id FROM t WHERE a = 3 AND b = 2')[0]
+  assert(r.kind === 'explain', 'expected explain')
+  const text = JSON.stringify(r.kind === 'explain' ? r.plan : {})
+  assert(text.includes('BitmapAnd'), 'two separate single-column indexes should be combined with a BitmapAnd')
+  assert(text.includes('idx_a') && text.includes('idx_b'), 'both index bitmaps should appear')
+})
+test('index', 'bitmap AND returns the correct rows', () => {
+  const e = bitmapEngine()
+  let expected = 0
+  for (let n = 1; n <= 300; n++) if (n % 10 === 3 && n % 7 === 2) expected++
+  assert(scalar(e, 'SELECT COUNT(*) FROM t WHERE a = 3 AND b = 2') === expected, `bitmap AND count should be ${expected}`)
+  const rows = rowsOf(e, 'SELECT id FROM t WHERE a = 3 AND b = 2 ORDER BY id')
+  assert(rows.every((row) => ((row[0] as number) % 10 === 3 && (row[0] as number) % 7 === 2)), 'every row must satisfy both predicates')
+})
+test('index', 'a covering composite index is preferred over a bitmap AND', () => {
+  const e = bitmapEngine()
+  e.execute('CREATE INDEX idx_ab ON t (a, b)')
+  const r = e.execute('EXPLAIN SELECT id FROM t WHERE a = 3 AND b = 2')[0]
+  const text = JSON.stringify(r.kind === 'explain' ? r.plan : {})
+  assert(text.includes('IndexScan') && text.includes('a, b'), 'a single composite index should win the tie')
+  assert(!text.includes('BitmapAnd'), 'no bitmap needed when one index covers both predicates')
+})
+
 // --- statistics / cardinality estimation -----------------------------------
 test('stats', 'ANALYZE makes a selective predicate estimate few rows', () => {
   const e = seeded()

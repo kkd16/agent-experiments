@@ -35,6 +35,7 @@ import { Database, Table, type IndexHandle, type Row } from './catalog'
 import type { IndexKey } from './storage/btree'
 import { eqSelectivity, nullSelectivity, rangeSelectivity, type ColumnStat } from './stats'
 import {
+  BitmapAnd,
   Distinct,
   Filter,
   HashJoin,
@@ -46,6 +47,7 @@ import {
   SeqScan,
   SetOpExec,
   Sort,
+  type BitmapInput,
   type Operator,
   type RangeBound,
   type SortKey,
@@ -579,6 +581,61 @@ function tryIndexScan(table: Table, baseSchema: Schema, preds: Expr[], sc: StatC
   }
 }
 
+// Build a single-column range bound for a sargable comparison (for bitmap scans).
+function sargBound(op: '=' | '<' | '<=' | '>' | '>=', value: SqlValue): { lo: RangeBound; hi: RangeBound } {
+  switch (op) {
+    case '=':
+      return { lo: { key: [value], inclusive: true }, hi: { key: [value], inclusive: true } }
+    case '>':
+      return { lo: { key: [value], inclusive: false }, hi: null }
+    case '>=':
+      return { lo: { key: [value], inclusive: true }, hi: null }
+    case '<':
+      return { lo: null, hi: { key: [value], inclusive: false } }
+    case '<=':
+      return { lo: null, hi: { key: [value], inclusive: true } }
+  }
+}
+
+// Combine several single-column indexes for a multi-predicate filter: scan each
+// index, intersect the row-id bitmaps, then heap-fetch. Used when no single
+// (composite) index covers as many predicates as two or more separate ones do.
+function tryBitmapAnd(table: Table, baseSchema: Schema, preds: Expr[], sc: StatCtx): IndexPlan | null {
+  const inputs: BitmapInput[] = []
+  const consumed = new Set<Expr>()
+  const usedCols = new Set<string>()
+  for (const p of preds) {
+    const cmp = asColumnCompare(p)
+    if (!cmp) continue
+    try {
+      resolveColumn(baseSchema, cmp.col.table, cmp.col.name)
+    } catch {
+      continue
+    }
+    const col = cmp.col.name.toLowerCase()
+    if (usedCols.has(col)) continue
+    const idx = table.indexForColumn(cmp.col.name)
+    if (!idx) continue
+    const { lo, hi } = sargBound(cmp.op, cmp.value)
+    inputs.push({ index: idx, lo, hi })
+    consumed.add(p)
+    usedCols.add(col)
+  }
+  if (inputs.length < 2) return null
+  const estRows = Math.max(1, Math.round(table.rowCount() * combinedSelectivity([...consumed], sc)))
+  return { op: new BitmapAnd(table, baseSchema, inputs, estRows), consumed }
+}
+
+// Pick the best index access path: a single (composite) index scan, or a bitmap
+// AND of several single-column indexes — whichever consumes more predicates
+// (ties favour the single scan, which avoids a heap re-fetch).
+function chooseIndexAccess(table: Table, schema: Schema, preds: Expr[], sc: StatCtx): IndexPlan | null {
+  const single = tryIndexScan(table, schema, preds, sc)
+  const bitmap = tryBitmapAnd(table, schema, preds, sc)
+  if (single && bitmap) return bitmap.consumed.size > single.consumed.size ? bitmap : single
+  return single ?? bitmap
+}
+
 // --- equijoin extraction ----------------------------------------------------
 interface EquiJoin {
   leftKey: Evaluator
@@ -716,7 +773,7 @@ function planJoinOrder(
       (p) => !localConsumed.has(p) && !containsSubquery(p) && resolvableIn(p, sch, env),
     )
     let leaf: Operator
-    const idx = tryIndexScan(r.table, sch, applicable, statTables)
+    const idx = chooseIndexAccess(r.table, sch, applicable, statTables)
     if (idx) {
       leaf = idx.op
       idx.consumed.forEach((p) => localConsumed.add(p))
@@ -898,7 +955,7 @@ function planCore(stmt: SelectStmt, env: PlanEnv, embedOrderLimit: boolean): Ope
 
     if (basePreserved) {
       const baseApplicable = wherePreds.filter((p) => !consumed.has(p) && resolvableIn(p, schema, env))
-      const idx = tryIndexScan(base.table, schema, baseApplicable, statTables)
+      const idx = chooseIndexAccess(base.table, schema, baseApplicable, statTables)
       if (idx) {
         op = idx.op
         idx.consumed.forEach((p) => consumed.add(p))
