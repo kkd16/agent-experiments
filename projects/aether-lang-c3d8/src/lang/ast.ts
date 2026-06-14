@@ -53,6 +53,31 @@ export interface CtorDecl {
   span: Span
 }
 
+/** A method signature inside a `class` declaration: `name : <type>`, with an
+ * optional default implementation used by instances that omit it. */
+export interface MethodSig {
+  name: string
+  type: TypeExpr
+  default?: Expr
+  span: Span
+}
+
+/** One method implementation inside an `instance`: `name = <expr>`. */
+export interface MethodImpl {
+  name: string
+  value: Expr
+  span: Span
+}
+
+/** A `=>`-context entry written on an instance, e.g. the `Disp a` in
+ * `instance Disp a => Disp (List a)`. Resolution derives the real context from
+ * inference; this is kept for display. */
+export interface ConstraintExpr {
+  cls: string
+  param: string
+  span: Span
+}
+
 /**
  * Patterns used by `match`. `plist` is normalised into nested `pcons`/`pnil`
  * by the parser, so the compiler only ever sees cons-cells.
@@ -99,6 +124,95 @@ export type Expr =
   | { kind: 'record'; fields: { label: string; value: Expr }[]; span: Span }
   | { kind: 'field'; record: Expr; label: string; span: Span }
   | { kind: 'recordUpdate'; record: Expr; fields: { label: string; value: Expr }[]; span: Span }
+  | {
+      kind: 'classdecl'
+      name: string
+      param: string
+      methods: MethodSig[]
+      body: Expr
+      span: Span
+    }
+  | {
+      kind: 'instancedecl'
+      cls: string
+      head: TypeExpr
+      context: ConstraintExpr[]
+      methods: MethodImpl[]
+      body: Expr
+      span: Span
+    }
+
+/** Structurally deep-copy an expression, giving every node a fresh identity.
+ * Used so a class default method can be elaborated independently per instance
+ * (the side-tables are keyed by node identity). */
+export function cloneExpr(e: Expr): Expr {
+  switch (e.kind) {
+    case 'int':
+    case 'float':
+    case 'bool':
+    case 'str':
+    case 'unit':
+    case 'var':
+      return { ...e }
+    case 'lambda':
+      return { ...e, body: cloneExpr(e.body) }
+    case 'app':
+      return { ...e, fn: cloneExpr(e.fn), arg: cloneExpr(e.arg) }
+    case 'let':
+      return { ...e, value: cloneExpr(e.value), body: cloneExpr(e.body) }
+    case 'if':
+      return { ...e, cond: cloneExpr(e.cond), then: cloneExpr(e.then), else: cloneExpr(e.else) }
+    case 'binop':
+      return { ...e, left: cloneExpr(e.left), right: cloneExpr(e.right) }
+    case 'unop':
+      return { ...e, operand: cloneExpr(e.operand) }
+    case 'list':
+    case 'tuple':
+      return { ...e, elements: e.elements.map(cloneExpr) }
+    case 'seq':
+      return { ...e, first: cloneExpr(e.first), rest: cloneExpr(e.rest) }
+    case 'match':
+      return {
+        ...e,
+        scrutinee: cloneExpr(e.scrutinee),
+        cases: e.cases.map((c) => ({
+          pattern: c.pattern,
+          guard: c.guard ? cloneExpr(c.guard) : undefined,
+          body: cloneExpr(c.body),
+        })),
+      }
+    case 'typedecl':
+      return { ...e, ctors: e.ctors.map((c) => ({ ...c })), body: cloneExpr(e.body) }
+    case 'letrec':
+      return {
+        ...e,
+        bindings: e.bindings.map((b) => ({ name: b.name, value: cloneExpr(b.value) })),
+        body: cloneExpr(e.body),
+      }
+    case 'record':
+      return { ...e, fields: e.fields.map((f) => ({ label: f.label, value: cloneExpr(f.value) })) }
+    case 'field':
+      return { ...e, record: cloneExpr(e.record) }
+    case 'recordUpdate':
+      return {
+        ...e,
+        record: cloneExpr(e.record),
+        fields: e.fields.map((f) => ({ label: f.label, value: cloneExpr(f.value) })),
+      }
+    case 'classdecl':
+      return {
+        ...e,
+        methods: e.methods.map((m) => ({ ...m, default: m.default ? cloneExpr(m.default) : undefined })),
+        body: cloneExpr(e.body),
+      }
+    case 'instancedecl':
+      return {
+        ...e,
+        methods: e.methods.map((m) => ({ ...m, value: cloneExpr(m.value) })),
+        body: cloneExpr(e.body),
+      }
+  }
+}
 
 /** A short human-readable label for a node, used by the AST visualiser. */
 export function nodeLabel(e: Expr): string {
@@ -145,6 +259,10 @@ export function nodeLabel(e: Expr): string {
       return `.${e.label}`
     case 'recordUpdate':
       return `update {${e.fields.map((f) => f.label).join(', ')}}`
+    case 'classdecl':
+      return `class ${e.name} ${e.param}`
+    case 'instancedecl':
+      return `instance ${e.cls}`
   }
 }
 
@@ -208,6 +326,10 @@ export function children(e: Expr): Expr[] {
       return [e.record]
     case 'recordUpdate':
       return [e.record, ...e.fields.map((f) => f.value)]
+    case 'classdecl':
+      return [e.body]
+    case 'instancedecl':
+      return [...e.methods.map((m) => m.value), e.body]
     default:
       return []
   }

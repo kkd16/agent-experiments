@@ -15,6 +15,11 @@ const STAGES = [
     body: 'Algorithm W (Hindley–Milner). Unification is by mutation of type variables with an occurs-check; let-bindings are generalised over the variables not free in the environment, giving full parametric polymorphism — with no annotations anywhere. User-declared algebraic data types add their own type constructors, each data constructor gets a polymorphic scheme, and records use row unification so field access is row-polymorphic.',
   },
   {
+    n: 3.3,
+    title: 'Type-class elaboration',
+    body: "Type classes are compiled by a type-directed translation into the ordinary core language. Inference resolves every class constraint to evidence — a concrete instance dictionary (applied to whatever its context needs) or a dictionary parameter passed down — and an elaboration pass rewrites the program: an instance becomes a record of methods, a constrained binding gains leading dictionary parameters, a method call becomes a field access, and each use site applies its evidence. Because the output is plain core AST, the compiler and the JavaScript backend run dictionaries with no special support. The Classes tab shows the elaborated core.",
+  },
+  {
     n: 3.5,
     title: 'Optimizer',
     body: 'An optional semantics-preserving pass folds constant arithmetic / comparison / boolean / string expressions, eliminates dead branches (if true …), and simplifies short-circuit operators — before compilation. Toggle it in the playground and watch the folded count and VM step total drop.',
@@ -81,6 +86,13 @@ export default function About() {
             is written in Aether and compiled in with every program.
           </li>
           <li>
+            <strong>Type classes</strong> add principled overloading on top of Hindley–Milner:{' '}
+            <code>class</code> / <code>instance</code> declarations, qualified types like{' '}
+            <code>Disp a =&gt; a -&gt; String</code>, instance contexts, and dictionary-passing
+            elaboration that both backends share. The Classes tab makes the generated dictionaries
+            visible.
+          </li>
+          <li>
             <code>match</code> is checked for exhaustiveness and redundancy using Maranget's
             usefulness algorithm — non-exhaustive matches are reported with a concrete witness
             pattern, and unreachable clauses are flagged.
@@ -89,6 +101,11 @@ export default function About() {
             There are <strong>two backends</strong> for one front end: a bytecode VM and a
             JavaScript code generator. They share the lexer, parser, type inferencer and optimizer,
             and agree on every program — the JavaScript tab proves it live.
+          </li>
+          <li>
+            The <strong>Tests</strong> page runs a self-test suite live in your browser — every case
+            goes through the whole pipeline and, when it yields a value, is run on both the VM and
+            the JavaScript backend, so a green row is a proof the two backends agree.
           </li>
           <li>
             Routing is hash-based and the build uses a relative base, so everything works as a

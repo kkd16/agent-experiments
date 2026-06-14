@@ -6,6 +6,7 @@ import { runPipeline } from '../../lang/pipeline.ts'
 import { valueToString } from '../../lang/values.ts'
 
 interface Props {
+  /** the elaborated (dictionary-passed) core AST — what actually compiles */
   ast: Expr | null
   /** the current editor source, for running the VM side-by-side */
   code: string

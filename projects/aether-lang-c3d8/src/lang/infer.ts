@@ -6,10 +6,11 @@
 // typed monomorphically while their own body is checked, then generalised.
 
 import type { BinaryOp, Expr, Pattern, TypeExpr } from './ast.ts'
+import { cloneExpr } from './ast.ts'
 import type { TypeCtorInfo } from './exhaustive.ts'
 import { analyzeMatch } from './exhaustive.ts'
 import type { Span } from './lexer.ts'
-import type { Scheme, Type, TVar } from './types.ts'
+import type { Pred, Scheme, Type, TVar } from './types.ts'
 import {
   ARROW,
   RECORD,
@@ -18,6 +19,7 @@ import {
   freshVar,
   isRow,
   isRowExtend,
+  predToString,
   prune,
   rowExtend,
   rowLabelOf,
@@ -33,6 +35,8 @@ import {
   tTuple,
   tUnit,
 } from './types.ts'
+import type { ClassTables, Evidence } from './classes.ts'
+import { EvCell, dictParamName, emptyTables } from './classes.ts'
 
 export class TypeCheckError extends Error {
   span: Span | null
@@ -68,6 +72,34 @@ export interface InferResult {
   bindingSchemes: Map<Expr, Scheme>
   /** non-fatal warnings (e.g. non-exhaustive / redundant matches) */
   warnings: InferWarning[]
+  /** type-class side-tables driving dictionary-passing elaboration */
+  classTables: ClassTables
+}
+
+// --- type classes ----------------------------------------------------------
+
+interface ClassDef {
+  name: string
+  param: string
+  methods: Map<string, { type: TypeExpr; span: Span; default?: Expr }>
+}
+
+interface InstanceDef {
+  /** head type constructor name (`Int`, `List`, `*`, a user type, …) */
+  headCon: string
+  /** arity of the head constructor (tuples vary, so it's part of the key) */
+  headArity: number
+  /** the name its dictionary is bound to in the elaborated program */
+  dictName: string
+  /** context predicates, each constraining one head argument by index */
+  context: { cls: string; argIndex: number }[]
+}
+
+/** A pending class obligation: `cls type`, to be discharged with `cell`. */
+interface Wanted {
+  cls: string
+  type: Type
+  cell: EvCell
 }
 
 class Inferrer {
@@ -76,6 +108,16 @@ class Inferrer {
   ctorInfo = new Map<string, { arity: number; scheme: Scheme }>()
   typeCtors = new Map<string, TypeCtorInfo>()
   warnings: InferWarning[] = []
+
+  // type-class state
+  classes = new Map<string, ClassDef>()
+  methodToClass = new Map<string, string>()
+  instances = new Map<string, InstanceDef[]>()
+  wanted: Wanted[] = []
+  tables: ClassTables = emptyTables()
+  /** stack of in-progress recursive bindings, to thread dictionaries through
+   * recursive (and nested) self-references */
+  recStack: { names: Set<string>; refs: { node: Expr; name: string }[] }[] = []
 
   occurs(v: TVar, t: Type): boolean {
     const p = prune(t)
@@ -198,7 +240,8 @@ class Inferrer {
       case 'var': {
         const scheme = env.get(e.name)
         if (!scheme) throw new TypeCheckError(`unbound variable: ${e.name}`, e.span)
-        return this.instantiate(scheme)
+        this.noteSelfRef(e)
+        return this.instantiateScheme(scheme, e)
       }
       case 'lambda': {
         const a = freshVar()
@@ -217,19 +260,27 @@ class Inferrer {
         if (e.recursive) {
           const a = freshVar()
           const env1 = extend(env, e.name, monoScheme(a))
+          this.recStack.push({ names: new Set([e.name]), refs: [] })
           const t1 = this.infer(env1, e.value)
+          const frame = this.recStack.pop()
           this.unify(a, t1, e.span)
-          const scheme = this.generalize(env, t1)
+          const { scheme, params } = this.generalizeWithPreds(env, t1)
           this.bindingSchemes.set(e, scheme)
+          this.attachDicts(e, params, frame ? frame.refs : [])
           const env2 = extend(env, e.name, scheme)
           return this.infer(env2, e.body)
         }
         const t1 = this.infer(env, e.value)
-        const scheme = this.generalize(env, t1)
+        const { scheme, params } = this.generalizeWithPreds(env, t1)
         this.bindingSchemes.set(e, scheme)
+        this.attachDicts(e, params, [])
         const env2 = extend(env, e.name, scheme)
         return this.infer(env2, e.body)
       }
+      case 'classdecl':
+        return this.inferClass(env, e)
+      case 'instancedecl':
+        return this.inferInstance(env, e)
       case 'if': {
         this.unify(this.infer(env, e.cond), tBool, e.cond.span)
         const tt = this.infer(env, e.then)
@@ -279,9 +330,25 @@ class Inferrer {
         e.bindings.forEach((b, i) => {
           env1 = extend(env1, b.name, monoScheme(tvs[i]))
         })
+        const wantedBefore = this.wanted.length
         e.bindings.forEach((b, i) => {
           this.unify(this.infer(env1, b.value), tvs[i], b.value.span)
         })
+        // constrained mutual recursion would need a shared dictionary context
+        // across the group; reduce what we can, and reject anything left over.
+        this.reduceConWanted(e.span)
+        if (this.wanted.length > wantedBefore) {
+          const stuck = this.wanted
+            .slice(wantedBefore)
+            .some((w) => prune(w.type).kind === 'var')
+          if (stuck) {
+            throw new TypeCheckError(
+              'class constraints inside a `let rec … and …` group are not supported; ' +
+                'use a single `let rec` for the overloaded function',
+              e.span,
+            )
+          }
+        }
         // then generalise each over the original environment
         let env2 = env
         e.bindings.forEach((b, i) => {
@@ -486,6 +553,359 @@ class Inferrer {
       }
     }
   }
+
+  // --- type classes --------------------------------------------------------
+
+  /** Record a reference to an in-progress recursive binding, so elaboration can
+   * thread its dictionaries through the recursive call. */
+  private noteSelfRef(e: Extract<Expr, { kind: 'var' }>): void {
+    for (let i = this.recStack.length - 1; i >= 0; i--) {
+      if (this.recStack[i].names.has(e.name)) {
+        this.recStack[i].refs.push({ node: e, name: e.name })
+        return
+      }
+    }
+  }
+
+  /** Instantiate a scheme, generating a class obligation per predicate and
+   * recording on `node` how to apply the resolved evidence. */
+  private instantiateScheme(scheme: Scheme, node: Extract<Expr, { kind: 'var' }>): Type {
+    if (!scheme.preds || scheme.preds.length === 0) return this.instantiate(scheme)
+    const mapping = new Map<number, Type>()
+    for (const id of scheme.vars) mapping.set(id, freshVar())
+    const type = subst(scheme.type, mapping)
+    const cells: EvCell[] = []
+    for (const p of scheme.preds) {
+      const cell = new EvCell()
+      this.wanted.push({ cls: p.cls, type: subst(p.type, mapping), cell })
+      cells.push(cell)
+    }
+    this.tables.used = true
+    if (this.methodToClass.has(node.name) && cells.length === 1) {
+      this.tables.methodUse.set(node, { method: node.name, cell: cells[0] })
+    } else {
+      this.tables.evidenceArgs.set(node, cells)
+    }
+    return type
+  }
+
+  /** Generalise `t` over the environment, additionally capturing the class
+   * constraints over the generalised variables as the binding's context. */
+  private generalizeWithPreds(
+    env: Env,
+    t: Type,
+  ): { scheme: Scheme; params: { name: string; cls: string; varId: number }[] } {
+    // discharge any ground constraints first, so what remains is var-headed
+    this.reduceConWanted(null)
+    const base = this.generalize(env, t)
+    const G = new Set(base.vars)
+    const preds: Pred[] = []
+    const params: { name: string; cls: string; varId: number }[] = []
+    const seen = new Set<string>()
+    const remaining: Wanted[] = []
+    for (const w of this.wanted) {
+      const pt = prune(w.type)
+      if (pt.kind === 'var' && G.has(pt.id)) {
+        const name = dictParamName(w.cls, pt.id)
+        w.cell.ev = { kind: 'param', name }
+        const key = w.cls + '|' + pt.id
+        if (!seen.has(key)) {
+          seen.add(key)
+          preds.push({ cls: w.cls, type: pt })
+          params.push({ name, cls: w.cls, varId: pt.id })
+        }
+      } else {
+        remaining.push(w)
+      }
+    }
+    this.wanted = remaining
+    const scheme: Scheme = preds.length ? { vars: base.vars, type: base.type, preds } : base
+    return { scheme, params }
+  }
+
+  /** Record the dictionary parameters a binding abstracts, and feed the same
+   * dictionaries to its recursive self-references. */
+  private attachDicts(
+    node: Expr,
+    params: { name: string; cls: string; varId: number }[],
+    refs: { node: Expr; name: string }[],
+  ): void {
+    if (params.length === 0) return
+    this.tables.bindingDicts.set(node, params.map((p) => p.name))
+    this.tables.used = true
+    for (const ref of refs) {
+      const cells = params.map((p) => {
+        const c = new EvCell()
+        c.ev = { kind: 'param', name: p.name }
+        return c
+      })
+      this.tables.evidenceArgs.set(ref.node, cells)
+    }
+  }
+
+  /** Discharge every pending constraint whose head is a concrete type
+   * constructor, resolving it to an instance dictionary (recursively). */
+  private reduceConWanted(span: Span | null): void {
+    const input = this.wanted
+    this.wanted = []
+    for (const w of input) {
+      const pt = prune(w.type)
+      if (pt.kind === 'con') {
+        w.cell.ev = this.evidenceFor(w.cls, pt, span)
+      } else {
+        this.wanted.push(w)
+      }
+    }
+  }
+
+  /** Evidence that builds a dictionary for `cls type`: a concrete instance
+   * dictionary, or a dictionary parameter when the head is still a variable. */
+  private evidenceFor(cls: string, type: Type, span: Span | null): Evidence {
+    const t = prune(type)
+    if (t.kind === 'var') {
+      const name = dictParamName(cls, t.id)
+      const cell = new EvCell()
+      cell.ev = { kind: 'param', name }
+      // register so an enclosing generalisation/instance abstracts this param
+      this.wanted.push({ cls, type: t, cell })
+      return { kind: 'param', name }
+    }
+    const insts = this.instances.get(cls)
+    if (!insts) throw new TypeCheckError(`no instance of class '${cls}' is in scope`, span)
+    const inst = insts.find((i) => i.headCon === t.name && i.headArity === t.args.length)
+    if (!inst) {
+      throw new TypeCheckError(`no instance for ${predToString({ cls, type: t })}`, span)
+    }
+    const args = inst.context.map((ce) => this.evidenceFor(ce.cls, t.args[ce.argIndex], span))
+    return { kind: 'instance', dictName: inst.dictName, args }
+  }
+
+  private inferClass(env: Env, e: Extract<Expr, { kind: 'classdecl' }>): Type {
+    if (this.classes.has(e.name)) {
+      throw new TypeCheckError(`class ${e.name} is already defined`, e.span)
+    }
+    const methods = new Map<string, { type: TypeExpr; span: Span; default?: Expr }>()
+    for (const m of e.methods) {
+      if (methods.has(m.name)) {
+        throw new TypeCheckError(`duplicate method ${m.name} in class ${e.name}`, m.span)
+      }
+      const owner = this.methodToClass.get(m.name)
+      if (owner) {
+        throw new TypeCheckError(`method ${m.name} already belongs to class ${owner}`, m.span)
+      }
+      methods.set(m.name, { type: m.type, span: m.span, default: m.default })
+      this.methodToClass.set(m.name, e.name)
+    }
+    this.classes.set(e.name, { name: e.name, param: e.param, methods })
+    if (!this.instances.has(e.name)) this.instances.set(e.name, [])
+    this.tables.used = true
+    let env2 = env
+    for (const m of e.methods) {
+      env2 = extend(env2, m.name, this.methodScheme(e.name, e.param, m.type))
+    }
+    return this.infer(env2, e.body)
+  }
+
+  private inferInstance(env: Env, e: Extract<Expr, { kind: 'instancedecl' }>): Type {
+    const cls = this.classes.get(e.cls)
+    if (!cls) throw new TypeCheckError(`unknown class '${e.cls}' in instance`, e.span)
+
+    // build the head type, recording which variable sits at each argument
+    const headMap = new Map<string, Type>()
+    const headType = prune(this.convertFresh(e.head, headMap))
+    if (headType.kind !== 'con') {
+      throw new TypeCheckError('an instance head must be a type constructor', e.span)
+    }
+    const headCon = headType.name
+    const headArity = headType.args.length
+    const argVarId = headType.args.map((a) => {
+      const p = prune(a)
+      return p.kind === 'var' ? p.id : null
+    })
+    const headVarIds = new Set<number>(argVarId.filter((x): x is number => x !== null))
+    const dictName = `$dict_${e.cls}_${dictTag(headCon, headArity)}`
+
+    const existing = (this.instances.get(e.cls) ?? []).find(
+      (i) => i.headCon === headCon && i.headArity === headArity,
+    )
+    if (existing) {
+      throw new TypeCheckError(`duplicate instance ${e.cls} for ${headCon}`, e.span)
+    }
+
+    // The context is taken from the written `… =>` constraints, mapping each
+    // constrained variable to its position in the head. This is what lets a
+    // *recursive* instance resolve a use of its own class on a sub-value: the
+    // context dictionary is in scope as a parameter while the methods run.
+    const context: { cls: string; argIndex: number; name: string }[] = []
+    const providedNames = new Set<string>()
+    for (const c of e.context) {
+      const tv = headMap.get(c.param)
+      if (!tv) {
+        throw new TypeCheckError(
+          `instance context variable '${c.param}' does not appear in the head ${headCon}`,
+          c.span,
+        )
+      }
+      const p = prune(tv)
+      if (p.kind !== 'var') continue
+      const argIndex = argVarId.indexOf(p.id)
+      const name = dictParamName(c.cls, p.id)
+      context.push({ cls: c.cls, argIndex, name })
+      providedNames.add(name)
+    }
+    const def: InstanceDef = {
+      headCon,
+      headArity,
+      dictName,
+      context: context.map((c) => ({ cls: c.cls, argIndex: c.argIndex })),
+    }
+    this.addInstance(e.cls, def) // register before checking methods (recursive instances)
+
+    // index the instance's provided methods, validating names and duplicates
+    const provided = new Map<string, { value: Expr; span: Span }>()
+    for (const impl of e.methods) {
+      if (!cls.methods.has(impl.name)) {
+        throw new TypeCheckError(`class ${e.cls} has no method '${impl.name}'`, impl.span)
+      }
+      if (provided.has(impl.name)) {
+        throw new TypeCheckError(`duplicate method '${impl.name}' in instance`, impl.span)
+      }
+      provided.set(impl.name, { value: impl.value, span: impl.span })
+    }
+    // for every class method, take the instance's impl or fall back to the
+    // class default (cloned so its elaboration is independent per instance)
+    const finalMethods: { name: string; value: Expr }[] = []
+    for (const [mname, sig] of cls.methods) {
+      const p = provided.get(mname)
+      let value: Expr
+      let span = e.span
+      if (p) {
+        value = p.value
+        span = p.span
+      } else if (sig.default) {
+        value = cloneExpr(sig.default)
+      } else {
+        throw new TypeCheckError(`instance ${e.cls} ${headCon} is missing method '${mname}'`, e.span)
+      }
+      const expected = this.methodSigType(sig.type, cls.param, headType)
+      const got = this.infer(env, value)
+      this.unify(got, expected, span)
+      finalMethods.push({ name: mname, value })
+    }
+
+    // discharge the method bodies' constraints. Ground ones resolve to other
+    // instances; constraints over a head variable must be covered by the
+    // written context (and resolve to its dictionary parameter).
+    this.reduceConWanted(e.span)
+    const remaining: Wanted[] = []
+    for (const w of this.wanted) {
+      const pt = prune(w.type)
+      if (pt.kind === 'var' && headVarIds.has(pt.id)) {
+        const name = dictParamName(w.cls, pt.id)
+        if (!providedNames.has(name)) {
+          throw new TypeCheckError(
+            `instance ${e.cls} ${headCon} needs a '${w.cls}' context on one of its ` +
+              'type variables — add it before `=>`',
+            e.span,
+          )
+        }
+        w.cell.ev = { kind: 'param', name }
+      } else {
+        remaining.push(w)
+      }
+    }
+    this.wanted = remaining
+
+    this.tables.instanceElab.set(e, {
+      dictName,
+      paramNames: context.map((c) => c.name),
+      methods: finalMethods,
+    })
+    this.tables.used = true
+    return this.infer(env, e.body)
+  }
+
+  private addInstance(cls: string, def: InstanceDef): void {
+    const arr = this.instances.get(cls)
+    if (arr) arr.push(def)
+    else this.instances.set(cls, [def])
+  }
+
+  /** The qualified scheme of a class method: `∀a…. (Cls a) => methodType`. */
+  private methodScheme(className: string, classParam: string, sig: TypeExpr): Scheme {
+    const map = new Map<string, Type>()
+    const classVar = freshVar()
+    map.set(classParam, classVar)
+    const type = this.convertFresh(sig, map)
+    const ids = new Set<number>([classVar.id, ...freeVars(type)])
+    return { vars: [...ids], type, preds: [{ cls: className, type: classVar }] }
+  }
+
+  /** The expected type of a method implementation at a given instance head. */
+  private methodSigType(sig: TypeExpr, classParam: string, headType: Type): Type {
+    const map = new Map<string, Type>()
+    map.set(classParam, headType)
+    return this.convertFresh(sig, map)
+  }
+
+  /** Convert a syntactic type, auto-allocating a fresh variable for any type
+   * variable not already bound in `map` (used for class/instance signatures). */
+  private convertFresh(te: TypeExpr, map: Map<string, Type>): Type {
+    switch (te.kind) {
+      case 'tvar': {
+        let tv = map.get(te.name)
+        if (!tv) {
+          tv = freshVar()
+          map.set(te.name, tv)
+        }
+        return tv
+      }
+      case 'tarrow':
+        return tArrow(this.convertFresh(te.from, map), this.convertFresh(te.to, map))
+      case 'ttuple':
+        return tTuple(te.elements.map((x) => this.convertFresh(x, map)))
+      case 'tcon': {
+        const args = te.args.map((x) => this.convertFresh(x, map))
+        switch (te.name) {
+          case 'Int':
+            return tInt
+          case 'Float':
+            return tFloat
+          case 'Bool':
+            return tBool
+          case 'String':
+            return tString
+          case 'Unit':
+            return tUnit
+          case 'List':
+            return tList(args[0] ?? freshVar())
+          default:
+            return tcon(te.name, args)
+        }
+      }
+    }
+  }
+
+  /** Discharge all remaining constraints at the top level; anything left is a
+   * missing instance or an ambiguous constraint. */
+  finish(): void {
+    this.reduceConWanted(null)
+    if (this.wanted.length > 0) {
+      const w = this.wanted[0]
+      throw new TypeCheckError(
+        `unresolved or ambiguous class constraint ${predToString({ cls: w.cls, type: w.type })} — ` +
+          'add an instance or constrain the type',
+        null,
+      )
+    }
+  }
+}
+
+/** A filesystem-safe tag for an instance dictionary's head constructor. */
+function dictTag(con: string, arity: number): string {
+  if (con === '*') return `Tuple${arity}`
+  if (con === '->') return 'Fun'
+  return con.replace(/[^A-Za-z0-9_]/g, '_')
 }
 
 // Convert a syntactic type expression (from a `type` declaration) into a real
@@ -541,11 +961,13 @@ function describe(t: Type): string {
 export function inferProgram(program: Expr, base: Env): InferResult {
   const inf = new Inferrer()
   const type = inf.infer(base, program)
+  inf.finish()
   return {
     type,
     nodeTypes: inf.nodeTypes,
     bindingSchemes: inf.bindingSchemes,
     warnings: inf.warnings,
+    classTables: inf.tables,
   }
 }
 

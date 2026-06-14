@@ -14,6 +14,7 @@ import type { InferResult } from './infer.ts'
 import { resetVarCounter, schemeToString, typeToString } from './types.ts'
 import { GLOBALS, PRELUDE_DEFS } from './prelude.ts'
 import { CompileError, compile } from './compiler.ts'
+import { elaborate } from './classes.ts'
 import { optimize } from './optimize.ts'
 import type { FnProto } from './bytecode.ts'
 import { VM } from './vm.ts'
@@ -64,6 +65,8 @@ export interface PipelineResult {
   tokens: Token[] | null
   /** the user's AST (without the prelude wrapper) */
   ast: Expr | null
+  /** the user's AST after dictionary-passing elaboration (core, class-free) */
+  coreAst: Expr | null
   typeResult: InferResult | null
   programType: string | null
   bindingTypes: BindingType[]
@@ -91,6 +94,7 @@ export function runPipeline(source: string, opts: PipelineOptions = {}): Pipelin
     source,
     tokens: null,
     ast: null,
+    coreAst: null,
     typeResult: null,
     programType: null,
     bindingTypes: [],
@@ -130,9 +134,10 @@ export function runPipeline(source: string, opts: PipelineOptions = {}): Pipelin
 
   // 3. type-check (with prelude in scope)
   const program = withPrelude(userAst)
+  let inferred: InferResult
   try {
     const baseEnv = baseEnvFrom(GLOBALS)
-    const inferred = inferProgram(program, baseEnv)
+    inferred = inferProgram(program, baseEnv)
     result.typeResult = inferred
     result.programType = typeToString(inferred.type)
     result.bindingTypes = collectBindingTypes(userAst, inferred)
@@ -142,10 +147,15 @@ export function runPipeline(source: string, opts: PipelineOptions = {}): Pipelin
     return result
   }
 
+  // 3b. dictionary-passing elaboration (type classes → core AST). A no-op when
+  // the program uses no classes. The user portion is exposed for the JS backend.
+  const coreProgram = elaborate(program, inferred.classTables)
+  result.coreAst = elaborate(userAst, inferred.classTables)
+
   // 4. compile
   let proto: FnProto
   try {
-    proto = compile(program)
+    proto = compile(coreProgram)
     result.proto = proto
   } catch (e) {
     result.error = toError('compile', e)

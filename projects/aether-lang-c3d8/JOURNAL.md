@@ -80,6 +80,68 @@ source -> lexer -> parser -> HM inference -> optimizer -+-> bytecode compiler ->
   example, comprehension semantics, shadowing, int-wrap/div, ADT/record show) + a
   react-dom/server render smoke test for the new panels + the CI gate.
 
+### Aether 3.0 — Type classes (planned + shipping this session)
+
+The headline gap in an ML-family language: **principled overloading**. Aether already has
+Hindley–Milner with let-polymorphism, ADTs, records with row polymorphism, two backends and a
+proof-tree view — but no way to say "this works for any type that supports `disp`/`eq`/…". This
+session adds **type classes with dictionary-passing**, the same machinery Haskell uses, done so
+that *both* existing backends (bytecode VM + JavaScript) get it for free.
+
+The key design choice: type classes are implemented as a **type-directed elaboration into the
+existing core AST**. After inference resolves which instance each constraint needs, an
+elaboration pass rewrites the program so that
+
+- every `instance` becomes a **dictionary** (a record of its method implementations),
+- every constrained binding gains extra **dictionary parameters** (`fn $d -> …`),
+- every method call becomes a **field access** on the right dictionary (`$d.disp x`),
+- every use site **applies** the resolved dictionaries (concrete instance dicts, or a dictionary
+  parameter passed down).
+
+Because elaboration produces ordinary core AST (lets, lambdas, records, field access), the
+bytecode compiler, the stack VM and the JavaScript backend need **zero changes** — they compile
+and run the dictionaries like any other code, and the JS≡VM equivalence check still holds.
+
+Plan / steps:
+
+- [x] **Predicates in the type system** — `Pred { cls, type }`, qualified schemes
+      (`∀a. (Disp a) => a -> String`), and qualified pretty-printing in the Types panel.
+- [x] **Surface syntax** — `class C a where m : τ, … in body`, `instance Ctx => C T where m = e, …
+      in body`, the `=>` constraint arrow, `:` for method signatures, and `class`/`instance`/`where`
+      keywords. New AST nodes `classdecl` / `instancedecl`; every AST walk (label, children,
+      optimizer, derivation, unparser) learns them.
+- [x] **Constraint solving + instance resolution** (in `infer.ts`, evidence in `classes.ts`) —
+      context reduction for a single-parameter class system: ground heads resolve to instance
+      dictionaries (recursively through written instance contexts like `Disp a => Disp (List a)`,
+      including *self-referential* recursive instances such as `Disp (Tree a)`); type-variable heads
+      defer to a dictionary parameter, captured at the nearest enclosing generalization. Clear
+      errors for missing / duplicate / ambiguous instances and missing contexts.
+- [x] **Dictionary-passing elaboration** (`classes.ts`) — turns the typed program into core AST:
+      instance dicts as records (a recursive `let`), constrained bindings as dictionary-abstracted
+      lambdas, method uses as field accesses, use sites as evidence applications, recursive
+      self-calls re-threading their own dictionaries. Identity on programs that use no classes.
+- [x] **Both backends, unchanged** — the VM compiles the elaborated core; the JS backend lowers
+      the elaborated user AST, so overloaded programs still pass the byte-for-byte JS≡VM badge.
+- [x] **A "Classes" inspector panel** — declared classes & instances, plus the elaborated core
+      (dictionaries made visible via a new core pretty-printer) so dictionary-passing isn't a black
+      box.
+- [x] **Examples** — `Type classes` (overloaded `disp` over Int/Bool/List/tuple + a constrained
+      helper), `Shape` (ad-hoc polymorphism across distinct Circle/Rect types), and `Semigroup`
+      (an associative `combine` with a generic `mconcat` fold). All three double as a showcase of a
+      small standard class library; users declare their own classes too.
+- [x] **Docs + verification** — Tour/About/README writeups; a Node strip-types harness covering
+      instance resolution, contexts, recursive/self-referential instances, dictionary passing
+      through recursion, JS≡VM over every class program, and the error cases.
+
+- [x] **Default methods** — a class method may declare a default body (`ne : a -> a -> Bool =
+      fn x y -> not (eq x y)`); instances inherit it unless they override. Each instance clones the
+      default (`cloneExpr`) so its dictionary-passing elaboration is independent, and the default
+      resolves the class's other methods against the instance being defined (a recursive dict).
+
+Deferred (future): superclasses & `=>` on method signatures; multi-parameter classes; class
+constraints inside `let rec … and …` groups (currently rejected with a clear message); an
+always-on standard prelude of classes (kept as examples for now to guarantee zero regression).
+
 ## Standard library
 
 - list: `map filter foldl foldr length append reverse sum range take drop elem all any concat zip replicate`
@@ -189,3 +251,41 @@ source -> lexer -> parser -> HM inference -> optimizer -+-> bytecode compiler ->
   harness (JS≡VM across every gallery example, comprehension semantics incl. dependent
   generators, prelude/let shadowing, integer wraparound & truncating division, ADT/record `show`)
   plus a react-dom/server render smoke test for the two new panels; full CI gate green.
+- 2026-06-14 (claude): **Aether 3.0 — Type classes.** Added principled overloading on top of
+  Hindley–Milner, the headline missing feature for an ML-family language, implemented as a
+  *type-directed translation into the existing core* so **both backends got it with zero changes**.
+  New surface syntax — `class C a where m : τ, … in body`, `instance Ctx => C Head where m = e, …
+  in body`, the `=>` arrow and `:` for signatures (new `classdecl`/`instancedecl` AST nodes wired
+  through every AST walk). Types gained predicates and qualified schemes (`∀a. Disp a => a ->
+  String`). Inference (`infer.ts`) now does constraint generation + context reduction for a
+  single-parameter class system: a method/constrained binding instantiates to fresh obligations;
+  ground-headed obligations resolve to instance dictionaries (recursing through written instance
+  contexts, *including self-referential recursive instances* like `Disp (Tree a)`); variable-headed
+  ones defer to a dictionary parameter captured at the nearest `let` generalization, with recursive
+  self-calls re-threading their own dictionaries. A new `classes.ts` carries the evidence
+  representation and the **dictionary-passing elaboration**: instances → records (a recursive
+  `let`), constrained bindings → dictionary-abstracted lambdas, method calls → field accesses, use
+  sites → evidence applications — and it's the identity on class-free programs (so every existing
+  example is byte-for-byte unchanged). Added a **Classes** inspector tab (declared classes +
+  instances + the elaborated core, via a new core pretty-printer `unparse.ts`), three examples
+  (overloaded `Disp`, ad-hoc `Shape` across distinct types, `Semigroup` + a generic `mconcat`),
+  REPL recognition of `class`/`instance` definitions, highlighter keywords, and Tour/About/README
+  writeups. Verified with a Node strip-types harness: 13 targeted cases (basic overloading,
+  constrained polymorphism, recursive `List`/nested/`Tuple`/`Tree` instances, multi-method classes,
+  dictionaries threaded through `let rec`, methods as first-class values, and the no-instance /
+  missing-method / ambiguous-constraint errors) **plus all 21 gallery examples run on both backends
+  with JS≡VM matching**. Full CI gate (conformance + lint + tsc + build) green.
+- 2026-06-14 (claude): **Default methods.** A class method can now carry a default implementation
+  (`ne : a -> a -> Bool = fn x y -> if eq x y then false else true`); an instance need only supply
+  what it overrides. Each instance clones the default so its elaboration is independent, and the
+  default's calls to the class's other methods resolve against the instance being defined (the
+  instance dictionary is a recursive `let`, so this just works). Added a `default-methods` example
+  (an `Eq` class over `Int` and a `Colour` enum, plus a generic `member`), a "has default" marker in
+  the Classes panel, and Tour notes. Verified with a 4-case strip-types harness (default used,
+  overridden, shared across instances, default calling another method) plus all 22 gallery examples
+  green on both backends; full gate green.
+- 2026-06-14 (claude): **In-browser self-test suite.** Added a `testSuite.ts` (18 cases across core
+  language, type classes, default methods and rejected-error cases) and a **Tests** page that runs
+  it live: each case flows through the whole pipeline and, when it yields a value, is run on the VM
+  *and* the JavaScript backend, so a green row proves the two backends agree byte-for-byte. The same
+  module backs the offline Node check. Full gate green (18/18 in-app, all 22 gallery examples).

@@ -63,6 +63,10 @@ function ruleOf(e: Expr): string {
       return 'Proj'
     case 'recordUpdate':
       return 'Update'
+    case 'classdecl':
+      return 'Class'
+    case 'instancedecl':
+      return 'Instance'
   }
 }
 
@@ -120,6 +124,10 @@ function render(e: Expr, depth: number): string {
       return `${paren(e.record, d)}.${e.label}`
     case 'recordUpdate':
       return `{ ${render(e.record, d)} | … }`
+    case 'classdecl':
+      return `class ${e.name} ${e.param} where … in …`
+    case 'instancedecl':
+      return `instance ${e.cls} … where … in …`
   }
 }
 

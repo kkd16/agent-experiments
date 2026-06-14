@@ -202,6 +202,14 @@ class Compiler {
         }
         c.op(Op.RECORD_UPDATE, e.span, -2 * e.fields.length, e.fields.length)
         return
+      case 'classdecl':
+      case 'instancedecl':
+        // type-class declarations are removed by dictionary-passing elaboration
+        // before compilation; reaching here means elaboration was skipped.
+        throw new CompileError(
+          `internal: ${e.kind} survived elaboration — compile the elaborated core, not the surface AST`,
+          e.span,
+        )
     }
   }
 

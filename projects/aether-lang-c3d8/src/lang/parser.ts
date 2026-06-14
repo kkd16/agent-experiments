@@ -5,7 +5,18 @@
 // are prefix forms whose bodies extend as far right as possible. Multi-argument
 // `fn a b -> e` and `let f a b = e` desugar to curried single-argument lambdas.
 
-import type { BinaryOp, CtorDecl, Expr, MatchCase, Pattern, TypeExpr, UnaryOp } from './ast.ts'
+import type {
+  BinaryOp,
+  ConstraintExpr,
+  CtorDecl,
+  Expr,
+  MatchCase,
+  MethodImpl,
+  MethodSig,
+  Pattern,
+  TypeExpr,
+  UnaryOp,
+} from './ast.ts'
 import type { Span, Token } from './lexer.ts'
 import { tokenize } from './lexer.ts'
 
@@ -128,6 +139,8 @@ class Parser {
       if (t.value === 'if') return this.parseIf()
       if (t.value === 'match') return this.parseMatch()
       if (t.value === 'type') return this.parseTypeDecl()
+      if (t.value === 'class') return this.parseClassDecl()
+      if (t.value === 'instance') return this.parseInstanceDecl()
     }
 
     if (t.kind === 'op' && (t.value === '-' || t.value === '!')) {
@@ -588,6 +601,128 @@ class Parser {
     this.expect('keyword', 'in')
     const body = this.parseExpr(0)
     return { kind: 'typedecl', name, params, ctors, body, span: this.spanFrom(start.span, body.span) }
+  }
+
+  // class Name a where m1 : τ ; m2 : τ ; … in body
+  private parseClassDecl(): Expr {
+    const start = this.expect('keyword', 'class')
+    if (!this.at('ident') || !isUpper(this.peek().value)) {
+      throw new ParseError('expected an uppercase class name after `class`', this.peek().span)
+    }
+    const name = this.next().value
+    if (!this.at('ident') || isUpper(this.peek().value)) {
+      throw new ParseError('expected a lowercase class parameter (e.g. `class Disp a`)', this.peek().span)
+    }
+    const param = this.next().value
+    this.expect('keyword', 'where')
+    const methods: MethodSig[] = []
+    while (!this.at('keyword', 'in')) {
+      if (!this.at('ident') || isUpper(this.peek().value)) {
+        throw new ParseError('expected a lowercase method name', this.peek().span)
+      }
+      const mtok = this.next()
+      this.expect('op', ':')
+      const type = this.parseTypeExpr()
+      // an optional default implementation: `m : τ = <expr>`
+      let dflt: Expr | undefined
+      let end = type.span
+      if (this.at('op', '=')) {
+        this.next()
+        dflt = this.parseExpr(0)
+        end = dflt.span
+      }
+      methods.push({ name: mtok.value, type, default: dflt, span: this.spanFrom(mtok.span, end) })
+      if (this.at('punc', ',')) this.next()
+      else break
+    }
+    if (methods.length === 0) {
+      throw new ParseError('a class needs at least one method signature', start.span)
+    }
+    this.expect('keyword', 'in')
+    const body = this.parseExpr(0)
+    return { kind: 'classdecl', name, param, methods, body, span: this.spanFrom(start.span, body.span) }
+  }
+
+  // instance [Ctx =>] Cls Head where m1 = e1 ; … in body
+  private parseInstanceDecl(): Expr {
+    const start = this.expect('keyword', 'instance')
+    const context = this.tryParseInstanceContext()
+    if (!this.at('ident') || !isUpper(this.peek().value)) {
+      throw new ParseError('expected a class name in the instance head', this.peek().span)
+    }
+    const cls = this.next().value
+    const head = this.parseTypeApp()
+    this.expect('keyword', 'where')
+    const methods: MethodImpl[] = []
+    while (!this.at('keyword', 'in')) {
+      if (!this.at('ident') || isUpper(this.peek().value)) {
+        throw new ParseError('expected a lowercase method name', this.peek().span)
+      }
+      const mtok = this.next()
+      const params: string[] = []
+      while (this.at('ident')) params.push(this.next().value)
+      this.expect('op', '=')
+      // methods are `,`-separated; `,` is never infix, so a method body parses
+      // greedily and stops cleanly at the next method (or `in`)
+      let value = this.parseExpr(0)
+      for (let k = params.length - 1; k >= 0; k--) {
+        value = { kind: 'lambda', param: params[k], body: value, span: value.span }
+      }
+      methods.push({ name: mtok.value, value, span: this.spanFrom(mtok.span, value.span) })
+      if (this.at('punc', ',')) this.next()
+      else break
+    }
+    this.expect('keyword', 'in')
+    const body = this.parseExpr(0)
+    return {
+      kind: 'instancedecl',
+      cls,
+      head,
+      context,
+      methods,
+      body,
+      span: this.spanFrom(start.span, body.span),
+    }
+  }
+
+  // Optional `C a, D b =>` (or `(C a, D b) =>`) prefix on an instance. Restores
+  // and returns [] if what follows is the instance head itself, not a context.
+  private tryParseInstanceContext(): ConstraintExpr[] {
+    const save = this.pos
+    const ctx: ConstraintExpr[] = []
+    const paren = this.at('punc', '(')
+    if (paren) this.next()
+    for (;;) {
+      if (!this.at('ident') || !isUpper(this.peek().value)) {
+        this.pos = save
+        return []
+      }
+      const clsTok = this.next()
+      if (!this.at('ident') || isUpper(this.peek().value)) {
+        this.pos = save
+        return []
+      }
+      const paramTok = this.next()
+      ctx.push({ cls: clsTok.value, param: paramTok.value, span: this.spanFrom(clsTok.span, paramTok.span) })
+      if (this.at('punc', ',')) {
+        this.next()
+        continue
+      }
+      break
+    }
+    if (paren) {
+      if (!this.at('punc', ')')) {
+        this.pos = save
+        return []
+      }
+      this.next()
+    }
+    if (this.at('op', '=>')) {
+      this.next()
+      return ctx
+    }
+    this.pos = save
+    return []
   }
 
   private startsTypeAtom(): boolean {
