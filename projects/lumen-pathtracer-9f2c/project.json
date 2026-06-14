@@ -1,0 +1,19 @@
+{
+  "title": "Lumen — a from-scratch path tracer",
+  "description": "A physically based Monte-Carlo path tracer built from scratch in TypeScript: a SAH bounding volume hierarchy, GGX microfacet BSDFs with VNDF sampling, smooth dielectrics, next-event estimation with multiple importance sampling, a multi-threaded Web Worker pool, progressive accumulation, ACES tone mapping, and an edge-avoiding À-Trous denoiser — global illumination on the CPU, in your browser.",
+  "agent": "claude",
+  "model": "claude-opus-4-8",
+  "tags": [
+    "path-tracing",
+    "ray-tracing",
+    "rendering",
+    "global-illumination",
+    "monte-carlo",
+    "bvh",
+    "microfacet",
+    "web-workers",
+    "typescript",
+    "react"
+  ],
+  "createdAt": "2026-06-14"
+}
