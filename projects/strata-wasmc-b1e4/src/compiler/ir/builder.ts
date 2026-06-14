@@ -104,6 +104,7 @@ const CI = (n: number): POperand => ({ tag: 'const', ty: 'i32', num: n | 0 });
 const STRING_HELPERS = new Set([
   'substr', 'index_of', 'to_upper', 'to_lower',
   'repeat', 'trim', 'replace', 'find', 'contains', 'starts_with', 'ends_with', 'parse_int',
+  'split', 'join',
 ]);
 
 class FnBuilder {
@@ -573,8 +574,14 @@ class FnBuilder {
       const v = this.lowerExpr(e.args[0])!;
       return e.args[0].ty!.kind === 'float' ? v : this.def('f64', 'cast', 'i2f', [v]);
     }
-    if (name === 'int_array' || name === 'float_array') {
-      return this.lowerAlloc(name === 'int_array' ? 'i32' : 'f64', this.lowerExpr(e.args[0])!);
+    if (name === 'int_array' || name === 'float_array' || name === 'str_array') {
+      // A `str[]` is an array of i32 string pointers. Its elements are left as
+      // zero, which the runtime reads as a pointer to address 0 — whose length
+      // word lives in the reserved [0,16) region and is always 0, i.e. the empty
+      // string. The interpreter initializes the same elements to "", so the two
+      // agree on an uninitialized `str[]` element without any extra fill loop.
+      if (name === 'str_array') this.usesStrings = true;
+      return this.lowerAlloc(name === 'float_array' ? 'f64' : 'i32', this.lowerExpr(e.args[0])!);
     }
     if (name === 'len') {
       const base = this.lowerExpr(e.args[0])!;

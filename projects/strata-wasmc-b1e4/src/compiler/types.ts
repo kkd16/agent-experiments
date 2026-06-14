@@ -430,12 +430,25 @@ class Checker {
         throw new CompileError(`${name}() expects a numeric argument, found ${tyName(t)}`, e.span, 'type');
       return name === 'int' ? T_INT : T_FLOAT;
     }
-    if (name === 'int_array' || name === 'float_array') {
+    if (name === 'int_array' || name === 'float_array' || name === 'str_array') {
       if (e.args.length !== 1) throw new CompileError(`${name}() expects a length`, e.span, 'type');
       const t = this.checkExpr(e.args[0]);
       if (t.kind !== 'int') throw new CompileError(`${name}() length must be int`, e.span, 'type');
-      const elem: ScalarTy = name === 'int_array' ? { kind: 'int' } : { kind: 'float' };
+      const elem: ScalarTy = name === 'int_array' ? { kind: 'int' } : name === 'float_array' ? { kind: 'float' } : { kind: 'str' };
       return { kind: 'array', elem };
+    }
+    if (name === 'split') {
+      if (e.args.length !== 2) throw new CompileError('split() expects (str, separator)', e.span, 'type');
+      if (this.checkExpr(e.args[0]).kind !== 'str') throw new CompileError('split() argument 1 must be str', e.args[0].span, 'type');
+      if (this.checkExpr(e.args[1]).kind !== 'str') throw new CompileError('split() separator must be str', e.args[1].span, 'type');
+      return { kind: 'array', elem: { kind: 'str' } };
+    }
+    if (name === 'join') {
+      if (e.args.length !== 2) throw new CompileError('join() expects (str[], separator)', e.span, 'type');
+      const at = this.checkExpr(e.args[0]);
+      if (at.kind !== 'array' || at.elem.kind !== 'str') throw new CompileError('join() argument 1 must be str[]', e.args[0].span, 'type');
+      if (this.checkExpr(e.args[1]).kind !== 'str') throw new CompileError('join() separator must be str', e.args[1].span, 'type');
+      return T_STR;
     }
     if (name === 'len') {
       if (e.args.length !== 1) throw new CompileError('len() expects 1 argument', e.span, 'type');

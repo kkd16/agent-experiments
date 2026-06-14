@@ -529,4 +529,55 @@ fn main(){ for (let i = 0; i < 7; i = i + 1) { print(name(i)); } }`,
   let n = -32768; print(parse_int(str(n)) == n);
 }`,
   },
+  {
+    name: 'str-array-basic',
+    source: `fn main(){
+  let a = str_array(3);
+  print(len(a));
+  print("[" + a[0] + "]");          // uninitialized element reads as ""
+  a[0] = "alpha"; a[1] = "beta"; a[2] = "gamma";
+  for (let i = 0; i < len(a); i = i + 1) { print(a[i]); }
+  a[1] = a[0] + "-" + a[2];
+  print(a[1]);
+}`,
+  },
+  {
+    name: 'str-split-join',
+    source: `fn main(){
+  let parts = split("a,b,c,d", ",");
+  print(len(parts));
+  for (let i = 0; i < len(parts); i = i + 1) { print(parts[i]); }
+  print(join(parts, "/"));
+  print(join(split("one two three", " "), "_"));
+  print("[" + join(split(",", ","), "|") + "]");     // ["",""] -> "|"
+  print("[" + join(split("trailing,", ","), "|") + "]");
+  print(len(split("", ",")));                         // [""] -> 1
+  print(join(split("nosep", "X"), "+"));              // ["nosep"]
+}`,
+  },
+  {
+    name: 'str-split-words-roundtrip',
+    source: `fn rev_words(s: str) -> str {
+  let w = split(s, " ");
+  let out = str_array(len(w));
+  for (let i = 0; i < len(w); i = i + 1) { out[len(w) - 1 - i] = w[i]; }
+  return join(out, " ");
+}
+fn main(){
+  print(rev_words("the quick brown fox"));
+  print(rev_words("single"));
+  print(join(split("a.b.c", "."), "."));   // identity round-trip
+}`,
+  },
+  {
+    name: 'str-csv-sum',
+    source: `fn main(){
+  let row = "10,20,30,40,5";
+  let cells = split(row, ",");
+  let total = 0;
+  for (let i = 0; i < len(cells); i = i + 1) { total = total + parse_int(cells[i]); }
+  print(total);
+  print(join(cells, " + ") + " = " + str(total));
+}`,
+  },
 ];

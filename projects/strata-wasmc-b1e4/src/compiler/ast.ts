@@ -12,7 +12,10 @@ export type Ty =
   | { kind: 'void' }
   | { kind: 'array'; elem: ScalarTy };
 
-export type ScalarTy = { kind: 'int' } | { kind: 'float' } | { kind: 'bool' };
+// Array element types. `str` elements are i32 pointers into linear memory (just
+// like a bare `str`), so the wasm backend treats `str[]` exactly like an i32
+// array; only the type system and the interpreter track the element kind.
+export type ScalarTy = { kind: 'int' } | { kind: 'float' } | { kind: 'bool' } | { kind: 'str' };
 
 export const T_INT: Ty = { kind: 'int' };
 export const T_FLOAT: Ty = { kind: 'float' };

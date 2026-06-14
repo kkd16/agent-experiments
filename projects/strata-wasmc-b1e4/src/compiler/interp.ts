@@ -11,8 +11,10 @@ import type { Block, Expr, Program, Stmt } from './ast';
 export type RtValue = number | ArrayVal | string;
 export interface ArrayVal {
   arr: true;
-  elem: 'int' | 'float';
-  data: number[];
+  elem: 'int' | 'float' | 'str';
+  // `int`/`float` arrays hold numbers; `str` arrays hold byte strings. A single
+  // union keeps the element accessors uniform.
+  data: (number | string)[];
 }
 
 // Strings are byte strings (Latin-1): every character is one byte. A JS string
@@ -167,9 +169,10 @@ export class Interpreter {
       case 'index-assign': {
         const target = this.evalExpr(s.target, f) as ArrayVal;
         const idx = i32(this.evalExpr(s.index, f) as number);
-        const val = this.evalExpr(s.value, f) as number;
+        const val = this.evalExpr(s.value, f);
         if (idx < 0 || idx >= target.data.length) throw new Trap('array index out of bounds');
-        target.data[idx] = target.elem === 'int' ? i32(val) : val;
+        if (target.elem === 'str') target.data[idx] = val as string;
+        else target.data[idx] = target.elem === 'int' ? i32(val as number) : (val as number);
         break;
       }
       case 'expr':
@@ -478,10 +481,33 @@ export class Interpreter {
     if (name === 'float') {
       return this.evalExpr(e.args[0], f) as number;
     }
-    if (name === 'int_array' || name === 'float_array') {
+    if (name === 'int_array' || name === 'float_array' || name === 'str_array') {
       const n = i32(this.evalExpr(e.args[0], f) as number);
       if (n < 0) throw new Trap('negative array length');
+      if (name === 'str_array') return { arr: true, elem: 'str', data: new Array(n).fill('') };
       return { arr: true, elem: name === 'int_array' ? 'int' : 'float', data: new Array(n).fill(0) };
+    }
+    if (name === 'split') {
+      const s = this.evalExpr(e.args[0], f) as string;
+      const sep = this.evalExpr(e.args[1], f) as string;
+      const data: string[] = [];
+      if (sep.length === 0) {
+        data.push(s);
+      } else {
+        let start = 0;
+        for (;;) {
+          const k = findFrom(s, sep, start);
+          if (k < 0) { data.push(s.slice(start)); break; }
+          data.push(s.slice(start, k));
+          start = k + sep.length;
+        }
+      }
+      return { arr: true, elem: 'str', data };
+    }
+    if (name === 'join') {
+      const arr = this.evalExpr(e.args[0], f) as ArrayVal;
+      const sep = this.evalExpr(e.args[1], f) as string;
+      return (arr.data as string[]).join(sep);
     }
     if (name === 'len') {
       const v = this.evalExpr(e.args[0], f);

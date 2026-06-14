@@ -113,8 +113,7 @@ class Parser {
     if (this.accept('[')) {
       this.expect(']');
       if (base.kind === 'void') throw new CompileError('cannot have an array of void', t.span, 'parse');
-      if (base.kind === 'str') throw new CompileError('arrays of str are not supported', t.span, 'parse');
-      return { kind: 'array', elem: base as { kind: 'int' } | { kind: 'float' } | { kind: 'bool' } };
+      return { kind: 'array', elem: base as { kind: 'int' } | { kind: 'float' } | { kind: 'bool' } | { kind: 'str' } };
     }
     return base;
   }
