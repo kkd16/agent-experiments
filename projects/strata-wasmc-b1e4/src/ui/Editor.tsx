@@ -5,11 +5,12 @@ interface EditorProps {
   value: string;
   onChange: (v: string) => void;
   errorLine?: number;
+  activeLine?: number; // current line while single-stepping in the debugger
 }
 
 // A lightweight code editor: a transparent <textarea> over a highlighted <pre>,
 // with a synced line-number gutter. No external dependencies.
-export default function Editor({ value, onChange, errorLine }: EditorProps) {
+export default function Editor({ value, onChange, errorLine, activeLine }: EditorProps) {
   const taRef = useRef<HTMLTextAreaElement>(null);
   const preRef = useRef<HTMLPreElement>(null);
   const gutterRef = useRef<HTMLDivElement>(null);
@@ -46,8 +47,11 @@ export default function Editor({ value, onChange, errorLine }: EditorProps) {
     <div className="editor">
       <div className="gutter" ref={gutterRef}>
         {Array.from({ length: lineCount }, (_, i) => (
-          <div key={i} className={'gln' + (errorLine === i + 1 ? ' gln-err' : '')}>
-            {i + 1}
+          <div
+            key={i}
+            className={'gln' + (errorLine === i + 1 ? ' gln-err' : '') + (activeLine === i + 1 ? ' gln-active' : '')}
+          >
+            {activeLine === i + 1 ? '▶' : i + 1}
           </div>
         ))}
       </div>

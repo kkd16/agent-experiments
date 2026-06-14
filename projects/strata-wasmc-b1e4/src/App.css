@@ -171,6 +171,12 @@
   color: var(--red);
   font-weight: 700;
 }
+.gln-active {
+  color: var(--bg, #0a0f17);
+  background: var(--accent, #5b8cff);
+  font-weight: 700;
+  border-radius: 3px;
+}
 .code-area {
   position: relative;
   flex: 1;
@@ -398,6 +404,25 @@
 .badge.ok { background: #11331f; color: var(--green); border: 1px solid #1f5c36; }
 .badge.bad { background: #331515; color: var(--red); border: 1px solid #5c2424; }
 .run-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+
+/* --- debugger --- */
+.dbg-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; align-items: start; }
+.dbg-col { min-width: 0; }
+.dbg-frame {
+  background: #0a0f17;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 10px;
+  margin-bottom: 8px;
+}
+.dbg-frame-cur { border-color: #2b4a8c; box-shadow: 0 0 0 1px #1b2a4d inset; }
+.dbg-frame-head { font-size: 13px; margin-bottom: 4px; }
+.dbg-novars { font-size: 12px; padding: 2px 0; }
+.dbg-vars { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.dbg-vars td { padding: 2px 8px 2px 0; vertical-align: top; }
+.dbg-vname { color: #cdd7ea; white-space: nowrap; }
+.dbg-vty { font-size: 11px; white-space: nowrap; }
+.dbg-vval { color: var(--green); word-break: break-word; }
 .col-head { font-size: 12px; color: var(--dim); text-transform: uppercase; letter-spacing: 0.6px; margin-bottom: 6px; }
 .out-pre {
   background: #0a0f17;
@@ -451,4 +476,5 @@
   .workspace { flex-direction: column; }
   .left { width: 100%; border-right: none; border-bottom: 1px solid var(--border); height: 50%; }
   .run-cols { grid-template-columns: 1fr; }
+  .dbg-cols { grid-template-columns: 1fr; }
 }

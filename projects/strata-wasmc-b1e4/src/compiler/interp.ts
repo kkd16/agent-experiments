@@ -356,107 +356,120 @@ export class Interpreter {
 
   private evalCall(e: Extract<Expr, { node: 'call' }>, f: Frame): RtValue {
     const name = e.callee;
-    if (name === 'print') {
-      const k = e.args[0].ty?.kind;
-      if (k === 'str') {
-        this.output.push(this.evalExpr(e.args[0], f) as string);
-        return 0;
+    // Strict left-to-right argument evaluation (no builtin is short-circuiting).
+    const argv = e.args.map((a) => this.evalExpr(a, f));
+    const argKinds = e.args.map((a) => a.ty?.kind);
+    const b = callBuiltin(name, argv, argKinds, this.output);
+    if (b.handled) return b.value;
+    const fn = this.fns.get(name);
+    if (!fn) throw new Trap(`call to undefined '${name}'`);
+    const r = this.call(fn, argv);
+    return r === undefined ? 0 : r;
+  }
+}
+
+// The complete builtin library, evaluated over already-computed argument values
+// and their static type kinds. Extracted so the tree-walking interpreter and the
+// generator-based debugger share one implementation (and so can never disagree
+// about a builtin). `print` appends to the supplied output sink. Returns
+// `{ handled: false }` for a name that is not a builtin (i.e. a user function).
+export interface BuiltinResult {
+  handled: boolean;
+  value: RtValue;
+}
+export function callBuiltin(
+  name: string,
+  argv: RtValue[],
+  argKinds: (string | undefined)[],
+  out: string[],
+): BuiltinResult {
+  const H = (value: RtValue): BuiltinResult => ({ handled: true, value });
+  switch (name) {
+    case 'print': {
+      const k = argKinds[0];
+      if (k === 'str') out.push(argv[0] as string);
+      else {
+        const v = argv[0] as number;
+        out.push(k === 'float' ? formatFloat(v) : k === 'bool' ? formatBool(v) : formatInt(v));
       }
-      const v = this.evalExpr(e.args[0], f) as number;
-      this.output.push(k === 'float' ? formatFloat(v) : k === 'bool' ? formatBool(v) : formatInt(v));
-      return 0;
+      return H(0);
     }
-    if (name === 'str') {
-      const k = e.args[0].ty?.kind;
-      const v = this.evalExpr(e.args[0], f);
-      if (k === 'str') return v;
-      if (k === 'bool') return formatBool(v as number);
-      return formatInt(v as number);
+    case 'str': {
+      const k = argKinds[0];
+      if (k === 'str') return H(argv[0]);
+      if (k === 'bool') return H(formatBool(argv[0] as number));
+      return H(formatInt(argv[0] as number));
     }
-    if (name === 'char') {
-      const n = i32(this.evalExpr(e.args[0], f) as number) & 0xff;
-      return String.fromCharCode(n);
-    }
-    if (name === 'substr') {
-      const s = this.evalExpr(e.args[0], f) as string;
-      let start = i32(this.evalExpr(e.args[1], f) as number);
-      let count = i32(this.evalExpr(e.args[2], f) as number);
+    case 'char':
+      return H(String.fromCharCode(i32(argv[0] as number) & 0xff));
+    case 'substr': {
+      const s = argv[0] as string;
+      let start = i32(argv[1] as number);
+      let count = i32(argv[2] as number);
       const n = s.length;
       if (start < 0) start = 0;
       if (start > n) start = n;
       if (count < 0) count = 0;
       if (start + count > n) count = n - start;
-      return s.substr(start, count);
+      return H(s.substr(start, count));
     }
-    if (name === 'index_of') {
-      const s = this.evalExpr(e.args[0], f) as string;
-      const c = i32(this.evalExpr(e.args[1], f) as number);
-      for (let i = 0; i < s.length; i++) if (s.charCodeAt(i) === c) return i;
-      return -1;
+    case 'index_of': {
+      const s = argv[0] as string;
+      const c = i32(argv[1] as number);
+      for (let i = 0; i < s.length; i++) if (s.charCodeAt(i) === c) return H(i);
+      return H(-1);
     }
-    if (name === 'to_upper' || name === 'to_lower') {
-      const s = this.evalExpr(e.args[0], f) as string;
-      let out = '';
+    case 'to_upper':
+    case 'to_lower': {
+      const s = argv[0] as string;
+      let r = '';
       for (let i = 0; i < s.length; i++) {
         let c = s.charCodeAt(i);
         if (name === 'to_upper' && c >= 97 && c <= 122) c -= 32;
         if (name === 'to_lower' && c >= 65 && c <= 90) c += 32;
-        out += String.fromCharCode(c);
+        r += String.fromCharCode(c);
       }
-      return out;
+      return H(r);
     }
-    if (name === 'repeat') {
-      const s = this.evalExpr(e.args[0], f) as string;
-      let n = i32(this.evalExpr(e.args[1], f) as number);
+    case 'repeat': {
+      const s = argv[0] as string;
+      let n = i32(argv[1] as number);
       if (n < 0) n = 0;
-      return s.repeat(n);
+      return H(s.repeat(n));
     }
-    if (name === 'trim') {
-      const s = this.evalExpr(e.args[0], f) as string;
+    case 'trim': {
+      const s = argv[0] as string;
       let a = 0;
       let b = s.length;
       while (a < b && isWs(s.charCodeAt(a))) a++;
       while (b > a && isWs(s.charCodeAt(b - 1))) b--;
-      return s.slice(a, b);
+      return H(s.slice(a, b));
     }
-    if (name === 'find') {
-      const s = this.evalExpr(e.args[0], f) as string;
-      const sub = this.evalExpr(e.args[1], f) as string;
-      return findFrom(s, sub, 0);
-    }
-    if (name === 'contains') {
-      const s = this.evalExpr(e.args[0], f) as string;
-      const sub = this.evalExpr(e.args[1], f) as string;
-      return findFrom(s, sub, 0) >= 0 ? 1 : 0;
-    }
-    if (name === 'starts_with') {
-      const s = this.evalExpr(e.args[0], f) as string;
-      const pre = this.evalExpr(e.args[1], f) as string;
-      return s.startsWith(pre) ? 1 : 0;
-    }
-    if (name === 'ends_with') {
-      const s = this.evalExpr(e.args[0], f) as string;
-      const suf = this.evalExpr(e.args[1], f) as string;
-      return s.endsWith(suf) ? 1 : 0;
-    }
-    if (name === 'replace') {
-      const s = this.evalExpr(e.args[0], f) as string;
-      const fnd = this.evalExpr(e.args[1], f) as string;
-      const repl = this.evalExpr(e.args[2], f) as string;
-      if (fnd.length === 0) return s;
-      // Non-overlapping left-to-right, matching the prelude's two-pass replace.
-      let out = '';
-      let r = 0;
+    case 'find':
+      return H(findFrom(argv[0] as string, argv[1] as string, 0));
+    case 'contains':
+      return H(findFrom(argv[0] as string, argv[1] as string, 0) >= 0 ? 1 : 0);
+    case 'starts_with':
+      return H((argv[0] as string).startsWith(argv[1] as string) ? 1 : 0);
+    case 'ends_with':
+      return H((argv[0] as string).endsWith(argv[1] as string) ? 1 : 0);
+    case 'replace': {
+      const s = argv[0] as string;
+      const fnd = argv[1] as string;
+      const repl = argv[2] as string;
+      if (fnd.length === 0) return H(s);
+      let r = '';
+      let i = 0;
       for (;;) {
-        const k = findFrom(s, fnd, r);
-        if (k < 0) { out += s.slice(r); break; }
-        out += s.slice(r, k) + repl;
-        r = k + fnd.length;
+        const k = findFrom(s, fnd, i);
+        if (k < 0) { r += s.slice(i); break; }
+        r += s.slice(i, k) + repl;
+        i = k + fnd.length;
       }
-      return out;
+      return H(r);
     }
-    if (name === 'parse_int') {
-      const s = this.evalExpr(e.args[0], f) as string;
+    case 'parse_int': {
+      const s = argv[0] as string;
       let i = 0;
       let neg = false;
       if (i < s.length) {
@@ -471,29 +484,26 @@ export class Interpreter {
         acc = i32(Math.imul(acc, 10) + (c - 48));
         i++;
       }
-      return neg ? i32(-acc) : acc;
+      return H(neg ? i32(-acc) : acc);
     }
-    if (name === 'int') {
-      const v = this.evalExpr(e.args[0], f) as number;
-      const k = e.args[0].ty?.kind;
-      return k === 'float' ? satTruncI32(v) : i32(v);
-    }
-    if (name === 'float') {
-      return this.evalExpr(e.args[0], f) as number;
-    }
-    if (name === 'int_array' || name === 'float_array' || name === 'str_array') {
-      const n = i32(this.evalExpr(e.args[0], f) as number);
+    case 'int':
+      return H(argKinds[0] === 'float' ? satTruncI32(argv[0] as number) : i32(argv[0] as number));
+    case 'float':
+      return H(argv[0] as number);
+    case 'int_array':
+    case 'float_array':
+    case 'str_array': {
+      const n = i32(argv[0] as number);
       if (n < 0) throw new Trap('negative array length');
-      if (name === 'str_array') return { arr: true, elem: 'str', data: new Array(n).fill('') };
-      return { arr: true, elem: name === 'int_array' ? 'int' : 'float', data: new Array(n).fill(0) };
+      if (name === 'str_array') return H({ arr: true, elem: 'str', data: new Array(n).fill('') });
+      return H({ arr: true, elem: name === 'int_array' ? 'int' : 'float', data: new Array(n).fill(0) });
     }
-    if (name === 'split') {
-      const s = this.evalExpr(e.args[0], f) as string;
-      const sep = this.evalExpr(e.args[1], f) as string;
+    case 'split': {
+      const s = argv[0] as string;
+      const sep = argv[1] as string;
       const data: string[] = [];
-      if (sep.length === 0) {
-        data.push(s);
-      } else {
+      if (sep.length === 0) data.push(s);
+      else {
         let start = 0;
         for (;;) {
           const k = findFrom(s, sep, start);
@@ -502,22 +512,16 @@ export class Interpreter {
           start = k + sep.length;
         }
       }
-      return { arr: true, elem: 'str', data };
+      return H({ arr: true, elem: 'str', data });
     }
-    if (name === 'join') {
-      const arr = this.evalExpr(e.args[0], f) as ArrayVal;
-      const sep = this.evalExpr(e.args[1], f) as string;
-      return (arr.data as string[]).join(sep);
+    case 'join':
+      return H(((argv[0] as ArrayVal).data as string[]).join(argv[1] as string));
+    case 'len': {
+      const v = argv[0];
+      return H(typeof v === 'string' ? v.length : (v as ArrayVal).data.length);
     }
-    if (name === 'len') {
-      const v = this.evalExpr(e.args[0], f);
-      return typeof v === 'string' ? v.length : (v as ArrayVal).data.length;
-    }
-    const fn = this.fns.get(name);
-    if (!fn) throw new Trap(`call to undefined '${name}'`);
-    const args = e.args.map((a) => this.evalExpr(a, f));
-    const r = this.call(fn, args);
-    return r === undefined ? 0 : r;
+    default:
+      return { handled: false, value: 0 };
   }
 }
 
