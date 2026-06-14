@@ -71,6 +71,7 @@ export default function App() {
   const [gallery, setGallery] = useState<GalleryItem[]>(() => loadGallery())
   const [galleryName, setGalleryName] = useState('')
   const [toast, setToast] = useState<string | null>(null)
+  const [showHelp, setShowHelp] = useState(false)
 
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const traceRef = useRef(1)
@@ -350,6 +351,10 @@ export default function App() {
     const onKey = (e: KeyboardEvent) => {
       const el = e.target as HTMLElement | null
       if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA')) return
+      if (e.key === 'Escape') {
+        setShowHelp(false)
+        return
+      }
       if (e.metaKey || e.ctrlKey || e.altKey) return
       switch (e.key) {
         case 'r':
@@ -367,6 +372,9 @@ export default function App() {
           break
         case 's':
           doShare()
+          break
+        case '?':
+          setShowHelp((s) => !s)
           break
         default:
           break
@@ -398,6 +406,9 @@ export default function App() {
           </button>
           <button className="primary" onClick={doShare} title="Copy share link (s)">
             🔗 Share
+          </button>
+          <button className="ghost" onClick={() => setShowHelp(true)} title="Help (?)">
+            ?
           </button>
         </div>
       </header>
@@ -845,6 +856,40 @@ export default function App() {
       </div>
 
       {toast && <div className="toast">{toast}</div>}
+
+      {showHelp && (
+        <div className="modal-backdrop" onClick={() => setShowHelp(false)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-head">
+              <h2>Harmonograph Lab</h2>
+              <button onClick={() => setShowHelp(false)}>✕</button>
+            </div>
+            <p>
+              A harmonograph is a Victorian drawing machine: damped pendulums swing
+              against each other and a pen traces their interference. Two pendulums
+              drive <strong>X</strong>, two drive <strong>Y</strong>, and an optional{' '}
+              <strong>rotary</strong> frame slowly turns the paper. Frequencies near
+              small whole-number ratios make the most coherent figures.
+            </p>
+            <p className="hint">
+              Build a piece by stacking <strong>layers</strong> — each its own curve,
+              palette and blend. Use <em>Add</em> / <em>Screen</em> blends with glow
+              for luminous overlaps, color along path / speed / curvature / direction,
+              and turn up <strong>kaleidoscope symmetry</strong> for mandalas. Hit
+              Animate to watch the pen draw. Everything lives in the URL, so the{' '}
+              <strong>Share</strong> link reproduces your exact piece.
+            </p>
+            <div className="shortcuts">
+              <div><kbd>Space</kbd> play / pause</div>
+              <div><kbd>R</kbd> randomize layer</div>
+              <div><kbd>N</kbd> new layer</div>
+              <div><kbd>E</kbd> export PNG</div>
+              <div><kbd>S</kbd> copy share link</div>
+              <div><kbd>?</kbd> this help</div>
+            </div>
+          </div>
+        </div>
+      )}
     </main>
   )
 }

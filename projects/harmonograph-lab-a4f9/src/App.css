@@ -593,6 +593,71 @@ input[type='text']:focus {
   }
 }
 
+/* ---- help modal ---- */
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(4, 5, 12, 0.72);
+  backdrop-filter: blur(4px);
+  display: grid;
+  place-items: center;
+  z-index: 100;
+  padding: 20px;
+  animation: toast-in 0.18s ease;
+}
+.modal {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  box-shadow: var(--shadow);
+  max-width: 540px;
+  width: 100%;
+  padding: 22px 24px 24px;
+}
+.modal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.modal-head h2 {
+  margin: 0;
+  font-size: 20px;
+  background: linear-gradient(95deg, var(--accent), var(--accent-2));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+.modal p {
+  font-size: 13.5px;
+  line-height: 1.6;
+  color: #cfd4f5;
+}
+.modal .hint {
+  color: var(--muted);
+}
+.shortcuts {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px 16px;
+  margin-top: 16px;
+  font-size: 13px;
+  color: var(--muted);
+}
+kbd {
+  display: inline-block;
+  min-width: 18px;
+  text-align: center;
+  background: var(--bg-2);
+  border: 1px solid var(--line);
+  border-bottom-width: 2px;
+  border-radius: 5px;
+  padding: 1px 6px;
+  margin-right: 7px;
+  font-family: ui-monospace, monospace;
+  font-size: 11.5px;
+  color: var(--text);
+}
+
 /* ---- responsive ---- */
 @media (max-width: 920px) {
   .stage {

@@ -61,6 +61,7 @@ Shipped in v2 (this session):
 - [x] **Redesigned, tabbed, responsive UI.**
 - [x] **Kaleidoscope** — per-layer radial symmetry (1–12×) + optional mirroring,
       stamped in both the canvas renderer and the SVG export.
+- [x] **Help / about overlay** explaining harmonographs + a shortcut reference.
 
 Future:
 
