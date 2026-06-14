@@ -22,6 +22,7 @@ export function toSSA(pm: PModule): IRModule {
     globals: pm.globals,
     usesMemory: pm.usesMemory,
     memPages: pm.memPages,
+    staticData: pm.staticData,
   };
 }
 

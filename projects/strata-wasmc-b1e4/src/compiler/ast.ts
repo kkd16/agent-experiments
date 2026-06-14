@@ -8,6 +8,7 @@ export type Ty =
   | { kind: 'int' }
   | { kind: 'float' }
   | { kind: 'bool' }
+  | { kind: 'str' }
   | { kind: 'void' }
   | { kind: 'array'; elem: ScalarTy };
 
@@ -16,6 +17,7 @@ export type ScalarTy = { kind: 'int' } | { kind: 'float' } | { kind: 'bool' };
 export const T_INT: Ty = { kind: 'int' };
 export const T_FLOAT: Ty = { kind: 'float' };
 export const T_BOOL: Ty = { kind: 'bool' };
+export const T_STR: Ty = { kind: 'str' };
 export const T_VOID: Ty = { kind: 'void' };
 
 export function tyEqual(a: Ty, b: Ty): boolean {
@@ -63,6 +65,7 @@ export type Expr =
   | (ExprBase & { node: 'int'; value: number })
   | (ExprBase & { node: 'float'; value: number })
   | (ExprBase & { node: 'bool'; value: boolean })
+  | (ExprBase & { node: 'string'; value: string })
   | (ExprBase & { node: 'ident'; name: string })
   | (ExprBase & { node: 'unary'; op: UnaryOp; operand: Expr })
   | (ExprBase & { node: 'binary'; op: BinaryOp; left: Expr; right: Expr })

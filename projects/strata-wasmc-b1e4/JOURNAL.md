@@ -15,7 +15,12 @@ reference interpreter at every optimization level.
   - `builder.ts` lowers the typed AST into a pre-SSA CFG (named vars, basic blocks),
   - `ssa.ts` builds pure SSA (Cooper–Harvey–Kennedy dominators, dominance frontiers,
     Cytron phi insertion + renaming),
-  - `cfg.ts` shared dominator analysis.
+  - `cfg.ts` shared dominator analysis,
+  - `prelude.ts` — the **string runtime, written in Strata itself**
+    (`__strcat`/`__streq`/`__char`/`__int_to_str`/`__bool_to_str`). It is parsed +
+    type-checked (with low-level memory intrinsics enabled) and compiled through this
+    very pipeline, then injected only when a program uses strings. Because the runtime
+    *is* ordinary Strata, the differential harness verifies it at every opt level too.
 - `src/compiler/opt/optimize.ts` — pass pipeline: copy-propagation, **SCCP** (sparse
   conditional constant propagation), **strength reduction**, dominator-scoped **GVN/CSE**,
   algebraic simplification, **LICM** (loop-invariant code motion), **DCE**, CFG cleanup,
@@ -33,16 +38,21 @@ reference interpreter at every optimization level.
 - `src/compiler/interp.ts` — reference tree-walking interpreter (the correctness oracle).
 - `src/compiler/runner.ts` — instantiates and runs the wasm in-browser.
 - `src/compiler/verify.ts` — differential testing harness (shipped as the "Verify" tab).
-- `src/compiler/tests.ts` — adversarial differential-test battery (32 focused programs).
+- `src/compiler/tests.ts` — adversarial differential-test battery (41 focused programs).
 - `src/ui/` — the Compiler-Explorer UI (editor with syntax highlight overlay, SVG CFG view,
   pipeline-stage panels).
 
 ## Language features
 
-int / float / bool / arrays (linear memory), functions + recursion, globals (now
+int / float / bool / **str** / arrays (linear memory), functions + recursion, globals (now
 assignable from any function), if/else, while, for, break/continue, short-circuit
 `&&`/`||`, **ternary `?:`**, **compound assignment** (`+=` … `>>=`), casts
 `int()`/`float()`, `print`, `int_array`/`float_array`/`len`.
+
+**Strings** are first-class byte strings in linear memory: double-quoted literals with
+escapes (`\n \t \r \0 \\ \" \xNN`), `+` concatenation, `==`/`!=` comparison, `len(s)`,
+byte indexing `s[i]` (0..255), and conversions `str(int|bool|str)` / `char(int)`. They
+print with `print(s)`. The runtime lives in `ir/prelude.ts` (see above).
 
 ## Done
 
@@ -102,15 +112,82 @@ against the reference interpreter). Plan + progress:
       every pass; click a pass to see a line-level red/green diff of exactly what
       it rewrote (snapshots are UI-only, so the Verify suite stays fast).
 
-## Earlier backlog (still open)
+## 2026-06-14 — first-class strings, end to end (claude / claude-opus-4-8)
 
+Strata gained a real `str` type that threads through *every* stage of the compiler —
+front-end, type system, SSA mid-end, optimizer, and a genuine WebAssembly data section
++ linear-memory runtime — and it is differential-tested at -O0…-O3 like everything else.
+
+The key design idea: **the string runtime is written in Strata and compiled by the same
+pipeline.** Strings are byte strings (Latin-1), represented as heap objects with the same
+`[i32 length][bytes…]` layout as arrays. In the tree-walking interpreter a string is just
+a JS string; in wasm it is a pointer into linear memory. The differential harness compares
+*printed output*, so the two representations are free to differ internally while being
+proven observationally identical.
+
+Plan + progress (all shipped this session):
+
+### Front-end
+- [x] Lexer: double-quoted string literals with C-style escapes (`\n \t \r \0 \\ \"`
+      and `\xNN`), enforcing the Latin-1 byte-string invariant.
+- [x] AST + parser: a `string` expression node, the `str` type annotation, and a guard
+      against `str[]` arrays.
+- [x] Type checker: `str` everywhere — `+` overloaded for concatenation, `==`/`!=`,
+      `len`, byte indexing → `int`, and the `str()` / `char()` builtins. Reserved the
+      `__` name prefix for the runtime.
+
+### Mid-end / backend
+- [x] A `StringPool` that interns literals (dedup → pointer-equal identical literals)
+      into one static **data segment**, with an 8-byte length header per entry.
+- [x] Builder lowering: literals → constant data-segment pointers; `+`/`==`/`!=` →
+      calls to runtime helpers; indexing → `i32.load8_u`; `str()`/`char()` → helpers;
+      `print(str)` → a `print_str` import; a raw bump-allocator intrinsic `__alloc`.
+- [x] New IR memory ops: byte `load`/`store` (`i32.load8_u` / `i32.store8`), wired
+      through SSA, the optimizer, codegen, and the WAT printer.
+- [x] Backend: emit the wasm **data section** (active segment), the `print_str` import,
+      and a `(data …)` line in the WAT listing; `__hp` heap start now sits *after* the
+      static data region.
+- [x] `ir/prelude.ts`: `__strcat`, `__streq`, `__char`, `__int_to_str` (decimal, INT_MIN
+      safe — no negation), `__bool_to_str`. Type-checked with low-level intrinsics,
+      injected only when strings are used, and pruned by dead-function elimination at -O2+.
+
+### Oracle, runner, UI, proof
+- [x] Interpreter: strings as JS byte-strings; concat/eq/len/index/`str()`/`char()` with
+      semantics that match the wasm runtime exactly.
+- [x] Runner: `print_str` reaches into the exported memory and Latin-1-decodes the object.
+- [x] Editor highlighter colors string literals; new examples **Strings & text**,
+      **Caesar cipher**, **ASCII bar chart**.
+- [x] Verify battery grew with 9 string programs (literals/escapes, concat/eq, conversions,
+      indexing, reverse, FizzBuzz, ROT13 round-trip, recursive build, param passthrough).
+      Headless harness: **220 differential checks (14 examples + 41 battery × 4 levels), all green.**
+
+### Future ideas (open)
+- [ ] Lexicographic string ordering (`<`/`>`) via a `__strcmp` helper
+- [ ] More string library: `substr`, `index_of`, `to_upper`/`to_lower`, `repeat`, `split`
+- [ ] `str(float)` (needs a wasm float-formatter matching the interpreter's round-tripping)
 - [ ] `i64`/`f32` types and more numeric conversions
-- [ ] Strings and a richer print (format strings)
+- [ ] A printf-style `format(...)` with typed varargs
 - [ ] General (non-self) tail-call elimination via the wasm tail-call proposal
 - [ ] Step debugger that single-steps the wasm and highlights the source line
 
 ## Session log
 
+- 2026-06-14 (claude / claude-opus-4-8): **First-class strings, end to end.** Added a `str`
+  type that runs through the whole compiler. Front-end: string literals with escapes (Latin-1
+  byte strings), a `string` AST node, `str` annotations, and type rules for `+` (concat),
+  `==`/`!=`, `len`, byte indexing, and the `str()`/`char()` builtins. Backend: literals are
+  interned into a single static **data section** (8-byte length header per object, identical
+  literals deduplicated to pointer equality); added byte `load`/`store` IR ops
+  (`i32.load8_u`/`i32.store8`); emitted the data section, a `print_str` import, and a `(data …)`
+  WAT line; the heap pointer now starts after the static region. The string **runtime is written
+  in Strata** (`ir/prelude.ts`: `__strcat`/`__streq`/`__char`/`__int_to_str`/`__bool_to_str`) and
+  compiled through the same pipeline (low-level memory intrinsics gated behind a `lowLevel`
+  type-check flag), injected only when needed and pruned by dead-function elimination at -O2+.
+  The interpreter models strings as JS byte-strings with matching semantics; the runner
+  Latin-1-decodes `print_str` out of exported memory. Three new examples (Strings & text, Caesar
+  cipher, ASCII bar chart) and nine new battery programs. Headless harness now runs **220
+  differential checks (14 examples + 41 battery × 4 levels), all green**; CI gate
+  (conformance + lint + build) green.
 - 2026-06-14 (claude / claude-opus-4-8): Major optimizing-compiler upgrade. **Backend
   stackification**: single-use, pure, non-trapping, same-block values are now folded directly
   onto the wasm operand stack (post-order subtree expansion at the consumer) instead of every

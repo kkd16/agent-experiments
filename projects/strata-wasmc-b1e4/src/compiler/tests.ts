@@ -286,4 +286,95 @@ fn main(){ for (let i = 0; i < 12; i = i + 1) { print(drop2(i)); } }`,
   print((x * y + z) * (x - y + z) - (x + y - z) * (y + z - x));
 }`,
   },
+
+  // --- string runtime (literals, concat, ==, indexing, str()/char(), len) ---
+  {
+    name: 'str-literals-escapes',
+    source: `fn main(){
+  print("Hello, world!");
+  print("tab\\tafter"); print("a\\nb"); print("q=\\" b=\\\\ x=\\x41");
+  print(""); print(len(""));
+}`,
+  },
+  {
+    name: 'str-concat-eq',
+    source: `fn main(){
+  let a = "foo"; let b = "bar";
+  print(a + b); print("x" + "y" + "z");
+  print(a == "foo"); print(a == b); print(a != b);
+  print(("a" + "b") == "ab");     // built vs interned literal
+  print("" + a == a);
+}`,
+  },
+  {
+    name: 'str-conversions',
+    source: `fn main(){
+  print(str(0)); print(str(42)); print(str(-7));
+  print(str(-2147483648)); print(str(2147483647));   // INT_MIN / INT_MAX
+  print(str(true)); print(str(false));
+  print(char(72) + char(105) + str(33));             // 'H' + 'i' + "33" = "Hi33"
+  print(str(1) + str(2) + str(3));
+}`,
+  },
+  {
+    name: 'str-index-len',
+    source: `fn main(){
+  let s = "ABCDE";
+  print(len(s));
+  for (let i = 0; i < len(s); i = i + 1) { print(s[i]); }
+  print(s[0] + s[4]);   // 65 + 69 byte arithmetic
+}`,
+  },
+  {
+    name: 'str-reverse',
+    source: `fn rev(s: str) -> str {
+  let r = "";
+  for (let i = len(s) - 1; i >= 0; i = i - 1) { r = r + char(s[i]); }
+  return r;
+}
+fn main(){ print(rev("hello")); print(rev("")); print(rev("a")); print(rev("racecar") == "racecar"); }`,
+  },
+  {
+    name: 'str-fizzbuzz',
+    source: `fn main(){
+  for (let i = 1; i <= 20; i = i + 1) {
+    let s = "";
+    if (i % 3 == 0) { s = s + "Fizz"; }
+    if (i % 5 == 0) { s = s + "Buzz"; }
+    print(s == "" ? str(i) : s);
+  }
+}`,
+  },
+  {
+    name: 'str-caesar-roundtrip',
+    source: `fn shift(s: str, k: int) -> str {
+  let out = "";
+  for (let i = 0; i < len(s); i = i + 1) {
+    let c = s[i];
+    if (c >= 97 && c <= 122) { c = (c - 97 + k) % 26 + 97; }
+    out = out + char(c);
+  }
+  return out;
+}
+fn main(){
+  let m = "the quick brown fox";
+  let e = shift(m, 13);
+  print(e);
+  print(shift(e, 13) == m);   // ROT13 is its own inverse
+}`,
+  },
+  {
+    name: 'str-recursive-build',
+    source: `fn rep(s: str, n: int) -> str { if (n <= 0) { return ""; } return s + rep(s, n - 1); }
+fn main(){ let r = rep("ab", 5); print(r); print(len(r)); print(rep("-", 0) == ""); }`,
+  },
+  {
+    name: 'str-param-passthrough',
+    source: `fn pick(cond: int, a: str, b: str) -> str { return cond != 0 ? a : b; }
+fn main(){
+  print(pick(1, "yes", "no"));
+  print(pick(0, "yes", "no"));
+  print(pick(1, "yes", "no") + "/" + pick(0, "yes", "no"));
+}`,
+  },
 ];

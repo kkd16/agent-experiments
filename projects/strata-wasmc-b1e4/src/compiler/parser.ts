@@ -15,7 +15,7 @@ import type {
   Ty,
   UnaryOp,
 } from './ast';
-import { T_BOOL, T_FLOAT, T_INT, T_VOID } from './ast';
+import { T_BOOL, T_FLOAT, T_INT, T_STR, T_VOID } from './ast';
 
 // Binding powers for the Pratt expression parser. Higher binds tighter. Each
 // entry is [left, right] so we can express left-associativity (left < right).
@@ -101,6 +101,9 @@ class Parser {
       case 'bool':
         base = T_BOOL;
         break;
+      case 'str':
+        base = T_STR;
+        break;
       case 'void':
         base = T_VOID;
         break;
@@ -110,6 +113,7 @@ class Parser {
     if (this.accept('[')) {
       this.expect(']');
       if (base.kind === 'void') throw new CompileError('cannot have an array of void', t.span, 'parse');
+      if (base.kind === 'str') throw new CompileError('arrays of str are not supported', t.span, 'parse');
       return { kind: 'array', elem: base as { kind: 'int' } | { kind: 'float' } | { kind: 'bool' } };
     }
     return base;
@@ -372,6 +376,8 @@ class Parser {
         return { node: 'int', value: t.value, span: t.span };
       case 'float_lit':
         return { node: 'float', value: t.value, span: t.span };
+      case 'str_lit':
+        return { node: 'string', value: t.str ?? '', span: t.span };
       case 'true':
         return { node: 'bool', value: true, span: t.span };
       case 'false':

@@ -28,8 +28,8 @@ type W =
   | { k: 'i32c'; v: number }
   | { k: 'f64c'; v: number }
   | { k: 'call'; i: number }
-  | { k: 'load'; f64: boolean }
-  | { k: 'store'; f64: boolean }
+  | { k: 'load'; mem: 'i32' | 'f64' | 'i8' }
+  | { k: 'store'; mem: 'i32' | 'f64' | 'i8' }
   | { k: 'op'; c: number; name: string }
   | { k: 'trunc' }
   | { k: 'convert' };
@@ -337,10 +337,10 @@ class FuncGen {
         out.push(...this.pushOperand(inst.args[0]), { k: 'gset', i: this.res.globalIndex(inst.sub) });
         break;
       case 'load':
-        out.push(...this.pushOperand(inst.args[0]), { k: 'load', f64: inst.sub === 'f64' });
+        out.push(...this.pushOperand(inst.args[0]), { k: 'load', mem: inst.sub as 'i32' | 'f64' | 'i8' });
         break;
       case 'store':
-        out.push(...this.pushOperand(inst.args[0]), ...this.pushOperand(inst.args[1]), { k: 'store', f64: inst.sub === 'f64' });
+        out.push(...this.pushOperand(inst.args[0]), ...this.pushOperand(inst.args[1]), { k: 'store', mem: inst.sub as 'i32' | 'f64' | 'i8' });
         break;
       case 'print':
         out.push(...this.pushOperand(inst.args[0]), { k: 'call', i: this.res.printIndex(inst.sub) });
@@ -429,8 +429,14 @@ function encodeBody(w: ByteWriter, tree: W[]): void {
       case 'i32c': w.u8(0x41); w.i32(n.v); break;
       case 'f64c': w.u8(0x44); w.f64(n.v); break;
       case 'call': w.u8(0x10); w.u32(n.i); break;
-      case 'load': w.u8(n.f64 ? 0x2b : 0x28); w.u32(n.f64 ? 3 : 2); w.u32(0); break;
-      case 'store': w.u8(n.f64 ? 0x39 : 0x36); w.u32(n.f64 ? 3 : 2); w.u32(0); break;
+      case 'load': {
+        const [op, align] = n.mem === 'f64' ? [0x2b, 3] : n.mem === 'i8' ? [0x2d, 0] : [0x28, 2];
+        w.u8(op); w.u32(align); w.u32(0); break;
+      }
+      case 'store': {
+        const [op, align] = n.mem === 'f64' ? [0x39, 3] : n.mem === 'i8' ? [0x3a, 0] : [0x36, 2];
+        w.u8(op); w.u32(align); w.u32(0); break;
+      }
       case 'op': w.u8(n.c); break;
       case 'trunc': w.u8(0xfc); w.u32(0x02); break; // i32.trunc_sat_f64_s
       case 'convert': w.u8(0xb7); break; // f64.convert_i32_s
@@ -458,7 +464,7 @@ export function codegen(mod: IRModule): CodegenResult {
   // discover which print imports are used
   const usedPrints = new Set<string>();
   for (const fn of mod.funcs) for (const b of fn.blocks) for (const i of b.insts) if (i.kind === 'print') usedPrints.add(i.sub);
-  const imports: PrintImport[] = (['int', 'float', 'bool'] as const)
+  const imports: PrintImport[] = (['int', 'float', 'bool', 'str'] as const)
     .filter((k) => usedPrints.has(k))
     .map((k) => ({ kind: k, field: `print_${k}`, param: k === 'float' ? 'f64' : 'i32' }));
   const printIndexMap = new Map<string, number>();
@@ -604,6 +610,20 @@ export function codegen(mod: IRModule): CodegenResult {
   });
   sections.push(section(10, vec(codeItems)));
 
+  // data section: one active segment that copies the interned string literals
+  // into linear memory at startup (offset = mod.staticData.offset).
+  if (mod.staticData && mod.staticData.bytes.length) {
+    const seg = new ByteWriter();
+    seg.u8(0x00); // active segment, memory 0, offset expression follows
+    seg.u8(0x41); seg.i32(mod.staticData.offset); seg.u8(0x0b); // (i32.const off) end
+    seg.u32(mod.staticData.bytes.length);
+    seg.raw(mod.staticData.bytes);
+    const body = new ByteWriter();
+    body.u32(1); // one segment
+    body.raw(seg.bytes);
+    sections.push(section(11, body.bytes));
+  }
+
   const all = new ByteWriter();
   all.raw(WASM_MAGIC);
   all.raw(WASM_VERSION);
@@ -636,6 +656,12 @@ function emitWAT(mod: IRModule, gens: FuncGen[], imports: PrintImport[]): string
     lines.push(`  (import "env" "${im.field}" (func $${im.field} (param ${im.param})))`);
   }
   if (mod.usesMemory) lines.push(`  (memory (export "memory") ${mod.memPages})`);
+  if (mod.staticData && mod.staticData.bytes.length) {
+    const esc = mod.staticData.bytes
+      .map((b) => (b >= 0x20 && b < 0x7f && b !== 0x22 && b !== 0x5c ? String.fromCharCode(b) : '\\' + b.toString(16).padStart(2, '0')))
+      .join('');
+    lines.push(`  (data (i32.const ${mod.staticData.offset}) "${esc}")`);
+  }
   for (const g of mod.globals) {
     const init = g.ty === 'f64' ? `(f64.const ${g.init})` : `(i32.const ${g.init | 0})`;
     lines.push(`  (global $${g.name} (mut ${g.ty}) ${init})`);
@@ -676,8 +702,8 @@ function watBody(tree: W[], lines: string[], depth: number): void {
       case 'i32c': lines.push(`${pad}i32.const ${n.v | 0}`); break;
       case 'f64c': lines.push(`${pad}f64.const ${n.v}`); break;
       case 'call': lines.push(`${pad}call ${n.i}`); break;
-      case 'load': lines.push(`${pad}${n.f64 ? 'f64' : 'i32'}.load`); break;
-      case 'store': lines.push(`${pad}${n.f64 ? 'f64' : 'i32'}.store`); break;
+      case 'load': lines.push(`${pad}${n.mem === 'f64' ? 'f64.load' : n.mem === 'i8' ? 'i32.load8_u' : 'i32.load'}`); break;
+      case 'store': lines.push(`${pad}${n.mem === 'f64' ? 'f64.store' : n.mem === 'i8' ? 'i32.store8' : 'i32.store'}`); break;
       case 'op': lines.push(`${pad}${n.name}`); break;
       case 'trunc': lines.push(`${pad}i32.trunc_sat_f64_s`); break;
       case 'convert': lines.push(`${pad}f64.convert_i32_s`); break;

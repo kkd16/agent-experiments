@@ -8,7 +8,7 @@ import type {
   Stmt,
   Ty,
 } from './ast';
-import { T_BOOL, T_FLOAT, T_INT, T_VOID, tyEqual, tyName } from './ast';
+import { T_BOOL, T_FLOAT, T_INT, T_STR, T_VOID, tyEqual, tyName } from './ast';
 
 // The type checker resolves every identifier, validates operators, and writes
 // the inferred `ty` back onto each expression node so later phases never have to
@@ -29,6 +29,19 @@ export interface SymbolTable {
 // cased because they accept multiple argument types; array intrinsics return
 // handles into linear memory.
 const ARRAY_INTRINSICS = new Set(['int_array', 'float_array', 'len']);
+const STR_BUILTINS = new Set(['str', 'char']);
+
+// Low-level memory intrinsics. They are *not* part of the user-facing language —
+// they are only enabled while type-checking the internal string runtime prelude
+// (see `lowLevel`), which is written in Strata itself and compiled through the
+// real pipeline. Each maps to a single IR memory op in the builder.
+const INTRINSIC_SIGS: Record<string, { params: ('int')[]; ret: 'int' | 'void' }> = {
+  __load8: { params: ['int'], ret: 'int' },
+  __load32: { params: ['int'], ret: 'int' },
+  __store8: { params: ['int', 'int'], ret: 'void' },
+  __store32: { params: ['int', 'int'], ret: 'void' },
+  __alloc: { params: ['int'], ret: 'int' },
+};
 
 class Scope {
   private maps: Map<string, Ty>[] = [new Map()];
@@ -57,12 +70,18 @@ class Checker {
   private scope = new Scope();
   private retTy: Ty = T_VOID;
   private loopDepth = 0;
+  private lowLevel: boolean;
+  constructor(lowLevel = false) {
+    this.lowLevel = lowLevel;
+  }
 
   check(prog: Program): SymbolTable {
     // Pass 1: collect signatures so functions can be mutually recursive.
     for (const d of prog.decls) {
       if (d.kind === 'fn') {
-        if (this.syms.functions.has(d.name) || ARRAY_INTRINSICS.has(d.name) || d.name === 'print')
+        if (!this.lowLevel && d.name.startsWith('__'))
+          throw new CompileError(`names beginning with '__' are reserved`, d.span, 'type');
+        if (this.syms.functions.has(d.name) || ARRAY_INTRINSICS.has(d.name) || STR_BUILTINS.has(d.name) || d.name === 'print')
           throw new CompileError(`duplicate or reserved function name '${d.name}'`, d.span, 'type');
         this.syms.functions.set(d.name, { params: d.params.map((p) => p.ty), ret: d.retTy });
       }
@@ -207,6 +226,8 @@ class Checker {
         return T_FLOAT;
       case 'bool':
         return T_BOOL;
+      case 'string':
+        return T_STR;
       case 'ident': {
         const local = this.scope.lookup(e.name);
         if (local) return local;
@@ -220,10 +241,12 @@ class Checker {
         return this.checkBinary(e);
       case 'index': {
         const tt = this.checkExpr(e.target);
-        if (tt.kind !== 'array') throw new CompileError(`cannot index a non-array of type ${tyName(tt)}`, e.span, 'type');
+        if (tt.kind !== 'array' && tt.kind !== 'str')
+          throw new CompileError(`cannot index a non-array of type ${tyName(tt)}`, e.span, 'type');
         const it = this.checkExpr(e.index);
-        if (it.kind !== 'int') throw new CompileError('array index must be int', e.index.span, 'type');
-        return tt.elem;
+        if (it.kind !== 'int') throw new CompileError('index must be int', e.index.span, 'type');
+        // Indexing a string yields the byte at that position as an int (0..255).
+        return tt.kind === 'str' ? T_INT : tt.elem;
       }
       case 'call':
         return this.checkCall(e);
@@ -264,6 +287,10 @@ class Checker {
 
     switch (op) {
       case '+':
+        // `+` is overloaded for string concatenation.
+        if (lt.kind === 'str' && rt.kind === 'str') return T_STR;
+        if (sameNumeric) return lt;
+        throw new CompileError(`'+' requires matching numeric or string operands, found ${tyName(lt)} and ${tyName(rt)}`, e.span, 'type');
       case '-':
       case '*':
       case '/':
@@ -297,12 +324,36 @@ class Checker {
   private checkCall(e: Extract<Expr, { node: 'call' }>): Ty {
     const name = e.callee;
     // builtins
+    // Low-level memory intrinsics (only inside the string-runtime prelude).
+    if (this.lowLevel && name in INTRINSIC_SIGS) {
+      const sig = INTRINSIC_SIGS[name];
+      if (e.args.length !== sig.params.length)
+        throw new CompileError(`${name}() expects ${sig.params.length} argument(s)`, e.span, 'type');
+      for (const a of e.args) {
+        const t = this.checkExpr(a);
+        if (t.kind !== 'int') throw new CompileError(`${name}() arguments must be int`, a.span, 'type');
+      }
+      return sig.ret === 'int' ? T_INT : T_VOID;
+    }
     if (name === 'print') {
       if (e.args.length !== 1) throw new CompileError('print expects 1 argument', e.span, 'type');
       const t = this.checkExpr(e.args[0]);
-      if (t.kind !== 'int' && t.kind !== 'float' && t.kind !== 'bool')
-        throw new CompileError(`print expects a scalar, found ${tyName(t)}`, e.span, 'type');
+      if (t.kind !== 'int' && t.kind !== 'float' && t.kind !== 'bool' && t.kind !== 'str')
+        throw new CompileError(`print expects a scalar or string, found ${tyName(t)}`, e.span, 'type');
       return T_VOID;
+    }
+    if (name === 'str') {
+      if (e.args.length !== 1) throw new CompileError('str() expects 1 argument', e.span, 'type');
+      const t = this.checkExpr(e.args[0]);
+      if (t.kind !== 'int' && t.kind !== 'bool' && t.kind !== 'str')
+        throw new CompileError(`str() expects an int, bool, or str, found ${tyName(t)}`, e.span, 'type');
+      return T_STR;
+    }
+    if (name === 'char') {
+      if (e.args.length !== 1) throw new CompileError('char() expects 1 argument', e.span, 'type');
+      const t = this.checkExpr(e.args[0]);
+      if (t.kind !== 'int') throw new CompileError(`char() expects an int, found ${tyName(t)}`, e.span, 'type');
+      return T_STR;
     }
     if (name === 'int' || name === 'float') {
       if (e.args.length !== 1) throw new CompileError(`${name}() expects 1 argument`, e.span, 'type');
@@ -321,7 +372,8 @@ class Checker {
     if (name === 'len') {
       if (e.args.length !== 1) throw new CompileError('len() expects 1 argument', e.span, 'type');
       const t = this.checkExpr(e.args[0]);
-      if (t.kind !== 'array') throw new CompileError(`len() expects an array, found ${tyName(t)}`, e.span, 'type');
+      if (t.kind !== 'array' && t.kind !== 'str')
+        throw new CompileError(`len() expects an array or string, found ${tyName(t)}`, e.span, 'type');
       return T_INT;
     }
     // user function
@@ -338,6 +390,6 @@ class Checker {
   }
 }
 
-export function typecheck(prog: Program): SymbolTable {
-  return new Checker().check(prog);
+export function typecheck(prog: Program, opts?: { lowLevel?: boolean }): SymbolTable {
+  return new Checker(opts?.lowLevel ?? false).check(prog);
 }

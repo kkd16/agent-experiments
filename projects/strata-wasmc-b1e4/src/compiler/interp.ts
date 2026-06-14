@@ -8,12 +8,17 @@ import type { Block, Expr, Program, Stmt } from './ast';
 // semantics (wrapping, truncating division, saturating float->int casts) so the
 // two implementations agree bit-for-bit.
 
-export type RtValue = number | ArrayVal;
+export type RtValue = number | ArrayVal | string;
 export interface ArrayVal {
   arr: true;
   elem: 'int' | 'float';
   data: number[];
 }
+
+// Strings are byte strings (Latin-1): every character is one byte. A JS string
+// here is guaranteed to hold only code points 0..255 (the lexer enforces this on
+// literals, and every runtime op below preserves it), so `.length` is the byte
+// length and `charCodeAt` reads a byte — matching the wasm backend exactly.
 
 export class Trap extends Error {
   constructor(msg: string) {
@@ -210,6 +215,8 @@ export class Interpreter {
         return e.value;
       case 'bool':
         return e.value ? 1 : 0;
+      case 'string':
+        return e.value;
       case 'ident':
         return this.getVar(e.name, f);
       case 'unary':
@@ -217,10 +224,15 @@ export class Interpreter {
       case 'binary':
         return this.evalBinary(e, f);
       case 'index': {
-        const target = this.evalExpr(e.target, f) as ArrayVal;
+        const target = this.evalExpr(e.target, f);
         const idx = i32(this.evalExpr(e.index, f) as number);
-        if (idx < 0 || idx >= target.data.length) throw new Trap('array index out of bounds');
-        return target.data[idx];
+        if (typeof target === 'string') {
+          if (idx < 0 || idx >= target.length) throw new Trap('string index out of bounds');
+          return target.charCodeAt(idx);
+        }
+        const arr = target as ArrayVal;
+        if (idx < 0 || idx >= arr.data.length) throw new Trap('array index out of bounds');
+        return arr.data[idx];
       }
       case 'call':
         return this.evalCall(e, f);
@@ -248,6 +260,18 @@ export class Interpreter {
     // Short-circuit logical operators.
     if (e.op === '&&') return this.evalExpr(e.left, f) ? (this.evalExpr(e.right, f) ? 1 : 0) : 0;
     if (e.op === '||') return this.evalExpr(e.left, f) ? 1 : (this.evalExpr(e.right, f) ? 1 : 0);
+
+    // String operations (concatenation and equality).
+    if (e.left.ty?.kind === 'str') {
+      const sa = this.evalExpr(e.left, f) as string;
+      const sb = this.evalExpr(e.right, f) as string;
+      switch (e.op) {
+        case '+': return sa + sb;
+        case '==': return sa === sb ? 1 : 0;
+        case '!=': return sa !== sb ? 1 : 0;
+        default: throw new Trap(`unsupported string operator '${e.op}'`);
+      }
+    }
 
     const a = this.evalExpr(e.left, f) as number;
     const b = this.evalExpr(e.right, f) as number;
@@ -298,10 +322,25 @@ export class Interpreter {
   private evalCall(e: Extract<Expr, { node: 'call' }>, f: Frame): RtValue {
     const name = e.callee;
     if (name === 'print') {
-      const v = this.evalExpr(e.args[0], f) as number;
       const k = e.args[0].ty?.kind;
+      if (k === 'str') {
+        this.output.push(this.evalExpr(e.args[0], f) as string);
+        return 0;
+      }
+      const v = this.evalExpr(e.args[0], f) as number;
       this.output.push(k === 'float' ? formatFloat(v) : k === 'bool' ? formatBool(v) : formatInt(v));
       return 0;
+    }
+    if (name === 'str') {
+      const k = e.args[0].ty?.kind;
+      const v = this.evalExpr(e.args[0], f);
+      if (k === 'str') return v;
+      if (k === 'bool') return formatBool(v as number);
+      return formatInt(v as number);
+    }
+    if (name === 'char') {
+      const n = i32(this.evalExpr(e.args[0], f) as number) & 0xff;
+      return String.fromCharCode(n);
     }
     if (name === 'int') {
       const v = this.evalExpr(e.args[0], f) as number;
@@ -317,7 +356,8 @@ export class Interpreter {
       return { arr: true, elem: name === 'int_array' ? 'int' : 'float', data: new Array(n).fill(0) };
     }
     if (name === 'len') {
-      return (this.evalExpr(e.args[0], f) as ArrayVal).data.length;
+      const v = this.evalExpr(e.args[0], f);
+      return typeof v === 'string' ? v.length : (v as ArrayVal).data.length;
     }
     const fn = this.fns.get(name);
     if (!fn) throw new Trap(`call to undefined '${name}'`);
