@@ -13,6 +13,7 @@ import { referenceSatEUF, referenceSatArith, collectAtoms, evalFormula } from '.
 import { checkSat } from './smt'
 import { parseSmtLib } from './parse'
 import { ackermannize } from './ackermann'
+import { SMT_EXAMPLES } from './examples'
 import { Rational, R } from './rational'
 
 export interface SmtCheckReport {
@@ -337,6 +338,20 @@ export function runSmtChecks(): SmtCheckReport {
       }
     }
     check(`UFLRA: ${N} random mixed formulas match the Ackermann+FM reference`, mism === 0, `mismatches=${mism}`)
+  }
+
+  // ---- every shipped example decides to its expected verdict -----------------
+  {
+    let bad = 0
+    for (const ex of SMT_EXAMPLES) {
+      const s = parseSmtLib(ex.src)
+      const r = checkSat(s.tm, s.tm.and(s.assertions))
+      if (r.status !== ex.expected) {
+        bad++
+        messages.push(`  example "${ex.name}": got ${r.status}, expected ${ex.expected}`)
+      }
+    }
+    check('examples: all shipped SMT examples match expected verdict', bad === 0, `bad=${bad}`)
   }
 
   void Rational

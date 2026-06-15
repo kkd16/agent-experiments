@@ -13,10 +13,13 @@ import { CnfView } from './components/CnfView'
 import { ProofView } from './components/ProofView'
 import { CountView } from './components/CountView'
 import { MaxSatView } from './components/MaxSatView'
+import { SmtStudio } from './components/SmtStudio'
 
 type Tab = 'solution' | 'stats' | 'count' | 'graph' | 'trace' | 'proof' | 'cnf'
+type Mode = 'sat' | 'smt'
 
 export default function App() {
+  const [mode, setMode] = useState<Mode>('sat')
   const [spec, setSpec] = useState<ProblemSpec>(DEFAULT_SPEC)
   const [opts, setOpts] = useState<SolverUiOptions>({ minimize: true, randomize: false, restartBase: 100 })
   const [tab, setTab] = useState<Tab>('solution')
@@ -78,14 +81,22 @@ export default function App() {
           <span className="logo">⊨</span>
           <div>
             <h1>SatForge</h1>
-            <p>A from-scratch CDCL SAT solver, visualized.</p>
+            <p>{mode === 'sat' ? 'A from-scratch CDCL SAT solver, visualized.' : 'A from-scratch DPLL(T) SMT solver — SAT lifted to theories.'}</p>
           </div>
         </div>
-        <a className="ghlink" href="https://en.wikipedia.org/wiki/Conflict-driven_clause_learning" target="_blank" rel="noreferrer">
-          What is CDCL?
-        </a>
+        <div className="mode-switch">
+          <button className={mode === 'sat' ? 'active' : ''} onClick={() => setMode('sat')}>
+            SAT Studio
+          </button>
+          <button className={mode === 'smt' ? 'active' : ''} onClick={() => setMode('smt')}>
+            SMT Studio
+          </button>
+        </div>
       </header>
 
+      {mode === 'smt' && <SmtStudio />}
+
+      {mode === 'sat' && (
       <div className="layout">
         <ControlPanel
           spec={spec}
@@ -170,6 +181,7 @@ export default function App() {
           )}
         </main>
       </div>
+      )}
 
       <footer className="footer">
         Two-watched-literals BCP · VSIDS · first-UIP learning · non-chronological backjumping ·
@@ -177,7 +189,10 @@ export default function App() {
         independent RUP/RAT checker · exact #SAT model counting (component caching) · minimal
         unsat cores (MUS) · factoring via a from-scratch multiplier circuit · incremental solving
         under assumptions with core extraction · weighted MaxSAT (linear SAT-UNSAT &amp; core-guided
-        WPM1) over a Generalized Totalizer — all hand-written in TypeScript.
+        WPM1) over a Generalized Totalizer · and a full <b>DPLL(T) SMT solver</b> on the same core
+        — EUF by proof-producing congruence closure, QF_LRA/QF_LIA by a general simplex over exact
+        δ-rationals with branch-and-bound, and QF_UFLIA by Ackermann combination — all hand-written
+        in TypeScript.
       </footer>
     </div>
   )

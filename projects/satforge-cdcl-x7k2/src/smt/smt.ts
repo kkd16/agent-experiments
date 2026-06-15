@@ -35,6 +35,10 @@ export function arithTrichotomy(tm: TermManager, root: Formula): Formula {
 export interface FullSmtResult extends SmtResult {
   /** Human-readable model description from each theory (UI only). */
   model?: string[]
+  /** Truth value of each original atom in the satisfying model (UI only). */
+  atomList?: { name: string; value: boolean }[]
+  /** Elapsed wall-clock time in ms. */
+  timeMs?: number
 }
 
 /** Solve a formula with the EUF + arithmetic theories. */
@@ -47,12 +51,18 @@ export function checkSat(tm: TermManager, root: Formula, opts: SmtOptions = {}):
   const mixed = atoms.some((a) => a.kind === 'arith') && hasUninterpretedFunctions(tm, root)
   const base = mixed ? ackermannize(tm, root) : root
   const expanded = arithTrichotomy(tm, base)
+  const t0 = typeof performance !== 'undefined' ? performance.now() : Date.now()
   const res = solveSmt(expanded, theories, {
     atomName: (a: Atom) => atomName(tm, a),
     ...opts,
   })
   const full: FullSmtResult = { ...res }
+  full.timeMs = (typeof performance !== 'undefined' ? performance.now() : Date.now()) - t0
   if (res.status === 'sat' && res.assignment) {
+    full.atomList = atoms
+      .filter((a) => res.assignment!.has(a.id))
+      .map((a) => ({ name: atomName(tm, a), value: res.assignment!.get(a.id)! }))
+      .sort((x, y) => x.name.localeCompare(y.name))
     // Rebuild the per-theory satisfying literal sets to describe the model.
     const lits = collectAtoms(expanded)
       .filter((a) => res.assignment!.has(a.id))

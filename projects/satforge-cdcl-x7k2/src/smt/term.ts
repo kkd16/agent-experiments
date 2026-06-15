@@ -254,11 +254,13 @@ export class TermManager {
 
   /** Equality of two terms. Bool → iff; arithmetic → arithmetic equality; else EUF. */
   eq(a: Term, b: Term): Formula {
-    if (a.sort !== b.sort) throw new Error(`= sort mismatch: ${a.sort} vs ${b.sort}`)
-    if (a.sort === 'Bool') return this.iff(this.pred(a), this.pred(b))
-    if (ARITH_SORTS.has(a.sort)) {
+    // Int and Real mix freely in arithmetic — integerness comes from declared
+    // variables, not from literals (an SMT-LIB `10` is fine in a Real context).
+    if (ARITH_SORTS.has(a.sort) && ARITH_SORTS.has(b.sort)) {
       return this.arithAtom('eq0', addLin(this.linearize(a), scaleLin(this.linearize(b), Rational.of(-1n))))
     }
+    if (a.sort !== b.sort) throw new Error(`= sort mismatch: ${a.sort} vs ${b.sort}`)
+    if (a.sort === 'Bool') return this.iff(this.pred(a), this.pred(b))
     const [x, y] = a.id <= b.id ? [a, b] : [b, a]
     return this.internFormula(() => ({ id: this.nextFormId++, kind: 'eq', a: x, b: y }), `eq${x.id},${y.id}`)
   }
