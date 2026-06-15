@@ -9,6 +9,8 @@ import { presetById } from './sim/presets'
 import { apoapsisPoint, orbitElements, periapsisPoint, sampleOrbitPath } from './sim/orbit'
 import type { OrbitElements } from './sim/orbit'
 import { jacobiConstant, restrictedThreeBody } from './sim/restricted3body'
+import { analyzeChaos, CHAOS_BODY_LIMIT } from './sim/chaos'
+import type { ChaosResult } from './sim/chaos'
 import { Ring } from './util/ring'
 import { Sidebar } from './components/Sidebar'
 import type { Series } from './components/Plot'
@@ -115,6 +117,9 @@ export default function App() {
   const [selectedIndex, setSelectedIndex] = useState(-1)
   const [inspect, setInspect] = useState<InspectInfo | null>(null)
   const [copied, setCopied] = useState(false)
+  const [chaosResult, setChaosResult] = useState<ChaosResult | null>(null)
+  const [chaosRunning, setChaosRunning] = useState(false)
+  const [chaosHorizon, setChaosHorizon] = useState(15000)
 
   const [diag, setDiag] = useState<Diagnostics | null>(null)
   const [series, setSeries] = useState<{ energy: Series; momentum: Series } | null>(null)
@@ -366,19 +371,38 @@ export default function App() {
     }
   }, [presetId])
 
+  const runChaos = useCallback(() => {
+    const sim = simRef.current!
+    if (sim.count < 2 || sim.count > CHAOS_BODY_LIMIT) return
+    setChaosRunning(true)
+    // Defer so the button can paint "Analysing…" before the synchronous solve.
+    window.setTimeout(() => {
+      const { g, softening, dt } = sim.params
+      const res = analyzeChaos(sim.count, sim.posX, sim.posY, sim.velX, sim.velY, sim.mass, {
+        g,
+        softening,
+        dt,
+        steps: chaosHorizon,
+      })
+      setChaosResult(res)
+      setChaosRunning(false)
+    }, 20)
+  }, [chaosHorizon])
+
   const handleReseed = useCallback(() => {
     const sd = (Math.random() * 2 ** 31) | 0
     setSeed(sd)
     setSelectedIndex(-1)
+    setChaosResult(null)
     const p = loadScenario(presetId, count, sd)
     if (p) setParams((prev) => ({ ...prev, ...p }))
   }, [presetId, count, loadScenario])
 
   // Keep the latest action closures reachable from the (deps-free) key handler.
-  const actionsRef = useRef({ doShare, doExport, fitView, stepOnce, reseed: handleReseed })
+  const actionsRef = useRef({ doShare, doExport, fitView, stepOnce, reseed: handleReseed, runChaos })
   useEffect(() => {
-    actionsRef.current = { doShare, doExport, fitView, stepOnce, reseed: handleReseed }
-  }, [doShare, doExport, fitView, stepOnce, handleReseed])
+    actionsRef.current = { doShare, doExport, fitView, stepOnce, reseed: handleReseed, runChaos }
+  }, [doShare, doExport, fitView, stepOnce, handleReseed, runChaos])
 
   // ----- keyboard shortcuts -----
   useEffect(() => {
@@ -408,6 +432,8 @@ export default function App() {
         setRenderOpts((r) => ({ ...r, showOrbit: !r.showOrbit }))
       } else if (e.key === 'l') {
         setRenderOpts((r) => ({ ...r, showLagrange: !r.showLagrange }))
+      } else if (e.key === 'y') {
+        a.runChaos()
       } else if (e.key === 'Escape') {
         setSelectedIndex(-1)
       }
@@ -523,16 +549,19 @@ export default function App() {
     setPresetId(id)
     setCount(n)
     setSelectedIndex(-1)
+    setChaosResult(null)
     firstSizedRef.current = true // keep current viewport; just refit
     applyParams(loadScenario(id, n, seed))
   }
   const handleCount = (n: number) => {
     setCount(n)
     setSelectedIndex(-1)
+    setChaosResult(null)
     applyParams(loadScenario(presetId, n, seed))
   }
   const handleReset = () => {
     setSelectedIndex(-1)
+    setChaosResult(null)
     applyParams(loadScenario(presetId, count, seed))
   }
 
@@ -607,6 +636,11 @@ export default function App() {
           onPredict={setPredict}
           predictHorizon={predictHorizon}
           onPredictHorizon={setPredictHorizon}
+          chaosResult={chaosResult}
+          chaosRunning={chaosRunning}
+          chaosHorizon={chaosHorizon}
+          onChaosHorizon={setChaosHorizon}
+          onAnalyzeChaos={runChaos}
         />
 
         <main className="stage" ref={containerRef}>

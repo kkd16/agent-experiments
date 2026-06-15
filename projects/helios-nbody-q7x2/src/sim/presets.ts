@@ -507,6 +507,50 @@ const figureEight: PresetDef = {
   },
 }
 
+// Broken Eight: the figure-eight choreography given a single, tiny velocity
+// nudge (0.4%). For a while it traces the famous eight — then sensitive
+// dependence on initial conditions takes over and the choreography unravels into
+// a chaotic three-body scramble. The perfect companion to the Chaos Lab: run the
+// analysis here and on the pristine Figure-Eight to watch MEGNO separate a
+// regular orbit from a chaotic one that looks, at first, identical.
+const brokenEight: PresetDef = {
+  id: 'broken-eight',
+  name: 'Broken Eight',
+  description:
+    'The figure-eight choreography with a 0.4% velocity nudge — it traces the eight, then chaos unravels it. Run the Chaos Lab here vs the pristine Figure-Eight to see MEGNO tell order from chaos.',
+  defaultCount: 3,
+  minCount: 3,
+  maxCount: 3,
+  build() {
+    const buf = alloc(3)
+    const L = 150
+    const M = 300
+    const vmul = Math.sqrt(M / L)
+    const px = 0.97000436
+    const py = -0.24308753
+    const vx = 0.4662036850
+    const vy = 0.4323657300
+    buf.posX[0] = px * L
+    buf.posY[0] = py * L
+    buf.velX[0] = vx * vmul
+    buf.velY[0] = vy * vmul
+    buf.posX[1] = -px * L
+    buf.posY[1] = -py * L
+    buf.velX[1] = vx * vmul
+    buf.velY[1] = vy * vmul
+    buf.posX[2] = 0
+    buf.posY[2] = 0
+    // The nudge: a 0.4% boost to the central body's velocity. Tiny, but it is a
+    // chaotic system, so the trajectories diverge exponentially from the eight.
+    buf.velX[2] = -2 * vx * vmul * 1.004
+    buf.velY[2] = -2 * vy * vmul * 1.004
+    buf.mass[0] = M
+    buf.mass[1] = M
+    buf.mass[2] = M
+    return { ...buf, params: { g: 1, dt: 0.2, softening: 0.5, theta: 0.2, integrator: 'yoshida6' }, viewExtent: L * 2.2 }
+  },
+}
+
 // The Pythagorean three-body problem (Burrau, 1913): masses 3, 4, 5 released
 // from rest at the corners of a 3-4-5 right triangle. Deterministic yet wildly
 // chaotic — repeated close encounters eventually eject a body and leave a binary.
@@ -711,6 +755,7 @@ export const PRESETS: PresetDef[] = [
   saturnRings,
   trojans,
   figureEight,
+  brokenEight,
   pythagorean,
   keplerShowcase,
   horseshoe,

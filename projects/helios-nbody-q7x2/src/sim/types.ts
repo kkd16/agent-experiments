@@ -5,6 +5,7 @@ export type IntegratorId =
   | 'velocity-verlet'
   | 'leapfrog'
   | 'yoshida4'
+  | 'yoshida6'
   | 'rk4'
   | 'euler'
 
@@ -47,6 +48,14 @@ export const INTEGRATORS: IntegratorInfo[] = [
     symplectic: true,
     blurb:
       'Fourth-order AND symplectic — a symmetric triple-jump of leapfrog substeps. Holds energy flat at a far larger Δt than Verlet, for three force evals.',
+  },
+  {
+    id: 'yoshida6',
+    label: 'Yoshida 6 (symplectic)',
+    evals: 7,
+    symplectic: true,
+    blurb:
+      'Sixth-order AND symplectic — a seven-substep symmetric composition (Yoshida 1990) whose error scales as Δt⁶. Holds energy flatter still than Yoshida 4, the gold standard for long, accurate orbits.',
   },
   {
     id: 'rk4',

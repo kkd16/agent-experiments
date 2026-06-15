@@ -11,6 +11,7 @@
 import { Simulation } from './Simulation'
 import { orbitElements } from './orbit'
 import { jacobiConstant, omegaGradient, solveLagrangeNormalized } from './restricted3body'
+import { accelAndVariational, analyzeChaos } from './chaos'
 import type { IntegratorId } from './types'
 
 export interface TestCase {
@@ -274,6 +275,133 @@ export function runSelfTest(): SelfTestReport {
     const rel = Math.abs((c1 - c0) / c0)
     const pass = Number.isFinite(rel) && rel < 5e-3
     add('Jacobi constant conserved', pass, `|ΔC/C| = ${rel.toExponential(2)} over 6000 steps`)
+  }
+
+  // 11 — Yoshida 6 conserves energy dramatically better than Yoshida 4 (its
+  // error scales as Δt⁶ vs Δt⁴), and both stay symplectically bounded.
+  {
+    const dt = 0.06
+    const steps = 4000
+    const y4Sim = twoBody(1, 2000, 1, 100, 0.6)
+    const y4 = maxEnergyDrift(y4Sim, 'yoshida4', dt, steps)
+    const y6Sim = twoBody(1, 2000, 1, 100, 0.6)
+    const y6 = maxEnergyDrift(y6Sim, 'yoshida6', dt, steps)
+    const pass = y6 < y4 * 0.1 && y6 < 1e-6
+    add(
+      'Yoshida 6 beats Yoshida 4 (energy)',
+      pass,
+      `max |ΔE/E|: Yoshida4=${y4.toExponential(2)}, Yoshida6=${y6.toExponential(2)} — ${(y4 / Math.max(y6, 1e-30)).toFixed(0)}× better`,
+    )
+  }
+
+  // 12 — Velocity Verlet is time-reversible: integrate forward, flip every
+  // velocity, integrate the same number of steps, and the system retraces its
+  // path back to the start. (This is the discrete time-symmetry that underlies
+  // symplecticity — a property explicit Euler and RK4 both lack.)
+  {
+    const dt = 0.04
+    const K = 3000
+    const a = 100
+    const sim = twoBody(1, 2000, 1, a, 0.3)
+    sim.params = { ...sim.params, integrator: 'velocity-verlet', dt }
+    const x0 = Float64Array.from(sim.posX.subarray(0, sim.count))
+    const y0 = Float64Array.from(sim.posY.subarray(0, sim.count))
+    for (let i = 0; i < K; i++) sim.step()
+    for (let i = 0; i < sim.count; i++) {
+      sim.velX[i] = -sim.velX[i]
+      sim.velY[i] = -sim.velY[i]
+    }
+    sim.invalidateAccel()
+    for (let i = 0; i < K; i++) sim.step()
+    let worst = 0
+    for (let i = 0; i < sim.count; i++) {
+      worst = Math.max(worst, Math.hypot(sim.posX[i] - x0[i], sim.posY[i] - y0[i]))
+    }
+    const rel = worst / a
+    const pass = rel < 1e-7
+    add('Velocity Verlet is time-reversible', pass, `return error / orbit size = ${rel.toExponential(2)} after ±${K} steps`)
+  }
+
+  // 13 — The variational (tidal) tensor that drives the chaos analysis is the
+  // exact gradient of the force: its analytic deviation-acceleration matches a
+  // central finite difference of the real acceleration to O(h²).
+  {
+    const n = 5
+    const g = 1
+    const eps2 = 3 * 3
+    let s = 42 >>> 0
+    const rnd = () => ((s = (s * 1664525 + 1013904223) >>> 0) / 4294967296)
+    const X = new Float64Array(n), Y = new Float64Array(n), M = new Float64Array(n)
+    const DX = new Float64Array(n), DY = new Float64Array(n)
+    for (let i = 0; i < n; i++) {
+      X[i] = (rnd() - 0.5) * 100
+      Y[i] = (rnd() - 0.5) * 100
+      M[i] = 1 + rnd() * 5
+      DX[i] = rnd() - 0.5
+      DY[i] = rnd() - 0.5
+    }
+    const z = new Float64Array(n)
+    const AX = new Float64Array(n), AY = new Float64Array(n)
+    const DAX = new Float64Array(n), DAY = new Float64Array(n)
+    accelAndVariational(n, X, Y, M, DX, DY, AX, AY, DAX, DAY, g, eps2)
+    const accelAt = (sx: Float64Array, sy: Float64Array): [Float64Array, Float64Array] => {
+      const ax = new Float64Array(n), ay = new Float64Array(n)
+      const da = new Float64Array(n), db = new Float64Array(n)
+      accelAndVariational(n, sx, sy, M, z, z, ax, ay, da, db, g, eps2)
+      return [ax, ay]
+    }
+    const h = 1e-5
+    const xp = new Float64Array(n), yp = new Float64Array(n)
+    const xm = new Float64Array(n), ym = new Float64Array(n)
+    for (let i = 0; i < n; i++) {
+      xp[i] = X[i] + h * DX[i]; yp[i] = Y[i] + h * DY[i]
+      xm[i] = X[i] - h * DX[i]; ym[i] = Y[i] - h * DY[i]
+    }
+    const [axp, ayp] = accelAt(xp, yp)
+    const [axm, aym] = accelAt(xm, ym)
+    let worst = 0
+    let scale = 0
+    for (let i = 0; i < n; i++) {
+      const fdx = (axp[i] - axm[i]) / (2 * h)
+      const fdy = (ayp[i] - aym[i]) / (2 * h)
+      worst = Math.max(worst, Math.hypot(fdx - DAX[i], fdy - DAY[i]))
+      scale = Math.max(scale, Math.hypot(DAX[i], DAY[i]))
+    }
+    const rel = worst / (scale + 1e-30)
+    const pass = rel < 1e-5
+    add('Tidal tensor = ∇(force) [finite-diff]', pass, `analytic vs central-difference variational accel: rel err ${rel.toExponential(2)}`)
+  }
+
+  // 14 & 15 — The chaos engine tells order from chaos. A regular (integrable
+  // two-body) orbit has MEGNO ⟨Y⟩ → 2 and a Lyapunov exponent that decays toward
+  // 0; the Pythagorean three-body problem is famously chaotic — MEGNO grows far
+  // past 2, it is classified chaotic, and its Lyapunov exponent exceeds the
+  // regular orbit's. (Softened so the linearised flow stays finite.)
+  {
+    const regSim = twoBody(1, 2000, 1, 100, 0.5)
+    const reg = analyzeChaos(
+      regSim.count, regSim.posX, regSim.posY, regSim.velX, regSim.velY, regSim.mass,
+      { g: 1, softening: 0.05, dt: 0.02, steps: 20000 },
+    )
+    add(
+      'MEGNO → 2 for a regular orbit',
+      approx(reg.megno, 2, 0.7) && reg.classification === 'regular',
+      `⟨Y⟩=${reg.megno.toFixed(3)} (≈2), λ=${reg.lyapunov.toExponential(2)}, ${reg.classification}`,
+    )
+
+    const L = 40
+    const mf = 80
+    const px = Float64Array.from([1 * L, -2 * L, 1 * L])
+    const py = Float64Array.from([3 * L, -1 * L, -1 * L])
+    const vx = Float64Array.from([0, 0, 0])
+    const vy = Float64Array.from([0, 0, 0])
+    const mass = Float64Array.from([3 * mf, 4 * mf, 5 * mf])
+    const ch = analyzeChaos(3, px, py, vx, vy, mass, { g: 1, softening: 2, dt: 0.01, steps: 30000 })
+    add(
+      'Chaos detected in the Pythagorean 3-body',
+      ch.megno > 3.5 && ch.classification === 'chaotic' && ch.lyapunov > reg.lyapunov,
+      `⟨Y⟩=${ch.megno.toFixed(2)} (≫2), λ=${ch.lyapunov.toExponential(2)} > regular ${reg.lyapunov.toExponential(2)}, ${ch.classification}`,
+    )
   }
 
   const passed = cases.filter((c) => c.pass).length
