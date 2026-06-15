@@ -737,6 +737,30 @@ function expandRvc(op: string, ops: string[], consts: Map<string, number>, line:
       return C({ rs2: parseReg(ops[0]), imm: mem.imm });
     }
 
+    // RV32FC — compressed single-precision float load/store
+    case 'c.flw': {
+      NEED(op, ops, 2);
+      const mem = parseMem(ops[1], consts);
+      return C({ rd: parseFReg(ops[0]), rs1: mem.reg, imm: mem.imm });
+    }
+    case 'c.fsw': {
+      NEED(op, ops, 2);
+      const mem = parseMem(ops[1], consts);
+      return C({ rs2: parseFReg(ops[0]), rs1: mem.reg, imm: mem.imm });
+    }
+    case 'c.flwsp': {
+      NEED(op, ops, 2);
+      const mem = parseMem(ops[1], consts);
+      parseSp(`x${mem.reg}`);
+      return C({ rd: parseFReg(ops[0]), imm: mem.imm });
+    }
+    case 'c.fswsp': {
+      NEED(op, ops, 2);
+      const mem = parseMem(ops[1], consts);
+      parseSp(`x${mem.reg}`);
+      return C({ rs2: parseFReg(ops[0]), imm: mem.imm });
+    }
+
     // Control flow
     case 'c.j':
     case 'c.jal':
@@ -765,7 +789,7 @@ function expandRvc(op: string, ops: string[], consts: Map<string, number>, line:
  * branch relaxation: every instruction's size is fixed before addresses are assigned.
  */
 function tryCompress(m: MicroInstr): MicroInstr | null {
-  if (m.compressed || m.csr !== undefined || m.amoFunct7 !== undefined || FP_SPECS[m.mnemonic]) return null;
+  if (m.compressed || m.csr !== undefined || m.amoFunct7 !== undefined) return null;
   if (m.imm.kind !== 'num') return null; // symbol relocations are address-dependent
   const imm = m.imm.value | 0;
   const { rd, rs1, rs2 } = m;
@@ -779,6 +803,20 @@ function tryCompress(m: MicroInstr): MicroInstr | null {
     line: m.line,
     source: m.source,
   });
+
+  // RV32FC float load/store (rd/rs2 hold float-register indices; the same x8–x15 class).
+  if (FP_SPECS[m.mnemonic]) {
+    if (m.mnemonic === 'flw') {
+      if (rs1 === 2 && imm >= 0 && imm < 256 && (imm & 3) === 0) return C('c.flwsp', { rd, imm });
+      if (isCompactReg(rd) && isCompactReg(rs1) && imm >= 0 && imm < 128 && (imm & 3) === 0)
+        return C('c.flw', { rd, rs1, imm });
+    } else if (m.mnemonic === 'fsw') {
+      if (rs1 === 2 && imm >= 0 && imm < 256 && (imm & 3) === 0) return C('c.fswsp', { rs2, imm });
+      if (isCompactReg(rs2) && isCompactReg(rs1) && imm >= 0 && imm < 128 && (imm & 3) === 0)
+        return C('c.fsw', { rs1, rs2, imm });
+    }
+    return null;
+  }
 
   switch (m.mnemonic) {
     case 'addi':

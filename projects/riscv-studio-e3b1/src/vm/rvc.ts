@@ -15,7 +15,7 @@
 // hardware paths stay cheap). Every scramble lives here exactly once, as a paired
 // pack/unpack so the encoder and decoder can never drift.
 
-import { ABI_NAMES } from './registers';
+import { ABI_NAMES, FREG_ABI_NAMES } from './registers';
 import { signExtend, u32, hexWord } from './format';
 
 // ---------------------------------------------------------------------------
@@ -35,8 +35,10 @@ const creg = (f: number): number => 8 + (f & 0x7);
 
 // Base-instruction opcodes (low 7 bits).
 const LOAD = 0x03;
+const LOAD_FP = 0x07;
 const OP_IMM = 0x13;
 const STORE = 0x23;
+const STORE_FP = 0x27;
 const OP = 0x33;
 const LUI = 0x37;
 const BRANCH = 0x63;
@@ -89,6 +91,18 @@ function encJ(rd: number, off: number): number {
       JAL,
   );
 }
+
+// Compressed FP load/store (RV32FC) expand to the F-extension load/store opcodes (.s width = 2).
+const encFlw = (rd: number, rs1: number, imm: number): number => encI(LOAD_FP, 2, rd, rs1, imm);
+const encFsw = (rs1: number, rs2: number, imm: number): number =>
+  u32(
+    (((imm >> 5) & 0x7f) << 25) |
+      ((rs2 & 0x1f) << 20) |
+      ((rs1 & 0x1f) << 15) |
+      (2 << 12) |
+      ((imm & 0x1f) << 7) |
+      STORE_FP,
+  );
 
 // Slli/srli/srai expand to OP-IMM I-type words; srai carries funct7=0x20 in its imm field.
 const encSlli = (rd: number, rs1: number, shamt: number): number => encI(OP_IMM, 1, rd, rs1, shamt & 0x1f);
@@ -190,10 +204,14 @@ export function expandCompressed(half: number): number | null {
       }
       case 2: // c.lw → lw rd', off(rs1')
         return encI(LOAD, 2, rdp, rs1p, clwUnpack(h));
+      case 3: // c.flw → flw rd', off(rs1')   (RV32FC)
+        return encFlw(rdp, rs1p, clwUnpack(h));
       case 6: // c.sw → sw rs2', off(rs1')
         return encS(2, rs1p, creg(bits(h, 4, 2)), clwUnpack(h));
+      case 7: // c.fsw → fsw rs2', off(rs1')   (RV32FC)
+        return encFsw(rs1p, creg(bits(h, 4, 2)), clwUnpack(h));
       default:
-        return null; // c.fld/c.flw/c.fsd/c.fsw not supported
+        return null; // c.fld/c.fsd are RV32DC (no D extension here)
     }
   }
 
@@ -302,10 +320,14 @@ export function expandCompressed(half: number): number | null {
         // c.add → add rd, rd, rs2
         return encR(0, 0, rd, rd, rs2);
       }
+      case 3: // c.flwsp → flw rd, off(x2)   (RV32FC)
+        return encFlw(bits(h, 11, 7), 2, clwspUnpack(h));
       case 6: // c.swsp → sw rs2, off(x2)
         return encS(2, 2, bits(h, 6, 2), cswspUnpack(h));
+      case 7: // c.fswsp → fsw rs2, off(x2)   (RV32FC)
+        return encFsw(2, bits(h, 6, 2), cswspUnpack(h));
       default:
-        return null; // c.fldsp/c.flwsp/c.fsdsp/c.fswsp not supported
+        return null; // c.fldsp/c.fsdsp are RV32DC (no D extension here)
     }
   }
 
@@ -317,6 +339,7 @@ export function expandCompressed(half: number): number | null {
 // ---------------------------------------------------------------------------
 
 const r = (i: number): string => ABI_NAMES[i & 0x1f];
+const fr = (i: number): string => FREG_ABI_NAMES[i & 0x1f];
 
 export function formatCompressed(half: number, pc = 0): string {
   const h = half & 0xffff;
@@ -335,7 +358,9 @@ export function formatCompressed(half: number, pc = 0): string {
       return `c.addi4spn ${r(rdp)}, sp, ${nz}`;
     }
     if (f3 === 2) return `c.lw ${r(rdp)}, ${clwUnpack(h)}(${r(rs1p)})`;
+    if (f3 === 3) return `c.flw ${fr(rdp)}, ${clwUnpack(h)}(${r(rs1p)})`;
     if (f3 === 6) return `c.sw ${r(creg(bits(h, 4, 2)))}, ${clwUnpack(h)}(${r(rs1p)})`;
+    if (f3 === 7) return `c.fsw ${fr(creg(bits(h, 4, 2)))}, ${clwUnpack(h)}(${r(rs1p)})`;
   } else if (op === 1) {
     switch (f3) {
       case 0: {
@@ -375,6 +400,8 @@ export function formatCompressed(half: number, pc = 0): string {
         return `c.slli ${r(bits(h, 11, 7))}, ${ci6Unpack(h) & 0x1f}`;
       case 2:
         return `c.lwsp ${r(bits(h, 11, 7))}, ${clwspUnpack(h)}(sp)`;
+      case 3:
+        return `c.flwsp ${fr(bits(h, 11, 7))}, ${clwspUnpack(h)}(sp)`;
       case 4: {
         const rd = bits(h, 11, 7);
         const rs2 = bits(h, 6, 2);
@@ -388,6 +415,8 @@ export function formatCompressed(half: number, pc = 0): string {
       }
       case 6:
         return `c.swsp ${r(bits(h, 6, 2))}, ${cswspUnpack(h)}(sp)`;
+      case 7:
+        return `c.fswsp ${fr(bits(h, 6, 2))}, ${cswspUnpack(h)}(sp)`;
     }
   }
   return `.half ${hexWord(h).slice(0, 6)}`;
@@ -402,6 +431,7 @@ export const RVC_MNEMONICS: ReadonlySet<string> = new Set([
   'c.addi4spn', 'c.lw', 'c.sw', 'c.nop', 'c.addi', 'c.jal', 'c.li', 'c.addi16sp', 'c.lui',
   'c.srli', 'c.srai', 'c.andi', 'c.sub', 'c.xor', 'c.or', 'c.and', 'c.j', 'c.beqz', 'c.bnez',
   'c.slli', 'c.lwsp', 'c.jr', 'c.mv', 'c.ebreak', 'c.jalr', 'c.add', 'c.swsp', 'c.unimp',
+  'c.flw', 'c.fsw', 'c.flwsp', 'c.fswsp',
 ]);
 
 /** True if `reg` is one of x8..x15 (the 3-bit compressed register class). */
@@ -450,6 +480,12 @@ export function encodeCompressed(name: string, f: RvcFields, fault: (m: string) 
     case 'c.sw':
       need((f.imm & 3) === 0 && f.imm >= 0 && f.imm < 128, `c.sw offset 0..124 (×4), got ${f.imm}`);
       return 0xc000 | (cf(f.rs1) << 7) | (cf(f.rs2) << 2) | clwPack(f.imm);
+    case 'c.flw':
+      need((f.imm & 3) === 0 && f.imm >= 0 && f.imm < 128, `c.flw offset 0..124 (×4), got ${f.imm}`);
+      return 0x6000 | (cf(f.rs1) << 7) | (cf(f.rd) << 2) | clwPack(f.imm);
+    case 'c.fsw':
+      need((f.imm & 3) === 0 && f.imm >= 0 && f.imm < 128, `c.fsw offset 0..124 (×4), got ${f.imm}`);
+      return 0xe000 | (cf(f.rs1) << 7) | (cf(f.rs2) << 2) | clwPack(f.imm);
 
     case 'c.addi':
       need(f.rd !== 0, 'c.addi destination must not be x0');
@@ -509,6 +545,12 @@ export function encodeCompressed(name: string, f: RvcFields, fault: (m: string) 
     case 'c.swsp':
       need((f.imm & 3) === 0 && f.imm >= 0 && f.imm < 256, `c.swsp offset 0..252 (×4), got ${f.imm}`);
       return 0xc002 | (f.rs2 << 2) | cswspPack(f.imm);
+    case 'c.flwsp':
+      need((f.imm & 3) === 0 && f.imm >= 0 && f.imm < 256, `c.flwsp offset 0..252 (×4), got ${f.imm}`);
+      return 0x6002 | (f.rd << 7) | clwspPack(f.imm);
+    case 'c.fswsp':
+      need((f.imm & 3) === 0 && f.imm >= 0 && f.imm < 256, `c.fswsp offset 0..252 (×4), got ${f.imm}`);
+      return 0xe002 | (f.rs2 << 2) | cswspPack(f.imm);
     case 'c.jr':
       need(f.rs1 !== 0, 'c.jr source must not be x0');
       return 0x8002 | (f.rs1 << 7);

@@ -107,6 +107,7 @@ const GROUPS: { title: string; items: InsDoc[] }[] = [
       { m: 'c.mv / c.add / c.sub / c.and / c.or / c.xor', desc: 'register-register ALU (c.sub/and/or/xor use x8–x15)' },
       { m: 'c.andi / c.slli / c.srli / c.srai', desc: 'immediate logic & shifts' },
       { m: 'c.lw / c.sw / c.lwsp / c.swsp', desc: 'word load/store (compact regs, or sp-relative)' },
+      { m: 'c.flw / c.fsw / c.flwsp / c.fswsp', desc: 'compressed single-precision float load/store (RV32FC)' },
       { m: 'c.j / c.jal / c.jr / c.jalr', desc: 'compressed jumps (link writes pc+2)' },
       { m: 'c.beqz / c.bnez', desc: 'compare a compact register against zero & branch' },
       { m: 'c.nop / c.ebreak / c.unimp', desc: 'compressed no-op / breakpoint / trap' },

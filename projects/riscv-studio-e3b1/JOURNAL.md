@@ -214,8 +214,10 @@ journal, verification suite, examples and docs so it is observable and proven.
   mnemonics **and** auto-compresses eligible base instructions via a layout-independent peephole
   (`.option rvc` directive or a "Compress (RVC)" toolbar toggle — no branch relaxation needed,
   ~25–30% smaller, byte-for-byte identical behaviour); a size-aware disassembler + Disasm view,
-  RVC syntax highlighting, an example, and 5 self-tests (round-trip equivalence + a differential
-  "compress shrinks & behaves identically" check). **(B) machine-mode traps:** the privileged
+  RVC syntax highlighting, an example, and self-tests (round-trip equivalence + a differential
+  "compress shrinks & behaves identically" check). Coverage is the full RV32**C** integer set
+  plus **RV32FC** compressed single-precision float load/store (`c.flw/c.fsw/c.flwsp/c.fswsp`,
+  hand-written or auto-compressed). **(B) machine-mode traps:** the privileged
   CSRs (`mstatus`/`mie`/`mip`/`mtvec`/`mepc`/`mcause`/`mtval`/`mscratch`/`misa`/`mhartid`), the
   `mret`/`wfi` instructions, synchronous exception traps (illegal instruction → cause 2,
   `ebreak` → cause 3, both vectoring to `mtvec` only when a handler is armed), and a

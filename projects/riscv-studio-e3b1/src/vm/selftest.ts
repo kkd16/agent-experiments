@@ -708,6 +708,62 @@ const TESTS: Test[] = [
     },
   },
 
+  {
+    name: 'RV32FC: compressed float load/store round-trips through the stack',
+    fn: () => {
+      const cpu = run(`
+        main:
+          addi sp, sp, -16
+          li   t0, 0x40490fdb       # 3.14159f bit pattern
+          fmv.w.x fa0, t0
+          c.fswsp fa0, 0(sp)        # compressed float store
+          c.flwsp fa1, 0(sp)        # compressed float load
+          fmv.s fa0, fa1
+          li   a7, 2                # print_float
+          ecall
+          li   a7, 10
+          ecall
+      `);
+      assert(/^3\.14/.test(cpu.output), `expected ~3.14159, got ${cpu.output}`);
+      eq(cpu.status, 'halted', 'status');
+    },
+  },
+  {
+    name: 'RV32FC auto-compress: flw/fsw shrink with identical float results',
+    fn: () => {
+      const prog = `
+        .data
+        arr: .word 0x3f800000, 0x40000000, 0x40400000   # 1.0, 2.0, 3.0
+        .text
+        main:
+          la   s0, arr
+          flw  fa0, 0(s0)
+          flw  fa1, 4(s0)
+          flw  fa2, 8(s0)
+          fadd.s fa0, fa0, fa1
+          fadd.s fa0, fa0, fa2
+          addi sp, sp, -16
+          fsw  fa0, 0(sp)
+          flw  fa0, 0(sp)
+          li   a7, 2
+          ecall
+          li   a7, 10
+          ecall`;
+      const plain = assemble(prog, { compress: false });
+      const small = assemble(prog, { compress: true });
+      assert(plain.ok && small.ok, 'both assemble');
+      const a = new Cpu();
+      a.load(plain);
+      a.run(1_000_000);
+      const b = new Cpu();
+      b.load(small);
+      b.run(1_000_000);
+      eq(b.output, a.output, 'float output matches');
+      eq(b.output, '6.0', 'sum 1+2+3');
+      assert(small.instrs.some((i) => i.size === 2), 'some flw/fsw compressed');
+    },
+  },
+
   // --- machine-mode traps & interrupts ---------------------------------------
   {
     name: 'trap: the timer-interrupt example fires 5 ticks and prints 5',
