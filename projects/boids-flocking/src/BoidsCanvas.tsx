@@ -1,14 +1,16 @@
 import { useEffect, useRef } from 'react';
-import { Boid, type BoidParams } from './boids';
+import { Boid, Predator, type BoidParams } from './boids';
 
 interface BoidsCanvasProps {
   params: BoidParams;
   numBoids: number;
+  numPredators: number;
 }
 
-export function BoidsCanvas({ params, numBoids }: BoidsCanvasProps) {
+export function BoidsCanvas({ params, numBoids, numPredators }: BoidsCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const boidsRef = useRef<Boid[]>([]);
+  const predatorsRef = useRef<Predator[]>([]);
   const animationFrameId = useRef<number>(0);
   const paramsRef = useRef(params);
   const mousePosRef = useRef<{ x: number; y: number } | null>(null);
@@ -34,6 +36,10 @@ export function BoidsCanvas({ params, numBoids }: BoidsCanvasProps) {
       boidsRef.current.forEach(boid => {
         boid.width = canvas.width;
         boid.height = canvas.height;
+      });
+      predatorsRef.current.forEach(pred => {
+        pred.width = canvas.width;
+        pred.height = canvas.height;
       });
     };
 
@@ -63,15 +69,34 @@ export function BoidsCanvas({ params, numBoids }: BoidsCanvasProps) {
        boidsRef.current = boidsRef.current.slice(0, numBoids);
     }
 
+    // Initialize predators if needed
+    if (predatorsRef.current.length === 0 && numPredators > 0) {
+      for (let i = 0; i < numPredators; i++) {
+        predatorsRef.current.push(new Predator(Math.random() * canvas.width, Math.random() * canvas.height, canvas.width, canvas.height));
+      }
+    } else if (predatorsRef.current.length < numPredators) {
+       for (let i = predatorsRef.current.length; i < numPredators; i++) {
+         predatorsRef.current.push(new Predator(Math.random() * canvas.width, Math.random() * canvas.height, canvas.width, canvas.height));
+       }
+    } else if (predatorsRef.current.length > numPredators) {
+       predatorsRef.current = predatorsRef.current.slice(0, numPredators);
+    }
+
     const render = () => {
       // Optional: Add a subtle trail effect
       ctx.fillStyle = 'rgba(15, 23, 42, 0.3)'; // Dark slate background with low opacity
       ctx.fillRect(0, 0, canvas.width, canvas.height);
 
       for (const boid of boidsRef.current) {
-        boid.flock(boidsRef.current, paramsRef.current, mousePosRef.current);
+        boid.flock(boidsRef.current, predatorsRef.current, paramsRef.current, mousePosRef.current);
         boid.update(paramsRef.current);
         boid.draw(ctx);
+      }
+
+      for (const predator of predatorsRef.current) {
+        predator.hunt(boidsRef.current, paramsRef.current);
+        predator.update(paramsRef.current);
+        predator.draw(ctx);
       }
 
       // Draw mouse interaction radius
@@ -108,7 +133,7 @@ export function BoidsCanvas({ params, numBoids }: BoidsCanvasProps) {
         cancelAnimationFrame(animationFrameId.current);
       }
     };
-  }, [numBoids]); // Re-run effect only when numBoids changes
+  }, [numBoids, numPredators]); // Re-run effect only when counts change
 
   return (
     <canvas
