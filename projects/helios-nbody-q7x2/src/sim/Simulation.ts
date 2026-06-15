@@ -391,6 +391,71 @@ export class Simulation {
     return paths.map((path) => path.subarray(0, s * 2))
   }
 
+  /**
+   * Record one body's complex orbital signal z(t) = (x − x_ref) + i(y − y_ref)
+   * over a shadow integration, for spectral (NAFF) analysis. A private copy of the
+   * whole system is evolved forward (collisions disabled so body indices stay
+   * stable), and every `stride` steps the chosen body's position is sampled
+   * relative to a moving reference — either the most-massive body or the system
+   * barycentre. Subtracting the reference removes the uniform drift of the centre
+   * of mass, leaving a bounded, quasi-periodic signal for a bound orbit. Returns
+   * `nSamples` complex samples (a power of two is ideal for the FFT) and their
+   * spacing `dt` in simulated time, or null if the request is degenerate.
+   */
+  recordComplexTrack(
+    index: number,
+    nSamples: number,
+    stride: number,
+    ref: 'heaviest' | 'barycenter',
+  ): { re: Float64Array; im: Float64Array; dt: number } | null {
+    if (index < 0 || index >= this.count || nSamples < 2 || stride < 1) return null
+    if (!this.predictor) this.predictor = new Simulation(this.capacity)
+    const p = this.predictor
+    p.setBodies(this.count, this.posX, this.posY, this.velX, this.velY, this.mass)
+    p.params = { ...this.params, collide: false }
+
+    // Resolve the fixed heaviest-body index once (masses are constant: collisions
+    // off). If the target IS the heaviest, "heaviest" reference degenerates to a
+    // zero signal, so fall back to the barycentre.
+    let heavyIdx = 0
+    let mm = -Infinity
+    for (let i = 0; i < p.count; i++) if (p.mass[i] > mm) { mm = p.mass[i]; heavyIdx = i }
+    const useBary = ref === 'barycenter' || heavyIdx === index
+
+    const re = new Float64Array(nSamples)
+    const im = new Float64Array(nSamples)
+    const sample = (s: number) => {
+      let rx: number
+      let ry: number
+      if (useBary) {
+        let cx = 0
+        let cy = 0
+        let tm = 0
+        for (let i = 0; i < p.count; i++) {
+          const m = p.mass[i]
+          cx += m * p.posX[i]
+          cy += m * p.posY[i]
+          tm += m
+        }
+        if (tm > 0) { cx /= tm; cy /= tm }
+        rx = cx
+        ry = cy
+      } else {
+        rx = p.posX[heavyIdx]
+        ry = p.posY[heavyIdx]
+      }
+      re[s] = p.posX[index] - rx
+      im[s] = p.posY[index] - ry
+    }
+
+    sample(0)
+    for (let s = 1; s < nSamples; s++) {
+      for (let k = 0; k < stride; k++) p.step()
+      sample(s)
+    }
+    return { re, im, dt: this.params.dt * stride }
+  }
+
   // Explicit (forward) Euler — uses the acceleration at the *start* of the step
   // for both position and velocity updates. Non-symplectic; energy grows.
   private stepEuler(n: number, dt: number): void {

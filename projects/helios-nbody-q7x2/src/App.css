@@ -501,6 +501,58 @@ select {
   gap: 2px;
 }
 
+/* ---------- spectral lab ---------- */
+.spectral-target {
+  font-size: 11px;
+  color: var(--muted);
+}
+.spectral-target strong {
+  color: var(--text);
+  font-family: var(--mono);
+}
+.spectral-diff {
+  margin-left: 8px;
+  font-family: var(--mono);
+  font-size: 11px;
+}
+.spectral-lines {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.spectral-line {
+  display: grid;
+  grid-template-columns: 76px 1fr 32px;
+  align-items: center;
+  gap: 6px;
+  font-size: 10.5px;
+  font-family: var(--mono);
+  color: var(--muted);
+}
+.spectral-line.primary {
+  color: var(--text);
+}
+.sl-omega {
+  white-space: nowrap;
+}
+.sl-bar-track {
+  height: 6px;
+  background: rgba(255, 255, 255, 0.05);
+  border-radius: 3px;
+  overflow: hidden;
+}
+.sl-bar {
+  height: 100%;
+  background: rgba(95, 208, 255, 0.7);
+  border-radius: 3px;
+}
+.spectral-line.primary .sl-bar {
+  background: rgba(255, 200, 120, 0.9);
+}
+.sl-amp {
+  text-align: right;
+}
+
 /* ---------- diagnostics dock ---------- */
 .diag-dock {
   position: absolute;

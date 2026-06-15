@@ -11,6 +11,11 @@ import type { OrbitElements } from './sim/orbit'
 import { jacobiConstant, restrictedThreeBody } from './sim/restricted3body'
 import { analyzeChaos, CHAOS_BODY_LIMIT } from './sim/chaos'
 import type { ChaosResult } from './sim/chaos'
+import { naff, frequencyDiffusion } from './sim/naff'
+import type { FreqDiffusion, NaffResult } from './sim/naff'
+import { poincareSection, POINCARE_BODY_LIMIT } from './sim/poincare'
+import type { PoincareResult } from './sim/poincare'
+import { SPECTRAL_BODY_LIMIT } from './components/SpectralPanel'
 import { Ring } from './util/ring'
 import { Sidebar } from './components/Sidebar'
 import type { Series } from './components/Plot'
@@ -120,6 +125,13 @@ export default function App() {
   const [chaosResult, setChaosResult] = useState<ChaosResult | null>(null)
   const [chaosRunning, setChaosRunning] = useState(false)
   const [chaosHorizon, setChaosHorizon] = useState(15000)
+  const [spectralResult, setSpectralResult] = useState<NaffResult | null>(null)
+  const [spectralDiffusion, setSpectralDiffusion] = useState<FreqDiffusion | null>(null)
+  const [spectralRunning, setSpectralRunning] = useState(false)
+  const [spectralTerms, setSpectralTerms] = useState(6)
+  const [spectralRef, setSpectralRef] = useState<'heaviest' | 'barycenter'>('heaviest')
+  const [poincareResult, setPoincareResult] = useState<PoincareResult | null>(null)
+  const [poincareRunning, setPoincareRunning] = useState(false)
 
   const [diag, setDiag] = useState<Diagnostics | null>(null)
   const [series, setSeries] = useState<{ energy: Series; momentum: Series } | null>(null)
@@ -389,20 +401,86 @@ export default function App() {
     }, 20)
   }, [chaosHorizon])
 
+  // The body NAFF analyses: the selected one, else the most-massive orbiting body.
+  const spectralTarget = useCallback((): number => {
+    const sim = simRef.current!
+    const sel = liveRef.current.selectedIndex
+    if (sel >= 0 && sel < sim.count) return sel
+    const heavy = sim.heaviestIndices(2)
+    return heavy.length >= 2 ? heavy[1] : 0
+  }, [])
+
+  const runSpectral = useCallback(() => {
+    const sim = simRef.current!
+    if (sim.count < 2 || sim.count > SPECTRAL_BODY_LIMIT) return
+    const target = spectralTarget()
+    setSpectralRunning(true)
+    // Defer so the button can paint "Analysing…" before the synchronous solve.
+    window.setTimeout(() => {
+      // 8192 = 2¹³ samples (a power of two for the FFT); stride 2 stretches the
+      // record over more orbital periods for a sharper frequency estimate.
+      const track = sim.recordComplexTrack(target, 8192, 2, spectralRef)
+      if (!track) {
+        setSpectralRunning(false)
+        return
+      }
+      const res = naff(track.re, track.im, track.dt, { maxTerms: spectralTerms })
+      const diff = frequencyDiffusion(track.re, track.im, track.dt, Math.min(spectralTerms, 5))
+      setSpectralResult(res)
+      setSpectralDiffusion(diff)
+      setSpectralRunning(false)
+    }, 20)
+  }, [spectralRef, spectralTerms, spectralTarget])
+
+  // The test particle a Poincaré section is drawn for: the selected body (if it is
+  // not one of the two primaries), else the lightest non-primary body.
+  const poincareTarget = useCallback((): number => {
+    const sim = simRef.current!
+    const heavy = sim.heaviestIndices(2)
+    const p0 = heavy[0] ?? -1
+    const p1 = heavy[1] ?? -1
+    const sel = liveRef.current.selectedIndex
+    if (sel >= 0 && sel < sim.count && sel !== p0 && sel !== p1) return sel
+    let best = -1
+    let bestM = Infinity
+    for (let i = 0; i < sim.count; i++) {
+      if (i === p0 || i === p1) continue
+      if (sim.mass[i] < bestM) { bestM = sim.mass[i]; best = i }
+    }
+    return best
+  }, [])
+
+  const runPoincare = useCallback(() => {
+    const sim = simRef.current!
+    if (sim.count < 3 || sim.count > POINCARE_BODY_LIMIT) return
+    const target = poincareTarget()
+    if (target < 0) return
+    setPoincareRunning(true)
+    // Defer so the button can paint "Integrating…" before the synchronous solve.
+    window.setTimeout(() => {
+      const res = poincareSection(sim, target, {})
+      setPoincareResult(res)
+      setPoincareRunning(false)
+    }, 20)
+  }, [poincareTarget])
+
   const handleReseed = useCallback(() => {
     const sd = (Math.random() * 2 ** 31) | 0
     setSeed(sd)
     setSelectedIndex(-1)
     setChaosResult(null)
+    setSpectralResult(null)
+    setSpectralDiffusion(null)
+    setPoincareResult(null)
     const p = loadScenario(presetId, count, sd)
     if (p) setParams((prev) => ({ ...prev, ...p }))
   }, [presetId, count, loadScenario])
 
   // Keep the latest action closures reachable from the (deps-free) key handler.
-  const actionsRef = useRef({ doShare, doExport, fitView, stepOnce, reseed: handleReseed, runChaos })
+  const actionsRef = useRef({ doShare, doExport, fitView, stepOnce, reseed: handleReseed, runChaos, runSpectral, runPoincare })
   useEffect(() => {
-    actionsRef.current = { doShare, doExport, fitView, stepOnce, reseed: handleReseed, runChaos }
-  }, [doShare, doExport, fitView, stepOnce, handleReseed, runChaos])
+    actionsRef.current = { doShare, doExport, fitView, stepOnce, reseed: handleReseed, runChaos, runSpectral, runPoincare }
+  }, [doShare, doExport, fitView, stepOnce, handleReseed, runChaos, runSpectral, runPoincare])
 
   // ----- keyboard shortcuts -----
   useEffect(() => {
@@ -434,6 +512,10 @@ export default function App() {
         setRenderOpts((r) => ({ ...r, showLagrange: !r.showLagrange }))
       } else if (e.key === 'y') {
         a.runChaos()
+      } else if (e.key === 'n') {
+        a.runSpectral()
+      } else if (e.key === 'k') {
+        a.runPoincare()
       } else if (e.key === 'Escape') {
         setSelectedIndex(-1)
       }
@@ -550,6 +632,9 @@ export default function App() {
     setCount(n)
     setSelectedIndex(-1)
     setChaosResult(null)
+    setSpectralResult(null)
+    setSpectralDiffusion(null)
+    setPoincareResult(null)
     firstSizedRef.current = true // keep current viewport; just refit
     applyParams(loadScenario(id, n, seed))
   }
@@ -557,11 +642,17 @@ export default function App() {
     setCount(n)
     setSelectedIndex(-1)
     setChaosResult(null)
+    setSpectralResult(null)
+    setSpectralDiffusion(null)
+    setPoincareResult(null)
     applyParams(loadScenario(presetId, n, seed))
   }
   const handleReset = () => {
     setSelectedIndex(-1)
     setChaosResult(null)
+    setSpectralResult(null)
+    setSpectralDiffusion(null)
+    setPoincareResult(null)
     applyParams(loadScenario(presetId, count, seed))
   }
 
@@ -641,6 +732,23 @@ export default function App() {
           chaosHorizon={chaosHorizon}
           onChaosHorizon={setChaosHorizon}
           onAnalyzeChaos={runChaos}
+          spectralResult={spectralResult}
+          spectralDiffusion={spectralDiffusion}
+          spectralRunning={spectralRunning}
+          spectralTerms={spectralTerms}
+          onSpectralTerms={setSpectralTerms}
+          spectralRef={spectralRef}
+          onSpectralRef={setSpectralRef}
+          onAnalyzeSpectral={runSpectral}
+          spectralTargetLabel={
+            selectedIndex >= 0 ? `#${selectedIndex} (selected)` : 'auto — most massive orbiter'
+          }
+          poincareResult={poincareResult}
+          poincareRunning={poincareRunning}
+          onAnalyzePoincare={runPoincare}
+          poincareTargetLabel={
+            selectedIndex >= 0 ? `#${selectedIndex} (selected)` : 'auto — lightest particle'
+          }
         />
 
         <main className="stage" ref={containerRef}>

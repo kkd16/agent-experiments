@@ -12,6 +12,9 @@ import { Simulation } from './Simulation'
 import { orbitElements } from './orbit'
 import { jacobiConstant, omegaGradient, solveLagrangeNormalized } from './restricted3body'
 import { accelAndVariational, analyzeChaos } from './chaos'
+import { fft, ifft } from './fft'
+import { naff, frequencyDiffusion } from './naff'
+import { poincareSection, toRotating } from './poincare'
 import type { IntegratorId } from './types'
 
 export interface TestCase {
@@ -401,6 +404,206 @@ export function runSelfTest(): SelfTestReport {
       'Chaos detected in the Pythagorean 3-body',
       ch.megno > 3.5 && ch.classification === 'chaotic' && ch.lyapunov > reg.lyapunov,
       `⟨Y⟩=${ch.megno.toFixed(2)} (≫2), λ=${ch.lyapunov.toExponential(2)} > regular ${reg.lyapunov.toExponential(2)}, ${ch.classification}`,
+    )
+  }
+
+  // 16 — The from-scratch FFT is correct: it inverts exactly and agrees with a
+  // direct DFT bin, so the spectral analyser's coarse search rests on solid ground.
+  {
+    const n = 64
+    const re = new Float64Array(n)
+    const im = new Float64Array(n)
+    let s = 7 >>> 0
+    const rnd = () => ((s = (s * 1664525 + 1013904223) >>> 0) / 4294967296)
+    for (let i = 0; i < n; i++) {
+      re[i] = rnd() - 0.5
+      im[i] = rnd() - 0.5
+    }
+    const r0 = Float64Array.from(re)
+    const i0 = Float64Array.from(im)
+    const R = Float64Array.from(re)
+    const I = Float64Array.from(im)
+    fft(R, I)
+    // Direct DFT at bin m = 5 for cross-validation.
+    const m = 5
+    let nr = 0
+    let ni = 0
+    for (let k = 0; k < n; k++) {
+      const a = (-2 * Math.PI * m * k) / n
+      nr += r0[k] * Math.cos(a) - i0[k] * Math.sin(a)
+      ni += r0[k] * Math.sin(a) + i0[k] * Math.cos(a)
+    }
+    const dftErr = Math.hypot(R[m] - nr, I[m] - ni)
+    ifft(R, I)
+    let round = 0
+    for (let k = 0; k < n; k++) round = Math.max(round, Math.hypot(R[k] - r0[k], I[k] - i0[k]))
+    const pass = round < 1e-12 && dftErr < 1e-12
+    add('FFT inverts & matches direct DFT', pass, `round-trip err ${round.toExponential(2)}, vs DFT ${dftErr.toExponential(2)}`)
+  }
+
+  // 17 — NAFF recovers a synthetic two-tone complex signal: both frequencies (one
+  // prograde, one retrograde, neither on an FFT bin) and both complex amplitudes,
+  // far below bin resolution.
+  {
+    const N = 4096
+    const dt = 0.1
+    const w1 = 0.7234
+    const w2 = -1.531
+    const a1r = Math.cos(0.3)
+    const a1i = Math.sin(0.3)
+    const a2r = 0.4 * Math.cos(-1.2)
+    const a2i = 0.4 * Math.sin(-1.2)
+    const re = new Float64Array(N)
+    const im = new Float64Array(N)
+    for (let k = 0; k < N; k++) {
+      const t = k * dt
+      const c1 = Math.cos(w1 * t)
+      const s1 = Math.sin(w1 * t)
+      const c2 = Math.cos(w2 * t)
+      const s2 = Math.sin(w2 * t)
+      re[k] = a1r * c1 - a1i * s1 + (a2r * c2 - a2i * s2)
+      im[k] = a1r * s1 + a1i * c1 + (a2r * s2 + a2i * c2)
+    }
+    const res = naff(re, im, dt, { maxTerms: 4 })
+    const near = (w: number) =>
+      res.lines.reduce((b, l) => (Math.abs(l.omega - w) < Math.abs(b.omega - w) ? l : b), res.lines[0])
+    const l1 = near(w1)
+    const l2 = near(w2)
+    const fErr = Math.max(Math.abs(l1.omega - w1), Math.abs(l2.omega - w2))
+    const aErr = Math.max(Math.abs(l1.amp - 1), Math.abs(l2.amp - 0.4))
+    const pass = fErr < 1e-5 && aErr < 1e-3 && res.reconError < 1e-4
+    add(
+      'NAFF recovers a two-tone signal',
+      pass,
+      `freq err ${fErr.toExponential(2)}, amp err ${aErr.toExponential(2)}, recon ${res.reconError.toExponential(2)}`,
+    )
+  }
+
+  // 18 — Super-resolution: a tone placed exactly half an FFT bin off-grid (the
+  // worst case for an FFT) is recovered to a tiny fraction of one bin width.
+  {
+    const N = 2048
+    const dt = 0.2
+    const dW = (2 * Math.PI) / (N * dt)
+    const w0 = (17 + 0.5) * dW
+    const re = new Float64Array(N)
+    const im = new Float64Array(N)
+    for (let k = 0; k < N; k++) {
+      const t = k * dt
+      re[k] = Math.cos(w0 * t)
+      im[k] = Math.sin(w0 * t)
+    }
+    const res = naff(re, im, dt, { maxTerms: 2 })
+    const ratio = Math.abs(res.lines[0].omega - w0) / dW
+    const pass = ratio < 1e-3
+    add('NAFF beats FFT bin resolution', pass, `frequency error = ${ratio.toExponential(2)} × one FFT bin`)
+  }
+
+  // 19 — NAFF reads a real orbit's mean motion off the simulator: the fundamental
+  // of a circular two-body orbit equals n = √(μ/a³), and the orbit's frequency is
+  // frozen (frequency-map diffusion → machine zero ⇒ classified regular).
+  {
+    const sim = twoBody(1, 2000, 1, 100, 0.0) // circular, μ = 2001, a = 100
+    sim.params = { ...sim.params, integrator: 'yoshida4', dt: 0.04 }
+    const n = Math.sqrt(2001 / 1e6)
+    const tr = sim.recordComplexTrack(1, 8192, 2, 'heaviest')
+    const res = tr ? naff(tr.re, tr.im, tr.dt, { maxTerms: 4 }) : null
+    const diff = tr ? frequencyDiffusion(tr.re, tr.im, tr.dt, 4) : null
+    const rel = res ? Math.abs(res.fundamental - n) / n : Infinity
+    const pass = !!res && !!diff && rel < 5e-4 && diff.classification === 'regular'
+    add(
+      'NAFF recovers Kepler mean motion',
+      pass,
+      `fundamental ν=${res?.fundamental.toExponential(4)} vs n=${n.toExponential(4)} (rel ${rel.toExponential(2)}), diffusion ${diff?.classification}`,
+    )
+  }
+
+  // 20 — Frequency-map analysis tells order from chaos: the Pythagorean three-body
+  // problem's fundamental frequency drifts by orders of magnitude more than the
+  // frozen circular orbit's, and is flagged non-regular.
+  {
+    const reg = twoBody(1, 2000, 1, 100, 0.0)
+    reg.params = { ...reg.params, integrator: 'yoshida4', dt: 0.04 }
+    const trReg = reg.recordComplexTrack(1, 8192, 2, 'heaviest')
+    const dReg = trReg ? frequencyDiffusion(trReg.re, trReg.im, trReg.dt, 4) : null
+
+    const L = 40
+    const mf = 80
+    const chSim = new Simulation(8)
+    chSim.setBodies(
+      3,
+      Float64Array.from([1 * L, -2 * L, 1 * L]),
+      Float64Array.from([3 * L, -1 * L, -1 * L]),
+      Float64Array.from([0, 0, 0]),
+      Float64Array.from([0, 0, 0]),
+      Float64Array.from([3 * mf, 4 * mf, 5 * mf]),
+    )
+    chSim.params = { ...chSim.params, g: 1, softening: 2, theta: 0, dt: 0.01, integrator: 'yoshida4' }
+    const trCh = chSim.recordComplexTrack(0, 8192, 2, 'barycenter')
+    const dCh = trCh ? frequencyDiffusion(trCh.re, trCh.im, trCh.dt, 5) : null
+
+    const pass =
+      !!dReg && !!dCh && dReg.valid && dCh.valid &&
+      dReg.classification === 'regular' &&
+      dCh.classification !== 'regular' &&
+      dCh.logDiffusion > dReg.logDiffusion + 4
+    add(
+      'Frequency diffusion flags chaos',
+      pass,
+      `log₁₀|Δν/ν|: regular ${dReg?.logDiffusion.toFixed(1)} (${dReg?.classification}) ≪ Pythagorean ${dCh?.logDiffusion.toFixed(1)} (${dCh?.classification})`,
+    )
+  }
+
+  // 21 — The co-rotating-frame transform (transport theorem) is exact: a point
+  // that rigidly co-rotates with the binary has zero velocity in the rotating
+  // frame. Equal-mass binary on the x-axis spinning at ω about the origin, plus a
+  // test point at (2,0) carried along at ω·ẑ×r — it should sit still in the frame.
+  {
+    const w = 0.37
+    const rot = toRotating(
+      1, -1, 0, 0, -w, // m1 at (−1,0), v = ω ẑ×r
+      1, 1, 0, 0, w, //  m2 at (+1,0)
+      2, 0, 0, 2 * w, //  test point at (2,0), v = ω ẑ×r
+    )
+    const pass =
+      approx(rot.xi, 2, 1e-12) && approx(rot.eta, 0, 1e-12) &&
+      approx(rot.xidot, 0, 1e-12) && approx(rot.etadot, 0, 1e-12) &&
+      approx(rot.omega, w, 1e-12)
+    add(
+      'Co-rotating frame transform is exact',
+      pass,
+      `ξ=${rot.xi.toFixed(3)} (=2), ξ̇=${rot.xidot.toExponential(1)} (≈0), η̇=${rot.etadot.toExponential(1)} (≈0), ω=${rot.omega.toFixed(3)} (=${w})`,
+    )
+  }
+
+  // 22 — The Poincaré section is physically consistent: along a genuine
+  // restricted-3-body trajectory (a Sun, a circular planet and an outer test
+  // particle), the Jacobi constant sampled at every section crossing is the same
+  // — the section lies on a single energy surface, as it must.
+  {
+    const sim = new Simulation(8)
+    const g = 1
+    const sun = 20000
+    const R = 200
+    const planet = 12
+    const vP = Math.sqrt((g * sun) / R)
+    const rPart = R * 1.6
+    const vPart = Math.sqrt((g * sun) / rPart)
+    sim.setBodies(
+      3,
+      Float64Array.from([0, R, rPart]),
+      Float64Array.from([0, 0, 0]),
+      Float64Array.from([0, 0, 0]),
+      Float64Array.from([-(planet * vP) / sun, vP, vPart]),
+      Float64Array.from([sun, planet, 1e-6]),
+    )
+    sim.params = { ...sim.params, g, theta: 0, softening: 0.5, dt: 0.02, integrator: 'yoshida4' }
+    const sec = poincareSection(sim, 2, { maxCrossings: 300, maxSteps: 200000 })
+    const pass = sec.valid && sec.count > 10 && sec.jacobiSpread < 5e-3
+    add(
+      'Poincaré section conserves Jacobi',
+      pass,
+      `${sec.count} crossings, Jacobi spread = ${Number.isFinite(sec.jacobiSpread) ? sec.jacobiSpread.toExponential(2) : 'n/a'} (≈0)`,
     )
   }
 

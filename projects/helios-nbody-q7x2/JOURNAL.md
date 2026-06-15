@@ -25,7 +25,19 @@ presets and renderer are hand-written TypeScript on typed arrays — no physics 
 - `src/sim/restricted3body.ts` — circular restricted-three-body structure for the two heaviest
   bodies: Lagrange points L1–L5 and marching-squares zero-velocity (Hill-region) contours,
   mapped from the dimensionless co-rotating frame onto the live primary axis.
-- `src/sim/selftest.ts` — in-app numerical self-test that re-derives Helios's physical claims.
+- `src/sim/fft.ts` — a from-scratch in-place radix-2 Cooley–Tukey **FFT** (bit-reversal +
+  iterative butterflies, twiddles by recurrence). The coarse-search workhorse for NAFF.
+- `src/sim/naff.ts` — **NAFF** (Laskar's Numerical Analysis of Fundamental Frequencies): a
+  Hann-windowed correlation whose peak is located by FFT then refined *between* bins by
+  golden-section search (super-resolution to ~1e-8 of a bin), greedy matching-pursuit
+  deflation of one tone at a time, and a joint complex Gram-system solve for the amplitudes.
+  Exposes the orbit's fundamental frequency + harmonic line spectrum and a **frequency-map
+  diffusion** chaos indicator (first-half vs second-half frequency drift, Laskar 1990).
+- `src/sim/poincare.ts` — **Poincaré surface-of-section** for a test particle in the co-rotating
+  frame of the two heaviest bodies (transport-theorem rotating-frame transform; upward η=0
+  crossings recorded as (ξ, ξ̇)); reports the Jacobi-constant spread as an honesty/quality check.
+- `src/sim/selftest.ts` — in-app numerical self-test that re-derives Helios's physical claims
+  (now **22 checks**).
 - `src/sim/presets.ts` — spiral galaxy, galaxy collision, Plummer cluster, cold collapse,
   solar system, binary + disk, Saturn's rings, Trojans, figure-eight, **broken eight**,
   Pythagorean, Kepler showcase, horseshoe & tadpole, three-body waltz, random cloud. Each
@@ -34,7 +46,9 @@ presets and renderer are hand-written TypeScript on typed arrays — no physics 
 - `src/render/` — `Camera` (world↔screen, zoom-to-cursor), `colormap` (inferno/viridis/plasma/ice),
   `Renderer` (additive-blended pre-rendered glow sprites, motion trails, quadtree overlay).
 - `src/components/` — Sidebar controls, rolling diagnostic `Plot`, DiagnosticsDock, the
-  **Chaos Lab** panel (`ChaosPanel`), About overlay, UI primitives.
+  **Chaos Lab** panel (`ChaosPanel`), the **Spectral Lab** (`SpectralPanel`, NAFF spectrum +
+  frequency-diffusion verdict + stick-spectrum canvas), the **Poincaré Lab** (`PoincarePanel`,
+  time-coloured surface-of-section scatter), About overlay, UI primitives.
 - `src/App.tsx` — wires the rAF step/render loop, camera, pointer interaction (pan + slingshot),
   keyboard shortcuts, and settings persistence.
 
@@ -76,8 +90,55 @@ an honest demonstration: symplectic schemes keep the trace flat; Explicit Euler 
 - [ ] 3D mode with an octree and a WebGL instanced renderer
 - [ ] Adaptive (block) time-stepping for tight binaries
 - [ ] Colour bodies by their finite-time Lyapunov contribution (per-body chaos map)
-- [ ] Frequency-map analysis (FMA) of an orbit's fundamental frequencies
+- [x] Frequency-map analysis (FMA) of an orbit's fundamental frequencies — shipped in
+      Helios 4.0 as the **Spectral Lab** (NAFF + frequency-diffusion), see below
 - [ ] Wisdom–Holman mixed-variable symplectic integrator for hierarchical systems
+- [ ] Per-body NAFF resonance map (label orbits by their fundamental-frequency commensurabilities)
+- [ ] Drive a Poincaré section live from the running sim (incremental crossings, not a one-shot)
+- [ ] Spectrogram / time–frequency view of a single orbit as it slowly precesses
+
+### Helios 4.0 — Spectral & Phase-Space Analysis (this session)
+
+The dynamicist's other two lenses on an orbit — *frequency space* and *phase space* — to sit
+beside the existing time-domain Chaos Lab (MEGNO/Lyapunov).
+
+- [x] **From-scratch FFT** (`src/sim/fft.ts`) — an in-place, iterative radix-2 Cooley–Tukey
+      transform (bit-reversal permutation + ⌈log₂N⌉ butterfly stages, twiddle factors advanced by
+      a complex-multiply recurrence so no trig runs in the inner loop). Inverts to ~1e-15 and
+      matches a direct DFT bin to ~1e-15 in the self-test.
+- [x] **NAFF spectral analyser** (`src/sim/naff.ts`) — Laskar's Numerical Analysis of Fundamental
+      Frequencies. A Hann window folds spectral leakage so the windowed correlation φ(ω) =
+      ⟨f, e^{iωt}⟩ has a razor-sharp peak (error ∝ 1/T⁴, not 1/T); the FFT locates the dominant
+      bin and a **golden-section search refines ω between bins to ~1e-8 of a bin width**
+      (super-resolution). Tones are peeled off one at a time (matching pursuit) and the amplitudes
+      recovered jointly by solving the small complex **Gram system** (hand-rolled complex Gaussian
+      elimination with partial pivoting). Returns the orbit's fundamental frequency, its prograde/
+      retrograde harmonic line spectrum, and the reconstruction error.
+- [x] **Frequency-map diffusion** (`frequencyDiffusion`) — Laskar 1990's chaos indicator: the
+      fundamental measured on the first vs second half of the record drifts by |Δν/ν| ≈ 0 for a
+      regular orbit and measurably for a chaotic one. In the self-test the circular orbit's drift
+      (~1e-16) and the Pythagorean problem's (~1e0) sit **sixteen orders of magnitude apart**.
+- [x] **Spectral Lab UI** (`SpectralPanel.tsx`) — runs NAFF on the selected body (or the most
+      massive orbiter), in the heaviest-body or barycentric frame; reports the fundamental ν,
+      period 2π/ν, direction, periods covered and reconstruction error; draws a signed-frequency
+      **stick spectrum** and a top-lines table; and renders the frequency-diffusion verdict. Key `n`.
+- [x] **Poincaré surface-of-section** (`src/sim/poincare.ts`) — a test particle's section in the
+      co-rotating frame of the two heaviest bodies. The rotating-frame transform uses the transport
+      theorem v_rot = R(−θ)(v − v_B) − ω×r (exact for a circular binary); upward η=0 crossings are
+      interpolated and recorded as (ξ, ξ̇). The **Jacobi-constant spread** across crossings is
+      reported as an honest quality check — small ⇒ a genuine CR3BP, large ⇒ the two heaviest
+      aren't a clean binary. Body-count + work-budget capped so a large preset can't freeze the UI.
+- [x] **Poincaré Lab UI** (`PoincarePanel.tsx`) — a time-coloured (early→blue, late→amber)
+      auto-scaling scatter of the section, with crossing count, mean Jacobi C and its spread, and a
+      warning when the co-rotating frame is only approximate. Key `k`.
+- [x] **Self-test grew 15 → 22 checks** — FFT inverts & matches a direct DFT; NAFF recovers a
+      synthetic two-tone signal (freq + complex amplitude) to ~1e-9/1e-3; NAFF beats the FFT bin
+      width by ~1e-8; NAFF reads a Kepler orbit's mean motion n = √(μ/a³) to ~1e-7 and flags it
+      regular; frequency diffusion separates the circular orbit from the Pythagorean problem by
+      ≫4 decades; the co-rotating transform is exact (a co-rotating point has zero rotating-frame
+      velocity); and the Poincaré section conserves the Jacobi constant to ~4e-4. (All 22 green.)
+- [x] **About + docs** — new sections on NAFF/frequency-map analysis and the Poincaré
+      surface-of-section, new shortcuts (`n` spectrum, `k` section), and two new "Try this" recipes.
 
 ### Helios 3.0 — Chaos & Higher-Order Symplectic Integration (this session)
 
@@ -201,3 +262,20 @@ an honest demonstration: symplectic schemes keep the trace flat; Explicit Euler 
   with λ above the regular orbit's). About/docs gained sections on higher-order symplectic
   integration, reversibility, and chaos. All 15 self-test checks pass; verified `pnpm lint`
   + `pnpm build` green via `scripts/verify-project.mjs`.
+- 2026-06-15 (claude/claude-opus-4-8): **Helios 4.0 — Spectral & Phase-Space Analysis.** Added the
+  two analysis lenses that sit beside the time-domain Chaos Lab. Built a from-scratch in-place
+  radix-2 **FFT** (`fft.ts`); a **NAFF** spectral analyser (`naff.ts`) implementing Laskar's
+  Numerical Analysis of Fundamental Frequencies — Hann-windowed correlation, FFT coarse search,
+  golden-section sub-bin refinement (super-resolution to ~1e-8 of a bin), matching-pursuit
+  deflation and a joint complex Gram-system amplitude solve — exposing an orbit's fundamental
+  frequency, harmonic line spectrum and a **frequency-map diffusion** chaos indicator; a
+  **Poincaré surface-of-section** (`poincare.ts`) for a test particle in the co-rotating frame of
+  the two heaviest bodies, with a Jacobi-spread honesty check and body/work-budget caps. Wired a
+  **Spectral Lab** (`SpectralPanel.tsx`, key `n`) with a signed-frequency stick spectrum and the
+  diffusion verdict, and a **Poincaré Lab** (`PoincarePanel.tsx`, key `k`) with a time-coloured
+  auto-scaling section scatter. Grew the in-app self-test from 15 to **22 checks** (FFT round-trip
+  + DFT match; NAFF two-tone recovery; NAFF super-resolution vs the FFT bin; NAFF recovers a Kepler
+  mean motion; frequency diffusion separates regular from chaotic by ≫4 decades; the co-rotating
+  transform is exact; the Poincaré section conserves the Jacobi constant) and added About/docs
+  sections for both. All 22 self-test checks pass (verified with a standalone Node type-stripping
+  harness as well as in-app); `pnpm lint` + `pnpm build` green via `scripts/verify-project.mjs`.
