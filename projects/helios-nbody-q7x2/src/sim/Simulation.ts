@@ -201,6 +201,9 @@ export class Simulation {
       case 'yoshida4':
         this.stepYoshida4(n, dt)
         break
+      case 'yoshida6':
+        this.stepYoshida6(n, dt)
+        break
       case 'rk4':
         this.stepRk4(n, dt)
         break
@@ -457,6 +460,29 @@ export class Simulation {
     this.verletSub(n, Simulation.Y_W1 * dt)
     this.verletSub(n, Simulation.Y_W0 * dt)
     this.verletSub(n, Simulation.Y_W1 * dt)
+  }
+
+  // Yoshida's 6th-order symplectic integrator ("Solution A", Yoshida 1990). A
+  // longer symmetric composition of the same leapfrog base map — seven substeps
+  //   w3, w2, w1, w0, w1, w2, w3
+  // whose weights are tuned so that all error terms through O(dt⁵) cancel, leaving
+  // O(dt⁷) local (sixth-order global) error while remaining exactly symplectic and
+  // time-reversible. Like Yoshida 4 it uses backward substeps (several wₖ < 0);
+  // that is what buys the extra order. Seven force evaluations per step.
+  private static readonly Y6_W1 = -0.117767998417887e1
+  private static readonly Y6_W2 = 0.235573213359357e0
+  private static readonly Y6_W3 = 0.784513610477560e0
+  private static readonly Y6_W0 =
+    1 - 2 * (Simulation.Y6_W1 + Simulation.Y6_W2 + Simulation.Y6_W3)
+
+  private stepYoshida6(n: number, dt: number): void {
+    this.verletSub(n, Simulation.Y6_W3 * dt)
+    this.verletSub(n, Simulation.Y6_W2 * dt)
+    this.verletSub(n, Simulation.Y6_W1 * dt)
+    this.verletSub(n, Simulation.Y6_W0 * dt)
+    this.verletSub(n, Simulation.Y6_W1 * dt)
+    this.verletSub(n, Simulation.Y6_W2 * dt)
+    this.verletSub(n, Simulation.Y6_W3 * dt)
   }
 
   // Classic 4th-order Runge–Kutta on the first-order system

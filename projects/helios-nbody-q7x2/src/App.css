@@ -454,6 +454,52 @@ select {
   background: rgba(255, 194, 75, 0.16);
   color: var(--warn);
 }
+.tag.bad {
+  background: rgba(255, 93, 108, 0.16);
+  color: var(--bad);
+}
+
+/* ---------- chaos lab ---------- */
+.chaos-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.chaos-run {
+  width: 100%;
+  justify-content: center;
+}
+.chaos-run:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.chaos-note {
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--warn);
+  margin: 0;
+}
+.chaos-result {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-top: 4px;
+  border-top: 1px solid var(--line);
+}
+.chaos-verdict {
+  display: flex;
+  align-items: center;
+}
+.chaos-verdict .tag {
+  font-size: 11px;
+  padding: 4px 9px;
+  margin: 0;
+}
+.chaos-plot {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
 
 /* ---------- diagnostics dock ---------- */
 .diag-dock {

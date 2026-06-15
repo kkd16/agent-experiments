@@ -59,6 +59,16 @@ export function About({ onClose }: Props) {
           is not symplectic. The conservation plots are computed independently of the force solver, so
           they are an honest report card.
         </p>
+        <p>
+          For long, accurate integrations Helios climbs the order ladder with <strong>Yoshida 4</strong>{' '}
+          and <strong>Yoshida 6</strong> — symmetric compositions of three and seven leapfrog substeps
+          (several stepping <em>backwards</em> in time) whose error terms cancel to leave O(Δt⁴) and
+          O(Δt⁶) error while staying exactly symplectic. At equal Δt, Yoshida 6 conserves energy tens of
+          thousands of times better than Yoshida 4, which is itself ~10⁴× better than Verlet — near
+          machine precision. Every symplectic scheme here is also <strong>time-reversible</strong>:
+          the self-test integrates an orbit forward, flips every velocity, and watches it retrace its
+          path back to the start.
+        </p>
 
         <h2>Softening</h2>
         <p>
@@ -109,12 +119,33 @@ export function About({ onClose }: Props) {
           the single integral of motion the restricted problem conserves.
         </p>
 
+        <h2>Chaos: MEGNO &amp; Lyapunov exponents</h2>
+        <p>
+          Is an orbit <em>predictable</em> forever, or does it have a horizon? The{' '}
+          <strong>Chaos Lab</strong> answers this from first principles. It evolves an infinitesimal
+          deviation vector <code>δ</code> alongside the real trajectory under the{' '}
+          <em>variational equations</em> — the linearised flow, whose force gradient is the analytic{' '}
+          <strong>tidal tensor</strong> (verified against a finite difference in the self-test). Two
+          numbers fall out. The maximal <strong>Lyapunov exponent</strong> <code>λ</code> (Benettin's
+          method: renormalise <code>δ</code> each step, accumulate the log of its stretch) measures
+          exponential divergence — <code>λ ≈ 0</code> is regular, <code>λ &gt; 0</code> is chaos with
+          e-folding time <code>1/λ</code>. <strong>MEGNO</strong> <code>⟨Y⟩</code> (Cincotta &amp;
+          Simó) converges far faster: it tends to exactly <code>2</code> for a quasi-periodic orbit and
+          grows linearly as <code>(λ/2)·t</code> for a chaotic one. Run it on the{' '}
+          <em>Figure-Eight</em> (regular, <code>⟨Y⟩ → 2</code>) and then the <em>Broken Eight</em> or{' '}
+          <em>Pythagorean 3-body</em> (chaotic, <code>⟨Y⟩ ≫ 2</code>) to watch the indicator tell order
+          from chaos in systems that look almost identical at first.
+        </p>
+
         <h2>Run the numbers yourself</h2>
         <p>
           None of the above is taken on faith. The button below runs a battery of numerical checks in
-          your browser — that the orbit solver recovers known elements, that Yoshida 4 beats Verlet at
-          energy conservation, that the Lagrange points are genuine equilibria (<code>∇Ω ≈ 0</code>),
-          that momentum is conserved and that the virial theorem holds.
+          your browser — that the orbit solver recovers known elements, that Yoshida 4 beats Verlet and
+          Yoshida 6 beats Yoshida 4 at energy conservation, that Verlet is time-reversible, that the
+          tidal tensor is the exact gradient of the force, that the Lagrange points are genuine
+          equilibria (<code>∇Ω ≈ 0</code>), that momentum is conserved, that the virial theorem holds —
+          and that MEGNO recognises a regular orbit (<code>⟨Y⟩ → 2</code>) yet flags the Pythagorean
+          three-body problem as chaotic.
         </p>
         <div className="selftest">
           <button type="button" className="btn primary" onClick={runTests} disabled={running}>
@@ -145,6 +176,7 @@ export function About({ onClose }: Props) {
           <li>Open <em>Kepler Showcase</em>, enable the <em>Osculating orbit</em> overlay, and click each planet to see its ellipse and elements.</li>
           <li>Load <em>Horseshoe &amp; Tadpole</em>, press <code>l</code> for the Lagrange overlay, and watch particles librate around L4/L5.</li>
           <li>Run the <em>Three-Body Waltz</em> on Yoshida 4 — a hierarchical triple that stays bound indefinitely.</li>
+          <li>Open the <em>Chaos Lab</em> and analyse the <em>Figure-Eight</em> (⟨Y⟩ → 2), then the <em>Broken Eight</em> — the same orbit nudged 0.4%, now chaotic. Watch MEGNO and λ tell them apart.</li>
           <li>Click a planet in <em>Solar System</em> to read its orbital energy, then <em>Share</em> a permalink to your setup.</li>
         </ul>
 
@@ -152,8 +184,8 @@ export function About({ onClose }: Props) {
           Built with React + TypeScript and a hand-rolled Barnes–Hut engine running on typed arrays.
           No WebGL, no physics library — just maths and a Canvas. Shortcuts: Space play/pause,
           <code>.</code> step, <code>f</code> fit, <code>t</code> trails, <code>c</code> collisions,
-          <code>p</code> predict, <code>o</code> orbit, <code>l</code> Lagrange, <code>r</code> reseed,
-          <code>s</code> share, <code>e</code> PNG.
+          <code>p</code> predict, <code>o</code> orbit, <code>l</code> Lagrange, <code>y</code> chaos,
+          <code>r</code> reseed, <code>s</code> share, <code>e</code> PNG.
         </p>
       </div>
     </div>

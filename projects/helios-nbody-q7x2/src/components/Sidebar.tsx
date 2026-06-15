@@ -7,6 +7,8 @@ import { COLORMAP_IDS } from '../render/colormap'
 import { INTEGRATORS } from '../sim/types'
 import type { IntegratorId, SimParams } from '../sim/types'
 import { PRESETS } from '../sim/presets'
+import type { ChaosResult } from '../sim/chaos'
+import { ChaosPanel } from './ChaosPanel'
 import { Section, Segmented, Select, Slider, Toggle } from './primitives'
 
 export interface SidebarProps {
@@ -34,6 +36,11 @@ export interface SidebarProps {
   onPredict: (v: boolean) => void
   predictHorizon: number
   onPredictHorizon: (n: number) => void
+  chaosResult: ChaosResult | null
+  chaosRunning: boolean
+  chaosHorizon: number
+  onChaosHorizon: (n: number) => void
+  onAnalyzeChaos: () => void
 }
 
 const integrator = INTEGRATORS.reduce<Record<string, (typeof INTEGRATORS)[number]>>((acc, it) => {
@@ -210,6 +217,17 @@ export function Sidebar(p: SidebarProps) {
           checked={p.render.showLagrange}
           onChange={(v) => p.onRender({ showLagrange: v })}
           title="Restricted-3-body L1–L5 points and zero-velocity (Hill-region) curves for the two heaviest bodies (key: l)"
+        />
+      </Section>
+
+      <Section title="Chaos Lab" defaultOpen={false}>
+        <ChaosPanel
+          result={p.chaosResult}
+          running={p.chaosRunning}
+          horizon={p.chaosHorizon}
+          onHorizon={p.onChaosHorizon}
+          onRun={p.onAnalyzeChaos}
+          bodyCount={p.count}
         />
       </Section>
 
