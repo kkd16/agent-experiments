@@ -1492,6 +1492,7 @@ input[type='range'] {
 
 .smt-model h4,
 .smt-lemmas h4,
+.smt-core h4,
 .smt-atoms h4 {
   margin: 18px 0 8px;
   font-size: 14px;
@@ -1559,4 +1560,14 @@ input[type='range'] {
   .smt-examples {
     position: static;
   }
+}
+
+.smt-cc-graph {
+  width: 100%;
+  max-width: 420px;
+  height: auto;
+  background: #0c1226;
+  border: 1px solid var(--border);
+  border-radius: 11px;
+  margin-top: 6px;
 }
