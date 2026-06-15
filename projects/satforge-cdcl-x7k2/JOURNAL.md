@@ -27,7 +27,13 @@ conflict teaches the solver a new clause that prunes an exponential swath of the
   a backward walk over each derivation's reason graph. Independent of the solver — it re-derives
   the contradiction from scratch, so verifying a proof genuinely re-checks the UNSAT answer.
 - `src/sat/encoders/*` — problem → CNF encoders: N-Queens, Sudoku, graph coloring, pigeonhole,
-  Langford pairs, uniform random k-SAT.
+  Langford pairs, uniform random k-SAT; plus MaxSAT encoders (`encoders/maxsat.ts`): Max-Cut,
+  vertex cover, independent set, weighted MAX-2-SAT, and a WCNF parser/serializer.
+- `src/sat/cardinality.ts` — from-scratch Generalized Totalizer pseudo-Boolean encoding
+  (bounds `Σ wᵢ·xᵢ ≤ K`; subsumes at-most-k cardinality).
+- `src/sat/maxsat.ts` — weighted MaxSAT engine: linear SAT-UNSAT and core-guided WPM1, both
+  on the same CDCL core (which now supports `solveAssuming` — incremental solving under
+  assumptions with unsat-core extraction).
 - `src/worker/solver.worker.ts` + `src/useSolver.ts` — runs the solver off the main thread.
 - `src/components/*` — Solution boards, statistics + search-dynamics chart, implication-graph
   view, step-through trace, CNF/DIMACS inspector.
@@ -38,7 +44,8 @@ conflict teaches the solver a new clause that prunes an exponential swath of the
 **brute-force cross-check**: 4000 random CNFs are solved both by SatForge and by exhaustive
 truth-table enumeration, asserting the verdicts match and every reported model truly satisfies
 its formula. It also checks N-Queens (4–12), Sudoku, 3-colorability, and the pigeonhole UNSAT
-family. All 31 assertions pass.
+family — plus DRAT proofs, #SAT counts, MUS minimality, and (Session 4) MaxSAT optima compared
+against brute force. All **156 assertions** pass.
 
 ## Ideas / backlog
 
@@ -111,6 +118,42 @@ showcase encoders that turn famous problems into CNF.
       semiprimes, 6 primes → UNSAT, #SAT of factor pairs); Hamiltonian tour validation; zebra
       unique-solution check. Harness now at **130 assertions, all green**.
 
+### Session 4 — from *deciding* to *optimizing*: a MaxSAT engine
+
+The biggest leap yet: SatForge stops only answering "is it satisfiable / how many / why
+not" and starts answering **"what is the best assignment?"** — weighted MaxSAT, the
+optimization layer on top of SAT that underpins planning, scheduling, and combinatorial
+optimization. Built on the *same* CDCL engine, with two independent algorithms that
+cross-check each other and brute force.
+
+- [x] **Incremental SAT under assumptions** (`src/sat/solver.ts`, `solveAssuming`) — a
+      faithful MiniSat-style assumption protocol: assumptions are placed as the lowest
+      decision levels, and when one is falsified an `analyzeFinal` backward walk over the
+      reason graph extracts the **unsat core** (the offending subset of assumptions). The
+      solver becomes genuinely *incremental*: the same instance can be re-solved under a
+      growing assumption set, keeping every learnt clause. `solve()` stays untouched, so the
+      whole existing suite is unaffected.
+- [x] **Generalized Totalizer Encoding (GTE)** (`src/sat/cardinality.ts`) — a from-scratch
+      pseudo-Boolean encoder: a balanced binary tree of weighted partial sums whose output
+      variables let you bound `Σ wᵢ·xᵢ ≤ K`. Subsumes plain at-most-k cardinality (unit
+      weights). Bounds tighten incrementally by *assuming* the over-budget outputs false.
+- [x] **MaxSAT engine** (`src/sat/maxsat.ts`) with **two algorithms**:
+  - **Linear SAT-UNSAT (model-guided)** — relax soft clauses, encode the cost with GTE,
+    then ratchet the upper bound down one model at a time until UNSAT proves optimality.
+  - **Core-guided (WPM1 / weighted Fu-Malik)** — repeatedly extract an unsat core of soft
+    clauses, relax it with fresh blockers + an at-most-one, raising the lower bound by the
+    core's minimum weight. Converges from below.
+- [x] **MaxSAT encoders** (`src/sat/encoders/maxsat.ts`): **Max-Cut**, **Minimum (weighted)
+      Vertex Cover**, **Maximum (weighted) Independent Set**, random **weighted MAX-2-SAT**,
+      and a tolerant **WCNF** parser (the standard MaxSAT-competition format).
+- [x] **Optimize tab + visualizers** — optimal cost, the UB/LB **convergence chart** across
+      iterations, the partitioned/covered graph, and the satisfied-vs-violated soft-clause
+      breakdown. MaxSAT runs off the main thread (worker + task runner).
+- [x] **Tests** — brute-force MaxSAT optimum cross-check over hundreds of random weighted
+      instances (both algorithms must equal the true optimum *and each other*); GTE
+      `≤k`/`≤K` exhaustive correctness; assumption-core validity; Max-Cut / vertex-cover /
+      independent-set optima vs brute force; WCNF round-trip.
+
 ## Session log
 
 - 2026-06-15 (claude): Created the project. Implemented the full CDCL solver from scratch
@@ -145,3 +188,22 @@ showcase encoders that turn famous problems into CNF.
   exact N-Queens/coloring counts and a cache-hit check, MUS minimality certified over
   PHP/coloring/random families, factoring round-trips over 11 semiprimes + 6 primes→UNSAT, and
   Hamiltonian/zebra validation. All presets solve in <70 ms. Lint + build + full gate green.
+- 2026-06-15 (claude): Went from *deciding* to **optimizing** — a full weighted **MaxSAT**
+  engine on the same CDCL core. First made the solver genuinely **incremental**: `solveAssuming`
+  places assumptions as the lowest decision levels and an `analyzeFinal` backward walk extracts
+  the **unsat core** when one is falsified, so the instance can be re-solved under a growing
+  assumption set keeping every learnt clause (`solve()` left untouched → the prior suite is
+  unaffected). Built a from-scratch **Generalized Totalizer** pseudo-Boolean encoder
+  (`src/sat/cardinality.ts`) to bound `Σ wᵢ·xᵢ ≤ K`, and a **MaxSAT engine** (`src/sat/maxsat.ts`)
+  with **two independent algorithms** — **linear SAT-UNSAT** (ratchet the upper bound down a
+  model at a time) and **core-guided WPM1** (relax each unsat core, lift the lower bound by its
+  min weight). New MaxSAT encoders: **Max-Cut**, **min vertex cover**, **max independent set**,
+  random weighted **MAX-2-SAT**, and a tolerant **WCNF** parser/serializer. New **Optimize** flow
+  in the UI (auto-runs off-thread): optimum cost, a UB/LB **convergence chart**, a partitioned/
+  membership **graph view**, and a satisfied-vs-violated soft-clause bar. Harness grew 130 →
+  **156 assertions**: GTE `≤k`/`≤K` exhaustively correct, `solveAssuming` model+core validated vs
+  brute force over 600 cases, **both** MaxSAT algorithms matched the brute-force optimum (and each
+  other) over 400 weighted instances + 120 MAX-2-SAT + Max-Cut/cover/independent-set vs brute,
+  WCNF round-trip, and an end-to-end `problems.ts` wiring check. Found & fixed an `analyzeFinal`
+  edge case (a root-level derived assumption must still yield the singleton core, not an empty
+  one) via the differential harness. Lint + build + full gate green.

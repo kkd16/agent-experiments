@@ -23,8 +23,24 @@ import {
   encodeFactoring,
   encodeHamiltonian,
   encodeZebra,
+  solveAssuming,
+  encodeGTE,
+  atMostBound,
+  encodeAtMostK,
+  PBBuilder,
+  solveMaxSat,
+  softCost,
+  clauseSat,
+  encodeMaxCut,
+  encodeVertexCover,
+  encodeIndependentSet,
+  randomWeightedMax2Sat,
+  randomWeightedGraph,
+  parseWcnf,
+  toWcnf,
 } from './src/sat/index'
-import type { CNF, ProofStep, Graph } from './src/sat/index'
+import type { CNF, ProofStep, Graph, MaxSatInstance, WeightedGraph } from './src/sat/index'
+import { buildProblem, DEFAULT_SPEC } from './src/problems'
 
 let pass = 0
 let fail = 0
@@ -616,6 +632,379 @@ function bruteCount(cnf: CNF): bigint {
   // The puzzle has a unique solution.
   const cnt = countModels(cnf, { budget: 8_000_000 })
   check('Zebra: exactly one solution', cnt.exact && cnt.count === 1n, `got=${cnt.count}`)
+}
+
+// ============================================================================
+//  Session 4 — incremental assumptions, cardinality (GTE), and MaxSAT
+// ============================================================================
+
+// Popcount helper.
+const popcount = (mask: number) => {
+  let c = 0
+  while (mask) {
+    c += mask & 1
+    mask >>= 1
+  }
+  return c
+}
+
+// ---- Generalized Totalizer: cardinality (≤ k) exhaustive correctness ----
+{
+  // For each input assignment over n free vars, the encoded formula (GTE ≤ k clauses, with
+  // the input vars pinned by units) must be SATISFIABLE iff popcount ≤ k. That precisely
+  // characterizes the encoding.
+  let bad = 0
+  for (const n of [3, 4, 5, 6]) {
+    for (let k = 0; k <= n; k++) {
+      const b = new PBBuilder(n)
+      encodeAtMostK(
+        b,
+        Array.from({ length: n }, (_, i) => i + 1),
+        k,
+      )
+      const aux = b.numVars
+      for (let mask = 0; mask < 1 << n; mask++) {
+        const units: number[][] = []
+        for (let v = 1; v <= n; v++) units.push([(mask & (1 << (v - 1))) !== 0 ? v : -v])
+        const cnf: CNF = { numVars: aux, clauses: [...b.clauses, ...units] }
+        const sat = solve(cnf, { maxConflicts: 200000 }).status === 'sat'
+        if (sat !== (popcount(mask) <= k)) bad++
+      }
+    }
+  }
+  check('GTE at-most-k: SAT iff popcount ≤ k (exhaustive, n≤6)', bad === 0, `bad=${bad}`)
+}
+
+// ---- Generalized Totalizer: weighted PB (≤ K) exhaustive correctness ----
+{
+  let bad = 0
+  const weightSets = [
+    [1, 2, 3],
+    [2, 2, 3, 5],
+    [1, 1, 4, 4, 6],
+  ]
+  for (const weights of weightSets) {
+    const n = weights.length
+    const total = weights.reduce((a, c) => a + c, 0)
+    for (let K = 0; K <= total; K++) {
+      const b = new PBBuilder(n)
+      const gte = encodeGTE(
+        b,
+        weights.map((w, i) => ({ lit: i + 1, weight: w })),
+      )
+      for (const lit of atMostBound(gte, K)) b.add([lit])
+      const aux = b.numVars
+      for (let mask = 0; mask < 1 << n; mask++) {
+        let wsum = 0
+        const units: number[][] = []
+        for (let v = 1; v <= n; v++) {
+          const on = (mask & (1 << (v - 1))) !== 0
+          if (on) wsum += weights[v - 1]
+          units.push([on ? v : -v])
+        }
+        const cnf: CNF = { numVars: aux, clauses: [...b.clauses, ...units] }
+        const sat = solve(cnf, { maxConflicts: 200000 }).status === 'sat'
+        if (sat !== (wsum <= K)) bad++
+      }
+    }
+  }
+  check('GTE weighted PB: SAT iff Σwᵢxᵢ ≤ K (exhaustive)', bad === 0, `bad=${bad}`)
+}
+
+// ---- solveAssuming: model + core correctness vs brute force ----
+{
+  let bad = 0
+  let unsatSeen = 0
+  let satSeen = 0
+  for (let t = 0; t < 600; t++) {
+    const n = 3 + (t % 6) // 3..8
+    const cnf = randomKSat(n, 2 + (t % 30) / 10, 3, t * 99991 + 5)
+    // Random assumption set (a few literals).
+    const nass = 1 + (t % 3)
+    const assumptions: number[] = []
+    const rngSeed = (t * 2654435761 + 7) >>> 0
+    let s = rngSeed
+    const rnd = () => {
+      s = (s * 1103515245 + 12345) & 0x7fffffff
+      return s / 0x7fffffff
+    }
+    const used = new Set<number>()
+    for (let i = 0; i < nass; i++) {
+      const v = 1 + Math.floor(rnd() * n)
+      if (used.has(v)) continue
+      used.add(v)
+      assumptions.push(rnd() < 0.5 ? v : -v)
+    }
+    const res = solveAssuming(cnf, assumptions, { maxConflicts: 500000 })
+    // Oracle: cnf with assumptions added as unit clauses.
+    const withAss: CNF = { numVars: n, clauses: [...cnf.clauses, ...assumptions.map((l) => [l])] }
+    const oracle = solve(withAss, { maxConflicts: 500000 }).status
+    if (res.status === 'unknown' || oracle === 'unknown') continue
+    if ((res.status === 'sat') !== (oracle === 'sat')) {
+      bad++
+      continue
+    }
+    if (res.status === 'sat') {
+      satSeen++
+      // The model must satisfy the cnf AND every assumption.
+      if (!verifyModel(cnf, res.model!).ok) bad++
+      for (const l of assumptions) {
+        const v = Math.abs(l)
+        if ((l > 0) !== res.model![v]) bad++
+      }
+    } else {
+      unsatSeen++
+      const core = res.core!
+      // Core ⊆ assumptions, and cnf ∧ core is UNSAT.
+      const subset = core.every((l) => assumptions.includes(l))
+      const coreCnf: CNF = { numVars: n, clauses: [...cnf.clauses, ...core.map((l) => [l])] }
+      const coreUnsat = solve(coreCnf, { maxConflicts: 500000 }).status === 'unsat'
+      if (!subset || !coreUnsat) bad++
+    }
+  }
+  check('solveAssuming: model+core correct vs brute (600 cases)', bad === 0, `bad=${bad}`)
+  check('solveAssuming: exercised SAT and UNSAT', satSeen > 50 && unsatSeen > 50, `sat=${satSeen} unsat=${unsatSeen}`)
+}
+
+// ---- solveAssuming incrementality: repeated calls on one solver ----
+{
+  // x1∨x2, ¬x1∨x3, with growing assumptions. Reuse one solver instance.
+  const cnf: CNF = { numVars: 3, clauses: [[1, 2], [-1, 3]] }
+  // Build via the class directly through the convenience path twice — same instance reuse is
+  // covered by the MaxSAT incremental solver below; here we just confirm repeated convenience
+  // calls give consistent answers.
+  check('solveAssuming incremental a', solveAssuming(cnf, [1]).status === 'sat')
+  // ¬x1 satisfies (¬x1∨x3); (x1∨x2) then forces x2 — satisfiable.
+  check('solveAssuming incremental b', solveAssuming(cnf, [-1, -3]).status === 'sat')
+  // ¬x1 ∧ ¬x2 falsifies (x1∨x2) — UNSAT, with core {-1,-2}.
+  const r = solveAssuming(cnf, [-1, -2])
+  check('solveAssuming incremental c', r.status === 'unsat' && r.core!.length > 0 && r.core!.every((l) => [-1, -2].includes(l)))
+}
+
+// Brute-force MaxSAT optimum over a small instance (≤ ~14 vars).
+function bruteMaxSat(inst: MaxSatInstance): { feasible: boolean; cost: number } {
+  const n = inst.numVars
+  let best = Infinity
+  for (let mask = 0; mask < 1 << n; mask++) {
+    const model: boolean[] = [false]
+    for (let v = 1; v <= n; v++) model[v] = (mask & (1 << (v - 1))) !== 0
+    let ok = true
+    for (const c of inst.hard) {
+      if (!clauseSat(c, model)) {
+        ok = false
+        break
+      }
+    }
+    if (!ok) continue
+    const cost = softCost(inst.soft, model)
+    if (cost < best) best = cost
+  }
+  return { feasible: best < Infinity, cost: best }
+}
+
+// ---- MaxSAT: both algorithms vs brute force over random weighted instances ----
+{
+  let badLin = 0
+  let badCg = 0
+  let optimalSeen = 0
+  let infeasibleSeen = 0
+  let nonTrivial = 0
+  for (let t = 0; t < 400; t++) {
+    const n = 3 + (t % 6) // 3..8
+    let s = (t * 2246822519 + 13) >>> 0
+    const rnd = () => {
+      s = (s * 1103515245 + 12345) & 0x7fffffff
+      return s / 0x7fffffff
+    }
+    const lit = () => {
+      const v = 1 + Math.floor(rnd() * n)
+      return rnd() < 0.5 ? v : -v
+    }
+    const hard: number[][] = []
+    const numHard = t % 3 // 0..2 hard clauses (keep mostly feasible)
+    for (let i = 0; i < numHard; i++) hard.push([lit(), lit()])
+    const soft: { lits: number[]; weight: number }[] = []
+    const numSoft = n + (t % (n + 1))
+    for (let i = 0; i < numSoft; i++) {
+      const w = 1 + Math.floor(rnd() * 5)
+      const k = 1 + Math.floor(rnd() * 2) // 1 or 2 literals
+      const lits = k === 1 ? [lit()] : [lit(), lit()]
+      soft.push({ lits, weight: w })
+    }
+    const inst: MaxSatInstance = { numVars: n, hard, soft }
+    const truth = bruteMaxSat(inst)
+
+    const lin = solveMaxSat(inst, { strategy: 'linear', maxConflicts: 1000000 })
+    const cg = solveMaxSat(inst, { strategy: 'core-guided', maxConflicts: 1000000 })
+
+    if (!truth.feasible) {
+      infeasibleSeen++
+      if (lin.status !== 'unsat-hard') badLin++
+      if (cg.status !== 'unsat-hard') badCg++
+      continue
+    }
+    optimalSeen++
+    if (truth.cost > 0) nonTrivial++
+    // Linear
+    if (lin.status !== 'optimal' || lin.cost !== truth.cost) badLin++
+    else if (softCost(soft, lin.model!) !== truth.cost) badLin++ // returned model must realize the optimum
+    else {
+      for (const c of hard) if (!clauseSat(c, lin.model!)) badLin++
+    }
+    // Core-guided
+    if (cg.status !== 'optimal' || cg.cost !== truth.cost) badCg++
+    else if (softCost(soft, cg.model!) !== truth.cost) badCg++
+    else {
+      for (const c of hard) if (!clauseSat(c, cg.model!)) badCg++
+    }
+  }
+  check('MaxSAT linear = brute-force optimum (400 instances)', badLin === 0, `bad=${badLin}`)
+  check('MaxSAT core-guided = brute-force optimum (400 instances)', badCg === 0, `bad=${badCg}`)
+  check('MaxSAT exercised many nontrivial optima', optimalSeen > 200 && nonTrivial > 100, `opt=${optimalSeen} nt=${nonTrivial}`)
+}
+
+// ---- MaxSAT: structural hand-checks ----
+{
+  // No soft clauses → cost 0.
+  check('MaxSAT: empty soft cost 0', solveMaxSat({ numVars: 2, hard: [[1, 2]], soft: [] }).cost === 0)
+  // Two directly-contradictory unit soft clauses (x) and (¬x): exactly one must break → cost = min weight.
+  const r = solveMaxSat({ numVars: 1, hard: [], soft: [{ lits: [1], weight: 3 }, { lits: [-1], weight: 5 }] })
+  check('MaxSAT: contradictory units pay min weight', r.status === 'optimal' && r.cost === 3, `cost=${r.cost}`)
+  // Hard UNSAT → unsat-hard.
+  const uh = solveMaxSat({ numVars: 1, hard: [[1], [-1]], soft: [{ lits: [1], weight: 1 }] })
+  check('MaxSAT: detects hard UNSAT', uh.status === 'unsat-hard')
+}
+
+// Brute Max-Cut for tiny graphs.
+function bruteMaxCut(g: WeightedGraph): number {
+  let best = 0
+  for (let mask = 0; mask < 1 << g.numVertices; mask++) {
+    let cut = 0
+    for (const { u, v, w } of g.edges) if (((mask >> u) & 1) !== ((mask >> v) & 1)) cut += w
+    if (cut > best) best = cut
+  }
+  return best
+}
+
+// ---- MaxSAT encoders: Max-Cut / Vertex Cover / Independent Set vs brute ----
+{
+  // Triangle (each edge weight 1): max cut is 2.
+  const tri: WeightedGraph = { numVertices: 3, edges: [{ u: 0, v: 1, w: 1 }, { u: 1, v: 2, w: 1 }, { u: 0, v: 2, w: 1 }] }
+  const mc = encodeMaxCut(tri)
+  const mcRes = solveMaxSat(mc.instance, { strategy: 'linear' })
+  check('Max-Cut triangle: cut = total − cost = 2', mc.totalWeight - mcRes.cost === 2, `${mc.totalWeight}-${mcRes.cost}`)
+  const dec = mc.decode(mcRes.model!)
+  check('Max-Cut triangle: decoded cut matches', dec.cutWeight === 2, `${dec.cutWeight}`)
+
+  let badCut = 0
+  let badVc = 0
+  let badIs = 0
+  for (let t = 0; t < 60; t++) {
+    const g = randomWeightedGraph(4 + (t % 4), 0.5, 4, t * 7331 + 1) // 4..7 vertices
+    // Max-Cut
+    const e = encodeMaxCut(g)
+    const r = solveMaxSat(e.instance, { strategy: t % 2 ? 'core-guided' : 'linear', maxConflicts: 2000000 })
+    if (e.totalWeight - r.cost !== bruteMaxCut(g)) badCut++
+    // Vertex Cover: brute minimum-weight cover.
+    {
+      const enc = encodeVertexCover(g)
+      const res = solveMaxSat(enc.instance, { strategy: 'linear' })
+      let bestCover = Infinity
+      for (let mask = 0; mask < 1 << g.numVertices; mask++) {
+        let ok = true
+        for (const { u, v } of g.edges) if (!((mask >> u) & 1) && !((mask >> v) & 1)) ok = false
+        if (!ok) continue
+        let w = 0
+        for (let i = 0; i < g.numVertices; i++) if ((mask >> i) & 1) w += 1
+        if (w < bestCover) bestCover = w
+      }
+      if (res.cost !== bestCover) badVc++
+      // Decoded cover must actually cover every edge.
+      const cov = enc.decode(res.model!)
+      for (const { u, v } of g.edges) if (!cov.chosen[u] && !cov.chosen[v]) badVc++
+    }
+    // Independent Set: brute maximum-cardinality independent set; cost = n − max.
+    {
+      const enc = encodeIndependentSet(g)
+      const res = solveMaxSat(enc.instance, { strategy: 'core-guided', maxConflicts: 2000000 })
+      let bestIs = 0
+      for (let mask = 0; mask < 1 << g.numVertices; mask++) {
+        let ok = true
+        for (const { u, v } of g.edges) if ((mask >> u) & 1 && (mask >> v) & 1) ok = false
+        if (!ok) continue
+        const sz = popcount(mask)
+        if (sz > bestIs) bestIs = sz
+      }
+      if (g.numVertices - res.cost !== bestIs) badIs++
+      const is = enc.decode(res.model!)
+      for (const { u, v } of g.edges) if (is.chosen[u] && is.chosen[v]) badIs++
+    }
+  }
+  check('Max-Cut random vs brute (60 graphs)', badCut === 0, `bad=${badCut}`)
+  check('Vertex Cover random vs brute (60 graphs)', badVc === 0, `bad=${badVc}`)
+  check('Independent Set random vs brute (60 graphs)', badIs === 0, `bad=${badIs}`)
+}
+
+// ---- MaxSAT: random weighted MAX-2-SAT, both algorithms agree with brute ----
+{
+  let bad = 0
+  for (let t = 0; t < 120; t++) {
+    const n = 3 + (t % 5) // 3..7
+    const inst = randomWeightedMax2Sat(n, n + 2 + (t % 4), 5, t * 1299721 + 3)
+    const truth = bruteMaxSat(inst)
+    const lin = solveMaxSat(inst, { strategy: 'linear' })
+    const cg = solveMaxSat(inst, { strategy: 'core-guided' })
+    if (lin.cost !== truth.cost || cg.cost !== truth.cost) bad++
+  }
+  check('MAX-2-SAT: linear & core-guided = brute (120 instances)', bad === 0, `bad=${bad}`)
+}
+
+// ---- WCNF parse + round-trip ----
+{
+  const wcnf = 'c demo\np wcnf 3 4 10\n10 1 2 0\n10 -1 3 0\n3 -2 0\n5 -3 0\n'
+  const { instance, top } = parseWcnf(wcnf)
+  check('WCNF: top weight parsed', top === 10)
+  check('WCNF: 2 hard, 2 soft', instance.hard.length === 2 && instance.soft.length === 2)
+  check('WCNF: soft weights', instance.soft[0].weight === 3 && instance.soft[1].weight === 5)
+  // Round-trip preserves the partition.
+  const round = parseWcnf(toWcnf(instance, top))
+  check('WCNF: round-trip hard/soft counts', round.instance.hard.length === 2 && round.instance.soft.length === 2)
+  check('WCNF: round-trip solves to same optimum', solveMaxSat(instance).cost === solveMaxSat(round.instance).cost)
+  // Newer 'h' format.
+  const newFmt = parseWcnf('h 1 2 0\n4 -1 0\n')
+  check('WCNF: h-prefixed hard clause', newFmt.instance.hard.length === 1 && newFmt.instance.soft.length === 1)
+}
+
+// ---- problems.ts wiring: every MaxSAT kind builds, solves, and decodes ----
+{
+  let bad = 0
+  for (const kind of ['maxcut', 'vertexcover', 'maxindset', 'max2sat', 'wcnf'] as const) {
+    const spec = { ...DEFAULT_SPEC, kind, n: 7, seed: 3 }
+    const p = buildProblem(spec)
+    if (!p.maxsat || p.error) {
+      bad++
+      continue
+    }
+    const r = solveMaxSat(p.maxsat, { strategy: 'linear' })
+    if (r.status !== 'optimal') {
+      bad++
+      continue
+    }
+    // The reported cost must equal the violated soft weight of the returned model.
+    if (softCost(p.maxsat.soft, r.model!) !== r.cost) bad++
+    // Decoders must not throw and must be consistent with the model.
+    if (p.decodeMaxCut) {
+      const d = p.decodeMaxCut(r.model!)
+      if (d.totalWeight - d.cutWeight !== r.cost) bad++ // uncut weight = optimum cost
+    }
+    if (p.decodeSubset) {
+      const d = p.decodeSubset(r.model!)
+      if (kind === 'vertexcover' && d.weight !== r.cost) bad++
+    }
+    // core-guided agrees on cost.
+    if (solveMaxSat(p.maxsat, { strategy: 'core-guided' }).cost !== r.cost) bad++
+  }
+  check('problems.ts: all MaxSAT kinds build/solve/decode consistently', bad === 0, `bad=${bad}`)
 }
 
 console.log(`\n${pass} passed, ${fail} failed`)

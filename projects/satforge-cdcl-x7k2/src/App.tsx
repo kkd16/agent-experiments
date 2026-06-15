@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import './App.css'
-import { buildProblem, DEFAULT_SPEC } from './problems'
+import { buildProblem, DEFAULT_SPEC, isMaxSatKind } from './problems'
 import type { ProblemSpec } from './problems'
 import { useSolver } from './useSolver'
 import { ControlPanel } from './components/ControlPanel'
@@ -12,6 +12,7 @@ import { TraceView } from './components/TraceView'
 import { CnfView } from './components/CnfView'
 import { ProofView } from './components/ProofView'
 import { CountView } from './components/CountView'
+import { MaxSatView } from './components/MaxSatView'
 
 type Tab = 'solution' | 'stats' | 'count' | 'graph' | 'trace' | 'proof' | 'cnf'
 
@@ -22,6 +23,7 @@ export default function App() {
   const { state, run, reset } = useSolver()
 
   const problem = useMemo(() => buildProblem(spec), [spec])
+  const maxsat = isMaxSatKind(spec.kind)
 
   // Reset the result whenever the problem definition changes.
   const specKey = JSON.stringify(spec)
@@ -34,7 +36,7 @@ export default function App() {
   }, [specKey, reset])
 
   const solve = () => {
-    if (problem.error) return
+    if (problem.error || maxsat) return
     const trace = problem.cnf.clauses.length <= 4000
     // Record a DRAT proof whenever the formula is small enough that the certificate
     // (and its independent re-check) stays comfortably in-browser.
@@ -110,6 +112,10 @@ export default function App() {
             </div>
           ))}
 
+          {maxsat ? (
+            <MaxSatView key={specKey} problem={problem} />
+          ) : (
+            <>
           <nav className="tabs">
             <TabBtn id="solution" tab={tab} setTab={setTab}>
               Solution
@@ -160,6 +166,8 @@ export default function App() {
             {result && tab === 'proof' && hasProof && <ProofView problem={problem} result={result} />}
             {tab === 'cnf' && <CnfView problem={problem} />}
           </section>
+            </>
+          )}
         </main>
       </div>
 
@@ -167,8 +175,9 @@ export default function App() {
         Two-watched-literals BCP · VSIDS · first-UIP learning · non-chronological backjumping ·
         recursive minimization · Luby restarts · LBD clause deletion · DRAT proofs with an
         independent RUP/RAT checker · exact #SAT model counting (component caching) · minimal
-        unsat cores (MUS) · factoring via a from-scratch multiplier circuit — all hand-written in
-        TypeScript.
+        unsat cores (MUS) · factoring via a from-scratch multiplier circuit · incremental solving
+        under assumptions with core extraction · weighted MaxSAT (linear SAT-UNSAT &amp; core-guided
+        WPM1) over a Generalized Totalizer — all hand-written in TypeScript.
       </footer>
     </div>
   )

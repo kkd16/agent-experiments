@@ -1121,3 +1121,211 @@ input[type='range'] {
     position: static;
   }
 }
+
+/* ============================================================ */
+/*  MaxSAT (optimization) UI                                     */
+/* ============================================================ */
+.section-gap {
+  margin-top: 18px;
+}
+.kind-btn.opt.active {
+  background: rgba(155, 140, 255, 0.18);
+  border-color: var(--accent-2);
+  color: #d9d2ff;
+}
+.strat-grid {
+  grid-template-columns: 1fr 1fr;
+}
+
+.maxsat-view .proof-intro {
+  margin-top: 0;
+}
+.maxsat-runbar {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin: 16px 0 4px;
+  flex-wrap: wrap;
+}
+.maxsat-runbar .count-btn {
+  width: auto;
+  padding: 10px 20px;
+}
+.maxsat-meta {
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.maxsat-headline {
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin: 8px 0 6px;
+}
+.maxsat-cost {
+  flex: 1 1 200px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 16px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.maxsat-cost.alt {
+  border-color: var(--accent-2);
+}
+.maxsat-cost .count-label {
+  font-size: 12px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.maxsat-cost .count-number {
+  font-size: 40px;
+  font-weight: 800;
+  letter-spacing: -0.03em;
+  color: var(--accent);
+  line-height: 1.05;
+}
+.maxsat-cost.alt .count-number {
+  color: var(--accent-2);
+}
+.maxsat-cost .count-note {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+/* convergence chart lines */
+.opt-guide {
+  stroke: var(--sat);
+  stroke-width: 1;
+  stroke-dasharray: 4 4;
+  opacity: 0.55;
+}
+.ub-line {
+  fill: none;
+  stroke: var(--unsat);
+  stroke-width: 2;
+}
+.lb-line {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 2;
+}
+.ub-dot {
+  fill: var(--unsat);
+}
+.lb-dot {
+  fill: var(--accent);
+}
+.legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-right: 6px;
+}
+.dot.ub-dot-l {
+  background: var(--unsat);
+  margin-left: 0;
+}
+.dot.lb-dot-l {
+  background: var(--accent);
+  margin-left: 0;
+}
+.dot.sat-dot {
+  background: var(--sat);
+  margin-left: 0;
+}
+.dot.vio-dot {
+  background: var(--unsat);
+  margin-left: 0;
+}
+
+/* soft-clause weight bar */
+.maxsat-bars {
+  margin-top: 22px;
+}
+.wbar {
+  display: flex;
+  height: 16px;
+  border-radius: 8px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+}
+.wbar-sat {
+  background: var(--sat);
+}
+.wbar-vio {
+  background: var(--unsat);
+}
+
+/* graph visualization */
+.graph-wrap {
+  margin-top: 22px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+.maxsat-graph {
+  width: 100%;
+  max-width: 360px;
+  height: auto;
+}
+.g-edge {
+  stroke: var(--border);
+}
+.g-edge.uncut {
+  stroke: rgba(148, 163, 196, 0.35);
+}
+.g-edge.cut {
+  stroke: var(--sat);
+}
+.g-edge.bad {
+  stroke: var(--unsat);
+}
+.g-node {
+  stroke: rgba(0, 0, 0, 0.4);
+  stroke-width: 1;
+}
+.g-node.side-a,
+.g-node.chosen {
+  fill: var(--accent);
+}
+.g-node.side-b {
+  fill: var(--accent-2);
+}
+.g-node.unchosen {
+  fill: var(--panel-2);
+  stroke: var(--border);
+}
+.g-label {
+  fill: #0b1020;
+  font-size: 11px;
+  font-weight: 700;
+}
+.g-node.unchosen + .g-label {
+  fill: var(--muted);
+}
+.dot.side-a-dot {
+  background: var(--accent);
+  margin-left: 0;
+}
+.dot.side-b-dot {
+  background: var(--accent-2);
+  margin-left: 0;
+}
+.dot.cut-dot {
+  background: var(--sat);
+  margin-left: 0;
+}
+.dot.chosen-dot {
+  background: var(--accent);
+  margin-left: 0;
+}
+.dot.unchosen-dot {
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  margin-left: 0;
+}
