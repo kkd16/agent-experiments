@@ -22,6 +22,14 @@ const SECTIONS: Section[] = [
     ],
   },
   {
+    title: 'Views',
+    entries: [
+      { syntax: 'CREATE [OR REPLACE] VIEW v [(c1, c2, …)] AS SELECT …', note: 'A named query the planner inlines wherever the view appears — usable in FROM, JOIN, subqueries and inside other views. Optional column names rename the output. OR REPLACE swaps the definition; the body is validated when you create it.' },
+      { syntax: 'SELECT … FROM v · JOIN v ON …', note: 'A view behaves like a table: it filters, sorts, groups, joins and feeds aggregates, always reflecting the current rows (it is re-evaluated each time, not materialized).' },
+      { syntax: 'CREATE VIEW IF NOT EXISTS v AS … · DROP VIEW [IF EXISTS] v', note: 'A view and a table may not share a name; a directly- or indirectly-recursive view definition is rejected.' },
+    ],
+  },
+  {
     title: 'Constraints & referential integrity',
     entries: [
       { syntax: 'col TYPE NOT NULL · col TYPE DEFAULT expr', note: 'NOT NULL rejects a NULL; DEFAULT supplies the value when the column is omitted on INSERT (e.g. DEFAULT 0, DEFAULT CURRENT_TIMESTAMP).' },
@@ -37,6 +45,7 @@ const SECTIONS: Section[] = [
     entries: [
       { syntax: 'INSERT INTO t (cols…) VALUES (…), (…)', note: 'Multi-row inserts. Omitted columns default to NULL.' },
       { syntax: 'INSERT INTO t (cols…) SELECT …', note: 'Populate a table from any query (joins, CTEs, subqueries included).' },
+      { syntax: 'INSERT … ON CONFLICT [(cols)] DO NOTHING | DO UPDATE SET … [WHERE …]', note: 'Upsert: on a UNIQUE/PRIMARY KEY collision, skip the row (DO NOTHING) or update the existing one (DO UPDATE). EXCLUDED.col refers to the row proposed for insertion; the optional WHERE can decline an individual update. Without a target, any unique constraint arbitrates.' },
       { syntax: 'UPDATE t SET col = expr [, …] [WHERE pred]', note: 'Assignments may reference other columns of the same row.' },
       { syntax: 'DELETE FROM t [WHERE pred]', note: 'Index entries are maintained automatically.' },
     ],
@@ -67,6 +76,7 @@ const SECTIONS: Section[] = [
       { syntax: 'WHERE [NOT] EXISTS (SELECT …)', note: 'True if the subquery yields ≥ 1 row.' },
       { syntax: 'WHERE x <op> ANY|SOME|ALL (SELECT …)', note: 'Quantified comparison against every value the subquery returns.' },
       { syntax: '(SELECT … WHERE t.c = outer.c)', note: 'Correlated subqueries see the enclosing row; uncorrelated ones are executed once and cached.' },
+      { syntax: 'WHERE [NOT] EXISTS (SELECT … WHERE inner.k = outer.k AND …)  →  Semi/Anti join', note: 'The optimizer decorrelates a correlated [NOT] EXISTS into a single hash SemiJoin (or AntiJoin) — building the inner side once and probing it — instead of re-running the subquery per outer row. EXPLAIN shows the rewrite. Shapes it can’t prove equivalent fall back to per-row evaluation.' },
     ],
   },
   {

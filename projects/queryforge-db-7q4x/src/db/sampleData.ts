@@ -110,9 +110,76 @@ CREATE INDEX idx_products_price ON products (price);
 CREATE INDEX idx_invoices_total ON invoices (total);
 CREATE INDEX idx_orders_customer ON orders (customer_id);
 CREATE INDEX idx_subs_started ON subscriptions (started);
+
+-- A saved analytical query: revenue per customer. A VIEW is a named query the
+-- planner inlines wherever it's used — so you can SELECT, JOIN, GROUP and filter
+-- it exactly like a table, and it always reflects the current rows.
+CREATE VIEW customer_revenue AS
+  SELECT c.id AS customer_id, c.name AS customer, c.country,
+         SUM(p.price * o.quantity) AS revenue,
+         COUNT(*) AS orders
+  FROM orders o
+  JOIN customers c ON o.customer_id = c.id
+  JOIN products  p ON o.product_id = p.id
+  GROUP BY c.id, c.name, c.country;
 `.trim()
 
 export const SAMPLE_QUERIES: SampleQuery[] = [
+  {
+    title: 'Views — query a saved query',
+    sql: `-- customer_revenue is a VIEW (a named query). Use it like a table:
+-- filter it, sort it, even join it — it always reflects the live rows.
+SELECT customer, country, revenue, orders
+FROM customer_revenue
+WHERE revenue > 300
+ORDER BY revenue DESC;`,
+  },
+  {
+    title: 'Views — define & compose one',
+    sql: `-- A view can build on a table, and another view can build on it.
+CREATE OR REPLACE VIEW big_spenders AS
+  SELECT customer, country, revenue FROM customer_revenue WHERE revenue >= 500;
+SELECT country, COUNT(*) AS whales, ROUND(AVG(revenue), 0) AS avg_spend
+FROM big_spenders
+GROUP BY country
+ORDER BY avg_spend DESC;`,
+  },
+  {
+    title: 'UPSERT — idempotent price feed (ON CONFLICT)',
+    sql: `-- Re-running a feed is safe: an existing id UPDATEs, a new one INSERTs.
+-- EXCLUDED is the row proposed for insertion. Run it twice — same result.
+INSERT INTO products (id, name, category, price, in_stock) VALUES
+  (1,  'Mechanical Keyboard', 'Hardware',    139.0,  50),
+  (99, 'Desk Mat',            'Accessories',  24.0, 200)
+ON CONFLICT (id) DO UPDATE
+  SET price = EXCLUDED.price, in_stock = EXCLUDED.in_stock;
+SELECT id, name, price, in_stock FROM products WHERE id IN (1, 99) ORDER BY id;`,
+  },
+  {
+    title: 'UPSERT — running totals with a conditional update',
+    sql: `-- A counters table accumulates per key. ON CONFLICT folds the new value
+-- into the stored one; the WHERE only updates when the delta is positive.
+CREATE TABLE IF NOT EXISTS hits (page TEXT PRIMARY KEY, n INTEGER DEFAULT 0);
+INSERT INTO hits (page, n) VALUES ('/home', 3), ('/docs', 1), ('/home', 2)
+ON CONFLICT (page) DO UPDATE SET n = hits.n + EXCLUDED.n WHERE EXCLUDED.n > 0;
+SELECT page, n FROM hits ORDER BY n DESC, page;`,
+  },
+  {
+    title: 'Decorrelation — EXISTS becomes a SemiJoin (EXPLAIN)',
+    sql: `-- A correlated EXISTS is rewritten into a single hash SemiJoin instead of
+-- re-running the subquery once per outer row. (NOT EXISTS → AntiJoin.)
+EXPLAIN
+SELECT c.name FROM customers c
+WHERE EXISTS (SELECT 1 FROM orders o WHERE o.customer_id = c.id AND o.quantity >= 2);`,
+  },
+  {
+    title: 'Decorrelation — customers with no orders (AntiJoin)',
+    sql: `EXPLAIN ANALYZE
+SELECT c.name, c.country
+FROM customers c
+WHERE NOT EXISTS (SELECT 1 FROM orders o WHERE o.customer_id = c.id)
+ORDER BY c.name;`,
+  },
   {
     title: 'Top spenders (join + group + order)',
     sql: `SELECT c.name AS customer, c.country,

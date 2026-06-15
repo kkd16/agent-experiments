@@ -204,6 +204,20 @@ body {
   border-left: 1px solid var(--line);
   margin-left: 0.85rem;
 }
+.schema-view-glyph {
+  color: var(--accent-2);
+  font-size: 0.85rem;
+}
+.schema-view-def {
+  padding-left: 1.95rem;
+  font-size: 0.68rem;
+  color: var(--txt-faint);
+  font-family: var(--mono, monospace);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin: -0.1rem 0 0.25rem;
+}
 .schema-col {
   width: 100%;
   display: flex;

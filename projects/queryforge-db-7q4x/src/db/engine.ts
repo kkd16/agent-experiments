@@ -7,13 +7,13 @@
 // transactions (BEGIN/COMMIT/ROLLBACK).
 
 import { parse } from './parser'
-import { Database, type Row, type SerializedDb } from './catalog'
+import { Database, Table, type Row, type SerializedDb } from './catalog'
 import { planSelect } from './planner'
 import { compileExpr, truthy, type CompileCtx } from './eval'
 import { resolveColumn, type Binding, type Schema } from './schema'
 import { SqlError, coerceTo, type SqlValue } from './types'
 import type { Operator, PlanNode } from './operators'
-import type { Expr, SelectStmt, Statement } from './ast'
+import type { Expr, OnConflictClause, SelectStmt, Statement } from './ast'
 
 export interface RowsResult {
   kind: 'rows'
@@ -88,6 +88,10 @@ export class Engine {
         return this.alterTable(stmt, sql, t0)
       case 'drop_table':
         return this.dropTable(stmt, sql, t0)
+      case 'create_view':
+        return this.createView(stmt, sql, t0)
+      case 'drop_view':
+        return this.dropView(stmt, sql, t0)
       case 'create_index':
         return this.createIndex(stmt, sql, t0)
       case 'analyze':
@@ -109,6 +113,9 @@ export class Engine {
 
   // --- DDL ------------------------------------------------------------------
   private createTable(stmt: Extract<Statement, { kind: 'create_table' }>, sql: string, t0: number): QueryResult {
+    if (this.db.hasView(stmt.name)) {
+      throw new SqlError(`"${stmt.name}" already exists as a view`, 'ddl')
+    }
     if (this.db.hasTable(stmt.name)) {
       if (stmt.ifNotExists) return msg(`table "${stmt.name}" already exists, skipped`, sql, t0)
       throw new SqlError(`table "${stmt.name}" already exists`, 'ddl')
@@ -207,6 +214,39 @@ export class Engine {
     return msg(`table "${stmt.name}" dropped`, sql, t0)
   }
 
+  private createView(stmt: Extract<Statement, { kind: 'create_view' }>, sql: string, t0: number): QueryResult {
+    if (this.db.hasTable(stmt.name)) {
+      throw new SqlError(`"${stmt.name}" already exists as a table`, 'ddl')
+    }
+    if (this.db.hasView(stmt.name) && !stmt.orReplace) {
+      if (stmt.ifNotExists) return msg(`view "${stmt.name}" already exists, skipped`, sql, t0)
+      throw new SqlError(`view "${stmt.name}" already exists (use CREATE OR REPLACE VIEW)`, 'ddl')
+    }
+    // Register first, then validate by planning the body — so a self-referential
+    // or otherwise broken definition is caught (and rolled back, since this
+    // statement is atomic). Planning binds every column and resolves every
+    // relation without executing the main pipeline.
+    this.db.setView({ name: stmt.name, columns: stmt.columns, select: stmt.select })
+    const op = planSelect(stmt.select, this.db)
+    if (stmt.columns && stmt.columns.length !== op.schema.length) {
+      throw new SqlError(
+        `CREATE VIEW "${stmt.name}" declares ${stmt.columns.length} columns but its query yields ${op.schema.length}`,
+        'ddl',
+      )
+    }
+    const verb = this.db.hasView(stmt.name) && stmt.orReplace ? 'created or replaced' : 'created'
+    return msg(`view "${stmt.name}" ${verb} (${op.schema.length} columns)`, sql, t0)
+  }
+
+  private dropView(stmt: Extract<Statement, { kind: 'drop_view' }>, sql: string, t0: number): QueryResult {
+    if (!this.db.hasView(stmt.name)) {
+      if (stmt.ifExists) return msg(`view "${stmt.name}" does not exist, skipped`, sql, t0)
+      throw new SqlError(`unknown view "${stmt.name}"`, 'ddl')
+    }
+    this.db.dropView(stmt.name)
+    return msg(`view "${stmt.name}" dropped`, sql, t0)
+  }
+
   private createIndex(stmt: Extract<Statement, { kind: 'create_index' }>, sql: string, t0: number): QueryResult {
     const table = this.db.getTable(stmt.table)
     if (table.hasIndexNamed(stmt.name)) {
@@ -243,6 +283,13 @@ export class Engine {
     })
 
     const provided = new Set(colIndexes)
+    const onConflict = stmt.onConflict
+    // Pre-compile the upsert resolver once (resolves the target table's own
+    // columns to the existing row, and EXCLUDED.* to the proposed row).
+    const upsert = onConflict ? this.prepareUpsert(table, onConflict) : null
+
+    let inserted = 0
+    let updated = 0
     const insertValues = (values: SqlValue[]): void => {
       const row: Row = new Array(table.columns.length).fill(null)
       for (let i = 0; i < values.length; i++) {
@@ -255,10 +302,21 @@ export class Engine {
           row[i] = coerceTo(col.type, evalConstant(col.default))
         }
       }
+      if (upsert) {
+        // Coerce types up front so the arbiter key matches the stored index keys.
+        for (let i = 0; i < table.columns.length; i++) {
+          row[i] = coerceTo(table.columns[i].type, row[i], table.columns[i].scale)
+        }
+        const rowid = upsert.findConflict(row)
+        if (rowid !== null) {
+          if (upsert.apply(rowid, row)) updated++
+          return
+        }
+      }
       this.db.insertChecked(table, row)
+      inserted++
     }
 
-    let count = 0
     if (stmt.select) {
       // INSERT … SELECT — run the query and feed each result row in.
       const rows = runOperator(planSelect(stmt.select, this.db))
@@ -267,7 +325,6 @@ export class Engine {
           throw new SqlError(`INSERT … SELECT produced ${r.length} columns for ${targetCols.length} target columns`, 'bind')
         }
         insertValues(r)
-        count++
       }
     } else {
       for (const rowExprs of stmt.rows) {
@@ -275,10 +332,78 @@ export class Engine {
           throw new SqlError(`INSERT has ${rowExprs.length} values for ${targetCols.length} columns`, 'bind')
         }
         insertValues(rowExprs.map((e) => compileExpr(e, CONST_CTX)([])))
-        count++
       }
     }
-    return msg(`${count} row${count === 1 ? '' : 's'} inserted into "${stmt.table}"`, sql, t0, count)
+    if (onConflict) {
+      return msg(`${inserted} inserted, ${updated} updated in "${stmt.table}"`, sql, t0, inserted + updated)
+    }
+    return msg(`${inserted} row${inserted === 1 ? '' : 's'} inserted into "${stmt.table}"`, sql, t0, inserted)
+  }
+
+  /** Build the machinery for `INSERT … ON CONFLICT`: an arbiter-key conflict
+   *  probe and (for DO UPDATE) a compiled assignment applier. The applier
+   *  evaluates SET/WHERE over a combined row `[existing… , proposed…]`, so the
+   *  table's own columns read the existing row and `EXCLUDED.*` the new one. */
+  private prepareUpsert(table: Table, oc: OnConflictClause) {
+    // The arbiter unique indexes: the one matching the named target columns, or
+    // every UNIQUE/PRIMARY KEY index when no target was given.
+    const arbiters = table.allIndexes().filter((idx) => {
+      if (!idx.meta.unique) return false
+      if (!oc.target) return true
+      const have = idx.meta.columns.map((c) => c.toLowerCase()).sort()
+      const want = oc.target.map((c) => c.toLowerCase()).sort()
+      return have.length === want.length && have.every((c, i) => c === want[i])
+    })
+    if (oc.target && arbiters.length === 0) {
+      throw new SqlError(`ON CONFLICT (${oc.target.join(', ')}) matches no UNIQUE or PRIMARY KEY constraint on "${table.name}"`, 'bind')
+    }
+    if (!oc.target && arbiters.length === 0) {
+      throw new SqlError(`ON CONFLICT requires "${table.name}" to have a UNIQUE or PRIMARY KEY constraint`, 'bind')
+    }
+
+    const findConflict = (row: Row): number | null => {
+      for (const idx of arbiters) {
+        const key = idx.keyOf(row)
+        if (key.some((k) => k === null)) continue // a NULL component never conflicts
+        const hits = idx.tree.search(key)
+        if (hits.length > 0) return hits[0]
+      }
+      return null
+    }
+
+    // DO UPDATE: compile the assignments and the optional WHERE against the
+    // combined row `[existing… , proposed…]`. Column index `n` is the existing
+    // row; `width + n` is EXCLUDED (the proposed row). DO NOTHING compiles to no
+    // setters, so `apply` is a no-op that reports "not updated".
+    const action = oc.action
+    const width = table.columns.length
+    const ctx: CompileCtx = {
+      resolve: (t, n) => {
+        if (t && t.toLowerCase() === 'excluded') return width + table.requireColumnIndex(n)
+        if (t && t.toLowerCase() !== table.name.toLowerCase()) {
+          throw new SqlError(`ON CONFLICT update may only reference "${table.name}" or EXCLUDED, not "${t}"`, 'bind')
+        }
+        return table.requireColumnIndex(n)
+      },
+    }
+    const setters =
+      action.kind === 'update'
+        ? action.assignments.map((a) => ({ i: table.requireColumnIndex(a.column), fn: compileExpr(a.value, ctx) }))
+        : []
+    const wherePred = action.kind === 'update' && action.where ? compileExpr(action.where, ctx) : null
+
+    const apply = (rowid: number, proposed: Row): boolean => {
+      if (action.kind === 'nothing') return false
+      const existing = table.heap.get(rowid)
+      if (!existing) return false
+      const combined = existing.concat(proposed)
+      if (wherePred && !truthy(wherePred(combined))) return false
+      const next = existing.slice()
+      for (const s of setters) next[s.i] = coerceTo(table.columns[s.i].type, s.fn(combined), table.columns[s.i].scale)
+      this.db.updateChecked(table, rowid, next)
+      return true
+    }
+    return { findConflict, apply }
   }
 
   private update(stmt: Extract<Statement, { kind: 'update' }>, sql: string, t0: number): QueryResult {
@@ -366,6 +491,8 @@ function isMutation(kind: Statement['kind']): boolean {
     kind === 'create_table' ||
     kind === 'alter_table' ||
     kind === 'drop_table' ||
+    kind === 'create_view' ||
+    kind === 'drop_view' ||
     kind === 'create_index'
   )
 }

@@ -246,6 +246,23 @@ export interface DropTableStmt {
   name: string
   ifExists: boolean
 }
+/** `CREATE [OR REPLACE] VIEW name [(cols)] AS <query>`. A view is a named query
+ *  that the planner inlines (re-plans) wherever the view name appears. */
+export interface CreateViewStmt {
+  kind: 'create_view'
+  name: string
+  /** Optional output column names — `CREATE VIEW v (a, b) AS …`. */
+  columns?: string[]
+  select: SelectStmt
+  orReplace: boolean
+  ifNotExists: boolean
+}
+/** `DROP VIEW [IF EXISTS] name`. */
+export interface DropViewStmt {
+  kind: 'drop_view'
+  name: string
+  ifExists: boolean
+}
 export interface CreateIndexStmt {
   kind: 'create_index'
   name: string
@@ -260,6 +277,18 @@ export interface AnalyzeStmt {
   kind: 'analyze'
   table?: string
 }
+/** `INSERT … ON CONFLICT [(cols)] DO NOTHING | DO UPDATE SET … [WHERE …]`.
+ *  The conflict `target` (the arbiter columns) is optional; when omitted, any
+ *  UNIQUE/PRIMARY KEY conflict triggers the action. In a `DO UPDATE`, the
+ *  pseudo-table `EXCLUDED` refers to the row proposed for insertion. */
+export interface OnConflictClause {
+  /** The arbiter columns; undefined → any unique constraint. */
+  target?: string[]
+  action:
+    | { kind: 'nothing' }
+    | { kind: 'update'; assignments: { column: string; value: Expr }[]; where?: Expr }
+}
+
 export interface InsertStmt {
   kind: 'insert'
   table: string
@@ -267,6 +296,8 @@ export interface InsertStmt {
   rows: Expr[][]
   /** INSERT … SELECT — when present, `rows` is empty and this query supplies them. */
   select?: SelectStmt
+  /** `ON CONFLICT …` upsert clause. */
+  onConflict?: OnConflictClause
 }
 export interface UpdateStmt {
   kind: 'update'
@@ -357,6 +388,8 @@ export type Statement =
   | CreateTableStmt
   | AlterTableStmt
   | DropTableStmt
+  | CreateViewStmt
+  | DropViewStmt
   | CreateIndexStmt
   | AnalyzeStmt
   | InsertStmt
