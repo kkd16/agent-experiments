@@ -40,6 +40,7 @@ import {
   toWcnf,
 } from './src/sat/index'
 import type { CNF, ProofStep, Graph, MaxSatInstance, WeightedGraph } from './src/sat/index'
+import { buildProblem, DEFAULT_SPEC } from './src/problems'
 
 let pass = 0
 let fail = 0
@@ -972,6 +973,38 @@ function bruteMaxCut(g: WeightedGraph): number {
   // Newer 'h' format.
   const newFmt = parseWcnf('h 1 2 0\n4 -1 0\n')
   check('WCNF: h-prefixed hard clause', newFmt.instance.hard.length === 1 && newFmt.instance.soft.length === 1)
+}
+
+// ---- problems.ts wiring: every MaxSAT kind builds, solves, and decodes ----
+{
+  let bad = 0
+  for (const kind of ['maxcut', 'vertexcover', 'maxindset', 'max2sat', 'wcnf'] as const) {
+    const spec = { ...DEFAULT_SPEC, kind, n: 7, seed: 3 }
+    const p = buildProblem(spec)
+    if (!p.maxsat || p.error) {
+      bad++
+      continue
+    }
+    const r = solveMaxSat(p.maxsat, { strategy: 'linear' })
+    if (r.status !== 'optimal') {
+      bad++
+      continue
+    }
+    // The reported cost must equal the violated soft weight of the returned model.
+    if (softCost(p.maxsat.soft, r.model!) !== r.cost) bad++
+    // Decoders must not throw and must be consistent with the model.
+    if (p.decodeMaxCut) {
+      const d = p.decodeMaxCut(r.model!)
+      if (d.totalWeight - d.cutWeight !== r.cost) bad++ // uncut weight = optimum cost
+    }
+    if (p.decodeSubset) {
+      const d = p.decodeSubset(r.model!)
+      if (kind === 'vertexcover' && d.weight !== r.cost) bad++
+    }
+    // core-guided agrees on cost.
+    if (solveMaxSat(p.maxsat, { strategy: 'core-guided' }).cost !== r.cost) bad++
+  }
+  check('problems.ts: all MaxSAT kinds build/solve/decode consistently', bad === 0, `bad=${bad}`)
 }
 
 console.log(`\n${pass} passed, ${fail} failed`)

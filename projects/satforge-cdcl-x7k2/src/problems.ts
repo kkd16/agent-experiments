@@ -14,6 +14,12 @@ import {
   encodeFactoring,
   encodeHamiltonian,
   encodeZebra,
+  encodeMaxCut,
+  encodeVertexCover,
+  encodeIndependentSet,
+  randomWeightedMax2Sat,
+  randomWeightedGraph,
+  parseWcnf,
 } from './sat'
 import type {
   Graph,
@@ -24,6 +30,10 @@ import type {
   FactorSolution,
   HamiltonianSolution,
   ZebraSolution,
+  MaxSatInstance,
+  WeightedGraph,
+  MaxCutSolution,
+  VertexSubsetSolution,
 } from './sat'
 
 export type ProblemKind =
@@ -37,17 +47,29 @@ export type ProblemKind =
   | 'langford'
   | 'random'
   | 'dimacs'
+  | 'maxcut'
+  | 'vertexcover'
+  | 'maxindset'
+  | 'max2sat'
+  | 'wcnf'
+
+/** The optimization (MaxSAT) problem kinds, handled by the Optimize flow. */
+export const MAXSAT_KINDS: ProblemKind[] = ['maxcut', 'vertexcover', 'maxindset', 'max2sat', 'wcnf']
+export const isMaxSatKind = (k: ProblemKind) => MAXSAT_KINDS.includes(k)
 
 export interface ProblemSpec {
   kind: ProblemKind
   n: number // queens size / hole count / random var count / coloring & hamiltonian vertices
-  ratio: number // random-SAT clause ratio
+  ratio: number // random-SAT clause ratio / MAX-2-SAT clause multiplier
   k: number // coloring colors
-  edgeProb: number // coloring / hamiltonian graph density
+  edgeProb: number // coloring / hamiltonian / weighted-graph density
   seed: number
   sudoku: string // sudoku puzzle string
   dimacs: string // raw DIMACS text
   target: number // factoring target N
+  maxWeight: number // max edge/clause weight for the weighted MaxSAT generators
+  wcnf: string // raw WCNF text
+  strategy: 'linear' | 'core-guided' // MaxSAT algorithm
 }
 
 export interface BuiltProblem {
@@ -65,6 +87,15 @@ export interface BuiltProblem {
   decodeHamiltonian?: (m: boolean[]) => HamiltonianSolution
   decodeFactoring?: (m: boolean[]) => FactorSolution
   decodeZebra?: (m: boolean[]) => ZebraSolution
+  // --- MaxSAT (optimization) ---
+  maxsat?: MaxSatInstance
+  strategy?: 'linear' | 'core-guided'
+  maxRender?: 'maxcut' | 'subset' | 'model'
+  wgraph?: WeightedGraph
+  totalWeight?: number // total soft weight (for "cut = total − cost" style readouts)
+  costLabel?: string // human label for what the optimum cost means
+  decodeMaxCut?: (m: boolean[]) => MaxCutSolution
+  decodeSubset?: (m: boolean[]) => VertexSubsetSolution
   warnings?: string[]
   error?: string
 }
@@ -79,6 +110,9 @@ export const DEFAULT_SPEC: ProblemSpec = {
   sudoku: '53..7....6..195....98....6.8...6...34..8.3..17...2...6.6....28....419..5....8..79',
   dimacs: 'c A small satisfiable example\np cnf 4 4\n1 2 0\n-1 3 0\n-2 -3 4 0\n-4 1 0\n',
   target: 143,
+  maxWeight: 4,
+  wcnf: 'c Weighted partial MaxSAT (WCNF)\nc hard clauses use the top weight; soft clauses use their own.\np wcnf 4 6 100\n100 1 2 0\n100 -1 3 0\n3 -2 0\n5 -3 0\n4 -4 0\n2 4 1 0\n',
+  strategy: 'linear',
 }
 
 export function buildProblem(spec: ProblemSpec): BuiltProblem {
@@ -210,6 +244,77 @@ export function buildProblem(spec: ProblemSpec): BuiltProblem {
           warnings,
         }
       }
+      case 'maxcut': {
+        const n = clampInt(spec.n, 3, 16)
+        const g = randomWeightedGraph(n, clamp(spec.edgeProb, 0.1, 0.95), clampInt(spec.maxWeight, 1, 9), spec.seed | 0)
+        const { instance, totalWeight, decode } = encodeMaxCut(g)
+        return {
+          ...maxBase(spec, instance),
+          title: `Max-Cut`,
+          subtitle: `Split ${n} vertices / ${g.edges.length} weighted edges to maximize the crossing weight (total ${totalWeight}).`,
+          maxRender: 'maxcut',
+          wgraph: g,
+          totalWeight,
+          costLabel: 'uncut weight',
+          decodeMaxCut: decode,
+        }
+      }
+      case 'vertexcover': {
+        const n = clampInt(spec.n, 3, 16)
+        const g = randomWeightedGraph(n, clamp(spec.edgeProb, 0.1, 0.95), 1, spec.seed | 0)
+        const { instance, decode } = encodeVertexCover(g)
+        return {
+          ...maxBase(spec, instance),
+          title: `Minimum Vertex Cover`,
+          subtitle: `Pick the fewest vertices touching all ${g.edges.length} edges of a ${n}-vertex graph.`,
+          maxRender: 'subset',
+          wgraph: g,
+          costLabel: 'cover size',
+          decodeSubset: decode,
+        }
+      }
+      case 'maxindset': {
+        const n = clampInt(spec.n, 3, 16)
+        const g = randomWeightedGraph(n, clamp(spec.edgeProb, 0.1, 0.95), 1, spec.seed | 0)
+        const { instance, decode } = encodeIndependentSet(g)
+        return {
+          ...maxBase(spec, instance),
+          title: `Maximum Independent Set`,
+          subtitle: `Pick the most pairwise-nonadjacent vertices of a ${n}-vertex / ${g.edges.length}-edge graph.`,
+          maxRender: 'subset',
+          wgraph: g,
+          totalWeight: n,
+          costLabel: 'excluded vertices',
+          decodeSubset: decode,
+        }
+      }
+      case 'max2sat': {
+        const n = clampInt(spec.n, 2, 18)
+        const m = clampInt(n * clamp(spec.ratio, 0.5, 6), 1, 400)
+        const instance = randomWeightedMax2Sat(n, m, clampInt(spec.maxWeight, 1, 9), spec.seed | 0)
+        const total = instance.soft.reduce((s, c) => s + c.weight, 0)
+        return {
+          ...maxBase(spec, instance),
+          title: `Weighted MAX-2-SAT`,
+          subtitle: `${n} variables, ${m} weighted 2-clauses (total weight ${total}) — minimize the violated weight.`,
+          maxRender: 'model',
+          totalWeight: total,
+          costLabel: 'violated weight',
+        }
+      }
+      case 'wcnf': {
+        const { instance, warnings } = parseWcnf(spec.wcnf)
+        const total = instance.soft.reduce((s, c) => s + c.weight, 0)
+        return {
+          ...maxBase(spec, instance),
+          title: 'Custom WCNF',
+          subtitle: `${instance.numVars} variables · ${instance.hard.length} hard · ${instance.soft.length} soft clauses (total soft ${total}).`,
+          maxRender: 'model',
+          totalWeight: total,
+          costLabel: 'violated weight',
+          warnings,
+        }
+      }
     }
   } catch (e) {
     return {
@@ -220,6 +325,19 @@ export function buildProblem(spec: ProblemSpec): BuiltProblem {
       render: 'none',
       error: e instanceof Error ? e.message : String(e),
     }
+  }
+}
+
+/** Common BuiltProblem scaffolding for a MaxSAT (optimization) instance. */
+function maxBase(spec: ProblemSpec, instance: MaxSatInstance): BuiltProblem {
+  return {
+    kind: spec.kind,
+    cnf: { numVars: instance.numVars, clauses: instance.hard },
+    title: '',
+    subtitle: '',
+    render: 'none',
+    maxsat: instance,
+    strategy: spec.strategy,
   }
 }
 

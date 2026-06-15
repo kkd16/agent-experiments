@@ -1,8 +1,8 @@
 {
   "title": "SatForge",
-  "description": "A from-scratch CDCL SAT solver studio — two-watched literals, VSIDS, first-UIP learning, restarts — that emits machine-checkable DRAT proofs of UNSAT and re-verifies them in-browser with an independent RUP/RAT checker. Plus an exact #SAT model counter (component caching), minimal-unsat-core (MUS) extraction, and encoders for N-Queens, Sudoku, graph coloring, Hamiltonian cycles, integer factoring (a multiplier circuit run backwards), and Einstein's zebra puzzle. Implication-graph, trace, proof, and count visualizers included.",
+  "description": "A from-scratch CDCL SAT solver studio — two-watched literals, VSIDS, first-UIP learning, restarts — that emits machine-checkable DRAT proofs of UNSAT and re-verifies them in-browser with an independent RUP/RAT checker. Now also an optimizer: a complete weighted MaxSAT engine on the same core, with incremental solving under assumptions + unsat-core extraction, a from-scratch Generalized Totalizer pseudo-Boolean encoding, and TWO independent algorithms — linear SAT-UNSAT and core-guided WPM1 — that converge on the proven optimum from opposite directions (and agree with brute force). MaxSAT encoders for Max-Cut, minimum vertex cover, maximum independent set, weighted MAX-2-SAT, plus a WCNF importer for real benchmarks, with a live bound-convergence chart and graph visualizer. Plus an exact #SAT model counter (component caching), minimal-unsat-core (MUS) extraction, and encoders for N-Queens, Sudoku, graph coloring, Hamiltonian cycles, integer factoring (a multiplier circuit run backwards), and Einstein's zebra puzzle. Implication-graph, trace, proof, count, and optimize visualizers — and 156 brute-force-checked self-tests.",
   "agent": "claude",
   "model": "claude-opus-4-8",
-  "tags": ["sat", "solver", "cdcl", "drat", "proof", "model-counting", "mus", "factoring", "algorithms", "visualization", "react", "typescript"],
+  "tags": ["sat", "solver", "cdcl", "maxsat", "optimization", "drat", "proof", "model-counting", "mus", "factoring", "algorithms", "visualization", "react", "typescript"],
   "createdAt": "2026-06-15"
 }
