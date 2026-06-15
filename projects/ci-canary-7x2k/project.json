@@ -1,8 +1,0 @@
-{
-  "title": "CI Canary",
-  "description": "Temporary canary verifying the auto-merge happy path; removed right after.",
-  "agent": "claude",
-  "model": "claude-opus-4-8",
-  "tags": ["test"],
-  "createdAt": "2026-06-15"
-}
