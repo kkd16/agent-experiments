@@ -39,7 +39,7 @@ import {
   typeToString,
 } from './types.ts'
 import type { ClassTables, Evidence } from './classes.ts'
-import { EvCell, dictParamName, emptyTables } from './classes.ts'
+import { EvCell, dictParamName, emptyTables, superFieldName } from './classes.ts'
 import type { Kind } from './kinds.ts'
 import {
   KindError,
@@ -102,6 +102,8 @@ export interface InferResult {
 interface ClassDef {
   name: string
   param: string
+  /** direct superclasses, each constraining the same parameter */
+  supers: string[]
   methods: Map<string, { type: TypeExpr; span: Span; default?: Expr }>
 }
 
@@ -661,26 +663,92 @@ class Inferrer {
     const G = new Set(base.vars)
     const preds: Pred[] = []
     const params: { name: string; cls: string; varId: number }[] = []
-    const seen = new Set<string>()
     const remaining: Wanted[] = []
+    // group the generalised, variable-headed constraints by variable, keeping
+    // every evidence cell that asked for each class on that variable
+    const byVar = new Map<number, Map<string, EvCell[]>>()
     for (const w of this.wanted) {
       const pt = prune(w.type)
       if (pt.kind === 'var' && G.has(pt.id)) {
-        const name = dictParamName(w.cls, pt.id)
-        w.cell.ev = { kind: 'param', name }
-        const key = w.cls + '|' + pt.id
-        if (!seen.has(key)) {
-          seen.add(key)
-          preds.push({ cls: w.cls, type: pt })
-          params.push({ name, cls: w.cls, varId: pt.id })
+        let m = byVar.get(pt.id)
+        if (!m) {
+          m = new Map()
+          byVar.set(pt.id, m)
         }
+        const cells = m.get(w.cls) ?? []
+        cells.push(w.cell)
+        m.set(w.cls, cells)
       } else {
         remaining.push(w)
       }
     }
     this.wanted = remaining
+    // For each variable, keep only the *root* classes as dictionary parameters
+    // (those not implied as a superclass of another wanted class). Each entailed
+    // class is discharged by projecting through a root's superclass fields — so
+    // `(Functor m, Monad m) => …` simplifies to `Monad m => …`.
+    for (const [varId, classes] of byVar) {
+      const present = [...classes.keys()]
+      const roots = present.filter(
+        (c) => !present.some((d) => d !== c && this.superClosure(d).has(c)),
+      )
+      const rootSet = new Set(roots)
+      for (const cls of present) {
+        const cells = classes.get(cls) as EvCell[]
+        if (rootSet.has(cls)) {
+          const name = dictParamName(cls, varId)
+          for (const c of cells) c.ev = { kind: 'param', name }
+          preds.push({ cls, type: { kind: 'var', id: varId, ref: null } })
+          params.push({ name, cls, varId })
+        } else {
+          const root = roots.find((r) => this.superClosure(r).has(cls)) as string
+          const path = this.superPath(root, cls) as string[]
+          const ev = this.projectSuper(dictParamName(root, varId), path)
+          for (const c of cells) c.ev = ev
+        }
+      }
+    }
     const scheme: Scheme = preds.length ? { vars: base.vars, type: base.type, preds } : base
     return { scheme, params }
+  }
+
+  /** All transitive superclasses of `cls` (excluding `cls` itself). */
+  private superClosure(cls: string): Set<string> {
+    const out = new Set<string>()
+    const stack = [...(this.classes.get(cls)?.supers ?? [])]
+    while (stack.length > 0) {
+      const s = stack.pop() as string
+      if (out.has(s)) continue
+      out.add(s)
+      for (const ss of this.classes.get(s)?.supers ?? []) stack.push(ss)
+    }
+    return out
+  }
+
+  /** The nearest-first chain of direct-superclass steps from `from` to the
+   * (transitive) superclass `to`, or null if `to` is not a superclass. */
+  private superPath(from: string, to: string): string[] | null {
+    const queue: { cls: string; path: string[] }[] = [{ cls: from, path: [] }]
+    const seen = new Set<string>([from])
+    while (queue.length > 0) {
+      const { cls, path } = queue.shift() as { cls: string; path: string[] }
+      for (const s of this.classes.get(cls)?.supers ?? []) {
+        const np = [...path, s]
+        if (s === to) return np
+        if (!seen.has(s)) {
+          seen.add(s)
+          queue.push({ cls: s, path: np })
+        }
+      }
+    }
+    return null
+  }
+
+  /** Evidence that projects a superclass dictionary out of a root dict param. */
+  private projectSuper(rootParam: string, path: string[]): Evidence {
+    let ev: Evidence = { kind: 'param', name: rootParam }
+    for (const s of path) ev = { kind: 'super', field: superFieldName(s), base: ev }
+    return ev
   }
 
   /** Record the dictionary parameters a binding abstracts, and feed the same
@@ -764,6 +832,14 @@ class Inferrer {
       methods.set(m.name, { type: m.type, span: m.span, default: m.default })
       this.methodToClass.set(m.name, e.name)
     }
+    // validate the superclasses: each must already be a class, and (sharing the
+    // class parameter) must agree on its kind.
+    for (const s of e.supers) {
+      if (s === e.name) throw new TypeCheckError(`class ${e.name} cannot be its own superclass`, e.span)
+      if (!this.classes.has(s)) {
+        throw new TypeCheckError(`unknown superclass '${s}' of class ${e.name}`, e.span)
+      }
+    }
     // Infer the class parameter's kind from how the methods use it: a class
     // whose methods apply the parameter (`m a`) is higher-kinded (`m : * -> *`),
     // one that uses it bare (`a -> String`) takes a proper type (`a : *`).
@@ -773,11 +849,16 @@ class Inferrer {
         const varKinds = new Map<string, Kind>([[e.param, pk]])
         unifyKind(this.kindOf(m.type, varKinds), kStar, m.span)
       }
+      // a superclass constrains the same parameter, so their kinds must match
+      for (const s of e.supers) {
+        const sk = this.classParamKind.get(s)
+        if (sk) unifyKind(pk, sk, e.span)
+      }
       return defaultKind(pk)
     })
     this.classParamKind.set(e.name, paramKind)
 
-    this.classes.set(e.name, { name: e.name, param: e.param, methods })
+    this.classes.set(e.name, { name: e.name, param: e.param, supers: e.supers, methods })
     if (!this.instances.has(e.name)) this.instances.set(e.name, [])
     this.tables.used = true
     let env2 = env
@@ -892,6 +973,13 @@ class Inferrer {
       finalMethods.push({ name: mname, value })
     }
 
+    // resolve the superclass dictionaries this instance must embed: declaring
+    // `instance Monad Option` requires (and references) `instance Functor Option`.
+    const superFields = cls.supers.map((s) => ({
+      field: superFieldName(s),
+      ev: this.evidenceFor(s, headType, e.span),
+    }))
+
     // discharge the method bodies' constraints. Ground ones resolve to other
     // instances; constraints over a head variable must be covered by the
     // written context (and resolve to its dictionary parameter).
@@ -919,6 +1007,7 @@ class Inferrer {
       dictName,
       paramNames: context.map((c) => c.name),
       methods: finalMethods,
+      supers: superFields,
     })
     this.tables.used = true
     return this.infer(env, e.body)

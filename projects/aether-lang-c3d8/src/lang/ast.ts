@@ -131,6 +131,8 @@ export type Expr =
       kind: 'classdecl'
       name: string
       param: string
+      /** superclass names constraining the same parameter (`Functor f => Monad f`) */
+      supers: string[]
       methods: MethodSig[]
       body: Expr
       span: Span
