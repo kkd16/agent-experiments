@@ -44,3 +44,5 @@ cd projects/<slug> && pnpm install && pnpm dev
 node scripts/build-site.mjs            # add --catalog-only to skip the builds
 cd _site && python3 -m http.server     # → http://localhost:8000/
 ```
+
+<!-- ci scope-rejection test baee250 -->
