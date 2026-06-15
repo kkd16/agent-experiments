@@ -1,19 +1,23 @@
 import { useEffect, useRef } from 'react';
-import { Boid, Predator, type BoidParams } from './boids';
+import { Boid, Predator, Grid, type BoidParams } from './boids';
 
 interface BoidsCanvasProps {
   params: BoidParams;
   numBoids: number;
   numPredators: number;
+  isPaused: boolean;
 }
 
-export function BoidsCanvas({ params, numBoids, numPredators }: BoidsCanvasProps) {
+export function BoidsCanvas({ params, numBoids, numPredators, isPaused }: BoidsCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const boidsRef = useRef<Boid[]>([]);
   const predatorsRef = useRef<Predator[]>([]);
   const animationFrameId = useRef<number>(0);
   const paramsRef = useRef(params);
   const mousePosRef = useRef<{ x: number; y: number } | null>(null);
+  const lastTimeRef = useRef<number>(0);
+  const fpsRef = useRef<number>(0);
+  const fpsDisplayRef = useRef<HTMLDivElement>(null);
 
   // Keep paramsRef up to date without triggering re-renders of the effect
   useEffect(() => {
@@ -82,21 +86,40 @@ export function BoidsCanvas({ params, numBoids, numPredators }: BoidsCanvasProps
        predatorsRef.current = predatorsRef.current.slice(0, numPredators);
     }
 
-    const render = () => {
+    lastTimeRef.current = performance.now();
+    const render = (time: number) => {
+      const dt = time - lastTimeRef.current;
+      lastTimeRef.current = time;
+      if (dt > 0) {
+        fpsRef.current = 1000 / dt;
+        if (fpsDisplayRef.current) {
+          fpsDisplayRef.current.innerText = `FPS: ${Math.round(fpsRef.current)}`;
+        }
+      }
+
+      const grid = new Grid(canvas.width, canvas.height, Math.max(paramsRef.current.visualRange, 50));
+      for (const boid of boidsRef.current) {
+        grid.insert(boid);
+      }
+
       // Optional: Add a subtle trail effect
       ctx.fillStyle = 'rgba(15, 23, 42, 0.3)'; // Dark slate background with low opacity
       ctx.fillRect(0, 0, canvas.width, canvas.height);
 
       for (const boid of boidsRef.current) {
-        boid.flock(boidsRef.current, predatorsRef.current, paramsRef.current, mousePosRef.current);
-        boid.update(paramsRef.current);
-        boid.draw(ctx);
+        if (!isPaused) {
+          boid.flock(grid, predatorsRef.current, paramsRef.current, mousePosRef.current);
+          boid.update(paramsRef.current);
+        }
+        boid.draw(ctx, paramsRef.current);
       }
 
       for (const predator of predatorsRef.current) {
-        predator.hunt(boidsRef.current, paramsRef.current);
-        predator.update(paramsRef.current);
-        predator.draw(ctx);
+        if (!isPaused) {
+          predator.hunt(grid, paramsRef.current);
+          predator.update(paramsRef.current);
+        }
+        predator.draw(ctx, paramsRef.current);
       }
 
       // Draw mouse interaction radius
@@ -123,7 +146,7 @@ export function BoidsCanvas({ params, numBoids, numPredators }: BoidsCanvasProps
       animationFrameId.current = requestAnimationFrame(render);
     };
 
-    render();
+    requestAnimationFrame(render);
 
     return () => {
       window.removeEventListener('resize', handleResize);
@@ -133,17 +156,36 @@ export function BoidsCanvas({ params, numBoids, numPredators }: BoidsCanvasProps
         cancelAnimationFrame(animationFrameId.current);
       }
     };
-  }, [numBoids, numPredators]); // Re-run effect only when counts change
+  }, [numBoids, numPredators, isPaused]); // Re-run effect only when counts change
 
   return (
-    <canvas
-      ref={canvasRef}
+    <div style={{ position: 'relative', width: '100vw', height: '100vh' }}>
+      <div
+        ref={fpsDisplayRef}
+        style={{
+          position: 'absolute',
+          top: 10,
+          left: 10,
+          color: 'white',
+          fontFamily: 'monospace',
+          fontSize: '14px',
+          zIndex: 10,
+          backgroundColor: 'rgba(0,0,0,0.5)',
+          padding: '4px 8px',
+          borderRadius: '4px'
+        }}
+      >
+        FPS: 0
+      </div>
+      <canvas
+        ref={canvasRef}
       style={{
         display: 'block',
         width: '100vw',
         height: '100vh',
-        backgroundColor: '#0f172a' // fallback background
-      }}
-    />
-  );
+          backgroundColor: '#0f172a'
+        }}
+      />
+    </div>
+  ); // Make sure this matches
 }

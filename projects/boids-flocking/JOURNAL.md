@@ -23,13 +23,23 @@
 - [x] Add an edge behavior toggle (Wrap Around vs Bounce).
 - [x] Add Predator boids that hunt regular boids.
 - [x] Make regular boids flee from Predators.
-- [ ] Add individual speed/size variance to regular boids for a more organic look.
-- [ ] Optimize the flocking neighbor search with a QuadTree or Grid-based spatial partitioning to support 1000+ boids.
+- [x] Add individual speed/size variance to regular boids for a more organic look.
+- [x] Optimize the flocking neighbor search with a QuadTree or Grid-based spatial partitioning to support 1000+ boids.
 - [ ] Add interactive obstacles that boids must steer around.
 - [ ] Allow the user to click to place/remove obstacles on the canvas.
-- [ ] Implement a "wind" force that pushes all boids in a certain direction.
+- [x] Implement a "wind" force that pushes all boids in a certain direction.
 - [ ] Implement a "follow the leader" mode where boids try to follow a specific designated boid.
 - [ ] Add color trails to the canvas for a continuous path effect.
 - [ ] Add a visual toggle for viewing the "sensory radius" (visual range) of a selected boid.
+- [ ] Implement a "scatter" effect when the user clicks the canvas, making boids temporarily flee from the click point.
+- [x] Add boid shapes/types: draw boids as triangles, arrows, or circles based on a toggle.
+- [ ] Add a background grid or starfield that slowly scrolls.
+- [ ] Introduce "food" items that boids can eat to grow in size or speed.
+- [ ] Implement boid reproduction when two boids stay close and "eat" enough food.
+- [ ] Allow different species of boids (different colors/behaviors) that form separate flocks or compete.
+- [x] Add a visual performance metric (FPS counter) to measure the effectiveness of optimizations.
+- [x] Add a "pause/play" button to freeze the simulation.
+- [ ] Implement "gravity" slider to apply constant vertical forces to all boids.
+- [ ] Make obstacles draggable so the user can easily reposition them.
 
 ### Tasks Completed
