@@ -3,7 +3,9 @@ name: Auto-merge project pull requests
 # Agents publish by opening a pull request into `main`. This workflow runs on
 # every PR and merges it automatically — but only if the change is confined to a
 # single projects/<slug>/ folder (the Golden Rule) and passes the exact CI gate
-# (conformance + lint + build). Anything else is rejected, never merged.
+# (conformance + lint + build). Anything else is rejected: the bot submits a
+# "changes requested" review (so it shows as a reviewer, like a human review the
+# monitoring agents can act on) and the check FAILS loudly (red ✗), never merged.
 
 on:
   pull_request:
@@ -54,14 +56,19 @@ jobs:
           cat /tmp/changed.txt || true
           node scripts/changed-scope.mjs /tmp/changed.txt
 
-      - name: Reject — out of scope
+      # Out of scope → leave a real "changes requested" review (so the bot shows
+      # up as a reviewer, mimicking a human review flow that monitoring agents
+      # can react to) AND fail the check so the red ✗ is obvious at a glance.
+      - name: Reject — out of scope (request changes + fail)
         if: steps.scope.outputs.slug == ''
         env:
           SKIP: ${{ steps.scope.outputs.skip }}
         run: |
-          echo "::notice title=Not auto-merged::$SKIP"
-          printf '🚫 **Not auto-merged.** %s\n\nEvery PR must change exactly one `projects/<slug>/` folder and nothing else.\n' "$SKIP" > /tmp/body.md
-          gh pr comment "$PR" --body-file /tmp/body.md
+          # shellcheck disable=SC2016  # %s is a printf placeholder; $SKIP is passed as an arg
+          printf '🚫 **Changes requested — not auto-merged.**\n\n%s\n\nEvery PR must change exactly one `projects/<slug>/` folder and nothing else. Remove the out-of-scope changes (run `pnpm` inside your project folder, never the repo root, and keep screenshots/scratch files out of the repo), then push again to this branch — the gate re-runs automatically.\n' "$SKIP" > /tmp/body.md
+          gh pr review "$PR" --request-changes --body-file /tmp/body.md || gh pr comment "$PR" --body-file /tmp/body.md || true
+          echo "::error title=Out of scope — not auto-merged::$SKIP"
+          exit 1
 
       - uses: pnpm/action-setup@v6
         if: steps.scope.outputs.slug != ''
@@ -100,10 +107,13 @@ jobs:
         if: steps.scope.outputs.slug != ''
         run: gh workflow run deploy.yml --ref main
 
-      - name: Report gate failure
+      # Gate failure (lint/build/conflict) → also a real "changes requested"
+      # review. The job is already red because the failing step exited non-zero.
+      - name: Report gate failure (request changes)
         if: failure() && steps.scope.outputs.slug != ''
         env:
           SLUG: ${{ steps.scope.outputs.slug }}
         run: |
-          printf '❌ **Not auto-merged.** The verify gate (conformance + `pnpm lint` + `pnpm build`) failed for `%s`, or the merge hit a conflict. Check the workflow logs, fix it, and push again to this branch.\n' "$SLUG" > /tmp/body.md
-          gh pr comment "$PR" --body-file /tmp/body.md
+          # shellcheck disable=SC2016  # %s is a printf placeholder; $SLUG is passed as an arg
+          printf '❌ **Changes requested — not auto-merged.** The verify gate (conformance + `pnpm lint` + `pnpm build`) failed for `%s`, or the merge hit a conflict. Read the workflow logs above for the exact error, fix it, and push again to this branch — the gate re-runs automatically.\n' "$SLUG" > /tmp/body.md
+          gh pr review "$PR" --request-changes --body-file /tmp/body.md || gh pr comment "$PR" --body-file /tmp/body.md || true
