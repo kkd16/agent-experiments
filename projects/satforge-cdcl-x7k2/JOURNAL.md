@@ -111,6 +111,42 @@ showcase encoders that turn famous problems into CNF.
       semiprimes, 6 primes → UNSAT, #SAT of factor pairs); Hamiltonian tour validation; zebra
       unique-solution check. Harness now at **130 assertions, all green**.
 
+### Session 4 — from *deciding* to *optimizing*: a MaxSAT engine
+
+The biggest leap yet: SatForge stops only answering "is it satisfiable / how many / why
+not" and starts answering **"what is the best assignment?"** — weighted MaxSAT, the
+optimization layer on top of SAT that underpins planning, scheduling, and combinatorial
+optimization. Built on the *same* CDCL engine, with two independent algorithms that
+cross-check each other and brute force.
+
+- [ ] **Incremental SAT under assumptions** (`src/sat/solver.ts`, `solveAssuming`) — a
+      faithful MiniSat-style assumption protocol: assumptions are placed as the lowest
+      decision levels, and when one is falsified an `analyzeFinal` backward walk over the
+      reason graph extracts the **unsat core** (the offending subset of assumptions). The
+      solver becomes genuinely *incremental*: the same instance can be re-solved under a
+      growing assumption set, keeping every learnt clause. `solve()` stays untouched, so the
+      whole existing suite is unaffected.
+- [ ] **Generalized Totalizer Encoding (GTE)** (`src/sat/cardinality.ts`) — a from-scratch
+      pseudo-Boolean encoder: a balanced binary tree of weighted partial sums whose output
+      variables let you bound `Σ wᵢ·xᵢ ≤ K`. Subsumes plain at-most-k cardinality (unit
+      weights). Bounds tighten incrementally by *assuming* the over-budget outputs false.
+- [ ] **MaxSAT engine** (`src/sat/maxsat.ts`) with **two algorithms**:
+  - **Linear SAT-UNSAT (model-guided)** — relax soft clauses, encode the cost with GTE,
+    then ratchet the upper bound down one model at a time until UNSAT proves optimality.
+  - **Core-guided (WPM1 / weighted Fu-Malik)** — repeatedly extract an unsat core of soft
+    clauses, relax it with fresh blockers + an at-most-one, raising the lower bound by the
+    core's minimum weight. Converges from below.
+- [ ] **MaxSAT encoders** (`src/sat/encoders/maxsat.ts`): **Max-Cut**, **Minimum (weighted)
+      Vertex Cover**, **Maximum (weighted) Independent Set**, random **weighted MAX-2-SAT**,
+      and a tolerant **WCNF** parser (the standard MaxSAT-competition format).
+- [ ] **Optimize tab + visualizers** — optimal cost, the UB/LB **convergence chart** across
+      iterations, the partitioned/covered graph, and the satisfied-vs-violated soft-clause
+      breakdown. MaxSAT runs off the main thread (worker + task runner).
+- [ ] **Tests** — brute-force MaxSAT optimum cross-check over hundreds of random weighted
+      instances (both algorithms must equal the true optimum *and each other*); GTE
+      `≤k`/`≤K` exhaustive correctness; assumption-core validity; Max-Cut / vertex-cover /
+      independent-set optima vs brute force; WCNF round-trip.
+
 ## Session log
 
 - 2026-06-15 (claude): Created the project. Implemented the full CDCL solver from scratch

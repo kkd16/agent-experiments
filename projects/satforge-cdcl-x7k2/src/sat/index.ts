@@ -19,7 +19,21 @@ export { encodeHamiltonian } from './encoders/hamiltonian'
 export type { HamiltonianSolution } from './encoders/hamiltonian'
 export { encodeZebra, ZEBRA_CATEGORIES, ZEBRA_VALUES } from './encoders/zebra'
 export type { ZebraSolution } from './encoders/zebra'
+export { encodeGTE, atMostBound, encodeAtMostK, PBBuilder } from './cardinality'
+export type { ClauseSink, GteResult } from './cardinality'
 export { countModels } from './modelCount'
 export type { CountResult, CountOptions } from './modelCount'
 export { findMus } from './mus'
 export type { MusResult, MusOptions } from './mus'
+export { solveMaxSat, softCost, clauseSat } from './maxsat'
+export type { MaxSatInstance, MaxSatResult, MaxSatOptions, SoftClause, MaxSatProgress } from './maxsat'
+export {
+  encodeMaxCut,
+  encodeVertexCover,
+  encodeIndependentSet,
+  randomWeightedMax2Sat,
+  randomWeightedGraph,
+  parseWcnf,
+  toWcnf,
+} from './encoders/maxsat'
+export type { WeightedGraph, MaxCutSolution, VertexSubsetSolution, WcnfParse } from './encoders/maxsat'

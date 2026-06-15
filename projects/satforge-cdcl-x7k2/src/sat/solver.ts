@@ -771,6 +771,148 @@ export class CdclSolver {
     }
   }
 
+  // ---- incremental solving under assumptions ---------------------------------
+  // A faithful MiniSat-style assumption protocol. Assumptions (DIMACS literals) are forced
+  // true by placing them as the lowest decision levels; if one is falsified by propagation
+  // we run `analyzeFinal` to recover the *unsat core* — the subset of assumptions that
+  // together with the (hard) clauses cannot all hold. Because no clauses are added between
+  // calls, the same solver instance can be re-solved under a growing assumption set, reusing
+  // every learnt clause: genuine incremental SAT. `solve()` above is left untouched.
+
+  /**
+   * Solve the current clause database under the given assumption literals (DIMACS).
+   * Returns 'sat' with a model, 'unsat' with the assumption `core` (DIMACS literals — a
+   * subset of `assumptions`), or 'unknown' if a budget is exhausted. Safe to call repeatedly.
+   */
+  solveAssuming(assumptions: number[]): { status: 'sat' | 'unsat' | 'unknown'; model?: boolean[]; core?: number[] } {
+    const start = typeof performance !== 'undefined' ? performance.now() : Date.now()
+    this.cancelUntil(0)
+    if (!this.ok) return { status: 'unsat', core: [] }
+    if (this.propagate() !== -1) {
+      this.ok = false
+      return { status: 'unsat', core: [] }
+    }
+    const assume = assumptions.map(dimacsToLit)
+
+    let restartNo = 0
+    let conflictBudget = this.restartBase * luby(restartNo + 1)
+    let conflictsSinceRestart = 0
+    let reduceBudget = 2000 + (this.numOriginal >> 1)
+    let conflictsSinceReduce = 0
+    let checkCounter = 0
+
+    for (;;) {
+      const confl = this.propagate()
+      if (confl !== -1) {
+        this.stats.conflicts++
+        conflictsSinceRestart++
+        conflictsSinceReduce++
+        if (this.decisionLevel() > this.maxLevelSeen) this.maxLevelSeen = this.decisionLevel()
+        if (this.decisionLevel() === 0) {
+          this.ok = false
+          return { status: 'unsat', core: [] } // UNSAT regardless of assumptions
+        }
+        const { learnt, backLevel, lbd } = this.analyze(confl)
+        this.stats.learned++
+        this.stats.learntLiterals += learnt.length
+        this.cancelUntil(backLevel)
+        if (learnt.length === 1) {
+          this.enqueue(learnt[0], -1)
+        } else {
+          const cidx = this.attachClause(learnt, true, lbd)
+          this.bumpClause(cidx)
+          this.enqueue(learnt[0], cidx)
+        }
+        this.decayVar()
+        this.decayClause()
+
+        if ((++checkCounter & 1023) === 0) {
+          if (this.maxConflicts > 0 && this.stats.conflicts >= this.maxConflicts) return { status: 'unknown' }
+          if (this.maxTimeMs > 0) {
+            const now = typeof performance !== 'undefined' ? performance.now() : Date.now()
+            if (now - start >= this.maxTimeMs) return { status: 'unknown' }
+          }
+        }
+        // Restart only above the assumption levels, so assumptions are simply re-placed.
+        if (conflictsSinceRestart >= conflictBudget) {
+          this.cancelUntil(0)
+          this.stats.restarts++
+          restartNo++
+          conflictBudget = this.restartBase * luby(restartNo + 1)
+          conflictsSinceRestart = 0
+        }
+        if (conflictsSinceReduce >= reduceBudget) {
+          this.cancelUntil(0)
+          if (this.propagate() !== -1) {
+            this.ok = false
+            return { status: 'unsat', core: [] }
+          }
+          this.reduceDB()
+          conflictsSinceReduce = 0
+          reduceBudget += 300
+        }
+      } else {
+        // Place the next assumption (assumptions occupy the lowest decision levels).
+        let next = -1
+        while (this.decisionLevel() < assume.length) {
+          const p = assume[this.decisionLevel()]
+          const v = this.litValue(p)
+          if (v === 1) {
+            this.trailLim.push(this.trail.length) // already implied — dummy level
+          } else if (v === -1) {
+            return { status: 'unsat', core: this.analyzeFinal(p) } // assumption conflict
+          } else {
+            next = p
+            break
+          }
+        }
+        if (next === -1) {
+          next = this.pickBranch()
+          if (next === -1) return { status: 'sat', model: this.extractModel() }
+        }
+        this.trailLim.push(this.trail.length)
+        this.stats.decisions++
+        this.enqueue(next, -1)
+        if (this.decisionLevel() > this.maxLevelSeen) this.maxLevelSeen = this.decisionLevel()
+      }
+    }
+  }
+
+  /**
+   * Backward walk over the reason graph from a falsified assumption `p` (internal literal),
+   * collecting the assumption literals responsible. Returns the core as DIMACS literals (a
+   * subset of the assumptions). Faithful port of MiniSat's analyzeFinal.
+   */
+  private analyzeFinal(p: number): number[] {
+    const core: number[] = [litToDimacs(p)]
+    // Even at the root, ¬p was *derived* (hard ⊨ ¬p), so {p} is a valid singleton core.
+    if (this.decisionLevel() === 0) return core
+    const touched: number[] = []
+    const mark = (v: number) => {
+      if (!this.seen[v]) {
+        this.seen[v] = 1
+        touched.push(v)
+      }
+    }
+    mark(litVar(p))
+    for (let i = this.trail.length - 1; i >= (this.trailLim[0] ?? 0); i--) {
+      const x = litVar(this.trail[i])
+      if (!this.seen[x]) continue
+      const r = this.reason[x]
+      if (r === -1) {
+        // A decision literal on the trail is one of the placed assumptions itself.
+        if (this.level[x] > 0) core.push(litToDimacs(this.trail[i]))
+      } else {
+        const clause = this.clauseLits[r]
+        for (let j = 1; j < clause.length; j++) {
+          if (this.level[litVar(clause[j])] > 0) mark(litVar(clause[j]))
+        }
+      }
+    }
+    for (const v of touched) this.seen[v] = 0
+    return core
+  }
+
   private extractModel(): boolean[] {
     const model: boolean[] = new Array(this.numVars + 1).fill(false)
     for (let v = 0; v < this.numVars; v++) {
@@ -784,4 +926,9 @@ export class CdclSolver {
 /** Convenience: solve a CNF in one call. */
 export function solve(cnf: CNF, opts: SolverOptions = {}): SolveResult {
   return new CdclSolver(cnf, opts).solve()
+}
+
+/** Convenience: solve a CNF once under a set of assumption literals (DIMACS). */
+export function solveAssuming(cnf: CNF, assumptions: number[], opts: SolverOptions = {}) {
+  return new CdclSolver(cnf, opts).solveAssuming(assumptions)
 }
