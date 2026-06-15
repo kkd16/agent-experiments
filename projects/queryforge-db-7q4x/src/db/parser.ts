@@ -10,21 +10,26 @@ import {
 import { SCALAR_FUNCTION_NAMES, exprKey } from './eval'
 import { SqlError, type ColumnType, type SqlValue } from './types'
 import { parseDate, parseTime, parseTimestamp, parseInterval } from './temporal'
+import { emptyConstraints } from './ast'
 import type {
   BinaryOp,
+  CheckConstraint,
   ColumnDef,
   CteDef,
   Expr,
   ExplainStmt,
+  ForeignKeyDef,
   FromItem,
   JoinClause,
   JoinType,
   OrderItem,
+  RefAction,
   SelectItem,
   SelectStmt,
   SetOp,
   SetOpKind,
   Statement,
+  TableConstraints,
 } from './ast'
 
 // Binary operator precedence (higher binds tighter).
@@ -128,6 +133,8 @@ class Parser {
         return this.parseDelete()
       case 'CREATE':
         return this.parseCreate()
+      case 'ALTER':
+        return this.parseAlter()
       case 'DROP':
         return this.parseDrop()
       case 'EXPLAIN':
@@ -206,11 +213,92 @@ class Parser {
     const name = this.parseIdent('table name')
     this.expect('(')
     const columns: ColumnDef[] = []
+    const constraints: TableConstraints = emptyConstraints()
     do {
-      columns.push(this.parseColumnDef())
+      // A table element is either a table-level constraint or a column def.
+      if (this.atTableConstraint()) this.parseTableConstraint(constraints)
+      else this.parseColumnDef(columns, constraints)
     } while (this.accept(','))
     this.expect(')')
-    return { kind: 'create_table', name, columns, ifNotExists }
+    return { kind: 'create_table', name, columns, constraints, ifNotExists }
+  }
+
+  /** Does the next token begin a *table-level* constraint (vs. a column def)? */
+  private atTableConstraint(): boolean {
+    return (
+      this.at('CONSTRAINT') ||
+      this.at('PRIMARY') ||
+      this.at('FOREIGN') ||
+      this.at('CHECK') ||
+      this.at('UNIQUE')
+    )
+  }
+
+  private parseTableConstraint(c: TableConstraints): void {
+    let name: string | undefined
+    if (this.accept('CONSTRAINT')) name = this.parseIdent('constraint name')
+    if (this.accept('PRIMARY')) {
+      this.expect('KEY')
+      if (c.primaryKey) throw this.err('a table may have only one PRIMARY KEY')
+      c.primaryKey = this.parseColumnList()
+    } else if (this.accept('UNIQUE')) {
+      c.uniques.push(this.parseColumnList())
+    } else if (this.accept('CHECK')) {
+      c.checks.push({ name, expr: this.parseParenExpr() })
+    } else if (this.accept('FOREIGN')) {
+      this.expect('KEY')
+      const columns = this.parseColumnList()
+      c.foreignKeys.push(this.parseReferences(name, columns))
+    } else {
+      throw this.err('expected a table constraint (PRIMARY KEY / UNIQUE / CHECK / FOREIGN KEY)')
+    }
+  }
+
+  /** Parse the `REFERENCES parent[(cols)] [ON DELETE …] [ON UPDATE …]` tail. */
+  private parseReferences(name: string | undefined, columns: string[]): ForeignKeyDef {
+    this.expect('REFERENCES')
+    const refTable = this.parseIdent('referenced table')
+    const refColumns = this.at('(') ? this.parseColumnList() : []
+    let onDelete: RefAction = 'NO ACTION'
+    let onUpdate: RefAction = 'NO ACTION'
+    while (this.accept('ON')) {
+      if (this.accept('DELETE')) onDelete = this.parseRefAction()
+      else if (this.accept('UPDATE')) onUpdate = this.parseRefAction()
+      else throw this.err('expected DELETE or UPDATE after ON')
+    }
+    return { name, columns, refTable, refColumns, onDelete, onUpdate }
+  }
+
+  private parseRefAction(): RefAction {
+    if (this.accept('CASCADE')) return 'CASCADE'
+    if (this.accept('RESTRICT')) return 'RESTRICT'
+    if (this.accept('NO')) {
+      this.expect('ACTION')
+      return 'NO ACTION'
+    }
+    if (this.accept('SET')) {
+      if (this.accept('NULL')) return 'SET NULL'
+      if (this.accept('DEFAULT')) return 'SET DEFAULT'
+      throw this.err('expected NULL or DEFAULT after SET')
+    }
+    throw this.err('expected a referential action (CASCADE / RESTRICT / NO ACTION / SET NULL / SET DEFAULT)')
+  }
+
+  private parseColumnList(): string[] {
+    this.expect('(')
+    const cols: string[] = []
+    do {
+      cols.push(this.parseIdent('column name'))
+    } while (this.accept(','))
+    this.expect(')')
+    return cols
+  }
+
+  private parseParenExpr(): Expr {
+    this.expect('(')
+    const e = this.parseExpr()
+    this.expect(')')
+    return e
   }
 
   private parseIfNotExists(): boolean {
@@ -222,25 +310,108 @@ class Parser {
     return false
   }
 
-  private parseColumnDef(): ColumnDef {
+  /** Parse one column definition, folding any inline constraints into `c`. */
+  private parseColumnDef(columns: ColumnDef[], c: TableConstraints): void {
     const name = this.parseIdent('column name')
     const type = this.parseTypeName()
     const def: ColumnDef = { name, type, primaryKey: false, notNull: false, unique: false }
     for (;;) {
-      if (this.accept('PRIMARY')) {
-        this.expect('KEY')
-        def.primaryKey = true
-        def.notNull = true
-      } else if (this.accept('NOT')) {
-        this.expect('NULL')
-        def.notNull = true
-      } else if (this.accept('UNIQUE')) {
-        def.unique = true
+      if (this.accept('CONSTRAINT')) {
+        // A named inline constraint; the name is attached to whatever follows.
+        const cname = this.parseIdent('constraint name')
+        this.parseInlineConstraint(def, c, cname)
+      } else if (this.atInlineConstraint()) {
+        this.parseInlineConstraint(def, c, undefined)
       } else {
         break
       }
     }
-    return def
+    columns.push(def)
+  }
+
+  private atInlineConstraint(): boolean {
+    return (
+      this.at('PRIMARY') ||
+      this.at('NOT') ||
+      this.at('NULL') ||
+      this.at('UNIQUE') ||
+      this.at('DEFAULT') ||
+      this.at('CHECK') ||
+      this.at('REFERENCES')
+    )
+  }
+
+  private parseInlineConstraint(def: ColumnDef, c: TableConstraints, name: string | undefined): void {
+    if (this.accept('PRIMARY')) {
+      this.expect('KEY')
+      def.primaryKey = true
+      def.notNull = true
+    } else if (this.accept('NOT')) {
+      this.expect('NULL')
+      def.notNull = true
+    } else if (this.accept('NULL')) {
+      // An explicit NULL-ability marker; no-op (the default).
+    } else if (this.accept('UNIQUE')) {
+      def.unique = true
+    } else if (this.accept('DEFAULT')) {
+      def.default = this.parseDefaultValue()
+    } else if (this.accept('CHECK')) {
+      c.checks.push({ name, expr: this.parseParenExpr() })
+    } else if (this.accept('REFERENCES')) {
+      // Column-level FK: rewind so parseReferences can consume REFERENCES.
+      this.pos--
+      c.foreignKeys.push(this.parseReferences(name, [def.name]))
+    } else {
+      throw this.err('expected a column constraint')
+    }
+  }
+
+  /** A DEFAULT value: a (possibly signed/parenthesised) term — restricted so it
+   *  never swallows a following `NOT NULL` or another column constraint. */
+  private parseDefaultValue(): Expr {
+    return this.parseUnary()
+  }
+
+  private parseAlter(): Statement {
+    this.expect('ALTER')
+    this.expect('TABLE')
+    const table = this.parseIdent('table name')
+    if (this.accept('RENAME')) {
+      if (this.accept('TO')) return { kind: 'alter_table', table, action: { kind: 'rename_table', to: this.parseIdent('new table name') } }
+      this.accept('COLUMN')
+      const column = this.parseIdent('column name')
+      this.expect('TO')
+      return { kind: 'alter_table', table, action: { kind: 'rename_column', column, to: this.parseIdent('new column name') } }
+    }
+    if (this.accept('DROP')) {
+      this.accept('COLUMN')
+      return { kind: 'alter_table', table, action: { kind: 'drop_column', column: this.parseIdent('column name') } }
+    }
+    if (this.accept('ADD')) {
+      // ADD <table-constraint> | ADD [COLUMN] <column-def>
+      let name: string | undefined
+      if (this.accept('CONSTRAINT')) name = this.parseIdent('constraint name')
+      if (this.accept('CHECK')) {
+        const check: CheckConstraint = { name, expr: this.parseParenExpr() }
+        return { kind: 'alter_table', table, action: { kind: 'add_check', check } }
+      }
+      if (this.accept('UNIQUE')) {
+        return { kind: 'alter_table', table, action: { kind: 'add_unique', columns: this.parseColumnList() } }
+      }
+      if (this.accept('FOREIGN')) {
+        this.expect('KEY')
+        const columns = this.parseColumnList()
+        const fk = this.parseReferences(name, columns)
+        return { kind: 'alter_table', table, action: { kind: 'add_foreign_key', fk } }
+      }
+      if (name !== undefined) throw this.err('expected CHECK / UNIQUE / FOREIGN KEY after CONSTRAINT name')
+      this.accept('COLUMN')
+      const columns: ColumnDef[] = []
+      const scratch = emptyConstraints()
+      this.parseColumnDef(columns, scratch)
+      return { kind: 'alter_table', table, action: { kind: 'add_column', column: columns[0] } }
+    }
+    throw this.err('expected ADD / DROP / RENAME after ALTER TABLE')
   }
 
   private parseCreateIndex(): Statement {

@@ -13,10 +13,23 @@ const SECTIONS: Section[] = [
   {
     title: 'Data definition',
     entries: [
-      { syntax: 'CREATE TABLE t (col TYPE [PRIMARY KEY] [NOT NULL] [UNIQUE], …)', note: 'Types: INTEGER, REAL, TEXT, BOOLEAN. PK/UNIQUE auto-create a B+Tree index.' },
+      { syntax: 'CREATE TABLE t (col TYPE [PRIMARY KEY] [NOT NULL] [UNIQUE] [DEFAULT e] [CHECK (e)] [REFERENCES p(c) …], …)', note: 'Types: INTEGER, REAL, TEXT, BOOLEAN, DATE/TIME/TIMESTAMP/INTERVAL. PK/UNIQUE auto-create a B+Tree index.' },
       { syntax: 'CREATE [UNIQUE] INDEX name ON t (col1 [, col2, …])', note: 'Single- or multi-column B+Tree. A composite index answers an equality prefix plus one trailing range from one tree; a covering index can be read index-only (no heap fetch). Separate single-column indexes combine via a bitmap AND, and an IN-list scans one index via a bitmap OR.' },
+      { syntax: 'ALTER TABLE t ADD [COLUMN] col TYPE … · ADD [CONSTRAINT n] CHECK/UNIQUE/FOREIGN KEY …', note: 'Evolve a table in place: a new column backfills existing rows with its DEFAULT; an added constraint is validated against the current data before it takes effect.' },
+      { syntax: 'ALTER TABLE t RENAME [TO new | COLUMN c TO new] · DROP COLUMN c', note: 'Rename a table/column (referencing foreign keys are updated) or drop a column (refused while an index or constraint still needs it).' },
       { syntax: 'ANALYZE [t]', note: 'Gather column statistics (distinct/null counts, min/max, equi-depth histograms, MCV list) that drive cost-based row estimates.' },
-      { syntax: 'DROP TABLE [IF EXISTS] t', note: 'Removes a table and its indexes.' },
+      { syntax: 'DROP TABLE [IF EXISTS] t', note: 'Removes a table and its indexes; refused while another table’s FOREIGN KEY still references it.' },
+    ],
+  },
+  {
+    title: 'Constraints & referential integrity',
+    entries: [
+      { syntax: 'col TYPE NOT NULL · col TYPE DEFAULT expr', note: 'NOT NULL rejects a NULL; DEFAULT supplies the value when the column is omitted on INSERT (e.g. DEFAULT 0, DEFAULT CURRENT_TIMESTAMP).' },
+      { syntax: 'PRIMARY KEY (a [, b, …]) · UNIQUE (a [, b, …])', note: 'Single- or multi-column keys, enforced by a UNIQUE B+Tree. PK columns are implicitly NOT NULL; a UNIQUE key with any NULL component never collides (SQL semantics).' },
+      { syntax: '[CONSTRAINT name] CHECK (expr)', note: 'A row is rejected only when the predicate evaluates to FALSE — a NULL (unknown) result passes. Enforced on every INSERT and UPDATE.' },
+      { syntax: 'FOREIGN KEY (a, …) REFERENCES parent (x, …)', note: 'Every non-NULL child key must match a parent PRIMARY KEY / UNIQUE row (MATCH SIMPLE: a key with any NULL is exempt). Checked on INSERT and UPDATE of the child.' },
+      { syntax: 'REFERENCES p(c) ON DELETE … ON UPDATE …', note: 'Referential actions when a referenced parent row is deleted or its key updated: NO ACTION · RESTRICT · CASCADE · SET NULL · SET DEFAULT. Cascades recurse (and are cycle-guarded).' },
+      { syntax: '— statement atomicity —', note: 'Every INSERT/UPDATE/DELETE/DDL is all-or-nothing: if any row, cascade, or constraint fails part-way, the whole statement rolls back to its pre-statement state.' },
     ],
   },
   {

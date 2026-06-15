@@ -64,10 +64,28 @@ export class Engine {
   }
 
   private runStatement(stmt: Statement, sql: string): QueryResult {
+    // Statement atomicity: a mutating statement that fails part-way (a constraint
+    // violation on row 50 of a bulk insert, a cascade that hits a RESTRICT) leaves
+    // the database exactly as it was. We snapshot first and roll back on any throw.
+    if (isMutation(stmt.kind)) {
+      const snap = this.db.snapshot()
+      try {
+        return this.dispatch(stmt, sql)
+      } catch (err) {
+        this.db = Database.restore(snap)
+        throw err
+      }
+    }
+    return this.dispatch(stmt, sql)
+  }
+
+  private dispatch(stmt: Statement, sql: string): QueryResult {
     const t0 = performance.now()
     switch (stmt.kind) {
       case 'create_table':
         return this.createTable(stmt, sql, t0)
+      case 'alter_table':
+        return this.alterTable(stmt, sql, t0)
       case 'drop_table':
         return this.dropTable(stmt, sql, t0)
       case 'create_index':
@@ -101,8 +119,83 @@ export class Engine {
       if (seen.has(c.name.toLowerCase())) throw new SqlError(`duplicate column "${c.name}"`, 'ddl')
       seen.add(c.name.toLowerCase())
     }
-    this.db.createTable(stmt.name, stmt.columns)
+    this.db.createTable(stmt.name, stmt.columns, stmt.constraints)
     return msg(`table "${stmt.name}" created (${stmt.columns.length} columns)`, sql, t0)
+  }
+
+  private alterTable(stmt: Extract<Statement, { kind: 'alter_table' }>, sql: string, t0: number): QueryResult {
+    const table = this.db.getTable(stmt.table)
+    const a = stmt.action
+    switch (a.kind) {
+      case 'add_column': {
+        table.addColumn(a.column)
+        if (a.column.primaryKey || a.column.unique) {
+          table.createIndex(`${table.name}_${a.column.name}_key`, [a.column.name], true)
+        }
+        return msg(`column "${a.column.name}" added to "${table.name}"`, sql, t0)
+      }
+      case 'drop_column': {
+        const used = table.columnDependents(a.column)
+        if (used.length > 0) {
+          throw new SqlError(`cannot drop column "${a.column}" — used by ${used.join(', ')}`, 'ddl')
+        }
+        for (const other of this.db.tables.values()) {
+          for (const fk of other.constraints.foreignKeys) {
+            if (fk.refTable.toLowerCase() === table.name.toLowerCase() && fk.refColumns.some((c) => c.toLowerCase() === a.column.toLowerCase())) {
+              throw new SqlError(`cannot drop column "${a.column}" — referenced by FOREIGN KEY on "${other.name}"`, 'ddl')
+            }
+          }
+        }
+        table.dropColumn(a.column)
+        return msg(`column "${a.column}" dropped from "${table.name}"`, sql, t0)
+      }
+      case 'rename_table': {
+        if (this.db.hasTable(a.to)) throw new SqlError(`table "${a.to}" already exists`, 'ddl')
+        const old = table.name
+        this.db.tables.delete(old.toLowerCase())
+        table.name = a.to
+        this.db.tables.set(a.to.toLowerCase(), table)
+        for (const other of this.db.tables.values()) {
+          for (const fk of other.constraints.foreignKeys) {
+            if (fk.refTable.toLowerCase() === old.toLowerCase()) fk.refTable = a.to
+          }
+        }
+        return msg(`table "${old}" renamed to "${a.to}"`, sql, t0)
+      }
+      case 'rename_column': {
+        table.renameColumn(a.column, a.to)
+        for (const other of this.db.tables.values()) {
+          for (const fk of other.constraints.foreignKeys) {
+            if (fk.refTable.toLowerCase() === table.name.toLowerCase()) {
+              fk.refColumns = fk.refColumns.map((c) => (c.toLowerCase() === a.column.toLowerCase() ? a.to : c))
+            }
+          }
+        }
+        return msg(`column "${a.column}" renamed to "${a.to}" in "${table.name}"`, sql, t0)
+      }
+      case 'add_check': {
+        table.constraints.checks.push(a.check)
+        table.invalidateChecks()
+        for (const row of table.heap.values()) table.validateRow(row)
+        return msg(`CHECK constraint added to "${table.name}"`, sql, t0)
+      }
+      case 'add_unique': {
+        if (!table.uniqueIndexOn(a.columns)) {
+          table.createIndex(`${table.name}_uniq_${a.columns.join('_')}`, a.columns, true)
+        }
+        table.constraints.uniques.push(a.columns)
+        return msg(`UNIQUE constraint added to "${table.name}" (${a.columns.join(', ')})`, sql, t0)
+      }
+      case 'add_foreign_key': {
+        this.db.validateForeignKey(table, a.fk)
+        // Verify existing rows satisfy the new reference before recording it.
+        for (const row of table.heap.values()) {
+          this.db.checkReferencesFor(table, row, a.fk)
+        }
+        table.constraints.foreignKeys.push(a.fk)
+        return msg(`FOREIGN KEY added to "${table.name}" (${a.fk.columns.join(', ')})`, sql, t0)
+      }
+    }
   }
 
   private dropTable(stmt: Extract<Statement, { kind: 'drop_table' }>, sql: string, t0: number): QueryResult {
@@ -149,12 +242,20 @@ export class Engine {
       return i
     })
 
+    const provided = new Set(colIndexes)
     const insertValues = (values: SqlValue[]): void => {
       const row: Row = new Array(table.columns.length).fill(null)
       for (let i = 0; i < values.length; i++) {
         row[colIndexes[i]] = coerceTo(table.columns[colIndexes[i]].type, values[i])
       }
-      table.insertRow(row)
+      // Columns not supplied take their DEFAULT (if any); the rest stay NULL.
+      for (let i = 0; i < table.columns.length; i++) {
+        const col = table.columns[i]
+        if (!provided.has(i) && col.default) {
+          row[i] = coerceTo(col.type, evalConstant(col.default))
+        }
+      }
+      this.db.insertChecked(table, row)
     }
 
     let count = 0
@@ -193,10 +294,11 @@ export class Engine {
     const targets: number[] = []
     for (const [rowid, row] of table.heap) if (!pred || truthy(pred(row))) targets.push(rowid)
     for (const rowid of targets) {
-      const row = table.heap.get(rowid)!
+      const row = table.heap.get(rowid)
+      if (!row) continue // a prior row's cascade may have removed it
       const next = row.slice()
       for (const s of setters) next[s.i] = coerceTo(table.columns[s.i].type, s.fn(row))
-      table.updateRow(rowid, next)
+      this.db.updateChecked(table, rowid, next)
     }
     return msg(`${targets.length} row${targets.length === 1 ? '' : 's'} updated in "${stmt.table}"`, sql, t0, targets.length)
   }
@@ -207,7 +309,7 @@ export class Engine {
     const pred = stmt.where ? compileExpr(stmt.where, { resolve: (t, n) => resolveColumn(schema, t, n) }) : null
     const targets: number[] = []
     for (const [rowid, row] of table.heap) if (!pred || truthy(pred(row))) targets.push(rowid)
-    for (const rowid of targets) table.deleteRow(rowid)
+    for (const rowid of targets) this.db.deleteChecked(table, rowid)
     return msg(`${targets.length} row${targets.length === 1 ? '' : 's'} deleted from "${stmt.table}"`, sql, t0, targets.length)
   }
 
@@ -253,6 +355,19 @@ export class Engine {
       }
     }
   }
+}
+
+/** Statement kinds that mutate persistent state and so run atomically. */
+function isMutation(kind: Statement['kind']): boolean {
+  return (
+    kind === 'insert' ||
+    kind === 'update' ||
+    kind === 'delete' ||
+    kind === 'create_table' ||
+    kind === 'alter_table' ||
+    kind === 'drop_table' ||
+    kind === 'create_index'
+  )
 }
 
 function runOperator(op: Operator): Row[] {

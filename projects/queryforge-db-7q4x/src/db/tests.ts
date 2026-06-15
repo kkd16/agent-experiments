@@ -48,6 +48,22 @@ function test(group: string, name: string, run: () => void) {
 function assert(cond: boolean, detail: string) {
   if (!cond) throw new Error(detail)
 }
+/** Assert that running `sql` throws, optionally with `frag` in the message. */
+function throws(e: Engine, sql: string, frag?: string): void {
+  try {
+    e.execute(sql)
+  } catch (err) {
+    const m = err instanceof Error ? err.message : String(err)
+    if (frag && !m.includes(frag)) throw new Error(`threw, but message ${JSON.stringify(m)} lacks ${JSON.stringify(frag)}`, { cause: err })
+    return
+  }
+  throw new Error(`expected ${JSON.stringify(sql)} to throw${frag ? ` (${frag})` : ''}`)
+}
+function fresh(ddl: string): Engine {
+  const e = new Engine()
+  e.execute(ddl)
+  return e
+}
 
 // --- lexer / parser ---------------------------------------------------------
 test('parser', 'tokenizes and parses a SELECT', () => {
@@ -1231,6 +1247,231 @@ test('temporal', 'CONCAT and || render temporal values', () => {
   const e = new Engine()
   assert(scalar(e, "SELECT 'd=' || DATE '2026-06-15'") === 'd=2026-06-15', 'concat operator')
   assert(scalar(e, "SELECT CONCAT('t=', TIME '09:30:00')") === 't=09:30:00', 'CONCAT function')
+})
+
+// --- constraints: CHECK ----------------------------------------------------
+test('constraint', 'CHECK rejects a false row, passes true & NULL', () => {
+  const e = fresh('CREATE TABLE t (id INTEGER PRIMARY KEY, age INTEGER CHECK (age >= 0))')
+  e.execute('INSERT INTO t VALUES (1, 30)')
+  throws(e, 'INSERT INTO t VALUES (2, -5)', 'CHECK')
+  e.execute('INSERT INTO t (id) VALUES (3)') // NULL age → check is unknown → passes
+  assert(scalar(e, 'SELECT COUNT(*) FROM t') === 2, 'only the two valid rows survive')
+})
+test('constraint', 'table-level CHECK over several columns', () => {
+  const e = fresh('CREATE TABLE t (lo INTEGER, hi INTEGER, CHECK (lo <= hi))')
+  e.execute('INSERT INTO t VALUES (1, 5)')
+  throws(e, 'INSERT INTO t VALUES (9, 2)', 'CHECK')
+})
+test('constraint', 'CHECK enforced on UPDATE', () => {
+  const e = fresh('CREATE TABLE t (id INTEGER PRIMARY KEY, age INTEGER CHECK (age >= 0))')
+  e.execute('INSERT INTO t VALUES (1, 30)')
+  throws(e, 'UPDATE t SET age = -1 WHERE id = 1', 'CHECK')
+  assert(scalar(e, 'SELECT age FROM t') === 30, 'failed update left the row unchanged')
+})
+test('constraint', 'named CHECK reports its name', () => {
+  const e = fresh('CREATE TABLE t (n INTEGER, CONSTRAINT positive CHECK (n > 0))')
+  throws(e, 'INSERT INTO t VALUES (-1)', 'positive')
+})
+
+// --- constraints: DEFAULT --------------------------------------------------
+test('constraint', 'DEFAULT fills omitted columns', () => {
+  const e = fresh("CREATE TABLE t (id INTEGER PRIMARY KEY, status TEXT DEFAULT 'new', n INTEGER DEFAULT 0)")
+  e.execute('INSERT INTO t (id) VALUES (1)')
+  assert(scalar(e, 'SELECT status FROM t') === 'new', 'text default')
+  assert(scalar(e, 'SELECT n FROM t') === 0, 'int default')
+  e.execute("INSERT INTO t (id, status) VALUES (2, 'old')")
+  assert(scalar(e, 'SELECT status FROM t WHERE id = 2') === 'old', 'default overridden')
+})
+test('constraint', 'DEFAULT CURRENT_TIMESTAMP evaluates per row', () => {
+  const e = fresh('CREATE TABLE t (id INTEGER PRIMARY KEY, made TIMESTAMP DEFAULT CURRENT_TIMESTAMP)')
+  e.execute('INSERT INTO t (id) VALUES (1)')
+  assert(scalar(e, 'SELECT made FROM t') !== null, 'timestamp default present')
+})
+
+// --- constraints: composite PK / UNIQUE ------------------------------------
+test('constraint', 'composite PRIMARY KEY: uniqueness + NOT NULL', () => {
+  const e = fresh('CREATE TABLE t (a INTEGER, b INTEGER, PRIMARY KEY (a, b))')
+  e.execute('INSERT INTO t VALUES (1, 1), (1, 2)')
+  throws(e, 'INSERT INTO t VALUES (1, 1)', 'UNIQUE')
+  throws(e, 'INSERT INTO t (a) VALUES (5)', 'NOT NULL')
+  // a single column may repeat as long as the pair is unique
+  assert(scalar(e, 'SELECT COUNT(*) FROM t') === 2, 'two rows so far')
+})
+test('constraint', 'table-level UNIQUE (multi-column)', () => {
+  const e = fresh('CREATE TABLE u (id INTEGER PRIMARY KEY, x INTEGER, y INTEGER, UNIQUE (x, y))')
+  e.execute('INSERT INTO u VALUES (1, 1, 1)')
+  throws(e, 'INSERT INTO u VALUES (2, 1, 1)', 'UNIQUE')
+  e.execute('INSERT INTO u VALUES (3, 1, 2)') // differs in y → ok
+  assert(scalar(e, 'SELECT COUNT(*) FROM u') === 2, 'distinct pair inserted')
+})
+test('constraint', 'UNIQUE allows repeated NULLs', () => {
+  const e = fresh('CREATE TABLE u (id INTEGER PRIMARY KEY, code TEXT UNIQUE)')
+  e.execute('INSERT INTO u (id) VALUES (1), (2)') // both code NULL → allowed
+  assert(scalar(e, 'SELECT COUNT(*) FROM u') === 2, 'two NULL codes coexist')
+})
+test('constraint', 'UNIQUE enforced on UPDATE (excludes self)', () => {
+  const e = fresh('CREATE TABLE u (id INTEGER PRIMARY KEY, code TEXT UNIQUE)')
+  e.execute("INSERT INTO u VALUES (1, 'a'), (2, 'b')")
+  throws(e, "UPDATE u SET code = 'a' WHERE id = 2", 'UNIQUE')
+  e.execute("UPDATE u SET code = 'a' WHERE id = 1") // self-update is fine
+  assert(scalar(e, "SELECT id FROM u WHERE code = 'a'") === 1, 'self-update allowed')
+})
+
+// --- constraints: FOREIGN KEY existence ------------------------------------
+function parentChild(onDelete = '', onUpdate = ''): Engine {
+  return fresh(
+    'CREATE TABLE p (id INTEGER PRIMARY KEY);' +
+      `CREATE TABLE c (id INTEGER PRIMARY KEY, pid INTEGER REFERENCES p(id) ${onDelete} ${onUpdate})`,
+  )
+}
+test('fk', 'a child must reference an existing parent', () => {
+  const e = parentChild()
+  e.execute('INSERT INTO p VALUES (1)')
+  e.execute('INSERT INTO c VALUES (10, 1)')
+  throws(e, 'INSERT INTO c VALUES (11, 99)', 'FOREIGN KEY')
+  e.execute('INSERT INTO c VALUES (12, NULL)') // NULL fk → unenforced
+  assert(scalar(e, 'SELECT COUNT(*) FROM c') === 2, 'valid + NULL child rows')
+})
+test('fk', 'UPDATE that orphans a child is rejected', () => {
+  const e = parentChild()
+  e.execute('INSERT INTO p VALUES (1)')
+  e.execute('INSERT INTO c VALUES (10, 1)')
+  throws(e, 'UPDATE c SET pid = 50 WHERE id = 10', 'FOREIGN KEY')
+})
+test('fk', 'FK must target a PRIMARY KEY / UNIQUE column', () => {
+  const e = fresh('CREATE TABLE p (id INTEGER PRIMARY KEY, name TEXT)')
+  throws(e, 'CREATE TABLE c (id INTEGER, pname TEXT REFERENCES p(name))', 'UNIQUE')
+})
+test('fk', 'cannot DROP a table still referenced', () => {
+  const e = parentChild()
+  throws(e, 'DROP TABLE p', 'referenced')
+})
+
+// --- constraints: referential actions --------------------------------------
+test('fk', 'ON DELETE CASCADE removes dependents', () => {
+  const e = parentChild('ON DELETE CASCADE')
+  e.execute('INSERT INTO p VALUES (1), (2)')
+  e.execute('INSERT INTO c VALUES (10, 1), (11, 1), (12, 2)')
+  e.execute('DELETE FROM p WHERE id = 1')
+  assert(scalar(e, 'SELECT COUNT(*) FROM c') === 1, 'two children cascaded away')
+  assert(scalar(e, 'SELECT id FROM c') === 12, 'the unrelated child remains')
+})
+test('fk', 'ON DELETE RESTRICT blocks the delete', () => {
+  const e = parentChild('ON DELETE RESTRICT')
+  e.execute('INSERT INTO p VALUES (1)')
+  e.execute('INSERT INTO c VALUES (10, 1)')
+  throws(e, 'DELETE FROM p WHERE id = 1', 'RESTRICT')
+  assert(scalar(e, 'SELECT COUNT(*) FROM p') === 1, 'parent untouched')
+})
+test('fk', 'ON DELETE SET NULL nulls the child key', () => {
+  const e = parentChild('ON DELETE SET NULL')
+  e.execute('INSERT INTO p VALUES (1)')
+  e.execute('INSERT INTO c VALUES (10, 1)')
+  e.execute('DELETE FROM p WHERE id = 1')
+  assert(scalar(e, 'SELECT COUNT(*) FROM c') === 1, 'child kept')
+  assert(scalar(e, 'SELECT pid FROM c') === null, 'fk set to NULL')
+})
+test('fk', 'ON UPDATE CASCADE follows the parent key', () => {
+  const e = parentChild('', 'ON UPDATE CASCADE')
+  e.execute('INSERT INTO p VALUES (1)')
+  e.execute('INSERT INTO c VALUES (10, 1)')
+  e.execute('UPDATE p SET id = 2 WHERE id = 1')
+  assert(scalar(e, 'SELECT pid FROM c') === 2, 'child key followed the parent')
+})
+test('fk', 'self-referential ON DELETE CASCADE walks the tree', () => {
+  const e = fresh('CREATE TABLE node (id INTEGER PRIMARY KEY, parent INTEGER REFERENCES node(id) ON DELETE CASCADE)')
+  e.execute('INSERT INTO node VALUES (1, NULL), (2, 1), (3, 2), (4, 1)')
+  e.execute('DELETE FROM node WHERE id = 1')
+  assert(scalar(e, 'SELECT COUNT(*) FROM node') === 0, 'whole subtree cascaded')
+})
+test('fk', 'multi-column FOREIGN KEY', () => {
+  const e = fresh(
+    'CREATE TABLE p (a INTEGER, b INTEGER, PRIMARY KEY (a, b));' +
+      'CREATE TABLE c (id INTEGER PRIMARY KEY, a INTEGER, b INTEGER, FOREIGN KEY (a, b) REFERENCES p (a, b) ON DELETE CASCADE)',
+  )
+  e.execute('INSERT INTO p VALUES (1, 1), (1, 2)')
+  e.execute('INSERT INTO c VALUES (10, 1, 1), (11, 1, 2)')
+  throws(e, 'INSERT INTO c VALUES (12, 9, 9)', 'FOREIGN KEY')
+  e.execute('DELETE FROM p WHERE a = 1 AND b = 1')
+  assert(scalar(e, 'SELECT COUNT(*) FROM c') === 1, 'only the (1,1) child cascaded')
+})
+
+// --- statement atomicity ----------------------------------------------------
+test('constraint', 'a partly-failing statement rolls back entirely', () => {
+  const e = fresh('CREATE TABLE t (id INTEGER PRIMARY KEY, n INTEGER CHECK (n > 0))')
+  throws(e, 'INSERT INTO t VALUES (1, 5), (2, 10), (3, -1)', 'CHECK')
+  assert(scalar(e, 'SELECT COUNT(*) FROM t') === 0, 'no rows from the failed bulk insert')
+})
+test('constraint', 'a blocked cascade leaves everything unchanged', () => {
+  const e = fresh(
+    'CREATE TABLE p (id INTEGER PRIMARY KEY);' +
+      'CREATE TABLE c (id INTEGER PRIMARY KEY, pid INTEGER REFERENCES p(id) ON DELETE RESTRICT)',
+  )
+  e.execute('INSERT INTO p VALUES (1), (2)')
+  e.execute('INSERT INTO c VALUES (10, 2)')
+  throws(e, 'DELETE FROM p', 'RESTRICT')
+  assert(scalar(e, 'SELECT COUNT(*) FROM p') === 2, 'no parent deleted despite p(1) being free')
+})
+
+// --- ALTER TABLE -----------------------------------------------------------
+test('alter', 'ADD COLUMN backfills existing rows with the DEFAULT', () => {
+  const e = fresh('CREATE TABLE t (id INTEGER PRIMARY KEY)')
+  e.execute('INSERT INTO t VALUES (1)')
+  e.execute("ALTER TABLE t ADD COLUMN label TEXT DEFAULT 'x'")
+  assert(scalar(e, 'SELECT label FROM t') === 'x', 'existing row backfilled')
+})
+test('alter', 'ADD COLUMN NOT NULL without DEFAULT rejected on non-empty table', () => {
+  const e = fresh('CREATE TABLE t (id INTEGER PRIMARY KEY)')
+  e.execute('INSERT INTO t VALUES (1)')
+  throws(e, 'ALTER TABLE t ADD COLUMN x INTEGER NOT NULL', 'DEFAULT')
+})
+test('alter', 'ADD CONSTRAINT CHECK applies to future rows', () => {
+  const e = fresh('CREATE TABLE t (id INTEGER PRIMARY KEY, a INTEGER)')
+  e.execute('INSERT INTO t VALUES (1, 10)')
+  e.execute('ALTER TABLE t ADD CONSTRAINT chk CHECK (a >= 0)')
+  throws(e, 'INSERT INTO t VALUES (2, -1)', 'CHECK')
+})
+test('alter', 'ADD FOREIGN KEY validates the current rows', () => {
+  const e = fresh('CREATE TABLE p (id INTEGER PRIMARY KEY); CREATE TABLE c (id INTEGER PRIMARY KEY, pid INTEGER)')
+  e.execute('INSERT INTO p VALUES (1)')
+  e.execute('INSERT INTO c VALUES (10, 1)')
+  e.execute('ALTER TABLE c ADD FOREIGN KEY (pid) REFERENCES p (id)')
+  throws(e, 'INSERT INTO c VALUES (11, 99)', 'FOREIGN KEY')
+  const bad = fresh('CREATE TABLE p (id INTEGER PRIMARY KEY); CREATE TABLE c (id INTEGER PRIMARY KEY, pid INTEGER)')
+  bad.execute('INSERT INTO p VALUES (1); INSERT INTO c VALUES (10, 99)')
+  throws(bad, 'ALTER TABLE c ADD FOREIGN KEY (pid) REFERENCES p (id)', 'FOREIGN KEY')
+})
+test('alter', 'RENAME TABLE and RENAME COLUMN', () => {
+  const e = fresh('CREATE TABLE t (id INTEGER PRIMARY KEY, a INTEGER)')
+  e.execute('INSERT INTO t VALUES (1, 10)')
+  e.execute('ALTER TABLE t RENAME COLUMN a TO amount')
+  assert(scalar(e, 'SELECT amount FROM t') === 10, 'column renamed')
+  e.execute('ALTER TABLE t RENAME TO things')
+  assert(scalar(e, 'SELECT COUNT(*) FROM things') === 1, 'table renamed')
+})
+test('alter', 'DROP COLUMN refuses a column an index needs', () => {
+  const e = fresh('CREATE TABLE t (id INTEGER PRIMARY KEY, a INTEGER, b INTEGER); CREATE INDEX ix ON t (a)')
+  e.execute('INSERT INTO t VALUES (1, 2, 3)')
+  throws(e, 'ALTER TABLE t DROP COLUMN a', 'index')
+  e.execute('ALTER TABLE t DROP COLUMN b')
+  throws(e, 'SELECT b FROM t', 'b')
+})
+
+// --- persistence of constraints --------------------------------------------
+test('constraint', 'constraints survive a snapshot round-trip', () => {
+  const e = fresh(
+    'CREATE TABLE p (id INTEGER PRIMARY KEY);' +
+      'CREATE TABLE c (id INTEGER PRIMARY KEY, pid INTEGER REFERENCES p(id) ON DELETE CASCADE, n INTEGER CHECK (n > 0) DEFAULT 1)',
+  )
+  e.execute('INSERT INTO p VALUES (1)')
+  e.execute('INSERT INTO c (id, pid) VALUES (10, 1)')
+  const snap = JSON.parse(JSON.stringify(e.db.snapshot()))
+  const e2 = new Engine(Database.restore(snap))
+  assert(scalar(e2, 'SELECT n FROM c') === 1, 'DEFAULT round-tripped')
+  throws(e2, 'INSERT INTO c (id, pid, n) VALUES (11, 1, -1)', 'CHECK')
+  throws(e2, 'INSERT INTO c (id, pid) VALUES (12, 77)', 'FOREIGN KEY')
+  e2.execute('DELETE FROM p WHERE id = 1')
+  assert(scalar(e2, 'SELECT COUNT(*) FROM c') === 0, 'ON DELETE CASCADE round-tripped')
 })
 
 export function runTests(): TestResult[] {

@@ -14,6 +14,17 @@ interface Props {
 function TableCard({ table, onInsert }: { table: TableInfo; onInsert: (t: string) => void }) {
   const [open, setOpen] = useState(true)
   const statFor = (name: string) => table.stats?.find((s) => s.column.toLowerCase() === name.toLowerCase())
+  const con = table.constraints
+  const fkCols = new Map<string, string>() // column → "parent.col"
+  for (const fk of con.foreignKeys) {
+    fk.columns.forEach((c, i) => fkCols.set(c.toLowerCase(), `${fk.refTable}.${fk.refColumns[i] ?? ''}`))
+  }
+  const actionTag = (fk: { onDelete: string; onUpdate: string }) => {
+    const parts: string[] = []
+    if (fk.onDelete !== 'NO ACTION') parts.push(`ON DELETE ${fk.onDelete}`)
+    if (fk.onUpdate !== 'NO ACTION') parts.push(`ON UPDATE ${fk.onUpdate}`)
+    return parts.join(' · ')
+  }
   return (
     <div className="schema-table">
       <button className="schema-table-head" onClick={() => setOpen((o) => !o)}>
@@ -34,6 +45,12 @@ function TableCard({ table, onInsert }: { table: TableInfo; onInsert: (t: string
               {c.primaryKey && <span className="badge pk">PK</span>}
               {c.unique && !c.primaryKey && <span className="badge uq">UQ</span>}
               {c.notNull && !c.primaryKey && <span className="badge nn">NN</span>}
+              {fkCols.has(c.name.toLowerCase()) && (
+                <span className="badge fk" title={`references ${fkCols.get(c.name.toLowerCase())}`}>FK</span>
+              )}
+              {con.defaults[c.name] && (
+                <span className="badge df" title={`DEFAULT ${con.defaults[c.name]}`}>={con.defaults[c.name]}</span>
+              )}
               {st && <span className="schema-colstat" title="distinct values · nulls (from ANALYZE)">{st.ndistinct}d{st.nullCount ? ` · ${st.nullCount}∅` : ''}</span>}
             </button>
             )
@@ -48,6 +65,22 @@ function TableCard({ table, onInsert }: { table: TableInfo; onInsert: (t: string
               <span className="idx-stats">
                 B+Tree h={idx.stats.height} · {idx.stats.nodes} nodes
               </span>
+            </div>
+          ))}
+          {con.primaryKey && con.primaryKey.length > 1 && (
+            <div className="schema-constraint" title="composite primary key">
+              <span className="con-glyph">⚷</span> PRIMARY KEY ({con.primaryKey.join(', ')})
+            </div>
+          )}
+          {con.foreignKeys.map((fk, i) => (
+            <div key={`fk${i}`} className="schema-constraint fk" title={`foreign key${actionTag(fk) ? ` — ${actionTag(fk)}` : ''}`}>
+              <span className="con-glyph">↗</span> {fk.columns.join(', ')} → {fk.refTable}({fk.refColumns.join(', ')})
+              {actionTag(fk) && <span className="con-action">{actionTag(fk)}</span>}
+            </div>
+          ))}
+          {con.checks.map((chk, i) => (
+            <div key={`ck${i}`} className="schema-constraint check" title="check constraint">
+              <span className="con-glyph">✓</span> CHECK ({chk.sql})
             </div>
           ))}
         </div>
