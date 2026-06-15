@@ -69,11 +69,13 @@ simulation, and lossless export to CSS / SVG / PNG / JSON / shareable URL.
 - [x] Shareable `#g=` URL state + localStorage gallery with thumbnails
 - [x] In-app self-test suite page (engine invariants, runnable live)
 - [x] Keyboard + responsive layout, dark studio theme
+- [x] Import a gradient by pasting CSS (`src/color/parseCss.ts`) — the inverse of export:
+      parses linear/radial/conic, angle / "to side" / "from deg" / "at x% y%", and
+      hex/rgb()/rgba()/hsl()/hsla()/oklch() stops with optional positions (12 self-tests)
 
 ### Future ideas
 - [ ] Gradient "spline" stops with per-segment easing curves
 - [ ] OKLCH gamut-boundary visualizer
-- [ ] Import a gradient by pasting CSS
 - [ ] Animated gradients (export CSS @keyframes)
 
 ## Session log
@@ -85,3 +87,6 @@ simulation, and lossless export to CSS / SVG / PNG / JSON / shareable URL.
   export, a mesh-gradient canvas studio, palette harmonies + image k-means extraction, WCAG+APCA
   contrast, CVD simulation, a from-scratch HSV picker, hash routing, a localStorage gallery, and a
   live self-test suite. Verified: engine self-tests green, `verify-project.mjs` (lint + build) green.
+- 2026-06-15 (claude): added **CSS gradient import** — paste any `linear/radial/conic-gradient(…)`
+  and it becomes editable stops (the inverse of the densified-CSS export). New `parseCss.ts` with a
+  paren-aware splitter + color parser; 12 new self-tests (38/38 total). Gate green.

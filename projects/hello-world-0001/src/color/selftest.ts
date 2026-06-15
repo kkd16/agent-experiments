@@ -22,7 +22,9 @@ import { contrastRatio, relativeLuminance, wcagLevel } from './contrast'
 import { simulateCvd } from './cvd'
 import { harmony } from './harmony'
 import { lerpHue, mix } from './interpolate'
-import type { RGB, RGBA } from './types'
+import { toCSS } from './gradient'
+import { parseCssColor, parseCssGradient, splitTopLevel } from './parseCss'
+import type { Gradient, RGB, RGBA } from './types'
 
 export interface TestResult {
   group: string
@@ -145,6 +147,51 @@ export function runTests(): TestResult[] {
     const triHues = tri.map((c) => rgbToOklch(c).h)
     const spread = Math.abs(((triHues[1] - triHues[0] + 540) % 360) - 180)
     t('Vision', 'triad hues ~120° apart', approx(spread, 120, 8), `Δ≈${spread.toFixed(0)}°`)
+  }
+
+  // ── CSS import (inverse of export) ──────────────────────────────────────────
+  {
+    t('CSS import', "parse '#ff0000'", rgbClose(parseCssColor('#ff0000')!, { r: 1, g: 0, b: 0 }))
+    t('CSS import', "parse 'rgb(255, 0, 0)'", rgbClose(parseCssColor('rgb(255, 0, 0)')!, { r: 1, g: 0, b: 0 }, 2e-3))
+    const rgba = parseCssColor('rgba(0, 0, 255, 0.5)')
+    t('CSS import', "parse 'rgba(…,0.5)'", !!rgba && rgbClose(rgba!, { r: 0, g: 0, b: 1 }, 2e-3) && approx(rgba!.a, 0.5, 1e-6))
+    t('CSS import', "parse 'hsl(120,100%,50%)'", rgbClose(parseCssColor('hsl(120, 100%, 50%)')!, { r: 0, g: 1, b: 0 }, 2e-3))
+    const ok = parseCssColor('oklch(62.8% 0.258 29.2)')
+    t('CSS import', "parse 'oklch(…)' ≈ red", !!ok && rgbClose(ok!, { r: 1, g: 0, b: 0 }, 0.02))
+
+    t('CSS import', 'splitTopLevel respects parens', splitTopLevel('rgb(1, 2, 3), #fff', ',').length === 2)
+
+    const lin = parseCssGradient('linear-gradient(90deg, #ff0000, #0000ff)')
+    t('CSS import', 'linear: type/angle/stops', !!lin && lin!.type === 'linear' && approx(lin!.angle, 90, 1e-6) && lin!.stops.length === 2)
+    t('CSS import', 'linear: endpoints + auto positions', !!lin && rgbClose(lin!.stops[0].color, { r: 1, g: 0, b: 0 }) && approx(lin!.stops[0].pos, 0, 1e-9) && approx(lin!.stops[1].pos, 1, 1e-9))
+
+    const mid = parseCssGradient('linear-gradient(to right, #000000 0%, #808080 50%, #ffffff 100%)')
+    t('CSS import', "linear: 'to right' = 90°, 3 stops", !!mid && approx(mid!.angle, 90, 1e-6) && mid!.stops.length === 3 && approx(mid!.stops[1].pos, 0.5, 1e-9))
+
+    const rad = parseCssGradient('radial-gradient(circle at 25% 75%, #ffffff, #000000)')
+    t('CSS import', 'radial: center parsed', !!rad && rad!.type === 'radial' && approx(rad!.cx, 0.25, 1e-9) && approx(rad!.cy, 0.75, 1e-9))
+
+    t('CSS import', 'non-gradient string rejected', parseCssGradient('12px solid red') === null)
+
+    // round-trip: export an sRGB gradient, parse it back, endpoints survive
+    const g: Gradient = {
+      type: 'linear',
+      angle: 45,
+      cx: 0.5,
+      cy: 0.5,
+      space: 'srgb',
+      hue: 'shorter',
+      stops: [
+        { id: 'a', color: { r: 0.2, g: 0.5, b: 0.8, a: 1 }, pos: 0 },
+        { id: 'b', color: { r: 0.93, g: 0.51, b: 0.21, a: 1 }, pos: 1 },
+      ],
+    }
+    const back = parseCssGradient(toCSS(g))
+    t(
+      'CSS import',
+      'export → import round-trip',
+      !!back && rgbClose(back!.stops[0].color, g.stops[0].color, 2e-3) && rgbClose(back!.stops[back!.stops.length - 1].color, g.stops[1].color, 2e-3),
+    )
   }
 
   return out

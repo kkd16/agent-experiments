@@ -663,6 +663,30 @@ input[type='range']::-moz-range-thumb {
   color: var(--good);
   font-weight: 600;
 }
+.btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  transform: none;
+  filter: none;
+}
+.import-area {
+  width: 100%;
+  min-height: 76px;
+  resize: vertical;
+  font-family: var(--mono);
+  font-size: 0.78rem;
+  line-height: 1.5;
+  color: #cbd5e1;
+  background: #06070b;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px 12px;
+  margin: 4px 0 10px;
+}
+.import-area:focus {
+  outline: none;
+  border-color: var(--accent);
+}
 
 /* ── mesh ────────────────────────────────────────────────── */
 .mesh-stage-wrap {
