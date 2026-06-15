@@ -15,7 +15,9 @@ export default function VerificationModal({ onClose }: { onClose: () => void }) 
             <h2>Engine verification</h2>
             <p className="modal-sub">
               Every check exercises a real engine path — mass integrals, GJK/EPA, manifolds,
-              capsules &amp; rounded shapes, conservation laws, continuous collision, joint
+              capsules &amp; rounded shapes, conservation laws, continuous collision, the exact
+              block-LCP solver, buoyancy &amp; submerged-area integrals, spatial queries &amp;
+              shape-casting, the wheel-joint suspension, sensors &amp; contact events, joint
               limits, determinism, broadphase and ray casting.
             </p>
           </div>

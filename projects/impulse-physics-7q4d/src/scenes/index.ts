@@ -1,6 +1,7 @@
 import {
   Body,
   BodyType,
+  BuoyancyZone,
   Capsule,
   Circle,
   DistanceJoint,
@@ -10,6 +11,7 @@ import {
   RevoluteJoint,
   Rng,
   Vec2,
+  WheelJoint,
   World,
   crossSV,
   type Shape,
@@ -718,6 +720,224 @@ const limits: SceneDef = {
   },
 };
 
+const buoyancy: SceneDef = {
+  id: 'buoyancy',
+  name: 'Buoyancy',
+  description:
+    'A water tank with real Archimedes buoyancy. Each body feels a lift equal to the weight of the fluid it displaces, applied at the submerged centroid — so a half-density box floats exactly half-under and rights itself, corks bob high, a dense ingot sinks, and a low-density raft carries its cargo. Drop shapes in and watch them find their waterline.',
+  category: 'Showcase',
+  build: (world, rng) => {
+    const surface = 4;
+    const halfW = 11;
+    const floorY = -3;
+    // Tank: floor + two side walls.
+    world.addBody(new Body(Polygon.box(halfW + 0.5, 0.5), {
+      type: BodyType.Static, position: new Vec2(0, floorY - 0.5), friction: 0.5, color: '#46506a',
+    }));
+    world.addBody(new Body(Polygon.box(0.5, 6), {
+      type: BodyType.Static, position: new Vec2(-halfW - 0.5, floorY + 5), friction: 0.3, color: '#46506a',
+    }));
+    world.addBody(new Body(Polygon.box(0.5, 6), {
+      type: BodyType.Static, position: new Vec2(halfW + 0.5, floorY + 5), friction: 0.3, color: '#46506a',
+    }));
+
+    world.addFluid(new BuoyancyZone({
+      surface,
+      minX: -halfW,
+      maxX: halfW,
+      density: 1,
+      depth: surface - floorY,
+      linearDrag: 1.4,
+      angularDrag: 1.0,
+    }));
+
+    // A half-density box — floats with its centre right on the waterline.
+    world.addBody(new Body(Polygon.box(0.7, 0.7), {
+      position: new Vec2(-7, 6), density: 0.5, friction: 0.4, color: '#ffd166',
+    }));
+    // Light corks bob high.
+    for (let i = 0; i < 4; i++) {
+      world.addBody(new Body(new Circle(0.32), {
+        position: new Vec2(-9 + i * 0.9, 6 + i * 0.4), density: 0.25, friction: 0.2, color: '#7CFFCB',
+      }));
+    }
+    // A dense ingot sinks straight to the floor.
+    world.addBody(new Body(Polygon.box(0.5, 0.4), {
+      position: new Vec2(-3, 6), density: 6, friction: 0.5, color: '#b9c0cc',
+    }));
+    // Capsules float lengthwise on the surface.
+    for (let i = 0; i < 3; i++) {
+      world.addBody(new Body(Capsule.of(1.6, 0.28), {
+        position: new Vec2(1 + i * 0.6, 6 + i * 0.5), angle: rng.range(-0.3, 0.3),
+        density: 0.4, friction: 0.4, color: colorFor(i + 3),
+      }));
+    }
+    // A low-density raft carrying a little cargo.
+    const raft = world.addBody(new Body(Polygon.box(2.2, 0.22), {
+      position: new Vec2(6, 5.2), density: 0.3, friction: 0.6, color: '#c0966b',
+    }));
+    for (let i = 0; i < 3; i++) {
+      box(world, 5.2 + i * 0.8, 6.2, 0.28, 0.28, i + 1);
+    }
+    void raft;
+
+    let acc = 0;
+    let dropped = 0;
+    return {
+      camera: { center: new Vec2(0, 3), scale: 30 },
+      update: (_t, dt) => {
+        acc += dt;
+        if (acc > 2.5 && dropped < 12) {
+          acc = 0;
+          dropped++;
+          const density = rng.range(0.2, 1.4);
+          world.addBody(new Body(randomShape(rng, 0.7), {
+            position: new Vec2(rng.range(-9, 9), 9),
+            density,
+            friction: 0.4,
+            restitution: 0.05,
+            color: density < 1 ? '#6ea8ff' : '#ff6b6b',
+          }));
+        }
+      },
+    };
+  },
+};
+
+const car: SceneDef = {
+  id: 'car',
+  name: 'Suspension Car',
+  description:
+    'A car built from a chassis and two wheels joined by wheel joints — each a rigid line constraint plus a sprung suspension axis and a drive motor. It powers itself over bumpy terrain, the suspension soaking up the hills, and reverses at the walls. Toggle Joints to see the suspension lines compress and extend.',
+  category: 'Joints',
+  build: (world) => {
+    const halfW = 16;
+    ground(world, halfW, 0);
+    walls(world, halfW, 8);
+    // Bumpy terrain: a row of low half-buried static humps for the suspension.
+    const humpXs = [-9, -5, -1, 4, 8, 12];
+    for (let i = 0; i < humpXs.length; i++) {
+      world.addBody(new Body(new Circle(0.4 + (i % 2) * 0.12), {
+        type: BodyType.Static, position: new Vec2(humpXs[i], -0.2), friction: 0.9, color: '#46506a',
+      }));
+    }
+
+    const startX = -10;
+    const chassisY = 1.2;
+    // A wide, low, heavy chassis keeps the centre of mass well under the axles so
+    // the drive torque can't flip it.
+    const chassis = world.addBody(new Body(Polygon.rounded(1.7, 0.22, 0.08), {
+      position: new Vec2(startX, chassisY), density: 3, friction: 0.5, color: '#4dd2ff',
+    }));
+
+    const axis = new Vec2(0, 1);
+    const wheelDefs: Array<{ dx: number; motor: boolean }> = [
+      { dx: -1.3, motor: true },
+      { dx: 1.3, motor: true },
+    ];
+    const motors: WheelJoint[] = [];
+    for (const wd of wheelDefs) {
+      const wheelPos = new Vec2(startX + wd.dx, chassisY - 0.45);
+      const wheel = world.addBody(new Body(new Circle(0.45), {
+        position: wheelPos, density: 1, friction: 1.8, color: '#2b3142',
+      }));
+      const wj = new WheelJoint(chassis, wheel, wheelPos, axis);
+      wj.frequencyHz = 5;
+      wj.dampingRatio = 0.8;
+      if (wd.motor) {
+        wj.enableMotor = true;
+        wj.motorSpeed = -9; // spin the wheels to roll the car to the right
+        wj.maxMotorTorque = 4.5;
+        motors.push(wj);
+      }
+      world.addJoint(wj);
+    }
+
+    let dir = 1;
+    return {
+      camera: { center: new Vec2(0, 2), scale: 22 },
+      update: () => {
+        if (chassis.worldCenter.x > halfW - 7 && dir > 0) dir = -1;
+        if (chassis.worldCenter.x < -(halfW - 7) && dir < 0) dir = 1;
+        for (const m of motors) m.motorSpeed = -9 * dir;
+      },
+    };
+  },
+};
+
+const sensors: SceneDef = {
+  id: 'sensors',
+  name: 'Sensor Field',
+  description:
+    'Two trigger gates built from sensor bodies — detected but never solved, so shapes fall straight through them. The engine fires begin/end contact events as each body enters and leaves a gate; the scene lights the body up while it is inside. Sensors are how you build goals, detectors and trigger volumes.',
+  category: 'Showcase',
+  build: (world, rng) => {
+    ground(world, 14, -7);
+    walls(world, 11, 16, -7);
+
+    // Two horizontal sensor gates at different heights, each a glowing colour.
+    const gates: Array<{ body: Body; glow: string }> = [];
+    const gateDefs = [
+      { y: 4, glow: '#7CFFCB' },
+      { y: 0, glow: '#ff6b6b' },
+    ];
+    for (const g of gateDefs) {
+      const gate = world.addBody(new Body(Polygon.box(9, 0.7), {
+        type: BodyType.Static, position: new Vec2(0, g.y), isSensor: true, color: g.glow,
+      }));
+      gates.push({ body: gate, glow: g.glow });
+    }
+
+    // Track each body's original colour so we can restore it on exit, and how
+    // many gates it is currently inside (so overlapping gates don't fight).
+    const original = new Map<number, string>();
+    const inside = new Map<number, number>();
+    const gateOf = (a: Body, b: Body): { mover: Body; glow: string } | null => {
+      const g = gates.find((x) => x.body === a || x.body === b);
+      if (!g) return null;
+      const mover = g.body === a ? b : a;
+      if (mover.isSensor) return null;
+      return { mover, glow: g.glow };
+    };
+    world.onBeginContact = (a, b) => {
+      const hit = gateOf(a, b);
+      if (!hit) return;
+      if (!original.has(hit.mover.id)) original.set(hit.mover.id, hit.mover.color);
+      inside.set(hit.mover.id, (inside.get(hit.mover.id) ?? 0) + 1);
+      hit.mover.color = hit.glow;
+    };
+    world.onEndContact = (a, b) => {
+      const hit = gateOf(a, b);
+      if (!hit) return;
+      const n = (inside.get(hit.mover.id) ?? 1) - 1;
+      inside.set(hit.mover.id, n);
+      if (n <= 0) {
+        const orig = original.get(hit.mover.id);
+        if (orig !== undefined) hit.mover.color = orig;
+      }
+    };
+
+    let acc = 0;
+    let count = 0;
+    return {
+      camera: { center: new Vec2(0, -1), scale: 22 },
+      update: (_t, dt) => {
+        acc += dt;
+        if (acc > 0.35 && count < 120) {
+          acc = 0;
+          count++;
+          world.addBody(new Body(randomShape(rng, 0.7), {
+            position: new Vec2(rng.range(-8, 8), 9),
+            color: '#6ea8ff',
+            friction: 0.3,
+            restitution: 0.1,
+          }));
+        }
+      },
+    };
+  },
+};
+
 export const SCENES: SceneDef[] = [
   pyramid,
   stacks,
@@ -729,8 +949,11 @@ export const SCENES: SceneDef[] = [
   springs,
   machine,
   limits,
+  car,
   tumbler,
   dominoes,
+  buoyancy,
+  sensors,
   bulletTest,
   galton,
   capsulePile,

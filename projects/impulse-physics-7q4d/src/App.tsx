@@ -16,6 +16,7 @@ const INITIAL_VALUES: ControlValues = {
   warmStarting: true,
   enableSleep: true,
   continuous: true,
+  blockSolver: true,
   showGjk: false,
   spawnKind: 'box',
 };
@@ -40,6 +41,7 @@ export default function App() {
       warmStarting: values.warmStarting,
       enableSleep: values.enableSleep,
       continuous: values.continuous,
+      blockSolver: values.blockSolver,
       debug,
       spawnKind: values.spawnKind,
       showGjk: values.showGjk,
@@ -84,7 +86,8 @@ export default function App() {
             <h1>Impulse</h1>
             <p className="tagline">
               A 2D rigid-body physics engine, from scratch — GJK/EPA, capsules &amp; rounded
-              shapes, continuous collision, sequential impulses, joints with limits, islands.
+              shapes, continuous collision, an exact block solver, buoyancy &amp; fluid drag,
+              wheel-joint suspension, sensors, shape-casting and joints with limits.
             </p>
           </div>
         </div>

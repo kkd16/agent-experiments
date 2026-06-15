@@ -5,7 +5,8 @@ export { BroadPhase, DynamicTree, type ProxyPair } from './broadphase';
 export { gjkDistance, epaPenetration, type DistanceResult, type PenetrationResult } from './collision/gjk';
 export { collide, type Manifold, type ManifoldPoint } from './collision/manifold';
 export { timeOfImpact, type TOIResult } from './collision/toi';
-export { Contact, ContactSolver, DEFAULT_CONFIG, type SolverConfig } from './contact';
+export { Contact, ContactSolver, DEFAULT_CONFIG, solveBlockLcp, type SolverConfig } from './contact';
+export { BuoyancyZone, type BuoyancyDef } from './fluid';
 export {
   clamp,
   crossSV,
@@ -34,7 +35,7 @@ export {
   type MassData,
   type Shape,
 } from './shapes';
-export { World, type RayHit, type StepStats } from './world';
+export { World, type RayHit, type ShapeCastHit, type StepStats } from './world';
 
 export { type Joint, type JointContext } from './joints/joint';
 export { RevoluteJoint } from './joints/revolute';
@@ -42,3 +43,4 @@ export { DistanceJoint } from './joints/distance';
 export { WeldJoint } from './joints/weld';
 export { MouseJoint } from './joints/mouse';
 export { PrismaticJoint } from './joints/prismatic';
+export { WheelJoint } from './joints/wheel';

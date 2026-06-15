@@ -27,6 +27,7 @@ export interface SimControls {
   warmStarting: boolean;
   enableSleep: boolean;
   continuous: boolean;
+  blockSolver: boolean;
   debug: DebugOptions;
   spawnKind: SpawnKind;
   showGjk: boolean;
@@ -247,6 +248,7 @@ function applyConfig(world: World, c: SimControls): void {
     baumgarte: c.baumgarte,
     warmStarting: c.warmStarting,
     continuous: c.continuous,
+    blockSolver: c.blockSolver,
   };
   world.enableSleep = c.enableSleep;
 }

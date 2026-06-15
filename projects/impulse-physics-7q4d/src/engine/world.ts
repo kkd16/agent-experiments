@@ -4,9 +4,10 @@ import { BroadPhase } from './broadphase';
 import { gjkDistance } from './collision/gjk';
 import { timeOfImpact } from './collision/toi';
 import { Contact, ContactSolver, DEFAULT_CONFIG, type SolverConfig } from './contact';
+import { BuoyancyZone } from './fluid';
 import { type Joint } from './joints/joint';
-import { clamp, Vec2 } from './math';
-import { boundingRadius, computeAABB } from './shapes';
+import { clamp, EPSILON, Transform, Vec2 } from './math';
+import { boundingRadius, computeAABB, type Shape } from './shapes';
 
 /** Per-step statistics surfaced to the UI HUD. */
 export interface StepStats {
@@ -26,6 +27,17 @@ export interface RayHit {
   body: Body;
   point: Vec2;
   normal: Vec2;
+  fraction: number;
+}
+
+/** Result of a world shape cast (sweeping a convex shape through the world). */
+export interface ShapeCastHit {
+  body: Body;
+  /** Contact point on the hit body's surface (world space). */
+  point: Vec2;
+  /** Surface normal at the hit, pointing out of the hit body toward the caster. */
+  normal: Vec2;
+  /** Fraction of the cast translation at first contact, in [0,1]. */
   fraction: number;
 }
 
@@ -50,11 +62,16 @@ export class World {
   config: SolverConfig;
   readonly bodies: Body[] = [];
   readonly joints: Joint[] = [];
+  readonly fluidZones: BuoyancyZone[] = [];
   private broadphase = new BroadPhase<Body>();
   private contacts = new Map<number, Contact>();
   /** Body-pair keys for which collision is disabled (jointed bodies). */
   private nonColliding = new Set<number>();
   enableSleep = true;
+  /** Fired when two bodies start touching (covers sensors and solid contacts). */
+  onBeginContact: ((a: Body, b: Body) => void) | null = null;
+  /** Fired when two previously-touching bodies separate. */
+  onEndContact: ((a: Body, b: Body) => void) | null = null;
   stats: StepStats = {
     bodies: 0,
     awakeBodies: 0,
@@ -93,6 +110,12 @@ export class World {
     }
   }
 
+  /** Add a body of water that applies buoyancy + drag to submerged bodies. */
+  addFluid(zone: BuoyancyZone): BuoyancyZone {
+    this.fluidZones.push(zone);
+    return zone;
+  }
+
   addJoint(joint: Joint, collideConnected = false): Joint {
     this.joints.push(joint);
     if (!collideConnected && joint.bodyA !== joint.bodyB) {
@@ -110,6 +133,7 @@ export class World {
   clear(): void {
     this.bodies.length = 0;
     this.joints.length = 0;
+    this.fluidZones.length = 0;
     this.contacts.clear();
     this.nonColliding.clear();
     this.broadphase = new BroadPhase<Body>();
@@ -130,15 +154,20 @@ export class World {
       this.addPair(this.broadphase.tree.get(p.a) as Body, this.broadphase.tree.get(p.b) as Body);
     }
 
-    // 2. Narrowphase: refresh or drop persistent contacts.
+    // 2. Narrowphase: refresh or drop persistent contacts, firing begin/end
+    // contact events on each touching transition (sensors included).
     let contactPoints = 0;
     for (const [key, c] of this.contacts) {
       if (!this.broadphase.tree.fatAABB(c.a.proxyId).overlaps(this.broadphase.tree.fatAABB(c.b.proxyId))) {
+        if (c.touching) this.onEndContact?.(c.a, c.b);
         this.contacts.delete(key);
         continue;
       }
+      c.wasTouching = c.touching;
       c.update();
-      contactPoints += c.manifold.points.length;
+      if (c.touching && !c.wasTouching) this.onBeginContact?.(c.a, c.b);
+      else if (!c.touching && c.wasTouching) this.onEndContact?.(c.a, c.b);
+      if (!c.sensor) contactPoints += c.manifold.points.length;
     }
 
     // 3. Assemble islands and wake any island with a moving member.
@@ -147,6 +176,15 @@ export class World {
       if (island.some((b) => b.awake)) {
         // Wake only the sleeping members; never reset an awake body's timer.
         for (const b of island) if (!b.awake) b.wake();
+      }
+    }
+
+    // 3b. Fluid: buoyancy + drag forces, added before velocity integration so
+    // they ride the same semi-implicit step as gravity.
+    if (this.fluidZones.length > 0) {
+      for (const b of this.bodies) {
+        if (b.type !== BodyType.Dynamic || !b.awake) continue;
+        for (const zone of this.fluidZones) zone.apply(b, this.gravity);
       }
     }
 
@@ -160,6 +198,7 @@ export class World {
     // 5. Solve velocity constraints (warm-started sequential impulses).
     const active: Contact[] = [];
     for (const c of this.contacts.values()) {
+      if (c.sensor) continue; // sensors are detected & reported, never solved
       if (c.touching && (this.isSolved(c.a) || this.isSolved(c.b))) active.push(c);
     }
     const activeJoints = this.joints.filter(
@@ -246,7 +285,7 @@ export class World {
       if (b.type === BodyType.Dynamic && !parent.has(b.id)) parent.set(b.id, b);
     }
     for (const c of this.contacts.values()) {
-      if (c.touching) union(c.a, c.b);
+      if (c.touching && !c.sensor) union(c.a, c.b);
     }
     for (const j of this.joints) union(j.bodyA, j.bodyB);
 
@@ -280,6 +319,7 @@ export class World {
       let hit = false;
       for (const b of this.bodies) {
         if (b === a) continue;
+        if (a.isSensor || b.isSensor) continue; // bullets pass through sensors
         // Resolve each bullet pair once; bullet-vs-bullet handled by id order.
         if (b.bullet && b.type === BodyType.Dynamic && b.id < a.id) continue;
         if (this.nonColliding.has(pairKey(a.id, b.id))) continue;
@@ -369,6 +409,43 @@ export class World {
     return best;
   }
 
+  /**
+   * Every body whose tight world AABB overlaps `region`. The broadphase narrows
+   * the candidates to those whose fat AABB overlaps; each is then refined against
+   * its exact AABB so the result is precise (no fat-margin false positives).
+   */
+  queryAABB(region: AABB): Body[] {
+    const out: Body[] = [];
+    this.broadphase.tree.query(region, (id) => {
+      const body = this.broadphase.tree.get(id) as Body;
+      if (body.worldAABB().overlaps(region)) out.push(body);
+    });
+    return out;
+  }
+
+  /**
+   * Sweep a convex `shape` (placed at `xf`) along `translation` and return the
+   * first body it touches. Each candidate is resolved by conservative advancement
+   * on the exact GJK distance — the same never-overshoot logic the CCD solver
+   * uses — so the reported fraction is the true first-contact time. Returns the
+   * nearest hit, or null if the swept shape stays clear.
+   */
+  shapeCast(shape: Shape, xf: Transform, translation: Vec2): ShapeCastHit | null {
+    const dist = translation.length();
+    if (dist < EPSILON) return null;
+    const startAABB = computeAABB(shape, xf);
+    const endAABB = computeAABB(shape, new Transform(xf.position.add(translation), xf.q));
+    const swept = startAABB.union(endAABB);
+
+    let best: ShapeCastHit | null = null;
+    this.broadphase.tree.query(swept, (id) => {
+      const body = this.broadphase.tree.get(id) as Body;
+      const hit = castShapeAtBody(shape, xf, translation, dist, body);
+      if (hit && (best === null || hit.fraction < best.fraction)) best = hit;
+    });
+    return best;
+  }
+
   /** Live contact points with their world normals, for the debug overlay. */
   contactPoints(): Array<{ point: Vec2; normal: Vec2 }> {
     const out: Array<{ point: Vec2; normal: Vec2 }> = [];
@@ -390,6 +467,35 @@ export class World {
     for (const b of this.bodies) if (b.type === BodyType.Dynamic) e += b.kineticEnergy();
     return e;
   }
+}
+
+/**
+ * Conservative-advancement shape cast of a moving convex `shape` (translating by
+ * `translation`, no rotation) against a single fixed `body`. Mirrors the CCD
+ * time-of-impact loop but for a free shape: measure the exact gap with GJK, then
+ * advance by the most that cannot overshoot first contact.
+ */
+function castShapeAtBody(
+  shape: Shape,
+  xf: Transform,
+  translation: Vec2,
+  dist: number,
+  body: Body,
+  tolerance = 0.005,
+): ShapeCastHit | null {
+  let t = 0;
+  for (let iter = 0; iter < 32; iter++) {
+    const pose = new Transform(xf.position.add(translation.mul(t)), xf.q);
+    const d = gjkDistance(shape, pose, body.shape, body.transform);
+    if (d.distance <= tolerance) {
+      let n = d.pointA.sub(d.pointB);
+      n = n.lengthSq() > EPSILON ? n.normalize() : translation.mul(-1 / dist);
+      return { body, point: d.pointB, normal: n, fraction: t };
+    }
+    t += (d.distance - tolerance) / dist; // cannot overshoot: surfaces close ≤ dist
+    if (t >= 1) return null;
+  }
+  return null;
 }
 
 function rayShape(body: Body, origin: Vec2, target: Vec2): RayHit | null {

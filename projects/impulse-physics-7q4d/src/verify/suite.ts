@@ -9,6 +9,7 @@
 import {
   Body,
   BodyType,
+  BuoyancyZone,
   Capsule,
   Circle,
   collide,
@@ -17,12 +18,15 @@ import {
   DynamicTree,
   epaPenetration,
   gjkDistance,
+  Mat22,
   Polygon,
   PrismaticJoint,
   RevoluteJoint,
   Rng,
+  solveBlockLcp,
   Transform,
   Vec2,
+  WheelJoint,
   World,
 } from '../engine';
 import { AABB } from '../engine/aabb';
@@ -362,6 +366,257 @@ export function runVerification(): CheckResult[] {
       minDrop = Math.min(minDrop, car.worldCenter.y - 5);
     }
     a.ok('Prismatic limit clamps the travel', minDrop > -1.1, `min drop ${minDrop.toFixed(3)}`);
+  }
+
+  // ---- Buoyancy & fluid ----------------------------------------------------
+  a.section('Buoyancy & fluid');
+  {
+    // Submerged area + centroid of a 2×2 box half-under the surface is exact:
+    // the lower half is a 2×1 rectangle (area 2) centred at y = −0.5.
+    const zone = new BuoyancyZone({ surface: 0 });
+    const box = new Body(Polygon.box(1, 1), { position: new Vec2(0, 0) });
+    const s = zone.submerged(box);
+    a.close('Half-submerged box area = 2', s.area, 2, 1e-9);
+    a.close('Submerged centroid y = −0.5', s.centroid.y, -0.5, 1e-9);
+    a.ok('Submerged centroid x = 0', Math.abs(s.centroid.x) < 1e-9, s.centroid.toString());
+  }
+  {
+    // Fully above the surface ⇒ no submerged area; fully below ⇒ the whole area.
+    const zone = new BuoyancyZone({ surface: 0 });
+    const above = zone.submerged(new Body(Polygon.box(1, 1), { position: new Vec2(0, 5) }));
+    const below = zone.submerged(new Body(Polygon.box(1, 1), { position: new Vec2(0, -5) }));
+    a.close('Box above water: area 0', above.area, 0, 1e-9);
+    a.close('Box below water: area 4', below.area, 4, 1e-9);
+  }
+  {
+    // A circle of radius 1 half-submerged: area ≈ π/2 (the n-gon under-estimates
+    // slightly), centroid below the surface.
+    const zone = new BuoyancyZone({ surface: 0 });
+    const s = zone.submerged(new Body(new Circle(1), { position: new Vec2(0, 0) }));
+    a.close('Half disc area ≈ π/2', s.area, Math.PI / 2, 0.05);
+    a.ok('Half disc centroid below surface', s.centroid.y < -0.3 && s.centroid.y > -0.5, s.centroid.toString());
+  }
+  {
+    // A neutrally-half-dense box floats with its centre exactly on the surface:
+    // submerged fraction = ρ_body / ρ_fluid = 0.5 ⇒ centre at the waterline.
+    const w = new World(new Vec2(0, -10));
+    w.addFluid(new BuoyancyZone({ surface: 0, density: 1, linearDrag: 1.6, angularDrag: 1.0 }));
+    const box = w.addBody(new Body(Polygon.box(0.6, 0.6), { position: new Vec2(0, 3), density: 0.5 }));
+    for (let i = 0; i < 1500; i++) w.step(1 / 120);
+    a.close('Half-density box floats at the surface', box.worldCenter.y, 0, 0.06);
+    a.ok('Floating box settles level', Math.abs(box.angle) < 0.05, `angle=${box.angle.toFixed(3)}`);
+  }
+  {
+    // A dense ingot (ρ > ρ_fluid) cannot float — it sinks to the floor.
+    const w = new World(new Vec2(0, -10));
+    w.addBody(new Body(Polygon.box(10, 0.5), { type: BodyType.Static, position: new Vec2(0, -5.5) }));
+    w.addFluid(new BuoyancyZone({ surface: 0, density: 1 }));
+    const ingot = w.addBody(new Body(Polygon.box(0.4, 0.4), { position: new Vec2(0, 2), density: 6 }));
+    for (let i = 0; i < 1200; i++) w.step(1 / 120);
+    a.ok('Dense ingot sinks to the floor', ingot.worldCenter.y < -4.5, `y=${ingot.worldCenter.y.toFixed(2)}`);
+  }
+  {
+    // A light cork (ρ ≪ ρ_fluid) floats high, barely dipping below the surface.
+    const w = new World(new Vec2(0, -10));
+    w.addFluid(new BuoyancyZone({ surface: 0, density: 1, linearDrag: 2 }));
+    const cork = w.addBody(new Body(new Circle(0.4), { position: new Vec2(0, 3), density: 0.2 }));
+    for (let i = 0; i < 1500; i++) w.step(1 / 120);
+    a.ok('Light cork rides high in the water', cork.worldCenter.y > -0.1, `y=${cork.worldCenter.y.toFixed(3)}`);
+    a.ok('Cork is mostly above the surface', cork.worldCenter.y > 0, `y=${cork.worldCenter.y.toFixed(3)}`);
+  }
+
+  // ---- Spatial queries -----------------------------------------------------
+  a.section('Spatial queries');
+  {
+    // queryAABB must return exactly the bodies whose tight AABB meets the window
+    // (compared against a brute-force scan over every body).
+    const rng = new Rng(31);
+    const w = new World(new Vec2(0, 0));
+    for (let i = 0; i < 50; i++) {
+      w.addBody(new Body(Polygon.box(rng.range(0.3, 0.8), rng.range(0.3, 0.8)), {
+        type: BodyType.Static,
+        position: new Vec2(rng.range(-15, 15), rng.range(-15, 15)),
+      }));
+    }
+    const window = new AABB(new Vec2(-4, -4), new Vec2(4, 4));
+    const got = new Set(w.queryAABB(window).map((b) => b.id));
+    let mismatch = 0;
+    for (const b of w.bodies) {
+      const overlaps = b.worldAABB().overlaps(window);
+      if (overlaps !== got.has(b.id)) mismatch++;
+    }
+    a.ok('queryAABB matches brute force', mismatch === 0, `${mismatch} mismatches, ${got.size} hits`);
+  }
+  {
+    // Cast a circle at a wall: the analytic first-contact fraction is exact.
+    const w = new World(new Vec2(0, 0));
+    w.addBody(new Body(Polygon.box(1, 1), { type: BodyType.Static, position: new Vec2(5, 0) }));
+    const r = 0.5;
+    const hit = w.shapeCast(new Circle(r), new Transform(new Vec2(-5, 0)), new Vec2(10, 0));
+    a.ok('shapeCast hits the wall', hit !== null, hit ? `frac=${hit.fraction.toFixed(3)}` : 'miss');
+    if (hit) {
+      // Circle centre stops at x = 4 − r = 3.5; from −5 over a 10 m cast ⇒ 0.85.
+      a.close('shapeCast fraction = 0.85', hit.fraction, 0.85, 0.01);
+      a.ok('shapeCast normal faces caster (−x)', hit.normal.x < -0.99, hit.normal.toString());
+      a.close('shapeCast contact at x = 4', hit.point.x, 4, 0.05);
+    }
+  }
+  {
+    // A cast that clears all geometry returns null.
+    const w = new World(new Vec2(0, 0));
+    w.addBody(new Body(new Circle(0.5), { type: BodyType.Static, position: new Vec2(0, 10) }));
+    const miss = w.shapeCast(new Circle(0.3), new Transform(new Vec2(-5, 0)), new Vec2(10, 0));
+    a.ok('shapeCast misses when clear', miss === null, miss ? 'unexpected hit' : 'clean miss');
+  }
+
+  // ---- Block solver (exact 2-point LCP) -----------------------------------
+  a.section('Block solver');
+  {
+    // Over many random symmetric positive-definite K and random velocities, the
+    // block solve must satisfy the LCP conditions: x ≥ 0, the residual
+    // w = Kx + b ≥ 0, and complementarity xᵀw = 0 (with a = 0 so b = vn).
+    const rng = new Rng(99);
+    let worstX = 0; // most-negative impulse component
+    let worstW = 0; // most-negative residual component
+    let worstComp = 0; // largest complementarity violation
+    for (let i = 0; i < 4000; i++) {
+      // SPD K = LLᵀ + diag → guaranteed positive-definite and symmetric.
+      const l11 = rng.range(0.3, 2);
+      const l21 = rng.range(-1.5, 1.5);
+      const l22 = rng.range(0.3, 2);
+      const k11 = l11 * l11 + 0.05;
+      const k12 = l11 * l21;
+      const k22 = l21 * l21 + l22 * l22 + 0.05;
+      const K = new Mat22(k11, k12, k12, k22);
+      const vn = new Vec2(rng.range(-5, 5), rng.range(-5, 5));
+      const x = solveBlockLcp(K, Vec2.ZERO, vn);
+      const w = K.mulV(x).add(vn); // residual since a = 0 ⇒ b = vn
+      worstX = Math.min(worstX, x.x, x.y);
+      worstW = Math.min(worstW, w.x, w.y);
+      worstComp = Math.max(worstComp, Math.abs(x.x * w.x), Math.abs(x.y * w.y));
+    }
+    a.ok('LCP impulses non-negative (x ≥ 0)', worstX > -1e-9, `min x = ${worstX.toExponential(2)}`);
+    a.ok('LCP residual non-negative (w ≥ 0)', worstW > -1e-9, `min w = ${worstW.toExponential(2)}`);
+    a.ok('LCP complementarity (xᵀw = 0)', worstComp < 1e-9, `max |xᵢwᵢ| = ${worstComp.toExponential(2)}`);
+  }
+  {
+    // A long heavy plank resting across two supports must settle flat and still,
+    // with both end contacts loaded — the case the block solver handles cleanly.
+    const w = new World(new Vec2(0, -10));
+    w.config.blockSolver = true;
+    w.addBody(new Body(Polygon.box(0.3, 0.6), { type: BodyType.Static, position: new Vec2(-3, 0.6) }));
+    w.addBody(new Body(Polygon.box(0.3, 0.6), { type: BodyType.Static, position: new Vec2(3, 0.6) }));
+    const plank = w.addBody(new Body(Polygon.box(4, 0.2), { position: new Vec2(0, 1.4), density: 5 }));
+    for (let i = 0; i < 600; i++) w.step(1 / 120);
+    a.ok('Plank rests level on two supports', Math.abs(plank.angle) < 0.02, `angle=${plank.angle.toFixed(4)}`);
+    a.ok('Plank comes fully to rest', plank.linearVelocity.length() < 0.02, `|v|=${plank.linearVelocity.length().toFixed(4)}`);
+    a.close('Plank stays at support height', plank.worldCenter.y, 1.4, 0.05);
+  }
+  {
+    // The block solver and the point-by-point solver must agree at equilibrium
+    // (a stacked box rests at the same height either way).
+    const settle = (block: boolean): number => {
+      const w = new World(new Vec2(0, -10));
+      w.config.blockSolver = block;
+      w.addBody(new Body(Polygon.box(6, 0.5), { type: BodyType.Static, position: new Vec2(0, -0.5) }));
+      const top = w.addBody(new Body(Polygon.box(0.5, 0.5), { position: new Vec2(0, 3) }));
+      for (let i = 0; i < 500; i++) w.step(1 / 120);
+      return top.worldCenter.y;
+    };
+    a.close('Block & sequential agree at rest', settle(true), settle(false), 0.02);
+  }
+
+  // ---- Sensors & contact events -------------------------------------------
+  a.section('Sensors & events');
+  {
+    // A body dropped through a static sensor must pass straight through it (no
+    // impulse) yet fire exactly one begin and one end contact event.
+    const w = new World(new Vec2(0, -10));
+    w.addBody(new Body(Polygon.box(20, 0.5), { type: BodyType.Static, position: new Vec2(0, -10) }));
+    w.addBody(new Body(Polygon.box(2, 0.6), { type: BodyType.Static, position: new Vec2(0, 0), isSensor: true }));
+    let begins = 0;
+    let ends = 0;
+    w.onBeginContact = (a1, b1) => { if (a1.isSensor || b1.isSensor) begins++; };
+    w.onEndContact = (a1, b1) => { if (a1.isSensor || b1.isSensor) ends++; };
+    const ball = w.addBody(new Body(new Circle(0.3), { position: new Vec2(0, 4) }));
+    for (let i = 0; i < 200; i++) w.step(1 / 120);
+    a.ok('Body passes through the sensor', ball.worldCenter.y < -8, `y=${ball.worldCenter.y.toFixed(2)}`);
+    a.ok('Exactly one begin event fired', begins === 1, `begins=${begins}`);
+    a.ok('Exactly one end event fired', ends === 1, `ends=${ends}`);
+  }
+  {
+    // A solid (non-sensor) block in the same place must instead stop the body.
+    const w = new World(new Vec2(0, -10));
+    w.addBody(new Body(Polygon.box(2, 0.6), { type: BodyType.Static, position: new Vec2(0, 0) }));
+    const ball = w.addBody(new Body(new Circle(0.3), { position: new Vec2(0, 4) }));
+    for (let i = 0; i < 200; i++) w.step(1 / 120);
+    a.ok('Solid block stops the body (control)', ball.worldCenter.y > 0.5, `y=${ball.worldCenter.y.toFixed(2)}`);
+  }
+
+  // ---- Wheel joint & suspension -------------------------------------------
+  a.section('Wheel joint');
+  {
+    // Build a minimal car: a chassis on two sprung, motorised wheels. The
+    // suspension's hard perpendicular constraint must keep each wheel directly
+    // under its anchor (no horizontal drift relative to the chassis), and the
+    // drive motor must push the car forward along the ground.
+    const w = new World(new Vec2(0, -10));
+    w.addBody(new Body(Polygon.box(30, 0.5), { type: BodyType.Static, position: new Vec2(0, -0.5), friction: 1 }));
+    const chassis = w.addBody(new Body(Polygon.box(1.5, 0.25), { position: new Vec2(0, 1.3), density: 2 }));
+    const axis = new Vec2(0, 1);
+    const wheels: Body[] = [];
+    const offsets = [-1.1, 1.1];
+    for (let i = 0; i < offsets.length; i++) {
+      const pos = new Vec2(offsets[i], 0.75);
+      const wheel = w.addBody(new Body(new Circle(0.4), { position: pos, density: 1.5, friction: 1.5 }));
+      wheels.push(wheel);
+      const wj = new WheelJoint(chassis, wheel, pos, axis);
+      wj.frequencyHz = 5;
+      wj.dampingRatio = 0.7;
+      if (i === 0) {
+        wj.enableMotor = true;
+        wj.motorSpeed = -11;
+        wj.maxMotorTorque = 8;
+      }
+      w.addJoint(wj);
+    }
+    // Settle briefly, then track motion and the constraint error. The
+    // perpendicular line constraint pins each wheel's offset *along the chassis*
+    // perpendicular axis, so we measure it in the chassis frame (tilt-invariant).
+    for (let i = 0; i < 120; i++) w.step(1 / 120);
+    const x0 = chassis.worldCenter.x;
+    let maxDrift = 0;
+    for (let i = 0; i < 600; i++) {
+      w.step(1 / 120);
+      for (let k = 0; k < wheels.length; k++) {
+        const local = chassis.localPoint(wheels[k].worldCenter);
+        maxDrift = Math.max(maxDrift, Math.abs(local.x - offsets[k]));
+      }
+    }
+    const travelled = chassis.worldCenter.x - x0;
+    a.ok('Suspension keeps wheels on their line (chassis frame)', maxDrift < 0.05, `max drift ${maxDrift.toFixed(4)} m`);
+    a.ok('Drive motor moves the car forward', travelled > 1, `travelled ${travelled.toFixed(2)} m`);
+    a.ok('Car stays upright while driving', Math.abs(chassis.angle) < 0.4, `tilt ${chassis.angle.toFixed(3)} rad`);
+  }
+  {
+    // The suspension spring carries the chassis above the wheels and holds it
+    // there at rest (it neither collapses to the wheel nor flies apart).
+    const w = new World(new Vec2(0, -10));
+    w.addBody(new Body(Polygon.box(30, 0.5), { type: BodyType.Static, position: new Vec2(0, -0.5), friction: 1 }));
+    const chassis = w.addBody(new Body(Polygon.box(1.2, 0.3), { position: new Vec2(0, 1.6), density: 1 }));
+    for (const dx of [-0.9, 0.9]) {
+      const pos = new Vec2(dx, 0.9);
+      const wheel = w.addBody(new Body(new Circle(0.45), { position: pos, density: 1.5, friction: 1.2 }));
+      const wj = new WheelJoint(chassis, wheel, pos, new Vec2(0, 1));
+      wj.frequencyHz = 4;
+      wj.dampingRatio = 0.8;
+      w.addJoint(wj);
+    }
+    for (let i = 0; i < 800; i++) w.step(1 / 120);
+    a.ok('Chassis rides above the wheels at rest', chassis.worldCenter.y > 1.0 && chassis.worldCenter.y < 1.7,
+      `y=${chassis.worldCenter.y.toFixed(3)}`);
+    a.ok('Suspended chassis comes to rest', chassis.linearVelocity.length() < 0.05,
+      `|v|=${chassis.linearVelocity.length().toFixed(4)}`);
   }
 
   return a.results;

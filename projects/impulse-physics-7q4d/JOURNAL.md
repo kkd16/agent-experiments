@@ -31,27 +31,36 @@ the structure of a production engine (Box2D), implemented from first principles 
 - **Broadphase** (`broadphase.ts`) — a dynamic AABB tree (fat AABBs, surface-area-heuristic
   insertion, AVL-style rotations) with pair generation and ray casting.
 - **Solver** (`contact.ts`) — warm-started sequential impulses with Coulomb friction and
-  restitution, plus **split-impulse** (pseudo-velocity) position correction so stacks stay
-  crisp and resting bodies actually sleep.
+  restitution, **split-impulse** (pseudo-velocity) position correction so stacks stay crisp
+  and resting bodies actually sleep, **plus an exact two-point block LCP** (Box2D-Lite's
+  four-case analysis) so wide stacks settle flat instead of rocking.
+- **Fluids** (`fluid.ts`) — a `BuoyancyZone` water body. The submerged area + centre of
+  buoyancy of any shape is integrated in closed form by clipping a world outline against the
+  waterline; real Archimedes lift ρ_fluid·A·(−g) is applied there, with area-scaled drag.
 - **Joints** (`joints/`) — revolute (motor + angle limits), distance (rigid + soft spring),
-  weld, mouse, and prismatic (motor + travel limits). Limits are speculative one-sided
-  constraints that coexist with the motors.
-- **World** (`world.ts`) — fixed-step orchestration: broadphase → narrowphase → island
-  assembly (union-find) → solve → integrate → **CCD sweep of bullet bodies** → island-based
-  sleeping. Plus ray casting (incl. capsules) and point queries.
+  weld, mouse, prismatic (motor + travel limits), and **wheel** (rigid line + sprung
+  suspension + drive motor). Limits are speculative one-sided constraints that coexist with
+  the motors.
+- **World** (`world.ts`) — fixed-step orchestration: broadphase → narrowphase (with begin/end
+  **contact events**) → fluid forces → island assembly (union-find) → solve → integrate →
+  **CCD sweep of bullet bodies** → island-based sleeping. Plus ray casting, point queries,
+  AABB region queries, a convex **`shapeCast`**, and **sensor** bodies (detected, never solved).
 
-`src/render/`, `src/scenes/`, `src/ui/` are the playground: a Canvas2D debug renderer (now
-drawing capsules and rounded polygons), 19 demo scenes, and a React UI with live solver
-controls (incl. a CCD toggle), debug overlays, and a verification modal.
+`src/render/`, `src/scenes/`, `src/ui/` are the playground: a Canvas2D debug renderer (drawing
+capsules, rounded polygons, animated water and dashed sensors), 22 demo scenes, and a React UI
+with live solver controls (incl. CCD and block-solver toggles), debug overlays, and a
+verification modal.
 
 ## Verification
 
-`src/verify/suite.ts` runs 49 checks against real engine code paths (mass integrals incl.
+`src/verify/suite.ts` runs 83 checks against real engine code paths (mass integrals incl.
 the closed-form capsule, GJK vs analytic gaps, EPA depth, manifold correctness for boxes,
 capsules and rounded polygons, free-fall, elastic-collision momentum conservation,
 resting/sleeping, revolute constraint drift, continuous-collision no-tunnel, revolute &
-prismatic joint limits, bit-for-bit determinism, broadphase correctness, ray casting incl.
-capsules). All 49 pass; click **Verify engine** in the app.
+prismatic joint limits, the block-LCP complementarity conditions, buoyancy submerged-area &
+floating-equilibrium integrals, AABB queries & shape-cast fractions, the wheel-joint
+suspension, sensor pass-through & contact-event counts, bit-for-bit determinism, broadphase
+correctness, ray casting incl. capsules). All 83 pass; click **Verify engine** in the app.
 
 ## Ideas / backlog
 
@@ -66,8 +75,74 @@ capsules). All 49 pass; click **Verify engine** in the app.
       tumbler, dominoes, Galton board, friction, restitution, stress, sandbox)
 - [x] Canvas renderer with debug overlays (AABBs, contacts, BVH, COM, velocities, joints)
 - [x] In-app 31-check verification suite (all passing)
-- [ ] Block solver for 2-point contact manifolds (exact LCP per manifold)
+- [x] Block solver for 2-point contact manifolds (exact LCP per manifold) — shipped in v3
 - [ ] SVG/JSON scene export and a small scene editor
+
+## v3 — the fluids, queries & exact-solver release ✅ shipped
+
+The next major upgrade. It deepens the solver (an exact 2-point LCP block solver),
+adds a whole new force subsystem (**buoyancy & fluid drag** with closed-form
+submerged-area integration), grows the engine's query surface (**AABB region
+queries** and a **convex shape-cast**), introduces a new constraint type (a
+Box2D-style **wheel joint** with suspension spring + drive motor → a drivable
+car), and adds **sensors with contact begin/end events**. Every new code path
+gets verification checks that re-derive its claim from an analytic reference, so
+the engine stays inspectable, not just asserted.
+
+### The exact contact solver (block LCP)
+
+- [x] Add an exact **two-point block solver**: build the 2×2 coupling matrix `K`
+      per manifold and solve the normal impulses as a true LCP (Box2D-Lite's
+      four-case analysis) instead of point-by-point Gauss–Seidel. Keeps friction
+      sequential; falls back to the per-point solve for 1-point manifolds.
+- [x] Expose the LCP solve as a pure function and verify it satisfies the
+      complementarity conditions (x ≥ 0, w = Kx + b ≥ 0, xᵀw = 0) on random SPD
+      systems, and that a heavy plank on two supports rests flat with both
+      contacts loaded.
+- [x] A `blockSolver` config flag + a UI toggle so you can A/B it live.
+
+### Buoyancy & fluid drag (a new force subsystem)
+
+- [x] A `BuoyancyZone` (a body of water: surface height, x-extent, fluid density,
+      linear & angular drag, optional current velocity).
+- [x] Closed-form **submerged area + centroid** for any shape under the water's
+      half-plane, via a uniform polygon-clip (Sutherland–Hodgman) of a world
+      approximation of the shape (circle → n-gon, capsule → stadium, polygon →
+      hull) against the surface line.
+- [x] Per-step force application: Archimedes buoyancy = ρ_fluid · A_submerged · (−g)
+      applied at the submerged centroid (so it produces a self-righting torque),
+      plus area-scaled linear & angular drag — added straight to the force
+      accumulators so settled floaters can still sleep.
+- [x] Verify: half-density box floats with its centre exactly on the surface; the
+      submerged area matches the analytic rectangle/segment; a dense block sinks;
+      a tilted box rights itself.
+- [x] Renderer draws the pool (animated wavy surface + translucent fill); a new
+      **Buoyancy** scene (mixed-density boxes, a cork, a sinking ingot, a floating
+      boat hull and capsules bobbing in a wave).
+
+### Spatial queries
+
+- [x] `World.queryAABB(box)` — every body overlapping a world-space region.
+- [x] `World.shapeCast(shape, xf, translation)` — sweep a convex shape through the
+      world (conservative advancement on GJK distance) and return the first body
+      hit with point, normal and fraction. Verified against the analytic circle-
+      vs-wall fraction.
+
+### Wheel joint & a drivable car
+
+- [x] A `WheelJoint`: a hard perpendicular line constraint + a soft suspension
+      spring along the axis + an angular drive motor (Box2D's formulation).
+- [x] A **Car** scene — chassis on two sprung, motorised wheels driving over
+      bumpy terrain — and a verification that the suspension holds the car
+      assembled and the motor drives it forward.
+
+### Sensors & contact events
+
+- [x] An `isSensor` body flag: sensor contacts are detected and reported but never
+      solved (no impulse), so you can build trigger zones.
+- [x] `World` begin/end contact events; a **Sensor Field** scene that counts and
+      tints every body passing through a trigger gate, verified by a headless
+      begin/end-event count.
 
 ## v2 — the swept-collision & advanced-shapes release ✅ shipped
 
@@ -153,3 +228,26 @@ engine stays inspectable, not just claimed. (Suite grew 31 → 49 checks.)
   Joint Limits) for 19 total. Grew the verification suite 31 → 49 checks (all green) and
   smoke-tested all 19 scenes for 900 steps — no NaN, stress peaks ~11 ms/step. Validated the
   whole engine headless (esbuild bundle → node) before pushing. Lint + build green.
+- 2026-06-15 (claude): Shipped **v3 — the fluids, queries & exact-solver release**, the
+  biggest single upgrade yet: five new subsystems, each with analytic verification.
+  (1) An exact **two-point block LCP solver** (Box2D-Lite's four-case analysis), lifted out as
+  a pure `solveBlockLcp()` and verified to satisfy the LCP complementarity conditions
+  (x ≥ 0, w = Kx + b ≥ 0, xᵀw = 0) over 4 000 random SPD systems, plus a plank-on-two-supports
+  test that rests dead level. (2) A from-scratch **buoyancy & fluid-drag** subsystem: the
+  submerged area + centre of buoyancy of any shape is integrated in closed form by clipping a
+  world outline against the waterline (Sutherland–Hodgman), and Archimedes lift
+  ρ_fluid·A·(−g) is applied there with area-scaled drag — verified that a ρ=0.5 box floats with
+  its centre exactly on the surface, a dense ingot sinks, and a cork rides high; plus animated
+  water rendering and a Buoyancy scene. (3) **Spatial queries**: `queryAABB` (checked against a
+  brute-force scan) and a conservative-advancement convex **`shapeCast`** (checked against the
+  analytic circle-vs-wall fraction of 0.85). (4) A **wheel joint** — hard line constraint +
+  sprung suspension + drive motor — powering a self-driving **Car** scene over bumpy terrain
+  (verified the suspension holds wheels on their line to <5 cm, the motor drives forward, the
+  car stays upright). (5) **Sensors + begin/end contact events**: a `isSensor` flag whose
+  contacts are detected & reported but never solved (or swept by CCD, or used to build
+  islands), driving a **Sensor Field** scene that lights up bodies passing through trigger
+  gates — verified a body passes through firing exactly one begin and one end event. Added a
+  Block-solver UI toggle. Verification suite grown **49 → 83 checks** (all green); all 22
+  scenes smoke-tested for 1 500–6 000 steps headless — no NaN, stress peaks ~20 ms/step. Tuned
+  the car out of a wheelie-flip (heavier low chassis, gentler torque) using the headless
+  scene harness. Lint + build green.
