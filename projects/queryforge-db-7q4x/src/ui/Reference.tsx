@@ -13,7 +13,7 @@ const SECTIONS: Section[] = [
   {
     title: 'Data definition',
     entries: [
-      { syntax: 'CREATE TABLE t (col TYPE [PRIMARY KEY] [NOT NULL] [UNIQUE] [DEFAULT e] [CHECK (e)] [REFERENCES p(c) …], …)', note: 'Types: INTEGER, REAL, TEXT, BOOLEAN, DATE/TIME/TIMESTAMP/INTERVAL. PK/UNIQUE auto-create a B+Tree index.' },
+      { syntax: 'CREATE TABLE t (col TYPE [PRIMARY KEY] [NOT NULL] [UNIQUE] [DEFAULT e] [CHECK (e)] [REFERENCES p(c) …], …)', note: 'Types: INTEGER, REAL, DECIMAL(p,s), TEXT, BOOLEAN, DATE/TIME/TIMESTAMP/INTERVAL, JSON. PK/UNIQUE auto-create a B+Tree index.' },
       { syntax: 'CREATE [UNIQUE] INDEX name ON t (col1 [, col2, …])', note: 'Single- or multi-column B+Tree. A composite index answers an equality prefix plus one trailing range from one tree; a covering index can be read index-only (no heap fetch). Separate single-column indexes combine via a bitmap AND, and an IN-list scans one index via a bitmap OR.' },
       { syntax: 'ALTER TABLE t ADD [COLUMN] col TYPE … · ADD [CONSTRAINT n] CHECK/UNIQUE/FOREIGN KEY …', note: 'Evolve a table in place: a new column backfills existing rows with its DEFAULT; an added constraint is validated against the current data before it takes effect.' },
       { syntax: 'ALTER TABLE t RENAME [TO new | COLUMN c TO new] · DROP COLUMN c', note: 'Rename a table/column (referencing foreign keys are updated) or drop a column (refused while an index or constraint still needs it).' },
@@ -104,7 +104,7 @@ const SECTIONS: Section[] = [
     entries: [
       { syntax: 'AND OR NOT · = <> < <= > >= · + - * / %', note: 'Full SQL three-valued logic — NULL is "unknown".' },
       { syntax: 'x BETWEEN a AND b · x IN (…) · x LIKE \'a%_\'', note: 'LIKE: % = any run, _ = any single character.' },
-      { syntax: 'x IS [NOT] NULL · a || b · CAST(x AS TYPE)', note: '|| concatenates text.' },
+      { syntax: 'x IS [NOT] NULL · a || b · CAST(x AS TYPE) · x::TYPE', note: '|| concatenates text (or, between two JSON values, concatenates/merges them). Postgres-style ::TYPE is a postfix cast that binds tightest.' },
       { syntax: 'CASE WHEN … THEN … [ELSE …] END', note: 'Both searched and simple CASE forms.' },
       { syntax: 'UPPER LOWER INITCAP TRIM LTRIM RTRIM LPAD RPAD REPEAT REVERSE', note: 'String functions.' },
       { syntax: 'LEFT RIGHT SUBSTR INSTR REPLACE CONCAT CONCAT_WS LENGTH ASCII CHR', note: 'More string functions.' },
@@ -139,6 +139,22 @@ const SECTIONS: Section[] = [
       { syntax: "DECIMAL '1.50' = DECIMAL '1.5' = 1.5 = 2−0.5", note: 'Scale-independent comparison; equal values share one identity in GROUP BY / DISTINCT / joins.' },
       { syntax: 'TYPEOF(x) · SCALE(d) · PRECISION(d) · TO_NUMBER(t) · DECIMAL(x [, scale])', note: 'Introspect and construct exact numerics.' },
       { syntax: "TO_CHAR(1234.5, 'FM$999,999.00') → $1,234.50", note: "Numeric templates: 9 0 . , (or D G), S MI PR sign forms, $ / L currency, FM fill, # on overflow." },
+    ],
+  },
+  {
+    title: 'JSON  —  jsonb-style structured values',
+    entries: [
+      { syntax: "'{\"a\":1}'::JSON · CAST(t AS JSON) · CREATE TABLE d (body JSON)", note: 'JSON (alias JSONB) is a first-class value: text parses on cast, and object keys are normalized (sorted, duplicates → last wins). JSON columns index in the B+Tree, sort, GROUP BY, DISTINCT, join and persist like any other type.' },
+      { syntax: "j -> 'key' · j -> n · j ->> 'key'", note: 'Extract a member: -> returns JSON, ->> returns text. An integer index addresses arrays (negative counts from the end). A missing key/index → NULL. Binds tighter than arithmetic.' },
+      { syntax: "j #> '{a,1,b}' · j #>> '{a,1,b}'", note: 'Follow a text path (a Postgres {…} array literal): #> returns JSON, #>> returns text.' },
+      { syntax: 'a @> b · a <@ b · j ? \'key\'', note: 'Containment (does a contain b?), contained-by, and top-level key existence — all boolean, usable directly in WHERE.' },
+      { syntax: 'a || b  (JSON)', note: 'Concatenate two arrays, or merge two objects (right side wins on duplicate keys).' },
+      { syntax: "TO_JSON(x) · JSON(t) · JSON_BUILD_OBJECT(k,v,…) · JSON_BUILD_ARRAY(…)", note: 'Construct JSON: wrap a scalar, parse text, or build an object/array from arguments.' },
+      { syntax: 'JSON_TYPEOF(j) · JSON_ARRAY_LENGTH(j) · JSON_OBJECT_KEYS(j) · JSON_VALID(t)', note: 'Introspection: the JSON type name, an array’s length, an object’s keys (as a JSON array), and whether text is valid JSON.' },
+      { syntax: "JSON_EXTRACT_PATH(j, k1, k2, …) · JSON_EXTRACT_PATH_TEXT(…)", note: 'Variadic path access — the function form of #> / #>>.' },
+      { syntax: "JSONB_SET(j, '{path}', value [, create]) · JSON_STRIP_NULLS(j) · JSON_PRETTY(j) · JSON_CONTAINS(a,b)", note: 'Transform: set/insert at a path (the value is itself JSON), drop null members, pretty-print, or test containment as a function.' },
+      { syntax: 'JSON_AGG(x) · JSON_OBJECT_AGG(k, v)', note: 'Aggregate rows into a JSON array (NULLs preserved, input order kept) or a JSON object.' },
+      { syntax: 'FROM JSON_ARRAY_ELEMENTS(j) · JSON_EACH(j) · JSON_EACH_TEXT(j) · JSON_OBJECT_KEYS(j)', note: 'Set-returning table functions: expand a JSON array/object into rows (value, or key+value) that compose with joins, WHERE, GROUP BY. (Arguments must be constant — LATERAL is not supported.)' },
     ],
   },
   {

@@ -32,7 +32,10 @@ export interface Token {
 // The reserved keyword set of the QueryForge dialect.
 export const KEYWORDS = new Set([
   'SELECT', 'FROM', 'WHERE', 'INSERT', 'INTO', 'VALUES', 'UPDATE', 'SET', 'DELETE',
-  'CREATE', 'TABLE', 'DROP', 'INDEX', 'ON', 'PRIMARY', 'KEY', 'NOT', 'NULL', 'UNIQUE',
+  // NB: KEY is intentionally *not* reserved (Postgres treats it as a non-reserved
+  // word too) so it can be a column name — e.g. the `key` column of json_each().
+  // `PRIMARY KEY` / `FOREIGN KEY` still parse because expect()/at() match by value.
+  'CREATE', 'TABLE', 'DROP', 'INDEX', 'ON', 'PRIMARY', 'NOT', 'NULL', 'UNIQUE',
   'DISTINCT', 'AS', 'JOIN', 'INNER', 'LEFT', 'RIGHT', 'FULL', 'CROSS', 'OUTER',
   'GROUP', 'BY', 'HAVING', 'ORDER', 'ASC', 'DESC', 'LIMIT', 'OFFSET',
   'AND', 'OR', 'IN', 'IS', 'LIKE', 'BETWEEN', 'CASE', 'WHEN', 'THEN', 'ELSE', 'END',
@@ -47,9 +50,12 @@ export const KEYWORDS = new Set([
   'ALTER', 'ADD', 'COLUMN', 'RENAME', 'TO',
 ])
 
-// Multi-character operators, longest first so the scanner is greedy.
-const MULTI_OPS = ['<=', '>=', '<>', '!=', '||', '==']
-const SINGLE_OPS = new Set(['<', '>', '=', '+', '-', '*', '/', '%'])
+// Multi-character operators, longest first so the scanner is greedy. The
+// 3-char JSON path operators (`->>`, `#>>`) must be tried before the 2-char
+// ones (`->`, `#>`), which in turn precede the single-char operators.
+const THREE_OPS = ['->>', '#>>']
+const MULTI_OPS = ['<=', '>=', '<>', '!=', '||', '==', '->', '#>', '@>', '<@', '::']
+const SINGLE_OPS = new Set(['<', '>', '=', '+', '-', '*', '/', '%', '?'])
 const PUNCT = new Set(['(', ')', ',', ';', '.'])
 
 function isDigit(c: string): boolean {
@@ -181,7 +187,13 @@ export function tokenize(src: string, opts: { includeComments?: boolean } = {}):
       continue
     }
 
-    // Multi-char operators.
+    // Multi-char operators (3-char first, then 2-char).
+    const three = src.slice(i, i + 3)
+    if (THREE_OPS.includes(three)) {
+      push('operator', i, i + 3)
+      i += 3
+      continue
+    }
     const two = src.slice(i, i + 2)
     if (MULTI_OPS.includes(two)) {
       push('operator', i, i + 2)

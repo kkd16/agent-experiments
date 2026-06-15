@@ -31,6 +31,18 @@ import {
   rescale as decimalRescale,
   type DecimalValue,
 } from './decimal'
+import {
+  isJson,
+  jsonOf,
+  parseJson,
+  tryParseJson,
+  stringify as jsonStringify,
+  jsonOrder,
+  jsonHash,
+  toJson,
+  type Json,
+  type JsonValue,
+} from './json'
 
 export type ColumnType =
   | 'INTEGER'
@@ -42,8 +54,9 @@ export type ColumnType =
   | 'TIMESTAMP'
   | 'INTERVAL'
   | 'DECIMAL'
+  | 'JSON'
 
-export type SqlValue = null | number | string | boolean | Temporal | DecimalValue
+export type SqlValue = null | number | string | boolean | Temporal | DecimalValue | JsonValue
 
 export const COLUMN_TYPES: readonly ColumnType[] = [
   'INTEGER',
@@ -55,6 +68,7 @@ export const COLUMN_TYPES: readonly ColumnType[] = [
   'TIME',
   'TIMESTAMP',
   'INTERVAL',
+  'JSON',
 ]
 
 /** Coerce any value into an exact DECIMAL (used by comparison + coercion). */
@@ -83,6 +97,7 @@ export function valueTypeOf(v: SqlValue): ColumnType | 'NULL' {
   if (v === null) return 'NULL'
   if (typeof v === 'boolean') return 'BOOLEAN'
   if (typeof v === 'string') return 'TEXT'
+  if (isJson(v)) return 'JSON'
   if (isDecimal(v)) return 'DECIMAL'
   if (isTemporal(v)) {
     return v.t === 'date' ? 'DATE' : v.t === 'time' ? 'TIME' : v.t === 'timestamp' ? 'TIMESTAMP' : 'INTERVAL'
@@ -95,6 +110,31 @@ export function valueTypeOf(v: SqlValue): ColumnType | 'NULL' {
  *  digits — i.e. the `s` of a `DECIMAL(p, s)` column or CAST. */
 export function coerceTo(type: ColumnType, v: SqlValue, scale?: number): SqlValue {
   if (v === null) return null
+  if (type === 'JSON') {
+    // text parses (jsonb), an existing JSON value passes through, and any other
+    // scalar is wrapped like `to_json` (CAST is lenient where SQL's `::json` isn't).
+    if (isJson(v)) return v
+    if (typeof v === 'string') return parseJson(v)
+    return jsonOf(toJson(v))
+  }
+  if (isJson(v)) {
+    // A JSON value flowing into a non-JSON column.
+    if (type === 'TEXT') return jsonStringify(v.v)
+    const inner = v.v
+    if (type === 'INTEGER') {
+      if (typeof inner === 'number') return Math.trunc(inner)
+      if (typeof inner === 'boolean') return inner ? 1 : 0
+      if (typeof inner === 'string' && inner.trim() !== '' && !Number.isNaN(Number(inner))) return Math.trunc(Number(inner))
+    } else if (type === 'REAL') {
+      if (typeof inner === 'number') return inner
+      if (typeof inner === 'boolean') return inner ? 1 : 0
+      if (typeof inner === 'string' && inner.trim() !== '' && !Number.isNaN(Number(inner))) return Number(inner)
+    } else if (type === 'BOOLEAN') {
+      if (typeof inner === 'boolean') return inner
+      if (typeof inner === 'number') return inner !== 0
+    }
+    throw new TypeErrorSql(`cannot store a JSON ${typeof inner === 'object' ? (Array.isArray(inner) ? 'array' : 'object') : typeof inner} as ${type}`)
+  }
   if (type === 'DECIMAL') {
     const d = asDecimalExact(v) ?? (typeof v === 'number' ? decimalFromNumber(v) : null)
     if (!d) throw new TypeErrorSql(`cannot store ${JSON.stringify(v)} as DECIMAL`)
@@ -159,8 +199,20 @@ export function coerceTo(type: ColumnType, v: SqlValue, scale?: number): SqlValu
 }
 
 /** SQL three-valued comparison. Returns null when either side is NULL. */
+/** Read a value as JSON data for cross-comparison: a JSON value unwraps, a
+ *  string parses if it's valid JSON (else it's treated as a JSON string), and
+ *  any other scalar maps through `to_json`. */
+function asJsonData(v: SqlValue): Json {
+  if (isJson(v)) return v.v
+  if (typeof v === 'string') return tryParseJson(v)?.v ?? v
+  return toJson(v)
+}
+
 export function compareValues(a: SqlValue, b: SqlValue): number | null {
   if (a === null || b === null) return null
+  // JSON compares structurally (jsonb's total order); a string/scalar opposite
+  // is read as JSON so `json_col = '{"a":1}'` behaves intuitively.
+  if (isJson(a) || isJson(b)) return jsonOrder(asJsonData(a), asJsonData(b))
   // Temporal values compare among themselves, and coerce a string/number
   // counterpart into their kind (so `date_col = '2026-06-15'` works).
   const at = isTemporal(a)
@@ -208,6 +260,7 @@ export function orderValues(a: SqlValue, b: SqlValue): number {
   if (a === null && b === null) return 0
   if (a === null) return -1
   if (b === null) return 1
+  if (isJson(a) && isJson(b)) return jsonOrder(a.v, b.v)
   if (isTemporal(a) && isTemporal(b)) return orderTemporal(a, b)
   const c = compareValues(a, b)
   return c ?? 0
@@ -224,6 +277,7 @@ export function hashKey(values: SqlValue[]): string {
     if (v === null) out += 'N;'
     else if (typeof v === 'string') out += `S${v.length}:${v}`
     else if (typeof v === 'boolean') out += v ? 'B1;' : 'B0;'
+    else if (isJson(v)) out += `J${jsonHash(v)};`
     else if (isTemporal(v)) out += `T${hashTemporal(v)};`
     else if (isDecimal(v)) out += `D${hashDecimal(v)};`
     else out += `D${v};`
@@ -235,6 +289,7 @@ export function formatValue(v: SqlValue): string {
   if (v === null) return 'NULL'
   if (typeof v === 'boolean') return v ? 'TRUE' : 'FALSE'
   if (typeof v === 'string') return v
+  if (isJson(v)) return jsonStringify(v.v)
   if (isDecimal(v)) return formatDecimal(v)
   if (isTemporal(v)) return formatTemporal(v)
   return String(v)

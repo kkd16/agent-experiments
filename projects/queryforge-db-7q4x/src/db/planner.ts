@@ -11,7 +11,7 @@
 // shape — and the reasoning — behind the chosen plan.
 
 import { SqlError, compareValues, hashKey, valueTypeOf, valuesEqual, type ColumnType, type SqlValue } from './types'
-import { compileExpr, exprKey, type CompileCtx, type Evaluator, type OuterScope } from './eval'
+import { compileExpr, exprKey, TABLE_FUNCTIONS, type CompileCtx, type Evaluator, type OuterScope } from './eval'
 import { resolveColumn, type Binding, type Schema } from './schema'
 import {
   isAggregate,
@@ -332,6 +332,16 @@ function inferType(e: Expr, schema: Schema, ctx: CompileCtx): ColumnType {
       if (['AGE', 'MAKE_INTERVAL', 'TO_INTERVAL', 'JUSTIFY_HOURS'].includes(e.name)) return 'INTERVAL'
       if (
         [
+          'TO_JSON', 'JSON', 'JSON_BUILD_OBJECT', 'JSON_BUILD_ARRAY', 'JSON_OBJECT_KEYS',
+          'JSON_EXTRACT_PATH', 'JSON_STRIP_NULLS', 'JSONB_SET', 'JSON_SET', 'JSON_AGG', 'JSON_OBJECT_AGG',
+        ].includes(e.name)
+      )
+        return 'JSON'
+      if (['JSON_TYPEOF', 'JSON_EXTRACT_PATH_TEXT', 'JSON_PRETTY'].includes(e.name)) return 'TEXT'
+      if (e.name === 'JSON_ARRAY_LENGTH') return 'INTEGER'
+      if (['JSON_VALID', 'JSON_CONTAINS'].includes(e.name)) return 'BOOLEAN'
+      if (
+        [
           'SUM', 'MIN', 'MAX', 'AVG', 'ABS', 'ROUND', 'SQRT', 'CEIL', 'CEILING', 'FLOOR', 'TRUNC',
           'POW', 'POWER', 'MOD', 'EXP', 'LN', 'LOG', 'LOG10', 'PI', 'SIN', 'COS', 'TAN', 'ASIN',
           'ACOS', 'ATAN', 'ATAN2', 'RADIANS', 'DEGREES', 'RANDOM', 'JULIANDAY',
@@ -350,8 +360,10 @@ function inferType(e: Expr, schema: Schema, ctx: CompileCtx): ColumnType {
         return 'TEXT'
       return 'TEXT'
     case 'binary':
-      if (['=', '<>', '<', '<=', '>', '>=', 'AND', 'OR'].includes(e.op)) return 'BOOLEAN'
-      if (e.op === '||') return 'TEXT'
+      if (['=', '<>', '<', '<=', '>', '>=', 'AND', 'OR', '@>', '<@', '?'].includes(e.op)) return 'BOOLEAN'
+      if (e.op === '->' || e.op === '#>') return 'JSON'
+      if (e.op === '->>' || e.op === '#>>') return 'TEXT'
+      if (e.op === '||') return inferType(e.left, schema, ctx) === 'JSON' ? 'JSON' : 'TEXT'
       return 'REAL'
     case 'unary':
       return e.op === 'NOT' ? 'BOOLEAN' : 'REAL'
@@ -1006,7 +1018,8 @@ const TYPE_RANK: Record<ColumnType, number> = {
   TIME: 5,
   DATE: 6,
   TIMESTAMP: 7,
-  TEXT: 8,
+  JSON: 8,
+  TEXT: 9,
 }
 function widerType(a: ColumnType, b: ColumnType): ColumnType {
   if (a === b) return a
@@ -1032,6 +1045,9 @@ function relationFor(item: FromItem | JoinClause, env: PlanEnv): { table: Table;
     const t = materialize(item.subquery, env, alias, item.columnAliases)
     return { table: t, alias }
   }
+  if (item.tableFunc) {
+    return tableFunctionRelation(item.tableFunc, item.alias, item.columnAliases)
+  }
   const name = item.table!
   // CTEs / derived overlays (more local) win over a catalog view or base table.
   const overlay = env.relations.get(name.toLowerCase())
@@ -1054,6 +1070,37 @@ function relationFor(item: FromItem | JoinClause, env: PlanEnv): { table: Table;
   }
   const t = env.db.getTable(name)
   return { table: t, alias: item.alias ?? t.name }
+}
+
+// Materialize a set-returning table function (json_each / json_array_elements /
+// …) into a synthetic single-use table, so the rest of the planner treats it
+// exactly like a derived table. Arguments are evaluated in a constant context —
+// LATERAL (referencing earlier FROM items) is not supported.
+function tableFunctionRelation(
+  tf: { name: string; args: Expr[] },
+  alias: string | undefined,
+  columnAliases: string[] | undefined,
+): { table: Table; alias: string } {
+  const fn = TABLE_FUNCTIONS[tf.name]
+  if (!fn) throw new SqlError(`unknown table function ${tf.name}() in FROM`, 'plan')
+  const constCtx: CompileCtx = {
+    resolve: () => {
+      throw new SqlError(`a ${tf.name}() argument cannot reference a column (LATERAL is not supported)`, 'plan')
+    },
+  }
+  const argVals = tf.args.map((a) => compileExpr(a, constCtx)([]))
+  const result = fn(argVals)
+  const name = alias ?? tf.name.toLowerCase()
+  const cols: ColumnDef[] = result.columns.map((c, i) => ({
+    name: columnAliases?.[i] ?? c.name,
+    type: c.type,
+    primaryKey: false,
+    notNull: false,
+    unique: false,
+  }))
+  const table = new Table(name, cols)
+  for (const r of result.rows) table.insertRawRow(r.slice())
+  return { table, alias: name }
 }
 
 // A top-level `EXISTS (…)` conjunct, or a `NOT EXISTS (…)` one (which parses as
@@ -1333,11 +1380,16 @@ function planCore(stmt: SelectStmt, env: PlanEnv, embedOrderLimit: boolean): Ope
         }
       }
 
+      // JSON_OBJECT_AGG(key, value): the 2nd argument is the per-row value.
+      const arg2 =
+        e.name === 'JSON_OBJECT_AGG' && e.args[1] ? compileExpr(e.args[1], preCtx) : undefined
+
       return {
         name: e.name as AggName,
         star: e.star,
         distinct: e.distinct,
         arg: e.star || e.args.length === 0 ? null : compileExpr(e.args[0], preCtx),
+        arg2,
         label: exprLabel(e),
         sep,
         filter: e.filter ? compileExpr(e.filter, preCtx) : undefined,

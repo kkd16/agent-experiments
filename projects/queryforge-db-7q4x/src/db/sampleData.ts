@@ -105,6 +105,22 @@ INSERT INTO invoices (id, customer_id, issued, subtotal, tax_rate, total) VALUES
   (7, 7, DATE '2026-04-19',  238.00, 0.2000,  285.60),
   (8, 1, DATE '2026-05-02',  459.00, 0.2000,  550.80);
 
+-- Semi-structured data: a JSON (jsonb-style) column. JSON is a first-class
+-- value here — it indexes, sorts, GROUP BYs and persists like any other type,
+-- and object keys are normalized (sorted, de-duplicated).
+CREATE TABLE documents (
+  id INTEGER PRIMARY KEY,
+  customer_id INTEGER REFERENCES customers(id) ON DELETE CASCADE,
+  body JSON
+);
+
+INSERT INTO documents (id, customer_id, body) VALUES
+  (1, 1, '{"kind":"order","priority":"high","tags":["vip","rush"],"items":[{"sku":"A1","qty":2},{"sku":"B2","qty":1}],"shipping":{"country":"US","express":true}}'),
+  (2, 2, '{"kind":"order","priority":"low","tags":["bulk"],"items":[{"sku":"A1","qty":10}],"shipping":{"country":"GB","express":false}}'),
+  (3, 3, '{"kind":"ticket","priority":"high","tags":["billing"],"sentiment":-2,"shipping":null}'),
+  (4, 4, '{"kind":"order","priority":"med","tags":["vip"],"items":[{"sku":"C3","qty":3}],"shipping":{"country":"US","express":false}}'),
+  (5, 5, '{"kind":"ticket","priority":"low","tags":["howto","docs"],"sentiment":1}');
+
 -- A secondary index the planner can exploit for range scans.
 CREATE INDEX idx_products_price ON products (price);
 CREATE INDEX idx_invoices_total ON invoices (total);
@@ -535,5 +551,68 @@ VALUES (99, 'Mystery Gadget', 'Misc', 9.99, 1000);
 SELECT COUNT(*) AS products_during_txn FROM products;
 ROLLBACK;
 SELECT COUNT(*) AS products_after_rollback FROM products;`,
+  },
+  {
+    title: 'JSON — extract fields with -> and ->>',
+    sql: `-- -> returns JSON, ->> returns text; chain them to dig in, and use a text
+-- path with #>>. Arrows bind tighter than arithmetic, like a field access.
+SELECT id,
+       body ->> 'kind'                AS kind,
+       body ->> 'priority'            AS priority,
+       body #>> '{shipping,country}'  AS ships_to,
+       body -> 'tags' -> 0            AS first_tag
+FROM documents
+ORDER BY id;`,
+  },
+  {
+    title: 'JSON — containment (@>) filtering, served like any predicate',
+    sql: `-- @> asks "does the left JSON contain the right?" — great for matching a
+-- shape. Here: high-priority orders shipping express.
+SELECT d.id, c.name, d.body ->> 'priority' AS priority
+FROM documents d
+JOIN customers c ON c.id = d.customer_id
+WHERE d.body @> '{"kind":"order","shipping":{"express":true}}'
+ORDER BY d.id;`,
+  },
+  {
+    title: 'JSON — unnest an array in FROM (json_array_elements)',
+    sql: `-- A set-returning function expands a JSON array into rows, which then
+-- compose with the rest of SQL — GROUP BY, aggregates, ORDER BY, joins.
+SELECT item ->> 'sku'                       AS sku,
+       SUM(CAST(item ->> 'qty' AS INTEGER)) AS total_qty
+FROM json_array_elements(
+       '[{"sku":"A1","qty":2},{"sku":"B2","qty":1},{"sku":"A1","qty":10}]'
+     ) AS line(item)
+GROUP BY item ->> 'sku'
+ORDER BY total_qty DESC;`,
+  },
+  {
+    title: 'JSON — json_each unrolls an object into key/value rows',
+    sql: `-- json_each turns the top-level members of an object into rows
+-- (key TEXT, value JSON). KEY is a usable column name here.
+SELECT key, value
+FROM json_each('{"a":1,"b":[2,3],"c":{"nested":true}}')
+ORDER BY key;`,
+  },
+  {
+    title: 'JSON — build & aggregate (JSON_BUILD_OBJECT / JSON_AGG)',
+    sql: `-- Roll each customer's documents up into one JSON array of summaries.
+SELECT c.name,
+       JSON_AGG(JSON_BUILD_OBJECT('kind', d.body ->> 'kind',
+                                  'priority', d.body ->> 'priority')) AS docs
+FROM customers c
+JOIN documents d ON d.customer_id = c.id
+GROUP BY c.name
+ORDER BY c.name;`,
+  },
+  {
+    title: 'JSON — reshape values (JSONB_SET, ||, JSON_PRETTY)',
+    sql: `-- Patch a stored document: bump priority and merge in an audit stamp.
+SELECT JSON_PRETTY(
+         JSONB_SET(body, '{priority}', '"urgent"')
+         || JSON_BUILD_OBJECT('reviewed', TRUE)
+       ) AS patched
+FROM documents
+WHERE id = 3;`,
   },
 ]

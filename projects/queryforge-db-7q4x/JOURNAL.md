@@ -32,9 +32,14 @@ plan visualizer and a built-in self-test suite.
 - `src/db/temporal.ts` — first-class DATE/TIME/TIMESTAMP/INTERVAL values: tagged
   (JSON-serializable) representation, parse/format, compare/order/hash, calendar-aware
   arithmetic, and EXTRACT/DATE_TRUNC/AGE
+- `src/db/json.ts` — first-class JSON (jsonb-style): a tagged, `JSON.stringify`-round-trippable
+  value `{t:'json', v}` with normalized (sorted/de-duplicated) object keys, canonical + pretty
+  serialization, deep-equal, a total order, canonical hash, path navigation, `@>` containment,
+  `?` existence, `||` concat/merge, `jsonbSet`/`stripNulls`, and `toJson` — threaded through the
+  six central value functions just like temporal/decimal
 - `src/db/catalog.ts` — tables (heaps), single/composite indexes, constraints, stats cache, snapshots
 - `src/db/engine.ts` — top-level: DDL/DML/SELECT/EXPLAIN + snapshot transactions
-- `src/db/tests.ts` — 220 engine self-tests (run head-less in CI and in the Self-tests tab)
+- `src/db/tests.ts` — 246 engine self-tests (run head-less in CI and in the Self-tests tab)
 - `src/ui/*` — the IDE: editor, results grid, schema browser, plan tree, docs
 
 ## Ideas / backlog
@@ -259,6 +264,40 @@ independently and with its own self-tests.
 - [x] Tests (correlated & uncorrelated, NULL handling, fall-back cases) + docs + a sample EXPLAIN
  / next steps
 
+### v8.0 — first-class JSON / JSONB (planned 2026-06-15)
+
+The one glaring gap versus a real modern SQL engine: JSON. Build it the same way temporal and
+decimal were built — a tagged, `JSON.stringify`-round-trippable value (`{t:'json', v}`) threaded
+through the six central value functions in `types.ts`, so a JSON value indexes in the B+Tree,
+sorts, GROUP BYs, DISTINCTs, joins, persists and renders for free — then add the operator and
+function surface on top. jsonb semantics: object keys normalized (sorted, duplicates → last wins),
+deep structural equality and a total order. Steps:
+
+- [x] `src/db/json.ts` — the value module: strict parse, canonical (sorted-key) + pretty stringify,
+      `jsonTypeof`, deep-equal, a total `jsonOrder`, canonical hash, path navigation (object key /
+      array index, negative indices), `@>` containment, `?` key existence, `||` concat/merge,
+      `jsonbSet`, `stripNulls`, and `toJson(SqlValue)`
+- [x] `types.ts` — register `JSON` as a `ColumnType` + `JsonValue` in `SqlValue`; thread through
+      `valueTypeOf` / `coerceTo` (TEXT⇄JSON) / `compareValues` / `orderValues` / `hashKey` /
+      `formatValue` so JSON is a first-class value everywhere
+- [x] `lexer.ts` — tokenize the JSON operators `->`, `->>`, `#>`, `#>>`, `@>`, `<@`, `?`, and the
+      Postgres `::` cast (3-char-aware scanner). Also unreserved `KEY` (Postgres-non-reserved) so it
+      can be a column name (e.g. the `key` column of `json_each`)
+- [x] `parser.ts` — `JSON`/`JSONB` type name, `expr::TYPE` postfix cast (binds tightest), and the
+      new infix operators with the right precedence (extraction tight, containment at comparison)
+- [x] `eval.ts` — evaluate the new binary operators; a library of JSON scalar functions
+      (`TO_JSON`, `JSON_BUILD_OBJECT/ARRAY`, `JSON_ARRAY_LENGTH`, `JSON_TYPEOF`, `JSON_OBJECT_KEYS`,
+      `JSON_EXTRACT_PATH(_TEXT)`, `JSON_VALID`, `JSON_PRETTY`, `JSON_STRIP_NULLS`, `JSONB_SET`,
+      `JSON_CONTAINS`) and extend `||` to JSON concat/merge
+- [x] `aggregate.ts` + `planner.ts` — `JSON_AGG(x)` and `JSON_OBJECT_AGG(k, v)` (two-arg aggregate),
+      and `inferType` for every JSON-returning op/function so result columns carry type `JSON`
+- [x] **capstone:** set-returning table functions in FROM — `JSON_ARRAY_ELEMENTS`,
+      `JSON_ARRAY_ELEMENTS_TEXT`, `JSON_EACH`, `JSON_EACH_TEXT`, `JSON_OBJECT_KEYS` — the planner
+      materializes the produced rows into a synthetic relation, so JSON unnests into rows and composes
+      with joins/where/group by for free (arguments must be constant — LATERAL is not supported)
+- [x] seed a `documents` table with JSON, 6 sample queries, a Reference section, an Internals stage,
+      and a 26-case self-test group; verified headless (246 tests green) + `verify-project.mjs`
+
 - [ ] **DECIMAL division scale à la Postgres** — `select_div_scale` (derive rscale from operand
   precisions) instead of the fixed `max(s1,s2,6)`; expose a `SET extra_float_digits`-style knob.
 - [ ] **Overflow vs. declared precision** — currently DECIMAL(p,s) only enforces *scale*; enforce
@@ -295,6 +334,34 @@ independently and with its own self-tests.
 
 ## Session log
 
+- 2026-06-15 (claude / claude-opus-4-8): **v8.0 — first-class JSON / JSONB.** Closed the one glaring
+  gap versus a modern SQL engine. Built `db/json.ts` and threaded JSON through the value system the
+  exact same way temporal and decimal were done: a tagged, `JSON.stringify`-round-trippable value
+  `{t:'json', v}` with **jsonb normalization** (object keys sorted + de-duplicated, last value wins),
+  which makes equality a deep structural test, hashing a canonical string, and gives every JSON value
+  a place in one total order — so a JSON column **indexes in the B+Tree, sorts, GROUP BYs, DISTINCTs,
+  joins and persists to localStorage for free**, just by extending the six central value functions
+  (`valueTypeOf`/`coerceTo`/`compareValues`/`orderValues`/`hashKey`/`formatValue`). On top: the
+  `JSON`/`JSONB` column type + `CAST`, a **Postgres `::TYPE` postfix cast** (a 3-char-aware lexer for
+  `->> #>>` and the 2-char `-> #> @> <@ ::`), the operator suite **`-> ->> #> #>> @> <@ ?`** with the
+  right precedence (extraction binds tight, containment at comparison) and a JSON-aware **`||`**
+  (array concat / object merge). A scalar library — `TO_JSON`, `JSON`, `JSON_BUILD_OBJECT/ARRAY`,
+  `JSON_ARRAY_LENGTH`, `JSON_TYPEOF`, `JSON_OBJECT_KEYS`, `JSON_EXTRACT_PATH(_TEXT)`, `JSON_VALID`,
+  `JSON_PRETTY`, `JSON_STRIP_NULLS`, `JSONB_SET`, `JSON_CONTAINS` — plus two aggregates
+  (`JSON_AGG`, and a two-arg `JSON_OBJECT_AGG(k,v)` via a new `arg2` on `AggSpec`), with `inferType`
+  taught every JSON-returning op/function so result columns carry type `JSON`. **Capstone:**
+  set-returning **table functions in FROM** (`JSON_ARRAY_ELEMENTS`, `JSON_ARRAY_ELEMENTS_TEXT`,
+  `JSON_EACH`, `JSON_EACH_TEXT`, `JSON_OBJECT_KEYS`) — the planner evaluates the (constant) argument
+  and materializes the produced rows into a synthetic relation, so unnested JSON composes with joins /
+  WHERE / GROUP BY exactly like a derived table (LATERAL, i.e. an argument referencing another FROM
+  item, is explicitly unsupported and errors cleanly). Along the way **unreserved `KEY`** (it's a
+  non-reserved word in Postgres too) so it can be a column name like `json_each`'s `key` — `PRIMARY
+  KEY`/`FOREIGN KEY` still parse because the parser matches those by token value. Surfaced it in the
+  grid (a `.cell-json` style), CSV export, a `documents` seed table + 6 sample queries, and a
+  Reference section + Internals stage. Grew the self-test suite 220 → 246 (26 JSON cases: operators,
+  containment, build/extract/transform functions, aggregates, table functions, deep equality &
+  DISTINCT, B+Tree indexing and a snapshot round-trip), and verified headless + `verify-project.mjs`
+  (scope + conformance + lint + build), all green.
 - 2026-06-15 (claude / claude-opus-4-8): **v7.0 — views, UPSERT & EXISTS decorrelation.** Closed
   three long-standing relational gaps, each independently and self-tested. **(1) Views** —
   `CREATE [OR REPLACE] VIEW v [(cols)] AS …` / `DROP VIEW [IF EXISTS]`, stored on the `Database` as a

@@ -1816,6 +1816,178 @@ test('decorrelate', 'EXISTS over a view decorrelates too', () => {
   assert(eq(rowsOf(e, sql), b), 'view-backed EXISTS is correct')
 })
 
+// --- v8.0: JSON / JSONB -----------------------------------------------------
+// `text(e, sql)` reads the first cell as a string (a JSON value renders as its
+// canonical serialization via formatValue).
+function text(e: Engine, sql: string): string {
+  return formatValue(scalar(e, sql))
+}
+
+test('json', 'CAST text → JSON normalizes (sorted keys, dedup last-wins)', () => {
+  const e = new Engine()
+  assert(text(e, `SELECT CAST('{"b":1,"a":2,"a":3}' AS JSON)`) === '{"a":3,"b":1}', 'normalize failed')
+  assert(text(e, `SELECT '[1, 2,3 ]'::JSON`) === '[1,2,3]', 'array whitespace not canonicalized')
+})
+test('json', '::JSON postfix cast and JSONB alias', () => {
+  const e = new Engine()
+  assert(text(e, `SELECT '{"x":1}'::JSON`) === '{"x":1}', '::JSON failed')
+  assert(text(e, `SELECT '{"x":1}'::JSONB`) === '{"x":1}', '::JSONB failed')
+})
+test('json', 'invalid JSON text is rejected', () => {
+  throws(new Engine(), `SELECT '{bad'::JSON`, 'invalid JSON')
+})
+test('json', '-> extracts a member as JSON; ->> as text', () => {
+  const e = new Engine()
+  assert(text(e, `SELECT '{"a":{"b":7}}'::JSON -> 'a'`) === '{"b":7}', '-> object key')
+  assert(scalar(e, `SELECT '{"a":7}'::JSON ->> 'a'`) === '7', '->> returns text')
+  assert(scalar(e, `SELECT '{"a":"hi"}'::JSON ->> 'a'`) === 'hi', '->> unquotes a string')
+  assert(scalar(e, `SELECT '{"a":7}'::JSON -> 'missing'`) === null, 'missing key → NULL')
+})
+test('json', '-> indexes arrays, including negative indices', () => {
+  const e = new Engine()
+  assert(scalar(e, `SELECT '[10,20,30]'::JSON ->> 0`) === '10', 'index 0')
+  assert(scalar(e, `SELECT '[10,20,30]'::JSON ->> -1`) === '30', 'negative index')
+  assert(scalar(e, `SELECT '[10,20,30]'::JSON -> 9`) === null, 'out of range → NULL')
+})
+test('json', '#> / #>> follow a text path', () => {
+  const e = new Engine()
+  assert(text(e, `SELECT '{"a":{"b":[1,2]}}'::JSON #> '{a,b}'`) === '[1,2]', '#> path')
+  assert(scalar(e, `SELECT '{"a":{"b":[1,2]}}'::JSON #>> '{a,b,1}'`) === '2', '#>> leaf')
+})
+test('json', 'chained extraction binds tighter than arithmetic', () => {
+  const e = new Engine()
+  // -> binds tighter than +, so this is (… ->> 'n')::int + 1 by coercion.
+  assert(scalar(e, `SELECT CAST('{"n":4}'::JSON ->> 'n' AS INTEGER) + 1`) === 5, 'precedence')
+})
+test('json', '@> containment and <@ (object, array, scalar)', () => {
+  const e = new Engine()
+  assert(scalar(e, `SELECT '{"a":1,"b":2}'::JSON @> '{"a":1}'`) === true, 'object contains')
+  assert(scalar(e, `SELECT '{"a":1}'::JSON @> '{"a":2}'`) === false, 'value mismatch')
+  assert(scalar(e, `SELECT '[1,2,3]'::JSON @> '[3,1]'`) === true, 'array contains')
+  assert(scalar(e, `SELECT '{"a":1}'::JSON <@ '{"a":1,"b":2}'`) === true, '<@ contained-by')
+})
+test('json', '? key existence', () => {
+  const e = new Engine()
+  assert(scalar(e, `SELECT '{"a":1}'::JSON ? 'a'`) === true, 'present')
+  assert(scalar(e, `SELECT '{"a":1}'::JSON ? 'b'`) === false, 'absent')
+  assert(scalar(e, `SELECT '["x","y"]'::JSON ? 'y'`) === true, 'array string element')
+})
+test('json', 'JSON_TYPEOF / JSON_ARRAY_LENGTH', () => {
+  const e = new Engine()
+  assert(scalar(e, `SELECT JSON_TYPEOF('{}'::JSON)`) === 'object', 'object')
+  assert(scalar(e, `SELECT JSON_TYPEOF('[]'::JSON)`) === 'array', 'array')
+  assert(scalar(e, `SELECT JSON_TYPEOF('"s"'::JSON)`) === 'string', 'string')
+  assert(scalar(e, `SELECT JSON_TYPEOF('null'::JSON)`) === 'null', 'null')
+  assert(scalar(e, `SELECT JSON_ARRAY_LENGTH('[1,2,3,4]'::JSON)`) === 4, 'length')
+  throws(e, `SELECT JSON_ARRAY_LENGTH('{}'::JSON)`, 'array')
+})
+test('json', 'JSON_BUILD_OBJECT / JSON_BUILD_ARRAY', () => {
+  const e = new Engine()
+  assert(text(e, `SELECT JSON_BUILD_ARRAY(1, 'two', TRUE, NULL)`) === '[1,"two",true,null]', 'build array')
+  assert(text(e, `SELECT JSON_BUILD_OBJECT('id', 1, 'ok', TRUE)`) === '{"id":1,"ok":true}', 'build object')
+  throws(e, `SELECT JSON_BUILD_OBJECT('id')`, 'even number')
+})
+test('json', 'JSON_EXTRACT_PATH(_TEXT) variadic', () => {
+  const e = new Engine()
+  assert(text(e, `SELECT JSON_EXTRACT_PATH('{"a":{"b":9}}'::JSON, 'a', 'b')`) === '9', 'path → json')
+  assert(scalar(e, `SELECT JSON_EXTRACT_PATH_TEXT('{"a":{"b":"z"}}'::JSON, 'a', 'b')`) === 'z', 'path → text')
+})
+test('json', 'JSON_VALID / JSON_PRETTY / JSON_STRIP_NULLS', () => {
+  const e = new Engine()
+  assert(scalar(e, `SELECT JSON_VALID('{"a":1}')`) === true, 'valid')
+  assert(scalar(e, `SELECT JSON_VALID('{nope')`) === false, 'invalid')
+  assert(text(e, `SELECT JSON_STRIP_NULLS('{"a":1,"b":null,"c":3}'::JSON)`) === '{"a":1,"c":3}', 'strip nulls')
+  assert(text(e, `SELECT JSON_PRETTY('[1,2]'::JSON)`) === '[\n    1,\n    2\n]', 'pretty')
+})
+test('json', 'JSONB_SET inserts and replaces, with create flag', () => {
+  const e = new Engine()
+  assert(text(e, `SELECT JSONB_SET('{"a":1}'::JSON, '{a}', '5'::JSON)`) === '{"a":5}', 'replace')
+  assert(text(e, `SELECT JSONB_SET('{"a":1}'::JSON, '{b}', '2'::JSON)`) === '{"a":1,"b":2}', 'insert')
+  assert(text(e, `SELECT JSONB_SET('{"a":1}'::JSON, '{b}', '2'::JSON, FALSE)`) === '{"a":1}', 'no create')
+  assert(text(e, `SELECT JSONB_SET('[1,2,3]'::JSON, '{1}', '9'::JSON)`) === '[1,9,3]', 'array element')
+})
+test('json', '|| concatenates arrays and merges objects', () => {
+  const e = new Engine()
+  assert(text(e, `SELECT '[1,2]'::JSON || '[3,4]'::JSON`) === '[1,2,3,4]', 'array concat')
+  assert(text(e, `SELECT '{"a":1}'::JSON || '{"a":2,"b":3}'::JSON`) === '{"a":2,"b":3}', 'object merge, right wins')
+})
+test('json', 'TO_JSON wraps scalars; JSON parses text', () => {
+  const e = new Engine()
+  assert(text(e, `SELECT TO_JSON('hi')`) === '"hi"', 'string → json string')
+  assert(text(e, `SELECT TO_JSON(42)`) === '42', 'number → json number')
+  assert(text(e, `SELECT JSON('[1,2]')`) === '[1,2]', 'JSON() parses')
+})
+test('json', 'JSON is a first-class stored column (insert / filter / order)', () => {
+  const e = new Engine()
+  e.execute(`CREATE TABLE docs (id INTEGER PRIMARY KEY, body JSON)`)
+  e.execute(`INSERT INTO docs VALUES (1,'{"tag":"x","n":3}'),(2,'{"tag":"y","n":1}'),(3,'{"tag":"x","n":2}')`)
+  assert(eq(rowsOf(e, `SELECT id FROM docs WHERE body @> '{"tag":"x"}' ORDER BY id`), [[1], [3]]), '@> filter')
+  assert(scalar(e, `SELECT body ->> 'tag' FROM docs ORDER BY CAST(body ->> 'n' AS INTEGER) DESC LIMIT 1`) === 'x', 'order by extracted')
+})
+test('json', 'GROUP BY a JSON expression + JSON_AGG / JSON_OBJECT_AGG', () => {
+  const e = new Engine()
+  e.execute(`CREATE TABLE docs (id INTEGER, body JSON)`)
+  e.execute(`INSERT INTO docs VALUES (1,'{"tag":"x","n":3}'),(2,'{"tag":"y","n":1}'),(3,'{"tag":"x","n":2}')`)
+  const r = rowsOf(e, `SELECT body ->> 'tag' AS tag, JSON_AGG(body -> 'n') AS ns FROM docs GROUP BY body ->> 'tag' ORDER BY tag`)
+  assert(formatValue(r[0][1]) === '[3,2]' && formatValue(r[1][1]) === '[1]', 'json_agg per group')
+  assert(text(e, `SELECT JSON_OBJECT_AGG(CAST(id AS TEXT), body -> 'n') FROM docs`) === '{"1":3,"2":1,"3":2}', 'json_object_agg')
+})
+test('json', 'JSON_AGG keeps NULL elements; empty group → NULL', () => {
+  const e = new Engine()
+  e.execute(`CREATE TABLE t (v JSON)`)
+  e.execute(`INSERT INTO t VALUES ('1'),('null'),('3')`)
+  assert(text(e, `SELECT JSON_AGG(v) FROM t`) === '[1,null,3]', 'nulls kept')
+  assert(scalar(e, `SELECT JSON_AGG(v) FROM t WHERE FALSE`) === null, 'no rows → NULL')
+})
+test('json', 'equality is deep & key-order independent; DISTINCT dedups', () => {
+  const e = new Engine()
+  assert(scalar(e, `SELECT '{"a":1,"b":2}'::JSON = '{"b":2,"a":1}'::JSON`) === true, 'deep equal')
+  e.execute(`CREATE TABLE t (v JSON)`)
+  e.execute(`INSERT INTO t VALUES ('{"a":1,"b":2}'),('{"b":2,"a":1}'),('{"a":2}')`)
+  assert(scalar(e, `SELECT COUNT(*) FROM (SELECT DISTINCT v FROM t) q`) === 2, 'DISTINCT over JSON')
+})
+test('json', 'JSON values index in the B+Tree and round-trip a snapshot', () => {
+  const e = new Engine()
+  e.execute(`CREATE TABLE t (id INTEGER, v JSON)`)
+  e.execute(`CREATE INDEX t_v ON t (v)`)
+  e.execute(`INSERT INTO t VALUES (1,'{"a":1}'),(2,'[1,2]'),(3,'"z"')`)
+  assert(scalar(e, `SELECT id FROM t WHERE v = '[1,2]'::JSON`) === 2, 'index lookup on JSON key')
+  // A localStorage-style round-trip: serialize the snapshot to text and back.
+  const snap = JSON.parse(JSON.stringify(e.db.snapshot()))
+  e.db = Database.restore(snap)
+  assert(scalar(e, `SELECT id FROM t WHERE v @> '{"a":1}'`) === 1, 'JSON survives a snapshot round-trip')
+})
+
+test('json', 'set-returning json_array_elements in FROM', () => {
+  const e = new Engine()
+  assert(eq(rowsOf(e, `SELECT CAST(value AS INTEGER) AS v FROM json_array_elements('[10,20,30]') ORDER BY v`), [[10], [20], [30]]), 'elements')
+  assert(scalar(e, `SELECT SUM(CAST(value AS INTEGER)) FROM json_array_elements('[1,2,3,4]')`) === 10, 'aggregate over elements')
+  assert(eq(rowsOf(e, `SELECT value FROM json_array_elements_text('["a","b"]') ORDER BY value`), [['a'], ['b']]), 'elements_text')
+})
+test('json', 'set-returning json_each / json_each_text / json_object_keys', () => {
+  const e = new Engine()
+  assert(eq(rowsOf(e, `SELECT key, value FROM json_each_text('{"a":"1","b":"x"}') ORDER BY key`), [['a', '1'], ['b', 'x']]), 'each_text')
+  assert(scalar(e, `SELECT value FROM json_each('{"a":1,"b":2}') WHERE key = 'b'`) !== null, 'each value is JSON')
+  assert(eq(rowsOf(e, `SELECT key FROM json_object_keys('{"z":1,"a":2}') ORDER BY key`), [['a'], ['z']]), 'object_keys')
+})
+test('json', 'a table function joins/aliases like any relation', () => {
+  const e = new Engine()
+  const r = rowsOf(e, `SELECT t.value ->> 'name' AS nm FROM json_array_elements('[{"name":"Ann"},{"name":"Bob"}]') AS t ORDER BY nm`)
+  assert(eq(r, [['Ann'], ['Bob']]), 'alias + arrow on a function source')
+})
+test('json', 'json_array_elements over a non-array errors', () => {
+  throws(new Engine(), `SELECT value FROM json_array_elements('{"a":1}')`, 'array')
+})
+test('json', 'KEY is a usable identifier (non-reserved)', () => {
+  const e = new Engine()
+  e.execute(`CREATE TABLE kv (key TEXT, val INTEGER)`)
+  e.execute(`INSERT INTO kv VALUES ('a', 1), ('b', 2)`)
+  assert(scalar(e, `SELECT val FROM kv WHERE key = 'b'`) === 2, 'column named key works')
+  // …and PRIMARY KEY / FOREIGN KEY still parse.
+  e.execute(`CREATE TABLE pk (id INTEGER PRIMARY KEY, parent INTEGER REFERENCES pk(id))`)
+  assert(scalar(e, `SELECT COUNT(*) FROM pk`) === 0, 'PRIMARY/FOREIGN KEY still parse')
+})
+
 // --- sample queries (catalog showcase) -------------------------------------
 test('samples', 'every shipped sample query runs against the seed', () => {
   for (const q of SAMPLE_QUERIES) {
