@@ -113,13 +113,17 @@ function evalICmp(sub: string, a: number, b: number): number {
     default: return 0;
   }
 }
-function evalFBin(sub: string, a: number, b: number): number {
+// JS `number` *is* an IEEE-754 f64 evaluated round-to-nearest, so folding
+// +,-,*,/ here matches the wasm f64 op bit-for-bit. `min`/`max`/`copysign` have
+// signed-zero / NaN subtleties, so they return `null` (unfoldable) — the real
+// wasm op stays their sole authority and a fold can never disagree with it.
+function evalFBin(sub: string, a: number, b: number): number | null {
   switch (sub) {
     case 'add': return a + b;
     case 'sub': return a - b;
     case 'mul': return a * b;
     case 'div': return a / b;
-    default: return 0;
+    default: return null;
   }
 }
 function evalFCmp(sub: string, a: number, b: number): number {
@@ -245,7 +249,10 @@ export function sccp(fn: IRFunc): number {
             : evalICmp(inst.sub, a[0].num as number, a[1].num as number);
           return { t: 'const', ty: 'i32', num: r };
         }
-        if (inst.kind === 'fbin') return { t: 'const', ty: 'f64', num: evalFBin(inst.sub, a[0].num as number, a[1].num as number) };
+        if (inst.kind === 'fbin') {
+          const r = evalFBin(inst.sub, a[0].num as number, a[1].num as number);
+          return r === null ? NAC : { t: 'const', ty: 'f64', num: r };
+        }
         return { t: 'const', ty: 'i32', num: evalFCmp(inst.sub, a[0].num as number, a[1].num as number) };
       }
       default:

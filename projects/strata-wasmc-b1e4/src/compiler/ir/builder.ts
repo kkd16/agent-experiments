@@ -2,7 +2,7 @@ import type { BinaryOp, Block, Expr, Program, Stmt, Ty } from '../ast';
 import type { ConstNum, IRType, RetType } from './ir';
 import { parse } from '../parser';
 import { typecheck } from '../types';
-import { STRING_PRELUDE } from './prelude';
+import { STRING_PRELUDE, FLOAT_PRELUDE } from './prelude';
 import type { StructLayout } from '../struct';
 import { computeLayouts } from '../struct';
 
@@ -112,11 +112,20 @@ const STRING_HELPERS = new Set([
   'split', 'join',
 ]);
 
+// Soft float-math builtins (overridable by a user function of the same name).
+// The unary group lowers to a single-operand f64 "cast" opcode; the binary group
+// to an `fbin`. `round` is wasm `f64.nearest` (round-half-to-even).
+const FLOAT_UNARY_SUB: Record<string, string> = {
+  sqrt: 'f_sqrt', floor: 'f_floor', ceil: 'f_ceil', trunc: 'f_trunc', round: 'f_nearest', abs: 'f_abs',
+};
+const FLOAT_BINARY_SUB: Record<string, string> = { fmin: 'min', fmax: 'max', copysign: 'copysign' };
+
 class FnBuilder {
   blocks: PBlock[] = [];
   varType = new Map<string, IRType>();
   usesMemory = false;
   usesStrings = false;
+  usesFloatFmt = false;
   private cur!: PBlock;
   private blockCounter = 0;
   private tempCounter = 0;
@@ -130,8 +139,9 @@ class FnBuilder {
   private exported: boolean;
   private pool: StringPool;
   private layouts: Map<string, StructLayout>;
+  private userFns: Set<string>;
 
-  constructor(name: string, params: { name: string; ty: IRType }[], retTy: RetType, body: Block, exported: boolean, pool: StringPool, layouts: Map<string, StructLayout>) {
+  constructor(name: string, params: { name: string; ty: IRType }[], retTy: RetType, body: Block, exported: boolean, pool: StringPool, layouts: Map<string, StructLayout>, userFns: Set<string>) {
     this.name = name;
     this.params = params;
     this.retTy = retTy;
@@ -139,9 +149,10 @@ class FnBuilder {
     this.exported = exported;
     this.pool = pool;
     this.layouts = layouts;
+    this.userFns = userFns;
   }
 
-  build(): { fn: PFunc; usesMemory: boolean; usesStrings: boolean } {
+  build(): { fn: PFunc; usesMemory: boolean; usesStrings: boolean; usesFloatFmt: boolean } {
     const entry = this.newBlock();
     this.cur = entry;
     this.scopes = [new Map()];
@@ -163,7 +174,7 @@ class FnBuilder {
       varType: this.varType,
       exported: this.exported,
     };
-    return { fn, usesMemory: this.usesMemory, usesStrings: this.usesStrings };
+    return { fn, usesMemory: this.usesMemory, usesStrings: this.usesStrings, usesFloatFmt: this.usesFloatFmt };
   }
 
   // --- block & scope plumbing ---
@@ -571,6 +582,9 @@ class FnBuilder {
     if (name === '__alloc') {
       return this.lowerAllocBytes(this.lowerExpr(e.args[0])!);
     }
+    // Float bit-reinterpretation intrinsics (prelude only).
+    if (name === '__f64_bits') return this.def('i64', 'cast', 'reinterp_f2l', [this.lowerExpr(e.args[0])!]);
+    if (name === '__f64_from_bits') return this.def('f64', 'cast', 'reinterp_l2f', [this.lowerExpr(e.args[0])!]);
     if (name === 'print') {
       const v = this.lowerExpr(e.args[0])!;
       const k = e.args[0].ty!.kind;
@@ -585,6 +599,11 @@ class FnBuilder {
       if (k === 'str') return v; // identity
       this.usesStrings = true;
       this.usesMemory = true;
+      if (k === 'float') {
+        // The float formatter is its own (large) prelude, pulled in only here.
+        this.usesFloatFmt = true;
+        return this.def('i32', 'call', '__float_to_str', [v]);
+      }
       const helper = k === 'bool' ? '__bool_to_str' : k === 'long' ? '__long_to_str' : '__int_to_str';
       return this.def('i32', 'call', helper, [v]);
     }
@@ -651,6 +670,15 @@ class FnBuilder {
     if (name === 'len') {
       const base = this.lowerExpr(e.args[0])!;
       return this.def('i32', 'load', 'i32', [base]);
+    }
+    // Soft float-math builtins (skipped when a user function shadows the name).
+    if (name in FLOAT_UNARY_SUB && !this.userFns.has(name)) {
+      return this.def('f64', 'cast', FLOAT_UNARY_SUB[name], [this.lowerExpr(e.args[0])!]);
+    }
+    if (name in FLOAT_BINARY_SUB && !this.userFns.has(name)) {
+      const a = this.lowerExpr(e.args[0])!;
+      const b = this.lowerExpr(e.args[1])!;
+      return this.def('f64', 'fbin', FLOAT_BINARY_SUB[name], [a, b]);
     }
     const args = e.args.map((a) => this.lowerExpr(a)!);
     const ret = retTypeOf(e.ty!);
@@ -757,18 +785,23 @@ export function buildPreIR(prog: Program): PModule {
   const layouts = computeLayouts(prog);
   let usesMemory = false;
   let usesStrings = false;
+  let usesFloatFmt = false;
   // Only the entry point is exported, so the optimizer is free to delete a
   // function once every call to it has been inlined. If a program has no `main`,
   // fall back to exporting everything so it can still be driven externally.
   const hasMain = prog.decls.some((d) => d.kind === 'fn' && d.name === 'main');
+  // Names a user function claims (so a soft float-math builtin like `sqrt` yields
+  // to a hand-written `fn sqrt`). The prelude's own `__`-functions never collide.
+  const userFns = new Set(prog.decls.filter((d) => d.kind === 'fn').map((d) => (d as { name: string }).name));
   for (const d of prog.decls) {
     if (d.kind !== 'fn') continue;
     const params = d.params.map((p) => ({ name: p.name, ty: irTypeOf(p.ty) }));
     const exported = hasMain ? d.name === 'main' : true;
-    const fb = new FnBuilder(d.name, params, retTypeOf(d.retTy), d.body, exported, pool, layouts);
-    const { fn, usesMemory: m, usesStrings: s } = fb.build();
+    const fb = new FnBuilder(d.name, params, retTypeOf(d.retTy), d.body, exported, pool, layouts, userFns);
+    const { fn, usesMemory: m, usesStrings: s, usesFloatFmt: ff } = fb.build();
     usesMemory = usesMemory || m;
     usesStrings = usesStrings || s;
+    usesFloatFmt = usesFloatFmt || ff;
     funcs.push(fn);
   }
 
@@ -796,7 +829,22 @@ export function buildPreIR(prog: Program): PModule {
     for (const d of preludeProg.decls) {
       if (d.kind !== 'fn') continue;
       const params = d.params.map((p) => ({ name: p.name, ty: irTypeOf(p.ty) }));
-      const fb = new FnBuilder(d.name, params, retTypeOf(d.retTy), d.body, false, pool, layouts);
+      const fb = new FnBuilder(d.name, params, retTypeOf(d.retTy), d.body, false, pool, layouts, userFns);
+      funcs.push(fb.build().fn);
+    }
+  }
+
+  // The float formatter is a second, self-contained prelude — a big-integer
+  // Dragon4 — injected only when a program actually formats a float (`str(float)`),
+  // and pruned by dead-function elimination at -O2+ if it ends up unreachable.
+  if (usesFloatFmt) {
+    usesMemory = true;
+    const floatProg = parse(FLOAT_PRELUDE);
+    typecheck(floatProg, { lowLevel: true });
+    for (const d of floatProg.decls) {
+      if (d.kind !== 'fn') continue;
+      const params = d.params.map((p) => ({ name: p.name, ty: irTypeOf(p.ty) }));
+      const fb = new FnBuilder(d.name, params, retTypeOf(d.retTy), d.body, false, pool, layouts, userFns);
       funcs.push(fb.build().fn);
     }
   }

@@ -107,6 +107,33 @@ export function formatBool(x: number): string {
 // Whitespace test matching the prelude's __is_ws: space (32) and \t\n\v\f\r.
 const isWs = (c: number): boolean => c === 32 || (c >= 9 && c <= 13);
 
+// --- f64 math helpers mirroring the wasm opcodes exactly ----------------------
+const _dv = new DataView(new ArrayBuffer(8));
+// Sign bit of a double (true = negative), read straight from the IEEE-754 bytes
+// so it is correct for ±0 and ±NaN — matching wasm `f64.copysign`'s sign rule.
+const signBit = (x: number): boolean => {
+  _dv.setFloat64(0, x);
+  return (_dv.getUint8(0) & 0x80) !== 0;
+};
+// wasm `f64.nearest`: round to the nearest integer, ties to even, preserving the
+// sign of a zero result (JS `Math.round` is half-up and loses both properties).
+export function nearestEven(x: number): number {
+  if (!Number.isFinite(x)) return x; // ±Infinity, NaN pass through unchanged
+  const fl = Math.floor(x);
+  const diff = x - fl;
+  let r: number;
+  if (diff < 0.5) r = fl;
+  else if (diff > 0.5) r = fl + 1;
+  else r = fl % 2 === 0 ? fl : fl + 1; // exact tie -> even
+  if (r === 0) return signBit(x) ? -0 : 0;
+  return r;
+}
+// wasm `f64.copysign`: magnitude of `a`, sign of `b`.
+const copysign = (a: number, b: number): number => {
+  const mag = Math.abs(a);
+  return signBit(b) ? -mag : mag;
+};
+
 // First index of `sub` in `s` at or after `from`, else -1 (empty needle -> from).
 // Mirrors the prelude's __find_from byte-for-byte so the two never disagree.
 function findFrom(s: string, sub: string, from: number): number {
@@ -488,13 +515,18 @@ export class Interpreter {
       sd.fields.forEach((fld, i) => fields.set(fld.name, normalizeField(argv[i], fld.ty)));
       return { struct: name, fields };
     }
+    // A user function shadows any *soft* builtin of the same name (e.g. a
+    // hand-written `fn sqrt`); hard builtins can never be user-declared (they are
+    // reserved), so they still fall through to `callBuiltin` below.
+    const fn = this.fns.get(name);
+    if (fn) {
+      const r = this.call(fn, argv);
+      return r === undefined ? 0 : r;
+    }
     const argKinds = e.args.map((a) => a.ty?.kind);
     const b = callBuiltin(name, argv, argKinds, this.output);
     if (b.handled) return b.value;
-    const fn = this.fns.get(name);
-    if (!fn) throw new Trap(`call to undefined '${name}'`);
-    const r = this.call(fn, argv);
-    return r === undefined ? 0 : r;
+    throw new Trap(`call to undefined '${name}'`);
   }
 
   private fieldTy(structName: string, field: string): Ty {
@@ -549,6 +581,7 @@ export function callBuiltin(
       const k = argKinds[0];
       if (k === 'str') return H(argv[0]);
       if (k === 'long') return H(formatLong(argv[0] as bigint));
+      if (k === 'float') return H(formatFloat(argv[0] as number));
       if (k === 'bool') return H(formatBool(argv[0] as number));
       return H(formatInt(argv[0] as number));
     }
@@ -659,6 +692,19 @@ export function callBuiltin(
       return H(argKinds[0] === 'long' ? rotl64(argv[0] as bigint, argv[1] as bigint) : rotl32(argv[0] as number, argv[1] as number));
     case 'rotr':
       return H(argKinds[0] === 'long' ? rotr64(argv[0] as bigint, argv[1] as bigint) : rotr32(argv[0] as number, argv[1] as number));
+    // Soft float-math builtins (wasm f64 ops). JS `number` is an IEEE-754 double
+    // evaluated round-to-nearest, so `Math.*` matches the wasm opcode bit-for-bit
+    // (`Math.min`/`max` even agree on the signed-zero rule); `round` and
+    // `copysign` use the helpers above for their sign/tie edge cases.
+    case 'sqrt': return H(Math.sqrt(argv[0] as number));
+    case 'floor': return H(Math.floor(argv[0] as number));
+    case 'ceil': return H(Math.ceil(argv[0] as number));
+    case 'trunc': return H(Math.trunc(argv[0] as number));
+    case 'round': return H(nearestEven(argv[0] as number));
+    case 'abs': return H(Math.abs(argv[0] as number));
+    case 'fmin': return H(Math.min(argv[0] as number, argv[1] as number));
+    case 'fmax': return H(Math.max(argv[0] as number, argv[1] as number));
+    case 'copysign': return H(copysign(argv[0] as number, argv[1] as number));
     case 'int_array':
     case 'long_array':
     case 'float_array':

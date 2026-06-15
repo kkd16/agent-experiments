@@ -385,3 +385,347 @@ fn __join(arr: int, sep: int) -> int {
   return p;
 }
 `;
+
+// ---------------------------------------------------------------------------
+// The floating-point formatting runtime — also written in Strata, and likewise
+// compiled by this very pipeline (so the differential harness exercises it at
+// every optimization level). It implements `str(float)` / `print(str(...))` of a
+// double: the *shortest decimal string that round-trips back to the same f64*,
+// formatted exactly like ECMAScript's `Number::toString` (and therefore exactly
+// like the reference interpreter's `String(x)` oracle).
+//
+// The shortest digits come from **Dragon4** (Steele & White's "free-format"
+// algorithm; Burger & Dubois, "Printing Floating-Point Numbers Quickly and
+// Accurately"): exact rational arithmetic in big integers R / S / m+ / m- whose
+// boundaries (closed when the significand is even) decide the shortest correctly
+// rounded digit sequence. Because the language has no bignum, one is built here
+// out of base-2^16 limbs held in an `int[]` (slot 0 = limb count, slots 1.. =
+// little-endian limbs) — a tiny self-contained arbitrary-precision library. The
+// digits are then laid out per the ECMA-262 Number-to-String notation rules
+// (fixed vs. exponential, decimal-point placement). It needs only the low-level
+// memory intrinsics plus `__f64_bits` (the IEEE-754 reinterpret), so it is fully
+// self-contained and pulled in only when a program formats a float.
+export const FLOAT_PRELUDE = `
+// ---- base-2^16 big-integer helpers (operate in place on int[] handles) ----
+
+// Drop leading zero limbs so the limb count is canonical (value 0 -> count 0).
+fn __bn_norm(a: int[]) -> int {
+  let n = a[0];
+  while (n > 0 && a[n] == 0) { n = n - 1; }
+  a[0] = n;
+  return 0;
+}
+
+// a := v  (v a small non-negative int, < 2^16).
+fn __bn_set_small(a: int[], v: int) -> int {
+  if (v == 0) { a[0] = 0; } else { a[0] = 1; a[1] = v; }
+  return 0;
+}
+
+// a := v  (v a non-negative 64-bit value), split into 16-bit little-endian limbs.
+fn __bn_from_long(a: int[], v: long) -> int {
+  let n = 0;
+  while (v != 0L) {
+    n = n + 1;
+    a[n] = int(v & 65535L);
+    v = v >> 16L;
+  }
+  a[0] = n;
+  return 0;
+}
+
+// Magnitude comparison: -1 if a<b, 0 if equal, 1 if a>b. Both must be normalized.
+fn __bn_cmp(a: int[], b: int[]) -> int {
+  let la = a[0]; let lb = b[0];
+  if (la != lb) { return la < lb ? 0 - 1 : 1; }
+  let i = la;
+  while (i >= 1) {
+    if (a[i] != b[i]) { return a[i] < b[i] ? 0 - 1 : 1; }
+    i = i - 1;
+  }
+  return 0;
+}
+
+// dst := src.
+fn __bn_copy(dst: int[], src: int[]) -> int {
+  let n = src[0];
+  dst[0] = n;
+  let i = 1;
+  while (i <= n) { dst[i] = src[i]; i = i + 1; }
+  return 0;
+}
+
+// a := a * m  (m small, e.g. 2 / 10 / 10000), carrying through the limbs.
+fn __bn_mul_small(a: int[], m: int) -> int {
+  let n = a[0];
+  let carry = 0;
+  let i = 1;
+  while (i <= n) {
+    let p = a[i] * m + carry;
+    a[i] = p & 65535;
+    carry = p >> 16;
+    i = i + 1;
+  }
+  while (carry != 0) {
+    n = n + 1;
+    a[n] = carry & 65535;
+    carry = carry >> 16;
+  }
+  a[0] = n;
+  return 0;
+}
+
+// a := a * 10^k  (k >= 0), in 4-digit chunks for speed.
+fn __bn_mul_pow10(a: int[], k: int) -> int {
+  while (k >= 4) { __bn_mul_small(a, 10000); k = k - 4; }
+  while (k > 0) { __bn_mul_small(a, 10); k = k - 1; }
+  return 0;
+}
+
+// a := a + b.
+fn __bn_add(a: int[], b: int[]) -> int {
+  let na = a[0];
+  let nb = b[0];
+  let n = na; if (nb > n) { n = nb; }
+  let carry = 0;
+  let i = 1;
+  while (i <= n) {
+    let av = 0; if (i <= na) { av = a[i]; }
+    let bv = 0; if (i <= nb) { bv = b[i]; }
+    let s = av + bv + carry;
+    a[i] = s & 65535;
+    carry = s >> 16;
+    i = i + 1;
+  }
+  if (carry != 0) { n = n + 1; a[n] = carry; }
+  a[0] = n;
+  return 0;
+}
+
+// a := a - b   (requires a >= b).
+fn __bn_sub(a: int[], b: int[]) -> int {
+  let na = a[0];
+  let nb = b[0];
+  let borrow = 0;
+  let i = 1;
+  while (i <= na) {
+    let bv = 0; if (i <= nb) { bv = b[i]; }
+    let s = a[i] - bv - borrow;
+    if (s < 0) { s = s + 65536; borrow = 1; } else { borrow = 0; }
+    a[i] = s;
+    i = i + 1;
+  }
+  __bn_norm(a);
+  return 0;
+}
+
+// a := a << bits  (a left shift by an arbitrary bit count).
+fn __bn_shl(a: int[], bits: int) -> int {
+  let n = a[0];
+  if (n == 0) { return 0; }
+  let bitShift = bits % 16;
+  if (bitShift != 0) {
+    let carry = 0;
+    let i = 1;
+    while (i <= n) {
+      let v = (a[i] << bitShift) | carry;
+      a[i] = v & 65535;
+      carry = v >> 16;
+      i = i + 1;
+    }
+    if (carry != 0) { n = n + 1; a[n] = carry; }
+    a[0] = n;
+  }
+  let limbShift = bits / 16;
+  if (limbShift > 0) {
+    let i = n;
+    while (i >= 1) { a[i + limbShift] = a[i]; i = i - 1; }
+    let j = 1;
+    while (j <= limbShift) { a[j] = 0; j = j + 1; }
+    a[0] = n + limbShift;
+  }
+  return 0;
+}
+
+// ---- tiny string builders (avoid a dependency on the string prelude) ----
+
+fn __f_cstr1(c: int) -> int { let p = __alloc(9); __store32(p, 1); __store8(p + 8, c); return p; }
+fn __f_nan() -> int { let p = __alloc(11); __store32(p, 3); __store8(p + 8, 110); __store8(p + 9, 97); __store8(p + 10, 110); return p; }
+fn __f_inf() -> int { let p = __alloc(11); __store32(p, 3); __store8(p + 8, 105); __store8(p + 9, 110); __store8(p + 10, 102); return p; }
+fn __f_ninf() -> int { let p = __alloc(12); __store32(p, 4); __store8(p + 8, 45); __store8(p + 9, 105); __store8(p + 10, 110); __store8(p + 11, 102); return p; }
+
+// Write the decimal digits of v (v >= 0) into buf at offset w; return new offset.
+fn __f_wuint(buf: int, w: int, v: int) -> int {
+  if (v == 0) { __store8(buf + w, 48); return w + 1; }
+  let tmp = int_array(12);
+  let nd = 0;
+  while (v > 0) { nd = nd + 1; tmp[nd] = v % 10; v = v / 10; }
+  let i = nd;
+  while (i >= 1) { __store8(buf + w, 48 + tmp[i]); w = w + 1; i = i - 1; }
+  return w;
+}
+
+// Copy len raw bytes from buf into a fresh heap string object.
+fn __f_mkstr(buf: int, len: int) -> int {
+  let p = __alloc(len + 8);
+  __store32(p, len);
+  let i = 0;
+  while (i < len) { __store8(p + 8 + i, __load8(buf + i)); i = i + 1; }
+  return p;
+}
+
+// The shortest-round-trip double formatter.
+fn __float_to_str(x: float) -> int {
+  if (x != x) { return __f_nan(); }                       // NaN
+  let bits = __f64_bits(x);
+  let expField = int((bits >> 52L) & 2047L);
+  let mant = bits & 4503599627370495L;                    // low 52 bits
+  if (expField == 2047) {                                 // +/- Infinity
+    if (bits < 0L) { return __f_ninf(); }
+    return __f_inf();
+  }
+  if (expField == 0 && mant == 0L) { return __f_cstr1(48); } // +/-0 -> "0"
+
+  let neg = bits < 0L ? 1 : 0;
+  let f = 0L; let e = 0;
+  if (expField == 0) { f = mant; e = 0 - 1074; }          // subnormal
+  else { f = mant + 4503599627370496L; e = expField - 1075; } // normal (add 2^52)
+  // closed (inclusive) boundaries when the significand is even
+  let even = int((f & 1L) == 0L);
+  // unequal margins: a power-of-two significand that is not the smallest normal
+  let lowClose = int(mant == 0L && expField > 1);
+
+  // Dragon4 setup: build R, S, m+ (mp), m- (mm) as exact big integers.
+  let R = int_array(110); let S = int_array(110);
+  let mp = int_array(110); let mm = int_array(110);
+  let T = int_array(110); let R2 = int_array(110);
+  if (e >= 0) {
+    if (lowClose != 0) {
+      __bn_from_long(R, f); __bn_shl(R, e + 2);
+      __bn_set_small(S, 4);
+      __bn_set_small(mp, 1); __bn_shl(mp, e + 1);
+      __bn_set_small(mm, 1); __bn_shl(mm, e);
+    } else {
+      __bn_from_long(R, f); __bn_shl(R, e + 1);
+      __bn_set_small(S, 2);
+      __bn_set_small(mp, 1); __bn_shl(mp, e);
+      __bn_set_small(mm, 1); __bn_shl(mm, e);
+    }
+  } else {
+    if (lowClose != 0) {
+      __bn_from_long(R, f); __bn_shl(R, 2);
+      __bn_set_small(S, 1); __bn_shl(S, 2 - e);
+      __bn_set_small(mp, 2);
+      __bn_set_small(mm, 1);
+    } else {
+      __bn_from_long(R, f); __bn_shl(R, 1);
+      __bn_set_small(S, 1); __bn_shl(S, 1 - e);
+      __bn_set_small(mp, 1);
+      __bn_set_small(mm, 1);
+    }
+  }
+
+  // Decimal-exponent estimate k = ceil(bexp * log10(2) - 1e-10), bexp the binary
+  // exponent of x (= e + bitlength(f) - 1). The two fixups below make the digit
+  // count exact regardless of any rounding in this estimate.
+  let bexp = e + (64 - int(clz(f))) - 1;
+  let k = int(ceil(float(bexp) * 0.30102999566398114 - 0.0000000001));
+  if (k >= 0) { __bn_mul_pow10(S, k); }
+  else { __bn_mul_pow10(R, 0 - k); __bn_mul_pow10(mp, 0 - k); __bn_mul_pow10(mm, 0 - k); }
+
+  // Fixup 1: if value+m+ already reaches the next decade, shift the point right.
+  let go = 1;
+  while (go != 0) {
+    __bn_copy(T, R); __bn_add(T, mp);
+    let c = __bn_cmp(T, S);
+    let high = even != 0 ? c >= 0 : c > 0;
+    if (high) { __bn_mul_small(S, 10); k = k + 1; } else { go = 0; }
+  }
+  // Fixup 2: if even after one more digit it cannot reach S, shift the point left.
+  go = 1;
+  while (go != 0) {
+    __bn_copy(T, R); __bn_add(T, mp); __bn_mul_small(T, 10);
+    let c = __bn_cmp(T, S);
+    let high = even != 0 ? c >= 0 : c > 0;
+    if (high) { go = 0; }
+    else { __bn_mul_small(R, 10); __bn_mul_small(mp, 10); __bn_mul_small(mm, 10); k = k - 1; }
+  }
+
+  // Generate digits until a boundary test fires, rounding the final digit.
+  let dig = int_array(40);
+  let nd = 0;
+  let done = 0;
+  while (done == 0) {
+    __bn_mul_small(R, 10); __bn_mul_small(mp, 10); __bn_mul_small(mm, 10);
+    let d = 0;
+    while (__bn_cmp(R, S) >= 0) { __bn_sub(R, S); d = d + 1; }
+    let cl = __bn_cmp(R, mm);
+    let low = even != 0 ? cl <= 0 : cl < 0;
+    __bn_copy(T, R); __bn_add(T, mp);
+    let ch = __bn_cmp(T, S);
+    let high = even != 0 ? ch >= 0 : ch > 0;
+    if (!low && !high) {
+      nd = nd + 1; dig[nd] = d;
+    } else {
+      let up = 0;
+      if (high && low) {
+        __bn_copy(R2, R); __bn_mul_small(R2, 2);
+        let c2 = __bn_cmp(R2, S);
+        if (c2 > 0) { up = 1; }
+        else if (c2 == 0 && (d & 1) == 1) { up = 1; }   // exact tie -> round to even
+      } else if (high) { up = 1; }
+      nd = nd + 1; dig[nd] = d + up;
+      done = 1;
+    }
+  }
+
+  // Carry a final digit of 10 leftward (all-nines case grows a new leading 1).
+  let n = k;
+  let i = nd;
+  while (i >= 1 && dig[i] == 10) {
+    dig[i] = 0;
+    if (i == 1) {
+      let j = nd;
+      while (j >= 1) { dig[j + 1] = dig[j]; j = j - 1; }
+      dig[1] = 1; nd = nd + 1; n = n + 1; i = 0;
+    } else { dig[i - 1] = dig[i - 1] + 1; i = i - 1; }
+  }
+  // Strip trailing zeros (shortest representation).
+  while (nd > 1 && dig[nd] == 0) { nd = nd - 1; }
+
+  // ---- ECMA-262 Number-to-String notation ----
+  let buf = __alloc(64);
+  let w = 0;
+  if (neg != 0) { __store8(buf + w, 45); w = w + 1; }
+  if (nd <= n && n <= 21) {
+    // integer digits then (n - nd) trailing zeros
+    let p = 1; while (p <= nd) { __store8(buf + w, 48 + dig[p]); w = w + 1; p = p + 1; }
+    let z = 0; while (z < n - nd) { __store8(buf + w, 48); w = w + 1; z = z + 1; }
+  } else if (0 < n && n <= 21) {
+    // a decimal point after the first n digits
+    let p = 1;
+    while (p <= n) { __store8(buf + w, 48 + dig[p]); w = w + 1; p = p + 1; }
+    __store8(buf + w, 46); w = w + 1;
+    while (p <= nd) { __store8(buf + w, 48 + dig[p]); w = w + 1; p = p + 1; }
+  } else if (0 - 6 < n && n <= 0) {
+    // 0.00…digits
+    __store8(buf + w, 48); w = w + 1; __store8(buf + w, 46); w = w + 1;
+    let z = 0; while (z < 0 - n) { __store8(buf + w, 48); w = w + 1; z = z + 1; }
+    let p = 1; while (p <= nd) { __store8(buf + w, 48 + dig[p]); w = w + 1; p = p + 1; }
+  } else {
+    // exponential: d[.ddd] 'e' sign exp
+    let ex = n - 1;
+    __store8(buf + w, 48 + dig[1]); w = w + 1;
+    if (nd > 1) {
+      __store8(buf + w, 46); w = w + 1;
+      let p = 2; while (p <= nd) { __store8(buf + w, 48 + dig[p]); w = w + 1; p = p + 1; }
+    }
+    __store8(buf + w, 101); w = w + 1;            // 'e'
+    let ea = ex;
+    if (ex < 0) { __store8(buf + w, 45); w = w + 1; ea = 0 - ex; }
+    else { __store8(buf + w, 43); w = w + 1; }    // '+'
+    w = __f_wuint(buf, w, ea);
+  }
+  return __f_mkstr(buf, w);
+}
+`;

@@ -29,7 +29,7 @@ export const zeroOf = (ty: IRType): ConstNum => (ty === 'i64' ? 0n : 0);
 export const zeroConst = (ty: IRType): Operand => ({ tag: 'const', ty, num: zeroOf(ty) });
 
 export type IntBin = 'add' | 'sub' | 'mul' | 'div_s' | 'rem_s' | 'and' | 'or' | 'xor' | 'shl' | 'shr_s';
-export type FloatBin = 'add' | 'sub' | 'mul' | 'div';
+export type FloatBin = 'add' | 'sub' | 'mul' | 'div' | 'min' | 'max' | 'copysign';
 export type ICmp = 'eq' | 'ne' | 'lt_s' | 'le_s' | 'gt_s' | 'ge_s';
 export type FCmp = 'eq' | 'ne' | 'lt' | 'le' | 'gt' | 'ge';
 

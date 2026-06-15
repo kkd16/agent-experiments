@@ -14,6 +14,7 @@ const BUILTINS = new Set([
   'print', 'int_array', 'long_array', 'float_array', 'str_array', 'struct_array', 'len', 'str', 'char', 'substr', 'index_of',
   'to_upper', 'to_lower', 'repeat', 'trim', 'replace', 'find', 'contains', 'starts_with',
   'ends_with', 'parse_int', 'split', 'join', 'popcount', 'clz', 'ctz', 'rotl', 'rotr',
+  'sqrt', 'floor', 'ceil', 'trunc', 'round', 'abs', 'fmin', 'fmax', 'copysign',
 ]);
 
 const isDigit = (c: string) => c >= '0' && c <= '9';

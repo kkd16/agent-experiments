@@ -41,6 +41,14 @@ const STR_BUILTINS = new Set([
 // `ctz` are unary; `rotl`/`rotr` are binary. All work on `int` (i32) and `long`
 // (i64), returning the operand's own type.
 const BIT_BUILTINS = new Set(['popcount', 'clz', 'ctz', 'rotl', 'rotr']);
+// Floating-point math builtins (each maps 1:1 to a wasm f64 op). Unlike the
+// builtins above these are **soft**: they are only recognized when the program
+// does *not* declare a function of the same name, so a user is free to write
+// their own `fn sqrt(...)` (the `newton` example does exactly that). The unary
+// group is f64 -> f64; the binary group is (f64, f64) -> f64. `round` is
+// round-half-to-even (wasm `f64.nearest`), not the half-up of many languages.
+const FLOAT_UNARY = new Set(['sqrt', 'floor', 'ceil', 'trunc', 'round', 'abs']);
+const FLOAT_BINARY = new Set(['fmin', 'fmax', 'copysign']);
 
 // Table-driven signatures for the extended string library. Each entry lists the
 // expected argument types and the result type; the checker validates arity and
@@ -484,6 +492,18 @@ class Checker {
       return { kind: 'struct', name };
     }
     // builtins
+    // Low-level float bit-reinterpretation intrinsics (prelude only): expose the
+    // raw IEEE-754 representation of a double to the float-format runtime.
+    if (this.lowLevel && (name === '__f64_bits' || name === '__f64_from_bits')) {
+      if (e.args.length !== 1) throw new CompileError(`${name}() expects 1 argument`, e.span, 'type');
+      const t = this.checkExpr(e.args[0]);
+      if (name === '__f64_bits') {
+        if (t.kind !== 'float') throw new CompileError(`${name}() expects a float`, e.args[0].span, 'type');
+        return T_LONG;
+      }
+      if (t.kind !== 'long') throw new CompileError(`${name}() expects a long`, e.args[0].span, 'type');
+      return T_FLOAT;
+    }
     // Low-level memory intrinsics (only inside the string-runtime prelude).
     if (this.lowLevel && name in INTRINSIC_SIGS) {
       const sig = INTRINSIC_SIGS[name];
@@ -505,8 +525,8 @@ class Checker {
     if (name === 'str') {
       if (e.args.length !== 1) throw new CompileError('str() expects 1 argument', e.span, 'type');
       const t = this.checkExpr(e.args[0]);
-      if (t.kind !== 'int' && t.kind !== 'long' && t.kind !== 'bool' && t.kind !== 'str')
-        throw new CompileError(`str() expects an int, long, bool, or str, found ${tyName(t)}`, e.span, 'type');
+      if (t.kind !== 'int' && t.kind !== 'long' && t.kind !== 'float' && t.kind !== 'bool' && t.kind !== 'str')
+        throw new CompileError(`str() expects an int, long, float, bool, or str, found ${tyName(t)}`, e.span, 'type');
       return T_STR;
     }
     if (name === 'char') {
@@ -557,6 +577,17 @@ class Checker {
       if (!((t0.kind === 'int' && t1.kind === 'int') || (t0.kind === 'long' && t1.kind === 'long')))
         throw new CompileError(`${name}() expects two matching int or long operands, found ${tyName(t0)} and ${tyName(t1)}`, e.span, 'type');
       return t0.kind === 'long' ? T_LONG : T_INT;
+    }
+    // Soft float-math builtins: recognized only when no user function shadows the
+    // name. Every operand and the result are `float` (f64).
+    if ((FLOAT_UNARY.has(name) || FLOAT_BINARY.has(name)) && !this.syms.functions.has(name)) {
+      const arity = FLOAT_UNARY.has(name) ? 1 : 2;
+      if (e.args.length !== arity) throw new CompileError(`${name}() expects ${arity} argument(s)`, e.span, 'type');
+      for (const a of e.args) {
+        const t = this.checkExpr(a);
+        if (t.kind !== 'float') throw new CompileError(`${name}() expects float argument(s), found ${tyName(t)}`, a.span, 'type');
+      }
+      return T_FLOAT;
     }
     if (name === 'int' || name === 'float' || name === 'long') {
       if (e.args.length !== 1) throw new CompileError(`${name}() expects 1 argument`, e.span, 'type');
