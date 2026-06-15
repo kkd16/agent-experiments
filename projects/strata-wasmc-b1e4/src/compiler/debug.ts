@@ -79,7 +79,7 @@ function fmtVal(v: RtValue, ty?: Ty): string {
     const head = a.data.slice(0, 8).map((x) =>
       a.elem === 'str' ? JSON.stringify(x)
       : a.elem === 'struct' ? (x === null ? 'null' : `${(x as StructVal).struct} {…}`)
-      : a.elem === 'float' ? formatFloat(x as number)
+      : a.elem === 'float' || a.elem === 'f32' ? formatFloat(x as number)
       : a.elem === 'long' ? formatLong(x as bigint)
       : formatInt(x as number),
     );
@@ -87,7 +87,7 @@ function fmtVal(v: RtValue, ty?: Ty): string {
     return `[${head.join(', ')}${more}]`;
   }
   if (ty?.kind === 'bool') return formatBool(v as number);
-  if (ty?.kind === 'float') return formatFloat(v as number);
+  if (ty?.kind === 'float' || ty?.kind === 'f32') return formatFloat(v as number);
   return formatInt(v as number);
 }
 
@@ -256,6 +256,7 @@ export class Debugger {
         if (target.elem === 'str') target.data[idx] = val as string;
         else if (target.elem === 'struct') target.data[idx] = val as StructVal | null;
         else if (target.elem === 'long') target.data[idx] = asI64(val as bigint);
+        else if (target.elem === 'f32') target.data[idx] = Math.fround(val as number);
         else target.data[idx] = target.elem === 'int' ? i32(val as number) : (val as number);
         break;
       }
@@ -430,17 +431,19 @@ export class Debugger {
     const a = (yield* this.evalExpr(e.left, f)) as number;
     const b = (yield* this.evalExpr(e.right, f)) as number;
     const isInt = e.left.ty?.kind === 'int' || e.left.ty?.kind === 'bool';
+    const f32 = e.left.ty?.kind === 'f32';
+    const fr = (x: number): number => (f32 ? Math.fround(x) : x);
     switch (e.op) {
-      case '+': return isInt ? i32(a + b) : a + b;
-      case '-': return isInt ? i32(a - b) : a - b;
-      case '*': return isInt ? Math.imul(a, b) : a * b;
+      case '+': return isInt ? i32(a + b) : fr(a + b);
+      case '-': return isInt ? i32(a - b) : fr(a - b);
+      case '*': return isInt ? Math.imul(a, b) : fr(a * b);
       case '/':
         if (isInt) {
           if (b === 0) throw new Trap('integer divide by zero');
           if (a === -2147483648 && b === -1) throw new Trap('integer overflow');
           return i32(Math.trunc(a / b));
         }
-        return a / b;
+        return fr(a / b);
       case '%':
         if (b === 0) throw new Trap('integer divide by zero');
         if (a === -2147483648 && b === -1) return 0;

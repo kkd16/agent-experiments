@@ -1,6 +1,6 @@
 import type { Block, Inst, IRFunc, IRModule, IRType, Operand, RetType, Term } from '../ir/ir';
 import { operandType } from '../ir/ir';
-import { ByteWriter, VT_F64, VT_I32, VT_I64, WASM_MAGIC, WASM_VERSION, section, vec } from './encoder';
+import { ByteWriter, VT_F32, VT_F64, VT_I32, VT_I64, WASM_MAGIC, WASM_VERSION, section, vec } from './encoder';
 
 // The WebAssembly backend. Three responsibilities:
 //   (1) Recover structured control flow (block / loop / if + br) from the SSA
@@ -29,9 +29,10 @@ type W =
   | { k: 'i32c'; v: number }
   | { k: 'i64c'; v: bigint }
   | { k: 'f64c'; v: number }
+  | { k: 'f32c'; v: number }
   | { k: 'call'; i: number }
-  | { k: 'load'; mem: 'i32' | 'i64' | 'f64' | 'i8' }
-  | { k: 'store'; mem: 'i32' | 'i64' | 'f64' | 'i8' }
+  | { k: 'load'; mem: 'i32' | 'i64' | 'f64' | 'f32' | 'i8' }
+  | { k: 'store'; mem: 'i32' | 'i64' | 'f64' | 'f32' | 'i8' }
   | { k: 'op'; c: number; name: string }
   | { k: 'select' }
   | { k: 'cast'; sub: string };
@@ -63,6 +64,13 @@ const F_BIN: Record<string, [number, string]> = {
   // sole authority on their NaN/signed-zero edge cases.
   min: [0xa4, 'f64.min'], max: [0xa5, 'f64.max'], copysign: [0xa6, 'f64.copysign'],
 };
+// The f32 (single-precision) counterparts, selected when an fbin/fcmp's operands
+// are f32. The IR keeps one generic `add`/`sub`/… sub; the operand value type
+// chooses the table — exactly like the i32/i64 integer split above.
+const F_BIN32: Record<string, [number, string]> = {
+  add: [0x92, 'f32.add'], sub: [0x93, 'f32.sub'], mul: [0x94, 'f32.mul'], div: [0x95, 'f32.div'],
+  min: [0x96, 'f32.min'], max: [0x97, 'f32.max'], copysign: [0x98, 'f32.copysign'],
+};
 const I_CMP: Record<string, [number, string]> = {
   eq: [0x46, 'i32.eq'], ne: [0x47, 'i32.ne'], lt_s: [0x48, 'i32.lt_s'],
   gt_s: [0x4a, 'i32.gt_s'], le_s: [0x4c, 'i32.le_s'], ge_s: [0x4e, 'i32.ge_s'],
@@ -85,6 +93,14 @@ const CAST_OP: Record<string, { bytes: number[]; name: string }> = {
   // are the only way the language's own code can inspect a float's representation.
   reinterp_f2l: { bytes: [0xbd], name: 'i64.reinterpret_f64' },
   reinterp_l2f: { bytes: [0xbf], name: 'f64.reinterpret_i64' },
+  // f32 (single-precision) conversions. demote/promote move between f32 and f64;
+  // the int conversions use the saturating-truncation prefix (0xfc) like f2i/f2l.
+  i2f32: { bytes: [0xb2], name: 'f32.convert_i32_s' },
+  l2f32: { bytes: [0xb4], name: 'f32.convert_i64_s' },
+  f2f32: { bytes: [0xb6], name: 'f32.demote_f64' },
+  f32_2f: { bytes: [0xbb], name: 'f64.promote_f32' },
+  f32_2i: { bytes: [0xfc, 0x00], name: 'i32.trunc_sat_f32_s' },
+  f32_2l: { bytes: [0xfc, 0x04], name: 'i64.trunc_sat_f32_s' },
   // Unary f64 math, modeled as single-operand "casts" (f64 -> f64). Each is a
   // pure, non-trapping wasm opcode, so SCCP leaves them unfolded (default NAC),
   // and the stackifier / LICM / if-conversion treat them like any pure value.
@@ -98,6 +114,10 @@ const CAST_OP: Record<string, { bytes: number[]; name: string }> = {
 const F_CMP: Record<string, [number, string]> = {
   eq: [0x61, 'f64.eq'], ne: [0x62, 'f64.ne'], lt: [0x63, 'f64.lt'],
   gt: [0x64, 'f64.gt'], le: [0x65, 'f64.le'], ge: [0x66, 'f64.ge'],
+};
+const F_CMP32: Record<string, [number, string]> = {
+  eq: [0x5b, 'f32.eq'], ne: [0x5c, 'f32.ne'], lt: [0x5d, 'f32.lt'],
+  gt: [0x5e, 'f32.gt'], le: [0x5f, 'f32.le'], ge: [0x60, 'f32.ge'],
 };
 
 interface Frame {
@@ -341,6 +361,7 @@ class FuncGen {
   private pushOperand(o: Operand): W[] {
     if (o.tag === 'const') {
       if (o.ty === 'f64') return [{ k: 'f64c', v: o.num as number }];
+      if (o.ty === 'f32') return [{ k: 'f32c', v: Math.fround(o.num as number) }];
       if (o.ty === 'i64') return [{ k: 'i64c', v: o.num as bigint }];
       return [{ k: 'i32c', v: (o.num as number) | 0 }];
     }
@@ -368,7 +389,7 @@ class FuncGen {
         break;
       }
       case 'fbin': {
-        const [c, name] = F_BIN[inst.sub];
+        const [c, name] = (operandType(this.fn, inst.args[0]) === 'f32' ? F_BIN32 : F_BIN)[inst.sub];
         out.push(...this.pushOperand(inst.args[0]), ...this.pushOperand(inst.args[1]), { k: 'op', c, name });
         break;
       }
@@ -380,7 +401,7 @@ class FuncGen {
         break;
       }
       case 'fcmp': {
-        const [c, name] = F_CMP[inst.sub];
+        const [c, name] = (operandType(this.fn, inst.args[0]) === 'f32' ? F_CMP32 : F_CMP)[inst.sub];
         out.push(...this.pushOperand(inst.args[0]), ...this.pushOperand(inst.args[1]), { k: 'op', c, name });
         break;
       }
@@ -493,13 +514,14 @@ function encodeBody(w: ByteWriter, tree: W[]): void {
       case 'i32c': w.u8(0x41); w.i32(n.v); break;
       case 'i64c': w.u8(0x42); w.i64(n.v); break;
       case 'f64c': w.u8(0x44); w.f64(n.v); break;
+      case 'f32c': w.u8(0x43); w.f32(n.v); break;
       case 'call': w.u8(0x10); w.u32(n.i); break;
       case 'load': {
-        const [op, align] = n.mem === 'i64' ? [0x29, 3] : n.mem === 'f64' ? [0x2b, 3] : n.mem === 'i8' ? [0x2d, 0] : [0x28, 2];
+        const [op, align] = n.mem === 'i64' ? [0x29, 3] : n.mem === 'f64' ? [0x2b, 3] : n.mem === 'f32' ? [0x2a, 2] : n.mem === 'i8' ? [0x2d, 0] : [0x28, 2];
         w.u8(op); w.u32(align); w.u32(0); break;
       }
       case 'store': {
-        const [op, align] = n.mem === 'i64' ? [0x37, 3] : n.mem === 'f64' ? [0x39, 3] : n.mem === 'i8' ? [0x3a, 0] : [0x36, 2];
+        const [op, align] = n.mem === 'i64' ? [0x37, 3] : n.mem === 'f64' ? [0x39, 3] : n.mem === 'f32' ? [0x38, 2] : n.mem === 'i8' ? [0x3a, 0] : [0x36, 2];
         w.u8(op); w.u32(align); w.u32(0); break;
       }
       case 'op': w.u8(n.c); break;
@@ -509,7 +531,7 @@ function encodeBody(w: ByteWriter, tree: W[]): void {
   }
 }
 
-const vt = (t: IRType): number => (t === 'f64' ? VT_F64 : t === 'i64' ? VT_I64 : VT_I32);
+const vt = (t: IRType): number => (t === 'f64' ? VT_F64 : t === 'f32' ? VT_F32 : t === 'i64' ? VT_I64 : VT_I32);
 
 interface PrintImport {
   kind: string;
@@ -620,6 +642,7 @@ export function codegen(mod: IRModule): CodegenResult {
       w.u8(vt(g.ty));
       w.u8(g.mutable ? 0x01 : 0x00);
       if (g.ty === 'f64') { w.u8(0x44); w.f64(g.init as number); }
+      else if (g.ty === 'f32') { w.u8(0x43); w.f32(Math.fround(g.init as number)); }
       else if (g.ty === 'i64') { w.u8(0x42); w.i64(g.init as bigint); }
       else { w.u8(0x41); w.i32((g.init as number) | 0); }
       w.u8(0x0b);
@@ -731,6 +754,7 @@ function emitWAT(mod: IRModule, gens: FuncGen[], imports: PrintImport[]): string
   }
   for (const g of mod.globals) {
     const init = g.ty === 'f64' ? `(f64.const ${g.init})`
+      : g.ty === 'f32' ? `(f32.const ${Math.fround(g.init as number)})`
       : g.ty === 'i64' ? `(i64.const ${g.init})`
       : `(i32.const ${(g.init as number) | 0})`;
     lines.push(`  (global $${g.name} (mut ${g.ty}) ${init})`);
@@ -771,9 +795,10 @@ function watBody(tree: W[], lines: string[], depth: number): void {
       case 'i32c': lines.push(`${pad}i32.const ${n.v | 0}`); break;
       case 'i64c': lines.push(`${pad}i64.const ${n.v}`); break;
       case 'f64c': lines.push(`${pad}f64.const ${n.v}`); break;
+      case 'f32c': lines.push(`${pad}f32.const ${Math.fround(n.v)}`); break;
       case 'call': lines.push(`${pad}call ${n.i}`); break;
-      case 'load': lines.push(`${pad}${n.mem === 'i64' ? 'i64.load' : n.mem === 'f64' ? 'f64.load' : n.mem === 'i8' ? 'i32.load8_u' : 'i32.load'}`); break;
-      case 'store': lines.push(`${pad}${n.mem === 'i64' ? 'i64.store' : n.mem === 'f64' ? 'f64.store' : n.mem === 'i8' ? 'i32.store8' : 'i32.store'}`); break;
+      case 'load': lines.push(`${pad}${n.mem === 'i64' ? 'i64.load' : n.mem === 'f64' ? 'f64.load' : n.mem === 'f32' ? 'f32.load' : n.mem === 'i8' ? 'i32.load8_u' : 'i32.load'}`); break;
+      case 'store': lines.push(`${pad}${n.mem === 'i64' ? 'i64.store' : n.mem === 'f64' ? 'f64.store' : n.mem === 'f32' ? 'f32.store' : n.mem === 'i8' ? 'i32.store8' : 'i32.store'}`); break;
       case 'op': lines.push(`${pad}${n.name}`); break;
       case 'select': lines.push(`${pad}select`); break;
       case 'cast': lines.push(`${pad}${CAST_OP[n.sub].name}`); break;

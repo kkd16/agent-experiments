@@ -9,7 +9,7 @@ import type {
   StructDecl,
   Ty,
 } from './ast';
-import { T_BOOL, T_FLOAT, T_INT, T_LONG, T_NULL, T_STR, T_VOID, tyEqual, tyName } from './ast';
+import { T_BOOL, T_F32, T_FLOAT, T_INT, T_LONG, T_NULL, T_STR, T_VOID, tyEqual, tyName } from './ast';
 
 // The type checker resolves every identifier, validates operators, and writes
 // the inferred `ty` back onto each expression node so later phases never have to
@@ -31,7 +31,7 @@ export interface SymbolTable {
 // Builtins available without declaration. `print`/`int`/`float` are special-
 // cased because they accept multiple argument types; array intrinsics return
 // handles into linear memory.
-const ARRAY_INTRINSICS = new Set(['int_array', 'long_array', 'float_array', 'str_array', 'struct_array', 'len']);
+const ARRAY_INTRINSICS = new Set(['int_array', 'long_array', 'float_array', 'f32_array', 'str_array', 'struct_array', 'len']);
 const STR_BUILTINS = new Set([
   'str', 'char', 'substr', 'index_of', 'to_upper', 'to_lower',
   'repeat', 'trim', 'replace', 'find', 'contains', 'starts_with', 'ends_with', 'parse_int',
@@ -117,8 +117,8 @@ class Scope {
 // builtin, a primitive type, or a reserved conversion). Keeps the constructor
 // call `Name(...)` unambiguous.
 const RESERVED_NAMES = new Set<string>([
-  'print', 'str', 'char', 'int', 'float', 'long', 'len',
-  'int_array', 'long_array', 'float_array', 'str_array',
+  'print', 'str', 'char', 'int', 'float', 'f32', 'long', 'len',
+  'int_array', 'long_array', 'float_array', 'f32_array', 'str_array',
   'bool', 'void',
 ]);
 
@@ -427,7 +427,7 @@ class Checker {
     switch (e.op) {
       case '-':
       case '+':
-        if (t.kind === 'int' || t.kind === 'long' || t.kind === 'float') return t;
+        if (t.kind === 'int' || t.kind === 'long' || t.kind === 'float' || t.kind === 'f32') return t;
         throw new CompileError(`unary '${e.op}' requires a numeric operand, found ${tyName(t)}`, e.span, 'type');
       case '!':
         if (t.kind === 'bool') return T_BOOL;
@@ -442,7 +442,7 @@ class Checker {
     const op: BinaryOp = e.op;
     const lt = this.checkExpr(e.left);
     const rt = this.checkExpr(e.right);
-    const sameNumeric = (lt.kind === 'int' || lt.kind === 'long' || lt.kind === 'float') && tyEqual(lt, rt);
+    const sameNumeric = (lt.kind === 'int' || lt.kind === 'long' || lt.kind === 'float' || lt.kind === 'f32') && tyEqual(lt, rt);
 
     switch (op) {
       case '+':
@@ -532,15 +532,15 @@ class Checker {
     if (name === 'print') {
       if (e.args.length !== 1) throw new CompileError('print expects 1 argument', e.span, 'type');
       const t = this.checkExpr(e.args[0]);
-      if (t.kind !== 'int' && t.kind !== 'long' && t.kind !== 'float' && t.kind !== 'bool' && t.kind !== 'str')
+      if (t.kind !== 'int' && t.kind !== 'long' && t.kind !== 'float' && t.kind !== 'f32' && t.kind !== 'bool' && t.kind !== 'str')
         throw new CompileError(`print expects a scalar or string, found ${tyName(t)}`, e.span, 'type');
       return T_VOID;
     }
     if (name === 'str') {
       if (e.args.length !== 1) throw new CompileError('str() expects 1 argument', e.span, 'type');
       const t = this.checkExpr(e.args[0]);
-      if (t.kind !== 'int' && t.kind !== 'long' && t.kind !== 'float' && t.kind !== 'bool' && t.kind !== 'str')
-        throw new CompileError(`str() expects an int, long, float, bool, or str, found ${tyName(t)}`, e.span, 'type');
+      if (t.kind !== 'int' && t.kind !== 'long' && t.kind !== 'float' && t.kind !== 'f32' && t.kind !== 'bool' && t.kind !== 'str')
+        throw new CompileError(`str() expects an int, long, float, f32, bool, or str, found ${tyName(t)}`, e.span, 'type');
       return T_STR;
     }
     if (name === 'char') {
@@ -609,14 +609,14 @@ class Checker {
       }
       return T_FLOAT;
     }
-    if (name === 'int' || name === 'float' || name === 'long') {
+    if (name === 'int' || name === 'float' || name === 'f32' || name === 'long') {
       if (e.args.length !== 1) throw new CompileError(`${name}() expects 1 argument`, e.span, 'type');
       const t = this.checkExpr(e.args[0]);
-      if (t.kind !== 'int' && t.kind !== 'long' && t.kind !== 'float' && t.kind !== 'bool')
+      if (t.kind !== 'int' && t.kind !== 'long' && t.kind !== 'float' && t.kind !== 'f32' && t.kind !== 'bool')
         throw new CompileError(`${name}() expects a numeric argument, found ${tyName(t)}`, e.span, 'type');
-      return name === 'int' ? T_INT : name === 'long' ? T_LONG : T_FLOAT;
+      return name === 'int' ? T_INT : name === 'long' ? T_LONG : name === 'f32' ? T_F32 : T_FLOAT;
     }
-    if (name === 'int_array' || name === 'long_array' || name === 'float_array' || name === 'str_array') {
+    if (name === 'int_array' || name === 'long_array' || name === 'float_array' || name === 'f32_array' || name === 'str_array') {
       if (e.args.length !== 1) throw new CompileError(`${name}() expects a length`, e.span, 'type');
       const t = this.checkExpr(e.args[0]);
       if (t.kind !== 'int') throw new CompileError(`${name}() length must be int`, e.span, 'type');
@@ -624,6 +624,7 @@ class Checker {
         name === 'int_array' ? { kind: 'int' }
         : name === 'long_array' ? { kind: 'long' }
         : name === 'float_array' ? { kind: 'float' }
+        : name === 'f32_array' ? { kind: 'f32' }
         : { kind: 'str' };
       return { kind: 'array', elem };
     }

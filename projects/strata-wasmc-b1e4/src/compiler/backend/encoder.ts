@@ -54,6 +54,12 @@ export class ByteWriter {
     const arr = new Uint8Array(buf);
     for (let i = 0; i < 8; i++) this.bytes.push(arr[i]);
   }
+  f32(value: number): void {
+    const buf = new ArrayBuffer(4);
+    new DataView(buf).setFloat32(0, value, true);
+    const arr = new Uint8Array(buf);
+    for (let i = 0; i < 4; i++) this.bytes.push(arr[i]);
+  }
   name(s: string): void {
     const utf8 = new TextEncoder().encode(s);
     this.u32(utf8.length);
@@ -85,3 +91,4 @@ export const WASM_VERSION = [0x01, 0x00, 0x00, 0x00];
 export const VT_I32 = 0x7f;
 export const VT_I64 = 0x7e;
 export const VT_F64 = 0x7c;
+export const VT_F32 = 0x7d;

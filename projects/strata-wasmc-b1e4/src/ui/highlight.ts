@@ -9,12 +9,14 @@ export interface Tok {
 
 const KEYWORDS = new Set(['fn', 'let', 'if', 'else', 'while', 'do', 'for', 'switch', 'case', 'default', 'return', 'break', 'continue', 'struct']);
 const CONSTS = new Set(['true', 'false', 'null']);
-const TYPES = new Set(['int', 'long', 'float', 'bool', 'str', 'void']);
+const TYPES = new Set(['int', 'long', 'float', 'f32', 'bool', 'str', 'void']);
 const BUILTINS = new Set([
-  'print', 'int_array', 'long_array', 'float_array', 'str_array', 'struct_array', 'len', 'str', 'char', 'substr', 'index_of',
+  'print', 'int_array', 'long_array', 'float_array', 'f32_array', 'str_array', 'struct_array', 'len', 'str', 'char', 'substr', 'index_of',
   'to_upper', 'to_lower', 'repeat', 'trim', 'replace', 'find', 'contains', 'starts_with',
   'ends_with', 'parse_int', 'parse_float', 'split', 'join', 'popcount', 'clz', 'ctz', 'rotl', 'rotr',
-  'sqrt', 'floor', 'ceil', 'trunc', 'round', 'abs', 'fmin', 'fmax', 'copysign',
+  'sqrt', 'floor', 'ceil', 'trunc', 'round', 'abs', 'fmin', 'fmax', 'copysign', 'f32',
+  'exp', 'expm1', 'ln', 'log2', 'log10', 'log1p', 'sin', 'cos', 'tan',
+  'asin', 'acos', 'atan', 'atan2', 'sinh', 'cosh', 'tanh', 'cbrt', 'pow', 'hypot', 'fmod',
 ]);
 
 const isDigit = (c: string) => c >= '0' && c <= '9';

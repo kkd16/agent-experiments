@@ -1158,6 +1158,69 @@ fn main(){
   print(str(s));
 }`,
   },
+  // --- f32 (single-precision) end to end --------------------------------------
+  // The interpreter models f32 as a Math.fround-rounded number; the wasm backend
+  // uses the f32 opcodes. The printed (promoted-to-f64) values must agree.
+  {
+    name: 'f32-arithmetic',
+    source: `fn main(){
+  let a = f32(0.1);
+  let b = f32(0.2);
+  print(str(a + b));                 // f32 rounding: 0.30000001192092896
+  print(str(a - b)); print(str(a * b)); print(str(f32(1.0) / f32(3.0)));
+  print(str(f32(0.0) - a));          // negate stays f32 (strict: no f64/f32 mixing)
+  print(str(float(a)));              // promote: 0.10000000149011612
+}`,
+  },
+  {
+    name: 'f32-conversions',
+    source: `fn main(){
+  print(str(f32(16777217)));        // 2^24+1 not representable -> 16777216
+  print(str(f32(123456789)));       // int -> f32 (rounds)
+  print(str(f32(123456789L)));      // long -> f32
+  print(str(int(f32(3.999))));      // 3 (truncates)
+  print(str(long(f32(1.0e15))));    // f32 then trunc to i64
+  print(str(float(f32(3.1415927)))); // demote then promote
+  print(str(f32(true)));            // bool -> f32 (1.0)
+}`,
+  },
+  {
+    name: 'f32-array-sum',
+    source: `// A harmonic sum accumulated entirely in single precision.
+fn main(){
+  let n = 12;
+  let xs = f32_array(n);
+  for (let i = 0; i < n; i = i + 1) { xs[i] = f32(1.0) / f32(i + 1); }
+  let s = f32(0.0);
+  for (let i = 0; i < n; i = i + 1) { s = s + xs[i]; }
+  print(str(s));
+  for (let i = 0; i < n; i = i + 1) { print(str(xs[i])); }
+}`,
+  },
+  {
+    name: 'f32-struct-dot',
+    source: `// f32 struct fields (4-byte) + a function returning f32.
+struct Vec3 { x: f32; y: f32; z: f32; }
+fn dot(a: Vec3, b: Vec3) -> f32 { return a.x * b.x + a.y * b.y + a.z * b.z; }
+fn main(){
+  let a = Vec3(f32(1.5), f32(2.5), f32(3.5));
+  let b = Vec3(f32(0.5), f32(1.0), f32(2.0));
+  print(str(dot(a, b)));
+  a.x = a.x + f32(10.0);
+  print(str(a.x)); print(str(a.y)); print(str(a.z));
+}`,
+  },
+  {
+    name: 'f32-compare',
+    source: `fn main(){
+  print(f32(0.1) + f32(0.2) == f32(0.3));  // false — single-precision rounding
+  print(f32(0.5) < f32(0.6));
+  print(f32(1.0) / f32(3.0) > f32(0.33));
+  print(f32(2.0) == f32(2.0));
+  // f32 vs f64 disagree on representability of 0.1
+  print(float(f32(0.1)) == 0.1);           // false
+}`,
+  },
   {
     name: 'math-user-shadow-isolation',
     source: `// A user 'fn sqrt' shadows the builtin in user code, but the MATH_PRELUDE

@@ -14,7 +14,7 @@ import { MATH_PRELUDE } from './ir/prelude';
 export type RtValue = number | bigint | ArrayVal | string | StructVal | null;
 export interface ArrayVal {
   arr: true;
-  elem: 'int' | 'long' | 'float' | 'str' | 'struct';
+  elem: 'int' | 'long' | 'float' | 'f32' | 'str' | 'struct';
   // `int`/`float` arrays hold numbers; `long` arrays hold BigInts; `str` arrays
   // hold byte strings; `struct` arrays hold struct handles (StructVal or null).
   // A single union keeps the element accessors uniform.
@@ -339,6 +339,7 @@ export class Interpreter {
         if (target.elem === 'str') target.data[idx] = val as string;
         else if (target.elem === 'struct') target.data[idx] = val as StructVal | null;
         else if (target.elem === 'long') target.data[idx] = asI64(val as bigint);
+        else if (target.elem === 'f32') target.data[idx] = Math.fround(val as number);
         else target.data[idx] = target.elem === 'int' ? i32(val as number) : (val as number);
         break;
       }
@@ -520,20 +521,25 @@ export class Interpreter {
     const a = this.evalExpr(e.left, f) as number;
     const b = this.evalExpr(e.right, f) as number;
     const isInt = e.left.ty?.kind === 'int' || e.left.ty?.kind === 'bool';
+    // f32 arithmetic rounds to single precision after every op. Computing in f64
+    // then `Math.fround`-ing matches the wasm f32 op exactly: f64 carries > 2p+2
+    // bits, so the double rounding is innocuous for +,-,*,/ (Figueroa's theorem).
+    const f32 = e.left.ty?.kind === 'f32';
+    const fr = (x: number): number => (f32 ? Math.fround(x) : x);
     switch (e.op) {
       case '+':
-        return isInt ? i32(a + b) : a + b;
+        return isInt ? i32(a + b) : fr(a + b);
       case '-':
-        return isInt ? i32(a - b) : a - b;
+        return isInt ? i32(a - b) : fr(a - b);
       case '*':
-        return isInt ? Math.imul(a, b) : a * b;
+        return isInt ? Math.imul(a, b) : fr(a * b);
       case '/':
         if (isInt) {
           if (b === 0) throw new Trap('integer divide by zero');
           if (a === -2147483648 && b === -1) throw new Trap('integer overflow');
           return i32(Math.trunc(a / b));
         }
-        return a / b;
+        return fr(a / b);
       case '%':
         if (b === 0) throw new Trap('integer divide by zero');
         if (a === -2147483648 && b === -1) return 0;
@@ -638,6 +644,8 @@ function normalizeField(v: RtValue, ty: Ty): RtValue {
       return i32(v as number);
     case 'long':
       return asI64(v as bigint);
+    case 'f32':
+      return Math.fround(v as number);
     default:
       return v;
   }
@@ -675,7 +683,7 @@ export function callBuiltin(
       else if (k === 'long') out.push(formatLong(argv[0] as bigint));
       else {
         const v = argv[0] as number;
-        out.push(k === 'float' ? formatFloat(v) : k === 'bool' ? formatBool(v) : formatInt(v));
+        out.push(k === 'float' || k === 'f32' ? formatFloat(v) : k === 'bool' ? formatBool(v) : formatInt(v));
       }
       return H(0);
     }
@@ -683,7 +691,7 @@ export function callBuiltin(
       const k = argKinds[0];
       if (k === 'str') return H(argv[0]);
       if (k === 'long') return H(formatLong(argv[0] as bigint));
-      if (k === 'float') return H(formatFloat(argv[0] as number));
+      if (k === 'float' || k === 'f32') return H(formatFloat(argv[0] as number));
       if (k === 'bool') return H(formatBool(argv[0] as number));
       return H(formatInt(argv[0] as number));
     }
@@ -774,15 +782,20 @@ export function callBuiltin(
       return H(neg ? i32(-acc) : acc);
     }
     case 'int':
-      if (argKinds[0] === 'float') return H(satTruncI32(argv[0] as number));
+      if (argKinds[0] === 'float' || argKinds[0] === 'f32') return H(satTruncI32(argv[0] as number));
       if (argKinds[0] === 'long') return H(Number(BigInt.asIntN(32, argv[0] as bigint))); // wrap to low 32 bits
       return H(i32(argv[0] as number));
     case 'float':
       if (argKinds[0] === 'long') return H(Number(argv[0] as bigint)); // i64 -> f64, ties to even
-      return H(argv[0] as number);
+      return H(argv[0] as number); // f32 promotes losslessly; int widens exactly
+    case 'f32':
+      // Round the argument to single precision. From an i64 the int->f64->f32
+      // double rounding is innocuous (f64 has > 2p+2 bits), matching wasm.
+      if (argKinds[0] === 'long') return H(Math.fround(Number(argv[0] as bigint)));
+      return H(Math.fround(argv[0] as number));
     case 'long':
       if (argKinds[0] === 'long') return H(asI64(argv[0] as bigint));
-      if (argKinds[0] === 'float') return H(satTruncI64(argv[0] as number));
+      if (argKinds[0] === 'float' || argKinds[0] === 'f32') return H(satTruncI64(argv[0] as number));
       return H(asI64(BigInt(i32(argv[0] as number)))); // int/bool widen, sign-extended
     case 'popcount':
       return H(argKinds[0] === 'long' ? popcnt64(argv[0] as bigint) : popcnt32(argv[0] as number));
@@ -811,12 +824,14 @@ export function callBuiltin(
     case 'int_array':
     case 'long_array':
     case 'float_array':
+    case 'f32_array':
     case 'str_array': {
       const n = i32(argv[0] as number);
       if (n < 0) throw new Trap('negative array length');
       if (name === 'str_array') return H({ arr: true, elem: 'str', data: new Array(n).fill('') });
       if (name === 'long_array') return H({ arr: true, elem: 'long', data: new Array(n).fill(0n) });
-      return H({ arr: true, elem: name === 'int_array' ? 'int' : 'float', data: new Array(n).fill(0) });
+      const elem = name === 'int_array' ? 'int' : name === 'f32_array' ? 'f32' : 'float';
+      return H({ arr: true, elem, data: new Array(n).fill(0) });
     }
     case 'struct_array': {
       const n = i32(argv[0] as number);

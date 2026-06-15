@@ -15,7 +15,7 @@ import type {
   Ty,
   UnaryOp,
 } from './ast';
-import { T_BOOL, T_FLOAT, T_INT, T_LONG, T_STR, T_VOID } from './ast';
+import { T_BOOL, T_F32, T_FLOAT, T_INT, T_LONG, T_STR, T_VOID } from './ast';
 
 // Fold a `long_lit` spelling (decimal or `0x` hex, with an `L`/`l` suffix) into a
 // 64-bit-wrapped BigInt. The lexer guarantees the shape, so `BigInt()` cannot
@@ -129,6 +129,9 @@ class Parser {
         break;
       case 'float':
         base = T_FLOAT;
+        break;
+      case 'f32':
+        base = T_F32;
         break;
       case 'bool':
         base = T_BOOL;
