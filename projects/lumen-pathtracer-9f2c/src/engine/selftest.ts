@@ -21,6 +21,9 @@ import { cauchyIor, wavelengthWeight, LAMBDA_MIN, LAMBDA_MAX } from './spectrum'
 import { icosphere, torus, meshTriangleCount } from './mesh'
 import { parseObj, CUBE_OBJ } from './obj'
 import { makeSky, skyRadiance } from './sky'
+import { hgPhase, sampleHG } from './phase'
+import { thinFilmReflectance } from './thinfilm'
+import { radicalInverse } from './qmc'
 
 export interface TestResult {
   name: string
@@ -546,6 +549,215 @@ function testEnvFurnace(): { pass: boolean; detail: string } {
   return { pass: approx(measured, rho, 1.5e-2), detail: `reflectance=${measured.toFixed(4)}, expected≈${rho.toFixed(3)}` }
 }
 
+// 23 — Henyey–Greenstein phase function: it must integrate to 1 over the sphere
+// (so it conserves energy at a scattering event), its sampler must report the
+// exact analytic pdf for the direction it draws, and the mean cosine of the
+// scattered angle must recover the anisotropy parameter (E[cosθ] = −g in the
+// wo-convention, since wo points back along the path).
+function testPhase(): { pass: boolean; detail: string } {
+  const wo = normalize(v(0.3, -0.5, 0.8))
+  let worstNorm = 0
+  let worstPdf = 0
+  let worstMean = 0
+  for (const g of [-0.6, 0, 0.4, 0.8]) {
+    // Normalisation: E over a uniform sphere of p == 1/(4π), so ∫ p dω == 1.
+    const rng = new Rng(101, 1)
+    let sum = 0
+    const N = 200000
+    for (let i = 0; i < N; i++) {
+      const z = 1 - 2 * rng.next()
+      const r = Math.sqrt(Math.max(0, 1 - z * z))
+      const phi = 2 * Math.PI * rng.next()
+      const dir = v(r * Math.cos(phi), r * Math.sin(phi), z)
+      sum += hgPhase(dot(wo, dir), g)
+    }
+    worstNorm = Math.max(worstNorm, Math.abs((sum / N) * 4 * Math.PI - 1))
+    // Sampler ↔ pdf consistency + mean cosine.
+    const rng2 = new Rng(202, 3)
+    let cosSum = 0
+    const M = 120000
+    for (let i = 0; i < M; i++) {
+      const s = sampleHG(wo, g, rng2)
+      const p = hgPhase(dot(wo, s.wi), g)
+      worstPdf = Math.max(worstPdf, Math.abs(p - s.pdf) / Math.max(1e-9, s.pdf))
+      cosSum += dot(wo, s.wi)
+    }
+    worstMean = Math.max(worstMean, Math.abs(cosSum / M - -g))
+  }
+  const ok = worstNorm < 1e-2 && worstPdf < 1e-9 && worstMean < 1e-2
+  return {
+    pass: ok,
+    detail: `‖∫p−1‖=${worstNorm.toExponential(1)}, Δpdf=${worstPdf.toExponential(1)}, ‖E[cos]+g‖=${worstMean.toExponential(1)}`,
+  }
+}
+
+// 24 — Homogeneous transmittance: the medium distance sampler must let a ray
+// reach a surface at distance L with probability exactly e^(−σ_t·L) (Beer's law
+// recovered statistically), the foundation of unbiased volumetric transport.
+function testMediumTransmittance(): { pass: boolean; detail: string } {
+  const sigmaT = 0.7
+  const L = 2
+  const def: SceneDef = {
+    name: 'tr',
+    materials: [],
+    prims: [],
+    camera: { eye: v(0, 0, 5), target: v(0, 0, 0), up: v(0, 1, 0), vfovDeg: 30, aperture: 0, focusDist: 5 },
+    env: { kind: 'solid', color: v(0, 0, 0) },
+    media: [{ center: v(0, 0, 0), radius: 100, sigmaT, albedo: v(1, 1, 1), g: 0 }],
+  }
+  const scene = new Scene(def)
+  const rng = new Rng(515, 2)
+  let reached = 0
+  const N = 200000
+  for (let i = 0; i < N; i++) {
+    const ms = scene.sampleMediumScatter(v(0, 0, 0), v(1, 0, 0), L, rng)
+    if (!ms) reached++ // no collision before L ⇒ the ray reaches the surface
+  }
+  const frac = reached / N
+  const expected = Math.exp(-sigmaT * L)
+  return { pass: approx(frac, expected, 5e-3), detail: `reach=${frac.toFixed(4)}, e^(−σL)=${expected.toFixed(4)}` }
+}
+
+// 25 — Volumetric energy conservation. A *purely scattering* bounded volume
+// (albedo 1) immersed in a uniform unit radiance field must remain invisible:
+// scattering only redistributes directions, and a uniform field is unchanged by
+// that, so a camera ray through the volume still measures exactly 1. Any bias in
+// the collision/boundary weights would push this off 1.
+function testVolumeScatterEnergy(): { pass: boolean; detail: string } {
+  const def: SceneDef = {
+    name: 'vol-scatter',
+    materials: [],
+    prims: [],
+    camera: { eye: v(0, 0, 5), target: v(0, 0, 0), up: v(0, 1, 0), vfovDeg: 30, aperture: 0, focusDist: 5 },
+    env: { kind: 'solid', color: v(1, 1, 1) },
+    media: [{ center: v(0, 0, 0), radius: 1, sigmaT: 0.6, albedo: v(1, 1, 1), g: 0.2 }],
+  }
+  const scene = new Scene(def)
+  const rng = new Rng(909, 4)
+  const settings = { maxDepth: 64, rrStart: 48, clampIndirect: 0 }
+  const stats: RayStats = { rays: 0 }
+  const N = 40000
+  let sum = 0
+  for (let i = 0; i < N; i++) {
+    const L = radiance(scene, { o: v(0, 0, 5), d: v(0, 0, -1), tMax: Infinity }, settings, rng, stats)
+    sum += luminance(L)
+  }
+  const measured = sum / N
+  return { pass: approx(measured, 1, 1.5e-2), detail: `radiance through scattering volume=${measured.toFixed(4)} (exp 1)` }
+}
+
+// 26 — Volumetric absorption. A *purely absorbing* volume (albedo 0, scalar σ_t)
+// must transmit the background only along unscattered rays, so a camera ray sees
+// the unit field attenuated by e^(−σ_t·chord) through the sphere — the volumetric
+// Beer–Lambert law, here arising from stochastic path termination.
+function testVolumeAbsorb(): { pass: boolean; detail: string } {
+  const sigmaT = 0.8
+  const radius = 1
+  const def: SceneDef = {
+    name: 'vol-absorb',
+    materials: [],
+    prims: [],
+    camera: { eye: v(0, 0, 5), target: v(0, 0, 0), up: v(0, 1, 0), vfovDeg: 30, aperture: 0, focusDist: 5 },
+    env: { kind: 'solid', color: v(1, 1, 1) },
+    media: [{ center: v(0, 0, 0), radius, sigmaT, albedo: v(0, 0, 0), g: 0 }],
+  }
+  const scene = new Scene(def)
+  const rng = new Rng(271, 6)
+  const settings = { maxDepth: 8, rrStart: 4, clampIndirect: 0 }
+  const stats: RayStats = { rays: 0 }
+  const N = 60000
+  let sum = 0
+  for (let i = 0; i < N; i++) {
+    const L = radiance(scene, { o: v(0, 0, 5), d: v(0, 0, -1), tMax: Infinity }, settings, rng, stats)
+    sum += luminance(L)
+  }
+  const measured = sum / N
+  const expected = Math.exp(-sigmaT * 2 * radius) // chord through a centred sphere = 2r
+  return { pass: approx(measured, expected, 1e-2), detail: `transmitted=${measured.toFixed(4)}, e^(−σ·2r)=${expected.toFixed(4)}` }
+}
+
+// 27 — Thin-film reflectance is a physical reflectance: bounded in [0,1] for all
+// angles, wavelengths and thicknesses; as the film thickness → 0 it must collapse
+// to the bare Fresnel reflectance of the air→substrate interface (the film
+// vanishes, independent of its index); and at an interference-active thickness it
+// must vary with wavelength (the very iridescence the model exists to produce).
+function testThinFilm(): { pass: boolean; detail: string } {
+  // Unpolarised dielectric Fresnel for an air(1)→n interface at incidence cosI.
+  const fresnel = (cosI: number, n: number): number => {
+    const sin2T = (1 / (n * n)) * Math.max(0, 1 - cosI * cosI)
+    if (sin2T >= 1) return 1
+    const cosT = Math.sqrt(1 - sin2T)
+    const rs = (cosI - n * cosT) / (cosI + n * cosT)
+    const rp = (n * cosI - cosT) / (n * cosI + cosT)
+    return 0.5 * (rs * rs + rp * rp)
+  }
+  const rng = new Rng(606, 5)
+  let inRange = true
+  for (let i = 0; i < 20000; i++) {
+    const cosI = rng.range(0.02, 1)
+    const lam = rng.range(380, 720)
+    const d = rng.range(0, 1200)
+    const R = thinFilmReflectance(cosI, lam, d, rng.range(1.2, 2.0), rng.range(1.2, 2.6))
+    if (R < -1e-9 || R > 1 + 1e-9) inRange = false
+  }
+  // d → 0 collapse (independent of the film index n1).
+  let maxCollapse = 0
+  for (const cosI of [1, 0.8, 0.5, 0.2]) {
+    for (const n1 of [1.3, 1.6, 2.0]) {
+      const R0 = thinFilmReflectance(cosI, 550, 0, n1, 1.5)
+      maxCollapse = Math.max(maxCollapse, Math.abs(R0 - fresnel(cosI, 1.5)))
+    }
+  }
+  // Iridescence: across the visible band, an interference-active film must spread
+  // its reflectance — high at some wavelengths, low at others — which is what the
+  // eye reads as a shifting rainbow sheen.
+  let rMin = 1
+  let rMax = 0
+  for (let lam = 400; lam <= 700; lam += 5) {
+    const R = thinFilmReflectance(1, lam, 300, 1.45, 2.4)
+    rMin = Math.min(rMin, R)
+    rMax = Math.max(rMax, R)
+  }
+  const iridescent = rMax - rMin
+  const ok = inRange && maxCollapse < 1e-9 && iridescent > 0.05
+  return {
+    pass: ok,
+    detail: `R∈[0,1]=${inRange}, d→0 err=${maxCollapse.toExponential(1)}, ΔR(λ)=${iridescent.toFixed(3)}`,
+  }
+}
+
+// 28 — Low-discrepancy sampling: the Halton (2,3) point set must cover the unit
+// square more evenly than white noise, i.e. have a strictly lower L2 star
+// discrepancy (Warnock's closed form). This is what makes anti-aliasing and the
+// lens converge faster than pseudo-random jitter.
+function testQmcDiscrepancy(): { pass: boolean; detail: string } {
+  const N = 400
+  // Warnock's L2 star discrepancy for a 2D point set.
+  const l2star = (pts: { x: number; y: number }[]): number => {
+    const n = pts.length
+    let s1 = 0
+    for (const p of pts) s1 += (1 - p.x * p.x) * (1 - p.y * p.y)
+    let s2 = 0
+    for (let i = 0; i < n; i++) {
+      for (let j = 0; j < n; j++) {
+        s2 += (1 - Math.max(pts[i].x, pts[j].x)) * (1 - Math.max(pts[i].y, pts[j].y))
+      }
+    }
+    const d2 = 1 / 9 - (0.5 / n) * s1 + (1 / (n * n)) * s2
+    return Math.sqrt(Math.max(0, d2))
+  }
+  const halton: { x: number; y: number }[] = []
+  const random: { x: number; y: number }[] = []
+  const rng = new Rng(4242, 9)
+  for (let i = 0; i < N; i++) {
+    halton.push({ x: radicalInverse(2, i + 1), y: radicalInverse(3, i + 1) })
+    random.push({ x: rng.next(), y: rng.next() })
+  }
+  const dH = l2star(halton)
+  const dR = l2star(random)
+  return { pass: dH < dR, detail: `Halton D*=${dH.toExponential(2)} < random D*=${dR.toExponential(2)}` }
+}
+
 export function runSelfTests(): TestResult[] {
   return [
     test('Vector algebra identities', testVectorMath),
@@ -571,5 +783,11 @@ export function runSelfTests(): TestResult[] {
     test('Preetham sky positivity & ordering', testSky),
     test('Env-sun sampler ↔ pdf + solid angle', testEnvSampler),
     test('Env-sampled white furnace ρ=0.8', testEnvFurnace),
+    test('Henyey–Greenstein phase (∫=1, pdf, mean cos)', testPhase),
+    test('Homogeneous medium transmittance e^(−σL)', testMediumTransmittance),
+    test('Scattering volume conserves energy (=1)', testVolumeScatterEnergy),
+    test('Absorbing volume e^(−σ·chord)', testVolumeAbsorb),
+    test('Thin-film R∈[0,1], d→0 Fresnel, iridescent', testThinFilm),
+    test('Halton L2 discrepancy < random', testQmcDiscrepancy),
   ]
 }

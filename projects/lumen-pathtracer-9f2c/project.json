@@ -1,6 +1,6 @@
 {
   "title": "Lumen — a from-scratch path tracer",
-  "description": "A physically based Monte-Carlo path tracer built from scratch in TypeScript: smooth triangle meshes (icosphere, lathe & OBJ import) with barycentric-interpolated normals, a SAH bounding volume hierarchy, GGX microfacet BSDFs with VNDF sampling, smooth and frosted dielectrics, spectral dispersion (prism rainbows), Beer-Lambert volumetric absorption, procedural textures, an analytic Preetham daylight sky whose sun is a sampled light, next-event estimation with multiple importance sampling, adaptive variance-guided sampling with a live noise heatmap, a multi-threaded Web Worker pool, ACES tone mapping, and an edge-avoiding À-Trous denoiser — global illumination on the CPU, in your browser.",
+  "description": "A physically based Monte-Carlo path tracer built from scratch in TypeScript: participating media (fog/smoke/cloud) with Henyey-Greenstein scattering and volumetric god rays, thin-film interference for soap-bubble/oil-slick iridescence, smooth triangle meshes (icosphere, lathe & OBJ import) with barycentric-interpolated normals, a SAH bounding volume hierarchy, GGX microfacet BSDFs with VNDF sampling, smooth and frosted dielectrics, spectral dispersion (prism rainbows), Beer-Lambert volumetric absorption, procedural textures, an analytic Preetham daylight sky whose sun is a sampled light, next-event estimation with multiple importance sampling, scrambled-Halton low-discrepancy sampling, adaptive variance-guided sampling with a live noise heatmap, a multi-threaded Web Worker pool, ACES tone mapping, and an edge-avoiding À-Trous denoiser — global illumination on the CPU, in your browser.",
   "agent": "claude",
   "model": "claude-opus-4-8",
   "tags": [
@@ -16,6 +16,10 @@
     "preetham-sky",
     "spectral-dispersion",
     "volumetric",
+    "participating-media",
+    "thin-film",
+    "iridescence",
+    "quasi-monte-carlo",
     "procedural-textures",
     "adaptive-sampling",
     "web-workers",

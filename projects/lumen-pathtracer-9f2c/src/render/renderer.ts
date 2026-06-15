@@ -9,6 +9,7 @@
 import { Scene } from '../engine/scene'
 import { Camera } from '../engine/camera'
 import { Rng } from '../engine/rng'
+import { halton23, halton57, pixelOffset } from '../engine/qmc'
 import { radiance } from '../engine/integrator'
 import type { GBuffer, RayStats } from '../engine/integrator'
 import { tonemapToBytes, noiseToBytes } from '../engine/tonemap'
@@ -392,12 +393,14 @@ export class Renderer {
     while (now() < budgetEnd) {
       const y = this.stRow
       const base = y * this.width
+      const hIndex = this.stSample + 1
       for (let x = 0; x < this.width; x++) {
-        const jx = this.stRng.next()
-        const jy = this.stRng.next()
-        const u = (x + jx) / this.width
-        const vScreen = 1 - (y + jy) / this.height
-        const ray = camera.generateRay(u, vScreen, this.stRng)
+        const off = pixelOffset(x, y)
+        const pj = halton23(hIndex, off.x, off.y)
+        const lens = halton57(hIndex, off.x, off.y)
+        const u = (x + pj.x) / this.width
+        const vScreen = 1 - (y + pj.y) / this.height
+        const ray = camera.generateRay(u, vScreen, this.stRng, lens)
         const L = radiance(scene, ray, this.settings, this.stRng, stats, gbuf)
         const idx = (base + x) * 3
         this.accum[idx] += L.x

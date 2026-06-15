@@ -79,10 +79,12 @@ export function cosineHemisphere(rng: Rng): Vec3 {
   return { x, y, z }
 }
 
-// Concentric mapping of the unit square to the unit disk (Shirley & Chiu).
-export function concentricDisk(rng: Rng): { x: number; y: number } {
-  const ox = 2 * rng.next() - 1
-  const oy = 2 * rng.next() - 1
+// Concentric mapping of a given unit-square point (u0,u1) ∈ [0,1)² to the unit
+// disk (Shirley & Chiu). Split from concentricDisk so a low-discrepancy lens
+// sample can be mapped with the identical area-preserving transform.
+export function concentricDiskFrom(u0: number, u1: number): { x: number; y: number } {
+  const ox = 2 * u0 - 1
+  const oy = 2 * u1 - 1
   if (ox === 0 && oy === 0) return { x: 0, y: 0 }
   let r: number
   let theta: number
@@ -94,6 +96,11 @@ export function concentricDisk(rng: Rng): { x: number; y: number } {
     theta = Math.PI / 2 - (Math.PI / 4) * (ox / oy)
   }
   return { x: r * Math.cos(theta), y: r * Math.sin(theta) }
+}
+
+// Concentric disk from the next two RNG draws.
+export function concentricDisk(rng: Rng): { x: number; y: number } {
+  return concentricDiskFrom(rng.next(), rng.next())
 }
 
 // Uniformly sample a triangle's barycentric coordinates.

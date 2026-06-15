@@ -18,7 +18,7 @@ import type { Primitive, Triangle } from './primitive'
 import { makeSphere, makeTriangle, sampleTriangle, triangleDirPdf } from './primitive'
 import { Bvh } from './bvh'
 import type { Rng } from './rng'
-import type { SceneDef, EnvDef } from './types'
+import type { SceneDef, EnvDef, MediumDef } from './types'
 import { makeSky, skyRadiance } from './sky'
 import type { SkyState } from './sky'
 
@@ -40,6 +40,32 @@ export interface LightSampleResult {
   primId: number
 }
 
+// A volumetric scattering event the integrator should service: a free-flight
+// collision at distance `t` along the current ray, inside medium `medium`.
+export interface MediumScatter {
+  t: number
+  medium: MediumDef
+}
+
+// Ray ∩ sphere, returning the (possibly negative) near/far parameters, or null
+// when the ray misses. Used to clip a medium's homogeneous region onto a ray.
+function sphereInterval(
+  o: Vec3,
+  d: Vec3,
+  center: Vec3,
+  radius: number,
+): { t0: number; t1: number } | null {
+  const ox = o.x - center.x
+  const oy = o.y - center.y
+  const oz = o.z - center.z
+  const b = ox * d.x + oy * d.y + oz * d.z
+  const c = ox * ox + oy * oy + oz * oz - radius * radius
+  const disc = b * b - c // d is unit, so a = 1
+  if (disc < 0) return null
+  const s = Math.sqrt(disc)
+  return { t0: -b - s, t1: -b + s }
+}
+
 export class Scene {
   readonly materials: Material[]
   readonly prims: Primitive[]
@@ -51,6 +77,8 @@ export class Scene {
   readonly sky: SkyState | null
   readonly envSun: EnvSun | null
   readonly hasEnvLight: boolean
+  readonly media: MediumDef[]
+  readonly hasMedia: boolean
 
   constructor(def: SceneDef) {
     const t0 = now()
@@ -73,6 +101,8 @@ export class Scene {
     this.sky = def.env.kind === 'sky' ? makeSky(def.env) : null
     this.envSun = deriveEnvSun(def.env)
     this.hasEnvLight = this.envSun !== null
+    this.media = (def.media ?? []).filter((m) => m.sigmaT > 0 && m.radius > 0)
+    this.hasMedia = this.media.length > 0
     this.buildMs = now() - t0
   }
 
@@ -212,6 +242,47 @@ export class Scene {
     if (!sun) return 0
     if (dot(wi, sun.dir) < sun.cosSize) return 0
     return 1 / sun.solidAngle / this.numLights
+  }
+
+  // ---- Participating media -------------------------------------------------
+
+  // Sample the nearest free-flight collision along ray (o,d) within [0, tMax].
+  // For each bounded medium we clip its sphere onto the ray, then draw a distance
+  // from that segment's transmittance e^(−σ_t·s); a draw landing past the segment
+  // means "no collision in this medium" (the analytic exit weight is 1). The
+  // smallest collision across all (disjoint) media is the event; null ⇒ the ray
+  // travels unobstructed to the surface/environment at tMax.
+  sampleMediumScatter(o: Vec3, d: Vec3, tMax: number, rng: Rng): MediumScatter | null {
+    let best: MediumScatter | null = null
+    let bestT = tMax
+    for (const m of this.media) {
+      const iv = sphereInterval(o, d, m.center, m.radius)
+      if (!iv) continue
+      const t0 = Math.max(iv.t0, 1e-4)
+      const t1 = Math.min(iv.t1, bestT)
+      if (t1 <= t0) continue
+      const t = t0 - Math.log(1 - rng.next()) / m.sigmaT
+      if (t < t1) {
+        best = { t, medium: m }
+        bestT = t
+      }
+    }
+    return best
+  }
+
+  // Scalar transmittance e^(−Σ σ_t·overlap) of a shadow segment of length `dist`
+  // through the media — what attenuates a next-event light through fog/smoke.
+  mediaTransmittance(o: Vec3, d: Vec3, dist: number): number {
+    if (!this.hasMedia) return 1
+    let tau = 0
+    for (const m of this.media) {
+      const iv = sphereInterval(o, d, m.center, m.radius)
+      if (!iv) continue
+      const t0 = Math.max(iv.t0, 0)
+      const t1 = Math.min(iv.t1, dist)
+      if (t1 > t0) tau += m.sigmaT * (t1 - t0)
+    }
+    return tau > 0 ? Math.exp(-tau) : 1
   }
 
   // Construct a primary ray helper (used by the self-test harness).

@@ -21,6 +21,7 @@ import type { Rng } from './rng'
 import type { Texture } from './texture'
 import { evalTexture } from './texture'
 import { cauchyIor } from './spectrum'
+import { thinFilmReflectance } from './thinfilm'
 
 export type Material =
   // `tex`, when present, overrides `albedo` with a procedural pattern evaluated
@@ -32,6 +33,12 @@ export type Material =
   // Beer–Lambert coefficient σ_a (per world unit) applied to interior path
   // segments by the integrator; `cauchyB` (µm²) turns on wavelength dispersion.
   | { kind: 'dielectric'; ior: number; tint: Vec3; roughness?: number; absorption?: Vec3; cauchyB?: number }
+  // A thin-film-coated specular reflector (iridescent). `thickness` (nm) and
+  // `filmIor` set the interference; `baseIor` is the substrate the film coats;
+  // `base`, when present, tints the reflection (e.g. a coloured metal under the
+  // film). Reflectance is spectral, so the integrator commits a hero wavelength
+  // (see isSpectral) and `lambda` is baked in by resolveMaterial before shading.
+  | { kind: 'thinfilm'; thickness: number; filmIor: number; baseIor: number; base?: Vec3; lambda?: number }
   | { kind: 'emissive'; emission: Vec3 }
 
 export interface BsdfSample {
@@ -55,6 +62,8 @@ export function resolveMaterial(m: Material, p: Vec3, lambdaNm: number): Materia
       return m.tex ? { kind: 'metal', albedo: evalTexture(m.tex, p), roughness: m.roughness } : m
     case 'dielectric':
       return m.cauchyB && lambdaNm > 0 ? { ...m, ior: cauchyIor(m.ior, m.cauchyB, lambdaNm) } : m
+    case 'thinfilm':
+      return lambdaNm > 0 ? { ...m, lambda: lambdaNm } : m
     default:
       return m
   }
@@ -63,7 +72,14 @@ export function resolveMaterial(m: Material, p: Vec3, lambdaNm: number): Materia
 const ROUGHNESS_DELTA = 1e-3 // below this a metal is treated as a perfect mirror
 
 export const isDelta = (m: Material): boolean =>
-  m.kind === 'dielectric' || (m.kind === 'metal' && m.roughness < ROUGHNESS_DELTA)
+  m.kind === 'dielectric' ||
+  m.kind === 'thinfilm' ||
+  (m.kind === 'metal' && m.roughness < ROUGHNESS_DELTA)
+
+// True for materials whose response varies with wavelength, so the integrator
+// must commit a hero wavelength before shading them (dispersive glass; a film).
+export const isSpectral = (m: Material): boolean =>
+  m.kind === 'thinfilm' || (m.kind === 'dielectric' && m.cauchyB !== undefined && m.cauchyB > 0)
 
 // ---------------------------------------------------------------------------
 // Fresnel
@@ -175,6 +191,20 @@ export function sampleBSDF(
   switch (m.kind) {
     case 'emissive':
       return null
+    case 'thinfilm': {
+      // A delta-specular mirror whose reflectance is the wavelength-dependent
+      // Airy reflectance of the film. The path has already committed a hero
+      // wavelength (β scaled by its RGB weight), so a scalar reflectance here
+      // reconstructs the iridescent colour over many samples.
+      const { t, b } = onb(n)
+      const wo = worldToLocal(woW, t, b, n)
+      if (wo.z <= 0) return null
+      const lam = m.lambda && m.lambda > 0 ? m.lambda : 550
+      const R = thinFilmReflectance(wo.z, lam, m.thickness, m.filmIor, m.baseIor)
+      const wi = v(-wo.x, -wo.y, wo.z)
+      const tint = m.base ?? v(1, 1, 1)
+      return { wi: toWorld(wi, t, b, n), weight: scale(tint, R), pdf: 1, specular: true }
+    }
     case 'diffuse': {
       const { t, b } = onb(n)
       // Cosine-weighted hemisphere: pdf = cosθ/π, so weight = albedo (f·cos/pdf).

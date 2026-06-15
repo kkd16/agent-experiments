@@ -45,6 +45,7 @@ const DEFAULTS: ControlState = {
   sunAzimuth: 135,
   sunElevation: 24,
   turbidity: 2.6,
+  fogDensity: 1,
   objText: '',
 }
 
@@ -74,6 +75,10 @@ function buildScene(ctrl: ControlState, orbit: Orbit): SceneDef {
       sunDir: sunFromAzEl(ctrl.sunAzimuth, ctrl.sunElevation),
       turbidity: ctrl.turbidity,
     }
+  }
+  // Volumetric scenes: scale the medium extinction by the live fog-density knob.
+  if (preset.fog && def.media && ctrl.fogDensity !== 1) {
+    def.media = def.media.map((m) => ({ ...m, sigmaT: m.sigmaT * ctrl.fogDensity }))
   }
   const eye = orbitEye(orbit.target, orbit.radius, orbit.yaw, orbit.pitch)
   def.camera = {
@@ -158,6 +163,7 @@ export default function App() {
     az: ctrl.sunAzimuth,
     el: ctrl.sunElevation,
     tb: ctrl.turbidity,
+    fog: ctrl.fogDensity,
     obj: ctrl.objText,
     o: orbit,
   })

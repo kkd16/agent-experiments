@@ -32,12 +32,29 @@ export type EnvDef =
       ground?: Vec3
     }
 
+// A bounded homogeneous participating medium: a sphere of fog / smoke / cloud.
+// `sigmaT` is the scalar extinction coefficient (collisions per world unit);
+// `albedo` is the per-channel single-scattering albedo σ_s/σ_t (1 = lossless
+// scattering, 0 = pure absorption), which is also what tints the volume; `g` is
+// the Henyey–Greenstein anisotropy. Media are assumed not to overlap in depth
+// along any ray (each scene places at most one enclosing volume), which keeps
+// the free-flight estimator a simple nearest-collision search.
+export interface MediumDef {
+  center: Vec3
+  radius: number
+  sigmaT: number
+  albedo: Vec3
+  g: number
+}
+
 export interface SceneDef {
   name: string
   materials: Material[]
   prims: PrimDef[]
   camera: CameraDef
   env: EnvDef
+  // Optional volumetric media filling bounded spherical regions of the scene.
+  media?: MediumDef[]
 }
 
 export interface IntegratorSettings {

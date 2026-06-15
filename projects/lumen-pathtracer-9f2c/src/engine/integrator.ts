@@ -34,7 +34,8 @@ import type { Scene } from './scene'
 import type { Rng } from './rng'
 import { powerHeuristic } from './rng'
 import type { Material } from './material'
-import { evalBSDF, isDelta, pdfBSDF, resolveMaterial, sampleBSDF } from './material'
+import { evalBSDF, isDelta, isSpectral, pdfBSDF, resolveMaterial, sampleBSDF } from './material'
+import { hgPhase, sampleHG } from './phase'
 import { LAMBDA_MAX, LAMBDA_MIN, wavelengthWeight } from './spectrum'
 import type { IntegratorSettings } from './types'
 
@@ -64,6 +65,8 @@ function albedoGuide(m: Material): Vec3 {
       return m.albedo
     case 'dielectric':
       return v(0.9, 0.95, 1)
+    case 'thinfilm':
+      return m.base ?? v(0.85, 0.85, 0.95)
     case 'emissive':
       return v(1, 1, 1)
   }
@@ -94,6 +97,54 @@ export function radiance(
   for (let depth = 0; depth <= settings.maxDepth; depth++) {
     stats.rays++
     const hit = scene.intersect(r)
+    const tHit = hit ? hit.t : Infinity
+
+    // ---- Participating media: a free-flight collision before the next surface
+    // makes the path scatter *inside* a volume rather than reach the surface. ----
+    if (scene.hasMedia) {
+      const ms = scene.sampleMediumScatter(r.o, r.d, tHit, rng)
+      if (ms) {
+        const med = ms.medium
+        // β *= single-scattering albedo: the homogeneous distance estimator's
+        // weight at a collision is σ_s/σ_t, which is exactly the albedo.
+        beta = mul(beta, med.albedo)
+        if (isBlack(beta)) break
+        const x = madd(r.o, r.d, ms.t)
+        const wo = neg(r.d)
+
+        // Russian roulette: a volumetric scatter counts as a bounce.
+        if (depth >= settings.rrStart) {
+          const q = clamp(maxComponent(beta), 0.05, 0.95)
+          if (rng.next() >= q) break
+          beta = scale(beta, 1 / q)
+        }
+
+        // ---- In-scattering NEE through the phase function (phase↔light MIS). ----
+        const ls = scene.sampleLight(x, rng)
+        if (ls && ls.pdf > 0 && !isBlack(ls.radiance)) {
+          const phase = hgPhase(dot(wo, ls.wi), med.g)
+          if (phase > 0) {
+            stats.rays++
+            const maxT = ls.dist === Infinity ? Infinity : ls.dist - 1e-3
+            if (!scene.occluded(x, ls.wi, EPS, maxT)) {
+              const tr = scene.mediaTransmittance(x, ls.wi, ls.dist)
+              const w = powerHeuristic(1, ls.pdf, 1, phase)
+              let c = scale(mul(beta, ls.radiance), (phase * tr * w) / ls.pdf)
+              if (clampI > 0) c = clampContribution(c, clampI)
+              L = add(L, c)
+            }
+          }
+        }
+
+        // ---- Phase sampling: a new direction; HG sampling is exact so β *= 1. ----
+        const ph = sampleHG(wo, med.g, rng)
+        specularBounce = false
+        prevPdf = ph.pdf
+        prevPoint = x
+        r = makeRay(x, ph.wi)
+        continue
+      }
+    }
 
     // ---- Escaped the scene: gather the environment (MIS vs. sun NEE). ----
     if (!hit) {
@@ -123,8 +174,9 @@ export function radiance(
     }
 
     const rawMat = scene.materials[hit.material]
-    // ---- Spectral dispersion: commit to one wavelength on first dispersive hit. ----
-    if (rawMat.kind === 'dielectric' && rawMat.cauchyB && lambda === 0) {
+    // ---- Spectral rendering: commit to one hero wavelength on the first
+    // wavelength-dependent interaction (dispersive glass or a thin film). ----
+    if (lambda === 0 && isSpectral(rawMat)) {
       lambda = LAMBDA_MIN + rng.next() * (LAMBDA_MAX - LAMBDA_MIN)
       beta = mul(beta, wavelengthWeight(lambda))
     }
@@ -174,6 +226,8 @@ export function radiance(
             const w = powerHeuristic(1, ls.pdf, 1, bp)
             // β · f · Le · cosθ · w / pdf_light
             let c = mul(mul(beta, f), scale(ls.radiance, (cosX * w) / ls.pdf))
+            // Attenuate the light by any media the shadow ray passes through.
+            if (scene.hasMedia) c = scale(c, scene.mediaTransmittance(shadowO, ls.wi, ls.dist))
             if (clampI > 0) c = clampContribution(c, clampI)
             L = add(L, c)
           }

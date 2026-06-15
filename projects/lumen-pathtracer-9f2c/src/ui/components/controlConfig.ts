@@ -37,6 +37,8 @@ export interface ControlState {
   sunAzimuth: number // degrees
   sunElevation: number // degrees above horizon
   turbidity: number
+  // Volumetric scenes only: a multiplier on the scene's medium extinction.
+  fogDensity: number
   // Custom-OBJ scene only: the pasted model text.
   objText: string
 }

@@ -40,6 +40,29 @@ export function About() {
           the medium a ray is inside and attenuates its throughput by e^(−σ·d), so thicker glass and
           longer chords darken and saturate exactly as real amber, emerald and sapphire do.
         </Card>
+        <Card title="Participating media">
+          Space between surfaces is no longer a vacuum: bounded volumes of fog, smoke and cloud
+          scatter light. The integrator samples a <em>free-flight distance</em> from the medium's
+          transmittance, and a collision before the next surface makes the path scatter <em>inside</em>{' '}
+          the volume — next-event-estimating the lights through the <em>Henyey–Greenstein</em> phase
+          function (with phase↔light MIS and shadow rays attenuated by the haze) before sampling a new
+          direction. That is what makes light shafts and volumetric shadows — "god rays" — emerge
+          physically rather than as a painted-on glow.
+        </Card>
+        <Card title="Thin-film iridescence">
+          The shifting colour of a soap bubble or an oil slick is <em>wave optics</em>, not pigment:
+          two reflections off a film only nanometres thick interfere, and their path difference makes
+          the reflectance a function of wavelength. We evaluate the exact two-interface <em>Airy
+          reflectance</em> per polarisation at the path's hero wavelength, so the same spectral
+          machinery that fans a prism into a rainbow fans a flat coating into iridescence.
+        </Card>
+        <Card title="Low-discrepancy sampling">
+          The camera's sub-pixel jitter and depth-of-field lens are drawn from a <em>scrambled Halton</em>{' '}
+          sequence with a per-pixel Cranley–Patterson rotation, not white noise. Low-discrepancy points
+          blanket the pixel footprint far more evenly, so anti-aliasing and bokeh converge noticeably
+          faster for the same sample count — while every deeper bounce keeps its own decorrelated
+          pseudo-random stream so global illumination stays unbiased.
+        </Card>
         <Card title="Triangle meshes & smooth shading">
           Geometry is no longer just spheres: an indexed mesh library builds icospheres, lathed
           surfaces of revolution and tori, and any pasted <em>Wavefront OBJ</em>. Each triangle
