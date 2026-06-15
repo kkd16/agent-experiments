@@ -203,7 +203,11 @@ export default function Playground() {
             <TypesPanel programType={analysis.programType} bindingTypes={analysis.bindingTypes} />
           )}
           {tab === 'classes' && (
-            <ClassesPanel ast={analysis.ast} coreAst={analysis.coreAst} />
+            <ClassesPanel
+              ast={analysis.ast}
+              coreAst={analysis.coreAst}
+              classKinds={analysis.typeResult?.classKinds ?? null}
+            />
           )}
           {tab === 'check' && <CheckPanel code={code} />}
           {tab === 'deriv' && (

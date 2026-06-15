@@ -23,6 +23,8 @@ import {
   prune,
   rowExtend,
   rowLabelOf,
+  spineOf,
+  tapp,
   tArrow,
   tBool,
   tcon,
@@ -34,9 +36,22 @@ import {
   tString,
   tTuple,
   tUnit,
+  typeToString,
 } from './types.ts'
 import type { ClassTables, Evidence } from './classes.ts'
-import { EvCell, dictParamName, emptyTables } from './classes.ts'
+import { EvCell, dictParamName, emptyTables, superFieldName } from './classes.ts'
+import type { Kind } from './kinds.ts'
+import {
+  KindError,
+  defaultKind,
+  freshKVar,
+  kArrow,
+  kArrowN,
+  kStar,
+  kindToString,
+  resetKindCounter,
+  unifyKind,
+} from './kinds.ts'
 
 export class TypeCheckError extends Error {
   span: Span | null
@@ -78,6 +93,8 @@ export interface InferResult {
   ctorInfo: Map<string, { arity: number; scheme: Scheme }>
   /** every user-declared type → its parameters + constructor argument shapes */
   typeCtors: Map<string, TypeCtorInfo>
+  /** every declared class → its inferred parameter kind (`Monad` → `* -> *`) */
+  classKinds: Map<string, Kind>
 }
 
 // --- type classes ----------------------------------------------------------
@@ -85,6 +102,8 @@ export interface InferResult {
 interface ClassDef {
   name: string
   param: string
+  /** direct superclasses, each constraining the same parameter */
+  supers: string[]
   methods: Map<string, { type: TypeExpr; span: Span; default?: Expr }>
 }
 
@@ -113,6 +132,11 @@ class Inferrer {
   typeCtors = new Map<string, TypeCtorInfo>()
   warnings: InferWarning[] = []
 
+  // kind environment: the kind of every type constructor in scope, and the
+  // inferred kind of each class's parameter (drives higher-kinded checking)
+  conKinds = builtinConKinds()
+  classParamKind = new Map<string, Kind>()
+
   // type-class state
   classes = new Map<string, ClassDef>()
   methodToClass = new Map<string, string>()
@@ -126,6 +150,7 @@ class Inferrer {
   occurs(v: TVar, t: Type): boolean {
     const p = prune(t)
     if (p.kind === 'var') return p.id === v.id
+    if (p.kind === 'app') return this.occurs(v, p.fn) || this.occurs(v, p.arg)
     return p.args.some((a) => this.occurs(v, a))
   }
 
@@ -142,6 +167,23 @@ class Inferrer {
     }
     if (pb.kind === 'var') {
       this.unify(pb, pa, span)
+      return
+    }
+    // type applications: `m a` vs `Option a`, `f a` vs `g b`, etc. A constructor
+    // of arity ≥ 1 decomposes into an application spine so the two
+    // representations unify uniformly (and a higher-kinded variable binds to a
+    // partially-applied constructor, e.g. `m := Option`).
+    if (pa.kind === 'app' || pb.kind === 'app') {
+      const da = decompApp(pa)
+      const db = decompApp(pb)
+      if (!da || !db) {
+        throw new TypeCheckError(
+          `type mismatch: cannot unify ${describe(pa)} with ${describe(pb)}`,
+          span,
+        )
+      }
+      this.unify(da.fn, db.fn, span)
+      this.unify(da.arg, db.arg, span)
       return
     }
     // records & rows unify structurally regardless of field order
@@ -366,6 +408,22 @@ class Inferrer {
         this.typeCtors.set(e.name, {
           params: e.params,
           ctors: e.ctors.map((c) => ({ name: c.name, argTypeExprs: c.args })),
+        })
+        // kind-infer the type's parameters from its constructor arguments. The
+        // constructor's own kind is registered first so recursive references
+        // (`type Tree a = Leaf | Node (Tree a) (Tree a)`) resolve consistently.
+        this.kindCheck(() => {
+          const varKinds = new Map<string, Kind>()
+          for (const p of e.params) varKinds.set(p, freshKVar())
+          const selfKind = kArrowN(
+            e.params.map((p) => varKinds.get(p) as Kind),
+            kStar,
+          )
+          this.conKinds.set(e.name, selfKind)
+          for (const ctor of e.ctors) {
+            for (const a of ctor.args) unifyKind(this.kindOf(a, varKinds), kStar, a.span)
+          }
+          this.conKinds.set(e.name, defaultKind(selfKind))
         })
         const params = new Map<string, Type>()
         for (const p of e.params) params.set(p, freshVar())
@@ -605,26 +663,92 @@ class Inferrer {
     const G = new Set(base.vars)
     const preds: Pred[] = []
     const params: { name: string; cls: string; varId: number }[] = []
-    const seen = new Set<string>()
     const remaining: Wanted[] = []
+    // group the generalised, variable-headed constraints by variable, keeping
+    // every evidence cell that asked for each class on that variable
+    const byVar = new Map<number, Map<string, EvCell[]>>()
     for (const w of this.wanted) {
       const pt = prune(w.type)
       if (pt.kind === 'var' && G.has(pt.id)) {
-        const name = dictParamName(w.cls, pt.id)
-        w.cell.ev = { kind: 'param', name }
-        const key = w.cls + '|' + pt.id
-        if (!seen.has(key)) {
-          seen.add(key)
-          preds.push({ cls: w.cls, type: pt })
-          params.push({ name, cls: w.cls, varId: pt.id })
+        let m = byVar.get(pt.id)
+        if (!m) {
+          m = new Map()
+          byVar.set(pt.id, m)
         }
+        const cells = m.get(w.cls) ?? []
+        cells.push(w.cell)
+        m.set(w.cls, cells)
       } else {
         remaining.push(w)
       }
     }
     this.wanted = remaining
+    // For each variable, keep only the *root* classes as dictionary parameters
+    // (those not implied as a superclass of another wanted class). Each entailed
+    // class is discharged by projecting through a root's superclass fields — so
+    // `(Functor m, Monad m) => …` simplifies to `Monad m => …`.
+    for (const [varId, classes] of byVar) {
+      const present = [...classes.keys()]
+      const roots = present.filter(
+        (c) => !present.some((d) => d !== c && this.superClosure(d).has(c)),
+      )
+      const rootSet = new Set(roots)
+      for (const cls of present) {
+        const cells = classes.get(cls) as EvCell[]
+        if (rootSet.has(cls)) {
+          const name = dictParamName(cls, varId)
+          for (const c of cells) c.ev = { kind: 'param', name }
+          preds.push({ cls, type: { kind: 'var', id: varId, ref: null } })
+          params.push({ name, cls, varId })
+        } else {
+          const root = roots.find((r) => this.superClosure(r).has(cls)) as string
+          const path = this.superPath(root, cls) as string[]
+          const ev = this.projectSuper(dictParamName(root, varId), path)
+          for (const c of cells) c.ev = ev
+        }
+      }
+    }
     const scheme: Scheme = preds.length ? { vars: base.vars, type: base.type, preds } : base
     return { scheme, params }
+  }
+
+  /** All transitive superclasses of `cls` (excluding `cls` itself). */
+  private superClosure(cls: string): Set<string> {
+    const out = new Set<string>()
+    const stack = [...(this.classes.get(cls)?.supers ?? [])]
+    while (stack.length > 0) {
+      const s = stack.pop() as string
+      if (out.has(s)) continue
+      out.add(s)
+      for (const ss of this.classes.get(s)?.supers ?? []) stack.push(ss)
+    }
+    return out
+  }
+
+  /** The nearest-first chain of direct-superclass steps from `from` to the
+   * (transitive) superclass `to`, or null if `to` is not a superclass. */
+  private superPath(from: string, to: string): string[] | null {
+    const queue: { cls: string; path: string[] }[] = [{ cls: from, path: [] }]
+    const seen = new Set<string>([from])
+    while (queue.length > 0) {
+      const { cls, path } = queue.shift() as { cls: string; path: string[] }
+      for (const s of this.classes.get(cls)?.supers ?? []) {
+        const np = [...path, s]
+        if (s === to) return np
+        if (!seen.has(s)) {
+          seen.add(s)
+          queue.push({ cls: s, path: np })
+        }
+      }
+    }
+    return null
+  }
+
+  /** Evidence that projects a superclass dictionary out of a root dict param. */
+  private projectSuper(rootParam: string, path: string[]): Evidence {
+    let ev: Evidence = { kind: 'param', name: rootParam }
+    for (const s of path) ev = { kind: 'super', field: superFieldName(s), base: ev }
+    return ev
   }
 
   /** Record the dictionary parameters a binding abstracts, and feed the same
@@ -654,7 +778,9 @@ class Inferrer {
     this.wanted = []
     for (const w of input) {
       const pt = prune(w.type)
-      if (pt.kind === 'con') {
+      // resolve once the constraint's head is a concrete constructor (looking
+      // through applications); a still-variable head defers to a dict param
+      if (spineOf(pt).head.kind === 'con') {
         w.cell.ev = this.evidenceFor(w.cls, pt, span)
       } else {
         this.wanted.push(w)
@@ -666,21 +792,27 @@ class Inferrer {
    * dictionary, or a dictionary parameter when the head is still a variable. */
   private evidenceFor(cls: string, type: Type, span: Span | null): Evidence {
     const t = prune(type)
-    if (t.kind === 'var') {
-      const name = dictParamName(cls, t.id)
+    // The head of the constraint's type drives instance selection. `spineOf`
+    // sees through both `TApp` chains and `TCon` arguments, so `Option`,
+    // `Option a` and `m a` all reduce to a head + applied-argument list.
+    const sp = spineOf(t)
+    if (sp.head.kind === 'var') {
+      const name = dictParamName(cls, sp.head.id)
       const cell = new EvCell()
       cell.ev = { kind: 'param', name }
       // register so an enclosing generalisation/instance abstracts this param
-      this.wanted.push({ cls, type: t, cell })
+      this.wanted.push({ cls, type: sp.head, cell })
       return { kind: 'param', name }
     }
+    const headCon = sp.head.name
+    const headArity = sp.args.length
     const insts = this.instances.get(cls)
     if (!insts) throw new TypeCheckError(`no instance of class '${cls}' is in scope`, span)
-    const inst = insts.find((i) => i.headCon === t.name && i.headArity === t.args.length)
+    const inst = insts.find((i) => i.headCon === headCon && i.headArity === headArity)
     if (!inst) {
       throw new TypeCheckError(`no instance for ${predToString({ cls, type: t })}`, span)
     }
-    const args = inst.context.map((ce) => this.evidenceFor(ce.cls, t.args[ce.argIndex], span))
+    const args = inst.context.map((ce) => this.evidenceFor(ce.cls, sp.args[ce.argIndex], span))
     return { kind: 'instance', dictName: inst.dictName, args }
   }
 
@@ -700,7 +832,33 @@ class Inferrer {
       methods.set(m.name, { type: m.type, span: m.span, default: m.default })
       this.methodToClass.set(m.name, e.name)
     }
-    this.classes.set(e.name, { name: e.name, param: e.param, methods })
+    // validate the superclasses: each must already be a class, and (sharing the
+    // class parameter) must agree on its kind.
+    for (const s of e.supers) {
+      if (s === e.name) throw new TypeCheckError(`class ${e.name} cannot be its own superclass`, e.span)
+      if (!this.classes.has(s)) {
+        throw new TypeCheckError(`unknown superclass '${s}' of class ${e.name}`, e.span)
+      }
+    }
+    // Infer the class parameter's kind from how the methods use it: a class
+    // whose methods apply the parameter (`m a`) is higher-kinded (`m : * -> *`),
+    // one that uses it bare (`a -> String`) takes a proper type (`a : *`).
+    const paramKind = this.kindCheck(() => {
+      const pk = freshKVar()
+      for (const m of e.methods) {
+        const varKinds = new Map<string, Kind>([[e.param, pk]])
+        unifyKind(this.kindOf(m.type, varKinds), kStar, m.span)
+      }
+      // a superclass constrains the same parameter, so their kinds must match
+      for (const s of e.supers) {
+        const sk = this.classParamKind.get(s)
+        if (sk) unifyKind(pk, sk, e.span)
+      }
+      return defaultKind(pk)
+    })
+    this.classParamKind.set(e.name, paramKind)
+
+    this.classes.set(e.name, { name: e.name, param: e.param, supers: e.supers, methods })
     if (!this.instances.has(e.name)) this.instances.set(e.name, [])
     this.tables.used = true
     let env2 = env
@@ -713,6 +871,24 @@ class Inferrer {
   private inferInstance(env: Env, e: Extract<Expr, { kind: 'instancedecl' }>): Type {
     const cls = this.classes.get(e.cls)
     if (!cls) throw new TypeCheckError(`unknown class '${e.cls}' in instance`, e.span)
+
+    // the instance head must have the class parameter's kind: `Monad Option` is
+    // fine (`Option : * -> *`), `Monad Int` is a kind error (`Int : *`).
+    const classKind = this.classParamKind.get(e.cls)
+    if (classKind) {
+      this.kindCheck(() => {
+        const headKind = this.kindOf(e.head, new Map<string, Kind>())
+        try {
+          unifyKind(headKind, classKind, e.head.span)
+        } catch {
+          throw new KindError(
+            `instance ${e.cls} ${typeExprHead(e.head)}: the class parameter has kind ` +
+              `${kindToString(classKind)} but ${typeExprHead(e.head)} has kind ${kindToString(headKind)}`,
+            e.head.span,
+          )
+        }
+      })
+    }
 
     // build the head type, recording which variable sits at each argument
     const headMap = new Map<string, Type>()
@@ -797,6 +973,13 @@ class Inferrer {
       finalMethods.push({ name: mname, value })
     }
 
+    // resolve the superclass dictionaries this instance must embed: declaring
+    // `instance Monad Option` requires (and references) `instance Functor Option`.
+    const superFields = cls.supers.map((s) => ({
+      field: superFieldName(s),
+      ev: this.evidenceFor(s, headType, e.span),
+    }))
+
     // discharge the method bodies' constraints. Ground ones resolve to other
     // instances; constraints over a head variable must be covered by the
     // written context (and resolve to its dictionary parameter).
@@ -824,6 +1007,7 @@ class Inferrer {
       dictName,
       paramNames: context.map((c) => c.name),
       methods: finalMethods,
+      supers: superFields,
     })
     this.tables.used = true
     return this.infer(env, e.body)
@@ -868,6 +1052,8 @@ class Inferrer {
         return tArrow(this.convertFresh(te.from, map), this.convertFresh(te.to, map))
       case 'ttuple':
         return tTuple(te.elements.map((x) => this.convertFresh(x, map)))
+      case 'tapp':
+        return tapp(this.convertFresh(te.fn, map), this.convertFresh(te.arg, map))
       case 'tcon': {
         const args = te.args.map((x) => this.convertFresh(x, map))
         switch (te.name) {
@@ -882,11 +1068,73 @@ class Inferrer {
           case 'Unit':
             return tUnit
           case 'List':
-            return tList(args[0] ?? freshVar())
+            // respect the written arity: `List a` is a list type, bare `List`
+            // is the unsaturated constructor (kind * -> *) for HKT instances
+            return args.length === 1 ? tList(args[0]) : tcon('List', args)
           default:
             return tcon(te.name, args)
         }
       }
+    }
+  }
+
+  // --- kinds ---------------------------------------------------------------
+
+  /** Infer the kind of a syntactic type expression, unifying as it goes. Kind
+   * variables for the expression's type variables are shared through `varKinds`
+   * (so the same `a` has one kind throughout a signature). */
+  private kindOf(te: TypeExpr, varKinds: Map<string, Kind>): Kind {
+    switch (te.kind) {
+      case 'tvar': {
+        let k = varKinds.get(te.name)
+        if (!k) {
+          k = freshKVar()
+          varKinds.set(te.name, k)
+        }
+        return k
+      }
+      case 'tarrow':
+        unifyKind(this.kindOf(te.from, varKinds), kStar, te.from.span)
+        unifyKind(this.kindOf(te.to, varKinds), kStar, te.to.span)
+        return kStar
+      case 'ttuple':
+        for (const el of te.elements) unifyKind(this.kindOf(el, varKinds), kStar, el.span)
+        return kStar
+      case 'tapp': {
+        const argK = this.kindOf(te.arg, varKinds)
+        const resK = freshKVar()
+        unifyKind(this.kindOf(te.fn, varKinds), kArrow(argK, resK), te.span)
+        return resK
+      }
+      case 'tcon': {
+        const conK = this.conKindFor(te.name)
+        const argKs = te.args.map((a) => this.kindOf(a, varKinds))
+        const resK = freshKVar()
+        unifyKind(conK, kArrowN(argKs, resK), te.span)
+        return resK
+      }
+    }
+  }
+
+  /** The kind of a type constructor; unknown names get an inferred (fresh) kind
+   * so the kind checker never rejects a program the type checker would accept. */
+  private conKindFor(name: string): Kind {
+    let k = this.conKinds.get(name)
+    if (!k) {
+      k = freshKVar()
+      this.conKinds.set(name, k)
+    }
+    return k
+  }
+
+  /** Kind-check a declaration, turning a `KindError` into a located
+   * `TypeCheckError` so it surfaces like any other type error. */
+  private kindCheck<T>(thunk: () => T): T {
+    try {
+      return thunk()
+    } catch (e) {
+      if (e instanceof KindError) throw new TypeCheckError(e.message, e.span)
+      throw e
     }
   }
 
@@ -903,6 +1151,34 @@ class Inferrer {
       )
     }
   }
+}
+
+/** The head name of a syntactic type expression (for kind-error messages). */
+function typeExprHead(te: TypeExpr): string {
+  switch (te.kind) {
+    case 'tvar':
+      return te.name
+    case 'tcon':
+      return te.name
+    case 'tapp':
+      return typeExprHead(te.fn)
+    case 'tarrow':
+      return '->'
+    case 'ttuple':
+      return 'tuple'
+  }
+}
+
+/** The kinds of the built-in type constructors. */
+function builtinConKinds(): Map<string, Kind> {
+  return new Map<string, Kind>([
+    ['Int', kStar],
+    ['Float', kStar],
+    ['Bool', kStar],
+    ['String', kStar],
+    ['Unit', kStar],
+    ['List', kArrow(kStar, kStar)],
+  ])
 }
 
 /** A filesystem-safe tag for an instance dictionary's head constructor. */
@@ -925,6 +1201,8 @@ function convertTypeExpr(te: TypeExpr, params: Map<string, Type>): Type {
       return tArrow(convertTypeExpr(te.from, params), convertTypeExpr(te.to, params))
     case 'ttuple':
       return tTuple(te.elements.map((x) => convertTypeExpr(x, params)))
+    case 'tapp':
+      return tapp(convertTypeExpr(te.fn, params), convertTypeExpr(te.arg, params))
     case 'tcon': {
       const args = te.args.map((x) => convertTypeExpr(x, params))
       switch (te.name) {
@@ -939,7 +1217,7 @@ function convertTypeExpr(te: TypeExpr, params: Map<string, Type>): Type {
         case 'Unit':
           return tUnit
         case 'List':
-          return tList(args[0] ?? freshVar())
+          return args.length === 1 ? tList(args[0]) : tcon('List', args)
         default:
           return tcon(te.name, args)
       }
@@ -953,16 +1231,32 @@ function subst(t: Type, mapping: Map<number, Type>): Type {
     const replacement = mapping.get(p.id)
     return replacement ?? p
   }
+  if (p.kind === 'app') {
+    return { kind: 'app', fn: subst(p.fn, mapping), arg: subst(p.arg, mapping) }
+  }
   return { kind: 'con', name: p.name, args: p.args.map((a) => subst(a, mapping)) }
+}
+
+/** Split a type into `fn`/`arg` if it is an application (a `TApp`, or a `TCon`
+ * of arity ≥ 1 viewed through its spine). Returns null otherwise. */
+function decompApp(t: Type): { fn: Type; arg: Type } | null {
+  const p = prune(t)
+  if (p.kind === 'app') return { fn: p.fn, arg: p.arg }
+  if (p.kind === 'con' && p.args.length > 0) {
+    return { fn: tcon(p.name, p.args.slice(0, -1)), arg: p.args[p.args.length - 1] }
+  }
+  return null
 }
 
 function describe(t: Type): string {
   if (t.kind === 'var') return 'a type variable'
+  if (t.kind === 'app') return typeToString(t)
   if (t.args.length === 0) return t.name
   return t.name
 }
 
 export function inferProgram(program: Expr, base: Env): InferResult {
+  resetKindCounter()
   const inf = new Inferrer()
   const type = inf.infer(base, program)
   inf.finish()
@@ -974,6 +1268,7 @@ export function inferProgram(program: Expr, base: Env): InferResult {
     classTables: inf.tables,
     ctorInfo: inf.ctorInfo,
     typeCtors: inf.typeCtors,
+    classKinds: inf.classParamKind,
   }
 }
 

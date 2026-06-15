@@ -1,5 +1,7 @@
 import { useMemo } from 'react'
 import type { Expr } from '../../lang/ast.ts'
+import type { Kind } from '../../lang/kinds.ts'
+import { kindToString } from '../../lang/kinds.ts'
 import { typeExprToString, unparse } from '../../lang/unparse.ts'
 
 interface Props {
@@ -7,11 +9,15 @@ interface Props {
   ast: Expr | null
   /** the elaborated, dictionary-passed core AST */
   coreAst: Expr | null
+  /** each class's inferred parameter kind (`Monad` → `* -> *`) */
+  classKinds: Map<string, Kind> | null
 }
 
 interface ClassRow {
   name: string
   param: string
+  kind: string
+  supers: string[]
   methods: { name: string; sig: string; hasDefault: boolean }[]
 }
 
@@ -23,15 +29,21 @@ interface InstanceRow {
 }
 
 // Walk the declaration spine of a program collecting class & instance decls.
-function collect(ast: Expr | null): { classes: ClassRow[]; instances: InstanceRow[] } {
+function collect(
+  ast: Expr | null,
+  classKinds: Map<string, Kind> | null,
+): { classes: ClassRow[]; instances: InstanceRow[] } {
   const classes: ClassRow[] = []
   const instances: InstanceRow[] = []
   let node = ast
   while (node) {
     if (node.kind === 'classdecl') {
+      const k = classKinds?.get(node.name)
       classes.push({
         name: node.name,
         param: node.param,
+        kind: k ? kindToString(k) : '*',
+        supers: node.supers,
         methods: node.methods.map((m) => ({
           name: m.name,
           sig: typeExprToString(m.type),
@@ -58,8 +70,8 @@ function collect(ast: Expr | null): { classes: ClassRow[]; instances: InstanceRo
   return { classes, instances }
 }
 
-export default function ClassesPanel({ ast, coreAst }: Props) {
-  const { classes, instances } = useMemo(() => collect(ast), [ast])
+export default function ClassesPanel({ ast, coreAst, classKinds }: Props) {
+  const { classes, instances } = useMemo(() => collect(ast, classKinds), [ast, classKinds])
   const core = useMemo(() => (coreAst ? unparse(coreAst) : null), [coreAst])
 
   if (!ast) return <div className="panel-empty">No classes — fix the error first.</div>
@@ -83,7 +95,10 @@ export default function ClassesPanel({ ast, coreAst }: Props) {
         Type classes give <strong>principled overloading</strong>. Aether infers a qualified type
         like <code>∀a. Disp a =&gt; a -&gt; String</code>, resolves each constraint to an instance,
         and elaborates to <strong>dictionary passing</strong>: instances become records, constrained
-        functions take dictionary arguments, and method calls become field accesses.
+        functions take dictionary arguments, and method calls become field accesses. Classes are{' '}
+        <strong>higher-kinded</strong> (each parameter's inferred <em>kind</em> is shown, e.g.{' '}
+        <code>Monad</code>'s is <code>* -&gt; *</code>) and may have <strong>superclasses</strong>{' '}
+        (whose dictionaries are embedded as <code>$super_</code> fields).
       </p>
 
       {classes.length > 0 && (
@@ -92,7 +107,12 @@ export default function ClassesPanel({ ast, coreAst }: Props) {
           {classes.map((c) => (
             <div className="cls-card" key={c.name}>
               <div className="cls-title">
-                <span className="cls-kw">class</span> {c.name} {c.param}
+                <span className="cls-kw">class</span>{' '}
+                {c.supers.length > 0 && (
+                  <span className="inst-ctx">{c.supers.map((s) => `${s} ${c.param}`).join(', ')} ⇒ </span>
+                )}
+                {c.name} {c.param}
+                <span className="cls-default"> · {c.param} : {c.kind}</span>
               </div>
               <table className="cls-methods">
                 <tbody>

@@ -588,6 +588,141 @@ let toInt = fn n -> n (fn x -> x + 1) 0 in
 
 (toInt two, toInt three, toInt five)`,
   },
+  {
+    id: 'monad-hierarchy',
+    title: 'Functor → Applicative → Monad',
+    blurb: 'A higher-kinded class hierarchy: one mapM, every monad — Option and List.',
+    visual: false,
+    code: `// Higher-kinded type classes. \`Monad m\` abstracts over a type
+// CONSTRUCTOR m (kind * -> *), so a single generic combinator runs in
+// every monad. Open the Classes tab to see each class's inferred kind
+// and the superclass dictionaries; the Types tab shows mapM's scheme.
+type Option a = None | Some a in
+
+class Functor f where
+  fmap : (a -> b) -> f a -> f b in
+class Functor f => Applicative f where
+  pure : a -> f a,
+  ap   : f (a -> b) -> f a -> f b in
+class Applicative m => Monad m where
+  bind : m a -> (a -> m b) -> m b in
+
+instance Functor Option where
+  fmap = fn g x -> match x with None -> None | Some v -> Some (g v) in
+instance Applicative Option where
+  pure = fn x -> Some x,
+  ap   = fn mf mx -> match mf with None -> None | Some f -> fmap f mx in
+instance Monad Option where
+  bind = fn m k -> match m with None -> None | Some x -> k x in
+
+instance Functor List where
+  fmap = fn g xs -> map g xs in
+instance Applicative List where
+  pure = fn x -> [x],
+  ap   = fn fs xs -> concat (map (fn f -> map f xs) fs) in
+instance Monad List where
+  bind = fn m k -> concat (map k m) in
+
+// Defined ONCE, constrained only by Monad — runs in any monad.
+// do-notation desugars to the overloaded \`bind\`, resolved by type.
+let rec mapM = fn f xs ->
+  if empty xs then pure []
+  else do {
+    y  <- f (head xs) ;
+    ys <- mapM f (tail xs) ;
+    pure (y :: ys)
+  } in
+
+let safe = fn x -> if x > 0 then Some x else None in
+
+( mapM safe [1, 2, 3]                 // Some [1, 2, 3]
+, mapM safe [1, 0, 3]                 // None — one failure aborts
+, mapM (fn x -> [x, x * 10]) [1, 2] ) // List monad: every combination`,
+  },
+  {
+    id: 'state-monad',
+    title: 'The State monad',
+    blurb: 'Monad (State s): a partially-applied constructor as a monad, threaded by do.',
+    visual: false,
+    code: `// A two-parameter type used as a one-parameter monad: the instance head
+// is the PARTIALLY-APPLIED constructor \`State s\` (kind * -> *). do-notation
+// threads the hidden state for you — no mutation anywhere.
+type State s a = State (s -> (a, s)) in
+let runState = fn st s -> match st with State f -> f s in
+
+class Functor f where fmap : (a -> b) -> f a -> f b in
+class Functor f => Applicative f where
+  pure : a -> f a,
+  ap   : f (a -> b) -> f a -> f b in
+class Applicative m => Monad m where
+  bind : m a -> (a -> m b) -> m b in
+
+instance Functor (State s) where
+  fmap = fn g st -> State (fn s0 -> match runState st s0 with (a, s1) -> (g a, s1)) in
+instance Applicative (State s) where
+  pure = fn x -> State (fn s0 -> (x, s0)),
+  ap = fn stf stx -> State (fn s0 ->
+    match runState stf s0 with (f, s1) ->
+    match runState stx s1 with (x, s2) -> (f x, s2)) in
+instance Monad (State s) where
+  bind = fn m k -> State (fn s0 -> match runState m s0 with (a, s1) -> runState (k a) s1) in
+
+// tick: read the counter and increment it
+let tick = State (fn n -> (n, n + 1)) in
+
+// number a list with an increasing index, all in the State monad
+let rec number = fn xs ->
+  if empty xs then pure []
+  else do {
+    i    <- tick ;
+    rest <- number (tail xs) ;
+    pure ((i, head xs) :: rest)
+  } in
+
+runState (number [10, 20, 30]) 0   // ([(0,10), (1,20), (2,30)], 3)`,
+  },
+  {
+    id: 'result-monad',
+    title: 'Typed errors — the Result monad',
+    blurb: 'Result e a as a monad; Kleisli >=> and a polymorphic traverse short-circuit on Err.',
+    visual: false,
+    code: `// Error handling without exceptions: a two-parameter type \`Result e a\`
+// used as the monad \`Result e\`. bind threads the Ok value and
+// short-circuits on the first Err — and traverse inherits that for free.
+type Result e a = Err e | Ok a in
+
+class Functor f where fmap : (a -> b) -> f a -> f b in
+class Functor f => Applicative f where
+  pure : a -> f a,
+  ap   : f (a -> b) -> f a -> f b in
+class Applicative m => Monad m where
+  bind : m a -> (a -> m b) -> m b in
+
+instance Functor (Result e) where
+  fmap = fn g r -> match r with Err x -> Err x | Ok v -> Ok (g v) in
+instance Applicative (Result e) where
+  pure = fn x -> Ok x,
+  ap = fn rf rx -> match rf with Err x -> Err x | Ok f -> fmap f rx in
+instance Monad (Result e) where
+  bind = fn r k -> match r with Err x -> Err x | Ok v -> k v in
+
+// Kleisli composition (f >=> g): chain two error-producing steps
+let kleisli = fn f g -> fn x -> bind (f x) g in
+
+let checkPos = fn x -> if x > 0 then Ok x else Err "not positive" in
+let half     = fn x -> if x % 2 == 0 then Ok (x / 2) else Err "odd number" in
+let step     = kleisli checkPos half in
+
+// traverse a list, short-circuiting on the first Err — defined generically
+let rec traverse = fn f xs ->
+  if empty xs then pure []
+  else do { y <- f (head xs) ; ys <- traverse f (tail xs) ; pure (y :: ys) } in
+
+( step 8                       // Ok 4
+, step 7                       // Err "odd number"
+, traverse checkPos [1, 2, 3]  // Ok [1, 2, 3]
+, traverse checkPos [1, 0, 3]) // Err "not positive" (aborts on 0)`,
+  },
 ]
 
 export const DEFAULT_CODE = EXAMPLES[0].code

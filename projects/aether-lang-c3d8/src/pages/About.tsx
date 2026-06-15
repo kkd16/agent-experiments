@@ -17,7 +17,12 @@ const STAGES = [
   {
     n: 3.3,
     title: 'Type-class elaboration',
-    body: "Type classes are compiled by a type-directed translation into the ordinary core language. Inference resolves every class constraint to evidence — a concrete instance dictionary (applied to whatever its context needs) or a dictionary parameter passed down — and an elaboration pass rewrites the program: an instance becomes a record of methods, a constrained binding gains leading dictionary parameters, a method call becomes a field access, and each use site applies its evidence. Because the output is plain core AST, the compiler and the JavaScript backend run dictionaries with no special support. The Classes tab shows the elaborated core.",
+    body: "Type classes are compiled by a type-directed translation into the ordinary core language. Inference resolves every class constraint to evidence — a concrete instance dictionary (applied to whatever its context needs), a dictionary parameter passed down, or a superclass dictionary projected out of another (Functor from Monad) — and an elaboration pass rewrites the program: an instance becomes a record of methods (plus $super_ fields for its superclasses), a constrained binding gains leading dictionary parameters, a method call becomes a field access, and each use site applies its evidence. Because the output is plain core AST, the compiler and the JavaScript backend run dictionaries with no special support. The Classes tab shows the elaborated core.",
+  },
+  {
+    n: 3.4,
+    title: 'Kinds & higher-kinded types',
+    body: "A kind classifies a type the way a type classifies a value: Int : *, List : * -> *, Either : * -> * -> *. Kinds make higher-kinded classes principled — Monad m abstracts over an m of kind * -> *, so one generic combinator runs in every monad (Option, List, the partially-applied State s). Kinds are inferred by unification, exactly like types: each class parameter's kind is read off how its methods use it, every class/instance/type declaration is kind-checked, and instance Monad Int is rejected because Int : * ≠ * -> *. A type variable may now stand for a constructor — a TApp node represents m a and unification decomposes ordinary constructors into application spines to bridge the two.",
   },
   {
     n: 3.5,
@@ -98,6 +103,15 @@ export default function About() {
             visible.
           </li>
           <li>
+            <strong>Higher-kinded types &amp; a kind system.</strong> Classes range over type
+            constructors, so <code>class Monad m where bind : m a -&gt; (a -&gt; m b) -&gt; m b</code>{' '}
+            is real — one <code>mapM</code> works in <code>Option</code>, <code>List</code> and the
+            partially-applied <code>State s</code>. Kinds are <em>inferred</em> (<code>Monad</code>'s
+            parameter is <code>* -&gt; *</code>) and <strong>superclasses</strong> (
+            <code>Functor f =&gt; Monad f</code>) let a <code>Monad</code> constraint entail a{' '}
+            <code>Functor</code> one via superclass dictionaries.
+          </li>
+          <li>
             <code>match</code> is checked for exhaustiveness and redundancy using Maranget's
             usefulness algorithm — non-exhaustive matches are reported with a concrete witness
             pattern, and unreachable clauses are flagged.
@@ -107,8 +121,8 @@ export default function About() {
             driven by the type checker: it generates random inputs from each <code>prop_…</code>{' '}
             function's inferred type and <strong>shrinks</strong> any failure to a minimal
             counterexample. <strong>do-notation</strong> (<code>do {'{'} x &lt;- e; … {'}'}</code>)
-            is pure sugar over a <code>bind</code> in scope, so the same block expresses Option
-            short-circuiting or List non-determinism depending on the monad.
+            desugars to <code>bind</code>; bound to the real <code>Monad</code> class method, the same
+            block is the Option, List or State monad depending on its <em>type</em>.
           </li>
           <li>
             There are <strong>two backends</strong> for one front end: a bytecode VM and a

@@ -651,9 +651,11 @@ class Parser {
     return { kind: 'typedecl', name, params, ctors, body, span: this.spanFrom(start.span, body.span) }
   }
 
-  // class Name a where m1 : τ ; m2 : τ ; … in body
+  // class [Super p, … =>] Name a where m1 : τ ; m2 : τ ; … in body
   private parseClassDecl(): Expr {
     const start = this.expect('keyword', 'class')
+    // an optional superclass context: `class Functor f => Monad f where …`
+    const context = this.tryParseInstanceContext()
     if (!this.at('ident') || !isUpper(this.peek().value)) {
       throw new ParseError('expected an uppercase class name after `class`', this.peek().span)
     }
@@ -662,6 +664,16 @@ class Parser {
       throw new ParseError('expected a lowercase class parameter (e.g. `class Disp a`)', this.peek().span)
     }
     const param = this.next().value
+    const supers: string[] = []
+    for (const c of context) {
+      if (c.param !== param) {
+        throw new ParseError(
+          `superclass constraint '${c.cls} ${c.param}' must constrain the class parameter '${param}'`,
+          c.span,
+        )
+      }
+      supers.push(c.cls)
+    }
     this.expect('keyword', 'where')
     const methods: MethodSig[] = []
     while (!this.at('keyword', 'in')) {
@@ -688,7 +700,7 @@ class Parser {
     }
     this.expect('keyword', 'in')
     const body = this.parseExpr(0)
-    return { kind: 'classdecl', name, param, methods, body, span: this.spanFrom(start.span, body.span) }
+    return { kind: 'classdecl', name, param, supers, methods, body, span: this.spanFrom(start.span, body.span) }
   }
 
   // instance [Ctx =>] Cls Head where m1 = e1 ; … in body
@@ -831,16 +843,20 @@ class Parser {
 
   private parseTypeApp(): TypeExpr {
     const head = this.parseTypeAtom()
-    if (head.kind !== 'tcon') return head
-    const args: TypeExpr[] = [...head.args]
-    let end = head.span
-    while (this.startsTypeAtom()) {
-      const a = this.parseTypeAtom()
-      args.push(a)
-      end = a.span
+    const extra: TypeExpr[] = []
+    while (this.startsTypeAtom()) extra.push(this.parseTypeAtom())
+    if (extra.length === 0) return head
+    // a constructor head absorbs its arguments directly (`List a`, `Either a b`)
+    if (head.kind === 'tcon') {
+      const args = [...head.args, ...extra]
+      return { kind: 'tcon', name: head.name, args, span: this.spanFrom(head.span, extra[extra.length - 1].span) }
     }
-    if (args.length === head.args.length) return head
-    return { kind: 'tcon', name: head.name, args, span: this.spanFrom(head.span, end) }
+    // a variable- (or otherwise non-constructor-) headed application is built as
+    // a left-associative `tapp` spine: `m a b` ⇒ ((m a) b). This is what lets a
+    // method signature mention `m a` for a higher-kinded class parameter `m`.
+    let acc = head
+    for (const a of extra) acc = { kind: 'tapp', fn: acc, arg: a, span: this.spanFrom(head.span, a.span) }
+    return acc
   }
 
   private parseIf(): Expr {

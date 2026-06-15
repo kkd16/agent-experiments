@@ -27,6 +27,9 @@ export type Evidence =
   | { kind: 'param'; name: string }
   // a named instance dictionary, applied to the evidence its context requires
   | { kind: 'instance'; dictName: string; args: Evidence[] }
+  // a superclass dictionary projected out of another dictionary (`d.$super_C`):
+  // this is how a `Monad m` constraint discharges a `Functor m` one
+  | { kind: 'super'; field: string; base: Evidence }
 
 /** A mutable cell inference fills in once a constraint is resolved. */
 export class EvCell {
@@ -38,6 +41,12 @@ export function dictParamName(cls: string, varId: number): string {
   return `$d_${cls}_${varId}`
 }
 
+/** The field that holds class `cls`'s superclass dictionary inside a subclass
+ * dictionary (so `monadDict.$super_Functor` is the `Functor` dictionary). */
+export function superFieldName(cls: string): string {
+  return `$super_${cls}`
+}
+
 /** The elaboration recipe for one `instance` declaration. */
 export interface InstanceElab {
   /** the (globally unique) name the instance dictionary is bound to */
@@ -46,6 +55,8 @@ export interface InstanceElab {
   paramNames: string[]
   /** the method implementations, by declared name (still surface AST) */
   methods: { name: string; value: Expr }[]
+  /** superclass dictionaries to embed (`$super_Functor = …`), by field */
+  supers: { field: string; ev: Evidence }[]
 }
 
 /**
@@ -77,6 +88,9 @@ export function emptyTables(): ClassTables {
 
 function evToExpr(ev: Evidence, span: Span): Expr {
   if (ev.kind === 'param') return { kind: 'var', name: ev.name, span }
+  if (ev.kind === 'super') {
+    return { kind: 'field', record: evToExpr(ev.base, span), label: ev.field, span }
+  }
   let acc: Expr = { kind: 'var', name: ev.dictName, span }
   for (const a of ev.args) acc = { kind: 'app', fn: acc, arg: evToExpr(a, span), span }
   return acc
@@ -181,6 +195,9 @@ export function elaborate(root: Expr, t: ClassTables): Expr {
         const ie = t.instanceElab.get(e)
         if (!ie) return go(e.body)
         const fields = ie.methods.map((m) => ({ label: m.name, value: go(m.value) }))
+        // embed each superclass dictionary as a `$super_C` field, so a use of a
+        // superclass method projects through it
+        for (const s of ie.supers) fields.push({ label: s.field, value: evToExpr(s.ev, e.span) })
         const record: Expr = { kind: 'record', fields, span: e.span }
         const value = wrapDicts(record, ie.paramNames, e.span)
         return {

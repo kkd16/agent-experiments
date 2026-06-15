@@ -167,6 +167,42 @@ instance Eq Int where eq = fn x y -> x == y in
       </section>
 
       <section>
+        <h2>Higher-kinded classes &amp; superclasses</h2>
+        <p>
+          A class can range over a <strong>type constructor</strong>, not just a proper type. In{' '}
+          <code>class Monad m where bind : m a -&gt; (a -&gt; m b) -&gt; m b</code>, the parameter{' '}
+          <code>m</code> is applied to arguments, so it has <strong>kind</strong> <code>* -&gt; *</code>{' '}
+          (a type that still needs one argument, like <code>Option</code> or <code>List</code>). Kinds
+          are <em>inferred</em> — Aether reads each class parameter's kind off how its methods use it —
+          and ill-kinded instances such as <code>instance Monad Int</code> are rejected
+          (<code>Int : *</code>, not <code>* -&gt; *</code>). The <strong>Classes</strong> tab shows
+          every class's inferred kind.
+        </p>
+        <p>
+          Classes may have <strong>superclasses</strong> (<code>class Functor f =&gt; Monad f</code>):
+          a <code>Monad m</code> constraint then <em>entails</em> a <code>Functor m</code> one, so a
+          function written with only <code>Monad</code> in its context still gets <code>fmap</code>.
+          Because <code>m</code> is higher-kinded, one generic combinator runs in <em>every</em> monad:
+        </p>
+        <pre className="snippet">{`class Functor f => Monad f where
+  pure : a -> f a,
+  bind : f a -> (a -> f b) -> f b
+in
+// defined once; works for Option, List, State, …
+let rec mapM = fn f xs ->
+  if empty xs then pure []
+  else do { y <- f (head xs)
+          ; ys <- mapM f (tail xs)
+          ; pure (y :: ys) }
+in
+mapM (fn x -> if x > 0 then Some x else None) [1, 2, 3]  // Some [1, 2, 3]`}</pre>
+        <p>
+          See the <strong>Functor → Applicative → Monad</strong> and <strong>State monad</strong>{' '}
+          examples in the gallery for the full instances.
+        </p>
+      </section>
+
+      <section>
         <h2>List comprehensions</h2>
         <p>
           <code>[ e | x &lt;- xs, guard, y &lt;- ys ]</code> builds a list from one or more{' '}
@@ -194,7 +230,8 @@ do { e }              =>  e`}</pre>
         <p>
           Pick a <code>bind</code> and the same block expresses a different effect — the Option
           (Maybe) monad short-circuits on the first <code>None</code>, the List monad branches over
-          every choice:
+          every choice. Bind the genuine <code>Monad</code> class method instead and the block is
+          resolved <em>by type</em>, so one <code>do</code> works for any monad:
         </p>
         <pre className="snippet">{`type Opt a = None | Some a in
 let bind = fn m k -> match m with None -> None | Some x -> k x in
