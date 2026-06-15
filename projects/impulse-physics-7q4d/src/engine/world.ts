@@ -68,6 +68,10 @@ export class World {
   /** Body-pair keys for which collision is disabled (jointed bodies). */
   private nonColliding = new Set<number>();
   enableSleep = true;
+  /** Fired when two bodies start touching (covers sensors and solid contacts). */
+  onBeginContact: ((a: Body, b: Body) => void) | null = null;
+  /** Fired when two previously-touching bodies separate. */
+  onEndContact: ((a: Body, b: Body) => void) | null = null;
   stats: StepStats = {
     bodies: 0,
     awakeBodies: 0,
@@ -150,15 +154,20 @@ export class World {
       this.addPair(this.broadphase.tree.get(p.a) as Body, this.broadphase.tree.get(p.b) as Body);
     }
 
-    // 2. Narrowphase: refresh or drop persistent contacts.
+    // 2. Narrowphase: refresh or drop persistent contacts, firing begin/end
+    // contact events on each touching transition (sensors included).
     let contactPoints = 0;
     for (const [key, c] of this.contacts) {
       if (!this.broadphase.tree.fatAABB(c.a.proxyId).overlaps(this.broadphase.tree.fatAABB(c.b.proxyId))) {
+        if (c.touching) this.onEndContact?.(c.a, c.b);
         this.contacts.delete(key);
         continue;
       }
+      c.wasTouching = c.touching;
       c.update();
-      contactPoints += c.manifold.points.length;
+      if (c.touching && !c.wasTouching) this.onBeginContact?.(c.a, c.b);
+      else if (!c.touching && c.wasTouching) this.onEndContact?.(c.a, c.b);
+      if (!c.sensor) contactPoints += c.manifold.points.length;
     }
 
     // 3. Assemble islands and wake any island with a moving member.
@@ -189,6 +198,7 @@ export class World {
     // 5. Solve velocity constraints (warm-started sequential impulses).
     const active: Contact[] = [];
     for (const c of this.contacts.values()) {
+      if (c.sensor) continue; // sensors are detected & reported, never solved
       if (c.touching && (this.isSolved(c.a) || this.isSolved(c.b))) active.push(c);
     }
     const activeJoints = this.joints.filter(
@@ -275,7 +285,7 @@ export class World {
       if (b.type === BodyType.Dynamic && !parent.has(b.id)) parent.set(b.id, b);
     }
     for (const c of this.contacts.values()) {
-      if (c.touching) union(c.a, c.b);
+      if (c.touching && !c.sensor) union(c.a, c.b);
     }
     for (const j of this.joints) union(j.bodyA, j.bodyB);
 
@@ -309,6 +319,7 @@ export class World {
       let hit = false;
       for (const b of this.bodies) {
         if (b === a) continue;
+        if (a.isSensor || b.isSensor) continue; // bullets pass through sensors
         // Resolve each bullet pair once; bullet-vs-bullet handled by id order.
         if (b.bullet && b.type === BodyType.Dynamic && b.id < a.id) continue;
         if (this.nonColliding.has(pairKey(a.id, b.id))) continue;

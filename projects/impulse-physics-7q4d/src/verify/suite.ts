@@ -526,6 +526,33 @@ export function runVerification(): CheckResult[] {
     a.close('Block & sequential agree at rest', settle(true), settle(false), 0.02);
   }
 
+  // ---- Sensors & contact events -------------------------------------------
+  a.section('Sensors & events');
+  {
+    // A body dropped through a static sensor must pass straight through it (no
+    // impulse) yet fire exactly one begin and one end contact event.
+    const w = new World(new Vec2(0, -10));
+    w.addBody(new Body(Polygon.box(20, 0.5), { type: BodyType.Static, position: new Vec2(0, -10) }));
+    w.addBody(new Body(Polygon.box(2, 0.6), { type: BodyType.Static, position: new Vec2(0, 0), isSensor: true }));
+    let begins = 0;
+    let ends = 0;
+    w.onBeginContact = (a1, b1) => { if (a1.isSensor || b1.isSensor) begins++; };
+    w.onEndContact = (a1, b1) => { if (a1.isSensor || b1.isSensor) ends++; };
+    const ball = w.addBody(new Body(new Circle(0.3), { position: new Vec2(0, 4) }));
+    for (let i = 0; i < 200; i++) w.step(1 / 120);
+    a.ok('Body passes through the sensor', ball.worldCenter.y < -8, `y=${ball.worldCenter.y.toFixed(2)}`);
+    a.ok('Exactly one begin event fired', begins === 1, `begins=${begins}`);
+    a.ok('Exactly one end event fired', ends === 1, `ends=${ends}`);
+  }
+  {
+    // A solid (non-sensor) block in the same place must instead stop the body.
+    const w = new World(new Vec2(0, -10));
+    w.addBody(new Body(Polygon.box(2, 0.6), { type: BodyType.Static, position: new Vec2(0, 0) }));
+    const ball = w.addBody(new Body(new Circle(0.3), { position: new Vec2(0, 4) }));
+    for (let i = 0; i < 200; i++) w.step(1 / 120);
+    a.ok('Solid block stops the body (control)', ball.worldCenter.y > 0.5, `y=${ball.worldCenter.y.toFixed(2)}`);
+  }
+
   // ---- Wheel joint & suspension -------------------------------------------
   a.section('Wheel joint');
   {

@@ -79,7 +79,8 @@ export class Renderer {
     for (const zone of world.fluidZones) this.drawWaterFill(zone, camera);
 
     for (const body of world.bodies) {
-      this.drawBody(body, camera, opts, extras.hovered === body);
+      if (body.isSensor) this.drawSensor(body, camera);
+      else this.drawBody(body, camera, opts, extras.hovered === body);
       if (opts.aabb) this.drawAABB(body, camera);
       if (opts.velocities) this.drawVelocity(body, camera);
       if (opts.centerOfMass) this.drawCOM(body, camera);
@@ -218,6 +219,40 @@ export class Renderer {
       ctx.lineWidth = strokeWidth;
       ctx.stroke();
     }
+  }
+
+  /** A sensor (trigger) body: a dashed, barely-filled outline — it's intangible. */
+  private drawSensor(body: Body, camera: Camera): void {
+    const ctx = this.ctx;
+    ctx.save();
+    ctx.beginPath();
+    if (body.shape.kind === 'circle') {
+      const c = camera.worldToScreen(body.worldPoint(body.shape.center));
+      ctx.arc(c.x, c.y, camera.toPixels(body.shape.radius), 0, Math.PI * 2);
+    } else if (body.shape.kind === 'capsule') {
+      const a = camera.worldToScreen(body.worldPoint(body.shape.p1));
+      const b = camera.worldToScreen(body.worldPoint(body.shape.p2));
+      const r = camera.toPixels(body.shape.radius);
+      const ang = Math.atan2(b.y - a.y, b.x - a.x);
+      ctx.arc(b.x, b.y, r, ang - Math.PI / 2, ang + Math.PI / 2);
+      ctx.arc(a.x, a.y, r, ang + Math.PI / 2, ang + (3 * Math.PI) / 2);
+      ctx.closePath();
+    } else {
+      const verts = body.shape.vertices;
+      for (let i = 0; i < verts.length; i++) {
+        const s = camera.worldToScreen(body.worldPoint(verts[i]));
+        if (i === 0) ctx.moveTo(s.x, s.y);
+        else ctx.lineTo(s.x, s.y);
+      }
+      ctx.closePath();
+    }
+    ctx.fillStyle = withAlpha(body.color, 0.08);
+    ctx.fill();
+    ctx.setLineDash([7, 5]);
+    ctx.strokeStyle = withAlpha(body.color, 0.85);
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+    ctx.restore();
   }
 
   private drawAABB(body: Body, camera: Camera): void {

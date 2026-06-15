@@ -10,6 +10,7 @@ export interface ControlValues {
   warmStarting: boolean;
   enableSleep: boolean;
   continuous: boolean;
+  blockSolver: boolean;
   showGjk: boolean;
   spawnKind: SpawnKind;
 }
@@ -109,6 +110,7 @@ export default function ControlPanel({
         <Slider label="Position β" value={values.baumgarte} min={0} max={1} step={0.05}
           fmt={(v) => v.toFixed(2)} onChange={(v) => onChange({ baumgarte: v })} />
         <Toggle label="Warm starting" checked={values.warmStarting} onChange={(v) => onChange({ warmStarting: v })} />
+        <Toggle label="Block solver" checked={values.blockSolver} onChange={(v) => onChange({ blockSolver: v })} />
         <Toggle label="Sleeping" checked={values.enableSleep} onChange={(v) => onChange({ enableSleep: v })} />
         <Toggle label="Continuous (CCD)" checked={values.continuous} onChange={(v) => onChange({ continuous: v })} />
       </section>

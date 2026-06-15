@@ -865,6 +865,79 @@ const car: SceneDef = {
   },
 };
 
+const sensors: SceneDef = {
+  id: 'sensors',
+  name: 'Sensor Field',
+  description:
+    'Two trigger gates built from sensor bodies — detected but never solved, so shapes fall straight through them. The engine fires begin/end contact events as each body enters and leaves a gate; the scene lights the body up while it is inside. Sensors are how you build goals, detectors and trigger volumes.',
+  category: 'Showcase',
+  build: (world, rng) => {
+    ground(world, 14, -7);
+    walls(world, 11, 16, -7);
+
+    // Two horizontal sensor gates at different heights, each a glowing colour.
+    const gates: Array<{ body: Body; glow: string }> = [];
+    const gateDefs = [
+      { y: 4, glow: '#7CFFCB' },
+      { y: 0, glow: '#ff6b6b' },
+    ];
+    for (const g of gateDefs) {
+      const gate = world.addBody(new Body(Polygon.box(9, 0.7), {
+        type: BodyType.Static, position: new Vec2(0, g.y), isSensor: true, color: g.glow,
+      }));
+      gates.push({ body: gate, glow: g.glow });
+    }
+
+    // Track each body's original colour so we can restore it on exit, and how
+    // many gates it is currently inside (so overlapping gates don't fight).
+    const original = new Map<number, string>();
+    const inside = new Map<number, number>();
+    const gateOf = (a: Body, b: Body): { mover: Body; glow: string } | null => {
+      const g = gates.find((x) => x.body === a || x.body === b);
+      if (!g) return null;
+      const mover = g.body === a ? b : a;
+      if (mover.isSensor) return null;
+      return { mover, glow: g.glow };
+    };
+    world.onBeginContact = (a, b) => {
+      const hit = gateOf(a, b);
+      if (!hit) return;
+      if (!original.has(hit.mover.id)) original.set(hit.mover.id, hit.mover.color);
+      inside.set(hit.mover.id, (inside.get(hit.mover.id) ?? 0) + 1);
+      hit.mover.color = hit.glow;
+    };
+    world.onEndContact = (a, b) => {
+      const hit = gateOf(a, b);
+      if (!hit) return;
+      const n = (inside.get(hit.mover.id) ?? 1) - 1;
+      inside.set(hit.mover.id, n);
+      if (n <= 0) {
+        const orig = original.get(hit.mover.id);
+        if (orig !== undefined) hit.mover.color = orig;
+      }
+    };
+
+    let acc = 0;
+    let count = 0;
+    return {
+      camera: { center: new Vec2(0, -1), scale: 22 },
+      update: (_t, dt) => {
+        acc += dt;
+        if (acc > 0.35 && count < 120) {
+          acc = 0;
+          count++;
+          world.addBody(new Body(randomShape(rng, 0.7), {
+            position: new Vec2(rng.range(-8, 8), 9),
+            color: '#6ea8ff',
+            friction: 0.3,
+            restitution: 0.1,
+          }));
+        }
+      },
+    };
+  },
+};
+
 export const SCENES: SceneDef[] = [
   pyramid,
   stacks,
@@ -880,6 +953,7 @@ export const SCENES: SceneDef[] = [
   tumbler,
   dominoes,
   buoyancy,
+  sensors,
   bulletTest,
   galton,
   capsulePile,

@@ -62,12 +62,17 @@ export class Contact {
   manifold: Manifold;
   points: PersistentPoint[] = [];
   touching = false;
+  /** Touching state at the previous step — drives begin/end contact events. */
+  wasTouching = false;
+  /** True when either body is a sensor: detected & reported, never solved. */
+  readonly sensor: boolean;
 
   constructor(a: Body, b: Body) {
     this.a = a;
     this.b = b;
     this.friction = combineFriction(a.friction, b.friction);
     this.restitution = combineRestitution(a.restitution, b.restitution);
+    this.sensor = a.isSensor || b.isSensor;
     this.manifold = { normal: Vec2.ZERO, points: [] };
   }
 

@@ -30,6 +30,12 @@ export interface BodyDef {
    * through thin geometry.
    */
   bullet?: boolean;
+  /**
+   * A sensor detects overlaps and fires begin/end contact events but is never
+   * resolved by the solver — bodies pass straight through it. Use it for trigger
+   * zones, goals and detectors.
+   */
+  isSensor?: boolean;
   /** Free-form tag used by scenes and the renderer for coloring. */
   color?: string;
 }
@@ -89,6 +95,8 @@ export class Body {
 
   /** Continuous-collision flag (swept to time of impact each step). */
   bullet: boolean;
+  /** Sensor flag: contacts are detected & reported but never solved. */
+  isSensor: boolean;
   /** Center of mass / angle captured at the start of the step, for CCD sweeps. */
   center0: Vec2;
   angle0 = 0;
@@ -113,6 +121,7 @@ export class Body {
     this.gravityScale = def.gravityScale ?? 1;
     this.allowSleep = def.allowSleep ?? true;
     this.bullet = def.bullet ?? false;
+    this.isSensor = def.isSensor ?? false;
     this.color = def.color ?? '#6ea8ff';
     this.localCenter = Vec2.ZERO;
     this.worldCenter = this.transform.apply(this.localCenter);

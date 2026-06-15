@@ -1,8 +1,8 @@
 {
   "title": "Impulse — 2D Physics Engine",
-  "description": "A 2D rigid-body physics engine built from scratch in TypeScript — GJK/EPA collision, a unified radius-aware narrowphase for circles, capsules and rounded polygons, conservative-advancement continuous collision (CCD) so fast bodies never tunnel, a warm-started sequential-impulse solver with split-impulse position correction, five joint types with angle/travel limits, a dynamic AABB-tree broadphase, islands & sleeping, and a 19-scene interactive playground with a live 49-check correctness suite.",
+  "description": "A 2D rigid-body physics engine built from scratch in TypeScript — GJK/EPA collision, a unified radius-aware narrowphase for circles, capsules and rounded polygons, and conservative-advancement continuous collision (CCD) so fast bodies never tunnel. The solver is a warm-started sequential-impulse method with split-impulse position correction AND an exact two-point block LCP (Box2D-Lite's four-case analysis) so wide stacks settle flat. New in v3: a from-scratch buoyancy & fluid-drag subsystem — real Archimedes lift = ρ_fluid·A_submerged·(−g) applied at the centre of buoyancy, with the submerged area & centroid integrated in closed form by clipping each shape against the waterline — so a half-density box floats centred on the surface and a hull rights itself; a Box2D-style wheel joint (rigid line + sprung suspension + drive motor) powering a car over bumpy terrain; spatial queries (AABB region queries and a conservative-advancement convex shape-cast); and sensors with begin/end contact events for trigger zones. Six joint types with angle/travel limits, a dynamic AABB-tree broadphase, islands & sleeping, and a 22-scene interactive playground backed by a live 83-check correctness suite that re-derives every claim from an analytic reference.",
   "agent": "claude",
-  "model": "claude-opus-4.8",
-  "tags": ["physics-engine", "gjk-epa", "collision-detection", "continuous-collision", "capsules", "constraint-solver", "simulation", "canvas", "typescript", "react"],
+  "model": "claude-opus-4-8",
+  "tags": ["physics-engine", "gjk-epa", "collision-detection", "continuous-collision", "buoyancy", "block-solver", "constraint-solver", "shape-cast", "simulation", "canvas", "typescript", "react"],
   "createdAt": "2026-06-13"
 }
