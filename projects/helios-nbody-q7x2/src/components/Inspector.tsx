@@ -1,32 +1,42 @@
-// A small floating panel describing the currently selected body. The orbital
-// quantities (specific energy, semi-major axis) are taken relative to the most
-// massive body in the system — the natural primary for the planet/ring/Trojan
-// scenarios where inspection is most useful.
+// A small floating panel describing the currently selected body, including the
+// full osculating Kepler orbit it rides relative to the chosen primary (the
+// heaviest body, or the system barycentre). The orbital elements come straight
+// from `sim/orbit.ts` — the same reconstruction the on-canvas ellipse is drawn
+// from, so the panel and the overlay always agree.
+
+import type { OrbitElements, OrbitShape } from '../sim/orbit'
 
 export interface InspectInfo {
   index: number
   mass: number
   speed: number
   distCom: number
-  /** Distance to the heaviest body, or null when the selected body *is* it. */
-  distCentral: number | null
-  /** Two-body specific orbital energy relative to the primary, or null. */
-  specificEnergy: number | null
-  /** Semi-major axis when bound, else null. */
-  semiMajor: number | null
-  /** Orbital period (Kepler) when bound, else null. */
-  period: number | null
-  bound: boolean | null
+  /** Human label for the body the orbit is measured against. */
+  primaryLabel: string
+  /** Osculating orbit relative to the primary, or null (e.g. body *is* primary). */
+  orbit: OrbitElements | null
+  /** Jacobi constant in the two-heaviest-body co-rotating frame, or null. */
+  jacobi: number | null
 }
 
 function fmt(v: number, digits = 3): string {
-  if (!Number.isFinite(v)) return '—'
+  if (!Number.isFinite(v)) return '∞'
   const a = Math.abs(v)
   if (a !== 0 && (a >= 1e5 || a < 1e-2)) return v.toExponential(2)
   return v.toFixed(digits)
 }
 
+const SHAPE_LABEL: Record<OrbitShape, string> = {
+  circular: 'circular',
+  elliptical: 'elliptical',
+  parabolic: 'parabolic',
+  hyperbolic: 'hyperbolic',
+}
+
+const DEG = 180 / Math.PI
+
 export function Inspector({ info, onClose }: { info: InspectInfo; onClose: () => void }) {
+  const o = info.orbit
   return (
     <div className="inspector">
       <div className="inspector-head">
@@ -39,16 +49,34 @@ export function Inspector({ info, onClose }: { info: InspectInfo; onClose: () =>
         <Row label="Mass" value={fmt(info.mass, 2)} />
         <Row label="Speed" value={fmt(info.speed)} />
         <Row label="Dist. to COM" value={fmt(info.distCom, 1)} />
-        {info.distCentral != null && <Row label="Dist. to primary" value={fmt(info.distCentral, 1)} />}
-        {info.specificEnergy != null && <Row label="Spec. energy ε" value={fmt(info.specificEnergy)} />}
-        {info.semiMajor != null && <Row label="Semi-major a" value={fmt(info.semiMajor, 1)} />}
-        {info.period != null && <Row label="Period T" value={fmt(info.period, 1)} />}
-        {info.bound != null && (
-          <Row
-            label="Orbit"
-            value={info.bound ? 'bound' : 'unbound'}
-            valueClass={info.bound ? 'good' : 'warn'}
-          />
+        <div className="inspector-divider">
+          <span>orbit vs {info.primaryLabel}</span>
+        </div>
+        {o ? (
+          <>
+            <Row label="Separation r" value={fmt(o.r, 1)} />
+            <Row
+              label="Shape"
+              value={SHAPE_LABEL[o.shape]}
+              valueClass={o.bound ? 'good' : 'warn'}
+            />
+            <Row label="Eccentricity e" value={fmt(o.eccentricity, 4)} />
+            {Number.isFinite(o.semiMajor) && <Row label="Semi-major a" value={fmt(o.semiMajor, 1)} />}
+            <Row label="Periapsis" value={fmt(o.periapsis, 1)} />
+            {o.apoapsis != null && <Row label="Apoapsis" value={fmt(o.apoapsis, 1)} />}
+            {o.period != null && <Row label="Period T" value={fmt(o.period, 1)} />}
+            <Row label="Arg. periapsis ϖ" value={`${(o.argPeriapsis * DEG).toFixed(1)}°`} />
+            <Row label="True anomaly ν" value={`${(o.trueAnomaly * DEG).toFixed(1)}°`} />
+            <Row label="Spec. energy ε" value={fmt(o.energy)} />
+            <Row label="Spec. ang. mom. h" value={fmt(o.angularMomentum, 1)} />
+            <Row
+              label="Direction"
+              value={o.prograde ? 'prograde ↺' : 'retrograde ↻'}
+            />
+            {info.jacobi != null && <Row label="Jacobi C (3-body)" value={fmt(info.jacobi, 2)} />}
+          </>
+        ) : (
+          <p className="inspector-note">This is the primary — no orbit to report.</p>
         )}
       </div>
       <p className="inspector-foot">Click empty space or press Esc to deselect.</p>

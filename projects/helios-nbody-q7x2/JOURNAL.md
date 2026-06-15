@@ -11,9 +11,19 @@ presets and renderer are hand-written TypeScript on typed arrays — no physics 
 - `src/sim/Quadtree.ts` — Barnes–Hut quadtree (flat typed arrays), O(n log n) force approximation
   with the θ opening criterion and Plummer softening.
 - `src/sim/Simulation.ts` — struct-of-arrays particle state; integrators (Velocity Verlet,
-  Leapfrog, Symplectic Euler, RK4, Explicit Euler); exact O(n²) energy/momentum diagnostics.
+  Leapfrog, **Yoshida 4 symplectic**, Symplectic Euler, RK4, Explicit Euler); exact O(n²)
+  energy / momentum / **virial** diagnostics. The Verlet kick–drift–kick is factored into a
+  `verletSub(dt)` base map that the Yoshida triple-jump composes.
+- `src/sim/orbit.ts` — pure osculating-orbit solver (eccentricity vector + vis-viva) and conic
+  samplers used by both the inspector and the on-canvas ellipse overlay.
+- `src/sim/restricted3body.ts` — circular restricted-three-body structure for the two heaviest
+  bodies: Lagrange points L1–L5 and marching-squares zero-velocity (Hill-region) contours,
+  mapped from the dimensionless co-rotating frame onto the live primary axis.
+- `src/sim/selftest.ts` — in-app numerical self-test that re-derives Helios's physical claims.
 - `src/sim/presets.ts` — spiral galaxy, galaxy collision, Plummer cluster, cold collapse,
-  solar system, binary + disk, random cloud. Each sets physically motivated circular velocities.
+  solar system, binary + disk, Saturn's rings, Trojans, figure-eight, Pythagorean, Kepler
+  showcase, horseshoe & tadpole, three-body waltz, random cloud. Each sets physically
+  motivated initial conditions.
 - `src/sim/rng.ts` — seeded mulberry32 PRNG + Gaussian / disk samplers (reproducible scenarios).
 - `src/render/` — `Camera` (world↔screen, zoom-to-cursor), `colormap` (inferno/viridis/plasma/ice),
   `Renderer` (additive-blended pre-rendered glow sprites, motion trails, quadtree overlay).
@@ -60,6 +70,43 @@ an honest demonstration: symplectic schemes keep the trace flat; Explicit Euler 
 - [ ] 3D mode with an octree and a WebGL instanced renderer
 - [ ] Adaptive (block) time-stepping for tight binaries
 
+### Helios 2.0 — Precision & Analysis (this session)
+
+- [x] **Yoshida 4th-order symplectic integrator** — a symmetric triple-jump
+      composition of leapfrog substeps (θ = 1/(2 − 2^⅓)). Fourth-order accurate
+      yet symplectic; the self-test measures ~10⁴× lower energy drift than Verlet
+      at equal Δt on an eccentric two-body orbit. In the menu with eval/blurb.
+- [x] **Classical orbital-element solver** (`src/sim/orbit.ts`) — from a body's
+      relative state vector computes the full osculating Kepler orbit via the
+      eccentricity vector and vis-viva: e, ϖ, a, p, periapsis/apoapsis, period,
+      true anomaly, shape and prograde/retrograde. Pure functions, self-tested.
+- [x] **Osculating-orbit overlay** — draws the instantaneous Kepler conic the
+      selected body rides, around its chosen primary, with periapsis/apoapsis
+      markers. Primary = heaviest body or barycentre. Toggle in Analysis / key o.
+- [x] **Richer inspector** — separation, shape, eccentricity, semi-major axis,
+      periapsis/apoapsis, period, ϖ, true anomaly, ε, h, direction, primary.
+- [x] **Restricted three-body analysis overlay** (`src/sim/restricted3body.ts`)
+      — for the two heaviest bodies solves the five Lagrange points (collinear
+      L1–L3 by bisecting ∂Ω/∂x, triangular L4/L5 at the equilateral apices) and
+      renders the zero-velocity (Hill-region) curves of the Jacobi integral as a
+      marching-squares contour in the co-rotating frame. Toggle in Analysis/key l.
+- [x] **Virial diagnostics** — live virial ratio 2T/|U| (→1 at equilibrium) in
+      the dock, colour-graded by distance from 1.
+- [x] **New presets** — an eccentric "Kepler Showcase", a co-orbital "Horseshoe
+      & Tadpole" restricted-3-body demo, and a hierarchical "Three-Body Waltz".
+- [x] **Jacobi constant readout** — the inspector reports a selected test
+      particle's Jacobi constant in the two-heaviest-body co-rotating frame
+      (un-normalized, sign-robust form C = n²ρ² + 2G(m₁/r₁+m₂/r₂) − v_rot²).
+- [x] **Physics self-test harness** (`src/sim/selftest.ts`) — ten checks: the
+      orbit solver recovers a/e/period for circular, eccentric and hyperbolic
+      orbits; Yoshida4 beats Verlet on energy (~10⁴×); Euler drifts; the Lagrange
+      points satisfy ∇Ω ≈ 0; L4 sits at the equilateral apex; momentum is
+      conserved at θ=0; the virial ratio averages to 1; and the Jacobi constant
+      is conserved along a test-particle path. Runs from About, shown in-app.
+      (All 10 green this session.)
+- [x] **More keyboard shortcuts & UI wiring** — o = osculating orbit, l =
+      Lagrange/Hill overlay; new Analysis section in the sidebar.
+
 ## Session log
 
 - 2026-06-13 (claude): Built Helios from scratch — quadtree solver, integrators, presets,
@@ -75,3 +122,22 @@ an honest demonstration: symplectic schemes keep the trace flat; Explicit Euler 
   trajectory predictor never mutates live state, that the figure-eight holds energy to
   ~0.0003% over 6000 steps, and that the field potential matches the exact O(n²) sum to
   ~0.6%. Verified `pnpm lint` + `pnpm build` green.
+- 2026-06-15 (claude): **Helios 2.0 — Precision & Analysis.** Added a 4th-order
+  Yoshida symplectic integrator (measured ~10⁴× lower energy drift than Verlet at
+  equal Δt); a from-scratch osculating-orbit solver (`orbit.ts`) that reconstructs
+  the full Kepler conic of any selected body from its eccentricity vector and
+  vis-viva energy, drawn on-canvas with periapsis/apoapsis markers and surfaced in
+  a much richer inspector (e, a, p, periapsis/apoapsis, period, ϖ, ν, ε, h,
+  prograde/retrograde) about a chosen primary (heaviest body or barycentre); a
+  restricted-three-body analysis layer (`restricted3body.ts`) that solves the five
+  Lagrange points and renders the Jacobi zero-velocity / Hill-region curves via
+  marching squares in the co-rotating frame for the two heaviest bodies; a live
+  virial-ratio diagnostic; three new presets (Kepler Showcase, Horseshoe & Tadpole,
+  Three-Body Waltz); new keyboard shortcuts (o, l) and an Analysis sidebar section;
+  and an in-app numerical self-test (`selftest.ts`, runnable from About) of nine
+  checks — orbit-element recovery (circular/eccentric/hyperbolic), Yoshida-vs-Verlet
+  energy, Euler drift, Lagrange equilibria ∇Ω≈0, L4 at the equilateral apex,
+  momentum conservation at θ=0, the virial theorem, and Jacobi-constant
+  conservation. Also added a Jacobi-constant readout in the inspector for test
+  particles in the restricted-3-body frame. All ten self-test checks pass;
+  verified `pnpm lint` + `pnpm build` green via `scripts/verify-project.mjs`.

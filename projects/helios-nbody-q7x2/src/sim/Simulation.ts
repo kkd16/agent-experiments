@@ -196,7 +196,10 @@ export class Simulation {
         break
       case 'velocity-verlet':
       case 'leapfrog':
-        this.stepVerlet(n, dt)
+        this.verletSub(n, dt)
+        break
+      case 'yoshida4':
+        this.stepYoshida4(n, dt)
         break
       case 'rk4':
         this.stepRk4(n, dt)
@@ -414,8 +417,11 @@ export class Simulation {
   }
 
   // Velocity Verlet / Leapfrog (kick–drift–kick). One force evaluation per step
-  // by reusing the stored acceleration from the previous step.
-  private stepVerlet(n: number, dt: number): void {
+  // by reusing the stored acceleration from the previous step. Factored out so
+  // the Yoshida composition can reuse it as its 2nd-order base map; it leaves
+  // accX/accY valid for the new positions (accelDirty = false), which is exactly
+  // what the next substep needs.
+  private verletSub(n: number, dt: number): void {
     this.refreshAccel()
     const { posX, posY, velX, velY, accX, accY } = this
     const halfDt = dt * 0.5
@@ -435,6 +441,22 @@ export class Simulation {
     }
     // accX/accY are now valid for the new positions.
     this.accelDirty = false
+  }
+
+  // Yoshida's 4th-order symplectic integrator (Forest–Ruth). A symmetric
+  // "triple jump" composition of the 2nd-order leapfrog at substep sizes
+  //   w1·dt, w0·dt, w1·dt,   w1 = 1/(2 − 2^⅓),  w0 = 1 − 2·w1 (= −2^⅓·w1),
+  // chosen so the leading O(dt³) error of each leapfrog cancels, leaving O(dt⁵)
+  // local error. The middle substep steps *backwards* in time (w0 < 0); that is
+  // expected and is what makes the composition fourth order while staying exactly
+  // symplectic — so energy stays bounded over arbitrarily long runs.
+  private static readonly Y_W1 = 1 / (2 - Math.cbrt(2))
+  private static readonly Y_W0 = 1 - 2 * Simulation.Y_W1
+
+  private stepYoshida4(n: number, dt: number): void {
+    this.verletSub(n, Simulation.Y_W1 * dt)
+    this.verletSub(n, Simulation.Y_W0 * dt)
+    this.verletSub(n, Simulation.Y_W1 * dt)
   }
 
   // Classic 4th-order Runge–Kutta on the first-order system
@@ -544,6 +566,7 @@ export class Simulation {
     let potential = 0
     let total = NaN
     let drift = NaN
+    let virial = NaN
     if (includePotential) {
       for (let i = 0; i < n; i++) {
         const xi = posX[i]
@@ -560,6 +583,7 @@ export class Simulation {
       if (Number.isNaN(this.initialEnergy)) this.initialEnergy = total
       drift =
         this.initialEnergy !== 0 ? (total - this.initialEnergy) / Math.abs(this.initialEnergy) : 0
+      virial = potential !== 0 ? (2 * kinetic) / Math.abs(potential) : NaN
     } else {
       potential = NaN
     }
@@ -572,6 +596,7 @@ export class Simulation {
       momentumX: px,
       momentumY: py,
       angularMomentum: angular,
+      virial,
       comX,
       comY,
     }

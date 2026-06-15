@@ -1,6 +1,12 @@
 // Shared simulation types.
 
-export type IntegratorId = 'symplectic-euler' | 'velocity-verlet' | 'leapfrog' | 'rk4' | 'euler'
+export type IntegratorId =
+  | 'symplectic-euler'
+  | 'velocity-verlet'
+  | 'leapfrog'
+  | 'yoshida4'
+  | 'rk4'
+  | 'euler'
 
 export interface IntegratorInfo {
   id: IntegratorId
@@ -33,6 +39,14 @@ export const INTEGRATORS: IntegratorInfo[] = [
     evals: 1,
     symplectic: true,
     blurb: 'First-order symplectic. Cheap and stable, but phase error accumulates faster.',
+  },
+  {
+    id: 'yoshida4',
+    label: 'Yoshida 4 (symplectic)',
+    evals: 3,
+    symplectic: true,
+    blurb:
+      'Fourth-order AND symplectic — a symmetric triple-jump of leapfrog substeps. Holds energy flat at a far larger Δt than Verlet, for three force evals.',
   },
   {
     id: 'rk4',
@@ -69,6 +83,12 @@ export interface Diagnostics {
   momentumX: number
   momentumY: number
   angularMomentum: number
+  /**
+   * Virial ratio 2T/|U|. For a self-gravitating system in equilibrium the
+   * virial theorem gives 2T + U = 0, i.e. this ratio → 1. NaN when the O(n²)
+   * potential is skipped for large N.
+   */
+  virial: number
   /** Centre-of-mass position, used by the camera "follow" mode. */
   comX: number
   comY: number

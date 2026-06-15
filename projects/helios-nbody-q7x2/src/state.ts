@@ -23,6 +23,9 @@ export const DEFAULT_RENDER: RenderOptions = {
   showQuadtree: false,
   showLegend: true,
   showField: false,
+  showOrbit: true,
+  showLagrange: false,
+  primary: 'heaviest',
   background: '#05060c',
 }
 

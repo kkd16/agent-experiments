@@ -189,6 +189,30 @@ export function Sidebar(p: SidebarProps) {
         )}
       </Section>
 
+      <Section title="Analysis" defaultOpen={false}>
+        <Toggle
+          label="Osculating orbit"
+          checked={p.render.showOrbit}
+          onChange={(v) => p.onRender({ showOrbit: v })}
+          title="Draw the instantaneous Kepler orbit of the selected body (key: o)"
+        />
+        <Segmented<'heaviest' | 'barycenter'>
+          label="Orbit about"
+          value={p.render.primary}
+          options={[
+            { value: 'heaviest', label: 'Heaviest', title: 'Two-body orbit about the most massive body' },
+            { value: 'barycenter', label: 'Barycentre', title: 'Orbit in the mean field about the centre of mass' },
+          ]}
+          onChange={(v) => p.onRender({ primary: v })}
+        />
+        <Toggle
+          label="Lagrange & Hill curves"
+          checked={p.render.showLagrange}
+          onChange={(v) => p.onRender({ showLagrange: v })}
+          title="Restricted-3-body L1–L5 points and zero-velocity (Hill-region) curves for the two heaviest bodies (key: l)"
+        />
+      </Section>
+
       <Section title="Rendering">
         <Select<ColorMapId>
           label="Colour map"
