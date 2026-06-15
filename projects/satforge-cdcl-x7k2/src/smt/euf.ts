@@ -124,8 +124,8 @@ export class EufSolver {
     return atom.kind === 'eq' || atom.kind === 'pred'
   }
 
-  /** After a consistent check, list the congruence classes (term-id groups). */
-  describeModel(lits: TheoryLit[]): string[] {
+  /** After a consistent check, every congruence class as a group of term names. */
+  allClasses(lits: TheoryLit[]): string[][] {
     this.check(lits) // re-establish classes
     const classes = new Map<number, Term[]>()
     for (const [tid, node] of this.termNode) {
@@ -135,11 +135,14 @@ export class EufSolver {
       if (!classes.has(r)) classes.set(r, [])
       classes.get(r)!.push(term)
     }
-    const out: string[] = []
-    for (const group of classes.values()) {
-      if (group.length > 1) out.push(group.map((t) => this.tm.termToString(t)).join(' = '))
-    }
-    return out
+    return [...classes.values()].map((g) => g.map((t) => this.tm.termToString(t)))
+  }
+
+  /** After a consistent check, list the non-trivial congruence classes (joined). */
+  describeModel(lits: TheoryLit[]): string[] {
+    return this.allClasses(lits)
+      .filter((g) => g.length > 1)
+      .map((g) => g.join(' = '))
   }
 
   // map term id -> Term, captured as we build nodes (for describeModel)

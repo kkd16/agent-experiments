@@ -10,7 +10,7 @@ import { TermManager, type Formula, type Term, type Atom } from './term'
 import { EufSolver } from './euf'
 import { solveSmt, type Theory } from './dpllt'
 import { referenceSatEUF, referenceSatArith, collectAtoms, evalFormula } from './reference'
-import { checkSat } from './smt'
+import { checkSat, smtUnsatCore } from './smt'
 import { parseSmtLib } from './parse'
 import { ackermannize } from './ackermann'
 import { SMT_EXAMPLES } from './examples'
@@ -352,6 +352,32 @@ export function runSmtChecks(): SmtCheckReport {
       }
     }
     check('examples: all shipped SMT examples match expected verdict', bad === 0, `bad=${bad}`)
+  }
+
+  // ---- SMT unsat core is genuinely minimal ----------------------------------
+  {
+    // x ≤ y ∧ y ≤ z ∧ z < x  is UNSAT; the (irrelevant) extra assertion w ≥ 0
+    // must NOT be in the core, and the core must itself be UNSAT and minimal.
+    const tm = new TermManager()
+    for (const v of ['x', 'y', 'z', 'w']) tm.declareFun({ name: v, argSorts: [], retSort: 'Real' })
+    const [x, y, z, w] = ['x', 'y', 'z', 'w'].map((v) => tm.app(v))
+    const asserts = [
+      tm.rel('le', x, y),
+      tm.rel('le', y, z),
+      tm.rel('lt', z, x),
+      tm.rel('ge', w, tm.num(R(0), 'Real')),
+    ]
+    const core = smtUnsatCore(tm, asserts)
+    const coreF = core.map((i) => asserts[i])
+    const coreUnsat = checkSat(tm, tm.and(coreF)).status === 'unsat'
+    let minimal = coreF.length > 0
+    for (let i = 0; i < coreF.length; i++) {
+      const without = coreF.filter((_, j) => j !== i)
+      if (checkSat(tm, tm.and(without)).status === 'unsat') minimal = false
+    }
+    check('SMT core: is itself UNSAT', coreUnsat)
+    check('SMT core: is minimal (drop any → SAT)', minimal, `size=${coreF.length}`)
+    check('SMT core: excludes the irrelevant assertion', core.length === 3)
   }
 
   void Rational

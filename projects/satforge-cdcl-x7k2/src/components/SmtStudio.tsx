@@ -1,11 +1,12 @@
 import { useState } from 'react'
-import { checkSat, parseSmtLib, SmtSyntaxError, SMT_EXAMPLES, type FullSmtResult } from '../smt'
+import { checkSat, parseSmtLib, SmtSyntaxError, SMT_EXAMPLES, smtUnsatCore, formulaToString, type FullSmtResult } from '../smt'
 import type { SmtExample } from '../smt'
 
 interface RunState {
   result?: FullSmtResult
   error?: string
   expected?: 'sat' | 'unsat'
+  core?: string[]
 }
 
 export function SmtStudio() {
@@ -32,7 +33,12 @@ export function SmtStudio() {
           return
         }
         const result = checkSat(script.tm, script.tm.and(script.assertions), { maxRounds: 200000 })
-        setRun({ result, expected: script.expected })
+        let core: string[] | undefined
+        if (result.status === 'unsat' && script.assertions.length > 1) {
+          const idx = smtUnsatCore(script.tm, script.assertions, { maxRounds: 200000 })
+          core = idx.map((i) => formulaToString(script.tm, script.assertions[i]))
+        }
+        setRun({ result, expected: script.expected, core })
       } catch (e) {
         const msg = e instanceof SmtSyntaxError ? `Syntax error: ${e.message}` : String(e)
         setRun({ error: msg })
@@ -110,6 +116,17 @@ export function SmtStudio() {
                 </div>
               </div>
 
+              {result.status === 'sat' && result.congruenceClasses && (
+                <div className="smt-model">
+                  <h4>Congruence classes</h4>
+                  <p className="smt-hint">
+                    Terms the solver proved equal. Each colour is one equivalence class closed under
+                    congruence (equal arguments ⇒ equal applications).
+                  </p>
+                  <CongruenceGraph classes={result.congruenceClasses} />
+                </div>
+              )}
+
               {result.status === 'sat' && (
                 <div className="smt-model">
                   <h4>Model</h4>
@@ -137,6 +154,23 @@ export function SmtStudio() {
                       </ul>
                     </div>
                   )}
+                </div>
+              )}
+
+              {result.status === 'unsat' && run?.core && run.core.length > 0 && (
+                <div className="smt-core">
+                  <h4>Minimal unsat core</h4>
+                  <p className="smt-hint">
+                    The smallest subset of your assertions that is already contradictory — drop any one
+                    and it becomes satisfiable.
+                  </p>
+                  <ul className="smt-assign">
+                    {run.core.map((c, i) => (
+                      <li key={i}>
+                        <code>{c}</code>
+                      </li>
+                    ))}
+                  </ul>
                 </div>
               )}
 
@@ -180,5 +214,64 @@ export function SmtStudio() {
         </section>
       </div>
     </div>
+  )
+}
+
+const CLASS_COLORS = ['#6ea8fe', '#9b8cff', '#22c55e', '#f59e0b', '#ef476f', '#2dd4bf', '#e879f9', '#fbbf24']
+
+function CongruenceGraph({ classes }: { classes: string[][] }) {
+  // One circle; nodes coloured by class, edges (star) within each class.
+  const nodes: { name: string; cls: number }[] = []
+  classes.forEach((g, ci) => g.forEach((name) => nodes.push({ name, cls: ci })))
+  const n = nodes.length
+  const W = 380
+  const H = Math.max(220, 60 + n * 14)
+  const cx = W / 2
+  const cy = H / 2
+  const r = Math.min(cx, cy) - 46
+  const pos = nodes.map((_, i) => {
+    const a = (i / n) * Math.PI * 2 - Math.PI / 2
+    return { x: cx + r * Math.cos(a), y: cy + r * Math.sin(a) }
+  })
+  // edges: connect each class's members as a star from its first node.
+  const edges: [number, number][] = []
+  let base = 0
+  for (const g of classes) {
+    for (let k = 1; k < g.length; k++) edges.push([base, base + k])
+    base += g.length
+  }
+  return (
+    <svg className="smt-cc-graph" viewBox={`0 0 ${W} ${H}`} role="img" aria-label="congruence classes">
+      {edges.map(([a, b], i) => (
+        <line
+          key={i}
+          x1={pos[a].x}
+          y1={pos[a].y}
+          x2={pos[b].x}
+          y2={pos[b].y}
+          stroke={CLASS_COLORS[nodes[a].cls % CLASS_COLORS.length]}
+          strokeWidth={2}
+          strokeOpacity={0.55}
+        />
+      ))}
+      {nodes.map((nd, i) => {
+        const color = CLASS_COLORS[nd.cls % CLASS_COLORS.length]
+        return (
+          <g key={i}>
+            <circle cx={pos[i].x} cy={pos[i].y} r={6} fill={color} stroke="#0b1020" strokeWidth={1.5} />
+            <text
+              x={pos[i].x}
+              y={pos[i].y - 11}
+              textAnchor="middle"
+              fontSize={11}
+              fill="#e6ecff"
+              fontFamily="ui-monospace, monospace"
+            >
+              {nd.name.length > 12 ? nd.name.slice(0, 11) + '…' : nd.name}
+            </text>
+          </g>
+        )
+      })}
+    </svg>
   )
 }
