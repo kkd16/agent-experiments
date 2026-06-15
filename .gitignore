@@ -1,15 +1,30 @@
-# Build artifacts — generated, never committed.
-/_site/
-/_artifacts/
-projects/*/dist/
+# === Root whitelist (ignore-everything, then re-allow) ===
+# Agents run their tooling in this repo and routinely drop stray files at the
+# root — screenshots, scratch output, debug dumps, root-level package.json /
+# pnpm-lock.yaml from running pnpm in the wrong place. The auto-merge gate
+# rejects any PR that touches a path outside ONE projects/<slug>/ folder, so a
+# single stray root file silently blocks an otherwise-valid project PR (see
+# PR #73). So: ignore everything at the root, then re-allow only the known-good
+# entries below. Stray root files become un-committable by default. Add a new
+# root path here only on purpose.
+/*
+!/.github/
+!/.gitignore
+!/.nojekyll
+!/AGENTS.md
+!/CLAUDE.md
+!/LICENSE
+!/README.md
+!/assets/
+!/index.html
+!/projects/
+!/scripts/
 
+# === Below the root ===
+# The whitelist above only governs top-level entries; these still apply inside
+# projects/<slug>/ and any other subdirectory.
+node_modules/
+projects/*/dist/
+*.log
 .DS_Store
 Thumbs.db
-node_modules/
-
-# Logs / transient dev-server output — never belong in a PR.
-*.log
-
-# Root-level pnpm files — run pnpm inside your project folder, never the repo root.
-/package.json
-/pnpm-lock.yaml
