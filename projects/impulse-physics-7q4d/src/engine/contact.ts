@@ -1,6 +1,6 @@
 import { Body } from './body';
 import { collide, type Manifold } from './collision/manifold';
-import { crossSV, Vec2 } from './math';
+import { crossSV, Mat22, Vec2 } from './math';
 
 /** Tunable constants for the contact solver. */
 export interface SolverConfig {
@@ -15,6 +15,13 @@ export interface SolverConfig {
   warmStarting: boolean;
   /** Sweep `bullet` bodies to their time of impact so they can't tunnel. */
   continuous: boolean;
+  /**
+   * Solve 2-point manifolds with the exact block LCP (Box2D-Lite) rather than
+   * point-by-point Gauss–Seidel. Couples the two contacts so a stack of wide
+   * bodies (a plank on two supports, boxes on boxes) settles flat in one pass
+   * instead of rocking as each point fights the other.
+   */
+  blockSolver: boolean;
 }
 
 export const DEFAULT_CONFIG: SolverConfig = {
@@ -25,6 +32,7 @@ export const DEFAULT_CONFIG: SolverConfig = {
   restitutionThreshold: 1.0,
   warmStarting: true,
   continuous: true,
+  blockSolver: true,
 };
 
 interface PersistentPoint {
@@ -102,6 +110,47 @@ interface VelocityConstraint {
   normal: Vec2;
   tangent: Vec2;
   points: ConstraintPoint[];
+  /** 2×2 normal-coupling matrix for the block solver (only for 2-point manifolds). */
+  K: Mat22 | null;
+}
+
+/**
+ * Solve the two-contact normal LCP exactly. Find total impulses `x ≥ 0` such that
+ * the post-impulse residual `w = K·x + b ≥ 0` with complementarity `xᵀw = 0`,
+ * where `b = vn − K·a` folds in the velocity targets `vn` (relative normal
+ * velocity minus the restitution bias) and the already-accumulated impulses `a`.
+ *
+ * `K` is the symmetric positive-definite coupling matrix; a one-DOF inverse is
+ * used per axis for the boundary cases. This is Box2D-Lite's four-case analysis,
+ * lifted out as a pure function so the verification suite can assert the LCP
+ * conditions directly on random systems.
+ */
+export function solveBlockLcp(K: Mat22, a: Vec2, vn: Vec2): Vec2 {
+  const b = vn.sub(K.mulV(a));
+  const invK11 = K.a > 0 ? 1 / K.a : 0;
+  const invK22 = K.d > 0 ? 1 / K.d : 0;
+
+  // Case 1: both contacts active. x = −K⁻¹·b.
+  {
+    const x = K.solve(b.neg());
+    if (x.x >= 0 && x.y >= 0) return x;
+  }
+  // Case 2: contact 1 active, contact 2 inactive (x2 = 0).
+  {
+    const x1 = -invK11 * b.x;
+    const w2 = K.c * x1 + b.y;
+    if (x1 >= 0 && w2 >= 0) return new Vec2(x1, 0);
+  }
+  // Case 3: contact 2 active, contact 1 inactive (x1 = 0).
+  {
+    const x2 = -invK22 * b.y;
+    const w1 = K.b * x2 + b.x;
+    if (x2 >= 0 && w1 >= 0) return new Vec2(0, x2);
+  }
+  // Case 4: both inactive.
+  if (b.x >= 0 && b.y >= 0) return Vec2.ZERO;
+  // Degenerate fallback (shouldn't happen for an SPD K): clamp the 1-DOF guesses.
+  return new Vec2(Math.max(-invK11 * b.x, 0), Math.max(-invK22 * b.y, 0));
 }
 
 /**
@@ -164,7 +213,27 @@ export class ContactSolver {
           persistent,
         });
       }
-      this.constraints.push({ contact: c, normal, tangent, points });
+
+      // Build the 2×2 normal-coupling matrix for the block solver. Only assemble
+      // it when the two points are well-conditioned (Box2D's near-parallel guard)
+      // so a degenerate manifold falls back to the robust point-by-point solve.
+      let K: Mat22 | null = null;
+      if (this.config.blockSolver && points.length === 2) {
+        const [p1, p2] = points;
+        const rn1A = p1.rA.cross(normal);
+        const rn1B = p1.rB.cross(normal);
+        const rn2A = p2.rA.cross(normal);
+        const rn2B = p2.rB.cross(normal);
+        const k11 = a.invMass + b.invMass + a.invInertia * rn1A * rn1A + b.invInertia * rn1B * rn1B;
+        const k22 = a.invMass + b.invMass + a.invInertia * rn2A * rn2A + b.invInertia * rn2B * rn2B;
+        const k12 = a.invMass + b.invMass + a.invInertia * rn1A * rn2A + b.invInertia * rn1B * rn2B;
+        const MAX_CONDITION = 1000;
+        if (k11 * k11 < MAX_CONDITION * (k11 * k22 - k12 * k12)) {
+          K = new Mat22(k11, k12, k12, k22);
+        }
+      }
+
+      this.constraints.push({ contact: c, normal, tangent, points, K });
     }
   }
 
@@ -185,20 +254,34 @@ export class ContactSolver {
       const { a, b } = vc.contact;
       const friction = vc.contact.friction;
 
+      // Friction first (solved per point, bounded by the current normal impulse).
       for (const p of vc.points) {
-        // Friction (solved first, bounded by the current normal impulse).
-        {
-          const dv = relativeVelocity(a, b, p.rA, p.rB);
-          const vt = dv.dot(vc.tangent);
-          let lambda = -p.tangentMass * vt;
-          const maxFriction = friction * p.normalImpulse;
-          const newImpulse = clampSym(p.tangentImpulse + lambda, maxFriction);
-          lambda = newImpulse - p.tangentImpulse;
-          p.tangentImpulse = newImpulse;
-          applyImpulse(a, b, vc.tangent.mul(lambda), p.rA, p.rB);
-        }
-        // Normal impulse with restitution (position error handled separately).
-        {
+        const dv = relativeVelocity(a, b, p.rA, p.rB);
+        const vt = dv.dot(vc.tangent);
+        let lambda = -p.tangentMass * vt;
+        const maxFriction = friction * p.normalImpulse;
+        const newImpulse = clampSym(p.tangentImpulse + lambda, maxFriction);
+        lambda = newImpulse - p.tangentImpulse;
+        p.tangentImpulse = newImpulse;
+        applyImpulse(a, b, vc.tangent.mul(lambda), p.rA, p.rB);
+      }
+
+      // Normal impulses: the exact 2-point block LCP when conditioned, else the
+      // robust point-by-point Gauss–Seidel relaxation.
+      if (vc.K) {
+        const [p1, p2] = vc.points;
+        const aOld = new Vec2(p1.normalImpulse, p2.normalImpulse);
+        const vn1 = relativeVelocity(a, b, p1.rA, p1.rB).dot(vc.normal) - p1.velocityBias;
+        const vn2 = relativeVelocity(a, b, p2.rA, p2.rB).dot(vc.normal) - p2.velocityBias;
+        const x = solveBlockLcp(vc.K, aOld, new Vec2(vn1, vn2));
+        const d1 = x.x - aOld.x;
+        const d2 = x.y - aOld.y;
+        applyImpulse(a, b, vc.normal.mul(d1), p1.rA, p1.rB);
+        applyImpulse(a, b, vc.normal.mul(d2), p2.rA, p2.rB);
+        p1.normalImpulse = x.x;
+        p2.normalImpulse = x.y;
+      } else {
+        for (const p of vc.points) {
           const dv = relativeVelocity(a, b, p.rA, p.rB);
           const vn = dv.dot(vc.normal);
           let lambda = p.normalMass * (-vn + p.velocityBias);

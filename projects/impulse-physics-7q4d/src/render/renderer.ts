@@ -1,4 +1,4 @@
-import { Body, BodyType, Vec2, World, type DistanceResult } from '../engine';
+import { Body, BodyType, BuoyancyZone, Vec2, World, type DistanceResult } from '../engine';
 import { Camera } from './camera';
 
 /** Toggleable debug overlays. */
@@ -52,6 +52,9 @@ const COLORS = {
   treeLeaf: 'rgba(120,255,180,0.18)',
   gjk: '#ff79c6',
   hover: '#ffffff',
+  waterFill: 'rgba(58,160,220,0.16)',
+  waterTint: 'rgba(58,160,220,0.14)',
+  waterLine: 'rgba(140,210,255,0.65)',
 };
 
 /** Draws a {@link World} and its debug overlays onto a 2D canvas. */
@@ -71,12 +74,18 @@ export class Renderer {
 
     if (opts.broadphaseTree) this.drawTree(world, camera);
 
+    // Water fill sits behind the bodies; a faint tint is layered back over their
+    // submerged parts after they're drawn.
+    for (const zone of world.fluidZones) this.drawWaterFill(zone, camera);
+
     for (const body of world.bodies) {
       this.drawBody(body, camera, opts, extras.hovered === body);
       if (opts.aabb) this.drawAABB(body, camera);
       if (opts.velocities) this.drawVelocity(body, camera);
       if (opts.centerOfMass) this.drawCOM(body, camera);
     }
+
+    for (const zone of world.fluidZones) this.drawWaterSurface(zone, camera);
 
     if (opts.joints) {
       for (const joint of world.joints) this.drawJoint(joint.anchorA(), joint.anchorB(), camera);
@@ -231,6 +240,68 @@ export class Renderer {
       ctx.strokeStyle = COLORS.tree;
       ctx.strokeRect(lo.x, lo.y, hi.x - lo.x, hi.y - lo.y);
     });
+  }
+
+  /** Horizontal span and a wavy surface polyline for a water zone (screen space). */
+  private waterGeometry(zone: BuoyancyZone, camera: Camera): {
+    left: number;
+    right: number;
+    surface: Vec2[];
+  } {
+    const viewL = camera.screenToWorld(new Vec2(0, 0)).x;
+    const viewR = camera.screenToWorld(new Vec2(camera.width, 0)).x;
+    const left = Math.max(zone.minX, viewL - 1);
+    const right = Math.min(zone.maxX, viewR + 1);
+    const t = (typeof performance !== 'undefined' ? performance.now() : Date.now()) / 1000;
+    const amp = 0.06;
+    const surface: Vec2[] = [];
+    const steps = 80;
+    for (let i = 0; i <= steps; i++) {
+      const x = left + ((right - left) * i) / steps;
+      const y = zone.surface + amp * Math.sin(x * 1.6 + t * 1.5) + amp * 0.5 * Math.sin(x * 3.1 - t * 2.2);
+      surface.push(camera.worldToScreen(new Vec2(x, y)));
+    }
+    return { left, right, surface };
+  }
+
+  private drawWaterFill(zone: BuoyancyZone, camera: Camera): void {
+    const ctx = this.ctx;
+    const { surface } = this.waterGeometry(zone, camera);
+    if (surface.length < 2) return;
+    const bottomY = camera.worldToScreen(new Vec2(0, zone.surface - zone.depth)).y;
+    const floor = Math.min(bottomY, camera.height);
+    ctx.beginPath();
+    ctx.moveTo(surface[0].x, surface[0].y);
+    for (const p of surface) ctx.lineTo(p.x, p.y);
+    ctx.lineTo(surface[surface.length - 1].x, floor);
+    ctx.lineTo(surface[0].x, floor);
+    ctx.closePath();
+    ctx.fillStyle = COLORS.waterFill;
+    ctx.fill();
+  }
+
+  private drawWaterSurface(zone: BuoyancyZone, camera: Camera): void {
+    const ctx = this.ctx;
+    const { surface } = this.waterGeometry(zone, camera);
+    if (surface.length < 2) return;
+    // A faint tint over the submerged bodies, then the bright crest line.
+    const bottomY = camera.worldToScreen(new Vec2(0, zone.surface - zone.depth)).y;
+    const floor = Math.min(bottomY, camera.height);
+    ctx.beginPath();
+    ctx.moveTo(surface[0].x, surface[0].y);
+    for (const p of surface) ctx.lineTo(p.x, p.y);
+    ctx.lineTo(surface[surface.length - 1].x, floor);
+    ctx.lineTo(surface[0].x, floor);
+    ctx.closePath();
+    ctx.fillStyle = COLORS.waterTint;
+    ctx.fill();
+
+    ctx.beginPath();
+    ctx.moveTo(surface[0].x, surface[0].y);
+    for (const p of surface) ctx.lineTo(p.x, p.y);
+    ctx.strokeStyle = COLORS.waterLine;
+    ctx.lineWidth = 2;
+    ctx.stroke();
   }
 
   private drawContacts(world: World, camera: Camera): void {

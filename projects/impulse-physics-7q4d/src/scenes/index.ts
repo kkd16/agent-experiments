@@ -1,6 +1,7 @@
 import {
   Body,
   BodyType,
+  BuoyancyZone,
   Capsule,
   Circle,
   DistanceJoint,
@@ -718,6 +719,90 @@ const limits: SceneDef = {
   },
 };
 
+const buoyancy: SceneDef = {
+  id: 'buoyancy',
+  name: 'Buoyancy',
+  description:
+    'A water tank with real Archimedes buoyancy. Each body feels a lift equal to the weight of the fluid it displaces, applied at the submerged centroid — so a half-density box floats exactly half-under and rights itself, corks bob high, a dense ingot sinks, and a low-density raft carries its cargo. Drop shapes in and watch them find their waterline.',
+  category: 'Showcase',
+  build: (world, rng) => {
+    const surface = 4;
+    const halfW = 11;
+    const floorY = -3;
+    // Tank: floor + two side walls.
+    world.addBody(new Body(Polygon.box(halfW + 0.5, 0.5), {
+      type: BodyType.Static, position: new Vec2(0, floorY - 0.5), friction: 0.5, color: '#46506a',
+    }));
+    world.addBody(new Body(Polygon.box(0.5, 6), {
+      type: BodyType.Static, position: new Vec2(-halfW - 0.5, floorY + 5), friction: 0.3, color: '#46506a',
+    }));
+    world.addBody(new Body(Polygon.box(0.5, 6), {
+      type: BodyType.Static, position: new Vec2(halfW + 0.5, floorY + 5), friction: 0.3, color: '#46506a',
+    }));
+
+    world.addFluid(new BuoyancyZone({
+      surface,
+      minX: -halfW,
+      maxX: halfW,
+      density: 1,
+      depth: surface - floorY,
+      linearDrag: 1.4,
+      angularDrag: 1.0,
+    }));
+
+    // A half-density box — floats with its centre right on the waterline.
+    world.addBody(new Body(Polygon.box(0.7, 0.7), {
+      position: new Vec2(-7, 6), density: 0.5, friction: 0.4, color: '#ffd166',
+    }));
+    // Light corks bob high.
+    for (let i = 0; i < 4; i++) {
+      world.addBody(new Body(new Circle(0.32), {
+        position: new Vec2(-9 + i * 0.9, 6 + i * 0.4), density: 0.25, friction: 0.2, color: '#7CFFCB',
+      }));
+    }
+    // A dense ingot sinks straight to the floor.
+    world.addBody(new Body(Polygon.box(0.5, 0.4), {
+      position: new Vec2(-3, 6), density: 6, friction: 0.5, color: '#b9c0cc',
+    }));
+    // Capsules float lengthwise on the surface.
+    for (let i = 0; i < 3; i++) {
+      world.addBody(new Body(Capsule.of(1.6, 0.28), {
+        position: new Vec2(1 + i * 0.6, 6 + i * 0.5), angle: rng.range(-0.3, 0.3),
+        density: 0.4, friction: 0.4, color: colorFor(i + 3),
+      }));
+    }
+    // A low-density raft carrying a little cargo.
+    const raft = world.addBody(new Body(Polygon.box(2.2, 0.22), {
+      position: new Vec2(6, 5.2), density: 0.3, friction: 0.6, color: '#c0966b',
+    }));
+    for (let i = 0; i < 3; i++) {
+      box(world, 5.2 + i * 0.8, 6.2, 0.28, 0.28, i + 1);
+    }
+    void raft;
+
+    let acc = 0;
+    let dropped = 0;
+    return {
+      camera: { center: new Vec2(0, 3), scale: 30 },
+      update: (_t, dt) => {
+        acc += dt;
+        if (acc > 2.5 && dropped < 12) {
+          acc = 0;
+          dropped++;
+          const density = rng.range(0.2, 1.4);
+          world.addBody(new Body(randomShape(rng, 0.7), {
+            position: new Vec2(rng.range(-9, 9), 9),
+            density,
+            friction: 0.4,
+            restitution: 0.05,
+            color: density < 1 ? '#6ea8ff' : '#ff6b6b',
+          }));
+        }
+      },
+    };
+  },
+};
+
 export const SCENES: SceneDef[] = [
   pyramid,
   stacks,
@@ -731,6 +816,7 @@ export const SCENES: SceneDef[] = [
   limits,
   tumbler,
   dominoes,
+  buoyancy,
   bulletTest,
   galton,
   capsulePile,

@@ -66,8 +66,74 @@ capsules). All 49 pass; click **Verify engine** in the app.
       tumbler, dominoes, Galton board, friction, restitution, stress, sandbox)
 - [x] Canvas renderer with debug overlays (AABBs, contacts, BVH, COM, velocities, joints)
 - [x] In-app 31-check verification suite (all passing)
-- [ ] Block solver for 2-point contact manifolds (exact LCP per manifold)
+- [x] Block solver for 2-point contact manifolds (exact LCP per manifold) — shipped in v3
 - [ ] SVG/JSON scene export and a small scene editor
+
+## v3 — the fluids, queries & exact-solver release 🚧 in progress
+
+The next major upgrade. It deepens the solver (an exact 2-point LCP block solver),
+adds a whole new force subsystem (**buoyancy & fluid drag** with closed-form
+submerged-area integration), grows the engine's query surface (**AABB region
+queries** and a **convex shape-cast**), introduces a new constraint type (a
+Box2D-style **wheel joint** with suspension spring + drive motor → a drivable
+car), and adds **sensors with contact begin/end events**. Every new code path
+gets verification checks that re-derive its claim from an analytic reference, so
+the engine stays inspectable, not just asserted.
+
+### The exact contact solver (block LCP)
+
+- [x] Add an exact **two-point block solver**: build the 2×2 coupling matrix `K`
+      per manifold and solve the normal impulses as a true LCP (Box2D-Lite's
+      four-case analysis) instead of point-by-point Gauss–Seidel. Keeps friction
+      sequential; falls back to the per-point solve for 1-point manifolds.
+- [x] Expose the LCP solve as a pure function and verify it satisfies the
+      complementarity conditions (x ≥ 0, w = Kx + b ≥ 0, xᵀw = 0) on random SPD
+      systems, and that a heavy plank on two supports rests flat with both
+      contacts loaded.
+- [x] A `blockSolver` config flag + a UI toggle so you can A/B it live.
+
+### Buoyancy & fluid drag (a new force subsystem)
+
+- [x] A `BuoyancyZone` (a body of water: surface height, x-extent, fluid density,
+      linear & angular drag, optional current velocity).
+- [x] Closed-form **submerged area + centroid** for any shape under the water's
+      half-plane, via a uniform polygon-clip (Sutherland–Hodgman) of a world
+      approximation of the shape (circle → n-gon, capsule → stadium, polygon →
+      hull) against the surface line.
+- [x] Per-step force application: Archimedes buoyancy = ρ_fluid · A_submerged · (−g)
+      applied at the submerged centroid (so it produces a self-righting torque),
+      plus area-scaled linear & angular drag — added straight to the force
+      accumulators so settled floaters can still sleep.
+- [x] Verify: half-density box floats with its centre exactly on the surface; the
+      submerged area matches the analytic rectangle/segment; a dense block sinks;
+      a tilted box rights itself.
+- [x] Renderer draws the pool (animated wavy surface + translucent fill); a new
+      **Buoyancy** scene (mixed-density boxes, a cork, a sinking ingot, a floating
+      boat hull and capsules bobbing in a wave).
+
+### Spatial queries
+
+- [x] `World.queryAABB(box)` — every body overlapping a world-space region.
+- [x] `World.shapeCast(shape, xf, translation)` — sweep a convex shape through the
+      world (conservative advancement on GJK distance) and return the first body
+      hit with point, normal and fraction. Verified against the analytic circle-
+      vs-wall fraction.
+
+### Wheel joint & a drivable car
+
+- [x] A `WheelJoint`: a hard perpendicular line constraint + a soft suspension
+      spring along the axis + an angular drive motor (Box2D's formulation).
+- [x] A **Car** scene — chassis on two sprung, motorised wheels driving over
+      bumpy terrain — and a verification that the suspension holds the car
+      assembled and the motor drives it forward.
+
+### Sensors & contact events
+
+- [x] An `isSensor` body flag: sensor contacts are detected and reported but never
+      solved (no impulse), so you can build trigger zones.
+- [x] `World` begin/end contact events; a **Sensor Field** scene that counts and
+      tints every body passing through a trigger gate, verified by a headless
+      begin/end-event count.
 
 ## v2 — the swept-collision & advanced-shapes release ✅ shipped
 
