@@ -11,20 +11,43 @@ import {
   encodeLangford,
   randomKSat,
   parseDimacs,
+  encodeFactoring,
+  encodeHamiltonian,
+  encodeZebra,
 } from './sat'
-import type { Graph, NQueensSolution, SudokuSolution, ColoringSolution, LangfordSolution } from './sat'
+import type {
+  Graph,
+  NQueensSolution,
+  SudokuSolution,
+  ColoringSolution,
+  LangfordSolution,
+  FactorSolution,
+  HamiltonianSolution,
+  ZebraSolution,
+} from './sat'
 
-export type ProblemKind = 'nqueens' | 'sudoku' | 'coloring' | 'pigeonhole' | 'langford' | 'random' | 'dimacs'
+export type ProblemKind =
+  | 'nqueens'
+  | 'sudoku'
+  | 'coloring'
+  | 'hamiltonian'
+  | 'factoring'
+  | 'zebra'
+  | 'pigeonhole'
+  | 'langford'
+  | 'random'
+  | 'dimacs'
 
 export interface ProblemSpec {
   kind: ProblemKind
-  n: number // queens size / hole count / random var count / coloring vertices
+  n: number // queens size / hole count / random var count / coloring & hamiltonian vertices
   ratio: number // random-SAT clause ratio
   k: number // coloring colors
-  edgeProb: number // coloring graph density
+  edgeProb: number // coloring / hamiltonian graph density
   seed: number
   sudoku: string // sudoku puzzle string
   dimacs: string // raw DIMACS text
+  target: number // factoring target N
 }
 
 export interface BuiltProblem {
@@ -32,13 +55,16 @@ export interface BuiltProblem {
   cnf: CNF
   title: string
   subtitle: string
-  render: 'queens' | 'sudoku' | 'coloring' | 'langford' | 'model' | 'none'
+  render: 'queens' | 'sudoku' | 'coloring' | 'hamiltonian' | 'factoring' | 'zebra' | 'langford' | 'model' | 'none'
   graph?: Graph
   clues?: number[]
   decodeQueens?: (m: boolean[]) => NQueensSolution
   decodeSudoku?: (m: boolean[]) => SudokuSolution
   decodeColoring?: (m: boolean[]) => ColoringSolution
   decodeLangford?: (m: boolean[]) => LangfordSolution
+  decodeHamiltonian?: (m: boolean[]) => HamiltonianSolution
+  decodeFactoring?: (m: boolean[]) => FactorSolution
+  decodeZebra?: (m: boolean[]) => ZebraSolution
   warnings?: string[]
   error?: string
 }
@@ -52,6 +78,7 @@ export const DEFAULT_SPEC: ProblemSpec = {
   seed: 1,
   sudoku: '53..7....6..195....98....6.8...6...34..8.3..17...2...6.6....28....419..5....8..79',
   dimacs: 'c A small satisfiable example\np cnf 4 4\n1 2 0\n-1 3 0\n-2 -3 4 0\n-4 1 0\n',
+  target: 143,
 }
 
 export function buildProblem(spec: ProblemSpec): BuiltProblem {
@@ -96,6 +123,43 @@ export function buildProblem(spec: ProblemSpec): BuiltProblem {
           render: 'coloring',
           graph,
           decodeColoring: decode,
+        }
+      }
+      case 'hamiltonian': {
+        const n = clampInt(spec.n, 3, 18)
+        const graph = randomGraph(n, clamp(spec.edgeProb, 0.2, 0.95), spec.seed | 0)
+        const { cnf, decode } = encodeHamiltonian(graph)
+        return {
+          kind: spec.kind,
+          cnf,
+          title: `Hamiltonian cycle`,
+          subtitle: `Find a closed tour visiting all ${n} vertices once (${graph.edges.length} edges).`,
+          render: 'hamiltonian',
+          graph,
+          decodeHamiltonian: decode,
+        }
+      }
+      case 'factoring': {
+        const N = clampInt(spec.target, 2, 1_000_000)
+        const { cnf, decode, bits } = encodeFactoring(N)
+        return {
+          kind: spec.kind,
+          cnf,
+          title: `Factoring ${N}`,
+          subtitle: `Find a·b = ${N} with a,b ≥ 2 via a ${bits}-bit multiplier circuit — UNSAT means ${N} is prime.`,
+          render: 'factoring',
+          decodeFactoring: decode,
+        }
+      }
+      case 'zebra': {
+        const { cnf, decode } = encodeZebra()
+        return {
+          kind: spec.kind,
+          cnf,
+          title: `Einstein's Zebra puzzle`,
+          subtitle: `Five houses, 25 attributes, 15 clues — who drinks water and who owns the zebra?`,
+          render: 'zebra',
+          decodeZebra: decode,
         }
       }
       case 'pigeonhole': {

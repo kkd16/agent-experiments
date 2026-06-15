@@ -10,10 +10,22 @@ const KINDS: { kind: ProblemKind; label: string }[] = [
   { kind: 'nqueens', label: 'N-Queens' },
   { kind: 'sudoku', label: 'Sudoku' },
   { kind: 'coloring', label: 'Graph coloring' },
+  { kind: 'hamiltonian', label: 'Hamiltonian' },
+  { kind: 'factoring', label: 'Factoring' },
+  { kind: 'zebra', label: 'Zebra puzzle' },
   { kind: 'pigeonhole', label: 'Pigeonhole' },
   { kind: 'langford', label: 'Langford pairs' },
   { kind: 'random', label: 'Random 3-SAT' },
   { kind: 'dimacs', label: 'Custom CNF' },
+]
+
+const FACTOR_PRESETS: { label: string; n: number }[] = [
+  { label: '143 = 11×13', n: 143 },
+  { label: '323 = 17×19', n: 323 },
+  { label: '1517 = 37×41', n: 1517 },
+  { label: '3599 = 59×61', n: 3599 },
+  { label: '8633 = 89×97', n: 8633 },
+  { label: '9973 (prime)', n: 9973 },
 ]
 
 const SUDOKU_PRESETS: Record<string, string> = {
@@ -91,6 +103,53 @@ export function ControlPanel({
             <Slider label="Edge density" min={10} max={90} value={Math.round(spec.edgeProb * 100)} onChange={(v) => onSpec({ edgeProb: v / 100 })} suffix={`${Math.round(spec.edgeProb * 100)}%`} />
             <Slider label="Seed" min={1} max={50} value={spec.seed} onChange={(seed) => onSpec({ seed })} suffix={`${spec.seed}`} />
           </>
+        )}
+
+        {spec.kind === 'hamiltonian' && (
+          <>
+            <Slider label="Vertices" min={4} max={16} value={spec.n} onChange={(n) => onSpec({ n })} suffix={`${spec.n}`} />
+            <Slider label="Edge density" min={20} max={90} value={Math.round(spec.edgeProb * 100)} onChange={(v) => onSpec({ edgeProb: v / 100 })} suffix={`${Math.round(spec.edgeProb * 100)}%`} />
+            <Slider label="Seed" min={1} max={50} value={spec.seed} onChange={(seed) => onSpec({ seed })} suffix={`${spec.seed}`} />
+            <p className="hint">Sparse graphs are often UNSAT (no closed tour); denser ones almost always have one.</p>
+          </>
+        )}
+
+        {spec.kind === 'factoring' && (
+          <>
+            <label className="field">
+              <span>Preset</span>
+              <select
+                value={spec.target}
+                onChange={(e) => onSpec({ target: Number(e.target.value) })}
+              >
+                {FACTOR_PRESETS.map((p) => (
+                  <option key={p.n} value={p.n}>
+                    {p.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="field">
+              <span>Target N (2 … 1,000,000)</span>
+              <input
+                type="number"
+                className="mono"
+                min={2}
+                max={1000000}
+                value={spec.target}
+                onChange={(e) => onSpec({ target: Number(e.target.value) })}
+              />
+            </label>
+            <p className="hint">The solver searches the bits of a and b in a from-scratch multiplier circuit. UNSAT certifies N is prime.</p>
+          </>
+        )}
+
+        {spec.kind === 'zebra' && (
+          <p className="hint">
+            The classic 1962 <em>Life International</em> riddle: five houses with unique colors, nationalities,
+            drinks, cigarettes and pets, tied together by 15 clues. Solve it, then open the Statistics ▸ Count
+            card — there is exactly one solution.
+          </p>
         )}
 
         {spec.kind === 'pigeonhole' && (
