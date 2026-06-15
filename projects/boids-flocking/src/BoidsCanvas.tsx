@@ -120,16 +120,44 @@ export function BoidsCanvas({ params, numBoids, numPredators, isPaused }: BoidsC
         }
       }
 
-      const grid = new Grid(canvas.width, canvas.height, Math.max(paramsRef.current.visualRange, 50));
+      // Dynamically calculate wind if windVariation is enabled
+      const currentParams = { ...paramsRef.current };
+      if (currentParams.windVariation) {
+        currentParams.windX += Math.sin(time * 0.001) * 0.05;
+        currentParams.windY += Math.cos(time * 0.0013) * 0.05;
+      }
+
+      const grid = new Grid(canvas.width, canvas.height, Math.max(currentParams.visualRange, 50));
       for (const boid of boidsRef.current) {
         grid.insert(boid);
       }
 
-      // Optional: Add a subtle trail effect
-      ctx.fillStyle = paramsRef.current.showTrails ? 'rgba(15, 23, 42, 0.15)' : 'rgba(15, 23, 42, 1.0)'; // Dark slate background with low opacity
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      // Background rendering & Trail Decay
+      const isNight = currentParams.nightMode;
+      const bgR = isNight ? 15 : 241;
+      const bgG = isNight ? 23 : 245;
+      const bgB = isNight ? 42 : 249;
 
-      if (paramsRef.current.showGrid) {
+      const decay = currentParams.showTrails ? currentParams.trailDecay : 1.0;
+      ctx.fillStyle = `rgba(${bgR}, ${bgG}, ${bgB}, ${decay})`;
+
+      ctx.save();
+
+      // Camera Follow logic
+      if (currentParams.cameraFollow && boidsRef.current.length > 0) {
+         const leader = boidsRef.current[0];
+         // Translate canvas context so leader is in center
+         ctx.translate(canvas.width / 2 - leader.position.x, canvas.height / 2 - leader.position.y);
+      }
+
+      // Fill full area regardless of translation
+      ctx.save();
+      ctx.setTransform(1, 0, 0, 1, 0, 0); // reset transform for background clear
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.restore();
+
+
+      if (currentParams.showGrid) {
         ctx.strokeStyle = 'rgba(255, 255, 255, 0.05)';
         ctx.lineWidth = 1;
         const gridSize = 50;
@@ -151,10 +179,10 @@ export function BoidsCanvas({ params, numBoids, numPredators, isPaused }: BoidsC
 
       for (const boid of boidsRef.current) {
         if (!isPaused) {
-          boid.flock(grid, predatorsRef.current, obstaclesRef.current, paramsRef.current, mousePosRef.current);
-          boid.update(paramsRef.current);
+          boid.flock(grid, predatorsRef.current, obstaclesRef.current, currentParams, mousePosRef.current);
+          boid.update(currentParams);
         }
-        boid.draw(ctx, paramsRef.current);
+        boid.draw(ctx, currentParams);
       }
 
       // Draw obstacles
@@ -170,37 +198,38 @@ export function BoidsCanvas({ params, numBoids, numPredators, isPaused }: BoidsC
 
       for (const predator of predatorsRef.current) {
         if (!isPaused) {
-          predator.hunt(grid, paramsRef.current);
-          predator.update(paramsRef.current);
+          predator.hunt(grid, currentParams);
+          predator.update(currentParams);
         }
-        predator.draw(ctx, paramsRef.current);
+        predator.draw(ctx, currentParams);
       }
 
       // Draw mouse interaction radius
-      if (mousePosRef.current && paramsRef.current.mouseInteraction !== 'none') {
+      if (mousePosRef.current && currentParams.mouseInteraction !== 'none') {
         ctx.beginPath();
         ctx.arc(
           mousePosRef.current.x,
           mousePosRef.current.y,
-          paramsRef.current.mouseInteraction === 'obstacle' ? 30 : paramsRef.current.mouseRadius,
+          currentParams.mouseInteraction === 'obstacle' ? 30 : currentParams.mouseRadius,
           0,
           Math.PI * 2
         );
-        ctx.fillStyle = paramsRef.current.mouseInteraction === 'attract'
+        ctx.fillStyle = currentParams.mouseInteraction === 'attract'
           ? 'rgba(59, 130, 246, 0.1)'
-          : paramsRef.current.mouseInteraction === 'obstacle'
+          : currentParams.mouseInteraction === 'obstacle'
           ? 'rgba(100, 116, 139, 0.2)'
           : 'rgba(239, 68, 68, 0.1)';
         ctx.fill();
-        ctx.strokeStyle = paramsRef.current.mouseInteraction === 'attract'
+        ctx.strokeStyle = currentParams.mouseInteraction === 'attract'
           ? 'rgba(59, 130, 246, 0.3)'
-          : paramsRef.current.mouseInteraction === 'obstacle'
+          : currentParams.mouseInteraction === 'obstacle'
           ? 'rgba(100, 116, 139, 0.5)'
           : 'rgba(239, 68, 68, 0.3)';
         ctx.lineWidth = 1;
         ctx.stroke();
       }
 
+      ctx.restore();
       animationFrameId.current = requestAnimationFrame(render);
     };
 
@@ -242,7 +271,7 @@ export function BoidsCanvas({ params, numBoids, numPredators, isPaused }: BoidsC
         display: 'block',
         width: '100vw',
         height: '100vh',
-          backgroundColor: '#0f172a'
+          backgroundColor: params.nightMode ? '#0f172a' : '#f1f5f9'
         }}
       />
     </div>
