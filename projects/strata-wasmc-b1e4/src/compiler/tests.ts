@@ -1009,6 +1009,51 @@ fn sqrt(x: float) -> float { return x + 1.0; }
 fn main(){ print(sqrt(10.0)); print(floor(9.9)); }`,
   },
   {
+    name: 'float-to-str-basic',
+    source: `fn main(){
+  print(str(0.0)); print(str(1.0)); print(str(-1.0)); print(str(0.5));
+  print(str(0.1)); print(str(0.2)); print(str(0.3)); print(str(1.5));
+  print(str(3.14159)); print(str(2.718281828459045));
+  print(str(100.0)); print(str(1000000.0)); print(str(0.001));
+  print(str(123.456)); print(str(-0.0));
+}`,
+  },
+  {
+    name: 'float-to-str-notation',
+    source: `fn main(){
+  // boundaries between fixed and exponential ECMAScript notation
+  print(str(1.0e21)); print(str(1.0e-7)); print(str(5.0e-7)); print(str(1.0e-6));
+  print(str(1.0e20)); print(str(1.0e22)); print(str(123456789.0));
+  print(str(0.0001)); print(str(0.00001)); print(str(0.000001)); print(str(0.0000001));
+  print(str(6.022e23)); print(str(1.0e308)); print(str(1.0e-308));
+}`,
+  },
+  {
+    name: 'float-to-str-computed',
+    source: `// Values produced by arithmetic (not literals) round-tripped through str().
+fn main(){
+  let s = 0.0;
+  for (let i = 1; i <= 6; i = i + 1) { s = s + 1.0 / float(i); }
+  print(str(s));                       // harmonic sum
+  print(str(sqrt(2.0)));
+  print(str(1.0 / 3.0));
+  print(str(0.1 + 0.2));               // the classic 0.30000000000000004
+  print("pi ~ " + str(3.141592653589793));
+  print(str(float(9999999) / 1000.0));
+}`,
+  },
+  {
+    name: 'float-to-str-extremes',
+    source: `fn main(){
+  print(str(1.0 / 0.0));               // inf
+  print(str(-1.0 / 0.0));              // -inf
+  print(str(0.0 / 0.0));               // nan
+  print(str(4.9e-324));                // smallest subnormal
+  print(str(1.7976931348623157e308));  // max double
+  print(str(9007199254740993.0));      // 2^53 + 1 (not representable -> nearest)
+}`,
+  },
+  {
     name: 'float-reduce-loop',
     source: `// Exercise the f64 ops through a loop the optimizer rewrites (LICM / stackify).
 fn main(){

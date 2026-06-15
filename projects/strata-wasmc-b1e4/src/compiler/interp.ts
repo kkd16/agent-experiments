@@ -581,6 +581,7 @@ export function callBuiltin(
       const k = argKinds[0];
       if (k === 'str') return H(argv[0]);
       if (k === 'long') return H(formatLong(argv[0] as bigint));
+      if (k === 'float') return H(formatFloat(argv[0] as number));
       if (k === 'bool') return H(formatBool(argv[0] as number));
       return H(formatInt(argv[0] as number));
     }

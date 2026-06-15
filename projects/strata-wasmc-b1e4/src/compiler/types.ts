@@ -525,8 +525,8 @@ class Checker {
     if (name === 'str') {
       if (e.args.length !== 1) throw new CompileError('str() expects 1 argument', e.span, 'type');
       const t = this.checkExpr(e.args[0]);
-      if (t.kind !== 'int' && t.kind !== 'long' && t.kind !== 'bool' && t.kind !== 'str')
-        throw new CompileError(`str() expects an int, long, bool, or str, found ${tyName(t)}`, e.span, 'type');
+      if (t.kind !== 'int' && t.kind !== 'long' && t.kind !== 'float' && t.kind !== 'bool' && t.kind !== 'str')
+        throw new CompileError(`str() expects an int, long, float, bool, or str, found ${tyName(t)}`, e.span, 'type');
       return T_STR;
     }
     if (name === 'char') {

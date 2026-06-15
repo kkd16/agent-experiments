@@ -2,7 +2,7 @@ import type { BinaryOp, Block, Expr, Program, Stmt, Ty } from '../ast';
 import type { ConstNum, IRType, RetType } from './ir';
 import { parse } from '../parser';
 import { typecheck } from '../types';
-import { STRING_PRELUDE } from './prelude';
+import { STRING_PRELUDE, FLOAT_PRELUDE } from './prelude';
 import type { StructLayout } from '../struct';
 import { computeLayouts } from '../struct';
 
@@ -125,6 +125,7 @@ class FnBuilder {
   varType = new Map<string, IRType>();
   usesMemory = false;
   usesStrings = false;
+  usesFloatFmt = false;
   private cur!: PBlock;
   private blockCounter = 0;
   private tempCounter = 0;
@@ -151,7 +152,7 @@ class FnBuilder {
     this.userFns = userFns;
   }
 
-  build(): { fn: PFunc; usesMemory: boolean; usesStrings: boolean } {
+  build(): { fn: PFunc; usesMemory: boolean; usesStrings: boolean; usesFloatFmt: boolean } {
     const entry = this.newBlock();
     this.cur = entry;
     this.scopes = [new Map()];
@@ -173,7 +174,7 @@ class FnBuilder {
       varType: this.varType,
       exported: this.exported,
     };
-    return { fn, usesMemory: this.usesMemory, usesStrings: this.usesStrings };
+    return { fn, usesMemory: this.usesMemory, usesStrings: this.usesStrings, usesFloatFmt: this.usesFloatFmt };
   }
 
   // --- block & scope plumbing ---
@@ -598,6 +599,11 @@ class FnBuilder {
       if (k === 'str') return v; // identity
       this.usesStrings = true;
       this.usesMemory = true;
+      if (k === 'float') {
+        // The float formatter is its own (large) prelude, pulled in only here.
+        this.usesFloatFmt = true;
+        return this.def('i32', 'call', '__float_to_str', [v]);
+      }
       const helper = k === 'bool' ? '__bool_to_str' : k === 'long' ? '__long_to_str' : '__int_to_str';
       return this.def('i32', 'call', helper, [v]);
     }
@@ -779,6 +785,7 @@ export function buildPreIR(prog: Program): PModule {
   const layouts = computeLayouts(prog);
   let usesMemory = false;
   let usesStrings = false;
+  let usesFloatFmt = false;
   // Only the entry point is exported, so the optimizer is free to delete a
   // function once every call to it has been inlined. If a program has no `main`,
   // fall back to exporting everything so it can still be driven externally.
@@ -791,9 +798,10 @@ export function buildPreIR(prog: Program): PModule {
     const params = d.params.map((p) => ({ name: p.name, ty: irTypeOf(p.ty) }));
     const exported = hasMain ? d.name === 'main' : true;
     const fb = new FnBuilder(d.name, params, retTypeOf(d.retTy), d.body, exported, pool, layouts, userFns);
-    const { fn, usesMemory: m, usesStrings: s } = fb.build();
+    const { fn, usesMemory: m, usesStrings: s, usesFloatFmt: ff } = fb.build();
     usesMemory = usesMemory || m;
     usesStrings = usesStrings || s;
+    usesFloatFmt = usesFloatFmt || ff;
     funcs.push(fn);
   }
 
@@ -819,6 +827,21 @@ export function buildPreIR(prog: Program): PModule {
     const preludeProg = parse(STRING_PRELUDE);
     typecheck(preludeProg, { lowLevel: true });
     for (const d of preludeProg.decls) {
+      if (d.kind !== 'fn') continue;
+      const params = d.params.map((p) => ({ name: p.name, ty: irTypeOf(p.ty) }));
+      const fb = new FnBuilder(d.name, params, retTypeOf(d.retTy), d.body, false, pool, layouts, userFns);
+      funcs.push(fb.build().fn);
+    }
+  }
+
+  // The float formatter is a second, self-contained prelude — a big-integer
+  // Dragon4 — injected only when a program actually formats a float (`str(float)`),
+  // and pruned by dead-function elimination at -O2+ if it ends up unreachable.
+  if (usesFloatFmt) {
+    usesMemory = true;
+    const floatProg = parse(FLOAT_PRELUDE);
+    typecheck(floatProg, { lowLevel: true });
+    for (const d of floatProg.decls) {
       if (d.kind !== 'fn') continue;
       const params = d.params.map((p) => ({ name: p.name, ty: irTypeOf(p.ty) }));
       const fb = new FnBuilder(d.name, params, retTypeOf(d.retTy), d.body, false, pool, layouts, userFns);
