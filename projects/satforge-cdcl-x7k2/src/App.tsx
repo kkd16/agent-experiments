@@ -81,7 +81,7 @@ export default function App() {
           <span className="logo">⊨</span>
           <div>
             <h1>SatForge</h1>
-            <p>{mode === 'sat' ? 'A from-scratch CDCL SAT solver, visualized.' : 'A from-scratch DPLL(T) SMT solver — SAT lifted to theories.'}</p>
+            <p>{mode === 'sat' ? 'A from-scratch CDCL SAT solver, visualized.' : 'A from-scratch DPLL(T) SMT solver — plus QF_BV by bit-blasting.'}</p>
           </div>
         </div>
         <div className="mode-switch">
@@ -191,8 +191,10 @@ export default function App() {
         under assumptions with core extraction · weighted MaxSAT (linear SAT-UNSAT &amp; core-guided
         WPM1) over a Generalized Totalizer · and a full <b>DPLL(T) SMT solver</b> on the same core
         — EUF by proof-producing congruence closure, QF_LRA/QF_LIA by a general simplex over exact
-        δ-rationals with branch-and-bound, and QF_UFLIA by Ackermann combination — all hand-written
-        in TypeScript.
+        δ-rationals with branch-and-bound, and QF_UFLIA by Ackermann combination · plus a complete
+        <b>QF_BV bit-vector engine</b> by eager bit-blasting — from-scratch adders, a shift-add
+        multiplier, restoring division and barrel shifters lowered to the very same CDCL core — all
+        hand-written in TypeScript.
       </footer>
     </div>
   )
