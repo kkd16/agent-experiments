@@ -15,6 +15,8 @@ export interface InspectInfo {
   primaryLabel: string
   /** Osculating orbit relative to the primary, or null (e.g. body *is* primary). */
   orbit: OrbitElements | null
+  /** Jacobi constant in the two-heaviest-body co-rotating frame, or null. */
+  jacobi: number | null
 }
 
 function fmt(v: number, digits = 3): string {
@@ -71,6 +73,7 @@ export function Inspector({ info, onClose }: { info: InspectInfo; onClose: () =>
               label="Direction"
               value={o.prograde ? 'prograde ↺' : 'retrograde ↻'}
             />
+            {info.jacobi != null && <Row label="Jacobi C (3-body)" value={fmt(info.jacobi, 2)} />}
           </>
         ) : (
           <p className="inspector-note">This is the primary — no orbit to report.</p>

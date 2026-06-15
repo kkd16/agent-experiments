@@ -100,6 +100,63 @@ function bisectCollinear(lo: number, hi: number, mu: number): number {
 }
 
 /**
+ * The Jacobi constant of a test particle in the co-rotating frame of two
+ * primaries — the one integral of motion the restricted three-body problem
+ * admits. In physical (un-normalized) units, with the binary's signed angular
+ * velocity n, distance ρ from the barycentre and distances r₁, r₂ to the
+ * primaries,
+ *   C = n²ρ² + 2G(m₁/r₁ + m₂/r₂) − v_rot²,   v_rot = v − ω × r.
+ * Every term here is frame- or sign-robust (ρ², r₁, r₂ are rotation-invariant
+ * and the rotating-frame speed uses the *signed* n derived from the primaries'
+ * own motion), so it is correct whether the binary spins clockwise or counter-
+ * clockwise, without any reference-frame alignment. It is (approximately)
+ * conserved along a particle's path so long as the primaries stay near-circular.
+ */
+export function jacobiConstant(
+  m1: number,
+  p1x: number,
+  p1y: number,
+  v1x: number,
+  v1y: number,
+  m2: number,
+  p2x: number,
+  p2y: number,
+  v2x: number,
+  v2y: number,
+  g: number,
+  bx: number,
+  by: number,
+  bvx: number,
+  bvy: number,
+): number | null {
+  const M = m1 + m2
+  const Rx = p2x - p1x
+  const Ry = p2y - p1y
+  const d2 = Rx * Rx + Ry * Ry
+  if (!(M > 0) || !(d2 > 1e-12)) return null
+  // Signed angular velocity of the binary from its own relative motion.
+  const Vx = v2x - v1x
+  const Vy = v2y - v1y
+  const n = (Rx * Vy - Ry * Vx) / d2
+
+  const baryX = (m1 * p1x + m2 * p2x) / M
+  const baryY = (m1 * p1y + m2 * p2y) / M
+  const rxb = bx - baryX
+  const ryb = by - baryY
+  const rho2 = rxb * rxb + ryb * ryb
+
+  const r1 = Math.hypot(bx - p1x, by - p1y) || 1e-12
+  const r2 = Math.hypot(bx - p2x, by - p2y) || 1e-12
+
+  // Rotating-frame velocity: v − ω × r, with ω = n ẑ ⇒ ω × r = n(−ryb, rxb).
+  const vrx = bvx + n * ryb
+  const vry = bvy - n * rxb
+  const vrot2 = vrx * vrx + vry * vry
+
+  return n * n * rho2 + 2 * g * (m1 / r1 + m2 / r2) - vrot2
+}
+
+/**
  * Solve the restricted-three-body structure for the two heaviest bodies and
  * return it in world coordinates. `gridN` controls the zero-velocity contour
  * resolution; `gridHalf` is the half-extent of the contour grid in units of the

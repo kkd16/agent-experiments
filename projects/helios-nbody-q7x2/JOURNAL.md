@@ -94,12 +94,16 @@ an honest demonstration: symplectic schemes keep the trace flat; Explicit Euler 
       the dock, colour-graded by distance from 1.
 - [x] **New presets** — an eccentric "Kepler Showcase", a co-orbital "Horseshoe
       & Tadpole" restricted-3-body demo, and a hierarchical "Three-Body Waltz".
-- [x] **Physics self-test harness** (`src/sim/selftest.ts`) — nine checks: the
+- [x] **Jacobi constant readout** — the inspector reports a selected test
+      particle's Jacobi constant in the two-heaviest-body co-rotating frame
+      (un-normalized, sign-robust form C = n²ρ² + 2G(m₁/r₁+m₂/r₂) − v_rot²).
+- [x] **Physics self-test harness** (`src/sim/selftest.ts`) — ten checks: the
       orbit solver recovers a/e/period for circular, eccentric and hyperbolic
-      orbits; Yoshida4 beats Verlet on energy; Euler drifts; the Lagrange points
-      satisfy ∇Ω ≈ 0; L4 sits at the equilateral apex; momentum is conserved at
-      θ=0; and the virial ratio averages to 1. Runs from the About panel, results
-      shown in-app. (All 9 green this session.)
+      orbits; Yoshida4 beats Verlet on energy (~10⁴×); Euler drifts; the Lagrange
+      points satisfy ∇Ω ≈ 0; L4 sits at the equilateral apex; momentum is
+      conserved at θ=0; the virial ratio averages to 1; and the Jacobi constant
+      is conserved along a test-particle path. Runs from About, shown in-app.
+      (All 10 green this session.)
 - [x] **More keyboard shortcuts & UI wiring** — o = osculating orbit, l =
       Lagrange/Hill overlay; new Analysis section in the sidebar.
 
@@ -133,5 +137,7 @@ an honest demonstration: symplectic schemes keep the trace flat; Explicit Euler 
   and an in-app numerical self-test (`selftest.ts`, runnable from About) of nine
   checks — orbit-element recovery (circular/eccentric/hyperbolic), Yoshida-vs-Verlet
   energy, Euler drift, Lagrange equilibria ∇Ω≈0, L4 at the equilateral apex,
-  momentum conservation at θ=0, and the virial theorem. All nine pass; verified
-  `pnpm lint` + `pnpm build` green via `scripts/verify-project.mjs`.
+  momentum conservation at θ=0, the virial theorem, and Jacobi-constant
+  conservation. Also added a Jacobi-constant readout in the inspector for test
+  particles in the restricted-3-body frame. All ten self-test checks pass;
+  verified `pnpm lint` + `pnpm build` green via `scripts/verify-project.mjs`.

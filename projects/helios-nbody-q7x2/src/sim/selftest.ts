@@ -10,7 +10,7 @@
 
 import { Simulation } from './Simulation'
 import { orbitElements } from './orbit'
-import { omegaGradient, solveLagrangeNormalized } from './restricted3body'
+import { jacobiConstant, omegaGradient, solveLagrangeNormalized } from './restricted3body'
 import type { IntegratorId } from './types'
 
 export interface TestCase {
@@ -240,6 +240,40 @@ export function runSelfTest(): SelfTestReport {
     const mean = cnt > 0 ? sum / cnt : NaN
     const pass = Number.isFinite(mean) && approx(mean, 1, 0.15)
     add('Virial theorem (2T/|U| → 1)', pass, `time-averaged 2T/|U| = ${mean.toFixed(3)} (≈1)`)
+  }
+
+  // 10 — The Jacobi constant is (nearly) conserved for a test particle orbiting a
+  // Sun–planet binary, as the restricted three-body problem demands.
+  {
+    const sim = new Simulation(8)
+    const g = 1
+    const sun = 20000
+    const R = 200
+    const planet = 12
+    const vP = Math.sqrt((g * sun) / R)
+    // Sun (recoiled), planet on a circular orbit, and a co-orbital test particle.
+    const rPart = R * 1.18
+    const vPart = Math.sqrt((g * sun) / rPart)
+    const px = Float64Array.from([0, R, 0])
+    const py = Float64Array.from([0, 0, rPart])
+    const vx = Float64Array.from([0, 0, -vPart])
+    const vy = Float64Array.from([-(planet * vP) / sun, vP, 0])
+    const mass = Float64Array.from([sun, planet, 1e-6])
+    sim.setBodies(3, px, py, vx, vy, mass)
+    sim.params = { ...sim.params, g, theta: 0, softening: 0.5, dt: 0.01, integrator: 'yoshida4' }
+    const cj = () =>
+      jacobiConstant(
+        sim.mass[0], sim.posX[0], sim.posY[0], sim.velX[0], sim.velY[0],
+        sim.mass[1], sim.posX[1], sim.posY[1], sim.velX[1], sim.velY[1],
+        g,
+        sim.posX[2], sim.posY[2], sim.velX[2], sim.velY[2],
+      ) ?? NaN
+    const c0 = cj()
+    for (let i = 0; i < 6000; i++) sim.step()
+    const c1 = cj()
+    const rel = Math.abs((c1 - c0) / c0)
+    const pass = Number.isFinite(rel) && rel < 5e-3
+    add('Jacobi constant conserved', pass, `|ΔC/C| = ${rel.toExponential(2)} over 6000 steps`)
   }
 
   const passed = cases.filter((c) => c.pass).length

@@ -105,6 +105,8 @@ export function About({ onClose }: Props) {
           potential, triangular <code>L4/L5</code> at the equilateral apices — and traces the
           <em>zero-velocity (Hill-region) curves</em> of the Jacobi integral. Load <em>Horseshoe &amp;
           Tadpole</em> or <em>Trojan Swarms</em> to see particles trapped in exactly those wells.
+          Click any test particle and the inspector reports its <strong>Jacobi constant</strong> —
+          the single integral of motion the restricted problem conserves.
         </p>
 
         <h2>Run the numbers yourself</h2>

@@ -8,7 +8,7 @@ import type { Diagnostics, SimParams } from './sim/types'
 import { presetById } from './sim/presets'
 import { apoapsisPoint, orbitElements, periapsisPoint, sampleOrbitPath } from './sim/orbit'
 import type { OrbitElements } from './sim/orbit'
-import { restrictedThreeBody } from './sim/restricted3body'
+import { jacobiConstant, restrictedThreeBody } from './sim/restricted3body'
 import { Ring } from './util/ring'
 import { Sidebar } from './components/Sidebar'
 import type { Series } from './components/Plot'
@@ -750,7 +750,23 @@ function computeInspect(sim: Simulation, sel: number, mode: PrimaryMode): Inspec
         sim.velY[sel] - ref.pvy,
         ref.mu,
       )
-  return { index: sel, mass: m, speed, distCom, primaryLabel: ref.label, orbit }
+  // Jacobi constant in the co-rotating frame of the two heaviest bodies — only
+  // meaningful for a genuine *test* particle, i.e. one that is not itself one of
+  // the two primaries.
+  let jacobi: number | null = null
+  if (sim.count >= 3) {
+    const heavy = sim.heaviestIndices(2)
+    if (heavy.length === 2 && sel !== heavy[0] && sel !== heavy[1]) {
+      const [a, b] = heavy
+      jacobi = jacobiConstant(
+        sim.mass[a], sim.posX[a], sim.posY[a], sim.velX[a], sim.velY[a],
+        sim.mass[b], sim.posX[b], sim.posY[b], sim.velX[b], sim.velY[b],
+        sim.params.g,
+        sim.posX[sel], sim.posY[sel], sim.velX[sel], sim.velY[sel],
+      )
+    }
+  }
+  return { index: sel, mass: m, speed, distCom, primaryLabel: ref.label, orbit, jacobi }
 }
 
 /** Build the on-canvas osculating-orbit overlay for the selected body. */
