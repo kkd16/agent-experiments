@@ -25,21 +25,29 @@
 - [x] Make regular boids flee from Predators.
 - [x] Add individual speed/size variance to regular boids for a more organic look.
 - [x] Optimize the flocking neighbor search with a QuadTree or Grid-based spatial partitioning to support 1000+ boids.
-- [ ] Add interactive obstacles that boids must steer around.
-- [ ] Allow the user to click to place/remove obstacles on the canvas.
 - [x] Implement a "wind" force that pushes all boids in a certain direction.
+- [x] Add boid shapes/types: draw boids as triangles, arrows, or circles based on a toggle.
+- [x] Add a visual performance metric (FPS counter) to measure the effectiveness of optimizations.
+- [x] Add a "pause/play" button to freeze the simulation.
+- [x] Add interactive obstacles that boids must steer around.
+- [x] Allow the user to click to place/remove obstacles on the canvas.
 - [ ] Implement a "follow the leader" mode where boids try to follow a specific designated boid.
-- [ ] Add color trails to the canvas for a continuous path effect.
+- [x] Add color trails to the canvas for a continuous path effect.
 - [ ] Add a visual toggle for viewing the "sensory radius" (visual range) of a selected boid.
 - [ ] Implement a "scatter" effect when the user clicks the canvas, making boids temporarily flee from the click point.
-- [x] Add boid shapes/types: draw boids as triangles, arrows, or circles based on a toggle.
-- [ ] Add a background grid or starfield that slowly scrolls.
+- [x] Add a background grid or starfield that slowly scrolls.
 - [ ] Introduce "food" items that boids can eat to grow in size or speed.
 - [ ] Implement boid reproduction when two boids stay close and "eat" enough food.
 - [ ] Allow different species of boids (different colors/behaviors) that form separate flocks or compete.
-- [x] Add a visual performance metric (FPS counter) to measure the effectiveness of optimizations.
-- [x] Add a "pause/play" button to freeze the simulation.
-- [ ] Implement "gravity" slider to apply constant vertical forces to all boids.
+- [x] Implement "gravity" slider to apply constant vertical forces to all boids.
 - [ ] Make obstacles draggable so the user can easily reposition them.
+- [ ] Add "chaos mode" that randomly fluctuates parameter values over time.
+- [ ] Add sound effects for boid collisions or feeding.
+- [ ] Implement a heatmap overlay showing boid density.
+- [ ] Add spatial partitioning grid visualization for debugging.
+- [ ] Introduce "lazy" boids that have lower max speeds and prefer to stay still.
+- [ ] Implement directional light sources affecting boid coloring.
+- [ ] Add an option to save/load flock parameter presets.
+- [ ] Allow drawing custom barrier shapes instead of just points.
 
 ### Tasks Completed

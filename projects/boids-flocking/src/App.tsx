@@ -18,7 +18,10 @@ function App() {
     predatorVisualRange: 100,
     windX: 0,
     windY: 0,
-    boidShape: 'triangle'
+    boidShape: 'triangle',
+    gravity: 0,
+    showTrails: false,
+    showGrid: false
   })
 
   const [numBoids, setNumBoids] = useState(150)
@@ -175,6 +178,7 @@ function App() {
                 <option value="none">None</option>
                 <option value="attract">Attract</option>
                 <option value="repel">Repel</option>
+                <option value="obstacle">Place Obstacle</option>
               </select>
             </label>
           </div>
@@ -207,6 +211,39 @@ function App() {
                 onChange={(e) => handleParamChange('windX', Number(e.target.value))}
               />
             </label>
+          </div>
+
+          <div className="control-group">
+            <label>
+              Gravity: {params.gravity.toFixed(2)}
+              <input
+                type="range"
+                min="-0.2"
+                max="0.2"
+                step="0.01"
+                value={params.gravity}
+                onChange={(e) => handleParamChange('gravity', Number(e.target.value))}
+              />
+            </label>
+          </div>
+
+          <div className="control-group" style={{ display: 'flex', gap: '10px', flexDirection: 'row' }}>
+             <label style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
+                <input
+                  type="checkbox"
+                  checked={params.showTrails}
+                  onChange={(e) => setParams(prev => ({ ...prev, showTrails: e.target.checked }))}
+                />
+                Show Trails
+             </label>
+             <label style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
+                <input
+                  type="checkbox"
+                  checked={params.showGrid}
+                  onChange={(e) => setParams(prev => ({ ...prev, showGrid: e.target.checked }))}
+                />
+                Show Grid
+             </label>
           </div>
 
           <div className="control-group">
