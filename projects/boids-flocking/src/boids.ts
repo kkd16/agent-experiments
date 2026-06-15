@@ -81,6 +81,64 @@ export interface BoidParams {
   edgeBehavior: 'wrap' | 'bounce';
   predatorAvoidance: number;
   predatorVisualRange: number;
+  windX: number;
+  windY: number;
+  boidShape: 'triangle' | 'circle' | 'arrow';
+}
+
+
+
+export class Grid {
+  cellSize: number;
+  width: number;
+  height: number;
+  cells: Map<string, Boid[]>;
+
+  constructor(width: number, height: number, cellSize: number) {
+    this.width = width;
+    this.height = height;
+    this.cellSize = cellSize;
+    this.cells = new Map();
+  }
+
+  clear() {
+    this.cells.clear();
+  }
+
+  getKey(x: number, y: number): string {
+    const col = Math.floor(x / this.cellSize);
+    const row = Math.floor(y / this.cellSize);
+    return `${col},${row}`;
+  }
+
+  insert(boid: Boid) {
+    const key = this.getKey(boid.position.x, boid.position.y);
+    if (!this.cells.has(key)) {
+      this.cells.set(key, []);
+    }
+    this.cells.get(key)!.push(boid);
+  }
+
+  query(x: number, y: number, radius: number): Boid[] {
+    const found: Boid[] = [];
+    const minCol = Math.floor((x - radius) / this.cellSize);
+    const maxCol = Math.floor((x + radius) / this.cellSize);
+    const minRow = Math.floor((y - radius) / this.cellSize);
+    const maxRow = Math.floor((y + radius) / this.cellSize);
+
+    for (let col = minCol; col <= maxCol; col++) {
+      for (let row = minRow; row <= maxRow; row++) {
+        const key = `${col},${row}`;
+        const cell = this.cells.get(key);
+        if (cell) {
+          for (const boid of cell) {
+            found.push(boid);
+          }
+        }
+      }
+    }
+    return found;
+  }
 }
 
 export class Boid {
@@ -91,6 +149,8 @@ export class Boid {
   height: number;
   color: string;
   size: number;
+  baseMaxSpeedMultiplier: number;
+  baseSizeMultiplier: number;
 
   constructor(x: number, y: number, width: number, height: number) {
     this.position = new Vector(x, y);
@@ -98,7 +158,9 @@ export class Boid {
     this.acceleration = new Vector(0, 0);
     this.width = width;
     this.height = height;
-    this.size = 3 + Math.random() * 2;
+    this.baseSizeMultiplier = 0.5 + Math.random(); // 0.5x to 1.5x size
+    this.size = (3 + Math.random() * 2) * this.baseSizeMultiplier;
+    this.baseMaxSpeedMultiplier = 0.8 + Math.random() * 0.4; // 0.8x to 1.2x speed
 
     // Nice gradient of colors based on initial velocity
     const hue = Math.floor(Math.random() * 360);
@@ -106,8 +168,9 @@ export class Boid {
   }
 
   update(params: BoidParams) {
+    this.acceleration.add(new Vector(params.windX, params.windY));
     this.velocity.add(this.acceleration);
-    this.velocity.limit(params.maxSpeed);
+    this.velocity.limit(params.maxSpeed * this.baseMaxSpeedMultiplier);
     this.position.add(this.velocity);
     this.acceleration.mult(0); // Reset acceleration each frame
     this.edges(params.edgeBehavior);
@@ -117,10 +180,11 @@ export class Boid {
     this.acceleration.add(force);
   }
 
-  flock(boids: Boid[], predators: Predator[], params: BoidParams, mousePos: { x: number; y: number } | null = null) {
-    const sep = this.separate(boids, params.visualRange / 2); // Separation distance is usually smaller
-    const ali = this.align(boids, params.visualRange);
-    const coh = this.cohere(boids, params.visualRange);
+  flock(grid: Grid, predators: Predator[], params: BoidParams, mousePos: { x: number; y: number } | null = null) {
+    const nearbyBoids = grid.query(this.position.x, this.position.y, Math.max(params.visualRange, params.visualRange / 2));
+    const sep = this.separate(nearbyBoids, params.visualRange / 2);
+    const ali = this.align(nearbyBoids, params.visualRange);
+    const coh = this.cohere(nearbyBoids, params.visualRange);
     const avoid = this.avoidPredators(predators, params.predatorVisualRange);
 
     sep.mult(params.separation);
@@ -139,9 +203,9 @@ export class Boid {
       if (d < params.mouseRadius) {
         let mouseForce: Vector;
         if (params.mouseInteraction === 'attract') {
-          mouseForce = this.seek(mouseVec, params.maxSpeed, params.maxForce);
+          mouseForce = this.seek(mouseVec, (params.maxSpeed * this.baseMaxSpeedMultiplier), params.maxForce);
         } else {
-          mouseForce = this.flee(mouseVec, params.maxSpeed, params.maxForce);
+          mouseForce = this.flee(mouseVec, (params.maxSpeed * this.baseMaxSpeedMultiplier), params.maxForce);
         }
 
         // Weight the mouse force based on distance (stronger when closer)
@@ -302,16 +366,31 @@ export class Boid {
     }
   }
 
-  draw(ctx: CanvasRenderingContext2D) {
+  draw(ctx: CanvasRenderingContext2D, params: BoidParams) {
     const theta = this.velocity.heading() + Math.PI / 2;
     ctx.save();
     ctx.translate(this.position.x, this.position.y);
     ctx.rotate(theta);
+
     ctx.beginPath();
-    ctx.moveTo(0, -this.size * 2);
-    ctx.lineTo(-this.size, this.size * 2);
-    ctx.lineTo(this.size, this.size * 2);
-    ctx.closePath();
+    if (params.boidShape === 'circle') {
+      ctx.arc(0, 0, this.size * 1.5, 0, Math.PI * 2);
+    } else if (params.boidShape === 'arrow') {
+      ctx.moveTo(0, -this.size * 2);
+      ctx.lineTo(-this.size, this.size);
+      ctx.lineTo(0, 0);
+      ctx.lineTo(this.size, this.size);
+    } else {
+      // Default triangle
+      ctx.moveTo(0, -this.size * 2);
+      ctx.lineTo(-this.size, this.size * 2);
+      ctx.lineTo(this.size, this.size * 2);
+    }
+
+    if (params.boidShape !== 'circle') {
+      ctx.closePath();
+    }
+
     ctx.fillStyle = this.color;
     ctx.fill();
     ctx.restore();
@@ -326,12 +405,13 @@ export class Predator extends Boid {
     this.velocity = new Vector((Math.random() - 0.5) * 15, (Math.random() - 0.5) * 15);
   }
 
-  hunt(boids: Boid[], params: BoidParams) {
+  hunt(grid: Grid, params: BoidParams) {
+    const nearbyBoids = grid.query(this.position.x, this.position.y, params.visualRange * 2);
     // Find closest boid
     let closestDist = Infinity;
     let closestBoid: Boid | null = null;
 
-    for (const boid of boids) {
+    for (const boid of nearbyBoids) {
       const d = Vector.dist(this.position, boid.position);
       if (d < closestDist) {
         closestDist = d;
@@ -340,7 +420,7 @@ export class Predator extends Boid {
     }
 
     if (closestBoid && closestDist < params.visualRange * 2) {
-      const steer = this.seek(closestBoid.position, params.maxSpeed * 1.2, params.maxForce * 1.5);
+      const steer = this.seek(closestBoid.position, (params.maxSpeed * this.baseMaxSpeedMultiplier) * 1.2, params.maxForce * 1.5);
       this.applyForce(steer);
     } else {
       // Wander if no boids nearby
@@ -351,23 +431,32 @@ export class Predator extends Boid {
     }
   }
 
-  draw(ctx: CanvasRenderingContext2D) {
+  draw(ctx: CanvasRenderingContext2D, params: BoidParams) {
     const theta = this.velocity.heading() + Math.PI / 2;
     ctx.save();
     ctx.translate(this.position.x, this.position.y);
     ctx.rotate(theta);
-    ctx.beginPath();
-    ctx.moveTo(0, -this.size * 2);
-    ctx.lineTo(-this.size, this.size * 2);
-    ctx.lineTo(this.size, this.size * 2);
-    ctx.closePath();
-    ctx.fillStyle = this.color;
-    ctx.fill();
 
-    // Draw an aura
     ctx.beginPath();
-    ctx.arc(0, 0, this.size * 3, 0, Math.PI * 2);
-    ctx.fillStyle = 'rgba(239, 68, 68, 0.2)';
+    if (params.boidShape === 'circle') {
+      ctx.arc(0, 0, this.size * 1.5, 0, Math.PI * 2);
+    } else if (params.boidShape === 'arrow') {
+      ctx.moveTo(0, -this.size * 2);
+      ctx.lineTo(-this.size, this.size);
+      ctx.lineTo(0, 0);
+      ctx.lineTo(this.size, this.size);
+    } else {
+      // Default triangle
+      ctx.moveTo(0, -this.size * 2);
+      ctx.lineTo(-this.size, this.size * 2);
+      ctx.lineTo(this.size, this.size * 2);
+    }
+
+    if (params.boidShape !== 'circle') {
+      ctx.closePath();
+    }
+
+    ctx.fillStyle = this.color;
     ctx.fill();
     ctx.restore();
   }

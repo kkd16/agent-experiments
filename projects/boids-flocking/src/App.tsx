@@ -15,12 +15,16 @@ function App() {
     mouseRadius: 150,
     edgeBehavior: 'wrap',
     predatorAvoidance: 2.5,
-    predatorVisualRange: 100
+    predatorVisualRange: 100,
+    windX: 0,
+    windY: 0,
+    boidShape: 'triangle'
   })
 
   const [numBoids, setNumBoids] = useState(150)
   const [numPredators, setNumPredators] = useState(0)
   const [showControls, setShowControls] = useState(true)
+  const [isPaused, setIsPaused] = useState(false)
 
   const handleParamChange = (key: keyof BoidParams, value: number) => {
     setParams(prev => ({ ...prev, [key]: value }))
@@ -28,7 +32,7 @@ function App() {
 
   return (
     <div className="app-container">
-      <BoidsCanvas params={params} numBoids={numBoids} numPredators={numPredators} />
+      <BoidsCanvas params={params} numBoids={numBoids} numPredators={numPredators} isPaused={isPaused} />
 
       <button
         className="toggle-controls"
@@ -40,6 +44,15 @@ function App() {
       {showControls && (
         <div className="controls-panel">
           <h2>Boids Flocking</h2>
+
+          <div className="control-group">
+            <button
+              onClick={() => setIsPaused(!isPaused)}
+              style={{ width: '100%', padding: '8px', marginBottom: '10px', backgroundColor: isPaused ? '#ef4444' : '#3b82f6', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer' }}
+            >
+              {isPaused ? '▶ Play' : '⏸ Pause'}
+            </button>
+          </div>
 
           <div className="control-group">
             <label>
@@ -181,6 +194,49 @@ function App() {
               </label>
             </div>
           )}
+
+          <div className="control-group">
+            <label>
+              Wind X: {params.windX.toFixed(2)}
+              <input
+                type="range"
+                min="-0.2"
+                max="0.2"
+                step="0.01"
+                value={params.windX}
+                onChange={(e) => handleParamChange('windX', Number(e.target.value))}
+              />
+            </label>
+          </div>
+
+          <div className="control-group">
+            <label>
+              Wind Y: {params.windY.toFixed(2)}
+              <input
+                type="range"
+                min="-0.2"
+                max="0.2"
+                step="0.01"
+                value={params.windY}
+                onChange={(e) => handleParamChange('windY', Number(e.target.value))}
+              />
+            </label>
+          </div>
+
+          <div className="control-group">
+            <label>
+              Boid Shape
+              <select
+                value={params.boidShape}
+                onChange={(e) => setParams(prev => ({ ...prev, boidShape: e.target.value as 'triangle' | 'circle' | 'arrow' }))}
+              >
+                <option value="triangle">Triangle</option>
+                <option value="circle">Circle</option>
+                <option value="arrow">Arrow</option>
+              </select>
+            </label>
+          </div>
+
         </div>
       )}
     </div>
