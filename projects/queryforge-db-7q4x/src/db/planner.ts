@@ -10,7 +10,7 @@
 // Each operator carries an estimated row count + cost so EXPLAIN can show the
 // shape — and the reasoning — behind the chosen plan.
 
-import { SqlError, compareValues, hashKey, valuesEqual, type ColumnType, type SqlValue } from './types'
+import { SqlError, compareValues, hashKey, valueTypeOf, valuesEqual, type ColumnType, type SqlValue } from './types'
 import { compileExpr, exprKey, type CompileCtx, type Evaluator, type OuterScope } from './eval'
 import { resolveColumn, type Binding, type Schema } from './schema'
 import {
@@ -308,10 +308,10 @@ function inferType(e: Expr, schema: Schema, ctx: CompileCtx): ColumnType {
       } catch {
         return 'TEXT'
       }
-    case 'literal':
-      if (typeof e.value === 'number') return Number.isInteger(e.value) ? 'INTEGER' : 'REAL'
-      if (typeof e.value === 'boolean') return 'BOOLEAN'
-      return 'TEXT'
+    case 'literal': {
+      const vt = valueTypeOf(e.value)
+      return vt === 'NULL' ? 'TEXT' : vt
+    }
     case 'cast':
       return e.type
     case 'func':
@@ -321,7 +321,15 @@ function inferType(e: Expr, schema: Schema, ctx: CompileCtx): ColumnType {
       if (e.name === 'PERCENTILE_DISC' || e.name === 'MODE') {
         return e.withinGroup && e.withinGroup[0] ? inferType(e.withinGroup[0].expr, schema, ctx) : 'TEXT'
       }
-      if (['LENGTH', 'INSTR', 'ASCII', 'SIGN', 'DATE_PART', 'EXTRACT', 'DATEDIFF'].includes(e.name)) return 'INTEGER'
+      if (['LENGTH', 'INSTR', 'ASCII', 'SIGN', 'DATEDIFF'].includes(e.name)) return 'INTEGER'
+      if (['DATE_PART', 'EXTRACT'].includes(e.name)) return 'REAL'
+      if (['CURRENT_DATE', 'TO_DATE', 'MAKE_DATE'].includes(e.name)) return 'DATE'
+      if (['CURRENT_TIME', 'TO_TIME', 'MAKE_TIME'].includes(e.name)) return 'TIME'
+      if (
+        ['CURRENT_TIMESTAMP', 'CLOCK_TIMESTAMP', 'TO_TIMESTAMP', 'MAKE_TIMESTAMP', 'DATE_TRUNC'].includes(e.name)
+      )
+        return 'TIMESTAMP'
+      if (['AGE', 'MAKE_INTERVAL', 'TO_INTERVAL', 'JUSTIFY_HOURS'].includes(e.name)) return 'INTERVAL'
       if (
         [
           'SUM', 'MIN', 'MAX', 'AVG', 'ABS', 'ROUND', 'SQRT', 'CEIL', 'CEILING', 'FLOOR', 'TRUNC',
@@ -336,7 +344,7 @@ function inferType(e: Expr, schema: Schema, ctx: CompileCtx): ColumnType {
         [
           'UPPER', 'LOWER', 'INITCAP', 'TRIM', 'LTRIM', 'RTRIM', 'LPAD', 'RPAD', 'REPEAT', 'REVERSE',
           'LEFT', 'RIGHT', 'CONCAT', 'CONCAT_WS', 'SUBSTR', 'REPLACE', 'CHR', 'TYPEOF', 'NOW', 'DATE',
-          'DATETIME', 'STRFTIME', 'DATE_ADD', 'STRING_AGG', 'GROUP_CONCAT',
+          'DATETIME', 'STRFTIME', 'DATE_ADD', 'TO_CHAR', 'STRING_AGG', 'GROUP_CONCAT',
         ].includes(e.name)
       )
         return 'TEXT'
@@ -989,7 +997,16 @@ function planQuery(stmt: SelectStmt, env: PlanEnv): Operator {
 }
 
 // Combine two SQL types into the one that can hold both (the wider type).
-const TYPE_RANK: Record<ColumnType, number> = { BOOLEAN: 0, INTEGER: 1, REAL: 2, TEXT: 3 }
+const TYPE_RANK: Record<ColumnType, number> = {
+  BOOLEAN: 0,
+  INTEGER: 1,
+  REAL: 2,
+  INTERVAL: 3,
+  TIME: 4,
+  DATE: 5,
+  TIMESTAMP: 6,
+  TEXT: 7,
+}
 function widerType(a: ColumnType, b: ColumnType): ColumnType {
   if (a === b) return a
   // BOOLEAN combined with a number stays numeric; TEXT absorbs everything.

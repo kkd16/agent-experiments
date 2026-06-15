@@ -13,6 +13,35 @@ import {
   type ColumnType,
   type SqlValue,
 } from './types'
+import {
+  isTemporal,
+  scaleInterval,
+  addIntervals,
+  applyIntervalMs,
+  msDiffToInterval,
+  mkDate,
+  mkTime,
+  mkTimestamp,
+  mkInterval,
+  parseDate as parseDateLit,
+  parseTime as parseTimeLit,
+  parseTimestamp as parseTimestampLit,
+  parseInterval as parseIntervalLit,
+  extractField,
+  truncTimestamp,
+  ageInterval,
+  makeDate,
+  makeTime,
+  makeTimestamp,
+  toChar,
+  formatTemporal,
+  MS_PER_DAY as TMS_PER_DAY,
+  type Temporal,
+  type TimeValue,
+  type DateValue,
+  type TimestampValue,
+  type IntervalValue,
+} from './temporal'
 import type { Expr, ExistsExpr, FuncExpr, InSubqueryExpr, QuantifiedExpr, SubqueryExpr, WindowFuncExpr } from './ast'
 import type { Row } from './catalog'
 
@@ -49,6 +78,11 @@ export interface CompileCtx {
   compileGrouping?: (expr: FuncExpr) => Evaluator
 }
 
+/** String coercion that renders temporal values via their canonical form. */
+function strOf(v: SqlValue): string {
+  return isTemporal(v) ? formatTemporal(v) : String(v)
+}
+
 // SQL three-valued logic helpers --------------------------------------------
 function toBool(v: SqlValue): boolean | null {
   if (v === null) return null
@@ -78,6 +112,76 @@ function numericPair(a: SqlValue, b: SqlValue): [number, number] {
   return [n(a), n(b)]
 }
 
+// --- temporal arithmetic ----------------------------------------------------
+// Apply an interval to a non-interval temporal. Following Postgres: DATE ±
+// INTERVAL yields a TIMESTAMP; TIMESTAMP stays a TIMESTAMP; TIME takes only the
+// sub-day part of the interval and wraps within a 24-hour clock.
+function applyToTemporal(base: DateValue | TimeValue | TimestampValue, iv: IntervalValue, sign: 1 | -1): Temporal {
+  if (base.t === 'time') return mkTime(base.ms + sign * iv.ms)
+  const ms = base.t === 'date' ? base.days * TMS_PER_DAY : base.ms
+  return mkTimestamp(applyIntervalMs(ms, iv, sign))
+}
+
+/** Arithmetic where at least one operand is temporal. Returns undefined when the
+ *  combination isn't a defined temporal operation (so the caller can fall back
+ *  to numeric handling / a clear error). */
+function temporalArith(op: string, a: SqlValue, b: SqlValue): SqlValue | undefined {
+  const at = isTemporal(a) ? a : null
+  const bt = isTemporal(b) ? b : null
+  if (!at && !bt) return undefined
+
+  if (op === '*' || op === '/') {
+    if (at?.t === 'interval' && typeof b === 'number') return scaleInterval(at, op === '*' ? b : 1 / b)
+    if (op === '*' && bt?.t === 'interval' && typeof a === 'number') return scaleInterval(bt, a)
+    return undefined
+  }
+  if (op !== '+' && op !== '-') return undefined
+  const sign: 1 | -1 = op === '+' ? 1 : -1
+
+  // interval ± interval
+  if (at?.t === 'interval' && bt?.t === 'interval') return addIntervals(at, bt, sign)
+
+  // (date|time|timestamp) ± interval  — and, for '+', interval + (…)
+  if (at && at.t !== 'interval' && bt?.t === 'interval') return applyToTemporal(at, bt, sign)
+  if (op === '+' && at?.t === 'interval' && bt && bt.t !== 'interval') return applyToTemporal(bt, at, 1)
+
+  // date ± integer  → date
+  if (at?.t === 'date' && typeof b === 'number') return mkDate(at.days + sign * Math.trunc(b))
+  if (op === '+' && bt?.t === 'date' && typeof a === 'number') return mkDate(bt.days + Math.trunc(a))
+
+  // differences (subtraction only)
+  if (op === '-' && at && bt) {
+    if (at.t === 'date' && bt.t === 'date') return at.days - bt.days
+    if ((at.t === 'date' || at.t === 'timestamp') && (bt.t === 'date' || bt.t === 'timestamp')) {
+      const ams = at.t === 'date' ? at.days * TMS_PER_DAY : at.ms
+      const bms = bt.t === 'date' ? bt.days * TMS_PER_DAY : bt.ms
+      return msDiffToInterval(ams - bms)
+    }
+    if (at.t === 'time' && bt.t === 'time') return msDiffToInterval(at.ms - bt.ms)
+  }
+  return undefined
+}
+
+/** Read an arbitrary value as a temporal value for the date/time functions. */
+function coerceTemporalArg(v: SqlValue): Temporal | null {
+  if (isTemporal(v)) return v
+  if (typeof v === 'number') return mkTimestamp(v)
+  if (typeof v === 'string') {
+    return parseTimestampLit(v) ?? parseDateLit(v) ?? parseTimeLit(v) ?? parseIntervalLit(v)
+  }
+  return null
+}
+
+/** A temporal value as a JS Date (for the legacy string-formatting helpers). */
+function toInstant(v: SqlValue): Date | null {
+  const t = coerceTemporalArg(v)
+  if (!t) return null
+  if (t.t === 'date') return new Date(t.days * TMS_PER_DAY)
+  if (t.t === 'timestamp') return new Date(t.ms)
+  if (t.t === 'time') return new Date(t.ms)
+  return null
+}
+
 // --- date/time helpers ------------------------------------------------------
 // Dates are represented as TEXT in ISO form ('YYYY-MM-DD' or full ISO 8601) or
 // as a number of epoch-milliseconds. We parse into a JS Date for computation
@@ -88,6 +192,7 @@ const UNIX_EPOCH_JD = 2_440_587.5
 
 function parseDate(v: SqlValue): Date | null {
   if (v === null) return null
+  if (isTemporal(v)) return toInstant(v)
   if (typeof v === 'number') return new Date(v)
   if (typeof v === 'boolean') return null
   const s = v.trim()
@@ -108,21 +213,6 @@ function formatDate(d: Date, withTime: boolean): string {
 function dayOfYear(d: Date): number {
   const start = Date.UTC(d.getUTCFullYear(), 0, 1)
   return Math.floor((d.getTime() - start) / MS_PER_DAY) + 1
-}
-function datePart(part: string, d: Date): number | null {
-  switch (part.toLowerCase()) {
-    case 'year': case 'y': case 'yyyy': return d.getUTCFullYear()
-    case 'month': case 'mon': case 'mm': return d.getUTCMonth() + 1
-    case 'day': case 'dd': case 'd': return d.getUTCDate()
-    case 'hour': case 'hh': return d.getUTCHours()
-    case 'minute': case 'mi': return d.getUTCMinutes()
-    case 'second': case 'ss': return d.getUTCSeconds()
-    case 'dow': case 'weekday': return d.getUTCDay()
-    case 'doy': return dayOfYear(d)
-    case 'quarter': return Math.floor(d.getUTCMonth() / 3) + 1
-    case 'epoch': return Math.floor(d.getTime() / 1000)
-    default: return null
-  }
 }
 function strftime(fmt: string, d: Date): string {
   return fmt.replace(/%[YmdHMSjwQ%]/g, (m) => {
@@ -180,9 +270,9 @@ export const SCALAR_FUNCTIONS: Record<string, ScalarFn> = {
     return k === 0 ? '' : String(s).slice(-k)
   },
   INSTR: ([s, sub]) => (s === null || sub === null ? null : String(s).indexOf(String(sub)) + 1),
-  CONCAT: (args) => args.map((a) => (a === null ? '' : String(a))).join(''),
+  CONCAT: (args) => args.map((a) => (a === null ? '' : strOf(a))).join(''),
   CONCAT_WS: ([sep, ...rest]) =>
-    sep === null ? null : rest.filter((a) => a !== null).map((a) => String(a)).join(String(sep)),
+    sep === null ? null : rest.filter((a) => a !== null).map((a) => strOf(a)).join(strOf(sep)),
   SUBSTR: ([s, start, len]) => {
     if (s === null) return null
     const str = String(s)
@@ -260,14 +350,8 @@ export const SCALAR_FUNCTIONS: Record<string, ScalarFn> = {
     const d = parseDate(a)
     return d ? formatDate(d, true) : null
   },
-  DATE_PART: ([part, a]) => {
-    const d = parseDate(a)
-    return d && part !== null ? datePart(String(part), d) : null
-  },
-  EXTRACT: ([part, a]) => {
-    const d = parseDate(a)
-    return d && part !== null ? datePart(String(part), d) : null
-  },
+  DATE_PART: ([part, a]) => extractAny(part, a),
+  EXTRACT: ([part, a]) => extractAny(part, a),
   STRFTIME: ([fmt, a]) => {
     const d = parseDate(a)
     return d && fmt !== null ? strftime(String(fmt), d) : null
@@ -285,6 +369,74 @@ export const SCALAR_FUNCTIONS: Record<string, ScalarFn> = {
     const d = parseDate(a)
     return d && days !== null ? formatDate(new Date(d.getTime() + Number(days) * MS_PER_DAY), false) : null
   },
+
+  // --- first-class temporal constructors / functions -----------------------
+  CURRENT_DATE: () => mkDate(Math.floor(Date.now() / MS_PER_DAY)),
+  CURRENT_TIME: () => {
+    const now = Date.now()
+    return mkTime(now - Math.floor(now / MS_PER_DAY) * MS_PER_DAY)
+  },
+  CURRENT_TIMESTAMP: () => mkTimestamp(Date.now()),
+  CLOCK_TIMESTAMP: () => mkTimestamp(Date.now()),
+  TO_DATE: ([a]) => (a === null ? null : parseDateLit(String(a))),
+  TO_TIMESTAMP: ([a]) => {
+    if (a === null) return null
+    if (typeof a === 'number') return mkTimestamp(a * 1000) // epoch-seconds, à la Postgres
+    return parseTimestampLit(String(a)) ?? parseDateLit(String(a))
+  },
+  TO_TIME: ([a]) => (a === null ? null : parseTimeLit(String(a))),
+  TO_INTERVAL: ([a]) => (a === null ? null : parseIntervalLit(String(a))),
+  MAKE_DATE: ([y, m, d]) =>
+    y === null || m === null || d === null ? null : makeDate(Number(y), Number(m), Number(d)),
+  MAKE_TIME: ([h, mi, s]) =>
+    h === null || mi === null || s === null ? null : makeTime(Number(h), Number(mi), Number(s)),
+  MAKE_TIMESTAMP: ([y, mo, d, h, mi, s]) =>
+    [y, mo, d, h, mi, s].some((x) => x === null || x === undefined)
+      ? null
+      : makeTimestamp(Number(y), Number(mo), Number(d), Number(h), Number(mi), Number(s)),
+  MAKE_INTERVAL: ([y, mo, d, h, mi, s]) => {
+    const n = (x: SqlValue) => (x === null || x === undefined ? 0 : Number(x))
+    return mkInterval(n(y) * 12 + n(mo), n(d), (n(h) * 3600 + n(mi) * 60 + n(s)) * 1000)
+  },
+  DATE_TRUNC: ([unit, a]) => {
+    if (unit === null) return null
+    const t = coerceTemporalArg(a)
+    if (!t || (t.t !== 'date' && t.t !== 'timestamp')) return null
+    return truncTimestamp(String(unit), t)
+  },
+  AGE: (args) => {
+    const datelike = (v: SqlValue): DateValue | TimestampValue | null => {
+      const t = coerceTemporalArg(v)
+      return t && (t.t === 'date' || t.t === 'timestamp') ? t : null
+    }
+    if (args.length >= 2) {
+      const a = datelike(args[0])
+      const b = datelike(args[1])
+      return a && b ? ageInterval(a, b) : null
+    }
+    const start = datelike(args[0])
+    if (!start) return null
+    return ageInterval(mkDate(Math.floor(Date.now() / MS_PER_DAY)), start)
+  },
+  TO_CHAR: ([a, fmt]) => {
+    if (a === null || fmt === null || fmt === undefined) return null
+    const t = coerceTemporalArg(a)
+    return t ? toChar(String(fmt), t) : null
+  },
+  JUSTIFY_HOURS: ([a]) => {
+    const t = coerceTemporalArg(a)
+    if (!t || t.t !== 'interval') return null
+    const extraDays = Math.trunc(t.ms / MS_PER_DAY)
+    return mkInterval(t.months, t.days + extraDays, t.ms - extraDays * MS_PER_DAY)
+  },
+}
+
+/** EXTRACT / DATE_PART for any value: temporal objects directly, strings/numbers
+ *  parsed first. Returns null on an unparseable value or unknown field. */
+function extractAny(part: SqlValue, a: SqlValue): SqlValue {
+  if (part === null || a === null) return null
+  const t = coerceTemporalArg(a)
+  return t ? extractField(String(part), t) : null
 }
 
 /** All scalar function names the parser should treat as callable (incl. those
@@ -356,7 +508,12 @@ export function compileExpr(expr: Expr, ctx: CompileCtx): Evaluator {
       const sign = expr.op === '-' ? -1 : 1
       return (row) => {
         const v = inner(row)
-        return v === null ? null : Number(v) * sign
+        if (v === null) return null
+        if (isTemporal(v)) {
+          if (v.t === 'interval') return expr.op === '-' ? scaleInterval(v, -1) : v
+          throw new SqlError(`cannot apply unary ${expr.op} to a ${v.t} value`, 'eval')
+        }
+        return Number(v) * sign
       }
     }
     case 'binary':
@@ -492,7 +649,7 @@ function compileBinary(op: string, left: Evaluator, right: Evaluator): Evaluator
         const a = left(row)
         const b = right(row)
         if (a === null || b === null) return null
-        return String(a) + String(b)
+        return strOf(a) + strOf(b)
       }
     case '+':
     case '-':
@@ -503,6 +660,10 @@ function compileBinary(op: string, left: Evaluator, right: Evaluator): Evaluator
         const a = left(row)
         const b = right(row)
         if (a === null || b === null) return null
+        if (isTemporal(a) || isTemporal(b)) {
+          const t = temporalArith(op, a, b)
+          if (t !== undefined) return t
+        }
         const [x, y] = numericPair(a, b)
         switch (op) {
           case '+': return x + y

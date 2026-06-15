@@ -11,6 +11,7 @@
 // Table; any mutation drops the cache so the next plan re-gathers fresh numbers.
 
 import { orderValues, valuesEqual, type ColumnType, type SqlValue } from './types'
+import { isTemporal, temporalScalar, hashTemporal } from './temporal'
 import type { Row } from './catalog'
 
 const HIST_BUCKETS = 32
@@ -80,6 +81,7 @@ function columnStat(name: string, type: ColumnType, values: SqlValue[]): ColumnS
 function keyOf(v: SqlValue): string {
   if (typeof v === 'string') return 's' + v
   if (typeof v === 'boolean') return 'b' + (v ? 1 : 0)
+  if (isTemporal(v)) return 't' + hashTemporal(v)
   return 'n' + String(v)
 }
 
@@ -109,6 +111,7 @@ export function gatherTableStats(
 function num(v: SqlValue): number {
   if (typeof v === 'number') return v
   if (typeof v === 'boolean') return v ? 1 : 0
+  if (isTemporal(v)) return temporalScalar(v)
   return NaN
 }
 

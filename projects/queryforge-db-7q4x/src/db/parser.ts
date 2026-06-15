@@ -8,7 +8,8 @@ import {
   type Token,
 } from './lexer'
 import { SCALAR_FUNCTION_NAMES, exprKey } from './eval'
-import { SqlError, type ColumnType } from './types'
+import { SqlError, type ColumnType, type SqlValue } from './types'
+import { parseDate, parseTime, parseTimestamp, parseInterval } from './temporal'
 import type {
   BinaryOp,
   ColumnDef,
@@ -178,8 +179,17 @@ class Parser {
       case 'BOOLEAN':
       case 'BOOL':
         return 'BOOLEAN'
+      case 'DATE':
+        return 'DATE'
+      case 'TIME':
+        return 'TIME'
+      case 'TIMESTAMP':
+      case 'DATETIME':
+        return 'TIMESTAMP'
+      case 'INTERVAL':
+        return 'INTERVAL'
       default:
-        throw this.err('expected a column type (INTEGER, REAL, TEXT, BOOLEAN)')
+        throw this.err('expected a column type (INTEGER, REAL, TEXT, BOOLEAN, DATE, TIME, TIMESTAMP, INTERVAL)')
     }
   }
 
@@ -793,6 +803,27 @@ class Parser {
       this.next()
       return { kind: 'literal', value: null }
     }
+    // Typed temporal literals: DATE '…', TIME '…', TIMESTAMP '…', INTERVAL '…'.
+    // (Disambiguated from the DATE(x) function by the following string token.)
+    if (
+      (t.value === 'DATE' || t.value === 'TIME' || t.value === 'TIMESTAMP' || t.value === 'INTERVAL') &&
+      this.peek(1).kind === 'string'
+    ) {
+      this.next()
+      const lit = stringValue(this.next())
+      return { kind: 'literal', value: parseTemporalLiteral(t.value, lit) }
+    }
+    // Niladic temporal keywords usable without parentheses, per the SQL
+    // standard: CURRENT_DATE, CURRENT_TIME, CURRENT_TIMESTAMP.
+    if (
+      (t.value === 'CURRENT_DATE' || t.value === 'CURRENT_TIME' || t.value === 'CURRENT_TIMESTAMP') &&
+      this.peek(1).value !== '('
+    ) {
+      this.next()
+      return { kind: 'func', name: t.value, args: [], distinct: false, star: false }
+    }
+    // EXTRACT(field FROM expr) — the SQL-standard spelling.
+    if (t.value === 'EXTRACT' && this.peek(1).value === '(') return this.parseExtract()
     if (t.value === 'CASE') return this.parseCase()
     if (t.value === 'CAST') return this.parseCast()
     if (t.value === 'EXISTS' && this.peek(1).value === '(') {
@@ -970,6 +1001,23 @@ class Parser {
     return { kind: 'case', operand, whens, else: elseExpr }
   }
 
+  private parseExtract(): Expr {
+    this.next() // EXTRACT
+    this.expect('(')
+    const fieldTok = this.next()
+    const field = fieldTok.kind === 'ident' ? identName(fieldTok) : fieldTok.value
+    this.expect('FROM')
+    const expr = this.parseExpr()
+    this.expect(')')
+    return {
+      kind: 'func',
+      name: 'EXTRACT',
+      args: [{ kind: 'literal', value: field }, expr],
+      distinct: false,
+      star: false,
+    }
+  }
+
   private parseCast(): Expr {
     this.expect('CAST')
     this.expect('(')
@@ -992,6 +1040,20 @@ function powerSet(items: Expr[]): Expr[][] {
     out.push(set)
   }
   return out
+}
+
+/** Parse a typed temporal literal (`DATE '…'` etc.), throwing on bad syntax. */
+function parseTemporalLiteral(kind: string, lit: string): SqlValue {
+  const v =
+    kind === 'DATE'
+      ? parseDate(lit)
+      : kind === 'TIME'
+        ? parseTime(lit)
+        : kind === 'TIMESTAMP'
+          ? parseTimestamp(lit)
+          : parseInterval(lit)
+  if (!v) throw new SqlError(`invalid ${kind} literal: '${lit}'`, 'parse')
+  return v
 }
 
 export function parse(sql: string): Statement[] {

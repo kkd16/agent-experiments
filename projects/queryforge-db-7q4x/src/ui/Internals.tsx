@@ -18,7 +18,13 @@ const STAGES: Stage[] = [
     n: 2,
     name: 'Parser',
     file: 'db/parser.ts',
-    body: 'Recursive descent for statements, with a Pratt (precedence-climbing) sub-parser for expressions. Produces a fully typed AST — including BETWEEN/IN/LIKE/CASE/CAST and the full join grammar.',
+    body: 'Recursive descent for statements, with a Pratt (precedence-climbing) sub-parser for expressions. Produces a fully typed AST — including BETWEEN/IN/LIKE/CASE/CAST, typed temporal literals (DATE/TIME/TIMESTAMP/INTERVAL ‘…’), the EXTRACT(field FROM x) spelling, niladic CURRENT_DATE/TIME/TIMESTAMP, and the full join grammar.',
+  },
+  {
+    n: 2.5,
+    name: 'Value system & temporal types',
+    file: 'db/temporal.ts',
+    body: 'The runtime value space is deliberately tiny and JS-native (null, number, string, boolean) so a whole database serializes to localStorage. DATE, TIME, TIMESTAMP and INTERVAL join it as plain tagged objects — {t:\'date\', days}, {t:\'timestamp\', ms}, {t:\'interval\', months, days, ms} — which survive a JSON round-trip untouched. A single set of helpers gives them comparison/ordering/hashing (so they flow through indexes, ORDER BY, GROUP BY, DISTINCT and joins for free), calendar-aware arithmetic (month addition clamps the day-of-month), and EXTRACT/DATE_TRUNC/AGE. Everything is computed in UTC, so a literal denotes the same instant everywhere.',
   },
   {
     n: 3,
@@ -69,9 +75,9 @@ export function Internals() {
         RECURSIVE</code>), set operations and window functions.
       </p>
       <ol className="pipeline">
-        {STAGES.map((s) => (
-          <li key={s.n} className="pipeline-stage">
-            <div className="stage-num">{s.n}</div>
+        {STAGES.map((s, i) => (
+          <li key={s.name} className="pipeline-stage">
+            <div className="stage-num">{i + 1}</div>
             <div className="stage-body">
               <h3>
                 {s.name} <code className="stage-file">{s.file}</code>

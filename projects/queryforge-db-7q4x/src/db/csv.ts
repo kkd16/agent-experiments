@@ -95,6 +95,10 @@ function renderValue(raw: string, type: ColumnType): string {
       if (/^(false|f)$/i.test(v)) return 'FALSE'
       return 'NULL'
     case 'TEXT':
+    case 'DATE':
+    case 'TIME':
+    case 'TIMESTAMP':
+    case 'INTERVAL':
       return sqlString(raw)
   }
 }
