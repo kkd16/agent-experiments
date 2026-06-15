@@ -646,6 +646,112 @@ fn main() {
 }
 `,
   },
+  {
+    id: 'math-lib',
+    title: 'Transcendental math library',
+    blurb: 'exp / ln / sin / cos / pow / atan2 / … — written once in Strata, compiled to wasm AND run by the oracle, so they agree bit-for-bit. Includes an ASCII sine plot.',
+    source: `// Strata's transcendental library. WebAssembly has no exp/sin/ln opcode, so each
+// of these is a polynomial kernel written in Strata itself (MATH_PRELUDE): the
+// compiler injects it into the wasm, and the reference interpreter runs the very
+// same source — so the two agree to the last bit, which the harness proves.
+fn main() {
+  print("e         = " + str(exp(1.0)));
+  print("ln(2)     = " + str(ln(2.0)));
+  print("pi        = " + str(atan2(0.0, -1.0)));         // atan2 recovers pi
+  print("2^0.5     = " + str(pow(2.0, 0.5)));
+  print("sin(1)    = " + str(sin(1.0)));
+  print("hypot 3,4 = " + str(hypot(3.0, 4.0)));
+  print("cbrt(27)  = " + str(cbrt(27.0)));
+  print("tanh(1)   = " + str(tanh(1.0)));
+
+  // An ASCII plot of sin over [0, 2*pi): each row maps sin in [-1,1] to a column.
+  let pi = 3.141592653589793;
+  let rows = 17;
+  for (let r = 0; r < rows; r = r + 1) {
+    let x = 2.0 * pi * float(r) / float(rows - 1);
+    let y = sin(x);
+    let col = int(round((y + 1.0) * 22.0));   // 0..44
+    let line = "";
+    for (let c = 0; c <= 44; c = c + 1) {
+      if (c == col) { line = line + "*"; }
+      else if (c == 22) { line = line + "|"; }   // the y = 0 axis
+      else { line = line + " "; }
+    }
+    print(line);
+  }
+}
+`,
+  },
+  {
+    id: 'mandelbrot',
+    title: 'Mandelbrot set (ASCII)',
+    blurb: 'Escape-time render of the Mandelbrot set with floating-point arithmetic — the wasm output matches the interpreter pixel-for-pixel.',
+    source: `// The Mandelbrot set, rendered as ASCII by escape-time iteration. Pure f64
+// arithmetic in a hot double loop — a good exercise for LICM and the stackifier.
+fn main() {
+  let rows = 24;
+  let cols = 64;
+  let maxIter = 50;
+  let shades = " .:-=+*#%@";          // 10 density levels (escape time -> glyph)
+  for (let py = 0; py < rows; py = py + 1) {
+    let y0 = (float(py) / float(rows)) * 2.0 - 1.0;        // [-1, 1)
+    let line = "";
+    for (let px = 0; px < cols; px = px + 1) {
+      let x0 = (float(px) / float(cols)) * 3.0 - 2.0;      // [-2, 1)
+      let x = 0.0;
+      let y = 0.0;
+      let iter = 0;
+      while (iter < maxIter && x * x + y * y <= 4.0) {
+        let xt = x * x - y * y + x0;
+        y = 2.0 * x * y + y0;
+        x = xt;
+        iter = iter + 1;
+      }
+      if (iter >= maxIter) { line = line + "@"; }
+      else {
+        let idx = iter % 10;
+        line = line + substr(shades, idx, 1);
+      }
+    }
+    print(line);
+  }
+}
+`,
+  },
+  {
+    id: 'f32-precision',
+    title: 'f32 vs f64 precision',
+    blurb: 'Single precision (wasm f32) lowered end to end. Watch where 32-bit floats diverge from 64-bit — representability, a harmonic sum, and the 2^24 integer gap.',
+    source: `// 'f32' is a real single-precision type lowered to the wasm f32 opcodes. It is
+// distinct from 'float' (f64): the type checker forbids mixing them, and every
+// f32 op rounds to 24-bit precision. Here is where that rounding shows.
+fn main() {
+  // 0.1 has no exact binary form; f32 keeps far fewer bits than f64.
+  print("0.1 as f64 = " + str(0.1));
+  print("0.1 as f32 = " + str(float(f32(0.1))));     // promote to f64 to print
+  // A neat reversal: 0.1+0.2 != 0.3 in f64, but the coarser f32 rounding lands
+  // both on the same value, so the f32 comparison is true.
+  print("0.1+0.2 == 0.3 in f64? " + str(0.1 + 0.2 == 0.3));
+  print("0.1+0.2 == 0.3 in f32? " + str(f32(0.1) + f32(0.2) == f32(0.3)));
+
+  // The 2^24 gap: above 16777216, consecutive integers are NOT all representable.
+  print("f32(16777216) = " + str(f32(16777216)));
+  print("f32(16777217) = " + str(f32(16777217)));    // rounds back down to 2^24
+
+  // A harmonic sum drifts more in single precision than double.
+  let n = 4096;
+  let s32 = f32(0.0);
+  let s64 = 0.0;
+  for (let i = 1; i <= n; i = i + 1) {
+    s32 = s32 + f32(1.0) / f32(i);
+    s64 = s64 + 1.0 / float(i);
+  }
+  print("harmonic(4096) f32 = " + str(s32));
+  print("harmonic(4096) f64 = " + str(s64));
+  print("difference         = " + str(s64 - float(s32)));
+}
+`,
+  },
 ];
 
 export const TEST_PROGRAMS: { name: string; source: string }[] = EXAMPLES.map((e) => ({ name: e.id, source: e.source }));

@@ -133,6 +133,15 @@ pipeline, so the differential harness exercises it at every opt level too.
       the f64 bit-reinterpret intrinsics. Output matches the reference interpreter
       (= V8 `String()` / `Number()`) byte-for-byte, proven by the harness at
       -O0…-O3 *and* multi-million-double fuzzes of the compiled wasm. 504 checks.
+- [x] **Transcendental math library** — `exp`/`expm1`/`ln`/`log2`/`log10`/`log1p`/
+      `pow`/`sin`/`cos`/`tan`/`asin`/`acos`/`atan`/`atan2`/`sinh`/`cosh`/`tanh`/
+      `cbrt`/`hypot`/`fmod`, written once as a shared Strata kernel that the wasm
+      backend compiles and the interpreter runs, so they agree bit-for-bit. ~1 ULP
+      vs the host `Math.*` (a dedicated accuracy oracle proves it).
+- [x] **`f32` single precision** end to end — a real wasm-f32 scalar through the
+      lexer/parser, strict type checker, SSA IR, SCCP, the backend (f32 ops /
+      const / load-store / globals / conversions) and the oracle + debugger.
+      556 differential checks across -O0…-O3 (baseline 504).
 
 ## 2026-06-15 — plan: a transcendental math library + `f32` single precision (claude / claude-opus-4-8)
 
@@ -153,41 +162,51 @@ the native single-op builtins (`sqrt`/`floor`/`abs`/`trunc`), and the `__f64_bit
 bit-reinterpret intrinsic for exact `frexp`/`ldexp` — every one of which is already
 identical between wasm and the interpreter.
 
+**Shipped — 556 differential checks, all green (baseline before this work: 504).**
+
 ### Floating-point standard library (shared Strata kernel, differential-tested at -O0…-O3)
-- [ ] `MATH_PRELUDE` — transcendentals written in Strata: `exp`, `expm1`, `ln`,
+- [x] `MATH_PRELUDE` — transcendentals written in Strata: `exp`, `expm1`, `ln`,
       `log2`, `log10`, `log1p`, `pow`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`,
-      `atan2`, `sinh`, `cosh`, `tanh`, `cbrt`, `hypot`, `fmod`. Accurate range
-      reduction (Cody–Waite / Payne–Hanek-lite) + minimax/Taylor polynomials.
-- [ ] Type checker: recognize the new names as **soft** float builtins (yield to a
-      user `fn` of the same name), unary `f64 -> f64` and binary `(f64,f64) -> f64`.
-- [ ] Builder: lower each to a `call __<name>` and inject `MATH_PRELUDE` on demand
-      (a new `usesMath` flag, pruned by dead-function elimination at -O2+).
-- [ ] Interpreter: dispatch the new builtins to a cached sub-interpreter over the
+      `atan2`, `sinh`, `cosh`, `tanh`, `cbrt`, `hypot`, `fmod`. Cody–Waite range
+      reduction + Taylor/atanh-series kernels; bit-level frexp/ldexp via
+      `__f64_bits`. Accuracy vs `Math.*`: ~1 ULP (max relative error ≤ ~6e-16 for
+      the smooth kernels; sin/cos use a two-part π/2, accurate to ~1e8).
+- [x] Type checker: recognized as **soft** float builtins (yield to a user `fn` of
+      the same name), unary `f64 -> f64` and binary `(f64,f64) -> f64`.
+- [x] Builder: each lowers to a `call __<name>`, with `MATH_PRELUDE` injected on
+      demand (a new `usesMath` flag) and pruned by dead-function elimination at -O2+.
+      The kernels are built with an empty user-fn set so their internal `sqrt`/… stay
+      native even if the user defines `fn sqrt` — matching the isolated oracle.
+- [x] Interpreter: dispatches the new builtins to a cached sub-interpreter over the
       *same* `MATH_PRELUDE`, so the oracle runs identical source to the wasm.
-- [ ] Interpreter: add the `__f64_bits` / `__f64_from_bits` reinterpret intrinsics
+- [x] Interpreter: added the `__f64_bits` / `__f64_from_bits` reinterpret intrinsics
       (DataView) so the kernels' bit tricks run in the oracle too.
-- [ ] **Accuracy oracle**: a harness mode that checks each kernel against the host
-      `Math.*` within a tight ULP/relative tolerance over a sweep of inputs — this
-      proves the math is *correct*, not merely self-consistent.
+- [x] **Accuracy oracle** (`tools/check-math.mjs`): sweeps each kernel, asserts
+      wasm == interpreter at -O0/-O3 *and* within a tight tolerance of the host
+      `Math.*` — proving the math is *correct*, not merely self-consistent. 20/20.
 
 ### `f32` single precision — the value-type dimension, completed
-- [ ] Lexer/parser: an `f32` type keyword and an `f`-suffixed float literal (`1.5f`).
-- [ ] Types: `f32` scalar, strict (no implicit float↔f32), `f32(x)` conversions
-      from int/long/float/f32, `f32` arithmetic/compare, `f32_array`, `str(f32)`.
-- [ ] IR: an `'f32'` value type; `constF32`; casts `demote_f64`/`promote_f32` and
-      the int/long ↔ f32 conversions.
-- [ ] Optimizer: constant-fold f32 ops through `Math.fround` so SCCP stays exact.
-- [ ] Backend: f32 wasm value type (0x7D), `f32.*` ops, `f32.const` (raw 4 bytes),
-      conversion opcodes; encoder support.
-- [ ] Interpreter: model f32 as `Math.fround`-rounded numbers everywhere (arith,
-      arrays, struct fields, casts, formatting).
+- [x] Parser: an `f32` type name + an `f32(x)` conversion. (No `1.5f` literal suffix
+      — f32 values arise from `f32(…)`, keeping the lexer/AST untouched.)
+- [x] Types: `f32` scalar, strict (no implicit float↔f32), `f32(x)` conversions
+      from int/long/float/f32, `f32` arithmetic/compare, `f32_array`, `str(f32)`,
+      and `f32` struct fields (4-byte).
+- [x] IR: an `'f32'` value type; `constF32`; casts `demote_f64`/`promote_f32` and
+      the int/long ↔ f32 conversions; f32 `fbin`/`fcmp` selected by operand type.
+- [x] Optimizer: SCCP constant-folds f32 ops through `Math.fround` (and tags the
+      constant `f32`); GVN/algebraic already key on the value type, so nothing leaks.
+- [x] Backend: f32 wasm value type (0x7D), `f32.*` arith/compare ops, `f32.const`
+      (raw 4 bytes), `f32.load`/`store`, f32 globals, conversion opcodes; encoder `f32()`.
+- [x] Interpreter + step debugger: model f32 as `Math.fround`-rounded numbers
+      everywhere (arith, arrays, struct fields, casts, formatting). Double rounding
+      is innocuous for +,-,*,/ (f64 carries > 2p+2 bits — Figueroa's theorem).
 
 ### Examples, battery, docs
-- [ ] New examples that exercise the library: a float **Mandelbrot** escape-time
-      render, a **Newton fractal** root count, a numerical-integration / `sin`
-      Taylor check, an `f32` vs `f64` precision demo.
-- [ ] Expand the adversarial differential battery with math + f32 cases.
-- [ ] Tour / About / README / `project.json` writeups; tally the new check count.
+- [x] Three showcase examples: an ASCII **Mandelbrot** (f64), a **transcendental
+      math lab** with an ASCII sine plot, and an **f32 vs f64 precision** demo.
+- [x] Expanded the adversarial battery: 5 math programs + 5 f32 programs (incl. the
+      user-`fn sqrt` isolation case). Examples + battery = 556 checks at -O0…-O3.
+- [x] Verify-panel blurb + syntax highlighter updated; `project.json` + this journal.
 
 ## 2026-06-15 — plan: floating point, done right — `str(float)` (Dragon4) + `parse_float` + an f64 math library (claude / claude-opus-4-8)
 
@@ -608,6 +627,25 @@ Plan + progress (all shipped this session):
 
 ## Session log
 
+- 2026-06-15 (claude / claude-opus-4-8): **Strata gets real math — a transcendental
+  library + `f32` single precision.** Closed two of the three longest-deferred items.
+  (1) A 20-function floating-point library (`exp`/`expm1`/`ln`/`log2`/`log10`/`log1p`/
+  `pow`/`sin`/`cos`/`tan`/`asin`/`acos`/`atan`/`atan2`/`sinh`/`cosh`/`tanh`/`cbrt`/
+  `hypot`/`fmod`) written **once** as a shared Strata kernel (`MATH_PRELUDE`): the
+  wasm backend compiles + injects it, and the reference interpreter runs the very
+  same source through a cached sub-interpreter, so the two agree bit-for-bit at every
+  opt level. Kernels use Cody–Waite reduction + Taylor/atanh series and bit-level
+  frexp/ldexp via the new interpreter-side `__f64_bits`/`__f64_from_bits`. A new
+  accuracy oracle (`tools/check-math.mjs`) additionally proves each kernel is within
+  ~1 ULP of the host `Math.*`. (2) **`f32`** — a real single-precision scalar lowered
+  to the wasm f32 opcodes, threaded through the parser, strict type checker (no
+  implicit f32↔f64), SSA IR, SCCP (folds through `Math.fround`), the backend (f32
+  arith/compare/convert ops, `f32.const`, f32 load/store, f32 globals, f32 struct
+  fields, `f32_array`) and the oracle + step debugger (modeled as `Math.fround`-
+  rounded numbers; double rounding is innocuous for +,-,*,/). Three showcase examples
+  (ASCII Mandelbrot, a transcendental math lab with a sine plot, an f32-vs-f64
+  precision demo) and 10 new battery programs. **556 differential checks at -O0…-O3,
+  all green (baseline 504); 20/20 accuracy checks; full gate green.**
 - 2026-06-15 (claude / claude-opus-4-8): **Bounded float-format/parse scratch
   (heap save/restore).** Follow-up to the floating-point work: `str(float)` and
   `parse_float` allocate a lot of transient bignums from the bump heap, which (like
