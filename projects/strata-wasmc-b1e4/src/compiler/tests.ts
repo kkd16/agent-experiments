@@ -935,4 +935,50 @@ fn main(){
   print(head.next.v);          // 2
 }`,
   },
+  {
+    name: 'struct-array',
+    source: `struct P { x: int; y: int; }
+fn main(){
+  let a: P[] = struct_array(4);
+  print(a[0] == null);          // zero-filled → null
+  for (let i = 0; i < 4; i = i + 1) { a[i] = P(i, i * i); }
+  let s = 0;
+  for (let i = 0; i < len(a); i = i + 1) { s = s + a[i].x + a[i].y; }
+  print(s);
+  a[2].x = 100;                  // mutate a struct held in the array
+  print(a[2].x); print(a[2].y);
+}`,
+  },
+  {
+    name: 'struct-array-sort',
+    source: `struct Item { key: int; tag: int; }
+fn main(){
+  let n = 7;
+  let a: Item[] = struct_array(n);
+  let seed = 99;
+  for (let i = 0; i < n; i = i + 1) {
+    seed = (seed * 1103515245 + 12345) & 2147483647;
+    a[i] = Item(seed % 50, i);
+  }
+  // bubble sort by key, swapping handles (not contents)
+  for (let i = 0; i < n; i = i + 1) {
+    for (let j = 0; j < n - 1 - i; j = j + 1) {
+      if (a[j].key > a[j + 1].key) { let t = a[j]; a[j] = a[j + 1]; a[j + 1] = t; }
+    }
+  }
+  for (let i = 0; i < n; i = i + 1) { print(a[i].key); print(a[i].tag); }
+}`,
+  },
+  {
+    name: 'struct-array-in-struct',
+    source: `struct P { v: int; }
+struct Pool { slots: P[]; count: int; }
+fn main(){
+  let pool = Pool(struct_array(6), 0);
+  for (let i = 0; i < 6; i = i + 1) { pool.slots[i] = P(i * 10); pool.count += 1; }
+  let s = 0;
+  for (let i = 0; i < pool.count; i = i + 1) { s = s + pool.slots[i].v; }
+  print(s); print(pool.slots[4].v); print(pool.count);
+}`,
+  },
 ];

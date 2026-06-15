@@ -582,6 +582,36 @@ fn main() {
 }
 `,
   },
+  {
+    id: 'struct-array',
+    title: 'Structs: arrays of records',
+    blurb: 'struct_array(n) makes a null-filled array of handles — here a tiny insertion sort.',
+    source: `// An array of structs is an array of handles (struct_array(n) starts all-null).
+// Sorting swaps handles, never field contents, so it is one i32 move per swap.
+struct Item { key: int; tag: int; }
+
+fn main() {
+  let parts = split("5:a,2:b,8:c,1:d,9:e,3:f,7:g", ",");
+  let n = len(parts);
+  let a: Item[] = struct_array(n);
+  for (let i = 0; i < n; i = i + 1) {
+    let kv = split(parts[i], ":");
+    a[i] = Item(parse_int(kv[0]), i);
+  }
+
+  // insertion sort by key — moves handles, keeping each Item intact
+  for (let i = 1; i < n; i = i + 1) {
+    let cur = a[i];
+    let j = i - 1;
+    while (j >= 0 && a[j].key > cur.key) { a[j + 1] = a[j]; j = j - 1; }
+    a[j + 1] = cur;
+  }
+
+  for (let i = 0; i < n; i = i + 1) { print(a[i].key); }
+  print(a[0].tag);            // original index of the smallest key
+}
+`,
+  },
 ];
 
 export const TEST_PROGRAMS: { name: string; source: string }[] = EXAMPLES.map((e) => ({ name: e.id, source: e.source }));

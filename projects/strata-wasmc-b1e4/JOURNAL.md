@@ -42,7 +42,7 @@ reference interpreter at every optimization level.
   (pauses per statement, steps into calls, exposes the live stack + variables + output).
 - `src/compiler/runner.ts` — instantiates and runs the wasm in-browser.
 - `src/compiler/verify.ts` — differential testing harness (shipped as the "Verify" tab).
-- `src/compiler/tests.ts` — adversarial differential-test battery (85+ focused programs).
+- `src/compiler/tests.ts` — adversarial differential-test battery (90+ focused programs).
 - `tools/run-harness.mjs` — headless Node harness: `tsc -b` + Vite-bundle + run the full
   corpus at -O0…-O3, asserting wasm == reference interpreter (run during development).
 - `src/ui/` — the Compiler-Explorer UI (editor with syntax highlight overlay, SVG CFG view,
@@ -107,7 +107,7 @@ pipeline, so the differential harness exercises it at every opt level too.
       a `null` handle, by-handle params/returns with reference semantics, struct
       `==`/`!=`; through the type checker, IR builder (linear-memory layout),
       every optimizer pass, the backend, the oracle + step debugger, and the UI;
-      440 differential checks across -O0…-O3 (baseline 388)
+      456 differential checks across -O0…-O3 (baseline 388)
 
 ## 2026-06-15 — plan: structs (aggregate types), end to end (claude / claude-opus-4-8)
 
@@ -125,7 +125,7 @@ addresses — so the two agree on observable output, never on layout.
 
 Plan (every item differential-tested at -O0…-O3 before it is checked off):
 
-**Shipped — 440 differential checks, all green (baseline before this work: 388).**
+**Shipped — 456 differential checks, all green (baseline before this work: 388).**
 
 ### Front-end — syntax & types
 - [x] Lexer: a `.` token (member access) and the `struct` / `null` keywords.
@@ -174,9 +174,19 @@ Plan (every item differential-tested at -O0…-O3 before it is checked off):
       **BST** sort; an array-typed field; a 2000-iteration allocator stress; and a
       `null`-initialised struct **global**.
 
+### Arrays of structs (`Point[]`)
+- [x] Generalized an array's element type to a scalar **or a struct** (an i32
+      handle). `struct_array(n)` makes a null-filled handle array whose concrete
+      element struct is pinned by the variable's annotation (a transient empty-name
+      placeholder until then; using it unannotated is a precise error). Threaded
+      through the parser, type checker (coercibility + validation), the builder
+      (i32-stride allocation/indexing), and the oracle + debugger. Indexing yields
+      a struct you can read/mutate (`a[i].x = …`) or swap as a handle; arrays of
+      structs nest inside structs too. Added an insertion-sort example and a
+      struct-array test battery (basic r/w, a handle-swapping sort, a struct-array
+      field, null holes). 456 checks across -O0…-O3.
+
 ### Deliberately deferred (clean limitations, documented in the parser/checker)
-- [ ] Arrays of structs (`Point[]`) — needs a typed element + a constructor; the
-      element type generalization is sketched but out of scope for this pass.
 - [ ] A struct-aware free list / GC (today every construction bump-allocates).
 
 ## 2026-06-15 — plan: 64-bit integers (`long` / i64), end to end (claude / claude-opus-4-8)
@@ -420,7 +430,7 @@ Plan + progress (all shipped this session):
 
 - 2026-06-15 (claude / claude-opus-4-8): **Structs (aggregate types), end to end.**
   The biggest missing C feature — a real `struct` — threaded through the whole
-  pipeline and proven by the differential harness at -O0…-O3 (**440 checks, all
+  pipeline and proven by the differential harness at -O0…-O3 (**456 checks, all
   green**, up from 388). A struct is laid out in linear memory and referenced by an
   i32 handle (the model arrays/strings already use), so it needed **no new IR
   concept and no optimizer/backend changes**: construction is a bump-allocate plus a
@@ -436,8 +446,12 @@ Plan + progress (all shipped this session):
   + step debugger model a struct as a by-reference object (and `null` as JS `null`),
   so they share mutation/aliasing/identity with the wasm without modelling addresses.
   Added 3 examples (2D vectors, a binary search tree, rational arithmetic) and a
-  10-program struct test battery. Verified green end to end: `tsc -b` + lint + Vite
-  build + the headless harness (440/440 across -O0…-O3) + `verify-project.mjs`.
+  10-program struct test battery. Then generalized arrays to hold structs too —
+  `struct_array(n)` (a null-filled handle array whose element struct is fixed by the
+  variable's annotation), so `a[i].x = …` and handle-swapping sorts work and struct
+  arrays nest inside structs; added an insertion-sort example and 3 more tests.
+  Verified green end to end: `tsc -b` + lint + Vite build + the headless harness
+  (**456/456** across -O0…-O3) + `verify-project.mjs`.
 
 - 2026-06-15 (claude / claude-opus-4-8): **64-bit integers (`long` → wasm `i64`),
   end to end — plus a bit-manipulation toolkit.** The longest-standing open item,
