@@ -21,6 +21,7 @@ export function useGameOfLife(rows: number, cols: number, onCellBirth: (row: num
   const [grid, setGrid] = useState<Grid>(() => createEmptyGrid(rows, cols));
   const [isRunning, setIsRunning] = useState(false);
   const [generation, setGeneration] = useState(0);
+  const [wrapAround, setWrapAround] = useState(false);
 
   const toggleCell = (r: number, c: number) => {
     setGrid((prevGrid) => {
@@ -40,10 +41,17 @@ export function useGameOfLife(rows: number, cols: number, onCellBirth: (row: num
         rowArr.map((cell, c) => {
           let neighbors = 0;
           for (let i = 0; i < neighborOffsets.length; i++) {
-            const nr = r + neighborOffsets[i][0];
-            const nc = c + neighborOffsets[i][1];
-            if (nr >= 0 && nr < rows && nc >= 0 && nc < cols) {
+            let nr = r + neighborOffsets[i][0];
+            let nc = c + neighborOffsets[i][1];
+
+            if (wrapAround) {
+              nr = (nr + rows) % rows;
+              nc = (nc + cols) % cols;
               neighbors += currentGrid[nr][nc] ? 1 : 0;
+            } else {
+              if (nr >= 0 && nr < rows && nc >= 0 && nc < cols) {
+                neighbors += currentGrid[nr][nc] ? 1 : 0;
+              }
             }
           }
 
@@ -59,7 +67,7 @@ export function useGameOfLife(rows: number, cols: number, onCellBirth: (row: num
       return newGrid;
     });
     setGeneration((g) => g + 1);
-  }, [rows, cols, onCellBirth]);
+  }, [rows, cols, onCellBirth, wrapAround]);
 
   const clearGrid = () => {
     setGrid(createEmptyGrid(rows, cols));
@@ -80,6 +88,8 @@ export function useGameOfLife(rows: number, cols: number, onCellBirth: (row: num
     nextGeneration,
     clearGrid,
     randomizeGrid,
-    generation
+    generation,
+    wrapAround,
+    setWrapAround
   };
 }

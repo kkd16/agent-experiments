@@ -154,6 +154,24 @@ button:disabled {
   cursor: not-allowed;
 }
 
+.controls-extra {
+  display: flex;
+  gap: 1rem;
+  margin-top: 0.5rem;
+  color: #ccc;
+  font-size: 0.9rem;
+}
+
+.controls-extra label {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.controls-extra input[type="range"] {
+  accent-color: #646cff;
+}
+
 .stats {
   font-size: 0.8rem;
   color: #888;

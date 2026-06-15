@@ -8,9 +8,11 @@ export class AudioEngine {
   private ctx: AudioContext | null = null;
   private masterGain: GainNode | null = null;
   private totalRows: number;
+  private totalCols: number;
 
-  constructor(totalRows: number) {
+  constructor(totalRows: number, totalCols: number = 30) {
     this.totalRows = totalRows;
+    this.totalCols = totalCols;
   }
 
   init() {
@@ -23,6 +25,13 @@ export class AudioEngine {
 
     if (this.ctx.state === 'suspended') {
       this.ctx.resume();
+    }
+  }
+
+  setVolume(volume: number) {
+    if (this.masterGain) {
+      // Linear volume mapping 0-100 to 0-0.5
+      this.masterGain.gain.value = (volume / 100) * 0.5;
     }
   }
 
@@ -48,13 +57,20 @@ export class AudioEngine {
     osc.type = col % 2 === 0 ? 'sine' : 'triangle';
     osc.frequency.setValueAtTime(freq, this.ctx.currentTime);
 
+    // Stereo Panning
+    const panner = this.ctx.createStereoPanner();
+    // Map column index to panning value: left (-1) to right (1)
+    const panValue = ((col / (this.totalCols - 1)) * 2) - 1;
+    panner.pan.value = panValue;
+
     // Envelope
     gainNode.gain.setValueAtTime(0, this.ctx.currentTime);
     gainNode.gain.linearRampToValueAtTime(1, this.ctx.currentTime + 0.05); // Attack
     gainNode.gain.exponentialRampToValueAtTime(0.001, this.ctx.currentTime + 0.5); // Decay
 
     osc.connect(gainNode);
-    gainNode.connect(this.masterGain);
+    gainNode.connect(panner);
+    panner.connect(this.masterGain);
 
     osc.start(this.ctx.currentTime);
     osc.stop(this.ctx.currentTime + 0.6);
