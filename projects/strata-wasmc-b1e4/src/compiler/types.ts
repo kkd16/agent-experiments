@@ -75,6 +75,10 @@ const INTRINSIC_SIGS: Record<string, { params: ('int')[]; ret: 'int' | 'void' }>
   __store8: { params: ['int', 'int'], ret: 'void' },
   __store32: { params: ['int', 'int'], ret: 'void' },
   __alloc: { params: ['int'], ret: 'int' },
+  // Save / restore the bump-allocator top, so a runtime function can free all of
+  // its own transient scratch on the way out (used by the float format/parse).
+  __heap_get: { params: [], ret: 'int' },
+  __heap_set: { params: ['int'], ret: 'void' },
 };
 
 class Scope {

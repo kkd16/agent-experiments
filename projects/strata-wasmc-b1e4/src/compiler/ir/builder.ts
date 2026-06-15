@@ -582,6 +582,16 @@ class FnBuilder {
     if (name === '__alloc') {
       return this.lowerAllocBytes(this.lowerExpr(e.args[0])!);
     }
+    // Bump-allocator top save/restore (the heap pointer is a global).
+    if (name === '__heap_get') {
+      this.usesMemory = true;
+      return this.def('i32', 'gget', HEAP_GLOBAL, []);
+    }
+    if (name === '__heap_set') {
+      this.usesMemory = true;
+      this.emit({ dest: null, ty: 'void', kind: 'gset', sub: HEAP_GLOBAL, args: [this.lowerExpr(e.args[0])!] });
+      return null;
+    }
     // Float bit-reinterpretation intrinsics (prelude only).
     if (name === '__f64_bits') return this.def('i64', 'cast', 'reinterp_f2l', [this.lowerExpr(e.args[0])!]);
     if (name === '__f64_from_bits') return this.def('f64', 'cast', 'reinterp_l2f', [this.lowerExpr(e.args[0])!]);

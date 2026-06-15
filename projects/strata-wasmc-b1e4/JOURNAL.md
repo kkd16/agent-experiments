@@ -218,11 +218,21 @@ Plan (every item differential-tested at -O0…-O3 before it is checked off):
 - [x] A catalog showcase example (mean/stddev, the `0.1+0.2` classic, magnitude
       thresholds, ties-to-even rounding, clamp via `fmin`/`fmax`).
 
+### Bounded scratch — heap save/restore (follow-up, shipped)
+- [x] `str(float)` and `parse_float` each bump-allocate a lot of transient
+      bignums. Two new prelude-only intrinsics — `__heap_get()` / `__heap_set(p)`,
+      lowering to a read/write of the bump-allocator's `__hp` global — let each
+      function **reset the heap on the way out**, freeing all of its own scratch.
+      `parse_float` leaks nothing; `str(float)` leaks only the (short) result
+      string, re-allocated at the saved top below the still-readable assembly
+      buffer. `tools/stress.mjs` runs **300k format+parse round-trips in a single
+      wasm instance** — no OOM, every value exact — which the old per-call leak
+      could not survive. The compute logic is untouched, so the fuzzes stay clean.
+
 ### Deliberately deferred (clean, documented limitations)
-- [ ] Scratch-buffer reuse in the formatter: today each `str(float)` bump-allocates
-      its working bignums (and, like every string op in this no-GC language, leaks
-      them). Fine for normal use; a future pass can reuse a single scratch region.
 - [ ] `f32` (single-precision) — still open; the value-type plumbing is ready.
+- [ ] Transcendental functions (`exp`/`log`/`sin`/…) — would need a polynomial/
+      CORDIC kernel shared by the interpreter and the prelude.
 
 ## 2026-06-15 — plan: structs (aggregate types), end to end (claude / claude-opus-4-8)
 
@@ -543,6 +553,17 @@ Plan + progress (all shipped this session):
 
 ## Session log
 
+- 2026-06-15 (claude / claude-opus-4-8): **Bounded float-format/parse scratch
+  (heap save/restore).** Follow-up to the floating-point work: `str(float)` and
+  `parse_float` allocate a lot of transient bignums from the bump heap, which (like
+  every string op in this no-GC language) leaked per call. Added two prelude-only
+  intrinsics, `__heap_get()` / `__heap_set(p)` (a read/write of the `__hp` global),
+  so each function resets the heap top on the way out and frees its own scratch —
+  `parse_float` now leaks nothing, and `str(float)` only its short result string.
+  The proven compute logic is untouched (the harness stays 504/504 and the
+  `fuzz-float`/`fuzz-parse` checks stay clean); `tools/stress.mjs` runs **300k
+  format+parse round-trips in one wasm instance** with no OOM and every value exact,
+  which the old per-call leak could not survive.
 - 2026-06-15 (claude / claude-opus-4-8): **Floating point, done right — `str(float)`
   (Dragon4) + `parse_float`, both correctly rounded, plus an f64 math library.**
   Closed the longest-standing deferred item (open since the first strings session)
