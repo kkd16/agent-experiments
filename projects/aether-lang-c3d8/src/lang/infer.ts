@@ -40,6 +40,18 @@ import {
 } from './types.ts'
 import type { ClassTables, Evidence } from './classes.ts'
 import { EvCell, dictParamName, emptyTables } from './classes.ts'
+import type { Kind } from './kinds.ts'
+import {
+  KindError,
+  defaultKind,
+  freshKVar,
+  kArrow,
+  kArrowN,
+  kStar,
+  kindToString,
+  resetKindCounter,
+  unifyKind,
+} from './kinds.ts'
 
 export class TypeCheckError extends Error {
   span: Span | null
@@ -81,6 +93,8 @@ export interface InferResult {
   ctorInfo: Map<string, { arity: number; scheme: Scheme }>
   /** every user-declared type → its parameters + constructor argument shapes */
   typeCtors: Map<string, TypeCtorInfo>
+  /** every declared class → its inferred parameter kind (`Monad` → `* -> *`) */
+  classKinds: Map<string, Kind>
 }
 
 // --- type classes ----------------------------------------------------------
@@ -115,6 +129,11 @@ class Inferrer {
   ctorInfo = new Map<string, { arity: number; scheme: Scheme }>()
   typeCtors = new Map<string, TypeCtorInfo>()
   warnings: InferWarning[] = []
+
+  // kind environment: the kind of every type constructor in scope, and the
+  // inferred kind of each class's parameter (drives higher-kinded checking)
+  conKinds = builtinConKinds()
+  classParamKind = new Map<string, Kind>()
 
   // type-class state
   classes = new Map<string, ClassDef>()
@@ -387,6 +406,22 @@ class Inferrer {
         this.typeCtors.set(e.name, {
           params: e.params,
           ctors: e.ctors.map((c) => ({ name: c.name, argTypeExprs: c.args })),
+        })
+        // kind-infer the type's parameters from its constructor arguments. The
+        // constructor's own kind is registered first so recursive references
+        // (`type Tree a = Leaf | Node (Tree a) (Tree a)`) resolve consistently.
+        this.kindCheck(() => {
+          const varKinds = new Map<string, Kind>()
+          for (const p of e.params) varKinds.set(p, freshKVar())
+          const selfKind = kArrowN(
+            e.params.map((p) => varKinds.get(p) as Kind),
+            kStar,
+          )
+          this.conKinds.set(e.name, selfKind)
+          for (const ctor of e.ctors) {
+            for (const a of ctor.args) unifyKind(this.kindOf(a, varKinds), kStar, a.span)
+          }
+          this.conKinds.set(e.name, defaultKind(selfKind))
         })
         const params = new Map<string, Type>()
         for (const p of e.params) params.set(p, freshVar())
@@ -729,6 +764,19 @@ class Inferrer {
       methods.set(m.name, { type: m.type, span: m.span, default: m.default })
       this.methodToClass.set(m.name, e.name)
     }
+    // Infer the class parameter's kind from how the methods use it: a class
+    // whose methods apply the parameter (`m a`) is higher-kinded (`m : * -> *`),
+    // one that uses it bare (`a -> String`) takes a proper type (`a : *`).
+    const paramKind = this.kindCheck(() => {
+      const pk = freshKVar()
+      for (const m of e.methods) {
+        const varKinds = new Map<string, Kind>([[e.param, pk]])
+        unifyKind(this.kindOf(m.type, varKinds), kStar, m.span)
+      }
+      return defaultKind(pk)
+    })
+    this.classParamKind.set(e.name, paramKind)
+
     this.classes.set(e.name, { name: e.name, param: e.param, methods })
     if (!this.instances.has(e.name)) this.instances.set(e.name, [])
     this.tables.used = true
@@ -742,6 +790,24 @@ class Inferrer {
   private inferInstance(env: Env, e: Extract<Expr, { kind: 'instancedecl' }>): Type {
     const cls = this.classes.get(e.cls)
     if (!cls) throw new TypeCheckError(`unknown class '${e.cls}' in instance`, e.span)
+
+    // the instance head must have the class parameter's kind: `Monad Option` is
+    // fine (`Option : * -> *`), `Monad Int` is a kind error (`Int : *`).
+    const classKind = this.classParamKind.get(e.cls)
+    if (classKind) {
+      this.kindCheck(() => {
+        const headKind = this.kindOf(e.head, new Map<string, Kind>())
+        try {
+          unifyKind(headKind, classKind, e.head.span)
+        } catch {
+          throw new KindError(
+            `instance ${e.cls} ${typeExprHead(e.head)}: the class parameter has kind ` +
+              `${kindToString(classKind)} but ${typeExprHead(e.head)} has kind ${kindToString(headKind)}`,
+            e.head.span,
+          )
+        }
+      })
+    }
 
     // build the head type, recording which variable sits at each argument
     const headMap = new Map<string, Type>()
@@ -923,6 +989,66 @@ class Inferrer {
     }
   }
 
+  // --- kinds ---------------------------------------------------------------
+
+  /** Infer the kind of a syntactic type expression, unifying as it goes. Kind
+   * variables for the expression's type variables are shared through `varKinds`
+   * (so the same `a` has one kind throughout a signature). */
+  private kindOf(te: TypeExpr, varKinds: Map<string, Kind>): Kind {
+    switch (te.kind) {
+      case 'tvar': {
+        let k = varKinds.get(te.name)
+        if (!k) {
+          k = freshKVar()
+          varKinds.set(te.name, k)
+        }
+        return k
+      }
+      case 'tarrow':
+        unifyKind(this.kindOf(te.from, varKinds), kStar, te.from.span)
+        unifyKind(this.kindOf(te.to, varKinds), kStar, te.to.span)
+        return kStar
+      case 'ttuple':
+        for (const el of te.elements) unifyKind(this.kindOf(el, varKinds), kStar, el.span)
+        return kStar
+      case 'tapp': {
+        const argK = this.kindOf(te.arg, varKinds)
+        const resK = freshKVar()
+        unifyKind(this.kindOf(te.fn, varKinds), kArrow(argK, resK), te.span)
+        return resK
+      }
+      case 'tcon': {
+        const conK = this.conKindFor(te.name)
+        const argKs = te.args.map((a) => this.kindOf(a, varKinds))
+        const resK = freshKVar()
+        unifyKind(conK, kArrowN(argKs, resK), te.span)
+        return resK
+      }
+    }
+  }
+
+  /** The kind of a type constructor; unknown names get an inferred (fresh) kind
+   * so the kind checker never rejects a program the type checker would accept. */
+  private conKindFor(name: string): Kind {
+    let k = this.conKinds.get(name)
+    if (!k) {
+      k = freshKVar()
+      this.conKinds.set(name, k)
+    }
+    return k
+  }
+
+  /** Kind-check a declaration, turning a `KindError` into a located
+   * `TypeCheckError` so it surfaces like any other type error. */
+  private kindCheck<T>(thunk: () => T): T {
+    try {
+      return thunk()
+    } catch (e) {
+      if (e instanceof KindError) throw new TypeCheckError(e.message, e.span)
+      throw e
+    }
+  }
+
   /** Discharge all remaining constraints at the top level; anything left is a
    * missing instance or an ambiguous constraint. */
   finish(): void {
@@ -936,6 +1062,34 @@ class Inferrer {
       )
     }
   }
+}
+
+/** The head name of a syntactic type expression (for kind-error messages). */
+function typeExprHead(te: TypeExpr): string {
+  switch (te.kind) {
+    case 'tvar':
+      return te.name
+    case 'tcon':
+      return te.name
+    case 'tapp':
+      return typeExprHead(te.fn)
+    case 'tarrow':
+      return '->'
+    case 'ttuple':
+      return 'tuple'
+  }
+}
+
+/** The kinds of the built-in type constructors. */
+function builtinConKinds(): Map<string, Kind> {
+  return new Map<string, Kind>([
+    ['Int', kStar],
+    ['Float', kStar],
+    ['Bool', kStar],
+    ['String', kStar],
+    ['Unit', kStar],
+    ['List', kArrow(kStar, kStar)],
+  ])
 }
 
 /** A filesystem-safe tag for an instance dictionary's head constructor. */
@@ -1013,6 +1167,7 @@ function describe(t: Type): string {
 }
 
 export function inferProgram(program: Expr, base: Env): InferResult {
+  resetKindCounter()
   const inf = new Inferrer()
   const type = inf.infer(base, program)
   inf.finish()
@@ -1024,6 +1179,7 @@ export function inferProgram(program: Expr, base: Env): InferResult {
     classTables: inf.tables,
     ctorInfo: inf.ctorInfo,
     typeCtors: inf.typeCtors,
+    classKinds: inf.classParamKind,
   }
 }
 
