@@ -251,7 +251,13 @@ export function sccp(fn: IRFunc): number {
         }
         if (inst.kind === 'fbin') {
           const r = evalFBin(inst.sub, a[0].num as number, a[1].num as number);
-          return r === null ? NAC : { t: 'const', ty: 'f64', num: r };
+          if (r === null) return NAC;
+          // f32 folds round to single precision (innocuous double rounding), and
+          // the produced constant must carry the f32 type so the backend emits an
+          // f32.const, not an f64.const.
+          return a[0].ty === 'f32'
+            ? { t: 'const', ty: 'f32', num: Math.fround(r) }
+            : { t: 'const', ty: 'f64', num: r };
         }
         return { t: 'const', ty: 'i32', num: evalFCmp(inst.sub, a[0].num as number, a[1].num as number) };
       }

@@ -8,6 +8,10 @@ export type Ty =
   | { kind: 'int' }
   | { kind: 'long' }
   | { kind: 'float' }
+  // Single-precision IEEE-754 (wasm f32). Carried through the IR and backend like
+  // `float` (f64) but with the f32 opcodes; the interpreter models it as a JS
+  // number kept rounded with `Math.fround` after every f32 op and conversion.
+  | { kind: 'f32' }
   | { kind: 'bool' }
   | { kind: 'str' }
   | { kind: 'void' }
@@ -24,7 +28,7 @@ export type Ty =
 // Array element types. `str` elements are i32 pointers into linear memory (just
 // like a bare `str`), so the wasm backend treats `str[]` exactly like an i32
 // array; only the type system and the interpreter track the element kind.
-export type ScalarTy = { kind: 'int' } | { kind: 'long' } | { kind: 'float' } | { kind: 'bool' } | { kind: 'str' };
+export type ScalarTy = { kind: 'int' } | { kind: 'long' } | { kind: 'float' } | { kind: 'f32' } | { kind: 'bool' } | { kind: 'str' };
 
 // An array's element type: any scalar, or a struct (stored as an i32 handle, just
 // like a bare struct value). `struct_array(n)` produces a struct array whose
@@ -35,6 +39,7 @@ export type ElemTy = ScalarTy | { kind: 'struct'; name: string };
 export const T_INT: Ty = { kind: 'int' };
 export const T_LONG: Ty = { kind: 'long' };
 export const T_FLOAT: Ty = { kind: 'float' };
+export const T_F32: Ty = { kind: 'f32' };
 export const T_BOOL: Ty = { kind: 'bool' };
 export const T_STR: Ty = { kind: 'str' };
 export const T_VOID: Ty = { kind: 'void' };

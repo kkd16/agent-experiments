@@ -1102,4 +1102,136 @@ fn main(){
   print(floor(acc)); print(ceil(acc));
 }`,
   },
+  // --- transcendental math library (the shared MATH_PRELUDE kernel) -----------
+  // The wasm backend compiles the kernel and the interpreter runs the same
+  // source, so the printed doubles must agree bit-for-bit at every opt level.
+  {
+    name: 'math-transcendentals',
+    source: `fn main(){
+  print(str(exp(1.0))); print(str(ln(10.0))); print(str(log2(1024.0)));
+  print(str(log10(1000.0))); print(str(sin(1.0))); print(str(cos(1.0)));
+  print(str(tan(0.5))); print(str(atan(1.0))); print(str(asin(0.5)));
+  print(str(acos(0.5))); print(str(cbrt(27.0))); print(str(pow(2.0, 10.0)));
+  print(str(sinh(1.0))); print(str(cosh(1.0))); print(str(tanh(1.0)));
+  print(str(expm1(1.0e-6))); print(str(log1p(1.0e-6)));
+  print(str(hypot(3.0, 4.0))); print(str(atan2(1.0, 1.0))); print(str(fmod(10.5, 3.0)));
+}`,
+  },
+  {
+    name: 'math-identities',
+    source: `// Identities that must hold to rounding, computed identically on both backends.
+fn main(){
+  for (let i = 0; i < 8; i = i + 1) {
+    let x = float(i) * 0.7 - 2.0;
+    print(str(sin(x) * sin(x) + cos(x) * cos(x)));     // ~1
+    print(str(cosh(x) * cosh(x) - sinh(x) * sinh(x))); // ~1
+    print(str(ln(exp(x))));                            // ~x
+  }
+}`,
+  },
+  {
+    name: 'math-pow-branches',
+    source: `// pow special cases: integer vs fractional exponents of a negative base.
+fn main(){
+  print(str(pow(-2.0, 3.0)));   // -8
+  print(str(pow(-2.0, 2.0)));   //  4
+  print(str(pow(-8.0, 2.0)));   // 64
+  print(str(pow(9.0, 0.5)));    //  3
+  print(str(pow(2.0, -3.0)));   // 0.125
+  print(str(pow(5.0, 0.0)));    //  1
+  print(str(pow(-2.0, 0.5) != pow(-2.0, 0.5)));  // NaN != NaN -> true
+}`,
+  },
+  {
+    name: 'math-loop-array',
+    source: `// Math through a float[] and a loop (LICM / stackifier stress), then a sum.
+fn main(){
+  let n = 12;
+  let xs = float_array(n);
+  let s = 0.0;
+  for (let i = 0; i < n; i = i + 1) {
+    let t = float(i) * 0.5;
+    xs[i] = exp(0.0 - t) * sin(t * 3.0);
+    s = s + xs[i];
+  }
+  for (let i = 0; i < n; i = i + 1) { print(str(xs[i])); }
+  print(str(s));
+}`,
+  },
+  // --- f32 (single-precision) end to end --------------------------------------
+  // The interpreter models f32 as a Math.fround-rounded number; the wasm backend
+  // uses the f32 opcodes. The printed (promoted-to-f64) values must agree.
+  {
+    name: 'f32-arithmetic',
+    source: `fn main(){
+  let a = f32(0.1);
+  let b = f32(0.2);
+  print(str(a + b));                 // f32 rounding: 0.30000001192092896
+  print(str(a - b)); print(str(a * b)); print(str(f32(1.0) / f32(3.0)));
+  print(str(f32(0.0) - a));          // negate stays f32 (strict: no f64/f32 mixing)
+  print(str(float(a)));              // promote: 0.10000000149011612
+}`,
+  },
+  {
+    name: 'f32-conversions',
+    source: `fn main(){
+  print(str(f32(16777217)));        // 2^24+1 not representable -> 16777216
+  print(str(f32(123456789)));       // int -> f32 (rounds)
+  print(str(f32(123456789L)));      // long -> f32
+  print(str(int(f32(3.999))));      // 3 (truncates)
+  print(str(long(f32(1.0e15))));    // f32 then trunc to i64
+  print(str(float(f32(3.1415927)))); // demote then promote
+  print(str(f32(true)));            // bool -> f32 (1.0)
+}`,
+  },
+  {
+    name: 'f32-array-sum',
+    source: `// A harmonic sum accumulated entirely in single precision.
+fn main(){
+  let n = 12;
+  let xs = f32_array(n);
+  for (let i = 0; i < n; i = i + 1) { xs[i] = f32(1.0) / f32(i + 1); }
+  let s = f32(0.0);
+  for (let i = 0; i < n; i = i + 1) { s = s + xs[i]; }
+  print(str(s));
+  for (let i = 0; i < n; i = i + 1) { print(str(xs[i])); }
+}`,
+  },
+  {
+    name: 'f32-struct-dot',
+    source: `// f32 struct fields (4-byte) + a function returning f32.
+struct Vec3 { x: f32; y: f32; z: f32; }
+fn dot(a: Vec3, b: Vec3) -> f32 { return a.x * b.x + a.y * b.y + a.z * b.z; }
+fn main(){
+  let a = Vec3(f32(1.5), f32(2.5), f32(3.5));
+  let b = Vec3(f32(0.5), f32(1.0), f32(2.0));
+  print(str(dot(a, b)));
+  a.x = a.x + f32(10.0);
+  print(str(a.x)); print(str(a.y)); print(str(a.z));
+}`,
+  },
+  {
+    name: 'f32-compare',
+    source: `fn main(){
+  print(f32(0.1) + f32(0.2) == f32(0.3));  // false — single-precision rounding
+  print(f32(0.5) < f32(0.6));
+  print(f32(1.0) / f32(3.0) > f32(0.33));
+  print(f32(2.0) == f32(2.0));
+  // f32 vs f64 disagree on representability of 0.1
+  print(float(f32(0.1)) == 0.1);           // false
+}`,
+  },
+  {
+    name: 'math-user-shadow-isolation',
+    source: `// A user 'fn sqrt' shadows the builtin in user code, but the MATH_PRELUDE
+// kernels keep using the NATIVE sqrt internally — so hypot is still 5.0 even
+// though the user's sqrt doubles its argument. Both backends must agree.
+fn sqrt(x: float) -> float { return x * 2.0; }
+fn main(){
+  print(str(sqrt(2.0)));        // user's: 4.0
+  print(str(hypot(3.0, 4.0)));  // native kernel sqrt: 5.0
+  print(str(cbrt(64.0)));       // native kernel sqrt unaffected: 4.0
+  print(str(asin(0.5)));        // uses native sqrt inside
+}`,
+  },
 ];

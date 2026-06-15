@@ -909,3 +909,295 @@ fn __parse_float(s: int) -> float {
   return result;
 }
 `;
+
+// ===========================================================================
+// MATH_PRELUDE — Strata's transcendental math library, written in Strata.
+//
+// WebAssembly has no transcendental opcodes, so — unlike sqrt/floor/ceil/trunc/
+// round/abs/fmin/fmax/copysign, each a single wasm op the interpreter mirrors
+// with the matching `Math.*` — these functions cannot be a native op plus a host
+// mirror (a hand-rolled polynomial never matches libm to the last ULP, and the
+// differential harness demands byte-for-byte agreement). The resolution is to
+// write each kernel exactly ONCE, here, in ordinary Strata. The wasm backend
+// compiles and injects this prelude (like the string / Dragon4 runtimes); the
+// reference interpreter runs THE SAME SOURCE through a cached sub-interpreter
+// (see `mathKernel` in interp.ts). One source of truth ⇒ wasm and the oracle
+// agree by construction at every optimization level.
+//
+// Every kernel uses only f64 `+ - * /`, comparisons, the native single-op
+// builtins (sqrt/floor/trunc/abs/copysign/fmin/fmax), and the `__f64_bits` /
+// `__f64_from_bits` reinterpret intrinsics for exact frexp/ldexp — each of which
+// is already identical across the wasm backend and the interpreter. NaN is
+// produced as `0.0/0.0` and ±inf as `±1.0/0.0` (float division never traps).
+// ===========================================================================
+export const MATH_PRELUDE = `
+// 2^n for an integer n, built straight from the IEEE-754 exponent field. Values
+// of n outside the normal range fold to inf / 0 via multiplication, so this and
+// __ldexp never trap. (8.98846567431158e307 = 2^1023, 2.2250...e-308 = 2^-1022.)
+fn __exp2i(n: int) -> float {
+  if (n > 1023) { return __exp2i(n - 1023) * 8.98846567431158e307; }
+  if (n < -1022) { return __exp2i(n + 1022) * 2.2250738585072014e-308; }
+  let bits = (long(n) + 1023L) << 52L;
+  return __f64_from_bits(bits);
+}
+
+// x * 2^n.
+fn __ldexp(x: float, n: int) -> float { return x * __exp2i(n); }
+
+// Unbiased base-2 exponent of a finite normal x != 0.
+fn __ilogb(x: float) -> int {
+  let bits = __f64_bits(x);
+  return int((bits >> 52L) & 0x7FFL) - 1023;
+}
+
+// Natural logarithm. Decompose x = 2^e * m with m in [sqrt(1/2), sqrt(2)); then
+// ln(m) = 2*(s + s^3/3 + s^5/5 + ...) with s = (m-1)/(m+1), |s| <= 0.1716, which
+// converges fast, and ln(x) = e*ln2 + ln(m).
+fn __ln(x: float) -> float {
+  if (x != x) { return x; }
+  if (x < 0.0) { return 0.0 / 0.0; }
+  if (x == 0.0) { return -1.0 / 0.0; }
+  if (x > 1.0e308) { return x; }
+  let bits = __f64_bits(x);
+  let e = int((bits >> 52L) & 0x7FFL) - 1023;
+  let mbits = (bits & 0x000FFFFFFFFFFFFFL) | 0x3FF0000000000000L;
+  let m = __f64_from_bits(mbits);
+  if (m > 1.4142135623730951) { m = m * 0.5; e = e + 1; }
+  let s = (m - 1.0) / (m + 1.0);
+  let s2 = s * s;
+  let term = s;
+  let sum = s;
+  let k = 1;
+  while (k <= 12) { term = term * s2; sum = sum + term / float(2 * k + 1); k = k + 1; }
+  return float(e) * 0.6931471805599453 + 2.0 * sum;
+}
+
+fn __log2(x: float) -> float { return __ln(x) * 1.4426950408889634; }
+fn __log10(x: float) -> float { return __ln(x) * 0.4342944819032518; }
+
+// ln(1+x), accurate near 0 via 2*atanh(s), s = x/(2+x) (no cancellation).
+fn __log1p(x: float) -> float {
+  if (x != x) { return x; }
+  if (x <= -1.0) { if (x == -1.0) { return -1.0 / 0.0; } return 0.0 / 0.0; }
+  if (abs(x) < 0.5) {
+    let s = x / (2.0 + x);
+    let s2 = s * s;
+    let term = s;
+    let sum = s;
+    let k = 1;
+    while (k <= 20) { term = term * s2; sum = sum + term / float(2 * k + 1); k = k + 1; }
+    return 2.0 * sum;
+  }
+  return __ln(1.0 + x);
+}
+
+// exp(x). Cody–Waite range reduction x = k*ln2 + r with |r| <= ln2/2, then
+// exp(r) by Taylor series and exp(x) = 2^k * exp(r).
+fn __exp(x: float) -> float {
+  if (x != x) { return x; }
+  if (x > 709.782712893384) { return 1.0 / 0.0; }
+  if (x < -745.1332191019412) { return 0.0; }
+  let kf = floor(x * 1.4426950408889634 + 0.5);
+  let r = (x - kf * 0.6931471803691238) - kf * 1.9082149292705877e-10;
+  let term = 1.0;
+  let sum = 1.0;
+  let i = 1;
+  while (i <= 13) { term = term * r / float(i); sum = sum + term; i = i + 1; }
+  return __ldexp(sum, int(kf));
+}
+
+// exp(x) - 1, accurate near 0 (Taylor avoids the 1.0 cancellation).
+fn __expm1(x: float) -> float {
+  if (x != x) { return x; }
+  if (abs(x) < 0.35) {
+    let term = x;
+    let sum = x;
+    let k = 2;
+    while (k <= 16) { term = term * x / float(k); sum = sum + term; k = k + 1; }
+    return sum;
+  }
+  return __exp(x) - 1.0;
+}
+
+// sin/cos kernels on a reduced argument r in [-pi/4, pi/4] (Taylor).
+fn __sin_k(r: float) -> float {
+  let r2 = r * r;
+  let term = r;
+  let sum = r;
+  let k = 1;
+  while (k <= 8) { term = 0.0 - term * r2 / float((2 * k) * (2 * k + 1)); sum = sum + term; k = k + 1; }
+  return sum;
+}
+fn __cos_k(r: float) -> float {
+  let r2 = r * r;
+  let term = 1.0;
+  let sum = 1.0;
+  let k = 1;
+  while (k <= 8) { term = 0.0 - term * r2 / float((2 * k - 1) * (2 * k)); sum = sum + term; k = k + 1; }
+  return sum;
+}
+
+// Argument reduction: n = round(x*2/pi); r = x - n*(pi/2) using a two-part pi/2
+// (Cody–Waite) for extra precision. Accurate for |x| up to ~1e8; beyond that the
+// two-part reduction loses bits (a documented limitation — true Payne–Hanek is
+// out of scope). The low 2 bits of n pick the quadrant.
+fn __sin(x: float) -> float {
+  if (x != x) { return x; }
+  if (abs(x) > 1.0e308) { return 0.0 / 0.0; }
+  let nf = floor(x * 0.6366197723675814 + 0.5);
+  let q = int(nf) & 3;
+  let r = (x - nf * 1.5707963267341256) - nf * 6.077100506506192e-11;
+  if (q == 0) { return __sin_k(r); }
+  if (q == 1) { return __cos_k(r); }
+  if (q == 2) { return 0.0 - __sin_k(r); }
+  return 0.0 - __cos_k(r);
+}
+fn __cos(x: float) -> float {
+  if (x != x) { return x; }
+  if (abs(x) > 1.0e308) { return 0.0 / 0.0; }
+  let nf = floor(x * 0.6366197723675814 + 0.5);
+  let q = int(nf) & 3;
+  let r = (x - nf * 1.5707963267341256) - nf * 6.077100506506192e-11;
+  if (q == 0) { return __cos_k(r); }
+  if (q == 1) { return 0.0 - __sin_k(r); }
+  if (q == 2) { return 0.0 - __cos_k(r); }
+  return __sin_k(r);
+}
+fn __tan(x: float) -> float { return __sin(x) / __cos(x); }
+
+// atan via reciprocal reduction to [0,1] then the half-angle identity
+// atan(t) = 2*atan(t/(1+sqrt(1+t^2))) repeated until t is tiny, then a short
+// polynomial; atan(orig) = 2^s * atan(t_small).
+fn __atan(x: float) -> float {
+  if (x != x) { return x; }
+  let neg = x < 0.0;
+  let t = abs(x);
+  if (t > 1.0e308) { return copysign(1.5707963267948966, x); }
+  let recip = false;
+  if (t > 1.0) { t = 1.0 / t; recip = true; }
+  let s = 0;
+  while (t > 0.05) { t = t / (1.0 + sqrt(1.0 + t * t)); s = s + 1; }
+  let t2 = t * t;
+  let term = t;
+  let sum = t;
+  let k = 1;
+  while (k <= 7) { term = 0.0 - term * t2; sum = sum + term / float(2 * k + 1); k = k + 1; }
+  let r = __ldexp(sum, s);
+  if (recip) { r = 1.5707963267948966 - r; }
+  if (neg) { r = 0.0 - r; }
+  return r;
+}
+fn __asin(x: float) -> float {
+  if (x != x) { return x; }
+  if (x > 1.0 || x < -1.0) { return 0.0 / 0.0; }
+  if (x == 1.0) { return 1.5707963267948966; }
+  if (x == -1.0) { return -1.5707963267948966; }
+  return __atan(x / sqrt(1.0 - x * x));
+}
+fn __acos(x: float) -> float {
+  if (x != x) { return x; }
+  return 1.5707963267948966 - __asin(x);
+}
+fn __atan2(y: float, x: float) -> float {
+  if (x != x) { return x; }
+  if (y != y) { return y; }
+  if (x > 0.0) { return __atan(y / x); }
+  if (x < 0.0) {
+    if (y >= 0.0) { return __atan(y / x) + 3.141592653589793; }
+    return __atan(y / x) - 3.141592653589793;
+  }
+  if (y > 0.0) { return 1.5707963267948966; }
+  if (y < 0.0) { return -1.5707963267948966; }
+  return 0.0;
+}
+
+// pow via exp(y*ln(x)) with the usual special cases; negative base only for
+// integer exponents (sign from the exponent's parity).
+fn __pow(x: float, y: float) -> float {
+  if (x != x) { return x; }
+  if (y != y) { return y; }
+  if (y == 0.0) { return 1.0; }
+  if (x == 1.0) { return 1.0; }
+  if (x > 0.0) { return __exp(y * __ln(x)); }
+  if (x == 0.0) { if (y > 0.0) { return 0.0; } return 1.0 / 0.0; }
+  let yi = trunc(y);
+  if (yi != y) { return 0.0 / 0.0; }
+  let r = __exp(y * __ln(0.0 - x));
+  let half = yi * 0.5;
+  if (trunc(half) != half) { return 0.0 - r; }
+  return r;
+}
+
+// Cube root: exponent/3 initial guess from the bits, refined by Newton.
+fn __cbrt(x: float) -> float {
+  if (x != x) { return x; }
+  if (x == 0.0) { return x; }
+  if (abs(x) > 1.0e308) { return x; }
+  let neg = x < 0.0;
+  let a = abs(x);
+  let e = __ilogb(a);
+  let y = __exp2i(e / 3);
+  let i = 0;
+  while (i < 7) { y = (2.0 * y + a / (y * y)) / 3.0; i = i + 1; }
+  if (neg) { return 0.0 - y; }
+  return y;
+}
+
+// Hyperbolic functions. Near 0 they route through expm1 to avoid cancellation.
+fn __sinh(x: float) -> float {
+  if (x != x) { return x; }
+  let a = abs(x);
+  if (a > 709.0) { return copysign(1.0 / 0.0, x); }
+  if (a < 1.0) { return (__expm1(x) - __expm1(0.0 - x)) * 0.5; }
+  let e = __exp(a);
+  return copysign((e - 1.0 / e) * 0.5, x);
+}
+fn __cosh(x: float) -> float {
+  if (x != x) { return x; }
+  let a = abs(x);
+  if (a > 709.0) { return 1.0 / 0.0; }
+  let e = __exp(a);
+  return (e + 1.0 / e) * 0.5;
+}
+fn __tanh(x: float) -> float {
+  if (x != x) { return x; }
+  let a = abs(x);
+  if (a > 20.0) { return copysign(1.0, x); }
+  let e = __expm1(2.0 * a);
+  return copysign(e / (e + 2.0), x);
+}
+
+// hypot with scaling to avoid intermediate overflow/underflow.
+fn __hypot(x: float, y: float) -> float {
+  let ax = abs(x);
+  let ay = abs(y);
+  if (ax > 1.0e308 || ay > 1.0e308) { return 1.0 / 0.0; }
+  let m = fmax(ax, ay);
+  let n = fmin(ax, ay);
+  if (m == 0.0) { return 0.0; }
+  let r = n / m;
+  return m * sqrt(1.0 + r * r);
+}
+
+// IEEE remainder by repeated scaled subtraction (the classic binary fmod). The
+// result has the sign of x and magnitude < |y|.
+fn __fmod(x: float, y: float) -> float {
+  if (x != x) { return x; }
+  if (y != y) { return y; }
+  let b = abs(y);
+  if (b == 0.0) { return 0.0 / 0.0; }
+  let a = abs(x);
+  if (a > 1.0e308) { return 0.0 / 0.0; }
+  if (b > 1.0e308) { return x; }
+  if (a < b) { return x; }
+  if (a == b) { return copysign(0.0, x); }
+  let eb = __ilogb(b);
+  while (a >= b) {
+    let d = __ilogb(a) - eb;
+    let scaled = __ldexp(b, d);
+    if (scaled > a) { scaled = __ldexp(b, d - 1); }
+    a = a - scaled;
+  }
+  return copysign(a, x);
+}
+`;

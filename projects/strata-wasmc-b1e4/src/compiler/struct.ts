@@ -8,7 +8,7 @@ import type { Program, Ty } from './ast';
 // offsets; the interpreter keeps the same fields in a by-reference object, so the
 // two never have to agree on an address — only on observable values.
 
-export type FieldIRType = 'i32' | 'i64' | 'f64';
+export type FieldIRType = 'i32' | 'i64' | 'f64' | 'f32';
 
 export interface FieldLayout {
   name: string;
@@ -26,15 +26,17 @@ export interface StructLayout {
   byName: Map<string, FieldLayout>;
 }
 
-/** A field's wasm value type: 8-byte `long`/`float`, otherwise a 4-byte i32
- * (ints, bools, string pointers, array handles and nested struct handles). */
+/** A field's wasm value type: 8-byte `long`/`float`, 4-byte `f32`, otherwise a
+ * 4-byte i32 (ints, bools, string pointers, array handles and nested struct
+ * handles). */
 export function fieldIRType(t: Ty): FieldIRType {
   if (t.kind === 'float') return 'f64';
+  if (t.kind === 'f32') return 'f32';
   if (t.kind === 'long') return 'i64';
   return 'i32';
 }
 
-const sizeOf = (t: FieldIRType): number => (t === 'i32' ? 4 : 8);
+const sizeOf = (t: FieldIRType): number => (t === 'i32' || t === 'f32' ? 4 : 8);
 const alignUp = (n: number, a: number): number => (n + a - 1) & ~(a - 1);
 
 export function computeLayout(name: string, fields: { name: string; ty: Ty }[]): StructLayout {

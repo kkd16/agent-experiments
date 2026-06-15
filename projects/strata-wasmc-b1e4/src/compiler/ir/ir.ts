@@ -7,12 +7,13 @@
 // `kind` selects the family and `sub` the specific opcode; this keeps the
 // optimizer's rewriting code small and uniform.
 
-export type IRType = 'i32' | 'i64' | 'f64';
+export type IRType = 'i32' | 'i64' | 'f64' | 'f32';
 export type RetType = IRType | 'void';
 
-// Constant payloads are `number` for i32/f64 and `bigint` for i64. The `ty`
+// Constant payloads are `number` for i32/f64/f32 and `bigint` for i64. The `ty`
 // discriminator tells consumers which to expect; helpers below build the right
-// shape so callers never have to remember the rule.
+// shape so callers never have to remember the rule. (An f32 const carries its
+// `Math.fround`-rounded value, so it survives a round-trip through the encoder.)
 export type ConstNum = number | bigint;
 
 export type Operand =
@@ -23,6 +24,7 @@ export const valOp = (id: number): Operand => ({ tag: 'val', id });
 export const constI32 = (num: number): Operand => ({ tag: 'const', ty: 'i32', num: num | 0 });
 export const constI64 = (num: bigint): Operand => ({ tag: 'const', ty: 'i64', num: BigInt.asIntN(64, num) });
 export const constF64 = (num: number): Operand => ({ tag: 'const', ty: 'f64', num });
+export const constF32 = (num: number): Operand => ({ tag: 'const', ty: 'f32', num: Math.fround(num) });
 
 /** The additive-identity constant of a value type (`0n` for i64, else `0`). */
 export const zeroOf = (ty: IRType): ConstNum => (ty === 'i64' ? 0n : 0);
