@@ -440,6 +440,163 @@ function texturedStudio(): SceneDef {
   }
 }
 
+// ---- Scene 11: Cathedral — volumetric god rays through haze ------------------
+
+function cathedral(): SceneDef {
+  // A tall, dark stone hall filled with a faint forward-scattering haze, lit by a
+  // single narrow ceiling slit. The light shaft becomes *visible* where the haze
+  // scatters it toward the camera, and a row of pillars breaks it into the
+  // banded "god rays" of a cathedral — pure single+multiple scattering, no
+  // billboards or fake glow.
+  const materials: Material[] = [
+    { kind: 'diffuse', albedo: v(0.12, 0.11, 0.1) }, // 0 dark stone walls/ceiling
+    { kind: 'emissive', emission: v(26, 22, 16) }, // 1 warm skylight
+    { kind: 'diffuse', albedo: v(0.32, 0.31, 0.29) }, // 2 stone floor
+    { kind: 'diffuse', albedo: v(0.22, 0.21, 0.2) }, // 3 pillar stone
+  ]
+  const prims: PrimDef[] = []
+  const x0 = -8
+  const x1 = 8
+  const z0 = -13
+  const z1 = 7
+  const yT = 15
+  prims.push(...quad(v(x0, 0, z0), v(x1, 0, z0), v(x1, 0, z1), v(x0, 0, z1), 2)) // floor
+  prims.push(...quad(v(x0, yT, z0), v(x0, yT, z1), v(x1, yT, z1), v(x1, yT, z0), 0)) // ceiling
+  prims.push(...quad(v(x0, 0, z0), v(x0, yT, z0), v(x1, yT, z0), v(x1, 0, z0), 0)) // back wall
+  prims.push(...quad(v(x0, 0, z1), v(x0, 0, z0), v(x0, yT, z0), v(x0, yT, z1), 0)) // left
+  prims.push(...quad(v(x1, 0, z0), v(x1, 0, z1), v(x1, yT, z1), v(x1, yT, z0), 0)) // right
+  // Narrow skylight slit in the ceiling (long in z, thin in x), facing down.
+  const lh = yT - 0.05
+  prims.push(...quad(v(-1.1, lh, -10), v(1.1, lh, -10), v(1.1, lh, 4), v(-1.1, lh, 4), 1))
+  // A colonnade: pairs of tall pillars flanking the nave, which carve the shaft
+  // into discrete beams and cast long volumetric shadows.
+  for (let i = 0; i < 4; i++) {
+    const z = -9 + i * 4
+    prims.push(...box(v(-3.0, 4, z), v(0.5, 4, 0.5), 0, 3))
+    prims.push(...box(v(3.0, 4, z), v(0.5, 4, 0.5), 0, 3))
+  }
+  // A diffuse sphere on the floor catching the pooled light.
+  prims.push({ kind: 'sphere', center: v(0, 1.2, -3), radius: 1.2, material: 2 })
+
+  return {
+    name: 'Cathedral',
+    materials,
+    prims,
+    camera: {
+      eye: v(0.5, 4.5, 13),
+      target: v(0, 5.5, -4),
+      up: v(0, 1, 0),
+      vfovDeg: 52,
+      aperture: 0,
+      focusDist: 16,
+    },
+    env: { kind: 'solid', color: v(0.003, 0.003, 0.005) },
+    // Enclosing haze: thin extinction, mildly forward-scattering, so the shaft
+    // glows but the rest of the hall stays dark — the contrast that reads as rays.
+    media: [{ center: v(0, 6, -3), radius: 24, sigmaT: 0.04, albedo: v(0.86, 0.84, 0.8), g: 0.45 }],
+  }
+}
+
+// ---- Scene 12: Iridescence — a thin-film thickness sweep ---------------------
+
+function iridescence(): SceneDef {
+  // Two rows of thin-film-coated spheres whose only difference is the film
+  // thickness. Because reflectance is an interference effect, sweeping thickness
+  // sweeps the whole spectrum: soap-bubble pastels, oil-slick greens and golds,
+  // beetle-shell blues — all from the same physics that fans a prism's rainbow.
+  const materials: Material[] = [
+    {
+      kind: 'diffuse',
+      albedo: v(0.5, 0.5, 0.5),
+      tex: { kind: 'checker', even: v(0.06, 0.06, 0.07), odd: v(0.02, 0.02, 0.03), scale: 0.4 },
+    }, // 0 near-black checker floor
+    { kind: 'emissive', emission: v(5.5, 5.5, 5.8) }, // 1 soft overhead light
+  ]
+  const prims: PrimDef[] = []
+  const g = 30
+  prims.push(...quad(v(-g, 0, -g), v(g, 0, -g), v(g, 0, g), v(-g, 0, g), 0))
+
+  const cols = 7
+  const span = (i: number): number => (i - (cols - 1) / 2) * 2.3
+  // Front row: film on a dense, mirror-like substrate (vivid, high-contrast sheen).
+  for (let i = 0; i < cols; i++) {
+    materials.push({ kind: 'thinfilm', thickness: 180 + i * 75, filmIor: 1.45, baseIor: 2.5 })
+    prims.push({ kind: 'sphere', center: v(span(i), 1, 1.6), radius: 1, material: materials.length - 1 })
+  }
+  // Back row: film over a warm metallic base tint (anodised-titanium look).
+  for (let i = 0; i < cols; i++) {
+    materials.push({
+      kind: 'thinfilm',
+      thickness: 520 - i * 60,
+      filmIor: 1.35,
+      baseIor: 2.0,
+      base: v(0.95, 0.86, 0.7),
+    })
+    prims.push({ kind: 'sphere', center: v(span(i), 1.15, -2.0), radius: 1.15, material: materials.length - 1 })
+  }
+  // Two soft overhead panels so the iridescence is read across a range of angles.
+  prims.push(...quad(v(-9, 9, -6), v(9, 9, -6), v(9, 9, 0), v(-9, 9, 0), 1))
+  prims.push(...quad(v(-9, 9, 0.5), v(9, 9, 0.5), v(9, 9, 6), v(-9, 9, 6), 1))
+
+  return {
+    name: 'Iridescence',
+    materials,
+    prims,
+    camera: {
+      eye: v(0, 3.6, 12),
+      target: v(0, 1, -0.2),
+      up: v(0, 1, 0),
+      vfovDeg: 40,
+      aperture: 0.03,
+      focusDist: 12,
+    },
+    // A soft studio backdrop (not black): a thin-film sphere reflects the whole
+    // surround, and each viewing angle samples a different film angle, so the
+    // iridescence reads as a full rainbow across the ball, not just at highlights.
+    env: { kind: 'gradient', top: v(0.24, 0.26, 0.32), bottom: v(0.09, 0.095, 0.11) },
+  }
+}
+
+// ---- Scene 13: Nebula — a coloured scattering orb beside iridescent glass -----
+
+function nebula(): SceneDef {
+  // A dense, coloured single-scattering volume — a glowing cloud — flanked by two
+  // coloured key lights, with a thin-film sphere nearby picking up the coloured
+  // illumination as a metallic sheen. The orb is lit purely by light scattering
+  // through its own body, so it self-shadows and glows from within.
+  const materials: Material[] = [
+    { kind: 'diffuse', albedo: v(0.08, 0.08, 0.1) }, // 0 dark floor
+    { kind: 'emissive', emission: v(44, 12, 58) }, // 1 magenta key
+    { kind: 'emissive', emission: v(9, 30, 48) }, // 2 cyan key
+    { kind: 'thinfilm', thickness: 360, filmIor: 1.4, baseIor: 2.4 }, // 3 iridescent sphere
+  ]
+  const prims: PrimDef[] = []
+  const g = 40
+  prims.push(...quad(v(-g, 0, -g), v(g, 0, -g), v(g, 0, g), v(-g, 0, g), 0))
+  // Two coloured area lights flanking the orb.
+  prims.push(...quad(v(-6.5, 0.5, -3), v(-6.5, 0.5, 3), v(-6.5, 6.5, 3), v(-6.5, 6.5, -3), 1)) // left magenta
+  prims.push(...quad(v(6.5, 6.5, -3), v(6.5, 6.5, 3), v(6.5, 0.5, 3), v(6.5, 0.5, -3), 2)) // right cyan
+  // The iridescent sphere off to the side.
+  prims.push({ kind: 'sphere', center: v(3.0, 1.3, 1.2), radius: 1.3, material: 3 })
+
+  return {
+    name: 'Nebula',
+    materials,
+    prims,
+    camera: {
+      eye: v(0, 2.6, 10),
+      target: v(-0.4, 2.0, 0),
+      up: v(0, 1, 0),
+      vfovDeg: 42,
+      aperture: 0.04,
+      focusDist: 10,
+    },
+    env: { kind: 'solid', color: v(0.01, 0.01, 0.02) },
+    // A dense, slightly forward cloud with a cool-violet single-scattering albedo.
+    media: [{ center: v(-1.6, 2.4, 0), radius: 2.0, sigmaT: 1.15, albedo: v(0.74, 0.58, 0.88), g: 0.35 }],
+  }
+}
+
 // ---- Sun helpers -------------------------------------------------------------
 
 // A unit direction pointing toward the sun from an azimuth (degrees clockwise
@@ -637,6 +794,7 @@ export interface ScenePreset {
   build: () => SceneDef
   sky?: boolean // exposes interactive sun/turbidity controls
   obj?: boolean // accepts a pasted OBJ model
+  fog?: boolean // contains participating media; exposes a fog-density control
 }
 
 export const SCENES: ScenePreset[] = [
@@ -647,6 +805,9 @@ export const SCENES: ScenePreset[] = [
   { id: 'prism', label: 'Prism', build: prismScene },
   { id: 'menagerie', label: 'Glass Menagerie', build: glassMenagerie },
   { id: 'textured', label: 'Textured Studio', build: texturedStudio },
+  { id: 'cathedral', label: 'Cathedral', build: cathedral, fog: true },
+  { id: 'iridescence', label: 'Iridescence', build: iridescence },
+  { id: 'nebula', label: 'Nebula', build: nebula, fog: true },
   { id: 'sky', label: 'Sky Studio', build: skyStudio, sky: true },
   { id: 'revolution', label: 'Revolution', build: revolution, sky: true },
   { id: 'custom', label: 'Custom OBJ', build: customScene, sky: true, obj: true },

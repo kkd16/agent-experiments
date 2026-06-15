@@ -8,7 +8,7 @@
 import type { Vec3 } from './vec3'
 import { add, cross, madd, normalize, scale, sub, v } from './vec3'
 import type { Ray } from './ray'
-import { concentricDisk } from './rng'
+import { concentricDisk, concentricDiskFrom } from './rng'
 import type { Rng } from './rng'
 
 export interface CameraDef {
@@ -48,12 +48,14 @@ export class Camera {
     )
   }
 
-  // s, t ∈ [0,1] image-plane coordinates (origin bottom-left).
-  generateRay(s: number, t: number, rng: Rng): Ray {
+  // s, t ∈ [0,1] image-plane coordinates (origin bottom-left). `lens`, when
+  // given, is a [0,1)² low-discrepancy sample for the aperture; otherwise the
+  // lens point is drawn from the RNG.
+  generateRay(s: number, t: number, rng: Rng, lens?: { x: number; y: number }): Ray {
     let origin = this.eye
     let target = add(this.lowerLeft, add(scale(this.horizontal, s), scale(this.vertical, t)))
     if (this.lensRadius > 0) {
-      const disk = concentricDisk(rng)
+      const disk = lens ? concentricDiskFrom(lens.x, lens.y) : concentricDisk(rng)
       const offset = add(scale(this.u, disk.x * this.lensRadius), scale(this.vv, disk.y * this.lensRadius))
       origin = add(this.eye, offset)
       target = sub(target, offset)

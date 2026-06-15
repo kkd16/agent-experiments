@@ -72,6 +72,21 @@ export function Controls(props: {
         </Panel>
       )}
 
+      {preset?.fog && (
+        <Panel title="Volumetric haze" subtitle="Participating media — Henyey–Greenstein scattering">
+          <Slider
+            label="Fog density"
+            value={state.fogDensity}
+            min={0}
+            max={3}
+            step={0.05}
+            onChange={(v) => set('fogDensity', v)}
+            format={(v) => `${v.toFixed(2)}×`}
+            hint="Scales the medium's extinction. Higher = thicker haze, brighter light shafts and softer depth."
+          />
+        </Panel>
+      )}
+
       {preset?.obj && (
         <Panel title="Model" subtitle="Paste a Wavefront OBJ">
           <TextArea

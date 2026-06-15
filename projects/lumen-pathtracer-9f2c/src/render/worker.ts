@@ -8,6 +8,7 @@
 import { Scene } from '../engine/scene'
 import { Camera } from '../engine/camera'
 import { Rng } from '../engine/rng'
+import { halton23, halton57, pixelOffset } from '../engine/qmc'
 import { radiance } from '../engine/integrator'
 import type { GBuffer, RayStats } from '../engine/integrator'
 import type { FromWorker, InitMsg, IntegratorSettings, ToWorker } from '../engine/types'
@@ -51,14 +52,19 @@ function handlePass(sampleIndex: number, captureGBuffer: boolean): void {
     ? { albedo: { x: 0, y: 0, z: 0 }, normal: { x: 0, y: 0, z: 0 } }
     : undefined
 
+  // Halton index: +1 so the very first sample isn't the degenerate (0,0) point.
+  const hIndex = sampleIndex + 1
   for (let y = bandStart; y < bandEnd; y++) {
     const row = (y - bandStart) * width
     for (let x = 0; x < width; x++) {
-      const jx = rng.next()
-      const jy = rng.next()
-      const u = (x + jx) / width
-      const vScreen = 1 - (y + jy) / height // flip so +v is up
-      const ray = camera.generateRay(u, vScreen, rng)
+      // Low-discrepancy sub-pixel jitter + lens sample, decorrelated per pixel
+      // by a Cranley–Patterson rotation; deeper bounces stay on the RNG.
+      const off = pixelOffset(x, y)
+      const pj = halton23(hIndex, off.x, off.y)
+      const lens = halton57(hIndex, off.x, off.y)
+      const u = (x + pj.x) / width
+      const vScreen = 1 - (y + pj.y) / height // flip so +v is up
+      const ray = camera.generateRay(u, vScreen, rng, lens)
       const L = radiance(scene, ray, settings, rng, stats, gbuf)
       const idx = (row + x) * 3
       rad[idx] = L.x

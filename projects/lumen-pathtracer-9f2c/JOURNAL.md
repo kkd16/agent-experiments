@@ -66,6 +66,71 @@ denoiser.
 - [ ] Bidirectional path tracing / light tracing for hard caustics
 - [ ] WebGPU compute backend behind the same scene API
 - [ ] Image (bitmap) textures + tangent-space normal maps (needs UV plumbing)
+- [x] **Participating media** — bounded homogeneous volumes with Henyey–Greenstein
+      scattering, distance sampling, in-scattering NEE + phase-function MIS (fog, smoke, god rays)
+- [x] **Thin-film interference** — spectral Airy reflectance for iridescent coatings
+      (soap-bubble / oil-slick / beetle-shell colour from interference, via the hero-wavelength path)
+- [x] **Low-discrepancy (quasi-Monte-Carlo) primary sampling** — scrambled Halton
+      sequence with Cranley–Patterson rotation for the camera sub-pixel + lens dimensions
+
+## Roadmap — 2026-06-15 Lumen 4.0: participating media, thin-film iridescence & QMC (claude)
+
+Lumen 3.0 made the *geometry* and the *sky* physical. 4.0 makes the **space between
+surfaces** physical and adds a **wave-optics** material — the two largest gaps left in a
+"physically based" renderer that so far only transported light along vacuum segments and
+modelled reflection as pure ray optics. Three headline additions, each wired through the
+engine, the worker protocol (`SceneDef` is structured-clone-serialised, so every new field
+is plain data), the verification suite, the scene registry, and the UI:
+
+1. **Participating media** (`phase.ts`, `MediumDef`, integrator + scene) — bounded
+   homogeneous volumes (fog, smoke, clouds, milky jade). The integrator samples a free-flight
+   distance from the medium's transmittance; if a collision falls before the next surface the
+   path *scatters* inside the volume: it next-event-estimates the lights through the
+   **Henyey–Greenstein** phase function (with phase↔light MIS and media-attenuated shadow
+   rays, so light shafts and volumetric shadows — "god rays" — emerge), then importance-samples
+   a new direction from the same phase function. A scalar extinction with a coloured
+   single-scattering albedo keeps the distance estimator unbiased with no spectral MIS, and the
+   analytic boundary weights cancel so surfaces seen *through* a volume need no explicit
+   transmittance multiply on the camera path. Shadow rays from ordinary surfaces are attenuated
+   by the media too, so fog darkens the room, not just the volume.
+
+2. **Thin-film interference** (`thinfilm.ts`, a new `Material` kind) — the iridescent colour of
+   soap bubbles, oil on water, anodised titanium and beetle shells, which is *wave optics*, not a
+   pigment: two reflections (off the top and bottom of a nm-thin film) interfere, and the path
+   difference `δ = 4π n₁ d cosθ₁ / λ` makes the reflectance a function of wavelength. We evaluate
+   the exact two-interface **Airy reflectance** per polarisation at the path's committed hero
+   wavelength, so the existing spectral machinery turns per-λ reflectance into a full iridescent
+   colour for free — a delta-specular coating that fans white light into interference colours the
+   way the prism fans it into a rainbow.
+
+3. **Low-discrepancy primary sampling** (`qmc.ts`) — the camera sub-pixel jitter and the lens
+   (depth-of-field) disk now come from a **scrambled Halton** sequence with a per-pixel
+   **Cranley–Patterson rotation** instead of white-noise `rng.next()`. Low-discrepancy points
+   cover the pixel footprint far more evenly, so anti-aliasing and bokeh converge visibly faster
+   for the same sample count, while every deeper bounce keeps its decorrelated pseudo-random
+   stream (so global illumination is unbiased).
+
+Plan / steps:
+
+- [x] `phase.ts` — Henyey–Greenstein phase value + importance sampler (PBRT `wo`-convention),
+      with normalisation, sampler↔pdf and mean-cosine proofs.
+- [x] `MediumDef` on `SceneDef`; `Scene` builds the medium list and exposes
+      `sampleMediumScatter` (nearest free-flight collision across bounded spheres) and
+      `mediaTransmittance` (optical depth along a shadow segment).
+- [x] Integrator: medium-scatter branch (albedo throughput, phase NEE + MIS, phase sampling),
+      plus media-attenuated surface NEE. Surfaces seen through a volume keep weight 1 (analytic
+      cancellation).
+- [x] `thinfilm.ts` — two-interface Airy reflectance (s+p averaged); a `thinfilm` `Material`
+      resolved to the hero wavelength; delta-specular BSDF; `isDelta`/`resolveMaterial` updated.
+- [x] `qmc.ts` — radical-inverse Halton/Sobol + scramble + Cranley–Patterson; camera + worker
+      wired to draw the primary 4 dimensions (pixel x/y, lens x/y) from it.
+- [x] New scenes — **Cathedral** (god rays through haze), **Iridescence** (a thin-film thickness
+      sweep), **Nebula** (a coloured scattering orb beside an iridescent sphere).
+- [x] UI — a fog-density control for volumetric scenes; About cards for media, thin-film and QMC.
+- [x] Verification — HG normalisation / sampler↔pdf / mean-cosine; homogeneous transmittance =
+      e^(−σ_t·L); pure-scattering volume conserves energy (radiance = 1 in a unit field);
+      absorbing volume = e^(−σ_t·chord); thin-film R∈[0,1], d→0 collapses to the bare-interface
+      Fresnel, and R(blue)≠R(red) (iridescence); Halton L2-discrepancy below random.
 
 ## Roadmap — 2026-06-14 Lumen 3.0: meshes, sky & sun NEE (claude)
 
@@ -163,3 +228,31 @@ verification suite, the scene registry, and the UI so it is observable and prove
   (azimuth/elevation/turbidity) for sky scenes, an OBJ paste box, and new About cards. Verified
   numerically in Node by bundling the engine with Vite and running all 23 self-tests (23/23) + a
   10-scene render smoke test (no NaNs, all lit); `pnpm lint`/`build` green via the CI gate.
+- 2026-06-15 (claude/claude-opus-4-8): **Lumen 4.0 — participating media, thin-film iridescence
+  & quasi-Monte-Carlo sampling.** Made the *space between surfaces* and a *wave-optics* material
+  physical. (1) **Participating media** (`phase.ts`, `MediumDef`, scene + integrator): bounded
+  homogeneous volumes (fog/smoke/cloud). The integrator samples a free-flight distance from the
+  medium's transmittance; a collision before the next surface makes the path scatter *inside* the
+  volume — in-scattering NEE through the **Henyey–Greenstein** phase function (phase↔light MIS, with
+  shadow rays attenuated by `mediaTransmittance` so volumetric shadows/god-rays form), then a
+  phase-importance-sampled new direction. A scalar extinction with a coloured single-scattering
+  albedo keeps the distance estimator unbiased (no spectral MIS) and the analytic boundary weights
+  cancel, so surfaces *seen through* a volume need no transmittance multiply on the camera path.
+  Surface NEE is media-attenuated too. (2) **Thin-film interference** (`thinfilm.ts`, a `thinfilm`
+  `Material`): the iridescence of soap bubbles / oil / anodised metal as exact two-interface **Airy
+  reflectance** (s+p averaged) at the path's committed hero wavelength — a delta-specular coating
+  whose reflectance is wavelength-dependent, so the existing dispersion machinery turns it into a
+  full iridescent colour (`isSpectral` now drives the wavelength commit for both dispersive glass
+  and films). (3) **Low-discrepancy primary sampling** (`qmc.ts`): the camera sub-pixel jitter and
+  the depth-of-field lens are now drawn from a **scrambled Halton** sequence with a per-pixel
+  Cranley–Patterson rotation (deeper bounces keep their RNG stream), so AA and bokeh converge
+  faster. Three new scenes — **Cathedral** (banded god-rays through forward-scattering haze),
+  **Iridescence** (a thin-film thickness sweep — soap-bubble to beetle-shell colour), **Nebula** (a
+  coloured single-scattering orb beside an iridescent sphere). UI: a live fog-density control for
+  volumetric scenes + three new About cards. **Six new correctness proofs (29 total):** HG phase
+  normalisation/sampler↔pdf/mean-cosine (E[cosθ]=−g), homogeneous transmittance = e^(−σ_t·L), a
+  pure-scattering volume conserving energy (radiance = 1 in a unit field), an absorbing volume =
+  e^(−σ_t·chord), thin-film R∈[0,1] with the d→0 limit collapsing to the bare-interface Fresnel
+  (err 5.6e-17) and R(λ) iridescent, and Halton L2 star-discrepancy 4× below random. Verified in
+  Node (29/29 self-tests + a 13-scene render smoke test: no NaNs, all lit); `pnpm lint`/`tsc`/`build`
+  green via the CI gate.
