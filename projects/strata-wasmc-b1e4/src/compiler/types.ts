@@ -6,9 +6,10 @@ import type {
   Program,
   ScalarTy,
   Stmt,
+  StructDecl,
   Ty,
 } from './ast';
-import { T_BOOL, T_FLOAT, T_INT, T_LONG, T_STR, T_VOID, tyEqual, tyName } from './ast';
+import { T_BOOL, T_FLOAT, T_INT, T_LONG, T_NULL, T_STR, T_VOID, tyEqual, tyName } from './ast';
 
 // The type checker resolves every identifier, validates operators, and writes
 // the inferred `ty` back onto each expression node so later phases never have to
@@ -23,6 +24,8 @@ export interface FnSig {
 export interface SymbolTable {
   functions: Map<string, FnSig>;
   globals: Map<string, Ty>;
+  /** every declared `struct`, keyed by name (preserves field order) */
+  structs: Map<string, StructDecl>;
 }
 
 // Builtins available without declaration. `print`/`int`/`float` are special-
@@ -88,8 +91,17 @@ class Scope {
   }
 }
 
+// Names that may never be used for a `struct` (they already mean something as a
+// builtin, a primitive type, or a reserved conversion). Keeps the constructor
+// call `Name(...)` unambiguous.
+const RESERVED_NAMES = new Set<string>([
+  'print', 'str', 'char', 'int', 'float', 'long', 'len',
+  'int_array', 'long_array', 'float_array', 'str_array',
+  'bool', 'void',
+]);
+
 class Checker {
-  syms: SymbolTable = { functions: new Map(), globals: new Map() };
+  syms: SymbolTable = { functions: new Map(), globals: new Map(), structs: new Map() };
   private scope = new Scope();
   private retTy: Ty = T_VOID;
   private loopDepth = 0;
@@ -99,24 +111,47 @@ class Checker {
   }
 
   check(prog: Program): SymbolTable {
+    // Pass 0: collect struct names (so field types and constructors can refer to
+    // any struct, including forward / mutually-recursive references), then
+    // validate each struct's fields once every name is known.
+    for (const d of prog.decls) {
+      if (d.kind === 'struct') {
+        if (!this.lowLevel && d.name.startsWith('__'))
+          throw new CompileError(`names beginning with '__' are reserved`, d.span, 'type');
+        if (RESERVED_NAMES.has(d.name) || ARRAY_INTRINSICS.has(d.name) || STR_BUILTINS.has(d.name) || BIT_BUILTINS.has(d.name))
+          throw new CompileError(`'${d.name}' is a reserved name and cannot name a struct`, d.span, 'type');
+        if (this.syms.structs.has(d.name))
+          throw new CompileError(`duplicate struct '${d.name}'`, d.span, 'type');
+        this.syms.structs.set(d.name, d);
+      }
+    }
+    for (const d of prog.decls) {
+      if (d.kind === 'struct') this.checkStructDecl(d);
+    }
     // Pass 1: collect signatures so functions can be mutually recursive.
     for (const d of prog.decls) {
       if (d.kind === 'fn') {
         if (!this.lowLevel && d.name.startsWith('__'))
           throw new CompileError(`names beginning with '__' are reserved`, d.span, 'type');
-        if (this.syms.functions.has(d.name) || ARRAY_INTRINSICS.has(d.name) || STR_BUILTINS.has(d.name) || BIT_BUILTINS.has(d.name) || d.name === 'print' || d.name === 'long')
+        if (this.syms.functions.has(d.name) || this.syms.structs.has(d.name) || ARRAY_INTRINSICS.has(d.name) || STR_BUILTINS.has(d.name) || BIT_BUILTINS.has(d.name) || d.name === 'print' || d.name === 'long')
           throw new CompileError(`duplicate or reserved function name '${d.name}'`, d.span, 'type');
+        for (const p of d.params) this.validateTy(p.ty, p.span);
+        this.validateTy(d.retTy, d.span);
         this.syms.functions.set(d.name, { params: d.params.map((p) => p.ty), ret: d.retTy });
       }
     }
     // Pass 2: globals (constant initializers, no forward references to globals).
     for (const d of prog.decls) {
       if (d.kind === 'global') {
+        if (d.declTy) this.validateTy(d.declTy, d.span);
         const t = this.checkExpr(d.init);
         const declared = d.declTy ?? t;
         if (d.declTy && !this.coercible(t, d.declTy))
           throw new CompileError(`global '${d.name}' declared ${tyName(d.declTy)} but initialized with ${tyName(t)}`, d.span, 'type');
         if (declared.kind === 'void') throw new CompileError(`global '${d.name}' cannot be void`, d.span, 'type');
+        if (declared.kind === 'null') throw new CompileError(`global '${d.name}' needs an explicit struct type for its null value (e.g. \`let ${d.name}: T = null;\`)`, d.span, 'type');
+        if (declared.kind === 'struct' && d.init.node !== 'null')
+          throw new CompileError(`a struct-typed global must be initialized with null (struct construction is not a constant)`, d.span, 'type');
         d.resolvedTy = declared;
         if (this.syms.globals.has(d.name)) throw new CompileError(`duplicate global '${d.name}'`, d.span, 'type');
         this.syms.globals.set(d.name, declared);
@@ -138,6 +173,26 @@ class Checker {
     return this.syms;
   }
 
+  // A type annotation is valid if every struct it names has been declared. (The
+  // parser turns any unknown type name into a `struct` reference, so this is
+  // where a typo like `: Pont` surfaces as a precise error.)
+  private validateTy(ty: Ty, span: import('./diagnostics').Span): void {
+    if (ty.kind === 'struct' && !this.syms.structs.has(ty.name))
+      throw new CompileError(`unknown type '${ty.name}'`, span, 'type');
+  }
+
+  private checkStructDecl(d: StructDecl): void {
+    const seen = new Set<string>();
+    for (const f of d.fields) {
+      if (seen.has(f.name))
+        throw new CompileError(`duplicate field '${f.name}' in struct '${d.name}'`, f.span, 'type');
+      seen.add(f.name);
+      if (f.ty.kind === 'void')
+        throw new CompileError(`struct field '${f.name}' cannot be void`, f.span, 'type');
+      this.validateTy(f.ty, f.span);
+    }
+  }
+
   private checkBlock(b: Block): void {
     this.scope.push();
     for (const s of b.stmts) this.checkStmt(s);
@@ -147,11 +202,13 @@ class Checker {
   private checkStmt(s: Stmt): void {
     switch (s.node) {
       case 'let': {
+        if (s.declTy) this.validateTy(s.declTy, s.span);
         const t = this.checkExpr(s.init);
         const declared = s.declTy ?? t;
         if (s.declTy && !this.coercible(t, s.declTy))
           throw new CompileError(`'${s.name}' declared ${tyName(s.declTy)} but initialized with ${tyName(t)}`, s.span, 'type');
         if (declared.kind === 'void') throw new CompileError(`'${s.name}' cannot be void`, s.span, 'type');
+        if (declared.kind === 'null') throw new CompileError(`'${s.name}' needs an explicit struct type for its null value (e.g. \`let ${s.name}: T = null;\`)`, s.span, 'type');
         s.resolvedTy = declared;
         this.scope.declare(s.name, declared, s.span);
         break;
@@ -174,6 +231,13 @@ class Checker {
         const elem: Ty = tt.elem;
         if (!this.coercible(vt, elem))
           throw new CompileError(`cannot store ${tyName(vt)} into ${tyName(tt)}`, s.span, 'type');
+        break;
+      }
+      case 'member-assign': {
+        const ft = this.fieldType(this.checkExpr(s.target), s.field, s.span);
+        const vt = this.checkExpr(s.value);
+        if (!this.coercible(vt, ft))
+          throw new CompileError(`cannot store ${tyName(vt)} into field '${s.field}' of type ${tyName(ft)}`, s.span, 'type');
         break;
       }
       case 'expr':
@@ -248,9 +312,21 @@ class Checker {
     if (t.kind !== 'bool') throw new CompileError(`condition must be bool, found ${tyName(t)}`, e.span, 'type');
   }
 
+  // The declared type of `obj.field`. `obj` must be a struct that has `field`.
+  private fieldType(objTy: Ty, field: string, span: import('./diagnostics').Span): Ty {
+    if (objTy.kind !== 'struct')
+      throw new CompileError(`type ${tyName(objTy)} has no fields`, span, 'type');
+    const def = this.syms.structs.get(objTy.name)!;
+    const f = def.fields.find((x) => x.name === field);
+    if (!f) throw new CompileError(`struct '${objTy.name}' has no field '${field}'`, span, 'type');
+    return f.ty;
+  }
+
   // `coercible` is intentionally strict: Strata performs no implicit numeric
-  // conversions. Kept as a hook so future literal-widening could slot in here.
+  // conversions. The one exception is `null`, which is assignable to any struct
+  // type (it is the struct handle that points nowhere).
   private coercible(from: Ty, to: Ty): boolean {
+    if (from.kind === 'null' && to.kind === 'struct') return true;
     return tyEqual(from, to);
   }
 
@@ -272,6 +348,10 @@ class Checker {
         return T_BOOL;
       case 'string':
         return T_STR;
+      case 'null':
+        return T_NULL;
+      case 'member':
+        return this.fieldType(this.checkExpr(e.target), e.field, e.span);
       case 'ident': {
         const local = this.scope.lookup(e.name);
         if (local) return local;
@@ -357,9 +437,17 @@ class Checker {
         if (lt.kind === 'str' && rt.kind === 'str') return T_BOOL; // lexicographic
         throw new CompileError(`'${op}' requires matching numeric or string operands, found ${tyName(lt)} and ${tyName(rt)}`, e.span, 'type');
       case '==':
-      case '!=':
+      case '!=': {
+        // Struct handles (and `null`) compare by reference identity.
+        const refKind = (t: Ty): boolean => t.kind === 'struct' || t.kind === 'null';
+        if (refKind(lt) && refKind(rt)) {
+          if (lt.kind === 'struct' && rt.kind === 'struct' && !tyEqual(lt, rt))
+            throw new CompileError(`'${op}' compares unrelated struct types ${tyName(lt)} and ${tyName(rt)}`, e.span, 'type');
+          return T_BOOL;
+        }
         if (tyEqual(lt, rt) && lt.kind !== 'void' && lt.kind !== 'array') return T_BOOL;
         throw new CompileError(`'${op}' requires matching scalar operands, found ${tyName(lt)} and ${tyName(rt)}`, e.span, 'type');
+      }
       case '&&':
       case '||':
         if (lt.kind === 'bool' && rt.kind === 'bool') return T_BOOL;
@@ -369,6 +457,19 @@ class Checker {
 
   private checkCall(e: Extract<Expr, { node: 'call' }>): Ty {
     const name = e.callee;
+    // A call to a struct name is a constructor: positional arguments fill the
+    // declared fields in order and the result is a fresh struct value.
+    const structDef = this.syms.structs.get(name);
+    if (structDef) {
+      if (e.args.length !== structDef.fields.length)
+        throw new CompileError(`struct '${name}' has ${structDef.fields.length} field(s) but got ${e.args.length} argument(s)`, e.span, 'type');
+      structDef.fields.forEach((f, i) => {
+        const at = this.checkExpr(e.args[i]);
+        if (!this.coercible(at, f.ty))
+          throw new CompileError(`field '${f.name}' of '${name}' expects ${tyName(f.ty)}, got ${tyName(at)}`, e.args[i].span, 'type');
+      });
+      return { kind: 'struct', name };
+    }
     // builtins
     // Low-level memory intrinsics (only inside the string-runtime prelude).
     if (this.lowLevel && name in INTRINSIC_SIGS) {

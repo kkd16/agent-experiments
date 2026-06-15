@@ -158,7 +158,7 @@ export function tokenize(source: string): Token[] {
       continue;
     }
 
-    const single = '(){}[],;:=+-*/%<>&|^!~?';
+    const single = '(){}[],;:=+-*/%<>&|^!~?.';
     if (single.includes(c)) {
       push(c as TokenType, i, i + 1);
       i++;

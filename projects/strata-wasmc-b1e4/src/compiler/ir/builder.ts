@@ -3,6 +3,8 @@ import type { ConstNum, IRType, RetType } from './ir';
 import { parse } from '../parser';
 import { typecheck } from '../types';
 import { STRING_PRELUDE } from './prelude';
+import type { StructLayout } from '../struct';
+import { computeLayouts } from '../struct';
 
 // Stage 1 of lowering: the typed AST is translated into a control-flow graph of
 // basic blocks where local variables are still referenced *by name* and may be
@@ -127,14 +129,16 @@ class FnBuilder {
   private body: Block;
   private exported: boolean;
   private pool: StringPool;
+  private layouts: Map<string, StructLayout>;
 
-  constructor(name: string, params: { name: string; ty: IRType }[], retTy: RetType, body: Block, exported: boolean, pool: StringPool) {
+  constructor(name: string, params: { name: string; ty: IRType }[], retTy: RetType, body: Block, exported: boolean, pool: StringPool, layouts: Map<string, StructLayout>) {
     this.name = name;
     this.params = params;
     this.retTy = retTy;
     this.body = body;
     this.exported = exported;
     this.pool = pool;
+    this.layouts = layouts;
   }
 
   build(): { fn: PFunc; usesMemory: boolean; usesStrings: boolean } {
@@ -240,6 +244,13 @@ class FnBuilder {
         const v = this.lowerExpr(s.value)!;
         const elem = this.arrayElemIR(s.target);
         this.emit({ dest: null, ty: 'void', kind: 'store', sub: elem, args: [addr, v] });
+        break;
+      }
+      case 'member-assign': {
+        const fl = this.fieldLayout(s.target, s.field);
+        const addr = this.fieldAddr(s.target, fl.offset);
+        const v = this.lowerExpr(s.value)!;
+        this.emit({ dest: null, ty: 'void', kind: 'store', sub: fl.irType, args: [addr, v] });
         break;
       }
       case 'expr':
@@ -419,6 +430,14 @@ class FnBuilder {
         const elem = this.arrayElemIR(e.target);
         return this.def(elem, 'load', elem, [addr]);
       }
+      case 'member': {
+        const fl = this.fieldLayout(e.target, e.field);
+        const addr = this.fieldAddr(e.target, fl.offset);
+        return this.def(fl.irType, 'load', fl.irType, [addr]);
+      }
+      case 'null':
+        // The struct handle that points nowhere.
+        return CI(0);
       case 'call':
         return this.lowerCall(e);
       case 'ternary':
@@ -534,6 +553,9 @@ class FnBuilder {
 
   private lowerCall(e: Extract<Expr, { node: 'call' }>): POperand | null {
     const name = e.callee;
+    // A call to a struct name constructs a value: bump-allocate the record and
+    // store each (left-to-right evaluated) argument at its field offset.
+    if (this.layouts.has(name)) return this.lowerStructNew(name, e.args);
     // Low-level memory intrinsics used by the string-runtime prelude.
     if (name === '__load8' || name === '__load32') {
       this.usesMemory = true;
@@ -668,6 +690,41 @@ class FnBuilder {
     return t.elem.kind === 'float' ? 'f64' : t.elem.kind === 'long' ? 'i64' : 'i32';
   }
 
+  // --- structs / linear memory ---
+
+  /** The layout of `target.field`, looked up from the target's static type. */
+  private fieldLayout(target: Expr, field: string): { offset: number; irType: IRType } {
+    const t = target.ty!;
+    if (t.kind !== 'struct') throw new Error('member access on a non-struct');
+    const fl = this.layouts.get(t.name)?.byName.get(field);
+    if (!fl) throw new Error(`no field ${field} on ${t.name}`);
+    return { offset: fl.offset, irType: fl.irType };
+  }
+
+  /** Address of a struct field: the base handle plus the field's byte offset. */
+  private fieldAddr(target: Expr, offset: number): POperand {
+    this.usesMemory = true;
+    const base = this.lowerExpr(target)!;
+    if (offset === 0) return base;
+    return this.def('i32', 'ibin', 'add', [base, CI(offset)]);
+  }
+
+  /** Construct a struct: evaluate every argument (left to right), bump-allocate
+   * the record, then store each argument at its field offset. Returns the
+   * handle. Argument evaluation precedes allocation so side effects observe the
+   * same order as the reference interpreter. */
+  private lowerStructNew(name: string, args: Expr[]): POperand {
+    const layout = this.layouts.get(name)!;
+    this.usesMemory = true;
+    const vals = args.map((a) => this.lowerExpr(a)!);
+    const base = this.lowerAllocBytes(CI(layout.size));
+    layout.fields.forEach((f, i) => {
+      const addr = f.offset === 0 ? base : this.def('i32', 'ibin', 'add', [base, CI(f.offset)]);
+      this.emit({ dest: null, ty: 'void', kind: 'store', sub: f.irType, args: [addr, vals[i]] });
+    });
+    return base;
+  }
+
   private elemAddr(target: Expr, index: Expr): POperand {
     this.usesMemory = true;
     const base = this.lowerExpr(target)!;
@@ -692,6 +749,7 @@ class FnBuilder {
 export function buildPreIR(prog: Program): PModule {
   const funcs: PFunc[] = [];
   const pool = new StringPool();
+  const layouts = computeLayouts(prog);
   let usesMemory = false;
   let usesStrings = false;
   // Only the entry point is exported, so the optimizer is free to delete a
@@ -702,7 +760,7 @@ export function buildPreIR(prog: Program): PModule {
     if (d.kind !== 'fn') continue;
     const params = d.params.map((p) => ({ name: p.name, ty: irTypeOf(p.ty) }));
     const exported = hasMain ? d.name === 'main' : true;
-    const fb = new FnBuilder(d.name, params, retTypeOf(d.retTy), d.body, exported, pool);
+    const fb = new FnBuilder(d.name, params, retTypeOf(d.retTy), d.body, exported, pool, layouts);
     const { fn, usesMemory: m, usesStrings: s } = fb.build();
     usesMemory = usesMemory || m;
     usesStrings = usesStrings || s;
@@ -733,7 +791,7 @@ export function buildPreIR(prog: Program): PModule {
     for (const d of preludeProg.decls) {
       if (d.kind !== 'fn') continue;
       const params = d.params.map((p) => ({ name: p.name, ty: irTypeOf(p.ty) }));
-      const fb = new FnBuilder(d.name, params, retTypeOf(d.retTy), d.body, false, pool);
+      const fb = new FnBuilder(d.name, params, retTypeOf(d.retTy), d.body, false, pool, layouts);
       funcs.push(fb.build().fn);
     }
   }

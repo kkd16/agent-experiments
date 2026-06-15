@@ -51,6 +51,8 @@ function exprStr(e: Expr): string {
     case 'binary': return `(${exprStr(e.left)} ${e.op} ${exprStr(e.right)})`;
     case 'call': return `${e.callee}(${e.args.map(exprStr).join(', ')})`;
     case 'index': return `${exprStr(e.target)}[${exprStr(e.index)}]`;
+    case 'member': return `${exprStr(e.target)}.${e.field}`;
+    case 'null': return 'null';
     case 'ternary': return `(${exprStr(e.cond)} ? ${exprStr(e.then)} : ${exprStr(e.otherwise)})`;
   }
 }
@@ -62,6 +64,7 @@ function stmtLines(s: Stmt, depth: number, out: string[]): void {
     case 'let': out.push(`${pad}let ${s.name} = ${exprStr(s.init)}${ty(s.init)}`); break;
     case 'assign': out.push(`${pad}${s.name} = ${exprStr(s.value)}`); break;
     case 'index-assign': out.push(`${pad}${exprStr(s.target)}[${exprStr(s.index)}] = ${exprStr(s.value)}`); break;
+    case 'member-assign': out.push(`${pad}${exprStr(s.target)}.${s.field} = ${exprStr(s.value)}`); break;
     case 'expr': out.push(`${pad}expr ${exprStr(s.expr)}`); break;
     case 'return': out.push(`${pad}return ${s.value ? exprStr(s.value) : ''}`); break;
     case 'break': out.push(`${pad}break`); break;
@@ -94,6 +97,9 @@ function astLines(prog: Program): string {
       const f = d as FnDecl;
       out.push(`fn ${f.name}(${f.params.map((p) => `${p.name}: ${tyName(p.ty)}`).join(', ')}) -> ${tyName(f.retTy)}`);
       blockLines(f.body, 1, out);
+    } else if (d.kind === 'struct') {
+      out.push(`struct ${d.name}`);
+      for (const fld of d.fields) out.push(`  ${fld.name}: ${tyName(fld.ty)}`);
     } else {
       out.push(`global ${d.name} = ${exprStr(d.init)}`);
     }

@@ -782,4 +782,157 @@ fn main(){
   print(acc);
 }`,
   },
+
+  // --- structs (aggregate types) -------------------------------------------
+  {
+    name: 'struct-basic',
+    source: `struct Point { x: int; y: int; }
+fn main(){
+  let p = Point(3, 4);
+  print(p.x); print(p.y);
+  p.x = 10; p.y += 5;          // store + compound-store into a field
+  print(p.x); print(p.y);
+  print(p.x * p.x + p.y * p.y);
+}`,
+  },
+  {
+    name: 'struct-mixed-fields',
+    source: `struct Mix { i: int; l: long; f: float; b: bool; s: str; }
+fn main(){
+  let m = Mix(7, 9000000000L, 2.5, true, "hi");
+  print(m.i); print(m.l); print(m.f); print(m.b); print(m.s);
+  m.l = m.l * 2L; m.f = m.f * 4.0; m.b = !m.b; m.s = m.s + "!";
+  print(m.l); print(m.f); print(m.b); print(m.s);
+}`,
+  },
+  {
+    name: 'struct-by-handle',
+    source: `struct V { x: int; y: int; z: int; }
+fn dot(a: V, b: V) -> int { return a.x*b.x + a.y*b.y + a.z*b.z; }
+fn bump(v: V) { v.x += 1; v.y += 1; v.z += 1; }   // mutates the caller's struct
+fn main(){
+  let a = V(1, 2, 3);
+  let b = V(4, 5, 6);
+  print(dot(a, b));
+  bump(a);
+  print(a.x); print(a.y); print(a.z);
+  print(dot(a, b));
+}`,
+  },
+  {
+    name: 'struct-alias',
+    source: `struct Box { v: int; }
+fn main(){
+  let a = Box(5);
+  let b = a;                 // alias — same handle
+  b.v = 99;
+  print(a.v);                // sees the mutation
+  print(a == b);             // true (same object)
+  let c = Box(99);
+  print(a == c);             // false (distinct allocations, equal contents)
+  print(a != c);
+}`,
+  },
+  {
+    name: 'struct-nested',
+    source: `struct D { v: int; }
+struct C { d: D; }
+struct B { c: C; }
+struct A { b: B; tag: int; }
+fn main(){
+  let a = A(B(C(D(1))), 100);
+  print(a.b.c.d.v); print(a.tag);
+  a.b.c.d.v = 42;
+  print(a.b.c.d.v);
+  let d = a.b.c.d;           // alias the innermost struct
+  d.v = d.v + 1;
+  print(a.b.c.d.v);          // 43, seen through the chain
+}`,
+  },
+  {
+    name: 'struct-linked-list',
+    source: `struct Node { value: int; next: Node; }
+fn cons(v: int, rest: Node) -> Node { return Node(v, rest); }
+fn sumList(n: Node) -> int {
+  let s = 0; let cur = n;
+  while (cur != null) { s = s + cur.value; cur = cur.next; }
+  return s;
+}
+fn length(n: Node) -> int {
+  if (n == null) { return 0; }
+  return 1 + length(n.next);
+}
+fn main(){
+  let l = cons(1, cons(2, cons(3, cons(4, cons(5, null)))));
+  print(sumList(l));
+  print(length(l));
+  // reverse in place
+  let prev: Node = null; let cur = l;
+  while (cur != null) { let nx = cur.next; cur.next = prev; prev = cur; cur = nx; }
+  print(sumList(prev));
+  print(prev.value);          // 5 — old tail is the new head
+}`,
+  },
+  {
+    name: 'struct-bst-sort',
+    source: `struct Tree { v: int; left: Tree; right: Tree; }
+fn insert(t: Tree, v: int) -> Tree {
+  if (t == null) { return Tree(v, null, null); }
+  if (v < t.v) { t.left = insert(t.left, v); } else { t.right = insert(t.right, v); }
+  return t;
+}
+fn walk(t: Tree) {
+  if (t == null) { return; }
+  walk(t.left); print(t.v); walk(t.right);
+}
+fn main(){
+  let root: Tree = null;
+  let seed = 12345;
+  for (let i = 0; i < 20; i = i + 1) {
+    seed = (seed * 1103515245 + 12345) & 2147483647;
+    root = insert(root, seed % 100);
+  }
+  walk(root);                 // ascending (duplicates go right)
+}`,
+  },
+  {
+    name: 'struct-array-field',
+    source: `struct Buf { data: int[]; len: int; cap: int; }
+fn push(b: Buf, v: int) { b.data[b.len] = v; b.len += 1; }
+fn main(){
+  let b = Buf(int_array(8), 0, 8);
+  for (let i = 0; i < 8; i = i + 1) { push(b, i * i); }
+  let s = 0;
+  for (let i = 0; i < b.len; i = i + 1) { s = s + b.data[i]; }
+  print(s); print(b.len); print(b.data[3]);
+}`,
+  },
+  {
+    name: 'struct-alloc-loop',
+    source: `struct Acc { sum: long; count: int; }
+fn main(){
+  // Thousands of allocations exercise the bump allocator; the optimizer must
+  // keep loads/stores ordered around each construction.
+  let a = Acc(0L, 0);
+  for (let i = 0; i < 2000; i = i + 1) {
+    let p = Acc(long(i), i);          // fresh handle every iteration
+    a.sum = a.sum + p.sum;
+    a.count = a.count + 1;
+  }
+  print(a.sum); print(a.count);
+}`,
+  },
+  {
+    name: 'struct-global-null',
+    source: `struct Node { v: int; next: Node; }
+let head: Node = null;        // struct-typed global, initialised null
+fn main(){
+  print(head == null);
+  head = Node(1, Node(2, Node(3, null)));
+  let s = 0; let c = head;
+  while (c != null) { s = s + c.v; c = c.next; }
+  print(s);
+  print(head.next.v);          // 2
+}`,
+  },
 ];

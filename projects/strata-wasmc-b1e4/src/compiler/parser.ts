@@ -92,8 +92,29 @@ class Parser {
   private parseDecl(): Decl {
     if (this.check('fn')) return this.parseFn();
     if (this.check('let')) return this.parseGlobal();
+    if (this.check('struct')) return this.parseStruct();
     const t = this.peek();
-    throw new CompileError(`expected a function or global declaration, found '${t.text || t.type}'`, t.span, 'parse');
+    throw new CompileError(`expected a function, global, or struct declaration, found '${t.text || t.type}'`, t.span, 'parse');
+  }
+
+  // struct Name { f1: T1; f2: T2; … }  — fields are `name: type` separated by
+  // semicolons (a trailing semicolon is allowed). Field types may be any value
+  // type, including another struct (composition / recursive linked structures)
+  // or an array; the checker validates that struct field types name real structs.
+  private parseStruct(): import('./ast').StructDecl {
+    const start = this.expect('struct').span;
+    const nameTok = this.expect('ident');
+    this.expect('{');
+    const fields: import('./ast').StructField[] = [];
+    while (!this.check('}') && !this.check('eof')) {
+      const f = this.expect('ident');
+      this.expect(':');
+      const ty = this.parseType();
+      fields.push({ name: f.text, ty, span: f.span });
+      if (!this.accept(';')) break;
+    }
+    this.expect('}');
+    return { kind: 'struct', name: nameTok.text, fields, span: this.spanFrom(start) };
   }
 
   private parseType(): Ty {
@@ -119,11 +140,15 @@ class Parser {
         base = T_VOID;
         break;
       default:
-        throw new CompileError(`unknown type '${t.text}'`, t.span, 'parse');
+        // A user type name refers to a `struct` (the checker, which knows every
+        // declared struct, reports an unknown name with a precise error).
+        base = { kind: 'struct', name: t.text };
+        break;
     }
     if (this.accept('[')) {
       this.expect(']');
       if (base.kind === 'void') throw new CompileError('cannot have an array of void', t.span, 'parse');
+      if (base.kind === 'struct') throw new CompileError('arrays of structs are not supported yet', t.span, 'parse');
       return { kind: 'array', elem: base as { kind: 'int' } | { kind: 'float' } | { kind: 'bool' } | { kind: 'str' } };
     }
     return base;
@@ -376,6 +401,9 @@ class Parser {
       if (lhs.node === 'index') {
         return { node: 'index-assign', target: lhs.target, index: lhs.index, value, span: this.spanFrom(start) };
       }
+      if (lhs.node === 'member') {
+        return { node: 'member-assign', target: lhs.target, field: lhs.field, value, span: this.spanFrom(start) };
+      }
       throw new CompileError('invalid assignment target', lhs.span, 'parse');
     }
     return { node: 'expr', expr: lhs, span: this.spanFrom(start) };
@@ -441,6 +469,10 @@ class Parser {
         const index = this.parseExpr();
         this.expect(']');
         e = { node: 'index', target: e, index, span: this.spanFrom(e.span) };
+      } else if (this.check('.')) {
+        this.next();
+        const field = this.expect('ident');
+        e = { node: 'member', target: e, field: field.text, span: this.spanFrom(e.span) };
       } else {
         break;
       }
@@ -463,6 +495,8 @@ class Parser {
         return { node: 'bool', value: true, span: t.span };
       case 'false':
         return { node: 'bool', value: false, span: t.span };
+      case 'null':
+        return { node: 'null', span: t.span };
       case '(': {
         const e = this.parseExpr();
         this.expect(')');

@@ -478,6 +478,110 @@ fn main() {
 }
 `,
   },
+  {
+    id: 'struct-vec',
+    title: 'Structs: 2D vectors',
+    blurb: 'Aggregate types with named fields — passed, returned, and mutated by handle.',
+    source: `// A struct is an aggregate laid out in linear memory and referenced by an
+// i32 handle. Fields are read/written with dot notation; structs pass to and
+// return from functions by handle (so a function can mutate its argument).
+struct Vec2 { x: float; y: float; }
+
+fn add(a: Vec2, b: Vec2) -> Vec2 { return Vec2(a.x + b.x, a.y + b.y); }
+fn scale(v: Vec2, s: float) -> Vec2 { return Vec2(v.x * s, v.y * s); }
+fn dot(a: Vec2, b: Vec2) -> float { return a.x * b.x + a.y * b.y; }
+fn normSq(v: Vec2) -> float { return dot(v, v); }
+
+fn main() {
+  let a = Vec2(3.0, 4.0);
+  let b = Vec2(1.0, 2.0);
+  let c = add(a, scale(b, 2.0));
+  print(c.x); print(c.y);
+  print(normSq(a));          // 25
+  print(dot(a, b));          // 11
+
+  // Mutation through a handle is visible to every alias of the struct.
+  let p = a;
+  p.x = 10.0;
+  print(a.x);                // 10
+}
+`,
+  },
+  {
+    id: 'struct-bst',
+    title: 'Structs: binary search tree',
+    blurb: 'Recursive structs + `null` leaves build a real linked data structure.',
+    source: `// A recursive struct field holds a handle to another node; \`null\` is the
+// handle that points nowhere, so it terminates the tree. Insert is recursive,
+// and an in-order walk prints the values in sorted order.
+struct Tree { value: int; left: Tree; right: Tree; }
+
+fn insert(t: Tree, v: int) -> Tree {
+  if (t == null) { return Tree(v, null, null); }
+  if (v < t.value) { t.left = insert(t.left, v); }
+  else if (v > t.value) { t.right = insert(t.right, v); }
+  return t;
+}
+
+fn inorder(t: Tree) {
+  if (t == null) { return; }
+  inorder(t.left);
+  print(t.value);
+  inorder(t.right);
+}
+
+fn height(t: Tree) -> int {
+  if (t == null) { return 0; }
+  let l = height(t.left);
+  let r = height(t.right);
+  return 1 + (l > r ? l : r);
+}
+
+fn main() {
+  let root: Tree = null;
+  let xs = split("5,3,8,1,4,7,9,2,6", ",");
+  for (let i = 0; i < len(xs); i = i + 1) {
+    root = insert(root, parse_int(xs[i]));
+  }
+  inorder(root);            // 1..9 sorted
+  print(height(root));
+}
+`,
+  },
+  {
+    id: 'struct-rational',
+    title: 'Structs: rational arithmetic',
+    blurb: 'A Rat { n, d } value type with gcd-reduced add/mul, returned by value.',
+    source: `// Exact fractions as a small value type. Each operation returns a fresh,
+// reduced struct — the bump allocator hands out a new handle per construction.
+struct Rat { n: int; d: int; }
+
+fn gcd(a: int, b: int) -> int {
+  while (b != 0) { let t = a % b; a = b; b = t; }
+  return a < 0 ? -a : a;
+}
+
+fn reduce(r: Rat) -> Rat {
+  let g = gcd(r.n, r.d);
+  if (g == 0) { return r; }
+  let s = r.d < 0 ? -1 : 1;          // keep the denominator positive
+  return Rat(s * r.n / g, s * r.d / g);
+}
+
+fn add(a: Rat, b: Rat) -> Rat { return reduce(Rat(a.n * b.d + b.n * a.d, a.d * b.d)); }
+fn mul(a: Rat, b: Rat) -> Rat { return reduce(Rat(a.n * b.n, a.d * b.d)); }
+
+fn main() {
+  // Harmonic-ish sum 1/1 + 1/2 + 1/3 + 1/4 as one exact fraction.
+  let acc = Rat(0, 1);
+  for (let i = 1; i <= 4; i = i + 1) { acc = add(acc, Rat(1, i)); }
+  print(acc.n); print(acc.d);        // 25 / 12
+
+  let half = mul(Rat(1, 2), Rat(1, 1));
+  print(half.n); print(half.d);      // 1 / 2
+}
+`,
+  },
 ];
 
 export const TEST_PROGRAMS: { name: string; source: string }[] = EXAMPLES.map((e) => ({ name: e.id, source: e.source }));
