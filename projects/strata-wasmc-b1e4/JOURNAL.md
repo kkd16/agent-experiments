@@ -21,6 +21,9 @@ reference interpreter at every optimization level.
     type-checked (with low-level memory intrinsics enabled) and compiled through this
     very pipeline, then injected only when a program uses strings. Because the runtime
     *is* ordinary Strata, the differential harness verifies it at every opt level too.
+    A second, self-contained `FLOAT_PRELUDE` — a **big-integer Dragon4** that
+    implements `str(float)` (shortest round-trip double→string) — is likewise
+    written in Strata and injected only when a program formats a float.
 - `src/compiler/opt/optimize.ts` — pass pipeline: copy-propagation, **SCCP** (sparse
   conditional constant propagation), **if-conversion** (control-flow diamond → branchless
   `select`), **strength reduction**, dominator-scoped **GVN/CSE**, algebraic simplification,
@@ -57,7 +60,19 @@ functions + recursion, globals (assignable from any function), if/else, while,
 break/continue, short-circuit `&&`/`||`, **ternary `?:`**, **compound assignment**
 (`+=` … `>>=`), casts `int()`/**`long()`**/`float()`, **bit ops**
 `popcount`/`clz`/`ctz`/`rotl`/`rotr`, `print`,
-`int_array`/**`long_array`**/`float_array`/**`str_array`**/`len`.
+`int_array`/**`long_array`**/`float_array`/**`str_array`**/`len`, an **f64 math
+library** (`sqrt`/`floor`/`ceil`/`trunc`/`round`/`abs`/`fmin`/`fmax`/`copysign`).
+
+**`str(float)`** renders a double as the **shortest decimal that round-trips**
+to the same f64, formatted exactly like a browser's `Number.toString` (ECMA-262
+notation, fixed vs. exponential) — e.g. `0.1 + 0.2 → "0.30000000000000004"`,
+`1e21`, `5e-7`. It is a genuine **Dragon4** (Steele & White / Burger–Dubois)
+big-integer formatter written *in Strata* (base-2^16 limbs in an `int[]`) and
+compiled by this pipeline, so the differential harness proves it at -O0…-O3; a
+separate fuzz checks the compiled wasm against `String()` over 10M random
+doubles. The **f64 math** builtins map 1:1 to wasm opcodes; `round` is
+ties-to-even (`f64.nearest`). They are **soft**: a user `fn sqrt(...)` shadows the
+builtin (the `newton` example does exactly that).
 
 **`struct`s** are aggregate value types laid out in linear memory and referenced by
 an i32 handle: `struct Point { x: int; y: int; }`, positional construction
@@ -108,6 +123,88 @@ pipeline, so the differential harness exercises it at every opt level too.
       `==`/`!=`; through the type checker, IR builder (linear-memory layout),
       every optimizer pass, the backend, the oracle + step debugger, and the UI;
       456 differential checks across -O0…-O3 (baseline 388)
+- [x] **`str(float)` — correct shortest round-trip float formatting (Dragon4)**,
+      plus an **f64 math library** (`sqrt`/`floor`/`ceil`/`trunc`/`round`/`abs`/
+      `fmin`/`fmax`/`copysign`) and the f64 bit-reinterpret intrinsics. The
+      formatter is a big-integer Dragon4 written in Strata; its output matches the
+      reference interpreter (= V8 `String()`) byte-for-byte, proven by the harness
+      at -O0…-O3 *and* a 10M-double fuzz of the compiled wasm. 492 checks.
+
+## 2026-06-15 — plan: floating point, done right — `str(float)` (Dragon4) + an f64 math library (claude / claude-opus-4-8)
+
+The longest-standing open item — deferred since the very first strings session
+("`str(float)` … needs a Ryū-style formatter to match the interpreter
+byte-for-byte") — closed here, turning floating point from "arithmetic only" into
+a first-class, printable part of the language. Everything is differential-tested
+at -O0…-O3, and the formatter additionally fuzzed as compiled wasm against V8's
+`String()` over 10 million random doubles (`tools/fuzz-float.mjs`).
+
+**The insight that unblocks the old deferral.** The blocker was "match the
+interpreter byte-for-byte." Rather than chase an opaque host formatter, I make the
+wasm formatter reproduce **ECMAScript `Number::toString` exactly** — which is
+precisely what the interpreter's `String(x)` oracle already prints. The two then
+agree *by construction*, and the proof becomes the much stronger statement: my
+from-scratch formatter reproduces V8's shortest round-trip output, verified on
+millions of cases.
+
+Plan (every item differential-tested at -O0…-O3 before it is checked off):
+
+### f64 math library — soft, user-overridable builtins
+- [x] Unary `sqrt`/`floor`/`ceil`/`trunc`/`round`/`abs` lowered as single-operand
+      f64 "cast" opcodes; binary `fmin`/`fmax`/`copysign` as `fbin`. `round` is
+      wasm `f64.nearest` (round-half-to-**even**, with signed-zero preserved —
+      not JS `Math.round`'s half-up). Each maps 1:1 to a wasm op.
+- [x] **Soft builtins**: recognized only when the program declares no function of
+      that name, so a hand-written `fn sqrt(...)` shadows the builtin end to end
+      (checker, IR builder, and interpreter all defer to the user function). The
+      `newton` example keeps its own `sqrt`; a regression test pins the behavior.
+- [x] Optimizer safety: `evalFBin` returns `null` (unfoldable) for
+      `min`/`max`/`copysign` so SCCP never mis-folds their signed-zero/NaN edges;
+      the new unary "cast" subs fall through SCCP's default (NAC) untouched. They
+      flow through GVN/LICM/if-conversion/stackification like any pure value.
+- [x] Interpreter mirrors each op with the matching `Math.*` (JS numbers *are*
+      f64, so `Math.min`/`max` even agree on −0), plus exact `f64.nearest` and
+      `f64.copysign` helpers (sign bit read from the IEEE-754 bytes).
+
+### `str(float)` — Dragon4, written in Strata
+- [x] f64 bit-reinterpret intrinsics `__f64_bits` / `__f64_from_bits`
+      (`i64.reinterpret_f64` / `f64.reinterpret_i64`) — the only way the language's
+      own code can inspect a double's representation; prelude-only.
+- [x] A tiny **arbitrary-precision big-integer** library in Strata — base-2^16
+      limbs held in an `int[]` (slot 0 = limb count) — with compare / add / sub /
+      shift-left / multiply-by-small / ×10^k, enough for exact rational Dragon4.
+- [x] **Dragon4** (Steele & White "free-format"; Burger & Dubois): build exact
+      R / S / m+ / m- from the unpacked (f, e); closed boundaries when the
+      significand is even; a bit-based decimal-exponent estimate corrected by two
+      integer fixups; generate digits by compare-and-subtract with boundary
+      termination and ties-to-even on the final digit (incl. all-nines carry).
+- [x] **ECMA-262 Number-to-String notation**: choose fixed vs. exponential and
+      place the decimal point per the spec (`k≤n≤21`, `0<n≤21`, `−6<n≤0`, else
+      `d.ddde±xx`), assembled into a fresh heap string.
+- [x] Wiring: `str(float)` type-checks to `str` and lowers to `__float_to_str`;
+      `print(float)` keeps its host import (unchanged); the interpreter routes
+      `str(float)` through the same `formatFloat` (= `String(x)`) oracle. The
+      float prelude is injected only when a program actually formats a float.
+
+### Proof
+- [x] 36 new differential checks (9 programs × 4 levels): basics, every notation
+      boundary, computed values (harmonic sum, `0.1+0.2`, `1/3`, `sqrt(2)`),
+      extremes (±inf, nan, smallest subnormal `4.9e-324`, max double, `2^53+1`),
+      the math library, ties-to-even rounding, and the soft-override behavior.
+- [x] `tools/fuzz-float.mjs`: compiles `fn fmt(x)->str{return str(x);}`, then
+      fuzzes the **compiled wasm** formatter against `String()` over 10M random
+      doubles at -O0…-O3 (2.5M each), incl. powers of ten and edge cases — **zero
+      mismatches**. (The prototype that designed the algorithm fuzzed ~13M more.)
+- [x] A catalog showcase example (mean/stddev, the `0.1+0.2` classic, magnitude
+      thresholds, ties-to-even rounding, clamp via `fmin`/`fmax`).
+
+### Deliberately deferred (clean, documented limitations)
+- [ ] `parse_float` (string → correctly-rounded double) — the inverse problem,
+      and the natural next bookend; reuses this big-integer machinery.
+- [ ] Scratch-buffer reuse in the formatter: today each `str(float)` bump-allocates
+      its working bignums (and, like every string op in this no-GC language, leaks
+      them). Fine for normal use; a future pass can reuse a single scratch region.
+- [ ] `f32` (single-precision) — still open; the value-type plumbing is ready.
 
 ## 2026-06-15 — plan: structs (aggregate types), end to end (claude / claude-opus-4-8)
 
@@ -428,6 +525,27 @@ Plan + progress (all shipped this session):
 
 ## Session log
 
+- 2026-06-15 (claude / claude-opus-4-8): **Floating point, done right — `str(float)`
+  via a from-scratch Dragon4, plus an f64 math library.** Closed the
+  longest-standing deferred item (open since the first strings session): rendering a
+  double as the shortest decimal that round-trips to the same f64, formatted exactly
+  like a browser's `Number.toString`. It is a real **Dragon4** (Steele & White /
+  Burger–Dubois) — exact rational arithmetic in R/S/m+/m- big integers — written
+  **in Strata** on top of a tiny base-2^16 big-integer library (limbs in an `int[]`),
+  then ECMA-262 Number-to-String notation for fixed vs. exponential layout. The
+  unlock was to make the wasm formatter reproduce ECMAScript `Number::toString`
+  *exactly*, which is what the interpreter's `String(x)` oracle already prints, so
+  the two agree by construction — and the proof becomes "my formatter == V8." Proven
+  by the differential harness at -O0…-O3 (**492 checks**, up from 456) *and* a new
+  `tools/fuzz-float.mjs` that fuzzes the **compiled wasm** against `String()` over
+  **10M random doubles** at every opt level (zero mismatches), covering subnormals,
+  powers of ten, ±inf/nan, the fixed↔exponential boundaries and the max/min double.
+  Also shipped an **f64 math library** — `sqrt`/`floor`/`ceil`/`trunc`/`round`/`abs`/
+  `fmin`/`fmax`/`copysign`, mapping 1:1 to wasm opcodes (`round` = ties-to-even
+  `f64.nearest`) — as **soft, user-overridable** builtins (a hand-written `fn sqrt`
+  shadows the builtin, as the `newton` example does), plus the f64 bit-reinterpret
+  intrinsics the formatter needs. New catalog example "Floating point & str(float)".
+  Gate (conformance + lint + build) green.
 - 2026-06-15 (claude / claude-opus-4-8): **Structs (aggregate types), end to end.**
   The biggest missing C feature — a real `struct` — threaded through the whole
   pipeline and proven by the differential harness at -O0…-O3 (**456 checks, all

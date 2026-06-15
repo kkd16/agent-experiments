@@ -612,6 +612,40 @@ fn main() {
 }
 `,
   },
+  {
+    id: 'float-format',
+    title: 'Floating point & str(float)',
+    blurb: 'A from-scratch shortest round-trip formatter (Dragon4, written in Strata) + the f64 math library — all compiled to real wasm.',
+    source: `// str(float) prints the *shortest* decimal that reads back to the exact same
+// f64 — the same string a browser's Number.toString would give — produced by a
+// Dragon4 big-integer formatter written in Strata and compiled to WebAssembly.
+fn main() {
+  // The classic: 0.1 + 0.2 is not 0.3
+  print("0.1 + 0.2 = " + str(0.1 + 0.2));
+  print("1/3       = " + str(1.0 / 3.0));
+  print("sqrt(2)   = " + str(sqrt(2.0)));
+
+  // Shortest round-trip across magnitudes (watch the fixed<->exponent threshold)
+  print(str(1.0e21)); print(str(0.0000001)); print(str(6.022e23));
+
+  // A tiny stats pass: mean and population standard deviation (uses sqrt)
+  let data = float_array(8);
+  data[0] = 2.0; data[1] = 4.0; data[2] = 4.0; data[3] = 4.0;
+  data[4] = 5.0; data[5] = 5.0; data[6] = 7.0; data[7] = 9.0;
+  let n = len(data);
+  let sum = 0.0;
+  for (let i = 0; i < n; i = i + 1) { sum = sum + data[i]; }
+  let mean = sum / float(n);
+  let acc = 0.0;
+  for (let i = 0; i < n; i = i + 1) { let d = data[i] - mean; acc = acc + d * d; }
+  print("mean = " + str(mean) + ", stddev = " + str(sqrt(acc / float(n))));
+
+  // Rounding is ties-to-even (wasm f64.nearest), plus abs / fmin / fmax
+  print("round: " + str(round(2.5)) + " " + str(round(3.5)) + " " + str(round(-2.5)));
+  print("clamp: " + str(fmax(0.0, fmin(10.0, 42.5))) + ", |-7.5| = " + str(abs(-7.5)));
+}
+`,
+  },
 ];
 
 export const TEST_PROGRAMS: { name: string; source: string }[] = EXAMPLES.map((e) => ({ name: e.id, source: e.source }));
