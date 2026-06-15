@@ -76,7 +76,7 @@ export interface BoidParams {
   visualRange: number;
   maxSpeed: number;
   maxForce: number;
-  mouseInteraction: 'none' | 'attract' | 'repel';
+  mouseInteraction: 'none' | 'attract' | 'repel' | 'obstacle';
   mouseRadius: number;
   edgeBehavior: 'wrap' | 'bounce';
   predatorAvoidance: number;
@@ -84,9 +84,19 @@ export interface BoidParams {
   windX: number;
   windY: number;
   boidShape: 'triangle' | 'circle' | 'arrow';
+
+  gravity: number;
+  showTrails: boolean;
+  showGrid: boolean;
 }
 
 
+
+export interface Obstacle {
+  x: number;
+  y: number;
+  radius: number;
+}
 
 export class Grid {
   cellSize: number;
@@ -151,6 +161,7 @@ export class Boid {
   size: number;
   baseMaxSpeedMultiplier: number;
   baseSizeMultiplier: number;
+  history: Vector[];
 
   constructor(x: number, y: number, width: number, height: number) {
     this.position = new Vector(x, y);
@@ -161,6 +172,7 @@ export class Boid {
     this.baseSizeMultiplier = 0.5 + Math.random(); // 0.5x to 1.5x size
     this.size = (3 + Math.random() * 2) * this.baseSizeMultiplier;
     this.baseMaxSpeedMultiplier = 0.8 + Math.random() * 0.4; // 0.8x to 1.2x speed
+    this.history = [];
 
     // Nice gradient of colors based on initial velocity
     const hue = Math.floor(Math.random() * 360);
@@ -169,25 +181,40 @@ export class Boid {
 
   update(params: BoidParams) {
     this.acceleration.add(new Vector(params.windX, params.windY));
+    this.acceleration.add(new Vector(0, params.gravity)); // Add gravity
     this.velocity.add(this.acceleration);
     this.velocity.limit(params.maxSpeed * this.baseMaxSpeedMultiplier);
     this.position.add(this.velocity);
     this.acceleration.mult(0); // Reset acceleration each frame
     this.edges(params.edgeBehavior);
+
+    // Track history for trails
+    if (params.showTrails) {
+      this.history.push(new Vector(this.position.x, this.position.y));
+      if (this.history.length > 20) { // Limit trail length
+        this.history.shift();
+      }
+    } else if (this.history.length > 0) {
+      this.history = [];
+    }
   }
 
   applyForce(force: Vector) {
     this.acceleration.add(force);
   }
 
-  flock(grid: Grid, predators: Predator[], params: BoidParams, mousePos: { x: number; y: number } | null = null) {
+  flock(grid: Grid, predators: Predator[], obstacles: Obstacle[], params: BoidParams, mousePos: { x: number; y: number } | null = null) {
     const nearbyBoids = grid.query(this.position.x, this.position.y, Math.max(params.visualRange, params.visualRange / 2));
     const sep = this.separate(nearbyBoids, params.visualRange / 2);
     const ali = this.align(nearbyBoids, params.visualRange);
     const coh = this.cohere(nearbyBoids, params.visualRange);
     const avoid = this.avoidPredators(predators, params.predatorVisualRange);
 
+
+    const avoidObs = this.avoidObstacles(obstacles);
+
     sep.mult(params.separation);
+    avoidObs.mult(3.0); // Strong priority to avoid obstacles
     ali.mult(params.alignment);
     coh.mult(params.cohesion);
     avoid.mult(params.predatorAvoidance);
@@ -196,6 +223,7 @@ export class Boid {
     this.applyForce(ali);
     this.applyForce(coh);
     this.applyForce(avoid);
+    this.applyForce(avoidObs);
 
     if (mousePos && params.mouseInteraction !== 'none') {
       const mouseVec = new Vector(mousePos.x, mousePos.y);
@@ -217,6 +245,34 @@ export class Boid {
   }
 
   // Flee from predators
+  avoidObstacles(obstacles: Obstacle[]): Vector {
+    const steer = new Vector(0, 0);
+    let count = 0;
+    const avoidDist = 50; // How far ahead to look
+
+    for (const obs of obstacles) {
+      const d = Vector.dist(this.position, new Vector(obs.x, obs.y));
+      // Bounding box / distance check
+      if (d > 0 && d < obs.radius + avoidDist) {
+        const diff = Vector.sub(this.position, new Vector(obs.x, obs.y));
+        diff.normalize();
+        diff.div(d); // Weight by distance
+        steer.add(diff);
+        count++;
+      }
+    }
+
+    if (count > 0) {
+      steer.div(count);
+      steer.normalize();
+      steer.mult(5); // Arbitrary max speed
+      steer.sub(this.velocity);
+      steer.limit(0.15); // Max force
+    }
+
+    return steer;
+  }
+
   avoidPredators(predators: Predator[], visualRange: number): Vector {
     const steer = new Vector(0, 0);
     let count = 0;
@@ -367,6 +423,25 @@ export class Boid {
   }
 
   draw(ctx: CanvasRenderingContext2D, params: BoidParams) {
+    if (params.showTrails && this.history.length > 1) {
+      ctx.beginPath();
+      ctx.moveTo(this.history[0].x, this.history[0].y);
+      for (let i = 1; i < this.history.length; i++) {
+        // Handle wrap-around discontinuities in trails
+        const d = Vector.dist(this.history[i-1], this.history[i]);
+        if (d > 100) {
+           ctx.moveTo(this.history[i].x, this.history[i].y);
+        } else {
+           ctx.lineTo(this.history[i].x, this.history[i].y);
+        }
+      }
+      ctx.strokeStyle = this.color;
+      ctx.globalAlpha = 0.5;
+      ctx.lineWidth = 2;
+      ctx.stroke();
+      ctx.globalAlpha = 1.0;
+    }
+
     const theta = this.velocity.heading() + Math.PI / 2;
     ctx.save();
     ctx.translate(this.position.x, this.position.y);

@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react';
-import { Boid, Predator, Grid, type BoidParams } from './boids';
+import { Boid, Predator, Grid, type BoidParams, type Obstacle } from './boids';
 
 interface BoidsCanvasProps {
   params: BoidParams;
@@ -12,6 +12,7 @@ export function BoidsCanvas({ params, numBoids, numPredators, isPaused }: BoidsC
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const boidsRef = useRef<Boid[]>([]);
   const predatorsRef = useRef<Predator[]>([]);
+  const obstaclesRef = useRef<Obstacle[]>([]);
   const animationFrameId = useRef<number>(0);
   const paramsRef = useRef(params);
   const mousePosRef = useRef<{ x: number; y: number } | null>(null);
@@ -47,6 +48,27 @@ export function BoidsCanvas({ params, numBoids, numPredators, isPaused }: BoidsC
       });
     };
 
+    const handleClick = (e: MouseEvent) => {
+      if (paramsRef.current.mouseInteraction === 'obstacle') {
+         // Check if clicking on an existing obstacle to remove it
+         const clickedIdx = obstaclesRef.current.findIndex(obs => {
+            const dx = obs.x - e.clientX;
+            const dy = obs.y - e.clientY;
+            return Math.sqrt(dx * dx + dy * dy) <= obs.radius;
+         });
+
+         if (clickedIdx !== -1) {
+            obstaclesRef.current.splice(clickedIdx, 1);
+         } else {
+            obstaclesRef.current.push({
+               x: e.clientX,
+               y: e.clientY,
+               radius: 30
+            });
+         }
+      }
+    };
+
     const handleMouseMove = (e: MouseEvent) => {
       mousePosRef.current = { x: e.clientX, y: e.clientY };
     };
@@ -56,6 +78,7 @@ export function BoidsCanvas({ params, numBoids, numPredators, isPaused }: BoidsC
     };
 
     window.addEventListener('resize', handleResize);
+    window.addEventListener('click', handleClick);
     window.addEventListener('mousemove', handleMouseMove);
     window.addEventListener('mouseleave', handleMouseLeave);
     handleResize();
@@ -103,15 +126,46 @@ export function BoidsCanvas({ params, numBoids, numPredators, isPaused }: BoidsC
       }
 
       // Optional: Add a subtle trail effect
-      ctx.fillStyle = 'rgba(15, 23, 42, 0.3)'; // Dark slate background with low opacity
+      ctx.fillStyle = paramsRef.current.showTrails ? 'rgba(15, 23, 42, 0.15)' : 'rgba(15, 23, 42, 1.0)'; // Dark slate background with low opacity
       ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+      if (paramsRef.current.showGrid) {
+        ctx.strokeStyle = 'rgba(255, 255, 255, 0.05)';
+        ctx.lineWidth = 1;
+        const gridSize = 50;
+        // Slowly scroll the grid using time
+        const offsetX = (time * 0.02) % gridSize;
+        const offsetY = (time * 0.02) % gridSize;
+
+        ctx.beginPath();
+        for (let x = offsetX; x < canvas.width; x += gridSize) {
+          ctx.moveTo(x, 0);
+          ctx.lineTo(x, canvas.height);
+        }
+        for (let y = offsetY; y < canvas.height; y += gridSize) {
+          ctx.moveTo(0, y);
+          ctx.lineTo(canvas.width, y);
+        }
+        ctx.stroke();
+      }
 
       for (const boid of boidsRef.current) {
         if (!isPaused) {
-          boid.flock(grid, predatorsRef.current, paramsRef.current, mousePosRef.current);
+          boid.flock(grid, predatorsRef.current, obstaclesRef.current, paramsRef.current, mousePosRef.current);
           boid.update(paramsRef.current);
         }
         boid.draw(ctx, paramsRef.current);
+      }
+
+      // Draw obstacles
+      for (const obs of obstaclesRef.current) {
+        ctx.beginPath();
+        ctx.arc(obs.x, obs.y, obs.radius, 0, Math.PI * 2);
+        ctx.fillStyle = '#64748b'; // slate-500
+        ctx.fill();
+        ctx.strokeStyle = '#94a3b8'; // slate-400
+        ctx.lineWidth = 2;
+        ctx.stroke();
       }
 
       for (const predator of predatorsRef.current) {
@@ -128,16 +182,20 @@ export function BoidsCanvas({ params, numBoids, numPredators, isPaused }: BoidsC
         ctx.arc(
           mousePosRef.current.x,
           mousePosRef.current.y,
-          paramsRef.current.mouseRadius,
+          paramsRef.current.mouseInteraction === 'obstacle' ? 30 : paramsRef.current.mouseRadius,
           0,
           Math.PI * 2
         );
         ctx.fillStyle = paramsRef.current.mouseInteraction === 'attract'
           ? 'rgba(59, 130, 246, 0.1)'
+          : paramsRef.current.mouseInteraction === 'obstacle'
+          ? 'rgba(100, 116, 139, 0.2)'
           : 'rgba(239, 68, 68, 0.1)';
         ctx.fill();
         ctx.strokeStyle = paramsRef.current.mouseInteraction === 'attract'
           ? 'rgba(59, 130, 246, 0.3)'
+          : paramsRef.current.mouseInteraction === 'obstacle'
+          ? 'rgba(100, 116, 139, 0.5)'
           : 'rgba(239, 68, 68, 0.3)';
         ctx.lineWidth = 1;
         ctx.stroke();
@@ -150,6 +208,7 @@ export function BoidsCanvas({ params, numBoids, numPredators, isPaused }: BoidsC
 
     return () => {
       window.removeEventListener('resize', handleResize);
+      window.removeEventListener('click', handleClick);
       window.removeEventListener('mousemove', handleMouseMove);
       window.removeEventListener('mouseleave', handleMouseLeave);
       if (animationFrameId.current) {
