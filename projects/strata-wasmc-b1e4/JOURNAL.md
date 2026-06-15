@@ -42,7 +42,7 @@ reference interpreter at every optimization level.
   (pauses per statement, steps into calls, exposes the live stack + variables + output).
 - `src/compiler/runner.ts` — instantiates and runs the wasm in-browser.
 - `src/compiler/verify.ts` — differential testing harness (shipped as the "Verify" tab).
-- `src/compiler/tests.ts` — adversarial differential-test battery (60+ focused programs).
+- `src/compiler/tests.ts` — adversarial differential-test battery (85+ focused programs).
 - `tools/run-harness.mjs` — headless Node harness: `tsc -b` + Vite-bundle + run the full
   corpus at -O0…-O3, asserting wasm == reference interpreter (run during development).
 - `src/ui/` — the Compiler-Explorer UI (editor with syntax highlight overlay, SVG CFG view,
@@ -51,12 +51,26 @@ reference interpreter at every optimization level.
 ## Language features
 
 int / **`long` (64-bit, i64)** / float / bool / **str** / arrays of any scalar incl.
-**`long[]`** and **`str[]`** (linear memory), functions + recursion, globals
-(assignable from any function), if/else, while, **`do`/`while`**, for,
-**`switch`/`case`/`default`** (multi-label, no fallthrough), break/continue,
-short-circuit `&&`/`||`, **ternary `?:`**, **compound assignment** (`+=` … `>>=`),
-casts `int()`/**`long()`**/`float()`, **bit ops** `popcount`/`clz`/`ctz`/`rotl`/`rotr`,
-`print`, `int_array`/**`long_array`**/`float_array`/**`str_array`**/`len`.
+**`long[]`** and **`str[]`** (linear memory) / **`struct` (aggregate types)**,
+functions + recursion, globals (assignable from any function), if/else, while,
+**`do`/`while`**, for, **`switch`/`case`/`default`** (multi-label, no fallthrough),
+break/continue, short-circuit `&&`/`||`, **ternary `?:`**, **compound assignment**
+(`+=` … `>>=`), casts `int()`/**`long()`**/`float()`, **bit ops**
+`popcount`/`clz`/`ctz`/`rotl`/`rotr`, `print`,
+`int_array`/**`long_array`**/`float_array`/**`str_array`**/`len`.
+
+**`struct`s** are aggregate value types laid out in linear memory and referenced by
+an i32 handle: `struct Point { x: int; y: int; }`, positional construction
+`Point(3, 4)`, dot access/assignment `p.x` / `p.x = 5` (and compound `p.x += 1`),
+fields of any type — including nested and **recursive** structs (`struct Node { v:
+int; next: Node; }`) — and a `null` handle that points nowhere, so linked lists,
+stacks and binary search trees fall out directly. Structs pass to and return from
+functions **by handle**, so a callee mutates the caller's value and two aliases see
+each other's writes; `==`/`!=` is reference identity (matching wasm pointer
+equality, since every construction bump-allocates a fresh handle). Field offsets are
+computed with natural alignment; the reference interpreter models a struct as a
+by-reference object, so it and the wasm agree on every observable value without ever
+sharing an address.
 
 **`long`** is a genuine 64-bit integer lowering to wasm **`i64`**: `L`-suffixed and
 `0x` hex literals (`9223372036854775807L`, `0xFFL`), the full operator set with
@@ -88,6 +102,82 @@ pipeline, so the differential harness exercises it at every opt level too.
 - [x] **`long` (64-bit / wasm `i64`)** end to end — literals, type system, SSA,
       every optimizer pass, the backend, the oracle + step debugger, and a real
       `__long_to_str`; plus `popcount`/`clz`/`ctz`/`rotl`/`rotr` bit primitives
+- [x] **`struct`s (aggregate types)** end to end — declarations, positional
+      construction, dot read/write/compound-assign, nested & recursive structs,
+      a `null` handle, by-handle params/returns with reference semantics, struct
+      `==`/`!=`; through the type checker, IR builder (linear-memory layout),
+      every optimizer pass, the backend, the oracle + step debugger, and the UI;
+      440 differential checks across -O0…-O3 (baseline 388)
+
+## 2026-06-15 — plan: structs (aggregate types), end to end (claude / claude-opus-4-8)
+
+The biggest missing piece of a C-like language: **`struct`s**. A struct is an
+aggregate laid out in linear memory and passed around by an i32 handle — exactly
+the model arrays and strings already use — so it slots into the existing pipeline
+without a new IR concept: construction is a bump-allocate + a store per field, a
+field read/write is a `load`/`store` at the field's byte offset, and a struct
+handle is just an i32 the optimizer already knows how to copy, phi, compare and
+keep on the operand stack. Everything is proven by the differential harness at
+-O0…-O3 like the rest of the language. The reference oracle models a struct as a
+by-reference JS object (and `null` as JS `null`), which gives it the same
+mutation/aliasing/identity semantics as the wasm handle without modelling
+addresses — so the two agree on observable output, never on layout.
+
+Plan (every item differential-tested at -O0…-O3 before it is checked off):
+
+**Shipped — 440 differential checks, all green (baseline before this work: 388).**
+
+### Front-end — syntax & types
+- [x] Lexer: a `.` token (member access) and the `struct` / `null` keywords.
+- [x] AST + parser: a `struct Name { f: T; … }` top-level declaration; a `member`
+      expression (`a.b`, chained through the postfix loop so `a.b[i].c` works); a
+      `null` literal; and a `member-assign` statement (`a.b = e`, with `+=` etc.
+      desugaring to it). A bare user type name parses as a `struct` reference.
+- [x] Type checker: a 4th declaration pass collects struct names first (so fields
+      and constructors may reference any struct, including **recursive** and
+      mutually-recursive ones), then validates every field type. Reserved-name and
+      duplicate checks; `Name(args)` type-checks as a **positional constructor**;
+      member access resolves a field's declared type; `null` gets a `null` type
+      coercible to any struct; struct/`null` `==`/`!=` (rejecting unrelated struct
+      types, `<`/printing/array-of-struct, non-null struct globals) — all with
+      precise spans. (17-case negative-test sweep during development.)
+
+### Mid-end / backend — handles in linear memory
+- [x] `struct.ts`: a shared layout pass — naturally-aligned field offsets and an
+      8-byte-padded record size, so loads/stores stay aligned and the bump
+      allocator stays 8-aligned. `null`/struct handles are i32.
+- [x] Builder: construction lowers to evaluate-args → `__alloc(size)` → store each
+      field (left-to-right, so side effects match the oracle); member read/write
+      lower to `load`/`store` at `base + offset`; `null` is the i32 constant 0;
+      struct `==`/`!=` reuses the generic i32 `icmp` path.
+- [x] Optimizer / SSA / backend: **no changes needed** — struct ops *are* the
+      `load`/`store`/`alloc`/`icmp`/`call` primitives already produced by arrays
+      and strings, so SCCP/GVN/LICM/DCE/inlining and the relooper/stackifier handle
+      them (and the load/store ordering) correctly, and the differential suite
+      proves it at every opt level.
+
+### Oracle, debugger, UX, proof
+- [x] Interpreter + step debugger: a struct as a by-reference record (`StructVal`),
+      `null` as JS `null`, construction/field-access/field-assign/reference-`==`,
+      with the same field normalisation (i32/i64 wrap) a wasm load would give. The
+      debugger renders structs (`Name { f: v, … }`) and `null` in its variable view.
+- [x] Highlighter: `struct` keyword + `null` constant.
+- [x] UI: the AST panel prints struct declarations, member access/assignment and
+      `null`.
+- [x] Three new examples — **2D vectors** (Vec2 add/scale/dot, mutation through a
+      handle), a **binary search tree** (recursive struct + `null`, sorted in-order
+      walk), and **rational arithmetic** (gcd-reduced Rat returned by value).
+- [x] A 10-program struct differential battery: construction + field r/w + compound
+      stores; every field type (int/long/float/bool/str) in one record; by-handle
+      params/returns with caller-visible mutation; aliasing + reference `==`; deep
+      nested mutation through `a.b.c.d`; an in-place **linked-list** reverse; a
+      **BST** sort; an array-typed field; a 2000-iteration allocator stress; and a
+      `null`-initialised struct **global**.
+
+### Deliberately deferred (clean limitations, documented in the parser/checker)
+- [ ] Arrays of structs (`Point[]`) — needs a typed element + a constructor; the
+      element type generalization is sketched but out of scope for this pass.
+- [ ] A struct-aware free list / GC (today every construction bump-allocates).
 
 ## 2026-06-15 — plan: 64-bit integers (`long` / i64), end to end (claude / claude-opus-4-8)
 
@@ -327,6 +417,27 @@ Plan + progress (all shipped this session):
 - [ ] Step debugger that single-steps the wasm and highlights the source line
 
 ## Session log
+
+- 2026-06-15 (claude / claude-opus-4-8): **Structs (aggregate types), end to end.**
+  The biggest missing C feature — a real `struct` — threaded through the whole
+  pipeline and proven by the differential harness at -O0…-O3 (**440 checks, all
+  green**, up from 388). A struct is laid out in linear memory and referenced by an
+  i32 handle (the model arrays/strings already use), so it needed **no new IR
+  concept and no optimizer/backend changes**: construction is a bump-allocate plus a
+  store per field, a field read/write is a `load`/`store` at the field's offset, and
+  a handle is an i32 the existing passes copy, phi, compare and stackify. Shipped:
+  `struct` declarations with fields of any type incl. **nested & recursive** structs;
+  a `null` handle (→ i32 `0`) so linked lists, stacks and BSTs work; positional
+  construction `Point(3,4)`; dot read/write/compound-assign (`p.x`, `p.x = e`,
+  `p.x += 1`); by-handle params/returns with caller-visible mutation; struct/`null`
+  `==`/`!=` as reference identity. New `struct.ts` computes naturally-aligned field
+  offsets. The type checker gained a struct-collection pass (forward/mutual recursion),
+  constructor/member/`null` checking and a 17-case negative sweep; the reference oracle
+  + step debugger model a struct as a by-reference object (and `null` as JS `null`),
+  so they share mutation/aliasing/identity with the wasm without modelling addresses.
+  Added 3 examples (2D vectors, a binary search tree, rational arithmetic) and a
+  10-program struct test battery. Verified green end to end: `tsc -b` + lint + Vite
+  build + the headless harness (440/440 across -O0…-O3) + `verify-project.mjs`.
 
 - 2026-06-15 (claude / claude-opus-4-8): **64-bit integers (`long` → wasm `i64`),
   end to end — plus a bit-manipulation toolkit.** The longest-standing open item,

@@ -1,5 +1,5 @@
 import { CompileError } from './diagnostics';
-import type { Block, Expr, Program, Stmt } from './ast';
+import type { Block, Expr, Program, Stmt, StructDecl, Ty } from './ast';
 
 // A straightforward tree-walking interpreter. Its sole purpose is to be an
 // independent oracle: the test harness runs every program through both this
@@ -8,13 +8,23 @@ import type { Block, Expr, Program, Stmt } from './ast';
 // semantics (wrapping, truncating division, saturating float->int casts) so the
 // two implementations agree bit-for-bit.
 
-export type RtValue = number | bigint | ArrayVal | string;
+export type RtValue = number | bigint | ArrayVal | string | StructVal | null;
 export interface ArrayVal {
   arr: true;
   elem: 'int' | 'long' | 'float' | 'str';
   // `int`/`float` arrays hold numbers; `long` arrays hold BigInts; `str` arrays
   // hold byte strings. A single union keeps the element accessors uniform.
   data: (number | bigint | string)[];
+}
+
+// A struct value: a by-reference record. Two distinct constructions are distinct
+// objects (so `==` — JS identity — disagrees), an aliased struct is the same
+// object (so `==` agrees), and a mutation through one alias is seen through every
+// alias — exactly the i32-handle-into-linear-memory semantics the wasm backend
+// has. `null` is the struct handle that points nowhere (the JS value `null`).
+export interface StructVal {
+  struct: string;
+  fields: Map<string, RtValue>;
 }
 
 // Strings are byte strings (Latin-1): every character is one byte. A JS string
@@ -114,6 +124,7 @@ interface Frame {
 
 export class Interpreter {
   private fns = new Map<string, Extract<Program['decls'][number], { kind: 'fn' }>>();
+  private structs = new Map<string, StructDecl>();
   private globals = new Map<string, RtValue>();
   output: string[] = [];
   private steps = 0;
@@ -123,6 +134,7 @@ export class Interpreter {
     this.stepLimit = stepLimit;
     for (const d of prog.decls) {
       if (d.kind === 'fn') this.fns.set(d.name, d);
+      else if (d.kind === 'struct') this.structs.set(d.name, d);
     }
     for (const d of prog.decls) {
       if (d.kind === 'global') this.globals.set(d.name, this.evalConst(d.init));
@@ -208,6 +220,14 @@ export class Interpreter {
         else target.data[idx] = target.elem === 'int' ? i32(val as number) : (val as number);
         break;
       }
+      case 'member-assign': {
+        const obj = this.evalExpr(s.target, f);
+        if (obj === null) throw new Trap('field assignment on a null struct');
+        const sv = obj as StructVal;
+        const ft = this.fieldTy(sv.struct, s.field);
+        sv.fields.set(s.field, normalizeField(this.evalExpr(s.value, f), ft));
+        break;
+      }
       case 'expr':
         this.evalExpr(s.expr, f);
         break;
@@ -283,6 +303,13 @@ export class Interpreter {
         return e.value ? 1 : 0;
       case 'string':
         return e.value;
+      case 'null':
+        return null;
+      case 'member': {
+        const obj = this.evalExpr(e.target, f);
+        if (obj === null) throw new Trap('field access on a null struct');
+        return (obj as StructVal).fields.get(e.field)!;
+      }
       case 'ident':
         return this.getVar(e.name, f);
       case 'unary':
@@ -335,6 +362,20 @@ export class Interpreter {
     // Short-circuit logical operators.
     if (e.op === '&&') return this.evalExpr(e.left, f) ? (this.evalExpr(e.right, f) ? 1 : 0) : 0;
     if (e.op === '||') return this.evalExpr(e.left, f) ? 1 : (this.evalExpr(e.right, f) ? 1 : 0);
+
+    // Struct / null comparison: reference identity. Same object (or null===null)
+    // is equal; two distinct constructions are not — matching wasm pointer
+    // equality, where every construction bump-allocates a fresh, non-zero handle.
+    if (e.op === '==' || e.op === '!=') {
+      const lk = e.left.ty?.kind;
+      const rk = e.right.ty?.kind;
+      if (lk === 'struct' || lk === 'null' || rk === 'struct' || rk === 'null') {
+        const a = this.evalExpr(e.left, f);
+        const b = this.evalExpr(e.right, f);
+        const eq = a === b;
+        return (e.op === '==' ? eq : !eq) ? 1 : 0;
+      }
+    }
 
     // String operations (concatenation and equality).
     if (e.left.ty?.kind === 'str') {
@@ -437,6 +478,14 @@ export class Interpreter {
     const name = e.callee;
     // Strict left-to-right argument evaluation (no builtin is short-circuiting).
     const argv = e.args.map((a) => this.evalExpr(a, f));
+    // A call to a struct name constructs a fresh record (a new object: distinct
+    // from every other construction under `==`).
+    const sd = this.structs.get(name);
+    if (sd) {
+      const fields = new Map<string, RtValue>();
+      sd.fields.forEach((fld, i) => fields.set(fld.name, normalizeField(argv[i], fld.ty)));
+      return { struct: name, fields };
+    }
     const argKinds = e.args.map((a) => a.ty?.kind);
     const b = callBuiltin(name, argv, argKinds, this.output);
     if (b.handled) return b.value;
@@ -444,6 +493,26 @@ export class Interpreter {
     if (!fn) throw new Trap(`call to undefined '${name}'`);
     const r = this.call(fn, argv);
     return r === undefined ? 0 : r;
+  }
+
+  private fieldTy(structName: string, field: string): Ty {
+    const f = this.structs.get(structName)!.fields.find((x) => x.name === field)!;
+    return f.ty;
+  }
+}
+
+// Normalize a value to a struct field's declared type so a stored value reads
+// back the same way the wasm load would (i32 wrap for int/bool, i64 wrap for
+// long). Handles (str/array/struct/null) and floats pass through unchanged.
+function normalizeField(v: RtValue, ty: Ty): RtValue {
+  switch (ty.kind) {
+    case 'int':
+    case 'bool':
+      return i32(v as number);
+    case 'long':
+      return asI64(v as bigint);
+    default:
+      return v;
   }
 }
 

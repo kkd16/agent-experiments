@@ -11,7 +11,15 @@ export type Ty =
   | { kind: 'bool' }
   | { kind: 'str' }
   | { kind: 'void' }
-  | { kind: 'array'; elem: ScalarTy };
+  | { kind: 'array'; elem: ScalarTy }
+  // An aggregate value, referenced by an i32 handle into linear memory. The
+  // `name` keys into the program's struct table; the interpreter holds the same
+  // value as a by-reference object, so the two share mutation semantics.
+  | { kind: 'struct'; name: string }
+  // The type of the `null` literal: a struct handle that points nowhere. It
+  // unifies with (is assignable to) any struct type and only ever compares with
+  // `==`/`!=`. Lowers to the i32 constant 0.
+  | { kind: 'null' };
 
 // Array element types. `str` elements are i32 pointers into linear memory (just
 // like a bare `str`), so the wasm backend treats `str[]` exactly like an i32
@@ -24,15 +32,18 @@ export const T_FLOAT: Ty = { kind: 'float' };
 export const T_BOOL: Ty = { kind: 'bool' };
 export const T_STR: Ty = { kind: 'str' };
 export const T_VOID: Ty = { kind: 'void' };
+export const T_NULL: Ty = { kind: 'null' };
 
 export function tyEqual(a: Ty, b: Ty): boolean {
   if (a.kind !== b.kind) return false;
   if (a.kind === 'array' && b.kind === 'array') return a.elem.kind === b.elem.kind;
+  if (a.kind === 'struct' && b.kind === 'struct') return a.name === b.name;
   return true;
 }
 
 export function tyName(t: Ty): string {
   if (t.kind === 'array') return `${t.elem.kind}[]`;
+  if (t.kind === 'struct') return t.name;
   return t.kind;
 }
 
@@ -77,6 +88,11 @@ export type Expr =
   | (ExprBase & { node: 'binary'; op: BinaryOp; left: Expr; right: Expr })
   | (ExprBase & { node: 'call'; callee: string; args: Expr[] })
   | (ExprBase & { node: 'index'; target: Expr; index: Expr })
+  // `target.field` — read a struct field. The checker resolves `field` to its
+  // declared type; the builder lowers it to a load at the field's byte offset.
+  | (ExprBase & { node: 'member'; target: Expr; field: string })
+  // The null struct handle (lowers to the i32 constant 0).
+  | (ExprBase & { node: 'null' })
   | (ExprBase & { node: 'ternary'; cond: Expr; then: Expr; otherwise: Expr });
 
 // ---------------------------------------------------------------------------
@@ -102,6 +118,8 @@ export type Stmt =
   | { node: 'let'; name: string; declTy: Ty | null; init: Expr; span: Span; resolvedTy?: Ty }
   | { node: 'assign'; name: string; value: Expr; span: Span }
   | { node: 'index-assign'; target: Expr; index: Expr; value: Expr; span: Span }
+  // `target.field = value` — store into a struct field.
+  | { node: 'member-assign'; target: Expr; field: string; value: Expr; span: Span }
   | { node: 'expr'; expr: Expr; span: Span }
   | { node: 'if'; cond: Expr; then: Block; otherwise: Block | null; span: Span }
   | { node: 'while'; cond: Expr; body: Block; span: Span }
@@ -147,7 +165,20 @@ export interface GlobalDecl {
   resolvedTy?: Ty;
 }
 
-export type Decl = FnDecl | GlobalDecl;
+export interface StructField {
+  name: string;
+  ty: Ty;
+  span: Span;
+}
+
+export interface StructDecl {
+  kind: 'struct';
+  name: string;
+  fields: StructField[];
+  span: Span;
+}
+
+export type Decl = FnDecl | GlobalDecl | StructDecl;
 
 export interface Program {
   decls: Decl[];

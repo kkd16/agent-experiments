@@ -7,8 +7,8 @@ export interface Tok {
   text: string;
 }
 
-const KEYWORDS = new Set(['fn', 'let', 'if', 'else', 'while', 'do', 'for', 'switch', 'case', 'default', 'return', 'break', 'continue']);
-const CONSTS = new Set(['true', 'false']);
+const KEYWORDS = new Set(['fn', 'let', 'if', 'else', 'while', 'do', 'for', 'switch', 'case', 'default', 'return', 'break', 'continue', 'struct']);
+const CONSTS = new Set(['true', 'false', 'null']);
 const TYPES = new Set(['int', 'long', 'float', 'bool', 'str', 'void']);
 const BUILTINS = new Set([
   'print', 'int_array', 'long_array', 'float_array', 'str_array', 'len', 'str', 'char', 'substr', 'index_of',

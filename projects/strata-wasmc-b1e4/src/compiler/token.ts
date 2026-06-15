@@ -24,6 +24,8 @@ export type TokenType =
   | 'continue'
   | 'true'
   | 'false'
+  | 'struct'
+  | 'null'
   // punctuation & operators
   | '('
   | ')'
@@ -34,6 +36,7 @@ export type TokenType =
   | ','
   | ';'
   | ':'
+  | '.'
   | '->'
   | '='
   | '+'
@@ -86,4 +89,6 @@ export const KEYWORDS: Record<string, TokenType> = {
   continue: 'continue',
   true: 'true',
   false: 'false',
+  struct: 'struct',
+  null: 'null',
 };

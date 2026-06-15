@@ -1,6 +1,6 @@
-import type { Block, Expr, Program, Stmt, Ty } from './ast';
+import type { Block, Expr, Program, Stmt, StructDecl, Ty } from './ast';
 import type { Span } from './diagnostics';
-import type { ArrayVal, RtValue } from './interp';
+import type { ArrayVal, RtValue, StructVal } from './interp';
 import { Trap, asI64, callBuiltin, formatBool, formatFloat, formatInt, formatLong, I64_MIN, i32 } from './interp';
 
 // A generator-based, single-stepping tree-walking interpreter — the engine
@@ -59,12 +59,21 @@ export interface DebugState {
 }
 
 function tyKindName(t: Ty): string {
-  return t.kind === 'array' ? `${t.elem.kind}[]` : t.kind;
+  if (t.kind === 'array') return `${t.elem.kind}[]`;
+  if (t.kind === 'struct') return t.name;
+  return t.kind;
 }
 
 function fmtVal(v: RtValue, ty?: Ty): string {
+  if (v === null) return 'null';
   if (typeof v === 'string') return JSON.stringify(v);
   if (typeof v === 'bigint') return formatLong(v);
+  if (typeof v === 'object' && (v as StructVal).struct !== undefined) {
+    const sv = v as StructVal;
+    const parts = [...sv.fields.entries()].slice(0, 6).map(([k, fv]) => `${k}: ${fmtVal(fv)}`);
+    const more = sv.fields.size > 6 ? ', …' : '';
+    return `${sv.struct} { ${parts.join(', ')}${more} }`;
+  }
   if (typeof v === 'object' && (v as ArrayVal).arr) {
     const a = v as ArrayVal;
     const head = a.data.slice(0, 8).map((x) =>
@@ -83,6 +92,7 @@ function fmtVal(v: RtValue, ty?: Ty): string {
 
 export class Debugger {
   private fns = new Map<string, Extract<Program['decls'][number], { kind: 'fn' }>>();
+  private structs = new Map<string, StructDecl>();
   private globals = new Map<string, RVar>();
   private frames: RFrame[] = [];
   output: string[] = [];
@@ -95,7 +105,10 @@ export class Debugger {
 
   constructor(prog: Program, entry = 'main', stepLimit = 5_000_000) {
     this.stepLimit = stepLimit;
-    for (const d of prog.decls) if (d.kind === 'fn') this.fns.set(d.name, d);
+    for (const d of prog.decls) {
+      if (d.kind === 'fn') this.fns.set(d.name, d);
+      else if (d.kind === 'struct') this.structs.set(d.name, d);
+    }
     for (const d of prog.decls) {
       if (d.kind === 'global') {
         const v = drain(this.evalExpr(d.init, this.syntheticFrame()));
@@ -244,6 +257,12 @@ export class Debugger {
         else target.data[idx] = target.elem === 'int' ? i32(val as number) : (val as number);
         break;
       }
+      case 'member-assign': {
+        const obj = yield* this.evalExpr(s.target, f);
+        if (obj === null) throw new Trap('field assignment on a null struct');
+        (obj as StructVal).fields.set(s.field, yield* this.evalExpr(s.value, f));
+        break;
+      }
       case 'expr':
         yield* this.evalExpr(s.expr, f);
         break;
@@ -321,6 +340,13 @@ export class Debugger {
         return e.value ? 1 : 0;
       case 'string':
         return e.value;
+      case 'null':
+        return null;
+      case 'member': {
+        const obj = yield* this.evalExpr(e.target, f);
+        if (obj === null) throw new Trap('field access on a null struct');
+        return (obj as StructVal).fields.get(e.field)!;
+      }
       case 'ident': {
         const rv = this.lookup(e.name, f);
         if (!rv) throw new Trap(`read of undefined '${e.name}'`);
@@ -370,6 +396,17 @@ export class Debugger {
   private *evalBinary(e: Extract<Expr, { node: 'binary' }>, f: RFrame): Generator<void, RtValue, void> {
     if (e.op === '&&') return (yield* this.evalExpr(e.left, f)) ? ((yield* this.evalExpr(e.right, f)) ? 1 : 0) : 0;
     if (e.op === '||') return (yield* this.evalExpr(e.left, f)) ? 1 : (yield* this.evalExpr(e.right, f)) ? 1 : 0;
+
+    if (e.op === '==' || e.op === '!=') {
+      const lk = e.left.ty?.kind;
+      const rk = e.right.ty?.kind;
+      if (lk === 'struct' || lk === 'null' || rk === 'struct' || rk === 'null') {
+        const a = yield* this.evalExpr(e.left, f);
+        const b = yield* this.evalExpr(e.right, f);
+        const eq = a === b;
+        return (e.op === '==' ? eq : !eq) ? 1 : 0;
+      }
+    }
 
     if (e.left.ty?.kind === 'str') {
       const sa = (yield* this.evalExpr(e.left, f)) as string;
@@ -454,6 +491,12 @@ export class Debugger {
   private *evalCall(e: Extract<Expr, { node: 'call' }>, f: RFrame): Generator<void, RtValue, void> {
     const argv: RtValue[] = [];
     for (const a of e.args) argv.push(yield* this.evalExpr(a, f));
+    const sd = this.structs.get(e.callee);
+    if (sd) {
+      const fields = new Map<string, RtValue>();
+      sd.fields.forEach((fld, i) => fields.set(fld.name, argv[i]));
+      return { struct: e.callee, fields };
+    }
     const argKinds = e.args.map((a) => a.ty?.kind);
     const b = callBuiltin(e.callee, argv, argKinds, this.output);
     if (b.handled) return b.value;
