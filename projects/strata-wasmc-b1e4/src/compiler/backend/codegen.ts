@@ -58,6 +58,10 @@ const I_UN64: Record<string, [number, string]> = {
 };
 const F_BIN: Record<string, [number, string]> = {
   add: [0xa0, 'f64.add'], sub: [0xa1, 'f64.sub'], mul: [0xa2, 'f64.mul'], div: [0xa3, 'f64.div'],
+  // f64.min / f64.max / f64.copysign back the fmin/fmax/copysign builtins. They
+  // are never constant-folded by SCCP (see evalFBin), so the real wasm op is the
+  // sole authority on their NaN/signed-zero edge cases.
+  min: [0xa4, 'f64.min'], max: [0xa5, 'f64.max'], copysign: [0xa6, 'f64.copysign'],
 };
 const I_CMP: Record<string, [number, string]> = {
   eq: [0x46, 'i32.eq'], ne: [0x47, 'i32.ne'], lt_s: [0x48, 'i32.lt_s'],
@@ -76,6 +80,20 @@ const CAST_OP: Record<string, { bytes: number[]; name: string }> = {
   l2i: { bytes: [0xa7], name: 'i32.wrap_i64' },
   l2f: { bytes: [0xb9], name: 'f64.convert_i64_s' },
   f2l: { bytes: [0xfc, 0x06], name: 'i64.trunc_sat_f64_s' },
+  // Bit-pattern reinterpretation (no value conversion): used by the float-format
+  // runtime to pull the IEEE-754 bits of a double into a `long` and back. These
+  // are the only way the language's own code can inspect a float's representation.
+  reinterp_f2l: { bytes: [0xbd], name: 'i64.reinterpret_f64' },
+  reinterp_l2f: { bytes: [0xbf], name: 'f64.reinterpret_i64' },
+  // Unary f64 math, modeled as single-operand "casts" (f64 -> f64). Each is a
+  // pure, non-trapping wasm opcode, so SCCP leaves them unfolded (default NAC),
+  // and the stackifier / LICM / if-conversion treat them like any pure value.
+  f_sqrt: { bytes: [0x9f], name: 'f64.sqrt' },
+  f_floor: { bytes: [0x9c], name: 'f64.floor' },
+  f_ceil: { bytes: [0x9b], name: 'f64.ceil' },
+  f_trunc: { bytes: [0x9d], name: 'f64.trunc' },
+  f_nearest: { bytes: [0x9e], name: 'f64.nearest' },
+  f_abs: { bytes: [0x99], name: 'f64.abs' },
 };
 const F_CMP: Record<string, [number, string]> = {
   eq: [0x61, 'f64.eq'], ne: [0x62, 'f64.ne'], lt: [0x63, 'f64.lt'],

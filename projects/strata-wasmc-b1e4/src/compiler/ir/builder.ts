@@ -112,6 +112,14 @@ const STRING_HELPERS = new Set([
   'split', 'join',
 ]);
 
+// Soft float-math builtins (overridable by a user function of the same name).
+// The unary group lowers to a single-operand f64 "cast" opcode; the binary group
+// to an `fbin`. `round` is wasm `f64.nearest` (round-half-to-even).
+const FLOAT_UNARY_SUB: Record<string, string> = {
+  sqrt: 'f_sqrt', floor: 'f_floor', ceil: 'f_ceil', trunc: 'f_trunc', round: 'f_nearest', abs: 'f_abs',
+};
+const FLOAT_BINARY_SUB: Record<string, string> = { fmin: 'min', fmax: 'max', copysign: 'copysign' };
+
 class FnBuilder {
   blocks: PBlock[] = [];
   varType = new Map<string, IRType>();
@@ -130,8 +138,9 @@ class FnBuilder {
   private exported: boolean;
   private pool: StringPool;
   private layouts: Map<string, StructLayout>;
+  private userFns: Set<string>;
 
-  constructor(name: string, params: { name: string; ty: IRType }[], retTy: RetType, body: Block, exported: boolean, pool: StringPool, layouts: Map<string, StructLayout>) {
+  constructor(name: string, params: { name: string; ty: IRType }[], retTy: RetType, body: Block, exported: boolean, pool: StringPool, layouts: Map<string, StructLayout>, userFns: Set<string>) {
     this.name = name;
     this.params = params;
     this.retTy = retTy;
@@ -139,6 +148,7 @@ class FnBuilder {
     this.exported = exported;
     this.pool = pool;
     this.layouts = layouts;
+    this.userFns = userFns;
   }
 
   build(): { fn: PFunc; usesMemory: boolean; usesStrings: boolean } {
@@ -571,6 +581,9 @@ class FnBuilder {
     if (name === '__alloc') {
       return this.lowerAllocBytes(this.lowerExpr(e.args[0])!);
     }
+    // Float bit-reinterpretation intrinsics (prelude only).
+    if (name === '__f64_bits') return this.def('i64', 'cast', 'reinterp_f2l', [this.lowerExpr(e.args[0])!]);
+    if (name === '__f64_from_bits') return this.def('f64', 'cast', 'reinterp_l2f', [this.lowerExpr(e.args[0])!]);
     if (name === 'print') {
       const v = this.lowerExpr(e.args[0])!;
       const k = e.args[0].ty!.kind;
@@ -651,6 +664,15 @@ class FnBuilder {
     if (name === 'len') {
       const base = this.lowerExpr(e.args[0])!;
       return this.def('i32', 'load', 'i32', [base]);
+    }
+    // Soft float-math builtins (skipped when a user function shadows the name).
+    if (name in FLOAT_UNARY_SUB && !this.userFns.has(name)) {
+      return this.def('f64', 'cast', FLOAT_UNARY_SUB[name], [this.lowerExpr(e.args[0])!]);
+    }
+    if (name in FLOAT_BINARY_SUB && !this.userFns.has(name)) {
+      const a = this.lowerExpr(e.args[0])!;
+      const b = this.lowerExpr(e.args[1])!;
+      return this.def('f64', 'fbin', FLOAT_BINARY_SUB[name], [a, b]);
     }
     const args = e.args.map((a) => this.lowerExpr(a)!);
     const ret = retTypeOf(e.ty!);
@@ -761,11 +783,14 @@ export function buildPreIR(prog: Program): PModule {
   // function once every call to it has been inlined. If a program has no `main`,
   // fall back to exporting everything so it can still be driven externally.
   const hasMain = prog.decls.some((d) => d.kind === 'fn' && d.name === 'main');
+  // Names a user function claims (so a soft float-math builtin like `sqrt` yields
+  // to a hand-written `fn sqrt`). The prelude's own `__`-functions never collide.
+  const userFns = new Set(prog.decls.filter((d) => d.kind === 'fn').map((d) => (d as { name: string }).name));
   for (const d of prog.decls) {
     if (d.kind !== 'fn') continue;
     const params = d.params.map((p) => ({ name: p.name, ty: irTypeOf(p.ty) }));
     const exported = hasMain ? d.name === 'main' : true;
-    const fb = new FnBuilder(d.name, params, retTypeOf(d.retTy), d.body, exported, pool, layouts);
+    const fb = new FnBuilder(d.name, params, retTypeOf(d.retTy), d.body, exported, pool, layouts, userFns);
     const { fn, usesMemory: m, usesStrings: s } = fb.build();
     usesMemory = usesMemory || m;
     usesStrings = usesStrings || s;
@@ -796,7 +821,7 @@ export function buildPreIR(prog: Program): PModule {
     for (const d of preludeProg.decls) {
       if (d.kind !== 'fn') continue;
       const params = d.params.map((p) => ({ name: p.name, ty: irTypeOf(p.ty) }));
-      const fb = new FnBuilder(d.name, params, retTypeOf(d.retTy), d.body, false, pool, layouts);
+      const fb = new FnBuilder(d.name, params, retTypeOf(d.retTy), d.body, false, pool, layouts, userFns);
       funcs.push(fb.build().fn);
     }
   }

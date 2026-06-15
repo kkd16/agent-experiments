@@ -981,4 +981,42 @@ fn main(){
   print(s); print(pool.slots[4].v); print(pool.count);
 }`,
   },
+  {
+    name: 'float-math-lib',
+    source: `fn main(){
+  print(sqrt(2.0)); print(sqrt(16.0)); print(sqrt(0.0)); print(sqrt(-1.0));
+  print(floor(2.7)); print(floor(-2.1)); print(ceil(2.1)); print(ceil(-2.7));
+  print(trunc(2.9)); print(trunc(-2.9));
+  print(abs(-3.5)); print(abs(3.5));
+  print(fmin(1.5, -2.0)); print(fmax(1.5, -2.0));
+  print(copysign(3.0, -1.0)); print(copysign(-3.0, 1.0));
+}`,
+  },
+  {
+    name: 'float-round-ties-even',
+    source: `fn main(){
+  // wasm f64.nearest rounds halves to even
+  print(round(0.5)); print(round(1.5)); print(round(2.5)); print(round(3.5));
+  print(round(-0.5)); print(round(-1.5)); print(round(-2.5));
+  print(round(2.4)); print(round(2.6)); print(round(-2.4)); print(round(-2.6));
+  print(round(1000000.5));
+}`,
+  },
+  {
+    name: 'float-builtins-overridable',
+    source: `// A user function named sqrt shadows the soft builtin entirely.
+fn sqrt(x: float) -> float { return x + 1.0; }
+fn main(){ print(sqrt(10.0)); print(floor(9.9)); }`,
+  },
+  {
+    name: 'float-reduce-loop',
+    source: `// Exercise the f64 ops through a loop the optimizer rewrites (LICM / stackify).
+fn main(){
+  let acc = 0.0;
+  for (let i = 1; i <= 8; i = i + 1) {
+    acc = acc + sqrt(float(i)) * fmin(2.0, float(i));
+  }
+  print(floor(acc)); print(ceil(acc));
+}`,
+  },
 ];
