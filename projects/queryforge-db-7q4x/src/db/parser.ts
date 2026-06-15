@@ -10,6 +10,7 @@ import {
 import { SCALAR_FUNCTION_NAMES, exprKey } from './eval'
 import { SqlError, type ColumnType, type SqlValue } from './types'
 import { parseDate, parseTime, parseTimestamp, parseInterval } from './temporal'
+import { parseDecimal as parseDecimalLit } from './decimal'
 import { emptyConstraints } from './ast'
 import type {
   BinaryOp,
@@ -171,33 +172,53 @@ class Parser {
     return { kind: 'analyze', table }
   }
 
-  private parseTypeName(): ColumnType {
+  private parseTypeName(): { type: ColumnType; precision?: number; scale?: number } {
     const t = this.next().value
     switch (t) {
       case 'INTEGER':
       case 'INT':
-        return 'INTEGER'
+        return { type: 'INTEGER' }
       case 'REAL':
       case 'FLOAT':
-        return 'REAL'
+        return { type: 'REAL' }
+      case 'DECIMAL':
+      case 'NUMERIC':
+      case 'DEC': {
+        // Optional DECIMAL(precision) / DECIMAL(precision, scale).
+        let precision: number | undefined
+        let scale: number | undefined
+        if (this.accept('(')) {
+          precision = this.parseUintToken('precision')
+          if (this.accept(',')) scale = this.parseUintToken('scale')
+          this.expect(')')
+        }
+        return { type: 'DECIMAL', precision, scale }
+      }
       case 'TEXT':
       case 'STRING':
-        return 'TEXT'
+        return { type: 'TEXT' }
       case 'BOOLEAN':
       case 'BOOL':
-        return 'BOOLEAN'
+        return { type: 'BOOLEAN' }
       case 'DATE':
-        return 'DATE'
+        return { type: 'DATE' }
       case 'TIME':
-        return 'TIME'
+        return { type: 'TIME' }
       case 'TIMESTAMP':
       case 'DATETIME':
-        return 'TIMESTAMP'
+        return { type: 'TIMESTAMP' }
       case 'INTERVAL':
-        return 'INTERVAL'
+        return { type: 'INTERVAL' }
       default:
-        throw this.err('expected a column type (INTEGER, REAL, TEXT, BOOLEAN, DATE, TIME, TIMESTAMP, INTERVAL)')
+        throw this.err('expected a column type (INTEGER, REAL, DECIMAL, TEXT, BOOLEAN, DATE, TIME, TIMESTAMP, INTERVAL)')
     }
+  }
+
+  /** Parse a bare non-negative integer token (DECIMAL precision / scale). */
+  private parseUintToken(what: string): number {
+    const tok = this.next()
+    if (tok.kind !== 'number' || !/^\d+$/.test(tok.value)) throw this.err(`expected an integer ${what}`)
+    return Number(tok.value)
   }
 
   private parseCreate(): Statement {
@@ -313,8 +334,16 @@ class Parser {
   /** Parse one column definition, folding any inline constraints into `c`. */
   private parseColumnDef(columns: ColumnDef[], c: TableConstraints): void {
     const name = this.parseIdent('column name')
-    const type = this.parseTypeName()
-    const def: ColumnDef = { name, type, primaryKey: false, notNull: false, unique: false }
+    const ty = this.parseTypeName()
+    const def: ColumnDef = {
+      name,
+      type: ty.type,
+      primaryKey: false,
+      notNull: false,
+      unique: false,
+      ...(ty.precision !== undefined ? { precision: ty.precision } : {}),
+      ...(ty.scale !== undefined ? { scale: ty.scale } : {}),
+    }
     for (;;) {
       if (this.accept('CONSTRAINT')) {
         // A named inline constraint; the name is attached to whatever follows.
@@ -984,6 +1013,14 @@ class Parser {
       const lit = stringValue(this.next())
       return { kind: 'literal', value: parseTemporalLiteral(t.value, lit) }
     }
+    // Typed exact-numeric literal: DECIMAL '123.45' / NUMERIC '…' / DEC '…'.
+    if ((t.value === 'DECIMAL' || t.value === 'NUMERIC' || t.value === 'DEC') && this.peek(1).kind === 'string') {
+      this.next()
+      const lit = stringValue(this.next())
+      const v = parseDecimalLit(lit)
+      if (!v) throw new SqlError(`invalid DECIMAL literal: '${lit}'`, 'parse')
+      return { kind: 'literal', value: v }
+    }
     // Niladic temporal keywords usable without parentheses, per the SQL
     // standard: CURRENT_DATE, CURRENT_TIME, CURRENT_TIMESTAMP.
     if (
@@ -1194,9 +1231,9 @@ class Parser {
     this.expect('(')
     const expr = this.parseExpr()
     this.expect('AS')
-    const type = this.parseTypeName()
+    const ty = this.parseTypeName()
     this.expect(')')
-    return { kind: 'cast', expr, type }
+    return { kind: 'cast', expr, type: ty.type, ...(ty.scale !== undefined ? { scale: ty.scale } : {}) }
   }
 }
 

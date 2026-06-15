@@ -150,7 +150,7 @@ export class Table {
       if (row[i] === null && col.notNull) {
         throw new SqlError(`NOT NULL constraint violated on "${this.name}.${col.name}"`, 'constraint')
       }
-      row[i] = coerceTo(col.type, row[i])
+      row[i] = coerceTo(col.type, row[i], col.scale)
     }
     for (const chk of this.compiledChecks()) {
       const v = chk.fn(row)
@@ -275,7 +275,7 @@ export class Table {
   /** Append a column, backfilling existing rows with its DEFAULT (or NULL). */
   addColumn(col: ColumnDef): void {
     if (this.columnIndex(col.name) >= 0) throw new SqlError(`column "${col.name}" already exists in "${this.name}"`, 'ddl')
-    const fill = col.default ? coerceTo(col.type, evalColumnDefault(col)) : null
+    const fill = col.default ? coerceTo(col.type, evalColumnDefault(col), col.scale) : null
     if (col.notNull && fill === null && this.heap.size > 0) {
       throw new SqlError(`cannot add NOT NULL column "${col.name}" without a DEFAULT to non-empty table "${this.name}"`, 'ddl')
     }
@@ -674,7 +674,7 @@ function evalColumnDefault(col: ColumnDef): SqlValue {
       throw new SqlError('column references are not allowed in DEFAULT', 'bind')
     },
   })
-  return coerceTo(col.type, fn([]))
+  return coerceTo(col.type, fn([]), col.scale)
 }
 
 /** Fill in missing fields on a (possibly older) serialized constraint set. */

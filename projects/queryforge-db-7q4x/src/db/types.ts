@@ -19,6 +19,18 @@ import {
   type Temporal,
   type TemporalKind,
 } from './temporal'
+import {
+  isDecimal,
+  formatDecimal,
+  hashDecimal,
+  compareDecimal,
+  parseDecimal,
+  fromNumber as decimalFromNumber,
+  fromInt as decimalFromInt,
+  toNumber as decimalToNumber,
+  rescale as decimalRescale,
+  type DecimalValue,
+} from './decimal'
 
 export type ColumnType =
   | 'INTEGER'
@@ -29,12 +41,14 @@ export type ColumnType =
   | 'TIME'
   | 'TIMESTAMP'
   | 'INTERVAL'
+  | 'DECIMAL'
 
-export type SqlValue = null | number | string | boolean | Temporal
+export type SqlValue = null | number | string | boolean | Temporal | DecimalValue
 
 export const COLUMN_TYPES: readonly ColumnType[] = [
   'INTEGER',
   'REAL',
+  'DECIMAL',
   'TEXT',
   'BOOLEAN',
   'DATE',
@@ -42,6 +56,15 @@ export const COLUMN_TYPES: readonly ColumnType[] = [
   'TIMESTAMP',
   'INTERVAL',
 ]
+
+/** Coerce any value into an exact DECIMAL (used by comparison + coercion). */
+function asDecimalExact(v: SqlValue): DecimalValue | null {
+  if (isDecimal(v)) return v
+  if (typeof v === 'boolean') return decimalFromInt(v ? 1 : 0)
+  if (typeof v === 'number') return Number.isInteger(v) ? decimalFromInt(v) : null
+  if (typeof v === 'string') return parseDecimal(v)
+  return null
+}
 
 /** Map a temporal column type to its runtime tag. */
 const TEMPORAL_KIND: Partial<Record<ColumnType, TemporalKind>> = {
@@ -60,15 +83,31 @@ export function valueTypeOf(v: SqlValue): ColumnType | 'NULL' {
   if (v === null) return 'NULL'
   if (typeof v === 'boolean') return 'BOOLEAN'
   if (typeof v === 'string') return 'TEXT'
+  if (isDecimal(v)) return 'DECIMAL'
   if (isTemporal(v)) {
     return v.t === 'date' ? 'DATE' : v.t === 'time' ? 'TIME' : v.t === 'timestamp' ? 'TIMESTAMP' : 'INTERVAL'
   }
   return Number.isInteger(v) ? 'INTEGER' : 'REAL'
 }
 
-/** Coerce a parsed/produced value into a declared column type, or throw. */
-export function coerceTo(type: ColumnType, v: SqlValue): SqlValue {
+/** Coerce a parsed/produced value into a declared column type, or throw.
+ *  For DECIMAL, `scale` (when given) rounds the value to that many fractional
+ *  digits — i.e. the `s` of a `DECIMAL(p, s)` column or CAST. */
+export function coerceTo(type: ColumnType, v: SqlValue, scale?: number): SqlValue {
   if (v === null) return null
+  if (type === 'DECIMAL') {
+    const d = asDecimalExact(v) ?? (typeof v === 'number' ? decimalFromNumber(v) : null)
+    if (!d) throw new TypeErrorSql(`cannot store ${JSON.stringify(v)} as DECIMAL`)
+    return scale === undefined ? d : decimalRescale(d, scale)
+  }
+  if (isDecimal(v)) {
+    // A DECIMAL flowing into a non-decimal column.
+    if (type === 'TEXT') return formatDecimal(v)
+    if (type === 'INTEGER') return Math.trunc(decimalToNumber(v))
+    if (type === 'REAL') return decimalToNumber(v)
+    if (type === 'BOOLEAN') return v.d !== '0'
+    throw new TypeErrorSql(`cannot store a DECIMAL as ${type}`)
+  }
   const tkind = TEMPORAL_KIND[type]
   if (tkind) {
     const t = asTemporalKind(tkind, v)
@@ -135,6 +174,18 @@ export function compareValues(a: SqlValue, b: SqlValue): number | null {
     const c = at ? compareTemporal(temp, coerced) : compareTemporal(coerced, temp)
     return c
   }
+  // Decimals compare exactly among themselves and against any value that can be
+  // read as an exact decimal (integers, decimal-shaped strings); a non-integer
+  // REAL falls back to a float comparison, matching `numeric vs double`.
+  if (isDecimal(a) || isDecimal(b)) {
+    const da = asDecimalExact(a)
+    const db = asDecimalExact(b)
+    if (da && db) return compareDecimal(da, db)
+    const na = isDecimal(a) ? decimalToNumber(a) : typeof a === 'boolean' ? (a ? 1 : 0) : Number(a)
+    const nb = isDecimal(b) ? decimalToNumber(b) : typeof b === 'boolean' ? (b ? 1 : 0) : Number(b)
+    if (Number.isNaN(na) || Number.isNaN(nb)) return null
+    return na < nb ? -1 : na > nb ? 1 : 0
+  }
   if (typeof a === 'number' && typeof b === 'number') return a < b ? -1 : a > b ? 1 : 0
   if (typeof a === 'boolean' && typeof b === 'boolean') {
     const na = a ? 1 : 0
@@ -174,6 +225,7 @@ export function hashKey(values: SqlValue[]): string {
     else if (typeof v === 'string') out += `S${v.length}:${v}`
     else if (typeof v === 'boolean') out += v ? 'B1;' : 'B0;'
     else if (isTemporal(v)) out += `T${hashTemporal(v)};`
+    else if (isDecimal(v)) out += `D${hashDecimal(v)};`
     else out += `D${v};`
   }
   return out
@@ -183,6 +235,7 @@ export function formatValue(v: SqlValue): string {
   if (v === null) return 'NULL'
   if (typeof v === 'boolean') return v ? 'TRUE' : 'FALSE'
   if (typeof v === 'string') return v
+  if (isDecimal(v)) return formatDecimal(v)
   if (isTemporal(v)) return formatTemporal(v)
   return String(v)
 }

@@ -83,8 +83,31 @@ INSERT INTO subscriptions (id, customer_id, plan, started, term, last_active) VA
   (7, 7, 'Starter', DATE '2026-01-31', INTERVAL '1 month',  TIMESTAMP '2026-06-15 16:48:20'),
   (8, 8, 'Team',    DATE '2024-12-25', INTERVAL '3 months', TIMESTAMP '2026-06-09 21:30:00');
 
+-- Money is exact here: DECIMAL columns never lose a cent to binary floating
+-- point. subtotal × tax_rate is computed and stored exactly; SUM/AVG over these
+-- columns stay exact, and they index, sort and group like any other value.
+CREATE TABLE invoices (
+  id INTEGER PRIMARY KEY,
+  customer_id INTEGER REFERENCES customers(id) ON DELETE CASCADE,
+  issued DATE,
+  subtotal DECIMAL(12,2),
+  tax_rate DECIMAL(5,4),
+  total DECIMAL(12,2)
+);
+
+INSERT INTO invoices (id, customer_id, issued, subtotal, tax_rate, total) VALUES
+  (1, 1, DATE '2026-01-31', 1299.00, 0.2000, 1558.80),
+  (2, 2, DATE '2026-02-15',  549.50, 0.2000,  659.40),
+  (3, 3, DATE '2026-02-28',  897.00, 0.0875,  975.49),
+  (4, 4, DATE '2026-03-10',  399.00, 0.0825,  431.92),
+  (5, 5, DATE '2026-03-22', 1158.00, 0.0875, 1259.33),
+  (6, 6, DATE '2026-04-05',  249.50, 0.0625,  265.09),
+  (7, 7, DATE '2026-04-19',  238.00, 0.2000,  285.60),
+  (8, 1, DATE '2026-05-02',  459.00, 0.2000,  550.80);
+
 -- A secondary index the planner can exploit for range scans.
 CREATE INDEX idx_products_price ON products (price);
+CREATE INDEX idx_invoices_total ON invoices (total);
 CREATE INDEX idx_orders_customer ON orders (customer_id);
 CREATE INDEX idx_subs_started ON subscriptions (started);
 `.trim()
@@ -200,6 +223,50 @@ SELECT 'Tokyo'
 EXCEPT
 SELECT 'London'
 ORDER BY city;`,
+  },
+  {
+    title: 'Exact money — invoice totals (DECIMAL)',
+    sql: `-- SUM/AVG over DECIMAL columns are exact to the cent (no float drift).
+-- Compare TYPEOF: the totals are 'decimal', not 'real'.
+SELECT COUNT(*)        AS invoices,
+       SUM(subtotal)   AS subtotal,
+       SUM(total)      AS billed,
+       AVG(total)      AS avg_invoice,
+       TYPEOF(SUM(total)) AS sum_type
+FROM invoices;`,
+  },
+  {
+    title: 'Decimal arithmetic vs. float (0.1 + 0.2)',
+    sql: `-- DECIMAL is exact; the same sum in REAL famously is not.
+SELECT DECIMAL '0.1' + DECIMAL '0.2'  AS exact_decimal,
+       0.1 + 0.2                      AS binary_float,
+       DECIMAL '19.99' * 3            AS price_times_three,
+       DECIMAL '10' / DECIMAL '3'     AS one_third;`,
+  },
+  {
+    title: 'Recompute tax exactly + verify stored total',
+    sql: `-- subtotal × (1 + tax_rate), rounded to cents, equals the stored total.
+SELECT id,
+       subtotal,
+       tax_rate,
+       ROUND(subtotal * tax_rate, 2)        AS tax,
+       ROUND(subtotal * (1 + tax_rate), 2)  AS computed_total,
+       total,
+       ROUND(subtotal * (1 + tax_rate), 2) = total AS matches
+FROM invoices
+ORDER BY id;`,
+  },
+  {
+    title: 'TO_CHAR — formatted currency report',
+    sql: `-- TO_CHAR's numeric templates: grouping, currency, fixed decimals.
+SELECT i.id,
+       c.name AS customer,
+       TO_CHAR(i.subtotal, 'FM$999,999.00') AS subtotal,
+       TO_CHAR(i.tax_rate * 100, 'FM990.00') || '%' AS tax_pct,
+       TO_CHAR(i.total, 'FM$999,999.00')    AS total
+FROM invoices i
+JOIN customers c ON i.customer_id = c.id
+ORDER BY i.total DESC;`,
   },
   {
     title: 'Window frame — 3-row moving average',

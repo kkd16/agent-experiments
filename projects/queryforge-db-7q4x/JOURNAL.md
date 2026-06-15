@@ -24,6 +24,11 @@ plan visualizer and a built-in self-test suite.
 - `src/db/storage/btree.ts` — a genuine tuple-keyed B+Tree (node splits, chained leaves,
   range scans, key-yielding `rangeKeys` for index-only scans)
 - `src/db/csv.ts` — CSV parser + type-inferring CREATE TABLE/INSERT generator
+- `src/db/decimal.ts` — first-class exact numerics: DECIMAL/NUMERIC as a tagged,
+  JSON-serializable value `{t:'decimal', d, s}` (unscaled BigInt rendered to a
+  string + a scale). BigInt arithmetic (add/sub/mul/div/mod, round/trunc/floor/
+  ceil, rescale), exact comparison, canonical hashing, parse/format, and
+  Postgres-style numeric `TO_CHAR` template formatting.
 - `src/db/temporal.ts` — first-class DATE/TIME/TIMESTAMP/INTERVAL values: tagged
   (JSON-serializable) representation, parse/format, compare/order/hash, calendar-aware
   arithmetic, and EXTRACT/DATE_TRUNC/AGE
@@ -176,7 +181,56 @@ partial state, so the enforcement code never has to unwind by hand.
   every referential action, multi-column & self-referential FKs, atomicity, ALTER and a
   constraint persistence round-trip); `verify-project.mjs` green.
 
+### v6.0 — First-class exact numerics (DECIMAL / NUMERIC) ✅
+
+The other half of "more types" (temporal was v4.0): money and any value that must
+be **exact**. The design mirrors temporal exactly — a single new tagged value that
+flows through the whole engine by teaching the six central value functions about it,
+so it indexes, sorts, groups, joins, aggregates and persists for free. The one twist
+was serialization: a `BigInt` can't be `JSON.stringify`'d, so a DECIMAL stores its
+unscaled integer as a **string** (`{t:'decimal', d:'-1999', s:2}` = -19.99) and lifts
+it back to `BigInt` for arithmetic — keeping the localStorage round-trip intact while
+arithmetic stays arbitrary-precision and exact.
+
+- [x] **`db/decimal.ts`** — BigInt-backed value module: parse/format, exact
+  `+ − × ÷ %`, `round`/`trunc`/`floor`/`ceil`/`rescale`/`abs`/`neg`/`sign`,
+  scale-independent compare, canonical hashing, precision, and a numeric
+  `TO_CHAR` template engine.
+- [x] **Value-system integration** — widened `ColumnType` (+`DECIMAL`) and `SqlValue`;
+  taught `valueTypeOf`/`coerceTo`/`compareValues`/`orderValues`/`hashKey`/`formatValue`
+  about decimals, so `1.50 = 1.5 = 2 = the integer-equal value` all share one identity
+  and a decimal indexes / sorts / groups / joins like any column.
+- [x] **Literals & types** — `DECIMAL '…'` / `NUMERIC '…'` / `DEC '…'` typed literals
+  (with exponent), `DECIMAL(precision, scale)` column types and `CAST(x AS DECIMAL(p,s))`,
+  rounding to the declared scale on store / cast (half-up). `NUMERIC` / `DEC` aliases.
+- [x] **Exact arithmetic with documented scale rules** — `+/−` → max scale, `×` → sum of
+  scales, `÷` → ≥ 6 fractional digits (half-up), `÷0` → NULL. Exact against DECIMAL/INTEGER;
+  a non-integer REAL degrades the expression to floating point (Postgres `numeric` vs `double`).
+- [x] **Exact aggregates** — `SUM`/`AVG` over a DECIMAL stay exact (a money SUM never loses a
+  cent); MIN/MAX/MEDIAN/percentiles and the **window** `SUM/AVG OVER` paths all handle decimals.
+- [x] **Exact scalar functions** — `ABS/SIGN/ROUND/TRUNC/CEIL/FLOOR/MOD` keep a DECIMAL exact
+  (incl. `ROUND(x, −n)`); new `TO_NUMBER`, `DECIMAL(x[,scale])`, `SCALE`, `PRECISION`; `TYPEOF`
+  reports `'decimal'`.
+- [x] **`TO_CHAR` numeric templates** — `9 0 . , (D G) S MI PR $ L FM` and `#`-on-overflow,
+  e.g. `TO_CHAR(1234.5,'FM$999,999.00') → $1,234.50` (the existing temporal `TO_CHAR` still works).
+- [x] **Stats & indexes** — histogram/MCV/ndistinct estimators read decimals (exact key + numeric
+  position); B+Tree indexes them via the shared total order with zero new code.
+- [x] **Showcase** — an `invoices` table with `DECIMAL(12,2)` money + `DECIMAL(5,4)` tax columns in
+  the seed; 4 new sample queries (exact totals, float-vs-decimal, recomputed tax = stored total, a
+  TO_CHAR currency report); a Reference section, an Internals stage, and `DECIMAL(p,s)` in the schema browser.
+- [x] **Tests** — grew the suite 173 → 190 (16 decimal cases + a new "every sample query runs against
+  the seed" guard + an invoices integrity check); `verify-project.mjs` green.
+
 ### Backlog / next steps
+
+- [ ] **DECIMAL division scale à la Postgres** — `select_div_scale` (derive rscale from operand
+  precisions) instead of the fixed `max(s1,s2,6)`; expose a `SET extra_float_digits`-style knob.
+- [ ] **Overflow vs. declared precision** — currently DECIMAL(p,s) only enforces *scale*; enforce
+  `precision` (digit count) and raise a "numeric field overflow" instead of silently storing.
+- [ ] **`SUM`/`AVG` `DECIMAL` window with explicit RANGE frames over decimals** (the running/ROWS
+  frames are exact; verify RANGE-frame peer arithmetic on decimals).
+- [ ] **CSV import → infer DECIMAL** for fixed-point money columns (today they infer REAL).
+- [ ] **`ROUND`/`TO_CHAR` rounding modes** — half-even (banker's) option alongside half-up.
 
 - [ ] **DEFERRABLE constraints + a real multi-statement transaction FK check** (currently MATCH
   SIMPLE, immediate); `MATCH FULL`/`MATCH PARTIAL`
@@ -205,6 +259,25 @@ partial state, so the enforcement code never has to unwind by hand.
 
 ## Session log
 
+- 2026-06-15 (claude / claude-opus-4-8): **v6.0 — first-class exact numerics (DECIMAL / NUMERIC).**
+  Added the other half of the "more types" backlog item. Built `db/decimal.ts`: a BigInt-backed
+  exact-decimal value stored as a tagged, JSON-serializable object `{t:'decimal', d, s}` (the
+  unscaled integer is a BigInt *rendered to a string*, since BigInt itself can't be serialized —
+  the trick that keeps the whole DB localStorage-round-trippable while arithmetic stays
+  arbitrary-precision). Threaded it through the six central value functions exactly like temporal,
+  so a decimal indexes, sorts, GROUP BYs, joins, aggregates and persists for free, and
+  `1.50 = 1.5 = 2` share one hash identity. On top: typed literals (`DECIMAL/NUMERIC/DEC '…'`),
+  `DECIMAL(p,s)` columns + `CAST` (rounding to scale on store, half-up), exact `+ − × ÷ %` with
+  documented scale rules (÷ to ≥6 digits, ÷0→NULL, REAL contaminates to float), exact `SUM`/`AVG`
+  in both the GROUP BY and window paths (money SUMs never lose a cent), decimal-exact
+  `ABS/SIGN/ROUND/TRUNC/CEIL/FLOOR/MOD` + new `TO_NUMBER/DECIMAL()/SCALE/PRECISION`, and a
+  Postgres-style **numeric `TO_CHAR`** template engine (`9 0 . , S MI PR $ L FM`, `#` overflow).
+  Stats estimators and the B+Tree pick decimals up via the shared order/hash with ~no new code.
+  Showcased with an `invoices` table (DECIMAL money + tax) in the seed, 4 sample queries, a
+  Reference section, an Internals stage, and `DECIMAL(p,s)` in the schema browser. Grew the
+  self-test suite 173 → 190 (decimal arithmetic/scale/comparison/coercion/aggregates/windows/index/
+  rounding/TO_CHAR/persistence + a guard that every shipped sample query runs against the seed);
+  verified headless and with `verify-project.mjs` (scope + conformance + lint + build), all green.
 - 2026-06-15 (claude / claude-opus-4-8): **v5.0 — declarative integrity.** Added the engine's
   missing half: constraints. CHECK (column + table level, compiled like any predicate, NULL passes),
   DEFAULT (fills omitted columns + feeds SET DEFAULT), composite PRIMARY KEY / UNIQUE (one B+Tree over

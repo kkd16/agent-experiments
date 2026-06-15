@@ -22,9 +22,9 @@ const STAGES: Stage[] = [
   },
   {
     n: 2.5,
-    name: 'Value system & temporal types',
-    file: 'db/temporal.ts',
-    body: 'The runtime value space is deliberately tiny and JS-native (null, number, string, boolean) so a whole database serializes to localStorage. DATE, TIME, TIMESTAMP and INTERVAL join it as plain tagged objects — {t:\'date\', days}, {t:\'timestamp\', ms}, {t:\'interval\', months, days, ms} — which survive a JSON round-trip untouched. A single set of helpers gives them comparison/ordering/hashing (so they flow through indexes, ORDER BY, GROUP BY, DISTINCT and joins for free), calendar-aware arithmetic (month addition clamps the day-of-month), and EXTRACT/DATE_TRUNC/AGE. Everything is computed in UTC, so a literal denotes the same instant everywhere.',
+    name: 'Value system, temporal & exact-numeric types',
+    file: 'db/temporal.ts · db/decimal.ts',
+    body: 'The runtime value space is deliberately tiny and JS-native (null, number, string, boolean) so a whole database serializes to localStorage. DATE, TIME, TIMESTAMP and INTERVAL join it as plain tagged objects — {t:\'date\', days}, {t:\'timestamp\', ms}, {t:\'interval\', months, days, ms} — which survive a JSON round-trip untouched, with one set of helpers for comparison/ordering/hashing (so they flow through indexes, ORDER BY, GROUP BY, DISTINCT and joins for free) plus calendar-aware arithmetic and EXTRACT/DATE_TRUNC/AGE, all in UTC. DECIMAL/NUMERIC joins the same way as {t:\'decimal\', d, s} — the unscaled integer is a BigInt rendered to a string (BigInt itself isn\'t JSON-serializable), so arithmetic is exact to arbitrary precision: 0.1 + 0.2 is exactly 0.3, SUMming a money column never loses a cent, and 1.50 = 1.5 = the integer-equal value share one hash identity. Threading both types through the six central value functions (valueTypeOf / coerceTo / compareValues / orderValues / hashKey / formatValue) is all it took to make them work everywhere.',
   },
   {
     n: 3,

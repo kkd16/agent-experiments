@@ -98,7 +98,7 @@ const SECTIONS: Section[] = [
       { syntax: 'CASE WHEN … THEN … [ELSE …] END', note: 'Both searched and simple CASE forms.' },
       { syntax: 'UPPER LOWER INITCAP TRIM LTRIM RTRIM LPAD RPAD REPEAT REVERSE', note: 'String functions.' },
       { syntax: 'LEFT RIGHT SUBSTR INSTR REPLACE CONCAT CONCAT_WS LENGTH ASCII CHR', note: 'More string functions.' },
-      { syntax: 'ABS SIGN ROUND TRUNC CEIL FLOOR SQRT EXP LN LOG LOG10 POWER MOD', note: 'Numeric functions.' },
+      { syntax: 'ABS SIGN ROUND TRUNC CEIL FLOOR SQRT EXP LN LOG LOG10 POWER MOD', note: 'Numeric functions. ABS/SIGN/ROUND/TRUNC/CEIL/FLOOR/MOD stay exact on a DECIMAL.' },
       { syntax: 'PI SIN COS TAN ASIN ACOS ATAN ATAN2 RADIANS DEGREES RANDOM', note: 'Trig & misc math.' },
       { syntax: 'COALESCE IFNULL NVL NULLIF IIF GREATEST LEAST TYPEOF', note: 'Conditional / null-handling.' },
       { syntax: 'NOW DATE DATETIME STRFTIME JULIANDAY DATEDIFF DATE_ADD', note: 'Legacy SQLite-style date helpers over ISO-8601 text or epoch-ms.' },
@@ -117,6 +117,18 @@ const SECTIONS: Section[] = [
       { syntax: 'CURRENT_DATE · CURRENT_TIME · CURRENT_TIMESTAMP / NOW', note: 'Niladic — usable without parentheses, per the SQL standard.' },
       { syntax: 'MAKE_DATE(y,m,d) · MAKE_TIME(h,mi,s) · MAKE_TIMESTAMP(…) · MAKE_INTERVAL(…)', note: 'Build temporal values from numeric parts. TO_DATE/TO_TIMESTAMP parse text.' },
       { syntax: "TO_CHAR(x, 'Dy, DD Mon YYYY HH24:MI')", note: 'Postgres-style templates: YYYY MM DD HH24 HH12 MI SS MS · Mon/Month · Dy/Day · AM/PM · Q · IW. Double-quoted text is literal.' },
+    ],
+  },
+  {
+    title: 'Exact numerics  —  DECIMAL / NUMERIC',
+    entries: [
+      { syntax: "DECIMAL '19.99' · NUMERIC '0.1' · DEC '1.5e3'", note: 'Arbitrary-precision exact decimals (BigInt-backed). 0.1 + 0.2 is exactly 0.3 — no binary-float drift.' },
+      { syntax: 'CREATE TABLE t (price DECIMAL(10,2)) · CAST(x AS DECIMAL(12,4))', note: 'DECIMAL(precision, scale): values round to the declared scale on store / cast (half-up).' },
+      { syntax: 'a + b · a − b  (scale = max)   ·   a * b  (scale = sum)   ·   a / b  (scale ≥ 6)', note: 'Exact against DECIMAL/INTEGER; mixing with a REAL degrades to floating point. ÷0 → NULL.' },
+      { syntax: 'SUM(col) · AVG(col)  over a DECIMAL column', note: 'Stay exact — SUM of money never loses a cent; AVG carries ≥ 6 fractional digits.' },
+      { syntax: "DECIMAL '1.50' = DECIMAL '1.5' = 1.5 = 2−0.5", note: 'Scale-independent comparison; equal values share one identity in GROUP BY / DISTINCT / joins.' },
+      { syntax: 'TYPEOF(x) · SCALE(d) · PRECISION(d) · TO_NUMBER(t) · DECIMAL(x [, scale])', note: 'Introspect and construct exact numerics.' },
+      { syntax: "TO_CHAR(1234.5, 'FM$999,999.00') → $1,234.50", note: "Numeric templates: 9 0 . , (or D G), S MI PR sign forms, $ / L currency, FM fill, # on overflow." },
     ],
   },
   {

@@ -13,6 +13,15 @@
 //     (UNBOUNDED PRECEDING → CURRENT ROW), the standard cumulative behaviour.
 
 import { hashKey, orderValues, type SqlValue } from './types'
+import {
+  isDecimal,
+  addDecimal,
+  divDecimal,
+  fromInt as decFromInt,
+  toNumber as decToNumber,
+  DECIMAL_ZERO,
+  DIV_DEFAULT_SCALE,
+} from './decimal'
 import type { Row } from './catalog'
 import type { Schema } from './schema'
 import type { Evaluator } from './eval'
@@ -64,19 +73,36 @@ function aggregateRange(spec: WindowSpecExec, rows: Row[], s: number, e: number)
   let sum = 0
   let mn: SqlValue = null
   let mx: SqlValue = null
+  // Exact-decimal running total (matches the GROUP BY aggregate's SUM/AVG).
+  let decSum = DECIMAL_ZERO
+  let decExact = true
+  let sawDecimal = false
   for (let i = s; i <= e; i++) {
     const v = star ? 1 : spec.args[0](rows[i])
     if (!star && v === null) continue
     count++
-    if (typeof v === 'number') sum += v
-    else if (typeof v === 'boolean') sum += v ? 1 : 0
+    if (typeof v === 'number') {
+      sum += v
+      if (Number.isInteger(v)) decSum = addDecimal(decSum, decFromInt(v))
+      else decExact = false
+    } else if (typeof v === 'boolean') {
+      sum += v ? 1 : 0
+      decSum = addDecimal(decSum, decFromInt(v ? 1 : 0))
+    } else if (isDecimal(v)) {
+      sum += decToNumber(v)
+      sawDecimal = true
+      decSum = addDecimal(decSum, v)
+    }
     if (mn === null || orderValues(v, mn) < 0) mn = v
     if (mx === null || orderValues(v, mx) > 0) mx = v
   }
+  const exact = sawDecimal && decExact
   switch (spec.name) {
     case 'COUNT': return count
-    case 'SUM': return count === 0 ? null : sum
-    case 'AVG': return count === 0 ? null : sum / count
+    case 'SUM': return count === 0 ? null : exact ? decSum : sum
+    case 'AVG':
+      if (count === 0) return null
+      return exact ? divDecimal(decSum, decFromInt(count), Math.max(decSum.s, DIV_DEFAULT_SCALE)) ?? sum / count : sum / count
     case 'MIN': return mn
     default: return mx
   }
@@ -259,29 +285,10 @@ function computePartition(spec: WindowSpecExec, rows: Row[], out: SqlValue[]): v
     case 'AVG':
     case 'MIN':
     case 'MAX': {
-      const star = spec.args.length === 0
-      const upto = (end: number): SqlValue => {
-        let count = 0
-        let sum = 0
-        let mn: SqlValue = null
-        let mx: SqlValue = null
-        for (let i = 0; i <= end; i++) {
-          const v = star ? 1 : arg0(i)
-          if (!star && v === null) continue
-          count++
-          if (typeof v === 'number') sum += v
-          else if (typeof v === 'boolean') sum += v ? 1 : 0
-          if (mn === null || orderValues(v, mn) < 0) mn = v
-          if (mx === null || orderValues(v, mx) > 0) mx = v
-        }
-        switch (spec.name) {
-          case 'COUNT': return count
-          case 'SUM': return count === 0 ? null : sum
-          case 'AVG': return count === 0 ? null : sum / count
-          case 'MIN': return mn
-          default: return mx
-        }
-      }
+      // Default frame is RANGE UNBOUNDED PRECEDING .. CURRENT ROW: a running
+      // aggregate up to (and including) the current peer group. Delegates to
+      // `aggregateRange`, so exact-decimal SUM/AVG behave identically here.
+      const upto = (end: number): SqlValue => aggregateRange(spec, rows, 0, end)
       if (ordered) {
         // Running frame: extend the peer group so peers share a value.
         let i = 0

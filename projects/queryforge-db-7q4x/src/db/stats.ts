@@ -12,6 +12,7 @@
 
 import { orderValues, valuesEqual, type ColumnType, type SqlValue } from './types'
 import { isTemporal, temporalScalar, hashTemporal } from './temporal'
+import { isDecimal, hashDecimal, toNumber as decToNumber } from './decimal'
 import type { Row } from './catalog'
 
 const HIST_BUCKETS = 32
@@ -82,6 +83,7 @@ function keyOf(v: SqlValue): string {
   if (typeof v === 'string') return 's' + v
   if (typeof v === 'boolean') return 'b' + (v ? 1 : 0)
   if (isTemporal(v)) return 't' + hashTemporal(v)
+  if (isDecimal(v)) return 'd' + hashDecimal(v)
   return 'n' + String(v)
 }
 
@@ -112,6 +114,7 @@ function num(v: SqlValue): number {
   if (typeof v === 'number') return v
   if (typeof v === 'boolean') return v ? 1 : 0
   if (isTemporal(v)) return temporalScalar(v)
+  if (isDecimal(v)) return decToNumber(v)
   return NaN
 }
 
