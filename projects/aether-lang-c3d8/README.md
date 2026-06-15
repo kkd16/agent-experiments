@@ -43,10 +43,10 @@ Aether is an ML-family expression language. Everything is an expression; there a
   works on any record carrying that field.
 - **List comprehensions** — `[ e | x <- xs, guard, y <- ys ]` with generators and guards, pure
   sugar over `concat` / `map` / `if`, so they're fully inferred and run on both backends.
-- **do-notation** — `do { x <- e; …; r }` is pure sugar over a `bind` in scope
-  (`do { x <- e; rest }` ⇒ `bind e (fn x -> rest)`), so the same block expresses Option
-  short-circuiting or List non-determinism depending on the monad you bind — and both backends run
-  it with no special support.
+- **do-notation** — `do { x <- e; …; r }` is sugar for `bind`
+  (`do { x <- e; rest }` ⇒ `bind e (fn x -> rest)`). Bind the genuine `Monad` class method and the
+  *same* block is the Option, List or State monad **by type** — both backends run it with no special
+  support.
 - **Type inference** — full Hindley–Milner (Algorithm W) with let-generalization; no type
   annotations anywhere. `let id = fn x -> x` is `∀ a. a -> a`.
 - **Type classes** — `class Disp a where disp : a -> String in …` and
@@ -55,6 +55,18 @@ Aether is an ML-family expression language. Everything is an expression; there a
   (instances may carry a context, e.g. `instance Disp a => Disp (List a)`), and compiles classes to
   **dictionary passing** — entirely as an elaboration into the core language, so both backends run
   them unchanged. The **Classes** tab shows the elaborated core.
+- **Higher-kinded types & a kind system** — type classes range over **type constructors**, not just
+  proper types. `class Monad m where bind : m a -> (a -> m b) -> m b` abstracts over an `m` of kind
+  `* -> *`, so a single generic combinator (`mapM`, `sequence`, …) runs in *every* monad — `Option`,
+  `List`, even the partially-applied `State s`. Kinds are **inferred** (no annotations): each class
+  parameter's kind is read off how its methods use it, and ill-kinded programs like
+  `instance Monad Int` are rejected with a clear message. Internally a type variable can now stand
+  for a constructor (a `TApp` node bridges to ordinary `TCon`s during unification), and the **Classes**
+  tab shows each class's inferred kind.
+- **Superclasses** — `class Functor f => Monad f where …`. A subclass dictionary embeds its
+  superclass dictionaries (as `$super_…` fields), so a `Monad m` constraint *entails* a `Functor m`
+  one: you write `Monad m =>` and get `fmap` for free, discharged by projecting through the dictionary.
+  Declaring a `Monad` instance requires (and references) the corresponding `Functor` instance.
 
 ### Property-based testing (Aether Check)
 
@@ -124,9 +136,10 @@ source ─▶ lexer ─▶ parser ─▶ HM inference ─▶ optimizer        �
 | `src/lang/lexer.ts` | hand-written scanner; precise source spans, nested block comments |
 | `src/lang/ast.ts` | the typed AST, patterns, and type-expression syntax |
 | `src/lang/parser.ts` | Pratt (precedence-climbing) parser; application is juxtaposition |
-| `src/lang/types.ts` | type representation (incl. rows), pretty-printing |
-| `src/lang/infer.ts` | Algorithm W: unification (with row unification), let-generalization, type-class constraint solving |
-| `src/lang/classes.ts` | type-class evidence + dictionary-passing elaboration into core AST |
+| `src/lang/types.ts` | type representation (incl. rows + higher-kinded `TApp`), pretty-printing |
+| `src/lang/kinds.ts` | the kind system: kinds, kind unification, kind inference for HKT |
+| `src/lang/infer.ts` | Algorithm W: unification (rows + applications), let-generalization, kind checking, type-class + superclass constraint solving |
+| `src/lang/classes.ts` | type-class evidence (incl. superclass projection) + dictionary-passing elaboration into core AST |
 | `src/lang/unparse.ts` | core-AST pretty-printer (renders the elaborated dictionaries) |
 | `src/lang/exhaustive.ts` | Maranget's pattern-usefulness algorithm (exhaustiveness + redundancy) |
 | `src/lang/optimize.ts` | constant folding, dead-branch elimination, short-circuit simplification |

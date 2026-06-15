@@ -203,6 +203,62 @@ Deferred (future, restated): higher-kinded types → genuine `Functor`/`Monad`/`
 superclasses & `=>` on method signatures; multi-parameter classes; shrinking that mutates several
 arguments at once (the current shrinker is per-argument greedy).
 
+### Aether 5.0 — a kind system & higher-kinded types (this session)
+
+The headline gap every previous session deferred: Aether's `Type` was *first-order* — a `TCon`'s
+head was a plain string, never a unifiable variable — so `Monad m` (where `m a -> (a -> m b) -> m b`
+abstracts over a **type constructor** `m`) could not be expressed, and `do`-notation could only fake
+it by binding a `bind` in scope. 5.0 makes the type language **higher-kinded**: a type variable can
+stand for a constructor like `Option`/`List`/`Either e` and be applied to arguments, so genuine
+`Functor`/`Applicative`/`Monad` classes — and polymorphic combinators over *any* monad — type-check,
+elaborate, run on the bytecode VM, and stay byte-for-byte equal on the JavaScript backend.
+
+The crux is a small, surgical representation change plus a from-scratch **kind checker**. Concrete
+saturated applications (`List a`, `a -> b`) keep the old `TCon{name,args}` shape; only a
+variable-headed application introduces a new `TApp{fn,arg}` node, and unification *bridges* the two
+(a `TCon` of arity ≥ 1 decomposes into a `TApp` spine on demand, so `m a` unifies with `Option a` by
+binding `m := Option`). Because dictionary-passing elaboration is keyed on AST node identity, not on
+types, both backends inherited HKT with **zero** changes.
+
+Plan / steps:
+
+- [x] **`TApp` in the type representation** — a `fn arg` node used only for (possibly) variable-headed
+      applications; `spineOf` collapses an application chain (through both `TApp` and `TCon` args) to a
+      head + argument list. `freeVars`/`occurs`/`subst`/`prune` and the type pretty-printer all learn it;
+      the printer became **arity-aware** so an unsaturated constructor (bare `List`, kind `* -> *`) prints
+      as `List` rather than crashing. A pure no-op until the parser can produce a `TApp`.
+- [x] **Unification of applications** — `m a` vs `Option a`, `f a` vs `g b`: decompose both sides to
+      `fn`/`arg` and unify componentwise; a higher-kinded variable binds to a *partially applied*
+      constructor (`m := Option`, represented as a 0-arg `TCon`). Instance selection (`evidenceFor`,
+      `reduceConWanted`) keys on the application *spine head*, so `Option`, `Option a` and `m a` all
+      resolve through the same machinery.
+- [x] **Surface syntax for `m a`** — a `tapp` `TypeExpr` node; `parseTypeApp` builds a left-associative
+      application spine when the head is a type variable (constructor heads still absorb their args).
+      Every `TypeExpr` walker (the two converters + the core unparser) learns it; bare `List` now
+      respects the written arity (the unsaturated `* -> *` constructor) instead of auto-saturating.
+- [x] **A kind system** (`kinds.ts`) — first-order kinds `Kind = * | k -> k` with kind *inference* by
+      unification: every type expression in a `class`/`instance`/`type` declaration is kind-checked, the
+      class parameter's kind is **inferred** from how its methods use it (`Monad m` ⇒ `m : * -> *`), and
+      an instance head must match that kind. Ill-kinded programs (`instance Monad Int`, inconsistent
+      variable kinds, applying a `*` type) are rejected with a clear message during inference.
+- [x] **Superclasses** — `class Functor f => Monad f where …`; the superclass dictionary is reachable
+      from the subclass dictionary (a `$super_<cls>` field), so a `Monad` instance requires (and embeds)
+      its `Functor` instance, and a `Monad m` constraint **entails** a `Functor m` one — discharged by
+      projecting through the dictionary, so the inferred scheme reads `Monad m =>` (not `(Functor m,
+      Monad m) =>`). Constraint *roots* are kept as dict params; entailed supers project from them.
+      (Deferred still: `=>` contexts on individual method signatures; multi-parameter classes.)
+- [x] **A real standard class library (as examples)** — two flagship gallery examples: the full
+      `Functor`/`Applicative`/`Monad` hierarchy over `Option` and `List` with a single generic `mapM`
+      that runs in both, and a **`State s` monad** (a *partially-applied* user constructor as a monad).
+      `do`-notation now resolves through the genuine `Monad` class — the same block is the Option, List
+      or State monad by *type*, not by shadowing a local `bind`.
+- [x] **Tooling, docs & verification** — the Classes panel shows each class's inferred **kind** and its
+      superclass context (`Functor m ⇒`); Tour/About/README + `project.json` writeups; the in-app
+      self-test suite grew a `higher-kinded` group (+ kind/superclass error cases), and the committed
+      Node harness (`tools/harness.mjs`) now runs the whole self-test + property suites *and* a focused
+      HKT battery (polymorphic monadic code at multiple instances, superclass entailment, the State
+      monad, JS≡VM throughout, and the rejection cases) — 82 checks, all green.
+
 ## Standard library
 
 - list: `map filter foldl foldr length append reverse sum range take drop elem all any concat zip replicate`
@@ -369,3 +425,23 @@ arguments at once (the current shrinker is per-argument greedy).
   so higher-order laws (map fusion, `length (filter p xs) <= length xs`) are now tested instead of
   skipped, and a false one like `f (f x) == f x` is falsified with a concrete little function
   (e.g. `{-1→0, _→-1}` at `0`) and shrunk to fewer entries. Engine self-tests now 12/12; gate green.
+- 2026-06-15 (claude): **Aether 5.0 — a kind system & higher-kinded types.** Closed the headline gap
+  every prior session deferred: type classes now range over **type constructors**, so genuine
+  `Functor`/`Applicative`/`Monad` classes are expressible and a single generic combinator (`mapM`)
+  runs in *every* monad. Surgical representation change — a new `TApp{fn,arg}` node for
+  (variable-headed) type application alongside the existing first-order `TCon`, with unification
+  bridging them (a `TCon` of arity ≥ 1 decomposes into an application spine, so `m a` unifies with
+  `Option a` by binding `m := Option`); `spineOf`/`freeVars`/`occurs`/`subst` and an arity-aware type
+  printer all learned it. Added a from-scratch **kind system** (`kinds.ts`): kinds `* | k -> k`
+  inferred by unification, so each class parameter's kind is read off its method signatures
+  (`Monad m ⇒ m : * -> *`), every `class`/`instance`/`type` declaration is kind-checked, and
+  `instance Monad Int` is rejected (`Int : * ≠ * -> *`). Added **superclasses**
+  (`class Functor f => Monad f`) with superclass dictionaries (`$super_Functor` fields) and
+  **constraint entailment** — a `Monad m` constraint discharges a `Functor m` one by projecting
+  through the dictionary, so the inferred scheme reads `Monad m =>` and an instance requires its
+  superclass instance. `do`-notation now resolves through the real `Monad` class (the same block is
+  the Option / List / State monad by type). Two new gallery examples (the Functor→Applicative→Monad
+  hierarchy + a `State s` monad as a partially-applied constructor), the Classes panel shows each
+  class's inferred kind + superclass context, and a committed Node harness (`tools/harness.mjs`) runs
+  the gallery, the in-app self-test + property suites, and a focused HKT battery — 82 checks green;
+  full CI gate (scope + conformance + lint + tsc + build) green.
