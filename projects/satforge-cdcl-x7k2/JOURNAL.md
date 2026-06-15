@@ -20,9 +20,14 @@ conflict teaches the solver a new clause that prunes an exponential swath of the
 - `src/sat/luby.ts` — Luby restart sequence.
 - `src/sat/solver.ts` — the CDCL engine (the heart): two-watched literals, VSIDS, first-UIP
   analysis, recursive minimization, non-chronological backjumping, Luby restarts, LBD-based
-  clause-database reduction, plus an optional event trace + conflict snapshot for the UI.
+  clause-database reduction, plus an optional event trace + conflict snapshot for the UI, and
+  optional **DRAT proof recording** (learnt clauses, deletions, the closing empty clause).
+- `src/sat/drat.ts` — a from-scratch **DRAT proof checker**: two-watched-literal RUP
+  propagation, the general RAT rule, DRAT text (de)serialization, and unsat-core extraction by
+  a backward walk over each derivation's reason graph. Independent of the solver — it re-derives
+  the contradiction from scratch, so verifying a proof genuinely re-checks the UNSAT answer.
 - `src/sat/encoders/*` — problem → CNF encoders: N-Queens, Sudoku, graph coloring, pigeonhole,
-  uniform random k-SAT.
+  Langford pairs, uniform random k-SAT.
 - `src/worker/solver.worker.ts` + `src/useSolver.ts` — runs the solver off the main thread.
 - `src/components/*` — Solution boards, statistics + search-dynamics chart, implication-graph
   view, step-through trace, CNF/DIMACS inspector.
@@ -53,14 +58,28 @@ family. All 31 assertions pass.
 - [x] Step-through trace with scrubber, filters and live counters
 - [x] CNF/DIMACS inspector with shape metrics
 - [x] Brute-force correctness harness (4000-instance cross-check) — all green
+- [x] **DRAT proof emission for UNSAT** — the solver records every learnt clause (`a`) and
+      LBD-reduction deletion (`d`), capped off with the empty clause (`src/sat/solver.ts`)
+- [x] **Independent in-app DRAT proof checker** (`src/sat/drat.ts`) — two-watched-literal
+      RUP verification, the general RAT rule (resolution asymmetric tautology), DRAT
+      text serialize/parse, all from scratch
+- [x] **Unsat-core extraction** — backward dependency-graph walk from the empty clause
+      recovers the minimal-ish subset of original clauses that forces the contradiction
+- [x] **Proof tab** — verification verdict, per-rule step counts, the unsat core (clause
+      grid + donut), `.drat` / core `.cnf` downloads, and a collapsible proof listing
+- [x] **Langford pairs encoder** (`src/sat/encoders/langford.ts`) — solvable iff n ≡ 0/3
+      (mod 4); a clean source of small, certifiable UNSAT refutations
+- [x] DRAT correctness: differential vs. an independent naive RUP checker over 1200 random
+      UNSAT instances, every emitted core re-solved to confirm it is itself UNSAT, RAT
+      accept/reject unit tests, PHP + triangle proofs verified — all green
 - [ ] Live animation: replay the trace step-by-step on the board, not just the log
-- [ ] DRAT proof emission for UNSAT, with an in-app proof checker
-- [ ] Incremental solving (assumptions) + a small SMT-style theory hook
-- [ ] More encoders: Hamiltonian path, Langford pairs, Einstein's zebra puzzle, factoring
+- [ ] Incremental solving (assumptions) + a small SMT-style theory hook → MUS extraction
+- [ ] More encoders: Hamiltonian path, Einstein's zebra puzzle, factoring
 - [ ] Watch-list / clause-database heatmap visualization
 - [ ] Cactus plot: solve many instances and chart time-to-solve
 - [ ] Compare heuristics side-by-side (VSIDS vs. random, restarts on/off)
 - [ ] Phase-transition explorer: sweep α and chart P(SAT) and median hardness
+- [ ] Run proof verification off the main thread for very large refutations
 
 ## Session log
 
@@ -70,3 +89,13 @@ family. All 31 assertions pass.
   (solution boards, stats + chart, implication graph, trace stepper, CNF inspector). Added a
   brute-force correctness harness — 31/31 assertions pass, including a 4000-instance random
   cross-check against exhaustive enumeration. Lint + build green.
+- 2026-06-15 (claude): Shipped end-to-end **DRAT proofs**. The solver now emits a DRAT
+  certificate for every UNSAT verdict, and a brand-new from-scratch checker (`src/sat/drat.ts`)
+  re-verifies it in the browser with RUP + RAT and extracts the unsat core. New **Proof** tab
+  shows the verification verdict, RUP/RAT step counts, the core (clause grid + donut), and
+  `.drat` / core-`.cnf` downloads. Added a **Langford pairs** encoder (small, certifiable UNSAT
+  instances). Hardened the test harness to 66 assertions: a differential cross-check of the real
+  checker against an independent naive RUP checker over 1200 random UNSAT proofs, every extracted
+  core re-solved to confirm it is itself UNSAT, RAT accept/reject cases, and PHP/triangle/Langford
+  proofs — all green. (Found & fixed a watch-list indexing bug in the checker via the differential
+  harness.) Lint + build + full gate green.

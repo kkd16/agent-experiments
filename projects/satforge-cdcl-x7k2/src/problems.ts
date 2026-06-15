@@ -8,12 +8,13 @@ import {
   encodeGraphColoring,
   randomGraph,
   encodePigeonhole,
+  encodeLangford,
   randomKSat,
   parseDimacs,
 } from './sat'
-import type { Graph, NQueensSolution, SudokuSolution, ColoringSolution } from './sat'
+import type { Graph, NQueensSolution, SudokuSolution, ColoringSolution, LangfordSolution } from './sat'
 
-export type ProblemKind = 'nqueens' | 'sudoku' | 'coloring' | 'pigeonhole' | 'random' | 'dimacs'
+export type ProblemKind = 'nqueens' | 'sudoku' | 'coloring' | 'pigeonhole' | 'langford' | 'random' | 'dimacs'
 
 export interface ProblemSpec {
   kind: ProblemKind
@@ -31,12 +32,13 @@ export interface BuiltProblem {
   cnf: CNF
   title: string
   subtitle: string
-  render: 'queens' | 'sudoku' | 'coloring' | 'model' | 'none'
+  render: 'queens' | 'sudoku' | 'coloring' | 'langford' | 'model' | 'none'
   graph?: Graph
   clues?: number[]
   decodeQueens?: (m: boolean[]) => NQueensSolution
   decodeSudoku?: (m: boolean[]) => SudokuSolution
   decodeColoring?: (m: boolean[]) => ColoringSolution
+  decodeLangford?: (m: boolean[]) => LangfordSolution
   warnings?: string[]
   error?: string
 }
@@ -105,6 +107,21 @@ export function buildProblem(spec: ProblemSpec): BuiltProblem {
           title: `Pigeonhole PHP(${n})`,
           subtitle: `${n + 1} pigeons into ${n} holes — provably UNSAT (hard for resolution).`,
           render: 'none',
+        }
+      }
+      case 'langford': {
+        const n = clampInt(spec.n, 1, 16)
+        const { cnf, decode } = encodeLangford(n)
+        const solvable = n % 4 === 0 || n % 4 === 3
+        return {
+          kind: spec.kind,
+          cnf,
+          title: `Langford pairing L(${n})`,
+          subtitle: `Arrange two each of 1..${n} so the two k's are k apart — ${
+            solvable ? 'satisfiable' : 'provably UNSAT'
+          } (solvable iff n ≡ 0 or 3 mod 4).`,
+          render: 'langford',
+          decodeLangford: decode,
         }
       }
       case 'random': {

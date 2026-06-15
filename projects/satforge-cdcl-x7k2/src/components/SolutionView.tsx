@@ -32,6 +32,9 @@ export function SolutionView({ problem, result }: { problem: BuiltProblem; resul
       {problem.render === 'coloring' && problem.decodeColoring && problem.graph && (
         <ColoringView sol={problem.decodeColoring(model)} graph={problem.graph} />
       )}
+      {problem.render === 'langford' && problem.decodeLangford && (
+        <LangfordView sol={problem.decodeLangford(model)} />
+      )}
       {problem.render === 'model' && <ModelView model={model} />}
     </div>
   )
@@ -149,6 +152,30 @@ function ColoringView({
         </g>
       ))}
     </svg>
+  )
+}
+
+function LangfordView({ sol }: { sol: { sequence: number[]; n: number } }) {
+  const { sequence, n } = sol
+  const hue = (v: number) => `hsl(${(v * 360) / Math.max(1, n)}, 62%, 55%)`
+  return (
+    <div className="langford">
+      <p className="muted">
+        A valid Langford pairing of 1..{n}: each value k has exactly k slots between its two copies.
+      </p>
+      <div className="langford-row">
+        {sequence.map((v, i) => (
+          <div
+            key={i}
+            className="langford-slot"
+            style={v ? { background: hue(v), borderColor: hue(v) } : undefined}
+            title={`slot ${i + 1}`}
+          >
+            {v || ''}
+          </div>
+        ))}
+      </div>
+    </div>
   )
 }
 

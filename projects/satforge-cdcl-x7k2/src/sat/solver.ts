@@ -13,6 +13,7 @@
 // the first conflict's implication graph for visualization.
 
 import type { CNF } from './cnf'
+import type { ProofStep } from './drat'
 import { VarOrderHeap } from './heap'
 import { luby } from './luby'
 
@@ -34,6 +35,8 @@ export interface SolverOptions {
   maxTrace?: number // cap on recorded trace events (default 30000)
   maxConflicts?: number // abort with 'unknown' after this many conflicts (0 = ∞)
   maxTimeMs?: number // abort with 'unknown' after this wall time (0 = ∞)
+  proof?: boolean // record a DRAT proof of UNSAT (default false)
+  maxProof?: number // cap on recorded proof steps (default 500000)
 }
 
 export type TraceEvent =
@@ -89,6 +92,8 @@ export interface SolveResult {
   firstConflict?: ConflictSnapshot
   history: HistorySample[]
   message?: string
+  proof?: ProofStep[] // DRAT proof of UNSAT (only when opts.proof and status === 'unsat')
+  proofTruncated?: boolean
 }
 
 // A tiny deterministic PRNG (mulberry32) so runs are reproducible.
@@ -138,6 +143,10 @@ export class CdclSolver {
   private readonly maxTrace: number
   private readonly maxConflicts: number
   private readonly maxTimeMs: number
+  private readonly proofOn: boolean
+  private readonly maxProof: number
+  private proof: ProofStep[] = []
+  private proofTruncated = false
   private rng: () => number
   private readonly randomFreq: number
 
@@ -174,6 +183,8 @@ export class CdclSolver {
     this.maxTrace = opts.maxTrace ?? 30000
     this.maxConflicts = opts.maxConflicts ?? 0
     this.maxTimeMs = opts.maxTimeMs ?? 0
+    this.proofOn = opts.proof ?? false
+    this.maxProof = opts.maxProof ?? 500000
     this.randomFreq = opts.randomFreq ?? 0
     this.rng = mulberry32(opts.randomSeed ?? 0x9e3779b9)
 
@@ -214,6 +225,27 @@ export class CdclSolver {
       return
     }
     this.events.push(e)
+  }
+
+  // ---- DRAT proof helpers ------------------------------------------------------
+  /** Record a derived (added) clause — a learnt clause or the final empty clause. */
+  private proofAdd(lits: number[]): void {
+    if (!this.proofOn) return
+    if (this.proof.length >= this.maxProof) {
+      this.proofTruncated = true
+      return
+    }
+    this.proof.push({ a: 'a', lits })
+  }
+
+  /** Record a clause deletion (learnt-database reduction). */
+  private proofDel(lits: number[]): void {
+    if (!this.proofOn) return
+    if (this.proof.length >= this.maxProof) {
+      this.proofTruncated = true
+      return
+    }
+    this.proof.push({ a: 'd', lits })
   }
 
   // ---- clause construction -----------------------------------------------------
@@ -535,6 +567,7 @@ export class CdclSolver {
       if (locked[c]) continue
       if (this.clauseLbd[c] <= 2) continue
       if (i < limit) {
+        this.proofDel(this.clauseLits[c].map(litToDimacs))
         this.clauseDeleted[c] = true
         removed++
       }
@@ -620,10 +653,17 @@ export class CdclSolver {
       this.stats.maxLevel = this.maxLevelSeen
       this.stats.peakTrail = this.peakTrail
       this.stats.timeMs = (typeof performance !== 'undefined' ? performance.now() : Date.now()) - start
+      // Cap off a refutation: the empty clause follows by RUP from the database
+      // at the moment we conclude UNSAT.
+      if (status === 'unsat') this.proofAdd([])
       const res: SolveResult = { status, stats: this.stats, history: this.history, message }
       if (this.trace) {
         res.trace = this.events
         res.traceTruncated = this.traceTruncated
+      }
+      if (this.proofOn) {
+        res.proof = this.proof
+        res.proofTruncated = this.proofTruncated
       }
       if (this.firstConflict) res.firstConflict = this.firstConflict
       if (status === 'sat') res.model = this.extractModel()
@@ -663,7 +703,9 @@ export class CdclSolver {
         const { learnt, backLevel, lbd } = this.analyze(confl)
         this.stats.learned++
         this.stats.learntLiterals += learnt.length
-        this.emit({ t: 'learn', lits: learnt.map(litToDimacs), lbd, backLevel })
+        const learntDimacs = learnt.map(litToDimacs)
+        this.emit({ t: 'learn', lits: learntDimacs, lbd, backLevel })
+        this.proofAdd(learntDimacs) // every CDCL learnt clause is a RUP inference
 
         this.cancelUntil(backLevel)
         if (learnt.length === 1) {

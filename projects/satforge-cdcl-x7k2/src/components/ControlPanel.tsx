@@ -11,6 +11,7 @@ const KINDS: { kind: ProblemKind; label: string }[] = [
   { kind: 'sudoku', label: 'Sudoku' },
   { kind: 'coloring', label: 'Graph coloring' },
   { kind: 'pigeonhole', label: 'Pigeonhole' },
+  { kind: 'langford', label: 'Langford pairs' },
   { kind: 'random', label: 'Random 3-SAT' },
   { kind: 'dimacs', label: 'Custom CNF' },
 ]
@@ -94,6 +95,13 @@ export function ControlPanel({
 
         {spec.kind === 'pigeonhole' && (
           <Slider label="Holes n (n+1 pigeons)" min={2} max={12} value={spec.n} onChange={(n) => onSpec({ n })} suffix={`PHP(${spec.n})`} />
+        )}
+
+        {spec.kind === 'langford' && (
+          <>
+            <Slider label="Numbers n" min={1} max={12} value={spec.n} onChange={(n) => onSpec({ n })} suffix={`L(${spec.n})`} />
+            <p className="hint">Solvable iff n ≡ 0 or 3 (mod 4): L(3), L(4), L(7), L(8) are SAT; L(1), L(2), L(5), L(6) are UNSAT — open the Proof tab to certify the refutation.</p>
+          </>
         )}
 
         {spec.kind === 'random' && (
