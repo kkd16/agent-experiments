@@ -60,9 +60,31 @@ INSERT INTO orders (id, customer_id, product_id, quantity, order_year) VALUES
   (10, 8, 3, 2, 2022), (11, 1, 7, 1, 2023), (12, 4, 2, 1, 2022),
   (13, 6, 5, 1, 2023), (14, 2, 8, 4, 2022), (15, 5, 1, 2, 2023);
 
+-- A subscriptions table with first-class temporal columns: DATE, INTERVAL and
+-- TIMESTAMP. These exercise date arithmetic, EXTRACT, DATE_TRUNC and AGE.
+CREATE TABLE subscriptions (
+  id INTEGER PRIMARY KEY,
+  customer_id INTEGER,
+  plan TEXT,
+  started DATE,
+  term INTERVAL,
+  last_active TIMESTAMP
+);
+
+INSERT INTO subscriptions (id, customer_id, plan, started, term, last_active) VALUES
+  (1, 1, 'Pro',     DATE '2024-01-15', INTERVAL '1 year',   TIMESTAMP '2026-06-14 18:22:00'),
+  (2, 2, 'Team',    DATE '2024-03-01', INTERVAL '1 month',  TIMESTAMP '2026-06-15 09:05:30'),
+  (3, 3, 'Pro',     DATE '2023-11-20', INTERVAL '1 year',   TIMESTAMP '2026-05-30 14:40:10'),
+  (4, 4, 'Starter', DATE '2025-02-10', INTERVAL '1 month',  TIMESTAMP '2026-06-15 23:59:00'),
+  (5, 5, 'Team',    DATE '2024-07-04', INTERVAL '3 months', TIMESTAMP '2026-04-18 07:15:00'),
+  (6, 6, 'Pro',     DATE '2025-09-30', INTERVAL '1 year',   TIMESTAMP '2026-06-13 11:00:00'),
+  (7, 7, 'Starter', DATE '2026-01-31', INTERVAL '1 month',  TIMESTAMP '2026-06-15 16:48:20'),
+  (8, 8, 'Team',    DATE '2024-12-25', INTERVAL '3 months', TIMESTAMP '2026-06-09 21:30:00');
+
 -- A secondary index the planner can exploit for range scans.
 CREATE INDEX idx_products_price ON products (price);
 CREATE INDEX idx_orders_customer ON orders (customer_id);
+CREATE INDEX idx_subs_started ON subscriptions (started);
 `.trim()
 
 export const SAMPLE_QUERIES: SampleQuery[] = [
@@ -298,6 +320,39 @@ SELECT category,
 FROM orders o JOIN products p ON o.product_id = p.id
 GROUP BY category
 ORDER BY revenue DESC;`,
+  },
+  {
+    title: 'Dates & intervals — renewal schedule',
+    sql: `-- DATE + INTERVAL is calendar-aware (a TIMESTAMP, Postgres-style);
+-- the day-of-month is clamped, so Jan 31 + 1 month lands on the 28th/29th.
+SELECT plan,
+       started,
+       term,
+       started + term                      AS renews_on,
+       EXTRACT(YEAR FROM started)          AS started_year,
+       AGE(DATE '2026-06-15', started)     AS age
+FROM subscriptions
+ORDER BY started;`,
+  },
+  {
+    title: 'Activity by month — DATE_TRUNC + EXTRACT',
+    sql: `-- Bucket TIMESTAMP activity into calendar months and read fields out.
+SELECT DATE_TRUNC('month', last_active)      AS month,
+       COUNT(*)                              AS sessions,
+       MIN(last_active)                      AS earliest,
+       MAX(last_active)                      AS latest
+FROM subscriptions
+GROUP BY DATE_TRUNC('month', last_active)
+ORDER BY month;`,
+  },
+  {
+    title: 'Time-travel filter — typed comparisons & an index',
+    sql: `-- A DATE column drives the B+Tree index; string literals coerce to dates.
+EXPLAIN
+SELECT id, plan, started
+FROM subscriptions
+WHERE started BETWEEN DATE '2024-01-01' AND '2024-12-31'
+ORDER BY started;`,
   },
   {
     title: 'Transaction: insert then rollback',

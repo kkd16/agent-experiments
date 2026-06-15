@@ -88,7 +88,22 @@ const SECTIONS: Section[] = [
       { syntax: 'ABS SIGN ROUND TRUNC CEIL FLOOR SQRT EXP LN LOG LOG10 POWER MOD', note: 'Numeric functions.' },
       { syntax: 'PI SIN COS TAN ASIN ACOS ATAN ATAN2 RADIANS DEGREES RANDOM', note: 'Trig & misc math.' },
       { syntax: 'COALESCE IFNULL NVL NULLIF IIF GREATEST LEAST TYPEOF', note: 'Conditional / null-handling.' },
-      { syntax: 'NOW DATE DATETIME DATE_PART EXTRACT STRFTIME JULIANDAY DATEDIFF DATE_ADD', note: 'Date/time over ISO-8601 text or epoch-ms.' },
+      { syntax: 'NOW DATE DATETIME STRFTIME JULIANDAY DATEDIFF DATE_ADD', note: 'Legacy SQLite-style date helpers over ISO-8601 text or epoch-ms.' },
+    ],
+  },
+  {
+    title: 'Temporal types  —  DATE · TIME · TIMESTAMP · INTERVAL',
+    entries: [
+      { syntax: "DATE '2026-06-15' · TIME '13:45:30' · TIMESTAMP '2026-06-15 13:45:30'", note: 'First-class typed literals (UTC, no time zone). Sub-second precision to milliseconds.' },
+      { syntax: "INTERVAL '1 year 2 months 3 days' · INTERVAL '90 minutes' · INTERVAL '1 day 04:05:06'", note: 'Calendar-aware durations: year…millisecond phrases, weeks, and a clock segment.' },
+      { syntax: 'CREATE TABLE t (d DATE, ts TIMESTAMP, iv INTERVAL) · CAST(x AS DATE)', note: 'Use them as column types; strings coerce on INSERT and in comparisons (date = \'2026-06-15\').' },
+      { syntax: "date + interval → timestamp · date + int → date · date − date → int days", note: 'Adding a month clamps the day-of-month (Jan 31 + 1 month → Feb 28).' },
+      { syntax: 'timestamp − timestamp → interval · interval ± interval · interval * n · −interval', note: 'Full interval algebra; intervals sort and aggregate (MIN/MAX) like any value.' },
+      { syntax: 'EXTRACT(field FROM x) · DATE_PART(field, x)', note: 'Fields: year month day hour minute second dow isodow doy week quarter decade century epoch.' },
+      { syntax: "DATE_TRUNC('month', ts) · AGE(end, start) · AGE(ts)", note: 'Truncate to a unit; AGE yields a calendar interval of whole years/months/days.' },
+      { syntax: 'CURRENT_DATE · CURRENT_TIME · CURRENT_TIMESTAMP / NOW', note: 'Niladic — usable without parentheses, per the SQL standard.' },
+      { syntax: 'MAKE_DATE(y,m,d) · MAKE_TIME(h,mi,s) · MAKE_TIMESTAMP(…) · MAKE_INTERVAL(…)', note: 'Build temporal values from numeric parts. TO_DATE/TO_TIMESTAMP parse text.' },
+      { syntax: "TO_CHAR(x, 'Dy, DD Mon YYYY HH24:MI')", note: 'Postgres-style templates: YYYY MM DD HH24 HH12 MI SS MS · Mon/Month · Dy/Day · AM/PM · Q · IW. Double-quoted text is literal.' },
     ],
   },
   {

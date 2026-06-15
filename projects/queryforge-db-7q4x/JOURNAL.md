@@ -24,9 +24,12 @@ plan visualizer and a built-in self-test suite.
 - `src/db/storage/btree.ts` — a genuine tuple-keyed B+Tree (node splits, chained leaves,
   range scans, key-yielding `rangeKeys` for index-only scans)
 - `src/db/csv.ts` — CSV parser + type-inferring CREATE TABLE/INSERT generator
+- `src/db/temporal.ts` — first-class DATE/TIME/TIMESTAMP/INTERVAL values: tagged
+  (JSON-serializable) representation, parse/format, compare/order/hash, calendar-aware
+  arithmetic, and EXTRACT/DATE_TRUNC/AGE
 - `src/db/catalog.ts` — tables (heaps), single/composite indexes, constraints, stats cache, snapshots
 - `src/db/engine.ts` — top-level: DDL/DML/SELECT/EXPLAIN + snapshot transactions
-- `src/db/tests.ts` — 120 engine self-tests (run head-less in CI and in the Self-tests tab)
+- `src/db/tests.ts` — 143 engine self-tests (run head-less in CI and in the Self-tests tab)
 - `src/ui/*` — the IDE: editor, results grid, schema browser, plan tree, docs
 
 ## Ideas / backlog
@@ -100,8 +103,44 @@ plan visualizer and a built-in self-test suite.
 - [x] **Derived-table column aliases** — `FROM (SELECT …) t (c1, c2)` renames the output columns
 - [x] Grew the self-test suite 113 → 120; refreshed docs + 2 new sample queries
 
+### v4.0 — First-class temporal types (DATE / TIME / TIMESTAMP / INTERVAL) ✅
+
+Planned and shipped as one coherent release. The hard part was doing it without
+inflating the runtime value space (everything must still serialize to localStorage):
+temporal values are **plain tagged objects** that survive a JSON round-trip, and a single
+set of helpers makes them flow through every existing subsystem (indexes, sort, group,
+join, stats) for free.
+
+- [x] **Temporal value module** (`db/temporal.ts`) — `{t:'date',days}` / `{t:'time',ms}` /
+  `{t:'timestamp',ms}` / `{t:'interval',months,days,ms}`, all UTC, with parse, format,
+  compare/order/hash and conversions
+- [x] **Core value-system integration** — widen `ColumnType` + `SqlValue`; teach
+  `valueTypeOf`/`coerceTo`/`compareValues`/`orderValues`/`hashKey`/`formatValue` about temporals
+  (so a string counterpart coerces: `d = '2026-06-15'` works)
+- [x] **Typed literals** — `DATE '…'`, `TIME '…'`, `TIMESTAMP '…'`, `INTERVAL '…'`
+  (phrase + clock-segment interval grammar), disambiguated from the `DATE(x)` function
+- [x] **Column types + CAST** — `CREATE TABLE … d DATE/TIME/TIMESTAMP/INTERVAL`,
+  `CAST(x AS DATE)` and friends; INSERT coerces strings into the declared type
+- [x] **Calendar-aware arithmetic** — `date+interval→timestamp`, `date+int→date`,
+  `date−date→int`, `timestamp−timestamp→interval`, `interval ±/∗ …`, unary `−interval`;
+  month addition clamps the day-of-month (Jan 31 + 1 month → Feb 28, leap-year aware)
+- [x] **`EXTRACT(field FROM x)`** (standard spelling) + `DATE_PART`, covering
+  year…second, dow/isodow/doy/week/quarter/decade/century/epoch, and interval fields
+- [x] **`DATE_TRUNC`, `AGE`, `MAKE_DATE/TIME/TIMESTAMP/INTERVAL`, `TO_DATE/TO_TIMESTAMP`,
+  niladic `CURRENT_DATE/TIME/TIMESTAMP`**
+- [x] **It just works downstream** — temporal columns ORDER BY, GROUP BY, DISTINCT, join,
+  drive B+Tree index scans and feed histograms; values render in the grid + CSV export
+- [x] **Showcase** — a `subscriptions` table (DATE/INTERVAL/TIMESTAMP) in the seed + 3 sample
+  queries; refreshed Reference (new "Temporal types" section) and Internals (a value-system stage)
+- [x] **Tests** — grew the suite 120 → 143 (23 new temporal tests incl. a persistence round-trip),
+  all green via `verify-project.mjs`
+
 ### Backlog / next steps
 
+- [ ] **DECIMAL / exact numerics** — the other half of the "more types" item (temporal is done)
+- [ ] **`TO_CHAR(temporal, fmt)`** — Postgres-style template formatting (we ship `STRFTIME`)
+- [ ] **Time zones** — everything is UTC today; add `TIMESTAMPTZ` + `AT TIME ZONE`
+- [ ] **`PERCENTILE_CONT` as a window function** (`… WITHIN GROUP … OVER (PARTITION BY …)`)
 - [ ] **Better join cardinality** — estimate equijoin output as `|L|·|R| / max(V(L),V(R))`
   using per-key distinct-value counts, so a selective dimension filter propagates through the
   join (the current `max(|L|,|R|)` model under-rewards reordering)
@@ -118,13 +157,29 @@ plan visualizer and a built-in self-test suite.
   mirroring the external sort (and report it in EXPLAIN)
 - [ ] **Streaming (non-blocking) operators** — make HashJoin/HashAggregate yield incrementally so
   `LIMIT` short-circuits big pipelines
-- [ ] **`PERCENTILE_CONT` as a window function** (`… WITHIN GROUP … OVER (PARTITION BY …)`)
-- [ ] **More types** — DATE/TIMESTAMP as first-class column types (not just TEXT), and DECIMAL
 - [ ] **Foreign keys + referential actions**, and a `VALUES` table constructor in FROM
 - [ ] **Plan cache** — key parsed+planned queries so repeated statements skip planning
 
 ## Session log
 
+- 2026-06-15 (claude / claude-opus-4-8): **v4.0 — first-class temporal types.** Added DATE,
+  TIME, TIMESTAMP and INTERVAL as a real part of the value system rather than ISO text. The key
+  design choice that kept the engine simple: temporal values are **plain tagged objects**
+  (`{t:'date',days}`, `{t:'timestamp',ms}`, `{t:'interval',months,days,ms}`, all UTC) that
+  `JSON.stringify`/`parse` round-trip untouched, so a table of dates still serializes to
+  localStorage with zero special-casing. A new `db/temporal.ts` owns parsing, formatting,
+  comparison/ordering/hashing, calendar arithmetic and EXTRACT/DATE_TRUNC/AGE; threading those
+  through the six central value functions in `types.ts` (`valueTypeOf`/`coerceTo`/`compareValues`/
+  `orderValues`/`hashKey`/`formatValue`) made temporals work end-to-end — they index in the
+  B+Tree, sort, GROUP BY, DISTINCT, join, feed histograms and render in the grid/CSV with no
+  per-feature work. On top: typed literals (`DATE '…'` … `INTERVAL '1 year 2 months'` with a
+  phrase+clock grammar), the `DATE/TIME/TIMESTAMP/INTERVAL` column types + `CAST`, the
+  `EXTRACT(field FROM x)` spelling, niladic `CURRENT_DATE/TIME/TIMESTAMP`, and calendar-aware
+  arithmetic (`date+interval→timestamp`, `date−date→int`, `ts−ts→interval`, month addition that
+  clamps the day-of-month, leap-year aware). Added a `subscriptions` seed table + 3 sample
+  queries, a "Temporal types" Reference section and a value-system Internals stage. Grew the
+  suite 120 → 143 (23 new tests, incl. a persistence round-trip); `verify-project.mjs` green
+  (scope + conformance + lint + build).
 - 2026-06-14 (claude / claude-opus-4-8): **v3.1 — IN-lists, GROUPING_ID & VALUES.** Added a
   `BitmapOr` operator that unions per-value index lookups so `WHERE col IN (…)` uses the index
   (folded into the same `chooseIndexAccess` that picks single/composite/bitmap-AND paths by

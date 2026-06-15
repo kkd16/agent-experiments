@@ -8,11 +8,48 @@
 //   TEXT    -> string
 //   BOOLEAN -> boolean
 
-export type ColumnType = 'INTEGER' | 'REAL' | 'TEXT' | 'BOOLEAN'
+import {
+  isTemporal,
+  formatTemporal,
+  compareTemporal,
+  orderTemporal,
+  hashTemporal,
+  asTemporalKind,
+  temporalScalar,
+  type Temporal,
+  type TemporalKind,
+} from './temporal'
 
-export type SqlValue = null | number | string | boolean
+export type ColumnType =
+  | 'INTEGER'
+  | 'REAL'
+  | 'TEXT'
+  | 'BOOLEAN'
+  | 'DATE'
+  | 'TIME'
+  | 'TIMESTAMP'
+  | 'INTERVAL'
 
-export const COLUMN_TYPES: readonly ColumnType[] = ['INTEGER', 'REAL', 'TEXT', 'BOOLEAN']
+export type SqlValue = null | number | string | boolean | Temporal
+
+export const COLUMN_TYPES: readonly ColumnType[] = [
+  'INTEGER',
+  'REAL',
+  'TEXT',
+  'BOOLEAN',
+  'DATE',
+  'TIME',
+  'TIMESTAMP',
+  'INTERVAL',
+]
+
+/** Map a temporal column type to its runtime tag. */
+const TEMPORAL_KIND: Partial<Record<ColumnType, TemporalKind>> = {
+  DATE: 'date',
+  TIME: 'time',
+  TIMESTAMP: 'timestamp',
+  INTERVAL: 'interval',
+}
 
 export function isNull(v: SqlValue): v is null {
   return v === null
@@ -23,13 +60,38 @@ export function valueTypeOf(v: SqlValue): ColumnType | 'NULL' {
   if (v === null) return 'NULL'
   if (typeof v === 'boolean') return 'BOOLEAN'
   if (typeof v === 'string') return 'TEXT'
+  if (isTemporal(v)) {
+    return v.t === 'date' ? 'DATE' : v.t === 'time' ? 'TIME' : v.t === 'timestamp' ? 'TIMESTAMP' : 'INTERVAL'
+  }
   return Number.isInteger(v) ? 'INTEGER' : 'REAL'
 }
 
 /** Coerce a parsed/produced value into a declared column type, or throw. */
 export function coerceTo(type: ColumnType, v: SqlValue): SqlValue {
   if (v === null) return null
+  const tkind = TEMPORAL_KIND[type]
+  if (tkind) {
+    const t = asTemporalKind(tkind, v)
+    if (t) return t
+    throw new TypeErrorSql(`cannot store ${JSON.stringify(v)} as ${type}`)
+  }
+  if (isTemporal(v)) {
+    // A temporal value flowing into a non-temporal column: TEXT renders it,
+    // INTEGER/REAL take its numeric scalar, BOOLEAN is a hard error.
+    if (type === 'TEXT') return formatTemporal(v)
+    if (type === 'INTEGER' || type === 'REAL') {
+      const n = temporalScalar(v)
+      return type === 'INTEGER' ? Math.trunc(n) : n
+    }
+    throw new TypeErrorSql(`cannot store ${type === 'BOOLEAN' ? 'a temporal value' : JSON.stringify(v)} as ${type}`)
+  }
   switch (type) {
+    case 'DATE':
+    case 'TIME':
+    case 'TIMESTAMP':
+    case 'INTERVAL':
+      // Unreachable (handled above), but keeps the switch exhaustive.
+      throw new TypeErrorSql(`cannot store ${JSON.stringify(v)} as ${type}`)
     case 'INTEGER': {
       if (typeof v === 'number') return Math.trunc(v)
       if (typeof v === 'boolean') return v ? 1 : 0
@@ -60,6 +122,19 @@ export function coerceTo(type: ColumnType, v: SqlValue): SqlValue {
 /** SQL three-valued comparison. Returns null when either side is NULL. */
 export function compareValues(a: SqlValue, b: SqlValue): number | null {
   if (a === null || b === null) return null
+  // Temporal values compare among themselves, and coerce a string/number
+  // counterpart into their kind (so `date_col = '2026-06-15'` works).
+  const at = isTemporal(a)
+  const bt = isTemporal(b)
+  if (at || bt) {
+    if (at && bt) return compareTemporal(a, b)
+    const temp = (at ? a : b) as Temporal
+    const other = at ? b : a
+    const coerced = asTemporalKind(temp.t, other)
+    if (!coerced) return null
+    const c = at ? compareTemporal(temp, coerced) : compareTemporal(coerced, temp)
+    return c
+  }
   if (typeof a === 'number' && typeof b === 'number') return a < b ? -1 : a > b ? 1 : 0
   if (typeof a === 'boolean' && typeof b === 'boolean') {
     const na = a ? 1 : 0
@@ -82,6 +157,7 @@ export function orderValues(a: SqlValue, b: SqlValue): number {
   if (a === null && b === null) return 0
   if (a === null) return -1
   if (b === null) return 1
+  if (isTemporal(a) && isTemporal(b)) return orderTemporal(a, b)
   const c = compareValues(a, b)
   return c ?? 0
 }
@@ -97,6 +173,7 @@ export function hashKey(values: SqlValue[]): string {
     if (v === null) out += 'N;'
     else if (typeof v === 'string') out += `S${v.length}:${v}`
     else if (typeof v === 'boolean') out += v ? 'B1;' : 'B0;'
+    else if (isTemporal(v)) out += `T${hashTemporal(v)};`
     else out += `D${v};`
   }
   return out
@@ -106,6 +183,7 @@ export function formatValue(v: SqlValue): string {
   if (v === null) return 'NULL'
   if (typeof v === 'boolean') return v ? 'TRUE' : 'FALSE'
   if (typeof v === 'string') return v
+  if (isTemporal(v)) return formatTemporal(v)
   return String(v)
 }
 

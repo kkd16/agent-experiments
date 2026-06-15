@@ -6,6 +6,7 @@
 // it lets EXPLAIN render the operator tree the optimizer chose.
 
 import { hashKey, orderValues, type SqlValue } from './types'
+import { isTemporal, formatTemporal } from './temporal'
 import type { Row, Table, IndexHandle } from './catalog'
 import type { IndexKey } from './storage/btree'
 import type { Schema } from './schema'
@@ -381,7 +382,10 @@ function keysEqual(a: IndexKey, b: IndexKey): boolean {
   return true
 }
 function fmt(v: SqlValue): string {
-  return v === null ? 'NULL' : typeof v === 'string' ? `'${v}'` : String(v)
+  if (v === null) return 'NULL'
+  if (typeof v === 'string') return `'${v}'`
+  if (isTemporal(v)) return `'${formatTemporal(v)}'`
+  return String(v)
 }
 function fmtKey(k: IndexKey): string {
   return k.length === 1 ? fmt(k[0]) : `(${k.map(fmt).join(', ')})`

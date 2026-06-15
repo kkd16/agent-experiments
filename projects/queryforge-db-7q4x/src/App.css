@@ -484,6 +484,10 @@ body {
 .cell-text {
   color: var(--txt);
 }
+.cell-temporal {
+  color: #57c7b0;
+  font-family: var(--mono);
+}
 .result-foot {
   display: flex;
   align-items: center;

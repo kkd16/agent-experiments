@@ -5,8 +5,10 @@
 import { Engine, type RowsResult } from './engine'
 import { SEED_SQL } from './sampleData'
 import { csvToSql, parseCsv } from './csv'
+import { Database } from './catalog'
 import type { Row } from './catalog'
-import type { SqlValue } from './types'
+import { formatValue, type SqlValue } from './types'
+import { isTemporal } from './temporal'
 
 export interface TestResult {
   name: string
@@ -1045,6 +1047,190 @@ test('csv', 'headerless import generates colN names', () => {
   const r = csvToSql('1,2\n3,4', { tableName: 't', hasHeader: false })
   assert(eq(r.columns.map((c) => c.name), ['col1', 'col2']), 'headerless column names wrong')
   assert(r.rowCount === 2, 'headerless row count wrong')
+})
+
+// --- temporal types: DATE / TIME / TIMESTAMP / INTERVAL ---------------------
+// `fv` renders a scalar result through the engine's canonical formatter, so a
+// first-class temporal value is checked by its textual form.
+function fv(e: Engine, sql: string): string {
+  return formatValue(scalar(e, sql))
+}
+
+test('temporal', 'typed literals parse and render canonically', () => {
+  const e = new Engine()
+  assert(fv(e, "SELECT DATE '2026-06-15'") === '2026-06-15', 'DATE literal')
+  assert(fv(e, "SELECT TIMESTAMP '2026-06-15 13:45:30'") === '2026-06-15 13:45:30', 'TIMESTAMP literal')
+  assert(fv(e, "SELECT TIME '13:45:30'") === '13:45:30', 'TIME literal')
+  assert(fv(e, "SELECT TIME '09:05'") === '09:05:00', 'TIME without seconds')
+  assert(fv(e, "SELECT TIMESTAMP '2026-06-15 13:45:30.250'") === '2026-06-15 13:45:30.250', 'sub-second TIMESTAMP')
+})
+test('temporal', 'interval literals: phrases and clock segments', () => {
+  const e = new Engine()
+  assert(fv(e, "SELECT INTERVAL '1 year 2 months 3 days'") === '1 year 2 mons 3 days', 'phrase interval')
+  assert(fv(e, "SELECT INTERVAL '90 minutes'") === '01:30:00', 'minutes fold into clock')
+  assert(fv(e, "SELECT INTERVAL '2 weeks'") === '14 days', 'weeks fold into days')
+  assert(fv(e, "SELECT INTERVAL '1 day 04:05:06'") === '1 day 04:05:06', 'mixed day + clock')
+  assert(fv(e, "SELECT INTERVAL '-3 days'") === '-3 days', 'negative interval')
+})
+test('temporal', 'invalid temporal literal is a parse error', () => {
+  const e = new Engine()
+  let threw = false
+  try {
+    e.execute("SELECT DATE 'not-a-date'")
+  } catch {
+    threw = true
+  }
+  assert(threw, 'bad DATE literal should throw')
+})
+test('temporal', 'date ± interval follows Postgres (yields timestamp)', () => {
+  const e = new Engine()
+  assert(fv(e, "SELECT DATE '2026-06-15' + INTERVAL '1 day'") === '2026-06-16 00:00:00', 'date + 1 day')
+  assert(fv(e, "SELECT DATE '2026-06-15' - INTERVAL '1 day'") === '2026-06-14 00:00:00', 'date - 1 day')
+})
+test('temporal', 'month arithmetic clamps the day-of-month', () => {
+  const e = new Engine()
+  assert(fv(e, "SELECT DATE '2026-01-31' + INTERVAL '1 month'") === '2026-02-28 00:00:00', 'Jan 31 + 1 month → Feb 28')
+  assert(fv(e, "SELECT DATE '2024-01-31' + INTERVAL '1 month'") === '2024-02-29 00:00:00', 'leap year → Feb 29')
+})
+test('temporal', 'date + integer shifts whole days (stays a date)', () => {
+  const e = new Engine()
+  assert(fv(e, "SELECT DATE '2026-06-15' + 10") === '2026-06-25', 'date + 10')
+  assert(fv(e, "SELECT DATE '2026-06-15' - 20") === '2026-05-26', 'date - 20')
+})
+test('temporal', 'differences: date−date, timestamp−timestamp, time−time', () => {
+  const e = new Engine()
+  assert(scalar(e, "SELECT DATE '2026-12-31' - DATE '2026-01-01'") === 364, 'date − date → int days')
+  assert(fv(e, "SELECT TIMESTAMP '2026-06-15 12:00:00' - TIMESTAMP '2026-06-14 10:00:00'") === '1 day 02:00:00', 'ts − ts → interval')
+  assert(fv(e, "SELECT TIME '10:00:00' - TIME '08:30:00'") === '01:30:00', 'time − time → interval')
+})
+test('temporal', 'interval algebra: add, scale, negate', () => {
+  const e = new Engine()
+  assert(fv(e, "SELECT INTERVAL '1 day' + INTERVAL '2 days'") === '3 days', 'interval + interval')
+  assert(fv(e, "SELECT INTERVAL '1 day' * 3") === '3 days', 'interval * number')
+  assert(fv(e, "SELECT 2 * INTERVAL '90 minutes'") === '03:00:00', 'number * interval')
+  assert(fv(e, "SELECT -INTERVAL '5 days'") === '-5 days', 'unary minus on interval')
+})
+test('temporal', 'timestamp ± interval keeps a timestamp', () => {
+  const e = new Engine()
+  assert(fv(e, "SELECT TIMESTAMP '2026-06-15 13:00:00' - INTERVAL '2 hours'") === '2026-06-15 11:00:00', 'ts - 2h')
+  assert(fv(e, "SELECT TIMESTAMP '2026-06-15 23:30:00' + INTERVAL '1 hour'") === '2026-06-16 00:30:00', 'ts crosses midnight')
+})
+test('temporal', 'EXTRACT (FROM syntax) reads calendar fields', () => {
+  const e = new Engine()
+  assert(scalar(e, "SELECT EXTRACT(YEAR FROM DATE '2026-06-15')") === 2026, 'extract year')
+  assert(scalar(e, "SELECT EXTRACT(MONTH FROM TIMESTAMP '2026-06-15 13:45:30')") === 6, 'extract month')
+  assert(scalar(e, "SELECT EXTRACT(DOW FROM DATE '2026-06-15')") === 1, '2026-06-15 is a Monday (dow=1)')
+  assert(scalar(e, "SELECT EXTRACT(QUARTER FROM DATE '2026-06-15')") === 2, 'Q2')
+  assert(scalar(e, "SELECT EXTRACT(HOUR FROM TIME '13:45:30')") === 13, 'extract hour from time')
+})
+test('temporal', 'EXTRACT works on intervals', () => {
+  const e = new Engine()
+  assert(scalar(e, "SELECT EXTRACT(DAY FROM INTERVAL '1 year 2 months 10 days')") === 10, 'interval day field')
+  assert(scalar(e, "SELECT EXTRACT(YEAR FROM INTERVAL '14 months')") === 1, '14 months → 1 year')
+  assert(scalar(e, "SELECT EXTRACT(MONTH FROM INTERVAL '14 months')") === 2, '14 months → 2 months remainder')
+})
+test('temporal', 'DATE_TRUNC zeroes finer fields', () => {
+  const e = new Engine()
+  assert(fv(e, "SELECT DATE_TRUNC('month', TIMESTAMP '2026-06-15 13:45:30')") === '2026-06-01 00:00:00', 'trunc month')
+  assert(fv(e, "SELECT DATE_TRUNC('year', TIMESTAMP '2026-06-15 13:45:30')") === '2026-01-01 00:00:00', 'trunc year')
+  assert(fv(e, "SELECT DATE_TRUNC('hour', TIMESTAMP '2026-06-15 13:45:30')") === '2026-06-15 13:00:00', 'trunc hour')
+  // Monday-anchored week: 2026-06-15 is a Monday, so the week starts the same day.
+  assert(fv(e, "SELECT DATE_TRUNC('week', TIMESTAMP '2026-06-17 09:00:00')") === '2026-06-15 00:00:00', 'trunc week to Monday')
+})
+test('temporal', 'AGE computes a calendar interval', () => {
+  const e = new Engine()
+  assert(fv(e, "SELECT AGE(DATE '2026-06-15', DATE '2000-01-01')") === '26 years 5 mons 14 days', 'age years/months/days')
+  assert(fv(e, "SELECT AGE(DATE '2026-03-01', DATE '2026-02-28')") === '1 day', 'one-day age')
+})
+test('temporal', 'MAKE_* constructors', () => {
+  const e = new Engine()
+  assert(fv(e, 'SELECT MAKE_DATE(2026, 6, 15)') === '2026-06-15', 'make_date')
+  assert(fv(e, 'SELECT MAKE_TIME(13, 45, 30)') === '13:45:30', 'make_time')
+  assert(fv(e, 'SELECT MAKE_TIMESTAMP(2026, 6, 15, 13, 45, 30)') === '2026-06-15 13:45:30', 'make_timestamp')
+  assert(fv(e, 'SELECT MAKE_INTERVAL(1, 2, 3, 4, 5, 6)') === '1 year 2 mons 3 days 04:05:06', 'make_interval')
+})
+test('temporal', 'CAST between temporal types and text', () => {
+  const e = new Engine()
+  assert(fv(e, "SELECT CAST('2026-06-15' AS DATE) + INTERVAL '1 month'") === '2026-07-15 00:00:00', 'text→date then arith')
+  assert(fv(e, "SELECT CAST(DATE '2026-06-15' AS TIMESTAMP)") === '2026-06-15 00:00:00', 'date→timestamp')
+  assert(fv(e, "SELECT CAST(TIMESTAMP '2026-06-15 13:45:30' AS DATE)") === '2026-06-15', 'timestamp→date')
+  assert(scalar(e, "SELECT CAST(DATE '2026-06-15' AS TEXT)") === '2026-06-15', 'date→text')
+})
+test('temporal', 'comparison coerces a string counterpart', () => {
+  const e = new Engine()
+  assert(scalar(e, "SELECT DATE '2026-06-15' = '2026-06-15'") === true, 'date = matching string')
+  assert(scalar(e, "SELECT DATE '2026-06-15' < DATE '2026-06-16'") === true, 'date ordering')
+  assert(scalar(e, "SELECT DATE '2026-06-15' BETWEEN '2026-01-01' AND '2026-12-31'") === true, 'date BETWEEN strings')
+  assert(scalar(e, "SELECT TIMESTAMP '2026-06-15 00:00:00' = DATE '2026-06-15'") === true, 'date/timestamp cross-compare')
+})
+test('temporal', 'date columns: ORDER BY, GROUP BY and DISTINCT', () => {
+  const e = new Engine()
+  e.execute("CREATE TABLE evt (id INTEGER, at TIMESTAMP)")
+  e.execute("INSERT INTO evt VALUES (1,'2026-06-15 10:00:00'),(2,'2026-06-14 09:00:00'),(3,'2026-06-15 23:00:00')")
+  assert(eq(rowsOf(e, 'SELECT id FROM evt ORDER BY at').map((r) => r[0]), [2, 1, 3]), 'ORDER BY timestamp')
+  const g = rowsOf(e, "SELECT DATE_TRUNC('day', at) d, COUNT(*) FROM evt GROUP BY DATE_TRUNC('day', at) ORDER BY d")
+  assert(g.length === 2 && g[1][1] === 2, 'GROUP BY truncated day')
+  assert(scalar(e, 'SELECT COUNT(DISTINCT at) FROM evt') === 3, 'DISTINCT timestamps')
+})
+test('temporal', 'a date column drives an index scan', () => {
+  const e = new Engine()
+  e.execute('CREATE TABLE bk (id INTEGER, day DATE)')
+  const rows = Array.from({ length: 20 }, (_, i) => `(${i}, DATE '2026-01-01' + ${i})`).join(',')
+  e.execute('INSERT INTO bk VALUES ' + rows)
+  e.execute('CREATE INDEX idx_bk ON bk(day)')
+  e.execute('ANALYZE bk')
+  const plan = lastResult(e, "EXPLAIN SELECT id FROM bk WHERE day = DATE '2026-01-10'")
+  const json = JSON.stringify(plan)
+  assert(json.includes('IndexScan'), 'date equality should use the index')
+  assert(scalar(e, "SELECT id FROM bk WHERE day = DATE '2026-01-10'") === 9, 'index lookup result')
+  assert(scalar(e, "SELECT COUNT(*) FROM bk WHERE day BETWEEN DATE '2026-01-05' AND DATE '2026-01-09'") === 5, 'range count')
+})
+test('temporal', 'join on equal dates', () => {
+  const e = new Engine()
+  e.execute('CREATE TABLE a (id INTEGER, d DATE)')
+  e.execute('CREATE TABLE b (d DATE, label TEXT)')
+  e.execute("INSERT INTO a VALUES (1,'2026-03-03'),(2,'2026-04-04')")
+  e.execute("INSERT INTO b VALUES ('2026-03-03','hit')")
+  const rows = rowsOf(e, 'SELECT a.id, b.label FROM a JOIN b ON a.d = b.d')
+  assert(rows.length === 1 && rows[0][0] === 1 && rows[0][1] === 'hit', 'date join')
+})
+test('temporal', 'INSERT coerces strings into the declared temporal type', () => {
+  const e = new Engine()
+  e.execute('CREATE TABLE t (d DATE, ts TIMESTAMP, iv INTERVAL)')
+  e.execute("INSERT INTO t VALUES ('2026-06-15', '2026-06-15 13:00:00', '2 days')")
+  assert(fv(e, 'SELECT d FROM t') === '2026-06-15', 'date stored and round-trips')
+  assert(fv(e, 'SELECT d + iv FROM t') === '2026-06-17 00:00:00', 'stored date + stored interval')
+  assert(fv(e, 'SELECT ts FROM t') === '2026-06-15 13:00:00', 'stored timestamp round-trips')
+})
+test('temporal', 'temporal values survive a JSON persistence round-trip', () => {
+  const e = new Engine()
+  e.execute('CREATE TABLE t (id INTEGER, d DATE, ts TIMESTAMP)')
+  e.execute("INSERT INTO t VALUES (1,'2026-06-15','2026-06-15 13:45:30')")
+  const snap = JSON.parse(JSON.stringify(e.db.snapshot()))
+  const e2 = new Engine(Database.restore(snap))
+  assert(fv(e2, 'SELECT d FROM t') === '2026-06-15', 'date survives reload')
+  assert(fv(e2, 'SELECT ts FROM t') === '2026-06-15 13:45:30', 'timestamp survives reload')
+  assert(scalar(e2, "SELECT id FROM t WHERE d = DATE '2026-06-15'") === 1, 'query after reload')
+})
+test('temporal', 'CURRENT_DATE / CURRENT_TIMESTAMP are sane and ordered', () => {
+  const e = new Engine()
+  assert(isTemporal(scalar(e, 'SELECT CURRENT_DATE')), 'CURRENT_DATE is a date value')
+  assert(scalar(e, "SELECT CURRENT_DATE >= DATE '2020-01-01'") === true, 'today is after 2020')
+  assert(scalar(e, 'SELECT CURRENT_TIMESTAMP >= CURRENT_DATE') === true, 'now ≥ midnight today')
+})
+test('temporal', 'TO_CHAR formats with Postgres-style templates', () => {
+  const e = new Engine()
+  assert(scalar(e, "SELECT TO_CHAR(DATE '2026-06-15', 'YYYY-MM-DD')") === '2026-06-15', 'numeric template')
+  assert(scalar(e, "SELECT TO_CHAR(DATE '2026-06-15', 'Dy, DD Mon YYYY')") === 'Mon, 15 Jun 2026', 'name template')
+  assert(scalar(e, "SELECT TO_CHAR(TIMESTAMP '2026-06-15 13:45:30', 'HH24:MI:SS')") === '13:45:30', 'time 24h')
+  assert(scalar(e, "SELECT TO_CHAR(TIMESTAMP '2026-06-15 13:45:30', 'HH12:MI AM')") === '01:45 PM', '12h with meridiem')
+  assert(scalar(e, `SELECT TO_CHAR(DATE '2026-06-15', '"Q"Q YYYY')`) === 'Q2 2026', 'quoted literal + quarter')
+  assert(scalar(e, "SELECT TO_CHAR(DATE '2026-01-05', 'Month')") === 'January', 'full month name')
+})
+test('temporal', 'CONCAT and || render temporal values', () => {
+  const e = new Engine()
+  assert(scalar(e, "SELECT 'd=' || DATE '2026-06-15'") === 'd=2026-06-15', 'concat operator')
+  assert(scalar(e, "SELECT CONCAT('t=', TIME '09:30:00')") === 't=09:30:00', 'CONCAT function')
 })
 
 export function runTests(): TestResult[] {
