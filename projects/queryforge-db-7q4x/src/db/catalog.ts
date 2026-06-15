@@ -25,10 +25,20 @@ import {
   type Expr,
   type ForeignKeyDef,
   type RefAction,
+  type SelectStmt,
   type TableConstraints,
 } from './ast'
 
 export type Row = SqlValue[]
+
+/** A view: a named query the planner inlines wherever the view name appears.
+ *  `select` is a plain-object AST, so it serializes to localStorage untouched. */
+export interface ViewDef {
+  name: string
+  /** Optional output column names. */
+  columns?: string[]
+  select: SelectStmt
+}
 
 export interface IndexMeta {
   name: string
@@ -344,6 +354,8 @@ export class Table {
 
 export class Database {
   readonly tables = new Map<string, Table>()
+  /** Views: name (lower-case) -> definition. Resolved lazily by the planner. */
+  readonly views = new Map<string, ViewDef>()
 
   getTable(name: string): Table {
     const t = this.tables.get(name.toLowerCase())
@@ -352,6 +364,21 @@ export class Database {
   }
   hasTable(name: string): boolean {
     return this.tables.has(name.toLowerCase())
+  }
+
+  // --- views ---------------------------------------------------------------
+  getView(name: string): ViewDef | undefined {
+    return this.views.get(name.toLowerCase())
+  }
+  hasView(name: string): boolean {
+    return this.views.has(name.toLowerCase())
+  }
+  /** Define (or redefine) a view. Caller validates the body & name collisions. */
+  setView(def: ViewDef): void {
+    this.views.set(def.name.toLowerCase(), def)
+  }
+  dropView(name: string): void {
+    this.views.delete(name.toLowerCase())
   }
 
   createTable(name: string, columns: ColumnDef[], constraints: TableConstraints = emptyConstraints()): Table {
@@ -578,7 +605,12 @@ export class Database {
         })),
       })
     }
-    return { version: 3, tables }
+    const views: ViewDef[] = [...this.views.values()].map((v) => ({
+      name: v.name,
+      columns: v.columns,
+      select: v.select,
+    }))
+    return { version: 4, tables, views }
   }
 
   static restore(snap: SerializedDb): Database {
@@ -593,6 +625,8 @@ export class Database {
         if (columns.length && !table.hasIndexNamed(idx.name)) table.createIndex(idx.name, columns, idx.unique)
       }
     }
+    // Views (added in snapshot v4; absent in older snapshots).
+    for (const v of snap.views ?? []) db.setView({ name: v.name, columns: v.columns, select: v.select })
     return db
   }
 }
@@ -706,6 +740,8 @@ export interface SerializedTable {
 export interface SerializedDb {
   version: number
   tables: SerializedTable[]
+  /** Views (added in snapshot v4; absent in older snapshots). */
+  views?: ViewDef[]
 }
 
 export type { CheckConstraint, ForeignKeyDef }

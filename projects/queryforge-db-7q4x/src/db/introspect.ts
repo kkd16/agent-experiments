@@ -2,7 +2,7 @@
 
 import type { Database } from './catalog'
 import type { BTreeStats } from './storage/btree'
-import type { ColumnDef, Expr, RefAction } from './ast'
+import type { ColumnDef, Expr, FromItem, JoinClause, RefAction, SelectStmt } from './ast'
 import { formatValue, type SqlValue } from './types'
 
 export interface IndexInfo {
@@ -41,6 +41,13 @@ export interface TableInfo {
   constraints: ConstraintInfo
   /** Per-column statistics, present only once the table has been analyzed. */
   stats: ColumnStatInfo[] | null
+}
+export interface ViewInfo {
+  name: string
+  /** Declared output column names, if the view named them. */
+  columns?: string[]
+  /** A best-effort one-line rendering of the view's defining query. */
+  definition: string
 }
 
 export function describeSchema(db: Database): TableInfo[] {
@@ -87,6 +94,34 @@ export function describeSchema(db: Database): TableInfo[] {
     })
   }
   return out.sort((a, b) => a.name.localeCompare(b.name))
+}
+
+export function describeViews(db: Database): ViewInfo[] {
+  const out: ViewInfo[] = []
+  for (const v of db.views.values()) {
+    out.push({ name: v.name, columns: v.columns, definition: selectToSql(v.select) })
+  }
+  return out.sort((a, b) => a.name.localeCompare(b.name))
+}
+
+/** A compact one-line rendering of a SELECT — for showing a view's definition in
+ *  the schema browser. Best-effort (covers the common shape), not round-trippable. */
+function selectToSql(s: SelectStmt): string {
+  const prefix = s.ctes && s.ctes.length ? 'WITH … ' : ''
+  const cols = s.columns
+    .map((c) => (c.expr.kind === 'star' ? '*' : exprToSql(c.expr) + (c.alias ? ` AS ${c.alias}` : '')))
+    .join(', ')
+  const fromItem = (it: FromItem | JoinClause): string =>
+    it.subquery ? `(…)${it.alias ? ` ${it.alias}` : ''}` : `${it.table}${it.alias && it.alias !== it.table ? ` ${it.alias}` : ''}`
+  let from = ''
+  if (s.from) {
+    from = ' FROM ' + fromItem(s.from)
+    for (const j of s.joins) from += ` ${j.type} JOIN ${fromItem(j)}${j.on ? ` ON ${exprToSql(j.on)}` : ''}`
+  }
+  const where = s.where ? ' WHERE ' + exprToSql(s.where) : ''
+  const group = s.groupBy.length ? ' GROUP BY ' + s.groupBy.map(exprToSql).join(', ') : ''
+  const setop = s.setOps && s.setOps.length ? ` ${s.setOps[0].op}${s.setOps[0].all ? ' ALL' : ''} …` : ''
+  return `${prefix}SELECT ${cols}${from}${where}${group}${setop}`
 }
 
 /** A compact, human-readable SQL rendering of an expression (for CHECK/DEFAULT

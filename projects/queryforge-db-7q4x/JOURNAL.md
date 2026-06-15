@@ -34,7 +34,7 @@ plan visualizer and a built-in self-test suite.
   arithmetic, and EXTRACT/DATE_TRUNC/AGE
 - `src/db/catalog.ts` — tables (heaps), single/composite indexes, constraints, stats cache, snapshots
 - `src/db/engine.ts` — top-level: DDL/DML/SELECT/EXPLAIN + snapshot transactions
-- `src/db/tests.ts` — 143 engine self-tests (run head-less in CI and in the Self-tests tab)
+- `src/db/tests.ts` — 220 engine self-tests (run head-less in CI and in the Self-tests tab)
 - `src/ui/*` — the IDE: editor, results grid, schema browser, plan tree, docs
 
 ## Ideas / backlog
@@ -221,7 +221,43 @@ arithmetic stays arbitrary-precision and exact.
 - [x] **Tests** — grew the suite 173 → 190 (16 decimal cases + a new "every sample query runs against
   the seed" guard + an invoices integrity check); `verify-project.mjs` green.
 
-### Backlog / next steps
+### v7.0 — Views, UPSERT & the optimizer learns to decorrelate ✅ (shipped this session)
+
+The headline gaps for a "real" relational engine that the prior releases never closed: a query
+couldn't be *named and reused* (no `VIEW`), an INSERT couldn't *reconcile* against an existing
+row (no UPSERT), and a correlated `EXISTS` was always evaluated the slow way (re-running the
+subquery per outer row) instead of being turned into a join. v7.0 ships all three, each
+independently and with its own self-tests.
+
+**A. Views — `CREATE VIEW` / `DROP VIEW`**
+- [x] AST: `CreateViewStmt` (`OR REPLACE` / `IF NOT EXISTS`, optional column list) + `DropViewStmt`
+- [x] Parser: `CREATE [OR REPLACE] VIEW name [(cols)] AS <query>` and `DROP VIEW [IF EXISTS] name`
+- [x] Catalog: a `views` map on `Database` (`{name, columns?, select}`), name-collision checks against tables
+- [x] Planner: resolve a view name in `relationFor` by materializing its body as a derived table —
+      so a view works in FROM, JOIN, subqueries and inside other views, with a cycle guard
+- [x] Engine: `create_view` / `drop_view` dispatch; validate the body plans at creation time
+- [x] Persistence: snapshot bumped to v4 (round-trips views); make `loadDb` version-tolerant
+      (fixes a latent bug where the loader was pinned to v1 and never restored anything)
+- [x] UI: a "Views" section in the schema browser; Reference + Internals docs; a seed view + samples
+
+**B. UPSERT — `INSERT … ON CONFLICT`**
+- [x] AST: `InsertStmt.onConflict` (optional target columns + `DO NOTHING` | `DO UPDATE SET … [WHERE …]`)
+- [x] Parser: the `ON CONFLICT [(cols)] DO …` tail, with `EXCLUDED.col` references in the SET/WHERE
+- [x] Engine: detect a UNIQUE/PK conflict *before* inserting (via the existing unique B+Trees); on a
+      hit, skip (`DO NOTHING`) or update the existing row (`DO UPDATE`) — `EXCLUDED.*` binds the
+      proposed row, the table's own columns bind the existing row; statement atomicity already covers rollback
+- [x] Tests + docs + a seed showcase (re-running a price feed idempotently)
+
+**C. Subquery decorrelation — `[NOT] EXISTS` → hash SemiJoin / AntiJoin**
+- [x] New physical operator: `HashSemiJoin` (with an `anti` flag) — build a hash set on the inner
+      key tuples, probe with the outer keys; NULL keys never match (exactly `EXISTS` / `NOT EXISTS`
+      semantics), and a key-less form degrades to "inner is (non-)empty"
+- [x] Planner: rewrite a top-level `WHERE … [NOT] EXISTS (…)` conjunct into a semi/anti join when the
+      correlation decomposes into equi-keys + inner-local predicates; **falls back** to the existing
+      per-row evaluator for any shape it can't prove equivalent, so it can never change an answer
+- [x] `EXPLAIN` shows `SemiJoin` / `AntiJoin (hash)` with the inner subplan as its right child
+- [x] Tests (correlated & uncorrelated, NULL handling, fall-back cases) + docs + a sample EXPLAIN
+ / next steps
 
 - [ ] **DECIMAL division scale à la Postgres** — `select_div_scale` (derive rscale from operand
   precisions) instead of the fixed `max(s1,s2,6)`; expose a `SET extra_float_digits`-style knob.
@@ -259,6 +295,29 @@ arithmetic stays arbitrary-precision and exact.
 
 ## Session log
 
+- 2026-06-15 (claude / claude-opus-4-8): **v7.0 — views, UPSERT & EXISTS decorrelation.** Closed
+  three long-standing relational gaps, each independently and self-tested. **(1) Views** —
+  `CREATE [OR REPLACE] VIEW v [(cols)] AS …` / `DROP VIEW [IF EXISTS]`, stored on the `Database` as a
+  plain-object `SelectStmt` (so they serialize to localStorage untouched) and resolved by the planner
+  in `relationFor`: a view name is inlined as a derived table in the *catalog* scope (fresh env, no
+  caller CTEs/correlations), so a view works in FROM/JOIN/subqueries and inside other views, with a
+  trail-based cycle guard. Bodies are validated (planned) at create time; name collisions with tables
+  are refused. **(2) UPSERT** — `INSERT … ON CONFLICT [(cols)] DO NOTHING | DO UPDATE SET … [WHERE …]`:
+  the arbiter is the unique/PK B+Tree matching the target columns (or any unique index when omitted);
+  on a hit we skip or update the existing row, with `EXCLUDED.*` bound to the proposed row and the
+  table's own columns to the existing one (one combined-row evaluator). Statement atomicity already
+  covers a DO UPDATE that triggers a fresh constraint violation. **(3) Decorrelation** — a new
+  `HashSemiJoin` operator (with an `anti` flag) plus a planner rewrite that turns a top-level
+  `WHERE [NOT] EXISTS (…)` into a single build-once/probe semi- or anti-join when the correlation
+  decomposes into equi-keys + inner-local predicates (NULL keys never match — exactly EXISTS / NOT
+  EXISTS semantics; a key-less form degrades to "inner (non-)empty"). It **falls back** to the existing
+  per-row evaluator for any shape it can't prove equivalent, so an answer can never change; `EXPLAIN`
+  shows the SemiJoin/AntiJoin with the inner subplan. Also fixed a latent persistence bug (the loader
+  was pinned to snapshot v1 and silently never restored anything) — snapshots are now v4 (round-trip
+  views) and the loader is version-tolerant. Surfaced views in the schema browser, added a seed view
+  (`customer_revenue`) + 6 sample queries, and refreshed Reference/Internals. Grew the suite 190 → 220
+  (12 view, 10 upsert, 9 decorrelation cases); `verify-project.mjs` (scope + conformance + lint +
+  build) green, and the full self-test suite passes head-less.
 - 2026-06-15 (claude / claude-opus-4-8): **v6.0 — first-class exact numerics (DECIMAL / NUMERIC).**
   Added the other half of the "more types" backlog item. Built `db/decimal.ts`: a BigInt-backed
   exact-decimal value stored as a tagged, JSON-serializable object `{t:'decimal', d, s}` (the

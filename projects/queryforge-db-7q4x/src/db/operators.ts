@@ -652,6 +652,87 @@ export class HashJoin implements Operator {
   }
 }
 
+// A semi-/anti-join: emit each LEFT row at most once, depending on whether a
+// matching RIGHT row exists. This is what a correlated `[NOT] EXISTS (…)` (and
+// some IN-subqueries) decorrelate to — instead of re-running the subquery per
+// outer row, we build the inner side once into a hash set of key tuples and
+// probe it. The RIGHT operator yields exactly the inner key columns (in the same
+// order as `leftKeys`). NULL keys never match — exactly EXISTS / NOT EXISTS
+// semantics (`x = NULL` is unknown). With no keys at all (an uncorrelated
+// EXISTS) the test degrades to "is the inner side non-empty?".
+export class HashSemiJoin implements Operator {
+  readonly schema: Schema
+  estRows: number
+  estCost: number
+  actualRows = 0
+  private readonly left: Operator
+  private readonly right: Operator
+  private readonly leftKeys: Evaluator[]
+  private readonly anti: boolean
+  private rows: Row[] = []
+  private pos = 0
+  private buildSize = 0
+
+  constructor(left: Operator, right: Operator, leftKeys: Evaluator[], anti: boolean, schema: Schema) {
+    this.left = left
+    this.right = right
+    this.leftKeys = leftKeys
+    this.anti = anti
+    this.schema = schema
+    // A semi-join can at most pass everything through; an anti-join too. Use the
+    // left estimate, halved for the typical selectivity of an existence filter.
+    this.estRows = Math.max(1, Math.round(left.estRows / 2))
+    this.estCost = left.estCost + right.estCost + (left.estRows + right.estRows) * CPU_OP
+  }
+  open() {
+    const innerRows = drain(this.right)
+    this.buildSize = innerRows.length
+    const keyed = this.leftKeys.length > 0
+    const set = new Set<string>()
+    if (keyed) {
+      for (const r of innerRows) {
+        if (r.some((v) => v === null)) continue // a NULL key never matches
+        set.add(hashKey(r))
+      }
+    }
+    const innerNonEmpty = innerRows.length > 0
+    const out: Row[] = []
+    for (const l of drain(this.left)) {
+      let match: boolean
+      if (!keyed) {
+        match = innerNonEmpty
+      } else {
+        const k = this.leftKeys.map((fn) => fn(l))
+        match = k.some((v) => v === null) ? false : set.has(hashKey(k))
+      }
+      if (this.anti ? !match : match) out.push(l)
+    }
+    this.rows = out
+    this.pos = 0
+  }
+  next(): Row | null {
+    if (this.pos >= this.rows.length) return null
+    this.actualRows++
+    return this.rows[this.pos++]
+  }
+  close() {
+    this.rows = []
+  }
+  plan(): PlanNode {
+    const kind = this.anti ? 'AntiJoin (hash)' : 'SemiJoin (hash)'
+    const detail = this.leftKeys.length ? `${this.leftKeys.length} key${this.leftKeys.length === 1 ? '' : 's'}` : 'uncorrelated'
+    return {
+      op: kind,
+      detail,
+      estRows: this.estRows,
+      estCost: this.estCost,
+      actualRows: this.actualRows,
+      extra: [`build set on inner keys (${this.buildSize} rows)`, this.anti ? 'keep left rows with NO match' : 'keep left rows WITH a match'],
+      children: [this.left.plan(), this.right.plan()],
+    }
+  }
+}
+
 // Sort–merge join: sort both inputs on the join key, then sweep them in lockstep
 // emitting matches for each equal-key block. An alternative to HashJoin that the
 // planner picks when its cost model prefers it (typically large, comparably

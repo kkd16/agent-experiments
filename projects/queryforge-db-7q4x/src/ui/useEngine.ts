@@ -5,7 +5,7 @@ import { useCallback, useState } from 'react'
 import { Engine, type QueryResult } from '../db/engine'
 import { Database } from '../db/catalog'
 import { SqlError } from '../db/types'
-import { describeSchema, type TableInfo } from '../db/introspect'
+import { describeSchema, describeViews, type TableInfo, type ViewInfo } from '../db/introspect'
 import { SEED_SQL } from '../db/sampleData'
 import { loadDb, saveDb, clearDb } from './persistence'
 
@@ -33,9 +33,11 @@ function freshEngine(): Engine {
 export function useEngine() {
   const [engine, setEngine] = useState<Engine>(freshEngine)
   const [schema, setSchema] = useState<TableInfo[]>(() => describeSchema(engine.db))
+  const [views, setViews] = useState<ViewInfo[]>(() => describeViews(engine.db))
 
   const refresh = useCallback((e: Engine) => {
     setSchema(describeSchema(e.db))
+    setViews(describeViews(e.db))
     saveDb(e.db)
   }, [])
 
@@ -63,5 +65,5 @@ export function useEngine() {
     refresh(e)
   }, [refresh])
 
-  return { schema, run, reset }
+  return { schema, views, run, reset }
 }

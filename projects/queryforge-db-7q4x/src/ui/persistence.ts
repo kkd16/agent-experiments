@@ -21,7 +21,10 @@ export function loadDb(): Database | null {
     const raw = localStorage.getItem(KEY)
     if (!raw) return null
     const snap = JSON.parse(raw) as SerializedDb
-    if (!snap || snap.version !== 1) return null
+    // Accept any snapshot the restorer understands (it back-fills fields that
+    // newer versions added). `Database.restore` is defensive, so a malformed or
+    // incompatible blob simply throws and we fall back to a fresh seed.
+    if (!snap || !Array.isArray(snap.tables)) return null
     return Database.restore(snap)
   } catch {
     return null

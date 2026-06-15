@@ -2,11 +2,12 @@
 // table/column inserts its name into the editor; clicking a sample loads it.
 
 import { useState } from 'react'
-import type { TableInfo } from '../db/introspect'
+import type { TableInfo, ViewInfo } from '../db/introspect'
 import { SAMPLE_QUERIES } from '../db/sampleData'
 
 interface Props {
   schema: TableInfo[]
+  views: ViewInfo[]
   onInsert: (text: string) => void
   onLoadSample: (sql: string) => void
 }
@@ -93,7 +94,20 @@ function TableCard({ table, onInsert }: { table: TableInfo; onInsert: (t: string
   )
 }
 
-export function SchemaPanel({ schema, onInsert, onLoadSample }: Props) {
+function ViewCard({ view, onInsert }: { view: ViewInfo; onInsert: (t: string) => void }) {
+  return (
+    <div className="schema-table schema-view">
+      <button className="schema-table-head" onClick={() => onInsert(view.name)}>
+        <span className="schema-view-glyph" title="view">⊡</span>
+        <span className="schema-table-name">{view.name}</span>
+        {view.columns && <span className="schema-rowcount">{view.columns.length} cols</span>}
+      </button>
+      <div className="schema-view-def" title={view.definition}>{view.definition}</div>
+    </div>
+  )
+}
+
+export function SchemaPanel({ schema, views, onInsert, onLoadSample }: Props) {
   return (
     <aside className="sidebar">
       <div className="sidebar-section">
@@ -103,6 +117,15 @@ export function SchemaPanel({ schema, onInsert, onLoadSample }: Props) {
           <TableCard key={t.name} table={t} onInsert={onInsert} />
         ))}
       </div>
+
+      {views.length > 0 && (
+        <div className="sidebar-section">
+          <h3 className="sidebar-title">Views</h3>
+          {views.map((v) => (
+            <ViewCard key={v.name} view={v} onInsert={onInsert} />
+          ))}
+        </div>
+      )}
 
       <div className="sidebar-section">
         <h3 className="sidebar-title">Example queries</h3>

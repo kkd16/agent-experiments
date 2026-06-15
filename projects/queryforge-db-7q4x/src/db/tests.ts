@@ -1603,6 +1603,219 @@ test('decimal', 'seed invoices: recomputed tax matches stored totals exactly', (
   assert(eq(scalar(e, 'SELECT TYPEOF(SUM(total)) FROM invoices'), 'decimal'), 'SUM(total) is exact DECIMAL')
 })
 
+// --- v7.0: views -----------------------------------------------------------
+function explainText(e: Engine, sql: string): string {
+  const r = e.execute('EXPLAIN ' + sql)[0]
+  return r.kind === 'explain' ? JSON.stringify(r.plan) : ''
+}
+
+test('view', 'CREATE VIEW then SELECT', () => {
+  const e = seeded()
+  e.execute(`CREATE VIEW uk_customers AS SELECT id, name FROM customers WHERE country = 'UK'`)
+  const r = rowsOf(e, 'SELECT name FROM uk_customers ORDER BY name')
+  assert(eq(r.map((x) => x[0]), ['Ada Lovelace', 'Alan Turing', 'Tim Berners-Lee']), 'view filters to UK customers')
+})
+test('view', 'a view aggregates and can itself be queried/grouped', () => {
+  const e = seeded()
+  e.execute(`CREATE VIEW order_value AS
+    SELECT o.id AS oid, c.country AS country, p.price * o.quantity AS amount
+    FROM orders o JOIN customers c ON o.customer_id = c.id JOIN products p ON o.product_id = p.id`)
+  const total = scalar(e, 'SELECT COUNT(*) FROM order_value')
+  assert(total === 15, 'view exposes all 15 orders')
+  const byCountry = rowsOf(e, 'SELECT country, COUNT(*) FROM order_value GROUP BY country ORDER BY country')
+  assert(byCountry.length === 2, 'group over a view works')
+})
+test('view', 'a view can be defined over another view', () => {
+  const e = seeded()
+  e.execute(`CREATE VIEW hardware AS SELECT id, name, price FROM products WHERE category = 'Hardware'`)
+  e.execute(`CREATE VIEW cheap_hardware AS SELECT name FROM hardware WHERE price < 200`)
+  const r = rowsOf(e, 'SELECT name FROM cheap_hardware ORDER BY name')
+  assert(eq(r.map((x) => x[0]), ['Mechanical Keyboard', 'USB-C Hub']), 'nested view resolves')
+})
+test('view', 'a view joins against a base table', () => {
+  const e = seeded()
+  e.execute(`CREATE VIEW premium AS SELECT id, name FROM products WHERE price > 300`)
+  const n = scalar(e, `SELECT COUNT(*) FROM orders o JOIN premium p ON o.product_id = p.id`)
+  assert(typeof n === 'number' && n > 0, 'view participates in a join')
+})
+test('view', 'CREATE OR REPLACE VIEW redefines', () => {
+  const e = seeded()
+  e.execute(`CREATE VIEW v AS SELECT id FROM products WHERE price < 100`)
+  const before = scalar(e, 'SELECT COUNT(*) FROM v')
+  e.execute(`CREATE OR REPLACE VIEW v AS SELECT id FROM products WHERE price >= 100`)
+  const after = scalar(e, 'SELECT COUNT(*) FROM v')
+  assert(before !== after && (before as number) + (after as number) === 8, 'replace swaps the definition')
+})
+test('view', 'CREATE VIEW IF NOT EXISTS is idempotent', () => {
+  const e = seeded()
+  e.execute(`CREATE VIEW v AS SELECT id FROM products`)
+  e.execute(`CREATE VIEW IF NOT EXISTS v AS SELECT id FROM customers`)
+  assert(scalar(e, 'SELECT COUNT(*) FROM v') === 8, 'second create is skipped, original kept')
+  throws(e, `CREATE VIEW v AS SELECT id FROM customers`, 'already exists')
+})
+test('view', 'declared column names rename the output', () => {
+  const e = seeded()
+  e.execute(`CREATE VIEW labelled (pid, label) AS SELECT id, name FROM products`)
+  const r = lastResult(e, 'SELECT pid, label FROM labelled WHERE pid = 1') as RowsResult
+  assert(r.rows[0][1] === 'Mechanical Keyboard', 'aliased columns resolve')
+  throws(e, `CREATE VIEW bad (a, b) AS SELECT id FROM products`, 'declares 2 columns')
+})
+test('view', 'DROP VIEW (and IF EXISTS)', () => {
+  const e = seeded()
+  e.execute(`CREATE VIEW v AS SELECT id FROM products`)
+  e.execute(`DROP VIEW v`)
+  throws(e, `SELECT * FROM v`, 'unknown table')
+  e.execute(`DROP VIEW IF EXISTS v`) // no-op
+  throws(e, `DROP VIEW v`, 'unknown view')
+})
+test('view', 'a view and a table cannot share a name', () => {
+  const e = seeded()
+  e.execute(`CREATE VIEW shared AS SELECT id FROM products`)
+  throws(e, `CREATE TABLE shared (id INTEGER)`, 'already exists as a view')
+  throws(e, `CREATE VIEW customers AS SELECT id FROM products`, 'already exists as a table')
+})
+test('view', 'a recursive view definition is rejected', () => {
+  const e = seeded()
+  throws(e, `CREATE VIEW loop AS SELECT * FROM loop`, 'recursively')
+  // an indirect cycle via OR REPLACE is caught at plan time and rolled back
+  e.execute(`CREATE VIEW a AS SELECT id FROM products`)
+  e.execute(`CREATE VIEW b AS SELECT id FROM a`)
+  throws(e, `CREATE OR REPLACE VIEW a AS SELECT id FROM b`, 'recursively')
+})
+test('view', 'views survive a snapshot/restore round-trip', () => {
+  const e = new Engine()
+  e.execute(`CREATE TABLE t (id INTEGER PRIMARY KEY, v INTEGER)`)
+  e.execute(`INSERT INTO t VALUES (1, 10), (2, 20), (3, 30)`)
+  e.execute(`CREATE VIEW big AS SELECT id FROM t WHERE v >= 20`)
+  const restored = Database.restore(e.db.snapshot())
+  const e2 = new Engine(restored)
+  assert(scalar(e2, 'SELECT COUNT(*) FROM big') === 2, 'the view is restored and still resolves')
+})
+
+// --- v7.0: UPSERT (INSERT … ON CONFLICT) -----------------------------------
+function upsertEngine(): Engine {
+  const e = new Engine()
+  e.execute(`CREATE TABLE inv (sku TEXT PRIMARY KEY, qty INTEGER NOT NULL DEFAULT 0, name TEXT UNIQUE)`)
+  e.execute(`INSERT INTO inv VALUES ('A', 5, 'Widget'), ('B', 3, 'Gadget')`)
+  return e
+}
+test('upsert', 'ON CONFLICT DO NOTHING leaves the existing row', () => {
+  const e = upsertEngine()
+  e.execute(`INSERT INTO inv VALUES ('A', 999, 'X') ON CONFLICT DO NOTHING`)
+  assert(scalar(e, `SELECT qty FROM inv WHERE sku = 'A'`) === 5, 'conflicting row was skipped')
+  assert(scalar(e, `SELECT COUNT(*) FROM inv`) === 2, 'no row added')
+})
+test('upsert', 'ON CONFLICT DO UPDATE with EXCLUDED', () => {
+  const e = upsertEngine()
+  e.execute(`INSERT INTO inv (sku, qty) VALUES ('A', 7) ON CONFLICT (sku) DO UPDATE SET qty = inv.qty + EXCLUDED.qty`)
+  assert(scalar(e, `SELECT qty FROM inv WHERE sku = 'A'`) === 12, 'qty accumulates (5 + 7)')
+})
+test('upsert', 'a brand-new key is inserted; an existing one updates', () => {
+  const e = upsertEngine()
+  const r = e.execute(`INSERT INTO inv (sku, qty) VALUES ('A', 1), ('C', 9)
+    ON CONFLICT (sku) DO UPDATE SET qty = EXCLUDED.qty`)
+  assert(r[0].kind === 'message' && (r[0].rowCount === 2), 'two rows affected (1 update + 1 insert)')
+  assert(scalar(e, `SELECT qty FROM inv WHERE sku = 'A'`) === 1, 'A updated to EXCLUDED.qty')
+  assert(scalar(e, `SELECT qty FROM inv WHERE sku = 'C'`) === 9, 'C inserted')
+})
+test('upsert', 'conflict on a non-PK UNIQUE column', () => {
+  const e = upsertEngine()
+  e.execute(`INSERT INTO inv (sku, qty, name) VALUES ('Z', 100, 'Widget') ON CONFLICT (name) DO UPDATE SET qty = EXCLUDED.qty`)
+  assert(scalar(e, `SELECT qty FROM inv WHERE name = 'Widget'`) === 100, 'matched on the UNIQUE name, updated A')
+  assert(scalar(e, `SELECT COUNT(*) FROM inv`) === 2, 'no new row (it was a conflict)')
+})
+test('upsert', 'DO UPDATE … WHERE can decline the update', () => {
+  const e = upsertEngine()
+  e.execute(`INSERT INTO inv (sku, qty) VALUES ('A', 1) ON CONFLICT (sku) DO UPDATE SET qty = 999 WHERE EXCLUDED.qty > 100`)
+  assert(scalar(e, `SELECT qty FROM inv WHERE sku = 'A'`) === 5, 'WHERE was false, row left unchanged')
+})
+test('upsert', 'no-target ON CONFLICT fires on any unique constraint', () => {
+  const e = upsertEngine()
+  e.execute(`INSERT INTO inv (sku, qty, name) VALUES ('Q', 1, 'Widget') ON CONFLICT DO NOTHING`)
+  assert(scalar(e, `SELECT COUNT(*) FROM inv`) === 2, 'the UNIQUE(name) collision was skipped')
+})
+test('upsert', 'a target matching no constraint is rejected', () => {
+  const e = upsertEngine()
+  throws(e, `INSERT INTO inv (sku, qty) VALUES ('A', 1) ON CONFLICT (qty) DO NOTHING`, 'matches no UNIQUE')
+})
+test('upsert', 'ON CONFLICT needs a unique constraint to arbitrate', () => {
+  const e = new Engine()
+  e.execute(`CREATE TABLE plain (a INTEGER, b INTEGER)`)
+  e.execute(`INSERT INTO plain VALUES (1, 1)`)
+  throws(e, `INSERT INTO plain VALUES (1, 2) ON CONFLICT DO NOTHING`, 'UNIQUE or PRIMARY KEY')
+})
+test('upsert', 'INSERT … SELECT … ON CONFLICT', () => {
+  const e = upsertEngine()
+  e.execute(`CREATE TABLE feed (sku TEXT, qty INTEGER)`)
+  e.execute(`INSERT INTO feed VALUES ('A', 50), ('D', 4)`)
+  e.execute(`INSERT INTO inv (sku, qty) SELECT sku, qty FROM feed ON CONFLICT (sku) DO UPDATE SET qty = EXCLUDED.qty`)
+  assert(scalar(e, `SELECT qty FROM inv WHERE sku = 'A'`) === 50, 'A upserted from the feed')
+  assert(scalar(e, `SELECT qty FROM inv WHERE sku = 'D'`) === 4, 'D inserted from the feed')
+})
+test('upsert', 'a DO UPDATE that creates a new conflict rolls back atomically', () => {
+  const e = upsertEngine()
+  // Updating A's name to 'Gadget' (B's name) would violate UNIQUE(name); the
+  // whole statement must roll back, leaving A untouched.
+  throws(e, `INSERT INTO inv (sku, qty, name) VALUES ('A', 1, 'Z') ON CONFLICT (sku) DO UPDATE SET name = 'Gadget'`, 'UNIQUE')
+  assert(scalar(e, `SELECT name FROM inv WHERE sku = 'A'`) === 'Widget', "A's name is unchanged after rollback")
+})
+
+// --- v7.0: subquery decorrelation (EXISTS → semi/anti join) ----------------
+test('decorrelate', 'correlated EXISTS matches the IN formulation', () => {
+  const e = seeded()
+  const a = rowsOf(e, `SELECT c.name FROM customers c WHERE EXISTS (SELECT 1 FROM orders o WHERE o.customer_id = c.id) ORDER BY c.name`)
+  const b = rowsOf(e, `SELECT c.name FROM customers c WHERE c.id IN (SELECT customer_id FROM orders) ORDER BY c.name`)
+  assert(eq(a, b), 'EXISTS and IN agree')
+})
+test('decorrelate', 'NOT EXISTS matches the NOT IN formulation', () => {
+  const e = seeded()
+  const a = rowsOf(e, `SELECT c.name FROM customers c WHERE NOT EXISTS (SELECT 1 FROM orders o WHERE o.customer_id = c.id) ORDER BY c.name`)
+  const b = rowsOf(e, `SELECT c.name FROM customers c WHERE c.id NOT IN (SELECT customer_id FROM orders) ORDER BY c.name`)
+  assert(eq(a, b), 'NOT EXISTS and NOT IN agree')
+})
+test('decorrelate', 'EXISTS becomes a SemiJoin, NOT EXISTS an AntiJoin', () => {
+  const e = seeded()
+  assert(explainText(e, `SELECT c.id FROM customers c WHERE EXISTS (SELECT 1 FROM orders o WHERE o.customer_id = c.id)`).includes('SemiJoin'), 'EXISTS → SemiJoin')
+  assert(explainText(e, `SELECT c.id FROM customers c WHERE NOT EXISTS (SELECT 1 FROM orders o WHERE o.customer_id = c.id)`).includes('AntiJoin'), 'NOT EXISTS → AntiJoin')
+})
+test('decorrelate', 'inner-local predicates stay inside the build side', () => {
+  const e = seeded()
+  const a = rowsOf(e, `SELECT c.name FROM customers c WHERE EXISTS (SELECT 1 FROM orders o WHERE o.customer_id = c.id AND o.quantity > 2) ORDER BY c.name`)
+  const b = rowsOf(e, `SELECT DISTINCT c.name FROM customers c JOIN orders o ON o.customer_id = c.id AND o.quantity > 2 ORDER BY c.name`)
+  assert(eq(a, b), 'extra inner predicate is honored')
+})
+test('decorrelate', 'a NULL correlation key: anti keeps it, semi drops it', () => {
+  const e = seeded()
+  e.execute(`INSERT INTO subscriptions (id, customer_id, plan) VALUES (99, NULL, 'Trial')`)
+  assert(eq(rowsOf(e, `SELECT s.id FROM subscriptions s WHERE NOT EXISTS (SELECT 1 FROM customers c WHERE c.id = s.customer_id) ORDER BY s.id`), [[99]]), 'anti keeps the NULL-key row')
+  assert(scalar(e, `SELECT COUNT(*) FROM subscriptions s WHERE EXISTS (SELECT 1 FROM customers c WHERE c.id = s.customer_id)`) === 8, 'semi drops it')
+})
+test('decorrelate', 'two-key correlation', () => {
+  const e = seeded()
+  const a = rowsOf(e, `SELECT o.id FROM orders o WHERE EXISTS (SELECT 1 FROM customers c WHERE c.id = o.customer_id AND c.signup_year = o.order_year) ORDER BY o.id`)
+  const b = rowsOf(e, `SELECT DISTINCT o.id FROM orders o JOIN customers c ON c.id = o.customer_id AND c.signup_year = o.order_year ORDER BY o.id`)
+  assert(eq(a, b), 'composite correlation key works')
+})
+test('decorrelate', 'a non-equi correlation falls back and stays correct', () => {
+  const e = seeded()
+  const sql = `SELECT COUNT(*) FROM customers c WHERE EXISTS (SELECT 1 FROM orders o WHERE o.quantity > c.signup_year)`
+  assert(!explainText(e, sql).includes('SemiJoin'), 'non-equi correlation is not decorrelated')
+  assert(scalar(e, sql) === 0, 'fallback per-row evaluation is correct (no order qty > a year)')
+})
+test('decorrelate', 'uncorrelated EXISTS: non-empty keeps all, empty drops all', () => {
+  const e = seeded()
+  assert(scalar(e, `SELECT COUNT(*) FROM customers WHERE EXISTS (SELECT 1 FROM orders)`) === 8, 'non-empty → all pass')
+  assert(scalar(e, `SELECT COUNT(*) FROM customers WHERE EXISTS (SELECT 1 FROM orders WHERE quantity > 9999)`) === 0, 'empty → none pass')
+})
+test('decorrelate', 'EXISTS over a view decorrelates too', () => {
+  const e = seeded()
+  e.execute(`CREATE VIEW big_orders AS SELECT customer_id FROM orders WHERE quantity >= 3`)
+  const sql = `SELECT c.name FROM customers c WHERE EXISTS (SELECT 1 FROM big_orders b WHERE b.customer_id = c.id) ORDER BY c.name`
+  assert(explainText(e, sql).includes('SemiJoin'), 'a view in the EXISTS body still decorrelates')
+  const b = rowsOf(e, `SELECT DISTINCT c.name FROM customers c JOIN orders o ON o.customer_id = c.id AND o.quantity >= 3 ORDER BY c.name`)
+  assert(eq(rowsOf(e, sql), b), 'view-backed EXISTS is correct')
+})
+
 // --- sample queries (catalog showcase) -------------------------------------
 test('samples', 'every shipped sample query runs against the seed', () => {
   for (const q of SAMPLE_QUERIES) {

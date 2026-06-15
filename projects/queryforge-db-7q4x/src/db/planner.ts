@@ -23,6 +23,7 @@ import {
   type FromItem,
   type InSubqueryExpr,
   type JoinClause,
+  type SelectItem,
   type SelectStmt,
   type ColumnExpr,
   type QuantifiedExpr,
@@ -40,6 +41,7 @@ import {
   Distinct,
   Filter,
   HashJoin,
+  HashSemiJoin,
   IndexOnlyScan,
   IndexScan,
   Limit,
@@ -65,10 +67,8 @@ export interface PlanEnv {
   db: Database
   relations: Map<string, Table>
   outer: OuterScope[]
-}
-
-function envGetTable(env: PlanEnv, name: string): Table {
-  return env.relations.get(name.toLowerCase()) ?? env.db.getTable(name)
+  /** Names of views currently being materialized, to break definition cycles. */
+  viewTrail?: Set<string>
 }
 
 /** Run an operator to completion, collecting all rows. */
@@ -1032,8 +1032,141 @@ function relationFor(item: FromItem | JoinClause, env: PlanEnv): { table: Table;
     const t = materialize(item.subquery, env, alias, item.columnAliases)
     return { table: t, alias }
   }
-  const t = envGetTable(env, item.table!)
+  const name = item.table!
+  // CTEs / derived overlays (more local) win over a catalog view or base table.
+  const overlay = env.relations.get(name.toLowerCase())
+  if (overlay) return { table: overlay, alias: item.alias ?? overlay.name }
+  // A view inlines its body as a derived table. It is resolved in the *catalog*
+  // scope — a fresh env with no caller CTEs or correlations — so its meaning is
+  // independent of where it's used; a trail breaks definition cycles.
+  const view = env.db.getView(name)
+  if (view) {
+    const trail = env.viewTrail ?? new Set<string>()
+    if (trail.has(name.toLowerCase())) {
+      throw new SqlError(`view "${name}" is defined recursively (not supported)`, 'plan')
+    }
+    const childTrail = new Set(trail)
+    childTrail.add(name.toLowerCase())
+    const alias = item.alias ?? view.name
+    const viewEnv: PlanEnv = { db: env.db, relations: new Map(), outer: [], viewTrail: childTrail }
+    const t = materialize(view.select, viewEnv, alias, view.columns)
+    return { table: t, alias }
+  }
+  const t = env.db.getTable(name)
   return { table: t, alias: item.alias ?? t.name }
+}
+
+// A top-level `EXISTS (…)` conjunct, or a `NOT EXISTS (…)` one (which parses as
+// a unary NOT over an EXISTS). Returns an ExistsExpr with the effective `negated`
+// flag folded in, or null if the conjunct isn't an existence test.
+function asExistsConjunct(p: Expr): ExistsExpr | null {
+  if (p.kind === 'exists') return p
+  if (p.kind === 'unary' && p.op === 'NOT' && p.expr.kind === 'exists') {
+    return { ...p.expr, negated: !p.expr.negated }
+  }
+  return null
+}
+
+// Attempt to decorrelate a `[NOT] EXISTS (subquery)` WHERE conjunct into a hash
+// semi-/anti-join over the post-FROM rows (`outerSchema`). Returns the join
+// inputs on success, or null when the shape isn't provably equivalent (the
+// caller then leaves the predicate for the normal per-row evaluator).
+//
+// The supported shape is a single-relation existence subquery whose WHERE is a
+// conjunction of (a) equi-correlations `innerExpr = outerExpr` (which become the
+// join keys) and (b) inner-local predicates (which stay inside the build side).
+// Anything that touches the outer scope in another way, or uses grouping /
+// aggregates / set-ops / LIMIT / joins, bails — keeping the rewrite sound.
+function tryDecorrelateExists(
+  e: ExistsExpr,
+  outerSchema: Schema,
+  env: PlanEnv,
+): { leftKeys: Evaluator[]; rightOp: Operator; anti: boolean } | null {
+  const sel = e.select
+  if (!sel.from) return null
+  if (sel.joins.length > 0) return null
+  if (sel.groupBy.length > 0 || sel.groupingSets || sel.having) return null
+  if (sel.setOps && sel.setOps.length) return null
+  if (sel.limit !== undefined || sel.offset !== undefined) return null
+  // An aggregate with no GROUP BY always yields exactly one row, so EXISTS would
+  // be trivially true — different semantics from a row-existence test. Bail.
+  const aggMap = new Map<string, Expr>()
+  for (const it of sel.columns) findAggregates(it.expr, aggMap)
+  if (aggMap.size > 0) return null
+
+  // Resolve the inner relation to learn its schema (so we can tell inner column
+  // references from correlated outer ones).
+  let inner: { table: Table; alias: string }
+  try {
+    inner = relationFor(sel.from, env)
+  } catch {
+    return null
+  }
+  const innerSchema = tableSchema(inner.table, inner.alias)
+  const innerRef = (c: ColumnExpr) => tryResolveIndex(innerSchema, c.table, c.name) !== null
+  const outerRef = (c: ColumnExpr) => tryResolveIndex(outerSchema, c.table, c.name) !== null
+  // Classify an expression as unambiguously inner-only, outer-only, or constant.
+  const classify = (ex: Expr): 'inner' | 'outer' | 'const' | null => {
+    if (containsSubquery(ex)) return null
+    const cols: ColumnExpr[] = []
+    collectColumns(ex, cols)
+    if (cols.length === 0) return 'const'
+    if (cols.every((c) => innerRef(c) && !outerRef(c))) return 'inner'
+    if (cols.every((c) => outerRef(c) && !innerRef(c))) return 'outer'
+    return null
+  }
+
+  const innerKeys: Expr[] = []
+  const outerKeys: Expr[] = []
+  const localPreds: Expr[] = []
+  for (const conj of conjuncts(sel.where)) {
+    if (conj.kind === 'binary' && conj.op === '=') {
+      const lc = classify(conj.left)
+      const rc = classify(conj.right)
+      if (lc === 'inner' && rc === 'outer') {
+        innerKeys.push(conj.left)
+        outerKeys.push(conj.right)
+        continue
+      }
+      if (lc === 'outer' && rc === 'inner') {
+        innerKeys.push(conj.right)
+        outerKeys.push(conj.left)
+        continue
+      }
+    }
+    const cl = classify(conj)
+    if (cl === 'inner' || cl === 'const') {
+      localPreds.push(conj)
+      continue
+    }
+    return null // references the outer scope in a non-equi way — can't decorrelate
+  }
+
+  // Build side: the inner key expressions (or a constant for an uncorrelated
+  // EXISTS), filtered by the inner-local predicates, re-using the full planner.
+  const buildColumns: SelectItem[] = innerKeys.length
+    ? innerKeys.map((ex) => ({ expr: ex }))
+    : [{ expr: { kind: 'literal', value: 1 } as Expr }]
+  const buildSel: SelectStmt = {
+    kind: 'select',
+    distinct: false,
+    columns: buildColumns,
+    from: sel.from,
+    joins: [],
+    where: andAll(localPreds),
+    groupBy: [],
+    orderBy: [],
+    ctes: sel.ctes,
+    recursive: sel.recursive,
+  }
+  let rightOp: Operator
+  try {
+    rightOp = planQuery(buildSel, env)
+  } catch {
+    return null
+  }
+  const leftKeys = outerKeys.map((ex) => compileExpr(ex, exprCtx(outerSchema, env)))
+  return { leftKeys, rightOp, anti: e.negated }
 }
 
 // Plan a single SELECT core (no set-op tail). When `embedOrderLimit` is false
@@ -1124,6 +1257,23 @@ function planCore(stmt: SelectStmt, env: PlanEnv, embedOrderLimit: boolean): Ope
         }
       }
       schema = combined
+    }
+  }
+
+  // --- subquery decorrelation -----------------------------------------------
+  // Rewrite a top-level `WHERE … [NOT] EXISTS (…)` conjunct into a hash semi-/
+  // anti-join when its correlation decomposes into equi-keys + inner-local
+  // predicates. This turns a per-outer-row subquery re-execution into a single
+  // build+probe. Any shape we can't prove equivalent is left untouched for the
+  // normal per-row evaluator below, so an answer can never change.
+  for (const p of wherePreds) {
+    if (consumed.has(p)) continue
+    const ex = asExistsConjunct(p)
+    if (!ex) continue
+    const dec = tryDecorrelateExists(ex, schema, env)
+    if (dec) {
+      op = new HashSemiJoin(op, dec.rightOp, dec.leftKeys, dec.anti, schema)
+      consumed.add(p)
     }
   }
 

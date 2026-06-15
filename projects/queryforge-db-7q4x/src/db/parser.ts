@@ -23,6 +23,7 @@ import type {
   FromItem,
   JoinClause,
   JoinType,
+  OnConflictClause,
   OrderItem,
   RefAction,
   SelectItem,
@@ -223,9 +224,27 @@ class Parser {
 
   private parseCreate(): Statement {
     this.expect('CREATE')
+    // CREATE OR REPLACE VIEW …
+    if (this.at('OR')) {
+      this.expect('OR')
+      this.expect('REPLACE')
+      return this.parseCreateView(true)
+    }
+    if (this.at('VIEW')) return this.parseCreateView(false)
     if (this.at('TABLE')) return this.parseCreateTable()
     if (this.at('INDEX') || this.at('UNIQUE')) return this.parseCreateIndex()
-    throw this.err('expected TABLE or INDEX after CREATE')
+    throw this.err('expected TABLE, VIEW or INDEX after CREATE')
+  }
+
+  private parseCreateView(orReplace: boolean): Statement {
+    this.expect('VIEW')
+    const ifNotExists = this.parseIfNotExists()
+    const name = this.parseIdent('view name')
+    let columns: string[] | undefined
+    if (this.at('(')) columns = this.parseColumnList()
+    this.expect('AS')
+    const select = this.parseSubquerySelect()
+    return { kind: 'create_view', name, columns, select, orReplace, ifNotExists }
   }
 
   private parseCreateTable(): Statement {
@@ -461,6 +480,11 @@ class Parser {
 
   private parseDrop(): Statement {
     this.expect('DROP')
+    if (this.accept('VIEW')) {
+      const ifExists = this.accept('IF') ? (this.expect('EXISTS'), true) : false
+      const name = this.parseIdent('view name')
+      return { kind: 'drop_view', name, ifExists }
+    }
     this.expect('TABLE')
     const ifExists = this.accept('IF') ? (this.expect('EXISTS'), true) : false
     const name = this.parseIdent('table name')
@@ -482,7 +506,8 @@ class Parser {
     // INSERT … SELECT
     if (this.at('SELECT') || this.at('WITH')) {
       const select = this.parseSubquerySelect()
-      return { kind: 'insert', table, columns, rows: [], select }
+      const onConflict = this.parseOnConflict()
+      return { kind: 'insert', table, columns, rows: [], select, onConflict }
     }
     this.expect('VALUES')
     const rows: Expr[][] = []
@@ -495,7 +520,30 @@ class Parser {
       this.expect(')')
       rows.push(row)
     } while (this.accept(','))
-    return { kind: 'insert', table, columns, rows }
+    const onConflict = this.parseOnConflict()
+    return { kind: 'insert', table, columns, rows, onConflict }
+  }
+
+  /** Parse an optional `ON CONFLICT [(cols)] DO NOTHING | DO UPDATE SET … [WHERE …]`. */
+  private parseOnConflict(): OnConflictClause | undefined {
+    if (!this.accept('ON')) return undefined
+    this.expect('CONFLICT')
+    let target: string[] | undefined
+    if (this.at('(')) target = this.parseColumnList()
+    this.expect('DO')
+    if (this.accept('NOTHING')) {
+      return { target, action: { kind: 'nothing' } }
+    }
+    this.expect('UPDATE')
+    this.expect('SET')
+    const assignments: { column: string; value: Expr }[] = []
+    do {
+      const column = this.parseIdent('column name')
+      this.expect('=')
+      assignments.push({ column, value: this.parseExpr() })
+    } while (this.accept(','))
+    const where = this.accept('WHERE') ? this.parseExpr() : undefined
+    return { target, action: { kind: 'update', assignments, where } }
   }
 
   private parseUpdate(): Statement {
