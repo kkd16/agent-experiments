@@ -21,15 +21,17 @@ CREATE TABLE products (
   id INTEGER PRIMARY KEY,
   name TEXT NOT NULL,
   category TEXT,
-  price REAL,
-  in_stock INTEGER
+  price REAL CHECK (price >= 0),
+  in_stock INTEGER DEFAULT 0
 );
 
+-- orders references both parents declaratively: deleting a customer cascades to
+-- their orders, while a product that still has orders cannot be deleted.
 CREATE TABLE orders (
   id INTEGER PRIMARY KEY,
-  customer_id INTEGER,
-  product_id INTEGER,
-  quantity INTEGER,
+  customer_id INTEGER REFERENCES customers(id) ON DELETE CASCADE,
+  product_id INTEGER REFERENCES products(id) ON DELETE RESTRICT,
+  quantity INTEGER CHECK (quantity > 0),
   order_year INTEGER
 );
 
@@ -64,8 +66,8 @@ INSERT INTO orders (id, customer_id, product_id, quantity, order_year) VALUES
 -- TIMESTAMP. These exercise date arithmetic, EXTRACT, DATE_TRUNC and AGE.
 CREATE TABLE subscriptions (
   id INTEGER PRIMARY KEY,
-  customer_id INTEGER,
-  plan TEXT,
+  customer_id INTEGER REFERENCES customers(id) ON DELETE CASCADE,
+  plan TEXT DEFAULT 'Starter',
   started DATE,
   term INTERVAL,
   last_active TIMESTAMP
@@ -353,6 +355,43 @@ SELECT id, plan, started
 FROM subscriptions
 WHERE started BETWEEN DATE '2024-01-01' AND '2024-12-31'
 ORDER BY started;`,
+  },
+  {
+    title: 'Referential integrity — cascade in a transaction',
+    sql: `-- orders.customer_id REFERENCES customers(id) ON DELETE CASCADE.
+-- Deleting Ada (id 1) inside a transaction removes her orders too; we read the
+-- counts, then ROLLBACK so the seed is untouched.
+BEGIN;
+SELECT COUNT(*) AS adas_orders_before FROM orders WHERE customer_id = 1;
+DELETE FROM customers WHERE id = 1;
+SELECT COUNT(*) AS adas_orders_after FROM orders WHERE customer_id = 1;
+SELECT COUNT(*) AS customers_left FROM customers;
+ROLLBACK;
+SELECT COUNT(*) AS customers_after_rollback FROM customers;`,
+  },
+  {
+    title: 'Constraints — what gets rejected',
+    sql: `-- Each of these would be refused (uncomment one to see the error):
+--   a dangling foreign key:
+-- INSERT INTO orders (id, customer_id, product_id, quantity) VALUES (999, 404, 1, 1);
+--   a CHECK violation (quantity must be > 0):
+-- INSERT INTO orders (id, customer_id, product_id, quantity) VALUES (999, 1, 1, 0);
+--   deleting a product that still has orders (ON DELETE RESTRICT):
+-- DELETE FROM products WHERE id = 1;
+-- A FOREIGN KEY with a NULL component is exempt (MATCH SIMPLE):
+INSERT INTO subscriptions (id, customer_id, plan) VALUES (99, NULL, 'Trial');
+SELECT id, customer_id, plan FROM subscriptions WHERE id = 99;
+DELETE FROM subscriptions WHERE id = 99;`,
+  },
+  {
+    title: 'Evolve a schema — ALTER TABLE',
+    sql: `-- Add a column with a DEFAULT (existing rows are backfilled), attach a CHECK,
+-- then read it back. (Re-run resets via the seed.)
+ALTER TABLE customers ADD COLUMN tier TEXT DEFAULT 'standard';
+ALTER TABLE customers ADD CONSTRAINT tier_known
+  CHECK (tier IN ('standard', 'gold', 'platinum'));
+UPDATE customers SET tier = 'gold' WHERE country = 'UK';
+SELECT name, country, tier FROM customers ORDER BY tier, name;`,
   },
   {
     title: 'Transaction: insert then rollback',

@@ -175,13 +175,65 @@ export interface ColumnDef {
   primaryKey: boolean
   notNull: boolean
   unique: boolean
+  /** A `DEFAULT <expr>` supplying the value when the column is omitted on INSERT. */
+  default?: Expr
+}
+
+/** A referential action for `ON DELETE` / `ON UPDATE`. */
+export type RefAction = 'NO ACTION' | 'RESTRICT' | 'CASCADE' | 'SET NULL' | 'SET DEFAULT'
+
+/** A `FOREIGN KEY (cols) REFERENCES parent(cols) [ON DELETE …] [ON UPDATE …]`. */
+export interface ForeignKeyDef {
+  name?: string
+  /** The child columns that reference the parent. */
+  columns: string[]
+  refTable: string
+  /** The referenced parent columns (the parent's PK when omitted in SQL). */
+  refColumns: string[]
+  onDelete: RefAction
+  onUpdate: RefAction
+}
+
+/** A named-or-anonymous `CHECK (<expr>)` row constraint. */
+export interface CheckConstraint {
+  name?: string
+  expr: Expr
+}
+
+/** Table-level declarative constraints, normalized from column- and table-level SQL. */
+export interface TableConstraints {
+  /** The single primary key (one or more columns), if declared. */
+  primaryKey?: string[]
+  /** Each `UNIQUE (…)` group (single- or multi-column). */
+  uniques: string[][]
+  checks: CheckConstraint[]
+  foreignKeys: ForeignKeyDef[]
+}
+
+export function emptyConstraints(): TableConstraints {
+  return { uniques: [], checks: [], foreignKeys: [] }
 }
 
 export interface CreateTableStmt {
   kind: 'create_table'
   name: string
   columns: ColumnDef[]
+  constraints: TableConstraints
   ifNotExists: boolean
+}
+
+/** `ALTER TABLE t ADD COLUMN … | ADD <constraint> | DROP COLUMN … | RENAME …`. */
+export interface AlterTableStmt {
+  kind: 'alter_table'
+  table: string
+  action:
+    | { kind: 'add_column'; column: ColumnDef }
+    | { kind: 'drop_column'; column: string }
+    | { kind: 'rename_table'; to: string }
+    | { kind: 'rename_column'; column: string; to: string }
+    | { kind: 'add_check'; check: CheckConstraint }
+    | { kind: 'add_foreign_key'; fk: ForeignKeyDef }
+    | { kind: 'add_unique'; columns: string[] }
 }
 export interface DropTableStmt {
   kind: 'drop_table'
@@ -297,6 +349,7 @@ export interface TxnStmt {
 
 export type Statement =
   | CreateTableStmt
+  | AlterTableStmt
   | DropTableStmt
   | CreateIndexStmt
   | AnalyzeStmt

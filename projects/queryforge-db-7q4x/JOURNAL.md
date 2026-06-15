@@ -135,8 +135,51 @@ join, stats) for free.
 - [x] **Tests** — grew the suite 120 → 143 (23 new temporal tests incl. a persistence round-trip),
   all green via `verify-project.mjs`
 
+### v5.0 — Declarative integrity: keys, checks, defaults & foreign keys ✅
+
+The headline gap for a "real" relational engine: it could *describe* data richly but couldn't
+*constrain* it. v5.0 makes integrity first-class and, crucially, **declarative** — you state the
+rules in DDL and the engine enforces them on every write, cascading across tables as configured.
+The design principle that kept it clean: per-row rules (NOT NULL / CHECK / UNIQUE) live on the
+`Table`; cross-table rules (FOREIGN KEY + referential actions) are orchestrated by the `Database`,
+which owns every table and so can cascade between them — and **statement atomicity** (snapshot +
+rollback-on-throw) means a half-applied cascade or a row-50-of-100 violation can never leave a
+partial state, so the enforcement code never has to unwind by hand.
+
+- [x] **CHECK constraints** — column- and table-level `CHECK (expr)`, compiled to the same closure
+  form as any predicate and run on INSERT/UPDATE; violated only when the result is FALSE (a NULL
+  result passes, per SQL). Named constraints report their name.
+- [x] **DEFAULT values** — `col TYPE DEFAULT expr` (literals, signed numbers, `CURRENT_TIMESTAMP`,
+  …) fill omitted columns on INSERT and feed `ON … SET DEFAULT`.
+- [x] **Composite PRIMARY KEY & UNIQUE** — table-level `PRIMARY KEY (a, b)` / `UNIQUE (a, b)`,
+  enforced by one UNIQUE B+Tree over the tuple; PK columns become implicitly NOT NULL; a UNIQUE
+  key with any NULL component never collides. UNIQUE is now enforced on UPDATE too (excluding self).
+- [x] **FOREIGN KEY + referential actions** — column- and table-level `REFERENCES parent(cols)`
+  with `ON DELETE` / `ON UPDATE` `NO ACTION | RESTRICT | CASCADE | SET NULL | SET DEFAULT`.
+  Child writes verify the parent exists (MATCH SIMPLE — a NULL key is exempt); parent delete/update
+  drives the action across dependents, **recursively** (self-referential trees included) and
+  depth-guarded against cycles. FK targets must be PRIMARY KEY/UNIQUE; a referenced table can't be
+  dropped.
+- [x] **Statement atomicity** — every INSERT/UPDATE/DELETE/DDL snapshots first and rolls back
+  wholesale on any throw, so a partly-failing bulk insert or a RESTRICT-blocked cascade is a no-op.
+- [x] **ALTER TABLE** — `ADD [COLUMN]` (backfilling existing rows with the DEFAULT),
+  `ADD [CONSTRAINT n] CHECK/UNIQUE/FOREIGN KEY` (validated against current data before taking
+  effect), `RENAME TO` / `RENAME COLUMN` (updating referencing FKs), and guarded `DROP COLUMN`.
+- [x] **Constraints persist** — snapshot/restore (now v3) round-trips PK/UNIQUE/CHECK/DEFAULT/FK,
+  so integrity survives a reload and a transaction rollback rebuilds it.
+- [x] **UI + docs** — the schema browser shows FK arrows (→ parent, with action tags), CHECK
+  expressions, DEFAULT values and composite PKs; the seed gains real FK relationships
+  (orders→customers ON DELETE CASCADE, orders→products ON DELETE RESTRICT, subscriptions→customers)
+  plus CHECKs/DEFAULTs; 3 new sample queries (a cascade-in-a-transaction, what gets rejected, and an
+  ALTER walkthrough); a new Reference section and an Internals pipeline stage.
+- [x] **Tests** — grew the suite 143 → 173 (30 new cases across CHECK, DEFAULT, composite PK/UNIQUE,
+  every referential action, multi-column & self-referential FKs, atomicity, ALTER and a
+  constraint persistence round-trip); `verify-project.mjs` green.
+
 ### Backlog / next steps
 
+- [ ] **DEFERRABLE constraints + a real multi-statement transaction FK check** (currently MATCH
+  SIMPLE, immediate); `MATCH FULL`/`MATCH PARTIAL`
 - [ ] **DECIMAL / exact numerics** — the other half of the "more types" item (temporal is done)
 - [ ] **`TO_CHAR(temporal, fmt)`** — Postgres-style template formatting (we ship `STRFTIME`)
 - [ ] **Time zones** — everything is UTC today; add `TIMESTAMPTZ` + `AT TIME ZONE`
@@ -162,6 +205,23 @@ join, stats) for free.
 
 ## Session log
 
+- 2026-06-15 (claude / claude-opus-4-8): **v5.0 — declarative integrity.** Added the engine's
+  missing half: constraints. CHECK (column + table level, compiled like any predicate, NULL passes),
+  DEFAULT (fills omitted columns + feeds SET DEFAULT), composite PRIMARY KEY / UNIQUE (one B+Tree over
+  the tuple; PK ⇒ NOT NULL; UNIQUE now enforced on UPDATE), and FOREIGN KEY with the full set of
+  `ON DELETE`/`ON UPDATE` actions (NO ACTION/RESTRICT/CASCADE/SET NULL/SET DEFAULT). The clean split:
+  the `Table` owns per-row rules, the `Database` owns cross-table referential integrity (it can see
+  every table, so it cascades and validates parents); cascades recurse and are depth-guarded for
+  self-referential trees/cycles. Made every mutating statement **atomic** — snapshot first, restore on
+  any throw — so a partly-failing bulk insert or a RESTRICT-blocked cascade is a clean no-op, which
+  meant the integrity code never had to unwind by hand. Bonus: full **ALTER TABLE** (ADD COLUMN with
+  DEFAULT backfill; ADD CHECK/UNIQUE/FOREIGN KEY validated against current rows; RENAME TABLE/COLUMN
+  updating referencing FKs; guarded DROP COLUMN). Extended snapshots to v3 so constraints round-trip
+  (persistence + rollback rebuild them). Surfaced it all in the schema browser (FK arrows with action
+  tags, CHECK/DEFAULT/composite-PK), wired real FKs+CHECKs into the seed, added 3 sample queries and
+  refreshed Reference/Internals. Grew the self-test suite 143 → 173 (30 new cases); verified headless
+  (every test + every sample query against the seed) and with `verify-project.mjs` (scope + conformance
+  + lint + build), all green.
 - 2026-06-15 (claude / claude-opus-4-8): **v4.0 — first-class temporal types.** Added DATE,
   TIME, TIMESTAMP and INTERVAL as a real part of the value system rather than ISO text. The key
   design choice that kept the engine simple: temporal values are **plain tagged objects**

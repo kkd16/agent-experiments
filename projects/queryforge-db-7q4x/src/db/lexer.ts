@@ -43,6 +43,8 @@ export const KEYWORDS = new Set([
   'UNION', 'INTERSECT', 'EXCEPT', 'ALL', 'WITH', 'RECURSIVE', 'OVER', 'PARTITION',
   'ANY', 'SOME',
   'ROWS', 'RANGE', 'UNBOUNDED', 'PRECEDING', 'FOLLOWING', 'CURRENT', 'ROW',
+  'FOREIGN', 'REFERENCES', 'CHECK', 'DEFAULT', 'CONSTRAINT',
+  'ALTER', 'ADD', 'COLUMN', 'RENAME', 'TO',
 ])
 
 // Multi-character operators, longest first so the scanner is greedy.

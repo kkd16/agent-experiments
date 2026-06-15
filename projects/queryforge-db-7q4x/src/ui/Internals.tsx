@@ -57,10 +57,16 @@ const STAGES: Stage[] = [
     body: 'Tables are heaps keyed by rowid; secondary indexes are real B+Trees with internal/leaf nodes, node splitting, and a chained leaf list for range scans. Keys are tuples, so one structure backs both single-column and composite indexes — a shorter bound is treated as a key prefix. EXPLAIN reports each tree’s height and node count.',
   },
   {
+    n: 7.5,
+    name: 'Declarative integrity & referential actions',
+    file: 'db/catalog.ts',
+    body: 'Constraints are first-class. The Table enforces its own-row rules — NOT NULL, CHECK (compiled to the same closure form as any predicate; a NULL result passes), and UNIQUE/PRIMARY KEY via its B+Trees (a NULL component never collides). Cross-table referential integrity is orchestrated by the Database, which owns every table: a child INSERT/UPDATE verifies its FOREIGN KEY parents exist (MATCH SIMPLE — a NULL key is exempt), and a parent DELETE/UPDATE drives the configured action — NO ACTION/RESTRICT (refuse), CASCADE (recurse), SET NULL or SET DEFAULT — across the dependent rows, recursively and cycle-guarded. DEFAULT expressions fill omitted columns. Statements are atomic: each INSERT/UPDATE/DELETE/DDL snapshots first and rolls back wholesale if any row or cascade fails, so a constraint never leaves a half-applied change.',
+  },
+  {
     n: 8,
     name: 'Transactions & persistence',
     file: 'db/engine.ts',
-    body: 'BEGIN snapshots the catalog; ROLLBACK restores it. After every successful statement the database is serialized to localStorage so your work survives a refresh (and degrades gracefully when sandboxed).',
+    body: 'BEGIN snapshots the catalog; ROLLBACK restores it. Snapshots round-trip the full schema — columns, indexes and every constraint (PK/UNIQUE/CHECK/DEFAULT/FOREIGN KEY) — so integrity survives a reload. After every successful statement the database is serialized to localStorage so your work survives a refresh (and degrades gracefully when sandboxed).',
   },
 ]
 
@@ -72,7 +78,8 @@ export function Internals() {
         A complete relational database — lexer, parser, cost-aware planner, compiled expression engine, an
         iterator-model executor, and a B+Tree storage layer — built from scratch in TypeScript. It speaks a
         broad SQL dialect: joins, aggregation, subqueries (correlated too), CTEs (including <code>WITH
-        RECURSIVE</code>), set operations and window functions.
+        RECURSIVE</code>), set operations, window functions, and declarative integrity — primary/foreign
+        keys, <code>CHECK</code>/<code>DEFAULT</code>, and <code>ON DELETE/UPDATE</code> referential actions.
       </p>
       <ol className="pipeline">
         {STAGES.map((s, i) => (
