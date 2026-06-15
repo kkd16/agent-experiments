@@ -3,31 +3,54 @@ import { BoidsCanvas } from './BoidsCanvas'
 import { type BoidParams } from './boids'
 import './App.css'
 
+const defaultParams: BoidParams = {
+  separation: 1.5,
+  alignment: 1.0,
+  cohesion: 1.0,
+  visualRange: 50,
+  maxSpeed: 4,
+  maxForce: 0.05,
+  mouseInteraction: 'none',
+  mouseRadius: 150,
+  edgeBehavior: 'wrap',
+  predatorAvoidance: 2.5,
+  predatorVisualRange: 100,
+  windX: 0,
+  windY: 0,
+  boidShape: 'triangle',
+  gravity: 0,
+  showTrails: false,
+  showGrid: false,
+  windVariation: false,
+  nightMode: true,
+  trailDecay: 0.1,
+  cameraFollow: false,
+  glowEffect: false
+}
+
 function App() {
-  const [params, setParams] = useState<BoidParams>({
-    separation: 1.5,
-    alignment: 1.0,
-    cohesion: 1.0,
-    visualRange: 50,
-    maxSpeed: 4,
-    maxForce: 0.05,
-    mouseInteraction: 'none',
-    mouseRadius: 150,
-    edgeBehavior: 'wrap',
-    predatorAvoidance: 2.5,
-    predatorVisualRange: 100,
-    windX: 0,
-    windY: 0,
-    boidShape: 'triangle',
-    gravity: 0,
-    showTrails: false,
-    showGrid: false
-  })
+  const [params, setParams] = useState<BoidParams>(defaultParams)
 
   const [numBoids, setNumBoids] = useState(150)
   const [numPredators, setNumPredators] = useState(0)
   const [showControls, setShowControls] = useState(true)
   const [isPaused, setIsPaused] = useState(false)
+
+  const handleDownloadScreenshot = () => {
+    const canvas = document.querySelector('canvas');
+    if (!canvas) return;
+    const dataURL = canvas.toDataURL('image/png');
+    const a = document.createElement('a');
+    a.href = dataURL;
+    a.download = 'boids-simulation.png';
+    a.click();
+  }
+
+  const handleResetDefaults = () => {
+    setParams(defaultParams);
+    setNumBoids(150);
+    setNumPredators(0);
+  }
 
   const handleParamChange = (key: keyof BoidParams, value: number) => {
     setParams(prev => ({ ...prev, [key]: value }))
@@ -58,7 +81,7 @@ function App() {
           </div>
 
           <div className="control-group">
-            <label>
+            <label title="Adjust this simulation parameter">
               Number of Boids: {numBoids}
               <input
                 type="range"
@@ -72,7 +95,7 @@ function App() {
           </div>
 
           <div className="control-group">
-            <label>
+            <label title="Adjust this simulation parameter">
               Number of Predators: {numPredators}
               <input
                 type="range"
@@ -86,7 +109,7 @@ function App() {
           </div>
 
           <div className="control-group">
-            <label>
+            <label title="Adjust this simulation parameter">
               Separation: {params.separation.toFixed(1)}
               <input
                 type="range"
@@ -100,7 +123,7 @@ function App() {
           </div>
 
           <div className="control-group">
-            <label>
+            <label title="Adjust this simulation parameter">
               Alignment: {params.alignment.toFixed(1)}
               <input
                 type="range"
@@ -114,7 +137,7 @@ function App() {
           </div>
 
           <div className="control-group">
-            <label>
+            <label title="Adjust this simulation parameter">
               Cohesion: {params.cohesion.toFixed(1)}
               <input
                 type="range"
@@ -128,7 +151,7 @@ function App() {
           </div>
 
           <div className="control-group">
-            <label>
+            <label title="Adjust this simulation parameter">
               Visual Range: {params.visualRange}
               <input
                 type="range"
@@ -142,7 +165,7 @@ function App() {
           </div>
 
           <div className="control-group">
-            <label>
+            <label title="Adjust this simulation parameter">
               Max Speed: {params.maxSpeed.toFixed(1)}
               <input
                 type="range"
@@ -156,7 +179,7 @@ function App() {
           </div>
 
           <div className="control-group">
-            <label>
+            <label title="Adjust this simulation parameter">
               Edge Behavior
               <select
                 value={params.edgeBehavior}
@@ -169,7 +192,7 @@ function App() {
           </div>
 
           <div className="control-group">
-            <label>
+            <label title="Adjust this simulation parameter">
               Mouse Interaction
               <select
                 value={params.mouseInteraction}
@@ -185,7 +208,7 @@ function App() {
 
           {params.mouseInteraction !== 'none' && (
             <div className="control-group">
-              <label>
+              <label title="Adjust this simulation parameter">
                 Mouse Radius: {params.mouseRadius}
                 <input
                   type="range"
@@ -200,7 +223,7 @@ function App() {
           )}
 
           <div className="control-group">
-            <label>
+            <label title="Adjust this simulation parameter">
               Wind X: {params.windX.toFixed(2)}
               <input
                 type="range"
@@ -214,7 +237,7 @@ function App() {
           </div>
 
           <div className="control-group">
-            <label>
+            <label title="Adjust this simulation parameter">
               Gravity: {params.gravity.toFixed(2)}
               <input
                 type="range"
@@ -247,7 +270,7 @@ function App() {
           </div>
 
           <div className="control-group">
-            <label>
+            <label title="Adjust this simulation parameter">
               Wind Y: {params.windY.toFixed(2)}
               <input
                 type="range"
@@ -261,7 +284,7 @@ function App() {
           </div>
 
           <div className="control-group">
-            <label>
+            <label title="Adjust this simulation parameter">
               Boid Shape
               <select
                 value={params.boidShape}
@@ -274,6 +297,68 @@ function App() {
             </label>
           </div>
 
+          <div className="control-group">
+            <label title="Automatically vary wind strength and direction over time">
+               <input
+                 type="checkbox"
+                 checked={params.windVariation}
+                 onChange={(e) => setParams(prev => ({ ...prev, windVariation: e.target.checked }))}
+               />
+               Wind Variation (Time)
+            </label>
+          </div>
+
+          <div className="control-group">
+            <label title="Toggle dark/light theme">
+               <input
+                 type="checkbox"
+                 checked={params.nightMode}
+                 onChange={(e) => setParams(prev => ({ ...prev, nightMode: e.target.checked }))}
+               />
+               Night Mode
+            </label>
+          </div>
+
+          <div className="control-group">
+            <label title="Control how quickly trails fade out">
+              Trail Decay: {params.trailDecay.toFixed(2)}
+              <input
+                type="range"
+                min="0.01"
+                max="0.5"
+                step="0.01"
+                value={params.trailDecay}
+                onChange={(e) => handleParamChange('trailDecay', Number(e.target.value))}
+              />
+            </label>
+          </div>
+
+          <div className="control-group">
+            <label title="Center camera on the leading boid">
+               <input
+                 type="checkbox"
+                 checked={params.cameraFollow}
+                 onChange={(e) => setParams(prev => ({ ...prev, cameraFollow: e.target.checked }))}
+               />
+               Camera Follow Leader
+            </label>
+          </div>
+
+          <div className="control-group">
+            <label title="Apply a visual bloom/glow effect to boids">
+               <input
+                 type="checkbox"
+                 checked={params.glowEffect}
+                 onChange={(e) => setParams(prev => ({ ...prev, glowEffect: e.target.checked }))}
+               />
+               Glow Effect
+            </label>
+          </div>
+
+          <div className="control-group" style={{ display: 'flex', gap: '10px', marginTop: '20px' }}>
+             <button onClick={handleResetDefaults} style={{ flex: 1, padding: '8px', cursor: 'pointer' }}>Reset Defaults</button>
+             <button onClick={handleDownloadScreenshot} style={{ flex: 1, padding: '8px', cursor: 'pointer', backgroundColor: '#10b981', color: 'white', border: 'none', borderRadius: '4px' }}>Screenshot</button>
+          </div>
         </div>
       )}
     </div>

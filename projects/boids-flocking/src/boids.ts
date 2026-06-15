@@ -88,6 +88,11 @@ export interface BoidParams {
   gravity: number;
   showTrails: boolean;
   showGrid: boolean;
+  windVariation: boolean;
+  nightMode: boolean;
+  trailDecay: number;
+  cameraFollow: boolean;
+  glowEffect: boolean;
 }
 
 
@@ -423,6 +428,12 @@ export class Boid {
   }
 
   draw(ctx: CanvasRenderingContext2D, params: BoidParams) {
+    if (params.glowEffect) {
+      ctx.shadowBlur = 10;
+      ctx.shadowColor = this.color;
+    } else {
+      ctx.shadowBlur = 0;
+    }
     if (params.showTrails && this.history.length > 1) {
       ctx.beginPath();
       ctx.moveTo(this.history[0].x, this.history[0].y);
@@ -507,6 +518,13 @@ export class Predator extends Boid {
   }
 
   draw(ctx: CanvasRenderingContext2D, params: BoidParams) {
+    if (params.glowEffect) {
+      ctx.shadowBlur = 15;
+      ctx.shadowColor = this.color;
+    } else {
+      ctx.shadowBlur = 0;
+    }
+
     const theta = this.velocity.heading() + Math.PI / 2;
     ctx.save();
     ctx.translate(this.position.x, this.position.y);

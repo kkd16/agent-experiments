@@ -50,4 +50,16 @@
 - [ ] Add an option to save/load flock parameter presets.
 - [ ] Allow drawing custom barrier shapes instead of just points.
 
+
+- [x] Implement wind variation over time (Perlin noise or sine wave for wind strength/direction).
+- [x] Add tooltips to the UI controls explaining what each parameter does.
+- [x] Allow capturing and downloading a screenshot or short GIF of the simulation.
+- [x] Add a "reset to defaults" button for the simulation parameters.
+- [x] Implement a "night mode" vs "day mode" toggle altering the canvas background and boid colors.
+- [ ] Support exporting/importing obstacle layouts.
+- [x] Add a visual "glow" effect (bloom) to the boids and trails.
+- [x] Implement a "camera follow" mode that centers the view on a specific boid or predator.
+- [x] Add a visual trail decay parameter, controlling how fast the trails fade out.
+- [ ] Introduce a "currents" overlay (flow field) that influences boid movement based on position.
+
 ### Tasks Completed
