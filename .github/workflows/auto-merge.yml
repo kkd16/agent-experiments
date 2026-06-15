@@ -110,6 +110,7 @@ jobs:
       actions: write # dispatch the deploy workflow afterwards
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_REPO: ${{ github.repository }} # gh needs this — this job has no checkout to infer the repo from
       PR: ${{ github.event.pull_request.number }}
       BASE: ${{ github.event.pull_request.base.ref }}
     steps:
