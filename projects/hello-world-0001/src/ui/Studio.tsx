@@ -6,6 +6,7 @@ import { useCallback, useRef, useState } from 'react'
 import { rgbaToCss } from '../color/convert'
 import { sortedStops } from '../color/interpolate'
 import { toCSS } from '../color/gradient'
+import { parseCssGradient } from '../color/parseCss'
 import { museGradient } from '../color/random'
 import { SPACE_BLURB, SPACE_LABELS } from '../color/types'
 import type { Gradient, GradientType, HueMode, InterpSpace, RGBA, Stop } from '../color/types'
@@ -24,6 +25,8 @@ const CYLINDRICAL: InterpSpace[] = ['oklch', 'lch', 'hsl']
 export function Studio({ gradient, setGradient }: { gradient: Gradient; setGradient: (g: Gradient) => void }) {
   const [rawSelectedId, setSelectedId] = useState<string | null>(gradient.stops[0]?.id ?? null)
   const [saved, setSaved] = useState(false)
+  const [importText, setImportText] = useState('')
+  const [importErr, setImportErr] = useState('')
   const previewRef = useRef<HTMLDivElement>(null)
 
   // Derive a valid selection rather than correcting it in an effect: if the selected stop went
@@ -47,6 +50,17 @@ export function Studio({ gradient, setGradient }: { gradient: Gradient; setGradi
   }
   const muse = () => {
     const g = museGradient(randomSeed())
+    setGradient(g)
+    setSelectedId(g.stops[0].id)
+  }
+  const importCss = () => {
+    const g = parseCssGradient(importText)
+    if (!g) {
+      setImportErr('Could not parse a gradient. Try a linear/radial/conic-gradient(…) with hex, rgb(), hsl() or oklch() stops.')
+      return
+    }
+    setImportErr('')
+    setImportText('')
     setGradient(g)
     setSelectedId(g.stops[0].id)
   }
@@ -199,6 +213,24 @@ export function Studio({ gradient, setGradient }: { gradient: Gradient; setGradi
         <section className="card">
           <h3>Color-vision preview</h3>
           <CvdPanel gradient={gradient} />
+        </section>
+
+        <section className="card">
+          <h3>Import CSS</h3>
+          <p className="muted small">Paste any <code>linear/radial/conic-gradient(…)</code> — hex, rgb(), hsl() or oklch() stops.</p>
+          <textarea
+            className="import-area"
+            value={importText}
+            onChange={(e) => setImportText(e.target.value)}
+            placeholder="background: linear-gradient(90deg, #0b1026, #6d28d9 45%, #f97316);"
+            spellCheck={false}
+          />
+          <div className="export-actions">
+            <button className="btn" onClick={importCss} disabled={!importText.trim()}>
+              Load gradient
+            </button>
+            {importErr && <span className="flash" style={{ color: 'var(--bad)' }}>{importErr}</span>}
+          </div>
         </section>
 
         <section className="card span-2">
