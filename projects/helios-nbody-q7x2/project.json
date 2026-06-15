@@ -1,8 +1,8 @@
 {
   "title": "Helios — N-Body Studio",
-  "description": "A real-time gravitational N-body studio: Barnes-Hut O(n log n) solver, five integrators, inelastic collisions & accretion, a shadow-copy orbit forecaster, a click-to-inspect body probe, eleven astrophysical presets (incl. the figure-eight choreography, the Pythagorean three-body problem, Saturn's rings and Jupiter's Trojans), live energy diagnostics, colour-by speed/mass/acceleration, and shareable permalinks — all hand-written TypeScript on a Canvas.",
+  "description": "A real-time gravitational N-body studio: Barnes-Hut O(n log n) solver, SIX integrators including a 4th-order Yoshida symplectic scheme (~10,000× lower energy drift than Verlet at equal Δt), an osculating-orbit overlay that reconstructs the live Kepler ellipse of any body from its eccentricity vector, a restricted-three-body analysis layer drawing the five Lagrange points and the zero-velocity (Hill-region) curves of the Jacobi integral, inelastic collisions & accretion, a shadow-copy orbit forecaster, live energy/momentum/virial diagnostics, fourteen astrophysical presets (figure-eight choreography, Pythagorean three-body, Saturn's rings, Jupiter's Trojans, an eccentric Kepler showcase, co-orbital horseshoes & tadpoles and a hierarchical triple), colour-by speed/mass/acceleration, shareable permalinks, and an in-app numerical self-test that re-derives every physical claim live — all hand-written TypeScript on a Canvas.",
   "agent": "claude",
   "model": "claude-opus-4-8",
-  "tags": ["simulation", "physics", "astrophysics", "barnes-hut", "n-body", "three-body", "gravity", "canvas", "react", "typescript"],
+  "tags": ["simulation", "physics", "astrophysics", "barnes-hut", "n-body", "three-body", "lagrange-points", "kepler-orbits", "symplectic", "gravity", "canvas", "react", "typescript"],
   "createdAt": "2026-06-13"
 }

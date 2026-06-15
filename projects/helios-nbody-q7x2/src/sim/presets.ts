@@ -537,6 +537,170 @@ const pythagorean: PresetDef = {
   },
 }
 
+// Kepler Showcase: a heavy star with a fan of planets on increasingly eccentric
+// orbits, each launched exactly from periapsis. Built to exercise the osculating
+// orbit overlay — every planet's drawn ellipse should hug its path. Runs on the
+// 4th-order Yoshida integrator so even the high-e orbits close cleanly.
+const keplerShowcase: PresetDef = {
+  id: 'kepler-showcase',
+  name: 'Kepler Showcase',
+  description:
+    'A star with planets on a ladder of eccentric orbits (e ≈ 0.1 → 0.75), each started from periapsis — turn on the osculating orbit overlay to watch each ellipse hug its body.',
+  defaultCount: 7,
+  minCount: 3,
+  maxCount: 24,
+  build(count, seed) {
+    const buf = alloc(count)
+    const rng = new Rng(seed)
+    const g = 1
+    const starMass = 16000
+    buf.mass[0] = starMass
+
+    const planets = count - 1
+    for (let k = 0; k < planets; k++) {
+      const i = k + 1
+      const a = 70 + k * 38 // semi-major axis ladder
+      const e = planets > 1 ? 0.1 + 0.65 * (k / (planets - 1)) : 0.4
+      const mu = g * (starMass + 1)
+      // Periapsis radius and speed for this ellipse (vis-viva at periapsis).
+      const rp = a * (1 - e)
+      const vp = Math.sqrt((mu / a) * ((1 + e) / (1 - e)))
+      const w = rng.range(0, Math.PI * 2) // orient periapsis randomly
+      const ux = Math.cos(w)
+      const uy = Math.sin(w)
+      // At periapsis the velocity is perpendicular to the radius (prograde).
+      buf.posX[i] = rp * ux
+      buf.posY[i] = rp * uy
+      buf.velX[i] = -uy * vp
+      buf.velY[i] = ux * vp
+      buf.mass[i] = rng.range(2, 18)
+    }
+    const aMax = 70 + (planets - 1) * 38
+    const eMax = planets > 1 ? 0.75 : 0.4
+    return {
+      ...buf,
+      params: { g: 1, dt: 0.01, softening: 1, theta: 0.4, integrator: 'yoshida4' },
+      viewExtent: aMax * (1 + eMax) * 1.1,
+    }
+  },
+}
+
+// Horseshoe & Tadpole: the Sun, one small planet, and a swarm of co-orbital test
+// particles sharing the planet's orbit at slightly different semi-major axes.
+// In the co-rotating frame some librate around L4/L5 (tadpoles) and some swing
+// all the way around through L3 (horseshoes). Pair with the Lagrange overlay (l).
+const horseshoe: PresetDef = {
+  id: 'horseshoe',
+  name: 'Horseshoe & Tadpole',
+  description:
+    'A small planet and a swarm of co-orbital particles on the same orbit — some librate around L4/L5 (tadpoles), some swing right around through L3 (horseshoes). Turn on Lagrange & Hill curves (key: l).',
+  defaultCount: 2500,
+  minCount: 400,
+  maxCount: 10000,
+  build(count, seed) {
+    const buf = alloc(count)
+    const rng = new Rng(seed)
+    const g = 1
+    const sun = 24000
+    const R = 240
+    const planetMass = 9 // μ ≈ 3.7e-4 — small enough for horseshoe orbits
+    const vP = Math.sqrt((g * sun) / R)
+
+    buf.posX[1] = R
+    buf.posY[1] = 0
+    buf.velX[1] = 0
+    buf.velY[1] = vP
+    buf.mass[1] = planetMass
+
+    // Sun at the origin with a tiny recoil so total momentum ≈ 0.
+    buf.posX[0] = 0
+    buf.posY[0] = 0
+    buf.velX[0] = 0
+    buf.velY[0] = -(planetMass * vP) / sun
+    buf.mass[0] = sun
+
+    for (let i = 2; i < count; i++) {
+      // Spread broadly in longitude (avoiding the planet) at near-co-orbital
+      // radius; the small radial offset sets the libration amplitude.
+      let ang = rng.range(0, Math.PI * 2)
+      // Nudge particles away from the planet's immediate vicinity.
+      if (Math.abs(ang) < 0.18) ang += 0.36
+      const r = R + rng.gaussian(0, 2.2)
+      const ux = Math.cos(ang)
+      const uy = Math.sin(ang)
+      const v = Math.sqrt((g * sun) / r)
+      buf.posX[i] = ux * r
+      buf.posY[i] = uy * r
+      buf.velX[i] = -uy * v
+      buf.velY[i] = ux * v
+      buf.mass[i] = 0.005
+    }
+    return { ...buf, params: { g: 1, dt: 0.04, softening: 1.5, theta: 0.6 }, viewExtent: R * 1.4 }
+  },
+}
+
+// Three-Body Waltz: a stable hierarchical triple — a tight inner binary orbited
+// by a distant third star. The inner pair traces a thick ribbon as its centre of
+// mass swings around the outer orbit. A clean, long-lived three-body system, in
+// contrast to the chaotic Pythagorean problem.
+const waltz: PresetDef = {
+  id: 'three-body-waltz',
+  name: 'Three-Body Waltz',
+  description:
+    'A stable hierarchical triple: a tight inner binary orbited by a distant third star. The inner pair traces a ribbon as its barycentre rides the wide orbit.',
+  defaultCount: 3,
+  minCount: 3,
+  maxCount: 3,
+  build() {
+    const buf = alloc(3)
+    const g = 1
+    const m = 1000 // all three equal
+    const Min = 2 * m
+    const m3 = m
+    const D = 300 // inner-COM ↔ outer separation
+    const s = 40 // inner binary separation
+
+    // Outer two-body split about the system barycentre (origin).
+    const dIn = (D * m3) / (Min + m3) // 100
+    const dOut = (D * Min) / (Min + m3) // 200
+    const vRel = Math.sqrt((g * (Min + m3)) / D)
+    const vInner = (vRel * m3) / (Min + m3) // inner-COM speed
+    const vOuter = (vRel * Min) / (Min + m3) // outer-body speed
+
+    // Inner COM on the −x side, moving −y; outer on +x, moving +y.
+    const innerCx = -dIn
+    const innerCy = 0
+    const innerVx = 0
+    const innerVy = -vInner
+
+    // Inner binary: pair separated along y, orbiting their COM in the plane.
+    const vBin = Math.sqrt((g * m) / (2 * s)) // each star's speed about inner COM
+    buf.posX[0] = innerCx
+    buf.posY[0] = innerCy + s / 2
+    buf.velX[0] = innerVx + vBin
+    buf.velY[0] = innerVy
+    buf.mass[0] = m
+    buf.posX[1] = innerCx
+    buf.posY[1] = innerCy - s / 2
+    buf.velX[1] = innerVx - vBin
+    buf.velY[1] = innerVy
+    buf.mass[1] = m
+
+    // Outer star.
+    buf.posX[2] = dOut
+    buf.posY[2] = 0
+    buf.velX[2] = 0
+    buf.velY[2] = vOuter
+    buf.mass[2] = m3
+
+    return {
+      ...buf,
+      params: { g: 1, dt: 0.015, softening: 1, theta: 0.3, integrator: 'yoshida4' },
+      viewExtent: D * 1.25,
+    }
+  },
+}
+
 export const PRESETS: PresetDef[] = [
   spiralGalaxy,
   galaxyCollision,
@@ -548,6 +712,9 @@ export const PRESETS: PresetDef[] = [
   trojans,
   figureEight,
   pythagorean,
+  keplerShowcase,
+  horseshoe,
+  waltz,
   randomCloud,
 ]
 

@@ -548,6 +548,12 @@ select {
   font-family: var(--mono);
   color: var(--text);
 }
+.stat-value.good {
+  color: var(--good);
+}
+.stat-value.warn {
+  color: var(--warn);
+}
 
 /* ---------- body inspector ---------- */
 .inspector {
@@ -753,6 +759,62 @@ select {
   border-top: 1px solid var(--line);
   color: var(--muted) !important;
   font-size: 12.5px !important;
+}
+
+/* ---------- in-app self-test ---------- */
+.selftest {
+  margin: 10px 0 6px;
+}
+.selftest-results {
+  margin-top: 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+.selftest-summary {
+  padding: 8px 12px;
+  font-family: var(--mono);
+  font-size: 12.5px;
+  font-weight: 700;
+  background: rgba(255, 255, 255, 0.03);
+  border-bottom: 1px solid var(--line);
+}
+.selftest-summary.good {
+  color: var(--good);
+}
+.selftest-summary.bad {
+  color: #ff6b6b;
+}
+.selftest-case {
+  display: grid;
+  grid-template-columns: 18px 1fr;
+  gap: 2px 8px;
+  padding: 7px 12px;
+  border-bottom: 1px dotted rgba(255, 255, 255, 0.06);
+  font-size: 12px;
+}
+.selftest-case:last-child {
+  border-bottom: none;
+}
+.selftest-mark {
+  grid-row: span 2;
+  font-weight: 700;
+}
+.selftest-mark.good {
+  color: var(--good);
+}
+.selftest-mark.bad {
+  color: #ff6b6b;
+}
+.selftest-name {
+  color: var(--text) !important;
+  font-weight: 600;
+}
+.selftest-detail {
+  grid-column: 2;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--muted) !important;
 }
 
 /* ---------- responsive ---------- */

@@ -45,6 +45,43 @@ function dOmegaDx(x: number, mu: number): number {
   return x - ((1 - mu) * a) / a3 - (mu * b) / b3
 }
 
+/**
+ * Gradient of the dimensionless effective potential ∇Ω(x,y). The five Lagrange
+ * points are exactly its zeros — exported so the self-test can confirm each
+ * solved point is a genuine equilibrium of the co-rotating frame.
+ */
+export function omegaGradient(xn: number, yn: number, mu: number): [number, number] {
+  const ax = xn + mu
+  const bx = xn - (1 - mu)
+  const r1 = Math.hypot(ax, yn)
+  const r2 = Math.hypot(bx, yn)
+  const r13 = r1 ** 3
+  const r23 = r2 ** 3
+  const gx = xn - ((1 - mu) * ax) / r13 - (mu * bx) / r23
+  const gy = yn - ((1 - mu) * yn) / r13 - (mu * yn) / r23
+  return [gx, gy]
+}
+
+/**
+ * The five Lagrange points in the dimensionless co-rotating frame (primaries at
+ * (−μ,0) and (1−μ,0)): collinear L1–L3 from bisecting ∂Ω/∂x, triangular L4/L5
+ * at the equilateral apices. Shared by the overlay and the self-test.
+ */
+export function solveLagrangeNormalized(mu: number): Array<[number, number]> {
+  const eps = 1e-4
+  const l1 = bisectCollinear(-mu + eps, 1 - mu - eps, mu)
+  const l2 = bisectCollinear(1 - mu + eps, 1 - mu + 3, mu)
+  const l3 = bisectCollinear(-mu - 3, -mu - eps, mu)
+  const SQRT3_2 = Math.sqrt(3) / 2
+  return [
+    [l1, 0],
+    [l2, 0],
+    [l3, 0],
+    [0.5 - mu, SQRT3_2],
+    [0.5 - mu, -SQRT3_2],
+  ]
+}
+
 /** Bisect dΩ/dx for a root in (lo, hi); assumes a sign change across the bracket. */
 function bisectCollinear(lo: number, hi: number, mu: number): number {
   let flo = dOmegaDx(lo, mu)
@@ -111,22 +148,16 @@ export function restrictedThreeBody(
     baryY + d * (xn * uy + yn * vy),
   ]
 
-  // Collinear points L1 (between), L2 (beyond m2), L3 (beyond m1).
-  const eps = 1e-4
-  const l1 = bisectCollinear(-mu + eps, 1 - mu - eps, mu)
-  const l2 = bisectCollinear(1 - mu + eps, 1 - mu + 3, mu)
-  const l3 = bisectCollinear(-mu - 3, -mu - eps, mu)
-  const SQRT3_2 = Math.sqrt(3) / 2
-  const points: Array<[number, number]> = [
-    toWorld(l1, 0),
-    toWorld(l2, 0),
-    toWorld(l3, 0),
-    toWorld(0.5 - mu, SQRT3_2),
-    toWorld(0.5 - mu, -SQRT3_2),
-  ]
+  // The five Lagrange points (normalized), then mapped into the world frame.
+  const normPts = solveLagrangeNormalized(mu)
+  const points: Array<[number, number]> = normPts.map(([xn, yn]) => toWorld(xn, yn))
 
   // Zero-velocity curves at the Jacobi separatrices through L1, L2, L3.
-  const levels = [omega(l1, 0, mu), omega(l2, 0, mu), omega(l3, 0, mu)]
+  const levels = [
+    omega(normPts[0][0], 0, mu),
+    omega(normPts[1][0], 0, mu),
+    omega(normPts[2][0], 0, mu),
+  ]
   const contours = marchingSquares(mu, gridN, gridHalf, levels, toWorld)
 
   return { points, contours, primary1: [p1x, p1y], primary2: [p2x, p2y], mu, valid: true }

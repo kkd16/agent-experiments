@@ -83,6 +83,12 @@ export interface Diagnostics {
   momentumX: number
   momentumY: number
   angularMomentum: number
+  /**
+   * Virial ratio 2T/|U|. For a self-gravitating system in equilibrium the
+   * virial theorem gives 2T + U = 0, i.e. this ratio → 1. NaN when the O(n²)
+   * potential is skipped for large N.
+   */
+  virial: number
   /** Centre-of-mass position, used by the camera "follow" mode. */
   comX: number
   comY: number

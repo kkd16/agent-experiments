@@ -566,6 +566,7 @@ export class Simulation {
     let potential = 0
     let total = NaN
     let drift = NaN
+    let virial = NaN
     if (includePotential) {
       for (let i = 0; i < n; i++) {
         const xi = posX[i]
@@ -582,6 +583,7 @@ export class Simulation {
       if (Number.isNaN(this.initialEnergy)) this.initialEnergy = total
       drift =
         this.initialEnergy !== 0 ? (total - this.initialEnergy) / Math.abs(this.initialEnergy) : 0
+      virial = potential !== 0 ? (2 * kinetic) / Math.abs(potential) : NaN
     } else {
       potential = NaN
     }
@@ -594,6 +596,7 @@ export class Simulation {
       momentumX: px,
       momentumY: py,
       angularMomentum: angular,
+      virial,
       comX,
       comY,
     }

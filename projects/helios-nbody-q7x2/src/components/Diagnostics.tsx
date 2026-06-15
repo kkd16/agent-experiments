@@ -86,6 +86,13 @@ export function DiagnosticsDock({
               )}
             />
             <Stat label="L (ang. mom.)" value={fmt(diag?.angularMomentum ?? NaN)} />
+            {exactEnergy && (
+              <Stat
+                label="Virial 2T/|U|"
+                value={fmt(diag?.virial ?? NaN)}
+                valueClass={virialClass(diag?.virial)}
+              />
+            )}
             {collideOn && <Stat label="Merges" value={mergeCount.toLocaleString()} />}
           </div>
         </div>
@@ -94,11 +101,18 @@ export function DiagnosticsDock({
   )
 }
 
-function Stat({ label, value }: { label: string; value: string }) {
+/** Colour the virial ratio by how close 2T/|U| sits to the equilibrium value 1. */
+function virialClass(v: number | undefined): string {
+  if (v == null || !Number.isFinite(v)) return ''
+  const d = Math.abs(v - 1)
+  return d < 0.15 ? 'good' : d < 0.5 ? 'warn' : ''
+}
+
+function Stat({ label, value, valueClass }: { label: string; value: string; valueClass?: string }) {
   return (
     <div className="stat">
       <span className="stat-label">{label}</span>
-      <span className="stat-value">{value}</span>
+      <span className={`stat-value ${valueClass ?? ''}`}>{value}</span>
     </div>
   )
 }

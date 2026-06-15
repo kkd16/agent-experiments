@@ -1,10 +1,27 @@
-// An overlay explaining the physics and numerics behind the simulator.
+// An overlay explaining the physics and numerics behind the simulator, with a
+// built-in self-test that re-derives Helios's physical claims at runtime.
+
+import { useState } from 'react'
+import { runSelfTest } from '../sim/selftest'
+import type { SelfTestReport } from '../sim/selftest'
 
 interface Props {
   onClose: () => void
 }
 
 export function About({ onClose }: Props) {
+  const [report, setReport] = useState<SelfTestReport | null>(null)
+  const [running, setRunning] = useState(false)
+
+  const runTests = () => {
+    setRunning(true)
+    // Defer so the button can paint its "running" state before the sync work.
+    setTimeout(() => {
+      setReport(runSelfTest())
+      setRunning(false)
+    }, 20)
+  }
+
   return (
     <div className="about-backdrop" onClick={onClose}>
       <div className="about" onClick={(e) => e.stopPropagation()}>
@@ -66,9 +83,56 @@ export function About({ onClose }: Props) {
           <em>Predict orbits</em> evolves a hidden copy of the entire system forward in time and
           draws the future paths of the heaviest bodies and whichever body you have selected. Because
           it integrates the real N-body forces, the forecast bends as the system does. Click any body
-          to <strong>inspect</strong> its live mass, speed and two-body orbital energy relative to the
+          to <strong>inspect</strong> its live mass, speed and full Kepler orbit relative to the
           system's primary.
         </p>
+
+        <h2>Osculating orbits</h2>
+        <p>
+          Select a body and Helios reconstructs the <strong>osculating orbit</strong> it rides right
+          now — the Kepler ellipse it would follow forever if every other perturbation vanished. From
+          the relative state vector it solves the <em>eccentricity vector</em> (shape and orientation)
+          and the <em>vis-viva</em> energy (size), then draws the conic with ticks at periapsis and
+          apoapsis. Watch a perturbed orbit drift frame-to-frame against its own osculating ellipse —
+          that drift <em>is</em> orbital precession. Try <em>Kepler Showcase</em> with the overlay on.
+        </p>
+
+        <h2>Lagrange points &amp; Hill regions</h2>
+        <p>
+          Turn on <em>Lagrange &amp; Hill curves</em> and Helios treats the two heaviest bodies as the
+          primaries of the <strong>restricted three-body problem</strong>. It solves the five
+          equilibrium points — collinear <code>L1–L3</code> as roots of the co-rotating effective
+          potential, triangular <code>L4/L5</code> at the equilateral apices — and traces the
+          <em>zero-velocity (Hill-region) curves</em> of the Jacobi integral. Load <em>Horseshoe &amp;
+          Tadpole</em> or <em>Trojan Swarms</em> to see particles trapped in exactly those wells.
+        </p>
+
+        <h2>Run the numbers yourself</h2>
+        <p>
+          None of the above is taken on faith. The button below runs a battery of numerical checks in
+          your browser — that the orbit solver recovers known elements, that Yoshida 4 beats Verlet at
+          energy conservation, that the Lagrange points are genuine equilibria (<code>∇Ω ≈ 0</code>),
+          that momentum is conserved and that the virial theorem holds.
+        </p>
+        <div className="selftest">
+          <button type="button" className="btn primary" onClick={runTests} disabled={running}>
+            {running ? 'Running…' : '▶ Run physics self-test'}
+          </button>
+          {report && (
+            <div className="selftest-results">
+              <div className={`selftest-summary ${report.ok ? 'good' : 'bad'}`}>
+                {report.passed}/{report.total} checks passed {report.ok ? '✓' : '✗'}
+              </div>
+              {report.cases.map((c) => (
+                <div key={c.name} className="selftest-case">
+                  <span className={`selftest-mark ${c.pass ? 'good' : 'bad'}`}>{c.pass ? '✓' : '✗'}</span>
+                  <span className="selftest-name">{c.name}</span>
+                  <span className="selftest-detail">{c.detail}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
 
         <h2>Try this</h2>
         <ul>
@@ -76,6 +140,9 @@ export function About({ onClose }: Props) {
           <li>Open <em>Figure-Eight</em>, turn on orbit prediction, then switch to <em>Explicit Euler</em> and watch the choreography unravel.</li>
           <li>Run the <em>Pythagorean 3-Body</em> problem — deterministic, yet it ends by ejecting a body and leaving a binary.</li>
           <li>Enable <em>Collisions</em> on <em>Cold Collapse</em> to watch a swarm accrete into a handful of massive clumps.</li>
+          <li>Open <em>Kepler Showcase</em>, enable the <em>Osculating orbit</em> overlay, and click each planet to see its ellipse and elements.</li>
+          <li>Load <em>Horseshoe &amp; Tadpole</em>, press <code>l</code> for the Lagrange overlay, and watch particles librate around L4/L5.</li>
+          <li>Run the <em>Three-Body Waltz</em> on Yoshida 4 — a hierarchical triple that stays bound indefinitely.</li>
           <li>Click a planet in <em>Solar System</em> to read its orbital energy, then <em>Share</em> a permalink to your setup.</li>
         </ul>
 
@@ -83,7 +150,8 @@ export function About({ onClose }: Props) {
           Built with React + TypeScript and a hand-rolled Barnes–Hut engine running on typed arrays.
           No WebGL, no physics library — just maths and a Canvas. Shortcuts: Space play/pause,
           <code>.</code> step, <code>f</code> fit, <code>t</code> trails, <code>c</code> collisions,
-          <code>p</code> predict, <code>r</code> reseed, <code>s</code> share, <code>e</code> PNG.
+          <code>p</code> predict, <code>o</code> orbit, <code>l</code> Lagrange, <code>r</code> reseed,
+          <code>s</code> share, <code>e</code> PNG.
         </p>
       </div>
     </div>
