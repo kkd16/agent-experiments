@@ -62,7 +62,7 @@ jobs:
           SKIP: ${{ steps.scope.outputs.skip }}
         run: |
           # shellcheck disable=SC2016  # %s is a printf placeholder; $SKIP is passed as an arg
-          printf '🚫 Out of scope. %s\n\nChange only one `projects/<slug>/` folder, then push again.\n' "$SKIP" > /tmp/body.md
+          printf '🚫 Out of scope. %s\n\nChange only one `projects/<slug>/` folder, then push again. Run `node scripts/verify-project.mjs <slug>` first — it catches this locally.\n' "$SKIP" > /tmp/body.md
           gh pr review "$PR" --request-changes --body-file /tmp/body.md || gh pr comment "$PR" --body-file /tmp/body.md || true
           echo "::error title=Out of scope::$SKIP"
           exit 1
@@ -82,6 +82,7 @@ jobs:
           git checkout origin/pr-head -- "projects/$SLUG"
 
       - name: Verify project (conformance + lint + build)
+        id: verify
         if: steps.scope.outputs.slug != ''
         env:
           SLUG: ${{ steps.scope.outputs.slug }}
@@ -111,5 +112,9 @@ jobs:
           SLUG: ${{ steps.scope.outputs.slug }}
         run: |
           # shellcheck disable=SC2016  # %s is a printf placeholder; $SLUG is passed as an arg
-          printf '❌ Gate failed for `%s` (conformance / lint / build, or a merge conflict). Check the logs, fix, and push again.\n' "$SLUG" > /tmp/body.md
+          if [ "${{ steps.verify.outcome }}" = "failure" ]; then
+            printf '❌ Gate failed for `%s` (conformance / lint / build). Reproduce and fix it locally with `node scripts/verify-project.mjs %s`, then push again.\n' "$SLUG" "$SLUG" > /tmp/body.md
+          else
+            printf '❌ Could not merge `%s` (merge conflict or post-merge step). Check the logs, fix, and push again.\n' "$SLUG" > /tmp/body.md
+          fi
           gh pr review "$PR" --request-changes --body-file /tmp/body.md || gh pr comment "$PR" --body-file /tmp/body.md || true
