@@ -11,6 +11,8 @@ import { EufSolver } from './euf'
 import { solveSmt, type Theory } from './dpllt'
 import { referenceSatEUF, referenceSatArith, collectAtoms, evalFormula } from './reference'
 import { checkSat } from './smt'
+import { parseSmtLib } from './parse'
+import { ackermannize } from './ackermann'
 import { Rational, R } from './rational'
 
 export interface SmtCheckReport {
@@ -235,6 +237,106 @@ export function runSmtChecks(): SmtCheckReport {
     }
     check(`LRA: ${N} random formulas match Fourier–Motzkin reference`, mism === 0, `mismatches=${mism}`)
     check('LRA: random suite exercised some UNSAT instances', unsatSeen > N / 20, `unsat=${unsatSeen}`)
+  }
+
+  // ---- SMT-LIB parser ---------------------------------------------------------
+  {
+    const solveScript = (src: string) => {
+      const s = parseSmtLib(src)
+      return checkSat(s.tm, s.tm.and(s.assertions))
+    }
+    check(
+      'parse: QF_UF unsat script',
+      solveScript(`(declare-sort U 0)(declare-fun a () U)(declare-fun b () U)(declare-fun f (U) U)
+        (assert (= a b)) (assert (not (= (f a) (f b)))) (check-sat)`).status === 'unsat',
+    )
+    check(
+      'parse: QF_LRA sat script',
+      solveScript(`(declare-const x Real)(declare-const y Real)
+        (assert (< x y)) (assert (< y (+ x 1))) (check-sat)`).status === 'sat',
+    )
+    check(
+      'parse: QF_LIA unsat (0<x<1 over Int)',
+      solveScript(`(declare-const x Int) (assert (> x 0)) (assert (< x 1)) (check-sat)`).status === 'unsat',
+    )
+    check(
+      'parse: distinct + arithmetic',
+      solveScript(`(declare-const x Int)(declare-const y Int)(declare-const z Int)
+        (assert (distinct x y z)) (assert (<= 0 x)) (assert (<= x 1))
+        (assert (<= 0 y)) (assert (<= y 1)) (assert (<= 0 z)) (assert (<= z 1)) (check-sat)`).status === 'unsat',
+    )
+  }
+
+  // ---- mixed UF + arithmetic (Ackermann combination) -------------------------
+  {
+    const tm = new TermManager()
+    for (const v of ['x', 'y']) tm.declareFun({ name: v, argSorts: [], retSort: 'Real' })
+    tm.declareFun({ name: 'f', argSorts: ['Real'], retSort: 'Real' })
+    const x = tm.app('x')
+    const y = tm.app('y')
+    const fx = tm.app('f', [x])
+    const fy = tm.app('f', [y])
+    const n = (k: number) => tm.num(R(k), 'Real')
+    const sat = (f: Formula) => checkSat(tm, f).status === 'sat'
+    // x = y ∧ f(x) ≠ f(y) → UNSAT (congruence through arithmetic equality)
+    check('UFLRA: x=y ∧ f(x)≠f(y) UNSAT', !sat(tm.and([tm.eq(x, y), tm.not(tm.eq(fx, fy))])))
+    // x ≤ y ∧ y ≤ x ∧ f(x) ≠ f(y) → UNSAT (x=y derived from arithmetic)
+    check(
+      'UFLRA: x≤y ∧ y≤x ∧ f(x)≠f(y) UNSAT',
+      !sat(tm.and([tm.rel('le', x, y), tm.rel('le', y, x), tm.not(tm.eq(fx, fy))])),
+    )
+    // f(x) > 0 ∧ f(y) < 0 ∧ x = y → UNSAT
+    check(
+      'UFLRA: f(x)>0 ∧ f(y)<0 ∧ x=y UNSAT',
+      !sat(tm.and([tm.rel('gt', fx, n(0)), tm.rel('lt', fy, n(0)), tm.eq(x, y)])),
+    )
+    // x = y ∧ f(x) = f(y) → SAT (consistent)
+    check('UFLRA: x=y ∧ f(x)=f(y) SAT', sat(tm.and([tm.eq(x, y), tm.eq(fx, fy)])))
+    // f(x) ≠ f(y) ∧ x < y → SAT (x≠y allowed)
+    check('UFLRA: f(x)≠f(y) ∧ x<y SAT', sat(tm.and([tm.not(tm.eq(fx, fy)), tm.rel('lt', x, y)])))
+  }
+
+  // ---- random mixed UFLRA cross-check vs FM on the Ackermann reduction -------
+  {
+    const rng = mulberry32(0x9e3a17)
+    let mism = 0
+    const N = 1200
+    for (let i = 0; i < N; i++) {
+      const tm = new TermManager()
+      const vnames = ['x', 'y', 'z']
+      for (const v of vnames) tm.declareFun({ name: v, argSorts: [], retSort: 'Real' })
+      tm.declareFun({ name: 'f', argSorts: ['Real'], retSort: 'Real' })
+      const vars = vnames.map((v) => tm.app(v))
+      const fapps = vars.map((v) => tm.app('f', [v]))
+      const pool = [...vars, ...fapps]
+      const n = (k: number) => tm.num(R(k), 'Real')
+      const lits: Formula[] = []
+      const numAtoms = 2 + Math.floor(rng() * 3)
+      for (let j = 0; j < numAtoms; j++) {
+        const a = pool[Math.floor(rng() * pool.length)]
+        let atom: Formula
+        if (rng() < 0.5) {
+          const b = pool[Math.floor(rng() * pool.length)]
+          atom = tm.eq(a, b)
+        } else {
+          const rels = ['le', 'lt', 'ge', 'gt'] as const
+          atom = tm.rel(rels[Math.floor(rng() * rels.length)], a, n(Math.floor(rng() * 5) - 2))
+        }
+        if (rng() < 0.4) atom = tm.not(atom)
+        lits.push(atom)
+      }
+      const f = rng() < 0.6 ? tm.and(lits) : tm.or(lits)
+      const r = checkSat(tm, f)
+      if (r.status === 'unknown') continue
+      const got = r.status === 'sat'
+      // Independent reference: decide the Ackermann reduction (pure arithmetic) by FM.
+      const want = referenceSatArith(ackermannize(tm, f))
+      if (got !== want) {
+        mism++
+        if (mism <= 4) messages.push(`  UFLRA mismatch: got ${got}, want ${want}`)
+      }
+    }
+    check(`UFLRA: ${N} random mixed formulas match the Ackermann+FM reference`, mism === 0, `mismatches=${mism}`)
   }
 
   void Rational

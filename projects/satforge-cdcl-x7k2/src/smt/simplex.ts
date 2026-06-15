@@ -258,6 +258,21 @@ export class SimplexSolver {
   // assertBound: tighten l/u of variable v. Returns a conflict (two lits) if the
   // bounds cross. Updates β of non-basic v (and dependent basics) to stay within.
   private assertBound(v: number, isUpper: boolean, val: Delta, reason: TheoryLit): TheoryLit[] | null {
+    // Integer bound tightening: round strict / fractional bounds onto the integer
+    // grid (x > c ⟺ x ≥ ⌊c⌋+1, x < c ⟺ x ≤ ⌈c⌉−1, etc.). This removes every δ on
+    // integer variables, so the LP relaxation + branch-and-bound stays exact.
+    if (this.isInt[v]) {
+      const c = val.c
+      const ks = val.k.sign()
+      const tightened = isUpper
+        ? ks < 0
+          ? c.ceil() - 1n
+          : c.floor()
+        : ks > 0
+          ? c.floor() + 1n
+          : c.ceil()
+      val = Delta.of(Rational.of(tightened))
+    }
     if (isUpper) {
       if (this.upper[v] && !val.lt(this.upper[v]!.val)) {
         /* not tighter */

@@ -14,6 +14,7 @@ import { EufSolver } from './euf'
 import { SimplexSolver } from './simplex'
 import { solveSmt, type SmtResult, type SmtOptions, type Theory } from './dpllt'
 import { collectAtoms } from './reference'
+import { ackermannize, hasUninterpretedFunctions } from './ackermann'
 
 export function arithTrichotomy(tm: TermManager, root: Formula): Formula {
   const atoms = collectAtoms(root)
@@ -41,7 +42,11 @@ export function checkSat(tm: TermManager, root: Formula, opts: SmtOptions = {}):
   const euf = new EufSolver(tm)
   const simplex = new SimplexSolver(tm)
   const theories: Theory[] = [euf as unknown as Theory, simplex as unknown as Theory]
-  const expanded = arithTrichotomy(tm, root)
+  // Mixed UF + arithmetic: Ackermannize so the theories no longer share terms.
+  const atoms = collectAtoms(root)
+  const mixed = atoms.some((a) => a.kind === 'arith') && hasUninterpretedFunctions(tm, root)
+  const base = mixed ? ackermannize(tm, root) : root
+  const expanded = arithTrichotomy(tm, base)
   const res = solveSmt(expanded, theories, {
     atomName: (a: Atom) => atomName(tm, a),
     ...opts,
