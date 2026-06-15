@@ -176,7 +176,85 @@ do { Some 1 ; None ; Some 99 }`,
     expected: 'None',
   },
 
+  // ---- higher-kinded type classes ----
+  {
+    group: 'higher-kinded',
+    name: 'Monad Option (bind + pure)',
+    code: `type Opt a = None | Some a in
+class Monad m where pure : a -> m a, bind : m a -> (a -> m b) -> m b in
+instance Monad Opt where
+  pure = fn x -> Some x,
+  bind = fn m k -> match m with None -> None | Some x -> k x in
+bind (Some 20) (fn x -> pure (x + 1))`,
+    expected: 'Some 21',
+  },
+  {
+    group: 'higher-kinded',
+    name: 'polymorphic mapM over two monads',
+    code: `type Opt a = None | Some a in
+class Monad m where pure : a -> m a, bind : m a -> (a -> m b) -> m b in
+instance Monad Opt where pure = fn x -> Some x, bind = fn m k -> match m with None -> None | Some x -> k x in
+instance Monad List where pure = fn x -> [x], bind = fn m k -> concat (map k m) in
+let rec mapM = fn f xs -> if empty xs then pure []
+  else bind (f (head xs)) (fn y -> bind (mapM f (tail xs)) (fn ys -> pure (y :: ys))) in
+( mapM (fn x -> Some (x + 1)) [1, 2, 3], mapM (fn x -> [x, x * 10]) [1, 2] )`,
+    expected: '(Some [2, 3, 4], [[1, 2], [1, 20], [10, 2], [10, 20]])',
+  },
+  {
+    group: 'higher-kinded',
+    name: 'do-notation through the Monad class',
+    code: `type Opt a = None | Some a in
+class Monad m where pure : a -> m a, bind : m a -> (a -> m b) -> m b in
+instance Monad Opt where pure = fn x -> Some x, bind = fn m k -> match m with None -> None | Some x -> k x in
+let sd = fn a b -> if b == 0 then None else Some (a / b) in
+do { y <- sd 100 5 ; z <- sd y 2 ; pure (z + 1) }`,
+    expected: 'Some 11',
+  },
+  {
+    group: 'higher-kinded',
+    name: 'superclass entailment (Functor from Monad)',
+    code: `type Opt a = None | Some a in
+class Functor f where fmap : (a -> b) -> f a -> f b in
+class Functor m => Monad m where pure : a -> m a, bind : m a -> (a -> m b) -> m b in
+instance Functor Opt where fmap = fn g x -> match x with None -> None | Some v -> Some (g v) in
+instance Monad Opt where pure = fn x -> Some x, bind = fn m k -> match m with None -> None | Some x -> k x in
+let twice = fn mx -> bind mx (fn x -> fmap (fn y -> y + y) (pure x)) in
+twice (Some 21)`,
+    expected: 'Some 42',
+  },
+  {
+    group: 'higher-kinded',
+    name: 'State monad (partially-applied constructor)',
+    code: `type St s a = St (s -> (a, s)) in
+let run = fn st s -> match st with St f -> f s in
+class Monad m where pure : a -> m a, bind : m a -> (a -> m b) -> m b in
+instance Monad (St s) where
+  pure = fn x -> St (fn s -> (x, s)),
+  bind = fn m k -> St (fn s0 -> match run m s0 with (a, s1) -> run (k a) s1) in
+let tick = St (fn n -> (n, n + 1)) in
+run (bind tick (fn a -> bind tick (fn b -> pure (a, b)))) 0`,
+    expected: '((0, 1), 2)',
+  },
+
   // ---- errors (must be rejected) ----
+  {
+    group: 'errors',
+    name: 'kind error: instance Monad Int is rejected',
+    code: `class Monad m where pure : a -> m a, bind : m a -> (a -> m b) -> m b in
+instance Monad Int where pure = fn x -> x, bind = fn m k -> k m in 0`,
+    expected: null,
+    expectError: true,
+  },
+  {
+    group: 'errors',
+    name: 'missing superclass instance is rejected',
+    code: `type Box a = Box a in
+class Functor f where fmap : (a -> b) -> f a -> f b in
+class Functor m => Monad m where pure : a -> m a, bind : m a -> (a -> m b) -> m b in
+instance Monad Box where pure = fn x -> Box x, bind = fn m k -> match m with Box x -> k x in 0`,
+    expected: null,
+    expectError: true,
+  },
   {
     group: 'errors',
     name: 'no instance is rejected',
