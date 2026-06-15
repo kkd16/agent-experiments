@@ -27,6 +27,12 @@ const STAGES: Stage[] = [
     body: 'The runtime value space is deliberately tiny and JS-native (null, number, string, boolean) so a whole database serializes to localStorage. DATE, TIME, TIMESTAMP and INTERVAL join it as plain tagged objects — {t:\'date\', days}, {t:\'timestamp\', ms}, {t:\'interval\', months, days, ms} — which survive a JSON round-trip untouched, with one set of helpers for comparison/ordering/hashing (so they flow through indexes, ORDER BY, GROUP BY, DISTINCT and joins for free) plus calendar-aware arithmetic and EXTRACT/DATE_TRUNC/AGE, all in UTC. DECIMAL/NUMERIC joins the same way as {t:\'decimal\', d, s} — the unscaled integer is a BigInt rendered to a string (BigInt itself isn\'t JSON-serializable), so arithmetic is exact to arbitrary precision: 0.1 + 0.2 is exactly 0.3, SUMming a money column never loses a cent, and 1.50 = 1.5 = the integer-equal value share one hash identity. Threading both types through the six central value functions (valueTypeOf / coerceTo / compareValues / orderValues / hashKey / formatValue) is all it took to make them work everywhere.',
   },
   {
+    n: 2.7,
+    name: 'JSON — a jsonb-style structured value',
+    file: 'db/json.ts',
+    body: 'JSON joins the value space the same way as {t:\'json\', v} — a plain tagged object that survives a JSON round-trip, so a column of JSON serializes to localStorage with zero special-casing. It uses jsonb semantics: on the way in, object keys are normalized (sorted and de-duplicated, last value winning), which makes equality a deep structural test, hashing a canonical string, and gives every JSON value a place in one total order — so JSON indexes in the B+Tree, sorts, GROUP BYs, DISTINCTs, joins and persists for free, again just by threading it through the same six central value functions. On top sits the operator and function surface: extraction (-> ->> #> #>>), containment/existence (@> <@ ?), concat/merge (||), a library of scalar functions (TO_JSON, JSON_BUILD_OBJECT/ARRAY, JSON_TYPEOF, JSON_EXTRACT_PATH, JSONB_SET, JSON_PRETTY, …), the JSON_AGG/JSON_OBJECT_AGG aggregates, and set-returning table functions (JSON_ARRAY_ELEMENTS, JSON_EACH, …) that the planner materializes into a synthetic relation so unnested JSON composes with the rest of SQL.',
+  },
+  {
     n: 3,
     name: 'Planner & cost-based optimizer',
     file: 'db/planner.ts',

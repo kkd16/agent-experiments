@@ -13,6 +13,8 @@ export type BinaryOp =
   | '+' | '-' | '*' | '/' | '%'
   | '=' | '<>' | '<' | '<=' | '>' | '>='
   | 'AND' | 'OR' | '||'
+  // JSON path extraction, containment and key existence.
+  | '->' | '->>' | '#>' | '#>>' | '@>' | '<@' | '?'
 
 export type UnaryOp = 'NOT' | '-' | '+'
 
@@ -316,9 +318,16 @@ export interface SelectItem {
   alias?: string
 }
 /** A relation in FROM/JOIN: either a named table/CTE, or a derived table. */
+/** A set-returning table function in FROM — `json_each(expr)`, etc. */
+export interface TableFuncRef {
+  name: string
+  args: Expr[]
+}
 export interface FromItem {
   table?: string
   subquery?: SelectStmt
+  /** A set-returning table function source — `FROM json_array_elements(j) t`. */
+  tableFunc?: TableFuncRef
   alias?: string
   /** Optional column aliases — `FROM (…) t (x, y)` (incl. VALUES constructors). */
   columnAliases?: string[]
@@ -328,6 +337,7 @@ export interface JoinClause {
   type: JoinType
   table?: string
   subquery?: SelectStmt
+  tableFunc?: TableFuncRef
   alias?: string
   columnAliases?: string[]
   on?: Expr
@@ -405,6 +415,7 @@ export const AGGREGATES = new Set([
   'STDDEV', 'STDDEV_SAMP', 'STDDEV_POP', 'VARIANCE', 'VAR_SAMP', 'VAR_POP',
   'STRING_AGG', 'GROUP_CONCAT', 'MEDIAN',
   'PERCENTILE_CONT', 'PERCENTILE_DISC', 'MODE',
+  'JSON_AGG', 'JSON_OBJECT_AGG',
 ])
 
 /** Ordered-set aggregates: their value to aggregate comes from a

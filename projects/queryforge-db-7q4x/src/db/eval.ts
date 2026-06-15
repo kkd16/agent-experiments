@@ -67,6 +67,27 @@ import {
   isNumericTemplate,
   type DecimalValue,
 } from './decimal'
+import {
+  isJson,
+  makeJson,
+  jsonOf,
+  parseJson,
+  tryParseJson,
+  stringify as jsonStringify,
+  pretty as jsonPretty,
+  jsonTypeof,
+  jsonGet,
+  jsonGetPath,
+  jsonToText,
+  parseTextPath,
+  contains as jsonContains,
+  existsKey as jsonExistsKey,
+  concat as jsonConcat,
+  setPath as jsonSetPath,
+  stripNulls as jsonStripNulls,
+  toJson,
+  type Json,
+} from './json'
 import type { Expr, ExistsExpr, FuncExpr, InSubqueryExpr, QuantifiedExpr, SubqueryExpr, WindowFuncExpr } from './ast'
 import type { Row } from './catalog'
 
@@ -107,7 +128,17 @@ export interface CompileCtx {
 function strOf(v: SqlValue): string {
   if (isTemporal(v)) return formatTemporal(v)
   if (isDecimal(v)) return formatDecimal(v)
+  if (isJson(v)) return jsonStringify(v.v)
   return String(v)
+}
+
+/** Read a SQL value as JSON data for the JSON operators: a JSON value unwraps,
+ *  a string parses if valid JSON (else it's a JSON string), other scalars map
+ *  through `to_json`. */
+function asJsonData(v: SqlValue): Json {
+  if (isJson(v)) return v.v
+  if (typeof v === 'string') return tryParseJson(v)?.v ?? v
+  return toJson(v)
 }
 
 /** Read a value as a JS number for the float math functions (decimals degrade). */
@@ -264,6 +295,7 @@ function parseDate(v: SqlValue): Date | null {
   if (typeof v === 'number') return new Date(v)
   if (typeof v === 'boolean') return null
   if (isDecimal(v)) return new Date(decToNumber(v))
+  if (isJson(v)) return null
   const s = v.trim()
   if (s.toUpperCase() === 'NOW') return new Date()
   // Date-only strings parse as UTC midnight (avoids local-timezone drift).
@@ -536,6 +568,78 @@ export const SCALAR_FUNCTIONS: Record<string, ScalarFn> = {
     const extraDays = Math.trunc(t.ms / MS_PER_DAY)
     return mkInterval(t.months, t.days + extraDays, t.ms - extraDays * MS_PER_DAY)
   },
+
+  // --- JSON -----------------------------------------------------------------
+  // Build a JSON value from a SQL value (`to_json`); text is taken literally as
+  // a JSON string (use a CAST / `::json` to parse text into structure).
+  TO_JSON: ([a]) => (a === undefined ? null : makeJson(toJson(a ?? null))),
+  // Parse JSON text into a value (errors on invalid input). NULL passes through.
+  JSON: ([a]) => (a === null || a === undefined ? null : isJson(a) ? a : parseJson(strOf(a))),
+  // json_build_object(k1, v1, k2, v2, …): keys coerced to text, values to JSON.
+  JSON_BUILD_OBJECT: (args) => {
+    if (args.length % 2 !== 0) throw new SqlError('JSON_BUILD_OBJECT() needs an even number of arguments', 'eval')
+    const obj: { [k: string]: Json } = {}
+    for (let i = 0; i < args.length; i += 2) {
+      const k = args[i]
+      if (k === null) throw new SqlError('JSON_BUILD_OBJECT() key must not be NULL', 'eval')
+      obj[strOf(k)] = toJson(args[i + 1] ?? null)
+    }
+    return jsonOf(obj)
+  },
+  // json_build_array(…): each argument becomes a JSON element.
+  JSON_BUILD_ARRAY: (args) => makeJson(args.map((a) => toJson(a ?? null))),
+  JSON_ARRAY_LENGTH: ([a]) => {
+    if (a === null || a === undefined) return null
+    const d = asJsonData(a)
+    if (!Array.isArray(d)) throw new SqlError('JSON_ARRAY_LENGTH() expects a JSON array', 'eval')
+    return d.length
+  },
+  JSON_TYPEOF: ([a]) => (a === null || a === undefined ? null : jsonTypeof(asJsonData(a))),
+  // Postgres' json_object_keys is set-returning; with no array type we surface
+  // the keys as a JSON array (use the FROM-clause json_each to get rows).
+  JSON_OBJECT_KEYS: ([a]) => {
+    if (a === null || a === undefined) return null
+    const d = asJsonData(a)
+    if (d === null || typeof d !== 'object' || Array.isArray(d)) {
+      throw new SqlError('JSON_OBJECT_KEYS() expects a JSON object', 'eval')
+    }
+    return makeJson(Object.keys(d).sort())
+  },
+  // json_extract_path(json, key1, key2, …) → json ; the variadic spelling that
+  // avoids needing a text[] (equivalent to `#>`).
+  JSON_EXTRACT_PATH: (args) => {
+    if (args[0] === null || args[0] === undefined) return null
+    const path = args.slice(1).filter((x) => x !== null).map((x) => strOf(x!))
+    const child = jsonGetPath(asJsonData(args[0]), path)
+    return child === undefined ? null : makeJson(child)
+  },
+  JSON_EXTRACT_PATH_TEXT: (args) => {
+    if (args[0] === null || args[0] === undefined) return null
+    const path = args.slice(1).filter((x) => x !== null).map((x) => strOf(x!))
+    const child = jsonGetPath(asJsonData(args[0]), path)
+    return child === undefined ? null : jsonToText(child)
+  },
+  JSON_VALID: ([a]) => (a === null || a === undefined ? null : tryParseJson(strOf(a)) !== null),
+  JSON_PRETTY: ([a]) => (a === null || a === undefined ? null : jsonPretty(asJsonData(a))),
+  JSON_STRIP_NULLS: ([a]) => (a === null || a === undefined ? null : makeJson(jsonStripNulls(asJsonData(a)))),
+  // jsonb_set(target, '{path}', new_value [, create_missing]) → json
+  // jsonb_set's new value is itself JSON: text is parsed (so '"x"' → a string,
+  // '5' → a number), matching Postgres where the argument is jsonb-typed.
+  JSONB_SET: ([target, path, value, create]) => {
+    if (target === null || target === undefined || path === null || path === undefined) return null
+    const created = create === null || create === undefined ? true : toBool(create) === true
+    return makeJson(jsonSetPath(asJsonData(target), parseTextPath(strOf(path)), asJsonData(value ?? null), created))
+  },
+  JSON_SET: ([target, path, value, create]) => {
+    if (target === null || target === undefined || path === null || path === undefined) return null
+    const created = create === null || create === undefined ? true : toBool(create) === true
+    return makeJson(jsonSetPath(asJsonData(target), parseTextPath(strOf(path)), asJsonData(value ?? null), created))
+  },
+  // json_contains(a, b) → boolean : the function form of `a @> b`.
+  JSON_CONTAINS: ([a, b]) =>
+    a === null || a === undefined || b === null || b === undefined
+      ? null
+      : jsonContains(asJsonData(a), asJsonData(b)),
 }
 
 /** EXTRACT / DATE_PART for any value: temporal objects directly, strings/numbers
@@ -549,6 +653,59 @@ function extractAny(part: SqlValue, a: SqlValue): SqlValue {
 /** All scalar function names the parser should treat as callable (incl. those
  *  that collide with keywords like LEFT/RIGHT). */
 export const SCALAR_FUNCTION_NAMES: ReadonlySet<string> = new Set(Object.keys(SCALAR_FUNCTIONS))
+
+// --- set-returning table functions (used in FROM) ---------------------------
+// These expand a JSON value into rows. The planner materializes the result into
+// a synthetic table, so the rows then compose with joins / WHERE / GROUP BY for
+// free — exactly like a derived table.
+export interface TableFunctionResult {
+  columns: { name: string; type: ColumnType }[]
+  rows: SqlValue[][]
+}
+
+function jsonElements(a: SqlValue, asText: boolean): TableFunctionResult {
+  const columns: { name: string; type: ColumnType }[] = [{ name: 'value', type: asText ? 'TEXT' : 'JSON' }]
+  if (a === null) return { columns, rows: [] }
+  const d = asJsonData(a)
+  if (!Array.isArray(d)) throw new SqlError('json_array_elements() expects a JSON array', 'eval')
+  return { columns, rows: d.map((el) => [asText ? jsonToText(el) : makeJson(el)]) }
+}
+
+function jsonEach(a: SqlValue, asText: boolean): TableFunctionResult {
+  const columns: { name: string; type: ColumnType }[] = [
+    { name: 'key', type: 'TEXT' },
+    { name: 'value', type: asText ? 'TEXT' : 'JSON' },
+  ]
+  if (a === null) return { columns, rows: [] }
+  const d = asJsonData(a)
+  if (d === null || typeof d !== 'object' || Array.isArray(d)) {
+    throw new SqlError('json_each() expects a JSON object', 'eval')
+  }
+  const rows = Object.keys(d)
+    .sort()
+    .map((k) => [k, asText ? jsonToText(d[k]) : makeJson(d[k])])
+  return { columns, rows }
+}
+
+function jsonKeys(a: SqlValue): TableFunctionResult {
+  const columns: { name: string; type: ColumnType }[] = [{ name: 'key', type: 'TEXT' }]
+  if (a === null) return { columns, rows: [] }
+  const d = asJsonData(a)
+  if (d === null || typeof d !== 'object' || Array.isArray(d)) {
+    throw new SqlError('json_object_keys() expects a JSON object', 'eval')
+  }
+  return { columns, rows: Object.keys(d).sort().map((k) => [k]) }
+}
+
+export const TABLE_FUNCTIONS: Record<string, (args: SqlValue[]) => TableFunctionResult> = {
+  JSON_ARRAY_ELEMENTS: ([a]) => jsonElements(a ?? null, false),
+  JSON_ARRAY_ELEMENTS_TEXT: ([a]) => jsonElements(a ?? null, true),
+  JSON_EACH: ([a]) => jsonEach(a ?? null, false),
+  JSON_EACH_TEXT: ([a]) => jsonEach(a ?? null, true),
+  JSON_OBJECT_KEYS: ([a]) => jsonKeys(a ?? null),
+}
+
+export const TABLE_FUNCTION_NAMES: ReadonlySet<string> = new Set(Object.keys(TABLE_FUNCTIONS))
 
 function trimChars(s: string, chars: string, left: boolean, right: boolean): string {
   const set = new Set([...chars])
@@ -758,7 +915,53 @@ function compileBinary(op: string, left: Evaluator, right: Evaluator): Evaluator
         const a = left(row)
         const b = right(row)
         if (a === null || b === null) return null
+        // JSON || JSON concatenates/merges (jsonb rules); otherwise text concat.
+        if (isJson(a) && isJson(b)) return makeJson(jsonConcat(a.v, b.v))
         return strOf(a) + strOf(b)
+      }
+    case '->':
+    case '->>':
+      // obj -> 'key' | arr -> n : extract a member; `->>` returns it as text.
+      return (row) => {
+        const a = left(row)
+        const k = right(row)
+        if (a === null || k === null) return null
+        const child = jsonGet(asJsonData(a), typeof k === 'number' ? k : strOf(k))
+        if (child === undefined) return null
+        return op === '->>' ? jsonToText(child) : makeJson(child)
+      }
+    case '#>':
+    case '#>>':
+      // data #> '{a,1,b}' : follow a text path; `#>>` returns text.
+      return (row) => {
+        const a = left(row)
+        const p = right(row)
+        if (a === null || p === null) return null
+        const path = parseTextPath(strOf(p))
+        const child = jsonGetPath(asJsonData(a), path)
+        if (child === undefined) return null
+        return op === '#>>' ? jsonToText(child) : makeJson(child)
+      }
+    case '@>':
+      return (row) => {
+        const a = left(row)
+        const b = right(row)
+        if (a === null || b === null) return null
+        return jsonContains(asJsonData(a), asJsonData(b))
+      }
+    case '<@':
+      return (row) => {
+        const a = left(row)
+        const b = right(row)
+        if (a === null || b === null) return null
+        return jsonContains(asJsonData(b), asJsonData(a))
+      }
+    case '?':
+      return (row) => {
+        const a = left(row)
+        const k = right(row)
+        if (a === null || k === null) return null
+        return jsonExistsKey(asJsonData(a), strOf(k))
       }
     case '+':
     case '-':

@@ -542,6 +542,11 @@ body {
   color: #57c7b0;
   font-family: var(--mono);
 }
+.cell-json {
+  color: #c9a4ff;
+  font-family: var(--mono);
+  white-space: pre-wrap;
+}
 .result-foot {
   display: flex;
   align-items: center;

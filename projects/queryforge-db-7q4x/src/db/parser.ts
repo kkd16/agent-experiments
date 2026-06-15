@@ -39,9 +39,13 @@ const PRECEDENCE: Record<string, number> = {
   OR: 1,
   AND: 2,
   '=': 4, '<>': 4, '<': 4, '<=': 4, '>': 4, '>=': 4,
+  // JSON containment / existence sit at the comparison level (they're boolean).
+  '@>': 4, '<@': 4, '?': 4,
   '||': 5,
   '+': 6, '-': 6,
   '*': 7, '/': 7, '%': 7,
+  // JSON path extraction binds tighter than arithmetic, like a field access.
+  '->': 8, '->>': 8, '#>': 8, '#>>': 8,
 }
 
 // Comparison-family keywords that act at precedence 4 (NOT/IS/IN/LIKE/BETWEEN).
@@ -210,8 +214,11 @@ class Parser {
         return { type: 'TIMESTAMP' }
       case 'INTERVAL':
         return { type: 'INTERVAL' }
+      case 'JSON':
+      case 'JSONB':
+        return { type: 'JSON' }
       default:
-        throw this.err('expected a column type (INTEGER, REAL, DECIMAL, TEXT, BOOLEAN, DATE, TIME, TIMESTAMP, INTERVAL)')
+        throw this.err('expected a column type (INTEGER, REAL, DECIMAL, TEXT, BOOLEAN, DATE, TIME, TIMESTAMP, INTERVAL, JSON)')
     }
   }
 
@@ -846,9 +853,35 @@ class Parser {
       const { alias, columnAliases } = this.parseOptionalAliasWithColumns()
       return { subquery, alias, columnAliases }
     }
+    // A set-returning table function: `name(args) [AS] alias [(cols)]`.
+    if (this.atTableFunc()) {
+      const tableFunc = this.parseTableFuncRef()
+      const { alias, columnAliases } = this.parseOptionalAliasWithColumns()
+      return { tableFunc, alias, columnAliases }
+    }
     const table = this.parseIdent('table name')
     const { alias, columnAliases } = this.parseOptionalAliasWithColumns()
     return { table, alias, columnAliases }
+  }
+
+  /** A FROM source that's a function call (`ident(` or a function keyword). */
+  private atTableFunc(): boolean {
+    const t = this.peek()
+    return this.peek(1).value === '(' && (t.kind === 'ident' || this.isFunctionName(t.value))
+  }
+
+  private parseTableFuncRef(): { name: string; args: Expr[] } {
+    const nameTok = this.next()
+    const name = (nameTok.kind === 'ident' ? identName(nameTok) : nameTok.value).toUpperCase()
+    this.expect('(')
+    const args: Expr[] = []
+    if (!this.at(')')) {
+      do {
+        args.push(this.parseExpr())
+      } while (this.accept(','))
+    }
+    this.expect(')')
+    return { name, args }
   }
 
   private parseOptionalAlias(): string | undefined {
@@ -897,10 +930,13 @@ class Parser {
     }
     let table: string | undefined
     let subquery: SelectStmt | undefined
+    let tableFunc: { name: string; args: Expr[] } | undefined
     if (this.at('(')) {
       this.next()
       subquery = this.parseSubquerySelect()
       this.expect(')')
+    } else if (this.atTableFunc()) {
+      tableFunc = this.parseTableFuncRef()
     } else {
       table = this.parseIdent('table name')
     }
@@ -910,7 +946,7 @@ class Parser {
       this.expect('ON')
       on = this.parseExpr()
     }
-    return { type, table, subquery, alias, columnAliases, on }
+    return { type, table, subquery, tableFunc, alias, columnAliases, on }
   }
 
   // ========================================================================
@@ -922,6 +958,15 @@ class Parser {
     for (;;) {
       const t = this.peek()
       const v = t.value
+
+      // Postfix `::TYPE` cast binds tighter than everything (it's a field-access
+      // -like suffix), so handle it before any precedence gate.
+      if (v === '::') {
+        this.next()
+        const ty = this.parseTypeName()
+        left = { kind: 'cast', expr: left, type: ty.type, ...(ty.scale !== undefined ? { scale: ty.scale } : {}) }
+        continue
+      }
 
       // Postfix comparison forms at precedence 4.
       if (COMPARISON_PREC >= minPrec) {

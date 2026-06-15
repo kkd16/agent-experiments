@@ -5,6 +5,7 @@ import { useState } from 'react'
 import { formatValue, type SqlValue } from '../db/types'
 import { isTemporal } from '../db/temporal'
 import { isDecimal } from '../db/decimal'
+import { isJson } from '../db/json'
 import type { QueryResult, RowsResult } from '../db/engine'
 import type { RunError } from './useEngine'
 import { PlanTree } from './PlanTree'
@@ -16,13 +17,15 @@ function Cell({ v }: { v: SqlValue }) {
   if (typeof v === 'number') return <span className="cell-num">{formatValue(v)}</span>
   if (isDecimal(v)) return <span className="cell-num cell-decimal">{formatValue(v)}</span>
   if (isTemporal(v)) return <span className="cell-temporal">{formatValue(v)}</span>
+  if (isJson(v)) return <span className="cell-json">{formatValue(v)}</span>
   return <span className="cell-text">{v}</span>
 }
 
 // RFC-4180-ish CSV: quote when a field contains a comma, quote, or newline.
 function csvField(v: SqlValue): string {
   if (v === null) return ''
-  const s = typeof v === 'boolean' ? (v ? 'true' : 'false') : isTemporal(v) ? formatValue(v) : String(v)
+  const s =
+    typeof v === 'boolean' ? (v ? 'true' : 'false') : isTemporal(v) || isDecimal(v) || isJson(v) ? formatValue(v) : String(v)
   return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s
 }
 function toCsv(res: RowsResult): string {

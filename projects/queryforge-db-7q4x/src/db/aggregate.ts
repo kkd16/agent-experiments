@@ -4,7 +4,8 @@
 // Output rows are [groupKey0..groupKeyN, agg0..aggM] so downstream HAVING /
 // projection can read both grouping columns and aggregate results positionally.
 
-import { hashKey, orderValues, type SqlValue } from './types'
+import { hashKey, orderValues, formatValue, type SqlValue } from './types'
+import { makeJson, jsonOf, toJson, type Json } from './json'
 import {
   isDecimal,
   addDecimal,
@@ -38,12 +39,16 @@ export type AggName =
   | 'PERCENTILE_CONT'
   | 'PERCENTILE_DISC'
   | 'MODE'
+  | 'JSON_AGG'
+  | 'JSON_OBJECT_AGG'
 
 export interface AggSpec {
   name: AggName
   star: boolean
   distinct: boolean
   arg: Evaluator | null
+  /** Second argument evaluator (the value of `JSON_OBJECT_AGG(key, value)`). */
+  arg2?: Evaluator | null
   label: string
   /** Separator for STRING_AGG / GROUP_CONCAT. */
   sep?: string
@@ -85,12 +90,32 @@ class Accumulator {
   private m2 = 0
   // Buffered values for order-/distribution-sensitive aggregates.
   private list: SqlValue[] | null
+  // Buffers for the JSON aggregates (which keep NULLs, unlike the others).
+  private jsonArr: Json[] | null
+  private jsonObj: { [k: string]: Json } | null
+  private jsonSeen = 0
   constructor(spec: AggSpec) {
     this.seen = spec.distinct ? new Set() : null
     this.list = needsList(spec.name) ? [] : null
+    this.jsonArr = spec.name === 'JSON_AGG' ? [] : null
+    this.jsonObj = spec.name === 'JSON_OBJECT_AGG' ? {} : null
   }
   update(spec: AggSpec, row: Row): void {
     if (spec.filter && spec.filter(row) !== true) return
+    // JSON aggregates buffer their own way: json_agg keeps NULL elements, and
+    // json_object_agg pairs a (text) key with a JSON value, skipping NULL keys.
+    if (this.jsonArr) {
+      this.jsonArr.push(toJson(spec.arg ? spec.arg(row) : null))
+      this.jsonSeen++
+      return
+    }
+    if (this.jsonObj) {
+      const k = spec.arg ? spec.arg(row) : null
+      if (k === null) return
+      this.jsonObj[formatValue(k)] = toJson(spec.arg2 ? spec.arg2(row) : null)
+      this.jsonSeen++
+      return
+    }
     if (spec.star) {
       this.count++
       return
@@ -135,6 +160,10 @@ class Accumulator {
   }
   finalize(spec: AggSpec): SqlValue {
     switch (spec.name) {
+      case 'JSON_AGG':
+        return this.jsonSeen > 0 && this.jsonArr ? makeJson(this.jsonArr) : null
+      case 'JSON_OBJECT_AGG':
+        return this.jsonSeen > 0 && this.jsonObj ? jsonOf(this.jsonObj) : null
       case 'COUNT':
         return this.count
       case 'SUM':

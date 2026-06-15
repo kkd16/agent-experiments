@@ -100,6 +100,7 @@ function renderValue(raw: string, type: ColumnType): string {
     case 'TIME':
     case 'TIMESTAMP':
     case 'INTERVAL':
+    case 'JSON':
       return sqlString(raw)
   }
 }
