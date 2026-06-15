@@ -11,6 +11,7 @@ import {
   RevoluteJoint,
   Rng,
   Vec2,
+  WheelJoint,
   World,
   crossSV,
   type Shape,
@@ -803,6 +804,67 @@ const buoyancy: SceneDef = {
   },
 };
 
+const car: SceneDef = {
+  id: 'car',
+  name: 'Suspension Car',
+  description:
+    'A car built from a chassis and two wheels joined by wheel joints — each a rigid line constraint plus a sprung suspension axis and a drive motor. It powers itself over bumpy terrain, the suspension soaking up the hills, and reverses at the walls. Toggle Joints to see the suspension lines compress and extend.',
+  category: 'Joints',
+  build: (world) => {
+    const halfW = 16;
+    ground(world, halfW, 0);
+    walls(world, halfW, 8);
+    // Bumpy terrain: a row of low half-buried static humps for the suspension.
+    const humpXs = [-9, -5, -1, 4, 8, 12];
+    for (let i = 0; i < humpXs.length; i++) {
+      world.addBody(new Body(new Circle(0.4 + (i % 2) * 0.12), {
+        type: BodyType.Static, position: new Vec2(humpXs[i], -0.2), friction: 0.9, color: '#46506a',
+      }));
+    }
+
+    const startX = -10;
+    const chassisY = 1.2;
+    // A wide, low, heavy chassis keeps the centre of mass well under the axles so
+    // the drive torque can't flip it.
+    const chassis = world.addBody(new Body(Polygon.rounded(1.7, 0.22, 0.08), {
+      position: new Vec2(startX, chassisY), density: 3, friction: 0.5, color: '#4dd2ff',
+    }));
+
+    const axis = new Vec2(0, 1);
+    const wheelDefs: Array<{ dx: number; motor: boolean }> = [
+      { dx: -1.3, motor: true },
+      { dx: 1.3, motor: true },
+    ];
+    const motors: WheelJoint[] = [];
+    for (const wd of wheelDefs) {
+      const wheelPos = new Vec2(startX + wd.dx, chassisY - 0.45);
+      const wheel = world.addBody(new Body(new Circle(0.45), {
+        position: wheelPos, density: 1, friction: 1.8, color: '#2b3142',
+      }));
+      const wj = new WheelJoint(chassis, wheel, wheelPos, axis);
+      wj.frequencyHz = 5;
+      wj.dampingRatio = 0.8;
+      if (wd.motor) {
+        wj.enableMotor = true;
+        wj.motorSpeed = -9; // spin the wheels to roll the car to the right
+        wj.maxMotorTorque = 4.5;
+        motors.push(wj);
+      }
+      world.addJoint(wj);
+    }
+
+    let dir = 1;
+    return {
+      camera: { center: new Vec2(0, 2), scale: 22 },
+      update: () => {
+        if (chassis.worldCenter.x > halfW - 7 && dir > 0) dir = -1;
+        if (chassis.worldCenter.x < -(halfW - 7) && dir < 0) dir = 1;
+        for (const m of motors) m.motorSpeed = -9 * dir;
+      },
+    };
+  },
+};
+
 export const SCENES: SceneDef[] = [
   pyramid,
   stacks,
@@ -814,6 +876,7 @@ export const SCENES: SceneDef[] = [
   springs,
   machine,
   limits,
+  car,
   tumbler,
   dominoes,
   buoyancy,

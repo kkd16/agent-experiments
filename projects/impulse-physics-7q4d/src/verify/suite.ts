@@ -26,6 +26,7 @@ import {
   solveBlockLcp,
   Transform,
   Vec2,
+  WheelJoint,
   World,
 } from '../engine';
 import { AABB } from '../engine/aabb';
@@ -523,6 +524,72 @@ export function runVerification(): CheckResult[] {
       return top.worldCenter.y;
     };
     a.close('Block & sequential agree at rest', settle(true), settle(false), 0.02);
+  }
+
+  // ---- Wheel joint & suspension -------------------------------------------
+  a.section('Wheel joint');
+  {
+    // Build a minimal car: a chassis on two sprung, motorised wheels. The
+    // suspension's hard perpendicular constraint must keep each wheel directly
+    // under its anchor (no horizontal drift relative to the chassis), and the
+    // drive motor must push the car forward along the ground.
+    const w = new World(new Vec2(0, -10));
+    w.addBody(new Body(Polygon.box(30, 0.5), { type: BodyType.Static, position: new Vec2(0, -0.5), friction: 1 }));
+    const chassis = w.addBody(new Body(Polygon.box(1.5, 0.25), { position: new Vec2(0, 1.3), density: 2 }));
+    const axis = new Vec2(0, 1);
+    const wheels: Body[] = [];
+    const offsets = [-1.1, 1.1];
+    for (let i = 0; i < offsets.length; i++) {
+      const pos = new Vec2(offsets[i], 0.75);
+      const wheel = w.addBody(new Body(new Circle(0.4), { position: pos, density: 1.5, friction: 1.5 }));
+      wheels.push(wheel);
+      const wj = new WheelJoint(chassis, wheel, pos, axis);
+      wj.frequencyHz = 5;
+      wj.dampingRatio = 0.7;
+      if (i === 0) {
+        wj.enableMotor = true;
+        wj.motorSpeed = -11;
+        wj.maxMotorTorque = 8;
+      }
+      w.addJoint(wj);
+    }
+    // Settle briefly, then track motion and the constraint error. The
+    // perpendicular line constraint pins each wheel's offset *along the chassis*
+    // perpendicular axis, so we measure it in the chassis frame (tilt-invariant).
+    for (let i = 0; i < 120; i++) w.step(1 / 120);
+    const x0 = chassis.worldCenter.x;
+    let maxDrift = 0;
+    for (let i = 0; i < 600; i++) {
+      w.step(1 / 120);
+      for (let k = 0; k < wheels.length; k++) {
+        const local = chassis.localPoint(wheels[k].worldCenter);
+        maxDrift = Math.max(maxDrift, Math.abs(local.x - offsets[k]));
+      }
+    }
+    const travelled = chassis.worldCenter.x - x0;
+    a.ok('Suspension keeps wheels on their line (chassis frame)', maxDrift < 0.05, `max drift ${maxDrift.toFixed(4)} m`);
+    a.ok('Drive motor moves the car forward', travelled > 1, `travelled ${travelled.toFixed(2)} m`);
+    a.ok('Car stays upright while driving', Math.abs(chassis.angle) < 0.4, `tilt ${chassis.angle.toFixed(3)} rad`);
+  }
+  {
+    // The suspension spring carries the chassis above the wheels and holds it
+    // there at rest (it neither collapses to the wheel nor flies apart).
+    const w = new World(new Vec2(0, -10));
+    w.addBody(new Body(Polygon.box(30, 0.5), { type: BodyType.Static, position: new Vec2(0, -0.5), friction: 1 }));
+    const chassis = w.addBody(new Body(Polygon.box(1.2, 0.3), { position: new Vec2(0, 1.6), density: 1 }));
+    for (const dx of [-0.9, 0.9]) {
+      const pos = new Vec2(dx, 0.9);
+      const wheel = w.addBody(new Body(new Circle(0.45), { position: pos, density: 1.5, friction: 1.2 }));
+      const wj = new WheelJoint(chassis, wheel, pos, new Vec2(0, 1));
+      wj.frequencyHz = 4;
+      wj.dampingRatio = 0.8;
+      w.addJoint(wj);
+    }
+    for (let i = 0; i < 800; i++) w.step(1 / 120);
+    a.ok('Chassis rides above the wheels at rest', chassis.worldCenter.y > 1.0 && chassis.worldCenter.y < 1.7,
+      `y=${chassis.worldCenter.y.toFixed(3)}`);
+    a.ok('Suspended chassis comes to rest', chassis.linearVelocity.length() < 0.05,
+      `|v|=${chassis.linearVelocity.length().toFixed(4)}`);
   }
 
   return a.results;

@@ -43,3 +43,4 @@ export { DistanceJoint } from './joints/distance';
 export { WeldJoint } from './joints/weld';
 export { MouseJoint } from './joints/mouse';
 export { PrismaticJoint } from './joints/prismatic';
+export { WheelJoint } from './joints/wheel';
