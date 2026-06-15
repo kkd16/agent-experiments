@@ -5,14 +5,15 @@ import { AudioEngine } from './audio';
 
 const ROWS = 20;
 const COLS = 30;
-const SPEED = 200; // ms per generation
 
 export default function App() {
   const [audioStarted, setAudioStarted] = useState(false);
+  const [speed, setSpeed] = useState(200);
+  const [volume, setVolume] = useState(30); // 0-100 range
   const audioEngineRef = useRef<AudioEngine | null>(null);
 
   useEffect(() => {
-    audioEngineRef.current = new AudioEngine(ROWS);
+    audioEngineRef.current = new AudioEngine(ROWS, COLS);
   }, []);
 
   const handleCellBirth = useCallback((row: number, col: number) => {
@@ -29,25 +30,34 @@ export default function App() {
     nextGeneration,
     clearGrid,
     randomizeGrid,
-    generation
+    generation,
+    wrapAround,
+    setWrapAround
   } = useGameOfLife(ROWS, COLS, handleCellBirth);
 
   useEffect(() => {
     let timerId: number | undefined;
     if (isRunning) {
-      timerId = window.setInterval(nextGeneration, SPEED);
+      timerId = window.setInterval(nextGeneration, speed);
     } else {
       clearInterval(timerId);
     }
     return () => clearInterval(timerId);
-  }, [isRunning, nextGeneration]);
+  }, [isRunning, nextGeneration, speed]);
 
   const startAudio = () => {
     if (audioEngineRef.current) {
       audioEngineRef.current.init();
+      audioEngineRef.current.setVolume(volume);
       setAudioStarted(true);
     }
   };
+
+  useEffect(() => {
+    if (audioEngineRef.current && audioStarted) {
+      audioEngineRef.current.setVolume(volume);
+    }
+  }, [volume, audioStarted]);
 
   const handleToggleRunning = () => {
     if (!audioStarted) {
@@ -91,6 +101,39 @@ export default function App() {
               <button onClick={nextGeneration} disabled={isRunning}>Next Step</button>
               <button onClick={randomizeGrid}>Randomize</button>
               <button onClick={clearGrid}>Clear</button>
+            </div>
+
+            <div className="controls-extra">
+              <label>
+                Speed: {speed}ms
+                <input
+                  type="range"
+                  min="50"
+                  max="1000"
+                  step="50"
+                  value={speed}
+                  onChange={(e) => setSpeed(Number(e.target.value))}
+                />
+              </label>
+              <label>
+                Volume: {volume}%
+                <input
+                  type="range"
+                  min="0"
+                  max="100"
+                  step="1"
+                  value={volume}
+                  onChange={(e) => setVolume(Number(e.target.value))}
+                />
+              </label>
+              <label>
+                <input
+                  type="checkbox"
+                  checked={wrapAround}
+                  onChange={(e) => setWrapAround(e.target.checked)}
+                />
+                Wrap Edges
+              </label>
             </div>
 
             <div className="stats">
