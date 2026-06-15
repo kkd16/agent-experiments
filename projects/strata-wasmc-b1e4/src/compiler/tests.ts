@@ -1054,6 +1054,44 @@ fn main(){
 }`,
   },
   {
+    name: 'parse-float-basic',
+    source: `fn main(){
+  print(str(parse_float("0"))); print(str(parse_float("1")));
+  print(str(parse_float("-1"))); print(str(parse_float("3.14159")));
+  print(str(parse_float("0.1"))); print(str(parse_float("0.5")));
+  print(str(parse_float("100"))); print(str(parse_float("-2.5")));
+  print(str(parse_float("123.456"))); print(str(parse_float("+7")));
+  print(str(parse_float("")));        // -> 0
+  print(str(parse_float("abc")));     // -> 0
+}`,
+  },
+  {
+    name: 'parse-float-exponent',
+    source: `fn main(){
+  print(str(parse_float("1e10"))); print(str(parse_float("1e-10")));
+  print(str(parse_float("6.022e23"))); print(str(parse_float("1.5E3")));
+  print(str(parse_float("1e308"))); print(str(parse_float("1e-308")));
+  print(str(parse_float("5e-324")));       // smallest subnormal
+  print(str(parse_float("2e400")));        // overflow -> inf
+  print(str(parse_float("1e-400")));       // underflow -> 0
+  print(str(parse_float("-3.5e-7")));
+}`,
+  },
+  {
+    name: 'parse-float-roundtrip',
+    source: `// str() then parse_float() must recover the exact same double (bit-identical),
+// so re-formatting the parsed value reproduces the string.
+fn main(){
+  print(str(parse_float(str(0.1 + 0.2))));
+  print(str(parse_float(str(1.0 / 3.0))));
+  print(str(parse_float(str(sqrt(2.0)))));
+  print(str(parse_float("0.30000000000000004") == 0.1 + 0.2));
+  print(str(parse_float("1234.5678") * 2.0));
+  // partial-prefix scanning (stops at the first invalid character)
+  print(str(parse_float("12.5xyz"))); print(str(parse_float("3.1.4")));
+}`,
+  },
+  {
     name: 'float-reduce-loop',
     source: `// Exercise the f64 ops through a loop the optimizer rewrites (LICM / stackify).
 fn main(){

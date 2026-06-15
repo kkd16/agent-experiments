@@ -35,7 +35,7 @@ const ARRAY_INTRINSICS = new Set(['int_array', 'long_array', 'float_array', 'str
 const STR_BUILTINS = new Set([
   'str', 'char', 'substr', 'index_of', 'to_upper', 'to_lower',
   'repeat', 'trim', 'replace', 'find', 'contains', 'starts_with', 'ends_with', 'parse_int',
-  'split', 'join',
+  'parse_float', 'split', 'join',
 ]);
 // Bit-manipulation builtins that map 1:1 to wasm integer ops. `popcount`/`clz`/
 // `ctz` are unary; `rotl`/`rotr` are binary. All work on `int` (i32) and `long`
@@ -534,6 +534,12 @@ class Checker {
       const t = this.checkExpr(e.args[0]);
       if (t.kind !== 'int') throw new CompileError(`char() expects an int, found ${tyName(t)}`, e.span, 'type');
       return T_STR;
+    }
+    if (name === 'parse_float') {
+      if (e.args.length !== 1) throw new CompileError('parse_float() expects 1 argument', e.span, 'type');
+      const t = this.checkExpr(e.args[0]);
+      if (t.kind !== 'str') throw new CompileError(`parse_float() expects a str, found ${tyName(t)}`, e.args[0].span, 'type');
+      return T_FLOAT;
     }
     if (name === 'substr') {
       if (e.args.length !== 3) throw new CompileError('substr() expects (str, start, count)', e.span, 'type');

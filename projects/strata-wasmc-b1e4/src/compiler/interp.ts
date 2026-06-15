@@ -134,6 +134,71 @@ const copysign = (a: number, b: number): number => {
   return signBit(b) ? -mag : mag;
 };
 
+// `parse_float` oracle — the identical correctly-rounded decimal->double
+// algorithm the Strata `__parse_float` runs (BigInt here, base-2^16 limbs there),
+// so the interpreter and the compiled wasm agree by construction. Both reproduce
+// JS `Number()` on valid decimal strings, but we implement it ourselves so the
+// two also agree on the exact prefix-scanning of partial/malformed input.
+const bitlenBig = (x: bigint): number => (x === 0n ? 0 : x.toString(2).length);
+const f64FromBits = (bits: bigint): number => {
+  _dv.setBigUint64(0, bits);
+  return _dv.getFloat64(0);
+};
+function decToDouble(neg: boolean, man: bigint, E: number): number {
+  const sign = neg ? 1n << 63n : 0n;
+  if (man === 0n) return f64FromBits(sign);
+  let num: bigint, den: bigint;
+  if (E >= 0) { num = man * 10n ** BigInt(E); den = 1n; }
+  else { num = man; den = 10n ** BigInt(-E); }
+  const scale = (s: number): [bigint, bigint] => (s >= 0 ? [num << BigInt(s), den] : [num, den << BigInt(-s)]);
+  let s = 52 - (bitlenBig(num) - bitlenBig(den));
+  let [A, B] = scale(s);
+  let Q = A / B;
+  let R = A % B;
+  while (Q < 1n << 52n) { s += 1; [A, B] = scale(s); Q = A / B; R = A % B; }
+  while (Q >= 1n << 53n) { s -= 1; [A, B] = scale(s); Q = A / B; R = A % B; }
+  let biased = 52 - s + 1023;
+  if (biased <= 0) {
+    const A2 = num << 1074n;
+    let m = A2 / den;
+    const r = A2 % den;
+    if (r * 2n > den || (r * 2n === den && (m & 1n) === 1n)) m += 1n;
+    return f64FromBits(sign | m);
+  }
+  if (R * 2n > B || (R * 2n === B && (Q & 1n) === 1n)) {
+    Q += 1n;
+    if (Q === 1n << 53n) { Q = 1n << 52n; biased += 1; }
+  }
+  if (biased >= 2047) return neg ? -Infinity : Infinity;
+  return f64FromBits(sign | (BigInt(biased) << 52n) | (Q - (1n << 52n)));
+}
+function parseFloatStr(s: string): number {
+  let i = 0; const n = s.length;
+  let neg = false;
+  if (i < n && (s.charCodeAt(i) === 45 || s.charCodeAt(i) === 43)) { neg = s.charCodeAt(i) === 45; i++; }
+  let man = 0n, digits = 0, fracDigits = 0, sawDot = false;
+  for (; i < n; i++) {
+    const c = s.charCodeAt(i);
+    if (c >= 48 && c <= 57) { man = man * 10n + BigInt(c - 48); digits++; if (sawDot) fracDigits++; }
+    else if (c === 46 && !sawDot) sawDot = true;
+    else break;
+  }
+  if (digits === 0) return neg ? -0 : 0;
+  let exp = 0;
+  if (i < n && (s.charCodeAt(i) === 101 || s.charCodeAt(i) === 69)) {
+    let j = i + 1, eneg = false;
+    if (j < n && (s.charCodeAt(j) === 45 || s.charCodeAt(j) === 43)) { eneg = s.charCodeAt(j) === 45; j++; }
+    let ed = 0, ev = 0;
+    for (; j < n; j++) {
+      const c = s.charCodeAt(j);
+      if (c < 48 || c > 57) break;
+      ev = ev * 10 + (c - 48); if (ev > 100000) ev = 100000; ed++;
+    }
+    if (ed > 0) exp = eneg ? -ev : ev;
+  }
+  return decToDouble(neg, man, exp - fracDigits);
+}
+
 // First index of `sub` in `s` at or after `from`, else -1 (empty needle -> from).
 // Mirrors the prelude's __find_from byte-for-byte so the two never disagree.
 function findFrom(s: string, sub: string, from: number): number {
@@ -705,6 +770,7 @@ export function callBuiltin(
     case 'fmin': return H(Math.min(argv[0] as number, argv[1] as number));
     case 'fmax': return H(Math.max(argv[0] as number, argv[1] as number));
     case 'copysign': return H(copysign(argv[0] as number, argv[1] as number));
+    case 'parse_float': return H(parseFloatStr(argv[0] as string));
     case 'int_array':
     case 'long_array':
     case 'float_array':
