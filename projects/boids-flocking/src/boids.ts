@@ -372,3 +372,5 @@ export class Predator extends Boid {
     ctx.restore();
   }
 }
+
+export const __ciBreak: number = "not a number";
