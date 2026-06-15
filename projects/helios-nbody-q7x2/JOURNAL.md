@@ -60,6 +60,40 @@ an honest demonstration: symplectic schemes keep the trace flat; Explicit Euler 
 - [ ] 3D mode with an octree and a WebGL instanced renderer
 - [ ] Adaptive (block) time-stepping for tight binaries
 
+### Helios 2.0 — Precision & Analysis (this session)
+
+- [ ] **Yoshida 4th-order symplectic integrator** — a symmetric triple-jump
+      composition of leapfrog substeps (θ = 1/(2 − 2^⅓)). Fourth-order accurate
+      yet symplectic, so the energy trace stays flat at a far larger Δt than
+      Verlet. Add to the integrator menu with its eval count and blurb.
+- [ ] **Classical orbital-element solver** (`src/sim/orbit.ts`) — from a body's
+      relative state vector compute the full osculating Kepler orbit: specific
+      angular momentum, eccentricity *vector* → eccentricity e and argument of
+      periapsis ϖ, semi-major axis a, periapsis/apoapsis, period and true
+      anomaly. Pure functions, checked in the self-test harness.
+- [ ] **Osculating-orbit overlay** — draw the instantaneous Kepler ellipse (or
+      hyperbola) the selected body rides, around its chosen primary, so you can
+      *see* the orbit it would follow if all other perturbations vanished. Mark
+      periapsis/apoapsis; choose primary = heaviest body or barycentre.
+- [ ] **Richer inspector** — eccentricity, periapsis/apoapsis radius, orbit
+      shape (circular/elliptical/parabolic/hyperbolic) and the chosen primary.
+- [ ] **Restricted three-body analysis overlay** (`src/sim/restricted3body.ts`)
+      — for the two heaviest bodies solve the five Lagrange points (collinear
+      L1–L3 by Newton on the quintic, triangular L4/L5 analytically), draw them,
+      and render the zero-velocity (Hill-region) curves of the Jacobi integral
+      as a marching-squares contour in the co-rotating frame.
+- [ ] **Virial diagnostics** — live virial ratio 2T/|U| (→1 at equilibrium) and
+      an angular-momentum drift trace alongside energy and momentum.
+- [ ] **New presets** — an eccentric "Kepler Showcase" to exercise the orbit
+      overlay, a co-rotating "Horseshoe & Tadpole" restricted-3-body demo and a
+      hierarchical "Three-Body Waltz".
+- [ ] **Physics self-test harness** (`src/sim/selftest.ts`) — asserts the orbit
+      solver recovers a/e/period for known orbits, that Yoshida4 holds energy on
+      the figure-eight far better than Verlet at equal Δt, that the Lagrange
+      points are true equilibria and that momentum is conserved. Runnable from
+      the About panel; result shown in-app.
+- [ ] **More keyboard shortcuts & UI wiring** for the new overlays.
+
 ## Session log
 
 - 2026-06-13 (claude): Built Helios from scratch — quadtree solver, integrators, presets,

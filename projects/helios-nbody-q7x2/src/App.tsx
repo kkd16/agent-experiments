@@ -3,9 +3,12 @@ import './App.css'
 import { Simulation } from './sim/Simulation'
 import { Camera } from './render/Camera'
 import { Renderer } from './render/Renderer'
-import type { RenderOptions, RenderOverlay } from './render/Renderer'
+import type { LagrangeOverlay, OrbitOverlay, RenderOptions, RenderOverlay } from './render/Renderer'
 import type { Diagnostics, SimParams } from './sim/types'
 import { presetById } from './sim/presets'
+import { apoapsisPoint, orbitElements, periapsisPoint, sampleOrbitPath } from './sim/orbit'
+import type { OrbitElements } from './sim/orbit'
+import { restrictedThreeBody } from './sim/restricted3body'
 import { Ring } from './util/ring'
 import { Sidebar } from './components/Sidebar'
 import type { Series } from './components/Plot'
@@ -69,6 +72,8 @@ export default function App() {
   const momentumRing = useRef(new Ring(240))
   // Latest forecast paths, recomputed periodically and drawn every frame.
   const trajRef = useRef<{ paths: Float64Array[]; colors: string[] } | null>(null)
+  // Latest restricted-3-body overlay, recomputed periodically (primaries move).
+  const lagRef = useRef<LagrangeOverlay | null>(null)
   const lastMergeRef = useRef(0)
 
   // Misc refs that must stay current inside the rAF loop / event handlers.
@@ -217,9 +222,26 @@ export default function App() {
         trajRef.current = null
       }
 
+      // Restricted-3-body overlay: recompute periodically since the primaries
+      // (the two heaviest bodies) move as the binary rotates.
+      if (ctrl.renderOpts.showLagrange && sim.count >= 2) {
+        if (frame % 3 === 0) lagRef.current = computeLagrange(sim)
+      } else if (lagRef.current) {
+        lagRef.current = null
+      }
+
+      // Osculating orbit of the selected body, recomputed every frame (cheap).
+      let orbitOverlay: OrbitOverlay | undefined
+      const selIdx = ctrl.selectedIndex
+      if (ctrl.renderOpts.showOrbit && selIdx >= 0 && selIdx < sim.count) {
+        orbitOverlay = computeOrbitOverlay(sim, selIdx, ctrl.renderOpts.primary) ?? undefined
+      }
+
       const overlay: RenderOverlay = {
         trajectories: trajRef.current ?? undefined,
         selected: ctrl.selectedIndex,
+        orbit: orbitOverlay,
+        lagrange: lagRef.current ?? undefined,
       }
       rendererRef.current!.render(sim, cam, ctrl.renderOpts, overlay)
 
@@ -245,7 +267,7 @@ export default function App() {
           setMergeCount(sim.mergeCount)
         }
         const sel = ctrl.selectedIndex
-        if (sel >= 0 && sel < sim.count) setInspect(computeInspect(sim, sel, d.comX, d.comY))
+        if (sel >= 0 && sel < sim.count) setInspect(computeInspect(sim, sel, ctrl.renderOpts.primary))
         else if (sel < 0) setInspect(null)
       }
     }
@@ -382,6 +404,10 @@ export default function App() {
         a.doShare()
       } else if (e.key === 'e') {
         a.doExport()
+      } else if (e.key === 'o') {
+        setRenderOpts((r) => ({ ...r, showOrbit: !r.showOrbit }))
+      } else if (e.key === 'l') {
+        setRenderOpts((r) => ({ ...r, showLagrange: !r.showLagrange }))
       } else if (e.key === 'Escape') {
         setSelectedIndex(-1)
       }
@@ -631,14 +657,49 @@ export default function App() {
   )
 }
 
-/** Live orbital readout for the selected body, relative to the heaviest body. */
-function computeInspect(sim: Simulation, sel: number, comX: number, comY: number): InspectInfo {
-  const m = sim.mass[sel]
-  const vx = sim.velX[sel]
-  const vy = sim.velY[sel]
-  const speed = Math.hypot(vx, vy)
-  const distCom = Math.hypot(sim.posX[sel] - comX, sim.posY[sel] - comY)
+type PrimaryMode = RenderOptions['primary']
 
+interface PrimaryRef {
+  px: number
+  py: number
+  pvx: number
+  pvy: number
+  mu: number
+  label: string
+  isSelf: boolean
+}
+
+/**
+ * Resolve the reference body for orbital elements. In "heaviest" mode the orbit
+ * is taken about the most massive body (μ = G(M+m), the exact two-body value);
+ * in "barycenter" mode it is taken about the system centre of mass moving with
+ * the COM velocity, with μ = G·M_total — the orbit in the mean monopole field.
+ */
+function resolvePrimary(sim: Simulation, sel: number, mode: PrimaryMode): PrimaryRef {
+  const g = sim.params.g
+  const m = sim.mass[sel]
+  if (mode === 'barycenter') {
+    let comX = 0
+    let comY = 0
+    let comVx = 0
+    let comVy = 0
+    let tm = 0
+    for (let i = 0; i < sim.count; i++) {
+      const mi = sim.mass[i]
+      comX += mi * sim.posX[i]
+      comY += mi * sim.posY[i]
+      comVx += mi * sim.velX[i]
+      comVy += mi * sim.velY[i]
+      tm += mi
+    }
+    if (tm > 0) {
+      comX /= tm
+      comY /= tm
+      comVx /= tm
+      comVy /= tm
+    }
+    return { px: comX, py: comY, pvx: comVx, pvy: comVy, mu: g * tm, label: 'barycentre', isSelf: false }
+  }
   let hi = 0
   let mm = -Infinity
   for (let i = 0; i < sim.count; i++) {
@@ -647,29 +708,86 @@ function computeInspect(sim: Simulation, sel: number, comX: number, comY: number
       hi = i
     }
   }
-
-  let distCentral: number | null = null
-  let specificEnergy: number | null = null
-  let semiMajor: number | null = null
-  let period: number | null = null
-  let bound: boolean | null = null
-  if (hi !== sel) {
-    const r = Math.hypot(sim.posX[sel] - sim.posX[hi], sim.posY[sel] - sim.posY[hi])
-    distCentral = r
-    const dvx = vx - sim.velX[hi]
-    const dvy = vy - sim.velY[hi]
-    const vrel2 = dvx * dvx + dvy * dvy
-    const mu = sim.params.g * (mm + m)
-    const eps = 0.5 * vrel2 - mu / Math.max(r, 1e-9)
-    specificEnergy = eps
-    bound = eps < 0
-    if (bound) {
-      const a = -mu / (2 * eps)
-      semiMajor = a
-      period = 2 * Math.PI * Math.sqrt((a * a * a) / mu)
-    }
+  return {
+    px: sim.posX[hi],
+    py: sim.posY[hi],
+    pvx: sim.velX[hi],
+    pvy: sim.velY[hi],
+    mu: g * (mm + m),
+    label: `#${hi} (heaviest)`,
+    isSelf: hi === sel,
   }
-  return { index: sel, mass: m, speed, distCom, distCentral, specificEnergy, semiMajor, period, bound }
+}
+
+/** The osculating orbital elements of the selected body about its primary. */
+function selectedOrbit(
+  sim: Simulation,
+  sel: number,
+  mode: PrimaryMode,
+): { el: OrbitElements; ref: PrimaryRef } | null {
+  const ref = resolvePrimary(sim, sel, mode)
+  if (ref.isSelf) return null
+  const rx = sim.posX[sel] - ref.px
+  const ry = sim.posY[sel] - ref.py
+  const dvx = sim.velX[sel] - ref.pvx
+  const dvy = sim.velY[sel] - ref.pvy
+  return { el: orbitElements(rx, ry, dvx, dvy, ref.mu), ref }
+}
+
+/** Live orbital readout for the selected body. */
+function computeInspect(sim: Simulation, sel: number, mode: PrimaryMode): InspectInfo {
+  const m = sim.mass[sel]
+  const speed = Math.hypot(sim.velX[sel], sim.velY[sel])
+  const [comX, comY] = sim.centerOfMass()
+  const distCom = Math.hypot(sim.posX[sel] - comX, sim.posY[sel] - comY)
+  const ref = resolvePrimary(sim, sel, mode)
+  const orbit = ref.isSelf
+    ? null
+    : orbitElements(
+        sim.posX[sel] - ref.px,
+        sim.posY[sel] - ref.py,
+        sim.velX[sel] - ref.pvx,
+        sim.velY[sel] - ref.pvy,
+        ref.mu,
+      )
+  return { index: sel, mass: m, speed, distCom, primaryLabel: ref.label, orbit }
+}
+
+/** Build the on-canvas osculating-orbit overlay for the selected body. */
+function computeOrbitOverlay(sim: Simulation, sel: number, mode: PrimaryMode): OrbitOverlay | null {
+  const res = selectedOrbit(sim, sel, mode)
+  if (!res) return null
+  const { el, ref } = res
+  // Skip degenerate near-radial orbits where the conic is meaningless.
+  if (!Number.isFinite(el.semiLatus) || el.semiLatus < 1e-9) return null
+  return {
+    path: sampleOrbitPath(el, ref.px, ref.py, 256),
+    primary: [ref.px, ref.py],
+    periapsis: periapsisPoint(el, ref.px, ref.py),
+    apoapsis: apoapsisPoint(el, ref.px, ref.py),
+  }
+}
+
+/** Build the restricted-3-body overlay from the two heaviest bodies. */
+function computeLagrange(sim: Simulation): LagrangeOverlay | null {
+  const heavy = sim.heaviestIndices(2)
+  if (heavy.length < 2) return null
+  const [a, b] = heavy
+  const lag = restrictedThreeBody(
+    sim.mass[a],
+    sim.posX[a],
+    sim.posY[a],
+    sim.mass[b],
+    sim.posX[b],
+    sim.posY[b],
+  )
+  if (!lag.valid) return null
+  return {
+    points: lag.points,
+    contours: lag.contours,
+    primary1: lag.primary1,
+    primary2: lag.primary2,
+  }
 }
 
 function HudStat({ label, value }: { label: string; value: string }) {

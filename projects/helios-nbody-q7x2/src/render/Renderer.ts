@@ -28,7 +28,18 @@ export interface RenderOptions {
   showQuadtree: boolean
   showLegend: boolean // colour-bar + scale-bar overlay
   showField: boolean // gravitational-potential heatmap background
+  showOrbit: boolean // osculating Kepler ellipse of the selected body
+  showLagrange: boolean // restricted-3-body Lagrange points + zero-velocity curves
+  primary: 'heaviest' | 'barycenter' // reference body for orbital elements
   background: string
+}
+
+/** Osculating Kepler orbit of the selected body, in world coordinates. */
+export interface OrbitOverlay {
+  path: Float64Array // flat [x0,y0,…] polyline of the conic
+  primary: [number, number]
+  periapsis: [number, number]
+  apoapsis: [number, number] | null
 }
 
 export interface RenderOverlay {
@@ -36,6 +47,20 @@ export interface RenderOverlay {
   trajectories?: { paths: Float64Array[]; colors: string[] }
   /** Index of the body to mark as selected, or -1/undefined for none. */
   selected?: number
+  /** Osculating orbit of the selected body, drawn as a dashed conic. */
+  orbit?: OrbitOverlay
+  /** Restricted-three-body analysis (Lagrange points + zero-velocity curves). */
+  lagrange?: LagrangeOverlay
+}
+
+/** Restricted-three-body overlay payload, all in world coordinates. */
+export interface LagrangeOverlay {
+  /** The five Lagrange points L1…L5 (world coords). */
+  points: Array<[number, number]>
+  /** Zero-velocity (Hill-region) contour segments: flat [x0,y0,x1,y1] per seg. */
+  contours: Float64Array
+  primary1: [number, number]
+  primary2: [number, number]
 }
 
 const PALETTE_SIZE = 64
@@ -130,6 +155,7 @@ export class Renderer {
     else this.clearOrFade(opts)
 
     if (opts.showQuadtree) this.drawQuadtree(sim, camera)
+    if (overlay?.lagrange) this.drawLagrange(overlay.lagrange, camera)
     if (overlay?.trajectories) this.drawTrajectories(overlay.trajectories, camera)
 
     const n = sim.count
@@ -181,6 +207,7 @@ export class Renderer {
 
     this.drawFlashes(sim, camera)
     ctx.globalCompositeOperation = 'source-over'
+    if (overlay?.orbit) this.drawOrbit(overlay.orbit, camera)
     if (overlay?.selected != null && overlay.selected >= 0 && overlay.selected < sim.count) {
       this.drawSelection(sim, overlay.selected, camera)
     }
@@ -212,6 +239,117 @@ export class Renderer {
     }
     ctx.globalAlpha = 1
     ctx.globalCompositeOperation = 'source-over'
+  }
+
+  /**
+   * Draw the selected body's osculating Kepler orbit as a dashed conic, with
+   * ticks at periapsis (bright) and apoapsis (dim) and a faint line to the
+   * primary. This is the orbit the body would trace if all other perturbations
+   * stopped right now — so a precessing or perturbed orbit visibly drifts frame
+   * to frame against it.
+   */
+  private drawOrbit(orbit: OrbitOverlay, camera: Camera): void {
+    const { ctx } = this
+    const dpr = this.dpr
+    const path = orbit.path
+    const len = path.length >> 1
+    if (len < 2) return
+
+    ctx.globalCompositeOperation = 'source-over'
+    ctx.save()
+    ctx.setLineDash([6 * dpr, 5 * dpr])
+    ctx.strokeStyle = 'rgba(120,210,255,0.75)'
+    ctx.lineWidth = 1.3 * dpr
+    ctx.beginPath()
+    for (let k = 0; k < len; k++) {
+      const x = camera.worldToScreenX(path[k * 2])
+      const y = camera.worldToScreenY(path[k * 2 + 1])
+      if (k === 0) ctx.moveTo(x, y)
+      else ctx.lineTo(x, y)
+    }
+    ctx.stroke()
+    ctx.setLineDash([])
+
+    // Faint radius line from the primary toward periapsis.
+    const px = camera.worldToScreenX(orbit.primary[0])
+    const py = camera.worldToScreenY(orbit.primary[1])
+    const perX = camera.worldToScreenX(orbit.periapsis[0])
+    const perY = camera.worldToScreenY(orbit.periapsis[1])
+    ctx.strokeStyle = 'rgba(120,210,255,0.3)'
+    ctx.lineWidth = 1 * dpr
+    ctx.beginPath()
+    ctx.moveTo(px, py)
+    ctx.lineTo(perX, perY)
+    ctx.stroke()
+
+    // Periapsis marker (bright cyan diamond).
+    this.marker(perX, perY, 3.5 * dpr, 'rgba(150,230,255,0.95)')
+    if (orbit.apoapsis) {
+      const apX = camera.worldToScreenX(orbit.apoapsis[0])
+      const apY = camera.worldToScreenY(orbit.apoapsis[1])
+      this.marker(apX, apY, 3 * dpr, 'rgba(120,170,220,0.7)')
+    }
+    ctx.restore()
+  }
+
+  private marker(x: number, y: number, r: number, color: string): void {
+    const { ctx } = this
+    ctx.fillStyle = color
+    ctx.beginPath()
+    ctx.moveTo(x, y - r)
+    ctx.lineTo(x + r, y)
+    ctx.lineTo(x, y + r)
+    ctx.lineTo(x - r, y)
+    ctx.closePath()
+    ctx.fill()
+  }
+
+  /**
+   * Draw the restricted-three-body analysis: the zero-velocity (Hill-region)
+   * contours of the Jacobi integral as faint curves, plus the five Lagrange
+   * points L1–L5 with labels. Geometry is computed in world coordinates by the
+   * caller; here we only map and stroke.
+   */
+  private drawLagrange(lag: LagrangeOverlay, camera: Camera): void {
+    const { ctx } = this
+    const dpr = this.dpr
+    ctx.globalCompositeOperation = 'source-over'
+    ctx.save()
+
+    // Zero-velocity contour segments.
+    const seg = lag.contours
+    if (seg.length >= 4) {
+      ctx.strokeStyle = 'rgba(180,160,255,0.45)'
+      ctx.lineWidth = 1 * dpr
+      ctx.beginPath()
+      for (let i = 0; i + 3 < seg.length; i += 4) {
+        ctx.moveTo(camera.worldToScreenX(seg[i]), camera.worldToScreenY(seg[i + 1]))
+        ctx.lineTo(camera.worldToScreenX(seg[i + 2]), camera.worldToScreenY(seg[i + 3]))
+      }
+      ctx.stroke()
+    }
+
+    // Lagrange points.
+    ctx.font = `${11 * dpr}px ui-monospace, monospace`
+    ctx.textBaseline = 'middle'
+    for (let i = 0; i < lag.points.length; i++) {
+      const [wx, wy] = lag.points[i]
+      const sx = camera.worldToScreenX(wx)
+      const sy = camera.worldToScreenY(wy)
+      ctx.fillStyle = 'rgba(255,225,150,0.95)'
+      ctx.beginPath()
+      ctx.arc(sx, sy, 3 * dpr, 0, Math.PI * 2)
+      ctx.fill()
+      ctx.strokeStyle = 'rgba(255,225,150,0.4)'
+      ctx.lineWidth = 1 * dpr
+      ctx.beginPath()
+      ctx.arc(sx, sy, 6 * dpr, 0, Math.PI * 2)
+      ctx.stroke()
+      ctx.fillStyle = 'rgba(255,235,190,0.95)'
+      ctx.textAlign = 'left'
+      ctx.fillText(`L${i + 1}`, sx + 8 * dpr, sy)
+    }
+    ctx.restore()
   }
 
   private drawFlashes(sim: Simulation, camera: Camera): void {

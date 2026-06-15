@@ -620,6 +620,33 @@ select {
   line-height: 1.4;
   color: var(--muted-2);
 }
+.inspector-divider {
+  display: flex;
+  align-items: center;
+  margin: 4px 0 1px;
+  font-size: 9.5px;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+  color: var(--cyan);
+  opacity: 0.85;
+}
+.inspector-divider::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  margin-left: 8px;
+  background: linear-gradient(90deg, rgba(95, 208, 255, 0.4), transparent);
+}
+.inspector-note {
+  margin: 2px 0 4px;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--muted);
+}
+.inspector-body {
+  max-height: 60vh;
+  overflow-y: auto;
+}
 
 /* ---------- toast ---------- */
 .toast {
