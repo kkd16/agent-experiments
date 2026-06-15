@@ -99,6 +99,7 @@ function randInt(rng: () => number, lo: number, hi: number): number {
 function substType(t: Type, sub: Map<number, Type>): Type {
   const p = prune(t)
   if (p.kind === 'var') return sub.get(p.id) ?? p
+  if (p.kind === 'app') return { kind: 'app', fn: substType(p.fn, sub), arg: substType(p.arg, sub) }
   return { kind: 'con', name: p.name, args: p.args.map((a) => substType(a, sub)) }
 }
 
@@ -116,6 +117,8 @@ function peelArrows(t: Type): { args: Type[]; result: Type } {
 function toGType(t: Type, ctx: GenCtx): GType {
   const p = prune(t)
   if (p.kind === 'var') return { k: 'int' } // leftover polymorphism defaults to Int
+  // a higher-kinded application (`m a`) is not concretely generatable
+  if (p.kind === 'app') throw new GenError('higher-kinded type')
   switch (p.name) {
     case 'Int':
       return { k: 'int' }
@@ -215,6 +218,7 @@ function comparable(t: GType): boolean {
 function typeMentions(t: Type, typeName: string): boolean {
   const p = prune(t)
   if (p.kind === 'var') return false
+  if (p.kind === 'app') return typeMentions(p.fn, typeName) || typeMentions(p.arg, typeName)
   return p.name === typeName || p.args.some((a) => typeMentions(a, typeName))
 }
 

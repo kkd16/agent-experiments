@@ -18,7 +18,51 @@ export interface TCon {
   args: Type[]
 }
 
-export type Type = TVar | TCon
+/**
+ * The application of one type to another, `fn arg`. Used only when the head of
+ * an application is (or may become) a *type variable* — e.g. `m a` in
+ * `bind : m a -> (a -> m b) -> m b`. Concrete, saturated constructor
+ * applications (`List a`, `Option a`, `a -> b`) stay as `TCon`s; unification
+ * bridges the two representations (a `TCon` of arity ≥ 1 decomposes into a
+ * `TApp` spine on demand). This is what makes Aether *higher-kinded*: a type
+ * variable can stand for a type constructor like `Option` or `List` and be
+ * applied to arguments, so genuine `Functor`/`Monad` classes are expressible.
+ */
+export interface TApp {
+  kind: 'app'
+  fn: Type
+  arg: Type
+}
+
+export type Type = TVar | TCon | TApp
+
+export function tapp(fn: Type, arg: Type): TApp {
+  return { kind: 'app', fn, arg }
+}
+
+/** Apply `head` to a list of arguments, left-associatively (`head a b c`). */
+export function tappN(head: Type, args: Type[]): Type {
+  return args.reduce<Type>((f, a) => tapp(f, a), head)
+}
+
+/**
+ * Collect an application spine into its ultimate head and the arguments applied
+ * to it, looking through both `TApp` nodes and `TCon` arguments. So `Option a`
+ * (a `TCon`), `m a` (a `TApp`) and `((m a) b)` all yield a head + arg list.
+ */
+export function spineOf(t: Type): { head: TVar | TCon; args: Type[] } {
+  const args: Type[] = []
+  let cur = prune(t)
+  while (cur.kind === 'app') {
+    args.unshift(prune(cur.arg))
+    cur = prune(cur.fn)
+  }
+  // `cur` is now a var or con (the loop consumed every application node)
+  if (cur.kind === 'con' && cur.args.length > 0) {
+    return { head: tcon(cur.name), args: [...cur.args.map(prune), ...args] }
+  }
+  return { head: cur, args }
+}
 
 /**
  * A class-constraint predicate, e.g. `Disp a` or `Eq (List b)`. Used by the
@@ -105,6 +149,9 @@ export function freeVars(t: Type, acc: Set<number> = new Set()): Set<number> {
   const p = prune(t)
   if (p.kind === 'var') {
     acc.add(p.id)
+  } else if (p.kind === 'app') {
+    freeVars(p.fn, acc)
+    freeVars(p.arg, acc)
   } else {
     for (const a of p.args) freeVars(a, acc)
   }
@@ -126,6 +173,12 @@ export function typeToString(t: Type, names: Map<number, string> = new Map()): s
   const go = (ty: Type, prec: number): string => {
     const p = prune(ty)
     if (p.kind === 'var') return nameOf(p.id)
+    if (p.kind === 'app') {
+      const { head, args } = spineOf(p)
+      if (args.length === 0) return go(head, prec)
+      const s = `${go(head, 3)} ${args.map((a) => go(a, 3)).join(' ')}`
+      return prec >= 3 ? `(${s})` : s
+    }
     switch (p.name) {
       case ARROW: {
         const [from, to] = p.args

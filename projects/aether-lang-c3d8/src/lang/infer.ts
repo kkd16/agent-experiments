@@ -23,6 +23,7 @@ import {
   prune,
   rowExtend,
   rowLabelOf,
+  spineOf,
   tArrow,
   tBool,
   tcon,
@@ -34,6 +35,7 @@ import {
   tString,
   tTuple,
   tUnit,
+  typeToString,
 } from './types.ts'
 import type { ClassTables, Evidence } from './classes.ts'
 import { EvCell, dictParamName, emptyTables } from './classes.ts'
@@ -126,6 +128,7 @@ class Inferrer {
   occurs(v: TVar, t: Type): boolean {
     const p = prune(t)
     if (p.kind === 'var') return p.id === v.id
+    if (p.kind === 'app') return this.occurs(v, p.fn) || this.occurs(v, p.arg)
     return p.args.some((a) => this.occurs(v, a))
   }
 
@@ -142,6 +145,23 @@ class Inferrer {
     }
     if (pb.kind === 'var') {
       this.unify(pb, pa, span)
+      return
+    }
+    // type applications: `m a` vs `Option a`, `f a` vs `g b`, etc. A constructor
+    // of arity ≥ 1 decomposes into an application spine so the two
+    // representations unify uniformly (and a higher-kinded variable binds to a
+    // partially-applied constructor, e.g. `m := Option`).
+    if (pa.kind === 'app' || pb.kind === 'app') {
+      const da = decompApp(pa)
+      const db = decompApp(pb)
+      if (!da || !db) {
+        throw new TypeCheckError(
+          `type mismatch: cannot unify ${describe(pa)} with ${describe(pb)}`,
+          span,
+        )
+      }
+      this.unify(da.fn, db.fn, span)
+      this.unify(da.arg, db.arg, span)
       return
     }
     // records & rows unify structurally regardless of field order
@@ -654,7 +674,9 @@ class Inferrer {
     this.wanted = []
     for (const w of input) {
       const pt = prune(w.type)
-      if (pt.kind === 'con') {
+      // resolve once the constraint's head is a concrete constructor (looking
+      // through applications); a still-variable head defers to a dict param
+      if (spineOf(pt).head.kind === 'con') {
         w.cell.ev = this.evidenceFor(w.cls, pt, span)
       } else {
         this.wanted.push(w)
@@ -666,21 +688,27 @@ class Inferrer {
    * dictionary, or a dictionary parameter when the head is still a variable. */
   private evidenceFor(cls: string, type: Type, span: Span | null): Evidence {
     const t = prune(type)
-    if (t.kind === 'var') {
-      const name = dictParamName(cls, t.id)
+    // The head of the constraint's type drives instance selection. `spineOf`
+    // sees through both `TApp` chains and `TCon` arguments, so `Option`,
+    // `Option a` and `m a` all reduce to a head + applied-argument list.
+    const sp = spineOf(t)
+    if (sp.head.kind === 'var') {
+      const name = dictParamName(cls, sp.head.id)
       const cell = new EvCell()
       cell.ev = { kind: 'param', name }
       // register so an enclosing generalisation/instance abstracts this param
-      this.wanted.push({ cls, type: t, cell })
+      this.wanted.push({ cls, type: sp.head, cell })
       return { kind: 'param', name }
     }
+    const headCon = sp.head.name
+    const headArity = sp.args.length
     const insts = this.instances.get(cls)
     if (!insts) throw new TypeCheckError(`no instance of class '${cls}' is in scope`, span)
-    const inst = insts.find((i) => i.headCon === t.name && i.headArity === t.args.length)
+    const inst = insts.find((i) => i.headCon === headCon && i.headArity === headArity)
     if (!inst) {
       throw new TypeCheckError(`no instance for ${predToString({ cls, type: t })}`, span)
     }
-    const args = inst.context.map((ce) => this.evidenceFor(ce.cls, t.args[ce.argIndex], span))
+    const args = inst.context.map((ce) => this.evidenceFor(ce.cls, sp.args[ce.argIndex], span))
     return { kind: 'instance', dictName: inst.dictName, args }
   }
 
@@ -953,11 +981,26 @@ function subst(t: Type, mapping: Map<number, Type>): Type {
     const replacement = mapping.get(p.id)
     return replacement ?? p
   }
+  if (p.kind === 'app') {
+    return { kind: 'app', fn: subst(p.fn, mapping), arg: subst(p.arg, mapping) }
+  }
   return { kind: 'con', name: p.name, args: p.args.map((a) => subst(a, mapping)) }
+}
+
+/** Split a type into `fn`/`arg` if it is an application (a `TApp`, or a `TCon`
+ * of arity ≥ 1 viewed through its spine). Returns null otherwise. */
+function decompApp(t: Type): { fn: Type; arg: Type } | null {
+  const p = prune(t)
+  if (p.kind === 'app') return { fn: p.fn, arg: p.arg }
+  if (p.kind === 'con' && p.args.length > 0) {
+    return { fn: tcon(p.name, p.args.slice(0, -1)), arg: p.args[p.args.length - 1] }
+  }
+  return null
 }
 
 function describe(t: Type): string {
   if (t.kind === 'var') return 'a type variable'
+  if (t.kind === 'app') return typeToString(t)
   if (t.args.length === 0) return t.name
   return t.name
 }

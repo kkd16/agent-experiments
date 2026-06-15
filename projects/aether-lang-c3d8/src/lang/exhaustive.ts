@@ -67,6 +67,8 @@ function signatureOf(
 ): Signature {
   const t = prune(type)
   if (t.kind === 'var') return { kind: 'infinite' }
+  // an applied type variable (`m a`) has no statically-known constructor set
+  if (t.kind === 'app') return { kind: 'infinite' }
   switch (t.name) {
     case 'Bool':
       return {
