@@ -12,10 +12,14 @@ function App() {
     maxSpeed: 4,
     maxForce: 0.05,
     mouseInteraction: 'none',
-    mouseRadius: 150
+    mouseRadius: 150,
+    edgeBehavior: 'wrap',
+    predatorAvoidance: 2.5,
+    predatorVisualRange: 100
   })
 
   const [numBoids, setNumBoids] = useState(150)
+  const [numPredators, setNumPredators] = useState(0)
   const [showControls, setShowControls] = useState(true)
 
   const handleParamChange = (key: keyof BoidParams, value: number) => {
@@ -24,7 +28,7 @@ function App() {
 
   return (
     <div className="app-container">
-      <BoidsCanvas params={params} numBoids={numBoids} />
+      <BoidsCanvas params={params} numBoids={numBoids} numPredators={numPredators} />
 
       <button
         className="toggle-controls"
@@ -47,6 +51,20 @@ function App() {
                 step="10"
                 value={numBoids}
                 onChange={(e) => setNumBoids(Number(e.target.value))}
+              />
+            </label>
+          </div>
+
+          <div className="control-group">
+            <label>
+              Number of Predators: {numPredators}
+              <input
+                type="range"
+                min="0"
+                max="10"
+                step="1"
+                value={numPredators}
+                onChange={(e) => setNumPredators(Number(e.target.value))}
               />
             </label>
           </div>
@@ -118,6 +136,19 @@ function App() {
                 value={params.maxSpeed}
                 onChange={(e) => handleParamChange('maxSpeed', Number(e.target.value))}
               />
+            </label>
+          </div>
+
+          <div className="control-group">
+            <label>
+              Edge Behavior
+              <select
+                value={params.edgeBehavior}
+                onChange={(e) => setParams(prev => ({ ...prev, edgeBehavior: e.target.value as 'wrap' | 'bounce' }))}
+              >
+                <option value="wrap">Wrap Around</option>
+                <option value="bounce">Bounce</option>
+              </select>
             </label>
           </div>
 

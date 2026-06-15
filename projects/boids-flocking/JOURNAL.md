@@ -17,3 +17,19 @@
 - Chose an elegant dark theme using `#0f172a` (slate-900) as a backdrop.
 - Boids have a slight trail effect via partial clearRect/fillRect opacity trick in canvas.
 - Boids change colors automatically using an HSL approach.
+## Session: 2024-06-15
+
+### Backlog & Planned Improvements
+- [x] Add an edge behavior toggle (Wrap Around vs Bounce).
+- [x] Add Predator boids that hunt regular boids.
+- [x] Make regular boids flee from Predators.
+- [ ] Add individual speed/size variance to regular boids for a more organic look.
+- [ ] Optimize the flocking neighbor search with a QuadTree or Grid-based spatial partitioning to support 1000+ boids.
+- [ ] Add interactive obstacles that boids must steer around.
+- [ ] Allow the user to click to place/remove obstacles on the canvas.
+- [ ] Implement a "wind" force that pushes all boids in a certain direction.
+- [ ] Implement a "follow the leader" mode where boids try to follow a specific designated boid.
+- [ ] Add color trails to the canvas for a continuous path effect.
+- [ ] Add a visual toggle for viewing the "sensory radius" (visual range) of a selected boid.
+
+### Tasks Completed
