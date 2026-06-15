@@ -1,8 +1,9 @@
 import { useMemo, useState } from 'react'
 import type { BuiltProblem } from '../problems'
-import type { SolveResult } from '../sat'
+import type { SolveResult, MusResult } from '../sat'
 import { checkProof, proofToDrat, toDimacs } from '../sat'
 import type { DratResult } from '../sat'
+import { findMusTask } from '../tasks'
 
 /**
  * Verifies the solver's DRAT refutation with the independent in-app checker and
@@ -10,7 +11,7 @@ import type { DratResult } from '../sat'
  * downloads for the `.drat` proof and the core `.cnf`.
  */
 export function ProofView({ problem, result }: { problem: BuiltProblem; result: SolveResult }) {
-  const proof = result.proof ?? []
+  const proof = useMemo(() => result.proof ?? [], [result.proof])
   const truncated = !!result.proofTruncated
 
   // Run the checker once per result. Guarded so the sandboxed thumbnail can't crash.
@@ -62,6 +63,8 @@ export function ProofView({ problem, result }: { problem: BuiltProblem; result: 
       {check && !('error' in check) && check.core && (
         <CorePanel problem={problem} core={check.core} />
       )}
+
+      <MusPanel problem={problem} seed={check && !('error' in check) ? check.core?.originalIndices : undefined} />
 
       <div className="proof-actions">
         <button
@@ -156,6 +159,105 @@ function CorePanel({ problem, core }: { problem: BuiltProblem; core: { originalI
           </span>
         ))}
         {total > CAP && <span className="core-more">… {fmt(total - CAP)} more clauses</span>}
+      </div>
+    </div>
+  )
+}
+
+type MusState =
+  | { phase: 'idle' }
+  | { phase: 'running' }
+  | { phase: 'done'; result: MusResult }
+  | { phase: 'error'; message: string }
+
+function MusPanel({ problem, seed }: { problem: BuiltProblem; seed?: number[] }) {
+  const [state, setState] = useState<MusState>({ phase: 'idle' })
+  const run = () => {
+    setState({ phase: 'running' })
+    // Seed the deletion loop with the DRAT core so we start from a sufficient subset.
+    findMusTask({ numVars: problem.cnf.numVars, clauses: problem.cnf.clauses }, 300000, seed)
+      .then((result) => setState({ phase: 'done', result }))
+      .catch((e) => setState({ phase: 'error', message: e instanceof Error ? e.message : String(e) }))
+  }
+  const total = problem.cnf.clauses.length
+  return (
+    <div className="mus-panel">
+      <div className="core-head">
+        <div>
+          <h3>Minimal unsatisfiable subset (MUS)</h3>
+          <p className="muted">
+            The DRAT core above is <em>sufficient</em> but not necessarily minimal. A MUS is{' '}
+            <em>irreducible</em>: every clause is essential, so deleting <strong>any one</strong> of them makes
+            the formula satisfiable. SatForge finds one with the deletion-based algorithm, re-solving subsets
+            with the real CDCL engine.
+            {seed && seed.length > 0 ? ` The DRAT core has ${fmt(seed.length)} clauses to refine.` : ''}
+          </p>
+        </div>
+        <button className="kind-btn" onClick={run} disabled={state.phase === 'running'}>
+          {state.phase === 'running' ? 'Minimizing…' : '↳ Extract MUS'}
+        </button>
+      </div>
+
+      {state.phase === 'error' && <div className="banner error">MUS error: {state.message}</div>}
+
+      {state.phase === 'done' && <MusResultView problem={problem} result={state.result} total={total} />}
+    </div>
+  )
+}
+
+function MusResultView({
+  problem,
+  result,
+  total,
+}: {
+  problem: BuiltProblem
+  result: MusResult
+  total: number
+}) {
+  if (result.core.length === 0) {
+    return (
+      <div className="banner warn">
+        Couldn't certify a MUS within the budget (the formula may be too hard to re-solve repeatedly). Try a
+        smaller instance.
+      </div>
+    )
+  }
+  const inCore = new Set(result.core)
+  const CAP = 600
+  const shown = problem.cnf.clauses.slice(0, CAP)
+  return (
+    <div className="core-panel">
+      <p className="muted">
+        Found a {result.minimal ? <strong>minimal</strong> : 'small (not fully certified)'} unsatisfiable
+        core of <strong>{fmt(result.core.length)}</strong> of {fmt(total)} clauses in {fmt(result.solverCalls)}{' '}
+        solves ({result.timeMs.toFixed(0)} ms).{' '}
+        {result.minimal && 'Removing any single one of these clauses makes the formula satisfiable.'}
+      </p>
+      <div className="core-grid" role="list" aria-label="clauses in the minimal unsatisfiable subset">
+        {shown.map((clause, i) => (
+          <span
+            key={i}
+            role="listitem"
+            className={`core-chip ${inCore.has(i) ? 'in mus' : 'out'}`}
+            title={`clause ${i + 1}: ${clause.join(' ')} 0`}
+          >
+            {clause.join(' ')}
+          </span>
+        ))}
+        {total > CAP && <span className="core-more">… {fmt(total - CAP)} more clauses</span>}
+      </div>
+      <div className="proof-actions">
+        <button
+          className="kind-btn"
+          onClick={() =>
+            download(
+              'mus.cnf',
+              toDimacs({ numVars: problem.cnf.numVars, clauses: result.core.map((i) => problem.cnf.clauses[i]) }),
+            )
+          }
+        >
+          ⤓ Download MUS (.cnf)
+        </button>
       </div>
     </div>
   )

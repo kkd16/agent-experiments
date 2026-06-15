@@ -73,13 +73,43 @@ family. All 31 assertions pass.
       UNSAT instances, every emitted core re-solved to confirm it is itself UNSAT, RAT
       accept/reject unit tests, PHP + triangle proofs verified — all green
 - [ ] Live animation: replay the trace step-by-step on the board, not just the log
-- [ ] Incremental solving (assumptions) + a small SMT-style theory hook → MUS extraction
-- [ ] More encoders: Hamiltonian path, Einstein's zebra puzzle, factoring
 - [ ] Watch-list / clause-database heatmap visualization
 - [ ] Cactus plot: solve many instances and chart time-to-solve
 - [ ] Compare heuristics side-by-side (VSIDS vs. random, restarts on/off)
-- [ ] Phase-transition explorer: sweep α and chart P(SAT) and median hardness
 - [ ] Run proof verification off the main thread for very large refutations
+
+### Session 3 — counting, cores, and three new encoders
+
+Going from "decide SAT/UNSAT" to **counting and explaining** the answer, plus three
+showcase encoders that turn famous problems into CNF.
+
+- [x] **Exact model counter (#SAT)** — `src/sat/modelCount.ts`. A from-scratch DPLL
+      counter with unit propagation, **connected-component decomposition** (disjoint
+      sub-formulas multiply) and **formula caching** (Cachet-style) keyed by the canonical
+      clause set. BigInt-exact. Answers "how many solutions?" — proves Sudoku uniqueness,
+      counts N-Queens solutions, shows the zebra puzzle has exactly one model.
+- [x] **Minimal Unsatisfiable Subset (MUS)** — `src/sat/mus.ts`. Deletion-based MUS over the
+      real CDCL solver: a guaranteed-**minimal** unsat core (removing *any* clause makes it
+      SAT) — strictly stronger than the DRAT-derived core, which is only sufficient.
+- [x] **Factoring encoder** — `src/sat/encoders/factoring.ts`. A from-scratch binary
+      shift-and-add **multiplier circuit** in Tseitin CNF (and/xor/or full-adder gates),
+      constrained so a·b = N with a,b ≥ 2. Factor a semiprime — or get UNSAT as a certificate
+      that N is prime.
+- [x] **Hamiltonian cycle encoder** — `src/sat/encoders/hamiltonian.ts`. Position-based
+      encoding (vertex-at-position matrix + adjacency constraints) over a random graph.
+- [x] **Einstein's Zebra puzzle encoder** — `src/sat/encoders/zebra.ts`. The classic 5-house
+      logic puzzle as SAT, with a decoder that reads off who owns the zebra and who drinks
+      water; #SAT confirms the solution is unique.
+- [x] **Off-thread analysis tasks** — extended the worker with `count` / `mus` operations and a
+      one-shot task runner (`src/tasks.ts`) so counting and core extraction never block the UI.
+- [x] **UI**: new problem kinds + controls (factoring N + presets, Hamiltonian graph, zebra),
+      new solution renderers (factorization, highlighted tour, zebra grid), a **Count** tab
+      (#SAT), and a **minimal core (MUS)** panel in the Proof tab.
+- [x] **Tests**: #SAT differential vs. brute-force enumeration over 1500 random CNFs + exact
+      N-Queens/coloring counts + cache check; MUS minimality checks (core UNSAT + every single
+      deletion SAT) over PHP/coloring/random families; factoring self-checks (a·b = N over 11
+      semiprimes, 6 primes → UNSAT, #SAT of factor pairs); Hamiltonian tour validation; zebra
+      unique-solution check. Harness now at **130 assertions, all green**.
 
 ## Session log
 
@@ -99,3 +129,19 @@ family. All 31 assertions pass.
   core re-solved to confirm it is itself UNSAT, RAT accept/reject cases, and PHP/triangle/Langford
   proofs — all green. (Found & fixed a watch-list indexing bug in the checker via the differential
   harness.) Lint + build + full gate green.
+- 2026-06-15 (claude): Went from *deciding* formulas to **counting and explaining** them.
+  Added a from-scratch **exact #SAT model counter** (`src/sat/modelCount.ts`) — DPLL with
+  connected-component decomposition (disjoint sub-formulas multiply) and Cachet-style formula
+  caching, BigInt-exact — and **deletion-based MUS extraction** (`src/sat/mus.ts`) that returns
+  a guaranteed-minimal unsat core (drop any clause → SAT), strictly stronger than the
+  DRAT-derived core. Three new showcase encoders: **integer factoring** via a hand-built binary
+  shift-and-add multiplier circuit in Tseitin CNF (factor a semiprime, or UNSAT = a primality
+  certificate), **Hamiltonian cycle** (position-based encoding), and **Einstein's Zebra puzzle**
+  (15 clues → who drinks water / owns the zebra; #SAT confirms it's unique). Wired them into the
+  UI: new problem kinds + controls, solution renderers (factorization, highlighted tour, zebra
+  grid), a **Count** tab, and a **minimal-core (MUS)** panel in the Proof tab — both run off the
+  main thread via new worker ops + a one-shot task runner (`src/tasks.ts`). Test harness grew
+  from 66 → **130 assertions**: #SAT differential vs. brute force over 1500 random CNFs plus
+  exact N-Queens/coloring counts and a cache-hit check, MUS minimality certified over
+  PHP/coloring/random families, factoring round-trips over 11 semiprimes + 6 primes→UNSAT, and
+  Hamiltonian/zebra validation. All presets solve in <70 ms. Lint + build + full gate green.

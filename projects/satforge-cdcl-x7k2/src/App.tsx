@@ -11,8 +11,9 @@ import { ImplicationGraph } from './components/ImplicationGraph'
 import { TraceView } from './components/TraceView'
 import { CnfView } from './components/CnfView'
 import { ProofView } from './components/ProofView'
+import { CountView } from './components/CountView'
 
-type Tab = 'solution' | 'stats' | 'graph' | 'trace' | 'proof' | 'cnf'
+type Tab = 'solution' | 'stats' | 'count' | 'graph' | 'trace' | 'proof' | 'cnf'
 
 export default function App() {
   const [spec, setSpec] = useState<ProblemSpec>(DEFAULT_SPEC)
@@ -116,6 +117,9 @@ export default function App() {
             <TabBtn id="stats" tab={tab} setTab={setTab} disabled={!result}>
               Statistics
             </TabBtn>
+            <TabBtn id="count" tab={tab} setTab={setTab} disabled={!result}>
+              Count
+            </TabBtn>
             <TabBtn id="graph" tab={tab} setTab={setTab} disabled={!hasGraph}>
               Conflict graph
             </TabBtn>
@@ -148,6 +152,7 @@ export default function App() {
             {result && tab === 'stats' && (
               <StatsView result={result} elapsed={state.phase === 'done' ? state.elapsed : 0} />
             )}
+            {result && tab === 'count' && <CountView key={specKey} cnf={problem.cnf} />}
             {result && tab === 'graph' && hasGraph && <ImplicationGraph snapshot={result.firstConflict!} />}
             {result && tab === 'trace' && hasTrace && (
               <TraceView trace={result.trace!} truncated={!!result.traceTruncated} />
@@ -161,7 +166,9 @@ export default function App() {
       <footer className="footer">
         Two-watched-literals BCP · VSIDS · first-UIP learning · non-chronological backjumping ·
         recursive minimization · Luby restarts · LBD clause deletion · DRAT proofs with an
-        independent RUP/RAT checker + unsat-core extraction — all hand-written in TypeScript.
+        independent RUP/RAT checker · exact #SAT model counting (component caching) · minimal
+        unsat cores (MUS) · factoring via a from-scratch multiplier circuit — all hand-written in
+        TypeScript.
       </footer>
     </div>
   )
