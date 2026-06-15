@@ -57,6 +57,12 @@ export interface DMRGOptions {
   seed?: number;
   /** Stop early once |ΔE| between half-sweeps drops below this. */
   tol?: number;
+  /**
+   * Number of independent random restarts; the lowest-energy run wins. DMRG can get trapped
+   * in a local minimum in symmetry-broken / near-degenerate phases (e.g. the deep
+   * ferromagnetic Ising regime), and a few restarts make it robust there. Default 1.
+   */
+  restarts?: number;
 }
 
 export interface DMRGResult {
@@ -496,9 +502,20 @@ function energySquared(A: Site[], mpo: MPO): number {
 /**
  * Run two-site DMRG on an MPO. Returns the ground energy, the per-half-sweep convergence
  * curve, the energy variance, and the ground state's entanglement-entropy and bond-dimension
- * profiles.
+ * profiles. With `restarts > 1` the lowest-energy independent run is returned (robust against
+ * local minima in symmetry-broken phases).
  */
 export function runDMRG(mpo: MPO, opts: DMRGOptions = {}): DMRGResult {
+  const restarts = Math.max(1, opts.restarts ?? 1);
+  let best: DMRGResult | null = null;
+  for (let t = 0; t < restarts; t++) {
+    const res = solveOnce(mpo, { ...opts, seed: (opts.seed ?? 1) + t * 1009 });
+    if (!best || res.energy < best.energy) best = res;
+  }
+  return best as DMRGResult;
+}
+
+function solveOnce(mpo: MPO, opts: DMRGOptions = {}): DMRGResult {
   const n = mpo.length;
   const maxBond = opts.maxBond ?? 32;
   const maxSweeps = opts.sweeps ?? 8;
@@ -556,12 +573,11 @@ export function runDMRG(mpo: MPO, opts: DMRGOptions = {}): DMRGResult {
     if (converged && sweep >= 1) break;
   }
 
-  // The right-to-left sweep leaves the centre at site 0 (A is right-canonical for s≥1);
-  // re-normalise site 0 so the state is a unit vector for the expectation values.
-  const t0 = A[0];
-  let nrm = 0; for (let i = 0; i < t0.re.length; i++) nrm += t0.re[i] * t0.re[i] + t0.im[i] * t0.im[i];
-  nrm = Math.sqrt(nrm) || 1; const inv = 1 / nrm;
-  for (let i = 0; i < t0.re.length; i++) { t0.re[i] *= inv; t0.im[i] *= inv; }
+  // Re-establish an exact right-canonical form (centre at site 0) and unit norm before
+  // measuring. Doing a full canonicalisation sweep — rather than only re-normalising the
+  // boundary tensor — guarantees ⟨ψ|ψ⟩ = 1 even if a sweep ended early or a truncation left
+  // the gauge slightly off, so the expectation values are honest variational quantities.
+  rightCanonicalize(A);
 
   const energy = energyExpectation(A, mpo);
   const h2 = energySquared(A, mpo);
@@ -592,4 +608,38 @@ export function runDMRG(mpo: MPO, opts: DMRGOptions = {}): DMRGResult {
     sweeps: Math.min(maxSweeps, energyTrace.length / (2 * (n - 1)) + 1) | 0,
     converged,
   };
+}
+
+export interface PhaseScanPoint {
+  /** The scanned control parameter (e.g. transverse field h, or anisotropy Δ). */
+  param: number;
+  energyPerSite: number;
+  /** Half-chain (central-cut) entanglement entropy of the ground state, in bits. */
+  centralEntropy: number;
+  variance: number;
+  maxBond: number;
+}
+
+/**
+ * Sweep DMRG across a control parameter to trace a *quantum phase transition*. For each
+ * (param, MPO) the ground state is found and its energy-per-site and half-chain
+ * entanglement entropy recorded. The entanglement entropy peaks (and, for a true critical
+ * point, would diverge logarithmically with n) right where the gap closes — so this is a
+ * direct, ground-state way to *locate* a quantum critical point, the same diagnostic used
+ * in real tensor-network studies.
+ */
+export function phaseScan(mpos: { param: number; mpo: MPO }[], opts: DMRGOptions = {}): PhaseScanPoint[] {
+  const out: PhaseScanPoint[] = [];
+  for (const { param, mpo } of mpos) {
+    const n = mpo.length;
+    const res = runDMRG(mpo, opts);
+    out.push({
+      param,
+      energyPerSite: res.energyPerSite,
+      centralEntropy: res.entropyProfile[(n - 1) >> 1] ?? 0,
+      variance: res.variance,
+      maxBond: res.maxBond,
+    });
+  }
+  return out;
 }

@@ -202,13 +202,24 @@ and turns the tensor-network engine from a forward simulator into a variational 
 - [x] **Energy variance ⟨H²⟩ − ⟨H⟩²** via a **double-layer MPO contraction** — the
       basis-independent certificate that the converged state is a genuine eigenstate, valid at
       chain lengths far past exact diagonalisation.
+- [x] **Multi-start restarts** — DMRG can stall in a local minimum in symmetry-broken /
+      near-degenerate phases (the deep ferromagnetic Ising regime); a few independent random
+      restarts keep the lowest-energy run and make convergence robust there (verified: n=12 h=0.1
+      goes from a stuck excited state to the exact ground at variance ~1e-12).
 - [x] **DMRG lab** card (`TensorLab.tsx`) — pick TFIM or Heisenberg/XXZ, n (≤40), χ and the
       model parameter; watch the energy descend per half-sweep against the exact line (n ≤ 8),
       with ground-state entropy & bond-dimension profiles, variance certificate, χ reached,
       truncated weight and solve time.
-- [x] **Tests** — extended the in-browser suite 47 → **51 cases**: TFIM and Heisenberg/XXZ
+- [x] **Quantum phase-transition scan** — sweep a control parameter and solve the ground state
+      at each value, plotting the central-cut entanglement entropy and energy/site. The
+      entropy peaks where the gap closes: the Ising critical field h=1 (a small pinning field
+      lifts the Z₂ degeneracy for a clean peak) and the gapless XXZ critical line −1<Δ<1 (zero
+      entanglement in the gapped ferromagnet beyond Δ=−1) — a direct ground-state locator of a
+      quantum critical point.
+- [x] **Tests** — extended the in-browser suite 47 → **52 cases**: TFIM and Heisenberg/XXZ
       (incl. anisotropy) ground energies vs exact diagonalisation of the *same* MPO, the
-      ground-state entanglement profile vs the exact eigenstate, and the energy variance → 0.
+      ground-state entanglement profile vs the exact eigenstate, the energy variance → 0, and
+      the XXZ ferromagnet-vs-critical entanglement contrast.
 
 ### Verified
 - DMRG ground energies match exact diagonalisation to **~1e-13** (TFIM n=6/7/8, Heisenberg
@@ -265,5 +276,7 @@ and turns the tensor-network engine from a forward simulator into a variational 
   ground-state entropy & bond-dimension profiles, variance, χ reached, truncation, solve time). Verified
   against exact diagonalisation of the same MPO to ~1e-13 (TFIM and Heisenberg incl. anisotropy),
   entropy profiles to ~1e-12, variance→0 for gapped chains (the critical-point residual is honest
-  truncation error). Typed-array hot paths keep Heisenberg n=30 χ=24 ≈ 4 s. In-browser suite 47 → 51
-  cases, all green; lint + tsc + build pass.
+  truncation error). Added multi-start restarts for robustness in symmetry-broken phases, and a
+  **quantum phase-transition scan** card that locates a critical point from the ground-state
+  entanglement peak (Ising h=1, gapless XXZ line −1<Δ<1). Typed-array hot paths keep Heisenberg
+  n=30 χ=24 ≈ 4 s. In-browser suite 47 → 52 cases, all green; lint + tsc + build pass.

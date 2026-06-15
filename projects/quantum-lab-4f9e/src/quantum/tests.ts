@@ -433,6 +433,16 @@ export function runTests(): TestResult[] {
       const res = runDMRG(tfimMPO(12, 1, 2), { maxBond: 16, sweeps: 10, lanczosIters: 14, seed: 3 });
       add('DMRG', 'energy variance ⟨H²⟩−⟨H⟩² vanishes at convergence', res.variance < 1e-8, `var ${res.variance.toExponential(1)}`);
     }
+
+    // The ground state diagnoses a quantum phase transition: the gapped ferromagnetic XXZ
+    // (Δ < −1) is a separable product state, while the gapless critical region (|Δ| < 1) is
+    // highly entangled. (Multi-start makes the symmetry-broken ferromagnet converge robustly.)
+    {
+      const ferro = runDMRG(heisenbergMPO(10, 1, -1.4), { maxBond: 16, sweeps: 8, lanczosIters: 14, seed: 3, restarts: 2 });
+      const crit = runDMRG(heisenbergMPO(10, 1, 0), { maxBond: 16, sweeps: 10, lanczosIters: 14, seed: 3, restarts: 2 });
+      const sFerro = ferro.entropyProfile[4], sCrit = crit.entropyProfile[4];
+      add('DMRG', 'XXZ phase transition: ferromagnet separable, critical region entangled', sFerro < 0.05 && sCrit > 0.5, `S(Δ=−1.4)=${sFerro.toFixed(3)} S(Δ=0)=${sCrit.toFixed(3)}`);
+    }
   }
 
   return r;

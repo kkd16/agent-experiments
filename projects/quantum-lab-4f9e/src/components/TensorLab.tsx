@@ -3,7 +3,7 @@ import { motion } from 'framer-motion';
 import { MPS } from '../quantum/MPS';
 import { QuantumState, type GateOp } from '../quantum/QuantumState';
 import { tebdQuench, exactTFIM, type TEBDResult, type TEBDFrame } from '../quantum/tebd';
-import { runDMRG, type DMRGResult } from '../quantum/dmrg';
+import { runDMRG, phaseScan, type DMRGResult, type PhaseScanPoint } from '../quantum/dmrg';
 import { buildModelMPO, exactGroundEnergyMPO, type ModelKind } from '../quantum/MPO';
 
 /**
@@ -116,8 +116,120 @@ export default function TensorLab() {
 
       <CircuitCard />
       <DmrgCard />
+      <PhaseScanCard />
       <QuenchCard />
     </div>
+  );
+}
+
+function PhaseScanCard() {
+  const [model, setModel] = useState<ModelKind>('tfim');
+  const [n, setN] = useState(12);
+  const [chi, setChi] = useState(16);
+  const [pts, setPts] = useState<PhaseScanPoint[] | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [ms, setMs] = useState(0);
+
+  // TFIM: scan the transverse field h (critical at h=1). XXZ: scan anisotropy Δ
+  // (gapless for −1 ≤ Δ ≤ 1, with transitions at Δ=±1).
+  const STEPS = 19;
+  const range = model === 'tfim'
+    ? Array.from({ length: STEPS }, (_, i) => 0.1 + (i / (STEPS - 1)) * 2.3)
+    : Array.from({ length: STEPS }, (_, i) => -1.4 + (i / (STEPS - 1)) * 2.8);
+  const critical = model === 'tfim' ? [1] : [-1, 1];
+
+  const doRun = () => {
+    setBusy(true);
+    setTimeout(() => {
+      const t0 = performance.now();
+      const mpos = range.map((param) => ({
+        param,
+        // A tiny longitudinal field pins the Ising Z₂ symmetry so DMRG converges to a single
+        // ground state across the degenerate ferromagnetic phase (a standard pinning trick).
+        mpo: buildModelMPO(model === 'tfim' ? { kind: 'tfim', n, J: 1, h: param, hz: 0.02 } : { kind: 'heisenberg', n, jxy: 1, jz: param }),
+      }));
+      const res = phaseScan(mpos, { maxBond: chi, sweeps: n <= 12 ? 10 : 12, lanczosIters: 14, seed: 3, restarts: 3 });
+      setPts(res); setMs(performance.now() - t0); setBusy(false);
+    }, 20);
+  };
+
+  return (
+    <Card title="Quantum phase transition — scanning the ground state with DMRG" accent="#fbbf24">
+      <p style={{ fontSize: 12, color: '#94a3b8', margin: '0 0 10px', lineHeight: 1.6 }}>
+        Sweep a control parameter and solve for the ground state at each value. Where the energy gap
+        closes — a <b style={{ color: '#fbbf24' }}>quantum critical point</b> — the half-chain
+        entanglement entropy peaks (and would diverge logarithmically with n). This is the
+        ground-state fingerprint of a phase transition: the Ising chain is critical at the field
+        <code style={{ color: '#67e8f9' }}> h = 1</code> (its entanglement vanishes deep in either phase
+        and peaks at the transition); the XXZ chain is a gapless critical line for
+        <code style={{ color: '#67e8f9' }}> −1 ≤ Δ ≤ 1</code> with transitions at <code style={{ color: '#67e8f9' }}>Δ = ±1</code>.
+        On finite chains the Ising peak sits slightly above h = 1 and sharpens as n grows.
+      </p>
+      <div style={{ display: 'flex', gap: 10, alignItems: 'center', marginBottom: 12, flexWrap: 'wrap' }}>
+        <select value={model} onChange={(e) => { setModel(e.target.value as ModelKind); setPts(null); }} style={sel}>
+          <option value="tfim">Ising — scan field h</option>
+          <option value="heisenberg">XXZ — scan anisotropy Δ</option>
+        </select>
+        <Slider label="sites n" min={6} max={18} value={n} onChange={setN} color="#d97706" accent="#fbbf24" />
+        <Slider label="max χ" min={8} max={24} value={chi} onChange={setChi} color="#0891b2" accent="#67e8f9" />
+        <button onClick={doRun} disabled={busy} style={btn('#d97706')}>{busy ? `Scanning ${STEPS}…` : `▶ Scan ${STEPS} points`}</button>
+      </div>
+      {pts && (
+        <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
+          <div style={{ display: 'flex', gap: 10, marginBottom: 10, flexWrap: 'wrap' }}>
+            <Metric label="peak entanglement at" value={`${model === 'tfim' ? 'h' : 'Δ'} = ${peakParam(pts).toFixed(2)}`} color="#fbbf24" />
+            <Metric label="worst variance" value={Math.max(...pts.map((p) => p.variance)).toExponential(1)} color="#94a3b8" />
+            <Metric label="scan time" value={`${ms.toFixed(0)} ms`} color="#94a3b8" />
+          </div>
+          <Label>Central-cut entanglement entropy vs {model === 'tfim' ? 'field h' : 'anisotropy Δ'} (peak ⇒ critical point)</Label>
+          <ScanPlot pts={pts} pick={(p) => p.centralEntropy} color="#22d3ee" yLabel="S (bits)" markers={critical} />
+          <Label>Ground-state energy per site</Label>
+          <ScanPlot pts={pts} pick={(p) => p.energyPerSite} color="#a78bfa" yLabel="E / n" markers={critical} />
+        </motion.div>
+      )}
+    </Card>
+  );
+}
+
+function peakParam(pts: PhaseScanPoint[]): number {
+  let best = pts[0];
+  for (const p of pts) if (p.centralEntropy > best.centralEntropy) best = p;
+  return best.param;
+}
+
+function ScanPlot({ pts, pick, color, yLabel, markers }: { pts: PhaseScanPoint[]; pick: (p: PhaseScanPoint) => number; color: string; yLabel: string; markers: number[] }) {
+  const w = 520, h = 140, pad = 44;
+  const xsArr = pts.map((p) => p.param);
+  const ysArr = pts.map(pick);
+  const xMin = Math.min(...xsArr), xMax = Math.max(...xsArr);
+  const yMin = Math.min(...ysArr), yMax = Math.max(...ysArr);
+  const ySpan = yMax - yMin || 1;
+  const xs = (v: number) => pad + ((v - xMin) / (xMax - xMin || 1)) * (w - pad - 10);
+  const ys = (v: number) => 10 + (1 - (v - (yMin - ySpan * 0.08)) / (ySpan * 1.16)) * (h - 28);
+  const path = pts.map((p, i) => `${i === 0 ? 'M' : 'L'}${xs(p.param).toFixed(1)},${ys(pick(p)).toFixed(1)}`).join(' ');
+  const yTicks = [yMax, (yMax + yMin) / 2, yMin];
+  const xTicks = [xMin, (xMin + xMax) / 2, xMax];
+  return (
+    <svg width="100%" viewBox={`0 0 ${w} ${h}`} style={{ background: 'rgba(2,6,23,0.5)', borderRadius: 6, border: '1px solid #1e293b', marginBottom: 14 }}>
+      {yTicks.map((v, i) => (
+        <g key={i}>
+          <line x1={pad} y1={ys(v)} x2={w - 10} y2={ys(v)} stroke="#1e293b" strokeWidth={1} />
+          <text x={pad - 4} y={ys(v) + 3} fontSize={8} fill="#475569" textAnchor="end">{v.toFixed(2)}</text>
+        </g>
+      ))}
+      {markers.filter((mk) => mk >= xMin && mk <= xMax).map((mk) => (
+        <g key={mk}>
+          <line x1={xs(mk)} y1={6} x2={xs(mk)} y2={h - 18} stroke="#f87171" strokeWidth={1} strokeDasharray="3 3" opacity={0.7} />
+          <text x={xs(mk)} y={h - 22} fontSize={8} fill="#f87171" textAnchor="middle">critical</text>
+        </g>
+      ))}
+      {xTicks.map((v, i) => (
+        <text key={i} x={xs(v)} y={h - 4} fontSize={8} fill="#475569" textAnchor="middle">{v.toFixed(1)}</text>
+      ))}
+      <path d={path} fill="none" stroke={color} strokeWidth={1.8} />
+      {pts.map((p, i) => <circle key={i} cx={xs(p.param)} cy={ys(pick(p))} r={1.8} fill={color} />)}
+      <text x={pad - 4} y={8} fontSize={9} fill="#64748b" textAnchor="end">{yLabel}</text>
+    </svg>
   );
 }
 
@@ -144,7 +256,7 @@ function DmrgCard() {
       // sweeps/iters scale gently with system size so big chains still converge
       const sweeps = n <= 12 ? 10 : 14;
       const lanczosIters = 16;
-      const r = runDMRG(mpo, { maxBond: chi, sweeps, lanczosIters, seed: 3 });
+      const r = runDMRG(mpo, { maxBond: chi, sweeps, lanczosIters, seed: 3, restarts: 3 });
       // exact reference only where dense diagonalisation is cheap
       const ex = n <= 8 ? exactGroundEnergyMPO(mpo) : null;
       setRes(r); setExact(ex); setMs(performance.now() - t0); setBusy(false);
