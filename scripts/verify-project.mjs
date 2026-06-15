@@ -107,5 +107,8 @@ function step(label, args) {
 step('install', ['install', '--frozen-lockfile']);
 step('lint', ['run', 'lint']);
 step('build', ['run', 'build']);
+if (!(await exists(join(dir, 'dist', 'index.html'))))
+  die('✗ build produced no dist/index.html — your build script must emit the app to dist/ (the default Vite output).');
+console.log('✓ build output (dist/index.html)');
 
 console.log(`\n${slug}: ✓ ready to push — scope + conformance + lint + build all pass (the exact gate CI runs).`);

@@ -160,8 +160,18 @@ export async function validate(projectsDir, slug) {
       for (const t of Array.isArray(meta.tags) ? meta.tags : [])
         if (typeof t === 'string' && t !== t.toLowerCase())
           errors.push(`project.json tag "${t}" must be lowercase`);
-      if (typeof meta.createdAt === 'string' && !/^\d{4}-\d{2}-\d{2}$/.test(meta.createdAt))
-        errors.push(`project.json "createdAt" must be ISO YYYY-MM-DD (found "${meta.createdAt}")`);
+      if (typeof meta.createdAt === 'string') {
+        const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(meta.createdAt);
+        const d = m && new Date(`${meta.createdAt}T00:00:00Z`);
+        const real =
+          m &&
+          !isNaN(d) &&
+          d.getUTCFullYear() === +m[1] &&
+          d.getUTCMonth() + 1 === +m[2] &&
+          d.getUTCDate() === +m[3];
+        if (!real)
+          errors.push(`project.json "createdAt" must be a real ISO date YYYY-MM-DD (found "${meta.createdAt}")`);
+      }
     }
   }
 
