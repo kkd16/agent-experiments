@@ -11,7 +11,7 @@ export type Ty =
   | { kind: 'bool' }
   | { kind: 'str' }
   | { kind: 'void' }
-  | { kind: 'array'; elem: ScalarTy }
+  | { kind: 'array'; elem: ElemTy }
   // An aggregate value, referenced by an i32 handle into linear memory. The
   // `name` keys into the program's struct table; the interpreter holds the same
   // value as a by-reference object, so the two share mutation semantics.
@@ -26,6 +26,12 @@ export type Ty =
 // array; only the type system and the interpreter track the element kind.
 export type ScalarTy = { kind: 'int' } | { kind: 'long' } | { kind: 'float' } | { kind: 'bool' } | { kind: 'str' };
 
+// An array's element type: any scalar, or a struct (stored as an i32 handle, just
+// like a bare struct value). `struct_array(n)` produces a struct array whose
+// element name is unknown until the variable's annotation pins it down — that
+// transient placeholder carries the empty name `''`.
+export type ElemTy = ScalarTy | { kind: 'struct'; name: string };
+
 export const T_INT: Ty = { kind: 'int' };
 export const T_LONG: Ty = { kind: 'long' };
 export const T_FLOAT: Ty = { kind: 'float' };
@@ -36,13 +42,16 @@ export const T_NULL: Ty = { kind: 'null' };
 
 export function tyEqual(a: Ty, b: Ty): boolean {
   if (a.kind !== b.kind) return false;
-  if (a.kind === 'array' && b.kind === 'array') return a.elem.kind === b.elem.kind;
+  if (a.kind === 'array' && b.kind === 'array') {
+    if (a.elem.kind !== b.elem.kind) return false;
+    return a.elem.kind === 'struct' && b.elem.kind === 'struct' ? a.elem.name === b.elem.name : true;
+  }
   if (a.kind === 'struct' && b.kind === 'struct') return a.name === b.name;
   return true;
 }
 
 export function tyName(t: Ty): string {
-  if (t.kind === 'array') return `${t.elem.kind}[]`;
+  if (t.kind === 'array') return `${t.elem.kind === 'struct' ? t.elem.name : t.elem.kind}[]`;
   if (t.kind === 'struct') return t.name;
   return t.kind;
 }

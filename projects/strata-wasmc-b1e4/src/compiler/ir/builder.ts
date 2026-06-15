@@ -643,6 +643,11 @@ class FnBuilder {
       const elem: IRType = name === 'float_array' ? 'f64' : name === 'long_array' ? 'i64' : 'i32';
       return this.lowerAlloc(elem, this.lowerExpr(e.args[0])!);
     }
+    if (name === 'struct_array') {
+      // Array of i32 struct handles, zero-filled (every element is the null
+      // handle until assigned).
+      return this.lowerAlloc('i32', this.lowerExpr(e.args[0])!);
+    }
     if (name === 'len') {
       const base = this.lowerExpr(e.args[0])!;
       return this.def('i32', 'load', 'i32', [base]);

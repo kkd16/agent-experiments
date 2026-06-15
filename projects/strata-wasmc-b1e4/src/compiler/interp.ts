@@ -11,10 +11,11 @@ import type { Block, Expr, Program, Stmt, StructDecl, Ty } from './ast';
 export type RtValue = number | bigint | ArrayVal | string | StructVal | null;
 export interface ArrayVal {
   arr: true;
-  elem: 'int' | 'long' | 'float' | 'str';
+  elem: 'int' | 'long' | 'float' | 'str' | 'struct';
   // `int`/`float` arrays hold numbers; `long` arrays hold BigInts; `str` arrays
-  // hold byte strings. A single union keeps the element accessors uniform.
-  data: (number | bigint | string)[];
+  // hold byte strings; `struct` arrays hold struct handles (StructVal or null).
+  // A single union keeps the element accessors uniform.
+  data: (number | bigint | string | StructVal | null)[];
 }
 
 // A struct value: a by-reference record. Two distinct constructions are distinct
@@ -216,6 +217,7 @@ export class Interpreter {
         const val = this.evalExpr(s.value, f);
         if (idx < 0 || idx >= target.data.length) throw new Trap('array index out of bounds');
         if (target.elem === 'str') target.data[idx] = val as string;
+        else if (target.elem === 'struct') target.data[idx] = val as StructVal | null;
         else if (target.elem === 'long') target.data[idx] = asI64(val as bigint);
         else target.data[idx] = target.elem === 'int' ? i32(val as number) : (val as number);
         break;
@@ -666,6 +668,11 @@ export function callBuiltin(
       if (name === 'str_array') return H({ arr: true, elem: 'str', data: new Array(n).fill('') });
       if (name === 'long_array') return H({ arr: true, elem: 'long', data: new Array(n).fill(0n) });
       return H({ arr: true, elem: name === 'int_array' ? 'int' : 'float', data: new Array(n).fill(0) });
+    }
+    case 'struct_array': {
+      const n = i32(argv[0] as number);
+      if (n < 0) throw new Trap('negative array length');
+      return H({ arr: true, elem: 'struct', data: new Array(n).fill(null) });
     }
     case 'split': {
       const s = argv[0] as string;

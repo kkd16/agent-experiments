@@ -31,7 +31,7 @@ export interface SymbolTable {
 // Builtins available without declaration. `print`/`int`/`float` are special-
 // cased because they accept multiple argument types; array intrinsics return
 // handles into linear memory.
-const ARRAY_INTRINSICS = new Set(['int_array', 'long_array', 'float_array', 'str_array', 'len']);
+const ARRAY_INTRINSICS = new Set(['int_array', 'long_array', 'float_array', 'str_array', 'struct_array', 'len']);
 const STR_BUILTINS = new Set([
   'str', 'char', 'substr', 'index_of', 'to_upper', 'to_lower',
   'repeat', 'trim', 'replace', 'find', 'contains', 'starts_with', 'ends_with', 'parse_int',
@@ -150,6 +150,8 @@ class Checker {
           throw new CompileError(`global '${d.name}' declared ${tyName(d.declTy)} but initialized with ${tyName(t)}`, d.span, 'type');
         if (declared.kind === 'void') throw new CompileError(`global '${d.name}' cannot be void`, d.span, 'type');
         if (declared.kind === 'null') throw new CompileError(`global '${d.name}' needs an explicit struct type for its null value (e.g. \`let ${d.name}: T = null;\`)`, d.span, 'type');
+        if (declared.kind === 'array' && declared.elem.kind === 'struct' && declared.elem.name === '')
+          throw new CompileError(`struct_array(...) needs an explicit element type — annotate the global`, d.span, 'type');
         if (declared.kind === 'struct' && d.init.node !== 'null')
           throw new CompileError(`a struct-typed global must be initialized with null (struct construction is not a constant)`, d.span, 'type');
         d.resolvedTy = declared;
@@ -179,6 +181,8 @@ class Checker {
   private validateTy(ty: Ty, span: import('./diagnostics').Span): void {
     if (ty.kind === 'struct' && !this.syms.structs.has(ty.name))
       throw new CompileError(`unknown type '${ty.name}'`, span, 'type');
+    if (ty.kind === 'array' && ty.elem.kind === 'struct' && ty.elem.name !== '' && !this.syms.structs.has(ty.elem.name))
+      throw new CompileError(`unknown type '${ty.elem.name}'`, span, 'type');
   }
 
   private checkStructDecl(d: StructDecl): void {
@@ -209,6 +213,8 @@ class Checker {
           throw new CompileError(`'${s.name}' declared ${tyName(s.declTy)} but initialized with ${tyName(t)}`, s.span, 'type');
         if (declared.kind === 'void') throw new CompileError(`'${s.name}' cannot be void`, s.span, 'type');
         if (declared.kind === 'null') throw new CompileError(`'${s.name}' needs an explicit struct type for its null value (e.g. \`let ${s.name}: T = null;\`)`, s.span, 'type');
+        if (declared.kind === 'array' && declared.elem.kind === 'struct' && declared.elem.name === '')
+          throw new CompileError(`struct_array(...) needs an explicit element type — annotate the variable (e.g. \`let ${s.name}: T[] = struct_array(n);\`)`, s.span, 'type');
         s.resolvedTy = declared;
         this.scope.declare(s.name, declared, s.span);
         break;
@@ -327,6 +333,13 @@ class Checker {
   // type (it is the struct handle that points nowhere).
   private coercible(from: Ty, to: Ty): boolean {
     if (from.kind === 'null' && to.kind === 'struct') return true;
+    // `struct_array(n)` (a placeholder `T[]` with the empty element name) fills
+    // any concrete struct-array slot once an annotation names the element.
+    if (
+      from.kind === 'array' && to.kind === 'array' &&
+      from.elem.kind === 'struct' && to.elem.kind === 'struct' && from.elem.name === ''
+    )
+      return true;
     return tyEqual(from, to);
   }
 
@@ -562,6 +575,15 @@ class Checker {
         : name === 'float_array' ? { kind: 'float' }
         : { kind: 'str' };
       return { kind: 'array', elem };
+    }
+    if (name === 'struct_array') {
+      // A null-filled array of struct handles. Its concrete element struct is
+      // fixed by the annotation on the variable it is assigned to (the empty
+      // name `''` is the placeholder until then).
+      if (e.args.length !== 1) throw new CompileError(`struct_array() expects a length`, e.span, 'type');
+      const t = this.checkExpr(e.args[0]);
+      if (t.kind !== 'int') throw new CompileError(`struct_array() length must be int`, e.span, 'type');
+      return { kind: 'array', elem: { kind: 'struct', name: '' } };
     }
     if (name === 'split') {
       if (e.args.length !== 2) throw new CompileError('split() expects (str, separator)', e.span, 'type');

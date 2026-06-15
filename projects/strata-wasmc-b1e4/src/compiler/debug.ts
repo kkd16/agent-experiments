@@ -59,7 +59,7 @@ export interface DebugState {
 }
 
 function tyKindName(t: Ty): string {
-  if (t.kind === 'array') return `${t.elem.kind}[]`;
+  if (t.kind === 'array') return `${t.elem.kind === 'struct' ? t.elem.name : t.elem.kind}[]`;
   if (t.kind === 'struct') return t.name;
   return t.kind;
 }
@@ -78,6 +78,7 @@ function fmtVal(v: RtValue, ty?: Ty): string {
     const a = v as ArrayVal;
     const head = a.data.slice(0, 8).map((x) =>
       a.elem === 'str' ? JSON.stringify(x)
+      : a.elem === 'struct' ? (x === null ? 'null' : `${(x as StructVal).struct} {…}`)
       : a.elem === 'float' ? formatFloat(x as number)
       : a.elem === 'long' ? formatLong(x as bigint)
       : formatInt(x as number),
@@ -253,6 +254,7 @@ export class Debugger {
         const val = yield* this.evalExpr(s.value, f);
         if (idx < 0 || idx >= target.data.length) throw new Trap('array index out of bounds');
         if (target.elem === 'str') target.data[idx] = val as string;
+        else if (target.elem === 'struct') target.data[idx] = val as StructVal | null;
         else if (target.elem === 'long') target.data[idx] = asI64(val as bigint);
         else target.data[idx] = target.elem === 'int' ? i32(val as number) : (val as number);
         break;
