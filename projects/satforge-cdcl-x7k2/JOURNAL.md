@@ -154,6 +154,66 @@ cross-check each other and brute force.
       `≤k`/`≤K` exhaustive correctness; assumption-core validity; Max-Cut / vertex-cover /
       independent-set optima vs brute force; WCNF round-trip.
 
+### Session 5 — from *SAT* to *SMT*: a DPLL(T) solver on the same core
+
+The biggest leap since the project began: SatForge stops reasoning only about Boolean
+variables and starts reasoning about **first-order theories** — a from-scratch **DPLL(T)
+SMT solver** built on the *exact same* CDCL engine. SAT decides propositional logic; SMT
+decides logic *modulo theories* (equality, uninterpreted functions, arithmetic) — the
+technology behind program verification, symbolic execution and type checkers. The whole
+SMT layer lives in `src/smt/` and reuses `solve()` unchanged.
+
+- [x] **Exact arithmetic** (`src/smt/rational.ts`) — BigInt `Rational` in lowest terms, and
+      a `Delta` (δ-rational `c + k·δ`) so strict inequalities are handled exactly. **No
+      floating point anywhere in the theory** — `1/3 + 1/3 + 1/3` is exactly `1`.
+- [x] **Hash-consed term/formula language** (`src/smt/term.ts`) — interned sorted terms and a
+      Boolean skeleton over atoms (predicate / EUF equality / canonical linear-arithmetic
+      relation), so one Boolean variable is minted per *distinct* atom.
+- [x] **Tseitin Boolean abstraction** (`src/smt/abstract.ts`) and the **lazy DPLL(T) loop**
+      (`src/smt/dpllt.ts`): SAT-solve the skeleton, hand each theory its atoms, and on a
+      theory conflict learn the **theory lemma** (the negated explanation) and re-solve.
+- [x] **EUF by proof-producing congruence closure** (`src/smt/euf.ts`) — curried binary
+      applications, union-find with use-lists/lookup for congruence, a proof forest that
+      reconstructs the *minimal* set of asserted equalities behind any derived equality
+      (so conflicts are small). Predicates are encoded via a built-in ⊤≠⊥.
+- [x] **Linear arithmetic by a general simplex** (`src/smt/simplex.ts`) — the
+      Dutertre–de Moura algorithm: each atom becomes a bound on a variable (or a fresh
+      auxiliary row variable), Bland's rule guarantees termination, δ-rationals handle
+      strict bounds, the violated row yields a minimal explanation, and **integer
+      branch-and-bound** with integer bound-tightening decides QF_LIA.
+- [x] **Mixed UF + arithmetic by Ackermann reduction** (`src/smt/ackermann.ts`) — function
+      applications become fresh variables plus functional-consistency axioms, so the two
+      theories no longer share terms and the independent-theory loop is sound without
+      Nelson–Oppen. Disequalities are handled by an **arithmetic trichotomy** split
+      (`x = y ∨ x < y ∨ x > y`) so the simplex only ever sees inequalities.
+- [x] **Tolerant SMT-LIB 2 parser** (`src/smt/parse.ts`) — `declare-sort/const/fun`,
+      `assert`, the Boolean connectives, `= distinct ite`, `+ − *`, comparisons, and
+      int/decimal literals with Int/Real coercion.
+- [x] **SMT Studio UI** (`src/components/SmtStudio.tsx`) — a SAT/SMT mode switch, a code
+      editor, a curated example library across QF_UF/QF_LRA/QF_LIA/QF_UFLIA, and a result
+      panel showing the verdict, elapsed time, refinement rounds, the **model** (congruence
+      classes + numeric values) and the exact **theory lemmas** learned to prove UNSAT.
+- [x] **Independent reference oracles** (`src/smt/reference.ts`) — congruence enumeration
+      (all set partitions filtered to congruences) for EUF, and Fourier–Motzkin elimination
+      for arithmetic; sharing *no code* with the solver.
+- [x] **Tests** (`src/smt/selfcheck.ts`, folded into `selftest.ts`): 3000 random EUF formulas
+      vs congruence enumeration, 2500 QF_LRA formulas vs Fourier–Motzkin, 1200 mixed UFLRA
+      formulas vs an Ackermann+FM reference, hand-built QF_UF/LRA/LIA/UFLIA cases, parser
+      scripts, and every shipped example deciding to its expected verdict. Harness grew
+      **156 → 185 assertions, all green**. (Found & fixed two bugs via the differential
+      harness: a use-list reset bug in congruence closure, and a β-update ordering bug in the
+      simplex pivot.)
+
+Ideas still open for a future session:
+- [ ] True **Nelson–Oppen** equality propagation (so combination needn't pay the Ackermann
+      O(n²) axiom blow-up), and the theory of **arrays** (read-over-write).
+- [ ] **Theory propagation** (deduce atom truth values from the theory, not just conflicts)
+      and an **online** DPLL(T) loop that pushes/pops bounds instead of re-solving.
+- [ ] A **visual congruence-class graph** and a **simplex-tableau / constraint-graph** view
+      in the SMT Studio.
+- [ ] `get-value`, `push`/`pop` scopes, and `define-fun` in the parser; a model **pretty
+      printer** in SMT-LIB form.
+
 ## Session log
 
 - 2026-06-15 (claude): Created the project. Implemented the full CDCL solver from scratch
@@ -207,3 +267,22 @@ cross-check each other and brute force.
   WCNF round-trip, and an end-to-end `problems.ts` wiring check. Found & fixed an `analyzeFinal`
   edge case (a root-level derived assumption must still yield the singleton core, not an empty
   one) via the differential harness. Lint + build + full gate green.
+- 2026-06-15 (claude): Went from *SAT* to **SMT** — a from-scratch **DPLL(T)** solver on the
+  same CDCL core (`src/smt/`). A lazy DPLL(T) loop Tseitin-abstracts a formula's Boolean
+  skeleton, SAT-solves it, and hands the theory atoms to from-scratch decision procedures,
+  learning a **theory lemma** on each conflict and re-solving. Theories: **EUF** by
+  proof-producing congruence closure (curried applications, minimal explanations via a proof
+  forest); **QF_LRA/QF_LIA** by a general **simplex** (Dutertre–de Moura) over exact
+  **δ-rationals** — zero floating point — with conflict explanations and integer
+  branch-and-bound (+ integer bound tightening); and mixed **QF_UFLIA** by **Ackermann
+  reduction** so uninterpreted functions and arithmetic combine soundly without Nelson–Oppen,
+  with an arithmetic **trichotomy** split turning disequalities into inequalities the simplex
+  can take. Added a tolerant **SMT-LIB 2 parser** and an **SMT Studio** UI (SAT/SMT mode
+  switch, code editor, a 10-example library across QF_UF/LRA/LIA/UFLIA, and a panel showing
+  the verdict, model, refinement rounds and the exact theory lemmas learned). Everything is
+  differentially verified against independent oracles that share no code with the solver:
+  **3000** random EUF formulas vs congruence enumeration, **2500** QF_LRA vs Fourier–Motzkin,
+  **1200** mixed UFLRA vs an Ackermann+FM reference, plus hand cases, parser scripts and an
+  every-example check. Two real bugs were caught and fixed by the differential harness (a
+  use-list reset in congruence closure; a β-update ordering in the simplex pivot). Harness
+  grew **156 → 185 assertions**. Lint + build + full gate green.

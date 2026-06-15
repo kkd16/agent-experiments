@@ -41,6 +41,7 @@ import {
 } from './src/sat/index'
 import type { CNF, ProofStep, Graph, MaxSatInstance, WeightedGraph } from './src/sat/index'
 import { buildProblem, DEFAULT_SPEC } from './src/problems'
+import { runSmtChecks } from './src/smt/selfcheck'
 
 let pass = 0
 let fail = 0
@@ -1005,6 +1006,14 @@ function bruteMaxCut(g: WeightedGraph): number {
     if (solveMaxSat(p.maxsat, { strategy: 'core-guided' }).cost !== r.cost) bad++
   }
   check('problems.ts: all MaxSAT kinds build/solve/decode consistently', bad === 0, `bad=${bad}`)
+}
+
+// ---- SMT (DPLL(T)) subsystem: EUF, simplex (LRA/LIA), parser, Ackermann ----
+{
+  const smt = runSmtChecks()
+  for (const m of smt.messages) console.error(m)
+  pass += smt.pass
+  fail += smt.fail
 }
 
 console.log(`\n${pass} passed, ${fail} failed`)
