@@ -681,6 +681,48 @@ let rec number = fn xs ->
 
 runState (number [10, 20, 30]) 0   // ([(0,10), (1,20), (2,30)], 3)`,
   },
+  {
+    id: 'result-monad',
+    title: 'Typed errors — the Result monad',
+    blurb: 'Result e a as a monad; Kleisli >=> and a polymorphic traverse short-circuit on Err.',
+    visual: false,
+    code: `// Error handling without exceptions: a two-parameter type \`Result e a\`
+// used as the monad \`Result e\`. bind threads the Ok value and
+// short-circuits on the first Err — and traverse inherits that for free.
+type Result e a = Err e | Ok a in
+
+class Functor f where fmap : (a -> b) -> f a -> f b in
+class Functor f => Applicative f where
+  pure : a -> f a,
+  ap   : f (a -> b) -> f a -> f b in
+class Applicative m => Monad m where
+  bind : m a -> (a -> m b) -> m b in
+
+instance Functor (Result e) where
+  fmap = fn g r -> match r with Err x -> Err x | Ok v -> Ok (g v) in
+instance Applicative (Result e) where
+  pure = fn x -> Ok x,
+  ap = fn rf rx -> match rf with Err x -> Err x | Ok f -> fmap f rx in
+instance Monad (Result e) where
+  bind = fn r k -> match r with Err x -> Err x | Ok v -> k v in
+
+// Kleisli composition (f >=> g): chain two error-producing steps
+let kleisli = fn f g -> fn x -> bind (f x) g in
+
+let checkPos = fn x -> if x > 0 then Ok x else Err "not positive" in
+let half     = fn x -> if x % 2 == 0 then Ok (x / 2) else Err "odd number" in
+let step     = kleisli checkPos half in
+
+// traverse a list, short-circuiting on the first Err — defined generically
+let rec traverse = fn f xs ->
+  if empty xs then pure []
+  else do { y <- f (head xs) ; ys <- traverse f (tail xs) ; pure (y :: ys) } in
+
+( step 8                       // Ok 4
+, step 7                       // Err "odd number"
+, traverse checkPos [1, 2, 3]  // Ok [1, 2, 3]
+, traverse checkPos [1, 0, 3]) // Err "not positive" (aborts on 0)`,
+  },
 ]
 
 export const DEFAULT_CODE = EXAMPLES[0].code
