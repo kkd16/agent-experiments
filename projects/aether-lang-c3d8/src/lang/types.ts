@@ -179,13 +179,19 @@ export function typeToString(t: Type, names: Map<number, string> = new Map()): s
       const s = `${go(head, 3)} ${args.map((a) => go(a, 3)).join(' ')}`
       return prec >= 3 ? `(${s})` : s
     }
+    // A constructor may now legitimately appear *unsaturated* (e.g. bare `List`,
+    // kind `* -> *`, when it stands in for a higher-kinded type variable), so the
+    // special syntactic forms apply only at their exact arity; otherwise the type
+    // prints in generic `Head args…` form (the `default` case below).
     switch (p.name) {
       case ARROW: {
+        if (p.args.length !== 2) break
         const [from, to] = p.args
         const s = `${go(from, 2)} -> ${go(to, 1)}`
         return prec >= 2 ? `(${s})` : s
       }
       case LIST: {
+        if (p.args.length !== 1) break
         const s = `List ${go(p.args[0], 3)}`
         return prec >= 3 ? `(${s})` : s
       }
@@ -195,6 +201,7 @@ export function typeToString(t: Type, names: Map<number, string> = new Map()): s
         return `(${s})`
       }
       case RECORD: {
+        if (p.args.length !== 1) break
         const fields: string[] = []
         let row = prune(p.args[0])
         let tail = ''
@@ -206,12 +213,14 @@ export function typeToString(t: Type, names: Map<number, string> = new Map()): s
         if (fields.length === 0 && !tail) return '{}'
         return `{ ${fields.join(', ')}${tail} }`
       }
-      default: {
-        if (p.args.length === 0) return p.name
-        const s = `${p.name} ${p.args.map((a) => go(a, 3)).join(' ')}`
-        return prec >= 3 ? `(${s})` : s
-      }
+      default:
+        break
     }
+    // generic application form, also reached by an unsaturated special
+    // constructor (bare `List`, a partially-applied `->`, …)
+    if (p.args.length === 0) return p.name
+    const s = `${p.name} ${p.args.map((a) => go(a, 3)).join(' ')}`
+    return prec >= 3 ? `(${s})` : s
   }
   return go(t, 0)
 }

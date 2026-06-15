@@ -46,6 +46,9 @@ export type TypeExpr =
   | { kind: 'tcon'; name: string; args: TypeExpr[]; span: Span }
   | { kind: 'tarrow'; from: TypeExpr; to: TypeExpr; span: Span }
   | { kind: 'ttuple'; elements: TypeExpr[]; span: Span }
+  // application of a (typically variable-headed) type to an argument: `m a`,
+  // the syntactic seed of higher-kinded types
+  | { kind: 'tapp'; fn: TypeExpr; arg: TypeExpr; span: Span }
 
 export interface CtorDecl {
   name: string

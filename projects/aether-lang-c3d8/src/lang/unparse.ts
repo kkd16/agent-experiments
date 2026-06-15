@@ -21,6 +21,10 @@ export function typeExprToString(te: TypeExpr, arg = false): string {
       const s = `${te.name} ${te.args.map((x) => typeExprToString(x, true)).join(' ')}`
       return arg ? `(${s})` : s
     }
+    case 'tapp': {
+      const s = `${typeExprToString(te.fn)} ${typeExprToString(te.arg, true)}`
+      return arg ? `(${s})` : s
+    }
   }
 }
 

@@ -831,16 +831,20 @@ class Parser {
 
   private parseTypeApp(): TypeExpr {
     const head = this.parseTypeAtom()
-    if (head.kind !== 'tcon') return head
-    const args: TypeExpr[] = [...head.args]
-    let end = head.span
-    while (this.startsTypeAtom()) {
-      const a = this.parseTypeAtom()
-      args.push(a)
-      end = a.span
+    const extra: TypeExpr[] = []
+    while (this.startsTypeAtom()) extra.push(this.parseTypeAtom())
+    if (extra.length === 0) return head
+    // a constructor head absorbs its arguments directly (`List a`, `Either a b`)
+    if (head.kind === 'tcon') {
+      const args = [...head.args, ...extra]
+      return { kind: 'tcon', name: head.name, args, span: this.spanFrom(head.span, extra[extra.length - 1].span) }
     }
-    if (args.length === head.args.length) return head
-    return { kind: 'tcon', name: head.name, args, span: this.spanFrom(head.span, end) }
+    // a variable- (or otherwise non-constructor-) headed application is built as
+    // a left-associative `tapp` spine: `m a b` ⇒ ((m a) b). This is what lets a
+    // method signature mention `m a` for a higher-kinded class parameter `m`.
+    let acc = head
+    for (const a of extra) acc = { kind: 'tapp', fn: acc, arg: a, span: this.spanFrom(head.span, a.span) }
+    return acc
   }
 
   private parseIf(): Expr {

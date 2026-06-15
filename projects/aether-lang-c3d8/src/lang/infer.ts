@@ -24,6 +24,7 @@ import {
   rowExtend,
   rowLabelOf,
   spineOf,
+  tapp,
   tArrow,
   tBool,
   tcon,
@@ -896,6 +897,8 @@ class Inferrer {
         return tArrow(this.convertFresh(te.from, map), this.convertFresh(te.to, map))
       case 'ttuple':
         return tTuple(te.elements.map((x) => this.convertFresh(x, map)))
+      case 'tapp':
+        return tapp(this.convertFresh(te.fn, map), this.convertFresh(te.arg, map))
       case 'tcon': {
         const args = te.args.map((x) => this.convertFresh(x, map))
         switch (te.name) {
@@ -910,7 +913,9 @@ class Inferrer {
           case 'Unit':
             return tUnit
           case 'List':
-            return tList(args[0] ?? freshVar())
+            // respect the written arity: `List a` is a list type, bare `List`
+            // is the unsaturated constructor (kind * -> *) for HKT instances
+            return args.length === 1 ? tList(args[0]) : tcon('List', args)
           default:
             return tcon(te.name, args)
         }
@@ -953,6 +958,8 @@ function convertTypeExpr(te: TypeExpr, params: Map<string, Type>): Type {
       return tArrow(convertTypeExpr(te.from, params), convertTypeExpr(te.to, params))
     case 'ttuple':
       return tTuple(te.elements.map((x) => convertTypeExpr(x, params)))
+    case 'tapp':
+      return tapp(convertTypeExpr(te.fn, params), convertTypeExpr(te.arg, params))
     case 'tcon': {
       const args = te.args.map((x) => convertTypeExpr(x, params))
       switch (te.name) {
@@ -967,7 +974,7 @@ function convertTypeExpr(te: TypeExpr, params: Map<string, Type>): Type {
         case 'Unit':
           return tUnit
         case 'List':
-          return tList(args[0] ?? freshVar())
+          return args.length === 1 ? tList(args[0]) : tcon('List', args)
         default:
           return tcon(te.name, args)
       }
