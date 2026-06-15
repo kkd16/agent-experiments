@@ -21,6 +21,8 @@ import { svd } from './SVD';
 import { MPS, simulateMPS } from './MPS';
 import type { GateOp } from './QuantumState';
 import { tebdQuench, exactTFIM } from './tebd';
+import { tfimMPO, heisenbergMPO, exactGroundEnergyMPO, mpoToDense } from './MPO';
+import { runDMRG } from './dmrg';
 
 export interface TestResult {
   group: string;
@@ -388,6 +390,48 @@ export function runTests(): TestResult[] {
       let worstX = 0; for (let s = 0; s <= steps; s++) worstX = Math.max(worstX, Math.abs(res.frames[s].mx - exact[s].mx));
       add('Tensor networks', 'TEBD evolution matches exact dynamics', worstX < 5e-3, `max ⟨X⟩ err ${worstX.toExponential(1)}`);
       add('Tensor networks', 'global quench grows entanglement from zero', res.frames[0].entropy < 1e-9 && res.frames[steps].entropy > 0.2, `S: ${res.frames[0].entropy.toExponential(0)} → ${res.frames[steps].entropy.toFixed(2)}`);
+    }
+  }
+
+  // --- DMRG (variational MPS ground state via MPO environments + Lanczos) ---
+  {
+    // Transverse-field Ising ground energy vs exact diagonalisation of the same MPO.
+    let worstTfim = 0;
+    for (const [n, h] of [[6, 1.0], [8, 0.7]] as [number, number][]) {
+      const mpo = tfimMPO(n, 1, h);
+      const res = runDMRG(mpo, { maxBond: 16, sweeps: 8, lanczosIters: 12, seed: 3 });
+      worstTfim = Math.max(worstTfim, Math.abs(res.energy - exactGroundEnergyMPO(mpo)));
+    }
+    add('DMRG', 'TFIM ground energy matches exact diagonalisation', worstTfim < 1e-6, `max err ${worstTfim.toExponential(1)}`);
+
+    // Heisenberg / XXZ (including anisotropy Δ≠1) vs exact diagonalisation.
+    let worstHeis = 0;
+    for (const [n, d] of [[8, 1.0], [6, 0.5]] as [number, number][]) {
+      const mpo = heisenbergMPO(n, 1, d);
+      const res = runDMRG(mpo, { maxBond: 16, sweeps: 10, lanczosIters: 14, seed: 7 });
+      worstHeis = Math.max(worstHeis, Math.abs(res.energy - exactGroundEnergyMPO(mpo)));
+    }
+    add('DMRG', 'Heisenberg/XXZ ground energy matches exact diagonalisation', worstHeis < 1e-5, `max err ${worstHeis.toExponential(1)}`);
+
+    // The ground state's entanglement-entropy profile matches the exact eigenstate's.
+    {
+      const n = 6, mpo = tfimMPO(n, 1, 1);
+      const res = runDMRG(mpo, { maxBond: 16, sweeps: 8, lanczosIters: 12, seed: 3 });
+      const { values, vectors } = hermitianEig(mpoToDense(mpo));
+      const gi = values.length - 1;
+      const amps = Array.from({ length: 1 << n }, (_, a) => vectors[a][gi]);
+      const gs = QuantumState.fromAmplitudes(amps);
+      let worst = 0;
+      for (let c = 0; c < n - 1; c++) worst = Math.max(worst, Math.abs(res.entropyProfile[c] - gs.entanglementEntropy(c + 1)));
+      add('DMRG', 'ground-state entanglement profile matches exact', worst < 1e-4, `max err ${worst.toExponential(1)}`);
+    }
+
+    // Energy variance ⟨H²⟩−⟨H⟩² (double-layer MPO contraction) vanishes at convergence —
+    // the basis-independent certificate that the state really is an eigenstate. Gapped chain
+    // so the bond dimension suffices for an exact representation.
+    {
+      const res = runDMRG(tfimMPO(12, 1, 2), { maxBond: 16, sweeps: 10, lanczosIters: 14, seed: 3 });
+      add('DMRG', 'energy variance ⟨H²⟩−⟨H⟩² vanishes at convergence', res.variance < 1e-8, `var ${res.variance.toExponential(1)}`);
     }
   }
 
