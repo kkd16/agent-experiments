@@ -597,6 +597,65 @@ function nebula(): SceneDef {
   }
 }
 
+// ---- Scene: Cove — an indirect-lit room (a BDPT showcase) -------------------
+
+// A neutral room whose only emitter is a small, bright strip tucked *above* a
+// baffle and aimed at the ceiling. Nothing in the room can see the light: a
+// next-event shadow ray from any floor/wall point is blocked by the baffle, and
+// the light is one-sided (it faces up), so the room is lit *entirely* by light
+// that bounces off the ceiling and back down — the textbook regime where a
+// unidirectional path tracer's NEE is useless and only lucky multi-bounce BSDF
+// paths find the light. Bidirectional path tracing carries radiance out of the
+// cove along the light subpath and connects it straight to the camera vertices,
+// so the same sample budget renders dramatically cleaner. Switch the Integrator
+// control between Path Tracer and Bidirectional to see the difference.
+function cove(): SceneDef {
+  const W = 10
+  const materials: Material[] = [
+    { kind: 'diffuse', albedo: v(0.74, 0.73, 0.70) }, // 0 neutral shell
+    { kind: 'diffuse', albedo: v(0.62, 0.11, 0.10) }, // 1 red wall
+    { kind: 'diffuse', albedo: v(0.12, 0.31, 0.54) }, // 2 blue wall
+    { kind: 'emissive', emission: v(230, 195, 140) }, // 3 hidden warm uplight (small + bright)
+    { kind: 'diffuse', albedo: v(0.88, 0.88, 0.9) }, // 4 baffle (hides the light)
+    { kind: 'metal', albedo: v(0.96, 0.94, 0.9), roughness: 0.16 }, // 5 glossy sphere
+    { kind: 'diffuse', albedo: v(0.83, 0.78, 0.5) }, // 6 warm pedestal
+  ]
+  const prims: PrimDef[] = []
+  // Shell: floor, ceiling, back, and two coloured side walls (open toward camera).
+  prims.push(...quad(v(0, 0, 0), v(W, 0, 0), v(W, 0, W), v(0, 0, W), 0)) // floor
+  prims.push(...quad(v(0, W, 0), v(0, W, W), v(W, W, W), v(W, W, 0), 0)) // ceiling
+  prims.push(...quad(v(0, 0, W), v(W, 0, W), v(W, W, W), v(0, W, W), 0)) // back
+  prims.push(...quad(v(0, 0, 0), v(0, 0, W), v(0, W, W), v(0, W, 0), 1)) // left red
+  prims.push(...quad(v(W, 0, 0), v(W, W, 0), v(W, W, W), v(W, 0, W), 2)) // right blue
+  // The cove: a baffle shelf just under the ceiling, with the emitter strip on
+  // top of it facing straight up. The baffle is wider than the strip, so the
+  // strip is invisible (and unsamplable by NEE) from anywhere in the room below.
+  const by = 8.3
+  prims.push(...quad(v(1.2, by, 5.4), v(8.8, by, 5.4), v(8.8, by, 9.4), v(1.2, by, 9.4), 4)) // baffle (down-facing winding)
+  prims.push(...quad(v(1.2, by, 5.4), v(1.2, by, 9.4), v(8.8, by, 9.4), v(8.8, by, 5.4), 4)) // baffle (up-facing winding) — two-sided
+  const ey = 8.55
+  // Emitter strip, wound so its geometric normal points +y (up, toward ceiling).
+  // Small + bright: hard for the path tracer to hit, easy for the light subpath.
+  prims.push(...quad(v(3.9, ey, 7.2), v(3.9, ey, 8.6), v(6.1, ey, 8.6), v(6.1, ey, 7.2), 3))
+  // A couple of objects to catch the soft bounced light.
+  prims.push({ kind: 'sphere', center: v(6.7, 1.6, 4.0), radius: 1.6, material: 5 })
+  prims.push(...box(v(3.0, 1.1, 5.4), v(1.1, 1.1, 1.1), 0.5, 6)) // pedestal block
+  return {
+    name: 'Cove',
+    materials,
+    prims,
+    camera: {
+      eye: v(5, 4.4, -7.2),
+      target: v(5, 3.6, 5),
+      up: v(0, 1, 0),
+      vfovDeg: 46,
+      aperture: 0,
+      focusDist: 12,
+    },
+    env: { kind: 'solid', color: v(0, 0, 0) },
+  }
+}
+
 // ---- Sun helpers -------------------------------------------------------------
 
 // A unit direction pointing toward the sun from an azimuth (degrees clockwise
@@ -799,6 +858,7 @@ export interface ScenePreset {
 
 export const SCENES: ScenePreset[] = [
   { id: 'cornell', label: 'Cornell Box', build: cornell },
+  { id: 'cove', label: 'Cove (BDPT)', build: cove },
   { id: 'weekend', label: 'Weekend Daylight', build: weekend },
   { id: 'gallery', label: 'Material Gallery', build: gallery },
   { id: 'caustic', label: 'Caustic Room', build: causticRoom },

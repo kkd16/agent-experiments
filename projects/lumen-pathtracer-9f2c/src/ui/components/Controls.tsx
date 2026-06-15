@@ -101,6 +101,16 @@ export function Controls(props: {
       )}
 
       <Panel title="Sampling" subtitle="Quality vs. speed">
+        <Segmented<'pt' | 'bdpt'>
+          label="Integrator"
+          value={state.integrator}
+          onChange={(v) => set('integrator', v)}
+          options={[
+            { value: 'pt', label: 'Path Tracer' },
+            { value: 'bdpt', label: 'Bidirectional' },
+          ]}
+          hint="Path Tracer grows paths from the camera (NEE+MIS). Bidirectional also grows a path from a light and connects the two — far cleaner for indirect-lit scenes (try Cove). Both converge to the same image."
+        />
         <Segmented
           label="Resolution"
           value={String(state.resIndex)}

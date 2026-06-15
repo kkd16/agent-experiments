@@ -10,7 +10,7 @@ import { Scene } from '../engine/scene'
 import { Camera } from '../engine/camera'
 import { Rng } from '../engine/rng'
 import { halton23, halton57, pixelOffset } from '../engine/qmc'
-import { radiance } from '../engine/integrator'
+import { integrate } from '../engine/integrator'
 import type { GBuffer, RayStats } from '../engine/integrator'
 import { tonemapToBytes, noiseToBytes } from '../engine/tonemap'
 import { denoise } from '../engine/denoise'
@@ -401,7 +401,7 @@ export class Renderer {
         const u = (x + pj.x) / this.width
         const vScreen = 1 - (y + pj.y) / this.height
         const ray = camera.generateRay(u, vScreen, this.stRng, lens)
-        const L = radiance(scene, ray, this.settings, this.stRng, stats, gbuf)
+        const L = integrate(scene, ray, this.settings, this.stRng, stats, gbuf)
         const idx = (base + x) * 3
         this.accum[idx] += L.x
         this.accum[idx + 1] += L.y

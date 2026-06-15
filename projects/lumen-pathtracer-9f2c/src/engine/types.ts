@@ -61,6 +61,9 @@ export interface IntegratorSettings {
   maxDepth: number // maximum path length (bounces)
   rrStart: number // bounce after which Russian roulette kicks in
   clampIndirect: number // firefly clamp on indirect radiance (0 = off)
+  // Light-transport algorithm. 'pt' is the unidirectional path tracer (NEE+MIS);
+  // 'bdpt' is the bidirectional path tracer (camera×light connections + MIS).
+  integrator?: 'pt' | 'bdpt'
 }
 
 // Tone-mapping operators applied on the UI thread to the accumulated HDR buffer.

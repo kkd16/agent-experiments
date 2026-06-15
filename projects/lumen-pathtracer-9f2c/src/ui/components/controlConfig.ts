@@ -20,6 +20,7 @@ export const RES_PRESETS: ResPreset[] = [
 export interface ControlState {
   sceneId: string
   resIndex: number
+  integrator: 'pt' | 'bdpt' // light-transport algorithm
   spp: number
   maxDepth: number
   rrStart: number

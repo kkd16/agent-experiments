@@ -25,6 +25,18 @@ export function About() {
           lights) and sampling the BSDF lobe (great for glossy surfaces and broad skies). The{' '}
           <em>power heuristic</em> blends them, so neither one’s variance dominates.
         </Card>
+        <Card title="Bidirectional path tracing">
+          The path tracer only grows paths from the camera, so it struggles when the light that
+          matters is hard to reach — a bulb hidden in a cove, a room lit only by bounced light.{' '}
+          <strong>BDPT</strong> also grows a path <em>from a light</em> and then <em>connects</em>{' '}
+          every camera vertex to every light vertex; multiple importance sampling (the balance
+          heuristic) blends all of these strategies so the best one for each situation wins. Because
+          it estimates the <em>same</em> rendering equation, it must converge to the same image as the
+          path tracer — the <strong>Verify</strong> tab proves exactly that by rendering a box both
+          ways and checking the means agree, and proves the MIS weights form a partition of unity. Try
+          the <em>Cove</em> scene and flip the <strong>Integrator</strong> control: same image, a
+          fraction of the noise.
+        </Card>
         <Card title="Microfacet BSDFs">
           Surfaces are Lambertian diffuse, GGX/Trowbridge-Reitz metal with height-correlated Smith
           shadowing, or dielectric glass — smooth or <em>frosted</em>, the latter refracting through a

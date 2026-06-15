@@ -9,7 +9,7 @@ import { Scene } from '../engine/scene'
 import { Camera } from '../engine/camera'
 import { Rng } from '../engine/rng'
 import { halton23, halton57, pixelOffset } from '../engine/qmc'
-import { radiance } from '../engine/integrator'
+import { integrate } from '../engine/integrator'
 import type { GBuffer, RayStats } from '../engine/integrator'
 import type { FromWorker, InitMsg, IntegratorSettings, ToWorker } from '../engine/types'
 
@@ -65,7 +65,7 @@ function handlePass(sampleIndex: number, captureGBuffer: boolean): void {
       const u = (x + pj.x) / width
       const vScreen = 1 - (y + pj.y) / height // flip so +v is up
       const ray = camera.generateRay(u, vScreen, rng, lens)
-      const L = radiance(scene, ray, settings, rng, stats, gbuf)
+      const L = integrate(scene, ray, settings, rng, stats, gbuf)
       const idx = (row + x) * 3
       rad[idx] = L.x
       rad[idx + 1] = L.y

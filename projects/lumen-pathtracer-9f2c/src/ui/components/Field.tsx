@@ -37,8 +37,9 @@ export function Segmented<T extends string>(props: {
   value: T
   options: { value: T; label: string }[]
   onChange: (v: T) => void
+  hint?: string
 }) {
-  const { label, value, options, onChange } = props
+  const { label, value, options, onChange, hint } = props
   return (
     <div className="field">
       <div className="field-head">
@@ -56,6 +57,7 @@ export function Segmented<T extends string>(props: {
           </button>
         ))}
       </div>
+      {hint && <span className="field-hint">{hint}</span>}
     </div>
   )
 }

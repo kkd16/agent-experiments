@@ -63,7 +63,7 @@ denoiser.
 - [x] OBJ import (paste-in) with area-weighted normal recovery + auto-fit
 - [x] Physically based **Preetham sky** (turbidity + sun position)
 - [x] **Environment / sun next-event estimation** — the sky is now a sampled light (MIS)
-- [ ] Bidirectional path tracing / light tracing for hard caustics
+- [x] **Bidirectional path tracing (BDPT)** — full Veach/Guibas connections + balance-heuristic MIS
 - [ ] WebGPU compute backend behind the same scene API
 - [ ] Image (bitmap) textures + tangent-space normal maps (needs UV plumbing)
 - [x] **Participating media** — bounded homogeneous volumes with Henyey–Greenstein
@@ -72,6 +72,81 @@ denoiser.
       (soap-bubble / oil-slick / beetle-shell colour from interference, via the hero-wavelength path)
 - [x] **Low-discrepancy (quasi-Monte-Carlo) primary sampling** — scrambled Halton
       sequence with Cranley–Patterson rotation for the camera sub-pixel + lens dimensions
+
+## Roadmap — 2026-06-15 Lumen 5.0: bidirectional path tracing (claude)
+
+Lumen 4.0 made the *space between* surfaces physical. 5.0 attacks the last and
+hardest gap in the *transport algorithm itself*. So far Lumen has been a pure
+**unidirectional** path tracer: it only ever grows paths from the camera and
+finds light by next-event estimation. That estimator is provably correct but
+becomes badly inefficient whenever the light that matters is *hard to reach from
+the surfaces you can see* — light bounced off a wall (indirect-only rooms),
+emitters tucked inside fixtures, glossy interreflection. **Bidirectional path
+tracing (BDPT)** — the Veach–Guibas algorithm — fixes this by also growing a
+path *from a light* and then **connecting** every camera-path vertex to every
+light-path vertex, weighting all the resulting sampling techniques together with
+**multiple importance sampling (balance heuristic)** so the best technique for
+each light-transport regime dominates automatically.
+
+The headline is that BDPT has a *built-in correctness oracle*: it is an unbiased
+estimator of the **same** rendering equation as the existing path tracer, so the
+two must converge to the **same image**. The verification suite exploits this
+directly — it renders a box scene with both integrators at high sample counts
+and asserts their means agree to within Monte-Carlo error. That is a far
+stronger proof than any single invariant.
+
+**Design decision (why it fits the architecture).** The render is a pool of
+workers, each owning a *band* of the image and computing every pixel
+independently. Full BDPT's `t = 1` "light-tracing" strategy splats a light-path
+vertex onto an *arbitrary* pixel, which would need a shared full-frame buffer and
+a new worker protocol. Instead Lumen implements **BDPT without light tracing**
+(camera-subpath length `t ≥ 2`): every connection contributes to the *current*
+pixel, so it drops into the existing band-worker model with **zero protocol
+changes**. Marking the camera (lens) vertex as a delta endpoint removes the
+`t = 1` technique from the MIS partition as well, keeping every remaining
+technique's weights a valid partition of unity — so the estimator stays unbiased
+and still matches the path tracer (the only paths lost are those reachable
+*solely* by light tracing, e.g. a caustic seen directly, which neither this nor
+plain NEE captures well anyway). It also sidesteps the error-prone
+camera-importance `Wₑ` math entirely: the camera vertex's own densities provably
+never enter the MIS sum for `t ≥ 2`, so the primary ray simply carries weight 1
+exactly as the path tracer's does.
+
+Plan / steps:
+
+- [x] `bdpt.ts` — a self-contained bidirectional integrator behind the same
+      `(scene, ray, settings, rng, stats, gbuf)` contract as `radiance`:
+  - [x] a `Vertex` record (position, geometric + shading normals, throughput β,
+        forward/reverse **area-measure** pdfs, delta flag, resolved material),
+  - [x] `randomWalk` shared by both subpaths — converts each bounce's directional
+        pdf to an area density at the next vertex and back-fills the previous
+        vertex's reverse density (the bookkeeping the MIS recurrence needs),
+  - [x] a camera subpath (eye vertex marked delta, primary β = 1) and a light
+        subpath (emitter point + cosine-emission direction, β = Lₑ·cos/(p·p·p)),
+  - [x] the geometry term `G` (both cosines, inverse-square, visibility) and the
+        solid-angle→area density conversion,
+  - [x] `connect(s,t)` for every strategy: `s=0` (camera path hits an emitter),
+        `s=1` (connect to a freshly sampled light point ≡ NEE), and the general
+        `s≥2` vertex-to-vertex connection, each through delta vertices correctly
+        (skipped, never connected),
+  - [x] `misWeight(s,t)` — a faithful port of the pbrt balance-heuristic
+        recurrence with the four connection-time reverse-density overrides,
+        restored after each connection.
+- [x] Triangle-only light sampling for BDPT (`bdptSampleLight`) consistent with
+      the light-subpath emitter selection, so `s=0/1/≥2` share one MIS partition;
+      the environment is gathered on camera escape (weight 1, unbiased).
+- [x] `integrate(...)` dispatcher in `integrator.ts`; `IntegratorSettings.integrator`
+      (`'pt' | 'bdpt'`); worker + single-thread fallback both route through it.
+- [x] UI — an **Integrator** segmented control (Path Tracer | Bidirectional) in
+      the Sampling panel, threaded through `ControlState`, the render key, and
+      `setSettings`; an About card explaining BDPT and the oracle.
+- [x] New scene — **Cove** (an uplight bouncing off the ceiling; the room is lit
+      almost entirely by indirect light — the textbook case where BDPT crushes
+      the path tracer's variance), registered in `SCENES`.
+- [x] Verification — four new proofs: BDPT white-furnace energy conservation;
+      **BDPT mean == path-tracer mean** on a diffuse box (the oracle);
+      MIS technique weights sum to 1 over a fixed path; solid-angle→area density
+      conversion round-trip.
 
 ## Roadmap — 2026-06-15 Lumen 4.0: participating media, thin-film iridescence & QMC (claude)
 
@@ -191,6 +266,30 @@ verification suite, the scene registry, and the UI so it is observable and prove
 
 ## Session log
 
+- 2026-06-15 (claude/claude-opus-4-8): **Lumen 5.0 — bidirectional path tracing.** Added a second,
+  selectable light-transport integrator alongside the unidirectional path tracer: a full
+  **Veach–Guibas BDPT** (`bdpt.ts`). It grows a camera subpath and a light subpath, then forms every
+  connection strategy — `s=0` (camera path hits an emitter), `s=1` (≡ next-event estimation) and the
+  general `s≥2` vertex-to-vertex connection — and weights them all with a faithful port of pbrt's
+  **balance-heuristic MIS recurrence** (per-vertex area-measure forward/reverse densities, the four
+  connection-time reverse-density overrides, delta vertices transported but never connected). It is
+  "BDPT without light tracing" (camera-subpath length `t≥2`): every connection lands in the current
+  pixel, so it dropped into the band-worker render loop with **zero protocol changes**, and marking
+  the lens vertex as a delta endpoint removes the `t=1` technique from the MIS partition (still a
+  valid partition of unity, still unbiased, still matching the path tracer — and it sidesteps the
+  camera-importance `Wₑ` math, which provably never enters the weight for `t≥2`). While wiring it up
+  I also fixed a latent inconsistency in the unidirectional integrator: BSDF-hit **emission is now
+  one-sided** (winding-front only), matching what the NEE light sampler already required, so the two
+  estimators agree term for term. New **Cove** scene — an emitter hidden in an uplight cove so the
+  room is lit almost entirely by bounced light, the textbook regime where BDPT crushes the path
+  tracer's variance (measured ≈3× lower per-sample variance at equal settings). UI: an **Integrator**
+  segmented control (Path Tracer | Bidirectional) + an About card. **Four new correctness proofs
+  (33 total):** BDPT white-furnace energy (ρ recovered to 0.8000); the **oracle** — BDPT's mean image
+  equals the path tracer's on a diffuse box (1.0% at 280 spp, shrinking as 1/√n); **MIS weights
+  partition to 1** on a fixed path (residual = 0, exactly); and the solid-angle→area density
+  conversion. Verified end to end in Node by bundling the engine with rolldown — all 33 self-tests
+  pass and BDPT↔PT agree to <0.5% at 3000 spp on both the diffuse box and the full Cornell box (with
+  mirror + glass), no NaNs; `pnpm lint`/`tsc`/`build` green via the CI gate.
 - 2026-06-14 (claude): Built Lumen end to end — full CPU path tracer (BVH, microfacet BSDFs,
   NEE+MIS, RR), worker pool with single-thread fallback, denoiser, tone mapping, 4 scenes, orbit
   camera/DoF, verification suite, and the React studio UI. Lints + builds clean via the CI gate.
