@@ -624,6 +624,286 @@ const TESTS: Test[] = [
       }
     },
   },
+
+  // --- RV32C: the compressed extension ---------------------------------------
+  {
+    name: 'RVC: hand-written compressed program prints 210 (sum 1..20)',
+    fn: () => {
+      const cpu = run(EXAMPLES.find((e) => e.id === 'rvc')!.code);
+      eq(cpu.output, 'sum 1..20 = 210', 'output');
+      eq(cpu.status, 'halted', 'status');
+    },
+  },
+  {
+    name: 'RVC: c.* instructions assemble to 2 bytes and step the pc by 2',
+    fn: () => {
+      const result = assemble(`main:\n  c.li a0, 5\n  c.addi a0, 3\n  c.mv a1, a0\n  li a7, 10\n  ecall\n`);
+      assert(result.ok, `assembles: ${result.errors.map((e) => e.message).join('; ')}`);
+      // The three c.* instructions are 2 bytes each at 0,2,4; the 32-bit li lands at 6.
+      eq(result.instrs[0].size, 2, 'c.li size');
+      eq(result.instrs[0].addr, 0, 'c.li addr');
+      eq(result.instrs[1].addr, 2, 'c.addi addr');
+      eq(result.instrs[2].addr, 4, 'c.mv addr');
+      eq(result.instrs[3].addr, 6, 'li addr (after three halfwords)');
+      const cpu = new Cpu();
+      cpu.load(result);
+      cpu.step(); // c.li a0,5
+      eq(cpu.pc, 2, 'pc advanced by 2');
+      eq(cpu.regs[10], 5, 'a0=5');
+      cpu.step(); // c.addi a0,3 -> 8
+      cpu.step(); // c.mv a1,a0 -> 8
+      eq(cpu.regs[10], 8, 'a0=8');
+      eq(cpu.regs[11], 8, 'a1=8 via c.mv');
+    },
+  },
+  {
+    name: 'RVC: c.jal links the *next 2-byte* address (return = pc+2)',
+    fn: () => {
+      // c.jal must write pc+2 to ra so the callee returns to the following 16-bit slot.
+      const result = assemble(`main:\n  c.jal sub\n  c.li a0, 7\n  li a7, 1\n  ecall\n  li a7, 10\n  ecall\nsub:\n  c.jr ra\n`);
+      assert(result.ok, `assembles: ${result.errors.map((e) => e.message).join('; ')}`);
+      const cpu = new Cpu();
+      cpu.load(result);
+      cpu.step(); // c.jal sub  (ra = 2)
+      eq(cpu.regs[1], 2, 'ra = pc+2');
+      cpu.step(); // c.jr ra -> back to 0x2
+      eq(cpu.pc, 2, 'returned to the c.li slot');
+    },
+  },
+  {
+    name: 'RVC auto-compress: identical behaviour, smaller binary',
+    fn: () => {
+      const prog = EXAMPLES.find((e) => e.id === 'fib')!.code;
+      const plain = assemble(prog, { compress: false });
+      const small = assemble(prog, { compress: true });
+      assert(plain.ok && small.ok, 'both assemble');
+      const cpuA = new Cpu();
+      cpuA.load(plain);
+      cpuA.run(1_000_000);
+      const cpuB = new Cpu();
+      cpuB.load(small);
+      cpuB.run(1_000_000);
+      eq(cpuB.output, cpuA.output, 'output matches the uncompressed build');
+      const bytesA = plain.instrs.reduce((s, i) => s + i.size, 0);
+      const bytesB = small.instrs.reduce((s, i) => s + i.size, 0);
+      assert(bytesB < bytesA, `expected a smaller image, got ${bytesB} vs ${bytesA}`);
+      assert(small.instrs.some((i) => i.size === 2), 'at least one instruction compressed');
+    },
+  },
+  {
+    name: 'RVC: every compressed encoding ⇄ disassembles to a c.* form',
+    fn: () => {
+      const result = assemble(EXAMPLES.find((e) => e.id === 'rvc')!.code, { compress: true });
+      assert(result.ok, 'assembles');
+      let sawCompressed = false;
+      for (const ins of result.instrs) {
+        const text = disassemble(ins.word, ins.addr, ins.size);
+        assert(text.length > 0 && !text.startsWith('.half') && !text.startsWith('.word'), `bad disasm: ${text}`);
+        if (ins.size === 2) {
+          sawCompressed = true;
+          assert(text.startsWith('c.'), `compressed word should render as c.*, got '${text}'`);
+        }
+      }
+      assert(sawCompressed, 'expected compressed instructions');
+    },
+  },
+
+  {
+    name: 'RV32FC: compressed float load/store round-trips through the stack',
+    fn: () => {
+      const cpu = run(`
+        main:
+          addi sp, sp, -16
+          li   t0, 0x40490fdb       # 3.14159f bit pattern
+          fmv.w.x fa0, t0
+          c.fswsp fa0, 0(sp)        # compressed float store
+          c.flwsp fa1, 0(sp)        # compressed float load
+          fmv.s fa0, fa1
+          li   a7, 2                # print_float
+          ecall
+          li   a7, 10
+          ecall
+      `);
+      assert(/^3\.14/.test(cpu.output), `expected ~3.14159, got ${cpu.output}`);
+      eq(cpu.status, 'halted', 'status');
+    },
+  },
+  {
+    name: 'RV32FC auto-compress: flw/fsw shrink with identical float results',
+    fn: () => {
+      const prog = `
+        .data
+        arr: .word 0x3f800000, 0x40000000, 0x40400000   # 1.0, 2.0, 3.0
+        .text
+        main:
+          la   s0, arr
+          flw  fa0, 0(s0)
+          flw  fa1, 4(s0)
+          flw  fa2, 8(s0)
+          fadd.s fa0, fa0, fa1
+          fadd.s fa0, fa0, fa2
+          addi sp, sp, -16
+          fsw  fa0, 0(sp)
+          flw  fa0, 0(sp)
+          li   a7, 2
+          ecall
+          li   a7, 10
+          ecall`;
+      const plain = assemble(prog, { compress: false });
+      const small = assemble(prog, { compress: true });
+      assert(plain.ok && small.ok, 'both assemble');
+      const a = new Cpu();
+      a.load(plain);
+      a.run(1_000_000);
+      const b = new Cpu();
+      b.load(small);
+      b.run(1_000_000);
+      eq(b.output, a.output, 'float output matches');
+      eq(b.output, '6.0', 'sum 1+2+3');
+      assert(small.instrs.some((i) => i.size === 2), 'some flw/fsw compressed');
+    },
+  },
+
+  // --- machine-mode traps & interrupts ---------------------------------------
+  {
+    name: 'trap: the timer-interrupt example fires 5 ticks and prints 5',
+    fn: () => {
+      const cpu = run(EXAMPLES.find((e) => e.id === 'timer')!.code);
+      eq(cpu.output, '5\n', 'output');
+      eq(cpu.status, 'halted', 'status');
+    },
+  },
+  {
+    name: 'trap: software interrupt (CLINT msip) vectors to the handler',
+    fn: () => {
+      const cpu = run(`
+        .equ MSIP, 0x02000000
+        main:
+          la    t0, h
+          csrw  mtvec, t0
+          li    s0, 0
+          li    t1, 0x8          # mie.MSIE
+          csrs  mie, t1
+          csrsi mstatus, 0x8
+          li    t2, MSIP
+          li    t0, 1
+          sw    t0, 0(t2)        # raise the software interrupt
+          nop
+          csrci mstatus, 0x8
+          mv    a0, s0
+          li    a7, 1
+          ecall
+          li    a7, 10
+          ecall
+        .align 2
+        h:
+          addi  s0, s0, 7
+          sw    x0, 0(t2)        # clear msip
+          mret
+      `);
+      eq(cpu.output, '7', 'handler ran');
+    },
+  },
+  {
+    name: 'trap: ebreak vectors to mtvec when a handler is armed; mcause = 3',
+    fn: () => {
+      const cpu = run(`
+        main:
+          la   t0, h
+          csrw mtvec, t0
+          ebreak
+          li   a7, 10
+          ecall
+        .align 2
+        h:
+          csrr a0, mcause       # breakpoint cause = 3
+          li   a7, 1
+          ecall
+          csrr t1, mepc
+          addi t1, t1, 4        # step over the ebreak
+          csrw mepc, t1
+          li   a7, 10
+          ecall
+      `);
+      eq(cpu.output, '3', 'mcause = 3');
+    },
+  },
+  {
+    name: 'trap: illegal instruction vectors to mtvec (mcause = 2) instead of erroring',
+    fn: () => {
+      // 0x00000000 is an illegal word; with a handler armed it must trap, not fail.
+      const cpu = run(`
+        .text
+        main:
+          la   t0, h
+          csrw mtvec, t0
+          .word 0               # illegal instruction
+          li   a7, 10
+          ecall
+        .align 2
+        h:
+          csrr a0, mcause       # illegal-instruction cause = 2
+          li   a7, 1
+          ecall
+          li   a7, 10
+          ecall
+      `);
+      eq(cpu.output, '2', 'mcause = 2');
+      eq(cpu.status, 'halted', 'did not error out');
+    },
+  },
+  {
+    name: 'trap: mret restores the interrupt-enable stack (MIE ← MPIE)',
+    fn: () => {
+      const result = assemble(`
+        main:
+          la   t0, h
+          csrw mtvec, t0
+          li   t1, 0x80
+          csrs mie, t1
+          csrsi mstatus, 0x8    # MIE = 1
+          ebreak                # synchronous trap clears MIE, sets MPIE
+          li   a7, 10
+          ecall
+        .align 2
+        h:
+          mret
+      `);
+      assert(result.ok, 'assembles');
+      const cpu = new Cpu();
+      cpu.load(result);
+      // Run up to (but not into) the handler so we can inspect mstatus inside the trap.
+      while (cpu.status !== 'halted' && cpu.cycles < 1000) {
+        const before = cpu.pc;
+        cpu.step();
+        // After ebreak traps, MIE must be 0 and MPIE must be 1.
+        if (cpu.mcause === 3 && before !== cpu.pc) {
+          eq(cpu.mstatus & (1 << 3), 0, 'MIE cleared on trap');
+          assert((cpu.mstatus & (1 << 7)) !== 0, 'MPIE set on trap');
+          break;
+        }
+      }
+      // mret then restores MIE from MPIE.
+      cpu.step(); // mret
+      assert((cpu.mstatus & (1 << 3)) !== 0, 'MIE restored after mret');
+    },
+  },
+  {
+    name: 'time-travel: stepBack reverts mtime and machine CSRs',
+    fn: () => {
+      const result = assemble(`main:\n  csrwi mstatus, 0x8\n  li a7, 10\n  ecall\n`);
+      assert(result.ok, 'assembles');
+      const cpu = new Cpu();
+      cpu.load(result);
+      const t0 = cpu.mtime;
+      cpu.step(); // csrwi mstatus, 0x8
+      assert((cpu.mstatus & 0x8) !== 0, 'mstatus.MIE set');
+      assert(cpu.mtime > t0, 'mtime advanced');
+      cpu.stepBack();
+      eq(cpu.mstatus, 0, 'mstatus reverted');
+      eq(cpu.mtime, t0, 'mtime reverted');
+    },
+  },
 ];
 
 export function runSelfTests(): TestResult[] {

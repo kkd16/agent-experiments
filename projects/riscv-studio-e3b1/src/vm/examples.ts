@@ -485,8 +485,88 @@ sdone:
         ecall
 `;
 
+const RVC = `# RV32C — the compressed (16-bit) extension.
+#
+# Two ways to get compressed code: write c.* mnemonics by hand (as below), or let the
+# assembler shrink eligible base instructions for you. The ".option rvc" directive (or the
+# "Compress (RVC)" toolbar toggle) turns that on — open the Disassembly tab and watch the
+# addresses step by 2, and the words shrink to 16 bits, with identical behaviour.
+.option rvc
+.data
+msg:    .string "sum 1..20 = "
+.text
+main:
+        la    a0, msg
+        li    a7, 4            # print_string
+        ecall
+        c.li  a0, 0            # acc  (hand-written compressed: c.li)
+        c.li  t0, 1            # i
+loop:
+        c.add a0, t0           # acc += i        (c.add)
+        c.addi t0, 1           # i++             (c.addi)
+        li    t1, 21
+        blt   t0, t1, loop     # this 32-bit branch interleaves freely with 16-bit ops
+        li    a7, 1
+        ecall                  # print 210
+        li    a7, 10
+        ecall
+`;
+
+const TIMER_IRQ = `# Machine-mode timer interrupts via the CLINT.
+#
+# Install a handler in mtvec, program the timer (mtimecmp = mtime + INTERVAL), enable the
+# timer interrupt (mie.MTIE) and interrupts globally (mstatus.MIE), then sit in a wfi loop.
+# Each time mtime reaches mtimecmp the handler fires, bumps a counter, reschedules the next
+# tick, and returns with mret. After five ticks we disable interrupts and print the count.
+.equ MTIMECMP, 0x02004000      # CLINT timer-compare (low word)
+.equ MTIME,    0x0200bff8      # CLINT time (low word)
+.equ INTERVAL, 40
+
+.text
+main:
+        la    t0, on_timer
+        csrw  mtvec, t0          # install the trap vector (direct mode)
+        li    s0, 0              # tick counter
+        li    s1, 5              # stop after 5 ticks
+        li    s2, MTIMECMP
+        li    s3, MTIME
+
+        lw    t0, 0(s3)          # read mtime
+        addi  t0, t0, INTERVAL
+        sw    t0, 0(s2)          # mtimecmp = mtime + INTERVAL
+
+        li    t0, 0x80           # mie.MTIE (bit 7)
+        csrs  mie, t0
+        csrsi mstatus, 0x8       # mstatus.MIE (bit 3) — interrupts on
+loop:
+        bge   s0, s1, done
+        wfi                      # wait for the next timer interrupt
+        j     loop
+done:
+        csrci mstatus, 0x8       # interrupts off before using the console
+        mv    a0, s0
+        li    a7, 1
+        ecall                    # print 5
+        li    a0, 10
+        li    a7, 11
+        ecall                    # newline
+        li    a7, 10
+        ecall                    # exit
+
+# Timer interrupt handler. Only clobbers t0 (dead in the wfi loop), so no save/restore.
+        .align 2
+on_timer:
+        addi  s0, s0, 1          # one more tick
+        lw    t0, 0(s2)
+        addi  t0, t0, INTERVAL
+        sw    t0, 0(s2)          # schedule the next tick
+        mret                     # return to the interrupted pc (mepc)
+`;
+
 export const EXAMPLES: readonly Example[] = [
   { id: 'hello', title: 'Hello, RISC-V', blurb: 'print_string syscall basics', focus: 'console', code: HELLO },
+  { id: 'rvc', title: 'Compressed (RV32C)', blurb: 'c.* 16-bit ops + .option rvc auto-compress', focus: 'console', code: RVC },
+  { id: 'timer', title: 'Timer interrupts', blurb: 'CLINT timer + mtvec/mret machine-mode trap', focus: 'console', code: TIMER_IRQ },
   { id: 'fib', title: 'Fibonacci', blurb: 'loops, registers, print_int', focus: 'console', code: FIB },
   { id: 'gcd', title: 'GCD (Euclid)', blurb: 'call/ret + rem (RV32M)', focus: 'console', code: GCD },
   { id: 'bubble', title: 'Bubble sort', blurb: 'arrays, loads/stores, nested loops', focus: 'console', code: BUBBLE },

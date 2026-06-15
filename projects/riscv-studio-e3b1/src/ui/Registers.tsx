@@ -102,6 +102,44 @@ export default function Registers({ cpu, prevRegs }: Props) {
           <span className={`reg-val status-${cpu.status}`}>{cpu.status}</span>
         </div>
       </div>
+
+      {(cpu.mtvec !== 0 || cpu.mcause !== 0 || cpu.mstatus !== 0) && (
+        <>
+          <div className="reg-subhead">
+            <span>machine-mode trap CSRs</span>
+            <span className="reg-fcsr">
+              MIE={(cpu.mstatus >> 3) & 1} · MPIE={(cpu.mstatus >> 7) & 1}
+            </span>
+          </div>
+          <div className="reg-special csr-special">
+            {(
+              [
+                ['mstatus', cpu.mstatus],
+                ['mtvec', cpu.mtvec],
+                ['mepc', cpu.mepc],
+                ['mcause', cpu.mcause],
+                ['mtval', cpu.mtval],
+                ['mie', cpu.mie],
+                ['mip', cpu.mip],
+                ['mscratch', cpu.mscratch],
+              ] as [string, number][]
+            ).map(([name, val]) => (
+              <div key={name} className="reg-cell" title={`CSR ${name}`}>
+                <span className="reg-name">{name}</span>
+                <span className="reg-val">{hexWord(val)}</span>
+              </div>
+            ))}
+            <div className="reg-cell" title="CLINT mtime">
+              <span className="reg-name">mtime</span>
+              <span className="reg-val">{cpu.mtime.toLocaleString()}</span>
+            </div>
+            <div className="reg-cell" title="CLINT mtimecmp">
+              <span className="reg-name">mtimecmp</span>
+              <span className="reg-val">{cpu.mtimecmp.toLocaleString()}</span>
+            </div>
+          </div>
+        </>
+      )}
       {cpu.error && <div className="reg-error">⚠ {cpu.error}</div>}
     </div>
   );

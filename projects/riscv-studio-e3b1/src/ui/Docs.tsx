@@ -100,10 +100,34 @@ const GROUPS: { title: string; items: InsDoc[] }[] = [
     ],
   },
   {
+    title: 'C extension — compressed 16-bit instructions (RV32C)',
+    items: [
+      { m: 'c.addi / c.li / c.lui', desc: 'compressed add-immediate / load-immediate / load-upper' },
+      { m: 'c.addi16sp / c.addi4spn', desc: 'stack-pointer adjust / frame slot address' },
+      { m: 'c.mv / c.add / c.sub / c.and / c.or / c.xor', desc: 'register-register ALU (c.sub/and/or/xor use x8–x15)' },
+      { m: 'c.andi / c.slli / c.srli / c.srai', desc: 'immediate logic & shifts' },
+      { m: 'c.lw / c.sw / c.lwsp / c.swsp', desc: 'word load/store (compact regs, or sp-relative)' },
+      { m: 'c.flw / c.fsw / c.flwsp / c.fswsp', desc: 'compressed single-precision float load/store (RV32FC)' },
+      { m: 'c.j / c.jal / c.jr / c.jalr', desc: 'compressed jumps (link writes pc+2)' },
+      { m: 'c.beqz / c.bnez', desc: 'compare a compact register against zero & branch' },
+      { m: 'c.nop / c.ebreak / c.unimp', desc: 'compressed no-op / breakpoint / trap' },
+    ],
+  },
+  {
+    title: 'Privileged — machine-mode traps & interrupts',
+    items: [
+      { m: 'mret', desc: 'return from a trap: restore MIE from MPIE, pc ← mepc' },
+      { m: 'wfi', desc: 'wait-for-interrupt (advances; the timer keeps ticking)' },
+      { m: 'mstatus / mie / mip', desc: 'global & per-source interrupt enable / pending bits' },
+      { m: 'mtvec / mepc / mcause / mtval', desc: 'trap vector, return pc, cause code, faulting value' },
+      { m: 'mscratch / mhartid / misa', desc: 'scratch word, hart id (0), ISA string (RV32IMAFC)' },
+    ],
+  },
+  {
     title: 'System',
     items: [
       { m: 'ecall', desc: 'environment call — dispatched on a7 (see syscalls)' },
-      { m: 'ebreak', desc: 'breakpoint — pauses the debugger' },
+      { m: 'ebreak', desc: 'breakpoint — pauses the debugger (or traps to mtvec when a handler is installed)' },
       { m: 'fence', desc: 'memory fence (a no-op on this single-hart machine)' },
     ],
   },
@@ -135,25 +159,54 @@ const DIRECTIVES: InsDoc[] = [
   { m: '.align n / .balign N', desc: 'align to 2ⁿ / N bytes' },
   { m: '.equ NAME, v  ·  NAME = v', desc: 'define an assembler constant' },
   { m: '.globl name', desc: 'mark a symbol global (accepted, informational)' },
+  { m: '.option rvc / norvc', desc: 'enable / disable automatic RV32C compression for the file' },
 ];
 
 export default function Docs() {
   return (
     <div className="panel docs">
       <div className="panel-head">
-        <h2>RV32IMAF + Zicsr reference</h2>
+        <h2>RV32IMAFC + Zicsr reference</h2>
       </div>
       <div className="docs-scroll">
         <p className="docs-intro">
           This studio implements the <strong>RV32I</strong> base integer ISA plus the{' '}
-          <strong>M</strong> (multiply/divide), <strong>A</strong> (atomics) and{' '}
-          <strong>F</strong> (single-precision float) extensions, together with{' '}
-          <strong>Zicsr</strong> and the hardware counters — every instruction below executes on
-          the built-in interpreter. Float ops take an optional rounding-mode operand
+          <strong>M</strong> (multiply/divide), <strong>A</strong> (atomics),{' '}
+          <strong>F</strong> (single-precision float) and <strong>C</strong> (compressed 16-bit)
+          extensions, together with <strong>Zicsr</strong>, the hardware counters, and a
+          machine-mode <strong>trap &amp; interrupt</strong> architecture — every instruction below
+          executes on the built-in interpreter. Float ops take an optional rounding-mode operand
           (<code>rne·rtz·rdn·rup·rmm·dyn</code>); the debugger can also <strong>step backward</strong>{' '}
           to undo instructions one at a time. The assembler accepts the full pseudo-instruction
           set and common GNU/RARS directives.
         </p>
+        <section>
+          <h3>The C (compressed) extension</h3>
+          <p className="docs-intro">
+            RV32C gives the 26 most common instructions a 16-bit alias, so real binaries are
+            ~25–30% smaller. Two ways to use it here: write <code>c.*</code> mnemonics by hand, or
+            let the assembler shrink eligible instructions for you — flip the{' '}
+            <strong>Compress (RVC)</strong> toolbar toggle or add <code>.option rvc</code> to your
+            source. Compressed and 32-bit instructions interleave freely (IALIGN = 16); the
+            Disassembly tab shows each instruction's true width, and behaviour is identical either
+            way (the verification suite proves it with a differential check).
+          </p>
+        </section>
+        <section>
+          <h3>Machine-mode traps &amp; interrupts</h3>
+          <p className="docs-intro">
+            Install a handler address in <code>mtvec</code>, enable interrupts in{' '}
+            <code>mstatus</code>/<code>mie</code>, and the machine takes real traps: synchronous
+            exceptions (illegal instruction, <code>ebreak</code>, misaligned load/store) and
+            asynchronous interrupts from a memory-mapped <strong>CLINT</strong>. A trap saves the
+            pc to <code>mepc</code>, the reason to <code>mcause</code>, and vectors to{' '}
+            <code>mtvec</code>; <code>mret</code> returns. The CLINT lives at{' '}
+            <code>{hexWord(0x0200_0000)}</code>: <code>msip</code> (software interrupt) at +0x0,{' '}
+            <code>mtimecmp</code> at +0x4000, and the 64-bit <code>mtime</code> at +0xbff8. When{' '}
+            <code>mtime ≥ mtimecmp</code> the timer interrupt (mcause 7) fires; the studio advances{' '}
+            <code>mtime</code> by one per instruction so timers are fully deterministic.
+          </p>
+        </section>
 
         {GROUPS.map((grp) => (
           <section key={grp.title}>

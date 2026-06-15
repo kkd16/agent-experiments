@@ -3,6 +3,7 @@
 
 import { REAL_MNEMONICS, AMO_MNEMONICS, CSR_MNEMONICS } from '../vm/isa';
 import { FP_MNEMONICS } from '../vm/fp';
+import { RVC_MNEMONICS } from '../vm/rvc';
 import { regIndex, fregIndex } from '../vm/registers';
 
 export type TokenKind =
@@ -38,7 +39,9 @@ const MNEMONICS = new Set<string>([
   ...FP_MNEMONICS,
   ...AMO_MNEMONICS,
   ...CSR_MNEMONICS,
+  ...RVC_MNEMONICS,
   ...PSEUDO,
+  'mret', 'wfi', // privileged (added with machine-mode traps)
 ]);
 
 // Atomics accept `.aq` / `.rl` ordering suffixes; recognise those too.

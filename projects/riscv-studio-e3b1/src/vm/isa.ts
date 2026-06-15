@@ -114,6 +114,18 @@ export const INSTRUCTIONS: Record<string, InstrSpec> = {
   ecall: { name: 'ecall', format: 'SYS', opcode: OPC.SYSTEM, funct3: 0, funct7: 0 },
   ebreak: { name: 'ebreak', format: 'SYS', opcode: OPC.SYSTEM, funct3: 0, funct7: 1 },
   fence: { name: 'fence', format: 'FENCE', opcode: OPC.MISC_MEM, funct3: 0 },
+
+  // Privileged trap-return / hint (encoded as full SYSTEM funct12s; see SYS_WORDS)
+  mret: { name: 'mret', format: 'SYS', opcode: OPC.SYSTEM, funct3: 0 },
+  wfi: { name: 'wfi', format: 'SYS', opcode: OPC.SYSTEM, funct3: 0 },
+};
+
+/** Fully-specified 32-bit encodings for the operand-less SYSTEM instructions. */
+export const SYS_WORDS: Record<string, number> = {
+  ecall: 0x0000_0073,
+  ebreak: 0x0010_0073,
+  mret: 0x3020_0073,
+  wfi: 0x1050_0073,
 };
 
 /** Set of every recognised base (RV32IM) mnemonic (lowercased). */
@@ -162,4 +174,18 @@ export const CSR_NUMBERS: Record<string, number> = {
   cycleh: 0xc80,
   timeh: 0xc81,
   instreth: 0xc82,
+  // Machine-mode trap CSRs
+  mstatus: 0x300,
+  misa: 0x301,
+  mie: 0x304,
+  mtvec: 0x305,
+  mscratch: 0x340,
+  mepc: 0x341,
+  mcause: 0x342,
+  mtval: 0x343,
+  mip: 0x344,
+  mvendorid: 0xf11,
+  marchid: 0xf12,
+  mimpid: 0xf13,
+  mhartid: 0xf14,
 };

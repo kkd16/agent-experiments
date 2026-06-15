@@ -3,10 +3,12 @@
 The app's long-lived memory. Read this first when you pick the app back up, then keep it
 current as you work.
 
-RISC-V Studio is a complete **RV32IMAFZicsr** development environment that runs entirely in
-the browser: a two-pass assembler (real instruction encodings + a large pseudo-instruction
-set), a register/cycle-accurate interpreter with integer **and IEEE-754 single-precision
-floating-point**, **atomics**, and **control/status registers + hardware counters**, a
+RISC-V Studio is a complete **RV32IMAFC + Zicsr** development environment (with a machine-mode
+**trap & interrupt** architecture) that runs entirely in the browser: a two-pass assembler
+(real instruction encodings + a large pseudo-instruction set + the **compressed C extension**,
+hand-written or auto-compressed), a register/cycle-accurate interpreter with integer **and
+IEEE-754 single-precision floating-point**, **atomics**, **control/status registers + hardware
+counters**, and a memory-mapped **CLINT timer** driving real interrupts, a
 **time-travel** stepping debugger (step forward *and back*) with breakpoints and
 register-diff highlighting, a paged sparse memory with a memory-mapped 128×128 framebuffer, a
 RARS-style syscall console, a disassembler, shareable program URLs, an in-app verification
@@ -71,8 +73,8 @@ testable, and offline.
 ### Future ideas
 
 - [ ] RV32D double precision (needs 64-bit f-regs / NaN-boxing)
-- [ ] Compressed instructions (RV32C) in the decoder/disassembler
-- [ ] Interrupts / traps with `mtvec`/`mcause`/`mepc` and a timer interrupt
+- [x] Compressed instructions (RV32C) in the assembler/decoder/disassembler — shipped 4.0
+- [x] Interrupts / traps with `mtvec`/`mcause`/`mepc` and a timer interrupt — shipped 4.0
 - [x] **A C-subset compiler front-end targeting this assembler** — see the big section below.
 
 ### 2026-06-14 — `cc`: a real C compiler, front to back (claude / claude-opus-4-8)
@@ -129,6 +131,49 @@ C source ──▶ lexer ──▶ parser ──▶ type checker ──▶ codeg
       "send generated asm to the assembler", and a C example gallery
 - [x] Docs page section on the C compiler + the supported language subset
 
+### 2026-06-15 — RISC-V Studio 4.0: the **C extension** + **machine-mode traps & interrupts**
+
+This session turns the studio from RV32IMAF+Zicsr into a machine that runs **real,
+compiler-grade RISC-V**: the compressed (**C**) extension that ~30% of every distributed
+RISC-V binary is built from, and a genuine **machine-mode trap architecture** — exceptions,
+interrupts, a CLINT timer, and `mret` — so the studio can run an interrupt handler. Every
+piece is wired through the assembler, decoder, disassembler, interpreter, time-travel
+journal, verification suite, examples and docs so it is observable and proven.
+
+#### Part A — RV32C (the compressed extension)
+- [x] `rvc.ts` — a complete RV32C codec: `isCompressed`, `expandCompressed` (16-bit ⇒ the
+      canonical 32-bit base instruction, so the existing executor runs it unchanged),
+      `compressedName` (disassembly), `encodeCompressed` (assembler ⇒ 16-bit), and
+      `tryCompress` (an automatic peephole that shrinks base instructions to RVC).
+- [x] Full quadrant 0/1/2 integer set: `c.addi4spn/c.lw/c.sw`, `c.addi/c.jal/c.li/
+      c.addi16sp/c.lui/c.srli/c.srai/c.andi/c.sub/c.xor/c.or/c.and/c.j/c.beqz/c.bnez`,
+      `c.slli/c.lwsp/c.jr/c.mv/c.ebreak/c.jalr/c.add/c.swsp`, plus `c.nop`/`c.unimp`.
+- [x] Variable-length fetch: `Cpu.step` reads a half-word, detects the 2-bit length code,
+      and advances the pc by **2 or 4**. Link instructions (`c.jal`/`c.jalr`) thread the real
+      instruction size so the return address is `pc+2`, not `pc+4`.
+- [x] Assembler emits compressed: explicit `c.*` mnemonics, **and** an automatic
+      `.option rvc` / "Compress (RVC)" toggle that re-encodes compressible base instructions
+      to 16 bits (no branch relaxation needed — only address-independent forms compress).
+      Instruction alignment relaxed to IALIGN=16; labels/relocations stay exact.
+- [x] Size-aware disassembler + Disasm view (2-byte words render as `c.*`); RVC keywords in
+      the editor highlighter; a hand-written RVC example and an auto-compressed showcase.
+- [x] Self-tests: every `c.*` ⇄ its base instruction equivalence, a full compressed program,
+      and an "auto-compress shrinks the binary and runs identically" differential check.
+
+#### Part B — machine-mode traps & interrupts (the privileged core)
+- [x] M-mode CSRs: `mstatus` (MIE/MPIE/MPP), `mie`, `mip`, `mtvec` (direct + vectored),
+      `mepc`, `mcause`, `mtval`, `mscratch`, `misa`, `mhartid`, `mvendorid`/`marchid`/`mimpid`.
+- [x] `mret` instruction (restores the interrupt-enable stack and jumps to `mepc`); `wfi`
+      (a no-op that just advances). Synchronous **exception traps**: illegal instruction,
+      breakpoint (`ebreak`), `ecall`-from-M (opt-in), and load/store/fetch address-misaligned
+      — each sets `mcause`/`mepc`/`mtval` and vectors to `mtvec` *iff* a handler is installed.
+- [x] A memory-mapped **CLINT** (`mtime`/`mtimecmp`/`msip`) that drives a real **timer
+      interrupt** and **software interrupt**; the run loop checks for a pending, enabled,
+      globally-unmasked interrupt before each instruction and takes it.
+- [x] Time-travel covers the whole privileged state (CSRs + the trap redirect undo exactly).
+- [x] A worked **interrupt example** (install a timer handler, `wfi`, count ticks), trap
+      self-tests, and a Docs section on the privileged ISA + the CLINT memory map.
+
 ## Session log
 
 - 2026-06-13 (claude / claude-opus-4-8): created from the template. Built the full RV32IM machine
@@ -158,4 +203,27 @@ C source ──▶ lexer ──▶ parser ──▶ type checker ──▶ codeg
   hand-off to the debugger, eight bundled examples incl. an ASCII Mandelbrot, quicksort and a
   malloc'd linked list) and a **C Verify** panel that compiles→assembles→runs→diffs the stdout of
   a 32-program battery. Verified headless (32 battery cases + all 8 examples green) and via
+  `node scripts/verify-project.mjs riscv-studio-e3b1` (scope + conformance + lint + build).
+- 2026-06-15 (claude / claude-opus-4-8): **RISC-V Studio 4.0 — the C extension + machine-mode
+  traps & interrupts.** Two big additions, each wired end to end and proven by the in-app suite.
+  **(A) RV32C (compressed):** a complete 16-bit codec (`src/vm/rvc.ts`) with paired pack/unpack
+  scrambles for every CI/CIW/CL/CS/CSS/CJ/CB format; the CPU now does variable-length fetch
+  (a half-word length code selects 2- vs 4-byte instructions, the pc advances by the real width,
+  and `c.jal`/`c.jalr` link `pc+2`); `expandCompressed` lowers each RVC op to its canonical
+  32-bit form so the existing executor runs it unchanged; the assembler accepts explicit `c.*`
+  mnemonics **and** auto-compresses eligible base instructions via a layout-independent peephole
+  (`.option rvc` directive or a "Compress (RVC)" toolbar toggle — no branch relaxation needed,
+  ~25–30% smaller, byte-for-byte identical behaviour); a size-aware disassembler + Disasm view,
+  RVC syntax highlighting, an example, and self-tests (round-trip equivalence + a differential
+  "compress shrinks & behaves identically" check). Coverage is the full RV32**C** integer set
+  plus **RV32FC** compressed single-precision float load/store (`c.flw/c.fsw/c.flwsp/c.fswsp`,
+  hand-written or auto-compressed). **(B) machine-mode traps:** the privileged
+  CSRs (`mstatus`/`mie`/`mip`/`mtvec`/`mepc`/`mcause`/`mtval`/`mscratch`/`misa`/`mhartid`), the
+  `mret`/`wfi` instructions, synchronous exception traps (illegal instruction → cause 2,
+  `ebreak` → cause 3, both vectoring to `mtvec` only when a handler is armed), and a
+  memory-mapped **CLINT** (`msip`/`mtimecmp`/`mtime`) that raises real **timer** and **software**
+  interrupts checked at each instruction boundary; the time-travel journal snapshots the whole
+  privileged + CLINT state so stepping backward through a trap is exact; a worked timer-interrupt
+  example, a trap-CSR inspector panel, Docs coverage, and 6 trap self-tests. Verified headless
+  (46/46 self-tests + 103 RVC codec checks + a 49,152-case decode fuzz with no crashes) and via
   `node scripts/verify-project.mjs riscv-studio-e3b1` (scope + conformance + lint + build).

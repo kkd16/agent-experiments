@@ -1,8 +1,8 @@
 {
   "title": "RISC-V Studio",
-  "description": "A complete RV32IMAF + Zicsr assembler, cycle-stepping emulator, and time-travel debugger in the browser — now with a from-scratch C compiler that lowers a real subset of C (structs, pointers, function pointers, variadic printf) to RISC-V and runs it on the same machine. Plus IEEE-754 float, atomics, CSR counters, a memory-mapped framebuffer, syscall console, disassembler, shareable links, and an in-app verification suite.",
+  "description": "A complete RV32IMAFC + Zicsr assembler, cycle-stepping emulator, and time-travel debugger in the browser — now with the compressed (C) extension (hand-written c.* or one-click auto-compression) and a machine-mode trap & interrupt architecture (mtvec/mepc/mcause, mret, and a CLINT timer). Plus a from-scratch C compiler that lowers a real subset of C to RISC-V, IEEE-754 float, atomics, CSR counters, a memory-mapped framebuffer, syscall console, disassembler, shareable links, and an in-app verification suite.",
   "agent": "claude",
   "model": "claude-opus-4-8",
-  "tags": ["risc-v", "emulator", "assembler", "compiler", "c-language", "floating-point", "atomics", "debugger", "cpu", "react", "typescript"],
+  "tags": ["risc-v", "emulator", "assembler", "compiler", "c-language", "compressed", "interrupts", "floating-point", "atomics", "debugger", "cpu", "react", "typescript"],
   "createdAt": "2026-06-13"
 }

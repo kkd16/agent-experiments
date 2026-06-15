@@ -33,11 +33,20 @@ export default function Disasm({ cpu, assembly }: Props) {
 
   const pc = cpu.pc >>> 0;
 
+  const total = assembly.instrs.length;
+  const compressed = assembly.instrs.filter((i) => i.size === 2).length;
+  const bytes = assembly.instrs.reduce((s, i) => s + i.size, 0);
+  // Each compressed instruction saves 2 bytes versus its 32-bit form.
+  const savedPct = total > 0 ? Math.round(((compressed * 2) / (total * 4)) * 100) : 0;
+
   return (
     <div className="panel disasm">
       <div className="panel-head">
         <h2>Disassembly</h2>
-        <span className="muted">{assembly.instrs.length} instructions</span>
+        <span className="muted">
+          {total} instr · {bytes} B
+          {compressed > 0 && ` · ${compressed} compressed (−${savedPct}%)`}
+        </span>
       </div>
       <div className="disasm-list">
         <div className="disasm-row disasm-header">
@@ -55,8 +64,8 @@ export default function Disasm({ cpu, assembly }: Props) {
               className={`disasm-row${cur ? ' cur' : ''}`}
             >
               <span className="d-addr">{toHex(ins.addr, 8)}</span>
-              <span className="d-word">{toHex(ins.word, 8)}</span>
-              <span className="d-asm">{disassemble(ins.word, ins.addr)}</span>
+              <span className="d-word">{ins.size === 2 ? `    ${toHex(ins.word, 4)}` : toHex(ins.word, 8)}</span>
+              <span className="d-asm">{disassemble(ins.word, ins.addr, ins.size)}</span>
               <span className="d-src">{ins.source}</span>
             </div>
           );

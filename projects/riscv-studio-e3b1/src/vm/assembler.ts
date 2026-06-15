@@ -24,11 +24,19 @@ import {
   CSR_FUNCT3,
   CSR_MNEMONICS,
   CSR_NUMBERS,
+  SYS_WORDS,
 } from './isa';
 import type { InstrSpec } from './isa';
 import { regIndex, fregIndex } from './registers';
 import { FP_SPECS, FP_MNEMONICS, rmFromName } from './fp';
 import { parseIntLiteral, signExtend, charCode, u32 } from './format';
+import { RVC_MNEMONICS, encodeCompressed, isCompactReg } from './rvc';
+
+/** Options controlling a single assembly run. */
+export interface AssembleOptions {
+  /** Automatically shrink eligible base instructions to their RV32C (compressed) forms. */
+  compress?: boolean;
+}
 
 export interface AsmError {
   line: number;
@@ -40,6 +48,8 @@ export interface AsmInstr {
   word: number;
   line: number;
   source: string;
+  /** Encoded length in bytes: 2 for a compressed (RV32C) instruction, 4 otherwise. */
+  size: number;
 }
 
 export interface AssembleResult {
@@ -76,6 +86,8 @@ interface MicroInstr {
   csr?: number;
   /** Precomputed funct7 (funct5<<2 | aq<<1 | rl) for RV32A atomics. */
   amoFunct7?: number;
+  /** When set, this micro is an RV32C (compressed) instruction encoded to 2 bytes. */
+  compressed?: boolean;
 }
 
 type ByteSrc = { kind: 'lit'; values: number[] } | { kind: 'word'; imm: ImmSrc };
@@ -533,6 +545,7 @@ function expandOther(
   line: number,
   source: string,
 ): MicroInstr[] {
+  if (RVC_MNEMONICS.has(op)) return [expandRvc(op, ops, consts, line, source)];
   if (FP_MNEMONICS.has(op)) return [expandFp(op, ops, consts, line, source)];
   if (CSR_MNEMONICS.has(op)) return [expandCsr(op, ops, consts, line, source)];
   const amoBase = stripAmoSuffix(op).base;
@@ -625,6 +638,233 @@ function expandFp(op: string, ops: string[], consts: Map<string, number>, line: 
     case 'fma':
       NEED(op, list, 4);
       return mk({ rd: parseFReg(list[0]), rs1: parseFReg(list[1]), rs2: parseFReg(list[2]), rs3: parseFReg(list[3]) });
+  }
+}
+
+// ---------------------------------------------------------------------------
+// RV32C (compressed) — explicit `c.*` mnemonics
+// ---------------------------------------------------------------------------
+
+function rvcMicro(
+  mnemonic: string,
+  parts: { rd?: number; rs1?: number; rs2?: number; imm?: ImmSrc },
+  line: number,
+  source: string,
+): MicroInstr {
+  return {
+    mnemonic,
+    rd: parts.rd ?? 0,
+    rs1: parts.rs1 ?? 0,
+    rs2: parts.rs2 ?? 0,
+    imm: parts.imm ?? { kind: 'num', value: 0 },
+    compressed: true,
+    line,
+    source,
+  };
+}
+
+/** Parse a `sp`/`x2` token, erroring if it is anything else. */
+function parseSp(tok: string): number {
+  const i = regIndex(tok);
+  if (i !== 2) throw new AsmFault(`expected sp, got '${tok}'`);
+  return 2;
+}
+
+/** Parse one explicit compressed instruction into a 2-byte micro. */
+function expandRvc(op: string, ops: string[], consts: Map<string, number>, line: number, source: string): MicroInstr {
+  const C = (parts: Parameters<typeof rvcMicro>[1]) => rvcMicro(op, parts, line, source);
+  const relSym = (tok: string): ImmSrc => ({ kind: 'sym', name: tok.trim(), reloc: 'rel' });
+  const num = (tok: string): ImmSrc => ({ kind: 'num', value: parseImmValue(tok, consts) });
+
+  switch (op) {
+    case 'c.nop':
+    case 'c.ebreak':
+    case 'c.unimp':
+      NEED(op, ops, 0);
+      return C({});
+
+    // CI / register forms: `c.op rd, imm`  or  `c.op rd, rs2`
+    case 'c.addi':
+    case 'c.li':
+    case 'c.lui':
+    case 'c.andi':
+    case 'c.slli':
+    case 'c.srli':
+    case 'c.srai':
+      NEED(op, ops, 2);
+      return C({ rd: parseReg(ops[0]), imm: num(ops[1]) });
+    case 'c.mv':
+    case 'c.add':
+      NEED(op, ops, 2);
+      return C({ rd: parseReg(ops[0]), rs2: parseReg(ops[1]) });
+    case 'c.sub':
+    case 'c.xor':
+    case 'c.or':
+    case 'c.and':
+      NEED(op, ops, 2);
+      return C({ rd: parseReg(ops[0]), rs2: parseReg(ops[1]) });
+
+    case 'c.addi16sp':
+      NEED(op, ops, 2);
+      parseSp(ops[0]);
+      return C({ imm: num(ops[1]) });
+    case 'c.addi4spn':
+      NEED(op, ops, 3);
+      parseSp(ops[1]);
+      return C({ rd: parseReg(ops[0]), imm: num(ops[2]) });
+
+    // Memory forms: `c.lw rd, off(rs1)` / `c.sw rs2, off(rs1)` / `*sp` variants
+    case 'c.lw': {
+      NEED(op, ops, 2);
+      const mem = parseMem(ops[1], consts);
+      return C({ rd: parseReg(ops[0]), rs1: mem.reg, imm: mem.imm });
+    }
+    case 'c.sw': {
+      NEED(op, ops, 2);
+      const mem = parseMem(ops[1], consts);
+      return C({ rs2: parseReg(ops[0]), rs1: mem.reg, imm: mem.imm });
+    }
+    case 'c.lwsp': {
+      NEED(op, ops, 2);
+      const mem = parseMem(ops[1], consts);
+      parseSp(`x${mem.reg}`);
+      return C({ rd: parseReg(ops[0]), imm: mem.imm });
+    }
+    case 'c.swsp': {
+      NEED(op, ops, 2);
+      const mem = parseMem(ops[1], consts);
+      parseSp(`x${mem.reg}`);
+      return C({ rs2: parseReg(ops[0]), imm: mem.imm });
+    }
+
+    // RV32FC — compressed single-precision float load/store
+    case 'c.flw': {
+      NEED(op, ops, 2);
+      const mem = parseMem(ops[1], consts);
+      return C({ rd: parseFReg(ops[0]), rs1: mem.reg, imm: mem.imm });
+    }
+    case 'c.fsw': {
+      NEED(op, ops, 2);
+      const mem = parseMem(ops[1], consts);
+      return C({ rs2: parseFReg(ops[0]), rs1: mem.reg, imm: mem.imm });
+    }
+    case 'c.flwsp': {
+      NEED(op, ops, 2);
+      const mem = parseMem(ops[1], consts);
+      parseSp(`x${mem.reg}`);
+      return C({ rd: parseFReg(ops[0]), imm: mem.imm });
+    }
+    case 'c.fswsp': {
+      NEED(op, ops, 2);
+      const mem = parseMem(ops[1], consts);
+      parseSp(`x${mem.reg}`);
+      return C({ rs2: parseFReg(ops[0]), imm: mem.imm });
+    }
+
+    // Control flow
+    case 'c.j':
+    case 'c.jal':
+      NEED(op, ops, 1);
+      return C({ imm: relSym(ops[0]) });
+    case 'c.jr':
+    case 'c.jalr':
+      NEED(op, ops, 1);
+      return C({ rs1: parseReg(ops[0]) });
+    case 'c.beqz':
+    case 'c.bnez':
+      NEED(op, ops, 2);
+      return C({ rs1: parseReg(ops[0]), imm: relSym(ops[1]) });
+  }
+  throw new AsmFault(`unknown compressed instruction '${op}'`);
+}
+
+// ---------------------------------------------------------------------------
+// RV32C — automatic peephole compressor (the `.option rvc` / "Compress" path)
+// ---------------------------------------------------------------------------
+
+/**
+ * If `m` (a fully-expanded base micro) has an equivalent 2-byte compressed form whose size is
+ * independent of code layout, return that compressed micro; otherwise return null. Only
+ * numeric-immediate, non-PC-relative forms are eligible, so enabling compression never needs
+ * branch relaxation: every instruction's size is fixed before addresses are assigned.
+ */
+function tryCompress(m: MicroInstr): MicroInstr | null {
+  if (m.compressed || m.csr !== undefined || m.amoFunct7 !== undefined) return null;
+  if (m.imm.kind !== 'num') return null; // symbol relocations are address-dependent
+  const imm = m.imm.value | 0;
+  const { rd, rs1, rs2 } = m;
+  const C = (mnemonic: string, parts: { rd?: number; rs1?: number; rs2?: number; imm?: number }): MicroInstr => ({
+    mnemonic,
+    rd: parts.rd ?? 0,
+    rs1: parts.rs1 ?? 0,
+    rs2: parts.rs2 ?? 0,
+    imm: { kind: 'num', value: parts.imm ?? 0 },
+    compressed: true,
+    line: m.line,
+    source: m.source,
+  });
+
+  // RV32FC float load/store (rd/rs2 hold float-register indices; the same x8–x15 class).
+  if (FP_SPECS[m.mnemonic]) {
+    if (m.mnemonic === 'flw') {
+      if (rs1 === 2 && imm >= 0 && imm < 256 && (imm & 3) === 0) return C('c.flwsp', { rd, imm });
+      if (isCompactReg(rd) && isCompactReg(rs1) && imm >= 0 && imm < 128 && (imm & 3) === 0)
+        return C('c.flw', { rd, rs1, imm });
+    } else if (m.mnemonic === 'fsw') {
+      if (rs1 === 2 && imm >= 0 && imm < 256 && (imm & 3) === 0) return C('c.fswsp', { rs2, imm });
+      if (isCompactReg(rs2) && isCompactReg(rs1) && imm >= 0 && imm < 128 && (imm & 3) === 0)
+        return C('c.fsw', { rs1, rs2, imm });
+    }
+    return null;
+  }
+
+  switch (m.mnemonic) {
+    case 'addi':
+      if (rs1 === 0 && rd !== 0 && imm >= -32 && imm <= 31) return C('c.li', { rd, imm });
+      if (rd === rs1 && rd !== 0 && imm !== 0 && imm >= -32 && imm <= 31) return C('c.addi', { rd, imm });
+      if (rd === rs1 && rd === 2 && imm !== 0 && imm >= -512 && imm <= 496 && (imm & 15) === 0)
+        return C('c.addi16sp', { imm });
+      if (rs1 === 2 && isCompactReg(rd) && imm > 0 && imm < 1024 && (imm & 3) === 0)
+        return C('c.addi4spn', { rd, imm });
+      if (imm === 0 && rd !== 0 && rs1 !== 0 && rd !== rs1) return C('c.mv', { rd, rs2: rs1 });
+      return null;
+    case 'add':
+      if (rd === rs1 && rd !== 0 && rs2 !== 0) return C('c.add', { rd, rs2 });
+      if (rs1 === 0 && rd !== 0 && rs2 !== 0) return C('c.mv', { rd, rs2 });
+      return null;
+    case 'sub':
+      return rd === rs1 && isCompactReg(rd) && isCompactReg(rs2) ? C('c.sub', { rd, rs2 }) : null;
+    case 'xor':
+      return rd === rs1 && isCompactReg(rd) && isCompactReg(rs2) ? C('c.xor', { rd, rs2 }) : null;
+    case 'or':
+      return rd === rs1 && isCompactReg(rd) && isCompactReg(rs2) ? C('c.or', { rd, rs2 }) : null;
+    case 'and':
+      return rd === rs1 && isCompactReg(rd) && isCompactReg(rs2) ? C('c.and', { rd, rs2 }) : null;
+    case 'andi':
+      return rd === rs1 && isCompactReg(rd) && imm >= -32 && imm <= 31 ? C('c.andi', { rd, imm }) : null;
+    case 'slli':
+      return rd === rs1 && rd !== 0 && imm >= 1 && imm < 32 ? C('c.slli', { rd, imm }) : null;
+    case 'srli':
+      return rd === rs1 && isCompactReg(rd) && imm >= 1 && imm < 32 ? C('c.srli', { rd, imm }) : null;
+    case 'srai':
+      return rd === rs1 && isCompactReg(rd) && imm >= 1 && imm < 32 ? C('c.srai', { rd, imm }) : null;
+    case 'lui':
+      // The 20-bit field must sign-extend from bit 5 (i.e. be a 6-bit signed value) and ≠ 0.
+      if (rd !== 0 && rd !== 2 && imm !== 0 && signExtend(imm & 0x3f, 6) === signExtend(imm & 0xfffff, 20))
+        return C('c.lui', { rd, imm: signExtend(imm & 0x3f, 6) });
+      return null;
+    case 'lw':
+      if (rs1 === 2 && rd !== 0 && imm >= 0 && imm < 256 && (imm & 3) === 0) return C('c.lwsp', { rd, imm });
+      if (isCompactReg(rd) && isCompactReg(rs1) && imm >= 0 && imm < 128 && (imm & 3) === 0)
+        return C('c.lw', { rd, rs1, imm });
+      return null;
+    case 'sw':
+      if (rs1 === 2 && imm >= 0 && imm < 256 && (imm & 3) === 0) return C('c.swsp', { rs2, imm });
+      if (isCompactReg(rs2) && isCompactReg(rs1) && imm >= 0 && imm < 128 && (imm & 3) === 0)
+        return C('c.sw', { rs1, rs2, imm });
+      return null;
+    default:
+      return null;
   }
 }
 
@@ -734,7 +974,20 @@ function checkRange(v: number, lo: number, hi: number, what: string): number {
   return v;
 }
 
+/** Encode a compressed micro to its 16-bit half-word, resolving its immediate/offset. */
+function encodeCompressedMicro(m: MicroInstr, addr: number, symbols: Map<string, number>): number {
+  const v = resolveImm(m.imm, addr, symbols);
+  return encodeCompressed(
+    m.mnemonic,
+    { rd: m.rd, rs1: m.rs1, rs2: m.rs2, imm: v, off: v },
+    (msg) => {
+      throw new AsmFault(msg);
+    },
+  );
+}
+
 function encode(m: MicroInstr, addr: number, symbols: Map<string, number>): number {
+  if (m.compressed) return encodeCompressedMicro(m, addr, symbols);
   if (FP_SPECS[m.mnemonic]) return encodeFp(m, addr, symbols);
   if (m.amoFunct7 !== undefined) return encodeAmo(m);
   if (m.csr !== undefined) return encodeCsr(m);
@@ -791,7 +1044,7 @@ function encode(m: MicroInstr, addr: number, symbols: Map<string, number>): numb
       return u32((b20 << 31) | (b10_1 << 21) | (b11 << 20) | (b19_12 << 12) | (rd << 7) | opc);
     }
     case 'SYS':
-      return m.mnemonic === 'ebreak' ? 0x0010_0073 : 0x0000_0073;
+      return SYS_WORDS[m.mnemonic] ?? 0x0000_0073;
     case 'FENCE':
       return 0x0ff0_000f;
   }
@@ -891,12 +1144,22 @@ function collectConstants(parsed: ParsedLine[], errors: AsmError[]): Map<string,
   return consts;
 }
 
-export function assemble(source: string): AssembleResult {
+export function assemble(source: string, options: AssembleOptions = {}): AssembleResult {
   const errors: AsmError[] = [];
   const parsed = parseLines(source);
   const consts = collectConstants(parsed, errors);
   const symbols = new Map<string, number>();
   const slots: Slot[] = [];
+
+  // Compression is on when the caller asks for it or the source opts in via `.option rvc`.
+  let compress = options.compress ?? false;
+  for (const p of parsed) {
+    if (p.op?.toLowerCase() === '.option') {
+      const arg = (p.operands[0] ?? '').trim().toLowerCase();
+      if (arg === 'rvc' || arg === 'c') compress = true;
+      else if (arg === 'norvc') compress = false;
+    }
+  }
 
   let seg: 'text' | 'data' = 'text';
   let textLC = TEXT_BASE;
@@ -968,13 +1231,16 @@ export function assemble(source: string): AssembleResult {
       } else if (op.startsWith('.')) {
         // Unknown directive — ignore quietly (e.g. .type, .size, .section).
       } else {
-        // An instruction. Force 4-byte alignment, then expand.
+        // An instruction. With the C extension, IALIGN is 16, so align to 2 bytes; pure
+        // 32-bit programs (every prior item a multiple of 4) keep their natural alignment.
         if (seg !== 'text') throw new AsmFault(`instruction '${op}' outside .text segment`);
-        setCur(align(cur(), 4));
+        setCur(align(cur(), 2));
         const micros = expand(op, p.operands, consts, p.line, p.raw.trim());
-        for (const mi of micros) {
-          slots.push({ addr: textLC, size: 4, line: p.line, source: p.raw.trim(), micro: mi, bytes: null });
-          textLC += 4;
+        for (let mi of micros) {
+          if (compress) mi = tryCompress(mi) ?? mi;
+          const sz = mi.compressed ? 2 : 4;
+          slots.push({ addr: textLC, size: sz, line: p.line, source: p.raw.trim(), micro: mi, bytes: null });
+          textLC += sz;
         }
       }
     } catch (e) {
@@ -992,8 +1258,12 @@ export function assemble(source: string): AssembleResult {
     try {
       if (slot.micro) {
         const word = encode(slot.micro, slot.addr, symbols);
-        writes.push({ addr: slot.addr, bytes: [word & 0xff, (word >> 8) & 0xff, (word >> 16) & 0xff, (word >> 24) & 0xff] });
-        instrs.push({ addr: slot.addr, word, line: slot.line, source: slot.source });
+        const bytes =
+          slot.size === 2
+            ? [word & 0xff, (word >> 8) & 0xff]
+            : [word & 0xff, (word >> 8) & 0xff, (word >> 16) & 0xff, (word >> 24) & 0xff];
+        writes.push({ addr: slot.addr, bytes });
+        instrs.push({ addr: slot.addr, word, line: slot.line, source: slot.source, size: slot.size });
         if (!lineToAddr.has(slot.line)) lineToAddr.set(slot.line, slot.addr);
         addrToLine.set(slot.addr, slot.line);
       } else if (slot.bytes) {
