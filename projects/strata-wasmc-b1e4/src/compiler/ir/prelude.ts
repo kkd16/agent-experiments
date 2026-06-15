@@ -595,6 +595,16 @@ fn __float_to_str(x: float) -> int {
   // unequal margins: a power-of-two significand that is not the smallest normal
   let lowClose = int(mant == 0L && expField > 1);
 
+  // Everything below is transient: save the heap top now and reset it once the
+  // (short) result string has been built, so a str(float) in a hot loop reuses
+  // the same scratch instead of leaking it. The digit buffer and assembly buffer
+  // are allocated above hp0 too — they are dead by the time the heap is reset,
+  // and the result string (tens of bytes, far smaller than the digit buffer) is
+  // re-allocated at hp0 without overlapping the still-readable assembly buffer.
+  let hp0 = __heap_get();
+  let dig = int_array(40);
+  let buf = __alloc(64);
+
   // Dragon4 setup: build R, S, m+ (mp), m- (mm) as exact big integers.
   let R = int_array(110); let S = int_array(110);
   let mp = int_array(110); let mm = int_array(110);
@@ -652,7 +662,6 @@ fn __float_to_str(x: float) -> int {
   }
 
   // Generate digits until a boundary test fires, rounding the final digit.
-  let dig = int_array(40);
   let nd = 0;
   let done = 0;
   while (done == 0) {
@@ -694,7 +703,6 @@ fn __float_to_str(x: float) -> int {
   while (nd > 1 && dig[nd] == 0) { nd = nd - 1; }
 
   // ---- ECMA-262 Number-to-String notation ----
-  let buf = __alloc(64);
   let w = 0;
   if (neg != 0) { __store8(buf + w, 45); w = w + 1; }
   if (nd <= n && n <= 21) {
@@ -726,7 +734,8 @@ fn __float_to_str(x: float) -> int {
     else { __store8(buf + w, 43); w = w + 1; }    // '+'
     w = __f_wuint(buf, w, ea);
   }
-  return __f_mkstr(buf, w);
+  __heap_set(hp0);              // free every transient bignum allocated above
+  return __f_mkstr(buf, w);     // the result string is then allocated at hp0
 }
 
 // ---------------------------------------------------------------------------
@@ -845,6 +854,7 @@ fn __dec_to_double(neg: int, man: int[], E: int) -> float {
 // parse_float(s): the longest valid leading [sign] d* [. d*] [(e|E) [sign] d+]
 // prefix, correctly rounded. Empty / digit-less input yields signed zero.
 fn __parse_float(s: int) -> float {
+  let hp0 = __heap_get();         // free man + every bignum below on the way out
   let n = __load32(s);
   let i = 0;
   let neg = 0;
@@ -868,28 +878,34 @@ fn __parse_float(s: int) -> float {
     } else if (c == 46 && sawDot == 0) { sawDot = 1; i = i + 1; }
     else { scanning = 0; }
   }
-  if (digits == 0) { return __f64_from_bits(long(neg) << 63L); }
-  let exp = 0;
-  if (i < n) {
-    let c = __load8(s + 8 + i);
-    if (c == 101 || c == 69) {                   // 'e' / 'E'
-      let j = i + 1;
-      let eneg = 0;
-      if (j < n) {
-        let c2 = __load8(s + 8 + j);
-        if (c2 == 45) { eneg = 1; j = j + 1; } else if (c2 == 43) { j = j + 1; }
+  let result = 0.0;
+  if (digits == 0) {
+    result = __f64_from_bits(long(neg) << 63L);
+  } else {
+    let exp = 0;
+    if (i < n) {
+      let c = __load8(s + 8 + i);
+      if (c == 101 || c == 69) {                   // 'e' / 'E'
+        let j = i + 1;
+        let eneg = 0;
+        if (j < n) {
+          let c2 = __load8(s + 8 + j);
+          if (c2 == 45) { eneg = 1; j = j + 1; } else if (c2 == 43) { j = j + 1; }
+        }
+        let ed = 0;
+        let ev = 0;
+        let go = 1;
+        while (j < n && go != 0) {
+          let c2 = __load8(s + 8 + j);
+          if (c2 < 48 || c2 > 57) { go = 0; }
+          else { ev = ev * 10 + (c2 - 48); if (ev > 100000) { ev = 100000; } ed = ed + 1; j = j + 1; }
+        }
+        if (ed > 0) { exp = eneg != 0 ? 0 - ev : ev; i = j; }
       }
-      let ed = 0;
-      let ev = 0;
-      let go = 1;
-      while (j < n && go != 0) {
-        let c2 = __load8(s + 8 + j);
-        if (c2 < 48 || c2 > 57) { go = 0; }
-        else { ev = ev * 10 + (c2 - 48); if (ev > 100000) { ev = 100000; } ed = ed + 1; j = j + 1; }
-      }
-      if (ed > 0) { exp = eneg != 0 ? 0 - ev : ev; i = j; }
     }
+    result = __dec_to_double(neg, man, exp - fracDigits);
   }
-  return __dec_to_double(neg, man, exp - fracDigits);
+  __heap_set(hp0);
+  return result;
 }
 `;
