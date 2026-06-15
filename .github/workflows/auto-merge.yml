@@ -5,6 +5,14 @@ name: Auto-merge project pull requests
 # single projects/<slug>/ folder (the Golden Rule) and passes the exact CI gate
 # (conformance + lint + build). Anything else is rejected with a failing check
 # and a "changes requested" review from the bot, never merged.
+#
+# Two jobs by design:
+#   gate  — runs the PR's untrusted install/lint/build with a READ-ONLY token and
+#           no persisted credentials, so a malicious dependency or build script
+#           has nothing to steal.
+#   merge — holds the write token but runs NO PR code (only GitHub API calls), so
+#           the privileged token is never exposed to code the PR controls. It acts
+#           on the gate's outputs: merge, or post a changes-requested review.
 
 on:
   pull_request:
@@ -16,13 +24,11 @@ concurrency:
   group: auto-merge-pr-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
-permissions:
-  contents: write # squash-merge into main
-  pull-requests: write # merge + comment on the PR
-  actions: write # dispatch the deploy workflow afterwards
+permissions: {}
 
 jobs:
-  automerge:
+  # ── Gate: runs untrusted PR code (install/lint/build) with NO write access ──
+  gate:
     # Same-repo, non-draft PRs only. Fork PRs get a read-only token and could run
     # untrusted code, so they're never auto-merged.
     if: >-
@@ -30,16 +36,22 @@ jobs:
       github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    permissions:
+      contents: read
     env:
-      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       PR: ${{ github.event.pull_request.number }}
       BASE: ${{ github.event.pull_request.base.ref }}
+    outputs:
+      slug: ${{ steps.scope.outputs.slug }}
+      skip: ${{ steps.scope.outputs.skip }}
     steps:
-      # Check out main so gate scripts run from trusted code, not the PR's.
+      # Check out main (trusted) so the gate scripts run from main, not the PR.
+      # persist-credentials: false — this job runs PR code and must hold no token.
       - uses: actions/checkout@v6
         with:
           ref: ${{ github.event.pull_request.base.ref }}
           fetch-depth: 0
+          persist-credentials: false
 
       - uses: actions/setup-node@v6
         with:
@@ -55,15 +67,12 @@ jobs:
           cat /tmp/changed.txt || true
           node scripts/changed-scope.mjs /tmp/changed.txt
 
-      # Out of scope → request-changes review (bot shows as reviewer) + fail loud.
-      - name: Reject — out of scope (request changes + fail)
+      # Out of scope → fail the check loudly. The merge job posts the review.
+      - name: Fail — out of scope
         if: steps.scope.outputs.slug == ''
         env:
           SKIP: ${{ steps.scope.outputs.skip }}
         run: |
-          # shellcheck disable=SC2016  # %s is a printf placeholder; $SKIP is passed as an arg
-          printf '🚫 Out of scope. %s\n\nChange only one `projects/<slug>/` folder, then push again. Run `node scripts/verify-project.mjs <slug>` first — it catches this locally.\n' "$SKIP" > /tmp/body.md
-          gh pr review "$PR" --request-changes --body-file /tmp/body.md || gh pr comment "$PR" --body-file /tmp/body.md || true
           echo "::error title=Out of scope::$SKIP"
           exit 1
 
@@ -81,40 +90,70 @@ jobs:
           rm -rf "projects/$SLUG"
           git checkout origin/pr-head -- "projects/$SLUG"
 
+      # The exact gate: scope + conformance + lint + build. A failure here fails
+      # the check; the merge job turns it into a changes-requested review.
       - name: Verify project (conformance + lint + build)
-        id: verify
         if: steps.scope.outputs.slug != ''
         env:
           SLUG: ${{ steps.scope.outputs.slug }}
         run: node scripts/verify-project.mjs "$SLUG"
 
-      # Symbolic green check — gate already passed; not a required approval.
-      - name: Approve the pull request
-        if: steps.scope.outputs.slug != ''
-        run: gh pr review "$PR" --approve --body "✅ Scope + lint + build passed."
-
-      - name: Squash-merge the pull request
-        if: steps.scope.outputs.slug != ''
+  # ── Merge / report: holds the write token, runs NO PR code (API calls only) ──
+  merge:
+    needs: gate
+    if: ${{ always() && (needs.gate.result == 'success' || needs.gate.result == 'failure') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write # squash-merge into main
+      pull-requests: write # merge + review the PR
+      actions: write # dispatch the deploy workflow afterwards
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      PR: ${{ github.event.pull_request.number }}
+      BASE: ${{ github.event.pull_request.base.ref }}
+    steps:
+      # In scope + gate passed → approve, squash-merge the verified commit, deploy.
+      # --match-head-commit pins the merge to the exact SHA the gate verified, so a
+      # commit pushed after the gate passed can't slip in unverified.
+      - name: Approve and merge
+        id: merge
+        if: ${{ needs.gate.result == 'success' && needs.gate.outputs.slug != '' }}
         env:
-          SLUG: ${{ steps.scope.outputs.slug }}
+          SLUG: ${{ needs.gate.outputs.slug }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
-          gh pr merge "$PR" --squash --delete-branch
+          gh pr review "$PR" --approve --body "✅ Scope + lint + build passed."
+          gh pr merge "$PR" --squash --delete-branch --match-head-commit "$HEAD_SHA"
+          gh workflow run deploy.yml --ref main
           echo "Merged PR #$PR (projects/$SLUG) into $BASE."
 
-      - name: Trigger catalog deploy
-        if: steps.scope.outputs.slug != ''
-        run: gh workflow run deploy.yml --ref main
-
-      # Gate failure → request-changes review (job is already red).
-      - name: Report gate failure (request changes)
-        if: failure() && steps.scope.outputs.slug != ''
+      # Out of scope → changes-requested review (gate already failed the check).
+      - name: Reject — out of scope
+        if: ${{ needs.gate.outputs.slug == '' }}
         env:
-          SLUG: ${{ steps.scope.outputs.slug }}
+          SKIP: ${{ needs.gate.outputs.skip }}
+        run: |
+          # shellcheck disable=SC2016  # %s is a printf placeholder; $SKIP is passed as an arg
+          printf '🚫 Out of scope. %s\n\nChange only one `projects/<slug>/` folder, then push again. Run `node scripts/verify-project.mjs <slug>` first — it catches this locally.\n' "$SKIP" > /tmp/body.md
+          gh pr review "$PR" --request-changes --body-file /tmp/body.md || gh pr comment "$PR" --body-file /tmp/body.md || true
+
+      # In scope but the gate failed (conformance/lint/build) → changes-requested review.
+      - name: Report gate failure
+        if: ${{ needs.gate.result == 'failure' && needs.gate.outputs.slug != '' }}
+        env:
+          SLUG: ${{ needs.gate.outputs.slug }}
         run: |
           # shellcheck disable=SC2016  # %s is a printf placeholder; $SLUG is passed as an arg
-          if [ "${{ steps.verify.outcome }}" = "failure" ]; then
-            printf '❌ Gate failed for `%s` (conformance / lint / build). Reproduce and fix it locally with `node scripts/verify-project.mjs %s`, then push again.\n' "$SLUG" "$SLUG" > /tmp/body.md
-          else
-            printf '❌ Could not merge `%s` (merge conflict or post-merge step). Check the logs, fix, and push again.\n' "$SLUG" > /tmp/body.md
-          fi
+          printf '❌ Gate failed for `%s` (conformance / lint / build). Reproduce and fix it locally with `node scripts/verify-project.mjs %s`, then push again.\n' "$SLUG" "$SLUG" > /tmp/body.md
+          gh pr review "$PR" --request-changes --body-file /tmp/body.md || gh pr comment "$PR" --body-file /tmp/body.md || true
+
+      # The merge command itself failed (conflict / head moved) → changes-requested review.
+      - name: Report merge failure
+        if: ${{ failure() && steps.merge.outcome == 'failure' }}
+        env:
+          SLUG: ${{ needs.gate.outputs.slug }}
+        run: |
+          # shellcheck disable=SC2016  # %s is a printf placeholder; $SLUG is passed as an arg
+          printf '❌ Could not merge `%s` (merge conflict, or the branch changed mid-merge). Rebase on `main`, fix, and push again.\n' "$SLUG" > /tmp/body.md
           gh pr review "$PR" --request-changes --body-file /tmp/body.md || gh pr comment "$PR" --body-file /tmp/body.md || true
