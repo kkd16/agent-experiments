@@ -8,7 +8,11 @@ import { INTEGRATORS } from '../sim/types'
 import type { IntegratorId, SimParams } from '../sim/types'
 import { PRESETS } from '../sim/presets'
 import type { ChaosResult } from '../sim/chaos'
+import type { FreqDiffusion, NaffResult } from '../sim/naff'
+import type { PoincareResult } from '../sim/poincare'
 import { ChaosPanel } from './ChaosPanel'
+import { SpectralPanel } from './SpectralPanel'
+import { PoincarePanel } from './PoincarePanel'
 import { Section, Segmented, Select, Slider, Toggle } from './primitives'
 
 export interface SidebarProps {
@@ -41,6 +45,19 @@ export interface SidebarProps {
   chaosHorizon: number
   onChaosHorizon: (n: number) => void
   onAnalyzeChaos: () => void
+  spectralResult: NaffResult | null
+  spectralDiffusion: FreqDiffusion | null
+  spectralRunning: boolean
+  spectralTerms: number
+  onSpectralTerms: (n: number) => void
+  spectralRef: 'heaviest' | 'barycenter'
+  onSpectralRef: (m: 'heaviest' | 'barycenter') => void
+  onAnalyzeSpectral: () => void
+  spectralTargetLabel: string
+  poincareResult: PoincareResult | null
+  poincareRunning: boolean
+  onAnalyzePoincare: () => void
+  poincareTargetLabel: string
 }
 
 const integrator = INTEGRATORS.reduce<Record<string, (typeof INTEGRATORS)[number]>>((acc, it) => {
@@ -227,6 +244,31 @@ export function Sidebar(p: SidebarProps) {
           horizon={p.chaosHorizon}
           onHorizon={p.onChaosHorizon}
           onRun={p.onAnalyzeChaos}
+          bodyCount={p.count}
+        />
+      </Section>
+
+      <Section title="Spectral Lab" defaultOpen={false}>
+        <SpectralPanel
+          result={p.spectralResult}
+          diffusion={p.spectralDiffusion}
+          running={p.spectralRunning}
+          terms={p.spectralTerms}
+          onTerms={p.onSpectralTerms}
+          refMode={p.spectralRef}
+          onRefMode={p.onSpectralRef}
+          onRun={p.onAnalyzeSpectral}
+          targetLabel={p.spectralTargetLabel}
+          bodyCount={p.count}
+        />
+      </Section>
+
+      <Section title="Poincaré Lab" defaultOpen={false}>
+        <PoincarePanel
+          result={p.poincareResult}
+          running={p.poincareRunning}
+          onRun={p.onAnalyzePoincare}
+          targetLabel={p.poincareTargetLabel}
           bodyCount={p.count}
         />
       </Section>

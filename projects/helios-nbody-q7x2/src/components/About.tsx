@@ -137,6 +137,48 @@ export function About({ onClose }: Props) {
           from chaos in systems that look almost identical at first.
         </p>
 
+        <h2>Frequency analysis: NAFF &amp; frequency maps</h2>
+        <p>
+          A bound orbit is <em>quasi-periodic</em>: its complex coordinate{' '}
+          <code>z(t) = x + i·y</code> is a sum of pure tones whose frequencies are integer
+          combinations of a few <strong>fundamental frequencies</strong>. The{' '}
+          <strong>Spectral Lab</strong> recovers them with <strong>NAFF</strong> (Laskar's Numerical
+          Analysis of Fundamental Frequencies). It evolves a shadow copy of the system to record a
+          long, clean track of the selected body, multiplies it by a <em>Hann window</em> (so spectral
+          leakage collapses and the windowed correlation's error falls as <code>1/T⁴</code> instead of
+          the FFT's <code>1/T</code>), finds the dominant frequency with a hand-written{' '}
+          <strong>FFT</strong> and then refines it <em>between</em> bins by a golden-section search —
+          reaching frequencies to a part in <code>10⁸</code> of a bin width. Each tone is projected out
+          and the search repeats, and the amplitudes are recovered jointly by solving the small complex
+          Gram system. The result is the orbit's mean motion, its harmonic line spectrum, and the
+          prograde/retrograde split — read straight off the dynamics.
+        </p>
+        <p>
+          Measuring the fundamental on the <em>first</em> versus the <em>second</em> half of the track
+          gives <strong>frequency-map analysis</strong> (Laskar 1990) — the chaos diagnostic that
+          mapped the chaotic zones of the Solar System. A regular orbit sits on an invariant torus, so
+          its frequency is frozen and the drift <code>|Δν/ν|</code> is essentially zero; a chaotic orbit
+          wanders across resonances and its frequency drifts measurably. It is an independent,
+          frequency-domain check on the Chaos Lab's time-domain MEGNO and Lyapunov verdict — and in the
+          self-test the circular orbit's drift (<code>~10⁻¹⁶</code>) and the Pythagorean problem's
+          (<code>~10⁰</code>) are sixteen orders of magnitude apart.
+        </p>
+
+        <h2>Poincaré surface-of-section</h2>
+        <p>
+          A trajectory is a tangle; its <strong>section</strong> is not. The{' '}
+          <strong>Poincaré Lab</strong> watches a test particle in the{' '}
+          <em>co-rotating frame</em> of the two heaviest bodies — where the primaries hang still — and
+          stamps a dot every time it crosses the line <code>η = 0</code> moving upward, recording
+          (<code>ξ</code>, <code>ξ̇</code>). The Poincaré–Birkhoff picture then reads straight off the
+          scatter: a <strong>regular</strong> orbit lives on an invariant torus whose slice is a smooth
+          closed curve, so the dots trace a loop; a <strong>chaotic</strong> orbit is hemmed in only by
+          the Jacobi integral, so its dots fill a two-dimensional patch. The lab also reports the spread
+          of the Jacobi constant across the crossings — near zero confirms the frame is a genuine
+          restricted three-body problem (it is verified to machine level in the self-test). Try it on
+          the <em>Three-Body Waltz</em> or <em>Horseshoe &amp; Tadpole</em>.
+        </p>
+
         <h2>Run the numbers yourself</h2>
         <p>
           None of the above is taken on faith. The button below runs a battery of numerical checks in
@@ -177,6 +219,8 @@ export function About({ onClose }: Props) {
           <li>Load <em>Horseshoe &amp; Tadpole</em>, press <code>l</code> for the Lagrange overlay, and watch particles librate around L4/L5.</li>
           <li>Run the <em>Three-Body Waltz</em> on Yoshida 4 — a hierarchical triple that stays bound indefinitely.</li>
           <li>Open the <em>Chaos Lab</em> and analyse the <em>Figure-Eight</em> (⟨Y⟩ → 2), then the <em>Broken Eight</em> — the same orbit nudged 0.4%, now chaotic. Watch MEGNO and λ tell them apart.</li>
+          <li>Open <em>Kepler Showcase</em>, click a planet, open the <em>Spectral Lab</em> and press <code>n</code> — read its mean motion and harmonic spectrum, then compare the frequency-diffusion verdict against the same planet in a chaotic preset.</li>
+          <li>Load <em>Three-Body Waltz</em>, open the <em>Poincaré Lab</em> and press <code>k</code> — watch the section dots trace a clean invariant curve, the signature of a regular orbit.</li>
           <li>Click a planet in <em>Solar System</em> to read its orbital energy, then <em>Share</em> a permalink to your setup.</li>
         </ul>
 
@@ -185,7 +229,8 @@ export function About({ onClose }: Props) {
           No WebGL, no physics library — just maths and a Canvas. Shortcuts: Space play/pause,
           <code>.</code> step, <code>f</code> fit, <code>t</code> trails, <code>c</code> collisions,
           <code>p</code> predict, <code>o</code> orbit, <code>l</code> Lagrange, <code>y</code> chaos,
-          <code>r</code> reseed, <code>s</code> share, <code>e</code> PNG.
+          <code>n</code> spectrum, <code>k</code> section, <code>r</code> reseed, <code>s</code> share,
+          <code>e</code> PNG.
         </p>
       </div>
     </div>
