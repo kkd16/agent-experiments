@@ -17,6 +17,9 @@ export interface VM {
   /** Bumps on every state change; components read it to stay in sync. */
   tick: number;
   running: boolean;
+  /** Whether the assembler auto-compresses eligible instructions to RV32C. */
+  compress: boolean;
+  setCompress: (on: boolean) => void;
   /** Register values captured before the most recent step/run, for diff highlighting. */
   prevRegs: Int32Array;
   breakpointLines: ReadonlySet<number>;
@@ -39,8 +42,14 @@ export function useVM(initialSource: string): VM {
   const [source, setSource] = useState(initialSource);
   const [tick, setTick] = useState(0);
   const [running, setRunning] = useState(false);
+  const [compress, setCompressState] = useState(false);
   const [assembly, setAssembly] = useState<AssembleResult | null>(null);
   const [breakpointLines, setBreakpointLines] = useState<ReadonlySet<number>>(new Set());
+
+  // A ref mirror of `compress` so every assemble call (even from inside other callbacks)
+  // reads the live value without re-creating those callbacks.
+  const compressRef = useRef(false);
+  const asm = useCallback((src: string): AssembleResult => assemble(src, { compress: compressRef.current }), []);
 
   // The Cpu and the register snapshot are stable holders kept in state (never re-created),
   // so they can be read during render without tripping the refs-in-render rule.
@@ -73,13 +82,13 @@ export function useVM(initialSource: string): VM {
   }, [breakpointAddrs]);
 
   const assembleOnly = useCallback((): AssembleResult => {
-    const result = assemble(source);
+    const result = asm(source);
     setAssembly(result);
     return result;
-  }, [source]);
+  }, [source, asm]);
 
   const load = useCallback((): boolean => {
-    const result = assemble(source);
+    const result = asm(source);
     setAssembly(result);
     if (!result.ok) {
       loadedSourceRef.current = null;
@@ -90,7 +99,7 @@ export function useVM(initialSource: string): VM {
     snapshot();
     bump();
     return true;
-  }, [source, cpu, snapshot, bump]);
+  }, [source, cpu, snapshot, bump, asm]);
 
   const cancelRun = useCallback(() => {
     runningRef.current = false;
@@ -104,7 +113,7 @@ export function useVM(initialSource: string): VM {
     (src: string) => {
       cancelRun();
       setSource(src);
-      const result = assemble(src);
+      const result = asm(src);
       setAssembly(result);
       if (result.ok) {
         cpu.load(result);
@@ -115,7 +124,27 @@ export function useVM(initialSource: string): VM {
       }
       bump();
     },
-    [cpu, cancelRun, bump],
+    [cpu, cancelRun, bump, asm],
+  );
+
+  /** Toggle automatic RV32C compression, then reassemble + reload so it takes effect now. */
+  const setCompress = useCallback(
+    (on: boolean) => {
+      cancelRun();
+      compressRef.current = on;
+      setCompressState(on);
+      const result = asm(source);
+      setAssembly(result);
+      if (result.ok) {
+        cpu.load(result);
+        loadedSourceRef.current = source;
+        setPrevRegs(cpu.regs.slice());
+      } else {
+        loadedSourceRef.current = null;
+      }
+      bump();
+    },
+    [source, cpu, cancelRun, asm, bump],
   );
 
   /** Ensure the CPU reflects the current source; reload if the text changed or it halted. */
@@ -123,9 +152,9 @@ export function useVM(initialSource: string): VM {
     if (loadedSourceRef.current !== source || cpu.isStopped()) {
       return load();
     }
-    if (!assembly) setAssembly(assemble(source));
+    if (!assembly) setAssembly(asm(source));
     return true;
-  }, [source, cpu, load, assembly]);
+  }, [source, cpu, load, assembly, asm]);
 
   const step = useCallback(() => {
     if (!ensureFresh()) return;
@@ -203,6 +232,8 @@ export function useVM(initialSource: string): VM {
     assembly,
     tick,
     running,
+    compress,
+    setCompress,
     prevRegs,
     breakpointLines,
     currentLine,

@@ -55,8 +55,8 @@ export default function Disasm({ cpu, assembly }: Props) {
               className={`disasm-row${cur ? ' cur' : ''}`}
             >
               <span className="d-addr">{toHex(ins.addr, 8)}</span>
-              <span className="d-word">{toHex(ins.word, 8)}</span>
-              <span className="d-asm">{disassemble(ins.word, ins.addr)}</span>
+              <span className="d-word">{ins.size === 2 ? `    ${toHex(ins.word, 4)}` : toHex(ins.word, 8)}</span>
+              <span className="d-asm">{disassemble(ins.word, ins.addr, ins.size)}</span>
               <span className="d-src">{ins.source}</span>
             </div>
           );

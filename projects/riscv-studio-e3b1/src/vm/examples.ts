@@ -485,8 +485,36 @@ sdone:
         ecall
 `;
 
+const RVC = `# RV32C — the compressed (16-bit) extension.
+#
+# Two ways to get compressed code: write c.* mnemonics by hand (as below), or let the
+# assembler shrink eligible base instructions for you. The ".option rvc" directive (or the
+# "Compress (RVC)" toolbar toggle) turns that on — open the Disassembly tab and watch the
+# addresses step by 2, and the words shrink to 16 bits, with identical behaviour.
+.option rvc
+.data
+msg:    .string "sum 1..20 = "
+.text
+main:
+        la    a0, msg
+        li    a7, 4            # print_string
+        ecall
+        c.li  a0, 0            # acc  (hand-written compressed: c.li)
+        c.li  t0, 1            # i
+loop:
+        c.add a0, t0           # acc += i        (c.add)
+        c.addi t0, 1           # i++             (c.addi)
+        li    t1, 21
+        blt   t0, t1, loop     # this 32-bit branch interleaves freely with 16-bit ops
+        li    a7, 1
+        ecall                  # print 210
+        li    a7, 10
+        ecall
+`;
+
 export const EXAMPLES: readonly Example[] = [
   { id: 'hello', title: 'Hello, RISC-V', blurb: 'print_string syscall basics', focus: 'console', code: HELLO },
+  { id: 'rvc', title: 'Compressed (RV32C)', blurb: 'c.* 16-bit ops + .option rvc auto-compress', focus: 'console', code: RVC },
   { id: 'fib', title: 'Fibonacci', blurb: 'loops, registers, print_int', focus: 'console', code: FIB },
   { id: 'gcd', title: 'GCD (Euclid)', blurb: 'call/ret + rem (RV32M)', focus: 'console', code: GCD },
   { id: 'bubble', title: 'Bubble sort', blurb: 'arrays, loads/stores, nested loops', focus: 'console', code: BUBBLE },

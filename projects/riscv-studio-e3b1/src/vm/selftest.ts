@@ -624,6 +624,89 @@ const TESTS: Test[] = [
       }
     },
   },
+
+  // --- RV32C: the compressed extension ---------------------------------------
+  {
+    name: 'RVC: hand-written compressed program prints 210 (sum 1..20)',
+    fn: () => {
+      const cpu = run(EXAMPLES.find((e) => e.id === 'rvc')!.code);
+      eq(cpu.output, 'sum 1..20 = 210', 'output');
+      eq(cpu.status, 'halted', 'status');
+    },
+  },
+  {
+    name: 'RVC: c.* instructions assemble to 2 bytes and step the pc by 2',
+    fn: () => {
+      const result = assemble(`main:\n  c.li a0, 5\n  c.addi a0, 3\n  c.mv a1, a0\n  li a7, 10\n  ecall\n`);
+      assert(result.ok, `assembles: ${result.errors.map((e) => e.message).join('; ')}`);
+      // The three c.* instructions are 2 bytes each at 0,2,4; the 32-bit li lands at 6.
+      eq(result.instrs[0].size, 2, 'c.li size');
+      eq(result.instrs[0].addr, 0, 'c.li addr');
+      eq(result.instrs[1].addr, 2, 'c.addi addr');
+      eq(result.instrs[2].addr, 4, 'c.mv addr');
+      eq(result.instrs[3].addr, 6, 'li addr (after three halfwords)');
+      const cpu = new Cpu();
+      cpu.load(result);
+      cpu.step(); // c.li a0,5
+      eq(cpu.pc, 2, 'pc advanced by 2');
+      eq(cpu.regs[10], 5, 'a0=5');
+      cpu.step(); // c.addi a0,3 -> 8
+      cpu.step(); // c.mv a1,a0 -> 8
+      eq(cpu.regs[10], 8, 'a0=8');
+      eq(cpu.regs[11], 8, 'a1=8 via c.mv');
+    },
+  },
+  {
+    name: 'RVC: c.jal links the *next 2-byte* address (return = pc+2)',
+    fn: () => {
+      // c.jal must write pc+2 to ra so the callee returns to the following 16-bit slot.
+      const result = assemble(`main:\n  c.jal sub\n  c.li a0, 7\n  li a7, 1\n  ecall\n  li a7, 10\n  ecall\nsub:\n  c.jr ra\n`);
+      assert(result.ok, `assembles: ${result.errors.map((e) => e.message).join('; ')}`);
+      const cpu = new Cpu();
+      cpu.load(result);
+      cpu.step(); // c.jal sub  (ra = 2)
+      eq(cpu.regs[1], 2, 'ra = pc+2');
+      cpu.step(); // c.jr ra -> back to 0x2
+      eq(cpu.pc, 2, 'returned to the c.li slot');
+    },
+  },
+  {
+    name: 'RVC auto-compress: identical behaviour, smaller binary',
+    fn: () => {
+      const prog = EXAMPLES.find((e) => e.id === 'fib')!.code;
+      const plain = assemble(prog, { compress: false });
+      const small = assemble(prog, { compress: true });
+      assert(plain.ok && small.ok, 'both assemble');
+      const cpuA = new Cpu();
+      cpuA.load(plain);
+      cpuA.run(1_000_000);
+      const cpuB = new Cpu();
+      cpuB.load(small);
+      cpuB.run(1_000_000);
+      eq(cpuB.output, cpuA.output, 'output matches the uncompressed build');
+      const bytesA = plain.instrs.reduce((s, i) => s + i.size, 0);
+      const bytesB = small.instrs.reduce((s, i) => s + i.size, 0);
+      assert(bytesB < bytesA, `expected a smaller image, got ${bytesB} vs ${bytesA}`);
+      assert(small.instrs.some((i) => i.size === 2), 'at least one instruction compressed');
+    },
+  },
+  {
+    name: 'RVC: every compressed encoding ⇄ disassembles to a c.* form',
+    fn: () => {
+      const result = assemble(EXAMPLES.find((e) => e.id === 'rvc')!.code, { compress: true });
+      assert(result.ok, 'assembles');
+      let sawCompressed = false;
+      for (const ins of result.instrs) {
+        const text = disassemble(ins.word, ins.addr, ins.size);
+        assert(text.length > 0 && !text.startsWith('.half') && !text.startsWith('.word'), `bad disasm: ${text}`);
+        if (ins.size === 2) {
+          sawCompressed = true;
+          assert(text.startsWith('c.'), `compressed word should render as c.*, got '${text}'`);
+        }
+      }
+      assert(sawCompressed, 'expected compressed instructions');
+    },
+  },
 ];
 
 export function runSelfTests(): TestResult[] {

@@ -10,6 +10,7 @@ import { ABI_NAMES, FREG_ABI_NAMES } from './registers';
 import { hexWord } from './format';
 import { FP_SPECS, RM_NAMES } from './fp';
 import { CSR_NUMBERS } from './isa';
+import { formatCompressed } from './rvc';
 
 function reg(i: number): string {
   return ABI_NAMES[i];
@@ -23,8 +24,12 @@ const CSR_NAME_BY_ADDR: Record<number, string> = Object.fromEntries(
   Object.entries(CSR_NUMBERS).map(([name, addr]) => [addr, name]),
 );
 
-/** Disassemble a raw word. `pc` lets jump/branch targets be shown as absolute addresses. */
-export function disassemble(word: number, pc = 0): string {
+/**
+ * Disassemble a raw instruction. `pc` lets jump/branch targets be shown as absolute
+ * addresses. `size` is the encoded length: 2 selects the compressed (`c.*`) renderer.
+ */
+export function disassemble(word: number, pc = 0, size = 4): string {
+  if (size === 2) return formatCompressed(word & 0xffff, pc);
   const d = decode(word);
   return render(d, pc);
 }

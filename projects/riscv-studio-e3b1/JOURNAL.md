@@ -129,6 +129,49 @@ C source ──▶ lexer ──▶ parser ──▶ type checker ──▶ codeg
       "send generated asm to the assembler", and a C example gallery
 - [x] Docs page section on the C compiler + the supported language subset
 
+### 2026-06-15 — RISC-V Studio 4.0: the **C extension** + **machine-mode traps & interrupts**
+
+This session turns the studio from RV32IMAF+Zicsr into a machine that runs **real,
+compiler-grade RISC-V**: the compressed (**C**) extension that ~30% of every distributed
+RISC-V binary is built from, and a genuine **machine-mode trap architecture** — exceptions,
+interrupts, a CLINT timer, and `mret` — so the studio can run an interrupt handler. Every
+piece is wired through the assembler, decoder, disassembler, interpreter, time-travel
+journal, verification suite, examples and docs so it is observable and proven.
+
+#### Part A — RV32C (the compressed extension)
+- [ ] `rvc.ts` — a complete RV32C codec: `isCompressed`, `expandCompressed` (16-bit ⇒ the
+      canonical 32-bit base instruction, so the existing executor runs it unchanged),
+      `compressedName` (disassembly), `encodeCompressed` (assembler ⇒ 16-bit), and
+      `tryCompress` (an automatic peephole that shrinks base instructions to RVC).
+- [ ] Full quadrant 0/1/2 integer set: `c.addi4spn/c.lw/c.sw`, `c.addi/c.jal/c.li/
+      c.addi16sp/c.lui/c.srli/c.srai/c.andi/c.sub/c.xor/c.or/c.and/c.j/c.beqz/c.bnez`,
+      `c.slli/c.lwsp/c.jr/c.mv/c.ebreak/c.jalr/c.add/c.swsp`, plus `c.nop`/`c.unimp`.
+- [ ] Variable-length fetch: `Cpu.step` reads a half-word, detects the 2-bit length code,
+      and advances the pc by **2 or 4**. Link instructions (`c.jal`/`c.jalr`) thread the real
+      instruction size so the return address is `pc+2`, not `pc+4`.
+- [ ] Assembler emits compressed: explicit `c.*` mnemonics, **and** an automatic
+      `.option rvc` / "Compress (RVC)" toggle that re-encodes compressible base instructions
+      to 16 bits (no branch relaxation needed — only address-independent forms compress).
+      Instruction alignment relaxed to IALIGN=16; labels/relocations stay exact.
+- [ ] Size-aware disassembler + Disasm view (2-byte words render as `c.*`); RVC keywords in
+      the editor highlighter; a hand-written RVC example and an auto-compressed showcase.
+- [ ] Self-tests: every `c.*` ⇄ its base instruction equivalence, a full compressed program,
+      and an "auto-compress shrinks the binary and runs identically" differential check.
+
+#### Part B — machine-mode traps & interrupts (the privileged core)
+- [ ] M-mode CSRs: `mstatus` (MIE/MPIE/MPP), `mie`, `mip`, `mtvec` (direct + vectored),
+      `mepc`, `mcause`, `mtval`, `mscratch`, `misa`, `mhartid`, `mvendorid`/`marchid`/`mimpid`.
+- [ ] `mret` instruction (restores the interrupt-enable stack and jumps to `mepc`); `wfi`
+      (a no-op that just advances). Synchronous **exception traps**: illegal instruction,
+      breakpoint (`ebreak`), `ecall`-from-M (opt-in), and load/store/fetch address-misaligned
+      — each sets `mcause`/`mepc`/`mtval` and vectors to `mtvec` *iff* a handler is installed.
+- [ ] A memory-mapped **CLINT** (`mtime`/`mtimecmp`/`msip`) that drives a real **timer
+      interrupt** and **software interrupt**; the run loop checks for a pending, enabled,
+      globally-unmasked interrupt before each instruction and takes it.
+- [ ] Time-travel covers the whole privileged state (CSRs + the trap redirect undo exactly).
+- [ ] A worked **interrupt example** (install a timer handler, `wfi`, count ticks), trap
+      self-tests, and a Docs section on the privileged ISA + the CLINT memory map.
+
 ## Session log
 
 - 2026-06-13 (claude / claude-opus-4-8): created from the template. Built the full RV32IM machine

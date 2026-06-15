@@ -7,6 +7,7 @@
 import { Memory } from './memory';
 import { decode } from './decode';
 import type { DecodedInstruction } from './decode';
+import { isCompressed, expandCompressed } from './rvc';
 import { handleEcall } from './syscalls';
 import { signExtend } from './format';
 import {
@@ -189,18 +190,36 @@ export class Cpu {
     if (this.status === 'halted' || this.status === 'error') return false;
     if (this.recordHistory) this.beginRecord();
     this.status = 'idle';
-    const word = this.mem.readWord(this.pc);
-    if (word === 0) {
-      this.fail('illegal instruction 0x00000000 (ran off the end of the program?)');
-      if (this.rec) this.commitRecord();
-      return false;
+
+    // Variable-length fetch: the low 2 bits of the first half-word select 16- vs 32-bit.
+    const half = this.mem.readHalf(this.pc) & 0xffff;
+    let d: DecodedInstruction;
+    let size: number;
+    if (isCompressed(half)) {
+      const expanded = expandCompressed(half);
+      if (expanded === null) {
+        this.fail(`illegal compressed instruction 0x${half.toString(16).padStart(4, '0')}`);
+        if (this.rec) this.commitRecord();
+        return false;
+      }
+      d = decode(expanded);
+      size = 2;
+    } else {
+      const word = this.mem.readWord(this.pc);
+      if (word === 0) {
+        this.fail('illegal instruction 0x00000000 (ran off the end of the program?)');
+        if (this.rec) this.commitRecord();
+        return false;
+      }
+      d = decode(word);
+      size = 4;
     }
-    const d = decode(word);
-    const advanced = this.execute(d);
+
+    const advanced = this.execute(d, size);
     this.cycles++;
     if (this.rec) this.commitRecord();
     if (this.isStopped()) return false;
-    if (!advanced) this.pc = (this.pc + 4) >>> 0;
+    if (!advanced) this.pc = (this.pc + size) >>> 0;
     return true;
   }
 
@@ -281,8 +300,12 @@ export class Cpu {
     return n;
   }
 
-  /** Execute a decoded instruction. Returns true if it set the pc itself (jump/branch). */
-  private execute(d: DecodedInstruction): boolean {
+  /**
+   * Execute a decoded instruction. Returns true if it set the pc itself (jump/branch).
+   * `size` is the encoded length (2 for a compressed instruction, 4 otherwise) so that
+   * link instructions record the correct return address.
+   */
+  private execute(d: DecodedInstruction, size = 4): boolean {
     if (d.format === 'FP') return this.executeFp(d);
     if (d.format === 'AMO') return this.executeAmo(d);
     if (d.format === 'CSR') return this.executeCsr(d);
@@ -302,12 +325,12 @@ export class Cpu {
 
       // ---- jumps ------------------------------------------------------
       case 'jal':
-        this.set(rd, (this.pc + 4) | 0);
+        this.set(rd, (this.pc + size) | 0);
         this.pc = (this.pc + imm) >>> 0;
         return true;
       case 'jalr': {
         const target = ((a + imm) & ~1) >>> 0;
-        this.set(rd, (this.pc + 4) | 0);
+        this.set(rd, (this.pc + size) | 0);
         this.pc = target;
         return true;
       }

@@ -97,7 +97,7 @@ export default function App() {
           <span className="logo">RV</span>
           <div>
             <h1>RISC-V Studio</h1>
-            <p>an RV32IMAF + Zicsr assembler, emulator &amp; time-travel debugger</p>
+            <p>an RV32IMAFC + Zicsr assembler, emulator &amp; time-travel debugger</p>
           </div>
         </div>
         <nav className="tabs">
@@ -151,6 +151,10 @@ export default function App() {
           {vm.breakpointLines.size > 0 && (
             <button onClick={vm.clearBreakpoints}>✕ {vm.breakpointLines.size} bp</button>
           )}
+          <label className="compress-toggle" title="Auto-compress eligible instructions to RV32C (16-bit)">
+            <input type="checkbox" checked={vm.compress} onChange={(e) => vm.setCompress(e.target.checked)} />
+            Compress (RVC)
+          </label>
         </div>
         <div className="tool-status">
           <span className={`pill status-${status}`}>{status}</span>
@@ -207,7 +211,7 @@ export default function App() {
           {vm.historyDepth} undo
         </span>
         <span>
-          {vm.cpu.error ? <span className="err-text">{vm.cpu.error}</span> : 'RV32IMAF · Zicsr · little-endian · 32-bit'}
+          {vm.cpu.error ? <span className="err-text">{vm.cpu.error}</span> : 'RV32IMAFC · Zicsr · machine-mode traps · little-endian'}
         </span>
       </footer>
     </div>
