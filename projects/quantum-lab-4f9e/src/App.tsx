@@ -579,8 +579,12 @@ function AboutPage() {
           content: 'A fourth simulation paradigm: a Matrix Product State writes |ψ⟩ as a chain of rank-3 tensors whose bond dimension χ is the Schmidt rank across each cut. Bounded-entanglement states (GHZ, cluster/graph states, shallow circuits, gapped 1-D ground states) keep χ small, so the MPS stores them in O(n·χ²) numbers and runs gates in O(χ³) — reaching 40+ qubits the 2ⁿ vector can never hold. Two-qubit gates re-split via a from-scratch complex SVD truncated to χ, with the discarded Schmidt weight reported exactly. The Tensor tab also runs TEBD: a real-time transverse-field-Ising quench that shows entanglement spreading linearly in a correlation light-cone — matched to exact dynamics on small chains.',
         },
         {
+          title: 'DMRG — Variational Ground States (MPO + Lanczos)',
+          content: 'The Density Matrix Renormalization Group, the workhorse of 1-D many-body physics, built from scratch on the same tensor-network engine. The Hamiltonian is encoded as a Matrix Product Operator (the operator analogue of an MPS — bond dimension 3 for the Ising chain, 5 for Heisenberg/XXZ, independent of length). DMRG sweeps the chain fusing two sites into a wavefunction, builds the effective Hamiltonian from the contracted environments and finds its lowest eigenpair with a matrix-free Lanczos iteration, then re-splits with a truncated SVD. The energy descends to the variational minimum — matching exact diagonalisation of the same operator to machine precision on small chains — while the energy variance ⟨H²⟩−⟨H⟩², from a double-layer MPO contraction, goes to zero: the basis-independent certificate that the state really is an eigenstate, at chain lengths a 2ⁿ vector could never diagonalise.',
+        },
+        {
           title: 'Phase Estimation & Tooling',
-          content: 'Quantum Phase Estimation recovers eigenphases via phase kickback + inverse QFT. Circuits export to OpenQASM 2.0 (Qiskit/IBM-compatible) and JSON, with shareable URLs, depth/gate metrics, and a 47-case in-browser self-test suite proving the engine correct against exact references.',
+          content: 'Quantum Phase Estimation recovers eigenphases via phase kickback + inverse QFT. Circuits export to OpenQASM 2.0 (Qiskit/IBM-compatible) and JSON, with shareable URLs, depth/gate metrics, and a 51-case in-browser self-test suite proving the engine correct against exact references — including DMRG vs exact diagonalisation and the vanishing energy variance.',
         },
       ].map(({ title, content }, i) => (
         <motion.div

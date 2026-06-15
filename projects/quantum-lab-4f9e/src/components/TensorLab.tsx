@@ -3,6 +3,8 @@ import { motion } from 'framer-motion';
 import { MPS } from '../quantum/MPS';
 import { QuantumState, type GateOp } from '../quantum/QuantumState';
 import { tebdQuench, exactTFIM, type TEBDResult, type TEBDFrame } from '../quantum/tebd';
+import { runDMRG, type DMRGResult } from '../quantum/dmrg';
+import { buildModelMPO, exactGroundEnergyMPO, type ModelKind } from '../quantum/MPO';
 
 /**
  * Tensor-Network lab: a fourth simulation paradigm. Build a circuit on many qubits,
@@ -113,8 +115,132 @@ export default function TensorLab() {
       </p>
 
       <CircuitCard />
+      <DmrgCard />
       <QuenchCard />
     </div>
+  );
+}
+
+function DmrgCard() {
+  const [model, setModel] = useState<ModelKind>('heisenberg');
+  const [n, setN] = useState(20);
+  const [chi, setChi] = useState(20);
+  const [h, setH] = useState(1.0);     // TFIM transverse field
+  const [delta, setDelta] = useState(1.0); // Heisenberg anisotropy Jz/Jxy
+  const [res, setRes] = useState<DMRGResult | null>(null);
+  const [exact, setExact] = useState<number | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [ms, setMs] = useState(0);
+
+  const doRun = () => {
+    setBusy(true);
+    setTimeout(() => {
+      const t0 = performance.now();
+      const mpo = buildModelMPO(
+        model === 'tfim'
+          ? { kind: 'tfim', n, J: 1, h }
+          : { kind: 'heisenberg', n, jxy: 1, jz: delta },
+      );
+      // sweeps/iters scale gently with system size so big chains still converge
+      const sweeps = n <= 12 ? 10 : 14;
+      const lanczosIters = 16;
+      const r = runDMRG(mpo, { maxBond: chi, sweeps, lanczosIters, seed: 3 });
+      // exact reference only where dense diagonalisation is cheap
+      const ex = n <= 8 ? exactGroundEnergyMPO(mpo) : null;
+      setRes(r); setExact(ex); setMs(performance.now() - t0); setBusy(false);
+    }, 20);
+  };
+
+  const dE = res && exact !== null ? Math.abs(res.energy - exact) : null;
+
+  return (
+    <Card title="DMRG — variational ground state of a quantum spin chain" accent="#f472b6">
+      <p style={{ fontSize: 12, color: '#94a3b8', margin: '0 0 10px', lineHeight: 1.6 }}>
+        The workhorse of 1-D many-body physics, built from scratch on the MPS/MPO engine. DMRG
+        sweeps the chain, fusing two sites into a wavefunction Θ, building the <i>effective</i>
+        Hamiltonian from the contracted environments + local <b style={{ color: '#f472b6' }}>MPO</b>
+        tensors, and finding its lowest eigenpair with a matrix-free <b style={{ color: '#f472b6' }}>Lanczos</b>
+        iteration — then re-splitting Θ with a truncated SVD. The energy drops to the variational
+        minimum, and the <b>energy variance</b> ⟨H²⟩−⟨H⟩² → 0 certifies a true eigenstate, at chain
+        lengths a 2ⁿ vector could never diagonalise.
+      </p>
+      <div style={{ display: 'flex', gap: 10, alignItems: 'center', marginBottom: 12, flexWrap: 'wrap' }}>
+        <select value={model} onChange={(e) => setModel(e.target.value as ModelKind)} style={sel}>
+          <option value="heisenberg">Heisenberg / XXZ chain</option>
+          <option value="tfim">Transverse-field Ising chain</option>
+        </select>
+        <Slider label="sites n" min={4} max={40} value={n} onChange={setN} color="#db2777" accent="#f472b6" />
+        <Slider label="max χ" min={4} max={32} value={chi} onChange={setChi} color="#0891b2" accent="#67e8f9" />
+        {model === 'tfim'
+          ? <Slider label="field h" min={0.1} max={2.5} step={0.1} value={h} onChange={setH} color="#db2777" accent="#f472b6" fmt={(v) => v.toFixed(1)} />
+          : <Slider label="anisotropy Δ" min={-1} max={2} step={0.1} value={delta} onChange={setDelta} color="#db2777" accent="#f472b6" fmt={(v) => v.toFixed(1)} />}
+        <button onClick={doRun} disabled={busy} style={btn('#db2777')}>{busy ? 'Sweeping…' : '▶ Run DMRG'}</button>
+      </div>
+
+      {res && (
+        <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
+          <div style={{ display: 'flex', gap: 10, marginBottom: 10, flexWrap: 'wrap' }}>
+            <Metric label="ground energy E₀" value={res.energy.toFixed(5)} color="#f472b6" />
+            <Metric label="energy per site" value={res.energyPerSite.toFixed(5)} color="#a78bfa" />
+            <Metric label="energy variance" value={res.variance < 1e-12 ? '< 1e-12' : res.variance.toExponential(2)} color={res.variance < 1e-6 ? '#34d399' : '#fbbf24'} />
+            {dE !== null && <Metric label="vs exact diag" value={dE < 1e-6 ? '✓ exact' : dE.toExponential(1)} color={dE < 1e-6 ? '#34d399' : '#fbbf24'} />}
+            <Metric label="max bond χ reached" value={`${res.maxBond}`} color="#67e8f9" />
+            <Metric label="truncated weight" value={res.truncation < 1e-12 ? 'exact (0)' : res.truncation.toExponential(2)} color={res.truncation < 1e-9 ? '#34d399' : '#fbbf24'} />
+            <Metric label="solve time" value={`${ms.toFixed(0)} ms`} color="#94a3b8" />
+          </div>
+
+          <Label>Variational energy per half-sweep (descent to the ground state)</Label>
+          <ConvergencePlot trace={res.energyTrace} exact={exact} color="#f472b6" />
+
+          <Label>Ground-state entanglement entropy per cut (bits)</Label>
+          <BarRow values={res.entropyProfile} color="#22d3ee" fmt={(v) => v.toFixed(2)} cap={Math.max(0.5, Math.log2(chi) || 1)} />
+
+          <Label>Bond dimension across the chain (Schmidt rank of each cut)</Label>
+          <BarRow values={res.bondDims.slice(1, -1)} color="#db2777" fmt={(v) => `${v}`} cap={chi} />
+
+          <p style={{ fontSize: 10, color: '#475569', margin: '12px 0 0', lineHeight: 1.5 }}>
+            The Heisenberg antiferromagnet (Δ=1) is critical (gapless) — its entanglement peaks in the
+            middle and grows with n, so χ must rise to hold it. The Ising chain is gapped away from h=1
+            and stays low-entanglement. For n ≤ 8 the energy is checked against exact diagonalisation of
+            the same Hamiltonian; everywhere else the vanishing variance is the proof of correctness.
+          </p>
+        </motion.div>
+      )}
+    </Card>
+  );
+}
+
+function ConvergencePlot({ trace, exact, color }: { trace: { step: number; energy: number }[]; exact: number | null; color: string }) {
+  const w = 520, h = 140, pad = 44;
+  if (trace.length === 0) return null;
+  const energies = trace.map((t) => t.energy);
+  const lo = Math.min(...energies, exact ?? Infinity);
+  const hi = Math.max(...energies);
+  const span = hi - lo || 1;
+  const yMin = lo - span * 0.08, yMax = hi + span * 0.08;
+  const xs = (i: number) => pad + (i / Math.max(1, trace.length - 1)) * (w - pad - 10);
+  const ys = (v: number) => 10 + (1 - (v - yMin) / (yMax - yMin)) * (h - 28);
+  const path = trace.map((t, i) => `${i === 0 ? 'M' : 'L'}${xs(i).toFixed(1)},${ys(t.energy).toFixed(1)}`).join(' ');
+  const ticks = [yMax, (yMax + yMin) / 2, yMin];
+  return (
+    <svg width="100%" viewBox={`0 0 ${w} ${h}`} style={{ background: 'rgba(2,6,23,0.5)', borderRadius: 6, border: '1px solid #1e293b', marginBottom: 14 }}>
+      {ticks.map((v, i) => (
+        <g key={i}>
+          <line x1={pad} y1={ys(v)} x2={w - 10} y2={ys(v)} stroke="#1e293b" strokeWidth={1} />
+          <text x={pad - 4} y={ys(v) + 3} fontSize={8} fill="#475569" textAnchor="end">{v.toFixed(3)}</text>
+        </g>
+      ))}
+      {exact !== null && (
+        <g>
+          <line x1={pad} y1={ys(exact)} x2={w - 10} y2={ys(exact)} stroke="#34d399" strokeWidth={1} strokeDasharray="4 3" opacity={0.8} />
+          <text x={w - 12} y={ys(exact) - 3} fontSize={8} fill="#34d399" textAnchor="end">exact</text>
+        </g>
+      )}
+      <path d={path} fill="none" stroke={color} strokeWidth={1.8} />
+      {trace.map((t, i) => <circle key={i} cx={xs(i)} cy={ys(t.energy)} r={1.6} fill={color} />)}
+      <text x={w - 10} y={h - 4} fontSize={9} fill="#64748b" textAnchor="end">half-sweep step</text>
+      <text x={pad - 4} y={8} fontSize={9} fill="#64748b" textAnchor="end">energy</text>
+    </svg>
   );
 }
 

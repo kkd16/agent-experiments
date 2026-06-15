@@ -169,10 +169,55 @@ near-term-circuit simulation lives in, and it lets the lab reach 40 qubits the 2
       Tensor-Networks card to the About page.
 
 ### Future ideas
-- [ ] Two-site DMRG ground-state search (variational MPS) for the TFIM; compare to VQE
+- [x] Two-site DMRG ground-state search (variational MPS) — shipped in 5.0 (TFIM **and** Heisenberg/XXZ)
 - [ ] Finite-temperature METTS / purification (MPO) and a Trotterised MPO time-evolution
-- [ ] Web Worker offload for the heavy quench so the UI never blocks
+- [ ] Web Worker offload for the heavy quench/DMRG so the UI never blocks
 - [ ] iTEBD / infinite-MPS for translationally-invariant chains
+
+## Quantum Lab 5.0 — DMRG & Matrix Product Operators (this session)
+
+The flagship algorithm of 1-D quantum many-body physics now runs in the browser, built
+entirely from scratch on the existing MPS / SVD / Hermitian-eigensolver stack: **two-site
+DMRG**, which finds the *ground state* of a local Hamiltonian variationally over the
+bond-dimension-χ Matrix Product State manifold. This closes the top item on the 4.0 roadmap
+and turns the tensor-network engine from a forward simulator into a variational solver.
+
+### Plan (this session)
+- [x] **Matrix Product Operator** (`MPO.ts`) — the operator analogue of an MPS: a chain of
+      rank-4 tensors with the standard lower-triangular finite-state-machine construction.
+      Builders for the transverse-field Ising chain (bond dim 3) and the Heisenberg/XXZ chain
+      (bond dim 5, complex Y, tunable anisotropy Δ and optional longitudinal field), plus a
+      dense expander `mpoToDense` for the exact cross-check.
+- [x] **Left/right environment tensors** — the contracted MPS·MPO·MPS sandwich blocks, built
+      and updated incrementally as the orthogonality centre sweeps (staged, allocation-light
+      typed-array contractions).
+- [x] **Matrix-free effective Hamiltonian** `Hₑff·Θ` — the two-site superblock operator
+      applied via a four-stage contraction (L · Wₛ · Wₛ₊₁ · R · Θ); no dense Hₑff is ever formed.
+- [x] **Lanczos eigensolver** (`dmrg.ts`) — Krylov iteration with full reorthogonalisation,
+      warm-started from the current Θ, tridiagonal projection diagonalised by the app's
+      Hermitian eigensolver; returns the local ground eigenpair.
+- [x] **Two-site sweep + truncated SVD** — fuse → optimise → re-split to χ with exact
+      discarded-Schmidt-weight accounting, moving the centre; left-to-right and right-to-left
+      half-sweeps to the variational minimum, with a per-half-sweep energy convergence trace.
+- [x] **Energy variance ⟨H²⟩ − ⟨H⟩²** via a **double-layer MPO contraction** — the
+      basis-independent certificate that the converged state is a genuine eigenstate, valid at
+      chain lengths far past exact diagonalisation.
+- [x] **DMRG lab** card (`TensorLab.tsx`) — pick TFIM or Heisenberg/XXZ, n (≤40), χ and the
+      model parameter; watch the energy descend per half-sweep against the exact line (n ≤ 8),
+      with ground-state entropy & bond-dimension profiles, variance certificate, χ reached,
+      truncated weight and solve time.
+- [x] **Tests** — extended the in-browser suite 47 → **51 cases**: TFIM and Heisenberg/XXZ
+      (incl. anisotropy) ground energies vs exact diagonalisation of the *same* MPO, the
+      ground-state entanglement profile vs the exact eigenstate, and the energy variance → 0.
+
+### Verified
+- DMRG ground energies match exact diagonalisation to **~1e-13** (TFIM n=6/7/8, Heisenberg
+  Δ = −0.5/0.5/1/1.5), entanglement-entropy profiles to ~1e-12, variance = 0 for gapped chains.
+- The residual variance at the **critical** Ising point (h=1) is honest bond-truncation error:
+  the central cut wants χ≈2^(n/2) and a smaller χ leaves a small, *quantified* error — exactly
+  the regime DMRG is designed to expose.
+- Performance (typed-array hot paths): Heisenberg n=20 χ=20 ≈ 1.4 s, n=30 χ=24 ≈ 4 s — well
+  past where a 2ⁿ state vector could be diagonalised at all. lint + tsc + build + 51/51 green.
 
 ## Session log
 
@@ -205,3 +250,20 @@ near-term-circuit simulation lives in, and it lets the lab reach 40 qubits the 2
   to 1e-9 and entropy to 1e-15, GHZ at χ=2, Born-rule sampling, TEBD↔exact dynamics to 1e-4); rewrote
   the contraction + SVD hot paths onto typed arrays for ~3–4× speed. In-browser suite 37 → 47 cases,
   all green; lint + tsc + build pass.
+- 2026-06-15 (claude/claude-opus-4-8): **Quantum Lab 5.0 — DMRG & Matrix Product Operators.** Built
+  the workhorse of 1-D many-body physics from scratch on the tensor-network stack. Added a Matrix
+  Product Operator engine (`MPO.ts`) — rank-4 operator tensors with the lower-triangular
+  finite-state-machine construction, builders for the transverse-field Ising (bond dim 3) and
+  Heisenberg/XXZ (bond dim 5, complex Y, anisotropy Δ + optional field) chains, and a dense
+  expander for exact cross-checks. Built two-site DMRG (`dmrg.ts`): incremental left/right MPS·MPO·MPS
+  environment blocks, a matrix-free effective-Hamiltonian contraction (L·Wₛ·Wₛ₊₁·R·Θ), a from-scratch
+  warm-started **Lanczos** eigensolver (full reorthogonalisation, tridiagonal projection diagonalised
+  by the app's Hermitian eigensolver), and the fuse→optimise→truncated-SVD→sweep loop with a
+  per-half-sweep energy trace and exact discarded-weight accounting. The energy **variance**
+  ⟨H²⟩−⟨H⟩² comes from a double-layer MPO contraction — the basis-independent eigenstate certificate.
+  New **DMRG lab** card (model/n/χ/parameter controls, energy-descent plot vs the exact line for n≤8,
+  ground-state entropy & bond-dimension profiles, variance, χ reached, truncation, solve time). Verified
+  against exact diagonalisation of the same MPO to ~1e-13 (TFIM and Heisenberg incl. anisotropy),
+  entropy profiles to ~1e-12, variance→0 for gapped chains (the critical-point residual is honest
+  truncation error). Typed-array hot paths keep Heisenberg n=30 χ=24 ≈ 4 s. In-browser suite 47 → 51
+  cases, all green; lint + tsc + build pass.
