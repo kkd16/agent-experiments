@@ -1,42 +1,63 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import './App.css'
+import type { Gradient } from './color/types'
+import { decodeGradient, defaultGradient, encodeGradient } from './state/store'
+import { navigate, replaceParams, ROUTES, useHash } from './state/router'
+import { Studio } from './ui/Studio'
+import { Mesh } from './ui/Mesh'
+import { Palette } from './ui/Palette'
+import { Gallery } from './ui/Gallery'
+import { Tests } from './ui/Tests'
+import { About } from './ui/About'
 
-const rand = (min: number, max: number) => Math.floor(Math.random() * (max - min + 1)) + min
-
-function makeGradient() {
-  const a = rand(0, 360)
-  const b = (a + rand(40, 200)) % 360
-  const angle = rand(0, 360)
-  return `linear-gradient(${angle}deg, hsl(${a} 80% 62%), hsl(${b} 80% 58%))`
+function initialGradient(): Gradient {
+  try {
+    const raw = window.location.hash.replace(/^#/, '')
+    const query = raw.split('?')[1] ?? ''
+    const code = new URLSearchParams(query).get('g')
+    if (code) {
+      const g = decodeGradient(code)
+      if (g) return g
+    }
+  } catch {
+    /* fall through */
+  }
+  return defaultGradient()
 }
 
 export default function App() {
-  const [gradient, setGradient] = useState(makeGradient)
-  const [copied, setCopied] = useState(false)
+  const { route } = useHash()
+  const [gradient, setGradient] = useState<Gradient>(initialGradient)
 
-  async function copy() {
-    try {
-      await navigator.clipboard.writeText(`background: ${gradient};`)
-      setCopied(true)
-      setTimeout(() => setCopied(false), 1200)
-    } catch {
-      /* clipboard unavailable */
-    }
-  }
+  // Keep the studio URL shareable: mirror the current gradient into ?g= while on the studio route.
+  useEffect(() => {
+    if (route === 'studio') replaceParams('studio', { g: encodeGradient(gradient) })
+  }, [gradient, route])
 
   return (
-    <main className="stage" style={{ background: gradient }}>
-      <div className="panel">
-        <h1>Gradient Lab</h1>
-        <p className="sub">A React + Vite + TS seed demo. Tap to remix.</p>
-        <code className="readout">{gradient}</code>
-        <div className="row">
-          <button onClick={() => setGradient(makeGradient())}>Remix ↻</button>
-          <button className="ghost" onClick={copy}>
-            {copied ? 'Copied ✓' : 'Copy CSS'}
-          </button>
-        </div>
-      </div>
-    </main>
+    <div className="app">
+      <header className="topbar">
+        <button className="brand" onClick={() => navigate('studio')}>
+          <span className="brand-mark" aria-hidden="true" />
+          Gradient<span className="brand-accent">Lab</span>
+        </button>
+        <nav className="nav">
+          {ROUTES.map((r) => (
+            <button key={r.id} className={r.id === route ? 'is-active' : ''} onClick={() => navigate(r.id)}>
+              {r.label}
+            </button>
+          ))}
+        </nav>
+      </header>
+
+      <main className="content">
+        {route === 'studio' && <Studio gradient={gradient} setGradient={setGradient} />}
+        {route === 'mesh' && <Mesh />}
+        {route === 'palette' && <Palette onUse={setGradient} />}
+        {route === 'gallery' && <Gallery onUse={setGradient} />}
+        {route === 'tests' && <Tests />}
+        {route === 'about' && <About />}
+      </main>
+    </div>
   )
 }

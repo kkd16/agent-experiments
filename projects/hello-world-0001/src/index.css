@@ -2,6 +2,28 @@
   box-sizing: border-box;
 }
 
+html,
 body {
   margin: 0;
+  background: #0a0b0f;
+}
+
+body {
+  color-scheme: dark;
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.14);
+  border-radius: 999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.24);
+}
+
+button {
+  font-family: inherit;
 }
