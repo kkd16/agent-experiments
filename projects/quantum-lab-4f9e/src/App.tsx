@@ -13,14 +13,15 @@ import BlochSphere from './components/BlochSphere';
 import DensityLab from './components/DensityLab';
 import VariationalLab from './components/VariationalLab';
 import StabilizerLab from './components/StabilizerLab';
+import TensorLab from './components/TensorLab';
 import TestsPanel from './components/TestsPanel';
 import ExportPanel from './components/ExportPanel';
 import { schmidtDecompose } from './quantum/Schmidt';
 
-type Tab = 'builder' | 'algorithms' | 'variational' | 'stabilizer' | 'tests' | 'about';
+type Tab = 'builder' | 'algorithms' | 'variational' | 'stabilizer' | 'tensor' | 'tests' | 'about';
 type VizTab = 'state' | 'probabilities' | 'bloch' | 'density' | 'measure';
 
-const PAGE_TABS: Tab[] = ['about', 'variational', 'stabilizer', 'tests'];
+const PAGE_TABS: Tab[] = ['about', 'variational', 'stabilizer', 'tensor', 'tests'];
 
 // Parse a shared circuit from the URL hash (#c=…) once, before mount — sandbox-safe.
 function loadSharedCircuit(): { numQubits: number; ops: GateOp[] } | null {
@@ -132,7 +133,7 @@ export default function App() {
         </div>
 
         <nav style={{ display: 'flex', gap: 2, marginLeft: 'auto', flexWrap: 'wrap' }}>
-          {(['builder', 'algorithms', 'variational', 'stabilizer', 'tests', 'about'] as Tab[]).map((tab) => (
+          {(['builder', 'algorithms', 'variational', 'stabilizer', 'tensor', 'tests', 'about'] as Tab[]).map((tab) => (
             <button
               key={tab}
               onClick={() => setActiveTab(tab)}
@@ -151,7 +152,7 @@ export default function App() {
             >
               {tab === 'builder' ? '🔧 Builder' : tab === 'algorithms' ? '⚡ Algorithms'
                 : tab === 'variational' ? '🧬 Variational' : tab === 'stabilizer' ? '🧱 Stabilizer'
-                : tab === 'tests' ? '🧪 Tests' : '📖 About'}
+                : tab === 'tensor' ? '🕸️ Tensor' : tab === 'tests' ? '🧪 Tests' : '📖 About'}
             </button>
           ))}
         </nav>
@@ -208,6 +209,7 @@ export default function App() {
               {activeTab === 'about' && <AboutPage />}
               {activeTab === 'variational' && <VariationalLab />}
               {activeTab === 'stabilizer' && <StabilizerLab />}
+              {activeTab === 'tensor' && <TensorLab />}
               {activeTab === 'tests' && <TestsPanel />}
             </motion.div>
           ) : (
@@ -573,8 +575,12 @@ function AboutPage() {
           content: 'Randomized benchmarking sends random Clifford sequences through a noise channel and fits the survival-probability decay p(m)=½+A·fᵐ to extract the average gate fidelity — immune to SPAM errors. The Schmidt decomposition factorises any bipartite state |ψ⟩=Σλᵢ|aᵢ⟩|bᵢ⟩, exposing the Schmidt rank and the spectrum behind the entanglement entropy.',
         },
         {
+          title: 'Tensor Networks (Matrix Product States & TEBD)',
+          content: 'A fourth simulation paradigm: a Matrix Product State writes |ψ⟩ as a chain of rank-3 tensors whose bond dimension χ is the Schmidt rank across each cut. Bounded-entanglement states (GHZ, cluster/graph states, shallow circuits, gapped 1-D ground states) keep χ small, so the MPS stores them in O(n·χ²) numbers and runs gates in O(χ³) — reaching 40+ qubits the 2ⁿ vector can never hold. Two-qubit gates re-split via a from-scratch complex SVD truncated to χ, with the discarded Schmidt weight reported exactly. The Tensor tab also runs TEBD: a real-time transverse-field-Ising quench that shows entanglement spreading linearly in a correlation light-cone — matched to exact dynamics on small chains.',
+        },
+        {
           title: 'Phase Estimation & Tooling',
-          content: 'Quantum Phase Estimation recovers eigenphases via phase kickback + inverse QFT. Circuits export to OpenQASM 2.0 (Qiskit/IBM-compatible) and JSON, with shareable URLs, depth/gate metrics, and a 37-case in-browser self-test suite proving the engine correct against exact references.',
+          content: 'Quantum Phase Estimation recovers eigenphases via phase kickback + inverse QFT. Circuits export to OpenQASM 2.0 (Qiskit/IBM-compatible) and JSON, with shareable URLs, depth/gate metrics, and a 47-case in-browser self-test suite proving the engine correct against exact references.',
         },
       ].map(({ title, content }, i) => (
         <motion.div

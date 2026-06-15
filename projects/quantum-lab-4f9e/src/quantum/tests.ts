@@ -17,6 +17,10 @@ import { schmidtDecompose } from './Schmidt';
 import { parameterShiftGradient, finiteDiffGradient, runGradientVQE } from './gradient';
 import { runSteane, type ErrorType } from './steane';
 import { randomizedBenchmark } from './rb';
+import { svd } from './SVD';
+import { MPS, simulateMPS } from './MPS';
+import type { GateOp } from './QuantumState';
+import { tebdQuench, exactTFIM } from './tebd';
 
 export interface TestResult {
   group: string;
@@ -294,6 +298,97 @@ export function runTests(): TestResult[] {
     add('Stabilizer', 'noiseless RB survival stays 1 (f≈1)', close(clean.fit.f, 1, 1e-6), `f=${clean.fit.f.toFixed(4)}`);
     const noisy = randomizedBenchmark({ channel: 'depolarizing', strength: 0.06, sequences: 8, lengths: [1, 2, 4, 8, 16, 32] });
     add('Stabilizer', 'depolarizing RB recovers decay f ≈ 1−p', close(noisy.fit.f, 0.94, 0.02), `f=${noisy.fit.f.toFixed(4)} r=${noisy.fit.r.toFixed(4)}`);
+  }
+
+  // --- Tensor networks (SVD + Matrix Product State + TEBD) ---
+  {
+    const randC = () => new Complex(Math.random() * 2 - 1, Math.random() * 2 - 1);
+    // SVD reconstruction A = U Σ V† for both tall and wide matrices
+    let worstSvd = 0, worstOrth = 0;
+    for (let trial = 0; trial < 6; trial++) {
+      const m = 2 + (trial % 4), n = 2 + ((trial + 2) % 4);
+      const A: Complex[][] = Array.from({ length: m }, () => Array.from({ length: n }, randC));
+      const { U, S, Vh } = svd(A);
+      for (let i = 0; i < m; i++) for (let j = 0; j < n; j++) {
+        let re = 0, im = 0;
+        for (let t = 0; t < S.length; t++) { const p = U[i][t].mul(Vh[t][j]).scale(S[t]); re += p.re; im += p.im; }
+        worstSvd = Math.max(worstSvd, Math.abs(re - A[i][j].re), Math.abs(im - A[i][j].im));
+      }
+      for (let a = 0; a < S.length; a++) for (let b = 0; b < S.length; b++) {
+        if (S[a] < 1e-9 || S[b] < 1e-9) continue;
+        let re = 0, im = 0;
+        for (let i = 0; i < m; i++) { const x = U[i][a].conj().mul(U[i][b]); re += x.re; im += x.im; }
+        worstOrth = Math.max(worstOrth, Math.abs(re - (a === b ? 1 : 0)), Math.abs(im));
+      }
+    }
+    add('Tensor networks', 'SVD reconstructs A = U Σ V†', worstSvd < 1e-9, `max err ${worstSvd.toExponential(1)}`);
+    add('Tensor networks', 'SVD left singular vectors are orthonormal', worstOrth < 1e-9, `max err ${worstOrth.toExponential(1)}`);
+
+    // random 1- and 2-qubit circuit (with long-range gates exercising the SWAP network)
+    const randomCircuit = (nq: number, depth: number): GateOp[] => {
+      const ops: GateOp[] = [];
+      const singles = ['H', 'X', 'Y', 'Z', 'S', 'T', 'SX'];
+      for (let d = 0; d < depth; d++) {
+        for (let q = 0; q < nq; q++) {
+          ops.push({ name: singles[Math.floor(Math.random() * singles.length)], qubits: [q] });
+          ops.push({ name: 'Rz', qubits: [q], params: [Math.random() * 6] });
+        }
+        for (let q = d % 2; q + 1 < nq; q += 2) ops.push({ name: Math.random() < 0.5 ? 'CNOT' : 'CZ', qubits: [q, q + 1] });
+        if (nq >= 4) { ops.push({ name: 'CNOT', qubits: [0, nq - 1] }); ops.push({ name: 'CPhase', qubits: [1, nq - 2], params: [Math.random() * 6] }); }
+      }
+      return ops;
+    };
+
+    // MPS at full bond dimension reproduces the exact state vector amplitude-for-amplitude
+    let worstAmp = 0, worstEnt = 0;
+    for (let trial = 0; trial < 4; trial++) {
+      const nq = 6, ops = randomCircuit(nq, 3);
+      const sv = new QuantumState(nq); ops.forEach((o) => sv.applyGate(o)); sv.normalize();
+      const mps = simulateMPS(nq, ops, 1024);
+      const vec = mps.toStateVector();
+      const norm = Math.sqrt(vec.reduce((s, z) => s + z.abs2(), 0));
+      for (let i = 0; i < (1 << nq); i++) worstAmp = Math.max(worstAmp, vec[i].scale(1 / norm).sub(sv.amplitudes[i]).abs());
+      // bond entropy must match the state-vector's reduced-density-matrix entropy.
+      // (engine cut convention: MPS cut at `c` = qubits {c..n-1} = QuantumState cut n−c.)
+      for (let c = 1; c < nq; c++) worstEnt = Math.max(worstEnt, Math.abs(mps.entropyAt(c) - sv.entanglementEntropy(nq - c)));
+    }
+    add('Tensor networks', 'MPS (χ=∞) reproduces the exact state vector', worstAmp < 1e-9, `max amp err ${worstAmp.toExponential(1)}`);
+    add('Tensor networks', 'MPS bond entropy = exact entanglement entropy', worstEnt < 1e-7, `max err ${worstEnt.toExponential(1)}`);
+
+    // GHZ: the textbook χ=2 / 1-bit-everywhere state
+    {
+      const nq = 8;
+      const ops: GateOp[] = [{ name: 'H', qubits: [0] }];
+      for (let q = 0; q + 1 < nq; q++) ops.push({ name: 'CNOT', qubits: [q, q + 1] });
+      const mps = simulateMPS(nq, ops, 8);
+      const prof = mps.entropyProfile();
+      add('Tensor networks', 'GHZ needs only bond dimension 2', mps.maxBondDim() === 2, `χmax=${mps.maxBondDim()}`);
+      add('Tensor networks', 'GHZ has exactly 1 bit of entanglement at every cut', prof.every((e) => close(e, 1, 1e-9)), `S=[${prof.map((e) => e.toFixed(2)).join(',')}]`);
+      // truncating GHZ to χ=1 must discard ≈ half the Schmidt weight
+      const trunc = new MPS(nq, 1); trunc.applyCircuit(ops);
+      add('Tensor networks', 'χ=1 truncation of GHZ records the discarded weight', trunc.truncationError > 0.1, `Σσ²=${trunc.truncationError.toFixed(3)}`);
+    }
+
+    // perfect sampling reproduces the Born distribution
+    {
+      const nq = 4, ops = randomCircuit(nq, 2);
+      const sv = new QuantumState(nq); ops.forEach((o) => sv.applyGate(o)); sv.normalize();
+      const probs = sv.probabilities();
+      const mps = simulateMPS(nq, ops, 1024);
+      const shots = 20000, counts = mps.sampleCounts(shots);
+      let tv = 0; for (let i = 0; i < (1 << nq); i++) tv += Math.abs((counts.get(i) ?? 0) / shots - probs[i]);
+      add('Tensor networks', 'MPS perfect sampling reproduces the Born rule', tv / 2 < 0.06, `total-variation ${(tv / 2).toFixed(3)}`);
+    }
+
+    // TEBD real-time dynamics matches exact dense evolution of the Ising chain
+    {
+      const nq = 6, J = 1, h = 0.8, dt = 0.05, steps = 30;
+      const res = tebdQuench({ n: nq, J, h, dt, steps, maxBond: 32 });
+      const exact = exactTFIM(nq, J, h, dt, steps);
+      let worstX = 0; for (let s = 0; s <= steps; s++) worstX = Math.max(worstX, Math.abs(res.frames[s].mx - exact[s].mx));
+      add('Tensor networks', 'TEBD evolution matches exact dynamics', worstX < 5e-3, `max ⟨X⟩ err ${worstX.toExponential(1)}`);
+      add('Tensor networks', 'global quench grows entanglement from zero', res.frames[0].entropy < 1e-9 && res.frames[steps].entropy > 0.2, `S: ${res.frames[0].entropy.toExponential(0)} → ${res.frames[steps].entropy.toFixed(2)}`);
+    }
   }
 
   return r;
