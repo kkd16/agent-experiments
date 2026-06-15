@@ -42,6 +42,7 @@ import {
 import type { CNF, ProofStep, Graph, MaxSatInstance, WeightedGraph } from './src/sat/index'
 import { buildProblem, DEFAULT_SPEC } from './src/problems'
 import { runSmtChecks } from './src/smt/selfcheck'
+import { runBvChecks } from './src/smt/bv/selfcheck'
 
 let pass = 0
 let fail = 0
@@ -1014,6 +1015,14 @@ function bruteMaxCut(g: WeightedGraph): number {
   for (const m of smt.messages) console.error(m)
   pass += smt.pass
   fail += smt.fail
+}
+
+// ---- QF_BV bit-vector engine: eager bit-blasting onto the CDCL core ---------
+{
+  const bv = runBvChecks()
+  for (const m of bv.messages) console.error(m)
+  pass += bv.pass
+  fail += bv.fail
 }
 
 console.log(`\n${pass} passed, ${fail} failed`)

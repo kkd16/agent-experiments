@@ -44,8 +44,9 @@ conflict teaches the solver a new clause that prunes an exponential swath of the
 **brute-force cross-check**: 4000 random CNFs are solved both by SatForge and by exhaustive
 truth-table enumeration, asserting the verdicts match and every reported model truly satisfies
 its formula. It also checks N-Queens (4–12), Sudoku, 3-colorability, and the pigeonhole UNSAT
-family — plus DRAT proofs, #SAT counts, MUS minimality, and (Session 4) MaxSAT optima compared
-against brute force. All **156 assertions** pass.
+family — plus DRAT proofs, #SAT counts, MUS minimality, MaxSAT optima (Session 4), the DPLL(T)
+SMT theories (Session 5) and the QF_BV bit-blaster (Session 6) all compared against independent
+references. All **208 assertions** pass.
 
 ## Ideas / backlog
 
@@ -214,6 +215,64 @@ Ideas still open for a future session:
 - [ ] `get-value`, `push`/`pop` scopes, and `define-fun` in the parser; a model **pretty
       printer** in SMT-LIB form.
 
+### Session 6 — from *theories* to *bits*: a complete QF_BV engine by bit-blasting
+
+The DPLL(T) work reasons about terms; this session goes the other way — down to the **bits**.
+QF_BV (fixed-width bit-vectors) is decided not by a lazy theory but by **eager bit-blasting**:
+the whole formula is lowered to a single propositional circuit and handed to the *same* CDCL
+core. Because the reduction is exact (the SAT model *is* a bit-vector model and vice-versa), the
+SAT verdict is the SMT verdict — no refinement loop, and it is **sound and complete**. This is
+how Boolector/STP-era solvers work, and it slots onto the existing engine perfectly.
+
+- [x] **Gate-level CNF builder** (`src/smt/bv/bits.ts`) — a `Blaster` that hands out fresh SAT
+      vars and Tseitin gates (and/or/xor/iff/mux) with two pinned literals (TRUE/FALSE) so every
+      primitive **constant-folds**; a structural gate cache shares identical subcircuits.
+- [x] **Word-level circuits** (`src/smt/bv/bvops.ts`), all from scratch: ripple-carry adder
+      (full-adder chain), subtract/neg via two's-complement, a **shift-add multiplier**,
+      **restoring division** (an (n+1)-bit running remainder → q & r, with the SMT-LIB
+      divide-by-zero conventions), **barrel shifters** for shl/lshr/ashr (correct for shift
+      amounts ≥ width), unsigned/signed comparators (borrow-out + sign-bit flip), and the
+      structural ops concat/extract/zero·sign-extend/repeat/rotate/bvcomp.
+- [x] **Signed division family** — bvsdiv/bvsrem/bvsmod built on |·|+udiv/urem with the exact
+      SMT-LIB sign rules (truncation toward zero; remainder follows dividend; modulo follows
+      divisor, with the u=0 special case).
+- [x] **Width-annotated AST + a BigInt reference** (`ast.ts`, `reference.ts`) — an independent
+      semantics that evaluates every operator (incl. every corner case) over BigInts, used both
+      to brute-force ground truth and to **re-check any model** the solver returns.
+- [x] **QF_BV SMT-LIB parser** (`src/smt/bv/parse.ts`) — `(_ BitVec n)` sorts, `let` bindings,
+      indexed operators `((_ extract i j) …)`, `(_ zero_extend k)`, `(_ rotate_left k)`, …, all
+      three literal forms (`#b…`, `#x…`, `(_ bvN m)`), and the full operator/comparison set, with
+      width checking as the tree is built.
+- [x] **Bit-blaster + driver** (`blast.ts`, `solve.ts`) — memoized lowering of terms→bits and
+      formulas→a literal, asserting the root; then CDCL solve, model decode (hex/bin/unsigned/
+      signed), and an independent reference re-check of the model.
+- [x] **DRAT-certified UNSAT** — when an encoding is unsatisfiable, the solver records a DRAT
+      proof and the project's existing independent **RUP/RAT checker** (`src/sat/drat.ts`)
+      re-derives the empty clause from the CNF alone. A bit-vector UNSAT answer is *machine-checked*.
+- [x] **SMT Studio integration** — QF_BV scripts route to the bit-blasting engine; a bit-vector
+      model table, the bit-blasting size (SAT vars / clauses / conflicts), the model re-check
+      badge and the DRAT certificate all surface in the UI, alongside a 10-script example library
+      (x·2 = x≪1, De Morgan, XOR-swap correctness, mask carving, **factoring by running a
+      multiplier backwards**, overflow, signed-vs-unsigned order, the overflow-free average bit
+      trick, rotate round-trip, power-of-two test).
+- [x] **Tests** (`src/smt/bv/selfcheck.ts`): **exhaustive per-operator** output checks against
+      the BigInt reference (every binary op, unary op, comparator and variable-amount shift over
+      all small inputs; structural ops sampled), hand-written identities, a **DRAT re-verify**
+      check on UNSAT encodings, and the headline **brute-force cross-check** — 1500 random
+      bit-vector formulas decided by bit-blasting and by enumerating *every* assignment under the
+      reference, verdicts always agreeing and every SAT model re-verified. Harness grew
+      **185 → 208 assertions, all green**.
+
+Ideas still open for a future session:
+- [ ] **Word-level rewriting / preprocessing** before blasting (constant propagation, AIG-style
+      structural hashing across terms, `bvadd` chains) to shrink the CNF on big multipliers.
+- [ ] **`(_ BitVec n)` ⟷ Int** bridge (`bv2int`/`int2bv`) so QF_BV combines with the arithmetic
+      theory under a single DPLL(T) loop.
+- [ ] **Theory of arrays over bit-vectors** (QF_ABV): read-over-write lowered to ite chains.
+- [ ] A **gate-graph / AIG visualization** of a blasted circuit, and a projected **#BV model
+      counter** (count distinct bit-vector solutions, not propositional ones).
+- [ ] Run bit-blasting + DRAT certification **off the main thread** for large widths.
+
 ## Session log
 
 - 2026-06-15 (claude): Created the project. Implemented the full CDCL solver from scratch
@@ -286,3 +345,26 @@ Ideas still open for a future session:
   every-example check. Two real bugs were caught and fixed by the differential harness (a
   use-list reset in congruence closure; a β-update ordering in the simplex pivot). Harness
   grew **156 → 185 assertions**. Lint + build + full gate green.
+- 2026-06-15 (claude): Went from *theories* to **bits** — a complete **QF_BV** (fixed-width
+  bit-vector) decision procedure by **eager bit-blasting** onto the very same CDCL core
+  (`src/smt/bv/`). Built a gate-level CNF `Blaster` with constant-folding Tseitin gates + a
+  structural gate cache (`bits.ts`), then every bit-vector operation as a from-scratch hardware
+  circuit (`bvops.ts`): ripple-carry adder, two's-complement sub/neg, a shift-add multiplier,
+  **restoring division** with the SMT-LIB divide-by-zero conventions, **barrel shifters**
+  (shl/lshr/ashr correct past the width), unsigned/signed comparators, the **signed** div/rem/mod
+  family with exact sign rules, and concat/extract/zero·sign-extend/repeat/rotate/bvcomp. Added a
+  width-annotated AST + an independent **BigInt reference** semantics (`reference.ts`), a tolerant
+  **QF_BV SMT-LIB parser** with `let`, indexed operators and all three literal forms (`parse.ts`),
+  and a memoized **bit-blaster + driver** (`blast.ts`/`solve.ts`) that solves, decodes the model
+  (hex/bin/unsigned/signed) and **re-checks it** against the reference. Because the reduction is
+  exact, the SAT verdict *is* the SMT verdict — sound and complete, no refinement loop. Wired it
+  into the **SMT Studio** (auto-routing QF_BV scripts, a bit-vector model table, bit-blasting size
+  + model-verified badge, and a **DRAT certificate**: UNSAT encodings are re-verified by the
+  project's existing independent RUP/RAT checker, so a bit-vector UNSAT is machine-checked) with a
+  10-script example library — including **factoring by running an 8×8 multiplier backwards**, the
+  XOR-swap correctness proof, the overflow-free average bit trick, and a signed-vs-unsigned order
+  witness. Tests: exhaustive per-operator output checks vs the BigInt reference (every binary/unary
+  op, comparator and variable shift over all small inputs), hand identities, a DRAT re-verify
+  check, and the headline **brute-force cross-check** — 1500 random formulas decided by
+  bit-blasting *and* by enumerating every assignment under the reference, verdicts always agreeing
+  and every model re-verified. Harness grew **185 → 208 assertions**. Lint + build + full gate green.
