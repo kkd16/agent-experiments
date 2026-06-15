@@ -49,6 +49,16 @@ const BIT_BUILTINS = new Set(['popcount', 'clz', 'ctz', 'rotl', 'rotr']);
 // round-half-to-even (wasm `f64.nearest`), not the half-up of many languages.
 const FLOAT_UNARY = new Set(['sqrt', 'floor', 'ceil', 'trunc', 'round', 'abs']);
 const FLOAT_BINARY = new Set(['fmin', 'fmax', 'copysign']);
+// Transcendental math builtins. They share the soft-builtin rules above (each is
+// `float -> float` / `(float,float) -> float` and yields to a user `fn` of the
+// same name), but instead of a single wasm op they lower to a call into the
+// shared MATH_PRELUDE kernel, which the interpreter runs too (see interp.ts).
+const MATH_UNARY = new Set([
+  'exp', 'expm1', 'ln', 'log2', 'log10', 'log1p',
+  'sin', 'cos', 'tan', 'asin', 'acos', 'atan',
+  'sinh', 'cosh', 'tanh', 'cbrt',
+]);
+const MATH_BINARY = new Set(['pow', 'atan2', 'hypot', 'fmod']);
 
 // Table-driven signatures for the extended string library. Each entry lists the
 // expected argument types and the result type; the checker validates arity and
@@ -590,8 +600,8 @@ class Checker {
     }
     // Soft float-math builtins: recognized only when no user function shadows the
     // name. Every operand and the result are `float` (f64).
-    if ((FLOAT_UNARY.has(name) || FLOAT_BINARY.has(name)) && !this.syms.functions.has(name)) {
-      const arity = FLOAT_UNARY.has(name) ? 1 : 2;
+    if ((FLOAT_UNARY.has(name) || FLOAT_BINARY.has(name) || MATH_UNARY.has(name) || MATH_BINARY.has(name)) && !this.syms.functions.has(name)) {
+      const arity = FLOAT_UNARY.has(name) || MATH_UNARY.has(name) ? 1 : 2;
       if (e.args.length !== arity) throw new CompileError(`${name}() expects ${arity} argument(s)`, e.span, 'type');
       for (const a of e.args) {
         const t = this.checkExpr(a);

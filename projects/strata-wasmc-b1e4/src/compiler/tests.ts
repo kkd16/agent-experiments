@@ -1102,4 +1102,73 @@ fn main(){
   print(floor(acc)); print(ceil(acc));
 }`,
   },
+  // --- transcendental math library (the shared MATH_PRELUDE kernel) -----------
+  // The wasm backend compiles the kernel and the interpreter runs the same
+  // source, so the printed doubles must agree bit-for-bit at every opt level.
+  {
+    name: 'math-transcendentals',
+    source: `fn main(){
+  print(str(exp(1.0))); print(str(ln(10.0))); print(str(log2(1024.0)));
+  print(str(log10(1000.0))); print(str(sin(1.0))); print(str(cos(1.0)));
+  print(str(tan(0.5))); print(str(atan(1.0))); print(str(asin(0.5)));
+  print(str(acos(0.5))); print(str(cbrt(27.0))); print(str(pow(2.0, 10.0)));
+  print(str(sinh(1.0))); print(str(cosh(1.0))); print(str(tanh(1.0)));
+  print(str(expm1(1.0e-6))); print(str(log1p(1.0e-6)));
+  print(str(hypot(3.0, 4.0))); print(str(atan2(1.0, 1.0))); print(str(fmod(10.5, 3.0)));
+}`,
+  },
+  {
+    name: 'math-identities',
+    source: `// Identities that must hold to rounding, computed identically on both backends.
+fn main(){
+  for (let i = 0; i < 8; i = i + 1) {
+    let x = float(i) * 0.7 - 2.0;
+    print(str(sin(x) * sin(x) + cos(x) * cos(x)));     // ~1
+    print(str(cosh(x) * cosh(x) - sinh(x) * sinh(x))); // ~1
+    print(str(ln(exp(x))));                            // ~x
+  }
+}`,
+  },
+  {
+    name: 'math-pow-branches',
+    source: `// pow special cases: integer vs fractional exponents of a negative base.
+fn main(){
+  print(str(pow(-2.0, 3.0)));   // -8
+  print(str(pow(-2.0, 2.0)));   //  4
+  print(str(pow(-8.0, 2.0)));   // 64
+  print(str(pow(9.0, 0.5)));    //  3
+  print(str(pow(2.0, -3.0)));   // 0.125
+  print(str(pow(5.0, 0.0)));    //  1
+  print(str(pow(-2.0, 0.5) != pow(-2.0, 0.5)));  // NaN != NaN -> true
+}`,
+  },
+  {
+    name: 'math-loop-array',
+    source: `// Math through a float[] and a loop (LICM / stackifier stress), then a sum.
+fn main(){
+  let n = 12;
+  let xs = float_array(n);
+  let s = 0.0;
+  for (let i = 0; i < n; i = i + 1) {
+    let t = float(i) * 0.5;
+    xs[i] = exp(0.0 - t) * sin(t * 3.0);
+    s = s + xs[i];
+  }
+  for (let i = 0; i < n; i = i + 1) { print(str(xs[i])); }
+  print(str(s));
+}`,
+  },
+  {
+    name: 'math-user-shadow-isolation',
+    source: `// A user 'fn sqrt' shadows the builtin in user code, but the MATH_PRELUDE
+// kernels keep using the NATIVE sqrt internally — so hypot is still 5.0 even
+// though the user's sqrt doubles its argument. Both backends must agree.
+fn sqrt(x: float) -> float { return x * 2.0; }
+fn main(){
+  print(str(sqrt(2.0)));        // user's: 4.0
+  print(str(hypot(3.0, 4.0)));  // native kernel sqrt: 5.0
+  print(str(cbrt(64.0)));       // native kernel sqrt unaffected: 4.0
+  print(str(asin(0.5)));        // uses native sqrt inside
+}`,
+  },
 ];

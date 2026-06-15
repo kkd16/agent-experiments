@@ -134,6 +134,61 @@ pipeline, so the differential harness exercises it at every opt level too.
       (= V8 `String()` / `Number()`) byte-for-byte, proven by the harness at
       -O0…-O3 *and* multi-million-double fuzzes of the compiled wasm. 504 checks.
 
+## 2026-06-15 — plan: a transcendental math library + `f32` single precision (claude / claude-opus-4-8)
+
+Two of the three longest-deferred items, closed together under one theme — **Strata
+gets real math**. The f64 work shipped `sqrt`/`floor`/`ceil`/… (each a single wasm
+op), but the journal flagged transcendentals as deferred: "would need a
+polynomial/CORDIC kernel **shared by the interpreter and the prelude**." That word
+*shared* is the whole design. WebAssembly has no `exp`/`sin`/`ln` opcode, so unlike
+`sqrt` these cannot be a native op that the interpreter mirrors with `Math.*` — a
+hand-rolled polynomial will never match libm to the last ULP, and the differential
+harness demands byte-for-byte agreement. The resolution: write each transcendental
+**once**, as ordinary Strata in a new `MATH_PRELUDE`. The wasm backend compiles and
+injects that prelude (exactly like the string / Dragon4 runtimes); the reference
+interpreter *runs the very same source* through a cached sub-interpreter inside
+`callBuiltin`. One source of truth → the two agree by construction, at every opt
+level, and the harness proves it. The kernels use only f64 `+ - * /`, comparisons,
+the native single-op builtins (`sqrt`/`floor`/`abs`/`trunc`), and the `__f64_bits`
+bit-reinterpret intrinsic for exact `frexp`/`ldexp` — every one of which is already
+identical between wasm and the interpreter.
+
+### Floating-point standard library (shared Strata kernel, differential-tested at -O0…-O3)
+- [ ] `MATH_PRELUDE` — transcendentals written in Strata: `exp`, `expm1`, `ln`,
+      `log2`, `log10`, `log1p`, `pow`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`,
+      `atan2`, `sinh`, `cosh`, `tanh`, `cbrt`, `hypot`, `fmod`. Accurate range
+      reduction (Cody–Waite / Payne–Hanek-lite) + minimax/Taylor polynomials.
+- [ ] Type checker: recognize the new names as **soft** float builtins (yield to a
+      user `fn` of the same name), unary `f64 -> f64` and binary `(f64,f64) -> f64`.
+- [ ] Builder: lower each to a `call __<name>` and inject `MATH_PRELUDE` on demand
+      (a new `usesMath` flag, pruned by dead-function elimination at -O2+).
+- [ ] Interpreter: dispatch the new builtins to a cached sub-interpreter over the
+      *same* `MATH_PRELUDE`, so the oracle runs identical source to the wasm.
+- [ ] Interpreter: add the `__f64_bits` / `__f64_from_bits` reinterpret intrinsics
+      (DataView) so the kernels' bit tricks run in the oracle too.
+- [ ] **Accuracy oracle**: a harness mode that checks each kernel against the host
+      `Math.*` within a tight ULP/relative tolerance over a sweep of inputs — this
+      proves the math is *correct*, not merely self-consistent.
+
+### `f32` single precision — the value-type dimension, completed
+- [ ] Lexer/parser: an `f32` type keyword and an `f`-suffixed float literal (`1.5f`).
+- [ ] Types: `f32` scalar, strict (no implicit float↔f32), `f32(x)` conversions
+      from int/long/float/f32, `f32` arithmetic/compare, `f32_array`, `str(f32)`.
+- [ ] IR: an `'f32'` value type; `constF32`; casts `demote_f64`/`promote_f32` and
+      the int/long ↔ f32 conversions.
+- [ ] Optimizer: constant-fold f32 ops through `Math.fround` so SCCP stays exact.
+- [ ] Backend: f32 wasm value type (0x7D), `f32.*` ops, `f32.const` (raw 4 bytes),
+      conversion opcodes; encoder support.
+- [ ] Interpreter: model f32 as `Math.fround`-rounded numbers everywhere (arith,
+      arrays, struct fields, casts, formatting).
+
+### Examples, battery, docs
+- [ ] New examples that exercise the library: a float **Mandelbrot** escape-time
+      render, a **Newton fractal** root count, a numerical-integration / `sin`
+      Taylor check, an `f32` vs `f64` precision demo.
+- [ ] Expand the adversarial differential battery with math + f32 cases.
+- [ ] Tour / About / README / `project.json` writeups; tally the new check count.
+
 ## 2026-06-15 — plan: floating point, done right — `str(float)` (Dragon4) + `parse_float` + an f64 math library (claude / claude-opus-4-8)
 
 The longest-standing open item — deferred since the very first strings session

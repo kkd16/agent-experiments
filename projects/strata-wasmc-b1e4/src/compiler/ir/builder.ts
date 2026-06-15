@@ -2,7 +2,7 @@ import type { BinaryOp, Block, Expr, Program, Stmt, Ty } from '../ast';
 import type { ConstNum, IRType, RetType } from './ir';
 import { parse } from '../parser';
 import { typecheck } from '../types';
-import { STRING_PRELUDE, FLOAT_PRELUDE } from './prelude';
+import { STRING_PRELUDE, FLOAT_PRELUDE, MATH_PRELUDE } from './prelude';
 import type { StructLayout } from '../struct';
 import { computeLayouts } from '../struct';
 
@@ -120,12 +120,23 @@ const FLOAT_UNARY_SUB: Record<string, string> = {
 };
 const FLOAT_BINARY_SUB: Record<string, string> = { fmin: 'min', fmax: 'max', copysign: 'copysign' };
 
+// Transcendental math builtins. Unlike the single-op floats above, each lowers to
+// a call into the MATH_PRELUDE kernel `__<name>` (injected on demand, like the
+// string / float-format runtimes) and returns f64.
+const MATH_UNARY = new Set([
+  'exp', 'expm1', 'ln', 'log2', 'log10', 'log1p',
+  'sin', 'cos', 'tan', 'asin', 'acos', 'atan',
+  'sinh', 'cosh', 'tanh', 'cbrt',
+]);
+const MATH_BINARY = new Set(['pow', 'atan2', 'hypot', 'fmod']);
+
 class FnBuilder {
   blocks: PBlock[] = [];
   varType = new Map<string, IRType>();
   usesMemory = false;
   usesStrings = false;
   usesFloatFmt = false;
+  usesMath = false;
   private cur!: PBlock;
   private blockCounter = 0;
   private tempCounter = 0;
@@ -152,7 +163,7 @@ class FnBuilder {
     this.userFns = userFns;
   }
 
-  build(): { fn: PFunc; usesMemory: boolean; usesStrings: boolean; usesFloatFmt: boolean } {
+  build(): { fn: PFunc; usesMemory: boolean; usesStrings: boolean; usesFloatFmt: boolean; usesMath: boolean } {
     const entry = this.newBlock();
     this.cur = entry;
     this.scopes = [new Map()];
@@ -174,7 +185,7 @@ class FnBuilder {
       varType: this.varType,
       exported: this.exported,
     };
-    return { fn, usesMemory: this.usesMemory, usesStrings: this.usesStrings, usesFloatFmt: this.usesFloatFmt };
+    return { fn, usesMemory: this.usesMemory, usesStrings: this.usesStrings, usesFloatFmt: this.usesFloatFmt, usesMath: this.usesMath };
   }
 
   // --- block & scope plumbing ---
@@ -698,6 +709,14 @@ class FnBuilder {
       const b = this.lowerExpr(e.args[1])!;
       return this.def('f64', 'fbin', FLOAT_BINARY_SUB[name], [a, b]);
     }
+    // Transcendental math builtins lower to a call into the MATH_PRELUDE kernel
+    // `__<name>` (pulled in via `usesMath`); the kernel is ordinary Strata that
+    // the interpreter runs too, so the two backends agree bit-for-bit.
+    if ((MATH_UNARY.has(name) || MATH_BINARY.has(name)) && !this.userFns.has(name)) {
+      this.usesMath = true;
+      const margs = e.args.map((a) => this.lowerExpr(a)!);
+      return this.def('f64', 'call', '__' + name, margs);
+    }
     const args = e.args.map((a) => this.lowerExpr(a)!);
     const ret = retTypeOf(e.ty!);
     if (ret === 'void') {
@@ -804,6 +823,7 @@ export function buildPreIR(prog: Program): PModule {
   let usesMemory = false;
   let usesStrings = false;
   let usesFloatFmt = false;
+  let usesMath = false;
   // Only the entry point is exported, so the optimizer is free to delete a
   // function once every call to it has been inlined. If a program has no `main`,
   // fall back to exporting everything so it can still be driven externally.
@@ -816,10 +836,11 @@ export function buildPreIR(prog: Program): PModule {
     const params = d.params.map((p) => ({ name: p.name, ty: irTypeOf(p.ty) }));
     const exported = hasMain ? d.name === 'main' : true;
     const fb = new FnBuilder(d.name, params, retTypeOf(d.retTy), d.body, exported, pool, layouts, userFns);
-    const { fn, usesMemory: m, usesStrings: s, usesFloatFmt: ff } = fb.build();
+    const { fn, usesMemory: m, usesStrings: s, usesFloatFmt: ff, usesMath: mm } = fb.build();
     usesMemory = usesMemory || m;
     usesStrings = usesStrings || s;
     usesFloatFmt = usesFloatFmt || ff;
+    usesMath = usesMath || mm;
     funcs.push(fn);
   }
 
@@ -863,6 +884,25 @@ export function buildPreIR(prog: Program): PModule {
       if (d.kind !== 'fn') continue;
       const params = d.params.map((p) => ({ name: p.name, ty: irTypeOf(p.ty) }));
       const fb = new FnBuilder(d.name, params, retTypeOf(d.retTy), d.body, false, pool, layouts, userFns);
+      funcs.push(fb.build().fn);
+    }
+  }
+
+  // The transcendental math library is a third self-contained prelude, written in
+  // Strata and compiled through this very pipeline (so it is differential-tested
+  // too), injected only when a program calls a math builtin and pruned by
+  // dead-function elimination at -O2+. Its kernels are built with an *empty*
+  // user-function set so their internal `sqrt`/`floor`/… always resolve to the
+  // native single-op builtins — exactly as the isolated interpreter kernel does —
+  // even if the user program happens to define `fn sqrt`.
+  if (usesMath) {
+    const mathProg = parse(MATH_PRELUDE);
+    typecheck(mathProg, { lowLevel: true });
+    const noUserFns = new Set<string>();
+    for (const d of mathProg.decls) {
+      if (d.kind !== 'fn') continue;
+      const params = d.params.map((p) => ({ name: p.name, ty: irTypeOf(p.ty) }));
+      const fb = new FnBuilder(d.name, params, retTypeOf(d.retTy), d.body, false, pool, layouts, noUserFns);
       funcs.push(fb.build().fn);
     }
   }

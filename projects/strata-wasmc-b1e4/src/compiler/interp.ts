@@ -1,5 +1,8 @@
 import { CompileError } from './diagnostics';
 import type { Block, Expr, Program, Stmt, StructDecl, Ty } from './ast';
+import { parse } from './parser';
+import { typecheck } from './types';
+import { MATH_PRELUDE } from './ir/prelude';
 
 // A straightforward tree-walking interpreter. Its sole purpose is to be an
 // independent oracle: the test harness runs every program through both this
@@ -133,6 +136,31 @@ const copysign = (a: number, b: number): number => {
   const mag = Math.abs(a);
   return signBit(b) ? -mag : mag;
 };
+
+// --- transcendental math oracle ----------------------------------------------
+// WebAssembly has no exp/sin/ln opcodes, so these cannot be a native op the
+// interpreter mirrors with `Math.*` (a hand-rolled polynomial would never match
+// the wasm result to the last ULP). Instead they are written once, in Strata, in
+// `MATH_PRELUDE`: the wasm backend compiles and injects that source, and the
+// interpreter runs THE SAME source here through a sub-interpreter. One source of
+// truth ⇒ the compiled wasm and this oracle agree bit-for-bit. The kernel names
+// are the user-facing builtins; each maps to the prelude function `__<name>`.
+const MATH_KERNELS = new Set([
+  'exp', 'expm1', 'ln', 'log2', 'log10', 'log1p',
+  'sin', 'cos', 'tan', 'asin', 'acos', 'atan', 'atan2',
+  'sinh', 'cosh', 'tanh', 'cbrt', 'pow', 'hypot', 'fmod',
+]);
+let _mathProg: Program | null = null;
+function mathKernel(name: string, args: RtValue[]): number {
+  if (!_mathProg) {
+    const p = parse(MATH_PRELUDE);
+    typecheck(p, { lowLevel: true });
+    _mathProg = p;
+  }
+  // A fresh sub-interpreter per call keeps the shared step budget from
+  // accumulating across the (many) kernel invocations a program may make.
+  return new Interpreter(_mathProg).run('__' + name, args) as number;
+}
 
 // `parse_float` oracle — the identical correctly-rounded decimal->double
 // algorithm the Strata `__parse_float` runs (BigInt here, base-2^16 limbs there),
@@ -631,7 +659,16 @@ export function callBuiltin(
   out: string[],
 ): BuiltinResult {
   const H = (value: RtValue): BuiltinResult => ({ handled: true, value });
+  // Transcendental builtins run the shared MATH_PRELUDE kernel (see mathKernel),
+  // the very source the wasm backend compiles — so the two agree bit-for-bit.
+  if (MATH_KERNELS.has(name)) return H(mathKernel(name, argv));
   switch (name) {
+    // Float bit-reinterpretation intrinsics (used by the MATH_PRELUDE kernels for
+    // exact frexp/ldexp; available to the interpreter so it can run them). Set +
+    // get with the same byte order, so the resulting i64 equals the IEEE bits the
+    // wasm `i64.reinterpret_f64` produces.
+    case '__f64_bits': { _dv.setFloat64(0, argv[0] as number); return H(_dv.getBigInt64(0)); }
+    case '__f64_from_bits': { _dv.setBigInt64(0, argv[0] as bigint); return H(_dv.getFloat64(0)); }
     case 'print': {
       const k = argKinds[0];
       if (k === 'str') out.push(argv[0] as string);
