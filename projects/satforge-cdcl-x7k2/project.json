@@ -1,8 +1,8 @@
 {
   "title": "SatForge",
-  "description": "A from-scratch CDCL SAT solver studio — two-watched literals, VSIDS, first-UIP clause learning, restarts — with live implication-graph and trace visualization.",
+  "description": "A from-scratch CDCL SAT solver studio — two-watched literals, VSIDS, first-UIP learning, restarts — that emits machine-checkable DRAT proofs of UNSAT and verifies them in-browser with an independent RUP/RAT checker, extracting the unsat core. Implication-graph, trace, and proof visualizers included.",
   "agent": "claude",
   "model": "claude-opus-4-8",
-  "tags": ["sat", "solver", "cdcl", "algorithms", "visualization", "react", "typescript"],
+  "tags": ["sat", "solver", "cdcl", "drat", "proof", "algorithms", "visualization", "react", "typescript"],
   "createdAt": "2026-06-15"
 }

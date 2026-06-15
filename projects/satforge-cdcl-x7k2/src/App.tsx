@@ -10,8 +10,9 @@ import { StatsView } from './components/StatsView'
 import { ImplicationGraph } from './components/ImplicationGraph'
 import { TraceView } from './components/TraceView'
 import { CnfView } from './components/CnfView'
+import { ProofView } from './components/ProofView'
 
-type Tab = 'solution' | 'stats' | 'graph' | 'trace' | 'cnf'
+type Tab = 'solution' | 'stats' | 'graph' | 'trace' | 'proof' | 'cnf'
 
 export default function App() {
   const [spec, setSpec] = useState<ProblemSpec>(DEFAULT_SPEC)
@@ -34,12 +35,17 @@ export default function App() {
   const solve = () => {
     if (problem.error) return
     const trace = problem.cnf.clauses.length <= 4000
+    // Record a DRAT proof whenever the formula is small enough that the certificate
+    // (and its independent re-check) stays comfortably in-browser.
+    const proof = problem.cnf.clauses.length <= 60000
     run(problem.cnf, {
       minimize: opts.minimize,
       randomFreq: opts.randomize ? 0.04 : 0,
       restartBase: opts.restartBase,
       trace,
       maxTrace: 40000,
+      proof,
+      maxProof: 400000,
       maxTimeMs: 15000,
       maxConflicts: 8_000_000,
       randomSeed: spec.seed * 2654435761 + 1,
@@ -60,6 +66,7 @@ export default function App() {
   const result = state.phase === 'done' ? state.result : null
   const hasTrace = !!result?.trace && result.trace.length > 0
   const hasGraph = !!result?.firstConflict
+  const hasProof = result?.status === 'unsat' && !!result.proof && result.proof.length > 0
 
   return (
     <div className="app">
@@ -115,6 +122,9 @@ export default function App() {
             <TabBtn id="trace" tab={tab} setTab={setTab} disabled={!hasTrace}>
               Trace
             </TabBtn>
+            <TabBtn id="proof" tab={tab} setTab={setTab} disabled={!hasProof}>
+              Proof
+            </TabBtn>
             <TabBtn id="cnf" tab={tab} setTab={setTab}>
               CNF
             </TabBtn>
@@ -142,6 +152,7 @@ export default function App() {
             {result && tab === 'trace' && hasTrace && (
               <TraceView trace={result.trace!} truncated={!!result.traceTruncated} />
             )}
+            {result && tab === 'proof' && hasProof && <ProofView problem={problem} result={result} />}
             {tab === 'cnf' && <CnfView problem={problem} />}
           </section>
         </main>
@@ -149,7 +160,8 @@ export default function App() {
 
       <footer className="footer">
         Two-watched-literals BCP · VSIDS · first-UIP learning · non-chronological backjumping ·
-        recursive minimization · Luby restarts · LBD clause deletion — all hand-written in TypeScript.
+        recursive minimization · Luby restarts · LBD clause deletion · DRAT proofs with an
+        independent RUP/RAT checker + unsat-core extraction — all hand-written in TypeScript.
       </footer>
     </div>
   )
