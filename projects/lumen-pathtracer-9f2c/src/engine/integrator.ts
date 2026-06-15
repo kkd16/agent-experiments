@@ -38,6 +38,7 @@ import { evalBSDF, isDelta, isSpectral, pdfBSDF, resolveMaterial, sampleBSDF } f
 import { hgPhase, sampleHG } from './phase'
 import { LAMBDA_MAX, LAMBDA_MIN, wavelengthWeight } from './spectrum'
 import type { IntegratorSettings } from './types'
+import { radianceBDPT } from './bdpt'
 
 export interface RayStats {
   rays: number
@@ -46,6 +47,22 @@ export interface RayStats {
 export interface GBuffer {
   albedo: Vec3
   normal: Vec3
+}
+
+// Dispatch a primary ray to the configured light-transport algorithm. Both
+// estimators share this signature so the worker and the single-thread fallback
+// stay agnostic about which is selected.
+export function integrate(
+  scene: Scene,
+  ray: Ray,
+  settings: IntegratorSettings,
+  rng: Rng,
+  stats: RayStats,
+  gbuf?: GBuffer,
+): Vec3 {
+  return settings.integrator === 'bdpt'
+    ? radianceBDPT(scene, ray, settings, rng, stats, gbuf)
+    : radiance(scene, ray, settings, rng, stats, gbuf)
 }
 
 const EPS = 1e-4
@@ -191,7 +208,11 @@ export function radiance(
 
     // ---- Emission (with MIS weighting against the NEE that could have hit it). ----
     if (mat.kind === 'emissive') {
-      const Le = mat.emission
+      // Area lights are one-sided: they emit only from their winding-front face,
+      // exactly as the NEE sampler (scene.sampleLight) treats them. A back-face
+      // hit contributes nothing, so the BSDF-hit and NEE estimators stay
+      // consistent (and bidirectional path tracing agrees term for term).
+      const Le = hit.frontFace ? mat.emission : v(0, 0, 0)
       if (!isBlack(Le)) {
         let w = 1
         if (!specularBounce) {

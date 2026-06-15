@@ -29,6 +29,7 @@ interface Orbit {
 const DEFAULTS: ControlState = {
   sceneId: 'weekend',
   resIndex: 1,
+  integrator: 'pt',
   spp: 512,
   maxDepth: 8,
   rrStart: 4,
@@ -155,6 +156,7 @@ export default function App() {
   const renderKey = JSON.stringify({
     s: ctrl.sceneId,
     r: ctrl.resIndex,
+    it: ctrl.integrator,
     spp: ctrl.spp,
     d: ctrl.maxDepth,
     rr: ctrl.rrStart,
@@ -174,7 +176,7 @@ export default function App() {
     const id = window.setTimeout(() => {
       const res = RES_PRESETS[ctrl.resIndex]
       r.setScene(buildScene(ctrl, orbit))
-      r.setSettings({ maxDepth: ctrl.maxDepth, rrStart: ctrl.rrStart, clampIndirect: ctrl.clampIndirect })
+      r.setSettings({ maxDepth: ctrl.maxDepth, rrStart: ctrl.rrStart, clampIndirect: ctrl.clampIndirect, integrator: ctrl.integrator })
       r.setResolution(res.w, res.h)
       r.setTarget(ctrl.spp)
       r.start()
@@ -201,7 +203,7 @@ export default function App() {
     if (!r) return
     const res = RES_PRESETS[ctrl.resIndex]
     r.setScene(buildScene(ctrl, orbit))
-    r.setSettings({ maxDepth: ctrl.maxDepth, rrStart: ctrl.rrStart, clampIndirect: ctrl.clampIndirect })
+    r.setSettings({ maxDepth: ctrl.maxDepth, rrStart: ctrl.rrStart, clampIndirect: ctrl.clampIndirect, integrator: ctrl.integrator })
     r.setResolution(res.w, res.h)
     r.setTarget(ctrl.spp)
     r.start()
@@ -310,7 +312,7 @@ export default function App() {
       )}
 
       <footer className="footer">
-        Monte-Carlo path tracing · SAH BVH · smooth meshes · Preetham sky + sun NEE · GGX microfacets · MIS · À-Trous denoise — all in TypeScript on the CPU.
+        Unidirectional & bidirectional path tracing · SAH BVH · smooth meshes · Preetham sky + sun NEE · GGX microfacets · MIS · À-Trous denoise — all in TypeScript on the CPU.
       </footer>
     </div>
   )

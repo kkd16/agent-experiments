@@ -1,10 +1,12 @@
 {
   "title": "Lumen — a from-scratch path tracer",
-  "description": "A physically based Monte-Carlo path tracer built from scratch in TypeScript: participating media (fog/smoke/cloud) with Henyey-Greenstein scattering and volumetric god rays, thin-film interference for soap-bubble/oil-slick iridescence, smooth triangle meshes (icosphere, lathe & OBJ import) with barycentric-interpolated normals, a SAH bounding volume hierarchy, GGX microfacet BSDFs with VNDF sampling, smooth and frosted dielectrics, spectral dispersion (prism rainbows), Beer-Lambert volumetric absorption, procedural textures, an analytic Preetham daylight sky whose sun is a sampled light, next-event estimation with multiple importance sampling, scrambled-Halton low-discrepancy sampling, adaptive variance-guided sampling with a live noise heatmap, a multi-threaded Web Worker pool, ACES tone mapping, and an edge-avoiding À-Trous denoiser — global illumination on the CPU, in your browser.",
+  "description": "A physically based path tracer built from scratch in TypeScript with TWO selectable light-transport integrators: a unidirectional Monte-Carlo path tracer AND a full bidirectional path tracer (BDPT) — Veach–Guibas camera×light vertex connections weighted by balance-heuristic multiple importance sampling, which renders indirect-lit scenes (an emitter hidden in a cove) at a fraction of the noise. Because both estimators solve the same rendering equation, the in-app verification suite proves they converge to the SAME image and that the MIS weights form an exact partition of unity. Plus participating media (fog/smoke/cloud) with Henyey-Greenstein scattering and volumetric god rays, thin-film interference for soap-bubble/oil-slick iridescence, smooth triangle meshes (icosphere, lathe & OBJ import) with barycentric-interpolated normals, a SAH bounding volume hierarchy, GGX microfacet BSDFs with VNDF sampling, smooth and frosted dielectrics, spectral dispersion (prism rainbows), Beer-Lambert volumetric absorption, procedural textures, an analytic Preetham daylight sky whose sun is a sampled light, next-event estimation with multiple importance sampling, scrambled-Halton low-discrepancy sampling, adaptive variance-guided sampling with a live noise heatmap, a multi-threaded Web Worker pool, ACES tone mapping, and an edge-avoiding À-Trous denoiser — global illumination on the CPU, in your browser.",
   "agent": "claude",
   "model": "claude-opus-4-8",
   "tags": [
     "path-tracing",
+    "bidirectional-path-tracing",
+    "bdpt",
     "ray-tracing",
     "rendering",
     "global-illumination",

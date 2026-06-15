@@ -5,6 +5,7 @@
 // run in well under a second and surface as a pass/fail panel in the UI.
 
 import { add, cross, dot, len, normalize, scale, sub, v, reflect, refract, luminance } from './vec3'
+import type { Vec3 } from './vec3'
 import { Rng } from './rng'
 import { sampleBSDF, pdfBSDF, evalBSDF, resolveMaterial } from './material'
 import type { Material } from './material'
@@ -14,6 +15,7 @@ import { Bvh } from './bvh'
 import { Scene } from './scene'
 import { radiance } from './integrator'
 import type { RayStats } from './integrator'
+import { radianceBDPT, areaDensity, misPartitionResidual } from './bdpt'
 import type { SceneDef } from './types'
 import { evalTexture } from './texture'
 import type { Texture } from './texture'
@@ -758,6 +760,151 @@ function testQmcDiscrepancy(): { pass: boolean; detail: string } {
   return { pass: dH < dR, detail: `Halton D*=${dH.toExponential(2)} < random D*=${dR.toExponential(2)}` }
 }
 
+// ---------------------------------------------------------------------------
+// Bidirectional path tracing (BDPT)
+// ---------------------------------------------------------------------------
+
+// A small, closed, all-diffuse box with a one-sided ceiling light — a clean
+// oracle: no specular, no environment, so the unidirectional and bidirectional
+// integrators must converge to the same image.
+function diffuseBox(): SceneDef {
+  const L = 5
+  const q = (p0: Vec3, p1: Vec3, p2: Vec3, p3: Vec3, m: number): SceneDef['prims'] => [
+    { kind: 'tri', p0, p1, p2, material: m },
+    { kind: 'tri', p0, p1: p2, p2: p3, material: m },
+  ]
+  const prims: SceneDef['prims'] = []
+  prims.push(...q(v(0, 0, 0), v(L, 0, 0), v(L, 0, L), v(0, 0, L), 0)) // floor
+  prims.push(...q(v(0, L, 0), v(0, L, L), v(L, L, L), v(L, L, 0), 0)) // ceiling
+  prims.push(...q(v(0, 0, L), v(L, 0, L), v(L, L, L), v(0, L, L), 0)) // back
+  prims.push(...q(v(0, 0, 0), v(0, 0, L), v(0, L, L), v(0, L, 0), 1)) // red
+  prims.push(...q(v(L, 0, 0), v(L, L, 0), v(L, L, L), v(L, 0, L), 2)) // green
+  // Down-facing ceiling light.
+  prims.push(...q(v(1.5, L - 0.02, 1.5), v(3.5, L - 0.02, 1.5), v(3.5, L - 0.02, 3.5), v(1.5, L - 0.02, 3.5), 3))
+  prims.push({ kind: 'sphere', center: v(1.7, 0.9, 2.2), radius: 0.9, material: 0 })
+  return {
+    name: 'oracle-box',
+    materials: [
+      { kind: 'diffuse', albedo: v(0.72, 0.72, 0.72) },
+      { kind: 'diffuse', albedo: v(0.63, 0.07, 0.05) },
+      { kind: 'diffuse', albedo: v(0.14, 0.45, 0.09) },
+      { kind: 'emissive', emission: v(16, 13, 9) },
+    ],
+    prims,
+    camera: { eye: v(2.5, 2.5, -3), target: v(2.5, 2.4, 2.5), up: v(0, 1, 0), vfovDeg: 55, aperture: 0, focusDist: 5 },
+    env: { kind: 'solid', color: v(0, 0, 0) },
+  }
+}
+
+// Mean image luminance from a fixed grid of primary rays, traced by either
+// integrator. Deterministic (fixed seed) so the comparison is reproducible.
+function meanLuminance(def: SceneDef, bdpt: boolean, W: number, H: number, spp: number, seed: number): number {
+  const scene = new Scene(def)
+  const c = def.camera
+  // A minimal pinhole camera basis (aperture 0).
+  const fwd = normalize(sub(c.target, c.eye))
+  const right = normalize(cross(fwd, c.up))
+  const upv = cross(right, fwd)
+  const halfH = Math.tan((c.vfovDeg * Math.PI) / 180 / 2)
+  const halfW = halfH * (W / H)
+  const rng = new Rng(seed, 5)
+  const settings = { maxDepth: 6, rrStart: 100, clampIndirect: 0, integrator: (bdpt ? 'bdpt' : 'pt') as 'bdpt' | 'pt' }
+  const stats: RayStats = { rays: 0 }
+  let sum = 0
+  for (let s = 0; s < spp; s++) {
+    for (let y = 0; y < H; y++) {
+      for (let x = 0; x < W; x++) {
+        const px = ((x + rng.next()) / W) * 2 - 1
+        const py = 1 - ((y + rng.next()) / H) * 2
+        const dir = normalize(
+          add(add(scale(fwd, 1), scale(right, px * halfW)), scale(upv, py * halfH)),
+        )
+        const ray = { o: c.eye, d: dir, tMax: Infinity }
+        const Lr = bdpt
+          ? radianceBDPT(scene, ray, settings, rng, stats)
+          : radiance(scene, ray, settings, rng, stats)
+        sum += luminance(Lr)
+      }
+    }
+  }
+  return sum / (spp * W * H)
+}
+
+// 30 — BDPT energy: a diffuse sphere in a white furnace re-radiates exactly its
+// albedo (no triangle lights, so transport is the camera walk + env on escape).
+function testBdptFurnace(): { pass: boolean; detail: string } {
+  const def: SceneDef = {
+    name: 'furnace',
+    materials: [{ kind: 'diffuse', albedo: v(0.8, 0.8, 0.8) }],
+    prims: [{ kind: 'sphere', center: v(0, 0, 0), radius: 1, material: 0 }],
+    camera: { eye: v(0, 0, 5), target: v(0, 0, 0), up: v(0, 1, 0), vfovDeg: 30, aperture: 0, focusDist: 5 },
+    env: { kind: 'solid', color: v(1, 1, 1) },
+  }
+  const scene = new Scene(def)
+  const rng = new Rng(4242, 6)
+  const settings = { maxDepth: 16, rrStart: 100, clampIndirect: 0, integrator: 'bdpt' as const }
+  const stats: RayStats = { rays: 0 }
+  let sum = 0
+  const N = 20000
+  for (let i = 0; i < N; i++) {
+    const L = radianceBDPT(scene, { o: v(0, 0, 5), d: v(0, 0, -1), tMax: Infinity }, settings, rng, stats)
+    sum += luminance(L)
+  }
+  const measured = sum / N
+  const ok = approx(measured, 0.8, 2e-2)
+  return { pass: ok, detail: `reflectance=${measured.toFixed(4)}, expected≈0.800` }
+}
+
+// 31 — The oracle: BDPT and the path tracer must agree on the same image. We
+// render a diffuse box with both and compare mean luminance; disagreement beyond
+// Monte-Carlo error would expose a bias in the bidirectional estimator.
+function testBdptVsPt(): { pass: boolean; detail: string } {
+  const def = diffuseBox()
+  const W = 12,
+    H = 9,
+    spp = 280
+  const pt = meanLuminance(def, false, W, H, spp, 1234)
+  const bd = meanLuminance(def, true, W, H, spp, 5678)
+  const rel = Math.abs(pt - bd) / pt
+  return { pass: rel < 0.04, detail: `PT=${pt.toFixed(4)} BDPT=${bd.toFixed(4)} rel diff=${(rel * 100).toFixed(2)}% (<4%)` }
+}
+
+// 32 — MIS partition of unity: for a fixed transport path the weights of every
+// strategy that can sample it sum to 1 — the exact property that makes the
+// bidirectional estimator unbiased. A deterministic, noise-free proof.
+function testBdptMis(): { pass: boolean; detail: string } {
+  // A scene whose last material is the emitter and whose lights[0] is a triangle
+  // covering the test path's light vertex.
+  const def: SceneDef = {
+    name: 'mis',
+    materials: [
+      { kind: 'diffuse', albedo: v(0.5, 0.5, 0.5) },
+      { kind: 'emissive', emission: v(10, 10, 10) },
+    ],
+    prims: [
+      { kind: 'tri', p0: v(-1, 3, -1), p1: v(1, 3, -1), p2: v(1, 3, 1), material: 1 },
+      { kind: 'tri', p0: v(-1, 3, -1), p1: v(1, 3, 1), p2: v(-1, 3, 1), material: 1 },
+    ],
+    camera: { eye: v(0, 1, -3), target: v(0, 0, 0), up: v(0, 1, 0), vfovDeg: 40, aperture: 0, focusDist: 3 },
+    env: { kind: 'solid', color: v(0, 0, 0) },
+  }
+  const scene = new Scene(def)
+  const residual = misPartitionResidual(scene)
+  return { pass: residual < 1e-9, detail: `|Σ w(s,t) − 1| = ${residual.toExponential(2)}` }
+}
+
+// 33 — Solid-angle → area density conversion (pdf_A = pdf_ω·|cosθ|/d²) that the
+// BDPT MIS recurrence relies on, checked against a hand-derived value.
+function testAreaDensity(): { pass: boolean; detail: string } {
+  // Source at origin, target 2 units away with its normal tilted 60° off the
+  // connecting direction: |cos| = 0.5, d² = 4, so pdf_A = 0.3·0.5/4 = 0.0375.
+  const toNg = normalize(v(Math.sin(Math.PI / 3), 0, -Math.cos(Math.PI / 3))) // 60° from −z
+  const got = areaDensity(0.3, v(0, 0, 0), v(0, 0, 2), toNg)
+  const expected = (0.3 * 0.5) / 4
+  const ok = approx(got, expected, 1e-9)
+  return { pass: ok, detail: `pdf_A=${got.toFixed(6)}, expected=${expected.toFixed(6)}` }
+}
+
 export function runSelfTests(): TestResult[] {
   return [
     test('Vector algebra identities', testVectorMath),
@@ -789,5 +936,9 @@ export function runSelfTests(): TestResult[] {
     test('Absorbing volume e^(−σ·chord)', testVolumeAbsorb),
     test('Thin-film R∈[0,1], d→0 Fresnel, iridescent', testThinFilm),
     test('Halton L2 discrepancy < random', testQmcDiscrepancy),
+    test('BDPT white furnace — diffuse ρ=0.8', testBdptFurnace),
+    test('BDPT ≡ path tracer (diffuse box oracle)', testBdptVsPt),
+    test('BDPT MIS weights partition to 1', testBdptMis),
+    test('Solid-angle → area density conversion', testAreaDensity),
   ]
 }
