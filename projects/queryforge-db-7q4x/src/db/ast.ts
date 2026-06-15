@@ -88,6 +88,8 @@ export interface CastExpr {
   kind: 'cast'
   expr: Expr
   type: ColumnType
+  /** Target fractional scale for `CAST(x AS DECIMAL(p, s))`. */
+  scale?: number
 }
 /** A scalar subquery: `(SELECT … )` yielding (at most) one row / one column. */
 export interface SubqueryExpr {
@@ -175,6 +177,10 @@ export interface ColumnDef {
   primaryKey: boolean
   notNull: boolean
   unique: boolean
+  /** Declared precision for `DECIMAL(precision, scale)` (informational). */
+  precision?: number
+  /** Declared fractional scale for `DECIMAL(precision, scale)`; rounds on store. */
+  scale?: number
   /** A `DEFAULT <expr>` supplying the value when the column is omitted on INSERT. */
   default?: Expr
 }

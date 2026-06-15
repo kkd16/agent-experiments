@@ -41,7 +41,11 @@ function TableCard({ table, onInsert }: { table: TableInfo; onInsert: (t: string
             return (
             <button key={c.name} className="schema-col" onClick={() => onInsert(c.name)}>
               <span className="schema-col-name">{c.name}</span>
-              <span className="schema-col-type">{c.type}</span>
+              <span className="schema-col-type">
+                {c.type === 'DECIMAL' && c.precision !== undefined
+                  ? `DECIMAL(${c.precision}${c.scale !== undefined ? `,${c.scale}` : ''})`
+                  : c.type}
+              </span>
               {c.primaryKey && <span className="badge pk">PK</span>}
               {c.unique && !c.primaryKey && <span className="badge uq">UQ</span>}
               {c.notNull && !c.primaryKey && <span className="badge nn">NN</span>}

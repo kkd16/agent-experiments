@@ -89,6 +89,7 @@ function renderValue(raw: string, type: ColumnType): string {
   switch (type) {
     case 'INTEGER':
     case 'REAL':
+    case 'DECIMAL':
       return REAL_RE.test(v) || INT_RE.test(v) ? v : sqlString(raw)
     case 'BOOLEAN':
       if (/^(true|t)$/i.test(v)) return 'TRUE'

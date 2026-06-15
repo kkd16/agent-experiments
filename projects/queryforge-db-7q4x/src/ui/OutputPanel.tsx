@@ -4,6 +4,7 @@
 import { useState } from 'react'
 import { formatValue, type SqlValue } from '../db/types'
 import { isTemporal } from '../db/temporal'
+import { isDecimal } from '../db/decimal'
 import type { QueryResult, RowsResult } from '../db/engine'
 import type { RunError } from './useEngine'
 import { PlanTree } from './PlanTree'
@@ -13,6 +14,7 @@ function Cell({ v }: { v: SqlValue }) {
   if (v === null) return <span className="cell-null">NULL</span>
   if (typeof v === 'boolean') return <span className="cell-bool">{v ? 'true' : 'false'}</span>
   if (typeof v === 'number') return <span className="cell-num">{formatValue(v)}</span>
+  if (isDecimal(v)) return <span className="cell-num cell-decimal">{formatValue(v)}</span>
   if (isTemporal(v)) return <span className="cell-temporal">{formatValue(v)}</span>
   return <span className="cell-text">{v}</span>
 }

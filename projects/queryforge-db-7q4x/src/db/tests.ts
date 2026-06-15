@@ -3,7 +3,7 @@
 // build is what gets verified.
 
 import { Engine, type RowsResult } from './engine'
-import { SEED_SQL } from './sampleData'
+import { SEED_SQL, SAMPLE_QUERIES } from './sampleData'
 import { csvToSql, parseCsv } from './csv'
 import { Database } from './catalog'
 import type { Row } from './catalog'
@@ -1472,6 +1472,147 @@ test('constraint', 'constraints survive a snapshot round-trip', () => {
   throws(e2, 'INSERT INTO c (id, pid) VALUES (12, 77)', 'FOREIGN KEY')
   e2.execute('DELETE FROM p WHERE id = 1')
   assert(scalar(e2, 'SELECT COUNT(*) FROM c') === 0, 'ON DELETE CASCADE round-tripped')
+})
+
+// --- exact numerics: DECIMAL / NUMERIC -------------------------------------
+/** The formatted text of a single-cell scalar result (handy for DECIMALs). */
+function fstr(e: Engine, sql: string): string {
+  return formatValue(scalar(e, sql))
+}
+
+test('decimal', 'typed literal and exact addition (no float error)', () => {
+  const e = new Engine()
+  assert(fstr(e, "SELECT DECIMAL '0.1' + DECIMAL '0.2'") === '0.3', '0.1 + 0.2 must be exactly 0.3')
+  // The same sum in binary floating point is famously *not* 0.3 — the contrast.
+  assert(fstr(e, 'SELECT 0.1 + 0.2') === '0.30000000000000004', 'REAL keeps its float behaviour')
+  assert(fstr(e, "SELECT NUMERIC '2' * DEC '3'") === '6', 'NUMERIC / DEC literal aliases work')
+})
+test('decimal', 'scale rules for + - * /', () => {
+  const e = new Engine()
+  assert(fstr(e, "SELECT DECIMAL '1.50' + DECIMAL '2.5'") === '4.00', 'add keeps max scale')
+  assert(fstr(e, "SELECT DECIMAL '2.50' * DECIMAL '4.0'") === '10.000', 'mul adds scales')
+  assert(fstr(e, "SELECT DECIMAL '10' / DECIMAL '4'") === '2.500000', 'div uses min scale 6')
+  assert(fstr(e, "SELECT DECIMAL '1' / DECIMAL '3'") === '0.333333', 'div rounds half-up to scale 6')
+})
+test('decimal', 'mixing with INTEGER stays exact, REAL degrades', () => {
+  const e = new Engine()
+  assert(fstr(e, "SELECT DECIMAL '19.99' * 3") === '59.97', 'decimal * integer is exact decimal')
+  assert(eq(scalar(e, "SELECT TYPEOF(DECIMAL '1.5' + 1)"), 'decimal'), 'decimal + int -> decimal')
+  assert(eq(scalar(e, "SELECT TYPEOF(DECIMAL '1.5' + 0.25)"), 'real'), 'decimal + real -> real')
+})
+test('decimal', 'cross-type comparison and equality (1.50 = 1.5 = numeric)', () => {
+  const e = new Engine()
+  assert(scalar(e, "SELECT DECIMAL '1.50' = DECIMAL '1.5'") === true, '1.50 = 1.5')
+  assert(scalar(e, "SELECT DECIMAL '2.00' = 2") === true, 'decimal = integer')
+  assert(scalar(e, "SELECT DECIMAL '0.50' = 0.5") === true, 'decimal = real')
+  assert(scalar(e, "SELECT DECIMAL '10' > DECIMAL '9.99'") === true, 'ordering')
+})
+test('decimal', 'DECIMAL(p,s) column rounds on store; CAST honours scale', () => {
+  const e = fresh('CREATE TABLE m (id INTEGER, bal DECIMAL(12,2))')
+  e.execute('INSERT INTO m VALUES (1, 19.999), (2, 19.991), (3, 100)')
+  assert(fstr(e, 'SELECT bal FROM m WHERE id = 1') === '20.00', '19.999 rounds to 20.00')
+  assert(fstr(e, 'SELECT bal FROM m WHERE id = 2') === '19.99', '19.991 rounds to 19.99')
+  assert(fstr(e, 'SELECT bal FROM m WHERE id = 3') === '100.00', 'integer stored at scale 2')
+  assert(fstr(e, "SELECT CAST('3.14159' AS DECIMAL(10,2))") === '3.14', 'CAST(... DECIMAL(10,2))')
+})
+test('decimal', 'SUM and AVG are exact over a money column', () => {
+  const e = fresh('CREATE TABLE t (x DECIMAL(12,2))')
+  e.execute('INSERT INTO t VALUES (0.10), (0.20), (0.30)')
+  assert(fstr(e, 'SELECT SUM(x) FROM t') === '0.60', 'exact SUM = 0.60 (not 0.6000000001)')
+  assert(eq(scalar(e, 'SELECT TYPEOF(SUM(x)) FROM t'), 'decimal'), 'SUM stays DECIMAL')
+  assert(fstr(e, 'SELECT AVG(x) FROM t') === '0.200000', 'exact AVG')
+})
+test('decimal', 'GROUP BY aggregates and ORDER BY on a DECIMAL column', () => {
+  const e = fresh('CREATE TABLE s (g TEXT, v DECIMAL(10,2))')
+  e.execute("INSERT INTO s VALUES ('a',1.11),('a',2.22),('b',10.00),('b',0.01)")
+  const rows = rowsOf(e, 'SELECT g, SUM(v) FROM s GROUP BY g ORDER BY g')
+  assert(eq([formatValue(rows[0][1]), formatValue(rows[1][1])], ['3.33', '10.01']), 'grouped exact sums')
+  const ord = rowsOf(e, 'SELECT v FROM s ORDER BY v').map((r) => formatValue(r[0]))
+  assert(eq(ord, ['0.01', '1.11', '2.22', '10.00']), 'numeric (not lexical) ordering')
+})
+test('decimal', 'window SUM/AVG OVER are exact', () => {
+  const e = fresh('CREATE TABLE w (id INTEGER, amt DECIMAL(12,2))')
+  e.execute('INSERT INTO w VALUES (1,10.10),(2,20.20),(3,0.01)')
+  const run = rowsOf(e, 'SELECT SUM(amt) OVER (ORDER BY id) FROM w').map((r) => formatValue(r[0]))
+  assert(eq(run, ['10.10', '30.30', '30.31']), 'running window SUM is exact')
+  assert(fstr(e, 'SELECT AVG(amt) OVER () FROM w LIMIT 1') === '10.103333', 'window AVG exact')
+})
+test('decimal', 'B+Tree index scan over a DECIMAL column', () => {
+  const e = fresh('CREATE TABLE p (id INTEGER, price DECIMAL(10,2)); CREATE INDEX ip ON p(price)')
+  e.execute('INSERT INTO p VALUES (1,9.99),(2,19.99),(3,5.05),(4,5.05)')
+  assert(scalar(e, 'SELECT COUNT(*) FROM p WHERE price = 5.05') === 2, 'index equality on decimal')
+  const r = rowsOf(e, 'SELECT id FROM p WHERE price BETWEEN 5.00 AND 10.00 ORDER BY id').map((x) => x[0])
+  assert(eq(r, [1, 3, 4]), 'index range on decimal')
+})
+test('decimal', 'rounding family: ROUND / TRUNC / FLOOR / CEIL / ABS / SIGN', () => {
+  const e = new Engine()
+  assert(fstr(e, "SELECT ROUND(DECIMAL '2.345', 2)") === '2.35', 'ROUND half-up')
+  assert(fstr(e, "SELECT ROUND(DECIMAL '123.456', -1)") === '120', 'ROUND negative places')
+  assert(fstr(e, "SELECT TRUNC(DECIMAL '2.789', 1)") === '2.7', 'TRUNC toward zero')
+  assert(fstr(e, "SELECT FLOOR(DECIMAL '-2.1')") === '-3', 'FLOOR toward -inf')
+  assert(fstr(e, "SELECT CEIL(DECIMAL '2.1')") === '3', 'CEIL toward +inf')
+  assert(fstr(e, "SELECT ABS(DECIMAL '-5.25')") === '5.25', 'ABS')
+  assert(scalar(e, "SELECT SIGN(DECIMAL '-5.25')") === -1, 'SIGN')
+  assert(fstr(e, "SELECT MOD(DECIMAL '10.5', DECIMAL '3')") === '1.5', 'MOD keeps scale and dividend sign')
+})
+test('decimal', 'introspection: TYPEOF / SCALE / PRECISION / DECIMAL() / TO_NUMBER', () => {
+  const e = new Engine()
+  assert(eq(scalar(e, "SELECT TYPEOF(DECIMAL '1.5')"), 'decimal'), 'TYPEOF')
+  assert(scalar(e, "SELECT SCALE(DECIMAL '1.500')") === 3, 'SCALE')
+  assert(scalar(e, "SELECT PRECISION(DECIMAL '12.34')") === 4, 'PRECISION')
+  assert(fstr(e, "SELECT DECIMAL('3.14159', 2)") === '3.14', 'DECIMAL(x, scale) function')
+  assert(fstr(e, "SELECT TO_NUMBER('42.5')") === '42.5', 'TO_NUMBER parses text')
+})
+test('decimal', 'arbitrary precision beyond float (30+ digit integers)', () => {
+  const e = new Engine()
+  assert(
+    fstr(e, "SELECT DECIMAL '123456789012345678901234567890' + 1") === '123456789012345678901234567891',
+    'exact big-integer addition',
+  )
+  assert(fstr(e, "SELECT DECIMAL '0.0000000001' * DECIMAL '0.0000000001'") === '0.00000000000000000001', 'tiny exact product')
+})
+test('decimal', 'TO_CHAR numeric templates', () => {
+  const e = new Engine()
+  assert(fstr(e, "SELECT TO_CHAR(1234.5, 'FM999,999.00')") === '1,234.50', 'group + FM')
+  assert(fstr(e, "SELECT TO_CHAR(1234.567, '$9,999.99')") === '$1,234.57', 'currency + rounding')
+  assert(fstr(e, "SELECT TO_CHAR(7, '000')") === '007', 'zero padding')
+  assert(fstr(e, "SELECT TO_CHAR(-42, 'FM9999MI')") === '42-', 'MI trailing sign')
+  assert(fstr(e, "SELECT TO_CHAR(-7.5, 'FM999.99PR')") === '<7.50>', 'PR brackets')
+  assert(fstr(e, "SELECT TO_CHAR(12345, '999')") === '###', 'overflow marks')
+})
+test('decimal', 'DECIMAL value survives a snapshot round-trip', () => {
+  const e = fresh('CREATE TABLE acct (id INTEGER PRIMARY KEY, bal DECIMAL(14,4))')
+  e.execute('INSERT INTO acct VALUES (1, 1234.5678), (2, 0.0001)')
+  const snap = JSON.parse(JSON.stringify(e.db.snapshot()))
+  const e2 = new Engine(Database.restore(snap))
+  assert(fstr(e2, 'SELECT bal FROM acct WHERE id = 1') === '1234.5678', 'round-trips exactly')
+  assert(fstr(e2, 'SELECT SUM(bal) FROM acct') === '1234.5679', 'still sums exactly after reload')
+})
+test('decimal', 'division by zero yields NULL (not an exception)', () => {
+  const e = new Engine()
+  assert(scalar(e, "SELECT DECIMAL '1' / DECIMAL '0'") === null, 'x / 0 -> NULL')
+  assert(scalar(e, "SELECT MOD(DECIMAL '1', DECIMAL '0')") === null, 'mod 0 -> NULL')
+})
+test('decimal', 'seed invoices: recomputed tax matches stored totals exactly', () => {
+  const e = seeded()
+  const off = scalar(
+    e,
+    'SELECT COUNT(*) FROM invoices WHERE ROUND(subtotal * (1 + tax_rate), 2) <> total',
+  )
+  assert(off === 0, 'every stored total equals subtotal × (1 + tax_rate) to the cent')
+  assert(eq(scalar(e, 'SELECT TYPEOF(SUM(total)) FROM invoices'), 'decimal'), 'SUM(total) is exact DECIMAL')
+})
+
+// --- sample queries (catalog showcase) -------------------------------------
+test('samples', 'every shipped sample query runs against the seed', () => {
+  for (const q of SAMPLE_QUERIES) {
+    const e = seeded()
+    try {
+      e.execute(q.sql)
+    } catch (err) {
+      throw new Error(`sample "${q.title}" failed: ${err instanceof Error ? err.message : String(err)}`, { cause: err })
+    }
+  }
 })
 
 export function runTests(): TestResult[] {

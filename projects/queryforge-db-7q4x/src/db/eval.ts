@@ -42,6 +42,31 @@ import {
   type TimestampValue,
   type IntervalValue,
 } from './temporal'
+import {
+  isDecimal,
+  addDecimal,
+  subDecimal,
+  mulDecimal,
+  divDecimal,
+  modDecimal,
+  negDecimal,
+  absDecimal,
+  signDecimal,
+  roundDecimal,
+  truncDecimal,
+  floorDecimal,
+  ceilDecimal,
+  rescale as decRescale,
+  precisionOf as decPrecisionOf,
+  parseDecimal as parseDecimalArg,
+  toNumber as decToNumber,
+  fromInt as decFromInt,
+  fromNumber as decFromNumber,
+  formatDecimal,
+  formatNumberTemplate,
+  isNumericTemplate,
+  type DecimalValue,
+} from './decimal'
 import type { Expr, ExistsExpr, FuncExpr, InSubqueryExpr, QuantifiedExpr, SubqueryExpr, WindowFuncExpr } from './ast'
 import type { Row } from './catalog'
 
@@ -80,7 +105,50 @@ export interface CompileCtx {
 
 /** String coercion that renders temporal values via their canonical form. */
 function strOf(v: SqlValue): string {
-  return isTemporal(v) ? formatTemporal(v) : String(v)
+  if (isTemporal(v)) return formatTemporal(v)
+  if (isDecimal(v)) return formatDecimal(v)
+  return String(v)
+}
+
+/** Read a value as a JS number for the float math functions (decimals degrade). */
+function numOf(v: SqlValue): number {
+  if (isDecimal(v)) return decToNumber(v)
+  return Number(v)
+}
+
+/** Read any value as an exact DECIMAL, or null if it can't be one exactly
+ *  (a non-integer REAL contaminates, so the caller falls back to float math). */
+function asExactDecimal(v: SqlValue): DecimalValue | null {
+  if (isDecimal(v)) return v
+  if (typeof v === 'boolean') return decFromInt(v ? 1 : 0)
+  if (typeof v === 'number') return Number.isInteger(v) ? decFromInt(v) : null
+  return null
+}
+
+/** Arithmetic where at least one operand is a DECIMAL. Stays exact when the
+ *  other side is an integer/decimal; degrades to float against a REAL. */
+function decimalArith(op: string, a: SqlValue, b: SqlValue): SqlValue {
+  const da = asExactDecimal(a)
+  const db = asExactDecimal(b)
+  if (da && db) {
+    switch (op) {
+      case '+': return addDecimal(da, db)
+      case '-': return subDecimal(da, db)
+      case '*': return mulDecimal(da, db)
+      case '/': return divDecimal(da, db)
+      default: return modDecimal(da, db)
+    }
+  }
+  // A non-integer REAL is involved: compute in floating point.
+  const x = numOf(a)
+  const y = numOf(b)
+  switch (op) {
+    case '+': return x + y
+    case '-': return x - y
+    case '*': return x * y
+    case '/': return y === 0 ? null : x / y
+    default: return y === 0 ? null : x % y
+  }
 }
 
 // SQL three-valued logic helpers --------------------------------------------
@@ -195,6 +263,7 @@ function parseDate(v: SqlValue): Date | null {
   if (isTemporal(v)) return toInstant(v)
   if (typeof v === 'number') return new Date(v)
   if (typeof v === 'boolean') return null
+  if (isDecimal(v)) return new Date(decToNumber(v))
   const s = v.trim()
   if (s.toUpperCase() === 'NOW') return new Date()
   // Date-only strings parse as UTC midnight (avoids local-timezone drift).
@@ -285,23 +354,51 @@ export const SCALAR_FUNCTIONS: Record<string, ScalarFn> = {
   CHR: ([n]) => (n === null ? null : String.fromCharCode(Number(n))),
 
   // --- numeric --------------------------------------------------------------
-  ABS: ([a]) => (a === null ? null : Math.abs(Number(a))),
-  SIGN: ([a]) => (a === null ? null : Math.sign(Number(a))),
+  // The exact-numeric (DECIMAL) functions stay exact when handed a DECIMAL and
+  // return a DECIMAL; over INTEGER/REAL they keep their original float behaviour.
+  ABS: ([a]) => (a === null ? null : isDecimal(a) ? absDecimal(a) : Math.abs(Number(a))),
+  SIGN: ([a]) => (a === null ? null : isDecimal(a) ? signDecimal(a) : Math.sign(Number(a))),
   ROUND: ([a, d]) => {
     if (a === null) return null
     const p = d === null || d === undefined ? 0 : Number(d)
+    if (isDecimal(a)) return roundDecimal(a, p)
     const f = 10 ** p
     return Math.round(Number(a) * f) / f
   },
-  CEIL: ([a]) => (a === null ? null : Math.ceil(Number(a))),
-  CEILING: ([a]) => (a === null ? null : Math.ceil(Number(a))),
-  FLOOR: ([a]) => (a === null ? null : Math.floor(Number(a))),
+  CEIL: ([a]) => (a === null ? null : isDecimal(a) ? ceilDecimal(a) : Math.ceil(Number(a))),
+  CEILING: ([a]) => (a === null ? null : isDecimal(a) ? ceilDecimal(a) : Math.ceil(Number(a))),
+  FLOOR: ([a]) => (a === null ? null : isDecimal(a) ? floorDecimal(a) : Math.floor(Number(a))),
   TRUNC: ([a, d]) => {
     if (a === null) return null
     const p = d === null || d === undefined ? 0 : Number(d)
+    if (isDecimal(a)) return truncDecimal(a, p)
     const f = 10 ** p
     return Math.trunc(Number(a) * f) / f
   },
+  TO_NUMBER: ([a]) => {
+    if (a === null) return null
+    if (isDecimal(a)) return a
+    if (typeof a === 'number') return decFromNumber(a)
+    if (typeof a === 'boolean') return decFromInt(a ? 1 : 0)
+    return parseDecimalArg(String(a))
+  },
+  DECIMAL: ([a, p, s]) => {
+    if (a === null) return null
+    let d: DecimalValue | null = isDecimal(a)
+      ? a
+      : typeof a === 'number'
+        ? decFromNumber(a)
+        : typeof a === 'boolean'
+          ? decFromInt(a ? 1 : 0)
+          : parseDecimalArg(String(a))
+    if (!d) throw new SqlError(`DECIMAL(): cannot convert ${JSON.stringify(a)}`, 'eval')
+    // DECIMAL(value, precision, scale) — the optional 2nd/3rd args set the scale.
+    if (s !== null && s !== undefined) d = decRescale(d, Number(s))
+    else if (p !== null && p !== undefined && (s === null || s === undefined)) d = decRescale(d, Number(p))
+    return d
+  },
+  SCALE: ([a]) => (a === null ? null : isDecimal(a) ? a.s : 0),
+  PRECISION: ([a]) => (a === null ? null : isDecimal(a) ? decPrecisionOf(a) : null),
   SQRT: ([a]) => (a === null ? null : Math.sqrt(Number(a))),
   EXP: ([a]) => (a === null ? null : Math.exp(Number(a))),
   LN: ([a]) => (a === null ? null : Math.log(Number(a))),
@@ -309,7 +406,8 @@ export const SCALAR_FUNCTIONS: Record<string, ScalarFn> = {
   LOG: ([a, b]) => (a === null ? null : b == null ? Math.log(Number(a)) : Math.log(Number(b)) / Math.log(Number(a))),
   POW: ([a, b]) => (a === null || b === null ? null : Number(a) ** Number(b)),
   POWER: ([a, b]) => (a === null || b === null ? null : Number(a) ** Number(b)),
-  MOD: ([a, b]) => (a === null || b === null ? null : Number(a) % Number(b)),
+  MOD: ([a, b]) =>
+    a === null || b === null ? null : isDecimal(a) || isDecimal(b) ? decimalArith('%', a, b) : Number(a) % Number(b),
   PI: () => Math.PI,
   SIN: ([a]) => (a === null ? null : Math.sin(Number(a))),
   COS: ([a]) => (a === null ? null : Math.cos(Number(a))),
@@ -337,6 +435,8 @@ export const SCALAR_FUNCTIONS: Record<string, ScalarFn> = {
     if (a === null) return 'null'
     if (typeof a === 'boolean') return 'boolean'
     if (typeof a === 'string') return 'text'
+    if (isDecimal(a)) return 'decimal'
+    if (isTemporal(a)) return a.t
     return Number.isInteger(a) ? 'integer' : 'real'
   },
 
@@ -420,8 +520,15 @@ export const SCALAR_FUNCTIONS: Record<string, ScalarFn> = {
   },
   TO_CHAR: ([a, fmt]) => {
     if (a === null || fmt === null || fmt === undefined) return null
+    const template = String(fmt)
+    // A numeric template (contains 9/0 and no date fields) formats a number;
+    // otherwise fall back to temporal formatting.
+    if (isNumericTemplate(template)) {
+      const d = asExactDecimal(a) ?? (typeof a === 'number' ? decFromNumber(a) : null)
+      if (d) return formatNumberTemplate(template, d)
+    }
     const t = coerceTemporalArg(a)
-    return t ? toChar(String(fmt), t) : null
+    return t ? toChar(template, t) : null
   },
   JUSTIFY_HOURS: ([a]) => {
     const t = coerceTemporalArg(a)
@@ -495,7 +602,8 @@ export function compileExpr(expr: Expr, ctx: CompileCtx): Evaluator {
     case 'cast': {
       const inner = compileExpr(expr.expr, ctx)
       const type: ColumnType = expr.type
-      return (row) => coerceTo(type, inner(row))
+      const scale = expr.scale
+      return (row) => coerceTo(type, inner(row), scale)
     }
     case 'unary': {
       const inner = compileExpr(expr.expr, ctx)
@@ -513,6 +621,7 @@ export function compileExpr(expr: Expr, ctx: CompileCtx): Evaluator {
           if (v.t === 'interval') return expr.op === '-' ? scaleInterval(v, -1) : v
           throw new SqlError(`cannot apply unary ${expr.op} to a ${v.t} value`, 'eval')
         }
+        if (isDecimal(v)) return expr.op === '-' ? negDecimal(v) : v
         return Number(v) * sign
       }
     }
@@ -664,6 +773,7 @@ function compileBinary(op: string, left: Evaluator, right: Evaluator): Evaluator
           const t = temporalArith(op, a, b)
           if (t !== undefined) return t
         }
+        if (isDecimal(a) || isDecimal(b)) return decimalArith(op, a, b)
         const [x, y] = numericPair(a, b)
         switch (op) {
           case '+': return x + y

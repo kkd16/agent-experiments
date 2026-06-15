@@ -5,6 +5,16 @@
 // projection can read both grouping columns and aggregate results positionally.
 
 import { hashKey, orderValues, type SqlValue } from './types'
+import {
+  isDecimal,
+  addDecimal,
+  divDecimal,
+  fromInt as decFromInt,
+  toNumber as decToNumber,
+  DECIMAL_ZERO,
+  DIV_DEFAULT_SCALE,
+  type DecimalValue,
+} from './decimal'
 import type { Row } from './catalog'
 import type { Schema } from './schema'
 import type { Evaluator } from './eval'
@@ -63,6 +73,12 @@ class Accumulator {
   max: SqlValue = null
   hasValue = false
   seen: Set<string> | null
+  // Exact running total when every summed value is a DECIMAL/integer; the
+  // moment a non-integer REAL appears `decExact` flips off and SUM/AVG fall
+  // back to the float `sum`. `sawDecimal` ensures pure-integer SUMs stay INTEGER.
+  private decSum: DecimalValue = DECIMAL_ZERO
+  private decExact = true
+  private sawDecimal = false
   // Welford's online variance over the numeric values only.
   private nc = 0
   private mean = 0
@@ -87,13 +103,25 @@ class Accumulator {
       this.seen.add(k)
     }
     this.count++
-    const num = typeof v === 'number' ? v : typeof v === 'boolean' ? (v ? 1 : 0) : null
+    const num =
+      typeof v === 'number' ? v : typeof v === 'boolean' ? (v ? 1 : 0) : isDecimal(v) ? decToNumber(v) : null
     if (num !== null) {
       this.sum += num
       this.nc++
       const d = num - this.mean
       this.mean += d / this.nc
       this.m2 += d * (num - this.mean)
+      // Exact-decimal running total.
+      if (isDecimal(v)) {
+        this.sawDecimal = true
+        this.decSum = addDecimal(this.decSum, v)
+      } else if (typeof v === 'boolean') {
+        this.decSum = addDecimal(this.decSum, decFromInt(v ? 1 : 0))
+      } else if (Number.isInteger(num)) {
+        this.decSum = addDecimal(this.decSum, decFromInt(num))
+      } else {
+        this.decExact = false
+      }
     }
     if (!this.hasValue) {
       this.min = v
@@ -110,9 +138,15 @@ class Accumulator {
       case 'COUNT':
         return this.count
       case 'SUM':
-        return this.hasValue ? this.sum : null
+        if (!this.hasValue) return null
+        return this.sawDecimal && this.decExact ? this.decSum : this.sum
       case 'AVG':
-        return this.hasValue ? this.sum / this.count : null
+        if (!this.hasValue) return null
+        if (this.sawDecimal && this.decExact) {
+          const scale = Math.max(this.decSum.s, DIV_DEFAULT_SCALE)
+          return divDecimal(this.decSum, decFromInt(this.count), scale) ?? this.sum / this.count
+        }
+        return this.sum / this.count
       case 'MIN':
         return this.min
       case 'MAX':
@@ -136,7 +170,7 @@ class Accumulator {
       case 'MEDIAN': {
         if (!this.list) return null
         const nums = this.list
-          .map((x) => (typeof x === 'number' ? x : typeof x === 'boolean' ? (x ? 1 : 0) : NaN))
+          .map((x) => (typeof x === 'number' ? x : typeof x === 'boolean' ? (x ? 1 : 0) : isDecimal(x) ? decToNumber(x) : NaN))
           .filter((x) => !Number.isNaN(x))
           .sort((a, b) => a - b)
         if (nums.length === 0) return null
@@ -147,7 +181,7 @@ class Accumulator {
         // Continuous percentile with linear interpolation between neighbours.
         if (!this.list) return null
         const nums = this.list
-          .map((x) => (typeof x === 'number' ? x : typeof x === 'boolean' ? (x ? 1 : 0) : NaN))
+          .map((x) => (typeof x === 'number' ? x : typeof x === 'boolean' ? (x ? 1 : 0) : isDecimal(x) ? decToNumber(x) : NaN))
           .filter((x) => !Number.isNaN(x))
           .sort((a, b) => a - b)
         if (nums.length === 0) return null

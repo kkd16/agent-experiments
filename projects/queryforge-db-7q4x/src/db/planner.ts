@@ -1000,12 +1000,13 @@ function planQuery(stmt: SelectStmt, env: PlanEnv): Operator {
 const TYPE_RANK: Record<ColumnType, number> = {
   BOOLEAN: 0,
   INTEGER: 1,
-  REAL: 2,
-  INTERVAL: 3,
-  TIME: 4,
-  DATE: 5,
-  TIMESTAMP: 6,
-  TEXT: 7,
+  DECIMAL: 2,
+  REAL: 3,
+  INTERVAL: 4,
+  TIME: 5,
+  DATE: 6,
+  TIMESTAMP: 7,
+  TEXT: 8,
 }
 function widerType(a: ColumnType, b: ColumnType): ColumnType {
   if (a === b) return a
