@@ -125,8 +125,8 @@ const GROUPS: { title: string; items: InsDoc[] }[] = [
   {
     title: 'System',
     items: [
-      { m: 'ecall', desc: 'environment call — dispatched on a7 (or traps to mtvec when armed)' },
-      { m: 'ebreak', desc: 'breakpoint — pauses the debugger (or traps when a handler is installed)' },
+      { m: 'ecall', desc: 'environment call — dispatched on a7 (see syscalls)' },
+      { m: 'ebreak', desc: 'breakpoint — pauses the debugger (or traps to mtvec when a handler is installed)' },
       { m: 'fence', desc: 'memory fence (a no-op on this single-hart machine)' },
     ],
   },

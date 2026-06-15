@@ -44,6 +44,14 @@ export const PALETTE: readonly string[] = [
   '#ffccaa', // 15 peach
 ];
 
+// Core-Local Interruptor (CLINT): a small MMIO block that drives the software and timer
+// interrupts. The layout follows the de-facto SiFive map so real handlers port unchanged.
+export const CLINT_BASE = 0x0200_0000;
+export const CLINT_MSIP = CLINT_BASE + 0x0000; // software-interrupt pending (write 1 to raise)
+export const CLINT_MTIMECMP = CLINT_BASE + 0x4000; // 64-bit timer compare (lo @ +0, hi @ +4)
+export const CLINT_MTIME = CLINT_BASE + 0xbff8; // 64-bit monotonic time (lo @ +0, hi @ +4)
+export const CLINT_END = CLINT_BASE + 0xc000;
+
 /** Default instruction budget for a single "run" so runaway loops cannot hang the tab. */
 export const DEFAULT_MAX_STEPS = 50_000_000;
 

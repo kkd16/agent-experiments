@@ -217,7 +217,20 @@ function resolveMnemonic(opcode: number, funct3: number, funct7: number, w: numb
       );
     }
     case OPC.SYSTEM:
-      if (funct3 === 0) return (w & 0x0010_0000) !== 0 ? 'ebreak' : 'ecall';
+      if (funct3 === 0) {
+        switch (w >>> 20) {
+          case 0x000:
+            return 'ecall';
+          case 0x001:
+            return 'ebreak';
+          case 0x302:
+            return 'mret';
+          case 0x105:
+            return 'wfi';
+          default:
+            return 'unknown';
+        }
+      }
       return { 1: 'csrrw', 2: 'csrrs', 3: 'csrrc', 5: 'csrrwi', 6: 'csrrsi', 7: 'csrrci' }[funct3] ?? 'unknown';
     case OPC.MISC_MEM:
       return 'fence';

@@ -24,6 +24,7 @@ import {
   CSR_FUNCT3,
   CSR_MNEMONICS,
   CSR_NUMBERS,
+  SYS_WORDS,
 } from './isa';
 import type { InstrSpec } from './isa';
 import { regIndex, fregIndex } from './registers';
@@ -1005,7 +1006,7 @@ function encode(m: MicroInstr, addr: number, symbols: Map<string, number>): numb
       return u32((b20 << 31) | (b10_1 << 21) | (b11 << 20) | (b19_12 << 12) | (rd << 7) | opc);
     }
     case 'SYS':
-      return m.mnemonic === 'ebreak' ? 0x0010_0073 : 0x0000_0073;
+      return SYS_WORDS[m.mnemonic] ?? 0x0000_0073;
     case 'FENCE':
       return 0x0ff0_000f;
   }

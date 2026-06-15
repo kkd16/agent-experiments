@@ -707,6 +707,147 @@ const TESTS: Test[] = [
       assert(sawCompressed, 'expected compressed instructions');
     },
   },
+
+  // --- machine-mode traps & interrupts ---------------------------------------
+  {
+    name: 'trap: the timer-interrupt example fires 5 ticks and prints 5',
+    fn: () => {
+      const cpu = run(EXAMPLES.find((e) => e.id === 'timer')!.code);
+      eq(cpu.output, '5\n', 'output');
+      eq(cpu.status, 'halted', 'status');
+    },
+  },
+  {
+    name: 'trap: software interrupt (CLINT msip) vectors to the handler',
+    fn: () => {
+      const cpu = run(`
+        .equ MSIP, 0x02000000
+        main:
+          la    t0, h
+          csrw  mtvec, t0
+          li    s0, 0
+          li    t1, 0x8          # mie.MSIE
+          csrs  mie, t1
+          csrsi mstatus, 0x8
+          li    t2, MSIP
+          li    t0, 1
+          sw    t0, 0(t2)        # raise the software interrupt
+          nop
+          csrci mstatus, 0x8
+          mv    a0, s0
+          li    a7, 1
+          ecall
+          li    a7, 10
+          ecall
+        .align 2
+        h:
+          addi  s0, s0, 7
+          sw    x0, 0(t2)        # clear msip
+          mret
+      `);
+      eq(cpu.output, '7', 'handler ran');
+    },
+  },
+  {
+    name: 'trap: ebreak vectors to mtvec when a handler is armed; mcause = 3',
+    fn: () => {
+      const cpu = run(`
+        main:
+          la   t0, h
+          csrw mtvec, t0
+          ebreak
+          li   a7, 10
+          ecall
+        .align 2
+        h:
+          csrr a0, mcause       # breakpoint cause = 3
+          li   a7, 1
+          ecall
+          csrr t1, mepc
+          addi t1, t1, 4        # step over the ebreak
+          csrw mepc, t1
+          li   a7, 10
+          ecall
+      `);
+      eq(cpu.output, '3', 'mcause = 3');
+    },
+  },
+  {
+    name: 'trap: illegal instruction vectors to mtvec (mcause = 2) instead of erroring',
+    fn: () => {
+      // 0x00000000 is an illegal word; with a handler armed it must trap, not fail.
+      const cpu = run(`
+        .text
+        main:
+          la   t0, h
+          csrw mtvec, t0
+          .word 0               # illegal instruction
+          li   a7, 10
+          ecall
+        .align 2
+        h:
+          csrr a0, mcause       # illegal-instruction cause = 2
+          li   a7, 1
+          ecall
+          li   a7, 10
+          ecall
+      `);
+      eq(cpu.output, '2', 'mcause = 2');
+      eq(cpu.status, 'halted', 'did not error out');
+    },
+  },
+  {
+    name: 'trap: mret restores the interrupt-enable stack (MIE ← MPIE)',
+    fn: () => {
+      const result = assemble(`
+        main:
+          la   t0, h
+          csrw mtvec, t0
+          li   t1, 0x80
+          csrs mie, t1
+          csrsi mstatus, 0x8    # MIE = 1
+          ebreak                # synchronous trap clears MIE, sets MPIE
+          li   a7, 10
+          ecall
+        .align 2
+        h:
+          mret
+      `);
+      assert(result.ok, 'assembles');
+      const cpu = new Cpu();
+      cpu.load(result);
+      // Run up to (but not into) the handler so we can inspect mstatus inside the trap.
+      while (cpu.status !== 'halted' && cpu.cycles < 1000) {
+        const before = cpu.pc;
+        cpu.step();
+        // After ebreak traps, MIE must be 0 and MPIE must be 1.
+        if (cpu.mcause === 3 && before !== cpu.pc) {
+          eq(cpu.mstatus & (1 << 3), 0, 'MIE cleared on trap');
+          assert((cpu.mstatus & (1 << 7)) !== 0, 'MPIE set on trap');
+          break;
+        }
+      }
+      // mret then restores MIE from MPIE.
+      cpu.step(); // mret
+      assert((cpu.mstatus & (1 << 3)) !== 0, 'MIE restored after mret');
+    },
+  },
+  {
+    name: 'time-travel: stepBack reverts mtime and machine CSRs',
+    fn: () => {
+      const result = assemble(`main:\n  csrwi mstatus, 0x8\n  li a7, 10\n  ecall\n`);
+      assert(result.ok, 'assembles');
+      const cpu = new Cpu();
+      cpu.load(result);
+      const t0 = cpu.mtime;
+      cpu.step(); // csrwi mstatus, 0x8
+      assert((cpu.mstatus & 0x8) !== 0, 'mstatus.MIE set');
+      assert(cpu.mtime > t0, 'mtime advanced');
+      cpu.stepBack();
+      eq(cpu.mstatus, 0, 'mstatus reverted');
+      eq(cpu.mtime, t0, 'mtime reverted');
+    },
+  },
 ];
 
 export function runSelfTests(): TestResult[] {
