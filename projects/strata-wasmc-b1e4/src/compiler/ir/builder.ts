@@ -612,6 +612,14 @@ class FnBuilder {
       this.usesMemory = true;
       return this.def('i32', 'call', '__char', [this.lowerExpr(e.args[0])!]);
     }
+    if (name === 'parse_float') {
+      // Correctly-rounded string -> double: lives in the float prelude (reuses the
+      // big-integer library), returns f64.
+      this.usesStrings = true;
+      this.usesMemory = true;
+      this.usesFloatFmt = true;
+      return this.def('f64', 'call', '__parse_float', [this.lowerExpr(e.args[0])!]);
+    }
     if (STRING_HELPERS.has(name)) {
       // Every extended string helper is a prelude function `__<name>` returning
       // an i32 (a string pointer, an int index, or a 0/1 bool).

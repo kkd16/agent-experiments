@@ -728,4 +728,168 @@ fn __float_to_str(x: float) -> int {
   }
   return __f_mkstr(buf, w);
 }
+
+// ---------------------------------------------------------------------------
+// The inverse of str(float): parse_float — a *correctly rounded* decimal string
+// to double (round to nearest, ties to even), reusing the same big-integer
+// library. It is exact: form value = man * 10^E as num/den, scale by a power of
+// two so the quotient has 53 bits, divide (binary long division), and round on
+// the exact remainder. Subnormals and overflow-to-infinity are handled. It
+// matches the reference interpreter (which runs the identical algorithm) and a
+// fuzz proves both reproduce JS Number() over millions of strings.
+
+// a := a + v  (v a small non-negative int), carrying from limb 0 up.
+fn __bn_add_small(a: int[], v: int) -> int {
+  let n = a[0];
+  let i = 1;
+  let carry = v;
+  while (carry != 0) {
+    let cur = i <= n ? a[i] : 0;
+    let s = cur + carry;
+    a[i] = s & 65535;
+    carry = s >> 16;
+    if (i > n) { n = i; }
+    i = i + 1;
+  }
+  a[0] = n;
+  return 0;
+}
+
+// Number of significant bits of a (0 for the zero value).
+fn __bn_bitlen(a: int[]) -> int {
+  let n = a[0];
+  if (n == 0) { return 0; }
+  let top = a[n];
+  let bits = 0;
+  while (top != 0) { bits = bits + 1; top = top >> 1; }
+  return (n - 1) * 16 + bits;
+}
+
+// A := num << s, B := den   (s >= 0); else A := num, B := den << (-s).
+fn __scale_ab(num: int[], den: int[], s: int, A: int[], B: int[]) -> int {
+  __bn_copy(A, num); __bn_copy(B, den);
+  if (s >= 0) { __bn_shl(A, s); } else { __bn_shl(B, 0 - s); }
+  return 0;
+}
+
+// Q := floor(A / B), and R := A mod B, by binary long division. The quotient is
+// known to fit in 53 bits here, so it is returned as a long; R is left in Rout.
+fn __bn_divmod(A: int[], B: int[], Rout: int[]) -> long {
+  Rout[0] = 0;
+  let Q = 0L;
+  let i = __bn_bitlen(A) - 1;
+  while (i >= 0) {
+    __bn_shl(Rout, 1);                          // R <<= 1
+    let bit = (A[(i / 16) + 1] >> (i % 16)) & 1; // next bit of A
+    if (bit != 0) {
+      if (Rout[0] == 0) { Rout[0] = 1; Rout[1] = 1; } else { Rout[1] = Rout[1] | 1; }
+    }
+    Q = Q << 1L;
+    if (__bn_cmp(Rout, B) >= 0) { __bn_sub(Rout, B); Q = Q | 1L; }
+    i = i - 1;
+  }
+  return Q;
+}
+
+// Round-to-nearest-even decision from the exact remainder R over divisor B for a
+// current quotient q: 1 if the fraction R/B rounds q up, else 0.
+fn __round_even(R: int[], B: int[], q: long) -> int {
+  let T = int_array(280);
+  __bn_copy(T, R); __bn_mul_small(T, 2);
+  let c = __bn_cmp(T, B);
+  if (c > 0) { return 1; }
+  if (c == 0 && (q & 1L) == 1L) { return 1; }
+  return 0;
+}
+
+// value = man * 10^E, with sign neg, rounded to the nearest double.
+fn __dec_to_double(neg: int, man: int[], E: int) -> float {
+  if (man[0] == 0) { return __f64_from_bits(long(neg) << 63L); } // signed zero
+
+  let num = int_array(220);
+  let den = int_array(220);
+  __bn_copy(num, man);
+  __bn_set_small(den, 1);
+  if (E >= 0) { __bn_mul_pow10(num, E); } else { __bn_mul_pow10(den, 0 - E); }
+
+  let A = int_array(280);
+  let B = int_array(280);
+  let R = int_array(280);
+
+  // scale so the 53-bit quotient lands in [2^52, 2^53)
+  let s = 52 - (__bn_bitlen(num) - __bn_bitlen(den));
+  __scale_ab(num, den, s, A, B);
+  let Q = __bn_divmod(A, B, R);
+  while (Q < 4503599627370496L) { s = s + 1; __scale_ab(num, den, s, A, B); Q = __bn_divmod(A, B, R); }
+  while (Q >= 9007199254740992L) { s = s - 1; __scale_ab(num, den, s, A, B); Q = __bn_divmod(A, B, R); }
+  let e2 = 52 - s;
+  let biased = e2 + 1023;
+
+  if (biased <= 0) {
+    // subnormal: mantissa m = round(num * 2^1074 / den), exponent field 0
+    __scale_ab(num, den, 1074, A, B);
+    let m = __bn_divmod(A, B, R);
+    if (__round_even(R, B, m) != 0) { m = m + 1L; }
+    return __f64_from_bits((long(neg) << 63L) | m);
+  }
+
+  if (__round_even(R, B, Q) != 0) {
+    Q = Q + 1L;
+    if (Q == 9007199254740992L) { Q = 4503599627370496L; biased = biased + 1; }
+  }
+  if (biased >= 2047) { return __f64_from_bits((long(neg) << 63L) | (2047L << 52L)); } // +/- inf
+  let mant = Q - 4503599627370496L;            // drop the implicit leading 1
+  return __f64_from_bits((long(neg) << 63L) | (long(biased) << 52L) | mant);
+}
+
+// parse_float(s): the longest valid leading [sign] d* [. d*] [(e|E) [sign] d+]
+// prefix, correctly rounded. Empty / digit-less input yields signed zero.
+fn __parse_float(s: int) -> float {
+  let n = __load32(s);
+  let i = 0;
+  let neg = 0;
+  if (i < n) {
+    let c = __load8(s + 8 + i);
+    if (c == 45) { neg = 1; i = i + 1; } else if (c == 43) { i = i + 1; }
+  }
+  let man = int_array(180);
+  man[0] = 0;
+  let digits = 0;
+  let fracDigits = 0;
+  let sawDot = 0;
+  let scanning = 1;
+  while (i < n && scanning != 0) {
+    let c = __load8(s + 8 + i);
+    if (c >= 48 && c <= 57) {
+      __bn_mul_small(man, 10); __bn_add_small(man, c - 48);
+      digits = digits + 1;
+      if (sawDot != 0) { fracDigits = fracDigits + 1; }
+      i = i + 1;
+    } else if (c == 46 && sawDot == 0) { sawDot = 1; i = i + 1; }
+    else { scanning = 0; }
+  }
+  if (digits == 0) { return __f64_from_bits(long(neg) << 63L); }
+  let exp = 0;
+  if (i < n) {
+    let c = __load8(s + 8 + i);
+    if (c == 101 || c == 69) {                   // 'e' / 'E'
+      let j = i + 1;
+      let eneg = 0;
+      if (j < n) {
+        let c2 = __load8(s + 8 + j);
+        if (c2 == 45) { eneg = 1; j = j + 1; } else if (c2 == 43) { j = j + 1; }
+      }
+      let ed = 0;
+      let ev = 0;
+      let go = 1;
+      while (j < n && go != 0) {
+        let c2 = __load8(s + 8 + j);
+        if (c2 < 48 || c2 > 57) { go = 0; }
+        else { ev = ev * 10 + (c2 - 48); if (ev > 100000) { ev = 100000; } ed = ed + 1; j = j + 1; }
+      }
+      if (ed > 0) { exp = eneg != 0 ? 0 - ev : ev; i = j; }
+    }
+  }
+  return __dec_to_double(neg, man, exp - fracDigits);
+}
 `;
