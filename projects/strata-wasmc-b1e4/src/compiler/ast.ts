@@ -34,11 +34,17 @@ export type Ty =
 // array; only the type system and the interpreter track the element kind.
 export type ScalarTy = { kind: 'int' } | { kind: 'long' } | { kind: 'float' } | { kind: 'f32' } | { kind: 'bool' } | { kind: 'str' };
 
-// An array's element type: any scalar, or a struct (stored as an i32 handle, just
-// like a bare struct value). `struct_array(n)` produces a struct array whose
-// element name is unknown until the variable's annotation pins it down — that
-// transient placeholder carries the empty name `''`.
-export type ElemTy = ScalarTy | { kind: 'struct'; name: string };
+// An array's element type: any scalar, a struct (stored as an i32 handle, just
+// like a bare struct value), or a function pointer (an i32 table slot, just like
+// a bare `fn(…)`). `struct_array(n)` produces a struct array whose element name is
+// unknown until the variable's annotation pins it down — that transient
+// placeholder carries the empty name `''`. `fn_array(n)` is the function-pointer
+// analogue: its element signature is unknown until annotated, so its placeholder
+// element carries `hole: true` until a `(fn(…)->…)[]` annotation supplies it.
+export type ElemTy =
+  | ScalarTy
+  | { kind: 'struct'; name: string }
+  | { kind: 'fn'; params: Ty[]; ret: Ty; hole?: boolean };
 
 export const T_INT: Ty = { kind: 'int' };
 export const T_LONG: Ty = { kind: 'long' };
@@ -53,7 +59,11 @@ export function tyEqual(a: Ty, b: Ty): boolean {
   if (a.kind !== b.kind) return false;
   if (a.kind === 'array' && b.kind === 'array') {
     if (a.elem.kind !== b.elem.kind) return false;
-    return a.elem.kind === 'struct' && b.elem.kind === 'struct' ? a.elem.name === b.elem.name : true;
+    if (a.elem.kind === 'struct' && b.elem.kind === 'struct') return a.elem.name === b.elem.name;
+    // Function-pointer arrays are only equal when their element *signatures*
+    // match (`(fn(int)->int)[]` is not a `(fn(str)->str)[]`).
+    if (a.elem.kind === 'fn' && b.elem.kind === 'fn') return tyEqual(a.elem, b.elem);
+    return true;
   }
   if (a.kind === 'struct' && b.kind === 'struct') return a.name === b.name;
   if (a.kind === 'fn' && b.kind === 'fn') {
@@ -65,7 +75,11 @@ export function tyEqual(a: Ty, b: Ty): boolean {
 }
 
 export function tyName(t: Ty): string {
-  if (t.kind === 'array') return `${t.elem.kind === 'struct' ? t.elem.name : t.elem.kind}[]`;
+  if (t.kind === 'array') {
+    const e = t.elem;
+    const en = e.kind === 'struct' ? e.name : e.kind === 'fn' ? `(${tyName(e)})` : e.kind;
+    return `${en}[]`;
+  }
   if (t.kind === 'struct') return t.name;
   if (t.kind === 'fn') return `fn(${t.params.map(tyName).join(', ')}) -> ${tyName(t.ret)}`;
   return t.kind;

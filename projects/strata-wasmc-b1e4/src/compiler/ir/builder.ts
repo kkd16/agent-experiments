@@ -740,6 +740,13 @@ class FnBuilder {
       // handle until assigned).
       return this.lowerAlloc('i32', this.lowerExpr(e.args[0])!);
     }
+    if (name === 'fn_array') {
+      // Array of i32 function-table slots, zero-filled. Slot 0 is reserved as a
+      // null `funcref` (the backend shifts every real function to slots 1..N), so
+      // an unassigned element calls table[0] and the engine traps on the null
+      // reference — exactly as the interpreter traps on a null function value.
+      return this.lowerAlloc('i32', this.lowerExpr(e.args[0])!);
+    }
     if (name === 'len') {
       const base = this.lowerExpr(e.args[0])!;
       return this.def('i32', 'load', 'i32', [base]);

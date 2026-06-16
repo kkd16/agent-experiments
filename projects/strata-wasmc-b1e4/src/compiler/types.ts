@@ -31,7 +31,7 @@ export interface SymbolTable {
 // Builtins available without declaration. `print`/`int`/`float` are special-
 // cased because they accept multiple argument types; array intrinsics return
 // handles into linear memory.
-const ARRAY_INTRINSICS = new Set(['int_array', 'long_array', 'float_array', 'f32_array', 'str_array', 'struct_array', 'len']);
+const ARRAY_INTRINSICS = new Set(['int_array', 'long_array', 'float_array', 'f32_array', 'str_array', 'struct_array', 'fn_array', 'len']);
 const STR_BUILTINS = new Set([
   'str', 'char', 'substr', 'index_of', 'to_upper', 'to_lower',
   'repeat', 'trim', 'replace', 'find', 'contains', 'starts_with', 'ends_with', 'parse_int',
@@ -118,7 +118,7 @@ class Scope {
 // call `Name(...)` unambiguous.
 const RESERVED_NAMES = new Set<string>([
   'print', 'str', 'char', 'int', 'float', 'f32', 'long', 'len',
-  'int_array', 'long_array', 'float_array', 'f32_array', 'str_array',
+  'int_array', 'long_array', 'float_array', 'f32_array', 'str_array', 'fn_array',
   'bool', 'void',
 ]);
 
@@ -175,6 +175,8 @@ class Checker {
         if (declared.kind === 'null') throw new CompileError(`global '${d.name}' needs an explicit struct type for its null value (e.g. \`let ${d.name}: T = null;\`)`, d.span, 'type');
         if (declared.kind === 'array' && declared.elem.kind === 'struct' && declared.elem.name === '')
           throw new CompileError(`struct_array(...) needs an explicit element type — annotate the global`, d.span, 'type');
+        if (declared.kind === 'array' && declared.elem.kind === 'fn' && declared.elem.hole)
+          throw new CompileError(`fn_array(...) needs an explicit element type — annotate the global`, d.span, 'type');
         if (declared.kind === 'struct' && d.init.node !== 'null')
           throw new CompileError(`a struct-typed global must be initialized with null (struct construction is not a constant)`, d.span, 'type');
         d.resolvedTy = declared;
@@ -206,6 +208,8 @@ class Checker {
       throw new CompileError(`unknown type '${ty.name}'`, span, 'type');
     if (ty.kind === 'array' && ty.elem.kind === 'struct' && ty.elem.name !== '' && !this.syms.structs.has(ty.elem.name))
       throw new CompileError(`unknown type '${ty.elem.name}'`, span, 'type');
+    // An array of function pointers — validate its element signature.
+    if (ty.kind === 'array' && ty.elem.kind === 'fn') this.validateTy(ty.elem, span);
     if (ty.kind === 'fn') {
       for (const p of ty.params) this.validateTy(p, span);
       this.validateTy(ty.ret, span);
@@ -242,6 +246,8 @@ class Checker {
         if (declared.kind === 'null') throw new CompileError(`'${s.name}' needs an explicit struct type for its null value (e.g. \`let ${s.name}: T = null;\`)`, s.span, 'type');
         if (declared.kind === 'array' && declared.elem.kind === 'struct' && declared.elem.name === '')
           throw new CompileError(`struct_array(...) needs an explicit element type — annotate the variable (e.g. \`let ${s.name}: T[] = struct_array(n);\`)`, s.span, 'type');
+        if (declared.kind === 'array' && declared.elem.kind === 'fn' && declared.elem.hole)
+          throw new CompileError(`fn_array(...) needs an explicit element type — annotate the variable (e.g. \`let ${s.name}: (fn(int) -> int)[] = fn_array(n);\`)`, s.span, 'type');
         s.resolvedTy = declared;
         this.scope.declare(s.name, declared, s.span);
         break;
@@ -359,12 +365,22 @@ class Checker {
   // conversions. The one exception is `null`, which is assignable to any struct
   // type (it is the struct handle that points nowhere).
   private coercible(from: Ty, to: Ty): boolean {
-    if (from.kind === 'null' && to.kind === 'struct') return true;
+    // `null` is the handle that points nowhere: assignable to any struct *and* to
+    // any function pointer (a "no function" value that traps if it is ever called).
+    if (from.kind === 'null' && (to.kind === 'struct' || to.kind === 'fn')) return true;
     // `struct_array(n)` (a placeholder `T[]` with the empty element name) fills
     // any concrete struct-array slot once an annotation names the element.
     if (
       from.kind === 'array' && to.kind === 'array' &&
       from.elem.kind === 'struct' && to.elem.kind === 'struct' && from.elem.name === ''
+    )
+      return true;
+    // `fn_array(n)` (a placeholder `(fn…)[]` with a hole element) likewise fills
+    // any concrete function-pointer-array slot once the annotation supplies the
+    // element signature.
+    if (
+      from.kind === 'array' && to.kind === 'array' &&
+      from.elem.kind === 'fn' && to.elem.kind === 'fn' && from.elem.hole
     )
       return true;
     return tyEqual(from, to);
@@ -491,9 +507,11 @@ class Checker {
             throw new CompileError(`'${op}' compares unrelated struct types ${tyName(lt)} and ${tyName(rt)}`, e.span, 'type');
           return T_BOOL;
         }
-        // Function pointers compare by identity (same target function).
-        if (lt.kind === 'fn' && rt.kind === 'fn') {
-          if (!tyEqual(lt, rt))
+        // Function pointers compare by identity (same target function), and a
+        // function pointer may be compared against `null` to test whether a slot
+        // (e.g. a `fn_array` entry) has been assigned a target yet.
+        if ((lt.kind === 'fn' || lt.kind === 'null') && (rt.kind === 'fn' || rt.kind === 'null') && (lt.kind === 'fn' || rt.kind === 'fn')) {
+          if (lt.kind === 'fn' && rt.kind === 'fn' && !tyEqual(lt, rt))
             throw new CompileError(`'${op}' compares unrelated function types ${tyName(lt)} and ${tyName(rt)}`, e.span, 'type');
           return T_BOOL;
         }
@@ -683,6 +701,16 @@ class Checker {
       const t = this.checkExpr(e.args[0]);
       if (t.kind !== 'int') throw new CompileError(`struct_array() length must be int`, e.span, 'type');
       return { kind: 'array', elem: { kind: 'struct', name: '' } };
+    }
+    if (name === 'fn_array') {
+      // A null-filled array of function pointers. Its concrete element signature
+      // is fixed by the annotation on the variable it is assigned to (the `hole`
+      // placeholder until then). Each element starts as the "no function" value
+      // (null), which traps if called before it is assigned a target.
+      if (e.args.length !== 1) throw new CompileError(`fn_array() expects a length`, e.span, 'type');
+      const t = this.checkExpr(e.args[0]);
+      if (t.kind !== 'int') throw new CompileError(`fn_array() length must be int`, e.span, 'type');
+      return { kind: 'array', elem: { kind: 'fn', params: [], ret: T_VOID, hole: true } };
     }
     if (name === 'split') {
       if (e.args.length !== 2) throw new CompileError('split() expects (str, separator)', e.span, 'type');

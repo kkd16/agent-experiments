@@ -59,7 +59,10 @@ export interface DebugState {
 }
 
 function tyKindName(t: Ty): string {
-  if (t.kind === 'array') return `${t.elem.kind === 'struct' ? t.elem.name : t.elem.kind}[]`;
+  if (t.kind === 'array') {
+    const e = t.elem;
+    return `${e.kind === 'struct' ? e.name : e.kind === 'fn' ? `(${tyKindName(e)})` : e.kind}[]`;
+  }
   if (t.kind === 'struct') return t.name;
   if (t.kind === 'fn') return `fn(${t.params.map(tyKindName).join(', ')}) -> ${tyKindName(t.ret)}`;
   return t.kind;
@@ -81,6 +84,7 @@ function fmtVal(v: RtValue, ty?: Ty): string {
     const head = a.data.slice(0, 8).map((x) =>
       a.elem === 'str' ? JSON.stringify(x)
       : a.elem === 'struct' ? (x === null ? 'null' : `${(x as StructVal).struct} {…}`)
+      : a.elem === 'fn' ? (x === null ? 'null' : `&${(x as FnVal).fn}`)
       : a.elem === 'float' || a.elem === 'f32' ? formatFloat(x as number)
       : a.elem === 'long' ? formatLong(x as bigint)
       : formatInt(x as number),
@@ -257,6 +261,7 @@ export class Debugger {
         if (idx < 0 || idx >= target.data.length) throw new Trap('array index out of bounds');
         if (target.elem === 'str') target.data[idx] = val as string;
         else if (target.elem === 'struct') target.data[idx] = val as StructVal | null;
+        else if (target.elem === 'fn') target.data[idx] = val as FnVal | null;
         else if (target.elem === 'long') target.data[idx] = asI64(val as bigint);
         else if (target.elem === 'f32') target.data[idx] = Math.fround(val as number);
         else target.data[idx] = target.elem === 'int' ? i32(val as number) : (val as number);

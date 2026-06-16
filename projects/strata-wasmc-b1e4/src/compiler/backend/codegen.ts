@@ -630,9 +630,10 @@ export function codegen(mod: IRModule): CodegenResult {
     globalIndex: (name: string) => globalIndexMap.get(name)!,
     printIndex: (kind: string) => printIndexMap.get(kind)!,
     callIndex: (name: string) => funcIndexMap.get(name)!,
-    // Table slot i ↔ mod.funcs[i] (the element segment maps it to that function's
-    // wasm index `importCount + i`).
-    funcSlot: (name: string) => funcIndexMap.get(name)! - importCount,
+    // Table slot (i+1) ↔ mod.funcs[i]: slot 0 is reserved as a null `funcref` so
+    // an unassigned function pointer (the i32 0 that `null` and a fresh `fn_array`
+    // element lower to) traps when called. The element segment fills slots 1..N.
+    funcSlot: (name: string) => funcIndexMap.get(name)! - importCount + 1,
     indirectType,
   };
   const gens = mod.funcs.map((fn) => new FuncGen(fn, resolvers));
@@ -669,13 +670,15 @@ export function codegen(mod: IRModule): CodegenResult {
   );
 
   // table section (4): a single funcref table holding every function, so any
-  // function's address can be taken and dispatched through `call_indirect`.
+  // function's address can be taken and dispatched through `call_indirect`. Slot 0
+  // is left as the default null `funcref` (a "no function" sentinel that traps on
+  // call); the N real functions occupy slots 1..N, hence the size is N+1.
   if (needsTable) {
     const w = new ByteWriter();
     w.u32(1); // one table
     w.u8(0x70); // element type: funcref
     w.u8(0x00); // limits: min only
-    w.u32(mod.funcs.length);
+    w.u32(mod.funcs.length + 1);
     sections.push(section(4, w.bytes));
   }
 
@@ -725,12 +728,13 @@ export function codegen(mod: IRModule): CodegenResult {
     sections.push(section(7, vec(items)));
   }
 
-  // element section (9): one active segment filling table[0..N) with the wasm
-  // index of every function, so table slot i resolves to mod.funcs[i].
+  // element section (9): one active segment filling table[1..N] with the wasm
+  // index of every function, so table slot (i+1) resolves to mod.funcs[i]. Slot 0
+  // stays the default null `funcref`.
   if (needsTable) {
     const seg = new ByteWriter();
     seg.u8(0x00); // active segment, table 0, offset expression follows
-    seg.u8(0x41); seg.i32(0); seg.u8(0x0b); // (i32.const 0) end
+    seg.u8(0x41); seg.i32(1); seg.u8(0x0b); // (i32.const 1) end
     seg.u32(mod.funcs.length);
     for (let i = 0; i < mod.funcs.length; i++) seg.u32(importCount + i);
     const body = new ByteWriter();
@@ -815,8 +819,8 @@ function emitWAT(mod: IRModule, gens: FuncGen[], imports: PrintImport[]): string
   if (mod.usesMemory) lines.push(`  (memory (export "memory") ${mod.memPages})`);
   const usesTable = mod.funcs.some((fn) => fn.blocks.some((b) => b.insts.some((i) => i.kind === 'funcaddr' || i.kind === 'callind')));
   if (usesTable) {
-    lines.push(`  (table ${mod.funcs.length} funcref)`);
-    lines.push(`  (elem (i32.const 0) ${mod.funcs.map((fn) => `$${fn.name}`).join(' ')})`);
+    lines.push(`  (table ${mod.funcs.length + 1} funcref)`);
+    lines.push(`  (elem (i32.const 1) ${mod.funcs.map((fn) => `$${fn.name}`).join(' ')})`);
   }
   if (mod.staticData && mod.staticData.bytes.length) {
     const esc = mod.staticData.bytes

@@ -11,7 +11,7 @@ const KEYWORDS = new Set(['fn', 'let', 'if', 'else', 'while', 'do', 'for', 'swit
 const CONSTS = new Set(['true', 'false', 'null']);
 const TYPES = new Set(['int', 'long', 'float', 'f32', 'bool', 'str', 'void']);
 const BUILTINS = new Set([
-  'print', 'int_array', 'long_array', 'float_array', 'f32_array', 'str_array', 'struct_array', 'len', 'str', 'char', 'substr', 'index_of',
+  'print', 'int_array', 'long_array', 'float_array', 'f32_array', 'str_array', 'struct_array', 'fn_array', 'len', 'str', 'char', 'substr', 'index_of',
   'to_upper', 'to_lower', 'repeat', 'trim', 'replace', 'find', 'contains', 'starts_with',
   'ends_with', 'parse_int', 'parse_float', 'split', 'join', 'popcount', 'clz', 'ctz', 'rotl', 'rotr',
   'sqrt', 'floor', 'ceil', 'trunc', 'round', 'abs', 'fmin', 'fmax', 'copysign', 'f32',

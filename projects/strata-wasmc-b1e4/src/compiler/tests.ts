@@ -1387,4 +1387,142 @@ fn main(){
   print(compose(neg, inc, 5));   // neg(inc(5)) = -6
 }`,
   },
+  // ----- arrays of function pointers (jump tables / state machines) -----
+  {
+    name: 'fnarr-jump-table',
+    source: `fn fadd(a: int, b: int) -> int { return a + b; }
+fn fsub(a: int, b: int) -> int { return a - b; }
+fn fmul(a: int, b: int) -> int { return a * b; }
+fn fdiv(a: int, b: int) -> int { return b == 0 ? 0 : a / b; }
+fn main(){
+  let ops: (fn(int, int) -> int)[] = fn_array(4);
+  ops[0] = fadd; ops[1] = fsub; ops[2] = fmul; ops[3] = fdiv;
+  let i = 0;
+  while (i < 4) { print(ops[i](12, 4)); i = i + 1; }   // 16 8 48 3
+}`,
+  },
+  {
+    name: 'fnarr-null-sentinel',
+    source: `// A fresh fn_array element is the "no function" value (null); the wasm engine
+// traps if it is called, but it can be *observed* with == null without trapping.
+fn hello() -> int { return 1; }
+fn main(){
+  let t: (fn() -> int)[] = fn_array(3);
+  t[1] = hello;                 // slots 0 and 2 stay null
+  let i = 0;
+  while (i < 3) {
+    if (t[i] == null) { print(-1); } else { print(t[i]()); }
+    i = i + 1;
+  }                             // -1 1 -1
+  t[1] = null;                  // a function pointer can be cleared back to null
+  print(t[1] == null);          // true
+  print(hello == null);         // false — a real pointer is never null
+}`,
+  },
+  {
+    name: 'fnarr-state-machine',
+    source: `// A finite-state machine: each state is a function in a table that prints its
+// id and returns the next state's index. Dispatch is a pure table indexing.
+fn s_red() -> int { print(0); return 1; }
+fn s_green() -> int { print(1); return 2; }
+fn s_yellow() -> int { print(2); return 0; }
+fn main(){
+  let states: (fn() -> int)[] = fn_array(3);
+  states[0] = s_red; states[1] = s_green; states[2] = s_yellow;
+  let st = 0; let steps = 0;
+  while (steps < 7) { st = states[st](); steps = steps + 1; }  // 0 1 2 0 1 2 0
+  print(99);
+}`,
+  },
+  {
+    name: 'fnarr-reassign-identity',
+    source: `fn a() -> int { return 10; }
+fn b() -> int { return 20; }
+fn main(){
+  let t: (fn() -> int)[] = fn_array(2);
+  t[0] = a; t[1] = a;
+  print(t[0] == t[1]);   // true  — same target
+  t[1] = b;
+  print(t[0] == t[1]);   // false
+  print(t[0]());          // 10
+  print(t[1]());          // 20
+  let p = t[0];           // load a table slot into a local function pointer
+  print(p == a);          // true
+  print(p());             // 10
+}`,
+  },
+  {
+    name: 'fnarr-mixed-sigs',
+    source: `fn pa(x: int) { print(x); }
+fn pb(x: int) { print(x * x); }
+fn slen(s: str) -> int { return len(s); }
+fn lsum(a: long, b: long) -> long { return a + b; }
+fn main(){
+  let actions: (fn(int))[] = fn_array(2);   // array of void-returning actions
+  actions[0] = pa; actions[1] = pb;
+  actions[0](7);                 // 7
+  actions[1](7);                 // 49
+  let measures: (fn(str) -> int)[] = fn_array(1);
+  measures[0] = slen;
+  print(measures[0]("strata"));  // 6
+  let acc: (fn(long, long) -> long)[] = fn_array(1);
+  acc[0] = lsum;
+  print(str(acc[0](2L, 40L)));   // 42
+}`,
+  },
+  {
+    name: 'fnarr-grammar-distinction',
+    source: `// 'fn(int) -> int[]' returns an int[]; '(fn(int) -> int)[]' is an array OF
+// function pointers — the grouping parens disambiguate.
+fn evens(n: int) -> int[] {
+  let a = int_array(n); let i = 0;
+  while (i < n) { a[i] = i * 2; i = i + 1; }
+  return a;
+}
+fn inc(x: int) -> int { return x + 1; }
+fn dec(x: int) -> int { return x - 1; }
+fn main(){
+  let e = evens(4);
+  print(e[3]);                              // 6
+  let fns: (fn(int) -> int)[] = fn_array(2);
+  fns[0] = inc; fns[1] = dec;
+  print(fns[0](fns[1](10)));                // inc(dec(10)) = 10
+}`,
+  },
+  {
+    name: 'fnarr-runtime-dispatch',
+    source: `// The table is built in a callee and returned, then indexed by a loop variable —
+// so the optimizer can never devirtualize the call (the target is data).
+fn k0(x: int) -> int { return x + 100; }
+fn k1(x: int) -> int { return x + 200; }
+fn k2(x: int) -> int { return x + 300; }
+fn build() -> (fn(int) -> int)[] {
+  let t: (fn(int) -> int)[] = fn_array(3);
+  t[0] = k0; t[1] = k1; t[2] = k2;
+  return t;
+}
+fn main(){
+  let t = build();
+  let i = 0; let acc = 0;
+  while (i < 3) { acc = acc + t[i](i); i = i + 1; }
+  print(acc);   // 100 + 201 + 302 = 603
+}`,
+  },
+  {
+    name: 'fnarr-as-param',
+    source: `// A function-pointer array passed as a parameter, with a null-guarded dispatch.
+fn op_add(a: int, b: int) -> int { return a + b; }
+fn op_max(a: int, b: int) -> int { return a > b ? a : b; }
+fn dispatch(tbl: (fn(int, int) -> int)[], which: int, a: int, b: int) -> int {
+  if (tbl[which] == null) { return -1; }
+  return tbl[which](a, b);
+}
+fn main(){
+  let tbl: (fn(int, int) -> int)[] = fn_array(3);
+  tbl[0] = op_add; tbl[2] = op_max;   // slot 1 deliberately left null
+  print(dispatch(tbl, 0, 3, 4));   // 7
+  print(dispatch(tbl, 1, 3, 4));   // -1  (null slot)
+  print(dispatch(tbl, 2, 3, 4));   // 4
+}`,
+  },
 ];
