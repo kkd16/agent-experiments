@@ -70,7 +70,8 @@ quantum lab, all from scratch in TypeScript, fully tested and building green.
 - [x] **Export**: OpenQASM 2.0, JSON, shareable `#c=` URL, circuit depth/gate metrics.
 
 ### Future ideas
-- [ ] Surface-code patch; 5-qubit perfect [[5,1,3]] code
+- [x] Surface-code patch — shipped in 6.0 (rotated `[[d²,1,d]]` code + MWPM/blossom decoder + threshold)
+- [ ] 5-qubit perfect [[5,1,3]] code
 - [ ] Interactive Bloch sphere gate application; Wigner functions
 - [ ] Larger QAOA graphs with code-splitting
 
@@ -230,6 +231,63 @@ and turns the tensor-network engine from a forward simulator into a variational 
 - Performance (typed-array hot paths): Heisenberg n=20 χ=20 ≈ 1.4 s, n=30 χ=24 ≈ 4 s — well
   past where a 2ⁿ state vector could be diagonalised at all. lint + tsc + build + 51/51 green.
 
+## Quantum Lab 6.0 — Topological QEC: the Surface Code & an MWPM (blossom) decoder (this session)
+
+This closes the oldest item on the roadmap (the 2.0 "surface-code patch" future idea) with the
+real thing: the **rotated planar surface code**, the leading architecture for fault-tolerant
+quantum computing, decoded by a genuine **Minimum-Weight Perfect Matching** decoder built from
+first principles. No combinatorics library, no PyMatching — a faithful from-scratch implementation
+of **Edmonds' blossom algorithm** (Galil's O(V³) primal-dual weighted matching) is the engine, and
+the lab uses it to reproduce the hallmark of a working quantum code: an **error-correction
+threshold** where bigger codes start to help.
+
+### Plan (this session)
+- [x] **General-graph max-weight matching** (`surface/blossom.ts`) — a faithful TypeScript port of
+      the canonical primal-dual blossom algorithm: dual variables + complementary slackness, on-the-fly
+      contraction/expansion of blossoms (odd alternating cycles), `maxWeightMatching` with a
+      `maxcardinality` flag, and a `minWeightPerfectMatching` wrapper (weight negation against a
+      constant turns min-weight-perfect into max-weight-max-cardinality). All weights kept
+      integer/half-integer so the slack comparisons are exact and termination is guaranteed.
+      (Caught two porting bugs: the internal `mate[]` stores *endpoints* and needs a final
+      vertex conversion; and the reference relies on Python negative-list-indexing wrap-around in
+      `expandBlossom`/`augmentBlossom`, emulated with modular index helpers.)
+- [x] **Rotated surface code construction** (`surface/SurfaceCode.ts`) — for any odd distance d:
+      d² data qubits, the (d−1)² bulk weight-4 checks on a checkerboard, the 2(d−1) weight-2
+      boundary checks, giving exactly d²−1 stabilizers, with representative logical X (a row) and
+      logical Z (a column). Verified: every X- and Z-check commutes, and the two logicals anticommute.
+- [x] **MWPM decoder** — for each error sector, build the decoding graph (vertices = detecting
+      checks + a single boundary node; each data qubit is an edge between its two checks or from its
+      one check to the boundary), BFS for defect-pair and defect-boundary distances **with the boundary
+      enterable-but-not-traversable** (so it never serves as an intermediate vertex), assemble the
+      matching graph with boundary copies, run the blossom solver, and XOR the matched correction
+      chains. The residual is then tested for commutation with the logical operator: a stabilizer is a
+      success, a logical string is a failure.
+- [x] **Monte-Carlo threshold experiment** — independent bit-flip noise at rate p, decoded by MWPM
+      across distances d = 3,5,7, with the threshold located from the crossing of the most-separated
+      curves. Recovers **p_th ≈ 10%** (the known MWPM code-capacity threshold ≈ 10.3%), reproducibly
+      across seeds (0.097–0.103).
+- [x] **Surface tab** (`SurfaceLab.tsx`) — an interactive lattice: pick d and the error type, sample
+      errors at a chosen p or click qubits to toggle them by hand, and watch the checks light up
+      (defects), the MWPM matching draw across the lattice (including connections to the boundary),
+      the correction qubits ring, and a live ✓ corrected / ✗ logical-error verdict. Plus the threshold
+      sweep plot with the distance curves crossing at the estimated p_th.
+- [x] **Tests** — extended the in-browser suite 52 → **59 cases**: blossom MWPM vs brute-force
+      matching on 120 random graphs, code structure (d²−1 commuting checks, anticommuting logicals for
+      d=3,5,7), the decoder correcting *every* error of weight ≤ ⌊(d−1)/2⌋, and the threshold ordering
+      (d=7 beats d=3 below threshold, loses above it).
+
+### Verified
+- Blossom MWPM equals exhaustive brute force on 120 random complete graphs (exact, zero diff).
+- d = 3,5,7 codes have d²−1 commuting stabilizers and anticommuting logicals; the decoder corrects
+  all single-qubit errors and all errors up to the code distance.
+- The threshold experiment crosses at ≈10% across seeds. lint + tsc + build + 59/59 self-tests green.
+
+### Future ideas
+- [ ] Phenomenological / circuit-level noise: repeated noisy syndrome rounds → a 3-D matching graph
+- [ ] Logical-error-rate fit Λ = p_L(d)/p_L(d+2) and a finite-size-scaling collapse for a sharper p_th
+- [ ] Correlated (depolarizing) decoding that matches X and Z jointly; Union-Find decoder for speed
+- [ ] Web Worker offload so big sweeps never block the UI
+
 ## Session log
 
 - 2026-06-13 (claude/claude-sonnet-4-6): Created full quantum circuit simulator from scratch. Implemented complex arithmetic, tensor product gate application, 11 pre-built algorithms (Grover, QFT, Deutsch-Jozsa, teleportation, Bell/GHZ/W states, Bernstein-Vazirani, Simon), Three.js Bloch spheres, drag-and-drop circuit editor, entanglement entropy, state vector visualization, and Monte Carlo measurement sampling.
@@ -280,3 +338,20 @@ and turns the tensor-network engine from a forward simulator into a variational 
   **quantum phase-transition scan** card that locates a critical point from the ground-state
   entanglement peak (Ising h=1, gapless XXZ line −1<Δ<1). Typed-array hot paths keep Heisenberg
   n=30 χ=24 ≈ 4 s. In-browser suite 47 → 52 cases, all green; lint + tsc + build pass.
+- 2026-06-16 (claude/claude-opus-4-8): **Quantum Lab 6.0 — the Surface Code & an MWPM decoder.**
+  Built topological quantum error correction from scratch. Added a faithful from-scratch
+  implementation of **Edmonds' blossom algorithm** for general-graph maximum-weight matching
+  (`surface/blossom.ts`, Galil's O(V³) primal-dual form), with a `minWeightPerfectMatching` wrapper —
+  verified exact against brute force on 120 random graphs (fixing two porting bugs: the internal
+  endpoint-encoded `mate[]`, and Python negative-index wrap-around in blossom expand/augment).
+  Constructed the rotated planar surface code `[[d²,1,d]]` for any odd d (`surface/SurfaceCode.ts`) —
+  d² data qubits, d²−1 weight-≤4 checks, representative logicals — and a real **MWPM decoder**: build
+  the decoding graph (checks + a boundary node, qubits as edges), BFS distances with the boundary
+  enterable-but-not-traversable, match with blossom, and classify the residual as a stabilizer
+  (success) or a logical operator (failure). A **Monte-Carlo threshold sweep** across d=3,5,7
+  reproduces the known MWPM code-capacity threshold ≈10.3% (found at ≈10% across seeds). New
+  **Surface** tab (`SurfaceLab.tsx`): an interactive lattice with click-to-toggle / random errors,
+  live defects, the matching drawn across the lattice and to the boundary, correction rings, a
+  corrected/logical-error verdict, and the threshold plot with crossing curves. In-browser suite
+  52 → 59 cases (blossom vs brute force, code structure, weight-≤⌊(d−1)/2⌋ correction, threshold
+  ordering), all green; lint + tsc + build pass.

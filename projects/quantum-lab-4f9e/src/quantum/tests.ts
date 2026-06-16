@@ -23,6 +23,8 @@ import type { GateOp } from './QuantumState';
 import { tebdQuench, exactTFIM } from './tebd';
 import { tfimMPO, heisenbergMPO, exactGroundEnergyMPO, mpoToDense } from './MPO';
 import { runDMRG } from './dmrg';
+import { minWeightPerfectMatching, type Edge } from './surface/blossom';
+import { buildSurfaceCode, correctRound, logicalErrorRate, mulberry32 } from './surface/SurfaceCode';
 
 export interface TestResult {
   group: string;
@@ -443,6 +445,74 @@ export function runTests(): TestResult[] {
       const sFerro = ferro.entropyProfile[4], sCrit = crit.entropyProfile[4];
       add('DMRG', 'XXZ phase transition: ferromagnet separable, critical region entangled', sFerro < 0.05 && sCrit > 0.5, `S(Δ=−1.4)=${sFerro.toFixed(3)} S(Δ=0)=${sCrit.toFixed(3)}`);
     }
+  }
+
+  // --- Surface code & MWPM (Edmonds' blossom) decoder ---
+  {
+    // Blossom min-weight perfect matching == brute force on random complete graphs.
+    const bruteMWPM = (n: number, w: number[][]): number => {
+      const used = new Array(n).fill(false);
+      const rec = (): number => {
+        let i = 0; while (i < n && used[i]) i++;
+        if (i === n) return 0;
+        used[i] = true; let best = Infinity;
+        for (let j = i + 1; j < n; j++) if (!used[j]) { used[j] = true; best = Math.min(best, w[i][j] + rec()); used[j] = false; }
+        used[i] = false; return best;
+      };
+      return rec();
+    };
+    const rng = mulberry32(123);
+    let blossomWorst = 0;
+    for (let trial = 0; trial < 120; trial++) {
+      const n = 2 * (1 + Math.floor(rng() * 4));
+      const w: number[][] = Array.from({ length: n }, () => new Array(n).fill(0));
+      const edges: Edge[] = [];
+      for (let i = 0; i < n; i++) for (let j = i + 1; j < n; j++) { const x = 1 + Math.floor(rng() * 20); w[i][j] = w[j][i] = x; edges.push([i, j, x]); }
+      const mate = minWeightPerfectMatching(n, edges);
+      let tot = 0, perfect = true;
+      for (let i = 0; i < n; i++) { if (mate[i] < 0) perfect = false; else if (i < mate[i]) tot += w[i][mate[i]]; }
+      if (!perfect) blossomWorst = Infinity;
+      blossomWorst = Math.max(blossomWorst, Math.abs(tot - bruteMWPM(n, w)));
+    }
+    add('Surface code', 'blossom MWPM matches brute force (120 random graphs)', blossomWorst === 0, `max Δ ${blossomWorst}`);
+
+    // Code structure: d²−1 commuting stabilizers, anticommuting logicals.
+    let structOk = true, commOk = true, logOk = true;
+    for (const d of [3, 5, 7]) {
+      const code = buildSurfaceCode(d);
+      if (code.stabs.length !== d * d - 1) structOk = false;
+      for (const xi of code.xStabIdx) for (const zi of code.zStabIdx) {
+        const xs = new Set(code.stabs[xi].qubits); let n = 0;
+        for (const q of code.stabs[zi].qubits) if (xs.has(q)) n++;
+        if (n % 2 !== 0) commOk = false;
+      }
+      const lz = new Set(code.logicalZ); let inter = 0;
+      for (const q of code.logicalX) if (lz.has(q)) inter++;
+      if (inter % 2 !== 1) logOk = false;
+    }
+    add('Surface code', 'rotated code has d²−1 stabilizers (d=3,5,7)', structOk, '');
+    add('Surface code', 'every X- and Z-check commutes', commOk, '');
+    add('Surface code', 'logical X and Z anticommute (single overlap)', logOk, '');
+
+    // The MWPM decoder corrects every error up to the code distance.
+    let correctOk = true;
+    for (const d of [3, 5, 7]) {
+      const code = buildSurfaceCode(d);
+      for (let q = 0; q < code.nData && correctOk; q++) if (correctRound(code, new Set([q]), new Set([q])).failure) correctOk = false;
+      const rg = mulberry32(31 + d), t = Math.floor((d - 1) / 2);
+      for (let trial = 0; trial < 80 && correctOk; trial++) {
+        const e = new Set<number>(); while (e.size < t) e.add(Math.floor(rg() * code.nData));
+        if (correctRound(code, e, new Set()).logicalXFailure) correctOk = false;
+      }
+    }
+    add('Surface code', 'MWPM corrects all errors of weight ≤ ⌊(d−1)/2⌋', correctOk, '');
+
+    // The threshold ordering: below p_th a bigger code wins, above it loses.
+    const rg2 = mulberry32(99);
+    const lo3 = logicalErrorRate(3, 0.04, 600, rg2), lo7 = logicalErrorRate(7, 0.04, 600, rg2);
+    add('Surface code', 'below threshold (p=4%): d=7 beats d=3', lo7 < lo3, `d3=${lo3.toFixed(3)} d7=${lo7.toFixed(3)}`);
+    const hi3 = logicalErrorRate(3, 0.22, 600, rg2), hi7 = logicalErrorRate(7, 0.22, 600, rg2);
+    add('Surface code', 'above threshold (p=22%): d=7 worse than d=3', hi7 > hi3, `d3=${hi3.toFixed(3)} d7=${hi7.toFixed(3)}`);
   }
 
   return r;
