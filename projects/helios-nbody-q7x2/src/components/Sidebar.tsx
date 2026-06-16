@@ -15,6 +15,7 @@ import { SpectralPanel } from './SpectralPanel'
 import { PoincarePanel } from './PoincarePanel'
 import { RelativityPanel } from './RelativityPanel'
 import { GravWavePanel } from './GravWavePanel'
+import { BlackHolePanel } from './BlackHolePanel'
 import { Section, Segmented, Select, Slider, Toggle } from './primitives'
 
 export interface SidebarProps {
@@ -299,6 +300,10 @@ export function Sidebar(p: SidebarProps) {
 
       <Section title="Wave Lab" defaultOpen={false}>
         <GravWavePanel />
+      </Section>
+
+      <Section title="Black Hole Lab" defaultOpen={false}>
+        <BlackHolePanel />
       </Section>
 
       <Section title="Rendering">

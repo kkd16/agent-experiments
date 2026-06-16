@@ -24,6 +24,19 @@ import {
   quadrupoleLuminosityCircular,
   gwFrequencyCircular,
 } from './gravwave'
+import {
+  criticalImpactParameter,
+  shadowImpactParameter,
+  circularAngularMomentumSq,
+  deflectionAngle,
+  bozzaStrongDeflection,
+  circularPrecessionPerOrbit,
+  integrateCircularPrecession,
+  diskRedshiftFactor,
+  shadowAngularRadius,
+  kerrShadowRim,
+  kerrEquatorialPhotonRadius,
+} from './geodesic'
 import type { IntegratorId } from './types'
 
 export interface TestCase {
@@ -872,6 +885,186 @@ export function runSelfTest(): SelfTestReport {
       'GW strain has the (1+cos²ι)/2cosι pattern',
       pass,
       `h₊(60°)/h₊(0)=${(i60.hp / face.hp).toFixed(3)} (=0.625), h×(60°)/h×(0)=${(i60.hx / face.hx).toFixed(3)} (=0.5), h×(90°)≈${(edge.hx / face.hx).toExponential(1)}`,
+    )
+  }
+
+  // ----- Strong-field gravity: Schwarzschild geodesics & the black-hole shadow -----
+
+  // 34 — The critical impact parameter b_c = 3√3 M, the apparent radius of a
+  // black hole's shadow. The closed form is cross-checked against an independent
+  // bisection on the ray tracer's capture/escape boundary.
+  {
+    const bcClosed = criticalImpactParameter(1)
+    const bcNum = shadowImpactParameter(1)
+    const exact = 3 * Math.sqrt(3)
+    const pass = approx(bcClosed, exact, 1e-9) && approx(bcNum, exact, 2e-3)
+    add(
+      'Shadow: critical impact parameter b_c = 3√3 M',
+      pass,
+      `closed=${bcClosed.toFixed(6)}, ray-trace bisection=${bcNum.toFixed(6)} (=3√3=${exact.toFixed(6)})`,
+    )
+  }
+
+  // 35 — The photon sphere r = 3M is the pole of the circular-orbit angular
+  // momentum L²(r) = M r²/(r−3M), and a photon with b just under b_c is captured
+  // while b just over it escapes — the shadow edge.
+  {
+    const big = circularAngularMomentumSq(3 + 1e-4, 1) // → ∞ as r → 3M
+    const finite = circularAngularMomentumSq(10, 1)
+    const bc = criticalImpactParameter(1)
+    const capIn = deflectionAngle(bc * 0.999, 1).captured
+    const capOut = deflectionAngle(bc * 1.001, 1).captured
+    const pass = big > 1e3 && Number.isFinite(finite) && capIn && !capOut
+    add(
+      'Shadow: photon sphere at r = 3M (capture boundary)',
+      pass,
+      `L²(3M⁺)=${big.toExponential(1)} (→∞), b<b_c captured=${capIn}, b>b_c captured=${capOut}`,
+    )
+  }
+
+  // 36 — The ISCO r = 6M is the minimum of L²(r): inside it no stable circular
+  // orbit exists. Recover it by scanning the closed-form curve for its minimum.
+  {
+    let minR = 0
+    let minV = Infinity
+    for (let r = 3.5; r < 12; r += 0.0005) {
+      const v = circularAngularMomentumSq(r, 1)
+      if (v < minV) { minV = v; minR = r }
+    }
+    const pass = approx(minR, 6, 2e-3) && approx(minV, 12, 5e-3)
+    add(
+      'Innermost stable circular orbit at r = 6M',
+      pass,
+      `argmin L²(r) = ${minR.toFixed(4)} (=6), L²_min = ${minV.toFixed(4)} (=12 M²)`,
+    )
+  }
+
+  // 37 — Light deflection in the weak field tends to Einstein's α → 4M/b. We
+  // check the ratio approaches 1 as the impact parameter grows.
+  {
+    const a50 = deflectionAngle(50, 1).deflection
+    const a200 = deflectionAngle(200, 1).deflection
+    const r50 = a50 / (4 / 50)
+    const r200 = a200 / (4 / 200)
+    // Larger b ⇒ closer to 1, and the residual shrinks with b.
+    const pass = r200 < r50 && Math.abs(r200 - 1) < 0.03
+    add(
+      'Light deflection → Einstein 4M/b in the weak field',
+      pass,
+      `α(50M)/(4M/50)=${r50.toFixed(4)}, α(200M)/(4M/200)=${r200.toFixed(4)} (→1)`,
+    )
+  }
+
+  // 38 — In the strong field α(b) diverges logarithmically as b → b_c⁺, matching
+  // the Bozza (2002) coefficient α ≈ −ln(b/b_c − 1) + b̄. We compare the
+  // integrated deflection to that closed form very close to b_c.
+  {
+    const bc = criticalImpactParameter(1)
+    const b = bc * (1 + 1e-4)
+    const aInt = deflectionAngle(b, 1, { dPhi: 1e-4 }).deflection
+    const aBozza = bozzaStrongDeflection(b, 1)
+    const pass = Number.isFinite(aInt) && aInt > 2 * Math.PI && Math.abs(aInt - aBozza) < 0.02
+    add(
+      'Strong-field log divergence matches Bozza (2002)',
+      pass,
+      `α(b_c·1.0001)=${aInt.toFixed(4)} rad (>2π), Bozza=${aBozza.toFixed(4)}, Δ=${Math.abs(aInt - aBozza).toExponential(1)}`,
+    )
+  }
+
+  // 39 — A near-circular timelike orbit precesses by exactly 2π(1/√(1−6M/r)−1)
+  // per revolution — the strong-field generalisation of the 1PN 6πM/r. The
+  // closed form is verified by integrating the orbit ODE, and shown to exceed
+  // the weak-field value and tend to it far out.
+  {
+    const r = 30
+    const measured = integrateCircularPrecession(r, 1)
+    const closed = circularPrecessionPerOrbit(r, 1)
+    const oneP = precessionTheory(1, r, 0, 1) // 6πM/r
+    const farRatio = circularPrecessionPerOrbit(2000, 1) / precessionTheory(1, 2000, 0, 1)
+    const pass =
+      approx(measured / closed, 1, 2e-3) && closed > oneP && Math.abs(farRatio - 1) < 1e-2
+    add(
+      'Exact GR precession 2π(1/√(1−6M/r)−1) vs 1PN',
+      pass,
+      `integrated=${measured.toFixed(5)} vs closed=${closed.toFixed(5)} (ratio ${(measured / closed).toFixed(4)}); >1PN ${oneP.toFixed(5)}; far ratio→${farRatio.toFixed(4)}`,
+    )
+  }
+
+  // 40 — The apparent angular radius of the shadow for a static observer at
+  // coordinate radius D is sin θ = b_c√(1−2M/D)/D — tending to the b_c disc as
+  // D → ∞. Check the relation and its large-D limit.
+  {
+    const D = 30
+    const theta = shadowAngularRadius(D, 1)
+    const bc = criticalImpactParameter(1)
+    const expected = Math.asin((bc * Math.sqrt(1 - 2 / D)) / D)
+    const farTheta = shadowAngularRadius(1e7, 1)
+    const farApparent = Math.sin(farTheta) * 1e7 // → b_c
+    const pass = approx(theta, expected, 1e-9) && approx(farApparent, bc, 1e-2)
+    add(
+      'Apparent shadow radius sin θ = b_c√(1−2M/D)/D',
+      pass,
+      `θ(30M)=${(theta * 180 / Math.PI).toFixed(3)}°; D→∞ apparent=${farApparent.toFixed(4)} (=b_c=${bc.toFixed(4)})`,
+    )
+  }
+
+  // 41 — The Keplerian-disc redshift g = √(1−3M/r)/(1−Ωℓ): with no Doppler
+  // (ℓ=0) it is the circular-orbit time dilation √(1−3M/r), giving exactly √½ at
+  // the ISCO (r=6M); and g → 1 far from the hole.
+  {
+    const gIsco = diskRedshiftFactor(6, 0, 1)
+    const gFar = diskRedshiftFactor(1e6, 0, 1)
+    // Doppler: a co-rotating photon (ℓ>0) is blueshifted relative to ℓ<0.
+    const gApproach = diskRedshiftFactor(10, 4, 1)
+    const gRecede = diskRedshiftFactor(10, -4, 1)
+    const pass =
+      approx(gIsco, Math.SQRT1_2, 1e-9) && approx(gFar, 1, 1e-5) && gApproach > gRecede
+    add(
+      'Accretion-disc redshift g(6M,0) = √½, g→1, Doppler asymmetry',
+      pass,
+      `g(ISCO)=${gIsco.toFixed(6)} (=√½=${Math.SQRT1_2.toFixed(6)}), g(∞)=${gFar.toFixed(6)}, g₊=${gApproach.toFixed(3)}>g₋=${gRecede.toFixed(3)}`,
+    )
+  }
+
+  // 42 — The Kerr shadow's vertical extent (edge-on, i=90°) is 2·3√3 M for any
+  // spin, and reduces to the Schwarzschild 3√3 M circle radius as a → 0.
+  {
+    const k = kerrShadowRim(0.02, Math.PI / 2, 1, 600)
+    const halfHeight = k.heightBeta / 2
+    const exact = 3 * Math.sqrt(3)
+    const pass = approx(halfHeight, exact, 5e-3)
+    add(
+      'Kerr shadow → 3√3 M circle as spin a → 0',
+      pass,
+      `edge-on half-height (a=0.02) = ${halfHeight.toFixed(4)} (=3√3=${exact.toFixed(4)})`,
+    )
+  }
+
+  // 43 — Bardeen's equatorial photon-orbit radii: prograde → M, retrograde → 4M
+  // as a → M; both equal 3M at a = 0. Check known values at a = 0.9.
+  {
+    const rPro = kerrEquatorialPhotonRadius(0.9, 1, true)
+    const rRetro = kerrEquatorialPhotonRadius(0.9, 1, false)
+    const rPro0 = kerrEquatorialPhotonRadius(1e-6, 1, true)
+    const pass = approx(rPro, 1.5579, 2e-3) && approx(rRetro, 3.9103, 2e-3) && approx(rPro0, 3, 1e-3)
+    add(
+      'Kerr equatorial photon radii (Bardeen)',
+      pass,
+      `a=0.9: prograde=${rPro.toFixed(4)} (=1.558), retrograde=${rRetro.toFixed(4)} (=3.910); a→0: ${rPro0.toFixed(4)} (=3)`,
+    )
+  }
+
+  // 44 — Frame dragging displaces and flattens the Kerr shadow: its centroid
+  // shifts further from centre as spin grows (zero for a Schwarzschild hole).
+  {
+    const lo = kerrShadowRim(0.2, Math.PI / 2, 1, 600)
+    const hi = kerrShadowRim(0.95, Math.PI / 2, 1, 600)
+    const tiny = kerrShadowRim(0.02, Math.PI / 2, 1, 600)
+    const pass = Math.abs(hi.centroidAlpha) > Math.abs(lo.centroidAlpha) && Math.abs(tiny.centroidAlpha) < 0.1
+    add(
+      'Kerr frame-dragging displaces the shadow with spin',
+      pass,
+      `centroid α: a=0.02→${tiny.centroidAlpha.toFixed(3)}, a=0.2→${lo.centroidAlpha.toFixed(3)}, a=0.95→${hi.centroidAlpha.toFixed(3)} M`,
     )
   }
 
