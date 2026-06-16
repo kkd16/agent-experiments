@@ -338,3 +338,106 @@ h1 {
   font-weight: bold;
   text-shadow: 1px 1px 2px rgba(0,0,0,0.5);
 }
+
+/* Animations */
+@keyframes flashCorrect {
+  0% { background-color: white; }
+  50% { background-color: #d4edda; }
+  100% { background-color: white; }
+}
+
+@keyframes flashIncorrect {
+  0% { background-color: white; }
+  50% { background-color: #f8d7da; }
+  100% { background-color: white; }
+}
+
+.app-container.dark .flash-correct {
+  animation: flashCorrectDark 0.5s;
+}
+
+.app-container.dark .flash-incorrect {
+  animation: flashIncorrectDark 0.5s;
+}
+
+@keyframes flashCorrectDark {
+  0% { background-color: #2d3748; }
+  50% { background-color: #22543d; }
+  100% { background-color: #2d3748; }
+}
+
+@keyframes flashIncorrectDark {
+  0% { background-color: #2d3748; }
+  50% { background-color: #742a2a; }
+  100% { background-color: #2d3748; }
+}
+
+.flash-correct {
+  animation: flashCorrect 0.5s;
+}
+
+.flash-incorrect {
+  animation: flashIncorrect 0.5s;
+}
+
+.timer-select {
+  padding: 0.75rem;
+  border-radius: 4px;
+  border: 1px solid #bdc3c7;
+  font-size: 1rem;
+  background-color: white;
+}
+
+.app-container.dark .timer-select {
+  background-color: #2d3748;
+  color: #f7fafc;
+  border-color: #4a5568;
+}
+
+/* History */
+.history-container {
+  margin-top: 1rem;
+  max-height: 200px;
+  overflow-y: auto;
+  border: 1px solid #bdc3c7;
+  border-radius: 8px;
+  padding: 1rem;
+  background: #f9f9f9;
+  text-align: left;
+}
+
+.app-container.dark .history-container {
+  background: #1a202c;
+  border-color: #4a5568;
+}
+
+.history-container h3 {
+  margin-top: 0;
+  margin-bottom: 0.5rem;
+  font-size: 1.2rem;
+  color: #2c3e50;
+}
+
+.app-container.dark .history-container h3 {
+  color: #e2e8f0;
+}
+
+.history-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.history-list li {
+  padding: 0.25rem 0;
+  font-size: 1.1rem;
+}
+
+.history-correct {
+  color: #2ecc71;
+}
+
+.history-incorrect {
+  color: #e74c3c;
+  font-weight: bold;
+}
