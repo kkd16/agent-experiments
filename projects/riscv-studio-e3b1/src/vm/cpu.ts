@@ -31,6 +31,30 @@ import {
   fmaxBits,
   FFLAG,
 } from './fp';
+import {
+  ACCESS_FETCH,
+  ACCESS_LOAD,
+  ACCESS_STORE,
+  PAGE_FAULT_CAUSE,
+  PAGE_SIZE,
+  PRIV_M,
+  PRIV_S,
+  PRIV_U,
+  PTE_A,
+  PTE_D,
+  PTE_FLAGS_MASK,
+  PTE_R,
+  PTE_U,
+  PTE_V,
+  PTE_W,
+  PTE_X,
+  PageFault,
+  SATP_MODE_SV32,
+  satpMode,
+  satpRootPpn,
+  vpn,
+} from './mmu';
+import type { Access, TlbEntry, TranslationStep, TranslationTrace } from './mmu';
 
 export type RunStatus = 'idle' | 'paused' | 'halted' | 'error' | 'ebreak';
 
@@ -45,32 +69,69 @@ interface UndoStep {
   heapPtr: number;
   fcsr: number;
   outLen: number;
-  /** Snapshot of the machine-mode trap + CLINT state (changes most steps via mtime). */
+  /** Snapshot of the privileged trap + CLINT + paging state (changes most steps via mtime). */
   priv: number[];
   reg?: { i: number; prev: number };
   freg?: { i: number; prev: number };
-  mem?: { addr: number; prev: number[] };
+  /**
+   * Bytes overwritten this step, oldest first. A single instruction can now touch memory more
+   * than once — a paged store updates the datum *and* the PTE's A/D bits — so this is a list.
+   */
+  mem: { addr: number; prev: number[] }[];
 }
 
 const SP = 2;
 const GP = 3;
 
-// mstatus / mie / mip bit positions (machine mode).
-const MSTATUS_MIE = 1 << 3;
-const MSTATUS_MPIE = 1 << 7;
-const MSTATUS_MPP = 3 << 11; // M-mode previous privilege (always 0b11 here)
+// mstatus field bit positions (the privileged interrupt-enable / paging-control register).
+const MSTATUS_SIE = 1 << 1; // supervisor interrupt-enable
+const MSTATUS_MIE = 1 << 3; // machine interrupt-enable
+const MSTATUS_SPIE = 1 << 5; // prior SIE, stacked on an S-mode trap
+const MSTATUS_MPIE = 1 << 7; // prior MIE, stacked on an M-mode trap
+const MSTATUS_SPP = 1 << 8; // S-mode previous privilege (0 = U, 1 = S)
+const MSTATUS_MPP = 3 << 11; // M-mode previous privilege (2 bits: 0=U, 1=S, 3=M)
+const MSTATUS_MPP_SHIFT = 11;
+const MSTATUS_MPRV = 1 << 17; // modify-privilege: M-mode loads/stores use MPP's translation
+const MSTATUS_SUM = 1 << 18; // permit S-mode access to U-marked pages
+const MSTATUS_MXR = 1 << 19; // make eXecutable pages Readable
+
+// mie/mip interrupt bit positions (S- and M-level software / timer / external).
+const IRQ_SSI = 1 << 1; // supervisor software interrupt
 const IRQ_MSI = 1 << 3; // machine software interrupt
+const IRQ_STI = 1 << 5; // supervisor timer interrupt
 const IRQ_MTI = 1 << 7; // machine timer interrupt
+const IRQ_SEI = 1 << 9; // supervisor external interrupt
 const IRQ_MEI = 1 << 11; // machine external interrupt
-const MSTATUS_WMASK = MSTATUS_MIE | MSTATUS_MPIE | MSTATUS_MPP;
-const MIE_WMASK = IRQ_MSI | IRQ_MTI | IRQ_MEI;
+/** The S-level interrupt bits — the slice visible through `sie`/`sip` and delegatable. */
+const S_INTS = IRQ_SSI | IRQ_STI | IRQ_SEI;
+
+// Which mstatus bits each privilege level may write.
+const MSTATUS_WMASK =
+  MSTATUS_SIE | MSTATUS_MIE | MSTATUS_SPIE | MSTATUS_MPIE | MSTATUS_SPP | MSTATUS_MPP |
+  MSTATUS_MPRV | MSTATUS_SUM | MSTATUS_MXR;
+/** The subset of mstatus that is also visible/writable as `sstatus`. */
+const SSTATUS_MASK = MSTATUS_SIE | MSTATUS_SPIE | MSTATUS_SPP | MSTATUS_SUM | MSTATUS_MXR;
+const MIE_WMASK = IRQ_SSI | IRQ_MSI | IRQ_STI | IRQ_MTI | IRQ_SEI | IRQ_MEI;
+/** Software-writable mip bits (the S-level pendings; M timer/soft are owned by the CLINT). */
+const MIP_SWMASK = IRQ_SSI | IRQ_STI | IRQ_SEI;
+/** medeleg/mideleg are WARL; allow delegating any of the 16 standard causes / S-interrupts. */
+const MEDELEG_WMASK = 0x0000_ffff;
+const MIDELEG_WMASK = S_INTS;
 
 // Synchronous exception causes.
 const EXC_ILLEGAL = 2;
 const EXC_BREAKPOINT = 3;
 
-// RV32IMAFC misa: MXL=1 (bits 31:30) + extension bits A,C,F,I,M.
-const MISA_RV32IMAFC = 0x4000_0000 | (1 << 0) | (1 << 2) | (1 << 5) | (1 << 8) | (1 << 12);
+// RV32IMAFC + S + U misa: MXL=1 (bits 31:30) + extension bits A,C,F,I,M,S,U.
+const MISA_RV32 =
+  0x4000_0000 |
+  (1 << 0) | // A
+  (1 << 2) | // C
+  (1 << 5) | // F
+  (1 << 8) | // I
+  (1 << 12) | // M
+  (1 << 18) | // S (supervisor mode)
+  (1 << 20); // U (user mode)
 
 // Reset value for mtimecmp. Its high word is zero, so the common "write only the low word"
 // idiom yields a usable compare; until a program sets it, the timer won't fire within any
@@ -117,6 +178,21 @@ export class Cpu {
   mcause = 0; // trap cause (top bit = interrupt)
   mtval = 0; // faulting value (bad address / instruction bits)
   mscratch = 0; // a scratch word for trap handlers
+  medeleg = 0; // exception delegation: causes routed to S-mode
+  mideleg = 0; // interrupt delegation: interrupts routed to S-mode
+
+  // --- supervisor-mode trap state + the Sv32 MMU ----------------------------
+  /** Current privilege ring: U=0, S=1, M=3. Resets to machine mode. */
+  priv = PRIV_M;
+  stvec = 0; // S-mode trap-vector base (+ mode in the low 2 bits)
+  sepc = 0; // pc saved on an S-mode trap
+  scause = 0; // S-mode trap cause (top bit = interrupt)
+  stval = 0; // S-mode faulting value
+  sscratch = 0; // S-mode scratch word
+  /** Supervisor address translation & protection: MODE | ASID | root-table PPN. */
+  satp = 0;
+  /** Translation-lookaside buffer: virtual-page-number → cached leaf translation. */
+  private tlb = new Map<number, TlbEntry>();
 
   // --- CLINT (memory-mapped timer + software interrupt) ---------------------
   /** Monotonic time; ticks once per retired instruction so timers are deterministic. */
@@ -171,6 +247,16 @@ export class Cpu {
     this.mcause = 0;
     this.mtval = 0;
     this.mscratch = 0;
+    this.medeleg = 0;
+    this.mideleg = 0;
+    this.priv = PRIV_M;
+    this.stvec = 0;
+    this.sepc = 0;
+    this.scause = 0;
+    this.stval = 0;
+    this.sscratch = 0;
+    this.satp = 0;
+    this.tlb.clear();
     this.mtime = 0;
     this.mtimecmp = MTIMECMP_NEVER;
     this.msip = 0;
@@ -230,7 +316,7 @@ export class Cpu {
     if (!this.rec) return;
     const prev: number[] = [];
     for (let i = 0; i < size; i++) prev.push(this.mem.readByte(addr + i));
-    this.rec.mem = { addr: addr >>> 0, prev };
+    this.rec.mem.push({ addr: addr >>> 0, prev });
   }
 
   /** OR accrued exception flags into fcsr[4:0]. */
@@ -258,48 +344,260 @@ export class Cpu {
       return true;
     }
 
-    // Variable-length fetch: the low 2 bits of the first half-word select 16- vs 32-bit.
-    const half = this.mem.readHalf(this.pc) & 0xffff;
-    let d: DecodedInstruction;
-    let size: number;
-    if (isCompressed(half)) {
-      const expanded = expandCompressed(half);
-      if (expanded === null) {
-        return this.fetchFault(half, `illegal compressed instruction 0x${half.toString(16).padStart(4, '0')}`);
+    // Fetch + decode + execute, all under a page-fault guard: any MMU fault during the
+    // instruction's address translation unwinds here and is turned into a synchronous trap.
+    try {
+      // Variable-length fetch: the low 2 bits of the first half-word select 16- vs 32-bit.
+      const half = this.fetchHalf(this.pc) & 0xffff;
+      let d: DecodedInstruction;
+      let size: number;
+      if (isCompressed(half)) {
+        const expanded = expandCompressed(half);
+        if (expanded === null) {
+          return this.fetchFault(half, `illegal compressed instruction 0x${half.toString(16).padStart(4, '0')}`);
+        }
+        d = decode(expanded);
+        size = 2;
+      } else {
+        const word = this.fetchWord(this.pc);
+        if (word === 0) {
+          return this.fetchFault(0, 'illegal instruction 0x00000000 (ran off the end of the program?)');
+        }
+        d = decode(word);
+        size = 4;
       }
-      d = decode(expanded);
-      size = 2;
-    } else {
-      const word = this.mem.readWord(this.pc);
-      if (word === 0) {
-        return this.fetchFault(0, 'illegal instruction 0x00000000 (ran off the end of the program?)');
-      }
-      d = decode(word);
-      size = 4;
-    }
 
-    const advanced = this.execute(d, size);
-    this.cycles++;
-    if (this.rec) this.commitRecord();
-    if (this.isStopped()) return false;
-    if (!advanced) this.pc = (this.pc + size) >>> 0;
-    return true;
+      const advanced = this.execute(d, size);
+      this.cycles++;
+      if (this.rec) this.commitRecord();
+      if (this.isStopped()) return false;
+      if (!advanced) this.pc = (this.pc + size) >>> 0;
+      return true;
+    } catch (err) {
+      if (err instanceof PageFault) {
+        const taken = this.trapException(err.cause, err.vaddr, this.pageFaultMessage(err));
+        this.cycles++;
+        if (this.rec) this.commitRecord();
+        return taken;
+      }
+      throw err;
+    }
+  }
+
+  private pageFaultMessage(f: PageFault): string {
+    const kind = f.cause === 12 ? 'instruction' : f.cause === 13 ? 'load' : 'store/AMO';
+    return `${kind} page fault at virtual 0x${(f.vaddr >>> 0).toString(16).padStart(8, '0')}`;
   }
 
   /** An un-decodable fetch: vector to the trap handler if one is armed, else fail. */
   private fetchFault(badBits: number, message: string): boolean {
-    const trapped = this.trapOrFail(EXC_ILLEGAL, badBits, message);
+    const trapped = this.trapException(EXC_ILLEGAL, badBits, message);
     this.cycles++;
     if (this.rec) this.commitRecord();
     return trapped;
   }
 
-  // --- machine-mode traps & interrupts --------------------------------------
+  // --- Sv32 virtual memory --------------------------------------------------
 
-  /** True once a handler base has been installed in mtvec. */
-  private trapsArmed(): boolean {
-    return (this.mtvec >>> 0) !== 0;
+  /** Drop every cached translation (sfence.vma, satp writes, time-travel rewinds). */
+  flushTlb(): void {
+    this.tlb.clear();
   }
+
+  /** Effective privilege for a data access: MPRV redirects M-mode loads/stores through MPP. */
+  private effPriv(access: Access): number {
+    if (access !== ACCESS_FETCH && this.priv === PRIV_M && this.mstatus & MSTATUS_MPRV) {
+      return (this.mstatus & MSTATUS_MPP) >>> MSTATUS_MPP_SHIFT;
+    }
+    return this.priv;
+  }
+
+  /** Is paging active for `access` right now? (Bare satp or M-effective-priv ⇒ identity.) */
+  private pagingOn(access: Access): boolean {
+    return satpMode(this.satp) === SATP_MODE_SV32 && this.effPriv(access) !== PRIV_M;
+  }
+
+  /**
+   * Translate a virtual address to physical for `access`, walking the Sv32 page table (cached
+   * by the TLB), enforcing permissions and updating the A/D bits. Throws `PageFault` on a fault.
+   * Identity when paging is off, so Bare-mode programs pay only a single branch per access.
+   */
+  translate(vaddr: number, access: Access): number {
+    vaddr = vaddr >>> 0;
+    if (!this.pagingOn(access)) return vaddr;
+    const key = vaddr >>> 12;
+    let e = this.tlb.get(key);
+    if (!e) {
+      e = this.walk(vaddr, access);
+      this.tlb.set(key, e);
+    }
+    this.checkPerms(e, access, this.effPriv(access), vaddr);
+    this.updateAD(e, access);
+    if (e.level === 1) {
+      // 4 MiB megapage: frame = ppn1, the low 22 bits pass through from the virtual address.
+      return (e.ppn1 * 0x40_0000 + (vaddr & 0x3f_ffff)) >>> 0;
+    }
+    return (e.ppn * PAGE_SIZE + (vaddr & 0xfff)) >>> 0;
+  }
+
+  /** The two-level Sv32 page-table walk. Returns the leaf; throws on a structurally bad walk. */
+  private walk(vaddr: number, access: Access): TlbEntry {
+    let a = satpRootPpn(this.satp) * PAGE_SIZE;
+    for (let level = 1; level >= 0; level--) {
+      const pteAddr = (a + vpn(vaddr, level) * 4) >>> 0;
+      const pte = this.mem.readWord(pteAddr) >>> 0;
+      // Not valid, or the reserved write-without-read encoding (R=0, W=1) → fault.
+      if (!(pte & PTE_V) || (!(pte & PTE_R) && pte & PTE_W)) this.pageFault(access, vaddr);
+      const ppn0 = (pte >>> 10) & 0x3ff;
+      const ppn1 = (pte >>> 20) & 0xfff;
+      if (pte & (PTE_R | PTE_X)) {
+        // A leaf. A megapage (found at level 1) must have a zero low PPN or it is misaligned.
+        if (level === 1 && ppn0 !== 0) this.pageFault(access, vaddr);
+        return { ppn: ppn1 * 0x400 + ppn0, ppn1, level, flags: pte & PTE_FLAGS_MASK, pteAddr };
+      }
+      // A pointer to the next level: descend.
+      a = (ppn1 * 0x400 + ppn0) * PAGE_SIZE;
+    }
+    return this.pageFault(access, vaddr);
+  }
+
+  private pageFault(access: Access, vaddr: number): never {
+    throw new PageFault(PAGE_FAULT_CAUSE[access], vaddr >>> 0);
+  }
+
+  /** Per-access permission check against the cached PTE flags + live priv / SUM / MXR. */
+  private checkPerms(e: TlbEntry, access: Access, priv: number, vaddr: number): void {
+    const f = e.flags;
+    // MXR lets a load read an execute-only page.
+    const readable = f & PTE_R || (this.mstatus & MSTATUS_MXR && f & PTE_X);
+    if (access === ACCESS_FETCH && !(f & PTE_X)) this.pageFault(access, vaddr);
+    if (access === ACCESS_LOAD && !readable) this.pageFault(access, vaddr);
+    if (access === ACCESS_STORE && !(f & PTE_W)) this.pageFault(access, vaddr);
+    const user = (f & PTE_U) !== 0;
+    if (priv === PRIV_U && !user) this.pageFault(access, vaddr);
+    if (priv === PRIV_S && user) {
+      // S-mode may touch U pages only as data, and only when SUM is set; never as instructions.
+      if (access === ACCESS_FETCH || !(this.mstatus & MSTATUS_SUM)) this.pageFault(access, vaddr);
+    }
+  }
+
+  /** Hardware page-table A/D management: set Accessed on any touch, Dirty on a store. */
+  private updateAD(e: TlbEntry, access: Access): void {
+    const pte = this.mem.readWord(e.pteAddr) >>> 0;
+    let nf = pte | PTE_A;
+    if (access === ACCESS_STORE) nf |= PTE_D;
+    if (nf !== pte) {
+      this.recordMem(e.pteAddr, 4);
+      this.mem.writeWord(e.pteAddr, nf);
+      e.flags = nf & PTE_FLAGS_MASK;
+    }
+  }
+
+  /**
+   * A read-only Sv32 walk for the inspector: visits the same PTEs as `translate` but never sets
+   * A/D, never throws, and never consults the TLB — purely for visualising what an address maps
+   * to right now. `access` only affects the reported fault cause and the effective privilege.
+   */
+  explainTranslation(vaddr: number, access: Access = ACCESS_LOAD): TranslationTrace {
+    vaddr = vaddr >>> 0;
+    const effPriv = this.effPriv(access);
+    const steps: TranslationStep[] = [];
+    if (!this.pagingOn(access)) {
+      return { vaddr, paging: false, effPriv, steps, physical: vaddr, fault: null };
+    }
+    const fault = (): TranslationTrace => ({
+      vaddr,
+      paging: true,
+      effPriv,
+      steps,
+      physical: null,
+      fault: PAGE_FAULT_CAUSE[access],
+    });
+    let a = satpRootPpn(this.satp) * PAGE_SIZE;
+    for (let level = 1; level >= 0; level--) {
+      const pteAddr = (a + vpn(vaddr, level) * 4) >>> 0;
+      const pte = this.mem.readWord(pteAddr) >>> 0;
+      const valid = !!(pte & PTE_V) && !(!(pte & PTE_R) && pte & PTE_W);
+      const leaf = !!(pte & (PTE_R | PTE_X));
+      steps.push({ level, pteAddr, pte, kind: !valid ? 'invalid' : leaf ? 'leaf' : 'pointer' });
+      if (!valid) return fault();
+      const ppn0 = (pte >>> 10) & 0x3ff;
+      const ppn1 = (pte >>> 20) & 0xfff;
+      if (leaf) {
+        if (level === 1 && ppn0 !== 0) return fault();
+        const physical =
+          level === 1
+            ? (ppn1 * 0x40_0000 + (vaddr & 0x3f_ffff)) >>> 0
+            : ((ppn1 * 0x400 + ppn0) * PAGE_SIZE + (vaddr & 0xfff)) >>> 0;
+        return { vaddr, paging: true, effPriv, steps, physical, fault: null };
+      }
+      a = (ppn1 * 0x400 + ppn0) * PAGE_SIZE;
+    }
+    return fault();
+  }
+
+  // ---- translated memory access (the load/store path goes through these) ----
+
+  /** Virtual load of `size` bytes (1/2/4) → little-endian value, via translation + CLINT. */
+  private vmLoad(vaddr: number, size: number, access: Access = ACCESS_LOAD): number {
+    vaddr = vaddr >>> 0;
+    // Fast path: the whole access lies in one page (always true when paging is off).
+    if ((vaddr & 0xfff) + size <= PAGE_SIZE) {
+      return this.physLoad(this.translate(vaddr, access), size);
+    }
+    // Rare page-crossing unaligned access: translate + read byte by byte.
+    let v = 0;
+    for (let i = 0; i < size; i++) {
+      v |= this.mem.readByte(this.translate((vaddr + i) >>> 0, access)) << (8 * i);
+    }
+    return v >>> 0;
+  }
+
+  /** Virtual store of `size` bytes; records overwritten bytes for time-travel. */
+  private vmStore(vaddr: number, size: number, value: number): void {
+    vaddr = vaddr >>> 0;
+    if ((vaddr & 0xfff) + size <= PAGE_SIZE) {
+      this.physStore(this.translate(vaddr, ACCESS_STORE), size, value);
+      return;
+    }
+    // Page-crossing: translate every byte first so a fault on any of them writes nothing.
+    const pas: number[] = [];
+    for (let i = 0; i < size; i++) pas.push(this.translate((vaddr + i) >>> 0, ACCESS_STORE));
+    for (let i = 0; i < size; i++) {
+      this.recordMem(pas[i], 1);
+      this.mem.writeByte(pas[i], (value >>> (8 * i)) & 0xff);
+    }
+  }
+
+  private physLoad(pa: number, size: number): number {
+    if (size === 4) return this.readWordIO(pa) >>> 0;
+    if (size === 2) return this.mem.readHalf(pa);
+    return this.mem.readByte(pa);
+  }
+
+  private physStore(pa: number, size: number, value: number): void {
+    if (size === 4) {
+      if (!this.writeWordIO(pa, value)) this.storeWord(pa, value);
+      return;
+    }
+    this.recordMem(pa, size);
+    if (size === 2) this.mem.writeHalf(pa, value & 0xffff);
+    else this.mem.writeByte(pa, value & 0xff);
+  }
+
+  /** Translate + read a 16-bit instruction parcel (pc is 2-byte aligned ⇒ never page-crosses). */
+  private fetchHalf(vaddr: number): number {
+    return this.vmLoad(vaddr, 2, ACCESS_FETCH);
+  }
+
+  /** Translate + read a 32-bit instruction as two parcels, so a page-straddling op faults right. */
+  private fetchWord(vaddr: number): number {
+    const lo = this.vmLoad(vaddr, 2, ACCESS_FETCH);
+    const hi = this.vmLoad((vaddr + 2) >>> 0, 2, ACCESS_FETCH);
+    return (lo | (hi << 16)) >>> 0;
+  }
+
+  // --- traps & interrupts (M / S, with delegation) --------------------------
 
   /** Advance mtime and recompute the timer/software interrupt-pending bits. */
   private tickClint(): void {
@@ -310,42 +608,79 @@ export class Cpu {
     else this.mip &= ~IRQ_MSI;
   }
 
+  /** Which ring handles this trap, honouring delegation (and never below the current ring). */
+  private trapTarget(cause: number, isInterrupt: boolean): number {
+    const deleg = isInterrupt ? this.mideleg : this.medeleg;
+    if (this.priv <= PRIV_S && (deleg & (1 << cause)) !== 0) return PRIV_S;
+    return PRIV_M;
+  }
+
   /** Take the highest-priority enabled+pending interrupt, if any. Returns true if taken. */
   private takeInterruptIfPending(): boolean {
-    if (!this.trapsArmed() || (this.mstatus & MSTATUS_MIE) === 0) return false;
     const pending = this.mip & this.mie;
     if (pending === 0) return false;
-    let cause: number;
-    if (pending & IRQ_MEI) cause = 11;
-    else if (pending & IRQ_MSI) cause = 3;
-    else if (pending & IRQ_MTI) cause = 7;
-    else return false;
-    this.takeTrap(cause, 0, true, this.pc);
-    return true;
-  }
-
-  /** Enter machine-mode trap handling: save state and vector to mtvec. */
-  private takeTrap(cause: number, tval: number, isInterrupt: boolean, epc: number): void {
-    this.mepc = epc >>> 0;
-    this.mcause = ((isInterrupt ? 0x8000_0000 : 0) | (cause & 0x7fff_ffff)) | 0;
-    this.mtval = tval | 0;
-    // Push the interrupt-enable stack: MPIE ← MIE, MIE ← 0, MPP ← M.
-    const mie = this.mstatus & MSTATUS_MIE ? MSTATUS_MPIE : 0;
-    this.mstatus = ((this.mstatus & ~MSTATUS_MPIE) | mie) & ~MSTATUS_MIE;
-    this.mstatus |= MSTATUS_MPP;
-    const base = this.mtvec & ~0x3;
-    const vectored = (this.mtvec & 0x3) === 1;
-    this.pc = (isInterrupt && vectored ? base + 4 * cause : base) >>> 0;
-  }
-
-  /** Synchronous fault: vector to mtvec if armed (returns true), else fail (returns false). */
-  private trapOrFail(cause: number, tval: number, message: string): boolean {
-    if (this.trapsArmed()) {
-      this.takeTrap(cause, tval, false, this.pc);
+    // Standard fixed priority: external > software > timer, machine level over supervisor.
+    const order: readonly [number, number][] = [
+      [IRQ_MEI, 11], [IRQ_MSI, 3], [IRQ_MTI, 7], [IRQ_SEI, 9], [IRQ_SSI, 1], [IRQ_STI, 5],
+    ];
+    for (const [bit, cause] of order) {
+      if (!(pending & bit)) continue;
+      const target = this.trapTarget(cause, true);
+      // Globally enabled when targeting a higher ring than current, or the same ring with its
+      // interrupt-enable set. A trap is never delivered to a lower ring than the current one.
+      const enabled =
+        target === PRIV_M
+          ? this.priv < PRIV_M || (this.priv === PRIV_M && (this.mstatus & MSTATUS_MIE) !== 0)
+          : this.priv < PRIV_S || (this.priv === PRIV_S && (this.mstatus & MSTATUS_SIE) !== 0);
+      if (!enabled) continue;
+      const armed = target === PRIV_M ? this.mtvec >>> 0 : this.stvec >>> 0;
+      if (armed === 0) continue;
+      this.enterTrap(cause, 0, true, this.pc, target);
       return true;
     }
-    this.fail(message);
     return false;
+  }
+
+  /** Save state and vector to the chosen ring's trap handler. */
+  private enterTrap(cause: number, tval: number, isInterrupt: boolean, epc: number, target: number): void {
+    const causeWord = ((isInterrupt ? 0x8000_0000 : 0) | (cause & 0x7fff_ffff)) | 0;
+    if (target === PRIV_S) {
+      this.sepc = epc >>> 0;
+      this.scause = causeWord;
+      this.stval = tval | 0;
+      // Stack the supervisor interrupt-enable: SPIE ← SIE, SIE ← 0, SPP ← (was S ? S : U).
+      const sie = this.mstatus & MSTATUS_SIE ? MSTATUS_SPIE : 0;
+      this.mstatus = (this.mstatus & ~(MSTATUS_SPIE | MSTATUS_SIE | MSTATUS_SPP)) | sie;
+      if (this.priv === PRIV_S) this.mstatus |= MSTATUS_SPP;
+      this.priv = PRIV_S;
+      const base = this.stvec & ~0x3;
+      const vectored = (this.stvec & 0x3) === 1;
+      this.pc = (isInterrupt && vectored ? base + 4 * cause : base) >>> 0;
+    } else {
+      this.mepc = epc >>> 0;
+      this.mcause = causeWord;
+      this.mtval = tval | 0;
+      // Stack the machine interrupt-enable: MPIE ← MIE, MIE ← 0, MPP ← current privilege.
+      const mie = this.mstatus & MSTATUS_MIE ? MSTATUS_MPIE : 0;
+      this.mstatus = (this.mstatus & ~(MSTATUS_MPIE | MSTATUS_MIE | MSTATUS_MPP)) | mie;
+      this.mstatus |= (this.priv << MSTATUS_MPP_SHIFT) & MSTATUS_MPP;
+      this.priv = PRIV_M;
+      const base = this.mtvec & ~0x3;
+      const vectored = (this.mtvec & 0x3) === 1;
+      this.pc = (isInterrupt && vectored ? base + 4 * cause : base) >>> 0;
+    }
+  }
+
+  /** Take a synchronous exception: vector to the right ring's handler, or fail if none armed. */
+  private trapException(cause: number, tval: number, message: string): boolean {
+    const target = this.trapTarget(cause, false);
+    const armed = target === PRIV_M ? this.mtvec >>> 0 : this.stvec >>> 0;
+    if (armed === 0) {
+      this.fail(message);
+      return false;
+    }
+    this.enterTrap(cause, tval, false, this.pc, target);
+    return true;
   }
 
   // --- undo journal ---------------------------------------------------------
@@ -362,14 +697,17 @@ export class Cpu {
       fcsr: this.fcsr,
       outLen: this.output.length,
       priv: this.snapshotPriv(),
+      mem: [],
     };
   }
 
-  /** Bundle the privileged trap + CLINT registers for the undo journal. */
+  /** Bundle the privileged trap + CLINT + paging registers for the undo journal. */
   private snapshotPriv(): number[] {
     return [
       this.mstatus, this.mie, this.mip, this.mtvec, this.mepc, this.mcause,
       this.mtval, this.mscratch, this.mtime, this.mtimecmp, this.msip,
+      this.medeleg, this.mideleg, this.priv, this.stvec, this.sepc, this.scause,
+      this.stval, this.sscratch, this.satp,
     ];
   }
 
@@ -385,6 +723,17 @@ export class Cpu {
     this.mtime = p[8];
     this.mtimecmp = p[9];
     this.msip = p[10];
+    this.medeleg = p[11];
+    this.mideleg = p[12];
+    this.priv = p[13];
+    this.stvec = p[14];
+    this.sepc = p[15];
+    this.scause = p[16];
+    this.stval = p[17];
+    this.sscratch = p[18];
+    this.satp = p[19];
+    // Translations may have changed under us; drop the cache so a re-step re-walks.
+    this.tlb.clear();
   }
 
   private commitRecord(): void {
@@ -418,7 +767,11 @@ export class Cpu {
 
     if (u.reg) this.regs[u.reg.i] = u.reg.prev | 0;
     if (u.freg) this.fregs[u.freg.i] = u.freg.prev >>> 0;
-    if (u.mem) for (let i = 0; i < u.mem.prev.length; i++) this.mem.writeByte(u.mem.addr + i, u.mem.prev[i]);
+    // Undo writes newest-first so overlapping ranges restore to the exact prior bytes.
+    for (let m = u.mem.length - 1; m >= 0; m--) {
+      const w = u.mem[m];
+      for (let i = 0; i < w.prev.length; i++) this.mem.writeByte(w.addr + i, w.prev[i]);
+    }
     this.restorePriv(u.priv);
     this.pc = u.pc >>> 0;
     this.cycles = u.cycles;
@@ -498,41 +851,33 @@ export class Cpu {
       case 'bgeu':
         return this.branch((a >>> 0) >= (b >>> 0), imm);
 
-      // ---- loads ------------------------------------------------------
+      // ---- loads (all go through the MMU; identity-mapped when paging is off) ----
       case 'lb':
-        this.set(rd, signExtend(this.mem.readByte((a + imm) >>> 0), 8));
+        this.set(rd, signExtend(this.vmLoad((a + imm) >>> 0, 1), 8));
         return false;
       case 'lh':
-        this.set(rd, signExtend(this.mem.readHalf((a + imm) >>> 0), 16));
+        this.set(rd, signExtend(this.vmLoad((a + imm) >>> 0, 2), 16));
         return false;
       case 'lw':
-        this.set(rd, this.readWordIO((a + imm) >>> 0) | 0);
+        this.set(rd, this.vmLoad((a + imm) >>> 0, 4) | 0);
         return false;
       case 'lbu':
-        this.set(rd, this.mem.readByte((a + imm) >>> 0));
+        this.set(rd, this.vmLoad((a + imm) >>> 0, 1));
         return false;
       case 'lhu':
-        this.set(rd, this.mem.readHalf((a + imm) >>> 0));
+        this.set(rd, this.vmLoad((a + imm) >>> 0, 2));
         return false;
 
       // ---- stores -----------------------------------------------------
-      case 'sb': {
-        const addr = (a + imm) >>> 0;
-        this.recordMem(addr, 1);
-        this.mem.writeByte(addr, b & 0xff);
+      case 'sb':
+        this.vmStore((a + imm) >>> 0, 1, b);
         return false;
-      }
-      case 'sh': {
-        const addr = (a + imm) >>> 0;
-        this.recordMem(addr, 2);
-        this.mem.writeHalf(addr, b & 0xffff);
+      case 'sh':
+        this.vmStore((a + imm) >>> 0, 2, b);
         return false;
-      }
-      case 'sw': {
-        const addr = (a + imm) >>> 0;
-        if (!this.writeWordIO(addr, b)) this.storeWord(addr, b);
+      case 'sw':
+        this.vmStore((a + imm) >>> 0, 4, b);
         return false;
-      }
 
       // ---- OP-IMM -----------------------------------------------------
       case 'addi':
@@ -623,28 +968,63 @@ export class Cpu {
 
       // ---- system -----------------------------------------------------
       case 'ecall': {
+        // ecall cause depends on the calling ring (U=8, S=9, M=11). When a U/S program runs
+        // under an armed handler, ecall is a real environment-call trap the OS intercepts;
+        // otherwise it is the studio's RARS-style syscall ABI (used by M-mode programs).
+        const cause = this.priv === PRIV_U ? 8 : this.priv === PRIV_S ? 9 : 11;
+        const target = this.trapTarget(cause, false);
+        const armed = target === PRIV_M ? this.mtvec >>> 0 : this.stvec >>> 0;
+        if (this.priv !== PRIV_M && armed !== 0) {
+          this.enterTrap(cause, 0, false, this.pc, target);
+          return true;
+        }
         const r = handleEcall(this);
         if (r === 'halt' && this.status !== 'error') this.status = 'halted';
         return false;
       }
-      case 'ebreak':
+      case 'ebreak': {
         // With a handler armed, ebreak is a synchronous breakpoint trap; otherwise it pauses.
-        if (this.trapsArmed()) {
-          this.takeTrap(EXC_BREAKPOINT, this.pc, false, this.pc);
+        const target = this.trapTarget(EXC_BREAKPOINT, false);
+        const armed = target === PRIV_M ? this.mtvec >>> 0 : this.stvec >>> 0;
+        if (armed !== 0) {
+          this.enterTrap(EXC_BREAKPOINT, this.pc, false, this.pc, target);
           return true;
         }
         this.status = 'ebreak';
         return false;
+      }
       case 'fence':
+        return false;
+      case 'sfence.vma':
+        // Fence the address-translation cache. (Operands are accepted but we flush wholesale —
+        // a correct over-approximation.) Illegal below supervisor mode.
+        if (this.priv < PRIV_S) return this.trapException(EXC_ILLEGAL, d.raw, 'sfence.vma requires S-mode');
+        this.flushTlb();
         return false;
 
       // ---- privileged trap return / hint ------------------------------
       case 'mret': {
-        // Pop the interrupt-enable stack: MIE ← MPIE, MPIE ← 1, MPP ← least-privileged.
+        if (this.priv < PRIV_M) return this.trapException(EXC_ILLEGAL, d.raw, 'mret requires M-mode');
+        // Pop the machine interrupt-enable stack and restore the saved privilege.
+        const mpp = (this.mstatus & MSTATUS_MPP) >>> MSTATUS_MPP_SHIFT;
         const mpie = this.mstatus & MSTATUS_MPIE ? MSTATUS_MIE : 0;
         this.mstatus = ((this.mstatus & ~MSTATUS_MIE) | mpie) | MSTATUS_MPIE;
-        this.mstatus &= ~MSTATUS_MPP;
+        this.mstatus &= ~MSTATUS_MPP; // MPP ← U (the least-privileged ring we support)
+        if (mpp !== PRIV_M) this.mstatus &= ~MSTATUS_MPRV; // returning below M clears MPRV
+        this.priv = mpp;
         this.pc = this.mepc >>> 0;
+        return true;
+      }
+      case 'sret': {
+        if (this.priv < PRIV_S) return this.trapException(EXC_ILLEGAL, d.raw, 'sret requires S-mode');
+        // Pop the supervisor interrupt-enable stack and restore the saved privilege.
+        const spp = this.mstatus & MSTATUS_SPP ? PRIV_S : PRIV_U;
+        const spie = this.mstatus & MSTATUS_SPIE ? MSTATUS_SIE : 0;
+        this.mstatus = ((this.mstatus & ~MSTATUS_SIE) | spie) | MSTATUS_SPIE;
+        this.mstatus &= ~MSTATUS_SPP; // SPP ← U
+        if (spp !== PRIV_M) this.mstatus &= ~MSTATUS_MPRV;
+        this.priv = spp;
+        this.pc = this.sepc >>> 0;
         return true;
       }
       case 'wfi':
@@ -653,7 +1033,7 @@ export class Cpu {
         return false;
 
       default:
-        return this.trapOrFail(
+        return this.trapException(
           EXC_ILLEGAL,
           d.raw,
           `illegal / unimplemented instruction (0x${d.raw.toString(16).padStart(8, '0')})`,
@@ -734,10 +1114,10 @@ export class Cpu {
 
     switch (d.mnemonic) {
       case 'flw':
-        this.setF(d.rd, this.mem.readWord((this.get(d.rs1) + d.imm) >>> 0));
+        this.setF(d.rd, this.vmLoad((this.get(d.rs1) + d.imm) >>> 0, 4));
         return false;
       case 'fsw':
-        this.storeWord((this.get(d.rs1) + d.imm) >>> 0, this.fregs[d.rs2]);
+        this.vmStore((this.get(d.rs1) + d.imm) >>> 0, 4, this.fregs[d.rs2]);
         return false;
 
       case 'fadd.s':
@@ -844,20 +1224,23 @@ export class Cpu {
   // ---- RV32A: atomic memory operations (single-hart, so trivially atomic) ---
 
   private executeAmo(d: DecodedInstruction): boolean {
-    const addr = this.get(d.rs1) >>> 0;
-    if (addr & 3) {
-      this.fail(`misaligned atomic access at 0x${addr.toString(16)}`);
+    const va = this.get(d.rs1) >>> 0;
+    if (va & 3) {
+      this.fail(`misaligned atomic access at 0x${va.toString(16)}`);
       return false;
     }
+    // Atomics translate like loads (lr) or stores (sc / amo); the page fault propagates to step().
     if (d.mnemonic === 'lr.w') {
-      this.set(d.rd, this.mem.readWord(addr) | 0);
-      this.reservation = addr;
+      const pa = this.translate(va, ACCESS_LOAD);
+      this.set(d.rd, this.mem.readWord(pa) | 0);
+      this.reservation = pa;
       return false;
     }
     if (d.mnemonic === 'sc.w') {
-      // Success only if the reservation is still held for this exact address.
-      if (this.reservation === addr) {
-        this.storeWord(addr, this.get(d.rs2));
+      const pa = this.translate(va, ACCESS_STORE);
+      // Success only if the reservation is still held for this exact (physical) address.
+      if (this.reservation === pa) {
+        this.storeWord(pa, this.get(d.rs2));
         this.set(d.rd, 0); // 0 = success
       } else {
         this.set(d.rd, 1); // 1 = failure
@@ -867,7 +1250,8 @@ export class Cpu {
     }
 
     // amo*: atomically load, combine with rs2, store back, return the old value in rd.
-    const old = this.mem.readWord(addr) | 0;
+    const pa = this.translate(va, ACCESS_STORE);
+    const old = this.mem.readWord(pa) | 0;
     const src = this.get(d.rs2) | 0;
     let result: number;
     switch (d.mnemonic) {
@@ -902,7 +1286,7 @@ export class Cpu {
         this.fail(`illegal / unimplemented atomic (0x${d.raw.toString(16).padStart(8, '0')})`);
         return false;
     }
-    this.storeWord(addr, result);
+    this.storeWord(pa, result);
     this.set(d.rd, old);
     this.reservation = -1;
     return false;
@@ -926,11 +1310,34 @@ export class Cpu {
       case 0xc81:
       case 0xc82:
         return Math.floor(this.cycles / 0x1_0000_0000) >>> 0;
+      // Supervisor-mode trap CSRs (sstatus/sie/sip are restricted views of the m-registers)
+      case 0x100:
+        return this.mstatus & SSTATUS_MASK;
+      case 0x104:
+        return this.mie & S_INTS;
+      case 0x105:
+        return this.stvec | 0;
+      case 0x140:
+        return this.sscratch | 0;
+      case 0x141:
+        return this.sepc | 0;
+      case 0x142:
+        return this.scause | 0;
+      case 0x143:
+        return this.stval | 0;
+      case 0x144:
+        return this.mip & S_INTS;
+      case 0x180:
+        return this.satp | 0;
       // Machine-mode trap CSRs
       case 0x300:
         return this.mstatus | 0;
       case 0x301:
-        return MISA_RV32IMAFC | 0;
+        return MISA_RV32 | 0;
+      case 0x302:
+        return this.medeleg | 0;
+      case 0x303:
+        return this.mideleg | 0;
       case 0x304:
         return this.mie | 0;
       case 0x305:
@@ -967,9 +1374,44 @@ export class Cpu {
       case 0x003:
         this.fcsr = v & 0xff;
         break;
+      // Supervisor-mode trap CSRs
+      case 0x100: // sstatus — writes only the supervisor-visible bits of mstatus
+        this.mstatus = (this.mstatus & ~SSTATUS_MASK) | (v & SSTATUS_MASK);
+        break;
+      case 0x104: // sie — writes only the supervisor-interrupt bits of mie
+        this.mie = (this.mie & ~S_INTS) | (v & S_INTS & MIE_WMASK);
+        break;
+      case 0x105:
+        this.stvec = v;
+        break;
+      case 0x140:
+        this.sscratch = v;
+        break;
+      case 0x141:
+        this.sepc = v & ~1;
+        break;
+      case 0x142:
+        this.scause = v;
+        break;
+      case 0x143:
+        this.stval = v;
+        break;
+      case 0x144: // sip — only the supervisor software-interrupt pending bit is writable
+        this.mip = (this.mip & ~IRQ_SSI) | (v & IRQ_SSI);
+        break;
+      case 0x180: // satp — changing the translation regime fences the TLB
+        this.satp = v;
+        this.flushTlb();
+        break;
       // Machine-mode trap CSRs
-      case 0x300: // mstatus — only MIE / MPIE / MPP are writable here
+      case 0x300: // mstatus
         this.mstatus = v & MSTATUS_WMASK;
+        break;
+      case 0x302: // medeleg
+        this.medeleg = v & MEDELEG_WMASK;
+        break;
+      case 0x303: // mideleg
+        this.mideleg = v & MIDELEG_WMASK;
         break;
       case 0x304: // mie
         this.mie = v & MIE_WMASK;
@@ -989,7 +1431,10 @@ export class Cpu {
       case 0x343:
         this.mtval = v;
         break;
-      // mip.MSIP/MTIP are owned by the CLINT, and misa/mhartid are read-only: ignore writes.
+      case 0x344: // mip — the S-level software/timer/external pendings are software-writable
+        this.mip = (this.mip & ~MIP_SWMASK) | (v & MIP_SWMASK);
+        break;
+      // misa/mhartid are read-only; M timer/soft pendings are owned by the CLINT: ignore writes.
       default:
         break; // counters / unknown CSRs ignore writes
     }
@@ -997,6 +1442,15 @@ export class Cpu {
 
   private executeCsr(d: DecodedInstruction): boolean {
     const addr = d.imm & 0xfff;
+    // CSR-address bits [9:8] encode the least-privileged ring allowed to access it.
+    const minPriv = (addr >> 8) & 3;
+    if (this.priv < minPriv) {
+      return this.trapException(
+        EXC_ILLEGAL,
+        d.raw,
+        `CSR 0x${addr.toString(16)} is not accessible from privilege ${this.priv}`,
+      );
+    }
     const old = this.readCsr(addr);
     // For the immediate variants the 5-bit zimm rides in the rs1 field.
     const imm = d.rs1 & 0x1f;

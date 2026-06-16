@@ -8,6 +8,8 @@ import { ABI_NAMES, REG_ROLES, FREG_ABI_NAMES, FREG_ROLES } from '../vm/register
 import { formatWord, hexWord } from '../vm/format';
 import type { Radix } from '../vm/format';
 import { f32FromBits } from '../vm/fp';
+import { ACCESS_FETCH } from '../vm/mmu';
+import type { TranslationTrace } from '../vm/mmu';
 
 interface Props {
   cpu: Cpu;
@@ -15,6 +17,45 @@ interface Props {
 }
 
 const RADII: Radix[] = ['hex', 'dec', 'udec', 'bin'];
+
+const PRIV_NAMES: Record<number, string> = { 0: 'U user', 1: 'S supervisor', 3: 'M machine' };
+const PAGE_FAULT_NAMES: Record<number, string> = {
+  12: 'instruction page fault',
+  13: 'load page fault',
+  15: 'store/AMO page fault',
+};
+
+/** Decode `satp` into a friendly one-liner for the MMU sub-header. */
+function satpLabel(satp: number): string {
+  if ((satp >>> 31 & 1) === 0) return 'Bare (translation off)';
+  const asid = (satp >>> 22) & 0x1ff;
+  const rootPhys = (satp & 0x3f_ffff) * 0x1000;
+  return `Sv32 · ASID ${asid} · root @ ${hexWord(rootPhys >>> 0)}`;
+}
+
+/** One row per page-table level visited by a read-only walk of the current pc. */
+function TranslationTracer({ trace }: { trace: TranslationTrace }) {
+  return (
+    <div className="mmu-trace">
+      <div className="mmu-trace-head">
+        translate pc {hexWord(trace.vaddr)} →{' '}
+        {trace.fault !== null ? (
+          <span className="status-error">{PAGE_FAULT_NAMES[trace.fault] ?? 'page fault'}</span>
+        ) : (
+          <span className="status-paused">{hexWord(trace.physical! >>> 0)}</span>
+        )}
+      </div>
+      {trace.steps.map((s, i) => (
+        <div key={i} className={`mmu-trace-step kind-${s.kind}`}>
+          <span className="reg-name">L{s.level}</span>
+          <span className="reg-val">{hexWord(s.pteAddr)}</span>
+          <span className="mmu-pte">pte {hexWord(s.pte)}</span>
+          <span className="mmu-kind">{s.kind}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
 
 /** Compact single-precision rendering: integers keep a `.0`, others ~7 sig-figs. */
 function fmtFloat(bits: number): string {
@@ -101,6 +142,10 @@ export default function Registers({ cpu, prevRegs }: Props) {
           <span className="reg-name">status</span>
           <span className={`reg-val status-${cpu.status}`}>{cpu.status}</span>
         </div>
+        <div className="reg-cell" title="current privilege ring">
+          <span className="reg-name">priv</span>
+          <span className={`reg-val priv-${cpu.priv}`}>{PRIV_NAMES[cpu.priv] ?? cpu.priv}</span>
+        </div>
       </div>
 
       {(cpu.mtvec !== 0 || cpu.mcause !== 0 || cpu.mstatus !== 0) && (
@@ -138,6 +183,36 @@ export default function Registers({ cpu, prevRegs }: Props) {
               <span className="reg-val">{cpu.mtimecmp.toLocaleString()}</span>
             </div>
           </div>
+        </>
+      )}
+      {(cpu.satp !== 0 || cpu.priv !== 3 || cpu.stvec !== 0 || cpu.scause !== 0) && (
+        <>
+          <div className="reg-subhead">
+            <span>supervisor mode &amp; Sv32 MMU</span>
+            <span className="reg-fcsr">{satpLabel(cpu.satp)}</span>
+          </div>
+          <div className="reg-special csr-special">
+            {(
+              [
+                ['stvec', cpu.stvec],
+                ['sepc', cpu.sepc],
+                ['scause', cpu.scause],
+                ['stval', cpu.stval],
+                ['sscratch', cpu.sscratch],
+                ['satp', cpu.satp],
+                ['medeleg', cpu.medeleg],
+                ['mideleg', cpu.mideleg],
+              ] as [string, number][]
+            ).map(([name, val]) => (
+              <div key={name} className="reg-cell" title={`CSR ${name}`}>
+                <span className="reg-name">{name}</span>
+                <span className="reg-val">{hexWord(val)}</span>
+              </div>
+            ))}
+          </div>
+          {(cpu.satp >>> 31 & 1) === 1 && cpu.priv !== 3 && (
+            <TranslationTracer trace={cpu.explainTranslation(cpu.pc, ACCESS_FETCH)} />
+          )}
         </>
       )}
       {cpu.error && <div className="reg-error">⚠ {cpu.error}</div>}

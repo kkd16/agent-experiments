@@ -120,7 +120,18 @@ const GROUPS: { title: string; items: InsDoc[] }[] = [
       { m: 'wfi', desc: 'wait-for-interrupt (advances; the timer keeps ticking)' },
       { m: 'mstatus / mie / mip', desc: 'global & per-source interrupt enable / pending bits' },
       { m: 'mtvec / mepc / mcause / mtval', desc: 'trap vector, return pc, cause code, faulting value' },
-      { m: 'mscratch / mhartid / misa', desc: 'scratch word, hart id (0), ISA string (RV32IMAFC)' },
+      { m: 'mscratch / mhartid / misa', desc: 'scratch word, hart id (0), ISA string (RV32IMAFCSU)' },
+      { m: 'medeleg / mideleg', desc: 'delegate exceptions / interrupts down to supervisor mode' },
+    ],
+  },
+  {
+    title: 'Privileged — supervisor mode & the Sv32 MMU',
+    items: [
+      { m: 'sret', desc: 'return from an S-mode trap: SIE ← SPIE, priv ← SPP, pc ← sepc' },
+      { m: 'sfence.vma', desc: 'fence the address-translation cache (TLB); modelled as a full flush' },
+      { m: 'satp', desc: 'MODE(31) | ASID(30:22) | root-table PPN(21:0); MODE 1 = Sv32, 0 = Bare' },
+      { m: 'sstatus / sie / sip', desc: 'supervisor views of mstatus / mie / mip (SIE, SPIE, SPP, SUM, MXR)' },
+      { m: 'stvec / sepc / scause / stval', desc: 'S-mode trap vector, return pc, cause, faulting value' },
     ],
   },
   {
@@ -205,6 +216,31 @@ export default function Docs() {
             <code>mtimecmp</code> at +0x4000, and the 64-bit <code>mtime</code> at +0xbff8. When{' '}
             <code>mtime ≥ mtimecmp</code> the timer interrupt (mcause 7) fires; the studio advances{' '}
             <code>mtime</code> by one per instruction so timers are fully deterministic.
+          </p>
+        </section>
+        <section>
+          <h3>Supervisor mode &amp; the Sv32 MMU</h3>
+          <p className="docs-intro">
+            The machine has three privilege rings — <strong>M</strong>achine,{' '}
+            <strong>S</strong>upervisor and <strong>U</strong>ser — and a real hardware{' '}
+            <strong>memory-management unit</strong>. Point <code>satp</code> at a root page table
+            (<code>MODE=1</code> selects Sv32) and, once running below machine mode, every
+            instruction fetch and load/store is translated through a two-level page table:{' '}
+            <code>VA[31:22]</code> indexes the root, <code>VA[21:12]</code> the leaf, and{' '}
+            <code>VA[11:0]</code> is the page offset. A leaf can map a 4&nbsp;KiB page or, straight
+            from the root, a 4&nbsp;MiB <em>megapage</em>. Each PTE carries{' '}
+            <code>V R W X U G A D</code> bits; the walker enforces them against the current ring
+            plus <code>SUM</code> (let S-mode read user pages) and <code>MXR</code> (let a load read
+            an execute-only page), sets <code>A</code>/<code>D</code> in hardware, and raises a{' '}
+            <strong>page fault</strong> (cause 12/13/15 for fetch/load/store) on any violation.
+            Translations are cached in a <strong>TLB</strong> that <code>sfence.vma</code> and{' '}
+            <code>satp</code> writes flush. With <code>medeleg</code>/<code>mideleg</code> a trap is{' '}
+            <strong>delegated</strong> to S-mode (<code>stvec</code>/<code>sepc</code>/
+            <code>scause</code>/<code>stval</code>, returned by <code>sret</code>) instead of M-mode.
+            The page tables live in ordinary RAM, so the <em>Virtual memory (Sv32)</em> example
+            builds one by hand; the register inspector shows the live page-table walk for the pc.
+            With <code>satp</code> in Bare mode (the reset state) translation is off and the machine
+            behaves exactly as the bare-metal RV32 it always was.
           </p>
         </section>
 

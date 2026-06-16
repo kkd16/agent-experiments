@@ -115,9 +115,12 @@ export const INSTRUCTIONS: Record<string, InstrSpec> = {
   ebreak: { name: 'ebreak', format: 'SYS', opcode: OPC.SYSTEM, funct3: 0, funct7: 1 },
   fence: { name: 'fence', format: 'FENCE', opcode: OPC.MISC_MEM, funct3: 0 },
 
-  // Privileged trap-return / hint (encoded as full SYSTEM funct12s; see SYS_WORDS)
+  // Privileged trap-return / fence / hint (encoded as full SYSTEM funct12s; see SYS_WORDS)
   mret: { name: 'mret', format: 'SYS', opcode: OPC.SYSTEM, funct3: 0 },
+  sret: { name: 'sret', format: 'SYS', opcode: OPC.SYSTEM, funct3: 0 },
   wfi: { name: 'wfi', format: 'SYS', opcode: OPC.SYSTEM, funct3: 0 },
+  // sfence.vma is modelled as a full TLB flush, so it encodes with zero rs1/rs2 (flush-all).
+  'sfence.vma': { name: 'sfence.vma', format: 'SYS', opcode: OPC.SYSTEM, funct3: 0 },
 };
 
 /** Fully-specified 32-bit encodings for the operand-less SYSTEM instructions. */
@@ -125,7 +128,9 @@ export const SYS_WORDS: Record<string, number> = {
   ecall: 0x0000_0073,
   ebreak: 0x0010_0073,
   mret: 0x3020_0073,
+  sret: 0x1020_0073,
   wfi: 0x1050_0073,
+  'sfence.vma': 0x1200_0073, // sfence.vma x0, x0 — flush everything
 };
 
 /** Set of every recognised base (RV32IM) mnemonic (lowercased). */
@@ -174,9 +179,21 @@ export const CSR_NUMBERS: Record<string, number> = {
   cycleh: 0xc80,
   timeh: 0xc81,
   instreth: 0xc82,
+  // Supervisor-mode trap CSRs + the Sv32 MMU control register
+  sstatus: 0x100,
+  sie: 0x104,
+  stvec: 0x105,
+  sscratch: 0x140,
+  sepc: 0x141,
+  scause: 0x142,
+  stval: 0x143,
+  sip: 0x144,
+  satp: 0x180,
   // Machine-mode trap CSRs
   mstatus: 0x300,
   misa: 0x301,
+  medeleg: 0x302,
+  mideleg: 0x303,
   mie: 0x304,
   mtvec: 0x305,
   mscratch: 0x340,
