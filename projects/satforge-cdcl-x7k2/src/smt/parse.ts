@@ -83,11 +83,7 @@ export function parseSmtLib(src: string): SmtScript {
   let expected: 'sat' | 'unsat' | undefined
   const forms = readSExprs(tokenize(src))
 
-  const asSort = (e: SExpr): Sort => {
-    if (!isSym(e)) throw new SmtSyntaxError('compound sorts are not supported')
-    if (!tm.hasSort(e)) throw new SmtSyntaxError(`unknown sort: ${e}`)
-    return e
-  }
+  const asSort = (e: SExpr): Sort => parseSort(tm, e)
 
   for (const form of forms) {
     if (!Array.isArray(form) || form.length === 0) continue
@@ -136,6 +132,16 @@ export function parseSmtLib(src: string): SmtScript {
 
 function asSymbol(e: SExpr): string {
   if (!isSym(e)) throw new SmtSyntaxError('expected a symbol')
+  return e
+}
+
+/** Parse a sort: a symbol, or the compound `(Array <index> <element>)`. */
+function parseSort(tm: TermManager, e: SExpr): Sort {
+  if (Array.isArray(e)) {
+    if (e.length === 3 && e[0] === 'Array') return tm.arraySort(parseSort(tm, e[1]), parseSort(tm, e[2]))
+    throw new SmtSyntaxError('unsupported compound sort')
+  }
+  if (!tm.hasSort(e)) throw new SmtSyntaxError(`unknown sort: ${e}`)
   return e
 }
 
@@ -201,6 +207,11 @@ function parseFormula(tm: TermManager, e: SExpr): Formula {
       // a predicate application (Bool-returning function)
       const sig = tm.getFun(head)
       if (sig && sig.retSort === 'Bool') return tm.pred(tm.app(head, args.map((a) => parseTerm(tm, a))))
+      // a select that returns a Bool element is a Boolean atom
+      if (head === 'select' || head === 'store') {
+        const t = parseTerm(tm, e)
+        if (t.sort === 'Bool') return tm.pred(t)
+      }
       throw new SmtSyntaxError(`'${head}' is not a known predicate or connective`)
     }
   }
@@ -231,6 +242,10 @@ function parseTermOrBool(tm: TermManager, e: SExpr): { kind: 'bool' } | { kind: 
   if (isSym(head)) {
     const sig = tm.getFun(head)
     if (sig && sig.retSort === 'Bool') return { kind: 'bool' }
+    if (head === 'select' || head === 'store') {
+      const term = parseTerm(tm, e)
+      return term.sort === 'Bool' ? { kind: 'bool' } : { kind: 'term', term }
+    }
   }
   return { kind: 'term', term: parseTerm(tm, e) }
 }
@@ -245,6 +260,16 @@ function parseTerm(tm: TermManager, e: SExpr): Term {
     return tm.app(e)
   }
   const head = e[0]
+  if (Array.isArray(head)) {
+    // The qualified identifier ((as const (Array I E)) v) builds a constant array.
+    if (head.length >= 3 && head[0] === 'as' && head[1] === 'const') {
+      const arrSort = parseSort(tm, head[2])
+      const args = e.slice(1)
+      if (args.length !== 1) throw new SmtSyntaxError('a constant array takes exactly one value')
+      return tm.constArray(arrSort, parseTerm(tm, args[0]))
+    }
+    throw new SmtSyntaxError('unsupported application head')
+  }
   if (!isSym(head)) throw new SmtSyntaxError('term head must be a symbol')
   const args = e.slice(1)
   switch (head) {
@@ -266,6 +291,14 @@ function parseTerm(tm: TermManager, e: SExpr): Term {
       const ts = args.map((a) => parseTerm(tm, a))
       if (ts.length === 2 && ts[1].kind === 'num') return tm.mul(ts[0], tm.num(Rational.ONE.div(ts[1].num!), 'Real'))
       throw new SmtSyntaxError('only division by a numeric constant is supported')
+    }
+    case 'select': {
+      if (args.length !== 2) throw new SmtSyntaxError('select takes (array index)')
+      return tm.select(parseTerm(tm, args[0]), parseTerm(tm, args[1]))
+    }
+    case 'store': {
+      if (args.length !== 3) throw new SmtSyntaxError('store takes (array index value)')
+      return tm.store(parseTerm(tm, args[0]), parseTerm(tm, args[1]), parseTerm(tm, args[2]))
     }
     default: {
       const sig = tm.getFun(head)

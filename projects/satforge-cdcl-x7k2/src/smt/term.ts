@@ -77,7 +77,24 @@ export class TermManager {
     this.sorts.add(name)
   }
   hasSort(name: Sort): boolean {
-    return this.sorts.has(name)
+    return this.sorts.has(name) || isArraySort(name)
+  }
+
+  // ---- array sorts -----------------------------------------------------------
+  /** The canonical sort name for arrays from `index` to `elem`, e.g. `(Array Int Int)`. */
+  arraySort(index: Sort, elem: Sort): Sort {
+    const s = `(Array ${index} ${elem})`
+    this.sorts.add(s)
+    return s
+  }
+  isArraySort(s: Sort): boolean {
+    return isArraySort(s)
+  }
+  arrayIndexSort(s: Sort): Sort {
+    return splitArraySort(s)[0]
+  }
+  arrayElemSort(s: Sort): Sort {
+    return splitArraySort(s)[1]
   }
   declareFun(sig: FunSig): void {
     this.funs.set(sig.name, sig)
@@ -120,6 +137,33 @@ export class TermManager {
       if (args[i].sort !== sig.argSorts[i])
         throw new Error(`${name}: arg ${i} has sort ${args[i].sort}, expected ${sig.argSorts[i]}`)
     return this.internTerm({ kind: 'app', op: name, args, sort: sig.retSort, arith: false })
+  }
+
+  // ---- array operations (McCarthy select/store) ------------------------------
+  /** `select(arr, idx)` — the value stored in `arr` at `idx`. Sort = arr's element sort. */
+  select(arr: Term, idx: Term): Term {
+    if (!isArraySort(arr.sort)) throw new Error(`select: ${arr.sort} is not an array sort`)
+    const [iSort, eSort] = splitArraySort(arr.sort)
+    if (idx.sort !== iSort) throw new Error(`select: index has sort ${idx.sort}, expected ${iSort}`)
+    return this.internTerm({ kind: 'app', op: 'select', args: [arr, idx], sort: eSort, arith: false })
+  }
+  /** A constant array of the given sort whose every cell holds `val`. */
+  constArray(arrSort: Sort, val: Term): Term {
+    if (!isArraySort(arrSort)) throw new Error(`constArray: ${arrSort} is not an array sort`)
+    const [, eSort] = splitArraySort(arrSort)
+    if (val.sort !== eSort) throw new Error(`constArray: value has sort ${val.sort}, expected ${eSort}`)
+    // Tag the array sort onto the op key so two const-arrays of different sorts
+    // over the same value intern distinctly.
+    return this.internTerm({ kind: 'app', op: `const-array~${arrSort}`, args: [val], sort: arrSort, arith: false })
+  }
+
+  /** `store(arr, idx, val)` — `arr` with `idx` updated to `val`. Sort = arr's array sort. */
+  store(arr: Term, idx: Term, val: Term): Term {
+    if (!isArraySort(arr.sort)) throw new Error(`store: ${arr.sort} is not an array sort`)
+    const [iSort, eSort] = splitArraySort(arr.sort)
+    if (idx.sort !== iSort) throw new Error(`store: index has sort ${idx.sort}, expected ${iSort}`)
+    if (val.sort !== eSort) throw new Error(`store: value has sort ${val.sort}, expected ${eSort}`)
+    return this.internTerm({ kind: 'app', op: 'store', args: [arr, idx, val], sort: arr.sort, arith: false })
   }
 
   /** A builtin arithmetic operator application (+ - *), result sort inferred. */
@@ -308,8 +352,38 @@ export class TermManager {
     if (t.args.length === 0) return t.op
     if (t.arith && t.args.length === 1) return `(- ${this.termToString(t.args[0])})`
     if (t.arith) return `(${t.op} ${t.args.map((a) => this.termToString(a)).join(' ')})`
+    // Pretty array notation: select → a[i], store → a[i↦v].
+    if (t.op === 'select' && t.args.length === 2)
+      return `${this.termToString(t.args[0])}[${this.termToString(t.args[1])}]`
+    if (t.op === 'store' && t.args.length === 3)
+      return `${this.termToString(t.args[0])}[${this.termToString(t.args[1])}↦${this.termToString(t.args[2])}]`
+    if (isConstArrayOp(t.op) && t.args.length === 1) return `const(${this.termToString(t.args[0])})`
     return `${t.op}(${t.args.map((a) => this.termToString(a)).join(', ')})`
   }
+}
+
+// ---- array-sort string helpers ----------------------------------------------
+export function isArraySort(s: Sort): boolean {
+  return s.startsWith('(Array ') && s.endsWith(')')
+}
+
+/** Is `op` a constant-array operator (`const-array~<sort>`)? */
+export function isConstArrayOp(op: string): boolean {
+  return op.startsWith('const-array~')
+}
+
+/** Split `(Array <I> <E>)` into its (possibly nested) index and element sorts. */
+export function splitArraySort(s: Sort): [Sort, Sort] {
+  if (!isArraySort(s)) throw new Error(`not an array sort: ${s}`)
+  const inner = s.slice('(Array '.length, -1)
+  let depth = 0
+  for (let i = 0; i < inner.length; i++) {
+    const c = inner[i]
+    if (c === '(') depth++
+    else if (c === ')') depth--
+    else if (c === ' ' && depth === 0) return [inner.slice(0, i), inner.slice(i + 1)]
+  }
+  throw new Error(`malformed array sort: ${s}`)
 }
 
 function fid(f: Formula): number {

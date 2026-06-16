@@ -11,6 +11,7 @@ import { EufSolver } from './euf'
 import { solveSmt, type Theory } from './dpllt'
 import { referenceSatEUF, referenceSatArith, collectAtoms, evalFormula } from './reference'
 import { checkSat, smtUnsatCore } from './smt'
+import { referenceSatArrays } from './arrayref'
 import { parseSmtLib } from './parse'
 import { ackermannize } from './ackermann'
 import { SMT_EXAMPLES } from './examples'
@@ -379,6 +380,172 @@ export function runSmtChecks(): SmtCheckReport {
     check('SMT core: is minimal (drop any → SAT)', minimal, `size=${coreF.length}`)
     check('SMT core: excludes the irrelevant assertion', core.length === 3)
   }
+
+  // ---- theory of arrays: hand-written cases ---------------------------------
+  {
+    const tm = new TermManager()
+    tm.declareSort('Idx')
+    tm.declareSort('Elem')
+    const A = tm.arraySort('Idx', 'Elem')
+    for (const c of ['a', 'b']) tm.declareFun({ name: c, argSorts: [], retSort: A })
+    for (const c of ['i', 'j']) tm.declareFun({ name: c, argSorts: [], retSort: 'Idx' })
+    for (const c of ['v', 'w']) tm.declareFun({ name: c, argSorts: [], retSort: 'Elem' })
+    const [a, b, i, j, v, w] = ['a', 'b', 'i', 'j', 'v', 'w'].map((s) => tm.app(s))
+    const sel = (ar: Term, ix: Term) => tm.select(ar, ix)
+    const st = (ar: Term, ix: Term, val: Term) => tm.store(ar, ix, val)
+    const aSat = (f: Formula) => checkSat(tm, f).status === 'sat'
+
+    // Read-over-write 1: reading a freshly written cell yields the written value.
+    check('Array RoW1: select(store(a,i,v),i)=v consistent', aSat(tm.eq(sel(st(a, i, v), i), v)))
+    check('Array RoW1: ≠ is UNSAT', !aSat(tm.not(tm.eq(sel(st(a, i, v), i), v))))
+    // Read-over-write 2: a write at i is invisible at a different index j.
+    check(
+      'Array RoW2: i≠j ⇒ select(store(a,i,v),j)=select(a,j)',
+      !aSat(tm.and([tm.not(tm.eq(i, j)), tm.not(tm.eq(sel(st(a, i, v), j), sel(a, j)))])),
+    )
+    // The last write wins.
+    check('Array: last write wins', !aSat(tm.not(tm.eq(sel(st(st(a, i, v), i, w), i), w))))
+    // Extensionality, positive direction (via congruence): a=b ⇒ reads agree.
+    check('Array ext: a=b ⇒ select(a,i)=select(b,i)', !aSat(tm.and([tm.eq(a, b), tm.not(tm.eq(sel(a, i), sel(b, i)))])))
+    // store(a,i,v)=a forces select(a,i)=v.
+    check('Array ext: store(a,i,v)=a ⇒ select(a,i)=v', !aSat(tm.and([tm.eq(st(a, i, v), a), tm.not(tm.eq(sel(a, i), v))])))
+    // Distinct arrays are satisfiable — a witness index where they differ exists.
+    check('Array ext: a≠b is SAT', aSat(tm.not(tm.eq(a, b))))
+    // Writing the value already there is a no-op: store(a,i,select(a,i)) = a.
+    check('Array: idempotent write store(a,i,a[i])=a', aSat(tm.eq(st(a, i, sel(a, i)), a)))
+    check('Array: idempotent write ≠ a is UNSAT', !aSat(tm.not(tm.eq(st(a, i, sel(a, i)), a))))
+    // Commuting independent writes: i≠j ⇒ store(store(a,i,v),j,w)=store(store(a,j,w),i,v).
+    check(
+      'Array: independent writes commute (i≠j)',
+      !aSat(tm.and([tm.not(tm.eq(i, j)), tm.not(tm.eq(st(st(a, i, v), j, w), st(st(a, j, w), i, v)))])),
+    )
+    // Constant arrays: every cell reads back the constant value.
+    const cv = tm.constArray(A, v)
+    check('Array const: select(const(v), i) = v', !aSat(tm.not(tm.eq(sel(cv, i), v))))
+    check('Array const: two reads of a const array agree', !aSat(tm.not(tm.eq(sel(cv, i), sel(cv, j)))))
+    // store(const(v), i, w) ≠ const(v) requires v ≠ w somewhere — SAT, and writing v is a no-op.
+    check('Array const: store(const(v),i,v) = const(v)', !aSat(tm.not(tm.eq(st(cv, i, v), cv))))
+  }
+
+  // ---- arrays + integer arithmetic (QF_ALIA) --------------------------------
+  {
+    const tm = new TermManager()
+    const A = tm.arraySort('Int', 'Int')
+    tm.declareFun({ name: 'a', argSorts: [], retSort: A })
+    for (const c of ['i', 'j']) tm.declareFun({ name: c, argSorts: [], retSort: 'Int' })
+    const a = tm.app('a')
+    const i = tm.app('i')
+    const j = tm.app('j')
+    const n = (k: number) => tm.num(R(k), 'Int')
+    const aSat = (f: Formula) => checkSat(tm, f).status === 'sat'
+    // i=j ∧ select(store(a,i,5),j) ≠ 5 → UNSAT (index equality drives read-over-write).
+    check(
+      'QF_ALIA: i=j ⇒ select(store(a,i,5),j)=5',
+      !aSat(tm.and([tm.eq(i, j), tm.not(tm.eq(tm.select(tm.store(a, i, n(5)), j), n(5)))])),
+    )
+    // select(a,i) used arithmetically: store, then read, then compare.
+    check(
+      'QF_ALIA: write 7 then the cell is > 6',
+      aSat(tm.rel('gt', tm.select(tm.store(a, i, n(7)), i), n(6))),
+    )
+    check(
+      'QF_ALIA: write 7 then claiming the cell < 7 is UNSAT',
+      !aSat(tm.rel('lt', tm.select(tm.store(a, i, n(7)), i), n(7))),
+    )
+  }
+
+  // ---- SMT-LIB array parser --------------------------------------------------
+  {
+    const solveScript = (src: string) => {
+      const s = parseSmtLib(src)
+      return checkSat(s.tm, s.tm.and(s.assertions))
+    }
+    check(
+      'parse: QF_AX read-over-write unsat',
+      solveScript(`(declare-sort I 0)(declare-sort E 0)
+        (declare-const a (Array I E))(declare-const i I)(declare-const v E)
+        (assert (not (= (select (store a i v) i) v))) (check-sat)`).status === 'unsat',
+    )
+    check(
+      'parse: QF_AX extensionality unsat',
+      solveScript(`(declare-sort I 0)(declare-sort E 0)
+        (declare-const a (Array I E))(declare-const b (Array I E))(declare-const i I)
+        (assert (= a b)) (assert (not (= (select a i) (select b i)))) (check-sat)`).status === 'unsat',
+    )
+    check(
+      'parse: QF_ALIA read-over-write sat',
+      solveScript(`(declare-const a (Array Int Int))(declare-const i Int)
+        (assert (= (select (store a i 9) i) 9)) (check-sat)`).status === 'sat',
+    )
+  }
+
+  // ---- random QF_AX cross-check vs finite-model enumeration ------------------
+  // Two batches: a NON-EXTENSIONAL batch (no array equalities — the fragment the
+  // reduction decides on EUF alone) and an EXTENSIONAL batch (array =/distinct,
+  // exercising the witness + agreement instantiation).
+  const arrayBatch = (label: string, seed: number, N: number, extensional: boolean) => {
+    const rng = mulberry32(seed)
+    let mism = 0
+    let decided = 0
+    let unsatSeen = 0
+    for (let it = 0; it < N; it++) {
+      const tm = new TermManager()
+      tm.declareSort('I')
+      tm.declareSort('E')
+      const A = tm.arraySort('I', 'E')
+      const arrNames = ['a', 'b']
+      for (const c of arrNames) tm.declareFun({ name: c, argSorts: [], retSort: A })
+      const idxNames = ['i', 'j']
+      for (const c of idxNames) tm.declareFun({ name: c, argSorts: [], retSort: 'I' })
+      const elemNames = ['u', 'v']
+      for (const c of elemNames) tm.declareFun({ name: c, argSorts: [], retSort: 'E' })
+      const arrs = arrNames.map((c) => tm.app(c))
+      const idxs = idxNames.map((c) => tm.app(c))
+      const elems = elemNames.map((c) => tm.app(c))
+      const pick = <T,>(xs: T[]) => xs[Math.floor(rng() * xs.length)]
+
+      // Build a small array term (depth ≤ 2): a variable, a constant array, or a
+      // store of one.
+      const mkArray = (depth: number): Term => {
+        const r = rng()
+        if (r < 0.12) return tm.constArray(A, pick(elems))
+        if (depth <= 0 || r < 0.5) return pick(arrs)
+        return tm.store(mkArray(depth - 1), pick(idxs), mkElem(0))
+      }
+      // Build an element term: a constant or a select.
+      const mkElem = (depth: number): Term => {
+        if (depth <= 0 || rng() < 0.5) return pick(elems)
+        return tm.select(mkArray(1), pick(idxs))
+      }
+      const mkAtom = (): Formula => {
+        const r = rng()
+        if (extensional && r < 0.3) return tm.eq(mkArray(1), mkArray(1)) // array equality
+        if (r < 0.6) return tm.eq(mkElem(1), mkElem(1)) // element equality
+        return tm.eq(pick(idxs), pick(idxs)) // index equality
+      }
+      const numAtoms = 2 + Math.floor(rng() * 2)
+      const lits: Formula[] = []
+      for (let k = 0; k < numAtoms; k++) {
+        let at = mkAtom()
+        if (rng() < 0.45) at = tm.not(at)
+        lits.push(at)
+      }
+      const f = rng() < 0.6 ? tm.and(lits) : tm.or(lits)
+      const want = referenceSatArrays(f, 'I', 'E', 900_000)
+      if (want === null) continue // enumeration too large / out of scope — skip
+      decided++
+      const got = checkSat(tm, f).status === 'sat'
+      if (got !== want) {
+        mism++
+        if (mism <= 4) messages.push(`  ${label} mismatch: got ${got}, want ${want}`)
+      }
+      if (!want) unsatSeen++
+    }
+    check(`Array (${label}): ${decided} random formulas match finite-model reference`, mism === 0, `mismatches=${mism}`)
+    check(`Array (${label}): suite exercised some UNSAT instances`, unsatSeen > decided / 25, `unsat=${unsatSeen}`)
+  }
+  arrayBatch('non-extensional', 0xa17a, 2500, false)
+  arrayBatch('extensional', 0xb33f, 1200, true)
 
   void Rational
   void ((): Atom | undefined => undefined)

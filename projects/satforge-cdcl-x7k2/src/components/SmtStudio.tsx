@@ -266,17 +266,25 @@ function SmtResultView({ result, expected, core }: { result: FullSmtResult; expe
       {result.status === 'sat' && (
         <div className="smt-model">
           <h4>Model</h4>
-          {result.model && result.model.length > 0 ? (
-            <ul className="smt-assign">
-              {result.model.map((m, i) => (
-                <li key={i}>
-                  <code>{m}</code>
-                </li>
-              ))}
-            </ul>
-          ) : (
-            <p className="smt-hint">Any assignment satisfying the atoms below works.</p>
-          )}
+          {(() => {
+            const { arrays, rest } = partitionArrayModel(result.model ?? [])
+            return (
+              <>
+                {arrays.length > 0 && <ArrayModelView arrays={arrays} />}
+                {rest.length > 0 ? (
+                  <ul className="smt-assign">
+                    {rest.map((m, i) => (
+                      <li key={i}>
+                        <code>{m}</code>
+                      </li>
+                    ))}
+                  </ul>
+                ) : (
+                  arrays.length === 0 && <p className="smt-hint">Any assignment satisfying the atoms below works.</p>
+                )}
+              </>
+            )
+          })()}
           {result.atomList && result.atomList.length > 0 && (
             <div className="smt-atoms">
               <h4>Atoms</h4>
@@ -338,6 +346,67 @@ function SmtResultView({ result, expected, core }: { result: FullSmtResult; expe
         </div>
       )}
     </>
+  )
+}
+
+// ---- array model view ---------------------------------------------------------
+interface ArrayModel {
+  name: string
+  cells: { index: string; value: string }[]
+}
+
+/** Pull `arr[index] = value` model lines into per-array tables; keep the rest. */
+function partitionArrayModel(model: string[]): { arrays: ArrayModel[]; rest: string[] } {
+  const byName = new Map<string, ArrayModel>()
+  const rest: string[] = []
+  for (const line of model) {
+    // Match a single read: <name>[<index>] = <value>, where name is a bare symbol
+    // (so nested a[i][j] / multi-equalities fall through to the plain list).
+    const m = /^([A-Za-z_][\w']*)\[([^[\]]+)\]\s*=\s*(.+)$/.exec(line)
+    if (!m) {
+      rest.push(line)
+      continue
+    }
+    const [, name, index, value] = m
+    if (!byName.has(name)) byName.set(name, { name, cells: [] })
+    byName.get(name)!.cells.push({ index, value })
+  }
+  return { arrays: [...byName.values()], rest }
+}
+
+function ArrayModelView({ arrays }: { arrays: ArrayModel[] }) {
+  return (
+    <div className="smt-arrays">
+      <p className="smt-hint">
+        The array contents the solver committed to — each row is a cell <code>array[index]</code> and the value read
+        there.
+      </p>
+      {arrays.map((arr) => (
+        <div key={arr.name} className="smt-array">
+          <table className="array-model">
+            <thead>
+              <tr>
+                <th colSpan={2}>
+                  <code>{arr.name}</code>
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              {arr.cells.map((c, i) => (
+                <tr key={i}>
+                  <td className="array-idx">
+                    <code>[{c.index}]</code>
+                  </td>
+                  <td className="array-val">
+                    <code>{c.value}</code>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ))}
+    </div>
   )
 }
 

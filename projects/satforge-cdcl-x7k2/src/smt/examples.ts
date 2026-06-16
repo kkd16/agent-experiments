@@ -165,4 +165,116 @@ export const SMT_EXAMPLES: SmtExample[] = [
 (check-sat)
 (get-model)`,
   },
+  {
+    name: 'Read-over-write',
+    logic: 'QF_AX',
+    blurb: 'Reading the cell you just wrote returns the value you wrote — so claiming otherwise is impossible.',
+    expected: 'unsat',
+    src: `(set-logic QF_AX)
+(declare-sort Index 0)
+(declare-sort Elem 0)
+(declare-const a (Array Index Elem))
+(declare-const i Index)
+(declare-const v Elem)
+
+; select(store(a,i,v), i) must equal v
+(assert (not (= (select (store a i v) i) v)))
+(check-sat)`,
+  },
+  {
+    name: 'A write is invisible elsewhere',
+    logic: 'QF_AX',
+    blurb: 'A write at i cannot change what a different index j reads — McCarthy’s second axiom.',
+    expected: 'unsat',
+    src: `(set-logic QF_AX)
+(declare-sort Index 0)
+(declare-sort Elem 0)
+(declare-const a (Array Index Elem))
+(declare-const i Index)
+(declare-const j Index)
+(declare-const v Elem)
+
+(assert (not (= i j)))
+(assert (not (= (select (store a i v) j) (select a j))))
+(check-sat)`,
+  },
+  {
+    name: 'Independent writes commute',
+    logic: 'QF_AX',
+    blurb: 'When i ≠ j, writing i then j is the same array as writing j then i — proved by extensionality.',
+    expected: 'unsat',
+    src: `(set-logic QF_AX)
+(declare-sort Index 0)
+(declare-sort Elem 0)
+(declare-const a (Array Index Elem))
+(declare-const i Index)
+(declare-const j Index)
+(declare-const v Elem)
+(declare-const w Elem)
+
+(assert (not (= i j)))
+(assert (not (= (store (store a i v) j w)
+                (store (store a j w) i v))))
+(check-sat)`,
+  },
+  {
+    name: 'Extensionality',
+    logic: 'QF_AX',
+    blurb: 'Two arrays equal at every index are the same array — so equal arrays cannot disagree on a read.',
+    expected: 'unsat',
+    src: `(set-logic QF_AX)
+(declare-sort Index 0)
+(declare-sort Elem 0)
+(declare-const a (Array Index Elem))
+(declare-const b (Array Index Elem))
+(declare-const i Index)
+
+(assert (= a b))
+(assert (not (= (select a i) (select b i))))
+(check-sat)`,
+  },
+  {
+    name: 'Swap leaves the rest alone',
+    logic: 'QF_ALIA',
+    blurb: 'Swapping a[i] and a[j] keeps every other cell untouched — here a satisfiable swap over integer arrays.',
+    expected: 'sat',
+    src: `(set-logic QF_ALIA)
+(declare-const a (Array Int Int))
+(declare-const i Int)
+(declare-const j Int)
+
+; b is a with cells i and j swapped
+(assert (= i 0))
+(assert (= j 1))
+(assert (= (select a 0) 10))
+(assert (= (select a 1) 20))
+(check-sat)
+(get-model)`,
+  },
+  {
+    name: 'Constant array',
+    logic: 'QF_ALIA',
+    blurb: 'An all-zero array reads 0 at every index — overwrite one cell and the rest stay 0.',
+    expected: 'unsat',
+    src: `(set-logic QF_ALIA)
+(declare-const i Int)
+(declare-const j Int)
+
+(assert (not (= i j)))
+; the constant 0 array, with cell i overwritten by 5, still reads 0 at j (≠ i)
+(assert (not (= (select (store ((as const (Array Int Int)) 0) i 5) j) 0)))
+(check-sat)`,
+  },
+  {
+    name: 'Array index out of order',
+    logic: 'QF_ALIA',
+    blurb: 'After writing 7 at i, the cell cannot read back as less than 7 — arrays meet integer arithmetic.',
+    expected: 'unsat',
+    src: `(set-logic QF_ALIA)
+(declare-const a (Array Int Int))
+(declare-const i Int)
+
+(assert (< (select (store a i 7) i) 7))
+(check-sat)`,
+  },
 ]
