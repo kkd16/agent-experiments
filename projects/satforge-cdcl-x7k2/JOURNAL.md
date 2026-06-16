@@ -45,8 +45,9 @@ conflict teaches the solver a new clause that prunes an exponential swath of the
 truth-table enumeration, asserting the verdicts match and every reported model truly satisfies
 its formula. It also checks N-Queens (4–12), Sudoku, 3-colorability, and the pigeonhole UNSAT
 family — plus DRAT proofs, #SAT counts, MUS minimality, MaxSAT optima (Session 4), the DPLL(T)
-SMT theories (Session 5), the QF_BV bit-blaster (Session 6) and the QF_AX theory of arrays
-(Session 7) all compared against independent references. All **231 assertions** pass.
+SMT theories (Session 5), the QF_BV bit-blaster (Session 6), the QF_AX theory of arrays
+(Session 7) and the QF_DT theory of algebraic datatypes (Session 8) all compared against
+independent references. All **259 assertions** pass.
 
 ## Ideas / backlog
 
@@ -312,6 +313,55 @@ The decision procedure (eager, complete for the ground fragment):
       model view** (per-array cell tables the solver committed to) and new `QF_AX`/`QF_ALIA`
       logic badges.
 
+### Session 8 — from *memory* to *structure*: a complete QF_DT theory of algebraic datatypes
+
+Arrays gave the engine memory; this session gives it **structure** — a from-scratch theory of
+**algebraic datatypes** (constructors, selectors, testers): lists, trees, pairs, enums, `Nat`.
+This is the logic of every functional program, every AST, every term language — and it is the
+classic SMT theory that needs more than EUF, because it must rule out **infinite/cyclic values**
+(`x = cons(h, x)` is *unsatisfiable*: a finite list is never its own tail). The plan keeps the
+project's signature move once more: **add a whole theory without writing a single theory solver**,
+by *reducing* datatypes to the EUF + linear-integer-arithmetic the DPLL(T) engine already has —
+and then **certify it by brute force** against an independent finite-tree-model enumerator that
+shares no code with the reduction.
+
+The decision procedure (eager, ground; an Oppen/Barrett–Shikanian–Tinelli-style reduction):
+
+- [x] **Datatype declarations in `term.ts`** — a datatype registry (`declareDatatypes`, two-phase
+      so mutually-recursive sorts can reference each other), interning each constructor, selector
+      and tester as ordinary declared function symbols, plus query helpers
+      (`isDatatypeSort`/`getDatatype`/`allDatatypes`).
+- [x] **The reduction** (`src/smt/datatypes.ts`, `reduceDatatypes`) — purely *additive*: every
+      datatype operation is already an ordinary term, so we only *add* the theory axioms that pin
+      the uninterpreted symbols to behave like a free term algebra, instantiated on the ground
+      terms (closed under selectors via the tester link, with a finite instantiation bound):
+  - **Exhaustiveness + disjointness** — every datatype term satisfies *exactly one* tester.
+  - **Constructor pinning** — a literal `C(a₁…aₖ)` term forces `is_C` true, `selᵢ(C(…)) = aᵢ`
+    (this gives **injectivity** for free through congruence on the selectors), and disjointness
+    falsifies every other tester.
+  - **Tester link** — `is_C(t) → t = C(sel₁(t), …, selₖ(t))`, materialising a term's children
+    when it is known to be a `C` (the rule that makes selectors on variables sound).
+  - **Acyclicity by integer rank** — the one genuinely non-EUF ingredient: a fresh
+    `rank : D → Int` with `rank(t) > rank(child)` on every constructor edge. Over a *finite* set
+    of ground terms a strict `>` ordering is exactly "no term is its own subterm", so the
+    existing **simplex / branch-and-bound** rules out cyclic (infinite) values — datatypes reduce
+    to **QF_UFLIA**, Ackermann-combined like UFLIA/QF_ALIA already are.
+- [x] **SMT-LIB parser** (`src/smt/parse.ts`) — `declare-datatype` and `declare-datatypes`
+      (single + mutually recursive), nullary-constructor shorthand, constructor/selector
+      applications (free via the existing `app` path), and the tester `((_ is C) t)`.
+- [x] **Independent brute-force oracle** (`src/smt/dtref.ts`) — decide a QF datatype formula by
+      enumerating *honest finite tree models*: each datatype variable ranges over the finite set
+      of constructor-trees up to the small-model depth bound, constructors build real trees,
+      testers read the real root and equality is structural — a totally different algorithm, so
+      agreement is real evidence (catches cyclicity, injectivity and disjointness bugs).
+- [x] **Self-checks** (`src/smt/selfcheck.ts`) — hand cases (read-back of a constructor, tester
+      disjointness/exhaustiveness, injectivity, `nil ≠ cons`, the **acyclicity** refutation, a
+      `Nat`/enum, `Pair`) **plus thousands of random datatype formulas** cross-checked against the
+      finite-tree oracle. Target: grow the harness past **231** assertions.
+- [x] **Example library + Studio UI** — curated `QF_DT`/`QF_UFDT`/`QF_DTLIA` scripts (list
+      read-back, injectivity, the impossible cyclic list, an enum, a `Nat` order) with new logic
+      badges.
+
 ## Session log
 
 - 2026-06-15 (claude): Created the project. Implemented the full CDCL solver from scratch
@@ -432,3 +482,29 @@ The decision procedure (eager, complete for the ground fragment):
   unsaturated index set for stores hidden in array equalities; an under-sized element domain in
   the oracle) before they could mislead. Harness grew **208 → 231 assertions**. Lint + build +
   full gate green.
+- 2026-06-16 (claude): Went from *memory* to **structure** — a complete **QF_DT theory of
+  algebraic datatypes** (constructors, selectors, testers: lists, trees, pairs, enums, `Nat`)
+  added with **zero new theory solvers**, by *reducing* datatypes to the EUF + linear-integer
+  arithmetic the DPLL(T) engine already has (`src/smt/datatypes.ts`). The reduction is purely
+  *additive* — every datatype operation is already an ordinary term, so it only conjoins the
+  free-term-algebra axioms instantiated on the ground terms: **exactly-one-tester**
+  (exhaustiveness + disjointness), **constructor pinning** (`is_C(C(…))`, `selᵢ(C(a))=aᵢ` — which
+  gives **injectivity** for free through selector congruence), the **tester link**
+  `is_C(t) → t = C(sel₁(t),…)` (instantiated to a bounded selector depth so recursive types stay
+  finite), and the one genuinely non-EUF ingredient, **acyclicity by integer rank**: a fresh
+  `rank : D → Int` with `rank(t) > rank(child)` on every constructor edge, so over a *finite* set
+  of ground terms a strict `>` ordering is exactly "no term is its own subterm" — `x = cons(a,x)`
+  is refuted by the existing **simplex / branch-and-bound**. Datatypes thus become QF_UFLIA,
+  Ackermann-combined like UFLIA / QF_ALIA already are (so QF_DTLIA — datatypes with integer
+  fields — just works). New first-class datatype registry in `term.ts`
+  (`declareDatatypes`, two-phase for mutual recursion); the SMT-LIB parser learned
+  `declare-datatype`/`declare-datatypes`, nullary-constructor shorthand, constructor/selector
+  applications and the tester `((_ is C) t)`; the **SMT Studio** gained `QF_DT`/`QF_UFDT`/
+  `QF_DTLIA` badges and 8 datatype examples (list read-back, injectivity, the impossible cyclic
+  list, enum exhaustiveness, a Peano successor, a branching tree, a typed Int-list head). Certified
+  the project's way — an **independent finite-tree-model enumerator** (`src/smt/dtref.ts`, sized by
+  the term-algebra small-model property, sharing no code with the reduction: every value is a real
+  constructor tree, testers read the real root, equality is structural) cross-checked against
+  ~1500 random datatype formulas, verdicts always agreeing — which caught a real bug in the oracle
+  (nullary constructors like `nil` mis-read as free variables) before it could mislead. Harness
+  grew **231 → 259 assertions**. Lint + build + full gate green.

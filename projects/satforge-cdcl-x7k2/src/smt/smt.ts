@@ -16,6 +16,7 @@ import { solveSmt, type SmtResult, type SmtOptions, type Theory } from './dpllt'
 import { collectAtoms } from './reference'
 import { ackermannize, hasUninterpretedFunctions } from './ackermann'
 import { hasArrays, reduceArrays } from './arrays'
+import { hasDatatypes, reduceDatatypes } from './datatypes'
 
 export function arithTrichotomy(tm: TermManager, root: Formula): Formula {
   const atoms = collectAtoms(root)
@@ -49,9 +50,13 @@ export function checkSat(tm: TermManager, root: Formula, opts: SmtOptions = {}):
   const euf = new EufSolver(tm)
   const simplex = new SimplexSolver(tm)
   const theories: Theory[] = [euf as unknown as Theory, simplex as unknown as Theory]
+  // Datatypes: reduce constructors/selectors/testers to EUF + integer arithmetic
+  // (acyclicity becomes a strict integer `rank` ordering) — additive, no theory
+  // solver of its own.
+  const afterDt = hasDatatypes(tm, root) ? reduceDatatypes(tm, root) : root
   // Arrays: reduce select/store to EUF + arithmetic first (no theory solver of
   // their own — read-over-write purification + extensionality instantiation).
-  const work = hasArrays(tm, root) ? reduceArrays(tm, root) : root
+  const work = hasArrays(tm, afterDt) ? reduceArrays(tm, afterDt) : afterDt
   // Mixed UF + arithmetic: Ackermannize so the theories no longer share terms.
   const atoms = collectAtoms(work)
   const mixed = atoms.some((a) => a.kind === 'arith') && hasUninterpretedFunctions(tm, work)

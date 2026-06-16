@@ -11,7 +11,7 @@
 // sorts it is an arithmetic equality; otherwise an EUF equality.
 
 import { Rational } from './rational'
-import { TermManager, type Formula, type Sort, type Term } from './term'
+import { TermManager, testerName, type DtConstructor, type Formula, type Sort, type Term } from './term'
 
 export class SmtSyntaxError extends Error {}
 
@@ -118,6 +118,31 @@ export function parseSmtLib(src: string): SmtScript {
         tm.declareFun({ name, argSorts: args.map(asSort), retSort: asSort(form[3]) })
         break
       }
+      case 'declare-datatype': {
+        // (declare-datatype D ((C1 (sel Sort) …) (C2 …) …))
+        const name = asSymbol(form[1])
+        tm.declareSort(name) // register before parsing self-recursive selector sorts
+        const ctorForms = form[2]
+        if (!Array.isArray(ctorForms)) throw new SmtSyntaxError('declare-datatype expects a constructor list')
+        tm.declareDatatypes([{ name, ctors: ctorForms.map((c) => parseDtCtor(tm, c)) }])
+        break
+      }
+      case 'declare-datatypes': {
+        // (declare-datatypes ((D1 0) (D2 0) …) ( (ctors-for-D1) (ctors-for-D2) … ))
+        const sortDecls = form[1]
+        const ctorLists = form[2]
+        if (!Array.isArray(sortDecls) || !Array.isArray(ctorLists))
+          throw new SmtSyntaxError('declare-datatypes expects a sort list and a constructor-list list')
+        const names = sortDecls.map((sd) => (Array.isArray(sd) ? asSymbol(sd[0]) : asSymbol(sd)))
+        for (const n of names) tm.declareSort(n) // register all names before parsing any selectors
+        const dts = names.map((n, i) => {
+          const cl = ctorLists[i]
+          if (!Array.isArray(cl)) throw new SmtSyntaxError(`missing constructor list for ${n}`)
+          return { name: n, ctors: cl.map((c) => parseDtCtor(tm, c)) }
+        })
+        tm.declareDatatypes(dts)
+        break
+      }
       case 'assert': {
         assertions.push(parseFormula(tm, form[1]))
         break
@@ -133,6 +158,23 @@ export function parseSmtLib(src: string): SmtScript {
 function asSymbol(e: SExpr): string {
   if (!isSym(e)) throw new SmtSyntaxError('expected a symbol')
   return e
+}
+
+/** Parse one constructor declaration: `(C (sel Sort) …)` or a bare nullary `C`. */
+function parseDtCtor(tm: TermManager, e: SExpr): DtConstructor {
+  if (isSym(e)) return { name: e, tester: testerName(e), selectors: [] }
+  const name = asSymbol(e[0])
+  const selectors = e.slice(1).map((s) => {
+    if (!Array.isArray(s) || s.length !== 2) throw new SmtSyntaxError(`malformed selector in constructor ${name}`)
+    return { name: asSymbol(s[0]), sort: parseSort(tm, s[1]) }
+  })
+  return { name, tester: testerName(name), selectors }
+}
+
+/** Is `e` the indexed tester identifier `(_ is C)`? Returns the constructor name. */
+function asTester(e: SExpr): string | null {
+  if (Array.isArray(e) && e.length === 3 && e[0] === '_' && e[1] === 'is' && isSym(e[2])) return e[2]
+  return null
 }
 
 /** Parse a sort: a symbol, or the compound `(Array <index> <element>)`. */
@@ -156,6 +198,13 @@ function parseFormula(tm: TermManager, e: SExpr): Formula {
     throw new SmtSyntaxError(`'${e}' is not a Boolean atom`)
   }
   const head = e[0]
+  // A datatype tester `((_ is C) t)` is a Boolean atom.
+  const tester = asTester(head)
+  if (tester !== null) {
+    const rest = e.slice(1)
+    if (rest.length !== 1) throw new SmtSyntaxError('a tester takes exactly one argument')
+    return tm.pred(tm.app(testerName(tester), [parseTerm(tm, rest[0])]))
+  }
   if (!isSym(head)) throw new SmtSyntaxError('application head must be a symbol')
   const args = e.slice(1)
   switch (head) {
@@ -237,6 +286,7 @@ function parseTermOrBool(tm: TermManager, e: SExpr): { kind: 'bool' } | { kind: 
     throw new SmtSyntaxError(`unknown symbol: ${e}`)
   }
   const head = e[0]
+  if (asTester(head) !== null) return { kind: 'bool' } // ((_ is C) t)
   if (isSym(head) && ['and', 'or', 'not', '=>', 'xor', '=', 'distinct', '<=', '<', '>=', '>'].includes(head))
     return { kind: 'bool' }
   if (isSym(head)) {

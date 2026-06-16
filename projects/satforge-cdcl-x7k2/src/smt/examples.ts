@@ -277,4 +277,104 @@ export const SMT_EXAMPLES: SmtExample[] = [
 (assert (< (select (store a i 7) i) 7))
 (check-sat)`,
   },
+  {
+    name: 'List read-back',
+    logic: 'QF_DT',
+    blurb: 'The head of a freshly built cons is exactly the value you put there — denying it is impossible.',
+    expected: 'unsat',
+    src: `(set-logic QF_DT)
+(declare-sort Elem 0)
+(declare-datatype Lst ((nil) (cons (head Elem) (tail Lst))))
+(declare-const a Elem)
+
+; head(cons(a, nil)) must equal a
+(assert (not (= (head (cons a nil)) a)))
+(check-sat)`,
+  },
+  {
+    name: 'Constructors are injective',
+    logic: 'QF_DT',
+    blurb: 'cons is injective: if cons(a,x) = cons(b,x) then a and b are the same — recovered through the selectors.',
+    expected: 'unsat',
+    src: `(set-logic QF_DT)
+(declare-sort Elem 0)
+(declare-datatype Lst ((nil) (cons (head Elem) (tail Lst))))
+(declare-const a Elem)
+(declare-const b Elem)
+(declare-const x Lst)
+
+(assert (= (cons a x) (cons b x)))
+(assert (not (= a b)))
+(check-sat)`,
+  },
+  {
+    name: 'An impossible infinite list',
+    logic: 'QF_DT',
+    blurb: 'A finite list is never its own tail — x = cons(a, x) would be infinite, so it is unsatisfiable (acyclicity).',
+    expected: 'unsat',
+    src: `(set-logic QF_DT)
+(declare-sort Elem 0)
+(declare-datatype Lst ((nil) (cons (head Elem) (tail Lst))))
+(declare-const x Lst)
+(declare-const a Elem)
+
+(assert (= x (cons a x)))
+(check-sat)`,
+  },
+  {
+    name: 'Three colours and no more',
+    logic: 'QF_DT',
+    blurb: 'An enum has exactly its listed values — a Color that is none of red/green/blue cannot exist (exhaustiveness).',
+    expected: 'unsat',
+    src: `(set-logic QF_DT)
+(declare-datatype Color ((red) (green) (blue)))
+(declare-const c Color)
+
+(assert (not (= c red)))
+(assert (not (= c green)))
+(assert (not (= c blue)))
+(check-sat)`,
+  },
+  {
+    name: 'Peano successor',
+    logic: 'QF_DT',
+    blurb: 'A natural number that is a successor and differs from its own successor — perfectly satisfiable (e.g. 1).',
+    expected: 'sat',
+    src: `(set-logic QF_DT)
+(declare-datatypes ((Nat 0)) (((zero) (succ (pred Nat)))))
+(declare-const n Nat)
+
+(assert ((_ is succ) n))
+(assert (not (= n (succ n))))
+(check-sat)
+(get-model)`,
+  },
+  {
+    name: 'A branching tree',
+    logic: 'QF_DT',
+    blurb: 'A binary tree node whose two children are distinct subtrees — satisfiable; the model commits to a shape.',
+    expected: 'sat',
+    src: `(set-logic QF_DT)
+(declare-sort Elem 0)
+(declare-datatypes ((Tree 0)) (((leaf (val Elem)) (node (left Tree) (right Tree)))))
+(declare-const t Tree)
+
+(assert ((_ is node) t))
+(assert (not (= (left t) (right t))))
+(check-sat)
+(get-model)`,
+  },
+  {
+    name: 'Typed list head (datatypes + ints)',
+    logic: 'QF_DTLIA',
+    blurb: 'Datatypes meet integer arithmetic: after x = lcons(5, lnil) the head is 5, so claiming hd(x) < 5 is impossible.',
+    expected: 'unsat',
+    src: `(set-logic QF_DTLIA)
+(declare-datatypes ((IntLst 0)) (((lnil) (lcons (hd Int) (tl IntLst)))))
+(declare-const x IntLst)
+
+(assert (= x (lcons 5 lnil)))
+(assert (< (hd x) 5))
+(check-sat)`,
+  },
 ]
