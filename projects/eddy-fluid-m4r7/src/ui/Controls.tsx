@@ -16,6 +16,8 @@ interface Props {
   onClearWalls: () => void;
   onTogglePause: () => void;
   onStep: () => void;
+  onShare: () => void;
+  onSnapshot: () => void;
 }
 
 function Slider(props: {
@@ -110,6 +112,14 @@ export function Controls(props: Props) {
           </button>
           <button type="button" onClick={props.onClearWalls}>
             Clear walls
+          </button>
+        </div>
+        <div className="row">
+          <button type="button" onClick={props.onShare} title="Copy a permalink to this exact setup">
+            🔗 Share
+          </button>
+          <button type="button" onClick={props.onSnapshot} title="Download the current frame as a PNG">
+            📷 Snapshot
           </button>
         </div>
       </section>
@@ -211,6 +221,14 @@ export function Controls(props: Props) {
           step={1}
           onChange={(iterations) => onParam({ iterations })}
         />
+        <label className="checkbox">
+          <input
+            type="checkbox"
+            checked={s.params.sharpDye}
+            onChange={(e) => onParam({ sharpDye: e.target.checked })}
+          />
+          Sharp dye (MacCormack advection)
+        </label>
       </section>
 
       <section>

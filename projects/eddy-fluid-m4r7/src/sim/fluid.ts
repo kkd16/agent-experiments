@@ -27,12 +27,15 @@ export interface FluidParams {
   iterations: number;
   /** Gravity / buoyancy in grid units (positive pulls down on +y). */
   gravity: number;
+  /** Use MacCormack (2nd-order, clamped) advection for dye — sharper, less smeared. */
+  sharpDye: boolean;
 }
 
 export const DEFAULT_PARAMS: FluidParams = {
   viscosity: 0,
   velocityDissipation: 0.02,
   dyeDissipation: 0.12,
+  sharpDye: true,
   vorticity: 6,
   iterations: 24,
   gravity: 0,
@@ -61,6 +64,10 @@ export class FluidSolver {
   div: Float32Array;
   curl: Float32Array;
 
+  // Extra scratch for MacCormack advection (forward + back-traced estimates).
+  private sA: Float32Array;
+  private sB: Float32Array;
+
   // Obstacle mask. solid[i] !== 0 means the cell is a wall.
   solid: Uint8Array;
 
@@ -81,6 +88,8 @@ export class FluidSolver {
     this.p = z();
     this.div = z();
     this.curl = z();
+    this.sA = z();
+    this.sB = z();
     this.solid = new Uint8Array(this.size);
   }
 
@@ -317,6 +326,61 @@ export class FluidSolver {
     this.setBnd(bnd, d);
   }
 
+  /**
+   * MacCormack advection: second-order accurate, much less dissipative than
+   * plain semi-Lagrangian. We advect forward, advect that result backward, and
+   * correct by half the round-trip error — then clamp to the source stencil's
+   * min/max so the correction can't overshoot into ringing/negative dye.
+   */
+  private advectMacCormack(
+    bnd: Boundary,
+    d: Float32Array,
+    d0: Float32Array,
+    u: Float32Array,
+    v: Float32Array,
+    dt: number,
+  ): void {
+    const N = this.N;
+    const fwd = this.sA; // φ̂ⁿ⁺¹ = A(φⁿ)
+    const bak = this.sB; // φ̂ⁿ   = A⁻¹(φ̂ⁿ⁺¹)
+    this.advect(bnd, fwd, d0, u, v, dt);
+    this.advect(bnd, bak, fwd, u, v, -dt);
+
+    const dt0 = dt * N;
+    const solid = this.solid;
+    const IX = (i: number, j: number) => i + (N + 2) * j;
+    for (let j = 1; j <= N; j++) {
+      for (let i = 1; i <= N; i++) {
+        const idx = IX(i, j);
+        if (solid[idx]) {
+          d[idx] = 0;
+          continue;
+        }
+        // Re-trace the forward characteristic to find the source stencil.
+        let x = i - dt0 * u[idx];
+        let y = j - dt0 * v[idx];
+        if (x < 0.5) x = 0.5;
+        if (x > N + 0.5) x = N + 0.5;
+        if (y < 0.5) y = 0.5;
+        if (y > N + 0.5) y = N + 0.5;
+        const i0 = Math.floor(x);
+        const j0 = Math.floor(y);
+        const c00 = d0[IX(i0, j0)];
+        const c10 = d0[IX(i0 + 1, j0)];
+        const c01 = d0[IX(i0, j0 + 1)];
+        const c11 = d0[IX(i0 + 1, j0 + 1)];
+        const lo = Math.min(c00, c10, c01, c11);
+        const hi = Math.max(c00, c10, c01, c11);
+
+        let val = fwd[idx] + 0.5 * (d0[idx] - bak[idx]);
+        if (val < lo) val = lo; // clamp prevents the corrector from overshooting
+        else if (val > hi) val = hi;
+        d[idx] = val;
+      }
+    }
+    this.setBnd(bnd, d);
+  }
+
   /** Hodge projection: remove divergence so the field stays incompressible. */
   private project(u: Float32Array, v: Float32Array, p: Float32Array, div: Float32Array, iters: number): void {
     const N = this.N;
@@ -443,9 +507,12 @@ export class FluidSolver {
     this.r0.set(this.r);
     this.g0.set(this.g);
     this.b0.set(this.b);
-    this.advect(0, this.r, this.r0, this.u, this.v, dt);
-    this.advect(0, this.g, this.g0, this.u, this.v, dt);
-    this.advect(0, this.b, this.b0, this.u, this.v, dt);
+    const advectDye = params.sharpDye
+      ? (b: Boundary, d: Float32Array, d0: Float32Array) => this.advectMacCormack(b, d, d0, this.u, this.v, dt)
+      : (b: Boundary, d: Float32Array, d0: Float32Array) => this.advect(b, d, d0, this.u, this.v, dt);
+    advectDye(0, this.r, this.r0);
+    advectDye(0, this.g, this.g0);
+    advectDye(0, this.b, this.b0);
 
     if (dyeDissipation > 0) {
       const decay = Math.max(0, 1 - dyeDissipation * dt);

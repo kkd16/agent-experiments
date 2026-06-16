@@ -6,8 +6,10 @@ import { Controls } from './Controls';
 import { Hud } from './Hud';
 import {
   DEFAULT_SETTINGS,
+  encodeSettings,
   loadSettings,
   saveSettings,
+  settingsFromHash,
   type Settings,
 } from '../state/settings';
 
@@ -18,11 +20,12 @@ export function Studio() {
   const lastPtr = useRef<{ x: number; y: number } | null>(null);
 
   const [settings, setSettings] = useState<Settings>(() => {
-    const s = loadSettings();
-    return { ...DEFAULT_SETTINGS, ...s };
+    // A permalink (#/?cfg=…) wins over locally-saved settings.
+    return settingsFromHash() ?? { ...DEFAULT_SETTINGS, ...loadSettings() };
   });
   const [paused, setPaused] = useState(false);
   const [stats, setStats] = useState<Stats | null>(null);
+  const [toast, setToast] = useState<string | null>(null);
 
   // Create the engine once.
   useEffect(() => {
@@ -73,6 +76,35 @@ export function Studio() {
     if (!eng) return;
     const update = eng.loadScene(id, true);
     if (update) setSettings((s) => ({ ...s, ...update }));
+  };
+
+  const flashToast = (msg: string) => {
+    setToast(msg);
+    window.setTimeout(() => setToast((t) => (t === msg ? null : t)), 1800);
+  };
+
+  const onShare = () => {
+    const url = `${location.origin}${location.pathname}#/?cfg=${encodeSettings(settings)}`;
+    const done = () => flashToast('Link copied to clipboard');
+    try {
+      navigator.clipboard?.writeText(url).then(done, () => flashToast('Copy failed — see console'));
+    } catch {
+      flashToast('Copy unavailable here');
+    }
+  };
+
+  const onSnapshot = () => {
+    try {
+      const canvas = canvasRef.current;
+      if (!canvas) return;
+      const a = document.createElement('a');
+      a.href = canvas.toDataURL('image/png');
+      a.download = `eddy-${settings.sceneId}-${Date.now()}.png`;
+      a.click();
+      flashToast('Saved PNG');
+    } catch {
+      flashToast('Snapshot unavailable here');
+    }
   };
 
   const togglePause = () => {
@@ -144,6 +176,7 @@ export function Studio() {
           onPointerLeave={onPointerUp}
         />
         <Hud stats={stats} />
+        {toast && <div className="toast">{toast}</div>}
         <div className="stage-hint">
           {settings.tool === 'dye'
             ? 'Drag to inject dye & stir the fluid'
@@ -164,6 +197,8 @@ export function Studio() {
         onClearWalls={() => engineRef.current?.clearWalls()}
         onTogglePause={togglePause}
         onStep={() => engineRef.current?.requestStep()}
+        onShare={onShare}
+        onSnapshot={onSnapshot}
       />
     </div>
   );
