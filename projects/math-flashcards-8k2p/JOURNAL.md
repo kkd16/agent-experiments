@@ -12,10 +12,10 @@ live here as long as you like.
 - [ ] Add sound effects toggle (mute/unmute)
 - [ ] Allow customizable background colors
 - [ ] Add an "Endless" mode with increasing difficulty
-- [ ] Create a "sudden death" mode (one wrong answer ends the game)
+- [x] Create a "sudden death" mode (one wrong answer ends the game)
 - [ ] Save full history of games played in localStorage
 - [ ] Show a graph of last 10 speed run scores
-- [ ] Let users input answers via an on-screen numpad
+- [x] Let users input answers via an on-screen numpad
 - [ ] Add optional haptic feedback for mobile users
 
 
@@ -46,6 +46,16 @@ live here as long as you like.
 - [ ] Support fraction and decimal operations
 - [ ] Add a daily challenge mode with fixed seeds
 - [ ] Add a mastery system with unlockable badges
+- [x] Add ability to reset high score and streak manually
+- [ ] Implement a "Zen Mode" with no timer or scores
+- [ ] Display an encouraging message on a 5-streak
+- [ ] Add optional sound effects on combo milestones
+- [ ] Include negative numbers in Hard difficulty
+- [ ] Create an "Equations" mode (e.g. `_ + 5 = 12`)
+- [ ] Allow users to pick their own specific timer duration
+- [ ] Create a screen shake effect on incorrect answers
+- [ ] Add a visual timer ring around the flashcard
+- [ ] Make the flashcards flip physically using CSS 3D transforms
 
 ## Session log
 
