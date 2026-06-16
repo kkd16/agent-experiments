@@ -752,6 +752,80 @@ fn main() {
 }
 `,
   },
+  {
+    id: 'higher-order',
+    title: 'First-class functions',
+    blurb: 'Function pointers: pass functions as arguments, return them, store them in a struct vtable, and call them through a real wasm call_indirect. Compile at -O1+ and watch the Optimizer panel devirtualize the provable indirect calls back into direct ones.',
+    source: `// Functions are values. A function type is written 'fn(int, int) -> int', and a
+// bare function name decays to a pointer to it (like C / Go). Calling a function-
+// typed value lowers to a real wasm 'call_indirect' through the module's function
+// table. Below: a generic map/reduce, a comparator-driven sort, and a vtable.
+
+fn square(x: int) -> int { return x * x; }
+fn add(a: int, b: int) -> int { return a + b; }
+fn maxi(a: int, b: int) -> int { return a > b ? a : b; }
+
+// Generic over the mapped function 'g' — pass any 'fn(int) -> int'.
+fn map(xs: int[], g: fn(int) -> int) -> int[] {
+  let out = int_array(len(xs));
+  for (let i = 0; i < len(xs); i = i + 1) { out[i] = g(xs[i]); }
+  return out;
+}
+
+// A self-recursive fold: never inlined, so its indirect call genuinely survives.
+fn fold(xs: int[], i: int, g: fn(int, int) -> int, acc: int) -> int {
+  if (i >= len(xs)) { return acc; }
+  return fold(xs, i + 1, g, g(acc, xs[i]));
+}
+
+// Insertion sort parameterized by a comparator function pointer.
+fn sort(xs: int[], less: fn(int, int) -> bool) {
+  for (let i = 1; i < len(xs); i = i + 1) {
+    let key = xs[i];
+    let j = i - 1;
+    while (j >= 0 && less(key, xs[j])) { xs[j + 1] = xs[j]; j = j - 1; }
+    xs[j + 1] = key;
+  }
+}
+fn asc(a: int, b: int) -> bool { return a < b; }
+fn desc(a: int, b: int) -> bool { return a > b; }
+
+// A 'struct' of function pointers is a hand-rolled vtable / strategy object.
+struct Op { run: fn(int, int) -> int; name: str; }
+
+fn show(label: str, xs: int[]) {
+  let line = label;
+  for (let i = 0; i < len(xs); i = i + 1) { line = line + " " + str(xs[i]); }
+  print(line);
+}
+
+fn main() {
+  let a = int_array(6);
+  a[0]=5; a[1]=3; a[2]=8; a[3]=1; a[4]=9; a[5]=2;
+  show("input   ", a);
+
+  // map(square): a function passed as an argument.
+  show("squared ", map(a, square));
+
+  // fold with two different combiners chosen at runtime.
+  print("sum = " + str(fold(a, 0, add, 0)));
+  print("max = " + str(fold(a, 0, maxi, -2147483648)));
+
+  // sort with a comparator, then re-sort with the opposite one.
+  sort(a, asc);  show("asc     ", a);
+  sort(a, desc); show("desc    ", a);
+
+  // A vtable: an array... is not allowed for fn elements, but a struct field is.
+  let plus = Op(add, "plus");
+  print(plus.name + "(20, 22) = " + str(plus.run(20, 22)));
+
+  // Devirtualization: 'g' is a known function pointer, so at -O1+ the optimizer
+  // proves the target and rewrites 'g(7)' into a direct call to 'square'.
+  let g = square;
+  print("g(7) = " + str(g(7)));
+}
+`,
+  },
 ];
 
 export const TEST_PROGRAMS: { name: string; source: string }[] = EXAMPLES.map((e) => ({ name: e.id, source: e.source }));

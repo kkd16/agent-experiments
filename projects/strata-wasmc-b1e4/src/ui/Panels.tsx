@@ -50,6 +50,7 @@ function exprStr(e: Expr): string {
     case 'unary': return `${e.op}${exprStr(e.operand)}`;
     case 'binary': return `(${exprStr(e.left)} ${e.op} ${exprStr(e.right)})`;
     case 'call': return `${e.callee}(${e.args.map(exprStr).join(', ')})`;
+    case 'callptr': return `${exprStr(e.target)}(${e.args.map(exprStr).join(', ')})`;
     case 'index': return `${exprStr(e.target)}[${exprStr(e.index)}]`;
     case 'member': return `${exprStr(e.target)}.${e.field}`;
     case 'null': return 'null';

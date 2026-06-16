@@ -11,7 +11,14 @@ import { MATH_PRELUDE } from './ir/prelude';
 // semantics (wrapping, truncating division, saturating float->int casts) so the
 // two implementations agree bit-for-bit.
 
-export type RtValue = number | bigint | ArrayVal | string | StructVal | null;
+export type RtValue = number | bigint | ArrayVal | string | StructVal | FnVal | null;
+
+// A function value (the oracle's model of a function pointer): the target
+// function's name. Identity (`==`/`!=`) is name equality, matching the wasm
+// backend's table-slot equality; the slot number itself is never observable.
+export interface FnVal {
+  fn: string;
+}
 export interface ArrayVal {
   arr: true;
   elem: 'int' | 'long' | 'float' | 'f32' | 'str' | 'struct';
@@ -313,13 +320,25 @@ export class Interpreter {
     throw new Trap(`assign to undefined '${name}'`);
   }
   private getVar(name: string, f: Frame): RtValue {
+    const v = this.findVar(name, f);
+    if (v !== undefined) return v;
+    throw new Trap(`read of undefined '${name}'`);
+  }
+  /** Look up a local then a global, returning undefined if neither exists. */
+  private findVar(name: string, f: Frame): RtValue | undefined {
     for (let i = f.vars.length - 1; i >= 0; i--) {
       const v = f.vars[i].get(name);
       if (v !== undefined) return v;
     }
-    const g = this.globals.get(name);
-    if (g !== undefined) return g;
-    throw new Trap(`read of undefined '${name}'`);
+    return this.globals.get(name);
+  }
+  /** Dispatch a function pointer (oracle: a `{ fn: name }`). */
+  private callIndirect(target: FnVal | null, argv: RtValue[]): RtValue {
+    if (!target || typeof target !== 'object' || !('fn' in target)) throw new Trap('call through an invalid function pointer');
+    const fn = this.fns.get(target.fn);
+    if (!fn) throw new Trap(`indirect call to undefined '${target.fn}'`);
+    const r = this.call(fn, argv);
+    return r === undefined ? 0 : r;
   }
 
   private execStmt(s: Stmt, f: Frame): void {
@@ -433,8 +452,21 @@ export class Interpreter {
         if (obj === null) throw new Trap('field access on a null struct');
         return (obj as StructVal).fields.get(e.field)!;
       }
-      case 'ident':
+      case 'ident': {
+        // A bare function name (typed `fn(…)` and not shadowed by a variable)
+        // evaluates to a function pointer.
+        if (e.ty?.kind === 'fn') {
+          const v = this.findVar(e.name, f);
+          if (v !== undefined) return v;
+          if (this.fns.has(e.name)) return { fn: e.name };
+        }
         return this.getVar(e.name, f);
+      }
+      case 'callptr': {
+        const target = this.evalExpr(e.target, f) as FnVal | null;
+        const argv = e.args.map((a) => this.evalExpr(a, f));
+        return this.callIndirect(target, argv);
+      }
       case 'unary':
         return this.evalUnary(e, f);
       case 'binary':
@@ -496,6 +528,13 @@ export class Interpreter {
         const a = this.evalExpr(e.left, f);
         const b = this.evalExpr(e.right, f);
         const eq = a === b;
+        return (e.op === '==' ? eq : !eq) ? 1 : 0;
+      }
+      // Function pointers compare by target identity (the function name).
+      if (lk === 'fn' || rk === 'fn') {
+        const a = this.evalExpr(e.left, f) as FnVal;
+        const b = this.evalExpr(e.right, f) as FnVal;
+        const eq = a.fn === b.fn;
         return (e.op === '==' ? eq : !eq) ? 1 : 0;
       }
     }
@@ -606,6 +645,8 @@ export class Interpreter {
     const name = e.callee;
     // Strict left-to-right argument evaluation (no builtin is short-circuiting).
     const argv = e.args.map((a) => this.evalExpr(a, f));
+    // An indirect call through a function-typed variable named `name`.
+    if (e.indirect) return this.callIndirect(this.getVar(name, f) as FnVal | null, argv);
     // A call to a struct name constructs a fresh record (a new object: distinct
     // from every other construction under `==`).
     const sd = this.structs.get(name);

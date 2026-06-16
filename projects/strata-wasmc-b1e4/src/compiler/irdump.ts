@@ -37,6 +37,10 @@ function inst(i: Inst): string {
       return `${dst}copy ${a[0]}`;
     case 'call':
       return `${dst}call ${i.sub}(${a.join(', ')})`;
+    case 'funcaddr':
+      return `${dst}funcaddr &${i.sub}`;
+    case 'callind':
+      return `${dst}call_indirect [${a[0]}](${a.slice(1).join(', ')}) : ${i.sub}`;
     case 'print':
       return `print.${i.sub} ${a[0]}`;
     case 'gget':

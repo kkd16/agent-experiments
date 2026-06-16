@@ -118,6 +118,22 @@ class Parser {
   }
 
   private parseType(): Ty {
+    // A function-pointer type: `fn(T, …) -> R` (the return arrow is optional and
+    // defaults to void). Not array-suffixable for now.
+    if (this.check('fn')) {
+      this.next();
+      this.expect('(');
+      const params: Ty[] = [];
+      if (!this.check(')')) {
+        do {
+          params.push(this.parseType());
+        } while (this.accept(','));
+      }
+      this.expect(')');
+      let ret: Ty = T_VOID;
+      if (this.accept('->')) ret = this.parseType();
+      return { kind: 'fn', params, ret };
+    }
     const t = this.expect('ident');
     let base: Ty;
     switch (t.text) {
@@ -475,6 +491,19 @@ class Parser {
         this.next();
         const field = this.expect('ident');
         e = { node: 'member', target: e, field: field.text, span: this.spanFrom(e.span) };
+      } else if (this.check('(')) {
+        // A call applied to an arbitrary callee expression: an indirect call
+        // through a function pointer (`arr[i](x)`, `f()(x)`, `tbl.op(x)`). A bare
+        // `name(...)` is consumed in parsePrimary as a direct `call` node instead.
+        this.next();
+        const args: Expr[] = [];
+        if (!this.check(')')) {
+          do {
+            args.push(this.parseExpr());
+          } while (this.accept(','));
+        }
+        this.expect(')');
+        e = { node: 'callptr', target: e, args, span: this.spanFrom(e.span) };
       } else {
         break;
       }

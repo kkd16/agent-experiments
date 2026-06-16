@@ -812,11 +812,50 @@ function pruneFunctions(mod: IRModule): number {
     live.add(name);
     const fn = byName.get(name);
     if (!fn) continue;
-    for (const b of fn.blocks) for (const i of b.insts) if (i.kind === 'call' && !live.has(i.sub)) stack.push(i.sub);
+    for (const b of fn.blocks)
+      for (const i of b.insts) {
+        // A direct call and an address-taken function (`funcaddr`) both keep the
+        // referenced function live; `i.sub` is the function name in either case.
+        if ((i.kind === 'call' || i.kind === 'funcaddr') && !live.has(i.sub)) stack.push(i.sub);
+      }
   }
   const before = mod.funcs.length;
   mod.funcs = mod.funcs.filter((f) => live.has(f.name));
   return before - mod.funcs.length;
+}
+
+// =====================================================================
+// Devirtualization — turn a provably-targeted call_indirect into a direct call
+// =====================================================================
+//
+// A `call_indirect` whose function-pointer operand the optimizer can trace back
+// to a single `funcaddr` (after copy-propagation/GVN have made the operand point
+// straight at it) has a known callee, so it is rewritten into a direct `call`.
+// Direct calls are cheaper (no table bounds-check / type-check) and expose the
+// callee name to whole-module liveness; the now-dead `funcaddr` is removed by the
+// following DCE. This is the classic optimization that makes provable virtual
+// dispatch as cheap as a static call.
+
+export function devirtualize(fn: IRFunc): number {
+  const addrOf = new Map<number, string>(); // value id -> the function it points at
+  for (const b of fn.blocks)
+    for (const i of b.insts)
+      if (i.kind === 'funcaddr' && i.res !== null) addrOf.set(i.res, i.sub);
+  let changed = 0;
+  for (const b of fn.blocks)
+    for (const i of b.insts) {
+      if (i.kind !== 'callind') continue;
+      const callee = i.args[0];
+      if (callee.tag !== 'val') continue;
+      const name = addrOf.get(callee.id);
+      if (name === undefined) continue;
+      // Rewrite in place: drop the function-pointer operand, become a direct call.
+      i.kind = 'call';
+      i.sub = name;
+      i.args = i.args.slice(1);
+      changed++;
+    }
+  return changed;
 }
 
 // =====================================================================
@@ -853,6 +892,7 @@ export function optimize(mod: IRModule, level: OptLevel, snapshots = false): Opt
     const suffix = rounds > 1 ? ` (round ${r + 1})` : '';
     record('copy-propagation' + suffix, copyProp);
     record('sccp' + suffix, sccp);
+    record('devirtualize' + suffix, devirtualize);
     record('if-convert' + suffix, ifConvert);
     record('strength-reduce' + suffix, peephole);
     if (level >= 2) record('gvn/cse' + suffix, gvn);

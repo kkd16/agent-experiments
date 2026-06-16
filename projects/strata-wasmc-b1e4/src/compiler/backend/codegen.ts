@@ -31,6 +31,11 @@ type W =
   | { k: 'f64c'; v: number }
   | { k: 'f32c'; v: number }
   | { k: 'call'; i: number }
+  // A function reference: an i32.const of the function's table slot (carries the
+  // name purely so the WAT printer can annotate it).
+  | { k: 'fref'; v: number; name: string }
+  // call_indirect through table 0 with the interned signature type index `t`.
+  | { k: 'callind'; t: number }
   | { k: 'load'; mem: 'i32' | 'i64' | 'f64' | 'f32' | 'i8' }
   | { k: 'store'; mem: 'i32' | 'i64' | 'f64' | 'f32' | 'i8' }
   | { k: 'op'; c: number; name: string }
@@ -129,6 +134,10 @@ interface Resolvers {
   globalIndex: (name: string) => number;
   printIndex: (kind: string) => number;
   callIndex: (name: string) => number;
+  /** A function's slot in the wasm function table (the value of a funcaddr). */
+  funcSlot: (name: string) => number;
+  /** Intern an indirect-call signature key (`p1,p2->ret`) → wasm type index. */
+  indirectType: (sigKey: string) => number;
 }
 
 // Pure value families that produce no side effect and never trap, so they may
@@ -434,6 +443,16 @@ class FuncGen {
         for (const a of inst.args) out.push(...this.pushOperand(a));
         out.push({ k: 'call', i: this.res.callIndex(inst.sub) });
         break;
+      case 'funcaddr':
+        out.push({ k: 'fref', v: this.res.funcSlot(inst.sub), name: inst.sub });
+        break;
+      case 'callind':
+        // call_indirect: push the call arguments, then the table index, then the
+        // indirect-call opcode (signature type interned from `inst.sub`).
+        for (let k = 1; k < inst.args.length; k++) out.push(...this.pushOperand(inst.args[k]));
+        out.push(...this.pushOperand(inst.args[0]));
+        out.push({ k: 'callind', t: this.res.indirectType(inst.sub) });
+        break;
     }
   }
 
@@ -516,6 +535,8 @@ function encodeBody(w: ByteWriter, tree: W[]): void {
       case 'f64c': w.u8(0x44); w.f64(n.v); break;
       case 'f32c': w.u8(0x43); w.f32(n.v); break;
       case 'call': w.u8(0x10); w.u32(n.i); break;
+      case 'fref': w.u8(0x41); w.i32(n.v); break; // i32.const table-slot
+      case 'callind': w.u8(0x11); w.u32(n.t); w.u32(0); break; // call_indirect typeidx table 0
       case 'load': {
         const [op, align] = n.mem === 'i64' ? [0x29, 3] : n.mem === 'f64' ? [0x2b, 3] : n.mem === 'f32' ? [0x2a, 2] : n.mem === 'i8' ? [0x2d, 0] : [0x28, 2];
         w.u8(op); w.u32(align); w.u32(0); break;
@@ -587,11 +608,32 @@ export function codegen(mod: IRModule): CodegenResult {
   const importTypeIdx = imports.map((im) => internType([im.param], []));
   const funcTypeIdx = mod.funcs.map((fn) => internType(fn.params.map((p) => p.ty), [fn.retTy]));
 
+  // Intern the signature an indirect call references (key: `p1,p2->ret`). It
+  // deduplicates against the direct functions' types, so a `call_indirect` and a
+  // matching direct callee share one type-section entry.
+  const indirectType = (sigKey: string): number => {
+    const [ps, rs] = sigKey.split('->');
+    const params = (ps === '' ? [] : ps.split(',')) as IRType[];
+    return internType(params, [rs as RetType]);
+  };
+
+  // Does any function take a function's address or call indirectly? If so the
+  // module needs a function table + element segment.
+  let needsTable = false;
+  for (const fn of mod.funcs)
+    for (const b of fn.blocks)
+      for (const i of b.insts)
+        if (i.kind === 'funcaddr' || i.kind === 'callind') needsTable = true;
+
   // --- codegen each function (also yields WAT + metrics) ---
   const resolvers = {
     globalIndex: (name: string) => globalIndexMap.get(name)!,
     printIndex: (kind: string) => printIndexMap.get(kind)!,
     callIndex: (name: string) => funcIndexMap.get(name)!,
+    // Table slot i ↔ mod.funcs[i] (the element segment maps it to that function's
+    // wasm index `importCount + i`).
+    funcSlot: (name: string) => funcIndexMap.get(name)! - importCount,
+    indirectType,
   };
   const gens = mod.funcs.map((fn) => new FuncGen(fn, resolvers));
 
@@ -625,6 +667,17 @@ export function codegen(mod: IRModule): CodegenResult {
       ),
     ),
   );
+
+  // table section (4): a single funcref table holding every function, so any
+  // function's address can be taken and dispatched through `call_indirect`.
+  if (needsTable) {
+    const w = new ByteWriter();
+    w.u32(1); // one table
+    w.u8(0x70); // element type: funcref
+    w.u8(0x00); // limits: min only
+    w.u32(mod.funcs.length);
+    sections.push(section(4, w.bytes));
+  }
 
   // memory section
   if (mod.usesMemory) {
@@ -670,6 +723,20 @@ export function codegen(mod: IRModule): CodegenResult {
       items.push(w.bytes);
     }
     sections.push(section(7, vec(items)));
+  }
+
+  // element section (9): one active segment filling table[0..N) with the wasm
+  // index of every function, so table slot i resolves to mod.funcs[i].
+  if (needsTable) {
+    const seg = new ByteWriter();
+    seg.u8(0x00); // active segment, table 0, offset expression follows
+    seg.u8(0x41); seg.i32(0); seg.u8(0x0b); // (i32.const 0) end
+    seg.u32(mod.funcs.length);
+    for (let i = 0; i < mod.funcs.length; i++) seg.u32(importCount + i);
+    const body = new ByteWriter();
+    body.u32(1); // one segment
+    body.raw(seg.bytes);
+    sections.push(section(9, body.bytes));
   }
 
   // code section
@@ -746,6 +813,11 @@ function emitWAT(mod: IRModule, gens: FuncGen[], imports: PrintImport[]): string
     lines.push(`  (import "env" "${im.field}" (func $${im.field} (param ${im.param})))`);
   }
   if (mod.usesMemory) lines.push(`  (memory (export "memory") ${mod.memPages})`);
+  const usesTable = mod.funcs.some((fn) => fn.blocks.some((b) => b.insts.some((i) => i.kind === 'funcaddr' || i.kind === 'callind')));
+  if (usesTable) {
+    lines.push(`  (table ${mod.funcs.length} funcref)`);
+    lines.push(`  (elem (i32.const 0) ${mod.funcs.map((fn) => `$${fn.name}`).join(' ')})`);
+  }
   if (mod.staticData && mod.staticData.bytes.length) {
     const esc = mod.staticData.bytes
       .map((b) => (b >= 0x20 && b < 0x7f && b !== 0x22 && b !== 0x5c ? String.fromCharCode(b) : '\\' + b.toString(16).padStart(2, '0')))
@@ -797,6 +869,8 @@ function watBody(tree: W[], lines: string[], depth: number): void {
       case 'f64c': lines.push(`${pad}f64.const ${n.v}`); break;
       case 'f32c': lines.push(`${pad}f32.const ${Math.fround(n.v)}`); break;
       case 'call': lines.push(`${pad}call ${n.i}`); break;
+      case 'fref': lines.push(`${pad}i32.const ${n.v}  ;; ref.func $${n.name}`); break;
+      case 'callind': lines.push(`${pad}call_indirect (type ${n.t})`); break;
       case 'load': lines.push(`${pad}${n.mem === 'i64' ? 'i64.load' : n.mem === 'f64' ? 'f64.load' : n.mem === 'f32' ? 'f32.load' : n.mem === 'i8' ? 'i32.load8_u' : 'i32.load'}`); break;
       case 'store': lines.push(`${pad}${n.mem === 'i64' ? 'i64.store' : n.mem === 'f64' ? 'f64.store' : n.mem === 'f32' ? 'f32.store' : n.mem === 'i8' ? 'i32.store8' : 'i32.store'}`); break;
       case 'op': lines.push(`${pad}${n.name}`); break;
