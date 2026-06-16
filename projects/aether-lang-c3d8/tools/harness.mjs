@@ -308,6 +308,81 @@ async function checkCache(name, src, expectResult, minHits) {
 await checkCache('range fold (counter-heavy)', 'foldl (fn a x -> a + x) 0 (range 0 500)', '124750', 500)
 await checkCache('nested loop indices', 'sum [ x | x <- range 0 100, y <- range 0 10, x % 7 == 0 ]', undefined, 200)
 
+// ---------------------------------------------------------------------------
+// Garbage collector (Aether 9.0). The headline correctness proof: re-run the
+// whole WASM corpus in STRESS mode — a full mark-sweep collection before EVERY
+// allocation — and assert byte-for-byte agreement with the non-stressed run. A
+// single missing root would sweep a live object and the answer would diverge.
+// ---------------------------------------------------------------------------
+
+/** Run `src` with and without GC stress; assert identical result + output, and
+ *  that stress mode actually collected (the sweep path really executed). */
+async function checkGcStress(name, src) {
+  const r = runPipeline(src, { execute: false })
+  if (r.error) {
+    record('gc:' + name, false, `pipeline error: ${r.error.message}`)
+    return
+  }
+  try {
+    const plain = await runWasm(r.coreAst)
+    const stressed = await runWasm(r.coreAst, { stress: true })
+    const problems = []
+    if (plain.error) problems.push(`plain error: ${plain.error}`)
+    if (stressed.error) problems.push(`stress error: ${stressed.error}`)
+    if (plain.result !== stressed.result) problems.push(`result drift: plain "${plain.result}" ≠ stress "${stressed.result}"`)
+    if (plain.output.join('\n') !== stressed.output.join('\n')) problems.push('output drift under stress')
+    if (stressed.heap && stressed.heap.collections <= 0) problems.push('stress mode never collected')
+    record('gc:' + name, problems.length === 0, problems.join('; '))
+  } catch (e) {
+    record('gc:' + name, false, `threw: ${e instanceof Error ? e.message : String(e)}`)
+  }
+}
+
+// Every gallery example, collected before every allocation, must still agree.
+for (const ex of EXAMPLES) await checkGcStress('example:' + ex.id, ex.code)
+// Allocation-shaped feature programs (lists, ADTs, records, closures, strings).
+await checkGcStress('list build + map + filter + fold', 'foldl (fn a x -> a + x) 0 (map (fn x -> x * x) (filter (fn x -> x % 2 == 0) (range 1 60)))')
+await checkGcStress('recursive ADT build + fold', 'type T a = L | N (T a) a (T a) in let rec mk = fn n -> if n == 0 then L else N (mk (n-1)) n (mk (n-1)) in let rec sz = fn t -> match t with L -> 0 | N l v r -> 1 + sz l + sz r in sz (mk 8)')
+await checkGcStress('record update churn', 'let r = { x = 1, y = 2 } in let bump = fn rr -> { rr | x = rr.x + 1 } in (foldl (fn a _ -> bump a) r (range 0 40)).x')
+await checkGcStress('string concat + show', 'foldl (fn a x -> a ^ show x) "" (range 0 30)')
+await checkGcStress('comprehension + tuples', '[ (x, y) | x <- range 1 12, y <- range 1 12, x + y == 10 ]')
+await checkGcStress('mutual recursion under stress', 'let rec ev = fn n -> if n == 0 then true else od (n - 1) and od = fn n -> if n == 0 then false else ev (n - 1) in (ev 300, od 300)')
+
+/** A long allocator loop must keep a *bounded* heap: the collector reclaims the
+ *  garbage so the peak stays far below the total bytes ever handed out. */
+async function checkGcReclaims(name, src, expect) {
+  const r = runPipeline(src, { execute: false })
+  if (r.error) {
+    record('gc:' + name, false, `pipeline error: ${r.error.message}`)
+    return
+  }
+  try {
+    const w = await runWasm(r.coreAst)
+    const problems = []
+    if (w.error) problems.push(`error: ${w.error}`)
+    if (expect !== undefined && w.result !== expect) problems.push(`result "${w.result}" ≠ "${expect}"`)
+    if (!w.heap) problems.push('no heap accounting')
+    else {
+      if (w.heap.collections <= 0) problems.push('never collected')
+      if (w.heap.reclaimed <= 0) problems.push('reclaimed nothing')
+      if (w.heap.reuse <= 0) problems.push('never reused a freed cell')
+      // peak heap must be a small fraction of the total bytes ever allocated
+      if (w.heap.peakHeap * 4 > w.heap.allocBytes) {
+        problems.push(`peak ${w.heap.peakHeap} not ≪ total ${w.heap.allocBytes} (memory not reclaimed)`)
+      }
+    }
+    record('gc:' + name, problems.length === 0, problems.join('; '))
+  } catch (e) {
+    record('gc:' + name, false, `threw: ${e instanceof Error ? e.message : String(e)}`)
+  }
+}
+
+await checkGcReclaims(
+  'bounded peak over a long allocator loop',
+  'let rec loop = fn n acc -> if n == 0 then acc else loop (n - 1) (acc + sum (range 0 80)) in loop 4000 0',
+  '12640000',
+)
+
 console.log(`\nAether harness: ${pass} passed, ${fail} failed`)
 if (fail) {
   console.log('\nFAILURES:')

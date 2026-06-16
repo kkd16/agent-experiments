@@ -846,6 +846,30 @@ let rec collatz = fn n ->
 , collatz27  = collatz 27                   // 111 steps to reach 1
 , squares    = [ x * x | x <- range 1 6 ] }`,
   },
+  {
+    id: 'gc-stress',
+    title: 'Garbage collector',
+    blurb: 'Open the WebAssembly tab, tick "stress GC", and watch the heap stay bounded.',
+    visual: false,
+    code: `// Open the "WebAssembly" tab and press Run.
+// This builds and *discards* a fresh 0..n list on every one of 400 iterations —
+// tens of thousands of cons cells, almost all of them instantly garbage.
+//
+// The WASM backend's tracing garbage collector (mark-sweep over a shadow stack
+// of roots) reclaims the dead cells and reuses them, so the PEAK heap stays a
+// tiny fraction of the total bytes ever allocated. Tick "stress GC" to collect
+// before every single allocation: the result is byte-for-byte identical — proof
+// the root set is complete — while the collector fires maximally.
+
+let rec sumTo = fn n -> foldl (fn a x -> a + x) 0 (range 0 n) in
+
+// each step throws away the whole list (range 0 120) built inside sumTo
+let rec loop = fn i acc ->
+  if i == 0 then acc
+  else loop (i - 1) (acc + sumTo 120) in
+
+loop 400 0`,
+  },
 ]
 
 export const DEFAULT_CODE = EXAMPLES[0].code
