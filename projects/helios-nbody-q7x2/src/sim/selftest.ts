@@ -16,6 +16,14 @@ import { fft, ifft } from './fft'
 import { naff, frequencyDiffusion } from './naff'
 import { poincareSection, toRotating } from './poincare'
 import { measurePrecession, precessionTheory, mercuryArcsecPerCentury } from './relativity'
+import {
+  simulateInspiral,
+  integratePeters,
+  radiationReactionAccel,
+  strainTT,
+  quadrupoleLuminosityCircular,
+  gwFrequencyCircular,
+} from './gravwave'
 import type { IntegratorId } from './types'
 
 export interface TestCase {
@@ -736,6 +744,134 @@ export function runSelfTest(): SelfTestReport {
       "Mercury's perihelion advance ≈ 43″/century",
       pass,
       `formula on real Mercury values → ${arcsec.toFixed(2)}″/century (observed/GR ≈ 43″)`,
+    )
+  }
+
+  // 28 — Gravitational waves: a circular binary integrated with the 2.5PN
+  // radiation reaction inspirals in exactly the time Peters (1964) predicts,
+  // t_c = 5c⁵a⁴/(256 G³m₁m₂M). The radiation-reaction force and the closed-form
+  // merger time are derived independently, so their agreement validates both.
+  {
+    const res = simulateInspiral({
+      m1: 1, m2: 0.8, g: 1, c: 1.3, a0: 36, e0: 0,
+      inclination: Math.PI / 6, distance: 100, stepsPerOrbit: 120, endFraction: 0.2,
+    })
+    const pass =
+      res.valid && Number.isFinite(res.ratioMergerTime) && Math.abs(res.ratioMergerTime - 1) < 0.02
+    add(
+      'GW inspiral matches Peters merger time',
+      pass,
+      `measured ${res.mergerTimeMeasured.toFixed(0)} vs Peters ${res.mergerTimePeters.toFixed(0)} (ratio ${res.ratioMergerTime.toFixed(4)}), ${res.cycles.toFixed(0)} GW cycles`,
+    )
+  }
+
+  // 29 — Energy balance: the work the 2.5PN reaction force does on the relative
+  // orbit, dE/dt = μ·(a_RR·v), equals minus the quadrupole gravitational
+  // luminosity L = (32/5)G⁴m₁²m₂²M/(c⁵a⁵) for a circular orbit. A direct check
+  // that the radiation reaction drains energy at exactly the radiated rate.
+  {
+    const g = 1, c = 1.3, m1 = 1, m2 = 0.8, a = 30
+    const M = m1 + m2, mu = (m1 * m2) / M, gm = g * M
+    const vy = Math.sqrt(gm / a)
+    const [ax, ay] = radiationReactionAccel(a, 0, 0, vy, M, mu, g, c)
+    const dEdt = mu * (0 * ax + vy * ay)
+    const L = quadrupoleLuminosityCircular(g, c, m1, m2, a)
+    const ratio = dEdt / -L
+    const pass = Number.isFinite(ratio) && Math.abs(ratio - 1) < 1e-9
+    add(
+      'GW energy balance: dE/dt = −L_quad',
+      pass,
+      `dE/dt=${dEdt.toExponential(3)} vs −L=${(-L).toExponential(3)} (ratio ${ratio.toFixed(6)})`,
+    )
+  }
+
+  // 30 — The gravitational-wave frequency is exactly twice the orbital frequency
+  // (the quadrupole radiates at the second harmonic), matching Kepler's
+  // f_orb = (1/2π)√(GM/a³).
+  {
+    const g = 1, m1 = 1, m2 = 0.8, a = 30
+    const gm = g * (m1 + m2)
+    const fgw = gwFrequencyCircular(g, m1, m2, a)
+    const forb = (1 / (2 * Math.PI)) * Math.sqrt(gm / (a * a * a))
+    const ratio = fgw / (2 * forb)
+    const pass = Math.abs(ratio - 1) < 1e-12
+    add(
+      'GW frequency = 2 × orbital frequency',
+      pass,
+      `f_gw=${fgw.toExponential(4)} vs 2·f_orb=${(2 * forb).toExponential(4)} (ratio ${ratio.toFixed(6)})`,
+    )
+  }
+
+  // 31 — An eccentric inspiral circularises. The radiation-reaction integration
+  // is run from e₀ = 0.5, and the resulting a(t), e(t) are compared head-to-head
+  // with an independent integration of Peters' coupled da/dt, de/dt equations.
+  // Gravitational radiation famously bleeds eccentricity faster than energy.
+  {
+    const g = 1, c = 1.5, m1 = 1, m2 = 1, a0 = 36, e0 = 0.5
+    const res = simulateInspiral({
+      m1, m2, g, c, a0, e0, inclination: 0, distance: 100,
+      stepsPerOrbit: 200, endFraction: 0.45,
+    })
+    const aMeas = res.aTrack[res.aTrack.length - 1]
+    const eMeas = res.eTrack[res.eTrack.length - 1]
+    const pet = integratePeters(g, c, m1, m2, a0, e0, res.mergerTimeMeasured, 6000)
+    const aOk = Math.abs(aMeas / pet.a - 1) < 0.03
+    const eOk = eMeas < e0 - 0.2 && Math.abs(eMeas / pet.e - 1) < 0.06
+    const pass = res.valid && aOk && eOk
+    add(
+      'GW eccentric inspiral matches Peters a(t), e(t)',
+      pass,
+      `e: ${e0} → measured ${eMeas.toFixed(3)} vs Peters ${pet.e.toFixed(3)}; a: ${a0} → ${aMeas.toFixed(2)} vs ${pet.a.toFixed(2)}`,
+    )
+  }
+
+  // 32 — Newtonian limit: as c → ∞ the radiation reaction (∝ 1/c⁵) vanishes and
+  // the orbit does not inspiral at all — the semi-major axis is frozen.
+  {
+    const res = simulateInspiral({
+      m1: 1, m2: 0.8, g: 1, c: 1e6, a0: 36, e0: 0,
+      inclination: 0, distance: 100, stepsPerOrbit: 120, endFraction: 0.1, maxSteps: 40000,
+    })
+    const shrink = res.aTrack[res.aTrack.length - 1] / res.aTrack[0]
+    const pass = res.valid && Math.abs(shrink - 1) < 1e-3
+    add(
+      'GW vanishes in the Newtonian limit (c→∞)',
+      pass,
+      `a(end)/a(0) = ${shrink.toFixed(6)} (≈1 — no inspiral)`,
+    )
+  }
+
+  // 33 — The transverse-traceless strain reproduces the analytic inclination
+  // dependence of the quadrupole formula: for a circular binary the plus
+  // polarisation amplitude scales as (1+cos²ι)/2 and the cross as cosι (relative
+  // to face-on), and the cross polarisation vanishes edge-on (ι = 90°).
+  {
+    const g = 1, c = 2, m1 = 1, m2 = 0.8, a = 30
+    const M = m1 + m2, mu = (m1 * m2) / M, gm = g * M, sp = Math.sqrt(gm / a)
+    const ampOverCycle = (incl: number) => {
+      let hp = 0, hx = 0
+      const N = 360
+      for (let k = 0; k < N; k++) {
+        const th = (k / N) * 2 * Math.PI
+        const px = a * Math.cos(th), py = a * Math.sin(th)
+        const pvx = -sp * Math.sin(th), pvy = sp * Math.cos(th)
+        const [a1, a2] = strainTT(px, py, pvx, pvy, mu, g, M, c, 100, incl)
+        hp = Math.max(hp, Math.abs(a1))
+        hx = Math.max(hx, Math.abs(a2))
+      }
+      return { hp, hx }
+    }
+    const face = ampOverCycle(0)
+    const i60 = ampOverCycle(Math.PI / 3)
+    const edge = ampOverCycle(Math.PI / 2)
+    const plusOk = Math.abs(i60.hp / face.hp - (1 + 0.25) / 2) < 1e-3 // (1+cos²60)/2 = 0.625
+    const crossOk = Math.abs(i60.hx / face.hx - 0.5) < 1e-3 // cos60 = 0.5
+    const edgeOk = edge.hx / face.hx < 1e-6 // cross vanishes edge-on
+    const pass = plusOk && crossOk && edgeOk
+    add(
+      'GW strain has the (1+cos²ι)/2cosι pattern',
+      pass,
+      `h₊(60°)/h₊(0)=${(i60.hp / face.hp).toFixed(3)} (=0.625), h×(60°)/h×(0)=${(i60.hx / face.hx).toFixed(3)} (=0.5), h×(90°)≈${(edge.hx / face.hx).toExponential(1)}`,
     )
   }
 

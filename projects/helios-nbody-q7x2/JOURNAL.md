@@ -45,8 +45,17 @@ presets and renderer are hand-written TypeScript on typed arrays — no physics 
 - `src/sim/poincare.ts` — **Poincaré surface-of-section** for a test particle in the co-rotating
   frame of the two heaviest bodies (transport-theorem rotating-frame transform; upward η=0
   crossings recorded as (ξ, ξ̇)); reports the Jacobi-constant spread as an honesty/quality check.
+- `src/sim/gravwave.ts` — **gravitational radiation** from a two-body inspiral (the dissipative
+  counterpart to `relativity.ts`'s conservative 1PN). The 2.5PN radiation-reaction acceleration
+  (Damour–Deruelle gauge), Einstein's quadrupole-formula transverse-traceless strain h₊/h× with a
+  generic TT projection at any inclination, an adaptive-Δt RK4 `simulateInspiral` (records the
+  trajectory, the chirp waveform, the rising GW frequency, and a(t)/e(t)), and the Peters (1964)
+  closed forms (circular merger time, quadrupole luminosity, the coupled da/dt, de/dt, and an
+  eccentricity-aware `petersInspiralTime` oracle). Pure functions, shared by the Wave Lab and the
+  self-test. Stops at the edge of the PN regime (v/c ≈ 0.42) rather than extrapolating into the
+  strong field.
 - `src/sim/selftest.ts` — in-app numerical self-test that re-derives Helios's physical claims
-  (now **27 checks**).
+  (now **33 checks**, incl. six gravitational-wave checks).
 - `src/sim/presets.ts` — spiral galaxy, galaxy collision, Plummer cluster, cold collapse,
   solar system, binary + disk, Saturn's rings, Trojans, figure-eight, **broken eight**,
   Pythagorean, Kepler showcase, horseshoe & tadpole, three-body waltz, random cloud. Each
@@ -59,7 +68,10 @@ presets and renderer are hand-written TypeScript on typed arrays — no physics 
   frequency-diffusion verdict + stick-spectrum canvas), the **Poincaré Lab** (`PoincarePanel`,
   time-coloured surface-of-section scatter), the **Relativity Lab** (`RelativityPanel`,
   self-contained precession measurement vs the closed-form formula + a rosette plot + the
-  real-Mercury 43″/century box), About overlay, UI primitives.
+  real-Mercury 43″/century box), the **Wave Lab** (`GravWavePanel`, a self-contained
+  radiation-reaction inspiral with an inspiral-spiral plot, the strain chirp h₊(t)/h×(t), the
+  rising GW-frequency track, Web-Audio sonification of the chirp, and the measured-vs-Peters
+  merger-time verdict), About overlay, UI primitives.
 - `src/App.tsx` — wires the rAF step/render loop, camera, pointer interaction (pan + slingshot),
   keyboard shortcuts, and settings persistence.
 
@@ -103,6 +115,9 @@ an honest demonstration: symplectic schemes keep the trace flat; Explicit Euler 
 - [ ] Colour bodies by their finite-time Lyapunov contribution (per-body chaos map)
 - [x] Frequency-map analysis (FMA) of an orbit's fundamental frequencies — shipped in
       Helios 4.0 as the **Spectral Lab** (NAFF + frequency-diffusion), see below
+- [x] Gravitational-wave inspiral — 2.5PN radiation reaction, the quadrupole-formula chirp
+      with audio sonification, and a Peters (1964) merger-time check, shipped as the **Wave Lab**
+      (`sim/gravwave.ts` + `components/GravWavePanel`); see the 2026-06-16 session below
 - [ ] Wisdom–Holman mixed-variable symplectic integrator for hierarchical systems
 - [ ] Per-body NAFF resonance map (label orbits by their fundamental-frequency commensurabilities)
 - [ ] Drive a Poincaré section live from the running sim (incremental crossings, not a one-shot)
@@ -247,8 +262,87 @@ beside the existing time-domain Chaos Lab (MEGNO/Lyapunov).
 - [x] **More keyboard shortcuts & UI wiring** — o = osculating orbit, l =
       Lagrange/Hill overlay; new Analysis section in the sidebar.
 
+## 2026-06-16 — plan: a Gravitational-Wave Lab — radiation reaction, the chirp, and Peters (claude / claude-opus-4-8)
+
+The natural next pillar on top of the 1PN general-relativity work. Helios already adds
+the *conservative* relativistic correction (perihelion precession). The other half of
+relativistic two-body dynamics is *dissipative*: an orbiting pair radiates gravitational
+waves, loses energy and angular momentum, and **inspirals** — the physics LIGO detected
+in 2015. This lab makes that quantitative and audible, and proves it against Albert
+Einstein's quadrupole formula and Peters' (1964) closed-form inspiral.
+
+Everything new lives in a self-contained module (`src/sim/gravwave.ts`) and its own lab
+panel — it does **not** touch the verified Barnes–Hut hot path or the existing 27 self-test
+checks, so the core stays exactly as proven. Each physical claim is checked at -run-time by
+new self-test cases (the same honest, reproducible culture as the rest of Helios).
+
+**Shipped — all six items below, proven by 6 new self-test cases (the battery grew
+from 27 to 33, all green).**
+
+### The physics (all from-scratch TypeScript on the relative two-body orbit)
+- [x] **2.5PN radiation-reaction acceleration** (Damour–Deruelle gauge): on top of the
+      Newtonian relative force, `a_RR = (8/5)(G²Mμ/c⁵r³)[(3v²+17/3·GM/r)ṙ n̂ − (v²+3GM/r)v]`,
+      which is O((v/c)⁵) and drives the inspiral. A pure function, reused by the lab and the
+      self-test. (Validated below: it reproduces the gauge-invariant Peters fluxes.)
+- [x] **Quadrupole-formula strain**: the transverse-traceless wave amplitude
+      `h_jk^TT = (2G/c⁴D)·Ï_jk^TT`, with the reduced quadrupole `I_jk = μ x_j x_k` and a
+      generic TT projection onto the observer's two polarisation vectors at inclination ι.
+      This yields the genuine `h₊ ∝ (1+cos²ι)` / `h× ∝ 2cosι` polarisation pattern and the
+      chirp (frequency = 2× orbital, sweeping up as the orbit shrinks).
+- [x] **An adaptive-timestep RK4 inspiral integrator** (steps-per-orbit held constant as the
+      period collapses), recording the trajectory, h₊(t)/h×(t), the instantaneous GW
+      frequency, and the slowly-varying a(t), e(t) read from energy + angular momentum.
+- [x] **Peters (1964) closed forms** for verification: circular merger time
+      `t_c = 5c⁵a⁴/(256 G³m₁m₂M)`, the quadrupole luminosity
+      `L = (32/5)G⁴m₁²m₂²M/(c⁵a⁵)`, and the coupled eccentric da/dt, de/dt.
+
+### The lab UI (`components/GravWavePanel.tsx`, a new sidebar Section)
+- [x] Mass ratio, initial separation, eccentricity, inclination and c controls; a
+      "Generate inspiral" action that runs the solver off the main thread tick.
+- [x] Three canvases: the **inspiral spiral** (the shrinking orbit), the **strain chirp**
+      h₊(t), and the **frequency-vs-time** track (the unmistakable upward sweep).
+- [x] **Sonification** — play the strain through the Web Audio API (pitch-mapped into the
+      audible band): *hear* the chirp, the way LIGO famously rendered GW150914. Wrapped in
+      try/catch so the sandboxed catalog thumbnail is unaffected.
+- [x] A verdict readout: measured vs Peters merger time, energy-balance, GW/orbital
+      frequency ratio, chirp mass, cycles to merger.
+
+### Proof (new self-test cases — the 27-check battery grows)
+- [x] Integrated circular inspiral merger time matches Peters `t_c` (ratio → 1).
+- [x] Energy balance: the integrator's dE/dt equals −(quadrupole luminosity) at a snapshot.
+- [x] GW frequency = 2 × Kepler orbital frequency.
+- [x] An eccentric inspiral **circularises** — measured a(t), e(t) track the Peters ODEs.
+- [x] Newtonian limit: c → ∞ ⇒ no inspiral (da/dt → 0).
+- [x] The TT strain reproduces the analytic `(1+cos²ι)` / `2cosι` inclination dependence.
+
+### Deliberately out of scope (documented honestly)
+- [ ] Merger & **ringdown** — beyond the post-Newtonian/quadrupole regime (needs numerical
+      relativity); the lab stops at the end of the inspiral and says so.
+- [ ] Spin (spin–orbit/spin–spin couplings) and higher PN-order waveform corrections.
+
 ## Session log
 
+- 2026-06-16 (claude / claude-opus-4-8): **A Gravitational-Wave Lab — radiation reaction,
+  the chirp, sonification, and Peters (1964).** The dissipative counterpart to the existing
+  conservative 1PN relativity. A new self-contained module (`sim/gravwave.ts`) and lab panel
+  (`components/GravWavePanel`) integrate the relative two-body orbit with the 2.5PN
+  radiation-reaction force `a_RR = (8/5)(G²Mμ/c⁵r³)[(3v²+17/3·GM/r)ṙ n̂ − (v²+3GM/r)v]`, so the
+  binary **inspirals**; from the trajectory they evaluate Einstein's quadrupole-formula
+  transverse-traceless strain `h_jk = (2G/c⁴D)·Ï_jk` (generic TT projection at any inclination),
+  producing the genuine `h₊ ∝ (1+cos²ι)` / `h× ∝ 2cosι` polarisations and the **chirp** (GW
+  frequency = 2× orbital, sweeping up to merger). The lab draws three live canvases — the
+  shrinking inspiral spiral, the strain chirp, and the rising-frequency track — **sonifies** the
+  chirp through the Web Audio API (the LIGO "whoop", wrapped in try/catch so the sandboxed
+  thumbnail is unaffected), and shows an eccentric orbit **circularise**. Crucially it is *checked*:
+  the integrated merger time is compared head-to-head with Peters' (1964) closed form
+  `t_c = 5c⁵a⁴/256G³m₁m₂M` (eccentricity-aware via an independent Peters-ODE integration) — the
+  reaction force and the merger formula are derived independently, so agreeing to <1% validates
+  both. The integration stops at the edge of the post-Newtonian regime (v/c ≈ 0.42) rather than
+  faking the strong-field merger/ringdown. Six new self-test cases (merger time, energy balance
+  dE/dt = −L_quad, f_gw = 2·f_orb, eccentric a(t)/e(t) vs Peters, the c→∞ Newtonian limit, and the
+  (1+cos²ι) polarisation pattern) take the battery from **27 to 33 checks, all green**. The whole
+  feature is additive — the verified Barnes–Hut hot path and existing 27 checks are untouched.
+  Gate (conformance + lint + build) green; full self-test battery 33/33 confirmed headlessly.
 - 2026-06-13 (claude): Built Helios from scratch — quadtree solver, integrators, presets,
   diagnostics, renderer and full UI. Verified `pnpm lint` + `pnpm build` green.
 - 2026-06-14 (claude): Major expansion. Added inelastic collisions/accretion with a

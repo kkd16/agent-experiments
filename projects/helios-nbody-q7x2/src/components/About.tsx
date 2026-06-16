@@ -210,6 +210,38 @@ export function About({ onClose }: Props) {
           numbers and it returns <strong>42.98″/century</strong>.
         </p>
 
+        <h2>Gravitational waves: the inspiral chirp</h2>
+        <p>
+          The relativity above is <em>conservative</em> — it makes the orbit precess but never
+          decay. The other half of relativistic two-body motion is <em>dissipative</em>: an
+          orbiting pair radiates <strong>gravitational waves</strong>, bleeds orbital energy and
+          angular momentum, and slowly spirals together. This is the signal LIGO first heard from
+          two merging black holes in 2015.
+        </p>
+        <p>
+          The <strong>Wave Lab</strong> makes it concrete. It integrates the relative two-body
+          orbit with the leading <strong>2.5PN radiation-reaction</strong> force
+          <code> a_RR = (8/5)(G²Mμ/c⁵r³)[(3v²+17/3·GM/r)ṙ n̂ − (v²+3GM/r)v]</code> — an effect of
+          order <code>(v/c)⁵</code> — and watches the orbit inspiral. From the trajectory it
+          evaluates Einstein's <strong>quadrupole formula</strong> for the transverse-traceless wave
+          strain <code>hⱼₖ = (2G/c⁴D)·Ïⱼₖ</code>, projected onto the observer's polarisation basis at
+          your chosen inclination, and draws the emitted <strong>chirp</strong>: a waveform whose
+          amplitude and frequency both sweep upward as the orbit tightens, with the GW frequency
+          locked at exactly twice the orbital frequency. Crank the eccentricity up and watch the
+          orbit <strong>circularise</strong> — gravitational radiation sheds eccentricity even faster
+          than it sheds energy. You can even <strong>hear it</strong>: the lab sonifies the frequency
+          track into the audible band, the rising "whoop" of a binary coalescence.
+        </p>
+        <p>
+          And it is checked. The integrated merger time is compared head-to-head with{' '}
+          <strong>Peters' (1964)</strong> closed form <code>t_c = 5c⁵a⁴/(256 G³m₁m₂M)</code> (and its
+          eccentric generalisation) — the radiation-reaction force and the merger-time formula are
+          derived independently, so their agreement to a fraction of a percent validates both. The
+          lab stops at the edge of the post-Newtonian regime: the final plunge, merger and{' '}
+          <strong>ringdown</strong> belong to the strong field, where only numerical relativity can
+          honestly take over.
+        </p>
+
         <h2>Run the numbers yourself</h2>
         <p>
           None of the above is taken on faith. The button below runs a battery of numerical checks in
@@ -218,8 +250,11 @@ export function About({ onClose }: Props) {
           tidal tensor is the exact gradient of the force, that the Lagrange points are genuine
           equilibria (<code>∇Ω ≈ 0</code>), that momentum is conserved, that the virial theorem holds,
           that MEGNO recognises a regular orbit (<code>⟨Y⟩ → 2</code>) yet flags the Pythagorean
-          three-body problem as chaotic — and that the engine's relativistic precession matches the
-          closed-form GR formula, reproducing Mercury's 43″/century.
+          three-body problem as chaotic, that the engine's relativistic precession matches the
+          closed-form GR formula reproducing Mercury's 43″/century — and that a radiation-reaction
+          inspiral reproduces Peters' gravitational-wave merger time, radiates at twice the orbital
+          frequency, circularises an eccentric orbit on schedule, and carries the quadrupole
+          formula's exact <code>(1+cos²ι)</code> polarisation pattern.
         </p>
         <div className="selftest">
           <button type="button" className="btn primary" onClick={runTests} disabled={running}>
@@ -255,6 +290,7 @@ export function About({ onClose }: Props) {
           <li>Load <em>Three-Body Waltz</em>, open the <em>Poincaré Lab</em> and press <code>k</code> — watch the section dots trace a clean invariant curve, the signature of a regular orbit.</li>
           <li>Open <em>GR Precession</em>, turn on motion trails, and watch the eccentric orbits wind into rosettes — then press <code>g</code> to switch relativity off and see them snap back to closed ellipses.</li>
           <li>Open the <em>Relativity Lab</em>, lower <em>c</em>, and press <em>Measure precession</em> — read the integrated advance against the exact 6πμ/(c²a(1−e²)), and see Mercury's real 43″/century.</li>
+          <li>Open the <em>Wave Lab</em>, press <em>Generate inspiral</em>, and watch two bodies spiral together as they radiate — then press <em>Hear the chirp</em> to listen to the merger. Push the eccentricity up and watch the orbit circularise; check the measured merger time against Peters' formula.</li>
           <li>Click a planet in <em>Solar System</em> to read its orbital energy, then <em>Share</em> a permalink to your setup.</li>
         </ul>
 
