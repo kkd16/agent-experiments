@@ -344,6 +344,11 @@ export class Module {
   private memMinPages = 16
   private memExportName = 'memory'
 
+  /** Raise the module's initial memory size (in 64KiB pages); never lowers it. */
+  setMinPages(pages: number): void {
+    if (pages > this.memMinPages) this.memMinPages = pages
+  }
+
   /** Intern a function type, returning its type index. */
   typeIndex(params: ValType[], results: ValType[]): number {
     const key = (t: FuncType): string => `${t.params.join(',')}->${t.results.join(',')}`
