@@ -8,6 +8,7 @@ import AstPanel from './panels/AstPanel.tsx'
 import TypesPanel from './panels/TypesPanel.tsx'
 import BytecodePanel from './panels/BytecodePanel.tsx'
 import JsPanel from './panels/JsPanel.tsx'
+import WasmPanel from './panels/WasmPanel.tsx'
 import DerivationPanel from './panels/DerivationPanel.tsx'
 import ClassesPanel from './panels/ClassesPanel.tsx'
 import CheckPanel from './panels/CheckPanel.tsx'
@@ -36,6 +37,7 @@ type Tab =
   | 'deriv'
   | 'bytecode'
   | 'js'
+  | 'wasm'
   | 'debug'
 
 const TABS: { id: Tab; label: string }[] = [
@@ -49,6 +51,7 @@ const TABS: { id: Tab; label: string }[] = [
   { id: 'deriv', label: 'Derivation' },
   { id: 'bytecode', label: 'Bytecode' },
   { id: 'js', label: 'JavaScript' },
+  { id: 'wasm', label: 'WebAssembly' },
   { id: 'debug', label: 'Debugger' },
 ]
 
@@ -215,6 +218,7 @@ export default function Playground() {
           )}
           {tab === 'bytecode' && <BytecodePanel proto={analysis.proto} />}
           {tab === 'js' && <JsPanel ast={analysis.coreAst} code={code} optimize={optimizeOn} />}
+          {tab === 'wasm' && <WasmPanel ast={analysis.coreAst} code={code} optimize={optimizeOn} />}
           {tab === 'debug' && (
             <DebuggerPanel
               key={traceNonce}

@@ -330,14 +330,24 @@ back 50.0        clear ()`}</pre>
       </section>
 
       <section>
-        <h2>Two backends</h2>
+        <h2>Three backends</h2>
         <p>
-          The same type-checked program is compiled <strong>two ways</strong>. The{' '}
+          The same type-checked program is compiled <strong>three ways</strong>. The{' '}
           <strong>Bytecode</strong> tab shows it lowered to a stack machine run by a hand-written VM
           (with the time-travel debugger). The <strong>JavaScript</strong> tab shows it lowered to
           self-contained JavaScript and runs it right in your browser — a tiny runtime mirrors the
           VM's value model exactly, so the result, printed output and turtle drawing match the VM{' '}
           <em>byte-for-byte</em> (there's a live "matches the VM ✓" check).
+        </p>
+        <p>
+          The <strong>WebAssembly</strong> tab goes one step further: it hand-assembles the program
+          into a <em>real <code>.wasm</code> module</em> — a from-scratch binary encoder, no{' '}
+          <code>wabt</code> or <code>binaryen</code> — then instantiates and runs it in the engine.
+          Closures dispatch through <code>call_indirect</code> over a bump-allocator heap, tail calls
+          use the WebAssembly <code>return_call</code> proposal for constant-space recursion, and the
+          inherently host-side operations (printing, <code>show</code>, comparison, the turtle) are
+          imports that reuse the VM's own code — so it too matches the VM <em>byte-for-byte</em>. You
+          can download the <code>.wasm</code> and run it anywhere.
         </p>
         <p>
           The <strong>Derivation</strong> tab reconstructs the Hindley–Milner <em>proof tree</em>:

@@ -1,11 +1,12 @@
 # Aether — journal
 
 Aether is a complete, from-scratch programming-language toolchain that runs entirely in the
-browser — no server, no WebAssembly, no parser generators, no external runtime libraries. You
-write code in a small ML-family functional language; the app lexes it, parses it, infers its
-types with Hindley–Milner, compiles it to bytecode, runs it on a stack VM, and lets you scrub
-through execution with a time-travel debugger. Programs can also drive a turtle to draw
-fractals, so "functional code → picture" is a first-class demo.
+browser — no server, no parser generators, no compiler libraries (it even assembles its own
+WebAssembly, with no `wabt`/`binaryen`), no external runtime libraries. You write code in a small
+ML-family functional language; the app lexes it, parses it, infers its types with Hindley–Milner,
+and compiles it **three ways** — to bytecode for a stack VM, to JavaScript, and to a real
+WebAssembly module — letting you scrub through execution with a time-travel debugger. Programs can
+also drive a turtle to draw fractals, so "functional code → picture" is a first-class demo.
 
 ## Architecture
 
@@ -13,6 +14,7 @@ fractals, so "functional code → picture" is a first-class demo.
 source -> lexer -> parser -> HM inference -> optimizer -+-> bytecode compiler -> stack VM -> turtle canvas
                                                          |                            \-> time-travel trace
                                                          +-> JavaScript backend -> run in browser (≡ VM)
+                                                         +-> WebAssembly backend -> assemble .wasm -> instantiate & run (≡ VM)
                                                          \-> derivation tree (the HM proof)
 ```
 
@@ -27,6 +29,10 @@ source -> lexer -> parser -> HM inference -> optimizer -+-> bytecode compiler ->
 - `src/lang/jsBackend.ts` — second backend: lowers the same typed AST to self-contained
   JavaScript + a tagged runtime that mirrors the VM value model; runs in the browser and
   matches the VM byte-for-byte.
+- `src/wasm/` — third backend: a from-scratch WebAssembly binary encoder (`encoder.ts`), a
+  tagged linear-memory heap layout (`layout.ts`) shared with a host bridge (`bridge.ts`) that
+  reuses the VM's own print/show/compare, closure-converting codegen with tail calls
+  (`codegen.ts`), and a driver (`run.ts`) that assembles, instantiates and runs the `.wasm`.
 - `src/lang/derivation.ts` — reconstructs the HM proof tree from the inferred per-node types.
 - `src/lang/prelude.ts` — primitives in TS + a standard library (map/filter/fold/…) written
   in Aether itself and compiled into every program.
@@ -317,6 +323,74 @@ Plan / steps:
       derived method's behaviour, JS≡VM throughout, and the rejection cases (non-derivable class,
       `Enum` on a type with fields, `Functor`/`Foldable` on a nullary type, an unfoldable nested-in-list shape).
 
+### Aether 7.0 — a native WebAssembly backend (planned + shipping this session)
+
+For six releases Aether has had two execution targets — the bytecode VM and the JavaScript
+backend — kept byte-for-byte equal by a live equivalence check. 7.0 adds the headline a
+language toolchain is judged on: a **third, *native* compilation target that emits real
+WebAssembly bytecode**. Aether now lowers the same type-checked, dictionary-elaborated core AST
+to a hand-assembled `.wasm` module — produced by a from-scratch WebAssembly binary encoder (no
+`wabt`, no `binaryen`, no libraries) — which the browser **instantiates and runs** through
+`WebAssembly.instantiate`. You can download the `.wasm` and run it in any WebAssembly engine.
+
+The design keeps the project's hard-won invariant: a third "✓ matches the VM" badge. WASM
+genuinely *executes the program* — it owns allocation (a bump allocator over linear memory),
+control flow, closures via `call_indirect`, integer/float arithmetic, structural comparison,
+list/tuple/record/ADT construction, and `match` dispatch. A handful of inherently host-side
+operations (printing, `show`'s text formatting, `sin`/`sqrt`, string ops, and the side-effecting
+turtle) are delegated to **imported JS functions that decode WASM heap pointers into the VM's
+exact `Value` model and reuse the VM's own formatter/comparator** — so the WASM backend's result,
+printed output and drawing match the bytecode VM byte-for-byte, by construction.
+
+The crux is closure conversion + a tagged heap that mirrors `values.ts` cell-for-cell, so a JS
+"bridge" can read and write the same value model on both sides of the WebAssembly boundary.
+
+Plan / steps:
+
+- [x] **WASM binary encoder** (`wasm/encoder.ts`) — from-scratch LEB128 (unsigned/signed/f64)
+      and every module section (type, import, function, table, memory, global, export, element,
+      code) with a small typed instruction builder. Pure and independently testable; emits bytes
+      a real engine accepts.
+- [x] **A tagged linear-memory heap + JS bridge** (`wasm/bridge.ts`) — heap-cell layout mirroring
+      `Value` (int/float/bool/unit/nil/cons/tuple/data/record/closure/native/ctor/str); `decode`
+      (read a pointer into a `Value`) and `encode` (write a `Value` via the exported allocator),
+      a string-intern table, a constructor-name table and a record-label table shared with codegen.
+- [x] **The runtime, emitted as WASM** — a bump allocator (`__alloc`, grows memory on demand), a
+      generic `apply` (user closures via `call_indirect`, partially-applied natives, partially-
+      applied constructors), structural `cmp` (the `<`/`==` family), list `++`, and boxing helpers.
+- [x] **Codegen** (`wasm/codegen.ts`) — closure conversion with free-variable analysis: each
+      `lambda` becomes a WASM function `(env, arg) -> i32`; top-level `let`/`letrec` become WASM
+      globals (with back-patched self/mutual recursion); `if`/`match`/`binop`/`unop`/`list`/`tuple`/
+      `record`/`field`/`recordUpdate`/`seq` all lower to WASM; constructors become curried builders;
+      the hot natives (`head`/`tail`/`empty`, comparisons, `min`/`max`) inline, the rest call imports.
+- [x] **Driver** (`wasm/run.ts`) — assemble + instantiate with the import object, run `main`,
+      collect output/effects/result decoded through the bridge, and surface the real module bytes
+      (size, function count, a WAT-style disassembly, a download).
+- [x] **A "WASM" inspector panel** — compile → instantiate → run → compare to the VM with a live
+      "✓ matches the VM" badge, module statistics, the disassembly, and a download for the `.wasm`.
+- [x] **Examples** — a "compile me to WebAssembly" showcase that runs identically on all three
+      backends.
+- [x] **Verification** — a Node battery (`tools/harness.mjs`) that instantiates the *real* emitted
+      module under Node's `WebAssembly` and asserts **WASM ≡ VM** (result + output) across the
+      supported gallery and a focused feature battery (closures/recursion, ADTs, records, `match`,
+      higher-order prelude, floats, the turtle). Keep the CI gate green.
+- [x] **Docs** — Tour/About/README/`project.json` writeups for the third backend.
+
+Deferred (future, Aether 7.x+):
+
+- [ ] A real WAT (text-format) disassembler in the WebAssembly panel, plus an emitted `name`
+      section, so the generated functions read by name instead of as a hex dump.
+- [ ] A copying/mark-sweep garbage collector for the WASM linear-memory heap (today's bump
+      allocator never frees; long-running programs grow memory monotonically).
+- [ ] Move the heap onto the **WasmGC** proposal (typed structs/arrays) so the engine manages
+      memory and the host bridge reads real GC objects instead of raw cells.
+- [ ] A **WASI** entry so the same module runs under `wasmtime`/`node --experimental-wasi` from a
+      file, with `print` wired to stdout.
+- [ ] Specialise saturated direct calls (skip the generic `apply` tag-dispatch when the arity is
+      statically known) and intern integer/`show` results to cut allocation.
+- [ ] String values as real linear-memory byte arrays (UTF-8) rather than a host-side string pool,
+      so a downloaded module is self-contained without the JS bridge for `^`/literals.
+
 ## Standard library
 
 - list: `map filter foldl foldr length append reverse sum range take drop elem all any concat zip replicate`
@@ -530,3 +604,30 @@ Plan / steps:
   the `deriving` highlighter keyword, and Tour/About/README/`project.json` writeups. The Node harness
   grew a focused `deriving` battery (every synthesised method, JS≡VM throughout, the rejection cases)
   — **126 checks green**; full CI gate (scope + conformance + lint + tsc + build) green.
+- 2026-06-16 (claude): **Aether 7.0 — a native WebAssembly backend.** Added the headline a language
+  toolchain is judged on: a *third* compilation target that emits **real WebAssembly bytecode**. The
+  same type-checked, dictionary-elaborated core AST is now hand-assembled into a `.wasm` module by a
+  from-scratch binary encoder (`src/wasm/encoder.ts` — LEB128 + every module section + a typed
+  instruction builder; **no `wabt`, no `binaryen`**), which the browser **instantiates and runs**.
+  WASM genuinely executes the program: a tagged linear-memory heap (`layout.ts`) over a bump
+  allocator (`__alloc`, grows on demand); each `lambda` is a WASM function and closures dispatch
+  through `call_indirect`; **tail calls use the WebAssembly tail-call proposal (`return_call`)** so
+  deep/mutual recursion runs in constant stack, matching the VM's TCO; arithmetic, number/bool
+  comparison, list/tuple/record/ADT construction and `match` (block-structured tests + `br_if`) all
+  lower to native WASM. The inherently host-side operations — printing, `show`'s formatting,
+  structural/lexicographic comparison, `sin`/`sqrt`, string ops and the turtle — are **three imports
+  that decode WASM heap pointers into the VM's exact `Value` model and reuse the VM's own code**
+  (`bridge.ts`), so the WASM result, output and drawing match the bytecode VM **byte-for-byte by
+  construction**. Codegen (`codegen.ts`) does closure conversion with free-variable analysis
+  (top-level bindings become WASM globals so top-level recursion needs no back-patching; nested
+  `let rec` ties the knot by filling a closure's own env slot after allocation), routes `head`/`tail`/
+  `empty` inline for speed, and threads tail position. The driver (`run.ts`) assembles, instantiates
+  and runs, and surfaces the module's section table, a hex dump and a **download** for the real
+  `.wasm`. Added a **WebAssembly** inspector tab (run → compare → live "✓ matches the VM" badge +
+  module stats), a "Compile me to WebAssembly" gallery example, and Tour/About/README/`project.json`
+  writeups. The Node harness (`tools/harness.mjs`) now instantiates the *real* emitted module under
+  Node's `WebAssembly` and asserts **WASM ≡ VM** across **all 31 gallery examples** plus a focused
+  feature battery (int/float arithmetic, closures & currying, the higher-order prelude, deep tail
+  recursion at depth 100k, mutual recursion, ADT/`match`/guards, records + update + row polymorphism,
+  strings + `show`, the nested-`let rec` knot, comprehensions, print ordering, polymorphic ADT
+  compare) — **171 checks green**; full CI gate (scope + conformance + lint + tsc + build) green.

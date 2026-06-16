@@ -7,6 +7,7 @@
 //   node --experimental-strip-types tools/harness.mjs
 import { runPipeline } from '../src/lang/pipeline.ts'
 import { compileToJs, runJsModule } from '../src/lang/jsBackend.ts'
+import { runWasm } from '../src/wasm/run.ts'
 import { valueToString } from '../src/lang/values.ts'
 import { EXAMPLES } from '../src/examples.ts'
 import { runSuite } from '../src/lang/testSuite.ts'
@@ -160,6 +161,59 @@ check('derive:reject non-derivable', 'type T = A deriving (Functor2) in 0', { er
 check('derive:reject Enum with fields', 'class Enum a where fromEnum : a -> Int, toEnum : Int -> a in type T = A Int deriving (Enum) in 0', { error: 'Enum' })
 check('derive:reject Functor nullary', 'class Functor f where fmap : (a -> b) -> f a -> f b in type T = A | B deriving (Functor) in 0', { error: 'Functor' })
 check('derive:reject duplicate in clause', 'class Eq a where eq : a -> a -> Bool in type T = A deriving (Eq, Eq) in 0', { error: 'duplicate' })
+
+// ---------------------------------------------------------------------------
+// WebAssembly backend battery — the third compilation target. Each program is
+// compiled to a real `.wasm` module, instantiated under Node's `WebAssembly`,
+// run, and asserted equal to the bytecode VM (result + output + draw count).
+// ---------------------------------------------------------------------------
+
+/** Compile + instantiate + run on the WASM backend; assert WASM ≡ VM. */
+async function checkWasm(name, src) {
+  const r = runPipeline(src, { execute: true })
+  if (r.error) {
+    record('wasm:' + name, false, `pipeline error: ${r.error.message}`)
+    return
+  }
+  const vm = r.run && r.run.result ? valueToString(r.run.result) : null
+  const vmOut = r.run ? r.run.output.join('\n') : ''
+  const vmEff = r.run ? r.run.effects.length : 0
+  try {
+    const w = await runWasm(r.coreAst)
+    if (w.error) {
+      record('wasm:' + name, false, `WASM runtime error: ${w.error}`)
+      return
+    }
+    const same = w.result === vm && w.output.join('\n') === vmOut && w.effects.length === vmEff
+    record(
+      'wasm:' + name,
+      same,
+      `WASM result "${w.result}" out ${JSON.stringify(w.output)} eff ${w.effects.length} vs VM "${vm}" out ${JSON.stringify(r.run ? r.run.output : [])} eff ${vmEff}`,
+    )
+  } catch (e) {
+    record('wasm:' + name, false, `WASM threw: ${e instanceof Error ? e.message : String(e)}`)
+  }
+}
+
+// Every gallery example must compile to WebAssembly and match the VM exactly.
+for (const ex of EXAMPLES) {
+  await checkWasm('example:' + ex.id, ex.code)
+}
+
+// A focused feature battery exercising each lowering path on the WASM backend.
+await checkWasm('int arithmetic + wraparound', '(7 * 6, 100 / 7, 100 % 7, 0 - 5, 2147483647 + 1)')
+await checkWasm('float arithmetic', '(3.0 +. 4.0, 1.0 /. 4.0, sqrt 2.0, pi *. 2.0)')
+await checkWasm('closures & currying', 'let add = fn a b c -> a + b + c in let f = add 1 2 in f 39')
+await checkWasm('higher-order prelude', 'foldl (fn a x -> a + x) 0 (map (fn x -> x * x) (filter (fn x -> x % 2 == 0) (range 1 11)))')
+await checkWasm('deep recursion (tail)', 'let rec go = fn n acc -> if n == 0 then acc else go (n - 1) (acc + 1) in go 100000 0')
+await checkWasm('mutual recursion', 'let rec ev = fn n -> if n == 0 then true else od (n - 1) and od = fn n -> if n == 0 then false else ev (n - 1) in (ev 1000, od 1000)')
+await checkWasm('ADT + match + guards', 'type T a = L | N (T a) a (T a) in let rec mx = fn t -> match t with L -> 0 - 1000 | N l v r -> let a = mx l in let b = mx r in if v > a then (if v > b then v else b) else (if a > b then a else b) in mx (N (N L 3 L) 7 (N L 5 L))')
+await checkWasm('records + update + row poly', 'let r = { x = 1, y = 2, z = 3 } in let bump = fn rr -> { rr | x = rr.x + 10 } in let s = bump r in (s.x, s.y, s.z, r.x)')
+await checkWasm('strings + show', 'type Opt a = None | Some a in let greet = fn n -> "hello, " ^ n ^ "!" in (greet "wasm", show [Some 1, None], strlen "abcd", toUpper "abc")')
+await checkWasm('nested let rec closure (knot)', 'let count = fn n -> let rec go = fn i -> if i >= n then [] else i :: go (i + 1) in go 0 in count 5')
+await checkWasm('list comprehension', '[ (x, y) | x <- range 1 4, y <- range 1 4, x + y == 4 ]')
+await checkWasm('print output ordering', 'let _ = print "a" in let _ = print 1 in let _ = print [1, 2] in print "z"')
+await checkWasm('polymorphic compare on ADTs', 'type C = Red | Green | Blue in (Red == Red, Red == Blue, min Green Blue, [1,2,3] == [1,2,3])')
 
 console.log(`\nAether harness: ${pass} passed, ${fail} failed`)
 if (fail) {

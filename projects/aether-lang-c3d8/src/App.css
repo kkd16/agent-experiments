@@ -1159,6 +1159,53 @@ body {
   color: var(--accent-2);
 }
 
+/* ---------- WebAssembly panel ---------- */
+.wasm-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1.2rem;
+  font-family: var(--mono);
+  font-size: 0.82rem;
+  color: var(--fg-dim);
+  margin: 0.6rem 0 0.8rem;
+}
+.wasm-stats strong {
+  color: var(--accent-2);
+}
+.wasm-sections {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: var(--mono);
+  font-size: 0.78rem;
+}
+.wasm-sections td {
+  padding: 0.12rem 0.6rem;
+  border-bottom: 1px solid var(--border);
+}
+.wsec-id {
+  color: var(--fg-dim);
+  width: 2rem;
+}
+.wsec-name {
+  color: var(--accent);
+}
+.wsec-size {
+  text-align: right;
+  color: var(--fg-dim);
+}
+.wasm-hex {
+  font-size: 0.72rem;
+  line-height: 1.35;
+  max-height: 22rem;
+  overflow: auto;
+}
+.wasm-err {
+  margin-top: 0.6rem;
+  white-space: pre-wrap;
+  font-size: 0.78rem;
+  color: var(--fg-dim);
+}
+
 /* ---------- derivation tree ---------- */
 .deriv-root {
   font-family: var(--mono);

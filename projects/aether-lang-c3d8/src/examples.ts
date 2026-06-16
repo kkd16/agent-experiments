@@ -816,6 +816,36 @@ let rec sumRose = fn rs -> match rs with
 , total (fmap (fn x -> x * x) t)      // 1 + 4 + 9 = 14
 , sumRose (fmap (fn x -> x + 100) r)) // (1+2+3+4) + 4*100 = 410`,
   },
+  {
+    id: 'wasm-backend',
+    title: 'Compile me to WebAssembly',
+    blurb: 'A third backend: open the WebAssembly tab to run this as real .wasm.',
+    visual: false,
+    code: `// Open the "WebAssembly" tab and press Run.
+// The same typed program is hand-assembled into a real .wasm module —
+// closures, ADTs, records and recursion all run as native WebAssembly —
+// and its result matches the bytecode VM (and the JS backend) byte-for-byte.
+// You can download the .wasm and run it in any engine.
+
+type Shape = Circle Float | Rect Float Float in
+
+let area = fn s -> match s with
+  | Circle r   -> pi *. r *. r
+  | Rect w h   -> w *. h in
+
+let shapes = [Circle 1.0, Rect 2.0 3.0, Circle 2.0] in
+let total  = foldl (fn acc s -> acc +. area s) 0.0 shapes in
+
+let rec collatz = fn n ->
+  if n == 1 then 0
+  else if n % 2 == 0 then 1 + collatz (n / 2)
+  else 1 + collatz (3 * n + 1) in
+
+{ shapeCount = length shapes
+, totalArea  = total                       // sum of the areas
+, collatz27  = collatz 27                   // 111 steps to reach 1
+, squares    = [ x * x | x <- range 1 6 ] }`,
+  },
 ]
 
 export const DEFAULT_CODE = EXAMPLES[0].code
