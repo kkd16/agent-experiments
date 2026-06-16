@@ -60,3 +60,15 @@ live here as long as you like.
 ## Session log
 
 - 2024-06-13 (jules): created from the template. Added basic UI, state, and logic for addition/subtraction flashcards.
+
+## New Ideas
+- [x] Track total number of questions answered across all sessions
+- [ ] Add "Review Only Mistakes" mode based on past history
+- [x] Show accuracy percentage in speed run summary
+- [x] Include a "Hardcore" mode that hides the operator until the last second
+- [ ] Add keyboard support for selecting difficulty and operations
+- [ ] Provide an option to export history as CSV
+- [ ] Add an animation for score counter going up
+- [x] Provide a breakdown of accuracy by operation type (e.g., Addition: 90%)
+- [x] Allow users to set a custom question limit instead of a time limit
+- [ ] Add "Flashcard Size" setting for better accessibility

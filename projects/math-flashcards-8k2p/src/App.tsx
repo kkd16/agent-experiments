@@ -72,6 +72,16 @@ function getInitialStreak(): number {
   return 0;
 }
 
+function getInitialLifetimeQuestions(): number {
+  try {
+    const stored = window.localStorage.getItem('mathFlashcardsLifetimeQuestions');
+    if (stored) return parseInt(stored, 10);
+  } catch (e) {
+    console.error("Local storage error:", e);
+  }
+  return 0;
+}
+
 function App() {
   const [theme, setTheme] = useState<'light' | 'dark'>(getInitialTheme());
   const [allowedOperations, setAllowedOperations] = useState<Operation[]>(['+', '-', '*', '/']);
@@ -88,10 +98,17 @@ function App() {
   const [highScore, setHighScore] = useState<number>(getInitialHighScore());
 
   const [isSpeedRunActive, setIsSpeedRunActive] = useState<boolean>(false);
+  const [gameMode, setGameMode] = useState<'time' | 'questions'>('time');
   const [isSuddenDeathMode, setIsSuddenDeathMode] = useState<boolean>(false);
+  const [isHardcoreMode, setIsHardcoreMode] = useState<boolean>(false);
+  const [hideOperator, setHideOperator] = useState<boolean>(false);
   const [timeLeft, setTimeLeft] = useState<number>(60);
   const [selectedTimerDuration, setSelectedTimerDuration] = useState<number>(60);
+  const [questionLimit, setQuestionLimit] = useState<number>(20);
   const [questionsAnswered, setQuestionsAnswered] = useState<number>(0);
+  const [startTime, setStartTime] = useState<number | null>(null);
+  const [elapsedTime, setElapsedTime] = useState<number>(0);
+  const [lifetimeQuestions, setLifetimeQuestions] = useState<number>(getInitialLifetimeQuestions());
   const [showSummary, setShowSummary] = useState<boolean>(false);
   const [animationClass, setAnimationClass] = useState<string>('');
   const [history, setHistory] = useState<HistoryItem[]>([]);
@@ -118,18 +135,18 @@ function App() {
 
   useEffect(() => {
     let timerId: ReturnType<typeof setInterval>;
-    if (isSpeedRunActive && timeLeft > 0) {
+    if (isSpeedRunActive && gameMode === 'time' && timeLeft > 0) {
       timerId = setInterval(() => {
         setTimeLeft(t => t - 1);
       }, 1000);
-    } else if (isSpeedRunActive && timeLeft === 0) {
+    } else if (isSpeedRunActive && gameMode === 'time' && timeLeft === 0) {
       setTimeout(() => {
         setIsSpeedRunActive(false);
         setShowSummary(true);
       }, 0);
     }
     return () => clearInterval(timerId);
-  }, [isSpeedRunActive, timeLeft]);
+  }, [isSpeedRunActive, gameMode, timeLeft]);
 
   const generateProblem = useCallback(() => {
     const { n1, n2, selectedOp } = generateRandomProblem(difficulty, allowedOperations);
@@ -137,23 +154,31 @@ function App() {
     setNum2(n2);
     setOperation(selectedOp);
     setUserAnswer('');
-    if (!isSpeedRunActive || timeLeft > 0) {
+    if (isHardcoreMode) {
+      setHideOperator(true);
+      setTimeout(() => {
+        setHideOperator(false);
+      }, 1500);
+    } else {
+      setHideOperator(false);
+    }
+    if (!isSpeedRunActive || (gameMode === 'time' ? timeLeft > 0 : questionsAnswered < questionLimit)) {
       setMessage('');
     }
     inputRef.current?.focus();
-  }, [difficulty, isSpeedRunActive, timeLeft, allowedOperations]);
+  }, [difficulty, isSpeedRunActive, timeLeft, allowedOperations, gameMode, questionsAnswered, questionLimit, isHardcoreMode]);
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'n' || e.key === 'N') {
-        if (!isSpeedRunActive || timeLeft > 0) {
+        if (!isSpeedRunActive || (gameMode === 'time' ? timeLeft > 0 : questionsAnswered < questionLimit)) {
           generateProblem();
         }
       }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [isSpeedRunActive, timeLeft, generateProblem]);
+  }, [isSpeedRunActive, timeLeft, generateProblem, gameMode, questionsAnswered, questionLimit]);
 
 
   const updateStreak = (newStreak: number) => {
@@ -208,7 +233,11 @@ function App() {
   const startSpeedRun = () => {
     setScore(0);
     updateStreak(0);
-    setTimeLeft(selectedTimerDuration);
+    if (gameMode === 'time') {
+      setTimeLeft(selectedTimerDuration);
+    } else {
+      setStartTime(Date.now());
+    }
     setQuestionsAnswered(0);
     setHistory([]);
     setIsSpeedRunActive(true);
@@ -219,7 +248,8 @@ function App() {
 
   const checkAnswer = (e: React.FormEvent) => {
     e.preventDefault();
-    if (isSpeedRunActive && timeLeft === 0) return;
+    if (isSpeedRunActive && gameMode === 'time' && timeLeft === 0) return;
+    if (isSpeedRunActive && gameMode === 'questions' && questionsAnswered >= questionLimit) return;
     if (isSuddenDeathMode && showSummary) return;
 
     const answer = parseInt(userAnswer, 10);
@@ -242,6 +272,14 @@ function App() {
       num1, num2, operation, userAnswer, correctAnswer, isCorrect
     }]);
 
+    const newLifetime = lifetimeQuestions + 1;
+    setLifetimeQuestions(newLifetime);
+    try {
+      window.localStorage.setItem('mathFlashcardsLifetimeQuestions', newLifetime.toString());
+    } catch (e) {
+      console.error("Local storage error:", e);
+    }
+
     if (isCorrect) {
       setMessage("Correct!");
       setAnimationClass('flash-correct');
@@ -255,11 +293,18 @@ function App() {
       setScore(newScore);
       updateStreak(streak + 1);
       updateHighScore(newScore);
-      setQuestionsAnswered(prev => prev + 1);
+      const newQuestionsAnswered = questionsAnswered + 1;
+      setQuestionsAnswered(newQuestionsAnswered);
 
-      setTimeout(() => {
-        generateProblem();
-      }, 500); // Shorter timeout for faster gameplay
+      if (isSpeedRunActive && gameMode === 'questions' && newQuestionsAnswered >= questionLimit) {
+        setElapsedTime((Date.now() - (startTime || Date.now())) / 1000);
+        setIsSpeedRunActive(false);
+        setShowSummary(true);
+      } else {
+        setTimeout(() => {
+          generateProblem();
+        }, 500); // Shorter timeout for faster gameplay
+      }
 
     } else {
       if (isSuddenDeathMode) {
@@ -303,6 +348,7 @@ function App() {
             High Score: {highScore}
             <button onClick={resetHighScore} className="reset-btn" title="Reset High Score" disabled={isSpeedRunActive}>↺</button>
           </div>
+          <div className="stat">Total Questions: {lifetimeQuestions}</div>
         </div>
       </div>
 
@@ -346,10 +392,17 @@ function App() {
         <div className="speed-run-controls">
 
           {isSpeedRunActive ? (
-            <div className="progress-container">
-              <div className="progress-bar" style={{ width: `${(timeLeft / selectedTimerDuration) * 100}%` }}></div>
-              <div className="progress-text">{timeLeft}s</div>
-            </div>
+            gameMode === 'time' ? (
+              <div className="progress-container">
+                <div className="progress-bar" style={{ width: `${(timeLeft / selectedTimerDuration) * 100}%` }}></div>
+                <div className="progress-text">{timeLeft}s</div>
+              </div>
+            ) : (
+              <div className="progress-container">
+                <div className="progress-bar" style={{ width: `${(questionsAnswered / questionLimit) * 100}%` }}></div>
+                <div className="progress-text">{questionsAnswered} / {questionLimit}</div>
+              </div>
+            )
           ) : (
 
             <div className="timer-select-container" style={{display: 'flex', gap: '0.5rem', alignItems: 'center', flexWrap: 'wrap', justifyContent: 'flex-end'}}>
@@ -361,12 +414,32 @@ function App() {
                 />
                 Sudden Death
               </label>
-              <select value={selectedTimerDuration} onChange={(e) => setSelectedTimerDuration(parseInt(e.target.value, 10))} className="timer-select">
-                <option value={30}>30s</option>
-                <option value={60}>60s</option>
-                <option value={120}>120s</option>
+              <label style={{display: 'flex', alignItems: 'center', gap: '0.2rem', cursor: 'pointer', fontSize: '0.9rem'}}>
+                <input
+                  type="checkbox"
+                  checked={isHardcoreMode}
+                  onChange={(e) => setIsHardcoreMode(e.target.checked)}
+                />
+                Hardcore
+              </label>
+              <select value={gameMode} onChange={(e) => setGameMode(e.target.value as 'time' | 'questions')} className="timer-select">
+                <option value="time">Time Limit</option>
+                <option value="questions">Question Limit</option>
               </select>
-              <button type="button" onClick={startSpeedRun} className="speed-run-button">Start Speed Run</button>
+              {gameMode === 'time' ? (
+                <select value={selectedTimerDuration} onChange={(e) => setSelectedTimerDuration(parseInt(e.target.value, 10))} className="timer-select">
+                  <option value={30}>30s</option>
+                  <option value={60}>60s</option>
+                  <option value={120}>120s</option>
+                </select>
+              ) : (
+                <select value={questionLimit} onChange={(e) => setQuestionLimit(parseInt(e.target.value, 10))} className="timer-select">
+                  <option value={10}>10 Qs</option>
+                  <option value={20}>20 Qs</option>
+                  <option value={50}>50 Qs</option>
+                </select>
+              )}
+              <button type="button" onClick={startSpeedRun} className="speed-run-button">Start Challenge</button>
             </div>
           )}
         </div>
@@ -375,7 +448,7 @@ function App() {
       <div className={`flashcard ${animationClass}`}>
         <div className="problem">
           <span className="number">{num1}</span>
-          <span className="operation">{operation}</span>
+          <span className="operation" style={{minWidth: '2rem', textAlign: 'center'}}>{hideOperator ? '?' : operation}</span>
           <span className="number">{num2}</span>
         </div>
         <form onSubmit={checkAnswer} className="answer-form">
@@ -387,9 +460,9 @@ function App() {
             autoFocus
             className="answer-input"
             placeholder="?"
-            disabled={isSpeedRunActive && timeLeft === 0}
+            disabled={isSpeedRunActive && (gameMode === 'time' ? timeLeft === 0 : questionsAnswered >= questionLimit)}
           />
-          <button type="submit" className="submit-button" disabled={isSpeedRunActive && timeLeft === 0}>Check</button>
+          <button type="submit" className="submit-button" disabled={isSpeedRunActive && (gameMode === 'time' ? timeLeft === 0 : questionsAnswered >= questionLimit)}>Check</button>
         </form>
 
         <div className="numpad">
@@ -398,7 +471,7 @@ function App() {
               key={num}
               type="button"
               className="numpad-btn"
-              disabled={isSpeedRunActive && timeLeft === 0}
+              disabled={isSpeedRunActive && (gameMode === 'time' ? timeLeft === 0 : questionsAnswered >= questionLimit)}
               onClick={() => setUserAnswer(prev => prev + num)}
             >
               {num}
@@ -407,7 +480,7 @@ function App() {
           <button
             type="button"
             className="numpad-btn control-btn"
-            disabled={isSpeedRunActive && timeLeft === 0}
+            disabled={isSpeedRunActive && (gameMode === 'time' ? timeLeft === 0 : questionsAnswered >= questionLimit)}
             onClick={() => setUserAnswer('')}
           >
             C
@@ -415,7 +488,7 @@ function App() {
           <button
             type="button"
             className="numpad-btn"
-            disabled={isSpeedRunActive && timeLeft === 0}
+            disabled={isSpeedRunActive && (gameMode === 'time' ? timeLeft === 0 : questionsAnswered >= questionLimit)}
             onClick={() => setUserAnswer(prev => prev + '0')}
           >
             0
@@ -423,7 +496,7 @@ function App() {
           <button
             type="button"
             className="numpad-btn control-btn"
-            disabled={isSpeedRunActive && timeLeft === 0}
+            disabled={isSpeedRunActive && (gameMode === 'time' ? timeLeft === 0 : questionsAnswered >= questionLimit)}
             onClick={() => setUserAnswer(prev => prev.slice(0, -1))}
           >
             ⌫
@@ -433,16 +506,29 @@ function App() {
 
       {message && <div className={`message ${message === 'Correct!' ? 'success' : (message.includes('Time') ? 'info' : 'error')}`}>{message}</div>}
 
-      <button type="button" onClick={generateProblem} className="next-button" disabled={isSpeedRunActive && timeLeft === 0}>Skip / Next Problem</button>
+      <button type="button" onClick={generateProblem} className="next-button" disabled={isSpeedRunActive && (gameMode === 'time' ? timeLeft === 0 : questionsAnswered >= questionLimit)}>Skip / Next Problem</button>
 
       {showSummary && (
         <div className="summary-modal-overlay">
           <div className="summary-modal">
-            <h2>{isSuddenDeathMode && !isSpeedRunActive && timeLeft > 0 ? "Game Over!" : "Time's Up!"}</h2>
+            <h2>{isSuddenDeathMode && !isSpeedRunActive && (gameMode === 'time' ? timeLeft > 0 : questionsAnswered < questionLimit) ? "Game Over!" : (gameMode === 'time' ? "Time's Up!" : "Challenge Complete!")}</h2>
             <p>Final Score: <strong>{score}</strong></p>
             <p>High Score: <strong>{highScore}</strong></p>
             <p>Questions Answered: <strong>{questionsAnswered}</strong></p>
-            <p>Average Time: <strong>{questionsAnswered > 0 ? (selectedTimerDuration / questionsAnswered).toFixed(2) : 0}s</strong></p>
+            <p>Accuracy: <strong>{history.length > 0 ? ((history.filter(h => h.isCorrect).length / history.length) * 100).toFixed(1) : 0}%</strong></p>
+            <div style={{fontSize: '0.9rem', marginBottom: '1rem', color: '#7f8c8d'}}>
+              {['+', '-', '*', '/'].map(op => {
+                const opHistory = history.filter(h => h.operation === op);
+                if (opHistory.length === 0) return null;
+                const correctCount = opHistory.filter(h => h.isCorrect).length;
+                return (
+                  <span key={op} style={{marginRight: '1rem'}}>
+                    {op}: {((correctCount / opHistory.length) * 100).toFixed(0)}%
+                  </span>
+                );
+              })}
+            </div>
+            <p>Average Time: <strong>{questionsAnswered > 0 ? ((gameMode === 'time' ? selectedTimerDuration : elapsedTime) / questionsAnswered).toFixed(2) : 0}s</strong></p>
 
             <div className="history-container">
               <h3>History</h3>
