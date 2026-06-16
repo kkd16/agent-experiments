@@ -1,0 +1,159 @@
+// renderer.ts — turns a FluidSolver's fields into pixels.
+//
+// We render the field at grid resolution into a small ImageData, then let the
+// canvas scale it up (bilinear via imageSmoothing) to the display size. This is
+// far cheaper than a per-display-pixel sample and looks great because fluid
+// fields are smooth. An optional velocity-arrow overlay is drawn on top.
+
+import { FluidSolver } from '../sim/fluid';
+import { COLORMAPS, diverging, type ColorMapName } from './colormaps';
+
+export type RenderMode = 'dye' | 'speed' | 'pressure' | 'curl';
+
+export interface RenderOptions {
+  mode: RenderMode;
+  colormap: ColorMapName;
+  showArrows: boolean;
+  exposure: number; // multiplier for dye/speed brightness
+}
+
+export class Renderer {
+  private grid: HTMLCanvasElement;
+  private gctx: CanvasRenderingContext2D;
+  private image: ImageData;
+  private N: number;
+
+  constructor(N: number) {
+    this.N = N;
+    this.grid = document.createElement('canvas');
+    this.grid.width = N;
+    this.grid.height = N;
+    const ctx = this.grid.getContext('2d');
+    if (!ctx) throw new Error('2D context unavailable');
+    this.gctx = ctx;
+    this.image = this.gctx.createImageData(N, N);
+  }
+
+  resize(N: number): void {
+    this.N = N;
+    this.grid.width = N;
+    this.grid.height = N;
+    this.image = this.gctx.createImageData(N, N);
+  }
+
+  private fillImage(sim: FluidSolver, opts: RenderOptions): void {
+    const N = this.N;
+    const data = this.image.data;
+    const cmap = COLORMAPS[opts.colormap];
+
+    if (opts.mode === 'pressure' || opts.mode === 'curl') {
+      // Signed fields: find a robust scale, then map with the diverging ramp.
+      const field = opts.mode === 'pressure' ? sim.p : sim.curl;
+      // curl is recomputed inside the solver; for a paused frame compute fresh.
+      if (opts.mode === 'curl') {
+        for (let j = 1; j <= N; j++)
+          for (let i = 1; i <= N; i++) sim.curl[sim.IX(i, j)] = sim.curlAt(i, j);
+      }
+      let maxAbs = 1e-6;
+      for (let j = 1; j <= N; j++)
+        for (let i = 1; i <= N; i++) {
+          const a = Math.abs(field[sim.IX(i, j)]);
+          if (a > maxAbs) maxAbs = a;
+        }
+      const scale = (opts.exposure * 2.2) / maxAbs;
+      for (let j = 0; j < N; j++) {
+        for (let i = 0; i < N; i++) {
+          const idx = sim.IX(i + 1, j + 1);
+          const o = (j * N + i) * 4;
+          if (sim.solid[idx]) {
+            data[o] = 38; data[o + 1] = 42; data[o + 2] = 54; data[o + 3] = 255;
+            continue;
+          }
+          const [r, g, b] = diverging(field[idx] * scale);
+          data[o] = r; data[o + 1] = g; data[o + 2] = b; data[o + 3] = 255;
+        }
+      }
+      return;
+    }
+
+    if (opts.mode === 'speed') {
+      for (let j = 0; j < N; j++) {
+        for (let i = 0; i < N; i++) {
+          const idx = sim.IX(i + 1, j + 1);
+          const o = (j * N + i) * 4;
+          if (sim.solid[idx]) {
+            data[o] = 38; data[o + 1] = 42; data[o + 2] = 54; data[o + 3] = 255;
+            continue;
+          }
+          const s = Math.min(1, sim.speedAt(idx) * 0.04 * opts.exposure);
+          const [r, g, b] = cmap(s);
+          data[o] = r; data[o + 1] = g; data[o + 2] = b; data[o + 3] = 255;
+        }
+      }
+      return;
+    }
+
+    // dye mode: RGB channels straight to pixels with tonemapping.
+    const exp = opts.exposure;
+    for (let j = 0; j < N; j++) {
+      for (let i = 0; i < N; i++) {
+        const idx = sim.IX(i + 1, j + 1);
+        const o = (j * N + i) * 4;
+        if (sim.solid[idx]) {
+          data[o] = 60; data[o + 1] = 66; data[o + 2] = 82; data[o + 3] = 255;
+          continue;
+        }
+        // Reinhard-ish tonemap keeps highlights from clipping harshly.
+        const tr = sim.r[idx] * exp;
+        const tg = sim.g[idx] * exp;
+        const tb = sim.b[idx] * exp;
+        data[o] = 255 * (tr / (1 + tr));
+        data[o + 1] = 255 * (tg / (1 + tg));
+        data[o + 2] = 255 * (tb / (1 + tb));
+        data[o + 3] = 255;
+      }
+    }
+  }
+
+  /** Render to the visible canvas. */
+  draw(target: CanvasRenderingContext2D, sim: FluidSolver, opts: RenderOptions): void {
+    this.fillImage(sim, opts);
+    this.gctx.putImageData(this.image, 0, 0);
+
+    const w = target.canvas.width;
+    const h = target.canvas.height;
+    target.imageSmoothingEnabled = true;
+    target.imageSmoothingQuality = 'high';
+    target.clearRect(0, 0, w, h);
+    target.drawImage(this.grid, 0, 0, w, h);
+
+    if (opts.showArrows) this.drawArrows(target, sim);
+  }
+
+  private drawArrows(target: CanvasRenderingContext2D, sim: FluidSolver): void {
+    const N = this.N;
+    const w = target.canvas.width;
+    const h = target.canvas.height;
+    const step = Math.max(4, Math.floor(N / 28));
+    const cell = w / N;
+    target.lineWidth = 1;
+    target.strokeStyle = 'rgba(255,255,255,0.35)';
+    target.beginPath();
+    for (let j = 1; j <= N; j += step) {
+      for (let i = 1; i <= N; i += step) {
+        const idx = sim.IX(i, j);
+        if (sim.solid[idx]) continue;
+        const x = (i - 0.5) * cell;
+        const y = (j - 0.5) * cell;
+        const sc = Math.min(step * cell * 0.9, 14);
+        const mag = sim.speedAt(idx) + 1e-6;
+        const ux = (sim.u[idx] / mag) * Math.min(1, mag * 0.04) * sc;
+        const uy = (sim.v[idx] / mag) * Math.min(1, mag * 0.04) * sc;
+        target.moveTo(x, y);
+        target.lineTo(x + ux, y + uy);
+      }
+    }
+    target.stroke();
+    void h;
+  }
+}

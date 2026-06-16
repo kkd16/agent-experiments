@@ -1,0 +1,219 @@
+// engine.ts — owns the simulation loop, pointer interaction, and scene state.
+//
+// Velocities live on a normalised scale: a stored velocity of ~1.0 carries
+// fluid across roughly one domain width per second (advection backtraces by
+// dt·N·u cells). All scene/pointer forces are expressed on that scale.
+
+import { FluidSolver, type FluidParams } from './fluid';
+import { Renderer, type RenderMode } from '../render/renderer';
+import type { ColorMapName } from '../render/colormaps';
+import { sceneById, type Scene } from './scenes';
+import { hexToDye, type Settings, type Tool } from '../state/settings';
+import { hueToRGB } from './scenes';
+
+export interface Stats {
+  fps: number;
+  stepMs: number;
+  resolution: number;
+  paused: boolean;
+}
+
+const FORCE_BASE = 0.16; // tames pointer-derived velocities to the normalised scale
+
+interface Pointer {
+  active: boolean;
+  gx: number; // grid cell x
+  gy: number; // grid cell y
+  dx: number; // normalised dye-domain velocity since last frame
+  dy: number;
+  moved: boolean;
+}
+
+export class FluidEngine {
+  sim: FluidSolver;
+  private renderer: Renderer;
+  private ctx: CanvasRenderingContext2D;
+  private settings: Settings;
+  private scene: Scene;
+  private sceneTime = 0;
+  private raf = 0;
+  private last = 0;
+  private hueCycle = 0;
+
+  private pointer: Pointer = { active: false, gx: 0, gy: 0, dx: 0, dy: 0, moved: false };
+  private paused = false;
+  private stepOnce = false;
+
+  // FPS smoothing.
+  private frameTimes: number[] = [];
+  private lastStepMs = 0;
+
+  onStats?: (s: Stats) => void;
+
+  constructor(canvas: HTMLCanvasElement, settings: Settings) {
+    const ctx = canvas.getContext('2d');
+    if (!ctx) throw new Error('2D context unavailable');
+    this.ctx = ctx;
+    this.settings = settings;
+    this.sim = new FluidSolver(settings.resolution);
+    this.renderer = new Renderer(settings.resolution);
+    this.scene = sceneById(settings.sceneId);
+  }
+
+  start(): void {
+    this.last = performance.now();
+    this.loop(this.last);
+  }
+
+  stop(): void {
+    if (this.raf) cancelAnimationFrame(this.raf);
+    this.raf = 0;
+  }
+
+  setSettings(s: Settings): void {
+    if (s.resolution !== this.sim.N) {
+      this.resize(s.resolution);
+    }
+    this.settings = s;
+  }
+
+  private resize(n: number): void {
+    const old = this.sim;
+    this.sim = new FluidSolver(n);
+    this.renderer.resize(n);
+    // Re-seed the active scene at the new resolution rather than interpolating.
+    void old;
+    this.loadScene(this.scene.id, false);
+  }
+
+  loadScene(id: string, applyParams = true): Partial<Settings> | undefined {
+    this.scene = sceneById(id);
+    this.sim.reset();
+    this.sceneTime = 0;
+    this.scene.setup(this.sim);
+    if (applyParams) {
+      const patch: Partial<Settings> = { sceneId: id };
+      if (this.scene.params) patch.params = { ...this.settings.params, ...this.scene.params };
+      if (this.scene.exposure != null) patch.exposure = this.scene.exposure;
+      return patch;
+    }
+    return undefined;
+  }
+
+  setPaused(p: boolean): void {
+    this.paused = p;
+  }
+
+  requestStep(): void {
+    this.stepOnce = true;
+  }
+
+  reset(): void {
+    this.loadScene(this.scene.id, false);
+  }
+
+  clearDye(): void {
+    this.sim.clearDye();
+  }
+
+  clearWalls(): void {
+    this.sim.clearSolids();
+  }
+
+  // --- Pointer ------------------------------------------------------------
+
+  pointerDown(nx: number, ny: number): void {
+    const g = this.toGrid(nx, ny);
+    this.pointer = { active: true, gx: g.gx, gy: g.gy, dx: 0, dy: 0, moved: false };
+  }
+
+  pointerMove(nx: number, ny: number, vdx: number, vdy: number): void {
+    if (!this.pointer.active) return;
+    const g = this.toGrid(nx, ny);
+    this.pointer.gx = g.gx;
+    this.pointer.gy = g.gy;
+    this.pointer.dx += vdx;
+    this.pointer.dy += vdy;
+    this.pointer.moved = true;
+  }
+
+  pointerUp(): void {
+    this.pointer.active = false;
+  }
+
+  private toGrid(nx: number, ny: number): { gx: number; gy: number } {
+    const N = this.sim.N;
+    return {
+      gx: Math.max(1, Math.min(N, Math.round(nx * N))),
+      gy: Math.max(1, Math.min(N, Math.round(ny * N))),
+    };
+  }
+
+  private applyPointer(dt: number): void {
+    const p = this.pointer;
+    if (!p.active) return;
+    const s = this.settings;
+    const tool: Tool = s.tool;
+    if (tool === 'wall' || tool === 'erase') {
+      this.sim.paintSolid(p.gx, p.gy, s.brushRadius, tool === 'wall');
+      p.dx = p.dy = 0;
+      return;
+    }
+    // dye tool
+    const fx = (p.dx / Math.max(dt, 1e-3)) * FORCE_BASE * s.forceScale;
+    const fy = (p.dy / Math.max(dt, 1e-3)) * FORCE_BASE * s.forceScale;
+    const color =
+      s.brushColor === 'rainbow' ? hueToRGB(this.hueCycle % 1, 2.4) : hexToDye(s.brushColor, 2.0);
+    this.sim.splat(p.gx, p.gy, fx, fy, color, s.brushRadius, 1.6);
+    this.hueCycle += 0.02;
+    p.dx = p.dy = 0;
+  }
+
+  // --- Loop ---------------------------------------------------------------
+
+  private loop = (now: number): void => {
+    this.raf = requestAnimationFrame(this.loop);
+    let dt = (now - this.last) / 1000;
+    this.last = now;
+    if (dt > 0.05) dt = 0.05; // clamp after a stall
+    if (dt <= 0) dt = 1 / 60;
+
+    const running = !this.paused || this.stepOnce;
+    if (running) {
+      const t0 = performance.now();
+      const simDt = this.paused ? 1 / 60 : dt;
+      this.scene.emit?.(this.sim, { time: this.sceneTime, dt: simDt });
+      this.applyPointer(simDt);
+      this.sim.step(simDt, this.settings.params satisfies FluidParams);
+      this.sceneTime += simDt;
+      this.lastStepMs = performance.now() - t0;
+      this.stepOnce = false;
+    } else {
+      this.applyPointer(dt); // allow painting walls/dye while paused
+    }
+
+    this.renderer.draw(this.ctx, this.sim, {
+      mode: this.settings.mode as RenderMode,
+      colormap: this.settings.colormap as ColorMapName,
+      showArrows: this.settings.showArrows,
+      exposure: this.settings.exposure,
+    });
+
+    this.reportStats(now);
+  };
+
+  private reportStats(now: number): void {
+    this.frameTimes.push(now);
+    while (this.frameTimes.length > 30) this.frameTimes.shift();
+    if (this.frameTimes.length >= 2 && this.onStats) {
+      const span = (this.frameTimes[this.frameTimes.length - 1] - this.frameTimes[0]) / 1000;
+      const fps = span > 0 ? (this.frameTimes.length - 1) / span : 0;
+      this.onStats({
+        fps,
+        stepMs: this.lastStepMs,
+        resolution: this.sim.N,
+        paused: this.paused,
+      });
+    }
+  }
+}
