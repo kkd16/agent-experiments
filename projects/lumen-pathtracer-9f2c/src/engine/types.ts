@@ -62,8 +62,10 @@ export interface IntegratorSettings {
   rrStart: number // bounce after which Russian roulette kicks in
   clampIndirect: number // firefly clamp on indirect radiance (0 = off)
   // Light-transport algorithm. 'pt' is the unidirectional path tracer (NEE+MIS);
-  // 'bdpt' is the bidirectional path tracer (camera×light connections + MIS).
-  integrator?: 'pt' | 'bdpt'
+  // 'bdpt' is the bidirectional path tracer (camera×light connections + MIS);
+  // 'pssmlt' is primary-sample-space Metropolis light transport (a Markov chain
+  // over the path tracer's random stream). All three converge to the same image.
+  integrator?: 'pt' | 'bdpt' | 'pssmlt'
 }
 
 // Tone-mapping operators applied on the UI thread to the accumulated HDR buffer.
@@ -111,4 +113,15 @@ export interface PassDoneMsg {
   normal?: ArrayBuffer
 }
 
-export type FromWorker = ReadyMsg | PassDoneMsg
+// PSSMLT progress: a worker running independent Markov chains posts, each pass,
+// its current full-frame normalised HDR estimate plus how far the chain has run.
+// The UI thread averages the workers' estimates (each is independently unbiased).
+export interface MltDoneMsg {
+  type: 'mltDone'
+  image: ArrayBuffer // full-frame interleaved [r,g,b] normalised radiance (W×H)
+  mpp: number // mutations per pixel this worker's chains have accumulated
+  rays: number // rays traced since the previous pass (for the stats readout)
+  b: number // this worker's bootstrap brightness estimate (for diagnostics)
+}
+
+export type FromWorker = ReadyMsg | PassDoneMsg | MltDoneMsg

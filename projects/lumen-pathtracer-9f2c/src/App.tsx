@@ -312,7 +312,7 @@ export default function App() {
       )}
 
       <footer className="footer">
-        Unidirectional & bidirectional path tracing · SAH BVH · smooth meshes · Preetham sky + sun NEE · GGX microfacets · MIS · À-Trous denoise — all in TypeScript on the CPU.
+        Unidirectional, bidirectional & Metropolis (PSSMLT) light transport · SAH BVH · smooth meshes · Preetham sky + sun NEE · GGX microfacets · MIS · À-Trous denoise — all in TypeScript on the CPU.
       </footer>
     </div>
   )

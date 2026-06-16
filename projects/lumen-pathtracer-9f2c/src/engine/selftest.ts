@@ -16,6 +16,8 @@ import { Scene } from './scene'
 import { radiance } from './integrator'
 import type { RayStats } from './integrator'
 import { radianceBDPT, areaDensity, misPartitionResidual } from './bdpt'
+import { Camera } from './camera'
+import { MltState, PssmltSampler } from './pssmlt'
 import type { SceneDef } from './types'
 import { evalTexture } from './texture'
 import type { Texture } from './texture'
@@ -905,6 +907,149 @@ function testAreaDensity(): { pass: boolean; detail: string } {
   return { pass: ok, detail: `pdf_A=${got.toFixed(6)}, expected=${expected.toFixed(6)}` }
 }
 
+// ---------------------------------------------------------------------------
+// Primary-Sample-Space Metropolis Light Transport (PSSMLT)
+// ---------------------------------------------------------------------------
+
+// Render a scene to an HDR image with the path tracer, using the exact same
+// `Camera` and `radiance` the Metropolis contribution function uses — so a PT
+// reference and a PSSMLT result are directly comparable pixel for pixel.
+function renderImagePT(def: SceneDef, W: number, H: number, spp: number, seed: number): Float32Array {
+  const scene = new Scene(def)
+  const camera = new Camera(def.camera, W / H)
+  const rng = new Rng(seed, 7)
+  const settings = { maxDepth: 6, rrStart: 100, clampIndirect: 0 }
+  const stats: RayStats = { rays: 0 }
+  const img = new Float32Array(W * H * 3)
+  for (let s = 0; s < spp; s++) {
+    for (let y = 0; y < H; y++) {
+      for (let x = 0; x < W; x++) {
+        const u = (x + rng.next()) / W
+        const t = 1 - (y + rng.next()) / H
+        const ray = camera.generateRay(u, t, rng)
+        const L = radiance(scene, ray, settings, rng, stats)
+        const i = (y * W + x) * 3
+        img[i] += L.x
+        img[i + 1] += L.y
+        img[i + 2] += L.z
+      }
+    }
+  }
+  for (let i = 0; i < img.length; i++) img[i] /= spp
+  return img
+}
+
+// Mean luminance overall and across the top vs. bottom image halves. The
+// top/bottom *ratio* is independent of the absolute scale b, so it isolates
+// whether the chain reproduces the spatial light distribution.
+function imageBlocks(img: Float32Array, W: number, H: number): { all: number; top: number; bot: number } {
+  let all = 0
+  let top = 0
+  let bot = 0
+  let nt = 0
+  let nb = 0
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      const i = (y * W + x) * 3
+      const l = luminance(v(img[i], img[i + 1], img[i + 2]))
+      all += l
+      if (y < H / 2) {
+        top += l
+        nt++
+      } else {
+        bot += l
+        nb++
+      }
+    }
+  }
+  return { all: all / (W * H), top: top / Math.max(1, nt), bot: bot / Math.max(1, nb) }
+}
+
+function renderImageMLT(def: SceneDef, W: number, H: number, mpp: number, seed: number, nBootstrap: number): { img: Float32Array; b: number } {
+  const scene = new Scene(def)
+  const camera = new Camera(def.camera, W / H)
+  const settings = { maxDepth: 6, rrStart: 100, clampIndirect: 0 }
+  const state = new MltState(scene, camera, settings, W, H, seed, {
+    nChains: 8,
+    nBootstrap,
+    largeStepProb: 0.3,
+    sigma: 0.02,
+  })
+  state.step(Math.round(mpp * W * H))
+  return { img: state.image(), b: state.brightness }
+}
+
+// 34 — The Metropolis sampler must be a *valid sampler*: a coordinate produced by
+// a (forced) large step is a fresh uniform — mean ½, variance 1/12 — and the
+// stream is deterministic for a fixed seed (so renders are reproducible).
+function testMltSampler(): { pass: boolean; detail: string } {
+  const N = 200000
+  const smp = new PssmltSampler(42, 1, 1.0, 0.02) // largeStepProb = 1 ⇒ every step uniform
+  let sum = 0
+  let sumSq = 0
+  for (let i = 0; i < N; i++) {
+    smp.startIteration()
+    const x = smp.next()
+    sum += x
+    sumSq += x * x
+    smp.accept()
+  }
+  const mean = sum / N
+  const varc = sumSq / N - mean * mean
+  // Determinism: two samplers with the same seed agree on their first draw.
+  const a = new PssmltSampler(7, 3)
+  a.startIteration()
+  const b = new PssmltSampler(7, 3)
+  b.startIteration()
+  const det = a.next() === b.next()
+  const ok = approx(mean, 0.5, 5e-3) && approx(varc, 1 / 12, 5e-3) && det
+  return { pass: ok, detail: `mean=${mean.toFixed(4)}, var=${varc.toFixed(4)} (exp .0833), det=${det}` }
+}
+
+// 35 — PSSMLT energy: a diffuse sphere in a white furnace, rendered by the
+// Metropolis estimator, must carry the same total light as the path tracer. The
+// brightness constant b *is* the mean image luminance, so PT mean ≈ b proves the
+// bootstrap normalisation is unbiased on a scene with a known analytic answer.
+function testMltFurnace(): { pass: boolean; detail: string } {
+  const def: SceneDef = {
+    name: 'mlt-furnace',
+    materials: [{ kind: 'diffuse', albedo: v(0.8, 0.8, 0.8) }],
+    prims: [{ kind: 'sphere', center: v(0, 0, 0), radius: 1, material: 0 }],
+    camera: { eye: v(0, 0, 5), target: v(0, 0, 0), up: v(0, 1, 0), vfovDeg: 30, aperture: 0, focusDist: 5 },
+    env: { kind: 'solid', color: v(1, 1, 1) },
+  }
+  const W = 12
+  const H = 9
+  const pt = imageBlocks(renderImagePT(def, W, H, 1200, 4321), W, H)
+  const { img, b } = renderImageMLT(def, W, H, 400, 20011, 16000)
+  const mlt = imageBlocks(img, W, H)
+  const rel = Math.abs(pt.all - mlt.all) / pt.all
+  const ok = rel < 0.03 && mlt.all > 0
+  return { pass: ok, detail: `PT=${pt.all.toFixed(4)} MLT=${mlt.all.toFixed(4)} (b=${b.toFixed(4)}) rel=${(rel * 100).toFixed(2)}% (<3%)` }
+}
+
+// 36 — The oracle, now three-way: PSSMLT must converge to the *same image* as the
+// path tracer (and therefore BDPT) on the diffuse Cornell box. We check both the
+// global brightness (absolute scale) and the top/bottom luminance ratio (the
+// spatial distribution, independent of scale) — a bias in the Markov chain, the
+// expected-value splat, or the normalisation would break one or the other.
+function testMltVsPt(): { pass: boolean; detail: string } {
+  const def = diffuseBox()
+  const W = 12
+  const H = 9
+  const pt = imageBlocks(renderImagePT(def, W, H, 1500, 1234), W, H)
+  const mlt = imageBlocks(renderImageMLT(def, W, H, 500, 38299, 24000).img, W, H)
+  const relAll = Math.abs(pt.all - mlt.all) / pt.all
+  const ratPT = pt.top / pt.bot
+  const ratM = mlt.top / mlt.bot
+  const relRatio = Math.abs(ratPT - ratM) / ratPT
+  const ok = relAll < 0.03 && relRatio < 0.05
+  return {
+    pass: ok,
+    detail: `relAll=${(relAll * 100).toFixed(2)}% (<3%), top/bot PT=${ratPT.toFixed(2)} MLT=${ratM.toFixed(2)} relRatio=${(relRatio * 100).toFixed(2)}% (<5%)`,
+  }
+}
+
 export function runSelfTests(): TestResult[] {
   return [
     test('Vector algebra identities', testVectorMath),
@@ -940,5 +1085,8 @@ export function runSelfTests(): TestResult[] {
     test('BDPT ≡ path tracer (diffuse box oracle)', testBdptVsPt),
     test('BDPT MIS weights partition to 1', testBdptMis),
     test('Solid-angle → area density conversion', testAreaDensity),
+    test('PSSMLT sampler — uniform large step + determinism', testMltSampler),
+    test('PSSMLT white furnace — diffuse ρ=0.8', testMltFurnace),
+    test('PSSMLT ≡ path tracer (diffuse box oracle)', testMltVsPt),
   ]
 }

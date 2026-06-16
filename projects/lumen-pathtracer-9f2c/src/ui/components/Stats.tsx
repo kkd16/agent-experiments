@@ -12,20 +12,21 @@ function fmt(n: number): string {
 export function Stats(props: { stats: RenderStats | null }) {
   const s = props.stats
   const pct = s ? Math.min(100, (s.samples / Math.max(1, s.targetSpp)) * 100) : 0
+  const mlt = s?.integrator === 'pssmlt'
   return (
     <div className="stats">
       <div className="progress">
         <div className="progress-fill" style={{ width: `${pct}%` }} />
       </div>
       <div className="stat-cells">
-        <Cell label="Samples" value={s ? `${s.samples} / ${s.targetSpp}` : '—'} />
+        <Cell label={mlt ? 'Mut/px' : 'Samples'} value={s ? `${s.samples} / ${s.targetSpp}` : '—'} />
         <Cell label="Rays" value={s ? fmt(s.rays) : '—'} />
         <Cell label="Rays/s" value={s ? fmt(s.raysPerSec) : '—'} />
         <Cell label="Elapsed" value={s ? `${(s.elapsedMs / 1000).toFixed(1)}s` : '—'} />
         <Cell label="Threads" value={s ? `${s.workers} · ${s.mode === 'multithread' ? 'MT' : 'ST'}` : '—'} />
         <Cell label="Triangles" value={s ? fmt(s.triCount) : '—'} />
         <Cell label="BVH nodes" value={s ? `${fmt(s.bvhNodes)} · d${s.bvhDepth}` : '—'} />
-        <Cell label="Noise" value={s ? `${(s.noise * 100).toFixed(1)}%` : '—'} />
+        <Cell label="Noise" value={s ? (mlt ? 'n/a' : `${(s.noise * 100).toFixed(1)}%`) : '—'} />
         <Cell label="Status" value={s ? (s.done ? 'Converged' : 'Rendering…') : 'Idle'} highlight={s?.done} />
       </div>
     </div>
