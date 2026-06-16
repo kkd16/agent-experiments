@@ -51,11 +51,16 @@ const STAGES = [
   },
   {
     n: 8,
+    title: 'WebAssembly backend',
+    body: "A third compilation target: the same typed AST is hand-assembled into a real .wasm module by a from-scratch binary encoder (no wabt, no binaryen), then instantiated and run by the engine. Every value is a tagged cell in linear memory over a bump allocator; each lambda becomes a WASM function and closures dispatch through call_indirect; tail calls use the WebAssembly tail-call proposal (return_call) for the VM's constant-space recursion. Arithmetic, comparison of numbers, list/tuple/record/ADT building and match all run as native WebAssembly, while printing, show, structural comparison, string ops and the turtle are imports that decode heap pointers and reuse the VM's own code — so the result, output and drawing match the bytecode VM byte-for-byte. The WebAssembly tab shows the module's sections and bytes and lets you download the .wasm to run anywhere.",
+  },
+  {
+    n: 9,
     title: 'Type-derivation tree',
     body: 'Inference records the type of every sub-expression as it goes; the Derivation tab reconstructs the Hindley–Milner proof tree from those, rendering each step as one typing rule (Var, Abs, App, Let, If, …) whose premises justify its conclusion expr : τ. It turns the final inferred scheme into the full argument for why it holds.',
   },
   {
-    n: 9,
+    n: 10,
     title: 'Property-based testing (Aether Check)',
     body: "The Check tab turns inferred types into machine-checked evidence about behaviour. Write a prop_… function returning Bool; Check reads its type, builds a random generator straight from that type — numbers, strings, lists, tuples, records, your own ADTs (recursively, with a size budget so types like Tree always terminate) and even functions (rendered as a finite table fn x -> if x == k then v … else default) — and runs hundreds of cases through the real VM. Leftover polymorphism defaults to Int and the RNG is seeded, so a report is reproducible. On a failure it performs integrated shrinking (ints toward zero, lists dropped and halved, ADTs replaced by sub-terms, functions reduced to fewer entries) down to a minimal counterexample, and a runtime crash is reported with the exact input that caused it.",
   },
@@ -67,8 +72,8 @@ export default function About() {
       <h1>How it works</h1>
       <p className="page-lead">
         Aether is a complete language toolchain that runs entirely in your browser — no server, no
-        WebAssembly, no external libraries. Source flows through these stages, and every
-        intermediate artifact is something you can inspect in the playground.
+        external libraries, and it even assembles its own WebAssembly. Source flows through these
+        stages, and every intermediate artifact is something you can inspect in the playground.
       </p>
 
       <div className="pipeline">
@@ -137,9 +142,11 @@ export default function About() {
             block is the Option, List or State monad depending on its <em>type</em>.
           </li>
           <li>
-            There are <strong>two backends</strong> for one front end: a bytecode VM and a
-            JavaScript code generator. They share the lexer, parser, type inferencer and optimizer,
-            and agree on every program — the JavaScript tab proves it live.
+            There are <strong>three backends</strong> for one front end: a bytecode VM, a
+            JavaScript code generator, and a native <strong>WebAssembly</strong> backend that
+            assembles a real <code>.wasm</code> module. They share the lexer, parser, type
+            inferencer and optimizer, and agree on every program — the JavaScript and WebAssembly
+            tabs prove it live.
           </li>
           <li>
             The <strong>Tests</strong> page runs a self-test suite live in your browser — every case

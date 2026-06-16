@@ -1,11 +1,12 @@
 # Aether
 
 A complete, statically-typed functional **programming language and toolchain that runs entirely in
-your browser** — no server, no WebAssembly, no parser generators, no runtime libraries beyond React
-for the UI. You write Aether source in the playground; it is lexed, parsed, type-inferred,
-optimized, and compiled **two ways** — to bytecode for a custom stack VM *and* to self-contained
-JavaScript — with every intermediate stage inspectable, an interactive time-travel debugger, and a
-live Hindley–Milner derivation tree.
+your browser** — no server, no parser generators, no compiler libraries (no `wabt`, no `binaryen`),
+no runtime libraries beyond React for the UI. You write Aether source in the playground; it is
+lexed, parsed, type-inferred, optimized, and compiled **three ways** — to bytecode for a custom
+stack VM, to self-contained JavaScript, *and* to a real **WebAssembly** module hand-assembled to
+bytes and run by the engine — with every intermediate stage inspectable, an interactive time-travel
+debugger, and a live Hindley–Milner derivation tree.
 
 Live: <https://kkd16.github.io/agent-experiments/projects/aether-lang-c3d8/>
 
@@ -116,9 +117,9 @@ let prop_bad = fn xs -> reverse xs == xs in             // ✗ falsified, shrink
 prop_rev
 ```
 
-### Two backends
+### Three backends
 
-The same type-checked AST is compiled two independent ways, which share the front end and agree on
+The same type-checked AST is compiled three independent ways, which share the front end and agree on
 every program:
 
 - **Bytecode VM** — lowered to a stack machine run by a hand-written, iterative VM, with a
@@ -127,6 +128,14 @@ every program:
   runtime mirrors the VM's value model exactly (tagged ints/floats, structural comparison, the
   turtle effect log), so the result, printed output and drawing match the VM **byte-for-byte** —
   there's a live equivalence check in the JavaScript tab.
+- **WebAssembly** — lowered to a *real* `.wasm` module by a from-scratch binary encoder (no `wabt`,
+  no `binaryen`), instantiated and run by the engine. Values are tagged cells in linear memory over
+  a bump allocator; closures dispatch through `call_indirect`; tail calls use the WebAssembly
+  tail-call proposal (`return_call`) for the VM's constant-space recursion; arithmetic, comparison
+  of numbers, list/tuple/record/ADT building and `match` all run as native WASM, while printing,
+  `show`, structural comparison, string ops and the turtle are **imports that reuse the VM's own
+  code** — so the result matches the VM byte-for-byte by construction. The WebAssembly tab shows the
+  module's sections and bytes, and lets you **download the `.wasm`** to run anywhere.
 
 ### Operators
 
@@ -155,7 +164,8 @@ Written partly as TypeScript primitives and partly in Aether itself (compiled in
 ```
                                                   ┌─▶ compiler ─▶ stack VM ─▶ turtle canvas
 source ─▶ lexer ─▶ parser ─▶ HM inference ─▶ optimizer        └─▶ time-travel trace
-              │                    │           └─▶ JS backend ─▶ run in browser (≡ VM)
+              │                    │           ├─▶ JS backend   ─▶ run in browser (≡ VM)
+              │                    │           ├─▶ WASM backend ─▶ assemble .wasm ─▶ instantiate & run (≡ VM)
               │                    ├─▶ derivation tree (the HM proof)
               │                    └─▶ Aether Check (generate from types, run, shrink)
               └─▶ list comprehensions & do-notation desugar here
@@ -177,6 +187,11 @@ source ─▶ lexer ─▶ parser ─▶ HM inference ─▶ optimizer        �
 | `src/lang/compiler.ts` | AST → bytecode; clox-style upvalues; tail-call detection |
 | `src/lang/vm.ts` | iterative stack VM; closures, currying, tail calls, snapshot trace |
 | `src/lang/jsBackend.ts` | AST → self-contained JavaScript (second backend); runs in the browser |
+| `src/wasm/encoder.ts` | from-scratch WebAssembly binary encoder (LEB128, sections, instruction builder) |
+| `src/wasm/layout.ts` | the tagged linear-memory heap layout shared by codegen and the host bridge |
+| `src/wasm/codegen.ts` | AST → WebAssembly (third backend): closure conversion, tail calls, `match` |
+| `src/wasm/bridge.ts` | host imports that decode/encode heap cells and reuse the VM's print/show/compare |
+| `src/wasm/run.ts` | assemble → instantiate → run the `.wasm`; module disassembly + hex dump |
 | `src/lang/derivation.ts` | reconstructs the HM proof tree from the inferred per-node types |
 | `src/lang/values.ts` | runtime values, structural equality, upvalues |
 | `src/lang/prelude.ts` | primitive type schemes + native impls + the Aether-source library |
