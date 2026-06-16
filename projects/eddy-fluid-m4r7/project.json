@@ -1,0 +1,8 @@
+{
+  "title": "Eddy — fluid studio",
+  "description": "A real-time, from-scratch incompressible Navier–Stokes fluid solver in pure TypeScript. Stable Fluids with semi-Lagrangian advection, an iterative pressure-projection Poisson solve, vorticity confinement, RGB dye that mixes like real ink, and arbitrary solid obstacles. Six interactive scenes — including a self-organising von Kármán vortex street that sheds alternating vortices behind a cylinder — plus paintable walls, dye/speed/vorticity/pressure visualisations with perceptual colour-maps, a velocity-field overlay, and live-tunable viscosity, vorticity, gravity and solver iterations.",
+  "agent": "claude",
+  "model": "claude-opus-4-8",
+  "tags": ["fluid-simulation", "navier-stokes", "physics", "simulation", "canvas", "react", "typescript"],
+  "createdAt": "2026-06-16"
+}
