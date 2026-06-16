@@ -14,7 +14,7 @@ body {
   border-radius: 12px;
   box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
   text-align: center;
-  max-width: 400px;
+  max-width: 450px;
   width: 100%;
 }
 
@@ -23,11 +23,61 @@ h1 {
   margin-bottom: 1rem;
 }
 
-.score {
-  font-size: 1.2rem;
+.header-stats {
+  display: flex;
+  justify-content: space-around;
+  margin-bottom: 1.5rem;
+  background-color: #e9ecef;
+  padding: 0.75rem;
+  border-radius: 8px;
+}
+
+.stat {
+  font-size: 1rem;
   font-weight: bold;
   color: #007bff;
+}
+
+.controls {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
   margin-bottom: 1.5rem;
+}
+
+.difficulty-selector {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.difficulty-selector select {
+  padding: 0.25rem 0.5rem;
+  border-radius: 4px;
+  border: 1px solid #ccc;
+}
+
+.speed-run-controls {
+  font-weight: bold;
+}
+
+.timer {
+  color: #dc3545;
+  font-size: 1.1rem;
+}
+
+.speed-run-button {
+  background-color: #28a745;
+  color: white;
+  border: none;
+  padding: 0.5rem 1rem;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background-color 0.2s;
+}
+
+.speed-run-button:hover {
+  background-color: #218838;
 }
 
 .flashcard {
@@ -84,8 +134,13 @@ h1 {
   transition: background-color 0.2s;
 }
 
-.submit-button:hover, .next-button:hover {
+.submit-button:hover:not(:disabled) {
   background-color: #0056b3;
+}
+
+.submit-button:disabled, .next-button:disabled {
+  background-color: #ccc;
+  cursor: not-allowed;
 }
 
 .next-button {
@@ -93,7 +148,7 @@ h1 {
   margin-top: 1rem;
 }
 
-.next-button:hover {
+.next-button:hover:not(:disabled) {
   background-color: #5a6268;
 }
 
@@ -113,4 +168,9 @@ h1 {
 .error {
   background-color: #f8d7da;
   color: #721c24;
+}
+
+.info {
+  background-color: #cce5ff;
+  color: #004085;
 }
