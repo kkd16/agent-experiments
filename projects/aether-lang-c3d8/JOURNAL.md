@@ -505,36 +505,59 @@ Design (the root discipline, which is the whole game):
 
 Plan / steps:
 
-- [ ] **Heap layout for a collector** (`layout.ts`) — a `FREE` block tag, a `MARK` bit stolen from
+- [x] **Heap layout for a collector** (`layout.ts`) — a `FREE` block tag, a `MARK` bit stolen from
       the high bits of the tag word, a shadow-stack region and a 16-byte minimum/aligned cell so a
       freed cell always has room for a free-list node `{tag, size, next}`.
-- [ ] **The collector, in hand-written wasm** (`codegen.ts` runtime) — `gcPush`; a recursive
+- [x] **The collector, in hand-written wasm** (`codegen.ts` runtime) — `gcPush`; a recursive
       `gcMark` that loops along cons spines (constant stack for long lists) and recurses through
       tuples/data/records/closures/pap cells, idempotent on shared/cyclic graphs; a `gcMarkRoots`
       that scans the shadow stack and every value global; a `gcSweep`/`gcCollect` that walks the
       heap linearly, coalesces adjacent dead/free runs into a free list, clears marks, and
       adaptively resizes the GC threshold from the measured live set.
-- [ ] **A free-list allocator** — `__alloc` rounds to a 16-byte-aligned cell, triggers a collection
+- [x] **A free-list allocator** — `__alloc` rounds to a 16-byte-aligned cell, triggers a collection
       when the bytes-since-GC threshold (or stress mode) says so, serves first-fit-with-split from
       the free list, and falls back to bumping (growing memory) — all unchanged for callers.
-- [ ] **Codegen root discipline** — `fp` capture + frame pop at every function exit; root `env`/
+- [x] **Codegen root discipline** — `fp` capture + frame pop at every function exit; root `env`/
       `arg`/`let`/`letrec`/`type`/`match`-scrutinee; evaluate-then-construct for every compound
       builder and two-pointer operator; the `$gcLock` wrapper around the allocating imports.
-- [ ] **GC accounting + controls** — globals/exports for collections run, bytes reclaimed, live
+- [x] **GC accounting + controls** — globals/exports for collections run, bytes reclaimed, live
       bytes, peak heap, free-list reuse count, plus `__gcCollect`, `__setGcStress`, and the
       `$gcLock` setters, surfaced through `run.ts` into `WasmRunResult.heap`.
-- [ ] **The WASM panel** — show the new GC stats (collections, reclaimed, peak vs final, reuse) and
+- [x] **The WASM panel** — show the new GC stats (collections, reclaimed, peak vs final, reuse) and
       a "Stress GC" toggle that re-runs the program collecting before every allocation, proving the
       result is identical.
-- [ ] **An allocation-heavy example** — build and discard many intermediate lists in a fold so the
+- [x] **An allocation-heavy example** — build and discard many intermediate lists in a fold so the
       collector visibly reclaims (peak heap ≫ live heap), runnable on all three backends.
-- [ ] **Verification** — the headline: a **GC stress battery** in `tools/harness.mjs` that re-runs
+- [x] **Verification** — the headline: a **GC stress battery** in `tools/harness.mjs` that re-runs
       the entire WASM≡VM example + feature corpus with stress mode on (collect before every alloc),
       asserting byte-for-byte agreement; plus targeted tests that a long allocator loop's peak heap
       stays bounded (memory is genuinely reclaimed) and that the disassembler still names the new
       runtime functions with zero unknown opcodes. Keep the CI gate (conformance + lint + build)
       green.
-- [ ] **Docs** — Tour/About/README/`project.json` writeups for the garbage collector.
+- [x] **Docs** — Tour/About/README/`project.json` writeups for the garbage collector.
+
+Shipped & measured: the harness grew from 207 → **249 checks, all green** (a 38-test GC battery: every
+gallery example + the feature programs re-run under stress mode agree byte-for-byte, and the long
+allocator loop is asserted to keep a bounded peak). Concretely, the `Garbage collector` example
+allocates tens of MB over its run yet the **peak heap stays ~130 KB** — the collector reclaims and the
+free list reuses cells — and the identical result under "collect before every allocation" is the proof
+that the shadow-stack root set is complete. The CI gate (conformance + lint + build) stays green.
+
+Notes for the next session: the collector is precise but *non-moving*, so the heap can fragment under
+adversarial size mixes (the free list coalesces adjacent runs each sweep, but never compacts). A
+natural follow-on is a **compacting / copying** collector (now that a precise root set exists, roots
+*can* be rewritten — the cost is reloading pointers from the shadow stack after each safepoint), or
+**generational** collection to cut the cost of the stress/threshold marking on long-lived data. The
+`gcPush` per-root call could also be inlined to shave the shadow-stack overhead.
+
+### Deferred (future, Aether 9.x+)
+
+- [ ] A **compacting** collector (slide/Cheney) that returns memory to a single contiguous region and
+      removes fragmentation — feasible now that the root set is precise, at the cost of pointer fixups
+      and reloading locals from the shadow stack across safepoints.
+- [ ] **Generational** GC (a nursery + promotion) so the common short-lived churn is collected cheaply
+      without scanning the whole heap.
+- [ ] **Inline** `gcPush`/frame push-pop (today a runtime call per root) to cut the shadow-stack cost.
 
 ## Standard library
 

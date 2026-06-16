@@ -64,6 +64,11 @@ const STAGES = [
     title: 'Property-based testing (Aether Check)',
     body: "The Check tab turns inferred types into machine-checked evidence about behaviour. Write a prop_… function returning Bool; Check reads its type, builds a random generator straight from that type — numbers, strings, lists, tuples, records, your own ADTs (recursively, with a size budget so types like Tree always terminate) and even functions (rendered as a finite table fn x -> if x == k then v … else default) — and runs hundreds of cases through the real VM. Leftover polymorphism defaults to Int and the RNG is seeded, so a report is reproducible. On a failure it performs integrated shrinking (ints toward zero, lists dropped and halved, ADTs replaced by sub-terms, functions reduced to fewer entries) down to a minimal counterexample, and a runtime crash is reported with the exact input that caused it.",
   },
+  {
+    n: 11,
+    title: 'A tracing garbage collector for WebAssembly',
+    body: "The WebAssembly heap used to be a bump allocator that never freed. It is now collected by a precise, non-moving mark-sweep garbage collector, hand-assembled in WebAssembly with no host help. The hard part of a tracing GC under WebAssembly is finding the roots: the live pointers sit in the operand stack and in locals, which running wasm cannot inspect. So codegen maintains a shadow stack — a second stack in linear memory holding exactly the pointers that must survive an allocation: each function roots its arguments and let/match bindings and pops its whole frame at every exit, and every compound value is built by rooting its parts first. The collector marks from the shadow stack and the module's value globals (cons spines iterate, so even huge lists mark in constant stack), then sweeps the heap into a coalesced free list that the allocator reuses. Because nothing moves, the pointers already in wasm locals stay valid across a collection. A GC stress mode collects before every single allocation, and the result is byte-for-byte identical to a normal run — a live proof that the root set is complete — while a long allocator loop keeps a bounded peak heap even as it churns megabytes of garbage. The WebAssembly tab reports collections, bytes reclaimed, cells reused and the peak heap, and offers the stress toggle.",
+  },
 ]
 
 export default function About() {
