@@ -13,6 +13,7 @@ import type { PoincareResult } from '../sim/poincare'
 import { ChaosPanel } from './ChaosPanel'
 import { SpectralPanel } from './SpectralPanel'
 import { PoincarePanel } from './PoincarePanel'
+import { RelativityPanel } from './RelativityPanel'
 import { Section, Segmented, Select, Slider, Toggle } from './primitives'
 
 export interface SidebarProps {
@@ -173,6 +174,24 @@ export function Sidebar(p: SidebarProps) {
           title="Sub-steps per rendered frame — raises simulation speed"
         />
         <Toggle
+          label="Relativity (1PN)"
+          checked={p.params.gr}
+          onChange={(v) => p.onParams({ gr: v })}
+          title="Add Einstein's first post-Newtonian correction about the heaviest body — orbits precess (key: g)"
+        />
+        {p.params.gr && (
+          <Slider
+            label="Speed of light c"
+            value={p.params.c}
+            min={60}
+            max={2000}
+            step={10}
+            onChange={(v) => p.onParams({ c: Math.round(v) })}
+            format={(v) => v.toFixed(0)}
+            title="GR strength: lower c → stronger relativity → faster precession (∝ 1/c²). Large c → Newtonian."
+          />
+        )}
+        <Toggle
           label="Collisions (merge)"
           checked={p.params.collide}
           onChange={(v) => p.onParams({ collide: v })}
@@ -271,6 +290,10 @@ export function Sidebar(p: SidebarProps) {
           targetLabel={p.poincareTargetLabel}
           bodyCount={p.count}
         />
+      </Section>
+
+      <Section title="Relativity Lab" defaultOpen={false}>
+        <RelativityPanel />
       </Section>
 
       <Section title="Rendering">

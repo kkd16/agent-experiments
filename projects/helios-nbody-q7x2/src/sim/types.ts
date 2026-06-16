@@ -81,6 +81,8 @@ export interface SimParams {
   integrator: IntegratorId
   collide: boolean // inelastic merging of bodies on contact
   collisionScale: number // capture-radius scale: R = collisionScale · mass^(1/3)
+  gr: boolean // first post-Newtonian (1PN) relativistic correction about the dominant mass
+  c: number // speed of light in simulation units — sets GR strength (ignored when gr is false)
 }
 
 export interface Diagnostics {

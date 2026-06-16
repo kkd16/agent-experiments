@@ -179,15 +179,47 @@ export function About({ onClose }: Props) {
           the <em>Three-Body Waltz</em> or <em>Horseshoe &amp; Tadpole</em>.
         </p>
 
+        <h2>General relativity: the perihelion of Mercury</h2>
+        <p>
+          Newtonian gravity makes every bound orbit a perfectly closed ellipse. General
+          relativity does not: it adds a tiny correction that makes the ellipse slowly{' '}
+          <strong>rotate</strong>, advancing its periapsis a little every revolution. For
+          Mercury this <em>perihelion advance</em> is the famous <strong>43 arc-seconds per
+          century</strong> that, after every planetary tug is subtracted, Newtonian gravity
+          simply could not account for — and whose exact prediction was general relativity's
+          first triumph.
+        </p>
+        <p>
+          Turn on <em>Relativity (1PN)</em> (key <code>g</code>) and Helios adds the leading{' '}
+          <strong>first post-Newtonian</strong> correction about the heaviest body:{' '}
+          <code>a₁ₚₙ = (μ/c²r³)[(4μ/r − v²)r + 4(r·v)v]</code>, with an equal-and-opposite
+          reaction on the central mass so total momentum is conserved exactly. Dial the{' '}
+          <em>speed of light c</em> down and the relativistic strength <code>∝ 1/c²</code>{' '}
+          grows until the precession is visible in seconds — load <em>GR Precession</em> to
+          watch two eccentric orbits wind into rotating <strong>rosettes</strong>, the inner
+          one (deeper in the field) turning faster.
+        </p>
+        <p>
+          The <strong>Relativity Lab</strong> makes it quantitative. It integrates a body
+          around a central mass with the 1PN term on a 4th-order Runge–Kutta, detects each
+          periapsis passage and averages the azimuthal advance, then checks the measured
+          precession against the closed-form{' '}
+          <code>Δϖ = 6πμ / (c²a(1 − e²))</code> per orbit. The agreement is exact in the weak
+          field and departs by a known, growing fraction as <code>v/c</code> rises — the
+          genuine higher-order post-Newtonian terms. Feed the very same formula Mercury's real
+          numbers and it returns <strong>42.98″/century</strong>.
+        </p>
+
         <h2>Run the numbers yourself</h2>
         <p>
           None of the above is taken on faith. The button below runs a battery of numerical checks in
           your browser — that the orbit solver recovers known elements, that Yoshida 4 beats Verlet and
           Yoshida 6 beats Yoshida 4 at energy conservation, that Verlet is time-reversible, that the
           tidal tensor is the exact gradient of the force, that the Lagrange points are genuine
-          equilibria (<code>∇Ω ≈ 0</code>), that momentum is conserved, that the virial theorem holds —
-          and that MEGNO recognises a regular orbit (<code>⟨Y⟩ → 2</code>) yet flags the Pythagorean
-          three-body problem as chaotic.
+          equilibria (<code>∇Ω ≈ 0</code>), that momentum is conserved, that the virial theorem holds,
+          that MEGNO recognises a regular orbit (<code>⟨Y⟩ → 2</code>) yet flags the Pythagorean
+          three-body problem as chaotic — and that the engine's relativistic precession matches the
+          closed-form GR formula, reproducing Mercury's 43″/century.
         </p>
         <div className="selftest">
           <button type="button" className="btn primary" onClick={runTests} disabled={running}>
@@ -221,6 +253,8 @@ export function About({ onClose }: Props) {
           <li>Open the <em>Chaos Lab</em> and analyse the <em>Figure-Eight</em> (⟨Y⟩ → 2), then the <em>Broken Eight</em> — the same orbit nudged 0.4%, now chaotic. Watch MEGNO and λ tell them apart.</li>
           <li>Open <em>Kepler Showcase</em>, click a planet, open the <em>Spectral Lab</em> and press <code>n</code> — read its mean motion and harmonic spectrum, then compare the frequency-diffusion verdict against the same planet in a chaotic preset.</li>
           <li>Load <em>Three-Body Waltz</em>, open the <em>Poincaré Lab</em> and press <code>k</code> — watch the section dots trace a clean invariant curve, the signature of a regular orbit.</li>
+          <li>Open <em>GR Precession</em>, turn on motion trails, and watch the eccentric orbits wind into rosettes — then press <code>g</code> to switch relativity off and see them snap back to closed ellipses.</li>
+          <li>Open the <em>Relativity Lab</em>, lower <em>c</em>, and press <em>Measure precession</em> — read the integrated advance against the exact 6πμ/(c²a(1−e²)), and see Mercury's real 43″/century.</li>
           <li>Click a planet in <em>Solar System</em> to read its orbital energy, then <em>Share</em> a permalink to your setup.</li>
         </ul>
 
@@ -228,9 +262,9 @@ export function About({ onClose }: Props) {
           Built with React + TypeScript and a hand-rolled Barnes–Hut engine running on typed arrays.
           No WebGL, no physics library — just maths and a Canvas. Shortcuts: Space play/pause,
           <code>.</code> step, <code>f</code> fit, <code>t</code> trails, <code>c</code> collisions,
-          <code>p</code> predict, <code>o</code> orbit, <code>l</code> Lagrange, <code>y</code> chaos,
-          <code>n</code> spectrum, <code>k</code> section, <code>r</code> reseed, <code>s</code> share,
-          <code>e</code> PNG.
+          <code>p</code> predict, <code>o</code> orbit, <code>l</code> Lagrange, <code>g</code> relativity,
+          <code>y</code> chaos, <code>n</code> spectrum, <code>k</code> section, <code>r</code> reseed,
+          <code>s</code> share, <code>e</code> PNG.
         </p>
       </div>
     </div>

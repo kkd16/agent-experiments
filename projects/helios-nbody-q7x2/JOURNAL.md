@@ -22,6 +22,15 @@ presets and renderer are hand-written TypeScript on typed arrays — no physics 
   exact (no Barnes–Hut approximation pollutes the measurement).
 - `src/sim/orbit.ts` — pure osculating-orbit solver (eccentricity vector + vis-viva) and conic
   samplers used by both the inspector and the on-canvas ellipse overlay.
+- `src/sim/relativity.ts` — **general relativity at first post-Newtonian (1PN) order**. The
+  Schwarzschild/"gr" correction acceleration about a dominant mass, the closed-form apsidal
+  precession Δϖ = 6πμ/(c²a(1−e²)) per orbit, a self-contained RK4 `measurePrecession` that
+  integrates a body with the 1PN term and recovers the precession by averaging the azimuth at
+  successive periapsis passages, and the Mercury benchmark (real a/e/GM_sun/c → 42.98″/century).
+  Pure functions reused by the live engine, the Relativity Lab and the self-test. The engine
+  (`Simulation.computeAccel`) adds the same correction about the heaviest body — velocity-aware
+  now, since GR (unlike Newtonian gravity) depends on velocity — with an equal-and-opposite
+  reaction on the central body so total momentum stays conserved to machine precision.
 - `src/sim/restricted3body.ts` — circular restricted-three-body structure for the two heaviest
   bodies: Lagrange points L1–L5 and marching-squares zero-velocity (Hill-region) contours,
   mapped from the dimensionless co-rotating frame onto the live primary axis.
@@ -37,7 +46,7 @@ presets and renderer are hand-written TypeScript on typed arrays — no physics 
   frame of the two heaviest bodies (transport-theorem rotating-frame transform; upward η=0
   crossings recorded as (ξ, ξ̇)); reports the Jacobi-constant spread as an honesty/quality check.
 - `src/sim/selftest.ts` — in-app numerical self-test that re-derives Helios's physical claims
-  (now **22 checks**).
+  (now **27 checks**).
 - `src/sim/presets.ts` — spiral galaxy, galaxy collision, Plummer cluster, cold collapse,
   solar system, binary + disk, Saturn's rings, Trojans, figure-eight, **broken eight**,
   Pythagorean, Kepler showcase, horseshoe & tadpole, three-body waltz, random cloud. Each
@@ -48,7 +57,9 @@ presets and renderer are hand-written TypeScript on typed arrays — no physics 
 - `src/components/` — Sidebar controls, rolling diagnostic `Plot`, DiagnosticsDock, the
   **Chaos Lab** panel (`ChaosPanel`), the **Spectral Lab** (`SpectralPanel`, NAFF spectrum +
   frequency-diffusion verdict + stick-spectrum canvas), the **Poincaré Lab** (`PoincarePanel`,
-  time-coloured surface-of-section scatter), About overlay, UI primitives.
+  time-coloured surface-of-section scatter), the **Relativity Lab** (`RelativityPanel`,
+  self-contained precession measurement vs the closed-form formula + a rosette plot + the
+  real-Mercury 43″/century box), About overlay, UI primitives.
 - `src/App.tsx` — wires the rAF step/render loop, camera, pointer interaction (pan + slingshot),
   keyboard shortcuts, and settings persistence.
 
@@ -96,6 +107,36 @@ an honest demonstration: symplectic schemes keep the trace flat; Explicit Euler 
 - [ ] Per-body NAFF resonance map (label orbits by their fundamental-frequency commensurabilities)
 - [ ] Drive a Poincaré section live from the running sim (incremental crossings, not a one-shot)
 - [ ] Spectrogram / time–frequency view of a single orbit as it slowly precesses
+
+### Helios 5.0 — General Relativity & Apsidal Precession (this session)
+
+The first piece of physics in Helios that Newton got *wrong*: the slow rotation of an orbit's
+ellipse that general relativity predicts and Mercury's perihelion famously displays. A coherent
+release — engine, preset, a quantitative lab, and self-tests — all hung off one new module.
+
+- [x] **1PN relativistic acceleration** (`relativity.ts`) — the Schwarzschild/"gr" correction
+      a₁ₚₙ = (μ/c²r³)[(4μ/r − v²)r + 4(r·v)v] about a dominant mass, as a pure function, with the
+      closed-form precession Δϖ = 6πμ/(c²a(1−e²)) per orbit and the Mercury benchmark.
+- [x] **Velocity-aware force loop** — `Simulation.computeAccel` now threads velocities through so
+      the velocity-dependent GR term can be added on top of Barnes–Hut, about the heaviest body,
+      with an equal-and-opposite reaction on it so momentum is conserved exactly. RK4 passes its
+      intermediate stage velocities; Verlet/Yoshida reuse the half-kicked velocity. Verified: all
+      integrators reproduce the secular precession rate (ratio ≈ 0.97 at v/c ≈ 0.1, the genuine
+      higher-order PN deficit), and a closed two-body system holds momentum to ~1e-18.
+- [x] **`gr` + `c` params**, a Physics-section toggle + speed-of-light slider, and key `g`.
+- [x] **"GR Precession" preset** — a star and two eccentric planets with the correction on and c
+      dialled down; the trails wind into rotating rosettes, the inner (deeper-field) planet faster.
+- [x] **Relativity Lab** (`RelativityPanel.tsx`) — a self-contained controlled experiment: dial a,
+      e, c, orbits; it integrates on RK4, detects periapsis passages, averages the azimuthal
+      advance, and reports measured-vs-theory (°/orbit, ratio), ε = μ/(ac²), v_peri/c, with a
+      rosette canvas — plus a "real Mercury" box that plugs the actual numbers into the same
+      formula and returns 42.98″/century.
+- [x] **Self-test grew 22 → 27 checks** — GR precession matches 6πμ/(c²a(1−e²)) to <1% in the weak
+      field; the correction vanishes as c→∞; the full engine integrates the precession (ratio
+      within the higher-order PN band); momentum is conserved with GR on; and the formula returns
+      Mercury's 43″/century. (All 27 green, verified in-app and via a Node type-stripping harness.)
+- [x] **About + docs** — a "General relativity: the perihelion of Mercury" section, the `g`
+      shortcut, and two new "Try this" recipes.
 
 ### Helios 4.0 — Spectral & Phase-Space Analysis (this session)
 
@@ -279,3 +320,22 @@ beside the existing time-domain Chaos Lab (MEGNO/Lyapunov).
   transform is exact; the Poincaré section conserves the Jacobi constant) and added About/docs
   sections for both. All 22 self-test checks pass (verified with a standalone Node type-stripping
   harness as well as in-app); `pnpm lint` + `pnpm build` green via `scripts/verify-project.mjs`.
+- 2026-06-16 (claude/claude-opus-4-8): **Helios 5.0 — General Relativity & Apsidal Precession.**
+  Added the first post-Newtonian (1PN) general-relativistic correction — the physics behind
+  Mercury's 43″/century perihelion advance. New `relativity.ts`: the Schwarzschild/"gr"
+  acceleration a₁ₚₙ = (μ/c²r³)[(4μ/r−v²)r + 4(r·v)v] about a dominant mass, the closed-form
+  precession Δϖ = 6πμ/(c²a(1−e²)) per orbit, a self-contained RK4 `measurePrecession` that recovers
+  the precession by averaging the body's azimuth at successive periapsis passages, and a Mercury
+  benchmark that feeds the real numbers into the same formula (→ 42.98″/century). Wired the
+  velocity-dependent term into the engine: `computeAccel` is now velocity-aware, the 1PN force is
+  added about the heaviest body with an equal-and-opposite reaction on it (momentum conserved to
+  ~1e-18), RK4 passes its stage velocities and Verlet/Yoshida reuse the half-kicked velocity — all
+  integrators reproduce the secular precession (ratio ≈ 0.97 at v/c ≈ 0.1, the genuine higher-order
+  PN deficit). Added `gr`/`c` params with a Physics toggle + speed-of-light slider and key `g`; a
+  "GR Precession" preset whose eccentric orbits wind into rosettes; and a **Relativity Lab**
+  (`RelativityPanel.tsx`) — a controlled a/e/c experiment that measures precession vs the formula,
+  draws the rosette, and shows the real-Mercury 43″/century. Grew the self-test from 22 to **27
+  checks** (precession matches theory in the weak field; GR vanishes as c→∞; the engine integrates
+  the precession; momentum is conserved with GR; Mercury ≈ 43″/century). All 27 green (verified
+  in-app and via a Node type-stripping harness); `pnpm lint` + `pnpm build` green via
+  `scripts/verify-project.mjs`.

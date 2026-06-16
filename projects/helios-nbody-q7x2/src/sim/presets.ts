@@ -745,6 +745,63 @@ const waltz: PresetDef = {
   },
 }
 
+// Relativistic Precession (Mercury): a heavy star with two eccentric planets and
+// the 1PN general-relativistic correction switched ON, with the speed of light
+// dialled down so the effect is visible in seconds. Each orbit's periapsis
+// advances a few degrees per revolution, so the trails trace a slowly rotating
+// "rosette" instead of a closed ellipse — the same physics behind Mercury's
+// famous 43″/century perihelion advance, exaggerated. The inner planet sits in a
+// stronger field (smaller a) and precesses visibly faster than the outer one.
+// Run the Relativity Lab to measure the precession against the closed-form
+// 6πμ/(c²a(1−e²)) prediction.
+const relativityPrecession: PresetDef = {
+  id: 'relativity-precession',
+  name: 'GR Precession',
+  description:
+    "A star and two eccentric planets with Einstein's 1PN correction on and the speed of light dialled down: each orbit precesses into a rosette (the inner, deeper in the field, faster). The mechanism behind Mercury's 43″/century — open the Relativity Lab to measure it.",
+  defaultCount: 3,
+  minCount: 3,
+  maxCount: 3,
+  build() {
+    const buf = alloc(3)
+    const g = 1
+    const star = 8000
+    const c = 130
+    buf.posX[0] = 0
+    buf.posY[0] = 0
+    buf.mass[0] = star
+
+    // Two planets launched from periapsis on the +x axis, prograde (+y).
+    const planets: { a: number; e: number; m: number }[] = [
+      { a: 70, e: 0.3, m: 1 },
+      { a: 130, e: 0.5, m: 1.5 },
+    ]
+    let py = 0
+    for (let k = 0; k < planets.length; k++) {
+      const { a, e, m } = planets[k]
+      const i = k + 1
+      const mu = g * (star + m)
+      const rp = a * (1 - e)
+      const vp = Math.sqrt((mu / a) * ((1 + e) / (1 - e)))
+      buf.posX[i] = rp
+      buf.posY[i] = 0
+      buf.velX[i] = 0
+      buf.velY[i] = vp
+      buf.mass[i] = m
+      // Accumulate planet momentum (all along +y) to recoil the star.
+      py += m * vp
+    }
+    buf.velX[0] = 0
+    buf.velY[0] = -py / star
+
+    return {
+      ...buf,
+      params: { g, dt: 0.02, softening: 0.4, theta: 0, integrator: 'yoshida6', gr: true, c },
+      viewExtent: 130 * 1.6,
+    }
+  },
+}
+
 export const PRESETS: PresetDef[] = [
   spiralGalaxy,
   galaxyCollision,
@@ -758,6 +815,7 @@ export const PRESETS: PresetDef[] = [
   brokenEight,
   pythagorean,
   keplerShowcase,
+  relativityPrecession,
   horseshoe,
   waltz,
   randomCloud,
