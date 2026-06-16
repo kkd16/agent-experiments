@@ -101,7 +101,7 @@ export function Controls(props: {
       )}
 
       <Panel title="Sampling" subtitle="Quality vs. speed">
-        <Segmented<'pt' | 'bdpt' | 'pssmlt'>
+        <Segmented<'pt' | 'bdpt' | 'pssmlt' | 'sppm'>
           label="Integrator"
           value={state.integrator}
           onChange={(v) => set('integrator', v)}
@@ -109,8 +109,9 @@ export function Controls(props: {
             { value: 'pt', label: 'Path Tracer' },
             { value: 'bdpt', label: 'Bidirectional' },
             { value: 'pssmlt', label: 'Metropolis' },
+            { value: 'sppm', label: 'Photon Map' },
           ]}
-          hint="Path Tracer grows paths from the camera (NEE+MIS). Bidirectional also grows a path from a light and connects the two — cleaner for indirect-lit scenes (try Cove). Metropolis (PSSMLT) runs a Markov chain over the path tracer's random stream, so it locks onto the hardest-to-find light and refines the whole frame at once. All three converge to the same image. With Metropolis the sample target counts mutations-per-pixel."
+          hint="Path Tracer grows paths from the camera (NEE+MIS). Bidirectional also grows a path from a light and connects the two — cleaner for indirect-lit scenes (try Cove). Metropolis (PSSMLT) runs a Markov chain over the path tracer's random stream, so it locks onto the hardest-to-find light and refines the whole frame at once. Photon Map (SPPM) shoots photons from the lights, refracts them through glass, and gathers them on diffuse surfaces with a shrinking radius — the one estimator that resolves caustics cleanly (try Caustic Room or Caustic Pool). All four converge to the same image. For Metropolis the sample target counts mutations-per-pixel; for Photon Map it counts passes."
         />
         <Segmented
           label="Resolution"

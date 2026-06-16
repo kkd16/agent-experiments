@@ -10,9 +10,10 @@ export function About() {
         Lumen is a physically based <strong>Monte-Carlo path tracer</strong> written from scratch in
         TypeScript — no WebGL, no GPU, no third-party math. It numerically solves the rendering
         equation by tracing thousands of random light paths per pixel and averaging their
-        contributions, converging to a photorealistic image. It ships <strong>three</strong>{' '}
-        light-transport integrators — a unidirectional path tracer, a bidirectional path tracer, and
-        primary-sample-space Metropolis — that provably converge to the <em>same</em> image.
+        contributions, converging to a photorealistic image. It ships <strong>four</strong>{' '}
+        light-transport integrators — a unidirectional path tracer, a bidirectional path tracer,
+        primary-sample-space Metropolis, and stochastic progressive photon mapping — that provably
+        converge to the <em>same</em> image.
       </p>
 
       <div className="about-grid">
@@ -52,6 +53,23 @@ export function About() {
           tracer and PSSMLT and proves their luminance and spatial distribution agree. Beautifully,
           the engine reuses the path tracer <em>verbatim</em>: the Metropolis sampler simply{' '}
           <em>is</em> the random-number generator.
+        </Card>
+        <Card title="Photon mapping (SPPM)">
+          All three of the others build paths that <em>end on a light</em> — the wrong shape for a{' '}
+          <strong>caustic</strong>, light focused through glass onto a floor. A shadow ray from the
+          floor to the lamp will not refract through the lens, so next-event estimation sees the light
+          at measure zero, and a diffuse bounce that threads the glass by luck is astronomically rare.{' '}
+          <strong>SPPM</strong> turns the problem around: it shoots <em>photons from the lights</em>,
+          lets them refract and reflect through the specular geometry, and records where they land on
+          diffuse surfaces — so the rare light→specular→diffuse transport is found <em>by
+          construction</em>. Each pass re-traces jittered camera rays to place a measurement point per
+          pixel, gathers the photons within a radius, and then <em>shrinks that radius</em> on the
+          Hachisuka schedule <code>R²←R²·(N+αM)/(N+M)</code>, which drives the density-estimation bias
+          to zero so the estimate <em>converges</em> — to the same image as the path tracer, as the{' '}
+          <strong>Verify</strong> tab proves on the Cornell box. Photons are gathered through an exact
+          spatial hash (also verified against brute force). Try <em>Caustic Pool</em> or{' '}
+          <em>Caustic Room</em> and switch to <strong>Photon Map</strong>: the caustics resolve where
+          the other integrators only sputter.
         </Card>
         <Card title="Microfacet BSDFs">
           Surfaces are Lambertian diffuse, GGX/Trowbridge-Reitz metal with height-correlated Smith

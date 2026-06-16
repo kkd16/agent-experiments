@@ -294,6 +294,94 @@ function causticRoom(): SceneDef {
   }
 }
 
+// ---- Scene: Caustic Pool — water caustics on a tiled floor (an SPPM showcase) -
+
+// A wind-rippled water surface as a single refractive sheet: a sine heightfield
+// triangulated with *analytic* smooth normals. Light refracting through the
+// undulating surface focuses into the shifting bright filaments of a swimming
+// pool — a light→specular→diffuse caustic that only photon mapping (SPPM)
+// resolves cleanly. The surface is a dielectric; photons emitted from the
+// overhead panel bend through it and concentrate on the floor below.
+function waterSheet(span: number, y0: number, res: number, amp: number, material: number): PrimDef[] {
+  // Two interfering wave trains plus a diagonal ripple — the gradient is known in
+  // closed form, so every vertex normal is exact (no finite differencing).
+  const k1 = 1.7
+  const k2 = 2.3
+  const k3 = 1.1
+  const height = (x: number, z: number): number =>
+    amp * (Math.sin(k1 * x + 0.6) + 0.8 * Math.sin(k2 * z - 0.4) + 0.6 * Math.sin(k3 * (x + z) + 1.3))
+  const normalAt = (x: number, z: number): Vec3 => {
+    // ∂y/∂x and ∂y/∂z of the heightfield; surface normal = (−∂x, 1, −∂z).
+    const dx = amp * (k1 * Math.cos(k1 * x + 0.6) + 0.6 * k3 * Math.cos(k3 * (x + z) + 1.3))
+    const dz = amp * (0.8 * k2 * Math.cos(k2 * z - 0.4) + 0.6 * k3 * Math.cos(k3 * (x + z) + 1.3))
+    return normalize(v(-dx, 1, -dz))
+  }
+  const pos = (i: number, j: number): Vec3 => {
+    const x = -span + (2 * span * i) / res
+    const z = -span + (2 * span * j) / res
+    return v(x, y0 + height(x, z), z)
+  }
+  const tris: PrimDef[] = []
+  for (let i = 0; i < res; i++) {
+    for (let j = 0; j < res; j++) {
+      const p00 = pos(i, j)
+      const p10 = pos(i + 1, j)
+      const p11 = pos(i + 1, j + 1)
+      const p01 = pos(i, j + 1)
+      const n00 = normalAt(p00.x, p00.z)
+      const n10 = normalAt(p10.x, p10.z)
+      const n11 = normalAt(p11.x, p11.z)
+      const n01 = normalAt(p01.x, p01.z)
+      tris.push({ kind: 'tri', p0: p00, p1: p10, p2: p11, material, n0: n00, n1: n10, n2: n11 })
+      tris.push({ kind: 'tri', p0: p00, p1: p11, p2: p01, material, n0: n00, n1: n11, n2: n01 })
+    }
+  }
+  return tris
+}
+
+function causticPool(): SceneDef {
+  const materials: Material[] = [
+    {
+      kind: 'diffuse',
+      albedo: v(0.8, 0.8, 0.8),
+      tex: { kind: 'checker', even: v(0.16, 0.45, 0.62), odd: v(0.78, 0.86, 0.9), scale: 0.6 },
+    }, // 0 tiled pool floor
+    { kind: 'emissive', emission: v(34, 33, 30) }, // 1 bright overhead sun panel
+    { kind: 'dielectric', ior: 1.33, tint: v(0.85, 0.95, 1.0) }, // 2 water
+    { kind: 'diffuse', albedo: v(0.22, 0.4, 0.5) }, // 3 pool walls
+  ]
+  const prims: PrimDef[] = []
+  const X = 7
+  const Z = 7
+  const yFloor = 0
+  const yWater = 2.0
+  const yTop = 9
+  prims.push(...quad(v(-X, yFloor, -Z), v(X, yFloor, -Z), v(X, yFloor, Z), v(-X, yFloor, Z), 0)) // floor
+  // Low pool walls (so the floor reads as a basin and bounces a little fill).
+  prims.push(...quad(v(-X, yFloor, -Z), v(-X, yFloor, Z), v(-X, yWater + 0.4, Z), v(-X, yWater + 0.4, -Z), 3)) // left
+  prims.push(...quad(v(X, yFloor, -Z), v(X, yWater + 0.4, -Z), v(X, yWater + 0.4, Z), v(X, yFloor, Z), 3)) // right
+  prims.push(...quad(v(-X, yFloor, Z), v(X, yFloor, Z), v(X, yWater + 0.4, Z), v(-X, yWater + 0.4, Z), 3)) // back
+  // The rippled water surface.
+  prims.push(...waterSheet(X - 0.05, yWater, 60, 0.12, 2))
+  // A bright overhead panel (a triangle light SPPM can emit photons from).
+  prims.push(...quad(v(-3.5, yTop, -3.5), v(3.5, yTop, -3.5), v(3.5, yTop, 3.5), v(-3.5, yTop, 3.5), 1))
+
+  return {
+    name: 'Caustic Pool',
+    materials,
+    prims,
+    camera: {
+      eye: v(0, 6.2, 12.5),
+      target: v(0, 1.4, 0),
+      up: v(0, 1, 0),
+      vfovDeg: 45,
+      aperture: 0,
+      focusDist: 13,
+    },
+    env: { kind: 'solid', color: v(0.01, 0.02, 0.03) },
+  }
+}
+
 // ---- Scene 5: Prism — spectral dispersion -----------------------------------
 
 function prismScene(): SceneDef {
@@ -862,6 +950,7 @@ export const SCENES: ScenePreset[] = [
   { id: 'weekend', label: 'Weekend Daylight', build: weekend },
   { id: 'gallery', label: 'Material Gallery', build: gallery },
   { id: 'caustic', label: 'Caustic Room', build: causticRoom },
+  { id: 'pool', label: 'Caustic Pool', build: causticPool },
   { id: 'prism', label: 'Prism', build: prismScene },
   { id: 'menagerie', label: 'Glass Menagerie', build: glassMenagerie },
   { id: 'textured', label: 'Textured Studio', build: texturedStudio },

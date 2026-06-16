@@ -12,7 +12,19 @@ import { halton23, halton57, pixelOffset } from '../engine/qmc'
 import { integrate } from '../engine/integrator'
 import type { GBuffer, RayStats } from '../engine/integrator'
 import { MltState, DEFAULT_MLT } from '../engine/pssmlt'
+import { SppmState, DEFAULT_SPPM } from '../engine/sppm'
 import type { FromWorker, InitMsg, IntegratorSettings, ToWorker } from '../engine/types'
+
+// A full-frame estimator (PSSMLT or SPPM): both advance with step(n), expose a
+// progress figure, and read back a fresh HDR image. Each worker owns the *whole*
+// image (not a band); the UI thread averages the workers' independent estimates.
+interface FrameEstimator {
+  step(n: number): void
+  image(out?: Float32Array): Float32Array
+  readonly mutationsPerPixel: number
+  readonly brightness: number
+  readonly stats: RayStats
+}
 
 let scene: Scene | null = null
 let camera: Camera | null = null
@@ -22,9 +34,8 @@ let bandStart = 0
 let bandEnd = 0
 let settings: IntegratorSettings = { maxDepth: 8, rrStart: 4, clampIndirect: 0 }
 let rng: Rng = new Rng(1)
-// PSSMLT: each worker runs its own independent set of Markov chains over the
-// *whole* image (not a band); the UI thread averages the workers' estimates.
-let mlt: MltState | null = null
+let frame: FrameEstimator | null = null
+let frameKind: 'pssmlt' | 'sppm' | null = null
 
 function handleInit(msg: InitMsg): void {
   width = msg.width
@@ -35,16 +46,27 @@ function handleInit(msg: InitMsg): void {
   scene = new Scene(msg.scene)
   camera = new Camera(msg.scene.camera, width / height)
   rng = new Rng(msg.seed ^ (bandStart * 0x9e3779b1), bandStart + 1)
-  mlt = null
+  frame = null
+  frameKind = null
   if (settings.integrator === 'pssmlt') {
     // Bootstrap scales gently with resolution but stays bounded so startup is
     // quick; chains are seeded from a per-worker seed so each is decorrelated.
     const nBootstrap = Math.min(40000, Math.max(12000, Math.round(width * height * 0.3)))
-    mlt = new MltState(scene, camera, settings, width, height, msg.seed >>> 0, {
+    frame = new MltState(scene, camera, settings, width, height, msg.seed >>> 0, {
       ...DEFAULT_MLT,
       nChains: 8,
       nBootstrap,
     })
+    frameKind = 'pssmlt'
+  } else if (settings.integrator === 'sppm') {
+    // Photons per pass scale with resolution (a denser image wants a denser map)
+    // but stay bounded so each pass returns promptly to the UI for compositing.
+    const photonsPerPass = Math.min(250000, Math.max(60000, Math.round(width * height * 0.8)))
+    frame = new SppmState(scene, camera, settings, width, height, msg.seed >>> 0, {
+      ...DEFAULT_SPPM,
+      photonsPerPass,
+    })
+    frameKind = 'sppm'
   }
   const ready: FromWorker = {
     type: 'ready',
@@ -56,22 +78,26 @@ function handleInit(msg: InitMsg): void {
   post(ready, [])
 }
 
-// One PSSMLT pass: advance the chains by ~½ a mutation per pixel, then ship the
-// current normalised image back. The worker keeps its splat buffer across passes
-// so the estimate refines progressively.
-function handleMltPass(): void {
-  if (!mlt) return
-  const before = mlt.stats.rays
-  const steps = Math.max(1, Math.round(width * height * 0.5))
-  mlt.step(steps)
-  const img = mlt.image() // a fresh Float32Array we can hand off by transfer
+// One full-frame estimator pass. PSSMLT advances its chains by ~½ a mutation per
+// pixel; SPPM runs one complete photon pass (camera measurement points + photon
+// emission + radius update). Either way we ship the current normalised image
+// back and keep accumulating across passes so the estimate refines progressively.
+function handleFramePass(): void {
+  if (!frame) return
+  const before = frame.stats.rays
+  if (frameKind === 'sppm') {
+    frame.step(1)
+  } else {
+    frame.step(Math.max(1, Math.round(width * height * 0.5)))
+  }
+  const img = frame.image() // a fresh Float32Array we can hand off by transfer
   const buf = img.buffer as ArrayBuffer
   const done: FromWorker = {
     type: 'mltDone',
     image: buf,
-    mpp: mlt.mutationsPerPixel,
-    rays: mlt.stats.rays - before,
-    b: mlt.brightness,
+    mpp: frame.mutationsPerPixel,
+    rays: frame.stats.rays - before,
+    b: frame.brightness,
   }
   post(done, [buf])
 }
@@ -143,7 +169,7 @@ self.onmessage = (ev: MessageEvent<ToWorker>) => {
       handleInit(msg)
       break
     case 'pass':
-      if (mlt) handleMltPass()
+      if (frame) handleFramePass()
       else handlePass(msg.sampleIndex, msg.captureGBuffer)
       break
     case 'reset':
