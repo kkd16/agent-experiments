@@ -13,16 +13,27 @@ live here as long as you like.
 - [x] Add multiplication and division
 - [x] Add difficulty levels
 - [x] Add a timer for a "speed run" mode
-- [ ] Add visual feedback animations
 - [x] Keep a high score using localStorage
-- [ ] Add sound effects for correct/incorrect answers
-- [ ] Add a combo multiplier
-- [ ] Add history of past answers
-- [ ] Support keyboard shortcuts
 - [x] Add a "streak" counter
-- [ ] Add an end-of-game summary screen for timed mode
+- [x] Add a combo multiplier
+- [x] Support keyboard shortcuts
+- [x] Add an end-of-game summary screen for timed mode
+- [x] Add a progress bar for speed run
+- [x] Add a dark mode toggle
+- [x] Add operation-specific modes (e.g. "Only Addition")
+- [x] Save/load streak in localStorage
+- [ ] Add visual feedback animations
+- [ ] Add sound effects for correct/incorrect answers
+- [ ] Add history of past answers
 - [ ] Add customizable ranges for numbers
-- [ ] Add a progress bar for speed run
+- [ ] Add visual confetti on high score
+- [ ] Support custom timer durations
+- [ ] Add a multiplayer mode via WebRTC
+- [ ] Add internationalization (i18n) support
+- [ ] Create detailed analytics/graphs for accuracy over time
+- [ ] Support fraction and decimal operations
+- [ ] Add a daily challenge mode with fixed seeds
+- [ ] Add a mastery system with unlockable badges
 
 ## Session log
 
