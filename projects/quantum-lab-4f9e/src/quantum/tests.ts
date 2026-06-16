@@ -25,6 +25,11 @@ import { tfimMPO, heisenbergMPO, exactGroundEnergyMPO, mpoToDense } from './MPO'
 import { runDMRG } from './dmrg';
 import { minWeightPerfectMatching, type Edge } from './surface/blossom';
 import { buildSurfaceCode, correctRound, logicalErrorRate, mulberry32 } from './surface/SurfaceCode';
+import { decodeMWPM, decodeUF } from './surface/decoder';
+import {
+  buildCodeCapacityGraph, buildSpaceTimeGraph, phenomLogicalErrorRate,
+  codeCapacityRate, lambdaRatios, collapseFit,
+} from './surface/spacetime';
 
 export interface TestResult {
   group: string;
@@ -513,6 +518,90 @@ export function runTests(): TestResult[] {
     add('Surface code', 'below threshold (p=4%): d=7 beats d=3', lo7 < lo3, `d3=${lo3.toFixed(3)} d7=${lo7.toFixed(3)}`);
     const hi3 = logicalErrorRate(3, 0.22, 600, rg2), hi7 = logicalErrorRate(7, 0.22, 600, rg2);
     add('Surface code', 'above threshold (p=22%): d=7 worse than d=3', hi7 > hi3, `d3=${hi3.toFixed(3)} d7=${hi7.toFixed(3)}`);
+  }
+
+  // --- Space-time fault tolerance: Union-Find decoder + phenomenological noise ---
+  {
+    const anticom = (sup: number[], err: Set<number>): boolean => {
+      let n = 0; for (const q of sup) if (err.has(q)) n++; return (n & 1) === 1;
+    };
+
+    // The Union-Find decoder corrects every error up to the code distance (code capacity).
+    let ufCorrects = true;
+    for (const d of [3, 5, 7]) {
+      const code = buildSurfaceCode(d);
+      const { graph, sector } = buildCodeCapacityGraph(code, 'Z');
+      const t = Math.floor((d - 1) / 2);
+      const rg = mulberry32(7 + d);
+      for (let trial = 0; trial < 200 && ufCorrects; trial++) {
+        const e = new Set<number>(); while (e.size < t) e.add(Math.floor(rg() * code.nData));
+        const defects: number[] = [];
+        sector.detGlobal.forEach((gi, l) => { let n = 0; for (const q of code.stabs[gi].qubits) if (e.has(q)) n++; if (n & 1) defects.push(l); });
+        const corr = decodeUF(graph, defects);
+        const res = new Set<number>(e); for (const q of corr) { if (res.has(q)) res.delete(q); else res.add(q); }
+        if (anticom(sector.logicalSupport, res)) ufCorrects = false;
+      }
+    }
+    add('Space-time FT', 'Union-Find corrects all errors of weight ≤ ⌊(d−1)/2⌋', ufCorrects, '');
+
+    // Union-Find agrees with optimal MWPM on the logical verdict for the vast majority of
+    // random errors (it is provably ≥ MWPM up to distance, near-optimal beyond).
+    {
+      const d = 5, code = buildSurfaceCode(d);
+      const { graph, sector } = buildCodeCapacityGraph(code, 'Z');
+      const rg = mulberry32(42); let agree = 0; const total = 600;
+      for (let s = 0; s < total; s++) {
+        const e = new Set<number>(); for (let q = 0; q < code.nData; q++) if (rg() < 0.08) e.add(q);
+        const defects: number[] = [];
+        sector.detGlobal.forEach((gi, l) => { let n = 0; for (const q of code.stabs[gi].qubits) if (e.has(q)) n++; if (n & 1) defects.push(l); });
+        const verdict = (corr: Set<number>) => { const res = new Set<number>(e); for (const q of corr) { if (res.has(q)) res.delete(q); else res.add(q); } return anticom(sector.logicalSupport, res); };
+        if (verdict(decodeMWPM(graph, defects)) === verdict(decodeUF(graph, defects))) agree++;
+      }
+      add('Space-time FT', 'Union-Find agrees with MWPM ≥ 90% (d=5, p=8%)', agree >= 0.9 * total, `${agree}/${total}`);
+    }
+
+    // The 3-D space-time graph: T+1 layers of the 2-D graph plus time (measurement) edges.
+    {
+      const code = buildSurfaceCode(5), layers = 6;
+      const { graph, sector } = buildSpaceTimeGraph(code, 'Z', layers);
+      const timeEdges = graph.edges.filter((e) => e.qubit < 0).length;
+      const spaceEdges = graph.edges.filter((e) => e.qubit >= 0).length;
+      const ok = graph.nNodes === layers * sector.nChecks
+        && timeEdges === (layers - 1) * sector.nChecks
+        && spaceEdges > 0;
+      add('Space-time FT', 'space-time graph: layers×checks nodes + measurement-edge layer', ok,
+        `nodes=${graph.nNodes} time=${timeEdges} space=${spaceEdges}`);
+    }
+
+    // Phenomenological threshold: below it a bigger code wins; above it loses (MWPM + UF).
+    {
+      const rg = mulberry32(99);
+      const lo3 = phenomLogicalErrorRate(3, 0.015, 1000, rg, { kind: 'mwpm' });
+      const lo7 = phenomLogicalErrorRate(7, 0.015, 1000, rg, { kind: 'mwpm' });
+      add('Space-time FT', 'phenomenological MWPM below p_th (p=1.5%): d=7 beats d=3', lo7 < lo3, `d3=${lo3.toFixed(3)} d7=${lo7.toFixed(3)}`);
+      const hi3 = phenomLogicalErrorRate(3, 0.08, 800, rg, { kind: 'mwpm' });
+      const hi7 = phenomLogicalErrorRate(7, 0.08, 800, rg, { kind: 'mwpm' });
+      add('Space-time FT', 'phenomenological MWPM above p_th (p=8%): d=7 worse than d=3', hi7 > hi3, `d3=${hi3.toFixed(3)} d7=${hi7.toFixed(3)}`);
+      const uf3 = phenomLogicalErrorRate(3, 0.08, 800, rg, { kind: 'uf' });
+      const uf7 = phenomLogicalErrorRate(7, 0.08, 800, rg, { kind: 'uf' });
+      add('Space-time FT', 'phenomenological Union-Find above p_th (p=8%): d=7 worse than d=3', uf7 > uf3, `d3=${uf3.toFixed(3)} d7=${uf7.toFixed(3)}`);
+    }
+
+    // Finite-size scaling: Λ_d = p_L(d)/p_L(d+2) > 1 below threshold (the code is working).
+    {
+      const { pairs } = lambdaRatios({ distances: [3, 5, 7], p: 0.05, samples: 3000, seed: 1 });
+      const allOver1 = pairs.every((x) => x.lambda > 1);
+      add('Space-time FT', 'Λ = p_L(d)/p_L(d+2) > 1 below threshold (p=5%)', allOver1, pairs.map((x) => `d${x.d}:${x.lambda.toFixed(2)}`).join(' '));
+    }
+
+    // Universal data collapse recovers the code-capacity threshold (~10%).
+    {
+      const distances = [3, 5, 7], ps = [0.08, 0.09, 0.10, 0.11, 0.12, 0.13];
+      const rg = mulberry32(5); const pts: { d: number; p: number; pL: number }[] = [];
+      for (const d of distances) for (const p of ps) pts.push({ d, p, pL: codeCapacityRate(d, p, 1200, rg, 'mwpm') });
+      const c = collapseFit(pts, { pthRange: [0.07, 0.13], nuRange: [0.8, 1.8], grid: 36 });
+      add('Space-time FT', 'finite-size collapse recovers p_th ≈ 10% (code capacity)', c.pth >= 0.07 && c.pth <= 0.12, `p_th=${(c.pth * 100).toFixed(1)}% ν=${c.nu.toFixed(2)}`);
+    }
   }
 
   return r;
