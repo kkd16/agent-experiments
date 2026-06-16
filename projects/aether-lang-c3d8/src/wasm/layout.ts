@@ -67,5 +67,20 @@ export const recordSize = (count: number): number => OFF.RECORD_PAIRS + 8 * coun
 export const closureSize = (nfree: number): number => OFF.CLOSURE_ENV + 4 * nfree
 export const papSize = (arity: number): number => OFF.PAP_ARGS + 4 * arity
 
-/** Where the heap bump pointer starts (leave 0 as an invalid/null pointer). */
-export const HEAP_BASE = 16
+// — small-integer cache —
+//
+// `boxInt` boxed a fresh cell for *every* integer; arithmetic-heavy programs churn
+// the heap doing it. We pre-build one shared `INT` cell per value in a small range
+// at the very start of memory and have `boxInt` return the shared cell for in-range
+// values. Aether is pure and every value is compared *structurally* (never by
+// pointer), so sharing is invisible to results — only the allocation count drops.
+export const SMALLINT_LO = -256
+export const SMALLINT_HI = 1024 // exclusive
+export const SMALLINT_COUNT = SMALLINT_HI - SMALLINT_LO
+
+/** The cached `INT` cells sit at the base of memory (cell `i` ⇒ value `LO + i`). */
+export const CACHE_BASE = 16
+export const CACHE_BYTES = SMALLINT_COUNT * SIZE.INT
+
+/** Where the heap bump pointer starts — just past the small-int cache (0 stays an invalid/null pointer). */
+export const HEAP_BASE = CACHE_BASE + CACHE_BYTES

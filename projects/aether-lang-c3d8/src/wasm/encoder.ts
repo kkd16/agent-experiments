@@ -305,6 +305,8 @@ interface ImportEntry {
   module: string
   field: string
   typeIdx: number
+  /** debug name for the `name` section (defaults to the field) */
+  name?: string
 }
 
 interface FuncEntry {
@@ -313,12 +315,18 @@ interface FuncEntry {
   body: Code
   /** export name, if any */
   exportName?: string
+  /** debug name for the `name` section */
+  name?: string
+  /** debug names for locals (indices 0… are the params), for the `name` section */
+  localNames?: (string | null)[]
 }
 
 interface GlobalEntry {
   valtype: ValType
   mutable: boolean
   init: Code
+  /** debug name for the `name` section */
+  name?: string
 }
 
 /**
@@ -346,10 +354,10 @@ export class Module {
   }
 
   /** Declare an imported function; returns its function index. */
-  importFunc(module: string, field: string, params: ValType[], results: ValType[]): number {
+  importFunc(module: string, field: string, params: ValType[], results: ValType[], name?: string): number {
     if (this.funcs.length > 0) throw new Error('all imports must be declared before any defined function')
     const typeIdx = this.typeIndex(params, results)
-    this.imports.push({ module, field, typeIdx })
+    this.imports.push({ module, field, typeIdx, name })
     return this.imports.length - 1
   }
 
@@ -359,17 +367,30 @@ export class Module {
   }
 
   /** Define a function. Returns its function index. */
-  addFunc(params: ValType[], results: ValType[], locals: ValType[], body: Code, exportName?: string): number {
+  addFunc(
+    params: ValType[],
+    results: ValType[],
+    locals: ValType[],
+    body: Code,
+    exportName?: string,
+    name?: string,
+    localNames?: (string | null)[],
+  ): number {
     const typeIdx = this.typeIndex(params, results)
     const idx = this.imports.length + this.funcs.length
-    this.funcs.push({ typeIdx, locals, body, exportName })
+    this.funcs.push({ typeIdx, locals, body, exportName, name: name ?? exportName, localNames })
     return idx
   }
 
   /** Define a global. Returns its global index. */
-  addGlobal(valtype: ValType, mutable: boolean, init: Code): number {
-    this.globals.push({ valtype, mutable, init })
+  addGlobal(valtype: ValType, mutable: boolean, init: Code, name?: string): number {
+    this.globals.push({ valtype, mutable, init, name })
     return this.globals.length - 1
+  }
+
+  /** Attach a debug name to an already-defined global (index from `addGlobal`). */
+  setGlobalName(idx: number, name: string): void {
+    if (this.globals[idx]) this.globals[idx].name = name
   }
 
   get definedFuncCount(): number {
@@ -459,6 +480,52 @@ export class Module {
     })
     out.push(...this.section(10, vec(codes)))
 
+    // 0 — the `name` custom section (DWARF-free debug names). Optional per the
+    // spec, but it is what lets the disassembler print `$map` instead of `(call 27)`.
+    const nameSec = this.nameSection()
+    if (nameSec) out.push(...this.section(0, nameSec))
+
     return new Uint8Array(out)
+  }
+
+  /** Build the body of the `name` custom section, or `null` if there is nothing to name. */
+  private nameSection(): number[] | null {
+    // a namemap is a vec of (index, name) pairs, indices strictly increasing
+    const nameMap = (pairs: [number, string][]): number[] =>
+      vec(pairs.sort((a, b) => a[0] - b[0]).map(([i, n]) => [...uleb(i), ...encodeName(n)]))
+
+    // sub-section 1 — function names (imports first, then defined functions)
+    const funcPairs: [number, string][] = []
+    this.imports.forEach((im, i) => funcPairs.push([i, im.name ?? im.field]))
+    this.funcs.forEach((f, i) => {
+      if (f.name) funcPairs.push([this.imports.length + i, f.name])
+    })
+
+    // sub-section 2 — local names (an indirectnamemap: per function, a namemap)
+    const localEntries: number[][] = []
+    this.funcs.forEach((f, i) => {
+      if (!f.localNames) return
+      const pairs: [number, string][] = []
+      f.localNames.forEach((n, li) => {
+        if (n) pairs.push([li, n])
+      })
+      if (pairs.length) localEntries.push([...uleb(this.imports.length + i), ...nameMap(pairs)])
+    })
+
+    // sub-section 7 — global names
+    const globalPairs: [number, string][] = []
+    this.globals.forEach((g, i) => {
+      if (g.name) globalPairs.push([i, g.name])
+    })
+
+    const subs: number[] = []
+    const sub = (id: number, content: number[]): void => {
+      subs.push(id, ...uleb(content.length), ...content)
+    }
+    if (funcPairs.length) sub(1, nameMap(funcPairs))
+    if (localEntries.length) sub(2, vec(localEntries))
+    if (globalPairs.length) sub(7, nameMap(globalPairs))
+    if (subs.length === 0) return null
+    return [...encodeName('name'), ...subs]
   }
 }

@@ -376,18 +376,89 @@ Plan / steps:
       higher-order prelude, floats, the turtle). Keep the CI gate green.
 - [x] **Docs** — Tour/About/README/`project.json` writeups for the third backend.
 
-Deferred (future, Aether 7.x+):
+### Aether 8.0 — a self-describing WebAssembly backend: a from-scratch WAT disassembler, a `name` section & a measured small-integer cache (planned + shipping this session)
 
-- [ ] A real WAT (text-format) disassembler in the WebAssembly panel, plus an emitted `name`
-      section, so the generated functions read by name instead of as a hex dump.
+For one release the WebAssembly backend has been a black box you could only read as a **hex dump**.
+8.0 makes it *self-describing and measurably leaner*, knocking out the two oldest items on the 7.x
+deferred list and adding a runtime win the panel can prove with numbers. Three headline pieces, all
+confined to `src/wasm/`, the WASM panel and the harness — and all kept honest by the existing
+WASM ≡ VM equivalence check that already guards every gallery example:
+
+1. **A from-scratch WAT *disassembler*** (`wasm/disasm.ts`) — the exact mirror image of the
+   from-scratch *encoder*. It is a real WebAssembly **binary decoder**: it re-reads the bytes the
+   encoder just produced (magic/version, then the type / import / function / table / memory / global
+   / export / element / code / **name** sections), and renders canonical, indented **WAT text** — a
+   full opcode table covering every instruction the `Code` builder can emit, structured
+   `block`/`loop`/`if`/`else`/`end` nesting, decoded `memarg`s and immediates, and call/global/local
+   targets resolved to **`$names`**. No `wabt`, no `wasm2wat`, no libraries — the same rule the
+   encoder lives by. The module now reads as a program, not a hex blob.
+
+2. **An emitted `name` custom section** (`encoder.ts`) — function names (imports, the runtime
+   helpers `__alloc`/`boxInt`/`apply`/…, every compiled lambda, `main`), a locals sub-section
+   (`$env`/`$arg` on every closure body), and a globals sub-section (`$heap`, the singletons,
+   each native builtin by its Aether name, every top-level binding by its source name). The
+   disassembler reads it back, so the WAT reads `(call $map)` and `(global.get $heap)` instead of
+   raw indices — the deferred "read by name instead of as a hex dump" goal, end to end.
+
+3. **A measured small-integer cache + live heap accounting** — `boxInt` boxed a *fresh* cell for
+   **every** integer result (the single hottest allocation in arithmetic-heavy code). 8.0 pins a
+   contiguous block of pre-built `INT` cells for a small range at module init and has `boxInt`
+   return the shared cell for any in-range value, allocating only outside it. Because Aether is pure
+   and every value is compared **structurally** (never by pointer), sharing is invisible to results
+   — the WASM ≡ VM badge still holds byte-for-byte. The runtime now also *counts* what it does
+   (`__allocCount`/`__allocBytes`/`__cacheHits` exports), so the panel and harness report a concrete
+   allocation reduction (e.g. a `range`/`fold` workload drops a large fraction of its boxes).
+
+The crux, as ever: the disassembler and the cache change *how the module is presented and how much it
+allocates*, never *what it computes* — so the project's hard-won invariant (three backends, one
+answer) is preserved and re-proven by the harness.
+
+Plan / steps:
+
+- [x] **`name` section in the encoder** — `addFunc`/`addGlobal`/`importFunc` carry an optional debug
+      name (+ a local-names list for closure params); `Module.nameSection()` serialises WebAssembly
+      custom section `"name"` (sub-sections 1: functions, 2: locals, 7: globals) after the code
+      section. Pure addition; the module still validates and runs (all 207 harness checks stay green).
+- [x] **Codegen threads names** — the runtime helpers (`__alloc`/`boxInt`/`apply`/…), every compiled
+      `lambda` (named after its binding via a hint — so prelude `map`/`filter`/… and user functions read
+      by name), `main`, the singleton/native/top-level globals (`$heap`, `$b_print`, `$g_fib`, …), and
+      `$env`/`$arg` on closure bodies are all named.
+- [x] **`wasm/disasm.ts` — the decoder** — a from-scratch binary reader (LEB128/`f64`/UTF-8) that
+      parses every section the encoder emits (incl. the name section) and renders WAT: types, imports,
+      memory, globals with their (instruction-decoded) init exprs, exports, and each function as
+      `(func $name (param…) (result…) (local…) <body>)` with a complete, indented instruction stream.
+- [x] **Opcode coverage** — a decode table for exactly the instructions `Code` emits (consts,
+      locals/globals, calls + `call_indirect`/`return_call`, control flow with block-type immediates,
+      `memarg` loads/stores, `memory.size`/`grow`, the i32/f64 arithmetic & comparison & conversion
+      ops). An unknown byte is surfaced loudly (`;; unknown …`) and the harness asserts none ever appears.
+- [x] **Small-integer cache + accounting** — the cache region sits at the base of memory (the bump
+      pointer starts just past it); `main` inits the cells in a tight WASM loop; `boxInt` serves
+      in-range values from it; `__allocCount`/`__allocBytes`/`__cacheHits` globals + exported getters are
+      surfaced through the driver (`runWasm(...).heap`).
+- [x] **WASM panel** — the disassembled **WAT** is now the default module view (header + a collapsible
+      `(func …)` per function), with the hex dump + download kept behind a second toggle, and the live
+      allocation stats (cells, bytes, cache hits) shown under the WASM column after a run. The
+      "✓ matches the VM" badge is unchanged.
+- [x] **Verification** — `tools/harness.mjs` grew a **disassembler battery** (every gallery + feature
+      module: no unknown opcodes, balanced `(module …)`, one named `(func …)` per defined function,
+      the named runtime helpers/entry present) and a **cache battery** (WASM ≡ VM preserved *and* a
+      minimum number of integers served from the cache on integer-heavy workloads): 207 checks, green.
+      The CI gate (conformance + lint + build) stays green.
+- [x] **Docs** — Tour/About/README/`project.json` writeups for the disassembler, the name section and
+      the cache.
+
+Deferred (future, Aether 8.x+):
+
 - [ ] A copying/mark-sweep garbage collector for the WASM linear-memory heap (today's bump
-      allocator never frees; long-running programs grow memory monotonically).
+      allocator still never frees; the small-int cache cuts allocation but does not reclaim it).
+      A sound tracing GC needs a shadow stack to capture operand-stack/local roots at allocation
+      safepoints — the next big systems step.
 - [ ] Move the heap onto the **WasmGC** proposal (typed structs/arrays) so the engine manages
       memory and the host bridge reads real GC objects instead of raw cells.
 - [ ] A **WASI** entry so the same module runs under `wasmtime`/`node --experimental-wasi` from a
-      file, with `print` wired to stdout.
+      file, with `print` wired to stdout (blocked today by `show`/`print` living in the host bridge).
 - [ ] Specialise saturated direct calls (skip the generic `apply` tag-dispatch when the arity is
-      statically known) and intern integer/`show` results to cut allocation.
+      statically known) to cut per-call work.
 - [ ] String values as real linear-memory byte arrays (UTF-8) rather than a host-side string pool,
       so a downloaded module is self-contained without the JS bridge for `^`/literals.
 
@@ -631,3 +702,23 @@ Deferred (future, Aether 7.x+):
   recursion at depth 100k, mutual recursion, ADT/`match`/guards, records + update + row polymorphism,
   strings + `show`, the nested-`let rec` knot, comprehensions, print ordering, polymorphic ADT
   compare) — **171 checks green**; full CI gate (scope + conformance + lint + tsc + build) green.
+- 2026-06-16 (claude): **Aether 8.0 — a self-describing WebAssembly backend.** Knocked out the two
+  oldest items on the 7.x deferred list and added a measured runtime win, all inside `src/wasm/`,
+  the WASM panel and the harness. (1) **A from-scratch WAT disassembler** (`wasm/disasm.ts`) — the
+  mirror image of the from-scratch encoder: a real WebAssembly *binary decoder* (LEB128/`f64`/UTF-8
+  reader; type/import/function/memory/global/export/code/`name` section parsing) that renders the
+  module the encoder just produced back into canonical, indented **WAT text**, with a complete opcode
+  table for exactly the instructions `Code` can emit and structured `block`/`loop`/`if`/`end` nesting.
+  (2) **An emitted `name` custom section** (`encoder.ts`) — function, local (`$env`/`$arg`) and global
+  names, so the WAT reads `call $map` / `global.get $heap` instead of raw indices; codegen threads a
+  name through every runtime helper, compiled lambda (named after its binding), `main` and global.
+  (3) **A measured small-integer cache + live heap accounting** — the bump allocator now reserves a
+  block of shared pre-built `INT` cells at the base of memory and `boxInt` returns them for in-range
+  values (invisible to results: Aether is pure and values compare structurally), and the module
+  exports `__allocCount`/`__allocBytes`/`__cacheHits` so the panel and harness report the allocations
+  saved (e.g. a `range 0 500` fold serves 500+ ints from the cache). The WASM panel now defaults to the
+  disassembled WAT (collapsible per function) with hex + download behind a toggle, and shows the heap
+  stats after a run. Harness grew a disassembler battery (every module: no unknown opcodes, balanced
+  parens, one named `(func …)` per defined function) and a cache battery (WASM ≡ VM preserved *and*
+  the cache demonstrably serves a minimum number of ints) — **207 checks green**; full CI gate
+  (scope + conformance + lint + tsc + build) green.

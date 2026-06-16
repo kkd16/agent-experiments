@@ -27,7 +27,21 @@ import { parse } from '../lang/parser.ts'
 import { PRELUDE_DEFS } from '../lang/prelude.ts'
 import { Code, F64, I32, Module } from './encoder.ts'
 import { NATIVE_GLOBALS } from './bridge.ts'
-import { HEAP_BASE, OFF, SIZE, TAG, closureSize, dataSize, papSize, recordSize, tupleSize } from './layout.ts'
+import {
+  CACHE_BASE,
+  HEAP_BASE,
+  OFF,
+  SIZE,
+  SMALLINT_COUNT,
+  SMALLINT_HI,
+  SMALLINT_LO,
+  TAG,
+  closureSize,
+  dataSize,
+  papSize,
+  recordSize,
+  tupleSize,
+} from './layout.ts'
 
 // Import function indices (declared first, so they take indices 0..2).
 const IMP_CALLNATIVE = 0
@@ -235,6 +249,9 @@ class Gen {
   gTrue = 0
   gFalse = 0
   gPi = 0
+  gAllocCount = 0
+  gAllocBytes = 0
+  gCacheHits = 0
   gNative: number[] = []
   // inline-builtin global indices (to confirm they are still the builtin)
   builtinGlobalIdx = new Map<string, number>()
@@ -381,7 +398,11 @@ class Gen {
   }
 
   // — compile a lambda's body into a fresh WASM function —
-  compileLambda(node: Extract<Expr, { kind: 'lambda' }>, enclosing: Scope): { funcIdx: number; captured: string[] } {
+  compileLambda(
+    node: Extract<Expr, { kind: 'lambda' }>,
+    enclosing: Scope,
+    nameHint = 'lambda',
+  ): { funcIdx: number; captured: string[] } {
     const free = freeVars(node.body)
     free.delete(node.param)
     const captured = [...free].filter((n) => enclosing.get(n)?.kind !== 'global').sort()
@@ -393,13 +414,23 @@ class Gen {
     const ctx = new FuncCtx(2)
     const body = new Code()
     this.compileTail(node.body, inner, ctx, body)
-    const funcIdx = this.module.addFunc([I32, I32], [I32], ctx.localTypes, body)
+    // locals 0/1 are the params (the closure env + the argument); name them so the
+    // disassembler reads `local.get $env` / `local.get $arg`.
+    const localNames: (string | null)[] = ['env', 'arg']
+    const funcIdx = this.module.addFunc([I32, I32], [I32], ctx.localTypes, body, undefined, `λ_${nameHint}`, localNames)
     return { funcIdx, captured }
   }
 
   // — emit a closure cell for a lambda, filling env from `srcScope` —
-  emitClosure(node: Extract<Expr, { kind: 'lambda' }>, defScope: Scope, srcScope: Scope, ctx: FuncCtx, code: Code): void {
-    const { funcIdx, captured } = this.compileLambda(node, defScope)
+  emitClosure(
+    node: Extract<Expr, { kind: 'lambda' }>,
+    defScope: Scope,
+    srcScope: Scope,
+    ctx: FuncCtx,
+    code: Code,
+    nameHint = 'lambda',
+  ): void {
+    const { funcIdx, captured } = this.compileLambda(node, defScope, nameHint)
     const tmp = ctx.newLocal()
     code.i32_const(closureSize(captured.length)).call(F_ALLOC).local_set(tmp)
     code.local_get(tmp).i32_const(TAG.CLOSURE).i32_store(OFF.TAG)
@@ -421,7 +452,7 @@ class Gen {
     // Phase A: compile each lambda function & allocate its (header-only) closure.
     const infos = group.map((b) => {
       if (b.value.kind !== 'lambda') throw new Error('recursive binding must be a function')
-      return this.compileLambda(b.value, inner)
+      return this.compileLambda(b.value, inner, b.name)
     })
     infos.forEach((info, i) => {
       code.i32_const(closureSize(info.captured.length)).call(F_ALLOC).local_set(locals[i])
@@ -913,10 +944,13 @@ class Gen {
 // Runtime function bodies
 // ---------------------------------------------------------------------------
 
-function runtimeAlloc(gHeap: number): Code {
+function runtimeAlloc(gHeap: number, gAllocCount: number, gAllocBytes: number): Code {
   const c = new Code()
   // size = (size + 7) & ~7
   c.local_get(0).i32_const(7).i32_add().i32_const(-8).i32_and().local_set(0)
+  // live accounting: one more allocation, of `size` bytes
+  c.global_get(gAllocCount).i32_const(1).i32_add().global_set(gAllocCount)
+  c.global_get(gAllocBytes).local_get(0).i32_add().global_set(gAllocBytes)
   // ptr = heap
   c.global_get(gHeap).local_set(1)
   // heap = ptr + size
@@ -935,12 +969,22 @@ function runtimeAlloc(gHeap: number): Code {
   return c
 }
 
-function runtimeBoxInt(): Code {
+function runtimeBoxInt(gCacheHits: number): Code {
   const c = new Code()
+  // in the small-int range? return the shared, pre-built cell at CACHE_BASE + (n-LO)*SIZE.INT
+  c.local_get(0).i32_const(SMALLINT_LO).i32_ge_s()
+  c.local_get(0).i32_const(SMALLINT_HI).i32_lt_s()
+  c.i32_and()
+  c.if_(I32)
+  c.global_get(gCacheHits).i32_const(1).i32_add().global_set(gCacheHits)
+  // SIZE.INT is 8 ⇒ shift left by 3
+  c.local_get(0).i32_const(SMALLINT_LO).i32_sub().i32_const(3).i32_shl().i32_const(CACHE_BASE).i32_add()
+  c.else_()
   c.i32_const(SIZE.INT).call(F_ALLOC).local_set(1)
   c.local_get(1).i32_const(TAG.INT).i32_store(OFF.TAG)
   c.local_get(1).local_get(0).i32_store(OFF.INT_VAL)
   c.local_get(1)
+  c.end()
   return c
 }
 function runtimeBoxFloat(): Code {
@@ -1169,28 +1213,32 @@ export function compileToWasm(userCoreAst: Expr): WasmModule {
   gen.collect(userCoreAst)
 
   // 3. WASM globals
-  gen.gHeap = m.addGlobal(I32, true, new Code().i32_const(HEAP_BASE))
-  gen.gUnit = m.addGlobal(I32, true, new Code().i32_const(0))
-  gen.gNil = m.addGlobal(I32, true, new Code().i32_const(0))
-  gen.gTrue = m.addGlobal(I32, true, new Code().i32_const(0))
-  gen.gFalse = m.addGlobal(I32, true, new Code().i32_const(0))
-  gen.gPi = m.addGlobal(I32, true, new Code().i32_const(0))
-  gen.gNative = NATIVE_GLOBALS.map(() => m.addGlobal(I32, true, new Code().i32_const(0)))
+  gen.gHeap = m.addGlobal(I32, true, new Code().i32_const(HEAP_BASE), 'heap')
+  gen.gUnit = m.addGlobal(I32, true, new Code().i32_const(0), 'unit')
+  gen.gNil = m.addGlobal(I32, true, new Code().i32_const(0), 'nil')
+  gen.gTrue = m.addGlobal(I32, true, new Code().i32_const(0), 'true_')
+  gen.gFalse = m.addGlobal(I32, true, new Code().i32_const(0), 'false_')
+  gen.gPi = m.addGlobal(I32, true, new Code().i32_const(0), 'pi')
+  // live heap accounting (read back through exported getters after `main`)
+  gen.gAllocCount = m.addGlobal(I32, true, new Code().i32_const(0), 'allocCount')
+  gen.gAllocBytes = m.addGlobal(I32, true, new Code().i32_const(0), 'allocBytes')
+  gen.gCacheHits = m.addGlobal(I32, true, new Code().i32_const(0), 'cacheHits')
+  gen.gNative = NATIVE_GLOBALS.map((g) => m.addGlobal(I32, true, new Code().i32_const(0), `b_${g.name}`))
 
   // 4. runtime functions (indices 3..15, in the fixed order the constants expect)
-  m.addFunc([I32], [I32], [I32], runtimeAlloc(gen.gHeap), '__alloc')
-  m.addFunc([I32], [I32], [I32], runtimeBoxInt())
-  m.addFunc([F64], [I32], [I32], runtimeBoxFloat())
-  m.addFunc([I32], [I32], [], runtimeBoxBool(gen.gTrue, gen.gFalse))
-  m.addFunc([I32], [I32], [I32], runtimeBoxStr())
-  m.addFunc([I32, I32], [I32], [I32], runtimeMkCons())
-  m.addFunc([I32], [F64], [], runtimeAsF64())
-  m.addFunc([I32, I32], [I32], [I32, I32, F64, F64], runtimeCmpVals())
-  m.addFunc([I32, I32], [I32], [], runtimeListAppend())
-  m.addFunc([I32, I32], [I32], [I32, I32, I32], runtimeRecGet())
-  m.addFunc([I32, I32, I32], [], [I32, I32, I32], runtimeRecSet())
-  m.addFunc([I32], [I32], [I32, I32, I32, I32], runtimeRecCopy())
-  m.addFunc([I32, I32], [I32], [I32, I32, I32, I32, I32, I32, I32], runtimeApply(gen.applyType))
+  m.addFunc([I32], [I32], [I32], runtimeAlloc(gen.gHeap, gen.gAllocCount, gen.gAllocBytes), '__alloc')
+  m.addFunc([I32], [I32], [I32], runtimeBoxInt(gen.gCacheHits), undefined, 'boxInt')
+  m.addFunc([F64], [I32], [I32], runtimeBoxFloat(), undefined, 'boxFloat')
+  m.addFunc([I32], [I32], [], runtimeBoxBool(gen.gTrue, gen.gFalse), undefined, 'boxBool')
+  m.addFunc([I32], [I32], [I32], runtimeBoxStr(), undefined, 'boxStr')
+  m.addFunc([I32, I32], [I32], [I32], runtimeMkCons(), undefined, 'mkCons')
+  m.addFunc([I32], [F64], [], runtimeAsF64(), undefined, 'asF64')
+  m.addFunc([I32, I32], [I32], [I32, I32, F64, F64], runtimeCmpVals(), undefined, 'cmpVals')
+  m.addFunc([I32, I32], [I32], [], runtimeListAppend(), undefined, 'listAppend')
+  m.addFunc([I32, I32], [I32], [I32, I32, I32], runtimeRecGet(), undefined, 'recGet')
+  m.addFunc([I32, I32, I32], [], [I32, I32, I32], runtimeRecSet(), undefined, 'recSet')
+  m.addFunc([I32], [I32], [I32, I32, I32, I32], runtimeRecCopy(), undefined, 'recCopy')
+  m.addFunc([I32, I32], [I32], [I32, I32, I32, I32, I32, I32, I32], runtimeApply(gen.applyType), undefined, 'apply')
 
   // 5. global scope: builtins, pi, and every top-level binding/ctor name
   NATIVE_GLOBALS.forEach((g, i) => {
@@ -1212,7 +1260,7 @@ export function compileToWasm(userCoreAst: Expr): WasmModule {
   const topGlobals = new Map<string, number>()
   const declareName = (name: string): void => {
     if (!topGlobals.has(name)) {
-      const idx = m.addGlobal(I32, true, new Code().i32_const(0))
+      const idx = m.addGlobal(I32, true, new Code().i32_const(0), `g_${name}`)
       topGlobals.set(name, idx)
       gen.globalScope.set(name, { kind: 'global', idx })
     }
@@ -1223,9 +1271,27 @@ export function compileToWasm(userCoreAst: Expr): WasmModule {
     else for (const c of b.ctors) declareName(c.name)
   }
 
-  // 6. main: initialise singletons + natives, assign globals, return final value
+  // 6. main: initialise the small-int cache + singletons + natives, assign globals, return final value
   const mainCtx = new FuncCtx(0)
   const main = new Code()
+
+  // small-integer cache: pre-build one shared INT cell per value in [LO, HI).
+  // cell `i` at CACHE_BASE + i*8 holds INT (LO + i); `boxInt` returns these directly.
+  {
+    const ci = mainCtx.newLocal()
+    const addr = mainCtx.newLocal()
+    main.i32_const(0).local_set(ci)
+    main.block()
+    main.loop()
+    main.local_get(ci).i32_const(SMALLINT_COUNT).i32_ge_s().br_if(1)
+    main.i32_const(CACHE_BASE).local_get(ci).i32_const(3).i32_shl().i32_add().local_set(addr)
+    main.local_get(addr).i32_const(TAG.INT).i32_store(OFF.TAG)
+    main.local_get(addr).i32_const(SMALLINT_LO).local_get(ci).i32_add().i32_store(OFF.INT_VAL)
+    main.local_get(ci).i32_const(1).i32_add().local_set(ci)
+    main.br(0)
+    main.end()
+    main.end()
+  }
 
   // singletons
   const initSingleton = (tag: number, size: number, glob: number, extra?: (c: Code, tmp: number) => void): void => {
@@ -1280,15 +1346,21 @@ export function compileToWasm(userCoreAst: Expr): WasmModule {
     main.local_get(tmp).global_set(glob)
   }
 
+  // a binding's value, naming the WASM function after the binding when it is a lambda
+  const compileNamedValue = (value: Expr, name: string): void => {
+    if (value.kind === 'lambda') gen.emitClosure(value, gen.globalScope, gen.globalScope, mainCtx, main, name)
+    else gen.compileExpr(value, gen.globalScope, mainCtx, main)
+  }
+
   for (const b of allBindings) {
     if (b.kind === 'let') {
-      gen.compileExpr(b.value, gen.globalScope, mainCtx, main)
+      compileNamedValue(b.value, b.name)
       main.global_set(topGlobals.get(b.name)!)
     } else if (b.kind === 'letrec') {
       // top-level mutual recursion: each value is a lambda referencing the others
       // via globals, so we can compile and assign independently.
       for (const x of b.bindings) {
-        gen.compileExpr(x.value, gen.globalScope, mainCtx, main)
+        compileNamedValue(x.value, x.name)
         main.global_set(topGlobals.get(x.name)!)
       }
     } else {
@@ -1300,6 +1372,11 @@ export function compileToWasm(userCoreAst: Expr): WasmModule {
   gen.compileTail(final, gen.globalScope, mainCtx, main)
   m.addFunc([], [I32], mainCtx.localTypes, main, 'main')
 
+  // exported getters for the live heap accounting (read back by the driver after `main`)
+  m.addFunc([], [I32], [], new Code().global_get(gen.gAllocCount), '__allocCount')
+  m.addFunc([], [I32], [], new Code().global_get(gen.gAllocBytes), '__allocBytes')
+  m.addFunc([], [I32], [], new Code().global_get(gen.gCacheHits), '__cacheHits')
+
   const bytes = m.emit()
   return {
     bytes,
@@ -1309,7 +1386,7 @@ export function compileToWasm(userCoreAst: Expr): WasmModule {
     stats: {
       funcCount: m.definedFuncCount,
       importCount: m.importCount,
-      globalCount: 6 + gen.gNative.length + topGlobals.size,
+      globalCount: 9 + gen.gNative.length + topGlobals.size,
       byteLength: bytes.length,
     },
   }

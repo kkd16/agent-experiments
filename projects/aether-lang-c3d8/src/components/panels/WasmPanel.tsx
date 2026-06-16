@@ -4,6 +4,7 @@ import { runPipeline } from '../../lang/pipeline.ts'
 import { valueToString } from '../../lang/values.ts'
 import { compileWasm, hexDump, runWasm, sectionSummary } from '../../wasm/run.ts'
 import type { WasmRunResult } from '../../wasm/run.ts'
+import { disassemble } from '../../wasm/disasm.ts'
 
 interface Props {
   /** the elaborated (dictionary-passed) core AST — what actually compiles */
@@ -31,8 +32,18 @@ export default function WasmPanel({ ast, code, optimize }: Props) {
     }
   }, [ast])
 
+  const wat = useMemo(() => {
+    if (!compiled?.module) return null
+    try {
+      return disassemble(compiled.module.bytes)
+    } catch {
+      return null
+    }
+  }, [compiled])
+
   const [cmp, setCmp] = useState<Comparison | null>(null)
   const [busy, setBusy] = useState(false)
+  const [showWat, setShowWat] = useState(true)
   const [showHex, setShowHex] = useState(false)
 
   const run = async (): Promise<void> => {
@@ -83,10 +94,11 @@ export default function WasmPanel({ ast, code, optimize }: Props) {
       <p className="panel-note">
         A third backend: the same typed AST is lowered to a real <strong>WebAssembly</strong> module —
         hand-assembled to bytes here in the browser (no <code>wabt</code>, no <code>binaryen</code>) —
-        then instantiated and run by the engine. A bump allocator, closures via <code>call_indirect</code>,
-        arithmetic and <code>match</code> run as native WASM; printing, <code>show</code>, comparison and the
-        turtle are imports that reuse the VM&apos;s own code, so the result matches the bytecode VM
-        byte-for-byte.
+        then instantiated and run by the engine. A bump allocator (with a shared small-integer cache),
+        closures via <code>call_indirect</code>, arithmetic and <code>match</code> run as native WASM;
+        printing, <code>show</code>, comparison and the turtle are imports that reuse the VM&apos;s own code,
+        so the result matches the bytecode VM byte-for-byte. The module carries a <code>name</code> section
+        and reads back as <strong>WAT text</strong> below, disassembled from its own bytes.
       </p>
 
       <div className="js-toolbar">
@@ -123,6 +135,13 @@ export default function WasmPanel({ ast, code, optimize }: Props) {
                 {cmp.wasm.output.length > 0 && <pre className="js-out">{cmp.wasm.output.join('\n')}</pre>}
                 {cmp.wasm.effects.length > 0 && (
                   <div className="run-stats">{cmp.wasm.effects.length.toLocaleString()} draw commands</div>
+                )}
+                {cmp.wasm.heap && (
+                  <div className="run-stats">
+                    {cmp.wasm.heap.allocCount.toLocaleString()} cells allocated (
+                    {cmp.wasm.heap.allocBytes.toLocaleString()} B);{' '}
+                    {cmp.wasm.heap.cacheHits.toLocaleString()} ints served from the small-int cache
+                  </div>
                 )}
               </div>
               <div className="js-col">
@@ -172,6 +191,30 @@ export default function WasmPanel({ ast, code, optimize }: Props) {
               </tbody>
             </table>
           </div>
+
+          <button className="js-disclose" onClick={() => setShowWat((s) => !s)}>
+            {showWat ? '▾' : '▸'} disassembly (WAT text format)
+            {wat && <span className="wasm-wat-meta"> — {wat.instructions.toLocaleString()} instructions, decoded from the bytes</span>}
+          </button>
+          {showWat &&
+            (wat ? (
+              <>
+                <p className="panel-note wasm-wat-note">
+                  Round-tripped back from the module bytes by a from-scratch WAT disassembler — the mirror
+                  image of the encoder, also library-free. Names come from the emitted <code>name</code>{' '}
+                  section, so calls read <code>call $map</code> instead of <code>call 27</code>.
+                </p>
+                <pre className="js-code wasm-wat">{wat.header}</pre>
+                {wat.funcs.map((f) => (
+                  <details key={f.index} className="wasm-func">
+                    <summary>{f.name}</summary>
+                    <pre className="js-code wasm-wat">{f.wat}</pre>
+                  </details>
+                ))}
+              </>
+            ) : (
+              <pre className="js-code dim">disassembly unavailable</pre>
+            ))}
 
           <button className="js-disclose" onClick={() => setShowHex((s) => !s)}>
             {showHex ? '▾' : '▸'} module bytes (hex)
