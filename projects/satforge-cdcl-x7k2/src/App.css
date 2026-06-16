@@ -1434,6 +1434,13 @@ input[type='range'] {
   color: #fbbf24;
   border-color: rgba(245, 158, 11, 0.34);
 }
+.logic-badge.l-qf_dt,
+.logic-badge.l-qf_ufdt,
+.logic-badge.l-qf_dtlia {
+  background: rgba(232, 121, 249, 0.15);
+  color: #f0abfc;
+  border-color: rgba(232, 121, 249, 0.34);
+}
 
 /* ---- array model tables ---- */
 .smt-arrays {

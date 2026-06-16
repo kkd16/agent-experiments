@@ -25,6 +25,24 @@ export interface FunSig {
   retSort: Sort
 }
 
+// ---- algebraic datatypes -----------------------------------------------------
+// A constructor of a datatype: its function symbol, the tester predicate that
+// recognizes it, and its selectors (each a unary function symbol with a sort).
+export interface DtConstructor {
+  name: string
+  tester: string // the recognizer predicate symbol, e.g. `is-cons`
+  selectors: { name: string; sort: Sort }[]
+}
+export interface DtSort {
+  name: Sort
+  ctors: DtConstructor[]
+}
+
+/** The canonical recognizer-predicate name for a constructor symbol. */
+export function testerName(ctor: string): string {
+  return `is-${ctor}`
+}
+
 // ---- Terms -------------------------------------------------------------------
 export interface Term {
   id: number
@@ -96,6 +114,36 @@ export class TermManager {
   arrayElemSort(s: Sort): Sort {
     return splitArraySort(s)[1]
   }
+
+  // ---- datatype sorts --------------------------------------------------------
+  private datatypes = new Map<Sort, DtSort>()
+  /**
+   * Declare a family of (possibly mutually-recursive) algebraic datatypes. All
+   * sort names are registered *first* so constructors may reference each other's
+   * sorts, then every constructor / selector / tester is interned as an ordinary
+   * declared function symbol — so the rest of the engine treats them uniformly.
+   */
+  declareDatatypes(dts: DtSort[]): void {
+    for (const dt of dts) this.declareSort(dt.name)
+    for (const dt of dts) {
+      this.datatypes.set(dt.name, dt)
+      for (const c of dt.ctors) {
+        this.declareFun({ name: c.name, argSorts: c.selectors.map((s) => s.sort), retSort: dt.name })
+        this.declareFun({ name: c.tester, argSorts: [dt.name], retSort: 'Bool' })
+        for (const s of c.selectors) this.declareFun({ name: s.name, argSorts: [dt.name], retSort: s.sort })
+      }
+    }
+  }
+  getDatatype(sort: Sort): DtSort | undefined {
+    return this.datatypes.get(sort)
+  }
+  isDatatypeSort(sort: Sort): boolean {
+    return this.datatypes.has(sort)
+  }
+  allDatatypes(): DtSort[] {
+    return [...this.datatypes.values()]
+  }
+
   declareFun(sig: FunSig): void {
     this.funs.set(sig.name, sig)
   }

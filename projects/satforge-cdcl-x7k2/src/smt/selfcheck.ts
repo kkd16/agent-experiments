@@ -12,6 +12,8 @@ import { solveSmt, type Theory } from './dpllt'
 import { referenceSatEUF, referenceSatArith, collectAtoms, evalFormula } from './reference'
 import { checkSat, smtUnsatCore } from './smt'
 import { referenceSatArrays } from './arrayref'
+import { referenceSatDatatypes } from './dtref'
+import { testerName, type DtSort } from './term'
 import { parseSmtLib } from './parse'
 import { ackermannize } from './ackermann'
 import { SMT_EXAMPLES } from './examples'
@@ -546,6 +548,225 @@ export function runSmtChecks(): SmtCheckReport {
   }
   arrayBatch('non-extensional', 0xa17a, 2500, false)
   arrayBatch('extensional', 0xb33f, 1200, true)
+
+  // ---- theory of datatypes (QF_DT): hand-written cases -----------------------
+  {
+    // Lst = nil | cons(head: Elem, tail: Lst) over an uninterpreted Elem sort.
+    const tm = new TermManager()
+    tm.declareSort('Elem')
+    const Lst: DtSort = {
+      name: 'Lst',
+      ctors: [
+        { name: 'nil', tester: testerName('nil'), selectors: [] },
+        {
+          name: 'cons',
+          tester: testerName('cons'),
+          selectors: [
+            { name: 'head', sort: 'Elem' },
+            { name: 'tail', sort: 'Lst' },
+          ],
+        },
+      ],
+    }
+    tm.declareDatatypes([Lst])
+    for (const c of ['x', 'y']) tm.declareFun({ name: c, argSorts: [], retSort: 'Lst' })
+    for (const c of ['a', 'b']) tm.declareFun({ name: c, argSorts: [], retSort: 'Elem' })
+    const [x, y] = ['x', 'y'].map((s) => tm.app(s))
+    const [a, b] = ['a', 'b'].map((s) => tm.app(s))
+    const nil = tm.app('nil')
+    const cons = (h: Term, t: Term) => tm.app('cons', [h, t])
+    const isC = (ctor: string, t: Term) => tm.pred(tm.app(testerName(ctor), [t]))
+    const head = (t: Term) => tm.app('head', [t])
+    const tail = (t: Term) => tm.app('tail', [t])
+    const sat = (f: Formula) => checkSat(tm, f).status === 'sat'
+
+    // Constructor read-back + injectivity.
+    check('DT: select head(cons(a,nil))=a', !sat(tm.not(tm.eq(head(cons(a, nil)), a))))
+    check('DT: select tail(cons(a,nil))=nil', !sat(tm.not(tm.eq(tail(cons(a, nil)), nil))))
+    check('DT: injectivity heads — cons(a,x)=cons(b,x) ∧ a≠b UNSAT', !sat(tm.and([tm.eq(cons(a, x), cons(b, x)), tm.not(tm.eq(a, b))])))
+    check('DT: injectivity tails — cons(a,x)=cons(a,y) ∧ x≠y UNSAT', !sat(tm.and([tm.eq(cons(a, x), cons(a, y)), tm.not(tm.eq(x, y))])))
+    check('DT: cons(a,x)=cons(a,x) SAT', sat(tm.eq(cons(a, x), cons(a, x))))
+
+    // Disjointness + exhaustiveness of testers.
+    check('DT: is-nil(x) ∧ is-cons(x) UNSAT', !sat(tm.and([isC('nil', x), isC('cons', x)])))
+    check('DT: ¬is-nil(x) ∧ ¬is-cons(x) UNSAT (exhaustive)', !sat(tm.and([tm.not(isC('nil', x)), tm.not(isC('cons', x))])))
+    check('DT: is-cons(cons(a,nil)) forced', !sat(tm.not(isC('cons', cons(a, nil)))))
+    check('DT: is-nil(cons(a,nil)) UNSAT', !sat(isC('nil', cons(a, nil))))
+    check('DT: is-cons(x) is SAT', sat(isC('cons', x)))
+
+    // Different constructors are distinct.
+    check('DT: nil = cons(a,nil) UNSAT', !sat(tm.eq(nil, cons(a, nil))))
+    check('DT: nil ≠ cons(a,nil) SAT', sat(tm.not(tm.eq(nil, cons(a, nil)))))
+
+    // Acyclicity — a finite list is never its own tail.
+    check('DT: x = cons(a,x) UNSAT (acyclic)', !sat(tm.eq(x, cons(a, x))))
+    check('DT: x=cons(a,y) ∧ y=cons(b,x) UNSAT (2-cycle)', !sat(tm.and([tm.eq(x, cons(a, y)), tm.eq(y, cons(b, x))])))
+    check('DT: x=cons(a,y) ∧ y=cons(b,nil) SAT (finite)', sat(tm.and([tm.eq(x, cons(a, y)), tm.eq(y, cons(b, nil))])))
+
+    // Selector reasoning through the tester link (selector on a variable).
+    check(
+      'DT: is-cons(x) ∧ x=cons(b,nil) ∧ head(x)=a ∧ a≠b UNSAT',
+      !sat(tm.and([isC('cons', x), tm.eq(x, cons(b, nil)), tm.eq(head(x), a), tm.not(tm.eq(a, b))])),
+    )
+    check('DT: is-cons(x) ∧ tail(x)=x UNSAT (acyclic via link)', !sat(tm.and([isC('cons', x), tm.eq(tail(x), x)])))
+  }
+
+  // ---- datatypes over integers (QF_DTLIA) ------------------------------------
+  {
+    const tm = new TermManager()
+    const IL: DtSort = {
+      name: 'IL',
+      ctors: [
+        { name: 'lnil', tester: testerName('lnil'), selectors: [] },
+        {
+          name: 'lcons',
+          tester: testerName('lcons'),
+          selectors: [
+            { name: 'hd', sort: 'Int' },
+            { name: 'tl', sort: 'IL' },
+          ],
+        },
+      ],
+    }
+    tm.declareDatatypes([IL])
+    tm.declareFun({ name: 'x', argSorts: [], retSort: 'IL' })
+    const x = tm.app('x')
+    const n = (k: number) => tm.num(R(k), 'Int')
+    const lcons = (h: Term, t: Term) => tm.app('lcons', [h, t])
+    const hd = (t: Term) => tm.app('hd', [t])
+    const lnil = tm.app('lnil')
+    const sat = (f: Formula) => checkSat(tm, f).status === 'sat'
+    // The head of a known cons is its integer value — claiming otherwise is UNSAT.
+    check('DTLIA: x=lcons(5,lnil) ∧ hd(x)<5 UNSAT', !sat(tm.and([tm.eq(x, lcons(n(5), lnil)), tm.rel('lt', hd(x), n(5))])))
+    check('DTLIA: x=lcons(7,lnil) ∧ hd(x)>6 SAT', sat(tm.and([tm.eq(x, lcons(n(7), lnil)), tm.rel('gt', hd(x), n(6))])))
+  }
+
+  // ---- enum datatype (exhaustiveness rules out a fourth value) ---------------
+  {
+    const tm = new TermManager()
+    const Color: DtSort = {
+      name: 'Color',
+      ctors: ['red', 'green', 'blue'].map((c) => ({ name: c, tester: testerName(c), selectors: [] })),
+    }
+    tm.declareDatatypes([Color])
+    tm.declareFun({ name: 'c', argSorts: [], retSort: 'Color' })
+    const c = tm.app('c')
+    const lit = (s: string) => tm.app(s)
+    const sat = (f: Formula) => checkSat(tm, f).status === 'sat'
+    check(
+      'enum: c≠red ∧ c≠green ∧ c≠blue UNSAT (only three colors)',
+      !sat(tm.and([tm.not(tm.eq(c, lit('red'))), tm.not(tm.eq(c, lit('green'))), tm.not(tm.eq(c, lit('blue')))])),
+    )
+    check('enum: red, green, blue are distinct', !sat(tm.eq(lit('red'), lit('green'))))
+    check('enum: c≠red ∧ c≠green SAT (c can be blue)', sat(tm.and([tm.not(tm.eq(c, lit('red'))), tm.not(tm.eq(c, lit('green')))])))
+  }
+
+  // ---- SMT-LIB datatype parser ----------------------------------------------
+  {
+    const solveScript = (src: string) => {
+      const s = parseSmtLib(src)
+      return checkSat(s.tm, s.tm.and(s.assertions))
+    }
+    check(
+      'parse: declare-datatype list read-back UNSAT',
+      solveScript(`(declare-sort Elem 0)
+        (declare-datatype Lst ((nil) (cons (head Elem) (tail Lst))))
+        (declare-const a Elem)
+        (assert (not (= (head (cons a nil)) a))) (check-sat)`).status === 'unsat',
+    )
+    check(
+      'parse: tester ((_ is cons) (cons a nil)) UNSAT to deny',
+      solveScript(`(declare-sort Elem 0)(declare-datatype Lst ((nil) (cons (head Elem) (tail Lst))))
+        (declare-const a Elem)
+        (assert (not ((_ is cons) (cons a nil)))) (check-sat)`).status === 'unsat',
+    )
+    check(
+      'parse: cyclic list x=cons(a,x) UNSAT',
+      solveScript(`(declare-sort Elem 0)(declare-datatype Lst ((nil) (cons (head Elem) (tail Lst))))
+        (declare-const x Lst)(declare-const a Elem)
+        (assert (= x (cons a x))) (check-sat)`).status === 'unsat',
+    )
+    check(
+      'parse: declare-datatypes mutual Nat order SAT',
+      solveScript(`(declare-datatypes ((Nat 0)) (((zero) (succ (pred Nat)))))
+        (declare-const n Nat)
+        (assert ((_ is succ) n)) (assert (not (= n (succ n)))) (check-sat)`).status === 'sat',
+    )
+  }
+
+  // ---- random QF_DT cross-check vs finite-tree-model enumeration -------------
+  // Discipline: atoms are testers / equalities over variables and constructor
+  // terms (no bare selectors — those are out of the oracle's scope), so the
+  // finite-tree oracle stays honest and shares no code with the reduction.
+  {
+    const rng = mulberry32(0xda7a)
+    let mism = 0
+    let decided = 0
+    let unsatSeen = 0
+    const N = 1500
+    for (let it = 0; it < N; it++) {
+      const tm = new TermManager()
+      tm.declareSort('Elem')
+      tm.declareDatatypes([
+        {
+          name: 'Lst',
+          ctors: [
+            { name: 'nil', tester: testerName('nil'), selectors: [] },
+            {
+              name: 'cons',
+              tester: testerName('cons'),
+              selectors: [
+                { name: 'head', sort: 'Elem' },
+                { name: 'tail', sort: 'Lst' },
+              ],
+            },
+          ],
+        },
+      ])
+      const lstNames = ['x', 'y']
+      for (const c of lstNames) tm.declareFun({ name: c, argSorts: [], retSort: 'Lst' })
+      const elemNames = ['u', 'v']
+      for (const c of elemNames) tm.declareFun({ name: c, argSorts: [], retSort: 'Elem' })
+      const lsts = lstNames.map((c) => tm.app(c))
+      const elems = elemNames.map((c) => tm.app(c))
+      const nil = tm.app('nil')
+      const pick = <T,>(xs: T[]) => xs[Math.floor(rng() * xs.length)]
+      const mkElem = (): Term => pick(elems)
+      const mkList = (depth: number): Term => {
+        const r = rng()
+        if (depth <= 0 || r < 0.45) return pick(lsts)
+        if (r < 0.6) return nil
+        return tm.app('cons', [mkElem(), mkList(depth - 1)])
+      }
+      const mkAtom = (): Formula => {
+        const r = rng()
+        if (r < 0.3) return tm.pred(tm.app(testerName(pick(['nil', 'cons'])), [mkList(1)]))
+        if (r < 0.65) return tm.eq(mkList(1), mkList(1))
+        return tm.eq(mkElem(), mkElem())
+      }
+      const numAtoms = 2 + Math.floor(rng() * 2)
+      const lits: Formula[] = []
+      for (let k = 0; k < numAtoms; k++) {
+        let at = mkAtom()
+        if (rng() < 0.45) at = tm.not(at)
+        lits.push(at)
+      }
+      const f = rng() < 0.6 ? tm.and(lits) : tm.or(lits)
+      const want = referenceSatDatatypes(tm, f, 700_000)
+      if (want === null) continue
+      const r = checkSat(tm, f)
+      if (r.status === 'unknown') continue
+      decided++
+      const got = r.status === 'sat'
+      if (got !== want) {
+        mism++
+        if (mism <= 4) messages.push(`  DT mismatch: got ${got}, want ${want}`)
+      }
+      if (!want) unsatSeen++
+    }
+    check(`DT: ${decided} random formulas match finite-tree-model reference`, mism === 0, `mismatches=${mism}`)
+    check('DT: random suite exercised some UNSAT instances', unsatSeen > decided / 25, `unsat=${unsatSeen}`)
+  }
 
   void Rational
   void ((): Atom | undefined => undefined)
