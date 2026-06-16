@@ -54,7 +54,8 @@ reference interpreter at every optimization level.
 ## Language features
 
 int / **`long` (64-bit, i64)** / float / bool / **str** / arrays of any scalar incl.
-**`long[]`** and **`str[]`** (linear memory) / **`struct` (aggregate types)**,
+**`long[]`** and **`str[]`** (linear memory) / **`struct` (aggregate types)** /
+**arrays of function pointers** (`(fn(…)->…)[]`, a jump table) /
 functions + recursion, globals (assignable from any function), if/else, while,
 **`do`/`while`**, for, **`switch`/`case`/`default`** (multi-label, no fallthrough),
 break/continue, short-circuit `&&`/`||`, **ternary `?:`**, **compound assignment**
@@ -108,7 +109,10 @@ pipeline, so the differential harness exercises it at every opt level too.
 **Function pointers (first-class functions)** make functions values. A function
 type is written `fn(int, int) -> int`; a bare function name *decays* to a function
 pointer (like C / Go), so you can store it in a variable, pass it to another
-function, return it, or keep it in a `struct` field (a hand-rolled **vtable**).
+function, return it, keep it in a `struct` field (a hand-rolled **vtable**), or hold
+a whole **array of them** — `(fn(int) -> int)[] = fn_array(n)` — for a real **jump
+table / state machine** (function-table slot 0 is reserved as a null `funcref`, so an
+unset element traps on call, and `fn == null` tests whether a slot is wired up yet).
 Calling a function-typed value — `g(x)` where `g` is a variable, or `tbl.op(x)`,
 or `(getfn())(x)` — lowers to a real wasm **`call_indirect`** through a module
 **function table**, with the signature interned in the type section. The result is
@@ -244,17 +248,97 @@ Plan (every item differential-tested at -O0…-O3 before it is checked off):
 - [x] UI: AST panel renders `callptr`; a flagship "First-class functions" example.
 
 ### Deliberately deferred (a clean, documented limitation)
-- [ ] **Arrays of function pointers** (jump tables / state machines). The blocker is
-      principled, not mechanical: an uninitialized element is observable, and the two
-      backends model a function value differently — the wasm has a raw table slot (an
-      uninitialized `0` would silently call `funcs[0]`), the oracle has the function's
-      *name* (and cannot compute the table order, which is a backend concern). Making
-      them agree needs an explicit "no function" sentinel that traps a call in *both*
-      (e.g. fill new fn-arrays with an out-of-range slot so `call_indirect` traps, and
-      model the element as `null` in the oracle) plus grouping parens in the type
-      grammar (`(fn(int)->int)[]`, since `fn(int)->int[]` already reads as "returns
-      `int[]`"). A `struct` field already stores a function pointer, so a hand-rolled
-      vtable / dispatch object works today; the array form is the remaining sugar.
+- [x] **Arrays of function pointers** (jump tables / state machines). **Shipped
+      2026-06-16** — see the session below. The blocker described here was solved by a
+      cleaner mechanism than the "out-of-range sentinel" sketched at the time:
+      **reserve table slot 0 as a null `funcref`** and shift every real function to
+      slots 1..N, so the i32 `0` that `null` (and a fresh `fn_array` element) already
+      lowers to *is* the no-function value — calling it traps on the null reference in
+      wasm exactly as the oracle traps on a `null` function value, and `fn == null`
+      becomes a real, observable "is this slot set?" test in both backends.
+
+## 2026-06-16 — plan: arrays of function pointers — jump tables & state machines (claude / claude-opus-4-8)
+
+The last function-pointer item the previous session deliberately deferred: an
+**array of function pointers**, the data structure behind a real interpreter's
+*jump table* and a *finite-state machine*. First-class functions shipped last time
+(pass them, return them, compare them, store one in a `struct` field), but you still
+could not write `(fn(int) -> int)[]` and index it — so a dispatch table had to be a
+chain of `struct` vtables. This session closes that, and proves it the way Strata
+proves everything: byte-for-byte agreement between the compiled WebAssembly and the
+reference interpreter, at every optimization level.
+
+**The hard part — and a cleaner fix than last time's note.** The deferred entry
+worried that the two backends model a function value differently (the wasm has a raw
+i32 table slot, the oracle has the target's *name*), so an *uninitialized* array
+element is observable and dangerous: a zero-filled slot would silently call
+`funcs[0]`. The previous note proposed an out-of-range sentinel that traps. The fix
+shipped here is simpler and stronger: **reserve function-table slot 0 as the default
+null `funcref`** and emit every real function into slots 1..N (the element segment now
+starts at offset 1, the table is sized N+1, and `funcSlot(name)` adds 1). Now the i32
+`0` that the `null` literal — and therefore a zero-initialized `fn_array` element —
+already lowers to *is* the "no function" value: calling it indexes table[0] and the
+engine traps on the null reference, exactly as the interpreter traps on a `null`
+function value. No fill loop, no special sentinel constant. Better still, because
+`null` and a real function pointer (slot ≥ 1) are now distinguishable as plain i32s,
+`fn == null` is a genuine, observable "has this slot been wired up yet?" test that
+agrees in both backends — so the safety property is testable *without* tripping a trap
+(trap messages differ between the engines, so they can't go in the differential corpus).
+
+Verified out-of-band: calling an unset slot traps in **both** backends at -O0…-O3
+(interpreter: "call through an invalid function pointer"; wasm: "null function or
+function signature mismatch"), each halting at exactly the right instruction.
+
+Plan (every item differential-tested at -O0…-O3 before it is checked off):
+
+**Shipped — 636 differential checks, all green (baseline before this work: 600).**
+
+### Front-end — syntax & types
+- [x] AST: extend `ElemTy` with a function-pointer element `{ kind:'fn'; params; ret;
+      hole? }`; `tyEqual` now compares fn-array element **signatures** (so
+      `(fn(int)->int)[]` ≠ `(fn(str)->str)[]`); `tyName` prints `(fn(…)->…)[]`.
+- [x] Parser: **grouping parens** in the type grammar. A bare `fn(int) -> int[]` still
+      reads as "returns `int[]`"; an array *of* function pointers is the grouped form
+      `(fn(int) -> int)[]`. `parseTypePrimary` handles `( T )` and rejects arrays-of-
+      arrays; a bare `fn(…)` type stays deliberately non-array-suffixable.
+- [x] Type checker: a new `fn_array(n)` intrinsic (the function-pointer analogue of
+      `struct_array`) returns a placeholder `(fn…)[]` whose element signature is a
+      `hole` until a `(fn(…)->…)[]` annotation pins it (same "annotate me" rule +
+      error as `struct_array`); `null` is now coercible to any `fn` (a nullable /
+      clearable function pointer); `fn == null` / `null == fn` type-check to `bool`;
+      `validateTy` recurses into fn-array element signatures.
+
+### Mid-end / back-end
+- [x] Builder: `fn_array(n)` lowers to a zero-filled i32 array (every element is the
+      null slot until assigned). No new IR — an `fn[]` is an i32 array, a stored
+      function name is a `funcaddr`, a call through `arr[i]` is the existing `callind`.
+- [x] Backend: **reserve table slot 0 as a null `funcref`**; functions occupy slots
+      1..N (table size N+1, element segment offset 1, `funcSlot += 1`); WAT printer
+      updated. This is the whole safety mechanism — uninitialized/`null` pointers trap.
+
+### Oracle, debugger, UI, tests
+- [x] Interpreter + step debugger: `ArrayVal` gains an `'fn'` element kind holding
+      `FnVal | null`; `index-assign` stores it; `fn_array` builtin null-fills; the
+      existing `null`-identity comparison already makes `fn == null` agree; the
+      debugger renders an `fn[]` element as `&name` / `null`.
+- [x] Examples + adversarial differential tests (8 new programs × 4 levels = 32 checks):
+      a calculator **jump table**, a null-sentinel observation, a **state machine**, slot
+      reassignment + identity, mixed signatures (incl. void-returning actions, `str`,
+      `long`), the grammar `fn(…)->T[]` vs `(fn(…)->T)[]` distinction, a runtime-built
+      table that never devirtualizes, and an fn-array **passed as a parameter** with a
+      null-guarded dispatch.
+- [x] UI: a flagship **"Bytecode VM (jump table)"** example — a stack machine whose
+      fetch–decode–execute loop is a single `table[op](vm, imm)` indexing, lowering to a
+      wasm `call_indirect` indexed by the opcode; `fn_array` added to the highlighter.
+
+### Deliberately deferred (clean, documented limitations)
+- [ ] **Function pointers in module globals / a global jump table.** Still rejected:
+      a global needs a constant initializer, but a `funcaddr`'s table slot isn't known
+      until backend layout. The slot-0-null trick makes a *null*-initialized global fn
+      pointer representable in principle (init `0`); wiring a const `funcaddr` initializer
+      through the global section is the remaining work.
+- [ ] **A `len`-bounded "call all" / map over an `fn[]` in the standard library.**
+      Trivial in user code today (a `while` loop); a builtin would be sugar.
 
 ## 2026-06-15 — plan: a transcendental math library + `f32` single precision (claude / claude-opus-4-8)
 

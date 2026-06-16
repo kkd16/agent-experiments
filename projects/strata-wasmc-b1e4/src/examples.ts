@@ -815,7 +815,8 @@ fn main() {
   sort(a, asc);  show("asc     ", a);
   sort(a, desc); show("desc    ", a);
 
-  // A vtable: an array... is not allowed for fn elements, but a struct field is.
+  // A vtable: a 'struct' field holds a function pointer. (Arrays of function
+  // pointers also work now — see the "Bytecode VM" example for a jump table.)
   let plus = Op(add, "plus");
   print(plus.name + "(20, 22) = " + str(plus.run(20, 22)));
 
@@ -823,6 +824,82 @@ fn main() {
   // proves the target and rewrites 'g(7)' into a direct call to 'square'.
   let g = square;
   print("g(7) = " + str(g(7)));
+}
+`,
+  },
+  {
+    id: 'bytecode-vm',
+    title: 'Bytecode VM (jump table)',
+    blurb: 'A stack-based virtual machine whose instruction dispatch is an array of function pointers — a real jump table lowered to a wasm call_indirect indexed by the opcode. Each instruction is one function in the table; the fetch–decode–execute loop is a single table indexing. The handler table is data, so the dispatch never devirtualizes, even at -O3.',
+    source: `// A tiny stack machine. The classic interpreter dispatch — a 'switch' over the
+// opcode — is replaced here by an ARRAY OF FUNCTION POINTERS indexed directly by
+// the opcode: 'table[op](vm, imm)'. That single indexing is the whole decode
+// step, and it lowers to a wasm 'call_indirect' through the module's function
+// table. Because the table is built at runtime, the optimizer can never prove the
+// target, so the indirect dispatch survives at every optimization level.
+
+struct VM { stack: int[]; sp: int; }              // a struct with an int[] field
+
+fn push(vm: VM, x: int) { vm.stack[vm.sp] = x; vm.sp = vm.sp + 1; }
+fn pop(vm: VM) -> int { vm.sp = vm.sp - 1; return vm.stack[vm.sp]; }
+
+// Every instruction handler shares one signature: 'fn(VM, int) -> void', taking
+// the machine and the instruction's immediate operand (used only by PUSH).
+fn op_push(vm: VM, imm: int) { push(vm, imm); }
+fn op_add(vm: VM, imm: int)  { let b = pop(vm); let a = pop(vm); push(vm, a + b); }
+fn op_sub(vm: VM, imm: int)  { let b = pop(vm); let a = pop(vm); push(vm, a - b); }
+fn op_mul(vm: VM, imm: int)  { let b = pop(vm); let a = pop(vm); push(vm, a * b); }
+fn op_dup(vm: VM, imm: int)  { let a = pop(vm); push(vm, a); push(vm, a); }
+fn op_neg(vm: VM, imm: int)  { push(vm, 0 - pop(vm)); }
+fn op_out(vm: VM, imm: int)  { print(pop(vm)); }
+
+// Opcode constants — the indices into the dispatch table.
+fn PUSH() -> int { return 0; }
+fn ADD()  -> int { return 1; }
+fn SUB()  -> int { return 2; }
+fn MUL()  -> int { return 3; }
+fn DUP()  -> int { return 4; }
+fn NEG()  -> int { return 5; }
+fn OUT()  -> int { return 6; }
+
+// Fetch–decode–execute: a single 'table[op](...)' per instruction.
+fn run(code: int[], imm: int[], table: (fn(VM, int))[]) {
+  let vm = VM(int_array(256), 0);
+  let pc = 0;
+  while (pc < len(code)) {
+    table[code[pc]](vm, imm[pc]);
+    pc = pc + 1;
+  }
+}
+
+fn main() {
+  // Wire the jump table once: opcode -> handler.
+  let table: (fn(VM, int))[] = fn_array(7);
+  table[PUSH()] = op_push;
+  table[ADD()]  = op_add;
+  table[SUB()]  = op_sub;
+  table[MUL()]  = op_mul;
+  table[DUP()]  = op_dup;
+  table[NEG()]  = op_neg;
+  table[OUT()]  = op_out;
+
+  // Program: compute (3 + 4) * 5, print it, then print -(6 * 6).
+  let n = 11;
+  let code = int_array(n);
+  let imm = int_array(n);
+  code[0]=PUSH(); imm[0]=3;
+  code[1]=PUSH(); imm[1]=4;
+  code[2]=ADD();
+  code[3]=PUSH(); imm[3]=5;
+  code[4]=MUL();
+  code[5]=OUT();             // -> 35
+  code[6]=PUSH(); imm[6]=6;
+  code[7]=DUP();
+  code[8]=MUL();
+  code[9]=NEG();
+  code[10]=OUT();            // -> -36
+
+  run(code, imm, table);
 }
 `,
   },

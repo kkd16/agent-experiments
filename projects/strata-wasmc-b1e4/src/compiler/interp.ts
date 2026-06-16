@@ -21,11 +21,12 @@ export interface FnVal {
 }
 export interface ArrayVal {
   arr: true;
-  elem: 'int' | 'long' | 'float' | 'f32' | 'str' | 'struct';
+  elem: 'int' | 'long' | 'float' | 'f32' | 'str' | 'struct' | 'fn';
   // `int`/`float` arrays hold numbers; `long` arrays hold BigInts; `str` arrays
-  // hold byte strings; `struct` arrays hold struct handles (StructVal or null).
-  // A single union keeps the element accessors uniform.
-  data: (number | bigint | string | StructVal | null)[];
+  // hold byte strings; `struct` arrays hold struct handles (StructVal or null);
+  // `fn` arrays hold function values (FnVal or null). A single union keeps the
+  // element accessors uniform.
+  data: (number | bigint | string | StructVal | FnVal | null)[];
 }
 
 // A struct value: a by-reference record. Two distinct constructions are distinct
@@ -357,6 +358,7 @@ export class Interpreter {
         if (idx < 0 || idx >= target.data.length) throw new Trap('array index out of bounds');
         if (target.elem === 'str') target.data[idx] = val as string;
         else if (target.elem === 'struct') target.data[idx] = val as StructVal | null;
+        else if (target.elem === 'fn') target.data[idx] = val as FnVal | null;
         else if (target.elem === 'long') target.data[idx] = asI64(val as bigint);
         else if (target.elem === 'f32') target.data[idx] = Math.fround(val as number);
         else target.data[idx] = target.elem === 'int' ? i32(val as number) : (val as number);
@@ -878,6 +880,14 @@ export function callBuiltin(
       const n = i32(argv[0] as number);
       if (n < 0) throw new Trap('negative array length');
       return H({ arr: true, elem: 'struct', data: new Array(n).fill(null) });
+    }
+    case 'fn_array': {
+      // A null-filled array of function pointers. Each element is the "no
+      // function" value until assigned; calling it traps (mirroring the wasm
+      // engine trapping on the reserved null table slot 0).
+      const n = i32(argv[0] as number);
+      if (n < 0) throw new Trap('negative array length');
+      return H({ arr: true, elem: 'fn', data: new Array(n).fill(null) });
     }
     case 'split': {
       const s = argv[0] as string;

@@ -118,58 +118,70 @@ class Parser {
   }
 
   private parseType(): Ty {
-    // A function-pointer type: `fn(T, …) -> R` (the return arrow is optional and
-    // defaults to void). Not array-suffixable for now.
-    if (this.check('fn')) {
-      this.next();
-      this.expect('(');
-      const params: Ty[] = [];
-      if (!this.check(')')) {
-        do {
-          params.push(this.parseType());
-        } while (this.accept(','));
-      }
-      this.expect(')');
-      let ret: Ty = T_VOID;
-      if (this.accept('->')) ret = this.parseType();
-      return { kind: 'fn', params, ret };
-    }
-    const t = this.expect('ident');
-    let base: Ty;
-    switch (t.text) {
-      case 'int':
-        base = T_INT;
-        break;
-      case 'long':
-        base = T_LONG;
-        break;
-      case 'float':
-        base = T_FLOAT;
-        break;
-      case 'f32':
-        base = T_F32;
-        break;
-      case 'bool':
-        base = T_BOOL;
-        break;
-      case 'str':
-        base = T_STR;
-        break;
-      case 'void':
-        base = T_VOID;
-        break;
-      default:
-        // A user type name refers to a `struct` (the checker, which knows every
-        // declared struct, reports an unknown name with a precise error).
-        base = { kind: 'struct', name: t.text };
-        break;
-    }
+    // A *bare* function-pointer type `fn(T, …) -> R` is deliberately not
+    // array-suffixable: `fn(int) -> int[]` reads as "returns int[]", so an array
+    // **of** function pointers must be written with grouping parens —
+    // `(fn(int) -> int)[]`. The parenthesized form is handled by `parseTypePrimary`
+    // + the `[]` suffix below.
+    if (this.check('fn')) return this.parseFnType();
+    const start = this.peek().span;
+    const base = this.parseTypePrimary();
     if (this.accept('[')) {
       this.expect(']');
-      if (base.kind === 'void') throw new CompileError('cannot have an array of void', t.span, 'parse');
+      if (base.kind === 'void') throw new CompileError('cannot have an array of void', start, 'parse');
+      if (base.kind === 'array') throw new CompileError('arrays of arrays are not supported', start, 'parse');
       return { kind: 'array', elem: base as import('./ast').ElemTy };
     }
     return base;
+  }
+
+  // `fn(T, …) -> R` (the return arrow is optional and defaults to void).
+  private parseFnType(): Ty {
+    this.expect('fn');
+    this.expect('(');
+    const params: Ty[] = [];
+    if (!this.check(')')) {
+      do {
+        params.push(this.parseType());
+      } while (this.accept(','));
+    }
+    this.expect(')');
+    let ret: Ty = T_VOID;
+    if (this.accept('->')) ret = this.parseType();
+    return { kind: 'fn', params, ret };
+  }
+
+  // A non-array-suffixed type: a parenthesized group `(T)` (which may itself be a
+  // function type, enabling `(fn(…)->…)[]`), a `fn(…)` type, or a scalar/struct
+  // name. The caller applies any `[]` suffix.
+  private parseTypePrimary(): Ty {
+    if (this.accept('(')) {
+      const inner = this.parseType();
+      this.expect(')');
+      return inner;
+    }
+    if (this.check('fn')) return this.parseFnType();
+    const t = this.expect('ident');
+    switch (t.text) {
+      case 'int':
+        return T_INT;
+      case 'long':
+        return T_LONG;
+      case 'float':
+        return T_FLOAT;
+      case 'f32':
+        return T_F32;
+      case 'bool':
+        return T_BOOL;
+      case 'str':
+        return T_STR;
+      case 'void':
+        return T_VOID;
+      default:
+        // A user type name refers to a `struct` (the checker, which knows every
+        // declared struct, reports an unknown name with a precise error).
+        return { kind: 'struct', name: t.text };
+    }
   }
 
   private parseFn(): FnDecl {
