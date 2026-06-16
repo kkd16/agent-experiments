@@ -283,10 +283,68 @@ threshold** where bigger codes start to help.
 - The threshold experiment crosses at ≈10% across seeds. lint + tsc + build + 59/59 self-tests green.
 
 ### Future ideas
-- [ ] Phenomenological / circuit-level noise: repeated noisy syndrome rounds → a 3-D matching graph
-- [ ] Logical-error-rate fit Λ = p_L(d)/p_L(d+2) and a finite-size-scaling collapse for a sharper p_th
-- [ ] Correlated (depolarizing) decoding that matches X and Z jointly; Union-Find decoder for speed
+- [x] Phenomenological noise: repeated noisy syndrome rounds → a 3-D matching graph — shipped in 7.0
+- [x] Logical-error-rate fit Λ = p_L(d)/p_L(d+2) and a finite-size-scaling collapse for a sharper p_th — shipped in 7.0
+- [x] Union-Find decoder for speed — shipped in 7.0 (Delfosse–Nivelle; cross-checked against MWPM)
+- [ ] Circuit-level noise with diagonal hook edges (the full syndrome-extraction circuit)
+- [ ] Correlated (depolarizing) decoding that matches X and Z jointly
 - [ ] Web Worker offload so big sweeps never block the UI
+
+## Quantum Lab 7.0 — Fault Tolerance in Space-Time (this session)
+
+The 6.0 surface code assumed *perfect* syndrome measurement (the code-capacity model). Real
+hardware measures the stabilizers repeatedly and **each measurement is itself noisy**, so a
+single bad readout is indistinguishable from a data error that flickers on for one round. 7.0
+closes that gap with the real fault-tolerance story — decoding in **space-time** — plus a
+second, near-linear-time decoder and the finite-size-scaling analysis that turns a fuzzy
+crossing into a sharp threshold. Everything is additive (new modules + new lab cards) and is
+cross-checked against the 6.0 MWPM decoder and brute force, the project's way.
+
+### Plan (this session)
+- [x] **Generic decoder layer** (`surface/decoder.ts`) — factor the decoder out from the graph.
+      A `MatchingGraph` is detector nodes + one boundary sink + edges that each carry an
+      optional **data qubit** (space edge) or nothing (time edge = measurement error). Both the
+      2-D code-capacity graph and the 3-D space-time graph are instances.
+- [x] **MWPM on the generic graph** (`decodeMWPM`) — BFS shortest-path metric (boundary
+      enter-only) → Edmonds' blossom (reused from 6.0) → path reconstruction toggling only the
+      data qubits along each matched chain.
+- [x] **Union-Find decoder** (`decodeUF`, Delfosse–Nivelle 2017) — from scratch: uniform
+      cluster growth (each odd cluster claims a half-edge per round; an edge claimed from both
+      sides fuses its clusters; the boundary is a free, infinite defect sink) until every
+      cluster is even or boundary-connected, then a **peeling decoder** (Delfosse–Zémor) on a
+      spanning forest of the grown erasure reads off a concrete correction. Near-linear time,
+      provably correct up to the code distance. (Caught one real bug: the growth loop must keep
+      going when a round advances the frontier without yet *fusing* anything — a boundary-bound
+      edge grows one half-edge per round — instead of bailing the moment no edge completes.)
+- [x] **Phenomenological noise + the 3-D space-time graph** (`surface/spacetime.ts`) — T noisy
+      rounds (data flip rate p, measurement flip rate q) + one perfect readout; detectors are
+      the *differences* of consecutive syndromes; the graph stacks T+1 copies of the 2-D graph
+      with a vertical measurement-error edge between layers. `spaceTimeShot` runs one full
+      experiment (history + verdict) and `phenomLogicalErrorRate` / `phenomThresholdSweep`
+      Monte-Carlo it — recovering the textbook phenomenological threshold (~2.5–3%, far below
+      the 10.3% code-capacity figure: the price of measuring imperfectly).
+- [x] **Finite-size scaling** — `lambdaRatios` computes Λ_d = p_L(d)/p_L(d+2) (>1 and growing
+      below threshold = a working code), and `collapseFit` performs the universal data collapse
+      (Wang–Harrington–Preskill): grid-search (p_th, ν), fit a quadratic in x=(p−p_th)·d^{1/ν}
+      by least squares, keep the minimum-residual collapse. Recovers p_th ≈ 9.7% for code
+      capacity and ≈ 2.3% phenomenological from small distances.
+- [x] **Surface lab UI** — a **space-time decoder** card (T-round slider, p=q, decoder toggle,
+      a strip of per-round mini-lattices showing the detector history with the perfect final
+      round flagged, full verdict), a generalised **threshold** card (toggle code-capacity ↔
+      phenomenological and MWPM ↔ Union-Find), and a **finite-size scaling** card (Λ table +
+      a universal-collapse plot of every (d,p) point folded onto one curve, with fitted p_th, ν).
+- [x] **Tests** — extended the in-browser suite **59 → 67**: Union-Find corrects every error of
+      weight ≤ ⌊(d−1)/2⌋ (d=3,5,7), Union-Find agrees with optimal MWPM on the logical verdict
+      ≥ 90% of the time, the space-time graph has the right node/time-edge/space-edge counts,
+      the phenomenological threshold ordering holds (below p_th the bigger code wins, above it
+      loses — for both decoders), Λ > 1 below threshold, and the collapse fit recovers p_th ≈ 10%.
+
+### Verified
+- Union-Find corrects all errors up to the code distance and tracks MWPM's logical verdict to
+  ~95% on random code-capacity errors (d=5, p=8%) — the expected near-optimality.
+- Phenomenological MWPM threshold ≈ 2.5%, Union-Find ≈ 2.3% (UF sits just under MWPM, as it
+  should); the universal collapse independently recovers ~2.3% phenomenological / ~9.7% code
+  capacity. lint + tsc + build + 67/67 self-tests green.
 
 ## Session log
 
@@ -355,3 +413,24 @@ threshold** where bigger codes start to help.
   corrected/logical-error verdict, and the threshold plot with crossing curves. In-browser suite
   52 → 59 cases (blossom vs brute force, code structure, weight-≤⌊(d−1)/2⌋ correction, threshold
   ordering), all green; lint + tsc + build pass.
+- 2026-06-16 (claude/claude-opus-4-8): **Quantum Lab 7.0 — Fault Tolerance in Space-Time.**
+  Took the surface code from perfect measurements to the real fault-tolerant setting. Factored
+  the decoder out from its graph into a generic `MatchingGraph` (`surface/decoder.ts`) — detector
+  nodes + a boundary sink + edges carrying an optional data qubit — so the same decoders run on
+  the 2-D code-capacity graph and the new 3-D space-time graph. Built a from-scratch **Union-Find
+  decoder** (Delfosse–Nivelle: uniform cluster growth with a boundary defect-sink, then a
+  Delfosse–Zémor peeling decoder on a spanning forest of the grown erasure) alongside the 6.0
+  MWPM decoder; it corrects every error up to the code distance and tracks MWPM's logical verdict
+  to ~95% (fixed a growth-loop bug that bailed before boundary-bound edges could finish growing).
+  Added the **phenomenological noise model** (`surface/spacetime.ts`): T noisy syndrome rounds
+  (data + measurement errors) + a perfect readout, detectors as syndrome *differences*, stacked
+  into a 3-D matching graph whose time edges absorb measurement errors. Monte-Carlo sweeps recover
+  the phenomenological threshold (MWPM ≈ 2.5%, UF ≈ 2.3% — well below the 10.3% code-capacity
+  figure). Added **finite-size scaling**: the Λ = p_L(d)/p_L(d+2) suppression factor and a
+  universal data collapse (`collapseFit`) that grid-fits (p_th, ν) by folding every distance/rate
+  curve onto one quadratic — independently recovering p_th. New Surface-lab cards: a space-time
+  decoder with a per-round detector-history strip, a threshold card that toggles model
+  (code-capacity ↔ phenomenological) and decoder (MWPM ↔ Union-Find), and a finite-size-scaling
+  card with the Λ table and a universal-collapse plot. In-browser suite 59 → 67 cases (UF
+  correctness, UF↔MWPM agreement, space-time graph structure, phenomenological threshold ordering
+  for both decoders, Λ>1, collapse recovers p_th), all green; lint + tsc + build pass.
