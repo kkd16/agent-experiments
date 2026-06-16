@@ -45,8 +45,8 @@ conflict teaches the solver a new clause that prunes an exponential swath of the
 truth-table enumeration, asserting the verdicts match and every reported model truly satisfies
 its formula. It also checks N-Queens (4–12), Sudoku, 3-colorability, and the pigeonhole UNSAT
 family — plus DRAT proofs, #SAT counts, MUS minimality, MaxSAT optima (Session 4), the DPLL(T)
-SMT theories (Session 5) and the QF_BV bit-blaster (Session 6) all compared against independent
-references. All **208 assertions** pass.
+SMT theories (Session 5), the QF_BV bit-blaster (Session 6) and the QF_AX theory of arrays
+(Session 7) all compared against independent references. All **231 assertions** pass.
 
 ## Ideas / backlog
 
@@ -273,6 +273,45 @@ Ideas still open for a future session:
       counter** (count distinct bit-vector solutions, not propositional ones).
 - [ ] Run bit-blasting + DRAT certification **off the main thread** for large widths.
 
+### Session 7 — from *bits* to *memory*: a complete QF_AX theory of arrays
+
+The DPLL(T) core already decides EUF and linear arithmetic. The classic next theory is
+**arrays** (McCarthy `select`/`store`) — the logic of memory, the backbone of every program
+verifier. The plan keeps the project's signature move: **add a whole theory without touching a
+single theory solver**, by *reducing* arrays to the EUF + arithmetic the engine already has —
+and then **certify it by brute force** against an independent finite-model enumerator that
+shares no code with the reduction.
+
+The decision procedure (eager, complete for the ground fragment):
+
+- [x] **Array sorts & terms** (`src/smt/term.ts`): parametric `(Array I E)` sorts, and
+      first-class `select`, `store`, and **constant-array** term constructors, interned like
+      every other term, with pretty `a[i]` / `a[i↦v]` / `const(v)` rendering.
+- [x] **Read-over-write purification** (`src/smt/arrays.ts`): recursively rewrite every
+      `select(store(a,i,v), j)` into a fresh element symbol `e` pinned by the McCarthy axioms
+      `(i=j → e=v) ∧ (i≠j → e=read(a,j))` — eliminating all writes from under reads. Plain
+      reads become an uninterpreted binary function the existing **congruence closure** already
+      reasons about. The result is an ordinary EUF(+arith) formula — both existing theories
+      inherit arrays for free, exactly like `arithTrichotomy` layers on today.
+- [x] **Extensionality** (`(Array I E)` equality): encode each array-equality atom `a=b` with a
+      Skolem **witness index** `k` and a saturated index set so `a≠b` forces a differing read
+      and `a=b` forces agreement on every relevant index — the Stump–Barrett–Dill scheme, made
+      finite and ground. Certified separately so the **non-extensional** guarantee stands alone.
+- [x] **SMT-LIB parser** (`src/smt/parse.ts`): `(Array I E)` sorts in `declare-const`/
+      `declare-fun`, the `select`/`store` operators, `((as const (Array I E)) v)`, and array
+      `=`/`distinct`.
+- [x] **Independent brute-force oracle** (`src/smt/arrayref.ts`): decide a QF array formula by
+      enumerating *every* function `I→E` over small finite index/element domains for each array
+      variable — a totally different algorithm, so agreement is real evidence.
+- [x] **Self-checks**: hand cases (read-over-write 1 & 2, swap-via-store, extensionality,
+      const arrays, McCarthy congruence) **plus thousands of random array formulas**
+      cross-checked against the finite-model oracle, both non-extensional and extensional. Grew
+      the assertion count **208 → 231**.
+- [x] **Example library + Studio UI**: curated `QF_AX`/`QF_ALIA` scripts (read-over-write,
+      array swap, const-array, extensionality witness), routed and rendered with an **array
+      model view** (per-array cell tables the solver committed to) and new `QF_AX`/`QF_ALIA`
+      logic badges.
+
 ## Session log
 
 - 2026-06-15 (claude): Created the project. Implemented the full CDCL solver from scratch
@@ -368,3 +407,28 @@ Ideas still open for a future session:
   check, and the headline **brute-force cross-check** — 1500 random formulas decided by
   bit-blasting *and* by enumerating every assignment under the reference, verdicts always agreeing
   and every model re-verified. Harness grew **185 → 208 assertions**. Lint + build + full gate green.
+- 2026-06-16 (claude): Went from *bits* to **memory** — a complete **QF_AX theory of arrays**
+  (McCarthy `select`/`store`, constant arrays, and full **extensionality**) added with **zero
+  new theory solvers**, by *reducing* arrays to the EUF + arithmetic the DPLL(T) engine already
+  has (`src/smt/arrays.ts`). **Read-over-write purification** recursively rewrites every
+  `select(store(a,i,v), j)` into a fresh element pinned by the McCarthy axioms `(i=j→e=v) ∧
+  (i≠j→e=read(a,j))` — recursing through nested writes and constant arrays — so surviving reads
+  become an uninterpreted function the existing **congruence closure** handles, and reads of Int
+  cells flow straight into the **simplex** (so QF_ALIA just works, Ackermann-combined like
+  UFLIA). **Extensionality** encodes each array-equality atom with a Skolem **witness index**
+  plus agreement clauses over a **saturated index set** (the Stump–Barrett–Dill scheme, finite
+  and ground); dropping those clauses leaves a sound, complete procedure for the non-extensional
+  fragment. New first-class array terms in `term.ts` (`(Array I E)` sorts, `select`/`store`/
+  constant arrays with `a[i]` / `a[i↦v]` / `const(v)` rendering); the SMT-LIB parser learned
+  `(Array I E)` sorts, `select`/`store` and `((as const …) v)`; the **SMT Studio** renders the
+  array contents the solver committed to as **per-array cell tables** and got `QF_AX`/`QF_ALIA`
+  badges, plus 6 array examples (read-over-write ×2, commuting writes, extensionality, constant
+  array, QF_ALIA). Made Ackermann name its fresh constants after the term they stand for (`a[0]`,
+  `f(x)`) so every mixed-theory **model stays legible**. Certified the project's way — an
+  **independent finite-model enumerator** (`src/smt/arrayref.ts`, sized by the array small-model
+  property, sharing no code with the reduction) cross-checked against ~3700 random array formulas
+  in two batches: **2500 non-extensional** (reads/writes/const arrays only) and **1200
+  extensional** (array `=`/`distinct`), verdicts always agreeing — caught two real bugs (an
+  unsaturated index set for stores hidden in array equalities; an under-sized element domain in
+  the oracle) before they could mislead. Harness grew **208 → 231 assertions**. Lint + build +
+  full gate green.

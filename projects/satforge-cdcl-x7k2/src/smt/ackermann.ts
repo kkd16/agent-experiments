@@ -51,12 +51,17 @@ function collectTerms(tm: TermManager, root: Formula): Map<number, Term> {
 
 export function ackermannize(tm: TermManager, root: Formula): Formula {
   const terms = collectTerms(tm, root)
-  // Fresh replacement constant for each uninterpreted application.
+  // Fresh replacement constant for each uninterpreted application. Name it after
+  // the term's readable form (e.g. `a[0]`, `f(x)`) so the model the solver
+  // reports stays legible; fall back to a counter only on the rare collision.
   const repl = new Map<number, Term>() // app term id → fresh const term
+  const used = new Set<string>()
   let counter = 0
   for (const t of terms.values()) {
     if (!isUFApp(t)) continue
-    const name = `ack!${t.op}!${counter++}`
+    let name = tm.termToString(t)
+    if (used.has(name) || tm.getFun(name)) name = `ack!${t.op}!${counter++}`
+    used.add(name)
     tm.declareFun({ name, argSorts: [], retSort: t.sort })
     repl.set(t.id, tm.app(name))
   }
