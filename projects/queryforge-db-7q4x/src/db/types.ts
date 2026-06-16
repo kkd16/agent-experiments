@@ -43,6 +43,20 @@ import {
   type Json,
   type JsonValue,
 } from './json'
+import {
+  isTsVector,
+  isTsQuery,
+  formatTsVector,
+  formatTsQuery,
+  tsVectorOrder,
+  tsQueryOrder,
+  tsVectorHash,
+  tsQueryHash,
+  asTsVector,
+  asTsQuery,
+  type TsVector,
+  type TsQuery,
+} from './fts'
 
 export type ColumnType =
   | 'INTEGER'
@@ -55,8 +69,10 @@ export type ColumnType =
   | 'INTERVAL'
   | 'DECIMAL'
   | 'JSON'
+  | 'TSVECTOR'
+  | 'TSQUERY'
 
-export type SqlValue = null | number | string | boolean | Temporal | DecimalValue | JsonValue
+export type SqlValue = null | number | string | boolean | Temporal | DecimalValue | JsonValue | TsVector | TsQuery
 
 export const COLUMN_TYPES: readonly ColumnType[] = [
   'INTEGER',
@@ -69,6 +85,8 @@ export const COLUMN_TYPES: readonly ColumnType[] = [
   'TIMESTAMP',
   'INTERVAL',
   'JSON',
+  'TSVECTOR',
+  'TSQUERY',
 ]
 
 /** Coerce any value into an exact DECIMAL (used by comparison + coercion). */
@@ -97,6 +115,8 @@ export function valueTypeOf(v: SqlValue): ColumnType | 'NULL' {
   if (v === null) return 'NULL'
   if (typeof v === 'boolean') return 'BOOLEAN'
   if (typeof v === 'string') return 'TEXT'
+  if (isTsVector(v)) return 'TSVECTOR'
+  if (isTsQuery(v)) return 'TSQUERY'
   if (isJson(v)) return 'JSON'
   if (isDecimal(v)) return 'DECIMAL'
   if (isTemporal(v)) {
@@ -110,6 +130,21 @@ export function valueTypeOf(v: SqlValue): ColumnType | 'NULL' {
  *  digits — i.e. the `s` of a `DECIMAL(p, s)` column or CAST. */
 export function coerceTo(type: ColumnType, v: SqlValue, scale?: number): SqlValue {
   if (v === null) return null
+  if (type === 'TSVECTOR') {
+    const tv = asTsVector(v)
+    if (!tv) throw new TypeErrorSql(`cannot store ${JSON.stringify(v)} as TSVECTOR`)
+    return tv
+  }
+  if (type === 'TSQUERY') {
+    const tq = asTsQuery(v)
+    if (!tq) throw new TypeErrorSql(`cannot store ${JSON.stringify(v)} as TSQUERY`)
+    return tq
+  }
+  if (isTsVector(v) || isTsQuery(v)) {
+    // a text-search value flowing into another column type: TEXT renders it.
+    if (type === 'TEXT') return isTsVector(v) ? formatTsVector(v) : formatTsQuery(v)
+    throw new TypeErrorSql(`cannot store a ${isTsVector(v) ? 'TSVECTOR' : 'TSQUERY'} as ${type}`)
+  }
   if (type === 'JSON') {
     // text parses (jsonb), an existing JSON value passes through, and any other
     // scalar is wrapped like `to_json` (CAST is lenient where SQL's `::json` isn't).
@@ -210,6 +245,18 @@ function asJsonData(v: SqlValue): Json {
 
 export function compareValues(a: SqlValue, b: SqlValue): number | null {
   if (a === null || b === null) return null
+  // Text-search values compare among themselves by canonical text; a string
+  // counterpart is read into the same kind so `vec_col = '…'::tsvector` works.
+  if (isTsVector(a) || isTsVector(b)) {
+    const va = asTsVector(a)
+    const vb = asTsVector(b)
+    return va && vb ? tsVectorOrder(va, vb) : null
+  }
+  if (isTsQuery(a) || isTsQuery(b)) {
+    const qa = asTsQuery(a)
+    const qb = asTsQuery(b)
+    return qa && qb ? tsQueryOrder(qa, qb) : null
+  }
   // JSON compares structurally (jsonb's total order); a string/scalar opposite
   // is read as JSON so `json_col = '{"a":1}'` behaves intuitively.
   if (isJson(a) || isJson(b)) return jsonOrder(asJsonData(a), asJsonData(b))
@@ -260,6 +307,8 @@ export function orderValues(a: SqlValue, b: SqlValue): number {
   if (a === null && b === null) return 0
   if (a === null) return -1
   if (b === null) return 1
+  if (isTsVector(a) && isTsVector(b)) return tsVectorOrder(a, b)
+  if (isTsQuery(a) && isTsQuery(b)) return tsQueryOrder(a, b)
   if (isJson(a) && isJson(b)) return jsonOrder(a.v, b.v)
   if (isTemporal(a) && isTemporal(b)) return orderTemporal(a, b)
   const c = compareValues(a, b)
@@ -277,6 +326,8 @@ export function hashKey(values: SqlValue[]): string {
     if (v === null) out += 'N;'
     else if (typeof v === 'string') out += `S${v.length}:${v}`
     else if (typeof v === 'boolean') out += v ? 'B1;' : 'B0;'
+    else if (isTsVector(v)) out += `V${tsVectorHash(v)};`
+    else if (isTsQuery(v)) out += `Q${tsQueryHash(v)};`
     else if (isJson(v)) out += `J${jsonHash(v)};`
     else if (isTemporal(v)) out += `T${hashTemporal(v)};`
     else if (isDecimal(v)) out += `D${hashDecimal(v)};`
@@ -289,6 +340,8 @@ export function formatValue(v: SqlValue): string {
   if (v === null) return 'NULL'
   if (typeof v === 'boolean') return v ? 'TRUE' : 'FALSE'
   if (typeof v === 'string') return v
+  if (isTsVector(v)) return formatTsVector(v)
+  if (isTsQuery(v)) return formatTsQuery(v)
   if (isJson(v)) return jsonStringify(v.v)
   if (isDecimal(v)) return formatDecimal(v)
   if (isTemporal(v)) return formatTemporal(v)

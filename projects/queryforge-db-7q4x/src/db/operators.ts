@@ -7,10 +7,11 @@
 
 import { hashKey, orderValues, type SqlValue } from './types'
 import { isTemporal, formatTemporal } from './temporal'
-import type { Row, Table, IndexHandle } from './catalog'
+import type { Row, Table, IndexHandle, GinIndexHandle } from './catalog'
 import type { IndexKey } from './storage/btree'
 import type { Schema } from './schema'
 import type { Evaluator } from './eval'
+import { ginCandidates, tsMatch, asTsVector, type TsQuery } from './fts'
 
 export interface PlanNode {
   op: string
@@ -371,6 +372,80 @@ export class BitmapOr implements Operator {
       estCost: this.estCost,
       actualRows: this.actualRows,
       extra: [`union ${this.inputs.length} index lookups (${this.label}) → ${this.matched || this.estRows} rows`],
+      children: [],
+    }
+  }
+}
+
+// GIN index scan: walk the (constant) tsquery to a candidate rowid set via the
+// inverted index, fetch those heap rows in physical order, and recheck `@@`
+// exactly (GIN postings are lossy — they ignore phrase positions and weight
+// filters — so the recheck is what makes the answer precise). The query
+// determines candidates at open() time, so it always sees the live index.
+export class GinScan implements Operator {
+  readonly schema: Schema
+  estRows: number
+  estCost: number
+  actualRows = 0
+  private readonly table: Table
+  private readonly gin: GinIndexHandle
+  private readonly query: TsQuery
+  private readonly colIndex: number
+  private rows: Row[] = []
+  private pos = 0
+  private matched = 0
+  private candidateCount = 0
+  private scannedAll = false
+
+  constructor(table: Table, schema: Schema, gin: GinIndexHandle, query: TsQuery, colIndex: number, estRows: number) {
+    this.table = table
+    this.schema = schema
+    this.gin = gin
+    this.query = query
+    this.colIndex = colIndex
+    this.estRows = Math.max(1, Math.round(estRows))
+    this.estCost = Math.max(1, gin.lexemeCount) * CPU_OP + this.estRows * CPU_TUPLE
+  }
+  open() {
+    const cand = ginCandidates(this.query.node, this.gin)
+    let rowids: number[]
+    if (cand === null) {
+      // The query can't be bounded by the index (e.g. a top-level NOT) — fall
+      // back to every row, still rechecking `@@` for a correct answer.
+      this.scannedAll = true
+      rowids = [...this.table.heap.keys()]
+    } else {
+      rowids = [...cand].sort((a, b) => a - b)
+    }
+    this.candidateCount = rowids.length
+    this.rows = []
+    for (const rid of rowids) {
+      const row = this.table.heap.get(rid)
+      if (!row) continue
+      const cell = row[this.colIndex]
+      const vec = cell === null || cell === undefined ? null : asTsVector(cell)
+      if (vec && tsMatch(vec, this.query)) this.rows.push(row)
+    }
+    this.matched = this.rows.length
+    this.pos = 0
+  }
+  next(): Row | null {
+    if (this.pos >= this.rows.length) return null
+    this.actualRows++
+    return this.rows[this.pos++]
+  }
+  close() {
+    this.rows = []
+  }
+  plan(): PlanNode {
+    const cand = this.scannedAll ? `all ${this.candidateCount} rows (unbounded query)` : `${this.candidateCount} candidates`
+    return {
+      op: 'GinScan',
+      detail: `${this.table.name} via ${this.gin.name}`,
+      estRows: this.estRows,
+      estCost: this.estCost,
+      actualRows: this.actualRows,
+      extra: [`@@ on ${this.gin.column}: ${cand} → recheck → ${this.matched || this.estRows} rows`],
       children: [],
     }
   }

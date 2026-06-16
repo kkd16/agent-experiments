@@ -88,6 +88,31 @@ import {
   toJson,
   type Json,
 } from './json'
+import {
+  isTsVector,
+  isTsQuery,
+  toTsVector,
+  toTsQuery,
+  plainToTsQuery,
+  phraseToTsQuery,
+  webSearchToTsQuery,
+  setWeight,
+  stripTsVector,
+  concatTsVector,
+  tsVectorLength,
+  tsMatch,
+  tsRank,
+  tsRankCd,
+  tsHeadline,
+  numNode,
+  tsQueryAnd,
+  tsQueryOr,
+  tsQueryNot,
+  formatTsQuery,
+  asTsVector,
+  asTsQuery,
+  type Weight,
+} from './fts'
 import type { Expr, ExistsExpr, FuncExpr, InSubqueryExpr, QuantifiedExpr, SubqueryExpr, WindowFuncExpr } from './ast'
 import type { Row } from './catalog'
 
@@ -296,6 +321,7 @@ function parseDate(v: SqlValue): Date | null {
   if (typeof v === 'boolean') return null
   if (isDecimal(v)) return new Date(decToNumber(v))
   if (isJson(v)) return null
+  if (isTsVector(v) || isTsQuery(v)) return null
   const s = v.trim()
   if (s.toUpperCase() === 'NOW') return new Date()
   // Date-only strings parse as UTC midnight (avoids local-timezone drift).
@@ -640,6 +666,132 @@ export const SCALAR_FUNCTIONS: Record<string, ScalarFn> = {
     a === null || a === undefined || b === null || b === undefined
       ? null
       : jsonContains(asJsonData(a), asJsonData(b)),
+
+  // --- full-text search -----------------------------------------------------
+  TO_TSVECTOR: (args) => {
+    // to_tsvector([config,] text) — the optional leading config is ignored
+    // (we ship a single english-like configuration).
+    const text = args.length >= 2 ? args[1] : args[0]
+    return text === null || text === undefined ? null : toTsVector(strOf(text))
+  },
+  TO_TSQUERY: (args) => {
+    const text = args.length >= 2 ? args[1] : args[0]
+    return text === null || text === undefined ? null : toTsQuery(strOf(text))
+  },
+  PLAINTO_TSQUERY: (args) => {
+    const text = args.length >= 2 ? args[1] : args[0]
+    return text === null || text === undefined ? null : plainToTsQuery(strOf(text))
+  },
+  PHRASETO_TSQUERY: (args) => {
+    const text = args.length >= 2 ? args[1] : args[0]
+    return text === null || text === undefined ? null : phraseToTsQuery(strOf(text))
+  },
+  WEBSEARCH_TO_TSQUERY: (args) => {
+    const text = args.length >= 2 ? args[1] : args[0]
+    return text === null || text === undefined ? null : webSearchToTsQuery(strOf(text))
+  },
+  SETWEIGHT: ([v, w]) => {
+    if (v === null || v === undefined || w === null || w === undefined) return null
+    const vec = asTsVector(v)
+    if (!vec) throw new SqlError('setweight() expects a tsvector', 'eval')
+    const label = strOf(w).toUpperCase()
+    if (label !== 'A' && label !== 'B' && label !== 'C' && label !== 'D') throw new SqlError('setweight(): weight must be A, B, C or D', 'eval')
+    return setWeight(vec, label as Weight)
+  },
+  STRIP: ([v]) => {
+    if (v === null || v === undefined) return null
+    const vec = asTsVector(v)
+    if (!vec) throw new SqlError('strip() expects a tsvector', 'eval')
+    return stripTsVector(vec)
+  },
+  TS_MATCH: ([v, q]) => {
+    if (v === null || v === undefined || q === null || q === undefined) return null
+    const vec = isTsQuery(v) ? asTsVector(q) : asTsVector(v)
+    const query = isTsQuery(v) ? asTsQuery(v) : asTsQuery(q)
+    if (!vec || !query) throw new SqlError('ts_match expects a tsvector and a tsquery', 'eval')
+    return tsMatch(vec, query)
+  },
+  TS_RANK: (args) => rankFn(args, false),
+  TS_RANK_CD: (args) => rankFn(args, true),
+  TS_HEADLINE: (args) => {
+    // ts_headline([config,] document, query). A leading config text is present
+    // only when there are 3+ args and the 3rd is the query.
+    let i = 0
+    const hasConfig = args.length >= 3 && typeof args[0] === 'string' && (isTsQuery(args[2]) || typeof args[2] === 'string')
+    if (hasConfig) i = 1
+    const doc = args[i]
+    const q = args[i + 1]
+    if (doc === null || doc === undefined || q === null || q === undefined) return null
+    const query = asTsQuery(q)
+    if (!query) throw new SqlError('ts_headline() expects a tsquery', 'eval')
+    return tsHeadline(strOf(doc), query)
+  },
+  NUMNODE: ([q]) => {
+    if (q === null || q === undefined) return null
+    const query = asTsQuery(q)
+    if (!query) throw new SqlError('numnode() expects a tsquery', 'eval')
+    return numNode(query)
+  },
+  QUERYTREE: ([q]) => {
+    if (q === null || q === undefined) return null
+    const query = asTsQuery(q)
+    if (!query) throw new SqlError('querytree() expects a tsquery', 'eval')
+    return formatTsQuery(query)
+  },
+  TSQUERY_AND: ([a, b]) => {
+    if (a === null || a === undefined || b === null || b === undefined) return null
+    const qa = asTsQuery(a); const qb = asTsQuery(b)
+    if (!qa || !qb) throw new SqlError('tsquery_and() expects two tsqueries', 'eval')
+    return tsQueryAnd(qa, qb)
+  },
+  TSQUERY_OR: ([a, b]) => {
+    if (a === null || a === undefined || b === null || b === undefined) return null
+    const qa = asTsQuery(a); const qb = asTsQuery(b)
+    if (!qa || !qb) throw new SqlError('tsquery_or() expects two tsqueries', 'eval')
+    return tsQueryOr(qa, qb)
+  },
+  TSQUERY_NOT: ([a]) => {
+    if (a === null || a === undefined) return null
+    const qa = asTsQuery(a)
+    if (!qa) throw new SqlError('tsquery_not() expects a tsquery', 'eval')
+    return tsQueryNot(qa)
+  },
+  TSVECTOR_LENGTH: ([v]) => {
+    if (v === null || v === undefined) return null
+    const vec = asTsVector(v)
+    if (!vec) throw new SqlError('tsvector_length() expects a tsvector', 'eval')
+    return tsVectorLength(vec)
+  },
+}
+
+/** Parse a Postgres-style float array `{0.1,0.2,0.4,1.0}` or a JSON array into
+ *  the [D,C,B,A] weights tuple, or null if not array-shaped. */
+function parseWeightArray(v: SqlValue): [number, number, number, number] | null {
+  let nums: number[] | null = null
+  if (isJson(v) && Array.isArray(v.v)) nums = v.v.map((x) => Number(x))
+  else if (typeof v === 'string' && /^\s*\{.*\}\s*$/.test(v)) {
+    nums = v.trim().slice(1, -1).split(',').map((s) => Number(s.trim()))
+  }
+  if (!nums || nums.length !== 4 || nums.some((n) => Number.isNaN(n))) return null
+  return [nums[0], nums[1], nums[2], nums[3]]
+}
+
+/** Shared implementation of ts_rank / ts_rank_cd with optional leading weights
+ *  array and trailing normalization integer. */
+function rankFn(args: SqlValue[], cover: boolean): SqlValue {
+  let i = 0
+  let weights: [number, number, number, number] | undefined
+  const w = parseWeightArray(args[0])
+  if (w) { weights = w; i = 1 }
+  const vRaw = args[i]
+  const qRaw = args[i + 1]
+  if (vRaw === null || vRaw === undefined || qRaw === null || qRaw === undefined) return null
+  const vec = isTsQuery(vRaw) ? asTsVector(qRaw) : asTsVector(vRaw)
+  const query = isTsQuery(vRaw) ? asTsQuery(vRaw) : asTsQuery(qRaw)
+  if (!vec || !query) throw new SqlError('ts_rank expects a tsvector and a tsquery', 'eval')
+  const normArg = args[i + 2]
+  const norm = normArg === null || normArg === undefined ? 0 : Number(normArg)
+  return cover ? tsRankCd(vec, query, weights, norm) : tsRank(vec, query, weights, norm)
 }
 
 /** EXTRACT / DATE_PART for any value: temporal objects directly, strings/numbers
@@ -915,7 +1067,10 @@ function compileBinary(op: string, left: Evaluator, right: Evaluator): Evaluator
         const a = left(row)
         const b = right(row)
         if (a === null || b === null) return null
-        // JSON || JSON concatenates/merges (jsonb rules); otherwise text concat.
+        // tsvector || tsvector concatenates (position-shifted); JSON || JSON
+        // concatenates/merges (jsonb rules); otherwise text concat.
+        if (isTsVector(a) && isTsVector(b)) return concatTsVector(a, b)
+        if (isTsQuery(a) && isTsQuery(b)) return tsQueryOr({ t: 'tsquery', node: a.node }, { t: 'tsquery', node: b.node })
         if (isJson(a) && isJson(b)) return makeJson(jsonConcat(a.v, b.v))
         return strOf(a) + strOf(b)
       }
@@ -955,6 +1110,23 @@ function compileBinary(op: string, left: Evaluator, right: Evaluator): Evaluator
         const b = right(row)
         if (a === null || b === null) return null
         return jsonContains(asJsonData(b), asJsonData(a))
+      }
+    case '@@':
+      // Full-text match. Either operand may be a tsvector or a tsquery (or a
+      // text that coerces to one), so `text @@ text` and the symmetric form
+      // `tsquery @@ tsvector` both work.
+      return (row) => {
+        const a = left(row)
+        const b = right(row)
+        if (a === null || b === null) return null
+        // When the left side is a tsquery, the document is on the right;
+        // otherwise the left is the document and the right is the query.
+        const docVal = isTsQuery(a) ? b : a
+        const queryVal = isTsQuery(a) ? a : b
+        const vec = asTsVector(docVal)
+        const query = asTsQuery(queryVal)
+        if (!vec || !query) throw new SqlError('@@ expects a tsvector and a tsquery', 'eval')
+        return tsMatch(vec, query)
       }
     case '?':
       return (row) => {

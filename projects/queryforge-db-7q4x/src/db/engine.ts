@@ -253,8 +253,15 @@ export class Engine {
       if (stmt.ifNotExists) return msg(`index "${stmt.name}" already exists, skipped`, sql, t0)
       throw new SqlError(`index "${stmt.name}" already exists`, 'ddl')
     }
-    table.createIndex(stmt.name, stmt.columns, stmt.unique)
     const cols = stmt.columns.join(', ')
+    if (stmt.using === 'GIN') {
+      if (stmt.columns.length !== 1) throw new SqlError('a GIN index covers exactly one column', 'ddl')
+      if (stmt.unique) throw new SqlError('a GIN index cannot be UNIQUE', 'ddl')
+      table.createGinIndex(stmt.name, stmt.columns[0])
+      return msg(`GIN index "${stmt.name}" created on ${stmt.table} (${cols})`, sql, t0)
+    }
+    if (stmt.using && stmt.using !== 'BTREE') throw new SqlError(`unknown index method "${stmt.using}"`, 'ddl')
+    table.createIndex(stmt.name, stmt.columns, stmt.unique)
     return msg(`index "${stmt.name}" created on ${stmt.table} (${cols})`, sql, t0)
   }
 

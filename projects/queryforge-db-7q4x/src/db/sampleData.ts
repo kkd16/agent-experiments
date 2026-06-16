@@ -121,11 +121,45 @@ INSERT INTO documents (id, customer_id, body) VALUES
   (4, 4, '{"kind":"order","priority":"med","tags":["vip"],"items":[{"sku":"C3","qty":3}],"shipping":{"country":"US","express":false}}'),
   (5, 5, '{"kind":"ticket","priority":"low","tags":["howto","docs"],"sentiment":1}');
 
+-- A full-text search corpus. The search column is a first-class TSVECTOR: the
+-- title is weighted 'A' and the body 'D', concatenated with || so ranking
+-- favours a title hit. A GIN inverted index (below) makes search @@ query fast.
+CREATE TABLE articles (
+  id INTEGER PRIMARY KEY,
+  title TEXT,
+  body TEXT,
+  search TSVECTOR
+);
+
+INSERT INTO articles (id, title, body, search) VALUES
+  (1, 'Cost-based query optimization',
+      'The optimizer estimates the cost of each plan from column statistics and chooses the cheapest, switching between a sequential scan and an index scan based on selectivity.',
+      setweight(to_tsvector('Cost-based query optimization'), 'A') || setweight(to_tsvector('The optimizer estimates the cost of each plan from column statistics and chooses the cheapest, switching between a sequential scan and an index scan based on selectivity.'), 'D')),
+  (2, 'Building a B+Tree index',
+      'A balanced tree keeps keys sorted so range scans are fast; leaves are chained for sequential traversal and splits keep the tree shallow.',
+      setweight(to_tsvector('Building a B+Tree index'), 'A') || setweight(to_tsvector('A balanced tree keeps keys sorted so range scans are fast; leaves are chained for sequential traversal and splits keep the tree shallow.'), 'D')),
+  (3, 'How GIN inverted indexes work',
+      'A generalized inverted index maps every lexeme to the list of rows that contain it, so a full-text match probes a handful of posting lists instead of scanning the whole table.',
+      setweight(to_tsvector('How GIN inverted indexes work'), 'A') || setweight(to_tsvector('A generalized inverted index maps every lexeme to the list of rows that contain it, so a full-text match probes a handful of posting lists instead of scanning the whole table.'), 'D')),
+  (4, 'Joins: hash, merge and nested loop',
+      'A hash join builds a table on one input and probes it with the other; a merge join exploits sorted inputs; a nested loop wins for tiny relations.',
+      setweight(to_tsvector('Joins: hash, merge and nested loop'), 'A') || setweight(to_tsvector('A hash join builds a table on one input and probes it with the other; a merge join exploits sorted inputs; a nested loop wins for tiny relations.'), 'D')),
+  (5, 'Transactions and snapshots',
+      'A snapshot captures the database so a transaction can roll back cleanly; the engine restores it wholesale when a statement fails or you issue ROLLBACK.',
+      setweight(to_tsvector('Transactions and snapshots'), 'A') || setweight(to_tsvector('A snapshot captures the database so a transaction can roll back cleanly; the engine restores it wholesale when a statement fails or you issue ROLLBACK.'), 'D')),
+  (6, 'Window functions explained',
+      'Window functions compute a value over a frame of related rows without collapsing them, so you can rank, run totals and take moving averages in one pass.',
+      setweight(to_tsvector('Window functions explained'), 'A') || setweight(to_tsvector('Window functions compute a value over a frame of related rows without collapsing them, so you can rank, run totals and take moving averages in one pass.'), 'D'));
+
 -- A secondary index the planner can exploit for range scans.
 CREATE INDEX idx_products_price ON products (price);
 CREATE INDEX idx_invoices_total ON invoices (total);
 CREATE INDEX idx_orders_customer ON orders (customer_id);
 CREATE INDEX idx_subs_started ON subscriptions (started);
+
+-- A GIN inverted index over the article search vectors: the planner turns
+-- a search @@ query predicate into a posting-list probe, not a sequential scan.
+CREATE INDEX idx_articles_search ON articles USING GIN (search);
 
 -- A saved analytical query: revenue per customer. A VIEW is a named query the
 -- planner inlines wherever it's used — so you can SELECT, JOIN, GROUP and filter
@@ -141,6 +175,49 @@ CREATE VIEW customer_revenue AS
 `.trim()
 
 export const SAMPLE_QUERIES: SampleQuery[] = [
+  {
+    title: 'Full-text search — match & rank',
+    sql: `-- @@ matches a TSVECTOR against a TSQUERY; ts_rank scores relevance
+-- (the title is weighted 'A', so a title hit outranks a body hit).
+SELECT id, title, ts_rank(search, to_tsquery('index | scan')) AS rank
+FROM articles
+WHERE search @@ to_tsquery('index | scan')
+ORDER BY rank DESC;`,
+  },
+  {
+    title: 'Full-text search — boolean & phrase operators',
+    sql: `-- & (AND), | (OR), ! (NOT) and <-> (FOLLOWED BY, a phrase) compose.
+-- 'sequential <-> scan' only matches the two words *adjacent*.
+SELECT id, title
+FROM articles
+WHERE search @@ to_tsquery('join & !merge')
+   OR search @@ phraseto_tsquery('sequential scan')
+ORDER BY id;`,
+  },
+  {
+    title: 'Full-text search — websearch + headline',
+    sql: `-- websearch_to_tsquery parses Google-style input ("quoted phrases",
+-- bare OR, leading - to exclude). ts_headline highlights the hit.
+SELECT id, title,
+       ts_headline(body, websearch_to_tsquery('inverted index -btree')) AS snippet
+FROM articles
+WHERE search @@ websearch_to_tsquery('inverted index -btree');`,
+  },
+  {
+    title: 'Full-text search — the GIN index path (EXPLAIN)',
+    sql: `-- With a GIN inverted index on articles.search, the planner walks the
+-- query to a small candidate set and rechecks @@ — no sequential scan.
+EXPLAIN SELECT id FROM articles WHERE search @@ to_tsquery('hash & join');`,
+  },
+  {
+    title: 'Full-text search — build a tsvector / tsquery',
+    sql: `-- to_tsvector tokenizes, lowercases, drops stop-words and Porter-stems;
+-- positions and A/B/C/D weights make phrase search and ranking possible.
+SELECT to_tsvector('The Quick brown foxes were jumping!') AS vector,
+       to_tsquery('quick & jump:*')                       AS query,
+       to_tsvector('The Quick brown foxes were jumping!')
+         @@ to_tsquery('quick & jump:*')                  AS matches;`,
+  },
   {
     title: 'Views — query a saved query',
     sql: `-- customer_revenue is a VIEW (a named query). Use it like a table:

@@ -13,7 +13,7 @@ const SECTIONS: Section[] = [
   {
     title: 'Data definition',
     entries: [
-      { syntax: 'CREATE TABLE t (col TYPE [PRIMARY KEY] [NOT NULL] [UNIQUE] [DEFAULT e] [CHECK (e)] [REFERENCES p(c) …], …)', note: 'Types: INTEGER, REAL, DECIMAL(p,s), TEXT, BOOLEAN, DATE/TIME/TIMESTAMP/INTERVAL, JSON. PK/UNIQUE auto-create a B+Tree index.' },
+      { syntax: 'CREATE TABLE t (col TYPE [PRIMARY KEY] [NOT NULL] [UNIQUE] [DEFAULT e] [CHECK (e)] [REFERENCES p(c) …], …)', note: 'Types: INTEGER, REAL, DECIMAL(p,s), TEXT, BOOLEAN, DATE/TIME/TIMESTAMP/INTERVAL, JSON, TSVECTOR, TSQUERY. PK/UNIQUE auto-create a B+Tree index; USING GIN builds an inverted index over a TSVECTOR column.' },
       { syntax: 'CREATE [UNIQUE] INDEX name ON t (col1 [, col2, …])', note: 'Single- or multi-column B+Tree. A composite index answers an equality prefix plus one trailing range from one tree; a covering index can be read index-only (no heap fetch). Separate single-column indexes combine via a bitmap AND, and an IN-list scans one index via a bitmap OR.' },
       { syntax: 'ALTER TABLE t ADD [COLUMN] col TYPE … · ADD [CONSTRAINT n] CHECK/UNIQUE/FOREIGN KEY …', note: 'Evolve a table in place: a new column backfills existing rows with its DEFAULT; an added constraint is validated against the current data before it takes effect.' },
       { syntax: 'ALTER TABLE t RENAME [TO new | COLUMN c TO new] · DROP COLUMN c', note: 'Rename a table/column (referencing foreign keys are updated) or drop a column (refused while an index or constraint still needs it).' },
@@ -155,6 +155,19 @@ const SECTIONS: Section[] = [
       { syntax: "JSONB_SET(j, '{path}', value [, create]) · JSON_STRIP_NULLS(j) · JSON_PRETTY(j) · JSON_CONTAINS(a,b)", note: 'Transform: set/insert at a path (the value is itself JSON), drop null members, pretty-print, or test containment as a function.' },
       { syntax: 'JSON_AGG(x) · JSON_OBJECT_AGG(k, v)', note: 'Aggregate rows into a JSON array (NULLs preserved, input order kept) or a JSON object.' },
       { syntax: 'FROM JSON_ARRAY_ELEMENTS(j) · JSON_EACH(j) · JSON_EACH_TEXT(j) · JSON_OBJECT_KEYS(j)', note: 'Set-returning table functions: expand a JSON array/object into rows (value, or key+value) that compose with joins, WHERE, GROUP BY. (Arguments must be constant — LATERAL is not supported.)' },
+    ],
+  },
+  {
+    title: 'Full-text search  —  TSVECTOR · TSQUERY',
+    entries: [
+      { syntax: "vec @@ query", note: 'The match operator: true when the TSVECTOR document satisfies the TSQUERY. Symmetric (query @@ vec works), and either side may be text — it is coerced (to_tsvector / to_tsquery). First-class values: both index, sort, GROUP BY, DISTINCT, join and persist like any type.' },
+      { syntax: "to_tsvector([cfg,] text)", note: 'Tokenize → lowercase → drop stop-words → Porter-stem, recording each lexeme’s 1-based positions. Renders as ‘lexeme’:pos[weight] … e.g. ‘cat’:3 ‘fat’:2A.' },
+      { syntax: "to_tsquery(text) · plainto_tsquery(text) · phraseto_tsquery(text) · websearch_to_tsquery(text)", note: 'Build a query: full operator syntax; a plain AND of words; a <-> phrase of words; or Google-style ("quoted phrases", bare OR, leading - to exclude).' },
+      { syntax: "a & b · a | b · !a · a <-> b · a <N> b · word:* · word:AB", note: 'Query operators: AND, OR, NOT, FOLLOWED-BY (phrase, distance 1), distance N, prefix match, and a weight filter (match only A/B-weighted positions). Precedence: | < & < <-> < !.' },
+      { syntax: "ts_rank([weights,] vec, query [, norm]) · ts_rank_cd(…)", note: 'Relevance: weighted by A/B/C/D term weights; ts_rank_cd is cover-density (tighter matches score higher). The optional norm bitmask divides by document length, unique words, etc.' },
+      { syntax: "ts_headline(document, query) · setweight(vec, 'A') · strip(vec) · a || b", note: 'Highlight the matched words of the original text; label every position with a weight; drop positions; or concatenate two vectors (the right side’s positions are shifted past the left).' },
+      { syntax: "numnode(q) · querytree(q) · tsvector_length(v) · q1 && q2 · q1 || q2 · !!q", note: 'Count query nodes; render the query; count distinct lexemes; and combine queries (AND / OR / NOT) as functions.' },
+      { syntax: "CREATE INDEX i ON t USING GIN (vec_col)", note: 'A GIN inverted index (lexeme → row list) over a TSVECTOR column. The planner turns col @@ <constant query> into a posting-list probe + exact recheck — a GinScan in EXPLAIN — instead of a sequential scan.' },
     ],
   },
   {

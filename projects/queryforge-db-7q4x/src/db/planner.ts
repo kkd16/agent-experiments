@@ -35,11 +35,13 @@ import {
 import { Database, Table, type IndexHandle, type Row } from './catalog'
 import type { IndexKey } from './storage/btree'
 import { eqSelectivity, nullSelectivity, rangeSelectivity, type ColumnStat } from './stats'
+import { asTsQuery } from './fts'
 import {
   BitmapAnd,
   BitmapOr,
   Distinct,
   Filter,
+  GinScan,
   HashJoin,
   HashSemiJoin,
   IndexOnlyScan,
@@ -339,7 +341,13 @@ function inferType(e: Expr, schema: Schema, ctx: CompileCtx): ColumnType {
         return 'JSON'
       if (['JSON_TYPEOF', 'JSON_EXTRACT_PATH_TEXT', 'JSON_PRETTY'].includes(e.name)) return 'TEXT'
       if (e.name === 'JSON_ARRAY_LENGTH') return 'INTEGER'
-      if (['JSON_VALID', 'JSON_CONTAINS'].includes(e.name)) return 'BOOLEAN'
+      if (['JSON_VALID', 'JSON_CONTAINS', 'TS_MATCH'].includes(e.name)) return 'BOOLEAN'
+      // Full-text search result types.
+      if (['TO_TSVECTOR', 'SETWEIGHT', 'STRIP'].includes(e.name)) return 'TSVECTOR'
+      if (['TO_TSQUERY', 'PLAINTO_TSQUERY', 'PHRASETO_TSQUERY', 'WEBSEARCH_TO_TSQUERY', 'TSQUERY_AND', 'TSQUERY_OR', 'TSQUERY_NOT'].includes(e.name)) return 'TSQUERY'
+      if (['TS_RANK', 'TS_RANK_CD'].includes(e.name)) return 'REAL'
+      if (['NUMNODE', 'TSVECTOR_LENGTH'].includes(e.name)) return 'INTEGER'
+      if (['TS_HEADLINE', 'QUERYTREE'].includes(e.name)) return 'TEXT'
       if (
         [
           'SUM', 'MIN', 'MAX', 'AVG', 'ABS', 'ROUND', 'SQRT', 'CEIL', 'CEILING', 'FLOOR', 'TRUNC',
@@ -360,10 +368,14 @@ function inferType(e: Expr, schema: Schema, ctx: CompileCtx): ColumnType {
         return 'TEXT'
       return 'TEXT'
     case 'binary':
-      if (['=', '<>', '<', '<=', '>', '>=', 'AND', 'OR', '@>', '<@', '?'].includes(e.op)) return 'BOOLEAN'
+      if (['=', '<>', '<', '<=', '>', '>=', 'AND', 'OR', '@>', '<@', '?', '@@'].includes(e.op)) return 'BOOLEAN'
       if (e.op === '->' || e.op === '#>') return 'JSON'
       if (e.op === '->>' || e.op === '#>>') return 'TEXT'
-      if (e.op === '||') return inferType(e.left, schema, ctx) === 'JSON' ? 'JSON' : 'TEXT'
+      if (e.op === '||') {
+        const lt = inferType(e.left, schema, ctx)
+        if (lt === 'JSON' || lt === 'TSVECTOR' || lt === 'TSQUERY') return lt
+        return 'TEXT'
+      }
       return 'REAL'
     case 'unary':
       return e.op === 'NOT' ? 'BOOLEAN' : 'REAL'
@@ -735,10 +747,63 @@ function tryBitmapOr(table: Table, baseSchema: Schema, preds: Expr[], sc: StatCt
   return null
 }
 
+/** Evaluate a column-free, subquery-free expression at plan time, or undefined
+ *  if it isn't actually constant. Used to extract a `@@` query's tsquery. */
+function evalConstFull(e: Expr): SqlValue | undefined {
+  if (containsSubquery(e)) return undefined
+  let hasColumn = false
+  const walk = (x: Expr) => {
+    if (x.kind === 'column' || x.kind === 'star') { hasColumn = true; return }
+    const kids: Expr[] = []
+    collectChildren(x, kids)
+    kids.forEach(walk)
+  }
+  walk(e)
+  if (hasColumn) return undefined
+  try {
+    const fn = compileExpr(e, { resolve: () => { throw new SqlError('not constant', 'plan') } })
+    const v = fn([])
+    return v === null ? null : v
+  } catch {
+    return undefined
+  }
+}
+
+// Use a GIN inverted index for a `col @@ <constant tsquery>` predicate: walk the
+// query to a candidate rowset, then recheck `@@` exactly. The match operator is
+// symmetric, so `query @@ col` works too.
+function tryGinScan(table: Table, baseSchema: Schema, preds: Expr[]): IndexPlan | null {
+  for (const p of preds) {
+    if (p.kind !== 'binary' || p.op !== '@@') continue
+    // Identify the document column side and the (constant) query side.
+    let colExpr: Expr | null = null
+    let queryExpr: Expr | null = null
+    if (p.left.kind === 'column') { colExpr = p.left; queryExpr = p.right }
+    else if (p.right.kind === 'column') { colExpr = p.right; queryExpr = p.left }
+    if (!colExpr || !queryExpr || colExpr.kind !== 'column') continue
+    const gin = table.ginIndexForColumn(colExpr.name)
+    if (!gin) continue
+    let colIndex: number
+    try {
+      colIndex = resolveColumn(baseSchema, colExpr.table, colExpr.name)
+    } catch {
+      continue
+    }
+    const qVal = evalConstFull(queryExpr)
+    if (qVal === undefined) continue
+    const query = asTsQuery(qVal)
+    if (!query) continue
+    // Estimate: most full-text predicates are quite selective.
+    const estRows = Math.max(1, Math.round(table.rowCount() * 0.1))
+    return { op: new GinScan(table, baseSchema, gin, query, colIndex, estRows), consumed: new Set<Expr>([p]) }
+  }
+  return null
+}
+
 // Pick the best index access path: a single (composite) index scan, a bitmap AND
-// of several single-column indexes, or a bitmap OR over an IN-list — whichever
-// consumes the most predicates. Ties favour the single scan (no heap re-fetch),
-// then the AND, then the OR.
+// of several single-column indexes, a bitmap OR over an IN-list, or a GIN scan
+// for a full-text `@@` predicate — whichever consumes the most predicates. Ties
+// favour the single scan (no heap re-fetch), then the AND, then the OR.
 function chooseIndexAccess(
   table: Table,
   schema: Schema,
@@ -750,6 +815,7 @@ function chooseIndexAccess(
     tryIndexScan(table, schema, preds, sc, coverCols),
     tryBitmapAnd(table, schema, preds, sc),
     tryBitmapOr(table, schema, preds, sc),
+    tryGinScan(table, schema, preds),
   ].filter((c): c is IndexPlan => c !== null)
   if (candidates.length === 0) return null
   let best = candidates[0]
@@ -1019,6 +1085,8 @@ const TYPE_RANK: Record<ColumnType, number> = {
   DATE: 6,
   TIMESTAMP: 7,
   JSON: 8,
+  TSVECTOR: 8,
+  TSQUERY: 8,
   TEXT: 9,
 }
 function widerType(a: ColumnType, b: ColumnType): ColumnType {

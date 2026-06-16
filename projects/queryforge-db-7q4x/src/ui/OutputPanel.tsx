@@ -6,6 +6,7 @@ import { formatValue, type SqlValue } from '../db/types'
 import { isTemporal } from '../db/temporal'
 import { isDecimal } from '../db/decimal'
 import { isJson } from '../db/json'
+import { isTsVector, isTsQuery } from '../db/fts'
 import type { QueryResult, RowsResult } from '../db/engine'
 import type { RunError } from './useEngine'
 import { PlanTree } from './PlanTree'
@@ -18,6 +19,8 @@ function Cell({ v }: { v: SqlValue }) {
   if (isDecimal(v)) return <span className="cell-num cell-decimal">{formatValue(v)}</span>
   if (isTemporal(v)) return <span className="cell-temporal">{formatValue(v)}</span>
   if (isJson(v)) return <span className="cell-json">{formatValue(v)}</span>
+  if (isTsVector(v)) return <span className="cell-json cell-tsvector">{formatValue(v)}</span>
+  if (isTsQuery(v)) return <span className="cell-json cell-tsquery">{formatValue(v)}</span>
   return <span className="cell-text">{v}</span>
 }
 

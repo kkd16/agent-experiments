@@ -17,6 +17,7 @@ import { BTree, type BTreeStats, type IndexKey } from './storage/btree'
 import { gatherTableStats, type TableStat } from './stats'
 import { compileExpr, type CompileCtx, type Evaluator } from './eval'
 import { SqlError, coerceTo, formatValue, valuesEqual, type ColumnType, type SqlValue } from './types'
+import { isTsVector, asTsVector, type GinPostings } from './fts'
 import {
   emptyConstraints,
   type CheckConstraint,
@@ -65,6 +66,63 @@ export class IndexHandle {
   }
 }
 
+/**
+ * A GIN (Generalized INverted) index over a single `tsvector` column: an
+ * inverted map from each lexeme to the set of rowids whose document contains it.
+ * This is what makes `col @@ query` sublinear — the planner walks the query to a
+ * small candidate rowset instead of scanning the whole heap.
+ */
+export class GinIndexHandle implements GinPostings {
+  readonly name: string
+  readonly column: string
+  readonly columnIndex: number
+  /** lexeme -> set of rowids containing it. */
+  private readonly postings = new Map<string, Set<number>>()
+
+  constructor(name: string, column: string, columnIndex: number) {
+    this.name = name
+    this.column = column
+    this.columnIndex = columnIndex
+  }
+
+  /** The distinct lexemes in a row's indexed cell (or [] if not a tsvector). */
+  private lexemesOf(row: Row): string[] {
+    const cell = row[this.columnIndex]
+    if (cell === null || cell === undefined) return []
+    const vec = isTsVector(cell) ? cell : asTsVector(cell)
+    return vec ? vec.lex.map((l) => l.word) : []
+  }
+
+  addRow(rowid: number, row: Row): void {
+    for (const word of this.lexemesOf(row)) {
+      let s = this.postings.get(word)
+      if (!s) { s = new Set(); this.postings.set(word, s) }
+      s.add(rowid)
+    }
+  }
+  removeRow(rowid: number, row: Row): void {
+    for (const word of this.lexemesOf(row)) {
+      const s = this.postings.get(word)
+      if (s) { s.delete(rowid); if (s.size === 0) this.postings.delete(word) }
+    }
+  }
+
+  // --- GinPostings (read side, used by the planner / GinScan) --------------
+  exact(word: string): Set<number> | undefined {
+    return this.postings.get(word)
+  }
+  prefix(word: string): Set<number> {
+    const out = new Set<number>()
+    for (const [lex, ids] of this.postings) if (lex.startsWith(word)) for (const id of ids) out.add(id)
+    return out
+  }
+
+  /** Distinct-lexeme cardinality — a rough sizing signal for the planner. */
+  get lexemeCount(): number {
+    return this.postings.size
+  }
+}
+
 /** A compiled CHECK constraint: its source plus an evaluator over a row. */
 interface CompiledCheck {
   def: CheckConstraint
@@ -82,6 +140,8 @@ export class Table {
   readonly heap = new Map<number, Row>()
   /** index name (lower-case) -> handle. */
   readonly indexes = new Map<string, IndexHandle>()
+  /** GIN index name (lower-case) -> inverted index over a tsvector column. */
+  readonly ginIndexes = new Map<string, GinIndexHandle>()
   /** Cached optimizer statistics (null = stale / not yet gathered). */
   private statsCache: TableStat | null = null
   /** Lazily-compiled CHECK evaluators (null = not yet compiled). */
@@ -119,6 +179,7 @@ export class Table {
     const rowid = this.nextRowId++
     this.heap.set(rowid, row)
     for (const idx of this.indexes.values()) idx.tree.insert(idx.keyOf(row), rowid)
+    for (const g of this.ginIndexes.values()) g.addRow(rowid, row)
     this.statsCache = null
     return rowid
   }
@@ -130,6 +191,7 @@ export class Table {
     const rowid = this.nextRowId++
     this.heap.set(rowid, row)
     for (const idx of this.indexes.values()) idx.tree.insert(idx.keyOf(row), rowid)
+    for (const g of this.ginIndexes.values()) g.addRow(rowid, row)
     this.statsCache = null
     return rowid
   }
@@ -138,6 +200,7 @@ export class Table {
     const row = this.heap.get(rowid)
     if (!row) return
     for (const idx of this.indexes.values()) idx.tree.remove(idx.keyOf(row), rowid)
+    for (const g of this.ginIndexes.values()) g.removeRow(rowid, row)
     this.heap.delete(rowid)
     this.statsCache = null
   }
@@ -148,8 +211,10 @@ export class Table {
     const old = this.heap.get(rowid)
     if (!old) return
     for (const idx of this.indexes.values()) idx.tree.remove(idx.keyOf(old), rowid)
+    for (const g of this.ginIndexes.values()) g.removeRow(rowid, old)
     this.heap.set(rowid, newRow)
     for (const idx of this.indexes.values()) idx.tree.insert(idx.keyOf(newRow), rowid)
+    for (const g of this.ginIndexes.values()) g.addRow(rowid, newRow)
     this.statsCache = null
   }
 
@@ -232,6 +297,24 @@ export class Table {
     return handle
   }
 
+  /** Build a GIN inverted index over a single tsvector column. */
+  createGinIndex(name: string, column: string): GinIndexHandle {
+    const ci = this.columnIndex(column)
+    if (ci < 0) throw new SqlError(`no column "${column}" to index on "${this.name}"`, 'bind')
+    const handle = new GinIndexHandle(name, column, ci)
+    // Backfill existing rows into the inverted index.
+    for (const [rowid, row] of this.heap) handle.addRow(rowid, row)
+    this.ginIndexes.set(name.toLowerCase(), handle)
+    return handle
+  }
+
+  /** A GIN index on exactly `column`, if one exists. */
+  ginIndexForColumn(column: string): GinIndexHandle | undefined {
+    const lc = column.toLowerCase()
+    for (const g of this.ginIndexes.values()) if (g.column.toLowerCase() === lc) return g
+    return undefined
+  }
+
   /** A single-column index on exactly `column`, if one exists. */
   indexForColumn(column: string): IndexHandle | undefined {
     const lc = column.toLowerCase()
@@ -266,7 +349,7 @@ export class Table {
     return [...this.indexes.values()]
   }
   hasIndexNamed(name: string): boolean {
-    return this.indexes.has(name.toLowerCase())
+    return this.indexes.has(name.toLowerCase()) || this.ginIndexes.has(name.toLowerCase())
   }
 
   /** rowids whose values in `columnIndexes` all equal `values` (none NULL). */
@@ -603,6 +686,7 @@ export class Database {
           columns: i.meta.columns,
           unique: i.meta.unique,
         })),
+        ginIndexes: [...t.ginIndexes.values()].map((g) => ({ name: g.name, column: g.column })),
       })
     }
     const views: ViewDef[] = [...this.views.values()].map((v) => ({
@@ -610,7 +694,7 @@ export class Database {
       columns: v.columns,
       select: v.select,
     }))
-    return { version: 4, tables, views }
+    return { version: 5, tables, views }
   }
 
   static restore(snap: SerializedDb): Database {
@@ -623,6 +707,9 @@ export class Database {
         // Back-compat: v1 snapshots stored a single `column`.
         const columns = idx.columns ?? (idx.column ? [idx.column] : [])
         if (columns.length && !table.hasIndexNamed(idx.name)) table.createIndex(idx.name, columns, idx.unique)
+      }
+      for (const g of t.ginIndexes ?? []) {
+        if (!table.hasIndexNamed(g.name)) table.createGinIndex(g.name, g.column)
       }
     }
     // Views (added in snapshot v4; absent in older snapshots).
@@ -736,6 +823,8 @@ export interface SerializedTable {
   constraints?: TableConstraints
   rows: Row[]
   indexes: SerializedIndex[]
+  /** GIN indexes (added in snapshot v5; absent in older snapshots). */
+  ginIndexes?: { name: string; column: string }[]
 }
 export interface SerializedDb {
   version: number
