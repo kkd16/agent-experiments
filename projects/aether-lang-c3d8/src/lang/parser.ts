@@ -19,6 +19,7 @@ import type {
 } from './ast.ts'
 import type { Span, Token } from './lexer.ts'
 import { tokenize } from './lexer.ts'
+import { DERIVABLE, deriveInstances, isDerivable } from './deriving.ts'
 
 // A list-comprehension qualifier: a generator `name <- src` or a boolean guard.
 type Qualifier =
@@ -646,9 +647,52 @@ class Parser {
       }
       break
     }
+    // optional `deriving (C1, C2, …)` clause — desugared into synthesised instances
+    const derived = this.parseDerivingClause()
     this.expect('keyword', 'in')
-    const body = this.parseExpr(0)
+    let body = this.parseExpr(0)
+    if (derived.length > 0) {
+      const tdSpan = this.spanFrom(start.span, body.span)
+      body = deriveInstances(name, params, ctors, derived, tdSpan, body)
+    }
     return { kind: 'typedecl', name, params, ctors, body, span: this.spanFrom(start.span, body.span) }
+  }
+
+  // optional `deriving (C1, C2, …)` after a type's constructors. Returns [] when
+  // absent. Each class must be one Aether knows how to derive, with no repeats.
+  private parseDerivingClause(): { cls: string; span: Span }[] {
+    if (!this.at('keyword', 'deriving')) return []
+    this.next()
+    this.expect('punc', '(')
+    const out: { cls: string; span: Span }[] = []
+    const seen = new Set<string>()
+    for (;;) {
+      if (!this.at('ident') || !isUpper(this.peek().value)) {
+        throw new ParseError('expected a class name inside `deriving (…)`', this.peek().span)
+      }
+      const tok = this.next()
+      if (!isDerivable(tok.value)) {
+        throw new ParseError(
+          `cannot derive '${tok.value}'; derivable classes are ${DERIVABLE.join(', ')}`,
+          tok.span,
+        )
+      }
+      if (seen.has(tok.value)) {
+        throw new ParseError(`duplicate class '${tok.value}' in deriving clause`, tok.span)
+      }
+      seen.add(tok.value)
+      out.push({ cls: tok.value, span: tok.span })
+      if (this.at('punc', ',')) {
+        this.next()
+        continue
+      }
+      break
+    }
+    this.expect('punc', ')')
+    if (out.length === 0) {
+      throw new ParseError('`deriving (…)` needs at least one class', this.peek().span)
+    }
+    return out
   }
 
   // class [Super p, … =>] Name a where m1 : τ ; m2 : τ ; … in body

@@ -131,6 +131,36 @@ check('hkt:reject Monad Int (kind)', 'class Monad m where pure : a -> m a, bind 
 check('hkt:reject inconsistent param kind', 'class Bad m where one : m, two : m Int -> Int in 0', { error: 'kind' })
 check('hkt:reject missing superclass instance', 'type Box a = Box a in class Functor f where fmap : (a -> b) -> f a -> f b in class Functor m => Monad m where pure : a -> m a, bind : m a -> (a -> m b) -> m b in instance Monad Box where pure = fn x -> Box x, bind = fn m k -> match m with Box x -> k x in 0', { error: 'Functor Box' })
 
+// A focused `deriving` battery: every synthesised method's behaviour, JS≡VM
+// throughout, and the rejection cases. Leaf primitives use hand-written base
+// instances; everything structural/parametric/recursive is derived.
+const DERIVE_PRELUDE = `let primShow = show in
+class Eq a   where eq      : a -> a -> Bool in
+class Ord a  where compare : a -> a -> Int  in
+class Show a where show    : a -> String    in
+instance Eq Int   where eq      = fn a b -> a == b in
+instance Ord Int  where compare = fn a b -> if a < b then -1 else if a == b then 0 else 1 in
+instance Show Int where show    = primShow in
+`
+check('derive:Eq recursive true', DERIVE_PRELUDE + 'type T a = L a | N (T a) (T a) deriving (Eq) in eq (N (L 1) (L 2)) (N (L 1) (L 2))', { value: 'true' })
+check('derive:Eq recursive false', DERIVE_PRELUDE + 'type T a = L a | N (T a) (T a) deriving (Eq) in eq (N (L 1) (L 2)) (N (L 1) (L 9))', { value: 'false' })
+check('derive:Eq inferred context', DERIVE_PRELUDE + 'type P a b = P a b deriving (Eq) in eq (P 1 2) (P 1 3)', { value: 'false' })
+check('derive:Ord fields then ctor order', DERIVE_PRELUDE + 'type T = A | B Int Int | C deriving (Ord) in (compare A (B 0 0), compare (B 1 2) (B 1 3), compare (B 9 9) A, compare (B 4 5) (B 4 5))', { value: '(-1, -1, 1, 0)' })
+check('derive:Show nullary + applied', DERIVE_PRELUDE + 'type T = Tip | Bin T Int T deriving (Show) in show (Bin Tip 7 (Bin Tip 8 Tip))', { value: '"(Bin Tip 7 (Bin Tip 8 Tip))"' })
+check('derive:Enum round-trip', 'class Enum a where fromEnum : a -> Int, toEnum : Int -> a in type C = X | Y | Z deriving (Enum) in let z = head (toEnum 2 :: [X]) in fromEnum z', { value: '2' })
+check('derive:Bounded min/max', 'class Enum a where fromEnum : a -> Int, toEnum : Int -> a in class Bounded a where minBound : a, maxBound : a in type C = X | Y | Z deriving (Enum, Bounded) in (fromEnum (max X minBound), fromEnum (max Z maxBound))', { value: '(0, 2)' })
+check('derive:Functor list+tuple+nullary', 'class Functor f where fmap : (a -> b) -> f a -> f b in type W a = W (List a) (a, a) | E deriving (Functor) in let w = W [1, 2] (3, 4) in match fmap (fn x -> x + 10) w with W xs p -> (xs, p) | E -> ([], (0, 0))', { value: '([11, 12], (13, 14))' })
+check('derive:Functor fixes earlier params', 'class Functor f where fmap : (a -> b) -> f a -> f b in type P k a = P k a deriving (Functor) in match fmap (fn x -> x * 2) (P "key" 21) with P k v -> (k, v)', { value: '("key", 42)' })
+check('derive:Foldable tree in-order', 'class Foldable t where foldr : (a -> b -> b) -> b -> t a -> b in type T a = L | N (T a) a (T a) deriving (Foldable) in foldr (fn x acc -> x :: acc) [] (N (N L 1 L) 2 (N L 3 L))', { value: '[1, 2, 3]' })
+check('derive:Foldable list+tuple fields', 'class Foldable t where foldr : (a -> b -> b) -> b -> t a -> b in type W a = W (List a) (a, a) | E deriving (Foldable) in foldr (fn x acc -> x + acc) 0 (W [1, 2, 3] (4, 5))', { value: '15' })
+check('derive:Functor+Foldable cooperate', 'class Functor f where fmap : (a -> b) -> f a -> f b in class Foldable t where foldr : (a -> b -> b) -> b -> t a -> b in type T a = L | N (T a) a (T a) deriving (Functor, Foldable) in foldr (fn x acc -> x + acc) 0 (fmap (fn x -> x * x) (N (N L 1 L) 2 (N L 3 L)))', { value: '14' })
+// rejection cases
+check('derive:reject Foldable nested-in-list', 'class Foldable t where foldr : (a -> b -> b) -> b -> t a -> b in type R a = R a (List (R a)) deriving (Foldable) in 0', { error: 'Foldable' })
+check('derive:reject non-derivable', 'type T = A deriving (Functor2) in 0', { error: 'derive' })
+check('derive:reject Enum with fields', 'class Enum a where fromEnum : a -> Int, toEnum : Int -> a in type T = A Int deriving (Enum) in 0', { error: 'Enum' })
+check('derive:reject Functor nullary', 'class Functor f where fmap : (a -> b) -> f a -> f b in type T = A | B deriving (Functor) in 0', { error: 'Functor' })
+check('derive:reject duplicate in clause', 'class Eq a where eq : a -> a -> Bool in type T = A deriving (Eq, Eq) in 0', { error: 'duplicate' })
+
 console.log(`\nAether harness: ${pass} passed, ${fail} failed`)
 if (fail) {
   console.log('\nFAILURES:')

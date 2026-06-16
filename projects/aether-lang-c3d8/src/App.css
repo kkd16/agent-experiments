@@ -1301,6 +1301,18 @@ body {
 .inst-methods {
   color: var(--fg-faint);
 }
+.inst-derived {
+  margin-left: 0.5rem;
+  padding: 0.05rem 0.4rem;
+  border-radius: 999px;
+  border: 1px solid var(--accent-2);
+  color: var(--accent-2);
+  font-family: var(--sans, inherit);
+  font-size: 0.68rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  vertical-align: middle;
+}
 .cls-core {
   margin: 0;
   font-family: var(--mono);

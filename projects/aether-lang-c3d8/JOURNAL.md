@@ -259,6 +259,64 @@ Plan / steps:
       HKT battery (polymorphic monadic code at multiple instances, superclass entailment, the State
       monad, JS≡VM throughout, and the rejection cases) — 82 checks, all green.
 
+### Aether 6.0 — `deriving` (this session)
+
+For three releases Aether's type classes have been hand-written: every instance, even the rote
+structural `Eq`/`Ord`/`Show`, was typed out by hand. 6.0 adds **`deriving`** — the one piece of
+class machinery a real ML/Haskell-family language is judged on. A `type` declaration can now carry
+a `deriving (…)` clause and the compiler **synthesises the instances for you**, generating the
+method bodies from the data type's shape: structural equality, lexicographic ordering, Haskell-style
+`show`, enumeration, bounds, and — the headline — a position-aware **`deriving Functor`** that maps
+over a type's last parameter (recursing through itself, lists and tuples).
+
+The crux is that this is *pure front-end desugaring*, exactly the pattern that has paid off every
+session: `deriving` runs at **parse time** and emits ordinary `instance` AST nodes nested in the
+type's body, so inference type-checks them, kind-checks their heads, infers their contexts and
+elaborates them to dictionaries — and the bytecode VM **and** the JavaScript backend inherited the
+whole feature with **zero** changes. A derived instance is byte-for-byte indistinguishable from a
+hand-written one; the only new code outside the generator is one keyword and a parser hook.
+
+Plan / steps:
+
+- [x] **`deriving` keyword + parser hook** — lex `deriving`; parse an optional
+      `deriving (C1, C2, …)` clause after a type's constructors. The clause desugars at parse time
+      into a chain of synthesised `instance` declarations wrapping the type's body, so the rest of
+      the pipeline never learns a new node. An optional `derived?: boolean` marker on `instancedecl`
+      lets the Classes panel badge them.
+- [x] **The generator (`deriving.ts`)** — from a type's parameters + constructors, build the
+      `instance` AST for each requested class. Each method body is real surface AST (`match`,
+      `^`, comparisons, recursive class-method calls) so it flows through inference unchanged, and
+      the instance context (`(Eq a, Eq b) =>`) is computed from which parameters the fields use.
+- [x] **`deriving Eq`** — `eq` by structural recursion: equal constructors compare their fields
+      with `eq` (`&&`-folded; `true` for nullary), unequal constructors are `false`. Recursive and
+      parametric types work via the self-instance + an inferred `(Eq a, …) =>` context. Generated
+      `match`es are exhaustive **and** non-redundant (no spurious warnings).
+- [x] **`deriving Ord`** — `compare : a -> a -> Int` (−1/0/1): same constructor ⇒ lexicographic
+      field comparison, different constructors ⇒ by declaration order (constructor index). No `Ord
+      Int` needed — the tag comparison uses primitive `<`.
+- [x] **`deriving Show`** — Haskell-style `show`: a nullary constructor prints its name, an applied
+      one prints `(Ctor f1 f2 …)` with each field shown recursively through the class.
+- [x] **`deriving Enum` / `deriving Bounded`** — for all-nullary (C-style) enums: `fromEnum`/`toEnum`
+      round-trip a constructor through its index; `minBound`/`maxBound` are the first/last
+      constructors. Rejected (with a clear message) on a type that carries fields.
+- [x] **`deriving Functor` / `deriving Foldable`** (headline) — synthesise `fmap : (a -> b) -> f a -> f b` mapping over the
+      type's **last** parameter: a field that *is* the parameter gets `g` applied; a recursive
+      `T … a` field recurses via `fmap`; a `List a` field maps; a tuple maps componentwise; a
+      parameter-free field is untouched. The instance head is the type applied to all-but-the-last
+      parameter (kind `* -> *`), unified against the class through the 5.0 `TApp`/`TCon` bridge.
+      Unsupported field shapes are rejected by name. The companion **`deriving Foldable`** writes
+      `foldr : (a -> b -> b) -> b -> t a -> b` over the same last parameter (standard DeriveFoldable
+      order), folding `List` fields with an inline right fold (no `Foldable List` instance needed), so a
+      derived `Foldable` hands you `toList`/`sum`/`length` for free.
+- [x] **Gallery examples** — a `deriving (Eq, Ord, Show)` showcase over a sum-of-products type, a
+      weekday `enum` driving a generic `allValues` via `Enum`/`Bounded`, and a `deriving (Functor,
+      Foldable)` tree mapped and folded generically (plus a rose tree) — each runs on both backends.
+- [x] **Tooling, docs & verification** — the Classes panel badges derived instances; `deriving` is a
+      highlighter keyword; Tour/About/README + `project.json` writeups. A new `deriving` self-test
+      group (in `testSuite.ts`) and a focused `deriving` battery in the Node harness check every
+      derived method's behaviour, JS≡VM throughout, and the rejection cases (non-derivable class,
+      `Enum` on a type with fields, `Functor`/`Foldable` on a nullary type, an unfoldable nested-in-list shape).
+
 ## Standard library
 
 - list: `map filter foldl foldr length append reverse sum range take drop elem all any concat zip replicate`
@@ -445,3 +503,30 @@ Plan / steps:
   class's inferred kind + superclass context, and a committed Node harness (`tools/harness.mjs`) runs
   the gallery, the in-app self-test + property suites, and a focused HKT battery — 82 checks green;
   full CI gate (scope + conformance + lint + tsc + build) green.
+- 2026-06-16 (claude): **Aether 6.0 — `deriving`.** Closed the last "real ML/Haskell-family language"
+  gap: a `type` declaration may now end with `deriving (Eq, Ord, Show, Enum, Bounded, Functor,
+  Foldable)` and the compiler **synthesises the instances**, generating each method from the data
+  type's shape. `Eq`/`Ord`/`Show` recurse structurally *through the class method* (so a parametric or
+  recursive type gets an inferred context like `Eq a => Eq (Tree a)`, bottoming out at the leaves'
+  own instances): `Eq` is `&&`-folded field equality, `Ord` is `compare : a -> a -> Int` (constructor
+  declaration order, then lexicographic fields), `Show` prints Haskell-style `(Ctor f1 f2 …)`.
+  `Enum`/`Bounded` index and fence a C-style enum (`fromEnum`/`toEnum`, `minBound`/`maxBound`). The
+  headline is position-aware **`deriving Functor`** and **`deriving Foldable`**: `fmap`/`foldr` written
+  by walking the type's *last* parameter — applied where it sits directly, and recursing through the
+  type itself, through `List` (an inline right fold for `Foldable`, so no `Foldable List` instance is
+  needed) and through tuples; the instance head is the type applied to its other parameters (kind
+  `* -> *`), unified against the class through the 5.0 `TApp`/`TCon` bridge. The whole feature is
+  **pure parse-time desugaring** into ordinary `instance` declarations nested in the type's body
+  (`deriving.ts`; one new keyword + a parser hook + an optional `derived` marker on `instancedecl`),
+  so inference type-checks, kind-checks, *infers each instance's context* and elaborates them exactly
+  like hand-written ones — and the bytecode VM and the JavaScript backend run derived instances with
+  **zero** added code. Generated `match`es are exhaustive and non-redundant (no spurious warnings).
+  Rejected with clear messages: a non-derivable class, `Enum` on a type with fields, `Functor`/
+  `Foldable` on a parameterless type (or a parameter in a function-argument position), and the one
+  unfoldable shape (a type nested inside a list under `Foldable`). Added three gallery examples
+  (`deriving (Eq, Ord, Show)` sorting a hand of cards by the derived order; an `Enum`/`Bounded`
+  weekday enum; a `deriving (Functor, Foldable)` tree mapped and folded generically), a `deriving`
+  self-test group (8 cases) + 3 rejection cases on the Tests page, a Classes-panel **derived** badge,
+  the `deriving` highlighter keyword, and Tour/About/README/`project.json` writeups. The Node harness
+  grew a focused `deriving` battery (every synthesised method, JS≡VM throughout, the rejection cases)
+  — **126 checks green**; full CI gate (scope + conformance + lint + tsc + build) green.

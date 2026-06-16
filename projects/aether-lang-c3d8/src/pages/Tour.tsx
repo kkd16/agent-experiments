@@ -203,6 +203,40 @@ mapM (fn x -> if x > 0 then Some x else None) [1, 2, 3]  // Some [1, 2, 3]`}</pr
       </section>
 
       <section>
+        <h2>deriving (instances for free)</h2>
+        <p>
+          Writing the rote, structural instances by hand gets old fast. A data type can end with a{' '}
+          <code>deriving (…)</code> clause and the compiler <strong>synthesises the instances</strong>,
+          generating each method from the type's shape:
+        </p>
+        <pre className="snippet">{`type Suit = Clubs | Diamonds | Hearts | Spades deriving (Eq, Ord, Show) in
+type Card = Card Suit Int                       deriving (Eq, Ord, Show) in
+compare (Card Clubs 14) (Card Spades 3)   // Clubs < Spades  =>  -1`}</pre>
+        <p>
+          <code>Eq</code> compares constructors structurally, <code>Ord</code> orders by constructor
+          declaration order then lexicographically by fields (<code>compare : a -&gt; a -&gt; Int</code>,
+          −1/0/1), and <code>Show</code> prints Haskell-style <code>(Ctor f₁ f₂ …)</code>. Recursion goes
+          through the class method, so a parametric or recursive type gets an <strong>inferred
+          context</strong> like <code>Eq a =&gt; Eq (Tree a)</code>. <code>Enum</code>/<code>Bounded</code>{' '}
+          enumerate and fence a C-style enum (<code>fromEnum</code>/<code>toEnum</code>,{' '}
+          <code>minBound</code>/<code>maxBound</code>).
+        </p>
+        <p>
+          The headline is <strong>deriving Functor</strong> and <strong>deriving Foldable</strong>: the
+          compiler writes <code>fmap</code> and <code>foldr</code> by walking the type's <em>last</em>{' '}
+          parameter, recursing through the type itself, through <code>List</code> and through tuples.
+        </p>
+        <pre className="snippet">{`type Tree a = Leaf | Node (Tree a) a (Tree a) deriving (Functor, Foldable) in
+let toList = fn xs -> foldr (fn x acc -> x :: acc) [] xs in
+toList (fmap (fn x -> x * 10) (Node Leaf 1 (Node Leaf 2 Leaf)))  // [10, 20]`}</pre>
+        <p>
+          It is all <strong>parse-time desugaring</strong> into ordinary <code>instance</code>{' '}
+          declarations — so both backends run derived instances unchanged, and the{' '}
+          <strong>Classes</strong> tab badges them <em>derived</em>.
+        </p>
+      </section>
+
+      <section>
         <h2>List comprehensions</h2>
         <p>
           <code>[ e | x &lt;- xs, guard, y &lt;- ys ]</code> builds a list from one or more{' '}

@@ -236,7 +236,109 @@ run (bind tick (fn a -> bind tick (fn b -> pure (a, b)))) 0`,
     expected: '((0, 1), 2)',
   },
 
+  // ---- deriving (synthesised instances) ----
+  {
+    group: 'deriving',
+    name: 'Eq over a parametric, recursive type',
+    code: `class Eq a where eq : a -> a -> Bool in
+instance Eq Int where eq = fn a b -> a == b in
+type Tree a = Leaf a | Node (Tree a) (Tree a) deriving (Eq) in
+let t = Node (Leaf 1) (Node (Leaf 2) (Leaf 3)) in
+(eq t t, eq t (Node (Leaf 1) (Node (Leaf 9) (Leaf 3))))`,
+    expected: '(true, false)',
+  },
+  {
+    group: 'deriving',
+    name: 'Ord by constructor order then fields',
+    code: `class Ord a where compare : a -> a -> Int in
+instance Ord Int where compare = fn a b -> if a < b then -1 else if a == b then 0 else 1 in
+type T = A | B Int | C deriving (Ord) in
+(compare A C, compare C A, compare (B 1) (B 4), compare (B 5) (B 5), compare C (B 9))`,
+    expected: '(-1, 1, -1, 0, 1)',
+  },
+  {
+    group: 'deriving',
+    name: 'Show is Haskell-style and recurses',
+    code: `class Show a where show : a -> String in
+type Tree = Tip | Bin Tree Tree deriving (Show) in
+show (Bin (Bin Tip Tip) Tip)`,
+    expected: '"(Bin (Bin Tip Tip) Tip)"',
+  },
+  {
+    group: 'deriving',
+    name: 'Enum + Bounded enumerate a C-style enum',
+    code: `class Enum a where fromEnum : a -> Int, toEnum : Int -> a in
+class Bounded a where minBound : a, maxBound : a in
+type RGB = R | G | B deriving (Enum, Bounded) in
+let lo = max R minBound in
+let hi = max B maxBound in
+let mid = head (toEnum 1 :: [G]) in
+(fromEnum lo, fromEnum hi, fromEnum mid)`,
+    expected: '(0, 2, 1)',
+  },
+  {
+    group: 'deriving',
+    name: 'Functor maps the last parameter (self + tuple)',
+    code: `class Functor f where fmap : (a -> b) -> f a -> f b in
+type Pair k a = Pair k (a, a) deriving (Functor) in
+type Tree a = Leaf a | Node (Tree a) (Tree a) deriving (Functor) in
+let p = fmap (fn x -> x + 1) (Pair "k" (10, 20)) in
+let t = fmap (fn x -> x * 2) (Node (Leaf 3) (Leaf 4)) in
+(match p with Pair k xs -> (k, xs), match t with Node (Leaf a) (Leaf b) -> (a, b) | _ -> (0, 0))`,
+    expected: '(("k", (11, 21)), (6, 8))',
+  },
+  {
+    group: 'deriving',
+    name: 'Foldable folds the last parameter (toList + sum)',
+    code: `class Foldable t where foldr : (a -> b -> b) -> b -> t a -> b in
+type Tree a = Leaf | Node (Tree a) a (Tree a) deriving (Foldable) in
+let t = Node (Node Leaf 1 Leaf) 2 (Node Leaf 3 Leaf) in
+let toList = fn xs -> foldr (fn x acc -> x :: acc) [] xs in
+(toList t, foldr (fn x acc -> x + acc) 0 t)`,
+    expected: '([1, 2, 3], 6)',
+  },
+  {
+    group: 'deriving',
+    name: 'Foldable over a list field',
+    code: `class Foldable t where foldr : (a -> b -> b) -> b -> t a -> b in
+type Bag a = Bag (List a) (a, a) deriving (Foldable) in
+foldr (fn x acc -> x :: acc) [] (Bag [1, 2] (3, 4))`,
+    expected: '[1, 2, 3, 4]',
+  },
+  {
+    group: 'deriving',
+    name: 'multiple classes in one clause cooperate',
+    code: `class Eq a where eq : a -> a -> Bool in
+class Show a where show : a -> String in
+type Color = Red | Green | Blue deriving (Eq, Show) in
+(eq Green Green, eq Red Blue, show Blue)`,
+    expected: '(true, false, "Blue")',
+  },
+
   // ---- errors (must be rejected) ----
+  {
+    group: 'errors',
+    name: 'deriving a non-derivable class is rejected',
+    code: 'class Foo a where foo : a -> Int in type T = A deriving (Foo) in 0',
+    expected: null,
+    expectError: true,
+  },
+  {
+    group: 'errors',
+    name: 'deriving Enum on a type with fields is rejected',
+    code: `class Enum a where fromEnum : a -> Int, toEnum : Int -> a in
+type T = A Int deriving (Enum) in 0`,
+    expected: null,
+    expectError: true,
+  },
+  {
+    group: 'errors',
+    name: 'deriving Functor on a nullary type is rejected',
+    code: `class Functor f where fmap : (a -> b) -> f a -> f b in
+type T = A | B deriving (Functor) in 0`,
+    expected: null,
+    expectError: true,
+  },
   {
     group: 'errors',
     name: 'kind error: instance Monad Int is rejected',
