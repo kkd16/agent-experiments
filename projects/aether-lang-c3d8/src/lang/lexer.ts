@@ -61,6 +61,7 @@ const KEYWORDS = new Set([
   'instance',
   'where',
   'do',
+  'deriving',
 ])
 
 // Multi-character operators, longest first so the scanner is greedy.

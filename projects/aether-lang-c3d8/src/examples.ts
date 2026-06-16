@@ -723,6 +723,99 @@ let rec traverse = fn f xs ->
 , traverse checkPos [1, 2, 3]  // Ok [1, 2, 3]
 , traverse checkPos [1, 0, 3]) // Err "not positive" (aborts on 0)`,
   },
+  {
+    id: 'deriving',
+    title: 'deriving (Eq, Ord, Show)',
+    blurb: 'One clause synthesises whole instances — then sort cards by them.',
+    visual: false,
+    code: `// A 'deriving' clause makes the compiler WRITE the instances for you,
+// generating each method from the data type's shape. Here Suit & Card get
+// structural equality, lexicographic ordering and a Haskell-style show — all
+// synthesised, all running identically on the bytecode VM and the JS backend.
+//
+// Only the leaf types need hand-written instances; everything structural is
+// derived, and the instance contexts (Eq a => …) are inferred for you.
+
+let primShow = show in
+class Eq a   where eq      : a -> a -> Bool in
+class Ord a  where compare : a -> a -> Int  in     // -1 / 0 / 1
+class Show a where show    : a -> String    in
+
+instance Eq Int   where eq      = fn a b -> a == b in
+instance Ord Int  where compare = fn a b -> if a < b then -1 else if a == b then 0 else 1 in
+instance Show Int where show    = primShow in
+
+type Suit = Clubs | Diamonds | Hearts | Spades   deriving (Eq, Ord, Show) in
+type Card = Card Suit Int                         deriving (Eq, Ord, Show) in
+
+// insertion sort using the DERIVED ordering (suit first, then rank):
+let rec insert = fn x ys ->
+  if empty ys then [x]
+  else if compare x (head ys) <= 0 then x :: ys
+  else head ys :: insert x (tail ys) in
+let sortCards = foldr insert [] in
+
+let hand = [Card Spades 10, Card Clubs 14, Card Spades 3, Card Hearts 14] in
+( map show (sortCards hand)
+, eq (Card Hearts 14) (Card Hearts 14)
+, compare (Card Clubs 14) (Card Spades 3) )   // Clubs < Spades  ⇒  -1`,
+  },
+  {
+    id: 'deriving-enum',
+    title: 'deriving (Enum, Bounded)',
+    blurb: 'Turn a plain enum into something you can enumerate and bound.',
+    visual: false,
+    code: `// Deriving Enum and Bounded turns a C-style enum into something the rest of
+// the language can iterate over: fromEnum/toEnum index each constructor, and
+// minBound/maxBound fence the type. (There are no type annotations in Aether,
+// so we 'pin' a polymorphic method's type with a concrete constructor.)
+
+class Eq a      where eq       : a -> a -> Bool in
+class Show a    where show     : a -> String    in
+class Enum a    where fromEnum : a -> Int, toEnum : Int -> a in
+class Bounded a where minBound : a, maxBound : a in
+
+type Day = Mon | Tue | Wed | Thu | Fri | Sat | Sun
+  deriving (Eq, Show, Enum, Bounded) in
+
+let allDays = Mon :: map toEnum (range 1 7) in   // 'Mon ::' pins toEnum to Day
+let first   = max Mon minBound in                // = minBound, pinned to Day
+let last    = max Sun maxBound in                // = maxBound, pinned to Day
+let isWeekend = fn d -> eq d Sat || eq d Sun in
+
+( map show allDays
+, map show (filter isWeekend allDays)
+, (show first, show last, fromEnum Wed) )`,
+  },
+  {
+    id: 'deriving-functor',
+    title: 'deriving (Functor, Foldable)',
+    blurb: 'The compiler writes fmap AND foldr from a type’s shape.',
+    visual: false,
+    code: `// The headline: 'deriving Functor' synthesises fmap and 'deriving Foldable'
+// synthesises foldr, both by reading the data type's shape — walking the LAST
+// type parameter where it sits directly and RECURSING through the type itself,
+// through lists and through tuples. No instance body to write.
+
+class Functor f  where fmap  : (a -> b) -> f a -> f b in
+class Foldable t where foldr : (a -> b -> b) -> b -> t a -> b in
+
+type Tree a = Leaf | Node (Tree a) a (Tree a) deriving (Functor, Foldable) in
+type Rose a = Rose a (List (Rose a))          deriving (Functor) in
+
+// generic, work for ANY Foldable:
+let toList = fn xs -> foldr (fn x acc -> x :: acc) [] xs in
+let total  = fn xs -> foldr (fn x acc -> x + acc) 0 xs in
+
+let t = Node (Node Leaf 1 Leaf) 2 (Node Leaf 3 Leaf) in
+let r = Rose 1 [Rose 2 [], Rose 3 [Rose 4 []]] in
+let rec sumRose = fn rs -> match rs with
+  Rose x kids -> x + sum (map sumRose kids) in
+
+( toList t                            // in-order: [1, 2, 3]
+, total (fmap (fn x -> x * x) t)      // 1 + 4 + 9 = 14
+, sumRose (fmap (fn x -> x + 100) r)) // (1+2+3+4) + 4*100 = 410`,
+  },
 ]
 
 export const DEFAULT_CODE = EXAMPLES[0].code

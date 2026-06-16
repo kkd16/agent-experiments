@@ -143,6 +143,8 @@ export type Expr =
       head: TypeExpr
       context: ConstraintExpr[]
       methods: MethodImpl[]
+      /** true when this instance was synthesised by a `deriving` clause */
+      derived?: boolean
       body: Expr
       span: Span
     }

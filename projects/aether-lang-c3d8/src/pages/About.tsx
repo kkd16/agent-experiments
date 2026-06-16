@@ -112,6 +112,18 @@ export default function About() {
             <code>Functor</code> one via superclass dictionaries.
           </li>
           <li>
+            <strong>
+              <code>deriving</code>
+            </strong>{' '}
+            synthesises instances from a data type's shape —{' '}
+            <code>deriving (Eq, Ord, Show, Enum, Bounded, Functor, Foldable)</code>, including
+            position-aware <code>deriving Functor</code> and <code>deriving Foldable</code> that write{' '}
+            <code>fmap</code>/<code>foldr</code> by walking the last type parameter (recursing through
+            itself, lists and tuples). It is pure parse-time desugaring
+            into ordinary <code>instance</code> declarations, so inference infers each instance's
+            context and both backends run derived instances with no added code.
+          </li>
+          <li>
             <code>match</code> is checked for exhaustiveness and redundancy using Maranget's
             usefulness algorithm — non-exhaustive matches are reported with a concrete witness
             pattern, and unreachable clauses are flagged.

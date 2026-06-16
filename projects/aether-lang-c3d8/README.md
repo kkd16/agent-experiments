@@ -67,6 +67,36 @@ Aether is an ML-family expression language. Everything is an expression; there a
   superclass dictionaries (as `$super_…` fields), so a `Monad m` constraint *entails* a `Functor m`
   one: you write `Monad m =>` and get `fmap` for free, discharged by projecting through the dictionary.
   Declaring a `Monad` instance requires (and references) the corresponding `Functor` instance.
+- **`deriving`** — a data type may end with `deriving (Eq, Ord, Show, Enum, Bounded, Functor, Foldable)`
+  and the compiler **writes the instances for you**, generating each method from the type's shape:
+
+  ```
+  type Suit = Clubs | Diamonds | Hearts | Spades deriving (Eq, Ord, Show) in
+  type Card = Card Suit Int                       deriving (Eq, Ord, Show) in
+  compare (Card Clubs 14) (Card Spades 3)         // Clubs < Spades ⇒ -1
+  ```
+
+  - `Eq` compares constructors structurally; `Ord` orders by constructor declaration order, then
+    lexicographically by fields (`compare : a -> a -> Int`); `Show` prints Haskell-style
+    `(Ctor f₁ f₂ …)`. Structural recursion goes *through the class method*, so a recursive or
+    parametric type's instance carries an **inferred context** (`Eq a => Eq (Tree a)`) and bottoms
+    out at the leaves' own instances.
+  - `Enum`/`Bounded` work on C-style enums: `fromEnum`/`toEnum` index each constructor and
+    `minBound`/`maxBound` fence the type.
+  - **`deriving Functor`** synthesises `fmap` by mapping over the type's **last** parameter —
+    applying the function where the parameter sits directly, and **recursing** through the type
+    itself, through `List`, and through tuples; the instance head is the type applied to its other
+    parameters (kind `* -> *`).
+  - **`deriving Foldable`** synthesises `foldr` over the same last parameter (in the standard
+    DeriveFoldable order), recursing through the type and tuples and folding `List` fields with an
+    inline right fold — so a derived `Foldable` gives you `toList`, `sum`, `length`, … for free.
+
+  It's all **pure parse-time desugaring** into ordinary `instance` declarations nested in the type's
+  body, so inference type-checks, kind-checks and elaborates them like hand-written ones — and the
+  bytecode VM and the JavaScript backend run derived instances with **zero** added code. The
+  **Classes** tab badges the synthesised instances `derived`. Non-derivable classes, `Enum` on a type
+  with fields, and `Functor` on a type with no parameter (or a parameter in a function-argument
+  position) are all rejected with a clear message.
 
 ### Property-based testing (Aether Check)
 

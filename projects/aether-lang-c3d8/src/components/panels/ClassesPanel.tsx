@@ -22,6 +22,7 @@ interface ClassRow {
 }
 
 interface InstanceRow {
+  derived: boolean
   cls: string
   head: string
   context: string[]
@@ -53,6 +54,7 @@ function collect(
       node = node.body
     } else if (node.kind === 'instancedecl') {
       instances.push({
+        derived: node.derived === true,
         cls: node.cls,
         head: typeExprToString(node.head),
         context: node.context.map((c) => `${c.cls} ${c.param}`),
@@ -142,6 +144,7 @@ export default function ClassesPanel({ ast, coreAst, classKinds }: Props) {
               {i.context.length > 0 && <span className="inst-ctx">{i.context.join(', ')} ⇒ </span>}
               <span className="inst-headcls">{i.cls}</span> <code>{i.head}</code>
               <span className="inst-methods"> — {i.methods.join(', ')}</span>
+              {i.derived && <span className="inst-derived" title="synthesised by a deriving clause">derived</span>}
             </div>
           ))}
         </div>

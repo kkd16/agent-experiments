@@ -38,6 +38,8 @@ const KEYWORDS = new Set([
   'class',
   'instance',
   'where',
+  'deriving',
+  'do',
 ])
 
 const OP_CHARS = new Set(['+', '-', '*', '/', '%', '<', '>', '=', '!', '^', '|', '&', ':', '.'])
