@@ -7,6 +7,18 @@ live here as long as you like.
 
 ## Ideas / backlog
 
+- [x] Add "Average Time per Question" to speed run summary
+- [x] Review history of wrong answers after speed run
+- [ ] Add sound effects toggle (mute/unmute)
+- [ ] Allow customizable background colors
+- [ ] Add an "Endless" mode with increasing difficulty
+- [ ] Create a "sudden death" mode (one wrong answer ends the game)
+- [ ] Save full history of games played in localStorage
+- [ ] Show a graph of last 10 speed run scores
+- [ ] Let users input answers via an on-screen numpad
+- [ ] Add optional haptic feedback for mobile users
+
+
 - [x] Basic addition and subtraction problems
 - [x] Check user answers
 - [x] Keep a score counter
@@ -22,12 +34,12 @@ live here as long as you like.
 - [x] Add a dark mode toggle
 - [x] Add operation-specific modes (e.g. "Only Addition")
 - [x] Save/load streak in localStorage
-- [ ] Add visual feedback animations
+- [x] Add visual feedback animations
 - [ ] Add sound effects for correct/incorrect answers
-- [ ] Add history of past answers
+- [x] Add history of past answers
 - [ ] Add customizable ranges for numbers
 - [ ] Add visual confetti on high score
-- [ ] Support custom timer durations
+- [x] Support custom timer durations
 - [ ] Add a multiplayer mode via WebRTC
 - [ ] Add internationalization (i18n) support
 - [ ] Create detailed analytics/graphs for accuracy over time

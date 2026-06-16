@@ -4,6 +4,16 @@ import './App.css';
 type Operation = '+' | '-' | '*' | '/';
 type Difficulty = 'easy' | 'medium' | 'hard';
 
+type HistoryItem = {
+  num1: number;
+  num2: number;
+  operation: Operation;
+  userAnswer: string;
+  correctAnswer: number;
+  isCorrect: boolean;
+};
+
+
 function generateRandomProblem(difficulty: Difficulty, allowedOps: Operation[]) {
   const ops = allowedOps.length > 0 ? allowedOps : ['+'] as Operation[];
   const selectedOp = ops[Math.floor(Math.random() * ops.length)];
@@ -79,7 +89,11 @@ function App() {
 
   const [isSpeedRunActive, setIsSpeedRunActive] = useState<boolean>(false);
   const [timeLeft, setTimeLeft] = useState<number>(60);
+  const [selectedTimerDuration, setSelectedTimerDuration] = useState<number>(60);
+  const [questionsAnswered, setQuestionsAnswered] = useState<number>(0);
   const [showSummary, setShowSummary] = useState<boolean>(false);
+  const [animationClass, setAnimationClass] = useState<string>('');
+  const [history, setHistory] = useState<HistoryItem[]>([]);
 
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -175,7 +189,9 @@ function App() {
   const startSpeedRun = () => {
     setScore(0);
     updateStreak(0);
-    setTimeLeft(60);
+    setTimeLeft(selectedTimerDuration);
+    setQuestionsAnswered(0);
+    setHistory([]);
     setIsSpeedRunActive(true);
     setShowSummary(false);
     setMessage('');
@@ -201,8 +217,15 @@ function App() {
     }
 
 
-    if (answer === correctAnswer) {
+    const isCorrect = answer === correctAnswer;
+    setHistory(prev => [...prev, {
+      num1, num2, operation, userAnswer, correctAnswer, isCorrect
+    }]);
+
+    if (isCorrect) {
       setMessage("Correct!");
+      setAnimationClass('flash-correct');
+      setTimeout(() => setAnimationClass(''), 500);
 
       let points = 1;
       if (streak >= 10) points = 3;
@@ -212,6 +235,7 @@ function App() {
       setScore(newScore);
       updateStreak(streak + 1);
       updateHighScore(newScore);
+      setQuestionsAnswered(prev => prev + 1);
 
       setTimeout(() => {
         generateProblem();
@@ -219,6 +243,8 @@ function App() {
 
     } else {
       setMessage(`Incorrect. Try again!`);
+      setAnimationClass('flash-incorrect');
+      setTimeout(() => setAnimationClass(''), 500);
       updateStreak(0); // Reset streak
       setUserAnswer('');
       inputRef.current?.focus();
@@ -286,17 +312,24 @@ function App() {
 
           {isSpeedRunActive ? (
             <div className="progress-container">
-              <div className="progress-bar" style={{ width: `${(timeLeft / 60) * 100}%` }}></div>
+              <div className="progress-bar" style={{ width: `${(timeLeft / selectedTimerDuration) * 100}%` }}></div>
               <div className="progress-text">{timeLeft}s</div>
             </div>
           ) : (
 
-            <button type="button" onClick={startSpeedRun} className="speed-run-button">Start Speed Run (60s)</button>
+            <div className="timer-select-container" style={{display: 'flex', gap: '0.5rem', alignItems: 'center'}}>
+              <select value={selectedTimerDuration} onChange={(e) => setSelectedTimerDuration(parseInt(e.target.value, 10))} className="timer-select">
+                <option value={30}>30s</option>
+                <option value={60}>60s</option>
+                <option value={120}>120s</option>
+              </select>
+              <button type="button" onClick={startSpeedRun} className="speed-run-button">Start Speed Run</button>
+            </div>
           )}
         </div>
       </div>
 
-      <div className="flashcard">
+      <div className={`flashcard ${animationClass}`}>
         <div className="problem">
           <span className="number">{num1}</span>
           <span className="operation">{operation}</span>
@@ -327,8 +360,25 @@ function App() {
             <h2>Time's Up!</h2>
             <p>Final Score: <strong>{score}</strong></p>
             <p>High Score: <strong>{highScore}</strong></p>
-            <button onClick={() => setShowSummary(false)} className="submit-button">Close</button>
-            <button onClick={startSpeedRun} className="speed-run-button" style={{marginLeft: '1rem'}}>Play Again</button>
+            <p>Questions Answered: <strong>{questionsAnswered}</strong></p>
+            <p>Average Time: <strong>{questionsAnswered > 0 ? (selectedTimerDuration / questionsAnswered).toFixed(2) : 0}s</strong></p>
+
+            <div className="history-container">
+              <h3>History</h3>
+              <ul className="history-list">
+                {history.map((item, index) => (
+                  <li key={index} className={item.isCorrect ? 'history-correct' : 'history-incorrect'}>
+                    {item.num1} {item.operation} {item.num2} = {item.userAnswer}
+                    {!item.isCorrect && <span> (Correct: {item.correctAnswer})</span>}
+                  </li>
+                ))}
+              </ul>
+            </div>
+
+            <div style={{marginTop: '1.5rem'}}>
+              <button onClick={() => setShowSummary(false)} className="submit-button">Close</button>
+              <button onClick={startSpeedRun} className="speed-run-button" style={{marginLeft: '1rem'}}>Play Again</button>
+            </div>
           </div>
         </div>
       )}
