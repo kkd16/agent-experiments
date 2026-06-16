@@ -64,8 +64,10 @@ export interface IntegratorSettings {
   // Light-transport algorithm. 'pt' is the unidirectional path tracer (NEE+MIS);
   // 'bdpt' is the bidirectional path tracer (camera×light connections + MIS);
   // 'pssmlt' is primary-sample-space Metropolis light transport (a Markov chain
-  // over the path tracer's random stream). All three converge to the same image.
-  integrator?: 'pt' | 'bdpt' | 'pssmlt'
+  // over the path tracer's random stream); 'sppm' is stochastic progressive
+  // photon mapping (photons from the lights + a shrinking-radius density
+  // estimate), which excels at caustics. All four converge to the same image.
+  integrator?: 'pt' | 'bdpt' | 'pssmlt' | 'sppm'
 }
 
 // Tone-mapping operators applied on the UI thread to the accumulated HDR buffer.
@@ -113,13 +115,14 @@ export interface PassDoneMsg {
   normal?: ArrayBuffer
 }
 
-// PSSMLT progress: a worker running independent Markov chains posts, each pass,
-// its current full-frame normalised HDR estimate plus how far the chain has run.
-// The UI thread averages the workers' estimates (each is independently unbiased).
+// Full-frame estimator progress (PSSMLT *and* SPPM): a worker running its own
+// independent chains / photon passes posts, each pass, its current full-frame
+// HDR estimate plus how far it has run. The UI thread averages the workers'
+// estimates weighted by progress (each is independently consistent).
 export interface MltDoneMsg {
   type: 'mltDone'
   image: ArrayBuffer // full-frame interleaved [r,g,b] normalised radiance (W×H)
-  mpp: number // mutations per pixel this worker's chains have accumulated
+  mpp: number // progress: mutations-per-pixel (PSSMLT) or passes (SPPM)
   rays: number // rays traced since the previous pass (for the stats readout)
   b: number // this worker's bootstrap brightness estimate (for diagnostics)
 }

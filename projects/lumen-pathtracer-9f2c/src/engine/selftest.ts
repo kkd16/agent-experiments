@@ -18,6 +18,7 @@ import type { RayStats } from './integrator'
 import { radianceBDPT, areaDensity, misPartitionResidual } from './bdpt'
 import { Camera } from './camera'
 import { MltState, PssmltSampler } from './pssmlt'
+import { renderSPPM, HashGrid } from './sppm'
 import type { SceneDef } from './types'
 import { evalTexture } from './texture'
 import type { Texture } from './texture'
@@ -1050,6 +1051,174 @@ function testMltVsPt(): { pass: boolean; detail: string } {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Stochastic Progressive Photon Mapping (SPPM)
+// ---------------------------------------------------------------------------
+
+// 37 — The oracle, now four-way: SPPM must converge to the *same image* as the
+// path tracer (and therefore BDPT and PSSMLT) on the diffuse Cornell box. SPPM
+// solves the rendering equation by an entirely different mechanism — photons
+// shot from the lights, gathered with a shrinking radius — so agreement on both
+// the global brightness (absolute scale, which pins the photon-power
+// normalisation) and the top/bottom luminance ratio (the spatial distribution)
+// is a stringent, independent check of the whole pipeline.
+function testSppmVsPt(): { pass: boolean; detail: string } {
+  const def = diffuseBox()
+  const W = 12
+  const H = 9
+  const pt = imageBlocks(renderImagePT(def, W, H, 600, 1234), W, H)
+  const scene = new Scene(def)
+  const camera = new Camera(def.camera, W / H)
+  const settings = { maxDepth: 6, rrStart: 100, clampIndirect: 0 }
+  const img = renderSPPM(scene, camera, settings, W, H, 16, 999, {
+    photonsPerPass: 24000,
+    alpha: 0.7,
+    initialRadiusFrac: 0.06,
+  })
+  const sp = imageBlocks(img, W, H)
+  const relAll = Math.abs(pt.all - sp.all) / pt.all
+  const ratPT = pt.top / pt.bot
+  const ratS = sp.top / sp.bot
+  const relRatio = Math.abs(ratPT - ratS) / ratPT
+  const ok = relAll < 0.04 && relRatio < 0.08 && sp.all > 0
+  return {
+    pass: ok,
+    detail: `relAll=${(relAll * 100).toFixed(2)}% (<4%), top/bot PT=${ratPT.toFixed(2)} SPPM=${ratS.toFixed(2)} relRatio=${(relRatio * 100).toFixed(2)}% (<8%)`,
+  }
+}
+
+// A glass sphere acting as a lens above a diffuse floor in an enclosed box lit by
+// a small bright ceiling panel: the floor under the sphere catches a focused
+// caustic — a light→specular→diffuse path that next-event estimation cannot
+// sample (a shadow ray to the light does not refract through the glass), so it is
+// exactly what photon mapping exists to resolve.
+function causticBox(): SceneDef {
+  const q = (p0: Vec3, p1: Vec3, p2: Vec3, p3: Vec3, m: number): SceneDef['prims'] => [
+    { kind: 'tri', p0, p1, p2, material: m },
+    { kind: 'tri', p0, p1: p2, p2: p3, material: m },
+  ]
+  const X = 6
+  const Y = 8
+  const Z = 6
+  const prims: SceneDef['prims'] = []
+  prims.push(...q(v(-X, 0, -Z), v(X, 0, -Z), v(X, 0, Z), v(-X, 0, Z), 0)) // floor
+  prims.push(...q(v(-X, Y, -Z), v(-X, Y, Z), v(X, Y, Z), v(X, Y, -Z), 0)) // ceiling
+  prims.push(...q(v(-X, 0, Z), v(X, 0, Z), v(X, Y, Z), v(-X, Y, Z), 0)) // back
+  prims.push(...q(v(-X, 0, -Z), v(-X, 0, Z), v(-X, Y, Z), v(-X, Y, -Z), 0)) // left
+  prims.push(...q(v(X, 0, -Z), v(X, Y, -Z), v(X, Y, Z), v(X, 0, Z), 0)) // right
+  const lh = Y - 0.02
+  prims.push(...q(v(-0.8, lh, -0.8), v(0.8, lh, -0.8), v(0.8, lh, 0.8), v(-0.8, lh, 0.8), 1)) // light
+  prims.push({ kind: 'sphere', center: v(0, 2.2, 0), radius: 1.3, material: 2 }) // glass lens
+  return {
+    name: 'caustic-box',
+    materials: [
+      { kind: 'diffuse', albedo: v(0.8, 0.8, 0.8) },
+      { kind: 'emissive', emission: v(120, 110, 95) },
+      { kind: 'dielectric', ior: 1.5, tint: v(1, 1, 1) },
+    ],
+    prims,
+    camera: { eye: v(0, 5.5, -9), target: v(0, 1.0, 0), up: v(0, 1, 0), vfovDeg: 45, aperture: 0, focusDist: 9 },
+    env: { kind: 'solid', color: v(0, 0, 0) },
+  }
+}
+
+// 38 — SPPM resolves a caustic. Photons emitted from the ceiling light refract
+// through the glass sphere and concentrate on the floor beneath it; the render
+// must be finite everywhere, carry real energy in the caustic region, and be
+// measurably brighter there than on the unfocused floor near the corners — the
+// focusing that defines a caustic, and the transport the other integrators miss.
+function testSppmCaustic(): { pass: boolean; detail: string } {
+  const def = causticBox()
+  const W = 20
+  const H = 15
+  const scene = new Scene(def)
+  const camera = new Camera(def.camera, W / H)
+  const settings = { maxDepth: 12, rrStart: 100, clampIndirect: 0 }
+  const img = renderSPPM(scene, camera, settings, W, H, 16, 555, {
+    photonsPerPass: 36000,
+    alpha: 0.7,
+    initialRadiusFrac: 0.035,
+  })
+  let finite = true
+  for (let i = 0; i < img.length; i++) if (!Number.isFinite(img[i])) finite = false
+  // Caustic region: floor directly under the lens (image bottom-centre).
+  let cl = 0
+  let cn = 0
+  for (let y = Math.floor(H * 0.6); y < H; y++)
+    for (let x = Math.floor(W * 0.38); x < Math.floor(W * 0.62); x++) {
+      const i = (y * W + x) * 3
+      cl += luminance(v(img[i], img[i + 1], img[i + 2]))
+      cn++
+    }
+  // Control region: floor near a lower corner (lit, but not focused).
+  let kl = 0
+  let kn = 0
+  for (let y = Math.floor(H * 0.6); y < H; y++)
+    for (let x = 0; x < Math.floor(W * 0.14); x++) {
+      const i = (y * W + x) * 3
+      kl += luminance(v(img[i], img[i + 1], img[i + 2]))
+      kn++
+    }
+  const caustic = cl / Math.max(1, cn)
+  const control = kl / Math.max(1, kn)
+  const ratio = caustic / Math.max(1e-6, control)
+  const ok = finite && caustic > 0.5 && ratio > 1.1
+  return {
+    pass: ok,
+    detail: `caustic L=${caustic.toFixed(3)} > control L=${control.toFixed(3)} (×${ratio.toFixed(2)}), finite=${finite}`,
+  }
+}
+
+// 39 — The photon-gather acceleration structure is exact. SPPM's spatial hash
+// inserts each measurement point into every cell its gather sphere overlaps, so a
+// photon need only probe its own cell; this proves that probe returns *exactly*
+// the points within radius — no false positives, no misses — against brute force
+// over 2000 random photon positions (hash collisions only add distance tests).
+function testSppmGrid(): { pass: boolean; detail: string } {
+  const rng = new Rng(20260616, 1)
+  const N = 400
+  const px = new Float64Array(N)
+  const py = new Float64Array(N)
+  const pz = new Float64Array(N)
+  const r2 = new Float64Array(N)
+  const alive = new Uint8Array(N)
+  for (let i = 0; i < N; i++) {
+    px[i] = rng.range(-5, 5)
+    py[i] = rng.range(-5, 5)
+    pz[i] = rng.range(-5, 5)
+    const r = rng.range(0.1, 0.8)
+    r2[i] = r * r
+    alive[i] = 1
+  }
+  const grid = new HashGrid()
+  grid.build(N, alive, px, py, pz, r2)
+  let mismatches = 0
+  let incidences = 0
+  for (let qq = 0; qq < 2000; qq++) {
+    const qx = rng.range(-5, 5)
+    const qy = rng.range(-5, 5)
+    const qz = rng.range(-5, 5)
+    const brute = new Set<number>()
+    for (let i = 0; i < N; i++) {
+      const dx = px[i] - qx
+      const dy = py[i] - qy
+      const dz = pz[i] - qz
+      if (dx * dx + dy * dy + dz * dz <= r2[i]) brute.add(i)
+    }
+    const found = new Set<number>()
+    grid.forEachNear(qx, qy, qz, (i) => {
+      const dx = px[i] - qx
+      const dy = py[i] - qy
+      const dz = pz[i] - qz
+      if (dx * dx + dy * dy + dz * dz <= r2[i]) found.add(i)
+    })
+    incidences += brute.size
+    for (const i of brute) if (!found.has(i)) mismatches++
+    for (const i of found) if (!brute.has(i)) mismatches++
+  }
+  return { pass: mismatches === 0, detail: `${incidences} in-radius incidences, ${mismatches} mismatch(es) vs brute force` }
+}
+
 export function runSelfTests(): TestResult[] {
   return [
     test('Vector algebra identities', testVectorMath),
@@ -1088,5 +1257,8 @@ export function runSelfTests(): TestResult[] {
     test('PSSMLT sampler — uniform large step + determinism', testMltSampler),
     test('PSSMLT white furnace — diffuse ρ=0.8', testMltFurnace),
     test('PSSMLT ≡ path tracer (diffuse box oracle)', testMltVsPt),
+    test('SPPM ≡ path tracer (diffuse box oracle)', testSppmVsPt),
+    test('SPPM resolves a caustic (focused & finite)', testSppmCaustic),
+    test('SPPM photon-gather grid exact vs brute force', testSppmGrid),
   ]
 }

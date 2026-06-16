@@ -37,10 +37,16 @@ denoiser.
   tracer be reused *verbatim* as the contribution function; `MltState` runs the Markov chain
   (Kelemen lazy mutation, expected-value splatting, bootstrap brightness) and is driven by both the
   worker and the single-thread fallback.
+- `src/engine/sppm.ts` — stochastic progressive photon mapping: an `SppmState` (same
+  `FrameEstimator` shape as `MltState`) that, each pass, re-traces jittered camera rays to place a
+  per-pixel measurement point, emits power-sampled photons from the area lights, deposits them into
+  the measurement points via an exact `HashGrid` (CSR spatial hash), and shrinks each point's gather
+  radius on the Hachisuka schedule so the density estimate converges. Built for caustics.
 - `src/engine/tonemap.ts` — ACES / filmic / Reinhard / linear + sRGB encode.
 - `src/engine/denoise.ts` — À-Trous edge-avoiding wavelet filter, albedo/normal guided.
-- `src/engine/scenes.ts` — Cornell box, Weekend daylight, Material gallery, Caustic room, Prism
-  (dispersion), Glass Menagerie (roughness + absorption), Textured Studio (procedural textures).
+- `src/engine/scenes.ts` — Cornell box, Weekend daylight, Material gallery, Caustic room, Caustic
+  Pool (rippled-water caustics), Prism (dispersion), Glass Menagerie (roughness + absorption),
+  Textured Studio (procedural textures), Cathedral / Nebula (media), Iridescence (thin film), …
 - `src/engine/selftest.ts` — invariant checks (furnace, BVH-vs-brute-force, pdf consistency…).
 - `src/render/worker.ts` — one render worker owning a horizontal band.
 - `src/render/renderer.ts` — worker-pool orchestrator + single-thread fallback + compositing.
@@ -83,15 +89,87 @@ denoiser.
       Markov chain over the path tracer's random stream (Kelemen mutation + Metropolis–Hastings),
       with bootstrap normalisation, parallel chains across the worker pool, and three new proofs
       that it converges to the same image as PT/BDPT
+- [x] **Stochastic Progressive Photon Mapping (SPPM)** — a fourth integrator built for **caustics**
+      (light→specular→diffuse paths NEE can't sample): photons emitted from the area lights (power-
+      sampled, equal flux), traced through the specular geometry, and gathered at per-pixel
+      measurement points through an exact spatial hash, with a per-point gather radius shrunk on the
+      Hachisuka schedule so the density-estimation bias vanishes and the estimate converges. Slots
+      into the full-frame estimator path (like PSSMLT); a new **Caustic Pool** scene (a sine-ripple
+      water surface with analytic smooth normals) showcases it; three new proofs (SPPM≡PT oracle,
+      caustic-forms, and the gather grid is exact vs brute force)
 - [ ] WebGPU compute backend behind the same scene API
 - [ ] Image (bitmap) textures + tangent-space normal maps (needs UV plumbing)
+- [ ] **Photon-map progress-radius decoupling** — share one radius across all workers' passes
+      (a single global SPPM rather than averaged independent ones) for slightly faster convergence
+- [ ] **Volumetric photon mapping / beam radiance estimate** — let SPPM resolve *volumetric*
+      caustics (light focused inside fog) by depositing photons along medium free-flights
+- [ ] **Spectral photons** — carry a hero wavelength on the photon walk so dispersive glass throws
+      *coloured* caustic rainbows (today SPPM traces photons achromatically)
+- [ ] **Environment photon emission** — emit SPPM photons from the sky/sun (a bounding-sphere disk)
+      so daylight scenes get photon-mapped GI/caustics too, not just the area-light scenes
 - [ ] Replica-exchange / population MLT — couple PSSMLT chains at different temperatures so a hot
       chain that finds new light hands its discovery to the cold (image) chain
 - [ ] A "transport explorer" debug view that visualises which integrator each pixel favours, and
-      an A/B equal-time split-screen of PT vs BDPT vs PSSMLT to make the variance gap visible
+      an A/B equal-time split-screen of PT vs BDPT vs PSSMLT vs SPPM to make the variance gap visible
 - [ ] Multiplexed MLT (Hachisuka et al.) — let the chain mutate *which* BDPT strategy it uses, so
       one estimator adapts per-path instead of fixing PT vs BDPT up front
 - [ ] Stratified large-step pixel selection so PSSMLT's global jumps cover the film evenly
+
+## Roadmap — 2026-06-16 Lumen 7.0: stochastic progressive photon mapping (SPPM) (claude)
+
+Lumen had three integrators that all *grow paths ending on a light* (PT, BDPT,
+PSSMLT). They share one blind spot: the **caustic** — light focused through a
+lens/glass onto a diffuse surface, the camera seeing a light→specular→diffuse
+(SDS) path. Next-event estimation is useless there (a shadow ray to the lamp
+won't refract through the glass, so the light has measure zero), and a diffuse
+bounce that threads the lens by luck is astronomically rare — so caustics are
+the textbook slow case for all three. 7.0 adds a *fourth* integrator whose whole
+job is exactly that transport, by running the light transport **backwards**.
+
+The plan, all shipped this session:
+
+1. **Photons from the lights (`sppm.ts`).** Emit photons from the emissive
+   triangles, chosen in proportion to their power so every photon carries equal
+   flux `Le·π·Σpower/lum(Le)`; trace them through the scene (reusing
+   `Scene.intersect` + the `Material` BSDFs + Beer–Lambert medium tracking
+   verbatim), and at every non-specular surface **deposit** them into the nearby
+   measurement points. Specular surfaces just refract/reflect — so a photon that
+   goes light→glass→floor lands a caustic by *construction*.
+2. **Per-pixel measurement points + the progressive radius.** Each pass re-traces
+   *jittered* camera rays (Hachisuka & Jensen's *stochastic* PPM — this
+   anti-aliases and captures glossy/DoF visible points), follows specular bounces,
+   and stores the first non-specular hit as that pixel's measurement point. The
+   gathered flux `τ`, photon count `N` and squared radius `R²` persist across
+   passes and update on the Hachisuka schedule `N←N+αM`, `R²←R²·(N+αM)/(N+M)`,
+   `τ←(τ+Σf·ΔΦ)·R²_new/R²` — which provably drives the density-estimation bias to
+   zero, so the estimate **converges** to the true rendering-equation solution.
+   Directly-seen emission (incl. through specular glass) is added on the camera
+   path; the radiance is `emission/passes + τ/(N_emitted·π·R²)`.
+3. **Exact gather via a spatial hash (`HashGrid`).** Each measurement point is
+   inserted (CSR-packed in typed arrays, zero per-pass allocation in the hot loop)
+   into every grid cell its gather sphere overlaps, so a photon need only probe its
+   own cell to find *every* point whose radius could reach it. Hash collisions only
+   add a few distance tests — never a miss.
+4. **Wiring.** SPPM is a *full-frame estimator* like PSSMLT, so the worker and
+   renderer were generalised behind a small `FrameEstimator` interface: each worker
+   runs an independent full-frame SPPM and the UI averages the workers' estimates
+   weighted by passes. A fourth **Integrator** option ("Photon Map"), the progress
+   readout reads "Passes", an About card, the footer.
+5. **A showcase scene — Caustic Pool.** A wind-rippled water surface built as a
+   sine heightfield with *analytic* smooth normals (a single refractive sheet),
+   over a tiled floor lit by an overhead panel: light refracting through the
+   undulating surface focuses into the shifting bright filaments of a swimming
+   pool — the canonical SDS caustic, which now resolves cleanly under SPPM.
+6. **Proofs (3 new, 39 total).** The headline: **SPPM converges to the same image
+   as the path tracer** on the diffuse Cornell box (global brightness + top/bottom
+   spatial ratio) — a stringent, independent check of the photon-power
+   normalisation and the radius/flux update, since SPPM shares no transport-loop
+   code with PT. Plus: SPPM resolves a finite, focused caustic (the floor under a
+   glass lens is brighter than the unfocused floor); and the photon-gather grid
+   returns *exactly* the in-radius points vs brute force over 2000 random probes.
+   Verified in Node: 39/39 self-tests, and a Caustic-Pool SPPM smoke render
+   (7210 tris, all finite, bright caustic filaments). `pnpm lint`/`tsc`/`build`
+   green via the CI gate.
 
 ## Roadmap — 2026-06-16 Lumen 6.0: Metropolis light transport (PSSMLT) (claude)
 
@@ -331,6 +409,31 @@ verification suite, the scene registry, and the UI so it is observable and prove
 
 ## Session log
 
+- 2026-06-16 (claude/claude-opus-4-8): **Lumen 7.0 — stochastic progressive photon mapping (SPPM).**
+  Added a *fourth* light-transport integrator, the one built for **caustics** — light focused through
+  glass onto a diffuse surface (a light→specular→diffuse path), which all three existing integrators
+  sample terribly because next-event estimation can't connect through the refractive interface. SPPM
+  runs the transport *backwards*: (1) `sppm.ts` emits photons from the area lights (power-sampled, so
+  every photon carries equal flux), traces them through the specular geometry reusing the existing
+  `Scene`/BSDF/medium code verbatim, and deposits them at non-specular surfaces; (2) each pass
+  re-traces *jittered* camera rays (the "stochastic" in SPPM — anti-aliases + handles glossy/DoF
+  visible points), follows specular bounces, and stores the first diffuse hit as a per-pixel
+  measurement point; (3) the photons are gathered through an exact CSR **spatial hash** (`HashGrid`)
+  and each point's gather radius is shrunk on the Hachisuka schedule `R²←R²·(N+αM)/(N+M)`, which
+  drives the density-estimation bias to zero so the estimate **converges**. (4) SPPM is a full-frame
+  estimator like PSSMLT, so the worker + renderer were generalised behind a small `FrameEstimator`
+  interface (each worker runs an independent full-frame SPPM; the UI averages them by passes). (5) A
+  fourth **Integrator** option ("Photon Map"), a "Passes" progress readout, an About card, the
+  footer. (6) A new **Caustic Pool** scene — a sine-ripple water surface (a single refractive sheet
+  with *analytic* smooth normals) over a tiled floor — that throws the shifting bright filaments of a
+  swimming pool. (7) **Three new proofs (39 total):** the headline is **SPPM ≡ the path tracer** on
+  the diffuse Cornell box (global brightness *and* top/bottom spatial ratio agree to ~2.6% — a strict
+  check since SPPM shares no transport-loop code with PT, so this pins the photon-power
+  normalisation and the radius/flux update); plus SPPM resolves a finite, focused caustic under a
+  glass lens; and the photon-gather grid returns *exactly* the in-radius points vs brute force over
+  2000 random probes. Verified in Node by bundling the engine with Vite: 39/39 self-tests, plus a
+  Caustic-Pool SPPM smoke render (7210 tris, all-finite, bright caustic filaments). `pnpm
+  lint`/`tsc`/`build` green via the CI gate.
 - 2026-06-16 (claude/claude-opus-4-8): **Lumen 6.0 — Metropolis light transport (PSSMLT).** Added a
   *third* light-transport integrator, and a fundamentally different one: where the path tracer and
   BDPT average independent samples, PSSMLT runs a **Markov chain** through path space so it lingers
