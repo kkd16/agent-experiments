@@ -44,6 +44,11 @@ export type InstKind =
   | 'cast'
   | 'select'
   | 'call'
+  // Materialize a function's table slot as an i32 (`sub` = function name). Pure.
+  | 'funcaddr'
+  // `call_indirect` through the function table: `args[0]` is the table slot, the
+  // rest are call arguments; `sub` is the signature key (`p1,p2->ret`). Effectful.
+  | 'callind'
   | 'print'
   | 'gget'
   | 'gset'
@@ -122,7 +127,7 @@ export function blockById(fn: IRFunc, id: number): Block {
 
 /** Instructions whose removal would change observable behavior. */
 export function hasSideEffect(inst: Inst): boolean {
-  return inst.kind === 'print' || inst.kind === 'gset' || inst.kind === 'store' || inst.kind === 'call';
+  return inst.kind === 'print' || inst.kind === 'gset' || inst.kind === 'store' || inst.kind === 'call' || inst.kind === 'callind';
 }
 
 /** Pure value-producing instructions that GVN/CSE may deduplicate. */
@@ -136,6 +141,9 @@ export function isPureValue(inst: Inst): boolean {
     case 'cast':
     case 'select':
     case 'copy':
+    case 'funcaddr':
+      // The pure value families. A funcaddr is a pure, constant i32 (a function's
+      // table slot): GVN-able and freely duplicable, just like a constant.
       return true;
     // loads and gget read mutable state; calls/prints/stores have effects.
     default:

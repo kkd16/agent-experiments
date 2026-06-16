@@ -23,7 +23,11 @@ export type Ty =
   // The type of the `null` literal: a struct handle that points nowhere. It
   // unifies with (is assignable to) any struct type and only ever compares with
   // `==`/`!=`. Lowers to the i32 constant 0.
-  | { kind: 'null' };
+  | { kind: 'null' }
+  // A function pointer: a first-class value carrying a callable signature. It
+  // lowers to an i32 (the function's slot in the wasm function table); the
+  // interpreter models it as the target function's name. Written `fn(T, …) -> R`.
+  | { kind: 'fn'; params: Ty[]; ret: Ty };
 
 // Array element types. `str` elements are i32 pointers into linear memory (just
 // like a bare `str`), so the wasm backend treats `str[]` exactly like an i32
@@ -52,12 +56,18 @@ export function tyEqual(a: Ty, b: Ty): boolean {
     return a.elem.kind === 'struct' && b.elem.kind === 'struct' ? a.elem.name === b.elem.name : true;
   }
   if (a.kind === 'struct' && b.kind === 'struct') return a.name === b.name;
+  if (a.kind === 'fn' && b.kind === 'fn') {
+    if (a.params.length !== b.params.length) return false;
+    for (let i = 0; i < a.params.length; i++) if (!tyEqual(a.params[i], b.params[i])) return false;
+    return tyEqual(a.ret, b.ret);
+  }
   return true;
 }
 
 export function tyName(t: Ty): string {
   if (t.kind === 'array') return `${t.elem.kind === 'struct' ? t.elem.name : t.elem.kind}[]`;
   if (t.kind === 'struct') return t.name;
+  if (t.kind === 'fn') return `fn(${t.params.map(tyName).join(', ')}) -> ${tyName(t.ret)}`;
   return t.kind;
 }
 
@@ -100,7 +110,14 @@ export type Expr =
   | (ExprBase & { node: 'ident'; name: string })
   | (ExprBase & { node: 'unary'; op: UnaryOp; operand: Expr })
   | (ExprBase & { node: 'binary'; op: BinaryOp; left: Expr; right: Expr })
-  | (ExprBase & { node: 'call'; callee: string; args: Expr[] })
+  // A direct call by name: a user function, a struct constructor, or a builtin.
+  // The checker sets `indirect`/`fnTy` when `callee` actually names a function-
+  // typed *variable* (lexical scoping wins), turning this into an indirect call
+  // through that variable's value without a separate parse form.
+  | (ExprBase & { node: 'call'; callee: string; args: Expr[]; indirect?: boolean; fnTy?: Ty })
+  // An indirect call through an arbitrary function-typed expression — produced by
+  // the postfix loop for any `expr(args)` whose callee isn't a bare name.
+  | (ExprBase & { node: 'callptr'; target: Expr; args: Expr[] })
   | (ExprBase & { node: 'index'; target: Expr; index: Expr })
   // `target.field` — read a struct field. The checker resolves `field` to its
   // declared type; the builder lowers it to a load at the field's byte offset.

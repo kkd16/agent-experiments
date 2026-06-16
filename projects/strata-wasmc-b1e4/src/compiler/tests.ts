@@ -1234,4 +1234,157 @@ fn main(){
   print(str(asin(0.5)));        // uses native sqrt inside
 }`,
   },
+
+  // ----- function pointers / first-class functions -----
+  {
+    name: 'fnptr-higher-order-apply',
+    source: `fn inc(x: int) -> int { return x + 1; }
+fn dbl(x: int) -> int { return x * 2; }
+fn apply(g: fn(int) -> int, x: int) -> int { return g(x); }
+fn main(){
+  print(apply(inc, 10));     // 11
+  print(apply(dbl, 10));     // 20
+  let f = inc;               // a bare function name decays to a pointer
+  print(f(41));              // 42 (indirect call through a local)
+  print(apply(f, 5));        // 6
+}`,
+  },
+  {
+    name: 'fnptr-return-and-curry',
+    source: `fn add(a: int, b: int) -> int { return a + b; }
+fn sub(a: int, b: int) -> int { return a - b; }
+fn pick(which: int) -> fn(int, int) -> int {
+  if (which == 0) { return add; }
+  return sub;
+}
+fn main(){
+  print(pick(0)(3, 4));      // 7  (call applied to a call's result)
+  print(pick(1)(10, 3));     // 7
+  let op = pick(0);
+  print(op(100, 1));         // 101
+}`,
+  },
+  {
+    name: 'fnptr-comparator-sort',
+    source: `fn asc(a: int, b: int) -> bool { return a < b; }
+fn desc(a: int, b: int) -> bool { return a > b; }
+fn sort(xs: int[], less: fn(int, int) -> bool) {
+  let n = len(xs);
+  let i = 1;
+  while (i < n) {
+    let key = xs[i];
+    let j = i - 1;
+    while (j >= 0 && less(key, xs[j])) { xs[j + 1] = xs[j]; j = j - 1; }
+    xs[j + 1] = key;
+    i = i + 1;
+  }
+}
+fn show(xs: int[]) { let i = 0; while (i < len(xs)) { print(xs[i]); i = i + 1; } }
+fn main(){
+  let a = int_array(6);
+  a[0]=3; a[1]=1; a[2]=4; a[3]=1; a[4]=5; a[5]=9;
+  sort(a, asc); show(a);
+  sort(a, desc); show(a);
+}`,
+  },
+  {
+    name: 'fnptr-map-reduce',
+    source: `fn sq(x: int) -> int { return x * x; }
+fn addup(a: int, b: int) -> int { return a + b; }
+fn mymap(xs: int[], g: fn(int) -> int) -> int[] {
+  let out = int_array(len(xs));
+  let i = 0;
+  while (i < len(xs)) { out[i] = g(xs[i]); i = i + 1; }
+  return out;
+}
+fn reduce(xs: int[], g: fn(int, int) -> int, acc: int) -> int {
+  let i = 0;
+  while (i < len(xs)) { acc = g(acc, xs[i]); i = i + 1; }
+  return acc;
+}
+fn main(){
+  let a = int_array(4);
+  a[0]=1; a[1]=2; a[2]=3; a[3]=4;
+  let b = mymap(a, sq);
+  print(reduce(b, addup, 0));   // 1+4+9+16 = 30
+  print(b[3]);                  // 16
+}`,
+  },
+  {
+    name: 'fnptr-struct-vtable',
+    source: `struct Calc { op: fn(int, int) -> int; name: str; }
+fn addi(a: int, b: int) -> int { return a + b; }
+fn muli(a: int, b: int) -> int { return a * b; }
+fn run(c: Calc, x: int, y: int) -> int { return c.op(x, y); }
+fn main(){
+  let plus = Calc(addi, "plus");
+  let times = Calc(muli, "times");
+  print(run(plus, 6, 7));    // 13
+  print(run(times, 6, 7));   // 42
+  print(plus.name);
+  print(plus.op(2, 3));      // 5  (member.fn(...) indirect call)
+}`,
+  },
+  {
+    name: 'fnptr-identity',
+    source: `fn a1(x: int) -> int { return x; }
+fn a2(x: int) -> int { return x + 0; }
+fn main(){
+  let p = a1; let q = a1; let r = a2;
+  print(p == q);   // true  — same function
+  print(p == r);   // false — distinct functions
+  print(p != r);   // true
+}`,
+  },
+  {
+    name: 'fnptr-devirtualize',
+    source: `fn tw(x: int) -> int { return x * 3; }
+fn main(){
+  let g = tw;          // a funcaddr in a local: devirtualization fires at -O1+
+  print(g(14));        // 42 at every optimization level
+  print(tw(10));       // 30
+}`,
+  },
+  {
+    name: 'fnptr-mixed-types',
+    source: `fn slen(s: str) -> int { return len(s); }
+fn choose(b: bool) -> fn(str) -> int { return slen; }
+fn lmul(a: long, b: long) -> long { return a * b; }
+fn fadd(a: float, b: float) -> float { return a + b; }
+fn main(){
+  let f = choose(true);
+  print(f("hello"));                       // 5
+  let g = lmul;
+  print(str(g(1000000000L, 1000000000L))); // 1000000000000000000
+  let h = fadd;
+  print(str(h(0.1, 0.2)));                 // 0.30000000000000004
+}`,
+  },
+  {
+    name: 'fnptr-recursive-hof',
+    source: `// A self-recursive higher-order fold: the optimizer can never inline it, so its
+// indirect call survives at every level (the comparator is a runtime value).
+fn addup(a: int, b: int) -> int { return a + b; }
+fn maxi(a: int, b: int) -> int { return a > b ? a : b; }
+fn foldl(xs: int[], i: int, g: fn(int, int) -> int, acc: int) -> int {
+  if (i >= len(xs)) { return acc; }
+  return foldl(xs, i + 1, g, g(acc, xs[i]));
+}
+fn main(){
+  let a = int_array(5);
+  a[0]=3; a[1]=1; a[2]=4; a[3]=1; a[4]=5;
+  print(foldl(a, 0, addup, 0));            // 14
+  print(foldl(a, 0, maxi, -2147483648));   // 5
+}`,
+  },
+  {
+    name: 'fnptr-compose',
+    source: `fn compose(f: fn(int) -> int, g: fn(int) -> int, x: int) -> int { return f(g(x)); }
+fn inc(x: int) -> int { return x + 1; }
+fn neg(x: int) -> int { return 0 - x; }
+fn main(){
+  print(compose(inc, neg, 5));   // inc(neg(5)) = -4
+  print(compose(neg, inc, 5));   // neg(inc(5)) = -6
+}`,
+  },
 ];

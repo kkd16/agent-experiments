@@ -1,6 +1,6 @@
 import type { Block, Expr, Program, Stmt, StructDecl, Ty } from './ast';
 import type { Span } from './diagnostics';
-import type { ArrayVal, RtValue, StructVal } from './interp';
+import type { ArrayVal, FnVal, RtValue, StructVal } from './interp';
 import { Trap, asI64, callBuiltin, formatBool, formatFloat, formatInt, formatLong, I64_MIN, i32 } from './interp';
 
 // A generator-based, single-stepping tree-walking interpreter — the engine
@@ -61,6 +61,7 @@ export interface DebugState {
 function tyKindName(t: Ty): string {
   if (t.kind === 'array') return `${t.elem.kind === 'struct' ? t.elem.name : t.elem.kind}[]`;
   if (t.kind === 'struct') return t.name;
+  if (t.kind === 'fn') return `fn(${t.params.map(tyKindName).join(', ')}) -> ${tyKindName(t.ret)}`;
   return t.kind;
 }
 
@@ -68,6 +69,7 @@ function fmtVal(v: RtValue, ty?: Ty): string {
   if (v === null) return 'null';
   if (typeof v === 'string') return JSON.stringify(v);
   if (typeof v === 'bigint') return formatLong(v);
+  if (typeof v === 'object' && (v as FnVal).fn !== undefined) return `&${(v as FnVal).fn}`;
   if (typeof v === 'object' && (v as StructVal).struct !== undefined) {
     const sv = v as StructVal;
     const parts = [...sv.fields.entries()].slice(0, 6).map(([k, fv]) => `${k}: ${fmtVal(fv)}`);
@@ -352,8 +354,16 @@ export class Debugger {
       }
       case 'ident': {
         const rv = this.lookup(e.name, f);
-        if (!rv) throw new Trap(`read of undefined '${e.name}'`);
-        return rv.v;
+        if (rv) return rv.v;
+        // A bare function name decays to a function pointer.
+        if (e.ty?.kind === 'fn' && this.fns.has(e.name)) return { fn: e.name };
+        throw new Trap(`read of undefined '${e.name}'`);
+      }
+      case 'callptr': {
+        const target = (yield* this.evalExpr(e.target, f)) as FnVal | null;
+        const argv: RtValue[] = [];
+        for (const a of e.args) argv.push(yield* this.evalExpr(a, f));
+        return yield* this.callIndirect(target, argv);
       }
       case 'unary': {
         if (e.operand.ty?.kind === 'long') {
@@ -407,6 +417,12 @@ export class Debugger {
         const a = yield* this.evalExpr(e.left, f);
         const b = yield* this.evalExpr(e.right, f);
         const eq = a === b;
+        return (e.op === '==' ? eq : !eq) ? 1 : 0;
+      }
+      if (lk === 'fn' || rk === 'fn') {
+        const a = (yield* this.evalExpr(e.left, f)) as FnVal;
+        const b = (yield* this.evalExpr(e.right, f)) as FnVal;
+        const eq = a.fn === b.fn;
         return (e.op === '==' ? eq : !eq) ? 1 : 0;
       }
     }
@@ -493,9 +509,23 @@ export class Debugger {
     }
   }
 
+  // Dispatch a function pointer (a `{ fn: name }`), stepping into the callee.
+  private *callIndirect(target: FnVal | null, argv: RtValue[]): Generator<void, RtValue, void> {
+    if (!target || typeof target !== 'object' || !('fn' in target)) throw new Trap('call through an invalid function pointer');
+    const fn = this.fns.get(target.fn);
+    if (!fn) throw new Trap(`indirect call to undefined '${target.fn}'`);
+    const r = yield* this.call(fn, argv);
+    return r === undefined ? 0 : r;
+  }
+
   private *evalCall(e: Extract<Expr, { node: 'call' }>, f: RFrame): Generator<void, RtValue, void> {
     const argv: RtValue[] = [];
     for (const a of e.args) argv.push(yield* this.evalExpr(a, f));
+    // An indirect call through a function-typed variable named `e.callee`.
+    if (e.indirect) {
+      const rv = this.lookup(e.callee, f);
+      return yield* this.callIndirect((rv ? rv.v : null) as FnVal | null, argv);
+    }
     const sd = this.structs.get(e.callee);
     if (sd) {
       const fields = new Map<string, RtValue>();

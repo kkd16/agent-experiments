@@ -171,6 +171,7 @@ class Checker {
         if (d.declTy && !this.coercible(t, d.declTy))
           throw new CompileError(`global '${d.name}' declared ${tyName(d.declTy)} but initialized with ${tyName(t)}`, d.span, 'type');
         if (declared.kind === 'void') throw new CompileError(`global '${d.name}' cannot be void`, d.span, 'type');
+        if (declared.kind === 'fn') throw new CompileError(`a function pointer cannot be stored in a global (use a local or a parameter)`, d.span, 'type');
         if (declared.kind === 'null') throw new CompileError(`global '${d.name}' needs an explicit struct type for its null value (e.g. \`let ${d.name}: T = null;\`)`, d.span, 'type');
         if (declared.kind === 'array' && declared.elem.kind === 'struct' && declared.elem.name === '')
           throw new CompileError(`struct_array(...) needs an explicit element type — annotate the global`, d.span, 'type');
@@ -205,6 +206,10 @@ class Checker {
       throw new CompileError(`unknown type '${ty.name}'`, span, 'type');
     if (ty.kind === 'array' && ty.elem.kind === 'struct' && ty.elem.name !== '' && !this.syms.structs.has(ty.elem.name))
       throw new CompileError(`unknown type '${ty.elem.name}'`, span, 'type');
+    if (ty.kind === 'fn') {
+      for (const p of ty.params) this.validateTy(p, span);
+      this.validateTy(ty.ret, span);
+    }
   }
 
   private checkStructDecl(d: StructDecl): void {
@@ -392,6 +397,10 @@ class Checker {
         if (local) return local;
         const g = this.syms.globals.get(e.name);
         if (g) return g;
+        // A bare function name used as a value *decays* to a function pointer
+        // (like C / Go). Only user functions are first-class; builtins are not.
+        const fsig = this.syms.functions.get(e.name);
+        if (fsig) return { kind: 'fn', params: fsig.params, ret: fsig.ret };
         throw new CompileError(`undefined name '${e.name}'`, e.span, 'type');
       }
       case 'unary':
@@ -409,6 +418,8 @@ class Checker {
       }
       case 'call':
         return this.checkCall(e);
+      case 'callptr':
+        return this.checkCallPtr(e);
       case 'ternary': {
         this.expectBool(e.cond);
         const a = this.checkExpr(e.then);
@@ -480,7 +491,13 @@ class Checker {
             throw new CompileError(`'${op}' compares unrelated struct types ${tyName(lt)} and ${tyName(rt)}`, e.span, 'type');
           return T_BOOL;
         }
-        if (tyEqual(lt, rt) && lt.kind !== 'void' && lt.kind !== 'array') return T_BOOL;
+        // Function pointers compare by identity (same target function).
+        if (lt.kind === 'fn' && rt.kind === 'fn') {
+          if (!tyEqual(lt, rt))
+            throw new CompileError(`'${op}' compares unrelated function types ${tyName(lt)} and ${tyName(rt)}`, e.span, 'type');
+          return T_BOOL;
+        }
+        if (tyEqual(lt, rt) && lt.kind !== 'void' && lt.kind !== 'array' && lt.kind !== 'fn') return T_BOOL;
         throw new CompileError(`'${op}' requires matching scalar operands, found ${tyName(lt)} and ${tyName(rt)}`, e.span, 'type');
       }
       case '&&':
@@ -490,8 +507,38 @@ class Checker {
     }
   }
 
+  // Validate an indirect call's arguments against a function-pointer signature
+  // and yield its return type. Shared by `callptr` and the function-typed-variable
+  // form of `call`.
+  private checkIndirectArgs(fnTy: Extract<Ty, { kind: 'fn' }>, args: Expr[], span: import('./diagnostics').Span): Ty {
+    if (fnTy.params.length !== args.length)
+      throw new CompileError(`this function pointer expects ${fnTy.params.length} argument(s), got ${args.length}`, span, 'type');
+    for (let i = 0; i < args.length; i++) {
+      const at = this.checkExpr(args[i]);
+      if (!this.coercible(at, fnTy.params[i]))
+        throw new CompileError(`argument ${i + 1} expects ${tyName(fnTy.params[i])}, got ${tyName(at)}`, args[i].span, 'type');
+    }
+    return fnTy.ret;
+  }
+
+  private checkCallPtr(e: Extract<Expr, { node: 'callptr' }>): Ty {
+    const tt = this.checkExpr(e.target);
+    if (tt.kind !== 'fn')
+      throw new CompileError(`cannot call a value of type ${tyName(tt)}`, e.target.span, 'type');
+    return this.checkIndirectArgs(tt, e.args, e.span);
+  }
+
   private checkCall(e: Extract<Expr, { node: 'call' }>): Ty {
     const name = e.callee;
+    // An indirect call through a function-typed *variable* (a local/param/global
+    // holding a function pointer). Lexical scoping wins over any builtin/struct of
+    // the same name, exactly like a user `fn` shadowing a soft builtin.
+    const variable = this.scope.lookup(name) ?? this.syms.globals.get(name);
+    if (variable && variable.kind === 'fn') {
+      e.indirect = true;
+      e.fnTy = variable;
+      return this.checkIndirectArgs(variable, e.args, e.span);
+    }
     // A call to a struct name is a constructor: positional arguments fill the
     // declared fields in order and the result is a fresh struct value.
     const structDef = this.syms.structs.get(name);

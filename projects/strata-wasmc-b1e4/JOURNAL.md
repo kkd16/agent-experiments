@@ -105,6 +105,22 @@ escapes (`\n \t \r \0 \\ \" \xNN`), `+` concatenation, `==`/`!=` and lexicograph
 The whole runtime is **written in Strata** (`ir/prelude.ts`) and compiled by this very
 pipeline, so the differential harness exercises it at every opt level too.
 
+**Function pointers (first-class functions)** make functions values. A function
+type is written `fn(int, int) -> int`; a bare function name *decays* to a function
+pointer (like C / Go), so you can store it in a variable, pass it to another
+function, return it, or keep it in a `struct` field (a hand-rolled **vtable**).
+Calling a function-typed value — `g(x)` where `g` is a variable, or `tbl.op(x)`,
+or `(getfn())(x)` — lowers to a real wasm **`call_indirect`** through a module
+**function table**, with the signature interned in the type section. The result is
+genuine **higher-order programming** (`map` / `filter` / `reduce` / a comparator
+sort), all written in Strata and proven by the differential harness. A function
+pointer is an i32 (its table slot) the optimizer already knows how to copy, phi,
+GVN and compare by identity (`==`/`!=`); the reference oracle models it as the
+function's name, so the two agree on every observable value without sharing the
+slot number (which is never printable). And because a `funcaddr` is a known
+constant, a dedicated **devirtualization** pass turns a `call_indirect` whose
+target the optimizer can prove back into a cheaper **direct `call`** at -O1+.
+
 ## Done
 
 - [x] Lexer, Pratt parser, strict type checker with precise error spans
@@ -142,6 +158,103 @@ pipeline, so the differential harness exercises it at every opt level too.
       lexer/parser, strict type checker, SSA IR, SCCP, the backend (f32 ops /
       const / load-store / globals / conversions) and the oracle + debugger.
       556 differential checks across -O0…-O3 (baseline 504).
+- [x] **First-class functions (function pointers)** end to end — a `fn(…) -> R`
+      type, bare-name decay, indirect calls through a real wasm **function table**
+      + **`call_indirect`** (signature interned in the type section), function
+      pointers in variables / params / returns / `struct` fields (vtables) /
+      identity `==`, two new pure/effectful IR opcodes (`funcaddr` / `callind`),
+      a **devirtualization** pass that turns provable indirect calls into direct
+      ones at -O1+, and the oracle + step debugger. Real higher-order programming
+      (`map`/`reduce`/comparator-sort/`compose`) proven by the harness.
+      600 differential checks across -O0…-O3 (baseline 556).
+
+## 2026-06-16 — plan: first-class functions (function pointers + `call_indirect`) (claude / claude-opus-4-8)
+
+The largest remaining gap between Strata and a "real" language: **functions are not
+values**. You can call them, but you cannot pass one to another function, return one,
+store one, or build a dispatch table. Closing that gap turns Strata into a language
+that can express the higher-order idioms — `map` / `filter` / `reduce`, a sort that
+takes a comparator, a struct of function pointers used as a vtable — that motivate
+half of functional and object-oriented programming.
+
+The design fits the existing machinery rather than fighting it. A function pointer
+is **just an i32**: the function's slot in a new wasm **function table**. So every
+SSA pass that already copies, phis, GVNs, compares and stackifies i32s handles it
+for free; the only genuinely new IR is two opcodes — `funcaddr` (materialize a
+function's table slot as an i32) and `callind` (a `call_indirect` through the
+table, with the call signature interned in the type section). The reference oracle
+models a function value as the function's *name*, which gives identity semantics
+(`==`/`!=`) and dispatch without ever exposing the slot number — and the slot number
+is never printable, so the interpreter and the wasm agree on every observable value
+by construction, proven by the differential harness at -O0…-O3 like everything else.
+
+The wasm is real: a **table section** (one `funcref` table holding every function),
+an **element section** that fills it, and `call_indirect (type N) (table 0)` with
+`N` a deduplicated signature in the type section — the actual indirect-call ABI a
+production compiler emits. And because `funcaddr` is a compile-time-constant i32,
+the optimizer can frequently **prove an indirect call's target** and rewrite it
+into a cheaper direct `call`: a new **devirtualization** pass, the kind of analysis
+that makes virtual dispatch cheap in real compilers, visible right in the Optimizer
+panel.
+
+Plan (every item differential-tested at -O0…-O3 before it is checked off):
+
+**Shipped — 600 differential checks, all green (baseline before this work: 556).**
+
+### Front-end — syntax & types
+- [x] AST + types: a `fn(T, …) -> R` function **type**; structural type equality
+      (`tyEqual`/`tyName`/`validateTy` recurse into params + ret).
+- [x] Parser: parse the `fn(…) -> R` type; generalize the postfix loop so a call
+      `(…)` can apply to **any** expression (`arr[i](x)`, `f()(x)`, `tbl.op(x)`),
+      producing a new `callptr` node.
+- [x] Type checker: a bare function name **decays** to a `fn(…)` value; calling a
+      function-typed variable (the `call` node gets `indirect`/`fnTy`) or any
+      function-typed expression (`callptr`) is an indirect call, arity + arg-type
+      checked against the signature; `fn` `==`/`!=` by identity; function pointers
+      rejected in module globals (no const table slot exists at IR-build time).
+
+### Mid-end — IR, builder, SSA, optimizer
+- [x] IR: `funcaddr` (pure i32 value) and `callind` (a call: side-effecting) opcodes;
+      `hasSideEffect`/`isPureValue`/irdump updated.
+- [x] Builder: lower a function-name value to `funcaddr`; lower both indirect-call
+      forms to `callind` with the signature key (`args[0]` = the table slot).
+- [x] SSA / GVN / DCE / LICM: `funcaddr` is a pure, GVN-deduplicated value; `callind`
+      has effects. Whole-module dead-function-elim treats `funcaddr` as a use, so an
+      address-taken-only function stays live and in the table.
+- [x] **Devirtualization** pass (-O1+): a `callind` whose target traces back to a
+      known `funcaddr` becomes a direct `call`; the now-dead address is removed by
+      DCE. Verified: a provable indirect call drops to 0 `call_indirect` at -O2 and
+      the table disappears, while a self-recursive HOF's indirect call survives.
+
+### Back-end — real WebAssembly
+- [x] Table section (one `funcref` table holding every function) + element section
+      filling it; `funcaddr` → `i32.const slot`; `callind` → `call_indirect (type N)`
+      with `N` interned from the signature (deduped against direct callees); the WAT
+      printer shows `(table …)` / `(elem …)` / `call_indirect (type N)`.
+
+### Oracle, debugger, UI, tests
+- [x] Interpreter + step debugger: a function value is `{ fn: name }`; indirect call
+      dispatches by name; identity `==`/`!=`; bare-name decay; the debugger renders a
+      function pointer as `&name`.
+- [x] Examples + adversarial differential tests (10 new programs × 4 levels = 40
+      checks): higher-order `apply`, returned/curried pointers, a comparator
+      insertion-sort, `map`/`reduce`, a struct-of-fn-pointers vtable, pointer
+      identity, a devirtualizable call, mixed-type signatures (long/float/str), a
+      self-recursive fold (surviving `call_indirect`), and `compose`.
+- [x] UI: AST panel renders `callptr`; a flagship "First-class functions" example.
+
+### Deliberately deferred (a clean, documented limitation)
+- [ ] **Arrays of function pointers** (jump tables / state machines). The blocker is
+      principled, not mechanical: an uninitialized element is observable, and the two
+      backends model a function value differently — the wasm has a raw table slot (an
+      uninitialized `0` would silently call `funcs[0]`), the oracle has the function's
+      *name* (and cannot compute the table order, which is a backend concern). Making
+      them agree needs an explicit "no function" sentinel that traps a call in *both*
+      (e.g. fill new fn-arrays with an out-of-range slot so `call_indirect` traps, and
+      model the element as `null` in the oracle) plus grouping parens in the type
+      grammar (`(fn(int)->int)[]`, since `fn(int)->int[]` already reads as "returns
+      `int[]`"). A `struct` field already stores a function pointer, so a hand-rolled
+      vtable / dispatch object works today; the array form is the remaining sugar.
 
 ## 2026-06-15 — plan: a transcendental math library + `f32` single precision (claude / claude-opus-4-8)
 

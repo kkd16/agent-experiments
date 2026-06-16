@@ -434,6 +434,9 @@ class FnBuilder {
       case 'ident': {
         const u = this.resolve(e.name);
         if (u) return VAR(u);
+        // A bare function name (not a local/param) is a function pointer: emit its
+        // table slot as an i32. (The checker has already typed it as `fn(…)`.)
+        if (e.ty!.kind === 'fn') return this.def('i32', 'funcaddr', e.name, []);
         return this.def(irTypeOf(e.ty!), 'gget', e.name, []);
       }
       case 'unary':
@@ -464,6 +467,8 @@ class FnBuilder {
         return CI(0);
       case 'call':
         return this.lowerCall(e);
+      case 'callptr':
+        return this.lowerIndirect(this.lowerExpr(e.target)!, e.target.ty as Extract<Ty, { kind: 'fn' }>, e.args);
       case 'ternary':
         return this.lowerTernary(e);
     }
@@ -575,8 +580,29 @@ class FnBuilder {
     return VAR(res);
   }
 
+  // Lower an indirect call (`call_indirect`): evaluate the call arguments, then
+  // dispatch through the function-pointer operand. The signature key lets the
+  // backend intern the wasm type the indirect call references.
+  private lowerIndirect(target: POperand, fnTy: Extract<Ty, { kind: 'fn' }>, argExprs: Expr[]): POperand | null {
+    const params = fnTy.params.map(irTypeOf);
+    const ret = retTypeOf(fnTy.ret);
+    const sigKey = params.join(',') + '->' + ret;
+    const args: POperand[] = [target, ...argExprs.map((a) => this.lowerExpr(a)!)];
+    if (ret === 'void') {
+      this.emit({ dest: null, ty: 'void', kind: 'callind', sub: sigKey, args });
+      return null;
+    }
+    return this.def(ret, 'callind', sigKey, args);
+  }
+
   private lowerCall(e: Extract<Expr, { node: 'call' }>): POperand | null {
     const name = e.callee;
+    // An indirect call through a function-typed variable named `name` (the checker
+    // flagged it). The function pointer is the variable's i32 value.
+    if (e.indirect) {
+      const target = this.lowerExpr({ node: 'ident', name, ty: e.fnTy, span: e.span } as Expr)!;
+      return this.lowerIndirect(target, e.fnTy as Extract<Ty, { kind: 'fn' }>, e.args);
+    }
     // A call to a struct name constructs a value: bump-allocate the record and
     // store each (left-to-right evaluated) argument at its field offset.
     if (this.layouts.has(name)) return this.lowerStructNew(name, e.args);
