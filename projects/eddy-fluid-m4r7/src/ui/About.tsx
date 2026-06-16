@@ -42,7 +42,10 @@ export function About() {
           <li>
             <strong>Advect</strong> — move the field along itself by tracing each cell{' '}
             <em>backwards</em> through the velocity and sampling there with bilinear interpolation
-            (the semi-Lagrangian trick that makes it stable).
+            (the semi-Lagrangian trick that makes it stable). The dye can optionally use{' '}
+            <strong>MacCormack advection</strong>: advect forward, advect that back, correct by half
+            the round-trip error, then clamp to the source stencil — second-order accurate and far
+            less smeared, without the overshoot that would ring or go negative.
           </li>
           <li>
             <strong>Project</strong> — restore <code>∇·u = 0</code>. We solve a Poisson equation

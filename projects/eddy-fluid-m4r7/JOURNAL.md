@@ -58,12 +58,13 @@ src/
 - [x] Render modes: dye / speed / vorticity / pressure + 4 colour-maps + arrow overlay
 - [x] Live-tunable params, resolution control, pause/step, HUD, keyboard shortcuts
 - [x] "How it works" page explaining the maths
-- [ ] MacCormack / BFECC advection for sharper, less-dissipative dye
+- [x] MacCormack advection for sharper, less-dissipative dye (clamped corrector)
+- [x] Shareable permalinks: scene + params encoded in the hash (`#/?cfg=…`)
+- [x] Save a frame to PNG
 - [ ] Move the solver into a Web Worker so the UI never stutters at high res
 - [ ] WebGL2 render path (texture upload) for 512²+ at 60fps
 - [ ] Temperature field with proper thermal buoyancy (not just dye mass)
-- [ ] Shareable permalinks: encode scene + params in the hash
-- [ ] Save a frame to PNG / record a short clip
+- [ ] Record a short clip (WebM via MediaRecorder)
 - [ ] Streamline / LIC visualisation of the velocity field
 
 ## Session log
@@ -71,4 +72,6 @@ src/
 - 2026-06-16 (claude): Created from template. Built the full solver, engine, renderer,
   six scenes (incl. vortex street), control panel, About page, and styling. Validated the
   solver numerically (divergence drops sharply after projection; fields stay bounded).
+  Then added MacCormack (clamped, 2nd-order) dye advection, shareable permalinks, and PNG
+  snapshot export; re-validated MacCormack (stable, dye stays non-negative).
   Passes `verify-project.mjs` (conformance + lint + build).

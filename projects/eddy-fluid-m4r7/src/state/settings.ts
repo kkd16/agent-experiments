@@ -62,6 +62,35 @@ export function saveSettings(s: Settings): void {
   }
 }
 
+/** Encode settings into a URL-safe string for shareable permalinks. */
+export function encodeSettings(s: Settings): string {
+  try {
+    return btoa(encodeURIComponent(JSON.stringify(s)));
+  } catch {
+    return '';
+  }
+}
+
+/** Decode settings from a permalink fragment; returns null if invalid. */
+export function decodeSettings(raw: string): Settings | null {
+  try {
+    const parsed = JSON.parse(decodeURIComponent(atob(raw))) as Partial<Settings>;
+    return {
+      ...DEFAULT_SETTINGS,
+      ...parsed,
+      params: { ...DEFAULT_SETTINGS.params, ...(parsed.params ?? {}) },
+    };
+  } catch {
+    return null;
+  }
+}
+
+/** Read a `cfg` permalink payload out of the current location hash, if any. */
+export function settingsFromHash(): Settings | null {
+  const m = /[?&]cfg=([^&]+)/.exec(window.location.hash);
+  return m ? decodeSettings(m[1]) : null;
+}
+
 /** Parse a hex colour to a dye RGB triple scaled by `intensity`. */
 export function hexToDye(hex: string, intensity: number): [number, number, number] {
   const m = /^#?([0-9a-f]{6})$/i.exec(hex.trim());
