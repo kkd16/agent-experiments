@@ -355,6 +355,16 @@ back 50.0        clear ()`}</pre>
           <code>.wasm</code> and run it anywhere.
         </p>
         <p>
+          That heap no longer leaks: a precise, non-moving <strong>tracing garbage collector</strong>{' '}
+          (mark-sweep, hand-written in WebAssembly) reclaims dead cells. Since wasm hides the operand
+          stack and locals from the collector, codegen keeps a <strong>shadow stack</strong> of roots
+          alongside the real one; the collector marks from it plus the value globals and sweeps the
+          heap into a reused free list. Tick <strong>stress GC</strong> to collect before every single
+          allocation — the answer stays byte-for-byte identical (proof no root is missed) while a long
+          allocator loop holds a <em>bounded</em> peak heap instead of growing forever. The{' '}
+          <strong>Garbage collector</strong> example shows it off.
+        </p>
+        <p>
           The <strong>Derivation</strong> tab reconstructs the Hindley–Milner <em>proof tree</em>:
           every step is one typing rule (Var, Abs, App, Let, If…) whose premises justify its
           conclusion <code>expr : τ</code> — the "why", not just the final scheme.

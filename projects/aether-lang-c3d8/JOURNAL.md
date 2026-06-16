@@ -449,10 +449,6 @@ Plan / steps:
 
 Deferred (future, Aether 8.x+):
 
-- [ ] A copying/mark-sweep garbage collector for the WASM linear-memory heap (today's bump
-      allocator still never frees; the small-int cache cuts allocation but does not reclaim it).
-      A sound tracing GC needs a shadow stack to capture operand-stack/local roots at allocation
-      safepoints — the next big systems step.
 - [ ] Move the heap onto the **WasmGC** proposal (typed structs/arrays) so the engine manages
       memory and the host bridge reads real GC objects instead of raw cells.
 - [ ] A **WASI** entry so the same module runs under `wasmtime`/`node --experimental-wasi` from a
@@ -461,6 +457,107 @@ Deferred (future, Aether 8.x+):
       statically known) to cut per-call work.
 - [ ] String values as real linear-memory byte arrays (UTF-8) rather than a host-side string pool,
       so a downloaded module is self-contained without the JS bridge for `^`/literals.
+
+### Aether 9.0 — a real tracing garbage collector for the WASM heap (planned + shipping this session)
+
+For eight releases the WebAssembly backend has had **one** memory-management strategy: a bump
+allocator that *never frees*. The small-int cache (8.0) cut how much it boxes, but the heap still
+grew without bound — run a long enough program and it climbs forever. 9.0 closes the oldest, hardest
+deferred item on the list: a **sound, precise, non-moving tracing garbage collector** that actually
+reclaims dead cells, written from scratch in hand-assembled WebAssembly — no host help, no WasmGC,
+the same rule the encoder and disassembler live by.
+
+The crux is the problem the 8.0 note flagged: a tracing GC needs to find **every root**, but in
+WebAssembly the live pointers sit in the operand stack and in function locals, which the collector
+(itself running as wasm) cannot introspect. The solution is a **shadow stack** — a second stack in
+linear memory that codegen keeps in lock-step with the real one, holding exactly the heap pointers
+that must survive an allocation. The collector marks from the shadow stack plus the module's value
+globals, then sweeps the heap into a coalesced free list. Because the collector is **non-moving**,
+objects never change address, so the pointers already sitting in wasm locals/operand-stack stay
+valid across a collection — the shadow stack exists only to keep reachable objects *marked*, never
+to rewrite them. That single design choice is what keeps the codegen surgery bounded.
+
+The hard-won invariant is preserved and, in fact, *strengthened*: a new **GC stress mode** forces a
+full collection before **every single allocation**, and the harness runs the entire WASM≡VM battery
+under it — so every example is proven to compute the identical answer even when the collector is
+firing maximally and reclaiming aggressively between every cell. If a single root were missing, a
+live object would be swept and the answer would diverge; it does not.
+
+Design (the root discipline, which is the whole game):
+
+- **Shadow stack**: a region of i32 root slots with a `$shadowSp` global. `gcPush(p)` stores `p`
+  and bumps `$shadowSp` in one step (a slot is never left reserved-but-unwritten, so the marker
+  never reads garbage). Each compiled function captures `fp = $shadowSp` on entry and restores
+  `$shadowSp = fp` at **every** exit (normal return *and* before every `return_call`), reclaiming
+  its whole frame at once — a per-function activation record, robust to `match`/`if` control flow.
+- **What gets rooted**: a lambda's `env`+`arg` on entry; every `let`/`letrec`/`type`-bound pointer
+  for its lifetime; a `match` scrutinee (pattern-bound vars need no rooting — they point *into* the
+  rooted scrutinee, and the collector is non-moving). Compound builders (`tuple`/`record`/`list`/
+  record-update/`::`/`++`/compare/application) switch to **evaluate-then-construct**: every
+  sub-value is pushed to the shadow stack *before* the cell is allocated, so a collection triggered
+  mid-construction can never reclaim a sibling. Scalar-extracting paths (`a + b`, `a < b` loads the
+  unboxed int/float, `^` loads the string id) need no rooting — nothing live is a pointer.
+- **Self-protecting runtime helpers**: `mkCons`/`listAppend`/`recCopy`/`apply` root their pointer
+  parameters on entry, and `apply` roots the partially-applied cell across the host `callNative`.
+- **GC lock**: the wasm sets a `$gcLock` global around the `callNative`/`strConcat` imports, so the
+  bridge's multi-step `encode` (which holds intermediate pointers only in JS locals) can never be
+  interrupted by a collection. Pure-wasm execution always runs unlocked.
+
+Plan / steps:
+
+- [x] **Heap layout for a collector** (`layout.ts`) — a `FREE` block tag, a `MARK` bit stolen from
+      the high bits of the tag word, a shadow-stack region and a 16-byte minimum/aligned cell so a
+      freed cell always has room for a free-list node `{tag, size, next}`.
+- [x] **The collector, in hand-written wasm** (`codegen.ts` runtime) — `gcPush`; a recursive
+      `gcMark` that loops along cons spines (constant stack for long lists) and recurses through
+      tuples/data/records/closures/pap cells, idempotent on shared/cyclic graphs; a `gcMarkRoots`
+      that scans the shadow stack and every value global; a `gcSweep`/`gcCollect` that walks the
+      heap linearly, coalesces adjacent dead/free runs into a free list, clears marks, and
+      adaptively resizes the GC threshold from the measured live set.
+- [x] **A free-list allocator** — `__alloc` rounds to a 16-byte-aligned cell, triggers a collection
+      when the bytes-since-GC threshold (or stress mode) says so, serves first-fit-with-split from
+      the free list, and falls back to bumping (growing memory) — all unchanged for callers.
+- [x] **Codegen root discipline** — `fp` capture + frame pop at every function exit; root `env`/
+      `arg`/`let`/`letrec`/`type`/`match`-scrutinee; evaluate-then-construct for every compound
+      builder and two-pointer operator; the `$gcLock` wrapper around the allocating imports.
+- [x] **GC accounting + controls** — globals/exports for collections run, bytes reclaimed, live
+      bytes, peak heap, free-list reuse count, plus `__gcCollect`, `__setGcStress`, and the
+      `$gcLock` setters, surfaced through `run.ts` into `WasmRunResult.heap`.
+- [x] **The WASM panel** — show the new GC stats (collections, reclaimed, peak vs final, reuse) and
+      a "Stress GC" toggle that re-runs the program collecting before every allocation, proving the
+      result is identical.
+- [x] **An allocation-heavy example** — build and discard many intermediate lists in a fold so the
+      collector visibly reclaims (peak heap ≫ live heap), runnable on all three backends.
+- [x] **Verification** — the headline: a **GC stress battery** in `tools/harness.mjs` that re-runs
+      the entire WASM≡VM example + feature corpus with stress mode on (collect before every alloc),
+      asserting byte-for-byte agreement; plus targeted tests that a long allocator loop's peak heap
+      stays bounded (memory is genuinely reclaimed) and that the disassembler still names the new
+      runtime functions with zero unknown opcodes. Keep the CI gate (conformance + lint + build)
+      green.
+- [x] **Docs** — Tour/About/README/`project.json` writeups for the garbage collector.
+
+Shipped & measured: the harness grew from 207 → **249 checks, all green** (a 38-test GC battery: every
+gallery example + the feature programs re-run under stress mode agree byte-for-byte, and the long
+allocator loop is asserted to keep a bounded peak). Concretely, the `Garbage collector` example
+allocates tens of MB over its run yet the **peak heap stays ~130 KB** — the collector reclaims and the
+free list reuses cells — and the identical result under "collect before every allocation" is the proof
+that the shadow-stack root set is complete. The CI gate (conformance + lint + build) stays green.
+
+Notes for the next session: the collector is precise but *non-moving*, so the heap can fragment under
+adversarial size mixes (the free list coalesces adjacent runs each sweep, but never compacts). A
+natural follow-on is a **compacting / copying** collector (now that a precise root set exists, roots
+*can* be rewritten — the cost is reloading pointers from the shadow stack after each safepoint), or
+**generational** collection to cut the cost of the stress/threshold marking on long-lived data. The
+`gcPush` per-root call could also be inlined to shave the shadow-stack overhead.
+
+### Deferred (future, Aether 9.x+)
+
+- [ ] A **compacting** collector (slide/Cheney) that returns memory to a single contiguous region and
+      removes fragmentation — feasible now that the root set is precise, at the cost of pointer fixups
+      and reloading locals from the shadow stack across safepoints.
+- [ ] **Generational** GC (a nursery + promotion) so the common short-lived churn is collected cheaply
+      without scanning the whole heap.
+- [ ] **Inline** `gcPush`/frame push-pop (today a runtime call per root) to cut the shadow-stack cost.
 
 ## Standard library
 

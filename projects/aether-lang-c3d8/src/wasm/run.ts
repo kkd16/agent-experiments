@@ -10,15 +10,26 @@ import { valueToString } from '../lang/values.ts'
 import { makeBridge } from './bridge.ts'
 import { compileToWasm } from './codegen.ts'
 import type { WasmModule } from './codegen.ts'
+import { HEAP_BASE } from './layout.ts'
 
 /** Live heap accounting read back from the module after `main` ran. */
 export interface WasmHeapStats {
-  /** number of `__alloc` calls (cells handed out by the bump allocator) */
+  /** number of `__alloc` calls (cells handed out by the allocator) */
   allocCount: number
-  /** total bytes the bump allocator handed out */
+  /** total bytes the allocator handed out */
   allocBytes: number
   /** integers served from the shared small-int cache instead of a fresh box */
   cacheHits: number
+  /** garbage collections run */
+  collections: number
+  /** total bytes swept back to the free list across all collections */
+  reclaimed: number
+  /** live bytes at the last collection */
+  liveBytes: number
+  /** high-water mark of the heap (bytes), minus the cache + shadow-stack base */
+  peakHeap: number
+  /** allocations satisfied by reusing a freed cell from the free list */
+  reuse: number
 }
 
 export interface WasmRunResult {
@@ -37,10 +48,25 @@ interface WasmExports {
   __allocCount?: () => number
   __allocBytes?: () => number
   __cacheHits?: () => number
+  __gcCollections?: () => number
+  __gcReclaimed?: () => number
+  __gcLiveBytes?: () => number
+  __gcPeakHeap?: () => number
+  __gcReuse?: () => number
+  __setGcStress?: (on: number) => void
+}
+
+/** Where the heap starts — subtracted from the raw peak so the reported figure
+ *  is the program's own heap footprint, not the cache + shadow-stack base. */
+const HEAP_FLOOR = HEAP_BASE
+
+export interface RunWasmOptions {
+  /** Collect before *every* allocation (a maximal correctness stress; slow). */
+  stress?: boolean
 }
 
 /** Compile, instantiate and run the program on the WebAssembly backend. */
-export async function runWasm(userCoreAst: Expr): Promise<WasmRunResult> {
+export async function runWasm(userCoreAst: Expr, opts: RunWasmOptions = {}): Promise<WasmRunResult> {
   const module = compileToWasm(userCoreAst)
   const bridge = makeBridge({
     stringLiterals: module.stringLiterals,
@@ -52,6 +78,7 @@ export async function runWasm(userCoreAst: Expr): Promise<WasmRunResult> {
     const exports = instance.exports as unknown as WasmExports
     bridge.ctx.memory = exports.memory
     bridge.ctx.alloc = exports.__alloc
+    if (opts.stress && exports.__setGcStress) exports.__setGcStress(1)
     const ptr = exports.main()
     const value = bridge.decode(ptr)
     const heap: WasmHeapStats | null = exports.__allocCount
@@ -59,6 +86,11 @@ export async function runWasm(userCoreAst: Expr): Promise<WasmRunResult> {
           allocCount: exports.__allocCount(),
           allocBytes: exports.__allocBytes ? exports.__allocBytes() : 0,
           cacheHits: exports.__cacheHits ? exports.__cacheHits() : 0,
+          collections: exports.__gcCollections ? exports.__gcCollections() : 0,
+          reclaimed: exports.__gcReclaimed ? exports.__gcReclaimed() : 0,
+          liveBytes: exports.__gcLiveBytes ? exports.__gcLiveBytes() : 0,
+          peakHeap: exports.__gcPeakHeap ? Math.max(0, exports.__gcPeakHeap() - HEAP_FLOOR) : 0,
+          reuse: exports.__gcReuse ? exports.__gcReuse() : 0,
         }
       : null
     return { result: valueToString(value), output: bridge.output, effects: bridge.effects, error: null, module, heap }

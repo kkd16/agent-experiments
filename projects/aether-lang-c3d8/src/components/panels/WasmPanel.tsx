@@ -45,12 +45,13 @@ export default function WasmPanel({ ast, code, optimize }: Props) {
   const [busy, setBusy] = useState(false)
   const [showWat, setShowWat] = useState(true)
   const [showHex, setShowHex] = useState(false)
+  const [stress, setStress] = useState(false)
 
   const run = async (): Promise<void> => {
     if (!ast) return
     setBusy(true)
     try {
-      const wasm = await runWasm(ast)
+      const wasm = await runWasm(ast, { stress })
       const vm = runPipeline(code, { execute: true, optimize })
       const vmResult = vm.run?.result ? valueToString(vm.run.result) : vm.error ? null : '()'
       const vmOutput = vm.run?.output ?? []
@@ -97,8 +98,10 @@ export default function WasmPanel({ ast, code, optimize }: Props) {
         then instantiated and run by the engine. A bump allocator (with a shared small-integer cache),
         closures via <code>call_indirect</code>, arithmetic and <code>match</code> run as native WASM;
         printing, <code>show</code>, comparison and the turtle are imports that reuse the VM&apos;s own code,
-        so the result matches the bytecode VM byte-for-byte. The module carries a <code>name</code> section
-        and reads back as <strong>WAT text</strong> below, disassembled from its own bytes.
+        so the result matches the bytecode VM byte-for-byte. A precise <strong>tracing garbage
+        collector</strong> (mark-sweep over a shadow stack of roots) reclaims dead cells; the module
+        carries a <code>name</code> section and reads back as <strong>WAT text</strong> below, disassembled
+        from its own bytes.
       </p>
 
       <div className="js-toolbar">
@@ -110,6 +113,9 @@ export default function WasmPanel({ ast, code, optimize }: Props) {
             ⇩ aether.wasm
           </button>
         )}
+        <label className="wasm-stress" title="Collect before every allocation — proves no root is ever missed (the result is identical), and reclaims maximally.">
+          <input type="checkbox" checked={stress} onChange={(e) => setStress(e.target.checked)} /> stress GC
+        </label>
         {cmp && (
           <span className={`js-badge ${cmp.matches ? 'ok' : 'bad'}`}>
             {cmp.matches ? '✓ matches the VM' : '✗ differs from the VM'}
@@ -141,6 +147,17 @@ export default function WasmPanel({ ast, code, optimize }: Props) {
                     {cmp.wasm.heap.allocCount.toLocaleString()} cells allocated (
                     {cmp.wasm.heap.allocBytes.toLocaleString()} B);{' '}
                     {cmp.wasm.heap.cacheHits.toLocaleString()} ints served from the small-int cache
+                  </div>
+                )}
+                {cmp.wasm.heap && (
+                  <div className="run-stats">
+                    GC: <strong>{cmp.wasm.heap.collections.toLocaleString()}</strong> collections,{' '}
+                    <strong>{cmp.wasm.heap.reclaimed.toLocaleString()} B</strong> reclaimed,{' '}
+                    <strong>{cmp.wasm.heap.reuse.toLocaleString()}</strong> cells reused; peak heap{' '}
+                    <strong>{cmp.wasm.heap.peakHeap.toLocaleString()} B</strong>
+                    {cmp.wasm.heap.collections > 0 && (
+                      <> (live {cmp.wasm.heap.liveBytes.toLocaleString()} B at last GC)</>
+                    )}
                   </div>
                 )}
               </div>

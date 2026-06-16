@@ -5,7 +5,8 @@ your browser** — no server, no parser generators, no compiler libraries (no `w
 no runtime libraries beyond React for the UI. You write Aether source in the playground; it is
 lexed, parsed, type-inferred, optimized, and compiled **three ways** — to bytecode for a custom
 stack VM, to self-contained JavaScript, *and* to a real **WebAssembly** module hand-assembled to
-bytes and run by the engine — with every intermediate stage inspectable, an interactive time-travel
+bytes and run by the engine (with its linear-memory heap collected by a from-scratch **tracing
+garbage collector**) — with every intermediate stage inspectable, an interactive time-travel
 debugger, and a live Hindley–Milner derivation tree.
 
 Live: <https://kkd16.github.io/agent-experiments/projects/aether-lang-c3d8/>
@@ -142,6 +143,16 @@ every program:
   WebAssembly tab disassembles its own bytes back into readable **WAT text** — a from-scratch binary
   *decoder* (the mirror of the encoder) that resolves every call/global/local to a `$name` — alongside
   the module's sections, live allocation stats, and a **download for the `.wasm`** to run anywhere.
+  That heap is **garbage-collected**: a precise, non-moving **mark-sweep collector** (hand-written in
+  WebAssembly) reclaims dead cells. Because wasm hides the operand stack and locals from the
+  collector, codegen keeps a **shadow stack** of roots in linear memory — each function roots its
+  arguments and `let`/`match` bindings and pops its whole frame at every exit, and compound values are
+  built parts-first — so the collector marks from the shadow stack plus the value globals (cons spines
+  iterate, so long lists mark in constant stack) and sweeps the heap into a coalesced free list the
+  allocator reuses. Nothing moves, so the pointers in wasm locals stay valid across a collection. A
+  **GC stress mode** collects before *every* allocation: the result is byte-for-byte identical (a live
+  proof the root set is complete) while a long allocator loop keeps a *bounded* peak heap. The tab
+  reports collections, bytes reclaimed, cells reused and the peak heap.
 
 ### Operators
 
@@ -194,8 +205,8 @@ source ─▶ lexer ─▶ parser ─▶ HM inference ─▶ optimizer        �
 | `src/lang/vm.ts` | iterative stack VM; closures, currying, tail calls, snapshot trace |
 | `src/lang/jsBackend.ts` | AST → self-contained JavaScript (second backend); runs in the browser |
 | `src/wasm/encoder.ts` | from-scratch WebAssembly binary encoder (LEB128, sections, instruction builder) |
-| `src/wasm/layout.ts` | the tagged linear-memory heap layout shared by codegen and the host bridge |
-| `src/wasm/codegen.ts` | AST → WebAssembly (third backend): closure conversion, tail calls, `match` |
+| `src/wasm/layout.ts` | the tagged linear-memory heap layout (+ GC bits, shadow stack, free-list nodes) shared by codegen and the host bridge |
+| `src/wasm/codegen.ts` | AST → WebAssembly (third backend): closure conversion, tail calls, `match`, the shadow-stack root discipline + mark-sweep GC runtime |
 | `src/wasm/bridge.ts` | host imports that decode/encode heap cells and reuse the VM's print/show/compare |
 | `src/wasm/run.ts` | assemble → instantiate → run the `.wasm`; section summary, hex dump, heap stats |
 | `src/wasm/disasm.ts` | from-scratch WAT disassembler — decodes the emitted bytes back to readable, named WAT |
@@ -217,6 +228,12 @@ source ─▶ lexer ─▶ parser ─▶ HM inference ─▶ optimizer        �
 - **Tail-call optimization** reuses the current frame for calls in tail position — constant-space
   tail recursion, visible as a flat call-frame count in the debugger.
 - **Row unification** (Rémy/Leijen) gives row-polymorphic records with no annotations.
+- The **WebAssembly garbage collector** is precise and non-moving (mark-sweep). Its root finder is a
+  **shadow stack** codegen keeps in lock-step with the real one — the only sound way to trace a heap
+  when wasm hides the operand stack and locals. Choosing *non-moving* is what keeps the codegen
+  surgery bounded: objects never move, so wasm locals stay valid across a collection and the shadow
+  stack only has to keep reachable objects *marked*, never rewrite them. Correctness is proved by a
+  stress mode that collects before every allocation with byte-for-byte identical results.
 - The **prelude** (`map`, `filter`, `fold`, …) is written in Aether and compiled into every
   program; the visualizers show only your own source.
 
