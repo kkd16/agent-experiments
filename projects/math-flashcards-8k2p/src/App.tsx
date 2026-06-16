@@ -88,6 +88,7 @@ function App() {
   const [highScore, setHighScore] = useState<number>(getInitialHighScore());
 
   const [isSpeedRunActive, setIsSpeedRunActive] = useState<boolean>(false);
+  const [isSuddenDeathMode, setIsSuddenDeathMode] = useState<boolean>(false);
   const [timeLeft, setTimeLeft] = useState<number>(60);
   const [selectedTimerDuration, setSelectedTimerDuration] = useState<number>(60);
   const [questionsAnswered, setQuestionsAnswered] = useState<number>(0);
@@ -175,6 +176,24 @@ function App() {
     }
   };
 
+  const resetHighScore = () => {
+    setHighScore(0);
+    try {
+      window.localStorage.removeItem('mathFlashcardsHighScore');
+    } catch (e) {
+      console.error("Local storage error:", e);
+    }
+  };
+
+  const resetStreak = () => {
+    setStreak(0);
+    try {
+      window.localStorage.removeItem('mathFlashcardsStreak');
+    } catch (e) {
+      console.error("Local storage error:", e);
+    }
+  };
+
 
   const toggleTheme = () => {
     const newTheme = theme === 'light' ? 'dark' : 'light';
@@ -201,6 +220,7 @@ function App() {
   const checkAnswer = (e: React.FormEvent) => {
     e.preventDefault();
     if (isSpeedRunActive && timeLeft === 0) return;
+    if (isSuddenDeathMode && showSummary) return;
 
     const answer = parseInt(userAnswer, 10);
     if (isNaN(answer)) {
@@ -242,12 +262,21 @@ function App() {
       }, 500); // Shorter timeout for faster gameplay
 
     } else {
-      setMessage(`Incorrect. Try again!`);
-      setAnimationClass('flash-incorrect');
-      setTimeout(() => setAnimationClass(''), 500);
-      updateStreak(0); // Reset streak
-      setUserAnswer('');
-      inputRef.current?.focus();
+      if (isSuddenDeathMode) {
+        setMessage(`Incorrect! Sudden Death over.`);
+        setAnimationClass('flash-incorrect');
+        setTimeout(() => setAnimationClass(''), 500);
+        updateStreak(0);
+        setShowSummary(true);
+        setIsSpeedRunActive(false);
+      } else {
+        setMessage(`Incorrect. Try again!`);
+        setAnimationClass('flash-incorrect');
+        setTimeout(() => setAnimationClass(''), 500);
+        updateStreak(0); // Reset streak
+        setUserAnswer('');
+        inputRef.current?.focus();
+      }
     }
   };
 
@@ -262,13 +291,19 @@ function App() {
       </div>
 
 
-      <div className="header-stats">
-        <div className="stat">Score: {score}</div>
-        <div className="stat">
-          Streak: {streak} 🔥
-          {streak >= 10 ? ' (x3)' : (streak >= 5 ? ' (x2)' : '')}
+      <div className="header-stats-container">
+        <div className="header-stats">
+          <div className="stat">Score: {score}</div>
+          <div className="stat">
+            Streak: {streak} 🔥
+            {streak >= 10 ? ' (x3)' : (streak >= 5 ? ' (x2)' : '')}
+            <button onClick={resetStreak} className="reset-btn" title="Reset Streak" disabled={isSpeedRunActive}>↺</button>
+          </div>
+          <div className="stat">
+            High Score: {highScore}
+            <button onClick={resetHighScore} className="reset-btn" title="Reset High Score" disabled={isSpeedRunActive}>↺</button>
+          </div>
         </div>
-        <div className="stat">High Score: {highScore}</div>
       </div>
 
 
@@ -317,7 +352,15 @@ function App() {
             </div>
           ) : (
 
-            <div className="timer-select-container" style={{display: 'flex', gap: '0.5rem', alignItems: 'center'}}>
+            <div className="timer-select-container" style={{display: 'flex', gap: '0.5rem', alignItems: 'center', flexWrap: 'wrap', justifyContent: 'flex-end'}}>
+              <label style={{display: 'flex', alignItems: 'center', gap: '0.2rem', cursor: 'pointer', fontSize: '0.9rem'}}>
+                <input
+                  type="checkbox"
+                  checked={isSuddenDeathMode}
+                  onChange={(e) => setIsSuddenDeathMode(e.target.checked)}
+                />
+                Sudden Death
+              </label>
               <select value={selectedTimerDuration} onChange={(e) => setSelectedTimerDuration(parseInt(e.target.value, 10))} className="timer-select">
                 <option value={30}>30s</option>
                 <option value={60}>60s</option>
@@ -348,6 +391,44 @@ function App() {
           />
           <button type="submit" className="submit-button" disabled={isSpeedRunActive && timeLeft === 0}>Check</button>
         </form>
+
+        <div className="numpad">
+          {[1, 2, 3, 4, 5, 6, 7, 8, 9].map(num => (
+            <button
+              key={num}
+              type="button"
+              className="numpad-btn"
+              disabled={isSpeedRunActive && timeLeft === 0}
+              onClick={() => setUserAnswer(prev => prev + num)}
+            >
+              {num}
+            </button>
+          ))}
+          <button
+            type="button"
+            className="numpad-btn control-btn"
+            disabled={isSpeedRunActive && timeLeft === 0}
+            onClick={() => setUserAnswer('')}
+          >
+            C
+          </button>
+          <button
+            type="button"
+            className="numpad-btn"
+            disabled={isSpeedRunActive && timeLeft === 0}
+            onClick={() => setUserAnswer(prev => prev + '0')}
+          >
+            0
+          </button>
+          <button
+            type="button"
+            className="numpad-btn control-btn"
+            disabled={isSpeedRunActive && timeLeft === 0}
+            onClick={() => setUserAnswer(prev => prev.slice(0, -1))}
+          >
+            ⌫
+          </button>
+        </div>
       </div>
 
       {message && <div className={`message ${message === 'Correct!' ? 'success' : (message.includes('Time') ? 'info' : 'error')}`}>{message}</div>}
@@ -357,7 +438,7 @@ function App() {
       {showSummary && (
         <div className="summary-modal-overlay">
           <div className="summary-modal">
-            <h2>Time's Up!</h2>
+            <h2>{isSuddenDeathMode && !isSpeedRunActive && timeLeft > 0 ? "Game Over!" : "Time's Up!"}</h2>
             <p>Final Score: <strong>{score}</strong></p>
             <p>High Score: <strong>{highScore}</strong></p>
             <p>Questions Answered: <strong>{questionsAnswered}</strong></p>
