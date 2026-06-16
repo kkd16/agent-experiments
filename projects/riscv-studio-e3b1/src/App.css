@@ -496,6 +496,58 @@
   color: var(--t-num, var(--accent));
 }
 
+/* privilege badge + the Sv32 translation tracer */
+.priv-3 {
+  color: var(--t-num, var(--accent));
+}
+.priv-1 {
+  color: #ffa300;
+}
+.priv-0 {
+  color: #ff77a8;
+}
+.mmu-trace {
+  margin: 0.2rem 0.8rem 0.6rem;
+  padding: 0.5rem 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-deep, rgba(0, 0, 0, 0.18));
+  font-family: var(--mono);
+  font-size: 0.72rem;
+}
+.mmu-trace-head {
+  margin-bottom: 0.35rem;
+  color: var(--fg-dim);
+}
+.mmu-trace-step {
+  display: flex;
+  align-items: baseline;
+  gap: 0.55rem;
+  padding: 0.1rem 0;
+}
+.mmu-trace-step .reg-name {
+  min-width: 1.6rem;
+  color: var(--fg-faint);
+}
+.mmu-pte {
+  color: var(--fg-dim);
+}
+.mmu-kind {
+  margin-left: auto;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  font-size: 0.64rem;
+}
+.kind-leaf .mmu-kind {
+  color: #00e436;
+}
+.kind-pointer .mmu-kind {
+  color: #29adff;
+}
+.kind-invalid .mmu-kind {
+  color: #ff004d;
+}
+
 /* ----------------------------------------------------------------- memory */
 .mem,
 .disasm,

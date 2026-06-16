@@ -453,6 +453,12 @@ function expand(
     case 'frflags':
       NEED(op, ops, 1);
       return [csrMicro('csrrs', { rd: parseReg(ops[0]), rs1: 0, csr: CSR_NUMBERS.fflags }, line, source)];
+    // ---- supervisor memory-management fence -----------------------------
+    case 'sfence.vma':
+      // Accept `sfence.vma`, `sfence.vma rs1` or `sfence.vma rs1, rs2`; this machine models the
+      // fence as a wholesale TLB flush, so the operands are parsed for syntax but not encoded.
+      return [M('sfence.vma', {})];
+
     case 'fscsr':
       return [csrSwapPseudo(ops, CSR_NUMBERS.fcsr, line, source)];
     case 'fsrm':

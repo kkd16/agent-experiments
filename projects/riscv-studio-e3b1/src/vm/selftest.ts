@@ -10,6 +10,42 @@ import { EXAMPLES } from './examples';
 import { FB_BASE, FB_W } from './constants';
 import { decode } from './decode';
 import { disassemble } from './disassembler';
+import {
+  ACCESS_FETCH,
+  ACCESS_LOAD,
+  ACCESS_STORE,
+  PRIV_M,
+  PRIV_S,
+  PRIV_U,
+  PTE_A,
+  PTE_D,
+  PageFault,
+} from './mmu';
+
+/** Build a CPU with a hand-laid Sv32 page table, parked in supervisor mode with paging on.
+ *  root@0x80000: [0] identity megapage for [0,4MiB); [2] → leaf@0x81000.
+ *  leaf@0x81000: [0] maps VA 0x800000 → PA 0x10000, READ-ONLY by default. */
+function pagedCpu(leafFlags = 0xc3, megaFlags = 0xcf): Cpu {
+  const cpu = new Cpu();
+  cpu.recordHistory = false;
+  cpu.mem.writeWord(0x80000 + 0 * 4, megaFlags); // root[0] megapage, ppn1 = 0
+  cpu.mem.writeWord(0x80000 + 2 * 4, (0x81 << 10) | 1); // root[2] → leaf table (pointer PTE)
+  cpu.mem.writeWord(0x81000 + 0 * 4, (0x10 << 10) | leafFlags); // leaf[0] → frame 0x10
+  cpu.satp = 0x8000_0080; // MODE = Sv32, root PPN = 0x80
+  cpu.priv = PRIV_S;
+  return cpu;
+}
+
+/** Run `fn` and report which page-fault cause (if any) it raised. */
+function faultCause(fn: () => void): number | null {
+  try {
+    fn();
+    return null;
+  } catch (e) {
+    if (e instanceof PageFault) return e.cause;
+    throw e;
+  }
+}
 
 export interface TestResult {
   name: string;
@@ -902,6 +938,206 @@ const TESTS: Test[] = [
       cpu.stepBack();
       eq(cpu.mstatus, 0, 'mstatus reverted');
       eq(cpu.mtime, t0, 'mtime reverted');
+    },
+  },
+
+  // --- Sv32 virtual memory + supervisor mode ---------------------------------
+  {
+    name: 'mmu: an identity megapage translates VA → same PA in S-mode',
+    fn: () => {
+      const cpu = pagedCpu();
+      eq(cpu.translate(0x0001_2340, ACCESS_LOAD), 0x0001_2340, 'identity low');
+      eq(cpu.translate(0x003f_f004, ACCESS_FETCH), 0x003f_f004, 'identity near 4 MiB edge');
+    },
+  },
+  {
+    name: 'mmu: a 4 KiB leaf aliases VA 0x800000 → PA 0x10000 (offset preserved)',
+    fn: () => {
+      const cpu = pagedCpu();
+      eq(cpu.translate(0x0080_0abc, ACCESS_LOAD), 0x0001_0abc, 'aliased read');
+      eq(cpu.translate(0x0080_0000, ACCESS_LOAD), 0x0001_0000, 'page base');
+    },
+  },
+  {
+    name: 'mmu: Bare satp (MODE 0) disables translation even in S-mode',
+    fn: () => {
+      const cpu = pagedCpu();
+      cpu.satp = 0; // Bare
+      eq(cpu.translate(0x0080_0abc, ACCESS_LOAD), 0x0080_0abc, 'identity when Bare');
+    },
+  },
+  {
+    name: 'mmu: M-mode bypasses translation; MPRV redirects M loads through MPP',
+    fn: () => {
+      const cpu = pagedCpu();
+      cpu.priv = PRIV_M;
+      eq(cpu.translate(0x0080_0abc, ACCESS_LOAD), 0x0080_0abc, 'M-mode is physical');
+      // MPRV with MPP = S makes M-mode *data* accesses translate, but instruction fetch stays physical.
+      cpu.mstatus = (1 << 17) | (PRIV_S << 11); // MPRV=1, MPP=S
+      eq(cpu.translate(0x0080_0abc, ACCESS_LOAD), 0x0001_0abc, 'MPRV redirects the load');
+      eq(cpu.translate(0x0080_0abc, ACCESS_FETCH), 0x0080_0abc, 'fetch ignores MPRV');
+    },
+  },
+  {
+    name: 'mmu: an unmapped page raises the right page-fault cause per access',
+    fn: () => {
+      const cpu = pagedCpu();
+      eq(faultCause(() => cpu.translate(0x00c0_0000, ACCESS_LOAD)), 13, 'load page fault');
+      eq(faultCause(() => cpu.translate(0x00c0_0000, ACCESS_STORE)), 15, 'store page fault');
+      eq(faultCause(() => cpu.translate(0x00c0_0000, ACCESS_FETCH)), 12, 'fetch page fault');
+    },
+  },
+  {
+    name: 'mmu: a read-only leaf faults on write but not on read',
+    fn: () => {
+      const cpu = pagedCpu(0xc3); // leaf flags = D|A|R|V (no W)
+      eq(cpu.translate(0x0080_0000, ACCESS_LOAD), 0x0001_0000, 'read of RO page ok');
+      eq(faultCause(() => cpu.translate(0x0080_0000, ACCESS_STORE)), 15, 'write of RO page faults');
+    },
+  },
+  {
+    name: 'mmu: a misaligned megapage (nonzero low PPN) is rejected',
+    fn: () => {
+      const cpu = pagedCpu(0xc3, (1 << 10) | 0xcf); // megapage with ppn0 = 1 → misaligned
+      eq(faultCause(() => cpu.translate(0x0010_0000, ACCESS_LOAD)), 13, 'misaligned superpage faults');
+    },
+  },
+  {
+    name: 'mmu: U-bit + SUM govern supervisor access to user pages',
+    fn: () => {
+      // leaf flags = U|D|A|W|R|V; an S-mode access needs SUM to touch a user page.
+      const cpu = pagedCpu(0xd7);
+      eq(faultCause(() => cpu.translate(0x0080_0000, ACCESS_LOAD)), 13, 'S-mode U page w/o SUM faults');
+      cpu.mstatus |= 1 << 18; // SUM
+      eq(cpu.translate(0x0080_0000, ACCESS_LOAD), 0x0001_0000, 'SUM permits the data access');
+      eq(faultCause(() => cpu.translate(0x0080_0000, ACCESS_FETCH)), 12, 'SUM never permits fetch');
+    },
+  },
+  {
+    name: 'mmu: MXR lets a load read an execute-only page',
+    fn: () => {
+      const cpu = pagedCpu(0xc9); // leaf flags = D|A|X|V (executable, not readable)
+      eq(faultCause(() => cpu.translate(0x0080_0000, ACCESS_LOAD)), 13, 'X-only load faults w/o MXR');
+      cpu.mstatus |= 1 << 19; // MXR
+      eq(cpu.translate(0x0080_0000, ACCESS_LOAD), 0x0001_0000, 'MXR makes it readable');
+    },
+  },
+  {
+    name: 'mmu: hardware sets A on any access and D on a store',
+    fn: () => {
+      const cpu = pagedCpu(0x07); // leaf flags = W|R|V (no A, no D)
+      cpu.translate(0x0080_0000, ACCESS_LOAD);
+      let pte = cpu.mem.readWord(0x81000);
+      assert((pte & PTE_A) !== 0, 'A set on read');
+      eq(pte & PTE_D, 0, 'D not set on read');
+      cpu.translate(0x0080_0000, ACCESS_STORE);
+      pte = cpu.mem.readWord(0x81000);
+      assert((pte & PTE_D) !== 0, 'D set on write');
+    },
+  },
+  {
+    name: 'mmu: the page-table walk reads from physical memory (two real levels)',
+    fn: () => {
+      // Move the leaf table to a different physical page and re-point root[2]; the alias must follow.
+      const cpu = pagedCpu();
+      cpu.mem.writeWord(0x82000, (0x10 << 10) | 0xc3); // a fresh leaf at 0x82000, same mapping
+      cpu.mem.writeWord(0x80000 + 2 * 4, (0x82 << 10) | 1); // root[2] → 0x82000
+      cpu.flushTlb();
+      eq(cpu.translate(0x0080_0010, ACCESS_LOAD), 0x0001_0010, 'walk follows the new pointer');
+    },
+  },
+  {
+    name: 'paging example: alias read prints 0xbeef, then the fault handler reports cause 13',
+    fn: () => {
+      const ex = EXAMPLES.find((e) => e.id === 'paging')!;
+      const cpu = run(ex.code);
+      eq(cpu.status, 'halted', 'status');
+      eq(cpu.output, '0x0000beef\n13:0x00c00000\n', 'alias + fault-handler output');
+    },
+  },
+  {
+    name: 'paging example: stepping all the way back restores the un-paged machine',
+    fn: () => {
+      const result = assemble(EXAMPLES.find((e) => e.id === 'paging')!.code);
+      assert(result.ok, 'assembles');
+      const cpu = new Cpu();
+      cpu.load(result);
+      cpu.run(200_000);
+      eq(cpu.status, 'halted', 'ran to exit');
+      while (cpu.stepBack());
+      eq(cpu.priv, PRIV_M, 'privilege rewound to machine');
+      eq(cpu.satp, 0, 'satp rewound to Bare');
+      eq(cpu.output, '', 'output rewound');
+      eq(cpu.mem.readWord(0x80000), 0, 'root PTE write undone');
+      eq(cpu.mem.readWord(0x10000), 0, 'sentinel write undone');
+      eq(cpu.pc >>> 0, cpu.entry >>> 0, 'pc back at entry');
+    },
+  },
+  {
+    name: 'priv: sret returns to U-mode and restores SIE from SPIE',
+    fn: () => {
+      const cpu = run(`
+        main:
+          # Arrange an S→U return: SPP=U, SPIE=1, sepc=user. (We are in M-mode here.)
+          li   t0, 0x120         # mstatus.SPIE (0x20) | SPP cleared; set SPIE
+          csrs sstatus, t0       # set SPIE
+          li   t0, 0x100         # SPP bit
+          csrc sstatus, t0       # SPP = 0 (return to U)
+          la   t0, user
+          csrw sepc, t0
+          sret                   # pc ← sepc, priv ← U, SIE ← SPIE(1)
+        user:
+          li   a7, 93
+          li   a0, 7
+          ecall
+      `);
+      eq(cpu.exitCode, 7, 'reached user code and exited');
+      eq(cpu.priv, PRIV_U, 'now in user mode');
+      assert((cpu.mstatus & (1 << 1)) !== 0, 'SIE restored from SPIE');
+    },
+  },
+  {
+    name: 'priv: a U-mode CSR write to an M-CSR traps illegal to the handler',
+    fn: () => {
+      const cpu = run(`
+        main:
+          la   t0, mtrap
+          csrw mtvec, t0         # M handler
+          li   t0, 0x1800
+          csrc mstatus, t0       # MPP = U (00)
+          la   t0, user
+          csrw mepc, t0
+          mret                   # → user mode
+        user:
+          csrw mscratch, zero    # illegal in U-mode → trap
+          li   a7, 93
+          li   a0, 1
+          ecall
+        .align 2
+        mtrap:
+          csrr a0, mcause        # 2 = illegal instruction
+          li   a7, 93
+          ecall
+      `);
+      eq(cpu.exitCode, 2, 'illegal-instruction cause delivered to M handler');
+    },
+  },
+  {
+    name: 'encoding: sret / sfence.vma round-trip through assemble→decode→disassemble',
+    fn: () => {
+      for (const [src, word, text] of [
+        ['sret', 0x1020_0073, 'sret'],
+        ['sfence.vma', 0x1200_0073, 'sfence.vma'],
+        ['sfence.vma t0, t1', 0x1200_0073, 'sfence.vma'],
+      ] as [string, number, string][]) {
+        const r = assemble(`main:\n  ${src}\n`);
+        assert(r.ok, `${src} assembles`);
+        const w = (r.writes[0].bytes[0] | (r.writes[0].bytes[1] << 8) |
+          (r.writes[0].bytes[2] << 16) | (r.writes[0].bytes[3] << 24)) >>> 0;
+        eq(w, word >>> 0, `${src} encodes`);
+        eq(decode(w).mnemonic, text, `${src} decodes`);
+        eq(disassemble(w), text, `${src} disassembles`);
+      }
     },
   },
 ];

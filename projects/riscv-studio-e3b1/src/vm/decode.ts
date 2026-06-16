@@ -218,11 +218,15 @@ function resolveMnemonic(opcode: number, funct3: number, funct7: number, w: numb
     }
     case OPC.SYSTEM:
       if (funct3 === 0) {
+        // sfence.vma carries register operands, so it is identified by its funct7, not funct12.
+        if (funct7 === 0x09) return 'sfence.vma';
         switch (w >>> 20) {
           case 0x000:
             return 'ecall';
           case 0x001:
             return 'ebreak';
+          case 0x102:
+            return 'sret';
           case 0x302:
             return 'mret';
           case 0x105:

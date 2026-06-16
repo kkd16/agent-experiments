@@ -563,8 +563,98 @@ on_timer:
         mret                     # return to the interrupted pc (mepc)
 `;
 
+const PAGING = `# Sv32 VIRTUAL MEMORY, by hand. Build a two-level page table, turn on paging, drop into
+# SUPERVISOR mode, read memory through an ALIASED mapping, then deliberately touch an
+# unmapped page and let the S-mode page-fault handler catch it and report the address.
+#
+# Physical layout (paging is OFF while we are in M-mode, so these writes hit RAM directly):
+#   0x80000  root page table        0x81000  leaf page table        0x10000  a data frame
+.text
+main:
+        li   t0, 0x80000          # root page table (physical), page 0x80
+        li   t1, 0x81000          # leaf page table (physical), page 0x81
+
+        # root[0] = a 4 MiB MEGAPAGE identity-mapping VA [0,4MiB) -> PA [0,4MiB).
+        #   ppn=0, flags = D|A|X|W|R|V = 0xcf
+        li   t2, 0xcf
+        sw   t2, 0(t0)
+
+        # root[2] = a POINTER to the leaf table (covers VA [8MiB,12MiB)).
+        #   PTE = (leafPPN 0x81)<<10 | V = 0x20401
+        li   t2, 0x20401
+        sw   t2, 8(t0)
+
+        # leaf[0] = a 4 KiB page mapping VA 0x00800000 -> PA 0x00010000.
+        #   PTE = (ppn 0x10)<<10 | D|A|W|R|V (0xc3) = 0x40c3
+        li   t2, 0x40c3
+        sw   t2, 0(t1)
+
+        # Stash a sentinel at PA 0x00010000 (reachable now via its identity address).
+        li   t3, 0x10000
+        li   t4, 0xbeef
+        sw   t4, 0(t3)
+
+        # Delegate page faults to S-mode and install the supervisor trap handler.
+        li   t2, 0xb000           # medeleg bits 12/13/15 = fetch/load/store page fault
+        csrw medeleg, t2
+        la   t2, s_handler
+        csrw stvec, t2
+
+        # Turn on Sv32:  satp = MODE(1<<31) | rootPPN(0x80)
+        li   t2, 0x80000080
+        csrw satp, t2
+        sfence.vma                # fence the (empty) TLB after changing the regime
+
+        # Prepare to mret into SUPERVISOR mode at \`kernel\`, with a low (mapped) stack.
+        li   sp, 0x00200000
+        li   t2, 0x1800           # mstatus.MPP mask (bits 12:11)
+        csrc mstatus, t2
+        li   t2, 0x800            # MPP = 01 (supervisor)
+        csrs mstatus, t2
+        la   t2, kernel
+        csrw mepc, t2
+        mret                      # ... drop to S-mode; translation is now LIVE
+
+kernel:
+        # Supervisor mode, paging on. Read the ALIAS: VA 0x800000 resolves to PA 0x10000.
+        li   t0, 0x800000
+        lw   a0, 0(t0)            # loads the sentinel written via the identity map
+        li   a7, 34
+        ecall                     # print_hex -> 0x0000beef
+        li   a0, 10
+        li   a7, 11
+        ecall                     # newline
+
+        # Now touch an UNMAPPED virtual page: root[3] is invalid -> load page fault.
+        li   t0, 0x00c00000
+        lw   a0, 0(t0)            # faults here; control vanishes into s_handler
+        li   a7, 93
+        li   a0, 1
+        ecall                     # (not reached)
+
+        .align 2
+s_handler:
+        # We arrive here in S-mode with scause/stval describing the fault.
+        csrr a0, scause
+        li   a7, 1
+        ecall                     # print_int -> 13 (load page fault)
+        li   a0, 58
+        li   a7, 11
+        ecall                     # ':'
+        csrr a0, stval
+        li   a7, 34
+        ecall                     # print_hex -> the faulting virtual address
+        li   a0, 10
+        li   a7, 11
+        ecall                     # newline
+        li   a7, 93
+        li   a0, 0
+        ecall                     # exit(0)
+`;
+
 export const EXAMPLES: readonly Example[] = [
   { id: 'hello', title: 'Hello, RISC-V', blurb: 'print_string syscall basics', focus: 'console', code: HELLO },
+  { id: 'paging', title: 'Virtual memory (Sv32)', blurb: 'page tables, S-mode, a page-fault handler', focus: 'console', code: PAGING },
   { id: 'rvc', title: 'Compressed (RV32C)', blurb: 'c.* 16-bit ops + .option rvc auto-compress', focus: 'console', code: RVC },
   { id: 'timer', title: 'Timer interrupts', blurb: 'CLINT timer + mtvec/mret machine-mode trap', focus: 'console', code: TIMER_IRQ },
   { id: 'fib', title: 'Fibonacci', blurb: 'loops, registers, print_int', focus: 'console', code: FIB },

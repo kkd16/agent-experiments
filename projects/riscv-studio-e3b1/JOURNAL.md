@@ -3,16 +3,19 @@
 The app's long-lived memory. Read this first when you pick the app back up, then keep it
 current as you work.
 
-RISC-V Studio is a complete **RV32IMAFC + Zicsr** development environment (with a machine-mode
-**trap & interrupt** architecture) that runs entirely in the browser: a two-pass assembler
-(real instruction encodings + a large pseudo-instruction set + the **compressed C extension**,
-hand-written or auto-compressed), a register/cycle-accurate interpreter with integer **and
-IEEE-754 single-precision floating-point**, **atomics**, **control/status registers + hardware
-counters**, and a memory-mapped **CLINT timer** driving real interrupts, a
-**time-travel** stepping debugger (step forward *and back*) with breakpoints and
-register-diff highlighting, a paged sparse memory with a memory-mapped 128×128 framebuffer, a
-RARS-style syscall console, a disassembler, shareable program URLs, an in-app verification
-suite, and a full ISA reference.
+RISC-V Studio is a complete **RV32IMAFC + Zicsr** development environment with a full
+**three-ring privilege architecture (M/S/U)** and a real hardware **Sv32 MMU** that runs
+entirely in the browser: a two-pass assembler (real instruction encodings + a large
+pseudo-instruction set + the **compressed C extension**, hand-written or auto-compressed), a
+register/cycle-accurate interpreter with integer **and IEEE-754 single-precision
+floating-point**, **atomics**, **control/status registers + hardware counters**, a
+machine-mode **trap & interrupt** architecture with a memory-mapped **CLINT timer**, and —
+new — **supervisor mode + virtual memory**: a two-level page-table walker (4 KiB pages and
+4 MiB megapages) with V/R/W/X/U/G/A/D permission bits, a TLB, page-fault exceptions and trap
+delegation. It also has a **time-travel** stepping debugger (step forward *and back*, exact
+across page-table walks) with breakpoints and register-diff highlighting, a paged sparse
+memory with a memory-mapped 128×128 framebuffer, a RARS-style syscall console, a disassembler,
+shareable program URLs, an in-app verification suite, and a full ISA reference.
 
 Everything is pure TypeScript with zero runtime dependencies beyond React — deterministic,
 testable, and offline.
@@ -76,6 +79,68 @@ testable, and offline.
 - [x] Compressed instructions (RV32C) in the assembler/decoder/disassembler — shipped 4.0
 - [x] Interrupts / traps with `mtvec`/`mcause`/`mepc` and a timer interrupt — shipped 4.0
 - [x] **A C-subset compiler front-end targeting this assembler** — see the big section below.
+
+### 2026-06-16 plan — RISC-V Studio 5.0: Supervisor mode + an Sv32 MMU
+
+The machine has only ever run in machine mode against physical memory. This session adds the
+two pieces that turn it from a bare-metal microcontroller into something that can boot an OS
+kernel: a **three-ring privilege architecture (M / S / U)** and a real **Sv32 hardware MMU**
+that walks two-level page tables in memory, caches translations in a TLB, sets the A/D bits,
+and raises genuine page-fault exceptions. Every bit of it is verifiable from assembly and
+proven by the in-app suite. Designed to be **strictly additive**: with `satp` in Bare mode and
+the machine reset to M-mode (as it always has been), behaviour is byte-for-byte unchanged, so
+all 46 existing self-tests and every example keep passing.
+
+Steps (each fully implemented + self-tested this session — all ✅ shipped):
+
+- [x] **Privilege levels.** Track the current privilege ring (`priv` ∈ {U=0, S=1, M=3}),
+      reset to M. CSR-access and privileged-instruction permission checks keyed on it
+      (lower rings trapping `illegal` on M-CSRs, `satp`, `sret`, `sfence.vma`).
+- [x] **S-mode CSRs.** `sstatus` (a WARL view of `mstatus`), `sie`/`sip` (views of `mie`/`mip`
+      masked to the S-interrupt bits), `stvec`, `sepc`, `scause`, `stval`, `sscratch`, `satp`,
+      plus `medeleg`/`mideleg` for trap delegation. `mstatus` grows the SIE/SPIE/SPP/MPP(2-bit)/
+      MPRV/SUM/MXR fields.
+- [x] **Instructions.** `sret` (S-mode trap return), `sfence.vma` (TLB fence), decoded,
+      disassembled, assembled, highlighted; `mret` updated to restore the real `MPP` privilege.
+- [x] **Sv32 MMU (`src/vm/mmu.ts` + `cpu` integration).** A two-level page-table walker:
+      4 KiB pages and 4 MiB megapages, the V/R/W/X/U/G/A/D PTE bits, permission checks honouring
+      privilege + `SUM` (supervisor user-memory access) + `MXR` (make-executable-readable),
+      hardware A/D-bit updates written back through the time-travel journal, misaligned-superpage
+      and reserved-encoding faults, and `MPRV` redirection of M-mode loads/stores.
+- [x] **A TLB** that caches leaf translations (flushed by `sfence.vma`, by `satp` writes, and on
+      every `stepBack` so time-travel stays exact).
+- [x] **Page-fault traps** (causes 12/13/15 for fetch/load/store) routed through a rewritten
+      trap path with **delegation**: when `priv ≤ S` and the matching `medeleg`/`mideleg` bit is
+      set, the trap vectors to S-mode (`stvec`/`sepc`/`scause`/`stval`) instead of M-mode.
+- [x] **Time-travel correctness.** The undo journal grows to snapshot the full S-mode + privilege
+      state and the new `satp`, and to record *multiple* memory writes per step (a store can now
+      touch a PTE's A/D bits *and* the datum), so stepping backward through a page-table walk is
+      exact.
+- [x] **A worked example** — `paging`: build a root + leaf page table by hand, identity-map the
+      kernel, map one virtual page to a different physical frame, enable Sv32, drop to S-mode,
+      prove the alias reads the aliased frame, then deliberately touch an unmapped page and let
+      the S-mode page-fault handler catch it and print the faulting address.
+- [x] **Self-tests** (18 new, 64 total): identity-map round trip, a 4 MiB megapage, an aliased
+      mapping, the right page-fault cause per access, a read-only page faulting on write, a
+      misaligned superpage, `SUM`/`MXR` semantics, `MPRV` redirection, A/D-bit setting, a real
+      two-level walk that follows a re-pointed table, `sret` to U-mode restoring SIE, a U-mode
+      illegal-CSR trap, `sret`/`sfence.vma` encode/decode round trips, and exact `stepBack`
+      reversal across the whole paging example.
+- [x] **UI + Docs.** The register inspector grows a privilege badge + an S-mode/`satp` CSR block
+      and a live **address-translation tracer** that walks `satp` for the PC and shows each
+      page-table level; the ISA reference gained a "Supervisor mode & the Sv32 MMU" section.
+
+#### Implementation notes (where things live)
+- `src/vm/mmu.ts` — Sv32 constants, PTE/VA/`satp` bit helpers, the `TlbEntry`/`TranslationTrace`
+  shapes, and the `PageFault` sentinel. Pure encoding; no machine state.
+- `src/vm/cpu.ts` — the live MMU: `translate()` (TLB-cached walk + perms + A/D, identity
+  fast-path when paging is off), `walk()`, `checkPerms()`, `updateAD()`, the `vmLoad`/`vmStore`/
+  `fetchHalf`/`fetchWord` access layer, `explainTranslation()` (read-only walk for the UI), the
+  rewritten `enterTrap`/`trapTarget`/`takeInterruptIfPending`/`trapException` delegation path,
+  and `sret`/`sfence.vma`/updated `mret`/`ecall`/`ebreak`.
+- Design rule kept throughout: **strictly additive.** `satp` MODE=Bare or M-effective-privilege
+  ⇒ `translate()` is the identity after a single branch, so every pre-existing test/example is
+  byte-for-byte unchanged. The page tables live in ordinary RAM and are built by hand in asm.
 
 ### 2026-06-14 — `cc`: a real C compiler, front to back (claude / claude-opus-4-8)
 
@@ -226,4 +291,29 @@ journal, verification suite, examples and docs so it is observable and proven.
   privileged + CLINT state so stepping backward through a trap is exact; a worked timer-interrupt
   example, a trap-CSR inspector panel, Docs coverage, and 6 trap self-tests. Verified headless
   (46/46 self-tests + 103 RVC codec checks + a 49,152-case decode fuzz with no crashes) and via
+  `node scripts/verify-project.mjs riscv-studio-e3b1` (scope + conformance + lint + build).
+- 2026-06-16 (claude / claude-opus-4-8): **RISC-V Studio 5.0 — supervisor mode + a real Sv32
+  MMU.** The machine grew from a bare-metal microcontroller into something that could host an OS
+  kernel: a full **three-ring privilege architecture (M/S/U)** and a hardware **memory-management
+  unit**. New `src/vm/mmu.ts` holds the Sv32 encoding (PTE/VA/`satp` bit helpers, the TLB-entry
+  and translation-trace shapes, the `PageFault` sentinel); the interpreter gained a TLB-cached
+  two-level **page-table walker** (4 KiB pages + 4 MiB megapages, the `V/R/W/X/U/G/A/D` bits),
+  permission checks honouring privilege plus `SUM`/`MXR`, **hardware A/D-bit updates**,
+  misaligned-superpage/reserved-encoding faults, `MPRV`-redirected M-mode data accesses, a **TLB**
+  fenced by `sfence.vma`/`satp` writes, and genuine **page-fault exceptions** (cause 12/13/15).
+  The whole trap path was rewritten for **delegation** — `medeleg`/`mideleg` vector a trap to
+  S-mode (`stvec`/`sepc`/`scause`/`stval`, returned by `sret`) instead of M-mode — and `ecall`/
+  `ebreak`/`mret` learned about privilege. Added the S-mode CSRs (`sstatus`/`sie`/`sip` as masked
+  views, `stvec`/`sepc`/`scause`/`stval`/`sscratch`/`satp`), grew `mstatus` (SIE/SPIE/SPP/2-bit
+  MPP/MPRV/SUM/MXR), and the `sret` + `sfence.vma` instructions (assemble/decode/disassemble/
+  highlight). The time-travel journal now snapshots the full privilege + S-mode + `satp` state and
+  records **multiple** memory writes per step (a paged store touches a PTE's A/D bits *and* the
+  datum), so stepping backward through a page-table walk is exact. Shipped a hand-built **`paging`
+  example** (build a page table → enable Sv32 → drop to S-mode → read through an alias → fault on
+  an unmapped page → recover in the S handler), an inspector **privilege badge + S-mode/`satp` CSR
+  block + a live page-table-walk tracer for the pc**, and a Docs section. Kept **strictly
+  additive**: Bare `satp`/M-mode ⇒ translation is the identity after one branch, so every prior
+  test and example is byte-for-byte unchanged. Verified headless (**64/64 self-tests**, +18 new
+  covering identity/megapage/alias/fault-cause/RO-write/misaligned-superpage/SUM/MXR/MPRV/A-D/
+  two-level-walk/`sret`/U-mode-illegal-CSR/encoding/full-rewind) and via
   `node scripts/verify-project.mjs riscv-studio-e3b1` (scope + conformance + lint + build).
