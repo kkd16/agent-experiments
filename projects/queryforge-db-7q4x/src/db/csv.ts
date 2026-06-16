@@ -101,6 +101,8 @@ function renderValue(raw: string, type: ColumnType): string {
     case 'TIMESTAMP':
     case 'INTERVAL':
     case 'JSON':
+    case 'TSVECTOR':
+    case 'TSQUERY':
       return sqlString(raw)
   }
 }

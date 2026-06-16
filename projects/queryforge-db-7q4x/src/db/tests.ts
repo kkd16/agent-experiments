@@ -9,6 +9,23 @@ import { Database } from './catalog'
 import type { Row } from './catalog'
 import { formatValue, type SqlValue } from './types'
 import { isTemporal } from './temporal'
+import {
+  porterStem,
+  toTsVector,
+  toTsQuery,
+  tsMatch,
+  formatTsVector,
+  formatTsQuery,
+  plainToTsQuery,
+  phraseToTsQuery,
+  webSearchToTsQuery,
+  parseTsVector,
+  setWeight,
+  stripTsVector,
+  concatTsVector,
+  tsRank,
+  numNode,
+} from './fts'
 
 export interface TestResult {
   name: string
@@ -1986,6 +2003,152 @@ test('json', 'KEY is a usable identifier (non-reserved)', () => {
   // …and PRIMARY KEY / FOREIGN KEY still parse.
   e.execute(`CREATE TABLE pk (id INTEGER PRIMARY KEY, parent INTEGER REFERENCES pk(id))`)
   assert(scalar(e, `SELECT COUNT(*) FROM pk`) === 0, 'PRIMARY/FOREIGN KEY still parse')
+})
+
+// --- full-text search -------------------------------------------------------
+// A small post corpus shared by the FTS engine tests.
+function ftsTable(): Engine {
+  const e = new Engine()
+  e.execute(`CREATE TABLE posts (id INTEGER PRIMARY KEY, body TSVECTOR)`)
+  e.execute(`INSERT INTO posts VALUES
+    (1, to_tsvector('The quick brown fox jumps over the lazy dog')),
+    (2, to_tsvector('A fat cat sat on the mat')),
+    (3, to_tsvector('Foxes are quick and clever animals')),
+    (4, to_tsvector('Databases run queries quickly'))`)
+  return e
+}
+
+test('fts', 'Porter stemmer matches the canonical reference vocabulary', () => {
+  const pairs: [string, string][] = [
+    ['running', 'run'], ['cats', 'cat'], ['ponies', 'poni'], ['caresses', 'caress'],
+    ['national', 'nation'], ['relational', 'relat'], ['conditional', 'condit'],
+    ['agreed', 'agre'], ['plastered', 'plaster'], ['motoring', 'motor'], ['sing', 'sing'],
+    ['hopping', 'hop'], ['falling', 'fall'], ['controlling', 'control'],
+    ['happily', 'happili'], ['probate', 'probat'], ['rate', 'rate'], ['cease', 'ceas'],
+  ]
+  for (const [w, want] of pairs) assert(porterStem(w) === want, `stem(${w})=${porterStem(w)} want ${want}`)
+})
+
+test('fts', 'to_tsvector normalizes, stems, drops stop-words and records positions', () => {
+  assert(formatTsVector(toTsVector('The quick brown foxes jumped')) === "'brown':3 'fox':4 'jump':5 'quick':2", 'vector text')
+})
+
+test('fts', '@@ does boolean AND/OR/NOT matching', () => {
+  const e = ftsTable()
+  // 'quickly' stems to 'quickli' (Porter 1980 has no bare -ly rule), so only
+  // posts 1 and 3 carry the lexeme 'quick'.
+  assert(eq(rowsOf(e, `SELECT id FROM posts WHERE body @@ to_tsquery('quick') ORDER BY id`).map((r) => r[0]), [1, 3]), 'quick')
+  assert(eq(rowsOf(e, `SELECT id FROM posts WHERE body @@ to_tsquery('fox & lazy')`).map((r) => r[0]), [1]), 'fox & lazy')
+  assert(eq(rowsOf(e, `SELECT id FROM posts WHERE body @@ to_tsquery('cat | clever') ORDER BY id`).map((r) => r[0]), [2, 3]), 'or')
+  // Posts 1 and 3 carry 'quick', but both also carry 'fox'/'foxes' → none survive.
+  assert(eq(rowsOf(e, `SELECT id FROM posts WHERE body @@ to_tsquery('quick & !fox') ORDER BY id`).map((r) => r[0]), []), 'and not')
+  assert(eq(rowsOf(e, `SELECT id FROM posts WHERE body @@ to_tsquery('clever & !fox')`).map((r) => r[0]), []), 'clever but fox')
+  assert(eq(rowsOf(e, `SELECT id FROM posts WHERE body @@ to_tsquery('cat & !dog')`).map((r) => r[0]), [2]), 'cat not dog')
+})
+
+test('fts', 'phrase (<->) and distance (<N>) require positional adjacency', () => {
+  assert(tsMatch(toTsVector('the fat cat'), toTsQuery('fat <-> cat')) === true, 'adjacent')
+  assert(tsMatch(toTsVector('the cat is fat'), toTsQuery('fat <-> cat')) === false, 'not adjacent')
+  assert(tsMatch(toTsVector('the fat lazy cat'), toTsQuery('fat <2> cat')) === true, 'distance 2')
+  assert(tsMatch(toTsVector('quick brown fox'), toTsQuery('quick <-> brown <-> fox')) === true, 'chained phrase')
+})
+
+test('fts', 'prefix (:*) and weight-filtered (:A) lexemes match', () => {
+  assert(tsMatch(toTsVector('postgresql rocks'), toTsQuery('postgr:*')) === true, 'prefix')
+  assert(tsMatch(setWeight(toTsVector('cat'), 'A'), toTsQuery('cat:A')) === true, 'weight A matches')
+  assert(tsMatch(setWeight(toTsVector('cat'), 'B'), toTsQuery('cat:A')) === false, 'weight B excluded')
+})
+
+test('fts', 'plainto / phraseto / websearch query builders', () => {
+  assert(formatTsQuery(plainToTsQuery('the fat cats')) === "'fat' & 'cat'", 'plainto')
+  assert(formatTsQuery(phraseToTsQuery('fat cats')) === "'fat' <-> 'cat'", 'phraseto')
+  assert(formatTsQuery(webSearchToTsQuery('cats -dogs')) === "'cat' & !'dog'", 'websearch -')
+  assert(formatTsQuery(webSearchToTsQuery('cat or dog')) === "'cat' | 'dog'", 'websearch or')
+  assert(formatTsQuery(webSearchToTsQuery('"fat cat"')) === "'fat' <-> 'cat'", 'websearch phrase')
+})
+
+test('fts', 'ts_rank scores matches, weighted higher for A-labelled positions', () => {
+  const plain = tsRank(toTsVector('fat cat'), toTsQuery('cat'))
+  const heavy = tsRank(setWeight(toTsVector('cat'), 'A'), toTsQuery('cat'))
+  assert(plain > 0 && heavy > plain, `rank ${plain} < ${heavy}`)
+  const e = ftsTable()
+  const ranked = rowsOf(e, `SELECT id FROM posts WHERE body @@ to_tsquery('quick') ORDER BY ts_rank(body, to_tsquery('quick')) DESC, id`)
+  assert(ranked.length === 2, 'ranked rows')
+})
+
+test('fts', 'ts_headline wraps the matched words in the original text', () => {
+  assert(scalar(ftsTable(), `SELECT ts_headline('The fat cat sat', to_tsquery('cat'))`) === 'The fat <b>cat</b> sat', 'headline')
+})
+
+test('fts', 'tsvector concatenation shifts positions so phrases span the join', () => {
+  const c = concatTsVector(toTsVector('fat cat'), toTsVector('big dog'))
+  assert(tsMatch(c, toTsQuery('cat <-> big')) === true, 'phrase across join')
+  assert(formatTsVector(stripTsVector(toTsVector('fat cat'))) === "'cat' 'fat'", 'strip drops positions')
+})
+
+test('fts', 'tsvector / tsquery casts, equality, ordering and numnode', () => {
+  const e = new Engine()
+  assert(scalar(e, `SELECT 'fat cat'::tsvector @@ 'cat'::tsquery`) === true, 'cast + match')
+  // strip() drops positions, so two documents with the same lexemes compare equal.
+  assert(scalar(e, `SELECT strip(to_tsvector('a fat cat')) = strip(to_tsvector('cats and fat'))`) === true, 'equality after stemming')
+  assert(numNode(toTsQuery('cat & dog | bird')) === 5, 'numnode')
+  assert(formatTsVector(parseTsVector("'cat':3 'fat':2A,4")) === "'cat':3 'fat':2A,4", 'parse round-trip')
+})
+
+test('fts', 'tsvector is a first-class stored column (insert / filter / group / order)', () => {
+  const e = ftsTable()
+  assert(scalar(e, `SELECT COUNT(*) FROM posts WHERE body @@ to_tsquery('fox')`) === 2, 'count matches')
+  // GROUP BY / DISTINCT over a tsvector column works through the value plumbing.
+  assert(scalar(e, `SELECT COUNT(DISTINCT body) FROM posts`) === 4, 'distinct vectors')
+})
+
+test('fts', 'a GIN index gives the same answers as a sequential scan', () => {
+  const queries = [
+    `body @@ to_tsquery('quick')`,
+    `body @@ to_tsquery('fox & lazy')`,
+    `body @@ to_tsquery('cat | clever')`,
+    `body @@ to_tsquery('quick & !fox')`,
+    `body @@ to_tsquery('quick:*')`,
+    `body @@ plainto_tsquery('quick database')`,
+  ]
+  const seq = ftsTable()
+  const gin = ftsTable()
+  gin.execute(`CREATE INDEX posts_gin ON posts USING GIN (body)`)
+  for (const q of queries) {
+    const a = rowsOf(seq, `SELECT id FROM posts WHERE ${q} ORDER BY id`).map((r) => r[0])
+    const b = rowsOf(gin, `SELECT id FROM posts WHERE ${q} ORDER BY id`).map((r) => r[0])
+    assert(eq(a, b), `GIN vs seq mismatch on "${q}": ${JSON.stringify(a)} vs ${JSON.stringify(b)}`)
+  }
+})
+
+test('fts', 'EXPLAIN chooses a GinScan once a GIN index exists', () => {
+  const e = ftsTable()
+  e.execute(`CREATE INDEX posts_gin ON posts USING GIN (body)`)
+  const r = lastResult(e, `EXPLAIN SELECT id FROM posts WHERE body @@ to_tsquery('quick')`)
+  const text = JSON.stringify(r)
+  assert(text.includes('GinScan'), 'plan should contain GinScan')
+})
+
+test('fts', 'a GIN index is maintained across INSERT / UPDATE / DELETE', () => {
+  const e = ftsTable()
+  e.execute(`CREATE INDEX posts_gin ON posts USING GIN (body)`)
+  e.execute(`UPDATE posts SET body = to_tsvector('now about penguins') WHERE id = 1`)
+  assert(eq(rowsOf(e, `SELECT id FROM posts WHERE body @@ to_tsquery('penguin')`).map((r) => r[0]), [1]), 'update reindexed')
+  assert(eq(rowsOf(e, `SELECT id FROM posts WHERE body @@ to_tsquery('fox') ORDER BY id`).map((r) => r[0]), [3]), 'old lexeme gone')
+  e.execute(`INSERT INTO posts VALUES (5, to_tsvector('a quick penguin'))`)
+  assert(eq(rowsOf(e, `SELECT id FROM posts WHERE body @@ to_tsquery('penguin') ORDER BY id`).map((r) => r[0]), [1, 5]), 'insert indexed')
+  e.execute(`DELETE FROM posts WHERE id = 1`)
+  assert(eq(rowsOf(e, `SELECT id FROM posts WHERE body @@ to_tsquery('penguin')`).map((r) => r[0]), [5]), 'delete deindexed')
+})
+
+test('fts', 'a GIN index survives a snapshot round-trip', () => {
+  const e = ftsTable()
+  e.execute(`CREATE INDEX posts_gin ON posts USING GIN (body)`)
+  const snap = JSON.parse(JSON.stringify(e.db.snapshot()))
+  const e2 = new Engine(Database.restore(snap))
+  const r = lastResult(e2, `EXPLAIN SELECT id FROM posts WHERE body @@ to_tsquery('fox')`)
+  assert(JSON.stringify(r).includes('GinScan'), 'restored GIN index still planned')
+  assert(eq(rowsOf(e2, `SELECT id FROM posts WHERE body @@ to_tsquery('fox') ORDER BY id`).map((r) => r[0]), [1, 3]), 'restored results')
 })
 
 // --- sample queries (catalog showcase) -------------------------------------

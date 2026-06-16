@@ -38,8 +38,12 @@ plan visualizer and a built-in self-test suite.
   `?` existence, `||` concat/merge, `jsonbSet`/`stripNulls`, and `toJson` — threaded through the
   six central value functions just like temporal/decimal
 - `src/db/catalog.ts` — tables (heaps), single/composite indexes, constraints, stats cache, snapshots
+- `src/db/fts.ts` — first-class full-text search: a from-scratch Porter (1980) stemmer + stop-words +
+  positional tokenizer; the `tsvector` (`{t:'tsvector', lex}`) and `tsquery` (`{t:'tsquery', node}`)
+  tagged values; an operator-precedence query parser; a positional `@@` match executor with true
+  phrase (`<->`) semantics; `ts_rank`/`ts_rank_cd`; `ts_headline`; and the GIN candidate walker
 - `src/db/engine.ts` — top-level: DDL/DML/SELECT/EXPLAIN + snapshot transactions
-- `src/db/tests.ts` — 246 engine self-tests (run head-less in CI and in the Self-tests tab)
+- `src/db/tests.ts` — 261 engine self-tests (run head-less in CI and in the Self-tests tab)
 - `src/ui/*` — the IDE: editor, results grid, schema browser, plan tree, docs
 
 ## Ideas / backlog
@@ -298,6 +302,48 @@ deep structural equality and a total order. Steps:
 - [x] seed a `documents` table with JSON, 6 sample queries, a Reference section, an Internals stage,
       and a 26-case self-test group; verified headless (246 tests green) + `verify-project.mjs`
 
+### v9.0 — first-class full-text search (`tsvector` / `tsquery` + a GIN inverted index) (planned 2026-06-16)
+
+The last big capability a modern SQL engine has that QueryForge didn't: **full-text search**. Build
+it the exact same way JSON, temporal and decimal were built — a pair of tagged,
+`JSON.stringify`-round-trippable values (`{t:'tsvector', …}`, `{t:'tsquery', …}`) threaded through
+the six central value functions in `types.ts`, so a search document indexes, sorts, GROUP BYs,
+DISTINCTs, joins, persists and renders for free — then layer the linguistic processing, the match
+operator, ranking, headlines and a real inverted index on top. Everything from scratch, deterministic,
+self-tested. Steps:
+
+- [x] `src/db/fts.ts` — the engine: a from-scratch **Porter (1980) stemmer** (all five steps), an
+      English stop-word list, and a text→lexeme normalizer that lowercases, splits on non-word
+      boundaries, drops stop-words/over-long tokens and records 1-based positions
+- [x] `TsVector` value — a sorted, de-duplicated lexeme list, each carrying its sorted positions and a
+      parallel A/B/C/D weight per position; canonical Postgres-style text form `'fat':2A 'cat':3`
+- [x] `TsQuery` value — a boolean AST over lexemes with `&` `|` `!`, the phrase/`<->` (FOLLOWED BY) and
+      `<N>` distance operators, prefix (`:*`) and weight-filtered (`:AB`) terms, with full operator
+      precedence + parentheses; canonical text form that round-trips
+- [x] constructors — `to_tsvector`, `to_tsquery`, `plainto_tsquery`, `phraseto_tsquery`,
+      `websearch_to_tsquery` (quotes → phrase, `or`, leading `-` → NOT), `setweight`, `strip`,
+      `tsvector || tsvector` (position-shifted concat), `tsquery && / || / !!`, `numnode`, `querytree`
+- [x] **match** — `tsvector @@ tsquery` with true positional **phrase** semantics (a position-set
+      executor so `a <-> b <-> c` requires adjacency, distances chain, `!` and `&`/`|` compose), plus
+      the convenience coercions `text @@ tsquery`, `tsvector @@ text`, `text @@ text`
+- [x] **ranking** — `ts_rank` (weighted by A/B/C/D term weights, with the 0/1/2/4/8/16/32 length-
+      normalization bitmask) and `ts_rank_cd` (Clarke-style cover-density over positions), plus
+      `ts_headline(document, query)` that re-tokenizes the original text and wraps the matched words
+- [x] `types.ts` — register `TSVECTOR`/`TSQUERY` as `ColumnType`s + in `SqlValue`; thread through
+      `valueTypeOf` / `coerceTo` (TEXT⇄tsvector/tsquery) / `compareValues` / `orderValues` / `hashKey` /
+      `formatValue` so both are first-class values everywhere
+- [x] `lexer.ts` + `parser.ts` — tokenize `@@`; parse it at comparison precedence; recognize the
+      `TSVECTOR`/`TSQUERY` type names for CAST and column declarations
+- [x] `eval.ts` — evaluate `@@`; register the whole FTS scalar-function library; `inferType` so
+      results carry the right type
+- [x] **capstone — a GIN inverted index.** `CREATE INDEX … USING GIN (col)` builds a lexeme→rowids
+      inverted index in the catalog; the planner detects `col @@ <const tsquery>`, walks the query AST
+      to a conservative candidate rowset (postings union/intersection), and emits a `GinScan` that
+      rechecks `@@` exactly — so search is sublinear and `EXPLAIN` shows the index path. Strictly
+      additive: with no GIN index the same query is a correct seq-scan filter
+- [x] seed a `posts` table with `tsvector` documents, add 6 sample queries, a Reference section, an
+      Internals stage, and a self-test group; verify headless + `verify-project.mjs`
+
 - [ ] **DECIMAL division scale à la Postgres** — `select_div_scale` (derive rscale from operand
   precisions) instead of the fixed `max(s1,s2,6)`; expose a `SET extra_float_digits`-style knob.
 - [ ] **Overflow vs. declared precision** — currently DECIMAL(p,s) only enforces *scale*; enforce
@@ -333,6 +379,30 @@ deep structural equality and a total order. Steps:
 - [ ] **Plan cache** — key parsed+planned queries so repeated statements skip planning
 
 ## Session log
+
+- 2026-06-16 (claude / claude-opus-4-8): **v9.0 — first-class full-text search (`tsvector` /
+  `tsquery` + a GIN inverted index).** Added the last big capability a modern SQL engine has that
+  QueryForge didn't, built the same way JSON/temporal/decimal were: a new `db/fts.ts` carrying two
+  tagged values threaded through the six central value functions in `types.ts`, so a search document
+  indexes, sorts, GROUP BYs, DISTINCTs, joins, persists and renders for free. From scratch and fully
+  deterministic: a **Porter (1980) stemmer** (verified against the canonical reference vocabulary),
+  an English stop-word list, and a positional tokenizer. The `@@` operator (new in lexer/parser at
+  comparison precedence; symmetric, with text⇄tsvector/tsquery coercions) does boolean (`& | !`),
+  prefix (`:*`), weight-filtered (`:A`) and **true positional phrase** search (`a <-> b`, `a <N> b`)
+  via a position-set executor. Constructors `to_tsvector` / `to_tsquery` / `plainto_tsquery` /
+  `phraseto_tsquery` / `websearch_to_tsquery`; ranking `ts_rank` / `ts_rank_cd` (A/B/C/D weights,
+  length-normalization bitmask, cover density); `ts_headline`, `setweight`, `strip`, `numnode`,
+  position-shifting `||`, and `tsquery` algebra. **Capstone — a GIN inverted index:** `CREATE INDEX
+  … USING GIN (col)` builds a lexeme→rowids map (new `GinIndexHandle` in the catalog), maintained on
+  every insert/update/delete and rebuilt on snapshot restore (snapshot bumped to v5). The planner's
+  `tryGinScan` detects `col @@ <constant tsquery>`, walks the query AST to a conservative candidate
+  rowset (postings union/intersection; falls back to all rows under a top-level `NOT`), and emits a
+  `GinScan` operator that rechecks `@@` exactly — lossy index, precise answer — shown as a `GinScan`
+  in `EXPLAIN`. Strictly additive: with no GIN index the same query is a correct seq-scan filter, and
+  a property test asserts GIN and seq give identical answers across six query shapes. Seeded an
+  `articles` corpus with weighted vectors + a GIN index, added 5 sample queries, a Reference section
+  and an Internals stage. Grew the self-test suite 246 → 261 (all green, verified headless) plus
+  `verify-project.mjs` (scope + conformance + lint + build).
 
 - 2026-06-15 (claude / claude-opus-4-8): **v8.0 — first-class JSON / JSONB.** Closed the one glaring
   gap versus a modern SQL engine. Built `db/json.ts` and threaded JSON through the value system the

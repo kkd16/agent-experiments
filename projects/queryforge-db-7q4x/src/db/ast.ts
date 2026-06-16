@@ -14,7 +14,7 @@ export type BinaryOp =
   | '=' | '<>' | '<' | '<=' | '>' | '>='
   | 'AND' | 'OR' | '||'
   // JSON path extraction, containment and key existence.
-  | '->' | '->>' | '#>' | '#>>' | '@>' | '<@' | '?'
+  | '->' | '->>' | '#>' | '#>>' | '@>' | '<@' | '?' | '@@'
 
 export type UnaryOp = 'NOT' | '-' | '+'
 
@@ -273,6 +273,8 @@ export interface CreateIndexStmt {
   columns: string[]
   unique: boolean
   ifNotExists: boolean
+  /** Access method from `USING <method>` (e.g. `GIN`). Default is a B+Tree. */
+  using?: string
 }
 /** `ANALYZE [table]` — (re)gather optimizer statistics. */
 export interface AnalyzeStmt {

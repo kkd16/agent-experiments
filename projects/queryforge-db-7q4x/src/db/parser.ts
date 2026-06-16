@@ -39,8 +39,9 @@ const PRECEDENCE: Record<string, number> = {
   OR: 1,
   AND: 2,
   '=': 4, '<>': 4, '<': 4, '<=': 4, '>': 4, '>=': 4,
-  // JSON containment / existence sit at the comparison level (they're boolean).
-  '@>': 4, '<@': 4, '?': 4,
+  // JSON containment / existence + the full-text `@@` match sit at the
+  // comparison level (they're boolean).
+  '@>': 4, '<@': 4, '?': 4, '@@': 4,
   '||': 5,
   '+': 6, '-': 6,
   '*': 7, '/': 7, '%': 7,
@@ -217,8 +218,12 @@ class Parser {
       case 'JSON':
       case 'JSONB':
         return { type: 'JSON' }
+      case 'TSVECTOR':
+        return { type: 'TSVECTOR' }
+      case 'TSQUERY':
+        return { type: 'TSQUERY' }
       default:
-        throw this.err('expected a column type (INTEGER, REAL, DECIMAL, TEXT, BOOLEAN, DATE, TIME, TIMESTAMP, INTERVAL, JSON)')
+        throw this.err('expected a column type (INTEGER, REAL, DECIMAL, TEXT, BOOLEAN, DATE, TIME, TIMESTAMP, INTERVAL, JSON, TSVECTOR, TSQUERY)')
     }
   }
 
@@ -476,13 +481,16 @@ class Parser {
     const name = this.parseIdent('index name')
     this.expect('ON')
     const table = this.parseIdent('table name')
+    // Optional access method: `USING gin` / `USING btree`.
+    let using: string | undefined
+    if (this.accept('USING')) using = this.parseIdent('index method').toUpperCase()
     this.expect('(')
     const columns: string[] = []
     do {
       columns.push(this.parseIdent('column name'))
     } while (this.accept(','))
     this.expect(')')
-    return { kind: 'create_index', name, table, columns, unique, ifNotExists }
+    return { kind: 'create_index', name, table, columns, unique, ifNotExists, using }
   }
 
   private parseDrop(): Statement {
