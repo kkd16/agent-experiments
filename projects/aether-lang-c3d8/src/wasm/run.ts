@@ -11,12 +11,32 @@ import { makeBridge } from './bridge.ts'
 import { compileToWasm } from './codegen.ts'
 import type { WasmModule } from './codegen.ts'
 
+/** Live heap accounting read back from the module after `main` ran. */
+export interface WasmHeapStats {
+  /** number of `__alloc` calls (cells handed out by the bump allocator) */
+  allocCount: number
+  /** total bytes the bump allocator handed out */
+  allocBytes: number
+  /** integers served from the shared small-int cache instead of a fresh box */
+  cacheHits: number
+}
+
 export interface WasmRunResult {
   result: string | null
   output: string[]
   effects: TurtleCmd[]
   error: string | null
   module: WasmModule
+  heap: WasmHeapStats | null
+}
+
+interface WasmExports {
+  memory: WebAssembly.Memory
+  __alloc: (n: number) => number
+  main: () => number
+  __allocCount?: () => number
+  __allocBytes?: () => number
+  __cacheHits?: () => number
 }
 
 /** Compile, instantiate and run the program on the WebAssembly backend. */
@@ -29,12 +49,19 @@ export async function runWasm(userCoreAst: Expr): Promise<WasmRunResult> {
   })
   try {
     const { instance } = await WebAssembly.instantiate(module.bytes as BufferSource, bridge.imports)
-    const exports = instance.exports as { memory: WebAssembly.Memory; __alloc: (n: number) => number; main: () => number }
+    const exports = instance.exports as unknown as WasmExports
     bridge.ctx.memory = exports.memory
     bridge.ctx.alloc = exports.__alloc
     const ptr = exports.main()
     const value = bridge.decode(ptr)
-    return { result: valueToString(value), output: bridge.output, effects: bridge.effects, error: null, module }
+    const heap: WasmHeapStats | null = exports.__allocCount
+      ? {
+          allocCount: exports.__allocCount(),
+          allocBytes: exports.__allocBytes ? exports.__allocBytes() : 0,
+          cacheHits: exports.__cacheHits ? exports.__cacheHits() : 0,
+        }
+      : null
+    return { result: valueToString(value), output: bridge.output, effects: bridge.effects, error: null, module, heap }
   } catch (e) {
     return {
       result: null,
@@ -42,6 +69,7 @@ export async function runWasm(userCoreAst: Expr): Promise<WasmRunResult> {
       effects: bridge.effects,
       error: e instanceof Error ? e.message : String(e),
       module,
+      heap: null,
     }
   }
 }

@@ -7,7 +7,8 @@
 //   node --experimental-strip-types tools/harness.mjs
 import { runPipeline } from '../src/lang/pipeline.ts'
 import { compileToJs, runJsModule } from '../src/lang/jsBackend.ts'
-import { runWasm } from '../src/wasm/run.ts'
+import { runWasm, compileWasm } from '../src/wasm/run.ts'
+import { disassemble } from '../src/wasm/disasm.ts'
 import { valueToString } from '../src/lang/values.ts'
 import { EXAMPLES } from '../src/examples.ts'
 import { runSuite } from '../src/lang/testSuite.ts'
@@ -214,6 +215,98 @@ await checkWasm('nested let rec closure (knot)', 'let count = fn n -> let rec go
 await checkWasm('list comprehension', '[ (x, y) | x <- range 1 4, y <- range 1 4, x + y == 4 ]')
 await checkWasm('print output ordering', 'let _ = print "a" in let _ = print 1 in let _ = print [1, 2] in print "z"')
 await checkWasm('polymorphic compare on ADTs', 'type C = Red | Green | Blue in (Red == Red, Red == Blue, min Green Blue, [1,2,3] == [1,2,3])')
+
+// ---------------------------------------------------------------------------
+// WAT disassembler battery — the from-scratch binary *decoder* (the mirror of
+// the encoder). Every module we emit must round-trip to well-formed WAT: no
+// unrecognised opcodes, balanced parens, one named `(func …)` per defined
+// function, and a populated `name` section (no anonymous `funcN` fallbacks).
+// ---------------------------------------------------------------------------
+
+function checkDisasm(name, src) {
+  const r = runPipeline(src, { execute: true })
+  if (r.error) {
+    record('disasm:' + name, false, `pipeline error: ${r.error.message}`)
+    return
+  }
+  let mod
+  try {
+    mod = compileWasm(r.coreAst)
+  } catch (e) {
+    record('disasm:' + name, false, `compile threw: ${e instanceof Error ? e.message : String(e)}`)
+    return
+  }
+  let wat
+  try {
+    wat = disassemble(mod.bytes)
+  } catch (e) {
+    record('disasm:' + name, false, `disassemble threw: ${e instanceof Error ? e.message : String(e)}`)
+    return
+  }
+  const problems = []
+  if (wat.unknown !== 0) problems.push(`${wat.unknown} unknown opcode(s)`)
+  if (wat.text.includes(';; unknown')) problems.push('a ;; unknown marker leaked into the WAT')
+  // one rendered (func …) per defined function in the module
+  if (wat.funcs.length !== mod.stats.funcCount)
+    problems.push(`rendered ${wat.funcs.length} funcs but the module defines ${mod.stats.funcCount}`)
+  // every function resolved a real name from the `name` section
+  const anon = wat.funcs.filter((f) => /^func\d+$/.test(f.name))
+  if (anon.length) problems.push(`${anon.length} function(s) fell back to an anonymous name`)
+  // balanced parentheses across the whole module text
+  let depth = 0
+  for (const ch of wat.text) {
+    if (ch === '(') depth++
+    else if (ch === ')') depth--
+    if (depth < 0) break
+  }
+  if (depth !== 0) problems.push(`unbalanced parens (final depth ${depth})`)
+  if (!wat.text.startsWith('(module')) problems.push('text does not open with (module')
+  // the named runtime helpers and the entry point must be present
+  for (const want of ['$__alloc', '$apply', '$boxInt', '$main', 'global.get $heap']) {
+    if (!wat.text.includes(want)) problems.push(`missing ${want} in the disassembly`)
+  }
+  record('disasm:' + name, problems.length === 0, problems.join('; '))
+}
+
+for (const ex of EXAMPLES) checkDisasm('example:' + ex.id, ex.code)
+checkDisasm('fib (named recursion)', 'let rec fib = fn n -> if n < 2 then n else fib (n - 1) + fib (n - 2) in fib 12')
+checkDisasm('floats + memargs', '(3.0 +. 4.0, sqrt 2.0, pi)')
+checkDisasm('records + match + strings', 'type O a = N | S a in let r = { x = 1 } in (r.x, show (S 1), "a" ^ "b")')
+
+// ---------------------------------------------------------------------------
+// Small-integer cache — the measured runtime win. It must (a) preserve
+// WASM ≡ VM (already covered above for correctness) and (b) actually *serve*
+// integers from the shared cache, cutting real allocations.
+// ---------------------------------------------------------------------------
+
+async function checkCache(name, src, expectResult, minHits) {
+  const r = runPipeline(src, { execute: true })
+  if (r.error) {
+    record('cache:' + name, false, `pipeline error: ${r.error.message}`)
+    return
+  }
+  const vm = r.run && r.run.result ? valueToString(r.run.result) : null
+  try {
+    const w = await runWasm(r.coreAst)
+    const problems = []
+    if (w.error) problems.push(`runtime error: ${w.error}`)
+    if (w.result !== vm) problems.push(`WASM "${w.result}" ≠ VM "${vm}"`)
+    if (expectResult !== undefined && w.result !== expectResult) problems.push(`result "${w.result}" ≠ "${expectResult}"`)
+    if (!w.heap) problems.push('no heap accounting exported')
+    else {
+      // every cache hit is an integer box the bump allocator did *not* have to make,
+      // so hits are allocations saved: assert the cache carried real, measurable weight.
+      if (w.heap.cacheHits < minHits) problems.push(`only ${w.heap.cacheHits} cache hits (< ${minHits})`)
+      if (w.heap.allocCount <= 0) problems.push('allocCount did not advance')
+    }
+    record('cache:' + name, problems.length === 0, problems.join('; '))
+  } catch (e) {
+    record('cache:' + name, false, `threw: ${e instanceof Error ? e.message : String(e)}`)
+  }
+}
+
+await checkCache('range fold (counter-heavy)', 'foldl (fn a x -> a + x) 0 (range 0 500)', '124750', 500)
+await checkCache('nested loop indices', 'sum [ x | x <- range 0 100, y <- range 0 10, x % 7 == 0 ]', undefined, 200)
 
 console.log(`\nAether harness: ${pass} passed, ${fail} failed`)
 if (fail) {

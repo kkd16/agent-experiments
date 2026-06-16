@@ -134,8 +134,14 @@ every program:
   tail-call proposal (`return_call`) for the VM's constant-space recursion; arithmetic, comparison
   of numbers, list/tuple/record/ADT building and `match` all run as native WASM, while printing,
   `show`, structural comparison, string ops and the turtle are **imports that reuse the VM's own
-  code** — so the result matches the VM byte-for-byte by construction. The WebAssembly tab shows the
-  module's sections and bytes, and lets you **download the `.wasm`** to run anywhere.
+  code** — so the result matches the VM byte-for-byte by construction. The bump allocator keeps a
+  **shared small-integer cache** (one pre-built `INT` cell per value in a small range) so
+  arithmetic-heavy code reuses cells instead of boxing fresh ones — invisible to results because
+  every value is compared structurally, and the module *counts* what it does
+  (`__allocCount`/`__allocBytes`/`__cacheHits`). The module also carries a **`name` section**, and the
+  WebAssembly tab disassembles its own bytes back into readable **WAT text** — a from-scratch binary
+  *decoder* (the mirror of the encoder) that resolves every call/global/local to a `$name` — alongside
+  the module's sections, live allocation stats, and a **download for the `.wasm`** to run anywhere.
 
 ### Operators
 
@@ -191,7 +197,8 @@ source ─▶ lexer ─▶ parser ─▶ HM inference ─▶ optimizer        �
 | `src/wasm/layout.ts` | the tagged linear-memory heap layout shared by codegen and the host bridge |
 | `src/wasm/codegen.ts` | AST → WebAssembly (third backend): closure conversion, tail calls, `match` |
 | `src/wasm/bridge.ts` | host imports that decode/encode heap cells and reuse the VM's print/show/compare |
-| `src/wasm/run.ts` | assemble → instantiate → run the `.wasm`; module disassembly + hex dump |
+| `src/wasm/run.ts` | assemble → instantiate → run the `.wasm`; section summary, hex dump, heap stats |
+| `src/wasm/disasm.ts` | from-scratch WAT disassembler — decodes the emitted bytes back to readable, named WAT |
 | `src/lang/derivation.ts` | reconstructs the HM proof tree from the inferred per-node types |
 | `src/lang/values.ts` | runtime values, structural equality, upvalues |
 | `src/lang/prelude.ts` | primitive type schemes + native impls + the Aether-source library |

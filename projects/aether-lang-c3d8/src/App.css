@@ -1199,6 +1199,33 @@ body {
   max-height: 22rem;
   overflow: auto;
 }
+.wasm-wat {
+  font-size: 0.74rem;
+  line-height: 1.4;
+  max-height: 26rem;
+  overflow: auto;
+  white-space: pre;
+}
+.wasm-wat-meta {
+  color: var(--fg-dim);
+  font-weight: 400;
+}
+.wasm-wat-note {
+  margin: 0.4rem 0 0.5rem;
+}
+.wasm-func {
+  margin: 0.25rem 0;
+}
+.wasm-func > summary {
+  cursor: pointer;
+  font-family: var(--mono);
+  font-size: 0.78rem;
+  color: var(--accent);
+  padding: 0.15rem 0;
+}
+.wasm-func > .wasm-wat {
+  margin-top: 0.25rem;
+}
 .wasm-err {
   margin-top: 0.6rem;
   white-space: pre-wrap;

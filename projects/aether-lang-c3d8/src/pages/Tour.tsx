@@ -346,8 +346,13 @@ back 50.0        clear ()`}</pre>
           Closures dispatch through <code>call_indirect</code> over a bump-allocator heap, tail calls
           use the WebAssembly <code>return_call</code> proposal for constant-space recursion, and the
           inherently host-side operations (printing, <code>show</code>, comparison, the turtle) are
-          imports that reuse the VM's own code — so it too matches the VM <em>byte-for-byte</em>. You
-          can download the <code>.wasm</code> and run it anywhere.
+          imports that reuse the VM's own code — so it too matches the VM <em>byte-for-byte</em>. The
+          allocator keeps a shared <strong>small-integer cache</strong> so arithmetic-heavy code reuses
+          cells instead of boxing fresh ones (it even reports the allocations saved), and the module
+          carries a <code>name</code> section so the tab can <strong>disassemble its own bytes</strong>{' '}
+          back into readable <strong>WAT text</strong> — a from-scratch decoder, the mirror of the
+          encoder, that prints <code>call $map</code> rather than a raw index. You can download the{' '}
+          <code>.wasm</code> and run it anywhere.
         </p>
         <p>
           The <strong>Derivation</strong> tab reconstructs the Hindley–Milner <em>proof tree</em>:
