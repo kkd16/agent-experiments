@@ -242,6 +242,48 @@ export function About({ onClose }: Props) {
           honestly take over.
         </p>
 
+        <h2>Strong-field gravity: the black-hole shadow</h2>
+        <p>
+          The relativity above is all <em>weak field</em> — post-Newtonian expansions valid only
+          where <code>v/c ≪ 1</code>, far outside any horizon. The <strong>Black-Hole Lab</strong>{' '}
+          goes to the strong field, but honestly: it integrates the <em>exact</em> null geodesics of
+          the Schwarzschild metric, which for light in a plane collapse to one strikingly simple
+          equation in the inverse radius <code>u = 1/r</code>:
+        </p>
+        <p style={{ textAlign: 'center' }}>
+          <code>d²u/dφ² = −u + 3M u²</code>
+        </p>
+        <p>
+          The lone nonlinear term <code>3M u²</code> <em>is</em> general relativity — drop it and you
+          recover Newton's straight line. Keep it and light bends, orbits precess, and a{' '}
+          <strong>photon sphere</strong> appears at <code>r = 3M</code> where light can circle the
+          hole. From this one equation fall the deflection of starlight (Einstein's{' '}
+          <code>4M/b</code> far out, diverging <em>logarithmically</em> as the impact parameter
+          approaches the critical <code>b_c = 3√3 M</code>), the precession of a near-circular orbit
+          (<code>2π(1/√(1−6M/r) − 1)</code> per turn, diverging at the innermost stable orbit{' '}
+          <code>r = 6M</code>), and the size of a black hole's <strong>shadow</strong>.
+        </p>
+        <p>
+          The lab is a <strong>reverse ray tracer</strong>. For every pixel it shoots a photon
+          backward into the curved spacetime and integrates that geodesic: photons that cross the
+          horizon paint the black shadow; those that escape sample a procedural sky, so the
+          background is gravitationally <strong>lensed</strong> — the grid bends and an Einstein ring
+          forms. A thin <strong>accretion disc</strong> of gas on circular geodesics is gathered
+          along the way, with the <em>exact</em> relativistic frequency shift{' '}
+          <code>g = √(1−3M/r)/(1−Ωℓ)</code> beaming the side that rotates toward you far brighter
+          (<code>I ∝ g⁴</code>) — and the disc's far side lensed up over the top of the hole. The
+          bright ring hugging the shadow is the <strong>photon ring</strong>, light that looped the
+          photon sphere before escaping, fixed at <code>b_c = 3√3 M</code> for any observer.
+        </p>
+        <p>
+          A <strong>rotating</strong> (Kerr) black hole drags space around itself, so its shadow is
+          not a circle but a <strong>D-shape</strong>, flattened and displaced on the co-rotating
+          side. The lab draws that boundary in closed form from the unstable spherical photon orbits
+          (Bardeen 1973), reducing to the <code>3√3 M</code> circle as the spin vanishes. The full
+          ray-traced rotating image — needing Carter-constant geodesics — is left for a later
+          session; this ships the exact analytic rim.
+        </p>
+
         <h2>Run the numbers yourself</h2>
         <p>
           None of the above is taken on faith. The button below runs a battery of numerical checks in
@@ -254,7 +296,14 @@ export function About({ onClose }: Props) {
           closed-form GR formula reproducing Mercury's 43″/century — and that a radiation-reaction
           inspiral reproduces Peters' gravitational-wave merger time, radiates at twice the orbital
           frequency, circularises an eccentric orbit on schedule, and carries the quadrupole
-          formula's exact <code>(1+cos²ι)</code> polarisation pattern.
+          formula's exact <code>(1+cos²ι)</code> polarisation pattern. The strong-field battery adds
+          the rest: that the shadow's critical impact parameter is <code>3√3 M</code> (the closed
+          form cross-checked against a bisection of the ray tracer itself), that the photon sphere
+          sits at <code>3M</code> and the ISCO at <code>6M</code>, that light deflection tends to
+          Einstein's <code>4M/b</code> and diverges logarithmically (matching Bozza 2002) at{' '}
+          <code>b_c</code>, that the exact orbit equation reproduces the <code>2π(1/√(1−6M/r)−1)</code>{' '}
+          precession, that the disc redshift is exactly <code>√½</code> at the ISCO, and that the
+          Kerr shadow collapses to the <code>3√3 M</code> circle as its spin vanishes.
         </p>
         <div className="selftest">
           <button type="button" className="btn primary" onClick={runTests} disabled={running}>
@@ -291,6 +340,8 @@ export function About({ onClose }: Props) {
           <li>Open <em>GR Precession</em>, turn on motion trails, and watch the eccentric orbits wind into rosettes — then press <code>g</code> to switch relativity off and see them snap back to closed ellipses.</li>
           <li>Open the <em>Relativity Lab</em>, lower <em>c</em>, and press <em>Measure precession</em> — read the integrated advance against the exact 6πμ/(c²a(1−e²)), and see Mercury's real 43″/century.</li>
           <li>Open the <em>Wave Lab</em>, press <em>Generate inspiral</em>, and watch two bodies spiral together as they radiate — then press <em>Hear the chirp</em> to listen to the merger. Push the eccentricity up and watch the orbit circularise; check the measured merger time against Peters' formula.</li>
+          <li>Open the <em>Black Hole Lab</em>, press <em>Render black hole</em>, and watch the shadow, the lensed sky grid and the Doppler-beamed disc trace out row by row — then set the inclination near 90° to see the disc's far side lensed up over the top, the <em>Interstellar</em> image.</li>
+          <li>In the <em>Black Hole Lab</em>, drag the Kerr <em>spin</em> up toward 1 and watch the shadow morph from a circle into the lopsided D-shape, flattening on the side space is dragged toward you.</li>
           <li>Click a planet in <em>Solar System</em> to read its orbital energy, then <em>Share</em> a permalink to your setup.</li>
         </ul>
 

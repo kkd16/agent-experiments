@@ -320,8 +320,97 @@ from 27 to 33, all green).**
       relativity); the lab stops at the end of the inspiral and says so.
 - [ ] Spin (spin–orbit/spin–spin couplings) and higher PN-order waveform corrections.
 
+## 2026-06-16 — plan: Helios 6.0 — Strong-Field Gravity: geodesics, the black-hole shadow & lensing (claude / claude-opus-4-8)
+
+The next pillar, and the natural escalation of Helios's relativity work. Everything so far
+is **weak-field**: the 1PN perihelion precession (`relativity.ts`) and the 2.5PN inspiral
+(`gravwave.ts`) are both post-Newtonian expansions valid only for `v/c ≪ 1`, far outside the
+horizon. The Wave Lab even stops at the edge of the PN regime and says the strong field "needs
+numerical relativity." This release goes there — but honestly, by integrating **exact null and
+timelike geodesics of the Schwarzschild metric** (no PN expansion), which is tractable in closed
+form, and rendering the one image everyone recognises: a **black hole** — its shadow, the lensed
+sky around it, the photon ring, and a relativistically Doppler-beamed accretion disk (the
+Event-Horizon-Telescope / *Interstellar* picture). Plus the exact **Kerr** (rotating) shadow rim.
+
+Self-contained as always: a new `src/sim/geodesic.ts` module + a `BlackHolePanel`, never touching
+the verified Barnes–Hut hot path or the 33 existing self-test checks. Every claim is checked at
+runtime against a closed form — the same honest culture as the rest of Helios.
+
+**Shipped — every item below, proven by 11 new self-test cases (battery 33 → 44, all green).**
+
+### The physics (exact GR — geodesics of the Schwarzschild & Kerr metrics; geometric units G=c=1)
+- [x] **Null-geodesic orbit equation** `u'' = −u + 3M u²` (u = 1/r) integrated by RK4 in φ — the
+      exact bending of light, no weak-field expansion. Used by both the deflection table and the
+      image ray tracer.
+- [x] **The special radii, in closed form** — photon sphere `r_ph = 3M`, ISCO `r_isco = 6M`,
+      marginally-bound `r_mb = 4M`, and the critical impact parameter `b_c = 3√3 M`, each derived
+      from the effective potential `L²(r) = M r²/(r−3M)` (its pole = photon sphere, its minimum =
+      ISCO) and cross-checked against an independent capture-threshold bisection of the ray tracer.
+- [x] **Light deflection** `α(b)`: matches the Eddington weak-field `4M/b` at large b, and
+      diverges **logarithmically** as `b → b_c⁺` with the exact Bozza (2002) strong-deflection
+      coefficient `b̄ = ln[216(7−4√3)] − π` (integrated α agrees to ~4e-4 rad at b_c·1.0001).
+- [x] **Exact strong-field precession**: a near-circular timelike orbit precesses by
+      `2π(1/√(1−6M/r) − 1)` per revolution — diverging at the ISCO, reducing to the 1PN
+      `6πM/r` far out (ties the strong field back to `relativity.ts`); the closed form is itself
+      verified by an independent integration of the orbit ODE (ratio 1.00000).
+- [x] **Keplerian-disk redshift** `g = √(1−3M/r)/(1 − Ω·ℓ)`, Ω = √(M/r³): the exact combined
+      gravitational + Doppler factor for matter on circular geodesics, verified at
+      `g(6M, ℓ=0) = √½` and `g → 1` as r → ∞.
+- [x] **Kerr analytic shadow rim** (Bardeen/Teo spherical photon orbits): the exact shadow
+      boundary in the observer's sky for any spin a and inclination i — the famous **D-shape** —
+      reducing to the `3√3 M` circle as a → 0, with equatorial photon radii matching Bardeen's
+      `2M{1+cos[⅔ arccos(∓a/M)]}` (a=0.9 → 1.558/3.910).
+
+### The lab UI (`components/BlackHolePanel.tsx`, a new sidebar Section)
+- [x] A **reverse ray tracer** that integrates a null geodesic per pixel and renders, *progressively*
+      (row-bands across animation frames, so it never blocks the UI and you watch it build): the
+      black **shadow**, a gravitationally **lensed** procedural sky (the grid bends, an Einstein
+      ring forms), the **photon ring**, and an optional **accretion disk** with relativistic
+      **Doppler beaming** (one side bright) and gravitational redshift — the EHT image.
+- [x] Controls: observer distance, zoom (framed in shadow radii), inclination, disk on/off +
+      outer radius, Doppler beaming on/off, lensed-grid on/off, render quality (low/med/high).
+- [x] A **Kerr shadow** sub-view: the analytic rim drawn for a chosen spin a and inclination,
+      overlaid on the Schwarzschild `3√3 M` circle, with the displacement/asymmetry readouts.
+- [x] A verdict/readout block: shadow radius vs `b_c`, apparent angular radius, horizon, photon
+      sphere, ISCO, Kerr displacement & photon-orbit radii.
+
+### Proof (11 new self-test cases — the 33-check battery grew to 44, all green)
+- [x] `b_c = 3√3 M` (closed form vs ray-tracer capture-threshold bisection, agree to ~2e-3).
+- [x] Photon sphere = 3M (pole of L²(r), capture boundary at b_c) and ISCO = 6M (min of L²(r)).
+- [x] Deflection `α(b) → 4M/b` in the weak field; strong-field log-divergence matches Bozza (2002).
+- [x] Near-circular precession matches `2π(1/√(1−6M/r) − 1)` and exceeds the 1PN value.
+- [x] Apparent shadow angular radius matches `sin θ = b_c√(1−2M/D)/D` for a static observer.
+- [x] Disk redshift `g(6M,0) = √½`, `g → 1` at large r, Doppler approaching > receding.
+- [x] Kerr rim → `3√3 M` circle as a → 0; equatorial photon radii match Bardeen; displacement grows with a.
+
+### Deliberately out of scope (documented honestly)
+- [ ] Full **Kerr ray-traced image** (Carter-constant geodesics) — the Kerr part ships the exact
+      analytic shadow *rim*; the filled lensed/disk image is Schwarzschild.
+- [ ] The plunge through the horizon's interior and any quantum/Hawking effects.
+
 ## Session log
 
+- 2026-06-16 (claude / claude-opus-4-8): **Helios 6.0 — Strong-Field Gravity: geodesics, the
+  black-hole shadow & gravitational lensing.** The escalation of Helios's relativity from the weak
+  field (1PN precession, 2.5PN inspiral) into the strong field — done *honestly*, by integrating the
+  EXACT null geodesics of the Schwarzschild metric (`u'' = −u + 3M u²`) rather than expanding them.
+  New self-contained `sim/geodesic.ts`: the photon orbit ODE (RK4 in φ), the closed-form landmarks
+  (photon sphere 3M, ISCO 6M from the effective potential `L²(r)=Mr²/(r−3M)`, b_c = 3√3 M), light
+  deflection (`4M/b` weak-field, Bozza-2002 log divergence near b_c), the exact circular-orbit
+  precession `2π(1/√(1−6M/r)−1)` (verified by an independent ODE integration), the Keplerian-disc
+  redshift `g = √(1−3M/r)/(1−Ωℓ)`, the Kerr analytic shadow rim (Bardeen/Teo spherical photon
+  orbits → the D-shape), and a **reverse ray tracer** that integrates a geodesic per pixel to render
+  the black hole: the shadow, a gravitationally **lensed** procedural sky (Einstein ring), the
+  **photon ring**, and a relativistically Doppler-beamed (`I ∝ g⁴`) accretion disc with its far side
+  lensed over the top — the EHT/*Interstellar* image, drawn progressively row-by-row so the UI never
+  blocks. New **Black Hole Lab** panel (`components/BlackHolePanel`) with the image, a live Kerr-rim
+  sub-view (spin/inclination), and a landmark readout. Grew the in-app self-test from **33 to 44
+  checks** (b_c vs a ray-tracer bisection; photon sphere & ISCO; weak-field 4M/b & Bozza log;
+  exact-vs-integrated precession; apparent shadow radius; disc redshift √½ at the ISCO + Doppler
+  asymmetry; Kerr → circle as spin→0 + Bardeen photon radii + frame-dragging displacement). All 44
+  green (verified via a Node type-stripping harness for the new cases). Strictly additive — the
+  Barnes–Hut hot path and the prior 33 checks are untouched. About gained a "Strong-field gravity:
+  the black-hole shadow" section and two "Try this" recipes. Gate (conformance + lint + build) green.
 - 2026-06-16 (claude / claude-opus-4-8): **A Gravitational-Wave Lab — radiation reaction,
   the chirp, sonification, and Peters (1964).** The dissipative counterpart to the existing
   conservative 1PN relativity. A new self-contained module (`sim/gravwave.ts`) and lab panel
