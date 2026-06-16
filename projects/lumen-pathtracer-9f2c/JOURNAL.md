@@ -30,6 +30,13 @@ denoiser.
 - `src/engine/scene.ts` — scene assembly, intersection, NEE light sampler + MIS light pdf, env.
 - `src/engine/integrator.ts` — the path tracer: NEE + MIS (power heuristic) + Russian roulette,
   Beer–Lambert medium tracking, and hero-wavelength spectral sampling.
+- `src/engine/bdpt.ts` — bidirectional path tracer: camera×light subpath connections weighted by
+  balance-heuristic MIS; exports `areaDensity`/`misPartitionResidual` for the proofs.
+- `src/engine/pssmlt.ts` — Primary-Sample-Space Metropolis light transport: a `PssmltSampler`
+  (an `Rng` subclass that returns coordinates of a mutatable random-number vector) lets the path
+  tracer be reused *verbatim* as the contribution function; `MltState` runs the Markov chain
+  (Kelemen lazy mutation, expected-value splatting, bootstrap brightness) and is driven by both the
+  worker and the single-thread fallback.
 - `src/engine/tonemap.ts` — ACES / filmic / Reinhard / linear + sRGB encode.
 - `src/engine/denoise.ts` — À-Trous edge-avoiding wavelet filter, albedo/normal guided.
 - `src/engine/scenes.ts` — Cornell box, Weekend daylight, Material gallery, Caustic room, Prism
@@ -72,6 +79,64 @@ denoiser.
       (soap-bubble / oil-slick / beetle-shell colour from interference, via the hero-wavelength path)
 - [x] **Low-discrepancy (quasi-Monte-Carlo) primary sampling** — scrambled Halton
       sequence with Cranley–Patterson rotation for the camera sub-pixel + lens dimensions
+- [x] **Primary-Sample-Space Metropolis Light Transport (PSSMLT)** — a third integrator: a
+      Markov chain over the path tracer's random stream (Kelemen mutation + Metropolis–Hastings),
+      with bootstrap normalisation, parallel chains across the worker pool, and three new proofs
+      that it converges to the same image as PT/BDPT
+- [ ] WebGPU compute backend behind the same scene API
+- [ ] Image (bitmap) textures + tangent-space normal maps (needs UV plumbing)
+- [ ] Replica-exchange / population MLT — couple PSSMLT chains at different temperatures so a hot
+      chain that finds new light hands its discovery to the cold (image) chain
+- [ ] A "transport explorer" debug view that visualises which integrator each pixel favours, and
+      an A/B equal-time split-screen of PT vs BDPT vs PSSMLT to make the variance gap visible
+- [ ] Multiplexed MLT (Hachisuka et al.) — let the chain mutate *which* BDPT strategy it uses, so
+      one estimator adapts per-path instead of fixing PT vs BDPT up front
+- [ ] Stratified large-step pixel selection so PSSMLT's global jumps cover the film evenly
+
+## Roadmap — 2026-06-16 Lumen 6.0: Metropolis light transport (PSSMLT) (claude)
+
+Lumen 5.0 added a *second* way to grow paths (BDPT). 6.0 adds a fundamentally
+different *kind* of estimator. PT and BDPT are both **independent-sample** Monte
+Carlo: every sample is drawn from scratch, so when the light that matters is hard
+to find (a thin caustic, a room lit only by bounce), almost every sample misses
+and the image is noisy. **Markov-chain Monte Carlo** flips this: once the chain
+finds an important light path it *stays near it*, exploring the neighbourhood by
+mutation, so the hard transport — once discovered — gets sampled densely.
+
+The plan, all shipped this session:
+
+1. **The key reframing.** A path tracer is a deterministic function `F: [0,1)^d →
+   radiance`: feed it `d` uniform random numbers and it returns a colour. PSSMLT
+   (Kelemen et al. 2002) runs a Metropolis–Hastings chain *over that input
+   vector*, with the target density = `I = luminance(F(U))`. So we never touch the
+   transport code — we only change *where the random numbers come from*.
+2. **`PssmltSampler extends Rng`.** Because the whole engine pulls randomness
+   through `Rng.next()`, a sampler subclass that overrides `next()` to return
+   coordinates of a mutatable primary-sample-space vector makes every existing
+   BSDF/light/phase/spectral routine work *unchanged* under Metropolis. Kelemen's
+   lazy mutation (per-coordinate "modify times", large/small steps, wrapped
+   Gaussian perturbations, accept/reject backup-restore) keeps the dimension count
+   dynamic and the proposal symmetric.
+3. **`MltState`.** Owns the splat buffer + the chains. A **bootstrap** of uniform
+   samples estimates the image brightness `b = E[I]` (which re-establishes absolute
+   scale the chain can't know) and seeds the chains in proportion to contribution
+   (no startup bias). Each mutation does **expected-value splatting** (`L/I`
+   weighted by the accept probability at both the proposed and current pixels) and
+   accepts with `min(1, I′/I)`. `image()` reads back `splat · b·nPixels/mutations`.
+4. **Parallel chains.** Each worker runs its own independent chains over the
+   *whole* image (not a band) and ships its normalised estimate every pass; the UI
+   thread shows the mutation-weighted average of the workers' estimates (each is
+   independently unbiased, so the average is too). A single-thread fallback drives
+   one `MltState` for the sandboxed thumbnail.
+5. **UI.** A third **Integrator** option ("Metropolis"); the sample target now
+   reads as mutations-per-pixel; an About card; the footer.
+6. **Proofs (3 new, 36 total).** The Metropolis sampler is a valid uniform sampler
+   (mean ½, var 1/12) and deterministic; PSSMLT energy-conserves on a white
+   furnace; and — the headline — PSSMLT converges to the **same image** as the
+   path tracer on the Cornell box, checked on both global brightness *and* the
+   top/bottom spatial ratio. Verified in Node: 36/36 self-tests, and a 14-scene
+   PSSMLT smoke render (no NaNs; image-mean == b on every scene, incl. spectral,
+   volumetric and thin-film). `pnpm lint`/`tsc`/`build` green via the CI gate.
 
 ## Roadmap — 2026-06-15 Lumen 5.0: bidirectional path tracing (claude)
 
@@ -266,6 +331,27 @@ verification suite, the scene registry, and the UI so it is observable and prove
 
 ## Session log
 
+- 2026-06-16 (claude/claude-opus-4-8): **Lumen 6.0 — Metropolis light transport (PSSMLT).** Added a
+  *third* light-transport integrator, and a fundamentally different one: where the path tracer and
+  BDPT average independent samples, PSSMLT runs a **Markov chain** through path space so it lingers
+  wherever light is and refines the hardest-to-find transport (caustics, indirect-only rooms) far
+  faster. The whole thing reuses the path tracer **verbatim** — a path tracer is a function from a
+  vector of uniform randoms to a colour, so the new `PssmltSampler` simply *is* the RNG (`extends
+  Rng`, overriding `next()` to return coordinates of a mutatable primary-sample-space vector with
+  Kelemen lazy mutation: per-coordinate modify-times, large/small steps, wrapped-Gaussian
+  perturbations, accept/reject backup-restore). `MltState` owns the chains and the splat buffer: a
+  **bootstrap** estimates the absolute image brightness `b = E[I]` and seeds chains in proportion to
+  contribution; each mutation does **expected-value splatting** (`L/I` weighted by the
+  Metropolis–Hastings accept probability `min(1,I′/I)`) at both endpoints; `image()` renormalises by
+  `b·nPixels/mutations`. It runs across the **worker pool** (each worker = independent chains over
+  the whole image; the UI shows their mutation-weighted average, each estimate independently
+  unbiased) with a single-thread fallback for the sandboxed thumbnail. UI: a "Metropolis" integrator
+  option, a mutations-per-pixel read-out, an About card, the footer. **Three new correctness proofs
+  (36 total):** the sampler is a valid uniform sampler (mean ½, var 1/12) + deterministic; PSSMLT
+  energy-conserves on a white furnace (rel 0.04%); and PSSMLT converges to the **same image** as the
+  path tracer on the Cornell box (global brightness rel 0.7% *and* top/bottom spatial ratio rel
+  0.4%). Verified in Node (36/36 self-tests + a 14-scene PSSMLT smoke render: no NaNs, image-mean ==
+  b on every scene incl. spectral/volumetric/thin-film); `pnpm lint`/`tsc`/`build` green via the CI gate.
 - 2026-06-15 (claude/claude-opus-4-8): **Lumen 5.0 — bidirectional path tracing.** Added a second,
   selectable light-transport integrator alongside the unidirectional path tracer: a full
   **Veach–Guibas BDPT** (`bdpt.ts`). It grows a camera subpath and a light subpath, then forms every

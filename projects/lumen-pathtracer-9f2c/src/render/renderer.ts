@@ -12,6 +12,7 @@ import { Rng } from '../engine/rng'
 import { halton23, halton57, pixelOffset } from '../engine/qmc'
 import { integrate } from '../engine/integrator'
 import type { GBuffer, RayStats } from '../engine/integrator'
+import { MltState, DEFAULT_MLT } from '../engine/pssmlt'
 import { tonemapToBytes, noiseToBytes } from '../engine/tonemap'
 import { denoise } from '../engine/denoise'
 import type { DenoiseParams } from '../engine/denoise'
@@ -56,6 +57,7 @@ export interface RenderStats {
   noise: number // mean relative error across the image (0 = converged)
   converged: number // fraction of bands that hit the adaptive threshold
   done: boolean
+  integrator: 'pt' | 'bdpt' | 'pssmlt'
 }
 
 const GBUFFER_PASSES = 16 // accumulate denoise guides over the first N samples
@@ -107,6 +109,14 @@ export class Renderer {
   private stRng = new Rng(1)
   private stRow = 0
   private stSample = 0
+
+  // PSSMLT mode: each worker reports a full-frame estimate; we hold the latest
+  // from each and display their mutation-weighted average. (Single-thread MLT
+  // drives one `stMlt` directly.)
+  private mltImages: (Float32Array | null)[] = []
+  private mltMpp: number[] = []
+  private mltB: number[] = []
+  private stMlt: MltState | null = null
 
   onStats: (s: RenderStats) => void = () => {}
 
@@ -161,6 +171,20 @@ export class Renderer {
     return this.mode
   }
 
+  private isMlt(): boolean {
+    return this.settings.integrator === 'pssmlt'
+  }
+
+  // PSSMLT progress is measured in mutations-per-pixel; the slowest worker (or the
+  // single-thread chain) sets the headline figure, compared against the spp target.
+  private mltMinMpp(): number {
+    if (this.stMlt) return this.stMlt.mutationsPerPixel
+    if (this.mltMpp.length === 0) return 0
+    let m = Infinity
+    for (let i = 0; i < this.mltMpp.length; i++) m = Math.min(m, this.mltMpp[i])
+    return m === Infinity ? 0 : m
+  }
+
   // ---- lifecycle -------------------------------------------------------------
 
   // (Re)start a fresh render of the current scene at the current resolution.
@@ -201,6 +225,10 @@ export class Renderer {
     this.denoiseCache = null
     this.stRow = 0
     this.stSample = 0
+    this.mltImages = []
+    this.mltMpp = []
+    this.mltB = []
+    this.stMlt = null
   }
 
   // ---- worker pool -----------------------------------------------------------
@@ -237,6 +265,9 @@ export class Renderer {
     this.inFlight = new Array(created.length).fill(false)
     this.bandSamples = new Array(created.length).fill(0)
     this.bandConverged = new Array(created.length).fill(false)
+    this.mltImages = new Array(created.length).fill(null)
+    this.mltMpp = new Array(created.length).fill(0)
+    this.mltB = new Array(created.length).fill(0)
     const seed = (Math.random() * 0xffffffff) >>> 0
 
     created.forEach((w, i) => {
@@ -289,6 +320,19 @@ export class Renderer {
     this.bandSamples = [0]
     this.bandConverged = [false]
     this.bands = [{ start: 0, end: this.height }]
+    if (this.isMlt()) {
+      // A modest bootstrap keeps the sandboxed/thumbnail path responsive.
+      const nBootstrap = Math.min(20000, Math.max(6000, Math.round(this.width * this.height * 0.25)))
+      this.stMlt = new MltState(
+        this.stScene,
+        this.stCamera,
+        this.settings,
+        this.width,
+        this.height,
+        (Math.random() * 0xffffffff) >>> 0,
+        { ...DEFAULT_MLT, nChains: 4, nBootstrap },
+      )
+    }
     this.readyMeta = {
       type: 'ready',
       buildMs: this.stScene.buildMs,
@@ -305,6 +349,15 @@ export class Renderer {
       this.dispatchPass(index)
       return
     }
+    if (msg.type === 'mltDone') {
+      this.mltImages[index] = new Float32Array(msg.image)
+      this.mltMpp[index] = msg.mpp
+      this.mltB[index] = msg.b
+      this.totalRays += msg.rays
+      this.inFlight[index] = false
+      if (this.running && this.shouldDispatch(index)) this.dispatchPass(index)
+      return
+    }
     this.accumulatePass(msg)
     this.inFlight[index] = false
     if (this.running && this.shouldDispatch(index)) {
@@ -317,6 +370,7 @@ export class Renderer {
   // threshold after a warm-up). A converged band stops accruing samples while the
   // pool's still-noisy bands keep refining toward the target.
   private shouldDispatch(index: number): boolean {
+    if (this.isMlt()) return this.mltMpp[index] < this.targetSpp
     if (this.bandSamples[index] >= this.targetSpp) return false
     if (this.adaptive.enabled && this.bandSamples[index] >= ADAPT_WARMUP) {
       if (this.bandRelError(index) < this.adaptive.threshold) {
@@ -330,6 +384,12 @@ export class Renderer {
 
   private dispatchPass(index: number): void {
     if (!this.running) return
+    if (this.isMlt()) {
+      if (this.mltMpp[index] >= this.targetSpp) return
+      this.inFlight[index] = true
+      this.workers[index].postMessage({ type: 'pass', sampleIndex: 0, captureGBuffer: false } as ToWorker)
+      return
+    }
     const sampleIndex = this.bandSamples[index]
     if (sampleIndex >= this.targetSpp) return
     this.inFlight[index] = true
@@ -380,6 +440,18 @@ export class Renderer {
   // Render a slice of work synchronously, budgeted to keep the frame responsive.
   private tickSingleThread(): void {
     if (!this.stScene || !this.stCamera) return
+    // PSSMLT single-thread: step the chain within a frame time budget.
+    if (this.isMlt()) {
+      if (!this.stMlt || this.stMlt.mutationsPerPixel >= this.targetSpp) return
+      const stepBatch = Math.max(256, Math.round(this.width * this.height * 0.05))
+      const budgetEnd = now() + 24
+      const before = this.stMlt.stats.rays
+      while (now() < budgetEnd && this.stMlt.mutationsPerPixel < this.targetSpp) {
+        this.stMlt.step(stepBatch)
+      }
+      this.totalRays += this.stMlt.stats.rays - before
+      return
+    }
     if (this.stSample >= this.targetSpp) return
     const scene = this.stScene
     const camera = this.stCamera
@@ -503,6 +575,10 @@ export class Renderer {
   // Build the averaged HDR buffer, optionally denoise, tone-map, and blit.
   private composite(): void {
     if (!this.image) return
+    if (this.isMlt()) {
+      this.compositeMlt()
+      return
+    }
     const minSamples = this.minSamples()
     if (minSamples <= 0 && this.stSample === 0) {
       // Nothing rendered yet — clear to dark so the canvas is not garbage.
@@ -532,6 +608,40 @@ export class Renderer {
     let display: Float32Array = this.avg
     if (this.display.denoiseEnabled) display = this.maybeDenoise()
     tonemapToBytes(display, this.out, this.display.exposure, this.display.tonemap)
+    this.image.data.set(this.out)
+    this.ctx.putImageData(this.image, 0, 0)
+  }
+
+  // PSSMLT compositing: form the displayed HDR buffer by averaging the workers'
+  // independent full-frame estimates (weighted by how far each chain has run), or
+  // read it straight from the single-thread chain. No denoise/heatmap: MLT keeps
+  // no per-sample variance, and its own correlation structure differs from MC.
+  private compositeMlt(): void {
+    if (!this.image) return
+    const n = this.avg.length
+    const haveAny = this.stMlt !== null || this.mltImages.some((m) => m !== null)
+    if (!haveAny) {
+      this.out.fill(0)
+      for (let i = 3; i < this.out.length; i += 4) this.out[i] = 255
+      this.image.data.set(this.out)
+      this.ctx.putImageData(this.image, 0, 0)
+      return
+    }
+    if (this.stMlt) {
+      this.stMlt.image(this.avg)
+    } else {
+      this.avg.fill(0)
+      let totalW = 0
+      for (let i = 0; i < this.mltImages.length; i++) {
+        const img = this.mltImages[i]
+        if (!img) continue
+        const w = Math.max(1e-6, this.mltMpp[i])
+        for (let k = 0; k < n; k++) this.avg[k] += img[k] * w
+        totalW += w
+      }
+      if (totalW > 0) for (let k = 0; k < n; k++) this.avg[k] /= totalW
+    }
+    tonemapToBytes(this.avg, this.out, this.display.exposure, this.display.tonemap)
     this.image.data.set(this.out)
     this.ctx.putImageData(this.image, 0, 0)
   }
@@ -588,15 +698,17 @@ export class Renderer {
 
   private emitStats(): void {
     const elapsed = now() - this.startTime
-    const samples = this.minSamples()
+    const mlt = this.isMlt()
+    const samples = mlt ? Math.floor(this.mltMinMpp()) : this.minSamples()
     // A render is finished when every band has either reached the target sample
-    // count or been declared converged by adaptive sampling.
+    // count or been declared converged by adaptive sampling (PSSMLT: when the
+    // slowest chain has run the target mutations-per-pixel).
     const nBands = this.bands.length || 1
-    const convergedCount = this.bandConverged.filter(Boolean).length
+    const convergedCount = mlt ? 0 : this.bandConverged.filter(Boolean).length
     const allSettled =
       this.bandSamples.length > 0 &&
       this.bandSamples.every((s, i) => s >= this.targetSpp || this.bandConverged[i])
-    const done = samples >= this.targetSpp || allSettled
+    const done = mlt ? this.mltMinMpp() >= this.targetSpp : samples >= this.targetSpp || allSettled
     if (done) this.running = false
     this.onStats({
       samples,
@@ -612,6 +724,7 @@ export class Renderer {
       noise: this.meanNoise,
       converged: convergedCount / nBands,
       done,
+      integrator: this.settings.integrator ?? 'pt',
     })
   }
 

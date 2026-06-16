@@ -101,15 +101,16 @@ export function Controls(props: {
       )}
 
       <Panel title="Sampling" subtitle="Quality vs. speed">
-        <Segmented<'pt' | 'bdpt'>
+        <Segmented<'pt' | 'bdpt' | 'pssmlt'>
           label="Integrator"
           value={state.integrator}
           onChange={(v) => set('integrator', v)}
           options={[
             { value: 'pt', label: 'Path Tracer' },
             { value: 'bdpt', label: 'Bidirectional' },
+            { value: 'pssmlt', label: 'Metropolis' },
           ]}
-          hint="Path Tracer grows paths from the camera (NEE+MIS). Bidirectional also grows a path from a light and connects the two — far cleaner for indirect-lit scenes (try Cove). Both converge to the same image."
+          hint="Path Tracer grows paths from the camera (NEE+MIS). Bidirectional also grows a path from a light and connects the two — cleaner for indirect-lit scenes (try Cove). Metropolis (PSSMLT) runs a Markov chain over the path tracer's random stream, so it locks onto the hardest-to-find light and refines the whole frame at once. All three converge to the same image. With Metropolis the sample target counts mutations-per-pixel."
         />
         <Segmented
           label="Resolution"

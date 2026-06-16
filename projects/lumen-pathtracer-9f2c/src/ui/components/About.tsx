@@ -10,7 +10,9 @@ export function About() {
         Lumen is a physically based <strong>Monte-Carlo path tracer</strong> written from scratch in
         TypeScript — no WebGL, no GPU, no third-party math. It numerically solves the rendering
         equation by tracing thousands of random light paths per pixel and averaging their
-        contributions, converging to a photorealistic image.
+        contributions, converging to a photorealistic image. It ships <strong>three</strong>{' '}
+        light-transport integrators — a unidirectional path tracer, a bidirectional path tracer, and
+        primary-sample-space Metropolis — that provably converge to the <em>same</em> image.
       </p>
 
       <div className="about-grid">
@@ -36,6 +38,20 @@ export function About() {
           ways and checking the means agree, and proves the MIS weights form a partition of unity. Try
           the <em>Cove</em> scene and flip the <strong>Integrator</strong> control: same image, a
           fraction of the noise.
+        </Card>
+        <Card title="Metropolis light transport (PSSMLT)">
+          The path tracer and BDPT both <em>average</em> independent samples. Lumen's third integrator
+          instead runs a <strong>Markov chain</strong> through path space. A path tracer is just a
+          function from a vector of random numbers to a colour, so PSSMLT (Kelemen et al.) mutates{' '}
+          <em>that very random stream</em> — small local nudges and occasional global jumps — and
+          accepts each mutation with the Metropolis rule, probability <code>min(1, I′/I)</code>. The
+          chain then lingers wherever light is, so it locks onto the hardest-to-find transport (a thin
+          caustic, a room lit only by a sliver of bounce) and refines the entire frame at once. A
+          one-time <em>bootstrap</em> re-establishes absolute brightness, and the result is the same
+          unbiased image — the <strong>Verify</strong> tab renders the Cornell box with both the path
+          tracer and PSSMLT and proves their luminance and spatial distribution agree. Beautifully,
+          the engine reuses the path tracer <em>verbatim</em>: the Metropolis sampler simply{' '}
+          <em>is</em> the random-number generator.
         </Card>
         <Card title="Microfacet BSDFs">
           Surfaces are Lambertian diffuse, GGX/Trowbridge-Reitz metal with height-correlated Smith

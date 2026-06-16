@@ -11,6 +11,7 @@ import { Rng } from '../engine/rng'
 import { halton23, halton57, pixelOffset } from '../engine/qmc'
 import { integrate } from '../engine/integrator'
 import type { GBuffer, RayStats } from '../engine/integrator'
+import { MltState, DEFAULT_MLT } from '../engine/pssmlt'
 import type { FromWorker, InitMsg, IntegratorSettings, ToWorker } from '../engine/types'
 
 let scene: Scene | null = null
@@ -21,6 +22,9 @@ let bandStart = 0
 let bandEnd = 0
 let settings: IntegratorSettings = { maxDepth: 8, rrStart: 4, clampIndirect: 0 }
 let rng: Rng = new Rng(1)
+// PSSMLT: each worker runs its own independent set of Markov chains over the
+// *whole* image (not a band); the UI thread averages the workers' estimates.
+let mlt: MltState | null = null
 
 function handleInit(msg: InitMsg): void {
   width = msg.width
@@ -31,6 +35,17 @@ function handleInit(msg: InitMsg): void {
   scene = new Scene(msg.scene)
   camera = new Camera(msg.scene.camera, width / height)
   rng = new Rng(msg.seed ^ (bandStart * 0x9e3779b1), bandStart + 1)
+  mlt = null
+  if (settings.integrator === 'pssmlt') {
+    // Bootstrap scales gently with resolution but stays bounded so startup is
+    // quick; chains are seeded from a per-worker seed so each is decorrelated.
+    const nBootstrap = Math.min(40000, Math.max(12000, Math.round(width * height * 0.3)))
+    mlt = new MltState(scene, camera, settings, width, height, msg.seed >>> 0, {
+      ...DEFAULT_MLT,
+      nChains: 8,
+      nBootstrap,
+    })
+  }
   const ready: FromWorker = {
     type: 'ready',
     buildMs: scene.buildMs,
@@ -39,6 +54,26 @@ function handleInit(msg: InitMsg): void {
     bvhDepth: scene.bvh.maxDepth,
   }
   post(ready, [])
+}
+
+// One PSSMLT pass: advance the chains by ~½ a mutation per pixel, then ship the
+// current normalised image back. The worker keeps its splat buffer across passes
+// so the estimate refines progressively.
+function handleMltPass(): void {
+  if (!mlt) return
+  const before = mlt.stats.rays
+  const steps = Math.max(1, Math.round(width * height * 0.5))
+  mlt.step(steps)
+  const img = mlt.image() // a fresh Float32Array we can hand off by transfer
+  const buf = img.buffer as ArrayBuffer
+  const done: FromWorker = {
+    type: 'mltDone',
+    image: buf,
+    mpp: mlt.mutationsPerPixel,
+    rays: mlt.stats.rays - before,
+    b: mlt.brightness,
+  }
+  post(done, [buf])
 }
 
 function handlePass(sampleIndex: number, captureGBuffer: boolean): void {
@@ -108,7 +143,8 @@ self.onmessage = (ev: MessageEvent<ToWorker>) => {
       handleInit(msg)
       break
     case 'pass':
-      handlePass(msg.sampleIndex, msg.captureGBuffer)
+      if (mlt) handleMltPass()
+      else handlePass(msg.sampleIndex, msg.captureGBuffer)
       break
     case 'reset':
       break
