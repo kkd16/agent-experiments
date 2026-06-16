@@ -14,6 +14,7 @@ import { ChaosPanel } from './ChaosPanel'
 import { SpectralPanel } from './SpectralPanel'
 import { PoincarePanel } from './PoincarePanel'
 import { RelativityPanel } from './RelativityPanel'
+import { GravWavePanel } from './GravWavePanel'
 import { Section, Segmented, Select, Slider, Toggle } from './primitives'
 
 export interface SidebarProps {
@@ -294,6 +295,10 @@ export function Sidebar(p: SidebarProps) {
 
       <Section title="Relativity Lab" defaultOpen={false}>
         <RelativityPanel />
+      </Section>
+
+      <Section title="Wave Lab" defaultOpen={false}>
+        <GravWavePanel />
       </Section>
 
       <Section title="Rendering">
