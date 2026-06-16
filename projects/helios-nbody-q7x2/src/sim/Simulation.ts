@@ -6,6 +6,7 @@
 // angular momentum) are computed on demand to verify integrator quality.
 
 import { Quadtree } from './Quadtree'
+import { grAccel } from './relativity'
 import type { Diagnostics, IntegratorId, SimParams } from './types'
 
 export class Simulation {
@@ -47,6 +48,8 @@ export class Simulation {
     integrator: 'velocity-verlet',
     collide: false,
     collisionScale: 0.8,
+    gr: false,
+    c: 1000,
   }
 
   /** Total simulated time elapsed. */
@@ -149,13 +152,20 @@ export class Simulation {
 
   /**
    * Compute accelerations for the current positions into `outX`/`outY`. Rebuilds
-   * the Barnes–Hut tree from the current positions first.
+   * the Barnes–Hut tree from the current positions first. When the 1PN
+   * relativistic correction is enabled it is added on top of the Newtonian force,
+   * which is why the velocity arrays are needed — relativity, unlike Newtonian
+   * gravity, depends on velocity. They default to the live state, which is correct
+   * for the integrators whose force evaluation is at the current state; the
+   * multi-stage RK4 passes its intermediate stage velocities explicitly.
    */
   private computeAccel(
     posX: Float64Array,
     posY: Float64Array,
     outX: Float64Array,
     outY: Float64Array,
+    velX: Float64Array = this.velX,
+    velY: Float64Array = this.velY,
   ): void {
     const n = this.count
     const { theta2, eps2 } = this.ensureTheta2eps2()
@@ -168,6 +178,47 @@ export class Simulation {
       outX[i] = ax
       outY[i] = ay
     }
+    if (this.params.gr) this.addRelativisticAccel(posX, posY, velX, velY, outX, outY)
+  }
+
+  /**
+   * Add the first post-Newtonian (1PN) relativistic correction about the dominant
+   * (heaviest) body. Each other body feels the Schwarzschild "gr" correction of
+   * its motion relative to the dominant mass; the equal-and-opposite reaction is
+   * applied back to the dominant body so total momentum is conserved exactly. This
+   * is the perihelion-precession physics — see `relativity.ts`.
+   */
+  private addRelativisticAccel(
+    posX: Float64Array,
+    posY: Float64Array,
+    velX: Float64Array,
+    velY: Float64Array,
+    outX: Float64Array,
+    outY: Float64Array,
+  ): void {
+    const n = this.count
+    const c = this.params.c
+    if (n < 2 || !(c > 0) || !Number.isFinite(c)) return
+    // Dominant body = the heaviest. The correction models a body orbiting it.
+    let d = 0
+    let mm = -Infinity
+    for (let i = 0; i < n; i++) if (this.mass[i] > mm) { mm = this.mass[i]; d = i }
+    if (mm <= 0) return
+    const mu = this.params.g * mm
+    const xd = posX[d], yd = posY[d], vxd = velX[d], vyd = velY[d]
+    let axd = 0 // accumulated reaction on the dominant body (Σ −m_i a_i)
+    let ayd = 0
+    for (let i = 0; i < n; i++) {
+      if (i === d) continue
+      const [ax, ay] = grAccel(posX[i] - xd, posY[i] - yd, velX[i] - vxd, velY[i] - vyd, mu, c)
+      outX[i] += ax
+      outY[i] += ay
+      const mi = this.mass[i]
+      axd -= mi * ax
+      ayd -= mi * ay
+    }
+    outX[d] += axd / mm
+    outY[d] += ayd / mm
   }
 
   /** Ensure `accX/accY` hold valid accelerations for the current positions. */
@@ -572,7 +623,7 @@ export class Simulation {
       tmpVX[i] = velX[i] + k1x[i] * h
       tmpVY[i] = velY[i] + k1y[i] * h
     }
-    this.computeAccel(tmpX, tmpY, k2x, k2y)
+    this.computeAccel(tmpX, tmpY, k2x, k2y, tmpVX, tmpVY)
 
     // Stage 3 at t + dt/2 using k2.
     for (let i = 0; i < n; i++) {
@@ -581,7 +632,7 @@ export class Simulation {
       tmpVX[i] = velX[i] + k2x[i] * h
       tmpVY[i] = velY[i] + k2y[i] * h
     }
-    this.computeAccel(tmpX, tmpY, k3x, k3y)
+    this.computeAccel(tmpX, tmpY, k3x, k3y, tmpVX, tmpVY)
 
     // Stage 4 at t + dt using k3.
     for (let i = 0; i < n; i++) {
@@ -590,7 +641,7 @@ export class Simulation {
       tmpVX[i] = velX[i] + k3x[i] * dt
       tmpVY[i] = velY[i] + k3y[i] * dt
     }
-    this.computeAccel(tmpX, tmpY, k4x, k4y)
+    this.computeAccel(tmpX, tmpY, k4x, k4y, tmpVX, tmpVY)
 
     // Combine. The velocity slopes for position are v, v2, v3, v4 (stored in
     // tmpV* progressively); we reconstruct them inline below.

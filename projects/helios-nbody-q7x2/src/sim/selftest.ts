@@ -15,6 +15,7 @@ import { accelAndVariational, analyzeChaos } from './chaos'
 import { fft, ifft } from './fft'
 import { naff, frequencyDiffusion } from './naff'
 import { poincareSection, toRotating } from './poincare'
+import { measurePrecession, precessionTheory, mercuryArcsecPerCentury } from './relativity'
 import type { IntegratorId } from './types'
 
 export interface TestCase {
@@ -604,6 +605,137 @@ export function runSelfTest(): SelfTestReport {
       'Poincaré section conserves Jacobi',
       pass,
       `${sec.count} crossings, Jacobi spread = ${Number.isFinite(sec.jacobiSpread) ? sec.jacobiSpread.toExponential(2) : 'n/a'} (≈0)`,
+    )
+  }
+
+  // 23 — General relativity: the measured apsidal precession of a body integrated
+  // with the 1PN correction matches the closed-form Δϖ = 6πμ/(c²a(1−e²)) per
+  // orbit. Measured in a weak field (large c) so the leading-order formula is
+  // essentially exact and the agreement is tight.
+  {
+    const res = measurePrecession({ mu: 8000, a: 200, e: 0.15, c: 400, orbits: 16, stepsPerOrbit: 6000 })
+    const pass = res.valid && Number.isFinite(res.ratio) && Math.abs(res.ratio - 1) < 0.01 && res.measuredPerOrbit > 0
+    add(
+      'GR precession matches 6πμ/(c²a(1−e²))',
+      pass,
+      `measured ${(res.measuredPerOrbit * 180 / Math.PI).toFixed(4)}°/orbit vs theory ${(res.theoryPerOrbit * 180 / Math.PI).toFixed(4)}° (ratio ${res.ratio.toFixed(4)}), prograde=${res.measuredPerOrbit > 0}`,
+    )
+  }
+
+  // 24 — Newtonian limit: as c → ∞ the relativistic correction vanishes and the
+  // orbit closes (zero precession). The formula and the measurement agree at both
+  // a finite c (a clear, prograde precession) and c → ∞ (none).
+  {
+    const huge = measurePrecession({ mu: 8000, a: 120, e: 0.45, c: 1e6, orbits: 14, stepsPerOrbit: 5000 })
+    const finite = measurePrecession({ mu: 8000, a: 120, e: 0.45, c: 300, orbits: 14, stepsPerOrbit: 5000 })
+    const pass =
+      huge.valid && finite.valid &&
+      Math.abs(huge.measuredPerOrbit) < 1e-5 &&
+      finite.measuredPerOrbit > 1e-2 &&
+      precessionTheory(8000, 120, 0.45, 1e6) < 1e-6
+    add(
+      'GR vanishes in the Newtonian limit (c→∞)',
+      pass,
+      `precession: c=300 → ${(finite.measuredPerOrbit * 180 / Math.PI).toFixed(3)}°/orbit, c=10⁶ → ${huge.measuredPerOrbit.toExponential(1)} rad (≈0)`,
+    )
+  }
+
+  // 25 — The full simulation engine reproduces the precession. A star + planet
+  // two-body system integrated through the engine's own force loop (Barnes–Hut +
+  // 1PN) precesses at the predicted rate, measured by detecting the planet's
+  // periapsis passages — proof the velocity-dependent force is wired into the
+  // integrators correctly, not just the standalone reference solver.
+  {
+    const g = 1, M = 8000, m = 1, a = 120, e = 0.45, c = 130
+    const mu = g * (M + m)
+    const rp = a * (1 - e)
+    const vp = Math.sqrt((mu / a) * ((1 + e) / (1 - e)))
+    const sim = new Simulation(8)
+    sim.setBodies(
+      2,
+      Float64Array.from([0, rp]),
+      Float64Array.from([0, 0]),
+      Float64Array.from([0, 0]),
+      Float64Array.from([-(m * vp) / M, vp]),
+      Float64Array.from([M, m]),
+    )
+    sim.params = { ...sim.params, g, theta: 0, softening: 0, dt: 0.02, integrator: 'yoshida6', gr: true, c }
+    let prevRdot = 1, totalPhi = 0, prevAngle: number | null = null
+    const peri: number[] = []
+    for (let i = 0; i < 200000 && peri.length < 16; i++) {
+      sim.step()
+      const rx = sim.posX[1] - sim.posX[0], ry = sim.posY[1] - sim.posY[0]
+      const vx = sim.velX[1] - sim.velX[0], vy = sim.velY[1] - sim.velY[0]
+      const ang = Math.atan2(ry, rx)
+      if (prevAngle !== null) {
+        let d = ang - prevAngle
+        if (d > Math.PI) d -= 2 * Math.PI
+        else if (d < -Math.PI) d += 2 * Math.PI
+        totalPhi += d
+      }
+      prevAngle = ang
+      const rdot = rx * vx + ry * vy
+      if (prevRdot < 0 && rdot >= 0) peri.push(totalPhi)
+      prevRdot = rdot
+    }
+    let sum = 0
+    for (let k = 1; k < peri.length; k++) sum += peri[k] - peri[k - 1] - 2 * Math.PI
+    const measured = peri.length > 1 ? sum / (peri.length - 1) : NaN
+    const theory = precessionTheory(mu, a, e, c)
+    const ratio = measured / theory
+    // Engine integration at v/c ≈ 0.1 carries a genuine higher-order PN deficit
+    // (~3%); accept a band around the leading-order theory.
+    const pass = Number.isFinite(ratio) && ratio > 0.9 && ratio < 1.03 && peri.length >= 10
+    add(
+      'Engine integrates GR precession',
+      pass,
+      `measured ${(measured * 180 / Math.PI).toFixed(3)}°/orbit vs theory ${(theory * 180 / Math.PI).toFixed(3)}° (ratio ${ratio.toFixed(3)}) over ${peri.length} periapses`,
+    )
+  }
+
+  // 26 — Momentum is conserved with GR on. The 1PN correction applies an
+  // equal-and-opposite reaction to the dominant body, so a closed two-body system
+  // that starts with zero total momentum keeps it to machine precision.
+  {
+    const g = 1, M = 8000, m = 1, a = 120, e = 0.45, c = 130
+    const mu = g * (M + m)
+    const rp = a * (1 - e)
+    const vp = Math.sqrt((mu / a) * ((1 + e) / (1 - e)))
+    const x1 = -(m / (M + m)) * rp, x2 = (M / (M + m)) * rp
+    const vy1 = -(m / (M + m)) * vp, vy2 = (M / (M + m)) * vp
+    const sim = new Simulation(8)
+    sim.setBodies(
+      2,
+      Float64Array.from([x1, x2]),
+      Float64Array.from([0, 0]),
+      Float64Array.from([0, 0]),
+      Float64Array.from([vy1, vy2]),
+      Float64Array.from([M, m]),
+    )
+    sim.params = { ...sim.params, g, theta: 0, softening: 0, dt: 0.02, integrator: 'velocity-verlet', gr: true, c }
+    const p0 = sim.diagnostics(false)
+    for (let i = 0; i < 20000; i++) sim.step()
+    const p1 = sim.diagnostics(false)
+    const drift = Math.hypot(p1.momentumX - p0.momentumX, p1.momentumY - p0.momentumY)
+    const scale = M * vp
+    const rel = drift / scale
+    const pass = rel < 1e-12
+    add(
+      'Momentum conserved with GR (back-reaction)',
+      pass,
+      `|Δp|/(M·v_p) = ${rel.toExponential(2)} after 20000 GR steps`,
+    )
+  }
+
+  // 27 — The same formula, fed Mercury's real orbital numbers (a, e, GM_sun, c),
+  // returns the historical anomalous perihelion advance: 43″ per century.
+  {
+    const arcsec = mercuryArcsecPerCentury()
+    const pass = Math.abs(arcsec - 43) < 1.5
+    add(
+      "Mercury's perihelion advance ≈ 43″/century",
+      pass,
+      `formula on real Mercury values → ${arcsec.toFixed(2)}″/century (observed/GR ≈ 43″)`,
     )
   }
 

@@ -178,7 +178,11 @@ export default function App() {
   useEffect(() => {
     const sim = simRef.current!
     const prev = sim.params
-    const energyChanged = prev.g !== params.g || prev.softening !== params.softening
+    const energyChanged =
+      prev.g !== params.g ||
+      prev.softening !== params.softening ||
+      prev.gr !== params.gr ||
+      prev.c !== params.c
     sim.params = { ...params }
     sim.invalidateAccel()
     if (energyChanged) {
@@ -510,6 +514,8 @@ export default function App() {
         setRenderOpts((r) => ({ ...r, showOrbit: !r.showOrbit }))
       } else if (e.key === 'l') {
         setRenderOpts((r) => ({ ...r, showLagrange: !r.showLagrange }))
+      } else if (e.key === 'g') {
+        setParams((p) => ({ ...p, gr: !p.gr }))
       } else if (e.key === 'y') {
         a.runChaos()
       } else if (e.key === 'n') {

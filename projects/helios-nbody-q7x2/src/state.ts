@@ -11,6 +11,8 @@ export const DEFAULT_PARAMS: SimParams = {
   integrator: 'velocity-verlet',
   collide: false,
   collisionScale: 0.8,
+  gr: false,
+  c: 1000,
 }
 
 export const DEFAULT_RENDER: RenderOptions = {
