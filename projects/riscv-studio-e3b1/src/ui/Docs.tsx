@@ -244,6 +244,48 @@ export default function Docs() {
           </p>
         </section>
 
+        <section>
+          <h3>Microarchitecture &amp; performance (the Pipeline tab)</h3>
+          <p className="docs-intro">
+            The interpreter tells you <em>what</em> a program computes; the <strong>Pipeline</strong>{' '}
+            tab tells you roughly <em>how fast real hardware would run it</em>. It is a{' '}
+            <strong>trace-driven timing model</strong>: the functional core is left completely
+            unchanged and runs the program once to emit its retired-instruction stream, and the
+            model then schedules that exact dynamic stream through a classic{' '}
+            <strong>5-stage in-order pipeline</strong> (IF → ID → EX → MEM → WB). Because the model
+            never executes anything itself, the architectural results can never change — only the
+            timing numbers are new, and they are checked against hand-computed cycle counts in the
+            Verify suite.
+          </p>
+          <p className="docs-intro">
+            <strong>Data hazards.</strong> With <strong>forwarding</strong> on, an ALU result is
+            bypassed from the end of EX and a dependent op runs back-to-back with{' '}
+            <em>no</em> stall; a load's value is only known after MEM, so a dependent use one slot
+            later pays the unavoidable <strong>one-cycle load-use bubble</strong>. Turn forwarding
+            off and a dependent instruction instead waits for the producer to write back the
+            register file (write-before-read), costing up to two bubbles.{' '}
+            <strong>Control hazards.</strong> Every branch/jump is run through the selected{' '}
+            <strong>branch predictor</strong> — static not-taken/taken, a 1-bit, a 2-bit saturating
+            bimodal, or <strong>gshare</strong> (global history ⊕ PC) — backed by a{' '}
+            <strong>BTB</strong> for taken targets; a wrong direction <em>or</em> a wrong/unknown
+            target flushes the front end for the misprediction penalty (resolving in ID costs one
+            cycle, in EX two). The tab also replays the branch trace through{' '}
+            <em>all</em> predictors so you can compare their accuracy side by side.
+          </p>
+          <p className="docs-intro">
+            <strong>Caches.</strong> A configurable <strong>I-cache</strong> (on fetch addresses)
+            and <strong>D-cache</strong> (on load/store addresses) model size, block size,
+            associativity, LRU/FIFO replacement and write-back/allocate vs write-through; a miss
+            adds the configured penalty to the fetch or memory stage. <strong>Functional-unit
+            latency</strong> models multi-cycle EX for integer multiply/divide and floating-point
+            add/mul/div. The result is reported as total cycles, <strong>CPI/IPC</strong>, a{' '}
+            <em>where-the-cycles-go</em> breakdown (data, load-use, control, I$, D$, FU latency —
+            categories can overlap when hazards stack), cache hit/miss tables, and the textbook{' '}
+            <strong>instruction × cycle pipeline diagram</strong> where stalls show as held stages
+            and mispredicted control flow is flagged. Every knob re-runs the model instantly.
+          </p>
+        </section>
+
         {GROUPS.map((grp) => (
           <section key={grp.title}>
             <h3>{grp.title}</h3>
