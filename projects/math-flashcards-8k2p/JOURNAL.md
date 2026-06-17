@@ -11,7 +11,7 @@ live here as long as you like.
 - [x] Review history of wrong answers after speed run
 - [x] Add sound effects toggle (mute/unmute)
 - [x] Allow customizable background colors
-- [ ] Add an "Endless" mode with increasing difficulty
+- [x] Add an "Endless" mode with increasing difficulty
 - [x] Create a "sudden death" mode (one wrong answer ends the game)
 - [ ] Save full history of games played in localStorage
 - [x] Show a graph of last 10 speed run scores
@@ -63,7 +63,7 @@ live here as long as you like.
 
 ## New Ideas
 - [x] Add a visual progress indicator for streak milestones
-- [ ] Allow customizing the number pad layout
+- [x] Allow customizing the number pad layout
 - [ ] Add support for algebraic equations (e.g. 2x + 3 = 7)
 - [ ] Provide weekly and monthly challenge leaderboards locally
 - [ ] Add a subtle background particle effect
@@ -75,7 +75,7 @@ live here as long as you like.
 - [ ] Add "Review Only Mistakes" mode based on past history
 - [x] Show accuracy percentage in speed run summary
 - [x] Include a "Hardcore" mode that hides the operator until the last second
-- [ ] Add keyboard support for selecting difficulty and operations
+- [x] Add keyboard support for selecting difficulty and operations
 - [x] Provide an option to export history as CSV
 - [x] Add an animation for score counter going up
 - [x] Provide a breakdown of accuracy by operation type (e.g., Addition: 90%)
@@ -91,3 +91,14 @@ live here as long as you like.
 - [ ] Support custom difficulty scaling parameters
 - [ ] Add optional spoken answers via Web Speech API
 - [ ] Build an overview dashboard of lifetime statistics
+
+- [ ] Implement a spaced repetition algorithm (SRS) for flashcards
+- [ ] Add support for drawing answers on canvas
+- [ ] Implement a "blindfold" mode where questions are only spoken, not shown
+- [ ] Create a math bingo mini-game using solved flashcards
+- [ ] Add a daily goal tracking calendar
+- [ ] Introduce "boss battles" every 10 levels with harder multi-step math
+- [ ] Create a local 2-player split screen versus mode
+- [ ] Add an achievement/trophy cabinet display screen
+- [ ] Support complex numbers in a special university mode
+- [ ] Allow importing custom flashcard sets via JSON

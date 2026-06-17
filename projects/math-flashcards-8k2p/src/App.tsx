@@ -79,6 +79,17 @@ function getInitialStreak(): number {
 }
 
 
+
+function getInitialNumpadLayout(): 'phone' | 'calculator' {
+  try {
+    const stored = window.localStorage.getItem('mathFlashcardsNumpadLayout');
+    if (stored === 'phone' || stored === 'calculator') return stored;
+  } catch (e) {
+    console.error("Local storage error:", e);
+  }
+  return 'phone';
+}
+
 function getInitialRunScores(): RunScore[] {
   try {
     const stored = window.localStorage.getItem('mathFlashcardsRunScores');
@@ -162,7 +173,7 @@ function App() {
   const [highScore, setHighScore] = useState<number>(getInitialHighScore());
 
   const [isSpeedRunActive, setIsSpeedRunActive] = useState<boolean>(false);
-  const [gameMode, setGameMode] = useState<'time' | 'questions'>('time');
+  const [gameMode, setGameMode] = useState<'time' | 'questions' | 'endless'>('time');
   const [isSuddenDeathMode, setIsSuddenDeathMode] = useState<boolean>(false);
   const [isHardcoreMode, setIsHardcoreMode] = useState<boolean>(false);
   const [hideOperator, setHideOperator] = useState<boolean>(false);
@@ -177,6 +188,7 @@ function App() {
   const [animationClass, setAnimationClass] = useState<string>('');
   const [streakMessage, setStreakMessage] = useState<string>('');
   const [soundEnabled, setSoundEnabled] = useState<boolean>(true);
+  const [numpadLayout, setNumpadLayout] = useState<'phone' | 'calculator'>(getInitialNumpadLayout());
   const [bgColor, setBgColor] = useState<string>(() => {
     try {
       return window.localStorage.getItem('mathFlashcardsBgColor') || '';
@@ -271,7 +283,7 @@ function App() {
     } else {
       setHideOperator(false);
     }
-    if (!isSpeedRunActive || (gameMode === 'time' ? timeLeft > 0 : questionsAnswered < questionLimit)) {
+    if (!isSpeedRunActive || (gameMode === 'time' ? timeLeft > 0 : (gameMode === 'questions' ? questionsAnswered < questionLimit : true))) {
       setMessage('');
     }
     inputRef.current?.focus();
@@ -279,10 +291,21 @@ function App() {
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
+      // Don't trigger if user is typing in the input
+      if (e.target instanceof HTMLInputElement) return;
+
       if (e.key === 'n' || e.key === 'N') {
-        if (!isSpeedRunActive || (gameMode === 'time' ? timeLeft > 0 : questionsAnswered < questionLimit)) {
+        if (!isSpeedRunActive || (gameMode === 'time' ? timeLeft > 0 : (gameMode === 'questions' ? questionsAnswered < questionLimit : true))) {
           generateProblem();
         }
+      } else if (e.key === 'd' || e.key === 'D') {
+        setDifficulty(prev => prev === 'easy' ? 'medium' : prev === 'medium' ? 'hard' : 'easy');
+      } else if (e.key === 'o' || e.key === 'O') {
+        setAllowedOperations(prev => {
+           const map: Operation[][] = [['+'], ['+', '-'], ['+', '-', '*'], ['+', '-', '*', '/']];
+           const currentIndex = map.findIndex(arr => arr.length === prev.length);
+           return map[(currentIndex + 1) % map.length];
+        });
       }
     };
     window.addEventListener('keydown', handleKeyDown);
@@ -328,6 +351,16 @@ function App() {
     }
   };
 
+
+
+  const updateNumpadLayout = (layout: 'phone' | 'calculator') => {
+    setNumpadLayout(layout);
+    try {
+      window.localStorage.setItem('mathFlashcardsNumpadLayout', layout);
+    } catch (e) {
+      console.error("Local storage error:", e);
+    }
+  };
 
   const toggleTheme = () => {
     const newTheme = theme === 'light' ? 'dark' : 'light';
@@ -422,6 +455,10 @@ function App() {
         setIsSpeedRunActive(false);
         setShowSummary(true);
       } else {
+        if (gameMode === 'endless' && newQuestionsAnswered % 10 === 0) {
+           if (difficulty === 'easy') setDifficulty('medium');
+           else if (difficulty === 'medium') setDifficulty('hard');
+        }
         setTimeout(() => {
           generateProblem();
         }, 500); // Shorter timeout for faster gameplay
@@ -530,6 +567,18 @@ function App() {
           </select>
         </div>
 
+        <div className="difficulty-selector">
+          <label htmlFor="numpadLayout">Numpad:</label>
+          <select
+            id="numpadLayout"
+            value={numpadLayout}
+            onChange={(e) => updateNumpadLayout(e.target.value as 'phone' | 'calculator')}
+          >
+            <option value="phone">Phone (123 top)</option>
+            <option value="calculator">Calc (789 top)</option>
+          </select>
+        </div>
+
         <div className="operations-selector">
           <span>Operations:</span>
           {(['+', '-', '*', '/'] as Operation[]).map(op => (
@@ -584,9 +633,10 @@ function App() {
                 />
                 Hardcore
               </label>
-              <select value={gameMode} onChange={(e) => setGameMode(e.target.value as 'time' | 'questions')} className="timer-select">
+              <select value={gameMode} onChange={(e) => setGameMode(e.target.value as 'time' | 'questions' | 'endless')} className="timer-select">
                 <option value="time">Time Limit</option>
                 <option value="questions">Question Limit</option>
+                <option value="endless">Endless</option>
               </select>
               {gameMode === 'time' ? (
                 <select value={selectedTimerDuration} onChange={(e) => setSelectedTimerDuration(parseInt(e.target.value, 10))} className="timer-select">
@@ -594,13 +644,13 @@ function App() {
                   <option value={60}>60s</option>
                   <option value={120}>120s</option>
                 </select>
-              ) : (
+              ) : gameMode === 'questions' ? (
                 <select value={questionLimit} onChange={(e) => setQuestionLimit(parseInt(e.target.value, 10))} className="timer-select">
                   <option value={10}>10 Qs</option>
                   <option value={20}>20 Qs</option>
                   <option value={50}>50 Qs</option>
                 </select>
-              )}
+              ) : null}
               <button type="button" onClick={startSpeedRun} className="speed-run-button">Start Challenge</button>
             </div>
           )}
@@ -622,18 +672,18 @@ function App() {
             autoFocus
             className="answer-input"
             placeholder="?"
-            disabled={isSpeedRunActive && (gameMode === 'time' ? timeLeft === 0 : questionsAnswered >= questionLimit)}
+            disabled={isSpeedRunActive && (gameMode === 'time' ? timeLeft === 0 : (gameMode === 'questions' ? questionsAnswered >= questionLimit : false))}
           />
-          <button type="submit" className="submit-button" disabled={isSpeedRunActive && (gameMode === 'time' ? timeLeft === 0 : questionsAnswered >= questionLimit)}>Check</button>
+          <button type="submit" className="submit-button" disabled={isSpeedRunActive && (gameMode === 'time' ? timeLeft === 0 : (gameMode === 'questions' ? questionsAnswered >= questionLimit : false))}>Check</button>
         </form>
 
         <div className="numpad">
-          {[1, 2, 3, 4, 5, 6, 7, 8, 9].map(num => (
+          {(numpadLayout === 'phone' ? [1, 2, 3, 4, 5, 6, 7, 8, 9] : [7, 8, 9, 4, 5, 6, 1, 2, 3]).map(num => (
             <button
               key={num}
               type="button"
               className="numpad-btn"
-              disabled={isSpeedRunActive && (gameMode === 'time' ? timeLeft === 0 : questionsAnswered >= questionLimit)}
+              disabled={isSpeedRunActive && (gameMode === 'time' ? timeLeft === 0 : (gameMode === 'questions' ? questionsAnswered >= questionLimit : false))}
               onClick={() => setUserAnswer(prev => prev + num)}
             >
               {num}
@@ -642,7 +692,7 @@ function App() {
           <button
             type="button"
             className="numpad-btn control-btn"
-            disabled={isSpeedRunActive && (gameMode === 'time' ? timeLeft === 0 : questionsAnswered >= questionLimit)}
+            disabled={isSpeedRunActive && (gameMode === 'time' ? timeLeft === 0 : (gameMode === 'questions' ? questionsAnswered >= questionLimit : false))}
             onClick={() => setUserAnswer('')}
           >
             C
@@ -650,7 +700,7 @@ function App() {
           <button
             type="button"
             className="numpad-btn"
-            disabled={isSpeedRunActive && (gameMode === 'time' ? timeLeft === 0 : questionsAnswered >= questionLimit)}
+            disabled={isSpeedRunActive && (gameMode === 'time' ? timeLeft === 0 : (gameMode === 'questions' ? questionsAnswered >= questionLimit : false))}
             onClick={() => setUserAnswer(prev => prev + '0')}
           >
             0
@@ -658,7 +708,7 @@ function App() {
           <button
             type="button"
             className="numpad-btn control-btn"
-            disabled={isSpeedRunActive && (gameMode === 'time' ? timeLeft === 0 : questionsAnswered >= questionLimit)}
+            disabled={isSpeedRunActive && (gameMode === 'time' ? timeLeft === 0 : (gameMode === 'questions' ? questionsAnswered >= questionLimit : false))}
             onClick={() => setUserAnswer(prev => prev.slice(0, -1))}
           >
             ⌫
@@ -669,7 +719,7 @@ function App() {
       {message && <div className={`message ${message === 'Correct!' ? 'success' : (message.includes('Time') ? 'info' : 'error')}`}>{message}</div>}
       {streakMessage && <div className="message" style={{color: '#9b59b6', animation: 'pulse 1s infinite'}}>{streakMessage}</div>}
 
-      <button type="button" onClick={generateProblem} className="next-button" disabled={isSpeedRunActive && (gameMode === 'time' ? timeLeft === 0 : questionsAnswered >= questionLimit)}>Skip / Next Problem</button>
+      <button type="button" onClick={generateProblem} className="next-button" disabled={isSpeedRunActive && (gameMode === 'time' ? timeLeft === 0 : (gameMode === 'questions' ? questionsAnswered >= questionLimit : false))}>Skip / Next Problem</button>
 
       {showSummary && (
         <div className="summary-modal-overlay">
