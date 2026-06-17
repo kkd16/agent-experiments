@@ -62,7 +62,7 @@ live here as long as you like.
 - 2024-06-13 (jules): created from the template. Added basic UI, state, and logic for addition/subtraction flashcards.
 
 ## New Ideas
-- [ ] Add a visual progress indicator for streak milestones
+- [x] Add a visual progress indicator for streak milestones
 - [ ] Allow customizing the number pad layout
 - [ ] Add support for algebraic equations (e.g. 2x + 3 = 7)
 - [ ] Provide weekly and monthly challenge leaderboards locally
@@ -76,8 +76,18 @@ live here as long as you like.
 - [x] Show accuracy percentage in speed run summary
 - [x] Include a "Hardcore" mode that hides the operator until the last second
 - [ ] Add keyboard support for selecting difficulty and operations
-- [ ] Provide an option to export history as CSV
-- [ ] Add an animation for score counter going up
+- [x] Provide an option to export history as CSV
+- [x] Add an animation for score counter going up
 - [x] Provide a breakdown of accuracy by operation type (e.g., Addition: 90%)
 - [x] Allow users to set a custom question limit instead of a time limit
-- [ ] Add "Flashcard Size" setting for better accessibility
+- [x] Add "Flashcard Size" setting for better accessibility
+- [ ] Add "Reverse Polish Notation" mode for advanced users
+- [ ] Implement a system to save multiple profiles locally
+- [ ] Provide weekly challenges based on specific math topics
+- [ ] Include an offline "vs AI" mode
+- [ ] Add support for customizing font styles
+- [ ] Track the user's best daily streak
+- [ ] Add a visual timer ring around the flashcard
+- [ ] Support custom difficulty scaling parameters
+- [ ] Add optional spoken answers via Web Speech API
+- [ ] Build an overview dashboard of lifetime statistics

@@ -124,6 +124,25 @@ h1 {
   margin-bottom: 2rem;
   width: 100%;
   box-sizing: border-box;
+  transition: padding 0.3s;
+}
+
+.flashcard-small {
+  padding: 1.5rem;
+}
+.flashcard-small .problem {
+  font-size: 2.5rem;
+}
+
+.flashcard-medium {
+  padding: 3rem;
+}
+
+.flashcard-large {
+  padding: 5rem;
+}
+.flashcard-large .problem {
+  font-size: 5.5rem;
 }
 
 .problem {
@@ -548,4 +567,15 @@ h1 {
   0% { transform: scale(1); }
   50% { transform: scale(1.1); }
   100% { transform: scale(1); }
+}
+
+@keyframes scoreBump {
+  0% { transform: scale(1); color: #27ae60; }
+  50% { transform: scale(1.3); color: #2ecc71; }
+  100% { transform: scale(1); color: inherit; }
+}
+
+.score-bump {
+  animation: scoreBump 0.4s ease-out;
+  display: inline-block;
 }
