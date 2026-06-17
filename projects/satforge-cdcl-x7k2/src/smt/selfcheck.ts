@@ -13,6 +13,8 @@ import { referenceSatEUF, referenceSatArith, collectAtoms, evalFormula } from '.
 import { checkSat, smtUnsatCore } from './smt'
 import { referenceSatArrays } from './arrayref'
 import { referenceSatDatatypes } from './dtref'
+import { referenceSatStrings } from './strref'
+import { ensureStringFuns, stringLit } from './strings'
 import { testerName, type DtSort } from './term'
 import { parseSmtLib } from './parse'
 import { ackermannize } from './ackermann'
@@ -766,6 +768,197 @@ export function runSmtChecks(): SmtCheckReport {
     }
     check(`DT: ${decided} random formulas match finite-tree-model reference`, mism === 0, `mismatches=${mism}`)
     check('DT: random suite exercised some UNSAT instances', unsatSeen > decided / 25, `unsat=${unsatSeen}`)
+  }
+
+  // ---- bounded theory of strings (QF_S): hand cases + brute-force cross-check ----
+  // Hand cases go through the *parser* (so they exercise it too); the headline test
+  // is a brute-force cross-check of thousands of random string formulas against the
+  // independent concrete-string enumerator (`strref.ts`).
+  {
+    const handCases: { name: string; src: string; expect: 'sat' | 'unsat' }[] = [
+      { name: 'concat identity (x·"" = x)', expect: 'sat', src: `(declare-fun x () String)(assert (= (str.++ x "") x))(check-sat)` },
+      { name: 'concat split', expect: 'sat', src: `(declare-fun x () String)(declare-fun y () String)(assert (= (str.++ x y) "ab"))(assert (= (str.len x) 1))(check-sat)` },
+      { name: 'no tail-fixpoint', expect: 'unsat', src: `(declare-fun x () String)(assert (= x (str.++ "a" x)))(check-sat)` },
+      { name: 'associativity (negated)', expect: 'unsat', src: `(declare-fun x () String)(declare-fun y () String)(declare-fun z () String)(assert (distinct (str.++ (str.++ x y) z) (str.++ x (str.++ y z))))(check-sat)` },
+      { name: 'length additivity (negated)', expect: 'unsat', src: `(declare-fun x () String)(declare-fun y () String)(assert (not (= (str.len (str.++ x y)) (+ (str.len x) (str.len y)))))(check-sat)` },
+      { name: 'contains literal', expect: 'sat', src: `(assert (str.contains "abc" "bc"))(check-sat)` },
+      { name: 'contains literal (denied)', expect: 'unsat', src: `(assert (not (str.contains "abc" "bc")))(check-sat)` },
+      { name: 'prefixof literal', expect: 'sat', src: `(assert (str.prefixof "ab" "abc"))(check-sat)` },
+      { name: 'suffixof literal', expect: 'sat', src: `(assert (str.suffixof "bc" "abc"))(check-sat)` },
+      { name: 'at read-back', expect: 'unsat', src: `(assert (not (= (str.at "abc" 1) "b")))(check-sat)` },
+      { name: 'substr read-back', expect: 'unsat', src: `(assert (not (= (str.substr "abcd" 1 2) "bc")))(check-sat)` },
+      { name: 'substr clamps past end', expect: 'unsat', src: `(assert (not (= (str.substr "abc" 2 9) "c")))(check-sat)` },
+      { name: 'value not identity', expect: 'unsat', src: `(assert (distinct (str.++ "ab" "c") "abc"))(check-sat)` },
+      { name: 'indexof finds', expect: 'unsat', src: `(assert (not (= (str.indexof "abcabc" "bc" 0) 1)))(check-sat)` },
+      { name: 'indexof from offset', expect: 'unsat', src: `(assert (not (= (str.indexof "abcabc" "bc" 2) 4)))(check-sat)` },
+      { name: 'indexof not found', expect: 'unsat', src: `(assert (not (= (str.indexof "abc" "x" 0) (- 1))))(check-sat)` },
+      { name: 'indexof empty needle', expect: 'unsat', src: `(assert (not (= (str.indexof "abc" "" 2) 2)))(check-sat)` },
+      { name: 'indexof constrains a hole', expect: 'sat', src: `(declare-fun x () String)(assert (= (str.len x) 3))(assert (= (str.indexof x "b" 0) 1))(check-sat)` },
+      { name: 'commuting append', expect: 'sat', src: `(declare-fun x () String)(assert (= (str.++ x "a") (str.++ "a" x)))(assert (= (str.len x) 2))(check-sat)` },
+      { name: 'distinct one-char strings need >1 char', expect: 'sat', src: `(declare-fun x () String)(declare-fun y () String)(assert (= (str.len x) 1))(assert (= (str.len y) 1))(assert (distinct x y))(check-sat)` },
+      { name: 'length forces empty', expect: 'sat', src: `(declare-fun x () String)(assert (= (str.len x) 0))(assert (= x ""))(check-sat)` },
+    ]
+    let bad = 0
+    for (const hc of handCases) {
+      const s = parseSmtLib(hc.src)
+      const r = checkSat(s.tm, s.tm.and(s.assertions), { stringBound: 4 })
+      if (r.status !== hc.expect) {
+        bad++
+        messages.push(`  QF_S hand case "${hc.name}": got ${r.status}, expected ${hc.expect}`)
+      }
+    }
+    check('QF_S: hand cases (concat/len/at/substr/contains/prefix/suffix) all decide correctly', bad === 0, `bad=${bad}`)
+
+    // A model the solver returns must be re-checkable: the concat-split should read
+    // back x = "a", y = "b".
+    {
+      const s = parseSmtLib(`(declare-fun x () String)(declare-fun y () String)(assert (= (str.++ x y) "ab"))(assert (= (str.len x) 1))(check-sat)`)
+      const r = checkSat(s.tm, s.tm.and(s.assertions), { stringBound: 4 })
+      const m = new Map((r.stringModel ?? []).map((e) => [e.name, e.value]))
+      check('QF_S: concat-split model reads back x="a", y="b"', m.get('x') === '"a"' && m.get('y') === '"b"', JSON.stringify(r.stringModel))
+    }
+
+    // Headline: random formulas decided by the DPLL(T) reduction and by the
+    // independent bounded-string enumerator must agree, verdict-for-verdict.
+    {
+      const L = 2
+      const rng = mulberry32(0x57a21f)
+      let mism = 0
+      let decided = 0
+      let unsatSeen = 0
+      const lits = ['', 'a', 'b', 'aa', 'ab', 'ba']
+      const N = 600
+      for (let it = 0; it < N; it++) {
+        const tm = new TermManager()
+        ensureStringFuns(tm)
+        for (const v of ['x', 'y']) tm.declareFun({ name: v, argSorts: [], retSort: 'String' })
+        const xs = ['x', 'y'].map((v) => tm.app(v))
+        const pick = <T,>(a: T[]): T => a[Math.floor(rng() * a.length)]
+        const num = (n: number): Term => tm.num(Rational.of(BigInt(n)))
+        const mkStr = (depth: number): Term => {
+          const r = rng()
+          if (depth <= 0 || r < 0.42) return pick(xs)
+          if (r < 0.62) return stringLit(tm, pick(lits))
+          if (r < 0.82) return tm.app('str.++', [mkStr(depth - 1), mkStr(depth - 1)])
+          if (r < 0.91) return tm.app('str.at', [mkStr(depth - 1), num(Math.floor(rng() * 3))])
+          return tm.app('str.substr', [mkStr(depth - 1), num(Math.floor(rng() * 3)), num(Math.floor(rng() * 3))])
+        }
+        const rels: ('le' | 'lt' | 'ge' | 'gt' | 'eq')[] = ['le', 'lt', 'ge', 'gt', 'eq']
+        const mkAtom = (): Formula => {
+          const r = rng()
+          if (r < 0.4) return tm.eq(mkStr(2), mkStr(2))
+          if (r < 0.52) return tm.pred(tm.app('str.contains', [mkStr(1), mkStr(1)]))
+          if (r < 0.63) return tm.pred(tm.app('str.prefixof', [mkStr(1), mkStr(1)]))
+          if (r < 0.74) return tm.pred(tm.app('str.suffixof', [mkStr(1), mkStr(1)]))
+          if (r < 0.86) {
+            const idx = tm.app('str.indexof', [mkStr(1), mkStr(1), num(Math.floor(rng() * 3))])
+            return tm.eq(idx, num(Math.floor(rng() * 4) - 1))
+          }
+          const rel = pick(rels)
+          const lenTerm = tm.app('str.len', [mkStr(1)])
+          const k = num(Math.floor(rng() * 4))
+          if (rel === 'eq') return tm.eq(lenTerm, k)
+          return tm.rel(rel, lenTerm, k)
+        }
+        const numAtoms = 2 + Math.floor(rng() * 2)
+        const parts: Formula[] = []
+        for (let i = 0; i < numAtoms; i++) {
+          let at = mkAtom()
+          if (rng() < 0.4) at = tm.not(at)
+          parts.push(at)
+        }
+        const f = rng() < 0.6 ? tm.and(parts) : tm.or(parts)
+        const want = referenceSatStrings(tm, f, L)
+        if (want === null) continue
+        const r = checkSat(tm, f, { stringBound: L })
+        if (r.status === 'unknown') continue
+        decided++
+        const got = r.status === 'sat'
+        if (got !== want) {
+          mism++
+          if (mism <= 4) messages.push(`  QF_S mismatch: got ${got}, want ${want}`)
+        }
+        if (!want) unsatSeen++
+      }
+      check(`QF_S: ${decided} random formulas match the bounded-string reference`, mism === 0, `mismatches=${mism}`)
+      check('QF_S: random suite exercised some UNSAT instances', unsatSeen > decided / 20, `unsat=${unsatSeen}`)
+    }
+
+    // A deeper single-variable batch at bound L = 3 — longer words, deeper
+    // concat/substr/indexof nesting — again cross-checked against the enumerator.
+    {
+      const L = 3
+      const rng = mulberry32(0x9e1ec)
+      let mism = 0
+      let decided = 0
+      let satSeen = 0
+      const lits = ['', 'a', 'b', 'ab', 'ba', 'aba']
+      for (let it = 0; it < 300; it++) {
+        const tm = new TermManager()
+        ensureStringFuns(tm)
+        tm.declareFun({ name: 'x', argSorts: [], retSort: 'String' })
+        const x = tm.app('x')
+        const num = (n: number): Term => tm.num(Rational.of(BigInt(n)))
+        const pick = <T,>(a: T[]): T => a[Math.floor(rng() * a.length)]
+        const mkStr = (depth: number): Term => {
+          const r = rng()
+          if (depth <= 0 || r < 0.45) return x
+          if (r < 0.65) return stringLit(tm, pick(lits))
+          if (r < 0.82) return tm.app('str.++', [mkStr(depth - 1), stringLit(tm, pick(lits))])
+          if (r < 0.92) return tm.app('str.at', [mkStr(depth - 1), num(Math.floor(rng() * 4))])
+          return tm.app('str.substr', [mkStr(depth - 1), num(Math.floor(rng() * 4)), num(Math.floor(rng() * 4))])
+        }
+        const mkAtom = (): Formula => {
+          const r = rng()
+          if (r < 0.4) return tm.eq(mkStr(2), stringLit(tm, pick(lits)))
+          if (r < 0.55) return tm.pred(tm.app('str.contains', [x, stringLit(tm, pick(lits))]))
+          if (r < 0.72) return tm.eq(tm.app('str.indexof', [x, stringLit(tm, pick(lits)), num(Math.floor(rng() * 3))]), num(Math.floor(rng() * 4) - 1))
+          return tm.rel(pick(['le', 'lt', 'ge', 'gt'] as ('le' | 'lt' | 'ge' | 'gt')[]), tm.app('str.len', [x]), num(Math.floor(rng() * 4)))
+        }
+        const parts: Formula[] = []
+        const k = 2 + Math.floor(rng() * 2)
+        for (let i = 0; i < k; i++) {
+          let at = mkAtom()
+          if (rng() < 0.35) at = tm.not(at)
+          parts.push(at)
+        }
+        const f = rng() < 0.7 ? tm.and(parts) : tm.or(parts)
+        const want = referenceSatStrings(tm, f, L)
+        if (want === null) continue
+        const r = checkSat(tm, f, { stringBound: L })
+        if (r.status === 'unknown') continue
+        decided++
+        if ((r.status === 'sat') !== want) {
+          mism++
+          if (mism <= 4) messages.push(`  QF_S(L=3) mismatch: got ${r.status === 'sat'}, want ${want}`)
+        }
+        if (want) satSeen++
+      }
+      check(`QF_S: ${decided} deeper (L=3) random formulas match the reference`, mism === 0, `mismatches=${mism}`)
+      check('QF_S: deeper suite exercised some SAT instances', satSeen > decided / 20, `sat=${satSeen}`)
+    }
+
+    // The commuting append x·"a" = "a"·x with |x| = 2 reads back x = "aa".
+    {
+      const s = parseSmtLib(`(declare-fun x () String)(assert (= (str.++ x "a") (str.++ "a" x)))(assert (= (str.len x) 2))(check-sat)`)
+      const r = checkSat(s.tm, s.tm.and(s.assertions), { stringBound: 4 })
+      const v = (r.stringModel ?? []).find((e) => e.name === 'x')?.value
+      check('QF_S: commuting-append model reads back x="aa"', r.status === 'sat' && v === '"aa"', String(v))
+    }
+
+    // indexof + suffix: a length-3 word whose first "b" is at index 1 and that ends
+    // in "c". The reconstructed model must respect every constraint.
+    {
+      const s = parseSmtLib(`(declare-fun x () String)(assert (= (str.len x) 3))(assert (= (str.indexof x "b" 0) 1))(assert (str.suffixof "c" x))(check-sat)`)
+      const r = checkSat(s.tm, s.tm.and(s.assertions), { stringBound: 5 })
+      const v = (r.stringModel ?? []).find((e) => e.name === 'x')?.value
+      let ok = r.status === 'sat' && typeof v === 'string'
+      if (ok) {
+        const w = JSON.parse(v!) as string
+        ok = w.length === 3 && w[1] === 'b' && w[2] === 'c' && w[0] !== 'b'
+      }
+      check('QF_S: indexof+suffix model is internally consistent', ok, String(v))
+    }
   }
 
   void Rational

@@ -17,6 +17,7 @@ import { collectAtoms } from './reference'
 import { ackermannize, hasUninterpretedFunctions } from './ackermann'
 import { hasArrays, reduceArrays } from './arrays'
 import { hasDatatypes, reduceDatatypes } from './datatypes'
+import { hasStrings, reduceStrings, reconstructStringModel, DEFAULT_STRING_BOUND } from './strings'
 
 export function arithTrichotomy(tm: TermManager, root: Formula): Formula {
   const atoms = collectAtoms(root)
@@ -41,6 +42,8 @@ export interface FullSmtResult extends SmtResult {
   atomList?: { name: string; value: boolean }[]
   /** EUF congruence classes (every class, as groups of term names). */
   congruenceClasses?: string[][]
+  /** Reconstructed solved text of each string variable (QF_S; UI only). */
+  stringModel?: { name: string; value: string }[]
   /** Elapsed wall-clock time in ms. */
   timeMs?: number
 }
@@ -50,10 +53,16 @@ export function checkSat(tm: TermManager, root: Formula, opts: SmtOptions = {}):
   const euf = new EufSolver(tm)
   const simplex = new SimplexSolver(tm)
   const theories: Theory[] = [euf as unknown as Theory, simplex as unknown as Theory]
+  // Strings: reduce the bounded theory of strings (QF_S) to EUF + integer
+  // arithmetic first (a per-string length + code-unit model with McCarthy-style
+  // per-operator axioms) — additive, no theory solver of its own.
+  const stringBound = opts.stringBound ?? DEFAULT_STRING_BOUND
+  const hasStr = hasStrings(tm, root)
+  const afterStr = hasStr ? reduceStrings(tm, root, stringBound) : root
   // Datatypes: reduce constructors/selectors/testers to EUF + integer arithmetic
   // (acyclicity becomes a strict integer `rank` ordering) — additive, no theory
   // solver of its own.
-  const afterDt = hasDatatypes(tm, root) ? reduceDatatypes(tm, root) : root
+  const afterDt = hasDatatypes(tm, afterStr) ? reduceDatatypes(tm, afterStr) : afterStr
   // Arrays: reduce select/store to EUF + arithmetic first (no theory solver of
   // their own — read-over-write purification + extensionality instantiation).
   const work = hasArrays(tm, afterDt) ? reduceArrays(tm, afterDt) : afterDt
@@ -85,6 +94,12 @@ export function checkSat(tm: TermManager, root: Formula, opts: SmtOptions = {}):
     full.model = desc
     const classes = euf.allClasses(eufLits).filter((g) => g.length > 1)
     if (classes.length) full.congruenceClasses = classes
+    // Reconstruct the solved text of each string variable from the numeric model
+    // the simplex just recorded (length + code-units). Best-effort, display-only.
+    if (hasStr) {
+      const sm = reconstructStringModel(tm, root, simplex.lastModel?.values)
+      if (sm.length) full.stringModel = sm
+    }
   }
   return full
 }

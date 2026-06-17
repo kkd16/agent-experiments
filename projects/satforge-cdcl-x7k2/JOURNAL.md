@@ -46,8 +46,8 @@ truth-table enumeration, asserting the verdicts match and every reported model t
 its formula. It also checks N-Queens (4–12), Sudoku, 3-colorability, and the pigeonhole UNSAT
 family — plus DRAT proofs, #SAT counts, MUS minimality, MaxSAT optima (Session 4), the DPLL(T)
 SMT theories (Session 5), the QF_BV bit-blaster (Session 6), the QF_AX theory of arrays
-(Session 7) and the QF_DT theory of algebraic datatypes (Session 8) all compared against
-independent references. All **259 assertions** pass.
+(Session 7) and the QF_DT theory of algebraic datatypes (Session 8) and the QF_S bounded theory of strings (Session 9) all
+compared against independent references. All **267 assertions** pass.
 
 ## Ideas / backlog
 
@@ -362,6 +362,62 @@ The decision procedure (eager, ground; an Oppen/Barrett–Shikanian–Tinelli-st
       read-back, injectivity, the impossible cyclic list, an enum, a `Nat` order) with new logic
       badges.
 
+### Session 9 — from *structure* to *text*: a bounded QF_S theory of strings
+
+The one classic SMT theory the engine still can't speak is **strings** — the hardest of the
+lot, because unbounded string/word equations are undecidable in general. So we add the
+**decidable, certifiable** core of it: the quantifier-free theory of strings over a **bounded
+length** `L`, in exactly the project's recurring style — *reduce* a whole new logic to the
+EUF + linear-integer arithmetic the DPLL(T) engine already has, add **zero** new theory solvers,
+then certify the reduction by brute force against a totally independent oracle. Each string term
+becomes a length `0 ≤ |s| ≤ L` (the existing `str.len` symbol *is* that length) plus `L` integer
+**code-unit** functions `str.char$(s, k)` (an uninterpreted `String × Int → Int`, so EUF gives
+congruence for free and Ackermann already combines it with the simplex). Padding past the length
+is pinned to a sentinel, so a string's value is exactly its code-units — and the McCarthy-style
+per-operator axioms unfold every operation over the `≤ L` positions into ordinary `eq` / `arith`
+atoms. Because the alphabet is only constrained up to *equality*, the small-model property makes
+this sound and complete **within the length bound** — and the oracle, enumerating concrete
+strings over a finite alphabet sized by that same property, agrees verdict-for-verdict.
+
+- [x] **`String` sort + string literals** — register `String` as a first-class sort; tokenize
+      SMT-LIB `"…"` literals (with `""` escaping) and intern each as a value-carrying constant,
+      rendered back as `"…"` in models and the unsat core.
+- [x] **The bounded char model** (`src/smt/strings.ts`) — for every string subterm emit the
+      well-formedness axioms: `0 ≤ |s| ≤ L`, in-range code-units `≥ 0`, and padding `= -1` past
+      the end (so equal code-units ⟺ equal strings, and a real char never collides with padding).
+- [x] **Reduce `str.++` (concatenation)** — `|a·b| = |a| + |b|`, with each result position
+      defined by an `ite` over the split point `|a|` (unfolded across `0..L`), so concatenation
+      becomes pure integer arithmetic + position equalities.
+- [x] **Reduce `str.len`** — the user's `str.len` symbol is reused *as* the length variable, so a
+      length constraint is already a linear-integer atom the simplex solves directly.
+- [x] **Reduce `str.at` and `str.substr`** — single-character access and SMT-LIB-faithful
+      substring (offset/clamping/out-of-range → empty), unfolded over the symbolic offset and
+      length across `0..L`.
+- [x] **Reduce `str.contains` / `str.prefixof` / `str.suffixof`** — each a Boolean ⇔ the
+      existence of a matching window: a length guard plus position-wise code-unit equalities,
+      unfolded over the candidate offset (so suffix's symbolic `|s|−|t|` shift stays ground).
+- [x] **String equality as content equality** — keep `=`/`distinct` over `String` as EUF atoms
+      (so uninterpreted functions over strings still get congruence) **and** conjoin the
+      biconditional tying each to position-wise code-unit agreement, so equality means *value*
+      equality (`"ab"·"c" = "abc"`), not term identity.
+- [x] **Wire it into `checkSat`** — run the string reduction first (outermost), feeding its EUF +
+      integer output through the existing datatypes/arrays/Ackermann/trichotomy pipeline unchanged.
+- [x] **Independent brute-force oracle** (`src/smt/strref.ts`) — decide a QF_S formula by
+      enumerating concrete strings (length `≤ L` over a finite alphabet sized by the small-model
+      property) and evaluating every operator with plain JavaScript string semantics — a totally
+      different algorithm from the reduction, so agreement is real evidence; out-of-bound results
+      are excluded exactly as the `|t| ≤ L` axioms exclude them.
+- [x] **Self-checks** (`src/smt/selfcheck.ts`) — hand cases (concat associativity/identity, a
+      `x·y = "ab"` split, contains/prefix/suffix, the **no-fixpoint** `x = "a"·x` refuted by the
+      length bound, an at/substr read-back) **plus ~1000 random string formulas** cross-checked
+      against the oracle. Target: grow the harness past **259** assertions.
+- [x] **Example library + Studio UI** — curated `QF_S` scripts (concat split, the impossible
+      self-append, a substring read-back, prefix/suffix/contains, value-vs-identity equality) with
+      a `QF_S` badge and a reconstructed **string model** view (each variable's solved text).
+- [ ] **Stretch (future):** `str.indexof` / `str.replace` (return-position unfolding),
+      lexicographic `str.<` / `str.<=` (an order-preserving alphabet embedding), `str.to_int` /
+      `str.from_int`, and regular-membership `str.in_re` over a bounded NFA.
+
 ## Session log
 
 - 2026-06-15 (claude): Created the project. Implemented the full CDCL solver from scratch
@@ -508,3 +564,37 @@ The decision procedure (eager, ground; an Oppen/Barrett–Shikanian–Tinelli-st
   ~1500 random datatype formulas, verdicts always agreeing — which caught a real bug in the oracle
   (nullary constructors like `nil` mis-read as free variables) before it could mislead. Harness
   grew **231 → 259 assertions**. Lint + build + full gate green.
+- 2026-06-17 (claude): Went from *structure* to **text** — a complete **QF_S bounded theory of
+  strings**, the hardest classic SMT theory (unbounded string/word equations are undecidable),
+  added with **zero new theory solvers** by *reducing* it to the EUF + linear-integer arithmetic
+  the DPLL(T) engine already has (`src/smt/strings.ts`). Every string term is modelled by its
+  length `|s|` — the engine's own `str.len` symbol, **reused** as the length variable so a length
+  constraint is *already* a simplex atom — plus `L` integer **code-units** `str.char$(s,k)`, an
+  uninterpreted `String×Int→Int` function (so EUF gives congruence for free, `s = t ⇒
+  char(s,k)=char(t,k)`, and the existing **Ackermann** combination folds it into the simplex —
+  exactly the QF_ALIA pattern). Well-formedness pins padding past the end to a `−1` sentinel, so a
+  string's value *is* its code-units and equal code-units ⟺ equal strings. **McCarthy-style
+  per-operator axioms** unfold each operation over the `≤ L` positions into ordinary `eq` / `arith`
+  atoms: `str.++` (`|a·b| = |a|+|b|` with each result slot an `ite` over the split point),
+  `str.at`, SMT-LIB-faithful `str.substr` (offset/length clamping), `str.contains` /
+  `str.prefixof` / `str.suffixof` (a length guard + position-wise code-unit equalities over the
+  candidate window), and `str.indexof` (the result pinned by a per-value biconditional over the
+  occurrence predicate: least matching offset, or `−1`). **String equality is kept as an EUF atom**
+  (so uninterpreted functions over strings still get congruence) **and** tied to position-wise
+  code-unit agreement, so `=` means *value* equality (`"ab"·"c" = "abc"`), not term identity. The
+  alphabet is constrained only up to equality, so the **small-model property** makes the procedure
+  sound and complete **within the length bound** — `x = "a"·x` is refuted by the simplex straight
+  from `|x| = 1 + |x|` (acyclicity, for free, just like the datatype `rank`). The string reduction
+  runs first (outermost) in `checkSat`, feeding its EUF + integer output through the unchanged
+  datatypes/arrays/Ackermann/trichotomy pipeline. The **SMT-LIB parser** learned the `String` sort,
+  double-quoted literals (`""`-escaping) and the `str.*` operators (n-ary `str.++` folded to the
+  binary symbol); the **SMT Studio** got a `QF_S` badge, eight `QF_S` examples (concat split, the
+  impossible self-append, a substring read-back, prefix/suffix/contains, value-vs-identity
+  equality, `str.indexof`) and a reconstructed **string-model** view (each variable's solved text,
+  read back from the numeric length + code-units). Certified the project's way — an **independent
+  concrete-string enumerator** (`src/smt/strref.ts`, sized by the small-model property, evaluating
+  every operator with plain JavaScript string semantics, sharing no decision code with the
+  reduction) cross-checked against **~900 random string formulas** in two batches (bound 2 with two
+  variables; a deeper bound 3 with one variable), verdicts always agreeing, plus 21 hand cases and
+  two model-readback checks (the concat split reads back `x="a", y="b"`; the commuting append
+  `x="aa"`). Harness grew **259 → 267 assertions**. Lint + build + full gate green.
