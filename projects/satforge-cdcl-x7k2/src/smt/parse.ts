@@ -12,6 +12,7 @@
 
 import { Rational } from './rational'
 import { TermManager, testerName, type DtConstructor, type Formula, type Sort, type Term } from './term'
+import { ensureStringFuns, stringLit } from './strings'
 
 export class SmtSyntaxError extends Error {}
 
@@ -36,6 +37,27 @@ function tokenize(src: string): string[] {
       while (j < src.length && src[j] !== '|') j++
       toks.push(src.slice(i, j + 1))
       i = j + 1
+    } else if (ch === '"') {
+      // SMT-LIB string literal; "" is an escaped double-quote. The emitted token
+      // keeps the surrounding quotes (with "" collapsed to ") so it stays distinct
+      // from a bare symbol.
+      let j = i + 1
+      let buf = '"'
+      while (j < src.length) {
+        if (src[j] === '"') {
+          if (src[j + 1] === '"') {
+            buf += '"'
+            j += 2
+            continue
+          }
+          j++
+          break
+        }
+        buf += src[j]
+        j++
+      }
+      toks.push(buf + '"')
+      i = j
     } else {
       let j = i
       while (j < src.length && !/[\s()]/.test(src[j]) && src[j] !== ';') j++
@@ -77,8 +99,15 @@ export interface SmtScript {
 
 const isSym = (e: SExpr): e is string => typeof e === 'string'
 
+/** Decode a `"…"` string-literal token to its text, or null if `e` isn't one. */
+function asStringLiteral(e: SExpr): string | null {
+  if (typeof e === 'string' && e.length >= 2 && e[0] === '"' && e[e.length - 1] === '"') return e.slice(1, -1)
+  return null
+}
+
 export function parseSmtLib(src: string): SmtScript {
   const tm = new TermManager()
+  ensureStringFuns(tm) // make str.++/str.len/str.at/… known so scripts can use them
   const assertions: Formula[] = []
   let expected: 'sat' | 'unsat' | undefined
   const forms = readSExprs(tokenize(src))
@@ -280,6 +309,7 @@ function chainTerms(ts: Term[], op: (a: Term, b: Term) => Formula, tm: TermManag
 function parseTermOrBool(tm: TermManager, e: SExpr): { kind: 'bool' } | { kind: 'term'; term: Term } {
   if (isSym(e)) {
     if (e === 'true' || e === 'false') return { kind: 'bool' }
+    if (asStringLiteral(e) !== null) return { kind: 'term', term: parseTerm(tm, e) }
     const sig = tm.getFun(e)
     if (sig && sig.argSorts.length === 0) return sig.retSort === 'Bool' ? { kind: 'bool' } : { kind: 'term', term: tm.app(e) }
     if (/^-?\d/.test(e)) return { kind: 'term', term: parseTerm(tm, e) }
@@ -302,6 +332,8 @@ function parseTermOrBool(tm: TermManager, e: SExpr): { kind: 'bool' } | { kind: 
 
 function parseTerm(tm: TermManager, e: SExpr): Term {
   if (isSym(e)) {
+    const lit = asStringLiteral(e)
+    if (lit !== null) return stringLit(tm, lit)
     if (/^-?\d+$/.test(e)) return tm.num(Rational.parse(e), 'Int')
     if (/^-?\d*\.\d+$/.test(e) || /^-?\d+\.\d*$/.test(e)) return tm.num(Rational.parse(e), 'Real')
     const sig = tm.getFun(e)
@@ -341,6 +373,12 @@ function parseTerm(tm: TermManager, e: SExpr): Term {
       const ts = args.map((a) => parseTerm(tm, a))
       if (ts.length === 2 && ts[1].kind === 'num') return tm.mul(ts[0], tm.num(Rational.ONE.div(ts[1].num!), 'Real'))
       throw new SmtSyntaxError('only division by a numeric constant is supported')
+    }
+    case 'str.++': {
+      // n-ary concatenation, folded left-associatively to the binary symbol.
+      const ts = args.map((a) => parseTerm(tm, a))
+      if (ts.length === 0) return stringLit(tm, '')
+      return ts.reduce((x, y) => tm.app('str.++', [x, y]))
     }
     case 'select': {
       if (args.length !== 2) throw new SmtSyntaxError('select takes (array index)')

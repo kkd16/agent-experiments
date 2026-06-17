@@ -377,4 +377,106 @@ export const SMT_EXAMPLES: SmtExample[] = [
 (assert (< (hd x) 5))
 (check-sat)`,
   },
+  {
+    name: 'Concatenation splits a word',
+    logic: 'QF_S',
+    blurb: 'Find x, y with x·y = "ab" and |x| = 1 — the solver reads off x = "a", y = "b" from the bounded code-unit model.',
+    expected: 'sat',
+    src: `(set-logic QF_S)
+(declare-fun x () String)
+(declare-fun y () String)
+
+(assert (= (str.++ x y) "ab"))
+(assert (= (str.len x) 1))
+(check-sat)`,
+  },
+  {
+    name: 'No string is its own tail-extension',
+    logic: 'QF_S',
+    blurb: 'x = "a"·x would force |x| = 1 + |x|. The reduction sends that straight to the simplex, which refutes it — acyclicity, for free, from the length bound.',
+    expected: 'unsat',
+    src: `(set-logic QF_S)
+(declare-fun x () String)
+
+(assert (= x (str.++ "a" x)))
+(check-sat)`,
+  },
+  {
+    name: 'Substring read-back',
+    logic: 'QF_S',
+    blurb: 'str.substr("hello", 1, 3) is exactly "ell" (SMT-LIB offset/length semantics, unfolded over positions), so denying it is contradictory.',
+    expected: 'unsat',
+    src: `(set-logic QF_S)
+(assert (not (= (str.substr "hello" 1 3) "ell")))
+(check-sat)`,
+  },
+  {
+    name: 'Prefix, suffix and a hole in the middle',
+    logic: 'QF_S',
+    blurb: 'Build a length-4 word that starts with "a", ends with "d" and contains "bc" — the only fit is "abcd".',
+    expected: 'sat',
+    src: `(set-logic QF_S)
+(declare-fun z () String)
+
+(assert (str.prefixof "a" z))
+(assert (str.suffixof "d" z))
+(assert (str.contains z "bc"))
+(assert (= (str.len z) 4))
+(check-sat)`,
+  },
+  {
+    name: 'Equality is value, not identity',
+    logic: 'QF_S',
+    blurb: '"ab"·"c" and "abc" are *different terms* but the *same string*, so demanding they be distinct is unsatisfiable.',
+    expected: 'unsat',
+    src: `(set-logic QF_S)
+(assert (distinct (str.++ "ab" "c") "abc"))
+(check-sat)`,
+  },
+  {
+    name: 'Length is additive over concatenation',
+    logic: 'QF_S',
+    blurb: '|x·y| = |x| + |y| is a theorem of the theory (concatenation lays the code-units end to end), so its negation has no model.',
+    expected: 'unsat',
+    src: `(set-logic QF_S)
+(declare-fun x () String)
+(declare-fun y () String)
+
+(assert (not (= (str.len (str.++ x y)) (+ (str.len x) (str.len y)))))
+(check-sat)`,
+  },
+  {
+    name: 'Find the first match',
+    logic: 'QF_S',
+    blurb: 'str.indexof("abcabc", "bc", 2) is the least offset ≥ 2 where "bc" occurs — position 4 — so claiming anything else fails.',
+    expected: 'unsat',
+    src: `(set-logic QF_S)
+(assert (not (= (str.indexof "abcabc" "bc" 2) 4)))
+(check-sat)`,
+  },
+  {
+    name: 'Place a letter by its index',
+    logic: 'QF_S',
+    blurb: 'A length-3 word whose first "b" sits at index 1 and that ends in "c": the solver fills the hole (e.g. "abc").',
+    expected: 'sat',
+    src: `(set-logic QF_S)
+(declare-fun x () String)
+
+(assert (= (str.len x) 3))
+(assert (= (str.indexof x "b" 0) 1))
+(assert (str.suffixof "c" x))
+(check-sat)`,
+  },
+  {
+    name: 'A commuting append',
+    logic: 'QF_S',
+    blurb: 'x·"a" = "a"·x with |x| = 2 forces x to be all a’s — the solver returns x = "aa".',
+    expected: 'sat',
+    src: `(set-logic QF_S)
+(declare-fun x () String)
+
+(assert (= (str.++ x "a") (str.++ "a" x)))
+(assert (= (str.len x) 2))
+(check-sat)`,
+  },
 ]

@@ -263,6 +263,31 @@ function SmtResultView({ result, expected, core }: { result: FullSmtResult; expe
         </div>
       )}
 
+      {result.status === 'sat' && result.stringModel && result.stringModel.length > 0 && (
+        <div className="smt-model">
+          <h4>Strings</h4>
+          <p className="smt-hint">
+            The text the solver committed to for each string variable, read back from the bounded code-unit model (length +
+            per-position code units). "UNSAT" here means unsatisfiable up to the length bound.
+          </p>
+          <table className="array-model">
+            <tbody>
+              {result.stringModel.map((s, i) => (
+                <tr key={i}>
+                  <td>
+                    <code>{s.name}</code>
+                  </td>
+                  <td>=</td>
+                  <td>
+                    <code>{s.value}</code>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
       {result.status === 'sat' && (
         <div className="smt-model">
           <h4>Model</h4>

@@ -43,6 +43,8 @@ export interface SmtOptions {
   maxRounds?: number
   maxConflicts?: number // per SAT call
   atomName?: (a: Atom) => string
+  /** Maximum string length for the bounded theory of strings (QF_S). */
+  stringBound?: number
 }
 
 export function solveSmt(root: Formula, theories: Theory[], opts: SmtOptions = {}): SmtResult {

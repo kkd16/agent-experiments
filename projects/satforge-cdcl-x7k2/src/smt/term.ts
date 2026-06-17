@@ -81,7 +81,7 @@ export type Atom = Extract<Formula, { kind: 'pred' | 'eq' | 'arith' }>
 const ARITH_SORTS = new Set(['Int', 'Real'])
 
 export class TermManager {
-  private sorts = new Set<Sort>(['Bool', 'Int', 'Real'])
+  private sorts = new Set<Sort>(['Bool', 'Int', 'Real', 'String'])
   private funs = new Map<string, FunSig>()
   private termByKey = new Map<string, Term>()
   private terms: Term[] = []
@@ -397,6 +397,9 @@ export class TermManager {
 
   termToString(t: Term): string {
     if (t.kind === 'num') return t.num!.toString()
+    // A string literal constant renders as its quoted text (the value is encoded in the op name).
+    if (t.args.length === 0 && t.op.startsWith('str.lit$'))
+      return JSON.stringify(decodeURIComponent(t.op.slice('str.lit$'.length)))
     if (t.args.length === 0) return t.op
     if (t.arith && t.args.length === 1) return `(- ${this.termToString(t.args[0])})`
     if (t.arith) return `(${t.op} ${t.args.map((a) => this.termToString(a)).join(' ')})`
