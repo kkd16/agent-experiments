@@ -148,6 +148,7 @@ function App() {
   const [theme, setTheme] = useState<'light' | 'dark'>(getInitialTheme());
   const [allowedOperations, setAllowedOperations] = useState<Operation[]>(['+', '-', '*', '/']);
   const [difficulty, setDifficulty] = useState<Difficulty>('easy');
+  const [flashcardSize, setFlashcardSize] = useState<'small' | 'medium' | 'large'>('medium');
   const [operation, setOperation] = useState<Operation>('+');
   const [num1, setNum1] = useState<number>(0);
   const [num2, setNum2] = useState<number>(0);
@@ -155,6 +156,7 @@ function App() {
   const [userAnswer, setUserAnswer] = useState<string>('');
   const [message, setMessage] = useState<string>('');
   const [score, setScore] = useState<number>(0);
+  const [scoreBump, setScoreBump] = useState<boolean>(false);
 
   const [streak, setStreak] = useState<number>(getInitialStreak());
   const [highScore, setHighScore] = useState<number>(getInitialHighScore());
@@ -197,6 +199,19 @@ function App() {
     }
   };
 
+  const handleExportCSV = () => {
+    if (history.length === 0) return;
+    const header = "Num1,Operation,Num2,UserAnswer,CorrectAnswer,IsCorrect\n";
+    const rows = history.map(h => `${h.num1},${h.operation},${h.num2},${h.userAnswer},${h.correctAnswer},${h.isCorrect}`).join("\n");
+    const csvContent = "data:text/csv;charset=utf-8," + header + rows;
+    const encodedUri = encodeURI(csvContent);
+    const link = document.createElement("a");
+    link.setAttribute("href", encodedUri);
+    link.setAttribute("download", "math_flashcards_history.csv");
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
 
   // Initialize first problem safely
   useEffect(() => {
@@ -386,6 +401,8 @@ function App() {
 
       const newScore = score + points;
       setScore(newScore);
+      setScoreBump(true);
+      setTimeout(() => setScoreBump(false), 400);
 
       const newStreak = streak + 1;
       updateStreak(newStreak);
@@ -467,11 +484,14 @@ function App() {
 
       <div className="header-stats-container">
         <div className="header-stats">
-          <div className="stat">Score: {score}</div>
-          <div className="stat">
-            Streak: {streak} 🔥
-            {streak >= 10 ? ' (x3)' : (streak >= 5 ? ' (x2)' : '')}
-            <button onClick={resetStreak} className="reset-btn" title="Reset Streak" disabled={isSpeedRunActive}>↺</button>
+          <div className="stat">Score: <span className={scoreBump ? "score-bump" : ""}>{score}</span></div>
+          <div className="stat" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+            <div>
+              Streak: {streak} 🔥
+              {streak >= 10 ? ' (x3)' : (streak >= 5 ? ' (x2)' : '')}
+              <button onClick={resetStreak} className="reset-btn" title="Reset Streak" disabled={isSpeedRunActive}>↺</button>
+            </div>
+            <progress value={streak % 5} max={5} style={{ width: '80px', marginTop: '4px' }} title="Next Milestone"></progress>
           </div>
           <div className="stat">
             High Score: {highScore}
@@ -494,6 +514,19 @@ function App() {
             <option value="easy">Easy</option>
             <option value="medium">Medium</option>
             <option value="hard">Hard</option>
+          </select>
+        </div>
+
+        <div className="difficulty-selector">
+          <label htmlFor="flashcardSize">Size:</label>
+          <select
+            id="flashcardSize"
+            value={flashcardSize}
+            onChange={(e) => setFlashcardSize(e.target.value as 'small' | 'medium' | 'large')}
+          >
+            <option value="small">Small</option>
+            <option value="medium">Medium</option>
+            <option value="large">Large</option>
           </select>
         </div>
 
@@ -574,7 +607,7 @@ function App() {
         </div>
       </div>
 
-      <div className={`flashcard ${animationClass}`}>
+      <div className={`flashcard flashcard-${flashcardSize} ${animationClass}`}>
         <div className="problem">
           <span className="number">{num1}</span>
           <span className="operation" style={{minWidth: '2rem', textAlign: 'center'}}>{hideOperator ? '?' : operation}</span>
@@ -679,7 +712,12 @@ function App() {
             )}
 
             <div className="history-container">
-              <h3>History</h3>
+              <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem'}}>
+                <h3 style={{margin: 0}}>History</h3>
+                {history.length > 0 && (
+                  <button onClick={handleExportCSV} className="submit-button" style={{padding: '0.2rem 0.5rem', fontSize: '0.8rem'}}>Export CSV</button>
+                )}
+              </div>
               <ul className="history-list">
                 {history.map((item, index) => (
                   <li key={index} className={item.isCorrect ? 'history-correct' : 'history-incorrect'}>
