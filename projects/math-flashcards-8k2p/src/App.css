@@ -511,3 +511,41 @@ h1 {
   color: #e74c3c;
   font-weight: bold;
 }
+
+.color-btn {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  border: 1px solid #bdc3c7;
+  cursor: pointer;
+  transition: transform 0.2s;
+}
+.color-btn:hover {
+  transform: scale(1.1);
+}
+.app-container.dark .color-picker {
+  display: none !important; /* hide in dark mode */
+}
+
+@keyframes shake {
+  0% { transform: translateX(0); }
+  20% { transform: translateX(-10px); }
+  40% { transform: translateX(10px); }
+  60% { transform: translateX(-10px); }
+  80% { transform: translateX(10px); }
+  100% { transform: translateX(0); }
+}
+
+.flash-incorrect {
+  animation: flashIncorrect 0.5s, shake 0.5s;
+}
+
+.app-container.dark .flash-incorrect {
+  animation: flashIncorrectDark 0.5s, shake 0.5s;
+}
+
+@keyframes pulse {
+  0% { transform: scale(1); }
+  50% { transform: scale(1.1); }
+  100% { transform: scale(1); }
+}

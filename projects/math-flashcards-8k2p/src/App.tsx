@@ -4,6 +4,12 @@ import './App.css';
 type Operation = '+' | '-' | '*' | '/';
 type Difficulty = 'easy' | 'medium' | 'hard';
 
+
+type RunScore = {
+  score: number;
+  date: number;
+};
+
 type HistoryItem = {
   num1: number;
   num2: number;
@@ -72,6 +78,17 @@ function getInitialStreak(): number {
   return 0;
 }
 
+
+function getInitialRunScores(): RunScore[] {
+  try {
+    const stored = window.localStorage.getItem('mathFlashcardsRunScores');
+    if (stored) return JSON.parse(stored);
+  } catch (e) {
+    console.error("Local storage error:", e);
+  }
+  return [];
+}
+
 function getInitialLifetimeQuestions(): number {
   try {
     const stored = window.localStorage.getItem('mathFlashcardsLifetimeQuestions');
@@ -81,6 +98,51 @@ function getInitialLifetimeQuestions(): number {
   }
   return 0;
 }
+
+
+function playSound(type: 'correct' | 'incorrect') {
+  try {
+    const AudioContextClass = window.AudioContext || ((window as unknown) as { webkitAudioContext: typeof window.AudioContext }).webkitAudioContext;
+    if (!AudioContextClass) return;
+    const ctx = new AudioContextClass();
+    const osc = ctx.createOscillator();
+    const gainNode = ctx.createGain();
+
+    osc.connect(gainNode);
+    gainNode.connect(ctx.destination);
+
+    if (type === 'correct') {
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(523.25, ctx.currentTime); // C5
+      osc.frequency.exponentialRampToValueAtTime(880, ctx.currentTime + 0.1);
+      gainNode.gain.setValueAtTime(0.1, ctx.currentTime);
+      gainNode.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.1);
+      osc.start();
+      osc.stop(ctx.currentTime + 0.1);
+      setTimeout(() => ctx.close().catch(() => {}), 150);
+    } else {
+      osc.type = 'sawtooth';
+      osc.frequency.setValueAtTime(150, ctx.currentTime);
+      osc.frequency.exponentialRampToValueAtTime(100, ctx.currentTime + 0.2);
+      gainNode.gain.setValueAtTime(0.1, ctx.currentTime);
+      gainNode.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.2);
+      osc.start();
+      osc.stop(ctx.currentTime + 0.2);
+      setTimeout(() => ctx.close().catch(() => {}), 250);
+    }
+  } catch (e) {
+    console.error("Audio playback failed", e);
+  }
+}
+
+
+const STREAK_MESSAGES = [
+  "On Fire! 🔥",
+  "Unstoppable! 🚀",
+  "Math Genius! 🧠",
+  "Incredible! ⭐",
+  "Godlike! ⚡"
+];
 
 function App() {
   const [theme, setTheme] = useState<'light' | 'dark'>(getInitialTheme());
@@ -111,9 +173,30 @@ function App() {
   const [lifetimeQuestions, setLifetimeQuestions] = useState<number>(getInitialLifetimeQuestions());
   const [showSummary, setShowSummary] = useState<boolean>(false);
   const [animationClass, setAnimationClass] = useState<string>('');
+  const [streakMessage, setStreakMessage] = useState<string>('');
+  const [soundEnabled, setSoundEnabled] = useState<boolean>(true);
+  const [bgColor, setBgColor] = useState<string>(() => {
+    try {
+      return window.localStorage.getItem('mathFlashcardsBgColor') || '';
+    } catch (e) {
+      console.error(e);
+      return '';
+    }
+  });
   const [history, setHistory] = useState<HistoryItem[]>([]);
+  const [runScores, setRunScores] = useState<RunScore[]>(getInitialRunScores());
 
   const inputRef = useRef<HTMLInputElement>(null);
+
+  const updateBgColor = (color: string) => {
+    setBgColor(color);
+    try {
+      window.localStorage.setItem('mathFlashcardsBgColor', color);
+    } catch (err) {
+      console.error("Local storage error:", err);
+    }
+  };
+
 
   // Initialize first problem safely
   useEffect(() => {
@@ -143,7 +226,18 @@ function App() {
       setTimeout(() => {
         setIsSpeedRunActive(false);
         setShowSummary(true);
+        const newScoreObj = { score: scoreRef.current, date: Date.now() };
+        setRunScores(prev => {
+          const updated = [...prev, newScoreObj].slice(-10);
+          try {
+            window.localStorage.setItem('mathFlashcardsRunScores', JSON.stringify(updated));
+          } catch(err) {
+             console.error("Local storage error:", err);
+          }
+          return updated;
+        });
       }, 0);
+
     }
     return () => clearInterval(timerId);
   }, [isSpeedRunActive, gameMode, timeLeft]);
@@ -282,6 +376,7 @@ function App() {
 
     if (isCorrect) {
       setMessage("Correct!");
+      if (soundEnabled) playSound('correct');
       setAnimationClass('flash-correct');
       setTimeout(() => setAnimationClass(''), 500);
 
@@ -291,7 +386,16 @@ function App() {
 
       const newScore = score + points;
       setScore(newScore);
-      updateStreak(streak + 1);
+
+      const newStreak = streak + 1;
+      updateStreak(newStreak);
+
+      if (newStreak > 0 && newStreak % 5 === 0) {
+        const msg = STREAK_MESSAGES[Math.floor(Math.random() * STREAK_MESSAGES.length)];
+        setStreakMessage(msg);
+        setTimeout(() => setStreakMessage(''), 2000);
+      }
+
       updateHighScore(newScore);
       const newQuestionsAnswered = questionsAnswered + 1;
       setQuestionsAnswered(newQuestionsAnswered);
@@ -309,10 +413,21 @@ function App() {
     } else {
       if (isSuddenDeathMode) {
         setMessage(`Incorrect! Sudden Death over.`);
-        setAnimationClass('flash-incorrect');
+        if (soundEnabled) playSound('incorrect');
+      setAnimationClass('flash-incorrect');
         setTimeout(() => setAnimationClass(''), 500);
         updateStreak(0);
         setShowSummary(true);
+        const newScoreObj = { score: scoreRef.current, date: Date.now() };
+        setRunScores(prev => {
+          const updated = [...prev, newScoreObj].slice(-10);
+          try {
+            window.localStorage.setItem('mathFlashcardsRunScores', JSON.stringify(updated));
+          } catch(err) {
+             console.error("Local storage error:", err);
+          }
+          return updated;
+        });
         setIsSpeedRunActive(false);
       } else {
         setMessage(`Incorrect. Try again!`);
@@ -326,15 +441,29 @@ function App() {
   };
 
   return (
-    <div className={`app-wrapper ${theme}`}>
+    <div className={`app-wrapper ${theme}`} style={{ backgroundColor: theme === 'light' && bgColor ? bgColor : undefined }}>
     <div className={`app-container ${theme}`}>
       <div className="header-top">
         <h1>Math Flashcards</h1>
-        <button onClick={toggleTheme} className="theme-toggle">
-          {theme === 'light' ? '🌙 Dark' : '☀️ Light'}
-        </button>
+        <div>
+          <button onClick={toggleTheme} className="theme-toggle" style={{ marginRight: '0.5rem' }}>
+            {theme === 'light' ? '🌙 Dark' : '☀️ Light'}
+          </button>
+          <button onClick={() => setSoundEnabled(!soundEnabled)} className="theme-toggle">
+            {soundEnabled ? '🔊 Sound On' : '🔇 Sound Off'}
+          </button>
+        </div>
       </div>
 
+
+
+      <div className="color-picker" style={{ marginBottom: '1rem', display: 'flex', gap: '0.5rem', justifyContent: 'center' }}>
+        <span style={{ alignSelf: 'center', fontSize: '0.9rem' }}>Background:</span>
+        <button className="color-btn" style={{ backgroundColor: '#f0f4f8' }} onClick={() => updateBgColor('#f0f4f8')} title="Default"></button>
+        <button className="color-btn" style={{ backgroundColor: '#e8f5e9' }} onClick={() => updateBgColor('#e8f5e9')} title="Light Green"></button>
+        <button className="color-btn" style={{ backgroundColor: '#fff3e0' }} onClick={() => updateBgColor('#fff3e0')} title="Light Orange"></button>
+        <button className="color-btn" style={{ backgroundColor: '#e3f2fd' }} onClick={() => updateBgColor('#e3f2fd')} title="Light Blue"></button>
+      </div>
 
       <div className="header-stats-container">
         <div className="header-stats">
@@ -505,6 +634,7 @@ function App() {
       </div>
 
       {message && <div className={`message ${message === 'Correct!' ? 'success' : (message.includes('Time') ? 'info' : 'error')}`}>{message}</div>}
+      {streakMessage && <div className="message" style={{color: '#9b59b6', animation: 'pulse 1s infinite'}}>{streakMessage}</div>}
 
       <button type="button" onClick={generateProblem} className="next-button" disabled={isSpeedRunActive && (gameMode === 'time' ? timeLeft === 0 : questionsAnswered >= questionLimit)}>Skip / Next Problem</button>
 
@@ -529,6 +659,24 @@ function App() {
               })}
             </div>
             <p>Average Time: <strong>{questionsAnswered > 0 ? ((gameMode === 'time' ? selectedTimerDuration : elapsedTime) / questionsAnswered).toFixed(2) : 0}s</strong></p>
+
+
+            {runScores.length > 0 && (
+              <div className="scores-graph-container" style={{marginTop: '1.5rem', marginBottom: '1.5rem'}}>
+                <h3 style={{marginBottom: '0.5rem', fontSize: '1.1rem'}}>Last 10 Runs</h3>
+                <div style={{display: 'flex', alignItems: 'flex-end', height: '100px', gap: '4px', borderBottom: '1px solid #bdc3c7', paddingBottom: '4px'}}>
+                  {runScores.map((run, i) => {
+                    const maxScore = Math.max(...runScores.map(r => r.score), 10);
+                    const heightPercent = (run.score / maxScore) * 100;
+                    return (
+                      <div key={i} style={{flex: 1, backgroundColor: '#3498db', height: `${heightPercent}%`, position: 'relative', minHeight: '10px'}} title={`Score: ${run.score}`}>
+                        <span style={{position: 'absolute', bottom: '-20px', left: '50%', transform: 'translateX(-50%)', fontSize: '0.7rem', color: '#7f8c8d'}}>{run.score}</span>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
 
             <div className="history-container">
               <h3>History</h3>
