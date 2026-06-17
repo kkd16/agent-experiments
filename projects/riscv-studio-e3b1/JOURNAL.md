@@ -23,8 +23,12 @@ testable, and offline.
 ## Architecture
 
 - `src/vm/` — the machine. `constants`, `registers`, `memory` (paged), `isa` (opcode tables),
-  `decode`, `disassembler`, `assembler` (two-pass, pseudo-ops, directives), `cpu` (execute),
-  `syscalls`, `examples`, `selftest`, `format`.
+  `decode`, `disassembler`, `assembler` (two-pass, pseudo-ops, directives), `cpu` (execute, plus
+  an opt-in `tracer` retire-hook), `syscalls`, `examples`, `selftest`, `format`.
+- `src/perf/` — the **microarchitecture timing model** (a pure function of the retired trace,
+  never touches execution): `isa-classes` (per-instruction micro-op shape), `predictor` (branch
+  predictors + BTB), `cache` (set-associative I$/D$), `pipeline` (the 5-stage scheduler),
+  `analyze` (trace capture + orchestration), `perf-tests` (hand-computed cycle oracles).
 - `src/ui/` — React views: `Editor` (custom syntax-highlighted editor w/ gutter + breakpoints),
   `Registers`, `MemoryView`, `Disasm`, `Console`, `Framebuffer`, `Controls`, `Docs`, `Tests`,
   `Examples`.
@@ -239,6 +243,89 @@ journal, verification suite, examples and docs so it is observable and proven.
 - [x] A worked **interrupt example** (install a timer handler, `wfi`, count ticks), trap
       self-tests, and a Docs section on the privileged ISA + the CLINT memory map.
 
+### 2026-06-17 plan — RISC-V Studio 6.0: a microarchitecture **performance lab** (pipeline, hazards, branch prediction, caches)
+
+So far the studio has only ever told you *what* a program computes — never *how fast the
+hardware would run it*. Real RISC-V chips are pipelined, speculate across branches, and live
+or die by their caches; a single-cycle interpreter hides all of that. This session adds a
+**trace-driven microarchitecture timing model** that turns the studio into a teaching-grade
+performance analyzer: a classic 5-stage in-order pipeline (IF/ID/EX/MEM/WB) with hazard
+detection and data forwarding, configurable **branch predictors** (static, 1-bit, 2-bit
+bimodal, gshare) over a BTB, and a configurable **I-cache + D-cache** hierarchy — all reported
+as cycles, CPI, a stall breakdown, prediction accuracy and cache hit rates, and visualised as
+the textbook **instruction × cycle pipeline diagram**.
+
+The design is **strictly decoupled and additive**, the same discipline as the MMU work: the
+functional interpreter is the single source of truth and is left **byte-for-byte unchanged**.
+The timing model never executes anything — it consumes the *retired-instruction trace* the
+interpreter emits (an opt-in, null-guarded hook that is dormant during normal
+debugging/running) and computes timing from that real dynamic instruction stream. Correctness
+of *results* is therefore impossible to regress; only the *timing numbers* are new. The model
+is a pure function of (trace, config), so it is exhaustively unit-testable against
+hand-computed cycle counts.
+
+Steps (each fully implemented + self-tested this session — all ✅ shipped):
+
+- [x] **Retire-trace hook (`src/vm/cpu.ts`).** An optional `tracer` callback the CPU invokes
+      once per retired instruction with `{ pc, size, raw, mnemonic, format, rd, rs1, rs2, rs3,
+      base=regs[rs1], imm, nextPc }`. Null by default (zero cost on the live path); set only by
+      the analyzer's throwaway CPU. No semantic change whatsoever — proven by a differential
+      self-test.
+- [x] **Instruction classification (`src/perf/isa-classes.ts`).** A pure `classify(mnemonic,
+      format, rd, rs1, rs2, rs3)` mapping every RV32IMAFC instruction to its micro-op shape:
+      which source registers it really reads and in which file (integer `x` vs float `f`), what
+      it writes, and whether it is a load / store / conditional branch / jump / multi-cycle unit
+      (mul, div, fp-add/mul/div). This is what makes the hazard and forwarding logic correct
+      per-class (and keeps the two register files from aliasing).
+- [x] **Branch predictors + BTB (`src/perf/predictor.ts`).** A shared interface with five
+      direction predictors — static not-taken/taken, 1-bit, 2-bit saturating bimodal, and
+      **gshare** (global-history ⊕ PC index) — plus a direct-mapped **BTB** for taken targets,
+      so a misprediction is *direction* or *target* wrong (split out for the UI). Tiny, exact,
+      table-driven; all sizes configurable.
+- [x] **Cache simulator (`src/perf/cache.ts`).** A set-associative cache with configurable
+      size / block / associativity, LRU or FIFO replacement, and write-back/write-allocate or
+      write-through/no-allocate policies; reports hits, misses, miss rate and writebacks.
+      Instantiated twice (I-cache on fetch addresses, D-cache on load/store addresses).
+- [x] **The pipeline timing model (`src/perf/pipeline.ts`).** An in-order single-issue scheduler
+      over the trace using the textbook stage-entry recurrence (each instruction's IF/ID/EX/MEM/WB
+      entry cycle is the max of: its previous stage finishing, the prior instruction vacating that
+      stage, and any data/control/cache hazard bound). Models full forwarding (EX→EX and MEM→EX)
+      with the unavoidable **1-cycle load-use bubble**, the no-forwarding write-before-read regfile
+      path, multi-cycle EX latencies, branch-resolve stage (ID or EX), misprediction flush penalty,
+      and I/D-cache miss penalties folded into stage latency. Emits exact total cycles, CPI, a
+      per-class stall breakdown, and the per-instruction stage spans that drive the diagram.
+- [x] **Analyzer/orchestrator (`src/perf/analyze.ts`).** Runs the current program on a fresh,
+      history-free CPU with the tracer attached (bounded 300k-instruction trace budget), then feeds
+      the captured trace through the pipeline + caches + the *selected* predictor, and **also**
+      replays the branch trace through *all* predictors for a side-by-side accuracy comparison.
+      Pure data out; no React.
+- [x] **Performance self-tests (`src/perf/perf-tests.ts`).** Hand-computed cycle oracles wired
+      into the in-app Verify suite (11 checks): a dependence-free stream costs exactly *n + 4*
+      cycles; forwarded back-to-back dependent ALU ops stall **zero**; a load-use pair stalls
+      **exactly one**; no-forwarding strictly increases that; multi-cycle EX lengthens the schedule
+      monotonically (and a 5-cycle mul adds exactly 4 FU-latency cycles); a 2-bit predictor misses
+      only the cold + final branch of a loop where always-not-taken misses all 9 taken ones; a
+      same-line re-access hits while the cold one misses; one I-fetch per retired instruction and a
+      larger penalty costs more; and — the keystone — the tracer leaves the interpreter's registers,
+      pc and console output **byte-for-byte unchanged**.
+- [x] **The Pipeline tab (`src/ui/Perf.tsx` + `App.tsx` + CSS).** A new top-level tab that analyzes
+      the loaded program and shows: headline cycles / CPI / IPC / branch-accuracy / I$ & D$ miss
+      cards, a stacked **where-the-cycles-go** breakdown (data, load-use, control, I$, D$, FU
+      latency, structural), the **branch-prediction** comparison table, **cache** hit/miss tables,
+      and a colour-coded **pipeline diagram** (instruction rows × cycle columns) with held-stage
+      stalls and mispredictions flagged. Presets (Ideal core / Default / No forwarding) and live
+      knobs (forwarding, predictor + BHT size, resolve stage, mul/div latency, miss penalty, I$/D$
+      geometry) re-run the model instantly.
+- [x] **Docs.** A "Microarchitecture & performance" section in the ISA reference explaining the
+      pipeline model, the hazard/forwarding rules, every predictor, the cache parameters, and —
+      importantly — that the timing layer is a model layered on the **unchanged** functional core.
+
+#### Design rule (kept throughout)
+The interpreter is authoritative and untouched; the timing model is a *pure function of the
+retired trace* and never affects execution. So every prior self-test and example stays
+byte-for-byte identical, and the new numbers are independently unit-tested against
+hand-derived cycle counts.
+
 ## Session log
 
 - 2026-06-13 (claude / claude-opus-4-8): created from the template. Built the full RV32IM machine
@@ -317,3 +404,29 @@ journal, verification suite, examples and docs so it is observable and proven.
   covering identity/megapage/alias/fault-cause/RO-write/misaligned-superpage/SUM/MXR/MPRV/A-D/
   two-level-walk/`sret`/U-mode-illegal-CSR/encoding/full-rewind) and via
   `node scripts/verify-project.mjs riscv-studio-e3b1` (scope + conformance + lint + build).
+- 2026-06-17 (claude / claude-opus-4-8): **RISC-V Studio 6.0 — a microarchitecture performance
+  lab.** Added a **trace-driven timing model** (`src/perf/`) that turns the studio into a
+  teaching-grade performance analyzer without touching the functional core. The interpreter
+  gained a single new seam — an opt-in, null-guarded `tracer` hook (`src/vm/cpu.ts`) that emits a
+  `RetireEvent` per retired instruction — and the timing layer is a *pure function* of that real
+  dynamic stream, so architectural results are provably unchanged (a differential self-test checks
+  registers/pc/output byte-for-byte). The model is a classic **5-stage in-order pipeline**
+  (`pipeline.ts`) scheduled by the textbook stage-entry recurrence: data hazards with optional
+  **forwarding** (EX→EX and MEM→EX, including the unavoidable one-cycle load-use bubble) or the
+  no-forwarding write-before-read path, multi-cycle EX latencies (mul/div, fp add/mul/div),
+  **branch prediction** (`predictor.ts`: static, 1-bit, 2-bit bimodal, gshare + a BTB; a miss is
+  direction- or target-wrong) with a misprediction flush penalty (ID- or EX-resolve), and a
+  set-associative **I-cache + D-cache** (`cache.ts`: size/block/ways/LRU-FIFO/write-back-through)
+  whose miss penalty folds into stage latency. A per-instruction classifier (`isa-classes.ts`)
+  keeps the integer and float register files from aliasing in the hazard logic. The analyzer
+  (`analyze.ts`) runs the program on a throwaway history-free CPU (300k-instruction trace cap),
+  feeds the trace through the pipeline + caches + selected predictor, and replays the branch trace
+  through *all* predictors for a comparison. Shipped the **Pipeline tab** (`src/ui/Perf.tsx`):
+  cycles/CPI/IPC + branch-acc + I$/D$-miss cards, a where-the-cycles-go stall breakdown, the
+  all-predictors accuracy table, cache hit/miss tables, and the colour-coded instruction × cycle
+  **pipeline diagram** with held-stage stalls and ⚡-flagged mispredictions — all driven by live
+  presets/knobs. Added an ISA-reference Docs section. Verified headless (the 11 hand-computed cycle
+  oracles all green; the analyzer smoke-run clean across every bundled example — floats, atomics,
+  paging, compressed, framebuffer — with sensible CPI/cache numbers and the 300k cap engaging on
+  the infinite demos) and via `node scripts/verify-project.mjs riscv-studio-e3b1` (scope +
+  conformance + lint + build; **75/75** self-tests, 64 prior + 11 new).

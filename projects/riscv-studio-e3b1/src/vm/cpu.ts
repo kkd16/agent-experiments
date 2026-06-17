@@ -58,6 +58,32 @@ import type { Access, TlbEntry, TranslationStep, TranslationTrace } from './mmu'
 
 export type RunStatus = 'idle' | 'paused' | 'halted' | 'error' | 'ebreak';
 
+/**
+ * One retired instruction, as seen by an optional performance tracer. This is the *only* seam
+ * the microarchitecture timing model (`src/perf/`) uses: the functional interpreter stays the
+ * single source of truth, and the timing layer is a pure function of this real dynamic stream.
+ * The hook is null on the live debugging/run path (zero cost) and is attached only by the
+ * analyzer's throwaway CPU.
+ */
+export interface RetireEvent {
+  /** Address of the retired instruction. */
+  pc: number;
+  /** Encoded length in bytes (2 for a compressed op, 4 otherwise). */
+  size: number;
+  raw: number;
+  mnemonic: string;
+  format: import('./decode').DecodedFormat;
+  rd: number;
+  rs1: number;
+  rs2: number;
+  rs3: number;
+  /** `regs[rs1]` captured *before* execution — the base for an effective address. */
+  base: number;
+  imm: number;
+  /** The pc after this instruction retires (its target when it is a taken transfer). */
+  nextPc: number;
+}
+
 /** Everything needed to revert exactly one executed instruction. */
 interface UndoStep {
   pc: number;
@@ -203,6 +229,13 @@ export class Cpu {
   msip = 0;
 
   // --- time-travel: a bounded, per-instruction undo journal -----------------
+  /**
+   * Optional performance tracer: invoked once per retired instruction. Null on the live path
+   * (so there is no overhead and no behavioural change); the `src/perf/` analyzer attaches one
+   * to a throwaway CPU to capture the dynamic instruction stream for its timing model.
+   */
+  tracer: ((e: RetireEvent) => void) | null = null;
+
   /** When true, every `step()` records a compact record so it can be reverted. */
   recordHistory = true;
   private static readonly UNDO_CAP = 4096;
@@ -347,6 +380,7 @@ export class Cpu {
     // Fetch + decode + execute, all under a page-fault guard: any MMU fault during the
     // instruction's address translation unwinds here and is turned into a synchronous trap.
     try {
+      const pc0 = this.pc >>> 0;
       // Variable-length fetch: the low 2 bits of the first half-word select 16- vs 32-bit.
       const half = this.fetchHalf(this.pc) & 0xffff;
       let d: DecodedInstruction;
@@ -367,9 +401,18 @@ export class Cpu {
         size = 4;
       }
 
+      // Capture the address base before execution (a writeback to rd could clobber rs1).
+      const base = this.tracer ? this.regs[d.rs1] : 0;
       const advanced = this.execute(d, size);
       this.cycles++;
       if (this.rec) this.commitRecord();
+      if (this.tracer) {
+        const nextPc = advanced ? this.pc >>> 0 : (pc0 + size) >>> 0;
+        this.tracer({
+          pc: pc0, size, raw: d.raw, mnemonic: d.mnemonic, format: d.format,
+          rd: d.rd, rs1: d.rs1, rs2: d.rs2, rs3: d.rs3, base, imm: d.imm, nextPc,
+        });
+      }
       if (this.isStopped()) return false;
       if (!advanced) this.pc = (this.pc + size) >>> 0;
       return true;

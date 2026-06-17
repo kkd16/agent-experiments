@@ -21,6 +21,7 @@ import {
   PTE_D,
   PageFault,
 } from './mmu';
+import { runPerfTests } from '../perf/perf-tests';
 
 /** Build a CPU with a hand-laid Sv32 page table, parked in supervisor mode with paging on.
  *  root@0x80000: [0] identity megapage for [0,4MiB); [2] → leaf@0x81000.
@@ -1143,7 +1144,7 @@ const TESTS: Test[] = [
 ];
 
 export function runSelfTests(): TestResult[] {
-  return TESTS.map(({ name, fn }) => {
+  const core = TESTS.map(({ name, fn }) => {
     try {
       fn();
       return { name, passed: true, detail: 'ok' };
@@ -1151,4 +1152,6 @@ export function runSelfTests(): TestResult[] {
       return { name, passed: false, detail: (e as Error).message };
     }
   });
+  // The microarchitecture timing model carries its own hand-computed cycle oracles.
+  return [...core, ...runPerfTests()];
 }
