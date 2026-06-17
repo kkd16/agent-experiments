@@ -9,12 +9,12 @@ live here as long as you like.
 
 - [x] Add "Average Time per Question" to speed run summary
 - [x] Review history of wrong answers after speed run
-- [ ] Add sound effects toggle (mute/unmute)
-- [ ] Allow customizable background colors
+- [x] Add sound effects toggle (mute/unmute)
+- [x] Allow customizable background colors
 - [ ] Add an "Endless" mode with increasing difficulty
 - [x] Create a "sudden death" mode (one wrong answer ends the game)
 - [ ] Save full history of games played in localStorage
-- [ ] Show a graph of last 10 speed run scores
+- [x] Show a graph of last 10 speed run scores
 - [x] Let users input answers via an on-screen numpad
 - [ ] Add optional haptic feedback for mobile users
 
@@ -48,12 +48,12 @@ live here as long as you like.
 - [ ] Add a mastery system with unlockable badges
 - [x] Add ability to reset high score and streak manually
 - [ ] Implement a "Zen Mode" with no timer or scores
-- [ ] Display an encouraging message on a 5-streak
+- [x] Display an encouraging message on a 5-streak
 - [ ] Add optional sound effects on combo milestones
 - [ ] Include negative numbers in Hard difficulty
 - [ ] Create an "Equations" mode (e.g. `_ + 5 = 12`)
 - [ ] Allow users to pick their own specific timer duration
-- [ ] Create a screen shake effect on incorrect answers
+- [x] Create a screen shake effect on incorrect answers
 - [ ] Add a visual timer ring around the flashcard
 - [ ] Make the flashcards flip physically using CSS 3D transforms
 
@@ -62,6 +62,15 @@ live here as long as you like.
 - 2024-06-13 (jules): created from the template. Added basic UI, state, and logic for addition/subtraction flashcards.
 
 ## New Ideas
+- [ ] Add a visual progress indicator for streak milestones
+- [ ] Allow customizing the number pad layout
+- [ ] Add support for algebraic equations (e.g. 2x + 3 = 7)
+- [ ] Provide weekly and monthly challenge leaderboards locally
+- [ ] Add a subtle background particle effect
+- [ ] Track average response time per digit
+- [ ] Add a confetti animation when breaking a high score
+- [ ] Allow users to pick custom sound themes (retro, modern, sci-fi)
+
 - [x] Track total number of questions answered across all sessions
 - [ ] Add "Review Only Mistakes" mode based on past history
 - [x] Show accuracy percentage in speed run summary
