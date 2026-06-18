@@ -29,6 +29,24 @@ export interface FluidParams {
   gravity: number;
   /** Use MacCormack (2nd-order, clamped) advection for dye — sharper, less smeared. */
   sharpDye: boolean;
+  /**
+   * Over-relaxation factor ω for the linear (pressure/diffusion) solves. ω = 1 is
+   * plain Gauss–Seidel; ω ∈ (1, 2) is SOR (successive over-relaxation), which
+   * converges markedly faster — the same number of sweeps drives divergence lower.
+   */
+  overRelax: number;
+  /**
+   * Boussinesq buoyancy: lift per unit (T − ambient). Positive ⇒ hot fluid rises.
+   * This is *real* thermal buoyancy from a temperature field, distinct from the
+   * dye-mass `gravity` body force.
+   */
+  buoyancy: number;
+  /** Thermal diffusivity κ — how fast heat spreads (a diffusion of the T field). */
+  thermalDiffusion: number;
+  /** Newton cooling: relaxation of temperature back toward `ambient`, per second. */
+  cooling: number;
+  /** Reference temperature the buoyancy force and cooling are measured against. */
+  ambient: number;
 }
 
 export const DEFAULT_PARAMS: FluidParams = {
@@ -39,6 +57,11 @@ export const DEFAULT_PARAMS: FluidParams = {
   vorticity: 6,
   iterations: 24,
   gravity: 0,
+  overRelax: 1,
+  buoyancy: 0,
+  thermalDiffusion: 0,
+  cooling: 0,
+  ambient: 0,
 };
 
 export class FluidSolver {
@@ -58,6 +81,10 @@ export class FluidSolver {
   r0: Float32Array;
   g0: Float32Array;
   b0: Float32Array;
+
+  // Temperature field (Boussinesq buoyancy) + scratch.
+  t: Float32Array;
+  t0: Float32Array;
 
   // Solver scratch shared between the pressure & diffusion solves.
   p: Float32Array;
@@ -85,6 +112,8 @@ export class FluidSolver {
     this.r0 = z();
     this.g0 = z();
     this.b0 = z();
+    this.t = z();
+    this.t0 = z();
     this.p = z();
     this.div = z();
     this.curl = z();
@@ -113,10 +142,15 @@ export class FluidSolver {
     this.solid.fill(0);
   }
 
+  clearTemperature(value = 0): void {
+    this.t.fill(value);
+  }
+
   reset(): void {
     this.clearDye();
     this.clearVelocity();
     this.clearSolids();
+    this.clearTemperature();
   }
 
   /** Deposit dye + impulse at grid cell (i, j) within a soft radius. */
@@ -155,6 +189,27 @@ export class FluidSolver {
     }
   }
 
+  /** Deposit heat (a temperature increment) into a soft disc — drives buoyancy. */
+  splatHeat(i: number, j: number, amount: number, radius: number): void {
+    const N = this.N;
+    const rad = Math.max(1, radius);
+    const r2 = rad * rad;
+    const lo = -Math.ceil(rad);
+    const hi = Math.ceil(rad);
+    for (let dj = lo; dj <= hi; dj++) {
+      for (let di = lo; di <= hi; di++) {
+        const d2 = di * di + dj * dj;
+        if (d2 > r2) continue;
+        const ci = i + di;
+        const cj = j + dj;
+        if (ci < 1 || ci > N || cj < 1 || cj > N) continue;
+        const idx = this.IX(ci, cj);
+        if (this.solid[idx]) continue;
+        this.t[idx] += amount * Math.exp(-d2 / (0.5 * r2 + 1e-6));
+      }
+    }
+  }
+
   /** Mark / unmark a disc of solid cells. */
   paintSolid(i: number, j: number, radius: number, solid: boolean): void {
     const N = this.N;
@@ -176,6 +231,7 @@ export class FluidSolver {
           this.r[idx] = 0;
           this.g[idx] = 0;
           this.b[idx] = 0;
+          this.t[idx] = 0;
         }
       }
     }
@@ -236,7 +292,18 @@ export class FluidSolver {
     }
   }
 
-  /** Gauss–Seidel linear solver shared by diffusion and pressure projection. */
+  /**
+   * Red-black Gauss–Seidel / SOR linear solver shared by diffusion and pressure
+   * projection. With `omega = 1` this is Gauss–Seidel; with `omega ∈ (1, 2)` it
+   * is successive over-relaxation, which accelerates convergence of this
+   * (symmetric, diagonally dominant) Poisson system without moving its fixed
+   * point. The 5-point Laplacian stencil is bipartite on the checkerboard
+   * colouring `(i+j) mod 2`: every cell's four neighbours have the opposite
+   * colour, so each colour can be swept independently of its own. That makes the
+   * sweep order-independent within a colour — no left-to-right information bias —
+   * which both parallelises cleanly and keeps a reflection-symmetric problem
+   * symmetric (lexicographic Gauss–Seidel does not).
+   */
   private linSolve(
     bnd: Boundary,
     x: Float32Array,
@@ -244,26 +311,32 @@ export class FluidSolver {
     a: number,
     c: number,
     iters: number,
+    omega = 1,
   ): void {
     const N = this.N;
     const invC = 1 / c;
     const solid = this.solid;
+    const relax = omega !== 1;
     const IX = (i: number, j: number) => i + (N + 2) * j;
     for (let k = 0; k < iters; k++) {
-      for (let j = 1; j <= N; j++) {
-        for (let i = 1; i <= N; i++) {
-          const idx = IX(i, j);
-          if (solid[idx]) continue;
-          // For solid neighbours, substitute this cell's own value, which
-          // enforces a zero-gradient (Neumann) condition at the wall.
-          const xl = solid[idx - 1] ? x[idx] : x[idx - 1];
-          const xr = solid[idx + 1] ? x[idx] : x[idx + 1];
-          const xd = solid[idx - (N + 2)] ? x[idx] : x[idx - (N + 2)];
-          const xu = solid[idx + (N + 2)] ? x[idx] : x[idx + (N + 2)];
-          x[idx] = (x0[idx] + a * (xl + xr + xd + xu)) * invC;
+      for (let color = 0; color < 2; color++) {
+        for (let j = 1; j <= N; j++) {
+          for (let i = 1; i <= N; i++) {
+            if (((i + j) & 1) !== color) continue;
+            const idx = IX(i, j);
+            if (solid[idx]) continue;
+            // For solid neighbours, substitute this cell's own value, which
+            // enforces a zero-gradient (Neumann) condition at the wall.
+            const xl = solid[idx - 1] ? x[idx] : x[idx - 1];
+            const xr = solid[idx + 1] ? x[idx] : x[idx + 1];
+            const xd = solid[idx - (N + 2)] ? x[idx] : x[idx - (N + 2)];
+            const xu = solid[idx + (N + 2)] ? x[idx] : x[idx + (N + 2)];
+            const gs = (x0[idx] + a * (xl + xr + xd + xu)) * invC;
+            x[idx] = relax ? x[idx] + omega * (gs - x[idx]) : gs;
+          }
         }
+        this.setBnd(bnd, x);
       }
-      this.setBnd(bnd, x);
     }
   }
 
@@ -274,6 +347,7 @@ export class FluidSolver {
     diff: number,
     dt: number,
     iters: number,
+    omega = 1,
   ): void {
     const a = dt * diff * this.N * this.N;
     if (a === 0) {
@@ -281,7 +355,7 @@ export class FluidSolver {
       this.setBnd(bnd, x);
       return;
     }
-    this.linSolve(bnd, x, x0, a, 1 + 4 * a, iters);
+    this.linSolve(bnd, x, x0, a, 1 + 4 * a, iters, omega);
   }
 
   /** Semi-Lagrangian advection: trace each cell backwards and sample. */
@@ -382,7 +456,7 @@ export class FluidSolver {
   }
 
   /** Hodge projection: remove divergence so the field stays incompressible. */
-  private project(u: Float32Array, v: Float32Array, p: Float32Array, div: Float32Array, iters: number): void {
+  private project(u: Float32Array, v: Float32Array, p: Float32Array, div: Float32Array, iters: number, omega = 1): void {
     const N = this.N;
     const solid = this.solid;
     const IX = (i: number, j: number) => i + (N + 2) * j;
@@ -400,7 +474,7 @@ export class FluidSolver {
     }
     this.setBnd(0, div);
     this.setBnd(0, p);
-    this.linSolve(0, p, div, 1, 4, iters);
+    this.linSolve(0, p, div, 1, 4, iters, omega);
 
     for (let j = 1; j <= N; j++) {
       for (let i = 1; i <= N; i++) {
@@ -462,17 +536,27 @@ export class FluidSolver {
 
   step(dt: number, params: FluidParams): void {
     const { viscosity, velocityDissipation, dyeDissipation, vorticity, iterations, gravity } = params;
+    const omega = params.overRelax ?? 1;
+    const { buoyancy, thermalDiffusion, cooling, ambient } = params;
+    const transportHeat = buoyancy !== 0 || thermalDiffusion > 0 || cooling > 0;
     const N = this.N;
     const IX = (i: number, j: number) => i + (N + 2) * j;
 
-    // Gravity / buoyancy: dye-bearing cells feel a body force.
-    if (gravity !== 0) {
+    // Body forces on the velocity.
+    if (gravity !== 0 || buoyancy !== 0) {
       for (let j = 1; j <= N; j++) {
         for (let i = 1; i <= N; i++) {
           const idx = IX(i, j);
           if (this.solid[idx]) continue;
-          const mass = this.r[idx] + this.g[idx] + this.b[idx];
-          this.v[idx] += gravity * dt * mass;
+          if (gravity !== 0) {
+            // Dye-mass body force (legacy "smoke has weight" model).
+            const mass = this.r[idx] + this.g[idx] + this.b[idx];
+            this.v[idx] += gravity * dt * mass;
+          }
+          if (buoyancy !== 0) {
+            // Boussinesq buoyancy: hotter-than-ambient fluid rises (−y).
+            this.v[idx] -= buoyancy * dt * (this.t[idx] - ambient);
+          }
         }
       }
     }
@@ -484,15 +568,15 @@ export class FluidSolver {
     this.u0.set(this.u);
     this.v0.set(this.v);
     if (viscosity > 0) {
-      this.diffuse(1, this.u, this.u0, viscosity, dt, iterations);
-      this.diffuse(2, this.v, this.v0, viscosity, dt, iterations);
-      this.project(this.u, this.v, this.p, this.div, iterations);
+      this.diffuse(1, this.u, this.u0, viscosity, dt, iterations, omega);
+      this.diffuse(2, this.v, this.v0, viscosity, dt, iterations, omega);
+      this.project(this.u, this.v, this.p, this.div, iterations, omega);
       this.u0.set(this.u);
       this.v0.set(this.v);
     }
     this.advect(1, this.u, this.u0, this.u0, this.v0, dt);
     this.advect(2, this.v, this.v0, this.u0, this.v0, dt);
-    this.project(this.u, this.v, this.p, this.div, iterations);
+    this.project(this.u, this.v, this.p, this.div, iterations, omega);
 
     // Velocity damping.
     if (velocityDissipation > 0) {
@@ -500,6 +584,22 @@ export class FluidSolver {
       for (let k = 0; k < this.size; k++) {
         this.u[k] *= decay;
         this.v[k] *= decay;
+      }
+    }
+
+    // --- Temperature step --- advect, diffuse, and Newton-cool the T field.
+    if (transportHeat) {
+      this.t0.set(this.t);
+      this.advect(0, this.t, this.t0, this.u, this.v, dt);
+      if (thermalDiffusion > 0) {
+        this.t0.set(this.t);
+        this.diffuse(0, this.t, this.t0, thermalDiffusion, dt, iterations, omega);
+      }
+      if (cooling > 0) {
+        const k = Math.max(0, 1 - cooling * dt);
+        for (let idx = 0; idx < this.size; idx++) {
+          this.t[idx] = ambient + (this.t[idx] - ambient) * k;
+        }
       }
     }
 
@@ -536,5 +636,90 @@ export class FluidSolver {
     const N = this.N;
     const idx = this.IX(i, j);
     return 0.5 * (this.v[idx + 1] - this.v[idx - 1] - (this.u[idx + (N + 2)] - this.u[idx - (N + 2)]));
+  }
+
+  /**
+   * Run one Hodge projection on the current velocity field, in place. A public
+   * hook over the private `project` so the verification suite can exercise the
+   * incompressibility solve in isolation.
+   */
+  projectVelocity(iters: number, omega = 1): void {
+    this.project(this.u, this.v, this.p, this.div, iters, omega);
+  }
+
+  /** Bilinearly sample a field at fractional grid coordinate (x, y). */
+  sampleField(f: Float32Array, x: number, y: number): number {
+    const N = this.N;
+    if (x < 0.5) x = 0.5;
+    else if (x > N + 0.5) x = N + 0.5;
+    if (y < 0.5) y = 0.5;
+    else if (y > N + 0.5) y = N + 0.5;
+    const i0 = Math.floor(x);
+    const j0 = Math.floor(y);
+    const s1 = x - i0;
+    const s0 = 1 - s1;
+    const t1 = y - j0;
+    const t0 = 1 - t1;
+    const i1 = i0 + 1;
+    const j1 = j0 + 1;
+    return (
+      s0 * (t0 * f[this.IX(i0, j0)] + t1 * f[this.IX(i0, j1)]) +
+      s1 * (t0 * f[this.IX(i1, j0)] + t1 * f[this.IX(i1, j1)])
+    );
+  }
+
+  /** Bilinearly sample the velocity field — used by tracers & streamlines. */
+  sampleVelocity(x: number, y: number, out: { u: number; v: number }): void {
+    out.u = this.sampleField(this.u, x, y);
+    out.v = this.sampleField(this.v, x, y);
+  }
+
+  /** Is the fractional position inside (or on) a solid cell? */
+  isSolidAt(x: number, y: number): boolean {
+    const N = this.N;
+    const i = Math.round(x);
+    const j = Math.round(y);
+    if (i < 1 || i > N || j < 1 || j > N) return false;
+    return this.solid[this.IX(i, j)] !== 0;
+  }
+
+  /**
+   * Global diagnostics, computed over the fluid (non-solid) interior:
+   *  - kineticEnergy: mean ½|u|²,
+   *  - enstrophy: mean ½ω² (a measure of swirl / small-scale activity),
+   *  - maxDivergence: peak |∇·u| (how incompressible the field actually is),
+   *  - meanTemp: mean temperature.
+   * These are what the verification suite and the live readout watch.
+   */
+  diagnostics(): { kineticEnergy: number; enstrophy: number; maxDivergence: number; meanTemp: number; cells: number } {
+    const N = this.N;
+    const u = this.u;
+    const v = this.v;
+    let ke = 0;
+    let ens = 0;
+    let maxDiv = 0;
+    let tSum = 0;
+    let cells = 0;
+    for (let j = 1; j <= N; j++) {
+      for (let i = 1; i <= N; i++) {
+        const idx = this.IX(i, j);
+        if (this.solid[idx]) continue;
+        ke += u[idx] * u[idx] + v[idx] * v[idx];
+        const w = 0.5 * (v[idx + 1] - v[idx - 1] - (u[idx + (N + 2)] - u[idx - (N + 2)]));
+        ens += w * w;
+        const div = Math.abs(-0.5 * (u[idx + 1] - u[idx - 1] + v[idx + (N + 2)] - v[idx - (N + 2)]) / N);
+        if (div > maxDiv) maxDiv = div;
+        tSum += this.t[idx];
+        cells++;
+      }
+    }
+    const inv = cells > 0 ? 1 / cells : 0;
+    return {
+      kineticEnergy: 0.5 * ke * inv,
+      enstrophy: 0.5 * ens * inv,
+      maxDivergence: maxDiv,
+      meanTemp: tSum * inv,
+      cells,
+    };
   }
 }

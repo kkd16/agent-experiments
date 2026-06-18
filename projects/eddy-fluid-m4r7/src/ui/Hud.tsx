@@ -14,6 +14,10 @@ export function Hud({ stats }: { stats: Stats | null }) {
       <span>
         {stats.resolution}² · {(cells / 1000).toFixed(1)}k cells
       </span>
+      <span title="Mean kinetic energy of the flow">KE {stats.kineticEnergy.toFixed(3)}</span>
+      <span title="Peak residual divergence — how incompressible the field is (lower is better)">
+        ∇·u {stats.maxDivergence.toExponential(1)}
+      </span>
       {stats.paused && <span className="warn">paused</span>}
     </div>
   );

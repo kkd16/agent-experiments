@@ -7,7 +7,7 @@ import { DEFAULT_PARAMS, type FluidParams } from '../sim/fluid';
 import type { RenderMode } from '../render/renderer';
 import type { ColorMapName } from '../render/colormaps';
 
-export type Tool = 'dye' | 'wall' | 'erase';
+export type Tool = 'dye' | 'heat' | 'wall' | 'erase';
 
 export interface Settings {
   params: FluidParams;
@@ -15,6 +15,8 @@ export interface Settings {
   mode: RenderMode;
   colormap: ColorMapName;
   showArrows: boolean;
+  showStreamlines: boolean;
+  showParticles: boolean;
   exposure: number;
   tool: Tool;
   brushColor: string; // hex; "rainbow" sentinel for cycling hue
@@ -29,6 +31,8 @@ export const DEFAULT_SETTINGS: Settings = {
   mode: 'dye',
   colormap: 'inferno',
   showArrows: false,
+  showStreamlines: false,
+  showParticles: false,
   exposure: 1,
   tool: 'dye',
   brushColor: 'rainbow',

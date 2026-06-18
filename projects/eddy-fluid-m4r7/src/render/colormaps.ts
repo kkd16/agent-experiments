@@ -69,7 +69,20 @@ export const magma = ramp([
   [252, 253, 191],
 ]);
 
-export const COLORMAPS: Record<string, ColorMap> = { inferno, viridis, ice, magma };
+// Incandescent "heat" ramp — black-body-ish black → red → orange → white. Reads
+// instantly as temperature (cold = dark, hot = white), ideal for the T field.
+export const heat = ramp([
+  [4, 4, 12],
+  [60, 8, 8],
+  [140, 20, 10],
+  [210, 70, 12],
+  [245, 140, 30],
+  [252, 205, 90],
+  [255, 245, 200],
+  [255, 255, 255],
+]);
+
+export const COLORMAPS: Record<string, ColorMap> = { inferno, viridis, ice, magma, heat };
 export type ColorMapName = keyof typeof COLORMAPS;
 
 // Diverging map for signed fields (vorticity): blue → black → red.

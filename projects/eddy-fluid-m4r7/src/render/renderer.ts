@@ -8,13 +8,22 @@
 import { FluidSolver } from '../sim/fluid';
 import { COLORMAPS, diverging, type ColorMapName } from './colormaps';
 
-export type RenderMode = 'dye' | 'speed' | 'pressure' | 'curl';
+export type RenderMode = 'dye' | 'speed' | 'pressure' | 'curl' | 'temperature';
+
+export interface ParticleField {
+  x: Float32Array;
+  y: Float32Array;
+  count: number;
+}
 
 export interface RenderOptions {
   mode: RenderMode;
   colormap: ColorMapName;
   showArrows: boolean;
+  showStreamlines: boolean;
+  showParticles: boolean;
   exposure: number; // multiplier for dye/speed brightness
+  particles?: ParticleField;
 }
 
 export class Renderer {
@@ -76,6 +85,38 @@ export class Renderer {
       return;
     }
 
+    if (opts.mode === 'temperature') {
+      // Scalar T field, normalised to its current [min, max] then mapped through
+      // the chosen perceptual ramp (the "heat" map reads as incandescence).
+      const t = sim.t;
+      let lo = Infinity;
+      let hi = -Infinity;
+      for (let j = 1; j <= N; j++)
+        for (let i = 1; i <= N; i++) {
+          const idx = sim.IX(i, j);
+          if (sim.solid[idx]) continue;
+          const val = t[idx];
+          if (val < lo) lo = val;
+          if (val > hi) hi = val;
+        }
+      if (!isFinite(lo)) { lo = 0; hi = 1; }
+      const span = hi - lo < 1e-6 ? 1e-6 : hi - lo;
+      for (let j = 0; j < N; j++) {
+        for (let i = 0; i < N; i++) {
+          const idx = sim.IX(i + 1, j + 1);
+          const o = (j * N + i) * 4;
+          if (sim.solid[idx]) {
+            data[o] = 38; data[o + 1] = 42; data[o + 2] = 54; data[o + 3] = 255;
+            continue;
+          }
+          const s = Math.min(1, Math.max(0, ((t[idx] - lo) / span) * opts.exposure));
+          const [r, g, b] = cmap(s);
+          data[o] = r; data[o + 1] = g; data[o + 2] = b; data[o + 3] = 255;
+        }
+      }
+      return;
+    }
+
     if (opts.mode === 'speed') {
       for (let j = 0; j < N; j++) {
         for (let i = 0; i < N; i++) {
@@ -127,7 +168,75 @@ export class Renderer {
     target.clearRect(0, 0, w, h);
     target.drawImage(this.grid, 0, 0, w, h);
 
+    if (opts.showStreamlines) this.drawStreamlines(target, sim);
+    if (opts.showParticles && opts.particles) this.drawParticles(target, sim, opts.particles);
     if (opts.showArrows) this.drawArrows(target, sim);
+  }
+
+  /**
+   * Streamlines: from a coarse lattice of seeds, integrate the (instantaneous)
+   * velocity field with RK2 (midpoint) and draw the resulting curves. They trace
+   * the flow's tangent everywhere, so vortices and stagnation points pop out.
+   */
+  private drawStreamlines(target: CanvasRenderingContext2D, sim: FluidSolver): void {
+    const N = this.N;
+    const w = target.canvas.width;
+    const cell = w / N;
+    const seedStep = Math.max(6, Math.floor(N / 22));
+    const steps = 26;
+    const h = 0.6; // grid cells advanced per (normalised) unit velocity, per substep
+    const vel = { u: 0, v: 0 };
+    const mid = { u: 0, v: 0 };
+    target.lineWidth = 1;
+    target.strokeStyle = 'rgba(255,255,255,0.30)';
+    target.lineCap = 'round';
+    target.beginPath();
+    for (let sj = seedStep; sj <= N; sj += seedStep) {
+      for (let si = seedStep; si <= N; si += seedStep) {
+        if (sim.solid[sim.IX(si, sj)]) continue;
+        let x = si;
+        let y = sj;
+        target.moveTo((x - 0.5) * cell, (y - 0.5) * cell);
+        for (let k = 0; k < steps; k++) {
+          sim.sampleVelocity(x, y, vel);
+          const sp = Math.hypot(vel.u, vel.v);
+          if (sp < 1e-4) break;
+          // RK2 (midpoint): probe the half-step, then advance with its velocity.
+          sim.sampleVelocity(x + 0.5 * h * vel.u, y + 0.5 * h * vel.v, mid);
+          x += h * mid.u;
+          y += h * mid.v;
+          if (x < 1 || x > N || y < 1 || y > N || sim.isSolidAt(x, y)) break;
+          target.lineTo((x - 0.5) * cell, (y - 0.5) * cell);
+        }
+      }
+    }
+    target.stroke();
+  }
+
+  /**
+   * Passive tracer particles, drawn as short streaks along the local velocity so
+   * a still frame reads as motion (the engine owns their positions & lifetimes).
+   */
+  private drawParticles(target: CanvasRenderingContext2D, sim: FluidSolver, p: ParticleField): void {
+    const N = this.N;
+    const w = target.canvas.width;
+    const cell = w / N;
+    const vel = { u: 0, v: 0 };
+    target.lineWidth = Math.max(1, cell * 0.6);
+    target.lineCap = 'round';
+    target.beginPath();
+    for (let k = 0; k < p.count; k++) {
+      const gx = p.x[k];
+      const gy = p.y[k];
+      sim.sampleVelocity(gx, gy, vel);
+      const tail = Math.min(2.5, Math.hypot(vel.u, vel.v) * 1.2);
+      const px = (gx - 0.5) * cell;
+      const py = (gy - 0.5) * cell;
+      target.moveTo(px, py);
+      target.lineTo(px - vel.u * tail * cell, py - vel.v * tail * cell);
+    }
+    target.strokeStyle = 'rgba(245,250,255,0.55)';
+    target.stroke();
   }
 
   private drawArrows(target: CanvasRenderingContext2D, sim: FluidSolver): void {
