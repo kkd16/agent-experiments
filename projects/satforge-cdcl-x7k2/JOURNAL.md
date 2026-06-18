@@ -34,9 +34,18 @@ conflict teaches the solver a new clause that prunes an exponential swath of the
 - `src/sat/maxsat.ts` — weighted MaxSAT engine: linear SAT-UNSAT and core-guided WPM1, both
   on the same CDCL core (which now supports `solveAssuming` — incremental solving under
   assumptions with unsat-core extraction).
+- `src/smt/*` — the DPLL(T) SMT solver: EUF, LIA/LRA simplex, arrays, datatypes, strings,
+  Ackermann reduction, an SMT-LIB 2 parser, and the OMT/MaxSMT optimization layer; `src/smt/bv/*`
+  is the eager QF_BV bit-blaster.
+- `src/imc/*` — **Craig interpolation + model checking** (Session 11). `proofSolver.ts` is a
+  proof-logging CDCL that records a resolution refutation for UNSAT; `interpolant.ts` reads a
+  McMillan interpolant off that proof; `formula.ts` is a Boolean circuit layer that both
+  Tseitin-encodes to CNF and evaluates concretely; `modelcheck.ts` is the interpolation-based
+  safety model checker plus an **independent explicit-state BFS reachability oracle**.
 - `src/worker/solver.worker.ts` + `src/useSolver.ts` — runs the solver off the main thread.
 - `src/components/*` — Solution boards, statistics + search-dynamics chart, implication-graph
-  view, step-through trace, CNF/DIMACS inspector.
+  view, step-through trace, CNF/DIMACS inspector, the SMT Studio, and the Model Checker studio
+  (`ModelChecker.tsx`).
 
 ## Correctness
 
@@ -46,8 +55,11 @@ truth-table enumeration, asserting the verdicts match and every reported model t
 its formula. It also checks N-Queens (4–12), Sudoku, 3-colorability, and the pigeonhole UNSAT
 family — plus DRAT proofs, #SAT counts, MUS minimality, MaxSAT optima (Session 4), the DPLL(T)
 SMT theories (Session 5), the QF_BV bit-blaster (Session 6), the QF_AX theory of arrays
-(Session 7) and the QF_DT theory of algebraic datatypes (Session 8) and the QF_S bounded theory of strings (Session 9) all
-compared against independent references. All **267 assertions** pass.
+(Session 7) and the QF_DT theory of algebraic datatypes (Session 8) and the QF_S bounded theory of strings (Session 9),
+the OMT/MaxSMT optimizer (Session 10), and the Craig-interpolation + model-checking subsystem
+(Session 11 — the proof-logging solver vs. brute force *and* the main engine, interpolants vs.
+exhaustive verification of all three Craig properties, and the model checker vs. an independent
+explicit-state BFS oracle) all compared against independent references. All **284 assertions** pass.
 
 ## Ideas / backlog
 
@@ -507,6 +519,96 @@ The two engines are chosen so each is **exact and terminating**:
       optimizer — the one case currently reported `unknown`.
 - [ ] Run OMT off the main thread via the existing worker/task runner.
 
+### Session 11 — from *deciding* to *proving programs safe*: Craig interpolation + model checking
+
+Every prior session made SatForge decide harder questions about a *single* formula.
+This one closes a different loop: it makes the solver reason about **all reachable
+states of a system, for all time**. The bridge is **Craig interpolation** — the
+quiet theorem that an unsatisfiable `A ∧ B` always has a "summary" `I` that talks
+only about the vocabulary `A` and `B` share — and its killer application,
+**McMillan-style SAT-based unbounded model checking**. SatForge can now take a
+finite-state transition system `(Init, Trans, Bad)` and *prove* the bad state is
+unreachable on every execution, returning a machine-checked **inductive
+invariant**; or, when it is reachable, a concrete **counterexample trace**. The
+whole subsystem is new and self-contained (`src/imc/`), so nothing the prior 277
+assertions cover is touched.
+
+The reason this is honest and not hand-wavy is the **two independent oracles** it
+is held to — the project's signature move:
+
+- [x] **A proof-logging CDCL solver** (`src/imc/proofSolver.ts`) — a compact
+      two-watched-literal CDCL (1-UIP analysis, activity bumping, geometric
+      restarts) that, unlike the speed-tuned main engine, **records a resolution
+      refutation** when it answers UNSAT: a DAG of leaves (input clauses, tagged
+      with their interpolation partition) and resolution steps (with pivots),
+      plus the level-0 chain that derives the empty clause. Cross-checked against
+      *both* exhaustive truth tables *and* the main SatForge solver on 1500 random
+      CNFs, with every returned model verified.
+- [x] **Craig interpolation by McMillan's system** (`src/imc/interpolant.ts`) —
+      partial interpolants are attached to every clause (`⊤` for a B-clause, the
+      shared-variable sub-clause for an A-clause) and combined at each resolution
+      step (∨ if the pivot is A-local, ∧ otherwise); the empty clause's partial
+      interpolant *is* the interpolant. Reads straight off the recorded proof,
+      with auxiliary Tseitin variables kept side-local so `vars(I)` stays within
+      the shared vocabulary.
+- [x] **A from-scratch interpolation-based model checker** (`src/imc/modelcheck.ts`)
+      — bounded model checking unrolls `Init ∧ Trans^k ∧ Bad`; when bound *k* is
+      UNSAT, the interpolant of `(R ∧ Trans | rest)` over-approximates the one-step
+      image while *still* excluding Bad, and iterating it converges to an inductive
+      invariant (McMillan 2003). Returns `SAFE` + invariant, `UNSAFE` + shortest
+      counterexample, with spurious-abstraction detection that widens the bound.
+- [x] **A Boolean formula/circuit layer** (`src/imc/formula.ts`) — one
+      representation that both **Tseitin-encodes** to CNF (for the SAT engine) and
+      **evaluates** under a concrete assignment (for the oracle), plus variable
+      renaming (priming/unpriming), constant-folding simplification, and an infix
+      pretty-printer for the UI.
+- [x] **An independent explicit-state BFS oracle** (`bfsReachability`) — brute-force
+      reachability over the whole `2^stateBits` state graph, sharing **no code**
+      with the SAT/interpolation path. The self-test asserts the model checker's
+      `SAFE`/`UNSAFE` verdict matches it, that every reported invariant is genuinely
+      inductive (`Init ⟹ Inv`, `Inv ∧ Trans ⟹ Inv′`, `Inv ⟹ ¬Bad`), and that every
+      counterexample replays through `Trans` *and* has the shortest possible length.
+- [x] **A "Model Checker" studio** (`src/components/ModelChecker.tsx`, third top-bar
+      mode) — a gallery of transition systems (modulo-6 counter, a saturating
+      counter that overflows, a mutual-exclusion protocol and its broken variant, a
+      traffic-light controller, a token ring), each run live with its verdict, the
+      independent-oracle cross-check shown side by side, the discovered inductive
+      invariant (or counterexample table), and the interpolation search trace. A
+      second **Interpolation** panel computes and exhaustively verifies the
+      interpolant of any editable `A`/`B` clause pair.
+- [x] **Correctness** (`src/imc/selfcheck.ts`, folded into `selftest.ts`) — 1500
+      random CNFs (solver vs. brute force vs. main engine + model validity), ~500
+      random UNSAT partitions whose interpolants are checked against all three
+      Craig properties by exhaustive enumeration, 300 random *total* transition
+      systems where the model checker must match the BFS oracle (verdict, inductive
+      invariant, and shortest counterexample), and the full curated gallery. The
+      headless gate grew **277 → 284 assertions**.
+
+#### Verified
+
+- The proof-logging solver agrees with brute force *and* the main solver on 1500
+  random CNFs; every interpolant produced for ~500 random UNSAT partitions passes
+  `A ⟹ I`, `I ∧ B` unsat, and the vocabulary containment by exhaustive check; the
+  model checker matches the explicit-state BFS oracle on 300 random total systems
+  and the whole gallery, with every `SAFE` invariant confirmed inductive and every
+  `UNSAFE` counterexample confirmed valid and shortest. lint + tsc + build + the
+  full self-test gate green.
+
+#### Future ideas
+
+- [ ] **Lift interpolation to the theories** — interpolants for EUF and LRA (the
+      DPLL(T) core already produces theory conflicts), so model checking can run
+      over infinite-state systems with arithmetic/array state.
+- [ ] **IC3 / PDR** alongside interpolation — incremental, frame-based induction,
+      cross-checking the same SAFE/UNSAFE verdict.
+- [ ] **A transition-system DSL / editor** in the studio so users can author their
+      own circuits and properties (registers, latches, guards) instead of picking
+      from the gallery.
+- [ ] **Liveness / k-induction** as a second proof rule beside the interpolation
+      fixpoint, each certifying the other.
+- [ ] Emit the interpolation **resolution proof** in the existing Proof tab and
+      DRAT-check it with `src/sat/drat.ts`.
+
 ## Session log
 
 - 2026-06-15 (claude): Created the project. Implemented the full CDCL solver from scratch
@@ -715,3 +817,28 @@ The two engines are chosen so each is **exact and terminating**:
   weight, exact QF_LRA cases (a vertex LP with an `obj > opt ⇒ UNSAT` optimality certificate, an
   open infimum, an unbounded objective, a disjunctive minimum) and end-to-end parser checks. Harness
   grew **267 → 277 assertions**. Lint + build + full gate green.
+- 2026-06-18 (claude): Went from *deciding formulas* to **proving programs safe** — added a
+  from-scratch **Craig interpolation** engine and an **interpolation-based safety model checker**
+  (McMillan 2003), a whole new self-contained subsystem (`src/imc/`) that leaves the prior 277
+  assertions untouched. Built a **proof-logging CDCL** (`proofSolver.ts`: two-watched literals,
+  1-UIP analysis, restarts) that records a full **resolution refutation** — a DAG of partition-
+  tagged leaves and pivoted resolution steps plus the level-0 empty-clause chain — so McMillan's
+  algorithm (`interpolant.ts`) can read an interpolant straight off it (⊤ for B-clauses, the
+  shared sub-clause for A-clauses, ∨/∧ at each step by pivot locality), with Tseitin aux vars kept
+  side-local so `vars(I)` stays in the shared vocabulary. On top, a model checker
+  (`modelcheck.ts`) unrolls bounded model checking and iterates the interpolant of `(R∧Trans | rest)`
+  into an **inductive invariant** proving the bad state unreachable *for all time* — or returns a
+  shortest **counterexample** — with spurious-abstraction detection that widens the bound. A
+  one-representation Boolean **formula/circuit layer** (`formula.ts`) both Tseitin-encodes to CNF
+  and evaluates concretely, which is what lets an **independent explicit-state BFS oracle**
+  (`bfsReachability`, sharing no code with the SAT path) certify every verdict. New **Model Checker**
+  studio mode (`ModelChecker.tsx`): a gallery (modulo-6 counter, overflow counter, mutual exclusion
+  + a broken variant, traffic-light controller, token ring) run live with verdict, the BFS
+  cross-check shown beside it, the discovered invariant or counterexample table and the
+  interpolation search trace; plus an **Interpolation** panel that computes and exhaustively
+  verifies the interpolant of any editable A/B clause pair. Certified the project's way: the
+  proof solver agrees with brute force **and** the main engine on **1500 random CNFs** (models
+  verified), **~500 random UNSAT partitions** whose interpolants pass all three Craig properties
+  by exhaustive enumeration, **300 random total transition systems** where the checker must match
+  the BFS oracle on verdict, inductive invariant, *and* shortest counterexample, plus the full
+  curated gallery. Harness grew **277 → 284 assertions**. Lint + build + full gate green.

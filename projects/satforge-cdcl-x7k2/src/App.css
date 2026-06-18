@@ -1747,3 +1747,227 @@ table.bv-model tr:hover td {
   border-radius: 11px;
   margin-top: 6px;
 }
+
+/* ---- Model checker / interpolation studio ---- */
+.imc-side {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.imc-subswitch {
+  display: flex;
+  gap: 6px;
+}
+.imc-subswitch button {
+  flex: 1;
+}
+.imc-blurb {
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--muted);
+}
+.imc-blurb strong {
+  color: var(--text);
+}
+.imc-pick {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 16px;
+}
+.imc-pick label {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+}
+.imc-pick select {
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 8px;
+  padding: 7px 10px;
+  font-size: 14px;
+}
+.imc-meta {
+  font-size: 12px;
+  color: var(--muted);
+}
+.imc-cards {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+.imc-card {
+  background: var(--bg-soft);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 14px 16px;
+}
+.imc-card.oracle {
+  border-color: rgba(110, 168, 254, 0.4);
+}
+.imc-card h3 {
+  margin: 0 0 6px;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+}
+.imc-card p {
+  margin: 0;
+  font-size: 13.5px;
+  line-height: 1.5;
+}
+.imc-panel {
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 16px;
+  margin-bottom: 16px;
+}
+.imc-panel h3 {
+  margin: 0 0 10px;
+  font-size: 15px;
+}
+.imc-formula {
+  background: #0c1224;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px 14px;
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 14px;
+  color: #cfe0ff;
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-x: auto;
+}
+.imc-checks {
+  list-style: none;
+  padding: 0;
+  margin: 12px 0 0;
+  display: flex;
+  gap: 18px;
+  flex-wrap: wrap;
+  font-family: ui-monospace, monospace;
+  font-size: 13.5px;
+}
+.check-ok {
+  color: var(--sat);
+}
+.check-bad {
+  color: var(--unsat);
+  font-weight: 700;
+}
+.imc-note {
+  margin: 12px 0 0;
+  font-size: 12.5px;
+  color: var(--muted);
+  line-height: 1.5;
+}
+.imc-trace {
+  border-collapse: collapse;
+  font-family: ui-monospace, monospace;
+  font-size: 13px;
+}
+.imc-trace th,
+.imc-trace td {
+  border: 1px solid var(--border);
+  padding: 5px 11px;
+  text-align: center;
+  color: var(--text);
+}
+.imc-trace th {
+  color: var(--muted);
+  font-weight: 600;
+}
+.imc-trace tr.cex-bad td {
+  background: rgba(239, 71, 111, 0.16);
+  color: #ffd6e0;
+}
+.imc-log {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--text);
+}
+.imc-kind {
+  display: inline-block;
+  min-width: 64px;
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  padding: 1px 7px;
+  border-radius: 6px;
+  margin-right: 8px;
+  border: 1px solid var(--border);
+  color: var(--muted);
+}
+.imc-bmc {
+  color: var(--accent);
+  border-color: rgba(110, 168, 254, 0.5);
+}
+.imc-fixpoint {
+  color: var(--sat);
+  border-color: rgba(34, 197, 94, 0.5);
+}
+.imc-spurious {
+  color: var(--unknown, #f59e0b);
+  border-color: rgba(245, 158, 11, 0.5);
+}
+.imc-k {
+  font-family: ui-monospace, monospace;
+  color: var(--muted);
+  margin-right: 8px;
+}
+.imc-def {
+  margin: 0;
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 6px 16px;
+  font-size: 13.5px;
+}
+.imc-def dt {
+  color: var(--accent);
+  font-family: ui-monospace, monospace;
+}
+.imc-def dd {
+  margin: 0;
+  font-family: ui-monospace, monospace;
+  color: #cfe0ff;
+}
+.imc-ab {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+  margin-bottom: 16px;
+}
+.imc-ab label {
+  display: block;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+  margin-bottom: 6px;
+}
+.imc-ab textarea {
+  width: 100%;
+  background: #0c1224;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: #cfe0ff;
+  font-family: ui-monospace, monospace;
+  font-size: 13.5px;
+  padding: 10px;
+  resize: vertical;
+  box-sizing: border-box;
+}
+@media (max-width: 760px) {
+  .imc-cards,
+  .imc-ab {
+    grid-template-columns: 1fr;
+  }
+}
