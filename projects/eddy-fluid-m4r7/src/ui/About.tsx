@@ -156,6 +156,14 @@ export function About() {
           function, so the suite checks it too (it reduces to the identity under no flow, can’t
           overshoot the noise, and provably streaks along the flow).
         </p>
+        <p>
+          Finally, the <strong>Q-vortex</strong> mode renders the <strong>Q-criterion</strong>
+          <code> Q = ½(‖Ω‖² − ‖S‖²)</code> — the part of the velocity gradient where rotation beats
+          strain. It lights up genuine <em>vortex cores</em> while ignoring the plain shear that a
+          raw vorticity view can’t tell apart from a vortex (a uniform shear has vorticity but{' '}
+          <code>Q = 0</code>; a solid-body rotation has <code>Q = Ω² &gt; 0</code> — both checked on
+          the Verify page).
+        </p>
 
         <h2>Does it actually work? The verification page</h2>
         <p>

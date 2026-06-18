@@ -938,6 +938,26 @@ export class FluidSolver {
     return 0.5 * (this.v[idx + 1] - this.v[idx - 1] - (this.u[idx + (N + 2)] - this.u[idx - (N + 2)]));
   }
 
+  /**
+   * The Hunt **Q-criterion** at interior cell (i, j): Q = ½(‖Ω‖² − ‖S‖²), where Ω
+   * and S are the antisymmetric (rotation) and symmetric (strain) parts of the
+   * velocity gradient. Q > 0 marks regions where rotation dominates strain — the
+   * standard objective definition of a *vortex core*, which a raw vorticity field
+   * confuses with mere shear. Computed in grid units from central differences.
+   */
+  qCriterion(i: number, j: number): number {
+    const N = this.N;
+    const S = N + 2;
+    const idx = this.IX(i, j);
+    const ux = 0.5 * (this.u[idx + 1] - this.u[idx - 1]);
+    const uy = 0.5 * (this.u[idx + S] - this.u[idx - S]);
+    const vx = 0.5 * (this.v[idx + 1] - this.v[idx - 1]);
+    const vy = 0.5 * (this.v[idx + S] - this.v[idx - S]);
+    const omegaSq = 0.5 * (uy - vx) * (uy - vx); // ‖Ω‖_F²
+    const strainSq = ux * ux + vy * vy + 0.5 * (uy + vx) * (uy + vx); // ‖S‖_F²
+    return 0.5 * (omegaSq - strainSq);
+  }
+
   /** Dispatch the projection to the chosen Poisson solver. */
   private projectWith(solver: 'sor' | 'cg', iters: number, omega: number): void {
     if (solver === 'cg') this.projectCG(this.u, this.v, this.p, this.div, iters);

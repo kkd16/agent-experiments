@@ -9,7 +9,15 @@ import { FluidSolver } from '../sim/fluid';
 import { COLORMAPS, diverging, type ColorMapName } from './colormaps';
 import { computeLIC, makeNoise } from './lic';
 
-export type RenderMode = 'dye' | 'speed' | 'pressure' | 'curl' | 'temperature' | 'lic' | 'schlieren';
+export type RenderMode =
+  | 'dye'
+  | 'speed'
+  | 'pressure'
+  | 'curl'
+  | 'temperature'
+  | 'lic'
+  | 'schlieren'
+  | 'qcrit';
 
 export interface ParticleField {
   x: Float32Array;
@@ -127,6 +135,35 @@ export class Renderer {
             continue;
           }
           const s = Math.min(1, Math.max(0, ((t[idx] - lo) / span) * opts.exposure));
+          const [r, g, b] = cmap(s);
+          data[o] = r; data[o + 1] = g; data[o + 2] = b; data[o + 3] = 255;
+        }
+      }
+      return;
+    }
+
+    if (opts.mode === 'qcrit') {
+      // Q-criterion: highlight vortex cores (Q > 0, rotation beating strain),
+      // normalised to the current peak positive Q through the chosen colour-map.
+      let maxQ = 1e-6;
+      for (let j = 1; j <= N; j++)
+        for (let i = 1; i <= N; i++) {
+          const idx = sim.IX(i, j);
+          if (sim.solid[idx]) continue;
+          const q = sim.qCriterion(i, j);
+          if (q > maxQ) maxQ = q;
+        }
+      const scale = (opts.exposure * 1.1) / maxQ;
+      for (let j = 0; j < N; j++) {
+        for (let i = 0; i < N; i++) {
+          const idx = sim.IX(i + 1, j + 1);
+          const o = (j * N + i) * 4;
+          if (sim.solid[idx]) {
+            data[o] = 38; data[o + 1] = 42; data[o + 2] = 54; data[o + 3] = 255;
+            continue;
+          }
+          const q = sim.qCriterion(i + 1, j + 1);
+          const s = q > 0 ? Math.min(1, q * scale) : 0; // strain regions stay dark
           const [r, g, b] = cmap(s);
           data[o] = r; data[o + 1] = g; data[o + 2] = b; data[o + 3] = 255;
         }
