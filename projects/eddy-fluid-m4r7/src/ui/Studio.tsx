@@ -26,6 +26,10 @@ export function Studio() {
   const [paused, setPaused] = useState(false);
   const [stats, setStats] = useState<Stats | null>(null);
   const [toast, setToast] = useState<string | null>(null);
+  const [recording, setRecording] = useState(false);
+  const recorderRef = useRef<MediaRecorder | null>(null);
+  const chunksRef = useRef<Blob[]>([]);
+  const canRecord = typeof MediaRecorder !== 'undefined';
 
   // Create the engine once.
   useEffect(() => {
@@ -106,6 +110,54 @@ export function Studio() {
       flashToast('Snapshot unavailable here');
     }
   };
+
+  const toggleRecord = () => {
+    if (recording) {
+      recorderRef.current?.stop();
+      return;
+    }
+    try {
+      const canvas = canvasRef.current as (HTMLCanvasElement & { captureStream?: (fps?: number) => MediaStream }) | null;
+      if (!canvas?.captureStream) {
+        flashToast('Recording unavailable here');
+        return;
+      }
+      const stream = canvas.captureStream(30);
+      const mime = ['video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm'].find(
+        (m) => MediaRecorder.isTypeSupported(m),
+      );
+      const rec = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined);
+      chunksRef.current = [];
+      rec.ondataavailable = (e) => {
+        if (e.data.size > 0) chunksRef.current.push(e.data);
+      };
+      rec.onstop = () => {
+        const blob = new Blob(chunksRef.current, { type: 'video/webm' });
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = `eddy-${settings.sceneId}-${Date.now()}.webm`;
+        a.click();
+        URL.revokeObjectURL(a.href);
+        setRecording(false);
+        recorderRef.current = null;
+        flashToast('Saved WebM clip');
+      };
+      rec.start();
+      recorderRef.current = rec;
+      setRecording(true);
+      flashToast('Recording…');
+    } catch {
+      flashToast('Recording failed — see console');
+      setRecording(false);
+    }
+  };
+
+  // Stop any in-flight recording when the studio unmounts.
+  useEffect(() => {
+    return () => {
+      if (recorderRef.current && recorderRef.current.state !== 'inactive') recorderRef.current.stop();
+    };
+  }, []);
 
   const togglePause = () => {
     setPaused((p) => {
@@ -199,6 +251,9 @@ export function Studio() {
         onStep={() => engineRef.current?.requestStep()}
         onShare={onShare}
         onSnapshot={onSnapshot}
+        onToggleRecord={toggleRecord}
+        recording={recording}
+        canRecord={canRecord}
       />
     </div>
   );

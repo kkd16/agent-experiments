@@ -156,6 +156,179 @@ export const SCENES: Scene[] = [
       }
     },
   },
+  {
+    id: 'rayleigh-benard',
+    name: 'Rayleigh–Bénard convection',
+    blurb:
+      'A fluid heated from below and cooled from above. Past a critical temperature gap the still layer breaks into a regular train of counter-rotating convection rolls — the pattern in a heated pan and in the Sun’s surface. Switch the render mode to Temperature to see the cells.',
+    params: {
+      buoyancy: 75,
+      thermalDiffusion: 0.00004,
+      viscosity: 0.00004,
+      vorticity: 1.5,
+      velocityDissipation: 0,
+      dyeDissipation: 0.02,
+      gravity: 0,
+      cooling: 0,
+      ambient: 0,
+      iterations: 30,
+      overRelax: 1.6,
+    },
+    exposure: 1.1,
+    setup: (sim) => {
+      const N = sim.N;
+      // A faint velocity perturbation breaks the unstable equilibrium so the
+      // rolls can grow; the wavenumber sets the initial cell count.
+      for (let j = 1; j <= N; j++)
+        for (let i = 1; i <= N; i++) {
+          sim.v[sim.IX(i, j)] = 0.02 * Math.sin((6 * Math.PI * i) / N);
+        }
+    },
+    emit: (sim, { time }) => {
+      const N = sim.N;
+      const hot = 1.2;
+      const cold = -1.2;
+      for (let i = 1; i <= N; i++) {
+        for (let j = 1; j <= 2; j++) {
+          const idx = sim.IX(i, j);
+          if (!sim.solid[idx]) sim.t[idx] = cold; // cold lid (top)
+        }
+        for (let j = N - 1; j <= N; j++) {
+          const idx = sim.IX(i, j);
+          if (!sim.solid[idx]) sim.t[idx] = hot + 0.12 * Math.sin(i * 0.7 + time * 0.6); // hot plate (bottom)
+        }
+      }
+      // Seed faint dye at the hot plate so the rolls also show in Dye mode.
+      for (let i = 4; i <= N - 4; i += Math.max(3, Math.floor(N / 18))) {
+        sim.splat(i, N - 2, 0, 0, hueToRGB(0.04, 1.4), 1.1, 0.4);
+      }
+    },
+  },
+  {
+    id: 'thermal-plume',
+    name: 'Buoyant thermal plume',
+    blurb:
+      'A genuine hot source: a temperature field driven by Boussinesq buoyancy (not dye-mass), rising, cooling, and curling into a mushroom cap. Try the Temperature render mode.',
+    params: {
+      buoyancy: 95,
+      thermalDiffusion: 0.00002,
+      cooling: 0.25,
+      vorticity: 12,
+      viscosity: 0,
+      velocityDissipation: 0.005,
+      dyeDissipation: 0.04,
+      gravity: 0,
+      ambient: 0,
+      iterations: 26,
+      overRelax: 1.4,
+    },
+    exposure: 1.2,
+    setup: () => {},
+    emit: (sim, { time }) => {
+      const N = sim.N;
+      const cx = Math.floor(N * 0.5 + Math.sin(time * 0.7) * N * 0.03);
+      const cy = N - Math.max(3, Math.floor(N * 0.05));
+      const rad = Math.max(2, N * 0.03);
+      sim.splatHeat(cx, cy, 4, rad);
+      sim.splat(cx, cy, 0, 0, hueToRGB((0.03 + 0.05 * Math.sin(time * 0.4) + 1) % 1, 2.2), rad, 1.4);
+    },
+  },
+  {
+    id: 'kelvin-helmholtz',
+    name: 'Kelvin–Helmholtz shear',
+    blurb:
+      'Two streams sliding past each other in opposite directions. The shear layer between them is unstable and rolls up into a row of cat’s-eye billows — the physics of wind-driven waves and the bands of Jupiter.',
+    params: {
+      vorticity: 5,
+      viscosity: 0.000012,
+      velocityDissipation: 0,
+      dyeDissipation: 0.008,
+      gravity: 0,
+      buoyancy: 0,
+      iterations: 28,
+      overRelax: 1.5,
+    },
+    exposure: 1.3,
+    setup: (sim) => {
+      const N = sim.N;
+      const mid = N / 2;
+      for (let j = 1; j <= N; j++)
+        for (let i = 1; i <= N; i++) {
+          const idx = sim.IX(i, j);
+          const top = j < mid;
+          sim.u[idx] = top ? 0.8 : -0.8;
+          const dyc = (j - mid) / (0.06 * N);
+          sim.v[idx] = 0.12 * Math.sin((12 * Math.PI * i) / N) * Math.exp(-dyc * dyc);
+          if (top) {
+            sim.r[idx] = 1.6;
+            sim.g[idx] = 0.5;
+            sim.b[idx] = 0.2;
+          } else {
+            sim.r[idx] = 0.2;
+            sim.g[idx] = 0.6;
+            sim.b[idx] = 1.8;
+          }
+        }
+    },
+    emit: (sim) => {
+      const N = sim.N;
+      const mid = N / 2;
+      // Sustain the two opposing streams at their entry edges and keep feeding dye.
+      for (let j = 1; j <= N; j++) {
+        const top = j < mid;
+        const idx = sim.IX(top ? 2 : N - 1, j);
+        if (!sim.solid[idx]) sim.u[idx] = top ? 0.8 : -0.8;
+      }
+      for (let j = 2; j < mid; j += Math.max(2, Math.floor(N / 24)))
+        sim.splat(3, j, 0.8, 0, [1.6, 0.5, 0.2], 1.1, 0.7);
+      for (let j = Math.ceil(mid); j <= N - 1; j += Math.max(2, Math.floor(N / 24)))
+        sim.splat(N - 3, j, -0.8, 0, [0.2, 0.6, 1.8], 1.1, 0.7);
+    },
+  },
+  {
+    id: 'lid-cavity',
+    name: 'Lid-driven cavity',
+    blurb:
+      'The textbook CFD benchmark: a closed box whose top lid slides steadily sideways, dragging the fluid into one big recirculating vortex with smaller counter-rotating eddies in the bottom corners. Turn on Streamlines or Particles to see the circulation.',
+    params: {
+      viscosity: 0.00012,
+      vorticity: 0,
+      velocityDissipation: 0,
+      dyeDissipation: 0.004,
+      gravity: 0,
+      buoyancy: 0,
+      iterations: 40,
+      overRelax: 1.6,
+    },
+    exposure: 1.4,
+    setup: (sim) => {
+      const N = sim.N;
+      // Alternating faint dye bands so the recirculation is visible in Dye mode.
+      for (let j = 1; j <= N; j++)
+        for (let i = 1; i <= N; i++) {
+          const band = Math.floor((j / N) * 6) % 2;
+          const idx = sim.IX(i, j);
+          if (band === 0) {
+            sim.r[idx] = 0.8;
+            sim.g[idx] = 0.4;
+          } else {
+            sim.b[idx] = 0.9;
+            sim.g[idx] = 0.4;
+          }
+        }
+    },
+    emit: (sim) => {
+      const N = sim.N;
+      const U = 0.9;
+      for (let i = 1; i <= N; i++) {
+        const idx = sim.IX(i, 1); // top interior row = the sliding lid
+        if (!sim.solid[idx]) {
+          sim.u[idx] = U;
+          sim.v[idx] = 0;
+        }
+      }
+    },
+  },
 ];
 
 /** Map a hue (0..1) to an RGB triple scaled by `intensity` (for dye injection). */

@@ -74,6 +74,61 @@ export function About() {
           and tall chimneys sway. Load that scene and watch it self-organise.
         </p>
 
+        <h2>Temperature &amp; buoyancy</h2>
+        <p>
+          Eddy carries a real <strong>temperature field</strong> alongside the dye. It is advected
+          by the flow and spread by thermal diffusion, and it pushes back on the fluid through the{' '}
+          <strong>Boussinesq approximation</strong>: a parcel hotter than the ambient reference feels
+          an upward body force proportional to <code>T − T₀</code>. That single coupling is enough to
+          produce genuine convection. Heat a layer from below and cool it from above and, past a
+          critical temperature gap, the motionless fluid spontaneously organises into a row of
+          counter-rotating <strong>Rayleigh–Bénard rolls</strong> — the same instability you see in a
+          pan of oil and on the surface of the Sun. Paint with the <em>Heat</em> brush, or load the
+          convection / plume scenes and switch the render mode to <em>Temperature</em>.
+        </p>
+
+        <h2>Faster, fairer solves — red-black SOR</h2>
+        <p>
+          The pressure and viscosity steps are big sparse linear systems. The original solver swept
+          them with Gauss–Seidel in reading order, which quietly biases the result left-to-right.
+          Eddy now uses a <strong>red-black</strong> ordering: the five-point Laplacian only ever
+          couples a cell to its opposite-coloured neighbours, so each colour can be updated
+          independently of its own. That removes the directional bias (a mirror-symmetric setup now
+          stays mirror-symmetric) and parallelises cleanly. On top of it sits{' '}
+          <strong>successive over-relaxation</strong> (the <code>ω</code> slider): nudging each update
+          past the Gauss–Seidel value accelerates convergence several-fold in the real-time sweep
+          budget, without changing the solution it converges to.
+        </p>
+        <p>
+          One honest caveat, shown right in the verification page: on a <em>collocated</em> grid
+          (velocity and pressure sampled at the same points) the divergence and pressure-gradient
+          stencils compose into a wide one, so projection drives the smooth divergence down sharply
+          but leaves a small high-frequency “checkerboard” residual it can’t remove. It’s harmless
+          here — and the suite measures it rather than hiding it.
+        </p>
+
+        <h2>Seeing the flow — streamlines &amp; tracers</h2>
+        <p>
+          Colour alone hides the velocity field’s structure. Two overlays expose it:{' '}
+          <strong>streamlines</strong> integrate the instantaneous velocity from a lattice of seeds
+          (midpoint/RK2) so vortices and stagnation points pop out, and thousands of passive{' '}
+          <strong>tracer particles</strong> are carried along the flow and drawn as short
+          velocity-aligned streaks, turning even a paused frame into a legible picture of motion.
+
+        </p>
+
+        <h2>Does it actually work? The verification page</h2>
+        <p>
+          A solver you can’t check is a solver you can’t trust. The <a href="#/verify">Verify</a> page
+          runs a battery of numerical checks live in your browser: that projection removes
+          divergence and adds no left/right bias, that the linear solve really converges and SOR
+          beats plain Gauss–Seidel, that advection reproduces constants and obeys a maximum principle
+          (no overshoot, no negative dye), that diffusion conserves heat and smooths it, that the
+          discrete curl matches a solid-body rotation exactly, that buoyancy lifts hot fluid, and
+          that the whole thing stays bounded for any timestep. Each check reports the number it
+          measured.
+        </p>
+
         <h2>Rendering</h2>
         <p>
           Three dye channels (R/G/B) are advected through the same velocity field, so colours mix

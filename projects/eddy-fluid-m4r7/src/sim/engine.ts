@@ -7,6 +7,7 @@
 import { FluidSolver, type FluidParams } from './fluid';
 import { Renderer, type RenderMode } from '../render/renderer';
 import type { ColorMapName } from '../render/colormaps';
+import { ParticleSystem } from './particles';
 import { sceneById, type Scene } from './scenes';
 import { hexToDye, type Settings, type Tool } from '../state/settings';
 import { hueToRGB } from './scenes';
@@ -16,6 +17,9 @@ export interface Stats {
   stepMs: number;
   resolution: number;
   paused: boolean;
+  kineticEnergy: number;
+  enstrophy: number;
+  maxDivergence: number;
 }
 
 const FORCE_BASE = 0.16; // tames pointer-derived velocities to the normalised scale
@@ -29,9 +33,14 @@ interface Pointer {
   moved: boolean;
 }
 
+function particleCount(N: number): number {
+  return Math.min(5000, Math.max(800, Math.round(N * N * 0.12)));
+}
+
 export class FluidEngine {
   sim: FluidSolver;
   private renderer: Renderer;
+  private particles: ParticleSystem;
   private ctx: CanvasRenderingContext2D;
   private settings: Settings;
   private scene: Scene;
@@ -57,6 +66,8 @@ export class FluidEngine {
     this.settings = settings;
     this.sim = new FluidSolver(settings.resolution);
     this.renderer = new Renderer(settings.resolution);
+    this.particles = new ParticleSystem(particleCount(settings.resolution), settings.resolution);
+    this.particles.seed(this.sim);
     this.scene = sceneById(settings.sceneId);
   }
 
@@ -81,6 +92,7 @@ export class FluidEngine {
     const old = this.sim;
     this.sim = new FluidSolver(n);
     this.renderer.resize(n);
+    this.particles = new ParticleSystem(particleCount(n), n);
     // Re-seed the active scene at the new resolution rather than interpolating.
     void old;
     this.loadScene(this.scene.id, false);
@@ -91,6 +103,7 @@ export class FluidEngine {
     this.sim.reset();
     this.sceneTime = 0;
     this.scene.setup(this.sim);
+    this.particles.seed(this.sim);
     if (applyParams) {
       const patch: Partial<Settings> = { sceneId: id };
       if (this.scene.params) patch.params = { ...this.settings.params, ...this.scene.params };
@@ -159,6 +172,15 @@ export class FluidEngine {
       p.dx = p.dy = 0;
       return;
     }
+    if (tool === 'heat') {
+      // Inject heat (and a gentle upward nudge so it reads immediately).
+      this.sim.splatHeat(p.gx, p.gy, 6, s.brushRadius);
+      const fy = (p.dy / Math.max(dt, 1e-3)) * FORCE_BASE * s.forceScale;
+      const fx = (p.dx / Math.max(dt, 1e-3)) * FORCE_BASE * s.forceScale;
+      this.sim.splat(p.gx, p.gy, fx, fy, [0, 0, 0], s.brushRadius, 0);
+      p.dx = p.dy = 0;
+      return;
+    }
     // dye tool
     const fx = (p.dx / Math.max(dt, 1e-3)) * FORCE_BASE * s.forceScale;
     const fy = (p.dy / Math.max(dt, 1e-3)) * FORCE_BASE * s.forceScale;
@@ -185,6 +207,7 @@ export class FluidEngine {
       this.scene.emit?.(this.sim, { time: this.sceneTime, dt: simDt });
       this.applyPointer(simDt);
       this.sim.step(simDt, this.settings.params satisfies FluidParams);
+      if (this.settings.showParticles) this.particles.update(this.sim, simDt);
       this.sceneTime += simDt;
       this.lastStepMs = performance.now() - t0;
       this.stepOnce = false;
@@ -196,7 +219,12 @@ export class FluidEngine {
       mode: this.settings.mode as RenderMode,
       colormap: this.settings.colormap as ColorMapName,
       showArrows: this.settings.showArrows,
+      showStreamlines: this.settings.showStreamlines,
+      showParticles: this.settings.showParticles,
       exposure: this.settings.exposure,
+      particles: this.settings.showParticles
+        ? { x: this.particles.x, y: this.particles.y, count: this.particles.capacity }
+        : undefined,
     });
 
     this.reportStats(now);
@@ -208,11 +236,15 @@ export class FluidEngine {
     if (this.frameTimes.length >= 2 && this.onStats) {
       const span = (this.frameTimes[this.frameTimes.length - 1] - this.frameTimes[0]) / 1000;
       const fps = span > 0 ? (this.frameTimes.length - 1) / span : 0;
+      const d = this.sim.diagnostics();
       this.onStats({
         fps,
         stepMs: this.lastStepMs,
         resolution: this.sim.N,
         paused: this.paused,
+        kineticEnergy: d.kineticEnergy,
+        enstrophy: d.enstrophy,
+        maxDivergence: d.maxDivergence,
       });
     }
   }

@@ -18,6 +18,9 @@ interface Props {
   onStep: () => void;
   onShare: () => void;
   onSnapshot: () => void;
+  onToggleRecord: () => void;
+  recording: boolean;
+  canRecord: boolean;
 }
 
 function Slider(props: {
@@ -122,6 +125,18 @@ export function Controls(props: Props) {
             📷 Snapshot
           </button>
         </div>
+        {props.canRecord && (
+          <div className="row">
+            <button
+              type="button"
+              className={props.recording ? 'recording' : ''}
+              onClick={props.onToggleRecord}
+              title="Record the canvas to a WebM video clip"
+            >
+              {props.recording ? '⏹ Stop recording' : '⏺ Record clip'}
+            </button>
+          </div>
+        )}
       </section>
 
       <section>
@@ -131,6 +146,7 @@ export function Controls(props: Props) {
           onChange={(tool) => onChange({ tool })}
           options={[
             { value: 'dye', label: 'Dye' },
+            { value: 'heat', label: 'Heat' },
             { value: 'wall', label: 'Wall' },
             { value: 'erase', label: 'Erase' },
           ]}
@@ -221,6 +237,15 @@ export function Controls(props: Props) {
           step={1}
           onChange={(iterations) => onParam({ iterations })}
         />
+        <Slider
+          label="Over-relaxation ω"
+          value={s.params.overRelax}
+          min={1}
+          max={1.95}
+          step={0.05}
+          fmt={(v) => v.toFixed(2)}
+          onChange={(overRelax) => onParam({ overRelax })}
+        />
         <label className="checkbox">
           <input
             type="checkbox"
@@ -229,6 +254,40 @@ export function Controls(props: Props) {
           />
           Sharp dye (MacCormack advection)
         </label>
+      </section>
+
+      <section>
+        <h2>Thermal (buoyancy)</h2>
+        <Slider
+          label="Buoyancy"
+          value={s.params.buoyancy}
+          min={0}
+          max={140}
+          step={1}
+          onChange={(buoyancy) => onParam({ buoyancy })}
+        />
+        <Slider
+          label="Heat diffusion"
+          value={s.params.thermalDiffusion}
+          min={0}
+          max={0.0002}
+          step={0.000005}
+          fmt={(v) => v.toExponential(1)}
+          onChange={(thermalDiffusion) => onParam({ thermalDiffusion })}
+        />
+        <Slider
+          label="Cooling"
+          value={s.params.cooling}
+          min={0}
+          max={1}
+          step={0.01}
+          fmt={(v) => v.toFixed(2)}
+          onChange={(cooling) => onParam({ cooling })}
+        />
+        <p className="scene-blurb">
+          Use the <strong>Heat</strong> brush to inject hot fluid; buoyancy lifts it. Try the
+          Rayleigh–Bénard or plume scenes with the Temperature render mode.
+        </p>
       </section>
 
       <section>
@@ -241,9 +300,10 @@ export function Controls(props: Props) {
             { value: 'speed', label: 'Speed' },
             { value: 'curl', label: 'Vorticity' },
             { value: 'pressure', label: 'Pressure' },
+            { value: 'temperature', label: 'Temp' },
           ]}
         />
-        {(s.mode === 'speed' || s.mode === 'pressure' || s.mode === 'curl') && (
+        {(s.mode === 'speed' || s.mode === 'pressure' || s.mode === 'curl' || s.mode === 'temperature') && (
           <div className="colormaps">
             {(Object.keys(COLORMAPS) as ColorMapName[]).map((c) => (
               <button
@@ -273,6 +333,22 @@ export function Controls(props: Props) {
             onChange={(e) => onChange({ showArrows: e.target.checked })}
           />
           Velocity field overlay
+        </label>
+        <label className="checkbox">
+          <input
+            type="checkbox"
+            checked={s.showStreamlines}
+            onChange={(e) => onChange({ showStreamlines: e.target.checked })}
+          />
+          Streamlines
+        </label>
+        <label className="checkbox">
+          <input
+            type="checkbox"
+            checked={s.showParticles}
+            onChange={(e) => onChange({ showParticles: e.target.checked })}
+          />
+          Tracer particles
         </label>
         <Slider
           label="Resolution"
