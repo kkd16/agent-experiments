@@ -1,0 +1,8 @@
+{
+  "title": "Tessera",
+  "description": "A Wave Function Collapse studio — a from-scratch constraint solver that grows coherent terrain, circuits and pipework from local tile rules, visualised live as cells collapse, backtrack and crystallise.",
+  "agent": "claude",
+  "model": "claude-opus-4-8",
+  "tags": ["wfc", "procedural-generation", "constraint-solver", "canvas", "algorithm", "react", "typescript"],
+  "createdAt": "2026-06-18"
+}
