@@ -1,10 +1,11 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import './index.css';
 import Viewport from './components/Viewport';
 import Transport from './components/Transport';
 import Tuning from './components/Tuning';
 import StatsPanel from './components/StatsPanel';
 import Gallery from './components/Gallery';
+import PaintPanel from './components/PaintPanel';
 import SampleEditor from './components/SampleEditor';
 import { Controller, type ControllerConfig, type Stats } from './wfc/controller';
 import { randomSeedString } from './wfc/prng';
@@ -46,6 +47,8 @@ const EMPTY_STATS: Stats = {
   elapsedMs: 0,
   nTiles: 0,
   running: false,
+  pins: 0,
+  recording: false,
 };
 
 export default function App() {
@@ -54,6 +57,8 @@ export default function App() {
   const [seedLocked, setSeedLocked] = useState(false);
   const [stats, setStats] = useState<Stats>(EMPTY_STATS);
   const [editing, setEditing] = useState(false);
+  const [brush, setBrushState] = useState<number | null>(null);
+  const [erase, setEraseState] = useState(false);
 
   const onStats = useCallback((s: Stats) => setStats(s), []);
 
@@ -72,11 +77,14 @@ export default function App() {
     }
   }, [cfg]);
 
-  // Push a config patch to the controller; `rebuild` recreates the solver.
+  // Push a config patch to the controller; `rebuild` recreates the solver. A patch that swaps
+  // the active set clears the brush/pins in the controller, so re-sync the React mirror.
   const apply = useCallback(
     (patch: Partial<ControllerConfig>, rebuild: boolean) => {
       setCfg((c) => ({ ...c, ...patch }));
       controller.update(patch, rebuild);
+      setBrushState(controller.activeBrush);
+      setEraseState(controller.eraseMode);
     },
     [controller],
   );
@@ -84,6 +92,8 @@ export default function App() {
   const toggle = useCallback(() => controller.toggle(), [controller]);
   const step = useCallback(() => controller.stepOnce(), [controller]);
   const exportPng = useCallback(() => controller.exportPng(), [controller]);
+  const exportJson = useCallback(() => controller.exportJson(), [controller]);
+  const record = useCallback(() => controller.toggleRecording(), [controller]);
   const reset = useCallback(() => {
     if (seedLocked) {
       controller.reset();
@@ -93,13 +103,32 @@ export default function App() {
   }, [controller, seedLocked, apply]);
   const newSeed = useCallback(() => apply({ seed: randomSeedString() }, true), [apply]);
 
+  // --- constraint painting ---
+  const pickBrush = useCallback(
+    (id: number | null) => {
+      controller.setBrush(id);
+      setBrushState(id);
+      if (id != null) setEraseState(false);
+    },
+    [controller],
+  );
+  const setErase = useCallback(
+    (on: boolean) => {
+      controller.setErase(on);
+      setEraseState(on);
+      if (on) setBrushState(null);
+    },
+    [controller],
+  );
+  const clearPins = useCallback(() => controller.clearPins(), [controller]);
+  const setWeight = useCallback((id: number, w: number) => controller.setWeight(id, w), [controller]);
+  const resetWeights = useCallback(() => controller.resetWeights(), [controller]);
+
   // --- sample editor (overlapping model) ---
   const openEditor = useCallback(() => {
-    // Switch to the overlapping model if needed; the editor forks the active sample.
     if (cfg.model !== 'overlap') apply({ model: 'overlap' }, true);
     setEditing(true);
   }, [cfg.model, apply]);
-  // The bitmap the editor starts from: an in-progress custom sample, or a fork of the built-in.
   const editorSample: Sample = cfg.sampleKey === 'custom' && cfg.customSample ? cfg.customSample : sampleByKey(cfg.sampleKey);
   const onSampleChange = useCallback(
     (s: Sample) => apply({ model: 'overlap', sampleKey: 'custom', customSample: s }, true),
@@ -127,6 +156,15 @@ export default function App() {
         case 'e':
           exportPng();
           break;
+        case 'j':
+          exportJson();
+          break;
+        case 'x':
+          setErase(!erase);
+          break;
+        case 'c':
+          clearPins();
+          break;
         case 'h':
           apply({ showEntropy: !cfg.showEntropy }, false);
           break;
@@ -137,11 +175,22 @@ export default function App() {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [toggle, step, reset, newSeed, exportPng, apply, cfg.showEntropy, cfg.showGrid]);
+  }, [toggle, step, reset, newSeed, exportPng, exportJson, setErase, erase, clearPins, apply, cfg.showEntropy, cfg.showGrid]);
 
-  // controller.tileset only changes identity on a tileset switch (which also bumps cfg and
-  // re-renders), so reading it here and letting Gallery memo on its identity is correct.
+  // controller.tileset changes identity on a set switch or a weight edit (both also bump stats
+  // and re-render), so reading it here and memoising the brush preview on it is correct.
   const tileset = controller.tileset;
+  const brushSrc = useMemo(() => {
+    if (brush == null) return null;
+    const v = tileset.variants[brush];
+    if (!v) return null;
+    try {
+      return (v.patternBitmap ?? v.bitmap).toDataURL();
+    } catch {
+      return null;
+    }
+  }, [tileset, brush]);
+  const paintActive = brush != null || erase;
 
   return (
     <div className="app">
@@ -160,14 +209,18 @@ export default function App() {
 
       <main className="layout">
         <div className="stage">
-          <Viewport controller={controller} onStats={onStats} />
+          <Viewport controller={controller} tileset={tileset} onStats={onStats} paintActive={paintActive} />
           <Transport
             running={stats.running}
             speed={cfg.speed}
+            recording={stats.recording}
+            canRecord={controller.canRecord()}
             onToggle={toggle}
             onStep={step}
             onReset={reset}
             onExport={exportPng}
+            onExportJson={exportJson}
+            onRecord={record}
             onShare={share}
             onSpeed={(v) => apply({ speed: v }, false)}
           />
@@ -183,16 +236,25 @@ export default function App() {
             onSeedLock={setSeedLocked}
             onEditSample={openEditor}
           />
-          <Gallery tileset={tileset} />
+          <PaintPanel brushSrc={brushSrc} erase={erase} pinCount={stats.pins} onErase={setErase} onClear={clearPins} />
+          <Gallery
+            tileset={tileset}
+            brush={brush}
+            onPickBrush={pickBrush}
+            onSetWeight={setWeight}
+            onResetWeights={resetWeights}
+            hasOverrides={controller.hasWeightOverrides()}
+            defaultWeight={(id) => controller.defaultWeight(id)}
+          />
         </aside>
       </main>
 
       {editing && <SampleEditor value={editorSample} onChange={onSampleChange} onClose={() => setEditing(false)} />}
 
       <footer className="footer">
-        <span>Built from scratch — tiled + overlapping models · support-counter propagation · snapshot backtracking.</span>
+        <span>Built from scratch — tiled + overlapping models · support-counter propagation · snapshot backtracking · hand constraints.</span>
         <span className="keys">
-          <kbd>space</kbd> play · <kbd>s</kbd> step · <kbd>r</kbd> reset · <kbd>n</kbd> seed · <kbd>e</kbd> png · <kbd>h</kbd> heatmap
+          <kbd>space</kbd> play · <kbd>s</kbd> step · <kbd>r</kbd> reset · <kbd>n</kbd> seed · <kbd>e</kbd> png · <kbd>j</kbd> json · <kbd>x</kbd> erase · <kbd>c</kbd> clear · <kbd>h</kbd> heatmap
         </span>
       </footer>
     </div>
