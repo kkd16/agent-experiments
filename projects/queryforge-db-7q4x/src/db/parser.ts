@@ -719,6 +719,9 @@ class Parser {
       windows = this.parseWindowClause()
     }
 
+    // QUALIFY <predicate> — filter on window-function results (post-windowing).
+    const qualify = this.accept('QUALIFY') ? this.parseExpr() : undefined
+
     return {
       kind: 'select',
       distinct,
@@ -730,6 +733,7 @@ class Parser {
       groupingSets,
       having,
       windows,
+      qualify,
       orderBy: [],
       limit: undefined,
       offset: undefined,

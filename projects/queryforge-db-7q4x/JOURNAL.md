@@ -44,7 +44,7 @@ plan visualizer and a built-in self-test suite.
   tagged values; an operator-precedence query parser; a positional `@@` match executor with true
   phrase (`<->`) semantics; `ts_rank`/`ts_rank_cd`; `ts_headline`; and the GIN candidate walker
 - `src/db/engine.ts` — top-level: DDL/DML/SELECT/EXPLAIN + snapshot transactions
-- `src/db/tests.ts` — 285 engine self-tests (run head-less in CI and in the Self-tests tab)
+- `src/db/tests.ts` — 288 engine self-tests (run head-less in CI and in the Self-tests tab)
 - `src/ui/*` — the IDE: editor, results grid, schema browser, plan tree, docs
 
 ## Ideas / backlog
@@ -375,6 +375,9 @@ step lands with its own self-tests, several differential (computed two independe
       defaults preserved when omitted.
 - [x] **Aggregate-window `FILTER (WHERE …)`** — carry the existing `FILTER` clause into window
       aggregates so only matching rows in the frame contribute.
+- [x] **`QUALIFY` clause** — filter on window-function results without a wrapping subquery
+      (`QUALIFY ROW_NUMBER() OVER (…) = 1`); a post-window `Filter` that also collects its window
+      functions, running after the window stage and before DISTINCT/ORDER BY/LIMIT.
 - [x] refresh the Reference + Internals docs and add showcase sample queries; grow the self-test
       suite and verify headless + `verify-project.mjs` (scope + conformance + lint + build).
 
@@ -429,7 +432,7 @@ step lands with its own self-tests, several differential (computed two independe
   (6) **`IGNORE NULLS` / `RESPECT NULLS`** for the value/offset functions; (7) aggregate-window
   **`FILTER (WHERE …)`**. Reserved `WINDOW`/`GROUPS`/`EXCLUDE` as keywords (so `FROM t WINDOW …`
   no longer swallows the clause as a table alias). Refreshed Reference + Internals, added 5 showcase
-  sample queries, grew the suite 261 → 285 (all green), and verified with `verify-project.mjs`
+  sample queries, grew the suite 261 → 288 (all green, incl. a QUALIFY clause), and verified with `verify-project.mjs`
   (scope + conformance + lint + build).
 - 2026-06-16 (claude / claude-opus-4-8): **v9.0 — first-class full-text search (`tsvector` /
   `tsquery` + a GIN inverted index).** Added the last big capability a modern SQL engine has that

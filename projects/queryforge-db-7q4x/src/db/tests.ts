@@ -1029,6 +1029,26 @@ test('window-filter', 'FILTER (WHERE …) restricts the rows a window aggregate 
   const rows = rowsOf(wf(), 'SELECT x, COUNT(*) FILTER (WHERE x >= 20) OVER (ORDER BY x ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) FROM wf ORDER BY x')
   assert(eq(col(rows), [0, 1, 2, 3, 4]), `window FILTER wrong: ${JSON.stringify(col(rows))}`)
 })
+function qf(): Engine {
+  const e = new Engine()
+  e.execute('CREATE TABLE q (cat TEXT, name TEXT, price INTEGER)')
+  e.execute("INSERT INTO q (cat, name, price) VALUES ('a','a1',10),('a','a2',30),('a','a3',20),('b','b1',5),('b','b2',50)")
+  return e
+}
+test('qualify', 'QUALIFY filters on a window function (top-1 per partition)', () => {
+  const rows = rowsOf(qf(), 'SELECT cat, name FROM q QUALIFY ROW_NUMBER() OVER (PARTITION BY cat ORDER BY price DESC) = 1 ORDER BY cat')
+  assert(eq(rows, [['a', 'a2'], ['b', 'b2']]), `QUALIFY top-1 wrong: ${JSON.stringify(rows)}`)
+})
+test('qualify', 'QUALIFY can reference an aggregate window', () => {
+  const rows = rowsOf(qf(), 'SELECT name FROM q QUALIFY price > AVG(price) OVER () ORDER BY name')
+  // overall average is 23 → only the 30 and 50 rows survive.
+  assert(eq(rows.map((r) => r[0]), ['a2', 'b2']), `QUALIFY vs avg wrong: ${JSON.stringify(rows.map((r) => r[0]))}`)
+})
+test('qualify', 'QUALIFY runs before DISTINCT / ORDER BY / LIMIT', () => {
+  const rows = rowsOf(qf(), 'SELECT cat FROM q QUALIFY ROW_NUMBER() OVER (PARTITION BY cat ORDER BY price) <= 2 ORDER BY cat')
+  // a keeps its two cheapest, b keeps both → 2 + 2 rows.
+  assert(rows.length === 4 && eq(rows.map((r) => r[0]), ['a', 'a', 'b', 'b']), `QUALIFY count wrong: ${JSON.stringify(rows.map((r) => r[0]))}`)
+})
 
 // --- set-operation type unification -----------------------------------------
 test('setop', 'UNION unifies INTEGER + REAL to REAL', () => {
