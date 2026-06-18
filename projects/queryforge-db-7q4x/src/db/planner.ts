@@ -31,6 +31,8 @@ import {
   type SubqueryExpr,
   type WindowFrame,
   type WindowFuncExpr,
+  type WindowSpec,
+  type FrameBound,
 } from './ast'
 import { Database, Table, type IndexHandle, type Row } from './catalog'
 import type { IndexKey } from './storage/btree'
@@ -391,6 +393,17 @@ function inferType(e: Expr, schema: Schema, ctx: CompileCtx): ColumnType {
       if (['ROW_NUMBER', 'RANK', 'DENSE_RANK', 'NTILE', 'COUNT'].includes(e.name)) return 'INTEGER'
       if (['PERCENT_RANK', 'CUME_DIST', 'AVG'].includes(e.name)) return 'REAL'
       if (e.name === 'SUM') return 'REAL'
+      if (
+        [
+          'STDDEV', 'STDDEV_SAMP', 'STDDEV_POP', 'VARIANCE', 'VAR_SAMP', 'VAR_POP',
+          'PERCENTILE_CONT', 'MEDIAN',
+        ].includes(e.name)
+      )
+        return 'REAL'
+      // Ordered-set windows that return one of the ordered values keep its type.
+      if (e.name === 'PERCENTILE_DISC' || e.name === 'MODE') {
+        return e.withinGroup && e.withinGroup[0] ? inferType(e.withinGroup[0].expr, schema, ctx) : 'TEXT'
+      }
       if (['LAG', 'LEAD', 'FIRST_VALUE', 'LAST_VALUE', 'NTH_VALUE', 'MIN', 'MAX'].includes(e.name))
         return e.args[0] ? inferType(e.args[0], schema, ctx) : 'REAL'
       return 'REAL'
@@ -1538,7 +1551,7 @@ function planCore(stmt: SelectStmt, env: PlanEnv, embedOrderLimit: boolean): Ope
   }
 
   // --- window functions -----------------------------------------------------
-  const windowPlan = planWindowFns(stmt.columns, stmt.orderBy, outCtx, schema)
+  const windowPlan = planWindowFns(stmt.columns, stmt.orderBy, outCtx, schema, stmt.windows)
   if (windowPlan) {
     op = new WindowExec(op, windowPlan.specs, windowPlan.schema)
     const prevResolve = outCtx.resolve
@@ -1960,11 +1973,53 @@ interface WindowPlanResult {
 
 // Compile an AST window frame into executable bounds (offset exprs compiled).
 function compileFrame(frame: WindowFrame, ctx: CompileCtx): FrameExec {
-  const bound = (b: WindowFrame['start']) => ({
+  const bound = (b: FrameBound) => ({
     type: b.type,
     offset: b.offset ? compileExpr(b.offset, ctx) : undefined,
   })
-  return { mode: frame.mode, start: bound(frame.start), end: bound(frame.end) }
+  return {
+    mode: frame.mode,
+    start: bound(frame.start),
+    end: bound(frame.end),
+    exclude: frame.exclude ?? 'NO_OTHERS',
+  }
+}
+
+// Merge a window spec against a named base (the WINDOW clause), applying the
+// standard inheritance rules: the base supplies PARTITION BY; the referencing
+// spec may add ORDER BY (only if the base has none) and a frame (the base must
+// have none). Resolves base chains, guarding against cycles.
+function mergeWindowBase(spec: WindowSpec, named: Map<string, WindowSpec>, seen: Set<string>): WindowSpec {
+  if (!spec.base) return spec
+  if (seen.has(spec.base)) throw new SqlError(`circular reference to window "${spec.base}"`, 'bind')
+  const baseDef = named.get(spec.base)
+  if (!baseDef) throw new SqlError(`window "${spec.base}" does not exist`, 'bind')
+  const base = mergeWindowBase(baseDef, named, new Set([...seen, spec.base]))
+  if (spec.partitionBy.length) {
+    throw new SqlError(`cannot override PARTITION BY of referenced window "${spec.base}"`, 'bind')
+  }
+  if (base.orderBy.length && spec.orderBy.length) {
+    throw new SqlError(`cannot override ORDER BY of referenced window "${spec.base}"`, 'bind')
+  }
+  if (base.frame) {
+    throw new SqlError(`cannot reference window "${spec.base}" — it specifies a frame`, 'bind')
+  }
+  return {
+    partitionBy: base.partitionBy,
+    orderBy: spec.orderBy.length ? spec.orderBy : base.orderBy,
+    frame: spec.frame,
+  }
+}
+
+// The effective window spec for a window function call, resolving a bare
+// `OVER name` reference or an inline `OVER (name …)` base against the WINDOW clause.
+function resolveWindowSpec(w: WindowFuncExpr, named: Map<string, WindowSpec>): WindowSpec {
+  if (w.windowRef) {
+    const def = named.get(w.windowRef)
+    if (!def) throw new SqlError(`window "${w.windowRef}" does not exist`, 'bind')
+    return mergeWindowBase(def, named, new Set([w.windowRef]))
+  }
+  return mergeWindowBase(w.spec, named, new Set())
 }
 
 function collectWindows(e: Expr, out: Map<string, WindowFuncExpr>): void {
@@ -1985,20 +2040,35 @@ function planWindowFns(
   orderBy: SelectStmt['orderBy'],
   ctx: CompileCtx,
   schema: Schema,
+  namedDefs?: SelectStmt['windows'],
 ): WindowPlanResult | null {
   const found = new Map<string, WindowFuncExpr>()
   for (const it of columns) collectWindows(it.expr, found)
   for (const o of orderBy) collectWindows(o.expr, found)
   if (found.size === 0) return null
+  const named = new Map<string, WindowSpec>()
+  for (const nw of namedDefs ?? []) named.set(nw.name, nw.spec)
   const exprs = [...found.values()]
-  const specs: WindowSpecExec[] = exprs.map((w) => ({
-    name: w.name,
-    args: w.args.map((a) => compileExpr(a, ctx)),
-    partition: w.spec.partitionBy.map((p) => compileExpr(p, ctx)),
-    order: w.spec.orderBy.map((o) => ({ eval: compileExpr(o.expr, ctx), dir: o.dir })),
-    frame: w.spec.frame ? compileFrame(w.spec.frame, ctx) : undefined,
-    label: exprLabel(w),
-  }))
+  const specs: WindowSpecExec[] = exprs.map((w) => {
+    const spec = resolveWindowSpec(w, named)
+    if (ORDERED_SET_AGGREGATES.has(w.name) && !(w.withinGroup && w.withinGroup[0])) {
+      throw new SqlError(`${w.name} requires WITHIN GROUP (ORDER BY <expr>) as a window function`, 'bind')
+    }
+    return {
+      name: w.name,
+      args: w.args.map((a) => compileExpr(a, ctx)),
+      partition: spec.partitionBy.map((p) => compileExpr(p, ctx)),
+      order: spec.orderBy.map((o) => ({ eval: compileExpr(o.expr, ctx), dir: o.dir })),
+      frame: spec.frame ? compileFrame(spec.frame, ctx) : undefined,
+      ignoreNulls: w.ignoreNulls,
+      filter: w.filter ? compileExpr(w.filter, ctx) : undefined,
+      withinGroup:
+        w.withinGroup && w.withinGroup[0]
+          ? { eval: compileExpr(w.withinGroup[0].expr, ctx), dir: w.withinGroup[0].dir }
+          : undefined,
+      label: exprLabel(w),
+    }
+  })
   const winSchema: Schema = [
     ...schema,
     ...exprs.map((w, i) => ({ table: '', name: `__win${i}`, type: inferType(w, schema, ctx) })),

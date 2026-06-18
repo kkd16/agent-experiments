@@ -1225,10 +1225,22 @@ export function exprKey(e: Expr): string {
       return `inq:${e.negated}(${exprKey(e.expr)};${subqueryKey(e.select)})`
     case 'quantified':
       return `quant:${e.op}:${e.quantifier}(${exprKey(e.expr)};${subqueryKey(e.select)})`
-    case 'window':
-      return `win:${e.name}(${e.args.map(exprKey).join(',')})[part:${e.spec.partitionBy
+    case 'window': {
+      const f = e.spec.frame
+      const frameKey = f
+        ? `${f.mode}:${f.start.type}:${f.start.offset ? exprKey(f.start.offset) : ''}:${f.end.type}:${
+            f.end.offset ? exprKey(f.end.offset) : ''
+          }:${f.exclude ?? ''}`
+        : ''
+      const wg = e.withinGroup ? e.withinGroup.map((o) => `${exprKey(o.expr)}:${o.dir}`).join(',') : ''
+      return `win:${e.name}(${e.args.map(exprKey).join(',')})[ref:${e.spec.base ?? e.windowRef ?? ''};part:${e.spec.partitionBy
         .map(exprKey)
-        .join(',')};ord:${e.spec.orderBy.map((o) => `${exprKey(o.expr)}:${o.dir}`).join(',')}]`
+        .join(',')};ord:${e.spec.orderBy
+        .map((o) => `${exprKey(o.expr)}:${o.dir}`)
+        .join(',')};frame:${frameKey};wg:${wg};ign:${e.ignoreNulls ? 1 : 0};flt:${
+        e.filter ? exprKey(e.filter) : ''
+      }]`
+    }
   }
 }
 
