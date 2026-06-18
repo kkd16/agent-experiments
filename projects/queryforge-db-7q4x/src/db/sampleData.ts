@@ -476,6 +476,15 @@ WINDOW w AS (PARTITION BY category)
 ORDER BY category, price;`,
   },
   {
+    title: 'QUALIFY — the priciest product per category',
+    sql: `-- QUALIFY filters on a window function without a wrapping subquery:
+-- keep only each category's #1 by price (ties broken by name).
+SELECT category, name, price
+FROM products
+QUALIFY ROW_NUMBER() OVER (PARTITION BY category ORDER BY price DESC, name) = 1
+ORDER BY price DESC;`,
+  },
+  {
     title: 'Window — gap-fill with IGNORE NULLS',
     sql: `-- "Last observation carried forward": LAST_VALUE(… IGNORE NULLS) over a
 -- running frame fills each gap with the most recent non-null reading.

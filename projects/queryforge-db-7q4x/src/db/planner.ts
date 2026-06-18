@@ -1551,7 +1551,14 @@ function planCore(stmt: SelectStmt, env: PlanEnv, embedOrderLimit: boolean): Ope
   }
 
   // --- window functions -----------------------------------------------------
-  const windowPlan = planWindowFns(stmt.columns, stmt.orderBy, outCtx, schema, stmt.windows)
+  const windowPlan = planWindowFns(
+    stmt.columns,
+    stmt.orderBy,
+    outCtx,
+    schema,
+    stmt.windows,
+    stmt.qualify ? [stmt.qualify] : undefined,
+  )
   if (windowPlan) {
     op = new WindowExec(op, windowPlan.specs, windowPlan.schema)
     const prevResolve = outCtx.resolve
@@ -1563,6 +1570,11 @@ function planCore(stmt: SelectStmt, env: PlanEnv, embedOrderLimit: boolean): Ope
       compileGrouping: prevGrouping,
     })
     schema = windowPlan.schema
+  }
+
+  // --- QUALIFY (filter on window results, after the window stage) ------------
+  if (stmt.qualify) {
+    op = new Filter(op, compileExpr(stmt.qualify, outCtx), `QUALIFY ${exprLabel(stmt.qualify)}`)
   }
 
   // --- expand projection list (resolve aliases for ORDER BY) ----------------
@@ -2041,10 +2053,12 @@ function planWindowFns(
   ctx: CompileCtx,
   schema: Schema,
   namedDefs?: SelectStmt['windows'],
+  extra?: Expr[],
 ): WindowPlanResult | null {
   const found = new Map<string, WindowFuncExpr>()
   for (const it of columns) collectWindows(it.expr, found)
   for (const o of orderBy) collectWindows(o.expr, found)
+  for (const e of extra ?? []) collectWindows(e, found)
   if (found.size === 0) return null
   const named = new Map<string, WindowSpec>()
   for (const nw of namedDefs ?? []) named.set(nw.name, nw.spec)

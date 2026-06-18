@@ -397,6 +397,8 @@ export interface SelectStmt {
   having?: Expr
   /** Named windows from a `WINDOW w AS (…)` clause, referenced by `OVER w`. */
   windows?: NamedWindow[]
+  /** `QUALIFY <predicate>` — filters on window-function results post-windowing. */
+  qualify?: Expr
   orderBy: OrderItem[]
   limit?: number
   offset?: number

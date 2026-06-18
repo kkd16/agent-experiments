@@ -64,6 +64,7 @@ const SECTIONS: Section[] = [
       { syntax: 'GROUPING(col [, …]) · GROUPING_ID(col, …)', note: 'In a ROLLUP/CUBE/GROUPING SETS query, returns 1 where a column was rolled up to a subtotal (NULL), else 0; GROUPING_ID packs several columns into one integer bitmap.' },
       { syntax: 'PERCENTILE_CONT(f) · PERCENTILE_DISC(f) · MODE() WITHIN GROUP (ORDER BY x)', note: 'Ordered-set aggregates: interpolated percentile, discrete percentile, and most-frequent value.' },
       { syntax: 'agg(x) FILTER (WHERE pred)', note: 'Aggregate only the rows matching pred — e.g. COUNT(*) FILTER (WHERE country = \'UK\').' },
+      { syntax: 'QUALIFY pred', note: 'Filter on window-function results without a wrapping subquery — e.g. QUALIFY ROW_NUMBER() OVER (PARTITION BY g ORDER BY x DESC) = 1 for the top row per group. Runs after the window stage, before DISTINCT/ORDER BY/LIMIT.' },
       { syntax: 'ORDER BY expr [ASC|DESC] [, …] LIMIT n [OFFSET m]', note: 'Sort keys may reference output aliases or ordinal positions.' },
       { syntax: 'EXPLAIN [ANALYZE] SELECT …', note: 'Show the physical plan; ANALYZE also runs it and reports actual rows.' },
     ],
