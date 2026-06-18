@@ -23,8 +23,11 @@ import type {
   FromItem,
   JoinClause,
   JoinType,
+  NamedWindow,
   OnConflictClause,
   OrderItem,
+  WindowSpec,
+  FrameExclude,
   RefAction,
   SelectItem,
   SelectStmt,
@@ -710,6 +713,12 @@ class Parser {
     }
     const having = this.accept('HAVING') ? this.parseExpr() : undefined
 
+    // WINDOW w AS (spec), … — named window definitions referenced by `OVER w`.
+    let windows: NamedWindow[] | undefined
+    if (this.at('WINDOW') && this.peek(2).value === 'AS') {
+      windows = this.parseWindowClause()
+    }
+
     return {
       kind: 'select',
       distinct,
@@ -720,6 +729,7 @@ class Parser {
       groupBy,
       groupingSets,
       having,
+      windows,
       orderBy: [],
       limit: undefined,
       offset: undefined,
@@ -1221,6 +1231,17 @@ class Parser {
       this.expect(')')
     }
 
+    // Null treatment for value/offset functions: `… IGNORE NULLS | RESPECT NULLS`.
+    let ignoreNulls = false
+    if (this.at('IGNORE') && this.peek(1).value === 'NULLS') {
+      this.next()
+      this.next()
+      ignoreNulls = true
+    } else if (this.at('RESPECT') && this.peek(1).value === 'NULLS') {
+      this.next()
+      this.next()
+    }
+
     // Aggregate FILTER (WHERE pred) — disambiguated from a "filter" alias by the
     // required opening parenthesis.
     let filter: Expr | undefined
@@ -1232,49 +1253,110 @@ class Parser {
       this.expect(')')
     }
 
-    // Window form: name(args) OVER ( [PARTITION BY …] [ORDER BY …] )
+    // Window form: name(args) OVER ( … ) | OVER window_name
     if (this.at('OVER')) {
       this.next()
-      this.expect('(')
-      const partitionBy: Expr[] = []
-      if (this.accept('PARTITION')) {
-        this.expect('BY')
-        do {
-          partitionBy.push(this.parseExpr())
-        } while (this.accept(','))
+      if (this.at('(')) {
+        this.expect('(')
+        const spec = this.parseOverBody()
+        this.expect(')')
+        return { kind: 'window', name, args, spec, withinGroup, filter, ignoreNulls }
       }
-      const orderBy: OrderItem[] = []
-      if (this.accept('ORDER')) {
-        this.expect('BY')
-        do {
-          const expr = this.parseExpr()
-          const dir = this.accept('DESC') ? 'DESC' : (this.accept('ASC'), 'ASC')
-          orderBy.push({ expr, dir })
-        } while (this.accept(','))
+      // Bare reference to a WINDOW-clause name.
+      const windowRef = this.next().text.toLowerCase()
+      return {
+        kind: 'window',
+        name,
+        args,
+        spec: { partitionBy: [], orderBy: [] },
+        windowRef,
+        withinGroup,
+        filter,
+        ignoreNulls,
       }
-      const frame = this.tryParseFrame()
-      this.expect(')')
-      return { kind: 'window', name, args, spec: { partitionBy, orderBy, frame } }
     }
 
     return { kind: 'func', name, args, distinct, star, filter, withinGroup }
   }
 
-  // ROWS|RANGE [BETWEEN] <bound> [AND <bound>] — an explicit window frame.
+  // The `WINDOW w AS (spec), w2 AS (spec)` clause — named window definitions.
+  private parseWindowClause(): NamedWindow[] {
+    this.expect('WINDOW')
+    const out: NamedWindow[] = []
+    do {
+      const name = this.next().text.toLowerCase()
+      this.expect('AS')
+      this.expect('(')
+      const spec = this.parseOverBody()
+      this.expect(')')
+      out.push({ name, spec })
+    } while (this.accept(','))
+    return out
+  }
+
+  // The body inside an `OVER ( … )` (or a `WINDOW name AS ( … )` definition):
+  //   [existing_window_name] [PARTITION BY …] [ORDER BY …] [frame]
+  private parseOverBody(): WindowSpec {
+    // A leading bare identifier (not PARTITION/ORDER, which are keywords, nor the
+    // GROUPS frame keyword) references a named window to inherit from.
+    let base: string | undefined
+    if (this.peek().kind === 'ident' && this.peek().value !== 'GROUPS') {
+      base = this.next().text.toLowerCase()
+    }
+    const partitionBy: Expr[] = []
+    if (this.accept('PARTITION')) {
+      this.expect('BY')
+      do {
+        partitionBy.push(this.parseExpr())
+      } while (this.accept(','))
+    }
+    const orderBy: OrderItem[] = []
+    if (this.accept('ORDER')) {
+      this.expect('BY')
+      do {
+        const expr = this.parseExpr()
+        const dir = this.accept('DESC') ? 'DESC' : (this.accept('ASC'), 'ASC')
+        orderBy.push({ expr, dir })
+      } while (this.accept(','))
+    }
+    const frame = this.tryParseFrame()
+    return { base, partitionBy, orderBy, frame }
+  }
+
+  // ROWS|RANGE|GROUPS [BETWEEN] <bound> [AND <bound>] [EXCLUDE …] — a frame.
   private tryParseFrame(): import('./ast').WindowFrame | undefined {
-    let mode: 'ROWS' | 'RANGE'
+    let mode: 'ROWS' | 'RANGE' | 'GROUPS'
     if (this.accept('ROWS')) mode = 'ROWS'
     else if (this.accept('RANGE')) mode = 'RANGE'
+    else if (this.accept('GROUPS')) mode = 'GROUPS'
     else return undefined
+    let start: import('./ast').FrameBound
+    let end: import('./ast').FrameBound
     if (this.accept('BETWEEN')) {
-      const start = this.parseFrameBound()
+      start = this.parseFrameBound()
       this.expect('AND')
-      const end = this.parseFrameBound()
-      return { mode, start, end }
+      end = this.parseFrameBound()
+    } else {
+      // Single-bound form: "<bound>" means BETWEEN <bound> AND CURRENT ROW.
+      start = this.parseFrameBound()
+      end = { type: 'CURRENT_ROW' }
     }
-    // Single-bound form: "<bound>" means BETWEEN <bound> AND CURRENT ROW.
-    const start = this.parseFrameBound()
-    return { mode, start, end: { type: 'CURRENT_ROW' } }
+    const exclude = this.parseFrameExclude()
+    return { mode, start, end, exclude }
+  }
+
+  // EXCLUDE NO OTHERS | CURRENT ROW | GROUP | TIES.
+  private parseFrameExclude(): FrameExclude | undefined {
+    if (!this.accept('EXCLUDE')) return undefined
+    if (this.accept('CURRENT')) {
+      this.expect('ROW')
+      return 'CURRENT_ROW'
+    }
+    if (this.accept('GROUP')) return 'GROUP'
+    if (this.accept('TIES')) return 'TIES'
+    this.expect('NO')
+    this.expect('OTHERS')
+    return 'NO_OTHERS'
   }
 
   private parseFrameBound(): import('./ast').FrameBound {

@@ -442,6 +442,54 @@ SELECT yr, revenue,
 FROM yearly ORDER BY yr;`,
   },
   {
+    title: 'Window — GROUPS frame + EXCLUDE',
+    sql: `-- GROUPS counts peer groups (distinct prices), not rows; EXCLUDE CURRENT
+-- ROW compares each item to the average of its price neighbours, itself omitted.
+SELECT name, category, price,
+       ROUND(AVG(price) OVER w, 2) AS neighbour_avg,
+       ROUND(price - AVG(price) OVER w, 2) AS vs_neighbours
+FROM products
+WINDOW w AS (ORDER BY price GROUPS BETWEEN 1 PRECEDING AND 1 FOLLOWING EXCLUDE CURRENT ROW)
+ORDER BY price;`,
+  },
+  {
+    title: 'Window — RANGE over dates (trailing 60-day total)',
+    sql: `-- A RANGE frame whose offset is an INTERVAL: each invoice sums every
+-- invoice issued within the preceding 60 days (by value, not by row count).
+SELECT issued, total,
+       SUM(total) OVER (ORDER BY issued
+                        RANGE BETWEEN INTERVAL '60 days' PRECEDING AND CURRENT ROW) AS trailing_60d,
+       COUNT(*)   OVER (ORDER BY issued
+                        RANGE BETWEEN INTERVAL '60 days' PRECEDING AND CURRENT ROW) AS invoices_60d
+FROM invoices
+ORDER BY issued;`,
+  },
+  {
+    title: 'Window — named WINDOW clause + percentile',
+    sql: `-- PERCENTILE_CONT as a window function over a named window: each product
+-- is measured against the median price of its own category, computed inline.
+SELECT category, name, price,
+       PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY price) OVER w AS cat_median,
+       ROUND(price - PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY price) OVER w, 2) AS vs_median
+FROM products
+WINDOW w AS (PARTITION BY category)
+ORDER BY category, price;`,
+  },
+  {
+    title: 'Window — gap-fill with IGNORE NULLS',
+    sql: `-- "Last observation carried forward": LAST_VALUE(… IGNORE NULLS) over a
+-- running frame fills each gap with the most recent non-null reading.
+WITH readings(t, v) AS (
+  SELECT 1, 10 UNION ALL SELECT 2, NULL UNION ALL SELECT 3, NULL
+  UNION ALL SELECT 4, 25 UNION ALL SELECT 5, NULL UNION ALL SELECT 6, 40
+)
+SELECT t, v,
+       LAST_VALUE(v) IGNORE NULLS OVER (ORDER BY t
+         ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS filled
+FROM readings
+ORDER BY t;`,
+  },
+  {
     title: 'Statistical aggregates per category',
     sql: `SELECT category,
        COUNT(*)               AS items,

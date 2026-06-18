@@ -891,6 +891,145 @@ test('window', 'RANGE CURRENT ROW groups peers', () => {
   assert(eq(rows.map((r) => r[1]), [2, 2, 2, 3]), 'RANGE CURRENT ROW should sum peers')
 })
 
+// --- v10.0: window functions, to the standard ------------------------------
+// A shared fixture: one partition of five values with a tie (20, 20).
+function wf(): Engine {
+  const e = new Engine()
+  e.execute('CREATE TABLE wf (x INTEGER)')
+  e.execute('INSERT INTO wf (x) VALUES (10), (20), (20), (30), (40)')
+  return e
+}
+const col = (rows: Row[], i = 1) => rows.map((r) => r[i])
+
+test('window-frame', 'GROUPS BETWEEN 1 PRECEDING AND 1 FOLLOWING counts peer groups', () => {
+  const rows = rowsOf(wf(), 'SELECT x, SUM(x) OVER (ORDER BY x GROUPS BETWEEN 1 PRECEDING AND 1 FOLLOWING) FROM wf ORDER BY x')
+  assert(eq(col(rows), [50, 80, 80, 110, 70]), `GROUPS sliding sum wrong: ${JSON.stringify(col(rows))}`)
+})
+test('window-frame', 'GROUPS differs from ROWS across a tie', () => {
+  // ROWS counts physical rows; over the (20, 20) tie the two windows differ.
+  const g = col(rowsOf(wf(), 'SELECT x, COUNT(*) OVER (ORDER BY x GROUPS BETWEEN 1 PRECEDING AND CURRENT ROW) FROM wf ORDER BY x'))
+  const r = col(rowsOf(wf(), 'SELECT x, COUNT(*) OVER (ORDER BY x ROWS BETWEEN 1 PRECEDING AND CURRENT ROW) FROM wf ORDER BY x'))
+  assert(eq(g, [1, 3, 3, 3, 2]), `GROUPS count wrong: ${JSON.stringify(g)}`)
+  assert(eq(r, [1, 2, 2, 2, 2]), `ROWS count wrong: ${JSON.stringify(r)}`)
+})
+test('window-frame', 'EXCLUDE CURRENT ROW removes self from a full frame', () => {
+  const rows = rowsOf(wf(), 'SELECT x, SUM(x) OVER (ORDER BY x ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING EXCLUDE CURRENT ROW) FROM wf ORDER BY x')
+  assert(eq(col(rows), [110, 100, 100, 90, 80]), `EXCLUDE CURRENT ROW wrong: ${JSON.stringify(col(rows))}`)
+})
+test('window-frame', 'EXCLUDE GROUP removes the whole peer group', () => {
+  const rows = rowsOf(wf(), 'SELECT x, COUNT(*) OVER (ORDER BY x GROUPS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING EXCLUDE GROUP) FROM wf ORDER BY x')
+  assert(eq(col(rows), [4, 3, 3, 4, 4]), `EXCLUDE GROUP wrong: ${JSON.stringify(col(rows))}`)
+})
+test('window-frame', 'EXCLUDE TIES keeps the current row but drops its peers', () => {
+  const rows = rowsOf(wf(), 'SELECT x, SUM(x) OVER (ORDER BY x ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING EXCLUDE TIES) FROM wf ORDER BY x')
+  assert(eq(col(rows), [120, 100, 100, 120, 120]), `EXCLUDE TIES wrong: ${JSON.stringify(col(rows))}`)
+})
+test('window-frame', 'EXCLUDE NO OTHERS is the default (no change)', () => {
+  const a = col(rowsOf(wf(), 'SELECT x, SUM(x) OVER (ORDER BY x ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING) FROM wf ORDER BY x'))
+  const b = col(rowsOf(wf(), 'SELECT x, SUM(x) OVER (ORDER BY x ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING EXCLUDE NO OTHERS) FROM wf ORDER BY x'))
+  assert(eq(a, b) && eq(a, [120, 120, 120, 120, 120]), 'EXCLUDE NO OTHERS should equal the unexcluded frame')
+})
+test('window-frame', 'RANGE numeric offset frames by value, not row count', () => {
+  const rows = rowsOf(wf(), 'SELECT x, SUM(x) OVER (ORDER BY x RANGE BETWEEN 10 PRECEDING AND 10 FOLLOWING) FROM wf ORDER BY x')
+  assert(eq(col(rows), [50, 80, 80, 110, 70]), `RANGE numeric wrong: ${JSON.stringify(col(rows))}`)
+})
+test('window-frame', 'default frame equals an explicit RANGE running frame', () => {
+  const dflt = col(rowsOf(wf(), 'SELECT x, SUM(x) OVER (ORDER BY x) FROM wf ORDER BY x'))
+  const expl = col(rowsOf(wf(), 'SELECT x, SUM(x) OVER (ORDER BY x RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) FROM wf ORDER BY x'))
+  assert(eq(dflt, expl) && eq(dflt, [10, 50, 50, 80, 120]), 'default frame must be RANGE UNBOUNDED PRECEDING .. CURRENT ROW')
+})
+test('window-frame', 'RANGE keeps DECIMAL money exact', () => {
+  const e = new Engine()
+  e.execute('CREATE TABLE m (amt DECIMAL(10,2))')
+  e.execute("INSERT INTO m (amt) VALUES (10.00), (20.00), (30.00), (40.00)")
+  const rows = rowsOf(e, 'SELECT amt, SUM(amt) OVER (ORDER BY amt RANGE BETWEEN 15.00 PRECEDING AND CURRENT ROW) FROM m ORDER BY amt')
+  assert(eq(rows.map((r) => formatValue(r[1])), ['10.00', '30.00', '50.00', '70.00']), `RANGE decimal wrong: ${JSON.stringify(rows.map((r) => formatValue(r[1])))}`)
+})
+test('window-frame', 'RANGE over DATE uses an INTERVAL offset', () => {
+  const e = new Engine()
+  e.execute('CREATE TABLE d (dt DATE, amt INTEGER)')
+  e.execute("INSERT INTO d (dt, amt) VALUES ('2024-01-01', 10), ('2024-01-03', 20), ('2024-01-08', 30), ('2024-01-09', 40)")
+  const rows = rowsOf(e, "SELECT dt, SUM(amt) OVER (ORDER BY dt RANGE BETWEEN INTERVAL '2 days' PRECEDING AND CURRENT ROW) FROM d ORDER BY dt")
+  assert(eq(col(rows), [10, 30, 30, 70]), `RANGE date/interval wrong: ${JSON.stringify(col(rows))}`)
+})
+test('window-frame', 'RANGE honours DESC ordering direction', () => {
+  const rows = rowsOf(wf(), 'SELECT x, SUM(x) OVER (ORDER BY x DESC RANGE BETWEEN 10 PRECEDING AND CURRENT ROW) FROM wf ORDER BY x DESC')
+  // Descending: "preceding" is the larger neighbour. 40→{40}, 30→{40,30}, 20→{30,20,20}, 10→{20,20,10}.
+  assert(eq(col(rows), [40, 70, 70, 70, 50]), `RANGE DESC wrong: ${JSON.stringify(col(rows))}`)
+})
+test('window-clause', 'WINDOW clause defines a named window', () => {
+  const rows = rowsOf(wf(), 'SELECT x, SUM(x) OVER w, AVG(x) OVER w FROM wf WINDOW w AS (ORDER BY x) ORDER BY x')
+  assert(eq(col(rows, 1), [10, 50, 50, 80, 120]), 'named-window running sum wrong')
+  assert(rows.length === 5, 'two functions can share one named window')
+})
+test('window-clause', 'a window may inherit a base and add a frame', () => {
+  const rows = rowsOf(wf(), 'SELECT x, SUM(x) OVER (w ROWS BETWEEN 1 PRECEDING AND CURRENT ROW) FROM wf WINDOW w AS (ORDER BY x) ORDER BY x')
+  assert(eq(col(rows), [10, 30, 40, 50, 70]), `inherited-base frame wrong: ${JSON.stringify(col(rows))}`)
+})
+test('window-clause', 'overriding a referenced window PARTITION BY is rejected', () => {
+  throws(wf(), 'SELECT SUM(x) OVER (w PARTITION BY x) FROM wf WINDOW w AS (ORDER BY x)', 'PARTITION BY')
+})
+test('window-clause', 'a missing named window is an error', () => {
+  throws(wf(), 'SELECT SUM(x) OVER nope FROM wf', 'does not exist')
+})
+test('window-clause', 'circular window references are rejected', () => {
+  throws(wf(), 'SELECT SUM(x) OVER a FROM wf WINDOW a AS (b), b AS (a)', 'circular')
+})
+test('window-oset', 'PERCENTILE_CONT window matches the GROUP BY aggregate per partition', () => {
+  const e = new Engine()
+  e.execute('CREATE TABLE p (g TEXT, x INTEGER)')
+  e.execute("INSERT INTO p (g, x) VALUES ('a',1),('a',2),('a',3),('a',4),('b',10),('b',30)")
+  const win = rowsOf(e, 'SELECT DISTINCT g, PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY x) OVER (PARTITION BY g) FROM p ORDER BY g')
+  const grp = rowsOf(e, 'SELECT g, PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY x) FROM p GROUP BY g ORDER BY g')
+  assert(eq(win, grp), `window vs group-by percentile differ: ${JSON.stringify(win)} vs ${JSON.stringify(grp)}`)
+  assert(eq(col(grp), [2.5, 20]), `median wrong: ${JSON.stringify(col(grp))}`)
+})
+test('window-oset', 'PERCENTILE_DISC and MODE as window functions', () => {
+  const d = scalar(wf(), 'SELECT PERCENTILE_DISC(0.5) WITHIN GROUP (ORDER BY x) OVER () FROM wf LIMIT 1')
+  const m = scalar(wf(), 'SELECT MODE() WITHIN GROUP (ORDER BY x) OVER () FROM wf LIMIT 1')
+  assert(d === 20, `PERCENTILE_DISC window wrong: ${d}`)
+  assert(m === 20, `MODE window wrong: ${m}`)
+})
+test('window-oset', 'an ordered-set window without WITHIN GROUP is rejected', () => {
+  throws(wf(), 'SELECT PERCENTILE_CONT(0.5) OVER () FROM wf', 'WITHIN GROUP')
+})
+test('window-oset', 'STDDEV_POP / VAR_POP windows match the aggregate', () => {
+  const e = new Engine()
+  e.execute('CREATE TABLE s (x INTEGER)')
+  e.execute('INSERT INTO s (x) VALUES (2), (4), (4), (4), (5), (5), (7), (9)')
+  const w = scalar(e, 'SELECT STDDEV_POP(x) OVER () FROM s LIMIT 1') as number
+  const a = scalar(e, 'SELECT STDDEV_POP(x) FROM s') as number
+  assert(Math.abs(w - a) < 1e-9 && Math.abs(w - 2) < 1e-9, `STDDEV_POP window=${w} agg=${a} (expected 2)`)
+})
+test('window-nulls', 'FIRST_VALUE / LAST_VALUE IGNORE NULLS skip nulls in the frame', () => {
+  const e = new Engine()
+  e.execute('CREATE TABLE n (id INTEGER, v INTEGER)')
+  e.execute('INSERT INTO n (id, v) VALUES (1,NULL),(2,5),(3,NULL),(4,7),(5,NULL)')
+  const first = rowsOf(e, 'SELECT id, FIRST_VALUE(v) IGNORE NULLS OVER (ORDER BY id ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) FROM n ORDER BY id')
+  assert(eq(col(first), [null, 5, 5, 5, 5]), `FIRST_VALUE IGNORE NULLS wrong: ${JSON.stringify(col(first))}`)
+  const last = rowsOf(e, 'SELECT id, LAST_VALUE(v) IGNORE NULLS OVER (ORDER BY id ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) FROM n ORDER BY id')
+  assert(eq(col(last), [null, 5, 5, 7, 7]), `LAST_VALUE IGNORE NULLS wrong: ${JSON.stringify(col(last))}`)
+})
+test('window-nulls', 'LAG IGNORE NULLS walks past nulls', () => {
+  const e = new Engine()
+  e.execute('CREATE TABLE n (id INTEGER, v INTEGER)')
+  e.execute('INSERT INTO n (id, v) VALUES (1,NULL),(2,5),(3,NULL),(4,7),(5,NULL)')
+  const rows = rowsOf(e, 'SELECT id, LAG(v) IGNORE NULLS OVER (ORDER BY id) FROM n ORDER BY id')
+  assert(eq(col(rows), [null, null, 5, 5, 7]), `LAG IGNORE NULLS wrong: ${JSON.stringify(col(rows))}`)
+})
+test('window-nulls', 'RESPECT NULLS is the default for value functions', () => {
+  const e = new Engine()
+  e.execute('CREATE TABLE n (id INTEGER, v INTEGER)')
+  e.execute('INSERT INTO n (id, v) VALUES (1,NULL),(2,5),(3,NULL)')
+  const a = col(rowsOf(e, 'SELECT id, LAG(v) OVER (ORDER BY id) FROM n ORDER BY id'))
+  const b = col(rowsOf(e, 'SELECT id, LAG(v) RESPECT NULLS OVER (ORDER BY id) FROM n ORDER BY id'))
+  assert(eq(a, b) && eq(a, [null, null, 5]), 'RESPECT NULLS should match the default')
+})
+test('window-filter', 'FILTER (WHERE …) restricts the rows a window aggregate sees', () => {
+  const rows = rowsOf(wf(), 'SELECT x, COUNT(*) FILTER (WHERE x >= 20) OVER (ORDER BY x ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) FROM wf ORDER BY x')
+  assert(eq(col(rows), [0, 1, 2, 3, 4]), `window FILTER wrong: ${JSON.stringify(col(rows))}`)
+})
+
 // --- set-operation type unification -----------------------------------------
 test('setop', 'UNION unifies INTEGER + REAL to REAL', () => {
   const e = new Engine()

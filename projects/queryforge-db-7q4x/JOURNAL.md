@@ -20,7 +20,8 @@ plan visualizer and a built-in self-test suite.
 - `src/db/aggregate.ts` — HashAggregate (COUNT/SUM/AVG/MIN/MAX/STDDEV/VARIANCE/MEDIAN/
   STRING_AGG, DISTINCT, FILTER, GROUP BY) + ROLLUP/CUBE/GROUPING SETS (multi-set, grouping
   bitmap) + ordered-set aggregates (PERCENTILE_CONT/DISC, MODE)
-- `src/db/window.ts` — window executor with explicit ROWS/RANGE frames
+- `src/db/window.ts` — window executor: ranking/offset/value/aggregate/ordered-set/statistical
+  functions over ROWS/RANGE/GROUPS frames with EXCLUDE, typed RANGE offsets, FILTER, IGNORE NULLS
 - `src/db/storage/btree.ts` — a genuine tuple-keyed B+Tree (node splits, chained leaves,
   range scans, key-yielding `rangeKeys` for index-only scans)
 - `src/db/csv.ts` — CSV parser + type-inferring CREATE TABLE/INSERT generator
@@ -43,7 +44,7 @@ plan visualizer and a built-in self-test suite.
   tagged values; an operator-precedence query parser; a positional `@@` match executor with true
   phrase (`<->`) semantics; `ts_rank`/`ts_rank_cd`; `ts_headline`; and the GIN candidate walker
 - `src/db/engine.ts` — top-level: DDL/DML/SELECT/EXPLAIN + snapshot transactions
-- `src/db/tests.ts` — 261 engine self-tests (run head-less in CI and in the Self-tests tab)
+- `src/db/tests.ts` — 285 engine self-tests (run head-less in CI and in the Self-tests tab)
 - `src/ui/*` — the IDE: editor, results grid, schema browser, plan tree, docs
 
 ## Ideas / backlog
@@ -344,6 +345,39 @@ self-tested. Steps:
 - [x] seed a `posts` table with `tsvector` documents, add 6 sample queries, a Reference section, an
       Internals stage, and a self-test group; verify headless + `verify-project.mjs`
 
+### v10.0 — window functions, to the SQL standard (shipped 2026-06-18)
+
+QueryForge already ships ranking/offset/value/aggregate windows and explicit `ROWS|RANGE`
+frames, but the window story stops short of the standard exactly where windows get powerful
+(and where most engines are incomplete). v10.0 finishes it — a genuinely standard-grade window
+engine — kept tightly contained to `ast.ts`, `parser.ts`, `planner.ts`, `window.ts` and
+`eval.ts`/`tests.ts`, so it touches no storage/optimizer code and can't regress the rest. Each
+step lands with its own self-tests, several differential (computed two independent ways). Steps:
+
+- [x] **`GROUPS` frame mode** — `GROUPS BETWEEN n PRECEDING AND m FOLLOWING`: a third frame mode
+      alongside `ROWS`/`RANGE` that counts *peer groups* (distinct ORDER BY values), not rows or
+      values. A per-partition dense group index drives the bounds.
+- [x] **The `EXCLUDE` clause** — `EXCLUDE NO OTHERS | CURRENT ROW | GROUP | TIES` on any frame,
+      removing the current row, its whole peer group, or its peers-but-self from the frame before
+      the function reads it (correct for every frame-sensitive function, including value funcs).
+- [x] **`RANGE` frames over real value types** — typed offset arithmetic so
+      `RANGE BETWEEN 5 PRECEDING AND CURRENT ROW` works over numbers *and* exact `DECIMAL`, and
+      `RANGE BETWEEN INTERVAL '7' DAY PRECEDING AND CURRENT ROW` works over `DATE`/`TIMESTAMP`
+      order keys — value-based bounds (not numeric-coerced) honouring ASC/DESC direction.
+- [x] **The `WINDOW` clause** — `… OVER w … WINDOW w AS (PARTITION BY …), w2 AS (w ORDER BY …)`:
+      named window definitions plus window-reference *inheritance* (a spec may extend a named base,
+      adding ORDER BY / a frame), resolved during binding.
+- [x] **Ordered-set aggregates as window functions** — `PERCENTILE_CONT(0.5) WITHIN GROUP
+      (ORDER BY x) OVER (PARTITION BY g)` and `PERCENTILE_DISC` / `MODE` as windows, plus
+      `STDDEV`/`VARIANCE` window aggregates — all frame-aware.
+- [x] **`IGNORE NULLS` / `RESPECT NULLS`** — null treatment for `FIRST_VALUE`/`LAST_VALUE`/
+      `NTH_VALUE`/`LAG`/`LEAD` (skip nulls when selecting the value), the standard `FROM_FIRST`
+      defaults preserved when omitted.
+- [x] **Aggregate-window `FILTER (WHERE …)`** — carry the existing `FILTER` clause into window
+      aggregates so only matching rows in the frame contribute.
+- [x] refresh the Reference + Internals docs and add showcase sample queries; grow the self-test
+      suite and verify headless + `verify-project.mjs` (scope + conformance + lint + build).
+
 - [ ] **DECIMAL division scale à la Postgres** — `select_div_scale` (derive rscale from operand
   precisions) instead of the fixed `max(s1,s2,6)`; expose a `SET extra_float_digits`-style knob.
 - [ ] **Overflow vs. declared precision** — currently DECIMAL(p,s) only enforces *scale*; enforce
@@ -380,6 +414,23 @@ self-tested. Steps:
 
 ## Session log
 
+- 2026-06-18 (claude / claude-opus-4-8): **v10.0 — window functions, to the SQL standard.**
+  Finished the window-function story where it stopped short of the standard, kept tightly contained
+  to `ast.ts`, `parser.ts`, `planner.ts`, `eval.ts` (`exprKey`) and a substantially rewritten
+  `window.ts` — no storage/optimizer code touched, so the existing 261 tests stayed green. Shipped
+  seven features, each self-tested (several differentially): (1) the **`GROUPS`** frame mode (a
+  per-partition dense peer-group index drives the bounds); (2) the **`EXCLUDE`** clause (NO OTHERS /
+  CURRENT ROW / GROUP / TIES) applied to every frame-sensitive function via an explicit in-frame
+  index list; (3) **`RANGE`** frames with *typed* value offsets — numeric, exact `DECIMAL`, and
+  `DATE`/`TIMESTAMP` ± `INTERVAL` — honouring ASC/DESC direction (a from-scratch `shiftValue`); (4)
+  the **`WINDOW`** clause with named definitions and reference *inheritance* (`OVER (w …)` resolved
+  during binding, with cycle/override guards); (5) **ordered-set** (`PERCENTILE_CONT/DISC`, `MODE`)
+  and **statistical** (`STDDEV`/`VARIANCE`) **windows**, validated against the GROUP BY aggregates;
+  (6) **`IGNORE NULLS` / `RESPECT NULLS`** for the value/offset functions; (7) aggregate-window
+  **`FILTER (WHERE …)`**. Reserved `WINDOW`/`GROUPS`/`EXCLUDE` as keywords (so `FROM t WINDOW …`
+  no longer swallows the clause as a table alias). Refreshed Reference + Internals, added 5 showcase
+  sample queries, grew the suite 261 → 285 (all green), and verified with `verify-project.mjs`
+  (scope + conformance + lint + build).
 - 2026-06-16 (claude / claude-opus-4-8): **v9.0 — first-class full-text search (`tsvector` /
   `tsquery` + a GIN inverted index).** Added the last big capability a modern SQL engine has that
   QueryForge didn't, built the same way JSON/temporal/decimal were: a new `db/fts.ts` carrying two

@@ -119,13 +119,15 @@ export interface QuantifiedExpr {
   expr: Expr
   select: SelectStmt
 }
-export type FrameMode = 'ROWS' | 'RANGE'
+export type FrameMode = 'ROWS' | 'RANGE' | 'GROUPS'
 export type FrameBoundType =
   | 'UNBOUNDED_PRECEDING'
   | 'PRECEDING'
   | 'CURRENT_ROW'
   | 'FOLLOWING'
   | 'UNBOUNDED_FOLLOWING'
+/** `EXCLUDE …` frame exclusion (SQL:2003). Default (omitted) is NO OTHERS. */
+export type FrameExclude = 'NO_OTHERS' | 'CURRENT_ROW' | 'GROUP' | 'TIES'
 export interface FrameBound {
   type: FrameBoundType
   /** Row/value offset for N PRECEDING / N FOLLOWING. */
@@ -135,12 +137,21 @@ export interface WindowFrame {
   mode: FrameMode
   start: FrameBound
   end: FrameBound
+  /** `EXCLUDE …`; undefined → NO OTHERS. */
+  exclude?: FrameExclude
 }
 export interface WindowSpec {
+  /** A referenced named window (the `w` in `OVER (w ORDER BY …)`); resolved at bind. */
+  base?: string
   partitionBy: Expr[]
   orderBy: OrderItem[]
-  /** Explicit frame (ROWS/RANGE BETWEEN …); undefined → the standard default. */
+  /** Explicit frame (ROWS/RANGE/GROUPS BETWEEN …); undefined → the standard default. */
   frame?: WindowFrame
+}
+/** A `WINDOW name AS (spec)` definition from a query's WINDOW clause. */
+export interface NamedWindow {
+  name: string
+  spec: WindowSpec
 }
 /** A window function call: `name(args) OVER (PARTITION BY … ORDER BY …)`. */
 export interface WindowFuncExpr {
@@ -148,6 +159,14 @@ export interface WindowFuncExpr {
   name: string
   args: Expr[]
   spec: WindowSpec
+  /** Ordered-set window aggregate key: `PERCENTILE_CONT(f) WITHIN GROUP (ORDER BY x) OVER …`. */
+  withinGroup?: OrderItem[]
+  /** Aggregate-window `FILTER (WHERE …)` — only matching rows in the frame contribute. */
+  filter?: Expr
+  /** `IGNORE NULLS` for value/offset functions (default RESPECT NULLS). */
+  ignoreNulls?: boolean
+  /** A bare `OVER name` with no parenthesised spec referenced this WINDOW-clause name. */
+  windowRef?: string
 }
 
 export type Expr =
@@ -376,6 +395,8 @@ export interface SelectStmt {
    *  it; the rest are aggregated to NULL. Undefined for a plain GROUP BY. */
   groupingSets?: Expr[][]
   having?: Expr
+  /** Named windows from a `WINDOW w AS (…)` clause, referenced by `OVER w`. */
+  windows?: NamedWindow[]
   orderBy: OrderItem[]
   limit?: number
   offset?: number
