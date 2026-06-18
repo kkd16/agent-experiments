@@ -20,7 +20,7 @@ type HistoryItem = {
 };
 
 
-function generateRandomProblem(difficulty: Difficulty, allowedOps: Operation[]) {
+function generateRandomProblem(difficulty: Difficulty, allowedOps: Operation[], allowNegativesParam: boolean = false) {
   const ops = allowedOps.length > 0 ? allowedOps : ['+'] as Operation[];
   const selectedOp = ops[Math.floor(Math.random() * ops.length)];
 
@@ -32,7 +32,7 @@ function generateRandomProblem(difficulty: Difficulty, allowedOps: Operation[]) 
   let n2 = Math.floor(Math.random() * maxNum) + 1;
 
   if (selectedOp === '-') {
-    if (n2 > n1) {
+    if (!allowNegativesParam && n2 > n1) {
       [n1, n2] = [n2, n1];
     }
   } else if (selectedOp === '/') {
@@ -44,6 +44,39 @@ function generateRandomProblem(difficulty: Difficulty, allowedOps: Operation[]) 
   }
 
   return { n1, n2, selectedOp };
+}
+
+
+
+
+function getInitialHideTimer(): boolean {
+  try {
+    const stored = window.localStorage.getItem('mathFlashcardsHideTimer');
+    if (stored !== null) return stored === 'true';
+  } catch (e) {
+    console.error("Local storage error:", e);
+  }
+  return false;
+}
+
+function getInitialEnableShake(): boolean {
+  try {
+    const stored = window.localStorage.getItem('mathFlashcardsEnableShake');
+    if (stored !== null) return stored === 'true';
+  } catch (e) {
+    console.error("Local storage error:", e);
+  }
+  return true;
+}
+
+function getInitialAllowNegatives(): boolean {
+  try {
+    const stored = window.localStorage.getItem('mathFlashcardsAllowNegatives');
+    if (stored !== null) return stored === 'true';
+  } catch (e) {
+    console.error("Local storage error:", e);
+  }
+  return false;
 }
 
 function getInitialHighScore() {
@@ -179,6 +212,7 @@ function App() {
   const [hideOperator, setHideOperator] = useState<boolean>(false);
   const [timeLeft, setTimeLeft] = useState<number>(60);
   const [selectedTimerDuration, setSelectedTimerDuration] = useState<number>(60);
+  const [customTimerDuration, setCustomTimerDuration] = useState<number>(45);
   const [questionLimit, setQuestionLimit] = useState<number>(20);
   const [questionsAnswered, setQuestionsAnswered] = useState<number>(0);
   const [startTime, setStartTime] = useState<number | null>(null);
@@ -197,6 +231,38 @@ function App() {
       return '';
     }
   });
+
+
+  const [allowNegatives, setAllowNegatives] = useState<boolean>(getInitialAllowNegatives());
+
+  const [enableScreenShake, setEnableScreenShake] = useState<boolean>(getInitialEnableShake());
+  const [hideTimer, setHideTimer] = useState<boolean>(getInitialHideTimer());
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem('mathFlashcardsHideTimer', hideTimer.toString());
+    } catch (e) {
+      console.error(e);
+    }
+  }, [hideTimer]);
+
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem('mathFlashcardsEnableShake', enableScreenShake.toString());
+    } catch (e) {
+      console.error(e);
+    }
+  }, [enableScreenShake]);
+
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem('mathFlashcardsAllowNegatives', allowNegatives.toString());
+    } catch (e) {
+      console.error(e);
+    }
+  }, [allowNegatives]);
   const [history, setHistory] = useState<HistoryItem[]>([]);
   const [runScores, setRunScores] = useState<RunScore[]>(getInitialRunScores());
 
@@ -228,14 +294,14 @@ function App() {
   // Initialize first problem safely
   useEffect(() => {
     setTimeout(() => {
-      const { n1, n2, selectedOp } = generateRandomProblem(difficulty, allowedOperations);
+      const { n1, n2, selectedOp } = generateRandomProblem(difficulty, allowedOperations, allowNegatives);
       setNum1(n1);
       setNum2(n2);
       setOperation(selectedOp);
       setUserAnswer('');
       setMessage('');
     }, 0);
-  }, [difficulty, allowedOperations]);
+  }, [difficulty, allowedOperations, allowNegatives]);
 
 
   const scoreRef = useRef(score);
@@ -270,7 +336,7 @@ function App() {
   }, [isSpeedRunActive, gameMode, timeLeft]);
 
   const generateProblem = useCallback(() => {
-    const { n1, n2, selectedOp } = generateRandomProblem(difficulty, allowedOperations);
+    const { n1, n2, selectedOp } = generateRandomProblem(difficulty, allowedOperations, allowNegatives);
     setNum1(n1);
     setNum2(n2);
     setOperation(selectedOp);
@@ -287,7 +353,7 @@ function App() {
       setMessage('');
     }
     inputRef.current?.focus();
-  }, [difficulty, isSpeedRunActive, timeLeft, allowedOperations, gameMode, questionsAnswered, questionLimit, isHardcoreMode]);
+  }, [difficulty, isSpeedRunActive, timeLeft, allowedOperations, gameMode, questionsAnswered, questionLimit, isHardcoreMode, allowNegatives]);
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -376,7 +442,7 @@ function App() {
     setScore(0);
     updateStreak(0);
     if (gameMode === 'time') {
-      setTimeLeft(selectedTimerDuration);
+      setTimeLeft(selectedTimerDuration === 0 ? customTimerDuration : selectedTimerDuration);
     } else {
       setStartTime(Date.now());
     }
@@ -468,7 +534,7 @@ function App() {
       if (isSuddenDeathMode) {
         setMessage(`Incorrect! Sudden Death over.`);
         if (soundEnabled) playSound('incorrect');
-      setAnimationClass('flash-incorrect');
+      setAnimationClass(enableScreenShake ? 'flash-incorrect shake-animation' : 'flash-incorrect');
         setTimeout(() => setAnimationClass(''), 500);
         updateStreak(0);
         setShowSummary(true);
@@ -485,12 +551,76 @@ function App() {
         setIsSpeedRunActive(false);
       } else {
         setMessage(`Incorrect. Try again!`);
-        setAnimationClass('flash-incorrect');
+        setAnimationClass(enableScreenShake ? 'flash-incorrect shake-animation' : 'flash-incorrect');
         setTimeout(() => setAnimationClass(''), 500);
         updateStreak(0); // Reset streak
         setUserAnswer('');
         inputRef.current?.focus();
       }
+    }
+  };
+
+
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (document.activeElement?.tagName === 'INPUT' || document.activeElement?.tagName === 'SELECT' || document.activeElement?.tagName === 'TEXTAREA') {
+        return;
+      }
+
+      const key = e.key.toLowerCase();
+      if (key === 'e') {
+        setDifficulty('easy');
+      } else if (key === 'm') {
+        setDifficulty('medium');
+      } else if (key === 'h') {
+        setDifficulty('hard');
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, []);
+
+
+  const handleFactoryReset = () => {
+    if (!window.confirm("Are you sure you want to delete all local storage data? This cannot be undone.")) return;
+
+    const keys = [
+      'mathFlashcardsHighScore',
+      'mathFlashcardsTheme',
+      'mathFlashcardsStreak',
+      'mathFlashcardsNumpadLayout',
+      'mathFlashcardsRunScores',
+      'mathFlashcardsLifetimeQuestions',
+      'mathFlashcardsBgColor',
+      'mathFlashcardsAllowNegatives',
+      'mathFlashcardsEnableShake',
+      'mathFlashcardsHideTimer'
+    ];
+
+    keys.forEach(k => {
+      try { window.localStorage.removeItem(k); } catch (e) { console.error(e); }
+    });
+
+    setHighScore(0);
+    setTheme('light');
+    setStreak(0);
+    setNumpadLayout('phone');
+    setRunScores([]);
+    setLifetimeQuestions(0);
+    setBgColor('');
+    setAllowNegatives(false);
+    setEnableScreenShake(true);
+    setHideTimer(false);
+  };
+
+  const clearRunHistory = () => {
+    setRunScores([]);
+    try {
+      window.localStorage.removeItem('mathFlashcardsRunScores');
+    } catch (e) {
+      console.error("Local storage error:", e);
     }
   };
 
@@ -598,18 +728,33 @@ function App() {
               {op}
             </label>
           ))}
+          <label style={{display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer', marginTop: '0.5rem'}}>
+            <input type="checkbox" checked={allowNegatives} onChange={(e) => setAllowNegatives(e.target.checked)} disabled={isSpeedRunActive} />
+            Allow Negatives
+          </label>
+          <label style={{display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer', marginTop: '0.5rem'}}>
+            <input type="checkbox" checked={enableScreenShake} onChange={(e) => setEnableScreenShake(e.target.checked)} />
+            Screen Shake
+          </label>
+          <label style={{display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer', marginTop: '0.5rem'}}>
+            <input type="checkbox" checked={hideTimer} onChange={(e) => setHideTimer(e.target.checked)} />
+            Hide Timer
+          </label>
+          <button onClick={handleFactoryReset} className="reset-btn" style={{marginTop: '0.5rem', padding: '0.5rem', background: '#e74c3c', color: 'white', borderRadius: '4px', cursor: 'pointer', border: 'none', width: '100%'}}>
+            Factory Reset
+          </button>
         </div>
 
         <div className="speed-run-controls">
 
           {isSpeedRunActive ? (
             gameMode === 'time' ? (
-              <div className="progress-container">
+              <div className="progress-container" style={{ visibility: hideTimer ? 'hidden' : 'visible' }}>
                 <div className="progress-bar" style={{ width: `${(timeLeft / selectedTimerDuration) * 100}%` }}></div>
                 <div className="progress-text">{timeLeft}s</div>
               </div>
             ) : (
-              <div className="progress-container">
+              <div className="progress-container" style={{ visibility: hideTimer ? 'hidden' : 'visible' }}>
                 <div className="progress-bar" style={{ width: `${(questionsAnswered / questionLimit) * 100}%` }}></div>
                 <div className="progress-text">{questionsAnswered} / {questionLimit}</div>
               </div>
@@ -639,11 +784,24 @@ function App() {
                 <option value="endless">Endless</option>
               </select>
               {gameMode === 'time' ? (
-                <select value={selectedTimerDuration} onChange={(e) => setSelectedTimerDuration(parseInt(e.target.value, 10))} className="timer-select">
-                  <option value={30}>30s</option>
-                  <option value={60}>60s</option>
-                  <option value={120}>120s</option>
-                </select>
+                <>
+                  <select value={selectedTimerDuration} onChange={(e) => setSelectedTimerDuration(parseInt(e.target.value, 10))} className="timer-select">
+                    <option value={30}>30s</option>
+                    <option value={60}>60s</option>
+                    <option value={120}>120s</option>
+                    <option value={0}>Custom</option>
+                  </select>
+                  {selectedTimerDuration === 0 && (
+                    <input
+                      type="number"
+                      value={customTimerDuration}
+                      onChange={(e) => setCustomTimerDuration(parseInt(e.target.value, 10) || 0)}
+                      className="timer-select"
+                      style={{width: '60px', padding: '0.4rem'}}
+                      min="1"
+                    />
+                  )}
+                </>
               ) : gameMode === 'questions' ? (
                 <select value={questionLimit} onChange={(e) => setQuestionLimit(parseInt(e.target.value, 10))} className="timer-select">
                   <option value={10}>10 Qs</option>
@@ -658,7 +816,14 @@ function App() {
       </div>
 
       <div className={`flashcard flashcard-${flashcardSize} ${animationClass}`}>
-        <div className="problem">
+
+        <div className="problem" style={{position: 'relative'}}>
+          {streak >= 5 && (
+            <span style={{position: 'absolute', top: '-10px', right: '-10px', background: '#f1c40f', color: '#000', padding: '0.2rem 0.5rem', borderRadius: '10px', fontSize: '1rem', fontWeight: 'bold', animation: 'pulse 0.5s'}}>
+              {streak >= 10 ? 'x3' : 'x2'}
+            </span>
+          )}
+
           <span className="number">{num1}</span>
           <span className="operation" style={{minWidth: '2rem', textAlign: 'center'}}>{hideOperator ? '?' : operation}</span>
           <span className="number">{num2}</span>
@@ -741,12 +906,15 @@ function App() {
                 );
               })}
             </div>
-            <p>Average Time: <strong>{questionsAnswered > 0 ? ((gameMode === 'time' ? selectedTimerDuration : elapsedTime) / questionsAnswered).toFixed(2) : 0}s</strong></p>
+            <p>Average Time: <strong>{questionsAnswered > 0 ? ((gameMode === 'time' ? (selectedTimerDuration === 0 ? customTimerDuration : selectedTimerDuration) : elapsedTime) / questionsAnswered).toFixed(2) : 0}s</strong></p>
 
 
             {runScores.length > 0 && (
               <div className="scores-graph-container" style={{marginTop: '1.5rem', marginBottom: '1.5rem'}}>
-                <h3 style={{marginBottom: '0.5rem', fontSize: '1.1rem'}}>Last 10 Runs</h3>
+                <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem'}}>
+                  <h3 style={{margin: 0, fontSize: '1.1rem'}}>Last 10 Runs</h3>
+                  <button onClick={clearRunHistory} className="submit-button" style={{padding: '0.2rem 0.5rem', fontSize: '0.8rem', backgroundColor: '#e74c3c'}}>Clear History</button>
+                </div>
                 <div style={{display: 'flex', alignItems: 'flex-end', height: '100px', gap: '4px', borderBottom: '1px solid #bdc3c7', paddingBottom: '4px'}}>
                   {runScores.map((run, i) => {
                     const maxScore = Math.max(...runScores.map(r => r.score), 10);

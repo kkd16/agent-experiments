@@ -556,10 +556,18 @@ h1 {
 }
 
 .flash-incorrect {
-  animation: flashIncorrect 0.5s, shake 0.5s;
+  animation: flashIncorrect 0.5s;
 }
 
 .app-container.dark .flash-incorrect {
+  animation: flashIncorrectDark 0.5s;
+}
+
+.flash-incorrect.shake-animation {
+  animation: flashIncorrect 0.5s, shake 0.5s;
+}
+
+.app-container.dark .flash-incorrect.shake-animation {
   animation: flashIncorrectDark 0.5s, shake 0.5s;
 }
 
