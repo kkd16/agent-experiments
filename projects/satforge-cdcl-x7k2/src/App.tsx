@@ -14,9 +14,10 @@ import { ProofView } from './components/ProofView'
 import { CountView } from './components/CountView'
 import { MaxSatView } from './components/MaxSatView'
 import { SmtStudio } from './components/SmtStudio'
+import { ModelChecker } from './components/ModelChecker'
 
 type Tab = 'solution' | 'stats' | 'count' | 'graph' | 'trace' | 'proof' | 'cnf'
-type Mode = 'sat' | 'smt'
+type Mode = 'sat' | 'smt' | 'imc'
 
 export default function App() {
   const [mode, setMode] = useState<Mode>('sat')
@@ -81,7 +82,13 @@ export default function App() {
           <span className="logo">⊨</span>
           <div>
             <h1>SatForge</h1>
-            <p>{mode === 'sat' ? 'A from-scratch CDCL SAT solver, visualized.' : 'A from-scratch DPLL(T) SMT solver — plus QF_BV by bit-blasting.'}</p>
+            <p>
+              {mode === 'sat'
+                ? 'A from-scratch CDCL SAT solver, visualized.'
+                : mode === 'smt'
+                  ? 'A from-scratch DPLL(T) SMT solver — plus QF_BV by bit-blasting.'
+                  : 'Craig interpolation & interpolation-based safety model checking.'}
+            </p>
           </div>
         </div>
         <div className="mode-switch">
@@ -91,10 +98,14 @@ export default function App() {
           <button className={mode === 'smt' ? 'active' : ''} onClick={() => setMode('smt')}>
             SMT Studio
           </button>
+          <button className={mode === 'imc' ? 'active' : ''} onClick={() => setMode('imc')}>
+            Model Checker
+          </button>
         </div>
       </header>
 
       {mode === 'smt' && <SmtStudio />}
+      {mode === 'imc' && <ModelChecker />}
 
       {mode === 'sat' && (
       <div className="layout">
