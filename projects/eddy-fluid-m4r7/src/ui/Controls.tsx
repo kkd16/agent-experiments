@@ -363,6 +363,7 @@ export function Controls(props: Props) {
             { value: 'temperature', label: 'Temp' },
             { value: 'lic', label: 'LIC' },
             { value: 'schlieren', label: 'Schlieren' },
+            { value: 'qcrit', label: 'Q-vortex' },
           ]}
         />
         {s.mode !== 'dye' && (

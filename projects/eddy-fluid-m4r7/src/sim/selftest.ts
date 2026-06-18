@@ -630,6 +630,44 @@ function operators(): CheckGroup {
     );
   }
 
+  // Q-criterion separates rotation from shear: a solid-body rotation is a pure
+  // vortex (Q = Ω² > 0), while a uniform shear is pure strain (Q = 0).
+  {
+    const N = 48;
+    const omega = 0.01;
+    const c = (N + 1) / 2;
+    const rot = new FluidSolver(N);
+    for (let j = 0; j <= N + 1; j++)
+      for (let i = 0; i <= N + 1; i++) {
+        const idx = rot.IX(i, j);
+        rot.u[idx] = -omega * (j - c);
+        rot.v[idx] = omega * (i - c);
+      }
+    let qRotMin = Infinity;
+    let qRotErr = 0;
+    for (let j = 3; j <= N - 2; j++)
+      for (let i = 3; i <= N - 2; i++) {
+        const q = rot.qCriterion(i, j);
+        qRotMin = Math.min(qRotMin, q);
+        qRotErr = Math.max(qRotErr, Math.abs(q - omega * omega));
+      }
+    const shear = new FluidSolver(N);
+    const gamma = 0.02;
+    for (let j = 0; j <= N + 1; j++)
+      for (let i = 0; i <= N + 1; i++) shear.u[shear.IX(i, j)] = gamma * (j - c);
+    let qShear = 0;
+    for (let j = 3; j <= N - 2; j++)
+      for (let i = 3; i <= N - 2; i++) qShear = Math.max(qShear, Math.abs(shear.qCriterion(i, j)));
+    checks.push(
+      check(
+        'Q-criterion isolates vortices from shear',
+        'The Hunt Q-criterion measures rotation minus strain. A solid-body rotation is all rotation (Q = Ω², positive everywhere); a uniform shear is all strain (Q = 0) even though it has vorticity — which is exactly why Q finds vortex cores where raw vorticity can’t.',
+        qRotMin > 0 && qRotErr < 1e-8 && qShear < 1e-9,
+        `rotation Q→${fmt(omega * omega)} (err ${fmt(qRotErr)}), shear |Q| ${fmt(qShear)}`,
+      ),
+    );
+  }
+
   // Bilinear sampling reproduces an affine field exactly.
   {
     const N = 48;

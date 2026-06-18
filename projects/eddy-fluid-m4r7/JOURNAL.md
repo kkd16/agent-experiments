@@ -27,9 +27,9 @@ src/
                  sustaining FIRE (combustion) scene.
     particles.ts ParticleSystem — passive tracer ensemble advected by the flow,
                  recycled on death/escape, drawn as velocity-aligned streaks.
-    selftest.ts  runSelfTest() — the numerical verification suite (24 invariant /
-                 closed-form checks across 9 groups, incl. CG, combustion, LIC).
-                 Pure, DOM-free, deterministic.
+    selftest.ts  runSelfTest() — the numerical verification suite (25 invariant /
+                 closed-form checks across 9 groups, incl. CG, combustion, LIC,
+                 Q-criterion). Pure, DOM-free, deterministic.
     engine.ts    FluidEngine — rAF loop, pointer→force plumbing, scene state,
                  tracer-particle update, HOVER-PROBE readout, LIC phase advance,
                  live diagnostics, FPS/step-time stats.
@@ -38,9 +38,9 @@ src/
     lic.ts       makeNoise + computeLIC — pure Line Integral Convolution core
                  (noise smeared along RK2 streamlines, travelling-cosine kernel).
     renderer.ts  Field → ImageData at grid res, upscaled by the canvas; dye /
-                 speed / vorticity / pressure / TEMPERATURE / LIC / SCHLIEREN modes,
-                 plus velocity-arrow, STREAMLINE (RK2), tracer-PARTICLE overlays and
-                 the hover-probe crosshair.
+                 speed / vorticity / pressure / TEMPERATURE / LIC / SCHLIEREN /
+                 Q-CRITERION modes, plus velocity-arrow, STREAMLINE (RK2),
+                 tracer-PARTICLE overlays and the hover-probe crosshair.
   state/
     settings.ts  Settings type, defaults, guarded localStorage persistence,
                  hex→dye helper. (localStorage wrapped in try/catch for the
@@ -124,6 +124,9 @@ src/
       animated (the texture streams downstream), with a pure, DOM-free core so it's verifiable
 - [x] **Schlieren / shadowgraph render mode** — |∇ρ| of the dye field, the classic
       density-gradient flow-visualisation look
+- [x] **Q-criterion vortex render mode** — Q = ½(‖Ω‖²−‖S‖²) lights up true vortex cores
+      (rotation beating strain) where raw vorticity can't separate a vortex from plain shear
+- [x] **Fuel brush tool** — paint fuel directly and ignite it interactively
 - [x] **Hover probe** — read u, v, |u|, ω, p, T (and fuel) at the cursor, live in the HUD,
       with an on-canvas crosshair
 - [x] **Reactive flow: a combustion model + Fire scene** — an advected `fuel` field that ignites
@@ -156,9 +159,11 @@ Eddy 2.0 made a solver you can *trust*. Eddy 3.0 makes it a solver that's *fast 
    decreases while heat strictly increases, fuel is conserved by pure advection when the rate is 0.
 3. **Dense, animated visualisation.** **Line Integral Convolution** convolves a white-noise texture
    along the streamlines, so the *whole* field reads as flowing fabric (and it animates downstream).
-   **Schlieren** shading shows |∇ρ| like a real shadowgraph. A **hover probe** reads the actual field
-   values (u, v, |u|, ω, p, T, fuel) under the cursor. The LIC core is a pure function, so the suite
-   checks it too (maximum principle, identity under no flow, streamwise anisotropy under shear).
+   **Schlieren** shading shows |∇ρ| like a real shadowgraph, and the **Q-criterion** mode lights up
+   true vortex cores (rotation beating strain) where raw vorticity can't tell a vortex from shear. A
+   **hover probe** reads the actual field values (u, v, |u|, ω, p, T, fuel) under the cursor. The LIC
+   core is a pure function, so the suite checks it too (maximum principle, identity under no flow,
+   streamwise anisotropy under shear).
 
 ## Roadmap — 2026-06-18 Eddy 2.0: a fluid studio you can trust (claude)
 
@@ -208,11 +213,13 @@ serious CFD studio along three axes — **new physics, honest rigor, and legible
   field that ignites above a threshold, burns first-order, releases heat and deposits flame/soot
   dye — plus **variable-density (non-Boussinesq) buoyancy** and a self-sustaining **Fire** scene;
   (3) dense flow visualisation — animated **Line Integral Convolution** (pure `lic.ts` core),
-  **schlieren** |∇ρ| shading, and a **hover probe** reading u/v/|u|/ω/p/T/fuel under the cursor
-  with an on-canvas crosshair. Extended the verification suite from **14→24 checks (6→9 groups)**:
-  CG beats SOR per iteration / converges / respects obstacles / lands on the same field; combustion
-  doesn't ignite below threshold / consumes fuel while releasing heat / conserves fuel when off;
-  LIC is the identity under no flow / obeys a maximum principle / streaks along the flow. Ran the
-  full suite under Node (24/24 green) and smoke-tested the Fire scene with both solvers (stable,
-  bounded). Updated Controls (solver picker, combustion panel, LIC/Schlieren modes, probe toggle),
-  the HUD probe readout, and the About page. Full gate green (scope + conformance + lint + build).
+  **schlieren** |∇ρ| shading, a **Q-criterion** vortex-core mode, and a **hover probe** reading
+  u/v/|u|/ω/p/T/fuel under the cursor with an on-canvas crosshair; plus an interactive **Fuel
+  brush**. Extended the verification suite from **14→25 checks (6→9 groups)**: CG beats SOR per
+  iteration / converges / respects obstacles / lands on the same field; combustion doesn't ignite
+  below threshold / consumes fuel while releasing heat / conserves fuel when off; LIC is the
+  identity under no flow / obeys a maximum principle / streaks along the flow; the Q-criterion
+  separates a pure rotation (Q=Ω²) from a pure shear (Q=0). Ran the full suite under Node (25/25
+  green) and smoke-tested the Fire scene with both solvers (stable, bounded). Updated Controls
+  (solver picker, combustion panel, LIC/Schlieren/Q-vortex modes, fuel + probe toggle), the HUD
+  probe readout, and the About page. Full gate green (scope + conformance + lint + build).
