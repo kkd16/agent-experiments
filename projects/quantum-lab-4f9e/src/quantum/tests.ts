@@ -23,6 +23,11 @@ import type { GateOp } from './QuantumState';
 import { tebdQuench, exactTFIM } from './tebd';
 import { tfimMPO, heisenbergMPO, exactGroundEnergyMPO, mpoToDense } from './MPO';
 import { runDMRG } from './dmrg';
+import {
+  solveTFIM, entropyProfile, pfeutyEnergyDensity,
+  thermalEnergyPerSite, centralCharge,
+} from './FreeFermion';
+import { ffQuench, exactQuenchDense } from './ffQuench';
 import { minWeightPerfectMatching, type Edge } from './surface/blossom';
 import { buildSurfaceCode, correctRound, logicalErrorRate, mulberry32 } from './surface/SurfaceCode';
 import { decodeMWPM, decodeUF } from './surface/decoder';
@@ -602,6 +607,60 @@ export function runTests(): TestResult[] {
       const c = collapseFit(pts, { pthRange: [0.07, 0.13], nuRange: [0.8, 1.8], grid: 36 });
       add('Space-time FT', 'finite-size collapse recovers p_th ≈ 10% (code capacity)', c.pth >= 0.07 && c.pth <= 0.12, `p_th=${(c.pth * 100).toFixed(1)}% ν=${c.nu.toFixed(2)}`);
     }
+  }
+
+  // --- Free fermions (Jordan–Wigner + Bogoliubov–de Gennes) for the TFIM ---
+  {
+    // Exact ground energy vs the lab's own TFIM MPO dense diagonalisation. The free-fermion
+    // solver works in the Hadamard-rotated convention (H = −JΣXX − hΣZ), whose spectrum is
+    // identical to the lab's −JΣZZ − hΣX, so this is a true cross-engine check.
+    let worstE = 0;
+    for (const [n, h] of [[6, 0.5], [8, 1.0], [7, 1.6]] as [number, number][]) {
+      worstE = Math.max(worstE, Math.abs(solveTFIM(n, 1, h).groundEnergy - exactGroundEnergyMPO(tfimMPO(n, 1, h))));
+    }
+    add('Free fermions', 'TFIM ground energy matches exact diagonalisation', worstE < 1e-9, `max err ${worstE.toExponential(1)}`);
+
+    // Block entanglement entropy (Majorana covariance) vs the exact reduced-density-matrix
+    // entropy of the lab's TFIM ground state, at every cut.
+    let worstS = 0;
+    for (const [n, h] of [[8, 0.7], [8, 1.0], [6, 1.5]] as [number, number][]) {
+      const prof = entropyProfile(solveTFIM(n, 1, h));
+      const { values, vectors } = hermitianEig(mpoToDense(tfimMPO(n, 1, h)));
+      const gi = values.length - 1;
+      const gs = QuantumState.fromAmplitudes(Array.from({ length: 1 << n }, (_, a) => vectors[a][gi]));
+      for (let L = 1; L < n; L++) worstS = Math.max(worstS, Math.abs(prof[L - 1] - gs.entanglementEntropy(L)));
+    }
+    add('Free fermions', 'block entanglement entropy matches exact RDM', worstS < 1e-7, `max err ${worstS.toExponential(1)}`);
+
+    // The quasiparticle gap closes at the quantum critical point h = J and stays open off it.
+    const gCrit = solveTFIM(160, 1, 1).gap, gOff = solveTFIM(60, 1, 1.8).gap;
+    add('Free fermions', 'gap closes at the critical field h = J', gCrit < 0.1 && gOff > 1, `gap(h=1)=${gCrit.toFixed(3)} gap(h=1.8)=${gOff.toFixed(2)}`);
+
+    // The Ising central charge c = ½ from the Calabrese–Cardy entanglement scaling at h = J.
+    const cFit = centralCharge(48, 1, 1, 4);
+    add('Free fermions', 'critical entanglement recovers central charge c = ½', Math.abs(cFit.c - 0.5) < 0.045, `c = ${cFit.c.toFixed(4)}`);
+
+    // Ground energy per site converges to the closed-form Pfeuty thermodynamic integral.
+    const eFF = solveTFIM(220, 1, 1.3).energyPerSite, ePf = pfeutyEnergyDensity(1, 1.3);
+    add('Free fermions', 'energy/site matches the Pfeuty thermodynamic limit', Math.abs(eFF - ePf) < 3e-3, `ff=${eFF.toFixed(5)} pfeuty=${ePf.toFixed(5)}`);
+
+    // Thermal energy recovers the ground energy as T → 0.
+    const solT = solveTFIM(40, 1, 0.9);
+    add('Free fermions', 'thermal energy → ground energy as T → 0', Math.abs(thermalEnergyPerSite(solT, 1e-10) - solT.energyPerSite) < 1e-9, '');
+
+    // Real-time quench: ⟨Z⟩(t) and half-chain entropy vs independent exact dense evolution.
+    let wZ = 0, wQS = 0;
+    for (const [n, hi, hf] of [[6, 4, 0.5], [8, 0.2, 1.5]] as [number, number, number][]) {
+      const q = ffQuench(n, 1, hi, hf, 0.25, 8);
+      const d = exactQuenchDense(n, 1, hi, hf, 0.25, 8);
+      for (let s = 0; s <= 8; s++) { wZ = Math.max(wZ, Math.abs(q.frames[s].mZ - d[s].mZ)); wQS = Math.max(wQS, Math.abs(q.frames[s].entropy - d[s].entropy)); }
+    }
+    add('Free fermions', 'quench dynamics match exact dense evolution', wZ < 1e-5 && wQS < 1e-5, `⟨Z⟩ err ${wZ.toExponential(1)}, S err ${wQS.toExponential(1)}`);
+
+    // A global quench from a near-product state (large h_i, deep in the paramagnet) grows
+    // half-chain entanglement from ≈0 — the quasiparticle light-cone.
+    const lc = ffQuench(24, 1, 8, 1.0, 0.2, 24);
+    add('Free fermions', 'global quench grows entanglement (light-cone)', lc.frames[0].entropy < 0.02 && lc.frames[24].entropy > lc.frames[0].entropy + 0.5, `S: ${lc.frames[0].entropy.toFixed(3)} → ${lc.frames[24].entropy.toFixed(2)}`);
   }
 
   return r;

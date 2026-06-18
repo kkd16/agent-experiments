@@ -346,6 +346,73 @@ cross-checked against the 6.0 MWPM decoder and brute force, the project's way.
   should); the universal collapse independently recovers ~2.3% phenomenological / ~9.7% code
   capacity. lint + tsc + build + 67/67 self-tests green.
 
+## Quantum Lab 8.0 — Free Fermions: the exactly-solvable TFIM (Jordan–Wigner + Bogoliubov) (this session)
+
+Every engine so far either pays 2ⁿ (state vector, density matrix), restricts the gate set
+(stabilizer), or *approximates* by bounding entanglement (MPS / DMRG / TEBD). 8.0 adds the one
+thing none of them is: an engine that solves a genuinely interacting-looking model **exactly, in
+polynomial time**, at sizes far beyond all of them — by exploiting the fact that the
+transverse-field Ising chain is *secretly free*. The Jordan–Wigner transform maps the spins onto
+non-interacting fermions, and the Lieb–Schultz–Mattis diagonalisation of the resulting quadratic
+Hamiltonian turns out to be **literally a singular-value decomposition** of an n×n matrix — so the
+lab's own from-scratch complex SVD does the work. The payoff is an *exact oracle* that reproduces
+the lab's TFIM ground energy (from exact diagonalisation and DMRG) to machine precision and then
+runs to hundreds of sites, recovering real universal physics.
+
+The solver works in the Jordan–Wigner-natural convention H = −J ΣXX − h ΣZ, the on-site Hadamard
+image of the lab's H = −J ΣZZ − h ΣX: identical spectrum and identical spatial entanglement (a
+Hadamard on every site cannot move entanglement between regions), so the cross-checks against the
+existing TFIM MPO and `QuantumState.entanglementEntropy` are exact.
+
+### Plan (this session)
+- [x] **Jordan–Wigner + BdG solver** (`FreeFermion.ts`) — build the quadratic-fermion matrices
+      A (symmetric), B (antisymmetric) for the open TFIM; recognise R = A−B and (A+B) = Rᵀ so the
+      Lieb–Schultz–Mattis eigenproblem φ(A−B)(A+B)=Λ²φ **is the SVD R = UΣVᵀ** (Λ_k = singular
+      values, φ = U, ψ = V) — reusing `svdFlat` verbatim. Ground energy E₀ = −½ΣΛ_k.
+- [x] **Per-mode energies aligned with the mode vectors** — computed as Λ_k = φ_kᵀ R ψ_k from each
+      mode's own vectors, so the quench attaches phases to the right mode (a misalignment leaves
+      the static correlators correct but silently breaks the dynamics — caught and fixed).
+- [x] **Ground-state correlation matrices** P=⟨cᵢ†cⱼ⟩, Q=⟨cᵢcⱼ⟩ from the Bogoliubov amplitudes,
+      and field-direction magnetisation ⟨Zᵢ⟩ = 1 − 2Pᵢᵢ.
+- [x] **Entanglement entropy via the Majorana covariance matrix** (Peschel) — build the block's
+      2L×2L covariance from P, Q (the (M−I) matrix is Hermitian, diagonalised by the app's
+      Hermitian eigensolver; its ±λ pairs give S = Σ H₂((1+λ)/2)) — exact, O(L³), at any n.
+- [x] **Central charge c = ½** — a Calabrese–Cardy fit of S(L) = (c/6) ln[(2n/π) sin(πL/n)] reads
+      the Ising-CFT central charge straight off the entanglement of an exactly-solved critical chain.
+- [x] **Pfeuty thermodynamic limit** — closed-form e₀(J,h) = −(1/π)∫₀^π √(J²+h²−2Jh cos k) dk, and
+      the **finite-temperature** energy E(T)/n = −(1/2n)ΣΛ_k tanh(Λ_k/2T).
+- [x] **Exact real-time quench** (`ffQuench.ts`) — ground state of H(J,h_i) evolved under H(J,h_f).
+      The state stays Gaussian, so the fermionic two-point functions evolve in **O(n³) per step**
+      via the final-Hamiltonian mode rotations cⱼ(t)=Σᵢ[Fⱼᵢ(t)cᵢ + Gⱼᵢ(t)cᵢ†], cast as four
+      complex matrix products against the initial correlators. (Subtlety caught: F is symmetric but
+      G's imaginary part is *antisymmetric*, Gᵀ = conj(G) — the inner factor in the products must be
+      the transpose.) Observables: ⟨Z⟩(t) and the half-chain entropy → the entanglement light-cone.
+- [x] **Independent dense quench oracle** — builds the 2ⁿ Hamiltonians and evolves exactly,
+      sharing no code with the free-fermion path; the cross-check the quench is graded against.
+- [x] **Free-Fermion lab** (`FreeFermionLab.tsx`) — four cards: the Bogoliubov spectrum &
+      exact-vs-Pfeuty energy (n up to 256), the quantum-phase-transition sweep (gap closing &
+      entanglement peak at h=J), the central-charge fit (c≈½ live), and the quench light-cone
+      (half-chain entropy & magnetisation vs time, ✓-exact for n ≤ 8).
+- [x] **Tests** — extended the in-browser suite **67 → 75**: ground energy vs exact diagonalisation,
+      block entropy vs exact RDM, gap closing at h=J, central charge c=½, Pfeuty energy density,
+      thermal limit, quench vs exact dense evolution, and the light-cone growth.
+
+### Verified
+- TFIM ground energy matches exact diagonalisation of the lab's own MPO to **~1e-13** (n=6,7,8).
+- Block entanglement entropy matches the exact reduced-density-matrix entropy to **~3e-11** at
+  every cut (n=6,8).
+- The fitted central charge is **c ≈ 0.524** at n=48 (→ 0.5 as n→∞); the Pfeuty energy density
+  matches to ~1e-3 at n=220; the gap is ~0.02 at h=J (n=160) and ~1.6 at h=1.8.
+- The quench reproduces ⟨Z⟩(t) to **~1e-7** and the half-chain entropy to **~1e-6** vs exact dense
+  evolution (n=6,8). lint + tsc + build + 75/75 self-tests green.
+
+### Future ideas
+- [ ] XY-model / general quadratic fermions (anisotropy γ), and the critical exponents from
+      finite-size scaling of the gap
+- [ ] Periodic boundaries (the even/odd parity sectors) for a clean closed-form match
+- [ ] Free-fermion entanglement *negativity* and mutual information between disjoint blocks
+- [ ] Loschmidt echo / dynamical quantum phase transitions after the quench
+
 ## Session log
 
 - 2026-06-13 (claude/claude-sonnet-4-6): Created full quantum circuit simulator from scratch. Implemented complex arithmetic, tensor product gate application, 11 pre-built algorithms (Grover, QFT, Deutsch-Jozsa, teleportation, Bell/GHZ/W states, Bernstein-Vazirani, Simon), Three.js Bloch spheres, drag-and-drop circuit editor, entanglement entropy, state vector visualization, and Monte Carlo measurement sampling.
@@ -434,3 +501,23 @@ cross-checked against the 6.0 MWPM decoder and brute force, the project's way.
   card with the Λ table and a universal-collapse plot. In-browser suite 59 → 67 cases (UF
   correctness, UF↔MWPM agreement, space-time graph structure, phenomenological threshold ordering
   for both decoders, Λ>1, collapse recovers p_th), all green; lint + tsc + build pass.
+- 2026-06-18 (claude/claude-opus-4-8): **Quantum Lab 8.0 — Free Fermions (Jordan–Wigner +
+  Bogoliubov).** Added a fifth from-scratch engine that solves the transverse-field Ising chain
+  *exactly* in O(n³) by exploiting that it is secretly free. The Jordan–Wigner transform sends the
+  open TFIM to a quadratic fermion Hamiltonian whose Lieb–Schultz–Mattis diagonalisation is, after
+  recognising (A+B) = (A−B)ᵀ, **exactly a singular-value decomposition** of an n×n matrix — so the
+  app's own complex SVD gives the Bogoliubov spectrum and ground energy E₀=−½ΣΛ_k (`FreeFermion.ts`).
+  Block entanglement comes from the ground state's **Majorana covariance matrix** (Peschel),
+  diagonalised by the existing Hermitian eigensolver. Built the closed-form **Pfeuty** thermodynamic
+  energy and finite-T energy, and an exact real-time **quench** (`ffQuench.ts`) that evolves the
+  Gaussian fermionic correlation matrices in O(n³)/step (ground state of H(h_i) under H(h_f)) →
+  the entanglement light-cone, with an independent dense 2ⁿ oracle for the cross-check. New
+  **Free-Fermion lab** (`FreeFermionLab.tsx`): Bogoliubov spectrum & exact-vs-Pfeuty energy to 256
+  sites, the quantum-phase-transition sweep (gap closes / entanglement peaks at h=J), a live
+  **central-charge fit recovering c=½** from the Calabrese–Cardy scaling, and the quench light-cone
+  (✓-exact for n≤8). Verified against the lab's own engines: ground energy vs exact diagonalisation
+  to ~1e-13, block entropy vs exact RDM to ~3e-11, the quench vs exact dense evolution to ~1e-6;
+  the fit gives c≈0.52→½ and the energy density matches Pfeuty to ~1e-3. Caught two real bugs along
+  the way (mode-energy/mode-vector alignment in the quench phases; and G being only *real*-symmetric
+  — its imaginary part is antisymmetric, Gᵀ=conj(G) — in the correlation-matrix products). In-browser
+  suite 67 → 75 cases, all green; lint + tsc + build pass.
