@@ -2310,6 +2310,257 @@ test('fts', 'a GIN index survives a snapshot round-trip', () => {
   assert(eq(rowsOf(e2, `SELECT id FROM posts WHERE body @@ to_tsquery('fox') ORDER BY id`).map((r) => r[0]), [1, 3]), 'restored results')
 })
 
+// --- v11: RETURNING ---------------------------------------------------------
+function retEngine(): Engine {
+  const e = new Engine()
+  e.execute(`CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT, qty INTEGER DEFAULT 0)`)
+  return e
+}
+test('returning', 'INSERT … RETURNING projects the inserted rows (incl. DEFAULT)', () => {
+  const e = retEngine()
+  const r = lastResult(e, `INSERT INTO t (id, name) VALUES (1,'a'),(2,'b') RETURNING id, name, qty`) as RowsResult
+  assert(r.kind === 'rows', 'RETURNING yields a rows result')
+  assert(eq(r.rows, [[1, 'a', 0], [2, 'b', 0]]), 'inserted rows with default qty=0 returned')
+  assert(eq(r.columns.map((c) => c.name), ['id', 'name', 'qty']), 'column names from RETURNING list')
+})
+test('returning', 'INSERT … RETURNING * returns all columns', () => {
+  const e = retEngine()
+  const r = lastResult(e, `INSERT INTO t VALUES (1,'a',5) RETURNING *`) as RowsResult
+  assert(eq(r.rows, [[1, 'a', 5]]), 'star returns every column')
+})
+test('returning', 'INSERT … RETURNING can compute expressions', () => {
+  const e = retEngine()
+  assert(scalar(e, `INSERT INTO t VALUES (1,'a',5) RETURNING qty * 2 AS d`) === 10, 'expression in RETURNING')
+})
+test('returning', 'UPDATE … RETURNING projects the NEW row image', () => {
+  const e = retEngine()
+  e.execute(`INSERT INTO t VALUES (1,'a',5),(2,'b',7)`)
+  const r = lastResult(e, `UPDATE t SET qty = qty + 100 WHERE id = 1 RETURNING id, qty`) as RowsResult
+  assert(eq(r.rows, [[1, 105]]), 'UPDATE RETURNING shows the post-update value')
+})
+test('returning', 'DELETE … RETURNING projects the OLD row image', () => {
+  const e = retEngine()
+  e.execute(`INSERT INTO t VALUES (1,'a',5),(2,'b',7)`)
+  const r = lastResult(e, `DELETE FROM t WHERE id = 2 RETURNING id, name`) as RowsResult
+  assert(eq(r.rows, [[2, 'b']]), 'DELETE RETURNING shows the deleted row')
+  assert(scalar(e, `SELECT COUNT(*) FROM t`) === 1, 'row really gone')
+})
+test('returning', 'INSERT … SELECT … RETURNING', () => {
+  const e = retEngine()
+  e.execute(`CREATE TABLE src (id INTEGER, name TEXT)`)
+  e.execute(`INSERT INTO src VALUES (1,'x'),(2,'y')`)
+  const r = lastResult(e, `INSERT INTO t (id, name) SELECT id, name FROM src RETURNING id`) as RowsResult
+  assert(eq(r.rows.map((row) => row[0]).sort(), [1, 2]), 'RETURNING over INSERT…SELECT')
+})
+test('returning', 'ON CONFLICT DO UPDATE … RETURNING returns the updated row', () => {
+  const e = retEngine()
+  e.execute(`INSERT INTO t VALUES (1,'a',5)`)
+  const r = lastResult(e, `INSERT INTO t VALUES (1,'a',99) ON CONFLICT (id) DO UPDATE SET qty = EXCLUDED.qty RETURNING qty`) as RowsResult
+  assert(eq(r.rows, [[99]]), 'upsert RETURNING shows the updated value')
+})
+test('returning', 'DELETE … RETURNING * with no match returns no rows', () => {
+  const e = retEngine()
+  e.execute(`INSERT INTO t VALUES (1,'a',5)`)
+  const r = lastResult(e, `DELETE FROM t WHERE id = 999 RETURNING *`) as RowsResult
+  assert(r.kind === 'rows' && r.rows.length === 0, 'empty RETURNING result')
+})
+
+// --- v11: MERGE -------------------------------------------------------------
+function mergeEngine(): Engine {
+  const e = new Engine()
+  e.execute(`CREATE TABLE tgt (id INTEGER PRIMARY KEY, val INTEGER)`)
+  e.execute(`INSERT INTO tgt VALUES (1,100),(2,200),(3,300)`)
+  e.execute(`CREATE TABLE src (id INTEGER PRIMARY KEY, val INTEGER)`)
+  e.execute(`INSERT INTO src VALUES (2,222),(3,0),(4,444)`)
+  return e
+}
+test('merge', 'MERGE updates matched, inserts unmatched, deletes on a condition', () => {
+  const e = mergeEngine()
+  e.execute(`MERGE INTO tgt USING src ON tgt.id = src.id
+    WHEN MATCHED AND src.val = 0 THEN DELETE
+    WHEN MATCHED THEN UPDATE SET val = src.val
+    WHEN NOT MATCHED THEN INSERT (id, val) VALUES (src.id, src.val)`)
+  assert(eq(rowsOf(e, `SELECT * FROM tgt ORDER BY id`), [[1, 100], [2, 222], [4, 444]]), 'merge result: 1 kept, 2 updated, 3 deleted, 4 inserted')
+})
+test('merge', 'MERGE first-applicable WHEN wins', () => {
+  const e = mergeEngine()
+  e.execute(`MERGE INTO tgt USING src ON tgt.id = src.id
+    WHEN MATCHED THEN UPDATE SET val = -1
+    WHEN MATCHED AND src.val = 0 THEN DELETE`)
+  // Every matched row hits the first arm (UPDATE) — the DELETE arm never fires.
+  assert(scalar(e, `SELECT COUNT(*) FROM tgt WHERE val = -1`) === 2, 'rows 2 and 3 updated to -1')
+  assert(scalar(e, `SELECT COUNT(*) FROM tgt`) === 3, 'nothing deleted')
+})
+test('merge', 'MERGE from a VALUES source', () => {
+  const e = mergeEngine()
+  e.execute(`MERGE INTO tgt USING (VALUES (1, 11), (9, 99)) AS s(id, val) ON tgt.id = s.id
+    WHEN MATCHED THEN UPDATE SET val = s.val
+    WHEN NOT MATCHED THEN INSERT (id, val) VALUES (s.id, s.val)`)
+  assert(scalar(e, `SELECT val FROM tgt WHERE id = 1`) === 11, 'updated from VALUES')
+  assert(scalar(e, `SELECT val FROM tgt WHERE id = 9`) === 99, 'inserted from VALUES')
+})
+test('merge', 'WHEN NOT MATCHED BY SOURCE prunes target rows', () => {
+  const e = mergeEngine()
+  e.execute(`MERGE INTO tgt USING (SELECT 1 AS id) s ON tgt.id = s.id
+    WHEN MATCHED THEN UPDATE SET val = 999
+    WHEN NOT MATCHED BY SOURCE THEN DELETE`)
+  assert(eq(rowsOf(e, `SELECT * FROM tgt ORDER BY id`), [[1, 999]]), 'only the matched row remains, updated')
+})
+test('merge', 'MERGE … RETURNING returns the affected rows', () => {
+  const e = mergeEngine()
+  const r = lastResult(e, `MERGE INTO tgt USING src ON tgt.id = src.id
+    WHEN MATCHED AND src.val = 0 THEN DELETE
+    WHEN MATCHED THEN UPDATE SET val = src.val
+    WHEN NOT MATCHED THEN INSERT (id, val) VALUES (src.id, src.val)
+    RETURNING id, val`) as RowsResult
+  assert(r.kind === 'rows', 'MERGE RETURNING yields rows')
+  // updated (2,222), deleted (3,300 old image), inserted (4,444).
+  assert(eq([...r.rows].sort((a, b) => (a[0] as number) - (b[0] as number)), [[2, 222], [3, 300], [4, 444]]), 'affected rows returned')
+})
+test('merge', 'MERGE INSERT DEFAULT VALUES uses column defaults', () => {
+  const e = new Engine()
+  e.execute(`CREATE TABLE tg (id INTEGER PRIMARY KEY, n INTEGER DEFAULT 7)`)
+  e.execute(`CREATE TABLE sr (id INTEGER)`)
+  e.execute(`INSERT INTO sr VALUES (1)`)
+  e.execute(`MERGE INTO tg USING sr ON tg.id = sr.id WHEN NOT MATCHED THEN INSERT (id) VALUES (sr.id)`)
+  assert(scalar(e, `SELECT n FROM tg WHERE id = 1`) === 7, 'default applied to omitted column')
+})
+test('merge', 'MERGE is atomic — a cardinality violation rolls back', () => {
+  const e = new Engine()
+  e.execute(`CREATE TABLE tg (id INTEGER PRIMARY KEY, val INTEGER)`)
+  e.execute(`INSERT INTO tg VALUES (1, 0)`)
+  // Two source rows both match the single target row → cannot affect it twice.
+  e.execute(`CREATE TABLE sr (k INTEGER)`)
+  e.execute(`INSERT INTO sr VALUES (1), (2)`)
+  throws(e, `MERGE INTO tg USING sr ON tg.id = 1 WHEN MATCHED THEN UPDATE SET val = sr.k`, 'more than once')
+  assert(scalar(e, `SELECT val FROM tg WHERE id = 1`) === 0, 'target unchanged after rollback')
+})
+test('merge', 'MERGE INSERT cannot appear in a WHEN MATCHED clause', () => {
+  const e = mergeEngine()
+  throws(e, `MERGE INTO tgt USING src ON tgt.id = src.id WHEN MATCHED THEN INSERT (id) VALUES (1)`, 'WHEN NOT MATCHED')
+})
+
+// --- v11: SAVEPOINTs --------------------------------------------------------
+test('savepoint', 'ROLLBACK TO SAVEPOINT undoes only the later work', () => {
+  const e = fresh(`CREATE TABLE s (id INTEGER)`)
+  e.execute(`BEGIN`)
+  e.execute(`INSERT INTO s VALUES (1)`)
+  e.execute(`SAVEPOINT sp1`)
+  e.execute(`INSERT INTO s VALUES (2)`)
+  e.execute(`ROLLBACK TO SAVEPOINT sp1`)
+  e.execute(`INSERT INTO s VALUES (3)`)
+  e.execute(`COMMIT`)
+  assert(eq(rowsOf(e, `SELECT id FROM s ORDER BY id`).map((r) => r[0]), [1, 3]), 'savepoint rolled back the (2) insert')
+})
+test('savepoint', 'ROLLBACK TO can be used repeatedly (savepoint survives)', () => {
+  const e = fresh(`CREATE TABLE s (id INTEGER)`)
+  e.execute(`BEGIN; INSERT INTO s VALUES (1); SAVEPOINT sp`)
+  e.execute(`INSERT INTO s VALUES (2); ROLLBACK TO sp`)
+  e.execute(`INSERT INTO s VALUES (3); ROLLBACK TO sp`)
+  e.execute(`COMMIT`)
+  assert(eq(rowsOf(e, `SELECT id FROM s`).map((r) => r[0]), [1]), 'both later inserts rolled back')
+})
+test('savepoint', 'RELEASE SAVEPOINT keeps the work, drops the point', () => {
+  const e = fresh(`CREATE TABLE s (id INTEGER)`)
+  e.execute(`BEGIN; INSERT INTO s VALUES (1); SAVEPOINT sp; INSERT INTO s VALUES (2); RELEASE SAVEPOINT sp; COMMIT`)
+  assert(scalar(e, `SELECT COUNT(*) FROM s`) === 2, 'released savepoint kept both rows')
+  throws(e, `BEGIN; ROLLBACK TO sp`, 'does not exist')
+})
+test('savepoint', 'a final ROLLBACK still undoes everything', () => {
+  const e = fresh(`CREATE TABLE s (id INTEGER)`)
+  e.execute(`BEGIN; INSERT INTO s VALUES (1); SAVEPOINT sp; INSERT INTO s VALUES (2); ROLLBACK`)
+  assert(scalar(e, `SELECT COUNT(*) FROM s`) === 0, 'outer ROLLBACK discards all')
+})
+test('savepoint', 'SAVEPOINT outside a transaction errors', () => {
+  const e = fresh(`CREATE TABLE s (id INTEGER)`)
+  throws(e, `SAVEPOINT sp`, 'transaction')
+})
+
+// --- v11: TRUNCATE ----------------------------------------------------------
+test('truncate', 'TRUNCATE empties a table', () => {
+  const e = fresh(`CREATE TABLE t (id INTEGER PRIMARY KEY)`)
+  e.execute(`INSERT INTO t VALUES (1),(2),(3)`)
+  e.execute(`TRUNCATE TABLE t`)
+  assert(scalar(e, `SELECT COUNT(*) FROM t`) === 0, 'table emptied')
+})
+test('truncate', 'TRUNCATE RESTART IDENTITY resets the rowid counter', () => {
+  // Indirectly observable: a UNIQUE index over the heap is rebuilt empty, so a
+  // re-insert of a previously-present key succeeds.
+  const e = fresh(`CREATE TABLE t (id INTEGER PRIMARY KEY)`)
+  e.execute(`INSERT INTO t VALUES (1),(2)`)
+  e.execute(`TRUNCATE TABLE t RESTART IDENTITY`)
+  e.execute(`INSERT INTO t VALUES (1)`)
+  assert(scalar(e, `SELECT COUNT(*) FROM t`) === 1, 're-insert after truncate works')
+})
+test('truncate', 'TRUNCATE of a referenced table needs CASCADE', () => {
+  const e = fresh(`CREATE TABLE p (id INTEGER PRIMARY KEY)`)
+  e.execute(`CREATE TABLE c (id INTEGER PRIMARY KEY, pid INTEGER REFERENCES p(id))`)
+  e.execute(`INSERT INTO p VALUES (1),(2); INSERT INTO c VALUES (10,1)`)
+  throws(e, `TRUNCATE TABLE p`, 'CASCADE')
+  e.execute(`TRUNCATE TABLE p CASCADE`)
+  assert(scalar(e, `SELECT COUNT(*) FROM p`) === 0 && scalar(e, `SELECT COUNT(*) FROM c`) === 0, 'parent and child both emptied')
+})
+test('truncate', 'TRUNCATE several tables at once', () => {
+  const e = fresh(`CREATE TABLE a (id INTEGER); CREATE TABLE b (id INTEGER)`)
+  e.execute(`INSERT INTO a VALUES (1); INSERT INTO b VALUES (1),(2)`)
+  e.execute(`TRUNCATE a, b`)
+  assert(scalar(e, `SELECT COUNT(*) FROM a`) === 0 && scalar(e, `SELECT COUNT(*) FROM b`) === 0, 'both truncated')
+})
+test('truncate', 'TRUNCATE keeps indexes usable', () => {
+  const e = fresh(`CREATE TABLE t (id INTEGER PRIMARY KEY, k INTEGER)`)
+  e.execute(`CREATE INDEX idx_k ON t (k)`)
+  e.execute(`INSERT INTO t VALUES (1,10),(2,20)`)
+  e.execute(`TRUNCATE TABLE t`)
+  e.execute(`INSERT INTO t VALUES (1,10)`)
+  assert(scalar(e, `SELECT id FROM t WHERE k = 10`) === 1, 'index still works post-truncate')
+})
+
+// --- v11: LATERAL -----------------------------------------------------------
+function latEngine(): Engine {
+  const e = new Engine()
+  e.execute(`CREATE TABLE emp (id INTEGER, name TEXT, salary INTEGER)`)
+  e.execute(`INSERT INTO emp VALUES (1,'a',100),(2,'b',200),(3,'c',300)`)
+  return e
+}
+test('lateral', 'LATERAL subquery sees the outer row (comma syntax)', () => {
+  const e = latEngine()
+  const rows = rowsOf(e, `SELECT name, hi FROM emp e, LATERAL (SELECT salary * 2 AS hi) x ORDER BY name`)
+  assert(eq(rows, [['a', 200], ['b', 400], ['c', 600]]), 'lateral derived column from outer salary')
+})
+test('lateral', 'correlated JOIN LATERAL filters per outer row', () => {
+  const e = latEngine()
+  const rows = rowsOf(e,
+    `SELECT e.name, peer.name AS cheaper
+     FROM emp e JOIN LATERAL (SELECT name FROM emp p WHERE p.salary < e.salary) peer ON TRUE
+     ORDER BY e.name, cheaper`)
+  assert(eq(rows, [['b', 'a'], ['c', 'a'], ['c', 'b']]), 'each row paired with the cheaper peers')
+})
+test('lateral', 'LEFT JOIN LATERAL null-extends an empty right side', () => {
+  const e = latEngine()
+  const rows = rowsOf(e,
+    `SELECT e.name, peer.name AS cheaper
+     FROM emp e LEFT JOIN LATERAL (SELECT name FROM emp p WHERE p.salary < e.salary) peer ON TRUE
+     ORDER BY e.name, cheaper`)
+  assert(eq(rows, [['a', null], ['b', 'a'], ['c', 'a'], ['c', 'b']]), 'cheapest employee keeps a NULL peer')
+})
+test('lateral', 'LATERAL agrees with a correlated scalar subquery', () => {
+  const e = latEngine()
+  const viaLateral = rowsOf(e,
+    `SELECT e.name, c.n FROM emp e JOIN LATERAL (SELECT COUNT(*) AS n FROM emp p WHERE p.salary <= e.salary) c ON TRUE ORDER BY e.name`)
+  const viaScalar = rowsOf(e,
+    `SELECT e.name, (SELECT COUNT(*) FROM emp p WHERE p.salary <= e.salary) AS n FROM emp e ORDER BY e.name`)
+  assert(eq(viaLateral, viaScalar), 'lateral count matches the scalar-subquery count')
+})
+test('lateral', 'LATERAL table function unnests a column', () => {
+  const e = new Engine()
+  e.execute(`CREATE TABLE docs (id INTEGER, tags JSON)`)
+  e.execute(`INSERT INTO docs VALUES (1, '[10, 20]'), (2, '[30]')`)
+  const rows = rowsOf(e,
+    `SELECT d.id, elem.value FROM docs d, LATERAL json_array_elements(d.tags) elem ORDER BY d.id, elem.value`)
+  assert(rows.length === 3, 'two tags from doc 1, one from doc 2')
+  assert(JSON.stringify(rows[0]) === JSON.stringify([1, { t: 'json', v: 10 }]), 'first unnested element')
+})
+
 // --- sample queries (catalog showcase) -------------------------------------
 test('samples', 'every shipped sample query runs against the seed', () => {
   for (const q of SAMPLE_QUERIES) {

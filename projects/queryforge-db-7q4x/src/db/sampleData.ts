@@ -749,4 +749,76 @@ SELECT JSON_PRETTY(
 FROM documents
 WHERE id = 3;`,
   },
+  {
+    title: 'RETURNING — read back what a mutation changed',
+    sql: `-- A mutation hands back the rows it touched, in one round trip. Raise every
+-- Audio price 10% and see the new prices without a follow-up SELECT.
+UPDATE products
+SET price = ROUND(price * 1.10, 2)
+WHERE category = 'Audio'
+RETURNING id, name, price AS new_price;`,
+  },
+  {
+    title: 'MERGE — fold a staging set into a table in one pass',
+    sql: `-- One statement: UPDATE matched rows, INSERT new keys, DELETE a flagged one,
+-- and RETURN everything that changed. (A tiny self-contained inventory table.)
+CREATE TABLE IF NOT EXISTS inventory (sku INTEGER PRIMARY KEY, qty INTEGER);
+INSERT INTO inventory VALUES (1, 10), (2, 5), (3, 0)
+  ON CONFLICT (sku) DO NOTHING;
+MERGE INTO inventory AS t
+USING (VALUES (2, 8), (3, -1), (4, 20)) AS feed(sku, qty)
+ON t.sku = feed.sku
+WHEN MATCHED AND feed.qty < 0 THEN DELETE
+WHEN MATCHED THEN UPDATE SET qty = feed.qty
+WHEN NOT MATCHED THEN INSERT (sku, qty) VALUES (feed.sku, feed.qty)
+RETURNING sku, qty;`,
+  },
+  {
+    title: 'SAVEPOINT — partial rollback inside a transaction',
+    sql: `-- Keep some work, undo the rest. ROLLBACK TO rewinds to the savepoint but
+-- leaves the earlier insert intact.
+CREATE TABLE IF NOT EXISTS log (id INTEGER, msg TEXT);
+BEGIN;
+INSERT INTO log VALUES (1, 'kept');
+SAVEPOINT sp;
+INSERT INTO log VALUES (2, 'undone');
+ROLLBACK TO SAVEPOINT sp;
+INSERT INTO log VALUES (3, 'kept');
+COMMIT;
+SELECT * FROM log ORDER BY id;`,
+  },
+  {
+    title: 'TRUNCATE — empty tables fast, CASCADE through FKs',
+    sql: `-- TRUNCATE clears a table far faster than a scanning DELETE; CASCADE follows
+-- the foreign-key children so nothing is left dangling.
+CREATE TABLE IF NOT EXISTS dept (id INTEGER PRIMARY KEY);
+CREATE TABLE IF NOT EXISTS emp (id INTEGER PRIMARY KEY, dept_id INTEGER REFERENCES dept(id));
+INSERT INTO dept VALUES (1), (2) ON CONFLICT (id) DO NOTHING;
+INSERT INTO emp VALUES (10, 1), (20, 2) ON CONFLICT (id) DO NOTHING;
+TRUNCATE dept CASCADE;
+SELECT (SELECT COUNT(*) FROM dept) AS depts,
+       (SELECT COUNT(*) FROM emp)  AS emps;`,
+  },
+  {
+    title: 'LATERAL — top-2 priciest products per category',
+    sql: `-- The LATERAL subquery references cat.category from the left, so it runs once
+-- per category: a clean "top-N per group".
+SELECT cat.category, top.name, top.price
+FROM (SELECT DISTINCT category FROM products) AS cat
+JOIN LATERAL (
+  SELECT name, price FROM products p
+  WHERE p.category = cat.category
+  ORDER BY price DESC
+  LIMIT 2
+) AS top ON TRUE
+ORDER BY cat.category, top.price DESC;`,
+  },
+  {
+    title: 'LATERAL — unnest a JSON column with a table function',
+    sql: `-- LATERAL lets a set-returning function read a column (previously its argument
+-- had to be constant): expand each document's "tags" array into rows.
+SELECT d.id, d.body ->> 'kind' AS kind, tag.value AS tag
+FROM documents d, LATERAL json_array_elements(d.body -> 'tags') AS tag
+ORDER BY d.id, tag;`,
+  },
 ]

@@ -8,12 +8,12 @@
 
 import { parse } from './parser'
 import { Database, Table, type Row, type SerializedDb } from './catalog'
-import { planSelect } from './planner'
-import { compileExpr, truthy, type CompileCtx } from './eval'
+import { planSelect, inferType } from './planner'
+import { compileExpr, truthy, type CompileCtx, type Evaluator } from './eval'
 import { resolveColumn, type Binding, type Schema } from './schema'
 import { SqlError, coerceTo, type SqlValue } from './types'
 import type { Operator, PlanNode } from './operators'
-import type { Expr, OnConflictClause, SelectStmt, Statement } from './ast'
+import type { Expr, MergeStmt, OnConflictClause, SelectItem, SelectStmt, Statement } from './ast'
 
 export interface RowsResult {
   kind: 'rows'
@@ -48,6 +48,8 @@ const CONST_CTX: CompileCtx = {
 export class Engine {
   db: Database
   private txnStack: SerializedDb[] = []
+  /** Named savepoints within the current transaction (innermost last). */
+  private savepoints: { name: string; snap: SerializedDb }[] = []
 
   constructor(db = new Database()) {
     this.db = db
@@ -102,6 +104,10 @@ export class Engine {
         return this.update(stmt, sql, t0)
       case 'delete':
         return this.delete(stmt, sql, t0)
+      case 'merge':
+        return this.merge(stmt, sql, t0)
+      case 'truncate':
+        return this.truncate(stmt, sql, t0)
       case 'select':
         return this.select(stmt, sql, t0)
       case 'explain':
@@ -297,6 +303,7 @@ export class Engine {
 
     let inserted = 0
     let updated = 0
+    const affected: Row[] = []
     const insertValues = (values: SqlValue[]): void => {
       const row: Row = new Array(table.columns.length).fill(null)
       for (let i = 0; i < values.length; i++) {
@@ -316,12 +323,16 @@ export class Engine {
         }
         const rowid = upsert.findConflict(row)
         if (rowid !== null) {
-          if (upsert.apply(rowid, row)) updated++
+          if (upsert.apply(rowid, row)) {
+            updated++
+            if (stmt.returning) affected.push(table.heap.get(rowid)!.slice())
+          }
           return
         }
       }
       this.db.insertChecked(table, row)
       inserted++
+      if (stmt.returning) affected.push(row.slice())
     }
 
     if (stmt.select) {
@@ -341,6 +352,7 @@ export class Engine {
         insertValues(rowExprs.map((e) => compileExpr(e, CONST_CTX)([])))
       }
     }
+    if (stmt.returning) return returningResult(stmt.returning, table, affected, sql, t0)
     if (onConflict) {
       return msg(`${inserted} inserted, ${updated} updated in "${stmt.table}"`, sql, t0, inserted + updated)
     }
@@ -425,13 +437,16 @@ export class Engine {
     })
     const targets: number[] = []
     for (const [rowid, row] of table.heap) if (!pred || truthy(pred(row))) targets.push(rowid)
+    const affected: Row[] = []
     for (const rowid of targets) {
       const row = table.heap.get(rowid)
       if (!row) continue // a prior row's cascade may have removed it
       const next = row.slice()
       for (const s of setters) next[s.i] = coerceTo(table.columns[s.i].type, s.fn(row))
       this.db.updateChecked(table, rowid, next)
+      if (stmt.returning) affected.push((table.heap.get(rowid) ?? next).slice())
     }
+    if (stmt.returning) return returningResult(stmt.returning, table, affected, sql, t0)
     return msg(`${targets.length} row${targets.length === 1 ? '' : 's'} updated in "${stmt.table}"`, sql, t0, targets.length)
   }
 
@@ -441,7 +456,17 @@ export class Engine {
     const pred = stmt.where ? compileExpr(stmt.where, { resolve: (t, n) => resolveColumn(schema, t, n) }) : null
     const targets: number[] = []
     for (const [rowid, row] of table.heap) if (!pred || truthy(pred(row))) targets.push(rowid)
-    for (const rowid of targets) this.db.deleteChecked(table, rowid)
+    const affected: Row[] = []
+    for (const rowid of targets) {
+      // RETURNING captures the row image before it (and any cascade) is removed;
+      // a prior row's self-referential cascade may already have deleted this one.
+      if (stmt.returning) {
+        const row = table.heap.get(rowid)
+        if (row) affected.push(row.slice())
+      }
+      this.db.deleteChecked(table, rowid)
+    }
+    if (stmt.returning) return returningResult(stmt.returning, table, affected, sql, t0)
     return msg(`${targets.length} row${targets.length === 1 ? '' : 's'} deleted from "${stmt.table}"`, sql, t0, targets.length)
   }
 
@@ -478,14 +503,224 @@ export class Engine {
       case 'commit':
         if (this.txnStack.length === 0) throw new SqlError('no transaction in progress', 'txn')
         this.txnStack.pop()
+        this.savepoints = []
         return msg('transaction committed', sql, t0)
       case 'rollback': {
         if (this.txnStack.length === 0) throw new SqlError('no transaction in progress', 'txn')
         const snap = this.txnStack.pop()!
         this.db = Database.restore(snap)
+        this.savepoints = []
         return msg('transaction rolled back', sql, t0)
       }
+      case 'savepoint': {
+        if (this.txnStack.length === 0) throw new SqlError('SAVEPOINT can only be used inside a transaction block', 'txn')
+        this.savepoints.push({ name: stmt.savepoint!, snap: this.db.snapshot() })
+        return msg(`savepoint "${stmt.savepoint}" established`, sql, t0)
+      }
+      case 'release': {
+        const i = this.findSavepoint(stmt.savepoint!)
+        // RELEASE destroys the named savepoint and every later one (without
+        // undoing their work — the changes fold into the enclosing scope).
+        this.savepoints.splice(i)
+        return msg(`savepoint "${stmt.savepoint}" released`, sql, t0)
+      }
+      case 'rollback_to': {
+        const i = this.findSavepoint(stmt.savepoint!)
+        // ROLLBACK TO restores the savepoint's image and discards every later
+        // savepoint, but *keeps* the named one (so it can be rolled back to again).
+        this.db = Database.restore(this.savepoints[i].snap)
+        this.savepoints.splice(i + 1)
+        return msg(`rolled back to savepoint "${stmt.savepoint}"`, sql, t0)
+      }
     }
+  }
+
+  /** Index of the most recent savepoint with `name` (errors if none exists). */
+  private findSavepoint(name: string): number {
+    for (let i = this.savepoints.length - 1; i >= 0; i--) {
+      if (this.savepoints[i].name.toLowerCase() === name.toLowerCase()) return i
+    }
+    throw new SqlError(`savepoint "${name}" does not exist`, 'txn')
+  }
+
+  // --- MERGE ----------------------------------------------------------------
+  private merge(stmt: MergeStmt, sql: string, t0: number): QueryResult {
+    const target = this.db.getTable(stmt.target)
+    const targetRel = stmt.targetAlias ?? target.name
+    const width = target.columns.length
+
+    // Run the source to completion (a table / derived table / VALUES / function).
+    const sourceSelect: SelectStmt = {
+      kind: 'select',
+      distinct: false,
+      columns: [{ expr: { kind: 'star' } }],
+      from: stmt.source,
+      joins: [],
+      groupBy: [],
+      orderBy: [],
+    }
+    const sourceOp = planSelect(sourceSelect, this.db)
+    const sourceRows = runOperator(sourceOp)
+    // A `SELECT *` projection drops table qualifiers, so re-tag the source
+    // columns under the source's relation name (its alias, or the table name)
+    // so `src.col` resolves in ON / WHEN expressions. Names already reflect any
+    // column aliases the planner applied.
+    const sourceRel = stmt.source.alias ?? stmt.source.table ?? ''
+    const sourceSchema: Schema = sourceOp.schema.map((b) => ({ table: sourceRel, name: b.name, type: b.type }))
+    const sourceWidth = sourceSchema.length
+
+    // Everything is compiled against the combined row `[target… | source…]`, so
+    // an arm can read both sides; the unused side is filled with NULLs.
+    const targetSchema: Schema = target.columns.map((c) => ({ table: targetRel, name: c.name, type: c.type }))
+    const combinedSchema = targetSchema.concat(sourceSchema)
+    const combinedCtx: CompileCtx = { resolve: (tbl, n) => resolveColumn(combinedSchema, tbl, n) }
+    const onPred = compileExpr(stmt.on, combinedCtx)
+
+    // Pre-compile every WHEN arm.
+    interface CompiledWhen {
+      match: 'matched' | 'not_matched' | 'not_matched_by_source'
+      cond: Evaluator | null
+      action:
+        | { kind: 'update'; setters: { i: number; fn: Evaluator }[] }
+        | { kind: 'delete' }
+        | { kind: 'insert'; colIdx: number[]; provided: Set<number>; valFns: Evaluator[] | null }
+        | { kind: 'nothing' }
+    }
+    const compiled: CompiledWhen[] = stmt.whens.map((w) => {
+      const cond = w.condition ? compileExpr(w.condition, combinedCtx) : null
+      const a = w.action
+      if (a.kind === 'update') {
+        const setters = a.assignments.map((asg) => ({ i: target.requireColumnIndex(asg.column), fn: compileExpr(asg.value, combinedCtx) }))
+        return { match: w.match, cond, action: { kind: 'update', setters } }
+      }
+      if (a.kind === 'insert') {
+        const cols = a.columns ?? target.columns.map((c) => c.name)
+        const colIdx = cols.map((c) => target.requireColumnIndex(c))
+        const valFns = a.defaultValues ? null : (a.values ?? []).map((v) => compileExpr(v, combinedCtx))
+        if (valFns && valFns.length !== colIdx.length) {
+          throw new SqlError(`MERGE INSERT has ${valFns.length} values for ${colIdx.length} columns`, 'bind')
+        }
+        return { match: w.match, cond, action: { kind: 'insert', colIdx, provided: new Set(colIdx), valFns } }
+      }
+      return { match: w.match, cond, action: a.kind === 'delete' ? { kind: 'delete' } : { kind: 'nothing' } }
+    })
+    const matchedWhens = compiled.filter((w) => w.match === 'matched')
+    const notMatchedWhens = compiled.filter((w) => w.match === 'not_matched')
+    const bySourceWhens = compiled.filter((w) => w.match === 'not_matched_by_source')
+
+    // Set-based semantics: match against the target image at statement start.
+    const snapshot = [...target.heap.keys()].map((id) => ({ id, row: target.heap.get(id)!.slice() }))
+    const everMatched = new Set<number>()
+    const touched = new Set<number>()
+    const affected: Row[] = []
+    let nIns = 0
+    let nUpd = 0
+    let nDel = 0
+
+    const doInsert = (action: Extract<CompiledWhen['action'], { kind: 'insert' }>, combined: Row): void => {
+      const row: Row = new Array(width).fill(null)
+      if (action.valFns) {
+        for (let k = 0; k < action.colIdx.length; k++) {
+          row[action.colIdx[k]] = coerceTo(target.columns[action.colIdx[k]].type, action.valFns[k](combined))
+        }
+      }
+      for (let i = 0; i < width; i++) {
+        if (!action.provided.has(i) && target.columns[i].default) {
+          row[i] = coerceTo(target.columns[i].type, evalConstant(target.columns[i].default!))
+        }
+      }
+      this.db.insertChecked(target, row)
+      nIns++
+      if (stmt.returning) affected.push(row.slice())
+    }
+    const fire = (w: CompiledWhen | undefined, id: number, oldRow: Row, combined: Row): void => {
+      if (!w) return
+      const a = w.action
+      if (a.kind === 'nothing') {
+        touched.add(id)
+        return
+      }
+      if (a.kind === 'delete') {
+        touched.add(id)
+        if (stmt.returning) affected.push(oldRow.slice())
+        this.db.deleteChecked(target, id)
+        nDel++
+        return
+      }
+      if (a.kind === 'update') {
+        touched.add(id)
+        const next = (target.heap.get(id) ?? oldRow).slice()
+        for (const s of a.setters) next[s.i] = coerceTo(target.columns[s.i].type, s.fn(combined), target.columns[s.i].scale)
+        this.db.updateChecked(target, id, next)
+        nUpd++
+        if (stmt.returning) affected.push((target.heap.get(id) ?? next).slice())
+      }
+    }
+
+    for (const src of sourceRows) {
+      let matchedAny = false
+      for (const { id, row: trow } of snapshot) {
+        const combined = trow.concat(src)
+        if (!truthy(onPred(combined))) continue
+        matchedAny = true
+        everMatched.add(id)
+        if (!target.heap.has(id)) continue // already deleted by an earlier action
+        if (touched.has(id)) {
+          throw new SqlError('MERGE command cannot affect the same target row more than once', 'eval')
+        }
+        const w = matchedWhens.find((c) => !c.cond || truthy(c.cond(combined)))
+        if (w) fire(w, id, trow, combined)
+      }
+      if (!matchedAny && notMatchedWhens.length) {
+        const combined = (new Array(width).fill(null) as Row).concat(src)
+        const w = notMatchedWhens.find((c) => !c.cond || truthy(c.cond(combined)))
+        if (w && w.action.kind === 'insert') doInsert(w.action, combined)
+      }
+    }
+
+    // WHEN NOT MATCHED BY SOURCE: target rows no source row ever matched.
+    if (bySourceWhens.length) {
+      const nullSrc: Row = new Array(sourceWidth).fill(null)
+      for (const { id, row: trow } of snapshot) {
+        if (everMatched.has(id) || touched.has(id) || !target.heap.has(id)) continue
+        const combined = trow.concat(nullSrc)
+        const w = bySourceWhens.find((c) => !c.cond || truthy(c.cond(combined)))
+        if (w) fire(w, id, trow, combined)
+      }
+    }
+
+    if (stmt.returning) return returningResult(stmt.returning, target, affected, sql, t0, targetRel)
+    return msg(`${nIns} inserted, ${nUpd} updated, ${nDel} deleted in "${target.name}"`, sql, t0, nIns + nUpd + nDel)
+  }
+
+  // --- TRUNCATE -------------------------------------------------------------
+  private truncate(stmt: Extract<Statement, { kind: 'truncate' }>, sql: string, t0: number): QueryResult {
+    // Resolve the requested tables, then (CASCADE) pull in every table that
+    // transitively references them so no dangling reference survives.
+    const set = new Map<string, Table>()
+    for (const n of stmt.tables) {
+      const t = this.db.getTable(n)
+      set.set(t.name.toLowerCase(), t)
+    }
+    for (;;) {
+      let grew = false
+      for (const parent of [...set.values()]) {
+        for (const child of this.db.tables.values()) {
+          if (set.has(child.name.toLowerCase())) continue
+          const refs = child.constraints.foreignKeys.some((fk) => fk.refTable.toLowerCase() === parent.name.toLowerCase())
+          if (!refs) continue
+          if (!stmt.cascade) {
+            throw new SqlError(`cannot TRUNCATE "${parent.name}" because "${child.name}" references it — use CASCADE`, 'constraint')
+          }
+          set.set(child.name.toLowerCase(), child)
+          grew = true
+        }
+      }
+      if (!grew) break
+    }
+    for (const t of set.values()) t.truncate(stmt.restartIdentity)
+    const names = [...set.values()].map((t) => `"${t.name}"`).join(', ')
+    return msg(`truncated ${names}`, sql, t0, 0)
   }
 }
 
@@ -495,6 +730,8 @@ function isMutation(kind: Statement['kind']): boolean {
     kind === 'insert' ||
     kind === 'update' ||
     kind === 'delete' ||
+    kind === 'merge' ||
+    kind === 'truncate' ||
     kind === 'create_table' ||
     kind === 'alter_table' ||
     kind === 'drop_table' ||
@@ -502,6 +739,57 @@ function isMutation(kind: Statement['kind']): boolean {
     kind === 'drop_view' ||
     kind === 'create_index'
   )
+}
+
+// --- RETURNING ---------------------------------------------------------------
+/** Project the affected rows of a mutating statement through its RETURNING
+ *  select-list, yielding a RowsResult exactly like a SELECT would. The list is
+ *  bound to the target table's schema (under `relName`, its alias if any), so
+ *  bare columns, `*`, `rel.*`, expressions and aliases all work. */
+function returningResult(
+  items: SelectItem[],
+  table: Table,
+  rows: Row[],
+  sql: string,
+  t0: number,
+  relName?: string,
+): RowsResult {
+  const rel = relName ?? table.name
+  const schema: Schema = table.columns.map((c) => ({ table: rel, name: c.name, type: c.type }))
+  const ctx: CompileCtx = { resolve: (t, n) => resolveColumn(schema, t, n) }
+  const columns: Binding[] = []
+  const evals: Evaluator[] = []
+  for (const item of items) {
+    if (item.expr.kind === 'star') {
+      const star = item.expr
+      if (star.table && star.table.toLowerCase() !== rel.toLowerCase()) {
+        throw new SqlError(`unknown table "${star.table}" in RETURNING`, 'bind')
+      }
+      schema.forEach((b, i) => {
+        columns.push(b)
+        evals.push((row) => row[i])
+      })
+      continue
+    }
+    columns.push({ table: '', name: item.alias ?? returningLabel(item.expr), type: inferType(item.expr, schema, ctx) })
+    evals.push(compileExpr(item.expr, ctx))
+  }
+  const out = rows.map((r) => evals.map((fn) => fn(r)))
+  return { kind: 'rows', columns, rows: out, rowCount: out.length, elapsedMs: performance.now() - t0, sql }
+}
+
+/** A reasonable output column name for a RETURNING item without an alias. */
+function returningLabel(e: Expr): string {
+  switch (e.kind) {
+    case 'column':
+      return e.name
+    case 'func':
+      return e.name.toLowerCase()
+    case 'cast':
+      return returningLabel(e.expr)
+    default:
+      return 'column'
+  }
 }
 
 function runOperator(op: Operator): Row[] {

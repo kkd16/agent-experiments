@@ -48,6 +48,9 @@ const SECTIONS: Section[] = [
       { syntax: 'INSERT … ON CONFLICT [(cols)] DO NOTHING | DO UPDATE SET … [WHERE …]', note: 'Upsert: on a UNIQUE/PRIMARY KEY collision, skip the row (DO NOTHING) or update the existing one (DO UPDATE). EXCLUDED.col refers to the row proposed for insertion; the optional WHERE can decline an individual update. Without a target, any unique constraint arbitrates.' },
       { syntax: 'UPDATE t SET col = expr [, …] [WHERE pred]', note: 'Assignments may reference other columns of the same row.' },
       { syntax: 'DELETE FROM t [WHERE pred]', note: 'Index entries are maintained automatically.' },
+      { syntax: 'INSERT/UPDATE/DELETE … RETURNING items', note: 'Turn a mutation into a result set of the rows it touched — INSERT/UPDATE return the new row image (post-default, post-coercion, post-upsert), DELETE the old one. items is a full projection (*, t.*, expressions, aliases) bound to the target. Read a generated key with INSERT … RETURNING id, or audit removals with DELETE … RETURNING *.' },
+      { syntax: 'MERGE INTO t USING src ON cond WHEN [NOT] MATCHED [AND p] THEN UPDATE/DELETE/INSERT/DO NOTHING …', note: 'Fold a source set (table, derived table or VALUES) into a target in one pass. Each source row finds its matched target rows (a no-double-touch guard); the first applicable arm fires; unmatched source rows fall to WHEN NOT MATCHED THEN INSERT. WHEN NOT MATCHED BY SOURCE acts on target rows no source row hit (e.g. prune). Supports RETURNING.' },
+      { syntax: 'TRUNCATE [TABLE] t [, …] [RESTART IDENTITY] [CASCADE]', note: 'Empty one or more tables far faster than a scanning DELETE. RESTART IDENTITY resets the rowid counter; CASCADE also truncates FK-referencing children (and is required when one would otherwise dangle).' },
     ],
   },
   {
@@ -57,6 +60,7 @@ const SECTIONS: Section[] = [
       { syntax: '[INNER | LEFT | RIGHT | FULL] JOIN t2 ON pred · CROSS JOIN t2', note: 'Equijoins use a HashJoin or, for large balanced inputs, a sort–merge join (cost-based); everything else NestedLoop. Outer joins null-extend.' },
       { syntax: 'a JOIN b ON … JOIN c ON …', note: 'A chain of INNER joins is reordered by a cost-based subset DP (Selinger-style) to pick the cheapest left-deep order; SELECT * column order is preserved.' },
       { syntax: 'FROM (SELECT …) alias (c1, c2, …)', note: 'Derived tables (subqueries in FROM) are materialized and scanned like a base table; optional column aliases rename their output.' },
+      { syntax: 'FROM a, LATERAL (SELECT … a.x …) b · JOIN LATERAL fn(a.col) … ON …', note: 'A LATERAL right side may reference the columns of the FROM items to its left; it is re-evaluated per outer row (a correlated nested loop). Lets a derived table filter by the outer row, or a table function unnest a column — e.g. FROM docs d, LATERAL json_array_elements(d.tags). A comma in FROM is an implicit CROSS JOIN.' },
       { syntax: 'VALUES (…), (…) · FROM (VALUES …) AS t(cols)', note: 'A row-set literal — usable as a top-level query or an inline table to join against. Column types unify across rows.' },
       { syntax: 'WHERE pred', note: 'Conjuncts are pushed down, drive index scans, and feed histogram-based selectivity estimates.' },
       { syntax: 'GROUP BY exprs [HAVING pred]', note: 'COUNT, SUM, AVG, MIN, MAX, STDDEV[_POP], VARIANCE/VAR_POP, MEDIAN, STRING_AGG/GROUP_CONCAT — with optional DISTINCT.' },
@@ -179,6 +183,7 @@ const SECTIONS: Section[] = [
     entries: [
       { syntax: 'BEGIN; … COMMIT;', note: 'Snapshot taken at BEGIN; COMMIT keeps changes.' },
       { syntax: 'BEGIN; … ROLLBACK;', note: 'Restores the snapshot, undoing every change since BEGIN.' },
+      { syntax: 'SAVEPOINT sp · ROLLBACK TO [SAVEPOINT] sp · RELEASE [SAVEPOINT] sp', note: 'Nested, named rollback points inside a transaction. ROLLBACK TO undoes the work since the savepoint but keeps it (you can roll back to it again); RELEASE folds it away, keeping its work; COMMIT/ROLLBACK clear all savepoints.' },
     ],
   },
 ]
