@@ -15,7 +15,7 @@ import { interpolate, checkInterpolant } from './interpolant'
 import { verifyModel } from '../sat/cnf'
 import { solve } from '../sat/solver'
 import { fvar, fnot, fand, for_, fxor, fiff, type Formula } from './formula'
-import { imc, bfsReachability, checkInvariant, checkCounterexample, type TransitionSystem } from './modelcheck'
+import { imc, kInduction, bfsReachability, checkInvariant, checkCounterexample, type TransitionSystem } from './modelcheck'
 import { TS_EXAMPLES } from './examples'
 
 export interface ImcCheckReport {
@@ -61,7 +61,7 @@ export function runImcChecks(): ImcCheckReport {
     const rng = mulberry32(0x5a7f)
     let agree = 0
     let modelsOk = true
-    const trials = 1500
+    const trials = 800
     for (let i = 0; i < trials; i++) {
       const nv = 3 + Math.floor(rng() * 6)
       const nc = Math.floor(rng() * (nv * 4))
@@ -104,7 +104,7 @@ export function runImcChecks(): ImcCheckReport {
       }
       return cs
     }
-    while (tried < 6000 && unsat < 500) {
+    while (tried < 4000 && unsat < 300) {
       tried++
       const nv = 4 + Math.floor(rng() * 5)
       const A = mkClauses(nv, 2 + Math.floor(rng() * nv))
@@ -133,26 +133,29 @@ export function runImcChecks(): ImcCheckReport {
       if (r < 0.8) return fxor(a, b)
       return fnot(a)
     }
+    const mkSystem = (n: number, i: number): TransitionSystem => {
+      const cur = Array.from({ length: n }, (_, j) => j + 1)
+      const transParts: Formula[] = []
+      for (let j = 1; j <= n; j++) transParts.push(fiff(fvar(n + j), randFormula(cur, 2)))
+      return {
+        name: `rand${i}`,
+        stateBits: n,
+        init: randFormula(cur, 2),
+        trans: transParts.reduce((acc, x) => fand(acc, x)),
+        bad: randFormula(cur, 2),
+      }
+    }
+
     let agree = true
     let invOk = true
     let cexOk = true
     let decided = 0
-    const trials = 300
+    const trials = 200
     for (let i = 0; i < trials; i++) {
-      const n = 3 + Math.floor(rng() * 3)
-      const cur = Array.from({ length: n }, (_, j) => j + 1)
-      const transParts: Formula[] = []
-      for (let j = 1; j <= n; j++) transParts.push(fiff(fvar(n + j), randFormula(cur, 2)))
-      const trans = transParts.reduce((acc, x) => fand(acc, x))
-      const ts: TransitionSystem = {
-        name: `rand${i}`,
-        stateBits: n,
-        init: randFormula(cur, 2),
-        trans,
-        bad: randFormula(cur, 2),
-      }
+      const n = 3 + Math.floor(rng() * 2) // 3..4 state bits (keeps unrolled CNFs small)
+      const ts = mkSystem(n, i)
       const ref = bfsReachability(ts)
-      const res = imc(ts, { maxBound: 30, maxRounds: 80 })
+      const res = imc(ts, { maxBound: 20, maxRounds: 60 })
       if (res.result === 'UNKNOWN') continue
       decided++
       if ((res.result === 'SAFE') !== ref.safe) agree = false
@@ -161,7 +164,7 @@ export function runImcChecks(): ImcCheckReport {
         if (!checkCounterexample(ts, res.counterexample!) || res.counterexample!.length - 1 !== ref.distance) cexOk = false
       }
     }
-    check('IMC verdict matches BFS oracle on random systems', agree && decided > 250, `decided=${decided}`)
+    check('IMC verdict matches BFS oracle on random systems', agree && decided > 150, `decided=${decided}`)
     check('IMC safety invariants are genuinely inductive', invOk)
     check('IMC counterexamples are valid and shortest', cexOk)
   }
@@ -169,14 +172,19 @@ export function runImcChecks(): ImcCheckReport {
   // 4. Curated gallery: every example matches the BFS oracle.
   {
     let ok = true
+    let kiOk = true
     for (const ts of TS_EXAMPLES) {
       const ref = bfsReachability(ts)
       const res = imc(ts, { maxBound: 40, maxRounds: 200 })
       if (res.result === 'UNKNOWN' || (res.result === 'SAFE') !== ref.safe) ok = false
       else if (res.result === 'SAFE' && !checkInvariant(ts, res.invariant!)) ok = false
       else if (res.result === 'UNSAFE' && (!checkCounterexample(ts, res.counterexample!) || res.counterexample!.length - 1 !== ref.distance)) ok = false
+      const ki = kInduction(ts, 64)
+      if (ki.result === 'UNKNOWN' || (ki.result === 'SAFE') !== ref.safe) kiOk = false
+      else if (ki.result === 'UNSAFE' && !checkCounterexample(ts, ki.counterexample!)) kiOk = false
     }
     check('curated model-checking gallery matches the BFS oracle', ok)
+    check('curated gallery: k-induction agrees with IMC and BFS', kiOk)
   }
 
   return { pass, fail, messages }

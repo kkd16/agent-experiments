@@ -1796,7 +1796,7 @@ table.bv-model tr:hover td {
 }
 .imc-cards {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
   gap: 12px;
   margin-bottom: 16px;
 }

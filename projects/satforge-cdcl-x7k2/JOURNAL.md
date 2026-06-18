@@ -59,7 +59,8 @@ SMT theories (Session 5), the QF_BV bit-blaster (Session 6), the QF_AX theory of
 the OMT/MaxSMT optimizer (Session 10), and the Craig-interpolation + model-checking subsystem
 (Session 11 — the proof-logging solver vs. brute force *and* the main engine, interpolants vs.
 exhaustive verification of all three Craig properties, and the model checker vs. an independent
-explicit-state BFS oracle) all compared against independent references. All **284 assertions** pass.
+explicit-state BFS oracle, plus a second k-induction proof rule that must agree) all compared
+against independent references. All **285 assertions** pass.
 
 ## Ideas / backlog
 
@@ -542,7 +543,7 @@ is held to — the project's signature move:
       refutation** when it answers UNSAT: a DAG of leaves (input clauses, tagged
       with their interpolation partition) and resolution steps (with pivots),
       plus the level-0 chain that derives the empty clause. Cross-checked against
-      *both* exhaustive truth tables *and* the main SatForge solver on 1500 random
+      *both* exhaustive truth tables *and* the main SatForge solver on 800 random
       CNFs, with every returned model verified.
 - [x] **Craig interpolation by McMillan's system** (`src/imc/interpolant.ts`) —
       partial interpolants are attached to every clause (`⊤` for a B-clause, the
@@ -557,6 +558,14 @@ is held to — the project's signature move:
       image while *still* excluding Bad, and iterating it converges to an inductive
       invariant (McMillan 2003). Returns `SAFE` + invariant, `UNSAFE` + shortest
       counterexample, with spurious-abstraction detection that widens the bound.
+- [x] **A second, independent proof rule — k-induction** (`kInduction`) —
+      base case `Init ∧ Trans^k ∧ ⋁Bad` unsat (no short counterexample) plus an
+      inductive step over a **simple path** (`Trans^{k+1} ∧ ⋀¬Bad ∧ Bad_{k+1}` with
+      all states pairwise distinct). The simple-path restriction makes it *complete*
+      for finite systems, with a completeness shortcut (`k+2 > 2^stateBits ⇒ SAFE`,
+      since no longer simple path exists) that also keeps the lightweight solver away
+      from the pigeonhole-hard distinct-state UNSAT. The studio runs it beside IMC so
+      two independent proofs and the BFS oracle must all agree.
 - [x] **A Boolean formula/circuit layer** (`src/imc/formula.ts`) — one
       representation that both **Tseitin-encodes** to CNF (for the SAT engine) and
       **evaluates** under a concrete assignment (for the oracle), plus variable
@@ -576,23 +585,24 @@ is held to — the project's signature move:
       invariant (or counterexample table), and the interpolation search trace. A
       second **Interpolation** panel computes and exhaustively verifies the
       interpolant of any editable `A`/`B` clause pair.
-- [x] **Correctness** (`src/imc/selfcheck.ts`, folded into `selftest.ts`) — 1500
-      random CNFs (solver vs. brute force vs. main engine + model validity), ~500
+- [x] **Correctness** (`src/imc/selfcheck.ts`, folded into `selftest.ts`) — 800
+      random CNFs (solver vs. brute force vs. main engine + model validity), ~300
       random UNSAT partitions whose interpolants are checked against all three
-      Craig properties by exhaustive enumeration, 300 random *total* transition
+      Craig properties by exhaustive enumeration, 200 random *total* transition
       systems where the model checker must match the BFS oracle (verdict, inductive
-      invariant, and shortest counterexample), and the full curated gallery. The
-      headless gate grew **277 → 284 assertions**.
+      invariant, and shortest counterexample), and the full curated gallery (matched
+      by *both* IMC and k-induction against the oracle). The headless self-test grew
+      **277 → 285 assertions**.
 
 #### Verified
 
-- The proof-logging solver agrees with brute force *and* the main solver on 1500
-  random CNFs; every interpolant produced for ~500 random UNSAT partitions passes
+- The proof-logging solver agrees with brute force *and* the main solver on 800
+  random CNFs; every interpolant produced for ~300 random UNSAT partitions passes
   `A ⟹ I`, `I ∧ B` unsat, and the vocabulary containment by exhaustive check; the
-  model checker matches the explicit-state BFS oracle on 300 random total systems
-  and the whole gallery, with every `SAFE` invariant confirmed inductive and every
-  `UNSAFE` counterexample confirmed valid and shortest. lint + tsc + build + the
-  full self-test gate green.
+  model checker matches the explicit-state BFS oracle on 200 random total systems
+  and the whole gallery (where the independent k-induction proof rule agrees too),
+  with every `SAFE` invariant confirmed inductive and every `UNSAFE` counterexample
+  confirmed valid and shortest. lint + tsc + build + the full self-test gate green.
 
 #### Future ideas
 
@@ -604,8 +614,9 @@ is held to — the project's signature move:
 - [ ] **A transition-system DSL / editor** in the studio so users can author their
       own circuits and properties (registers, latches, guards) instead of picking
       from the gallery.
-- [ ] **Liveness / k-induction** as a second proof rule beside the interpolation
-      fixpoint, each certifying the other.
+- [x] **k-induction** as a second proof rule beside the interpolation fixpoint —
+      each certifying the other (added this session).
+- [ ] **Liveness** properties (fairness, eventually) as a further proof obligation.
 - [ ] Emit the interpolation **resolution proof** in the existing Proof tab and
       DRAT-check it with `src/sat/drat.ts`.
 
@@ -836,9 +847,13 @@ is held to — the project's signature move:
   + a broken variant, traffic-light controller, token ring) run live with verdict, the BFS
   cross-check shown beside it, the discovered invariant or counterexample table and the
   interpolation search trace; plus an **Interpolation** panel that computes and exhaustively
-  verifies the interpolant of any editable A/B clause pair. Certified the project's way: the
-  proof solver agrees with brute force **and** the main engine on **1500 random CNFs** (models
-  verified), **~500 random UNSAT partitions** whose interpolants pass all three Craig properties
-  by exhaustive enumeration, **300 random total transition systems** where the checker must match
-  the BFS oracle on verdict, inductive invariant, *and* shortest counterexample, plus the full
-  curated gallery. Harness grew **277 → 284 assertions**. Lint + build + full gate green.
+  verifies the interpolant of any editable A/B clause pair. Also added a **second, independent
+  proof rule — simple-path k-induction** (`kInduction`, with a `k+2 > 2^stateBits ⇒ SAFE`
+  completeness shortcut that dodges the pigeonhole-hard distinct-state UNSAT), run beside IMC in
+  the studio so two proofs and the oracle must all agree. Certified the project's way: the proof
+  solver agrees with brute force **and** the main engine on **800 random CNFs** (models verified),
+  **~300 random UNSAT partitions** whose interpolants pass all three Craig properties by exhaustive
+  enumeration, **200 random total transition systems** where the checker must match the BFS oracle
+  on verdict, inductive invariant, *and* shortest counterexample, plus the full curated gallery
+  (matched by both IMC and k-induction). Harness grew **277 → 285 assertions**. Lint + build +
+  full gate green.

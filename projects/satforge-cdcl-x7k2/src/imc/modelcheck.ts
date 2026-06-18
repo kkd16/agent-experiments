@@ -11,7 +11,7 @@
 // next vars (n+1..2n); `init`/`bad` over current vars (1..n).
 
 import type { Formula } from './formula'
-import { CnfBuilder, mapVars, for_, fnot, evalFormula } from './formula'
+import { CnfBuilder, mapVars, for_, fnot, evalFormula, fvar, fxor } from './formula'
 import { solveCnf } from './proofSolver'
 import { interpolate } from './interpolant'
 
@@ -183,6 +183,73 @@ export function imc(ts: TransitionSystem, opts: ImcOptions = {}): ImcResult {
     }
   }
   return { result: 'UNKNOWN', bound: maxBound, rounds: totalRounds, trace }
+}
+
+// ---- k-induction: a second, independent safety proof rule ------------------
+
+export interface KIndResult {
+  result: 'SAFE' | 'UNSAFE' | 'UNKNOWN'
+  /** Depth at which induction succeeded or the counterexample was found. */
+  k: number
+  counterexample?: boolean[][]
+}
+
+// States at steps i and j differ in at least one bit.
+const distinct = (i: number, j: number, n: number): Formula => {
+  const parts: Formula[] = []
+  for (let b = 1; b <= n; b++) parts.push(fxor(fvar(i * n + b), fvar(j * n + b)))
+  return for_(...parts)
+}
+
+/**
+ * Prove safety by **k-induction**, completely independently of interpolation.
+ *   base(k):  Init ∧ Trans^k ∧ ⋁ Bad@i  unsat  ⇒ no counterexample within k
+ *   step(k):  Trans^{k+1} ∧ ⋀_{i≤k} ¬Bad@i ∧ Bad@{k+1} ∧ (all states distinct) unsat
+ *             ⇒ ¬Bad is k-inductive
+ * The simple-path (pairwise-distinct) restriction makes k-induction complete for
+ * finite systems, so this always terminates with SAFE or UNSAFE. Used in the
+ * self-test as a second oracle: its verdict must match both `imc` and BFS.
+ */
+export function kInduction(ts: TransitionSystem, maxK = 64): KIndResult {
+  const n = ts.stateBits
+  const stateCount = 1 << n
+  for (let k = 0; k <= maxK; k++) {
+    const reserved = (k + 2) * n
+    // Base case: counterexample of length ≤ k?
+    const base: Formula[] = [atStep(ts.init, 0, n)]
+    for (let i = 0; i < k; i++) base.push(transAt(ts.trans, i, n))
+    const badAny: Formula[] = []
+    for (let i = 0; i <= k; i++) badAny.push(atStep(ts.bad, i, n))
+    base.push(for_(...badAny))
+    const cex = satModel(reserved, base)
+    if (cex) {
+      let badStep = k
+      for (let i = 0; i <= k; i++) {
+        if (evalFormula(atStep(ts.bad, i, n), (v) => cex[v] ?? false)) {
+          badStep = i
+          break
+        }
+      }
+      return { result: 'UNSAFE', k, counterexample: extractStates(cex, badStep, n) }
+    }
+    // Completeness shortcut: the step asserts k+2 pairwise-distinct states, but a
+    // system has only 2^n of them. Once k+2 > 2^n no such simple path exists, so —
+    // the base case above having ruled out any counterexample within k (and the
+    // shortest counterexample is always simple, hence ≤ 2^n−1 long) — the property
+    // is proven. This also keeps the lightweight solver away from the
+    // pigeonhole-hard distinct-state UNSAT at the recurrence-diameter boundary.
+    if (k + 2 > stateCount) return { result: 'SAFE', k }
+    // Inductive step over a simple path of length k+1.
+    const step: Formula[] = []
+    for (let i = 0; i <= k; i++) step.push(transAt(ts.trans, i, n))
+    for (let i = 0; i <= k; i++) step.push(fnot(atStep(ts.bad, i, n)))
+    step.push(atStep(ts.bad, k + 1, n))
+    for (let i = 0; i <= k + 1; i++) for (let j = i + 1; j <= k + 1; j++) step.push(distinct(i, j, n))
+    if (satModel(reserved, step) === null) {
+      return { result: 'SAFE', k }
+    }
+  }
+  return { result: 'UNKNOWN', k: maxK }
 }
 
 // ---- Independent explicit-state reachability oracle ------------------------
