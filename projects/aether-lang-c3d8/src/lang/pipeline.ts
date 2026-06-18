@@ -15,7 +15,8 @@ import { resetVarCounter, schemeToString, typeToString } from './types.ts'
 import { GLOBALS, PRELUDE_DEFS } from './prelude.ts'
 import { CompileError, compile } from './compiler.ts'
 import { elaborate } from './classes.ts'
-import { optimize } from './optimize.ts'
+import { optimizeCore } from './optimize.ts'
+import type { OptimizeStats } from './optimize.ts'
 import type { FnProto } from './bytecode.ts'
 import { VM } from './vm.ts'
 import type { RunResult } from './vm.ts'
@@ -65,14 +66,21 @@ export interface PipelineResult {
   tokens: Token[] | null
   /** the user's AST (without the prelude wrapper) */
   ast: Expr | null
-  /** the user's AST after dictionary-passing elaboration (core, class-free) */
+  /** the user's AST after dictionary-passing elaboration (core, class-free) —
+   * *unoptimized*, so the Classes panel can show the raw dictionary passing */
   coreAst: Expr | null
+  /** the elaborated core after the optimizing middle-end — what every backend
+   * actually compiles (≡ `coreAst` when optimization is off) */
+  optimizedCoreAst: Expr | null
   typeResult: InferResult | null
   programType: string | null
   bindingTypes: BindingType[]
   warnings: PipelineWarning[]
-  /** number of nodes the optimizer folded (0 if optimization is off) */
+  /** number of rewrites the optimizing middle-end performed on the compiled
+   * program (0 if optimization is off) */
   foldCount: number
+  /** detailed optimizer statistics for the user program's core (null if off) */
+  optimization: OptimizeStats | null
   proto: FnProto | null
   run: RunResult | null
   error: PipelineError | null
@@ -95,11 +103,13 @@ export function runPipeline(source: string, opts: PipelineOptions = {}): Pipelin
     tokens: null,
     ast: null,
     coreAst: null,
+    optimizedCoreAst: null,
     typeResult: null,
     programType: null,
     bindingTypes: [],
     warnings: [],
     foldCount: 0,
+    optimization: null,
     proto: null,
     run: null,
     error: null,
@@ -124,12 +134,6 @@ export function runPipeline(source: string, opts: PipelineOptions = {}): Pipelin
     return result
   }
 
-  // 2b. optimize (constant folding, branch elimination, …)
-  if (doOptimize) {
-    const optimized = optimize(userAst)
-    userAst = optimized.expr
-    result.foldCount = optimized.folded
-  }
   result.ast = userAst
 
   // 3. type-check (with prelude in scope)
@@ -148,9 +152,26 @@ export function runPipeline(source: string, opts: PipelineOptions = {}): Pipelin
   }
 
   // 3b. dictionary-passing elaboration (type classes → core AST). A no-op when
-  // the program uses no classes. The user portion is exposed for the JS backend.
-  const coreProgram = elaborate(program, inferred.classTables)
-  result.coreAst = elaborate(userAst, inferred.classTables)
+  // the program uses no classes. The user portion is exposed for the backends.
+  const coreProgramRaw = elaborate(program, inferred.classTables)
+  const userCoreRaw = elaborate(userAst, inferred.classTables)
+  result.coreAst = userCoreRaw
+
+  // 3c. the optimizing middle-end — rewrites the elaborated core into a smaller,
+  // faster equivalent that every backend then compiles. Optimizing both the full
+  // program (compiled by the VM) and the user portion (lowered by the JS/WASM
+  // backends + shown in the Optimizer panel) keeps the three backends in lock-step.
+  let coreProgram = coreProgramRaw
+  if (doOptimize) {
+    const full = optimizeCore(coreProgramRaw)
+    coreProgram = full.expr
+    result.foldCount = full.stats.total
+    const user = optimizeCore(userCoreRaw)
+    result.optimizedCoreAst = user.expr
+    result.optimization = user.stats
+  } else {
+    result.optimizedCoreAst = userCoreRaw
+  }
 
   // 4. compile
   let proto: FnProto

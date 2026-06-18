@@ -9,6 +9,7 @@ import TypesPanel from './panels/TypesPanel.tsx'
 import BytecodePanel from './panels/BytecodePanel.tsx'
 import JsPanel from './panels/JsPanel.tsx'
 import WasmPanel from './panels/WasmPanel.tsx'
+import OptimizerPanel from './panels/OptimizerPanel.tsx'
 import DerivationPanel from './panels/DerivationPanel.tsx'
 import ClassesPanel from './panels/ClassesPanel.tsx'
 import CheckPanel from './panels/CheckPanel.tsx'
@@ -36,6 +37,7 @@ type Tab =
   | 'check'
   | 'deriv'
   | 'bytecode'
+  | 'optimizer'
   | 'js'
   | 'wasm'
   | 'debug'
@@ -50,6 +52,7 @@ const TABS: { id: Tab; label: string }[] = [
   { id: 'check', label: 'Check' },
   { id: 'deriv', label: 'Derivation' },
   { id: 'bytecode', label: 'Bytecode' },
+  { id: 'optimizer', label: 'Optimizer' },
   { id: 'js', label: 'JavaScript' },
   { id: 'wasm', label: 'WebAssembly' },
   { id: 'debug', label: 'Debugger' },
@@ -161,7 +164,7 @@ export default function Playground() {
           <button className="btn" onClick={share} title="Copy a shareable link">
             {copied ? '✓ copied' : '⇗ share'}
           </button>
-          <label className="opt-toggle" title="Constant folding & branch elimination">
+          <label className="opt-toggle" title="The optimizing middle-end (see the Optimizer tab)">
             <input
               type="checkbox"
               checked={optimizeOn}
@@ -217,8 +220,13 @@ export default function Playground() {
             <DerivationPanel ast={analysis.ast} typeResult={analysis.typeResult} />
           )}
           {tab === 'bytecode' && <BytecodePanel proto={analysis.proto} />}
-          {tab === 'js' && <JsPanel ast={analysis.coreAst} code={code} optimize={optimizeOn} />}
-          {tab === 'wasm' && <WasmPanel ast={analysis.coreAst} code={code} optimize={optimizeOn} />}
+          {tab === 'optimizer' && <OptimizerPanel code={code} />}
+          {tab === 'js' && (
+            <JsPanel ast={analysis.optimizedCoreAst} code={code} optimize={optimizeOn} />
+          )}
+          {tab === 'wasm' && (
+            <WasmPanel ast={analysis.optimizedCoreAst} code={code} optimize={optimizeOn} />
+          )}
           {tab === 'debug' && (
             <DebuggerPanel
               key={traceNonce}
@@ -252,7 +260,7 @@ function StatusBar({ analysis }: { analysis: PipelineResult }) {
         <span className="status-msg">
           type-checks · <code>{analysis.programType}</code>
           {analysis.foldCount > 0 && (
-            <span className="status-fold"> · optimizer folded {analysis.foldCount}</span>
+            <span className="status-fold"> · optimizer: {analysis.foldCount} rewrites</span>
           )}
         </span>
       </div>

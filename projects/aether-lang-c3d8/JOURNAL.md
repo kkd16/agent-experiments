@@ -11,17 +11,23 @@ also drive a turtle to draw fractals, so "functional code → picture" is a firs
 ## Architecture
 
 ```
-source -> lexer -> parser -> HM inference -> optimizer -+-> bytecode compiler -> stack VM -> turtle canvas
-                                                         |                            \-> time-travel trace
-                                                         +-> JavaScript backend -> run in browser (≡ VM)
-                                                         +-> WebAssembly backend -> assemble .wasm -> instantiate & run (≡ VM)
-                                                         \-> derivation tree (the HM proof)
+source -> lexer -> parser -> HM inference -> elaborate -> optimizer -+-> bytecode compiler -> stack VM -> turtle canvas
+                                                                      |                            \-> time-travel trace
+                                                                      +-> JavaScript backend -> run in browser (≡ VM)
+                                                                      +-> WebAssembly backend -> assemble .wasm -> instantiate & run (≡ VM)
+                                                                      \-> derivation tree (the HM proof)
 ```
+
+The **optimizing middle-end** (`optimize.ts`) sits between elaboration and the backends, so all three
+compile the same optimized core — and the equivalence checks prove it preserves every answer.
 
 - `src/lang/lexer.ts` — hand-written scanner; precise source spans, nested block comments.
 - `src/lang/parser.ts` — Pratt parser; application is juxtaposition; curried lambdas.
 - `src/lang/types.ts` + `infer.ts` — Algorithm W: unification by mutation, occurs-check,
   let-generalisation (real parametric polymorphism, zero annotations).
+- `src/lang/optimize.ts` — the optimizing middle-end: a multi-pass, fixpoint rewriter over the core
+  (const-fold + algebra, β/η, capture-avoiding inlining, dead-binding elimination, known-constructor
+  `match` reduction, field projection) whose output every backend compiles.
 - `src/lang/compiler.ts` + `bytecode.ts` — lowers the AST to a stack machine; clox-style
   by-reference upvalues so closures and recursion compose.
 - `src/lang/vm.ts` — iterative stack VM (recursion bounded by memory, not the JS stack);
@@ -59,6 +65,8 @@ source -> lexer -> parser -> HM inference -> optimizer -+-> bytecode compiler ->
 - [x] `let rec … and …` mutually recursive bindings (TCO works across them)
 - [x] Exhaustiveness + redundancy checking for `match` (Maranget, with witnesses)
 - [x] Optimizer pass: constant folding, dead-branch elimination, short-circuit simplification
+- [x] A full **optimizing middle-end** over the core (β/η, inlining, dead code, known-`match`,
+      field projection) feeding all three backends — abstraction melts away (Aether 10.0)
 - [x] Records with row polymorphism (`{ x = 1 }`, `r.x`, inferred `{ x: a | ρ } -> a`)
 - [x] Functional record update (`{ r | x = 5 }`, type-safe, row-polymorphic)
 - [x] A REPL mode that keeps top-level bindings between runs
@@ -559,6 +567,107 @@ natural follow-on is a **compacting / copying** collector (now that a precise ro
       without scanning the whole heap.
 - [ ] **Inline** `gcPush`/frame push-pop (today a runtime call per root) to cut the shadow-stack cost.
 
+### Aether 10.0 — an optimizing middle-end (planned + shipping this session)
+
+For nine releases Aether grew *outward*: more of the front end (inference, kinds, type classes,
+`deriving`), more ways to *run* a program (the bytecode VM, the JavaScript backend, the native
+WebAssembly backend with its own garbage collector). The one stage that never grew was the bit *in
+the middle*: a toy `optimize.ts` did literal constant folding and branch elimination on the surface
+AST and nothing else — every backend faithfully compiled all the abstraction the front end piled on
+(type-class dictionaries, `deriving` instances, `do`/comprehension/`|>` desugarings) exactly as
+written. 10.0 closes that gap with the piece a serious compiler is judged on: a **real optimizing
+middle-end** — a multi-pass, fixpoint rewriter over the *core* (the dictionary-passed, class-free
+program) that all three backends then compile, so **one optimizer makes the VM, the JavaScript and
+the WebAssembly faster at once**.
+
+The crux, and the reason it fits Aether's hard-won invariant, is *where* it runs and *how it stays
+honest*. It sits after elaboration and before every backend, so the bytecode VM compiles the
+optimized core, and the JS/WASM backends lower the optimized user core — which means the project's
+existing byte-for-byte equivalence checks (`✓ matches the VM`, run on every gallery example and
+feature program) **re-prove, automatically, that the optimizer never changed an answer**. The harness
+was pointed at the optimized core for exactly this reason: the same 249-check corpus now exercises
+the shipping path, and a new battery runs every program *twice* (optimizer on/off) asserting identical
+result, output and effect order plus a never-increasing VM-step count.
+
+Every rewrite is semantics-preserving **for a strict, effectful language** — Aether is pure except
+`print` and the turtle, whose effects are observable in order — so the whole engine rests on two
+conservative predicates: `isValue` (evaluating it does no work and cannot diverge or raise; includes
+saturated constructor applications of values) and `isPure` (no observable effect, terminates;
+division/`%` only with a nonzero-literal divisor, a `match` only on a pure static scrutinee with a
+definite pure arm). Inlining is **capture-avoiding** (binders that would capture a free variable of
+the inlined term are α-renamed with `$opt_`-fresh names the lexer can never produce).
+
+Plan / steps:
+
+- [x] **A capture-avoiding core toolkit** (`optimize.ts`) — `freeVars` (memoised), `countUses`
+      (shadowing-aware), `rename` (consistent, fresh-target so capture is impossible) and a full
+      capture-avoiding `subst` that α-renames any `lambda`/`let`/`letrec`/`match`-pattern binder that
+      would capture a free variable of the replacement. Plus `isValue`/`isPure` and a program-wide
+      constructor-arity table so the analyses can recognise (saturated) constructor applications as
+      data.
+- [x] **A fixpoint pass manager** — one combined bottom-up rewriter (`step`) optimises children then
+      fires at most one local rule per node, attributing each firing to a named counter; the driver
+      re-runs it to a fixpoint (a round that performs zero rewrites), with a `MAX_ROUNDS` safety cap.
+      Every rule is non-increasing on a well-founded measure, so it terminates well inside the cap.
+- [x] **Constant folding + algebra** — integer/float arithmetic, comparison, boolean and string ops
+      over literals (never folding a trap like `÷0`); unary `-`/`!` and `!!x`; identity & short-circuit
+      laws (`x+0`, `0+x`, `x*1`, `x++[]`, `[]++x`, `x^""`, `true && x`, `false || x`) that keep the
+      surviving operand evaluated exactly once.
+- [x] **Branch elimination** — `if true … / if false …`, `if c then e else e` (pure `c`), and
+      `if c then true else false ⇒ c` / `… false else true ⇒ !c`.
+- [x] **β-reduction + let-floating + η-contraction** — `(fn x -> b) a ⇒ let x = a in b` (the exact
+      operational meaning: sound, and it removes a closure allocation + call); `(let x = v in f) a ⇒
+      let x = v in (f a)` so curried applications keep peeling (guarded against capture, and sound
+      because both the VM and the JS backend evaluate the function position before the argument); and
+      `fn x -> f x ⇒ f` when `x ∉ fv(f)`.
+- [x] **Inlining, copy-propagation & dead-binding elimination** — substitute a `let`-bound *value*
+      (atoms always; a `lambda`/compound value only when used once, so code never blows up); drop a
+      pure, unused binding; turn an unused-but-effectful binding into a `seq`; a non-self-recursive
+      `let rec` is **de-recursivised** to a plain `let` and a wholly non-recursive `letrec` group is
+      **split** into a chain of `let`s — which is exactly how an instance dictionary (elaborated as a
+      recursive `let`/`letrec` of method records) becomes inlinable.
+- [x] **Known-constructor `match` reduction** — when the scrutinee is a statically-known, *pure* shape
+      (a literal, tuple, list, `::`, or a saturated known-constructor application), test each arm
+      statically: drop arms that provably cannot match, and reduce a definite, unguarded match to its
+      arm with the pattern variables bound by `let`s (order-preserving, since the scrutinee evaluated
+      once). The purity guard is what keeps a discarded sub-expression's effect alive
+      (`match (Some (print 1)) with Some _ -> 0` is *not* reduced).
+- [x] **Record field projection** — `{ a = e1, b = e2, … }.a ⇒ e1` when the dropped fields are pure
+      (dictionaries are records of pure lambdas, so a method projection reduces to the method body,
+      which β-reduction then applies — the link that lets a type-class call collapse).
+- [x] **Wire it through the pipeline** — inference runs on the raw user AST (so the Types/AST/
+      Derivation panels reflect the source); after elaboration the optimizer rewrites both the full
+      program (compiled by the VM) and the user portion (lowered by the JS/WASM backends + shown in
+      the panel). `coreAst` stays *unoptimized* (the Classes panel keeps showing raw dictionary
+      passing); a new `optimizedCoreAst` + `optimization` stats feed the rest.
+- [x] **An Optimizer inspector panel** — the rewrites broken down by rule (with a friendly
+      description each), the node-count reduction (before → after, %), the optimized core
+      pretty-printed (toggle to the before core), and a one-click **Measure VM steps** that runs the
+      program with the optimizer on and off and shows the step reduction + a `✓ identical result`
+      badge. The JS/WASM tabs now compile the *optimized* core (what ships).
+- [x] **A gallery example** — *"The optimizing middle-end"*: a `class Area` whose method, applied to
+      a literal `Circle`, melts from a dictionary lookup all the way to the single `Float` literal
+      `12.56636` (user core 41 → 4 nodes), beside a folded, β-reduced `|>` pipe and an eliminated
+      dead binding.
+- [x] **Verification** — the harness now exercises the optimized core through JS *and* WASM (the
+      shipping path), and a dedicated **optimizer battery** runs every gallery example + a dozen
+      targeted per-pass programs twice (on/off): identical result/output/effects, never more VM steps,
+      a minimum rewrite count and node-budget where stated, plus adversarial **soundness** cases
+      (effect under a discarded field, print ordering, dead-but-effectful binding, capture avoidance,
+      β under shadowing, an effectful scrutinee not optimized away). 249 → **304 checks, all green**;
+      full CI gate (scope + conformance + lint + tsc + build) green.
+
+Deferred (future, Aether 10.x+):
+
+- [ ] **Multi-use dictionary specialization** — a value binding used more than once is not inlined
+      (to avoid code blow-up), so a dictionary threaded to several call sites stays a record lookup;
+      a targeted "duplicate-then-collapse" or per-instance method specialization would melt those too.
+- [ ] **Inlining across `let`-bound non-values** when a single use is in strict, effect-free position
+      (today only syntactic values are inlined), and **common-subexpression elimination**.
+- [ ] **Type-directed optimization** — the optimizer is untyped; feeding inferred types in would
+      enable e.g. specialising `show`/`compare` to a known monomorphic type, or unboxing.
+- [ ] **A worst-case-cost / fuel view** in the panel, and per-pass before/after diffs.
+
 ## Standard library
 
 - list: `map filter foldl foldr length append reverse sum range take drop elem all any concat zip replicate`
@@ -819,3 +928,32 @@ natural follow-on is a **compacting / copying** collector (now that a precise ro
   parens, one named `(func …)` per defined function) and a cache battery (WASM ≡ VM preserved *and*
   the cache demonstrably serves a minimum number of ints) — **207 checks green**; full CI gate
   (scope + conformance + lint + tsc + build) green.
+- 2026-06-18 (claude): **Aether 10.0 — an optimizing middle-end.** Replaced the toy surface-AST
+  constant folder with a real, multi-pass, fixpoint **optimizer over the elaborated core** that all
+  three backends compile — so one optimizer speeds up the bytecode VM, the JavaScript backend and the
+  WebAssembly backend at once, and the project's existing byte-for-byte equivalence checks re-prove on
+  every program that the answer never changed. New `optimize.ts`: a capture-avoiding core toolkit
+  (memoised `freeVars`, shadowing-aware `countUses`, fresh-target `rename`, full α-renaming `subst`),
+  conservative `isValue`/`isPure` predicates (a saturated constructor application of values is data;
+  `÷0`/`%0` and effectful/partial `match`es are impure) and a program-wide constructor-arity table,
+  driving a bottom-up `step` rewriter to a fixpoint. The passes: constant folding + algebraic
+  identities + short-circuits; branch elimination; β-reduction (`(fn x -> b) a ⇒ let x = a in b`) with
+  let-floating for curried calls and η-contraction; capture-avoiding inlining / copy-propagation of
+  value bindings (atoms always, lambdas/compounds only single-use); dead-binding elimination;
+  de-recursivising a non-recursive `let rec` and splitting a non-recursive `letrec` group (so instance
+  dictionaries become inlinable); **known-constructor `match` reduction** (a `match` on a pure
+  statically-known literal/tuple/list/constructor collapses to its arm, binding fields with `let`s and
+  dropping impossible arms); and **record field projection** (`{ a = e, … }.a ⇒ e` when the dropped
+  fields are pure). Together these make abstraction *melt away*: a `class` method call on a literal
+  constructor inlines the dictionary, projects the method, β-reduces, picks the `match` arm and folds
+  the arithmetic — the new *"The optimizing middle-end"* gallery example reduces `area (Circle 2.0)`
+  to the single literal `12.56636` (core 41 → 4 nodes, VM steps 135 → 31). Wired through the pipeline
+  (inference now runs on the raw user AST so the Types/AST/Derivation panels reflect the source; a new
+  `optimizedCoreAst` + per-rule `optimization` stats feed the backends and a new **Optimizer** tab that
+  shows the rewrite breakdown, node-count reduction, before/after core and a one-click VM-step
+  measurement). Tour/About/README/`project.json` updated. The harness now drives the *optimized* core
+  through JS and WASM (the shipping path) and adds an optimizer battery — every example + targeted
+  per-pass programs run twice (on/off) for identical result/output/effects and never-more steps, plus
+  adversarial soundness cases (effect under a discarded ctor field, print ordering, dead-but-effectful
+  binding, capture avoidance, β under shadowing, an effectful scrutinee left intact): **304 checks
+  green**; full CI gate (scope + conformance + lint + tsc + build) green.

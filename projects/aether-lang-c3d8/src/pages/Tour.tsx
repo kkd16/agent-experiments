@@ -330,9 +330,38 @@ back 50.0        clear ()`}</pre>
       </section>
 
       <section>
+        <h2>The optimizing middle-end</h2>
+        <p>
+          Before any backend runs, an <strong>optimizing middle-end</strong> rewrites the elaborated{' '}
+          <em>core</em> (the program after type-class dictionaries, <code>deriving</code>,{' '}
+          <code>do</code>-notation and comprehensions are desugared) into a smaller, faster
+          equivalent — and all three backends compile <em>its</em> output, so one optimizer makes the
+          VM, the JavaScript and the WebAssembly faster at once. It runs to a fixpoint: constant
+          folding and algebra (<code>x + 0</code>, <code>x * 1</code>, <code>x ++ []</code>), branch
+          elimination, β-reduction and η-contraction, capture-avoiding inlining, dead-binding
+          elimination, <strong>known-constructor <code>match</code> reduction</strong> and record
+          field projection. Every rewrite is semantics-preserving for a strict, effectful language —
+          it never reorders, duplicates or drops anything that could <code>print</code>, loop or
+          fail.
+        </p>
+        <p>
+          The upshot: <em>abstraction melts away</em>. A type-class method call on a concrete value
+          inlines the dictionary, projects the method out of its record, β-reduces, and — for a
+          literal constructor — picks the <code>match</code> arm and folds the arithmetic. Open the{' '}
+          <strong>Optimizer</strong> tab on the <em>optimizing middle-end</em> example:{' '}
+          <code>area (Circle 2.0)</code> (a <code>class Area</code> method call) reduces all the way
+          to the single literal <code>12.56636</code>, its core shrinking from 41 nodes to 4. The tab
+          breaks the rewrites down by rule, shows the before/after core, and measures the VM-step
+          reduction — and because the backends compile the optimized core, the same "matches the VM ✓"
+          checks re-prove the answer never changed.
+        </p>
+      </section>
+
+      <section>
         <h2>Three backends</h2>
         <p>
-          The same type-checked program is compiled <strong>three ways</strong>. The{' '}
+          The same type-checked, <strong>optimized</strong> program is compiled{' '}
+          <strong>three ways</strong>. The{' '}
           <strong>Bytecode</strong> tab shows it lowered to a stack machine run by a hand-written VM
           (with the time-travel debugger). The <strong>JavaScript</strong> tab shows it lowered to
           self-contained JavaScript and runs it right in your browser — a tiny runtime mirrors the

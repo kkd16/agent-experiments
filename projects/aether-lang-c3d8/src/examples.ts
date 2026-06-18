@@ -847,6 +847,41 @@ let rec collatz = fn n ->
 , squares    = [ x * x | x <- range 1 6 ] }`,
   },
   {
+    id: 'optimizer',
+    title: 'The optimizing middle-end',
+    blurb: 'Open the Optimizer tab, then "Measure VM steps" — watch the abstraction melt away.',
+    visual: false,
+    code: `// Open the "Optimizer" tab, press "Measure VM steps", then flip the core view
+// between "before" and "after".
+//
+// Aether's optimizing middle-end rewrites the elaborated *core* — the program
+// after type-class dictionaries, deriving, do-notation, comprehensions and the
+// |> pipe have all been desugared — into a smaller, faster equivalent. The
+// bytecode VM, the JavaScript backend AND the WebAssembly backend all compile
+// the optimized core, and the equivalence checks re-prove the answer never
+// changed.
+//
+// 'area' is a type-class method: really a lookup in a dictionary record.
+// Applied to a *literal* constructor the whole abstraction evaporates — the
+// optimizer de-recursivises and inlines the dictionary, projects the method out
+// of the record, beta-reduces the call, selects the matching 'match' arm and
+// folds the arithmetic, so 'area (Circle 2.0)' becomes the single literal below.
+
+type Shape = Circle Float | Rect Float Float in
+
+class Area a where area : a -> Float in
+instance Area Shape where
+  area = fn s -> match s with
+    | Circle r -> 3.14159 *. r *. r
+    | Rect w h -> w *. h in
+
+let unused = (10 + 20) * 3 in          // pure & never used -> eliminated
+
+let answer = area (Circle 2.0) in      // melts all the way to a Float literal
+
+(answer, 2 * 3 + 4 * 5 |> (fn n -> n + 1))   // and a folded, beta-reduced pipe`,
+  },
+  {
     id: 'gc-stress',
     title: 'Garbage collector',
     blurb: 'Open the WebAssembly tab, tick "stress GC", and watch the heap stay bounded.',
