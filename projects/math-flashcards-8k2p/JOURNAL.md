@@ -114,3 +114,15 @@ live here as long as you like.
 - [x] Provide a "Hide Timer" toggle for less stressful timed runs
 - [x] Show the current combo multiplier directly on the flashcard
 - [x] Implement an option to reset all local storage data at once
+- [ ] Add an option to select multiple operations simultaneously (e.g. mix of +, -, *)
+- [x] Implement a "Zen Mode" toggle that disables scores, timers, and combo indicators
+- [x] Add visual feedback (like a green checkmark / red X overlay) upon submitting an answer
+- [x] Allow users to configure the maximum combo multiplier achievable
+- [ ] Implement local storage for storing custom difficulty settings (number ranges)
+- [x] Add an accessibility setting to increase base font sizes for the entire app
+- [x] Display the historical best combo on the speed run summary screen
+- [ ] Create a "Review Mistakes Only" mode if past mistakes exist in localStorage
+- [x] Add a confirmation dialog before "Clear Run History" deletes data
+- [x] Introduce a "Time Attack" mode where every correct answer adds +1s to the timer
+- [ ] Allow toggling a "strict mode" where formatting (like spaces) must match exactly
+- [x] Display an animated confetti overlay when the streak reaches multiples of 10

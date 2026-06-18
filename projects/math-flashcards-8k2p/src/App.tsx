@@ -90,6 +90,50 @@ function getInitialHighScore() {
 }
 
 
+
+function getInitialZenMode(): boolean {
+  try {
+    const item = window.localStorage.getItem('mathFlashcardsZenMode');
+    return item ? item === 'true' : false;
+  } catch (e) {
+    console.error(e);
+    return false;
+  }
+}
+
+
+function getInitialMaxCombo(): number {
+  try {
+    const item = window.localStorage.getItem('mathFlashcardsMaxCombo');
+    return item ? parseInt(item, 10) : 3;
+  } catch (e) {
+    console.error(e);
+    return 3;
+  }
+}
+
+
+function getInitialFontSize(): 'normal' | 'large' | 'extra-large' {
+  try {
+    const item = window.localStorage.getItem('mathFlashcardsFontSize');
+    return (item === 'large' || item === 'extra-large') ? item : 'normal';
+  } catch (e) {
+    console.error(e);
+    return 'normal';
+  }
+}
+
+
+function getInitialBestCombo(): number {
+  try {
+    const item = window.localStorage.getItem('mathFlashcardsBestCombo');
+    return item ? parseInt(item, 10) : 0;
+  } catch (e) {
+    console.error(e);
+    return 0;
+  }
+}
+
 function getInitialTheme(): 'light' | 'dark' {
   try {
     const stored = window.localStorage.getItem('mathFlashcardsTheme');
@@ -190,23 +234,70 @@ const STREAK_MESSAGES = [
 
 function App() {
   const [theme, setTheme] = useState<'light' | 'dark'>(getInitialTheme());
+
+  const [zenMode, setZenMode] = useState<boolean>(getInitialZenMode());
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem('mathFlashcardsZenMode', zenMode.toString());
+    } catch (e) {
+      console.error(e);
+    }
+  }, [zenMode]);
+
   const [allowedOperations, setAllowedOperations] = useState<Operation[]>(['+', '-', '*', '/']);
   const [difficulty, setDifficulty] = useState<Difficulty>('easy');
   const [flashcardSize, setFlashcardSize] = useState<'small' | 'medium' | 'large'>('medium');
+  const [accessibilityFontSize, setAccessibilityFontSize] = useState<'normal' | 'large' | 'extra-large'>(getInitialFontSize());
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem('mathFlashcardsFontSize', accessibilityFontSize);
+    } catch (e) {
+      console.error(e);
+    }
+  }, [accessibilityFontSize]);
+
   const [operation, setOperation] = useState<Operation>('+');
   const [num1, setNum1] = useState<number>(0);
   const [num2, setNum2] = useState<number>(0);
 
   const [userAnswer, setUserAnswer] = useState<string>('');
+  const [answerStatus, setAnswerStatus] = useState<'correct' | 'incorrect' | null>(null);
+  const [showConfetti, setShowConfetti] = useState<boolean>(false);
+  const [confettiPieces, setConfettiPieces] = useState<Array<{left: string, delay: string, color: string}>>([]);
+
+
+
   const [message, setMessage] = useState<string>('');
   const [score, setScore] = useState<number>(0);
   const [scoreBump, setScoreBump] = useState<boolean>(false);
 
   const [streak, setStreak] = useState<number>(getInitialStreak());
   const [highScore, setHighScore] = useState<number>(getInitialHighScore());
+  const [bestHistoricalCombo, setBestHistoricalCombo] = useState<number>(getInitialBestCombo());
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem('mathFlashcardsBestCombo', bestHistoricalCombo.toString());
+    } catch (e) {
+      console.error(e);
+    }
+  }, [bestHistoricalCombo]);
+
 
   const [isSpeedRunActive, setIsSpeedRunActive] = useState<boolean>(false);
-  const [gameMode, setGameMode] = useState<'time' | 'questions' | 'endless'>('time');
+  const [gameMode, setGameMode] = useState<'time' | 'questions' | 'endless' | 'timeAttack'>('time');
+  const [maxComboMultiplier, setMaxComboMultiplier] = useState<number>(getInitialMaxCombo());
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem('mathFlashcardsMaxCombo', maxComboMultiplier.toString());
+    } catch (e) {
+      console.error(e);
+    }
+  }, [maxComboMultiplier]);
+
   const [isSuddenDeathMode, setIsSuddenDeathMode] = useState<boolean>(false);
   const [isHardcoreMode, setIsHardcoreMode] = useState<boolean>(false);
   const [hideOperator, setHideOperator] = useState<boolean>(false);
@@ -267,6 +358,11 @@ function App() {
   const [runScores, setRunScores] = useState<RunScore[]>(getInitialRunScores());
 
   const inputRef = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    if (isSpeedRunActive && gameMode === 'timeAttack' && startTime) {
+      setTimeout(() => setElapsedTime((Date.now() - startTime) / 1000), 0);
+    }
+  }, [timeLeft, isSpeedRunActive, gameMode, startTime]);
 
   const updateBgColor = (color: string) => {
     setBgColor(color);
@@ -311,11 +407,11 @@ function App() {
 
   useEffect(() => {
     let timerId: ReturnType<typeof setInterval>;
-    if (isSpeedRunActive && gameMode === 'time' && timeLeft > 0) {
+    if (isSpeedRunActive && (gameMode === 'time' || gameMode === 'timeAttack') && timeLeft > 0) {
       timerId = setInterval(() => {
         setTimeLeft(t => t - 1);
       }, 1000);
-    } else if (isSpeedRunActive && gameMode === 'time' && timeLeft === 0) {
+    } else if (isSpeedRunActive && (gameMode === 'time' || gameMode === 'timeAttack') && timeLeft === 0) {
       setTimeout(() => {
         setIsSpeedRunActive(false);
         setShowSummary(true);
@@ -349,7 +445,7 @@ function App() {
     } else {
       setHideOperator(false);
     }
-    if (!isSpeedRunActive || (gameMode === 'time' ? timeLeft > 0 : (gameMode === 'questions' ? questionsAnswered < questionLimit : true))) {
+    if (!isSpeedRunActive || ((gameMode === 'time' || gameMode === 'timeAttack') ? timeLeft > 0 : (gameMode === 'questions' ? questionsAnswered < questionLimit : true))) {
       setMessage('');
     }
     inputRef.current?.focus();
@@ -361,7 +457,7 @@ function App() {
       if (e.target instanceof HTMLInputElement) return;
 
       if (e.key === 'n' || e.key === 'N') {
-        if (!isSpeedRunActive || (gameMode === 'time' ? timeLeft > 0 : (gameMode === 'questions' ? questionsAnswered < questionLimit : true))) {
+        if (!isSpeedRunActive || ((gameMode === 'time' || gameMode === 'timeAttack') ? timeLeft > 0 : (gameMode === 'questions' ? questionsAnswered < questionLimit : true))) {
           generateProblem();
         }
       } else if (e.key === 'd' || e.key === 'D') {
@@ -381,6 +477,9 @@ function App() {
 
   const updateStreak = (newStreak: number) => {
     setStreak(newStreak);
+    if (newStreak > bestHistoricalCombo) {
+      setBestHistoricalCombo(newStreak);
+    }
     try {
       window.localStorage.setItem('mathFlashcardsStreak', newStreak.toString());
     } catch (e) {
@@ -441,8 +540,9 @@ function App() {
   const startSpeedRun = () => {
     setScore(0);
     updateStreak(0);
-    if (gameMode === 'time') {
+    if (gameMode === 'time' || gameMode === 'timeAttack') {
       setTimeLeft(selectedTimerDuration === 0 ? customTimerDuration : selectedTimerDuration);
+      setStartTime(Date.now());
     } else {
       setStartTime(Date.now());
     }
@@ -456,7 +556,7 @@ function App() {
 
   const checkAnswer = (e: React.FormEvent) => {
     e.preventDefault();
-    if (isSpeedRunActive && gameMode === 'time' && timeLeft === 0) return;
+    if (isSpeedRunActive && (gameMode === 'time' || gameMode === 'timeAttack') && timeLeft === 0) return;
     if (isSpeedRunActive && gameMode === 'questions' && questionsAnswered >= questionLimit) return;
     if (isSuddenDeathMode && showSummary) return;
 
@@ -491,12 +591,14 @@ function App() {
     if (isCorrect) {
       setMessage("Correct!");
       if (soundEnabled) playSound('correct');
+      setAnswerStatus('correct');
+      setTimeout(() => setAnswerStatus(null), 500);
       setAnimationClass('flash-correct');
       setTimeout(() => setAnimationClass(''), 500);
 
       let points = 1;
-      if (streak >= 10) points = 3;
-      else if (streak >= 5) points = 2;
+      if (streak >= 10 && maxComboMultiplier >= 3) points = 3;
+      else if (streak >= 5 && maxComboMultiplier >= 2) points = 2;
 
       const newScore = score + points;
       setScore(newScore);
@@ -505,6 +607,21 @@ function App() {
 
       const newStreak = streak + 1;
       updateStreak(newStreak);
+
+      if (isSpeedRunActive && gameMode === 'timeAttack') {
+        setTimeLeft(t => t + 2); // Add 2 seconds for a correct answer in Time Attack
+      }
+
+      if (newStreak > 0 && newStreak % 10 === 0) {
+        const pieces = [...Array(30)].map(() => ({
+          left: `${Math.random() * 100}%`,
+          delay: `${Math.random() * 0.5}s`,
+          color: ['#e74c3c', '#3498db', '#f1c40f', '#2ecc71', '#9b59b6'][Math.floor(Math.random() * 5)]
+        }));
+        setConfettiPieces(pieces);
+        setShowConfetti(true);
+        setTimeout(() => setShowConfetti(false), 2000);
+      }
 
       if (newStreak > 0 && newStreak % 5 === 0) {
         const msg = STREAK_MESSAGES[Math.floor(Math.random() * STREAK_MESSAGES.length)];
@@ -534,6 +651,8 @@ function App() {
       if (isSuddenDeathMode) {
         setMessage(`Incorrect! Sudden Death over.`);
         if (soundEnabled) playSound('incorrect');
+      setAnswerStatus('incorrect');
+      setTimeout(() => setAnswerStatus(null), 500);
       setAnimationClass(enableScreenShake ? 'flash-incorrect shake-animation' : 'flash-incorrect');
         setTimeout(() => setAnimationClass(''), 500);
         updateStreak(0);
@@ -551,6 +670,8 @@ function App() {
         setIsSpeedRunActive(false);
       } else {
         setMessage(`Incorrect. Try again!`);
+        setAnswerStatus('incorrect');
+        setTimeout(() => setAnswerStatus(null), 500);
         setAnimationClass(enableScreenShake ? 'flash-incorrect shake-animation' : 'flash-incorrect');
         setTimeout(() => setAnimationClass(''), 500);
         updateStreak(0); // Reset streak
@@ -616,6 +737,7 @@ function App() {
   };
 
   const clearRunHistory = () => {
+    if (!window.confirm("Are you sure you want to clear your run history?")) return;
     setRunScores([]);
     try {
       window.localStorage.removeItem('mathFlashcardsRunScores');
@@ -625,7 +747,7 @@ function App() {
   };
 
   return (
-    <div className={`app-wrapper ${theme}`} style={{ backgroundColor: theme === 'light' && bgColor ? bgColor : undefined }}>
+    <div className={`app-wrapper ${theme} font-size-${accessibilityFontSize}`} style={{ backgroundColor: theme === 'light' && bgColor ? bgColor : undefined }}>
     <div className={`app-container ${theme}`}>
       <div className="header-top">
         <h1>Math Flashcards</h1>
@@ -636,6 +758,11 @@ function App() {
           <button onClick={() => setSoundEnabled(!soundEnabled)} className="theme-toggle">
             {soundEnabled ? '🔊 Sound On' : '🔇 Sound Off'}
           </button>
+
+          <button onClick={() => setZenMode(!zenMode)} className="theme-toggle">
+            {zenMode ? '🌿 Zen On' : '🌿 Zen Off'}
+          </button>
+
         </div>
       </div>
 
@@ -649,7 +776,10 @@ function App() {
         <button className="color-btn" style={{ backgroundColor: '#e3f2fd' }} onClick={() => updateBgColor('#e3f2fd')} title="Light Blue"></button>
       </div>
 
+
+      {!zenMode && (
       <div className="header-stats-container">
+
         <div className="header-stats">
           <div className="stat">Score: <span className={scoreBump ? "score-bump" : ""}>{score}</span></div>
           <div className="stat" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
@@ -667,9 +797,22 @@ function App() {
           <div className="stat">Total Questions: {lifetimeQuestions}</div>
         </div>
       </div>
-
+      )}
 
       <div className="controls">
+        <div className="difficulty-selector">
+          <label htmlFor="maxComboMultiplier">Max Combo:</label>
+          <select
+            id="maxComboMultiplier"
+            value={maxComboMultiplier}
+            onChange={(e) => setMaxComboMultiplier(parseInt(e.target.value, 10))}
+          >
+            <option value={1}>x1</option>
+            <option value={2}>x2</option>
+            <option value={3}>x3</option>
+          </select>
+        </div>
+
         <div className="difficulty-selector">
           <label htmlFor="difficulty">Difficulty:</label>
           <select
@@ -685,7 +828,20 @@ function App() {
         </div>
 
         <div className="difficulty-selector">
-          <label htmlFor="flashcardSize">Size:</label>
+          <label htmlFor="accessibilityFontSize">Font Size:</label>
+          <select
+            id="accessibilityFontSize"
+            value={accessibilityFontSize}
+            onChange={(e) => setAccessibilityFontSize(e.target.value as 'normal' | 'large' | 'extra-large')}
+          >
+            <option value="normal">Normal</option>
+            <option value="large">Large</option>
+            <option value="extra-large">Extra Large</option>
+          </select>
+        </div>
+
+        <div className="difficulty-selector">
+          <label htmlFor="flashcardSize">Card Size:</label>
           <select
             id="flashcardSize"
             value={flashcardSize}
@@ -748,7 +904,7 @@ function App() {
         <div className="speed-run-controls">
 
           {isSpeedRunActive ? (
-            gameMode === 'time' ? (
+            !zenMode && ((gameMode === 'time' || gameMode === 'timeAttack') ? (
               <div className="progress-container" style={{ visibility: hideTimer ? 'hidden' : 'visible' }}>
                 <div className="progress-bar" style={{ width: `${(timeLeft / selectedTimerDuration) * 100}%` }}></div>
                 <div className="progress-text">{timeLeft}s</div>
@@ -758,7 +914,7 @@ function App() {
                 <div className="progress-bar" style={{ width: `${(questionsAnswered / questionLimit) * 100}%` }}></div>
                 <div className="progress-text">{questionsAnswered} / {questionLimit}</div>
               </div>
-            )
+            ))
           ) : (
 
             <div className="timer-select-container" style={{display: 'flex', gap: '0.5rem', alignItems: 'center', flexWrap: 'wrap', justifyContent: 'flex-end'}}>
@@ -782,8 +938,9 @@ function App() {
                 <option value="time">Time Limit</option>
                 <option value="questions">Question Limit</option>
                 <option value="endless">Endless</option>
+                <option value="timeAttack">Time Attack</option>
               </select>
-              {gameMode === 'time' ? (
+              {(gameMode === 'time' || gameMode === 'timeAttack') ? (
                 <>
                   <select value={selectedTimerDuration} onChange={(e) => setSelectedTimerDuration(parseInt(e.target.value, 10))} className="timer-select">
                     <option value={30}>30s</option>
@@ -815,9 +972,23 @@ function App() {
         </div>
       </div>
 
+
+      {showConfetti && (
+        <div className="confetti-container">
+          {confettiPieces.map((piece, i) => (
+            <div key={i} className="confetti-piece" style={{ left: piece.left, animationDelay: piece.delay, backgroundColor: piece.color }}></div>
+          ))}
+        </div>
+      )}
+
       <div className={`flashcard flashcard-${flashcardSize} ${animationClass}`}>
 
         <div className="problem" style={{position: 'relative'}}>
+          {answerStatus && (
+            <div className={`answer-feedback ${answerStatus}`}>
+              {answerStatus === 'correct' ? '✓' : '✗'}
+            </div>
+          )}
           {streak >= 5 && (
             <span style={{position: 'absolute', top: '-10px', right: '-10px', background: '#f1c40f', color: '#000', padding: '0.2rem 0.5rem', borderRadius: '10px', fontSize: '1rem', fontWeight: 'bold', animation: 'pulse 0.5s'}}>
               {streak >= 10 ? 'x3' : 'x2'}
@@ -837,9 +1008,9 @@ function App() {
             autoFocus
             className="answer-input"
             placeholder="?"
-            disabled={isSpeedRunActive && (gameMode === 'time' ? timeLeft === 0 : (gameMode === 'questions' ? questionsAnswered >= questionLimit : false))}
+            disabled={isSpeedRunActive && ((gameMode === 'time' || gameMode === 'timeAttack') ? timeLeft === 0 : (gameMode === 'questions' ? questionsAnswered >= questionLimit : false))}
           />
-          <button type="submit" className="submit-button" disabled={isSpeedRunActive && (gameMode === 'time' ? timeLeft === 0 : (gameMode === 'questions' ? questionsAnswered >= questionLimit : false))}>Check</button>
+          <button type="submit" className="submit-button" disabled={isSpeedRunActive && ((gameMode === 'time' || gameMode === 'timeAttack') ? timeLeft === 0 : (gameMode === 'questions' ? questionsAnswered >= questionLimit : false))}>Check</button>
         </form>
 
         <div className="numpad">
@@ -848,7 +1019,7 @@ function App() {
               key={num}
               type="button"
               className="numpad-btn"
-              disabled={isSpeedRunActive && (gameMode === 'time' ? timeLeft === 0 : (gameMode === 'questions' ? questionsAnswered >= questionLimit : false))}
+              disabled={isSpeedRunActive && ((gameMode === 'time' || gameMode === 'timeAttack') ? timeLeft === 0 : (gameMode === 'questions' ? questionsAnswered >= questionLimit : false))}
               onClick={() => setUserAnswer(prev => prev + num)}
             >
               {num}
@@ -857,7 +1028,7 @@ function App() {
           <button
             type="button"
             className="numpad-btn control-btn"
-            disabled={isSpeedRunActive && (gameMode === 'time' ? timeLeft === 0 : (gameMode === 'questions' ? questionsAnswered >= questionLimit : false))}
+            disabled={isSpeedRunActive && ((gameMode === 'time' || gameMode === 'timeAttack') ? timeLeft === 0 : (gameMode === 'questions' ? questionsAnswered >= questionLimit : false))}
             onClick={() => setUserAnswer('')}
           >
             C
@@ -865,7 +1036,7 @@ function App() {
           <button
             type="button"
             className="numpad-btn"
-            disabled={isSpeedRunActive && (gameMode === 'time' ? timeLeft === 0 : (gameMode === 'questions' ? questionsAnswered >= questionLimit : false))}
+            disabled={isSpeedRunActive && ((gameMode === 'time' || gameMode === 'timeAttack') ? timeLeft === 0 : (gameMode === 'questions' ? questionsAnswered >= questionLimit : false))}
             onClick={() => setUserAnswer(prev => prev + '0')}
           >
             0
@@ -873,7 +1044,7 @@ function App() {
           <button
             type="button"
             className="numpad-btn control-btn"
-            disabled={isSpeedRunActive && (gameMode === 'time' ? timeLeft === 0 : (gameMode === 'questions' ? questionsAnswered >= questionLimit : false))}
+            disabled={isSpeedRunActive && ((gameMode === 'time' || gameMode === 'timeAttack') ? timeLeft === 0 : (gameMode === 'questions' ? questionsAnswered >= questionLimit : false))}
             onClick={() => setUserAnswer(prev => prev.slice(0, -1))}
           >
             ⌫
@@ -884,14 +1055,15 @@ function App() {
       {message && <div className={`message ${message === 'Correct!' ? 'success' : (message.includes('Time') ? 'info' : 'error')}`}>{message}</div>}
       {streakMessage && <div className="message" style={{color: '#9b59b6', animation: 'pulse 1s infinite'}}>{streakMessage}</div>}
 
-      <button type="button" onClick={generateProblem} className="next-button" disabled={isSpeedRunActive && (gameMode === 'time' ? timeLeft === 0 : (gameMode === 'questions' ? questionsAnswered >= questionLimit : false))}>Skip / Next Problem</button>
+      <button type="button" onClick={generateProblem} className="next-button" disabled={isSpeedRunActive && ((gameMode === 'time' || gameMode === 'timeAttack') ? timeLeft === 0 : (gameMode === 'questions' ? questionsAnswered >= questionLimit : false))}>Skip / Next Problem</button>
 
       {showSummary && (
         <div className="summary-modal-overlay">
           <div className="summary-modal">
-            <h2>{isSuddenDeathMode && !isSpeedRunActive && (gameMode === 'time' ? timeLeft > 0 : questionsAnswered < questionLimit) ? "Game Over!" : (gameMode === 'time' ? "Time's Up!" : "Challenge Complete!")}</h2>
+            <h2>{isSuddenDeathMode && !isSpeedRunActive && ((gameMode === 'time' || gameMode === 'timeAttack') ? timeLeft > 0 : questionsAnswered < questionLimit) ? "Game Over!" : ((gameMode === 'time' || gameMode === 'timeAttack') ? "Time's Up!" : "Challenge Complete!")}</h2>
             <p>Final Score: <strong>{score}</strong></p>
             <p>High Score: <strong>{highScore}</strong></p>
+            <p>Best Combo: <strong>{bestHistoricalCombo}</strong></p>
             <p>Questions Answered: <strong>{questionsAnswered}</strong></p>
             <p>Accuracy: <strong>{history.length > 0 ? ((history.filter(h => h.isCorrect).length / history.length) * 100).toFixed(1) : 0}%</strong></p>
             <div style={{fontSize: '0.9rem', marginBottom: '1rem', color: '#7f8c8d'}}>
@@ -906,7 +1078,7 @@ function App() {
                 );
               })}
             </div>
-            <p>Average Time: <strong>{questionsAnswered > 0 ? ((gameMode === 'time' ? (selectedTimerDuration === 0 ? customTimerDuration : selectedTimerDuration) : elapsedTime) / questionsAnswered).toFixed(2) : 0}s</strong></p>
+            <p>Average Time: <strong>{questionsAnswered > 0 ? ((gameMode === 'time' ? (selectedTimerDuration === 0 ? customTimerDuration : selectedTimerDuration) : (gameMode === 'timeAttack' ? elapsedTime : elapsedTime)) / questionsAnswered).toFixed(2) : 0}s</strong></p>
 
 
             {runScores.length > 0 && (
