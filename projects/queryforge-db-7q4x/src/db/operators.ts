@@ -631,6 +631,86 @@ export class NestedLoopJoin implements Operator {
   }
 }
 
+/**
+ * A LATERAL join: the right side may reference the left side's columns, so it is
+ * re-evaluated once per left row (a correlated nested loop). `buildRight(leftRow)`
+ * produces the right rows for one outer row — for a LATERAL subquery it re-runs a
+ * correlated plan; for a LATERAL table function it re-evaluates the function's
+ * arguments against the outer row. An INNER lateral drops outer rows with no
+ * right match; a LEFT one null-extends them.
+ */
+export class LateralJoin implements Operator {
+  readonly schema: Schema
+  estRows: number
+  estCost: number
+  actualRows = 0
+  private rows: Row[] = []
+  private pos = 0
+  private readonly left: Operator
+  private readonly rightWidth: number
+  private readonly buildRight: (leftRow: Row) => Row[]
+  private readonly pred: Evaluator | null
+  private readonly leftJoin: boolean
+  private readonly rightLabel: string
+
+  constructor(
+    left: Operator,
+    rightWidth: number,
+    buildRight: (leftRow: Row) => Row[],
+    pred: Evaluator | null,
+    leftJoin: boolean,
+    schema: Schema,
+    rightLabel: string,
+  ) {
+    this.left = left
+    this.rightWidth = rightWidth
+    this.buildRight = buildRight
+    this.pred = pred
+    this.leftJoin = leftJoin
+    this.rightLabel = rightLabel
+    this.schema = schema
+    // No statistics for the correlated side; assume a small fan-out.
+    this.estRows = Math.max(left.estRows, left.estRows * 4)
+    this.estCost = left.estCost + left.estRows * 8 * CPU_OP
+  }
+  open() {
+    const out: Row[] = []
+    const leftRows = drain(this.left)
+    for (const l of leftRows) {
+      let matched = false
+      for (const r of this.buildRight(l)) {
+        const combined = l.concat(r)
+        if (this.pred === null || this.pred(combined) === true) {
+          matched = true
+          out.push(combined)
+        }
+      }
+      if (!matched && this.leftJoin) out.push(l.concat(new Array(this.rightWidth).fill(null)))
+    }
+    this.rows = out
+    this.pos = 0
+  }
+  next(): Row | null {
+    if (this.pos >= this.rows.length) return null
+    this.actualRows++
+    return this.rows[this.pos++]
+  }
+  close() {
+    this.rows = []
+  }
+  plan(): PlanNode {
+    return {
+      op: `LateralJoin (${this.leftJoin ? 'LEFT' : 'INNER'})`,
+      detail: this.rightLabel,
+      estRows: this.estRows,
+      estCost: this.estCost,
+      actualRows: this.actualRows,
+      extra: ['right side re-evaluated per outer row'],
+      children: [this.left.plan()],
+    }
+  }
+}
+
 export class HashJoin implements Operator {
   readonly schema: Schema
   estRows: number

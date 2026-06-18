@@ -23,6 +23,7 @@ import type {
   FromItem,
   JoinClause,
   JoinType,
+  MergeWhen,
   NamedWindow,
   OnConflictClause,
   OrderItem,
@@ -141,6 +142,13 @@ class Parser {
         return this.parseUpdate()
       case 'DELETE':
         return this.parseDelete()
+      case 'MERGE':
+        return this.parseMerge()
+      case 'TRUNCATE':
+        return this.parseTruncate()
+      case 'SAVEPOINT':
+      case 'RELEASE':
+        return this.parseSavepoint()
       case 'CREATE':
         return this.parseCreate()
       case 'ALTER':
@@ -162,10 +170,32 @@ class Parser {
 
   private parseTxn(): Statement {
     const t = this.next().value
+    if (t === 'BEGIN') {
+      this.accept('TRANSACTION')
+      return { kind: 'txn', action: 'begin' }
+    }
+    if (t === 'COMMIT') {
+      this.accept('TRANSACTION')
+      return { kind: 'txn', action: 'commit' }
+    }
+    // ROLLBACK [TRANSACTION] | ROLLBACK TO [SAVEPOINT] <name>
+    if (this.accept('TO')) {
+      this.accept('SAVEPOINT')
+      const savepoint = this.parseIdent('savepoint name')
+      return { kind: 'txn', action: 'rollback_to', savepoint }
+    }
     this.accept('TRANSACTION')
-    if (t === 'BEGIN') return { kind: 'txn', action: 'begin' }
-    if (t === 'COMMIT') return { kind: 'txn', action: 'commit' }
     return { kind: 'txn', action: 'rollback' }
+  }
+
+  /** `SAVEPOINT <name>` | `RELEASE [SAVEPOINT] <name>`. */
+  private parseSavepoint(): Statement {
+    if (this.accept('SAVEPOINT')) {
+      return { kind: 'txn', action: 'savepoint', savepoint: this.parseIdent('savepoint name') }
+    }
+    this.expect('RELEASE')
+    this.accept('SAVEPOINT')
+    return { kind: 'txn', action: 'release', savepoint: this.parseIdent('savepoint name') }
   }
 
   private parseExplain(): ExplainStmt {
@@ -525,7 +555,8 @@ class Parser {
     if (this.at('SELECT') || this.at('WITH')) {
       const select = this.parseSubquerySelect()
       const onConflict = this.parseOnConflict()
-      return { kind: 'insert', table, columns, rows: [], select, onConflict }
+      const returning = this.parseReturning()
+      return { kind: 'insert', table, columns, rows: [], select, onConflict, returning }
     }
     this.expect('VALUES')
     const rows: Expr[][] = []
@@ -539,7 +570,15 @@ class Parser {
       rows.push(row)
     } while (this.accept(','))
     const onConflict = this.parseOnConflict()
-    return { kind: 'insert', table, columns, rows, onConflict }
+    const returning = this.parseReturning()
+    return { kind: 'insert', table, columns, rows, onConflict, returning }
+  }
+
+  /** Parse an optional trailing `RETURNING <select-list>` shared by INSERT /
+   *  UPDATE / DELETE / MERGE. `RETURNING *` and `RETURNING t.*` are select items. */
+  private parseReturning(): SelectItem[] | undefined {
+    if (!this.accept('RETURNING')) return undefined
+    return this.parseSelectList()
   }
 
   /** Parse an optional `ON CONFLICT [(cols)] DO NOTHING | DO UPDATE SET … [WHERE …]`. */
@@ -575,7 +614,8 @@ class Parser {
       assignments.push({ column, value: this.parseExpr() })
     } while (this.accept(','))
     const where = this.accept('WHERE') ? this.parseExpr() : undefined
-    return { kind: 'update', table, assignments, where }
+    const returning = this.parseReturning()
+    return { kind: 'update', table, assignments, where, returning }
   }
 
   private parseDelete(): Statement {
@@ -583,7 +623,121 @@ class Parser {
     this.expect('FROM')
     const table = this.parseIdent('table name')
     const where = this.accept('WHERE') ? this.parseExpr() : undefined
-    return { kind: 'delete', table, where }
+    const returning = this.parseReturning()
+    return { kind: 'delete', table, where, returning }
+  }
+
+  // ========================================================================
+  // MERGE (SQL:2003 "upsert from a set")
+  // ========================================================================
+  private parseMerge(): Statement {
+    this.expect('MERGE')
+    this.expect('INTO')
+    const target = this.parseIdent('target table name')
+    const targetAlias = this.parseOptionalAlias()
+    this.expect('USING')
+    const source = this.parseFromItem()
+    this.expect('ON')
+    const on = this.parseExpr()
+    const whens: MergeWhen[] = []
+    while (this.at('WHEN')) whens.push(this.parseMergeWhen())
+    if (whens.length === 0) throw this.err('MERGE needs at least one WHEN clause')
+    const returning = this.parseReturning()
+    return { kind: 'merge', target, targetAlias, source, on, whens, returning }
+  }
+
+  private parseMergeWhen(): MergeWhen {
+    this.expect('WHEN')
+    let match: MergeWhen['match']
+    if (this.accept('NOT')) {
+      this.expect('MATCHED')
+      // WHEN NOT MATCHED [BY TARGET] → insert; WHEN NOT MATCHED BY SOURCE → act
+      // on target rows no source row hit.
+      if (this.accept('BY')) {
+        if (this.accept('SOURCE')) match = 'not_matched_by_source'
+        else {
+          this.expect('TARGET')
+          match = 'not_matched'
+        }
+      } else {
+        match = 'not_matched'
+      }
+    } else {
+      this.expect('MATCHED')
+      match = 'matched'
+    }
+    const condition = this.accept('AND') ? this.parseExpr() : undefined
+    this.expect('THEN')
+    const action = this.parseMergeAction(match)
+    return { match, condition, action }
+  }
+
+  private parseMergeAction(match: MergeWhen['match']): MergeWhen['action'] {
+    if (this.accept('DO')) {
+      this.expect('NOTHING')
+      return { kind: 'nothing' }
+    }
+    if (this.accept('DELETE')) return { kind: 'delete' }
+    if (this.accept('UPDATE')) {
+      this.expect('SET')
+      const assignments: { column: string; value: Expr }[] = []
+      do {
+        const column = this.parseIdent('column name')
+        this.expect('=')
+        assignments.push({ column, value: this.parseExpr() })
+      } while (this.accept(','))
+      return { kind: 'update', assignments }
+    }
+    if (this.accept('INSERT')) {
+      if (match !== 'not_matched') throw this.err('INSERT is only allowed in a WHEN NOT MATCHED clause')
+      let columns: string[] | undefined
+      if (this.at('(')) columns = this.parseColumnList()
+      // INSERT DEFAULT VALUES, or INSERT … VALUES (…).
+      if (this.accept('DEFAULT')) {
+        this.expect('VALUES')
+        return { kind: 'insert', columns, defaultValues: true }
+      }
+      this.expect('VALUES')
+      this.expect('(')
+      const values: Expr[] = []
+      if (!this.at(')')) {
+        do {
+          values.push(this.parseExpr())
+        } while (this.accept(','))
+      }
+      this.expect(')')
+      return { kind: 'insert', columns, values }
+    }
+    throw this.err('expected UPDATE, DELETE, INSERT or DO NOTHING after THEN')
+  }
+
+  // ========================================================================
+  // TRUNCATE
+  // ========================================================================
+  private parseTruncate(): Statement {
+    this.expect('TRUNCATE')
+    this.accept('TABLE')
+    const tables: string[] = []
+    do {
+      tables.push(this.parseIdent('table name'))
+    } while (this.accept(','))
+    let restartIdentity = false
+    let cascade = false
+    // RESTART IDENTITY / CONTINUE IDENTITY and CASCADE / RESTRICT, in any order.
+    for (;;) {
+      if (this.accept('RESTART')) {
+        this.expect('IDENTITY')
+        restartIdentity = true
+      } else if (this.accept('CONTINUE')) {
+        this.expect('IDENTITY')
+        restartIdentity = false
+      } else if (this.accept('CASCADE')) {
+        cascade = true
+      } else if (this.accept('RESTRICT')) {
+        cascade = false
+      } else break
+    }
+    return { kind: 'truncate', tables, restartIdentity, cascade }
   }
 
   // ========================================================================
@@ -868,22 +1022,25 @@ class Parser {
   }
 
   private parseFromItem(): FromItem {
+    // `LATERAL` lets a derived table / table function reference columns of the
+    // FROM items to its left (a correlated nested loop in the planner).
+    const lateral = this.accept('LATERAL')
     if (this.at('(')) {
       this.next()
       const subquery = this.parseSubquerySelect()
       this.expect(')')
       const { alias, columnAliases } = this.parseOptionalAliasWithColumns()
-      return { subquery, alias, columnAliases }
+      return { subquery, alias, columnAliases, lateral }
     }
     // A set-returning table function: `name(args) [AS] alias [(cols)]`.
     if (this.atTableFunc()) {
       const tableFunc = this.parseTableFuncRef()
       const { alias, columnAliases } = this.parseOptionalAliasWithColumns()
-      return { tableFunc, alias, columnAliases }
+      return { tableFunc, alias, columnAliases, lateral }
     }
     const table = this.parseIdent('table name')
     const { alias, columnAliases } = this.parseOptionalAliasWithColumns()
-    return { table, alias, columnAliases }
+    return { table, alias, columnAliases, lateral }
   }
 
   /** A FROM source that's a function call (`ident(` or a function keyword). */
@@ -927,7 +1084,10 @@ class Parser {
 
   private tryParseJoin(): JoinClause | null {
     let type: JoinType
-    if (this.accept('CROSS')) {
+    // `FROM a, b` — a comma is an implicit CROSS JOIN (SQL-89 join syntax).
+    if (this.accept(',')) {
+      type = 'CROSS'
+    } else if (this.accept('CROSS')) {
       this.expect('JOIN')
       type = 'CROSS'
     } else if (this.accept('INNER')) {
@@ -950,6 +1110,7 @@ class Parser {
     } else {
       return null
     }
+    const lateral = this.accept('LATERAL')
     let table: string | undefined
     let subquery: SelectStmt | undefined
     let tableFunc: { name: string; args: Expr[] } | undefined
@@ -964,11 +1125,15 @@ class Parser {
     }
     const { alias, columnAliases } = this.parseOptionalAliasWithColumns()
     let on: Expr | undefined
-    if (type !== 'CROSS') {
-      this.expect('ON')
+    // CROSS and a comma-join take no ON; an explicit JOIN ... ON does. A LATERAL
+    // right side may also omit ON (it correlates via its body), defaulting to ON TRUE.
+    if (type !== 'CROSS' && this.at('ON')) {
+      this.next()
       on = this.parseExpr()
+    } else if (type !== 'CROSS' && !lateral) {
+      this.expect('ON')
     }
-    return { type, table, subquery, tableFunc, alias, columnAliases, on }
+    return { type, table, subquery, tableFunc, alias, columnAliases, on, lateral }
   }
 
   // ========================================================================

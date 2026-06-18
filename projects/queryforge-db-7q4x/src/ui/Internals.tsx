@@ -60,7 +60,7 @@ const STAGES: Stage[] = [
     n: 6,
     name: 'Execution (Volcano model)',
     file: 'db/operators.ts',
-    body: 'Physical operators implement open()/next()/close() and pull rows one at a time from their children. SeqScan, IndexScan, IndexOnlyScan, BitmapAnd, BitmapOr, Filter, Project, HashJoin, MergeJoin, NestedLoopJoin, HashSemiJoin (semi/anti, from EXISTS decorrelation), HashAggregate (with ROLLUP/CUBE/GROUPING SETS), Window, SetOp (UNION/INTERSECT/EXCEPT), Sort, Distinct and Limit compose into the tree EXPLAIN renders. The Sort spills to an external (run-generating, k-way) merge sort past a threshold; a WindowExec partitions and orders its buffered input to evaluate ranking, offset and aggregate window functions over standard frames — ROWS (physical), RANGE (value offsets over numbers, exact DECIMAL and DATE/TIMESTAMP±INTERVAL) and GROUPS (peer groups), each with the EXCLUDE clause (NO OTHERS / CURRENT ROW / GROUP / TIES), aggregate FILTER (WHERE …), IGNORE NULLS value functions, the statistical and ordered-set (PERCENTILE_CONT/DISC, MODE) families as windows, and a named WINDOW clause with reference inheritance.',
+    body: 'Physical operators implement open()/next()/close() and pull rows one at a time from their children. SeqScan, IndexScan, IndexOnlyScan, BitmapAnd, BitmapOr, Filter, Project, HashJoin, MergeJoin, NestedLoopJoin, LateralJoin (a correlated nested loop that re-evaluates its right side per outer row, for FROM … LATERAL), HashSemiJoin (semi/anti, from EXISTS decorrelation), HashAggregate (with ROLLUP/CUBE/GROUPING SETS), Window, SetOp (UNION/INTERSECT/EXCEPT), Sort, Distinct and Limit compose into the tree EXPLAIN renders. The Sort spills to an external (run-generating, k-way) merge sort past a threshold; a WindowExec partitions and orders its buffered input to evaluate ranking, offset and aggregate window functions over standard frames — ROWS (physical), RANGE (value offsets over numbers, exact DECIMAL and DATE/TIMESTAMP±INTERVAL) and GROUPS (peer groups), each with the EXCLUDE clause (NO OTHERS / CURRENT ROW / GROUP / TIES), aggregate FILTER (WHERE …), IGNORE NULLS value functions, the statistical and ordered-set (PERCENTILE_CONT/DISC, MODE) families as windows, and a named WINDOW clause with reference inheritance.',
   },
   {
     n: 7,
@@ -78,7 +78,13 @@ const STAGES: Stage[] = [
     n: 8,
     name: 'Transactions & persistence',
     file: 'db/engine.ts',
-    body: 'BEGIN snapshots the catalog; ROLLBACK restores it. Snapshots round-trip the full schema — columns, indexes and every constraint (PK/UNIQUE/CHECK/DEFAULT/FOREIGN KEY) — so integrity survives a reload. After every successful statement the database is serialized to localStorage so your work survives a refresh (and degrades gracefully when sandboxed).',
+    body: 'BEGIN snapshots the catalog; ROLLBACK restores it. Snapshots round-trip the full schema — columns, indexes and every constraint (PK/UNIQUE/CHECK/DEFAULT/FOREIGN KEY) — so integrity survives a reload. After every successful statement the database is serialized to localStorage so your work survives a refresh (and degrades gracefully when sandboxed). SAVEPOINT / ROLLBACK TO / RELEASE add nested rollback points inside a transaction by stacking the same snapshots — ROLLBACK TO restores a savepoint and discards the later ones (keeping the named point so you can rewind to it again).',
+  },
+  {
+    n: 8.5,
+    name: 'Productive DML — RETURNING, MERGE, TRUNCATE',
+    file: 'db/engine.ts',
+    body: 'The write surface goes beyond plain INSERT/UPDATE/DELETE. RETURNING turns any mutation into a result set: each DML loop captures the rows it touched (the new image for INSERT/UPDATE, the old one for DELETE) and projects them through a select-list bound to the target — so INSERT … RETURNING id reads a generated key and DELETE … RETURNING * audits what left. MERGE folds a source set (table, derived table or VALUES) into a target in one pass: the ON predicate is compiled over the combined [target | source] row, each source row finds its matched targets under a no-double-touch guard, the first applicable WHEN arm fires (UPDATE/DELETE/INSERT/DO NOTHING), unmatched source rows fall to WHEN NOT MATCHED THEN INSERT, and WHEN NOT MATCHED BY SOURCE reaches the target rows no source row hit — all evaluated against the target image at statement start, and atomic like every mutation. TRUNCATE empties one or more tables by clearing the heap and rebuilding empty indexes (optionally RESTART IDENTITY), following CASCADE to FK children.',
   },
 ]
 
@@ -89,9 +95,11 @@ export function Internals() {
       <p className="doc-lead">
         A complete relational database — lexer, parser, cost-aware planner, compiled expression engine, an
         iterator-model executor, and a B+Tree storage layer — built from scratch in TypeScript. It speaks a
-        broad SQL dialect: joins, aggregation, subqueries (correlated too), CTEs (including <code>WITH
-        RECURSIVE</code>), set operations, window functions, and declarative integrity — primary/foreign
-        keys, <code>CHECK</code>/<code>DEFAULT</code>, and <code>ON DELETE/UPDATE</code> referential actions.
+        broad SQL dialect: joins (including <code>LATERAL</code>), aggregation, subqueries (correlated too),
+        CTEs (including <code>WITH RECURSIVE</code>), set operations, window functions, productive DML
+        (<code>RETURNING</code>, <code>MERGE</code>, <code>TRUNCATE</code>, savepoints), and declarative
+        integrity — primary/foreign keys, <code>CHECK</code>/<code>DEFAULT</code>, and
+        <code>ON DELETE/UPDATE</code> referential actions.
       </p>
       <ol className="pipeline">
         {STAGES.map((s, i) => (

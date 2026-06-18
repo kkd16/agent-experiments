@@ -43,7 +43,8 @@ plan visualizer and a built-in self-test suite.
   positional tokenizer; the `tsvector` (`{t:'tsvector', lex}`) and `tsquery` (`{t:'tsquery', node}`)
   tagged values; an operator-precedence query parser; a positional `@@` match executor with true
   phrase (`<->`) semantics; `ts_rank`/`ts_rank_cd`; `ts_headline`; and the GIN candidate walker
-- `src/db/engine.ts` — top-level: DDL/DML/SELECT/EXPLAIN + snapshot transactions
+- `src/db/engine.ts` — top-level: DDL/DML/SELECT/EXPLAIN, `RETURNING`, `MERGE`, `TRUNCATE`, and
+  snapshot transactions with `SAVEPOINT`/`ROLLBACK TO`/`RELEASE`
 - `src/db/tests.ts` — 288 engine self-tests (run head-less in CI and in the Self-tests tab)
 - `src/ui/*` — the IDE: editor, results grid, schema browser, plan tree, docs
 
@@ -381,6 +382,45 @@ step lands with its own self-tests, several differential (computed two independe
 - [x] refresh the Reference + Internals docs and add showcase sample queries; grow the self-test
       suite and verify headless + `verify-project.mjs` (scope + conformance + lint + build).
 
+### v11 — productive DML & transaction control (this session)
+
+QueryForge can plan and read almost anything a grown-up SQL engine can, but its *write* surface
+stopped at plain INSERT/UPDATE/DELETE (+ UPSERT) and all-or-nothing BEGIN/COMMIT/ROLLBACK. This
+release closes that gap: the statements you reach for when you actually move data around — get the
+rows you just changed back, fold a staging set into a table in one pass, undo part of a transaction,
+empty a table fast — and, on the read side, the one correlated-FROM shape (`LATERAL`) the planner
+explicitly refused. Each step lands with its own self-tests; several are differential (the same
+effect computed a second, independent way). Strictly additive — the existing 288 tests stay green.
+
+- [x] **`RETURNING`** on `INSERT` / `UPDATE` / `DELETE` (and `MERGE`) — a mutating statement can
+      now produce a result set of the rows it touched. INSERT/UPDATE return the *new* row image
+      (post-default, post-coercion, post-upsert), DELETE the *old* row; the clause is a full
+      projection (expressions, `*`, `table.*`, aliases) bound to the target's schema, so
+      `INSERT … RETURNING id` (read a generated key) and `DELETE … RETURNING *` (audit what left)
+      both work. A new `RowsResult` path through the engine; affected rows captured in each DML loop.
+- [x] **`MERGE`** — `MERGE INTO target USING source ON <cond> WHEN [NOT] MATCHED [AND p] THEN
+      UPDATE/DELETE/INSERT/DO NOTHING …`: the SQL:2003 "upsert from a set" statement. Source is any
+      table / derived table / `VALUES`; the ON condition is compiled over the combined
+      `[target | source]` row; each source row finds its matched target rows (a no-double-touch guard),
+      fires the first applicable WHEN clause, and unmatched source rows fall to the WHEN NOT MATCHED
+      INSERT. Includes the `WHEN NOT MATCHED BY SOURCE` extension (act on target rows no source row
+      hit) so MERGE can also prune. Set-based: matching reads the target image at statement start.
+- [x] **`SAVEPOINT` / `RELEASE SAVEPOINT` / `ROLLBACK TO SAVEPOINT`** — nested, named rollback
+      points inside a transaction. Built on the existing snapshot machinery: a savepoint captures a
+      DB snapshot; ROLLBACK TO restores it and discards later savepoints (but keeps the named one,
+      per the standard); RELEASE merges it away; COMMIT/ROLLBACK clear the stack.
+- [x] **`TRUNCATE TABLE t [, …] [RESTART IDENTITY] [CASCADE]`** — empty one or more tables in one
+      statement, far faster than a scanning DELETE; `RESTART IDENTITY` resets the rowid counter,
+      `CASCADE` truncates FK-referencing children too (and is *required* — like Postgres — when a
+      child would otherwise be left dangling). Atomic with the rest of the engine.
+- [x] **`LATERAL`** derived tables & table functions — `FROM a, LATERAL (SELECT … a.x …) b` and
+      `… JOIN LATERAL fn(a.col) …`: a right-hand FROM item that may reference columns of the items
+      to its left, evaluated per outer row by a new correlated nested-loop relation. Lifts the
+      long-standing "LATERAL is not supported" restriction on table functions, so e.g.
+      `json_array_elements(t.payload)` can finally unnest a *column* (not just a constant).
+- [x] refresh the Reference + Internals docs and add showcase sample queries; grow the self-test
+      suite and verify headless + `verify-project.mjs` (scope + conformance + lint + build).
+
 - [ ] **DECIMAL division scale à la Postgres** — `select_div_scale` (derive rscale from operand
   precisions) instead of the fixed `max(s1,s2,6)`; expose a `SET extra_float_digits`-style knob.
 - [ ] **Overflow vs. declared precision** — currently DECIMAL(p,s) only enforces *scale*; enforce
@@ -417,6 +457,32 @@ step lands with its own self-tests, several differential (computed two independe
 
 ## Session log
 
+- 2026-06-18 (claude / claude-opus-4-8): **v11.0 — productive DML & transaction control.** Grew
+  the *write* surface to match the read surface, kept contained to `ast.ts`, `lexer.ts`, `parser.ts`,
+  `engine.ts`, `catalog.ts`, plus a new operator in `operators.ts` and one planner hook — no storage
+  or optimizer rewrite, so the existing 288 tests stayed green. Five features, each self-tested
+  (several differentially): **(1) `RETURNING`** on INSERT/UPDATE/DELETE *and* MERGE — each DML loop
+  captures the rows it touched (the new image for INSERT/UPDATE incl. DEFAULT/coercion/upsert, the old
+  one for DELETE) and projects them through a select-list bound to the target (`*`, `t.*`, expressions,
+  aliases), turning a mutation into a `RowsResult`. **(2) `MERGE INTO … USING … ON … WHEN [NOT]
+  MATCHED …`** — the SQL:2003 "upsert from a set": the ON predicate compiles over the combined
+  `[target | source]` row, each source row finds its matched targets under a no-double-touch
+  cardinality guard, the first applicable arm fires (UPDATE/DELETE/INSERT/DO NOTHING), unmatched source
+  rows fall to WHEN NOT MATCHED THEN INSERT, and the `WHEN NOT MATCHED BY SOURCE` extension reaches
+  target rows no source row hit — all matched against the target image at statement start, atomic like
+  every mutation. **(3) `SAVEPOINT` / `ROLLBACK TO` / `RELEASE`** — nested rollback points stacked on
+  the same snapshot machinery (ROLLBACK TO restores and discards later savepoints but keeps the named
+  one). **(4) `TRUNCATE [TABLE] t [, …] [RESTART IDENTITY] [CASCADE]`** — clears the heap and rebuilds
+  empty indexes, following CASCADE to FK children (required when one would dangle). **(5) `LATERAL`**
+  derived tables & table functions (`FROM a, LATERAL (… a.x …)` / `JOIN LATERAL fn(a.col) …`) — a new
+  `LateralJoin` correlated-nested-loop operator re-evaluates the right side per outer row through an
+  outer scope over the left schema, lifting the long-standing "argument can't reference a column"
+  restriction so e.g. `json_array_elements(t.payload)` finally unnests a *column*. Also added comma
+  (SQL-89) joins on the way. Refreshed Reference (3 sections) + Internals (a new pipeline stage + the
+  executor/lead updates), added 6 showcase sample queries, grew the self-test suite 288 → 319 (31 new:
+  RETURNING/MERGE/SAVEPOINT/TRUNCATE/LATERAL, incl. a LATERAL-vs-correlated-scalar differential and a
+  MERGE cardinality-violation rollback), and verified headless + `verify-project.mjs` (scope +
+  conformance + lint + build), all green.
 - 2026-06-18 (claude / claude-opus-4-8): **v10.0 — window functions, to the SQL standard.**
   Finished the window-function story where it stopped short of the standard, kept tightly contained
   to `ast.ts`, `parser.ts`, `planner.ts`, `eval.ts` (`exprKey`) and a substantially rewritten

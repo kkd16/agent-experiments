@@ -48,6 +48,7 @@ import {
   HashSemiJoin,
   IndexOnlyScan,
   IndexScan,
+  LateralJoin,
   Limit,
   MergeJoin,
   NestedLoopJoin,
@@ -304,7 +305,7 @@ function exprLabel(e: Expr): string {
   }
 }
 
-function inferType(e: Expr, schema: Schema, ctx: CompileCtx): ColumnType {
+export function inferType(e: Expr, schema: Schema, ctx: CompileCtx): ColumnType {
   switch (e.kind) {
     case 'column':
       try {
@@ -902,6 +903,9 @@ const MAX_REORDER_RELS = 8
 function canReorderJoins(stmt: SelectStmt): boolean {
   const n = stmt.joins.length + 1
   if (n < 3 || n > MAX_REORDER_RELS) return false
+  // A LATERAL right side depends on the relations to its left, so its position
+  // is fixed — never reorder a query that uses one.
+  if (stmt.from?.lateral || stmt.joins.some((j) => j.lateral)) return false
   return stmt.joins.every((j) => j.type === 'INNER' && !!j.on)
 }
 
@@ -1184,6 +1188,64 @@ function tableFunctionRelation(
   return { table, alias: name }
 }
 
+// Plan a LATERAL join: the right side (a subquery or a table function) may
+// reference the columns produced by the relations to its left. Rather than
+// materialize it once, we plan it against an outer scope over the left schema
+// and re-evaluate it per left row inside a `LateralJoin` operator.
+function planLateralJoin(leftOp: Operator, leftSchema: Schema, join: JoinClause, env: PlanEnv): Operator {
+  if (join.type === 'RIGHT' || join.type === 'FULL') {
+    throw new SqlError('LATERAL does not support RIGHT or FULL joins', 'plan')
+  }
+  const leftJoin = join.type === 'LEFT'
+  let rightSchema: Schema
+  let buildRight: (leftRow: Row) => Row[]
+  let label: string
+
+  if (join.subquery) {
+    const alias = join.alias ?? '__lateral'
+    // The subquery resolves its own columns locally and correlated ones through
+    // a fresh outer scope over the left row (innermost last).
+    const outer: OuterScope = { resolve: (t, n) => tryResolveIndex(leftSchema, t, n), row: null }
+    const env2: PlanEnv = { ...env, outer: [...env.outer, outer] }
+    const rightOp = planQuery(join.subquery, env2)
+    rightSchema = rightOp.schema.map((b, i) => ({
+      table: alias,
+      name: join.columnAliases?.[i] ?? b.name,
+      type: b.type,
+    }))
+    buildRight = (leftRow) => {
+      outer.row = leftRow
+      return drain(rightOp)
+    }
+    label = `lateral ${alias}`
+  } else if (join.tableFunc) {
+    const tf = join.tableFunc
+    const fn = TABLE_FUNCTIONS[tf.name]
+    if (!fn) throw new SqlError(`unknown table function ${tf.name}() in FROM`, 'plan')
+    const alias = join.alias ?? tf.name.toLowerCase()
+    // Compile the function arguments against the left row directly (a LATERAL
+    // function call sees the left columns as locals).
+    const argFns = tf.args.map((a) => compileExpr(a, exprCtx(leftSchema, env)))
+    // Probe the column shape once with NULL arguments (every table function
+    // returns its fixed columns even for a NULL/empty input).
+    const probeRow: Row = new Array(leftSchema.length).fill(null)
+    const probe = fn(argFns.map((f) => f(probeRow)))
+    rightSchema = probe.columns.map((c, i) => ({
+      table: alias,
+      name: join.columnAliases?.[i] ?? c.name,
+      type: c.type,
+    }))
+    buildRight = (leftRow) => fn(argFns.map((f) => f(leftRow))).rows
+    label = `lateral ${tf.name.toLowerCase()}()`
+  } else {
+    throw new SqlError('LATERAL requires a subquery or a table function', 'plan')
+  }
+
+  const combined: Schema = [...leftSchema, ...rightSchema]
+  const pred = join.on ? compileExpr(join.on, exprCtx(combined, env)) : null
+  return new LateralJoin(leftOp, rightSchema.length, buildRight, pred, leftJoin, combined, label)
+}
+
 // A top-level `EXISTS (…)` conjunct, or a `NOT EXISTS (…)` one (which parses as
 // a unary NOT over an EXISTS). Returns an ExistsExpr with the effective `negated`
 // flag folded in, or null if the conjunct isn't an existence test.
@@ -1355,6 +1417,13 @@ function planCore(stmt: SelectStmt, env: PlanEnv, embedOrderLimit: boolean): Ope
 
     // --- joins --------------------------------------------------------------
     for (const join of stmt.joins) {
+      // A LATERAL right side correlates to the columns produced so far, so it is
+      // re-evaluated per outer row by a dedicated correlated-nested-loop operator.
+      if (join.lateral) {
+        op = planLateralJoin(op, schema, join, env)
+        schema = op.schema
+        continue
+      }
       const right = relationFor(join, env)
       statTables.set(right.alias.toLowerCase(), right.table)
       const rSchema = tableSchema(right.table, right.alias)

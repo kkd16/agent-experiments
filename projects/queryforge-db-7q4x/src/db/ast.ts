@@ -321,17 +321,59 @@ export interface InsertStmt {
   select?: SelectStmt
   /** `ON CONFLICT …` upsert clause. */
   onConflict?: OnConflictClause
+  /** `RETURNING <select-list>` — project the inserted/updated rows as a result set. */
+  returning?: SelectItem[]
 }
 export interface UpdateStmt {
   kind: 'update'
   table: string
   assignments: { column: string; value: Expr }[]
   where?: Expr
+  /** `RETURNING <select-list>` — project the new row images as a result set. */
+  returning?: SelectItem[]
 }
 export interface DeleteStmt {
   kind: 'delete'
   table: string
   where?: Expr
+  /** `RETURNING <select-list>` — project the deleted (old) rows as a result set. */
+  returning?: SelectItem[]
+}
+
+/** One `WHEN [NOT] MATCHED [BY SOURCE|TARGET] [AND <cond>] THEN <action>` arm of a MERGE. */
+export interface MergeWhen {
+  /** Which side the arm fires on: a target row matched by the source row
+   *  (`matched`), a source row with no target match (`not_matched` — i.e. NOT
+   *  MATCHED BY TARGET), or a target row no source row matched
+   *  (`not_matched_by_source`). */
+  match: 'matched' | 'not_matched' | 'not_matched_by_source'
+  /** Optional extra `AND <condition>` gating this arm. */
+  condition?: Expr
+  action:
+    | { kind: 'update'; assignments: { column: string; value: Expr }[] }
+    | { kind: 'delete' }
+    | { kind: 'insert'; columns?: string[]; values?: Expr[]; defaultValues?: boolean }
+    | { kind: 'nothing' }
+}
+
+/** `MERGE INTO target [AS a] USING source [AS s] ON <cond> WHEN … THEN … [RETURNING …]`. */
+export interface MergeStmt {
+  kind: 'merge'
+  target: string
+  targetAlias?: string
+  /** The data source: a table, derived table, table function, or VALUES. */
+  source: FromItem
+  on: Expr
+  whens: MergeWhen[]
+  returning?: SelectItem[]
+}
+
+/** `TRUNCATE TABLE t [, …] [RESTART IDENTITY] [CASCADE]`. */
+export interface TruncateStmt {
+  kind: 'truncate'
+  tables: string[]
+  restartIdentity: boolean
+  cascade: boolean
 }
 
 export interface SelectItem {
@@ -352,6 +394,9 @@ export interface FromItem {
   alias?: string
   /** Optional column aliases — `FROM (…) t (x, y)` (incl. VALUES constructors). */
   columnAliases?: string[]
+  /** `LATERAL` — this item may reference columns of the FROM items to its left,
+   *  evaluated per outer row by a correlated nested loop. */
+  lateral?: boolean
 }
 export type JoinType = 'INNER' | 'LEFT' | 'RIGHT' | 'FULL' | 'CROSS'
 export interface JoinClause {
@@ -362,6 +407,8 @@ export interface JoinClause {
   alias?: string
   columnAliases?: string[]
   on?: Expr
+  /** `JOIN LATERAL …` — the right side may reference the left side's columns. */
+  lateral?: boolean
 }
 export interface OrderItem {
   expr: Expr
@@ -416,7 +463,9 @@ export interface ExplainStmt {
 }
 export interface TxnStmt {
   kind: 'txn'
-  action: 'begin' | 'commit' | 'rollback'
+  action: 'begin' | 'commit' | 'rollback' | 'savepoint' | 'release' | 'rollback_to'
+  /** Savepoint name for `savepoint` / `release` / `rollback_to`. */
+  savepoint?: string
 }
 
 export type Statement =
@@ -430,6 +479,8 @@ export type Statement =
   | InsertStmt
   | UpdateStmt
   | DeleteStmt
+  | MergeStmt
+  | TruncateStmt
   | SelectStmt
   | ExplainStmt
   | TxnStmt

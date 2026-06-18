@@ -205,6 +205,21 @@ export class Table {
     this.statsCache = null
   }
 
+  /** Empty the heap and every index in one shot (TRUNCATE). With
+   *  `restartIdentity` the rowid counter resets to 1; otherwise it continues. */
+  truncate(restartIdentity: boolean): void {
+    const idxMetas = [...this.indexes.values()].map((h) => ({ name: h.meta.name, columns: h.meta.columns.slice(), unique: h.meta.unique }))
+    const ginMetas = [...this.ginIndexes.values()].map((g) => ({ name: g.name, column: g.column }))
+    this.heap.clear()
+    this.indexes.clear()
+    this.ginIndexes.clear()
+    // Rebuild the (now empty) index structures so their identity/shape is kept.
+    for (const m of idxMetas) this.createIndex(m.name, m.columns, m.unique)
+    for (const m of ginMetas) this.createGinIndex(m.name, m.column)
+    if (restartIdentity) this.nextRowId = 1
+    this.statsCache = null
+  }
+
   updateRow(rowid: number, newRow: Row): void {
     this.validateRow(newRow)
     this.checkUnique(newRow, rowid)

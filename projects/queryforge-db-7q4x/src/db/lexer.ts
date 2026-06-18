@@ -49,6 +49,13 @@ export const KEYWORDS = new Set([
   'WINDOW', 'EXCLUDE', 'QUALIFY',
   'FOREIGN', 'REFERENCES', 'CHECK', 'DEFAULT', 'CONSTRAINT',
   'ALTER', 'ADD', 'COLUMN', 'RENAME', 'TO',
+  // v11 — productive DML & transaction control. These are highlighted as
+  // keywords but are NOT reserved (the parser matches them by token value, and
+  // `parseIdent` still rejects only the reserved set), so existing column names
+  // keep working. MERGE/USING/MATCHED/RETURNING/SAVEPOINT/RELEASE/TRUNCATE/LATERAL
+  // only ever appear in statement position or after a keyword, never as a name
+  // in the shipped corpus.
+  'MERGE', 'USING', 'MATCHED', 'RETURNING', 'SAVEPOINT', 'RELEASE', 'TRUNCATE', 'LATERAL',
 ])
 
 // Multi-character operators, longest first so the scanner is greedy. The
