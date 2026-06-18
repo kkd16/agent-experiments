@@ -1,11 +1,27 @@
+import { compileOverlap } from './overlap';
 import { render, type RenderOptions } from './render';
+import { sampleByKey, type Sample } from './samples';
 import { Solver, type SolverStatus } from './solver';
 import { compile } from './tiles';
 import { tilesetByKey } from './tilesets';
 import type { CompiledTileset } from './types';
 
+/** Which WFC model is running: hand-authored tiles, or patterns learnt from a bitmap. */
+export type WfcModel = 'tiled' | 'overlap';
+
 export type ControllerConfig = {
+  /** Active model. The two halves below configure one model each. */
+  model: WfcModel;
+  // --- tiled model ---
   tilesetKey: string;
+  // --- overlapping model ---
+  sampleKey: string;
+  /** Present (and used) only when `sampleKey === 'custom'`. */
+  customSample?: Sample;
+  patternN: number; // pattern side length (2 or 3)
+  symmetry: number; // 1, 2, 4 or 8
+  periodicInput: boolean;
+  // --- shared ---
   size: number;
   seed: string;
   wrap: boolean;
@@ -32,6 +48,7 @@ export type Stats = {
 };
 
 const TARGET_PX = 760; // rendered backing-store size (CSS scales it to fit)
+const MAX_RESTARTS = 240; // bound auto-restarts so an unsatisfiable config can't spin forever
 
 export class Controller {
   private canvas: HTMLCanvasElement | null = null;
@@ -50,14 +67,37 @@ export class Controller {
 
   constructor(cfg: ControllerConfig) {
     this.cfg = cfg;
-    this.compiled = this.getCompiled(cfg.tilesetKey);
+    this.compiled = this.buildCompiled();
     this.solver = this.makeSolver();
   }
 
-  private getCompiled(key: string): CompiledTileset {
+  /** The example bitmap the overlapping model should learn from, given the current config. */
+  private currentSample(): Sample {
+    if (this.cfg.sampleKey === 'custom' && this.cfg.customSample) return this.cfg.customSample;
+    return sampleByKey(this.cfg.sampleKey);
+  }
+
+  /** A cache key capturing every input that affects the compiled tile/pattern set. */
+  private compileKey(): string {
+    if (this.cfg.model === 'tiled') return `tiled:${this.cfg.tilesetKey}`;
+    const s = this.currentSample();
+    const sig = this.cfg.sampleKey === 'custom' ? `custom-${s.width}x${s.height}-${hashGrid(s.grid)}` : this.cfg.sampleKey;
+    return `overlap:${sig}:n${this.cfg.patternN}:y${this.cfg.symmetry}:p${this.cfg.periodicInput ? 1 : 0}`;
+  }
+
+  private buildCompiled(): CompiledTileset {
+    const key = this.compileKey();
     let c = this.compiledCache.get(key);
     if (!c) {
-      c = compile(tilesetByKey(key));
+      if (this.compiledCache.size > 24) this.compiledCache.clear(); // bound memory across edits
+      c =
+        this.cfg.model === 'tiled'
+          ? compile(tilesetByKey(this.cfg.tilesetKey))
+          : compileOverlap(this.currentSample(), {
+              n: this.cfg.patternN,
+              symmetry: this.cfg.symmetry,
+              periodicInput: this.cfg.periodicInput,
+            });
       this.compiledCache.set(key, c);
     }
     return c;
@@ -134,10 +174,12 @@ export class Controller {
 
   /** Apply config. `rebuild` recreates the solver (size/seed/tileset/edges changed). */
   update(patch: Partial<ControllerConfig>, rebuild: boolean): void {
-    const tilesetChanged = patch.tilesetKey !== undefined && patch.tilesetKey !== this.cfg.tilesetKey;
+    const prevKey = this.compileKey();
     this.cfg = { ...this.cfg, ...patch };
-    if (tilesetChanged) this.compiled = this.getCompiled(this.cfg.tilesetKey);
-    if (rebuild) {
+    const setChanged = this.compileKey() !== prevKey;
+    if (setChanged) this.compiled = this.buildCompiled();
+    // A different tile/pattern set means the solver's arrays are the wrong shape — always rebuild.
+    if (rebuild || setChanged) {
       this.pause();
       this.restarts = 0;
       this.elapsedMs = 0;
@@ -195,7 +237,22 @@ export class Controller {
       status = this.solver.step();
       if (status === 'failed') {
         this.restarts++;
+        // Some configs are globally unsatisfiable but locally consistent (e.g. a sample whose
+        // period doesn't divide a toroidal grid): every fresh attempt fails after backtracking,
+        // so unbounded reseeding would spin forever. Give up after a generous budget — solvable
+        // runs essentially never need this many restarts.
+        if (this.restarts > MAX_RESTARTS) {
+          status = 'failed';
+          break;
+        }
         this.solver = this.makeSolver(`${this.cfg.seed}#${this.restarts}`);
+        // A solver that is *already* failed after a fresh init failed its initial purge — the
+        // config is structurally unsatisfiable (e.g. a non-tileable sample on a torus), and no
+        // amount of reseeding will help. Surface the failure instead of spinning forever.
+        if (this.solver.status === 'failed') {
+          status = 'failed';
+          break;
+        }
         status = 'running';
       } else if (status === 'done') {
         break;
@@ -211,7 +268,7 @@ export class Controller {
     const status = this.advance(this.cfg.speed);
     this.draw();
     this.emit();
-    if (status === 'done') {
+    if (status === 'done' || status === 'failed') {
       this.running = false;
       this.emit();
       return;
@@ -226,11 +283,22 @@ export class Controller {
     const url = this.canvas.toDataURL('image/png');
     const a = document.createElement('a');
     a.href = url;
-    a.download = `tessera-${this.cfg.tilesetKey}-${this.cfg.seed}.png`;
+    const tag = this.cfg.model === 'tiled' ? this.cfg.tilesetKey : `overlap-${this.cfg.sampleKey}`;
+    a.download = `tessera-${tag}-${this.cfg.seed}.png`;
     a.click();
   }
 
   get tileset(): CompiledTileset {
     return this.compiled;
   }
+}
+
+/** A cheap, order-sensitive 32-bit hash of a sample grid, used to key the compile cache. */
+function hashGrid(grid: Int32Array): number {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < grid.length; i++) {
+    h ^= grid[i] + 0x9e3779b9 + (i & 0xff);
+    h = Math.imul(h, 0x01000193);
+  }
+  return h >>> 0;
 }

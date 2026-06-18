@@ -117,6 +117,49 @@ export class Solver {
     this.contradictions = 0;
     this.backtracks = 0;
     this.steps = 0;
+    this.purgeUnsupported();
+  }
+
+  /**
+   * Initial arc-consistency purge. A tile whose support count in some *on-grid* direction is
+   * already zero (its `allowed` list there is structurally empty) can never satisfy adjacency
+   * in that direction, so it must be banned everywhere it isn't rescued by an off-grid edge.
+   *
+   * The support-counter loop in `propagate` only bans on the transition *to* zero, so a tile
+   * that starts at zero is otherwise never removed. With bounded edges off-grid neighbours
+   * count as `SUPPORTED`, so such tiles simply pin to the border; on a torus there are no
+   * off-grid edges, and without this purge an unplaceable tile could be collapsed into the
+   * grid — declaring "done" with an adjacency violation. Running it once up front makes both
+   * models correct on the torus (it is a no-op for tilesets whose every edge has a match).
+   */
+  private purgeUnsupported(): void {
+    const { n } = this;
+    for (let cell = 0; cell < this.cells; cell++) {
+      for (let t = 0; t < n; t++) {
+        if (this.wave[cell * n + t] === 0) continue;
+        const base = (cell * n + t) * 4;
+        let dead = false;
+        for (const d of DIRS) {
+          if (this.compat[base + d] === 0) {
+            dead = true;
+            break;
+          }
+        }
+        if (dead) {
+          this.ban(cell, t);
+          if (this.numPossible[cell] === 0) {
+            this.status = 'failed';
+            this.stack = [];
+            return;
+          }
+        }
+      }
+    }
+    if (!this.propagate()) this.status = 'failed';
+    this.stack = [];
+    let collapsed = 0;
+    for (let c = 0; c < this.cells; c++) if (this.numPossible[c] === 1) collapsed++;
+    this.collapsedCount = collapsed;
   }
 
   /** Recompute every support counter from the current wave (used at init + on restore). */

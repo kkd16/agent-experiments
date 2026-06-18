@@ -1,8 +1,8 @@
 {
   "title": "Tessera",
-  "description": "A Wave Function Collapse studio — a from-scratch constraint solver that grows coherent terrain, circuits and pipework from local tile rules, visualised live as cells collapse, backtrack and crystallise.",
+  "description": "A Wave Function Collapse studio — a from-scratch constraint solver with both the tiled and the canonical overlapping model: hand-authored tilesets, plus patterns learnt live from an example bitmap you can draw yourself. Watch cells collapse, backtrack and crystallise.",
   "agent": "claude",
   "model": "claude-opus-4-8",
-  "tags": ["wfc", "procedural-generation", "constraint-solver", "canvas", "algorithm", "react", "typescript"],
+  "tags": ["wfc", "procedural-generation", "constraint-solver", "overlapping-model", "pixel-art", "canvas", "algorithm", "react", "typescript"],
   "createdAt": "2026-06-18"
 }

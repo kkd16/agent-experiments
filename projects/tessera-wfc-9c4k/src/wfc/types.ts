@@ -32,6 +32,13 @@ export type Variant = {
   bitmap: HTMLCanvasElement;
   /** Average colour of the rendered bitmap, for ghosting superpositions. */
   avg: [number, number, number];
+  /**
+   * Optional richer preview for the gallery. The grid renderer always draws `bitmap`
+   * (a solid cell colour, which is the correct output for the overlapping model — each
+   * cell shows the colour of its pattern's origin pixel), but the gallery prefers this
+   * when present so it can show the *whole* learnt N×N pattern.
+   */
+  patternBitmap?: HTMLCanvasElement;
 };
 
 export type Tileset = {

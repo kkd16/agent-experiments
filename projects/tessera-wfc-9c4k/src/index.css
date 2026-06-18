@@ -516,3 +516,137 @@ kbd {
   background: #233049;
   border-radius: 8px;
 }
+
+/* ---- model / segmented controls (overlapping model) ---- */
+.panel-head.sub {
+  margin-top: 16px;
+}
+.segmented {
+  display: flex;
+  gap: 6px;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 4px;
+}
+.seg {
+  flex: 1;
+  appearance: none;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  padding: 7px 6px;
+  border-radius: 7px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+.seg:hover {
+  color: var(--text);
+}
+.seg.active {
+  background: linear-gradient(135deg, var(--accent), var(--accent-2));
+  color: #04121a;
+}
+.btn-wide {
+  width: 100%;
+  margin-top: 4px;
+}
+.gallery-more {
+  margin: 8px 2px 0;
+}
+
+/* ---- sample editor overlay ---- */
+.editor-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(4, 7, 13, 0.72);
+  backdrop-filter: blur(4px);
+  padding: 20px;
+}
+.editor {
+  width: min(560px, 96vw);
+  max-height: 92vh;
+  overflow: auto;
+  background: var(--panel);
+  border: 1px solid var(--line-2);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 18px 20px 20px;
+}
+.editor-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.editor-head h3 {
+  margin: 0;
+  font-size: 16px;
+}
+.editor-hint {
+  color: var(--muted);
+  font-size: 13px;
+  margin: 6px 0 14px;
+}
+.editor-body {
+  display: flex;
+  gap: 18px;
+  flex-wrap: wrap;
+  align-items: flex-start;
+}
+.editor-canvas {
+  image-rendering: pixelated;
+  border: 1px solid var(--line-2);
+  border-radius: 8px;
+  background: #04070d;
+  cursor: crosshair;
+  flex: 0 0 auto;
+}
+.editor-side {
+  flex: 1 1 160px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 150px;
+}
+.swatches {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8px;
+}
+.swatch {
+  aspect-ratio: 1;
+  border-radius: 8px;
+  border: 2px solid transparent;
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.45);
+  cursor: pointer;
+  transition: transform 0.08s, border-color 0.12s;
+}
+.swatch:hover {
+  transform: scale(1.06);
+}
+.swatch.sel {
+  border-color: #fff;
+}
+.editor-dims {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.editor-actions {
+  display: flex;
+  gap: 8px;
+}
+.editor-actions .btn {
+  flex: 1;
+}
+.editor-foot {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 18px;
+}
