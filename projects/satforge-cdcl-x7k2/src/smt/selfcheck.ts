@@ -11,6 +11,7 @@ import { EufSolver } from './euf'
 import { solveSmt, type Theory } from './dpllt'
 import { referenceSatEUF, referenceSatArith, collectAtoms, evalFormula } from './reference'
 import { checkSat, smtUnsatCore } from './smt'
+import { optimize, maxsmt, type MaxSmtSoft } from './omt'
 import { referenceSatArrays } from './arrayref'
 import { referenceSatDatatypes } from './dtref'
 import { referenceSatStrings } from './strref'
@@ -958,6 +959,248 @@ export function runSmtChecks(): SmtCheckReport {
         ok = w.length === 3 && w[1] === 'b' && w[2] === 'c' && w[0] !== 'b'
       }
       check('QF_S: indexof+suffix model is internally consistent', ok, String(v))
+    }
+  }
+
+  // ---- OMT (Optimization Modulo Theories) + MaxSMT --------------------------
+  {
+    const linTerm = (tm: TermManager, coeffs: number[], vars: Term[]): Term => {
+      let acc: Term = tm.num(R(0n), 'Int')
+      for (let i = 0; i < vars.length; i++) acc = tm.add(acc, tm.mul(tm.num(R(BigInt(coeffs[i])), 'Int'), vars[i]))
+      return acc
+    }
+
+    // (A) Integer OMT vs brute force over a bounded box. The strongest check:
+    // hundreds of random QF_LIA programs whose true min/max we compute by
+    // exhaustive enumeration, asserting the solver returns *exactly* those.
+    {
+      const rng = mulberry32(91237)
+      const ri = (lo: number, hi: number) => lo + Math.floor(rng() * (hi - lo + 1))
+      let mism = 0
+      let infeas = 0
+      let ran = 0
+      for (let t = 0; t < 200; t++) {
+        const n = ri(2, 3)
+        const B = 4
+        const tm = new TermManager()
+        const vars: Term[] = []
+        const conj: Formula[] = []
+        for (let i = 0; i < n; i++) {
+          tm.declareFun({ name: `x${i}`, argSorts: [], retSort: 'Int' })
+          const v = tm.app(`x${i}`)
+          vars.push(v)
+          conj.push(tm.rel('le', tm.num(R(0n), 'Int'), v))
+          conj.push(tm.rel('le', v, tm.num(R(BigInt(B)), 'Int')))
+        }
+        const cons: { a: number[]; c: number }[] = []
+        for (let k = 0, nc = ri(1, 3); k < nc; k++) {
+          const a = Array.from({ length: n }, () => ri(-2, 2))
+          const c = ri(-2, 8)
+          cons.push({ a, c })
+          conj.push(tm.rel('le', linTerm(tm, a, vars), tm.num(R(BigInt(c)), 'Int')))
+        }
+        const root = tm.and(conj)
+        const obj = Array.from({ length: n }, () => ri(-2, 2))
+        const objTerm = linTerm(tm, obj, vars)
+
+        let feas = false
+        let bmin = 0
+        let bmax = 0
+        const total = (B + 1) ** n
+        for (let m = 0; m < total; m++) {
+          const xs: number[] = []
+          let mm = m
+          for (let i = 0; i < n; i++) {
+            xs.push(mm % (B + 1))
+            mm = Math.floor(mm / (B + 1))
+          }
+          let ok = true
+          for (const cc of cons) {
+            let s = 0
+            for (let i = 0; i < n; i++) s += cc.a[i] * xs[i]
+            if (s > cc.c) {
+              ok = false
+              break
+            }
+          }
+          if (!ok) continue
+          let z = 0
+          for (let i = 0; i < n; i++) z += obj[i] * xs[i]
+          if (!feas) {
+            feas = true
+            bmin = z
+            bmax = z
+          } else {
+            bmin = Math.min(bmin, z)
+            bmax = Math.max(bmax, z)
+          }
+        }
+
+        ran++
+        const rMin = optimize(tm, root, objTerm, 'min')
+        const rMax = optimize(tm, root, objTerm, 'max')
+        if (!feas) {
+          infeas++
+          if (rMin.status !== 'infeasible') mism++
+          continue
+        }
+        const okMin = rMin.status === 'optimal' && rMin.value!.eq(R(BigInt(bmin)))
+        const okMax = rMax.status === 'optimal' && rMax.value!.eq(R(BigInt(bmax)))
+        if (!okMin || !okMax) mism++
+      }
+      check(`OMT(LIA): ${ran} random integer programs match brute-force optima (${infeas} infeasible)`, mism === 0, `mism=${mism}`)
+    }
+
+    // (B) MaxSMT vs brute force over Boolean assignments.
+    {
+      const rng = mulberry32(0xc0ffee)
+      const ri = (lo: number, hi: number) => lo + Math.floor(rng() * (hi - lo + 1))
+      let mism = 0
+      let ran = 0
+      const evalBool = (f: Formula, val: (i: number) => boolean): boolean => {
+        switch (f.kind) {
+          case 'const':
+            return f.val
+          case 'not':
+            return !evalBool(f.arg, val)
+          case 'and':
+            return f.args.every((g) => evalBool(g, val))
+          case 'or':
+            return f.args.some((g) => evalBool(g, val))
+          case 'pred':
+            return val(Number(f.term.op.slice(1)))
+          default:
+            throw new Error('unexpected ' + f.kind)
+        }
+      }
+      for (let t = 0; t < 200; t++) {
+        const n = ri(2, 4)
+        const tm = new TermManager()
+        const bools: Formula[] = []
+        for (let i = 0; i < n; i++) {
+          tm.declareFun({ name: `b${i}`, argSorts: [], retSort: 'Bool' })
+          bools.push(tm.pred(tm.app(`b${i}`)))
+        }
+        const hardClauses: Formula[] = []
+        for (let k = 0, nh = ri(0, 2); k < nh; k++) {
+          const lits: Formula[] = []
+          for (let i = 0; i < n; i++) if (rng() < 0.5) lits.push(rng() < 0.5 ? bools[i] : tm.not(bools[i]))
+          if (lits.length) hardClauses.push(tm.or(lits))
+        }
+        const hard = tm.and(hardClauses)
+        const soft: MaxSmtSoft[] = []
+        for (let k = 0, ns = ri(2, 4); k < ns; k++) {
+          const i = ri(0, n - 1)
+          soft.push({ formula: rng() < 0.5 ? bools[i] : tm.not(bools[i]), weight: ri(1, 4), id: `s${k}` })
+        }
+
+        let bfCost = Infinity
+        let feasible = false
+        for (let m = 0; m < 1 << n; m++) {
+          const val = (i: number) => (m & (1 << i)) !== 0
+          if (!evalBool(hard, val)) continue
+          feasible = true
+          let cost = 0
+          for (const s of soft) if (!evalBool(s.formula, val)) cost += Math.round(s.weight)
+          bfCost = Math.min(bfCost, cost)
+        }
+
+        ran++
+        const r = maxsmt(tm, hard, soft)
+        if (!feasible) {
+          if (r.status !== 'infeasible') mism++
+          continue
+        }
+        if (r.status !== 'optimal' || !r.cost!.eq(R(BigInt(bfCost)))) mism++
+      }
+      check(`MaxSMT: ${ran} random instances match brute-force minimum violated weight`, mism === 0, `mism=${mism}`)
+    }
+
+    // (C) Real (QF_LRA) OMT: exact vertex optima, open infima, unboundedness.
+    {
+      const real = (tm: TermManager, k: bigint, d = 1n) => tm.num(R(k, d), 'Real')
+      // min x s.t. 2x ≥ 3 → 3/2 (attained)
+      {
+        const tm = new TermManager()
+        tm.declareFun({ name: 'x', argSorts: [], retSort: 'Real' })
+        const x = tm.app('x')
+        const r = optimize(tm, tm.rel('ge', tm.mul(real(tm, 2n), x), real(tm, 3n)), x, 'min')
+        check('OMT(LRA): min x, 2x≥3 = 3/2 (attained)', r.status === 'optimal' && r.value!.eq(R(3n, 2n)) && r.attained === true, `${r.value?.toString()}`)
+      }
+      // LP: max x+y s.t. x+2y≤14, 3x≤y, x,y≥0 → vertex (2,6), optimum 8.
+      {
+        const tm = new TermManager()
+        tm.declareFun({ name: 'x', argSorts: [], retSort: 'Real' })
+        tm.declareFun({ name: 'y', argSorts: [], retSort: 'Real' })
+        const x = tm.app('x')
+        const y = tm.app('y')
+        const z = real(tm, 0n)
+        const root = tm.and([
+          tm.rel('le', tm.add(x, tm.mul(real(tm, 2n), y)), real(tm, 14n)),
+          tm.rel('le', tm.sub(tm.mul(real(tm, 3n), x), y), z),
+          tm.rel('ge', x, z),
+          tm.rel('ge', y, z),
+        ])
+        const obj = tm.add(x, y)
+        const r = optimize(tm, root, obj, 'max')
+        check('OMT(LRA): linear program max x+y = 8 (vertex)', r.status === 'optimal' && r.value!.eq(R(8n)), `${r.value?.toString()}`)
+        if (r.status === 'optimal') {
+          const gt = checkSat(tm, tm.and([root, tm.rel('gt', obj, real(tm, r.value!.n, r.value!.d))]))
+          check('OMT(LRA): LP optimality certificate (obj>opt UNSAT)', gt.status === 'unsat', gt.status)
+        }
+      }
+      // open infimum: min x s.t. x > 1 → 1, not attained
+      {
+        const tm = new TermManager()
+        tm.declareFun({ name: 'x', argSorts: [], retSort: 'Real' })
+        const x = tm.app('x')
+        const r = optimize(tm, tm.rel('gt', x, real(tm, 1n)), x, 'min')
+        check('OMT(LRA): min x, x>1 = 1 (open infimum)', r.status === 'optimal' && r.value!.eq(R(1n)) && r.attained === false, `${r.value?.toString()} att=${r.attained}`)
+      }
+      // unbounded: max y s.t. y ≥ x
+      {
+        const tm = new TermManager()
+        tm.declareFun({ name: 'x', argSorts: [], retSort: 'Real' })
+        tm.declareFun({ name: 'y', argSorts: [], retSort: 'Real' })
+        const r = optimize(tm, tm.rel('ge', tm.sub(tm.app('y'), tm.app('x')), real(tm, 0n)), tm.app('y'), 'max')
+        check('OMT(LRA): unbounded objective detected', r.status === 'unbounded', r.status)
+      }
+      // disjunctive structure: min x s.t. (x≥5 ∨ x≥3) → 3
+      {
+        const tm = new TermManager()
+        tm.declareFun({ name: 'x', argSorts: [], retSort: 'Real' })
+        const x = tm.app('x')
+        const r = optimize(tm, tm.or([tm.rel('ge', x, real(tm, 5n)), tm.rel('ge', x, real(tm, 3n))]), x, 'min')
+        check('OMT(LRA): disjunctive min x = 3', r.status === 'optimal' && r.value!.eq(R(3n)), `${r.value?.toString()}`)
+      }
+    }
+
+    // (D) End-to-end through the SMT-LIB parser: the coin-change example.
+    {
+      const s = parseSmtLib(`(set-logic QF_LIA)
+        (declare-const a Int)(declare-const b Int)(declare-const c Int)(declare-const d Int)
+        (assert (>= a 0))(assert (>= b 0))(assert (>= c 0))(assert (>= d 0))
+        (assert (= (+ a (* 5 b) (* 10 c) (* 25 d)) 47))
+        (minimize (+ a b c d))(check-sat)`)
+      const obj = s.objectives[0]
+      const r = optimize(s.tm, s.tm.and(s.assertions), obj.term, obj.dir)
+      check('OMT: parsed coin-change minimizes to 5 coins', r.status === 'optimal' && r.value!.eq(R(5n)), `${r.value?.toString()}`)
+    }
+
+    // (E) MaxSMT across the theory of equality (QF_UF) via the parser.
+    {
+      const s = parseSmtLib(`(set-logic QF_UF)
+        (declare-sort U 0)(declare-fun a () U)(declare-fun b () U)(declare-fun c () U)(declare-fun f (U) U)
+        (assert (not (= (f a) (f c))))
+        (assert-soft (= a b) :weight 2 :id ab)
+        (assert-soft (= b c) :weight 2 :id bc)
+        (assert-soft (= a c) :weight 1 :id ac)
+        (check-sat)`)
+      const r = maxsmt(s.tm, s.tm.and(s.assertions), s.softs)
+      // f(a)≠f(c) forbids a=c (congruence). a=c can never hold (drop weight 1), and
+      // at most one of a=b / b=c can (both ⇒ a=c). So the most weight we can keep is
+      // a single weight-2 equality; the minimum violated weight is 2 + 1 = 3.
+      check('MaxSMT(QF_UF): equality MaxSMT optimum = 3', r.status === 'optimal' && r.cost!.eq(R(3n)), `${r.cost?.toString()}`)
     }
   }
 

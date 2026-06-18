@@ -1446,6 +1446,47 @@ input[type='range'] {
   color: #86efac;
   border-color: rgba(34, 197, 94, 0.34);
 }
+.logic-badge.l-qf_lia,
+.logic-badge.l-qf_lra {
+  background: rgba(110, 168, 254, 0.16);
+  color: #93c5fd;
+  border-color: rgba(110, 168, 254, 0.34);
+}
+
+/* ---- OMT / MaxSMT result panels ---- */
+.omt-trace {
+  margin: 10px 0 4px;
+  border: 1px solid var(--border, rgba(255, 255, 255, 0.1));
+  border-radius: 8px;
+  padding: 6px 10px;
+  background: rgba(255, 255, 255, 0.02);
+}
+.omt-trace > summary {
+  cursor: pointer;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--accent-2, #9b8cff);
+}
+.omt-trace table.array-model {
+  margin-top: 8px;
+}
+table.array-model.omt-soft th {
+  background: rgba(110, 168, 254, 0.13);
+}
+.omt-violated td {
+  color: #fca5a5;
+}
+.omt-satisfied td {
+  color: #86efac;
+}
+.omt-model-block {
+  margin-top: 14px;
+  padding-top: 10px;
+  border-top: 1px dashed rgba(255, 255, 255, 0.12);
+}
+.omt-model-block .smt-verdict-row {
+  opacity: 0.85;
+}
 
 /* ---- array model tables ---- */
 .smt-arrays {

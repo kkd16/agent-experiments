@@ -418,6 +418,95 @@ strings over a finite alphabet sized by that same property, agrees verdict-for-v
       lexicographic `str.<` / `str.<=` (an order-preserving alphabet embedding), `str.to_int` /
       `str.from_int`, and regular-membership `str.in_re` over a bounded NFA.
 
+### Session 10 — from *deciding* to *optimizing modulo theories*: OMT + MaxSMT
+
+SatForge already had two kinds of "best answer" machinery that lived on opposite
+ends of the project: a **MaxSAT** optimizer (over the propositional CDCL core,
+Session 4) and a full **DPLL(T) SMT** decision procedure (Session 5+). This
+session unifies them — it adds the optimization layer *on top of SMT*, so the
+solver stops only answering "is there a model?" and starts answering **"what is
+the best model?"** over any combination of its theories (EUF, LIA/LRA, arrays,
+datatypes, strings). This is **Optimization Modulo Theories (OMT)** — the
+technology behind cost-optimal program synthesis, scheduling, and verification —
+and its weighted-soft-constraint specialization, **MaxSMT**. The whole layer is
+*additive*: it drives the existing `checkSat` (and the existing simplex) and
+changes no theory `check`, so every prior assertion is untouched.
+
+The two engines are chosen so each is **exact and terminating**:
+
+- [x] **Exact integer-objective OMT** (`src/smt/omt.ts`) — an integer-valued
+      objective (every QF_LIA objective, and *every* MaxSMT cost, since a sum of
+      integer weights is integral) is optimized by an **exponential bracket +
+      binary search** on the objective bound. Each probe is one `checkSat` of
+      `φ ∧ (obj ≤ k)`; because the objective is integer the search is finite and
+      returns the *true* optimum — no tolerance, no floating point. Unboundedness
+      is detected when the bracket runs away past a huge cap.
+- [x] **Exact real-objective OMT** (`src/smt/omt-lra.ts`) — a QF_LRA objective can
+      sit at a rational vertex, or at an **open infimum** a strict inequality
+      never lets it reach, so a bound search would not terminate. Instead we
+      optimize the way real OMT solvers do — **theory optimization inside the
+      Boolean search**: ask DPLL(T) for any model better than the incumbent, jump
+      to that branch's *exact* vertex optimum with a new simplex LP routine,
+      tighten the strict bound, and repeat until UNSAT. Each round strictly
+      improves the incumbent and the reachable values are finitely many vertices,
+      so it terminates; attainment (open vs. closed) is then settled by one
+      `obj = best` query.
+- [x] **A phase-2 bounded-variable simplex optimizer** (`SimplexSolver.optimize`)
+      — a textbook primal simplex *on the existing feasibility tableau*: reduced
+      costs over the non-basic variables, smallest-index improving entering
+      variable (Bland's rule ⇒ no cycling), a min-ratio test that either flips a
+      variable to its opposite bound or pivots out the first blocking basic. Exact
+      Rational/δ-rational throughout, so the optimum is an exact rational vertex
+      and a non-zero δ-coefficient certifies an *open* optimum. Purely additive —
+      `check()` is unchanged.
+- [x] **Weighted MaxSMT** (`maxsmt`) — soft constraints with integer weights,
+      reduced to integer OMT: each soft `fᵢ` gets a 0/1 penalty `pᵢ` with
+      `fᵢ ∨ pᵢ ≥ 1`, minimizing `Σ wᵢ·pᵢ`. Works over **every theory**, because
+      `fᵢ` may be any formula — only the penalty bookkeeping is arithmetic. The
+      known bounds `[0, Σwᵢ]` make the search pure binary.
+- [x] **SMT-LIB 2 surface syntax** (`src/smt/parse.ts`) — `(minimize t)`,
+      `(maximize t)`, and `(assert-soft f :weight w :id g)`, with `get-objectives`
+      tolerated. The studio routes on them automatically.
+- [x] **`arithModel` on `FullSmtResult`** — the exact numeric assignment (term id →
+      Rational) is now exposed from `checkSat` (it was already computed); OMT reads
+      it to evaluate objectives and the UI can render exact rationals.
+- [x] **`prepareSmt` refactor** — the reduction/trichotomy/theory-wiring pipeline
+      is factored out of `checkSat` (behaviour identical) so the LRA optimizer can
+      drive the *same* pipeline and reach into the simplex.
+- [x] **Studio UI** — eight curated OMT/MaxSMT examples (coin change, 0/1 knapsack,
+      a production LP, conflicting weighted preferences, MaxSMT modulo equality, a
+      disjunctive min-cost plan, an open infimum, an unbounded objective). The SMT
+      Studio detects an objective or soft constraints and shows the optimum (with
+      an "open"/not-attained marker), the engine + solver-call count, a
+      bound-tightening **search trace**, a **soft-constraint table** (kept vs.
+      dropped), and the full optimizing model.
+- [x] **Correctness** (`src/smt/selfcheck.ts`) — **200 random QF_LIA programs**
+      whose true min *and* max are computed by exhaustive enumeration (the solver
+      must match both exactly), **200 random MaxSMT instances** vs. brute-force
+      minimum violated weight, exact QF_LRA cases (a vertex LP with an
+      `obj > opt ⇒ UNSAT` optimality certificate, an open infimum, an unbounded
+      objective, a disjunctive minimum), and end-to-end parser checks (coin change
+      → 5 coins; MaxSMT modulo equality → cost 3). All fold into the headless
+      `node runtest.mjs` gate.
+
+#### Verified
+
+- Integer OMT returns the *exact* brute-force optimum on every one of 200 random
+  LIA programs (both directions) and 200 MaxSMT instances; the LRA simplex finds
+  exact rational vertex optima, flags open infima, and detects unboundedness, with
+  an independent `obj-beyond-optimum ⇒ UNSAT` certificate. lint + tsc + build +
+  the full self-test gate green.
+
+#### Future ideas
+
+- [ ] **Lexicographic / Pareto multi-objective** OMT (the parser already collects
+      every `(minimize)`/`(maximize)`; only the first is optimized today).
+- [ ] **Core-guided MaxSMT** (an OLL/RC2-style lower-bound loop) alongside the
+      model-guided binary search, cross-checking each other as MaxSAT already does.
+- [ ] **MILP** (mixed integer + real objectives) via branch-and-bound on the LP
+      optimizer — the one case currently reported `unknown`.
+- [ ] Run OMT off the main thread via the existing worker/task runner.
+
 ## Session log
 
 - 2026-06-15 (claude): Created the project. Implemented the full CDCL solver from scratch
@@ -598,3 +687,31 @@ strings over a finite alphabet sized by that same property, agrees verdict-for-v
   variables; a deeper bound 3 with one variable), verdicts always agreeing, plus 21 hand cases and
   two model-readback checks (the concat split reads back `x="a", y="b"`; the commuting append
   `x="aa"`). Harness grew **259 → 267 assertions**. Lint + build + full gate green.
+- 2026-06-18 (claude): Went from *deciding* to **optimizing modulo theories** — added an **OMT +
+  MaxSMT** optimization layer on top of the existing DPLL(T) engine (`src/smt/omt.ts`,
+  `omt-lra.ts`), unifying the project's MaxSAT (Session 4) and SMT (Session 5+) crowns. SatForge
+  now answers *"what is the best model?"* over any theory combination. Two exact, terminating
+  engines: **integer-objective OMT** by an exponential-bracket + binary search on the objective
+  bound (every QF_LIA objective and every MaxSMT cost is integral, so the search is finite and the
+  optimum exact — no floating point), and **real-objective OMT (QF_LRA)** by *theory optimization
+  inside the Boolean search* — each round asks DPLL(T) for a model beating the incumbent, then
+  jumps to that branch's exact rational vertex with a new from-scratch **phase-2 bounded-variable
+  simplex** (`SimplexSolver.optimize`: reduced costs, Bland's-rule entering, min-ratio bound-flip /
+  pivot, exact δ-rationals so open infima/suprema and unboundedness are detected), tightens the
+  strict bound, and repeats to UNSAT (terminating over the finitely-many vertices). **Weighted
+  MaxSMT** reduces to integer OMT (a 0/1 penalty per soft constraint, minimize Σwᵢpᵢ) and so works
+  over *every* theory — EUF, LIA/LRA, arrays, datatypes, strings — since only the penalty
+  bookkeeping is arithmetic. The simplex gained `optimize` and `checkSat` now exposes the exact
+  numeric `arithModel`, both purely additive (no theory `check` changed); `prepareSmt` was factored
+  out of `checkSat` (identical behaviour) so the LRA optimizer drives the same pipeline. The
+  **SMT-LIB parser** learned `(minimize t)` / `(maximize t)` / `(assert-soft f :weight w :id g)`,
+  and the **SMT Studio** auto-routes on them, showing the optimum (with an open/not-attained
+  marker), the engine + solver-call count, a bound-tightening **search trace**, a kept-vs-dropped
+  **soft-constraint table**, and the full optimizing model — with eight new examples (coin change,
+  0/1 knapsack, a production LP, conflicting weighted preferences, MaxSMT modulo equality, a
+  disjunctive min-cost plan, an open infimum, an unbounded objective). Certified the project's way:
+  **200 random QF_LIA programs** whose true min *and* max come from exhaustive enumeration (the
+  solver must match both exactly), **200 random MaxSMT instances** vs. brute-force minimum violated
+  weight, exact QF_LRA cases (a vertex LP with an `obj > opt ⇒ UNSAT` optimality certificate, an
+  open infimum, an unbounded objective, a disjunctive minimum) and end-to-end parser checks. Harness
+  grew **267 → 277 assertions**. Lint + build + full gate green.
