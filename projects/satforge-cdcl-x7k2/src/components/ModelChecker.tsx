@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react'
 import {
   imc,
+  kInduction,
   bfsReachability,
   checkInvariant,
   checkCounterexample,
@@ -12,6 +13,7 @@ import {
   type TransitionSystem,
   type ImcResult,
   type BfsResult,
+  type KIndResult,
 } from '../imc'
 
 type Sub = 'mc' | 'interp'
@@ -64,15 +66,17 @@ function McView() {
 
   const run = useMemo(() => {
     const res: ImcResult = imc(ts, { maxBound: 40, maxRounds: 200 })
+    const ki: KIndResult = kInduction(ts, 64)
     const ref: BfsResult = bfsReachability(ts)
     const invOk = res.result === 'SAFE' && res.invariant ? checkInvariant(ts, res.invariant) : null
     const cexOk =
       res.result === 'UNSAFE' && res.counterexample ? checkCounterexample(ts, res.counterexample) : null
     const agrees = res.result !== 'UNKNOWN' && (res.result === 'SAFE') === ref.safe
-    return { res, ref, invOk, cexOk, agrees }
+    const kiAgrees = ki.result !== 'UNKNOWN' && (ki.result === 'SAFE') === ref.safe
+    return { res, ki, ref, invOk, cexOk, agrees, kiAgrees }
   }, [ts])
 
-  const { res, ref, invOk, cexOk, agrees } = run
+  const { res, ki, ref, invOk, cexOk, agrees, kiAgrees } = run
 
   return (
     <>
@@ -119,12 +123,22 @@ function McView() {
             {res.result === 'UNKNOWN' && <>The bound/round budget was exhausted.</>}
           </p>
         </div>
+        <div className="imc-card">
+          <h3>k-induction (2nd proof)</h3>
+          <p>
+            An independent proof rule (simple-path k-induction) reports{' '}
+            <strong>{ki.result === 'SAFE' ? `SAFE at k=${ki.k}` : ki.result === 'UNSAFE' ? `UNSAFE (k=${ki.k})` : 'UNKNOWN'}</strong>.{' '}
+            <span className={kiAgrees ? 'check-ok' : 'check-bad'}>{kiAgrees ? '✓ agrees' : '✗ MISMATCH'}</span>
+          </p>
+        </div>
         <div className="imc-card oracle">
-          <h3>Independent oracle</h3>
+          <h3>BFS oracle (ground truth)</h3>
           <p>
             Explicit-state BFS over all {1 << ts.stateBits} states reports{' '}
             <strong>{ref.safe ? 'SAFE' : `UNSAFE (bad reachable in ${ref.distance} step${ref.distance === 1 ? '' : 's'})`}</strong>.{' '}
-            <span className={agrees ? 'check-ok' : 'check-bad'}>{agrees ? '✓ verdicts agree' : '✗ MISMATCH'}</span>
+            <span className={agrees && kiAgrees ? 'check-ok' : 'check-bad'}>
+              {agrees && kiAgrees ? '✓ all three agree' : '✗ MISMATCH'}
+            </span>
           </p>
         </div>
       </div>
