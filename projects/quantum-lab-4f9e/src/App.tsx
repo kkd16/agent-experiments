@@ -15,14 +15,15 @@ import VariationalLab from './components/VariationalLab';
 import StabilizerLab from './components/StabilizerLab';
 import SurfaceLab from './components/SurfaceLab';
 import TensorLab from './components/TensorLab';
+import FreeFermionLab from './components/FreeFermionLab';
 import TestsPanel from './components/TestsPanel';
 import ExportPanel from './components/ExportPanel';
 import { schmidtDecompose } from './quantum/Schmidt';
 
-type Tab = 'builder' | 'algorithms' | 'variational' | 'stabilizer' | 'surface' | 'tensor' | 'tests' | 'about';
+type Tab = 'builder' | 'algorithms' | 'variational' | 'stabilizer' | 'surface' | 'tensor' | 'freefermion' | 'tests' | 'about';
 type VizTab = 'state' | 'probabilities' | 'bloch' | 'density' | 'measure';
 
-const PAGE_TABS: Tab[] = ['about', 'variational', 'stabilizer', 'surface', 'tensor', 'tests'];
+const PAGE_TABS: Tab[] = ['about', 'variational', 'stabilizer', 'surface', 'tensor', 'freefermion', 'tests'];
 
 // Parse a shared circuit from the URL hash (#c=…) once, before mount — sandbox-safe.
 function loadSharedCircuit(): { numQubits: number; ops: GateOp[] } | null {
@@ -134,7 +135,7 @@ export default function App() {
         </div>
 
         <nav style={{ display: 'flex', gap: 2, marginLeft: 'auto', flexWrap: 'wrap' }}>
-          {(['builder', 'algorithms', 'variational', 'stabilizer', 'surface', 'tensor', 'tests', 'about'] as Tab[]).map((tab) => (
+          {(['builder', 'algorithms', 'variational', 'stabilizer', 'surface', 'tensor', 'freefermion', 'tests', 'about'] as Tab[]).map((tab) => (
             <button
               key={tab}
               onClick={() => setActiveTab(tab)}
@@ -154,6 +155,7 @@ export default function App() {
               {tab === 'builder' ? '🔧 Builder' : tab === 'algorithms' ? '⚡ Algorithms'
                 : tab === 'variational' ? '🧬 Variational' : tab === 'stabilizer' ? '🧱 Stabilizer'
                 : tab === 'surface' ? '🔲 Surface' : tab === 'tensor' ? '🕸️ Tensor'
+                : tab === 'freefermion' ? '🪢 Free Fermion'
                 : tab === 'tests' ? '🧪 Tests' : '📖 About'}
             </button>
           ))}
@@ -213,6 +215,7 @@ export default function App() {
               {activeTab === 'stabilizer' && <StabilizerLab />}
               {activeTab === 'surface' && <SurfaceLab />}
               {activeTab === 'tensor' && <TensorLab />}
+              {activeTab === 'freefermion' && <FreeFermionLab />}
               {activeTab === 'tests' && <TestsPanel />}
             </motion.div>
           ) : (
@@ -594,8 +597,12 @@ function AboutPage() {
           content: 'Real hardware measures the stabilizers repeatedly, and each measurement is itself noisy — so a single bad readout is indistinguishable from a data error that flickers on for one round. The fix is to decode in space-time: stack T noisy syndrome rounds into a 3-D matching graph whose time edges absorb measurement errors while space edges absorb data errors, with a detection event wherever the syndrome changes between rounds. Both the optimal MWPM decoder and a from-scratch Union-Find decoder (Delfosse–Nivelle — near-linear-time cluster growth + a peeling decoder, provably correct up to the code distance) run on this graph. The phenomenological threshold (~3%, well below the 10.3% code-capacity figure) is reproduced, the two decoders are cross-checked, and the finite-size data is distilled two ways: the suppression factor Λ = p_L(d)/p_L(d+2) > 1 of a working code, and a universal data collapse that fits (p_th, ν) by folding every distance/error-rate curve onto one scaling function.',
         },
         {
+          title: 'Free Fermions — the Exactly-Solvable TFIM (Jordan–Wigner + Bogoliubov)',
+          content: 'The transverse-field Ising chain is secretly free: the Jordan–Wigner transform maps the spins onto non-interacting fermions, turning the 2ⁿ problem into a quadratic Hamiltonian that diagonalises EXACTLY in O(n³). The Lieb–Schultz–Mattis solution is, remarkably, just a singular-value decomposition of an n×n matrix — so the lab\'s from-scratch complex SVD does the work, giving the Bogoliubov single-particle spectrum and the ground energy E₀ = −½ΣΛ_k. This is an exact oracle: it reproduces the lab\'s own TFIM ground energy from exact diagonalisation and DMRG to machine precision, and then runs far past them — to hundreds of sites. The quasiparticle gap 2|J−h| closes at the quantum critical point h=J, where the half-chain entanglement peaks. Block entanglement comes from the ground state\'s Majorana covariance matrix (Peschel), and a Calabrese–Cardy fit of S(L) reads off the Ising-CFT central charge c=½ — the universal number naming the universality class — straight from the entanglement of an exactly-solved critical chain. The ground energy per site matches the closed-form Pfeuty thermodynamic integral. And a real-time quench (ground state at h_i, evolved under h_f) stays Gaussian forever, so its fermionic correlation matrices evolve in O(n³) per step — reproducing the entanglement light-cone (linear growth then saturation) at sizes whose Schmidt rank 2^S no MPS or exact simulator could ever store, with every small-n step checked against exact dense time evolution.',
+        },
+        {
           title: 'Phase Estimation & Tooling',
-          content: 'Quantum Phase Estimation recovers eigenphases via phase kickback + inverse QFT. Circuits export to OpenQASM 2.0 (Qiskit/IBM-compatible) and JSON, with shareable URLs, depth/gate metrics, and a 67-case in-browser self-test suite proving the engine correct against exact references — including DMRG vs exact diagonalisation, the surface-code MWPM decoder vs brute-force matching, the Union-Find decoder vs MWPM, and both the code-capacity and phenomenological QEC threshold crossings.',
+          content: 'Quantum Phase Estimation recovers eigenphases via phase kickback + inverse QFT. Circuits export to OpenQASM 2.0 (Qiskit/IBM-compatible) and JSON, with shareable URLs, depth/gate metrics, and a 75-case in-browser self-test suite proving the engine correct against exact references — including the free-fermion TFIM vs exact diagonalisation and the Pfeuty thermodynamic limit, the recovered central charge c=½, the quench vs exact dense evolution, DMRG vs exact diagonalisation, the surface-code MWPM decoder vs brute-force matching, the Union-Find decoder vs MWPM, and both the code-capacity and phenomenological QEC threshold crossings.',
         },
       ].map(({ title, content }, i) => (
         <motion.div
