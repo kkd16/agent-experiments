@@ -7,6 +7,7 @@ import StatsPanel from './components/StatsPanel';
 import Gallery from './components/Gallery';
 import PaintPanel from './components/PaintPanel';
 import SampleEditor from './components/SampleEditor';
+import TestsPanel from './components/TestsPanel';
 import { Controller, type ControllerConfig, type Stats } from './wfc/controller';
 import { randomSeedString } from './wfc/prng';
 import { decodeHash, encodeHash } from './wfc/permalink';
@@ -27,6 +28,7 @@ const DEFAULTS: ControllerConfig = {
   showGhost: true,
   showEntropy: false,
   showGrid: false,
+  connectivity: 'off',
 };
 
 // Boot config: defaults, a fresh random seed, then anything pinned in the URL hash wins.
@@ -49,6 +51,11 @@ const EMPTY_STATS: Stats = {
   running: false,
   pins: 0,
   recording: false,
+  supportsConnectivity: false,
+  connectivity: 'off',
+  components: 0,
+  routed: null,
+  terminals: 0,
 };
 
 export default function App() {
@@ -246,13 +253,14 @@ export default function App() {
             hasOverrides={controller.hasWeightOverrides()}
             defaultWeight={(id) => controller.defaultWeight(id)}
           />
+          <TestsPanel />
         </aside>
       </main>
 
       {editing && <SampleEditor value={editorSample} onChange={onSampleChange} onClose={() => setEditing(false)} />}
 
       <footer className="footer">
-        <span>Built from scratch — tiled + overlapping models · support-counter propagation · snapshot backtracking · hand constraints.</span>
+        <span>Built from scratch — tiled + overlapping models · support-counter propagation · snapshot backtracking · hand constraints · global connectivity (one network / routed pins) · in-app Proof Lab.</span>
         <span className="keys">
           <kbd>space</kbd> play · <kbd>s</kbd> step · <kbd>r</kbd> reset · <kbd>n</kbd> seed · <kbd>e</kbd> png · <kbd>j</kbd> json · <kbd>x</kbd> erase · <kbd>c</kbd> clear · <kbd>h</kbd> heatmap
         </span>

@@ -43,5 +43,6 @@ export const knots: Tileset = {
   name: 'Knots',
   blurb: 'Pipework that must join end-to-end — mazes, loops and dead-ends self-assemble.',
   background: '#0b1220',
+  emptyEdge: '000',
   prototypes: protos,
 };

@@ -58,5 +58,6 @@ export const cables: Tileset = {
   name: 'Cables',
   blurb: 'Three colours of wire that only join their own kind, weaving over and under.',
   background: '#0b1220',
+  emptyEdge: '000',
   prototypes: protos,
 };

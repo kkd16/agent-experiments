@@ -91,6 +91,19 @@ export function compile(set: Tileset): CompiledTileset {
   const weights = variants.map((v) => v.weight);
   const weightLogWeights = weights.map((w) => w * Math.log(w));
 
+  // Derive the open-socket mask when the set has connection semantics: bit d is set when this
+  // variant's edge d is something other than the declared empty socket (i.e. it carries a link).
+  let openMask: Uint8Array | undefined;
+  if (set.emptyEdge != null) {
+    const empty = set.emptyEdge;
+    openMask = new Uint8Array(n);
+    for (let a = 0; a < n; a++) {
+      let m = 0;
+      for (const d of DIRS) if (variants[a].edges[d] !== empty) m |= 1 << d;
+      openMask[a] = m;
+    }
+  }
+
   return {
     key: set.key,
     name: set.name,
@@ -99,5 +112,6 @@ export function compile(set: Tileset): CompiledTileset {
     allowed,
     weights,
     weightLogWeights,
+    openMask,
   };
 }

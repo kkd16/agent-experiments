@@ -180,6 +180,33 @@ export default function Tuning({ cfg, seedLocked, onPatch, onNewSeed, onSeedLock
         <Toggle label="Backtracking" hint="recover from dead-ends" value={cfg.backtracking} onChange={(b) => onPatch({ backtracking: b }, true)} />
       </div>
 
+      {cfg.model === 'tiled' && activeTileset.emptyEdge != null && (
+        <>
+          <header className="panel-head sub">
+            <h2>Connectivity</h2>
+          </header>
+          <div className="field">
+            <span className="field-label">global constraint</span>
+            <Segmented
+              options={[
+                { label: 'Off', value: 'off' },
+                { label: 'Network', value: 'network' },
+                { label: 'Route pins', value: 'terminals' },
+              ]}
+              value={cfg.connectivity}
+              onChange={(v) => onPatch({ connectivity: v as ControllerConfig['connectivity'] }, true)}
+            />
+          </div>
+          <p className="blurb">
+            {cfg.connectivity === 'network'
+              ? 'Every connector cell is guaranteed to end up in one connected network — the solver backtracks out of any layout that would strand a piece.'
+              : cfg.connectivity === 'terminals'
+                ? 'Paint two or more connector tiles as endpoints; the solver forces the cells on every route between them, so the pins are guaranteed to link up.'
+                : 'Constrain the global shape: force one connected network, or a guaranteed route between the cells you pin.'}
+          </p>
+        </>
+      )}
+
       <header className="panel-head">
         <h2>View</h2>
       </header>

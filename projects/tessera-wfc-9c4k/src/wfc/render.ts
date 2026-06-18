@@ -9,7 +9,18 @@ export type RenderOptions = {
   hover?: number;
   /** Hand-placed constraints (cell -> tile) — drawn with a corner marker. */
   pins?: ReadonlyMap<number, number>;
+  /**
+   * Global-connectivity overlay. `comp[cell]` is the component id of each *collapsed* connector
+   * cell (−1 for non-connectors), so the network is tinted by membership: one colour means one
+   * connected network, several colours means it is still fragmented. `terminals` are ringed.
+   */
+  network?: { comp: Int32Array; count: number; terminals?: number[] };
 };
+
+/** A stable, well-spread hue for a component id (golden-angle stepping). */
+function compHue(id: number): number {
+  return (id * 137.508) % 360;
+}
 
 function heat(t: number): string {
   // t in [0,1]: deep indigo (low) -> teal -> amber (high entropy)
@@ -81,6 +92,38 @@ export function render(ctx: CanvasRenderingContext2D, solver: Solver, set: { var
       ctx.lineTo(width * px, y * px + 0.5);
     }
     ctx.stroke();
+  }
+
+  // Global-connectivity overlay: tint each collapsed connector cell by its network component, so
+  // a single colour reads as "one connected network" and multiple colours as "still fragmented".
+  if (o.network) {
+    const { comp, count, terminals } = o.network;
+    const single = count <= 1;
+    for (let cell = 0; cell < width * height; cell++) {
+      const id = comp[cell];
+      if (id < 0) continue;
+      const x = (cell % width) * px;
+      const y = ((cell / width) | 0) * px;
+      // A connected network glows a calm teal; a fragmented one paints each piece its own hue.
+      ctx.fillStyle = single ? 'hsla(168,80%,55%,0.30)' : `hsla(${compHue(id)},85%,60%,0.42)`;
+      ctx.fillRect(x, y, px, px);
+    }
+    if (terminals && terminals.length) {
+      const r = Math.max(3, Math.round(px * 0.32));
+      for (const cell of terminals) {
+        const cx = (cell % width) * px + px / 2;
+        const cy = ((cell / width) | 0) * px + px / 2;
+        ctx.lineWidth = Math.max(2, Math.round(px * 0.1));
+        ctx.strokeStyle = '#f8fafc';
+        ctx.beginPath();
+        ctx.arc(cx, cy, r, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.fillStyle = '#f8fafc';
+        ctx.beginPath();
+        ctx.arc(cx, cy, Math.max(1.5, px * 0.1), 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
   }
 
   // Hand-placed constraints: a small amber corner triangle so painted cells read as deliberate.

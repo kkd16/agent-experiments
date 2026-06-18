@@ -10,7 +10,7 @@ import { SAMPLES, type Sample } from './samples';
 // self-contained encoding of the bitmap itself so a custom sample travels in the link.
 
 const bool = (b: boolean) => (b ? '1' : '0');
-const TILESET_KEYS = new Set(['knots', 'terrain', 'circuit', 'cables', 'truchet', 'rails']);
+const TILESET_KEYS = new Set(['knots', 'terrain', 'circuit', 'cables', 'truchet', 'rails', 'maze']);
 const SAMPLE_KEYS = new Set([...SAMPLES.map((s) => s.key), 'custom']);
 const MAX_CUSTOM_CELLS = 1024; // don't bloat the URL with huge hand-drawn samples
 
@@ -31,6 +31,7 @@ export type Permalinkable = Pick<
   | 'showGhost'
   | 'showEntropy'
   | 'showGrid'
+  | 'connectivity'
 >;
 
 // ---- custom-sample (de)serialisation ---------------------------------------
@@ -81,6 +82,9 @@ export function encodeHash(c: Permalinkable): string {
   p.set('g', bool(c.showGhost));
   p.set('h', bool(c.showEntropy));
   p.set('r', bool(c.showGrid));
+  if (c.connectivity && c.connectivity !== 'off') {
+    p.set('c', c.connectivity === 'network' ? 'n' : 't');
+  }
   if (c.model === 'overlap') {
     p.set('sk', c.sampleKey);
     p.set('pn', String(c.patternN));
@@ -148,5 +152,10 @@ export function decodeHash(hash: string): Partial<Permalinkable> {
   if (h !== undefined) out.showEntropy = h;
   const r = flag('r');
   if (r !== undefined) out.showGrid = r;
+
+  const c = p.get('c');
+  if (c === 'n') out.connectivity = 'network';
+  else if (c === 't') out.connectivity = 'terminals';
+  else if (c === '0') out.connectivity = 'off';
   return out;
 }
