@@ -9,20 +9,45 @@ curvature / direction, switch on **glow**, **animate the pen** drawing the figur
 share a piece by **URL**, and keep a local **gallery**. Export to high-resolution
 PNG or layered SVG.
 
+As of v3 it is no longer only about harmonographs: each layer can draw from any
+of **five curve families** — a harmonograph, a **spirograph** (hypo/epitrochoid),
+a **rose** (rhodonea), a **Lissajous** figure, or the **Gielis superformula** —
+all flowing through the same color/blend/glow/kaleidoscope render pipeline. You
+can let a piece **evolve live**, capture the drawing pass to **WebM video**, and
+back any scene with a **gradient**.
+
 ## Architecture
 
 - `harmonograph.ts` — pendulum math, rotary-frame rotation, path sampling, and
-  per-point metrics (speed / curvature / direction) used by the color engine.
-- `types.ts` — the data model: `Project` → many `Layer`s, each with `params` and
-  a `LayerStyle` (palette, color mode, width mode, opacity, blend, glow).
+  the shared per-point metric pipeline (`buildLayerData`: speed / curvature /
+  direction) used by the color engine. Now source-agnostic: it consumes points.
+- `curves.ts` — **the multi-source curve engine.** Defines every non-harmonograph
+  family (spirograph hypo/epitrochoid, rose, pure Lissajous, superformula) with
+  default + random factories, the `sampleLayer` kind dispatcher, the WeakMap
+  render-data cache (`getLayerData`), the uncached `computeLayerData` Live mode
+  uses, and `breatheLayer` (per-kind phase drift for the Live animation).
+- `record.ts` — **WebM capture.** Grabs the canvas as a `MediaStream` and drives
+  the trace 0→1 in real time through a `MediaRecorder`, feature-detected and
+  fully try/caught so unsupported browsers / the sandbox degrade gracefully.
+- `types.ts` — the data model: `Project` (background + optional gradient `bg2` /
+  `bgMode`) → many `Layer`s. Each layer has a `kind` (`CurveKind`), a harmonograph
+  `params` (always present — default + back-compat source), the optional per-kind
+  source params (`spiro` / `rose` / `liss` / `sf`), an optional `drift`, and a
+  `LayerStyle` (palette, color mode, width mode, opacity, blend, glow, symmetry).
 - `palettes.ts` — curated color ramps + background swatches.
-- `render.ts` — the renderer: auto-fit transform shared across layers, chunked
-  gradient strokes, four color modes, speed-driven variable width, additive/
-  screen blending, glow, vignette, animated pen head, and SVG export.
-- `presets.ts` — curated **multi-layer** compositions.
+- `render.ts` — the renderer: auto-fit transform (overridable, so Live freezes
+  framing) shared across layers, chunked gradient strokes, four color modes,
+  speed-driven variable width, additive/screen blending, glow, kaleidoscope,
+  vignette, animated pen head, solid/linear/radial backgrounds, and SVG export.
+- `presets.ts` — curated **multi-layer** compositions (now incl. spirograph, rose,
+  Lissajous and superformula showcases).
+- `generate.ts` — the “Generate” composer; designs coordinated harmonograph
+  archetypes *and* (≈40% of the time) alternative-source pieces.
 - `share.ts` — URL (hash) encode/decode of a whole project + a localStorage
-  gallery (sandbox-safe).
-- `components/` — `Slider`, `LayerList`, `Tabs` and the editor panels.
+  gallery (sandbox-safe), with migration that defaults legacy layers to the
+  harmonograph kind.
+- `components/` — `Slider`, `Segmented`, `LayerList`, and `CurveControls` (the
+  per-kind parameter editors for the Curve tab).
 
 ## Ideas / backlog
 
@@ -66,12 +91,39 @@ Shipped in v2 (this session):
       from a visual archetype (luminous veils, kaleidoscopic mandala, ink study…)
       with phase-shifted, interfering layers and matching palette/blend/glow.
 
+Shipped in v3 (this session) — **from harmonograph toy to a multi-source curve studio:**
+
+- [x] **Multi-source curve engine** — each layer chooses one of five families,
+      all sharing the color / width / blend / glow / kaleidoscope pipeline:
+  - [x] **Spirograph** — hypotrochoid & epitrochoid with rolling radius, pen
+        offset, turns, phase, and an optional inward spiral (decay).
+  - [x] **Rose (rhodonea)** — r = cos(k·θ), k = n/d, with an optional second
+        harmonic, adjustable wraps, and phase.
+  - [x] **Lissajous** — pure undamped (or optionally damped) x/y frequency figure.
+  - [x] **Superformula (Gielis)** — m / n₁ / n₂ / n₃ with multi-loop nesting and a
+        per-loop twist for rosettes.
+- [x] **Curve-type selector + per-kind parameter editors** (`CurveControls.tsx`),
+      with kind-aware randomize (🎲 randomizes within the layer's family).
+- [x] **Live “breathe” mode** — the figure slowly evolves as each source's phases
+      drift, with framing frozen so it doesn't jitter; dedicated speed control and
+      the `l` shortcut. A view-time effect — never mutates the saved figure.
+- [x] **WebM video capture** of the drawing pass (`MediaRecorder` + canvas stream),
+      feature-detected and sandbox-safe.
+- [x] **Gradient backgrounds** — solid / linear / radial with a second color, in
+      the canvas renderer *and* the SVG export.
+- [x] **“Generate” extended** to compose alternative-source pieces (spirograph /
+      rose / Lissajous / superformula), sometimes over a gradient backdrop.
+- [x] **New showcase presets** — Spiro Gear, Spiro Spiral, Twelve-Rose, Lissajous
+      Weave, Superflora, Starfish.
+- [x] **Backward compatibility** — old share links & gallery pieces migrate to the
+      harmonograph kind and render identically.
+
 Future:
 
-- [ ] Spirograph / epicycloid generators as additional layer sources.
-- [ ] Audio-reactive driving of pendulum amplitudes.
-- [ ] Animated GIF / WebM capture of the drawing pass.
-- [ ] Per-layer phase animation (slowly evolving figures).
+- [ ] Audio-reactive driving of amplitudes / glow (Web Audio analyser).
+- [ ] Per-layer drift rate control surfaced in the UI.
+- [ ] Animated GIF capture (alongside WebM) for universal sharing.
+- [ ] More superformula presets + a “supershape morph” Live preset.
 
 ## Session log
 
@@ -90,4 +142,11 @@ Future:
   and SVG), a **help/about** overlay, and a one-click **“Generate”** composer that
   designs coordinated multi-layer pieces from visual archetypes. Verified with
   lint + build.
-</content>
+- 2026-06-18 (claude): **v3 — a multi-source curve studio.** Generalised the layer
+  model so the renderer is curve-agnostic, then added four new parametric families
+  (`curves.ts`: spirograph, rose, Lissajous, superformula) with per-kind editors
+  (`CurveControls.tsx`) and kind-aware randomize/generate. Added a **Live** evolving
+  mode (per-kind phase drift, frozen framing), **WebM** capture of the drawing pass
+  (`record.ts`), **gradient backgrounds** (linear/radial, canvas + SVG), six new
+  showcase presets, and backward-compatible migration of old links/gallery. Curve
+  math fuzz-checked for finiteness/bounds; verified with lint + build.

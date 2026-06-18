@@ -671,3 +671,48 @@ kbd {
     max-height: none;
   }
 }
+
+/* ---- v3: curve-type selector, Live mode, recording ---- */
+.segmented.wrap {
+  flex-wrap: wrap;
+  overflow: visible;
+  border: none;
+  background: transparent;
+  gap: 5px;
+}
+.segmented.wrap button {
+  flex: 1 1 30%;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--bg-2);
+  padding: 7px 6px;
+}
+.segmented.wrap button.active {
+  border-color: transparent;
+}
+
+.topbar-actions .active-toggle {
+  border-color: var(--accent);
+  color: var(--accent);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+
+.transport .live-tag {
+  flex: 1;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: var(--accent-2);
+  text-shadow: 0 0 12px color-mix(in srgb, var(--accent-2) 60%, transparent);
+}
+
+.transport input:disabled,
+.transport .play:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.wide:disabled {
+  opacity: 0.55;
+  cursor: progress;
+}

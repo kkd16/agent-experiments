@@ -3,7 +3,19 @@
 // storage is wrapped in try/catch so the sandboxed catalog thumbnail still
 // renders if those APIs throw.
 
-import type { Project } from './types'
+import type { Layer, Project } from './types'
+
+// Older links / saved pieces predate multi-source layers — default them to the
+// harmonograph kind so they keep rendering exactly as before.
+function migrate(project: Project): Project {
+  return {
+    ...project,
+    layers: project.layers.map((l) => ({
+      ...l,
+      kind: (l as Partial<Layer>).kind ?? 'harmonograph',
+    })),
+  }
+}
 
 // Round numbers to keep encoded links short.
 function compact(project: Project): string {
@@ -45,7 +57,7 @@ export function encodeProject(project: Project): string {
 export function decodeProject(code: string): Project | null {
   try {
     const obj = JSON.parse(b64decode(code)) as unknown
-    return isProject(obj) ? obj : null
+    return isProject(obj) ? migrate(obj) : null
   } catch {
     return null
   }
@@ -101,7 +113,9 @@ export function loadGallery(): GalleryItem[] {
     if (!raw) return []
     const arr = JSON.parse(raw) as unknown
     if (!Array.isArray(arr)) return []
-    return arr.filter((it) => it && isProject((it as GalleryItem).project)) as GalleryItem[]
+    return (arr.filter((it) => it && isProject((it as GalleryItem).project)) as GalleryItem[]).map(
+      (it) => ({ ...it, project: migrate(it.project) }),
+    )
   } catch {
     return []
   }

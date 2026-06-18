@@ -69,9 +69,9 @@ function normalise(values: number[]): number[] {
 }
 
 // Build the full render-ready dataset for a curve, including the metric arrays
-// used by velocity / curvature / direction coloring and speed-based width.
-export function buildLayerData(p: HarmonographParams): LayerData {
-  const points = samplePath(p)
+// used by velocity / curvature / direction coloring and speed-based width. The
+// caller supplies the already-sampled points so any curve source can feed in.
+export function buildLayerData(points: Point[]): LayerData {
   const n = points.length
   const rawSpeed = new Array<number>(n)
   const angle = new Array<number>(n)
@@ -99,19 +99,6 @@ export function buildLayerData(p: HarmonographParams): LayerData {
     curvature: normalise(rawCurv),
     angle: angle.map((a) => (a + Math.PI) / TWO_PI),
   }
-}
-
-// Memoise the (relatively costly) sampling by params identity. Editing a layer's
-// *style* keeps its `params` object reference, so this returns instantly then;
-// only an actual params change recomputes. A WeakMap lets dropped layers GC.
-const dataCache = new WeakMap<HarmonographParams, LayerData>()
-export function getLayerData(p: HarmonographParams): LayerData {
-  let d = dataCache.get(p)
-  if (!d) {
-    d = buildLayerData(p)
-    dataCache.set(p, d)
-  }
-  return d
 }
 
 const rand = (min: number, max: number) => min + Math.random() * (max - min)
@@ -190,8 +177,9 @@ export function makeLayer(
   name: string,
   params: HarmonographParams,
   style: LayerStyle,
+  extra: Partial<Layer> = {},
 ): Layer {
-  return { id: makeId(), name, visible: true, params, style }
+  return { id: makeId(), name, visible: true, kind: 'harmonograph', params, style, ...extra }
 }
 
 // Deep clone so duplicate / preset loads never share mutable nested objects.

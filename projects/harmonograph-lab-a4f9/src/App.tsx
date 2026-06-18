@@ -3,16 +3,30 @@ import './App.css'
 import {
   cloneParams,
   defaultStyle,
-  getLayerData,
   makeId,
   makeLayer,
   randomParams,
   type LayerData,
 } from './harmonograph'
+import {
+  CURVE_KINDS,
+  breatheLayer,
+  computeLayerData,
+  defaultLiss,
+  defaultRose,
+  defaultSf,
+  defaultSpiro,
+  getLayerData,
+  randomLissajous,
+  randomRose,
+  randomSpiro,
+  randomSuperformula,
+} from './curves'
 import { BACKGROUNDS, PALETTES, randomPalette } from './palettes'
 import { PRESETS, loadPreset } from './presets'
 import { generateProject } from './generate'
-import { drawProject, toSvg } from './render'
+import { computeTransform, drawProject, toSvg, type Transform } from './render'
+import { canRecord, recordWebm } from './record'
 import {
   deleteFromGallery,
   loadGallery,
@@ -23,21 +37,33 @@ import {
   type GalleryItem,
 } from './share'
 import type {
+  BackgroundMode,
   BlendMode,
   ColorMode,
+  CurveKind,
   Layer,
+  LissajousParams,
   Project,
+  RoseParams,
+  SpirographParams,
+  SuperformulaParams,
   WidthMode,
 } from './types'
 import { Slider } from './components/Slider'
 import { Segmented } from './components/Segmented'
 import { LayerList } from './components/LayerList'
+import {
+  CurveHarmonograph,
+  CurveLissajous,
+  CurveRose,
+  CurveSpirograph,
+  CurveSuperformula,
+} from './components/CurveControls'
 
 const RENDER = 1100 // canvas backing resolution (square)
 
 type Tab = 'compose' | 'curve' | 'style' | 'scene' | 'save'
 type PendKey = 'x1' | 'x2' | 'y1' | 'y2'
-const PEND_KEYS: PendKey[] = ['x1', 'x2', 'y1', 'y2']
 
 const COLOR_MODES: { value: ColorMode; label: string }[] = [
   { value: 'path', label: 'Path' },
@@ -54,9 +80,31 @@ const BLEND_MODES: { value: BlendMode; label: string }[] = [
   { value: 'lighter', label: 'Add' },
   { value: 'screen', label: 'Screen' },
 ]
+const BG_MODES: { value: BackgroundMode; label: string }[] = [
+  { value: 'solid', label: 'Solid' },
+  { value: 'linear', label: 'Linear' },
+  { value: 'radial', label: 'Radial' },
+]
 
 function initialProject(): Project {
   return readHashProject() ?? loadPreset(PRESETS[0])
+}
+
+// Fresh random source matching a layer's current kind.
+function withRandomSource(l: Layer): Layer {
+  switch (l.kind) {
+    case 'spirograph':
+      return { ...l, spiro: randomSpiro() }
+    case 'rose':
+      return { ...l, rose: randomRose() }
+    case 'lissajous':
+      return { ...l, liss: randomLissajous() }
+    case 'superformula':
+      return { ...l, sf: randomSuperformula() }
+    case 'harmonograph':
+    default:
+      return { ...l, params: randomParams() }
+  }
 }
 
 export default function App() {
@@ -68,6 +116,9 @@ export default function App() {
   const [trace, setTrace] = useState(1)
   const [playing, setPlaying] = useState(false)
   const [speed, setSpeed] = useState(1)
+  const [live, setLive] = useState(false)
+  const [liveSpeed, setLiveSpeed] = useState(1)
+  const [recording, setRecording] = useState(false)
   const [exportScale, setExportScale] = useState(2)
   const [gallery, setGallery] = useState<GalleryItem[]>(() => loadGallery())
   const [galleryName, setGalleryName] = useState('')
@@ -82,7 +133,7 @@ export default function App() {
   const datas = useMemo(() => {
     const map = new Map<string, LayerData>()
     for (const layer of project.layers) {
-      map.set(layer.id, getLayerData(layer.params))
+      map.set(layer.id, getLayerData(layer))
     }
     return map
   }, [project.layers])
@@ -92,12 +143,38 @@ export default function App() {
     [project.layers, selectedId],
   )
 
-  // Draw.
+  // Draw the static figure. While Live mode or a recording is running, those
+  // own the canvas, so this effect stands down.
   useEffect(() => {
+    if (live || recording) return
     const ctx = canvasRef.current?.getContext('2d')
     if (!ctx) return
     drawProject(ctx, project, datas, RENDER, { trace })
-  }, [project, datas, trace])
+  }, [project, datas, trace, live, recording])
+
+  // Live "breathe" loop: drift each layer's phases over time and redraw, with
+  // framing frozen so the evolving figure doesn't jitter as its extent shifts.
+  useEffect(() => {
+    if (!live) return
+    const ctx = canvasRef.current?.getContext('2d')
+    if (!ctx) return
+    const tf: Transform = computeTransform(project.layers, datas, RENDER)
+    let raf = 0
+    const t0 = performance.now()
+    const loop = (now: number) => {
+      const t = ((now - t0) / 1000) * liveSpeed
+      const map = new Map<string, LayerData>()
+      const drifted = project.layers.map((l) => {
+        const dl = breatheLayer(l, t)
+        map.set(dl.id, computeLayerData(dl))
+        return dl
+      })
+      drawProject(ctx, { ...project, layers: drifted }, map, RENDER, { transform: tf })
+      raf = requestAnimationFrame(loop)
+    }
+    raf = requestAnimationFrame(loop)
+    return () => cancelAnimationFrame(raf)
+  }, [live, liveSpeed, project, datas])
 
   // Keep the URL hash in sync so the current piece is always shareable.
   useEffect(() => {
@@ -159,6 +236,37 @@ export default function App() {
     }))
   }
 
+  // ---- curve-source editing (per kind) ------------------------------------
+
+  const setKind = (kind: CurveKind) => {
+    if (!selected) return
+    updateLayer(selected.id, (l) => {
+      const next: Layer = { ...l, kind }
+      if (kind === 'spirograph' && !next.spiro) next.spiro = defaultSpiro()
+      if (kind === 'rose' && !next.rose) next.rose = defaultRose()
+      if (kind === 'lissajous' && !next.liss) next.liss = defaultLiss()
+      if (kind === 'superformula' && !next.sf) next.sf = defaultSf()
+      return next
+    })
+  }
+  const updateSpiro = (patch: Partial<SpirographParams>) => {
+    if (!selected) return
+    updateLayer(selected.id, (l) => ({ ...l, spiro: { ...(l.spiro ?? defaultSpiro()), ...patch } }))
+  }
+  const updateRose = (patch: Partial<RoseParams>) => {
+    if (!selected) return
+    updateLayer(selected.id, (l) => ({ ...l, rose: { ...(l.rose ?? defaultRose()), ...patch } }))
+  }
+  const updateLiss = (patch: Partial<LissajousParams>) => {
+    if (!selected) return
+    updateLayer(selected.id, (l) => ({ ...l, liss: { ...(l.liss ?? defaultLiss()), ...patch } }))
+  }
+  const updateSf = (patch: Partial<SuperformulaParams>) => {
+    if (!selected) return
+    updateLayer(selected.id, (l) => ({ ...l, sf: { ...(l.sf ?? defaultSf()), ...patch } }))
+  }
+
+
   const addLayer = useCallback(() => {
     const layer = makeLayer(
       `Layer ${project.layers.length + 1}`,
@@ -179,9 +287,16 @@ export default function App() {
         id: makeId(),
         name: `${src.name} copy`,
         visible: true,
+        kind: src.kind,
         params: cloneParams(src.params),
         style: { ...src.style, colors: [...src.style.colors] },
       }
+      // Clone the active source for non-harmonograph kinds so edits don't share.
+      if (src.spiro) copy.spiro = { ...src.spiro }
+      if (src.rose) copy.rose = { ...src.rose }
+      if (src.liss) copy.liss = { ...src.liss }
+      if (src.sf) copy.sf = { ...src.sf }
+      if (src.drift) copy.drift = { ...src.drift }
       const next = [...ls]
       next.splice(i + 1, 0, copy)
       return next
@@ -215,14 +330,13 @@ export default function App() {
 
   const randomizeSelected = useCallback(() => {
     if (!selected) return
-    updateLayer(selected.id, (l) => ({ ...l, params: randomParams() }))
+    updateLayer(selected.id, (l) => withRandomSource(l))
   }, [selected, updateLayer])
 
   const randomizeAll = () => {
     setLayers((ls) =>
       ls.map((l) => ({
-        ...l,
-        params: randomParams(),
+        ...withRandomSource(l),
         style: { ...l.style, colors: randomPalette().colors },
       })),
     )
@@ -342,17 +456,65 @@ export default function App() {
   // ---- animation controls -------------------------------------------------
 
   const togglePlay = useCallback(() => {
+    if (recording) return
+    setLive(false)
     if (!playing && traceRef.current >= 1) {
       traceRef.current = 0
       setTrace(0)
     }
     setPlaying((p) => !p)
-  }, [playing])
+  }, [playing, recording])
   const scrub = (v: number) => {
     setPlaying(false)
     traceRef.current = v
     setTrace(v)
   }
+
+  const toggleLive = useCallback(() => {
+    if (recording) return
+    setPlaying(false)
+    // entering Live: make sure the full figure is showing first
+    if (!live) {
+      traceRef.current = 1
+      setTrace(1)
+    }
+    setLive((v) => !v)
+  }, [live, recording])
+
+  // ---- video capture ------------------------------------------------------
+
+  const recordVideo = useCallback(async () => {
+    const canvas = canvasRef.current
+    const ctx = canvas?.getContext('2d')
+    if (!canvas || !ctx) return
+    if (!canRecord()) {
+      flash('Video capture is not supported in this browser')
+      return
+    }
+    setLive(false)
+    setPlaying(false)
+    setRecording(true)
+    try {
+      const blob = await recordWebm(
+        canvas,
+        (tr) => drawProject(ctx, project, datas, RENDER, { trace: tr }),
+        { duration: 7, fps: 60, hold: 1.4 },
+      )
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = 'harmonograph.webm'
+      a.click()
+      URL.revokeObjectURL(url)
+      flash('Saved WebM video')
+    } catch (err) {
+      flash(err instanceof Error ? err.message : 'Recording failed')
+    } finally {
+      setRecording(false)
+      traceRef.current = 1
+      setTrace(1)
+    }
+  }, [project, datas, flash])
 
   // ---- keyboard shortcuts -------------------------------------------------
 
@@ -376,6 +538,9 @@ export default function App() {
           e.preventDefault()
           togglePlay()
           break
+        case 'l':
+          toggleLive()
+          break
         case 'n':
           addLayer()
           break
@@ -394,7 +559,7 @@ export default function App() {
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [generate, randomizeSelected, togglePlay, addLayer, doShare, downloadPng])
+  }, [generate, randomizeSelected, togglePlay, toggleLive, addLayer, doShare, downloadPng])
 
   const theme = selected
   const visibleCount = project.layers.filter((l) => l.visible).length
@@ -419,6 +584,13 @@ export default function App() {
           <button className="ghost" onClick={togglePlay} title="Play / pause (space)">
             {playing ? '⏸ Pause' : '▶ Animate'}
           </button>
+          <button
+            className={live ? 'ghost active-toggle' : 'ghost'}
+            onClick={toggleLive}
+            title="Live evolving figure (l)"
+          >
+            {live ? '🌀 Live ✓' : '🌀 Live'}
+          </button>
           <button className="primary" onClick={doShare} title="Copy share link (s)">
             🔗 Share
           </button>
@@ -434,30 +606,55 @@ export default function App() {
             <canvas ref={canvasRef} width={RENDER} height={RENDER} className="canvas" />
           </div>
           <div className="transport">
-            <button className="play" onClick={togglePlay}>
-              {playing ? '⏸' : '▶'}
-            </button>
-            <input
-              className="scrub"
-              type="range"
-              min={0}
-              max={1}
-              step={0.001}
-              value={trace}
-              onChange={(e) => scrub(parseFloat(e.target.value))}
-            />
-            <span className="trace-pct">{Math.round(trace * 100)}%</span>
-            <label className="speed">
-              speed
-              <input
-                type="range"
-                min={0.2}
-                max={3}
-                step={0.1}
-                value={speed}
-                onChange={(e) => setSpeed(parseFloat(e.target.value))}
-              />
-            </label>
+            {live ? (
+              <>
+                <button className="play" onClick={toggleLive} title="Stop Live">
+                  ⏹
+                </button>
+                <span className="live-tag">LIVE · evolving</span>
+                <label className="speed">
+                  evolve
+                  <input
+                    type="range"
+                    min={0.1}
+                    max={3}
+                    step={0.1}
+                    value={liveSpeed}
+                    onChange={(e) => setLiveSpeed(parseFloat(e.target.value))}
+                  />
+                </label>
+              </>
+            ) : (
+              <>
+                <button className="play" onClick={togglePlay} disabled={recording}>
+                  {playing ? '⏸' : '▶'}
+                </button>
+                <input
+                  className="scrub"
+                  type="range"
+                  min={0}
+                  max={1}
+                  step={0.001}
+                  value={trace}
+                  disabled={recording}
+                  onChange={(e) => scrub(parseFloat(e.target.value))}
+                />
+                <span className="trace-pct">
+                  {recording ? 'REC' : `${Math.round(trace * 100)}%`}
+                </span>
+                <label className="speed">
+                  speed
+                  <input
+                    type="range"
+                    min={0.2}
+                    max={3}
+                    step={0.1}
+                    value={speed}
+                    onChange={(e) => setSpeed(parseFloat(e.target.value))}
+                  />
+                </label>
+              </>
+            )}
           </div>
         </div>
 
@@ -523,119 +720,34 @@ export default function App() {
                       🎲
                     </button>
                   </div>
-                  <Slider
-                    label="Trace length"
-                    value={theme.params.duration}
-                    min={40}
-                    max={420}
-                    step={1}
-                    onChange={(v) => updateParams({ duration: v })}
-                    fmt={(v) => v.toFixed(0)}
+                  <div className="seg-label">Curve type</div>
+                  <Segmented
+                    value={theme.kind}
+                    options={CURVE_KINDS}
+                    onChange={setKind}
+                    wrap
                   />
                 </section>
 
-                {PEND_KEYS.map((key) => (
-                  <section className="group" key={key}>
-                    <div className="group-title">
-                      Pendulum <span className="tag">{key.toUpperCase()}</span>
-                    </div>
-                    <Slider
-                      label="Frequency"
-                      value={theme.params[key].freq}
-                      min={0.5}
-                      max={8}
-                      step={0.001}
-                      onChange={(v) => updatePend(key, 'freq', v)}
-                    />
-                    <Slider
-                      label="Phase"
-                      value={theme.params[key].phase}
-                      min={0}
-                      max={Math.PI * 2}
-                      step={0.01}
-                      onChange={(v) => updatePend(key, 'phase', v)}
-                      fmt={(v) => `${((v / Math.PI) * 180).toFixed(0)}°`}
-                    />
-                    <Slider
-                      label="Amplitude"
-                      value={theme.params[key].amp}
-                      min={0}
-                      max={1}
-                      step={0.01}
-                      onChange={(v) => updatePend(key, 'amp', v)}
-                    />
-                    <Slider
-                      label="Damping"
-                      value={theme.params[key].damp}
-                      min={0}
-                      max={0.05}
-                      step={0.0005}
-                      onChange={(v) => updatePend(key, 'damp', v)}
-                      fmt={(v) => v.toFixed(4)}
-                    />
-                  </section>
-                ))}
-
-                <section className="group">
-                  <label className="check">
-                    <input
-                      type="checkbox"
-                      checked={theme.params.rotary.enabled}
-                      onChange={(e) =>
-                        updateParams({
-                          rotary: { ...theme.params.rotary, enabled: e.target.checked },
-                        })
-                      }
-                    />
-                    Rotary frame (rotating paper)
-                  </label>
-                  {theme.params.rotary.enabled && (
-                    <>
-                      <Slider
-                        label="Rot. frequency"
-                        value={theme.params.rotary.freq}
-                        min={0.2}
-                        max={6}
-                        step={0.001}
-                        onChange={(v) =>
-                          updateParams({ rotary: { ...theme.params.rotary, freq: v } })
-                        }
-                      />
-                      <Slider
-                        label="Rot. amplitude"
-                        value={theme.params.rotary.amp}
-                        min={0}
-                        max={3}
-                        step={0.01}
-                        onChange={(v) =>
-                          updateParams({ rotary: { ...theme.params.rotary, amp: v } })
-                        }
-                      />
-                      <Slider
-                        label="Rot. phase"
-                        value={theme.params.rotary.phase}
-                        min={0}
-                        max={Math.PI * 2}
-                        step={0.01}
-                        onChange={(v) =>
-                          updateParams({ rotary: { ...theme.params.rotary, phase: v } })
-                        }
-                        fmt={(v) => `${((v / Math.PI) * 180).toFixed(0)}°`}
-                      />
-                      <Slider
-                        label="Rot. damping"
-                        value={theme.params.rotary.damp}
-                        min={0}
-                        max={0.03}
-                        step={0.0005}
-                        onChange={(v) =>
-                          updateParams({ rotary: { ...theme.params.rotary, damp: v } })
-                        }
-                        fmt={(v) => v.toFixed(4)}
-                      />
-                    </>
-                  )}
-                </section>
+                {theme.kind === 'harmonograph' && (
+                  <CurveHarmonograph
+                    theme={theme}
+                    updateParams={updateParams}
+                    updatePend={updatePend}
+                  />
+                )}
+                {theme.kind === 'spirograph' && (
+                  <CurveSpirograph spiro={theme.spiro ?? defaultSpiro()} update={updateSpiro} />
+                )}
+                {theme.kind === 'rose' && (
+                  <CurveRose rose={theme.rose ?? defaultRose()} update={updateRose} />
+                )}
+                {theme.kind === 'lissajous' && (
+                  <CurveLissajous liss={theme.liss ?? defaultLiss()} update={updateLiss} />
+                )}
+                {theme.kind === 'superformula' && (
+                  <CurveSuperformula sf={theme.sf ?? defaultSf()} update={updateSf} />
+                )}
               </>
             )}
 
@@ -778,6 +890,22 @@ export default function App() {
                       title="Custom background"
                     />
                   </div>
+                  <div className="seg-label">Fill</div>
+                  <Segmented
+                    value={project.bgMode ?? 'solid'}
+                    options={BG_MODES}
+                    onChange={(v) => setProject((p) => ({ ...p, bgMode: v }))}
+                  />
+                  {(project.bgMode ?? 'solid') !== 'solid' && (
+                    <label className="check" style={{ marginTop: 8 }}>
+                      <input
+                        type="color"
+                        value={project.bg2 ?? '#000000'}
+                        onChange={(e) => setProject((p) => ({ ...p, bg2: e.target.value }))}
+                      />
+                      Gradient end color
+                    </label>
+                  )}
                   <Slider
                     label="Vignette"
                     value={project.vignette}
@@ -819,6 +947,9 @@ export default function App() {
                     <button onClick={downloadPng}>⬇ PNG</button>
                     <button onClick={downloadSvg}>⬇ SVG</button>
                   </div>
+                  <button className="wide" onClick={recordVideo} disabled={recording}>
+                    {recording ? '● Recording…' : '🎬 Record WebM (drawing pass)'}
+                  </button>
                   <button className="wide" onClick={doShare}>
                     🔗 Copy share link
                   </button>
@@ -887,16 +1018,22 @@ export default function App() {
               small whole-number ratios make the most coherent figures.
             </p>
             <p className="hint">
-              Build a piece by stacking <strong>layers</strong> — each its own curve,
-              palette and blend. Use <em>Add</em> / <em>Screen</em> blends with glow
-              for luminous overlaps, color along path / speed / curvature / direction,
-              and turn up <strong>kaleidoscope symmetry</strong> for mandalas. Hit
-              Animate to watch the pen draw. Everything lives in the URL, so the{' '}
+              Build a piece by stacking <strong>layers</strong>, and pick each layer's{' '}
+              <strong>curve type</strong> in the Curve tab: a harmonograph, a{' '}
+              <strong>spirograph</strong> (hypo/epitrochoid), a <strong>rose</strong>,
+              a <strong>Lissajous</strong> figure, or the wildly versatile{' '}
+              <strong>superformula</strong>. Use <em>Add</em> / <em>Screen</em> blends
+              with glow for luminous overlaps, color along path / speed / curvature /
+              direction, and turn up <strong>kaleidoscope symmetry</strong> for mandalas.
+              Hit <strong>Animate</strong> to watch the pen draw, <strong>Live</strong> to
+              let the figure slowly evolve, and <strong>Record WebM</strong> to capture
+              the drawing pass as video. Everything lives in the URL, so the{' '}
               <strong>Share</strong> link reproduces your exact piece.
             </p>
             <div className="shortcuts">
               <div><kbd>G</kbd> generate a piece</div>
               <div><kbd>Space</kbd> play / pause</div>
+              <div><kbd>L</kbd> live evolve</div>
               <div><kbd>R</kbd> randomize layer</div>
               <div><kbd>N</kbd> new layer</div>
               <div><kbd>E</kbd> export PNG</div>
