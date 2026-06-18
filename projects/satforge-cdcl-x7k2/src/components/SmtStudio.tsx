@@ -1,18 +1,44 @@
 import { useState } from 'react'
-import { checkSat, parseSmtLib, SmtSyntaxError, SMT_EXAMPLES, smtUnsatCore, formulaToString, type FullSmtResult } from '../smt'
+import {
+  checkSat,
+  parseSmtLib,
+  SmtSyntaxError,
+  SMT_EXAMPLES,
+  OMT_EXAMPLES,
+  optimize,
+  maxsmt,
+  smtUnsatCore,
+  formulaToString,
+  type FullSmtResult,
+  type OmtResult,
+  type MaxSmtResult,
+} from '../smt'
 import { parseBv, solveBv, BvSyntaxError, BV_EXAMPLES, type BvResult } from '../smt/bv'
 
-type Example = { name: string; logic: string; blurb: string; expected: 'sat' | 'unsat'; src: string }
-const ALL_EXAMPLES: Example[] = [...SMT_EXAMPLES, ...BV_EXAMPLES]
+type Example = { name: string; logic: string; blurb: string; expected?: 'sat' | 'unsat'; src: string }
+const ALL_EXAMPLES: Example[] = [
+  ...SMT_EXAMPLES,
+  ...OMT_EXAMPLES.map((e) => ({ name: e.name, logic: e.logic, blurb: e.blurb, src: e.src })),
+  ...BV_EXAMPLES,
+]
 
 /** QF_BV is decided by a different engine (eager bit-blasting), so route on it. */
 function isBvScript(src: string): boolean {
   return /\bQF_BV\b/.test(src) || /\bBitVec\b/.test(src) || /\bbv[a-z]/.test(src)
 }
 
+interface OmtRun {
+  kind: 'omt' | 'maxsmt'
+  objective?: string
+  dir?: 'min' | 'max'
+  omt?: OmtResult
+  maxsmt?: MaxSmtResult
+}
+
 interface RunState {
   smt?: FullSmtResult
   bv?: BvResult
+  omt?: OmtRun
   error?: string
   expected?: 'sat' | 'unsat'
   core?: string[]
@@ -45,18 +71,37 @@ export function SmtStudio() {
           setRun({ bv, expected: script.expected })
         } else {
           const script = parseSmtLib(src)
-          if (script.assertions.length === 0) {
-            setRun({ error: 'No (assert …) commands found.' })
-            setBusy(false)
-            return
+          const opts = { maxRounds: 200000 }
+          // OMT / MaxSMT routing: an objective or soft constraints switch on the
+          // optimization layer; otherwise it's an ordinary decision query.
+          if (script.objectives.length > 0) {
+            const obj = script.objectives[0]
+            const hard = script.tm.and(script.assertions)
+            const omt = optimize(script.tm, hard, obj.term, obj.dir, opts)
+            setRun({ omt: { kind: 'omt', objective: script.tm.termToString(obj.term), dir: obj.dir, omt } })
+          } else if (script.softs.length > 0) {
+            const hard = script.tm.and(script.assertions)
+            const res = maxsmt(
+              script.tm,
+              hard,
+              script.softs.map((s) => ({ formula: s.formula, weight: s.weight, id: s.id })),
+              opts,
+            )
+            setRun({ omt: { kind: 'maxsmt', maxsmt: res } })
+          } else {
+            if (script.assertions.length === 0) {
+              setRun({ error: 'No (assert …) commands found.' })
+              setBusy(false)
+              return
+            }
+            const smt = checkSat(script.tm, script.tm.and(script.assertions), opts)
+            let core: string[] | undefined
+            if (smt.status === 'unsat' && script.assertions.length > 1) {
+              const idx = smtUnsatCore(script.tm, script.assertions, opts)
+              core = idx.map((i) => formulaToString(script.tm, script.assertions[i]))
+            }
+            setRun({ smt, expected: script.expected, core })
           }
-          const smt = checkSat(script.tm, script.tm.and(script.assertions), { maxRounds: 200000 })
-          let core: string[] | undefined
-          if (smt.status === 'unsat' && script.assertions.length > 1) {
-            const idx = smtUnsatCore(script.tm, script.assertions, { maxRounds: 200000 })
-            core = idx.map((i) => formulaToString(script.tm, script.assertions[i]))
-          }
-          setRun({ smt, expected: script.expected, core })
         }
       } catch (e) {
         const msg = e instanceof SmtSyntaxError || e instanceof BvSyntaxError ? `Syntax error: ${e.message}` : String(e)
@@ -107,6 +152,7 @@ export function SmtStudio() {
           )}
           {!busy && run?.error && <div className="banner error">⚠ {run.error}</div>}
           {!busy && run?.bv && <BvResultView res={run.bv} expected={run.expected} />}
+          {!busy && run?.omt && <OmtResultView run={run.omt} />}
           {!busy && run?.smt && <SmtResultView result={run.smt} expected={run.expected} core={run.core} />}
           {!busy && !run && (
             <div className="placeholder">
@@ -224,6 +270,159 @@ function BvResultView({ res, expected }: { res: BvResult; expected?: 'sat' | 'un
         <div className="banner warn">The solver could not decide this instance within its budget ({res.message ?? 'limit reached'}).</div>
       )}
     </>
+  )
+}
+
+// ---- OMT / MaxSMT result ------------------------------------------------------
+function statusPill(status: string): { cls: string; label: string } {
+  switch (status) {
+    case 'optimal':
+      return { cls: 'sat', label: 'OPTIMAL' }
+    case 'infeasible':
+      return { cls: 'unsat', label: 'INFEASIBLE' }
+    case 'unbounded':
+      return { cls: 'unknown', label: 'UNBOUNDED' }
+    default:
+      return { cls: 'unknown', label: 'UNKNOWN' }
+  }
+}
+
+function OmtResultView({ run }: { run: OmtRun }) {
+  if (run.kind === 'maxsmt' && run.maxsmt) {
+    const r = run.maxsmt
+    const pill = statusPill(r.status)
+    const satisfied = r.soft.filter((s) => !s.violated)
+    const satWeight = satisfied.reduce((a, s) => a + s.weight, 0)
+    return (
+      <>
+        <div className="smt-verdict-row">
+          <div className={`status-pill ${pill.cls}`}>
+            <strong>{pill.label}</strong>
+            {r.status === 'optimal' && <span>cost {r.cost!.toString()}</span>}
+          </div>
+          <div className="smt-meta">
+            <span className="bv-engine">MaxSMT · core reused</span>
+            <span>
+              <b>{r.calls}</b> solver call{r.calls === 1 ? '' : 's'}
+            </span>
+            {r.status === 'optimal' && (
+              <span className="ok">
+                ✓ <b>{satWeight}</b> weight satisfied, <b>{r.cost!.toString()}</b> dropped
+              </span>
+            )}
+          </div>
+        </div>
+        {r.status === 'optimal' && (
+          <div className="smt-model">
+            <h4>Soft constraints</h4>
+            <p className="smt-hint">
+              The minimum-weight set of soft constraints to give up so the hard part stays satisfiable — every other choice
+              violates at least as much weight.
+            </p>
+            <table className="array-model omt-soft">
+              <thead>
+                <tr>
+                  <th>soft constraint</th>
+                  <th>weight</th>
+                  <th>status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {r.soft.map((s, i) => (
+                  <tr key={i} className={s.violated ? 'omt-violated' : 'omt-satisfied'}>
+                    <td>
+                      <code>{s.id}</code>
+                    </td>
+                    <td>{s.weight}</td>
+                    <td>{s.violated ? '✗ dropped' : '✓ satisfied'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+        {r.status === 'optimal' && r.model && <ModelBlock model={r.model} />}
+        {r.message && <div className="banner warn">{r.message}</div>}
+      </>
+    )
+  }
+
+  if (run.kind === 'omt' && run.omt) {
+    const r = run.omt
+    const pill = statusPill(r.status)
+    return (
+      <>
+        <div className="smt-verdict-row">
+          <div className={`status-pill ${pill.cls}`}>
+            <strong>{pill.label}</strong>
+            {r.status === 'optimal' && (
+              <span>
+                {run.dir === 'min' ? 'min' : 'max'} = {r.value!.toString()}
+                {r.attained === false ? '⁺' : ''}
+              </span>
+            )}
+          </div>
+          <div className="smt-meta">
+            <span className="bv-engine">{r.method === 'lra-simplex' ? 'OMT · simplex LP' : 'OMT · binary search'}</span>
+            <span>
+              <b>{r.calls}</b> solver call{r.calls === 1 ? '' : 's'}
+            </span>
+            {r.status === 'optimal' && r.attained === false && <span className="mismatch">open (not attained)</span>}
+          </div>
+        </div>
+
+        <div className="smt-model">
+          <h4>Objective</h4>
+          <p className="smt-hint">
+            <code>
+              {run.dir === 'min' ? 'minimize' : 'maximize'} {run.objective}
+            </code>
+            {r.status === 'optimal' && (
+              <>
+                {' '}
+                → <strong>{r.value!.toString()}</strong>
+                {r.attained === false && (
+                  <em> (an open {run.dir === 'min' ? 'infimum' : 'supremum'} — approached but never reached)</em>
+                )}
+              </>
+            )}
+          </p>
+        </div>
+
+        {r.trace.length > 0 && (
+          <details className="omt-trace">
+            <summary>Search trace · {r.trace.length} steps</summary>
+            <table className="array-model">
+              <tbody>
+                {r.trace.map((s, i) => (
+                  <tr key={i} className={s.sat ? 'omt-satisfied' : 'omt-violated'}>
+                    <td>
+                      <code>{s.bound}</code>
+                    </td>
+                    <td>{s.sat ? 'sat' : 'unsat'}</td>
+                    <td>{s.value !== undefined ? <code>obj = {s.value}</code> : ''}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </details>
+        )}
+
+        {r.status === 'optimal' && r.model && <ModelBlock model={r.model} />}
+        {r.message && <div className="banner warn">{r.message}</div>}
+      </>
+    )
+  }
+  return null
+}
+
+/** Render an optimizing model's assignment by reusing the SMT model panels. */
+function ModelBlock({ model }: { model: FullSmtResult }) {
+  return (
+    <div className="omt-model-block">
+      <h4>Optimal model</h4>
+      <SmtResultView result={model} />
+    </div>
   )
 }
 

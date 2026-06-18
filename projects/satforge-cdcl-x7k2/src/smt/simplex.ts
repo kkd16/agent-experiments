@@ -61,6 +61,17 @@ export interface ArithModel {
   values: Map<number, Rational> // problem-variable term id → value
 }
 
+/** Result of a linear-programming optimization over the current bounds. */
+export interface LpResult {
+  kind: 'optimal' | 'unbounded' | 'infeasible'
+  /** The optimal objective value as a δ-rational `c + k·δ`. `k ≠ 0` ⇒ the
+   *  optimum is an open infimum/supremum (a strict bound prevents attainment). */
+  c?: Rational
+  k?: Rational
+  /** Problem-variable values (term id → Rational) at the optimal vertex. */
+  values?: Map<number, Rational>
+}
+
 export class SimplexSolver {
   private tm: { arithVars: Map<number, Term> }
   constructor(tm: { arithVars: Map<number, Term> }) {
@@ -480,6 +491,115 @@ export class SimplexSolver {
     this.beta = s.beta.slice()
     this.basic = s.basic.slice()
     this.row = s.row.map((m) => new Map(m))
+  }
+
+  // ---- linear-programming optimization (phase 2) ----------------------------
+  // After establishing feasibility for `lits`, optimize a linear objective over
+  // the same polytope by a textbook *bounded-variable* primal simplex: compute
+  // reduced costs in terms of the non-basic variables, enter the smallest-index
+  // improving non-basic (Bland's rule ⇒ no cycling), and either flip it to its
+  // opposite bound or pivot out the basic that blocks it first (the min-ratio
+  // test). Exact throughout (Rational/δ-rational), so the optimum is an exact
+  // rational vertex and a non-zero δ-coefficient certifies an *open* optimum (a
+  // strict inequality keeping it from being attained). Intended for QF_LRA — the
+  // caller must ensure the problem has no integer variables.
+  optimize(lits: TheoryLit[], objLin: LinExpr, maximize: boolean): LpResult {
+    const feas = this.check(lits)
+    if (!feas.ok) return { kind: 'infeasible' }
+
+    // Make sure every objective variable is present in the tableau.
+    for (const v of objLin.coeffs.keys()) {
+      this.fresh(`x${v}`, this.tm.arithVars.get(v)?.sort === 'Int', v)
+    }
+    // Objective coefficients keyed by internal index. We always *maximize*
+    // `sign·obj` (so minimizing obj is maximizing −obj).
+    const sign = maximize ? Rational.ONE : Rational.of(-1n)
+    const objByVar = new Map<number, Rational>()
+    for (const [tid, c] of objLin.coeffs) {
+      const i = this.idx.get(`x${tid}`)!
+      objByVar.set(i, (objByVar.get(i) ?? Rational.ZERO).add(c))
+    }
+    const cobj = new Map<number, Rational>()
+    for (const [i, c] of objByVar) cobj.set(i, c.mul(sign))
+
+    const MAX = 200000
+    for (let iter = 0; iter < MAX; iter++) {
+      // Reduced costs over the non-basic variables (substitute basic rows).
+      const rc = new Map<number, Rational>()
+      const bump = (k: number, d: Rational) => {
+        const cur = (rc.get(k) ?? Rational.ZERO).add(d)
+        if (cur.isZero()) rc.delete(k)
+        else rc.set(k, cur)
+      }
+      for (const [i, c] of cobj) {
+        if (!this.basic[i]) bump(i, c)
+        else for (const [k, a] of this.row[i]) bump(k, c.mul(a))
+      }
+      // Choose the smallest-index non-basic that can improve the objective.
+      let enter = -1
+      let dir = 0
+      for (const k of [...rc.keys()].sort((x, y) => x - y)) {
+        const r = rc.get(k)!
+        const canInc = !this.upper[k] || this.beta[k].lt(this.upper[k]!.val)
+        const canDec = !this.lower[k] || this.beta[k].gt(this.lower[k]!.val)
+        if (r.sign() > 0 && canInc) {
+          enter = k
+          dir = 1
+          break
+        }
+        if (r.sign() < 0 && canDec) {
+          enter = k
+          dir = -1
+          break
+        }
+      }
+      if (enter === -1) break // optimal
+
+      // Min-ratio test: how far can `enter` move (in direction `dir`) before some
+      // basic variable — or `enter` itself — hits a bound?
+      let theta: Delta | null = null
+      let leave = -1
+      const dirR = Rational.of(BigInt(dir))
+      // `enter`'s own opposite bound (a bound flip, no pivot).
+      if (dir > 0 && this.upper[enter]) theta = this.upper[enter]!.val.sub(this.beta[enter])
+      if (dir < 0 && this.lower[enter]) theta = this.beta[enter].sub(this.lower[enter]!.val)
+      for (let i = 0; i < this.nVars; i++) {
+        if (!this.basic[i]) continue
+        const a = this.row[i].get(enter)
+        if (!a) continue
+        const rate = a.mul(dirR) // dx_i per unit +θ
+        if (rate.sign() > 0 && this.upper[i]) {
+          const lim = this.upper[i]!.val.sub(this.beta[i]).scale(Rational.ONE.div(rate))
+          if (theta === null || lim.lt(theta)) {
+            theta = lim
+            leave = i
+          }
+        } else if (rate.sign() < 0 && this.lower[i]) {
+          const lim = this.lower[i]!.val.sub(this.beta[i]).scale(Rational.ONE.div(rate))
+          if (theta === null || lim.lt(theta)) {
+            theta = lim
+            leave = i
+          }
+        }
+      }
+      if (theta === null) return { kind: 'unbounded' }
+
+      // Move `enter` by dir·θ, updating every dependent basic's β.
+      this.updateBeta(enter, this.beta[enter].add(theta.scale(dirR)))
+      if (leave === -1) continue // bound flip — `enter` stays non-basic
+      this.pivot(leave, enter) // `leave` is now exactly at its bound; swap roles
+    }
+
+    // Read off the optimal vertex and the (δ-rational) objective value.
+    const values = new Map<number, Rational>()
+    for (let i = 0; i < this.nVars; i++) {
+      const tid = this.termId[i]
+      if (tid !== null) values.set(tid, this.beta[i].c)
+    }
+    let z = Delta.of(objLin.constant)
+    for (const [i, c] of objByVar) z = z.add(this.beta[i].scale(c))
+    this.lastModel = { values }
+    return { kind: 'optimal', c: z.c, k: z.k, values }
   }
 }
 

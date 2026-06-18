@@ -44,12 +44,31 @@ export interface FullSmtResult extends SmtResult {
   congruenceClasses?: string[][]
   /** Reconstructed solved text of each string variable (QF_S; UI only). */
   stringModel?: { name: string; value: string }[]
+  /** Numeric value of every arithmetic leaf variable (term id → exact Rational). */
+  arithModel?: Map<number, Rational>
   /** Elapsed wall-clock time in ms. */
   timeMs?: number
 }
 
-/** Solve a formula with the EUF + arithmetic theories. */
-export function checkSat(tm: TermManager, root: Formula, opts: SmtOptions = {}): FullSmtResult {
+/**
+ * The wired-up problem: fresh theory solvers, the fully reduced + trichotomized
+ * formula, and the original `work` form (post string/datatype/array reduction,
+ * pre-trichotomy) whose atoms describe the model. Factored out of `checkSat` so
+ * the OMT layer (`omt-lra.ts`) can drive the *same* pipeline while reaching into
+ * the simplex for linear-programming optimization.
+ */
+export interface PreparedSmt {
+  euf: EufSolver
+  simplex: SimplexSolver
+  theories: Theory[]
+  /** Post-reduction, pre-trichotomy formula (its atoms label the model). */
+  work: Formula
+  /** Fully expanded formula handed to the DPLL(T) loop. */
+  expanded: Formula
+  hasStr: boolean
+}
+
+export function prepareSmt(tm: TermManager, root: Formula, opts: SmtOptions = {}): PreparedSmt {
   const euf = new EufSolver(tm)
   const simplex = new SimplexSolver(tm)
   const theories: Theory[] = [euf as unknown as Theory, simplex as unknown as Theory]
@@ -71,6 +90,13 @@ export function checkSat(tm: TermManager, root: Formula, opts: SmtOptions = {}):
   const mixed = atoms.some((a) => a.kind === 'arith') && hasUninterpretedFunctions(tm, work)
   const base = mixed ? ackermannize(tm, work) : work
   const expanded = arithTrichotomy(tm, base)
+  return { euf, simplex, theories, work, expanded, hasStr }
+}
+
+/** Solve a formula with the EUF + arithmetic theories. */
+export function checkSat(tm: TermManager, root: Formula, opts: SmtOptions = {}): FullSmtResult {
+  const { euf, simplex, theories, work, expanded, hasStr } = prepareSmt(tm, root, opts)
+  const atoms = collectAtoms(work)
   const t0 = typeof performance !== 'undefined' ? performance.now() : Date.now()
   const res = solveSmt(expanded, theories, {
     atomName: (a: Atom) => atomName(tm, a),
@@ -92,6 +118,11 @@ export function checkSat(tm: TermManager, root: Formula, opts: SmtOptions = {}):
     desc.push(...euf.describeModel(eufLits))
     desc.push(...simplex.describeModel(lits.filter((l) => simplex.owns(l.atom))))
     full.model = desc
+    // Expose the exact numeric arithmetic assignment (term id → Rational). The
+    // describeModel call above just (re)solved the simplex over the arith literals,
+    // so its lastModel holds the satisfying values. OMT reads this to evaluate an
+    // objective; the UI can render exact rationals.
+    if (simplex.lastModel) full.arithModel = new Map(simplex.lastModel.values)
     const classes = euf.allClasses(eufLits).filter((g) => g.length > 1)
     if (classes.length) full.congruenceClasses = classes
     // Reconstruct the solved text of each string variable from the numeric model

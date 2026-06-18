@@ -90,11 +90,27 @@ function readSExprs(toks: string[]): SExpr[] {
   return out
 }
 
+export interface SmtObjective {
+  term: Term
+  dir: 'min' | 'max'
+  id?: string
+}
+
+export interface SmtSoft {
+  formula: Formula
+  weight: number
+  id?: string
+}
+
 export interface SmtScript {
   tm: TermManager
   assertions: Formula[]
   /** Expected status from (set-info :status ...), if any. */
   expected?: 'sat' | 'unsat'
+  /** `(minimize t)` / `(maximize t)` objectives (OMT). */
+  objectives: SmtObjective[]
+  /** `(assert-soft f :weight w :id g)` soft constraints (MaxSMT). */
+  softs: SmtSoft[]
 }
 
 const isSym = (e: SExpr): e is string => typeof e === 'string'
@@ -109,6 +125,8 @@ export function parseSmtLib(src: string): SmtScript {
   const tm = new TermManager()
   ensureStringFuns(tm) // make str.++/str.len/str.at/… known so scripts can use them
   const assertions: Formula[] = []
+  const objectives: SmtObjective[] = []
+  const softs: SmtSoft[] = []
   let expected: 'sat' | 'unsat' | undefined
   const forms = readSExprs(tokenize(src))
 
@@ -176,12 +194,32 @@ export function parseSmtLib(src: string): SmtScript {
         assertions.push(parseFormula(tm, form[1]))
         break
       }
+      case 'minimize':
+      case 'maximize': {
+        objectives.push({ term: parseTerm(tm, form[1]), dir: head === 'minimize' ? 'min' : 'max' })
+        break
+      }
+      case 'assert-soft': {
+        const formula = parseFormula(tm, form[1])
+        let weight = 1
+        let id: string | undefined
+        for (let i = 2; i + 1 < form.length; i += 2) {
+          const key = form[i]
+          const val = form[i + 1]
+          if (key === ':weight' && isSym(val)) weight = Math.max(1, Math.round(Number(val)))
+          else if (key === ':id' && isSym(val)) id = val
+        }
+        softs.push({ formula, weight, id })
+        break
+      }
+      case 'get-objectives':
+        break
       default:
         // Unknown command — ignore for tolerance.
         break
     }
   }
-  return { tm, assertions, expected }
+  return { tm, assertions, expected, objectives, softs }
 }
 
 function asSymbol(e: SExpr): string {
