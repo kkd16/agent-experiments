@@ -12,6 +12,19 @@ import { sceneById, type Scene } from './scenes';
 import { hexToDye, type Settings, type Tool } from '../state/settings';
 import { hueToRGB } from './scenes';
 
+export interface ProbeReading {
+  gx: number;
+  gy: number;
+  u: number;
+  v: number;
+  speed: number;
+  curl: number;
+  pressure: number;
+  temp: number;
+  fuel: number;
+  solid: boolean;
+}
+
 export interface Stats {
   fps: number;
   stepMs: number;
@@ -20,6 +33,7 @@ export interface Stats {
   kineticEnergy: number;
   enstrophy: number;
   maxDivergence: number;
+  probe: ProbeReading | null;
 }
 
 const FORCE_BASE = 0.16; // tames pointer-derived velocities to the normalised scale
@@ -52,6 +66,8 @@ export class FluidEngine {
   private pointer: Pointer = { active: false, gx: 0, gy: 0, dx: 0, dy: 0, moved: false };
   private paused = false;
   private stepOnce = false;
+  private hover: { gx: number; gy: number } | null = null;
+  private licPhase = 0;
 
   // FPS smoothing.
   private frameTimes: number[] = [];
@@ -154,6 +170,15 @@ export class FluidEngine {
     this.pointer.active = false;
   }
 
+  /** Track the cursor for the hover probe (independent of dragging). */
+  setHover(nx: number, ny: number): void {
+    this.hover = this.toGrid(nx, ny);
+  }
+
+  clearHover(): void {
+    this.hover = null;
+  }
+
   private toGrid(nx: number, ny: number): { gx: number; gy: number } {
     const N = this.sim.N;
     return {
@@ -178,6 +203,14 @@ export class FluidEngine {
       const fy = (p.dy / Math.max(dt, 1e-3)) * FORCE_BASE * s.forceScale;
       const fx = (p.dx / Math.max(dt, 1e-3)) * FORCE_BASE * s.forceScale;
       this.sim.splat(p.gx, p.gy, fx, fy, [0, 0, 0], s.brushRadius, 0);
+      p.dx = p.dy = 0;
+      return;
+    }
+    if (tool === 'fuel') {
+      // Lay down fuel plus a small pilot heat so it lights wherever the reaction
+      // rate is on (the Fire scene, or any nonzero Combustion → Reaction rate).
+      this.sim.splatFuel(p.gx, p.gy, 3, s.brushRadius);
+      this.sim.splatHeat(p.gx, p.gy, 1.5, s.brushRadius);
       p.dx = p.dy = 0;
       return;
     }
@@ -211,9 +244,14 @@ export class FluidEngine {
       this.sceneTime += simDt;
       this.lastStepMs = performance.now() - t0;
       this.stepOnce = false;
+      // Advance the LIC texture so it appears to stream with the flow.
+      this.licPhase = (this.licPhase + simDt * 0.6) % 1;
     } else {
       this.applyPointer(dt); // allow painting walls/dye while paused
     }
+
+    const probeMark =
+      this.settings.showProbe && this.hover ? { gx: this.hover.gx, gy: this.hover.gy } : null;
 
     this.renderer.draw(this.ctx, this.sim, {
       mode: this.settings.mode as RenderMode,
@@ -225,10 +263,32 @@ export class FluidEngine {
       particles: this.settings.showParticles
         ? { x: this.particles.x, y: this.particles.y, count: this.particles.capacity }
         : undefined,
+      licPhase: this.licPhase,
+      probe: probeMark,
     });
 
     this.reportStats(now);
   };
+
+  /** Read every field at the hover cell — powers the live probe readout. */
+  private readProbe(): ProbeReading | null {
+    if (!this.hover) return null;
+    const { gx, gy } = this.hover;
+    const sim = this.sim;
+    const idx = sim.IX(gx, gy);
+    return {
+      gx,
+      gy,
+      u: sim.u[idx],
+      v: sim.v[idx],
+      speed: Math.hypot(sim.u[idx], sim.v[idx]),
+      curl: sim.curlAt(gx, gy),
+      pressure: sim.p[idx],
+      temp: sim.t[idx],
+      fuel: sim.fuel[idx],
+      solid: sim.solid[idx] !== 0,
+    };
+  }
 
   private reportStats(now: number): void {
     this.frameTimes.push(now);
@@ -245,6 +305,7 @@ export class FluidEngine {
         kineticEnergy: d.kineticEnergy,
         enstrophy: d.enstrophy,
         maxDivergence: d.maxDivergence,
+        probe: this.readProbe(),
       });
     }
   }

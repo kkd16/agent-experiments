@@ -107,14 +107,54 @@ export function About() {
           here — and the suite measures it rather than hiding it.
         </p>
 
-        <h2>Seeing the flow — streamlines &amp; tracers</h2>
+        <h2>A faster road to the same answer — Conjugate Gradients</h2>
         <p>
-          Colour alone hides the velocity field’s structure. Two overlays expose it:{' '}
-          <strong>streamlines</strong> integrate the instantaneous velocity from a lattice of seeds
-          (midpoint/RK2) so vortices and stagnation points pop out, and thousands of passive{' '}
-          <strong>tracer particles</strong> are carried along the flow and drawn as short
-          velocity-aligned streaks, turning even a paused frame into a legible picture of motion.
+          The pressure Poisson equation is a large, sparse, <strong>symmetric
+          positive-semidefinite</strong> linear system — the exact case the{' '}
+          <strong>Conjugate Gradient</strong> method was built for. Eddy offers CG alongside SOR
+          (pick it under <em>Fluid → Pressure solver</em>). It is <em>matrix-free</em>: rather than
+          storing a matrix it applies the same five-point Neumann/obstacle stencil the relaxation
+          uses, so the two solvers attack the identical system. CG drives the residual down across
+          the whole spectrum at once instead of sweep-by-sweep, so it reaches a given accuracy in a
+          small fraction of the iterations — the <a href="#/verify">Verify</a> page shows it landing
+          several times lower than SOR at an equal budget, and converging to the <em>same</em>
+          projected field. (The right-hand side is shifted to be mean-zero first: the pure-Neumann
+          system is singular up to a constant, and that compatibility step keeps CG from stalling on
+          the null space. Only the pressure gradient is used, so the constant is irrelevant.)
+        </p>
 
+        <h2>Reactive flow — combustion</h2>
+        <p>
+          Beyond carrying heat, Eddy can <em>make</em> it. A separate <strong>fuel</strong> field is
+          advected by the flow like the dye; wherever it is hotter than the <em>ignition</em>
+          temperature it burns at a first-order (Arrhenius-lite) rate, releasing heat back into the
+          temperature field and being consumed in the process — depositing bright flame and soot dye
+          as it reacts. Couple that with <strong>variable-density buoyancy</strong> (a
+          non-Boussinesq lift proportional to the local smoke concentration, distinct from the
+          thermal term) and you get a genuine self-sustaining <strong>Fire</strong> scene: fuel
+          rises from a burner, ignites, buoys its own hot products upward, and trails rising smoke.
+          The verification page pins the model down — nothing burns below ignition, burning strictly
+          consumes fuel while raising heat, and fuel is exactly conserved when the reaction is off.
+        </p>
+
+        <h2>Seeing the flow — streamlines, tracers, LIC &amp; schlieren</h2>
+        <p>
+          Colour alone hides the velocity field’s structure. Several overlays and modes expose it:{' '}
+          <strong>streamlines</strong> integrate the instantaneous velocity from a lattice of seeds
+          (midpoint/RK2) so vortices and stagnation points pop out; thousands of passive{' '}
+          <strong>tracer particles</strong> are carried along the flow and drawn as short
+          velocity-aligned streaks; and the <strong>hover probe</strong> reads the actual field
+          values — velocity, speed, vorticity, pressure, temperature, fuel — under your cursor.
+        </p>
+        <p>
+          Two render modes show the <em>whole</em> field at once.{' '}
+          <strong>Line Integral Convolution</strong> (Cabral &amp; Leedom, 1993) smears a white-noise
+          texture <em>along</em> the streamlines, so every pixel reveals the local flow direction as
+          a dense, fabric-like weave — and it animates downstream. <strong>Schlieren</strong> shading
+          images the magnitude of the dye-density gradient <code>|∇ρ|</code>, the way an optical
+          schlieren rig makes plumes and shock waves visible by refraction. The LIC core is a pure
+          function, so the suite checks it too (it reduces to the identity under no flow, can’t
+          overshoot the noise, and provably streaks along the flow).
         </p>
 
         <h2>Does it actually work? The verification page</h2>
@@ -125,8 +165,12 @@ export function About() {
           beats plain Gauss–Seidel, that advection reproduces constants and obeys a maximum principle
           (no overshoot, no negative dye), that diffusion conserves heat and smooths it, that the
           discrete curl matches a solid-body rotation exactly, that buoyancy lifts hot fluid, and
-          that the whole thing stays bounded for any timestep. Each check reports the number it
-          measured.
+          that the whole thing stays bounded for any timestep. It now also checks the newer
+          machinery: that Conjugate Gradients beats SOR per iteration, converges, respects obstacles,
+          and lands on the same field; that combustion only burns above ignition, consumes fuel while
+          releasing heat, and conserves fuel when off; and that the LIC texture is the identity under
+          no flow, obeys a maximum principle, and streaks along the flow. Each check reports the
+          number it measured.
         </p>
 
         <h2>Rendering</h2>

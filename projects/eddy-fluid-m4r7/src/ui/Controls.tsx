@@ -147,6 +147,7 @@ export function Controls(props: Props) {
           options={[
             { value: 'dye', label: 'Dye' },
             { value: 'heat', label: 'Heat' },
+            { value: 'fuel', label: 'Fuel' },
             { value: 'wall', label: 'Wall' },
             { value: 'erase', label: 'Erase' },
           ]}
@@ -254,6 +255,20 @@ export function Controls(props: Props) {
           />
           Sharp dye (MacCormack advection)
         </label>
+        <div className="field-label">Pressure solver</div>
+        <Segmented<'sor' | 'cg'>
+          value={s.params.pressureSolver}
+          onChange={(pressureSolver) => onParam({ pressureSolver })}
+          options={[
+            { value: 'sor', label: 'Red-black SOR' },
+            { value: 'cg', label: 'Conjugate Gradient' },
+          ]}
+        />
+        <p className="scene-blurb">
+          Both solve the same Poisson system. <strong>CG</strong> (Krylov) converges the residual far
+          faster per iteration; <strong>SOR</strong> is cheaper per sweep. See the{' '}
+          <a href="#/verify">Verify</a> page for the head-to-head.
+        </p>
       </section>
 
       <section>
@@ -291,6 +306,51 @@ export function Controls(props: Props) {
       </section>
 
       <section>
+        <h2>Combustion (reactive flow)</h2>
+        <Slider
+          label="Reaction rate"
+          value={s.params.combustion}
+          min={0}
+          max={12}
+          step={0.25}
+          fmt={(v) => (v === 0 ? 'off' : v.toFixed(2))}
+          onChange={(combustion) => onParam({ combustion })}
+        />
+        <Slider
+          label="Ignition temp"
+          value={s.params.ignition}
+          min={0}
+          max={3}
+          step={0.05}
+          fmt={(v) => v.toFixed(2)}
+          onChange={(ignition) => onParam({ ignition })}
+        />
+        <Slider
+          label="Heat release"
+          value={s.params.heatRelease}
+          min={0}
+          max={8}
+          step={0.1}
+          fmt={(v) => v.toFixed(1)}
+          onChange={(heatRelease) => onParam({ heatRelease })}
+        />
+        <Slider
+          label="Smoke buoyancy"
+          value={s.params.smokeBuoyancy}
+          min={-20}
+          max={20}
+          step={0.5}
+          onChange={(smokeBuoyancy) => onParam({ smokeBuoyancy })}
+        />
+        <p className="scene-blurb">
+          A real reactive flow: an advected <strong>fuel</strong> field ignites above the threshold
+          temperature, releases heat, and is consumed. <strong>Smoke buoyancy</strong> is a
+          variable-density (non-Boussinesq) lift proportional to local dye mass. Load the{' '}
+          <strong>Fire</strong> scene to see it.
+        </p>
+      </section>
+
+      <section>
         <h2>Render</h2>
         <Segmented<RenderMode>
           value={s.mode}
@@ -301,9 +361,11 @@ export function Controls(props: Props) {
             { value: 'curl', label: 'Vorticity' },
             { value: 'pressure', label: 'Pressure' },
             { value: 'temperature', label: 'Temp' },
+            { value: 'lic', label: 'LIC' },
+            { value: 'schlieren', label: 'Schlieren' },
           ]}
         />
-        {(s.mode === 'speed' || s.mode === 'pressure' || s.mode === 'curl' || s.mode === 'temperature') && (
+        {s.mode !== 'dye' && (
           <div className="colormaps">
             {(Object.keys(COLORMAPS) as ColorMapName[]).map((c) => (
               <button
@@ -349,6 +411,14 @@ export function Controls(props: Props) {
             onChange={(e) => onChange({ showParticles: e.target.checked })}
           />
           Tracer particles
+        </label>
+        <label className="checkbox">
+          <input
+            type="checkbox"
+            checked={s.showProbe}
+            onChange={(e) => onChange({ showProbe: e.target.checked })}
+          />
+          Hover probe (read fields at the cursor)
         </label>
         <Slider
           label="Resolution"

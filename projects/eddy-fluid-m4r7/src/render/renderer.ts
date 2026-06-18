@@ -7,13 +7,19 @@
 
 import { FluidSolver } from '../sim/fluid';
 import { COLORMAPS, diverging, type ColorMapName } from './colormaps';
+import { computeLIC, makeNoise } from './lic';
 
-export type RenderMode = 'dye' | 'speed' | 'pressure' | 'curl' | 'temperature';
+export type RenderMode = 'dye' | 'speed' | 'pressure' | 'curl' | 'temperature' | 'lic' | 'schlieren';
 
 export interface ParticleField {
   x: Float32Array;
   y: Float32Array;
   count: number;
+}
+
+export interface ProbeMark {
+  gx: number; // grid cell x (1..N)
+  gy: number; // grid cell y (1..N)
 }
 
 export interface RenderOptions {
@@ -24,6 +30,10 @@ export interface RenderOptions {
   showParticles: boolean;
   exposure: number; // multiplier for dye/speed brightness
   particles?: ParticleField;
+  /** Animation phase in [0,1) for the LIC texture (advances over time). */
+  licPhase?: number;
+  /** When set, a crosshair is drawn at this grid cell (the hover probe). */
+  probe?: ProbeMark | null;
 }
 
 export class Renderer {
@@ -31,6 +41,9 @@ export class Renderer {
   private gctx: CanvasRenderingContext2D;
   private image: ImageData;
   private N: number;
+  // LIC working buffers (a white-noise texture + the convolved intensity field).
+  private noise: Float32Array;
+  private licBuf: Float32Array;
 
   constructor(N: number) {
     this.N = N;
@@ -41,6 +54,8 @@ export class Renderer {
     if (!ctx) throw new Error('2D context unavailable');
     this.gctx = ctx;
     this.image = this.gctx.createImageData(N, N);
+    this.noise = makeNoise(N);
+    this.licBuf = new Float32Array(N * N);
   }
 
   resize(N: number): void {
@@ -48,6 +63,8 @@ export class Renderer {
     this.grid.width = N;
     this.grid.height = N;
     this.image = this.gctx.createImageData(N, N);
+    this.noise = makeNoise(N);
+    this.licBuf = new Float32Array(N * N);
   }
 
   private fillImage(sim: FluidSolver, opts: RenderOptions): void {
@@ -117,6 +134,70 @@ export class Renderer {
       return;
     }
 
+    if (opts.mode === 'lic') {
+      // Line Integral Convolution: a noise texture smeared along the streamlines,
+      // tinted by local speed through the chosen colour-map. The texture animates
+      // downstream as licPhase advances.
+      computeLIC(
+        { N, u: sim.u, v: sim.v, noise: this.noise, solid: sim.solid },
+        this.licBuf,
+        { steps: Math.min(22, Math.max(10, Math.round(N / 8))), phase: opts.licPhase ?? 0 },
+      );
+      for (let j = 0; j < N; j++) {
+        for (let i = 0; i < N; i++) {
+          const idx = sim.IX(i + 1, j + 1);
+          const o = (j * N + i) * 4;
+          if (sim.solid[idx]) {
+            data[o] = 38; data[o + 1] = 42; data[o + 2] = 54; data[o + 3] = 255;
+            continue;
+          }
+          // Contrast-stretch the convolved texture around its mid-grey.
+          let tex = (this.licBuf[j * N + i] - 0.5) * 1.9 + 0.5;
+          tex = tex < 0 ? 0 : tex > 1 ? 1 : tex;
+          const speed = Math.min(1, sim.speedAt(idx) * 0.04 * opts.exposure);
+          const [cr, cg, cb] = cmap(speed);
+          // Streaks ride on a floor so still regions don't go fully black.
+          const k = 0.22 + 0.78 * tex;
+          data[o] = cr * k; data[o + 1] = cg * k; data[o + 2] = cb * k; data[o + 3] = 255;
+        }
+      }
+      return;
+    }
+
+    if (opts.mode === 'schlieren') {
+      // Synthetic schlieren / shadowgraph: brightness from |∇ρ|, the magnitude of
+      // the dye-density gradient — the way a real schlieren rig images shock waves
+      // and plumes by refraction through density variations.
+      let maxAbs = 1e-6;
+      const lum = (k: number) => 0.299 * sim.r[k] + 0.587 * sim.g[k] + 0.114 * sim.b[k];
+      for (let j = 1; j <= N; j++)
+        for (let i = 1; i <= N; i++) {
+          const idx = sim.IX(i, j);
+          if (sim.solid[idx]) continue;
+          const gx = 0.5 * (lum(idx + 1) - lum(idx - 1));
+          const gy = 0.5 * (lum(idx + (N + 2)) - lum(idx - (N + 2)));
+          const m = Math.hypot(gx, gy);
+          if (m > maxAbs) maxAbs = m;
+        }
+      const scale = (opts.exposure * 3) / maxAbs;
+      for (let j = 0; j < N; j++) {
+        for (let i = 0; i < N; i++) {
+          const idx = sim.IX(i + 1, j + 1);
+          const o = (j * N + i) * 4;
+          if (sim.solid[idx]) {
+            data[o] = 38; data[o + 1] = 42; data[o + 2] = 54; data[o + 3] = 255;
+            continue;
+          }
+          const gx = 0.5 * (lum(idx + 1) - lum(idx - 1));
+          const gy = 0.5 * (lum(idx + (N + 2)) - lum(idx - (N + 2)));
+          const s = Math.min(1, Math.hypot(gx, gy) * scale);
+          const [r, g, b] = cmap(s);
+          data[o] = r; data[o + 1] = g; data[o + 2] = b; data[o + 3] = 255;
+        }
+      }
+      return;
+    }
+
     if (opts.mode === 'speed') {
       for (let j = 0; j < N; j++) {
         for (let i = 0; i < N; i++) {
@@ -171,6 +252,32 @@ export class Renderer {
     if (opts.showStreamlines) this.drawStreamlines(target, sim);
     if (opts.showParticles && opts.particles) this.drawParticles(target, sim, opts.particles);
     if (opts.showArrows) this.drawArrows(target, sim);
+    if (opts.probe) this.drawProbe(target, opts.probe);
+  }
+
+  /** A crosshair marking the hover-probe sample point. */
+  private drawProbe(target: CanvasRenderingContext2D, probe: ProbeMark): void {
+    const N = this.N;
+    const w = target.canvas.width;
+    const cell = w / N;
+    const x = (probe.gx - 0.5) * cell;
+    const y = (probe.gy - 0.5) * cell;
+    const r = Math.max(6, cell * 1.4);
+    target.save();
+    target.lineWidth = 1.5;
+    target.strokeStyle = 'rgba(255,255,255,0.9)';
+    target.beginPath();
+    target.arc(x, y, r, 0, Math.PI * 2);
+    target.moveTo(x - r * 1.6, y);
+    target.lineTo(x - r * 0.5, y);
+    target.moveTo(x + r * 0.5, y);
+    target.lineTo(x + r * 1.6, y);
+    target.moveTo(x, y - r * 1.6);
+    target.lineTo(x, y - r * 0.5);
+    target.moveTo(x, y + r * 0.5);
+    target.lineTo(x, y + r * 1.6);
+    target.stroke();
+    target.restore();
   }
 
   /**

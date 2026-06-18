@@ -88,7 +88,9 @@ main {
   touch-action: none;
   display: block;
 }
-.fluid-canvas.tool-dye {
+.fluid-canvas.tool-dye,
+.fluid-canvas.tool-heat,
+.fluid-canvas.tool-fuel {
   cursor: crosshair;
 }
 .fluid-canvas.tool-wall {
@@ -124,6 +126,31 @@ main {
 }
 .hud .bad {
   color: var(--bad);
+}
+
+.probe {
+  position: absolute;
+  top: 3.1rem;
+  left: 1.3rem;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  max-width: min(70%, 30rem);
+  font-variant-numeric: tabular-nums;
+  font-size: 0.72rem;
+  pointer-events: none;
+}
+.probe span {
+  background: rgba(8, 10, 16, 0.66);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 0.16rem 0.42rem;
+  color: var(--muted);
+  backdrop-filter: blur(4px);
+}
+.probe .probe-pos {
+  color: var(--accent);
+  font-weight: 700;
 }
 
 .toast {
@@ -239,6 +266,11 @@ main {
   font-size: 0.76rem;
   line-height: 1.45;
   color: var(--muted);
+}
+.field-label {
+  font-size: 0.78rem;
+  color: var(--text);
+  margin: 0.7rem 0 0.3rem;
 }
 
 /* sliders */
