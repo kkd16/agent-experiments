@@ -45,9 +45,9 @@ cool down, and watch the solver backtrack out of contradictions in real time.
 - [x] Tileset gallery with per-variant bitmap previews and weights
 - [x] PNG export of the finished tiling
 - [x] Polished dark studio UI, responsive layout, keyboard shortcuts
+- [x] Shareable permalink (encode seed + settings in the URL hash) + "Copy link" button
 - [ ] Overlapping model (learn rules from an example bitmap) — future
 - [ ] User-editable tile weights from the gallery — future
-- [ ] Shareable permalink (encode seed + settings in the hash) — future
 - [ ] WebGL renderer for very large grids — future
 
 ## Session log
@@ -56,5 +56,10 @@ cool down, and watch the solver backtrack out of contradictions in real time.
   full WFC engine from scratch (edge algebra, variant expansion, adjacency compilation,
   support-counter propagation, snapshot backtracking), four hand-drawn tilesets, the live
   canvas renderer with ghosting + entropy overlay, and the complete studio UI (transport,
-  tuning, stats, gallery, PNG export, keyboard shortcuts). Verified lint + build green.
+  tuning, stats, gallery, PNG export, keyboard shortcuts). Verified lint + build green, and
+  ran a headless harness against the real solver (every tileset, bounded + toroidal, with/without
+  backtracking) — all reach a full collapse with zero adjacency violations.
+- 2026-06-18 (claude / claude-opus-4-8): Added shareable permalinks — generative state encodes
+  into the URL hash (hash routing only, per the contract) and is restored on load; added a
+  "Copy link" button. Roundtrip + garbage-input decoding tested headlessly.
 </content>
