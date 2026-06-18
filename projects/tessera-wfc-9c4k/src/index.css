@@ -823,3 +823,96 @@ kbd {
   0%, 100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.35); }
   50% { box-shadow: 0 0 0 4px rgba(239, 68, 68, 0); }
 }
+
+/* ---- connectivity read-out (Telemetry panel) ---- */
+.conn-readout {
+  margin-top: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--warn);
+  border-radius: 10px;
+  background: var(--panel-2);
+  display: grid;
+  gap: 2px;
+}
+.conn-readout.ok {
+  border-left-color: var(--accent);
+}
+.conn-title {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+}
+.conn-value {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text);
+}
+.conn-readout.ok .conn-value {
+  color: var(--accent);
+}
+.conn-sub {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+/* ---- Proof Lab panel ---- */
+.proof-time {
+  margin: 8px 0 0;
+  font-size: 12px;
+  color: var(--muted);
+  text-align: right;
+}
+.proof-group {
+  margin-top: 12px;
+}
+.proof-group h3 {
+  margin: 0 0 6px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--accent-2);
+}
+.proof-group ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 6px;
+}
+.proof-group li {
+  display: grid;
+  grid-template-columns: 16px 1fr;
+  column-gap: 8px;
+  align-items: baseline;
+  padding: 7px 9px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--panel-2);
+}
+.proof-group li.ok {
+  border-left: 3px solid var(--accent);
+}
+.proof-group li.bad {
+  border-left: 3px solid var(--danger);
+}
+.proof-mark {
+  grid-row: 1 / span 2;
+  font-weight: 700;
+}
+.proof-group li.ok .proof-mark {
+  color: var(--accent);
+}
+.proof-group li.bad .proof-mark {
+  color: var(--danger);
+}
+.proof-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+.proof-detail {
+  font-size: 12px;
+  color: var(--muted);
+}

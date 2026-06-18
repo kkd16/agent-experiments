@@ -1,8 +1,29 @@
+import {
+  forcedConnectors,
+  networkFeasible,
+  terminalsFeasible,
+  type ConnMode,
+  type ConnView,
+} from './connectivity';
 import { DELTA, DIRS, opposite, type Dir } from './edges';
 import { hashSeed, makeRng, type Rng } from './prng';
 import type { CompiledTileset } from './types';
 
 export type SolverStatus = 'running' | 'done' | 'failed';
+
+/**
+ * Optional global connectivity constraint layered on top of the local adjacency solve. Active
+ * only when the tileset has open sockets (`CompiledTileset.openMask`); otherwise ignored.
+ */
+export type ConnectivityOptions = {
+  /** 'network' = all connector cells form one component; 'terminals' = the given cells link up. */
+  mode: ConnMode;
+  /** Cell indices that must end up mutually connected (used by 'terminals' mode). */
+  terminals?: readonly number[];
+};
+
+/** Grids larger than this skip the (heavier) cut-vertex forcing — feasibility + final check still run. */
+const CONN_FORCE_LIMIT = 4096;
 
 export type SolverOptions = {
   width: number;
@@ -18,6 +39,8 @@ export type SolverOptions = {
    * constraints survive restarts. A pin that can't be satisfied is skipped (not fatal).
    */
   pins?: ReadonlyArray<readonly [number, number]>;
+  /** Optional global connectivity constraint (see {@link ConnectivityOptions}). */
+  connectivity?: ConnectivityOptions;
 };
 
 type Snapshot = { wave: Uint8Array; cell: number; tile: number };
@@ -50,6 +73,11 @@ export class Solver {
   private stack: number[] = []; // propagation stack: interleaved (cell, tile)
   private snapshots: Snapshot[] = [];
 
+  // Global connectivity constraint, enabled only when the set has open sockets. `null` = the
+  // solver behaves exactly as the unconstrained v2 engine (the default).
+  private conn: ConnectivityOptions | null;
+  private openMask: Uint8Array | null;
+
   status: SolverStatus = 'running';
   collapsedCount = 0;
   contradictions = 0;
@@ -63,6 +91,8 @@ export class Solver {
     this.height = opts.height;
     this.cells = opts.width * opts.height;
     this.n = set.variants.length;
+    this.openMask = set.openMask ?? null;
+    this.conn = opts.connectivity && this.openMask ? opts.connectivity : null;
     this.rng = makeRng(hashSeed(opts.seed));
     this.wave = new Uint8Array(this.cells * this.n);
     this.numPossible = new Int32Array(this.cells);
@@ -164,6 +194,13 @@ export class Solver {
     if (!this.propagate()) this.status = 'failed';
     this.stack = [];
     this.applyPins();
+    // Seed the connectivity constraint once up front: force the cells every terminal route must
+    // cross, and reject a config that is already globally unroutable (so the host stops instead
+    // of restarting forever). A no-op when connectivity is disabled.
+    if (this.conn && this.status === 'running') {
+      if (!this.enforceConnectivity()) this.status = 'failed';
+      this.stack = [];
+    }
     this.recountCollapsed();
   }
 
@@ -356,12 +393,25 @@ export class Solver {
     }
   }
 
+  /** Handle a contradiction (local or global): backtrack within budget, else mark failed. */
+  private handleContradiction(): void {
+    this.contradictions++;
+    if (this.opts.backtracking && this.backtracks < this.opts.backtrackBudget && this.backtrack()) {
+      return; // recovered
+    }
+    this.status = 'failed';
+  }
+
   /** One observation + full propagation. Drives the animation, one call per logical step. */
   step(): SolverStatus {
     if (this.status !== 'running') return this.status;
     const cell = this.chooseCell();
     if (cell === -1) {
-      this.status = 'done';
+      // Fully collapsed — validate the global constraint before declaring success. A finished
+      // grid that violates connectivity is a contradiction we backtrack out of, never a "done".
+      if (this.finishOk()) this.status = 'done';
+      else this.handleContradiction();
+      this.recountCollapsed();
       return this.status;
     }
     const tile = this.chooseTile(cell);
@@ -371,21 +421,95 @@ export class Solver {
       if (this.snapshots.length > 512) this.snapshots.shift();
     }
     this.steps++;
-    const ok = this.collapse(cell, tile);
-    if (!ok) {
-      this.contradictions++;
-      if (this.opts.backtracking && this.backtracks < this.opts.backtrackBudget && this.backtrack()) {
-        // recovered — recount collapsed below
-      } else {
-        this.status = 'failed';
-      }
+    let ok = this.collapse(cell, tile);
+    // After local propagation succeeds, enforce the global connectivity constraint: a sound
+    // contradiction (or forced bans) here drives the same backtracking machinery.
+    if (ok && this.conn) ok = this.enforceConnectivity();
+    if (!ok) this.handleContradiction();
+    this.recountCollapsed();
+    if (this.collapsedCount === this.cells && this.status === 'running') {
+      // This step collapsed the last cell — validate the global constraint before "done".
+      if (this.finishOk()) this.status = 'done';
+      else this.handleContradiction();
+      this.recountCollapsed();
     }
-    // refresh collapsed count (cheap: one pass)
-    let collapsed = 0;
-    for (let c = 0; c < this.cells; c++) if (this.numPossible[c] === 1) collapsed++;
-    this.collapsedCount = collapsed;
-    if (collapsed === this.cells && this.status === 'running') this.status = 'done';
     return this.status;
+  }
+
+  // ---- global connectivity constraint -------------------------------------
+
+  /** Reduce the live wave to the connectivity view connectivity.ts reasons over. */
+  private connView(): ConnView {
+    const { n, cells } = this;
+    const om = this.openMask!;
+    const mayOpen = new Uint8Array(cells);
+    const mustConnector = new Uint8Array(cells);
+    for (let cell = 0; cell < cells; cell++) {
+      let mo = 0;
+      let any = false;
+      let blank = false;
+      const base = cell * n;
+      for (let t = 0; t < n; t++) {
+        if (this.wave[base + t] === 1) {
+          any = true;
+          const m = om[t];
+          mo |= m;
+          if (m === 0) blank = true;
+        }
+      }
+      mayOpen[cell] = mo;
+      mustConnector[cell] = any && !blank ? 1 : 0;
+    }
+    return { width: this.width, height: this.height, wrap: this.opts.wrap, cells, mayOpen, mustConnector };
+  }
+
+  /** Does a (view of the) wave satisfy the active connectivity property? */
+  private connSatisfied(view: ConnView): boolean {
+    const conn = this.conn!;
+    if (conn.mode === 'terminals') return terminalsFeasible(view, conn.terminals ?? []);
+    return networkFeasible(view);
+  }
+
+  /** True if the (assumed fully-collapsed) grid satisfies the global constraint. */
+  private finishOk(): boolean {
+    if (!this.conn) return true;
+    return this.connSatisfied(this.connView());
+  }
+
+  /**
+   * Enforce connectivity on the current partial wave. For terminal routing it iterates
+   * forced-connector inference to a fixpoint (banning blank tiles at cut cells and propagating),
+   * then checks feasibility; for whole-network mode it checks optimistic feasibility. Returns
+   * false on a sound contradiction (which the caller turns into a backtrack).
+   */
+  private enforceConnectivity(): boolean {
+    const conn = this.conn!;
+    if (conn.mode === 'terminals') {
+      const terminals = conn.terminals ?? [];
+      if (terminals.length < 2) return true; // nothing to route
+      if (this.cells <= CONN_FORCE_LIMIT) {
+        for (let iter = 0; iter < this.cells; iter++) {
+          const view = this.connView();
+          const forced = forcedConnectors(view, terminals);
+          if (forced === null) return false; // terminals already unroutable
+          let changed = false;
+          for (const c of forced) {
+            const base = c * this.n;
+            for (let t = 0; t < this.n; t++) {
+              if (this.wave[base + t] === 1 && this.openMask![t] === 0) {
+                this.ban(c, t);
+                changed = true;
+              }
+            }
+            if (this.numPossible[c] === 0) return false;
+          }
+          if (!changed) break;
+          if (!this.propagate()) return false;
+        }
+      }
+      return terminalsFeasible(this.connView(), terminals);
+    }
+    return networkFeasible(this.connView());
   }
 
   /**
@@ -453,5 +577,42 @@ export class Solver {
 
   get total(): number {
     return this.cells;
+  }
+
+  // ---- connectivity read-out (for the overlay + stats) --------------------
+
+  /** Whether this run has an active global connectivity constraint. */
+  get connectivityActive(): boolean {
+    return this.conn !== null;
+  }
+
+  get connectivityMode(): ConnMode | null {
+    return this.conn ? this.conn.mode : null;
+  }
+
+  /** The 4-bit open-socket mask of a collapsed tile, or 0 for blank/uncollapsed. */
+  cellOpenMask(cell: number): number {
+    if (!this.openMask) return 0;
+    const t = this.collapsedTile(cell);
+    return t >= 0 ? this.openMask[t] : 0;
+  }
+
+  /**
+   * A {@link ConnView} of just the *collapsed* connector cells — used to colour the network
+   * overlay and report component counts. Uncollapsed cells are treated as non-nodes so the
+   * overlay reflects what has actually crystallised. `null` when the set has no sockets.
+   */
+  collapsedConnView(): ConnView | null {
+    if (!this.openMask) return null;
+    const { cells } = this;
+    const mayOpen = new Uint8Array(cells);
+    const mustConnector = new Uint8Array(cells);
+    for (let cell = 0; cell < cells; cell++) {
+      const t = this.collapsedTile(cell);
+      const m = t >= 0 ? this.openMask[t] : 0;
+      mayOpen[cell] = m;
+      mustConnector[cell] = m !== 0 ? 1 : 0;
+    }
+    return { width: this.width, height: this.height, wrap: this.opts.wrap, cells, mayOpen, mustConnector };
   }
 }

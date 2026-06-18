@@ -124,5 +124,6 @@ export const rails: Tileset = {
   name: 'Rails',
   blurb: 'Steel rails on a sleepered bed route across gravel — straights, curves, crossings and buffer stops.',
   background: '#0a0a0b',
+  emptyEdge: '000',
   prototypes: protos,
 };

@@ -24,6 +24,11 @@ export const W = 3;
 export const DIRS = [N, E, S, W] as const;
 export type Dir = (typeof DIRS)[number];
 
+/** Single-bit flag for a direction, for compact 4-bit direction masks (e.g. open sockets). */
+export function dirBit(d: Dir): number {
+  return 1 << d;
+}
+
 /** (dx, dy) offset for each direction, with +y pointing down (screen space). */
 export const DELTA: Record<Dir, [number, number]> = {
   [N]: [0, -1],

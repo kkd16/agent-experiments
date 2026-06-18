@@ -47,6 +47,15 @@ export type Tileset = {
   blurb: string;
   background: string;
   prototypes: Prototype[];
+  /**
+   * The "disconnected" edge socket, if this tileset has a notion of carrying a connection
+   * (rails, wires, pipes, corridors). Any edge code other than this one is an *open* edge that
+   * links to its neighbour. Tilesets that declare it unlock the global connectivity constraint;
+   * those that don't (e.g. terrain, truchet) simply leave that feature disabled. The code must
+   * be reverse-symmetric (`open(c) ⇔ open(reverse(c))`) so a collapsed open edge always faces an
+   * open edge — the in-app suite asserts this.
+   */
+  emptyEdge?: string;
 };
 
 /** A fully compiled tileset: variants + the adjacency tensor the solver consumes. */
@@ -59,4 +68,10 @@ export type CompiledTileset = {
   allowed: Record<Dir, number[][]>;
   weights: number[];
   weightLogWeights: number[];
+  /**
+   * Per-variant 4-bit open-socket mask (bit `d` set ⇔ edge `d` carries a connection), present
+   * only when the source tileset declared an `emptyEdge`. Drives the global connectivity
+   * constraint; `undefined` means the set has no connection semantics.
+   */
+  openMask?: Uint8Array;
 };

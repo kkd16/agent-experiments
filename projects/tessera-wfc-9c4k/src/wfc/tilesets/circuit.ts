@@ -71,5 +71,6 @@ export const circuit: Tileset = {
   name: 'Circuit',
   blurb: 'Copper traces route across a green PCB, fanning into pads, vias and chips.',
   background: '#07140f',
+  emptyEdge: '000',
   prototypes: protos,
 };

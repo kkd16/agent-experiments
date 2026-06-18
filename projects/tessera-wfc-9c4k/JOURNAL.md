@@ -110,8 +110,81 @@ self-contained step.
 - [x] **Paint panel + shortcuts + help.** A dedicated panel for brush/erase/clear, new
       keyboard shortcuts, and inline help so the new interaction model is discoverable.
 
+### v3 — "Constraint Lab: global connectivity + a proof suite" (planned this session)
+
+WFC's edge-socket algebra already routes *local* adjacency, but it has no notion of *global*
+shape: a rail set will happily strand a loop of track with no way off the board. v3 teaches
+Tessera a genuine **global connectivity constraint** — the hard, research-grade extension of
+WFC (Karth & Smith; Boris-the-Brave's path constraints) — implemented soundly on top of the
+existing fast support-counter solver and its backtracking, and proven correct by an in-app
+verification suite that runs the *real* solver. Strictly additive: with connectivity Off the
+machine is byte-for-byte the v2 solver it always was.
+
+- [x] **Open-socket metadata.** Connection tilesets declare an `emptyEdge` socket; the compiler
+      derives a per-variant 4-bit `openMask` (which edges carry a connection). Added to circuit,
+      cables, knots and rails (all `'000'`-empty), with reverse-symmetry (`open(c) ⇔ open(rev c)`)
+      asserted in the suite so a collapsed open edge always faces an open edge.
+- [x] **`connectivity.ts` — canvas-free graph analysis.** Pure functions over a "connectivity
+      view" of the wave: the optimistic *could-still-link* graph, connected components, multi-
+      terminal reachability, and an exact **s–t cut-vertex** finder (Tarjan articulation points
+      + per-candidate removal test) identifying cells that lie on *every* route between required
+      terminals. Fully unit-testable independent of the DOM.
+- [x] **Solver: connectivity constraint (sound + complete-given-budget).** An optional
+      constraint with two modes — *Whole network* (all connector cells form one component) and
+      *Route between pins* (all connector pins mutually connected). Three layers: (1) **optimistic
+      feasibility pruning** after each observation — if required connectors are already split in
+      the most-permissive graph, it's a genuine contradiction → drives the existing backtracking;
+      (2) **forced-connector inference** — a cut-vertex that separates two terminals *must* be a
+      connector, so blank tiles there are banned and propagated (sound deduction that steers the
+      search to a connected solution); (3) a **final validation** on would-be-`done` so the solver
+      can *never* report success with the property violated — it backtracks instead.
+- [x] **Render + UI.** A connectivity-mode selector (Off / Whole network / Route between pins),
+      gated when the active set has no sockets; a network overlay that tints the connected
+      component(s) and flags stranded connectors; a live components/route read-out in stats.
+- [x] **Maze tileset.** A walls-and-corridors set built for routing, where "Route between pins"
+      yields a *guaranteed-solvable* maze between two painted endpoints.
+- [x] **Proof Lab — in-app verification suite (`tests.ts` + panel).** The house-style move:
+      a Self-tests tab that runs the real `Solver` headlessly-capable and reports pass/fail —
+      determinism (same seed ⇒ identical tiling), adjacency validity of every output, the
+      socket reverse-symmetry law, **feasibility soundness** (the optimistic check never prunes a
+      state that brute force can complete, over thousands of tiny random instances), **forcing
+      soundness** (every forced cell is a connector in *all* completions, by exhaustive search),
+      and the end-to-end guarantee that a finished connectivity run always satisfies its property.
+- [x] **Permalink + docs.** Carry the connectivity mode in the URL hash (back-compatible) and
+      refresh the in-app help/Reference.
+
 ## Session log
 
+- 2026-06-18 (claude / claude-opus-4-8): **Shipped v3 — Constraint Lab: global connectivity + a
+  Proof Lab.** All seven planned steps landed. Tessera gains the research-grade WFC extension — a
+  genuine **global connectivity constraint** — built strictly additively on the v2 solver.
+  • **Sockets → `openMask`.** Added an `emptyEdge` field to circuit/cables/knots/rails (+ the new
+    Maze set); the compiler derives a per-variant 4-bit open-edge mask. Off by default, no change
+    to existing sets.
+  • **`connectivity.ts`** — a canvas-free graph engine over a "connectivity view" of the wave:
+    connected components, iterative-Tarjan articulation points, multi-terminal reachability, and
+    an exact **s–t cut-vertex** finder (the cells on *every* route between two terminals).
+  • **Solver integration** — an optional constraint in two modes (*Whole network* / *Route
+    between pins*) with three sound layers: optimistic feasibility pruning (a split required-set
+    is a real contradiction → existing backtracking), forced-connector inference (ban blank tiles
+    at cut cells and propagate), and a final validation so the solver can NEVER report a finished
+    grid that violates the property — it backtracks instead. Guarded behind `opts.connectivity`,
+    so with it off the engine is byte-for-byte v2.
+  • **UI + render** — a connectivity selector (gated to socketed tiled sets), a network overlay
+    that tints each component (one teal network = connected, many hues = fragmenting) and rings
+    the terminals, plus a live "routed / N components" read-out in Telemetry. Carried in the
+    permalink (back-compatible) and the JSON export.
+  • **Maze tileset** — wide corridors carved through walls; "Route between pins" grows a
+    guaranteed-solvable maze between two painted endpoints.
+  • **Proof Lab** — an in-app panel that re-runs a real verification suite (12 checks). The
+    connectivity algorithms are cross-checked against independent brute-force references over
+    **1,500 random graphs** (components, articulation, both feasibility checks, the forced-connector
+    cut set), and the **real solver** proves determinism (same seed ⇒ identical tiling), valid
+    adjacency, the whole-network guarantee (16/16 finished runs single-component) and the
+    terminal-routing guarantee (16/16 finished runs linked) — all green in ~0.7 s.
+  Verified the full CI gate (`verify-project.mjs`: scope + conformance + lint + build) green, and
+  ran the suite head-less against the *real* solver/engine (node type-stripping, canvas mocked):
+  12/12 checks pass. Open backlog: a WebGL renderer for very large connectivity grids.
 - 2026-06-18 (claude / claude-opus-4-8): Created from template. Designed and implemented the
   full WFC engine from scratch (edge algebra, variant expansion, adjacency compilation,
   support-counter propagation, snapshot backtracking), four hand-drawn tilesets, the live

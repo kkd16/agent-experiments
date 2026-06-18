@@ -1,13 +1,17 @@
+import { components, type ConnMode } from './connectivity';
 import { compileOverlap } from './overlap';
 import { render, type RenderOptions } from './render';
 import { sampleByKey, type Sample } from './samples';
-import { Solver, type SolverStatus } from './solver';
+import { Solver, type ConnectivityOptions, type SolverStatus } from './solver';
 import { compile } from './tiles';
 import { tilesetByKey } from './tilesets';
 import type { CompiledTileset } from './types';
 
 /** Which WFC model is running: hand-authored tiles, or patterns learnt from a bitmap. */
 export type WfcModel = 'tiled' | 'overlap';
+
+/** Global connectivity constraint setting surfaced in the UI. */
+export type ConnectivitySetting = 'off' | ConnMode;
 
 export type ControllerConfig = {
   /** Active model. The two halves below configure one model each. */
@@ -30,6 +34,12 @@ export type ControllerConfig = {
   showGhost: boolean;
   showEntropy: boolean;
   showGrid: boolean;
+  /**
+   * Global connectivity constraint. 'network' = every connector cell ends up in one component;
+   * 'terminals' = the connector cells you pin must all link up. Only effective on a tiled set
+   * with open sockets (rails/knots/circuit/cables/maze); ignored otherwise.
+   */
+  connectivity: ConnectivitySetting;
 };
 
 export type Stats = {
@@ -47,6 +57,16 @@ export type Stats = {
   running: boolean;
   pins: number;
   recording: boolean;
+  // --- connectivity read-out ---
+  /** Does the active set support the connectivity constraint (tiled + open sockets)? */
+  supportsConnectivity: boolean;
+  connectivity: ConnectivitySetting;
+  /** Connected components among the cells that have *collapsed* to a connector so far. */
+  components: number;
+  /** Terminal-routing: are all pinned terminals currently in one component? null if N/A. */
+  routed: boolean | null;
+  /** Number of pinned terminal cells (connector pins) in 'terminals' mode. */
+  terminals: number;
 };
 
 /** A live read-out of one cell's state, for the hover inspector ("Lens"). */
@@ -155,7 +175,47 @@ export class Controller {
       backtracking,
       backtrackBudget: 4000,
       pins: [...this.pins.entries()],
+      connectivity: this.effectiveConnectivity(),
     });
+  }
+
+  /** Does the active set carry connection semantics the constraint can act on? */
+  get supportsConnectivity(): boolean {
+    return this.cfg.model === 'tiled' && !!this.compiled.openMask;
+  }
+
+  /** Cells pinned to a connector tile — the terminals 'terminals' mode must link together. */
+  private terminalCells(): number[] {
+    const om = this.compiled.openMask;
+    if (!om) return [];
+    return [...this.pins.entries()].filter(([, t]) => om[t] !== 0).map(([c]) => c);
+  }
+
+  /** The connectivity option passed to the solver, or undefined when the feature is inactive. */
+  private effectiveConnectivity(): ConnectivityOptions | undefined {
+    if (this.cfg.connectivity === 'off' || !this.supportsConnectivity) return undefined;
+    if (this.cfg.connectivity === 'terminals') {
+      return { mode: 'terminals', terminals: this.terminalCells() };
+    }
+    return { mode: 'network' };
+  }
+
+  /**
+   * Component labelling of the currently-collapsed connector cells, plus a route verdict for
+   * terminals mode — used by the network overlay and the stats read-out. `null` when inactive.
+   */
+  private connOverlay(): { comp: Int32Array; count: number; routed: boolean | null; terminals: number[] } | null {
+    if (this.cfg.connectivity === 'off' || !this.supportsConnectivity) return null;
+    const view = this.solver.collapsedConnView();
+    if (!view) return null;
+    const { comp, count } = components(view);
+    const terminals = this.cfg.connectivity === 'terminals' ? this.terminalCells() : [];
+    let routed: boolean | null = null;
+    if (this.cfg.connectivity === 'terminals' && terminals.length >= 2) {
+      const first = comp[terminals[0]];
+      routed = first >= 0 && terminals.every((c) => comp[c] === first);
+    }
+    return { comp, count, routed, terminals };
   }
 
   attach(canvas: HTMLCanvasElement, onStats: (s: Stats) => void): void {
@@ -181,6 +241,7 @@ export class Controller {
   }
 
   private renderOpts(): RenderOptions {
+    const overlay = this.connOverlay();
     return {
       cellPx: this.cellPx,
       showGhost: this.cfg.showGhost,
@@ -188,6 +249,7 @@ export class Controller {
       showGrid: this.cfg.showGrid,
       hover: this.hover,
       pins: this.pins,
+      network: overlay ? { comp: overlay.comp, count: overlay.count, terminals: overlay.terminals } : undefined,
     };
   }
 
@@ -199,6 +261,7 @@ export class Controller {
   private emit(): void {
     const s = this.solver;
     const elapsedSec = this.elapsedMs / 1000;
+    const overlay = this.connOverlay();
     this.onStats({
       status: s.status,
       collapsed: s.collapsedCount,
@@ -214,6 +277,11 @@ export class Controller {
       running: this.running,
       pins: this.pins.size,
       recording: this.recording,
+      supportsConnectivity: this.supportsConnectivity,
+      connectivity: this.cfg.connectivity,
+      components: overlay ? overlay.count : 0,
+      routed: overlay ? overlay.routed : null,
+      terminals: overlay ? overlay.terminals.length : 0,
     });
   }
 
@@ -597,6 +665,7 @@ export class Controller {
         seed: this.cfg.seed,
         wrap: this.cfg.wrap,
         backtracking: this.cfg.backtracking,
+        connectivity: this.cfg.connectivity,
       },
       grid: { width: n, height: n },
       tiles: set.variants.map((v) => ({
