@@ -10,7 +10,7 @@ import { SAMPLES, type Sample } from './samples';
 // self-contained encoding of the bitmap itself so a custom sample travels in the link.
 
 const bool = (b: boolean) => (b ? '1' : '0');
-const TILESET_KEYS = new Set(['knots', 'terrain', 'circuit', 'cables']);
+const TILESET_KEYS = new Set(['knots', 'terrain', 'circuit', 'cables', 'truchet', 'rails']);
 const SAMPLE_KEYS = new Set([...SAMPLES.map((s) => s.key), 'custom']);
 const MAX_CUSTOM_CELLS = 1024; // don't bloat the URL with huge hand-drawn samples
 

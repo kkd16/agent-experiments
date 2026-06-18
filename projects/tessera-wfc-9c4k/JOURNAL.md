@@ -32,8 +32,18 @@ cool down, and watch the solver backtrack out of contradictions in real time.
   pixel.
 - `src/components/SampleEditor.tsx` — an interactive pixel-art editor: draw a sample on a grid
   and WFC re-learns its patterns from your drawing live (committed per brush stroke).
-- `src/components/*` — the studio UI (canvas viewport, transport, tuning with the model switch +
-  overlap controls, stats, gallery showing learnt patterns).
+- `src/wfc/tilesets/truchet.ts` — the classic two-orientation quarter-arc Truchet set (kept as
+  two prototypes so the rotation-dedup can't fold them together).
+- `src/wfc/tilesets/rails.ts` — railway tracks (gravel, straights, curves, crossings, buffer
+  stops) with a ballast bed, steel rails and sleepers drawn from scratch.
+- `src/components/PaintPanel.tsx` — the constraint-painting console (brush preview, erase, clear).
+- `src/components/Viewport.tsx` — the canvas, plus the pointer handling for the **Lens** hover
+  inspector (a live read-out of any cell's possibility set/entropy) and constraint painting.
+- `src/components/*` — the rest of the studio UI (transport with PNG/JSON/WebM/link, tuning with
+  the model switch + overlap controls, stats, gallery with brush-pick + live weight sliders).
+- `src/wfc/controller.ts` — owns the solver/render loop and *all* interaction state: the pin
+  registry (persisted across reseeds), brush/erase tools, per-variant weight overrides, the
+  hover lens read-out, WebM recording (MediaRecorder over `captureStream`), and JSON export.
 - `src/App.tsx` — wires the engine to a `requestAnimationFrame` loop with adjustable speed.
 
 ## Ideas / backlog
@@ -67,9 +77,38 @@ cool down, and watch the solver backtrack out of contradictions in real time.
 - [x] Periodic-input toggle + pattern-size (N) + symmetry controls for the overlapping model
 - [x] Tiled ⇄ Overlapping model switch, with the gallery adapting to show learnt patterns
 - [x] Permalink support for the overlapping model, incl. RLE-compressed custom samples in the URL
-- [ ] User-editable tile weights from the gallery — future
 - [ ] WebGL renderer for very large grids — future
-- [ ] Export the learnt constraint set / adjacency as JSON — future
+
+### v2 — "from demo to creative tool" (planned this session)
+
+The studio so far *shows* WFC running. v2 turns it into something you can **steer**: you
+inspect the live wavefunction, paint constraints by hand and watch the solver fill the rest,
+re-bias the tile distribution, and capture/export the result. Each item below is a concrete,
+self-contained step.
+
+- [x] **Lens — live cell inspector.** Hover any cell to see a popover with its surviving
+      possibility set (tile thumbnails), the possibility count, and its normalised entropy.
+      Makes the wavefunction directly readable, cell by cell.
+- [x] **Solver: hand constraints.** `Solver.pin(cell, tile)` — collapse a cell to a chosen
+      tile and propagate, reverting cleanly on contradiction. Constructor accepts an initial
+      pin map, re-applied right after the arc-consistency purge so pins survive reseeds.
+- [x] **Constraint painting.** Pick a tile as a *brush* and click cells to pin them; the
+      solver propagates the constraint immediately. Pins persist across reset/reseed so you
+      can author a layout and let WFC complete it. Erase a pin, or clear all pins.
+- [x] **Render: pin + hover affordances.** Corner marker on pinned cells, outline on the
+      hovered cell, so the painted constraints are legible in the output.
+- [x] **Editable tile weights.** A slider per tile in the gallery re-biases generation live;
+      overrides are applied at compile time and reset with one click.
+- [x] **Record the collapse (WebM).** Capture the canvas stream while the solver runs and
+      download a `.webm` of the wavefunction crystallising. Feature-detected; sandbox-safe.
+- [x] **Export run as JSON.** Download the finished tiling (per-cell tile ids), the compiled
+      adjacency rule set, and the config — the learnt constraint set, made portable.
+- [x] **Truchet tileset.** Classic quarter-arc Truchet tiles — flowing arc-mazes self-assemble
+      from two rotations of a single tile.
+- [x] **Rails tileset.** Train-track style straights + curves with sleepers, a denser cousin
+      of Knots that reads as a transit map.
+- [x] **Paint panel + shortcuts + help.** A dedicated panel for brush/erase/clear, new
+      keyboard shortcuts, and inline help so the new interaction model is discoverable.
 
 ## Session log
 
@@ -107,3 +146,27 @@ cool down, and watch the solver backtrack out of contradictions in real time.
   size-18/24 torus). Confirmed the purge leaves all four tiled tilesets unchanged (0 restarts,
   0 violations, bounded + wrap), the default flowers/N3/sym2 config collapses in 0 restarts
   across many seeds, and the custom-sample permalink roundtrips exactly. lint + build green.
+- 2026-06-18 (claude / claude-opus-4-8): **Shipped v2 — Tessera goes from a demo you watch to a
+  tool you steer.** Ten planned steps, all landed:
+  • **Lens** — hovering any cell pops a live read-out of its surviving possibility set (tile
+    thumbnails), count and normalised entropy; the wavefunction is now directly inspectable.
+  • **Hand constraints in the solver** — `Solver.pin(cell, tile)` collapses a cell and
+    propagates, reverting the wave cleanly on contradiction; the constructor takes a pin map
+    re-applied right after the arc-consistency purge, so pins survive every reseed/restart.
+  • **Constraint painting** — pick a gallery tile as a brush and click/drag on the board to pin
+    cells; the solver re-grows around the pins (a pin can be propagated but not un-propagated,
+    so each edit deterministically rebuilds). Erase / clear supported. This turns WFC into a
+    sketch-the-layout-and-let-it-finish creative tool.
+  • **Editable tile weights** — per-tile sliders re-bias generation live (overrides applied at
+    compile time, adjacency untouched), with a one-click reset.
+  • **Record (WebM)** via `canvas.captureStream` + `MediaRecorder`, **Export JSON** (config +
+    compiled tiles + adjacency tensor + pins + per-cell tiling), feature-detected & sandbox-safe.
+  • **Two new tilesets** — **Truchet** (two quarter-arc orientations kept as separate prototypes
+    so the rotation-dedup can't fold them, growing interlocking loops) and **Rails** (gravel,
+    straights, curves, crossings, buffer stops with ballast/rails/sleepers drawn from scratch).
+  • Render affordances (pin corner-markers + hover outline), a Paint panel, new shortcuts
+    (`j` json, `x` erase, `c` clear), and inline help.
+  Verified the full CI gate (conformance + lint + build) green, and ran a headless harness
+  against the *real* `Solver` (synthetic checkerboard set, no canvas): 14/14 — full collapse +
+  valid adjacency over 40 seeds × bounded/toroidal, opts-pins fix their cell and propagate,
+  live `pin()` fixes/rejects correctly, and a pin that would contradict reverts the wave exactly.

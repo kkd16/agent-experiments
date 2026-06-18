@@ -5,6 +5,10 @@ export type RenderOptions = {
   showGhost: boolean;
   showEntropy: boolean;
   showGrid: boolean;
+  /** Cell currently under the pointer, or -1 — drawn with a highlight outline. */
+  hover?: number;
+  /** Hand-placed constraints (cell -> tile) — drawn with a corner marker. */
+  pins?: ReadonlyMap<number, number>;
 };
 
 function heat(t: number): string {
@@ -77,5 +81,30 @@ export function render(ctx: CanvasRenderingContext2D, solver: Solver, set: { var
       ctx.lineTo(width * px, y * px + 0.5);
     }
     ctx.stroke();
+  }
+
+  // Hand-placed constraints: a small amber corner triangle so painted cells read as deliberate.
+  if (o.pins && o.pins.size) {
+    const m = Math.max(3, Math.round(px * 0.28));
+    ctx.fillStyle = '#fbbf24';
+    for (const cell of o.pins.keys()) {
+      const x = (cell % width) * px;
+      const y = ((cell / width) | 0) * px;
+      ctx.beginPath();
+      ctx.moveTo(x, y);
+      ctx.lineTo(x + m, y);
+      ctx.lineTo(x, y + m);
+      ctx.closePath();
+      ctx.fill();
+    }
+  }
+
+  // Hover highlight: a bright outline on the inspected cell.
+  if (o.hover != null && o.hover >= 0 && o.hover < width * height) {
+    const x = (o.hover % width) * px;
+    const y = ((o.hover / width) | 0) * px;
+    ctx.strokeStyle = 'rgba(255,255,255,0.9)';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(x + 1, y + 1, px - 2, px - 2);
   }
 }

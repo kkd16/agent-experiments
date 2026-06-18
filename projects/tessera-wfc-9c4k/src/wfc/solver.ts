@@ -12,6 +12,12 @@ export type SolverOptions = {
   backtracking: boolean;
   /** Maximum cumulative backtracks before the run gives up (and the host restarts). */
   backtrackBudget: number;
+  /**
+   * Hand-placed constraints, applied once after the initial arc-consistency purge: each entry
+   * collapses `cell` to `tile` and propagates. Re-supplied on every (re)seed so painted
+   * constraints survive restarts. A pin that can't be satisfied is skipped (not fatal).
+   */
+  pins?: ReadonlyArray<readonly [number, number]>;
 };
 
 type Snapshot = { wave: Uint8Array; cell: number; tile: number };
@@ -157,6 +163,22 @@ export class Solver {
     }
     if (!this.propagate()) this.status = 'failed';
     this.stack = [];
+    this.applyPins();
+    this.recountCollapsed();
+  }
+
+  /** Apply the constructor's hand-placed constraints. Unsatisfiable pins are skipped. */
+  private applyPins(): void {
+    const pins = this.opts.pins;
+    if (!pins || this.status !== 'running') return;
+    for (const [cell, tile] of pins) {
+      if (cell < 0 || cell >= this.cells || tile < 0 || tile >= this.n) continue;
+      // A pin that can't be satisfied is skipped — `pin` reverts the wave and returns false.
+      this.pin(cell, tile);
+    }
+  }
+
+  private recountCollapsed(): void {
     let collapsed = 0;
     for (let c = 0; c < this.cells; c++) if (this.numPossible[c] === 1) collapsed++;
     this.collapsedCount = collapsed;
@@ -366,6 +388,32 @@ export class Solver {
     return this.status;
   }
 
+  /**
+   * Force `cell` to `tile` and propagate the consequences — a hand-placed constraint. Returns
+   * false (and leaves the wave untouched) if the tile is already banned there or the choice
+   * leads to an immediate contradiction; true on success. Used both for live constraint
+   * painting and to replay the constructor's pin map after a reseed.
+   */
+  pin(cell: number, tile: number): boolean {
+    if (cell < 0 || cell >= this.cells || tile < 0 || tile >= this.n) return false;
+    if (this.wave[cell * this.n + tile] === 0) return false; // tile already impossible here
+    if (this.numPossible[cell] === 1) return true; // already collapsed to it
+    const saved = this.wave.slice();
+    this.stack = [];
+    const ok = this.collapse(cell, tile);
+    if (!ok) {
+      // contradiction — roll back to exactly the pre-pin wave
+      this.wave.set(saved);
+      this.recomputeDerived();
+      this.rebuildCompat();
+      this.stack = [];
+      return false;
+    }
+    this.recountCollapsed();
+    if (this.collapsedCount === this.cells) this.status = 'done';
+    return true;
+  }
+
   // ---- read-out for the renderer ------------------------------------------
 
   /** Collapsed tile id for a cell, or -1 if still superposed/contradicted. */
@@ -378,6 +426,16 @@ export class Solver {
 
   possibilities(cell: number): number {
     return this.numPossible[cell];
+  }
+
+  /** The list of tile ids still possible at a cell (for the inspector). Capped for sanity. */
+  possibleTiles(cell: number, cap = 64): number[] {
+    const out: number[] = [];
+    const { n } = this;
+    for (let t = 0; t < n && out.length < cap; t++) {
+      if (this.wave[cell * n + t] === 1) out.push(t);
+    }
+    return out;
   }
 
   /** Average colour of a cell's surviving possibilities (for ghosting). */
