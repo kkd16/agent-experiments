@@ -7,11 +7,17 @@ import { paletteById } from './palettes'
 import type {
   BlendMode,
   ColorMode,
+  CurveKind,
   HarmonographParams,
+  Layer,
   LayerStyle,
+  LissajousParams,
   Pendulum,
   Project,
+  RoseParams,
   RotaryPendulum,
+  SpirographParams,
+  SuperformulaParams,
   WidthMode,
 } from './types'
 
@@ -58,11 +64,31 @@ interface PresetLayer {
   name: string
   params: HarmonographParams
   style: LayerStyle
+  kind?: CurveKind
+  spiro?: SpirographParams
+  rose?: RoseParams
+  liss?: LissajousParams
+  sf?: SuperformulaParams
+}
+
+// A harmonograph placeholder for layers whose real source is another kind.
+function dummyHarm(): HarmonographParams {
+  return {
+    x1: pend(2, 0, 1, 0.004),
+    x2: pend(3, Math.PI, 0.7, 0.004),
+    y1: pend(3, 0, 1, 0.004),
+    y2: pend(2, Math.PI, 0.7, 0.004),
+    rotary: noRot(),
+    duration: 220,
+    steps: STEPS,
+  }
 }
 
 export interface Preset {
   name: string
   background: string
+  bg2?: string
+  bgMode?: 'solid' | 'linear' | 'radial'
   vignette: number
   layers: PresetLayer[]
 }
@@ -322,14 +348,114 @@ export const PRESETS: Preset[] = [
       },
     ],
   },
+  {
+    name: 'Spiro Gear',
+    background: '#0a0a0a',
+    vignette: 0.4,
+    layers: [
+      {
+        name: 'Gear',
+        kind: 'spirograph',
+        params: dummyHarm(),
+        spiro: { R: 1, r: 0.27, d: 0.78, outer: false, turns: 27, phase: 0, decay: 0, steps: STEPS },
+        style: st('neon', { colorMode: 'angle', glow: 0.3, lineWidth: 0.8, blend: 'lighter' }),
+      },
+    ],
+  },
+  {
+    name: 'Spiro Spiral',
+    background: '#0b1220',
+    vignette: 0.45,
+    layers: [
+      {
+        name: 'Inward',
+        kind: 'spirograph',
+        params: dummyHarm(),
+        spiro: { R: 1, r: 0.41, d: 0.62, outer: false, turns: 22, phase: 0, decay: 0.012, steps: STEPS },
+        style: st('ice', { colorMode: 'path', glow: 0.4, lineWidth: 0.9, blend: 'lighter', opacity: 0.9 }),
+      },
+    ],
+  },
+  {
+    name: 'Twelve-Rose',
+    background: '#080612',
+    vignette: 0.5,
+    layers: [
+      {
+        name: 'Rose',
+        kind: 'rose',
+        params: dummyHarm(),
+        rose: { n: 7, d: 4, amp: 1, c2: 0.22, k2: 12, phase: 0, cycles: 4, steps: STEPS },
+        style: st('spectrum', { colorMode: 'angle', glow: 0.32, lineWidth: 0.9, blend: 'lighter' }),
+      },
+    ],
+  },
+  {
+    name: 'Lissajous Weave',
+    background: '#070b1a',
+    vignette: 0.4,
+    layers: [
+      {
+        name: 'Weave A',
+        kind: 'lissajous',
+        params: dummyHarm(),
+        liss: { a: 5, b: 4, delta: Math.PI / 2, ampX: 1, ampY: 1, decay: 0, cycles: 1, steps: STEPS },
+        style: st('aurora', { glow: 0.35, lineWidth: 1, blend: 'lighter', opacity: 0.85 }),
+      },
+      {
+        name: 'Weave B',
+        kind: 'lissajous',
+        params: dummyHarm(),
+        liss: { a: 4, b: 5, delta: Math.PI / 3, ampX: 1, ampY: 1, decay: 0, cycles: 1, steps: STEPS },
+        style: st('sunset', { glow: 0.35, lineWidth: 1, blend: 'lighter', opacity: 0.75 }),
+      },
+    ],
+  },
+  {
+    name: 'Superflora',
+    background: '#0d0820',
+    bg2: '#1a0a2e',
+    bgMode: 'radial',
+    vignette: 0.5,
+    layers: [
+      {
+        name: 'Flora',
+        kind: 'superformula',
+        params: dummyHarm(),
+        sf: { m: 10, n1: 0.4, n2: 0.6, n3: 0.6, a: 1, b: 1, amp: 1, cycles: 5, twist: 1.4, steps: STEPS },
+        style: st('plasma', { colorMode: 'path', glow: 0.3, lineWidth: 0.85, blend: 'lighter', opacity: 0.9 }),
+      },
+    ],
+  },
+  {
+    name: 'Starfish',
+    background: '#03140f',
+    vignette: 0.42,
+    layers: [
+      {
+        name: 'Bloom',
+        kind: 'superformula',
+        params: dummyHarm(),
+        sf: { m: 5, n1: 0.3, n2: 0.3, n3: 0.3, a: 1, b: 1, amp: 1, cycles: 7, twist: 0.9, steps: STEPS },
+        style: st('jade', { colorMode: 'angle', glow: 0.28, lineWidth: 0.9, blend: 'lighter' }),
+      },
+    ],
+  },
 ]
 
 export function loadPreset(preset: Preset): Project {
   return {
     background: preset.background,
+    bg2: preset.bg2,
+    bgMode: preset.bgMode,
     vignette: preset.vignette,
-    layers: preset.layers.map((l) =>
-      makeLayer(l.name, structuredClone(l.params), structuredClone(l.style)),
-    ),
+    layers: preset.layers.map((l) => {
+      const extra: Partial<Layer> = { kind: l.kind ?? 'harmonograph' }
+      if (l.spiro) extra.spiro = structuredClone(l.spiro)
+      if (l.rose) extra.rose = structuredClone(l.rose)
+      if (l.liss) extra.liss = structuredClone(l.liss)
+      if (l.sf) extra.sf = structuredClone(l.sf)
+      return makeLayer(l.name, structuredClone(l.params), structuredClone(l.style), extra)
+    }),
   }
 }

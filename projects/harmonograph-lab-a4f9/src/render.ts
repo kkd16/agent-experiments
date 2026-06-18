@@ -106,6 +106,7 @@ function toPixel(p: Point, tf: Transform): Point {
 
 export interface RenderOptions {
   trace?: number // 0..1, default 1 (whole curve)
+  transform?: Transform // override auto-fit (Live mode freezes framing)
 }
 
 function layerLimit(n: number, trace: number): number {
@@ -224,6 +225,30 @@ function drawVignette(ctx: CanvasRenderingContext2D, size: number, amount: numbe
   ctx.restore()
 }
 
+// Resolve the canvas background: a flat color, or a linear / radial gradient
+// between `background` and `bg2`.
+function backgroundFill(
+  ctx: CanvasRenderingContext2D,
+  project: Project,
+  size: number,
+): string | CanvasGradient {
+  const mode = project.bgMode ?? 'solid'
+  const b2 = project.bg2 ?? project.background
+  if (mode === 'linear') {
+    const g = ctx.createLinearGradient(0, 0, size, size)
+    g.addColorStop(0, project.background)
+    g.addColorStop(1, b2)
+    return g
+  }
+  if (mode === 'radial') {
+    const g = ctx.createRadialGradient(size / 2, size / 2, size * 0.05, size / 2, size / 2, size * 0.72)
+    g.addColorStop(0, project.background)
+    g.addColorStop(1, b2)
+    return g
+  }
+  return project.background
+}
+
 export function drawProject(
   ctx: CanvasRenderingContext2D,
   project: Project,
@@ -236,10 +261,10 @@ export function drawProject(
   ctx.globalCompositeOperation = 'source-over'
   ctx.globalAlpha = 1
   ctx.clearRect(0, 0, size, size)
-  ctx.fillStyle = project.background
+  ctx.fillStyle = backgroundFill(ctx, project, size)
   ctx.fillRect(0, 0, size, size)
 
-  const tf = computeTransform(project.layers, datas, size)
+  const tf = opts.transform ?? computeTransform(project.layers, datas, size)
   for (const layer of project.layers) {
     if (!layer.visible) continue
     const d = datas.get(layer.id)
@@ -320,6 +345,22 @@ export function toSvg(
     )
   }
 
+  // Background: solid fill or a gradient def referenced by the backing rect.
+  const bgMode = project.bgMode ?? 'solid'
+  const bg2 = project.bg2 ?? project.background
+  let bgFill = project.background
+  if (bgMode === 'linear') {
+    defs.push(
+      `<linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" stop-color="${project.background}"/><stop offset="100%" stop-color="${bg2}"/></linearGradient>`,
+    )
+    bgFill = 'url(#bg)'
+  } else if (bgMode === 'radial') {
+    defs.push(
+      `<radialGradient id="bg" cx="50%" cy="50%" r="72%"><stop offset="0%" stop-color="${project.background}"/><stop offset="100%" stop-color="${bg2}"/></radialGradient>`,
+    )
+    bgFill = 'url(#bg)'
+  }
+
   let vignette = ''
   if (project.vignette > 0) {
     const edge = Math.round(255 * (1 - clamp01(project.vignette)))
@@ -333,7 +374,7 @@ export function toSvg(
 <defs>
 ${defs.join('\n')}
 </defs>
-<rect width="${size}" height="${size}" fill="${project.background}"/>
+<rect width="${size}" height="${size}" fill="${bgFill}"/>
 ${groups.join('\n')}
 ${vignette}
 </svg>`

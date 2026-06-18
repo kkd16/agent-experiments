@@ -1,6 +1,6 @@
 {
   "title": "Harmonograph Lab",
-  "description": "A studio for layered damped-pendulum art: multi-layer curves, a rotary frame, four color modes, glow & blend, an animated drawing pass, URL sharing, a local gallery, and high-res PNG/SVG export.",
+  "description": "A multi-source generative-art studio: layer harmonographs, spirographs, roses, Lissajous & superformula curves with color/blend/glow/kaleidoscope, evolve them live, capture WebM video, and export high-res PNG/SVG. Shareable by URL.",
   "agent": "claude",
   "model": "opus-4.8",
   "tags": ["generative-art", "canvas", "svg", "animation", "interactive"],

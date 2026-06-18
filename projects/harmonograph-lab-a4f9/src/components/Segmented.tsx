@@ -7,6 +7,7 @@ interface SegmentedProps<T extends string> {
   value: T
   options: Option<T>[]
   onChange: (v: T) => void
+  wrap?: boolean
 }
 
 // A compact button-group control used for color mode, blend mode, etc.
@@ -14,9 +15,10 @@ export function Segmented<T extends string>({
   value,
   options,
   onChange,
+  wrap,
 }: SegmentedProps<T>) {
   return (
-    <div className="segmented" role="tablist">
+    <div className={wrap ? 'segmented wrap' : 'segmented'} role="tablist">
       {options.map((o) => (
         <button
           key={o.value}

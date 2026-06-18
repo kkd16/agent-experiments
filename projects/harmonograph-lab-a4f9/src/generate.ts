@@ -3,12 +3,20 @@
 // kaleidoscopic mandala, a clean ink study…) and derives several phase-shifted
 // layers that interfere coherently, with matching palettes, blend and glow.
 
-import { cloneParams, makeLayer, randomParams } from './harmonograph'
+import { cloneParams, defaultParams, makeLayer, randomParams } from './harmonograph'
+import {
+  randomLissajous,
+  randomRose,
+  randomSpiro,
+  randomSuperformula,
+} from './curves'
 import { PALETTES } from './palettes'
 import type {
   BlendMode,
   ColorMode,
+  CurveKind,
   HarmonographParams,
+  Layer,
   LayerStyle,
   Project,
 } from './types'
@@ -154,7 +162,63 @@ function planFor(archetype: Archetype): Plan {
   }
 }
 
+// ---- alternative-source compositions --------------------------------------
+// A coordinated piece built from spirograph / rose / Lissajous / superformula
+// layers, with palette + glow chosen to suit the family.
+
+const DARK_ALT = ['#070b1a', '#0a0a0a', '#0b1220', '#160a1e', '#0d0820', '#03140f']
+
+function altStyle(palette: string[], glow: number, opacity: number, mode: ColorMode): LayerStyle {
+  return {
+    colors: palette,
+    colorMode: mode,
+    lineWidth: rand(0.75, 1.05),
+    widthMode: 'uniform',
+    opacity,
+    blend: 'lighter',
+    glow,
+    symmetry: 1,
+    mirror: false,
+  }
+}
+
+function altLayer(kind: CurveKind, name: string, style: LayerStyle): Layer {
+  const extra: Partial<Layer> = { kind }
+  if (kind === 'spirograph') extra.spiro = randomSpiro()
+  else if (kind === 'rose') extra.rose = randomRose()
+  else if (kind === 'lissajous') extra.liss = randomLissajous()
+  else if (kind === 'superformula') extra.sf = randomSuperformula()
+  return makeLayer(name, defaultParams(), style, extra)
+}
+
+function generateAltProject(): Project {
+  const kind = pick<CurveKind>(['spirograph', 'rose', 'lissajous', 'superformula'])
+  const background = pick(DARK_ALT)
+  const vignette = rand(0.38, 0.55)
+  const palettes = [pick(PALETTES), pick(PALETTES)]
+  const mode: ColorMode = pick(['path', 'angle', 'velocity'])
+  // One or two interleaved layers of the same family read as a coherent piece.
+  const count = kind === 'lissajous' ? pick([1, 2, 2]) : pick([1, 1, 2])
+  const layers: Layer[] = []
+  for (let i = 0; i < count; i++) {
+    const style = altStyle(
+      [...palettes[i % palettes.length].colors],
+      rand(0.28, 0.46),
+      i === 0 ? rand(0.85, 0.95) : rand(0.6, 0.8),
+      mode,
+    )
+    layers.push(altLayer(kind, ['Base', 'Echo'][i] ?? `Layer ${i + 1}`, style))
+  }
+  // Occasionally deepen the scene with a radial gradient background.
+  if (chance(0.4)) {
+    return { background, bg2: pick(DARK_ALT), bgMode: 'radial', vignette, layers }
+  }
+  return { background, vignette, layers }
+}
+
 export function generateProject(): Project {
+  // ~40% of the time, surprise with a non-harmonograph curve family.
+  if (Math.random() < 0.4) return generateAltProject()
   const archetype = pick<Archetype>(['veil', 'bloom', 'mandala', 'ink', 'clean'])
   const plan = planFor(archetype)
   const base = randomParams()

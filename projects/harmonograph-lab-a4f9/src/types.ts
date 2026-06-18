@@ -24,6 +24,79 @@ export interface HarmonographParams {
   steps: number // number of sampled points along the curve
 }
 
+// ---- alternative curve sources -------------------------------------------
+// Each layer draws from one *source* family. Harmonographs are the historical
+// default; the others are classic parametric curve generators that share the
+// same render pipeline (a list of points + per-point speed/curvature/angle).
+
+export type CurveKind =
+  | 'harmonograph'
+  | 'spirograph'
+  | 'rose'
+  | 'lissajous'
+  | 'superformula'
+
+// Hypotrochoid / epitrochoid — a pen offset `d` on a circle of radius `r`
+// rolling inside (hypo) or outside (epi) a fixed circle of radius `R`. `decay`
+// optionally winds the figure inward into a spiral.
+export interface SpirographParams {
+  R: number
+  r: number
+  d: number
+  outer: boolean // true = epitrochoid (rolls outside), false = hypotrochoid
+  turns: number // revolutions of the rolling circle's centre angle
+  phase: number
+  decay: number // inward spiral rate (0 = none)
+  steps: number
+}
+
+// Rhodonea (rose) curve r(θ) = cos(k·θ), k = n/d, optionally summed with a
+// second harmonic for richer petals.
+export interface RoseParams {
+  n: number
+  d: number
+  amp: number
+  c2: number // weight of the second harmonic
+  k2: number // frequency of the second harmonic
+  phase: number
+  cycles: number // θ spans cycles·2π
+  steps: number
+}
+
+// Pure (undamped) Lissajous figure: x = sin(a·t + δ), y = sin(b·t).
+export interface LissajousParams {
+  a: number
+  b: number
+  delta: number
+  ampX: number
+  ampY: number
+  decay: number
+  cycles: number
+  steps: number
+}
+
+// Gielis superformula — an astonishingly versatile shape generator. `twist`
+// rotates each successive loop so multi-cycle figures nest into rosettes.
+export interface SuperformulaParams {
+  m: number
+  n1: number
+  n2: number
+  n3: number
+  a: number
+  b: number
+  amp: number
+  cycles: number
+  twist: number
+  steps: number
+}
+
+// Per-layer "breathe" animation: how fast and how far the source phases drift
+// when Live mode is running. Purely a view-time effect — never persisted into
+// the figure itself.
+export interface LayerDrift {
+  rate: number // 0..1 relative speed of phase evolution
+}
+
 // How stroke color is chosen along the curve.
 export type ColorMode = 'path' | 'velocity' | 'curvature' | 'angle'
 
@@ -49,12 +122,22 @@ export interface Layer {
   id: string
   name: string
   visible: boolean
-  params: HarmonographParams
+  kind: CurveKind
+  params: HarmonographParams // harmonograph source (always present)
+  spiro?: SpirographParams
+  rose?: RoseParams
+  liss?: LissajousParams
+  sf?: SuperformulaParams
+  drift?: LayerDrift
   style: LayerStyle
 }
 
+export type BackgroundMode = 'solid' | 'linear' | 'radial'
+
 export interface Project {
   background: string
+  bg2?: string // second stop for gradient backgrounds
+  bgMode?: BackgroundMode // defaults to 'solid'
   vignette: number // 0..1 darkening at the frame edges
   layers: Layer[]
 }
