@@ -315,6 +315,80 @@ export class Stabilizer {
     return this.generators().map((g) => (g.sign < 0 ? '-' : '+') + g.paulis.join(''));
   }
 
+  /**
+   * Build the unique stabilizer state pinned by n commuting, independent generators given as
+   * signed Pauli strings — no Clifford circuit required. This is how an *encoded* logical state
+   * is loaded directly: pass a code's n−k stabilizers together with its k logical-Z operators and
+   * the result is the joint +1 eigenstate |0…0⟩_L.
+   *
+   * The stabilizer rows are placed verbatim; the destabilizer rows (the symplectic-dual basis the
+   * CHP tableau needs for measurement and sign tracking) are synthesised by solving, over GF(2),
+   * the symplectic system ⟨dᵢ, sⱼ⟩ = δᵢⱼ and then a symplectic Gram–Schmidt pass that makes the
+   * destabilizers mutually commuting without disturbing their pairing with the stabilizers.
+   */
+  static fromGenerators(generators: Generator[], rng?: () => number): Stabilizer {
+    const n = generators.length;
+    if (generators.some((g) => g.paulis.length !== n))
+      throw new Error('fromGenerators needs exactly n generators on n qubits');
+
+    // Symplectic vectors of the stabilizers: sVec[i] = [x_0..x_{n-1}, z_0..z_{n-1}].
+    const sVec: number[][] = generators.map((g) => {
+      const x = new Array(n).fill(0), z = new Array(n).fill(0);
+      for (let q = 0; q < n; q++) {
+        const p = g.paulis[q];
+        if (p === 'X' || p === 'Y') x[q] = 1;
+        if (p === 'Z' || p === 'Y') z[q] = 1;
+      }
+      return [...x, ...z];
+    });
+
+    const sympVec = (a: number[], b: number[]): number => {
+      let acc = 0;
+      for (let q = 0; q < n; q++) acc ^= (a[q] & b[n + q]) ^ (a[n + q] & b[q]);
+      return acc;
+    };
+
+    // Row i of A is sᵢ with its X/Z blocks swapped, so A·d = ⟨sᵢ, d⟩.
+    const A: number[][] = sVec.map((s) => [...s.slice(n), ...s.slice(0, n)]);
+
+    // Particular GF(2) solution of A·d = rhs (free columns set to 0).
+    const solve = (rhs: number[]): number[] => {
+      const m = A.map((row, i) => [...row, rhs[i]]); // n × (2n+1) augmented
+      const pivotCol: number[] = [];
+      let r = 0;
+      for (let c = 0; c < 2 * n && r < n; c++) {
+        let piv = -1;
+        for (let i = r; i < n; i++) if (m[i][c]) { piv = i; break; }
+        if (piv < 0) continue;
+        [m[r], m[piv]] = [m[piv], m[r]];
+        for (let i = 0; i < n; i++) if (i !== r && m[i][c]) for (let j = 0; j <= 2 * n; j++) m[i][j] ^= m[r][j];
+        pivotCol[r] = c; r++;
+      }
+      const d = new Array(2 * n).fill(0);
+      for (let i = 0; i < r; i++) d[pivotCol[i]] = m[i][2 * n];
+      return d;
+    };
+
+    const dVec: number[][] = [];
+    for (let i = 0; i < n; i++) { const e = new Array(n).fill(0); e[i] = 1; dVec.push(solve(e)); }
+    // Symplectic Gram–Schmidt: adding sᵢ to dⱼ leaves every ⟨d, s⟩ fixed (stabilizers commute)
+    // and flips only ⟨dᵢ, dⱼ⟩, so this clears all destabilizer–destabilizer overlaps.
+    for (let i = 0; i < n; i++)
+      for (let j = i + 1; j < n; j++)
+        if (sympVec(dVec[i], dVec[j])) for (let c = 0; c < 2 * n; c++) dVec[j][c] ^= sVec[i][c];
+
+    const s = new Stabilizer(n, rng);
+    for (let i = 0; i < n; i++) {
+      for (let q = 0; q < n; q++) {
+        s.x[s.idx(i, q)] = dVec[i][q];      s.z[s.idx(i, q)] = dVec[i][n + q];      // destabilizer
+        s.x[s.idx(n + i, q)] = sVec[i][q];  s.z[s.idx(n + i, q)] = sVec[i][n + q];  // stabilizer
+      }
+      s.r[i] = 0;
+      s.r[n + i] = generators[i].sign < 0 ? 1 : 0;
+    }
+    return s;
+  }
+
   /** Build a stabilizer state by running a Clifford circuit; throws on a non-Clifford gate. */
   static fromCircuit(
     n: number,

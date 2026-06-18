@@ -12,7 +12,7 @@ import {
 } from './variational';
 import { toQASM } from './qasm';
 import { circuitMetrics } from './metrics';
-import { Stabilizer } from './Stabilizer';
+import { Stabilizer, type Generator, type Pauli1 } from './Stabilizer';
 import { schmidtDecompose } from './Schmidt';
 import { parameterShiftGradient, finiteDiffGradient, runGradientVQE } from './gradient';
 import { runSteane, type ErrorType } from './steane';
@@ -30,6 +30,9 @@ import {
   buildCodeCapacityGraph, buildSpaceTimeGraph, phenomLogicalErrorRate,
   codeCapacityRate, lambdaRatios, collapseFit,
 } from './surface/spacetime';
+import { CODE_ZOO, fiveQubitCode, steaneCode, code422, shorCode as shorCodeZoo } from './codes/codeZoo';
+import { singleError, pauliMul } from './codes/StabilizerCode';
+import { runCodeCycle } from './codes/runCode';
 
 export interface TestResult {
   group: string;
@@ -601,6 +604,102 @@ export function runTests(): TestResult[] {
       for (const d of distances) for (const p of ps) pts.push({ d, p, pL: codeCapacityRate(d, p, 1200, rg, 'mwpm') });
       const c = collapseFit(pts, { pthRange: [0.07, 0.13], nuRange: [0.8, 1.8], grid: 36 });
       add('Space-time FT', 'finite-size collapse recovers p_th ≈ 10% (code capacity)', c.pth >= 0.07 && c.pth <= 0.12, `p_th=${(c.pth * 100).toFixed(1)}% ν=${c.nu.toFixed(2)}`);
+    }
+  }
+
+  // --- Stabilizer codes & the perfect five-qubit code ---
+  {
+    let allValid = true;
+    const dist: Record<string, number> = {};
+    for (const spec of CODE_ZOO) {
+      const c = spec.build();
+      if (!c.validity().ok) allValid = false;
+      dist[spec.key] = c.distance();
+    }
+    add('Stabilizer codes', 'every code in the zoo is well-formed (commuting independent generators)', allValid, '');
+    add('Stabilizer codes', 'exact code distances: [[5,1,3]]=3 [[7,1,3]]=3 [[9,1,3]]=3 [[4,2,2]]=2 [[3,1,1]]=1',
+      dist.five === 3 && dist.steane === 3 && dist.shor === 3 && dist.c422 === 2 && dist.bitflip === 1,
+      `d = 5q:${dist.five} steane:${dist.steane} shor:${dist.shor} 422:${dist.c422} bf:${dist.bitflip}`);
+
+    const five = fiveQubitCode();
+    add('Stabilizer codes', 'five-qubit code saturates the quantum Hamming bound (a perfect code)', five.perfect(), '');
+
+    // Perfect ⇔ the 15 single-qubit errors map to 15 distinct, all-nonzero 4-bit syndromes.
+    {
+      const seen = new Set<number>(); let allNonzero = true;
+      for (let q = 0; q < 5; q++) for (const t of ['X', 'Y', 'Z'] as const) {
+        const s = five.syndromeKey(five.syndrome(singleError(5, q, t)));
+        if (s === 0) allNonzero = false;
+        seen.add(s);
+      }
+      add('Stabilizer codes', 'five-qubit: 15 single errors ↔ 15 distinct nonzero syndromes (bijection)',
+        allNonzero && seen.size === 15, `distinct=${seen.size}`);
+    }
+
+    // The symplectic lookup decoder corrects every single-qubit error for the distance-3 codes.
+    {
+      let allOk = true;
+      for (const c of [fiveQubitCode(), steaneCode(), shorCodeZoo()]) {
+        for (let q = 0; q < c.n; q++) for (const t of ['X', 'Y', 'Z'] as const) {
+          const e = singleError(c.n, q, t);
+          if (c.classify(pauliMul(e, c.decode(c.syndrome(e)))) === 'logical') allOk = false;
+        }
+      }
+      add('Stabilizer codes', 'decoder corrects all single-qubit errors (5q, Steane, Shor)', allOk, '');
+    }
+
+    // [[4,2,2]] detects (but cannot correct) every single-qubit error: all give a nonzero syndrome.
+    {
+      const c = code422(); let allDetect = true;
+      for (let q = 0; q < 4; q++) for (const t of ['X', 'Y', 'Z'] as const)
+        if (c.syndromeKey(c.syndrome(singleError(4, q, t))) === 0) allDetect = false;
+      add('Stabilizer codes', '[[4,2,2]] detects every single-qubit error (nonzero syndrome)', allDetect, '');
+    }
+
+    // Distance-3 means: some weight-2 error is mis-corrected into a logical failure.
+    {
+      let foundFailure = false;
+      for (let a = 0; a < 5 && !foundFailure; a++) for (let b = a + 1; b < 5 && !foundFailure; b++) {
+        const e = pauliMul(singleError(5, a, 'X'), singleError(5, b, 'X'));
+        if (five.classify(pauliMul(e, five.decode(five.syndrome(e)))) === 'logical') foundFailure = true;
+      }
+      add('Stabilizer codes', 'five-qubit: a weight-2 error provokes a logical failure (distance 3)', foundFailure, '');
+    }
+
+    // The live CHP-tableau cycle (fromGenerators → inject → read syndrome → correct → verify) recovers
+    // every single error, and its read-off syndrome matches the independent symplectic one.
+    {
+      let allRec = true, allMatch = true;
+      for (const c of [fiveQubitCode(), steaneCode()]) {
+        for (let q = 0; q < c.n; q++) for (const t of ['X', 'Y', 'Z'] as const) {
+          const run = runCodeCycle(c, singleError(c.n, q, t));
+          if (!run.recovered || run.residual === 'logical') allRec = false;
+          if (!run.syndromeMatchesSymplectic) allMatch = false;
+        }
+      }
+      add('Stabilizer codes', 'live tableau recovers all single errors (5q + Steane)', allRec, '');
+      add('Stabilizer codes', 'tableau syndrome ≡ symplectic syndrome (two independent code paths)', allMatch, '');
+    }
+
+    // Stabilizer.fromGenerators yields a faithful tableau: every loaded generator stabilises |0⟩_L (+1).
+    {
+      const pin: Generator[] = [...five.stabs, ...five.logicalZ].map((p) => ({
+        sign: 1 as const,
+        paulis: p.x.map((_, q) => (p.x[q] && p.z[q] ? 'Y' : p.x[q] ? 'X' : p.z[q] ? 'Z' : 'I') as Pauli1),
+      }));
+      const st = Stabilizer.fromGenerators(pin);
+      const allPlus = five.stabs.every((g) => st.pauliEigenvalue(g.x, g.z) === 1)
+        && five.logicalZ.every((l) => st.pauliEigenvalue(l.x, l.z) === 1);
+      add('Stabilizer codes', 'fromGenerators loads |0⟩_L: every generator has eigenvalue +1', allPlus, '');
+    }
+
+    // Monte-Carlo: below its pseudo-threshold the five-qubit logical rate is quadratically suppressed
+    // (p_L ≪ p); push p high and the unencoded code wins (p_L > p).
+    {
+      const lo = fiveQubitCode().logicalErrorRate(0.02, 8000, mulberry32(11));
+      add('Stabilizer codes', 'five-qubit p_L(2%) is suppressed below the bare-qubit rate', lo < 0.02, `p_L=${lo.toFixed(4)}`);
+      const hi = fiveQubitCode().logicalErrorRate(0.45, 4000, mulberry32(12));
+      add('Stabilizer codes', 'five-qubit p_L(45%) exceeds 2% (above the pseudo-threshold)', hi > 0.02, `p_L=${hi.toFixed(3)}`);
     }
   }
 

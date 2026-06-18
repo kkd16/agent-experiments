@@ -13,16 +13,17 @@ import BlochSphere from './components/BlochSphere';
 import DensityLab from './components/DensityLab';
 import VariationalLab from './components/VariationalLab';
 import StabilizerLab from './components/StabilizerLab';
+import CodesLab from './components/CodesLab';
 import SurfaceLab from './components/SurfaceLab';
 import TensorLab from './components/TensorLab';
 import TestsPanel from './components/TestsPanel';
 import ExportPanel from './components/ExportPanel';
 import { schmidtDecompose } from './quantum/Schmidt';
 
-type Tab = 'builder' | 'algorithms' | 'variational' | 'stabilizer' | 'surface' | 'tensor' | 'tests' | 'about';
+type Tab = 'builder' | 'algorithms' | 'variational' | 'stabilizer' | 'codes' | 'surface' | 'tensor' | 'tests' | 'about';
 type VizTab = 'state' | 'probabilities' | 'bloch' | 'density' | 'measure';
 
-const PAGE_TABS: Tab[] = ['about', 'variational', 'stabilizer', 'surface', 'tensor', 'tests'];
+const PAGE_TABS: Tab[] = ['about', 'variational', 'stabilizer', 'codes', 'surface', 'tensor', 'tests'];
 
 // Parse a shared circuit from the URL hash (#c=…) once, before mount — sandbox-safe.
 function loadSharedCircuit(): { numQubits: number; ops: GateOp[] } | null {
@@ -134,7 +135,7 @@ export default function App() {
         </div>
 
         <nav style={{ display: 'flex', gap: 2, marginLeft: 'auto', flexWrap: 'wrap' }}>
-          {(['builder', 'algorithms', 'variational', 'stabilizer', 'surface', 'tensor', 'tests', 'about'] as Tab[]).map((tab) => (
+          {(['builder', 'algorithms', 'variational', 'stabilizer', 'codes', 'surface', 'tensor', 'tests', 'about'] as Tab[]).map((tab) => (
             <button
               key={tab}
               onClick={() => setActiveTab(tab)}
@@ -153,6 +154,7 @@ export default function App() {
             >
               {tab === 'builder' ? '🔧 Builder' : tab === 'algorithms' ? '⚡ Algorithms'
                 : tab === 'variational' ? '🧬 Variational' : tab === 'stabilizer' ? '🧱 Stabilizer'
+                : tab === 'codes' ? '🛡️ Codes'
                 : tab === 'surface' ? '🔲 Surface' : tab === 'tensor' ? '🕸️ Tensor'
                 : tab === 'tests' ? '🧪 Tests' : '📖 About'}
             </button>
@@ -211,6 +213,7 @@ export default function App() {
               {activeTab === 'about' && <AboutPage />}
               {activeTab === 'variational' && <VariationalLab />}
               {activeTab === 'stabilizer' && <StabilizerLab />}
+              {activeTab === 'codes' && <CodesLab />}
               {activeTab === 'surface' && <SurfaceLab />}
               {activeTab === 'tensor' && <TensorLab />}
               {activeTab === 'tests' && <TestsPanel />}
@@ -586,6 +589,10 @@ function AboutPage() {
           content: 'The Density Matrix Renormalization Group, the workhorse of 1-D many-body physics, built from scratch on the same tensor-network engine. The Hamiltonian is encoded as a Matrix Product Operator (the operator analogue of an MPS — bond dimension 3 for the Ising chain, 5 for Heisenberg/XXZ, independent of length). DMRG sweeps the chain fusing two sites into a wavefunction, builds the effective Hamiltonian from the contracted environments and finds its lowest eigenpair with a matrix-free Lanczos iteration, then re-splits with a truncated SVD. The energy descends to the variational minimum — matching exact diagonalisation of the same operator to machine precision on small chains — while the energy variance ⟨H²⟩−⟨H⟩², from a double-layer MPO contraction, goes to zero: the basis-independent certificate that the state really is an eigenstate, at chain lengths a 2ⁿ vector could never diagonalise. Scanning a model parameter then traces a quantum phase transition: the ground-state entanglement entropy peaks exactly where the gap closes (the Ising critical field h=1; the gapless XXZ critical line −1<Δ<1).',
         },
         {
+          title: 'Stabilizer Codes & the Perfect Five-Qubit Code',
+          content: 'A general from-scratch stabilizer-code engine: a code is defined purely by its commuting Pauli generators, and the syndrome of an error, the recovery operator, the exact code distance (brute-forced as the lightest non-trivial logical over all 4ⁿ Paulis) and whether the code is perfect (saturating the quantum Hamming bound) are all pure GF(2) symplectic linear algebra — no state vector needed. Its headline is the perfect five-qubit [[5,1,3]] code: the smallest code that corrects an arbitrary single-qubit error and the first non-CSS (genuinely entangling) code in the lab, whose 16 syndromes are an exact bijection onto the 15 single-qubit errors plus the identity. The Codes tab loads the logical |0⟩_L directly from the generators (via a symplectic-dual destabilizer synthesis, no encoding circuit), injects an error, reads the syndrome off the live stabilizer tableau — cross-checked against the symplectic syndrome — corrects it, and verifies recovery, then Monte-Carlos the depolarizing logical-error rate to expose each code\'s pseudo-threshold against the bare-qubit break-even line. The Steane, Shor, [[4,2,2]] detection and 3-qubit repetition codes all live under the same engine, their distances and validity machine-checked.',
+        },
+        {
           title: 'Surface Code & MWPM Decoding (Topological QEC)',
           content: 'The surface code — the leading architecture for fault-tolerant quantum computing — built from scratch with a real decoder. The rotated planar [[d²,1,d]] code lays one logical qubit across a d×d lattice of data qubits protected by d²−1 weight-≤4 stabilizer checks; a local error lights up a pair of checks, and the decoder must infer the hidden error chain. That inference is Minimum-Weight Perfect Matching, solved here by a faithful from-scratch implementation of Edmonds\' blossom algorithm (Galil\'s O(V³) primal-dual matching) — there is no reduction of general-graph matching to flow, so blossoms (odd alternating cycles) are contracted on the fly. Interactively inject X or Z errors on any lattice and watch the checks fire, the matching form, and the residual be classified as a harmless stabilizer or a logical failure. A Monte-Carlo sweep then reproduces the hallmark of a working code — an error-correction threshold near 10.3%, below which more qubits suppress the logical error rate and above which they amplify it, the distance-d curves all crossing at p_th.',
         },
@@ -595,7 +602,7 @@ function AboutPage() {
         },
         {
           title: 'Phase Estimation & Tooling',
-          content: 'Quantum Phase Estimation recovers eigenphases via phase kickback + inverse QFT. Circuits export to OpenQASM 2.0 (Qiskit/IBM-compatible) and JSON, with shareable URLs, depth/gate metrics, and a 67-case in-browser self-test suite proving the engine correct against exact references — including DMRG vs exact diagonalisation, the surface-code MWPM decoder vs brute-force matching, the Union-Find decoder vs MWPM, and both the code-capacity and phenomenological QEC threshold crossings.',
+          content: 'Quantum Phase Estimation recovers eigenphases via phase kickback + inverse QFT. Circuits export to OpenQASM 2.0 (Qiskit/IBM-compatible) and JSON, with shareable URLs, depth/gate metrics, and a 79-case in-browser self-test suite proving the engine correct against exact references — including DMRG vs exact diagonalisation, the surface-code MWPM decoder vs brute-force matching, the Union-Find decoder vs MWPM, both QEC threshold crossings, and the stabilizer-code engine (exact code distances, the perfect five-qubit bijection, and the live tableau cross-checked against the symplectic decoder).',
         },
       ].map(({ title, content }, i) => (
         <motion.div

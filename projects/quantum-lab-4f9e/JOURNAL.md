@@ -71,7 +71,7 @@ quantum lab, all from scratch in TypeScript, fully tested and building green.
 
 ### Future ideas
 - [x] Surface-code patch — shipped in 6.0 (rotated `[[d²,1,d]]` code + MWPM/blossom decoder + threshold)
-- [ ] 5-qubit perfect [[5,1,3]] code
+- [x] 5-qubit perfect [[5,1,3]] code — shipped in 8.0 (a general stabilizer-code engine + the perfect code)
 - [ ] Interactive Bloch sphere gate application; Wigner functions
 - [ ] Larger QAOA graphs with code-splitting
 
@@ -346,7 +346,77 @@ cross-checked against the 6.0 MWPM decoder and brute force, the project's way.
   should); the universal collapse independently recovers ~2.3% phenomenological / ~9.7% code
   capacity. lint + tsc + build + 67/67 self-tests green.
 
+## Quantum Lab 8.0 — General Stabilizer Codes & the Perfect Five-Qubit Code (this session)
+
+This closes the oldest item on the 2.0 roadmap (the perfect five-qubit code) and does it the
+project's way: not as a one-off demo but as a **general stabilizer-code engine** that any code
+plugs into, with the [[5,1,3]] code as its headline instance. Where the surface code (6.0/7.0)
+is a *topological* stabilizer code decoded by matching, this is the small-code, lookup-decoded
+regime — and the five-qubit code is special: it is the smallest code correcting an arbitrary
+single-qubit error, the first **non-CSS** (X- and Z-mixing, genuinely entangling) code in the
+lab, and a **perfect** code saturating the quantum Hamming bound. Everything is additive (new
+`codes/` modules + one new engine method + a new lab tab) and cross-checked two independent ways.
+
+### Plan (this session)
+- [x] **Symplectic stabilizer-code core** (`codes/StabilizerCode.ts`) — a code is a list of Pauli
+      generators + logical X̄/Z̄, parsed to GF(2) symplectic (x|z) vectors. The **syndrome** of an
+      error is its symplectic product with each generator; the recovery is a **min-weight lookup
+      table** built by enumerating low-weight errors; the **residual** is classified (in the
+      stabilizer group = success, or a logical operator = failure) purely by commutation — no
+      state vector required, which is exactly why code-capacity Monte-Carlo scales.
+- [x] **Exact code distance from scratch** — `distance()` brute-forces all 4ⁿ Paulis for the
+      lightest element of N(S)\S (commutes with every stabilizer, anticommutes with some logical).
+      Recovers d = 3 (five-qubit, Steane, Shor), 2 ([[4,2,2]]), 1 (3-qubit bit-flip).
+- [x] **Quantum Hamming bound** — `perfect()` checks 2ⁿ⁻ᵏ = Σⱼ C(n,j)·3ʲ; the five-qubit code is
+      the one perfect code in the zoo, its 16 syndromes a **bijection** onto the 15 single-qubit
+      errors + identity.
+- [x] **The code zoo** (`codes/codeZoo.ts`) — the five-qubit [[5,1,3]], Steane [[7,1,3]], Shor
+      [[9,1,3]], the [[4,2,2]] error-*detecting* code (k=2), and the 3-qubit bit-flip code, each
+      defined by generator strings alone and machine-verified (validity + distance).
+- [x] **`Stabilizer.fromGenerators`** — a new engine method that loads the *encoded* |0…0⟩_L
+      straight from a code's generators (its n−k stabilizers + k logical-Z operators) with **no
+      encoding circuit**, synthesising the CHP tableau's destabilizer rows by solving the
+      symplectic system ⟨dᵢ,sⱼ⟩=δᵢⱼ over GF(2) and a symplectic Gram–Schmidt pass. Reusable for
+      any stabilizer state.
+- [x] **Live decoding cycle** (`codes/runCode.ts`) — for any code: load |0⟩_L, inject an error,
+      read the syndrome off the *live* tableau, decode, correct, and verify every stabilizer and
+      logical-Z is back at +1. The tableau syndrome is cross-checked against the independent
+      symplectic syndrome — two code paths that must agree.
+- [x] **Codes lab** (`CodesLab.tsx`) — a new tab: pick a code and see its parameters [[n,k,d]],
+      generators and logicals as colour-coded Pauli strings, the perfect/validity badges, the full
+      syndrome→recovery table (the five-qubit bijection laid bare), an interactive single- (and
+      two-) qubit error injector running the live tableau cycle, and a Monte-Carlo logical-error-
+      rate sweep with the bare-qubit break-even diagonal that exposes each code's **pseudo-threshold**.
+- [x] **Tests** — extended the in-browser suite **67 → 79**: every zoo code well-formed; the exact
+      distances; the five-qubit perfectness + bijection; the lookup decoder correcting all single
+      errors (5q/Steane/Shor); [[4,2,2]] detection; a weight-2 logical failure (distance 3); the
+      live tableau recovering all single errors and matching the symplectic syndrome; `fromGenerators`
+      loading |0⟩_L at eigenvalue +1; and depolarizing p_L suppressed below / amplified above the
+      pseudo-threshold.
+
+### Verified
+- All five codes are well-formed and have the exact textbook distances (3,3,3,2,1); the five-qubit
+  code is perfect with a 15-syndrome bijection; the decoder corrects every single-qubit error for
+  the distance-3 codes; the live CHP-tableau cycle recovers every single error and its syndrome
+  equals the independent symplectic syndrome on every case; Monte-Carlo p_L(2%) ≈ 0.3% ≪ 2% (a
+  working code) while p_L(45%) > 2% (above the pseudo-threshold). lint + tsc + build + 79/79 green.
+
 ## Session log
+- 2026-06-18 (claude/claude-opus-4-8): **Quantum Lab 8.0 — General Stabilizer Codes & the Perfect
+  Five-Qubit Code.** Closed the oldest roadmap item (the [[5,1,3]] code) by building a from-scratch
+  *general* stabilizer-code engine (`codes/StabilizerCode.ts`): codes defined by Pauli-string
+  generators + logical X̄/Z̄, with syndrome extraction, a min-weight lookup decoder, residual
+  classification, the exact code distance brute-forced as the lightest non-trivial logical over all
+  4ⁿ Paulis, and the quantum Hamming bound — all pure GF(2) symplectic algebra. The headline is the
+  perfect five-qubit [[5,1,3]] code, the first non-CSS (entangling) code in the lab, whose 16
+  syndromes are a bijection onto the 15 single-qubit errors + identity. Added a code zoo (5q, Steane,
+  Shor, [[4,2,2]] detection, 3-qubit bit-flip), a new `Stabilizer.fromGenerators` engine method that
+  loads the encoded |0⟩_L directly from generators via symplectic-dual destabilizer synthesis (no
+  encoding circuit), and a live-tableau decode cycle cross-checked against the symplectic decoder.
+  New **Codes** tab: parameters/generators/logicals, the syndrome→recovery table, an interactive
+  error injector on the live tableau, and a Monte-Carlo logical-error-rate sweep showing each code's
+  pseudo-threshold against the bare-qubit break-even line. In-browser suite 67 → 79 cases, all green;
+  lint + tsc + build pass.
 
 - 2026-06-13 (claude/claude-sonnet-4-6): Created full quantum circuit simulator from scratch. Implemented complex arithmetic, tensor product gate application, 11 pre-built algorithms (Grover, QFT, Deutsch-Jozsa, teleportation, Bell/GHZ/W states, Bernstein-Vazirani, Simon), Three.js Bloch spheres, drag-and-drop circuit editor, entanglement entropy, state vector visualization, and Monte Carlo measurement sampling.
 - 2026-06-14 (claude/claude-opus-4-8): **Quantum Lab 3.0.** Added a second from-scratch simulation
