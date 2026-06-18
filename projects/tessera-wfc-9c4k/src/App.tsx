@@ -5,17 +5,24 @@ import Transport from './components/Transport';
 import Tuning from './components/Tuning';
 import StatsPanel from './components/StatsPanel';
 import Gallery from './components/Gallery';
+import SampleEditor from './components/SampleEditor';
 import { Controller, type ControllerConfig, type Stats } from './wfc/controller';
 import { randomSeedString } from './wfc/prng';
 import { decodeHash, encodeHash } from './wfc/permalink';
+import { sampleByKey, type Sample } from './wfc/samples';
 
 const DEFAULTS: ControllerConfig = {
+  model: 'overlap',
   tilesetKey: 'terrain',
+  sampleKey: 'flowers',
+  patternN: 3,
+  symmetry: 2,
+  periodicInput: false,
   size: 28,
   seed: 'seed',
   wrap: false,
   backtracking: true,
-  speed: 8,
+  speed: 10,
   showGhost: true,
   showEntropy: false,
   showGrid: false,
@@ -46,6 +53,7 @@ export default function App() {
   const [controller] = useState(() => new Controller(cfg));
   const [seedLocked, setSeedLocked] = useState(false);
   const [stats, setStats] = useState<Stats>(EMPTY_STATS);
+  const [editing, setEditing] = useState(false);
 
   const onStats = useCallback((s: Stats) => setStats(s), []);
 
@@ -84,6 +92,19 @@ export default function App() {
     }
   }, [controller, seedLocked, apply]);
   const newSeed = useCallback(() => apply({ seed: randomSeedString() }, true), [apply]);
+
+  // --- sample editor (overlapping model) ---
+  const openEditor = useCallback(() => {
+    // Switch to the overlapping model if needed; the editor forks the active sample.
+    if (cfg.model !== 'overlap') apply({ model: 'overlap' }, true);
+    setEditing(true);
+  }, [cfg.model, apply]);
+  // The bitmap the editor starts from: an in-progress custom sample, or a fork of the built-in.
+  const editorSample: Sample = cfg.sampleKey === 'custom' && cfg.customSample ? cfg.customSample : sampleByKey(cfg.sampleKey);
+  const onSampleChange = useCallback(
+    (s: Sample) => apply({ model: 'overlap', sampleKey: 'custom', customSample: s }, true),
+    [apply],
+  );
 
   // keyboard shortcuts
   useEffect(() => {
@@ -155,32 +176,21 @@ export default function App() {
         <aside className="sidebar">
           <StatsPanel stats={stats} />
           <Tuning
-            tilesetKey={cfg.tilesetKey}
-            size={cfg.size}
-            seed={cfg.seed}
+            cfg={cfg}
             seedLocked={seedLocked}
-            wrap={cfg.wrap}
-            backtracking={cfg.backtracking}
-            showGhost={cfg.showGhost}
-            showEntropy={cfg.showEntropy}
-            showGrid={cfg.showGrid}
-            onTileset={(k) => apply({ tilesetKey: k }, true)}
-            onSize={(n) => apply({ size: n }, true)}
-            onSeed={(s) => apply({ seed: s }, true)}
+            onPatch={apply}
             onNewSeed={newSeed}
             onSeedLock={setSeedLocked}
-            onWrap={(b) => apply({ wrap: b }, true)}
-            onBacktracking={(b) => apply({ backtracking: b }, true)}
-            onGhost={(b) => apply({ showGhost: b }, false)}
-            onEntropy={(b) => apply({ showEntropy: b }, false)}
-            onGrid={(b) => apply({ showGrid: b }, false)}
+            onEditSample={openEditor}
           />
           <Gallery tileset={tileset} />
         </aside>
       </main>
 
+      {editing && <SampleEditor value={editorSample} onChange={onSampleChange} onClose={() => setEditing(false)} />}
+
       <footer className="footer">
-        <span>Built from scratch — edge-code algebra · support-counter propagation · snapshot backtracking.</span>
+        <span>Built from scratch — tiled + overlapping models · support-counter propagation · snapshot backtracking.</span>
         <span className="keys">
           <kbd>space</kbd> play · <kbd>s</kbd> step · <kbd>r</kbd> reset · <kbd>n</kbd> seed · <kbd>e</kbd> png · <kbd>h</kbd> heatmap
         </span>
