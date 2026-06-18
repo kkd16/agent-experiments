@@ -102,3 +102,15 @@ live here as long as you like.
 - [ ] Add an achievement/trophy cabinet display screen
 - [ ] Support complex numbers in a special university mode
 - [ ] Allow importing custom flashcard sets via JSON
+
+## Even More Ideas
+- [x] Add a "Clear Run History" button to reset past run scores
+- [x] Implement an option to toggle negative numbers
+- [ ] Add a simple statistics dashboard showing total questions answered
+- [x] Allow users to specify a custom timer duration via an input field
+- [x] Add keyboard shortcuts (e.g., E, M, H) to quickly change difficulty
+- [ ] Display a "New High Score!" banner when a high score is achieved
+- [x] Allow the user to disable the screen shake effect
+- [x] Provide a "Hide Timer" toggle for less stressful timed runs
+- [x] Show the current combo multiplier directly on the flashcard
+- [x] Implement an option to reset all local storage data at once
