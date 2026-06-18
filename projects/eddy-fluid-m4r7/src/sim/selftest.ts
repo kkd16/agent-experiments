@@ -11,6 +11,7 @@
 // through walls or blows up. If any check fails, the studio says so out loud.
 
 import { FluidSolver, DEFAULT_PARAMS, type FluidParams } from './fluid';
+import { computeLIC, makeNoise } from '../render/lic';
 
 export interface Check {
   name: string;
@@ -233,6 +234,293 @@ function linearSolver(): CheckGroup {
   return {
     title: 'Linear solver (red-black Gauss–Seidel / SOR)',
     blurb: 'Pressure & viscosity are sparse linear systems solved by relaxation; over-relaxation accelerates it and red-black ordering removes directional bias.',
+    checks,
+  };
+}
+
+function conjugateGradient(): CheckGroup {
+  const checks: Check[] = [];
+  const N = 56;
+
+  // CG drives the Poisson residual far lower than SOR at an equal iteration budget.
+  {
+    const budget = 24;
+    const cg = new FluidSolver(N);
+    seedDivergent(cg);
+    cg.projectVelocityCG(budget);
+    const resCG = poissonResidual(cg);
+    const sor = new FluidSolver(N);
+    seedDivergent(sor);
+    sor.projectVelocity(budget, 1.8);
+    const resSOR = poissonResidual(sor);
+    checks.push(
+      check(
+        'CG beats SOR per iteration',
+        `At an equal budget (${budget} iterations) Jacobi-preconditioned Conjugate Gradients leaves a much smaller Poisson residual than red-black SOR — Krylov methods converge the spectrum far faster than a stationary relaxation.`,
+        resCG < 0.5 * resSOR,
+        `‖residual‖∞ @ ${budget} its: CG ${fmt(resCG)} vs SOR ${fmt(resSOR)} (${fmt(resSOR / resCG)}× lower)`,
+      ),
+    );
+  }
+
+  // The CG residual converges monotonically toward zero with more iterations.
+  {
+    const its = [10, 30, 90];
+    const res = its.map((k) => {
+      const sim = new FluidSolver(N);
+      seedDivergent(sim);
+      sim.projectVelocityCG(k, 1e-12);
+      return poissonResidual(sim);
+    });
+    const monotone = res[0] > res[1] && res[1] > res[2];
+    checks.push(
+      check(
+        'CG converges the pressure equation',
+        'More CG iterations strictly lower the residual of the same Poisson system the relaxation solves, down toward machine precision.',
+        monotone && res[res.length - 1] < 1e-4,
+        `‖residual‖∞ @ ${its.join('/')} its = ${res.map(fmt).join(' → ')}`,
+      ),
+    );
+  }
+
+  // CG and fully-converged SOR reach the same incompressibility — same physics.
+  {
+    const cg = new FluidSolver(N);
+    seedDivergent(cg);
+    cg.projectVelocityCG(300, 1e-12);
+    const divCG = rmsDivInterior(cg);
+    const sor = new FluidSolver(N);
+    seedDivergent(sor);
+    sor.projectVelocity(3000, 1.7);
+    const divSOR = rmsDivInterior(sor);
+    checks.push(
+      check(
+        'CG lands on the same projected field',
+        'CG is a faster road to the *same* answer: converged, it reaches the identical residual divergence floor as converged SOR (both hit the collocated-grid odd/even limit, not a different solution).',
+        Math.abs(divCG - divSOR) < 1.5e-4,
+        `RMS ∇·u (converged): CG ${fmt(divCG)} vs SOR ${fmt(divSOR)}`,
+      ),
+    );
+  }
+
+  // CG honours internal obstacles: with a cylinder in the flow it reaches the
+  // same incompressibility as converged SOR (both apply the Neumann no-penetration
+  // condition at the solid faces through the identical stencil).
+  {
+    const before = (() => {
+      const s = new FluidSolver(64);
+      seedDivergent(s);
+      return rmsDivInterior(s);
+    })();
+    const cg = new FluidSolver(64);
+    seedDivergent(cg);
+    cg.paintSolid(22, 32, 6, true);
+    cg.projectVelocityCG(300, 1e-12);
+    const divCG = rmsDivInterior(cg);
+    const sor = new FluidSolver(64);
+    seedDivergent(sor);
+    sor.paintSolid(22, 32, 6, true);
+    sor.projectVelocity(3000, 1.7);
+    const divSOR = rmsDivInterior(sor);
+    checks.push(
+      check(
+        'CG respects solid obstacles',
+        'The matrix-free operator applies the identical Neumann condition at internal solid faces as at the domain walls, so a cylinder in the flow is projected to the same residual divergence as converged SOR.',
+        Number.isFinite(divCG) && divCG < 0.6 * before && Math.abs(divCG - divSOR) < 1.5e-4,
+        `RMS ∇·u with a cylinder: ${fmt(before)} → CG ${fmt(divCG)} (SOR ${fmt(divSOR)})`,
+      ),
+    );
+  }
+
+  return {
+    title: 'Krylov solver (Conjugate Gradients)',
+    blurb:
+      'The pressure Poisson system is symmetric positive-semidefinite — the textbook case for Conjugate Gradients. CG converges it far faster than SOR and to the same solution.',
+    checks,
+  };
+}
+
+function combustion(): CheckGroup {
+  const checks: Check[] = [];
+  const N = 48;
+
+  const seedFuelHot = (sim: FluidSolver, t: number) => {
+    for (let j = 1; j <= N; j++)
+      for (let i = 1; i <= N; i++) {
+        const idx = sim.IX(i, j);
+        sim.fuel[idx] = 0.8;
+        sim.t[idx] = t;
+      }
+  };
+  const totalFuel = (sim: FluidSolver) => sum(sim.fuel, N, sim);
+  const totalHeat = (sim: FluidSolver) => sum(sim.t, N, sim);
+
+  // Below the ignition temperature, nothing burns: fuel & heat are unchanged.
+  {
+    const sim = new FluidSolver(N);
+    seedFuelHot(sim, 0.2); // cooler than ignition 0.6
+    const f0 = totalFuel(sim);
+    const h0 = totalHeat(sim);
+    for (let s = 0; s < 20; s++)
+      sim.step(1 / 60, params({ combustion: 6, ignition: 0.6, heatRelease: 3 }));
+    const f1 = totalFuel(sim);
+    const h1 = totalHeat(sim);
+    checks.push(
+      check(
+        'No ignition below threshold',
+        'Fuel colder than the ignition temperature must not burn — total fuel and total heat both stay put (only quiescent advection of a uniform field).',
+        Math.abs(f1 - f0) < 1e-3 * Math.abs(f0) && Math.abs(h1 - h0) < 1e-3 * Math.abs(h0) + 1e-6,
+        `∑fuel ${fmt(f0)}→${fmt(f1)}, ∑T ${fmt(h0)}→${fmt(h1)}`,
+      ),
+    );
+  }
+
+  // Above ignition, combustion consumes fuel and releases heat.
+  {
+    const sim = new FluidSolver(N);
+    seedFuelHot(sim, 1.0); // hotter than ignition 0.5
+    const f0 = totalFuel(sim);
+    const h0 = totalHeat(sim);
+    for (let s = 0; s < 20; s++)
+      sim.step(1 / 60, params({ combustion: 6, ignition: 0.5, heatRelease: 3, cooling: 0 }));
+    const f1 = totalFuel(sim);
+    const h1 = totalHeat(sim);
+    checks.push(
+      check(
+        'Burning consumes fuel & releases heat',
+        'Above ignition the first-order reaction strictly draws down the fuel and deposits its energy into the temperature field (exothermic).',
+        f1 < f0 - 0.1 && h1 > h0 + 0.1,
+        `∑fuel ${fmt(f0)}→${fmt(f1)} (down), ∑T ${fmt(h0)}→${fmt(h1)} (up)`,
+      ),
+    );
+  }
+
+  // With the reaction off, fuel is a passive scalar — conserved by advection.
+  {
+    const sim = new FluidSolver(N);
+    const c = (N + 1) / 2;
+    for (let j = 0; j <= N + 1; j++)
+      for (let i = 0; i <= N + 1; i++) {
+        const idx = sim.IX(i, j);
+        sim.u[idx] = -0.4 * (j - c) / N;
+        sim.v[idx] = 0.4 * (i - c) / N;
+      }
+    sim.splatFuel(Math.floor(N * 0.5), Math.floor(N * 0.5), 1, 8);
+    const f0 = totalFuel(sim);
+    for (let s = 0; s < 30; s++) sim.step(1 / 60, params({ combustion: 0 }));
+    const f1 = totalFuel(sim);
+    checks.push(
+      check(
+        'Fuel is conserved when not burning',
+        'With the reaction rate at zero, fuel is just another advected scalar — swirling it around conserves the total (no spurious sources or sinks).',
+        Math.abs(f1 - f0) < 5e-3 * Math.abs(f0),
+        `∑fuel ${fmt(f0)} → ${fmt(f1)} (Δ ${fmt((100 * (f1 - f0)) / f0)}%)`,
+      ),
+    );
+  }
+
+  return {
+    title: 'Reactive flow (combustion)',
+    blurb:
+      'Fuel is advected like any scalar, ignites above a threshold temperature, burns at a first-order rate, and releases heat — a minimal but honest combustion model.',
+    checks,
+  };
+}
+
+function visualization(): CheckGroup {
+  const checks: Check[] = [];
+  const N = 48;
+  const S = N + 2;
+  const noise = makeNoise(N, 1234567);
+  const u = new Float32Array(S * S);
+  const v = new Float32Array(S * S);
+  const out = new Float32Array(N * N);
+
+  // With no flow, each LIC pixel convolves a single point ⇒ output = the noise.
+  {
+    u.fill(0);
+    v.fill(0);
+    computeLIC({ N, u, v, noise }, out, { steps: 16, phase: 0.3 });
+    let maxErr = 0;
+    for (let k = 0; k < out.length; k++) maxErr = Math.max(maxErr, Math.abs(out[k] - noise[k]));
+    checks.push(
+      check(
+        'LIC is the identity under no flow',
+        'With zero velocity every streamline is a fixed point, so the convolution reduces to sampling the noise where it already is — the texture must come back unchanged.',
+        maxErr < 1e-4,
+        `max|LIC − noise| = ${fmt(maxErr)}`,
+      ),
+    );
+  }
+
+  // LIC is a convex blend of the noise ⇒ it obeys a maximum principle.
+  {
+    const c = (N + 1) / 2;
+    for (let j = 0; j <= N + 1; j++)
+      for (let i = 0; i <= N + 1; i++) {
+        const idx = i + S * j;
+        u[idx] = -(j - c);
+        v[idx] = i - c;
+      }
+    computeLIC({ N, u, v, noise }, out, { steps: 18 });
+    let nlo = Infinity;
+    let nhi = -Infinity;
+    for (const x of noise) {
+      if (x < nlo) nlo = x;
+      if (x > nhi) nhi = x;
+    }
+    let olo = Infinity;
+    let ohi = -Infinity;
+    for (const x of out) {
+      if (x < olo) olo = x;
+      if (x > ohi) ohi = x;
+    }
+    checks.push(
+      check(
+        'LIC obeys a maximum principle',
+        'The convolution weights are non-negative, so each output is a convex average of noise samples — it can never leave the noise’s own [min, max] range.',
+        olo >= nlo - 1e-6 && ohi <= nhi + 1e-6,
+        `noise [${fmt(nlo)}, ${fmt(nhi)}] → LIC [${fmt(olo)}, ${fmt(ohi)}]`,
+      ),
+    );
+  }
+
+  // Under a uniform shear the texture is smoother *along* the flow than across it.
+  {
+    u.fill(0);
+    v.fill(0);
+    for (let j = 0; j <= N + 1; j++) for (let i = 0; i <= N + 1; i++) u[i + S * j] = 1;
+    computeLIC({ N, u, v, noise }, out, { steps: 20 });
+    let along = 0;
+    let across = 0;
+    let na = 0;
+    let nc = 0;
+    for (let j = 0; j < N; j++)
+      for (let i = 0; i < N - 1; i++) {
+        along += Math.abs(out[j * N + i + 1] - out[j * N + i]);
+        na++;
+      }
+    for (let j = 0; j < N - 1; j++)
+      for (let i = 0; i < N; i++) {
+        across += Math.abs(out[(j + 1) * N + i] - out[j * N + i]);
+        nc++;
+      }
+    along /= na;
+    across /= nc;
+    checks.push(
+      check(
+        'LIC streaks along the flow',
+        'Convolving along the streamlines smears the noise in the flow direction — so neighbouring samples vary far less along the flow than across it (the streaks you see).',
+        along < 0.5 * across,
+        `mean |Δ| along ${fmt(along)} vs across ${fmt(across)} (${fmt(across / along)}× smoother along)`,
+      ),
+    );
+  }
+
+  return {
+    title: 'Flow visualisation (LIC)',
+    blurb:
+      'Line Integral Convolution smears a noise texture along the streamlines. It’s a pure function, so its invariants — identity, boundedness, streamwise anisotropy — are checkable too.',
     checks,
   };
 }
@@ -541,9 +829,12 @@ export function runSelfTest(): SelfTestReport {
   const groups = [
     incompressibility(),
     linearSolver(),
+    conjugateGradient(),
     transport(),
     operators(),
     thermalAndSymmetry(),
+    combustion(),
+    visualization(),
     robustness(),
   ];
   let passed = 0;

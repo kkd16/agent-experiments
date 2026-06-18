@@ -184,8 +184,9 @@ export function Studio() {
     engineRef.current?.pointerDown(n.x, n.y);
   };
   const onPointerMove = (e: React.PointerEvent) => {
-    if (!lastPtr.current) return;
     const n = toNorm(e);
+    engineRef.current?.setHover(n.x, n.y); // probe follows the cursor always
+    if (!lastPtr.current) return;
     const dx = n.x - lastPtr.current.x;
     const dy = n.y - lastPtr.current.y;
     lastPtr.current = n;
@@ -195,6 +196,10 @@ export function Studio() {
     lastPtr.current = null;
     engineRef.current?.pointerUp();
     (e.target as Element).releasePointerCapture?.(e.pointerId);
+  };
+  const onPointerLeave = (e: React.PointerEvent) => {
+    engineRef.current?.clearHover();
+    onPointerUp(e);
   };
 
   // Keyboard shortcuts.
@@ -225,16 +230,20 @@ export function Studio() {
           onPointerDown={onPointerDown}
           onPointerMove={onPointerMove}
           onPointerUp={onPointerUp}
-          onPointerLeave={onPointerUp}
+          onPointerLeave={onPointerLeave}
         />
         <Hud stats={stats} />
         {toast && <div className="toast">{toast}</div>}
         <div className="stage-hint">
           {settings.tool === 'dye'
             ? 'Drag to inject dye & stir the fluid'
-            : settings.tool === 'wall'
-              ? 'Drag to draw solid walls'
-              : 'Drag to erase walls'}
+            : settings.tool === 'heat'
+              ? 'Drag to inject heat (buoyancy lifts it)'
+              : settings.tool === 'fuel'
+                ? 'Drag to lay down fuel — it burns where the reaction is on'
+                : settings.tool === 'wall'
+                  ? 'Drag to draw solid walls'
+                  : 'Drag to erase walls'}
           {'  ·  space = pause · r = reset · c = clear dye'}
         </div>
       </div>

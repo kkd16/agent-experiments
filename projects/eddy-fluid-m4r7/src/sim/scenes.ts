@@ -329,6 +329,42 @@ export const SCENES: Scene[] = [
       }
     },
   },
+  {
+    id: 'fire',
+    name: 'Combustion (fire)',
+    blurb:
+      'A genuine reactive flow. Fuel streams up from a burner; where it is hotter than the ignition temperature it ignites, releasing heat that buoys the flame and consumes the fuel, leaving rising smoke. A pilot keeps it lit. Try the Temperature, LIC, or Schlieren render modes.',
+    params: {
+      combustion: 6,
+      ignition: 0.4,
+      heatRelease: 3.5,
+      buoyancy: 70,
+      smokeBuoyancy: 6,
+      cooling: 0.35,
+      thermalDiffusion: 0.00002,
+      vorticity: 14,
+      viscosity: 0,
+      velocityDissipation: 0.01,
+      dyeDissipation: 0.08,
+      gravity: 0,
+      ambient: 0,
+      iterations: 26,
+      overRelax: 1.4,
+    },
+    exposure: 1.1,
+    setup: () => {},
+    emit: (sim, { time }) => {
+      const N = sim.N;
+      const cx = Math.floor(N * 0.5 + Math.sin(time * 1.3) * N * 0.02);
+      const cy = N - Math.max(3, Math.floor(N * 0.05));
+      const rad = Math.max(2, N * 0.03);
+      // Feed fuel and keep a pilot flame lit at the burner mouth.
+      sim.splatFuel(cx, cy, 2.4, rad);
+      sim.splatHeat(cx, cy, 1.1, rad * 0.8);
+      // A small upward nudge so the column starts rising immediately.
+      sim.splat(cx, cy, 0, -0.45, [0, 0, 0], rad, 0);
+    },
+  },
 ];
 
 /** Map a hue (0..1) to an RGB triple scaled by `intensity` (for dye injection). */

@@ -14,24 +14,33 @@ src/
     fluid.ts     FluidSolver — the core Stable-Fluids solver (Stam '99/'03):
                  setBnd (walls + obstacles), linSolve (RED-BLACK Gauss–Seidel /
                  SOR), diffuse, advect (semi-Lagrangian + MacCormack), project
-                 (Hodge/Poisson), vorticityConfinement, a Boussinesq TEMPERATURE
-                 field (buoyancy + thermal diffusion + Newton cooling), splat,
-                 splatHeat, paintSolid, sampleField/sampleVelocity, diagnostics,
-                 projectVelocity (test hook), step().
-    scenes.ts    Ten curated scenes: blank, vortex street, plume, jets, stirred
-                 ink, obstacle course, + Rayleigh–Bénard convection, buoyant
-                 thermal plume, Kelvin–Helmholtz shear, lid-driven cavity.
+                 (Hodge/Poisson), + an alternative matrix-free Jacobi-PRECONDITIONED
+                 CONJUGATE-GRADIENT projection (applyPoisson/projectCG), a reactive
+                 COMBUSTION model (advected `fuel` field, ignition, heat release —
+                 combust()), VARIABLE-DENSITY (non-Boussinesq) buoyancy, vorticity
+                 confinement, a Boussinesq TEMPERATURE field, splat/splatHeat/
+                 splatFuel, paintSolid, sampleField/sampleVelocity, diagnostics,
+                 projectVelocity{,CG} (test hooks), step().
+    scenes.ts    Eleven curated scenes: blank, vortex street, plume, jets, stirred
+                 ink, obstacle course, Rayleigh–Bénard convection, buoyant thermal
+                 plume, Kelvin–Helmholtz shear, lid-driven cavity, + a self-
+                 sustaining FIRE (combustion) scene.
     particles.ts ParticleSystem — passive tracer ensemble advected by the flow,
                  recycled on death/escape, drawn as velocity-aligned streaks.
-    selftest.ts  runSelfTest() — the numerical verification suite (14 invariant /
-                 closed-form checks across 6 groups). Pure, DOM-free, deterministic.
+    selftest.ts  runSelfTest() — the numerical verification suite (24 invariant /
+                 closed-form checks across 9 groups, incl. CG, combustion, LIC).
+                 Pure, DOM-free, deterministic.
     engine.ts    FluidEngine — rAF loop, pointer→force plumbing, scene state,
-                 tracer-particle update, live diagnostics, FPS/step-time stats.
+                 tracer-particle update, HOVER-PROBE readout, LIC phase advance,
+                 live diagnostics, FPS/step-time stats.
   render/
     colormaps.ts inferno / viridis / ice / magma / heat ramps + diverging map.
+    lic.ts       makeNoise + computeLIC — pure Line Integral Convolution core
+                 (noise smeared along RK2 streamlines, travelling-cosine kernel).
     renderer.ts  Field → ImageData at grid res, upscaled by the canvas; dye /
-                 speed / vorticity / pressure / TEMPERATURE modes, plus
-                 velocity-arrow, STREAMLINE (RK2) and tracer-PARTICLE overlays.
+                 speed / vorticity / pressure / TEMPERATURE / LIC / SCHLIEREN modes,
+                 plus velocity-arrow, STREAMLINE (RK2), tracer-PARTICLE overlays and
+                 the hover-probe crosshair.
   state/
     settings.ts  Settings type, defaults, guarded localStorage persistence,
                  hex→dye helper. (localStorage wrapped in try/catch for the
@@ -63,10 +72,23 @@ src/
 - Obstacles: `solid` mask; no-penetration/no-slip via reflective `setBnd` and
   Neumann substitution (use self-pressure for solid neighbours) in the solve.
 - Vorticity confinement re-injects swirl lost to semi-Lagrangian dissipation.
+- **Two pressure solvers, one system.** The projection can use red-black SOR *or*
+  matrix-free Jacobi-preconditioned **Conjugate Gradients**. CG applies the exact
+  same 5-point Neumann/obstacle Laplacian SOR relaxes (`applyPoisson`), so they
+  converge to the same field; CG just gets there in far fewer iterations (Krylov vs
+  stationary). The CG RHS is shifted mean-zero first — the compatibility condition
+  for the singular pure-Neumann system — and only ∇p is used, so the constant
+  null-space mode is irrelevant. A divergence guard stops the finite-precision
+  breakdown that pure CG hits if iterated far past convergence.
+- **Reactive flow.** A `fuel` field is advected like dye; `combust()` burns it above
+  `ignition` at a first-order rate (`1−e^{−rate·(1+ΔT)·dt}`), adds `heatRelease·burn`
+  to T, and deposits flame/soot dye. `smokeBuoyancy` is a variable-density
+  (non-Boussinesq) lift ∝ local dye mass, separate from the thermal Boussinesq term.
 - **Known limitation (measured, not hidden):** on a collocated grid the divergence
   and pressure-gradient stencils compose to a wide one, so projection removes the
-  smooth divergence (~5–6× in RMS) but leaves a small odd/even checkerboard residual.
-  The verify suite tests the *linear solver's* true convergence to sidestep it.
+  smooth divergence (~5–6× in RMS) but leaves a small odd/even checkerboard residual
+  — *independent of solver* (CG and SOR hit the same floor). The verify suite tests
+  the *linear solver's* true convergence (mean-zero residual) to sidestep it.
 
 ## Ideas / backlog
 
@@ -95,13 +117,48 @@ src/
 - [x] **Four new physics scenes**: Rayleigh–Bénard convection, buoyant thermal plume,
       Kelvin–Helmholtz shear instability, and the lid-driven-cavity CFD benchmark
 - [x] **Live diagnostics** in the HUD (mean kinetic energy + peak residual divergence)
+- [x] **Conjugate-Gradient (Jacobi-preconditioned) pressure solver** — a Krylov alternative to
+      red-black SOR, selectable in the UI; converges the Poisson residual orders of magnitude
+      faster per iteration and to the same projected field (verified)
+- [x] **Line-Integral-Convolution (LIC) render** for a dense, texture-like flow image —
+      animated (the texture streams downstream), with a pure, DOM-free core so it's verifiable
+- [x] **Schlieren / shadowgraph render mode** — |∇ρ| of the dye field, the classic
+      density-gradient flow-visualisation look
+- [x] **Hover probe** — read u, v, |u|, ω, p, T (and fuel) at the cursor, live in the HUD,
+      with an on-canvas crosshair
+- [x] **Reactive flow: a combustion model + Fire scene** — an advected `fuel` field that ignites
+      above a threshold temperature, releases heat (Arrhenius-lite), is consumed, and deposits
+      flame/soot dye; **variable-density (non-Boussinesq) buoyancy** lifts the hot products
 - [ ] Move the solver into a Web Worker so the UI never stutters at high res
 - [ ] WebGL2 render path (texture upload) for 512²+ at 60fps
-- [ ] Line-Integral-Convolution (LIC) render for a dense, texture-like flow image
 - [ ] A true MAC (staggered) grid pressure solve to kill the collocated checkerboard residual
 - [ ] Geometric multigrid V-cycle Poisson solver (open-domain) for O(N) pressure solves
-- [ ] Dye-density / Schlieren shading and a hover probe (read u, p, ω, T at the cursor)
-- [ ] Variable-density (non-Boussinesq) buoyancy and a smoke/temperature combustion scene
+- [ ] Multigrid-preconditioned CG (combine the two solvers above for the best of both)
+- [ ] Inflow/outflow (open) boundary conditions so the vortex street isn't recirculating
+
+## Roadmap — 2026-06-18 Eddy 3.0: reactive flow, real solvers, dense visualisation (claude)
+
+Eddy 2.0 made a solver you can *trust*. Eddy 3.0 makes it a solver that's *fast where it counts*,
+*reactive*, and *legible at a glance* — three new axes, every one of them backed by the verify suite:
+
+1. **A real Krylov solver.** The pressure Poisson system is symmetric positive-(semi)definite — the
+   textbook case for **Conjugate Gradients**. Eddy now offers Jacobi-preconditioned CG alongside
+   red-black SOR, matrix-free over the exact same 5-point Neumann/obstacle stencil. The verify page
+   proves it: at an equal iteration budget CG leaves a residual several times lower than SOR (and
+   keeps converging toward machine precision with more iterations), while landing on the *same*
+   projected velocity field — a faster road to the same physics, not a different answer. The RHS is
+   made mean-zero first so the Neumann null space can't poison CG.
+2. **Reactive flow.** A new advected **fuel** field ignites above a threshold temperature, burns at
+   a first-order (Arrhenius-lite) rate, releases heat back into the temperature field, and is
+   consumed — depositing flame + soot dye as it goes. Coupled with **variable-density buoyancy**
+   (lift proportional to local smoke concentration, distinct from the thermal Boussinesq term) it
+   produces a genuine candle/bonfire **Fire** scene. Verified: no burn below ignition, fuel strictly
+   decreases while heat strictly increases, fuel is conserved by pure advection when the rate is 0.
+3. **Dense, animated visualisation.** **Line Integral Convolution** convolves a white-noise texture
+   along the streamlines, so the *whole* field reads as flowing fabric (and it animates downstream).
+   **Schlieren** shading shows |∇ρ| like a real shadowgraph. A **hover probe** reads the actual field
+   values (u, v, |u|, ω, p, T, fuel) under the cursor. The LIC core is a pure function, so the suite
+   checks it too (maximum principle, identity under no flow, streamwise anisotropy under shear).
 
 ## Roadmap — 2026-06-18 Eddy 2.0: a fluid studio you can trust (claude)
 
@@ -144,3 +201,18 @@ serious CFD studio along three axes — **new physics, honest rigor, and legible
   (Rayleigh–Bénard, thermal plume, Kelvin–Helmholtz, lid-driven cavity). Verified the suite passes
   14/14 by bundling it through Vite and running under Node; smoke-tested all ten scenes headlessly
   (finite, bounded, active). Full gate green (scope + conformance + lint + build).
+- 2026-06-18 (claude): **Eddy 3.0.** Three new axes (see roadmap above): (1) a matrix-free
+  **Jacobi-preconditioned Conjugate-Gradient** pressure solver selectable beside red-black SOR —
+  same 5-point Neumann/obstacle operator, mean-zero RHS for the singular Neumann system, and a
+  finite-precision divergence guard; (2) a **reactive combustion model** — an advected `fuel`
+  field that ignites above a threshold, burns first-order, releases heat and deposits flame/soot
+  dye — plus **variable-density (non-Boussinesq) buoyancy** and a self-sustaining **Fire** scene;
+  (3) dense flow visualisation — animated **Line Integral Convolution** (pure `lic.ts` core),
+  **schlieren** |∇ρ| shading, and a **hover probe** reading u/v/|u|/ω/p/T/fuel under the cursor
+  with an on-canvas crosshair. Extended the verification suite from **14→24 checks (6→9 groups)**:
+  CG beats SOR per iteration / converges / respects obstacles / lands on the same field; combustion
+  doesn't ignite below threshold / consumes fuel while releasing heat / conserves fuel when off;
+  LIC is the identity under no flow / obeys a maximum principle / streaks along the flow. Ran the
+  full suite under Node (24/24 green) and smoke-tested the Fire scene with both solvers (stable,
+  bounded). Updated Controls (solver picker, combustion panel, LIC/Schlieren modes, probe toggle),
+  the HUD probe readout, and the About page. Full gate green (scope + conformance + lint + build).

@@ -47,6 +47,29 @@ export interface FluidParams {
   cooling: number;
   /** Reference temperature the buoyancy force and cooling are measured against. */
   ambient: number;
+  /**
+   * Which Poisson solver the projection uses. `'sor'` is red-black successive
+   * over-relaxation (the original); `'cg'` is Jacobi-preconditioned Conjugate
+   * Gradients — a Krylov method that converges the *same* symmetric system far
+   * faster per iteration. Both honour walls/obstacles via the identical stencil.
+   */
+  pressureSolver: 'sor' | 'cg';
+  /**
+   * Combustion reaction rate (first-order). 0 disables the reactive-flow path
+   * entirely. When > 0, fuel hotter than `ignition` burns at this rate, releasing
+   * heat and depositing flame/soot dye.
+   */
+  combustion: number;
+  /** Temperature above which fuel ignites and sustains a flame. */
+  ignition: number;
+  /** Temperature released into the T field per unit fuel burned (exothermicity). */
+  heatRelease: number;
+  /**
+   * Variable-density (non-Boussinesq) buoyancy: lift per unit local dye/smoke
+   * mass. Positive ⇒ smoke is lighter than air and rises; negative ⇒ it is heavy
+   * and sinks. Distinct from the thermal Boussinesq `buoyancy` term.
+   */
+  smokeBuoyancy: number;
 }
 
 export const DEFAULT_PARAMS: FluidParams = {
@@ -62,6 +85,11 @@ export const DEFAULT_PARAMS: FluidParams = {
   thermalDiffusion: 0,
   cooling: 0,
   ambient: 0,
+  pressureSolver: 'sor',
+  combustion: 0,
+  ignition: 0.5,
+  heatRelease: 2.5,
+  smokeBuoyancy: 0,
 };
 
 export class FluidSolver {
@@ -86,6 +114,10 @@ export class FluidSolver {
   t: Float32Array;
   t0: Float32Array;
 
+  // Fuel field for the reactive-flow (combustion) model + scratch.
+  fuel: Float32Array;
+  fuel0: Float32Array;
+
   // Solver scratch shared between the pressure & diffusion solves.
   p: Float32Array;
   div: Float32Array;
@@ -94,6 +126,13 @@ export class FluidSolver {
   // Extra scratch for MacCormack advection (forward + back-traced estimates).
   private sA: Float32Array;
   private sB: Float32Array;
+
+  // Conjugate-Gradient scratch: residual, preconditioned residual, search
+  // direction, and A·d. Allocated once and reused every projection.
+  private cgR: Float32Array;
+  private cgZ: Float32Array;
+  private cgD: Float32Array;
+  private cgQ: Float32Array;
 
   // Obstacle mask. solid[i] !== 0 means the cell is a wall.
   solid: Uint8Array;
@@ -114,11 +153,17 @@ export class FluidSolver {
     this.b0 = z();
     this.t = z();
     this.t0 = z();
+    this.fuel = z();
+    this.fuel0 = z();
     this.p = z();
     this.div = z();
     this.curl = z();
     this.sA = z();
     this.sB = z();
+    this.cgR = z();
+    this.cgZ = z();
+    this.cgD = z();
+    this.cgQ = z();
     this.solid = new Uint8Array(this.size);
   }
 
@@ -146,11 +191,16 @@ export class FluidSolver {
     this.t.fill(value);
   }
 
+  clearFuel(): void {
+    this.fuel.fill(0);
+  }
+
   reset(): void {
     this.clearDye();
     this.clearVelocity();
     this.clearSolids();
     this.clearTemperature();
+    this.clearFuel();
   }
 
   /** Deposit dye + impulse at grid cell (i, j) within a soft radius. */
@@ -210,6 +260,27 @@ export class FluidSolver {
     }
   }
 
+  /** Deposit fuel into a soft disc — feeds the combustion model. */
+  splatFuel(i: number, j: number, amount: number, radius: number): void {
+    const N = this.N;
+    const rad = Math.max(1, radius);
+    const r2 = rad * rad;
+    const lo = -Math.ceil(rad);
+    const hi = Math.ceil(rad);
+    for (let dj = lo; dj <= hi; dj++) {
+      for (let di = lo; di <= hi; di++) {
+        const d2 = di * di + dj * dj;
+        if (d2 > r2) continue;
+        const ci = i + di;
+        const cj = j + dj;
+        if (ci < 1 || ci > N || cj < 1 || cj > N) continue;
+        const idx = this.IX(ci, cj);
+        if (this.solid[idx]) continue;
+        this.fuel[idx] += amount * Math.exp(-d2 / (0.5 * r2 + 1e-6));
+      }
+    }
+  }
+
   /** Mark / unmark a disc of solid cells. */
   paintSolid(i: number, j: number, radius: number, solid: boolean): void {
     const N = this.N;
@@ -232,6 +303,7 @@ export class FluidSolver {
           this.g[idx] = 0;
           this.b[idx] = 0;
           this.t[idx] = 0;
+          this.fuel[idx] = 0;
         }
       }
     }
@@ -492,6 +564,219 @@ export class FluidSolver {
     this.setBnd(2, v);
   }
 
+  /**
+   * Matrix-free application of the pressure Poisson operator A to a field x, over
+   * the fluid interior. A is the 5-point graph Laplacian with homogeneous Neumann
+   * conditions at domain walls *and* internal solid faces: a neighbour counts only
+   * if it is in-domain and fluid, otherwise its contribution vanishes (zero normal
+   * gradient). This is the *exact* operator the red-black SOR relaxes, so CG and
+   * SOR converge to the same solution. A is symmetric positive-semidefinite (its
+   * null space is the constants), which is what makes Conjugate Gradients valid.
+   */
+  private applyPoisson(x: Float32Array, out: Float32Array): void {
+    const N = this.N;
+    const S = N + 2;
+    const solid = this.solid;
+    for (let j = 1; j <= N; j++) {
+      for (let i = 1; i <= N; i++) {
+        const idx = i + S * j;
+        if (solid[idx]) {
+          out[idx] = 0;
+          continue;
+        }
+        let acc = 0;
+        if (i > 1 && !solid[idx - 1]) acc += x[idx] - x[idx - 1];
+        if (i < N && !solid[idx + 1]) acc += x[idx] - x[idx + 1];
+        if (j > 1 && !solid[idx - S]) acc += x[idx] - x[idx - S];
+        if (j < N && !solid[idx + S]) acc += x[idx] - x[idx + S];
+        out[idx] = acc;
+      }
+    }
+  }
+
+  /** Diagonal of A at (i, j): the count of valid (in-domain, fluid) neighbours. */
+  private poissonDiag(i: number, j: number): number {
+    const N = this.N;
+    const S = N + 2;
+    const solid = this.solid;
+    const idx = i + S * j;
+    let d = 0;
+    if (i > 1 && !solid[idx - 1]) d++;
+    if (i < N && !solid[idx + 1]) d++;
+    if (j > 1 && !solid[idx - S]) d++;
+    if (j < N && !solid[idx + S]) d++;
+    return d > 0 ? d : 1;
+  }
+
+  /**
+   * Hodge projection via Jacobi-preconditioned Conjugate Gradients. Solves the
+   * same Poisson system as `project`, but with a Krylov method that converges the
+   * residual far faster per iteration. The right-hand side (the divergence) is
+   * shifted to be mean-zero first, which is the compatibility condition for the
+   * singular pure-Neumann system — without it the constant null-space component
+   * would make CG stall. Only the pressure *gradient* is used to correct the
+   * velocity, so the arbitrary additive constant is irrelevant.
+   */
+  private projectCG(
+    u: Float32Array,
+    v: Float32Array,
+    p: Float32Array,
+    div: Float32Array,
+    maxIters: number,
+    tol = 1e-7,
+  ): void {
+    const N = this.N;
+    const S = N + 2;
+    const solid = this.solid;
+    const r = this.cgR;
+    const z = this.cgZ;
+    const d = this.cgD;
+    const q = this.cgQ;
+
+    // Build the divergence RHS and zero the pressure guess.
+    let mean = 0;
+    let cells = 0;
+    for (let j = 1; j <= N; j++) {
+      for (let i = 1; i <= N; i++) {
+        const idx = i + S * j;
+        if (solid[idx]) {
+          div[idx] = 0;
+          p[idx] = 0;
+          continue;
+        }
+        div[idx] = -0.5 * (u[idx + 1] - u[idx - 1] + v[idx + S] - v[idx - S]) / N;
+        p[idx] = 0;
+        mean += div[idx];
+        cells++;
+      }
+    }
+    if (cells === 0) return;
+    // Neumann compatibility: shift the RHS to be mean-zero, in place, so the
+    // singular constant mode can't make CG stall (and so `div` stores the actual
+    // system the solve drives to zero — only the pressure gradient is used, which
+    // a uniform shift leaves untouched).
+    const m = mean / cells;
+    for (let j = 1; j <= N; j++)
+      for (let i = 1; i <= N; i++) {
+        const idx = i + S * j;
+        if (!solid[idx]) div[idx] -= m;
+      }
+
+    // r = b − A·p = b (since p ≡ 0); z = M⁻¹r; d = z; rz = ⟨r, z⟩.
+    let rz = 0;
+    for (let j = 1; j <= N; j++) {
+      for (let i = 1; i <= N; i++) {
+        const idx = i + S * j;
+        if (solid[idx]) continue;
+        const ri = div[idx];
+        r[idx] = ri;
+        const zi = ri / this.poissonDiag(i, j);
+        z[idx] = zi;
+        d[idx] = zi;
+        rz += ri * zi;
+      }
+    }
+    let bestInf = Infinity;
+
+    for (let k = 0; k < maxIters; k++) {
+      if (!Number.isFinite(rz) || rz <= 0) break;
+      this.applyPoisson(d, q);
+      let dq = 0;
+      for (let j = 1; j <= N; j++)
+        for (let i = 1; i <= N; i++) {
+          const idx = i + S * j;
+          if (!solid[idx]) dq += d[idx] * q[idx];
+        }
+      if (dq <= 1e-30) break;
+      const alpha = rz / dq;
+      let rInf = 0;
+      for (let j = 1; j <= N; j++)
+        for (let i = 1; i <= N; i++) {
+          const idx = i + S * j;
+          if (solid[idx]) continue;
+          p[idx] += alpha * d[idx];
+          const ri = (r[idx] -= alpha * q[idx]);
+          const a = ri < 0 ? -ri : ri;
+          if (a > rInf) rInf = a;
+        }
+      if (rInf < tol) break;
+      // Divergence guard: in finite precision, iterating far past convergence can
+      // make ⟨d, Ad⟩ collapse and the residual blow up. Stop if it does.
+      if (rInf < bestInf) bestInf = rInf;
+      else if (rInf > 4 * bestInf) break;
+      let rzNew = 0;
+      for (let j = 1; j <= N; j++)
+        for (let i = 1; i <= N; i++) {
+          const idx = i + S * j;
+          if (solid[idx]) continue;
+          const zi = r[idx] / this.poissonDiag(i, j);
+          z[idx] = zi;
+          rzNew += r[idx] * zi;
+        }
+      const beta = rzNew / rz;
+      rz = rzNew;
+      for (let j = 1; j <= N; j++)
+        for (let i = 1; i <= N; i++) {
+          const idx = i + S * j;
+          if (!solid[idx]) d[idx] = z[idx] + beta * d[idx];
+        }
+    }
+
+    // Fill ghost pressures (Neumann), then subtract ∇p — identical to `project`.
+    this.setBnd(0, p);
+    for (let j = 1; j <= N; j++) {
+      for (let i = 1; i <= N; i++) {
+        const idx = i + S * j;
+        if (solid[idx]) continue;
+        const pl = solid[idx - 1] ? p[idx] : p[idx - 1];
+        const pr = solid[idx + 1] ? p[idx] : p[idx + 1];
+        const pd = solid[idx - S] ? p[idx] : p[idx - S];
+        const pu = solid[idx + S] ? p[idx] : p[idx + S];
+        u[idx] -= 0.5 * N * (pr - pl);
+        v[idx] -= 0.5 * N * (pu - pd);
+      }
+    }
+    this.setBnd(1, u);
+    this.setBnd(2, v);
+  }
+
+  /**
+   * Reactive flow (combustion). Fuel is carried by the velocity field like any
+   * scalar; wherever it is hotter than the ignition temperature it burns at a
+   * first-order rate (Arrhenius-lite: rate scales with how far past ignition the
+   * cell is), releasing heat into the temperature field and depositing flame +
+   * soot dye. Conserves fuel exactly when `rate = 0` (advection only).
+   */
+  private combust(dt: number, ignition: number, rate: number, heatRelease: number): void {
+    const N = this.N;
+    const S = N + 2;
+    const solid = this.solid;
+    // Advect the fuel field through the flow.
+    this.fuel0.set(this.fuel);
+    this.advect(0, this.fuel, this.fuel0, this.u, this.v, dt);
+    if (rate <= 0) return;
+    for (let j = 1; j <= N; j++) {
+      for (let i = 1; i <= N; i++) {
+        const idx = i + S * j;
+        if (solid[idx]) continue;
+        const f = this.fuel[idx];
+        if (f <= 1e-5) continue;
+        const over = this.t[idx] - ignition;
+        if (over <= 0) continue;
+        // Fraction burned this step (bounded to [0, 1]); hotter ⇒ faster.
+        const frac = 1 - Math.exp(-rate * (1 + over) * dt);
+        const burn = f * frac;
+        this.fuel[idx] = f - burn;
+        this.t[idx] += heatRelease * burn;
+        // Flame is bright and warm; the soot it leaves cools into smoke as the
+        // dye advects and fades. Scaled so a vigorous flame reads at exposure 1.
+        this.r[idx] += burn * 5.0;
+        this.g[idx] += burn * 2.2;
+        this.b[idx] += burn * 0.5;
+      }
+    }
+  }
+
   /** Vorticity confinement: re-inject small-scale swirl lost to advection. */
   private vorticityConfinement(strength: number, dt: number): void {
     if (strength <= 0) return;
@@ -538,20 +823,29 @@ export class FluidSolver {
     const { viscosity, velocityDissipation, dyeDissipation, vorticity, iterations, gravity } = params;
     const omega = params.overRelax ?? 1;
     const { buoyancy, thermalDiffusion, cooling, ambient } = params;
-    const transportHeat = buoyancy !== 0 || thermalDiffusion > 0 || cooling > 0;
+    const combustion = params.combustion ?? 0;
+    const smokeBuoyancy = params.smokeBuoyancy ?? 0;
+    const solver = params.pressureSolver ?? 'sor';
+    // The temperature field must be transported whenever anything reads or writes
+    // it — buoyancy, diffusion, cooling, or the exothermic combustion reaction.
+    const transportHeat = buoyancy !== 0 || thermalDiffusion > 0 || cooling > 0 || combustion > 0;
     const N = this.N;
     const IX = (i: number, j: number) => i + (N + 2) * j;
 
     // Body forces on the velocity.
-    if (gravity !== 0 || buoyancy !== 0) {
+    if (gravity !== 0 || buoyancy !== 0 || smokeBuoyancy !== 0) {
       for (let j = 1; j <= N; j++) {
         for (let i = 1; i <= N; i++) {
           const idx = IX(i, j);
           if (this.solid[idx]) continue;
+          const mass = this.r[idx] + this.g[idx] + this.b[idx];
           if (gravity !== 0) {
             // Dye-mass body force (legacy "smoke has weight" model).
-            const mass = this.r[idx] + this.g[idx] + this.b[idx];
             this.v[idx] += gravity * dt * mass;
+          }
+          if (smokeBuoyancy !== 0) {
+            // Variable-density (non-Boussinesq) buoyancy: lift ∝ local smoke mass.
+            this.v[idx] -= smokeBuoyancy * dt * mass;
           }
           if (buoyancy !== 0) {
             // Boussinesq buoyancy: hotter-than-ambient fluid rises (−y).
@@ -570,13 +864,13 @@ export class FluidSolver {
     if (viscosity > 0) {
       this.diffuse(1, this.u, this.u0, viscosity, dt, iterations, omega);
       this.diffuse(2, this.v, this.v0, viscosity, dt, iterations, omega);
-      this.project(this.u, this.v, this.p, this.div, iterations, omega);
+      this.projectWith(solver, iterations, omega);
       this.u0.set(this.u);
       this.v0.set(this.v);
     }
     this.advect(1, this.u, this.u0, this.u0, this.v0, dt);
     this.advect(2, this.v, this.v0, this.u0, this.v0, dt);
-    this.project(this.u, this.v, this.p, this.div, iterations, omega);
+    this.projectWith(solver, iterations, omega);
 
     // Velocity damping.
     if (velocityDissipation > 0) {
@@ -601,6 +895,12 @@ export class FluidSolver {
           this.t[idx] = ambient + (this.t[idx] - ambient) * k;
         }
       }
+    }
+
+    // --- Combustion step --- advect fuel, then burn it where it's hot enough,
+    // releasing heat into the (already-transported) temperature field above.
+    if (combustion > 0) {
+      this.combust(dt, params.ignition ?? 0.5, combustion, params.heatRelease ?? 2.5);
     }
 
     // --- Dye step --- advect each colour channel through the velocity field.
@@ -638,6 +938,12 @@ export class FluidSolver {
     return 0.5 * (this.v[idx + 1] - this.v[idx - 1] - (this.u[idx + (N + 2)] - this.u[idx - (N + 2)]));
   }
 
+  /** Dispatch the projection to the chosen Poisson solver. */
+  private projectWith(solver: 'sor' | 'cg', iters: number, omega: number): void {
+    if (solver === 'cg') this.projectCG(this.u, this.v, this.p, this.div, iters);
+    else this.project(this.u, this.v, this.p, this.div, iters, omega);
+  }
+
   /**
    * Run one Hodge projection on the current velocity field, in place. A public
    * hook over the private `project` so the verification suite can exercise the
@@ -645,6 +951,14 @@ export class FluidSolver {
    */
   projectVelocity(iters: number, omega = 1): void {
     this.project(this.u, this.v, this.p, this.div, iters, omega);
+  }
+
+  /**
+   * Public hook over the private CG projection, for the verification suite — lets
+   * it compare CG's convergence and result against red-black SOR directly.
+   */
+  projectVelocityCG(iters: number, tol = 1e-7): void {
+    this.projectCG(this.u, this.v, this.p, this.div, iters, tol);
   }
 
   /** Bilinearly sample a field at fractional grid coordinate (x, y). */
