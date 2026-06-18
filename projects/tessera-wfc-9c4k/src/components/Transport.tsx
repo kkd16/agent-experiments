@@ -1,3 +1,5 @@
+import { useState } from 'react';
+
 type Props = {
   running: boolean;
   speed: number;
@@ -5,6 +7,7 @@ type Props = {
   onStep: () => void;
   onReset: () => void;
   onExport: () => void;
+  onShare: () => Promise<boolean>;
   onSpeed: (v: number) => void;
 };
 
@@ -13,7 +16,15 @@ const SLIDER_MAX = 100;
 const sliderToSpeed = (v: number) => Math.round(2 ** ((v / SLIDER_MAX) * 9)); // 1..512
 const speedToSlider = (s: number) => Math.round((Math.log2(Math.max(1, s)) / 9) * SLIDER_MAX);
 
-export default function Transport({ running, speed, onToggle, onStep, onReset, onExport, onSpeed }: Props) {
+export default function Transport({ running, speed, onToggle, onStep, onReset, onExport, onShare, onSpeed }: Props) {
+  const [copied, setCopied] = useState(false);
+  const share = async () => {
+    const ok = await onShare();
+    if (ok) {
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1400);
+    }
+  };
   return (
     <section className="panel transport">
       <div className="transport-row">
@@ -28,6 +39,9 @@ export default function Transport({ running, speed, onToggle, onStep, onReset, o
         </button>
         <button className="btn" onClick={onExport} title="E">
           ⤓ PNG
+        </button>
+        <button className="btn" onClick={share} title="Copy a shareable link">
+          {copied ? '✓ Copied' : '🔗 Link'}
         </button>
       </div>
       <label className="field">

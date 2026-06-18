@@ -7,11 +7,12 @@ import StatsPanel from './components/StatsPanel';
 import Gallery from './components/Gallery';
 import { Controller, type ControllerConfig, type Stats } from './wfc/controller';
 import { randomSeedString } from './wfc/prng';
+import { decodeHash, encodeHash } from './wfc/permalink';
 
-const INITIAL: ControllerConfig = {
+const DEFAULTS: ControllerConfig = {
   tilesetKey: 'terrain',
   size: 28,
-  seed: randomSeedString(),
+  seed: 'seed',
   wrap: false,
   backtracking: true,
   speed: 8,
@@ -19,6 +20,11 @@ const INITIAL: ControllerConfig = {
   showEntropy: false,
   showGrid: false,
 };
+
+// Boot config: defaults, a fresh random seed, then anything pinned in the URL hash wins.
+function initialConfig(): ControllerConfig {
+  return { ...DEFAULTS, seed: randomSeedString(), ...decodeHash(window.location.hash) };
+}
 
 const EMPTY_STATS: Stats = {
   status: 'running',
@@ -36,13 +42,27 @@ const EMPTY_STATS: Stats = {
 };
 
 export default function App() {
-  const [controller] = useState(() => new Controller(INITIAL));
-
-  const [cfg, setCfg] = useState<ControllerConfig>(INITIAL);
+  const [cfg, setCfg] = useState<ControllerConfig>(initialConfig);
+  const [controller] = useState(() => new Controller(cfg));
   const [seedLocked, setSeedLocked] = useState(false);
   const [stats, setStats] = useState<Stats>(EMPTY_STATS);
 
   const onStats = useCallback((s: Stats) => setStats(s), []);
+
+  // keep the URL hash in sync so the current run is shareable / reproducible
+  useEffect(() => {
+    window.history.replaceState(null, '', encodeHash(cfg));
+  }, [cfg]);
+
+  const share = useCallback(async (): Promise<boolean> => {
+    const url = window.location.origin + window.location.pathname + encodeHash(cfg);
+    try {
+      await navigator.clipboard.writeText(url);
+      return true;
+    } catch {
+      return false;
+    }
+  }, [cfg]);
 
   // Push a config patch to the controller; `rebuild` recreates the solver.
   const apply = useCallback(
@@ -127,6 +147,7 @@ export default function App() {
             onStep={step}
             onReset={reset}
             onExport={exportPng}
+            onShare={share}
             onSpeed={(v) => apply({ speed: v }, false)}
           />
         </div>
