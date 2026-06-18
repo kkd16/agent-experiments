@@ -118,10 +118,33 @@ let prop_bad = fn xs -> reverse xs == xs in             // ✗ falsified, shrink
 prop_rev
 ```
 
+### The optimizing middle-end
+
+Between the front end and the backends sits a real, multi-pass **optimizing middle-end** that
+rewrites the elaborated *core* (the dictionary-passed, class-free program) into a smaller, faster
+equivalent — which **all three backends then compile**, so a single optimizer makes the VM, the
+JavaScript and the WebAssembly outputs faster at once, and the existing equivalence checks re-prove
+on every program that the answer never changed. It runs to a fixpoint and includes constant folding
++ algebraic identities (`x + 0`, `x * 1`, `x ++ []`, short-circuits), branch elimination,
+β-reduction (`(fn x -> b) a` ⇒ `let x = a in b`, with let-floating for curried calls) and
+η-contraction, inlining / copy-propagation of value bindings (capture-avoiding), dead-binding
+elimination, **known-constructor `match` reduction** (a `match` on a statically-known literal /
+tuple / list / constructor collapses to its arm), and record **field projection**. Every rewrite is
+semantics-preserving *for a strict, effectful language*: two predicates (`isValue`, `isPure`) keep it
+from ever reordering, duplicating or dropping a computation that could `print`, diverge or raise.
+
+Together these make the abstraction the front end adds **melt away**: a type-class method call on a
+concrete value inlines the dictionary, projects the method out of its record, β-reduces, and — if the
+value is a literal constructor — selects the `match` arm and folds the arithmetic. The gallery's
+*"The optimizing middle-end"* example reduces `area (Circle 2.0)` (a `class Area` method call) all the
+way to the single literal `12.56636`; its whole core shrinks from 41 nodes to 4. The **Optimizer**
+tab shows the rewrite breakdown by rule, the node-count reduction, the before/after core, and a
+one-click VM-step measurement.
+
 ### Three backends
 
-The same type-checked AST is compiled three independent ways, which share the front end and agree on
-every program:
+The same type-checked, **optimized** AST is compiled three independent ways, which share the front
+end and agree on every program:
 
 - **Bytecode VM** — lowered to a stack machine run by a hand-written, iterative VM, with a
   time-travel debugger.
@@ -179,10 +202,10 @@ Written partly as TypeScript primitives and partly in Aether itself (compiled in
 ## Architecture
 
 ```
-                                                  ┌─▶ compiler ─▶ stack VM ─▶ turtle canvas
-source ─▶ lexer ─▶ parser ─▶ HM inference ─▶ optimizer        └─▶ time-travel trace
-              │                    │           ├─▶ JS backend   ─▶ run in browser (≡ VM)
-              │                    │           ├─▶ WASM backend ─▶ assemble .wasm ─▶ instantiate & run (≡ VM)
+                                                            ┌─▶ compiler ─▶ stack VM ─▶ turtle canvas
+source ─▶ lexer ─▶ parser ─▶ HM inference ─▶ elaborate ─▶ optimizer        └─▶ time-travel trace
+              │                    │                        ├─▶ JS backend   ─▶ run in browser (≡ VM)
+              │                    │                        ├─▶ WASM backend ─▶ assemble .wasm ─▶ instantiate & run (≡ VM)
               │                    ├─▶ derivation tree (the HM proof)
               │                    └─▶ Aether Check (generate from types, run, shrink)
               └─▶ list comprehensions & do-notation desugar here
@@ -199,7 +222,7 @@ source ─▶ lexer ─▶ parser ─▶ HM inference ─▶ optimizer        �
 | `src/lang/classes.ts` | type-class evidence (incl. superclass projection) + dictionary-passing elaboration into core AST |
 | `src/lang/unparse.ts` | core-AST pretty-printer (renders the elaborated dictionaries) |
 | `src/lang/exhaustive.ts` | Maranget's pattern-usefulness algorithm (exhaustiveness + redundancy) |
-| `src/lang/optimize.ts` | constant folding, dead-branch elimination, short-circuit simplification |
+| `src/lang/optimize.ts` | the optimizing middle-end: a fixpoint of const-folding, algebra, β/η, capture-avoiding inlining, dead-binding elimination, known-constructor `match` reduction & field projection over the core AST (feeds all three backends) |
 | `src/lang/bytecode.ts` | opcodes + disassembler |
 | `src/lang/compiler.ts` | AST → bytecode; clox-style upvalues; tail-call detection |
 | `src/lang/vm.ts` | iterative stack VM; closures, currying, tail calls, snapshot trace |

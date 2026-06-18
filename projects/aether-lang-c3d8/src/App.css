@@ -1620,3 +1620,122 @@ body {
   color: var(--red);
   font-family: var(--mono);
 }
+
+/* ── Optimizer panel (Aether 10.0) ───────────────────────────────────────── */
+.opt-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 0.9rem;
+}
+.btn.small {
+  padding: 0.18rem 0.55rem;
+  font-size: 0.74rem;
+}
+.opt-stats {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 1.4rem;
+  padding: 0.6rem 0.2rem;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+}
+.opt-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+.opt-stat-val {
+  font-family: var(--mono);
+  font-size: 1.15rem;
+  color: var(--accent-2);
+}
+.opt-stat-lbl {
+  font-size: 0.72rem;
+  color: var(--fg-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.opt-measure {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.9rem;
+  font-size: 0.86rem;
+}
+.opt-measure-steps strong {
+  color: var(--cyan);
+  font-family: var(--mono);
+}
+.opt-pct {
+  color: var(--green);
+  font-family: var(--mono);
+}
+.opt-measure-result code {
+  color: var(--fg);
+}
+.opt-badge {
+  font-family: var(--mono);
+  font-size: 0.76rem;
+  padding: 0.16rem 0.5rem;
+  border-radius: 4px;
+}
+.opt-badge.ok {
+  color: var(--green);
+  background: rgba(95, 211, 163, 0.12);
+  border: 1px solid rgba(95, 211, 163, 0.4);
+}
+.opt-badge.bad {
+  color: var(--red);
+  background: rgba(255, 107, 129, 0.12);
+  border: 1px solid rgba(255, 107, 129, 0.4);
+}
+.opt-passes h4,
+.opt-core-head h4 {
+  margin: 0 0 0.45rem;
+  font-size: 0.85rem;
+  color: var(--accent);
+  font-weight: 600;
+}
+.opt-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.8rem;
+}
+.opt-table td {
+  padding: 0.18rem 0.6rem 0.18rem 0;
+  border-bottom: 1px solid var(--line);
+  vertical-align: top;
+}
+.opt-pass-count {
+  font-family: var(--mono);
+  color: var(--cyan);
+  text-align: right;
+  width: 2.4rem;
+  white-space: nowrap;
+}
+.opt-pass-name code {
+  color: var(--accent-2);
+}
+.opt-pass-desc {
+  color: var(--fg-dim);
+}
+.opt-core-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.opt-core-src {
+  margin: 0;
+  padding: 0.7rem 0.85rem;
+  background: var(--bg-1);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  overflow: auto;
+  max-height: 22rem;
+  font-family: var(--mono);
+  font-size: 0.78rem;
+  line-height: 1.5;
+  color: var(--fg);
+  white-space: pre;
+}

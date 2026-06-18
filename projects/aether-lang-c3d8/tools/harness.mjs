@@ -49,9 +49,9 @@ export function check(name, src, expect = {}) {
     const out = r.run ? r.run.output.join('\n') : ''
     record(name + ' [output]', out === expect.output, `output was ${JSON.stringify(out)}, expected ${JSON.stringify(expect.output)}`)
   }
-  // JS ≡ VM equivalence on the elaborated core
-  if (r.coreAst && !expect.skipJs) {
-    const mod = compileToJs(r.coreAst)
+  // JS ≡ VM equivalence on the *optimized* elaborated core (what ships)
+  if (r.optimizedCoreAst && !expect.skipJs) {
+    const mod = compileToJs(r.optimizedCoreAst)
     const js = runJsModule(mod.full)
     if (js.error) {
       record(name + ' [js≡vm]', false, `JS backend error: ${js.error}`)
@@ -180,7 +180,7 @@ async function checkWasm(name, src) {
   const vmOut = r.run ? r.run.output.join('\n') : ''
   const vmEff = r.run ? r.run.effects.length : 0
   try {
-    const w = await runWasm(r.coreAst)
+    const w = await runWasm(r.optimizedCoreAst)
     if (w.error) {
       record('wasm:' + name, false, `WASM runtime error: ${w.error}`)
       return
@@ -382,6 +382,155 @@ await checkGcReclaims(
   'let rec loop = fn n acc -> if n == 0 then acc else loop (n - 1) (acc + sum (range 0 80)) in loop 4000 0',
   '12640000',
 )
+
+// ---------------------------------------------------------------------------
+// Optimizing middle-end battery — the headline of Aether 10.0. For each program
+// we run the pipeline twice (optimizer on / off) and assert:
+//   • identical result, identical printed output, identical effect (draw) count
+//   • the optimizer never *increases* VM steps
+//   • where stated, a minimum number of rewrites fire and/or the optimized core
+//     shrinks below a node budget (the abstraction provably melts away)
+// Because the JS/WASM batteries above already compile the *optimized* core, this
+// closes the loop: same answer on all three backends, demonstrably less work.
+// ---------------------------------------------------------------------------
+
+function nodeCount(e) {
+  if (!e) return 0
+  const kids = []
+  switch (e.kind) {
+    case 'lambda': kids.push(e.body); break
+    case 'app': kids.push(e.fn, e.arg); break
+    case 'let': kids.push(e.value, e.body); break
+    case 'if': kids.push(e.cond, e.then, e.else); break
+    case 'binop': kids.push(e.left, e.right); break
+    case 'unop': kids.push(e.operand); break
+    case 'list': case 'tuple': kids.push(...e.elements); break
+    case 'seq': kids.push(e.first, e.rest); break
+    case 'match': kids.push(e.scrutinee, ...e.cases.flatMap((c) => (c.guard ? [c.guard, c.body] : [c.body]))); break
+    case 'typedecl': kids.push(e.body); break
+    case 'letrec': kids.push(...e.bindings.map((b) => b.value), e.body); break
+    case 'record': kids.push(...e.fields.map((f) => f.value)); break
+    case 'field': kids.push(e.record); break
+    case 'recordUpdate': kids.push(e.record, ...e.fields.map((f) => f.value)); break
+    default: break
+  }
+  return 1 + kids.reduce((n, k) => n + nodeCount(k), 0)
+}
+
+function anyNode(e, pred) {
+  if (!e) return false
+  if (pred(e)) return true
+  const kids = []
+  switch (e.kind) {
+    case 'lambda': kids.push(e.body); break
+    case 'app': kids.push(e.fn, e.arg); break
+    case 'let': kids.push(e.value, e.body); break
+    case 'if': kids.push(e.cond, e.then, e.else); break
+    case 'binop': kids.push(e.left, e.right); break
+    case 'unop': kids.push(e.operand); break
+    case 'list': case 'tuple': kids.push(...e.elements); break
+    case 'seq': kids.push(e.first, e.rest); break
+    case 'match': kids.push(e.scrutinee, ...e.cases.flatMap((c) => (c.guard ? [c.guard, c.body] : [c.body]))); break
+    case 'typedecl': kids.push(e.body); break
+    case 'letrec': kids.push(...e.bindings.map((b) => b.value), e.body); break
+    case 'record': kids.push(...e.fields.map((f) => f.value)); break
+    case 'field': kids.push(e.record); break
+    case 'recordUpdate': kids.push(e.record, ...e.fields.map((f) => f.value)); break
+    default: break
+  }
+  return kids.some((k) => anyNode(k, pred))
+}
+
+function checkOpt(name, src, opts = {}) {
+  const on = runPipeline(src, { execute: true, optimize: true })
+  const off = runPipeline(src, { execute: true, optimize: false })
+  const problems = []
+  if (on.error || off.error) {
+    record('opt:' + name, false, `pipeline error: ${(on.error || off.error).message}`)
+    return
+  }
+  const onVal = on.run && on.run.result ? valueToString(on.run.result) : null
+  const offVal = off.run && off.run.result ? valueToString(off.run.result) : null
+  if (onVal !== offVal) problems.push(`result "${onVal}" != "${offVal}"`)
+  if ((on.run ? on.run.output.join('\n') : '') !== (off.run ? off.run.output.join('\n') : ''))
+    problems.push('output differs')
+  if ((on.run ? on.run.effects.length : 0) !== (off.run ? off.run.effects.length : 0))
+    problems.push('effect count differs')
+  if (on.run && off.run && on.run.steps > off.run.steps)
+    problems.push(`steps increased ${off.run.steps} -> ${on.run.steps}`)
+  if (opts.minRewrites !== undefined && on.foldCount < opts.minRewrites)
+    problems.push(`only ${on.foldCount} rewrites (expected >= ${opts.minRewrites})`)
+  if (opts.maxNodes !== undefined && nodeCount(on.optimizedCoreAst) > opts.maxNodes)
+    problems.push(`optimized core ${nodeCount(on.optimizedCoreAst)} nodes (expected <= ${opts.maxNodes})`)
+  if (opts.noMatch && anyNode(on.optimizedCoreAst, (n) => n.kind === 'match'))
+    problems.push('a `match` survived optimization (expected none)')
+  if (opts.expect !== undefined && onVal !== opts.expect)
+    problems.push(`value "${onVal}" != expected "${opts.expect}"`)
+  record('opt:' + name, problems.length === 0, problems.join('; '))
+}
+
+// Every gallery example: optimizer must preserve the answer and not add steps.
+for (const ex of EXAMPLES) checkOpt('example:' + ex.id, ex.code)
+
+// Targeted per-pass programs. Each must reduce to the same answer and fire.
+// const-folding + algebra fold a pure arithmetic tree to a literal.
+checkOpt('const-fold arithmetic', 'let x = (2 + 3) * 4 - 10 / 2 in x * 1 + 0', { expect: '15', minRewrites: 4 })
+// β: an immediately-applied lambda (what `|>` and dictionary calls desugar to).
+checkOpt('beta reduce pipe', '5 |> (fn x -> x + 1) |> (fn x -> x * 2)', { expect: '12', minRewrites: 2 })
+// known-match: matching a literal constructor collapses to its arm.
+checkOpt('known-match Option', 'type Opt a = None | Some a in match Some (3 + 4) with None -> 0 | Some x -> x * 10', { expect: '70', minRewrites: 1 })
+// known-match on a tuple + list literal, no match should remain.
+checkOpt('known-match tuple', 'match (1, 2, 3) with (a, b, c) -> a + b + c', { expect: '6', noMatch: true })
+checkOpt('known-match list', 'match [10, 20, 30] with [] -> 0 | h :: _ -> h', { expect: '10', noMatch: true })
+// dead-binding elimination drops a pure unused let.
+checkOpt('dead binding', 'let unused = 1 + 2 + 3 in let y = 7 in y', { expect: '7', minRewrites: 1 })
+// field projection: a record literal field access reduces to the field value.
+checkOpt('field projection', 'let r = { a = 1, b = 2 + 3, c = 9 } in r.b', { expect: '5', minRewrites: 1 })
+// if-folding on a constant condition (after folding the comparison).
+checkOpt('if fold', 'if 3 < 5 then 100 else 200', { expect: '100', minRewrites: 1 })
+// The abstraction-melts-away showcase: a type-class call on a concrete instance
+// should inline the dictionary, project the method and β-reduce it away.
+checkOpt(
+  'type-class dictionary melts',
+  'class Disp a where disp : a -> String in instance Disp Int where disp = fn n -> show n in disp (1 + 1)',
+  { expect: '"2"', minRewrites: 3 },
+)
+// do-notation over Option desugars to bind/then on dictionaries; still correct.
+checkOpt(
+  'do-notation optimized',
+  'type Opt a = None | Some a in let bind = fn m f -> match m with None -> None | Some x -> f x in do { a <- Some 10; b <- Some 20; Some (a + b) }',
+  { expect: 'Some 30' },
+)
+
+// Soundness corner cases — the optimizer must NOT change effects, ordering or
+// scoping. checkOpt compares optimized vs unoptimized result *and* printed
+// output, so any divergence here fails.
+// A discarded constructor field with an effect must still run.
+checkOpt('effect under discarded ctor field', 'type Box a = Box a in let _ = match Box (print 7) with Box _ -> 0 in 1', { expect: '1' })
+// Print ordering across a let chain is preserved.
+checkOpt('print ordering preserved', 'let _ = print 1 in let _ = print 2 in let _ = print 3 in 0', { expect: '0' })
+// A dead but effectful binding keeps its effect.
+checkOpt('dead effectful binding keeps effect', 'let unused = print 99 in 5', { expect: '5' })
+// Capture avoidance: inlining a closure must keep its captured outer binding.
+checkOpt('inline avoids capture', 'let y = 10 in let f = fn x -> x + y in let y = 999 in f 0 + y', { expect: '1009' })
+// β with shadowed binder picks the inner binding.
+checkOpt('beta respects shadowing', '(fn x -> (fn x -> x) 2) 1', { expect: '2' })
+// known-match must not fire through an effect even on a literal-headed ctor.
+checkOpt('known-match keeps scrutinee effect', 'type Opt a = None | Some a in match Some (print 1) with None -> 0 | Some _ -> 42', { expect: '42' })
+
+// Aggregate: the optimizer fires somewhere on the gallery, and at least one
+// example's core strictly shrinks (proves real reduction, not a no-op).
+let totalRewrites = 0
+let anyShrunk = false
+for (const ex of EXAMPLES) {
+  const r = runPipeline(ex.code, { execute: false, optimize: true })
+  if (r.optimization) {
+    totalRewrites += r.foldCount
+    if (r.optimization.nodesAfter < r.optimization.nodesBefore) anyShrunk = true
+  }
+}
+record('opt:gallery fires', totalRewrites > 0, `total rewrites across gallery: ${totalRewrites}`)
+record('opt:gallery shrinks', anyShrunk, 'no gallery example shrank under optimization')
 
 console.log(`\nAether harness: ${pass} passed, ${fail} failed`)
 if (fail) {
