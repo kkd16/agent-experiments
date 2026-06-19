@@ -1,4 +1,5 @@
 import type { ControllerConfig } from './controller';
+import type { CellHeuristic, TilePolicy } from './heuristics';
 import { SAMPLES, type Sample } from './samples';
 
 // Encode the generative state into the URL hash so a run is shareable/reproducible.
@@ -31,8 +32,17 @@ export type Permalinkable = Pick<
   | 'showGhost'
   | 'showEntropy'
   | 'showGrid'
+  | 'showContraHeat'
+  | 'heuristic'
+  | 'tilePolicy'
   | 'connectivity'
 >;
+
+// Compact, back-compatible codes for the search policy (absent ⇒ defaults).
+const HEUR_TO_CODE: Record<CellHeuristic, string> = { entropy: 'e', mrv: 'm', scanline: 's', random: 'r' };
+const CODE_TO_HEUR: Record<string, CellHeuristic> = { e: 'entropy', m: 'mrv', s: 'scanline', r: 'random' };
+const POLICY_TO_CODE: Record<TilePolicy, string> = { weighted: 'w', uniform: 'u', greedy: 'g' };
+const CODE_TO_POLICY: Record<string, TilePolicy> = { w: 'weighted', u: 'uniform', g: 'greedy' };
 
 // ---- custom-sample (de)serialisation ---------------------------------------
 
@@ -82,6 +92,9 @@ export function encodeHash(c: Permalinkable): string {
   p.set('g', bool(c.showGhost));
   p.set('h', bool(c.showEntropy));
   p.set('r', bool(c.showGrid));
+  p.set('he', HEUR_TO_CODE[c.heuristic] ?? 'e');
+  p.set('tp', POLICY_TO_CODE[c.tilePolicy] ?? 'w');
+  if (c.showContraHeat) p.set('ch', '1');
   if (c.connectivity && c.connectivity !== 'off') {
     p.set('c', c.connectivity === 'network' ? 'n' : 't');
   }
@@ -152,6 +165,13 @@ export function decodeHash(hash: string): Partial<Permalinkable> {
   if (h !== undefined) out.showEntropy = h;
   const r = flag('r');
   if (r !== undefined) out.showGrid = r;
+  const ch = flag('ch');
+  if (ch !== undefined) out.showContraHeat = ch;
+
+  const he = p.get('he');
+  if (he && CODE_TO_HEUR[he]) out.heuristic = CODE_TO_HEUR[he];
+  const tp = p.get('tp');
+  if (tp && CODE_TO_POLICY[tp]) out.tilePolicy = CODE_TO_POLICY[tp];
 
   const c = p.get('c');
   if (c === 'n') out.connectivity = 'network';

@@ -6,6 +6,14 @@ import {
   type ConnView,
 } from './connectivity';
 import { DELTA, DIRS, opposite, type Dir } from './edges';
+import {
+  mrvCell,
+  randomCell,
+  scanlineCell,
+  tileIndex,
+  type CellHeuristic,
+  type TilePolicy,
+} from './heuristics';
 import { hashSeed, makeRng, type Rng } from './prng';
 import type { CompiledTileset } from './types';
 
@@ -41,6 +49,10 @@ export type SolverOptions = {
   pins?: ReadonlyArray<readonly [number, number]>;
   /** Optional global connectivity constraint (see {@link ConnectivityOptions}). */
   connectivity?: ConnectivityOptions;
+  /** Cell-selection heuristic (which cell to observe next). Defaults to `'entropy'`. */
+  heuristic?: CellHeuristic;
+  /** Tile-selection policy (which value to collapse a cell to). Defaults to `'weighted'`. */
+  tilePolicy?: TilePolicy;
 };
 
 type Snapshot = { wave: Uint8Array; cell: number; tile: number };
@@ -84,6 +96,16 @@ export class Solver {
   backtracks = 0;
   steps = 0;
 
+  // ---- search instrumentation (the Solver Lab read-out) -------------------
+  /** Tile possibilities eliminated by propagation — the raw "work" the constraint solver did. */
+  eliminations = 0;
+  /** Deepest the decision (snapshot) stack ever got — the height of the search tree explored. */
+  peakDepth = 0;
+  /** Cells emptied during propagation/purge (a *local* contradiction). */
+  localContradictions = 0;
+  /** Per-cell tally of how often a cell was the one that emptied — the "struggle" heatmap. */
+  private contraHeat!: Int32Array;
+
   constructor(set: CompiledTileset, opts: SolverOptions) {
     this.set = set;
     this.opts = opts;
@@ -102,6 +124,7 @@ export class Solver {
     this.sumR = new Float64Array(this.cells);
     this.sumG = new Float64Array(this.cells);
     this.sumB = new Float64Array(this.cells);
+    this.contraHeat = new Int32Array(this.cells);
     this.reset();
   }
 
@@ -153,6 +176,10 @@ export class Solver {
     this.contradictions = 0;
     this.backtracks = 0;
     this.steps = 0;
+    this.eliminations = 0;
+    this.peakDepth = 0;
+    this.localContradictions = 0;
+    this.contraHeat.fill(0);
     this.purgeUnsupported();
   }
 
@@ -184,6 +211,8 @@ export class Solver {
         if (dead) {
           this.ban(cell, t);
           if (this.numPossible[cell] === 0) {
+            this.contraHeat[cell]++;
+            this.localContradictions++;
             this.status = 'failed';
             this.stack = [];
             return;
@@ -271,6 +300,7 @@ export class Solver {
     const idx = cell * this.n + tile;
     if (this.wave[idx] === 0) return;
     this.wave[idx] = 0;
+    this.eliminations++;
     const base = idx * 4;
     for (const d of DIRS) this.compat[base + d] = 0;
     this.numPossible[cell]--;
@@ -301,7 +331,11 @@ export class Solver {
           const left = --this.compat[cbase];
           if (left === 0 && this.wave[nb * n + t2] === 1) {
             this.ban(nb, t2);
-            if (this.numPossible[nb] === 0) return false;
+            if (this.numPossible[nb] === 0) {
+              this.contraHeat[nb]++;
+              this.localContradictions++;
+              return false;
+            }
           }
         }
       }
@@ -309,8 +343,27 @@ export class Solver {
     return true;
   }
 
-  /** Lowest-entropy uncollapsed cell, with seeded noise to break ties. Returns -1 if done. */
+  /**
+   * Choose the next cell to observe under the active heuristic. `entropy` (the default) stays
+   * here because it needs the live weight sums; the others are pure functions of the option
+   * counts (see {@link CellHeuristic}). All consume the seeded rng so a run stays reproducible.
+   * Returns -1 when every cell is collapsed.
+   */
   private chooseCell(): number {
+    switch (this.opts.heuristic ?? 'entropy') {
+      case 'scanline':
+        return scanlineCell(this.numPossible, this.cells);
+      case 'mrv':
+        return mrvCell(this.numPossible, this.cells, this.rng.next);
+      case 'random':
+        return randomCell(this.numPossible, this.cells, this.rng.next);
+      default:
+        return this.chooseEntropyCell();
+    }
+  }
+
+  /** Lowest-entropy uncollapsed cell, with seeded noise to break ties. Returns -1 if done. */
+  private chooseEntropyCell(): number {
     let best = -1;
     let bestEntropy = Infinity;
     for (let cell = 0; cell < this.cells; cell++) {
@@ -330,15 +383,14 @@ export class Solver {
     const { n } = this;
     const weights: number[] = [];
     const tiles: number[] = [];
-    let total = 0;
     for (let t = 0; t < n; t++) {
       if (this.wave[cell * n + t] === 1) {
         weights.push(this.set.weights[t]);
         tiles.push(t);
-        total += this.set.weights[t];
       }
     }
-    return tiles[this.rng.weighted(weights, total)];
+    const idx = tileIndex(this.opts.tilePolicy ?? 'weighted', weights, this.rng.next);
+    return idx < 0 ? -1 : tiles[idx];
   }
 
   private collapse(cell: number, tile: number): boolean {
@@ -417,6 +469,7 @@ export class Solver {
     const tile = this.chooseTile(cell);
     if (this.opts.backtracking) {
       this.snapshots.push({ wave: this.wave.slice(), cell, tile });
+      if (this.snapshots.length > this.peakDepth) this.peakDepth = this.snapshots.length;
       // bound memory: forget the deepest branch point if we go very deep
       if (this.snapshots.length > 512) this.snapshots.shift();
     }
@@ -566,6 +619,25 @@ export class Solver {
   ghostColor(cell: number): [number, number, number] {
     const c = this.numPossible[cell] || 1;
     return [this.sumR[cell] / c, this.sumG[cell] / c, this.sumB[cell] / c];
+  }
+
+  /** How often this cell was the one that emptied (a local contradiction). */
+  contraHeatAt(cell: number): number {
+    return this.contraHeat[cell] ?? 0;
+  }
+
+  /** The hottest contradiction count over all cells — the heatmap's normalisation ceiling. */
+  get maxContraHeat(): number {
+    let m = 0;
+    for (let i = 0; i < this.cells; i++) if (this.contraHeat[i] > m) m = this.contraHeat[i];
+    return m;
+  }
+
+  /** Σ of the contradiction heatmap — must equal {@link localContradictions} (a Proof-Lab law). */
+  get contraHeatSum(): number {
+    let s = 0;
+    for (let i = 0; i < this.cells; i++) s += this.contraHeat[i];
+    return s;
   }
 
   /** Normalised entropy in [0,1] for the heatmap (0 = collapsed, 1 = all options open). */

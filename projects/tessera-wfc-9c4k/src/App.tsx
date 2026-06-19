@@ -7,6 +7,7 @@ import StatsPanel from './components/StatsPanel';
 import Gallery from './components/Gallery';
 import PaintPanel from './components/PaintPanel';
 import SampleEditor from './components/SampleEditor';
+import SolverLab from './components/SolverLab';
 import TestsPanel from './components/TestsPanel';
 import { Controller, type ControllerConfig, type Stats } from './wfc/controller';
 import { randomSeedString } from './wfc/prng';
@@ -30,6 +31,9 @@ const DEFAULTS: ControllerConfig = {
   showGhost: true,
   showEntropy: false,
   showGrid: false,
+  showContraHeat: false,
+  heuristic: 'entropy',
+  tilePolicy: 'weighted',
   connectivity: 'off',
 };
 
@@ -48,6 +52,8 @@ const EMPTY_STATS: Stats = {
   restarts: 0,
   steps: 0,
   stepsPerSec: 0,
+  eliminations: 0,
+  peakDepth: 0,
   elapsedMs: 0,
   nTiles: 0,
   running: false,
@@ -181,6 +187,9 @@ export default function App() {
         case 'h':
           apply({ showEntropy: !cfg.showEntropy }, false);
           break;
+        case 'k':
+          apply({ showContraHeat: !cfg.showContraHeat }, false);
+          break;
         case 'g':
           apply({ showGrid: !cfg.showGrid }, false);
           break;
@@ -188,7 +197,7 @@ export default function App() {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [mode, toggle, step, reset, newSeed, exportPng, exportJson, setErase, erase, clearPins, apply, cfg.showEntropy, cfg.showGrid]);
+  }, [mode, toggle, step, reset, newSeed, exportPng, exportJson, setErase, erase, clearPins, apply, cfg.showEntropy, cfg.showContraHeat, cfg.showGrid]);
 
   // controller.tileset changes identity on a set switch or a weight edit (both also bump stats
   // and re-render), so reading it here and memoising the brush preview on it is correct.
@@ -276,6 +285,7 @@ export default function App() {
               hasOverrides={controller.hasWeightOverrides()}
               defaultWeight={(id) => controller.defaultWeight(id)}
             />
+            <SolverLab controller={controller} activeHeuristic={cfg.heuristic} size={cfg.size} />
             <TestsPanel />
           </aside>
         </main>
@@ -297,9 +307,9 @@ export default function App() {
           </>
         ) : (
           <>
-            <span>Built from scratch — tiled + overlapping models · support-counter propagation · snapshot backtracking · hand constraints · global connectivity (one network / routed pins) · in-app Proof Lab.</span>
+            <span>Built from scratch — tiled + overlapping models · support-counter propagation · snapshot backtracking · pluggable search heuristics (entropy / MRV / scanline / random) · hand constraints · global connectivity (one network / routed pins) · Solver Lab benchmark + in-app Proof Lab.</span>
             <span className="keys">
-              <kbd>space</kbd> play · <kbd>s</kbd> step · <kbd>r</kbd> reset · <kbd>n</kbd> seed · <kbd>e</kbd> png · <kbd>j</kbd> json · <kbd>x</kbd> erase · <kbd>c</kbd> clear · <kbd>h</kbd> heatmap
+              <kbd>space</kbd> play · <kbd>s</kbd> step · <kbd>r</kbd> reset · <kbd>n</kbd> seed · <kbd>e</kbd> png · <kbd>j</kbd> json · <kbd>x</kbd> erase · <kbd>c</kbd> clear · <kbd>h</kbd> entropy · <kbd>k</kbd> contradictions
             </span>
           </>
         )}

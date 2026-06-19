@@ -5,6 +5,8 @@ export type RenderOptions = {
   showGhost: boolean;
   showEntropy: boolean;
   showGrid: boolean;
+  /** Tint cells by how often they were the one that emptied — the contradiction "struggle" map. */
+  showContraHeat?: boolean;
   /** Cell currently under the pointer, or -1 — drawn with a highlight outline. */
   hover?: number;
   /** Hand-placed constraints (cell -> tile) — drawn with a corner marker. */
@@ -92,6 +94,23 @@ export function render(ctx: CanvasRenderingContext2D, solver: Solver, set: { var
       ctx.lineTo(width * px, y * px + 0.5);
     }
     ctx.stroke();
+  }
+
+  // Contradiction heatmap: tint every cell by how often it was the one the solver emptied — a
+  // direct picture of *where the search struggled* (corridors that paint themselves into corners,
+  // cells under tight constraint). Drawn over the finished tiles so the hot spots read clearly.
+  if (o.showContraHeat) {
+    const max = solver.maxContraHeat;
+    if (max > 0) {
+      for (let cell = 0; cell < width * height; cell++) {
+        const h = solver.contraHeatAt(cell);
+        if (h === 0) continue;
+        // perceptual emphasis: a sqrt ramp so rare-but-real hot spots still show.
+        const t = Math.sqrt(h / max);
+        ctx.fillStyle = `rgba(239,68,68,${(0.18 + 0.62 * t).toFixed(3)})`;
+        ctx.fillRect((cell % width) * px, ((cell / width) | 0) * px, px, px);
+      }
+    }
   }
 
   // Global-connectivity overlay: tint each collapsed connector cell by its network component, so

@@ -917,6 +917,84 @@ kbd {
   color: var(--muted);
 }
 
+/* ---- Solver Lab (benchmark) panel ---- */
+.bench {
+  margin-top: 12px;
+  display: grid;
+  gap: 5px;
+}
+.bench-row {
+  display: grid;
+  grid-template-columns: 1.5fr 0.7fr 0.8fr 1.6fr 0.7fr;
+  column-gap: 8px;
+  align-items: center;
+  padding: 7px 9px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--panel-2);
+  font-size: 12.5px;
+  font-variant-numeric: tabular-nums;
+}
+.bench-row span:not(.bench-name):not(.bench-bar-cell) {
+  text-align: right;
+  color: var(--muted);
+}
+.bench-head {
+  background: transparent;
+  border: none;
+  padding: 0 9px;
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--accent-2);
+}
+.bench-head span {
+  color: var(--accent-2) !important;
+}
+.bench-name {
+  font-weight: 600;
+  color: var(--text);
+}
+.bench-name em {
+  font-style: normal;
+  font-size: 10.5px;
+  color: var(--accent);
+}
+.bench-row.win {
+  border-left: 3px solid var(--accent);
+}
+.bench-row.active {
+  background: color-mix(in srgb, var(--accent) 9%, var(--panel-2));
+}
+.bench-bar-cell {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  min-height: 16px;
+}
+.bench-bar {
+  position: absolute;
+  left: 0;
+  height: 9px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, var(--accent-2), var(--accent));
+  opacity: 0.55;
+}
+.bench-row.win .bench-bar {
+  opacity: 0.9;
+}
+.bench-bar-val {
+  position: relative;
+  color: var(--text) !important;
+  font-weight: 600;
+}
+.btn-ghost {
+  background: transparent;
+  margin-top: 8px;
+}
+
 /* ---- 3D studio ---- */
 .topbar-right {
   display: flex;

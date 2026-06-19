@@ -1,4 +1,6 @@
+import { runBench, type BenchRow, type BenchStrategy } from './bench';
 import { components, type ConnMode } from './connectivity';
+import type { CellHeuristic, TilePolicy } from './heuristics';
 import { compileOverlap } from './overlap';
 import { render, type RenderOptions } from './render';
 import { sampleByKey, type Sample } from './samples';
@@ -34,6 +36,12 @@ export type ControllerConfig = {
   showGhost: boolean;
   showEntropy: boolean;
   showGrid: boolean;
+  /** Tint cells by how often they triggered a contradiction — the search "struggle" heatmap. */
+  showContraHeat: boolean;
+  /** Cell-selection heuristic (which cell to observe next). */
+  heuristic: CellHeuristic;
+  /** Tile-selection policy (which value to collapse a cell to). */
+  tilePolicy: TilePolicy;
   /**
    * Global connectivity constraint. 'network' = every connector cell ends up in one component;
    * 'terminals' = the connector cells you pin must all link up. Only effective on a tiled set
@@ -52,6 +60,10 @@ export type Stats = {
   restarts: number;
   steps: number;
   stepsPerSec: number;
+  /** Tile possibilities eliminated by propagation (constraint-solving work). */
+  eliminations: number;
+  /** Deepest the search (decision) stack reached. */
+  peakDepth: number;
   elapsedMs: number;
   nTiles: number;
   running: boolean;
@@ -166,7 +178,7 @@ export class Controller {
   }
 
   private makeSolver(seedOverride?: string): Solver {
-    const { size, seed, wrap, backtracking } = this.cfg;
+    const { size, seed, wrap, backtracking, heuristic, tilePolicy } = this.cfg;
     return new Solver(this.compiled, {
       width: size,
       height: size,
@@ -176,7 +188,29 @@ export class Controller {
       backtrackBudget: 4000,
       pins: [...this.pins.entries()],
       connectivity: this.effectiveConnectivity(),
+      heuristic,
+      tilePolicy,
     });
+  }
+
+  /**
+   * Run the Solver Lab benchmark on the *currently compiled* set + instance (size/wrap/budget),
+   * comparing the given search strategies over `seeds` shared seeds. Used by the Solver Lab panel.
+   */
+  benchmark(strategies: BenchStrategy[], seeds: number): BenchRow[] {
+    return runBench(
+      this.compiled,
+      {
+        width: this.cfg.size,
+        height: this.cfg.size,
+        wrap: this.cfg.wrap,
+        backtracking: this.cfg.backtracking,
+        backtrackBudget: 4000,
+        seedBase: this.cfg.seed,
+      },
+      strategies,
+      seeds,
+    );
   }
 
   /** Does the active set carry connection semantics the constraint can act on? */
@@ -247,6 +281,7 @@ export class Controller {
       showGhost: this.cfg.showGhost,
       showEntropy: this.cfg.showEntropy,
       showGrid: this.cfg.showGrid,
+      showContraHeat: this.cfg.showContraHeat,
       hover: this.hover,
       pins: this.pins,
       network: overlay ? { comp: overlay.comp, count: overlay.count, terminals: overlay.terminals } : undefined,
@@ -272,6 +307,8 @@ export class Controller {
       restarts: this.restarts,
       steps: s.steps,
       stepsPerSec: elapsedSec > 0.05 ? s.steps / elapsedSec : 0,
+      eliminations: s.eliminations,
+      peakDepth: s.peakDepth,
       elapsedMs: this.elapsedMs,
       nTiles: this.compiled.variants.length,
       running: this.running,
