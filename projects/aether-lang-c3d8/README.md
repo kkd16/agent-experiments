@@ -129,17 +129,29 @@ on every program that the answer never changed. It runs to a fixpoint and includ
 β-reduction (`(fn x -> b) a` ⇒ `let x = a in b`, with let-floating for curried calls) and
 η-contraction, inlining / copy-propagation of value bindings (capture-avoiding), dead-binding
 elimination, **known-constructor `match` reduction** (a `match` on a statically-known literal /
-tuple / list / constructor collapses to its arm), and record **field projection**. Every rewrite is
-semantics-preserving *for a strict, effectful language*: two predicates (`isValue`, `isPure`) keep it
-from ever reordering, duplicating or dropping a computation that could `print`, diverge or raise.
+tuple / list / constructor collapses to its arm), record **field projection**, and
+**common-subexpression elimination**. Every rewrite is semantics-preserving *for a strict, effectful
+language*: two predicates (`isValue`, `isPure`) keep it from ever reordering, duplicating or dropping
+a computation that could `print`, diverge or raise.
 
 Together these make the abstraction the front end adds **melt away**: a type-class method call on a
 concrete value inlines the dictionary, projects the method out of its record, β-reduces, and — if the
 value is a literal constructor — selects the `match` arm and folds the arithmetic. The gallery's
 *"The optimizing middle-end"* example reduces `area (Circle 2.0)` (a `class Area` method call) all the
-way to the single literal `12.56636`; its whole core shrinks from 41 nodes to 4. The **Optimizer**
-tab shows the rewrite breakdown by rule, the node-count reduction, the before/after core, and a
-one-click VM-step measurement.
+way to the single literal `12.56636`; its whole core shrinks from 41 nodes to 4.
+
+Where that removes *abstraction* overhead, **common-subexpression elimination (CSE)** removes
+*recomputation*: when a program evaluates the same expression more than once on a guaranteed path, CSE
+computes it **once** into a fresh `let` and shares the result. Two safety rules on top of `isPure`
+keep it honest — it only ever touches effect-free, terminating expressions (so a `print` is never
+merged) and only shares occurrences that are *guaranteed to be evaluated* (so it can never add a VM
+step). To reach the most valuable targets — repeated **calls** to a pure helper — CSE is powered by a
+from-scratch **interprocedural effect-&-totality analysis**: a fixpoint that proves which
+never-shadowed, non-recursive functions are effect-free and total, so a saturated call to one is
+itself pure and shareable. The *"Common-subexpression elimination"* example writes the same distance
+four times and CSE collapses it to one. The **Optimizer** tab shows the rewrite breakdown by rule, a
+**round-by-round fixpoint trace**, the functions proven pure, the node-count reduction, the
+before/after core, and a one-click VM-step measurement.
 
 ### Three backends
 
@@ -222,7 +234,7 @@ source ─▶ lexer ─▶ parser ─▶ HM inference ─▶ elaborate ─▶ op
 | `src/lang/classes.ts` | type-class evidence (incl. superclass projection) + dictionary-passing elaboration into core AST |
 | `src/lang/unparse.ts` | core-AST pretty-printer (renders the elaborated dictionaries) |
 | `src/lang/exhaustive.ts` | Maranget's pattern-usefulness algorithm (exhaustiveness + redundancy) |
-| `src/lang/optimize.ts` | the optimizing middle-end: a fixpoint of const-folding, algebra, β/η, capture-avoiding inlining, dead-binding elimination, known-constructor `match` reduction & field projection over the core AST (feeds all three backends) |
+| `src/lang/optimize.ts` | the optimizing middle-end: a fixpoint of const-folding, algebra, β/η, capture-avoiding inlining, dead-binding elimination, known-constructor `match` reduction, field projection & **common-subexpression elimination** over the core AST, plus an **interprocedural effect-&-totality analysis** that powers it (feeds all three backends) |
 | `src/lang/bytecode.ts` | opcodes + disassembler |
 | `src/lang/compiler.ts` | AST → bytecode; clox-style upvalues; tail-call detection |
 | `src/lang/vm.ts` | iterative stack VM; closures, currying, tail calls, snapshot trace |

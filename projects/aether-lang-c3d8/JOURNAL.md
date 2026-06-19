@@ -668,6 +668,101 @@ Deferred (future, Aether 10.x+):
       enable e.g. specialising `show`/`compare` to a known monomorphic type, or unboxing.
 - [ ] **A worst-case-cost / fuel view** in the panel, and per-pass before/after diffs.
 
+### Aether 11.0 — common-subexpression elimination + a from-scratch effect-&-totality analysis (planned + shipping this session)
+
+Aether 10.0 made *single-use* abstraction melt: a dictionary used once is inlined, its method
+projected, β-reduced and folded away. But it left the oldest performance item on the list — a
+program that computes the **same thing twice** still computes it twice. 11.0 closes that gap with
+the optimization a serious compiler is judged on: **common-subexpression elimination (CSE)** — when
+a program evaluates an identical expression more than once on a guaranteed path, compute it *once*
+into a fresh binding and share the result. It is the dual of 10.0's story: 10.0 removed *abstraction*
+overhead; 11.0 removes *recomputation*.
+
+CSE in a strict, effectful language is subtle, and the whole feature rests on getting three safety
+predicates exactly right — this is where the real work is:
+
+1. **Effect safety.** Sharing two evaluations of `print x` would print once instead of twice, so CSE
+   may only ever touch *effect-free* expressions. Aether's existing `isPure` predicate already means
+   "no observable effect **and** terminates" — but it was deliberately conservative, treating *every*
+   function application as impure. That throws away the most valuable CSE targets (repeated calls to a
+   pure helper). So 11.0 first adds a **from-scratch interprocedural effect-&-totality analysis**: a
+   fixpoint that discovers which user functions are *effect-free and total* (a non-recursive `let`/
+   `letrec`-bound lambda whose body is pure, transitively — calling only other already-proven-pure
+   functions and never itself), then teaches `isPure` that a *saturated* application of such a
+   function to pure arguments is itself pure. Recursion (possible non-termination) or any call to an
+   unknown/effectful function makes a candidate impure — conservative, so it can never be wrong.
+
+2. **No speculation (the step-count invariant).** Hoisting a pure-but-conditional computation out of
+   a branch would *add* work on paths that didn't need it — and the harness asserts the optimizer
+   *never increases VM steps*. So CSE only ever shares occurrences that are **guaranteed to be
+   evaluated**: it walks only the strict, binder-free evaluation frontier of a node (both sides of a
+   strict binop, all tuple/record/list/application operands, `seq` halves, an `if`'s condition — but
+   *not* an `if`'s arms, a `match`'s arms, a `&&`/`||` right operand, or a lambda body), so every
+   occurrence it merges already ran on every path that reached the others. Because a non-recursive
+   `let` costs exactly one extra VM instruction over evaluating its value and body (verified against
+   the compiler), sharing an expression of evaluation-cost ≥ 4 is a *strict* step win; the pass is
+   gated on that, so it can only ever reduce — never increase — runtime work.
+
+3. **Capture safety.** The shared binding is hoisted to wrap the node whose frontier the occurrences
+   live on. Because the frontier-walk crosses **no binder**, every occurrence denotes the same value
+   and all its free variables are already in scope at the hoist point — so wrapping the node in
+   `let cse = s in …` is scope-safe by construction (no α-renaming needed, unlike inlining).
+
+Because CSE emits an ordinary `let` + `var` references, the bytecode VM, the JavaScript backend and
+the WebAssembly backend compile it with **zero** changes — and the project's hard-won invariant does
+the rest: the existing `✓ matches the VM` equivalence checks, run on every gallery example through
+all three backends, **re-prove automatically that CSE never changed an answer**, and the optimizer
+battery re-proves it never added a VM step.
+
+Plan / steps:
+
+- [x] **Interprocedural effect-&-totality analysis** (`optimize.ts`) — a fixpoint `analyzePurity`
+      that returns the set of `let`/`letrec`-bound function names (with arities) that are provably
+      effect-free *and* total: a non-recursive lambda whose body is pure under the growing set, with
+      mutual-recursion groups excluded wholesale. Store it module-wide like the constructor table.
+- [x] **Extend `isPure`** so a *saturated* application of a proven-pure function to pure arguments is
+      pure (partial applications are values already; over-application stays conservative). This alone
+      strengthens dead-binding elimination and `if c then e else e` collapse for free — re-proven by
+      the existing soundness battery.
+- [x] **The CSE pass** — a `tryCse(node)` that fires only on strict combinator nodes; collect the
+      pure, cost-≥4 subexpressions on the node's binder-free strict frontier (canonicalised, ignoring
+      spans); when one occurs ≥ 2 times, hoist it into a fresh `let cse$opt_n = s in node'` and
+      replace exactly those frontier occurrences with the new variable. Capture-safe by construction;
+      strictly non-increasing on VM steps; terminates (each firing removes a duplicate).
+- [x] **Wire CSE into the fixpoint** rewriter and the per-rule rewrite counter, with a friendly label
+      in the Optimizer panel.
+- [x] **A round-by-round optimization trace** — `optimizeCore` records each fixpoint round's rewrite
+      count and node total; the Optimizer panel renders the *melt* as a step-by-step trace, so the
+      multi-pass nature (CSE exposing a dead binding exposing a fold, …) is legible, not a black box.
+- [x] **A flagship gallery example** (`cse`) — a numeric kernel that evaluates a sizeable pure
+      sub-expression several times (and a pure helper called repeatedly), so CSE visibly shares the
+      work; runnable identically on all three backends.
+- [x] **Verification** — a dedicated CSE battery in `tools/harness.mjs`: targeted programs where CSE
+      must fire, strictly cut VM steps, and keep the identical result/output across JS + WASM; the new
+      gallery example auto-flows through the JS/WASM/GC/disassembler batteries; and adversarial
+      soundness cases (CSE must **not** merge two effectful calls, must **not** hoist out of a branch,
+      must respect a mis-analysed-as-pure boundary). Plus an in-app self-test group. Keep the full CI
+      gate (scope + conformance + lint + tsc + build) green.
+- [x] **Docs** — Tour/About/README/`project.json` writeups for CSE, the effect analysis and the trace.
+
+Shipped & measured: the harness grew 304 → **320 checks, all green** (the new `cse` gallery example
+flows through the JS / WASM / GC-stress / disassembler / optimizer batteries; an 8-test CSE battery
+covers firing, real step cuts, the proven-pure set, and the adversarial soundness cases — no effect
+merged, no speculation across branches, recursive and effectful functions never admitted; plus 3
+in-app self-tests). Concretely the `cse` example's `dist2 ox oy px py`, written four times, is
+computed **once** (4 CSE rewrites; VM steps 219 → 99), and `dist2` is reported as proven-pure in the
+panel. The full CI gate (scope + conformance + lint + tsc + build) stays green.
+
+Deferred (future, Aether 11.x+):
+
+- [ ] **CSE across a `let`** — the frontier walk stops at every binder, so a subexpression repeated
+      across a `let` boundary (but with all free vars in scope above it) is not yet shared; a
+      dominator-based available-expressions pass would catch those.
+- [ ] **Effect-free *but partial* calls** — totality is approximated by "non-recursive"; a structural
+      termination check would let CSE share pure-but-recursive calls like `fib`.
+- [ ] **Whitelisting total, effect-free *natives*** (`sqrt`, `floor`, `toFloat`, string ops) so their
+      repeated calls are shareable too (today only user functions are analysed).
+
 ## Standard library
 
 - list: `map filter foldl foldr length append reverse sum range take drop elem all any concat zip replicate`
@@ -957,3 +1052,30 @@ Deferred (future, Aether 10.x+):
   adversarial soundness cases (effect under a discarded ctor field, print ordering, dead-but-effectful
   binding, capture avoidance, β under shadowing, an effectful scrutinee left intact): **304 checks
   green**; full CI gate (scope + conformance + lint + tsc + build) green.
+- 2026-06-19 (claude): **Aether 11.0 — common-subexpression elimination + an effect-&-totality
+  analysis.** Where 10.0 made *abstraction* melt, 11.0 removes *recomputation*: a new **CSE** pass in
+  the optimizing middle-end finds an expression a node's strict, binder-free evaluation frontier
+  computes more than once and hoists it into a single fresh `let`, sharing the result — so the bytecode
+  VM, the JavaScript backend and the WebAssembly backend all run the shared program (it emits an
+  ordinary `let`, so zero backend changes) and the existing byte-for-byte equivalence checks re-prove,
+  on every example, that the answer never changed. The whole feature rests on three safety invariants:
+  CSE only ever touches **effect-free, terminating** expressions (so a `print` is never merged); it
+  only merges occurrences **guaranteed to be evaluated** — it walks only the strict frontier (both
+  sides of a strict binop, all tuple/record/list/application operands, `seq` halves, an `if`'s
+  condition, but never an arm, a `&&`/`||` right operand or a lambda body) — so VM steps can only fall
+  (a shared `let` is exactly one extra instruction, verified against the compiler, so sharing a
+  cost-≥3 expression is provably non-increasing); and the hoist crosses **no binder**, so it is
+  scope-safe with no α-renaming. To reach the most valuable targets — repeated *calls* to a pure
+  helper — the existing conservative `isPure` (which treated every application as impure) is now backed
+  by a from-scratch **interprocedural effect-&-totality analysis** (`analyzePurity`): a monotone
+  fixpoint that proves which never-shadowed, non-recursive `let`/`letrec`-bound functions are
+  effect-free and total, so a *saturated* call to one (on pure args) is itself pure and shareable —
+  conservative by construction (recursion, shadowing, or any unknown/effectful call disqualifies a
+  candidate), which also strengthens dead-binding elimination for free. The Optimizer panel gained the
+  `cse` rule, a **round-by-round fixpoint trace** (watch the core melt), and a list of the functions
+  proven pure. Added a `cse` gallery example (`dist2 ox oy px py` written four times collapses to one;
+  steps 219 → 99). Verification: the harness grew 304 → **320** — the new example auto-flows through
+  the JS / WASM / GC-stress / disassembler / optimizer batteries, an 8-test CSE battery asserts CSE
+  fires, cuts real steps, reports the proven-pure set, and — the safety half — never merges an effect,
+  never speculates across a branch, and never admits a recursive or effectful function; plus 3 in-app
+  self-tests. Full CI gate (scope + conformance + lint + tsc + build) green.
