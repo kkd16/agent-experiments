@@ -91,6 +91,17 @@ function getInitialHighScore() {
 
 
 
+
+function getInitialCustomTimer(): number {
+  try {
+    const item = window.localStorage.getItem('mathFlashcardsCustomTimer');
+    return item ? parseInt(item, 10) : 45;
+  } catch (e) {
+    console.error(e);
+    return 45;
+  }
+}
+
 function getInitialZenMode(): boolean {
   try {
     const item = window.localStorage.getItem('mathFlashcardsZenMode');
@@ -131,6 +142,17 @@ function getInitialBestCombo(): number {
   } catch (e) {
     console.error(e);
     return 0;
+  }
+}
+
+
+function getInitialAutoDarkMode(): boolean {
+  try {
+    const item = window.localStorage.getItem('mathFlashcardsAutoDarkMode');
+    return item ? item === 'true' : false;
+  } catch (e) {
+    console.error(e);
+    return false;
   }
 }
 
@@ -175,6 +197,17 @@ function getInitialRunScores(): RunScore[] {
     console.error("Local storage error:", e);
   }
   return [];
+}
+
+
+function getInitialLifetimeCorrect(): number {
+  try {
+    const stored = window.localStorage.getItem('mathFlashcardsLifetimeCorrect');
+    if (stored) return parseInt(stored, 10);
+  } catch (e) {
+    console.error("Local storage error:", e);
+  }
+  return 0;
 }
 
 function getInitialLifetimeQuestions(): number {
@@ -234,6 +267,27 @@ const STREAK_MESSAGES = [
 
 function App() {
   const [theme, setTheme] = useState<'light' | 'dark'>(getInitialTheme());
+  const [autoDarkMode, setAutoDarkMode] = useState<boolean>(getInitialAutoDarkMode());
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem('mathFlashcardsAutoDarkMode', autoDarkMode.toString());
+    } catch (e) {
+      console.error(e);
+    }
+  }, [autoDarkMode]);
+
+  useEffect(() => {
+    if (!autoDarkMode) return;
+    const checkTheme = () => {
+      const hour = new Date().getHours();
+      const shouldBeDark = hour >= 18 || hour <= 6;
+      setTheme(shouldBeDark ? 'dark' : 'light');
+    };
+    checkTheme(); // run once immediately
+    const interval = setInterval(checkTheme, 60000);
+    return () => clearInterval(interval);
+  }, [autoDarkMode]);
 
   const [zenMode, setZenMode] = useState<boolean>(getInitialZenMode());
 
@@ -306,12 +360,23 @@ function App() {
   const [hideOperator, setHideOperator] = useState<boolean>(false);
   const [timeLeft, setTimeLeft] = useState<number>(60);
   const [selectedTimerDuration, setSelectedTimerDuration] = useState<number>(60);
-  const [customTimerDuration, setCustomTimerDuration] = useState<number>(45);
+  const [customTimerDuration, setCustomTimerDuration] = useState<number>(getInitialCustomTimer());
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem('mathFlashcardsCustomTimer', customTimerDuration.toString());
+    } catch (e) {
+      console.error(e);
+    }
+  }, [customTimerDuration]);
+
   const [questionLimit, setQuestionLimit] = useState<number>(20);
+  const [customQuestionLimit, setCustomQuestionLimit] = useState<number>(20);
   const [questionsAnswered, setQuestionsAnswered] = useState<number>(0);
   const [startTime, setStartTime] = useState<number | null>(null);
   const [elapsedTime, setElapsedTime] = useState<number>(0);
   const [lifetimeQuestions, setLifetimeQuestions] = useState<number>(getInitialLifetimeQuestions());
+  const [lifetimeCorrectAnswers, setLifetimeCorrectAnswers] = useState<number>(getInitialLifetimeCorrect());
   const [showSummary, setShowSummary] = useState<boolean>(false);
   const [animationClass, setAnimationClass] = useState<string>('');
   const [streakMessage, setStreakMessage] = useState<string>('');
@@ -473,11 +538,11 @@ function App() {
     } else {
       setHideOperator(false);
     }
-    if (!isSpeedRunActive || ((gameMode === 'time' || gameMode === 'timeAttack') ? timeLeft > 0 : (gameMode === 'questions' ? questionsAnswered < questionLimit : true))) {
+    if (!isSpeedRunActive || ((gameMode === 'time' || gameMode === 'timeAttack') ? timeLeft > 0 : (gameMode === 'questions' ? questionsAnswered < (questionLimit === 0 ? customQuestionLimit : questionLimit) : true))) {
       setMessage('');
     }
     inputRef.current?.focus();
-  }, [difficulty, isSpeedRunActive, timeLeft, allowedOperations, gameMode, questionsAnswered, questionLimit, isHardcoreMode, allowNegatives]);
+  }, [difficulty, isSpeedRunActive, timeLeft, allowedOperations, gameMode, questionsAnswered, questionLimit, customQuestionLimit, isHardcoreMode, allowNegatives]);
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -485,7 +550,7 @@ function App() {
       if (e.target instanceof HTMLInputElement) return;
 
       if (e.key === 'n' || e.key === 'N') {
-        if (!isSpeedRunActive || ((gameMode === 'time' || gameMode === 'timeAttack') ? timeLeft > 0 : (gameMode === 'questions' ? questionsAnswered < questionLimit : true))) {
+        if (!isSpeedRunActive || ((gameMode === 'time' || gameMode === 'timeAttack') ? timeLeft > 0 : (gameMode === 'questions' ? questionsAnswered < (questionLimit === 0 ? customQuestionLimit : questionLimit) : true))) {
           generateProblem();
         }
       } else if (e.key === 'd' || e.key === 'D') {
@@ -500,7 +565,7 @@ function App() {
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [isSpeedRunActive, timeLeft, generateProblem, gameMode, questionsAnswered, questionLimit]);
+  }, [isSpeedRunActive, timeLeft, generateProblem, gameMode, questionsAnswered, questionLimit, customQuestionLimit]);
 
 
   const updateStreak = (newStreak: number) => {
@@ -590,7 +655,7 @@ function App() {
   const checkAnswer = (e: React.FormEvent) => {
     e.preventDefault();
     if (isSpeedRunActive && (gameMode === 'time' || gameMode === 'timeAttack') && timeLeft === 0) return;
-    if (isSpeedRunActive && gameMode === 'questions' && questionsAnswered >= questionLimit) return;
+    if (isSpeedRunActive && gameMode === 'questions' && questionsAnswered >= (questionLimit === 0 ? customQuestionLimit : questionLimit)) return;
     if (isSuddenDeathMode && showSummary) return;
 
     const answer = parseInt(userAnswer, 10);
@@ -615,8 +680,13 @@ function App() {
 
     const newLifetime = lifetimeQuestions + 1;
     setLifetimeQuestions(newLifetime);
+
+    const newCorrect = lifetimeCorrectAnswers + (isCorrect ? 1 : 0);
+    setLifetimeCorrectAnswers(newCorrect);
+
     try {
       window.localStorage.setItem('mathFlashcardsLifetimeQuestions', newLifetime.toString());
+      window.localStorage.setItem('mathFlashcardsLifetimeCorrect', newCorrect.toString());
     } catch (e) {
       console.error("Local storage error:", e);
     }
@@ -645,7 +715,17 @@ function App() {
         setTimeLeft(t => t + 2); // Add 2 seconds for a correct answer in Time Attack
       }
 
-      if (newStreak > 0 && newStreak % 10 === 0) {
+      if (newStreak > 0 && newStreak % 100 === 0) {
+        const pieces = [...Array(100)].map(() => ({
+          left: `${Math.random() * 100}%`,
+          delay: `${Math.random() * 2}s`,
+          color: Math.random() > 0.5 ? '#f1c40f' : '#f39c12'
+        }));
+        setConfettiPieces(pieces);
+        setShowConfetti(true);
+        setTimeout(() => setShowConfetti(false), 4000);
+        setStreakMessage("100 STREAK! GODLIKE!");
+      } else if (newStreak > 0 && newStreak % 10 === 0) {
         const pieces = [...Array(30)].map(() => ({
           left: `${Math.random() * 100}%`,
           delay: `${Math.random() * 0.5}s`,
@@ -666,7 +746,7 @@ function App() {
       const newQuestionsAnswered = questionsAnswered + 1;
       setQuestionsAnswered(newQuestionsAnswered);
 
-      if (isSpeedRunActive && gameMode === 'questions' && newQuestionsAnswered >= questionLimit) {
+      if (isSpeedRunActive && gameMode === 'questions' && newQuestionsAnswered >= (questionLimit === 0 ? customQuestionLimit : questionLimit)) {
         setElapsedTime((Date.now() - (startTime || Date.now())) / 1000);
         setIsSpeedRunActive(false);
         setShowSummary(true);
@@ -729,6 +809,11 @@ function App() {
         setDifficulty('medium');
       } else if (key === 'h') {
         setDifficulty('hard');
+      } else if (key === 's') {
+        const btn = document.querySelector('.next-button') as HTMLButtonElement;
+        if (btn && !btn.disabled) {
+          btn.click();
+        }
       }
     };
 
@@ -780,13 +865,16 @@ function App() {
   };
 
   return (
-    <div className={`app-wrapper ${theme} font-size-${accessibilityFontSize}`} style={{ backgroundColor: theme === 'light' && bgColor ? bgColor : undefined, backgroundImage: bgImage ? `url(${bgImage})` : 'none', backgroundSize: 'cover', backgroundPosition: 'center' }}>
+    <div className={`app-wrapper ${theme} font-size-${accessibilityFontSize} ${streak >= 5 ? 'streak-active-bg' : ''}`} style={{ backgroundColor: theme === 'light' && bgColor ? bgColor : undefined, backgroundImage: bgImage ? `url(${bgImage})` : 'none', backgroundSize: 'cover', backgroundPosition: 'center' }}>
     <div className={`app-container ${theme}`}>
       <div className="header-top">
         <h1>Math Flashcards {nightOwlUnlocked && <span title="Night Owl">🦉</span>}</h1>
         <div>
-          <button onClick={toggleTheme} className="theme-toggle" style={{ marginRight: '0.5rem' }}>
+          <button onClick={toggleTheme} className="theme-toggle" style={{ marginRight: '0.5rem' }} disabled={autoDarkMode}>
             {theme === 'light' ? '🌙 Dark' : '☀️ Light'}
+          </button>
+          <button onClick={() => setAutoDarkMode(!autoDarkMode)} className="theme-toggle" style={{ marginRight: '0.5rem' }}>
+            {autoDarkMode ? '🌙 Auto Dark' : '⚪ Manual Dark'}
           </button>
           <button onClick={() => setSoundEnabled(!soundEnabled)} className="theme-toggle">
             {soundEnabled ? '🔊 Sound On' : '🔇 Sound Off'}
@@ -828,7 +916,7 @@ function App() {
             High Score: {highScore}
             <button onClick={resetHighScore} className="reset-btn" title="Reset High Score" disabled={isSpeedRunActive}>↺</button>
           </div>
-          <div className="stat">Total Questions: {lifetimeQuestions}</div>
+          <div className="stat">Total Questions: {lifetimeQuestions} | Lifetime Acc: {lifetimeQuestions > 0 ? (lifetimeCorrectAnswers / lifetimeQuestions * 100).toFixed(1) : 0}%</div>
         </div>
       </div>
       )}
@@ -938,17 +1026,24 @@ function App() {
         <div className="speed-run-controls">
 
           {isSpeedRunActive ? (
-            !zenMode && ((gameMode === 'time' || gameMode === 'timeAttack') ? (
-              <div className="progress-container" style={{ visibility: hideTimer ? 'hidden' : 'visible' }}>
-                <div className="progress-bar" style={{ width: `${(timeLeft / selectedTimerDuration) * 100}%` }}></div>
-                <div className="progress-text">{timeLeft}s</div>
-              </div>
-            ) : (
-              <div className="progress-container" style={{ visibility: hideTimer ? 'hidden' : 'visible' }}>
-                <div className="progress-bar" style={{ width: `${(questionsAnswered / questionLimit) * 100}%` }}></div>
-                <div className="progress-text">{questionsAnswered} / {questionLimit}</div>
-              </div>
-            ))
+            !zenMode && (
+              (gameMode === 'time' || gameMode === 'timeAttack') ? (
+                <div className="progress-container" style={{ visibility: hideTimer ? 'hidden' : 'visible' }}>
+                  <div className="progress-bar" style={{ width: `${(timeLeft / selectedTimerDuration) * 100}%` }}></div>
+                  <div className="progress-text">{timeLeft}s</div>
+                </div>
+              ) : gameMode === 'questions' ? (
+                <div className="progress-container" style={{ visibility: hideTimer ? 'hidden' : 'visible' }}>
+                  <div className="progress-bar" style={{ width: `${(questionsAnswered / (questionLimit === 0 ? customQuestionLimit : questionLimit)) * 100}%` }}></div>
+                  <div className="progress-text">{questionsAnswered} / {questionLimit === 0 ? customQuestionLimit : questionLimit}</div>
+                </div>
+              ) : gameMode === 'endless' ? (
+                <div className="progress-container" style={{ visibility: hideTimer ? 'hidden' : 'visible' }}>
+                  <div className="progress-bar" style={{ width: `${((questionsAnswered % 10) / 10) * 100}%` }}></div>
+                  <div className="progress-text">{10 - (questionsAnswered % 10)} to next level</div>
+                </div>
+              ) : null
+            )
           ) : (
 
             <div className="timer-select-container" style={{display: 'flex', gap: '0.5rem', alignItems: 'center', flexWrap: 'wrap', justifyContent: 'flex-end'}}>
@@ -994,11 +1089,24 @@ function App() {
                   )}
                 </>
               ) : gameMode === 'questions' ? (
-                <select value={questionLimit} onChange={(e) => setQuestionLimit(parseInt(e.target.value, 10))} className="timer-select">
-                  <option value={10}>10 Qs</option>
-                  <option value={20}>20 Qs</option>
-                  <option value={50}>50 Qs</option>
-                </select>
+                <>
+                  <select value={questionLimit} onChange={(e) => setQuestionLimit(parseInt(e.target.value, 10))} className="timer-select">
+                    <option value={10}>10 Qs</option>
+                    <option value={20}>20 Qs</option>
+                    <option value={50}>50 Qs</option>
+                    <option value={0}>Custom</option>
+                  </select>
+                  {questionLimit === 0 && (
+                      <input
+                        type="number"
+                        value={customQuestionLimit}
+                        onChange={(e) => setCustomQuestionLimit(parseInt(e.target.value, 10) || 1)}
+                        className="timer-select"
+                        style={{width: '60px', padding: '0.4rem'}}
+                        min="1"
+                      />
+                  )}
+                </>
               ) : null}
               <button type="button" onClick={startSpeedRun} className="speed-run-button">Start Challenge</button>
             </div>
@@ -1042,9 +1150,9 @@ function App() {
             autoFocus
             className="answer-input"
             placeholder="?"
-            disabled={isSpeedRunActive && ((gameMode === 'time' || gameMode === 'timeAttack') ? timeLeft === 0 : (gameMode === 'questions' ? questionsAnswered >= questionLimit : false))}
+            disabled={isSpeedRunActive && ((gameMode === 'time' || gameMode === 'timeAttack') ? timeLeft === 0 : (gameMode === 'questions' ? questionsAnswered >= (questionLimit === 0 ? customQuestionLimit : questionLimit) : false))}
           />
-          <button type="submit" className="submit-button" disabled={isSpeedRunActive && ((gameMode === 'time' || gameMode === 'timeAttack') ? timeLeft === 0 : (gameMode === 'questions' ? questionsAnswered >= questionLimit : false))}>Check</button>
+          <button type="submit" className="submit-button" disabled={isSpeedRunActive && ((gameMode === 'time' || gameMode === 'timeAttack') ? timeLeft === 0 : (gameMode === 'questions' ? questionsAnswered >= (questionLimit === 0 ? customQuestionLimit : questionLimit) : false))}>Check</button>
         </form>
 
         <div className="numpad">
@@ -1053,7 +1161,7 @@ function App() {
               key={num}
               type="button"
               className="numpad-btn"
-              disabled={isSpeedRunActive && ((gameMode === 'time' || gameMode === 'timeAttack') ? timeLeft === 0 : (gameMode === 'questions' ? questionsAnswered >= questionLimit : false))}
+              disabled={isSpeedRunActive && ((gameMode === 'time' || gameMode === 'timeAttack') ? timeLeft === 0 : (gameMode === 'questions' ? questionsAnswered >= (questionLimit === 0 ? customQuestionLimit : questionLimit) : false))}
               onClick={() => setUserAnswer(prev => prev + num)}
             >
               {num}
@@ -1062,7 +1170,7 @@ function App() {
           <button
             type="button"
             className="numpad-btn control-btn"
-            disabled={isSpeedRunActive && ((gameMode === 'time' || gameMode === 'timeAttack') ? timeLeft === 0 : (gameMode === 'questions' ? questionsAnswered >= questionLimit : false))}
+            disabled={isSpeedRunActive && ((gameMode === 'time' || gameMode === 'timeAttack') ? timeLeft === 0 : (gameMode === 'questions' ? questionsAnswered >= (questionLimit === 0 ? customQuestionLimit : questionLimit) : false))}
             onClick={() => setUserAnswer('')}
           >
             C
@@ -1070,7 +1178,7 @@ function App() {
           <button
             type="button"
             className="numpad-btn"
-            disabled={isSpeedRunActive && ((gameMode === 'time' || gameMode === 'timeAttack') ? timeLeft === 0 : (gameMode === 'questions' ? questionsAnswered >= questionLimit : false))}
+            disabled={isSpeedRunActive && ((gameMode === 'time' || gameMode === 'timeAttack') ? timeLeft === 0 : (gameMode === 'questions' ? questionsAnswered >= (questionLimit === 0 ? customQuestionLimit : questionLimit) : false))}
             onClick={() => setUserAnswer(prev => prev + '0')}
           >
             0
@@ -1078,7 +1186,7 @@ function App() {
           <button
             type="button"
             className="numpad-btn control-btn"
-            disabled={isSpeedRunActive && ((gameMode === 'time' || gameMode === 'timeAttack') ? timeLeft === 0 : (gameMode === 'questions' ? questionsAnswered >= questionLimit : false))}
+            disabled={isSpeedRunActive && ((gameMode === 'time' || gameMode === 'timeAttack') ? timeLeft === 0 : (gameMode === 'questions' ? questionsAnswered >= (questionLimit === 0 ? customQuestionLimit : questionLimit) : false))}
             onClick={() => setUserAnswer(prev => prev.slice(0, -1))}
           >
             ⌫
@@ -1089,12 +1197,12 @@ function App() {
       {message && <div className={`message ${message === 'Correct!' ? 'success' : (message.includes('Time') ? 'info' : 'error')}`}>{message}</div>}
       {streakMessage && <div className="message" style={{color: '#9b59b6', animation: 'pulse 1s infinite'}}>{streakMessage}</div>}
 
-      <button type="button" onClick={handleGiveUp} className="next-button" disabled={isSpeedRunActive && ((gameMode === 'time' || gameMode === 'timeAttack') ? timeLeft === 0 : (gameMode === 'questions' ? questionsAnswered >= questionLimit : false))}>Give Up / Skip</button>
+      <button type="button" onClick={handleGiveUp} className="next-button" disabled={isSpeedRunActive && ((gameMode === 'time' || gameMode === 'timeAttack') ? timeLeft === 0 : (gameMode === 'questions' ? questionsAnswered >= (questionLimit === 0 ? customQuestionLimit : questionLimit) : false))}>Give Up / Skip</button>
 
       {showSummary && (
         <div className="summary-modal-overlay">
           <div className="summary-modal">
-            <h2>{isSuddenDeathMode && !isSpeedRunActive && ((gameMode === 'time' || gameMode === 'timeAttack') ? timeLeft > 0 : questionsAnswered < questionLimit) ? "Game Over!" : ((gameMode === 'time' || gameMode === 'timeAttack') ? "Time's Up!" : "Challenge Complete!")}</h2>
+            <h2>{isSuddenDeathMode && !isSpeedRunActive && ((gameMode === 'time' || gameMode === 'timeAttack') ? timeLeft > 0 : questionsAnswered < (questionLimit === 0 ? customQuestionLimit : questionLimit)) ? "Game Over!" : ((gameMode === 'time' || gameMode === 'timeAttack') ? "Time's Up!" : "Challenge Complete!")}</h2>
             <p>Final Score: <strong>{score}</strong></p>
             <p>High Score: <strong>{highScore}</strong></p>
             <p>Best Combo: <strong>{bestHistoricalCombo}</strong></p>

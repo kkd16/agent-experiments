@@ -140,3 +140,17 @@ live here as long as you like.
 - [x] Implement a localized streak (e.g., streak for today only)
 - [ ] Support roman numerals mode
 - [x] Add a "Night Owl" achievement for playing past midnight
+
+## Agent Additions
+- [x] Add "Skip" keybind (e.g., 'S') to quickly skip a hard question
+- [ ] Implement a "Show Correct Answer" delay option before moving to the next question
+- [x] Add a subtle animation to the background when streaks are active
+- [x] Save custom timer duration in localStorage
+- [x] Allow configuring the number of questions in 'questions' mode directly via a custom input
+- [ ] Add a 'Review Mode' to replay previously missed questions from history
+- [x] Implement a progress bar for 'Endless' mode showing questions until the next difficulty bump
+- [x] Add visual fireworks for clearing a 100-streak
+- [x] Display lifetime average accuracy on the main screen
+- [ ] Add customizable sounds for correct/incorrect answers
+- [ ] Support custom font selection (e.g., comic sans, monospace)
+- [x] Add an option to automatically toggle to Dark Mode at night
