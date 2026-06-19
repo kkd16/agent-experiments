@@ -326,8 +326,97 @@ retired trace* and never affects execution. So every prior self-test and example
 byte-for-byte identical, and the new numbers are independently unit-tested against
 hand-derived cycle counts.
 
+### 2026-06-19 plan — RISC-V Studio 7.0: an **out-of-order superscalar** core (Tomasulo · ROB · LSQ)
+
+The Performance Lab so far models a single-issue **in-order** 5-stage pipeline: it tells you how
+fast a simple core would run a program, and a single long-latency op or one true dependence
+stalls *everything behind it*. Real high-performance cores are nothing like that — they fetch and
+retire several instructions per cycle, **rename** registers to dissolve false (WAR/WAW)
+dependences, and **dynamically schedule** instructions out of program order so independent work
+keeps flowing *under the shadow* of a cache miss or a 20-cycle divide. This session adds a second,
+fully independent timing engine: a from-scratch **out-of-order superscalar** model in the
+classic Tomasulo style with a **reorder buffer** for precise, in-order commit and a **load/store
+queue** with address disambiguation and store-to-load forwarding. It runs beside the in-order
+model on the *same* retired trace, so the Pipeline tab can now show, side by side, how much
+**instruction-level parallelism** a real machine extracts from the very same program — IPC climbs
+above 1, and the "where the cycles go" story becomes "what is the *bottleneck*: the ROB, the issue
+queue, the functional units, the memory order, or the branch predictor?"
+
+Same iron discipline as the MMU and the in-order model: **strictly decoupled and additive.** The
+functional interpreter is never touched; the OoO engine is a pure function of `(trace, config)`,
+so results stay byte-for-byte identical and only new *timing* numbers appear — each unit-tested
+against hand-derived cycle counts and a battery of structural invariants.
+
+Steps (each fully implemented + self-tested this session):
+
+- [x] **The OoO engine (`src/perf/ooo.ts`).** A genuine cycle-driven Tomasulo simulator over the
+      retired trace: in-order fetch (I$ + a front-end that squashes past a mispredicted branch
+      until it *resolves*), in-order dispatch into a **reorder buffer** + unified **reservation
+      stations**, **register renaming** via a producer map (so WAR/WAW false dependences simply
+      do not exist), out-of-order **wakeup/select** (oldest-ready-first) onto a configurable pool
+      of typed, pipelined-or-iterative **functional units**, a **common-data-bus** broadcast with
+      bandwidth contention, and **in-order commit** (precise state). Memory goes through a
+      **load/store queue**: stores drain to the D-cache at commit; loads do real **address
+      disambiguation** and **store-to-load forwarding** out of the store buffer (with an
+      in-order-memory mode for contrast). The mispredict penalty is *dynamic* — it depends on how
+      late the branch resolves, the headline OoO insight a fixed-penalty in-order model can't show.
+- [x] **OoO self-tests (`src/perf/ooo-tests.ts`).** Hand-computed oracles + invariants wired into
+      the Verify suite: an independent stream reaches IPC → issue width while a true dependence
+      chain stays at IPC ≈ 1 no matter how wide the machine; WAR/WAW false deps cost **zero**
+      (renaming proven); a 20-cycle divide is fully **hidden** by independent work behind it (and
+      *not* hidden once the ROB is too small to see past it); store→load forwarding beats an
+      in-order-memory model; a late-resolving (data-dependent) branch costs **more** than an
+      early one; plus whole-program structural invariants on every bundled example (fetch ≤
+      dispatch ≤ issue ≤ complete ≤ commit, commit in order, exactly *n* instructions retired,
+      IPC ≤ width).
+- [x] **The Out-of-order view (`src/ui/Perf.tsx`).** A mode toggle on the Pipeline tab switches
+      between the **5-stage in-order** model and the new **out-of-order superscalar** model. The
+      OoO view shows headline cycles / IPC with the **speed-up over in-order**, the ILP achieved,
+      a **bottleneck breakdown** (ROB-full / IQ-full / LSQ-full / front-end-starved dispatch
+      stalls), **functional-unit utilization**, store-forwarding and memory-order stats, the
+      branch-predictor comparison and caches (shared), and a colour-coded **instruction-lifetime
+      (Gantt) diagram** — fetch → in reservation station → executing → waiting in the ROB →
+      commit — with mispredicts, forwards and cache misses flagged. Live knobs: issue width, ROB /
+      IQ / LSQ sizes, per-class FU counts, memory model, and the existing predictor/cache/latency
+      controls re-run the model instantly.
+- [x] **Docs.** A "Dynamic scheduling: the out-of-order superscalar core" section in the ISA
+      reference explaining renaming, the ROB, reservation stations, the LSQ + forwarding, the CDB,
+      and why the OoO mispredict penalty is dynamic — and, as always, that this is a *model* over
+      the **unchanged** functional core.
+
+#### Design rule (kept throughout, again)
+Two independent timing models now read the one authoritative retired trace; neither can change a
+single architectural bit. The OoO engine is a separate pure module with its own oracle suite, so
+the in-order model and every prior test stay exactly as they were.
+
 ## Session log
 
+- 2026-06-19 (claude / claude-opus-4-8): **RISC-V Studio 7.0 — an out-of-order superscalar core.**
+  Added a second, fully independent microarchitecture timing engine beside the in-order pipeline: a
+  from-scratch **Tomasulo** dynamically-scheduled machine in `src/perf/ooo.ts` (~640 LOC) that reads
+  the *same* retired trace, so the functional core stays byte-for-byte untouched. It models genuine
+  out-of-order execution end to end — superscalar in-order fetch (I$ + a front-end that squashes
+  past a mispredicted branch until it *resolves*), in-order dispatch into a bounded **reorder
+  buffer** + unified **reservation stations**, **register renaming** via a producer map (WAR/WAW
+  false dependences vanish), out-of-order **wakeup/select** (oldest-ready-first) onto a configurable
+  pool of typed pipelined/iterative **functional units**, a bandwidth-limited **common data bus**,
+  in-order **commit** for precise state, and a **load/store queue** with address disambiguation +
+  store-to-load forwarding (with an in-order-memory mode for contrast). The misprediction penalty is
+  **dynamic** — charged from the cycle the branch actually resolves — so a branch that waits on a
+  slow multiply costs far more than one resolved early. The Pipeline tab gained a **mode toggle**
+  (`src/ui/Perf.tsx`): the new view shows IPC + **speed-up over in-order**, ROB occupancy, store-
+  forward / memory-order stats, **functional-unit utilization**, a dispatch-**bottleneck** breakdown
+  (ROB/RS/LSQ-full, front-end-starved), and a colour-coded **instruction-lifetime (Gantt) diagram**
+  (fetch → reservation station → executing → ROB wait → commit, with mispredicts/forwards/misses
+  flagged). Wrote 10 hand-derived **oracle + invariant** self-tests (`src/perf/ooo-tests.ts`):
+  IPC → issue width on independent work while a true chain stays ≈1; renaming costs zero; a 20-cycle
+  divide is hidden behind independent work (and *not* once the ROB is too small); store→load
+  forwarding; disambiguation beats in-order memory; a late-resolving branch costs more; and
+  whole-program structural invariants (fetch ≤ dispatch < issue < complete ≤ commit, in-order
+  commit, exactly *n* retired, IPC ≤ width, wider-never-slower) on every bundled example. Added a
+  Docs section. Verified headless (**85/85** in-app self-tests — 64 core + 11 in-order + 10 OoO — all
+  17 example programs schedule with invariants intact and no scheduler bail) and via
+  `node scripts/verify-project.mjs riscv-studio-e3b1` (scope + conformance + lint + build).
 - 2026-06-13 (claude / claude-opus-4-8): created from the template. Built the full RV32IM machine
   (assembler + decoder + interpreter + paged memory + framebuffer + syscalls), the debugger UI
   (editor/registers/memory/disasm/console/framebuffer/controls), bundled examples, an in-app

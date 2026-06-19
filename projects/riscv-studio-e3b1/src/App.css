@@ -1217,3 +1217,40 @@
 .stage-chip.st-ex { background: #7ee787; } .stage-chip.st-mem { background: #ffb454; }
 .stage-chip.st-wb { background: #b07ce8; }
 .held-key { color: var(--fg-faint); margin-left: 0.4rem; }
+
+/* ---- out-of-order view ---- */
+.perf-modes { display: inline-flex; gap: 0; margin: 0 auto 0 0.8rem; border: 1px solid var(--border-2); border-radius: 6px; overflow: hidden; }
+.perf-modes button {
+  background: var(--bg-3); color: var(--fg-dim); border: none; border-right: 1px solid var(--border-2);
+  padding: 0.22rem 0.6rem; font-size: 0.76rem; cursor: pointer;
+}
+.perf-modes button:last-child { border-right: none; }
+.perf-modes button:hover { color: var(--fg); }
+.perf-modes button.on { background: var(--accent); color: #0d1017; font-weight: 600; }
+
+.ooo-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 0.5rem; }
+.ooo-stat { background: var(--bg-2); border: 1px solid var(--border); border-radius: 7px; padding: 0.45rem 0.6rem; display: flex; flex-direction: column; gap: 0.1rem; }
+.ooo-stat-val { font-family: var(--mono); font-size: 1.02rem; font-weight: 700; color: var(--fg); }
+.ooo-stat-lbl { font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.03em; color: var(--fg-faint); }
+
+/* functional-unit utilization bars share the .acc-bar shape, recoloured per class */
+.acc-bar.fu-alu { background: #7ee787; } .acc-bar.fu-mem { background: #ffb454; }
+.acc-bar.fu-mul, .acc-bar.fu-fpmul { background: #58d6c9; }
+.acc-bar.fu-div, .acc-bar.fu-fpdiv { background: #ff6b6b; }
+.acc-bar.fu-fpadd { background: #b07ce8; }
+
+/* OoO instruction-lifetime (Gantt) phases */
+.dg-cell.ph-fetch { background: #5ec2ff; }
+.dg-cell.ph-rs { background: #5b6677; color: #cdd6e4; }
+.dg-cell.ph-ex { background: #7ee787; }
+.dg-cell.ph-ex.fu-mul, .dg-cell.ph-ex.fu-fpmul { background: #58d6c9; }
+.dg-cell.ph-ex.fu-div, .dg-cell.ph-ex.fu-fpdiv { background: #ff8a5c; }
+.dg-cell.ph-ex.fu-fpadd { background: #b07ce8; }
+.dg-cell.ph-ex.fu-mem { background: #ffb454; }
+.dg-cell.ph-rob { background: #2b3344; color: #8b96a8; }
+.dg-cell.ph-commit { background: var(--accent); }
+.dg-flags { color: var(--accent-2); margin-left: 0.35rem; font-size: 0.62rem; }
+
+.stage-chip.ph-fetch { background: #5ec2ff; } .stage-chip.ph-rs { background: #5b6677; color: #e6ebf2; }
+.stage-chip.ph-ex { background: #7ee787; } .stage-chip.ph-rob { background: #2b3344; color: #c7d0de; }
+.stage-chip.ph-commit { background: var(--accent); }

@@ -22,6 +22,7 @@ import {
   PageFault,
 } from './mmu';
 import { runPerfTests } from '../perf/perf-tests';
+import { runOooTests } from '../perf/ooo-tests';
 
 /** Build a CPU with a hand-laid Sv32 page table, parked in supervisor mode with paging on.
  *  root@0x80000: [0] identity megapage for [0,4MiB); [2] → leaf@0x81000.
@@ -1152,6 +1153,7 @@ export function runSelfTests(): TestResult[] {
       return { name, passed: false, detail: (e as Error).message };
     }
   });
-  // The microarchitecture timing model carries its own hand-computed cycle oracles.
-  return [...core, ...runPerfTests()];
+  // The microarchitecture timing models carry their own hand-computed cycle oracles: the in-order
+  // 5-stage pipeline, then the out-of-order superscalar (Tomasulo + ROB) engine.
+  return [...core, ...runPerfTests(), ...runOooTests()];
 }
