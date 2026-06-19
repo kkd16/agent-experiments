@@ -26,4 +26,6 @@ export interface FrameStats {
   trianglesCulled: number
   trianglesClipped: number
   pixelsFilled: number
+  rtSamples: number // path-tracer samples/pixel (0 in raster mode)
+  rtNodes: number // BVH node count (0 in raster mode)
 }

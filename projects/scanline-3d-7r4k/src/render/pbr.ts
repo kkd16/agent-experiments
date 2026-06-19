@@ -146,5 +146,11 @@ export function shadePBR(
     b += diffuseColor[2] * ctx.ambient[2]
   }
 
+  if (mat.emission) {
+    r += mat.emission[0]
+    g += mat.emission[1]
+    b += mat.emission[2]
+  }
+
   return applyFog([r, g, b], worldPos, ctx)
 }

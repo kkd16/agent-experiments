@@ -22,8 +22,29 @@ import { makeNormalMap, makeTexture } from '../render/texture.ts'
 import type { FrameStats, RenderMode } from '../render/types.ts'
 import { OrbitCamera } from '../scene/camera.ts'
 import type { SceneConfig } from '../scene/scene.ts'
+import { lerp3 } from '../math/vec.ts'
+import { clamp01 } from '../math/scalar.ts'
+import { RayTracer } from '../raytrace/raytracer.ts'
+import type { RTCamera, RTMode } from '../raytrace/raytracer.ts'
+import type { RTInstance } from '../raytrace/rtscene.ts'
+import type { RTLighting } from '../raytrace/tracer.ts'
+
+export type Engine = 'raster' | 'rt'
+
+export interface RTSettings {
+  mode: RTMode // 'path' (global illumination) | 'ao' (ambient occlusion)
+  maxBounces: number // path-tracer light-bounce depth
+  softShadows: boolean // cone/area light sampling for penumbrae
+  sunSoftness: number // directional-light cone half-angle, degrees
+  lightRadius: number // point-light sphere radius (world units)
+  aoRadius: number // ambient-occlusion reach (world units)
+  resolutionScale: number // RT internal resolution relative to the framebuffer
+  compare: boolean // split-screen: rasterizer left, path tracer right
+  splitPos: number // divider position, 0..1
+}
 
 export interface RenderSettings {
+  engine: Engine
   mode: RenderMode
   cullBack: boolean
   autoRotate: boolean
@@ -36,7 +57,11 @@ export interface RenderSettings {
   environment: boolean // image-based lighting + skybox
   normalMaps: boolean // honour per-object normal maps
   post: PostSettings
+  rt: RTSettings
 }
+
+const RT_BUDGET_MS = 26 // per-frame time the path tracer may spend refining
+const DIVIDER = Framebuffer.pack(0.95, 0.95, 1)
 
 const emptyStats = (): FrameStats => ({
   trianglesIn: 0,
@@ -44,6 +69,8 @@ const emptyStats = (): FrameStats => ({
   trianglesCulled: 0,
   trianglesClipped: 0,
   pixelsFilled: 0,
+  rtSamples: 0,
+  rtNodes: 0,
 })
 
 export class Renderer {
@@ -55,6 +82,8 @@ export class Renderer {
   private shadowMap = new ShadowMap(1024)
   private env: Environment
   private customMesh: Mesh | null = null
+  private customMeshId = 0
+  readonly rayTracer = new RayTracer()
   spinClock = 0
 
   constructor(width: number, height: number, scene: SceneConfig) {
@@ -63,16 +92,19 @@ export class Renderer {
     this.ground = makePlane(16, 8)
     computeTangents(this.ground)
     this.env = makeEnvironment(scene.sky)
+    if (scene.view) this.camera.applyView(scene.view)
   }
 
   setScene(scene: SceneConfig): void {
     this.scene = scene
     this.env = makeEnvironment(scene.sky)
+    if (scene.view) this.camera.applyView(scene.view)
   }
 
   // Install an imported OBJ mesh for the 'custom' scene.
   setCustomMesh(mesh: Mesh): void {
     this.customMesh = mesh
+    this.customMeshId++
   }
 
   resize(width: number, height: number): void {
@@ -103,7 +135,14 @@ export class Renderer {
     return this.scene.lights.map((l) => ({ ...l, intensity: l.intensity * s.lightBoost }))
   }
 
+  // Dispatch to the rasterizer or the ray tracer. Animation only advances in
+  // raster mode; the path tracer needs a still scene to accumulate against.
   render(dt: number, settings: RenderSettings): FrameStats {
+    if (settings.engine === 'rt') return this.renderRT(settings)
+    return this.renderRaster(dt, settings)
+  }
+
+  renderRaster(dt: number, settings: RenderSettings): FrameStats {
     const { fb, scene, camera } = this
     if (settings.autoRotate) this.spinClock += dt
     const t = this.spinClock
@@ -209,6 +248,134 @@ export class Renderer {
     else if (hdrMode) resolveHDR(fb, settings.post)
 
     return stats
+  }
+
+  // ── the ray-traced reference path ────────────────────────────────────────────
+  // Flatten the live scene into a triangle soup, (re)build the BVH only when the
+  // geometry changes, refine the progressive path-traced image for a frame's time
+  // budget, then composite it — full-screen, or split against the rasterizer.
+  renderRT(settings: RenderSettings): FrameStats {
+    const { fb, scene, camera } = this
+    const t = this.spinClock
+    const aspect = fb.width / fb.height
+    const eye = camera.eye()
+    const cam = this.cameraSnapshot(eye, aspect)
+
+    const objectModels = scene.objects.map((o) =>
+      this.objectModel(o.position, o.scale, o.baseRotation, o.spin * t, o.tiltSpin * t),
+    )
+    const instances = this.buildRTInstances(objectModels, settings)
+    const geomKey =
+      `${scene.name}|${t.toFixed(4)}|${settings.showGround ? 1 : 0}|${settings.normalMaps ? 1 : 0}|${this.customMeshId}`
+    this.rayTracer.setGeometry(instances, geomKey)
+
+    const light = this.buildRTLighting(settings)
+    const rt = settings.rt
+    const e3 = `${eye[0].toFixed(3)},${eye[1].toFixed(3)},${eye[2].toFixed(3)}`
+    const f3 = `${cam.fx.toFixed(3)},${cam.fy.toFixed(3)},${cam.fz.toFixed(3)}`
+    const resetKey = [
+      geomKey, e3, f3, rt.mode, rt.maxBounces, rt.softShadows ? 1 : 0,
+      rt.sunSoftness, rt.lightRadius, rt.aoRadius, settings.environment ? 1 : 0,
+      settings.lightBoost, settings.ambientBoost, settings.fog ? 1 : 0,
+    ].join('|')
+
+    const rtW = Math.max(16, Math.round(fb.width * rt.resolutionScale))
+    const rtH = Math.max(16, Math.round(fb.height * rt.resolutionScale))
+    this.rayTracer.step(cam, light, rt.mode, settings.post, rtW, rtH, RT_BUDGET_MS, resetKey)
+
+    const stats = emptyStats()
+    if (rt.compare) {
+      // left half: the real-time rasterizer at the same (frozen) pose
+      this.renderRaster(0, settings)
+      const split = Math.round(clamp01(rt.splitPos) * fb.width)
+      this.rayTracer.blit(fb.color, fb.width, fb.height, split, fb.width)
+      // draw the divider
+      const x = Math.min(fb.width - 1, Math.max(0, split))
+      for (let y = 0; y < fb.height; y++) {
+        fb.color[y * fb.width + x] = DIVIDER
+        if (x + 1 < fb.width) fb.color[y * fb.width + x + 1] = DIVIDER
+      }
+    } else {
+      this.rayTracer.blit(fb.color, fb.width, fb.height, 0, fb.width)
+    }
+
+    stats.trianglesIn = this.rayTracer.triangles
+    stats.rtSamples = this.rayTracer.minSamples
+    stats.rtNodes = this.rayTracer.nodes
+    return stats
+  }
+
+  // The camera's orthonormal basis + view-ray scale, the data the tracer needs to
+  // generate primary rays (matches makeRayGenerator).
+  private cameraSnapshot(eye: Vec3, aspect: number): RTCamera {
+    const { camera } = this
+    const forward = normalize(sub(camera.target, eye))
+    const right = normalize(cross(forward, [0, 1, 0]))
+    const up = cross(right, forward)
+    return {
+      ex: eye[0], ey: eye[1], ez: eye[2],
+      fx: forward[0], fy: forward[1], fz: forward[2],
+      rx: right[0], ry: right[1], rz: right[2],
+      ux: up[0], uy: up[1], uz: up[2],
+      tanHalf: Math.tan((camera.fovDeg * DEG2RAD) / 2),
+      aspect,
+    }
+  }
+
+  private buildRTInstances(objectModels: Mat4[], settings: RenderSettings): RTInstance[] {
+    const { scene } = this
+    const insts: RTInstance[] = []
+    if (settings.showGround && scene.ground) {
+      insts.push({
+        mesh: this.ground,
+        model: translation(0, 0, 0),
+        material: scene.groundMaterial,
+        texture: makeTexture(scene.groundTexture),
+        normalMap: settings.normalMaps ? makeNormalMap(scene.groundNormalMap) : null,
+      })
+    }
+    for (let i = 0; i < scene.objects.length; i++) {
+      const o = scene.objects[i]
+      insts.push({
+        mesh: this.mesh(o.meshKind),
+        model: objectModels[i],
+        material: o.material,
+        texture: makeTexture(o.texture),
+        normalMap: settings.normalMaps ? makeNormalMap(o.normalMap) : null,
+      })
+    }
+    return insts
+  }
+
+  private buildRTLighting(settings: RenderSettings): RTLighting {
+    const { scene } = this
+    const ambient: Vec3 = [
+      scene.ambient[0] * settings.ambientBoost,
+      scene.ambient[1] * settings.ambientBoost,
+      scene.ambient[2] * settings.ambientBoost,
+    ]
+    const env = settings.environment ? this.env : null
+    const intensity = this.env.intensity
+    const bgTop = scene.bgTop
+    const bgBottom = scene.bgBottom
+    const sky = (dx: number, dy: number, dz: number): Vec3 => {
+      if (env) {
+        const c = env.sky([dx, dy, dz])
+        return [c[0] * intensity, c[1] * intensity, c[2] * intensity]
+      }
+      return lerp3(bgBottom, bgTop, clamp01(dy * 0.5 + 0.5))
+    }
+    const rt = settings.rt
+    return {
+      lights: this.scaledLights(settings),
+      env,
+      ambient,
+      sky,
+      maxBounces: rt.mode === 'ao' ? 1 : rt.maxBounces,
+      sunCosHalf: rt.softShadows ? Math.cos(rt.sunSoftness * DEG2RAD) : 1,
+      lightRadius: rt.softShadows ? rt.lightRadius : 0,
+      aoRadius: rt.aoRadius > 0 ? rt.aoRadius : 1e30,
+    }
   }
 
   // Build a per-pixel view-ray generator for the current camera, used to paint

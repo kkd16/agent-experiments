@@ -216,6 +216,9 @@
 .obj-msg.err { color: var(--accent-2); }
 .obj-msg.ok { color: var(--good); }
 
+.rt-tests { margin-top: 8px; max-height: 230px; overflow-y: auto; }
+.rt-tests .obj-msg { font-size: 10.5px; }
+
 .actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
 .reset {
   font: inherit; font-size: 13px; font-weight: 600;

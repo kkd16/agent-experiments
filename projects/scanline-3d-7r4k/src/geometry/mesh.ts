@@ -345,7 +345,7 @@ export const makeSpring = (turns = 3.5, segU = 320, segV = 14, R = 0.55, r = 0.1
   )
 
 export type MeshKind =
-  | 'sphere' | 'torus' | 'knot' | 'cube' | 'cylinder' | 'klein' | 'mobius' | 'spring' | 'custom'
+  | 'sphere' | 'torus' | 'knot' | 'cube' | 'cylinder' | 'klein' | 'mobius' | 'spring' | 'quad' | 'custom'
 
 export const buildMesh = (kind: MeshKind): Mesh => {
   const m = buildMeshRaw(kind)
@@ -363,6 +363,7 @@ const buildMeshRaw = (kind: MeshKind): Mesh => {
     case 'klein': return makeKlein()
     case 'mobius': return makeMobius()
     case 'spring': return makeSpring()
+    case 'quad': return makePlane(1, 1) // a unit quad for building walls / area lights
     case 'custom': return makeSphere() // placeholder; the renderer supplies the real custom mesh
   }
 }

@@ -25,6 +25,14 @@ export class OrbitCamera {
     this.distance = 6
   }
 
+  // Snap to a scene-provided framing (applied when a preset is loaded).
+  applyView(v: { target: Vec3; yaw: number; pitch: number; distance: number }): void {
+    this.target = v.target
+    this.yaw = v.yaw
+    this.pitch = clamp(v.pitch, this.minPitch, this.maxPitch)
+    this.distance = clamp(v.distance, this.minDist, this.maxDist)
+  }
+
   rotate(dYaw: number, dPitch: number): void {
     this.yaw += dYaw
     this.pitch = clamp(this.pitch + dPitch, this.minPitch, this.maxPitch)
