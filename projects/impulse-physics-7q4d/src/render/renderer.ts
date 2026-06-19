@@ -1,4 +1,13 @@
-import { Body, BodyType, BuoyancyZone, Vec2, World, type DistanceResult } from '../engine';
+import {
+  Body,
+  BodyType,
+  BuoyancyZone,
+  PulleyJoint,
+  Vec2,
+  World,
+  type DistanceResult,
+  type Joint,
+} from '../engine';
 import { Camera } from './camera';
 
 /** Toggleable debug overlays. */
@@ -81,6 +90,7 @@ export class Renderer {
     for (const body of world.bodies) {
       if (body.isSensor) this.drawSensor(body, camera);
       else this.drawBody(body, camera, opts, extras.hovered === body);
+      if (body.tangentSpeed !== 0) this.drawConveyor(body, camera);
       if (opts.aabb) this.drawAABB(body, camera);
       if (opts.velocities) this.drawVelocity(body, camera);
       if (opts.centerOfMass) this.drawCOM(body, camera);
@@ -89,7 +99,7 @@ export class Renderer {
     for (const zone of world.fluidZones) this.drawWaterSurface(zone, camera);
 
     if (opts.joints) {
-      for (const joint of world.joints) this.drawJoint(joint.anchorA(), joint.anchorB(), camera);
+      for (const joint of world.joints) this.drawJointShape(joint, camera);
     }
     if (opts.contacts) this.drawContacts(world, camera);
     if (extras.mouseTarget) this.drawMouse(extras.mouseTarget, camera);
@@ -377,6 +387,79 @@ export class Renderer {
     ctx.beginPath();
     ctx.arc(s.x, s.y, 2.5, 0, Math.PI * 2);
     ctx.fill();
+  }
+
+  /** Dispatch joint rendering: a pulley draws its rope over both wheels. */
+  private drawJointShape(joint: Joint, camera: Camera): void {
+    if (joint instanceof PulleyJoint) {
+      this.drawPulley(joint, camera);
+      return;
+    }
+    this.drawJoint(joint.anchorA(), joint.anchorB(), camera);
+  }
+
+  /** A pulley: the rope from each ground wheel down to its body, joined across the top. */
+  private drawPulley(joint: PulleyJoint, camera: Camera): void {
+    const ctx = this.ctx;
+    const ga = camera.worldToScreen(joint.groundAnchorA);
+    const gb = camera.worldToScreen(joint.groundAnchorB);
+    const aa = camera.worldToScreen(joint.anchorA());
+    const ab = camera.worldToScreen(joint.anchorB());
+    ctx.strokeStyle = COLORS.joint;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(aa.x, aa.y);
+    ctx.lineTo(ga.x, ga.y);
+    ctx.lineTo(gb.x, gb.y);
+    ctx.lineTo(ab.x, ab.y);
+    ctx.stroke();
+    // The two pulley wheels.
+    for (const p of [ga, gb]) {
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, 5, 0, Math.PI * 2);
+      ctx.strokeStyle = COLORS.joint;
+      ctx.lineWidth = 2;
+      ctx.stroke();
+    }
+    for (const p of [aa, ab]) {
+      ctx.fillStyle = COLORS.joint;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, 2.5, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+
+  /** Chevron flow arrows along a conveyor body, pointing in its surface direction. */
+  private drawConveyor(body: Body, camera: Camera): void {
+    if (body.shape.kind !== 'polygon') return;
+    const ctx = this.ctx;
+    const verts = body.shape.vertices;
+    let minX = Infinity;
+    let maxX = -Infinity;
+    let topY = -Infinity;
+    for (const v of verts) {
+      minX = Math.min(minX, v.x);
+      maxX = Math.max(maxX, v.x);
+      topY = Math.max(topY, v.y);
+    }
+    const dir = Math.sign(body.tangentSpeed);
+    const y = topY - 0.05;
+    const sz = 0.13;
+    ctx.strokeStyle = 'rgba(255,255,255,0.6)';
+    ctx.lineWidth = 2;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    for (let x = minX + 0.3; x <= maxX - 0.3; x += 0.5) {
+      const tip = camera.worldToScreen(body.worldPoint(new Vec2(x + dir * sz, y)));
+      const top = camera.worldToScreen(body.worldPoint(new Vec2(x - dir * sz, y + sz)));
+      const bot = camera.worldToScreen(body.worldPoint(new Vec2(x - dir * sz, y - sz)));
+      ctx.beginPath();
+      ctx.moveTo(top.x, top.y);
+      ctx.lineTo(tip.x, tip.y);
+      ctx.lineTo(bot.x, bot.y);
+      ctx.stroke();
+    }
+    ctx.lineCap = 'butt';
   }
 
   private drawJoint(a: Vec2, b: Vec2, camera: Camera): void {

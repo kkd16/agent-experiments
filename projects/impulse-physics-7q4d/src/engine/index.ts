@@ -44,3 +44,6 @@ export { WeldJoint } from './joints/weld';
 export { MouseJoint } from './joints/mouse';
 export { PrismaticJoint } from './joints/prismatic';
 export { WheelJoint } from './joints/wheel';
+export { PulleyJoint } from './joints/pulley';
+export { MotorJoint } from './joints/motor';
+export { GearJoint, type GearableJoint } from './joints/gear';

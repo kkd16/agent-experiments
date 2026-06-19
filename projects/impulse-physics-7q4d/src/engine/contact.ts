@@ -117,6 +117,12 @@ interface VelocityConstraint {
   points: ConstraintPoint[];
   /** 2×2 normal-coupling matrix for the block solver (only for 2-point manifolds). */
   K: Mat22 | null;
+  /**
+   * Target relative tangential velocity from conveyor surfaces. The friction
+   * constraint drives `(vB − vA)·tangent` to this value instead of zero, so a
+   * belt body drags whatever rests on it up to its surface speed.
+   */
+  tangentSpeed: number;
 }
 
 /**
@@ -238,7 +244,18 @@ export class ContactSolver {
         }
       }
 
-      this.constraints.push({ contact: c, normal, tangent, points, K });
+      // Conveyor target: the relative surface velocity along the tangent. Each
+      // belt's surface moves at `tangentSpeed` along its own world +x axis; the
+      // friction target is the A-minus-B projection so the result is independent
+      // of which body the contact happened to label A vs B (see body.ts).
+      let tangentSpeed = 0;
+      if (a.tangentSpeed !== 0 || b.tangentSpeed !== 0) {
+        const convA = a.transform.q.xAxis().mul(a.tangentSpeed);
+        const convB = b.transform.q.xAxis().mul(b.tangentSpeed);
+        tangentSpeed = convA.sub(convB).dot(tangent);
+      }
+
+      this.constraints.push({ contact: c, normal, tangent, points, K, tangentSpeed });
     }
   }
 
@@ -262,7 +279,7 @@ export class ContactSolver {
       // Friction first (solved per point, bounded by the current normal impulse).
       for (const p of vc.points) {
         const dv = relativeVelocity(a, b, p.rA, p.rB);
-        const vt = dv.dot(vc.tangent);
+        const vt = dv.dot(vc.tangent) - vc.tangentSpeed;
         let lambda = -p.tangentMass * vt;
         const maxFriction = friction * p.normalImpulse;
         const newImpulse = clampSym(p.tangentImpulse + lambda, maxFriction);

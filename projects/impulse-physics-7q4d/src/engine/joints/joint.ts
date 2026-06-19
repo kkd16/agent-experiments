@@ -24,6 +24,19 @@ export interface Joint {
   anchorA(): Vec2;
   /** World-space anchor on body B, for rendering. */
   anchorB(): Vec2;
+
+  /**
+   * Optional breaking budgets. When a joint exposes {@link reactionForce} (or
+   * {@link reactionTorque}) and its reaction exceeds the matching budget, the
+   * world removes the joint after the velocity solve and fires `onJointBreak`.
+   * Both default to `Infinity` (unbreakable).
+   */
+  breakForce?: number;
+  breakTorque?: number;
+  /** Magnitude of the constraint reaction force this step (N). */
+  reactionForce?(invDt: number): number;
+  /** Magnitude of the constraint reaction torque this step (N·m). */
+  reactionTorque?(invDt: number): number;
 }
 
 /** Apply an impulse pair to a body about offset `r` from its center of mass. */

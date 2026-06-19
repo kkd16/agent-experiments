@@ -16,6 +16,10 @@ export class WeldJoint implements Joint {
   private localAnchorB: Vec2;
   private referenceAngle: number;
 
+  /** Breaking budgets: the weld breaks above this force (N) or torque (N·m). */
+  breakForce = Infinity;
+  breakTorque = Infinity;
+
   private rA = Vec2.ZERO;
   private rB = Vec2.ZERO;
   private mass = new Mat22();
@@ -82,6 +86,15 @@ export class WeldJoint implements Joint {
       applyBodyImpulse(a, impulse.neg(), this.rA);
       applyBodyImpulse(b, impulse, this.rB);
     }
+  }
+
+  /** Magnitude of the point-constraint reaction force (for breaking). */
+  reactionForce(invDt: number): number {
+    return this.impulse.length() * invDt;
+  }
+  /** Magnitude of the angular reaction torque (for breaking). */
+  reactionTorque(invDt: number): number {
+    return Math.abs(this.angularImpulse) * invDt;
   }
 
   anchorA(): Vec2 {

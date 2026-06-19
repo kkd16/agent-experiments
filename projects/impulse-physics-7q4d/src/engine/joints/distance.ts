@@ -25,6 +25,9 @@ export class DistanceJoint implements Joint {
   frequencyHz = 0;
   dampingRatio = 0.7;
 
+  /** Breaking budget: the rod/spring snaps above this tension (N). */
+  breakForce = Infinity;
+
   private rA = Vec2.ZERO;
   private rB = Vec2.ZERO;
   private u = Vec2.ZERO;
@@ -83,6 +86,11 @@ export class DistanceJoint implements Joint {
     const p = this.u.mul(impulse);
     applyBodyImpulse(this.bodyA, p.neg(), this.rA);
     applyBodyImpulse(this.bodyB, p, this.rB);
+  }
+
+  /** Tension along the rod this step (for breakable joints). */
+  reactionForce(invDt: number): number {
+    return Math.abs(this.impulse) * invDt;
   }
 
   anchorA(): Vec2 {

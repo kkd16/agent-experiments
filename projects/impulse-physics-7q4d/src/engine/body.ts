@@ -38,6 +38,13 @@ export interface BodyDef {
   isSensor?: boolean;
   /** Free-form tag used by scenes and the renderer for coloring. */
   color?: string;
+  /**
+   * Conveyor surface speed along the body's local +x axis (m/s). A non-zero
+   * value turns the body into a conveyor belt: friction at any contact drives
+   * the touching body up to this surface velocity. Zero (the default) leaves the
+   * friction solve untouched.
+   */
+  tangentSpeed?: number;
 }
 
 let nextBodyId = 1;
@@ -93,6 +100,8 @@ export class Body {
   awake = true;
   sleepTime = 0;
 
+  /** Conveyor surface speed along the local +x axis (0 = not a belt). */
+  tangentSpeed: number;
   /** Continuous-collision flag (swept to time of impact each step). */
   bullet: boolean;
   /** Sensor flag: contacts are detected & reported but never solved. */
@@ -120,6 +129,7 @@ export class Body {
     this.angularDamping = def.angularDamping ?? 0;
     this.gravityScale = def.gravityScale ?? 1;
     this.allowSleep = def.allowSleep ?? true;
+    this.tangentSpeed = def.tangentSpeed ?? 0;
     this.bullet = def.bullet ?? false;
     this.isSensor = def.isSensor ?? false;
     this.color = def.color ?? '#6ea8ff';

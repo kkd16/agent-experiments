@@ -15,17 +15,22 @@ import {
   collide,
   computeMass,
   convexHull,
+  DistanceJoint,
   DynamicTree,
   epaPenetration,
+  GearJoint,
   gjkDistance,
   Mat22,
+  MotorJoint,
   Polygon,
   PrismaticJoint,
+  PulleyJoint,
   RevoluteJoint,
   Rng,
   solveBlockLcp,
   Transform,
   Vec2,
+  WeldJoint,
   WheelJoint,
   World,
 } from '../engine';
@@ -617,6 +622,257 @@ export function runVerification(): CheckResult[] {
       `y=${chassis.worldCenter.y.toFixed(3)}`);
     a.ok('Suspended chassis comes to rest', chassis.linearVelocity.length() < 0.05,
       `|v|=${chassis.linearVelocity.length().toFixed(4)}`);
+  }
+
+  // ---- Conveyor surfaces ---------------------------------------------------
+  a.section('Conveyor surfaces');
+  {
+    // A crate dropped on a level belt is dragged up to the belt's surface speed
+    // by friction, then carried along at that speed.
+    const w = new World(new Vec2(0, -10));
+    w.addBody(new Body(Polygon.box(20, 0.5), {
+      type: BodyType.Static, position: new Vec2(0, -0.5), friction: 1, tangentSpeed: 3,
+    }));
+    const crate = w.addBody(new Body(Polygon.box(0.4, 0.4), { position: new Vec2(-5, 0.4), friction: 1 }));
+    for (let i = 0; i < 300; i++) w.step(1 / 120);
+    a.close('Crate reaches belt speed (vx = 3)', crate.linearVelocity.x, 3, 0.3);
+    a.ok('Crate is carried downstream (+x)', crate.worldCenter.x > -4, `x=${crate.worldCenter.x.toFixed(2)}`);
+  }
+  {
+    // Regression guard: a zero-speed belt is just ordinary ground — the crate
+    // sits still (the conveyor term must vanish when tangentSpeed is 0).
+    const w = new World(new Vec2(0, -10));
+    w.addBody(new Body(Polygon.box(20, 0.5), {
+      type: BodyType.Static, position: new Vec2(0, -0.5), friction: 1, tangentSpeed: 0,
+    }));
+    const crate = w.addBody(new Body(Polygon.box(0.4, 0.4), { position: new Vec2(0, 0.4), friction: 1 }));
+    for (let i = 0; i < 300; i++) w.step(1 / 120);
+    a.ok('Zero-speed belt leaves the crate put', Math.abs(crate.worldCenter.x) < 0.05, `x=${crate.worldCenter.x.toFixed(4)}`);
+  }
+  {
+    // A reversed belt carries the crate the other way.
+    const w = new World(new Vec2(0, -10));
+    w.addBody(new Body(Polygon.box(20, 0.5), {
+      type: BodyType.Static, position: new Vec2(0, -0.5), friction: 1, tangentSpeed: -2,
+    }));
+    const crate = w.addBody(new Body(Polygon.box(0.4, 0.4), { position: new Vec2(5, 0.4), friction: 1 }));
+    for (let i = 0; i < 300; i++) w.step(1 / 120);
+    a.close('Reversed belt speed (vx = −2)', crate.linearVelocity.x, -2, 0.3);
+  }
+
+  // ---- Radial impulse / explosion ------------------------------------------
+  a.section('Radial impulse');
+  {
+    // A symmetric ring of equal discs blown from the centre gets equal-and-
+    // opposite momentum: the vector sum is ~zero, every disc flies outward.
+    const w = new World(new Vec2(0, 0));
+    const n = 8;
+    const bodies: Body[] = [];
+    for (let i = 0; i < n; i++) {
+      const ang = (i / n) * Math.PI * 2;
+      const pos = new Vec2(Math.cos(ang) * 3, Math.sin(ang) * 3);
+      bodies.push(w.addBody(new Body(new Circle(0.3), { position: pos })));
+    }
+    const pushed = w.applyRadialImpulse(new Vec2(0, 0), 10, 6, { occlusion: false });
+    let sum = Vec2.ZERO;
+    let outward = 0;
+    for (const b of bodies) {
+      sum = sum.add(b.linearVelocity.mul(b.mass));
+      if (b.linearVelocity.dot(b.worldCenter) > 0) outward++;
+    }
+    a.ok('All discs pushed', pushed.length === n, `pushed ${pushed.length}/${n}`);
+    a.ok('Net momentum ~0 (symmetry)', sum.length() < 1e-6, `|Σp|=${sum.length().toExponential(2)}`);
+    a.ok('Every disc flies outward', outward === n, `${outward}/${n} outward`);
+  }
+  {
+    // Linear falloff: the near disc gets twice the near/far impulse ratio
+    // predicted by 1 − d/radius (d=2 vs d=4 over radius 6 ⇒ 0.667 vs 0.333 = 2×).
+    const w = new World(new Vec2(0, 0));
+    const near = w.addBody(new Body(new Circle(0.3), { position: new Vec2(2, 0) }));
+    const far = w.addBody(new Body(new Circle(0.3), { position: new Vec2(4, 0) }));
+    w.applyRadialImpulse(new Vec2(0, 0), 10, 6, { falloff: 'linear', occlusion: false });
+    a.close('Falloff impulse ratio = 2', near.linearVelocity.x / far.linearVelocity.x, 2, 0.05);
+  }
+  {
+    // Occlusion: a static wall shadows the body directly behind it, while a body
+    // in the clear is still pushed. Turning occlusion off reaches both.
+    const build = (): World => {
+      const w = new World(new Vec2(0, 0));
+      w.addBody(new Body(Polygon.box(0.2, 1.5), { type: BodyType.Static, position: new Vec2(3, 0) }));
+      return w;
+    };
+    const w1 = build();
+    const shadowed = w1.addBody(new Body(new Circle(0.3), { position: new Vec2(6, 0) }));
+    const clear = w1.addBody(new Body(new Circle(0.3), { position: new Vec2(0, 6) }));
+    w1.applyRadialImpulse(new Vec2(0, 0), 10, 10, { occlusion: true });
+    a.ok('Wall shadows the body behind it', shadowed.linearVelocity.length() < 1e-9,
+      `|v|=${shadowed.linearVelocity.length().toExponential(2)}`);
+    a.ok('Body in the clear is still pushed', clear.linearVelocity.length() > 0.1,
+      `|v|=${clear.linearVelocity.length().toFixed(2)}`);
+    const w2 = build();
+    const behind = w2.addBody(new Body(new Circle(0.3), { position: new Vec2(6, 0) }));
+    w2.applyRadialImpulse(new Vec2(0, 0), 10, 10, { occlusion: false });
+    a.ok('Occlusion off reaches the shadowed body', behind.linearVelocity.length() > 0.1,
+      `|v|=${behind.linearVelocity.length().toFixed(2)}`);
+  }
+
+  // ---- Pulley joint --------------------------------------------------------
+  a.section('Pulley joint');
+  {
+    // Two masses hang from a rope over two pulleys. The heavier descends and the
+    // lighter rises, but the combined length lengthA + ratio·lengthB is conserved.
+    const w = new World(new Vec2(0, -10));
+    const heavy = w.addBody(new Body(Polygon.box(0.4, 0.4), { position: new Vec2(-2, 4), density: 4 }));
+    const light = w.addBody(new Body(Polygon.box(0.4, 0.4), { position: new Vec2(2, 4), density: 1 }));
+    const pulley = new PulleyJoint(
+      heavy, light, new Vec2(-2, 8), new Vec2(2, 8), new Vec2(-2, 4), new Vec2(2, 4), 1,
+    );
+    w.addJoint(pulley);
+    let maxDrift = 0;
+    const y0heavy = heavy.worldCenter.y;
+    for (let i = 0; i < 140; i++) {
+      w.step(1 / 120);
+      // Accumulate drift only while both rope runs are healthy (away from the
+      // length→0 singularity where a side reaches the pulley and the rope jams).
+      if (pulley.lengthA() > 0.4 && pulley.lengthB() > 0.4) {
+        const c = pulley.lengthA() + pulley.ratio * pulley.lengthB() - pulley.totalLength;
+        maxDrift = Math.max(maxDrift, Math.abs(c));
+      }
+    }
+    a.ok('Pulley conserves combined length', maxDrift < 0.02, `max drift ${maxDrift.toFixed(4)} m`);
+    a.ok('Heavier side descends', heavy.worldCenter.y < y0heavy - 0.2, `Δy=${(heavy.worldCenter.y - y0heavy).toFixed(2)}`);
+    a.ok('Lighter side rises', light.worldCenter.y > 4.1, `y=${light.worldCenter.y.toFixed(2)}`);
+  }
+
+  // ---- Gear joint ----------------------------------------------------------
+  a.section('Gear joint');
+  {
+    // Two discs pinned to ground and meshed by a gear joint of ratio 2. The
+    // constraint forces wA + ratio·wB = 0, so the second spins at −wA/2 (the
+    // opposite way, half the speed) — exactly meshed teeth.
+    const w = new World(new Vec2(0, 0));
+    const ground = w.addBody(new Body(new Circle(0.05), { type: BodyType.Static, position: new Vec2(0, 0) }));
+    const gearA = w.addBody(new Body(new Circle(1), { position: new Vec2(0, 0), angularVelocity: 5 }));
+    const gearB = w.addBody(new Body(new Circle(0.5), { position: new Vec2(1.5, 0) }));
+    const rev1 = new RevoluteJoint(ground, gearA, new Vec2(0, 0));
+    const rev2 = new RevoluteJoint(ground, gearB, new Vec2(1.5, 0));
+    w.addJoint(rev1);
+    w.addJoint(rev2);
+    w.addJoint(new GearJoint(rev1, rev2, 2));
+    let worst = 0;
+    for (let i = 0; i < 120; i++) {
+      w.step(1 / 120);
+      worst = Math.max(worst, Math.abs(gearA.angularVelocity + 2 * gearB.angularVelocity));
+    }
+    a.ok('Gear holds the ω ratio (ωA + 2·ωB = 0)', worst < 0.05, `max residual ${worst.toFixed(4)}`);
+    a.ok('Meshed gears counter-rotate', gearA.angularVelocity * gearB.angularVelocity < 0,
+      `ωA=${gearA.angularVelocity.toFixed(2)}, ωB=${gearB.angularVelocity.toFixed(2)}`);
+  }
+  {
+    // Rack and pinion: a motorised pinion drives a prismatic carriage. The gear
+    // constraint couples the pinion's angle to the rack's translation, so the
+    // carriage actually slides as the pinion turns.
+    const w = new World(new Vec2(0, 0));
+    const ground = w.addBody(new Body(new Circle(0.05), { type: BodyType.Static, position: new Vec2(0, 0) }));
+    const pinion = w.addBody(new Body(new Circle(0.5), { position: new Vec2(0, 0) }));
+    const rack = w.addBody(new Body(Polygon.box(1, 0.2), { position: new Vec2(0, 1) }));
+    const rev = new RevoluteJoint(ground, pinion, new Vec2(0, 0));
+    rev.enableMotor = true;
+    rev.motorSpeed = 4;
+    rev.maxMotorTorque = 50;
+    const pris = new PrismaticJoint(ground, rack, new Vec2(0, 1), new Vec2(1, 0));
+    w.addJoint(rev);
+    w.addJoint(pris);
+    w.addJoint(new GearJoint(rev, pris, 0.5));
+    const x0 = rack.worldCenter.x;
+    for (let i = 0; i < 240; i++) w.step(1 / 120);
+    a.ok('Rack-and-pinion slides the carriage', Math.abs(rack.worldCenter.x - x0) > 0.5,
+      `Δx=${(rack.worldCenter.x - x0).toFixed(2)}`);
+  }
+
+  // ---- Motor joint ---------------------------------------------------------
+  a.section('Motor joint');
+  {
+    // A motor joint drives B to a target offset + angle relative to A with plenty
+    // of force/torque, and gets there.
+    const w = new World(new Vec2(0, 0));
+    const anchor = w.addBody(new Body(new Circle(0.1), { type: BodyType.Static, position: new Vec2(0, 0) }));
+    const plate = w.addBody(new Body(Polygon.box(0.5, 0.5), { position: new Vec2(0, 0) }));
+    const motor = new MotorJoint(anchor, plate, new Vec2(3, 2), 1);
+    motor.maxForce = 5000;
+    motor.maxTorque = 5000;
+    w.addJoint(motor);
+    for (let i = 0; i < 400; i++) w.step(1 / 120);
+    a.close('Motor reaches target x', plate.worldCenter.x, 3, 0.05);
+    a.close('Motor reaches target y', plate.worldCenter.y, 2, 0.05);
+    a.close('Motor reaches target angle', plate.angle, 1, 0.05);
+  }
+  {
+    // A force-limited motor cannot hold a heavy load against gravity: with a tiny
+    // force budget the plate sags far below its commanded height, while a strong
+    // motor holds it there. (An overpowerable actuator, not a rigid weld.)
+    const lift = (maxForce: number): number => {
+      const w = new World(new Vec2(0, -10));
+      const anchor = w.addBody(new Body(new Circle(0.1), { type: BodyType.Static, position: new Vec2(0, 0) }));
+      const load = w.addBody(new Body(Polygon.box(0.6, 0.6), { position: new Vec2(0, 0), density: 5 }));
+      const motor = new MotorJoint(anchor, load, new Vec2(0, 5), 0);
+      motor.maxForce = maxForce;
+      motor.maxTorque = 5000;
+      w.addJoint(motor);
+      for (let i = 0; i < 400; i++) w.step(1 / 120);
+      return load.worldCenter.y;
+    };
+    a.ok('Weak motor stalls under load', lift(5) < 2, `y=${lift(5).toFixed(2)}`);
+    a.ok('Strong motor holds the load up', lift(5000) > 4.8, `y=${lift(5000).toFixed(2)}`);
+  }
+
+  // ---- Breakable joints ----------------------------------------------------
+  a.section('Breakable joints');
+  {
+    // A rigid distance rod holds a mass at rest with a tension ≈ m·g. Set the
+    // break budget above that and it holds; set it below and the rod snaps, the
+    // mass falls, and exactly one break event fires.
+    const run = (breakFactor: number): { joints: number; breaks: number; mass: number } => {
+      const w = new World(new Vec2(0, -10));
+      const anchor = w.addBody(new Body(new Circle(0.1), { type: BodyType.Static, position: new Vec2(0, 5) }));
+      const bob = w.addBody(new Body(new Circle(0.4), { position: new Vec2(0, 2), density: 3 }));
+      const rod = new DistanceJoint(anchor, bob, new Vec2(0, 5), new Vec2(0, 2), 3);
+      const weight = bob.mass * 10;
+      rod.breakForce = weight * breakFactor;
+      w.addJoint(rod);
+      let breaks = 0;
+      w.onJointBreak = () => { breaks++; };
+      for (let i = 0; i < 240; i++) w.step(1 / 120);
+      return { joints: w.joints.length, breaks, mass: bob.mass };
+    };
+    const strong = run(2); // budget twice the weight ⇒ holds
+    const weak = run(0.5); // budget half the weight ⇒ snaps
+    a.ok('Rod within budget holds', strong.joints === 1 && strong.breaks === 0,
+      `joints=${strong.joints}, breaks=${strong.breaks}`);
+    a.ok('Overloaded rod snaps (1 break event)', weak.joints === 0 && weak.breaks === 1,
+      `joints=${weak.joints}, breaks=${weak.breaks}`);
+  }
+  {
+    // A heavy body welded to a static anchor by its edge loads the weld with
+    // ≈ m·g of force. A weld whose force budget is below that breaks and the body
+    // falls; one above it holds the body welded in place.
+    const run = (breakForce: number): { fell: boolean; broke: boolean } => {
+      const w = new World(new Vec2(0, -10));
+      const anchor = w.addBody(new Body(new Circle(0.1), { type: BodyType.Static, position: new Vec2(0, 5) }));
+      const slab = w.addBody(new Body(Polygon.box(0.5, 0.5), { position: new Vec2(0, 4.4), density: 4 }));
+      const weld = new WeldJoint(anchor, slab, new Vec2(0, 5));
+      weld.breakForce = breakForce;
+      w.addJoint(weld);
+      let broke = false;
+      w.onJointBreak = () => { broke = true; };
+      for (let i = 0; i < 240; i++) w.step(1 / 120);
+      return { fell: slab.worldCenter.y < 3, broke };
+    };
+    const weight = 0.5 * 0.5 * 4 * 4 * 10; // (1×1 box, density 4) · g
+    const weak = run(weight * 0.3);
+    const strong = run(weight * 3);
+    a.ok('Overloaded weld breaks & body falls', weak.broke && weak.fell, `broke=${weak.broke}, fell=${weak.fell}`);
+    a.ok('Weld within budget holds', !strong.broke && !strong.fell, `broke=${strong.broke}, fell=${strong.fell}`);
   }
 
   return a.results;

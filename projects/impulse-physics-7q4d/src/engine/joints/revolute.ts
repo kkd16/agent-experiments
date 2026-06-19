@@ -24,6 +24,10 @@ export class RevoluteJoint implements Joint {
   private bias = Vec2.ZERO;
   private impulse = Vec2.ZERO;
 
+  /** Breaking budgets: the pin breaks above this force (N) or torque (N·m). */
+  breakForce = Infinity;
+  breakTorque = Infinity;
+
   /** Optional motor that drives relative angular velocity toward `motorSpeed`. */
   enableMotor = false;
   motorSpeed = 0;
@@ -152,6 +156,28 @@ export class RevoluteJoint implements Joint {
   /** Current relative angle (radians) about the pivot, for the UI. */
   jointAngle(): number {
     return this.bodyB.angle - this.bodyA.angle - this.referenceAngle;
+  }
+
+  /** Local anchor on body A — read by {@link GearJoint} when coupling joints. */
+  gearLocalAnchorA(): Vec2 {
+    return this.localAnchorA;
+  }
+  /** Local anchor on body B — read by {@link GearJoint}. */
+  gearLocalAnchorB(): Vec2 {
+    return this.localAnchorB;
+  }
+  /** Reference angle captured at construction — read by {@link GearJoint}. */
+  gearReferenceAngle(): number {
+    return this.referenceAngle;
+  }
+
+  /** Magnitude of the point-constraint reaction force (for breakable joints). */
+  reactionForce(invDt: number): number {
+    return this.impulse.length() * invDt;
+  }
+  /** Magnitude of the axial (motor + limit) reaction torque. */
+  reactionTorque(invDt: number): number {
+    return Math.abs(this.motorImpulse + this.lowerImpulse - this.upperImpulse) * invDt;
   }
 
   anchorA(): Vec2 {
