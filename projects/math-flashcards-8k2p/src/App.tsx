@@ -156,6 +156,81 @@ function getInitialAutoDarkMode(): boolean {
   }
 }
 
+
+
+function getInitialFontFamily(): string {
+  try {
+    return window.localStorage.getItem('mathFlashcardsFontFamily') || 'sans-serif';
+  } catch (e) {
+    console.error("Local storage error:", e);
+    return 'sans-serif';
+  }
+}
+
+function getInitialStrictMode(): boolean {
+  try {
+    return window.localStorage.getItem('mathFlashcardsStrictMode') === 'true';
+  } catch (e) {
+    console.error("Local storage error:", e);
+    return false;
+  }
+}
+
+function getInitialCorrectColor(): string {
+  try {
+    return window.localStorage.getItem('mathFlashcardsCorrectColor') || '#2ecc71';
+  } catch (e) {
+    console.error("Local storage error:", e);
+    return '#2ecc71';
+  }
+}
+
+function getInitialIncorrectColor(): string {
+  try {
+    return window.localStorage.getItem('mathFlashcardsIncorrectColor') || '#e74c3c';
+  } catch (e) {
+    console.error("Local storage error:", e);
+    return '#e74c3c';
+  }
+}
+
+function getInitialDailyGoal(): number {
+  try {
+    const item = window.localStorage.getItem('mathFlashcardsDailyGoal');
+    return item ? parseInt(item, 10) : 50;
+  } catch (e) {
+    console.error(e);
+    return 50;
+  }
+}
+
+function getInitialDailyQuestions(): { date: string, count: number } {
+  const today = new Date().toISOString().split('T')[0];
+  try {
+    const item = window.localStorage.getItem('mathFlashcardsDailyQuestions');
+    if (item) {
+      const parsed = JSON.parse(item);
+      if (parsed.date === today) {
+        return parsed;
+      }
+    }
+  } catch (e) {
+    console.error(e);
+  }
+  return { date: today, count: 0 };
+}
+
+function getInitialHideStats(): boolean {
+  try {
+    return window.localStorage.getItem('mathFlashcardsHideStats') === 'true';
+  } catch (e) {
+    console.error("Local storage error:", e);
+    return false;
+  }
+}
+
+
+
 function getInitialTheme(): 'light' | 'dark' {
   try {
     const stored = window.localStorage.getItem('mathFlashcardsTheme');
@@ -312,6 +387,25 @@ function App() {
   }, [autoDarkMode]);
 
   const [zenMode, setZenMode] = useState<boolean>(getInitialZenMode());
+
+  const [fontFamily, setFontFamily] = useState<string>(getInitialFontFamily());
+  const [strictMode, setStrictMode] = useState<boolean>(getInitialStrictMode());
+  const [correctColor, setCorrectColor] = useState<string>(getInitialCorrectColor());
+  const [incorrectColor, setIncorrectColor] = useState<string>(getInitialIncorrectColor());
+  const [dailyGoal, setDailyGoal] = useState<number>(getInitialDailyGoal());
+  const [dailyQuestions, setDailyQuestions] = useState<{ date: string, count: number }>(getInitialDailyQuestions());
+  const [hideStats, setHideStats] = useState<boolean>(getInitialHideStats());
+
+
+  useEffect(() => { try { window.localStorage.setItem('mathFlashcardsFontFamily', fontFamily); } catch (e) { console.error(e); } }, [fontFamily]);
+  useEffect(() => { try { window.localStorage.setItem('mathFlashcardsStrictMode', strictMode.toString()); } catch (e) { console.error(e); } }, [strictMode]);
+  useEffect(() => { try { window.localStorage.setItem('mathFlashcardsCorrectColor', correctColor); } catch (e) { console.error(e); } }, [correctColor]);
+  useEffect(() => { try { window.localStorage.setItem('mathFlashcardsIncorrectColor', incorrectColor); } catch (e) { console.error(e); } }, [incorrectColor]);
+  useEffect(() => { try { window.localStorage.setItem('mathFlashcardsDailyGoal', dailyGoal.toString()); } catch (e) { console.error(e); } }, [dailyGoal]);
+  useEffect(() => { try { window.localStorage.setItem('mathFlashcardsDailyQuestions', JSON.stringify(dailyQuestions)); } catch (e) { console.error(e); } }, [dailyQuestions]);
+  useEffect(() => { try { window.localStorage.setItem('mathFlashcardsHideStats', hideStats.toString()); } catch (e) { console.error(e); } }, [hideStats]);
+
+
 
   useEffect(() => {
     try {
@@ -705,7 +799,7 @@ function App() {
     }
 
 
-        const isCorrect = answer === correctAnswer;
+        const isCorrect = strictMode ? userAnswer === correctAnswer.toString() : answer === correctAnswer;
     setHistory(prev => [...prev, {
       num1, num2, operation, userAnswer, correctAnswer, isCorrect
     }]);
@@ -722,6 +816,7 @@ function App() {
 
     const newLifetime = lifetimeQuestions + 1;
     setLifetimeQuestions(newLifetime);
+    setDailyQuestions(prev => ({ date: prev.date, count: prev.count + 1 }));
 
     const newCorrect = lifetimeCorrectAnswers + (isCorrect ? 1 : 0);
     setLifetimeCorrectAnswers(newCorrect);
@@ -909,7 +1004,7 @@ function App() {
 
   return (
     <div className={`app-wrapper ${theme} font-size-${accessibilityFontSize} ${streak >= 5 ? 'streak-active-bg' : ''}`} style={{ backgroundColor: theme === 'light' && bgColor ? bgColor : undefined, backgroundImage: bgImage ? `url(${bgImage})` : 'none', backgroundSize: 'cover', backgroundPosition: 'center' }}>
-    <div className={`app-container ${theme}`}>
+    <div className={`app-container ${theme}`} style={{ fontFamily }}>
       <div className="header-top">
         <h1>Math Flashcards {nightOwlUnlocked && <span title="Night Owl">🦉</span>}</h1>
         <div>
@@ -932,8 +1027,21 @@ function App() {
 
 
 
-      <div className="color-picker" style={{ marginBottom: '1rem', display: 'flex', gap: '0.5rem', justifyContent: 'center' }}>
+      <div className="color-picker" style={{ marginBottom: '1rem', display: 'flex', gap: '0.5rem', justifyContent: 'center', flexWrap: 'wrap' }}>
         <label style={{fontSize: '0.8rem', marginRight: '1rem'}}>BG Image: <input type="file" accept="image/*" onChange={handleBgImageUpload} style={{width: '120px'}}/></label>
+        <label style={{fontSize: '0.8rem', marginRight: '1rem'}}>Correct: <input type="color" value={correctColor} onChange={(e) => setCorrectColor(e.target.value)} /></label>
+        <label style={{fontSize: '0.8rem', marginRight: '1rem'}}>Incorrect: <input type="color" value={incorrectColor} onChange={(e) => setIncorrectColor(e.target.value)} /></label>
+      </div>
+
+      <div className="difficulty-selector" style={{ marginBottom: '1rem', display: 'flex', gap: '1rem', justifyContent: 'center', flexWrap: 'wrap' }}>
+        <label htmlFor="dailyGoal">Daily Goal: <input id="dailyGoal" type="number" min="1" value={dailyGoal} onChange={(e) => setDailyGoal(parseInt(e.target.value, 10) || 50)} style={{ width: '60px' }} /></label>
+        <label htmlFor="fontFamily">Font: <select id="fontFamily" value={fontFamily} onChange={(e) => setFontFamily(e.target.value)}><option value="sans-serif">Sans-serif</option><option value="serif">Serif</option><option value="monospace">Monospace</option></select></label>
+        <label htmlFor="strictMode"><input id="strictMode" type="checkbox" checked={strictMode} onChange={(e) => setStrictMode(e.target.checked)} disabled={isSpeedRunActive} /> Strict Mode</label>
+        <label htmlFor="hideStats"><input id="hideStats" type="checkbox" checked={hideStats} onChange={(e) => setHideStats(e.target.checked)} /> Hide Stats</label>
+      </div>
+
+      <div className="color-picker" style={{ marginBottom: '1rem', display: 'flex', gap: '0.5rem', justifyContent: 'center' }}>
+
         <span style={{ alignSelf: 'center', fontSize: '0.9rem' }}>Background:</span>
         <button className="color-btn" style={{ backgroundColor: '#f0f4f8' }} onClick={() => updateBgColor('#f0f4f8')} title="Default"></button>
         <button className="color-btn" style={{ backgroundColor: '#e8f5e9' }} onClick={() => updateBgColor('#e8f5e9')} title="Light Green"></button>
@@ -943,8 +1051,17 @@ function App() {
 
 
       {!zenMode && (
-      <div className="header-stats-container">
+      <div className="header-stats-container" style={{ display: hideStats ? 'none' : 'flex' }}>
 
+        {!hideStats && <div className="daily-goal-container" style={{ width: '100%', marginBottom: '0.5rem' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.8rem', color: '#7f8c8d' }}>
+            <span>Daily Goal</span>
+            <span>{dailyQuestions.count} / {dailyGoal}</span>
+          </div>
+          <div style={{ width: '100%', height: '8px', backgroundColor: '#ecf0f1', borderRadius: '4px', overflow: 'hidden' }}>
+            <div style={{ width: `${Math.min((dailyQuestions.count / dailyGoal) * 100, 100)}%`, height: '100%', backgroundColor: '#3498db', transition: 'width 0.3s' }}></div>
+          </div>
+        </div>}
         <div className="header-stats">
           <div className="stat">Score: <span className={scoreBump ? "score-bump" : ""}>{score}</span></div>
           <div className="stat" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
@@ -1175,7 +1292,7 @@ function App() {
 
         <div className="problem" style={{position: 'relative'}}>
           {answerStatus && (
-            <div className={`answer-feedback ${answerStatus}`}>
+            <div className={`answer-feedback ${answerStatus}`} style={{ color: answerStatus === 'correct' ? correctColor : incorrectColor }}>
               {answerStatus === 'correct' ? '✓' : '✗'}
             </div>
           )}
@@ -1269,6 +1386,38 @@ function App() {
               })}
             </div>
             <p>Average Time: <strong>{questionsAnswered > 0 ? ((gameMode === 'time' ? (selectedTimerDuration === 0 ? customTimerDuration : selectedTimerDuration) : (gameMode === 'timeAttack' ? elapsedTime : elapsedTime)) / questionsAnswered).toFixed(2) : 0}s</strong></p>
+
+            {history.length > 0 && (() => {
+              const counts = { '+': 0, '-': 0, '*': 0, '/': 0 };
+              history.forEach(h => counts[h.operation as keyof typeof counts]++);
+              const total = history.length;
+              let currentDeg = 0;
+              const segments = Object.entries(counts).filter(([, count]) => count > 0).map(([op, count]) => {
+                const percentage = (count / total) * 360;
+                const colors = { '+': '#3498db', '-': '#e74c3c', '*': '#f1c40f', '/': '#2ecc71' };
+                const segment = `${colors[op as keyof typeof colors]} ${currentDeg}deg ${currentDeg + percentage}deg`;
+                currentDeg += percentage;
+                return segment;
+              });
+
+              return (
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '2rem', marginTop: '1rem' }}>
+                  <div style={{
+                    width: '80px', height: '80px', borderRadius: '50%',
+                    background: `conic-gradient(${segments.join(', ')})`
+                  }}></div>
+                  <div style={{ display: 'flex', flexDirection: 'column', fontSize: '0.8rem' }}>
+                    {Object.entries(counts).filter(([, count]) => count > 0).map(([op, count]) => (
+                      <span key={op} style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                        <span style={{ display: 'inline-block', width: '10px', height: '10px', backgroundColor: { '+': '#3498db', '-': '#e74c3c', '*': '#f1c40f', '/': '#2ecc71' }[op as keyof typeof counts] }}></span>
+                        {op}: {((count / total) * 100).toFixed(0)}%
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              );
+            })()}
+
 
 
             {runScores.length > 0 && (

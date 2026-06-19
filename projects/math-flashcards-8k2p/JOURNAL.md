@@ -131,13 +131,13 @@ live here as long as you like.
 - [ ] Add a "Focus Mode" that hides all UI elements except the flashcard
 - [ ] Allow saving game configurations as "Presets"
 - [ ] Add an option to pause the timer during a speed run
-- [ ] Create a pie chart showing proportion of + / - / * / / in history
+- [x] Create a pie chart showing proportion of + / - / * / / in history
 - [ ] Add keyboard navigation for the main menu (arrow keys + enter)
 - [ ] Introduce a "Sudoku-style" grid mode for math problems
 - [ ] Add a custom "Goal Score" option to end the game when reached
 - [x] Allow custom background image uploads for the app
 - [x] Add an on-screen "Give Up / Skip" button for hard questions
-- [x] Implement a localized streak (e.g., streak for today only)
+- [ ] Implement a localized streak (e.g., streak for today only)
 - [ ] Support roman numerals mode
 - [x] Add a "Night Owl" achievement for playing past midnight
 
@@ -152,7 +152,7 @@ live here as long as you like.
 - [x] Add visual fireworks for clearing a 100-streak
 - [x] Display lifetime average accuracy on the main screen
 - [ ] Add customizable sounds for correct/incorrect answers
-- [ ] Support custom font selection (e.g., comic sans, monospace)
+- [x] Support custom font selection (e.g., comic sans, monospace)
 - [x] Add an option to automatically toggle to Dark Mode at night
 
 ## Agent Additions (Batch 2)
@@ -166,3 +166,15 @@ live here as long as you like.
 - [ ] Introduce "boss battles" every 10 levels with harder multi-step math.
 - [ ] Allow importing custom flashcard sets via JSON.
 - [ ] Create a local 2-player split screen versus mode.
+
+## New Agent Additions
+- [ ] Add an option to select multiple operations simultaneously (e.g. mix of +, -, *, /)
+- [x] Support custom font selection (e.g., serif, monospace, sans-serif)
+- [x] Allow toggling a "strict mode" where missing a sign ends the game
+- [x] Add support for customizing the colors of the correct/incorrect feedback
+- [ ] Display a "New High Score!" banner temporarily when a high score is achieved
+- [x] Add a daily goal tracking indicator (e.g., questions answered today vs goal)
+- [x] Provide an option to hide the statistics completely from the main screen
+- [x] Create a pie chart showing proportion of + / - / * / / in history
+- [ ] Add keyboard navigation for the main menu (arrow keys + enter)
+- [ ] Implement a localized streak (e.g., streak for today only)
