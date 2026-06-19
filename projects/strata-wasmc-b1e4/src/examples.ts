@@ -10,6 +10,51 @@ export interface Example {
 
 export const EXAMPLES: Example[] = [
   {
+    id: 'divmagic',
+    title: 'Division by a constant',
+    blurb: 'Watch -O1 turn every `/ C` and `% C` into multiply-shift — no hardware divide.',
+    source: `// Hardware integer division is ~20x slower than a multiply, so every
+// optimizing compiler replaces a division (or remainder) by a *constant* with
+// a short multiply/shift/add sequence — an exact algebraic identity, not an
+// approximation. Compile this at -O0 then flip to -O1 and read the WASM tab:
+// the i32.div_s / i32.rem_s opcodes vanish.
+//
+//   * a power of two  -> an arithmetic shift with a round-toward-zero bias,
+//   * anything else    -> the signed "magic number" multiply (Hacker's Delight):
+//                         a high-word multiply by a precomputed constant.
+//
+// The reference interpreter and the compiled wasm are proven bit-identical at
+// every optimization level, INT_MIN and all.
+
+fn checksum(seed: int) -> int {
+  // A little hash mixing divides and remainders by assorted constants.
+  let h = seed;
+  h = (h * 1103515245 + 12345);         // a wrapping LCG step (fits in int)
+  let a = h / 7;          // magic multiply
+  let b = h % 100;        // magic multiply (digits)
+  let c = h / 16;         // shift by 4 (power of two)
+  let d = h % 1000;       // magic multiply
+  return a + b * 3 + c - d;
+}
+
+fn main() {
+  // Decompose numbers into base-10 digits — the canonical /10 and %10 idiom,
+  // both of which strength-reduce to the same shared multiply (GVN at -O2).
+  for (let n = 0; n < 6; n = n + 1) {
+    let x = checksum(n);
+    if (x < 0) { x = -x; }
+    let digits = 0;
+    while (x > 0) {
+      print(x % 10);      // last digit
+      x = x / 10;         // drop it
+      digits = digits + 1;
+    }
+    print(-1);            // separator
+  }
+}
+`,
+  },
+  {
     id: 'fib',
     title: 'Recursive Fibonacci',
     blurb: 'Tree recursion — watch the call graph in the WASM output.',

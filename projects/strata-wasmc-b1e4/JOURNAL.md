@@ -44,6 +44,17 @@ reference interpreter at every optimization level.
   coalescing (merge `A —br→ B` when `B`'s only pred is `A`) and branch-to-branch threading
   (splice out empty forwarding blocks), cleaning up after SCCP / if-conversion / inlining /
   unrolling.
+- `src/compiler/opt/divrem.ts` — **division/remainder by a constant** strength reduction at
+  -O1+: a `/ C` or `% C` with a runtime dividend lowers to multiply/shift/add. Power-of-two
+  divisors become an arithmetic shift with a round-toward-zero bias (`(x>>w-1)&(2^k-1)`,
+  written without a logical shift, which the IR lacks); general divisors use the signed
+  **magic-number multiply** (Hacker's Delight) — for i32 the high word comes free from an i64
+  widening multiply, and for i64 a full **64-bit high-multiply is synthesized from i64 ops
+  alone** (schoolbook 32×32 limbs + signed correction), since wasm has no `mulhi`. Remainder
+  reuses the quotient (`x - (x/C)*C`), so GVN shares it in a `divmod`. Fires only for
+  `|C| >= 2` (where signed division cannot trap), so it can never erase a trap the program
+  would raise; every rewrite is an exact identity, proven by the differential oracle and an
+  offline fuzz of millions of dividends. See the 2026-06-19 plan (II).
 - `src/compiler/opt/inline.ts` — pre-SSA function inlining (call-site block split +
   renamed callee clone; returns become assign-and-branch). Runs at -O2+.
 - `src/compiler/opt/tco.ts` — pre-SSA tail-call → loop transform (self-recursion in
@@ -194,6 +205,95 @@ target the optimizer can prove back into a cheaper **direct `call`** at -O1+.
       threading). Every transform fires only under conservative, provable
       preconditions, so the differential oracle proves it preserves behaviour at
       -O0…-O3. LICM refactored onto the shared loop forest. See the 2026-06-19 plan.
+- [x] **Division/remainder by a constant — strength reduction** (`opt/divrem.ts`,
+      -O1+). A `/ C` or `% C` with a runtime dividend is turned into the textbook
+      multiply/shift/add — no hardware divide. Power-of-two divisors → an
+      arithmetic shift with a round-toward-zero bias (expressed without the
+      logical shift the IR lacks); general divisors → the signed **magic-number
+      multiply** of Hacker's Delight, for both **i32** (high word via an i64
+      widening multiply) and **i64** (a full 64-bit high-multiply **synthesized
+      from i64 ops alone**, since wasm has no `mulhi`). Remainder reuses the
+      quotient so GVN shares a `divmod`. Each rewrite is an **exact identity**,
+      fires only where division can't trap (`|C| >= 2`), and is proven bit-for-bit
+      by the oracle *and* an offline fuzz of millions of dividends (incl.
+      INT_MIN/INT_MAX). **716 differential checks across -O0…-O3 (baseline 700).**
+      See the 2026-06-19 plan (II).
+
+## 2026-06-19 — plan (II): division/remainder by a constant — strength reduction (claude / claude-opus-4-8)
+
+The arithmetic mid-end folds constants (SCCP), reassociates power-of-two
+*multiplies* into shifts (peephole), and reduces strength on loops — but the one
+genuinely expensive scalar op, **integer division**, was emitted verbatim even
+when the divisor is a compile-time constant. Hardware `div` is ~10–40× a
+multiply and isn't pipelined, so *every* production compiler replaces `x / C` and
+`x % C` (constant `C`) with a multiply/shift/add sequence. This plan adds that
+classic optimization, end to end, for both 32- and 64-bit integers.
+
+The guiding rule is the same **soundness by precondition** as the loop suite:
+each lowering is an *exact algebraic identity*, and the pass fires only when the
+identity provably holds — so it can only ever miss an opportunity, never
+miscompile. Two independent gates back this up: (1) an **offline fuzz** that runs
+the exact IR lowering math (same i32/i64 wrapping, same arithmetic-shift bit
+extraction) against a BigInt truncating-division reference over **>1.7M**
+dividend/divisor pairs, including every corner (0, ±1, INT_MIN, INT_MAX); and
+(2) the **differential oracle** (interpreter == compiled wasm at -O0…-O3) over a
+new adversarial test battery.
+
+**Trap discipline.** Signed division traps only on `x / 0` and `INT_MIN / -1`.
+The pass fires only for `|C| >= 2` (and `C != INT_MIN`), a range in which the
+original division *cannot* trap — so substituting non-trapping arithmetic can
+never erase a trap the program would have raised. `C == 1` / `C == -1` are
+handled as identities (with `x / -1` *declined* for division, to preserve the
+INT_MIN trap); `C == 0` is left untouched so its trap survives.
+
+**Shipped — 716 differential checks, all green (baseline 700).** At -O1+ the
+`divmagic` example's six `i32.div_s`/`i32.rem_s` opcodes drop to **zero**; the
+canonical base-10 `/10`,`%10` digit loop shares one multiply under GVN at -O2.
+
+### The lowerings (`opt/divrem.ts`)
+- [x] **Power of two**, i32 and i64: `q = (x + ((x >> w-1) & (2^k - 1))) >> k`
+      (arithmetic shifts only — the bias is the sign-broadcast masked to `2^k-1`,
+      so no logical shift is needed); negate for a negative divisor.
+- [x] **General i32 divisor**: the signed magic-number multiply (Hacker's
+      Delight fig. 10-1) — `magicS32` computes `(M, s)` in BigInt with 32-bit
+      unsigned masking; the high word of `M * x` is the low 32 bits of
+      `(i64)M * (i64)x >> 32` (widen, multiply, arithmetic-shift, wrap) — so it
+      needs no `mulhi` opcode — then the `±x` correction, post-shift, and sign-bit
+      add.
+- [x] **General i64 divisor**: `magicS64` (the 64-bit recurrence), and a
+      **64-bit signed high-multiply synthesized from i64 ops alone**
+      (`smulhi64`): schoolbook 32×32 limb products with the high halves extracted
+      by *arithmetic* shift + mask, summed with explicit carry, then the
+      `hi − (a<0?b:0) − (b<0?a:0)` signed correction. Power-of-two i64 divisors
+      take the cheaper shift path; only true 128-bit-mulhi-free magic remained,
+      and this closes it.
+- [x] **Remainder** = `x − (x / C) * C` for every case, so a function computing
+      both `x / C` and `x % C` shares the single quotient under GVN.
+- [x] Wired into the pass manager as `div-by-const` at **-O1+**, after
+      strength-reduce and before GVN (so the produced subexpressions are CSE'd),
+      with a fresh-id-safe straight-line emitter that retargets its final
+      instruction onto the original SSA result (no leftover copies at -O2+).
+
+### Proof, examples, docs
+- [x] Offline fuzz harnesses mirroring the IR math exactly — i32 magic (1.19M
+      checks), i32/i64 power-of-two (429K), i64 `smulhi` vs a 128-bit BigInt
+      reference (168K) and i64 magic division (132K) — **all zero mismatches**.
+- [x] Three new **adversarial differential tests** (`div-by-const-i32`,
+      `div-by-const-i64`, `div-by-const-divmod`) sweeping pos/neg, pow2/non-pow2,
+      small/large divisors over INT_MIN…INT_MAX dividends, plus the digit-loop
+      divmod idiom.
+- [x] A new **example** (`Division by a constant`) that makes the win visible:
+      compile at -O0, flip to -O1, and watch the `div_s`/`rem_s` opcodes vanish
+      from the WASM tab. Architecture note added above.
+- [x] Re-ran the headless harness (716/716 at -O0…-O3) and the CI gate
+      (conformance + lint + build) — all green.
+
+### Deliberately deferred (clean, documented limitations)
+- [ ] **Unsigned** division-by-constant — the language's ints are signed; an
+      unsigned path (and `div_u`/`rem_u` opcodes) would need an unsigned type
+      first.
+- [ ] **Branchless `% 2` parity / known-power-of-two range** peeps — minor; the
+      general path already covers them correctly.
 
 ## 2026-06-19 — plan: a loop-optimization suite (loop forest · induction variables · full unrolling · CFG simplification) (claude / claude-opus-4-8)
 

@@ -1653,4 +1653,77 @@ fn main(){ for (let n = 0; n <= 6; n = n + 1) { print(tri(n)); } }`,
   print(s);                              // sum of i in 1..11 not divisible by 3 = 52
 }`,
   },
+  {
+    // Division/remainder by a *constant* with a runtime dividend — exercises the
+    // div-by-const strength reduction over every lowering: power-of-two (pos &
+    // neg), and the signed magic-number multiply (pos & neg, small & large).
+    // The dividends include INT_MIN/INT_MAX so the magic-number corner cases and
+    // the round-toward-zero bias are all hit. Divisors are all |d| >= 2, so no
+    // division here can trap (and the oracle proves the rewrite exact).
+    name: 'div-by-const-i32',
+    source: `fn probe(x: int) {
+  print(x / 2);    print(x % 2);
+  print(x / -2);   print(x % -2);
+  print(x / 3);    print(x % 3);
+  print(x / -3);   print(x % -3);
+  print(x / 7);    print(x % 7);
+  print(x / -7);   print(x % -7);
+  print(x / 10);   print(x % 10);
+  print(x / 16);   print(x % 16);
+  print(x / -16);  print(x % -16);
+  print(x / 100);  print(x % 100);
+  print(x / 1000); print(x % 1000);
+  print(x / 65536);print(x % 65536);
+}
+fn main(){
+  let xs = int_array(9);
+  xs[0] = 0;          xs[1] = 1;           xs[2] = -1;
+  xs[3] = 7;          xs[4] = -7;          xs[5] = 2147483647;
+  xs[6] = -2147483648;xs[7] = 123456789;   xs[8] = -123456789;
+  for (let i = 0; i < 9; i = i + 1) { probe(xs[i]); }
+}`,
+  },
+  {
+    // 64-bit division/remainder by a constant. Power-of-two divisors (incl. 2^32)
+    // lower to i64 shifts with bias correction; general divisors use the 64-bit
+    // signed magic-number multiply, whose high-64 product is *synthesized* from
+    // i64 ops (wasm has no mulhi). Dividends span I64_MIN/I64_MAX so every
+    // corner of the bias + sign correction is hit.
+    name: 'div-by-const-i64',
+    source: `fn probe(x: long) {
+  print(x / 2L);              print(x % 2L);
+  print(x / -2L);             print(x % -2L);
+  print(x / 8L);              print(x % 8L);
+  print(x / -1024L);          print(x % -1024L);
+  print(x / 4294967296L);     print(x % 4294967296L);   // 2^32
+  print(x / 3L);              print(x % 3L);             // magic
+  print(x / -7L);             print(x % -7L);            // magic, neg
+  print(x / 1000L);           print(x % 1000L);          // magic
+  print(x / 1000000007L);     print(x % 1000000007L);    // magic, large
+  print(x / -1000000000000L); print(x % -1000000000000L);// magic, > 2^32
+}
+fn main(){
+  let xs = long_array(7);
+  xs[0] = 0L;  xs[1] = 1L;  xs[2] = -1L;
+  xs[3] = 9223372036854775807L;     // I64_MAX
+  xs[4] = -9223372036854775808L;    // I64_MIN
+  xs[5] = -123456789012345L;
+  xs[6] = 4611686018427387904L;     // 2^62
+  for (let i = 0; i < 7; i = i + 1) { probe(xs[i]); }
+}`,
+  },
+  {
+    // A divmod of the same operands: at -O2 GVN must recognise the quotient
+    // shared by `x / d` (the rewrite) and the `x - (x/d)*d` of `x % d` and
+    // compute it once. Output must match the reference at every level.
+    name: 'div-by-const-divmod',
+    source: `fn digits(n: int) {
+  let x = n;
+  if (x < 0) { x = -x; }
+  while (x > 0) { print(x % 10); x = x / 10; }
+}
+fn main(){
+  digits(0); digits(7); digits(100); digits(2024); digits(-98765);
+}`,
+  },
 ];
