@@ -44,7 +44,29 @@ cool down, and watch the solver backtrack out of contradictions in real time.
 - `src/wfc/controller.ts` — owns the solver/render loop and *all* interaction state: the pin
   registry (persisted across reseeds), brush/erase tools, per-variant weight overrides, the
   hover lens read-out, WebM recording (MediaRecorder over `captureStream`), and JSON export.
-- `src/App.tsx` — wires the engine to a `requestAnimationFrame` loop with adjustable speed.
+- `src/App.tsx` — wires the engine to a `requestAnimationFrame` loop with adjustable speed, and
+  hosts the top-level **2D ⇄ 3D** mode switch.
+
+### The 3D engine (`src/wfc3d/*`, `src/components/Studio3D.tsx` + `Viewport3D.tsx`)
+
+A self-contained second engine running WFC on a voxel lattice — the 2D code is untouched.
+
+- `wfc3d/dirs3.ts` — the 6-direction lattice algebra (±X/±Y/±Z), opposites, and the Y-axis
+  90° rotation permutation.
+- `wfc3d/sockets3.ts` — the cube-group socket scheme: symmetric/flipped **horizontal** seams +
+  rotation-indexed **vertical** seams, with a reverse-consistent `connects()` rule.
+- `wfc3d/voxel.ts` — the R³ packed-colour voxel model, a fluent builder, and `rotateY`.
+- `wfc3d/types3.ts` / `compile3.ts` — prototype/variant/compiled types and the compiler that
+  expands Y-rotations (deduped) and builds the 6-direction adjacency tensor.
+- `wfc3d/solver3.ts` — the WFC core on six neighbours (support-counter propagation, min-entropy
+  observation, arc-consistency purge, snapshot backtracking).
+- `wfc3d/tilesets3/*` — the hand-authored volumetric sets: Terraces, Castle, Pipes3D.
+- `wfc3d/camera.ts` / `field.ts` / `raster.ts` — the from-scratch software renderer: an
+  orthographic orbit camera, the merged voxel field, and the surface-extracting, back-face-culling,
+  painter's-ordered, Lambert-shaded rasteriser. `thumb3.ts` reuses it for gallery thumbnails.
+- `wfc3d/controller3.ts` — owns the 3D solver/render loop, camera, weight overrides, PNG export.
+- `wfc3d/tests3.ts` — the in-app **3D Proof Lab** (socket/rotation/adjacency/solver guarantees).
+- `wfc3d/permalink3.ts` — the `m=3` shareable hash for the 3D studio.
 
 ## Ideas / backlog
 
@@ -78,6 +100,33 @@ cool down, and watch the solver backtrack out of contradictions in real time.
 - [x] Tiled ⇄ Overlapping model switch, with the gallery adapting to show learnt patterns
 - [x] Permalink support for the overlapping model, incl. RLE-compressed custom samples in the URL
 - [ ] WebGL renderer for very large grids — future
+
+### v4 — "the third dimension" (planned + shipped this session)
+
+The whole studio so far lives on a 2D grid. v4 grows Tessera a **second, parallel engine that
+runs Wave Function Collapse in true 3D** — a 6-neighbour voxel lattice with a proper cube-group
+socket algebra, hand-authored volumetric tilesets, and a **from-scratch software voxel renderer**
+(no Three.js, no WebGL — orthographic orbit camera, painter's-ordered cube rasteriser with face
+culling + Lambert shading) so the from-scratch ethos holds in 3D too. A top-level **2D ⇄ 3D**
+switch picks the engine; the 3D side is self-contained so the 2D studio is untouched. Each item
+below is a concrete, self-contained step.
+
+- [x] 6-direction lattice algebra (±X, ±Y, ±Z) with `opposite` + Y-axis 90° rotation maps
+- [x] Marian42-style socket scheme: symmetric/flipped **horizontal** faces + rotation-indexed **vertical** faces, with a provably reverse-consistent `connects()` rule
+- [x] Voxel model type + colour helpers + a 90°-CW `rotateY` that rotates geometry *and* sockets coherently
+- [x] Prototype→variant compiler: expand each tile into its distinct Y-rotations (dedup), build the 6-direction adjacency tensor, weights, per-variant average colour
+- [x] 3D WFC solver: 6-neighbour support-counter propagation, min-entropy observation, snapshot backtracking, bounded vs wrapped lattice (mirrors the 2D core's guarantees in 3D)
+- [x] Hand-authored **Castle** tileset — floors, walls, corners, crenellations, towers, pillars, arches, air (grows little keeps)
+- [x] Hand-authored **Pipes3D** tileset — a 3D conduit network (straights, elbows, tees, caps) that connects across all six faces
+- [x] Hand-authored **Terraces** tileset — stepped ground/grass/rock/water blocks (landscape-like)
+- [x] Orthographic **orbit camera** (yaw + pitch + zoom) with mouse-drag + wheel control
+- [x] From-scratch **software voxel rasteriser**: merge collapsed cells into a voxel field, extract only surface faces (interior culling), depth-sort + paint with Lambert shading and a soft sky/ground tint
+- [x] Incremental voxel field that accumulates collapsed cells as the solve runs (live build-up)
+- [x] Per-variant **isometric sprite** thumbnails (the rasteriser run on one model) for the 3D gallery
+- [x] `Controller3D` — owns the solver loop, camera, dirty-render scheduling, stats, PNG export
+- [x] `Studio3D` UI — viewport with drag-orbit, transport, tuning (set / grid X·Y·Z / seed / wrap / backtracking), telemetry, gallery
+- [x] Top-level **2D ⇄ 3D** mode switch wired into the existing header + permalink
+- [x] **3D Proof Lab** — socket reverse-consistency, rotation-group closure, adjacency symmetry, and the headline: a *finished* 3D solve is always 6-neighbour adjacency-valid (cross-checked the long way), all on the real solver, deterministic from a seed
 
 ### v2 — "from demo to creative tool" (planned this session)
 
@@ -155,6 +204,39 @@ machine is byte-for-byte the v2 solver it always was.
 
 ## Session log
 
+- 2026-06-19 (claude / claude-opus-4-8): **Shipped v4 — the third dimension.** Tessera grows a
+  whole second, parallel engine that runs Wave Function Collapse in **true 3D**, sitting behind a
+  top-level **2D ⇄ 3D** switch; the 2D studio is byte-for-byte untouched. Seventeen planned steps,
+  all landed, all from scratch (no Three.js, no WebGL):
+  • **Cube-group socket algebra** (`src/wfc3d/dirs3.ts`, `sockets3.ts`) — a 6-neighbour lattice
+    (±X/±Y/±Z) with the well-tested Marian42/Stålberg scheme: **horizontal** faces carry a
+    symmetric-or-flipped seam, **vertical** faces a rotation-indexed one, so rotating a tile about
+    Y stays sound. `connects()` is provably symmetric (the Proof Lab checks it).
+  • **Voxel models** (`voxel.ts`) — an R³ packed-colour block with a fluent builder and a 90°-CW
+    `rotateY` that turns geometry *and* sockets together; the compiler (`compile3.ts`) expands each
+    prototype into its distinct Y-rotations (deduped) and builds the 6-direction adjacency tensor.
+  • **3D solver** (`solver3.ts`) — the 2D core lifted to six neighbours: support-counter
+    propagation (six counters/tile), weighted min-entropy observation with seeded noise, the
+    initial arc-consistency purge, and snapshot backtracking — same guarantees, one more axis.
+  • **Three hand-authored volumetric tilesets** — **Terraces** (a stacked landscape; two vertical
+    seam types force rock → one surface → sky), **Castle** (free-standing crenellated stone towers
+    with windows + spires), and **Pipes3D** (a 23-variant conduit network whose round
+    cross-sections join seamlessly across all six faces).
+  • **From-scratch software voxel renderer** (`camera.ts`, `field.ts`, `raster.ts`) — an
+    orthographic orbit camera (drag to spin/tilt, wheel to zoom); the merged voxel field is
+    surface-extracted (interior voxels culled), back-face culled, depth-sorted by the painter's
+    algorithm and filled with Lambert shading against a fixed scene light, plus hair-line voxel
+    edges. ~28k voxels collapse to ~6–9k drawn faces; thumbnails reuse the same rasteriser.
+  • **`Controller3` + `Studio3D`** — own loop, dirty-rebuild rendering, telemetry (incl. faces
+    drawn), PNG export, live weight sliders, a permalinkable `m=3` hash, and an in-app **3D Proof
+    Lab** that runs the real compiler + solver: socket symmetry, rotation-group closure, a tensor
+    that matches the socket rule exactly, determinism, and the headline — *every finished 3D solve
+    is 6-neighbour adjacency-valid*, re-checked the long way.
+  Verified the full CI gate (conformance + lint + build) green. Headless harnesses against the
+  *real* compiled engine confirmed: all three sets solve 12/12 seeds to completion with **0
+  adjacency violations** and symmetric adjacency tensors; the render pipeline projects in-bounds
+  with **0 NaNs** and culls 28k voxels down to ~6–9k surface faces. Open: a thin-instance/WebGPU
+  path if grids ever need to be huge, and hand-painted 3D constraints (the 2D "paint" tool in 3D).
 - 2026-06-18 (claude / claude-opus-4-8): **Shipped v3 — Constraint Lab: global connectivity + a
   Proof Lab.** All seven planned steps landed. Tessera gains the research-grade WFC extension — a
   genuine **global connectivity constraint** — built strictly additively on the v2 solver.
