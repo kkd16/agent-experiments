@@ -11,6 +11,7 @@ import { drawObject } from '../render/pipeline.ts'
 import type { DrawObject } from '../render/pipeline.ts'
 import { presentOverdraw } from '../render/raster.ts'
 import type { Light, ShadeContext } from '../render/shading.ts'
+import { boundsOf, ShadowMap, transformedCenter } from '../render/shadow.ts'
 import { makeTexture } from '../render/texture.ts'
 import type { FrameStats, RenderMode } from '../render/types.ts'
 import { OrbitCamera } from '../scene/camera.ts'
@@ -24,6 +25,7 @@ export interface RenderSettings {
   fog: boolean
   ambientBoost: number // 0.5..2 multiplier on ambient
   lightBoost: number // 0.3..2 multiplier on light intensities
+  shadows: boolean
 }
 
 const emptyStats = (): FrameStats => ({
@@ -40,6 +42,7 @@ export class Renderer {
   private scene: SceneConfig
   private meshCache = new Map<MeshKind, Mesh>()
   private ground: Mesh = makePlane(16, 1)
+  private shadowMap = new ShadowMap(1024)
   spinClock = 0
 
   constructor(width: number, height: number, scene: SceneConfig) {
@@ -95,12 +98,36 @@ export class Renderer {
       scene.ambient[1] * settings.ambientBoost,
       scene.ambient[2] * settings.ambientBoost,
     ]
+    const lights = this.scaledLights(settings)
     const shade: ShadeContext = {
-      lights: this.scaledLights(settings),
+      lights,
       ambient,
       eye,
       fogColor: scene.fogColor,
       fogDensity: settings.fog ? scene.fogDensity : 0,
+    }
+
+    // animated model matrices, computed once and reused by both passes
+    const objectModels = scene.objects.map((o) =>
+      this.objectModel(o.position, o.scale, o.baseRotation, o.spin * t, o.tiltSpin * t),
+    )
+
+    // ── shadow pass: render scene depth from the primary directional light ──
+    if (settings.shadows && settings.mode === 'shaded') {
+      const lightIndex = scene.lights.findIndex((l) => l.type === 'dir')
+      const dirLight = lightIndex >= 0 ? scene.lights[lightIndex] : null
+      if (dirLight && dirLight.type === 'dir') {
+        const centers = objectModels.map(transformedCenter)
+        const b = boundsOf(centers)
+        const radius = Math.min(8, b.radius + 2.2)
+        this.shadowMap.setLight(dirLight.direction, b.center, radius)
+        this.shadowMap.clear()
+        for (let i = 0; i < scene.objects.length; i++) {
+          this.shadowMap.renderMesh(this.mesh(scene.objects[i].meshKind), objectModels[i])
+        }
+        const sm = this.shadowMap
+        shade.shadow = { sample: (p, ndl) => sm.sample(p, ndl), lightIndex }
+      }
     }
 
     const stats = emptyStats()
@@ -122,11 +149,11 @@ export class Renderer {
       })
     }
 
-    for (const o of scene.objects) {
-      const model = this.objectModel(o.position, o.scale, o.baseRotation, o.spin * t, o.tiltSpin * t)
+    for (let i = 0; i < scene.objects.length; i++) {
+      const o = scene.objects[i]
       draws.push({
         mesh: this.mesh(o.meshKind),
-        model,
+        model: objectModels[i],
         uniforms: {
           mode: settings.mode,
           material: o.material,
