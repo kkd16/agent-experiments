@@ -20,15 +20,29 @@ src/
                  combust()), VARIABLE-DENSITY (non-Boussinesq) buoyancy, vorticity
                  confinement, a Boussinesq TEMPERATURE field, splat/splatHeat/
                  splatFuel, paintSolid, sampleField/sampleVelocity, diagnostics,
-                 projectVelocity{,CG} (test hooks), step().
-    scenes.ts    Eleven curated scenes: blank, vortex street, plume, jets, stirred
+                 projectVelocity{,CG,MG,MGCG} (test hooks), step(). Dispatches the
+                 projection to one of FOUR Poisson solvers (sor/cg/mg/mgcg).
+    multigrid.ts Multigrid — a from-scratch cell-centred GEOMETRIC MULTIGRID for
+                 the pressure Poisson eq.: red-black smoothing on the same
+                 Neumann/obstacle Laplacian, cell-centred bilinear prolongation +
+                 its transpose for restriction, a 2×2 agglomeration of the obstacle
+                 mask, symmetric V-cycles, and a precondition() hook so the same
+                 V-cycle drives MGCG inside fluid.ts. O(N), grid-independent rate.
+    fft.ts       fft1d/fft2d — a from-scratch radix-2 Cooley–Tukey FFT (bit-reversal
+                 + butterflies, double precision) + energySpectrum() (radially-
+                 averaged kinetic-energy spectrum E(k), Parseval-normalised) and
+                 meanKineticEnergy(). Powers the Spectra lab + the spectral checks.
+    scenes.ts    Fourteen curated scenes: blank, vortex street, plume, jets, stirred
                  ink, obstacle course, Rayleigh–Bénard convection, buoyant thermal
-                 plume, Kelvin–Helmholtz shear, lid-driven cavity, + a self-
-                 sustaining FIRE (combustion) scene.
+                 plume, Kelvin–Helmholtz shear, lid-driven cavity, a self-sustaining
+                 FIRE (combustion), the TAYLOR–GREEN vortex (exact NS solution),
+                 DECAYING 2-D TURBULENCE, and the DOUBLE-SHEAR-LAYER benchmark (the
+                 last three default to the MGCG solver). + a seeded mulberry32 PRNG.
     particles.ts ParticleSystem — passive tracer ensemble advected by the flow,
                  recycled on death/escape, drawn as velocity-aligned streaks.
-    selftest.ts  runSelfTest() — the numerical verification suite (25 invariant /
-                 closed-form checks across 9 groups, incl. CG, combustion, LIC,
+    selftest.ts  runSelfTest() — the numerical verification suite (34 invariant /
+                 closed-form checks across 11 groups, incl. CG, MULTIGRID/MGCG,
+                 analytic diffusion decay, FFT/Parseval, combustion, LIC,
                  Q-criterion). Pure, DOM-free, deterministic.
     engine.ts    FluidEngine — rAF loop, pointer→force plumbing, scene state,
                  tracer-particle update, HOVER-PROBE readout, LIC phase advance,
@@ -46,13 +60,17 @@ src/
                  hex→dye helper. (localStorage wrapped in try/catch for the
                  sandboxed catalog thumbnail.)
   hooks/
-    useHashRoute.ts  hash-only router (#/ , #/about, #/verify).
+    useHashRoute.ts  hash-only router (#/ , #/spectra, #/about, #/verify).
   ui/
     Studio.tsx   canvas + engine wiring + pointer/keyboard + WebM recording.
     Controls.tsx scene picker, playback, record, brush (incl. heat), fluid +
-                 thermal params, render options + flow-viz toggles.
+                 thermal params (incl. the 4-way solver picker), render options.
+    SpectraLab.tsx  the live #/spectra lab: a self-contained decaying-turbulence
+                 sim (MGCG) whose velocity is FFT'd every few frames into a log–log
+                 E(k) plot with k^-3 / k^-5/3 reference slopes, beside its vorticity.
     Hud.tsx      fps / ms / cell-count + live KE & divergence overlay.
-    About.tsx    the maths, explained (incl. buoyancy, red-black SOR, verify).
+    About.tsx    the maths, explained (incl. buoyancy, SOR, CG, MULTIGRID/MGCG,
+                 the FFT energy cascade, and the verify page).
     Verify.tsx   runs the verification suite live and renders the results.
 ```
 
@@ -72,14 +90,28 @@ src/
 - Obstacles: `solid` mask; no-penetration/no-slip via reflective `setBnd` and
   Neumann substitution (use self-pressure for solid neighbours) in the solve.
 - Vorticity confinement re-injects swirl lost to semi-Lagrangian dissipation.
-- **Two pressure solvers, one system.** The projection can use red-black SOR *or*
-  matrix-free Jacobi-preconditioned **Conjugate Gradients**. CG applies the exact
-  same 5-point Neumann/obstacle Laplacian SOR relaxes (`applyPoisson`), so they
-  converge to the same field; CG just gets there in far fewer iterations (Krylov vs
-  stationary). The CG RHS is shifted mean-zero first — the compatibility condition
-  for the singular pure-Neumann system — and only ∇p is used, so the constant
-  null-space mode is irrelevant. A divergence guard stops the finite-precision
-  breakdown that pure CG hits if iterated far past convergence.
+- **Four pressure solvers, one system.** The projection can use red-black **SOR**,
+  matrix-free Jacobi-preconditioned **CG**, geometric **multigrid** V-cycles, or
+  **MGCG** (a V-cycle as the CG preconditioner). All four apply the *exact same*
+  5-point Neumann/obstacle Laplacian SOR relaxes (`applyPoisson` / `Multigrid.applyA`),
+  so they converge to the same field — they just get there at very different rates
+  (stationary < Krylov < grid-independent multigrid). Every RHS is shifted mean-zero
+  first — the compatibility condition for the singular pure-Neumann system — and only
+  ∇p is used, so the constant null-space mode is irrelevant. CG keeps a divergence
+  guard against the finite-precision breakdown of pure CG past convergence.
+- **Multigrid, from scratch.** `multigrid.ts` builds a hierarchy by halving the grid
+  while it stays even (down to ≥4 cells); a coarse cell is solid only if all four
+  fine children are (keeps fluid connected). The coarse operator is the graph
+  Laplacian *rediscretised* on the coarsened mask (not Galerkin), so a bare V-cycle
+  converges superbly on open domains (~0.17/cycle, grid-independent) but overshoots
+  near intricate embedded boundaries — which is exactly why MGCG wraps it in CG.
+  Restriction = the transpose of the (cell-centred bilinear) prolongation, and the
+  smoother is applied forward then reverse, so the V-cycle is a *symmetric* operator
+  and a valid SPD-ish CG preconditioner.
+- **Energy spectrum.** `fft.ts` is a from-scratch radix-2 Cooley–Tukey FFT (double
+  precision); `energySpectrum` FFTs u and v, bins ½(|û|²+|v̂|²) into integer-|k|
+  shells, and normalises so ∑ₖ E(k) = ½⟨u²+v²⟩ (Parseval). The Spectra lab windows
+  (Hann) the non-periodic box before transforming so the walls don't leak energy.
 - **Reactive flow.** A `fuel` field is advected like dye; `combust()` burns it above
   `ignition` at a first-order rate (`1−e^{−rate·(1+ΔT)·dt}`), adds `heatRelease·burn`
   to T, and deposits flame/soot dye. `smokeBuoyancy` is a variable-density
@@ -132,12 +164,63 @@ src/
 - [x] **Reactive flow: a combustion model + Fire scene** — an advected `fuel` field that ignites
       above a threshold temperature, releases heat (Arrhenius-lite), is consumed, and deposits
       flame/soot dye; **variable-density (non-Boussinesq) buoyancy** lifts the hot products
+- [x] **Geometric multigrid V-cycle Poisson solver** (open-domain) for O(N) pressure solves —
+      `multigrid.ts`: red-black smoothing on the same Neumann/obstacle Laplacian, cell-centred
+      bilinear prolongation + its transpose for restriction, 2×2 mask agglomeration, symmetric
+      V-cycles; verified grid-INDEPENDENT (reduction/cycle ≈0.17 at both 48² and 96²)
+- [x] **Multigrid-preconditioned CG (MGCG)** — one symmetric V-cycle as the CG preconditioner;
+      grid-independent iteration count AND robust to obstacles (verified: crushes plain CG at an
+      equal budget, lands on the same field, respects a cylinder)
+- [x] **From-scratch 2-D FFT + kinetic-energy spectrum E(k)** (`fft.ts`) + a live **Spectra lab**
+      (`#/spectra`) plotting the 2-D turbulent cascade with k^-3 / k^-5/3 reference slopes
+- [x] **Three new scenes**: the Taylor–Green vortex (an exact NS solution), decaying 2-D
+      turbulence (the inverse cascade), and the double-shear-layer benchmark
+- [x] **Analytic diffusion-decay verification** — a single Fourier mode decays at exactly the
+      closed-form backward-Euler rate 1/(1+4a·sin²(πm/2N)), matched live to ~1e-6
 - [ ] Move the solver into a Web Worker so the UI never stutters at high res
 - [ ] WebGL2 render path (texture upload) for 512²+ at 60fps
 - [ ] A true MAC (staggered) grid pressure solve to kill the collocated checkerboard residual
-- [ ] Geometric multigrid V-cycle Poisson solver (open-domain) for O(N) pressure solves
-- [ ] Multigrid-preconditioned CG (combine the two solvers above for the best of both)
+- [ ] Galerkin (R·A·P) coarse operators so *standalone* multigrid matches MGCG's robustness on
+      intricate embedded boundaries (kills the bare-V-cycle obstacle overshoot)
+- [ ] Full-multigrid (FMG) start + W-cycles, and a residual-tolerance stop, for the MG path
 - [ ] Inflow/outflow (open) boundary conditions so the vortex street isn't recirculating
+- [ ] A live FFT energy *flux* Π(k) (not just E(k)) to show the cascade direction quantitatively
+- [ ] Forced 2-D turbulence (steady small-scale forcing) to grow the −5/3 inverse-cascade range
+- [ ] FTLE / Lagrangian-coherent-structure render mode (flow-map Jacobian, finite-time Lyapunov)
+- [ ] Passive scalar (smoke) with a Schmidt-number knob, and dye-variance spectra
+- [ ] A solver head-to-head benchmark page (residual-vs-wallclock for SOR/CG/MG/MGCG across N)
+
+## Roadmap — 2026-06-19 Eddy 4.0: the work-optimal solver & the energy cascade (claude)
+
+Eddy 3.0 gave it a Krylov solver. Eddy 4.0 takes the numerics to the place real CFD codes live —
+**multigrid** — and adds a genuine **science instrument** on top, every claim backed by the suite:
+
+1. **The work-optimal Poisson solver — geometric multigrid.** Stationary relaxation (SOR) and even
+   CG slow down as the grid grows, because they crawl on *smooth* error. Multigrid resolves every
+   error wavelength on the grid where it is cheap: a V-cycle smooths, restricts the residual to a
+   coarser grid, recurses, prolongs the correction, and smooths again. Built from scratch
+   (`multigrid.ts`): red-black smoothing on the identical Neumann/obstacle Laplacian the other
+   solvers use, cell-centred bilinear prolongation with its transpose for restriction, and a 2×2
+   agglomeration of the obstacle mask. The verify page proves the headline property — the
+   reduction-per-cycle barely moves between a 48² and a 96² grid (≈0.17 either way), the defining
+   signature of an O(N) solver. A bare V-cycle is happiest on open domains, so **MGCG** wraps it in
+   CG (the V-cycle as an SPD preconditioner): grid-independent *and* robust to obstacles, reaching
+   machine-level residual in a fixed handful of iterations. The new turbulence scenes default to it,
+   and run at ~100× lower divergence than the SOR scenes.
+
+2. **A science instrument — the Spectra lab.** A turbulent field looks like noise until you take its
+   Fourier transform. A from-scratch radix-2 2-D **FFT** (`fft.ts`) turns the live velocity field
+   into its **kinetic-energy spectrum E(k)**, plotted log–log in a dedicated `#/spectra` lab beside
+   the vorticity, with k^-3 (enstrophy) and k^-5/3 (energy) reference slopes. Watching decaying 2-D
+   turbulence, you see the inverse cascade: small vortices merge into larger ones, energy climbing to
+   small k. The transform is exact and checked: it round-trips to 1e-15, obeys **Parseval** (the
+   spectrum sums to the physical energy), and localises a single mode to one shell.
+
+3. **More physics, more rigor.** Three new scenes — the **Taylor–Green vortex** (an exact NS
+   solution, perfect for calibration), **decaying 2-D turbulence** (feeds the Spectra lab), and the
+   **double-shear-layer** benchmark. And a new gold-standard check: the implicit diffusion solve
+   decays a single Fourier mode at *exactly* its closed-form backward-Euler rate (matched to ~1e-6) —
+   the discrete dispersion relation, verified live. The suite grew **25 → 34 checks (9 → 11 groups)**.
 
 ## Roadmap — 2026-06-18 Eddy 3.0: reactive flow, real solvers, dense visualisation (claude)
 
@@ -223,3 +306,21 @@ serious CFD studio along three axes — **new physics, honest rigor, and legible
   green) and smoke-tested the Fire scene with both solvers (stable, bounded). Updated Controls
   (solver picker, combustion panel, LIC/Schlieren/Q-vortex modes, fuel + probe toggle), the HUD
   probe readout, and the About page. Full gate green (scope + conformance + lint + build).
+- 2026-06-19 (claude): **Eddy 4.0.** Took the numerics to multigrid and added a real spectral
+  instrument (see roadmap above). (1) A from-scratch cell-centred **geometric multigrid** solver
+  (`multigrid.ts`): red-black smoothing on the identical Neumann/obstacle Laplacian, cell-centred
+  bilinear prolongation + its transpose for restriction, 2×2 obstacle-mask agglomeration, symmetric
+  V-cycles — and **MGCG** (the V-cycle as a CG preconditioner). Both selectable in the UI (4-way
+  solver picker now: SOR/CG/MG/MGCG). Measured the textbook result directly: reduction/cycle ≈0.17
+  at 48² *and* 96² (grid-independent), MGCG drives the residual ~1e5× below plain CG at an equal
+  8-iteration budget and reaches the same field; standalone MG floors near float precision in ~6
+  cycles on open domains. (2) A from-scratch radix-2 2-D **FFT** (`fft.ts`) + radially-averaged
+  **energy spectrum E(k)**, and a live **Spectra lab** (`#/spectra`) plotting the 2-D turbulent
+  cascade (k^-3 / k^-5/3 references) beside the vorticity, with pause/reseed. (3) Three new scenes
+  (Taylor–Green vortex, decaying turbulence, double shear layer — defaulting to MGCG) and a new
+  **analytic diffusion-decay** check (a Fourier mode decays at exactly the backward-Euler rate, rel.
+  err ~5e-7). Verification suite **25 → 34 checks (9 → 11 groups)**; ran it under Node (34/34 green),
+  smoke-tested all 14 scenes headlessly (finite/bounded; the MGCG scenes hit ~1e-5 max-divergence vs
+  ~2–3e-3 for the SOR scenes), and confirmed the live spectrum shows a clean decreasing cascade.
+  Updated Controls, App routing/nav, About, the catalog card, and this journal. Full gate green
+  (scope + conformance + lint + build).

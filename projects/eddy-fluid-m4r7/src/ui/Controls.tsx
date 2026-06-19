@@ -256,18 +256,22 @@ export function Controls(props: Props) {
           Sharp dye (MacCormack advection)
         </label>
         <div className="field-label">Pressure solver</div>
-        <Segmented<'sor' | 'cg'>
+        <Segmented<'sor' | 'cg' | 'mg' | 'mgcg'>
           value={s.params.pressureSolver}
           onChange={(pressureSolver) => onParam({ pressureSolver })}
           options={[
-            { value: 'sor', label: 'Red-black SOR' },
-            { value: 'cg', label: 'Conjugate Gradient' },
+            { value: 'sor', label: 'SOR' },
+            { value: 'cg', label: 'CG' },
+            { value: 'mg', label: 'Multigrid' },
+            { value: 'mgcg', label: 'MGCG' },
           ]}
         />
         <p className="scene-blurb">
-          Both solve the same Poisson system. <strong>CG</strong> (Krylov) converges the residual far
-          faster per iteration; <strong>SOR</strong> is cheaper per sweep. See the{' '}
-          <a href="#/verify">Verify</a> page for the head-to-head.
+          All four solve the same Poisson system. <strong>SOR</strong> is cheapest per sweep;{' '}
+          <strong>CG</strong> (Krylov) converges far faster per iteration; <strong>Multigrid</strong>{' '}
+          is work-optimal (O(N), grid-independent convergence) and shines on open domains;{' '}
+          <strong>MGCG</strong> wraps a multigrid V-cycle in CG — grid-independent <em>and</em> robust
+          to obstacles. See the <a href="#/verify">Verify</a> page for the head-to-head.
         </p>
       </section>
 

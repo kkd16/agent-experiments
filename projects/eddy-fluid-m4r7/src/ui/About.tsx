@@ -123,6 +123,34 @@ export function About() {
           the null space. Only the pressure gradient is used, so the constant is irrelevant.)
         </p>
 
+        <h2>The work-optimal solver — geometric multigrid</h2>
+        <p>
+          SOR and even CG share a blind spot: they kill <em>jagged</em> error fast but crawl on the{' '}
+          <em>smooth</em>, long-wavelength error — which is most of the pressure field. So their cost
+          to a fixed accuracy grows with the grid. <strong>Multigrid</strong> removes that ceiling
+          with one idea: error that looks smooth on a fine grid looks <em>oscillatory</em> on a
+          coarser one, where a cheap relaxation flattens it. A <strong>V-cycle</strong> smooths on the
+          fine grid, transfers (<em>restricts</em>) the leftover residual to a 2× coarser grid,
+          recurses all the way down to a handful of cells, then interpolates (<em>prolongs</em>) the
+          correction back up and smooths again. Because every error wavelength is handled on the grid
+          where it’s cheap to resolve, the residual drops by a near-constant factor <em>per cycle</em>{' '}
+          — a convergence rate that <strong>doesn’t degrade as the grid grows</strong>, the textbook
+          O(N) (work-optimal) Poisson solver. Eddy builds the whole hierarchy from scratch: red-black
+          smoothing on the same Neumann/obstacle Laplacian, cell-centred bilinear prolongation, its
+          transpose for restriction, and a 2×2 agglomeration of the obstacle mask.
+        </p>
+        <p>
+          A bare V-cycle is happiest on open domains; intricate embedded boundaries make its
+          coarse-grid correction overshoot. The fix is <strong>MGCG</strong> — use a single symmetric
+          V-cycle as the <em>preconditioner</em> inside Conjugate Gradients. CG is forgiving of an
+          imperfect preconditioner (it still converges to the exact answer), while the V-cycle gives
+          it a near-perfect, grid-independent approximate inverse — so MGCG reaches machine-level
+          residual in a fixed handful of iterations <em>regardless of resolution</em> and stays robust
+          around obstacles. The <a href="#/verify">Verify</a> page shows the convergence factor barely
+          moving between a 48² and a 96² grid, and MGCG crushing plain CG at an equal budget while
+          landing on the identical field. Pick either under <em>Fluid → Pressure solver</em>.
+        </p>
+
         <h2>Reactive flow — combustion</h2>
         <p>
           Beyond carrying heat, Eddy can <em>make</em> it. A separate <strong>fuel</strong> field is
@@ -165,6 +193,21 @@ export function About() {
           the Verify page).
         </p>
 
+        <h2>The energy cascade — a spectrum from a from-scratch FFT</h2>
+        <p>
+          A turbulent field looks like noise, but in Fourier space it has structure: a{' '}
+          <strong>kinetic-energy spectrum</strong> <code>E(k)</code> telling how much energy lives at
+          each spatial scale. The <a href="#/spectra">Spectra lab</a> evolves a decaying-turbulence
+          field live and, every few frames, runs its velocity through a from-scratch radix-2{' '}
+          <strong>2-D FFT</strong> to plot <code>E(k)</code> on log–log axes. Two dimensions are
+          special (Kraichnan, 1967): energy flows <em>up</em> the scales — small vortices merging into
+          larger ones (the <strong>inverse cascade</strong>) — while enstrophy flows <em>down</em>,
+          steepening the spectrum toward the <code>k<sup>−3</sup></code> enstrophy range (drawn as a
+          reference slope). The transform is exact: it inverts to machine precision, obeys{' '}
+          <strong>Parseval’s theorem</strong> (the spectrum sums to the physical kinetic energy), and
+          localises a pure sinusoid to a single shell — all on the Verify page.
+        </p>
+
         <h2>Does it actually work? The verification page</h2>
         <p>
           A solver you can’t check is a solver you can’t trust. The <a href="#/verify">Verify</a> page
@@ -175,10 +218,14 @@ export function About() {
           discrete curl matches a solid-body rotation exactly, that buoyancy lifts hot fluid, and
           that the whole thing stays bounded for any timestep. It now also checks the newer
           machinery: that Conjugate Gradients beats SOR per iteration, converges, respects obstacles,
-          and lands on the same field; that combustion only burns above ignition, consumes fuel while
+          and lands on the same field; that <strong>multigrid</strong> converges with a
+          grid-independent rate and <strong>MGCG</strong> crushes plain CG while reaching the same
+          answer; that the implicit diffusion decays a Fourier mode at exactly its analytic
+          (backward-Euler) rate; that the <strong>FFT</strong> round-trips, obeys Parseval, and
+          localises a single mode; that combustion only burns above ignition, consumes fuel while
           releasing heat, and conserves fuel when off; and that the LIC texture is the identity under
           no flow, obeys a maximum principle, and streaks along the flow. Each check reports the
-          number it measured.
+          number it measured — <strong>34 checks across 11 groups</strong>.
         </p>
 
         <h2>Rendering</h2>

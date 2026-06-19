@@ -12,6 +12,7 @@
 
 import { FluidSolver, DEFAULT_PARAMS, type FluidParams } from './fluid';
 import { computeLIC, makeNoise } from '../render/lic';
+import { fft1d, fft2d, energySpectrum, meanKineticEnergy } from './fft';
 
 export interface Check {
   name: string;
@@ -340,6 +341,135 @@ function conjugateGradient(): CheckGroup {
   };
 }
 
+function multigrid(): CheckGroup {
+  const checks: Check[] = [];
+
+  // 1. The V-cycle solver drives the Poisson residual toward machine precision.
+  {
+    const N = 56;
+    const vc = [1, 3, 6];
+    const res = vc.map((k) => {
+      const sim = new FluidSolver(N);
+      seedDivergent(sim);
+      sim.projectVelocityMG(k);
+      return poissonResidual(sim);
+    });
+    const monotone = res[0] > res[1] && res[1] > res[2];
+    checks.push(
+      check(
+        'Multigrid converges the pressure equation',
+        'Each V-cycle smooths on the fine grid, corrects from a 2× coarser one (where the smooth error is oscillatory and cheap to kill), and smooths again. A handful of cycles drives the Poisson residual down toward float precision.',
+        monotone && res[res.length - 1] < 1e-5,
+        `‖residual‖∞ @ ${vc.join('/')} V-cycles = ${res.map(fmt).join(' → ')}`,
+      ),
+    );
+  }
+
+  // 2. The headline multigrid property: a convergence factor independent of grid
+  // size. Stationary relaxation (SOR) and even CG slow down as the grid grows;
+  // multigrid's reduction-per-cycle stays put — the work-optimal O(N) Poisson solve.
+  {
+    const factor = (N: number) => {
+      const after = (k: number) => {
+        const sim = new FluidSolver(N);
+        seedDivergent(sim);
+        sim.projectVelocityMG(k);
+        return poissonResidual(sim);
+      };
+      const r1 = after(1);
+      const r6 = after(6);
+      return Math.pow(r6 / r1, 1 / 5); // geometric mean reduction per cycle
+    };
+    const fSmall = factor(48);
+    const fLarge = factor(96);
+    const ratio = Math.max(fSmall, fLarge) / Math.min(fSmall, fLarge);
+    checks.push(
+      check(
+        'Multigrid convergence is grid-independent',
+        'The per-V-cycle residual reduction barely changes when the grid is doubled — the defining property of multigrid (and why it is asymptotically optimal). A stationary solver’s rate would worsen markedly with N.',
+        fSmall < 0.3 && fLarge < 0.3 && ratio < 1.6,
+        `reduction/cycle: 48² ${fmt(fSmall)} vs 96² ${fmt(fLarge)} (ratio ${fmt(ratio)})`,
+      ),
+    );
+  }
+
+  // 3. MGCG: one V-cycle as the CG preconditioner annihilates CG's per-iteration cost.
+  {
+    const budget = 8;
+    const cg = new FluidSolver(56);
+    seedDivergent(cg);
+    cg.projectVelocityCG(budget);
+    const resCG = poissonResidual(cg);
+    const mgcg = new FluidSolver(56);
+    seedDivergent(mgcg);
+    mgcg.projectVelocityMGCG(budget);
+    const resMGCG = poissonResidual(mgcg);
+    checks.push(
+      check(
+        'MGCG crushes the residual per iteration',
+        `Replacing CG’s diagonal preconditioner with a single multigrid V-cycle (a near-perfect approximate inverse) makes each CG iteration enormously more effective: at an equal ${budget}-iteration budget MGCG’s residual is orders of magnitude below plain CG’s.`,
+        resMGCG < 1e-5 && resMGCG < 0.05 * resCG,
+        `‖residual‖∞ @ ${budget} its: CG ${fmt(resCG)} vs MGCG ${fmt(resMGCG)} (${fmt(resCG / resMGCG)}× lower)`,
+      ),
+    );
+  }
+
+  // 4. MGCG lands on the same incompressible field as converged CG — same physics.
+  {
+    const cg = new FluidSolver(56);
+    seedDivergent(cg);
+    cg.projectVelocityCG(300, 1e-12);
+    const divCG = rmsDivInterior(cg);
+    const mgcg = new FluidSolver(56);
+    seedDivergent(mgcg);
+    mgcg.projectVelocityMGCG(60, 1e-10);
+    const divMGCG = rmsDivInterior(mgcg);
+    checks.push(
+      check(
+        'MGCG lands on the same projected field',
+        'A different, faster road to the *same* answer: converged MGCG reaches the identical residual-divergence floor as converged CG (the same collocated-grid limit, not a different solution).',
+        Math.abs(divCG - divMGCG) < 1.5e-4,
+        `RMS ∇·u (converged): CG ${fmt(divCG)} vs MGCG ${fmt(divMGCG)}`,
+      ),
+    );
+  }
+
+  // 5. MGCG honours internal obstacles (where a bare V-cycle would struggle, CG
+  // makes it robust): a cylinder in the flow projects to the converged-SOR floor.
+  {
+    const before = (() => {
+      const s = new FluidSolver(64);
+      seedDivergent(s);
+      return rmsDivInterior(s);
+    })();
+    const mgcg = new FluidSolver(64);
+    seedDivergent(mgcg);
+    mgcg.paintSolid(22, 32, 6, true);
+    mgcg.projectVelocityMGCG(60, 1e-10);
+    const divMGCG = rmsDivInterior(mgcg);
+    const sor = new FluidSolver(64);
+    seedDivergent(sor);
+    sor.paintSolid(22, 32, 6, true);
+    sor.projectVelocity(3000, 1.7);
+    const divSOR = rmsDivInterior(sor);
+    checks.push(
+      check(
+        'MGCG respects solid obstacles',
+        'Wrapping the V-cycle in CG keeps it robust where embedded boundaries make a bare multigrid correction overshoot: with a cylinder in the flow MGCG still reaches the same residual divergence as converged SOR.',
+        Number.isFinite(divMGCG) && divMGCG < 0.6 * before && Math.abs(divMGCG - divSOR) < 1.5e-4,
+        `RMS ∇·u with a cylinder: ${fmt(before)} → MGCG ${fmt(divMGCG)} (SOR ${fmt(divSOR)})`,
+      ),
+    );
+  }
+
+  return {
+    title: 'Multigrid (V-cycle & MGCG)',
+    blurb:
+      'Geometric multigrid solves the pressure Poisson equation in O(N) work with a convergence rate independent of grid size; as a CG preconditioner (MGCG) it is both grid-independent and robust to obstacles.',
+    checks,
+  };
+}
+
 function combustion(): CheckGroup {
   const checks: Check[] = [];
   const N = 48;
@@ -423,6 +553,98 @@ function combustion(): CheckGroup {
     title: 'Reactive flow (combustion)',
     blurb:
       'Fuel is advected like any scalar, ignites above a threshold temperature, burns at a first-order rate, and releases heat — a minimal but honest combustion model.',
+    checks,
+  };
+}
+
+function spectral(): CheckGroup {
+  const checks: Check[] = [];
+
+  // 1. The FFT inverts itself to machine precision (it had better).
+  {
+    const M = 64;
+    const re = new Float64Array(M * M);
+    const im = new Float64Array(M * M);
+    for (let i = 0; i < M * M; i++) re[i] = Math.sin(0.1 * i) + 0.27 * (i % 13);
+    const r0 = Float64Array.from(re);
+    fft2d(re, im, M, false);
+    fft2d(re, im, M, true);
+    let err = 0;
+    for (let i = 0; i < M * M; i++) err = Math.max(err, Math.abs(re[i] - r0[i]), Math.abs(im[i]));
+    // also a 1-D round trip
+    const a = new Float64Array(32);
+    const b = new Float64Array(32);
+    for (let i = 0; i < 32; i++) a[i] = Math.cos(i) - 0.4;
+    const a0 = Float64Array.from(a);
+    fft1d(a, b, false);
+    fft1d(a, b, true);
+    let err1 = 0;
+    for (let i = 0; i < 32; i++) err1 = Math.max(err1, Math.abs(a[i] - a0[i]));
+    checks.push(
+      check(
+        'FFT round-trips to machine precision',
+        'The inverse FFT of a forward FFT must return the original signal exactly (a from-scratch radix-2 Cooley–Tukey transform). Tested in 1-D and 2-D.',
+        err < 1e-9 && err1 < 1e-9,
+        `max |ifft(fft(x)) − x| = ${fmt(err)} (2-D), ${fmt(err1)} (1-D)`,
+      ),
+    );
+  }
+
+  // 2. Parseval's theorem: the energy spectrum integrates to the physical energy.
+  {
+    const M = 64;
+    const u = new Float64Array(M * M);
+    const v = new Float64Array(M * M);
+    for (let j = 0; j < M; j++)
+      for (let i = 0; i < M; i++) {
+        u[j * M + i] = Math.sin((2 * Math.PI * 3 * i) / M) * Math.cos((2 * Math.PI * 2 * j) / M) + 0.1;
+        v[j * M + i] = Math.cos((2 * Math.PI * 5 * i) / M) * Math.sin((2 * Math.PI * j) / M);
+      }
+    const sp = energySpectrum(u, v, M);
+    const ke = meanKineticEnergy(u, v, M);
+    const relErr = Math.abs(sp.total - ke) / ke;
+    checks.push(
+      check(
+        'Energy spectrum obeys Parseval',
+        'No energy is created or lost moving to Fourier space: the kinetic energy summed over the spectrum ∑ₖ E(k) equals the mean physical energy ½⟨u²+v²⟩ — the guarantee that E(k) is a true decomposition of the flow’s energy by scale.',
+        relErr < 1e-10,
+        `∑ₖ E(k) = ${fmt(sp.total)} vs ½⟨u²+v²⟩ = ${fmt(ke)} (rel. err ${fmt(relErr)})`,
+      ),
+    );
+  }
+
+  // 3. A pure sinusoid lands its energy in exactly one wavenumber shell.
+  {
+    const M = 64;
+    const kx = 6;
+    const u = new Float64Array(M * M);
+    const v = new Float64Array(M * M);
+    for (let j = 0; j < M; j++)
+      for (let i = 0; i < M; i++) u[j * M + i] = Math.cos((2 * Math.PI * kx * i) / M);
+    const sp = energySpectrum(u, v, M);
+    let peak = 0;
+    let peakK = -1;
+    for (let k = 0; k < sp.e.length; k++)
+      if (sp.e[k] > peak) {
+        peak = sp.e[k];
+        peakK = k;
+      }
+    let leak = 0;
+    for (let k = 0; k < sp.e.length; k++) if (k !== peakK) leak += sp.e[k];
+    checks.push(
+      check(
+        'A single mode resolves to one shell',
+        'A pure spatial sinusoid of wavenumber k carries all its energy at |k| — the spectrum must spike in that one shell with no leakage into the others (no windowing artefacts on a periodic signal).',
+        peakK === kx && leak < 1e-12 * peak,
+        `peak at shell k=${peakK} (expected ${kx}); leakage / peak = ${fmt(peak === 0 ? 0 : leak / peak)}`,
+      ),
+    );
+  }
+
+  return {
+    title: 'Spectral analysis (FFT)',
+    blurb:
+      'A from-scratch 2-D FFT turns the velocity field into a kinetic-energy spectrum E(k) — energy by spatial scale. Its identities (invertibility, Parseval, single-mode localisation) are exact and checkable.',
     checks,
   };
 }
@@ -587,6 +809,49 @@ function transport(): CheckGroup {
         'Heat diffusion is a low-pass filter: spatial variance must strictly decrease.',
         var1 < var0,
         `variance: ${fmt(var0)} → ${fmt(var1)}`,
+      ),
+    );
+  }
+
+  // A *closed-form* diffusion check. The implicit (backward-Euler) diffusion solve
+  // has each grid Fourier mode as an exact eigenvector: a single cosine mode of
+  // index m decays per step by exactly 1/(1 + 4a·sin²(πm/2N)), with a = κ·dt·N².
+  // Seed that mode, diffuse for many steps, and compare the measured amplitude
+  // decay against the analytic prediction — the discrete dispersion relation, live.
+  {
+    const N = 48;
+    const m = 4;
+    const kappa = 0.0015;
+    const dt = 1 / 60;
+    const K = 100;
+    const sim = new FluidSolver(N);
+    const j0 = Math.floor(N / 2);
+    for (let j = 1; j <= N; j++)
+      for (let i = 1; i <= N; i++) sim.t[sim.IX(i, j)] = Math.cos((Math.PI * m * (i - 0.5)) / N);
+    const ampOf = () => {
+      let lo = Infinity;
+      let hi = -Infinity;
+      for (let i = 1; i <= N; i++) {
+        const v = sim.t[sim.IX(i, j0)];
+        if (v < lo) lo = v;
+        if (v > hi) hi = v;
+      }
+      return hi - lo;
+    };
+    const a0 = ampOf();
+    for (let s = 0; s < K; s++)
+      sim.step(dt, params({ thermalDiffusion: kappa, iterations: 200 }));
+    const measured = ampOf() / a0;
+    const a = kappa * dt * N * N;
+    const factor = 1 / (1 + 4 * a * Math.sin((Math.PI * m) / (2 * N)) ** 2);
+    const predicted = Math.pow(factor, K);
+    const relErr = Math.abs(measured - predicted) / predicted;
+    checks.push(
+      check(
+        'Diffusion decays a Fourier mode at the analytic rate',
+        'The backward-Euler diffusion solve has the grid cosine modes as exact eigenvectors. A mode’s amplitude must decay by exactly 1/(1+4a·sin²(πm/2N)) per step (a = κ·dt·N²) — the discrete dispersion relation. Measured vs closed-form, over 100 steps.',
+        relErr < 1e-4,
+        `amplitude ×${fmt(measured)} measured vs ×${fmt(predicted)} predicted (rel. err ${fmt(relErr)})`,
       ),
     );
   }
@@ -868,10 +1133,12 @@ export function runSelfTest(): SelfTestReport {
     incompressibility(),
     linearSolver(),
     conjugateGradient(),
+    multigrid(),
     transport(),
     operators(),
     thermalAndSymmetry(),
     combustion(),
+    spectral(),
     visualization(),
     robustness(),
   ];

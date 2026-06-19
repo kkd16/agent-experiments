@@ -365,7 +365,145 @@ export const SCENES: Scene[] = [
       sim.splat(cx, cy, 0, -0.45, [0, 0, 0], rad, 0);
     },
   },
+  {
+    id: 'taylor-green',
+    name: 'Taylor–Green vortices',
+    blurb:
+      'A textbook *exact* solution of the Navier–Stokes equations: a periodic lattice of counter-rotating vortices, u = sin(kx)cos(ky), v = −cos(kx)sin(ky). It is divergence-free by construction and, under viscosity, simply decays in place — every Fourier mode shrinking at its own analytic rate. A clean, calibratable flow (open the Spectra lab to watch its energy spectrum).',
+    params: {
+      viscosity: 0.00004,
+      vorticity: 0,
+      velocityDissipation: 0,
+      dyeDissipation: 0.004,
+      gravity: 0,
+      buoyancy: 0,
+      iterations: 30,
+      overRelax: 1.6,
+      pressureSolver: 'mgcg',
+    },
+    exposure: 1.2,
+    setup: (sim) => {
+      const N = sim.N;
+      const k = 4; // vortex pairs across the domain
+      const A = 0.9;
+      for (let j = 1; j <= N; j++)
+        for (let i = 1; i <= N; i++) {
+          const idx = sim.IX(i, j);
+          const x = i / N;
+          const y = j / N;
+          sim.u[idx] = A * Math.sin(TAU * k * x) * Math.cos(TAU * k * y);
+          sim.v[idx] = -A * Math.cos(TAU * k * x) * Math.sin(TAU * k * y);
+          // Paint the vortex cells: warm where the streamfunction is positive,
+          // cool where negative, so the rotating cells read at a glance.
+          const psi = Math.sin(TAU * k * x) * Math.sin(TAU * k * y);
+          if (psi > 0) {
+            sim.r[idx] = 1.6 * psi;
+            sim.g[idx] = 0.6 * psi;
+          } else {
+            sim.b[idx] = -1.7 * psi;
+            sim.g[idx] = -0.5 * psi;
+          }
+        }
+    },
+  },
+  {
+    id: 'decaying-turbulence',
+    name: 'Decaying turbulence',
+    blurb:
+      'A field seeded with many random vortices and then left entirely alone — no forcing, faint viscosity. In two dimensions energy flows *up* the scales: like-signed vortices merge into ever larger ones (the inverse cascade) while enstrophy drains to small scales. Open the Spectra lab to watch the kinetic-energy spectrum E(k) evolve.',
+    params: {
+      viscosity: 0.000015,
+      vorticity: 0,
+      velocityDissipation: 0,
+      dyeDissipation: 0.006,
+      gravity: 0,
+      buoyancy: 0,
+      iterations: 30,
+      overRelax: 1.6,
+      pressureSolver: 'mgcg',
+    },
+    exposure: 1.3,
+    setup: (sim) => {
+      const N = sim.N;
+      const rng = mulberry32(0x5eed1234);
+      // Sprinkle ~40 Gaussian vortices of random sign and a dye blob in each.
+      const count = 40;
+      for (let n = 0; n < count; n++) {
+        const cx = rng() * N;
+        const cy = rng() * N;
+        const sign = rng() < 0.5 ? -1 : 1;
+        const strength = 0.6 + rng() * 0.9;
+        const rad = N * (0.04 + rng() * 0.06);
+        const r2 = rad * rad;
+        for (let j = 1; j <= N; j++)
+          for (let i = 1; i <= N; i++) {
+            const dx = i - cx;
+            const dy = j - cy;
+            const d2 = dx * dx + dy * dy;
+            if (d2 > 9 * r2) continue;
+            const g = Math.exp(-d2 / r2);
+            const idx = sim.IX(i, j);
+            // Rotating (solenoidal) velocity contribution: v = sign·(−dy, dx)·g.
+            sim.u[idx] += sign * strength * (-dy / rad) * g;
+            sim.v[idx] += sign * strength * (dx / rad) * g;
+          }
+        const c = hueToRGB(rng(), 1.8);
+        sim.splat(Math.floor(cx), Math.floor(cy), 0, 0, c, Math.max(2, rad * 0.7), 1.6);
+      }
+    },
+  },
+  {
+    id: 'double-shear',
+    name: 'Double shear layer',
+    blurb:
+      'The Bell–Colella–Glaz benchmark: two thin shear layers (a hyperbolic-tangent velocity profile) given a small sinusoidal nudge. Each layer is Kelvin–Helmholtz unstable and rolls up into a clean row of vortices — a sensitive test that a solver rolls them up without spurious secondary billows.',
+    params: {
+      viscosity: 0.00002,
+      vorticity: 0,
+      velocityDissipation: 0,
+      dyeDissipation: 0.003,
+      gravity: 0,
+      buoyancy: 0,
+      iterations: 32,
+      overRelax: 1.6,
+      pressureSolver: 'mgcg',
+    },
+    exposure: 1.3,
+    setup: (sim) => {
+      const N = sim.N;
+      const delta = 1 / 28; // shear-layer thickness
+      const eps = 0.05; // perturbation amplitude
+      const A = 0.9;
+      for (let j = 1; j <= N; j++)
+        for (let i = 1; i <= N; i++) {
+          const idx = sim.IX(i, j);
+          const x = i / N;
+          const y = j / N;
+          sim.u[idx] = A * (y <= 0.5 ? Math.tanh((y - 0.25) / delta) : Math.tanh((0.75 - y) / delta));
+          sim.v[idx] = A * eps * Math.sin(TAU * x);
+          if (y > 0.25 && y < 0.75) {
+            sim.r[idx] = 1.5;
+            sim.g[idx] = 0.5;
+          } else {
+            sim.b[idx] = 1.6;
+            sim.g[idx] = 0.4;
+          }
+        }
+    },
+  },
 ];
+
+/** Seeded deterministic PRNG (mulberry32) — keeps random scenes reproducible. */
+function mulberry32(seed: number): () => number {
+  let a = seed >>> 0;
+  return () => {
+    a |= 0;
+    a = (a + 0x6d2b79f5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
 
 /** Map a hue (0..1) to an RGB triple scaled by `intensity` (for dye injection). */
 export function hueToRGB(h: number, intensity: number): [number, number, number] {
