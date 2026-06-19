@@ -32,7 +32,7 @@ function generateRandomProblem(difficulty: Difficulty, allowedOps: Operation[], 
   let n2 = Math.floor(Math.random() * maxNum) + 1;
 
   if (selectedOp === '-') {
-    if (!allowNegativesParam && n2 > n1) {
+    if (!allowNegativesParam && difficulty !== 'hard' && n2 > n1) {
       [n1, n2] = [n2, n1];
     }
   } else if (selectedOp === '/') {
@@ -187,6 +187,28 @@ function getInitialNumpadLayout(): 'phone' | 'calculator' {
     console.error("Local storage error:", e);
   }
   return 'phone';
+}
+
+
+
+function getInitialHapticEnabled(): boolean {
+  try {
+    const stored = window.localStorage.getItem('mathFlashcardsHapticEnabled');
+    if (stored !== null) return stored === 'true';
+  } catch (e) {
+    console.error("Local storage error:", e);
+  }
+  return false;
+}
+
+function getInitialFullHistory(): HistoryItem[] {
+  try {
+    const stored = window.localStorage.getItem('mathFlashcardsFullHistory');
+    if (stored) return JSON.parse(stored);
+  } catch (e) {
+    console.error("Local storage error:", e);
+  }
+  return [];
 }
 
 function getInitialRunScores(): RunScore[] {
@@ -423,6 +445,16 @@ function App() {
     }
   }, [allowNegatives]);
   const [history, setHistory] = useState<HistoryItem[]>([]);
+  const [, setFullHistory] = useState<HistoryItem[]>(getInitialFullHistory());
+  const [hapticEnabled, setHapticEnabled] = useState(getInitialHapticEnabled());
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem('mathFlashcardsHapticEnabled', hapticEnabled.toString());
+    } catch (e) {
+      console.error(e);
+    }
+  }, [hapticEnabled]);
   const [runScores, setRunScores] = useState<RunScore[]>(getInitialRunScores());
 
   const inputRef = useRef<HTMLInputElement>(null);
@@ -673,10 +705,20 @@ function App() {
     }
 
 
-    const isCorrect = answer === correctAnswer;
+        const isCorrect = answer === correctAnswer;
     setHistory(prev => [...prev, {
       num1, num2, operation, userAnswer, correctAnswer, isCorrect
     }]);
+
+    setFullHistory(prev => {
+      const next = [...prev, { num1, num2, operation, userAnswer, correctAnswer, isCorrect }];
+      try {
+        window.localStorage.setItem('mathFlashcardsFullHistory', JSON.stringify(next));
+      } catch (e) {
+        console.error("Local storage error:", e);
+      }
+      return next;
+    });
 
     const newLifetime = lifetimeQuestions + 1;
     setLifetimeQuestions(newLifetime);
@@ -694,6 +736,7 @@ function App() {
     if (isCorrect) {
       setMessage("Correct!");
       if (soundEnabled) playSound('correct');
+      if (hapticEnabled && typeof window !== 'undefined' && window.navigator && window.navigator.vibrate) window.navigator.vibrate(50);
       setAnswerStatus('correct');
       setTimeout(() => setAnswerStatus(null), 500);
       setAnimationClass('flash-correct');
@@ -1017,6 +1060,11 @@ function App() {
           <label style={{display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer', marginTop: '0.5rem'}}>
             <input type="checkbox" checked={hideTimer} onChange={(e) => setHideTimer(e.target.checked)} />
             Hide Timer
+          </label>
+
+          <label style={{display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer', marginTop: '0.5rem'}}>
+            <input type="checkbox" checked={hapticEnabled} onChange={(e) => setHapticEnabled(e.target.checked)} />
+            Haptic Feedback
           </label>
           <button onClick={handleFactoryReset} className="reset-btn" style={{marginTop: '0.5rem', padding: '0.5rem', background: '#e74c3c', color: 'white', borderRadius: '4px', cursor: 'pointer', border: 'none', width: '100%'}}>
             Factory Reset

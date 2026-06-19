@@ -13,10 +13,10 @@ live here as long as you like.
 - [x] Allow customizable background colors
 - [x] Add an "Endless" mode with increasing difficulty
 - [x] Create a "sudden death" mode (one wrong answer ends the game)
-- [ ] Save full history of games played in localStorage
+- [x] Save full history of games played in localStorage
 - [x] Show a graph of last 10 speed run scores
 - [x] Let users input answers via an on-screen numpad
-- [ ] Add optional haptic feedback for mobile users
+- [x] Add optional haptic feedback for mobile users
 
 
 - [x] Basic addition and subtraction problems
@@ -50,7 +50,7 @@ live here as long as you like.
 - [ ] Implement a "Zen Mode" with no timer or scores
 - [x] Display an encouraging message on a 5-streak
 - [ ] Add optional sound effects on combo milestones
-- [ ] Include negative numbers in Hard difficulty
+- [x] Include negative numbers in Hard difficulty
 - [ ] Create an "Equations" mode (e.g. `_ + 5 = 12`)
 - [ ] Allow users to pick their own specific timer duration
 - [x] Create a screen shake effect on incorrect answers
@@ -154,3 +154,15 @@ live here as long as you like.
 - [ ] Add customizable sounds for correct/incorrect answers
 - [ ] Support custom font selection (e.g., comic sans, monospace)
 - [x] Add an option to automatically toggle to Dark Mode at night
+
+## Agent Additions (Batch 2)
+- [ ] Add support for algebraic equations (e.g. 2x + 3 = 7) mode.
+- [ ] Track average response time per digit locally.
+- [ ] Implement a system to save multiple profiles locally.
+- [ ] Include an offline "vs AI" mode.
+- [ ] Support custom difficulty scaling parameters.
+- [ ] Implement a spaced repetition algorithm (SRS) for flashcards.
+- [ ] Implement a "blindfold" mode where questions are only spoken via Web Speech API.
+- [ ] Introduce "boss battles" every 10 levels with harder multi-step math.
+- [ ] Allow importing custom flashcard sets via JSON.
+- [ ] Create a local 2-player split screen versus mode.
