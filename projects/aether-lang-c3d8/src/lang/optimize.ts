@@ -92,6 +92,21 @@ let PURE_FNS = new Map<string, { arity: number; body: Expr }>()
 // one call performs), so `minCost` can see *through* a saturated pure call.
 let bodyCostMemo = new Map<string, number>()
 
+// Native builtins that are *total and effect-free* — a saturated call to one (on
+// pure args) is pure, so CSE may share a repeat and DCE may drop an unused one.
+// Deliberately excludes the partial natives (`head`/`tail` raise on `[]`) and the
+// effectful ones (`print`, the turtle). Trusted only when NOT shadowed by a
+// user binding of the same name (see SHADOWED).
+const TOTAL_NATIVES = new Map<string, number>([
+  ['sqrt', 1], ['sin', 1], ['cos', 1], ['floor', 1], ['toFloat', 1], ['abs', 1],
+  ['strlen', 1], ['toUpper', 1], ['toLower', 1], ['parseInt', 1],
+  ['min', 2], ['max', 2],
+])
+
+// Names bound somewhere in the program (so a `var` of one might *not* be the
+// native of that name). Populated per run; guards the TOTAL_NATIVES shortcut.
+let SHADOWED = new Set<string>()
+
 // ---------------------------------------------------------------------------
 // Public entry
 // ---------------------------------------------------------------------------
@@ -99,6 +114,7 @@ let bodyCostMemo = new Map<string, number>()
 export function optimizeCore(root: Expr): OptimizeResult {
   freshCounter = 0
   CTORS = collectCtors(root)
+  SHADOWED = new Set(collectBinderCounts(root).keys())
   PURE_FNS = analyzePurity(root)
   bodyCostMemo = new Map<string, number>()
   const passes: Record<string, number> = {}
@@ -870,6 +886,14 @@ function isPure(e: Expr): boolean {
       // Over-application stays conservative (the returned function is unknown).
       const f = spineHead(e)
       if (f && PURE_FNS.has(f.name) && f.args.length <= PURE_FNS.get(f.name)!.arity) {
+        return f.args.every(isPure)
+      }
+      // a saturated call to a total, effect-free native (when not shadowed)
+      if (
+        f &&
+        !SHADOWED.has(f.name) &&
+        TOTAL_NATIVES.get(f.name) === f.args.length
+      ) {
         return f.args.every(isPure)
       }
       return false
