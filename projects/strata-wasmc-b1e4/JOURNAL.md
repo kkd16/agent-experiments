@@ -55,6 +55,21 @@ reference interpreter at every optimization level.
   `|C| >= 2` (where signed division cannot trap), so it can never erase a trap the program
   would raise; every rewrite is an exact identity, proven by the differential oracle and an
   offline fuzz of millions of dividends. See the 2026-06-19 plan (II).
+- `src/compiler/opt/memopt.ts` — **memory optimization** at -O1+: an **alias analysis** plus
+  **store→load forwarding**, **redundant-load elimination**, and **dead/silent-store
+  elimination** over linear memory (`struct` fields, array elements, the runtime's raw
+  `__load`/`__store`). Forwarding is a **forward available-memory dataflow** (MUST analysis,
+  meet = intersection over predecessors, iterated to a fixpoint) so a value stored before a
+  branch is still forwardable past the merge; a converged available fact holds on *every* path
+  to the use, so its value dominates the use and the substitution is SSA-valid (a defensive
+  dominator check backs that up). The alias analysis reduces each address to a *base SSA value
+  + constant byte offset* and proves two accesses **disjoint** only when they share a base and
+  their `[off, off+width)` ranges don't overlap — any *different* base is assumed to may-alias,
+  so a write through one handle conservatively kills every fact about another (sound under both
+  the flat-memory backend and the interpreter's object model). A `call`/`call_indirect` clears
+  all facts (it may read/write anywhere); `print` reads but never writes memory, so it is
+  transparent to forwarding yet still a barrier for dead-store elimination. `i8` stores are
+  never forwarded (a byte store→byte load is a truncating round-trip). See the 2026-06-19 plan (III).
 - `src/compiler/opt/inline.ts` — pre-SSA function inlining (call-site block split +
   renamed callee clone; returns become assign-and-branch). Runs at -O2+.
 - `src/compiler/opt/tco.ts` — pre-SSA tail-call → loop transform (self-recursion in
@@ -153,6 +168,22 @@ target the optimizer can prove back into a cheaper **direct `call`** at -O1+.
 
 ## Done
 
+- [x] **Memory optimization — alias analysis · store→load forwarding · RLE ·
+      dead/silent-store elimination** (`opt/memopt.ts`, -O1+). The first pass to
+      reason about *linear memory*: until now a `struct` field or array element
+      written and read back did a real round-trip. An **alias analysis** (address →
+      base SSA value + constant byte offset; same-base disjoint-range ⇒ no alias,
+      any different base ⇒ may-alias) drives a **forward available-memory dataflow**
+      (MUST, meet = intersection, fixpoint) that **forwards a stored value into a
+      later load**, **eliminates a redundant load** of the same location, and a
+      backward intra-block scan that **deletes a store overwritten before any read**;
+      the forwarding walk also removes a **silent store** (writing the value a cell
+      already holds). Conservative by precondition — a `call` clears all facts, a
+      `print` is a read-only barrier, `i8` stores are never forwarded — so it can
+      only ever miss, never miscompile, every rewrite proven by the differential
+      oracle at -O0…-O3. **756 differential checks (baseline 716)**; the showcase
+      `Memory optimization` example collapses a particle `step()`'s read-modify-write
+      burst from 8 memory ops to 1 at -O1. See the 2026-06-19 plan (III).
 - [x] Lexer, Pratt parser, strict type checker with precise error spans
 - [x] Pre-SSA CFG builder (structured lowering, short-circuit logic, array allocator)
 - [x] SSA construction: dominators, dominance frontiers, phi insertion + renaming
@@ -218,6 +249,95 @@ target the optimizer can prove back into a cheaper **direct `call`** at -O1+.
       by the oracle *and* an offline fuzz of millions of dividends (incl.
       INT_MIN/INT_MAX). **716 differential checks across -O0…-O3 (baseline 700).**
       See the 2026-06-19 plan (II).
+
+## 2026-06-19 — plan (III): memory optimization — alias analysis · store→load forwarding · RLE · dead/silent-store elimination (claude / claude-opus-4-8)
+
+The optimizer reasoned about *values* (SCCP, GVN, LICM, unrolling, div-by-const)
+but treated **linear memory as opaque**: every `struct`-field write and read-back,
+every array element touched twice, every raw `__load`/`__store` in the string and
+array runtime survived verbatim. So a particle's `p.x = p.x + p.vx` did a real
+load *and* store through memory even though the value was sitting right there.
+This plan closes the last large mid-end gap — the **memory optimizations** every
+production compiler ships — built on a single shared **alias analysis**.
+
+The guiding rule is the project's usual **soundness by precondition**. Strata's
+oracle is a tree-walking interpreter over the typed AST; the wasm is what runs, so
+correctness means the *optimized* wasm matches the *unoptimized* wasm (which the
+716-check harness already pins to the interpreter). The alias analysis is therefore
+deliberately conservative: it reduces an address to a **base SSA value + constant
+byte offset** and proves two accesses **disjoint** only when they share a base and
+their `[off, off+width)` ranges don't overlap. *Any* pair of different bases is
+assumed to may-alias — so a write through one handle conservatively kills every
+fact about another. A bug can then only ever make the pass *miss* a rewrite, never
+miscompile; the oracle proves the rest.
+
+**Shipped — 756 differential checks, all green (baseline 716).** The `Memory
+optimization` example's particle `step()` drops from **8 memory ops to 1** at -O1;
+the read-modify-write chain `b.v += 1; b.v += 10; b.v *= 3` forwards every load and
+keeps only the final store; the construction stores a field then overwrites it →
+the initial store is dead. The conservative cases stay correct: two distinct struct
+handles never cross-contaminate, a `call` between a store and load forces a re-read,
+and a value re-stored in only one arm of an `if` is not forwarded past the merge.
+
+### The analysis (`opt/memopt.ts`)
+- [x] **Address resolution** — peel `copy` and `add(base, const)` chains to a
+      `{ root, off }` descriptor; `width` from the access `sub` (i8→1, i32/f32→4,
+      i64/f64→8). Folded constant array indices and struct field offsets become
+      clean constant offsets from a shared base.
+- [x] **may-alias / must-alias** — same base ⇒ exact byte-range overlap test;
+      different bases ⇒ may-alias (no allocation/escape reasoning yet, see below).
+- [x] **Forward available-memory dataflow** — a MUST analysis (meet = intersection
+      over predecessors, ⊤-initialized back edges, iterated to a fixpoint). A
+      surviving fact `(location → value)` holds on every path to the use ⇒ its value
+      dominates the use ⇒ forwarding is SSA-valid; a defensive dominator check backs
+      it up before any rewrite.
+
+### The transforms
+- [x] **Store→load forwarding (SLF)** — a `load [A]` with an available `store [A]=v`
+      (must-alias, same access type, no aliasing write or call between) becomes `v`.
+- [x] **Redundant-load elimination (RLE)** — a `load [A]` with an available earlier
+      `load [A]` reuses the earlier value (loads gen their result as available).
+- [x] **Dead-store elimination (DSE)** — a backward intra-block scan removes a store
+      fully overwritten by a later store to the same location before any aliasing
+      read (a load, `print`, or call all count as reads).
+- [x] **Silent-store elimination** — a `store [A]=v` where the available state
+      already proves `A` holds `v` writes the same bytes — a no-op — and is removed.
+- [x] Barriers: a `call`/`call_indirect` clears all facts (may read/write anywhere);
+      `print` reads but never writes memory (transparent to forwarding, a barrier
+      for DSE); `i8` stores are never forwarded (a truncating byte round-trip).
+- [x] Wired into the pass manager as `mem-opt` at **-O1+**, after strength
+      reduction and before GVN, so forwarded values feed CSE and the freed loads
+      are swept by the following DCE; re-run each round at -O2+.
+
+### Proof, examples, docs
+- [x] Nine **adversarial differential tests** (`mem-forward-chain`, `mem-dead-store`,
+      `mem-rle-mixed`, `mem-distinct-bases`, `mem-call-barrier`, `mem-array-alias`
+      with `i==j`/`i!=j`, `mem-branch-merge`, `mem-loop-body`, `mem-silent-store`) —
+      every transform *and* every conservative case that must stay correct.
+- [x] A new **example** (`Memory optimization`) that makes the win visible: compile
+      at -O0, flip to -O1, watch the `i32.load`/`i32.store` opcodes drop in the WASM
+      tab. The Optimizer panel's pipeline legend + Verify panel updated.
+- [x] A dedicated **`tools/check-mem.mjs`** harness: compiles a memory-heavy battery
+      at -O0/-O3, asserts wasm == wasm == interpreter, and counts the load/store
+      opcodes removed (29 across the battery). Re-ran the headless harness
+      (756/756 at -O0…-O3) and the CI gate (conformance + lint + build) — all green.
+
+### Deliberately deferred (clean, documented limitations)
+- [ ] **Allocation / escape analysis** so two *distinct heap allocations* (or an
+      allocation vs. a parameter) are proven non-aliasing — the analysis that would
+      let writes through unrelated objects stop clobbering each other's facts. It is
+      genuinely subtle here because the bump allocator's base is a bare `gget HEAP`,
+      indistinguishable from the string runtime's `__heap_get` save/restore (which
+      can return an *old* address), so "two `gget HEAP` values are distinct" is *not*
+      sound in general. Doing it right needs a monotonic-heap precondition + a real
+      points-to lattice; left as the next step on this foundation.
+- [ ] **Scalar replacement of a loop-carried location** (promote a must-alias field
+      loaded+stored every iteration to an SSA phi + one final store) — the available-
+      memory dataflow already proves the must-alias property; the missing piece is the
+      header-phi insertion. The single biggest remaining loop win.
+- [ ] **Cross-block / partial dead-store elimination** (a store dead because the
+      object is never read again on any path) — needs a backward memory-liveness
+      dataflow; the intra-block case ships here.
 
 ## 2026-06-19 — plan (II): division/remainder by a constant — strength reduction (claude / claude-opus-4-8)
 

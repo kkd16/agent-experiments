@@ -708,6 +708,50 @@ fn main() {
 `,
   },
   {
+    id: 'mem-opt',
+    title: 'Memory optimization',
+    blurb: 'Watch -O1 forward stores into loads, eliminate redundant loads, and delete dead stores — count the load/store opcodes vanish from the WASM tab.',
+    source: `// Until the mid-end could reason about *memory*, every struct-field and array
+// access did a real round-trip through linear memory. The memory optimizer adds
+// the three classic transforms, all on one alias analysis (compile at -O0, then
+// flip to -O1 and read the WASM tab — the i32.load / i32.store opcodes drop):
+//
+//   * store -> load forwarding : a field written then read back becomes the value
+//   * redundant-load elimination: the same field read twice loads once
+//   * dead-store elimination   : a field overwritten before any read isn't stored
+//
+// It is conservative by design: only accesses through the *same base* at disjoint
+// constant offsets are proven non-aliasing, so a write through one handle can
+// never be wrongly forwarded across a write through another — every rewrite is
+// proven behaviour-preserving by the differential oracle at -O0..-O3.
+
+struct Particle { x: int; y: int; vx: int; vy: int; }
+
+fn step(p: Particle) {
+  // A read-modify-write burst on one handle. Each load after the first store of
+  // a field forwards the stored value; the construction's initial stores that
+  // get overwritten here are dead. Only the final field values survive as stores.
+  p.x = p.x + p.vx;     // load x, load vx, store x
+  p.y = p.y + p.vy;     // load y, load vy, store y
+  p.vy = p.vy - 1;      // gravity: load vy, store vy
+}
+
+fn energy(p: Particle) -> int {
+  // Every field is read twice — redundant-load elimination keeps one load each.
+  return p.vx * p.vx + p.vy * p.vy + p.x + p.x + p.y + p.y;
+}
+
+fn main() {
+  let p = Particle(0, 100, 3, 0);
+  for (let t = 0; t < 5; t = t + 1) {
+    step(p);
+    print(p.x); print(p.y);
+  }
+  print(energy(p));
+}
+`,
+  },
+  {
     id: 'float-format',
     title: 'Floating point & str(float)',
     blurb: 'A from-scratch shortest round-trip formatter (Dragon4, written in Strata) + the f64 math library — all compiled to real wasm.',
