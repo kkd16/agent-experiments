@@ -34,8 +34,10 @@ export const recomputeNormals = (m: Mesh): void => {
 
 // ── Parametric helpers ──────────────────────────────────────────────────────
 
-// Build a grid over (u, v) ∈ [0,1]² from a surface function that returns a
-// position and (optionally) an analytic normal. Wraps seams when asked.
+// Build a grid over (u, v) ∈ [0,1]² from a surface function. When `f` supplies
+// an analytic normal we use it; otherwise the normal is estimated from central
+// differences of the position field (∂P/∂u × ∂P/∂v), with the wrap flags
+// controlling whether the epsilon samples wrap the seam or clamp the edge.
 function parametricSurface(
   name: string,
   uSegments: number,
@@ -44,6 +46,12 @@ function parametricSurface(
   wrapU: boolean,
   wrapV: boolean,
 ): Mesh {
+  const wrap = (x: number): number => x - Math.floor(x)
+  const clamp01 = (x: number): number => (x < 0 ? 0 : x > 1 ? 1 : x)
+  const posAt = (uu: number, vv: number): Vec3 =>
+    f(wrapU ? wrap(uu) : clamp01(uu), wrapV ? wrap(vv) : clamp01(vv)).position
+  const e = 1e-3
+
   const vertices: Vertex[] = []
   const uCount = uSegments + 1
   const vCount = vSegments + 1
@@ -52,7 +60,13 @@ function parametricSurface(
     for (let iu = 0; iu < uCount; iu++) {
       const u = iu / uSegments
       const s = f(u, v)
-      vertices.push({ position: s.position, normal: s.normal ?? [0, 0, 0], uv: [u, v] })
+      let normal = s.normal
+      if (!normal) {
+        const du = sub(posAt(u + e, v), posAt(u - e, v))
+        const dv = sub(posAt(u, v + e), posAt(u, v - e))
+        normal = normalize(cross(du, dv))
+      }
+      vertices.push({ position: s.position, normal, uv: [u, v] })
     }
   }
   const indices: number[] = []
@@ -65,11 +79,7 @@ function parametricSurface(
       indices.push(i0, i2, i1, i1, i2, i3)
     }
   }
-  const mesh: Mesh = { name, vertices, indices }
-  if (wrapU || wrapV) {
-    // analytic normals already correct; nothing to weld for shading purposes.
-  }
-  return mesh
+  return { name, vertices, indices }
 }
 
 const TAU = Math.PI * 2
@@ -220,7 +230,71 @@ export const makeCube = (s = 0.9): Mesh => {
   return { name: 'Cube', vertices, indices }
 }
 
-export type MeshKind = 'sphere' | 'torus' | 'knot' | 'cube' | 'cylinder'
+// Figure-8 immersion of the Klein bottle — normals come from finite differences.
+export const makeKlein = (segU = 128, segV = 64): Mesh =>
+  parametricSurface(
+    'Klein Bottle',
+    segU,
+    segV,
+    (u, v) => {
+      const a = u * TAU
+      const b = v * TAU
+      const r = 2 + Math.cos(b / 2) * Math.sin(a) - Math.sin(b / 2) * Math.sin(2 * a)
+      const x = r * Math.cos(b)
+      const y = Math.sin(b / 2) * Math.sin(a) + Math.cos(b / 2) * Math.sin(2 * a)
+      const z = r * Math.sin(b)
+      return { position: [x * 0.28, y * 0.28, z * 0.28] }
+    },
+    true,
+    true,
+  )
+
+// One-sided Möbius band; two-sided shading in the rasterizer handles the twist.
+export const makeMobius = (segU = 160, segV = 18, width = 0.55): Mesh =>
+  parametricSurface(
+    'Möbius Band',
+    segU,
+    segV,
+    (u, v) => {
+      const a = u * TAU
+      const s = (v - 0.5) * 2 * width
+      const r = 1 + (s / 2) * Math.cos(a / 2)
+      return {
+        position: [r * Math.cos(a), (s / 2) * Math.sin(a / 2), r * Math.sin(a)],
+      }
+    },
+    true,
+    false,
+  )
+
+// A coiled spring: a circular tube swept along a helix, with analytic normals.
+export const makeSpring = (turns = 3.5, segU = 320, segV = 14, R = 0.55, r = 0.15, height = 1.7): Mesh =>
+  parametricSurface(
+    'Spring',
+    segU,
+    segV,
+    (u, v) => {
+      const a = u * TAU * turns
+      const center: Vec3 = [R * Math.cos(a), (u - 0.5) * height, R * Math.sin(a)]
+      // tangent = d(center)/du
+      const tangent = normalize([
+        -R * Math.sin(a) * TAU * turns,
+        height,
+        R * Math.cos(a) * TAU * turns,
+      ])
+      const up: Vec3 = [0, 1, 0]
+      const bitangent = normalize(cross(tangent, up))
+      const nrm = normalize(cross(bitangent, tangent))
+      const ang = v * TAU
+      const ring = add(scale(nrm, Math.cos(ang)), scale(bitangent, Math.sin(ang)))
+      return { position: add(center, scale(ring, r)), normal: ring }
+    },
+    false,
+    true,
+  )
+
+export type MeshKind =
+  | 'sphere' | 'torus' | 'knot' | 'cube' | 'cylinder' | 'klein' | 'mobius' | 'spring'
 
 export const buildMesh = (kind: MeshKind): Mesh => {
   switch (kind) {
@@ -229,5 +303,8 @@ export const buildMesh = (kind: MeshKind): Mesh => {
     case 'knot': return makeTorusKnot()
     case 'cube': return makeCube()
     case 'cylinder': return makeCylinder()
+    case 'klein': return makeKlein()
+    case 'mobius': return makeMobius()
+    case 'spring': return makeSpring()
   }
 }

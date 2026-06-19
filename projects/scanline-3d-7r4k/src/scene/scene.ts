@@ -135,14 +135,46 @@ const primitives = (): SceneConfig => {
   }
 }
 
+const exhibit = (): SceneConfig => ({
+  name: 'Math Exhibit',
+  ground: true,
+  groundTexture: 'grid',
+  groundMaterial: mat([0.74, 0.76, 0.8], 0.2, 22),
+  objects: [
+    {
+      id: 'klein', meshKind: 'klein', position: [-2.6, 1.0, 0], scale: 1.0,
+      spin: 0.4, tiltSpin: 0.0, baseRotation: [0.2, 0, 0],
+      material: mat([0.95, 0.5, 0.75], 0.8, 70, 0.12), texture: 'none',
+    },
+    {
+      id: 'spring', meshKind: 'spring', position: [0, 0.95, 0], scale: 1.05,
+      spin: 0.6, tiltSpin: 0.0, baseRotation: [0, 0, 0],
+      material: mat([0.8, 0.85, 0.5], 0.9, 90), texture: 'none',
+    },
+    {
+      id: 'mobius', meshKind: 'mobius', position: [2.6, 0.95, 0], scale: 1.1,
+      spin: 0.5, tiltSpin: 0.18, baseRotation: [0.4, 0, 0],
+      material: mat([0.45, 0.8, 0.95], 0.85, 80, 0.1), texture: 'none',
+    },
+  ],
+  lights: keyLights(true),
+  ambient: [0.19, 0.21, 0.27],
+  bgTop: [0.06, 0.08, 0.13],
+  bgBottom: [0.15, 0.12, 0.16],
+  fogColor: [0.11, 0.12, 0.16],
+  fogDensity: 0.011,
+})
+
 export const PRESETS: Record<string, () => SceneConfig> = {
   showcase,
   materials,
   primitives,
+  exhibit,
 }
 
 export const PRESET_LABELS: { key: string; label: string }[] = [
   { key: 'showcase', label: 'Showcase' },
-  { key: 'materials', label: 'Material Lineup' },
-  { key: 'primitives', label: 'Primitive Zoo' },
+  { key: 'materials', label: 'Materials' },
+  { key: 'primitives', label: 'Primitives' },
+  { key: 'exhibit', label: 'Math Exhibit' },
 ]
