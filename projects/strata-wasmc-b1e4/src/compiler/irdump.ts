@@ -47,6 +47,8 @@ function inst(i: Inst): string {
       return `${dst}global.get ${i.sub}`;
     case 'gset':
       return `global.set ${i.sub}, ${a[0]}`;
+    case 'alloc':
+      return `${dst}alloc ${a[0]}`;
     case 'load':
       return `${dst}load.${i.sub} [${a[0]}]`;
     case 'store':

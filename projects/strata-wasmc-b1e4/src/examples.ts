@@ -603,6 +603,43 @@ fn main() {
 `,
   },
   {
+    id: 'sroa-melt',
+    title: 'SROA: records melt to registers',
+    blurb: 'Switch to -O1: escape analysis proves the record local and scalarizes it — every alloc/load/store vanishes.',
+    source: `// Scalar Replacement of Aggregates. A struct is a block of linear memory
+// addressed by an i32 handle, its fields stored/loaded at byte offsets. But when
+// the handle never *escapes* — only ever used as the base of its own field
+// accesses, never returned, compared, stored, or passed to a call — the record
+// is provably private and aliases nothing. Escape analysis proves exactly that,
+// and SROA promotes each field into an SSA value: the allocation and every
+// load/store disappear, replaced by plain register arithmetic.
+//
+// Compile at -O0 and watch the IR: an 'alloc', then load/store traffic for every
+// field. Flip to -O1 and the whole record is gone — the 'sroa' pass reports the
+// memory ops it deleted, and the wasm shrinks to bare integer math.
+struct Particle { x: int; y: int; vx: int; vy: int; }
+
+fn step(steps: int) -> int {
+  let p = Particle(0, 0, 3, 4);
+  // A field written before a branch and read after the merge becomes a phi, not
+  // a memory round-trip — full SSA construction, not just straight-line forwarding.
+  for (let i = 0; i < steps; i = i + 1) {
+    p.x = p.x + p.vx;
+    p.y = p.y + p.vy;
+    if (p.x > 20) { p.vx = -p.vx; }   // bounce: conditional field write
+    if (p.y > 20) { p.vy = -p.vy; }
+  }
+  return p.x * p.x + p.y * p.y;        // distance² from origin
+}
+
+fn main() {
+  print(step(0));     // 0
+  print(step(5));     // 15² + 20² = 625
+  print(step(10));
+}
+`,
+  },
+  {
     id: 'struct-bst',
     title: 'Structs: binary search tree',
     blurb: 'Recursive structs + `null` leaves build a real linked data structure.',

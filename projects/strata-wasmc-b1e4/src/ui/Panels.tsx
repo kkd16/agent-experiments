@@ -234,8 +234,11 @@ export function OptPanel({ comp }: { comp: Compilation }) {
         <b>Pipeline:</b>{comp.level >= 2 ? ' tail-call → loop → function inlining (pre-SSA) → ' : ' '}
         copy-propagation → sparse conditional constant propagation → devirtualization →
         {comp.level >= 2 ? ' full loop unrolling (induction-variable + trip-count analysis) →' : ''}
-        {' '}if-conversion → strength reduction (incl. division-by-constant) → memory optimization
-        (alias-based store→load forwarding, redundant-load &amp; dead-store elimination) →
+        {' '}if-conversion → strength reduction (incl. division-by-constant) → <b>SROA</b>
+        (escape analysis + scalar replacement of aggregates: a non-escaping record is promoted out
+        of memory into SSA values via dominance-frontier phi insertion) → memory optimization
+        (alias-based store→load forwarding, redundant-load &amp; dead-store elimination, with distinct
+        allocations proven disjoint) →
         {comp.level >= 2 ? ' global value numbering (CSE) →' : ''} algebraic simplification →
         {comp.level >= 2 ? ' loop-invariant code motion →' : ''} dead-code elimination → CFG
         simplification (block coalescing), iterated to a fixed point
@@ -535,7 +538,9 @@ export function VerifyPanel() {
         (counted/nested/reverse-step/<code>long</code> IVs, plus the loops that must <em>not</em> unroll), globals, ternary,
         compound assignment, the full <b>string runtime</b>: literals, concat, equality, indexing, str()/char()…,
         the <b>transcendental math library</b> (exp/ln/sin/cos/pow/…, a shared Strata kernel), the <b>f32</b>
-        single-precision type, and <b>memory optimization</b> (store→load forwarding, redundant-load &amp;
+        single-precision type, <b>SROA</b> (escape analysis promoting non-escaping records out of memory —
+        local, branch-merged, loop-carried, aliased, mixed-width and escape-boundary cases), and
+        <b>memory optimization</b> (store→load forwarding, redundant-load &amp;
         dead/silent-store elimination — with the aliasing, call-barrier and branch-merge cases that must stay conservative))
         — is compiled at -O0…-O3, executed as WebAssembly, and its output compared to the reference interpreter.
         Identical output at every level is the proof that each optimization — and the string runtime, which is itself

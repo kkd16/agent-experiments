@@ -838,7 +838,10 @@ class FnBuilder {
     const layout = this.layouts.get(name)!;
     this.usesMemory = true;
     const vals = args.map((a) => this.lowerExpr(a)!);
-    const base = this.lowerAllocBytes(CI(layout.size));
+    // A first-class `alloc` op (not the raw bump sequence) so escape analysis can
+    // recognize this as a fresh record and, when it never escapes, scalarize it
+    // away entirely. Surviving allocs are lowered to the bump sequence pre-codegen.
+    const base = this.def('i32', 'alloc', '', [CI(layout.size)]);
     layout.fields.forEach((f, i) => {
       const addr = f.offset === 0 ? base : this.def('i32', 'ibin', 'add', [base, CI(f.offset)]);
       this.emit({ dest: null, ty: 'void', kind: 'store', sub: f.irType, args: [addr, vals[i]] });

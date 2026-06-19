@@ -1877,4 +1877,100 @@ fn main(){
   print(s.a);
 }`,
   },
+  {
+    // SROA: a record used only locally (no calls, no escape) is promoted entirely
+    // out of memory — every field becomes an SSA value. The handle never leaks, so
+    // the alloc and all its loads/stores must disappear with identical output.
+    name: 'sroa-local',
+    source: `struct P { x: int; y: int; }
+fn main(){
+  let p = P(3, 4);
+  p.x = p.x + p.y;     // 7
+  p.y = p.x * p.y;     // 28
+  print(p.x); print(p.y);
+}`,
+  },
+  {
+    // SROA through a control-flow merge: a field written on both arms of a branch
+    // must reconcile with a phi at the join (not a memory round-trip). The value
+    // read after the merge has to match the path actually taken.
+    name: 'sroa-phi-merge',
+    source: `struct P { x: int; y: int; }
+fn classify(n: int) -> int {
+  let p = P(0, n);
+  if (n > 0) { p.x = 1; } else if (n < 0) { p.x = -1; } else { p.x = 0; }
+  return p.x + p.y * 0;
+}
+fn main(){ print(classify(42)); print(classify(-7)); print(classify(0)); }`,
+  },
+  {
+    // SROA across a loop: a field accumulated each iteration becomes a loop-carried
+    // phi. The header phi for every promoted slot must thread the right value.
+    name: 'sroa-loop-acc',
+    source: `struct Acc { sum: int; cnt: int; }
+fn triangular(n: int) -> int {
+  let a = Acc(0, 0);
+  for (let i = 1; i <= n; i = i + 1) { a.sum = a.sum + i; a.cnt = a.cnt + 1; }
+  return a.sum + a.cnt;     // n(n+1)/2 + n
+}
+fn main(){ print(triangular(5)); print(triangular(100)); print(triangular(0)); }`,
+  },
+  {
+    // Handle aliasing: `q = p` is the SAME record. A write through one alias is
+    // visible through the other — promotion must keep a single slot per field,
+    // not two.
+    name: 'sroa-alias',
+    source: `struct P { x: int; y: int; }
+fn main(){
+  let p = P(1, 2);
+  let q = p;           // same handle
+  q.x = 99;
+  p.y = q.y + p.x;     // 2 + 99
+  print(p.x); print(q.y); print(p.y);
+}`,
+  },
+  {
+    // Mixed field widths (i32 / i64 / f64 / f32) at their natural offsets all
+    // scalarize independently; the byte-offset slots must stay disjoint.
+    name: 'sroa-mixed-widths',
+    source: `struct M { a: int; b: long; c: float; d: f32; }
+fn main(){
+  let m = M(1, 9000000000L, 2.5, f32(1.25));
+  m.a = m.a + 3;
+  m.b = m.b * 2L;
+  m.c = m.c + float(m.a);
+  print(m.a); print(m.b); print(m.c); print(m.d);
+}`,
+  },
+  {
+    // Escape boundaries: a record that is returned (or compared, or stored) must
+    // stay a real allocation, while a sibling local record is still promoted. The
+    // two must not be confused.
+    name: 'sroa-escape-mix',
+    source: `struct P { x: int; y: int; }
+fn keep(p: P) -> P { return p; }      // p escapes via return
+fn main(){
+  let a = P(5, 6);
+  let kept = keep(a);                 // a escapes -> stays in memory
+  let local = P(10, 20);              // never escapes -> promoted
+  local.x = local.x + local.y;
+  print(kept.x); print(kept.y); print(local.x);
+}`,
+  },
+  {
+    // After cross-function inlining at -O2, vector helpers fold away and the whole
+    // chain of temporaries melts to scalar arithmetic — the headline SROA win.
+    name: 'sroa-inline-vec',
+    source: `struct V { x: float; y: float; }
+fn add(a: V, b: V) -> V { return V(a.x + b.x, a.y + b.y); }
+fn scale(v: V, s: float) -> V { return V(v.x * s, v.y * s); }
+fn dot(a: V, b: V) -> float { return a.x * b.x + a.y * b.y; }
+fn main(){
+  let a = V(3.0, 4.0);
+  let b = V(1.0, 2.0);
+  let c = add(a, scale(b, 2.0));
+  print(c.x); print(c.y);
+  print(dot(a, b));
+}`,
+  },
 ];

@@ -52,6 +52,14 @@ export type InstKind =
   | 'print'
   | 'gget'
   | 'gset'
+  // Reserve a fresh, distinct block of linear memory and yield its base address
+  // as an i32 (`args[0]` is the byte size). Each `alloc` produces an address that
+  // aliases no other allocation — the property escape analysis (`opt/sroa.ts`)
+  // exploits to scalarize non-escaping records. Lowered to the bump-allocator
+  // sequence (`gget`/`add`/`gset`) just before codegen, so the backend never sees
+  // it. Bumping the heap pointer is not observable in a user program (the pointer
+  // is never read back), so a dead `alloc` is freely removable.
+  | 'alloc'
   | 'load'
   | 'store'
   | 'copy';
