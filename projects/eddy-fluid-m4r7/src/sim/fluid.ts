@@ -12,6 +12,8 @@
 // resolution N stores (N+2)² samples per field. Interior cells are indexed
 // 1..N; the ghost ring (index 0 and N+1) carries boundary conditions.
 
+import { Multigrid } from './multigrid';
+
 export type Boundary = 0 | 1 | 2; // 0 = scalar, 1 = u (x-velocity), 2 = v (y-velocity)
 
 export interface FluidParams {
@@ -48,12 +50,16 @@ export interface FluidParams {
   /** Reference temperature the buoyancy force and cooling are measured against. */
   ambient: number;
   /**
-   * Which Poisson solver the projection uses. `'sor'` is red-black successive
-   * over-relaxation (the original); `'cg'` is Jacobi-preconditioned Conjugate
-   * Gradients — a Krylov method that converges the *same* symmetric system far
-   * faster per iteration. Both honour walls/obstacles via the identical stencil.
+   * Which Poisson solver the projection uses, all over the *identical* 5-point
+   * Neumann/obstacle stencil so they converge to the same field:
+   *  - `'sor'`  — red-black successive over-relaxation (a stationary relaxation),
+   *  - `'cg'`   — Jacobi-preconditioned Conjugate Gradients (a Krylov method),
+   *  - `'mg'`   — geometric multigrid V-cycles (work-optimal O(N); convergence
+   *               factor independent of grid size on open domains),
+   *  - `'mgcg'` — multigrid-preconditioned Conjugate Gradients: a V-cycle as the
+   *               CG preconditioner — grid-independent *and* robust to obstacles.
    */
-  pressureSolver: 'sor' | 'cg';
+  pressureSolver: 'sor' | 'cg' | 'mg' | 'mgcg';
   /**
    * Combustion reaction rate (first-order). 0 disables the reactive-flow path
    * entirely. When > 0, fuel hotter than `ignition` burns at this rate, releasing
@@ -136,6 +142,10 @@ export class FluidSolver {
 
   // Obstacle mask. solid[i] !== 0 means the cell is a wall.
   solid: Uint8Array;
+
+  // Geometric-multigrid hierarchy, built lazily the first time the `'mg'` or
+  // `'mgcg'` solver is used (so the SOR/CG paths pay nothing for it).
+  private mg: Multigrid | null = null;
 
   constructor(N: number) {
     this.N = N;
@@ -723,6 +733,42 @@ export class FluidSolver {
     }
 
     // Fill ghost pressures (Neumann), then subtract ∇p — identical to `project`.
+    this.subtractPressureGradient(u, v, p);
+  }
+
+  /**
+   * Build the divergence right-hand side b = −½ ∇·u / N over the fluid interior
+   * (zeroing solids), exactly as `project`/`projectCG` do, into `div`, and zero
+   * the pressure guess. Shared by the multigrid projections.
+   */
+  private buildDivergence(u: Float32Array, v: Float32Array, p: Float32Array, div: Float32Array): void {
+    const N = this.N;
+    const S = N + 2;
+    const solid = this.solid;
+    for (let j = 1; j <= N; j++) {
+      for (let i = 1; i <= N; i++) {
+        const idx = i + S * j;
+        if (solid[idx]) {
+          div[idx] = 0;
+          p[idx] = 0;
+          continue;
+        }
+        div[idx] = -0.5 * (u[idx + 1] - u[idx - 1] + v[idx + S] - v[idx - S]) / N;
+        p[idx] = 0;
+      }
+    }
+  }
+
+  /**
+   * Fill the ghost pressures (homogeneous Neumann) and subtract the pressure
+   * gradient from the velocity — the second half of every Hodge projection,
+   * identical across SOR / CG / multigrid (a solid neighbour contributes this
+   * cell's own pressure, i.e. zero normal gradient at the wall).
+   */
+  private subtractPressureGradient(u: Float32Array, v: Float32Array, p: Float32Array): void {
+    const N = this.N;
+    const S = N + 2;
+    const solid = this.solid;
     this.setBnd(0, p);
     for (let j = 1; j <= N; j++) {
       for (let i = 1; i <= N; i++) {
@@ -738,6 +784,168 @@ export class FluidSolver {
     }
     this.setBnd(1, u);
     this.setBnd(2, v);
+  }
+
+  private ensureMultigrid(): Multigrid {
+    if (!this.mg) this.mg = new Multigrid(this.N);
+    return this.mg;
+  }
+
+  /**
+   * Hodge projection via geometric **multigrid** V-cycles. Multigrid solves the
+   * pressure Poisson equation in work proportional to the number of cells (O(N)),
+   * with a convergence rate per V-cycle that does not degrade as the grid is
+   * refined — because smooth pressure error, which stalls a stationary relaxation
+   * (or even CG), is resolved cheaply on a coarse grid where it looks oscillatory.
+   * Best on open domains; with intricate obstacles prefer `'mgcg'`, which wraps
+   * the same V-cycle in CG for robustness.
+   */
+  private projectMG(
+    u: Float32Array,
+    v: Float32Array,
+    p: Float32Array,
+    div: Float32Array,
+    vcycles: number,
+    nu1 = 2,
+    nu2 = 2,
+  ): void {
+    const N = this.N;
+    const S = N + 2;
+    const solid = this.solid;
+    const mg = this.ensureMultigrid();
+    mg.setSolid(solid);
+    this.buildDivergence(u, v, p, div);
+    // Neumann compatibility: shift the RHS mean-zero in place (so `div` stores the
+    // exact system the solve drives to zero — keeping the pressure diagnostic and
+    // the verify suite honest — and only ∇p is used, which a uniform shift leaves
+    // untouched). `mg.solve`'s own re-zeroing is then a no-op.
+    let mean = 0;
+    let cells = 0;
+    for (let j = 1; j <= N; j++)
+      for (let i = 1; i <= N; i++) {
+        const idx = i + S * j;
+        if (!solid[idx]) {
+          mean += div[idx];
+          cells++;
+        }
+      }
+    if (cells === 0) return;
+    mean /= cells;
+    for (let j = 1; j <= N; j++)
+      for (let i = 1; i <= N; i++) {
+        const idx = i + S * j;
+        if (!solid[idx]) div[idx] -= mean;
+      }
+    const L0 = mg.levels[0];
+    L0.b.set(div);
+    mg.solve(Math.max(1, vcycles), nu1, nu2, 1);
+    // Copy the multigrid solution into the solver's pressure field.
+    for (let j = 1; j <= N; j++)
+      for (let i = 1; i <= N; i++) {
+        const idx = i + S * j;
+        p[idx] = this.solid[idx] ? 0 : L0.x[idx];
+      }
+    this.subtractPressureGradient(u, v, p);
+  }
+
+  /**
+   * Hodge projection via **multigrid-preconditioned Conjugate Gradients**. CG over
+   * the exact same Poisson operator as `projectCG`, but with a single symmetric
+   * multigrid V-cycle replacing the Jacobi diagonal as the preconditioner. The
+   * V-cycle is a near-perfect (grid-independent) approximate inverse, so CG reaches
+   * machine-level residual in a handful of iterations whose count does not grow
+   * with resolution — and, being CG, it stays robust where a bare V-cycle would
+   * stumble (intricate embedded boundaries). This is the best of both solvers.
+   */
+  private projectMGCG(
+    u: Float32Array,
+    v: Float32Array,
+    p: Float32Array,
+    div: Float32Array,
+    maxIters: number,
+    tol = 1e-7,
+  ): void {
+    const N = this.N;
+    const S = N + 2;
+    const solid = this.solid;
+    const mg = this.ensureMultigrid();
+    mg.setSolid(solid);
+    const L0 = mg.levels[0];
+
+    this.buildDivergence(u, v, p, div);
+    // Neumann compatibility: shift the RHS mean-zero (only ∇p is used downstream).
+    let mean = 0;
+    let cells = 0;
+    for (let j = 1; j <= N; j++)
+      for (let i = 1; i <= N; i++) {
+        const idx = i + S * j;
+        if (!solid[idx]) {
+          mean += div[idx];
+          cells++;
+        }
+      }
+    if (cells === 0) return;
+    mean /= cells;
+    for (let j = 1; j <= N; j++)
+      for (let i = 1; i <= N; i++) {
+        const idx = i + S * j;
+        if (!solid[idx]) div[idx] -= mean;
+      }
+
+    const r = this.cgR;
+    const z = this.cgZ;
+    const d = this.cgD;
+    const q = this.cgQ;
+    // r = b − A·p = b (p ≡ 0); z = M⁻¹r via one V-cycle; d = z; rz = ⟨r, z⟩.
+    r.set(div);
+    mg.precondition(r, z);
+    d.set(z);
+    let rz = 0;
+    for (let j = 1; j <= N; j++)
+      for (let i = 1; i <= N; i++) {
+        const idx = i + S * j;
+        if (!solid[idx]) rz += r[idx] * z[idx];
+      }
+
+    for (let k = 0; k < maxIters; k++) {
+      if (!Number.isFinite(rz) || rz === 0) break;
+      mg.applyA(L0, d, q);
+      let dq = 0;
+      for (let j = 1; j <= N; j++)
+        for (let i = 1; i <= N; i++) {
+          const idx = i + S * j;
+          if (!solid[idx]) dq += d[idx] * q[idx];
+        }
+      if (dq <= 1e-30) break;
+      const alpha = rz / dq;
+      let rInf = 0;
+      for (let j = 1; j <= N; j++)
+        for (let i = 1; i <= N; i++) {
+          const idx = i + S * j;
+          if (solid[idx]) continue;
+          p[idx] += alpha * d[idx];
+          const ri = (r[idx] -= alpha * q[idx]);
+          const a = ri < 0 ? -ri : ri;
+          if (a > rInf) rInf = a;
+        }
+      if (rInf < tol) break;
+      mg.precondition(r, z);
+      let rzNew = 0;
+      for (let j = 1; j <= N; j++)
+        for (let i = 1; i <= N; i++) {
+          const idx = i + S * j;
+          if (!solid[idx]) rzNew += r[idx] * z[idx];
+        }
+      const beta = rzNew / rz;
+      rz = rzNew;
+      for (let j = 1; j <= N; j++)
+        for (let i = 1; i <= N; i++) {
+          const idx = i + S * j;
+          if (!solid[idx]) d[idx] = z[idx] + beta * d[idx];
+        }
+    }
+
+    this.subtractPressureGradient(u, v, p);
   }
 
   /**
@@ -959,9 +1167,22 @@ export class FluidSolver {
   }
 
   /** Dispatch the projection to the chosen Poisson solver. */
-  private projectWith(solver: 'sor' | 'cg', iters: number, omega: number): void {
-    if (solver === 'cg') this.projectCG(this.u, this.v, this.p, this.div, iters);
-    else this.project(this.u, this.v, this.p, this.div, iters, omega);
+  private projectWith(solver: 'sor' | 'cg' | 'mg' | 'mgcg', iters: number, omega: number): void {
+    switch (solver) {
+      case 'cg':
+        this.projectCG(this.u, this.v, this.p, this.div, iters);
+        break;
+      case 'mg':
+        // A few V-cycles match the SOR/CG sweep budget in cost but converge the
+        // smooth pressure error far further; clamp to a sensible band.
+        this.projectMG(this.u, this.v, this.p, this.div, Math.max(2, Math.min(10, Math.round(iters / 6))));
+        break;
+      case 'mgcg':
+        this.projectMGCG(this.u, this.v, this.p, this.div, Math.max(4, Math.min(24, Math.round(iters / 2))));
+        break;
+      default:
+        this.project(this.u, this.v, this.p, this.div, iters, omega);
+    }
   }
 
   /**
@@ -979,6 +1200,19 @@ export class FluidSolver {
    */
   projectVelocityCG(iters: number, tol = 1e-7): void {
     this.projectCG(this.u, this.v, this.p, this.div, iters, tol);
+  }
+
+  /**
+   * Public hook over the private multigrid projection, for the verification suite
+   * — `vcycles` V-cycles of geometric multigrid on the current velocity field.
+   */
+  projectVelocityMG(vcycles: number, nu1 = 2, nu2 = 2): void {
+    this.projectMG(this.u, this.v, this.p, this.div, vcycles, nu1, nu2);
+  }
+
+  /** Public hook over the private multigrid-preconditioned CG projection. */
+  projectVelocityMGCG(maxIters: number, tol = 1e-7): void {
+    this.projectMGCG(this.u, this.v, this.p, this.div, maxIters, tol);
   }
 
   /** Bilinearly sample a field at fractional grid coordinate (x, y). */

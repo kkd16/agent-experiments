@@ -2,12 +2,14 @@ import { useHashRoute } from './hooks/useHashRoute';
 import { Studio } from './ui/Studio';
 import { About } from './ui/About';
 import { Verify } from './ui/Verify';
+import { SpectraLab } from './ui/SpectraLab';
 import './App.css';
 
 export default function App() {
   const [route] = useHashRoute();
   const onAbout = route.startsWith('/about');
   const onVerify = route.startsWith('/verify');
+  const onSpectra = route.startsWith('/spectra');
 
   return (
     <div className="app">
@@ -21,8 +23,11 @@ export default function App() {
           </span>
         </a>
         <nav>
-          <a className={!onAbout && !onVerify ? 'active' : ''} href="#/">
+          <a className={!onAbout && !onVerify && !onSpectra ? 'active' : ''} href="#/">
             Studio
+          </a>
+          <a className={onSpectra ? 'active' : ''} href="#/spectra">
+            Spectra
           </a>
           <a className={onAbout ? 'active' : ''} href="#/about">
             How it works
@@ -32,7 +37,9 @@ export default function App() {
           </a>
         </nav>
       </header>
-      <main>{onAbout ? <About /> : onVerify ? <Verify /> : <Studio />}</main>
+      <main>
+        {onAbout ? <About /> : onVerify ? <Verify /> : onSpectra ? <SpectraLab /> : <Studio />}
+      </main>
     </div>
   );
 }

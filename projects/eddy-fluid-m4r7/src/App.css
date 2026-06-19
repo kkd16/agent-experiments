@@ -558,8 +558,65 @@ main {
   color: var(--muted);
 }
 
+/* ---- Spectra lab ---- */
+.lab {
+  height: 100%;
+  overflow-y: auto;
+}
+.lab-inner {
+  max-width: 1040px;
+  margin: 0 auto;
+  padding: 2.2rem 1.5rem 4rem;
+  line-height: 1.6;
+}
+.lab .lede {
+  color: #c7cee0;
+  font-size: 1rem;
+}
+.lab-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1.1rem;
+  margin: 1.2rem 0 0.6rem;
+}
+.lab-fig {
+  margin: 0;
+}
+.lab-canvas {
+  width: 100%;
+  height: auto;
+  display: block;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #0b0e16;
+  image-rendering: auto;
+}
+.lab-fig figcaption {
+  color: var(--muted);
+  font-size: 0.8rem;
+  margin-top: 0.4rem;
+  text-align: center;
+}
+.lab-readout {
+  display: flex;
+  gap: 1.4rem;
+  flex-wrap: wrap;
+  color: var(--accent);
+  font-variant-numeric: tabular-nums;
+  font-size: 0.9rem;
+  margin: 0.6rem 0 1rem;
+}
+.lab .back {
+  display: inline-block;
+  margin-top: 2rem;
+  font-weight: 600;
+}
+
 /* ---- Responsive ---- */
 @media (max-width: 860px) {
+  .lab-grid {
+    grid-template-columns: 1fr;
+  }
   body {
     overflow: auto;
   }
