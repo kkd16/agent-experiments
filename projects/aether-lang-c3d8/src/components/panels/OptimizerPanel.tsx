@@ -24,6 +24,7 @@ const PASS_LABELS: Record<string, string> = {
   'known-match': 'known-constructor match reduction',
   'field-proj': 'record field projection ({ a = e, … }.a ⇒ e)',
   'seq-clean': 'sequence cleanup (pure ; rest ⇒ rest)',
+  cse: 'common-subexpression elimination (compute repeated work once)',
 }
 
 interface Measured {
@@ -146,6 +147,52 @@ export default function OptimizerPanel({ code }: Props) {
       ) : (
         <p className="panel-note">
           Nothing to optimize here — this program is already in its simplest form.
+        </p>
+      )}
+
+      {stats.trace.length > 1 && (
+        <div className="opt-passes">
+          <h4>Fixpoint trace</h4>
+          <p className="panel-note" style={{ marginTop: 0 }}>
+            The optimizer re-runs to a fixpoint; each round can expose new rewrites for the next
+            (a CSE uncovers a dead binding, an inline uncovers a fold, …). Watch the core melt:
+          </p>
+          <table className="opt-table">
+            <tbody>
+              <tr>
+                <td className="opt-pass-count">start</td>
+                <td className="opt-pass-name" />
+                <td className="opt-pass-desc">{stats.nodesBefore} core nodes</td>
+              </tr>
+              {stats.trace.map((t) => (
+                <tr key={t.round}>
+                  <td className="opt-pass-count">round {t.round}</td>
+                  <td className="opt-pass-name">
+                    <code>{t.rewrites}×</code>
+                  </td>
+                  <td className="opt-pass-desc">
+                    {t.nodes} core nodes{' '}
+                    <span className="opt-pct">({pct(stats.nodesBefore, t.nodes)})</span>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {stats.pureFns.length > 0 && (
+        <p className="panel-note">
+          <strong>Effect-&amp;-totality analysis</strong> — proved these functions effect-free and
+          total, so common-subexpression elimination may share a repeated call and dead-code
+          elimination may drop an unused one:{' '}
+          {stats.pureFns.map((f, i) => (
+            <span key={f}>
+              {i > 0 ? ', ' : ''}
+              <code>{f}</code>
+            </span>
+          ))}
+          .
         </p>
       )}
 

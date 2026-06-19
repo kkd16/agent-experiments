@@ -466,6 +466,21 @@ function checkOpt(name, src, opts = {}) {
     problems.push('a `match` survived optimization (expected none)')
   if (opts.expect !== undefined && onVal !== opts.expect)
     problems.push(`value "${onVal}" != expected "${opts.expect}"`)
+  const cseCount = on.optimization ? (on.optimization.passes.cse ?? 0) : 0
+  if (opts.minCse !== undefined && cseCount < opts.minCse)
+    problems.push(`only ${cseCount} CSE rewrites (expected >= ${opts.minCse})`)
+  if (opts.noCse && cseCount !== 0)
+    problems.push(`CSE fired ${cseCount}× (expected none — would be speculative)`)
+  if (opts.minStepCut !== undefined && on.run && off.run && off.run.steps - on.run.steps < opts.minStepCut)
+    problems.push(`steps cut by only ${off.run.steps - on.run.steps} (expected >= ${opts.minStepCut})`)
+  if (opts.pure !== undefined) {
+    const pureFns = on.optimization ? on.optimization.pureFns : []
+    for (const f of opts.pure) if (!pureFns.includes(f)) problems.push(`'${f}' not proven pure (got [${pureFns}])`)
+  }
+  if (opts.notPure !== undefined) {
+    const pureFns = on.optimization ? on.optimization.pureFns : []
+    for (const f of opts.notPure) if (pureFns.includes(f)) problems.push(`'${f}' wrongly proven pure`)
+  }
   record('opt:' + name, problems.length === 0, problems.join('; '))
 }
 
@@ -517,6 +532,47 @@ checkOpt('inline avoids capture', 'let y = 10 in let f = fn x -> x + y in let y 
 checkOpt('beta respects shadowing', '(fn x -> (fn x -> x) 2) 1', { expect: '2' })
 // known-match must not fire through an effect even on a literal-headed ctor.
 checkOpt('known-match keeps scrutinee effect', 'type Opt a = None | Some a in match Some (print 1) with None -> 0 | Some _ -> 42', { expect: '42' })
+
+// ---------------------------------------------------------------------------
+// Common-subexpression elimination battery (Aether 11.0). CSE shares work that
+// runs more than once on a guaranteed path — checkOpt already proves the result,
+// output, effects and (never-increased) step count agree with the unoptimized
+// run, so here we additionally assert CSE *fired*, *cut real steps*, and — the
+// safety half — that it NEVER merges an effect or speculates across a branch.
+// ---------------------------------------------------------------------------
+
+// Repeated pure arithmetic in a tuple: computed once, fewer steps.
+checkOpt('cse repeated arithmetic', 'let a = 3 in let b = 4 in (a * a + b * b, a * a + b * b)',
+  { expect: '(25, 25)', minCse: 1, minStepCut: 5 })
+// Squaring: (x)*(x) shares the inner expression even within one multiply.
+checkOpt('cse squaring', 'let ax = 6 in let bx = 2 in (ax - bx) * (ax - bx)',
+  { expect: '16', minCse: 1 })
+// The headline: a proven-pure helper's repeated *call* is shared.
+checkOpt('cse pure helper call',
+  'let norm2 = fn x y -> x * x + y * y in let dx = 7 in let dy = 4 in (norm2 dx dy + norm2 dx dy, norm2 dx dy * 2)',
+  { expect: '(130, 130)', minCse: 1, minStepCut: 10, pure: ['norm2'] })
+// CSE composes with the rest of the middle-end (a record + a shared subterm).
+checkOpt('cse inside record', 'let a = 5 in let b = 6 in { p = a * b + a, q = a * b + b }',
+  { minCse: 1 })
+
+// --- soundness: CSE must NOT change observable behaviour ---
+// An effectful helper is never proven pure, so two calls are never merged: both
+// 'print's must still run (checkOpt compares optimized vs unoptimized output).
+checkOpt('cse never merges an effect',
+  'let logId = fn x -> let u = print x in x in (logId 1, logId 1)',
+  { notPure: ['logId'] })
+// A bare repeated effectful call likewise keeps both effects.
+checkOpt('cse keeps repeated prints', 'let p = fn x -> print x in let _ = p 1 in let _ = p 1 in 0',
+  { expect: '0' })
+// No speculation: a subexpression common to two *branches* (not guaranteed to
+// run) must not be hoisted out of the `if`.
+checkOpt('cse does not speculate across branches',
+  'let a = 3 in let b = 4 in let c = a < b in if c then a * a + b * b + 1 else a * a + b * b + 2',
+  { expect: '26', noCse: true })
+// A genuinely recursive function is never admitted as pure-total (it could loop).
+checkOpt('cse rejects recursive functions',
+  'let rec f = fn n -> if n == 0 then 0 else n + f (n - 1) in (f 5, f 5)',
+  { expect: '(15, 15)', notPure: ['f'] })
 
 // Aggregate: the optimizer fires somewhere on the gallery, and at least one
 // example's core strictly shrinks (proves real reduction, not a no-op).

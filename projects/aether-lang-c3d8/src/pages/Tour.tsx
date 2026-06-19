@@ -339,10 +339,10 @@ back 50.0        clear ()`}</pre>
           VM, the JavaScript and the WebAssembly faster at once. It runs to a fixpoint: constant
           folding and algebra (<code>x + 0</code>, <code>x * 1</code>, <code>x ++ []</code>), branch
           elimination, β-reduction and η-contraction, capture-avoiding inlining, dead-binding
-          elimination, <strong>known-constructor <code>match</code> reduction</strong> and record
-          field projection. Every rewrite is semantics-preserving for a strict, effectful language —
-          it never reorders, duplicates or drops anything that could <code>print</code>, loop or
-          fail.
+          elimination, <strong>known-constructor <code>match</code> reduction</strong>, record
+          field projection and <strong>common-subexpression elimination</strong>. Every rewrite is
+          semantics-preserving for a strict, effectful language — it never reorders, duplicates or
+          drops anything that could <code>print</code>, loop or fail.
         </p>
         <p>
           The upshot: <em>abstraction melts away</em>. A type-class method call on a concrete value
@@ -354,6 +354,19 @@ back 50.0        clear ()`}</pre>
           breaks the rewrites down by rule, shows the before/after core, and measures the VM-step
           reduction — and because the backends compile the optimized core, the same "matches the VM ✓"
           checks re-prove the answer never changed.
+        </p>
+        <p>
+          And where 10.0 removed <em>abstraction</em> overhead, <strong>common-subexpression
+          elimination</strong> removes <em>recomputation</em>: when a program evaluates the same thing
+          more than once on a guaranteed path, CSE computes it <em>once</em> and shares the result. It
+          stays honest with two rules on top of the purity analysis — it only touches effect-free,
+          terminating expressions (a <code>print</code> is never merged) and only shares occurrences
+          guaranteed to run (so it can never <em>add</em> a step). A from-scratch{' '}
+          <strong>interprocedural effect-&amp;-totality analysis</strong> proves which functions are
+          effect-free and total, so even a repeated <em>call</em> to a pure helper is shared. The{' '}
+          <strong>common-subexpression elimination</strong> example writes one distance four times;
+          the Optimizer tab's round-by-round trace shows it collapse to a single computation, lists
+          the function it proved pure, and the VM steps falling with it.
         </p>
       </section>
 

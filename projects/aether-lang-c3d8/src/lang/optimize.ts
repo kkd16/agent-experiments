@@ -49,6 +49,12 @@ export interface OptimizeStats {
   /** AST node count before / after */
   nodesBefore: number
   nodesAfter: number
+  /** per-round progress: the rewrites fired and the surviving node count after
+   * each fixpoint round, so the UI can show the program *melting* step by step */
+  trace: { round: number; rewrites: number; nodes: number }[]
+  /** the functions the effect-&-totality analysis proved pure (effect-free and
+   * total), whose saturated calls CSE / dead-code-elimination may share or drop */
+  pureFns: string[]
 }
 
 export interface OptimizeResult {
@@ -73,6 +79,19 @@ function gensym(base: string): string {
 // same reason as `freshCounter`: optimization is synchronous and single-shot.
 let CTORS = new Map<string, number>()
 
+// `fnName -> { arity, body }` for every function the effect-&-totality analysis
+// proved **effect-free and total** — a non-recursive, never-shadowed binding
+// whose body is pure (transitively, calling only other proven functions). A
+// *saturated* application of one of these to pure arguments is itself pure, which
+// is what lets CSE share a repeated call and dead-code elimination drop one. Set
+// once per run by `analyzePurity`; read by the extended `isPure`. (See the long
+// safety argument in the header: the gate is conservative, so it can never lie.)
+let PURE_FNS = new Map<string, { arity: number; body: Expr }>()
+
+// memoised per-run cost of a pure function's body (a lower bound on the VM steps
+// one call performs), so `minCost` can see *through* a saturated pure call.
+let bodyCostMemo = new Map<string, number>()
+
 // ---------------------------------------------------------------------------
 // Public entry
 // ---------------------------------------------------------------------------
@@ -80,18 +99,23 @@ let CTORS = new Map<string, number>()
 export function optimizeCore(root: Expr): OptimizeResult {
   freshCounter = 0
   CTORS = collectCtors(root)
+  PURE_FNS = analyzePurity(root)
+  bodyCostMemo = new Map<string, number>()
   const passes: Record<string, number> = {}
   const bump = (name: string): void => {
     passes[name] = (passes[name] ?? 0) + 1
   }
 
   const nodesBefore = size(root)
+  const trace: { round: number; rewrites: number; nodes: number }[] = []
   let expr = root
   let rounds = 0
   for (; rounds < MAX_ROUNDS; rounds++) {
     const before = passesTotal(passes)
     expr = step(expr, bump)
-    if (passesTotal(passes) === before) break // fixpoint
+    const fired = passesTotal(passes) - before
+    if (fired === 0) break // fixpoint
+    trace.push({ round: rounds + 1, rewrites: fired, nodes: size(expr) })
   }
 
   return {
@@ -102,6 +126,8 @@ export function optimizeCore(root: Expr): OptimizeResult {
       passes,
       nodesBefore,
       nodesAfter: size(expr),
+      trace,
+      pureFns: [...PURE_FNS.keys()],
     },
   }
 }
@@ -141,7 +167,7 @@ function step(e: Expr, bump: Bump): Expr {
     }
     case 'app': {
       const n = { ...e, fn: rec(e.fn), arg: rec(e.arg) }
-      return reduceApp(n, bump) ?? n
+      return reduceApp(n, bump) ?? tryCse(n, bump) ?? n
     }
     case 'let': {
       const n = { ...e, value: rec(e.value), body: rec(e.body) }
@@ -157,24 +183,28 @@ function step(e: Expr, bump: Bump): Expr {
     }
     case 'if': {
       const n = { ...e, cond: rec(e.cond), then: rec(e.then), else: rec(e.else) }
-      return reduceIf(n, bump) ?? n
+      return reduceIf(n, bump) ?? tryCse(n, bump) ?? n
     }
     case 'binop': {
       const n = { ...e, left: rec(e.left), right: rec(e.right) }
-      return reduceBinop(n, bump) ?? n
+      return reduceBinop(n, bump) ?? tryCse(n, bump) ?? n
     }
     case 'unop': {
       const n = { ...e, operand: rec(e.operand) }
-      return reduceUnop(n, bump) ?? n
+      return reduceUnop(n, bump) ?? tryCse(n, bump) ?? n
     }
     case 'seq': {
       const n = { ...e, first: rec(e.first), rest: rec(e.rest) }
-      return reduceSeq(n, bump) ?? n
+      return reduceSeq(n, bump) ?? tryCse(n, bump) ?? n
     }
-    case 'list':
-      return { ...e, elements: e.elements.map(rec) }
-    case 'tuple':
-      return { ...e, elements: e.elements.map(rec) }
+    case 'list': {
+      const n = { ...e, elements: e.elements.map(rec) }
+      return tryCse(n, bump) ?? n
+    }
+    case 'tuple': {
+      const n = { ...e, elements: e.elements.map(rec) }
+      return tryCse(n, bump) ?? n
+    }
     case 'match': {
       const n: Expr = {
         ...e,
@@ -185,20 +215,24 @@ function step(e: Expr, bump: Bump): Expr {
           body: rec(c.body),
         })),
       }
-      return reduceMatch(n as Extract<Expr, { kind: 'match' }>, bump) ?? n
+      return reduceMatch(n as Extract<Expr, { kind: 'match' }>, bump) ?? tryCse(n, bump) ?? n
     }
-    case 'record':
-      return { ...e, fields: e.fields.map((f) => ({ label: f.label, value: rec(f.value) })) }
+    case 'record': {
+      const n = { ...e, fields: e.fields.map((f) => ({ label: f.label, value: rec(f.value) })) }
+      return tryCse(n, bump) ?? n
+    }
     case 'field': {
       const n = { ...e, record: rec(e.record) }
-      return reduceField(n, bump) ?? n
+      return reduceField(n, bump) ?? tryCse(n, bump) ?? n
     }
-    case 'recordUpdate':
-      return {
+    case 'recordUpdate': {
+      const n = {
         ...e,
         record: rec(e.record),
         fields: e.fields.map((f) => ({ label: f.label, value: rec(f.value) })),
       }
+      return tryCse(n, bump) ?? n
+    }
     case 'typedecl':
       // never dropped — it carries constructor information the compiler needs
       return { ...e, body: rec(e.body) }
@@ -829,7 +863,16 @@ function isPure(e: Expr): boolean {
     case 'app': {
       // a saturated constructor application of pure args is pure & total
       const head = ctorAppHead(e)
-      return head !== null && head.args.every(isPure)
+      if (head !== null) return head.args.every(isPure)
+      // an application of a *proven* effect-free, total function (see PURE_FNS /
+      // analyzePurity) to pure arguments is pure: a partial application is just a
+      // closure (a value), and a saturated one runs a body we proved pure & total.
+      // Over-application stays conservative (the returned function is unknown).
+      const f = spineHead(e)
+      if (f && PURE_FNS.has(f.name) && f.args.length <= PURE_FNS.get(f.name)!.arity) {
+        return f.args.every(isPure)
+      }
+      return false
     }
     case 'match': {
       // a match on a statically-known, *pure* shape with a definite, unguarded,
@@ -1249,6 +1292,430 @@ function renamePattern(from: string, to: string, p: Pattern): Pattern {
       return { ...p, args: p.args.map((s) => renamePattern(from, to, s)) }
     default:
       return p
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Interprocedural effect-&-totality analysis (powers PURE_FNS)
+// ---------------------------------------------------------------------------
+
+// Effectful native builtins — a function that calls one of these can never be
+// pure. They are natives (never `let`-bound), so they are already excluded from
+// PURE_FNS; this set is belt-and-suspenders against a user *shadowing* one with
+// a pure binding of the same name.
+const EFFECTFUL_NATIVES = new Set([
+  'print', 'forward', 'back', 'turn', 'width', 'penUp', 'penDown', 'push', 'pop', 'clear', 'color',
+])
+
+/** The variable head + argument spine of an application (or null if not headed
+ *  by a variable). `f a b` ⇒ `{ name: 'f', args: [a, b] }`. */
+function spineHead(e: Expr): { name: string; args: Expr[] } | null {
+  const args: Expr[] = []
+  let cur: Expr = e
+  while (cur.kind === 'app') {
+    args.unshift(cur.arg)
+    cur = cur.fn
+  }
+  return cur.kind === 'var' ? { name: cur.name, args } : null
+}
+
+/** Number of leading parameters of a (curried) lambda. */
+function lambdaArity(e: Expr): number {
+  let n = 0
+  let cur: Expr = e
+  while (cur.kind === 'lambda') {
+    n++
+    cur = cur.body
+  }
+  return n
+}
+
+/** The body beneath all of a curried lambda's parameters. */
+function lambdaBody(e: Expr): Expr {
+  let cur: Expr = e
+  while (cur.kind === 'lambda') cur = cur.body
+  return cur
+}
+
+/**
+ * Count every value-binder occurrence of each name (`let` / `letrec` / `lambda`
+ * params / `match`-pattern variables). A name bound *exactly once* in the whole
+ * program can never be shadowed, so a plain `var name` always resolves to that
+ * one binding — which is exactly what makes the name-keyed purity analysis sound
+ * (`isPure` has no scope, so it must only trust unambiguous names).
+ */
+function collectBinderCounts(root: Expr): Map<string, number> {
+  const m = new Map<string, number>()
+  const add = (n: string): void => {
+    m.set(n, (m.get(n) ?? 0) + 1)
+  }
+  const walk = (e: Expr): void => {
+    switch (e.kind) {
+      case 'lambda':
+        add(e.param)
+        break
+      case 'let':
+        add(e.name)
+        break
+      case 'letrec':
+        for (const b of e.bindings) add(b.name)
+        break
+      case 'match':
+        for (const c of e.cases) {
+          const s = new Set<string>()
+          patternVars(c.pattern, s)
+          for (const n of s) add(n)
+        }
+        break
+      default:
+        break
+    }
+    for (const c of childrenOf(e)) walk(c)
+  }
+  walk(root)
+  return m
+}
+
+/**
+ * Discover the functions that are provably **effect-free and total** — a
+ * never-shadowed, non-recursive `let`/`letrec`-bound lambda whose body is pure
+ * (transitively: it may only call constructors, other proven functions, and
+ * itself never, since recursion could diverge). Computed as a monotone fixpoint:
+ * a candidate joins the set once its body type-checks as pure under the set
+ * discovered so far. Conservative by construction, so it can never lie.
+ */
+function analyzePurity(root: Expr): Map<string, { arity: number; body: Expr }> {
+  const counts = collectBinderCounts(root)
+  const candidates: { name: string; lam: Expr }[] = []
+  const consider = (name: string, value: Expr, recursive: boolean): void => {
+    if (value.kind !== 'lambda') return
+    if (counts.get(name) !== 1) return // bound more than once → could be shadowed
+    if (EFFECTFUL_NATIVES.has(name)) return
+    if (recursive && freeVars(value).has(name)) return // genuinely self-recursive
+    candidates.push({ name, lam: value })
+  }
+  const walk = (e: Expr): void => {
+    if (e.kind === 'let') {
+      consider(e.name, e.value, e.recursive)
+    } else if (e.kind === 'letrec') {
+      // a group is recursive iff any binder is referenced from any value; only a
+      // group with no internal references at all is total.
+      const groupFv = new Set<string>()
+      for (const b of e.bindings) for (const v of freeVars(b.value)) groupFv.add(v)
+      if (!e.bindings.some((b) => groupFv.has(b.name))) {
+        for (const b of e.bindings) consider(b.name, b.value, false)
+      }
+    }
+    for (const c of childrenOf(e)) walk(c)
+  }
+  walk(root)
+
+  const known = new Map<string, { arity: number; body: Expr }>()
+  PURE_FNS = known // isPure consults PURE_FNS while the set is being built
+  let changed = true
+  while (changed) {
+    changed = false
+    for (const c of candidates) {
+      if (known.has(c.name)) continue
+      if (isPure(lambdaBody(c.lam))) {
+        known.set(c.name, { arity: lambdaArity(c.lam), body: lambdaBody(c.lam) })
+        changed = true
+      }
+    }
+  }
+  return known
+}
+
+// ---------------------------------------------------------------------------
+// Common-subexpression elimination
+// ---------------------------------------------------------------------------
+
+/**
+ * A conservative **lower bound** on the VM steps to evaluate `e` once. Used only
+ * to gate CSE: because a shared `let` costs exactly one extra VM instruction over
+ * evaluating its value and body, sharing an expression of cost ≥ 4 between ≥ 2
+ * guaranteed evaluations is always a *strict* step win. So this must never
+ * *over*-count — every branch below counts only work that definitely happens
+ * (one `if`/`match` arm, only the left of `&&`/`||`, never a closure body unless
+ * the call is a proven-total saturated one).
+ */
+function minCost(e: Expr): number {
+  switch (e.kind) {
+    case 'int':
+    case 'float':
+    case 'bool':
+    case 'str':
+    case 'unit':
+    case 'var':
+    case 'lambda':
+      return 1
+    case 'unop':
+      return 1 + minCost(e.operand)
+    case 'binop':
+      return e.op === '&&' || e.op === '||'
+        ? 1 + minCost(e.left)
+        : 1 + minCost(e.left) + minCost(e.right)
+    case 'if':
+      return 1 + minCost(e.cond) + Math.min(minCost(e.then), minCost(e.else))
+    case 'seq':
+      return minCost(e.first) + minCost(e.rest)
+    case 'let':
+      return 1 + minCost(e.value) + minCost(e.body)
+    case 'tuple':
+    case 'list':
+      return 1 + e.elements.reduce((n, x) => n + minCost(x), 0)
+    case 'record':
+      return 1 + e.fields.reduce((n, f) => n + minCost(f.value), 0)
+    case 'recordUpdate':
+      return 1 + minCost(e.record) + e.fields.reduce((n, f) => n + minCost(f.value), 0)
+    case 'field':
+      return 1 + minCost(e.record)
+    case 'match':
+      return 1 + minCost(e.scrutinee) + Math.min(...e.cases.map((c) => minCost(c.body)))
+    case 'app': {
+      const f = spineHead(e)
+      if (f && PURE_FNS.has(f.name) && f.args.length === PURE_FNS.get(f.name)!.arity) {
+        // a saturated proven-total call: at least its args + its (terminating) body
+        return 1 + f.args.reduce((n, a) => n + minCost(a), 0) + bodyCost(f.name)
+      }
+      return 1 + minCost(e.fn) + minCost(e.arg)
+    }
+    default:
+      return 1
+  }
+}
+
+/** Memoised lower-bound cost of a proven-pure function's body. The pure-call
+ *  graph is acyclic (no recursion is admitted), so this terminates. */
+function bodyCost(name: string): number {
+  const cached = bodyCostMemo.get(name)
+  if (cached !== undefined) return cached
+  bodyCostMemo.set(name, 1) // conservative guard against any unexpected cycle
+  const c = minCost(PURE_FNS.get(name)!.body)
+  bodyCostMemo.set(name, c)
+  return c
+}
+
+// The strict, binder-free evaluation *frontier* of a node: the children that are
+// guaranteed to be evaluated, exactly once, before the node yields its value,
+// without crossing a binder. Conditional positions (an `if`'s / `match`'s arms,
+// the right of `&&`/`||`) and lambda bodies are deliberately NOT on the frontier,
+// so anything CSE shares from here already ran on every path to the others.
+function frontierChildren(e: Expr): Expr[] {
+  switch (e.kind) {
+    case 'app':
+      return [e.fn, e.arg]
+    case 'binop':
+      return e.op === '&&' || e.op === '||' ? [e.left] : [e.left, e.right]
+    case 'unop':
+      return [e.operand]
+    case 'tuple':
+    case 'list':
+      return e.elements
+    case 'record':
+      return e.fields.map((f) => f.value)
+    case 'recordUpdate':
+      return [e.record, ...e.fields.map((f) => f.value)]
+    case 'field':
+      return [e.record]
+    case 'seq':
+      return [e.first, e.rest]
+    case 'if':
+      return [e.cond]
+    case 'match':
+      return [e.scrutinee]
+    default:
+      return [] // let / letrec / lambda / var / literals: a binder or a leaf — stop
+  }
+}
+
+/** Rebuild `e`, mapping its frontier children through `f` and leaving every
+ *  non-frontier child untouched (mirrors `frontierChildren` exactly). */
+function rebuildFrontier(e: Expr, f: (x: Expr) => Expr): Expr {
+  switch (e.kind) {
+    case 'app':
+      return { ...e, fn: f(e.fn), arg: f(e.arg) }
+    case 'binop':
+      return e.op === '&&' || e.op === '||'
+        ? { ...e, left: f(e.left) }
+        : { ...e, left: f(e.left), right: f(e.right) }
+    case 'unop':
+      return { ...e, operand: f(e.operand) }
+    case 'tuple':
+    case 'list':
+      return { ...e, elements: e.elements.map(f) }
+    case 'record':
+      return { ...e, fields: e.fields.map((fl) => ({ label: fl.label, value: f(fl.value) })) }
+    case 'recordUpdate':
+      return {
+        ...e,
+        record: f(e.record),
+        fields: e.fields.map((fl) => ({ label: fl.label, value: f(fl.value) })),
+      }
+    case 'field':
+      return { ...e, record: f(e.record) }
+    case 'seq':
+      return { ...e, first: f(e.first), rest: f(e.rest) }
+    case 'if':
+      return { ...e, cond: f(e.cond) }
+    case 'match':
+      return { ...e, scrutinee: f(e.scrutinee) }
+    default:
+      return e
+  }
+}
+
+/** Replace every frontier occurrence whose canonical form equals `key` with `v`,
+ *  *not* touching the root node itself (only its frontier descendants). */
+function replaceFrontier(node: Expr, key: string, v: Expr): Expr {
+  const repl = (e: Expr): Expr => (canon(e) === key ? v : rebuildFrontier(e, repl))
+  return rebuildFrontier(node, repl)
+}
+
+// Sharing an expression of evaluation-cost ≥ 3 across ≥ 2 guaranteed evaluations
+// never increases VM steps: the saving is `(n−1)·cost`, the overhead a single
+// extra `let` instruction plus one variable load per site, so the net step change
+// is `1 + n − (n−1)·cost ≤ 0` once `cost ≥ 3`. (Verified against the compiler:
+// a non-recursive `let` is exactly one `POP_BELOW`, a `var` one `GET_LOCAL`.)
+const COST_THRESHOLD = 3
+
+/**
+ * Common-subexpression elimination. On a strict combinator node, find a pure,
+ * costly expression that the node's binder-free strict frontier evaluates more
+ * than once and hoist it into a single fresh `let`, sharing the result. Safe by
+ * three invariants (see the file header): only **pure** (effect-free + total)
+ * expressions are touched; only **guaranteed-evaluated** occurrences are merged
+ * (so VM steps can only fall); and the hoist crosses **no binder** (so it is
+ * scope-safe with no α-renaming).
+ */
+function tryCse(node: Expr, bump: Bump): Expr | null {
+  const groups = new Map<string, Expr[]>()
+  const visit = (e: Expr): void => {
+    if (isPure(e) && minCost(e) >= COST_THRESHOLD) {
+      const k = canon(e)
+      const arr = groups.get(k)
+      if (arr) arr.push(e)
+      else groups.set(k, [e])
+    }
+    for (const c of frontierChildren(e)) visit(c)
+  }
+  for (const c of frontierChildren(node)) visit(c)
+
+  // pick the duplicate group with the largest guaranteed saving
+  let bestKey: string | null = null
+  let bestSaving = 0
+  for (const [k, arr] of groups) {
+    if (arr.length < 2) continue
+    const saving = (arr.length - 1) * minCost(arr[0])
+    if (saving > bestSaving) {
+      bestSaving = saving
+      bestKey = k
+    }
+  }
+  if (bestKey === null) return null
+
+  const s = groups.get(bestKey)![0]
+  const name = gensym('cse')
+  const body = replaceFrontier(node, bestKey, { kind: 'var', name, span: s.span })
+  bump('cse')
+  return { kind: 'let', name, value: s, body, recursive: false, span: node.span }
+}
+
+// Span-insensitive canonical form, used to recognise identical subexpressions.
+// Variables compare by name (sound only inside a binder-free region, which is the
+// only place CSE compares them). Memoised like `freeVars`.
+const canonCache = new WeakMap<Expr, string>()
+function canon(e: Expr): string {
+  const c = canonCache.get(e)
+  if (c !== undefined) return c
+  const s = canonCompute(e)
+  canonCache.set(e, s)
+  return s
+}
+
+function canonCompute(e: Expr): string {
+  switch (e.kind) {
+    case 'int':
+      return 'i' + e.value
+    case 'float':
+      return 'f' + e.value
+    case 'bool':
+      return 'b' + (e.value ? 1 : 0)
+    case 'str':
+      return 's' + JSON.stringify(e.value)
+    case 'unit':
+      return 'u'
+    case 'var':
+      return 'v' + e.name
+    case 'lambda':
+      return 'L' + e.param + '.' + canon(e.body)
+    case 'app':
+      return '(' + canon(e.fn) + ' ' + canon(e.arg) + ')'
+    case 'binop':
+      return '[' + e.op + canon(e.left) + canon(e.right) + ']'
+    case 'unop':
+      return '{' + e.op + canon(e.operand) + '}'
+    case 'if':
+      return '?' + canon(e.cond) + ':' + canon(e.then) + ':' + canon(e.else)
+    case 'let':
+      return 'let' + (e.recursive ? '*' : '') + e.name + '=' + canon(e.value) + ';' + canon(e.body)
+    case 'letrec':
+      return 'ltr[' + e.bindings.map((b) => b.name + '=' + canon(b.value)).join(',') + '];' + canon(e.body)
+    case 'tuple':
+      return 'T(' + e.elements.map(canon).join(',') + ')'
+    case 'list':
+      return 'Li[' + e.elements.map(canon).join(',') + ']'
+    case 'seq':
+      return canon(e.first) + ';;' + canon(e.rest)
+    case 'match':
+      return (
+        'M' +
+        canon(e.scrutinee) +
+        '{' +
+        e.cases
+          .map((c) => canonPat(c.pattern) + (c.guard ? '|' + canon(c.guard) : '') + '>' + canon(c.body))
+          .join(';') +
+        '}'
+      )
+    case 'record':
+      return 'R{' + e.fields.map((f) => f.label + '=' + canon(f.value)).join(',') + '}'
+    case 'field':
+      return canon(e.record) + '.' + e.label
+    case 'recordUpdate':
+      return canon(e.record) + '{|' + e.fields.map((f) => f.label + '=' + canon(f.value)).join(',') + '}'
+    case 'typedecl':
+      return 'ty;' + canon(e.body)
+    case 'classdecl':
+      return 'cl;' + canon(e.body)
+    case 'instancedecl':
+      return 'in;' + canon(e.body)
+  }
+}
+
+function canonPat(p: Pattern): string {
+  switch (p.kind) {
+    case 'pwild':
+      return '_'
+    case 'pvar':
+      return '@' + p.name
+    case 'pint':
+      return 'i' + p.value
+    case 'pfloat':
+      return 'f' + p.value
+    case 'pbool':
+      return 'b' + (p.value ? 1 : 0)
+    case 'pstr':
+      return 's' + JSON.stringify(p.value)
+    case 'punit':
+      return 'u'
+    case 'pnil':
+      return 'n'
+    case 'pcons':
+      return '(' + canonPat(p.head) + '::' + canonPat(p.tail) + ')'
+    case 'ptuple':
+      return 'T(' + p.elements.map(canonPat).join(',') + ')'
+    case 'pcon':
+      return 'C' + p.name + '(' + p.args.map(canonPat).join(',') + ')'
   }
 }
 

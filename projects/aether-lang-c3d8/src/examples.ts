@@ -905,6 +905,39 @@ let rec loop = fn i acc ->
 
 loop 400 0`,
   },
+  {
+    id: 'cse',
+    title: 'Common-subexpression elimination',
+    blurb: 'Open the Optimizer tab: the round-by-round trace shows repeated work collapsing to one.',
+    visual: false,
+    code: `// Aether 11.0 — Common-Subexpression Elimination (CSE).
+//
+// Open the "Optimizer" tab. The rewrite table now lists 'cse'; the round-by-round
+// trace shows the core melting; "Measure VM steps" shows the saving; and the panel
+// reports which functions the new effect-&-totality analysis proved *pure*.
+//
+// CSE shares work the programmer never factored out — but only when it is safe:
+//   • only effect-free, terminating expressions (a 'print' is never merged), and
+//   • only occurrences that are *guaranteed* to run (so it can never add work).
+// Because it emits an ordinary 'let', the VM, the JavaScript backend AND the
+// WebAssembly backend all run the shared program, and the equivalence checks
+// re-prove the answer never changed.
+
+// 'dist2' is a pure helper. The optimizer's effect-&-totality analysis proves it
+// effect-free and total, so a repeated *call* to it can be computed once and
+// shared. (Inside it, each squared difference repeats and is shared too.)
+let dist2 = fn ax ay bx by ->
+  (ax - bx) * (ax - bx) + (ay - by) * (ay - by) in
+
+let ox = 0 in let oy = 0 in
+let px = 6 in let py = 8 in
+
+// 'dist2 ox oy px py' is written four times below. After CSE the whole tuple
+// evaluates it ONCE — watch the VM step count fall in the Optimizer tab.
+( dist2 ox oy px py
+, dist2 ox oy px py + dist2 ox oy px py
+, dist2 ox oy px py * 2 )`,
+  },
 ]
 
 export const DEFAULT_CODE = EXAMPLES[0].code

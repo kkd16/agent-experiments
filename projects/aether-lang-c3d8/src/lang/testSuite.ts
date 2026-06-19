@@ -315,6 +315,26 @@ type Color = Red | Green | Blue deriving (Eq, Show) in
     expected: '(true, false, "Blue")',
   },
 
+  // ---- optimizer: common-subexpression elimination (Aether 11.0) ----
+  {
+    group: 'cse',
+    name: 'repeated pure work is shared (and equals the unshared answer)',
+    code: 'let a = 3 in let b = 4 in (a * a + b * b, a * a + b * b)',
+    expected: '(25, 25)',
+  },
+  {
+    group: 'cse',
+    name: 'a proven-pure helper call is shared',
+    code: 'let norm2 = fn x y -> x * x + y * y in let dx = 7 in let dy = 4 in norm2 dx dy + norm2 dx dy',
+    expected: '130',
+  },
+  {
+    group: 'cse',
+    name: 'an effectful call is never merged (both effects run)',
+    code: 'let logId = fn x -> let u = print x in x in (logId 1, logId 1)',
+    expected: '(1, 1)',
+  },
+
   // ---- errors (must be rejected) ----
   {
     group: 'errors',
