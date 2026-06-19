@@ -156,6 +156,34 @@ function ringToken(): TransitionSystem {
   }
 }
 
+function lfsr(broken: boolean): TransitionSystem {
+  // A 4-bit Fibonacci linear-feedback shift register with taps at bits 3 and 2
+  // (polynomial x⁴+x³+1), which is *maximal-length*: from any nonzero seed it
+  // cycles through all 15 nonzero states and never reaches 0 — the all-zero
+  // word is a fixed point outside the cycle. PDR discovers exactly the invariant
+  // "register ≠ 0". The broken variant XORs the wrong taps (a single mis-wired
+  // gate) and *can* shift in all zeros, so the lock-up state 0 becomes reachable.
+  const n = 4
+  const next = (s: number): number[] => {
+    const b3 = (s >> 3) & 1
+    const b2 = (s >> 2) & 1
+    const b0 = s & 1
+    const fb = broken ? b3 & b0 : b3 ^ b2
+    return [((s << 1) | fb) & 0b1111]
+  }
+  return {
+    name: broken ? 'LFSR lock-up (mis-wired)' : 'Maximal-length LFSR',
+    description: broken
+      ? 'A 4-bit shift register whose feedback gate is wired wrong. From the seed 0001 it can shift in all zeros and latch up in the dead state 0 — model checking returns the concrete sequence that kills it.'
+      : 'A 4-bit Fibonacci LFSR (taps x⁴+x³+1) — the workhorse of pseudo-random generators and scramblers. From a nonzero seed it tours all 15 nonzero words and never hits the lock-up state 0. PDR proves it with the one-clause invariant "register ≠ 0".',
+    stateBits: n,
+    bitNames: ['b0', 'b1', 'b2', 'b3'],
+    init: minterm(1, n), // seed 0001
+    trans: fromNextFn(n, next),
+    bad: pred(n, (v) => v === 0), // the all-zero lock-up state
+  }
+}
+
 export const TS_EXAMPLES: TransitionSystem[] = [
   modCounter(),
   overflowCounter(),
@@ -163,4 +191,6 @@ export const TS_EXAMPLES: TransitionSystem[] = [
   mutex(true),
   trafficLight(),
   ringToken(),
+  lfsr(false),
+  lfsr(true),
 ]

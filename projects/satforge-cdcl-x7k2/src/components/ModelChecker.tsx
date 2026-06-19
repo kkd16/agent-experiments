@@ -9,11 +9,13 @@ import {
   checkInterpolant,
   simplify,
   formulaToString,
+  pdr,
   TS_EXAMPLES,
   type TransitionSystem,
   type ImcResult,
   type BfsResult,
   type KIndResult,
+  type PdrResult,
 } from '../imc'
 
 type Sub = 'mc' | 'interp'
@@ -34,10 +36,11 @@ export function ModelChecker() {
         <p className="imc-blurb">
           {sub === 'mc' ? (
             <>
-              <strong>Interpolation-based model checking</strong> (McMillan 2003) proves a
-              finite-state system can <em>never</em> reach a bad state — unbounded safety — by
-              turning Craig interpolants of bounded unrollings into an inductive invariant. Every
-              verdict here is double-checked against an independent explicit-state BFS oracle.
+              <strong>Unbounded safety model checking</strong> proves a finite-state system can{' '}
+              <em>never</em> reach a bad state. SatForge runs <strong>three independent engines</strong>{' '}
+              — Craig-interpolation (McMillan 2003), <strong>IC3/PDR</strong> (Bradley 2011), and
+              k-induction — each producing a machine-checked inductive invariant or a concrete
+              counterexample, and cross-checks all of them against an explicit-state BFS oracle.
             </>
           ) : (
             <>
@@ -67,16 +70,21 @@ function McView() {
   const run = useMemo(() => {
     const res: ImcResult = imc(ts, { maxBound: 40, maxRounds: 200 })
     const ki: KIndResult = kInduction(ts, 64)
+    const pd: PdrResult = pdr(ts)
     const ref: BfsResult = bfsReachability(ts)
     const invOk = res.result === 'SAFE' && res.invariant ? checkInvariant(ts, res.invariant) : null
     const cexOk =
       res.result === 'UNSAFE' && res.counterexample ? checkCounterexample(ts, res.counterexample) : null
+    const pdInvOk = pd.result === 'SAFE' && pd.invariant ? checkInvariant(ts, pd.invariant) : null
+    const pdCexOk = pd.result === 'UNSAFE' && pd.counterexample ? checkCounterexample(ts, pd.counterexample) : null
     const agrees = res.result !== 'UNKNOWN' && (res.result === 'SAFE') === ref.safe
     const kiAgrees = ki.result !== 'UNKNOWN' && (ki.result === 'SAFE') === ref.safe
-    return { res, ki, ref, invOk, cexOk, agrees, kiAgrees }
+    const pdAgrees = pd.result !== 'UNKNOWN' && (pd.result === 'SAFE') === ref.safe
+    const allAgree = agrees && kiAgrees && pdAgrees
+    return { res, ki, pd, ref, invOk, cexOk, pdInvOk, pdCexOk, agrees, kiAgrees, pdAgrees, allAgree }
   }, [ts])
 
-  const { res, ki, ref, invOk, cexOk, agrees, kiAgrees } = run
+  const { res, ki, pd, ref, invOk, cexOk, pdInvOk, pdCexOk, kiAgrees, pdAgrees, allAgree } = run
 
   return (
     <>
@@ -124,7 +132,16 @@ function McView() {
           </p>
         </div>
         <div className="imc-card">
-          <h3>k-induction (2nd proof)</h3>
+          <h3>IC3 / PDR (2nd proof)</h3>
+          <p>
+            Property-directed reachability (Bradley 2011) reports{' '}
+            <strong>{pd.result === 'SAFE' ? `SAFE at depth ${pd.depth}` : pd.result === 'UNSAFE' ? `UNSAFE (depth ${pd.depth})` : 'UNKNOWN'}</strong>{' '}
+            after {pd.stats.frames} frame{pd.stats.frames === 1 ? '' : 's'}, {pd.stats.satQueries} one-step SAT queries.{' '}
+            <span className={pdAgrees ? 'check-ok' : 'check-bad'}>{pdAgrees ? '✓ agrees' : '✗ MISMATCH'}</span>
+          </p>
+        </div>
+        <div className="imc-card">
+          <h3>k-induction (3rd proof)</h3>
           <p>
             An independent proof rule (simple-path k-induction) reports{' '}
             <strong>{ki.result === 'SAFE' ? `SAFE at k=${ki.k}` : ki.result === 'UNSAFE' ? `UNSAFE (k=${ki.k})` : 'UNKNOWN'}</strong>.{' '}
@@ -136,8 +153,8 @@ function McView() {
           <p>
             Explicit-state BFS over all {1 << ts.stateBits} states reports{' '}
             <strong>{ref.safe ? 'SAFE' : `UNSAFE (bad reachable in ${ref.distance} step${ref.distance === 1 ? '' : 's'})`}</strong>.{' '}
-            <span className={agrees && kiAgrees ? 'check-ok' : 'check-bad'}>
-              {agrees && kiAgrees ? '✓ all three agree' : '✗ MISMATCH'}
+            <span className={allAgree ? 'check-ok' : 'check-bad'}>
+              {allAgree ? '✓ all four agree' : '✗ MISMATCH'}
             </span>
           </p>
         </div>
@@ -192,6 +209,63 @@ function McView() {
           </table>
         </div>
       )}
+
+      <div className="imc-panel">
+        <h3>
+          IC3 / PDR proof{' '}
+          <span className={pdAgrees ? 'check-ok' : 'check-bad'}>{pdAgrees ? '✓ agrees with the oracle' : '✗ MISMATCH'}</span>
+        </h3>
+        <p className="imc-note">
+          PDR never unrolls <code>Trans</code>. It strengthens a ladder of over-approximating frames
+          F₀=Init ⊆ F₁ ⊆ … using only single-step SAT queries, blocking each bad state with an{' '}
+          <em>inductively generalized</em> clause; when two adjacent frames coincide their conjunction
+          is the invariant below.
+        </p>
+        <div className="pdr-stats">
+          <div><span>{pd.stats.frames}</span>frames</div>
+          <div><span>{pd.stats.clauses}</span>clauses learnt</div>
+          <div><span>{pd.stats.satQueries}</span>SAT queries</div>
+          <div><span>{pd.stats.obligations}</span>proof obligations</div>
+          <div><span>{pd.stats.litsDropped}</span>literals dropped (MIC)</div>
+          <div><span>{pd.stats.pushed}</span>clauses pushed</div>
+        </div>
+        <div className="pdr-ladder">
+          {pd.frameClauses.slice(1).map((cls, i) => {
+            const max = Math.max(1, ...pd.frameClauses.slice(1).map((c) => c.length))
+            return (
+              <div className="pdr-frame" key={i}>
+                <span className="pdr-frame-label">F{i + 1}</span>
+                <div className="pdr-frame-bar">
+                  <div className="pdr-frame-fill" style={{ width: `${(cls.length / max) * 100}%` }} />
+                </div>
+                <span className="pdr-frame-count">{cls.length} clause{cls.length === 1 ? '' : 's'}</span>
+              </div>
+            )
+          })}
+        </div>
+        {pd.result === 'SAFE' && pd.invariant && (
+          <>
+            <h4 className="pdr-subhead">PDR's inductive invariant (found at F{pd.depth})</h4>
+            <pre className="imc-formula">{formulaToString(simplify(pd.invariant), (v) => bitName(ts, v))}</pre>
+            <ul className="imc-checks">
+              <li className={pdInvOk ? 'check-ok' : 'check-bad'}>{pdInvOk ? '✓' : '✗'} Init ⟹ Inv</li>
+              <li className={pdInvOk ? 'check-ok' : 'check-bad'}>{pdInvOk ? '✓' : '✗'} Inv ∧ Trans ⟹ Inv′</li>
+              <li className={pdInvOk ? 'check-ok' : 'check-bad'}>{pdInvOk ? '✓' : '✗'} Inv ⟹ ¬Bad</li>
+            </ul>
+            <p className="imc-note">
+              Discovered by a different algorithm than the interpolation invariant above — both are
+              machine-checked to be genuine proofs of unbounded safety.
+            </p>
+          </>
+        )}
+        {pd.result === 'UNSAFE' && pd.counterexample && (
+          <p className="imc-note">
+            PDR's recursive blocking reached F₀ (an initial state on the path to Bad); it returns the
+            same shortest counterexample of length {pd.counterexample.length - 1}{' '}
+            <span className={pdCexOk ? 'check-ok' : 'check-bad'}>{pdCexOk ? '✓ replays through Trans' : '✗ invalid'}</span>.
+          </p>
+        )}
+      </div>
 
       <div className="imc-panel">
         <h3>Search trace</h3>

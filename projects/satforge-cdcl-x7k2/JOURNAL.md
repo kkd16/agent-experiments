@@ -41,7 +41,10 @@ conflict teaches the solver a new clause that prunes an exponential swath of the
   proof-logging CDCL that records a resolution refutation for UNSAT; `interpolant.ts` reads a
   McMillan interpolant off that proof; `formula.ts` is a Boolean circuit layer that both
   Tseitin-encodes to CNF and evaluates concretely; `modelcheck.ts` is the interpolation-based
-  safety model checker plus an **independent explicit-state BFS reachability oracle**.
+  safety model checker plus k-induction plus an **independent explicit-state BFS reachability
+  oracle**. `pdr.ts` (Session 13) is a from-scratch **IC3 / PDR** engine — property-directed
+  reachability with recursive proof-obligation blocking, Bradley's inductive generalization (MIC),
+  and clause propagation — a *third* unbounded-safety prover that never unrolls `Trans`.
 - `src/worker/solver.worker.ts` + `src/useSolver.ts` — runs the solver off the main thread.
 - `src/components/*` — Solution boards, statistics + search-dynamics chart, implication-graph
   view, step-through trace, CNF/DIMACS inspector, the SMT Studio, and the Model Checker studio
@@ -59,8 +62,10 @@ SMT theories (Session 5), the QF_BV bit-blaster (Session 6), the QF_AX theory of
 the OMT/MaxSMT optimizer (Session 10), and the Craig-interpolation + model-checking subsystem
 (Session 11 — the proof-logging solver vs. brute force *and* the main engine, interpolants vs.
 exhaustive verification of all three Craig properties, and the model checker vs. an independent
-explicit-state BFS oracle, plus a second k-induction proof rule that must agree) all compared
-against independent references. All **285 assertions** pass.
+explicit-state BFS oracle, plus a k-induction proof rule that must agree) and the **IC3/PDR
+engine** (Session 13 — its verdicts, inductive invariants and shortest counterexamples
+cross-checked against BFS, IMC *and* k-induction on hundreds of random systems and the curated
+gallery) all compared against independent references. All **296 assertions** pass.
 
 ## Ideas / backlog
 
@@ -713,6 +718,78 @@ pattern.
 - [ ] A "tournament" mode that auto-tunes one knob (e.g. `restartBase`) by bisection on PAR-2.
 - [ ] Wire the same harness over the **MaxSAT** and **SMT** engines (strategy/theory ablations).
 
+### Session 13 — from *one safety proof* to *three*: IC3 / PDR
+
+Session 11 gave SatForge its first unbounded-safety prover (Craig interpolation) and a second
+proof rule (k-induction). Session 13 adds the algorithm that actually dethroned interpolation in
+practice and powers every modern hardware model checker: **IC3 / PDR — Property-Directed
+Reachability** (Bradley, *VMCAI 2011*; Eén–Mishchenko–Brayton, *FMCAD 2011*). It is a genuinely
+different idea, not a variation on what we had: where interpolation derives an invariant from a
+*global* resolution proof of a bounded unrolling, **IC3 never unrolls `Trans` at all**. It grows a
+ladder of over-approximating frames F₀=Init ⊆ F₁ ⊆ … ⊆ Fₖ — each a conjunction of CNF clauses —
+and strengthens them using nothing but *single-step* SAT queries, blocking each reachable bad
+state with a freshly *learned, inductively generalized* clause. When two adjacent frames coincide,
+their conjunction is an inductive invariant: a checkable proof of safety for executions of *any*
+length.
+
+This is the real algorithm, built from scratch on the project's existing pieces — the `Formula`
+layer, the Tseitin `CnfBuilder`, and the proof-logging `solveCnf` SAT backend — not a toy.
+
+**The engine (`src/imc/pdr.ts`).**
+
+- [x] **Monotone CNF frames** F₀=Init ⊆ F₁ ⊆ … with Bradley's representation: a clause learned at
+      frame *i* is added to every frame ≤ *i*, so `Fᵢ ⊇ Fᵢ₊₁` as clause sets is an invariant — and
+      a fixpoint is detected by a simple set-equality of two adjacent frames.
+- [x] **Recursive proof-obligation blocking** with a min-frame-first priority queue: a bad cube at
+      Fₖ spawns predecessor obligations at lower frames; a chain that reaches F₀ (an initial state)
+      is a counterexample, otherwise each obligation is discharged by a learned blocking clause.
+- [x] **Relative-induction queries** `SAT(Fᵢ ∧ ¬s ∧ Trans ∧ s′)` — the one-step heart of PDR — for
+      both predecessor extraction and "is ¬s inductive relative to Fᵢ?".
+- [x] **Inductive generalization (MIC)** — Bradley's minimal-inductive-clause: drop literals from a
+      blocking cube as long as ¬s stays inductive relative to the previous frame *and* excludes
+      Init, so a single query prunes an exponential set of states. (The self-test shows it routinely
+      drops a third of the literals.)
+- [x] **Clause propagation / pushing** — after each frame extension, push every clause as far
+      forward as it stays inductive; coincident adjacent frames ⇒ SAFE with an inductive invariant.
+- [x] **Counterexample materialization** — IC3 establishes *unsafety* by reaching F₀; the shortest
+      concrete witness is then produced by an honest bounded unrolling (`Init ∧ Tᴸ ∧ Bad`) and is
+      validated by the same `checkCounterexample` gate the other engines use.
+- [x] **Instrumentation** — per-run stats (frames, clauses, SAT queries, obligations, literals
+      dropped by MIC, clauses pushed) and a structured search trace, surfaced in the UI.
+
+**Cross-checks (`src/imc/selfcheck.ts`) — PDR has to earn its verdict three times over.**
+
+- [x] On **220 random transition systems**, PDR's verdict matches the explicit-state **BFS oracle**,
+      every SAFE result carries a *genuinely inductive* invariant (re-checked by `checkInvariant`),
+      every UNSAFE result a *valid and shortest* counterexample, and PDR's verdict **agrees with both
+      IMC and k-induction** on every decided instance (a four-way cross-check).
+- [x] On the **curated gallery**, PDR matches BFS on every example with all invariants/counter­
+      examples machine-checked.
+- [x] Six new assertions; the full gate is now **296 assertions, all green**.
+
+**New gallery examples (`src/imc/examples.ts`).** A real-hardware **maximal-length 4-bit LFSR**
+(taps x⁴+x³+1) — the workhorse of scramblers and PRNGs — whose safety property "never latches up in
+the all-zero state" is proven by PDR with the one-clause invariant *register ≠ 0*; plus a **broken,
+mis-wired variant** that *can* shift in all zeros, for which all three engines return the concrete
+lock-up sequence.
+
+**UI (`src/components/ModelChecker.tsx`).** The Model Checker now presents **four** verdicts side by
+side (IMC, IC3/PDR, k-induction, BFS oracle) and only shows "✓ all four agree" when they do. A new
+**IC3/PDR proof panel** visualizes the algorithm: a live **frame ladder** (clauses learned per
+frame), a stats grid (frames / SAT queries / obligations / literals dropped by MIC / clauses
+pushed), and PDR's *own* inductive invariant with its three machine-checked conditions — a proof
+discovered by a completely different route than the interpolation invariant shown above it.
+
+#### Future ideas
+
+- [ ] **Ternary simulation / lifting** of predecessor cubes (drop don't-care state bits before MIC)
+      to cut SAT queries on wider systems.
+- [ ] **CTG-guided generalization** (Hassan–Bradley–Somenzi) — block counterexamples-to-generalization
+      to learn stronger clauses.
+- [ ] Let the studio accept a **user-typed transition system** (DIMACS-style Init/Trans/Bad) and run
+      all four engines on it live.
+- [ ] An **animated frame-ladder replay** that steps through blocking/propagation events from the trace.
+
 ## Session log
 
 - 2026-06-15 (claude): Created the project. Implemented the full CDCL solver from scratch
@@ -970,3 +1047,18 @@ pattern.
   200 random CNFs (verdicts + models), the suite decided unanimously and matched ground truth,
   every SAT result re-verified its model, and the summary/cactus aggregations checked well-formed
   and mutually consistent. Lint + build + full gate green.
+- 2026-06-19 (claude): Gave SatForge its **third independent unbounded-safety prover — IC3 / PDR**
+  (`src/imc/pdr.ts`), built from scratch on the existing `Formula`/`CnfBuilder`/`solveCnf` stack.
+  Property-directed reachability: monotone over-approximating CNF frames F₀=Init ⊆ F₁ ⊆ …, recursive
+  proof-obligation blocking with a min-frame priority queue, relative-induction one-step SAT queries
+  (`Fᵢ ∧ ¬s ∧ Trans ∧ s′`), Bradley's inductive generalization (MIC — drops ~⅓ of literals),
+  clause propagation with adjacent-frame fixpoint detection ⇒ inductive invariant, and shortest
+  counterexamples materialized by an honest bounded unrolling. It never unrolls `Trans`. Wired into
+  the Model Checker UI as a fourth side-by-side verdict (IMC / PDR / k-induction / BFS, "✓ all four
+  agree") with a new proof panel: a live frame-ladder bar chart, a stats grid (frames / SAT queries /
+  obligations / MIC literal drops / clauses pushed), and PDR's own machine-checked inductive
+  invariant. Added a real-hardware **maximal-length LFSR** gallery example (invariant *register ≠ 0*)
+  plus a mis-wired lock-up variant. Six new self-test assertions cross-check PDR's verdicts,
+  invariants and shortest counterexamples against the BFS oracle, IMC *and* k-induction on 220 random
+  systems + the curated gallery — harness now **290 → 296 assertions**. Lint + tsc + build + full
+  gate green.
