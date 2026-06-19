@@ -284,6 +284,32 @@ export function About({ onClose }: Props) {
           session; this ships the exact analytic rim.
         </p>
 
+        <h2>Symplectic planetary dynamics: integrating exactly the right thing</h2>
+        <p>
+          Every integrator above is <em>agnostic</em> — it knows nothing about the problem it
+          advances. But a <strong>planetary system</strong> has structure worth exploiting: the
+          motion is <em>nearly Keplerian</em>, a dominant star with the other planets a faint
+          perturbation. A brute-force stepper integrates the <em>whole</em> force — including the
+          huge, fast-curving stellar pull — approximately, so its error tracks the full dynamics.{' '}
+          <strong>Wisdom &amp; Holman (1991)</strong> instead <em>split</em> the Hamiltonian into a
+          Keplerian part and a small interaction, integrate the Kepler part{' '}
+          <strong>exactly</strong>, and only approximate the perturbation.
+        </p>
+        <p>
+          The exact part is a <strong>universal-variable Kepler propagator</strong>: it advances a
+          body along its osculating ellipse analytically for any eccentricity (and either time
+          direction), via the Stumpff functions and a bisection-safeguarded Newton solve for the
+          universal anomaly — its internal Lagrange coefficients satisfy{' '}
+          <code>f·ġ − ḟ·g = 1</code> to a part in <code>10¹³</code>, the signature of an exact
+          symplectic map. The <strong>Symplectic Lab</strong> then races Wisdom–Holman (2nd order,
+          and a 4th-order Yoshida triple-jump of it) against velocity Verlet and Runge–Kutta 4 on the{' '}
+          <em>identical</em> unsoftened Hamiltonian at one deliberately coarse step. The energy-error
+          plot tells the whole story: WH stays flat and <em>bounded</em> — roughly{' '}
+          <strong>10,000× under Verlet</strong> — while the 4th-order-accurate-but-non-symplectic RK4
+          drifts secularly away. This is precisely why long-term Solar-System integrations (SWIFT,
+          MERCURY, REBOUND) are all built on the Wisdom–Holman map.
+        </p>
+
         <h2>Run the numbers yourself</h2>
         <p>
           None of the above is taken on faith. The button below runs a battery of numerical checks in
@@ -303,7 +329,13 @@ export function About({ onClose }: Props) {
           Einstein's <code>4M/b</code> and diverges logarithmically (matching Bozza 2002) at{' '}
           <code>b_c</code>, that the exact orbit equation reproduces the <code>2π(1/√(1−6M/r)−1)</code>{' '}
           precession, that the disc redshift is exactly <code>√½</code> at the ISCO, and that the
-          Kerr shadow collapses to the <code>3√3 M</code> circle as its spin vanishes.
+          Kerr shadow collapses to the <code>3√3 M</code> circle as its spin vanishes. And the
+          symplectic battery: that the universal-variable Kepler propagator matches the analytic{' '}
+          <code>E − e·sinE</code> solution to machine precision, that its Lagrange coefficients
+          satisfy <code>f·ġ − ḟ·g = 1</code>, that Wisdom–Holman is exact for two bodies and beats
+          Verlet on energy by <code>~10⁴×</code> (with RK4's secular drift as a control), that its
+          4th-order composition beats the 2nd, and that the map is time-reversible and conserves
+          linear and angular momentum.
         </p>
         <div className="selftest">
           <button type="button" className="btn primary" onClick={runTests} disabled={running}>
@@ -342,6 +374,7 @@ export function About({ onClose }: Props) {
           <li>Open the <em>Wave Lab</em>, press <em>Generate inspiral</em>, and watch two bodies spiral together as they radiate — then press <em>Hear the chirp</em> to listen to the merger. Push the eccentricity up and watch the orbit circularise; check the measured merger time against Peters' formula.</li>
           <li>Open the <em>Black Hole Lab</em>, press <em>Render black hole</em>, and watch the shadow, the lensed sky grid and the Doppler-beamed disc trace out row by row — then set the inclination near 90° to see the disc's far side lensed up over the top, the <em>Interstellar</em> image.</li>
           <li>In the <em>Black Hole Lab</em>, drag the Kerr <em>spin</em> up toward 1 and watch the shadow morph from a circle into the lopsided D-shape, flattening on the side space is dragged toward you.</li>
+          <li>Open the <em>Symplectic Lab</em>, pick <em>Four inner planets</em>, push Δt up and press <em>Run the race</em> — on the log-scale energy-error plot watch Wisdom–Holman stay flat while Verlet ripples far above it and RK4 climbs off the top. Toggle <em>WH 4th order</em> to drop the green curve another decade.</li>
           <li>Click a planet in <em>Solar System</em> to read its orbital energy, then <em>Share</em> a permalink to your setup.</li>
         </ul>
 

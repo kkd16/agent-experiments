@@ -519,6 +519,28 @@ select {
   gap: 2px;
 }
 
+/* ---------- symplectic lab legend ---------- */
+.wh-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  margin-top: 4px;
+  font-size: 10px;
+  color: var(--muted);
+}
+.wh-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-family: var(--mono);
+}
+.wh-swatch {
+  width: 14px;
+  height: 3px;
+  border-radius: 2px;
+  display: inline-block;
+}
+
 /* ---------- spectral lab ---------- */
 .spectral-target {
   font-size: 11px;
