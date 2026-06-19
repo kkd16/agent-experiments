@@ -103,6 +103,7 @@ function renderValue(raw: string, type: ColumnType): string {
     case 'JSON':
     case 'TSVECTOR':
     case 'TSQUERY':
+    case 'ARRAY':
       return sqlString(raw)
   }
 }

@@ -62,9 +62,10 @@ export const KEYWORDS = new Set([
 // 3-char JSON path operators (`->>`, `#>>`) must be tried before the 2-char
 // ones (`->`, `#>`), which in turn precede the single-char operators.
 const THREE_OPS = ['->>', '#>>']
-const MULTI_OPS = ['<=', '>=', '<>', '!=', '||', '==', '->', '#>', '@@', '@>', '<@', '::']
+const MULTI_OPS = ['<=', '>=', '<>', '!=', '||', '==', '->', '#>', '@@', '@>', '<@', '::', '&&']
 const SINGLE_OPS = new Set(['<', '>', '=', '+', '-', '*', '/', '%', '?'])
-const PUNCT = new Set(['(', ')', ',', ';', '.'])
+// `[` / `]` delimit array literals and subscripts; `:` separates slice bounds.
+const PUNCT = new Set(['(', ')', ',', ';', '.', '[', ']', ':'])
 
 function isDigit(c: string): boolean {
   return c >= '0' && c <= '9'

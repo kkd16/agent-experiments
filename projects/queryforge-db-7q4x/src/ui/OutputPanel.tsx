@@ -7,6 +7,7 @@ import { isTemporal } from '../db/temporal'
 import { isDecimal } from '../db/decimal'
 import { isJson } from '../db/json'
 import { isTsVector, isTsQuery } from '../db/fts'
+import { isArray } from '../db/array'
 import type { QueryResult, RowsResult } from '../db/engine'
 import type { RunError } from './useEngine'
 import { PlanTree } from './PlanTree'
@@ -21,6 +22,7 @@ function Cell({ v }: { v: SqlValue }) {
   if (isJson(v)) return <span className="cell-json">{formatValue(v)}</span>
   if (isTsVector(v)) return <span className="cell-json cell-tsvector">{formatValue(v)}</span>
   if (isTsQuery(v)) return <span className="cell-json cell-tsquery">{formatValue(v)}</span>
+  if (isArray(v)) return <span className="cell-json cell-array">{formatValue(v)}</span>
   return <span className="cell-text">{v}</span>
 }
 
@@ -28,7 +30,13 @@ function Cell({ v }: { v: SqlValue }) {
 function csvField(v: SqlValue): string {
   if (v === null) return ''
   const s =
-    typeof v === 'boolean' ? (v ? 'true' : 'false') : isTemporal(v) || isDecimal(v) || isJson(v) ? formatValue(v) : String(v)
+    typeof v === 'boolean'
+      ? v
+        ? 'true'
+        : 'false'
+      : isTemporal(v) || isDecimal(v) || isJson(v) || isArray(v)
+        ? formatValue(v)
+        : String(v)
   return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s
 }
 function toCsv(res: RowsResult): string {

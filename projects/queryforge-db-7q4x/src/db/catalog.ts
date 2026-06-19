@@ -240,7 +240,7 @@ export class Table {
       if (row[i] === null && col.notNull) {
         throw new SqlError(`NOT NULL constraint violated on "${this.name}.${col.name}"`, 'constraint')
       }
-      row[i] = coerceTo(col.type, row[i], col.scale)
+      row[i] = coerceTo(col.type, row[i], col.scale, col.elemType)
     }
     for (const chk of this.compiledChecks()) {
       const v = chk.fn(row)
@@ -383,7 +383,7 @@ export class Table {
   /** Append a column, backfilling existing rows with its DEFAULT (or NULL). */
   addColumn(col: ColumnDef): void {
     if (this.columnIndex(col.name) >= 0) throw new SqlError(`column "${col.name}" already exists in "${this.name}"`, 'ddl')
-    const fill = col.default ? coerceTo(col.type, evalColumnDefault(col), col.scale) : null
+    const fill = col.default ? coerceTo(col.type, evalColumnDefault(col), col.scale, col.elemType) : null
     if (col.notNull && fill === null && this.heap.size > 0) {
       throw new SqlError(`cannot add NOT NULL column "${col.name}" without a DEFAULT to non-empty table "${this.name}"`, 'ddl')
     }
@@ -796,6 +796,18 @@ function walkExprColumns(e: Expr, visit: (c: ColumnExpr) => void): void {
     case 'quantified':
       walk(e.expr)
       return
+    case 'quantified_array':
+      walk(e.expr)
+      walk(e.array)
+      return
+    case 'array':
+      e.elements.forEach(walk)
+      return
+    case 'subscript':
+      walk(e.base)
+      if (e.index) walk(e.index)
+      if (e.upper) walk(e.upper)
+      return
     case 'window':
       e.args.forEach(walk)
       return
@@ -810,7 +822,7 @@ function evalColumnDefault(col: ColumnDef): SqlValue {
       throw new SqlError('column references are not allowed in DEFAULT', 'bind')
     },
   })
-  return coerceTo(col.type, fn([]), col.scale)
+  return coerceTo(col.type, fn([]), col.scale, col.elemType)
 }
 
 /** Fill in missing fields on a (possibly older) serialized constraint set. */

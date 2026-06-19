@@ -15,6 +15,8 @@ export type BinaryOp =
   | 'AND' | 'OR' | '||'
   // JSON path extraction, containment and key existence.
   | '->' | '->>' | '#>' | '#>>' | '@>' | '<@' | '?' | '@@'
+  // Array overlap.
+  | '&&'
 
 export type UnaryOp = 'NOT' | '-' | '+'
 
@@ -92,6 +94,8 @@ export interface CastExpr {
   type: ColumnType
   /** Target fractional scale for `CAST(x AS DECIMAL(p, s))`. */
   scale?: number
+  /** Element type for an array cast `CAST(x AS INTEGER[])` / `x::int[]`. */
+  elemType?: ColumnType
 }
 /** A scalar subquery: `(SELECT … )` yielding (at most) one row / one column. */
 export interface SubqueryExpr {
@@ -118,6 +122,31 @@ export interface QuantifiedExpr {
   quantifier: 'ANY' | 'ALL'
   expr: Expr
   select: SelectStmt
+}
+/** `expr <op> ANY|ALL (<array>)` — the array-operand form of the quantified
+ *  comparison (e.g. `5 = ANY(tags)`), distinct from the subquery form above. */
+export interface QuantifiedArrayExpr {
+  kind: 'quantified_array'
+  op: '=' | '<>' | '<' | '<=' | '>' | '>='
+  quantifier: 'ANY' | 'ALL'
+  expr: Expr
+  array: Expr
+}
+/** `ARRAY[e1, e2, …]` — an array constructor. */
+export interface ArrayExpr {
+  kind: 'array'
+  elements: Expr[]
+}
+/** `base[index]` (subscript) or `base[lower:upper]` (slice). For a slice either
+ *  bound may be omitted (`base[:n]`, `base[n:]`), defaulting to the array ends. */
+export interface SubscriptExpr {
+  kind: 'subscript'
+  base: Expr
+  /** Present for both subscript and slice (the lower bound). */
+  index?: Expr
+  /** Present only for a slice (the upper bound); `slice` flags slice syntax. */
+  upper?: Expr
+  slice: boolean
 }
 export type FrameMode = 'ROWS' | 'RANGE' | 'GROUPS'
 export type FrameBoundType =
@@ -186,6 +215,9 @@ export type Expr =
   | ExistsExpr
   | InSubqueryExpr
   | QuantifiedExpr
+  | QuantifiedArrayExpr
+  | ArrayExpr
+  | SubscriptExpr
   | WindowFuncExpr
 
 // ---------------------------------------------------------------------------
@@ -202,6 +234,8 @@ export interface ColumnDef {
   precision?: number
   /** Declared fractional scale for `DECIMAL(precision, scale)`; rounds on store. */
   scale?: number
+  /** Element type for an array column `INTEGER[]` (type is then 'ARRAY'). */
+  elemType?: ColumnType
   /** A `DEFAULT <expr>` supplying the value when the column is omitted on INSERT. */
   default?: Expr
 }
@@ -492,6 +526,7 @@ export const AGGREGATES = new Set([
   'STRING_AGG', 'GROUP_CONCAT', 'MEDIAN',
   'PERCENTILE_CONT', 'PERCENTILE_DISC', 'MODE',
   'JSON_AGG', 'JSON_OBJECT_AGG',
+  'ARRAY_AGG',
 ])
 
 /** Ordered-set aggregates: their value to aggregate comes from a

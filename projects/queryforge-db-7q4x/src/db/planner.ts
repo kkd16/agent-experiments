@@ -144,6 +144,18 @@ function collectColumns(e: Expr, out: ColumnExpr[]): void {
       // opaque (and is never pushed down — see containsSubquery).
       collectColumns(e.expr, out)
       break
+    case 'quantified_array':
+      collectColumns(e.expr, out)
+      collectColumns(e.array, out)
+      break
+    case 'array':
+      e.elements.forEach((x) => collectColumns(x, out))
+      break
+    case 'subscript':
+      collectColumns(e.base, out)
+      if (e.index) collectColumns(e.index, out)
+      if (e.upper) collectColumns(e.upper, out)
+      break
     case 'window':
       e.args.forEach((a) => collectColumns(a, out))
       e.spec.partitionBy.forEach((p) => collectColumns(p, out))
@@ -186,6 +198,16 @@ function containsSubquery(e: Expr): boolean {
         (e.operand ? containsSubquery(e.operand) : false) ||
         e.whens.some((w) => containsSubquery(w.when) || containsSubquery(w.then)) ||
         (e.else ? containsSubquery(e.else) : false)
+      )
+    case 'quantified_array':
+      return containsSubquery(e.expr) || containsSubquery(e.array)
+    case 'array':
+      return e.elements.some(containsSubquery)
+    case 'subscript':
+      return (
+        containsSubquery(e.base) ||
+        (e.index ? containsSubquery(e.index) : false) ||
+        (e.upper ? containsSubquery(e.upper) : false)
       )
     default:
       return false
@@ -252,6 +274,17 @@ function collectChildren(e: Expr, out: Expr[]): void {
     case 'in_subquery':
     case 'quantified':
       out.push(e.expr)
+      break
+    case 'quantified_array':
+      out.push(e.expr, e.array)
+      break
+    case 'array':
+      out.push(...e.elements)
+      break
+    case 'subscript':
+      out.push(e.base)
+      if (e.index) out.push(e.index)
+      if (e.upper) out.push(e.upper)
       break
     case 'literal':
     case 'column':
@@ -345,6 +378,19 @@ export function inferType(e: Expr, schema: Schema, ctx: CompileCtx): ColumnType 
       if (['JSON_TYPEOF', 'JSON_EXTRACT_PATH_TEXT', 'JSON_PRETTY'].includes(e.name)) return 'TEXT'
       if (e.name === 'JSON_ARRAY_LENGTH') return 'INTEGER'
       if (['JSON_VALID', 'JSON_CONTAINS', 'TS_MATCH'].includes(e.name)) return 'BOOLEAN'
+      // Array functions.
+      if (
+        [
+          'ARRAY_AGG', 'ARRAY_APPEND', 'ARRAY_PREPEND', 'ARRAY_CAT', 'ARRAY_REMOVE', 'ARRAY_REPLACE',
+          'ARRAY_POSITIONS', 'STRING_TO_ARRAY', 'TRIM_ARRAY',
+        ].includes(e.name)
+      )
+        return 'ARRAY'
+      if (
+        ['ARRAY_LENGTH', 'CARDINALITY', 'ARRAY_NDIMS', 'ARRAY_UPPER', 'ARRAY_LOWER', 'ARRAY_POSITION'].includes(e.name)
+      )
+        return 'INTEGER'
+      if (['ARRAY_DIMS', 'ARRAY_TO_STRING'].includes(e.name)) return 'TEXT'
       // Full-text search result types.
       if (['TO_TSVECTOR', 'SETWEIGHT', 'STRIP'].includes(e.name)) return 'TSVECTOR'
       if (['TO_TSQUERY', 'PLAINTO_TSQUERY', 'PHRASETO_TSQUERY', 'WEBSEARCH_TO_TSQUERY', 'TSQUERY_AND', 'TSQUERY_OR', 'TSQUERY_NOT'].includes(e.name)) return 'TSQUERY'
@@ -371,11 +417,13 @@ export function inferType(e: Expr, schema: Schema, ctx: CompileCtx): ColumnType 
         return 'TEXT'
       return 'TEXT'
     case 'binary':
-      if (['=', '<>', '<', '<=', '>', '>=', 'AND', 'OR', '@>', '<@', '?', '@@'].includes(e.op)) return 'BOOLEAN'
+      if (['=', '<>', '<', '<=', '>', '>=', 'AND', 'OR', '@>', '<@', '?', '@@', '&&'].includes(e.op)) return 'BOOLEAN'
       if (e.op === '->' || e.op === '#>') return 'JSON'
       if (e.op === '->>' || e.op === '#>>') return 'TEXT'
       if (e.op === '||') {
         const lt = inferType(e.left, schema, ctx)
+        const rt = inferType(e.right, schema, ctx)
+        if (lt === 'ARRAY' || rt === 'ARRAY') return 'ARRAY'
         if (lt === 'JSON' || lt === 'TSVECTOR' || lt === 'TSQUERY') return lt
         return 'TEXT'
       }
@@ -389,7 +437,14 @@ export function inferType(e: Expr, schema: Schema, ctx: CompileCtx): ColumnType 
     case 'exists':
     case 'in_subquery':
     case 'quantified':
+    case 'quantified_array':
       return 'BOOLEAN'
+    case 'array':
+      return 'ARRAY'
+    case 'subscript':
+      // A slice yields an array; a single subscript yields one element (whose
+      // exact type we don't track positionally — TEXT is a safe display default).
+      return e.slice ? 'ARRAY' : 'TEXT'
     case 'window':
       if (['ROW_NUMBER', 'RANK', 'DENSE_RANK', 'NTILE', 'COUNT'].includes(e.name)) return 'INTEGER'
       if (['PERCENT_RANK', 'CUME_DIST', 'AVG'].includes(e.name)) return 'REAL'
@@ -1104,6 +1159,7 @@ const TYPE_RANK: Record<ColumnType, number> = {
   JSON: 8,
   TSVECTOR: 8,
   TSQUERY: 8,
+  ARRAY: 8,
   TEXT: 9,
 }
 function widerType(a: ColumnType, b: ColumnType): ColumnType {
