@@ -31,6 +31,13 @@ conflict teaches the solver a new clause that prunes an exponential swath of the
   vertex cover, independent set, weighted MAX-2-SAT, and a WCNF parser/serializer.
 - `src/sat/cardinality.ts` — from-scratch Generalized Totalizer pseudo-Boolean encoding
   (bounds `Σ wᵢ·xᵢ ≤ K`; subsumes at-most-k cardinality).
+- `src/sat/modelCount.ts` — exact #SAT: DPLL with component decomposition + Cachet-style caching.
+- `src/sat/ddnnf.ts` — **knowledge compilation** (Session 14). Compiles a CNF into a *smooth,
+  deterministic, decomposable* DNNF circuit (sd-DNNF) — the DPLL search recorded as a shared DAG —
+  then answers, each in one linear pass: exact `ddnnfCount`, `ddnnfWmc` (weighted model counting),
+  `ddnnfMarginals` (every variable's exact marginal via the arithmetic-circuit derivative, one
+  forward + backward sweep), `ddnnfEnumerate`, `verifyCircuit` (structural sd-DNNF certificates) and
+  `toNnf` (the standard c2d/Dsharp `.nnf` export).
 - `src/sat/maxsat.ts` — weighted MaxSAT engine: linear SAT-UNSAT and core-guided WPM1, both
   on the same CDCL core (which now supports `solveAssuming` — incremental solving under
   assumptions with unsat-core extraction).
@@ -47,8 +54,10 @@ conflict teaches the solver a new clause that prunes an exponential swath of the
   and clause propagation — a *third* unbounded-safety prover that never unrolls `Trans`.
 - `src/worker/solver.worker.ts` + `src/useSolver.ts` — runs the solver off the main thread.
 - `src/components/*` — Solution boards, statistics + search-dynamics chart, implication-graph
-  view, step-through trace, CNF/DIMACS inspector, the SMT Studio, and the Model Checker studio
-  (`ModelChecker.tsx`).
+  view, step-through trace, CNF/DIMACS inspector, the #SAT Count view, the **Compile** view
+  (`CompileView.tsx` — sd-DNNF stats, verified property badges, an interactive weight "tilt"
+  slider, a live variable-marginal bar chart, and a `.nnf` download), the SMT Studio, and the
+  Model Checker studio (`ModelChecker.tsx`).
 
 ## Correctness
 
@@ -65,7 +74,11 @@ exhaustive verification of all three Craig properties, and the model checker vs.
 explicit-state BFS oracle, plus a k-induction proof rule that must agree) and the **IC3/PDR
 engine** (Session 13 — its verdicts, inductive invariants and shortest counterexamples
 cross-checked against BFS, IMC *and* k-induction on hundreds of random systems and the curated
-gallery) all compared against independent references. All **296 assertions** pass.
+gallery) and the **knowledge-compilation engine** (Session 14 — over 1200 random CNFs the compiled
+sd-DNNF is checked for the three structural properties, its model count is matched against #SAT and
+brute force, its weighted model count and its one-pass differential marginals against brute force,
+and its enumeration against the exact model set with no duplicates) all compared against independent
+references. All **312 assertions** pass.
 
 ## Ideas / backlog
 
@@ -790,6 +803,67 @@ discovered by a completely different route than the interpolation invariant show
       all four engines on it live.
 - [ ] An **animated frame-ladder replay** that steps through blocking/propagation events from the trace.
 
+### Session 14 — from *counting* to *compiling*: knowledge compilation to sd-DNNF
+
+Session 3 added a #SAT counter that returns a *number*. Knowledge compilation goes one level deeper:
+it pays for the search **once**, recording it as a circuit, and then a whole family of otherwise
+#P-hard queries collapses to a single linear-time pass over that circuit. Same DPLL search — but
+instead of a count you keep the *structure*, and it answers question after question for free.
+
+**The compiler (`src/sat/ddnnf.ts`).**
+
+- [x] **Compile CNF → smooth d-DNNF** (`compileDdnnf`). The recursion is the #SAT search recorded
+      as a shared DAG: unit propagation → an AND of forced-literal leaves; a vanished variable →
+      a free `OR(x, ¬x)` "coin-flip"; independent sub-formulas → a *decomposable* AND (children share
+      no variables); a branch on the busiest variable → a *deterministic* OR (the arms disagree on
+      that variable, so their model sets are disjoint). Unsatisfiable branches are collapsed away.
+- [x] **Component caching** keyed by the canonical clause set, so a sub-formula that recurs across
+      the search is compiled once and *shared* — the circuit is a DAG, not a tree (the c2d/Dsharp idea).
+- [x] **Smooth by construction** — emitting forced and free literals explicitly makes both arms of
+      every OR mention exactly the same variables, which is what lets the queries be a clean ∏ / Σ.
+- [x] **A reachability GC** compacts the node table into a still-topological array (children before
+      parents) after the search leaves cached-but-unused branches behind.
+
+**Linear-time queries over the compiled circuit.**
+
+- [x] **Exact model count** (`ddnnfCount`) — one BigInt pass: AND multiplies, OR adds.
+- [x] **Weighted model counting** (`ddnnfWmc`) — arbitrary per-literal weights; the partition
+      function behind exact probabilistic inference. Uniform weights tie it to #SAT: `Z = count / 2ⁿ`.
+- [x] **Exact variable marginals in one forward + backward sweep** (`ddnnfMarginals`) — the
+      Darwiche *differential of an arithmetic circuit*: `w[ℓ]·∂Z/∂w[ℓ] = WMC(f ∧ ℓ)`, so every
+      variable's exact `Pr(xᵢ = true)` falls out of a single backpropagation. Exact precisely
+      because the circuit is decomposable + deterministic + smooth.
+- [x] **Model enumeration** (`ddnnfEnumerate`) straight off the circuit — each model produced once
+      (determinism) by AND cross-products and OR unions.
+- [x] **Structural certificates** (`verifyCircuit`) — independently *proves* the compiled circuit is
+      smooth, decomposable and deterministic; surfaced in the UI as three verified badges.
+- [x] **`.nnf` export** (`toNnf`) in the standard c2d/Dsharp format, downloadable.
+
+**UI (`src/components/CompileView.tsx`, a new "Compile" tab).** Compiles off-thread (new `compile`
+worker op + `compileDdnnfTask`), then shows the verified sd-DNNF property badges, a circuit-stats grid
+(nodes / edges / decision / AND / literal / sub-formula reuse / compile time), the exact model count,
+and a **weighted-inference panel**: a "tilt" slider sets each variable's positive-literal weight `p`
+(negative `1−p`) and the **weighted model count** plus a **live variable-marginal bar chart** recompute
+in real time — each a single linear pass over the same compiled circuit. At `p = 0.5` the bars are the
+exact fraction of solutions in which each variable is true.
+
+**Cross-checks (folded into `selftest.ts`).** On **1200 random CNFs** (2–12 vars): the compiled count
+equals both #SAT and brute force; every circuit is verified smooth + decomposable + deterministic; the
+weighted model count matches brute force under random per-literal weights (and `count/2ⁿ` under uniform
+weights); the one-pass differential marginals match brute force exactly (including the partition `Z`);
+and the enumeration equals the exact model set with **no duplicates**. Plus hand cases (empty formula
+`2ⁿ`, contradiction `0`, forced-literal marginal `1`, free-literal marginal `0.5`, N-Queens counts off
+the circuit, `.nnf` header consistency). **16 new assertions; the gate is now 312, all green.**
+
+#### Future ideas
+
+- [ ] **Compile larger encoders** (Sudoku, graph coloring) with a smarter dtree/min-fill variable
+      order so the DAG stays small on structured instances.
+- [ ] **Conditioning & projection** on the compiled circuit (clamp literals / forget variables) to
+      answer follow-up queries without recompiling.
+- [ ] **MPE / most-probable explanation** (a max-product pass) alongside the sum-product marginals.
+- [ ] A **circuit visualization** (the sd-DNNF DAG) in the Compile tab, like the implication graph.
+
 ## Session log
 
 - 2026-06-15 (claude): Created the project. Implemented the full CDCL solver from scratch
@@ -1062,3 +1136,23 @@ discovered by a completely different route than the interpolation invariant show
   invariants and shortest counterexamples against the BFS oracle, IMC *and* k-induction on 220 random
   systems + the curated gallery — harness now **290 → 296 assertions**. Lint + tsc + build + full
   gate green.
+- 2026-06-19 (claude): Took SatForge from *counting* solutions to **compiling knowledge** — a
+  from-scratch **knowledge-compilation engine** (`src/sat/ddnnf.ts`) that turns a CNF into a
+  **smooth, deterministic, decomposable DNNF** circuit (sd-DNNF), then answers a family of #P-hard
+  queries in a single linear pass each. The compiler records the #SAT DPLL search as a *shared DAG*
+  (forced literals → AND leaves, free vars → `OR(x,¬x)`, independent sub-formulas → decomposable AND,
+  a branch → deterministic OR; repeated sub-formulas cached/shared; unsat branches collapsed; a
+  reachability GC compacts the table). On the circuit: exact `ddnnfCount` (BigInt), `ddnnfWmc`
+  (weighted model counting — the partition function), `ddnnfMarginals` (every variable's exact
+  marginal in one forward+backward sweep, by the Darwiche arithmetic-circuit differential —
+  `w[ℓ]·∂Z/∂w[ℓ] = WMC(f∧ℓ)`), `ddnnfEnumerate`, `verifyCircuit` (independent sd-DNNF certificates),
+  and `toNnf` (the standard c2d/Dsharp `.nnf` export). New off-thread `compile` worker op +
+  `compileDdnnfTask`, and a new **Compile** tab (`CompileView.tsx`): verified property badges, a
+  circuit-stats grid, the exact count, and a **weighted-inference panel** with a "tilt" slider that
+  recomputes the weighted model count and a **live variable-marginal bar chart** in real time. Found
+  & fixed a bug where an UNSAT circuit's GC dropped the variable count (so marginals indexed out of
+  range) — the circuit now carries the input's `numVars`. Added **15 cross-check assertions**: over
+  1200 random CNFs the compiled count matches #SAT and brute force, every circuit is verified
+  smooth+decomposable+deterministic, WMC and the one-pass marginals match brute force (random and
+  uniform weights), and enumeration equals the exact model set with no duplicates — harness now
+  **296 → 312 assertions**. Lint + tsc + build + full gate green.

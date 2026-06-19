@@ -2,8 +2,8 @@
 // spins up a throwaway worker, awaits a single reply, and terminates it — so these
 // never race with the persistent solve worker in useSolver. If workers are unavailable
 // (older browsers, the sandboxed catalog thumbnail), we fall back to a synchronous run.
-import { countModels, findMus, solveMaxSat } from './sat'
-import type { MusResult, MaxSatInstance, MaxSatResult, MaxSatOptions } from './sat'
+import { countModels, findMus, solveMaxSat, compileDdnnf } from './sat'
+import type { MusResult, MaxSatInstance, MaxSatResult, MaxSatOptions, CompileResult } from './sat'
 import type { WorkerRequest, WorkerResponse } from './worker/solver.worker'
 import type { CNF } from './sat'
 
@@ -64,6 +64,21 @@ export async function countModelsTask(cnf: CNF, budget = 400000): Promise<CountT
   }
   const r = countModels(cnf, { budget })
   return { count: r.count, exact: r.exact, nodes: r.nodes, cacheHits: r.cacheHits, cacheSize: r.cacheSize, timeMs: r.timeMs }
+}
+
+export async function compileDdnnfTask(cnf: CNF, budget = 400000): Promise<CompileResult> {
+  const onWorker = runOnWorker<CompileResult>({ op: 'compile', cnf, budget }, (r) => {
+    if (r.op !== 'compile' || !r.ok) throw new Error('unexpected response')
+    return { ddnnf: r.payload.ddnnf, stats: r.payload.stats }
+  })
+  if (onWorker) {
+    try {
+      return await onWorker
+    } catch {
+      /* fall through to synchronous */
+    }
+  }
+  return compileDdnnf(cnf, { budget })
 }
 
 export async function solveMaxSatTask(instance: MaxSatInstance, opts: MaxSatOptions): Promise<MaxSatResult> {

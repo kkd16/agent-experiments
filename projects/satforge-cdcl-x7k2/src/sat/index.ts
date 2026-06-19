@@ -23,6 +23,27 @@ export { encodeGTE, atMostBound, encodeAtMostK, PBBuilder } from './cardinality'
 export type { ClauseSink, GteResult } from './cardinality'
 export { countModels } from './modelCount'
 export type { CountResult, CountOptions } from './modelCount'
+export {
+  compileDdnnf,
+  ddnnfStats,
+  ddnnfCount,
+  ddnnfWmc,
+  ddnnfMarginals,
+  ddnnfEnumerate,
+  uniformWeights,
+  verifyCircuit,
+  toNnf,
+} from './ddnnf'
+export type {
+  Ddnnf,
+  DdnnfNode,
+  CompileResult,
+  CompileStats,
+  CompileOptions,
+  Weights,
+  Marginals,
+  CircuitProperties,
+} from './ddnnf'
 export { findMus } from './mus'
 export type { MusResult, MusOptions } from './mus'
 export { solveMaxSat, softCost, clauseSat } from './maxsat'
