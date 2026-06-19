@@ -110,6 +110,7 @@ export default function Controls(props: Props) {
       <Section title="Pipeline">
         <div className="toggles">
           <Toggle label="Auto-rotate" value={settings.autoRotate} onChange={(v) => set({ autoRotate: v })} />
+          <Toggle label="Shadow map" value={settings.shadows} onChange={(v) => set({ shadows: v })} />
           <Toggle label="Backface cull" value={settings.cullBack} onChange={(v) => set({ cullBack: v })} />
           <Toggle label="Distance fog" value={settings.fog} onChange={(v) => set({ fog: v })} />
           <Toggle label="Ground plane" value={settings.showGround} onChange={(v) => set({ showGround: v })} />

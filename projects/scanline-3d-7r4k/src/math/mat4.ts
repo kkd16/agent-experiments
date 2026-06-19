@@ -72,6 +72,22 @@ export const perspective = (fovYRad: number, aspect: number, near: number, far: 
   return out
 }
 
+// Right-handed orthographic projection; maps the box to NDC [-1, 1]³. Used for
+// the directional-light shadow pass.
+export const orthographic = (
+  l: number, r: number, b: number, t: number, near: number, far: number,
+): Mat4 => {
+  const out = new Array<number>(16).fill(0)
+  out[0] = 2 / (r - l)
+  out[5] = 2 / (t - b)
+  out[10] = -2 / (far - near)
+  out[12] = -(r + l) / (r - l)
+  out[13] = -(t + b) / (t - b)
+  out[14] = -(far + near) / (far - near)
+  out[15] = 1
+  return out
+}
+
 // Right-handed look-at: camera at `eye` looking toward `center`.
 export const lookAt = (eye: Vec3, center: Vec3, up: Vec3): Mat4 => {
   const f = normalize(sub(center, eye))

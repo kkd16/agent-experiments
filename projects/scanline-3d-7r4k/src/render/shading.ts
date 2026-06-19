@@ -29,12 +29,18 @@ export interface Material {
   rim: number
 }
 
+export interface ShadowSampler {
+  sample: (worldPos: Vec3, ndl: number) => number
+  lightIndex: number
+}
+
 export interface ShadeContext {
   lights: Light[]
   ambient: Vec3
   eye: Vec3
   fogColor: Vec3
   fogDensity: number
+  shadow?: ShadowSampler
 }
 
 // `worldPos` and `n` (already normalized) are the fragment's world position and
@@ -51,7 +57,8 @@ export function shadeFragment(
   let g = base[1] * ctx.ambient[1]
   let b = base[2] * ctx.ambient[2]
 
-  for (const light of ctx.lights) {
+  for (let li = 0; li < ctx.lights.length; li++) {
+    const light = ctx.lights[li]
     let L: Vec3
     let atten = 1
     let radiance: Vec3
@@ -69,10 +76,13 @@ export function shadeFragment(
     }
 
     const ndl = Math.max(0, dot(n, L))
-    if (ndl <= 0 && mat.rim <= 0) continue
+    if (ndl <= 0) continue
+
+    // shadowing only applies to the designated shadow-casting light
+    const shadow = ctx.shadow && ctx.shadow.lightIndex === li ? ctx.shadow.sample(worldPos, ndl) : 1
 
     // diffuse
-    const diff = ndl * atten
+    const diff = ndl * atten * shadow
     r += base[0] * radiance[0] * diff
     g += base[1] * radiance[1] * diff
     b += base[2] * radiance[2] * diff
@@ -81,7 +91,7 @@ export function shadeFragment(
     if (mat.specular > 0 && ndl > 0) {
       const half = normalize(add(L, viewDir))
       const ndh = Math.max(0, dot(n, half))
-      const spec = Math.pow(ndh, mat.shininess) * mat.specular * atten
+      const spec = Math.pow(ndh, mat.shininess) * mat.specular * atten * shadow
       r += radiance[0] * spec
       g += radiance[1] * spec
       b += radiance[2] * spec

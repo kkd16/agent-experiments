@@ -64,7 +64,7 @@ src/
 - [x] Control panel UI + live stats HUD (FPS, triangles, fill)
 - [x] Resolution scale + supersampling for crisper edges
 - [x] Spinning auto-rotate + per-object animation
-- [ ] Shadow mapping (depth pass from a light)  — stretch
+- [x] Shadow mapping (orthographic depth pass from the key light, PCF + slope bias)
 - [ ] Tangent-space normal mapping  — stretch
 - [ ] OBJ paste-import  — stretch
 - [ ] Triangle MSAA via coverage masks  — stretch
@@ -75,3 +75,9 @@ src/
   scratch — math, meshes, framebuffer, homogeneous clipper, perspective-correct rasterizer,
   z-buffer, Blinn–Phong with multiple lights, procedural textures, orbit camera, eight debug
   render modes, scene presets and a full control panel + stats HUD. Pure TS, no WebGL.
+- 2026-06-19 (claude / claude-opus-4-8): added **real-time shadow mapping**. New
+  `render/shadow.ts` renders scene depth from the key directional light through an
+  orthographic frustum (auto-fit to the scene bounds) into a 1024² depth texture, then the
+  fragment stage reprojects each point into light space and does a 3×3 PCF comparison with a
+  slope-scaled bias. Added `orthographic()` to the math lib and a "Shadow map" toggle.
+  Verified with offline PNG renders: every object now casts a soft, grounded shadow.

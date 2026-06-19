@@ -12,6 +12,7 @@ const DEFAULT_SETTINGS: RenderSettings = {
   fog: true,
   ambientBoost: 1,
   lightBoost: 1,
+  shadows: true,
 }
 
 export default function App() {
