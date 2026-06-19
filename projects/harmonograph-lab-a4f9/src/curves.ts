@@ -6,6 +6,8 @@
 
 import { buildLayerData, samplePath, type LayerData, type Point } from './harmonograph'
 import type {
+  AttractorKind,
+  AttractorParams,
   CurveKind,
   Layer,
   LissajousParams,
@@ -25,6 +27,7 @@ export const CURVE_KINDS: { value: CurveKind; label: string }[] = [
   { value: 'rose', label: 'Rose' },
   { value: 'lissajous', label: 'Lissajous' },
   { value: 'superformula', label: 'Superformula' },
+  { value: 'attractor', label: 'Attractor' },
 ]
 
 // ---- spirograph (hypotrochoid / epitrochoid) ------------------------------
@@ -182,6 +185,97 @@ export function randomSuperformula(): SuperformulaParams {
   }
 }
 
+// ---- strange attractors ---------------------------------------------------
+// Each map takes the current point (x, y) and the four constants to the next
+// point. They are deliberately written so the orbit stays bounded for every
+// constant (every term is a bounded sin/cos), which keeps auto-fit framing sane
+// and lets the Live "breathe" mode morph the constants without the figure ever
+// blowing up.
+
+function attractorStep(type: AttractorKind, x: number, y: number, p: AttractorParams): Point {
+  switch (type) {
+    case 'clifford':
+      return {
+        x: Math.sin(p.a * y) + p.c * Math.cos(p.a * x),
+        y: Math.sin(p.b * x) + p.d * Math.cos(p.b * y),
+      }
+    case 'svensson':
+      return {
+        x: p.d * Math.sin(p.a * x) - Math.sin(p.b * y),
+        y: p.c * Math.cos(p.a * x) + Math.cos(p.b * y),
+      }
+    case 'dejong':
+    default:
+      return {
+        x: Math.sin(p.a * y) - Math.cos(p.b * x),
+        y: Math.sin(p.c * x) - Math.cos(p.d * y),
+      }
+  }
+}
+
+export function sampleAttractor(p: AttractorParams): Point[] {
+  const n = Math.max(2, p.steps)
+  const pts: Point[] = new Array(n + 1)
+  let x = 0.1
+  let y = 0.1
+  // Discard a short transient so the orbit settles onto the attractor before we
+  // start recording it.
+  for (let i = 0; i < 80; i++) {
+    const next = attractorStep(p.type, x, y, p)
+    x = next.x
+    y = next.y
+  }
+  for (let i = 0; i <= n; i++) {
+    pts[i] = { x, y }
+    const next = attractorStep(p.type, x, y, p)
+    // Bounded maps shouldn't diverge, but guard anyway: a non-finite step resets
+    // the orbit to the seed instead of poisoning the whole point array.
+    if (Number.isFinite(next.x) && Number.isFinite(next.y)) {
+      x = next.x
+      y = next.y
+    } else {
+      x = 0.1
+      y = 0.1
+    }
+  }
+  return pts
+}
+
+export const ATTRACTOR_KINDS: { value: AttractorKind; label: string }[] = [
+  { value: 'dejong', label: 'de Jong' },
+  { value: 'clifford', label: 'Clifford' },
+  { value: 'svensson', label: 'Svensson' },
+]
+
+export function defaultAttractor(): AttractorParams {
+  // A classic, well-behaved de Jong attractor.
+  return { type: 'dejong', a: 1.4, b: -2.3, c: 2.4, d: -2.1, steps: 14000 }
+}
+
+export function randomAttractor(): AttractorParams {
+  const type = pick<AttractorKind>(['dejong', 'clifford', 'svensson'])
+  // Clifford's c/d are multipliers (kept moderate); the others read their four
+  // constants as angular frequencies, where a wider range stays interesting.
+  if (type === 'clifford') {
+    return {
+      type,
+      a: rand(-2, 2),
+      b: rand(-2, 2),
+      c: rand(-1.2, 1.2),
+      d: rand(-1.2, 1.2),
+      steps: 14000,
+    }
+  }
+  return {
+    type,
+    a: rand(-2.6, 2.6),
+    b: rand(-2.6, 2.6),
+    c: rand(-2.6, 2.6),
+    d: rand(-2.6, 2.6),
+    steps: 14000,
+  }
+}
+
 // ---- dispatch -------------------------------------------------------------
 
 // The source param object for a layer's active kind — also the WeakMap cache
@@ -196,6 +290,8 @@ export function sourceParams(layer: Layer): object {
       return (layer.liss ??= defaultLiss())
     case 'superformula':
       return (layer.sf ??= defaultSf())
+    case 'attractor':
+      return (layer.attractor ??= defaultAttractor())
     case 'harmonograph':
     default:
       return layer.params
@@ -212,6 +308,8 @@ export function sampleLayer(layer: Layer): Point[] {
       return sampleLissajous(layer.liss ?? defaultLiss())
     case 'superformula':
       return sampleSuperformula(layer.sf ?? defaultSf())
+    case 'attractor':
+      return sampleAttractor(layer.attractor ?? defaultAttractor())
     case 'harmonograph':
     default:
       return samplePath(layer.params)
@@ -241,6 +339,20 @@ export function breatheLayer(layer: Layer, t: number): Layer {
     case 'superformula': {
       const s = layer.sf ?? defaultSf()
       return { ...layer, sf: { ...s, twist: s.twist + a * 0.5 } }
+    }
+    case 'attractor': {
+      // Gently oscillate two constants around their current values so the orbit
+      // morphs through nearby attractors and back, rather than wandering off
+      // into a dead region the way unbounded linear drift would.
+      const s = layer.attractor ?? defaultAttractor()
+      return {
+        ...layer,
+        attractor: {
+          ...s,
+          a: s.a + 0.12 * Math.sin(a * 0.45),
+          c: s.c + 0.12 * Math.cos(a * 0.37),
+        },
+      }
     }
     case 'harmonograph':
     default: {
@@ -293,6 +405,8 @@ export function randomSourceFor(kind: CurveKind): Partial<Layer> {
       return { liss: randomLissajous() }
     case 'superformula':
       return { sf: randomSuperformula() }
+    case 'attractor':
+      return { attractor: randomAttractor() }
     case 'harmonograph':
     default:
       return {}

@@ -9,12 +9,14 @@ curvature / direction, switch on **glow**, **animate the pen** drawing the figur
 share a piece by **URL**, and keep a local **gallery**. Export to high-resolution
 PNG or layered SVG.
 
-As of v3 it is no longer only about harmonographs: each layer can draw from any
-of **five curve families** — a harmonograph, a **spirograph** (hypo/epitrochoid),
-a **rose** (rhodonea), a **Lissajous** figure, or the **Gielis superformula** —
-all flowing through the same color/blend/glow/kaleidoscope render pipeline. You
-can let a piece **evolve live**, capture the drawing pass to **WebM video**, and
-back any scene with a **gradient**.
+As of v4 it is no longer only about harmonographs: each layer can draw from any
+of **six curve families** — a harmonograph, a **spirograph** (hypo/epitrochoid),
+a **rose** (rhodonea), a **Lissajous** figure, the **Gielis superformula**, or a
+chaotic **strange attractor** (de Jong / Clifford / Svensson) — all flowing
+through the same color/blend/glow/kaleidoscope render pipeline. You can let a
+piece **evolve live** (per-layer drift), **pulse it to your microphone**, capture
+the drawing pass to a universal **animated GIF** or **WebM video**, and back any
+scene with a **gradient**.
 
 ## Architecture
 
@@ -46,8 +48,20 @@ back any scene with a **gradient**.
 - `share.ts` — URL (hash) encode/decode of a whole project + a localStorage
   gallery (sandbox-safe), with migration that defaults legacy layers to the
   harmonograph kind.
+- `gif.ts` — **a from-scratch animated-GIF89a encoder.** Median-cut color
+  quantization to a shared 256-entry palette, a 15-bit nearest-color cache,
+  variable-width **LZW** compression (with the standard code-size growth + 4096
+  table reset, packed LSB-first), GCE/image-descriptor framing and a
+  NETSCAPE2.0 loop block. `recordGif` renders the drawing pass into an offscreen
+  canvas frame by frame and `assembleGif` (pure, DOM-free, unit-tested) emits the
+  bytes. Universal: plays anywhere WebM/`captureStream` can't.
+- `audio.ts` — **Web Audio reactor.** Taps the mic through an `AnalyserNode` and
+  exposes a smoothed overall `level` + low-frequency `bass`, used to pulse glow
+  and stroke width. Feature-detected, permission-guarded and fully try/caught so
+  it no-ops (rather than throws) when unavailable or sandboxed.
 - `components/` — `Slider`, `Segmented`, `LayerList`, and `CurveControls` (the
-  per-kind parameter editors for the Curve tab).
+  per-kind parameter editors for the Curve tab, incl. the strange-attractor map
+  selector + a/b/c/d constants).
 
 ## Ideas / backlog
 
@@ -118,12 +132,37 @@ Shipped in v3 (this session) — **from harmonograph toy to a multi-source curve
 - [x] **Backward compatibility** — old share links & gallery pieces migrate to the
       harmonograph kind and render identically.
 
+Shipped in v4 (this session) — **chaos, universal capture, and sound:**
+
+- [x] **Strange-attractor curve family** (6th source) — three chaotic iterated
+      maps (**de Jong**, **Clifford**, **Svensson**) feeding the same color /
+      blend / glow / kaleidoscope / Live pipeline. Each is written to stay
+      bounded for *every* constant, so framing never blows up and Live can morph
+      the constants freely. A map selector + a/b/c/d editors live in the Curve
+      tab, with kind-aware randomize and a Live "breathe" that oscillates two
+      constants so the web reshapes and returns instead of wandering off.
+- [x] **Universal animated-GIF export** — a dependency-free **GIF89a encoder**
+      (`gif.ts`): median-cut quantization, nearest-color cache, variable-width
+      **LZW**, looping NETSCAPE2.0 block. Captures the drawing pass and plays in
+      every viewer (where WebM/`captureStream` can't). The LZW round-trip and the
+      full container were both verified against a from-scratch decoder.
+- [x] **Audio-reactive mode** (`audio.ts`) — the microphone's envelope pulses
+      glow and stroke width in real time (frozen framing, like Live), with a
+      sensitivity control. Feature-detected, permission-guarded, sandbox-safe;
+      releases the mic on stop / unmount / before recording.
+- [x] **Per-layer drift-rate control** surfaced in the Curve tab, so Live evolves
+      each layer at its own pace (they drift out of, and back into, phase).
+- [x] **New presets** — *de Jong Web*, *Clifford Drift*, *Svensson Bloom*, and a
+      *Supershape Morph* tuned to be watched evolving in Live.
+- [x] **"Generate" extended** to compose attractor pieces (hairline, solo).
+- [x] Shortcuts: **A** audio-reactive, **I** export GIF; help overlay updated.
+
 Future:
 
-- [ ] Audio-reactive driving of amplitudes / glow (Web Audio analyser).
-- [ ] Per-layer drift rate control surfaced in the UI.
-- [ ] Animated GIF capture (alongside WebM) for universal sharing.
-- [ ] More superformula presets + a “supershape morph” Live preset.
+- [ ] Animated-GIF capture of the Live evolution (not just the drawing pass).
+- [ ] Attractor point-density shading (accumulate a heatmap instead of a polyline).
+- [ ] More attractor families (Peter de Jong variants, Hopalong, Bedhead).
+- [ ] Beat detection so audio mode can also re-seed / randomize on transients.
 
 ## Session log
 
@@ -150,3 +189,15 @@ Future:
   (`record.ts`), **gradient backgrounds** (linear/radial, canvas + SVG), six new
   showcase presets, and backward-compatible migration of old links/gallery. Curve
   math fuzz-checked for finiteness/bounds; verified with lint + build.
+- 2026-06-19 (claude): **v4 — chaos, universal capture, sound.** Added a sixth
+  curve family, **strange attractors** (de Jong / Clifford / Svensson) wired through
+  the whole pipeline (sample/dispatch/breathe/randomize/generate + a Curve-tab map
+  selector and a/b/c/d editors); the maps are written to stay bounded for any
+  constant. Wrote a **from-scratch animated-GIF89a encoder** (`gif.ts`: median-cut
+  quantization, LZW, looping block) and a universal **Export GIF** action — its LZW
+  round-trip and full container were verified end-to-end against a hand-written
+  decoder, and the attractor bounds/finiteness were checked across 2000 random
+  parameter sets. Added an **audio-reactive** mode (`audio.ts`, Web Audio analyser →
+  glow/width pulse, sandbox-safe), surfaced the **per-layer drift rate**, four new
+  presets, and **A**/**I** shortcuts. Verified with the full CI gate (scope +
+  conformance + lint + build).

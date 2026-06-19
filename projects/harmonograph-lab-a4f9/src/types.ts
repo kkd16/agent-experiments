@@ -35,6 +35,7 @@ export type CurveKind =
   | 'rose'
   | 'lissajous'
   | 'superformula'
+  | 'attractor'
 
 // Hypotrochoid / epitrochoid — a pen offset `d` on a circle of radius `r`
 // rolling inside (hypo) or outside (epi) a fixed circle of radius `R`. `decay`
@@ -90,6 +91,23 @@ export interface SuperformulaParams {
   steps: number
 }
 
+// Strange attractors — chaotic iterated maps. Unlike the parametric families
+// above (a smooth function of one angle), these feed each point back into the
+// map to produce the next, tracing the dense, web-like orbit of a 2D dynamical
+// system. All three maps below are bounded, so the orbit never escapes; the
+// `a..d` constants reshape it completely. The renderer connects the iterates
+// into a polyline, which reads as a luminous tangle of the attractor's basin.
+export type AttractorKind = 'dejong' | 'clifford' | 'svensson'
+
+export interface AttractorParams {
+  type: AttractorKind
+  a: number
+  b: number
+  c: number
+  d: number
+  steps: number
+}
+
 // Per-layer "breathe" animation: how fast and how far the source phases drift
 // when Live mode is running. Purely a view-time effect — never persisted into
 // the figure itself.
@@ -128,6 +146,7 @@ export interface Layer {
   rose?: RoseParams
   liss?: LissajousParams
   sf?: SuperformulaParams
+  attractor?: AttractorParams
   drift?: LayerDrift
   style: LayerStyle
 }

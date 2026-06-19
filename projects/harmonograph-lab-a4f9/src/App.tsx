@@ -12,11 +12,13 @@ import {
   CURVE_KINDS,
   breatheLayer,
   computeLayerData,
+  defaultAttractor,
   defaultLiss,
   defaultRose,
   defaultSf,
   defaultSpiro,
   getLayerData,
+  randomAttractor,
   randomLissajous,
   randomRose,
   randomSpiro,
@@ -27,6 +29,8 @@ import { PRESETS, loadPreset } from './presets'
 import { generateProject } from './generate'
 import { computeTransform, drawProject, toSvg, type Transform } from './render'
 import { canRecord, recordWebm } from './record'
+import { canGif, recordGif } from './gif'
+import { AudioReactor, canAudio } from './audio'
 import {
   deleteFromGallery,
   loadGallery,
@@ -37,6 +41,7 @@ import {
   type GalleryItem,
 } from './share'
 import type {
+  AttractorParams,
   BackgroundMode,
   BlendMode,
   ColorMode,
@@ -53,6 +58,7 @@ import { Slider } from './components/Slider'
 import { Segmented } from './components/Segmented'
 import { LayerList } from './components/LayerList'
 import {
+  CurveAttractor,
   CurveHarmonograph,
   CurveLissajous,
   CurveRose,
@@ -101,9 +107,31 @@ function withRandomSource(l: Layer): Layer {
       return { ...l, liss: randomLissajous() }
     case 'superformula':
       return { ...l, sf: randomSuperformula() }
+    case 'attractor':
+      return { ...l, attractor: randomAttractor() }
     case 'harmonograph':
     default:
       return { ...l, params: randomParams() }
+  }
+}
+
+// Audio-reactive view modulation: pulse glow with the overall level and swell
+// line width with the bass. Purely a draw-time effect on a throwaway project
+// copy — it never mutates or persists the figure.
+function pulseProject(project: Project, level: number, bass: number, gain: number): Project {
+  const g = Math.max(0, gain)
+  const glowBoost = level * 0.6 * g
+  const widthBoost = 1 + bass * 1.1 * g
+  return {
+    ...project,
+    layers: project.layers.map((l) => ({
+      ...l,
+      style: {
+        ...l.style,
+        glow: Math.min(1, l.style.glow + glowBoost),
+        lineWidth: l.style.lineWidth * widthBoost,
+      },
+    })),
   }
 }
 
@@ -119,6 +147,9 @@ export default function App() {
   const [live, setLive] = useState(false)
   const [liveSpeed, setLiveSpeed] = useState(1)
   const [recording, setRecording] = useState(false)
+  const [gifBusy, setGifBusy] = useState(false)
+  const [audioOn, setAudioOn] = useState(false)
+  const [audioGain, setAudioGain] = useState(1)
   const [exportScale, setExportScale] = useState(2)
   const [gallery, setGallery] = useState<GalleryItem[]>(() => loadGallery())
   const [galleryName, setGalleryName] = useState('')
@@ -127,6 +158,11 @@ export default function App() {
 
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const traceRef = useRef(1)
+  const audioRef = useRef<AudioReactor | null>(null)
+  const audioGainRef = useRef(1)
+  useEffect(() => {
+    audioGainRef.current = audioGain
+  }, [audioGain])
 
   // Build render data per layer. `getLayerData` caches by params identity, so a
   // style edit (which keeps the params object) is essentially free here.
@@ -146,11 +182,11 @@ export default function App() {
   // Draw the static figure. While Live mode or a recording is running, those
   // own the canvas, so this effect stands down.
   useEffect(() => {
-    if (live || recording) return
+    if (live || recording || audioOn) return
     const ctx = canvasRef.current?.getContext('2d')
     if (!ctx) return
     drawProject(ctx, project, datas, RENDER, { trace })
-  }, [project, datas, trace, live, recording])
+  }, [project, datas, trace, live, recording, audioOn])
 
   // Live "breathe" loop: drift each layer's phases over time and redraw, with
   // framing frozen so the evolving figure doesn't jitter as its extent shifts.
@@ -175,6 +211,26 @@ export default function App() {
     raf = requestAnimationFrame(loop)
     return () => cancelAnimationFrame(raf)
   }, [live, liveSpeed, project, datas])
+
+  // Audio-reactive loop: sample the mic each frame and redraw the figure with
+  // glow / width pulsing to the sound. Framing is frozen (like Live) so the beat
+  // doesn't make the whole piece breathe in and out of frame.
+  useEffect(() => {
+    if (!audioOn) return
+    const reactor = audioRef.current
+    const ctx = canvasRef.current?.getContext('2d')
+    if (!reactor || !ctx) return
+    const tf: Transform = computeTransform(project.layers, datas, RENDER)
+    let raf = 0
+    const loop = () => {
+      reactor.sample()
+      const pulsed = pulseProject(project, reactor.getLevel(), reactor.getBass(), audioGainRef.current)
+      drawProject(ctx, pulsed, datas, RENDER, { transform: tf })
+      raf = requestAnimationFrame(loop)
+    }
+    raf = requestAnimationFrame(loop)
+    return () => cancelAnimationFrame(raf)
+  }, [audioOn, project, datas])
 
   // Keep the URL hash in sync so the current piece is always shareable.
   useEffect(() => {
@@ -246,6 +302,7 @@ export default function App() {
       if (kind === 'rose' && !next.rose) next.rose = defaultRose()
       if (kind === 'lissajous' && !next.liss) next.liss = defaultLiss()
       if (kind === 'superformula' && !next.sf) next.sf = defaultSf()
+      if (kind === 'attractor' && !next.attractor) next.attractor = defaultAttractor()
       return next
     })
   }
@@ -264,6 +321,17 @@ export default function App() {
   const updateSf = (patch: Partial<SuperformulaParams>) => {
     if (!selected) return
     updateLayer(selected.id, (l) => ({ ...l, sf: { ...(l.sf ?? defaultSf()), ...patch } }))
+  }
+  const updateAttractor = (patch: Partial<AttractorParams>) => {
+    if (!selected) return
+    updateLayer(selected.id, (l) => ({
+      ...l,
+      attractor: { ...(l.attractor ?? defaultAttractor()), ...patch },
+    }))
+  }
+  const updateDrift = (rate: number) => {
+    if (!selected) return
+    updateLayer(selected.id, (l) => ({ ...l, drift: { rate } }))
   }
 
 
@@ -296,6 +364,7 @@ export default function App() {
       if (src.rose) copy.rose = { ...src.rose }
       if (src.liss) copy.liss = { ...src.liss }
       if (src.sf) copy.sf = { ...src.sf }
+      if (src.attractor) copy.attractor = { ...src.attractor }
       if (src.drift) copy.drift = { ...src.drift }
       const next = [...ls]
       next.splice(i + 1, 0, copy)
@@ -455,15 +524,24 @@ export default function App() {
 
   // ---- animation controls -------------------------------------------------
 
+  const stopAudio = useCallback(() => {
+    if (audioRef.current) {
+      audioRef.current.stop()
+      audioRef.current = null
+    }
+    setAudioOn(false)
+  }, [])
+
   const togglePlay = useCallback(() => {
     if (recording) return
     setLive(false)
+    stopAudio()
     if (!playing && traceRef.current >= 1) {
       traceRef.current = 0
       setTrace(0)
     }
     setPlaying((p) => !p)
-  }, [playing, recording])
+  }, [playing, recording, stopAudio])
   const scrub = (v: number) => {
     setPlaying(false)
     traceRef.current = v
@@ -473,13 +551,14 @@ export default function App() {
   const toggleLive = useCallback(() => {
     if (recording) return
     setPlaying(false)
+    stopAudio()
     // entering Live: make sure the full figure is showing first
     if (!live) {
       traceRef.current = 1
       setTrace(1)
     }
     setLive((v) => !v)
-  }, [live, recording])
+  }, [live, recording, stopAudio])
 
   // ---- video capture ------------------------------------------------------
 
@@ -493,6 +572,11 @@ export default function App() {
     }
     setLive(false)
     setPlaying(false)
+    if (audioRef.current) {
+      audioRef.current.stop()
+      audioRef.current = null
+      setAudioOn(false)
+    }
     setRecording(true)
     try {
       const blob = await recordWebm(
@@ -515,6 +599,74 @@ export default function App() {
       setTrace(1)
     }
   }, [project, datas, flash])
+
+  // ---- animated GIF (universal) -------------------------------------------
+
+  const downloadGif = useCallback(async () => {
+    if (!canGif()) {
+      flash('GIF export is not supported here')
+      return
+    }
+    setLive(false)
+    setPlaying(false)
+    if (audioRef.current) {
+      audioRef.current.stop()
+      audioRef.current = null
+      setAudioOn(false)
+    }
+    setGifBusy(true)
+    flash('Rendering GIF…')
+    try {
+      const blob = await recordGif(
+        (ctx, size, tr) => drawProject(ctx, project, datas, size, { trace: tr }),
+        { size: 420, frames: 36, delayMs: 60, holdMs: 900 },
+      )
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = 'harmonograph.gif'
+      a.click()
+      URL.revokeObjectURL(url)
+      flash(`Saved GIF (${(blob.size / 1024).toFixed(0)} KB)`)
+    } catch (err) {
+      flash(err instanceof Error ? err.message : 'GIF export failed')
+    } finally {
+      setGifBusy(false)
+    }
+  }, [project, datas, flash])
+
+  // ---- audio-reactive mode -------------------------------------------------
+
+  const toggleAudio = useCallback(async () => {
+    if (recording || gifBusy) return
+    if (audioOn) {
+      audioRef.current?.stop()
+      audioRef.current = null
+      setAudioOn(false)
+      return
+    }
+    if (!canAudio()) {
+      flash('Microphone / audio is not available here')
+      return
+    }
+    setPlaying(false)
+    setLive(false)
+    const reactor = new AudioReactor()
+    const ok = await reactor.start()
+    if (!ok) {
+      reactor.stop()
+      flash('Could not access the microphone')
+      return
+    }
+    audioRef.current = reactor
+    traceRef.current = 1
+    setTrace(1)
+    setAudioOn(true)
+    flash('Audio-reactive — make some noise 🎙')
+  }, [audioOn, recording, gifBusy, flash])
+
+  // Always release the mic when the component unmounts.
+  useEffect(() => () => audioRef.current?.stop(), [])
 
   // ---- keyboard shortcuts -------------------------------------------------
 
@@ -541,6 +693,12 @@ export default function App() {
         case 'l':
           toggleLive()
           break
+        case 'a':
+          void toggleAudio()
+          break
+        case 'i':
+          void downloadGif()
+          break
         case 'n':
           addLayer()
           break
@@ -559,7 +717,17 @@ export default function App() {
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [generate, randomizeSelected, togglePlay, toggleLive, addLayer, doShare, downloadPng])
+  }, [
+    generate,
+    randomizeSelected,
+    togglePlay,
+    toggleLive,
+    toggleAudio,
+    downloadGif,
+    addLayer,
+    doShare,
+    downloadPng,
+  ])
 
   const theme = selected
   const visibleCount = project.layers.filter((l) => l.visible).length
@@ -591,6 +759,13 @@ export default function App() {
           >
             {live ? '🌀 Live ✓' : '🌀 Live'}
           </button>
+          <button
+            className={audioOn ? 'ghost active-toggle' : 'ghost'}
+            onClick={toggleAudio}
+            title="Audio-reactive — pulse to the mic (a)"
+          >
+            {audioOn ? '🎙 Audio ✓' : '🎙 Audio'}
+          </button>
           <button className="primary" onClick={doShare} title="Copy share link (s)">
             🔗 Share
           </button>
@@ -606,7 +781,25 @@ export default function App() {
             <canvas ref={canvasRef} width={RENDER} height={RENDER} className="canvas" />
           </div>
           <div className="transport">
-            {live ? (
+            {audioOn ? (
+              <>
+                <button className="play" onClick={toggleAudio} title="Stop audio mode">
+                  ⏹
+                </button>
+                <span className="live-tag">🎙 AUDIO · reactive</span>
+                <label className="speed">
+                  sensitivity
+                  <input
+                    type="range"
+                    min={0.2}
+                    max={3}
+                    step={0.1}
+                    value={audioGain}
+                    onChange={(e) => setAudioGain(parseFloat(e.target.value))}
+                  />
+                </label>
+              </>
+            ) : live ? (
               <>
                 <button className="play" onClick={toggleLive} title="Stop Live">
                   ⏹
@@ -748,6 +941,29 @@ export default function App() {
                 {theme.kind === 'superformula' && (
                   <CurveSuperformula sf={theme.sf ?? defaultSf()} update={updateSf} />
                 )}
+                {theme.kind === 'attractor' && (
+                  <CurveAttractor
+                    attractor={theme.attractor ?? defaultAttractor()}
+                    update={updateAttractor}
+                  />
+                )}
+
+                <section className="group">
+                  <div className="group-title">Live evolution</div>
+                  <Slider
+                    label="Drift rate"
+                    value={theme.drift?.rate ?? 1}
+                    min={0}
+                    max={2.5}
+                    step={0.05}
+                    onChange={updateDrift}
+                    fmt={(v) => (v <= 0 ? 'still' : `${v.toFixed(2)}×`)}
+                  />
+                  <p className="hint">
+                    How fast this layer evolves in <strong>Live</strong> mode (🌀). Set
+                    different rates per layer so they drift out of, and back into, phase.
+                  </p>
+                </section>
               </>
             )}
 
@@ -947,7 +1163,10 @@ export default function App() {
                     <button onClick={downloadPng}>⬇ PNG</button>
                     <button onClick={downloadSvg}>⬇ SVG</button>
                   </div>
-                  <button className="wide" onClick={recordVideo} disabled={recording}>
+                  <button className="wide" onClick={downloadGif} disabled={gifBusy || recording}>
+                    {gifBusy ? '● Rendering GIF…' : '🖼 Export animated GIF (universal)'}
+                  </button>
+                  <button className="wide" onClick={recordVideo} disabled={recording || gifBusy}>
                     {recording ? '● Recording…' : '🎬 Record WebM (drawing pass)'}
                   </button>
                   <button className="wide" onClick={doShare}>
@@ -1021,22 +1240,29 @@ export default function App() {
               Build a piece by stacking <strong>layers</strong>, and pick each layer's{' '}
               <strong>curve type</strong> in the Curve tab: a harmonograph, a{' '}
               <strong>spirograph</strong> (hypo/epitrochoid), a <strong>rose</strong>,
-              a <strong>Lissajous</strong> figure, or the wildly versatile{' '}
-              <strong>superformula</strong>. Use <em>Add</em> / <em>Screen</em> blends
-              with glow for luminous overlaps, color along path / speed / curvature /
-              direction, and turn up <strong>kaleidoscope symmetry</strong> for mandalas.
+              a <strong>Lissajous</strong> figure, the wildly versatile{' '}
+              <strong>superformula</strong>, or a chaotic{' '}
+              <strong>strange attractor</strong> (de Jong / Clifford / Svensson). Use{' '}
+              <em>Add</em> / <em>Screen</em> blends with glow for luminous overlaps, color
+              along path / speed / curvature / direction, and turn up{' '}
+              <strong>kaleidoscope symmetry</strong> for mandalas.
               Hit <strong>Animate</strong> to watch the pen draw, <strong>Live</strong> to
-              let the figure slowly evolve, and <strong>Record WebM</strong> to capture
-              the drawing pass as video. Everything lives in the URL, so the{' '}
-              <strong>Share</strong> link reproduces your exact piece.
+              let the figure slowly evolve (per-layer <em>drift rate</em>), and{' '}
+              <strong>🎙 Audio</strong> to pulse glow and stroke to your microphone.
+              Export an <strong>animated GIF</strong> that plays anywhere, a{' '}
+              <strong>WebM</strong> video, or a high-res <strong>PNG/SVG</strong>.
+              Everything lives in the URL, so the <strong>Share</strong> link reproduces
+              your exact piece.
             </p>
             <div className="shortcuts">
               <div><kbd>G</kbd> generate a piece</div>
               <div><kbd>Space</kbd> play / pause</div>
               <div><kbd>L</kbd> live evolve</div>
+              <div><kbd>A</kbd> audio-reactive</div>
               <div><kbd>R</kbd> randomize layer</div>
               <div><kbd>N</kbd> new layer</div>
               <div><kbd>E</kbd> export PNG</div>
+              <div><kbd>I</kbd> export GIF</div>
               <div><kbd>S</kbd> copy share link</div>
               <div><kbd>?</kbd> this help</div>
             </div>

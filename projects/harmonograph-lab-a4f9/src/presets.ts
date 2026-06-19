@@ -5,6 +5,7 @@
 import { makeLayer } from './harmonograph'
 import { paletteById } from './palettes'
 import type {
+  AttractorParams,
   BlendMode,
   ColorMode,
   CurveKind,
@@ -69,6 +70,7 @@ interface PresetLayer {
   rose?: RoseParams
   liss?: LissajousParams
   sf?: SuperformulaParams
+  attractor?: AttractorParams
 }
 
 // A harmonograph placeholder for layers whose real source is another kind.
@@ -441,6 +443,66 @@ export const PRESETS: Preset[] = [
       },
     ],
   },
+  {
+    name: 'de Jong Web',
+    background: '#06060d',
+    bg2: '#140a22',
+    bgMode: 'radial',
+    vignette: 0.5,
+    layers: [
+      {
+        name: 'Orbit',
+        kind: 'attractor',
+        params: dummyHarm(),
+        attractor: { type: 'dejong', a: 1.4, b: -2.3, c: 2.4, d: -2.1, steps: 16000 },
+        style: st('plasma', { colorMode: 'path', glow: 0.3, lineWidth: 0.55, blend: 'lighter', opacity: 0.85 }),
+      },
+    ],
+  },
+  {
+    name: 'Clifford Drift',
+    background: '#070b1a',
+    vignette: 0.45,
+    layers: [
+      {
+        name: 'Orbit',
+        kind: 'attractor',
+        params: dummyHarm(),
+        attractor: { type: 'clifford', a: -1.4, b: 1.6, c: 1.0, d: 0.7, steps: 16000 },
+        style: st('aurora', { colorMode: 'velocity', glow: 0.32, lineWidth: 0.55, blend: 'lighter', opacity: 0.85 }),
+      },
+    ],
+  },
+  {
+    name: 'Svensson Bloom',
+    background: '#0a0512',
+    vignette: 0.48,
+    layers: [
+      {
+        name: 'Orbit',
+        kind: 'attractor',
+        params: dummyHarm(),
+        attractor: { type: 'svensson', a: 1.5, b: -1.8, c: 1.6, d: 1.4, steps: 16000 },
+        style: st('neon', { colorMode: 'path', glow: 0.3, lineWidth: 0.6, blend: 'lighter', opacity: 0.85 }),
+      },
+    ],
+  },
+  {
+    name: 'Supershape Morph',
+    background: '#0d0820',
+    bg2: '#06030f',
+    bgMode: 'radial',
+    vignette: 0.5,
+    layers: [
+      {
+        name: 'Morph',
+        kind: 'superformula',
+        params: dummyHarm(),
+        sf: { m: 7, n1: 0.3, n2: 0.5, n3: 0.5, a: 1, b: 1, amp: 1, cycles: 9, twist: 1.7, steps: STEPS },
+        style: st('spectrum', { colorMode: 'angle', glow: 0.34, lineWidth: 0.75, blend: 'lighter', opacity: 0.9 }),
+      },
+    ],
+  },
 ]
 
 export function loadPreset(preset: Preset): Project {
@@ -455,6 +517,7 @@ export function loadPreset(preset: Preset): Project {
       if (l.rose) extra.rose = structuredClone(l.rose)
       if (l.liss) extra.liss = structuredClone(l.liss)
       if (l.sf) extra.sf = structuredClone(l.sf)
+      if (l.attractor) extra.attractor = structuredClone(l.attractor)
       return makeLayer(l.name, structuredClone(l.params), structuredClone(l.style), extra)
     }),
   }
