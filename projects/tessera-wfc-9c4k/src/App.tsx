@@ -12,6 +12,8 @@ import { Controller, type ControllerConfig, type Stats } from './wfc/controller'
 import { randomSeedString } from './wfc/prng';
 import { decodeHash, encodeHash } from './wfc/permalink';
 import { sampleByKey, type Sample } from './wfc/samples';
+import Studio3D from './components/Studio3D';
+import { decodeHash3, hashMode, type Mode } from './wfc3d/permalink3';
 
 const DEFAULTS: ControllerConfig = {
   model: 'overlap',
@@ -59,6 +61,7 @@ const EMPTY_STATS: Stats = {
 };
 
 export default function App() {
+  const [mode, setMode] = useState<Mode>(() => hashMode(window.location.hash));
   const [cfg, setCfg] = useState<ControllerConfig>(initialConfig);
   const [controller] = useState(() => new Controller(cfg));
   const [seedLocked, setSeedLocked] = useState(false);
@@ -69,10 +72,12 @@ export default function App() {
 
   const onStats = useCallback((s: Stats) => setStats(s), []);
 
-  // keep the URL hash in sync so the current run is shareable / reproducible
+  // keep the URL hash in sync so the current run is shareable / reproducible. Only the active
+  // engine owns the hash — when the 3D studio is up it writes its own (`m=3`) hash instead.
   useEffect(() => {
+    if (mode !== '2d') return;
     window.history.replaceState(null, '', encodeHash(cfg));
-  }, [cfg]);
+  }, [cfg, mode]);
 
   const share = useCallback(async (): Promise<boolean> => {
     const url = window.location.origin + window.location.pathname + encodeHash(cfg);
@@ -142,8 +147,9 @@ export default function App() {
     [apply],
   );
 
-  // keyboard shortcuts
+  // keyboard shortcuts (2D engine only — the 3D studio owns its own keys while it's up)
   useEffect(() => {
+    if (mode !== '2d') return;
     const onKey = (e: KeyboardEvent) => {
       if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
       switch (e.key.toLowerCase()) {
@@ -182,7 +188,7 @@ export default function App() {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [toggle, step, reset, newSeed, exportPng, exportJson, setErase, erase, clearPins, apply, cfg.showEntropy, cfg.showGrid]);
+  }, [mode, toggle, step, reset, newSeed, exportPng, exportJson, setErase, erase, clearPins, apply, cfg.showEntropy, cfg.showGrid]);
 
   // controller.tileset changes identity on a set switch or a weight edit (both also bump stats
   // and re-render), so reading it here and memoising the brush preview on it is correct.
@@ -206,64 +212,97 @@ export default function App() {
           <span className="logo">◩</span>
           <div>
             <h1>Tessera</h1>
-            <p>A Wave Function Collapse studio — watch constraints crystallise into form.</p>
+            <p>
+              {mode === '3d'
+                ? 'Wave Function Collapse in three dimensions — a from-scratch voxel engine.'
+                : 'A Wave Function Collapse studio — watch constraints crystallise into form.'}
+            </p>
           </div>
         </div>
-        <a className="repo-link" href="https://en.wikipedia.org/wiki/Model_synthesis" target="_blank" rel="noreferrer">
-          what is WFC?
-        </a>
+        <div className="topbar-right">
+          <div className="segmented mode-switch">
+            <button className={`seg ${mode === '2d' ? 'active' : ''}`} type="button" onClick={() => setMode('2d')}>
+              2D
+            </button>
+            <button className={`seg ${mode === '3d' ? 'active' : ''}`} type="button" onClick={() => setMode('3d')}>
+              3D
+            </button>
+          </div>
+          <a className="repo-link" href="https://en.wikipedia.org/wiki/Model_synthesis" target="_blank" rel="noreferrer">
+            what is WFC?
+          </a>
+        </div>
       </header>
 
-      <main className="layout">
-        <div className="stage">
-          <Viewport controller={controller} tileset={tileset} onStats={onStats} paintActive={paintActive} />
-          <Transport
-            running={stats.running}
-            speed={cfg.speed}
-            recording={stats.recording}
-            canRecord={controller.canRecord()}
-            onToggle={toggle}
-            onStep={step}
-            onReset={reset}
-            onExport={exportPng}
-            onExportJson={exportJson}
-            onRecord={record}
-            onShare={share}
-            onSpeed={(v) => apply({ speed: v }, false)}
-          />
-        </div>
+      {mode === '3d' ? (
+        <Studio3D initial={decodeHash3(window.location.hash)} />
+      ) : (
+        <main className="layout">
+          <div className="stage">
+            <Viewport controller={controller} tileset={tileset} onStats={onStats} paintActive={paintActive} />
+            <Transport
+              running={stats.running}
+              speed={cfg.speed}
+              recording={stats.recording}
+              canRecord={controller.canRecord()}
+              onToggle={toggle}
+              onStep={step}
+              onReset={reset}
+              onExport={exportPng}
+              onExportJson={exportJson}
+              onRecord={record}
+              onShare={share}
+              onSpeed={(v) => apply({ speed: v }, false)}
+            />
+          </div>
 
-        <aside className="sidebar">
-          <StatsPanel stats={stats} />
-          <Tuning
-            cfg={cfg}
-            seedLocked={seedLocked}
-            onPatch={apply}
-            onNewSeed={newSeed}
-            onSeedLock={setSeedLocked}
-            onEditSample={openEditor}
-          />
-          <PaintPanel brushSrc={brushSrc} erase={erase} pinCount={stats.pins} onErase={setErase} onClear={clearPins} />
-          <Gallery
-            tileset={tileset}
-            brush={brush}
-            onPickBrush={pickBrush}
-            onSetWeight={setWeight}
-            onResetWeights={resetWeights}
-            hasOverrides={controller.hasWeightOverrides()}
-            defaultWeight={(id) => controller.defaultWeight(id)}
-          />
-          <TestsPanel />
-        </aside>
-      </main>
+          <aside className="sidebar">
+            <StatsPanel stats={stats} />
+            <Tuning
+              cfg={cfg}
+              seedLocked={seedLocked}
+              onPatch={apply}
+              onNewSeed={newSeed}
+              onSeedLock={setSeedLocked}
+              onEditSample={openEditor}
+            />
+            <PaintPanel brushSrc={brushSrc} erase={erase} pinCount={stats.pins} onErase={setErase} onClear={clearPins} />
+            <Gallery
+              tileset={tileset}
+              brush={brush}
+              onPickBrush={pickBrush}
+              onSetWeight={setWeight}
+              onResetWeights={resetWeights}
+              hasOverrides={controller.hasWeightOverrides()}
+              defaultWeight={(id) => controller.defaultWeight(id)}
+            />
+            <TestsPanel />
+          </aside>
+        </main>
+      )}
 
-      {editing && <SampleEditor value={editorSample} onChange={onSampleChange} onClose={() => setEditing(false)} />}
+      {editing && mode === '2d' && <SampleEditor value={editorSample} onChange={onSampleChange} onClose={() => setEditing(false)} />}
 
       <footer className="footer">
-        <span>Built from scratch — tiled + overlapping models · support-counter propagation · snapshot backtracking · hand constraints · global connectivity (one network / routed pins) · in-app Proof Lab.</span>
-        <span className="keys">
-          <kbd>space</kbd> play · <kbd>s</kbd> step · <kbd>r</kbd> reset · <kbd>n</kbd> seed · <kbd>e</kbd> png · <kbd>j</kbd> json · <kbd>x</kbd> erase · <kbd>c</kbd> clear · <kbd>h</kbd> heatmap
-        </span>
+        {mode === '3d' ? (
+          <>
+            <span>
+              Built from scratch — 3D Wave Function Collapse on a 6-neighbour voxel lattice · cube-group socket algebra ·
+              support-counter propagation · snapshot backtracking · software voxel rasteriser (orbit camera, face culling,
+              Lambert shading) · in-app 3D Proof Lab.
+            </span>
+            <span className="keys">
+              <kbd>space</kbd> play · <kbd>s</kbd> step · <kbd>r</kbd> reset · <kbd>n</kbd> seed · <kbd>e</kbd> png · drag to orbit
+            </span>
+          </>
+        ) : (
+          <>
+            <span>Built from scratch — tiled + overlapping models · support-counter propagation · snapshot backtracking · hand constraints · global connectivity (one network / routed pins) · in-app Proof Lab.</span>
+            <span className="keys">
+              <kbd>space</kbd> play · <kbd>s</kbd> step · <kbd>r</kbd> reset · <kbd>n</kbd> seed · <kbd>e</kbd> png · <kbd>j</kbd> json · <kbd>x</kbd> erase · <kbd>c</kbd> clear · <kbd>h</kbd> heatmap
+            </span>
+          </>
+        )}
       </footer>
     </div>
   );
