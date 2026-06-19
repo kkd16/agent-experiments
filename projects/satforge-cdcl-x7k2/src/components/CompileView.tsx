@@ -1,6 +1,6 @@
 import { useMemo, useRef, useState } from 'react'
 import type { CNF, Ddnnf, CompileStats, Weights } from '../sat'
-import { ddnnfCount, ddnnfMarginals, ddnnfWmc, verifyCircuit, toNnf } from '../sat'
+import { ddnnfCount, ddnnfMarginals, ddnnfMpe, ddnnfWmc, verifyCircuit, toNnf } from '../sat'
 import { compileDdnnfTask } from '../tasks'
 
 type State =
@@ -79,6 +79,7 @@ function Compiled({ ddnnf, stats }: { ddnnf: Ddnnf; stats: CompileStats }) {
   }, [ddnnf, p])
   const wmc = useMemo(() => ddnnfWmc(ddnnf, weights), [ddnnf, weights])
   const marg = useMemo(() => ddnnfMarginals(ddnnf, weights), [ddnnf, weights])
+  const mpe = useMemo(() => ddnnfMpe(ddnnf, weights), [ddnnf, weights])
 
   const digits = count.toString()
   const cacheTotal = stats.cacheHits + stats.cacheSize
@@ -154,6 +155,8 @@ function Compiled({ ddnnf, stats }: { ddnnf: Ddnnf; stats: CompileStats }) {
         </div>
 
         <MarginalBars probTrue={marg.probTrue} numVars={ddnnf.numVars} />
+
+        {count > 0n && <MpeRow assignment={mpe.assignment} weight={mpe.weight} numVars={ddnnf.numVars} />}
       </div>
 
       <div className="compile-actions">
@@ -189,6 +192,33 @@ function MarginalBars({ probTrue, numVars }: { probTrue: number[]; numVars: numb
               </div>
               <span className="marg-pct">{pr.toFixed(2)}</span>
             </div>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
+function MpeRow({ assignment, weight, numVars }: { assignment: boolean[]; weight: number; numVars: number }) {
+  const cap = 64
+  const shown = Math.min(numVars, cap)
+  return (
+    <div className="mpe-wrap">
+      <div className="marg-head">
+        <span>
+          Most-probable explanation — the single likeliest assignment (max-product), weight{' '}
+          <strong className="mpe-weight">{weight.toExponential(4)}</strong>
+        </span>
+        {numVars > cap && <span className="marg-note">showing first {cap} of {numVars}</span>}
+      </div>
+      <div className="mpe-chips">
+        {Array.from({ length: shown }, (_, i) => {
+          const v = i + 1
+          const on = assignment[v]
+          return (
+            <span key={v} className={`mpe-chip ${on ? 'on' : 'off'}`} title={`x${v} = ${on}`}>
+              x{v}
+            </span>
           )
         })}
       </div>

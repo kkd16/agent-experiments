@@ -23,6 +23,7 @@ import {
   ddnnfCount,
   ddnnfWmc,
   ddnnfMarginals,
+  ddnnfMpe,
   ddnnfEnumerate,
   uniformWeights,
   verifyCircuit,
@@ -540,6 +541,20 @@ function bruteModelSet(cnf: CNF): Set<string> {
   }
   return set
 }
+// Brute-force most-probable explanation: the largest ∏-of-weights over satisfying models.
+function bruteMpe(cnf: CNF, wpos: number[], wneg: number[]): number {
+  const n = cnf.numVars
+  let best = 0
+  for (let mask = 0; mask < 1 << n; mask++) {
+    const model: boolean[] = [false]
+    for (let v = 1; v <= n; v++) model[v] = (mask & (1 << (v - 1))) !== 0
+    if (!verifyModel(cnf, model).ok) continue
+    let p = 1
+    for (let v = 1; v <= n; v++) p *= model[v] ? wpos[v] : wneg[v]
+    if (p > best) best = p
+  }
+  return best
+}
 const close = (a: number, b: number) => Math.abs(a - b) <= 1e-9 * (1 + Math.abs(a) + Math.abs(b))
 
 // ---- knowledge compilation to sd-DNNF (Session 14) -----------------------------
@@ -552,6 +567,7 @@ const close = (a: number, b: number) => Math.abs(a - b) <= 1e-9 * (1 + Math.abs(
   let propBad = 0
   let wmcBad = 0
   let margBad = 0
+  let mpeBad = 0
   let enumBad = 0
   let nonTrivial = 0
   let exercised = 0
@@ -597,7 +613,18 @@ const close = (a: number, b: number) => Math.abs(a - b) <= 1e-9 * (1 + Math.abs(
     if (!close(m.z, bm.z)) margBad++
     for (let v = 1; v <= n; v++) if (!close(m.probTrue[v], bm.probTrue[v])) margBad++
 
-    // 5) Enumeration off the circuit equals the brute-force model set, with no duplicates.
+    // 5) Most-probable explanation (max-product) vs brute force, and the returned assignment
+    //    must be a genuine satisfying model whose weight equals the reported optimum.
+    if (truth > 0n) {
+      const mpe = ddnnfMpe(d, { pos: wpos, neg: wneg })
+      if (!close(mpe.weight, bruteMpe(cnf, wpos, wneg))) mpeBad++
+      if (!verifyModel(cnf, mpe.assignment).ok) mpeBad++
+      let pw = 1
+      for (let v = 1; v <= n; v++) pw *= mpe.assignment[v] ? wpos[v] : wneg[v]
+      if (!close(pw, mpe.weight)) mpeBad++
+    }
+
+    // 6) Enumeration off the circuit equals the brute-force model set, with no duplicates.
     if (truth <= 200n) {
       const models = ddnnfEnumerate(d, 1000)
       if (BigInt(models.length) !== truth) enumBad++
@@ -617,6 +644,7 @@ const close = (a: number, b: number) => Math.abs(a - b) <= 1e-9 * (1 + Math.abs(
   check('d-DNNF: every circuit is smooth + decomposable + deterministic', propBad === 0, `bad=${propBad}`)
   check('d-DNNF: weighted model count vs brute force', wmcBad === 0, `bad=${wmcBad}`)
   check('d-DNNF: exact marginals (differential pass) vs brute force', margBad === 0, `bad=${margBad}`)
+  check('d-DNNF: most-probable explanation (max-product) vs brute force', mpeBad === 0, `bad=${mpeBad}`)
   check('d-DNNF: enumeration == model set, no duplicates', enumBad === 0, `bad=${enumBad}`)
   check('d-DNNF: exercised non-trivial counts', nonTrivial > 250, `nonTrivial=${nonTrivial}`)
   check('d-DNNF: compiled the vast majority of instances', exercised > 1100, `exercised=${exercised}`)

@@ -29,6 +29,7 @@ export {
   ddnnfCount,
   ddnnfWmc,
   ddnnfMarginals,
+  ddnnfMpe,
   ddnnfEnumerate,
   uniformWeights,
   verifyCircuit,
@@ -42,6 +43,7 @@ export type {
   CompileOptions,
   Weights,
   Marginals,
+  Mpe,
   CircuitProperties,
 } from './ddnnf'
 export { findMus } from './mus'
