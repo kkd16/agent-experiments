@@ -12,12 +12,13 @@ import { TraceView } from './components/TraceView'
 import { CnfView } from './components/CnfView'
 import { ProofView } from './components/ProofView'
 import { CountView } from './components/CountView'
+import { CompileView } from './components/CompileView'
 import { MaxSatView } from './components/MaxSatView'
 import { SmtStudio } from './components/SmtStudio'
 import { ModelChecker } from './components/ModelChecker'
 import { SolverLab } from './components/SolverLab'
 
-type Tab = 'solution' | 'stats' | 'count' | 'graph' | 'trace' | 'proof' | 'cnf'
+type Tab = 'solution' | 'stats' | 'count' | 'compile' | 'graph' | 'trace' | 'proof' | 'cnf'
 type Mode = 'sat' | 'smt' | 'imc' | 'lab'
 
 export default function App() {
@@ -155,6 +156,9 @@ export default function App() {
             <TabBtn id="count" tab={tab} setTab={setTab} disabled={!result}>
               Count
             </TabBtn>
+            <TabBtn id="compile" tab={tab} setTab={setTab} disabled={!result}>
+              Compile
+            </TabBtn>
             <TabBtn id="graph" tab={tab} setTab={setTab} disabled={!hasGraph}>
               Conflict graph
             </TabBtn>
@@ -188,6 +192,7 @@ export default function App() {
               <StatsView result={result} elapsed={state.phase === 'done' ? state.elapsed : 0} />
             )}
             {result && tab === 'count' && <CountView key={specKey} cnf={problem.cnf} />}
+            {result && tab === 'compile' && <CompileView key={specKey} cnf={problem.cnf} />}
             {result && tab === 'graph' && hasGraph && <ImplicationGraph snapshot={result.firstConflict!} />}
             {result && tab === 'trace' && hasTrace && (
               <TraceView trace={result.trace!} truncated={!!result.traceTruncated} />
@@ -205,7 +210,9 @@ export default function App() {
         Two-watched-literals BCP · VSIDS · first-UIP learning · non-chronological backjumping ·
         recursive minimization · Luby restarts · LBD clause deletion · DRAT proofs with an
         independent RUP/RAT checker · exact #SAT model counting (component caching) · minimal
-        unsat cores (MUS) · factoring via a from-scratch multiplier circuit · incremental solving
+        unsat cores (MUS) · <b>knowledge compilation</b> to smooth d-DNNF for weighted model
+        counting &amp; exact variable marginals in one linear pass · factoring via a from-scratch
+        multiplier circuit · incremental solving
         under assumptions with core extraction · weighted MaxSAT (linear SAT-UNSAT &amp; core-guided
         WPM1) over a Generalized Totalizer · and a full <b>DPLL(T) SMT solver</b> on the same core
         — EUF by proof-producing congruence closure, QF_LRA/QF_LIA by a general simplex over exact

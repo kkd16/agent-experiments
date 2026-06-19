@@ -19,6 +19,14 @@ import {
   proofToDrat,
   parseDrat,
   countModels,
+  compileDdnnf,
+  ddnnfCount,
+  ddnnfWmc,
+  ddnnfMarginals,
+  ddnnfEnumerate,
+  uniformWeights,
+  verifyCircuit,
+  toNnf,
   findMus,
   encodeFactoring,
   encodeHamiltonian,
@@ -483,6 +491,158 @@ function bruteCount(cnf: CNF): bigint {
   const sharedCount = countModels(shared)
   check('#SAT shared-residual count = 6', sharedCount.count === 6n, `got=${sharedCount.count}`)
   check('#SAT formula cache caught the repeated component', sharedCount.cacheHits > 0, `hits=${sharedCount.cacheHits}`)
+}
+
+// Brute-force weighted model count over a CNF (<=18 vars). Weights indexed 1..n.
+function bruteWmc(cnf: CNF, wpos: number[], wneg: number[]): number {
+  const n = cnf.numVars
+  let z = 0
+  for (let mask = 0; mask < 1 << n; mask++) {
+    const model: boolean[] = [false]
+    for (let v = 1; v <= n; v++) model[v] = (mask & (1 << (v - 1))) !== 0
+    if (!verifyModel(cnf, model).ok) continue
+    let p = 1
+    for (let v = 1; v <= n; v++) p *= model[v] ? wpos[v] : wneg[v]
+    z += p
+  }
+  return z
+}
+// Brute-force marginal Pr(x_v = true) = WMC(f ∧ x_v) / WMC(f), for each variable.
+function bruteMarginals(cnf: CNF, wpos: number[], wneg: number[]): { z: number; probTrue: number[] } {
+  const n = cnf.numVars
+  let z = 0
+  const num = new Array(n + 1).fill(0)
+  for (let mask = 0; mask < 1 << n; mask++) {
+    const model: boolean[] = [false]
+    for (let v = 1; v <= n; v++) model[v] = (mask & (1 << (v - 1))) !== 0
+    if (!verifyModel(cnf, model).ok) continue
+    let p = 1
+    for (let v = 1; v <= n; v++) p *= model[v] ? wpos[v] : wneg[v]
+    z += p
+    for (let v = 1; v <= n; v++) if (model[v]) num[v] += p
+  }
+  const probTrue = new Array(n + 1).fill(0)
+  for (let v = 1; v <= n; v++) probTrue[v] = z > 0 ? num[v] / z : 0
+  return { z, probTrue }
+}
+// Brute-force set of satisfying assignments, as canonical 0/1 strings.
+function bruteModelSet(cnf: CNF): Set<string> {
+  const n = cnf.numVars
+  const set = new Set<string>()
+  for (let mask = 0; mask < 1 << n; mask++) {
+    const model: boolean[] = [false]
+    let key = ''
+    for (let v = 1; v <= n; v++) {
+      model[v] = (mask & (1 << (v - 1))) !== 0
+      key += model[v] ? '1' : '0'
+    }
+    if (verifyModel(cnf, model).ok) set.add(key)
+  }
+  return set
+}
+const close = (a: number, b: number) => Math.abs(a - b) <= 1e-9 * (1 + Math.abs(a) + Math.abs(b))
+
+// ---- knowledge compilation to sd-DNNF (Session 14) -----------------------------
+{
+  // A deterministic little RNG so the suite is reproducible.
+  let s = 0x9e3779b9 >>> 0
+  const rnd = () => ((s = (s * 1664525 + 1013904223) >>> 0), s / 0x100000000)
+
+  let countBad = 0
+  let propBad = 0
+  let wmcBad = 0
+  let margBad = 0
+  let enumBad = 0
+  let nonTrivial = 0
+  let exercised = 0
+  for (let t = 0; t < 1200; t++) {
+    const n = 2 + (t % 11) // 2..12 vars
+    const ratio = (t % 70) / 10 // 0.0..7.0
+    const cnf = randomKSat(n, ratio, 3, t * 2654435 + 7)
+    const r = compileDdnnf(cnf, { budget: 5_000_000 })
+    if (!r.ddnnf || !r.stats.exact) {
+      countBad++
+      continue
+    }
+    exercised++
+    const d = r.ddnnf
+
+    // 1) Model count off the circuit must match #SAT and brute force.
+    const truth = bruteCount(cnf)
+    const cCount = ddnnfCount(d)
+    if (cCount !== truth || cCount !== countModels(cnf).count) countBad++
+    if (truth > 0n && truth < BigInt(1 << n)) nonTrivial++
+
+    // 2) The circuit must be provably smooth, decomposable and deterministic.
+    const props = verifyCircuit(d)
+    if (!props.smooth || !props.decomposable || !props.deterministic) propBad++
+
+    // 3) Weighted model count under random per-literal weights.
+    const wpos = new Array(n + 1).fill(0)
+    const wneg = new Array(n + 1).fill(0)
+    for (let v = 1; v <= n; v++) {
+      wpos[v] = 0.2 + rnd() * 1.6
+      wneg[v] = 0.2 + rnd() * 1.6
+    }
+    const wmc = ddnnfWmc(d, { pos: wpos, neg: wneg })
+    if (!close(wmc, bruteWmc(cnf, wpos, wneg))) wmcBad++
+
+    // Uniform weights tie WMC to #SAT: Z = count / 2^n.
+    const uni = ddnnfWmc(d, uniformWeights(n))
+    if (!close(uni, Number(truth) / 2 ** n)) wmcBad++
+
+    // 4) Exact marginals in one differential pass vs. brute force (and the partition Z).
+    const m = ddnnfMarginals(d, { pos: wpos, neg: wneg })
+    const bm = bruteMarginals(cnf, wpos, wneg)
+    if (!close(m.z, bm.z)) margBad++
+    for (let v = 1; v <= n; v++) if (!close(m.probTrue[v], bm.probTrue[v])) margBad++
+
+    // 5) Enumeration off the circuit equals the brute-force model set, with no duplicates.
+    if (truth <= 200n) {
+      const models = ddnnfEnumerate(d, 1000)
+      if (BigInt(models.length) !== truth) enumBad++
+      const got = new Set<string>()
+      for (const row of models) {
+        let key = ''
+        for (let v = 1; v <= n; v++) key += row[v] ? '1' : '0'
+        got.add(key)
+      }
+      if (got.size !== models.length) enumBad++ // determinism: no model produced twice
+      const want = bruteModelSet(cnf)
+      if (got.size !== want.size) enumBad++
+      else for (const k of want) if (!got.has(k)) enumBad++
+    }
+  }
+  check('d-DNNF: compiled count == #SAT == brute force (1200 instances)', countBad === 0, `bad=${countBad}`)
+  check('d-DNNF: every circuit is smooth + decomposable + deterministic', propBad === 0, `bad=${propBad}`)
+  check('d-DNNF: weighted model count vs brute force', wmcBad === 0, `bad=${wmcBad}`)
+  check('d-DNNF: exact marginals (differential pass) vs brute force', margBad === 0, `bad=${margBad}`)
+  check('d-DNNF: enumeration == model set, no duplicates', enumBad === 0, `bad=${enumBad}`)
+  check('d-DNNF: exercised non-trivial counts', nonTrivial > 250, `nonTrivial=${nonTrivial}`)
+  check('d-DNNF: compiled the vast majority of instances', exercised > 1100, `exercised=${exercised}`)
+
+  // Structural hand-checks.
+  check('d-DNNF: empty formula counts 2^n', ddnnfCount(compileDdnnf({ numVars: 4, clauses: [] }).ddnnf!) === 16n)
+  check('d-DNNF: contradiction counts 0', ddnnfCount(compileDdnnf({ numVars: 1, clauses: [[1], [-1]] }).ddnnf!) === 0n)
+  check('d-DNNF: single unit halves the cube', ddnnfCount(compileDdnnf({ numVars: 3, clauses: [[1]] }).ddnnf!) === 4n)
+  // A forced literal pins its marginal to a certainty.
+  {
+    const d = compileDdnnf({ numVars: 3, clauses: [[1]] }).ddnnf!
+    const m = ddnnfMarginals(d, uniformWeights(3))
+    check('d-DNNF: forced literal has marginal 1', close(m.probTrue[1], 1))
+    check('d-DNNF: free literal has marginal 0.5', close(m.probTrue[2], 0.5) && close(m.probTrue[3], 0.5))
+  }
+  // N-Queens solution counts straight off the circuit (OEIS A000170).
+  for (const [n, want] of [[4, 2n], [5, 10n], [6, 4n]] as [number, bigint][]) {
+    const d = compileDdnnf(encodeNQueens(n).cnf, { budget: 8_000_000 }).ddnnf
+    check(`d-DNNF: ${n}-Queens count = ${want}`, !!d && ddnnfCount(d) === want, `got=${d ? ddnnfCount(d) : 'abort'}`)
+  }
+  // The .nnf export header agrees with the circuit it describes.
+  {
+    const d = compileDdnnf(encodeNQueens(5).cnf, { budget: 8_000_000 }).ddnnf!
+    const header = toNnf(d).split('\n')[0].split(' ')
+    check('d-DNNF: .nnf header node count matches', Number(header[1]) === d.nodes.length, header.join(' '))
+  }
 }
 
 // ---- minimal unsatisfiable subset (MUS) ----
