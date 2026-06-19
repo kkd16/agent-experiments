@@ -1,6 +1,14 @@
 import type { ControllerConfig } from '../wfc/controller';
+import type { CellHeuristic, TilePolicy } from '../wfc/heuristics';
 import { SAMPLES } from '../wfc/samples';
 import { TILESETS } from '../wfc/tilesets';
+
+const HEURISTIC_BLURB: Record<CellHeuristic, string> = {
+  entropy: 'Observe the lowest-entropy cell first — the classic WFC rule. Grows coherent regions.',
+  mrv: 'Minimum remaining values: collapse the most-constrained cell first. Usually backtracks least.',
+  scanline: 'Strict top-left raster order. Deliberately naive — watch it paint itself into corners.',
+  random: 'A uniformly-random uncollapsed cell each step. The maximum-disorder baseline.',
+};
 
 type Props = {
   cfg: ControllerConfig;
@@ -208,11 +216,42 @@ export default function Tuning({ cfg, seedLocked, onPatch, onNewSeed, onSeedLock
       )}
 
       <header className="panel-head">
+        <h2>Search</h2>
+      </header>
+      <div className="field">
+        <span className="field-label">observe (which cell)</span>
+        <Segmented
+          options={[
+            { label: 'Entropy', value: 'entropy' },
+            { label: 'MRV', value: 'mrv' },
+            { label: 'Scanline', value: 'scanline' },
+            { label: 'Random', value: 'random' },
+          ]}
+          value={cfg.heuristic}
+          onChange={(v) => onPatch({ heuristic: v as CellHeuristic }, true)}
+        />
+      </div>
+      <div className="field">
+        <span className="field-label">collapse (which tile)</span>
+        <Segmented
+          options={[
+            { label: 'Weighted', value: 'weighted' },
+            { label: 'Uniform', value: 'uniform' },
+            { label: 'Greedy', value: 'greedy' },
+          ]}
+          value={cfg.tilePolicy}
+          onChange={(v) => onPatch({ tilePolicy: v as TilePolicy }, true)}
+        />
+      </div>
+      <p className="blurb">{HEURISTIC_BLURB[cfg.heuristic]}</p>
+
+      <header className="panel-head">
         <h2>View</h2>
       </header>
       <div className="toggles">
         <Toggle label="Ghost superpositions" value={cfg.showGhost} onChange={(b) => onPatch({ showGhost: b }, false)} />
         <Toggle label="Entropy heatmap" hint="H" value={cfg.showEntropy} onChange={(b) => onPatch({ showEntropy: b }, false)} />
+        <Toggle label="Contradiction heatmap" hint="K" value={cfg.showContraHeat} onChange={(b) => onPatch({ showContraHeat: b }, false)} />
         <Toggle label="Grid lines" value={cfg.showGrid} onChange={(b) => onPatch({ showGrid: b }, false)} />
       </div>
     </section>

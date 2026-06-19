@@ -19,6 +19,8 @@ export default function StatsPanel({ stats }: { stats: Stats }) {
     ['contradictions', fmt(stats.contradictions)],
     ['backtracks', fmt(stats.backtracks)],
     ['restarts', `${stats.restarts}`],
+    ['eliminations', fmt(stats.eliminations)],
+    ['peak depth', `${stats.peakDepth}`],
   ];
   return (
     <section className="panel stats">

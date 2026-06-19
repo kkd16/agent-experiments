@@ -10,6 +10,7 @@
 //
 // Everything is deterministic (seeded RNG) so the verdict is stable run to run.
 
+import { aggregate, type RunOutcome } from './bench';
 import {
   articulationPoints,
   components,
@@ -20,6 +21,14 @@ import {
   type ConnView,
 } from './connectivity';
 import { fits, reverseCode, type Dir } from './edges';
+import {
+  CELL_HEURISTICS,
+  TILE_POLICIES,
+  mrvCell,
+  randomCell,
+  scanlineCell,
+  tileIndex,
+} from './heuristics';
 import { Solver, type SolverOptions } from './solver';
 import { compile } from './tiles';
 import { TILESETS, tilesetByKey } from './tilesets';
@@ -420,6 +429,114 @@ export function runAllTests(): TestGroup[] {
     }
 
     groups.push({ group: 'Solver guarantees (real solver)', results });
+  }
+
+  // 4) Search Lab — pluggable heuristics + instrumentation + benchmark ------
+  {
+    const results: TestResult[] = [];
+
+    // 4a) Pure cell-selection heuristics (mechanics, no solver/canvas needed).
+    {
+      const r = rng(0x51ed270b);
+      const counts = [1, 4, 1, 2, 7, 2]; // uncollapsed = count > 1
+      const scanOk = scanlineCell(counts, counts.length) === 1; // first index with count > 1
+      const mrvOk = (() => {
+        // must land on a *minimum-count* uncollapsed cell (count 2 at idx 3 or 5)
+        for (let i = 0; i < 200; i++) {
+          const c = mrvCell(counts, counts.length, r);
+          if (counts[c] !== 2) return false;
+        }
+        return true;
+      })();
+      const randOk = (() => {
+        for (let i = 0; i < 400; i++) {
+          const c = randomCell(counts, counts.length, r);
+          if (counts[c] <= 1) return false; // must always be an uncollapsed cell
+        }
+        return true;
+      })();
+      const doneOk = scanlineCell([1, 1, 1], 3) === -1 && mrvCell([1, 1], 2, r) === -1 && randomCell([1], 1, r) === -1;
+      results.push({
+        name: 'cell heuristics — mechanics',
+        pass: scanOk && mrvOk && randOk && doneOk,
+        detail: scanOk && mrvOk && randOk && doneOk ? 'scanline=first, MRV=min-count, random∈uncollapsed, all return −1 when settled' : 'a heuristic violated its contract',
+      });
+    }
+
+    // 4b) Pure tile-selection policies.
+    {
+      const greedyOk = tileIndex('greedy', [1, 5, 3], () => 0.99) === 1; // argmax, no randomness
+      const uniformOk = tileIndex('uniform', [1, 1, 1], () => 0) === 0 && tileIndex('uniform', [1, 1, 1], () => 0.999) === 2;
+      const weightedLo = tileIndex('weighted', [1, 1, 2], () => 0) === 0;
+      const weightedHi = tileIndex('weighted', [1, 1, 2], () => 0.999) === 2;
+      const pass = greedyOk && uniformOk && weightedLo && weightedHi;
+      results.push({
+        name: 'tile policies — mechanics',
+        pass,
+        detail: pass ? 'greedy=argmax weight, uniform spans the list, weighted walks the cumulative buckets' : 'a tile policy violated its contract',
+      });
+    }
+
+    // 4c) Every heuristic × policy yields *valid* output, and is deterministic.
+    {
+      const terrain = compile(tilesetByKey('terrain'));
+      let invalid = 0;
+      let diverged = 0;
+      let done = 0;
+      const n = 10;
+      for (const heuristic of CELL_HEURISTICS) {
+        for (const tilePolicy of TILE_POLICIES) {
+          const opts: SolverOptions = { width: n, height: n, seed: `lab-${heuristic}-${tilePolicy}`, wrap: false, backtracking: true, backtrackBudget: 6000, heuristic, tilePolicy };
+          const a = runToEnd(terrain, opts);
+          const b = runToEnd(terrain, opts);
+          if (a.status === 'done') {
+            done++;
+            if (!adjacencyValid(terrain, tilingOf(a, n * n), n, n, false)) invalid++;
+            if (b.status === 'done' && tilingOf(a, n * n).join(',') !== tilingOf(b, n * n).join(',')) diverged++;
+          }
+        }
+      }
+      results.push({ name: 'heuristics — valid + deterministic output', pass: invalid === 0 && diverged === 0 && done >= 8, detail: invalid === 0 && diverged === 0 ? `${done}/12 heuristic×policy combos finished, every one adjacency-valid and reproduced byte-for-byte` : `${invalid} invalid, ${diverged} non-deterministic` });
+    }
+
+    // 4d) Instrumentation law: the contradiction heatmap sums to the local-contradiction count.
+    {
+      const rails = compile(tilesetByKey('rails'));
+      let bad = 0;
+      let checked = 0;
+      for (const heuristic of CELL_HEURISTICS) {
+        const opts: SolverOptions = { width: 12, height: 12, seed: `heat-${heuristic}`, wrap: heuristic === 'random', backtracking: true, backtrackBudget: 4000, heuristic };
+        // step a bounded number of times so we sample mid-search too, not just the terminal state
+        const s = new Solver(rails, opts);
+        for (let i = 0; i < 600 && s.status === 'running'; i++) s.step();
+        checked++;
+        if (s.contraHeatSum !== s.localContradictions) bad++;
+        // eliminations and peak depth are non-negative, and depth never exceeds the cell count
+        if (s.eliminations < 0 || s.peakDepth < 0 || s.peakDepth > 12 * 12) bad++;
+      }
+      results.push({ name: 'instrumentation — Σ heatmap = local contradictions', pass: bad === 0, detail: bad === 0 ? `across ${checked} runs, the per-cell contradiction tally sums exactly to the local-contradiction counter` : `${bad} instrumentation invariants broke` });
+    }
+
+    // 4e) Benchmark aggregation arithmetic (pure — no solver involved).
+    {
+      const outs: RunOutcome[] = [
+        { solved: true, steps: 10, backtracks: 2, contradictions: 1, eliminations: 50, peakDepth: 8, restarts: 0, ms: 1 },
+        { solved: false, steps: 99, backtracks: 9, contradictions: 9, eliminations: 999, peakDepth: 99, restarts: 5, ms: 3 },
+        { solved: true, steps: 20, backtracks: 4, contradictions: 3, eliminations: 70, peakDepth: 12, restarts: 1, ms: 2 },
+      ];
+      const row = aggregate({ heuristic: 'entropy', tilePolicy: 'weighted' }, outs);
+      const ok =
+        row.runs === 3 &&
+        row.solved === 2 &&
+        Math.abs(row.successRate - 2 / 3) < 1e-9 &&
+        row.meanSteps === 15 && // mean over the two *solved* runs (10, 20)
+        row.meanBacktracks === 3 &&
+        row.meanPeakDepth === 10 &&
+        Math.abs(row.meanMs - 2) < 1e-9; // mean ms over *all* runs (1, 3, 2)
+      results.push({ name: 'benchmark — aggregation arithmetic', pass: ok, detail: ok ? 'success rate + per-metric means computed over the correct subsets (solved-only vs all)' : 'aggregation produced wrong figures' });
+    }
+
+    groups.push({ group: 'Search Lab (heuristics + instrumentation)', results });
   }
 
   return groups;

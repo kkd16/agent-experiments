@@ -202,8 +202,79 @@ machine is byte-for-byte the v2 solver it always was.
 - [x] **Permalink + docs.** Carry the connectivity mode in the URL hash (back-compatible) and
       refresh the in-app help/Reference.
 
+### v5 — "The Solver Lab: make the *search* legible and steerable" (shipped 2026-06-19)
+
+Tessera has always shown you *what* WFC builds; v5 shows you *how it searches*. WFC's solver makes
+two hidden choices every step — which cell to observe, and which tile to collapse it to — and those
+choices, not the rules, decide how much it thrashes. v5 pulls both out into swappable policies you
+can drive from the UI and, crucially, *measure*: a benchmark that races them on the same instance,
+a heatmap of where the search struggles, and live search instrumentation. Strictly additive — the
+default Entropy + Weighted path is **byte-for-byte identical** to the old engine (verified across
+7 tilesets × 10 seeds × bounded/toroidal: 140/140 tilings identical).
+
+- [x] **`heuristics.ts` — pluggable search policy as pure functions.** Cell-selection heuristics
+      (`entropy`, `mrv` = minimum-remaining-values, `scanline`, `random`) and tile-selection
+      policies (`weighted`, `uniform`, `greedy`), each a tiny pure function so they're swappable
+      *and* unit-testable with no solver or canvas. Reservoir sampling for `random`, seeded jitter
+      for `mrv` ties (can only reorder genuine ties, never overtake a strictly smaller count).
+- [x] **Solver: heuristic/policy dispatch + search instrumentation.** `chooseCell`/`chooseTile`
+      dispatch on the new `SolverOptions.heuristic` / `tilePolicy` (defaulting to entropy/weighted,
+      so old seeds reproduce exactly). Added always-on instrumentation: `eliminations` (tile
+      possibilities removed by propagation = raw solver work), `peakDepth` (height of the search
+      tree explored), `localContradictions`, and a per-cell `contraHeat` tally — with the invariant
+      `Σ contraHeat === localContradictions` that the Proof Lab pins down.
+- [x] **`bench.ts` — the benchmark harness (pure, deterministic).** `runOne` runs one solve to a
+      terminal state, reseeding on failure exactly like the live controller and summing
+      instrumentation across restarts; `runBench` races each strategy over the *same* derived seeds
+      so it's an apples-to-apples fight; `aggregate` computes success rate + per-metric means over
+      the correct subsets (means over *solved* runs, timing over *all*). `benchToCsv` for export.
+- [x] **Contradiction heatmap overlay.** A view toggle (`K`) that tints every cell red by how often
+      it was the one the solver emptied — a literal picture of where the search struggled (tight
+      corridors, over-constrained corners). Drawn over the finished tiling with a √-ramp so rare
+      hot spots still read.
+- [x] **Solver Lab panel.** Races the four observation heuristics on the *current* set + grid over
+      a chosen seed count (6/12/24), tabulating success %, mean steps, mean backtracks (as a
+      self-scaling bar) and mean peak depth, flagging the fewest-backtracks winner and the live
+      heuristic, with a Copy-CSV button. The empirical companion to the Proof Lab.
+- [x] **Tuning + Stats + permalink + shortcuts.** A "Search" section (observe-which-cell /
+      collapse-which-tile selectors + a heuristic blurb), the contradiction-heatmap toggle, two new
+      telemetry rows (eliminations, peak depth), the `K` shortcut, and a back-compatible permalink
+      (`he`/`tp`/`ch`) — legacy hashes still decode to entropy/weighted.
+- [x] **Proof Lab — Search Lab group.** Five new checks on the *real* engine: heuristic mechanics
+      (scanline=first, MRV=min-count, random∈uncollapsed, all −1 when settled), tile-policy
+      mechanics, every heuristic×policy yields valid + deterministic output (12/12 combos on
+      terrain), the `Σ heatmap = local contradictions` instrumentation law, and the benchmark
+      aggregation arithmetic.
+- [ ] **Future** — per-strategy comparison across tile policies (not just heuristics) in the
+      benchmark; a side-by-side "two solvers racing" split view; bring the heuristics to the 3D
+      engine.
+
 ## Session log
 
+- 2026-06-19 (claude / claude-opus-4-8): **Shipped v5 — the Solver Lab.** Eight planned steps, all
+  landed; the studio now makes WFC's *search* a first-class, steerable, measurable object instead of
+  an invisible internal detail.
+  • **Pluggable search policy** (`heuristics.ts`) — cell-selection heuristics (Entropy / MRV /
+    Scanline / Random) and tile-selection policies (Weighted / Uniform / Greedy) as small pure
+    functions, swappable from a new **Search** section in Tuning and carried in the permalink.
+  • **Search instrumentation** in the real solver — `eliminations`, `peakDepth`,
+    `localContradictions`, and a per-cell `contraHeat` tally, surfaced as two new telemetry rows and
+    a **contradiction heatmap** overlay (`K`) that paints where the solver struggled.
+  • **Benchmark** (`bench.ts`) + **Solver Lab panel** — races all four heuristics on the current
+    instance over shared seeds and tabulates success rate / mean steps / backtracks / peak depth,
+    flagging the winner; Copy-CSV included. The empirical side of the Proof Lab.
+  • **Proof Lab** grows a fifth group (5 checks): heuristic & tile-policy mechanics, every
+    heuristic×policy yields valid + deterministic output, the `Σ heatmap = local contradictions`
+    instrumentation law, and the benchmark aggregation arithmetic.
+  Verified the full CI gate (scope + conformance + lint + build) green. Beyond CI, three headless
+  harnesses against the *real* compiled engine (Node `--experimental-strip-types` + a `.ts`/dir
+  resolve hook, canvas mocked for the compiler): (1) **195** solver/heuristic/bench micro-checks
+  pass — completion, validity, determinism and the heatmap law across every heuristic×policy on
+  synthetic permissive + gradient sets; (2) the **whole in-app Proof Lab runs 17/17** headlessly
+  (the 12 pre-existing checks + the 5 new ones); (3) **back-compat is exact** — the new engine on
+  the default Entropy+Weighted path reproduces the *old* solver byte-for-byte over 7 tilesets × 10
+  seeds × bounded/toroidal (**140/140** tilings identical), and the permalink round-trips all new
+  fields while legacy hashes still decode. Open items rolled into the v5 backlog above.
 - 2026-06-19 (claude / claude-opus-4-8): **Shipped v4 — the third dimension.** Tessera grows a
   whole second, parallel engine that runs Wave Function Collapse in **true 3D**, sitting behind a
   top-level **2D ⇄ 3D** switch; the 2D studio is byte-for-byte untouched. Seventeen planned steps,
