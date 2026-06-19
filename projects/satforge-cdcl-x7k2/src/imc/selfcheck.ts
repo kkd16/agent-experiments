@@ -16,6 +16,7 @@ import { verifyModel } from '../sat/cnf'
 import { solve } from '../sat/solver'
 import { fvar, fnot, fand, for_, fxor, fiff, type Formula } from './formula'
 import { imc, kInduction, bfsReachability, checkInvariant, checkCounterexample, type TransitionSystem } from './modelcheck'
+import { pdr } from './pdr'
 import { TS_EXAMPLES } from './examples'
 
 export interface ImcCheckReport {
@@ -185,6 +186,83 @@ export function runImcChecks(): ImcCheckReport {
     }
     check('curated model-checking gallery matches the BFS oracle', ok)
     check('curated gallery: k-induction agrees with IMC and BFS', kiOk)
+  }
+
+  // 5. IC3 / PDR — a third, independent unbounded-safety engine.
+  {
+    // 5a. Random systems: PDR vs. the explicit-state BFS oracle, with inductive
+    // invariants and shortest counterexamples machine-checked, plus a four-way
+    // agreement against IMC and k-induction on every decided instance.
+    const rng = mulberry32(0x9d3f)
+    const randFormula = (vars: number[], depth: number): Formula => {
+      if (depth <= 0 || rng() < 0.3) {
+        const v = vars[Math.floor(rng() * vars.length)]
+        return rng() < 0.5 ? fvar(v) : fnot(fvar(v))
+      }
+      const r = rng()
+      const a = randFormula(vars, depth - 1)
+      const b = randFormula(vars, depth - 1)
+      if (r < 0.3) return fand(a, b)
+      if (r < 0.6) return for_(a, b)
+      if (r < 0.8) return fxor(a, b)
+      return fnot(a)
+    }
+    const mkSystem = (n: number, i: number): TransitionSystem => {
+      const cur = Array.from({ length: n }, (_, j) => j + 1)
+      const transParts: Formula[] = []
+      for (let j = 1; j <= n; j++) transParts.push(fiff(fvar(n + j), randFormula(cur, 2)))
+      return {
+        name: `pdr${i}`,
+        stateBits: n,
+        init: randFormula(cur, 2),
+        trans: transParts.reduce((acc, x) => fand(acc, x)),
+        bad: randFormula(cur, 2),
+      }
+    }
+
+    let agree = true
+    let invOk = true
+    let cexOk = true
+    let fourWay = true
+    let decided = 0
+    const trials = 220
+    for (let i = 0; i < trials; i++) {
+      const n = 3 + Math.floor(rng() * 2) // 3..4 state bits
+      const ts = mkSystem(n, i)
+      const ref = bfsReachability(ts)
+      const res = pdr(ts)
+      if (res.result === 'UNKNOWN') continue
+      decided++
+      if ((res.result === 'SAFE') !== ref.safe) agree = false
+      if (res.result === 'SAFE' && !checkInvariant(ts, res.invariant!)) invOk = false
+      if (res.result === 'UNSAFE') {
+        if (!checkCounterexample(ts, res.counterexample!) || res.counterexample!.length - 1 !== ref.distance) cexOk = false
+      }
+      // PDR must agree with both other unbounded-safety engines.
+      const ki = kInduction(ts, 64)
+      const im = imc(ts, { maxBound: 20, maxRounds: 60 })
+      if (ki.result !== 'UNKNOWN' && (ki.result === 'SAFE') !== (res.result === 'SAFE')) fourWay = false
+      if (im.result !== 'UNKNOWN' && (im.result === 'SAFE') !== (res.result === 'SAFE')) fourWay = false
+    }
+    check('IC3/PDR verdict matches BFS oracle on random systems', agree && decided > 180, `decided=${decided}`)
+    check('IC3/PDR safety invariants are genuinely inductive', invOk)
+    check('IC3/PDR counterexamples are valid and shortest', cexOk)
+    check('IC3/PDR agrees with IMC and k-induction', fourWay)
+
+    // 5b. Curated gallery: PDR matches BFS on every example, invariants and
+    // counterexamples all check out, and it agrees with IMC + k-induction.
+    let gOk = true
+    let gInv = true
+    let gCex = true
+    for (const ts of TS_EXAMPLES) {
+      const ref = bfsReachability(ts)
+      const res = pdr(ts)
+      if (res.result === 'UNKNOWN' || (res.result === 'SAFE') !== ref.safe) gOk = false
+      if (res.result === 'SAFE' && !checkInvariant(ts, res.invariant!)) gInv = false
+      if (res.result === 'UNSAFE' && (!checkCounterexample(ts, res.counterexample!) || res.counterexample!.length - 1 !== ref.distance)) gCex = false
+    }
+    check('curated gallery: IC3/PDR matches the BFS oracle', gOk)
+    check('curated gallery: IC3/PDR invariants inductive & counterexamples shortest', gInv && gCex)
   }
 
   return { pass, fail, messages }
