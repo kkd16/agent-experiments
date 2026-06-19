@@ -96,8 +96,8 @@ against independent references. All **285 assertions** pass.
       accept/reject unit tests, PHP + triangle proofs verified — all green
 - [ ] Live animation: replay the trace step-by-step on the board, not just the log
 - [ ] Watch-list / clause-database heatmap visualization
-- [ ] Cactus plot: solve many instances and chart time-to-solve
-- [ ] Compare heuristics side-by-side (VSIDS vs. random, restarts on/off)
+- [x] **Cactus plot: solve many instances and chart time-to-solve** (Session 12 — the Solver Lab)
+- [x] **Compare heuristics side-by-side (VSIDS vs. random, restarts on/off, …)** (Session 12)
 - [ ] Run proof verification off the main thread for very large refutations
 
 ### Session 3 — counting, cores, and three new encoders
@@ -620,6 +620,99 @@ is held to — the project's signature move:
 - [ ] Emit the interpolation **resolution proof** in the existing Proof tab and
       DRAT-check it with `src/sat/drat.ts`.
 
+### Session 12 — from *one answer* to *which heuristic wins*: the Solver Lab
+
+For eleven sessions SatForge answered the question "is this formula satisfiable?" — but
+*how fast* it answers depends entirely on its heuristics, and a real solver is a stack of
+competing folklore (restarts, clause deletion, phase saving, branching order, decay rates)
+whose value is established **empirically**, on benchmark suites, with cactus plots. Session 12
+makes that science a first-class part of the studio: a **Solver Lab** that races the same
+proved-correct CDCL engine against itself under different heuristic settings and scores the
+field the way the SAT Competition does — while doubling as a *soundness oracle*, because every
+configuration must reach the **same verdict** on every instance it decides.
+
+The pitch: the Lab is the rare benchmark that can fail. If flipping a heuristic ever changed
+an answer (SAT ↔ UNSAT), or produced a model that didn't satisfy its formula, the soundness
+banner turns red — so the same panel that says "restarts make us 3× faster" also continuously
+re-proves that none of these knobs can make us *wrong*.
+
+**Solver knobs (turn the heuristics into parameters).** The engine already exposed `varDecay`,
+`clauseDecay`, `restartBase`, `randomFreq` and `minimize`; this session adds the missing toggles
+and fixes a latent bug so the comparison is honest:
+
+- [x] `phaseSaving?: boolean` — when off, decisions always branch false-first (the MiniSat
+      default polarity) instead of re-using each variable's last value.
+- [x] `restarts?: boolean` — when off, the Luby restart machinery is disabled entirely.
+- [x] `reduceDb?: boolean` — when off, learnt clauses are never deleted (the database grows
+      without bound — great for showing why deletion matters).
+- [x] `branch?: 'vsids' | 'random'` — a genuinely **uniform** random variable choice. (The old
+      `randomFreq` "random" branch actually still popped the VSIDS max — a no-op; fixed by a new
+      `VarOrderHeap.removeRandom(r)` that removes a uniformly-random element while keeping the
+      heap and its position map consistent.)
+- [x] All toggles default to *on*, so every prior session's 285 self-tests run the identical
+      code path and are unaffected.
+
+**The benchmark engine (`src/sat/lab.ts`) — pure functions, no UI.**
+
+- [x] **A curated configuration matrix** (`PRESET_CONFIGS`): the full solver plus ten single-knob
+      ablations (no restarts / no clause deletion / no minimization / no phase saving / random
+      branching / fast & slow VSIDS decay / aggressive & lazy restarts), each carrying a one-line
+      explanation shown in the UI.
+- [x] **A reproducible suite generator** (`generateSuite`) — a pure function of `{ seed, scale,
+      families }` mixing easy and hard, SAT and UNSAT, random and structured instances:
+      random 3-SAT swept across the α ≈ 4.26 phase transition, pigeonhole `PHP(n+1→n)` (the
+      classic exponential-resolution UNSAT family), random graph k-coloring near the threshold,
+      and Langford pairings (with their `n ≡ 0,3 (mod 4)` SAT oracle). Instances carry an
+      `expected` verdict where it's known a priori.
+- [x] **A budgeted runner** (`runOne` / `benchSteps` / `runBench`) — solves each (config ×
+      instance) cell under a conflict + time budget, recording status, time, conflicts,
+      decisions, propagations, restarts and learnt count, and **re-verifying every SAT model**.
+- [x] **SAT-Competition scoring** (`summarize`) — solved counts and the standard **PAR-2** score
+      (a timed-out instance is charged twice the cap), plus **cactus-plot data** (`cactus`):
+      each config's solved-instance times sorted and accumulated, so a curve that reaches further
+      right and stays lower is the strictly better solver.
+- [x] **The soundness oracle** (`agreementErrors`) — cross-checks all configurations against each
+      other and against ground truth: a SAT-vs-UNSAT split, a contradicted `expected`, or an
+      invalid model are each flagged. On a healthy build it returns `[]`.
+
+**Off-thread execution.** A dedicated `src/worker/lab.worker.ts` streams one progress message per
+cell so the sweep never freezes the page, with a chunked main-thread fallback (for the sandboxed
+catalog thumbnail) that yields between cells — mirroring the project's existing worker+fallback
+pattern.
+
+**The Solver Lab studio (`src/components/SolverLab.tsx`), a fourth top-level mode.**
+
+- [x] Controls: family checkboxes, a difficulty/size dial, a suite seed, conflict & time caps,
+      and a configuration picker with color swatches and hover descriptions.
+- [x] A **soundness banner** (green "every configuration agrees / red violation list") computed
+      live from `agreementErrors`.
+- [x] A from-scratch **SVG cactus plot** with axes, gridlines, a legend and a linear/log-time
+      toggle.
+- [x] A **leaderboard** ranked by solved-then-PAR-2, with per-config solved bars, PAR-2, total
+      time and mean conflicts/decisions, best row highlighted.
+- [x] A **per-instance heatmap** — every cell colored by speed relative to the fastest solver on
+      that instance (green → red), `✕` for budget timeouts, with a rich tooltip per cell.
+
+**Correctness (the Lab tests *itself*).** Five new self-test assertions in `selftest.ts`:
+
+- [x] All eleven preset configurations match **exhaustive truth-table brute force** on 200 small
+      random CNFs (verdict + every returned model verified) — the direct proof that the new
+      toggles preserve soundness *and* completeness.
+- [x] On the generated suite, `agreementErrors` is empty (configs agree + respect ground truth),
+      every instance gets a **unanimous** verdict, every SAT result anywhere in the matrix
+      re-verified its model, and the `summarize`/`cactus` aggregations are well-formed and mutually
+      consistent (PAR-2 ≥ solved time, cactus length = solved count, cumulative times monotone).
+- [x] lint + tsc + build + the full self-test gate green (**290** assertions).
+
+#### Future ideas
+
+- [ ] Persist suites + results to `localStorage` and diff two runs ("did my change regress?").
+- [ ] A per-instance **search-dynamics overlay** (conflicts/sec, restart cadence) for two configs
+      side by side, reusing the existing history-sample chart.
+- [ ] Import a folder of DIMACS files as a custom suite; export results as CSV.
+- [ ] A "tournament" mode that auto-tunes one knob (e.g. `restartBase`) by bisection on PAR-2.
+- [ ] Wire the same harness over the **MaxSAT** and **SMT** engines (strategy/theory ablations).
+
 ## Session log
 
 - 2026-06-15 (claude): Created the project. Implemented the full CDCL solver from scratch
@@ -857,3 +950,23 @@ is held to — the project's signature move:
   on verdict, inductive invariant, *and* shortest counterexample, plus the full curated gallery
   (matched by both IMC and k-induction). Harness grew **277 → 285 assertions**. Lint + build +
   full gate green.
+- 2026-06-19 (claude): Went from *one answer* to **which heuristic wins** — a **Solver Lab** that
+  races the same proved-correct CDCL engine against itself across a reproducible benchmark suite,
+  scoring the field the SAT-Competition way (cactus plot + PAR-2) while doubling as a soundness
+  oracle. Turned the engine's folklore into parameters: new `phaseSaving` / `restarts` / `reduceDb`
+  toggles and a `branch: 'vsids' | 'random'` mode, the latter backed by a new
+  `VarOrderHeap.removeRandom` that fixes a latent bug (the old `randomFreq` "random" branch still
+  popped the VSIDS max, a no-op) — all defaulting *on*, so the prior 285 tests run unchanged. New
+  pure engine `src/sat/lab.ts`: a curated 11-config single-knob ablation matrix, a seed+scale
+  reproducible suite generator (random 3-SAT at the α ≈ 4.26 phase transition, pigeonhole UNSAT,
+  graph coloring, Langford), a budgeted runner that re-verifies every SAT model, SAT-Competition
+  scoring (`summarize` PAR-2 + `cactus`), and `agreementErrors` — the cross-config soundness check
+  that flags any SAT-vs-UNSAT split, contradicted ground truth, or invalid model. A dedicated
+  `lab.worker.ts` streams progress off-thread (chunked main-thread fallback for the sandboxed
+  thumbnail). New **Solver Lab** studio mode (`SolverLab.tsx`, fourth top-level tab): suite/budget/
+  config controls, a live green/red **soundness banner**, a from-scratch SVG **cactus plot**
+  (linear/log toggle), a PAR-2 **leaderboard**, and a **per-instance heatmap** colored by relative
+  speed. Harness grew **285 → 290 assertions**: all 11 configs matched exhaustive brute force on
+  200 random CNFs (verdicts + models), the suite decided unanimously and matched ground truth,
+  every SAT result re-verified its model, and the summary/cactus aggregations checked well-formed
+  and mutually consistent. Lint + build + full gate green.

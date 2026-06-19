@@ -38,8 +38,16 @@ import {
   randomWeightedGraph,
   parseWcnf,
   toWcnf,
+  PRESET_CONFIGS,
+  configById,
+  generateSuite,
+  runBench,
+  summarize,
+  cactus,
+  agreementErrors,
+  DEFAULT_SUITE,
 } from './src/sat/index'
-import type { CNF, ProofStep, Graph, MaxSatInstance, WeightedGraph } from './src/sat/index'
+import type { CNF, ProofStep, Graph, MaxSatInstance, WeightedGraph, BenchConfig } from './src/sat/index'
 import { buildProblem, DEFAULT_SPEC } from './src/problems'
 import { runSmtChecks } from './src/smt/selfcheck'
 import { runBvChecks } from './src/smt/bv/selfcheck'
@@ -1008,6 +1016,97 @@ function bruteMaxCut(g: WeightedGraph): number {
     if (solveMaxSat(p.maxsat, { strategy: 'core-guided' }).cost !== r.cost) bad++
   }
   check('problems.ts: all MaxSAT kinds build/solve/decode consistently', bad === 0, `bad=${bad}`)
+}
+
+// ---- Solver Lab: heuristic configurations preserve correctness ----------------
+// The Lab flips one CDCL heuristic at a time. Each configuration is still the
+// proved-sound+complete engine, so it must agree with brute force and with every
+// other configuration — these checks are the formal backing for that claim.
+{
+  // (1) Brute-force cross-check: every preset config matches exhaustive truth-table
+  // enumeration on small random CNFs (verdict + any returned model).
+  let bad = 0
+  let s = 0xc0ffee >>> 0
+  const rnd = () => {
+    s ^= s << 13
+    s ^= s >>> 17
+    s ^= s << 5
+    return (s >>> 0) / 4294967296
+  }
+  for (let t = 0; t < 200; t++) {
+    const n = 4 + Math.floor(rnd() * 8)
+    const ratio = 3 + rnd() * 2.5
+    const cnf = randomKSat(n, ratio, 3, s >>> 0)
+    const truth = bruteforce(cnf)
+    for (const c of PRESET_CONFIGS) {
+      const r = solve(cnf, { ...c.opts, maxConflicts: 200000 })
+      if (r.status === 'unknown') {
+        bad++
+        continue
+      }
+      if ((r.status === 'sat') !== truth) bad++
+      if (r.status === 'sat' && !verifyModel(cnf, r.model!).ok) bad++
+    }
+  }
+  check(`Solver Lab: all ${PRESET_CONFIGS.length} configs = brute force on 200 random CNFs`, bad === 0, `bad=${bad}`)
+
+  // (2) The benchmark suite: configurations must agree with each other AND with the
+  // known ground truth carried on pigeonhole/Langford instances.
+  const suite = generateSuite({ families: { ...DEFAULT_SUITE.families }, seed: 7, scale: 1 })
+  const ids = ['full', 'no-restart', 'no-reduce', 'no-min', 'no-phase', 'random-branch', 'eager-restart']
+  const cfgs = ids.map((id) => configById(id)).filter((c): c is BenchConfig => !!c)
+  // A small conflict cap keeps a deliberately-handicapped config (e.g. no clause deletion)
+  // from grinding — the learnt database, and thus propagation cost, stays bounded — and a
+  // short time cap is the backstop. Whichever cells get decided must still agree.
+  const budget = { maxConflicts: 8000, maxTimeMs: 800 }
+  const results = runBench(cfgs, suite, budget)
+  const errs = agreementErrors(suite, results)
+  check(
+    'Solver Lab: configs agree + match ground truth on the suite',
+    errs.length === 0,
+    errs.map((e) => e.detail).slice(0, 3).join('; '),
+  )
+
+  // (3) Every instance is decided unanimously (no SAT-vs-UNSAT split across configs).
+  const byInst = new Map<string, Set<string>>()
+  for (const r of results) {
+    if (r.status === 'unknown') continue
+    const set = byInst.get(r.instanceId) ?? new Set<string>()
+    set.add(r.status)
+    byInst.set(r.instanceId, set)
+  }
+  let split = 0
+  for (const set of byInst.values()) if (set.size > 1) split++
+  check('Solver Lab: every instance has a unanimous verdict', split === 0, `split=${split}`)
+
+  // (4) Every SAT verdict anywhere in the matrix carried a model that satisfies its CNF.
+  const sat = results.filter((r) => r.status === 'sat')
+  check(
+    'Solver Lab: every SAT result across the matrix verified its model',
+    sat.every((r) => r.modelOk),
+    `bad=${sat.filter((r) => !r.modelOk).length}`,
+  )
+
+  // (5) The summary and cactus aggregators are internally consistent and well-formed:
+  // PAR-2 ≥ time-on-solved, solved ≤ total, the cactus length equals the solved count, and
+  // cumulative times are monotone non-decreasing.
+  const summ = summarize(cfgs, suite, results, budget)
+  const cac = cactus(cfgs, results)
+  const cacSolved = new Map(cac.map((c) => [c.configId, c.points.length]))
+  let aggBad = 0
+  for (const sm of summ) {
+    if (sm.par2 < sm.timeSolvedMs - 1e-6) aggBad++
+    if (sm.solved > sm.total) aggBad++
+    if (cacSolved.get(sm.configId) !== sm.solved) aggBad++
+  }
+  for (const series of cac) {
+    let prev = -1
+    for (const p of series.points) {
+      if (p.cumTimeMs < prev - 1e-9) aggBad++
+      prev = p.cumTimeMs
+    }
+  }
+  check('Solver Lab: summary + cactus aggregations well-formed and consistent', aggBad === 0, `aggBad=${aggBad}`)
 }
 
 // ---- SMT (DPLL(T)) subsystem: EUF, simplex (LRA/LIA), parser, Ackermann ----

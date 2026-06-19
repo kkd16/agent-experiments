@@ -37,3 +37,29 @@ export {
   toWcnf,
 } from './encoders/maxsat'
 export type { WeightedGraph, MaxCutSolution, VertexSubsetSolution, WcnfParse } from './encoders/maxsat'
+export {
+  PRESET_CONFIGS,
+  configById,
+  ALL_FAMILIES,
+  FAMILY_LABEL,
+  DEFAULT_SUITE,
+  DEFAULT_BUDGET,
+  generateSuite,
+  runOne,
+  benchSteps,
+  runBench,
+  summarize,
+  cactus,
+  agreementErrors,
+} from './lab'
+export type {
+  BenchConfig,
+  InstanceFamily,
+  BenchInstance,
+  SuiteSpec,
+  BenchBudget,
+  RunResult,
+  ConfigSummary,
+  CactusSeries,
+  Disagreement,
+} from './lab'

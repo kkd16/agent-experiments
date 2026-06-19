@@ -30,6 +30,10 @@ export interface SolverOptions {
   restartBase?: number // conflicts in the first Luby restart (default 100)
   randomSeed?: number // RNG seed for tie-breaking / random decisions
   randomFreq?: number // probability of a random decision (default 0)
+  branch?: 'vsids' | 'random' // branching heuristic (default 'vsids'); 'random' = uniform var choice
+  phaseSaving?: boolean // re-use each variable's last truth value as its branch polarity (default true)
+  restarts?: boolean // Luby-sequenced restarts (default true); false = never restart
+  reduceDb?: boolean // periodic LBD-based learnt-clause database reduction (default true)
   minimize?: boolean // recursive learnt-clause minimization (default true)
   trace?: boolean // record a full event trace (default false)
   maxTrace?: number // cap on recorded trace events (default 30000)
@@ -149,6 +153,10 @@ export class CdclSolver {
   private proofTruncated = false
   private rng: () => number
   private readonly randomFreq: number
+  private readonly branchRandom: boolean
+  private readonly phaseSaving: boolean
+  private readonly restartsOn: boolean
+  private readonly reduceOn: boolean
 
   private seen: Uint8Array
   private events: TraceEvent[] = []
@@ -186,6 +194,10 @@ export class CdclSolver {
     this.proofOn = opts.proof ?? false
     this.maxProof = opts.maxProof ?? 500000
     this.randomFreq = opts.randomFreq ?? 0
+    this.branchRandom = opts.branch === 'random'
+    this.phaseSaving = opts.phaseSaving ?? true
+    this.restartsOn = opts.restarts ?? true
+    this.reduceOn = opts.reduceDb ?? true
     this.rng = mulberry32(opts.randomSeed ?? 0x9e3779b9)
 
     const n = this.numVars
@@ -517,19 +529,19 @@ export class CdclSolver {
   // ---- branching ---------------------------------------------------------------
   private pickBranch(): number {
     let v = -1
-    if (this.randomFreq > 0 && this.rng() < this.randomFreq && this.order.size > 0) {
-      // (cheap) random pick: pop until we hit an unassigned variable
-      const drained: number[] = []
+    // `branch: 'random'` forces a uniform variable choice on every decision;
+    // `randomFreq` mixes in random decisions probabilistically (Biere/MiniSat style).
+    const useRandom = this.branchRandom || (this.randomFreq > 0 && this.rng() < this.randomFreq)
+    if (useRandom) {
+      // A genuinely uniform pick over the unassigned order set, removing the
+      // chosen variable (mirrors `removeMax`) so the heap stays consistent.
       while (this.order.size > 0) {
-        const cand = this.order.removeMax()
+        const cand = this.order.removeRandom(this.rng())
         if (this.value[cand] === 0) {
           v = cand
           break
         }
-        drained.push(cand)
       }
-      for (const d of drained) this.order.insert(d)
-      if (v === -1) return -1
     } else {
       while (this.order.size > 0) {
         const cand = this.order.removeMax()
@@ -538,10 +550,11 @@ export class CdclSolver {
           break
         }
       }
-      if (v === -1) return -1
     }
-    // phase saving: re-use the variable's last value; default to false.
-    const sign = this.polarity[v] === 1 ? 0 : 1
+    if (v === -1) return -1
+    // phase saving: re-use the variable's last value; without it, branch false
+    // first (the MiniSat default polarity).
+    const sign = this.phaseSaving && this.polarity[v] === 1 ? 0 : 1
     return (v << 1) | sign
   }
 
@@ -739,7 +752,7 @@ export class CdclSolver {
         }
 
         // restart?
-        if (conflictsSinceRestart >= conflictBudget) {
+        if (this.restartsOn && conflictsSinceRestart >= conflictBudget) {
           this.cancelUntil(0)
           this.stats.restarts++
           restartNo++
@@ -748,7 +761,7 @@ export class CdclSolver {
           this.emit({ t: 'restart', conflicts: this.stats.conflicts })
         }
         // reduce learnt DB?
-        if (conflictsSinceReduce >= reduceBudget) {
+        if (this.reduceOn && conflictsSinceReduce >= reduceBudget) {
           this.cancelUntil(0)
           if (this.propagate() !== -1) {
             this.ok = false
@@ -834,14 +847,14 @@ export class CdclSolver {
           }
         }
         // Restart only above the assumption levels, so assumptions are simply re-placed.
-        if (conflictsSinceRestart >= conflictBudget) {
+        if (this.restartsOn && conflictsSinceRestart >= conflictBudget) {
           this.cancelUntil(0)
           this.stats.restarts++
           restartNo++
           conflictBudget = this.restartBase * luby(restartNo + 1)
           conflictsSinceRestart = 0
         }
-        if (conflictsSinceReduce >= reduceBudget) {
+        if (this.reduceOn && conflictsSinceReduce >= reduceBudget) {
           this.cancelUntil(0)
           if (this.propagate() !== -1) {
             this.ok = false

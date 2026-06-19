@@ -15,9 +15,10 @@ import { CountView } from './components/CountView'
 import { MaxSatView } from './components/MaxSatView'
 import { SmtStudio } from './components/SmtStudio'
 import { ModelChecker } from './components/ModelChecker'
+import { SolverLab } from './components/SolverLab'
 
 type Tab = 'solution' | 'stats' | 'count' | 'graph' | 'trace' | 'proof' | 'cnf'
-type Mode = 'sat' | 'smt' | 'imc'
+type Mode = 'sat' | 'smt' | 'imc' | 'lab'
 
 export default function App() {
   const [mode, setMode] = useState<Mode>('sat')
@@ -87,7 +88,9 @@ export default function App() {
                 ? 'A from-scratch CDCL SAT solver, visualized.'
                 : mode === 'smt'
                   ? 'A from-scratch DPLL(T) SMT solver — plus QF_BV by bit-blasting.'
-                  : 'Craig interpolation & interpolation-based safety model checking.'}
+                  : mode === 'imc'
+                    ? 'Craig interpolation & interpolation-based safety model checking.'
+                    : 'An empirical lab that races CDCL heuristics across a benchmark suite.'}
             </p>
           </div>
         </div>
@@ -101,11 +104,15 @@ export default function App() {
           <button className={mode === 'imc' ? 'active' : ''} onClick={() => setMode('imc')}>
             Model Checker
           </button>
+          <button className={mode === 'lab' ? 'active' : ''} onClick={() => setMode('lab')}>
+            Solver Lab
+          </button>
         </div>
       </header>
 
       {mode === 'smt' && <SmtStudio />}
       {mode === 'imc' && <ModelChecker />}
+      {mode === 'lab' && <SolverLab />}
 
       {mode === 'sat' && (
       <div className="layout">
