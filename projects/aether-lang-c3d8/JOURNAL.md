@@ -745,7 +745,7 @@ Plan / steps:
       gate (scope + conformance + lint + tsc + build) green.
 - [x] **Docs** — Tour/About/README/`project.json` writeups for CSE, the effect analysis and the trace.
 
-Shipped & measured: the harness grew 304 → **320 checks, all green** (the new `cse` gallery example
+Shipped & measured: the harness grew 304 → **322 checks, all green** (the new `cse` gallery example
 flows through the JS / WASM / GC-stress / disassembler / optimizer batteries; an 8-test CSE battery
 covers firing, real step cuts, the proven-pure set, and the adversarial soundness cases — no effect
 merged, no speculation across branches, recursive and effectful functions never admitted; plus 3
@@ -760,8 +760,10 @@ Deferred (future, Aether 11.x+):
       dominator-based available-expressions pass would catch those.
 - [ ] **Effect-free *but partial* calls** — totality is approximated by "non-recursive"; a structural
       termination check would let CSE share pure-but-recursive calls like `fib`.
-- [ ] **Whitelisting total, effect-free *natives*** (`sqrt`, `floor`, `toFloat`, string ops) so their
-      repeated calls are shareable too (today only user functions are analysed).
+- [x] **Whitelisting total, effect-free *natives*** (`sqrt`/`sin`/`cos`/`floor`/`toFloat`/`abs`/
+      `strlen`/`toUpper`/`toLower`/`parseInt`/`min`/`max`) so their repeated calls are shareable too —
+      trusted only when the name is *not* shadowed by a user binding (the partial `head`/`tail` and the
+      effectful `print`/turtle natives are deliberately excluded).
 
 ## Standard library
 
@@ -1071,11 +1073,14 @@ Deferred (future, Aether 11.x+):
   fixpoint that proves which never-shadowed, non-recursive `let`/`letrec`-bound functions are
   effect-free and total, so a *saturated* call to one (on pure args) is itself pure and shareable —
   conservative by construction (recursion, shadowing, or any unknown/effectful call disqualifies a
-  candidate), which also strengthens dead-binding elimination for free. The Optimizer panel gained the
+  candidate), which also strengthens dead-binding elimination for free. A small whitelist of total,
+  effect-free *natives* (`sqrt`/`floor`/`min`/… — never the partial `head`/`tail` or the effectful
+  `print`/turtle) is trusted too, but only when the name is not user-shadowed. The Optimizer panel gained the
   `cse` rule, a **round-by-round fixpoint trace** (watch the core melt), and a list of the functions
   proven pure. Added a `cse` gallery example (`dist2 ox oy px py` written four times collapses to one;
-  steps 219 → 99). Verification: the harness grew 304 → **320** — the new example auto-flows through
-  the JS / WASM / GC-stress / disassembler / optimizer batteries, an 8-test CSE battery asserts CSE
-  fires, cuts real steps, reports the proven-pure set, and — the safety half — never merges an effect,
-  never speculates across a branch, and never admits a recursive or effectful function; plus 3 in-app
-  self-tests. Full CI gate (scope + conformance + lint + tsc + build) green.
+  steps 219 → 99). Verification: the harness grew 304 → **322** — the new example auto-flows through
+  the JS / WASM / GC-stress / disassembler / optimizer batteries, a 10-test CSE battery asserts CSE
+  fires (incl. a shared total-native call), cuts real steps, reports the proven-pure set, and — the
+  safety half — never merges an effect, never speculates across a branch, never admits a recursive or
+  effectful function, and distrusts a shadowed native; plus 3 in-app self-tests. Full CI gate (scope +
+  conformance + lint + tsc + build) green.

@@ -554,6 +554,13 @@ checkOpt('cse pure helper call',
 // CSE composes with the rest of the middle-end (a record + a shared subterm).
 checkOpt('cse inside record', 'let a = 5 in let b = 6 in { p = a * b + a, q = a * b + b }',
   { minCse: 1 })
+// A repeated total, effect-free *native* call (sqrt) is shared too.
+checkOpt('cse total native', 'let x = 16.0 in (sqrt x +. 1.0, sqrt x +. 2.0)',
+  { expect: '(5.0, 6.0)', minCse: 1 })
+// ...but a *shadowed* native is distrusted: the user's effectful sqrt is not merged.
+checkOpt('cse distrusts a shadowed native',
+  'let sqrt = fn x -> let u = print x in x in (sqrt 5, sqrt 5)',
+  { expect: '(5, 5)', noCse: true })
 
 // --- soundness: CSE must NOT change observable behaviour ---
 // An effectful helper is never proven pure, so two calls are never merged: both
