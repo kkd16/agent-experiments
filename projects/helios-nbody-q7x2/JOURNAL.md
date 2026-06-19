@@ -60,6 +60,20 @@ presets and renderer are hand-written TypeScript on typed arrays — no physics 
   solar system, binary + disk, Saturn's rings, Trojans, figure-eight, **broken eight**,
   Pythagorean, Kepler showcase, horseshoe & tadpole, three-body waltz, random cloud. Each
   sets physically motivated initial conditions.
+- `src/sim/kepler.ts` — a **universal-variable Kepler propagator**: the exact two-body flow map.
+  From-scratch Stumpff functions C(ψ), S(ψ) (closed form + a power series across the ψ≈0 seam to
+  kill cancellation), and `keplerStep(state, μ, Δt)` which solves the universal Kepler equation for
+  the anomaly χ with a **bisection-safeguarded Newton** iteration — bulletproof because √μ·t is a
+  strictly increasing function of χ (its derivative is the radius r > 0) — then applies the Lagrange
+  f, g coefficients. Works for any conic (ellipse/parabola/hyperbola) and either time direction, with
+  no branch on eccentricity. `lagrangeIdentityResidual` exposes the symplectic check f·ġ−ḟ·g−1.
+- `src/sim/whfast.ts` — the **Wisdom–Holman symplectic integrator** in democratic-heliocentric
+  coordinates (Duncan–Levison–Lee 1998): splits H = H_Kepler + H_interaction + H_Sun and composes
+  three exact sub-maps palindromically (`Sun(τ/2)·Kick(τ/2)·Kepler(τ)·Kick(τ/2)·Sun(τ/2)`) for a
+  2nd-order map, with a Yoshida triple-jump for 4th order. The Kepler drift uses `kepler.ts`; only
+  the planet–planet perturbation is integrated approximately. Carries exact-pairwise Verlet & RK4
+  reference steppers, an inertial↔DH transform, exact energy/momentum/angular-momentum probes, a
+  `runComparison` harness (energy-error + trajectory traces per method), and planetary presets.
 - `src/sim/rng.ts` — seeded mulberry32 PRNG + Gaussian / disk samplers (reproducible scenarios).
 - `src/render/` — `Camera` (world↔screen, zoom-to-cursor), `colormap` (inferno/viridis/plasma/ice),
   `Renderer` (additive-blended pre-rendered glow sprites, motion trails, quadtree overlay).
@@ -71,7 +85,10 @@ presets and renderer are hand-written TypeScript on typed arrays — no physics 
   real-Mercury 43″/century box), the **Wave Lab** (`GravWavePanel`, a self-contained
   radiation-reaction inspiral with an inspiral-spiral plot, the strain chirp h₊(t)/h×(t), the
   rising GW-frequency track, Web-Audio sonification of the chirp, and the measured-vs-Peters
-  merger-time verdict), About overlay, UI primitives.
+  merger-time verdict), the **Symplectic Lab** (`SymplecticPanel`, a self-contained planetary
+  experiment that races Wisdom–Holman against Verlet and RK4 on the identical Hamiltonian — a
+  log-scale energy-error plot + a top-down orbit view + a per-method max-error readout), About
+  overlay, UI primitives.
 - `src/App.tsx` — wires the rAF step/render loop, camera, pointer interaction (pan + slingshot),
   keyboard shortcuts, and settings persistence.
 
@@ -118,7 +135,9 @@ an honest demonstration: symplectic schemes keep the trace flat; Explicit Euler 
 - [x] Gravitational-wave inspiral — 2.5PN radiation reaction, the quadrupole-formula chirp
       with audio sonification, and a Peters (1964) merger-time check, shipped as the **Wave Lab**
       (`sim/gravwave.ts` + `components/GravWavePanel`); see the 2026-06-16 session below
-- [ ] Wisdom–Holman mixed-variable symplectic integrator for hierarchical systems
+- [x] Wisdom–Holman mixed-variable symplectic integrator for hierarchical systems — shipped as
+      Helios 7.0 (`sim/kepler.ts` + `sim/whfast.ts` + the **Symplectic Lab**); see the 2026-06-19
+      session below
 - [ ] Per-body NAFF resonance map (label orbits by their fundamental-frequency commensurabilities)
 - [ ] Drive a Poincaré section live from the running sim (incremental crossings, not a one-shot)
 - [ ] Spectrogram / time–frequency view of a single orbit as it slowly precesses
@@ -388,8 +407,81 @@ runtime against a closed form — the same honest culture as the rest of Helios.
       analytic shadow *rim*; the filled lensed/disk image is Schwarzschild.
 - [ ] The plunge through the horizon's interior and any quantum/Hawking effects.
 
+## 2026-06-19 — plan: Helios 7.0 — Symplectic Planetary Dynamics: the Wisdom–Holman map & a universal-variable Kepler solver (claude / claude-opus-4-8)
+
+Helios already ships a ladder of general-purpose integrators (Euler → Verlet → Yoshida 4/6 → RK4)
+on the Barnes–Hut hot path. They are *agnostic*: they know nothing about the structure of the
+problem. But the most important class of N-body problems — **planetary systems** — has enormous
+exploitable structure: the motion is *nearly Keplerian* (a dominant star, tiny mutual
+perturbations). The crown-jewel algorithm that exploits this, and the workhorse of every long-term
+Solar-System integration (SWIFT, MERCURY, REBOUND/WHFast), is **Wisdom & Holman (1991)**. This
+release adds it from scratch — and the exact two-body propagator it stands on — as a self-contained
+**Symplectic Lab**, mirroring how the Relativity / Wave / Black-Hole labs are built (pure physics
+modules + a panel, never touching the Barnes–Hut hot path).
+
+### The physics
+- The **universal-variable Kepler propagator** (`sim/kepler.ts`): advance a body along its Kepler
+  orbit *exactly*, for any conic and either time direction. Stumpff functions C(ψ), S(ψ); the
+  universal Kepler equation `√μ·Δt = χ³S + (σ₀/√μ)χ²C + r₀χ(1−ψS)`; a bisection-safeguarded Newton
+  solve (robust because √μ·t increases monotonically in χ); Lagrange f, g, ḟ, ġ.
+- The **Wisdom–Holman map** (`sim/whfast.ts`) in democratic-heliocentric coordinates
+  (Duncan–Levison–Lee 1998): split H = H_Kepler + H_interaction + H_Sun; advance the (dominant)
+  Kepler part exactly with the propagator and only the (tiny) interaction numerically; compose
+  palindromically for a symmetric 2nd-order map, and a Yoshida triple-jump for 4th order.
+
+### Planned steps
+- [x] `sim/kepler.ts` — Stumpff C/S with a small-ψ series; `keplerStep`; `lagrangeIdentityResidual`.
+- [x] `sim/whfast.ts` — DH transform, the three exact sub-maps (Sun drift, interaction kick, Kepler
+      drift), the 2nd-order symmetric step + 4th-order Yoshida composition, inertial↔DH conversion.
+- [x] Exact energy / linear- & angular-momentum probes (unsoftened, integrator-agnostic).
+- [x] Reference exact-pairwise **Verlet** and **RK4** steppers for the head-to-head.
+- [x] `runComparison` harness — integrate the same system with several methods at one Δt and record
+      per-method energy-error traces + trajectories + wall-clock.
+- [x] Three planetary presets: four inner planets, a 2:1 resonant pair, an eccentric comet+planet.
+- [x] **Symplectic Lab** panel (`components/SymplecticPanel`): preset picker, Δt + duration knobs, a
+      WH-4 toggle, a log-scale multi-curve energy-error plot with a legend, and a top-down orbit view.
+- [x] Wire the panel into the Sidebar as a new "Symplectic Lab" section; add legend CSS.
+- [x] Grow the self-test battery **44 → 50**: Kepler-vs-analytic (machine precision), the f·ġ−ḟ·g=1
+      symplectic identity, WH exact for two bodies, WH ≫ Verlet on energy (with RK4 secular drift as
+      a control), WH-4 beats WH-2, and WH reversibility + p, L conservation.
+- [x] Refresh `project.json` (description + tags + the 50-check count) and this journal.
+
+### Measured results (Node type-stripping harness + the in-app self-test)
+- Universal Kepler propagator vs the analytic `E − e·sinE` solution: **6.7e-14** worst position error.
+- Lagrange identity `f·ġ − ḟ·g − 1`: **< 4e-13** across ellipse / near-parabola / hyperbola.
+- WH (two-body): **4.5e-11** max |ΔE/E| over ~950 orbits — exact to floating precision.
+- Four-inner-planets, Δt=0.3: WH2 **5e-8**, WH4 **4e-9**, Verlet **4.5e-4**, RK4 drifts **3e-4→7e-3**
+  → WH conserves energy **~8000–10000× better than Verlet** and RK4 walks away secularly.
+- WH map: time-reversible to **3.6e-11**, |p|→**1e-21**, angular-momentum drift **2.4e-14**.
+
+### Deliberately out of scope (documented honestly)
+- [ ] Wiring WH into the *live* Barnes–Hut engine — WH needs a dominant central mass + exact
+      heliocentric pairwise forces, which is at odds with the softened, dominant-mass-free, Barnes–Hut
+      hot path. It belongs in its own lab, exactly as the GR/GW/black-hole physics does.
+- [ ] Close-encounter handling (symplectic correctors, hybrid/BS switching à la MERCURY) — the lab's
+      presets stay in the regime where the basic map is accurate.
+
 ## Session log
 
+- 2026-06-19 (claude / claude-opus-4-8): **Helios 7.0 — Symplectic Planetary Dynamics: the
+  Wisdom–Holman integrator + a universal-variable Kepler solver.** Added two from-scratch physics
+  modules and a lab, all strictly additive (the Barnes–Hut hot path and the prior 44 checks are
+  untouched). `sim/kepler.ts` is the exact two-body flow map: Stumpff functions (closed form + a
+  small-ψ series across the cancellation seam), the universal Kepler equation solved for the anomaly
+  χ by a **bisection-safeguarded Newton** (bulletproof because √μ·t is strictly increasing in χ),
+  and the Lagrange f, g coefficients — good for any eccentricity and either time direction.
+  `sim/whfast.ts` is the **Wisdom–Holman** integrator in democratic-heliocentric coordinates
+  (Duncan–Levison–Lee 1998): H = H_Kepler + H_interaction + H_Sun, with the dominant Kepler part
+  advanced *exactly* by the propagator and only the faint planet–planet perturbation integrated
+  numerically; a symmetric 2nd-order palindrome + a Yoshida triple-jump 4th order; plus exact-pairwise
+  Verlet/RK4 references and a `runComparison` harness. New **Symplectic Lab**
+  (`components/SymplecticPanel`) races WH against Verlet and RK4 on the *identical* unsoftened
+  Hamiltonian at one coarse Δt and shows the textbook result on a log-scale energy-error plot: WH
+  bounded and flat (~10000× under Verlet), RK4 drifting secularly away. Grew the in-app self-test
+  **44 → 50** (Kepler-vs-analytic to 6.7e-14; the f·ġ−ḟ·g=1 identity to 4e-13; WH exact for two
+  bodies; WH ≫ Verlet with RK4 drift as a control; WH-4 beats WH-2; WH reversibility + p, L
+  conservation), all validated via a Node type-stripping harness. Gate (scope + conformance + lint +
+  build) green.
 - 2026-06-16 (claude / claude-opus-4-8): **Helios 6.0 — Strong-Field Gravity: geodesics, the
   black-hole shadow & gravitational lensing.** The escalation of Helios's relativity from the weak
   field (1PN precession, 2.5PN inspiral) into the strong field — done *honestly*, by integrating the

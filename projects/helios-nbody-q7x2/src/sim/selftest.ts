@@ -37,6 +37,17 @@ import {
   kerrShadowRim,
   kerrEquatorialPhotonRadius,
 } from './geodesic'
+import { keplerStep, lagrangeIdentityResidual } from './kepler'
+import type { KeplerState } from './kepler'
+import {
+  WisdomHolman,
+  toBarycentric,
+  totalEnergy,
+  momentumMagnitude,
+  angularMomentum,
+  runComparison,
+  LAB_PRESETS,
+} from './whfast'
 import type { IntegratorId } from './types'
 
 export interface TestCase {
@@ -1065,6 +1076,143 @@ export function runSelfTest(): SelfTestReport {
       'Kerr frame-dragging displaces the shadow with spin',
       pass,
       `centroid α: a=0.02→${tiny.centroidAlpha.toFixed(3)}, a=0.2→${lo.centroidAlpha.toFixed(3)}, a=0.95→${hi.centroidAlpha.toFixed(3)} M`,
+    )
+  }
+
+  // 45 — Universal-variable Kepler propagator reproduces the analytic two-body
+  // flow. Launch an e=0.6 ellipse from periapsis, propagate by the universal
+  // solver, and compare to the position obtained by solving Kepler's equation
+  // E − e·sinE = M directly. Agreement to machine precision validates the
+  // Stumpff functions, the χ root-find and the Lagrange f,g coefficients.
+  {
+    const mu = 1
+    const a = 1.7
+    const e = 0.6
+    const rp = a * (1 - e)
+    const vp = Math.sqrt((mu / a) * ((1 + e) / (1 - e)))
+    const s0: KeplerState = { r: { x: rp, y: 0 }, v: { x: 0, y: vp } }
+    const T = 2 * Math.PI * Math.sqrt((a * a * a) / mu)
+    const n = Math.sqrt(mu / (a * a * a))
+    let worst = 0
+    for (const frac of [0.13, 0.5, 0.77, 1.4]) {
+      const t = frac * T
+      const got = keplerStep(s0, mu, t)
+      // Analytic: solve Kepler's equation, then x = a(cosE − e), y = a√(1−e²)sinE.
+      let E = n * t
+      for (let k = 0; k < 80; k++) {
+        const dE = (E - e * Math.sin(E) - n * t) / (1 - e * Math.cos(E))
+        E -= dE
+        if (Math.abs(dE) < 1e-15) break
+      }
+      const ex = a * (Math.cos(E) - e)
+      const ey = a * Math.sqrt(1 - e * e) * Math.sin(E)
+      worst = Math.max(worst, Math.hypot(got.r.x - ex, got.r.y - ey))
+    }
+    const pass = worst < 1e-9
+    add('Kepler propagator matches analytic orbit', pass, `max position error vs E−e·sinE=M: ${worst.toExponential(2)} (≈0)`)
+  }
+
+  // 46 — A Kepler step is an exact symplectic map: the Lagrange coefficients
+  // satisfy f·ġ − ḟ·g = 1 identically, for ellipse, parabola-grazing and
+  // hyperbola alike. This is checked independently of the propagation above.
+  {
+    const mu = 1
+    let worst = 0
+    const states: KeplerState[] = [
+      { r: { x: 1.2, y: 0.3 }, v: { x: -0.2, y: 0.9 } }, // bound ellipse
+      { r: { x: 0.5, y: 0 }, v: { x: 0, y: Math.sqrt(2 * mu / 0.5) } }, // ~parabolic
+      { r: { x: 0.6, y: -0.1 }, v: { x: 0.4, y: 1.9 } }, // hyperbolic
+    ]
+    for (const s of states) for (const dt of [0.05, 1.3, 7, -3]) {
+      worst = Math.max(worst, Math.abs(lagrangeIdentityResidual(s, mu, dt)))
+    }
+    const pass = worst < 1e-10
+    add('Kepler step is exactly symplectic (f·ġ − ḟ·g = 1)', pass, `max |f·ġ − ḟ·g − 1| = ${worst.toExponential(2)}`)
+  }
+
+  // 47 — For a single planet (the pure two-body problem) Wisdom–Holman is
+  // essentially EXACT: the only approximated term (the inter-planet interaction)
+  // is absent, so energy holds to machine precision over ~950 orbits.
+  {
+    const G = 1
+    const bary = toBarycentric([
+      { m: 1, x: 0, y: 0, vx: 0, vy: 0 },
+      { m: 1e-3, x: 1, y: 0, vx: 0, vy: Math.sqrt(G * 1.001) },
+    ])
+    const E0 = totalEnergy(bary, G)
+    const wh = new WisdomHolman(bary, G)
+    let maxErr = 0
+    for (let i = 0; i < 30000; i++) {
+      wh.step(0.2, 2)
+      if (i % 200 === 0) maxErr = Math.max(maxErr, Math.abs((wh.energy() - E0) / E0))
+    }
+    const pass = maxErr < 1e-8
+    add('Wisdom–Holman is exact for two bodies', pass, `max |ΔE/E| = ${maxErr.toExponential(2)} over ~950 orbits`)
+  }
+
+  // 48 — THE headline claim: on a near-Keplerian multi-planet system, at a
+  // deliberately coarse step, Wisdom–Holman conserves energy orders of magnitude
+  // better than velocity Verlet — and stays bounded, where the non-symplectic
+  // RK4 drifts secularly. All three integrate the identical unsoftened Hamiltonian.
+  {
+    const p = LAB_PRESETS[0]
+    const res = runComparison({
+      bodies: p.build(), G: p.G, dt: 0.3, duration: 360, samples: 240,
+      methods: ['wh2', 'verlet', 'rk4'],
+    })
+    const wh = res.traces.find((t) => t.id === 'wh2')!
+    const ve = res.traces.find((t) => t.id === 'verlet')!
+    const rk = res.traces.find((t) => t.id === 'rk4')!
+    const ratio = ve.maxEnergyErr / Math.max(wh.maxEnergyErr, 1e-30)
+    const rkEarly = Math.max(...rk.energyErr.slice(0, 15))
+    const rkLate = Math.max(...rk.energyErr.slice(-15))
+    const pass = wh.maxEnergyErr < ve.maxEnergyErr * 0.05 && wh.maxEnergyErr < 1e-5 && rkLate > rkEarly * 8
+    add(
+      'Wisdom–Holman crushes Verlet on energy',
+      pass,
+      `max |ΔE/E|: WH=${wh.maxEnergyErr.toExponential(2)} ≪ Verlet=${ve.maxEnergyErr.toExponential(2)} (${ratio.toFixed(0)}×); RK4 drifts ${rkEarly.toExponential(1)}→${rkLate.toExponential(1)}`,
+    )
+  }
+
+  // 49 — The 4th-order Wisdom–Holman composition (a Yoshida triple-jump of the
+  // 2nd-order map) is markedly more accurate than the 2nd-order map at the same Δt.
+  {
+    const G = 1
+    const bary = toBarycentric(LAB_PRESETS[2].build())
+    const E0 = totalEnergy(bary, G)
+    const run = (order: 2 | 4) => {
+      const wh = new WisdomHolman(bary, G)
+      let m = 0
+      for (let i = 0; i < 4000; i++) { wh.step(0.25, order); if (i % 25 === 0) m = Math.max(m, Math.abs((wh.energy() - E0) / E0)) }
+      return m
+    }
+    const e2 = run(2)
+    const e4 = run(4)
+    const pass = e4 < e2 * 0.5
+    add('Wisdom–Holman 4th order beats 2nd', pass, `max |ΔE/E|: WH2=${e2.toExponential(2)}, WH4=${e4.toExponential(2)} — ${(e2 / Math.max(e4, 1e-30)).toFixed(1)}× better`)
+  }
+
+  // 50 — The Wisdom–Holman map is time-reversible and conserves total linear and
+  // angular momentum: integrate forward N steps then backward N, and the system
+  // retraces to the start; meanwhile |p| stays zero in the barycentre frame.
+  {
+    const G = 1
+    const bary = toBarycentric(LAB_PRESETS[1].build())
+    const L0 = angularMomentum(bary)
+    const wh = new WisdomHolman(bary, G)
+    for (let i = 0; i < 600; i++) wh.step(0.3, 2)
+    const mid = wh.toInertial()
+    const pMag = momentumMagnitude(mid)
+    const Ldrift = Math.abs((angularMomentum(mid) - L0) / L0)
+    for (let i = 0; i < 600; i++) wh.step(-0.3, 2)
+    const end = wh.toInertial()
+    let ret = 0
+    for (let i = 0; i < bary.length; i++) ret = Math.max(ret, Math.hypot(end[i].x - bary[i].x, end[i].y - bary[i].y))
+    const pass = ret < 1e-7 && pMag < 1e-12 && Ldrift < 1e-10
+    add(
+      'Wisdom–Holman is reversible & conserves p, L',
+      pass,
+      `return error=${ret.toExponential(2)}, |p|=${pMag.toExponential(1)}, |ΔL/L|=${Ldrift.toExponential(1)}`,
     )
   }
 
