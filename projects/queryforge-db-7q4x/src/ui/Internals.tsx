@@ -86,6 +86,12 @@ const STAGES: Stage[] = [
     file: 'db/engine.ts',
     body: 'The write surface goes beyond plain INSERT/UPDATE/DELETE. RETURNING turns any mutation into a result set: each DML loop captures the rows it touched (the new image for INSERT/UPDATE, the old one for DELETE) and projects them through a select-list bound to the target — so INSERT … RETURNING id reads a generated key and DELETE … RETURNING * audits what left. MERGE folds a source set (table, derived table or VALUES) into a target in one pass: the ON predicate is compiled over the combined [target | source] row, each source row finds its matched targets under a no-double-touch guard, the first applicable WHEN arm fires (UPDATE/DELETE/INSERT/DO NOTHING), unmatched source rows fall to WHEN NOT MATCHED THEN INSERT, and WHEN NOT MATCHED BY SOURCE reaches the target rows no source row hit — all evaluated against the target image at statement start, and atomic like every mutation. TRUNCATE empties one or more tables by clearing the heap and rebuilding empty indexes (optionally RESTART IDENTITY), following CASCADE to FK children.',
   },
+  {
+    n: 9,
+    name: 'PL/QF — a procedural language & triggers',
+    file: 'db/pl.ts · db/parser.ts · db/engine.ts',
+    body: 'The database is programmable. A stored FUNCTION/PROCEDURE is written in a real procedural language — DECLARE’d typed variables, IF/ELSIF, WHILE/LOOP, integer FOR ranges and FOR-query loops, EXIT/CONTINUE, RAISE, RETURN, and embedded SQL — whose body is carried as one dollar-quoted ($$ … $$) token the lexer hands back opaque, then re-tokenized and parsed by a dedicated PL grammar that reuses the SQL parser for embedded statements. The interpreter runs a body in a chain of variable frames; the one interesting trick is how embedded SQL sees those variables — before a statement like INSERT INTO audit VALUES (NEW.id, now()) reaches the engine, every bare identifier that names an in-scope variable (and every NEW/OLD record field) is substituted as a literal, so the entire query pipeline stays unaware that PL exists. A single hook in the expression compiler lets an unknown scalar-function call resolve to a stored routine, so a function invoked inside a WHERE/SELECT runs the interpreter transparently (and the planner reads its declared return type through the same hook). Triggers fire inside the engine’s per-row INSERT/UPDATE/DELETE loops: a BEFORE trigger may rewrite the row (assign NEW.col, RETURN NEW) or cancel it (RETURN NULL); an AFTER trigger sees the final image; a WHEN clause gates firing; and a recursion guard bounds trigger→DML→trigger cascades. Routines and triggers live in the catalog next to tables and views, so they snapshot/restore with transactions and persist to localStorage for free.',
+  },
 ]
 
 export function Internals() {
@@ -97,9 +103,10 @@ export function Internals() {
         iterator-model executor, and a B+Tree storage layer — built from scratch in TypeScript. It speaks a
         broad SQL dialect: joins (including <code>LATERAL</code>), aggregation, subqueries (correlated too),
         CTEs (including <code>WITH RECURSIVE</code>), set operations, window functions, productive DML
-        (<code>RETURNING</code>, <code>MERGE</code>, <code>TRUNCATE</code>, savepoints), and declarative
+        (<code>RETURNING</code>, <code>MERGE</code>, <code>TRUNCATE</code>, savepoints), declarative
         integrity — primary/foreign keys, <code>CHECK</code>/<code>DEFAULT</code>, and
-        <code>ON DELETE/UPDATE</code> referential actions.
+        <code>ON DELETE/UPDATE</code> referential actions — and a procedural language with stored
+        functions, procedures and triggers (<code>PL/QF</code>).
       </p>
       <ol className="pipeline">
         {STAGES.map((s, i) => (

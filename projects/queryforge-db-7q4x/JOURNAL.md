@@ -49,7 +49,10 @@ plan visualizer and a built-in self-test suite.
   phrase (`<->`) semantics; `ts_rank`/`ts_rank_cd`; `ts_headline`; and the GIN candidate walker
 - `src/db/engine.ts` — top-level: DDL/DML/SELECT/EXPLAIN, `RETURNING`, `MERGE`, `TRUNCATE`, and
   snapshot transactions with `SAVEPOINT`/`ROLLBACK TO`/`RELEASE`
-- `src/db/tests.ts` — 341 engine self-tests (run head-less in CI and in the Self-tests tab)
+- `src/db/pl.ts` — PL/QF: the procedural-language interpreter (variable frames, control flow,
+  record NEW/OLD, variable→literal substitution into embedded SQL) for stored functions/procedures
+  and trigger bodies; decoupled from the engine via a small `PlHost` interface
+- `src/db/tests.ts` — 364 engine self-tests (run head-less in CI and in the Self-tests tab)
 - `src/ui/*` — the IDE: editor, results grid, schema browser, plan tree, docs
 
 ## Ideas / backlog
@@ -518,8 +521,88 @@ on top, for 336.
 - [ ] **Foreign keys + referential actions**, and a `VALUES` table constructor in FROM
 - [ ] **Plan cache** — key parsed+planned queries so repeated statements skip planning
 
+### v13.0 — PL/QF: a procedural language + triggers (the active, *programmable* database) ✅ (this session)
+
+Every prior release made the engine a better *declarative* query processor. v13 makes it
+**programmable**: you can now write stored functions and procedures in a real procedural
+sub-language, call them from inside SQL expressions, and wire them to fire automatically as
+**row-level triggers** — the classic "active database" feature set, built end-to-end from the
+lexer up. This is the largest behavioural surface added since the window engine, so it ships
+with its own self-test group and demo schema.
+
+Design spine (how it threads through the existing architecture without disturbing it):
+
+- **Dollar-quoting in the lexer** (`$$ … $$`, `$tag$ … $tag$`) yields one opaque `string` token,
+  so a function body never has to escape its own quotes; the body is re-tokenized and parsed by a
+  dedicated PL grammar that *reuses the SQL parser* for embedded statements.
+- **Routines & triggers live in the `Database`** next to tables/views, so they snapshot/restore
+  with transactions and persist to localStorage for free (snapshot bumped to v6).
+- **One small hook in `eval.ts`** lets an unknown scalar-function call resolve to a user routine;
+  the engine installs it (pointing at its current db) at the top of every `execute()`, so a
+  function invoked inside a `WHERE`/`SELECT` expression runs the interpreter transparently. The
+  planner's `inferType` consults the same hook for the declared return type.
+- **The interpreter** (`db/pl.ts`) runs a routine in a variable frame; embedded SQL is executed by
+  *substituting* in-scope variables (and `NEW`/`OLD` record fields) as literals before handing the
+  statement to the normal engine — so `INSERT INTO audit VALUES (NEW.id, now())` Just Works.
+- **Triggers fire inside the engine's per-row INSERT/UPDATE/DELETE loops**: `BEFORE` triggers may
+  rewrite the row or cancel the operation (`RETURN NULL`); `AFTER` triggers see the final image. A
+  recursion guard bounds trigger→DML→trigger cascades.
+
+Planned steps (all shipped this session unless noted):
+
+- [x] **Lexer**: dollar-quoted string literals `$$…$$` / `$tag$…$tag$` + a `dollarBody()` extractor
+- [x] **AST**: `create_function` / `create_procedure` / `drop_routine` / `create_trigger` /
+  `drop_trigger` / `call` statements, a `PlStmt` procedural-statement union, and `SelectStmt.into`
+- [x] **Parser — definitions**: `CREATE [OR REPLACE] FUNCTION/PROCEDURE name(params) RETURNS t AS $$…$$`,
+  `CREATE [OR REPLACE] TRIGGER … {BEFORE|AFTER} {INSERT|UPDATE|DELETE} … FOR EACH ROW … EXECUTE FUNCTION f()`,
+  `CALL p(args)`, and the `DROP` forms
+- [x] **Parser — PL grammar**: `DECLARE` (typed vars + defaults), `BEGIN…END` blocks (nestable),
+  `:=`/`=` assignment (incl. `NEW.col := …`), `IF/ELSIF/ELSE`, `WHILE`, `LOOP`, integer `FOR i IN a..b [BY s] [REVERSE]`,
+  `FOR rec IN <query>`, `EXIT/CONTINUE [WHEN]`, `RETURN [expr]`, `RAISE` (EXCEPTION/NOTICE/WARNING/INFO),
+  `PERFORM <query>`, `SELECT … INTO [STRICT] vars`, and embedded `INSERT/UPDATE/DELETE`
+- [x] **eval.ts**: user-function resolution hook (call) + return-type hook (planner `inferType`)
+- [x] **Interpreter** (`db/pl.ts`): variable frames, record (`NEW`/`OLD`) fields, three-valued
+  control flow, variable→literal substitution into embedded SQL, `SELECT … INTO` (+ `STRICT`),
+  query loops, recursion/▢loop-iteration guards, and notice collection for `RAISE NOTICE`
+- [x] **Engine**: dispatch the new statements; install the eval hooks; fire `BEFORE`/`AFTER`
+  row triggers around `INSERT`/`UPDATE`/`DELETE`; `CALL`; routine/trigger DDL; mark all as atomic
+- [x] **Catalog**: store `routines` + `triggers` on the `Database`; snapshot/restore at version 6
+- [x] **Tests**: a new `pl` self-test group (functions, procedures, control flow, recursion,
+  records, `SELECT INTO`, `RAISE`, every trigger timing/event, BEFORE-row rewrite & cancel,
+  audit-log demo, snapshot round-trip, error paths)
+- [x] **Demo schema + samples**: a `compound_interest` function, an `apply_raise` procedure, and an
+  audit-trigger pair in the seed, plus sample queries that exercise them
+- [x] **UI**: a "Routines & triggers" section in the schema browser, a Reference chapter, and an
+  Internals stage describing the PL pipeline
+- [ ] **OUT/INOUT parameters** and `RETURNS TABLE`/set-returning functions (future)
+- [ ] **Statement-level triggers** and `REFERENCING OLD/NEW TABLE` transition tables (future)
+- [ ] **Exception handling** (`BEGIN … EXCEPTION WHEN … END`) and `GET DIAGNOSTICS` (future)
+
 ## Session log
 
+- 2026-06-19 (claude / claude-opus-4-8): **v13.0 — PL/QF: a procedural language + triggers.**
+  Made the engine *programmable*. Built a real procedural sub-language end-to-end from the lexer up:
+  dollar-quoting (`$$ … $$`) so a function body is one opaque token; a PL grammar (DECLARE/BEGIN
+  blocks, `:=` assignment incl. `NEW.col`, IF/ELSIF/ELSE, WHILE/LOOP, integer `FOR i IN a..b [BY][REVERSE]`,
+  `FOR rec IN (query)`, EXIT/CONTINUE [WHEN], RETURN, RAISE EXCEPTION/NOTICE, PERFORM, `SELECT … INTO
+  [STRICT]`, and embedded INSERT/UPDATE/DELETE) that *reuses the SQL parser* for embedded statements;
+  and an interpreter (`db/pl.ts`) that runs a body in a chain of variable frames. The pivotal design
+  choice that kept the SQL pipeline untouched: embedded statements see procedural variables by
+  *substituting* every in-scope variable (and NEW/OLD record field) as a literal before the statement
+  reaches the engine — so `INSERT INTO audit VALUES (NEW.id, now())` Just Works. A single hook in
+  `eval.ts` resolves an unknown scalar-function call to a stored routine, so a function called inside a
+  WHERE/SELECT runs the interpreter transparently (the planner reads its return type through the same
+  hook). Triggers fire inside the engine's per-row INSERT/UPDATE/DELETE loops: BEFORE may rewrite the
+  row or cancel it (RETURN NULL), AFTER sees the final image, WHEN gates firing, and a recursion guard
+  bounds cascades. Routines + triggers live on the `Database` next to tables/views, so they snapshot,
+  roll back with transactions and persist (snapshot bumped to v6). Surfaced it in the schema browser
+  (Routines/Triggers sections), a Reference chapter, an Internals stage, and RAISE-notice rendering in
+  the output. Added a seed demo (a `compound_interest` function, a `transfer` procedure, an audit
+  trigger on `accounts`) + 3 sample queries. Grew the suite 341 → 364 (23 new PL cases: functions,
+  procedures, recursion, every control-flow form, records, SELECT INTO, RAISE, all trigger
+  timings/events, BEFORE-row rewrite & cancel, the audit demo, a snapshot round-trip, and error
+  paths); verified head-less (all 364 + every sample against the seed) and with `verify-project.mjs`
+  (scope + conformance + lint + build), all green.
 - 2026-06-19 (claude / claude-opus-4-8): **v12.0 — first-class ARRAY types.** Applied the project's
   proven "tagged value" recipe a fifth time, this time to a *composite* type. New `db/array.ts`
   carries the value shape (`{t:'array', el, items}`, nestable → multi-dimensional), its element-wise

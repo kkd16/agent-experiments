@@ -172,9 +172,92 @@ CREATE VIEW customer_revenue AS
   JOIN customers c ON o.customer_id = c.id
   JOIN products  p ON o.product_id = p.id
   GROUP BY c.id, c.name, c.country;
+
+-- ── PL/QF: stored functions, procedures & triggers ────────────────────────
+-- The engine is programmable. A stored function is written in a real procedural
+-- language (variables, control flow, embedded SQL) and can be called from
+-- inside any SQL expression; triggers fire functions automatically on DML.
+
+-- A pure scalar function: compound interest, A = P·(1+r)^n, computed by looping.
+CREATE FUNCTION compound_interest(principal REAL, rate REAL, years INTEGER) RETURNS REAL AS $$
+DECLARE amount REAL := principal;
+BEGIN
+  FOR y IN 1..years LOOP
+    amount := amount * (1 + rate);
+  END LOOP;
+  RETURN round(amount, 2);
+END;
+$$;
+
+-- A small ledger, plus an audit table a trigger keeps in sync automatically.
+CREATE TABLE accounts (
+  id      INTEGER PRIMARY KEY,
+  owner   TEXT NOT NULL,
+  balance DECIMAL(12, 2) NOT NULL DEFAULT 0 CHECK (balance >= 0)
+);
+INSERT INTO accounts (id, owner, balance) VALUES (1, 'Ada', 1000.00), (2, 'Linus', 500.00);
+
+CREATE TABLE account_audit (
+  account_id  INTEGER,
+  change      DECIMAL(12, 2),
+  new_balance DECIMAL(12, 2)
+);
+
+-- AFTER UPDATE trigger: append a row to the audit table on every balance change.
+CREATE FUNCTION audit_balance() RETURNS TRIGGER AS $$
+BEGIN
+  IF NEW.balance <> OLD.balance THEN
+    INSERT INTO account_audit VALUES (NEW.id, NEW.balance - OLD.balance, NEW.balance);
+  END IF;
+  RETURN NEW;
+END;
+$$;
+CREATE TRIGGER accounts_audit AFTER UPDATE ON accounts FOR EACH ROW
+  EXECUTE FUNCTION audit_balance();
+
+-- A procedure that moves money between accounts in one atomic statement,
+-- guarded by a RAISE that aborts (and rolls back) on insufficient funds.
+CREATE PROCEDURE transfer(from_id INTEGER, to_id INTEGER, amount DECIMAL) AS $$
+DECLARE bal DECIMAL;
+BEGIN
+  SELECT balance INTO bal FROM accounts WHERE id = from_id;
+  IF bal < amount THEN
+    RAISE EXCEPTION 'account % has insufficient funds (% < %)', from_id, bal, amount;
+  END IF;
+  UPDATE accounts SET balance = balance - amount WHERE id = from_id;
+  UPDATE accounts SET balance = balance + amount WHERE id = to_id;
+END;
+$$;
 `.trim()
 
 export const SAMPLE_QUERIES: SampleQuery[] = [
+  {
+    title: 'PL/QF — call a stored function from SQL',
+    sql: `-- compound_interest() is written in the procedural language (a DECLARE'd
+-- accumulator + a FOR loop) yet is called like any built-in, here once per row.
+SELECT principal, years,
+       compound_interest(principal, 0.05, years) AS balance_at_5pct
+FROM (VALUES (1000, 5), (1000, 10), (5000, 20)) AS t(principal, years)
+ORDER BY balance_at_5pct;`,
+  },
+  {
+    title: 'PL/QF — procedure + trigger (transfer & audit)',
+    sql: `-- CALL a procedure that moves money between two accounts. An AFTER UPDATE
+-- trigger writes the audit trail automatically — no application code involved.
+CALL transfer(1, 2, 250.00);
+SELECT a.owner, ac.change, ac.new_balance
+FROM account_audit ac
+JOIN accounts a ON a.id = ac.account_id
+ORDER BY ac.new_balance;`,
+  },
+  {
+    title: 'PL/QF — a function in a WHERE predicate',
+    sql: `-- A stored function is a first-class expression: use it to filter, too.
+-- Which 10-year investments at 5% more than double the principal?
+SELECT principal, compound_interest(principal, 0.05, 10) AS after_10y
+FROM (VALUES (1000), (2000), (8000)) AS t(principal)
+WHERE compound_interest(principal, 0.05, 10) > principal * 1.6;`,
+  },
   {
     title: 'Arrays — build, subscript, slice & set operators',
     sql: `-- First-class arrays: 1-based subscripts, inclusive slices, and the

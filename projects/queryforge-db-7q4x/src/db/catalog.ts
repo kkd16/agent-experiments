@@ -30,6 +30,7 @@ import {
   type SelectStmt,
   type TableConstraints,
 } from './ast'
+import type { Routine, Trigger } from './pl'
 
 export type Row = SqlValue[]
 
@@ -470,6 +471,44 @@ export class Database {
   readonly tables = new Map<string, Table>()
   /** Views: name (lower-case) -> definition. Resolved lazily by the planner. */
   readonly views = new Map<string, ViewDef>()
+  /** Stored routines (functions/procedures): name (lower-case) -> routine. */
+  readonly routines = new Map<string, Routine>()
+  /** Triggers: name (lower-case) -> trigger. */
+  readonly triggers = new Map<string, Trigger>()
+
+  // --- routines & triggers -------------------------------------------------
+  getRoutine(name: string): Routine | undefined {
+    return this.routines.get(name.toLowerCase())
+  }
+  setRoutine(r: Routine): void {
+    this.routines.set(r.name.toLowerCase(), r)
+  }
+  dropRoutine(name: string): void {
+    this.routines.delete(name.toLowerCase())
+  }
+  setTrigger(t: Trigger): void {
+    this.triggers.set(t.name.toLowerCase(), t)
+  }
+  dropTrigger(name: string): void {
+    this.triggers.delete(name.toLowerCase())
+  }
+  /** Triggers on `table` of a given timing that fire for `op`, in creation order. */
+  triggersFor(table: string, timing: 'BEFORE' | 'AFTER', op: 'INSERT' | 'UPDATE' | 'DELETE'): Trigger[] {
+    const lc = table.toLowerCase()
+    const out: Trigger[] = []
+    for (const t of this.triggers.values()) {
+      if (t.table.toLowerCase() === lc && t.timing === timing && t.events.includes(op)) out.push(t)
+    }
+    return out
+  }
+  /** Has any table got at least one trigger for `op` (either timing)? */
+  hasTriggersFor(table: string, op: 'INSERT' | 'UPDATE' | 'DELETE'): boolean {
+    const lc = table.toLowerCase()
+    for (const t of this.triggers.values()) {
+      if (t.table.toLowerCase() === lc && t.events.includes(op)) return true
+    }
+    return false
+  }
 
   getTable(name: string): Table {
     const t = this.tables.get(name.toLowerCase())
@@ -725,7 +764,13 @@ export class Database {
       columns: v.columns,
       select: v.select,
     }))
-    return { version: 5, tables, views }
+    return {
+      version: 6,
+      tables,
+      views,
+      routines: [...this.routines.values()],
+      triggers: [...this.triggers.values()],
+    }
   }
 
   static restore(snap: SerializedDb): Database {
@@ -745,6 +790,9 @@ export class Database {
     }
     // Views (added in snapshot v4; absent in older snapshots).
     for (const v of snap.views ?? []) db.setView({ name: v.name, columns: v.columns, select: v.select })
+    // Routines & triggers (added in snapshot v6).
+    for (const r of snap.routines ?? []) db.setRoutine(r)
+    for (const t of snap.triggers ?? []) db.setTrigger(t)
     return db
   }
 }
@@ -874,6 +922,10 @@ export interface SerializedDb {
   tables: SerializedTable[]
   /** Views (added in snapshot v4; absent in older snapshots). */
   views?: ViewDef[]
+  /** Stored routines (added in snapshot v6). */
+  routines?: Routine[]
+  /** Triggers (added in snapshot v6). */
+  triggers?: Trigger[]
 }
 
 export type { CheckConstraint, ForeignKeyDef }

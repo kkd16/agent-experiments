@@ -2780,6 +2780,292 @@ test('samples', 'every shipped sample query runs against the seed', () => {
   }
 })
 
+// --- PL/QF: stored functions, procedures & triggers ------------------------
+
+/** A small engine with two helper tables for the procedural tests. */
+function plBase(): Engine {
+  const e = new Engine()
+  e.execute(`
+    CREATE TABLE nums(x INTEGER);
+    INSERT INTO nums VALUES (10), (20), (30);
+    CREATE TABLE accounts(id INTEGER PRIMARY KEY, bal INTEGER);
+    INSERT INTO accounts VALUES (1, 100), (2, 50);
+  `)
+  return e
+}
+
+test('pl', 'scalar function returns a value and is callable in SELECT', () => {
+  const e = new Engine()
+  e.execute(`CREATE FUNCTION add_tax(price REAL, rate REAL) RETURNS REAL AS $$
+    BEGIN RETURN price * (1 + rate); END; $$;`)
+  assert(scalar(e, 'SELECT add_tax(100, 0.25)') === 125, 'add_tax(100, 0.25) = 125')
+})
+
+test('pl', 'dollar-quoting tokenizes a body containing quotes', () => {
+  const e = new Engine()
+  e.execute(`CREATE FUNCTION greet(who TEXT) RETURNS TEXT AS $$
+    BEGIN RETURN 'hello, ' || who || '!'; END; $$;`)
+  assert(scalar(e, `SELECT greet('world')`) === 'hello, world!', "embedded quotes survive")
+})
+
+test('pl', 'recursion: factorial', () => {
+  const e = new Engine()
+  e.execute(`CREATE FUNCTION fact(n INTEGER) RETURNS INTEGER AS $$
+    BEGIN IF n <= 1 THEN RETURN 1; END IF; RETURN n * fact(n - 1); END; $$;`)
+  assert(scalar(e, 'SELECT fact(5)') === 120, '5! = 120')
+})
+
+test('pl', 'IF / ELSIF / ELSE branching', () => {
+  const e = new Engine()
+  e.execute(`CREATE FUNCTION sign_of(n INTEGER) RETURNS TEXT AS $$
+    BEGIN
+      IF n > 0 THEN RETURN 'pos';
+      ELSIF n < 0 THEN RETURN 'neg';
+      ELSE RETURN 'zero'; END IF;
+    END; $$;`)
+  assert(scalar(e, 'SELECT sign_of(7)') === 'pos', 'pos')
+  assert(scalar(e, 'SELECT sign_of(-3)') === 'neg', 'neg')
+  assert(scalar(e, 'SELECT sign_of(0)') === 'zero', 'zero')
+})
+
+test('pl', 'FOR integer-range loop with a local variable', () => {
+  const e = new Engine()
+  e.execute(`CREATE FUNCTION sum_to(n INTEGER) RETURNS INTEGER AS $$
+    DECLARE total INTEGER := 0;
+    BEGIN FOR i IN 1..n LOOP total := total + i; END LOOP; RETURN total; END; $$;`)
+  assert(scalar(e, 'SELECT sum_to(10)') === 55, '1..10 sums to 55')
+})
+
+test('pl', 'REVERSE / BY step in a FOR range', () => {
+  const e = new Engine()
+  e.execute(`CREATE FUNCTION evens_desc(n INTEGER) RETURNS INTEGER AS $$
+    DECLARE c INTEGER := 0;
+    BEGIN FOR i IN REVERSE n..0 BY 2 LOOP c := c + 1; END LOOP; RETURN c; END; $$;`)
+  assert(scalar(e, 'SELECT evens_desc(10)') === 6, '10,8,6,4,2,0 -> 6 iterations')
+})
+
+test('pl', 'WHILE loop', () => {
+  const e = new Engine()
+  e.execute(`CREATE FUNCTION countdown(n INTEGER) RETURNS INTEGER AS $$
+    DECLARE c INTEGER := 0;
+    BEGIN WHILE n > 0 LOOP n := n - 1; c := c + 1; END LOOP; RETURN c; END; $$;`)
+  assert(scalar(e, 'SELECT countdown(7)') === 7, 'counts 7 iterations')
+})
+
+test('pl', 'LOOP with EXIT WHEN', () => {
+  const e = new Engine()
+  e.execute(`CREATE FUNCTION find_div(n INTEGER) RETURNS INTEGER AS $$
+    DECLARE i INTEGER := 2;
+    BEGIN LOOP EXIT WHEN n % i = 0; i := i + 1; END LOOP; RETURN i; END; $$;`)
+  assert(scalar(e, 'SELECT find_div(15)') === 3, 'smallest divisor of 15 is 3')
+})
+
+test('pl', 'SELECT … INTO binds a query result to a variable', () => {
+  const e = plBase()
+  e.execute(`CREATE FUNCTION total_x() RETURNS INTEGER AS $$
+    DECLARE s INTEGER;
+    BEGIN SELECT sum(x) INTO s FROM nums; RETURN s; END; $$;`)
+  assert(scalar(e, 'SELECT total_x()') === 60, 'sum of 10+20+30')
+})
+
+test('pl', 'FOR rec IN <query> loop reads columns via the record', () => {
+  const e = plBase()
+  e.execute(`CREATE FUNCTION count_gt(t INTEGER) RETURNS INTEGER AS $$
+    DECLARE c INTEGER := 0;
+    BEGIN FOR r IN (SELECT x FROM nums) LOOP IF r.x > t THEN c := c + 1; END IF; END LOOP; RETURN c; END; $$;`)
+  assert(scalar(e, 'SELECT count_gt(15)') === 2, '20 and 30 exceed 15')
+})
+
+test('pl', 'function usable in a WHERE predicate', () => {
+  const e = plBase()
+  e.execute(`CREATE FUNCTION is_big(x INTEGER) RETURNS BOOLEAN AS $$
+    BEGIN RETURN x >= 20; END; $$;`)
+  assert(scalar(e, 'SELECT count(*) FROM nums WHERE is_big(x)') === 2, 'two rows are big')
+})
+
+test('pl', 'procedure mutates via CALL with variable substitution', () => {
+  const e = plBase()
+  e.execute(`CREATE PROCEDURE transfer(from_id INTEGER, to_id INTEGER, amt INTEGER) AS $$
+    BEGIN
+      UPDATE accounts SET bal = bal - amt WHERE id = from_id;
+      UPDATE accounts SET bal = bal + amt WHERE id = to_id;
+    END; $$;`)
+  e.execute('CALL transfer(1, 2, 30)')
+  assert(eq(rowsOf(e, 'SELECT bal FROM accounts ORDER BY id'), [[70], [80]]), 'balances transferred')
+})
+
+test('pl', 'RAISE EXCEPTION aborts and rolls the statement back', () => {
+  const e = plBase()
+  e.execute(`CREATE PROCEDURE withdraw(acc INTEGER, amt INTEGER) AS $$
+    DECLARE cur INTEGER;
+    BEGIN
+      SELECT bal INTO cur FROM accounts WHERE id = acc;
+      IF cur < amt THEN RAISE EXCEPTION 'insufficient funds: have %, need %', cur, amt; END IF;
+      UPDATE accounts SET bal = bal - amt WHERE id = acc;
+    END; $$;`)
+  throws(e, 'CALL withdraw(2, 999)', 'insufficient funds: have 50, need 999')
+  assert(scalar(e, 'SELECT bal FROM accounts WHERE id = 2') === 50, 'balance unchanged after abort')
+})
+
+test('pl', 'RAISE NOTICE is collected and surfaced on the result', () => {
+  const e = new Engine()
+  e.execute(`CREATE PROCEDURE noisy() AS $$ BEGIN RAISE NOTICE 'value is %', 42; END; $$;`)
+  const r = lastResult(e, 'CALL noisy()')
+  assert(r.kind === 'message' && (r.notices ?? []).some((n) => n.includes('value is 42')), 'notice captured')
+})
+
+test('pl', 'BEFORE INSERT trigger rewrites the NEW row', () => {
+  const e = new Engine()
+  e.execute(`
+    CREATE TABLE items(id INTEGER, name TEXT);
+    CREATE FUNCTION upper_name() RETURNS TRIGGER AS $$
+      BEGIN NEW.name := upper(NEW.name); RETURN NEW; END; $$;
+    CREATE TRIGGER items_upper BEFORE INSERT ON items FOR EACH ROW EXECUTE FUNCTION upper_name();
+    INSERT INTO items VALUES (1, 'widget');
+  `)
+  assert(scalar(e, 'SELECT name FROM items') === 'WIDGET', 'name upper-cased by the trigger')
+})
+
+test('pl', 'BEFORE INSERT trigger can cancel a row with RETURN NULL', () => {
+  const e = new Engine()
+  e.execute(`
+    CREATE TABLE items(id INTEGER, name TEXT);
+    CREATE FUNCTION reject_neg() RETURNS TRIGGER AS $$
+      BEGIN IF NEW.id < 0 THEN RETURN NULL; END IF; RETURN NEW; END; $$;
+    CREATE TRIGGER items_guard BEFORE INSERT ON items FOR EACH ROW EXECUTE FUNCTION reject_neg();
+    INSERT INTO items VALUES (-1, 'bad'), (2, 'ok'), (-3, 'nope');
+  `)
+  assert(scalar(e, 'SELECT count(*) FROM items') === 1, 'only the non-negative row survived')
+  assert(scalar(e, 'SELECT id FROM items') === 2, 'and it is row 2')
+})
+
+test('pl', 'AFTER INSERT/DELETE trigger maintains an audit log', () => {
+  const e = new Engine()
+  e.execute(`
+    CREATE TABLE products(id INTEGER PRIMARY KEY, name TEXT);
+    CREATE TABLE audit(action TEXT, pid INTEGER);
+    CREATE FUNCTION log_change() RETURNS TRIGGER AS $$
+      BEGIN
+        IF TG_OP = 'INSERT' THEN INSERT INTO audit VALUES ('INSERT', NEW.id); RETURN NEW;
+        ELSIF TG_OP = 'DELETE' THEN INSERT INTO audit VALUES ('DELETE', OLD.id); RETURN OLD; END IF;
+        RETURN NULL;
+      END; $$;
+    CREATE TRIGGER products_audit AFTER INSERT OR DELETE ON products FOR EACH ROW EXECUTE FUNCTION log_change();
+    INSERT INTO products VALUES (1, 'Widget');
+    DELETE FROM products WHERE id = 1;
+  `)
+  assert(eq(rowsOf(e, 'SELECT action, pid FROM audit'), [['INSERT', 1], ['DELETE', 1]]), 'audit recorded both ops')
+})
+
+test('pl', 'trigger WHEN clause gates the firing', () => {
+  const e = new Engine()
+  e.execute(`
+    CREATE TABLE emp(id INTEGER PRIMARY KEY, salary INTEGER);
+    INSERT INTO emp VALUES (1, 100), (2, 200);
+    CREATE TABLE raises(id INTEGER, old_s INTEGER, new_s INTEGER);
+    CREATE FUNCTION log_raise() RETURNS TRIGGER AS $$
+      BEGIN INSERT INTO raises VALUES (NEW.id, OLD.salary, NEW.salary); RETURN NEW; END; $$;
+    CREATE TRIGGER emp_raise AFTER UPDATE ON emp FOR EACH ROW WHEN (NEW.salary > OLD.salary) EXECUTE FUNCTION log_raise();
+    UPDATE emp SET salary = salary + 50 WHERE id = 1;
+    UPDATE emp SET salary = salary - 10 WHERE id = 2;
+  `)
+  assert(eq(rowsOf(e, 'SELECT id, old_s, new_s FROM raises'), [[1, 100, 150]]), 'only the genuine raise logged')
+})
+
+test('pl', 'routines and triggers survive a snapshot round-trip', () => {
+  const e = new Engine()
+  e.execute(`
+    CREATE TABLE items(id INTEGER, name TEXT);
+    CREATE FUNCTION fact(n INTEGER) RETURNS INTEGER AS $$
+      BEGIN IF n <= 1 THEN RETURN 1; END IF; RETURN n * fact(n - 1); END; $$;
+    CREATE FUNCTION upper_name() RETURNS TRIGGER AS $$
+      BEGIN NEW.name := upper(NEW.name); RETURN NEW; END; $$;
+    CREATE TRIGGER items_upper BEFORE INSERT ON items FOR EACH ROW EXECUTE FUNCTION upper_name();
+  `)
+  const e2 = new Engine(Database.restore(e.db.snapshot()))
+  assert(scalar(e2, 'SELECT fact(4)') === 24, 'function restored & runs')
+  e2.execute(`INSERT INTO items VALUES (1, 'hi')`)
+  assert(scalar(e2, 'SELECT name FROM items') === 'HI', 'trigger restored & fires')
+})
+
+test('pl', 'DROP FUNCTION is refused while a trigger depends on it', () => {
+  const e = new Engine()
+  e.execute(`
+    CREATE TABLE items(id INTEGER, name TEXT);
+    CREATE FUNCTION upper_name() RETURNS TRIGGER AS $$ BEGIN RETURN NEW; END; $$;
+    CREATE TRIGGER items_upper BEFORE INSERT ON items FOR EACH ROW EXECUTE FUNCTION upper_name();
+  `)
+  throws(e, 'DROP FUNCTION upper_name', 'depends on it')
+  e.execute('DROP TRIGGER items_upper')
+  e.execute('DROP FUNCTION upper_name') // now allowed
+  assert(true, 'drop succeeds once the trigger is gone')
+})
+
+test('pl', 'calling a function with the wrong arity errors', () => {
+  const e = new Engine()
+  e.execute(`CREATE FUNCTION add2(a INTEGER, b INTEGER) RETURNS INTEGER AS $$ BEGIN RETURN a + b; END; $$;`)
+  throws(e, 'SELECT add2(1)', 'expects 2 argument')
+})
+
+test('pl', 'CREATE OR REPLACE FUNCTION redefines the body', () => {
+  const e = new Engine()
+  e.execute(`CREATE FUNCTION f() RETURNS INTEGER AS $$ BEGIN RETURN 1; END; $$;`)
+  assert(scalar(e, 'SELECT f()') === 1, 'first definition')
+  e.execute(`CREATE OR REPLACE FUNCTION f() RETURNS INTEGER AS $$ BEGIN RETURN 2; END; $$;`)
+  assert(scalar(e, 'SELECT f()') === 2, 'redefined')
+})
+
+test('pl', 'CALL of a non-void function surfaces its return value', () => {
+  const e = new Engine()
+  e.execute(`CREATE FUNCTION twice(n INTEGER) RETURNS INTEGER AS $$ BEGIN RETURN n * 2; END; $$;`)
+  assert(scalar(e, 'CALL twice(21)') === 42, 'returns 42')
+})
+
+test('pl', 'nested BEGIN blocks scope and shadow variables', () => {
+  const e = new Engine()
+  e.execute(`CREATE FUNCTION shadow() RETURNS INTEGER AS $$
+    DECLARE x INTEGER := 1;
+    BEGIN
+      DECLARE x INTEGER := 100;
+      BEGIN x := x + 5; END;       -- inner x becomes 105, outer untouched
+      RETURN x;                    -- the outer x is still 1
+    END; $$;`)
+  assert(scalar(e, 'SELECT shadow()') === 1, 'inner shadow does not leak to the outer scope')
+})
+
+test('pl', 'one function composes another', () => {
+  const e = new Engine()
+  e.execute(`
+    CREATE FUNCTION sq(n INTEGER) RETURNS INTEGER AS $$ BEGIN RETURN n * n; END; $$;
+    CREATE FUNCTION sum_sq(a INTEGER, b INTEGER) RETURNS INTEGER AS $$ BEGIN RETURN sq(a) + sq(b); END; $$;`)
+  assert(scalar(e, 'SELECT sum_sq(3, 4)') === 25, '9 + 16 = 25')
+})
+
+test('pl', 'SELECT … INTO STRICT errors when the query is not exactly one row', () => {
+  const e = plBase()
+  e.execute(`CREATE FUNCTION only_one() RETURNS INTEGER AS $$
+    DECLARE v INTEGER;
+    BEGIN SELECT x INTO STRICT v FROM nums; RETURN v; END; $$;`)
+  throws(e, 'SELECT only_one()', 'expected exactly one row')
+})
+
+test('pl', 'BEFORE UPDATE trigger clamps the NEW row', () => {
+  const e = new Engine()
+  e.execute(`
+    CREATE TABLE gauge(id INTEGER PRIMARY KEY, pct INTEGER);
+    INSERT INTO gauge VALUES (1, 50);
+    CREATE FUNCTION clamp_pct() RETURNS TRIGGER AS $$
+      BEGIN
+        IF NEW.pct > 100 THEN NEW.pct := 100; END IF;
+        IF NEW.pct < 0 THEN NEW.pct := 0; END IF;
+        RETURN NEW;
+      END; $$;
+    CREATE TRIGGER gauge_clamp BEFORE UPDATE ON gauge FOR EACH ROW EXECUTE FUNCTION clamp_pct();
+    UPDATE gauge SET pct = 250 WHERE id = 1;
+  `)
+  assert(scalar(e, 'SELECT pct FROM gauge') === 100, 'over-range value clamped to 100 by the trigger')
+})
+
 export function runTests(): TestResult[] {
   return cases.map((c) => {
     try {

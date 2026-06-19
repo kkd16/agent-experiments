@@ -5,6 +5,8 @@ import {
   tokenize,
   identName,
   stringValue,
+  isDollarQuoted,
+  dollarBody,
   type Token,
 } from './lexer'
 import { SCALAR_FUNCTION_NAMES, exprKey } from './eval'
@@ -14,6 +16,7 @@ import { parseDecimal as parseDecimalLit } from './decimal'
 import { emptyConstraints } from './ast'
 import type {
   BinaryOp,
+  CallStmt,
   CheckConstraint,
   ColumnDef,
   CteDef,
@@ -27,6 +30,9 @@ import type {
   NamedWindow,
   OnConflictClause,
   OrderItem,
+  PlStmt,
+  RaiseLevel,
+  TypedName,
   WindowSpec,
   FrameExclude,
   RefAction,
@@ -165,6 +171,8 @@ class Parser {
       case 'COMMIT':
       case 'ROLLBACK':
         return this.parseTxn()
+      case 'CALL':
+        return this.parseCall()
       default:
         throw this.err(`unexpected statement; expected SELECT/INSERT/UPDATE/DELETE/CREATE/DROP/EXPLAIN`)
     }
@@ -286,16 +294,20 @@ class Parser {
 
   private parseCreate(): Statement {
     this.expect('CREATE')
-    // CREATE OR REPLACE VIEW …
+    // CREATE OR REPLACE {VIEW | FUNCTION | PROCEDURE | TRIGGER} …
     if (this.at('OR')) {
       this.expect('OR')
       this.expect('REPLACE')
+      if (this.at('FUNCTION') || this.at('PROCEDURE')) return this.parseCreateRoutine(true)
+      if (this.at('TRIGGER')) return this.parseCreateTrigger(true)
       return this.parseCreateView(true)
     }
     if (this.at('VIEW')) return this.parseCreateView(false)
     if (this.at('TABLE')) return this.parseCreateTable()
+    if (this.at('FUNCTION') || this.at('PROCEDURE')) return this.parseCreateRoutine(false)
+    if (this.at('TRIGGER')) return this.parseCreateTrigger(false)
     if (this.at('INDEX') || this.at('UNIQUE')) return this.parseCreateIndex()
-    throw this.err('expected TABLE, VIEW or INDEX after CREATE')
+    throw this.err('expected TABLE, VIEW, INDEX, FUNCTION, PROCEDURE or TRIGGER after CREATE')
   }
 
   private parseCreateView(orReplace: boolean): Statement {
@@ -551,10 +563,351 @@ class Parser {
       const name = this.parseIdent('view name')
       return { kind: 'drop_view', name, ifExists }
     }
+    if (this.at('FUNCTION') || this.at('PROCEDURE')) {
+      const isProcedure = this.next().value === 'PROCEDURE'
+      const ifExists = this.accept('IF') ? (this.expect('EXISTS'), true) : false
+      const name = this.parseIdent('routine name')
+      // Tolerate (and ignore) a parameter-type signature, like Postgres.
+      if (this.accept('(')) {
+        while (!this.at(')') && !this.atKind('eof')) this.next()
+        this.expect(')')
+      }
+      return { kind: 'drop_routine', name, isProcedure, ifExists }
+    }
+    if (this.accept('TRIGGER')) {
+      const ifExists = this.accept('IF') ? (this.expect('EXISTS'), true) : false
+      const name = this.parseIdent('trigger name')
+      const table = this.accept('ON') ? this.parseIdent('table name') : undefined
+      return { kind: 'drop_trigger', name, table, ifExists }
+    }
     this.expect('TABLE')
     const ifExists = this.accept('IF') ? (this.expect('EXISTS'), true) : false
     const name = this.parseIdent('table name')
     return { kind: 'drop_table', name, ifExists }
+  }
+
+  // ========================================================================
+  // PL/QF — routines, triggers & the procedural body grammar
+  // ========================================================================
+
+  /** `CREATE [OR REPLACE] FUNCTION|PROCEDURE name(params) [RETURNS t] [LANGUAGE …]
+   *  AS $$ <body> $$`. The body is a single dollar-quoted string token that we
+   *  re-tokenize and parse with the PL grammar. */
+  private parseCreateRoutine(orReplace: boolean): Statement {
+    const isProcedure = this.next().value === 'PROCEDURE'
+    const name = this.parseIdent('routine name')
+    const params = this.parseRoutineParams()
+    let returns: { type: ColumnType; scale?: number; elemType?: ColumnType } | undefined
+    let returnsTrigger = false
+    if (this.accept('RETURNS')) {
+      if (this.accept('TRIGGER')) {
+        returnsTrigger = true
+      } else {
+        const t = this.parseTypeName()
+        returns = { type: t.type, scale: t.scale, elemType: t.elemType }
+      }
+    } else if (!isProcedure) {
+      throw this.err('a FUNCTION must declare RETURNS <type> (or RETURNS TRIGGER)')
+    }
+    // Optional, ignored: LANGUAGE plpgsql / LANGUAGE sql.
+    if (this.accept('LANGUAGE')) this.parseIdent('language name')
+    this.expect('AS')
+    const body = this.parseRoutineBody()
+    return { kind: 'create_routine', name, isProcedure, params, returns, returnsTrigger, body, orReplace }
+  }
+
+  /** `(p1 TYPE [DEFAULT e], …)` — only IN parameters in v1 (an optional, ignored
+   *  IN/OUT/INOUT mode keyword is tolerated). An empty list is `()`. */
+  private parseRoutineParams(): TypedName[] {
+    const params: TypedName[] = []
+    this.expect('(')
+    if (!this.at(')')) {
+      do {
+        // Tolerate (and ignore) a leading IN/OUT/INOUT mode keyword. We only
+        // consume it when a parameter name plus a type clearly follow, so a
+        // parameter literally named "in"/"out" still works.
+        if ((this.at('IN') || this.at('OUT') || this.at('INOUT')) && this.peek(1).kind === 'ident') {
+          this.next()
+        }
+        const pname = this.parseIdent('parameter name')
+        const t = this.parseTypeName()
+        let def: Expr | undefined
+        if (this.accept('DEFAULT') || this.accept('=')) def = this.parseExpr()
+        params.push({ name: pname, type: t.type, scale: t.scale, elemType: t.elemType, default: def })
+      } while (this.accept(','))
+    }
+    this.expect(')')
+    return params
+  }
+
+  /** Re-tokenize the dollar-quoted body and parse it as a PL block. */
+  private parseRoutineBody(): PlStmt {
+    const t = this.peek()
+    if (t.kind !== 'string') throw this.err('expected a function body ($$ … $$ or a quoted string)')
+    this.next()
+    const text = isDollarQuoted(t) ? dollarBody(t.text) : stringValue(t)
+    const sub = new Parser(tokenize(text))
+    const block = sub.parsePlBlock(true)
+    if (!sub.atKind('eof')) throw sub.err('trailing tokens after routine body')
+    return block
+  }
+
+  /** A `[DECLARE …] BEGIN <statements> END [label]` block. With `topLevel`, a
+   *  trailing `;` after END is tolerated (the routine body form). */
+  parsePlBlock(topLevel = false): PlStmt {
+    const declares: TypedName[] = []
+    if (this.accept('DECLARE')) {
+      while (!this.at('BEGIN') && !this.atKind('eof')) {
+        const name = this.parseIdent('variable name')
+        const t = this.parseTypeName()
+        // Optional initialiser: `DEFAULT e`, `:= e`, or `= e`.
+        let def: Expr | undefined
+        if (this.accept('DEFAULT') || this.accept('=')) {
+          def = this.parseExpr()
+        } else if (this.accept(':')) {
+          this.expect('=')
+          def = this.parseExpr()
+        }
+        declares.push({ name, type: t.type, scale: t.scale, elemType: t.elemType, default: def })
+        this.expect(';')
+      }
+    }
+    this.expect('BEGIN')
+    const body = this.parsePlStatements(['END'])
+    this.expect('END')
+    // Optional block label after END.
+    if (this.atKind('ident')) this.next()
+    if (topLevel) this.accept(';')
+    return { kind: 'pl_block', declares, body }
+  }
+
+  /** Parse procedural statements until one of `terminators` is next. */
+  private parsePlStatements(terminators: string[]): PlStmt[] {
+    const out: PlStmt[] = []
+    while (!terminators.some((k) => this.at(k)) && !this.atKind('eof')) {
+      out.push(this.parsePlStatement())
+      this.accept(';')
+    }
+    return out
+  }
+
+  private parsePlStatement(): PlStmt {
+    const v = this.peek().value
+    // A labelled loop: <<label>> LOOP|WHILE|FOR …
+    let label: string | undefined
+    if (v === '<' && this.peek(1).value === '<') {
+      this.next(); this.next()
+      label = this.parseIdent('loop label')
+      this.expect('>'); this.expect('>')
+    }
+    switch (this.peek().value) {
+      case 'DECLARE':
+      case 'BEGIN':
+        return this.parsePlBlock()
+      case 'IF':
+        return this.parsePlIf()
+      case 'WHILE':
+        return this.parsePlWhile(label)
+      case 'LOOP':
+        return this.parsePlLoop(label)
+      case 'FOR':
+        return this.parsePlFor(label)
+      case 'RETURN':
+        return this.parsePlReturn()
+      case 'RAISE':
+        return this.parsePlRaise()
+      case 'EXIT':
+      case 'CONTINUE': {
+        const kind = this.next().value === 'EXIT' ? 'pl_exit' : 'pl_continue'
+        const lbl = this.atKind('ident') ? this.parseIdent('loop label') : undefined
+        const when = this.accept('WHEN') ? this.parseExpr() : undefined
+        return { kind, label: lbl, when } as PlStmt
+      }
+      case 'PERFORM': {
+        const query = this.parseSelectCore('PERFORM')
+        return { kind: 'pl_perform', query }
+      }
+      case 'CALL': {
+        const c = this.parseCall()
+        return { kind: 'pl_call', name: c.name, args: c.args }
+      }
+      case 'NULL':
+        this.next()
+        return { kind: 'pl_null' }
+      case 'SELECT': {
+        const query = this.parseSelect()
+        if (query.into) {
+          return { kind: 'pl_select_into', query, targets: query.into.targets, strict: query.into.strict }
+        }
+        // A bare SELECT with no INTO inside PL behaves like PERFORM.
+        return { kind: 'pl_perform', query }
+      }
+      case 'INSERT':
+      case 'UPDATE':
+      case 'DELETE':
+      case 'MERGE':
+      case 'WITH':
+      case 'TRUNCATE':
+        return { kind: 'pl_sql', statement: this.parseStatement() }
+    }
+    // Assignment: <ident>[.<field>] := expr  (or `= expr`).
+    if (this.atKind('ident')) {
+      const target = this.parseIdent('variable name')
+      let field: string | undefined
+      if (this.accept('.')) field = this.parseIdent('record field')
+      // `:=` arrives as two tokens (`:` then `=`); `=` is also accepted.
+      if (this.accept(':')) this.expect('=')
+      else this.expect('=')
+      const value = this.parseExpr()
+      return { kind: 'pl_assign', target, field, value }
+    }
+    throw this.err('expected a procedural statement')
+  }
+
+  private parsePlIf(): PlStmt {
+    this.expect('IF')
+    const arms: { cond: Expr; body: PlStmt[] }[] = []
+    const cond = this.parseExpr()
+    this.expect('THEN')
+    arms.push({ cond, body: this.parsePlStatements(['ELSIF', 'ELSEIF', 'ELSE', 'END']) })
+    while (this.at('ELSIF') || this.at('ELSEIF')) {
+      this.next()
+      const c = this.parseExpr()
+      this.expect('THEN')
+      arms.push({ cond: c, body: this.parsePlStatements(['ELSIF', 'ELSEIF', 'ELSE', 'END']) })
+    }
+    let elseBody: PlStmt[] | undefined
+    if (this.accept('ELSE')) elseBody = this.parsePlStatements(['END'])
+    this.expect('END')
+    this.expect('IF')
+    return { kind: 'pl_if', arms, elseBody }
+  }
+
+  private parsePlWhile(label?: string): PlStmt {
+    this.expect('WHILE')
+    const cond = this.parseExpr()
+    this.expect('LOOP')
+    const body = this.parsePlStatements(['END'])
+    this.expect('END')
+    this.expect('LOOP')
+    return { kind: 'pl_while', cond, body, label }
+  }
+
+  private parsePlLoop(label?: string): PlStmt {
+    this.expect('LOOP')
+    const body = this.parsePlStatements(['END'])
+    this.expect('END')
+    this.expect('LOOP')
+    return { kind: 'pl_loop', body, label }
+  }
+
+  /** `FOR i IN [REVERSE] lo .. hi [BY step] LOOP …` (integer range) or
+   *  `FOR rec IN <query> LOOP …` (one row per iteration). */
+  private parsePlFor(label?: string): PlStmt {
+    this.expect('FOR')
+    const varName = this.parseIdent('loop variable')
+    this.expect('IN')
+    // A parenthesised query (`FOR r IN (SELECT …) LOOP`) iterates its rows; a
+    // bare expression is an integer range (`FOR i IN lo..hi LOOP`). The query
+    // form is parenthesised so the trailing LOOP can't be mistaken for a table
+    // alias. We peek past `(` for SELECT/WITH/VALUES to tell the two apart.
+    const q1 = this.peek(1).value
+    if (this.at('(') && (q1 === 'SELECT' || q1 === 'WITH' || q1 === 'VALUES')) {
+      this.expect('(')
+      const query = this.parseSubquerySelect()
+      this.expect(')')
+      this.expect('LOOP')
+      const body = this.parsePlStatements(['END'])
+      this.expect('END'); this.expect('LOOP')
+      return { kind: 'pl_for_query', var: varName, query, body, label }
+    }
+    const reverse = this.accept('REVERSE')
+    const lo = this.parseExpr()
+    this.expect('..')
+    const hi = this.parseExpr()
+    const step = this.accept('BY') ? this.parseExpr() : undefined
+    this.expect('LOOP')
+    const body = this.parsePlStatements(['END'])
+    this.expect('END'); this.expect('LOOP')
+    return { kind: 'pl_for_range', var: varName, lo, hi, step, reverse, body, label }
+  }
+
+  private parsePlReturn(): PlStmt {
+    this.expect('RETURN')
+    if (this.at(';') || this.at('END') || this.atKind('eof')) return { kind: 'pl_return' }
+    return { kind: 'pl_return', value: this.parseExpr() }
+  }
+
+  /** `RAISE [level] 'format', arg, …` — `%` placeholders in the format string are
+   *  filled left-to-right by the args. With no level, the default is EXCEPTION. */
+  private parsePlRaise(): PlStmt {
+    this.expect('RAISE')
+    let level: RaiseLevel = 'EXCEPTION'
+    const levels: Record<string, RaiseLevel> = {
+      EXCEPTION: 'EXCEPTION', WARNING: 'WARNING', NOTICE: 'NOTICE', INFO: 'INFO', LOG: 'LOG', DEBUG: 'DEBUG',
+    }
+    const lv = this.peek().value
+    if (lv in levels && this.peek().kind !== 'string') {
+      level = levels[lv]
+      this.next()
+    }
+    let message: string | undefined
+    const args: Expr[] = []
+    if (this.peek().kind === 'string') {
+      message = stringValue(this.next())
+      while (this.accept(',')) args.push(this.parseExpr())
+    }
+    return { kind: 'pl_raise', level, message, args }
+  }
+
+  /** `CALL name(args)`. */
+  private parseCall(): CallStmt {
+    this.expect('CALL')
+    const name = this.parseIdent('procedure name')
+    this.expect('(')
+    const args: Expr[] = []
+    if (!this.at(')')) {
+      do {
+        args.push(this.parseExpr())
+      } while (this.accept(','))
+    }
+    this.expect(')')
+    return { kind: 'call', name, args }
+  }
+
+  /** `CREATE [OR REPLACE] TRIGGER name {BEFORE|AFTER} {INSERT|UPDATE|DELETE [OR …]}
+   *  ON table FOR EACH ROW [WHEN (cond)] EXECUTE {FUNCTION|PROCEDURE} f()`. */
+  private parseCreateTrigger(orReplace: boolean): Statement {
+    this.expect('TRIGGER')
+    const name = this.parseIdent('trigger name')
+    let timing: 'BEFORE' | 'AFTER'
+    if (this.accept('BEFORE')) timing = 'BEFORE'
+    else if (this.accept('AFTER')) timing = 'AFTER'
+    else throw this.err('expected BEFORE or AFTER')
+    const events: ('INSERT' | 'UPDATE' | 'DELETE')[] = []
+    do {
+      if (this.accept('INSERT')) events.push('INSERT')
+      else if (this.accept('UPDATE')) events.push('UPDATE')
+      else if (this.accept('DELETE')) events.push('DELETE')
+      else throw this.err('expected INSERT, UPDATE or DELETE')
+    } while (this.accept('OR'))
+    this.expect('ON')
+    const table = this.parseIdent('table name')
+    // FOR EACH ROW (only row-level triggers in v1).
+    if (this.accept('FOR')) {
+      this.expect('EACH')
+      if (!this.accept('ROW')) {
+        this.expect('STATEMENT')
+        throw this.err('only FOR EACH ROW triggers are supported')
+      }
+    }
+    const when = this.accept('WHEN') ? this.parseParenExpr() : undefined
+    this.expect('EXECUTE')
+    if (!this.accept('FUNCTION')) this.expect('PROCEDURE')
+    const functionName = this.parseIdent('trigger function name')
+    this.expect('(')
+    this.expect(')')
+    return { kind: 'create_trigger', name, timing, events, table, when, functionName, orReplace }
   }
 
   private parseInsert(): Statement {
@@ -856,11 +1209,25 @@ class Parser {
   }
 
   // One SELECT branch: everything up to (but not including) ORDER BY/LIMIT.
-  private parseSelectCore(): SelectStmt {
-    this.expect('SELECT')
+  private parseSelectCore(keyword = 'SELECT'): SelectStmt {
+    this.expect(keyword)
     const distinct = this.accept('DISTINCT')
     if (!distinct) this.accept('ALL') // SELECT ALL is the (default) opposite of DISTINCT
     const columns = this.parseSelectList()
+
+    // `SELECT … INTO [STRICT] v1, v2` — a PL/QF extension captured here so the
+    // procedural interpreter can bind result columns to variables. A top-level
+    // query never has it (INTO only follows a select list inside a routine).
+    let into: SelectStmt['into']
+    if (this.at('INTO')) {
+      this.expect('INTO')
+      const strict = this.accept('STRICT')
+      const targets: string[] = []
+      do {
+        targets.push(this.parseIdent('target variable'))
+      } while (this.accept(','))
+      into = { targets, strict }
+    }
 
     let from: SelectStmt['from']
     const joins: JoinClause[] = []
@@ -909,6 +1276,7 @@ class Parser {
       orderBy: [],
       limit: undefined,
       offset: undefined,
+      into,
     }
   }
 

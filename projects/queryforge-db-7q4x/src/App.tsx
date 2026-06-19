@@ -31,7 +31,7 @@ const TABS = [
 ]
 
 export default function App() {
-  const { schema, views, run, reset } = useEngine()
+  const { schema, views, routines, triggers, run, reset } = useEngine()
   const [route, navigate] = useHashRoute()
   const [query, setQuery] = useState(loadLastQuery)
   const [results, setResults] = useState<QueryResult[]>([])
@@ -108,7 +108,7 @@ export default function App() {
 
       {route === 'playground' ? (
         <div className="layout">
-          <SchemaPanel schema={schema} views={views} onInsert={insertText} onLoadSample={loadSample} />
+          <SchemaPanel schema={schema} views={views} routines={routines} triggers={triggers} onInsert={insertText} onLoadSample={loadSample} />
           <main className="main">
             <div className="editor-bar">
               <span className="editor-label">SQL</span>

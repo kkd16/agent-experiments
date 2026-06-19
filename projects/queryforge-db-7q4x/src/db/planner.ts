@@ -11,7 +11,7 @@
 // shape — and the reasoning — behind the chosen plan.
 
 import { SqlError, compareValues, hashKey, valueTypeOf, valuesEqual, type ColumnType, type SqlValue } from './types'
-import { compileExpr, exprKey, TABLE_FUNCTIONS, type CompileCtx, type Evaluator, type OuterScope } from './eval'
+import { compileExpr, exprKey, TABLE_FUNCTIONS, userFunctionReturnType, type CompileCtx, type Evaluator, type OuterScope } from './eval'
 import { resolveColumn, type Binding, type Schema } from './schema'
 import {
   isAggregate,
@@ -417,7 +417,8 @@ export function inferType(e: Expr, schema: Schema, ctx: CompileCtx): ColumnType 
         ].includes(e.name)
       )
         return 'TEXT'
-      return 'TEXT'
+      // A user-defined function carries its declared return type.
+      return userFunctionReturnType(e.name) ?? 'TEXT'
     case 'binary':
       if (['=', '<>', '<', '<=', '>', '>=', 'AND', 'OR', '@>', '<@', '?', '@@', '&&'].includes(e.op)) return 'BOOLEAN'
       if (e.op === '->' || e.op === '#>') return 'JSON'

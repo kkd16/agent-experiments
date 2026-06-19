@@ -137,11 +137,32 @@ function GridBody({ res }: { res: RowsResult }) {
   )
 }
 
+function Notices({ notices }: { notices?: string[] }) {
+  if (!notices || notices.length === 0) return null
+  return (
+    <div className="result-notices">
+      {notices.map((n, i) => (
+        <div key={i} className="result-notice">
+          <span className="notice-glyph">▸</span> {n}
+        </div>
+      ))}
+    </div>
+  )
+}
+
 function ResultView({ res }: { res: QueryResult }) {
-  if (res.kind === 'rows') return <RowsView res={res} />
+  if (res.kind === 'rows') {
+    return (
+      <>
+        <Notices notices={res.notices} />
+        <RowsView res={res} />
+      </>
+    )
+  }
   if (res.kind === 'message') {
     return (
       <div className="result-block">
+        <Notices notices={res.notices} />
         <div className="result-message">
           <span className="ok-dot" /> {res.message}
           <span className="result-foot inline">{res.elapsedMs.toFixed(2)} ms</span>

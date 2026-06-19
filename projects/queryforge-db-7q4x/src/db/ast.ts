@@ -483,6 +483,9 @@ export interface SelectStmt {
   orderBy: OrderItem[]
   limit?: number
   offset?: number
+  /** `SELECT … INTO [STRICT] v1, v2 …` — a PL/QF extension. Only meaningful when
+   *  the query runs inside a procedural body; a top-level query ignores it. */
+  into?: { targets: string[]; strict: boolean }
   /** CTEs attached to this query (WITH …). */
   ctes?: CteDef[]
   /** Whether the WITH was declared RECURSIVE. */
@@ -502,6 +505,88 @@ export interface TxnStmt {
   savepoint?: string
 }
 
+// ---------------------------------------------------------------------------
+// PL/QF — the procedural language (stored functions/procedures + triggers)
+// ---------------------------------------------------------------------------
+
+/** A typed reference (a parameter or a DECLARE'd variable). */
+export interface TypedName {
+  name: string
+  type: ColumnType
+  scale?: number
+  elemType?: ColumnType
+  /** Optional default / initial value expression. */
+  default?: Expr
+}
+
+/** Severity of a `RAISE` statement. EXCEPTION aborts; the rest emit a notice. */
+export type RaiseLevel = 'EXCEPTION' | 'WARNING' | 'NOTICE' | 'INFO' | 'LOG' | 'DEBUG'
+
+/** A procedural statement inside a routine/trigger body. */
+export type PlStmt =
+  | { kind: 'pl_block'; declares: TypedName[]; body: PlStmt[] }
+  | { kind: 'pl_assign'; target: string; field?: string; value: Expr }
+  | { kind: 'pl_return'; value?: Expr }
+  | { kind: 'pl_if'; arms: { cond: Expr; body: PlStmt[] }[]; elseBody?: PlStmt[] }
+  | { kind: 'pl_while'; cond: Expr; body: PlStmt[]; label?: string }
+  | { kind: 'pl_loop'; body: PlStmt[]; label?: string }
+  | { kind: 'pl_for_range'; var: string; lo: Expr; hi: Expr; step?: Expr; reverse: boolean; body: PlStmt[]; label?: string }
+  | { kind: 'pl_for_query'; var: string; query: SelectStmt; body: PlStmt[]; label?: string }
+  | { kind: 'pl_exit'; label?: string; when?: Expr }
+  | { kind: 'pl_continue'; label?: string; when?: Expr }
+  | { kind: 'pl_raise'; level: RaiseLevel; message?: string; args: Expr[] }
+  | { kind: 'pl_perform'; query: SelectStmt }
+  | { kind: 'pl_select_into'; query: SelectStmt; targets: string[]; strict: boolean }
+  | { kind: 'pl_call'; name: string; args: Expr[] }
+  | { kind: 'pl_sql'; statement: Statement }
+  | { kind: 'pl_null' }
+
+/** `CREATE [OR REPLACE] FUNCTION|PROCEDURE name(params) [RETURNS t] AS $$ … $$`. */
+export interface CreateRoutineStmt {
+  kind: 'create_routine'
+  name: string
+  isProcedure: boolean
+  params: TypedName[]
+  /** Return type; undefined for a procedure / a trigger function (see returnsTrigger). */
+  returns?: { type: ColumnType; scale?: number; elemType?: ColumnType }
+  /** `RETURNS TRIGGER` — a function usable as a trigger body (sees NEW/OLD). */
+  returnsTrigger: boolean
+  body: PlStmt
+  orReplace: boolean
+}
+/** `DROP FUNCTION|PROCEDURE [IF EXISTS] name`. */
+export interface DropRoutineStmt {
+  kind: 'drop_routine'
+  name: string
+  isProcedure: boolean
+  ifExists: boolean
+}
+/** `CALL name(args)` — invoke a procedure. */
+export interface CallStmt {
+  kind: 'call'
+  name: string
+  args: Expr[]
+}
+/** `CREATE [OR REPLACE] TRIGGER name {BEFORE|AFTER} {INSERT|UPDATE|DELETE [OR …]}
+ *  ON table FOR EACH ROW [WHEN (cond)] EXECUTE FUNCTION f()`. */
+export interface CreateTriggerStmt {
+  kind: 'create_trigger'
+  name: string
+  timing: 'BEFORE' | 'AFTER'
+  events: ('INSERT' | 'UPDATE' | 'DELETE')[]
+  table: string
+  when?: Expr
+  functionName: string
+  orReplace: boolean
+}
+/** `DROP TRIGGER [IF EXISTS] name [ON table]`. */
+export interface DropTriggerStmt {
+  kind: 'drop_trigger'
+  name: string
+  table?: string
+  ifExists: boolean
+}
+
 export type Statement =
   | CreateTableStmt
   | AlterTableStmt
@@ -518,6 +603,11 @@ export type Statement =
   | SelectStmt
   | ExplainStmt
   | TxnStmt
+  | CreateRoutineStmt
+  | DropRoutineStmt
+  | CallStmt
+  | CreateTriggerStmt
+  | DropTriggerStmt
 
 // Aggregate function names recognised by the planner.
 export const AGGREGATES = new Set([

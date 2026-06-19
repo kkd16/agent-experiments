@@ -2,12 +2,14 @@
 // table/column inserts its name into the editor; clicking a sample loads it.
 
 import { useState } from 'react'
-import type { TableInfo, ViewInfo } from '../db/introspect'
+import type { TableInfo, ViewInfo, RoutineInfo, TriggerInfo } from '../db/introspect'
 import { SAMPLE_QUERIES } from '../db/sampleData'
 
 interface Props {
   schema: TableInfo[]
   views: ViewInfo[]
+  routines: RoutineInfo[]
+  triggers: TriggerInfo[]
   onInsert: (text: string) => void
   onLoadSample: (sql: string) => void
 }
@@ -107,7 +109,13 @@ function ViewCard({ view, onInsert }: { view: ViewInfo; onInsert: (t: string) =>
   )
 }
 
-export function SchemaPanel({ schema, views, onInsert, onLoadSample }: Props) {
+const ROUTINE_GLYPH: Record<RoutineInfo['kind'], string> = {
+  function: 'ƒ',
+  procedure: '⚙',
+  trigger: '⚡',
+}
+
+export function SchemaPanel({ schema, views, routines, triggers, onInsert, onLoadSample }: Props) {
   return (
     <aside className="sidebar">
       <div className="sidebar-section">
@@ -123,6 +131,31 @@ export function SchemaPanel({ schema, views, onInsert, onLoadSample }: Props) {
           <h3 className="sidebar-title">Views</h3>
           {views.map((v) => (
             <ViewCard key={v.name} view={v} onInsert={onInsert} />
+          ))}
+        </div>
+      )}
+
+      {routines.length > 0 && (
+        <div className="sidebar-section">
+          <h3 className="sidebar-title">Routines</h3>
+          {routines.map((r) => (
+            <button key={r.name} className="schema-routine" onClick={() => onInsert(r.name)} title={`${r.kind}: ${r.signature}`}>
+              <span className="routine-glyph" title={r.kind}>{ROUTINE_GLYPH[r.kind]}</span>
+              <span className="routine-sig">{r.signature}</span>
+            </button>
+          ))}
+        </div>
+      )}
+
+      {triggers.length > 0 && (
+        <div className="sidebar-section">
+          <h3 className="sidebar-title">Triggers</h3>
+          {triggers.map((t) => (
+            <div key={t.name} className="schema-trigger" title={t.summary}>
+              <span className="routine-glyph" title="trigger">⚡</span>
+              <span className="trigger-name">{t.name}</span>
+              <span className="trigger-summary">{t.summary}</span>
+            </div>
           ))}
         </div>
       )}

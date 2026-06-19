@@ -54,6 +54,23 @@ const SECTIONS: Section[] = [
     ],
   },
   {
+    title: 'Procedural language & triggers (PL/QF)',
+    entries: [
+      { syntax: 'CREATE [OR REPLACE] FUNCTION f(p TYPE, …) RETURNS t AS $$ … $$', note: 'A stored function written in the procedural language. Call it anywhere a scalar expression is allowed — in a SELECT list, a WHERE predicate, a DEFAULT, even another routine. The body lives between $$ … $$ (dollar-quoting, so it needn’t escape its own quotes).' },
+      { syntax: 'CREATE [OR REPLACE] PROCEDURE p(args …) AS $$ … $$ · CALL p(args)', note: 'A procedure returns nothing and runs for its side effects (it may execute INSERT/UPDATE/DELETE). Invoke it with CALL. CALL of a non-void FUNCTION instead returns its value as a one-row result.' },
+      { syntax: '[DECLARE v TYPE [:= e]; …] BEGIN … END;', note: 'A block: optional typed variable declarations with initialisers, then statements. Blocks nest; an inner DECLARE shadows an outer variable.' },
+      { syntax: 'v := expr;  ·  rec.field := expr;', note: 'Assignment. Inside embedded SQL, a bare identifier that names an in-scope variable (and NEW/OLD record fields) is substituted as its current value; everything else resolves as a normal column.' },
+      { syntax: 'IF c THEN … ELSIF c THEN … ELSE … END IF;', note: 'Conditional execution with any number of ELSIF arms.' },
+      { syntax: 'WHILE c LOOP … END LOOP;  ·  LOOP … END LOOP;', note: 'Pre-tested and unconditional loops. Leave a loop with EXIT [WHEN c]; skip to the next iteration with CONTINUE [WHEN c]; both accept an optional <<label>>.' },
+      { syntax: 'FOR i IN [REVERSE] lo..hi [BY step] LOOP … END LOOP;', note: 'Integer-range loop. REVERSE counts down; BY sets the stride.' },
+      { syntax: 'FOR rec IN (SELECT …) LOOP … END LOOP;', note: 'Iterate a query’s rows; read columns as rec.col. (The query is parenthesised so the trailing LOOP is unambiguous.)' },
+      { syntax: 'SELECT expr, … INTO [STRICT] v1, v2 FROM …;', note: 'Run a query and bind its first row’s columns to variables. STRICT requires exactly one row (else it errors); without it, no rows leaves the targets NULL.' },
+      { syntax: 'PERFORM (SELECT …);  ·  RETURN [expr];  ·  RAISE [EXCEPTION|NOTICE|WARNING|INFO] \'msg %\', arg;', note: 'PERFORM runs a query for its effect, discarding rows. RETURN yields the function value (or, in a trigger, NEW/OLD/NULL). RAISE EXCEPTION aborts and rolls the statement back; the other levels emit a notice surfaced beside the result. % placeholders fill from the args.' },
+      { syntax: 'CREATE [OR REPLACE] TRIGGER name {BEFORE|AFTER} {INSERT|UPDATE|DELETE [OR …]} ON t FOR EACH ROW [WHEN (cond)] EXECUTE FUNCTION f()', note: 'Run a RETURNS TRIGGER function automatically on each affected row. The body sees the NEW and OLD records and TG_OP/TG_NAME/TG_WHEN/TG_TABLE_NAME. A BEFORE trigger may rewrite the row (assign NEW.col then RETURN NEW) or cancel it (RETURN NULL); an AFTER trigger sees the final image. WHEN gates firing.' },
+      { syntax: 'DROP FUNCTION/PROCEDURE [IF EXISTS] f · DROP TRIGGER [IF EXISTS] name [ON t]', note: 'Remove a routine or trigger. Dropping a function is refused while a trigger still depends on it. Routines and triggers participate in snapshots, so they roll back with a transaction and persist with the database.' },
+    ],
+  },
+  {
     title: 'Queries',
     entries: [
       { syntax: 'SELECT [DISTINCT] items FROM t [alias]', note: 'items can be *, table.*, expressions, or aggregates with AS aliases.' },
