@@ -36,8 +36,9 @@ conflict teaches the solver a new clause that prunes an exponential swath of the
   deterministic, decomposable* DNNF circuit (sd-DNNF) — the DPLL search recorded as a shared DAG —
   then answers, each in one linear pass: exact `ddnnfCount`, `ddnnfWmc` (weighted model counting),
   `ddnnfMarginals` (every variable's exact marginal via the arithmetic-circuit derivative, one
-  forward + backward sweep), `ddnnfEnumerate`, `verifyCircuit` (structural sd-DNNF certificates) and
-  `toNnf` (the standard c2d/Dsharp `.nnf` export).
+  forward + backward sweep), `ddnnfMpe` (the most-probable explanation by a max-product pass),
+  `ddnnfEnumerate`, `verifyCircuit` (structural sd-DNNF certificates) and `toNnf` (the standard
+  c2d/Dsharp `.nnf` export).
 - `src/sat/maxsat.ts` — weighted MaxSAT engine: linear SAT-UNSAT and core-guided WPM1, both
   on the same CDCL core (which now supports `solveAssuming` — incremental solving under
   assumptions with unsat-core extraction).
@@ -78,7 +79,7 @@ gallery) and the **knowledge-compilation engine** (Session 14 — over 1200 rand
 sd-DNNF is checked for the three structural properties, its model count is matched against #SAT and
 brute force, its weighted model count and its one-pass differential marginals against brute force,
 and its enumeration against the exact model set with no duplicates) all compared against independent
-references. All **312 assertions** pass.
+references. All **313 assertions** pass.
 
 ## Ideas / backlog
 
@@ -833,6 +834,9 @@ instead of a count you keep the *structure*, and it answers question after quest
       Darwiche *differential of an arithmetic circuit*: `w[ℓ]·∂Z/∂w[ℓ] = WMC(f ∧ ℓ)`, so every
       variable's exact `Pr(xᵢ = true)` falls out of a single backpropagation. Exact precisely
       because the circuit is decomposable + deterministic + smooth.
+- [x] **Most-probable explanation** (`ddnnfMpe`) — the single likeliest assignment, by a max-product
+      pass (the OR's Σ becomes max); exact because the circuit is deterministic + decomposable, and
+      complete because it is smooth.
 - [x] **Model enumeration** (`ddnnfEnumerate`) straight off the circuit — each model produced once
       (determinism) by AND cross-products and OR unions.
 - [x] **Structural certificates** (`verifyCircuit`) — independently *proves* the compiled circuit is
@@ -843,17 +847,20 @@ instead of a count you keep the *structure*, and it answers question after quest
 worker op + `compileDdnnfTask`), then shows the verified sd-DNNF property badges, a circuit-stats grid
 (nodes / edges / decision / AND / literal / sub-formula reuse / compile time), the exact model count,
 and a **weighted-inference panel**: a "tilt" slider sets each variable's positive-literal weight `p`
-(negative `1−p`) and the **weighted model count** plus a **live variable-marginal bar chart** recompute
-in real time — each a single linear pass over the same compiled circuit. At `p = 0.5` the bars are the
-exact fraction of solutions in which each variable is true.
+(negative `1−p`) and the **weighted model count**, a **live variable-marginal bar chart**, and the
+**most-probable explanation** all recompute in real time — each a single linear pass over the same
+compiled circuit. At `p = 0.5` the bars are the exact fraction of solutions in which each variable is
+true.
 
 **Cross-checks (folded into `selftest.ts`).** On **1200 random CNFs** (2–12 vars): the compiled count
 equals both #SAT and brute force; every circuit is verified smooth + decomposable + deterministic; the
 weighted model count matches brute force under random per-literal weights (and `count/2ⁿ` under uniform
 weights); the one-pass differential marginals match brute force exactly (including the partition `Z`);
-and the enumeration equals the exact model set with **no duplicates**. Plus hand cases (empty formula
-`2ⁿ`, contradiction `0`, forced-literal marginal `1`, free-literal marginal `0.5`, N-Queens counts off
-the circuit, `.nnf` header consistency). **16 new assertions; the gate is now 312, all green.**
+the max-product **MPE** matches brute force and its returned assignment is a genuine satisfying model of
+that weight; and the enumeration equals the exact model set with **no duplicates**. Plus hand cases
+(empty formula `2ⁿ`, contradiction `0`, forced-literal marginal `1`, free-literal marginal `0.5`,
+N-Queens counts off the circuit, `.nnf` header consistency). **17 new assertions; the gate is now 313,
+all green.**
 
 #### Future ideas
 
@@ -861,7 +868,8 @@ the circuit, `.nnf` header consistency). **16 new assertions; the gate is now 31
       order so the DAG stays small on structured instances.
 - [ ] **Conditioning & projection** on the compiled circuit (clamp literals / forget variables) to
       answer follow-up queries without recompiling.
-- [ ] **MPE / most-probable explanation** (a max-product pass) alongside the sum-product marginals.
+- [x] **MPE / most-probable explanation** (a max-product pass) alongside the sum-product marginals —
+      `ddnnfMpe`, surfaced in the Compile tab and cross-checked against brute force.
 - [ ] A **circuit visualization** (the sd-DNNF DAG) in the Compile tab, like the implication graph.
 
 ## Session log
@@ -1145,14 +1153,16 @@ the circuit, `.nnf` header consistency). **16 new assertions; the gate is now 31
   reachability GC compacts the table). On the circuit: exact `ddnnfCount` (BigInt), `ddnnfWmc`
   (weighted model counting — the partition function), `ddnnfMarginals` (every variable's exact
   marginal in one forward+backward sweep, by the Darwiche arithmetic-circuit differential —
-  `w[ℓ]·∂Z/∂w[ℓ] = WMC(f∧ℓ)`), `ddnnfEnumerate`, `verifyCircuit` (independent sd-DNNF certificates),
+  `w[ℓ]·∂Z/∂w[ℓ] = WMC(f∧ℓ)`), `ddnnfMpe` (the most-probable explanation by a max-product pass),
+  `ddnnfEnumerate`, `verifyCircuit` (independent sd-DNNF certificates),
   and `toNnf` (the standard c2d/Dsharp `.nnf` export). New off-thread `compile` worker op +
   `compileDdnnfTask`, and a new **Compile** tab (`CompileView.tsx`): verified property badges, a
   circuit-stats grid, the exact count, and a **weighted-inference panel** with a "tilt" slider that
-  recomputes the weighted model count and a **live variable-marginal bar chart** in real time. Found
+  recomputes the weighted model count, a **live variable-marginal bar chart**, and the
+  **most-probable explanation** in real time. Found
   & fixed a bug where an UNSAT circuit's GC dropped the variable count (so marginals indexed out of
-  range) — the circuit now carries the input's `numVars`. Added **15 cross-check assertions**: over
+  range) — the circuit now carries the input's `numVars`. Added **17 cross-check assertions**: over
   1200 random CNFs the compiled count matches #SAT and brute force, every circuit is verified
-  smooth+decomposable+deterministic, WMC and the one-pass marginals match brute force (random and
-  uniform weights), and enumeration equals the exact model set with no duplicates — harness now
-  **296 → 312 assertions**. Lint + tsc + build + full gate green.
+  smooth+decomposable+deterministic, WMC, the one-pass marginals and the max-product MPE match brute
+  force (random and uniform weights), and enumeration equals the exact model set with no duplicates —
+  harness now **296 → 313 assertions**. Lint + tsc + build + full gate green.

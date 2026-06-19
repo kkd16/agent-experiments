@@ -1281,6 +1281,37 @@ input[type='range'] {
   min-width: 34px;
   text-align: right;
 }
+.mpe-wrap {
+  margin-top: 18px;
+  padding-top: 16px;
+  border-top: 1px dashed var(--border);
+}
+.mpe-weight {
+  font-family: 'JetBrains Mono', monospace;
+  color: var(--text);
+}
+.mpe-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+.mpe-chip {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  padding: 3px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+}
+.mpe-chip.on {
+  background: rgba(76, 217, 123, 0.16);
+  border-color: rgba(76, 217, 123, 0.5);
+  color: #b9f6ca;
+}
+.mpe-chip.off {
+  background: var(--panel-2);
+  color: var(--muted);
+  opacity: 0.7;
+}
 .compile-actions {
   margin-top: 20px;
   padding-top: 16px;

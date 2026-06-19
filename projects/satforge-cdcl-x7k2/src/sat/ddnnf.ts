@@ -605,6 +605,67 @@ export function ddnnfMarginals(d: Ddnnf, w: Weights): Marginals {
   return { z, probTrue }
 }
 
+export interface Mpe {
+  /** The maximum ∏-of-weights achievable by any satisfying assignment (0 if unsatisfiable). */
+  weight: number
+  /** The maximizing assignment, 1-indexed over 1..numVars (all-false when unsatisfiable). */
+  assignment: boolean[]
+}
+
+/**
+ * Most-Probable Explanation (MAP/MPE): the single satisfying assignment of greatest weight,
+ * found by a max-product pass — the same circuit, with the OR's Σ replaced by max. Because the
+ * circuit is deterministic and decomposable, this max-product is exact (it never mixes literals
+ * from incompatible branches), and smoothness means the recovered assignment is complete.
+ */
+export function ddnnfMpe(d: Ddnnf, w: Weights): Mpe {
+  const best = new Float64Array(d.nodes.length)
+  // For each OR, remember which child achieved the maximum (for the top-down reconstruction).
+  const argChild = new Int32Array(d.nodes.length).fill(-1)
+  for (let i = 0; i < d.nodes.length; i++) {
+    const n = d.nodes[i]
+    switch (n.kind) {
+      case 'true':
+        best[i] = 1
+        break
+      case 'false':
+        best[i] = 0
+        break
+      case 'lit':
+        best[i] = n.lit > 0 ? w.pos[n.lit] : w.neg[-n.lit]
+        break
+      case 'and': {
+        let p = 1
+        for (const c of n.children) p *= best[c]
+        best[i] = p
+        break
+      }
+      case 'or': {
+        let m = -Infinity
+        let arg = n.children[0]
+        for (const c of n.children)
+          if (best[c] > m) {
+            m = best[c]
+            arg = c
+          }
+        best[i] = m
+        argChild[i] = arg
+        break
+      }
+    }
+  }
+  // Top-down: follow the argmax child of each OR, every child of each AND, and read off literals.
+  const assignment = new Array(d.numVars + 1).fill(false)
+  const visit = (i: number) => {
+    const n = d.nodes[i]
+    if (n.kind === 'lit') assignment[Math.abs(n.lit)] = n.lit > 0
+    else if (n.kind === 'and') for (const c of n.children) visit(c)
+    else if (n.kind === 'or') visit(argChild[i])
+  }
+  if (best[d.root] > 0) visit(d.root)
+  return { weight: best[d.root], assignment }
+}
+
 /**
  * Enumerate up to `limit` satisfying assignments directly from the circuit. Because the
  * circuit is smooth, decomposable and deterministic, each model is produced exactly once.
