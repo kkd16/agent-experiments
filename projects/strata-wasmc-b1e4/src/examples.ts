@@ -211,6 +211,56 @@ fn main() {
 `,
   },
   {
+    id: 'loop-unroll',
+    title: 'Loop unrolling → constants',
+    blurb: 'Counted loops with a constant trip count fully unroll, then fold away. Step -O0→-O3.',
+    source: `// At -O2/-O3 a counted loop whose trip count the optimizer can prove
+// constant is *fully unrolled* — the induction variable / trip-count
+// analysis (see the Optimizer tab) replaces the loop with straight-line
+// copies of its body, and SCCP + GVN + simplify-cfg then fold the whole
+// thing into a single constant. Watch the CFG collapse to one block.
+fn main() {
+  // Sum of squares, i = 1..20. Unrolls to 20 adds, then folds to 2870.
+  let s = 0;
+  for (let i = 1; i <= 20; i = i + 1) { s = s + i * i; }
+  print(s);
+
+  // Two accumulators threaded through the loop as phi nodes — both fold.
+  let a = 1; let b = 0;
+  for (let k = 0; k < 10; k = k + 1) { let t = a + b; a = b; b = t; }
+  print(b);
+
+  // A descending counter (negative step) folds the factorial too.
+  let f = 1;
+  for (let n = 6; n > 0; n = n - 1) { f = f * n; }
+  print(f);
+}
+`,
+  },
+  {
+    id: 'loop-vector',
+    title: 'Fixed-size vector kernel',
+    blurb: 'Small memory loops (trip ≤ 8) unroll into straight-line loads/stores — a vector-kernel win.',
+    source: `// Small fixed-size loops are unrolled even when they touch linear memory,
+// so the index arithmetic and bounds math fold into a flat sequence of
+// loads, stores and multiplies — the classic win for fixed-size vector and
+// matrix kernels. Compare the WASM / CFG at -O0 vs -O3.
+fn main() {
+  let v = int_array(4);
+  for (let i = 0; i < 4; i = i + 1) { v[i] = (i + 1) * (i + 1); }  // [1, 4, 9, 16]
+
+  // Dot product v·v, unrolled into four load/multiply/add chains.
+  let dot = 0;
+  for (let i = 0; i < 4; i = i + 1) { dot = dot + v[i] * v[i]; }
+  print(dot);                                  // 1 + 16 + 81 + 256 = 354
+
+  // Prefix sums, written back in place.
+  for (let i = 1; i < 4; i = i + 1) { v[i] = v[i] + v[i - 1]; }
+  for (let i = 0; i < 4; i = i + 1) { print(v[i]); }   // 1 5 14 30
+}
+`,
+  },
+  {
     id: 'strings',
     title: 'Strings & text',
     blurb: 'First-class str type: concat with +, str()/char() conversions, len & byte indexing — a real string runtime compiled to wasm.',

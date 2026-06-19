@@ -232,10 +232,13 @@ export function OptPanel({ comp }: { comp: Compilation }) {
       )}
       <div className="pass-legend">
         <b>Pipeline:</b>{comp.level >= 2 ? ' tail-call → loop → function inlining (pre-SSA) → ' : ' '}
-        copy-propagation → sparse conditional constant propagation → strength reduction →
+        copy-propagation → sparse conditional constant propagation → devirtualization →
+        {comp.level >= 2 ? ' full loop unrolling (induction-variable + trip-count analysis) →' : ''}
+        {' '}if-conversion → strength reduction →
         {comp.level >= 2 ? ' global value numbering (CSE) →' : ''} algebraic simplification →
-        {comp.level >= 2 ? ' loop-invariant code motion →' : ''} dead-code elimination,
-        iterated to a fixed point{comp.level >= 2 ? ', then CFG cleanup + dead-function elimination' : ''}.
+        {comp.level >= 2 ? ' loop-invariant code motion →' : ''} dead-code elimination → CFG
+        simplification (block coalescing), iterated to a fixed point
+        {comp.level >= 2 ? ', then CFG cleanup + dead-function elimination' : ''}.
         The backend then <b>stackifies</b> — folding single-use pure values onto the wasm operand
         stack so they never need a local. {snaps.length > 0 && 'Click a pass to see exactly what it rewrote.'}
       </div>
@@ -527,7 +530,8 @@ export function VerifyPanel() {
       </div>
       <p className="dim note">
         Every program — the {TEST_PROGRAMS.length} examples plus a {battery.length}-program adversarial battery
-        (wrapping arithmetic, signed div/rem, shifts, floats &amp; ∞, casts, inlining, LICM, globals, ternary,
+        (wrapping arithmetic, signed div/rem, shifts, floats &amp; ∞, casts, inlining, LICM, <b>loop unrolling</b>
+        (counted/nested/reverse-step/<code>long</code> IVs, plus the loops that must <em>not</em> unroll), globals, ternary,
         compound assignment, the full <b>string runtime</b>: literals, concat, equality, indexing, str()/char()…,
         the <b>transcendental math library</b> (exp/ln/sin/cos/pow/…, a shared Strata kernel) and the <b>f32</b>
         single-precision type)

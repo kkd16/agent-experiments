@@ -1525,4 +1525,132 @@ fn main(){
   print(dispatch(tbl, 2, 3, 4));   // 4
 }`,
   },
+
+  // --- loop optimization battery -------------------------------------------
+  // These stress the induction-variable / trip-count analysis and the unroller:
+  // each must print the same lines at -O0 (no unroll) and -O2/-O3 (unrolled and
+  // usually folded to a constant), so the harness proves the transform exact.
+  {
+    name: 'loop-sum-collapse',
+    source: `fn main(){
+  let s = 0;
+  for (let i = 1; i <= 100; i = i + 1) { s = s + i; }
+  print(s);                              // 5050 — unrolls then folds to a constant
+}`,
+  },
+  {
+    name: 'loop-reverse-step',
+    source: `fn main(){
+  let p = 1;
+  for (let i = 5; i > 0; i = i - 1) { p = p * i; }
+  print(p);                              // 120 — descending counter (negative step)
+}`,
+  },
+  {
+    name: 'loop-step-by-two',
+    source: `fn main(){
+  let n = 0; let s = 0;
+  for (let i = 0; i < 20; i = i + 2) { n = n + 1; s = s + i; }
+  print(n); print(s);                    // 10, 90
+}`,
+  },
+  {
+    name: 'loop-ne-test',
+    source: `fn main(){
+  let s = 0; let i = 0;
+  while (i != 8) { s = s + i * i; i = i + 1; }
+  print(s);                              // 140 — exit on not-equal
+}`,
+  },
+  {
+    name: 'loop-iv-on-rhs',
+    source: `fn main(){
+  let s = 0;
+  for (let i = 0; 12 > i; i = i + 3) { s = s + i; }
+  print(s);                              // 0+3+6+9 = 18 — IV is the right operand
+}`,
+  },
+  {
+    name: 'loop-multi-phi',
+    source: `fn main(){
+  let a = 0; let b = 1;                   // two accumulators threaded as header phis
+  for (let i = 0; i < 10; i = i + 1) { let t = a + b; a = b; b = t; }
+  print(a); print(b);                    // a 10th/11th Fibonacci, fully unrolled
+}`,
+  },
+  {
+    name: 'loop-nested',
+    source: `fn main(){
+  let s = 0;
+  for (let i = 0; i < 5; i = i + 1) {
+    for (let j = 0; j < 5; j = j + 1) { s = s + i * j; }
+  }
+  print(s);                              // 100 — innermost unrolls first, then the outer
+}`,
+  },
+  {
+    name: 'loop-early-return',
+    source: `fn first_factor(n: int) -> int {
+  for (let d = 2; d < n; d = d + 1) { if (n % d == 0) { return d; } }
+  return n;
+}
+fn main(){ print(first_factor(91)); print(first_factor(97)); }  // 7, 97 — return inside an unrolled loop`,
+  },
+  {
+    name: 'loop-long-iv',
+    source: `fn main(){
+  let s = 0L;
+  for (let i = 1L; i <= 12L; i = i + 1L) { s = s + i * i; }
+  print(s);                              // 650 — 64-bit induction variable
+}`,
+  },
+  {
+    name: 'loop-array-unroll',
+    source: `fn main(){
+  let a = int_array(6);
+  for (let i = 0; i < 6; i = i + 1) { a[i] = i * i; }   // small side-effecting loop (unrolls at T<=8)
+  let s = 0;
+  for (let i = 0; i < 6; i = i + 1) { s = s + a[i]; }
+  print(s);                              // 55
+}`,
+  },
+  {
+    name: 'loop-variable-bound',
+    source: `fn tri(n: int) -> int {
+  let s = 0;
+  for (let i = 0; i < n; i = i + 1) { s = s + i; }   // bound is a parameter — must NOT unroll
+  return s;
+}
+fn main(){ for (let n = 0; n <= 6; n = n + 1) { print(tri(n)); } }`,
+  },
+  {
+    name: 'loop-break-no-unroll',
+    source: `fn main(){
+  let s = 0;
+  for (let i = 0; i < 100; i = i + 1) {   // a break is a second exit — must NOT unroll
+    if (i * i > 40) { break; }
+    s = s + i;
+  }
+  print(s);                              // 0+1+..+6 = 21
+}`,
+  },
+  {
+    name: 'loop-zero-trip',
+    source: `fn main(){
+  let s = 42;
+  for (let i = 10; i < 5; i = i + 1) { s = s + 1; }   // never executes
+  print(s);                              // 42
+}`,
+  },
+  {
+    name: 'loop-continue',
+    source: `fn main(){
+  let s = 0;
+  for (let i = 0; i < 12; i = i + 1) {
+    if (i % 3 == 0) { continue; }
+    s = s + i;
+  }
+  print(s);                              // sum of i in 1..11 not divisible by 3 = 52
+}`,
+  },
 ];

@@ -1,6 +1,9 @@
 import type { Block, ConstNum, Inst, IRFunc, IRModule, IRType, Operand, Phi } from '../ir/ir';
 import { eachOperand, hasSideEffect, isPureValue, zeroOf } from '../ir/ir';
 import { computeDom, succOfTerm } from '../ir/cfg';
+import { findNaturalLoops } from '../ir/loops';
+import { simplifyCFG } from './simplifycfg';
+import { unrollLoops } from './unroll';
 import { dumpModule } from '../irdump';
 import { i32, satTruncI32, rotl32, rotr32, rotl64, rotr64 } from '../interp';
 
@@ -534,17 +537,6 @@ export function dce(fn: IRFunc): number {
 
 const HOISTABLE = new Set(['ibin', 'iunary', 'fbin', 'icmp', 'fcmp', 'cast', 'copy']);
 
-function dominates(idom: Map<number, number>, a: number, b: number): boolean {
-  let n: number | undefined = b;
-  while (n !== undefined) {
-    if (n === a) return true;
-    const d = idom.get(n);
-    if (d === n) break; // reached entry
-    n = d;
-  }
-  return false;
-}
-
 function maxValueId(fn: IRFunc): number {
   let m = -1;
   for (const k of fn.valueType.keys()) if (k > m) m = k;
@@ -599,26 +591,12 @@ function getPreheader(fn: IRFunc, header: Block, loop: Set<number>, idCtr: { n: 
 }
 
 export function licm(fn: IRFunc): number {
-  const dom = computeDom(fn);
+  // Natural loops come from the shared loop forest (one definition of "loop" for
+  // the whole mid-end). LICM only needs each loop's header and body set.
+  const naturalLoops = findNaturalLoops(fn);
+  if (naturalLoops.length === 0) return 0;
   const byId = new Map(fn.blocks.map((b) => [b.id, b]));
-
-  // Collect natural loops (header -> set of body block ids), unioning back edges.
-  const loops = new Map<number, Set<number>>();
-  for (const b of fn.blocks) {
-    for (const s of succOfTerm(b.term)) {
-      if (!dominates(dom.idom, s, b.id)) continue; // not a back edge
-      let body = loops.get(s);
-      if (!body) loops.set(s, (body = new Set([s])));
-      const stack = [b.id];
-      while (stack.length) {
-        const n = stack.pop()!;
-        if (body.has(n)) continue;
-        body.add(n);
-        for (const p of byId.get(n)?.preds ?? []) if (!body.has(p)) stack.push(p);
-      }
-    }
-  }
-  if (loops.size === 0) return 0;
+  const loops = new Map<number, Set<number>>(naturalLoops.map((l) => [l.header, l.body]));
 
   const idCtr = { n: maxValueId(fn) + 1 };
   // Block ids and value ids share no namespace requirement for codegen, but to
@@ -893,12 +871,14 @@ export function optimize(mod: IRModule, level: OptLevel, snapshots = false): Opt
     record('copy-propagation' + suffix, copyProp);
     record('sccp' + suffix, sccp);
     record('devirtualize' + suffix, devirtualize);
+    if (level >= 2) record('loop-unroll' + suffix, unrollLoops);
     record('if-convert' + suffix, ifConvert);
     record('strength-reduce' + suffix, peephole);
     if (level >= 2) record('gvn/cse' + suffix, gvn);
     record('algebraic-simplify' + suffix, algebraic);
     if (level >= 2) record('licm' + suffix, licm);
     record('dead-code-elim' + suffix, dce);
+    record('simplify-cfg' + suffix, simplifyCFG);
   }
   // a final cleanup pass that always runs
   record('cfg-cleanup', (fn) => pruneUnreachable(fn));

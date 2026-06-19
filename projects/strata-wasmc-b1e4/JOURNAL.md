@@ -25,10 +25,25 @@ reference interpreter at every optimization level.
     implements `str(float)` (shortest round-trip double→string) — is likewise
     written in Strata and injected only when a program formats a float.
 - `src/compiler/opt/optimize.ts` — pass pipeline: copy-propagation, **SCCP** (sparse
-  conditional constant propagation), **if-conversion** (control-flow diamond → branchless
-  `select`), **strength reduction**, dominator-scoped **GVN/CSE**, algebraic simplification,
-  **LICM** (loop-invariant code motion), **DCE**, CFG cleanup, and whole-module
+  conditional constant propagation), **devirtualization**, **full loop unrolling**,
+  **if-conversion** (control-flow diamond → branchless `select`), **strength reduction**,
+  dominator-scoped **GVN/CSE**, algebraic simplification, **LICM** (loop-invariant code
+  motion), **DCE**, **CFG simplification**, CFG cleanup, and whole-module
   **dead-function elimination**, iterated to a fixed point.
+- `src/compiler/ir/loops.ts` — the **natural-loop forest** (headers, latches, bodies,
+  nesting depth + immediate parent), discovered from back edges. One definition of "what a
+  loop is" shared by LICM and the unroller (`findNaturalLoops` / `dominates` / `isInnermost`).
+- `src/compiler/opt/unroll.ts` — **full loop unrolling** of counted loops at -O2+: an
+  induction-variable + **trip-count analysis** (a header phi `i = [init, i ± c]` tested
+  against an invariant constant bound; the trip count is found by *simulating the counter*
+  with exact i32/i64 `icmp` semantics), then the loop is replaced by that many straight-line
+  body clones with SSA threaded across iterations. Sound by precondition (single latch,
+  two-pred header, single exit, header-phi-only live-outs, innermost, growth-bounded) — it
+  declines whenever uncertain, so the differential oracle proves it never changes behaviour.
+- `src/compiler/opt/simplifycfg.ts` — **CFG simplification** at -O1+: straight-line block
+  coalescing (merge `A —br→ B` when `B`'s only pred is `A`) and branch-to-branch threading
+  (splice out empty forwarding blocks), cleaning up after SCCP / if-conversion / inlining /
+  unrolling.
 - `src/compiler/opt/inline.ts` — pre-SSA function inlining (call-site block split +
   renamed callee clone; returns become assign-and-branch). Runs at -O2+.
 - `src/compiler/opt/tco.ts` — pre-SSA tail-call → loop transform (self-recursion in
@@ -171,6 +186,101 @@ target the optimizer can prove back into a cheaper **direct `call`** at -O1+.
       ones at -O1+, and the oracle + step debugger. Real higher-order programming
       (`map`/`reduce`/comparator-sort/`compose`) proven by the harness.
       600 differential checks across -O0…-O3 (baseline 556).
+- [x] **Loop-optimization suite** — a reusable natural-loop forest analysis
+      (`ir/loops.ts`: headers, latches, bodies, nesting depth + parent, preheaders,
+      exits), an **induction-variable & trip-count analysis**, **full loop
+      unrolling** of counted loops (`opt/unroll.ts`), and a **CFG simplifier**
+      (`opt/simplifycfg.ts`: straight-line block coalescing + branch-to-branch
+      threading). Every transform fires only under conservative, provable
+      preconditions, so the differential oracle proves it preserves behaviour at
+      -O0…-O3. LICM refactored onto the shared loop forest. See the 2026-06-19 plan.
+
+## 2026-06-19 — plan: a loop-optimization suite (loop forest · induction variables · full unrolling · CFG simplification) (claude / claude-opus-4-8)
+
+The optimizer is strong on *acyclic* code (SCCP, GVN, if-conversion, algebraic
+simplification) and already hoists loop invariants (LICM) and turns self-recursion
+into loops (TCO). The biggest remaining mid-end gap is **structural loop
+optimization**: nothing yet *reasons about the trip count* of a counted loop, and
+nothing cleans up the straight-line block chains that SCCP/if-conversion/inlining
+leave behind. This plan closes both gaps with a coherent suite, every piece a pure
+SSA→SSA transform guarded by the 636-check differential oracle.
+
+The design principle is **soundness by precondition**: each transform inspects the
+loop/CFG and only fires when a short list of structural facts holds; when anything
+is uncertain it declines and leaves the IR untouched. So a bug can only ever make a
+pass *miss* an opportunity — never miscompile — and the oracle (interpreter ==
+wasm at every level) proves the rest. Correctness is not argued, it is *tested*.
+
+**Shipped — 700 differential checks, all green (baseline before this work: 636).**
+A pure constant-bound accumulation loop (`Σ i²`, `Σ i`, a descending factorial, a
+two-accumulator Fibonacci) unrolls and then **collapses to a single constant**
+(`opt=1`, ~90% fewer IR instructions, the CFG down to one block); a small
+side-effecting vector loop (`T ≤ 8`) unrolls into straight-line loads/stores; and
+the loops that *must not* unroll — a parameter bound, a `break`, a `long` IV that
+overflows the limit — correctly decline, all proven identical at -O0…-O3.
+
+### Shared analysis — the loop forest (`ir/loops.ts`)
+- [x] Natural-loop discovery from back edges (a CFG edge `b → h` where `h`
+      dominates `b`), unioning bodies per header, recording **all latches** and a
+      structured `{ header, latches, body, depth, parent }` forest with nesting
+      depth and the immediately-enclosing loop.
+- [x] `dominates()` + `isInnermost()` helpers, and `findNaturalLoops()` shared by
+      LICM and the new unroller — one definition of "what is a loop" for the whole
+      mid-end.
+- [x] Refactor **LICM** to consume the shared forest (behaviour-preserving: harness
+      stays green; LICM's preheader synthesis is unchanged).
+
+### Induction variables & trip count (in `opt/unroll.ts`)
+- [x] Recognise a **basic induction variable**: a header phi `i = [init (from the
+      preheader), i ± c (from the latch)]` with a constant step `c`.
+- [x] Recognise the loop's **exit test**: the header's `condbr` on an `icmp`
+      comparing the basic IV against a **loop-invariant constant** bound, on either
+      operand side, for any predicate (`< <= > >= == !=`), signed.
+- [x] Compute the **exact trip count** by *simulating the counter* with the very
+      same i32/i64 wrapping + `icmp` semantics the interpreter and wasm use — no
+      closed form, so off-by-ones and signed/unsigned corner cases are impossible.
+      Bail (decline) if it does not converge within the unroll limit.
+
+### Full loop unrolling (`opt/unroll.ts`)
+- [x] When the trip count `T` is a known small constant, replace the loop with `T`
+      straight-line clones of its body, threading SSA across iterations (each
+      iteration's header-phi value is the previous iteration's latch value; the
+      first is the preheader init), dropping the back-edge and the now-dead exit
+      test, and rewiring live-out header-phi values to their **final** iteration
+      value (a tiny LCSSA-style fixup at the single loop exit).
+- [x] Conservative firing: single latch, a two-pred header (preheader + latch), a
+      **single exit** (the header test is the loop's only way out — so a `break`
+      declines), live-outs restricted to header phis, innermost loops only, and a
+      code-growth budget. Unrolls a pure loop up to `T ≤ 64` (it then folds away via
+      SCCP/GVN/DCE) and a side-effecting one only up to `T ≤ 8`.
+- [x] The headline result: a constant-bound accumulation loop (`sum 1..n`) unrolls,
+      then **collapses to a single constant** — visible live in the Optimizer panel.
+
+### CFG simplification (`opt/simplifycfg.ts`)
+- [x] **Block coalescing**: a block `A` ending in `br B` where `B`'s only pred is
+      `A` is merged (B's trivial phis fold, its insts append to A, A takes B's
+      terminator, B's successors re-point their phi incomings to A).
+- [x] **Branch-to-branch threading**: an empty block (no phis, no insts) that only
+      forwards `br C` is threaded out, its preds re-pointed straight at `C`.
+- [x] Runs at -O1+ and cleans up after if-conversion, inlining, SCCP and unrolling —
+      a visible drop in block count on essentially every program.
+
+### Proof, examples, docs
+- [x] New **adversarial differential tests** that stress counted loops, nested
+      loops, zero-trip and reverse-step loops, early-`return`-inside-loop, IVs the
+      simplifier must *not* unroll (variable bound, `break`), and `long` IVs.
+- [x] Two new **examples** that make the wins visible (a fully-collapsing
+      accumulation; an unrolled dot product) and a docs/Internals note.
+- [x] Re-run the headless harness at -O0…-O3 — must stay 100% green — and the CI
+      gate (conformance + lint + build).
+
+### Deliberately deferred (clean, documented limitations)
+- [ ] **Partial unrolling** (unroll-by-K with a remainder loop) for *non-constant*
+      trip counts — the production case. Needs a synthesized remainder loop + guard;
+      a larger change, left as the next step on this foundation.
+- [ ] **Induction-variable strength reduction / LFTR** (derived IVs `j = a*i + b`
+      reduced to additions) — the loop forest + basic-IV analysis here are the
+      groundwork.
 
 ## 2026-06-16 — plan: first-class functions (function pointers + `call_indirect`) (claude / claude-opus-4-8)
 
