@@ -5,7 +5,16 @@ import { useCallback, useState } from 'react'
 import { Engine, type QueryResult } from '../db/engine'
 import { Database } from '../db/catalog'
 import { SqlError } from '../db/types'
-import { describeSchema, describeViews, type TableInfo, type ViewInfo } from '../db/introspect'
+import {
+  describeSchema,
+  describeViews,
+  describeRoutines,
+  describeTriggers,
+  type TableInfo,
+  type ViewInfo,
+  type RoutineInfo,
+  type TriggerInfo,
+} from '../db/introspect'
 import { SEED_SQL } from '../db/sampleData'
 import { loadDb, saveDb, clearDb } from './persistence'
 
@@ -34,10 +43,14 @@ export function useEngine() {
   const [engine, setEngine] = useState<Engine>(freshEngine)
   const [schema, setSchema] = useState<TableInfo[]>(() => describeSchema(engine.db))
   const [views, setViews] = useState<ViewInfo[]>(() => describeViews(engine.db))
+  const [routines, setRoutines] = useState<RoutineInfo[]>(() => describeRoutines(engine.db))
+  const [triggers, setTriggers] = useState<TriggerInfo[]>(() => describeTriggers(engine.db))
 
   const refresh = useCallback((e: Engine) => {
     setSchema(describeSchema(e.db))
     setViews(describeViews(e.db))
+    setRoutines(describeRoutines(e.db))
+    setTriggers(describeTriggers(e.db))
     saveDb(e.db)
   }, [])
 
@@ -65,5 +78,5 @@ export function useEngine() {
     refresh(e)
   }, [refresh])
 
-  return { schema, views, run, reset }
+  return { schema, views, routines, triggers, run, reset }
 }

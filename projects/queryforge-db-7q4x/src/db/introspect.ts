@@ -49,6 +49,49 @@ export interface ViewInfo {
   /** A best-effort one-line rendering of the view's defining query. */
   definition: string
 }
+export interface RoutineInfo {
+  name: string
+  kind: 'function' | 'procedure' | 'trigger'
+  /** A rendered signature, e.g. `add(a INTEGER, b INTEGER) → INTEGER`. */
+  signature: string
+}
+export interface TriggerInfo {
+  name: string
+  /** A rendered summary, e.g. `BEFORE INSERT ON items → upper_name()`. */
+  summary: string
+  table: string
+}
+
+/** Render a scalar/array type for display (`INTEGER`, `TEXT[]`). */
+function typeLabel(type: string, elemType?: string): string {
+  return type === 'ARRAY' ? `${elemType ?? 'ANY'}[]` : type
+}
+
+export function describeRoutines(db: Database): RoutineInfo[] {
+  const out: RoutineInfo[] = []
+  for (const r of db.routines.values()) {
+    const params = r.params.map((p) => `${p.name} ${typeLabel(p.type, p.elemType)}`).join(', ')
+    const ret = r.returnsTrigger ? ' → TRIGGER' : r.returns ? ` → ${typeLabel(r.returns.type, r.returns.elemType)}` : ''
+    out.push({
+      name: r.name,
+      kind: r.isProcedure ? 'procedure' : r.returnsTrigger ? 'trigger' : 'function',
+      signature: `${r.name}(${params})${ret}`,
+    })
+  }
+  return out.sort((a, b) => a.name.localeCompare(b.name))
+}
+
+export function describeTriggers(db: Database): TriggerInfo[] {
+  const out: TriggerInfo[] = []
+  for (const t of db.triggers.values()) {
+    out.push({
+      name: t.name,
+      table: t.table,
+      summary: `${t.timing} ${t.events.join(' OR ')} ON ${t.table}${t.when ? ' WHEN (…)' : ''} → ${t.functionName}()`,
+    })
+  }
+  return out.sort((a, b) => a.name.localeCompare(b.name))
+}
 
 export function describeSchema(db: Database): TableInfo[] {
   const out: TableInfo[] = []

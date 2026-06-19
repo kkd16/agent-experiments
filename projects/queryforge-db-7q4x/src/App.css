@@ -322,6 +322,74 @@ body {
 .idx-stats {
   margin-left: auto;
 }
+/* Routines & triggers (PL/QF) */
+.schema-routine {
+  display: flex;
+  align-items: baseline;
+  gap: 0.4rem;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--txt-dim);
+  font: inherit;
+  font-size: 0.72rem;
+  padding: 0.22rem 0.4rem;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.schema-routine:hover {
+  background: var(--bg-2);
+  border-color: var(--line);
+  color: var(--txt);
+}
+.routine-glyph {
+  color: var(--accent);
+  font-size: 0.85rem;
+}
+.routine-sig {
+  font-family: var(--mono);
+  word-break: break-word;
+}
+.schema-trigger {
+  display: flex;
+  align-items: baseline;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+  font-size: 0.68rem;
+  color: var(--txt-faint);
+  padding: 0.22rem 0.4rem;
+}
+.trigger-name {
+  font-family: var(--mono);
+  color: #ffd479;
+}
+.trigger-summary {
+  font-family: var(--mono);
+  width: 100%;
+  opacity: 0.85;
+}
+
+/* RAISE NOTICE / WARNING messages surfaced on a result */
+.result-notices {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  margin-bottom: 0.4rem;
+}
+.result-notice {
+  font-family: var(--mono);
+  font-size: 0.74rem;
+  color: #8fd6a8;
+  background: rgba(143, 214, 168, 0.08);
+  border-left: 2px solid #8fd6a8;
+  padding: 0.2rem 0.5rem;
+  border-radius: 0 4px 4px 0;
+}
+.notice-glyph {
+  opacity: 0.7;
+}
+
 .sample-list {
   display: flex;
   flex-direction: column;

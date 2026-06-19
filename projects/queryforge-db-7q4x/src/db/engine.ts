@@ -9,11 +9,22 @@
 import { parse } from './parser'
 import { Database, Table, type Row, type SerializedDb } from './catalog'
 import { planSelect, inferType } from './planner'
-import { compileExpr, truthy, type CompileCtx, type Evaluator } from './eval'
+import { compileExpr, truthy, setUserFunctionHook, type CompileCtx, type Evaluator, type UserScalarFn } from './eval'
 import { resolveColumn, type Binding, type Schema } from './schema'
-import { SqlError, coerceTo, type SqlValue } from './types'
+import { SqlError, coerceTo, type ColumnType, type SqlValue } from './types'
+import { callRoutine, fireTrigger, routineFromStmt, triggerFromStmt, type PlHost, type Routine } from './pl'
 import type { Operator, PlanNode } from './operators'
-import type { Expr, MergeStmt, OnConflictClause, SelectItem, SelectStmt, Statement } from './ast'
+import type {
+  CallStmt,
+  CreateRoutineStmt,
+  CreateTriggerStmt,
+  Expr,
+  MergeStmt,
+  OnConflictClause,
+  SelectItem,
+  SelectStmt,
+  Statement,
+} from './ast'
 
 export interface RowsResult {
   kind: 'rows'
@@ -22,6 +33,8 @@ export interface RowsResult {
   rowCount: number
   elapsedMs: number
   sql: string
+  /** RAISE NOTICE/WARNING/… messages emitted while running the statement. */
+  notices?: string[]
 }
 export interface MessageResult {
   kind: 'message'
@@ -29,6 +42,8 @@ export interface MessageResult {
   rowCount?: number
   elapsedMs: number
   sql: string
+  /** RAISE NOTICE/WARNING/… messages emitted while running the statement. */
+  notices?: string[]
 }
 export interface ExplainResult {
   kind: 'explain'
@@ -45,18 +60,40 @@ const CONST_CTX: CompileCtx = {
   },
 }
 
-export class Engine {
+export class Engine implements PlHost {
   db: Database
   private txnStack: SerializedDb[] = []
   /** Named savepoints within the current transaction (innermost last). */
   private savepoints: { name: string; snap: SerializedDb }[] = []
+  /** RAISE NOTICE/… messages collected while running the current statement. */
+  private notices: string[] = []
+  /** Routine/trigger call nesting (guards runaway recursion). */
+  private callDepth = 0
 
   constructor(db = new Database()) {
     this.db = db
   }
 
+  /** Point the expression compiler's user-function resolver at this engine, so a
+   *  stored function called inside any SQL expression runs our interpreter
+   *  against the *current* database. Reinstalled per `execute()` because the
+   *  hook is process-global and several engines may coexist (e.g. in tests). */
+  private installHooks(): void {
+    const call = (name: string): UserScalarFn | undefined => {
+      const r = this.db.getRoutine(name)
+      if (!r || r.isProcedure || r.returnsTrigger) return undefined
+      return (args) => callRoutine(this, r, args)
+    }
+    const returnType = (name: string): ColumnType | undefined => {
+      const r = this.db.getRoutine(name)
+      return r && !r.isProcedure && !r.returnsTrigger ? r.returns?.type : undefined
+    }
+    setUserFunctionHook(call, returnType)
+  }
+
   /** Run a script of one or more `;`-separated statements. */
   execute(sql: string): QueryResult[] {
+    this.installHooks()
     const stmts = parse(sql)
     const results: QueryResult[] = []
     for (const stmt of stmts) {
@@ -66,19 +103,50 @@ export class Engine {
   }
 
   private runStatement(stmt: Statement, sql: string): QueryResult {
+    this.notices = []
     // Statement atomicity: a mutating statement that fails part-way (a constraint
     // violation on row 50 of a bulk insert, a cascade that hits a RESTRICT) leaves
     // the database exactly as it was. We snapshot first and roll back on any throw.
+    let result: QueryResult
     if (isMutation(stmt.kind)) {
       const snap = this.db.snapshot()
       try {
-        return this.dispatch(stmt, sql)
+        result = this.dispatch(stmt, sql)
       } catch (err) {
         this.db = Database.restore(snap)
         throw err
       }
+    } else {
+      result = this.dispatch(stmt, sql)
     }
-    return this.dispatch(stmt, sql)
+    if (this.notices.length && (result.kind === 'rows' || result.kind === 'message')) {
+      result.notices = this.notices.slice()
+    }
+    return result
+  }
+
+  // --- PlHost (services the procedural interpreter calls back into) ---------
+  queryRows(select: SelectStmt): { schema: Binding[]; rows: Row[] } {
+    const op = planSelect(select, this.db)
+    return { schema: op.schema, rows: runOperator(op) }
+  }
+  execStatement(stmt: Statement): void {
+    this.dispatch(stmt, '')
+  }
+  emitNotice(text: string): void {
+    this.notices.push(text)
+  }
+  getRoutine(name: string): Routine | undefined {
+    return this.db.getRoutine(name)
+  }
+  enterCall(): void {
+    if (++this.callDepth > 200) {
+      this.callDepth--
+      throw new SqlError('routine/trigger recursion too deep', 'eval')
+    }
+  }
+  leaveCall(): void {
+    this.callDepth--
   }
 
   private dispatch(stmt: Statement, sql: string): QueryResult {
@@ -114,6 +182,130 @@ export class Engine {
         return this.explain(stmt, sql, t0)
       case 'txn':
         return this.txn(stmt, sql, t0)
+      case 'create_routine':
+        return this.createRoutine(stmt, sql, t0)
+      case 'drop_routine':
+        return this.dropRoutine(stmt, sql, t0)
+      case 'call':
+        return this.callProcedure(stmt, sql, t0)
+      case 'create_trigger':
+        return this.createTrigger(stmt, sql, t0)
+      case 'drop_trigger':
+        return this.dropTrigger(stmt, sql, t0)
+    }
+  }
+
+  // --- PL/QF: routines, procedures & triggers -------------------------------
+  private createRoutine(stmt: CreateRoutineStmt, sql: string, t0: number): QueryResult {
+    if (this.db.getRoutine(stmt.name) && !stmt.orReplace) {
+      throw new SqlError(`routine "${stmt.name}" already exists (use CREATE OR REPLACE)`, 'ddl')
+    }
+    // Validate parameter / variable / NEW.* references by attempting to bind the
+    // body against an empty frame would require executing it — instead we trust
+    // the parse and surface runtime errors on first call, like PL/pgSQL.
+    this.db.setRoutine(routineFromStmt(stmt))
+    const what = stmt.isProcedure ? 'procedure' : stmt.returnsTrigger ? 'trigger function' : 'function'
+    return msg(`${what} "${stmt.name}" created`, sql, t0)
+  }
+
+  private dropRoutine(stmt: Extract<Statement, { kind: 'drop_routine' }>, sql: string, t0: number): QueryResult {
+    const existing = this.db.getRoutine(stmt.name)
+    if (!existing) {
+      if (stmt.ifExists) return msg(`routine "${stmt.name}" does not exist, skipped`, sql, t0)
+      throw new SqlError(`unknown ${stmt.isProcedure ? 'procedure' : 'function'} "${stmt.name}"`, 'ddl')
+    }
+    // Refuse to drop a function a trigger still depends on.
+    for (const tg of this.db.triggers.values()) {
+      if (tg.functionName.toLowerCase() === stmt.name.toLowerCase()) {
+        throw new SqlError(`cannot drop "${stmt.name}" — trigger "${tg.name}" depends on it`, 'ddl')
+      }
+    }
+    this.db.dropRoutine(stmt.name)
+    return msg(`${stmt.isProcedure ? 'procedure' : 'function'} "${stmt.name}" dropped`, sql, t0)
+  }
+
+  private callProcedure(stmt: CallStmt, sql: string, t0: number): QueryResult {
+    const routine = this.db.getRoutine(stmt.name)
+    if (!routine) throw new SqlError(`unknown procedure "${stmt.name}"`, 'eval')
+    if (routine.returnsTrigger) throw new SqlError(`"${stmt.name}" is a trigger function and cannot be CALLed`, 'eval')
+    const args = stmt.args.map((a) => evalConstant(a))
+    const ret = callRoutine(this, routine, args)
+    if (!routine.isProcedure && ret !== null) {
+      // CALL of a (non-void) function: surface its return value as a 1×1 result.
+      return {
+        kind: 'rows',
+        columns: [{ table: '', name: stmt.name.toLowerCase(), type: routine.returns?.type ?? 'TEXT' }],
+        rows: [[ret]],
+        rowCount: 1,
+        elapsedMs: performance.now() - t0,
+        sql,
+      }
+    }
+    return msg(`called "${stmt.name}"`, sql, t0)
+  }
+
+  private createTrigger(stmt: CreateTriggerStmt, sql: string, t0: number): QueryResult {
+    if (this.db.triggers.has(stmt.name.toLowerCase()) && !stmt.orReplace) {
+      throw new SqlError(`trigger "${stmt.name}" already exists (use CREATE OR REPLACE)`, 'ddl')
+    }
+    if (!this.db.hasTable(stmt.table)) throw new SqlError(`unknown table "${stmt.table}"`, 'ddl')
+    const fn = this.db.getRoutine(stmt.functionName)
+    if (!fn) throw new SqlError(`trigger function "${stmt.functionName}()" does not exist`, 'ddl')
+    if (!fn.returnsTrigger) throw new SqlError(`function "${stmt.functionName}()" is not declared RETURNS TRIGGER`, 'ddl')
+    this.db.setTrigger(triggerFromStmt(stmt))
+    return msg(`trigger "${stmt.name}" created on "${stmt.table}"`, sql, t0)
+  }
+
+  private dropTrigger(stmt: Extract<Statement, { kind: 'drop_trigger' }>, sql: string, t0: number): QueryResult {
+    if (!this.db.triggers.has(stmt.name.toLowerCase())) {
+      if (stmt.ifExists) return msg(`trigger "${stmt.name}" does not exist, skipped`, sql, t0)
+      throw new SqlError(`unknown trigger "${stmt.name}"`, 'ddl')
+    }
+    this.db.dropTrigger(stmt.name)
+    return msg(`trigger "${stmt.name}" dropped`, sql, t0)
+  }
+
+  // --- row-level trigger firing (BEFORE/AFTER INSERT/UPDATE/DELETE) ---------
+  /** BEFORE INSERT: returns the row to insert (possibly rewritten) or null to
+   *  skip. No-op (returns `row`) when the table has no BEFORE INSERT triggers. */
+  private beforeInsert(table: Table, row: Row): Row | null {
+    let cur: Row | null = row
+    for (const tg of this.db.triggersFor(table.name, 'BEFORE', 'INSERT')) {
+      cur = fireTrigger(this, { trigger: tg, op: 'INSERT', columns: table.columns, newRow: cur, oldRow: null })
+      if (cur === null) return null
+    }
+    return cur
+  }
+  private afterInsert(table: Table, row: Row): void {
+    for (const tg of this.db.triggersFor(table.name, 'AFTER', 'INSERT')) {
+      fireTrigger(this, { trigger: tg, op: 'INSERT', columns: table.columns, newRow: row, oldRow: null })
+    }
+  }
+  /** BEFORE UPDATE: returns the new row image (possibly rewritten) or null. */
+  private beforeUpdate(table: Table, oldRow: Row, newRow: Row): Row | null {
+    let cur: Row | null = newRow
+    for (const tg of this.db.triggersFor(table.name, 'BEFORE', 'UPDATE')) {
+      cur = fireTrigger(this, { trigger: tg, op: 'UPDATE', columns: table.columns, newRow: cur, oldRow })
+      if (cur === null) return null
+    }
+    return cur
+  }
+  private afterUpdate(table: Table, oldRow: Row, newRow: Row): void {
+    for (const tg of this.db.triggersFor(table.name, 'AFTER', 'UPDATE')) {
+      fireTrigger(this, { trigger: tg, op: 'UPDATE', columns: table.columns, newRow, oldRow })
+    }
+  }
+  /** BEFORE DELETE: false cancels the delete of this row. */
+  private beforeDelete(table: Table, oldRow: Row): boolean {
+    for (const tg of this.db.triggersFor(table.name, 'BEFORE', 'DELETE')) {
+      const res = fireTrigger(this, { trigger: tg, op: 'DELETE', columns: table.columns, newRow: null, oldRow })
+      if (res === null) return false
+    }
+    return true
+  }
+  private afterDelete(table: Table, oldRow: Row): void {
+    for (const tg of this.db.triggersFor(table.name, 'AFTER', 'DELETE')) {
+      fireTrigger(this, { trigger: tg, op: 'DELETE', columns: table.columns, newRow: null, oldRow })
     }
   }
 
@@ -334,9 +526,14 @@ export class Engine {
           return
         }
       }
-      this.db.insertChecked(table, row)
+      // Fire BEFORE/AFTER INSERT row triggers (a BEFORE trigger may rewrite the
+      // row or return NULL to skip it). Triggers are bypassed on the upsert path.
+      const finalRow = onConflict ? row : this.beforeInsert(table, row)
+      if (finalRow === null) return
+      this.db.insertChecked(table, finalRow)
       inserted++
-      if (stmt.returning) affected.push(row.slice())
+      if (stmt.returning) affected.push(finalRow.slice())
+      if (!onConflict) this.afterInsert(table, finalRow)
     }
 
     if (stmt.select) {
@@ -442,16 +639,22 @@ export class Engine {
     const targets: number[] = []
     for (const [rowid, row] of table.heap) if (!pred || truthy(pred(row))) targets.push(rowid)
     const affected: Row[] = []
+    let updated = 0
     for (const rowid of targets) {
       const row = table.heap.get(rowid)
       if (!row) continue // a prior row's cascade may have removed it
+      const oldRow = row.slice()
       const next = row.slice()
       for (const s of setters) next[s.i] = coerceTo(table.columns[s.i].type, s.fn(row), undefined, table.columns[s.i].elemType)
-      this.db.updateChecked(table, rowid, next)
-      if (stmt.returning) affected.push((table.heap.get(rowid) ?? next).slice())
+      const finalRow = this.beforeUpdate(table, oldRow, next)
+      if (finalRow === null) continue // a BEFORE trigger cancelled this row
+      this.db.updateChecked(table, rowid, finalRow)
+      updated++
+      this.afterUpdate(table, oldRow, table.heap.get(rowid) ?? finalRow)
+      if (stmt.returning) affected.push((table.heap.get(rowid) ?? finalRow).slice())
     }
     if (stmt.returning) return returningResult(stmt.returning, table, affected, sql, t0)
-    return msg(`${targets.length} row${targets.length === 1 ? '' : 's'} updated in "${stmt.table}"`, sql, t0, targets.length)
+    return msg(`${updated} row${updated === 1 ? '' : 's'} updated in "${stmt.table}"`, sql, t0, updated)
   }
 
   private delete(stmt: Extract<Statement, { kind: 'delete' }>, sql: string, t0: number): QueryResult {
@@ -461,17 +664,21 @@ export class Engine {
     const targets: number[] = []
     for (const [rowid, row] of table.heap) if (!pred || truthy(pred(row))) targets.push(rowid)
     const affected: Row[] = []
+    let deleted = 0
     for (const rowid of targets) {
-      // RETURNING captures the row image before it (and any cascade) is removed;
-      // a prior row's self-referential cascade may already have deleted this one.
-      if (stmt.returning) {
-        const row = table.heap.get(rowid)
-        if (row) affected.push(row.slice())
-      }
+      // A prior row's self-referential cascade may already have removed this one.
+      const row = table.heap.get(rowid)
+      if (!row) continue
+      if (!this.beforeDelete(table, row)) continue // a BEFORE trigger cancelled it
+      // RETURNING captures the row image before it (and any cascade) is removed.
+      const image = row.slice()
       this.db.deleteChecked(table, rowid)
+      deleted++
+      this.afterDelete(table, image)
+      if (stmt.returning) affected.push(image)
     }
     if (stmt.returning) return returningResult(stmt.returning, table, affected, sql, t0)
-    return msg(`${targets.length} row${targets.length === 1 ? '' : 's'} deleted from "${stmt.table}"`, sql, t0, targets.length)
+    return msg(`${deleted} row${deleted === 1 ? '' : 's'} deleted from "${stmt.table}"`, sql, t0, deleted)
   }
 
   // --- SELECT / EXPLAIN -----------------------------------------------------
@@ -741,7 +948,12 @@ function isMutation(kind: Statement['kind']): boolean {
     kind === 'drop_table' ||
     kind === 'create_view' ||
     kind === 'drop_view' ||
-    kind === 'create_index'
+    kind === 'create_index' ||
+    kind === 'create_routine' ||
+    kind === 'drop_routine' ||
+    kind === 'call' ||
+    kind === 'create_trigger' ||
+    kind === 'drop_trigger'
   )
 }
 

@@ -56,13 +56,20 @@ export const KEYWORDS = new Set([
   // only ever appear in statement position or after a keyword, never as a name
   // in the shipped corpus.
   'MERGE', 'USING', 'MATCHED', 'RETURNING', 'SAVEPOINT', 'RELEASE', 'TRUNCATE', 'LATERAL',
+  // v13 — PL/QF procedural language & triggers. Highlighted as keywords; matched
+  // by token value in statement position, so they never need to be reserved
+  // against identifiers the parser reads via `parseIdent`. Short, ambiguous words
+  // (LOOP/WHILE/FOR/RETURN/EXIT/CONTINUE) are intentionally left non-reserved.
+  'FUNCTION', 'PROCEDURE', 'TRIGGER', 'RETURNS', 'DECLARE', 'RAISE', 'PERFORM',
+  'ELSIF', 'BEFORE', 'AFTER', 'EXECUTE', 'CALL', 'LANGUAGE',
 ])
 
 // Multi-character operators, longest first so the scanner is greedy. The
 // 3-char JSON path operators (`->>`, `#>>`) must be tried before the 2-char
 // ones (`->`, `#>`), which in turn precede the single-char operators.
 const THREE_OPS = ['->>', '#>>']
-const MULTI_OPS = ['<=', '>=', '<>', '!=', '||', '==', '->', '#>', '@@', '@>', '<@', '::', '&&']
+// `..` is the integer-range delimiter in a PL `FOR i IN lo..hi LOOP`.
+const MULTI_OPS = ['<=', '>=', '<>', '!=', '||', '==', '->', '#>', '@@', '@>', '<@', '::', '&&', '..']
 const SINGLE_OPS = new Set(['<', '>', '=', '+', '-', '*', '/', '%', '?'])
 // `[` / `]` delimit array literals and subscripts; `:` separates slice bounds.
 const PUNCT = new Set(['(', ')', ',', ';', '.', '[', ']', ':'])
@@ -159,6 +166,34 @@ export function tokenize(src: string, opts: { includeComments?: boolean } = {}):
       continue
     }
 
+    // Dollar-quoted string literals: $$ … $$ or $tag$ … $tag$ (Postgres-style),
+    // used for procedural function bodies so the body never escapes its own
+    // quotes. The opening delimiter is `$` <tag> `$` where <tag> is an empty or
+    // identifier-like label; the literal runs to the next identical delimiter.
+    if (c === '$') {
+      const tagStart = i + 1
+      let j = tagStart
+      while (j < n && isIdentPart(src[j])) j++
+      if (src[j] === '$') {
+        const delim = src.slice(i, j + 1) // e.g. "$$" or "$body$"
+        const bodyStart = j + 1
+        const close = src.indexOf(delim, bodyStart)
+        if (close < 0) throw new SqlError(`unterminated dollar-quoted string starting at line ${line}`, 'lex')
+        // Track newlines inside the body so later error lines stay accurate.
+        for (let k = i; k < close + delim.length; k++) {
+          if (src[k] === '\n') {
+            line++
+            lineStart = k + 1
+          }
+        }
+        push('string', i, close + delim.length)
+        i = close + delim.length
+        continue
+      }
+      // A lone `$` that doesn't open a dollar-quote is not part of the dialect.
+      throw new SqlError(`unexpected character "$" at line ${line}, col ${i - lineStart + 1}`, 'lex')
+    }
+
     // Double-quoted identifiers.
     if (c === '"') {
       const start = i
@@ -174,7 +209,9 @@ export function tokenize(src: string, opts: { includeComments?: boolean } = {}):
     if (isDigit(c) || (c === '.' && isDigit(src[i + 1] ?? ''))) {
       const start = i
       while (i < n && isDigit(src[i])) i++
-      if (src[i] === '.') {
+      // Consume a decimal point only when a digit follows — so `1..n` (a range)
+      // leaves the `..` for the operator scanner rather than eating one dot.
+      if (src[i] === '.' && isDigit(src[i + 1] ?? '')) {
         i++
         while (i < n && isDigit(src[i])) i++
       }
@@ -234,7 +271,22 @@ export function identName(tok: Token): string {
   return tok.text
 }
 
-/** Parse a string-literal token into its runtime value (handles '' escapes). */
+/** Parse a string-literal token into its runtime value (handles '' escapes).
+ *  Dollar-quoted bodies are returned verbatim (no escape processing). */
 export function stringValue(tok: Token): string {
+  if (tok.text.startsWith('$')) return dollarBody(tok.text)
   return tok.text.slice(1, -1).replace(/''/g, "'")
+}
+
+/** Is this string token a dollar-quoted literal (`$$ … $$`)? */
+export function isDollarQuoted(tok: Token): boolean {
+  return tok.kind === 'string' && tok.text.startsWith('$')
+}
+
+/** Extract the inner body of a dollar-quoted literal, stripping both `$tag$`
+ *  delimiters. (For `$body$abc$body$` this returns `abc`.) */
+export function dollarBody(text: string): string {
+  const close = text.indexOf('$', 1)
+  const delimLen = close + 1
+  return text.slice(delimLen, text.length - delimLen)
 }

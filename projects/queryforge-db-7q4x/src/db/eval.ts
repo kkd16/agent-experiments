@@ -939,6 +939,29 @@ function extractAny(part: SqlValue, a: SqlValue): SqlValue {
  *  that collide with keywords like LEFT/RIGHT). */
 export const SCALAR_FUNCTION_NAMES: ReadonlySet<string> = new Set(Object.keys(SCALAR_FUNCTIONS))
 
+// --- user-defined function hook (PL/QF) -------------------------------------
+// A scalar-function call whose name is not a built-in falls through to this
+// hook, which the engine installs (pointing at its current database) so a
+// stored function invoked inside any SQL expression runs the PL interpreter.
+// eval.ts stays decoupled from the engine — it only knows this callback shape.
+export type UserScalarFn = (args: SqlValue[]) => SqlValue
+let userFunctionHook: ((name: string, argc: number) => UserScalarFn | undefined) | null = null
+let returnTypeHook: ((name: string) => ColumnType | undefined) | null = null
+
+/** Install (or clear, with null) the resolver for user-defined scalar functions. */
+export function setUserFunctionHook(
+  call: ((name: string, argc: number) => UserScalarFn | undefined) | null,
+  returnType: ((name: string) => ColumnType | undefined) | null = null,
+): void {
+  userFunctionHook = call
+  returnTypeHook = returnType
+}
+/** The declared return type of a user function, if one is registered (used by
+ *  the planner's static `inferType`). */
+export function userFunctionReturnType(name: string): ColumnType | undefined {
+  return returnTypeHook?.(name.toUpperCase())
+}
+
 // --- set-returning table functions (used in FROM) ---------------------------
 // These expand a JSON value into rows. The planner materializes the result into
 // a synthetic table, so the rows then compose with joins / WHERE / GROUP BY for
@@ -1173,6 +1196,13 @@ export function compileExpr(expr: Expr, ctx: CompileCtx): Evaluator {
       }
       const fn = SCALAR_FUNCTIONS[expr.name]
       if (!fn) {
+        // Fall through to a user-defined function (stored routine) if one of a
+        // matching arity is registered; otherwise it's genuinely unknown.
+        const uf = userFunctionHook?.(expr.name, expr.args.length)
+        if (uf) {
+          const uargs = expr.args.map((a) => compileExpr(a, ctx))
+          return (row) => uf(uargs.map((a) => a(row)))
+        }
         throw new SqlError(`unknown function ${expr.name}() in this context`, 'bind')
       }
       const args = expr.args.map((a) => compileExpr(a, ctx))
