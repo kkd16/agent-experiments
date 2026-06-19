@@ -4,13 +4,16 @@
 // rotary controls; the rest drive the new parametric sources in `curves.ts`.
 
 import type {
+  AttractorParams,
   Layer,
   LissajousParams,
   RoseParams,
   SpirographParams,
   SuperformulaParams,
 } from '../types'
+import { ATTRACTOR_KINDS } from '../curves'
 import { Slider } from './Slider'
+import { Segmented } from './Segmented'
 
 const TWO_PI = Math.PI * 2
 const deg = (v: number) => `${((v / Math.PI) * 180).toFixed(0)}°`
@@ -368,6 +371,39 @@ export function CurveSuperformula({
         step={0.01}
         onChange={(v) => update({ twist: v })}
       />
+    </section>
+  )
+}
+
+export function CurveAttractor({
+  attractor,
+  update,
+}: {
+  attractor: AttractorParams
+  update: (patch: Partial<AttractorParams>) => void
+}) {
+  // Clifford reads c/d as amplitude multipliers, so a tighter range suits it;
+  // de Jong / Svensson read all four as angular frequencies and roam wider.
+  const wide = attractor.type !== 'clifford'
+  const cdMax = wide ? 3 : 1.5
+  return (
+    <section className="group">
+      <div className="group-title">Strange attractor</div>
+      <div className="seg-label">Map</div>
+      <Segmented
+        value={attractor.type}
+        options={ATTRACTOR_KINDS}
+        onChange={(type) => update({ type })}
+        wrap
+      />
+      <Slider label="a" value={attractor.a} min={-3} max={3} step={0.001} onChange={(v) => update({ a: v })} fmt={(v) => v.toFixed(3)} />
+      <Slider label="b" value={attractor.b} min={-3} max={3} step={0.001} onChange={(v) => update({ b: v })} fmt={(v) => v.toFixed(3)} />
+      <Slider label="c" value={attractor.c} min={-cdMax} max={cdMax} step={0.001} onChange={(v) => update({ c: v })} fmt={(v) => v.toFixed(3)} />
+      <Slider label="d" value={attractor.d} min={-cdMax} max={cdMax} step={0.001} onChange={(v) => update({ d: v })} fmt={(v) => v.toFixed(3)} />
+      <p className="hint">
+        A chaotic orbit fed back into itself — nudge a constant and the whole web
+        reshapes. Try <em>Live</em> to watch it morph, or color along <em>Path</em>.
+      </p>
     </section>
   )
 }

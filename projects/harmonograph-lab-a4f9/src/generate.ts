@@ -5,6 +5,7 @@
 
 import { cloneParams, defaultParams, makeLayer, randomParams } from './harmonograph'
 import {
+  randomAttractor,
   randomLissajous,
   randomRose,
   randomSpiro,
@@ -188,17 +189,19 @@ function altLayer(kind: CurveKind, name: string, style: LayerStyle): Layer {
   else if (kind === 'rose') extra.rose = randomRose()
   else if (kind === 'lissajous') extra.liss = randomLissajous()
   else if (kind === 'superformula') extra.sf = randomSuperformula()
+  else if (kind === 'attractor') extra.attractor = randomAttractor()
   return makeLayer(name, defaultParams(), style, extra)
 }
 
 function generateAltProject(): Project {
-  const kind = pick<CurveKind>(['spirograph', 'rose', 'lissajous', 'superformula'])
+  const kind = pick<CurveKind>(['spirograph', 'rose', 'lissajous', 'superformula', 'attractor'])
   const background = pick(DARK_ALT)
   const vignette = rand(0.38, 0.55)
   const palettes = [pick(PALETTES), pick(PALETTES)]
   const mode: ColorMode = pick(['path', 'angle', 'velocity'])
-  // One or two interleaved layers of the same family read as a coherent piece.
-  const count = kind === 'lissajous' ? pick([1, 2, 2]) : pick([1, 1, 2])
+  // Attractors are dense single orbits — one reads best alone with a hairline
+  // stroke; the smooth families layer nicely as one or two interleaved copies.
+  const count = kind === 'attractor' ? 1 : kind === 'lissajous' ? pick([1, 2, 2]) : pick([1, 1, 2])
   const layers: Layer[] = []
   for (let i = 0; i < count; i++) {
     const style = altStyle(
@@ -207,6 +210,7 @@ function generateAltProject(): Project {
       i === 0 ? rand(0.85, 0.95) : rand(0.6, 0.8),
       mode,
     )
+    if (kind === 'attractor') style.lineWidth = rand(0.5, 0.65)
     layers.push(altLayer(kind, ['Base', 'Echo'][i] ?? `Layer ${i + 1}`, style))
   }
   // Occasionally deepen the scene with a radial gradient background.
