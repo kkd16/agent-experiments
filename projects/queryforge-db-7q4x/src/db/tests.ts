@@ -3,6 +3,7 @@
 // build is what gets verified.
 
 import { Engine, type RowsResult } from './engine'
+import { mvccCases } from './concurrency/tests'
 import { SEED_SQL, SAMPLE_QUERIES } from './sampleData'
 import { csvToSql, parseCsv } from './csv'
 import { Database } from './catalog'
@@ -3067,7 +3068,7 @@ test('pl', 'BEFORE UPDATE trigger clamps the NEW row', () => {
 })
 
 export function runTests(): TestResult[] {
-  return cases.map((c) => {
+  return cases.concat(mvccCases).map((c) => {
     try {
       c.run()
       return { name: c.name, group: c.group, pass: true, detail: 'ok' }

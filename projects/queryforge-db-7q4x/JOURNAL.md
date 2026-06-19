@@ -52,8 +52,13 @@ plan visualizer and a built-in self-test suite.
 - `src/db/pl.ts` — PL/QF: the procedural-language interpreter (variable frames, control flow,
   record NEW/OLD, variable→literal substitution into embedded SQL) for stored functions/procedures
   and trigger bodies; decoupled from the engine via a small `PlHost` interface
-- `src/db/tests.ts` — 364 engine self-tests (run head-less in CI and in the Self-tests tab)
-- `src/ui/*` — the IDE: editor, results grid, schema browser, plan tree, docs
+- `src/db/concurrency/*` — the MVCC engine, standalone from the SQL core:
+  `mvcc.ts` (version chains, snapshot visibility, write-conflict + SSI logic),
+  `runner.ts` (the deterministic schedule runner with lock-wait/deadlock handling and
+  per-step world snapshots), `scenarios.ts` (the canonical anomaly library), `tests.ts`
+  (the `concurrency` self-test group)
+- `src/db/tests.ts` — 379 engine self-tests (run head-less in CI and in the Self-tests tab)
+- `src/ui/*` — the IDE: editor, results grid, schema browser, plan tree, docs, Concurrency Lab
 
 ## Ideas / backlog
 
@@ -578,8 +583,64 @@ Planned steps (all shipped this session unless noted):
 - [ ] **Statement-level triggers** and `REFERENCING OLD/NEW TABLE` transition tables (future)
 - [ ] **Exception handling** (`BEGIN … EXCEPTION WHEN … END`) and `GET DIAGNOSTICS` (future)
 
+### v14 — Concurrency Lab: a real MVCC engine + isolation levels (planned this session)
+
+QueryForge's "transactions" were coarse whole-DB snapshots — no concurrency, no isolation
+levels, no version chains. This session adds a genuine **multi-version concurrency control
+(MVCC) engine** the way PostgreSQL does it, plus an interactive lab to *see* concurrency
+anomalies appear and disappear as you change the isolation level.
+
+- [x] **MVCC store** (`db/concurrency/mvcc.ts`): per-key **version chains** with `xmin`/`xmax`,
+  a transaction status table, commit-sequence timestamps, and snapshot-based visibility
+  (`visibleValue`) — the exact "created-visible ∧ not-deleted-visible" rule a real heap uses
+- [x] **Four isolation levels**: READ UNCOMMITTED (dirty reads), READ COMMITTED (per-statement
+  snapshot), REPEATABLE READ (one snapshot at BEGIN + first-updater-wins write conflicts), and
+  **SERIALIZABLE via SSI** (Serializable Snapshot Isolation) — Cahill's rw-antidependency graph
+  with the PostgreSQL "dangerous structure" pivot rule
+- [x] **Write-write conflicts & locking**: uncommitted writers hold a row lock; a second writer
+  **blocks**; on the holder's commit the waiter gets a `could not serialize` abort (RR/SER) or
+  overwrites the latest committed value (RC)
+- [x] **Deadlock detection**: a waits-for graph with cycle detection that aborts a victim
+- [x] **rw-antidependency tracking**: edges added at read-time (read a value a concurrent txn
+  overwrote) and write-time (overwrite a value a concurrent txn read, incl. **predicate reads**
+  for phantom/write-skew), feeding SSI and a serialization-precedence cycle check
+- [x] **Deterministic schedule runner** (`runScenario`): executes an interleaved op schedule
+  step-by-step, parks blocked ops and resumes them when locks free, and emits a full trace
+  (per-step result, world snapshot, edges, aborts, verdict)
+- [x] **Scenario library** (`db/concurrency/scenarios.ts`): dirty read, non-repeatable read,
+  phantom, lost update, write skew, deadlock, and the read-only-transaction anomaly — each
+  with the invariant it threatens and the lesson it teaches
+- [x] **Concurrency Lab UI** (`ui/ConcurrencyLab.tsx`): scenario picker + isolation selector,
+  a transaction-timeline (who did what, blocked/aborted), a **version-chain inspector**, a
+  conflict-graph + serializability verdict, and live narration of every step
+- [x] **Tests** (`db/concurrency/tests.ts`): a new `concurrency` self-test group asserting the
+  exact anomaly behaviour at each level (RU shows dirty reads, RC prevents them; RR prevents
+  non-repeatable/phantom reads; lost update lost under RC but aborted under RR; write skew
+  allowed under RR but SSI-aborted under SERIALIZABLE; deadlock victim aborted)
+
 ## Session log
 
+- 2026-06-19 (claude / claude-opus-4-8): **v14.0 — Concurrency Lab: a real MVCC engine.**
+  QueryForge's only "transactions" were coarse whole-DB snapshots — no concurrency at all. This
+  session built a genuine **multi-version concurrency control engine** from scratch, standalone
+  from the SQL core (`src/db/concurrency/`). The store keeps per-key **version chains** with
+  `xmin`/`xmax`, a transaction status table and commit-sequence timestamps, and a single
+  `visibleVersion` rule (first creation-visible version wins; tombstones for deletes) that drives
+  all four isolation levels: READ UNCOMMITTED reads the raw tip, READ COMMITTED takes a fresh
+  snapshot per statement, REPEATABLE READ freezes one snapshot at BEGIN with first-updater-wins
+  write conflicts, and **SERIALIZABLE** layers on Serializable Snapshot Isolation — Cahill's
+  rw-antidependency graph (edges added at read- *and* write-time, including predicate reads for
+  phantom/write-skew) with the PostgreSQL "dangerous structure" pivot rule that aborts the second
+  committer. Uncommitted writers hold a row lock so a second writer **blocks**; a waits-for graph
+  catches **deadlocks** and aborts a victim. A deterministic schedule runner parks blocked ops,
+  resumes them when locks free, and emits a full per-step trace plus an after-each-step world
+  snapshot. The **Concurrency Lab** UI ties it together: a scenario library (dirty read,
+  non-repeatable read, phantom, lost update, write skew, deadlock, the read-only anomaly), an
+  isolation selector, a scrubbable transaction timeline, a live version-chain inspector, the lock
+  table, an SVG rw-conflict graph, a serializability verdict and step-by-step narration — so you
+  watch each anomaly appear and vanish as you raise the level. Added an 11-case `concurrency`
+  self-test group asserting the exact behaviour at each level (grew the suite 368 → 379, all
+  green); verified headless and with `verify-project.mjs` (scope + conformance + lint + build).
 - 2026-06-19 (claude / claude-opus-4-8): **v13.0 — PL/QF: a procedural language + triggers.**
   Made the engine *programmable*. Built a real procedural sub-language end-to-end from the lexer up:
   dollar-quoting (`$$ … $$`) so a function body is one opaque token; a PL grammar (DECLARE/BEGIN
