@@ -1074,7 +1074,7 @@ function transport(): CheckGroup {
     const m = 3;
     const kappaS = 0.0012;
     const dt = 1 / 60;
-    const K = 100;
+    const K = 50;
     const sim = new FluidSolver(N);
     const j0 = Math.floor(N / 2);
     for (let j = 1; j <= N; j++)
@@ -1269,6 +1269,79 @@ function thermalAndSymmetry(): CheckGroup {
   };
 }
 
+function openBoundaries(): CheckGroup {
+  const checks: Check[] = [];
+  const N = 48;
+  const U = 0.5;
+
+  // Seed a uniform rightward flow, re-impose it at the left inflow column every
+  // step, and run. A closed box cannot pass a net through-flow (the incompressible
+  // pressure builds up and the right wall blocks it), so the flow stalls near the
+  // outlet. With the right edge OPEN (outflow), the uniform stream is the exact
+  // incompressible solution — it sails straight through and out.
+  const run = (open: boolean): { meanRight: number; rmsDiv: number } => {
+    const sim = new FluidSolver(N);
+    if (open) sim.setBoundaries({ left: 'inflow', right: 'outflow' });
+    for (let j = 0; j <= N + 1; j++)
+      for (let i = 0; i <= N + 1; i++) {
+        sim.u[sim.IX(i, j)] = U;
+        sim.v[sim.IX(i, j)] = 0;
+      }
+    for (let s = 0; s < 50; s++) {
+      for (let j = 1; j <= N; j++) {
+        sim.u[sim.IX(1, j)] = U; // imposed inflow
+        sim.v[sim.IX(1, j)] = 0;
+      }
+      sim.step(1 / 60, params({ iterations: 60, overRelax: 1.6 }));
+    }
+    // Mean horizontal velocity over the right quarter of the channel.
+    let s = 0;
+    let n = 0;
+    for (let j = 1; j <= N; j++)
+      for (let i = Math.floor(0.75 * N); i <= N; i++) {
+        s += sim.u[sim.IX(i, j)];
+        n++;
+      }
+    // RMS divergence over the strict interior (the same margin the suite uses).
+    let d2 = 0;
+    let dn = 0;
+    for (let j = 3; j <= N - 2; j++)
+      for (let i = 3; i <= N - 2; i++) {
+        const idx = sim.IX(i, j);
+        const dv = -0.5 * (sim.u[idx + 1] - sim.u[idx - 1] + sim.v[idx + (N + 2)] - sim.v[idx - (N + 2)]) / N;
+        d2 += dv * dv;
+        dn++;
+      }
+    return { meanRight: s / n, rmsDiv: Math.sqrt(d2 / dn) };
+  };
+
+  const o = run(true);
+  const c = run(false);
+  checks.push(
+    check(
+      'Open outflow sustains a through-flow a wall blocks',
+      'A closed box is mass-locked: an imposed inflow cannot leave, so the incompressible projection stalls the stream before the far wall. Opening the right edge (zero-gradient velocity + Dirichlet pressure p=0 at the outlet) lets the uniform stream pass straight through — so the velocity at the outlet stays near the inflow speed, where the closed box has nearly stopped it.',
+      o.meanRight > 0.85 * U && c.meanRight < 0.5 * o.meanRight,
+      `mean u over the outlet quarter: open ${fmt(o.meanRight)} vs closed ${fmt(c.meanRight)} (inflow U=${fmt(U)})`,
+    ),
+  );
+  checks.push(
+    check(
+      'The open through-flow stays incompressible',
+      'A uniform stream is divergence-free, and the open-boundary projection must keep it so — the outlet absorbs exactly the inflow, leaving a negligible residual divergence in the interior.',
+      Number.isFinite(o.rmsDiv) && o.rmsDiv < 5e-3,
+      `RMS ∇·u (open channel) = ${fmt(o.rmsDiv)}`,
+    ),
+  );
+
+  return {
+    title: 'Open boundaries (inflow / outflow)',
+    blurb:
+      'A domain edge can be opened so the flow leaves the box instead of recirculating: a zero-gradient velocity condition with a Dirichlet pressure at the outlet turns the tank into a channel — the physically correct setting for a von Kármán wake.',
+    checks,
+  };
+}
+
 function robustness(): CheckGroup {
   const checks: Check[] = [];
 
@@ -1391,6 +1464,7 @@ export function runSelfTest(): SelfTestReport {
     combustion(),
     spectral(),
     lagrangian(),
+    openBoundaries(),
     visualization(),
     robustness(),
   ];

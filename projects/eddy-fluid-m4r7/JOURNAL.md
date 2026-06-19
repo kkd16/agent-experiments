@@ -30,9 +30,18 @@ src/
                  V-cycle drives MGCG inside fluid.ts. O(N), grid-independent rate.
     fft.ts       fft1d/fft2d — a from-scratch radix-2 Cooley–Tukey FFT (bit-reversal
                  + butterflies, double precision) + energySpectrum() (radially-
-                 averaged kinetic-energy spectrum E(k), Parseval-normalised) and
+                 averaged kinetic-energy spectrum E(k), Parseval-normalised),
+                 enstrophySpectrum() Z(k), scalarVarianceSpectrum() V(k), and
+                 energyTransfer() — the rotational-form nonlinear transfer T(k) +
+                 cumulative flux Π(k) (with ∑ₖT(k)=0 conservation), plus
                  meanKineticEnergy(). Powers the Spectra lab + the spectral checks.
-    scenes.ts    Fourteen curated scenes: blank, vortex street, plume, jets, stirred
+    ftle.ts      FtleComputer — Finite-Time Lyapunov Exponents / Lagrangian Coherent
+                 Structures: RK4 flow-map integration of the frozen velocity field
+                 (forward or backward), flow-map gradient by central differences, the
+                 right Cauchy–Green tensor, and its closed-form larger eigenvalue →
+                 FTLE. Ridges are the transport barriers (attracting/repelling LCS).
+    scenes.ts    Sixteen curated scenes: blank, vortex street (closed + open channel),
+                 forced 2-D turbulence, plume, jets, stirred
                  ink, obstacle course, Rayleigh–Bénard convection, buoyant thermal
                  plume, Kelvin–Helmholtz shear, lid-driven cavity, a self-sustaining
                  FIRE (combustion), the TAYLOR–GREEN vortex (exact NS solution),
@@ -40,10 +49,12 @@ src/
                  last three default to the MGCG solver). + a seeded mulberry32 PRNG.
     particles.ts ParticleSystem — passive tracer ensemble advected by the flow,
                  recycled on death/escape, drawn as velocity-aligned streaks.
-    selftest.ts  runSelfTest() — the numerical verification suite (34 invariant /
-                 closed-form checks across 11 groups, incl. CG, MULTIGRID/MGCG,
-                 analytic diffusion decay, FFT/Parseval, combustion, LIC,
-                 Q-criterion). Pure, DOM-free, deterministic.
+    selftest.ts  runSelfTest() — the numerical verification suite (43 invariant /
+                 closed-form checks across 13 groups, incl. CG, MULTIGRID/MGCG,
+                 analytic diffusion decay, FFT/Parseval, exact energy-transfer
+                 conservation, FTLE strain rates, open-channel through-flow,
+                 Schmidt-number dye diffusion, combustion, LIC, Q-criterion). Pure,
+                 DOM-free, deterministic. (Run headless: `node runtest.mjs`.)
     engine.ts    FluidEngine — rAF loop, pointer→force plumbing, scene state,
                  tracer-particle update, HOVER-PROBE readout, LIC phase advance,
                  live diagnostics, FPS/step-time stats.
@@ -177,18 +188,80 @@ src/
       turbulence (the inverse cascade), and the double-shear-layer benchmark
 - [x] **Analytic diffusion-decay verification** — a single Fourier mode decays at exactly the
       closed-form backward-Euler rate 1/(1+4a·sin²(πm/2N)), matched live to ~1e-6
+- [x] **Inflow/outflow (open) boundary conditions** so the vortex street isn't recirculating —
+      `fluid.ts` now carries a per-edge `boundaries` config (wall / inflow / outflow). An open
+      *outflow* edge gets a zero-gradient velocity ghost **and** a Dirichlet pressure (p=0 at the
+      face, boundary code 3 in `setBnd`), making the otherwise-singular pure-Neumann system
+      non-singular so the box passes a net through-flow. Carried on the SOR projection; the
+      **Vortex street (open channel)** scene uses it. Verified: an open channel sustains a
+      through-flow a closed box stalls, and the through-flow stays incompressible.
+- [x] **A live FFT energy *flux* Π(k)** — `energyTransfer` in `fft.ts` (rotational-form nonlinear
+      transfer T(k); the gradient part is ⊥ to the divergence-free velocity in Fourier space so it
+      transfers no energy). Because u·(ω×u)=0 pointwise, ∑ₖ T(k)=0 *exactly* — checked in the suite.
+      The Spectra lab plots Π(k) beside E(k); negative ⇒ the 2-D inverse cascade.
+- [x] **Forced 2-D turbulence** — `forceTurbulence` injects band-limited solenoidal kicks each step;
+      paired with a large-scale drag it reaches a steady k^-5/3 inertial range. New **Forced 2-D
+      turbulence** scene, and a Decaying/Forced toggle in the Spectra lab.
+- [x] **FTLE / Lagrangian-coherent-structure render mode** — `ftle.ts`: RK4 flow-map integration of
+      the frozen field, Cauchy–Green tensor, closed-form λ_max → FTLE. New **LCS** render mode with a
+      forward (repelling) / backward (attracting) toggle and an integration-time knob. Verified
+      against the analytic strain rate of a saddle and zero on a rigid rotation.
+- [x] **Passive scalar with a Schmidt-number knob, + scalar-variance / enstrophy spectra** — the dye
+      carries its own diffusivity κ_s (`dyeDiffusion`; Sc = ν/κ_s, with a UI slider). `fft.ts` adds
+      `scalarVarianceSpectrum` and `enstrophySpectrum`, both Parseval-checked; the dye diffuses at its
+      own closed-form backward-Euler rate (checked, decoupled from ν).
+- [ ] Wire the scalar-variance V(k) / enstrophy Z(k) spectra into the Spectra lab as toggleable curves
+      (the transforms + checks ship; only the live plot is pending)
+- [ ] Open boundaries on the CG / multigrid projections too (today only the SOR path carries them)
 - [ ] Move the solver into a Web Worker so the UI never stutters at high res
 - [ ] WebGL2 render path (texture upload) for 512²+ at 60fps
 - [ ] A true MAC (staggered) grid pressure solve to kill the collocated checkerboard residual
 - [ ] Galerkin (R·A·P) coarse operators so *standalone* multigrid matches MGCG's robustness on
       intricate embedded boundaries (kills the bare-V-cycle obstacle overshoot)
 - [ ] Full-multigrid (FMG) start + W-cycles, and a residual-tolerance stop, for the MG path
-- [ ] Inflow/outflow (open) boundary conditions so the vortex street isn't recirculating
-- [ ] A live FFT energy *flux* Π(k) (not just E(k)) to show the cascade direction quantitatively
-- [ ] Forced 2-D turbulence (steady small-scale forcing) to grow the −5/3 inverse-cascade range
-- [ ] FTLE / Lagrangian-coherent-structure render mode (flow-map Jacobian, finite-time Lyapunov)
-- [ ] Passive scalar (smoke) with a Schmidt-number knob, and dye-variance spectra
+- [ ] FTLE on the *time-dependent* flow (accumulate the flow map across frames) for true LCS, not the
+      instantaneous (frozen-field) approximation
+- [ ] A Batchelor-regime check for the scalar-variance spectrum at high Schmidt number (k^-1 range)
 - [ ] A solver head-to-head benchmark page (residual-vs-wallclock for SOR/CG/MG/MGCG across N)
+
+## Roadmap — 2026-06-19 Eddy 5.0: Lagrangian transport & the turbulent cascade (claude)
+
+Eddy 4.0 made the *Eulerian* picture rigorous (a work-optimal solver and an energy spectrum). Eddy
+5.0 goes after the parts a velocity snapshot *cannot* show — how the flow transports material, and
+which way energy actually moves — plus the boundary physics to make the flagship demo honest. Five
+pillars, every one of them backed by the verify suite (which grew **34 → 43 checks, 11 → 13 groups**):
+
+1. **The hidden skeleton — FTLE / Lagrangian Coherent Structures.** A new render mode (`ftle.ts`)
+   integrates the **flow map** of the frozen field with RK4, forms the right Cauchy–Green strain
+   tensor from the flow-map gradient, and reads its larger eigenvalue in closed form to get the
+   finite-time Lyapunov exponent. Its ridges are the LCS — the material curves that organise mixing:
+   *forward*-time ridges repel, *backward*-time ridges attract (the filaments where dye collects, so
+   the backward field mirrors the ink). Pinned to ground truth: FTLE equals the analytic strain rate
+   of a hyperbolic saddle and is exactly zero on a rigid rotation.
+
+2. **Which way does energy flow? — the spectral flux Π(k).** `energyTransfer` splits the nonlinear
+   term into its rotational part ω×u (the gradient part is ⊥ to the divergence-free velocity in
+   Fourier space, so it transfers no energy) and bins the per-shell transfer T(k). Because
+   u·(ω×u)=0 *pointwise*, ∑ₖ T(k)=0 **exactly** — the nonlinearity only shuffles energy between
+   scales — which the suite checks to round-off. The cumulative flux Π(k), plotted live beside E(k)
+   in the Spectra lab, shows the 2-D **inverse cascade** as a clean *negative* flux.
+
+3. **Sustained turbulence — forcing.** `forceTurbulence` stirs the fluid with band-limited
+   solenoidal kicks; against a large-scale drag it reaches a statistically steady state with a real
+   k^-5/3 inertial range. A new **Forced 2-D turbulence** scene and a Decaying/Forced toggle in the
+   lab. Companion spectra — the **enstrophy** Z(k) and **scalar-variance** V(k) transforms — ship in
+   `fft.ts`, each Parseval-checked.
+
+4. **A real channel — open inflow/outflow boundaries.** A closed box is mass-locked, so a wake
+   recirculates. An edge can now be opened to **outflow**: a zero-gradient velocity condition plus a
+   **Dirichlet pressure** (p=0 at the outlet) makes the singular pure-Neumann pressure system
+   non-singular and lets the box pass a net through-flow. The new **Vortex street (open channel)**
+   scene sheds vortices that sail off downstream. Verified: the open channel sustains a through-flow
+   the closed box stalls, and keeps it incompressible.
+
+5. **The Schmidt number.** The dye now carries its own diffusivity κ_s, decoupled from the momentum
+   viscosity ν (Sc = ν/κ_s), with a UI slider — so ink can fold into ever-finer filaments
+   independent of the velocity field. Verified to diffuse at its own closed-form backward-Euler rate.
 
 ## Roadmap — 2026-06-19 Eddy 4.0: the work-optimal solver & the energy cascade (claude)
 
@@ -268,6 +341,22 @@ serious CFD studio along three axes — **new physics, honest rigor, and legible
 
 ## Session log
 
+- 2026-06-19 (claude): **Eddy 5.0 — Lagrangian transport & the turbulent cascade** (see roadmap
+  above). Added: (1) an **FTLE / LCS** render mode (`ftle.ts`) — RK4 flow-map integration of the
+  frozen field, Cauchy–Green tensor, closed-form λ_max, forward/backward toggle + τ knob; (2) the
+  spectral **energy flux Π(k)** and nonlinear transfer T(k) (`energyTransfer`, rotational form) with
+  exact ∑T(k)=0 conservation, plus `enstrophySpectrum` and `scalarVarianceSpectrum`, all in `fft.ts`;
+  the Spectra lab now plots Π(k) beside E(k) and has a Decaying/Forced toggle; (3) **forced 2-D
+  turbulence** (`forceTurbulence` + a new scene); (4) **open inflow/outflow boundaries** in the solver
+  (`boundaries` config; boundary code 3 = Dirichlet-pressure outflow on the SOR path) + a **Vortex
+  street (open channel)** scene; (5) a **Schmidt-number** dye diffusivity κ_s (`dyeDiffusion`) with a
+  UI slider. Extended the verify suite **34 → 43 checks (11 → 13 groups)**: FTLE vs the analytic
+  saddle strain rate / zero on rotation, ∑T(k)=0 transfer conservation, scalar-variance & enstrophy
+  Parseval, the open-channel through-flow vs a stalled closed box, and the decoupled dye-diffusion
+  decay rate. Updated the renderer (LCS mode), Controls (LCS toggle/τ, Schmidt slider), the Spectra
+  lab (flux plot + regime toggle), the About page, `project.json`, and added `runtest.mjs` (headless
+  suite via Vite). Ran the suite under Node (43/43 green) and the full gate (scope + conformance +
+  lint + build) — all pass.
 - 2026-06-16 (claude): Created from template. Built the full solver, engine, renderer,
   six scenes (incl. vortex street), control panel, About page, and styling. Validated the
   solver numerically (divergence drops sharply after projection; fields stay bounded).

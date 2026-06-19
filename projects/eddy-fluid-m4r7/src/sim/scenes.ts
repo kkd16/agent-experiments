@@ -69,6 +69,41 @@ export const SCENES: Scene[] = [
     },
   },
   {
+    id: 'vortex-street-open',
+    name: 'Vortex street (open channel)',
+    blurb:
+      'The same cylinder wake, but in a true open channel: the right edge is an OUTFLOW boundary (zero-gradient velocity + Dirichlet pressure), so the shed vortices sail off downstream and leave the domain instead of piling up against a far wall and recirculating. This is the physically honest von Kármán street — compare it with the closed-box version. (Uses the SOR solver, which carries the open-boundary condition.)',
+    params: { vorticity: 8, viscosity: 0.00002, dyeDissipation: 0.02, velocityDissipation: 0.0, iterations: 30, overRelax: 1.7, pressureSolver: 'sor' },
+    exposure: 1.4,
+    setup: (sim) => {
+      const N = sim.N;
+      const cx = Math.floor(N * 0.22);
+      const cy = Math.floor(N * 0.5);
+      const rad = Math.max(3, Math.floor(N * 0.06));
+      sim.paintSolid(cx, cy, rad, true);
+      // Open the downstream (right) edge so the wake exits the box.
+      sim.setBoundaries({ right: 'outflow' });
+    },
+    emit: (sim, { time }) => {
+      const N = sim.N;
+      const speed = 1.0;
+      const wobble = Math.sin(time * 3) * 0.06;
+      // Sustain the inflow on the first two interior columns.
+      for (let j = 2; j <= N - 1; j++) {
+        for (let ci = 1; ci <= 2; ci++) {
+          const idx = sim.IX(ci, j);
+          if (sim.solid[idx]) continue;
+          sim.u[idx] = speed;
+          sim.v[idx] = wobble;
+        }
+      }
+      for (let j = 6; j <= N - 6; j += Math.max(4, Math.floor(N / 16))) {
+        const hue = j / N;
+        sim.splat(3, j, speed, 0, hueToRGB(hue, 2.2), 1.4, 1.2);
+      }
+    },
+  },
+  {
     id: 'plume',
     name: 'Rising plume',
     blurb: 'A hot buoyant source at the bottom. Vorticity confinement curls it into billowing smoke.',

@@ -207,6 +207,62 @@ export function About() {
           <strong>Parseval’s theorem</strong> (the spectrum sums to the physical kinetic energy), and
           localises a pure sinusoid to a single shell — all on the Verify page.
         </p>
+        <p>
+          But <code>E(k)</code> only says <em>where</em> the energy is, not which way it is moving.
+          For that the lab also computes the spectral <strong>energy flux</strong> <code>Π(k)</code>.
+          The nonlinear term splits into a rotational part <code>ω×u</code> and a gradient part; the
+          gradient part is parallel to <code>k</code> in Fourier space and so does no work on the
+          (divergence-free, hence <code>k</code>-perpendicular) velocity — it cannot move energy
+          between scales. The rotational part carries all the transfer, and because{' '}
+          <code>u·(ω×u) = 0</code> at every point, the energy fed into all shells sums to{' '}
+          <em>exactly zero</em>: the nonlinearity only <em>shuffles</em> energy across scales, never
+          creates it (the Verify page checks <code>∑ₖ T(k) = 0</code> to round-off). The cumulative
+          flux <code>Π(k)</code> then reveals the 2-D inverse cascade as a clean <em>negative</em>
+          flux — energy flowing to large scales. Switch the lab to <strong>Forced</strong> to stir
+          the fluid continuously at a small scale against a large-scale drag; it settles into a
+          steady state with a sustained <code>k<sup>−5/3</sup></code> inertial range and a steady
+          negative flux through it. Alongside <code>E(k)</code> the same FFT yields the{' '}
+          <strong>enstrophy</strong> spectrum <code>Z(k)</code> and the scalar-variance spectrum{' '}
+          <code>V(k)</code> of a stirred dye — each verified to integrate to its physical total.
+        </p>
+
+        <h2>The hidden skeleton — Lagrangian coherent structures</h2>
+        <p>
+          A velocity snapshot tells you where the fluid points <em>now</em>; it does not tell you how
+          a drop of dye will be stretched over the next second. That is a <em>Lagrangian</em>
+          question, answered by the <strong>flow map</strong> <code>φ_τ</code> — where each point
+          lands after following the flow for a time <code>τ</code>. Two neighbouring tracers separate
+          at a rate set by the gradient of that map, and the{' '}
+          <strong>finite-time Lyapunov exponent</strong> measures the largest such stretching:{' '}
+          <code>FTLE = (1/|τ|)·ln√λ_max(C)</code>, where <code>C = (∇φ_τ)ᵀ∇φ_τ</code> is the
+          Cauchy–Green strain tensor. The ridges of the FTLE field are{' '}
+          <strong>Lagrangian Coherent Structures</strong> — the material curves that organise mixing.
+          <strong> Forward-time</strong> ridges are <em>repelling</em> (a watershed two parcels fall
+          off either side of); <strong>backward-time</strong> ridges are <em>attracting</em> — exactly
+          the filaments where dye and floating debris collect, which is why the backward-FTLE often
+          mirrors the dye pattern. Eddy integrates the flow map of the frozen field with RK4, takes
+          the gradient by central differences of neighbouring landing points, and reads{' '}
+          <code>λ_max</code> from the closed-form 2×2 eigenvalue. Choose the <strong>LCS</strong>
+          render mode. The Verify page pins it to ground truth: on a hyperbolic saddle the FTLE equals
+          the analytic strain rate, and on a rigid rotation (which stretches nothing) it is zero.
+        </p>
+
+        <h2>Closing the box — open channels &amp; the Schmidt number</h2>
+        <p>
+          A sealed tank is mass-locked: fluid pumped in has nowhere to go, so a wake piles up against
+          the far wall and recirculates. A real wind tunnel is a <em>channel</em>. Eddy can open a
+          domain edge to <strong>outflow</strong>: a zero-gradient condition on the velocity lets the
+          flow leave, and a <strong>Dirichlet pressure</strong> (<code>p = 0</code>) at the outlet
+          makes the (otherwise singular pure-Neumann) pressure system non-singular and lets the box
+          pass a net through-flow. The <em>Vortex street (open channel)</em> scene uses it, so the
+          shed vortices sail off downstream instead of recirculating — the honest von Kármán street.
+          Separately, the dye carries its own diffusivity <code>κ_s</code>, decoupled from the
+          momentum viscosity <code>ν</code>; their ratio is the <strong>Schmidt number</strong>{' '}
+          <code>Sc = ν/κ_s</code>, which sets how sharp the ink’s filaments stay relative to the
+          velocity field (high <code>Sc</code> folds ink into ever-finer streaks). Both are verified:
+          an open channel sustains a through-flow a closed box stalls, and a dye mode diffuses at
+          exactly its own Schmidt-number rate.
+        </p>
 
         <h2>Does it actually work? The verification page</h2>
         <p>
@@ -224,16 +280,23 @@ export function About() {
           (backward-Euler) rate; that the <strong>FFT</strong> round-trips, obeys Parseval, and
           localises a single mode; that combustion only burns above ignition, consumes fuel while
           releasing heat, and conserves fuel when off; and that the LIC texture is the identity under
-          no flow, obeys a maximum principle, and streaks along the flow. Each check reports the
-          number it measured — <strong>34 checks across 11 groups</strong>.
+          no flow, obeys a maximum principle, and streaks along the flow. The newest physics is held
+          to the same bar: the scalar-variance and enstrophy spectra obey Parseval, the nonlinear
+          energy transfer is <em>exactly conservative</em> (<code>∑ₖ T(k) = 0</code>), the FTLE
+          reproduces the analytic strain rate of a saddle and vanishes on a rigid rotation, an open
+          channel sustains a through-flow a closed box stalls, and the dye diffuses at its own
+          Schmidt-number rate. Each check reports the number it measured —{' '}
+          <strong>43 checks across 13 groups</strong>.
         </p>
 
         <h2>Rendering</h2>
         <p>
           Three dye channels (R/G/B) are advected through the same velocity field, so colours mix
           like real ink. The dye is tonemapped (Reinhard) to keep highlights from clipping. You can
-          also visualise raw speed, signed vorticity, or the pressure field with perceptual
-          colour-maps, and overlay the velocity vectors.
+          also visualise raw speed, signed vorticity, the pressure or temperature field, the
+          Q-criterion vortex cores, an animated LIC weave, schlieren shading, or the{' '}
+          <strong>LCS</strong> (FTLE) transport skeleton — each with perceptual colour-maps — and
+          overlay the velocity vectors, streamlines or tracer particles.
         </p>
 
         <a className="back" href="#/">
