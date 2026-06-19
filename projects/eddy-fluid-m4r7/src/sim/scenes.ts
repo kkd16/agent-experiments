@@ -453,6 +453,36 @@ export const SCENES: Scene[] = [
     },
   },
   {
+    id: 'forced-turbulence',
+    name: 'Forced 2-D turbulence',
+    blurb:
+      'Steady small-scale stirring against a large-scale drag. Energy injected at the forcing scale cascades *up* to ever-larger eddies (the 2-D inverse cascade) until the drag balances it at a statistically steady state — so the kinetic-energy spectrum grows a sustained k^−5/3 inertial range. Open the Spectra lab (set it to Forced) to watch E(k) and the negative energy flux Π(k) that proves the cascade direction.',
+    params: {
+      viscosity: 0.000008,
+      vorticity: 0,
+      velocityDissipation: 0.06, // large-scale (linear) drag to reach a steady state
+      dyeDissipation: 0.02,
+      gravity: 0,
+      buoyancy: 0,
+      iterations: 30,
+      overRelax: 1.6,
+      pressureSolver: 'mgcg',
+    },
+    exposure: 1.3,
+    setup: (sim) => {
+      const N = sim.N;
+      // A faint dye wash so the stirred structures read in Dye mode.
+      for (let n = 0; n < 18; n++) {
+        const cx = Math.floor(((n * 2654435761) % 1000) / 1000 * N);
+        const cy = Math.floor(((n * 40503) % 1000) / 1000 * N);
+        sim.splat(cx, cy, 0, 0, hueToRGB((n / 18) % 1, 1.5), Math.max(2, N * 0.05), 1.0);
+      }
+    },
+    emit: (sim, { dt }) => {
+      forceTurbulence(sim, dt);
+    },
+  },
+  {
     id: 'double-shear',
     name: 'Double shear layer',
     blurb:
@@ -492,6 +522,44 @@ export const SCENES: Scene[] = [
     },
   },
 ];
+
+/**
+ * Continuous band-limited **solenoidal forcing** for sustained 2-D turbulence.
+ * Each step we add a handful of small counter-rotating Gaussian vortices at random
+ * positions — energy injected at a fixed (small) length scale. In 2-D this energy
+ * cascades *up* to larger scales; paired with a large-scale linear drag
+ * (`velocityDissipation`) it settles into a statistically steady state with a
+ * k^−5/3 inertial range. The forcing is divergence-free by construction (it is the
+ * curl of a Gaussian bump), so it adds swirl without sourcing the pressure solve.
+ */
+export function forceTurbulence(sim: FluidSolver, dt: number): void {
+  const N = sim.N;
+  const rad = Math.max(2, N * 0.05); // forcing length scale (small eddies)
+  const amp = 9 * dt; // injection rate (per second), framerate-independent
+  const kicks = 6;
+  for (let n = 0; n < kicks; n++) {
+    const cx = 4 + Math.random() * (N - 8);
+    const cy = 4 + Math.random() * (N - 8);
+    const sign = Math.random() < 0.5 ? -1 : 1;
+    const lo = Math.max(1, Math.floor(cx - 3 * rad));
+    const hi = Math.min(N, Math.ceil(cx + 3 * rad));
+    const lo2 = Math.max(1, Math.floor(cy - 3 * rad));
+    const hi2 = Math.min(N, Math.ceil(cy + 3 * rad));
+    for (let j = lo2; j <= hi2; j++)
+      for (let i = lo; i <= hi; i++) {
+        const dx = i - cx;
+        const dy = j - cy;
+        const d2 = dx * dx + dy * dy;
+        if (d2 > 9 * rad * rad) continue;
+        const idx = sim.IX(i, j);
+        if (sim.solid[idx]) continue;
+        const g = Math.exp(-d2 / (rad * rad));
+        // Rotational (solenoidal) velocity contribution: u = sign·(−dy, dx)·g/rad.
+        sim.u[idx] += sign * amp * (-dy / rad) * g;
+        sim.v[idx] += sign * amp * (dx / rad) * g;
+      }
+  }
+}
 
 /** Seeded deterministic PRNG (mulberry32) — keeps random scenes reproducible. */
 function mulberry32(seed: number): () => number {

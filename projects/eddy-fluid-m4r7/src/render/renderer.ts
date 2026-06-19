@@ -8,6 +8,7 @@
 import { FluidSolver } from '../sim/fluid';
 import { COLORMAPS, diverging, type ColorMapName } from './colormaps';
 import { computeLIC, makeNoise } from './lic';
+import { FtleComputer } from '../sim/ftle';
 
 export type RenderMode =
   | 'dye'
@@ -17,7 +18,8 @@ export type RenderMode =
   | 'temperature'
   | 'lic'
   | 'schlieren'
-  | 'qcrit';
+  | 'qcrit'
+  | 'ftle';
 
 export interface ParticleField {
   x: Float32Array;
@@ -40,6 +42,10 @@ export interface RenderOptions {
   particles?: ParticleField;
   /** Animation phase in [0,1) for the LIC texture (advances over time). */
   licPhase?: number;
+  /** FTLE integration horizon in seconds (for the `ftle` mode). */
+  ftleTime?: number;
+  /** Integrate the FTLE flow map backward in time (reveals attracting LCS). */
+  ftleBackward?: boolean;
   /** When set, a crosshair is drawn at this grid cell (the hover probe). */
   probe?: ProbeMark | null;
 }
@@ -52,6 +58,8 @@ export class Renderer {
   // LIC working buffers (a white-noise texture + the convolved intensity field).
   private noise: Float32Array;
   private licBuf: Float32Array;
+  // FTLE / LCS flow-map computer (persistent scratch, rebuilt on resize).
+  private ftle: FtleComputer;
 
   constructor(N: number) {
     this.N = N;
@@ -64,6 +72,7 @@ export class Renderer {
     this.image = this.gctx.createImageData(N, N);
     this.noise = makeNoise(N);
     this.licBuf = new Float32Array(N * N);
+    this.ftle = new FtleComputer(N);
   }
 
   resize(N: number): void {
@@ -73,6 +82,7 @@ export class Renderer {
     this.image = this.gctx.createImageData(N, N);
     this.noise = makeNoise(N);
     this.licBuf = new Float32Array(N * N);
+    this.ftle = new FtleComputer(N);
   }
 
   private fillImage(sim: FluidSolver, opts: RenderOptions): void {
@@ -228,6 +238,39 @@ export class Renderer {
           const gx = 0.5 * (lum(idx + 1) - lum(idx - 1));
           const gy = 0.5 * (lum(idx + (N + 2)) - lum(idx - (N + 2)));
           const s = Math.min(1, Math.hypot(gx, gy) * scale);
+          const [r, g, b] = cmap(s);
+          data[o] = r; data[o + 1] = g; data[o + 2] = b; data[o + 3] = 255;
+        }
+      }
+      return;
+    }
+
+    if (opts.mode === 'ftle') {
+      // Finite-Time Lyapunov Exponent: integrate the flow map over a horizon and
+      // colour by the local stretching rate. Ridges (bright) are the Lagrangian
+      // Coherent Structures — the transport barriers that organise mixing. The
+      // backward-time field's ridges are *attracting* (where dye collects).
+      const tau = Math.max(0.05, opts.ftleTime ?? 1.2);
+      const steps = Math.min(48, Math.max(8, Math.round(tau * 30)));
+      const field = this.ftle.compute(
+        sim.u,
+        sim.v,
+        { tau, backward: !!opts.ftleBackward, steps },
+        sim.solid,
+      );
+      let maxF = 1e-6;
+      for (let k = 0; k < field.length; k++) if (field[k] > maxF) maxF = field[k];
+      const scale = (opts.exposure * 1.1) / maxF;
+      for (let j = 0; j < N; j++) {
+        for (let i = 0; i < N; i++) {
+          const idx = sim.IX(i + 1, j + 1);
+          const o = (j * N + i) * 4;
+          if (sim.solid[idx]) {
+            data[o] = 38; data[o + 1] = 42; data[o + 2] = 54; data[o + 3] = 255;
+            continue;
+          }
+          const f = field[j * N + i];
+          const s = f > 0 ? Math.min(1, f * scale) : 0; // contracting regions stay dark
           const [r, g, b] = cmap(s);
           data[o] = r; data[o + 1] = g; data[o + 2] = b; data[o + 3] = 255;
         }

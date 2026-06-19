@@ -76,6 +76,14 @@ export interface FluidParams {
    * and sinks. Distinct from the thermal Boussinesq `buoyancy` term.
    */
   smokeBuoyancy: number;
+  /**
+   * Scalar (dye) diffusivity κ_s — molecular diffusion of the dye, decoupled from
+   * the momentum viscosity ν. Their ratio is the **Schmidt number** Sc = ν/κ_s,
+   * which controls how sharp the scalar's filaments stay relative to the velocity
+   * field: high Sc (κ_s → 0) lets ink fold into ever-finer streaks, low Sc blurs
+   * it. 0 = no diffusion (only numerical dissipation acts on the dye).
+   */
+  dyeDiffusion: number;
 }
 
 export const DEFAULT_PARAMS: FluidParams = {
@@ -96,6 +104,7 @@ export const DEFAULT_PARAMS: FluidParams = {
   ignition: 0.5,
   heatRelease: 2.5,
   smokeBuoyancy: 0,
+  dyeDiffusion: 0,
 };
 
 export class FluidSolver {
@@ -1121,6 +1130,19 @@ export class FluidSolver {
     advectDye(0, this.r, this.r0);
     advectDye(0, this.g, this.g0);
     advectDye(0, this.b, this.b0);
+
+    // Scalar (molecular) diffusion of the dye — the Schmidt-number physics. Solved
+    // implicitly on the same red-black stencil as heat/viscosity, so it is stable
+    // for any κ_s and conserves total dye under insulating walls.
+    const dyeDiffusion = params.dyeDiffusion ?? 0;
+    if (dyeDiffusion > 0) {
+      this.r0.set(this.r);
+      this.diffuse(0, this.r, this.r0, dyeDiffusion, dt, iterations, omega);
+      this.g0.set(this.g);
+      this.diffuse(0, this.g, this.g0, dyeDiffusion, dt, iterations, omega);
+      this.b0.set(this.b);
+      this.diffuse(0, this.b, this.b0, dyeDiffusion, dt, iterations, omega);
+    }
 
     if (dyeDissipation > 0) {
       const decay = Math.max(0, 1 - dyeDissipation * dt);

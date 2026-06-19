@@ -12,7 +12,8 @@
 
 import { FluidSolver, DEFAULT_PARAMS, type FluidParams } from './fluid';
 import { computeLIC, makeNoise } from '../render/lic';
-import { fft1d, fft2d, energySpectrum, meanKineticEnergy } from './fft';
+import { fft1d, fft2d, energySpectrum, meanKineticEnergy, enstrophySpectrum, scalarVarianceSpectrum, energyTransfer } from './fft';
+import { computeFTLE } from './ftle';
 
 export interface Check {
   name: string;
@@ -641,10 +642,217 @@ function spectral(): CheckGroup {
     );
   }
 
+  // 4. The scalar-variance spectrum obeys Parseval: it integrates to the variance.
+  {
+    const M = 64;
+    const s = new Float64Array(M * M);
+    for (let j = 0; j < M; j++)
+      for (let i = 0; i < M; i++)
+        s[j * M + i] =
+          0.7 +
+          Math.sin((2 * Math.PI * 4 * i) / M) * Math.cos((2 * Math.PI * 3 * j) / M) +
+          0.5 * Math.cos((2 * Math.PI * 7 * i) / M);
+    let mean = 0;
+    for (let i = 0; i < M * M; i++) mean += s[i];
+    mean /= M * M;
+    let varRef = 0;
+    for (let i = 0; i < M * M; i++) varRef += (s[i] - mean) * (s[i] - mean);
+    varRef /= M * M;
+    const sp = scalarVarianceSpectrum(s, M);
+    const relErr = Math.abs(sp.total - varRef) / varRef;
+    checks.push(
+      check(
+        'Scalar-variance spectrum obeys Parseval',
+        'The variance spectrum V(k) decomposes a scalar field’s spatial variance by scale; summed over all shells it must equal that variance ⟨(s−⟨s⟩)²⟩ — and the constant (mean) mode must carry none of it.',
+        relErr < 1e-10,
+        `∑ₖ V(k) = ${fmt(sp.total)} vs variance ${fmt(varRef)} (rel. err ${fmt(relErr)})`,
+      ),
+    );
+  }
+
+  // 5. The enstrophy spectrum integrates to the mean enstrophy ½⟨ω²⟩.
+  {
+    const M = 64;
+    const k1 = 3;
+    const k2 = 5;
+    const u = new Float64Array(M * M);
+    const v = new Float64Array(M * M);
+    const amp = (2 * Math.PI) * (2 * Math.PI); // (2π)² appears in ∇²ψ
+    let ens = 0;
+    for (let j = 0; j < M; j++)
+      for (let i = 0; i < M; i++) {
+        const x = i / M;
+        const y = j / M;
+        // Streamfunction ψ = cos(2πk1 x) cos(2πk2 y); u = ∂ψ/∂y, v = −∂ψ/∂x.
+        u[j * M + i] = -2 * Math.PI * k2 * Math.cos(2 * Math.PI * k1 * x) * Math.sin(2 * Math.PI * k2 * y);
+        v[j * M + i] = 2 * Math.PI * k1 * Math.sin(2 * Math.PI * k1 * x) * Math.cos(2 * Math.PI * k2 * y);
+        // ω = −∇²ψ = (2π)²(k1²+k2²)·ψ.
+        const psi = Math.cos(2 * Math.PI * k1 * x) * Math.cos(2 * Math.PI * k2 * y);
+        const w = amp * (k1 * k1 + k2 * k2) * psi;
+        ens += 0.5 * w * w;
+      }
+    ens /= M * M;
+    const sp = enstrophySpectrum(u, v, M);
+    const relErr = Math.abs(sp.total - ens) / ens;
+    checks.push(
+      check(
+        'Enstrophy spectrum matches the mean enstrophy',
+        'The spectral vorticity ω̂ = i·2π(kₓv̂ − k_yû) reproduces the analytic vorticity of a known streamfunction: the enstrophy spectrum Z(k) summed over shells equals the independently-computed mean enstrophy ½⟨ω²⟩.',
+        relErr < 1e-9,
+        `∑ₖ Z(k) = ${fmt(sp.total)} vs ½⟨ω²⟩ = ${fmt(ens)} (rel. err ${fmt(relErr)})`,
+      ),
+    );
+  }
+
+  // 6. The nonlinear energy transfer conserves total kinetic energy: ∑ₖ T(k) = 0.
+  // This is the deep property behind the turbulent cascade — the nonlinear term
+  // only *moves* energy between scales, never creates or destroys it.
+  {
+    const M = 64;
+    const u = new Float64Array(M * M);
+    const v = new Float64Array(M * M);
+    // A divergence-free field from a multi-mode streamfunction (u=∂ψ/∂y, v=−∂ψ/∂x).
+    const modes = [
+      [1, 2, 0.6],
+      [3, 1, -0.4],
+      [2, 4, 0.5],
+      [5, 3, 0.3],
+    ];
+    for (let j = 0; j < M; j++)
+      for (let i = 0; i < M; i++) {
+        const x = i / M;
+        const y = j / M;
+        let uu = 0;
+        let vv = 0;
+        for (const [a, b, c] of modes) {
+          // ψ = c·sin(2πa x)·sin(2πb y)
+          uu += c * 2 * Math.PI * b * Math.sin(2 * Math.PI * a * x) * Math.cos(2 * Math.PI * b * y);
+          vv += -c * 2 * Math.PI * a * Math.cos(2 * Math.PI * a * x) * Math.sin(2 * Math.PI * b * y);
+        }
+        u[j * M + i] = uu;
+        v[j * M + i] = vv;
+      }
+    const tr = energyTransfer(u, v, M);
+    let net = 0;
+    let absSum = 0;
+    for (let k = 0; k < tr.t.length; k++) {
+      net += tr.t[k];
+      absSum += Math.abs(tr.t[k]);
+    }
+    const fluxEnds = Math.max(Math.abs(tr.flux[0] - (-tr.t[0])), Math.abs(tr.flux[tr.flux.length - 1]));
+    checks.push(
+      check(
+        'Nonlinear energy transfer is conservative (∑T(k)=0)',
+        'Splitting the nonlinear term into its rotational part ω×u (the only part that transfers energy, since the gradient part is ⊥ to the divergence-free velocity in Fourier space) gives u·(ω×u)=0 pointwise — so the energy transferred *into* all shells sums to exactly zero, and the flux closes at the largest scale. The transfer itself is non-trivial (it is what drives the cascade).',
+        absSum > 1e-6 && Math.abs(net) < 1e-9 * absSum && fluxEnds < 1e-9 * absSum,
+        `∑ₖ T(k) = ${fmt(net)} (∑|T| ${fmt(absSum)}); |Π(k_max)| = ${fmt(Math.abs(tr.flux[tr.flux.length - 1]))}`,
+      ),
+    );
+  }
+
   return {
     title: 'Spectral analysis (FFT)',
     blurb:
-      'A from-scratch 2-D FFT turns the velocity field into a kinetic-energy spectrum E(k) — energy by spatial scale. Its identities (invertibility, Parseval, single-mode localisation) are exact and checkable.',
+      'A from-scratch 2-D FFT turns the flow into spectra — kinetic energy E(k), enstrophy Z(k), scalar variance V(k) — and into the nonlinear energy transfer T(k) / flux Π(k). Their identities (invertibility, Parseval, single-mode localisation, and exact transfer conservation) are checkable.',
+    checks,
+  };
+}
+
+function lagrangian(): CheckGroup {
+  const checks: Check[] = [];
+
+  // Helper: fill the (N+2)² velocity arrays from an analytic cell-space field.
+  // The solver stores a normalised velocity (cell-space speed = N·u), so to make a
+  // tracer move at cell-space rate f(i,j) we store u = f / N.
+
+  // 1. Hyperbolic (saddle) strain: u̇ = s·(x−c), v̇ = −s·(y−c). The flow map is
+  // φ = c + (x−c)·e^{±sτ}, so ∇φ = diag(e^{sτ}, e^{−sτ}), σ_max = e^{sτ}, and the
+  // FTLE is *exactly* the strain rate s everywhere — a closed-form ground truth.
+  {
+    const N = 64;
+    const s = 1.0;
+    const tau = 0.4;
+    const sim = new FluidSolver(N);
+    const c = (N + 1) / 2;
+    for (let j = 0; j <= N + 1; j++)
+      for (let i = 0; i <= N + 1; i++) {
+        const idx = sim.IX(i, j);
+        sim.u[idx] = (s * (i - c)) / N;
+        sim.v[idx] = (-s * (j - c)) / N;
+      }
+    const f = computeFTLE(sim.u, sim.v, N, { tau, backward: false, steps: 60 });
+    // Average over a central window where no tracer reaches the clamping walls.
+    let sum = 0;
+    let n = 0;
+    for (let j = Math.floor(0.4 * N); j < Math.ceil(0.6 * N); j++)
+      for (let i = Math.floor(0.4 * N); i < Math.ceil(0.6 * N); i++) {
+        sum += f[j * N + i];
+        n++;
+      }
+    const measured = sum / n;
+    const relErr = Math.abs(measured - s) / s;
+    checks.push(
+      check(
+        'FTLE matches the analytic strain rate of a saddle',
+        'For a hyperbolic stagnation point u̇ = s(x−c), v̇ = −s(y−c) the flow-map gradient is diag(e^{sτ}, e^{−sτ}), so the finite-time Lyapunov exponent is exactly the strain rate s. The integrated flow-map FTLE reproduces it.',
+        relErr < 5e-3,
+        `mean FTLE = ${fmt(measured)} vs s = ${fmt(s)} (rel. err ${fmt(relErr)})`,
+      ),
+    );
+
+    // 1b. Backward-time on the same saddle gives the same stretching magnitude (the
+    // contracting forward direction is the expanding backward one): FTLE ≈ s again.
+    const fb = computeFTLE(sim.u, sim.v, N, { tau, backward: true, steps: 60 });
+    let sumB = 0;
+    let nB = 0;
+    for (let j = Math.floor(0.4 * N); j < Math.ceil(0.6 * N); j++)
+      for (let i = Math.floor(0.4 * N); i < Math.ceil(0.6 * N); i++) {
+        sumB += fb[j * N + i];
+        nB++;
+      }
+    const measuredB = sumB / nB;
+    checks.push(
+      check(
+        'Backward-time FTLE recovers the same exponent',
+        'A saddle’s stable and unstable manifolds swap under time reversal, but the maximal stretching rate is unchanged — so the backward-time FTLE equals the forward-time FTLE (here the strain rate s). Forward ridges are repelling LCS; backward ridges are attracting (where dye collects).',
+        Math.abs(measuredB - s) / s < 5e-3,
+        `backward FTLE = ${fmt(measuredB)} vs s = ${fmt(s)}`,
+      ),
+    );
+  }
+
+  // 2. A solid-body rotation stretches nothing: FTLE ≈ 0.
+  {
+    const N = 64;
+    const omega = 1.0;
+    const tau = 0.5;
+    const sim = new FluidSolver(N);
+    const c = (N + 1) / 2;
+    for (let j = 0; j <= N + 1; j++)
+      for (let i = 0; i <= N + 1; i++) {
+        const idx = sim.IX(i, j);
+        sim.u[idx] = (-omega * (j - c)) / N;
+        sim.v[idx] = (omega * (i - c)) / N;
+      }
+    const f = computeFTLE(sim.u, sim.v, N, { tau, backward: false, steps: 80 });
+    let maxAbs = 0;
+    for (let j = Math.floor(0.4 * N); j < Math.ceil(0.6 * N); j++)
+      for (let i = Math.floor(0.4 * N); i < Math.ceil(0.6 * N); i++)
+        maxAbs = Math.max(maxAbs, Math.abs(f[j * N + i]));
+    checks.push(
+      check(
+        'Rigid rotation has zero FTLE',
+        'A solid-body rotation carries fluid parcels around together without pulling them apart — its flow-map gradient is a pure rotation (Cauchy–Green tensor = I), so the FTLE is zero. (Contrast the saddle, which is all stretching.)',
+        maxAbs < 0.02 * omega,
+        `max|FTLE| over the core = ${fmt(maxAbs)} (rotation rate ${fmt(omega)})`,
+      ),
+    );
+  }
+
+  return {
+    title: 'Lagrangian coherent structures (FTLE)',
+    blurb:
+      'The finite-time Lyapunov exponent measures how fast neighbouring tracers separate under the flow map; its ridges are the transport barriers (LCS) that organise mixing. On analytic flows it has a closed-form value the integrator must reproduce.',
     checks,
   };
 }
@@ -852,6 +1060,49 @@ function transport(): CheckGroup {
         'The backward-Euler diffusion solve has the grid cosine modes as exact eigenvectors. A mode’s amplitude must decay by exactly 1/(1+4a·sin²(πm/2N)) per step (a = κ·dt·N²) — the discrete dispersion relation. Measured vs closed-form, over 100 steps.',
         relErr < 1e-4,
         `amplitude ×${fmt(measured)} measured vs ×${fmt(predicted)} predicted (rel. err ${fmt(relErr)})`,
+      ),
+    );
+  }
+
+  // The passive-scalar (dye) diffusion path is decoupled from momentum viscosity
+  // by its own diffusivity κ_s (the Schmidt-number physics). Verify it independently
+  // obeys the same closed-form backward-Euler decay — and that it is driven by κ_s,
+  // *not* the viscosity ν (here ν is set large but the still field can't advect, so
+  // only κ_s acts): a dye cosine mode decays by exactly 1/(1+4a·sin²(πm/2N)) per step.
+  {
+    const N = 48;
+    const m = 3;
+    const kappaS = 0.0012;
+    const dt = 1 / 60;
+    const K = 100;
+    const sim = new FluidSolver(N);
+    const j0 = Math.floor(N / 2);
+    for (let j = 1; j <= N; j++)
+      for (let i = 1; i <= N; i++) sim.r[sim.IX(i, j)] = 1 + Math.cos((Math.PI * m * (i - 0.5)) / N);
+    const ampOf = () => {
+      let lo = Infinity;
+      let hi = -Infinity;
+      for (let i = 1; i <= N; i++) {
+        const v = sim.r[sim.IX(i, j0)];
+        if (v < lo) lo = v;
+        if (v > hi) hi = v;
+      }
+      return hi - lo;
+    };
+    const a0 = ampOf();
+    for (let s = 0; s < K; s++)
+      sim.step(dt, params({ dyeDiffusion: kappaS, viscosity: 0.0002, iterations: 200, sharpDye: false }));
+    const measured = ampOf() / a0;
+    const a = kappaS * dt * N * N;
+    const factor = 1 / (1 + 4 * a * Math.sin((Math.PI * m) / (2 * N)) ** 2);
+    const predicted = Math.pow(factor, K);
+    const relErr = Math.abs(measured - predicted) / predicted;
+    checks.push(
+      check(
+        'Dye diffuses at its own Schmidt-number rate',
+        'The dye carries an independent diffusivity κ_s (Schmidt number Sc = ν/κ_s). With the fluid at rest a dye cosine mode must decay at exactly the backward-Euler rate set by κ_s — independent of the momentum viscosity ν — confirming the two scalars are decoupled.',
+        relErr < 1e-3,
+        `dye amplitude ×${fmt(measured)} measured vs ×${fmt(predicted)} predicted (rel. err ${fmt(relErr)})`,
       ),
     );
   }
@@ -1139,6 +1390,7 @@ export function runSelfTest(): SelfTestReport {
     thermalAndSymmetry(),
     combustion(),
     spectral(),
+    lagrangian(),
     visualization(),
     robustness(),
   ];
