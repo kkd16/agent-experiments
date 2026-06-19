@@ -42,14 +42,15 @@
 // (SIGGRAPH Asia 2009); Jensen, "Realistic Image Synthesis Using Photon Mapping".
 
 import type { Vec3 } from './vec3'
-import { dot, isBlack, luminance, madd, maxComponent, mul, neg, scale, v } from './vec3'
+import { add, dot, isBlack, luminance, madd, maxComponent, mul, neg, onb, scale, toWorld, v } from './vec3'
 import { makeRay } from './ray'
 import type { Ray } from './ray'
 import { Rng, triangleBary } from './rng'
 import type { Scene } from './scene'
 import type { Camera } from './camera'
 import type { Material } from './material'
-import { evalBSDF, isDelta, resolveMaterial, sampleBSDF } from './material'
+import { evalBSDF, isDelta, isSpectral, resolveMaterial, sampleBSDF } from './material'
+import { LAMBDA_MAX, LAMBDA_MIN, wavelengthWeight } from './spectrum'
 import type { Triangle } from './primitive'
 import type { RayStats } from './integrator'
 import type { IntegratorSettings } from './types'
@@ -72,12 +73,28 @@ export interface SppmOptions {
   alpha: number
   // Initial gather radius as a fraction of the scene's bounding-box diagonal.
   initialRadiusFrac: number
+  // Spectral photons: when a photon first strikes a dispersive (wavelength-
+  // dependent) surface it commits a random "hero" wavelength and carries that
+  // wavelength's RGB weight, so its later refraction bends per-colour and the
+  // caustic it deposits is *coloured* — a rainbow caustic — instead of white.
+  // Because E_λ[weight] = (1,1,1) the total caustic energy is unchanged; only
+  // its colour is spread spatially. Default on (no extra cost). (Optional so
+  // older call sites that omit it default to enabled.)
+  spectralPhotons?: boolean
+  // Environment photons: when the scene's environment carries a sun (a daylight
+  // gradient sun or a Preetham sky), emit photons from it too — from a disc
+  // perpendicular to the sun direction, sized to the scene's bounding sphere —
+  // so daylight scenes get photon-mapped sun caustics and indirect light, not
+  // just the area-light scenes. Default on.
+  envPhotons?: boolean
 }
 
 export const DEFAULT_SPPM: SppmOptions = {
   photonsPerPass: 120000,
   alpha: 0.7,
   initialRadiusFrac: 0.012,
+  spectralPhotons: true,
+  envPhotons: true,
 }
 
 // ---------------------------------------------------------------------------
@@ -225,6 +242,23 @@ interface PhotonLight {
   power: number // scalar luminous power lum(Le)·A, the selection weight
 }
 
+// The environment sun prepared as a photon source. Photons leave a disc of
+// radius `radius` (the scene's bounding-sphere radius) perpendicular to the sun
+// direction and travel into the scene as a parallel beam (the sun is at
+// infinity), with a small cone jitter of half-angle acos(cosSize). The selection
+// `weight` is the sun's luminous power lum(L)·π·R²·Ω, and `repLum` (= lum of the
+// representative radiance) divides it back out when a photon's flux is set, so
+// the photon flux is L·ΣW/repLum — exactly parallel to the triangle Le·π·ΣW/lum.
+interface SunSource {
+  dir: Vec3 // unit direction from the scene toward the sun
+  cosSize: number
+  solidAngle: number // Ω = 2π(1−cosSize)
+  center: Vec3 // scene bounding-sphere centre
+  radius: number // scene bounding-sphere radius
+  repLum: number // luminance of the representative (cone-centre) sun radiance
+  weight: number // selection weight in the photon-source pool
+}
+
 // ---------------------------------------------------------------------------
 // A running SPPM renderer. Mirrors `MltState`'s shape so the worker and the
 // single-thread fallback drive it the same way they drive PSSMLT: `step(n)`
@@ -277,7 +311,10 @@ export class SppmState {
   private readonly grid = new HashGrid()
   private readonly lights: PhotonLight[]
   private readonly lightCdf: Float64Array
-  private readonly totalPower: number // Σ lum(Le)·A over emitters
+  private readonly triPower: number // Σ lum(Le)·A over the emissive triangles
+  private readonly sun: SunSource | null // the environment sun, if it emits photons
+  private readonly totalPower: number // triPower + (sun ? sun.weight : 0)
+  private readonly spectral: boolean // commit a hero wavelength on dispersive hits
   private passes = 0
   private emittedTotal = 0 // photons emitted across all passes
 
@@ -327,8 +364,14 @@ export class SppmState {
     this.flB = new Float64Array(n)
     this.flM = new Int32Array(n)
 
+    this.spectral = opts.spectralPhotons ?? true
+
+    // Scene bounds (centre + bounding-sphere radius), shared by the initial
+    // gather radius and the environment-sun photon disc.
+    const bounds = this.sceneBounds()
+
     // Initial gather radius from the scene's extent.
-    const r0 = this.sceneDiagonal() * opts.initialRadiusFrac
+    const r0 = bounds.diagonal * opts.initialRadiusFrac
     this.r2.fill(r0 * r0)
 
     // Index the emissive triangles as photon sources, with a power CDF for
@@ -341,9 +384,18 @@ export class SppmState {
       const power = luminance(emission) * tri.area
       if (power > 0) this.lights.push({ tri, emission, power })
     }
-    this.totalPower = this.lights.reduce((s, l) => s + l.power, 0)
     this.lightCdf = new Float64Array(this.lights.length + 1)
     for (let i = 0; i < this.lights.length; i++) this.lightCdf[i + 1] = this.lightCdf[i] + this.lights[i].power
+    this.triPower = this.lightCdf[this.lights.length]
+
+    // Add the environment sun to the photon-source pool, if it emits.
+    this.sun = (opts.envPhotons ?? true) ? buildSunSource(scene, bounds.center, bounds.radius) : null
+    this.totalPower = this.triPower + (this.sun ? this.sun.weight : 0)
+  }
+
+  // True when there is at least one photon source (a triangle light or the sun).
+  private get hasPhotonSources(): boolean {
+    return this.lights.length > 0 || this.sun !== null
   }
 
   get passCount(): number {
@@ -358,7 +410,10 @@ export class SppmState {
     return 0
   }
 
-  private sceneDiagonal(): number {
+  // The scene's axis-aligned bounds as a centre, a bounding-sphere radius (half
+  // the box diagonal), and that diagonal — used for the gather radius and the
+  // environment-sun photon disc.
+  private sceneBounds(): { center: Vec3; radius: number; diagonal: number } {
     let minx = Infinity
     let miny = Infinity
     let minz = Infinity
@@ -386,12 +441,17 @@ export class SppmState {
         }
       }
     }
-    if (!Number.isFinite(minx)) return 1
+    if (!Number.isFinite(minx)) return { center: v(0, 0, 0), radius: 1, diagonal: 1 }
     const dx = maxx - minx
     const dy = maxy - miny
     const dz = maxz - minz
     const d = Math.sqrt(dx * dx + dy * dy + dz * dz)
-    return d > 0 ? d : 1
+    const diagonal = d > 0 ? d : 1
+    return {
+      center: v(0.5 * (minx + maxx), 0.5 * (miny + maxy), 0.5 * (minz + maxz)),
+      radius: 0.5 * diagonal,
+      diagonal,
+    }
   }
 
   // Advance the render by `nPasses` full SPPM passes.
@@ -402,7 +462,7 @@ export class SppmState {
   private onePass(): void {
     this.cameraPass()
     this.grid.build(this.nPixels, this.alive, this.hpX, this.hpY, this.hpZ, this.r2)
-    if (this.lights.length > 0) this.photonPass()
+    if (this.hasPhotonSources) this.photonPass()
     this.updateStatistics()
     this.passes++
     this.emittedTotal += this.opts.photonsPerPass
@@ -429,6 +489,7 @@ export class SppmState {
         let ray: Ray = this.camera.generateRay(u, t, rng)
         let beta = v(1, 1, 1)
         let medium: Vec3 | null = null
+        let lambda = 0 // committed hero wavelength (0 = achromatic, not yet chosen)
         for (let depth = 0; depth <= maxDepth; depth++) {
           this.stats.rays++
           const hit = this.scene.intersect(ray)
@@ -444,7 +505,14 @@ export class SppmState {
             beta = mul(beta, v(Math.exp(-medium.x * hit.t), Math.exp(-medium.y * hit.t), Math.exp(-medium.z * hit.t)))
           }
           const rawMat = this.scene.materials[hit.material]
-          const mat = resolveMaterial(rawMat, hit.p, 0)
+          // Spectral dispersion: on the first wavelength-dependent surface the
+          // camera path crosses (a prism seen directly), commit a hero wavelength
+          // so the view refracts per-colour — matching the photon side.
+          if (this.spectral && lambda === 0 && isSpectral(rawMat)) {
+            lambda = LAMBDA_MIN + rng.next() * (LAMBDA_MAX - LAMBDA_MIN)
+            beta = mul(beta, wavelengthWeight(lambda))
+          }
+          const mat = resolveMaterial(rawMat, hit.p, lambda)
           if (mat.kind === 'emissive') {
             // A directly visible emitter (or one seen through specular glass):
             // photon mapping handles indirect light, so emission is added here.
@@ -499,6 +567,7 @@ export class SppmState {
       let ray = emit.ray
       let beta = emit.flux
       let medium: Vec3 | null = null
+      let lambda = 0 // committed hero wavelength (0 = achromatic, not yet chosen)
       for (let depth = 0; depth <= maxDepth; depth++) {
         this.stats.rays++
         const hit = this.scene.intersect(ray)
@@ -507,7 +576,15 @@ export class SppmState {
           beta = mul(beta, v(Math.exp(-medium.x * hit.t), Math.exp(-medium.y * hit.t), Math.exp(-medium.z * hit.t)))
         }
         const rawMat = this.scene.materials[hit.material]
-        const mat = resolveMaterial(rawMat, hit.p, 0)
+        // Spectral photons: the first time a photon strikes a dispersive surface
+        // it commits a random hero wavelength and is tinted by that wavelength's
+        // RGB weight, so its onward refraction bends per-colour and the caustic
+        // it deposits is coloured. E_λ[weight] = (1,1,1) keeps total flux exact.
+        if (this.spectral && lambda === 0 && isSpectral(rawMat)) {
+          lambda = LAMBDA_MIN + rng.next() * (LAMBDA_MAX - LAMBDA_MIN)
+          beta = mul(beta, wavelengthWeight(lambda))
+        }
+        const mat = resolveMaterial(rawMat, hit.p, lambda)
         if (mat.kind === 'emissive') break // photons are absorbed by lights
         const wi = neg(ray.d) // incoming direction at the surface (points back along the photon)
         if (!isDelta(mat)) {
@@ -536,10 +613,13 @@ export class SppmState {
   // carries flux Le·π·Σpower/lum(Le) — equal across white emitters, tinted by
   // coloured ones. The final image normalises by the total photons emitted.
   private emitPhoton(rng: Rng): { ray: Ray; flux: Vec3 } | null {
-    const nL = this.lights.length
-    if (nL === 0 || this.totalPower <= 0) return null
-    // Choose the emitter by its power via the CDF.
+    if (this.totalPower <= 0) return null
+    // Choose a source from the pool (triangles + the sun) by its power.
     const target = rng.next() * this.totalPower
+    if (this.sun && target >= this.triPower) return this.emitSunPhoton(rng, this.sun)
+    const nL = this.lights.length
+    if (nL === 0) return null
+    // Choose the emitter triangle by its power via the CDF (within [0, triPower)).
     let lo = 0
     let hi = nL
     while (lo < hi) {
@@ -559,6 +639,39 @@ export class SppmState {
     const fluxScale = (Math.PI * this.totalPower) / lum
     const flux = scale(light.emission, fluxScale)
     return { ray: makeRay(offsetOrigin(origin, tri.ng, dir), dir), flux }
+  }
+
+  // Emit one photon from the environment sun. We sample a direction toward the
+  // sun uniformly within its cone (the sun's disc, exactly as next-event
+  // estimation samples it), read the radiance there, then launch the photon from
+  // a uniformly sampled point on a disc of radius R (the scene's bounding-sphere
+  // radius) one radius out along that direction, travelling as a parallel beam
+  // into the scene. The disc faces the beam (cosθ = 1), so the per-photon flux is
+  //   Φ = L·cosθ/(pdf_A·pdf_ω)·(ΣW/w_sun) = L·(πR²)·Ω·ΣW/(lum(L_rep)·πR²·Ω)
+  //     = L·ΣW/lum(L_rep),
+  // exactly parallel to the triangle case Le·π·ΣW/lum(Le); the πR²·Ω geometry
+  // cancels against the selection weight, so the estimate is unbiased for any R.
+  private emitSunPhoton(rng: Rng, sun: SunSource): { ray: Ray; flux: Vec3 } | null {
+    // Direction toward the sun, uniform in the solar cone (matches sampleEnvLight).
+    const u1 = rng.next()
+    const u2 = rng.next()
+    const cosT = 1 - u1 * (1 - sun.cosSize)
+    const sinT = Math.sqrt(Math.max(0, 1 - cosT * cosT))
+    const phi = 2 * Math.PI * u2
+    const fr = onb(sun.dir)
+    const toSun = toWorld(v(Math.cos(phi) * sinT, Math.sin(phi) * sinT, cosT), fr.t, fr.b, sun.dir)
+    const L = this.scene.envRadiance(toSun)
+    if (luminance(L) <= 0) return null
+    // A uniformly sampled point on the emission disc (radius R, perpendicular to
+    // toSun), centred one radius out toward the sun so the whole scene is behind it.
+    const dr = sun.radius * Math.sqrt(rng.next())
+    const da = 2 * Math.PI * rng.next()
+    const disc = onb(toSun)
+    const center = madd(sun.center, toSun, sun.radius)
+    const origin = add(center, add(scale(disc.t, dr * Math.cos(da)), scale(disc.b, dr * Math.sin(da))))
+    const dir = neg(toSun) // the photon travels away from the sun, into the scene
+    const flux = scale(L, this.totalPower / sun.repLum)
+    return { ray: makeRay(origin, dir), flux }
   }
 
   // A cosine-weighted hemisphere direction around the unit normal n.
@@ -666,6 +779,22 @@ export class SppmState {
     }
     return dst
   }
+}
+
+// Build the environment sun as a photon source, or null if the scene has no sun
+// (a solid colour or a sun-less gradient) or its sun carries no energy. The
+// selection weight is the sun's total luminous power lum(L_rep)·π·R²·Ω, so the
+// share of photons the sun receives is proportional to how much light it pours
+// into the scene relative to the triangle emitters.
+function buildSunSource(scene: Scene, center: Vec3, radius: number): SunSource | null {
+  const es = scene.envSun
+  if (!es || radius <= 0) return null
+  const rep = scene.envRadiance(es.dir) // representative (cone-centre) radiance
+  const repLum = luminance(rep)
+  if (repLum <= 0) return null
+  const weight = repLum * Math.PI * radius * radius * es.solidAngle
+  if (!(weight > 0)) return null
+  return { dir: es.dir, cosSize: es.cosSize, solidAngle: es.solidAngle, center, radius, repLum, weight }
 }
 
 // One-shot convenience used by the verification suite: render a scene to a

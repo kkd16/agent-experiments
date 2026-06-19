@@ -8,7 +8,11 @@ accumulation. It solves the rendering equation with next-event estimation + mult
 sampling, GGX microfacet BSDFs, smooth **and frosted** dielectrics, **spectral dispersion**,
 **Beer–Lambert volumetric absorption**, **procedural textures**, **adaptive variance-guided
 sampling** with a live noise heatmap, a SAH BVH, ACES tone mapping, and an edge-avoiding À-Trous
-denoiser.
+denoiser. It carries **four interchangeable light-transport integrators** (a unidirectional path
+tracer, bidirectional PT, primary-sample-space Metropolis, and stochastic progressive photon
+mapping) that all provably converge to the same image — and as of 8.0 the photon mapper is
+**spectral** (rainbow caustics through dispersive glass) and **daylight-complete** (the sun is a
+photon emitter, so daylight scenes get photon-mapped sun caustics).
 
 ## Architecture
 
@@ -41,7 +45,10 @@ denoiser.
   `FrameEstimator` shape as `MltState`) that, each pass, re-traces jittered camera rays to place a
   per-pixel measurement point, emits power-sampled photons from the area lights, deposits them into
   the measurement points via an exact `HashGrid` (CSR spatial hash), and shrinks each point's gather
-  radius on the Hachisuka schedule so the density estimate converges. Built for caustics.
+  radius on the Hachisuka schedule so the density estimate converges. Built for caustics. As of 8.0
+  its photons are **spectral** (commit a hero wavelength on the first dispersive hit → rainbow
+  caustics) and the **sun is a photon source** (a disc, sized to the scene's bounding sphere,
+  perpendicular to the sun → daylight caustics + GI), both unbiased and proven in the verify suite.
 - `src/engine/tonemap.ts` — ACES / filmic / Reinhard / linear + sRGB encode.
 - `src/engine/denoise.ts` — À-Trous edge-avoiding wavelet filter, albedo/normal guided.
 - `src/engine/scenes.ts` — Cornell box, Weekend daylight, Material gallery, Caustic room, Caustic
@@ -103,10 +110,15 @@ denoiser.
       (a single global SPPM rather than averaged independent ones) for slightly faster convergence
 - [ ] **Volumetric photon mapping / beam radiance estimate** — let SPPM resolve *volumetric*
       caustics (light focused inside fog) by depositing photons along medium free-flights
-- [ ] **Spectral photons** — carry a hero wavelength on the photon walk so dispersive glass throws
-      *coloured* caustic rainbows (today SPPM traces photons achromatically)
-- [ ] **Environment photon emission** — emit SPPM photons from the sky/sun (a bounding-sphere disk)
-      so daylight scenes get photon-mapped GI/caustics too, not just the area-light scenes
+- [x] **Spectral photons (8.0)** — a photon commits a random hero wavelength on its first dispersive
+      hit and carries that wavelength's RGB weight, so its refraction bends per-colour and the caustic
+      it deposits is a *rainbow*. E_λ[weight]=(1,1,1) keeps the total energy exact (proven). Showcased
+      by the new **Spectral Caustic** scene.
+- [x] **Environment photon emission (8.0)** — the sun (a daylight-gradient sun or a Preetham sky) is
+      now a photon source: photons leave a disc sized to the scene's bounding sphere, perpendicular to
+      the sun, and rain in as a parallel beam, so daylight scenes get photon-mapped **sun caustics** and
+      indirect light. The distant-light flux normalisation S = L·ΣW/lum(L_rep) is proven against the
+      path tracer. Showcased by the new **Daylight Lens** scene.
 - [ ] Replica-exchange / population MLT — couple PSSMLT chains at different temperatures so a hot
       chain that finds new light hands its discovery to the cold (image) chain
 - [ ] A "transport explorer" debug view that visualises which integrator each pixel favours, and
@@ -114,6 +126,77 @@ denoiser.
 - [ ] Multiplexed MLT (Hachisuka et al.) — let the chain mutate *which* BDPT strategy it uses, so
       one estimator adapts per-path instead of fixing PT vs BDPT up front
 - [ ] Stratified large-step pixel selection so PSSMLT's global jumps cover the film evenly
+
+## Roadmap — 2026-06-19 Lumen 8.0: a spectral, daylight-complete photon mapper (claude)
+
+Lumen 7.0 gave the renderer a fourth integrator — stochastic progressive photon
+mapping (SPPM) — built for the one transport the camera-side integrators can't
+touch: the **caustic** (a light→specular→diffuse path). But that first photon
+mapper was deliberately narrow: it traced photons **achromatically** (so a
+caustic through *dispersive* glass came out white, throwing away the rainbow the
+path tracer already shows for direct views of a prism), and it emitted photons
+**only from the emissive triangles** (so a *daylight* scene — lit by the sun, a
+light at infinity — got no photon-mapped caustics at all, because the sun was
+never a photon source). 8.0 closes both gaps. The photon mapper is now **colour-
+complete** and **daylight-complete**, and it reuses the existing engine
+verbatim — the wavelength machinery from the path tracer and the sun model from
+next-event estimation — so the additions are small, surgical, and provable.
+
+The plan, all shipped this session:
+
+1. **Spectral photons (`sppm.ts`).** A photon walk now tracks a committed hero
+   wavelength exactly as the path tracer does: the first time a photon strikes a
+   *spectral* surface (`isSpectral` — dispersive glass or a thin film), it draws a
+   uniform wavelength in [380,720] nm and multiplies its flux by that wavelength's
+   white-point-normalised RGB weight (`wavelengthWeight`). From then on the
+   dielectric's IOR is resolved at that wavelength (`resolveMaterial(.,.,λ)`), so
+   blue photons refract more sharply than red and the caustic on the floor fans
+   into a spectrum. Because `E_λ[weight] = (1,1,1)`, the *total* deposited energy
+   is unchanged — dispersion only spreads it across colour and space — so the
+   image stays unbiased. The camera pass commits a wavelength symmetrically, so a
+   prism viewed *directly* under SPPM disperses just as it does under PT.
+
+2. **Environment / sun photon emission (`sppm.ts`).** The scene's sun — a
+   daylight-gradient sun or a Preetham sky sun, already exposed by `scene.envSun`
+   for NEE — joins the photon-source pool. A sun photon is launched by (a) sampling
+   a direction toward the sun uniformly in its cone (the exact sampler NEE uses),
+   (b) reading the radiance there, and (c) emitting from a uniformly sampled point
+   on a disc of radius R (the scene's bounding-sphere radius) one radius out along
+   that direction, travelling into the scene as a parallel beam. The per-photon
+   flux is derived from the disc-area pdf 1/(πR²) and the cone pdf 1/Ω, and the
+   selection weight is the sun's luminous power lum(L_rep)·πR²·Ω, so the πR²·Ω
+   geometry **cancels** and the photon flux is `S = L·ΣW/lum(L_rep)` — exactly
+   parallel to the triangle case `Le·π·ΣW/lum(Le)`, and unbiased for any choice of
+   R. The sun shares the same per-pass photon budget and `N_emit` normaliser as the
+   triangle lights, so no other code changes.
+
+3. **Two showcase scenes (`scenes.ts`).** **Spectral Caustic** — a dense,
+   dispersive glass sphere and a glass prism over a white catch-floor in a dark
+   room, lit by one small panel: under Photon Map the focused caustic is a
+   *rainbow*. **Daylight Lens** — a glass sphere and a gold torus on a tiled floor
+   under the Preetham sky: the sun, refracted through the glass, focuses a caustic
+   on the floor that *only* environment photons resolve (a distant-light
+   light→specular→diffuse path NEE can't connect through the lens).
+
+4. **Four new proofs (43 total) (`selftest.ts`).** (a) **Spectral photons conserve
+   energy** — a dispersive caustic box rendered with spectral photons ON vs OFF
+   agrees on total image energy to ~0.2% (the white-point/normalisation oracle for
+   the hero-wavelength photon walk). (b) **The spectral caustic is coloured** — its
+   chromatic spread (range of (R−B)/luminance) is large while the achromatic twin
+   is exactly grey. (c) **Env-sun photons ≡ the path tracer** — a sun-lit diffuse
+   courtyard under SPPM (sun photons) matches PT (sun NEE) in mean brightness to
+   ~2.5%, pinning the distant-light flux normalisation. (d) **Env photons resolve a
+   daylight caustic** — the sun focuses a spot through a glass sphere measurably
+   brighter (≈8.7×) than the directly-lit floor. Verified in Node by bundling the
+   engine with Vite: 43/43 self-tests, plus a smoke render of both new scenes
+   (all-finite, energetic, with hundreds of chromatic caustic pixels). `pnpm
+   lint`/`tsc`/`build` green via the CI gate.
+
+The flux algebra that makes the sun unbiased *for free* is the nicest part: the
+distant-light geometry (disc area πR², cone solid angle Ω) appears in both the
+photon flux and the selection weight, so it cancels to leave a formula that is the
+literal twin of the area-light one — a single code path for "radiance · π · ΣW /
+luminance" emits both a lamp and a star correctly.
 
 ## Roadmap — 2026-06-16 Lumen 7.0: stochastic progressive photon mapping (SPPM) (claude)
 
@@ -409,6 +492,27 @@ verification suite, the scene registry, and the UI so it is observable and prove
 
 ## Session log
 
+- 2026-06-19 (claude/claude-opus-4-8): **Lumen 8.0 — a spectral, daylight-complete photon mapper.**
+  Closed the two deliberate gaps in the 7.0 photon mapper. **(1) Spectral photons:** a photon now
+  commits a random hero wavelength the first time it strikes a dispersive surface (reusing the path
+  tracer's `isSpectral`/`wavelengthWeight`/`resolveMaterial(.,.,λ)` machinery verbatim), so it refracts
+  per-colour and the caustic it deposits is a *rainbow* instead of white — and because the per-λ RGB
+  weights average to (1,1,1), total energy is exactly preserved. The camera pass commits a wavelength
+  symmetrically so a prism viewed directly disperses too. **(2) Environment/sun photons:** the scene's
+  sun (a gradient sun or a Preetham sky, already an NEE light) is now also a photon source — photons
+  leave a disc sized to the scene's bounding sphere, perpendicular to the sun, and rain in as a
+  parallel beam, so daylight scenes finally get photon-mapped sun caustics and indirect light. The
+  distant-light flux works out to `S = L·ΣW/lum(L_rep)`, the literal twin of the area-light formula
+  (the disc-area πR² and cone solid-angle Ω cancel against the selection weight), so it's unbiased and
+  needs no other code changes. **(3) Two scenes:** **Spectral Caustic** (a dispersive sphere + prism
+  over a white floor → a rainbow caustic) and **Daylight Lens** (a glass sphere + gold torus under the
+  sky → a sun caustic on a tiled floor). **(4) Four new proofs (43 total):** spectral photons conserve
+  energy vs the achromatic twin (rel 0.22%); the spectral caustic carries real chromatic spread (0.69)
+  while the achromatic one is exactly grey (0.00); env-sun photons match the path tracer on a sun-lit
+  courtyard (rel 2.53%, pinning the distant-light flux normalisation); and the sun focuses a real
+  caustic through glass (≈8.7× the lit floor). Verified in Node by bundling the engine with Vite:
+  43/43 self-tests, plus a smoke render of both new scenes (all-finite, energetic, hundreds of
+  chromatic caustic pixels). `pnpm lint`/`tsc`/`build` green via the CI gate.
 - 2026-06-16 (claude/claude-opus-4-8): **Lumen 7.0 — stochastic progressive photon mapping (SPPM).**
   Added a *fourth* light-transport integrator, the one built for **caustics** — light focused through
   glass onto a diffuse surface (a light→specular→diffuse path), which all three existing integrators

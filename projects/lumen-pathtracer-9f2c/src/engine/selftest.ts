@@ -1219,6 +1219,225 @@ function testSppmGrid(): { pass: boolean; detail: string } {
   return { pass: mismatches === 0, detail: `${incidences} in-radius incidences, ${mismatches} mismatch(es) vs brute force` }
 }
 
+// ---------------------------------------------------------------------------
+// Lumen 8.0 — spectral photons & environment-sun photon emission
+// ---------------------------------------------------------------------------
+
+// The caustic box, but the glass lens is *dispersive* (a Cauchy B coefficient),
+// so spectral photons fan the caustic into colour. The camera sees the floor
+// directly (no glass on the eye path), so the caustic's colour comes entirely
+// from the photon side.
+function dispersiveCausticBox(cauchyB: number): SceneDef {
+  const q = (p0: Vec3, p1: Vec3, p2: Vec3, p3: Vec3, m: number): SceneDef['prims'] => [
+    { kind: 'tri', p0, p1, p2, material: m },
+    { kind: 'tri', p0, p1: p2, p2: p3, material: m },
+  ]
+  const X = 6
+  const Y = 8
+  const Z = 6
+  const prims: SceneDef['prims'] = []
+  prims.push(...q(v(-X, 0, -Z), v(X, 0, -Z), v(X, 0, Z), v(-X, 0, Z), 0))
+  prims.push(...q(v(-X, Y, -Z), v(-X, Y, Z), v(X, Y, Z), v(X, Y, -Z), 0))
+  prims.push(...q(v(-X, 0, Z), v(X, 0, Z), v(X, Y, Z), v(-X, Y, Z), 0))
+  prims.push(...q(v(-X, 0, -Z), v(-X, 0, Z), v(-X, Y, Z), v(-X, Y, -Z), 0))
+  prims.push(...q(v(X, 0, -Z), v(X, Y, -Z), v(X, Y, Z), v(X, 0, Z), 0))
+  const lh = Y - 0.02
+  prims.push(...q(v(-0.8, lh, -0.8), v(0.8, lh, -0.8), v(0.8, lh, 0.8), v(-0.8, lh, 0.8), 1))
+  prims.push({ kind: 'sphere', center: v(0, 2.2, 0), radius: 1.3, material: 2 })
+  const glass: Material =
+    cauchyB > 0
+      ? { kind: 'dielectric', ior: 1.5, tint: v(1, 1, 1), cauchyB }
+      : { kind: 'dielectric', ior: 1.5, tint: v(1, 1, 1) }
+  return {
+    name: 'dispersive-caustic',
+    materials: [{ kind: 'diffuse', albedo: v(0.8, 0.8, 0.8) }, { kind: 'emissive', emission: v(120, 110, 95) }, glass],
+    prims,
+    camera: { eye: v(0, 5.5, -9), target: v(0, 1.0, 0), up: v(0, 1, 0), vfovDeg: 45, aperture: 0, focusDist: 9 },
+    env: { kind: 'solid', color: v(0, 0, 0) },
+  }
+}
+
+const sumLuminance = (img: Float32Array, W: number, H: number): number => {
+  let s = 0
+  for (let i = 0; i < W * H; i++) s += luminance(v(img[i * 3], img[i * 3 + 1], img[i * 3 + 2]))
+  return s
+}
+
+// 40 — Spectral photons conserve energy. Dispersion only *redistributes* the
+// caustic's energy across colour (and therefore space) — it must not create or
+// destroy any, because the per-wavelength RGB weight averages to (1,1,1). So the
+// total image energy with spectral photons ON must match the achromatic render
+// of the same dispersive scene. This is the white-point/normalisation oracle for
+// the hero-wavelength photon walk: a wrong weight would change total brightness.
+function testSpectralPhotonEnergy(): { pass: boolean; detail: string } {
+  const W = 24
+  const H = 18
+  const settings = { maxDepth: 12, rrStart: 100, clampIndirect: 0 }
+  const opts = { photonsPerPass: 60000, alpha: 0.7, initialRadiusFrac: 0.035 }
+  const sceneA = new Scene(dispersiveCausticBox(0.05))
+  const camA = new Camera(dispersiveCausticBox(0.05).camera, W / H)
+  const achroma = renderSPPM(sceneA, camA, settings, W, H, 20, 7, { ...opts, spectralPhotons: false })
+  const sceneB = new Scene(dispersiveCausticBox(0.05))
+  const camB = new Camera(dispersiveCausticBox(0.05).camera, W / H)
+  const spectral = renderSPPM(sceneB, camB, settings, W, H, 20, 7, { ...opts, spectralPhotons: true })
+  const ea = sumLuminance(achroma, W, H)
+  const es = sumLuminance(spectral, W, H)
+  let finite = true
+  for (let i = 0; i < spectral.length; i++) if (!Number.isFinite(spectral[i])) finite = false
+  const rel = Math.abs(ea - es) / ea
+  return {
+    pass: finite && rel < 0.03 && ea > 0,
+    detail: `total energy achromatic=${ea.toFixed(1)} spectral=${es.toFixed(1)} rel=${(rel * 100).toFixed(2)}% (<3%)`,
+  }
+}
+
+// 41 — Spectral photons actually produce colour. The caustic from a dispersive
+// lens must carry a measurable *chromatic spread* (some patches red-leaning,
+// others blue-leaning) — the rainbow fringe — whereas the achromatic render of
+// the same scene is perfectly grey. Measured as the range of (R−B)/luminance over
+// the caustic region.
+function testSpectralCausticColour(): { pass: boolean; detail: string } {
+  const W = 24
+  const H = 18
+  const settings = { maxDepth: 12, rrStart: 100, clampIndirect: 0 }
+  const opts = { photonsPerPass: 60000, alpha: 0.7, initialRadiusFrac: 0.035 }
+  const spread = (img: Float32Array): number => {
+    let lo = Infinity
+    let hi = -Infinity
+    for (let y = Math.floor(H * 0.55); y < H; y++)
+      for (let x = Math.floor(W * 0.35); x < Math.floor(W * 0.65); x++) {
+        const i = (y * W + x) * 3
+        const L = luminance(v(img[i], img[i + 1], img[i + 2]))
+        if (L < 0.3) continue
+        const rb = (img[i] - img[i + 2]) / L
+        if (rb < lo) lo = rb
+        if (rb > hi) hi = rb
+      }
+    return hi > lo ? hi - lo : 0
+  }
+  const sceneA = new Scene(dispersiveCausticBox(0.05))
+  const camA = new Camera(dispersiveCausticBox(0.05).camera, W / H)
+  const achroma = renderSPPM(sceneA, camA, settings, W, H, 20, 7, { ...opts, spectralPhotons: false })
+  const sceneB = new Scene(dispersiveCausticBox(0.05))
+  const camB = new Camera(dispersiveCausticBox(0.05).camera, W / H)
+  const spectral = renderSPPM(sceneB, camB, settings, W, H, 20, 7, { ...opts, spectralPhotons: true })
+  const sp = spread(spectral)
+  const ac = spread(achroma)
+  return {
+    pass: sp > 0.2 && ac < 0.02,
+    detail: `chromatic spread spectral=${sp.toFixed(3)} (>0.2), achromatic=${ac.toFixed(3)} (<0.02)`,
+  }
+}
+
+// A sunlit diffuse courtyard (floor + three walls, open to the sky) lit *only*
+// by the environment sun against a black sky. The path tracer reaches the sun by
+// next-event estimation; SPPM reaches it by emitting photons from the sun disc.
+function sunCourtyard(): SceneDef {
+  const q = (p0: Vec3, p1: Vec3, p2: Vec3, p3: Vec3, m: number): SceneDef['prims'] => [
+    { kind: 'tri', p0, p1, p2, material: m },
+    { kind: 'tri', p0, p1: p2, p2: p3, material: m },
+  ]
+  const X = 3
+  const Z = 3
+  const Yc = 3
+  const prims: SceneDef['prims'] = []
+  prims.push(...q(v(-X, 0, -Z), v(X, 0, -Z), v(X, 0, Z), v(-X, 0, Z), 0))
+  prims.push(...q(v(-X, 0, Z), v(X, 0, Z), v(X, Yc, Z), v(-X, Yc, Z), 0))
+  prims.push(...q(v(-X, 0, -Z), v(-X, 0, Z), v(-X, Yc, Z), v(-X, Yc, -Z), 0))
+  prims.push(...q(v(X, 0, -Z), v(X, Yc, -Z), v(X, Yc, Z), v(X, 0, Z), 0))
+  return {
+    name: 'sun-courtyard',
+    materials: [{ kind: 'diffuse', albedo: v(0.7, 0.7, 0.7) }],
+    prims,
+    camera: { eye: v(0, 4.5, -6), target: v(0, 0.4, 0), up: v(0, 1, 0), vfovDeg: 50, aperture: 0, focusDist: 7 },
+    env: { kind: 'gradient', top: v(0, 0, 0), bottom: v(0, 0, 0), sunDir: v(0.25, 1, 0.2), sunColor: v(7, 7, 7), sunSize: 0.06 },
+  }
+}
+
+// 42 — Environment-sun photons reproduce the path tracer. Photon mapping of a
+// distant light is unbiased only if the per-photon flux is normalised correctly
+// for the sun-disc area (πR²) and solid angle (Ω). The oracle: the mean
+// brightness of the sunlit courtyard under SPPM (sun photons) must match the path
+// tracer (sun NEE). Both sample envRadiance over the same cone, so they share an
+// expectation — agreement pins the sun-disc flux S = L·ΣW/lum(L_rep).
+function testEnvPhotonOracle(): { pass: boolean; detail: string } {
+  const W = 14
+  const H = 11
+  const def = sunCourtyard()
+  const pt = imageBlocks(renderImagePT(def, W, H, 800, 1234), W, H)
+  const scene = new Scene(def)
+  const camera = new Camera(def.camera, W / H)
+  const settings = { maxDepth: 6, rrStart: 100, clampIndirect: 0 }
+  const sp = imageBlocks(renderSPPM(scene, camera, settings, W, H, 24, 999, { photonsPerPass: 40000, alpha: 0.7, initialRadiusFrac: 0.05 }), W, H)
+  const rel = Math.abs(pt.all - sp.all) / pt.all
+  return {
+    pass: rel < 0.06 && sp.all > 0,
+    detail: `mean brightness PT=${pt.all.toFixed(4)} SPPM=${sp.all.toFixed(4)} rel=${(rel * 100).toFixed(2)}% (<6%)`,
+  }
+}
+
+// A glass sphere over a white floor under the sun: the sun's parallel beam
+// refracts through the sphere and focuses to a bright caustic spot on the floor —
+// the daylight caustic that only environment photons can resolve.
+function sunCausticScene(): SceneDef {
+  const q = (p0: Vec3, p1: Vec3, p2: Vec3, p3: Vec3, m: number): SceneDef['prims'] => [
+    { kind: 'tri', p0, p1, p2, material: m },
+    { kind: 'tri', p0, p1: p2, p2: p3, material: m },
+  ]
+  const X = 5
+  const Z = 5
+  const Yc = 6
+  const prims: SceneDef['prims'] = []
+  prims.push(...q(v(-X, 0, -Z), v(X, 0, -Z), v(X, 0, Z), v(-X, 0, Z), 0))
+  prims.push(...q(v(-X, 0, Z), v(X, 0, Z), v(X, Yc, Z), v(-X, Yc, Z), 1))
+  prims.push({ kind: 'sphere', center: v(0, 1.8, 0), radius: 1.3, material: 2 })
+  return {
+    name: 'sun-caustic',
+    materials: [{ kind: 'diffuse', albedo: v(0.85, 0.85, 0.85) }, { kind: 'diffuse', albedo: v(0.1, 0.1, 0.12) }, { kind: 'dielectric', ior: 1.5, tint: v(1, 1, 1) }],
+    prims,
+    camera: { eye: v(0, 5.0, -8.5), target: v(0, 0.2, 0), up: v(0, 1, 0), vfovDeg: 50, aperture: 0, focusDist: 9 },
+    env: { kind: 'gradient', top: v(0, 0, 0), bottom: v(0, 0, 0), sunDir: v(0.12, 1, 0.05), sunColor: v(80, 80, 80), sunSize: 0.04 },
+  }
+}
+
+// 43 — Environment photons resolve a daylight caustic. The sun, refracted by the
+// glass sphere, must focus a bright spot on the floor — measurably brighter than
+// the directly-lit floor away from it. This is a light→specular→diffuse path from
+// a *distant* light, which next-event estimation cannot sample (a shadow ray to
+// the sun does not refract through the glass), so it is exactly the daylight
+// transport environment photons exist to capture.
+function testEnvPhotonCaustic(): { pass: boolean; detail: string } {
+  const def = sunCausticScene()
+  const W = 28
+  const H = 22
+  const scene = new Scene(def)
+  const camera = new Camera(def.camera, W / H)
+  const settings = { maxDepth: 10, rrStart: 100, clampIndirect: 0 }
+  const img = renderSPPM(scene, camera, settings, W, H, 28, 3, { photonsPerPass: 90000, alpha: 0.7, initialRadiusFrac: 0.028 })
+  let finite = true
+  for (let i = 0; i < img.length; i++) if (!Number.isFinite(img[i])) finite = false
+  let peak = 0
+  for (let y = Math.floor(H * 0.5); y < H; y++)
+    for (let x = Math.floor(W * 0.35); x < Math.floor(W * 0.7); x++) {
+      const i = (y * W + x) * 3
+      peak = Math.max(peak, luminance(v(img[i], img[i + 1], img[i + 2])))
+    }
+  let kl = 0
+  let kn = 0
+  for (let y = Math.floor(H * 0.5); y < H; y++)
+    for (let x = 0; x < Math.floor(W * 0.12); x++) {
+      const i = (y * W + x) * 3
+      kl += luminance(v(img[i], img[i + 1], img[i + 2]))
+      kn++
+    }
+  const control = kl / Math.max(1, kn)
+  const ratio = peak / Math.max(1e-6, control)
+  return {
+    pass: finite && ratio > 2 && control > 0,
+    detail: `caustic peak L=${peak.toFixed(3)} vs lit-floor L=${control.toFixed(3)} (×${ratio.toFixed(2)} > 2), finite=${finite}`,
+  }
+}
+
 export function runSelfTests(): TestResult[] {
   return [
     test('Vector algebra identities', testVectorMath),
@@ -1260,5 +1479,9 @@ export function runSelfTests(): TestResult[] {
     test('SPPM ≡ path tracer (diffuse box oracle)', testSppmVsPt),
     test('SPPM resolves a caustic (focused & finite)', testSppmCaustic),
     test('SPPM photon-gather grid exact vs brute force', testSppmGrid),
+    test('Spectral photons conserve energy (E_λ[w]=1)', testSpectralPhotonEnergy),
+    test('Spectral caustic is coloured, achromatic is grey', testSpectralCausticColour),
+    test('Env-sun photons ≡ path tracer (daylight oracle)', testEnvPhotonOracle),
+    test('Env photons resolve a daylight caustic (focused)', testEnvPhotonCaustic),
   ]
 }

@@ -908,6 +908,93 @@ export function buildCustomScene(objText: string): SceneDef {
   }
 }
 
+// ---- Scene 11: Spectral Caustic — rainbow caustics (a spectral-SPPM showcase) -
+
+// A dense, dispersive glass sphere and a glass prism above a white catch-floor in
+// an otherwise dark room, lit by one small bright panel. Under the Photon Map
+// integrator, photons commit a hero wavelength on the glass and refract per
+// colour, so the focused caustic on the floor fans into a *rainbow* — the
+// daylight-prism effect, but as a caustic the other integrators cannot resolve.
+function spectralCaustic(): SceneDef {
+  const materials: Material[] = [
+    { kind: 'diffuse', albedo: v(0.86, 0.86, 0.88) }, // 0 white catch floor
+    { kind: 'diffuse', albedo: v(0.04, 0.04, 0.05) }, // 1 dark surrounds
+    { kind: 'emissive', emission: v(170, 158, 140) }, // 2 small bright panel
+    // Dense flint-style glass with strong Cauchy dispersion → a wide rainbow.
+    { kind: 'dielectric', ior: 1.62, tint: v(1, 1, 1), cauchyB: 0.02 }, // 3 dispersive glass
+  ]
+  const X = 6
+  const Y = 8
+  const Z = 6
+  const prims: PrimDef[] = []
+  prims.push(...quad(v(-X, 0, -Z), v(X, 0, -Z), v(X, 0, Z), v(-X, 0, Z), 0)) // white floor
+  prims.push(...quad(v(-X, Y, -Z), v(-X, Y, Z), v(X, Y, Z), v(X, Y, -Z), 1)) // dark ceiling
+  prims.push(...quad(v(-X, 0, Z), v(X, 0, Z), v(X, Y, Z), v(-X, Y, Z), 1)) // dark back
+  prims.push(...quad(v(-X, 0, -Z), v(-X, 0, Z), v(-X, Y, Z), v(-X, Y, -Z), 1)) // dark left
+  prims.push(...quad(v(X, 0, -Z), v(X, Y, -Z), v(X, Y, Z), v(X, 0, Z), 1)) // dark right
+  const lh = Y - 0.02
+  prims.push(...quad(v(-0.7, lh, -0.7), v(0.7, lh, -0.7), v(0.7, lh, 0.7), v(-0.7, lh, 0.7), 2)) // panel
+  prims.push({ kind: 'sphere', center: v(-1.7, 2.2, 0.2), radius: 1.25, material: 3 }) // dispersive lens
+  prims.push(...prism(2.4, 1.4, 0.0, 0.9, 3)) // dispersive prism
+  return {
+    name: 'Spectral Caustic',
+    materials,
+    prims,
+    camera: {
+      eye: v(0, 5.6, -9),
+      target: v(-0.3, 0.6, 0.4),
+      up: v(0, 1, 0),
+      vfovDeg: 46,
+      aperture: 0,
+      focusDist: 9,
+    },
+    env: { kind: 'solid', color: v(0, 0, 0) },
+  }
+}
+
+// ---- Scene 12: Daylight Lens — a sun caustic (an environment-photon showcase) -
+
+// A glass sphere and a gold torus on a tiled floor under the analytic sky. The
+// sun is a *distant* light, so the caustic it focuses through the glass onto the
+// floor is a light→specular→diffuse path next-event estimation cannot sample —
+// only environment photons, emitted from the sun disc, resolve it. Best viewed
+// with the Photon Map integrator.
+function daylightLens(): SceneDef {
+  const materials: Material[] = [
+    {
+      kind: 'diffuse',
+      albedo: v(0.85, 0.85, 0.86),
+      tex: { kind: 'checker', even: v(0.82, 0.82, 0.84), odd: v(0.34, 0.36, 0.4), scale: 0.7 },
+    }, // 0 tiled floor
+    { kind: 'dielectric', ior: 1.5, tint: v(1, 1, 1) }, // 1 clear glass
+    { kind: 'metal', albedo: v(0.97, 0.79, 0.4), roughness: 0.1 }, // 2 gold torus
+  ]
+  const prims: PrimDef[] = []
+  const g = 40
+  prims.push(...quad(v(-g, 0, -g), v(g, 0, -g), v(g, 0, g), v(-g, 0, g), 0))
+  prims.push({ kind: 'sphere', center: v(-1.6, 1.5, 0), radius: 1.5, material: 1 }) // glass lens
+  prims.push(
+    ...emitMesh(
+      transformMesh(torus(1.0, 0.36, 56, 28), { translate: v(2.4, 1.0, 0.3), rotate: { axis: v(1, 0, 0.3), angle: 1.1 } }),
+      2,
+    ),
+  )
+  return {
+    name: 'Daylight Lens',
+    materials,
+    prims,
+    camera: {
+      eye: v(0, 3.4, 10),
+      target: v(-0.4, 0.4, 0),
+      up: v(0, 1, 0),
+      vfovDeg: 42,
+      aperture: 0,
+      focusDist: 10,
+    },
+    env: { kind: 'sky', sunDir: sunFromAzEl(150, 38), turbidity: 2.2, intensity: 1.0, sunSize: 0.035 },
+  }
+}
+
 function customScene(): SceneDef {
   return buildCustomScene(CUBE_OBJ)
 }
@@ -951,6 +1038,8 @@ export const SCENES: ScenePreset[] = [
   { id: 'gallery', label: 'Material Gallery', build: gallery },
   { id: 'caustic', label: 'Caustic Room', build: causticRoom },
   { id: 'pool', label: 'Caustic Pool', build: causticPool },
+  { id: 'spectral-caustic', label: 'Spectral Caustic', build: spectralCaustic },
+  { id: 'daylight-lens', label: 'Daylight Lens', build: daylightLens, sky: true },
   { id: 'prism', label: 'Prism', build: prismScene },
   { id: 'menagerie', label: 'Glass Menagerie', build: glassMenagerie },
   { id: 'textured', label: 'Textured Studio', build: texturedStudio },

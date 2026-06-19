@@ -71,6 +71,21 @@ export function About() {
           <em>Caustic Room</em> and switch to <strong>Photon Map</strong>: the caustics resolve where
           the other integrators only sputter.
         </Card>
+        <Card title="Spectral & daylight photons">
+          The photon mapper is now <em>colour-</em> and <em>daylight-complete</em>. <strong>Spectral
+          photons:</strong> the first time a photon strikes dispersive glass it commits a random hero
+          wavelength and carries that colour's weight, so its onward refraction bends per-colour and the
+          caustic it lays down is a <em>rainbow</em> — a prism's spectrum, but focused as a caustic the
+          camera-side integrators can't sample. Because the per-wavelength weights average to white the
+          total caustic energy is unchanged; the <strong>Verify</strong> tab proves a dispersive caustic
+          carries the same energy as its achromatic twin while measurably spreading into colour.{' '}
+          <strong>Environment photons:</strong> the sun is now a photon emitter too — photons leave a disc
+          sized to the scene and rain in as a parallel beam — so daylight scenes get photon-mapped sun
+          caustics and indirect light, not just the lamp-lit ones. Verify shows the sun-lit render matches
+          the path tracer (the distant-light flux normalisation) and that the sun focuses a real caustic
+          through glass. Try <em>Spectral Caustic</em> and <em>Daylight Lens</em> on <strong>Photon
+          Map</strong>.
+        </Card>
         <Card title="Microfacet BSDFs">
           Surfaces are Lambertian diffuse, GGX/Trowbridge-Reitz metal with height-correlated Smith
           shadowing, or dielectric glass — smooth or <em>frosted</em>, the latter refracting through a
