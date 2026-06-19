@@ -263,6 +263,10 @@ export class Engine {
     if (stmt.using === 'GIN') {
       if (stmt.columns.length !== 1) throw new SqlError('a GIN index covers exactly one column', 'ddl')
       if (stmt.unique) throw new SqlError('a GIN index cannot be UNIQUE', 'ddl')
+      const gt = table.columnType(stmt.columns[0])
+      if (gt !== 'TSVECTOR' && gt !== 'ARRAY') {
+        throw new SqlError(`a GIN index requires a TSVECTOR or array column (got ${gt})`, 'ddl')
+      }
       table.createGinIndex(stmt.name, stmt.columns[0])
       return msg(`GIN index "${stmt.name}" created on ${stmt.table} (${cols})`, sql, t0)
     }

@@ -16,8 +16,9 @@
 import { BTree, type BTreeStats, type IndexKey } from './storage/btree'
 import { gatherTableStats, type TableStat } from './stats'
 import { compileExpr, type CompileCtx, type Evaluator } from './eval'
-import { SqlError, coerceTo, formatValue, valuesEqual, type ColumnType, type SqlValue } from './types'
+import { SqlError, coerceTo, formatValue, valuesEqual, hashKey, type ColumnType, type SqlValue } from './types'
 import { isTsVector, asTsVector, type GinPostings } from './fts'
+import { isArray } from './array'
 import {
   emptyConstraints,
   type CheckConstraint,
@@ -66,11 +67,20 @@ export class IndexHandle {
   }
 }
 
+/** The GIN posting key for one array element — a canonical, type-aware string so
+ *  the build side and the probe side agree (e.g. integer 2 and the search value 2
+ *  map to the same key). Distinct from any tsvector lexeme: the two never share a
+ *  column, so the key spaces can't collide. */
+export function arrayGinKey(v: SqlValue): string {
+  return hashKey([v])
+}
+
 /**
- * A GIN (Generalized INverted) index over a single `tsvector` column: an
- * inverted map from each lexeme to the set of rowids whose document contains it.
- * This is what makes `col @@ query` sublinear — the planner walks the query to a
- * small candidate rowset instead of scanning the whole heap.
+ * A GIN (Generalized INverted) index over a single `tsvector` *or* array column:
+ * an inverted map from each key (a tsvector lexeme, or an array element) to the
+ * set of rowids whose cell contains it. This is what makes `col @@ query` and
+ * `col @> array` / `col && array` / `x = ANY(col)` sublinear — the planner walks
+ * the query to a small candidate rowset instead of scanning the whole heap.
  */
 export class GinIndexHandle implements GinPostings {
   readonly name: string
@@ -85,23 +95,29 @@ export class GinIndexHandle implements GinPostings {
     this.columnIndex = columnIndex
   }
 
-  /** The distinct lexemes in a row's indexed cell (or [] if not a tsvector). */
-  private lexemesOf(row: Row): string[] {
+  /** The distinct GIN keys in a row's indexed cell: tsvector lexemes, or the
+   *  (non-null) elements of an array. Empty if the cell is neither. */
+  private keysOf(row: Row): string[] {
     const cell = row[this.columnIndex]
     if (cell === null || cell === undefined) return []
+    if (isArray(cell)) {
+      const out: string[] = []
+      for (const x of cell.items) if (x !== null) out.push(arrayGinKey(x))
+      return out
+    }
     const vec = isTsVector(cell) ? cell : asTsVector(cell)
     return vec ? vec.lex.map((l) => l.word) : []
   }
 
   addRow(rowid: number, row: Row): void {
-    for (const word of this.lexemesOf(row)) {
+    for (const word of this.keysOf(row)) {
       let s = this.postings.get(word)
       if (!s) { s = new Set(); this.postings.set(word, s) }
       s.add(rowid)
     }
   }
   removeRow(rowid: number, row: Row): void {
-    for (const word of this.lexemesOf(row)) {
+    for (const word of this.keysOf(row)) {
       const s = this.postings.get(word)
       if (s) { s.delete(rowid); if (s.size === 0) this.postings.delete(word) }
     }

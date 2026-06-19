@@ -187,6 +187,15 @@ SELECT ARRAY[3,1,2]               AS arr,
        2 = ANY(ARRAY[1,2,3])      AS has_two;`,
   },
   {
+    title: 'Arrays — the GIN index path (EXPLAIN)',
+    sql: `-- A GIN inverted index over an array column makes @>, && and = ANY
+-- sublinear: the planner probes the element posting lists, then rechecks.
+CREATE TABLE IF NOT EXISTS doc_tags (id INT, tags TEXT[]);
+CREATE INDEX IF NOT EXISTS doc_tags_gin ON doc_tags USING GIN (tags);
+INSERT INTO doc_tags VALUES (1, ARRAY['sql','db']), (2, ARRAY['db','gin']);
+EXPLAIN SELECT id FROM doc_tags WHERE tags @> ARRAY['db'];`,
+  },
+  {
     title: 'Arrays — unnest() rows out, array_agg() rolls back',
     sql: `-- unnest() expands an array into rows (compose it with joins / WHERE /
 -- GROUP BY like any table); array_agg() is the inverse, collecting rows.

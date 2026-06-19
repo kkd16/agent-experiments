@@ -451,6 +451,100 @@ export class GinScan implements Operator {
   }
 }
 
+// GIN index scan over an *array* column: probe the inverted index for the search
+// element keys, combine the posting lists (AND for `@>`, OR for `&&` / `= ANY`)
+// into a candidate rowid set, then recheck the exact predicate on each candidate
+// (GIN membership is element-level, so a multi-element `@>` or duplicate handling
+// still needs the precise operator to confirm). Mirrors the tsvector GinScan.
+export class ArrayGinScan implements Operator {
+  readonly schema: Schema
+  estRows: number
+  estCost: number
+  actualRows = 0
+  private readonly table: Table
+  private readonly gin: GinIndexHandle
+  private readonly keys: string[]
+  private readonly mode: 'and' | 'or'
+  private readonly recheck: Evaluator
+  private readonly label: string
+  private rows: Row[] = []
+  private pos = 0
+  private matched = 0
+  private candidateCount = 0
+
+  constructor(
+    table: Table,
+    schema: Schema,
+    gin: GinIndexHandle,
+    keys: string[],
+    mode: 'and' | 'or',
+    recheck: Evaluator,
+    label: string,
+    estRows: number,
+  ) {
+    this.table = table
+    this.schema = schema
+    this.gin = gin
+    this.keys = keys
+    this.mode = mode
+    this.recheck = recheck
+    this.label = label
+    this.estRows = Math.max(1, Math.round(estRows))
+    this.estCost = Math.max(1, this.keys.length) * CPU_OP + this.estRows * CPU_TUPLE
+  }
+  private candidates(): Set<number> {
+    if (this.keys.length === 0) return new Set()
+    if (this.mode === 'or') {
+      const out = new Set<number>()
+      for (const k of this.keys) {
+        const ids = this.gin.exact(k)
+        if (ids) for (const id of ids) out.add(id)
+      }
+      return out
+    }
+    // AND: start from the smallest posting list and intersect the rest. Any key
+    // with no posting list makes the result empty.
+    let acc: Set<number> | null = null
+    for (const k of this.keys) {
+      const ids = this.gin.exact(k)
+      if (!ids) return new Set()
+      if (acc === null) acc = new Set(ids)
+      else for (const id of [...acc]) if (!ids.has(id)) acc.delete(id)
+    }
+    return acc ?? new Set()
+  }
+  open() {
+    const rowids = [...this.candidates()].sort((a, b) => a - b)
+    this.candidateCount = rowids.length
+    this.rows = []
+    for (const rid of rowids) {
+      const row = this.table.heap.get(rid)
+      if (row && this.recheck(row) === true) this.rows.push(row)
+    }
+    this.matched = this.rows.length
+    this.pos = 0
+  }
+  next(): Row | null {
+    if (this.pos >= this.rows.length) return null
+    this.actualRows++
+    return this.rows[this.pos++]
+  }
+  close() {
+    this.rows = []
+  }
+  plan(): PlanNode {
+    return {
+      op: 'GinScan',
+      detail: `${this.table.name} via ${this.gin.name}`,
+      estRows: this.estRows,
+      estCost: this.estCost,
+      actualRows: this.actualRows,
+      extra: [`${this.label} on ${this.gin.column}: ${this.candidateCount} candidates → recheck → ${this.matched || this.estRows} rows`],
+      children: [],
+    }
+  }
+}
+
 function keysEqual(a: IndexKey, b: IndexKey): boolean {
   if (a.length !== b.length) return false
   for (let i = 0; i < a.length; i++) if (orderValues(a[i], b[i]) !== 0) return false

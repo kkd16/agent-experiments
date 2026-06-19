@@ -49,7 +49,7 @@ plan visualizer and a built-in self-test suite.
   phrase (`<->`) semantics; `ts_rank`/`ts_rank_cd`; `ts_headline`; and the GIN candidate walker
 - `src/db/engine.ts` — top-level: DDL/DML/SELECT/EXPLAIN, `RETURNING`, `MERGE`, `TRUNCATE`, and
   snapshot transactions with `SAVEPOINT`/`ROLLBACK TO`/`RELEASE`
-- `src/db/tests.ts` — 336 engine self-tests (run head-less in CI and in the Self-tests tab)
+- `src/db/tests.ts` — 341 engine self-tests (run head-less in CI and in the Self-tests tab)
 - `src/ui/*` — the IDE: editor, results grid, schema browser, plan tree, docs
 
 ## Ideas / backlog
@@ -469,10 +469,14 @@ on top, for 336.
       (scope + conformance + lint + build) all green.
 
 #### v12 — next steps for arrays (backlog)
-- [ ] **A GIN index over an array column** (`CREATE INDEX … USING GIN (tags)`) — generalise the
-      tsvector GIN to extract array *elements* as keys, and teach the planner to turn `tags @> …`,
-      `tags && …` and `x = ANY(tags)` into a posting-list candidate probe + exact recheck (a GinScan
-      in EXPLAIN), byte-for-byte identical to the sequential filter — mirroring the FTS GIN path.
+- [x] **A GIN index over an array column** (`CREATE INDEX … USING GIN (tags)`) — generalised the
+      `GinIndexHandle` to extract array *elements* as posting keys (`keysOf` branches on the cell:
+      tsvector lexemes or array elements via a canonical per-element key), and taught the planner a
+      new `tryArrayGinScan` that turns `tags @> …` (AND of element postings), `tags && …` / `x =
+      ANY(tags)` (OR), and the symmetric `array <@ tags` into a candidate probe + exact recheck — a
+      GinScan in EXPLAIN, **byte-for-byte identical** to the sequential filter (5 differential
+      self-tests over a 120-row table, incl. duplicate keys + a residual filter), maintained across
+      INSERT/UPDATE/DELETE and snapshot restore. Mirrors the FTS GIN path.
 - [ ] **`array_agg(x ORDER BY y)`** — an ordered aggregate (the WITHIN-GROUP-less ORDER BY form).
 - [ ] **Element-typed schema bindings** — carry `elemType` on `Binding` so a subscript infers its
       element type (today a single subscript reports TEXT for display).
@@ -534,7 +538,7 @@ on top, for 336.
   `to_json`/`::json` interop, results-grid + CSV rendering, and every AST walker were updated. All new
   AST node kinds compiled clean (TS exhaustiveness caught the value-returning switches; the
   void-returning walkers were updated by hand). 17 new differential self-tests; the suite went
-  319 → 336, all green, and `verify-project.mjs` (scope + conformance + lint + build) passes.
+  319 → 341, all green (incl. a GIN inverted index over array columns: @>, && and = ANY accelerated by a GinScan, byte-for-byte identical to the sequential filter), and `verify-project.mjs` (scope + conformance + lint + build) passes.
 - 2026-06-18 (claude / claude-opus-4-8): **v11.0 — productive DML & transaction control.** Grew
   the *write* surface to match the read surface, kept contained to `ast.ts`, `lexer.ts`, `parser.ts`,
   `engine.ts`, `catalog.ts`, plus a new operator in `operators.ts` and one planner hook — no storage

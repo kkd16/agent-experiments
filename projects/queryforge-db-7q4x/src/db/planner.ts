@@ -34,7 +34,8 @@ import {
   type WindowSpec,
   type FrameBound,
 } from './ast'
-import { Database, Table, type IndexHandle, type Row } from './catalog'
+import { Database, Table, arrayGinKey, type IndexHandle, type Row } from './catalog'
+import { isArray } from './array'
 import type { IndexKey } from './storage/btree'
 import { eqSelectivity, nullSelectivity, rangeSelectivity, type ColumnStat } from './stats'
 import { asTsQuery } from './fts'
@@ -44,6 +45,7 @@ import {
   Distinct,
   Filter,
   GinScan,
+  ArrayGinScan,
   HashJoin,
   HashSemiJoin,
   IndexOnlyScan,
@@ -869,6 +871,74 @@ function tryGinScan(table: Table, baseSchema: Schema, preds: Expr[]): IndexPlan 
   return null
 }
 
+// Use a GIN inverted index over an *array* column for `col @> array`,
+// `array <@ col`, `col && array` or `x = ANY(col)`: probe the element posting
+// lists (AND for @>, OR for && / = ANY), then recheck the exact predicate.
+function tryArrayGinScan(table: Table, baseSchema: Schema, preds: Expr[]): IndexPlan | null {
+  for (const p of preds) {
+    let colExpr: ColumnExpr | null = null
+    let constExpr: Expr | null = null
+    let mode: 'and' | 'or' = 'and'
+    let single = false // a `= ANY` probes a single search element, not an array
+    if (p.kind === 'binary' && (p.op === '@>' || p.op === '<@' || p.op === '&&')) {
+      const lc = p.left.kind === 'column' ? (p.left as ColumnExpr) : null
+      const rc = p.right.kind === 'column' ? (p.right as ColumnExpr) : null
+      if (p.op === '@>') {
+        if (lc) { colExpr = lc; constExpr = p.right; mode = 'and' }
+      } else if (p.op === '<@') {
+        // `const <@ col` ≡ `col @> const`.
+        if (rc) { colExpr = rc; constExpr = p.left; mode = 'and' }
+      } else {
+        // `&&` is symmetric.
+        if (lc) { colExpr = lc; constExpr = p.right; mode = 'or' }
+        else if (rc) { colExpr = rc; constExpr = p.left; mode = 'or' }
+      }
+    } else if (p.kind === 'quantified_array' && p.op === '=' && p.quantifier === 'ANY' && p.array.kind === 'column') {
+      colExpr = p.array as ColumnExpr
+      constExpr = p.expr
+      mode = 'or'
+      single = true
+    }
+    if (!colExpr || !constExpr) continue
+    let colType: ColumnType
+    try {
+      colType = table.columnType(colExpr.name)
+    } catch {
+      continue
+    }
+    if (colType !== 'ARRAY') continue
+    const gin = table.ginIndexForColumn(colExpr.name)
+    if (!gin) continue
+    const cval = evalConstFull(constExpr)
+    if (cval === undefined) continue
+    let keys: string[]
+    if (single) {
+      if (cval === null) continue
+      keys = [arrayGinKey(cval)]
+    } else {
+      if (!isArray(cval)) continue
+      keys = []
+      for (const x of cval.items) if (x !== null) keys.push(arrayGinKey(x))
+    }
+    // An empty key set (e.g. `col @> ARRAY[]` — true for every row) isn't safely
+    // index-bounded; let the sequential filter handle it.
+    if (keys.length === 0) continue
+    let recheck: Evaluator
+    try {
+      recheck = compileExpr(p, { resolve: (t, n) => resolveColumn(baseSchema, t, n) })
+    } catch {
+      continue
+    }
+    const label = p.kind === 'binary' ? p.op : '= ANY'
+    const estRows = Math.max(1, Math.round(table.rowCount() * 0.1))
+    return {
+      op: new ArrayGinScan(table, baseSchema, gin, keys, mode, recheck, label, estRows),
+      consumed: new Set<Expr>([p]),
+    }
+  }
+  return null
+}
+
 // Pick the best index access path: a single (composite) index scan, a bitmap AND
 // of several single-column indexes, a bitmap OR over an IN-list, or a GIN scan
 // for a full-text `@@` predicate — whichever consumes the most predicates. Ties
@@ -885,6 +955,7 @@ function chooseIndexAccess(
     tryBitmapAnd(table, schema, preds, sc),
     tryBitmapOr(table, schema, preds, sc),
     tryGinScan(table, schema, preds),
+    tryArrayGinScan(table, schema, preds),
   ].filter((c): c is IndexPlan => c !== null)
   if (candidates.length === 0) return null
   let best = candidates[0]

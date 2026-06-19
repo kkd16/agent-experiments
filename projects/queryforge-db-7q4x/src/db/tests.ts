@@ -2706,6 +2706,68 @@ test('arrays', 'persistence: arrays survive a snapshot round-trip', () => {
   assert(formatValue(rows[0][1]) === '{3,1}' && formatValue(rows[1][1]) === '{1,2}', 'array cells restored intact')
 })
 
+// A table of int-arrays + a GIN index, and a twin with no index, for differential
+// checks that the GinScan returns byte-for-byte what the sequential filter does.
+function arrayGinPair(): { gin: Engine; seq: Engine } {
+  const rows: string[] = []
+  for (let i = 1; i <= 120; i++) rows.push(`(${i}, ARRAY[${i % 7}, ${i % 11}, ${i % 13}])`)
+  const ddl = `CREATE TABLE posts (id INT, tags INT[]); INSERT INTO posts VALUES ${rows.join(',')};`
+  const gin = new Engine()
+  gin.execute(ddl)
+  gin.execute(`CREATE INDEX posts_gin ON posts USING GIN (tags)`)
+  const seq = new Engine()
+  seq.execute(ddl)
+  return { gin, seq }
+}
+test('arrays', 'a GIN index requires a TSVECTOR or array column', () => {
+  const e = new Engine()
+  e.execute(`CREATE TABLE bad (id INT, n INT)`)
+  throws(e, `CREATE INDEX g ON bad USING GIN (n)`, 'GIN index requires')
+})
+test('arrays', 'EXPLAIN chooses a GinScan for array predicates', () => {
+  const { gin } = arrayGinPair()
+  for (const pred of ['tags @> ARRAY[1,2]', 'tags && ARRAY[5,6]', '4 = ANY(tags)', 'ARRAY[3] <@ tags']) {
+    const r = lastResult(gin, `EXPLAIN SELECT id FROM posts WHERE ${pred}`)
+    assert(JSON.stringify(r).includes('GinScan'), `plan for "${pred}" should use a GinScan`)
+  }
+})
+test('arrays', 'array GinScan is byte-for-byte identical to the sequential filter', () => {
+  const { gin, seq } = arrayGinPair()
+  const preds = [
+    'tags @> ARRAY[1,2]',
+    'ARRAY[3] <@ tags',
+    'tags && ARRAY[5,6]',
+    '4 = ANY(tags)',
+    'tags @> ARRAY[0,0]', // duplicate keys
+    'tags @> ARRAY[1] AND id > 50', // GIN + a residual filter
+  ]
+  for (const pred of preds) {
+    const a = rowsOf(gin, `SELECT id FROM posts WHERE ${pred} ORDER BY id`)
+    const b = rowsOf(seq, `SELECT id FROM posts WHERE ${pred} ORDER BY id`)
+    assert(eq(a, b), `GinScan vs seq differ for "${pred}"`)
+  }
+})
+test('arrays', 'array GIN index is maintained across INSERT / UPDATE / DELETE', () => {
+  const e = new Engine()
+  e.execute(`CREATE TABLE posts (id INT, tags INT[])`)
+  e.execute(`CREATE INDEX posts_gin ON posts USING GIN (tags)`)
+  e.execute(`INSERT INTO posts VALUES (1, ARRAY[1,2]), (2, ARRAY[2,3])`)
+  assert(eq(rowsOf(e, `SELECT id FROM posts WHERE tags @> ARRAY[2] ORDER BY id`), [[1], [2]]), 'both contain 2')
+  e.execute(`UPDATE posts SET tags = ARRAY[9] WHERE id = 1`)
+  assert(eq(rowsOf(e, `SELECT id FROM posts WHERE tags @> ARRAY[2] ORDER BY id`), [[2]]), 'update removed id 1 from the 2-postings')
+  assert(eq(rowsOf(e, `SELECT id FROM posts WHERE 9 = ANY(tags)`), [[1]]), 'and added it to the 9-postings')
+  e.execute(`DELETE FROM posts WHERE id = 2`)
+  assert(rowsOf(e, `SELECT id FROM posts WHERE tags @> ARRAY[2]`).length === 0, 'delete cleared the 2-postings')
+})
+test('arrays', 'array GIN survives a snapshot round-trip and still plans', () => {
+  const { gin } = arrayGinPair()
+  const e2 = new Engine(Database.restore(gin.db.snapshot()))
+  const r = lastResult(e2, `EXPLAIN SELECT id FROM posts WHERE tags @> ARRAY[1,2]`)
+  assert(JSON.stringify(r).includes('GinScan'), 'restored array GIN index still planned')
+  const a = rowsOf(e2, `SELECT id FROM posts WHERE tags @> ARRAY[1,2] ORDER BY id`)
+  assert(a.length > 0, 'and still returns rows')
+})
+
 // --- sample queries (catalog showcase) -------------------------------------
 test('samples', 'every shipped sample query runs against the seed', () => {
   for (const q of SAMPLE_QUERIES) {

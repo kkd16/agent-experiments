@@ -178,6 +178,7 @@ const SECTIONS: Section[] = [
       { syntax: "array_to_string(a, sep [, null_str]) · string_to_array(t, sep [, null_str])", note: 'Render an array to a delimited string and back; an optional null-string controls how NULL elements are emitted / recognised.' },
       { syntax: 'array_agg(x [DISTINCT]) · to_json(a) · a::JSON', note: 'Aggregate rows into an array (arrival order, NULLs kept; DISTINCT de-duplicates), and convert an array to a JSON array.' },
       { syntax: 'FROM unnest(a) AS t(v) · generate_subscripts(a, d)', note: 'Set-returning table functions: expand an array into one row per element, or yield its 1..length index series. Compose with joins / WHERE / GROUP BY, and (via LATERAL) unnest a column per row.' },
+      { syntax: 'CREATE INDEX i ON t USING GIN (arr_col)', note: 'A GIN inverted index (element → row list) over an array column, maintained on every insert/update/delete and across snapshots. The planner turns col @> …, col && … and x = ANY(col) into a posting-list candidate probe (AND for @>, OR for && / ANY) plus an exact recheck — a GinScan in EXPLAIN — byte-for-byte identical to, but sublinear vs, the sequential filter.' },
     ],
   },
   {
