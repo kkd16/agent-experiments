@@ -10,6 +10,10 @@ export class Framebuffer {
   readonly color: Uint32Array
   readonly depth: Float32Array
   readonly overdraw: Uint16Array
+  // Linear HDR scene buffer (3 floats per pixel). The shaded/albedo/clip modes
+  // accumulate *un-tone-mapped* radiance here; the resolve pass turns it into the
+  // packed `color` buffer. Debug modes write `color` directly and ignore this.
+  readonly hdr: Float32Array
   private image: ImageData | null = null
   private view: Uint32Array | null = null
 
@@ -20,6 +24,7 @@ export class Framebuffer {
     this.color = new Uint32Array(n)
     this.depth = new Float32Array(n)
     this.overdraw = new Uint16Array(n)
+    this.hdr = new Float32Array(n * 3)
   }
 
   // Pack 0..1 linear-ish rgb (already gamma-encoded by the caller) into ABGR.
@@ -34,19 +39,46 @@ export class Framebuffer {
     return Framebuffer.pack(c[0], c[1], c[2], a)
   }
 
-  clear(bgTop: Vec3, bgBottom: Vec3, farDepth = Infinity): void {
+  // Clear depth/overdraw and paint the background gradient. In `hdr` mode the
+  // gradient goes (linearly) into the HDR buffer for the resolve pass; otherwise
+  // it is gamma-packed straight into `color` for the debug views.
+  clear(bgTop: Vec3, bgBottom: Vec3, hdr: boolean, farDepth = Infinity): void {
     const { width, height, color, depth, overdraw } = this
     depth.fill(farDepth)
     overdraw.fill(0)
-    // vertical gradient background
     for (let y = 0; y < height; y++) {
       const t = height > 1 ? y / (height - 1) : 0
       const r = bgTop[0] + (bgBottom[0] - bgTop[0]) * t
       const g = bgTop[1] + (bgBottom[1] - bgTop[1]) * t
       const b = bgTop[2] + (bgBottom[2] - bgTop[2]) * t
-      const packed = Framebuffer.pack(r, g, b)
       const row = y * width
-      for (let x = 0; x < width; x++) color[row + x] = packed
+      if (hdr) {
+        for (let x = 0; x < width; x++) {
+          const o = (row + x) * 3
+          this.hdr[o] = r
+          this.hdr[o + 1] = g
+          this.hdr[o + 2] = b
+        }
+      } else {
+        const packed = Framebuffer.pack(r, g, b)
+        for (let x = 0; x < width; x++) color[row + x] = packed
+      }
+    }
+  }
+
+  // Overwrite the HDR buffer with a per-pixel skybox. `dirOf(x, y)` returns the
+  // world-space view ray for a pixel centre; `sky` returns its HDR radiance.
+  fillSky(dirOf: (x: number, y: number) => Vec3, sky: (dir: Vec3) => Vec3): void {
+    const { width, height, hdr } = this
+    for (let y = 0; y < height; y++) {
+      const row = y * width
+      for (let x = 0; x < width; x++) {
+        const c = sky(dirOf(x, y))
+        const o = (row + x) * 3
+        hdr[o] = c[0]
+        hdr[o + 1] = c[1]
+        hdr[o + 2] = c[2]
+      }
     }
   }
 

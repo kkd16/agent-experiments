@@ -3,19 +3,23 @@
 // and steps the three barycentric edge functions incrementally. Attributes are
 // interpolated perspective-correctly (×1/w, then ÷ the interpolated 1/w); depth
 // is linear in screen space and goes through a z-buffer.
+//
+// The beauty pass ('shaded') writes *linear* radiance into the HDR buffer so the
+// resolve pass can tone-map it; every debug view packs straight into `color`.
 import { clamp01 } from '../math/scalar.ts'
-import type { Vec2, Vec3 } from '../math/vec.ts'
-import { dot, normalize, sub } from '../math/vec.ts'
+import type { Vec2, Vec3, Vec4 } from '../math/vec.ts'
+import { cross, dot, length, negate, normalize, scale, sub } from '../math/vec.ts'
 import { Framebuffer } from './framebuffer.ts'
-import { gammaEncode, shadeFragment } from './shading.ts'
+import { gammaEncode, shadeSurface } from './shading.ts'
 import type { Material, ShadeContext } from './shading.ts'
-import type { Texture } from './texture.ts'
+import type { NormalMap, Texture } from './texture.ts'
 import type { FrameStats, PipeVertex, RenderMode } from './types.ts'
 
 export interface Uniforms {
   mode: RenderMode
   material: Material
   texture: Texture | null
+  normalMap: NormalMap | null
   shade: ShadeContext
   near: number
   far: number
@@ -29,6 +33,7 @@ interface ScreenVertex {
   iw: number // 1 / clip.w
   world: Vec3
   normal: Vec3
+  tangent: Vec4
   uv: Vec2
 }
 
@@ -44,6 +49,7 @@ const project = (v: PipeVertex, w: number, h: number): ScreenVertex => {
     iw,
     world: v.world,
     normal: v.normal,
+    tangent: v.tangent,
     uv: v.uv,
   }
 }
@@ -53,6 +59,22 @@ const linearDepth = (ndcZ: number, near: number, far: number): number => {
   const z = ndcZ // already −1..1
   const eye = (2 * near * far) / (far + near - z * (far - near))
   return clamp01((eye - near) / (far - near))
+}
+
+// Perturb a geometric normal by a tangent-space normal map sample. Builds an
+// orthonormal TBN from the interpolated tangent (Gram–Schmidt against n) and the
+// handedness in tangent.w.
+function perturbNormal(n: Vec3, t: Vec3, handed: number, map: NormalMap, u: number, v: number): Vec3 {
+  let T = sub(t, scale(n, dot(n, t)))
+  if (length(T) < 1e-6) return n
+  T = normalize(T)
+  const B = scale(cross(n, T), handed)
+  const m = map(u, v)
+  return normalize([
+    T[0] * m[0] + B[0] * m[1] + n[0] * m[2],
+    T[1] * m[0] + B[1] * m[1] + n[1] * m[2],
+    T[2] * m[0] + B[2] * m[1] + n[2] * m[2],
+  ])
 }
 
 const HEAT: Vec3[] = [
@@ -67,7 +89,7 @@ export function rasterizeTriangle(
   stats: FrameStats,
   cullBack: boolean,
 ): void {
-  const { width: W, height: H, color, depth, overdraw } = fb
+  const { width: W, height: H, color, depth, overdraw, hdr } = fb
   const a = project(tri[0], W, H)
   const b = project(tri[1], W, H)
   const c = project(tri[2], W, H)
@@ -102,6 +124,7 @@ export function rasterizeTriangle(
 
   const mode = uni.mode
   const insideSign = area > 0 ? 1 : -1
+  const needNormalMap = uni.normalMap !== null && (mode === 'shaded' || mode === 'normals')
 
   for (let y = minY; y <= maxY; y++) {
     let wA = rowA
@@ -119,62 +142,78 @@ export function rasterizeTriangle(
 
         if (mode === 'overdraw') {
           // colour applied in a post-pass; just count here.
-        } else {
-          const z = l0 * a.z + l1 * b.z + l2 * c.z
-          if (z < depth[idx]) {
-            const iw = l0 * a.iw + l1 * b.iw + l2 * c.iw
-            const inv = 1 / iw
-            // perspective-correct attributes
-            const u = (l0 * a.uv[0] * a.iw + l1 * b.uv[0] * b.iw + l2 * c.uv[0] * c.iw) * inv
-            const v = (l0 * a.uv[1] * a.iw + l1 * b.uv[1] * b.iw + l2 * c.uv[1] * c.iw) * inv
+          wA += sx1; wB += sx2; wC += sx0
+          continue
+        }
 
-            let packed: number
-            if (mode === 'depth') {
-              const d = 1 - linearDepth(z, uni.near, uni.far)
-              packed = Framebuffer.pack(d, d, d)
+        const z = l0 * a.z + l1 * b.z + l2 * c.z
+        if (z < depth[idx]) {
+          const iw = l0 * a.iw + l1 * b.iw + l2 * c.iw
+          const inv = 1 / iw
+          // perspective-correct attributes
+          const u = (l0 * a.uv[0] * a.iw + l1 * b.uv[0] * b.iw + l2 * c.uv[0] * c.iw) * inv
+          const v = (l0 * a.uv[1] * a.iw + l1 * b.uv[1] * b.iw + l2 * c.uv[1] * c.iw) * inv
+
+          if (mode === 'depth') {
+            const d = 1 - linearDepth(z, uni.near, uni.far)
+            color[idx] = Framebuffer.pack(d, d, d)
+          } else {
+            const nx = (l0 * a.normal[0] * a.iw + l1 * b.normal[0] * b.iw + l2 * c.normal[0] * c.iw) * inv
+            const ny = (l0 * a.normal[1] * a.iw + l1 * b.normal[1] * b.iw + l2 * c.normal[1] * c.iw) * inv
+            const nz = (l0 * a.normal[2] * a.iw + l1 * b.normal[2] * b.iw + l2 * c.normal[2] * c.iw) * inv
+
+            if (mode === 'uv') {
+              color[idx] = Framebuffer.pack(u, v, 0.4)
             } else {
-              const nx = (l0 * a.normal[0] * a.iw + l1 * b.normal[0] * b.iw + l2 * c.normal[0] * c.iw) * inv
-              const ny = (l0 * a.normal[1] * a.iw + l1 * b.normal[1] * b.iw + l2 * c.normal[1] * c.iw) * inv
-              const nz = (l0 * a.normal[2] * a.iw + l1 * b.normal[2] * b.iw + l2 * c.normal[2] * c.iw) * inv
+              const wx = (l0 * a.world[0] * a.iw + l1 * b.world[0] * b.iw + l2 * c.world[0] * c.iw) * inv
+              const wy = (l0 * a.world[1] * a.iw + l1 * b.world[1] * b.iw + l2 * c.world[1] * c.iw) * inv
+              const wz = (l0 * a.world[2] * a.iw + l1 * b.world[2] * b.iw + l2 * c.world[2] * c.iw) * inv
+              const world: Vec3 = [wx, wy, wz]
               let n = normalize([nx, ny, nz])
+              // two-sided shading: face the geometric normal toward the camera
+              if (dot(n, sub(uni.shade.eye, world)) < 0) n = negate(n)
 
-              if (mode === 'uv') {
-                packed = Framebuffer.pack(u, v, 0.4)
-              } else if (mode === 'normals') {
-                const wx = (l0 * a.world[0] * a.iw + l1 * b.world[0] * b.iw + l2 * c.world[0] * c.iw) * inv
-                const wy = (l0 * a.world[1] * a.iw + l1 * b.world[1] * b.iw + l2 * c.world[1] * c.iw) * inv
-                const wz = (l0 * a.world[2] * a.iw + l1 * b.world[2] * b.iw + l2 * c.world[2] * c.iw) * inv
-                if (dot(n, sub(uni.shade.eye, [wx, wy, wz])) < 0) n = [-n[0], -n[1], -n[2]]
-                packed = Framebuffer.pack(n[0] * 0.5 + 0.5, n[1] * 0.5 + 0.5, n[2] * 0.5 + 0.5)
+              if (needNormalMap) {
+                const tx = (l0 * a.tangent[0] * a.iw + l1 * b.tangent[0] * b.iw + l2 * c.tangent[0] * c.iw) * inv
+                const ty = (l0 * a.tangent[1] * a.iw + l1 * b.tangent[1] * b.iw + l2 * c.tangent[1] * c.iw) * inv
+                const tz = (l0 * a.tangent[2] * a.iw + l1 * b.tangent[2] * b.iw + l2 * c.tangent[2] * c.iw) * inv
+                n = perturbNormal(n, [tx, ty, tz], a.tangent[3], uni.normalMap!, u, v)
+              }
+
+              if (mode === 'normals') {
+                color[idx] = Framebuffer.pack(n[0] * 0.5 + 0.5, n[1] * 0.5 + 0.5, n[2] * 0.5 + 0.5)
               } else {
-                const wx = (l0 * a.world[0] * a.iw + l1 * b.world[0] * b.iw + l2 * c.world[0] * c.iw) * inv
-                const wy = (l0 * a.world[1] * a.iw + l1 * b.world[1] * b.iw + l2 * c.world[1] * c.iw) * inv
-                const wz = (l0 * a.world[2] * a.iw + l1 * b.world[2] * b.iw + l2 * c.world[2] * c.iw) * inv
-                const world: Vec3 = [wx, wy, wz]
-                if (dot(n, sub(uni.shade.eye, world)) < 0) n = [-n[0], -n[1], -n[2]]
-
                 let base = uni.material.albedo
                 if (uni.texture) {
                   const t = uni.texture(u, v)
                   base = [base[0] * t[0], base[1] * t[1], base[2] * t[2]]
                 }
-                let lit: Vec3
-                if (mode === 'albedo') {
-                  lit = base
-                } else if (mode === 'clip') {
-                  const shade = clamp01(dot(n, normalize(sub(uni.shade.eye, world)))) * 0.7 + 0.3
-                  lit = uni.wasClipped ? [shade, shade * 0.3, shade * 0.3] : [shade * 0.4, shade * 0.5, shade * 0.6]
+                if (mode === 'shaded') {
+                  // linear radiance → HDR buffer (resolve pass tone-maps it)
+                  const lit = shadeSurface(base, world, n, uni.material, uni.shade)
+                  const o = idx * 3
+                  hdr[o] = lit[0]
+                  hdr[o + 1] = lit[1]
+                  hdr[o + 2] = lit[2]
                 } else {
-                  lit = shadeFragment(base, world, n, uni.material, uni.shade)
+                  // albedo / clip debug views pack straight to color
+                  let lit: Vec3
+                  if (mode === 'albedo') {
+                    lit = base
+                  } else {
+                    const shadeAmt = clamp01(dot(n, normalize(sub(uni.shade.eye, world)))) * 0.7 + 0.3
+                    lit = uni.wasClipped
+                      ? [shadeAmt, shadeAmt * 0.3, shadeAmt * 0.3]
+                      : [shadeAmt * 0.4, shadeAmt * 0.5, shadeAmt * 0.6]
+                  }
+                  const g = gammaEncode(lit)
+                  color[idx] = Framebuffer.pack(g[0], g[1], g[2])
                 }
-                const g = gammaEncode(lit)
-                packed = Framebuffer.pack(g[0], g[1], g[2])
               }
             }
-            color[idx] = packed
-            depth[idx] = z
-            stats.pixelsFilled++
           }
+          depth[idx] = z
+          stats.pixelsFilled++
         }
       }
       wA += sx1

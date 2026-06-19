@@ -22,6 +22,7 @@ const lerpVertex = (a: PipeVertex, b: PipeVertex, t: number): PipeVertex => {
     clip: mix4(a.clip, b.clip),
     world: mix3(a.world, b.world),
     normal: mix3(a.normal, b.normal),
+    tangent: mix4(a.tangent, b.tangent),
     uv: mix2(a.uv, b.uv),
   }
 }
