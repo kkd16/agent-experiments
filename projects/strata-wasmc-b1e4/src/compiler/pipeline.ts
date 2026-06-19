@@ -7,7 +7,8 @@ import { parse } from './parser';
 import { typecheck } from './types';
 import { buildPreIR } from './ir/builder';
 import { toSSA } from './ir/ssa';
-import { optimize } from './opt/optimize';
+import { lowerAllocs } from './ir/lower';
+import { optimize, cloneModule } from './opt/optimize';
 import { inlineModule } from './opt/inline';
 import { tailCallOpt } from './opt/tco';
 import { codegen } from './backend/codegen';
@@ -72,7 +73,13 @@ export function compile(source: string, level: OptLevel, collectSnapshots = fals
     const preLog: PassStat[] = [];
     if (tco > 0) preLog.push({ name: 'tail-call → loop', changed: tco });
     if (inlined > 0) preLog.push({ name: 'inline (pre-SSA)', changed: inlined });
-    const cg = codegen(optimized);
+    // The optimizer and UI keep records as first-class `alloc` ops; the backend
+    // is a pure consumer of the bump-allocator primitives, so lower allocs on a
+    // private clone right before codegen (every level — `alloc` reaches here at
+    // -O0 too, where no SROA has run).
+    const forCodegen = cloneModule(optimized);
+    lowerAllocs(forCodegen);
+    const cg = codegen(forCodegen);
     const ssaInsts = countIR(ssa);
     const optInsts = countIR(optimized);
     const compileMs = (globalThis.performance?.now?.() ?? Date.now()) - t0;

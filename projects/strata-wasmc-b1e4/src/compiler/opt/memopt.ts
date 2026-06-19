@@ -73,12 +73,6 @@ const sameOperand = (a: Operand, b: Operand): boolean =>
 function rangesOverlap(aOff: number, aW: number, bOff: number, bW: number): boolean {
   return aOff < bOff + bW && bOff < aOff + aW;
 }
-// Conservative may-alias: same base ⇒ exact byte-range test; different bases ⇒
-// assume they may alias (no allocation/escape reasoning yet).
-function mayAlias(a: { root: string; off: number; width: AccWidth }, b: { root: string; off: number; width: AccWidth }): boolean {
-  if (a.root === b.root) return rangesOverlap(a.off, a.width, b.off, b.width);
-  return true;
-}
 
 export function memOpt(fn: IRFunc): number {
   // Nothing to do for a function that never touches linear memory.
@@ -92,6 +86,22 @@ export function memOpt(fn: IRFunc): number {
     if (touchesMem) break;
   }
   if (!touchesMem) return 0;
+
+  // Every `alloc` yields a *fresh* region that overlaps no other allocation, so
+  // two addresses rooted at two distinct alloc results are provably disjoint —
+  // the allocation reasoning the conservative same-base test could not do. (A
+  // fresh root vs. any non-alloc base, e.g. a handle reloaded from memory, is
+  // still treated as may-alias.) This lets a store to one record forward across
+  // a write to an unrelated record.
+  const allocIds = new Set<number>();
+  for (const b of fn.blocks) for (const i of b.insts) if (i.kind === 'alloc' && i.res !== null) allocIds.add(i.res);
+  const freshDistinct = (ra: string, rb: string): boolean =>
+    ra !== rb && ra[0] === 'v' && rb[0] === 'v' && allocIds.has(+ra.slice(1)) && allocIds.has(+rb.slice(1));
+  const mayAlias = (a: { root: string; off: number; width: AccWidth }, b: { root: string; off: number; width: AccWidth }): boolean => {
+    if (a.root === b.root) return rangesOverlap(a.off, a.width, b.off, b.width);
+    if (freshDistinct(a.root, b.root)) return false;
+    return true;
+  };
 
   const byId = new Map(fn.blocks.map((b) => [b.id, b]));
   const defOf = new Map<number, Inst>();

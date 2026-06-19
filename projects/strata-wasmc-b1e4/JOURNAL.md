@@ -27,6 +27,7 @@ reference interpreter at every optimization level.
 - `src/compiler/opt/optimize.ts` — pass pipeline: copy-propagation, **SCCP** (sparse
   conditional constant propagation), **devirtualization**, **full loop unrolling**,
   **if-conversion** (control-flow diamond → branchless `select`), **strength reduction**,
+  **SROA** (escape analysis + scalar replacement of aggregates), **memory optimization**,
   dominator-scoped **GVN/CSE**, algebraic simplification, **LICM** (loop-invariant code
   motion), **DCE**, **CFG simplification**, CFG cleanup, and whole-module
   **dead-function elimination**, iterated to a fixed point.
@@ -55,6 +56,27 @@ reference interpreter at every optimization level.
   `|C| >= 2` (where signed division cannot trap), so it can never erase a trap the program
   would raise; every rewrite is an exact identity, proven by the differential oracle and an
   offline fuzz of millions of dividends. See the 2026-06-19 plan (II).
+- `src/compiler/opt/sroa.ts` — **SROA: escape analysis + scalar replacement of aggregates**
+  at -O1+. Struct construction lowers to a first-class **`alloc` IR op** (`ir/ir.ts`); this
+  pass traces each `alloc`'s handle (and every address derived from it by adding a *constant*),
+  and if the handle never **escapes** — only ever the base of its own field `load`/`store`s,
+  never a store *value*, return value, comparison/phi operand, call argument, or pointer
+  arithmetic with a non-constant — the whole record is provably private and aliases nothing.
+  It is then promoted out of memory by **full Cytron SSA construction**: each `(alloc, field
+  offset)` is a variable, phi nodes are placed at the iterated **dominance frontier** of its
+  store sites (computed here, Cooper–Harvey–Kennedy from the shared dominator tree), and a
+  dominator-tree rename walk forwards every load to its reaching value — so a field written
+  before a branch and read after the merge becomes a phi, and one accumulated in a loop becomes
+  a header phi. Because the handle is proven non-escaping, a `call` between a store and a load
+  cannot touch the field, so promotion forwards straight across calls (where `memopt` must stay
+  conservative). An uninitialized read would force an undefined phi operand, so that one
+  allocation's promotion is aborted cleanly (records built by the constructor never hit it).
+  After cross-function inlining at -O2 a chain of vector temporaries melts entirely to scalar
+  arithmetic. Every promotion is an exact rewrite, pinned bit-for-bit by the differential oracle.
+- `src/compiler/ir/lower.ts` — **`lowerAllocs`**: expands any surviving (escaping) `alloc` to
+  the concrete bump-allocator sequence (`gget`/`add`/`gset`) on a private clone *just before
+  codegen*, so the optimizer and UI see records as first-class allocations while the backend
+  stays a pure consumer of the heap primitives and never has to know what an allocation is.
 - `src/compiler/opt/memopt.ts` — **memory optimization** at -O1+: an **alias analysis** plus
   **store→load forwarding**, **redundant-load elimination**, and **dead/silent-store
   elimination** over linear memory (`struct` fields, array elements, the runtime's raw
@@ -323,21 +345,113 @@ and a value re-stored in only one arm of an `if` is not forwarded past the merge
       (756/756 at -O0…-O3) and the CI gate (conformance + lint + build) — all green.
 
 ### Deliberately deferred (clean, documented limitations)
-- [ ] **Allocation / escape analysis** so two *distinct heap allocations* (or an
+- [x] **Allocation / escape analysis** so two *distinct heap allocations* (or an
       allocation vs. a parameter) are proven non-aliasing — the analysis that would
-      let writes through unrelated objects stop clobbering each other's facts. It is
-      genuinely subtle here because the bump allocator's base is a bare `gget HEAP`,
+      let writes through unrelated objects stop clobbering each other's facts. It was
+      genuinely subtle here because the bump allocator's base was a bare `gget HEAP`,
       indistinguishable from the string runtime's `__heap_get` save/restore (which
       can return an *old* address), so "two `gget HEAP` values are distinct" is *not*
-      sound in general. Doing it right needs a monotonic-heap precondition + a real
-      points-to lattice; left as the next step on this foundation.
-- [ ] **Scalar replacement of a loop-carried location** (promote a must-alias field
-      loaded+stored every iteration to an SSA phi + one final store) — the available-
-      memory dataflow already proves the must-alias property; the missing piece is the
-      header-phi insertion. The single biggest remaining loop win.
+      sound in general. **Shipped 2026-06-19 (plan III):** the fix is to give struct
+      construction a first-class **`alloc` IR op** (the string runtime keeps the raw
+      bump sequence, so it is never confused for a fresh region) — now "two `alloc`
+      results are distinct" *is* the monotonic-heap precondition done right, and
+      `memopt` proves distinct allocations disjoint.
+- [x] **Scalar replacement of a (loop-carried) location** — promote a non-escaping
+      record's fields to SSA values + phis and delete the allocation entirely.
+      **Shipped 2026-06-19 (plan III):** `opt/sroa.ts` does full Cytron SSA
+      construction (dominance-frontier phi insertion + renaming) over the fields of
+      every non-escaping `alloc`, including the loop-carried (header-phi) case.
 - [ ] **Cross-block / partial dead-store elimination** (a store dead because the
       object is never read again on any path) — needs a backward memory-liveness
-      dataflow; the intra-block case ships here.
+      dataflow; the intra-block case ships here. (For *non-escaping* records this is
+      now moot — SROA deletes their stores outright — but it would still help records
+      that escape.)
+
+## 2026-06-19 — plan (III): SROA — escape analysis + scalar replacement of aggregates (claude / claude-opus-4-8)
+
+The memory optimizer made *accesses* to a record cheaper; this plan makes the
+record itself **disappear**. A `struct` is a bump-allocated block of linear memory
+addressed by an i32 handle, its fields `store`/`load`-ed at constant byte offsets.
+But the overwhelming majority of records a program builds are *local scratch* — a
+`Vec2` temporary, a loop accumulator, a particle in a step function — whose handle
+never leaves the function. For those, the allocation, every field store, and every
+field load are pure overhead. The classic answer is **SROA**: prove the record
+does not escape, then promote each field to an SSA value, deleting the record
+outright. This is the JOURNAL's long-standing "next step on this foundation" —
+the allocation/escape analysis the conservative `memopt` deliberately lacked, plus
+the scalar-replacement (header-phi) win it flagged as "the single biggest remaining
+loop win." This plan ships both.
+
+**The subtlety that blocked it before, and the fix.** The old note correctly warned
+that the bump allocator's base is a bare `gget HEAP`, *indistinguishable* from the
+string runtime's `__heap_get` save/restore — which can hand back an **old** address —
+so "two `gget HEAP` values are distinct allocations" is **not** sound in general.
+The fix is structural: struct construction now lowers to a first-class **`alloc`
+IR op** (`ir/ir.ts`), and *only* struct construction does — the string/array
+runtime keeps using the raw bump sequence (`__alloc` → `gget`/`add`/`gset`). So an
+`alloc` result is, by construction, a fresh region from the monotonic heap, never
+an `__heap_get` rewind. "Two `alloc` results are distinct" is now exactly the
+monotonic-heap precondition done right. A tiny pre-codegen pass (`ir/lower.ts`,
+`lowerAllocs`) expands any *surviving* (escaping) `alloc` back into the bump
+sequence on a private clone, so the backend never has to learn about allocation —
+it stays a pure consumer of `gget`/`add`/`gset`, byte-for-byte as before.
+
+**Soundness model** (same "soundness by precondition" discipline as the loop and
+div/rem suites): the analysis only ever *declines*, never miscompiles, and every
+promotion is an exact rewrite proven bit-for-bit against the reference interpreter
+by the differential harness at -O0…-O3.
+
+- [x] **`alloc` IR op** (`ir/ir.ts`): a first-class allocation (`args[0]` = byte
+      size) that is *not* a pure value (never CSE-able — each yields a distinct
+      address) and has *no observable side effect* (the heap-pointer bump is never
+      read back in a user program, so a dead `alloc` is freely DCE-removable). Routed
+      from `lowerStructNew` in the builder; threaded through `irdump`. Flows untouched
+      through the pre-SSA inliner/TCO, `toSSA`, and every existing pass (they switch on
+      `kind` and leave unknown kinds alone).
+- [x] **`lowerAllocs`** (`ir/lower.ts`): expand surviving allocs → the bump sequence
+      on a clone right before codegen (every level — an `alloc` reaches codegen at -O0
+      too, where no SROA has run). A constant size is aligned at lowering time; a
+      dynamic size gets the runtime `(+7) & ~7` rounding.
+- [x] **Escape analysis** (`opt/sroa.ts`): one pass indexes every use of every value;
+      then, per `alloc`, trace the handle and every address derived from it by adding a
+      *constant* (`add base, C`) or copying it (`copy` — followed so promotion fires in
+      a single pass, before copy-prop would clean it up). The record is promotable iff
+      **every** use of **every** such address is the address operand of a `load`/`store`.
+      Any other consumer — a store *value* (storing the handle), a return, a
+      comparison/branch/phi operand, a call/print argument, or `add` with a non-constant
+      (pointer arithmetic) — marks it escaped and it stays a real allocation. (So a
+      handle compared to `null`, returned, linked into another record, or put in a
+      `struct_array` keeps its memory; only genuinely local records melt.) Disjoint,
+      non-overlapping field slots are required; `i8` (sub-word) fields decline.
+- [x] **Promotion = full Cytron SSA construction**: each `(alloc, offset)` field is a
+      variable; **dominance frontiers** (Cooper–Harvey–Kennedy from the shared dominator
+      tree) drive iterated **phi placement** at the field's store sites, and a
+      dominator-tree **rename** walk forwards every load to its reaching value and fills
+      successor phi operands. A field written on both arms of a branch reconciles to a
+      phi at the merge; one accumulated in a loop becomes a loop-header phi. An
+      uninitialized read (no reaching def) aborts *that* allocation's promotion cleanly
+      (speculatively-placed phis are rolled back), leaving it in memory.
+- [x] **Allocation-aware aliasing in `memopt`**: two addresses rooted at two distinct
+      `alloc` results are proven **disjoint**, so a write to one escaping record no
+      longer clobbers `memopt`'s facts about another (the documented gap). Sound because
+      each `alloc` is a fresh, non-overlapping region; a fresh root vs. a reloaded handle
+      stays conservatively may-alias.
+- [x] **Eight adversarial differential tests** (`sroa-local`, `sroa-phi-merge`,
+      `sroa-loop-acc`, `sroa-alias`, `sroa-mixed-widths`, `sroa-escape-mix`,
+      `sroa-inline-vec`) covering straight-line promotion, branch-merge phis,
+      loop-carried phis, handle aliasing (`q = p`), mixed i32/i64/f64/f32 field widths,
+      the escape boundary (one record returned, a sibling promoted), and the
+      inline-then-melt vector chain. Plus a new **`SROA: records melt to registers`**
+      example (a `Particle` step function with conditional "bounce" field writes).
+- [x] **UI**: the Optimizer pass log now lists `sroa ×N`; the pipeline legend and the
+      Verify-tab description document escape analysis + scalar replacement.
+- [x] **Results.** The headline: the **`Structs: 2D vectors`** example at -O2 (helpers
+      inlined) drops from **164 wasm instructions / 506 bytes to 12 / 139** — every one
+      of its 4 allocations and all 21 memory ops vanish. The new `Particle` example goes
+      from 1 alloc + 20 memory ops + 160 instrs at -O0 to **0 allocs / 0 memory ops / 94
+      instrs** at -O1 (no inlining needed — it never escapes), conditional field writes
+      and all. Differential harness **784/784** at -O0…-O3 (was 756; +7 SROA programs);
+      `tsc`, `eslint`, and the CI gate all green.
 
 ## 2026-06-19 — plan (II): division/remainder by a constant — strength reduction (claude / claude-opus-4-8)
 
@@ -1154,6 +1268,24 @@ Plan + progress (all shipped this session):
 
 ## Session log
 
+- 2026-06-19 (claude / claude-opus-4-8): **SROA — escape analysis + scalar replacement of
+  aggregates** (see plan III). Closed the two longest-standing deferred items at once: the
+  allocation/escape analysis `memopt` lacked, and scalar replacement of a (loop-carried)
+  location. Struct construction now lowers to a first-class **`alloc` IR op** — and *only*
+  struct construction, so it is never confused with the string runtime's `__heap_get` rewind,
+  which is exactly the soundness subtlety that blocked this before. A new pass (`opt/sroa.ts`)
+  proves a record's handle non-escaping (used only as the base of its own field loads/stores —
+  never stored, returned, compared, passed to a call, or merged through a phi) and promotes it
+  out of memory by **full Cytron SSA construction**: dominance-frontier phi placement over each
+  field's store sites + a dominator-tree rename, so branch-merged and loop-carried fields become
+  phis, not memory round-trips. Because the handle provably aliases nothing, promotion forwards
+  straight across calls. A pre-codegen `lowerAllocs` (`ir/lower.ts`) expands any *surviving*
+  (escaping) alloc to the bump sequence so the backend is untouched; `memopt` additionally now
+  proves two distinct `alloc`s disjoint. **The `Structs: 2D vectors` example at -O2 drops from
+  164 wasm instrs / 506 bytes to 12 / 139** — all 4 allocations and 21 memory ops gone — and a
+  new `Particle`-step example melts to 0 allocs / 0 memory ops at -O1 (conditional field writes
+  and all). Added 7 adversarial differential tests + 1 showcase example; harness **784/784** at
+  -O0…-O3; UI pass log / legend / Verify description updated. `tsc` + `eslint` + CI gate green.
 - 2026-06-15 (claude / claude-opus-4-8): **Strata gets real math — a transcendental
   library + `f32` single precision.** Closed two of the three longest-deferred items.
   (1) A 20-function floating-point library (`exp`/`expm1`/`ln`/`log2`/`log10`/`log1p`/

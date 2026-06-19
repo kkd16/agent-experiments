@@ -6,6 +6,7 @@ import { simplifyCFG } from './simplifycfg';
 import { unrollLoops } from './unroll';
 import { divRemByConst } from './divrem';
 import { memOpt } from './memopt';
+import { sroa } from './sroa';
 import { dumpModule } from '../irdump';
 import { i32, satTruncI32, rotl32, rotr32, rotl64, rotr64 } from '../interp';
 
@@ -877,6 +878,7 @@ export function optimize(mod: IRModule, level: OptLevel, snapshots = false): Opt
     record('if-convert' + suffix, ifConvert);
     record('strength-reduce' + suffix, peephole);
     record('div-by-const' + suffix, divRemByConst);
+    record('sroa' + suffix, sroa);
     record('mem-opt' + suffix, memOpt);
     if (level >= 2) record('gvn/cse' + suffix, gvn);
     record('algebraic-simplify' + suffix, algebraic);
