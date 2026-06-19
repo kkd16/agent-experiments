@@ -1,0 +1,159 @@
+// The stateful renderer. It owns the framebuffer + mesh cache, turns a scene
+// description into per-frame draw calls (building each object's model matrix from
+// its animated transform) and runs the whole pipeline for one frame.
+import type { Mesh, MeshKind } from '../geometry/mesh.ts'
+import { buildMesh, makePlane } from '../geometry/mesh.ts'
+import type { Mat4 } from '../math/mat4.ts'
+import { multiply, rotationX, rotationY, rotationZ, scaling, translation } from '../math/mat4.ts'
+import type { Vec3 } from '../math/vec.ts'
+import { Framebuffer } from '../render/framebuffer.ts'
+import { drawObject } from '../render/pipeline.ts'
+import type { DrawObject } from '../render/pipeline.ts'
+import { presentOverdraw } from '../render/raster.ts'
+import type { Light, ShadeContext } from '../render/shading.ts'
+import { makeTexture } from '../render/texture.ts'
+import type { FrameStats, RenderMode } from '../render/types.ts'
+import { OrbitCamera } from '../scene/camera.ts'
+import type { SceneConfig } from '../scene/scene.ts'
+
+export interface RenderSettings {
+  mode: RenderMode
+  cullBack: boolean
+  autoRotate: boolean
+  showGround: boolean
+  fog: boolean
+  ambientBoost: number // 0.5..2 multiplier on ambient
+  lightBoost: number // 0.3..2 multiplier on light intensities
+}
+
+const emptyStats = (): FrameStats => ({
+  trianglesIn: 0,
+  trianglesDrawn: 0,
+  trianglesCulled: 0,
+  trianglesClipped: 0,
+  pixelsFilled: 0,
+})
+
+export class Renderer {
+  fb: Framebuffer
+  readonly camera = new OrbitCamera()
+  private scene: SceneConfig
+  private meshCache = new Map<MeshKind, Mesh>()
+  private ground: Mesh = makePlane(16, 1)
+  spinClock = 0
+
+  constructor(width: number, height: number, scene: SceneConfig) {
+    this.fb = new Framebuffer(width, height)
+    this.scene = scene
+  }
+
+  setScene(scene: SceneConfig): void {
+    this.scene = scene
+  }
+
+  resize(width: number, height: number): void {
+    if (width === this.fb.width && height === this.fb.height) return
+    this.fb = new Framebuffer(width, height)
+  }
+
+  private mesh(kind: MeshKind): Mesh {
+    let m = this.meshCache.get(kind)
+    if (!m) {
+      m = buildMesh(kind)
+      this.meshCache.set(kind, m)
+    }
+    return m
+  }
+
+  triangleBudget(): number {
+    // total source triangles across the scene (for the HUD before culling)
+    let n = 0
+    for (const o of this.scene.objects) n += this.mesh(o.meshKind).indices.length / 3
+    if (this.scene.ground) n += this.ground.indices.length / 3
+    return n
+  }
+
+  private scaledLights(s: RenderSettings): Light[] {
+    if (s.lightBoost === 1) return this.scene.lights
+    return this.scene.lights.map((l) => ({ ...l, intensity: l.intensity * s.lightBoost }))
+  }
+
+  render(dt: number, settings: RenderSettings): FrameStats {
+    const { fb, scene, camera } = this
+    if (settings.autoRotate) this.spinClock += dt
+    const t = this.spinClock
+
+    const aspect = fb.width / fb.height
+    const view = camera.view()
+    const proj = camera.projection(aspect)
+    const eye = camera.eye()
+
+    fb.clear(scene.bgTop, scene.bgBottom)
+
+    const ambient: Vec3 = [
+      scene.ambient[0] * settings.ambientBoost,
+      scene.ambient[1] * settings.ambientBoost,
+      scene.ambient[2] * settings.ambientBoost,
+    ]
+    const shade: ShadeContext = {
+      lights: this.scaledLights(settings),
+      ambient,
+      eye,
+      fogColor: scene.fogColor,
+      fogDensity: settings.fog ? scene.fogDensity : 0,
+    }
+
+    const stats = emptyStats()
+    const draws: DrawObject[] = []
+
+    if (settings.showGround && scene.ground) {
+      draws.push({
+        mesh: this.ground,
+        model: translation(0, 0, 0),
+        uniforms: {
+          mode: settings.mode,
+          material: scene.groundMaterial,
+          texture: makeTexture(scene.groundTexture),
+          shade,
+          near: camera.near,
+          far: camera.far,
+          wasClipped: false,
+        },
+      })
+    }
+
+    for (const o of scene.objects) {
+      const model = this.objectModel(o.position, o.scale, o.baseRotation, o.spin * t, o.tiltSpin * t)
+      draws.push({
+        mesh: this.mesh(o.meshKind),
+        model,
+        uniforms: {
+          mode: settings.mode,
+          material: o.material,
+          texture: makeTexture(o.texture),
+          shade,
+          near: camera.near,
+          far: camera.far,
+          wasClipped: false,
+        },
+      })
+    }
+
+    for (const d of draws) drawObject(fb, view, proj, d, settings.cullBack, stats)
+    if (settings.mode === 'overdraw') presentOverdraw(fb)
+
+    return stats
+  }
+
+  private objectModel(pos: Vec3, scale: number, base: Vec3, spinY: number, spinX: number): Mat4 {
+    const baseRot = multiply(rotationY(base[1]), multiply(rotationX(base[0]), rotationZ(base[2])))
+    const anim = multiply(rotationY(spinY), rotationX(spinX))
+    let m = multiply(anim, multiply(baseRot, scaling(scale, scale, scale)))
+    m = multiply(translation(pos[0], pos[1], pos[2]), m)
+    return m
+  }
+
+  present(ctx: CanvasRenderingContext2D): void {
+    this.fb.present(ctx)
+  }
+}
