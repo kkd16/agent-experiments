@@ -64,12 +64,69 @@ compile the same optimized core — and the equivalence checks prove it preserve
 - [x] User-defined algebraic data types (`type Option a = None | Some a`) + constructor patterns
 - [x] `let rec … and …` mutually recursive bindings (TCO works across them)
 - [x] Exhaustiveness + redundancy checking for `match` (Maranget, with witnesses)
+- [x] **Compiling pattern matching to good decision trees** (Maranget 2008) — a core-to-core
+      middle-end pass that shares tests across arms so all three backends run the shared tree
+      (Aether 12.0)
 - [x] Optimizer pass: constant folding, dead-branch elimination, short-circuit simplification
 - [x] A full **optimizing middle-end** over the core (β/η, inlining, dead code, known-`match`,
       field projection) feeding all three backends — abstraction melts away (Aether 10.0)
 - [x] Records with row polymorphism (`{ x = 1 }`, `r.x`, inferred `{ x: a | ρ } -> a`)
 - [x] Functional record update (`{ r | x = 5 }`, type-safe, row-polymorphic)
 - [x] A REPL mode that keeps top-level bindings between runs
+
+### Aether 12.0 — compiling pattern matching to good decision trees (planned + shipping this session)
+
+Aether has cited **Maranget** since 1.0 — but only for *exhaustiveness* (`exhaustive.ts`). The
+*compiler* itself lowered `match` naively: for every arm in turn it flattened the pattern into a
+flat list of tests and re-navigated the scrutinee, so two arms that share a constructor prefix
+(`Cons a (Cons b r)` then `Cons a Nil`) **re-test that outer `Cons` twice**. 12.0 closes the gap
+with the companion algorithm — *Compiling Pattern Matching to Good Decision Trees* (Maranget,
+2008): a real pattern-matrix compiler that tests each scrutinee position **once**, sharing the
+decision across every arm that needs it.
+
+The decisive design choice (the same one that gave 10.0/11.0 three backends "for free"): decision
+trees are produced as a **core-to-core transformation in the optimizing middle-end**, lowering a
+multi-arm nested `match` into a tree of **single-column** `match`es (`match o with Cons s1 s2 ->
+match s2 with …`) plus join-points for shared arm bodies. Because the output is ordinary core, the
+bytecode VM, the JavaScript backend and the WebAssembly backend compile it with **zero changes**,
+and the project's existing byte-for-byte equivalence checks re-prove on every program that the
+answer never changed — and the harness's per-example "optimizer never increases VM steps" gate
+proves the tree is never worse, while the showcase proves it is strictly better.
+
+Plan / steps:
+
+- [x] `src/lang/decisiontree.ts` — a from-scratch pattern-matrix compiler. A `compile(occs, rows)`
+      that, on a column whose row-0 pattern is refutable (chosen by a sharing heuristic — the
+      column tested by the most rows), **switches once** on that occurrence: one arm per head
+      constructor present (`pcon` / `::` / `[]` / tuple / literal / bool), specializing the matrix
+      (constructor rows expand their sub-patterns into new columns; wildcard/var rows propagate into
+      every arm), plus a default arm for the remaining rows when the column's signature is
+      incomplete. Bottoms out when row-0 is all-irrefutable (a leaf), threading variable bindings
+      `patVar ↦ occurrence` down the tree.
+- [x] **Guards, correctly.** A guarded leaf becomes `if guard then body else <compile the rest of
+      the still-live matrix>`, so a failing `when` falls through to exactly the arms it would have
+      under the naive compiler — preserving non-exhaustive `MATCH_FAIL` behaviour by *omitting* the
+      default arm (a non-exhaustive switch fails at runtime just as the source did).
+- [x] **No code blow-up, no step regressions.** A row reached from one leaf is inlined directly
+      (its `patVar ↦ occ` bindings are trivial `let`s the existing copy-propagation erases); a row
+      duplicated across arms (a wildcard row) is shared through a **join-point** lambda so its body
+      appears once. DT only fires on matches that actually share work — nested refutable
+      sub-patterns or a repeated head constructor — so flat enum/`Option` matches (already optimal)
+      are left untouched.
+- [x] Wire it into `optimizeCore` as a phase between two fixpoints (fixpoint → DT → fixpoint, so
+      the introduced `let`s/join-points are cleaned up), with a `dt` rewrite count, per-match
+      tree statistics, and a serializable tree view for the panel. Both the full program (VM) and
+      the user portion (JS/WASM + panel) get it, keeping the backends in lock-step.
+- [x] **Optimizer panel — a "Decision trees" section** that renders each compiled match's tree
+      (switch nodes labelled by occurrence, edges by constructor, leaves by arm) and reports the
+      static *pattern tests* it shares away (naive vs tree), beside the existing live VM-step
+      measurement.
+- [x] A `decision-tree` gallery example (a list-merge / expression-simplifier with shared
+      constructor prefixes) whose VM steps drop measurably; an in-app self-test group; and a
+      harness battery that asserts DT ≡ naive (result + output + effects + steps-never-up) across
+      every example, fires on the nested cases, cuts real steps on the showcase, preserves
+      `MATCH_FAIL`, and handles guards.
+- [x] Docs (Tour / About / README / `project.json`) updated.
 
 ### Aether 2.0 — a second backend & deeper insight (shipped this session)
 
@@ -1084,3 +1141,34 @@ Deferred (future, Aether 11.x+):
   safety half — never merges an effect, never speculates across a branch, never admits a recursive or
   effectful function, and distrusts a shadowed native; plus 3 in-app self-tests. Full CI gate (scope +
   conformance + lint + tsc + build) green.
+- 2026-06-19 (claude): **Aether 12.0 — compiling pattern matching to good decision trees.** Aether had
+  cited **Maranget** since 1.0, but only for *exhaustiveness* — the compiler itself lowered `match`
+  naively, re-testing a shared constructor prefix once per arm (two arms `Cons a (Cons b r)` /
+  `Cons a Nil` test the outer `Cons` twice). 12.0 ships the companion algorithm — *Compiling Pattern
+  Matching to Good Decision Trees* (Maranget, 2008) — as a new middle-end pass (`src/lang/decisiontree.ts`):
+  a pattern-matrix compiler that tests each scrutinee position **once**. `compile(occs, rows)` switches on
+  the column whose row-0 pattern is refutable and that the most rows test (a sharing heuristic), emitting
+  one arm per head constructor present (`pcon`/`::`/`[]`/tuple/literal/bool), specializing the matrix per
+  constructor (constructor rows expand their sub-patterns into new columns; var/wildcard rows propagate
+  into every arm), with a default arm only when the column's signature is incomplete — bottoming out at a
+  leaf when row 0 is all-irrefutable, threading `patVar ↦ occurrence` bindings down the tree. **Guards**
+  keep the naive "first matching, guard-passing arm wins" semantics (a guarded leaf is `if g then body
+  else <compile the rest of the still-live matrix>`), and a non-exhaustive switch is emitted *without* a
+  default arm so it `MATCH_FAIL`s at runtime exactly where the source did. The decisive choice (the one
+  that gave 10.0/11.0 three backends for free): it's a **core-to-core** transformation — the tree lowers
+  into a nest of *single-column* `match`es plus `let`-bound **join-points** for arm bodies reached from
+  more than one leaf (so the tree never blows up code size; single-use bodies are inlined and their
+  `let v = occ` aliases copy-prop away), so the bytecode VM, the JavaScript backend and the WebAssembly
+  backend compile it **unchanged**. Wired into `optimizeCore` as a phase between two fixpoints (fixpoint →
+  DT → fixpoint, to clean up the introduced bindings), gated by a `worthDecisionTree` check so already-flat
+  enum/`Option` matches (where the naive compiler is optimal) are left byte-identical. The **Optimizer
+  panel** gained a "Decision trees" section that draws each compiled match's tree (switch nodes by
+  occurrence, edges by constructor, leaves by arm) and reports the pattern tests shared away; a
+  `decision-tree` gallery example (an expression-peephole simplifier whose rules share `Add`/`Mul`
+  prefixes — VM steps 1972 → 1802) showcases it. Verification: the harness grew 322 → **343** — the new
+  example auto-flows through the JS / WASM / GC-stress / disassembler / optimizer batteries (so DT ≡ naive
+  on result + output + effects + never-increased steps across all three backends), plus a focused DT
+  battery that fires on nested/shared-prefix/guarded/literal/tuple cases, cuts ≥ 80 steps on the showcase,
+  exercises the join-point path, preserves `MATCH_FAIL` on a guard fall-through, and is *skipped* on flat
+  matches; plus a 5-case in-app self-test group. Full CI gate (scope + conformance + lint + tsc + build)
+  green.

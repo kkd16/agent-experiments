@@ -38,6 +38,8 @@
 // constructor collapses to its arm.
 
 import type { BinaryOp, Expr, MatchCase, Pattern } from './ast.ts'
+import { collectSiblings, compileMatches } from './decisiontree.ts'
+import type { DtStats, DtView } from './decisiontree.ts'
 
 export interface OptimizeStats {
   /** fixpoint rounds run */
@@ -55,6 +57,10 @@ export interface OptimizeStats {
   /** the functions the effect-&-totality analysis proved pure (effect-free and
    * total), whose saturated calls CSE / dead-code-elimination may share or drop */
   pureFns: string[]
+  /** decision-tree compilation statistics (Aether 12.0) */
+  dt: DtStats
+  /** one entry per `match` rewritten into a decision tree (for the panel) */
+  decisionTrees: DtView[]
 }
 
 export interface OptimizeResult {
@@ -126,12 +132,33 @@ export function optimizeCore(root: Expr): OptimizeResult {
   const trace: { round: number; rewrites: number; nodes: number }[] = []
   let expr = root
   let rounds = 0
-  for (; rounds < MAX_ROUNDS; rounds++) {
-    const before = passesTotal(passes)
-    expr = step(expr, bump)
-    const fired = passesTotal(passes) - before
-    if (fired === 0) break // fixpoint
-    trace.push({ round: rounds + 1, rewrites: fired, nodes: size(expr) })
+  const fixpoint = (): void => {
+    for (let local = 0; local < MAX_ROUNDS; local++, rounds++) {
+      const before = passesTotal(passes)
+      expr = step(expr, bump)
+      const fired = passesTotal(passes) - before
+      if (fired === 0) break // fixpoint
+      trace.push({ round: rounds + 1, rewrites: fired, nodes: size(expr) })
+    }
+  }
+
+  // Phase 1: rewrite to a fixpoint (folds, inlining, known-match, CSE, …) so the
+  // abstraction the front end adds has already melted before we touch matching.
+  fixpoint()
+
+  // Phase 2: compile pattern matching to good decision trees (Aether 12.0). A
+  // core-to-core pass that shares tests across arms; emits ordinary core, so all
+  // three backends compile it unchanged.
+  const dtResult = compileMatches(expr, { ctors: CTORS, siblings: collectSiblings(root) })
+  const dt: DtStats = dtResult.stats
+  const decisionTrees: DtView[] = dtResult.views
+  if (dtResult.changed) {
+    expr = dtResult.expr
+    passes['dt'] = (passes['dt'] ?? 0) + dt.matchesCompiled
+    // Phase 3: re-run the fixpoint to clean up the introduced bindings — copy-
+    // propagate the `let v = occ` occurrence aliases and inline single-use
+    // join-points — and to fold anything the new structure exposes.
+    fixpoint()
   }
 
   return {
@@ -144,6 +171,8 @@ export function optimizeCore(root: Expr): OptimizeResult {
       nodesAfter: size(expr),
       trace,
       pureFns: [...PURE_FNS.keys()],
+      dt,
+      decisionTrees,
     },
   }
 }

@@ -335,6 +335,69 @@ type Color = Red | Green | Blue deriving (Eq, Show) in
     expected: '(1, 1)',
   },
 
+  // ---- decision-tree pattern compilation (Aether 12.0) ----
+  // Each runs through the whole pipeline (so the decision-tree lowering ships)
+  // and is also run on the JavaScript backend — a green row proves DT ≡ naive.
+  {
+    group: 'decision trees',
+    name: 'shared cons prefix',
+    code: `let rec f = fn xs -> match xs with
+| a :: b :: rest -> a + b + f rest
+| a :: [] -> a
+| [] -> 0 in f [1, 2, 3, 4, 5]`,
+    expected: '15',
+  },
+  {
+    group: 'decision trees',
+    name: 'nested ADT constructors',
+    code: `type T = A | B T | C T T in
+let rec d = fn t -> match t with
+| C (B x) y -> 1 + d x + d y
+| C x y -> 2 + d x + d y
+| B x -> 3 + d x
+| A -> 0 in d (C (B A) (C A A))`,
+    expected: '3',
+  },
+  {
+    group: 'decision trees',
+    name: 'nested literals in a tuple',
+    code: `let f = fn p -> match p with
+| (0, _) -> 1
+| (_, 0) -> 2
+| (a, b) -> a + b in (f (0, 9), f (9, 0), f (3, 4))`,
+    expected: '(1, 2, 7)',
+  },
+  {
+    group: 'decision trees',
+    name: 'guards fall through correctly',
+    code: `let f = fn a b -> match (a, b) with
+| (x, y) when x > y -> 1
+| (x, y) when x < y -> 2
+| (x, y) -> 3 in (f 5 1, f 1 5, f 4 4)`,
+    expected: '(1, 2, 3)',
+  },
+  {
+    group: 'decision trees',
+    name: 'peephole simplifier (shared prefixes)',
+    code: `type Expr = Lit Int | Add Expr Expr | Mul Expr Expr in
+let reduce = fn e -> match e with
+| Add (Lit 0) y -> y
+| Add x (Lit 0) -> x
+| Mul (Lit 0) _ -> Lit 0
+| Mul _ (Lit 0) -> Lit 0
+| Mul (Lit 1) y -> y
+| Mul x (Lit 1) -> x
+| other -> other in
+let rec simp = fn e -> match e with
+| Lit n -> Lit n
+| Add a b -> reduce (Add (simp a) (simp b))
+| Mul a b -> reduce (Mul (simp a) (simp b)) in
+let rec eval = fn e -> match e with
+| Lit n -> n | Add a b -> eval a + eval b | Mul a b -> eval a * eval b in
+eval (simp (Mul (Add (Mul (Lit 1) (Lit 7)) (Mul (Lit 0) (Lit 9))) (Add (Lit 3) (Mul (Lit 6) (Lit 1)))))`,
+    expected: '63',
+  },
+
   // ---- errors (must be rejected) ----
   {
     group: 'errors',

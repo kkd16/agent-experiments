@@ -473,6 +473,13 @@ function checkOpt(name, src, opts = {}) {
     problems.push(`CSE fired ${cseCount}× (expected none — would be speculative)`)
   if (opts.minStepCut !== undefined && on.run && off.run && off.run.steps - on.run.steps < opts.minStepCut)
     problems.push(`steps cut by only ${off.run.steps - on.run.steps} (expected >= ${opts.minStepCut})`)
+  const dt = on.optimization ? on.optimization.dt : null
+  if (opts.minDt !== undefined && (!dt || dt.matchesCompiled < opts.minDt))
+    problems.push(`only ${dt ? dt.matchesCompiled : 0} matches compiled to decision trees (expected >= ${opts.minDt})`)
+  if (opts.noDt && dt && dt.matchesCompiled !== 0)
+    problems.push(`DT fired on ${dt.matchesCompiled} match(es) (expected none — already flat)`)
+  if (opts.minJoins !== undefined && (!dt || dt.joinPoints < opts.minJoins))
+    problems.push(`only ${dt ? dt.joinPoints : 0} join-points (expected >= ${opts.minJoins})`)
   if (opts.pure !== undefined) {
     const pureFns = on.optimization ? on.optimization.pureFns : []
     for (const f of opts.pure) if (!pureFns.includes(f)) problems.push(`'${f}' not proven pure (got [${pureFns}])`)
@@ -580,6 +587,89 @@ checkOpt('cse does not speculate across branches',
 checkOpt('cse rejects recursive functions',
   'let rec f = fn n -> if n == 0 then 0 else n + f (n - 1) in (f 5, f 5)',
   { expect: '(15, 15)', notPure: ['f'] })
+
+// ---------------------------------------------------------------------------
+// Decision-tree pattern compilation battery (Aether 12.0). `checkOpt` already
+// proves DT ≡ naive for every program (same result, output, effect count, and a
+// never-increased step count). Here we additionally assert DT *fired* on the
+// nested/shared-prefix cases, *cut real steps* on the showcase, exercises every
+// lowering path (cons, ADT, tuple, literal, guard, join-point), preserves
+// `MATCH_FAIL`, and is *skipped* on already-optimal flat matches.
+// ---------------------------------------------------------------------------
+
+// The headline showcase: a shared-prefix peephole simplifier really cuts steps.
+checkOpt('dt expression simplifier',
+  `type Expr = Lit Int | Add Expr Expr | Mul Expr Expr in
+   let reduce = fn e -> match e with
+     | Add (Lit 0) y -> y | Add x (Lit 0) -> x
+     | Mul (Lit 0) _ -> Lit 0 | Mul _ (Lit 0) -> Lit 0
+     | Mul (Lit 1) y -> y | Mul x (Lit 1) -> x | other -> other in
+   let rec simp = fn e -> match e with
+     | Lit n -> Lit n
+     | Add a b -> reduce (Add (simp a) (simp b))
+     | Mul a b -> reduce (Mul (simp a) (simp b)) in
+   let rec eval = fn e -> match e with Lit n -> n | Add a b -> eval a + eval b | Mul a b -> eval a * eval b in
+   eval (simp (Mul (Add (Mul (Lit 1) (Lit 7)) (Mul (Lit 0) (Lit 9))) (Add (Lit 3) (Mul (Lit 6) (Lit 1)))))`,
+  { expect: '63', minDt: 1, minStepCut: 80 })
+
+// Shared cons prefix: `a :: b :: rest` and `a :: []` both test the outer `::`.
+checkOpt('dt shared cons prefix',
+  'let rec f = fn xs -> match xs with a :: b :: r -> a + b + f r | a :: [] -> a | [] -> 0 in f [1, 2, 3, 4, 5]',
+  { expect: '15', minDt: 1, minStepCut: 1 })
+
+// Nested ADT constructors (`C (B x) y`): the inner `B` is tested under the `C` arm.
+checkOpt('dt nested ADT',
+  'type T = A | B T | C T T in let rec d = fn t -> match t with C (B x) y -> 1 + d x + d y | C x y -> 2 + d x + d y | B x -> 3 + d x | A -> 0 in d (C (B A) (C A A))',
+  { expect: '3', minDt: 1, minStepCut: 1 })
+
+// Nested literals inside a tuple destructure.
+checkOpt('dt nested tuple literals',
+  'let f = fn p -> match p with (0, _) -> 1 | (_, 0) -> 2 | (a, b) -> a + b in (f (0, 9), f (9, 0), f (3, 4))',
+  { expect: '(1, 2, 7)', minDt: 1 })
+
+// Guards: a failing `when` falls through to exactly the arms it would naively.
+checkOpt('dt guards fall through',
+  'let f = fn a b -> match (a, b) with (x, y) when x > y -> 1 | (x, y) when x < y -> 2 | (x, y) -> 3 in (f 5 1, f 1 5, f 4 4)',
+  { expect: '(1, 2, 3)', minDt: 1 })
+
+// Join-points: an overlapping wildcard row reachable from two arms is shared,
+// not duplicated (so the tree never blows up code size).
+checkOpt('dt shares overlapping arm via join-point',
+  `let big = fn z -> z * z * z + z * z + z in
+   let f = fn a b -> match (a, b) with (true, true) -> 0 | (_, false) -> big 5 + big 6 | (false, _) -> 1
+   in (f true false, f false true, f true true, f false false)`,
+  { expect: '(413, 1, 0, 413)', minDt: 1, minJoins: 1 })
+
+// Signature completeness: a complete ADT switch needs no default arm.
+checkOpt('dt complete signature, no default',
+  'type C = R | G | B in let f = fn x y -> match (x, y) with (R, n) -> n | (G, n) -> n + 1 | (B, n) -> n + 2 in (f R 10, f G 10, f B 10)',
+  { expect: '(10, 11, 12)', minDt: 1 })
+
+// A nested match on a *dynamic* scrutinee (so the optimizer can't const-fold it
+// away) returns the right arm's value — DT fired and is correct. `range` hides
+// the list from constant folding.
+checkOpt('dt on a dynamic list scrutinee',
+  'let f = fn xs -> match xs with a :: b :: _ -> a + b | a :: [] -> a | [] -> 0 in (f (range 7 8), f (range 3 6))',
+  { expect: '(7, 7)', minDt: 1 })
+
+// A guard that falls through with no remaining arm MATCH_FAILs identically on
+// both paths (checkOpt compares the optimized and unoptimized runs).
+{
+  const src = 'let f = fn n -> match n with x when x > 100 -> x in f 5'
+  const on = runPipeline(src, { execute: true, optimize: true })
+  const off = runPipeline(src, { execute: true, optimize: false })
+  const bothFail = !!(on.error && off.error && on.error.stage === 'run' && off.error.stage === 'run')
+  record('opt:dt guard-fail MATCH_FAILs on both', bothFail, `on=${on.error && on.error.message} off=${off.error && off.error.message}`)
+}
+
+// A flat match (distinct single-level heads, no nesting) is already optimal —
+// DT must leave it untouched so the prelude/enums stay byte-identical.
+checkOpt('dt skips a flat Option match',
+  'type Opt a = None | Some a in match Some 5 with None -> 0 | Some x -> x + 1',
+  { expect: '6', noDt: true })
+checkOpt('dt skips a flat enum match',
+  'type C = R | G | B in let f = fn c -> match c with R -> 1 | G -> 2 | B -> 3 in (f R, f G, f B)',
+  { expect: '(1, 2, 3)', noDt: true })
 
 // Aggregate: the optimizer fires somewhere on the gallery, and at least one
 // example's core strictly shrinks (proves real reduction, not a no-op).
