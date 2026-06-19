@@ -45,6 +45,8 @@ export interface FFSolution {
   n: number;
   J: number;
   h: number;
+  /** Anisotropy γ of the XY model (γ = 1 is the transverse-field Ising chain). */
+  gamma: number;
   /** Bogoliubov single-particle energies Λ_k ≥ 0, ascending (for display/gap). */
   spectrum: number[];
   /** Per-mode energies aligned with `g`/`hAmp` mode index k (SVD order). */
@@ -68,16 +70,32 @@ export interface FFSolution {
 /**
  * Diagonalise the open TFIM H = −J Σ XᵢXᵢ₊₁ − h Σ Zᵢ on n sites, returning the
  * Bogoliubov spectrum, ground energy and the ground-state correlation matrices.
+ * This is the γ = 1 (isotropic) point of the anisotropic XY model — see `solveXY`.
  */
 export function solveTFIM(n: number, J: number, h: number): FFSolution {
-  // R = A − B (n×n, real). A: diag 2h, sub/super −J. B: B[i,i+1]=−J, B[i+1,i]=+J.
-  //   R[i][i]   = 2h
-  //   R[i][i+1] = A−B = (−J) − (−J) = 0
-  //   R[i+1][i] = A−B = (−J) − (+J) = −2J
+  return solveXY(n, J, h, 1);
+}
+
+/**
+ * Diagonalise the open **anisotropic XY chain** in a transverse field
+ *   H = −J Σᵢ [ (1+γ)/2 XᵢXᵢ₊₁ + (1−γ)/2 YᵢYᵢ₊₁ ] − h Σᵢ Zᵢ      (open boundaries)
+ * on n sites. γ = 1 is the transverse-field Ising chain (only XX coupling); γ = 0 is the
+ * isotropic XX model; 0 < γ < 1 interpolates. The Jordan–Wigner image is again quadratic,
+ * H = Σ cᵢ†Aᵢⱼcⱼ + ½Σ(cᵢ†Bᵢⱼcⱼ† + h.c.), with A symmetric and B antisymmetric. The ONLY
+ * change from the Ising case is the anisotropy splitting the hopping/pairing across the bond:
+ *   A[i,i] = 2h,  A[i,i±1] = −J  (hopping),  B[i,i+1] = −Jγ,  B[i+1,i] = +Jγ  (pairing).
+ * So R = A − B has R[i,i] = 2h, R[i,i+1] = −J(1−γ), R[i+1,i] = −J(1+γ) — and because A is
+ * symmetric and B antisymmetric, Rᵀ = A + B for ANY γ, so the Lieb–Schultz–Mattis problem is
+ * still exactly the SVD R = U Σ Vᵀ. The whole correlator/entropy machinery is γ-agnostic.
+ */
+export function solveXY(n: number, J: number, h: number, gamma: number): FFSolution {
   const Rre = new Float64Array(n * n);
   const Rim = new Float64Array(n * n); // identically zero — R is real
   for (let i = 0; i < n; i++) Rre[i * n + i] = 2 * h;
-  for (let i = 0; i + 1 < n; i++) Rre[(i + 1) * n + i] = -2 * J;
+  for (let i = 0; i + 1 < n; i++) {
+    Rre[i * n + (i + 1)] = -J * (1 - gamma); // A−B upper: (−J) − (−Jγ)
+    Rre[(i + 1) * n + i] = -J * (1 + gamma); // A−B lower: (−J) − (+Jγ)
+  }
 
   const { Ure, S, Vhre } = svdFlat(Rre, Rim, n, n);
   // φ_{ki} = U[i][k] = Ure[i*n+k] ; ψ_{ki} = V[i][k] = conj(Vh[k][i]) = Vhre[k*n+i] (real).
@@ -127,7 +145,7 @@ export function solveTFIM(n: number, J: number, h: number): FFSolution {
   const spectrum = Array.from(S).sort((a, b) => a - b);
 
   return {
-    n, J, h, spectrum,
+    n, J, h, gamma, spectrum,
     modeEnergy,
     groundEnergy,
     energyPerSite: groundEnergy / n,
@@ -198,6 +216,42 @@ export function blockEntropy(sol: FFSolution, L: number): number {
 /** Entanglement entropy at every cut 1..n−1 (block = first L sites). */
 export function entropyProfile(sol: FFSolution): number[] {
   return Array.from({ length: sol.n - 1 }, (_, i) => blockEntropy(sol, i + 1));
+}
+
+/** Entanglement entropy (bits) of an arbitrary set of sites of the ground state. */
+export function entropyOfSites(sol: FFSolution, sites: number[]): number {
+  return covarianceEntropy(sol.n, sol.P, null, sol.Q, null, sites);
+}
+
+/**
+ * Quantum **mutual information** I(A:B) = S_A + S_B − S_{A∪B} (bits) between two disjoint
+ * blocks of sites of the ground state. It is non-negative, bounds all correlations between
+ * the regions, and — unlike a single block's entropy — measures genuine *two-region*
+ * correlation. Off criticality it decays exponentially with the gap-set separation between
+ * A and B; at the quantum critical point (h = J) it decays only algebraically.
+ */
+export function mutualInformation(sol: FFSolution, A: number[], B: number[]): number {
+  const sA = entropyOfSites(sol, A);
+  const sB = entropyOfSites(sol, B);
+  const sAB = entropyOfSites(sol, [...A, ...B].sort((x, y) => x - y));
+  return Math.max(0, sA + sB - sAB);
+}
+
+/**
+ * Mutual information between two equal blocks of width `w` as a function of the gap `d`
+ * between them (A = sites [a0..a0+w), B = [a0+w+d .. a0+2w+d)), centred in an n-site chain.
+ * Returns one point per separation d, for the disjoint-region correlation-decay plot.
+ */
+export function mutualInfoVsSeparation(sol: FFSolution, w: number): { d: number; I: number }[] {
+  const n = sol.n;
+  const out: { d: number; I: number }[] = [];
+  for (let d = 1; 2 * w + d < n; d++) {
+    const start = Math.max(0, Math.floor((n - (2 * w + d)) / 2));
+    const A = Array.from({ length: w }, (_, i) => start + i);
+    const B = Array.from({ length: w }, (_, i) => start + w + d + i);
+    out.push({ d, I: mutualInformation(sol, A, B) });
+  }
+  return out;
 }
 
 /** Field-direction magnetisation ⟨Zᵢ⟩ = 1 − 2⟨cᵢ†cᵢ⟩ at every site. */
