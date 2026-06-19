@@ -57,6 +57,15 @@ import {
   type TsVector,
   type TsQuery,
 } from './fts'
+import {
+  isArray,
+  makeArray,
+  arrayOrder,
+  formatArray,
+  parseArrayText,
+  type ArrayValue,
+  type RawElem,
+} from './array'
 
 export type ColumnType =
   | 'INTEGER'
@@ -71,8 +80,9 @@ export type ColumnType =
   | 'JSON'
   | 'TSVECTOR'
   | 'TSQUERY'
+  | 'ARRAY'
 
-export type SqlValue = null | number | string | boolean | Temporal | DecimalValue | JsonValue | TsVector | TsQuery
+export type SqlValue = null | number | string | boolean | Temporal | DecimalValue | JsonValue | TsVector | TsQuery | ArrayValue
 
 export const COLUMN_TYPES: readonly ColumnType[] = [
   'INTEGER',
@@ -87,6 +97,7 @@ export const COLUMN_TYPES: readonly ColumnType[] = [
   'JSON',
   'TSVECTOR',
   'TSQUERY',
+  'ARRAY',
 ]
 
 /** Coerce any value into an exact DECIMAL (used by comparison + coercion). */
@@ -96,6 +107,44 @@ function asDecimalExact(v: SqlValue): DecimalValue | null {
   if (typeof v === 'number') return Number.isInteger(v) ? decimalFromInt(v) : null
   if (typeof v === 'string') return parseDecimal(v)
   return null
+}
+
+/** Infer the element-type tag of an array from its first non-null element. */
+export function inferElemType(items: SqlValue[]): ColumnType | null {
+  for (const x of items) {
+    if (x === null) continue
+    const t = valueTypeOf(x)
+    return t === 'NULL' ? null : t
+  }
+  return null
+}
+
+/** Coerce every element of an array to `elemType` (recursing into nested arrays). */
+function coerceArrayElems(a: ArrayValue, elemType: ColumnType): ArrayValue {
+  return makeArray(
+    a.items.map((x) => (x === null ? null : isArray(x) ? coerceArrayElems(x, elemType) : coerceTo(elemType, x))),
+    elemType,
+  )
+}
+
+/** Recursively convert an array value to JSON data (`to_json` over an array). */
+function arrayToJson(a: ArrayValue): Json {
+  return a.items.map((x) => (isArray(x) ? arrayToJson(x) : toJson(x)))
+}
+
+/** Build an array value from a parsed `{…}` element tree, coercing scalar tokens
+ *  to `elemType` (left as TEXT when no element type is known). */
+function rawToValue(r: RawElem, elemType: ColumnType | null): SqlValue {
+  if (r.kind === 'null') return null
+  if (r.kind === 'array') return makeArray(r.items.map((it) => rawToValue(it, elemType)), elemType)
+  return elemType === null || elemType === 'TEXT' ? r.text : coerceTo(elemType, r.text)
+}
+
+/** Parse Postgres `{…}` array text into a typed array value. */
+export function parseArrayLiteral(text: string, elemType: ColumnType | null): ArrayValue {
+  const v = rawToValue(parseArrayText(text), elemType)
+  if (!isArray(v)) throw new TypeErrorSql('an array literal must be enclosed in { }')
+  return v
 }
 
 /** Map a temporal column type to its runtime tag. */
@@ -115,6 +164,7 @@ export function valueTypeOf(v: SqlValue): ColumnType | 'NULL' {
   if (v === null) return 'NULL'
   if (typeof v === 'boolean') return 'BOOLEAN'
   if (typeof v === 'string') return 'TEXT'
+  if (isArray(v)) return 'ARRAY'
   if (isTsVector(v)) return 'TSVECTOR'
   if (isTsQuery(v)) return 'TSQUERY'
   if (isJson(v)) return 'JSON'
@@ -128,8 +178,21 @@ export function valueTypeOf(v: SqlValue): ColumnType | 'NULL' {
 /** Coerce a parsed/produced value into a declared column type, or throw.
  *  For DECIMAL, `scale` (when given) rounds the value to that many fractional
  *  digits — i.e. the `s` of a `DECIMAL(p, s)` column or CAST. */
-export function coerceTo(type: ColumnType, v: SqlValue, scale?: number): SqlValue {
+export function coerceTo(type: ColumnType, v: SqlValue, scale?: number, elemType?: ColumnType): SqlValue {
   if (v === null) return null
+  if (type === 'ARRAY') {
+    // An existing array passes through (coercing its elements to elemType when
+    // one is declared); array text `'{…}'` parses; anything else is an error.
+    if (isArray(v)) return elemType ? coerceArrayElems(v, elemType) : v
+    if (typeof v === 'string') return parseArrayLiteral(v, elemType ?? null)
+    throw new TypeErrorSql(`cannot store ${JSON.stringify(v)} as an array`)
+  }
+  if (isArray(v)) {
+    // An array flowing into a non-array column.
+    if (type === 'TEXT') return formatArray(v, formatValue)
+    if (type === 'JSON') return jsonOf(arrayToJson(v))
+    throw new TypeErrorSql(`cannot store an array as ${type}`)
+  }
   if (type === 'TSVECTOR') {
     const tv = asTsVector(v)
     if (!tv) throw new TypeErrorSql(`cannot store ${JSON.stringify(v)} as TSVECTOR`)
@@ -245,6 +308,11 @@ function asJsonData(v: SqlValue): Json {
 
 export function compareValues(a: SqlValue, b: SqlValue): number | null {
   if (a === null || b === null) return null
+  // Arrays compare element-wise among themselves (Postgres array ordering).
+  if (isArray(a) || isArray(b)) {
+    if (isArray(a) && isArray(b)) return arrayOrder(a, b, orderValues)
+    return null
+  }
   // Text-search values compare among themselves by canonical text; a string
   // counterpart is read into the same kind so `vec_col = '…'::tsvector` works.
   if (isTsVector(a) || isTsVector(b)) {
@@ -307,6 +375,7 @@ export function orderValues(a: SqlValue, b: SqlValue): number {
   if (a === null && b === null) return 0
   if (a === null) return -1
   if (b === null) return 1
+  if (isArray(a) && isArray(b)) return arrayOrder(a, b, orderValues)
   if (isTsVector(a) && isTsVector(b)) return tsVectorOrder(a, b)
   if (isTsQuery(a) && isTsQuery(b)) return tsQueryOrder(a, b)
   if (isJson(a) && isJson(b)) return jsonOrder(a.v, b.v)
@@ -326,6 +395,7 @@ export function hashKey(values: SqlValue[]): string {
     if (v === null) out += 'N;'
     else if (typeof v === 'string') out += `S${v.length}:${v}`
     else if (typeof v === 'boolean') out += v ? 'B1;' : 'B0;'
+    else if (isArray(v)) out += `A${v.items.length}[${hashKey(v.items)}];`
     else if (isTsVector(v)) out += `V${tsVectorHash(v)};`
     else if (isTsQuery(v)) out += `Q${tsQueryHash(v)};`
     else if (isJson(v)) out += `J${jsonHash(v)};`
@@ -340,6 +410,7 @@ export function formatValue(v: SqlValue): string {
   if (v === null) return 'NULL'
   if (typeof v === 'boolean') return v ? 'TRUE' : 'FALSE'
   if (typeof v === 'string') return v
+  if (isArray(v)) return formatArray(v, formatValue)
   if (isTsVector(v)) return formatTsVector(v)
   if (isTsQuery(v)) return formatTsQuery(v)
   if (isJson(v)) return jsonStringify(v.v)

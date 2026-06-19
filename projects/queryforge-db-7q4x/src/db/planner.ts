@@ -34,7 +34,8 @@ import {
   type WindowSpec,
   type FrameBound,
 } from './ast'
-import { Database, Table, type IndexHandle, type Row } from './catalog'
+import { Database, Table, arrayGinKey, type IndexHandle, type Row } from './catalog'
+import { isArray } from './array'
 import type { IndexKey } from './storage/btree'
 import { eqSelectivity, nullSelectivity, rangeSelectivity, type ColumnStat } from './stats'
 import { asTsQuery } from './fts'
@@ -44,6 +45,7 @@ import {
   Distinct,
   Filter,
   GinScan,
+  ArrayGinScan,
   HashJoin,
   HashSemiJoin,
   IndexOnlyScan,
@@ -144,6 +146,18 @@ function collectColumns(e: Expr, out: ColumnExpr[]): void {
       // opaque (and is never pushed down — see containsSubquery).
       collectColumns(e.expr, out)
       break
+    case 'quantified_array':
+      collectColumns(e.expr, out)
+      collectColumns(e.array, out)
+      break
+    case 'array':
+      e.elements.forEach((x) => collectColumns(x, out))
+      break
+    case 'subscript':
+      collectColumns(e.base, out)
+      if (e.index) collectColumns(e.index, out)
+      if (e.upper) collectColumns(e.upper, out)
+      break
     case 'window':
       e.args.forEach((a) => collectColumns(a, out))
       e.spec.partitionBy.forEach((p) => collectColumns(p, out))
@@ -186,6 +200,16 @@ function containsSubquery(e: Expr): boolean {
         (e.operand ? containsSubquery(e.operand) : false) ||
         e.whens.some((w) => containsSubquery(w.when) || containsSubquery(w.then)) ||
         (e.else ? containsSubquery(e.else) : false)
+      )
+    case 'quantified_array':
+      return containsSubquery(e.expr) || containsSubquery(e.array)
+    case 'array':
+      return e.elements.some(containsSubquery)
+    case 'subscript':
+      return (
+        containsSubquery(e.base) ||
+        (e.index ? containsSubquery(e.index) : false) ||
+        (e.upper ? containsSubquery(e.upper) : false)
       )
     default:
       return false
@@ -252,6 +276,17 @@ function collectChildren(e: Expr, out: Expr[]): void {
     case 'in_subquery':
     case 'quantified':
       out.push(e.expr)
+      break
+    case 'quantified_array':
+      out.push(e.expr, e.array)
+      break
+    case 'array':
+      out.push(...e.elements)
+      break
+    case 'subscript':
+      out.push(e.base)
+      if (e.index) out.push(e.index)
+      if (e.upper) out.push(e.upper)
       break
     case 'literal':
     case 'column':
@@ -345,6 +380,19 @@ export function inferType(e: Expr, schema: Schema, ctx: CompileCtx): ColumnType 
       if (['JSON_TYPEOF', 'JSON_EXTRACT_PATH_TEXT', 'JSON_PRETTY'].includes(e.name)) return 'TEXT'
       if (e.name === 'JSON_ARRAY_LENGTH') return 'INTEGER'
       if (['JSON_VALID', 'JSON_CONTAINS', 'TS_MATCH'].includes(e.name)) return 'BOOLEAN'
+      // Array functions.
+      if (
+        [
+          'ARRAY_AGG', 'ARRAY_APPEND', 'ARRAY_PREPEND', 'ARRAY_CAT', 'ARRAY_REMOVE', 'ARRAY_REPLACE',
+          'ARRAY_POSITIONS', 'STRING_TO_ARRAY', 'TRIM_ARRAY',
+        ].includes(e.name)
+      )
+        return 'ARRAY'
+      if (
+        ['ARRAY_LENGTH', 'CARDINALITY', 'ARRAY_NDIMS', 'ARRAY_UPPER', 'ARRAY_LOWER', 'ARRAY_POSITION'].includes(e.name)
+      )
+        return 'INTEGER'
+      if (['ARRAY_DIMS', 'ARRAY_TO_STRING'].includes(e.name)) return 'TEXT'
       // Full-text search result types.
       if (['TO_TSVECTOR', 'SETWEIGHT', 'STRIP'].includes(e.name)) return 'TSVECTOR'
       if (['TO_TSQUERY', 'PLAINTO_TSQUERY', 'PHRASETO_TSQUERY', 'WEBSEARCH_TO_TSQUERY', 'TSQUERY_AND', 'TSQUERY_OR', 'TSQUERY_NOT'].includes(e.name)) return 'TSQUERY'
@@ -371,11 +419,13 @@ export function inferType(e: Expr, schema: Schema, ctx: CompileCtx): ColumnType 
         return 'TEXT'
       return 'TEXT'
     case 'binary':
-      if (['=', '<>', '<', '<=', '>', '>=', 'AND', 'OR', '@>', '<@', '?', '@@'].includes(e.op)) return 'BOOLEAN'
+      if (['=', '<>', '<', '<=', '>', '>=', 'AND', 'OR', '@>', '<@', '?', '@@', '&&'].includes(e.op)) return 'BOOLEAN'
       if (e.op === '->' || e.op === '#>') return 'JSON'
       if (e.op === '->>' || e.op === '#>>') return 'TEXT'
       if (e.op === '||') {
         const lt = inferType(e.left, schema, ctx)
+        const rt = inferType(e.right, schema, ctx)
+        if (lt === 'ARRAY' || rt === 'ARRAY') return 'ARRAY'
         if (lt === 'JSON' || lt === 'TSVECTOR' || lt === 'TSQUERY') return lt
         return 'TEXT'
       }
@@ -389,7 +439,14 @@ export function inferType(e: Expr, schema: Schema, ctx: CompileCtx): ColumnType 
     case 'exists':
     case 'in_subquery':
     case 'quantified':
+    case 'quantified_array':
       return 'BOOLEAN'
+    case 'array':
+      return 'ARRAY'
+    case 'subscript':
+      // A slice yields an array; a single subscript yields one element (whose
+      // exact type we don't track positionally — TEXT is a safe display default).
+      return e.slice ? 'ARRAY' : 'TEXT'
     case 'window':
       if (['ROW_NUMBER', 'RANK', 'DENSE_RANK', 'NTILE', 'COUNT'].includes(e.name)) return 'INTEGER'
       if (['PERCENT_RANK', 'CUME_DIST', 'AVG'].includes(e.name)) return 'REAL'
@@ -814,6 +871,74 @@ function tryGinScan(table: Table, baseSchema: Schema, preds: Expr[]): IndexPlan 
   return null
 }
 
+// Use a GIN inverted index over an *array* column for `col @> array`,
+// `array <@ col`, `col && array` or `x = ANY(col)`: probe the element posting
+// lists (AND for @>, OR for && / = ANY), then recheck the exact predicate.
+function tryArrayGinScan(table: Table, baseSchema: Schema, preds: Expr[]): IndexPlan | null {
+  for (const p of preds) {
+    let colExpr: ColumnExpr | null = null
+    let constExpr: Expr | null = null
+    let mode: 'and' | 'or' = 'and'
+    let single = false // a `= ANY` probes a single search element, not an array
+    if (p.kind === 'binary' && (p.op === '@>' || p.op === '<@' || p.op === '&&')) {
+      const lc = p.left.kind === 'column' ? (p.left as ColumnExpr) : null
+      const rc = p.right.kind === 'column' ? (p.right as ColumnExpr) : null
+      if (p.op === '@>') {
+        if (lc) { colExpr = lc; constExpr = p.right; mode = 'and' }
+      } else if (p.op === '<@') {
+        // `const <@ col` ≡ `col @> const`.
+        if (rc) { colExpr = rc; constExpr = p.left; mode = 'and' }
+      } else {
+        // `&&` is symmetric.
+        if (lc) { colExpr = lc; constExpr = p.right; mode = 'or' }
+        else if (rc) { colExpr = rc; constExpr = p.left; mode = 'or' }
+      }
+    } else if (p.kind === 'quantified_array' && p.op === '=' && p.quantifier === 'ANY' && p.array.kind === 'column') {
+      colExpr = p.array as ColumnExpr
+      constExpr = p.expr
+      mode = 'or'
+      single = true
+    }
+    if (!colExpr || !constExpr) continue
+    let colType: ColumnType
+    try {
+      colType = table.columnType(colExpr.name)
+    } catch {
+      continue
+    }
+    if (colType !== 'ARRAY') continue
+    const gin = table.ginIndexForColumn(colExpr.name)
+    if (!gin) continue
+    const cval = evalConstFull(constExpr)
+    if (cval === undefined) continue
+    let keys: string[]
+    if (single) {
+      if (cval === null) continue
+      keys = [arrayGinKey(cval)]
+    } else {
+      if (!isArray(cval)) continue
+      keys = []
+      for (const x of cval.items) if (x !== null) keys.push(arrayGinKey(x))
+    }
+    // An empty key set (e.g. `col @> ARRAY[]` — true for every row) isn't safely
+    // index-bounded; let the sequential filter handle it.
+    if (keys.length === 0) continue
+    let recheck: Evaluator
+    try {
+      recheck = compileExpr(p, { resolve: (t, n) => resolveColumn(baseSchema, t, n) })
+    } catch {
+      continue
+    }
+    const label = p.kind === 'binary' ? p.op : '= ANY'
+    const estRows = Math.max(1, Math.round(table.rowCount() * 0.1))
+    return {
+      op: new ArrayGinScan(table, baseSchema, gin, keys, mode, recheck, label, estRows),
+      consumed: new Set<Expr>([p]),
+    }
+  }
+  return null
+}
+
 // Pick the best index access path: a single (composite) index scan, a bitmap AND
 // of several single-column indexes, a bitmap OR over an IN-list, or a GIN scan
 // for a full-text `@@` predicate — whichever consumes the most predicates. Ties
@@ -830,6 +955,7 @@ function chooseIndexAccess(
     tryBitmapAnd(table, schema, preds, sc),
     tryBitmapOr(table, schema, preds, sc),
     tryGinScan(table, schema, preds),
+    tryArrayGinScan(table, schema, preds),
   ].filter((c): c is IndexPlan => c !== null)
   if (candidates.length === 0) return null
   let best = candidates[0]
@@ -1104,6 +1230,7 @@ const TYPE_RANK: Record<ColumnType, number> = {
   JSON: 8,
   TSVECTOR: 8,
   TSQUERY: 8,
+  ARRAY: 8,
   TEXT: 9,
 }
 function widerType(a: ColumnType, b: ColumnType): ColumnType {

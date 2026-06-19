@@ -16,8 +16,9 @@
 import { BTree, type BTreeStats, type IndexKey } from './storage/btree'
 import { gatherTableStats, type TableStat } from './stats'
 import { compileExpr, type CompileCtx, type Evaluator } from './eval'
-import { SqlError, coerceTo, formatValue, valuesEqual, type ColumnType, type SqlValue } from './types'
+import { SqlError, coerceTo, formatValue, valuesEqual, hashKey, type ColumnType, type SqlValue } from './types'
 import { isTsVector, asTsVector, type GinPostings } from './fts'
+import { isArray } from './array'
 import {
   emptyConstraints,
   type CheckConstraint,
@@ -66,11 +67,20 @@ export class IndexHandle {
   }
 }
 
+/** The GIN posting key for one array element — a canonical, type-aware string so
+ *  the build side and the probe side agree (e.g. integer 2 and the search value 2
+ *  map to the same key). Distinct from any tsvector lexeme: the two never share a
+ *  column, so the key spaces can't collide. */
+export function arrayGinKey(v: SqlValue): string {
+  return hashKey([v])
+}
+
 /**
- * A GIN (Generalized INverted) index over a single `tsvector` column: an
- * inverted map from each lexeme to the set of rowids whose document contains it.
- * This is what makes `col @@ query` sublinear — the planner walks the query to a
- * small candidate rowset instead of scanning the whole heap.
+ * A GIN (Generalized INverted) index over a single `tsvector` *or* array column:
+ * an inverted map from each key (a tsvector lexeme, or an array element) to the
+ * set of rowids whose cell contains it. This is what makes `col @@ query` and
+ * `col @> array` / `col && array` / `x = ANY(col)` sublinear — the planner walks
+ * the query to a small candidate rowset instead of scanning the whole heap.
  */
 export class GinIndexHandle implements GinPostings {
   readonly name: string
@@ -85,23 +95,29 @@ export class GinIndexHandle implements GinPostings {
     this.columnIndex = columnIndex
   }
 
-  /** The distinct lexemes in a row's indexed cell (or [] if not a tsvector). */
-  private lexemesOf(row: Row): string[] {
+  /** The distinct GIN keys in a row's indexed cell: tsvector lexemes, or the
+   *  (non-null) elements of an array. Empty if the cell is neither. */
+  private keysOf(row: Row): string[] {
     const cell = row[this.columnIndex]
     if (cell === null || cell === undefined) return []
+    if (isArray(cell)) {
+      const out: string[] = []
+      for (const x of cell.items) if (x !== null) out.push(arrayGinKey(x))
+      return out
+    }
     const vec = isTsVector(cell) ? cell : asTsVector(cell)
     return vec ? vec.lex.map((l) => l.word) : []
   }
 
   addRow(rowid: number, row: Row): void {
-    for (const word of this.lexemesOf(row)) {
+    for (const word of this.keysOf(row)) {
       let s = this.postings.get(word)
       if (!s) { s = new Set(); this.postings.set(word, s) }
       s.add(rowid)
     }
   }
   removeRow(rowid: number, row: Row): void {
-    for (const word of this.lexemesOf(row)) {
+    for (const word of this.keysOf(row)) {
       const s = this.postings.get(word)
       if (s) { s.delete(rowid); if (s.size === 0) this.postings.delete(word) }
     }
@@ -240,7 +256,7 @@ export class Table {
       if (row[i] === null && col.notNull) {
         throw new SqlError(`NOT NULL constraint violated on "${this.name}.${col.name}"`, 'constraint')
       }
-      row[i] = coerceTo(col.type, row[i], col.scale)
+      row[i] = coerceTo(col.type, row[i], col.scale, col.elemType)
     }
     for (const chk of this.compiledChecks()) {
       const v = chk.fn(row)
@@ -383,7 +399,7 @@ export class Table {
   /** Append a column, backfilling existing rows with its DEFAULT (or NULL). */
   addColumn(col: ColumnDef): void {
     if (this.columnIndex(col.name) >= 0) throw new SqlError(`column "${col.name}" already exists in "${this.name}"`, 'ddl')
-    const fill = col.default ? coerceTo(col.type, evalColumnDefault(col), col.scale) : null
+    const fill = col.default ? coerceTo(col.type, evalColumnDefault(col), col.scale, col.elemType) : null
     if (col.notNull && fill === null && this.heap.size > 0) {
       throw new SqlError(`cannot add NOT NULL column "${col.name}" without a DEFAULT to non-empty table "${this.name}"`, 'ddl')
     }
@@ -796,6 +812,18 @@ function walkExprColumns(e: Expr, visit: (c: ColumnExpr) => void): void {
     case 'quantified':
       walk(e.expr)
       return
+    case 'quantified_array':
+      walk(e.expr)
+      walk(e.array)
+      return
+    case 'array':
+      e.elements.forEach(walk)
+      return
+    case 'subscript':
+      walk(e.base)
+      if (e.index) walk(e.index)
+      if (e.upper) walk(e.upper)
+      return
     case 'window':
       e.args.forEach(walk)
       return
@@ -810,7 +838,7 @@ function evalColumnDefault(col: ColumnDef): SqlValue {
       throw new SqlError('column references are not allowed in DEFAULT', 'bind')
     },
   })
-  return coerceTo(col.type, fn([]), col.scale)
+  return coerceTo(col.type, fn([]), col.scale, col.elemType)
 }
 
 /** Fill in missing fields on a (possibly older) serialized constraint set. */

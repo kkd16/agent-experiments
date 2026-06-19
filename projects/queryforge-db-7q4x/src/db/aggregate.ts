@@ -4,7 +4,8 @@
 // Output rows are [groupKey0..groupKeyN, agg0..aggM] so downstream HAVING /
 // projection can read both grouping columns and aggregate results positionally.
 
-import { hashKey, orderValues, formatValue, type SqlValue } from './types'
+import { hashKey, orderValues, formatValue, inferElemType, type SqlValue } from './types'
+import { makeArray } from './array'
 import { makeJson, jsonOf, toJson, type Json } from './json'
 import {
   isDecimal,
@@ -41,6 +42,7 @@ export type AggName =
   | 'MODE'
   | 'JSON_AGG'
   | 'JSON_OBJECT_AGG'
+  | 'ARRAY_AGG'
 
 export interface AggSpec {
   name: AggName
@@ -94,11 +96,14 @@ class Accumulator {
   private jsonArr: Json[] | null
   private jsonObj: { [k: string]: Json } | null
   private jsonSeen = 0
+  // ARRAY_AGG keeps every value in arrival order (including NULLs).
+  private arr: SqlValue[] | null
   constructor(spec: AggSpec) {
     this.seen = spec.distinct ? new Set() : null
     this.list = needsList(spec.name) ? [] : null
     this.jsonArr = spec.name === 'JSON_AGG' ? [] : null
     this.jsonObj = spec.name === 'JSON_OBJECT_AGG' ? {} : null
+    this.arr = spec.name === 'ARRAY_AGG' ? [] : null
   }
   update(spec: AggSpec, row: Row): void {
     if (spec.filter && spec.filter(row) !== true) return
@@ -114,6 +119,17 @@ class Accumulator {
       if (k === null) return
       this.jsonObj[formatValue(k)] = toJson(spec.arg2 ? spec.arg2(row) : null)
       this.jsonSeen++
+      return
+    }
+    if (this.arr) {
+      const v = spec.arg ? spec.arg(row) : null
+      // array_agg(DISTINCT x) de-duplicates; the plain form keeps every value.
+      if (this.seen) {
+        const k = hashKey([v])
+        if (this.seen.has(k)) return
+        this.seen.add(k)
+      }
+      this.arr.push(v)
       return
     }
     if (spec.star) {
@@ -164,6 +180,8 @@ class Accumulator {
         return this.jsonSeen > 0 && this.jsonArr ? makeJson(this.jsonArr) : null
       case 'JSON_OBJECT_AGG':
         return this.jsonSeen > 0 && this.jsonObj ? jsonOf(this.jsonObj) : null
+      case 'ARRAY_AGG':
+        return this.arr && this.arr.length > 0 ? makeArray(this.arr.slice(), inferElemType(this.arr)) : null
       case 'COUNT':
         return this.count
       case 'SUM':

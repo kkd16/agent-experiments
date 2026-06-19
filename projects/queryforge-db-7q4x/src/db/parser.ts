@@ -46,6 +46,8 @@ const PRECEDENCE: Record<string, number> = {
   // JSON containment / existence + the full-text `@@` match sit at the
   // comparison level (they're boolean).
   '@>': 4, '<@': 4, '?': 4, '@@': 4,
+  // Array overlap is a boolean operator at the comparison level.
+  '&&': 4,
   '||': 5,
   '+': 6, '-': 6,
   '*': 7, '/': 7, '%': 7,
@@ -211,7 +213,22 @@ class Parser {
     return { kind: 'analyze', table }
   }
 
-  private parseTypeName(): { type: ColumnType; precision?: number; scale?: number } {
+  /** Parse a type name, recognising one or more trailing `[]` array suffixes
+   *  (`INTEGER[]`, `TEXT[][]`). A suffixed type becomes ARRAY with `elemType`
+   *  carrying the inner scalar type. */
+  private parseTypeName(): { type: ColumnType; precision?: number; scale?: number; elemType?: ColumnType } {
+    const base = this.parseScalarTypeName()
+    if (this.at('[') && this.peek(1).value === ']') {
+      while (this.at('[') && this.peek(1).value === ']') {
+        this.next() // [
+        this.next() // ]
+      }
+      return { type: 'ARRAY', elemType: base.type }
+    }
+    return base
+  }
+
+  private parseScalarTypeName(): { type: ColumnType; precision?: number; scale?: number } {
     const t = this.next().value
     switch (t) {
       case 'INTEGER':
@@ -407,6 +424,7 @@ class Parser {
       unique: false,
       ...(ty.precision !== undefined ? { precision: ty.precision } : {}),
       ...(ty.scale !== undefined ? { scale: ty.scale } : {}),
+      ...(ty.elemType !== undefined ? { elemType: ty.elemType } : {}),
     }
     for (;;) {
       if (this.accept('CONSTRAINT')) {
@@ -1151,7 +1169,19 @@ class Parser {
       if (v === '::') {
         this.next()
         const ty = this.parseTypeName()
-        left = { kind: 'cast', expr: left, type: ty.type, ...(ty.scale !== undefined ? { scale: ty.scale } : {}) }
+        left = {
+          kind: 'cast',
+          expr: left,
+          type: ty.type,
+          ...(ty.scale !== undefined ? { scale: ty.scale } : {}),
+          ...(ty.elemType !== undefined ? { elemType: ty.elemType } : {}),
+        }
+        continue
+      }
+      // Postfix subscript / slice: base[index] or base[lo:hi] (binds tightest).
+      if (v === '[') {
+        this.next()
+        left = this.parseSubscriptTail(left)
         continue
       }
 
@@ -1198,17 +1228,25 @@ class Parser {
       // Treat only operator/keyword tokens as binary ops (not strings).
       if (t.kind === 'string') break
       this.next()
-      // Quantified comparison: <op> ANY|SOME|ALL (SELECT …)
+      // Quantified comparison: <op> ANY|SOME|ALL ( SELECT … | <array> )
       if (
         prec === COMPARISON_PREC &&
         (this.at('ANY') || this.at('SOME') || this.at('ALL')) &&
         this.peek(1).value === '('
       ) {
         const quantifier: 'ANY' | 'ALL' = this.accept('ALL') ? 'ALL' : (this.next(), 'ANY')
+        const op = v as '=' | '<>' | '<' | '<=' | '>' | '>='
         this.expect('(')
-        const select = this.parseSubquerySelect()
-        this.expect(')')
-        left = { kind: 'quantified', op: v as '=' | '<>' | '<' | '<=' | '>' | '>=', quantifier, expr: left, select }
+        if (this.at('SELECT') || this.at('WITH')) {
+          const select = this.parseSubquerySelect()
+          this.expect(')')
+          left = { kind: 'quantified', op, quantifier, expr: left, select }
+        } else {
+          // Array-operand form: `x = ANY(array_expr)`.
+          const array = this.parseExpr()
+          this.expect(')')
+          left = { kind: 'quantified_array', op, quantifier, expr: left, array }
+        }
         continue
       }
       const right = this.parseExpr(prec + 1)
@@ -1309,6 +1347,19 @@ class Parser {
     ) {
       this.next()
       return { kind: 'func', name: t.value, args: [], distinct: false, star: false }
+    }
+    // Array constructor: ARRAY[e1, e2, …] (ARRAY is a contextual keyword here).
+    if (t.value === 'ARRAY' && this.peek(1).value === '[') {
+      this.next() // ARRAY
+      this.next() // [
+      const elements: Expr[] = []
+      if (!this.at(']')) {
+        do {
+          elements.push(this.parseExpr())
+        } while (this.accept(','))
+      }
+      this.expect(']')
+      return { kind: 'array', elements }
     }
     // EXTRACT(field FROM expr) — the SQL-standard spelling.
     if (t.value === 'EXTRACT' && this.peek(1).value === '(') return this.parseExtract()
@@ -1585,7 +1636,34 @@ class Parser {
     this.expect('AS')
     const ty = this.parseTypeName()
     this.expect(')')
-    return { kind: 'cast', expr, type: ty.type, ...(ty.scale !== undefined ? { scale: ty.scale } : {}) }
+    return {
+      kind: 'cast',
+      expr,
+      type: ty.type,
+      ...(ty.scale !== undefined ? { scale: ty.scale } : {}),
+      ...(ty.elemType !== undefined ? { elemType: ty.elemType } : {}),
+    }
+  }
+
+  /** Parse the tail of a subscript/slice after the opening `[` has been read.
+   *  Handles `base[i]`, `base[lo:hi]`, `base[:hi]`, `base[lo:]` and `base[:]`. */
+  private parseSubscriptTail(base: Expr): Expr {
+    // `[:` — slice with an omitted lower bound.
+    if (this.at(':')) {
+      this.next()
+      const upper = this.at(']') ? undefined : this.parseExpr()
+      this.expect(']')
+      return { kind: 'subscript', base, slice: true, ...(upper ? { upper } : {}) }
+    }
+    const index = this.parseExpr()
+    if (this.at(':')) {
+      this.next()
+      const upper = this.at(']') ? undefined : this.parseExpr()
+      this.expect(']')
+      return { kind: 'subscript', base, slice: true, index, ...(upper ? { upper } : {}) }
+    }
+    this.expect(']')
+    return { kind: 'subscript', base, index, slice: false }
   }
 }
 

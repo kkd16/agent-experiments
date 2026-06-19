@@ -10,9 +10,32 @@ import {
   coerceTo,
   compareValues,
   valuesEqual,
+  formatValue,
+  inferElemType,
   type ColumnType,
   type SqlValue,
 } from './types'
+import {
+  isArray,
+  makeArray,
+  arrayContains,
+  arrayOverlap,
+  arrayCat,
+  arraySubscript,
+  arraySlice,
+  arrayPosition,
+  arrayPositions,
+  arrayRemove,
+  arrayReplace,
+  arrayAppend,
+  arrayPrepend,
+  arrayLength,
+  cardinality as arrayCardinality,
+  arrayNdims,
+  arrayDims,
+  generateSubscripts,
+  type ArrayValue,
+} from './array'
 import {
   isTemporal,
   scaleInterval,
@@ -113,7 +136,15 @@ import {
   asTsQuery,
   type Weight,
 } from './fts'
-import type { Expr, ExistsExpr, FuncExpr, InSubqueryExpr, QuantifiedExpr, SubqueryExpr, WindowFuncExpr } from './ast'
+import type {
+  Expr,
+  ExistsExpr,
+  FuncExpr,
+  InSubqueryExpr,
+  QuantifiedExpr,
+  SubqueryExpr,
+  WindowFuncExpr,
+} from './ast'
 import type { Row } from './catalog'
 
 export type Evaluator = (row: Row) => SqlValue
@@ -322,6 +353,7 @@ function parseDate(v: SqlValue): Date | null {
   if (isDecimal(v)) return new Date(decToNumber(v))
   if (isJson(v)) return null
   if (isTsVector(v) || isTsQuery(v)) return null
+  if (isArray(v)) return null
   const s = v.trim()
   if (s.toUpperCase() === 'NOW') return new Date()
   // Date-only strings parse as UTC midnight (avoids local-timezone drift).
@@ -762,6 +794,107 @@ export const SCALAR_FUNCTIONS: Record<string, ScalarFn> = {
     if (!vec) throw new SqlError('tsvector_length() expects a tsvector', 'eval')
     return tsVectorLength(vec)
   },
+
+  // --- arrays ---------------------------------------------------------------
+  ARRAY_LENGTH: ([a, d]) => {
+    if (a === null || a === undefined) return null
+    return lengthAtDim(asArrayArg(a, 'array_length'), d === null || d === undefined ? 1 : Number(d))
+  },
+  ARRAY_UPPER: ([a, d]) => {
+    if (a === null || a === undefined) return null
+    return lengthAtDim(asArrayArg(a, 'array_upper'), d === null || d === undefined ? 1 : Number(d))
+  },
+  // Arrays are 1-indexed, so the lower bound is 1 (NULL for an empty dimension).
+  ARRAY_LOWER: ([a, d]) => {
+    if (a === null || a === undefined) return null
+    return lengthAtDim(asArrayArg(a, 'array_lower'), d === null || d === undefined ? 1 : Number(d)) === null ? null : 1
+  },
+  CARDINALITY: ([a]) => (a === null || a === undefined ? null : arrayCardinality(asArrayArg(a, 'cardinality'))),
+  ARRAY_NDIMS: ([a]) => {
+    if (a === null || a === undefined) return null
+    const arr = asArrayArg(a, 'array_ndims')
+    return arr.items.length === 0 ? null : arrayNdims(arr)
+  },
+  ARRAY_DIMS: ([a]) => (a === null || a === undefined ? null : arrayDims(asArrayArg(a, 'array_dims'))),
+  ARRAY_APPEND: ([a, e]) => {
+    const el = e ?? null
+    if (a === null || a === undefined) return makeArray([el])
+    return arrayAppend(asArrayArg(a, 'array_append'), el)
+  },
+  ARRAY_PREPEND: ([e, a]) => {
+    const el = e ?? null
+    if (a === null || a === undefined) return makeArray([el])
+    return arrayPrepend(el, asArrayArg(a, 'array_prepend'))
+  },
+  ARRAY_CAT: ([a, b]) => {
+    const an = a === null || a === undefined
+    const bn = b === null || b === undefined
+    if (an && bn) return null
+    if (an) return asArrayArg(b, 'array_cat')
+    if (bn) return asArrayArg(a, 'array_cat')
+    return arrayCat(asArrayArg(a, 'array_cat'), asArrayArg(b, 'array_cat'))
+  },
+  ARRAY_REMOVE: ([a, e]) =>
+    a === null || a === undefined ? null : arrayRemove(asArrayArg(a, 'array_remove'), e ?? null, valuesEqual),
+  ARRAY_REPLACE: ([a, from, to]) =>
+    a === null || a === undefined
+      ? null
+      : arrayReplace(asArrayArg(a, 'array_replace'), from ?? null, to ?? null, valuesEqual),
+  ARRAY_POSITION: ([a, e]) =>
+    a === null || a === undefined ? null : arrayPosition(asArrayArg(a, 'array_position'), e ?? null, valuesEqual),
+  ARRAY_POSITIONS: ([a, e]) =>
+    a === null || a === undefined ? null : arrayPositions(asArrayArg(a, 'array_positions'), e ?? null, valuesEqual),
+  // trim_array(a, n): drop the last n elements.
+  TRIM_ARRAY: ([a, n]) => {
+    if (a === null || a === undefined || n === null || n === undefined) return null
+    const arr = asArrayArg(a, 'trim_array')
+    const k = Math.trunc(Number(n))
+    if (k < 0 || k > arr.items.length) throw new SqlError('trim_array(): number of elements to trim is out of range', 'eval')
+    return makeArray(arr.items.slice(0, arr.items.length - k), arr.el)
+  },
+  ARRAY_TO_STRING: ([a, sep, nullStr]) => {
+    if (a === null || a === undefined || sep === null || sep === undefined) return null
+    const arr = asArrayArg(a, 'array_to_string')
+    const ns = nullStr === null || nullStr === undefined ? null : strOf(nullStr)
+    const parts: string[] = []
+    for (const x of arr.items) {
+      if (x === null) {
+        if (ns !== null) parts.push(ns)
+      } else {
+        parts.push(formatValue(x))
+      }
+    }
+    return parts.join(strOf(sep))
+  },
+  STRING_TO_ARRAY: ([s, sep, nullStr]) => {
+    if (s === null || s === undefined || sep === null || sep === undefined) return null
+    const str = strOf(s)
+    const d = strOf(sep)
+    const ns = nullStr === null || nullStr === undefined ? null : strOf(nullStr)
+    // An empty delimiter splits into single characters (Postgres behaviour).
+    const pieces = d === '' ? [...str] : str.split(d)
+    const items: SqlValue[] = pieces.map((p) => (ns !== null && p === ns ? null : p))
+    return makeArray(items, 'TEXT')
+  },
+}
+
+/** Require an array argument, throwing a clear error otherwise. */
+function asArrayArg(v: SqlValue, fn: string): ArrayValue {
+  if (!isArray(v)) throw new SqlError(`${fn}() expects an array`, 'eval')
+  return v
+}
+
+/** Length of an array along dimension `dim` (1-based), descending into the first
+ *  element for higher dimensions. NULL when the dimension is empty / absent. */
+function lengthAtDim(a: ArrayValue, dim: number): number | null {
+  if (dim < 1) return null
+  let cur: ArrayValue = a
+  for (let d = 1; d < dim; d++) {
+    const first: SqlValue = cur.items[0]
+    if (!isArray(first)) return null
+    cur = first
+  }
+  return arrayLength(cur)
 }
 
 /** Parse a Postgres-style float array `{0.1,0.2,0.4,1.0}` or a JSON array into
@@ -849,12 +982,30 @@ function jsonKeys(a: SqlValue): TableFunctionResult {
   return { columns, rows: Object.keys(d).sort().map((k) => [k]) }
 }
 
+/** `unnest(array)` — one row per (first-dimension) element. */
+function unnestArray(a: SqlValue): TableFunctionResult {
+  if (a === null) return { columns: [{ name: 'unnest', type: 'TEXT' }], rows: [] }
+  if (!isArray(a)) throw new SqlError('unnest() expects an array', 'eval')
+  const type: ColumnType = a.el ?? inferElemType(a.items) ?? 'TEXT'
+  return { columns: [{ name: 'unnest', type }], rows: a.items.map((el) => [el]) }
+}
+
+/** `generate_subscripts(array, dim)` — the 1..length index series. */
+function genSubscripts(a: SqlValue): TableFunctionResult {
+  const columns = [{ name: 'generate_subscripts', type: 'INTEGER' as ColumnType }]
+  if (a === null) return { columns, rows: [] }
+  if (!isArray(a)) throw new SqlError('generate_subscripts() expects an array', 'eval')
+  return { columns, rows: generateSubscripts(a).map((i) => [i]) }
+}
+
 export const TABLE_FUNCTIONS: Record<string, (args: SqlValue[]) => TableFunctionResult> = {
   JSON_ARRAY_ELEMENTS: ([a]) => jsonElements(a ?? null, false),
   JSON_ARRAY_ELEMENTS_TEXT: ([a]) => jsonElements(a ?? null, true),
   JSON_EACH: ([a]) => jsonEach(a ?? null, false),
   JSON_EACH_TEXT: ([a]) => jsonEach(a ?? null, true),
   JSON_OBJECT_KEYS: ([a]) => jsonKeys(a ?? null),
+  UNNEST: ([a]) => unnestArray(a ?? null),
+  GENERATE_SUBSCRIPTS: ([a]) => genSubscripts(a ?? null),
 }
 
 export const TABLE_FUNCTION_NAMES: ReadonlySet<string> = new Set(Object.keys(TABLE_FUNCTIONS))
@@ -912,7 +1063,8 @@ export function compileExpr(expr: Expr, ctx: CompileCtx): Evaluator {
       const inner = compileExpr(expr.expr, ctx)
       const type: ColumnType = expr.type
       const scale = expr.scale
-      return (row) => coerceTo(type, inner(row), scale)
+      const elemType = expr.elemType
+      return (row) => coerceTo(type, inner(row), scale, elemType)
     }
     case 'unary': {
       const inner = compileExpr(expr.expr, ctx)
@@ -1026,6 +1178,38 @@ export function compileExpr(expr: Expr, ctx: CompileCtx): Evaluator {
       const args = expr.args.map((a) => compileExpr(a, ctx))
       return (row) => fn(args.map((a) => a(row)))
     }
+    case 'array': {
+      const els = expr.elements.map((e) => compileExpr(e, ctx))
+      return (row) => {
+        const items = els.map((f) => f(row))
+        return makeArray(items, inferElemType(items))
+      }
+    }
+    case 'subscript': {
+      const base = compileExpr(expr.base, ctx)
+      const idx = expr.index ? compileExpr(expr.index, ctx) : null
+      const up = expr.upper ? compileExpr(expr.upper, ctx) : null
+      const slice = expr.slice
+      return (row) => {
+        const a = base(row)
+        if (a === null) return null
+        if (!isArray(a)) throw new SqlError('cannot subscript a non-array value', 'eval')
+        if (slice) {
+          const lo = idx ? idx(row) : null
+          const hi = up ? up(row) : null
+          return arraySlice(a, lo === null ? null : Number(lo), hi === null ? null : Number(hi))
+        }
+        const i = idx ? idx(row) : null
+        return i === null ? null : arraySubscript(a, Number(i))
+      }
+    }
+    case 'quantified_array': {
+      const left = compileExpr(expr.expr, ctx)
+      const arr = compileExpr(expr.array, ctx)
+      const op = expr.op
+      const all = expr.quantifier === 'ALL'
+      return (row) => quantifiedArray(left(row), arr(row), op, all)
+    }
     case 'subquery':
     case 'exists':
     case 'in_subquery':
@@ -1040,6 +1224,40 @@ export function compileExpr(expr: Expr, ctx: CompileCtx): Evaluator {
       return ctx.compileWindow(expr)
     }
   }
+}
+
+type CompareOp = '=' | '<>' | '<' | '<=' | '>' | '>='
+
+/** `x <op> y` under SQL three-valued logic (NULL when incomparable). */
+function compareOp(op: CompareOp, x: SqlValue, y: SqlValue): boolean | null {
+  const c = compareValues(x, y)
+  if (c === null) return null
+  switch (op) {
+    case '=': return c === 0
+    case '<>': return c !== 0
+    case '<': return c < 0
+    case '<=': return c <= 0
+    case '>': return c > 0
+    default: return c >= 0
+  }
+}
+
+/** `x <op> ANY|ALL (array)` with SQL three-valued semantics. */
+function quantifiedArray(x: SqlValue, a: SqlValue, op: CompareOp, all: boolean): SqlValue {
+  if (a === null) return null
+  if (!isArray(a)) throw new SqlError('the operand of ANY/ALL must be an array', 'eval')
+  let sawNull = false
+  for (const e of a.items) {
+    const r = compareOp(op, x, e)
+    if (r === null) {
+      sawNull = true
+      continue
+    }
+    // ANY short-circuits on the first true; ALL on the first false.
+    if (all ? !r : r) return all ? false : true
+  }
+  if (sawNull) return null
+  return all // empty / all-comparable: ALL → true, ANY → false
 }
 
 function compileBinary(op: string, left: Evaluator, right: Evaluator): Evaluator {
@@ -1067,6 +1285,11 @@ function compileBinary(op: string, left: Evaluator, right: Evaluator): Evaluator
         const a = left(row)
         const b = right(row)
         if (a === null || b === null) return null
+        // array || array concatenates; array || elem appends; elem || array prepends.
+        if (isArray(a) || isArray(b)) {
+          if (isArray(a) && isArray(b)) return arrayCat(a, b)
+          return isArray(a) ? arrayAppend(a, b) : arrayPrepend(a, b as ArrayValue)
+        }
         // tsvector || tsvector concatenates (position-shifted); JSON || JSON
         // concatenates/merges (jsonb rules); otherwise text concat.
         if (isTsVector(a) && isTsVector(b)) return concatTsVector(a, b)
@@ -1102,6 +1325,7 @@ function compileBinary(op: string, left: Evaluator, right: Evaluator): Evaluator
         const a = left(row)
         const b = right(row)
         if (a === null || b === null) return null
+        if (isArray(a) && isArray(b)) return arrayContains(a, b, valuesEqual)
         return jsonContains(asJsonData(a), asJsonData(b))
       }
     case '<@':
@@ -1109,7 +1333,16 @@ function compileBinary(op: string, left: Evaluator, right: Evaluator): Evaluator
         const a = left(row)
         const b = right(row)
         if (a === null || b === null) return null
+        if (isArray(a) && isArray(b)) return arrayContains(b, a, valuesEqual)
         return jsonContains(asJsonData(b), asJsonData(a))
+      }
+    case '&&':
+      return (row) => {
+        const a = left(row)
+        const b = right(row)
+        if (a === null || b === null) return null
+        if (isArray(a) && isArray(b)) return arrayOverlap(a, b, valuesEqual)
+        throw new SqlError('&& (overlap) requires two arrays', 'eval')
       }
     case '@@':
       // Full-text match. Either operand may be a tsvector or a tsquery (or a
@@ -1225,6 +1458,14 @@ export function exprKey(e: Expr): string {
       return `inq:${e.negated}(${exprKey(e.expr)};${subqueryKey(e.select)})`
     case 'quantified':
       return `quant:${e.op}:${e.quantifier}(${exprKey(e.expr)};${subqueryKey(e.select)})`
+    case 'quantified_array':
+      return `quantarr:${e.op}:${e.quantifier}(${exprKey(e.expr)};${exprKey(e.array)})`
+    case 'array':
+      return `arr(${e.elements.map(exprKey).join(',')})`
+    case 'subscript':
+      return `sub:${e.slice ? 'slice' : 'idx'}(${exprKey(e.base)};${e.index ? exprKey(e.index) : ''}:${
+        e.upper ? exprKey(e.upper) : ''
+      })`
     case 'window': {
       const f = e.spec.frame
       const frameKey = f

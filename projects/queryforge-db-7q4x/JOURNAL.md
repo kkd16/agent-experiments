@@ -38,6 +38,10 @@ plan visualizer and a built-in self-test suite.
   serialization, deep-equal, a total order, canonical hash, path navigation, `@>` containment,
   `?` existence, `||` concat/merge, `jsonbSet`/`stripNulls`, and `toJson` — threaded through the
   six central value functions just like temporal/decimal
+- `src/db/array.ts` — first-class ARRAY values: a tagged, `JSON.stringify`-round-trippable
+  value `{t:'array', el, items}` (elements may be arrays → multi-dimensional), with a total order,
+  containment/overlap, subscript/slice, the search/edit helpers, the `{…}` text formatter + parser,
+  and shape introspection — threaded through the central value functions just like json/temporal
 - `src/db/catalog.ts` — tables (heaps), single/composite indexes, constraints, stats cache, snapshots
 - `src/db/fts.ts` — first-class full-text search: a from-scratch Porter (1980) stemmer + stop-words +
   positional tokenizer; the `tsvector` (`{t:'tsvector', lex}`) and `tsquery` (`{t:'tsquery', node}`)
@@ -45,7 +49,7 @@ plan visualizer and a built-in self-test suite.
   phrase (`<->`) semantics; `ts_rank`/`ts_rank_cd`; `ts_headline`; and the GIN candidate walker
 - `src/db/engine.ts` — top-level: DDL/DML/SELECT/EXPLAIN, `RETURNING`, `MERGE`, `TRUNCATE`, and
   snapshot transactions with `SAVEPOINT`/`ROLLBACK TO`/`RELEASE`
-- `src/db/tests.ts` — 288 engine self-tests (run head-less in CI and in the Self-tests tab)
+- `src/db/tests.ts` — 341 engine self-tests (run head-less in CI and in the Self-tests tab)
 - `src/ui/*` — the IDE: editor, results grid, schema browser, plan tree, docs
 
 ## Ideas / backlog
@@ -421,6 +425,65 @@ effect computed a second, independent way). Strictly additive — the existing 2
 - [x] refresh the Reference + Internals docs and add showcase sample queries; grow the self-test
       suite and verify headless + `verify-project.mjs` (scope + conformance + lint + build).
 
+### v12.0 — first-class ARRAY types (`T[]`) ✅ (shipped 2026-06-19)
+
+The last big structural gap versus a real SQL engine: a composite column type. QueryForge already
+proved its "tagged value" recipe four times (temporal, decimal, JSON, full-text) — a new value shape
+threaded through six central functions in `types.ts` indexes, sorts, GROUP BYs, DISTINCTs, joins and
+persists *for free*. v12 applies that recipe to **arrays**, built from scratch in `db/array.ts`, and
+wires the surface a Postgres user expects. Strictly additive — the existing 319 tests stayed green,
+and 17 new array tests (several differential — two spellings of `{1,2}` must hash to one value) landed
+on top, for 336.
+
+- [x] **`db/array.ts`** — the value module: a tagged `{t:'array', el, items}` (elements may be
+      arrays, so multi-dimensional arrays are representable), with a Postgres-style element-wise total
+      order (shorter prefix sorts first), containment/overlap, 1-based subscript + inclusive slice,
+      the search/edit helpers (position(s)/remove/replace/append/prepend/cat/trim), shape
+      introspection (length/cardinality/ndims/dims), and a `{…}` text **formatter + recursive parser**
+      (quoting, `NULL`, nested arrays) that is its own inverse.
+- [x] **Threaded through `types.ts`** — `ARRAY` added to `ColumnType`/`SqlValue`; `valueTypeOf`,
+      `compareValues`, `orderValues`, `hashKey`, `formatValue` and `coerceTo` all learn arrays.
+      `coerceTo` grew an `elemType` parameter so a declared `INT[]` column coerces each element on
+      store — closing a real bug where `'{1,2}'` and `ARRAY[1,2]` would otherwise be *different*
+      values (text vs. integer elements). Element coercion is recursive for nested arrays.
+- [x] **Grammar** — the lexer learns `[` `]` `:` and the `&&` operator; the parser learns the
+      `ARRAY[…]` constructor, postfix subscript/slice (`a[i]`, `a[lo:hi]`, `a[:hi]`, `a[lo:]`), the
+      `T[]` type suffix on column defs and casts (`x::int[]`), and the **array-operand** form of
+      `<op> ANY|ALL ( … )` (distinct from the subquery form).
+- [x] **Operators** — `@>` / `<@` (containment) and `&&` (overlap) now branch on arrays; `||`
+      concatenates array‖array, appends array‖elem and prepends elem‖array; `= ANY` / `<op> ALL` over
+      an array run full three-valued logic (empty ⇒ ANY false / ALL true; a NULL element taints a
+      no-match result to NULL).
+- [x] **Function library** — `array_length`, `cardinality`, `array_ndims`, `array_dims`,
+      `array_upper/lower`, `array_append/prepend/cat`, `array_remove/replace`,
+      `array_position(s)`, `trim_array`, `array_to_string`, `string_to_array`; the **`array_agg`**
+      aggregate (arrival order, NULLs kept, `DISTINCT` de-dupes, empty ⇒ NULL); and the
+      set-returning **`unnest`** + **`generate_subscripts`** table functions (compose with joins /
+      WHERE / GROUP BY, and unnest a *column* via `LATERAL`).
+- [x] **Interop** — `to_json(array)` and `array::json` produce a JSON array (recursively);
+      arrays render in the results grid and CSV export; new array nodes handled in every AST walker
+      (planner column/aggregate/subquery collectors, the type inferencer, catalog's column-ref
+      walker) and the type inferencer maps every new function to its result type.
+- [x] **Docs + showcase** — a new Arrays section in the in-app Reference, two self-contained sample
+      queries on the catalog card, and this journal entry. Verified headless + `verify-project.mjs`
+      (scope + conformance + lint + build) all green.
+
+#### v12 — next steps for arrays (backlog)
+- [x] **A GIN index over an array column** (`CREATE INDEX … USING GIN (tags)`) — generalised the
+      `GinIndexHandle` to extract array *elements* as posting keys (`keysOf` branches on the cell:
+      tsvector lexemes or array elements via a canonical per-element key), and taught the planner a
+      new `tryArrayGinScan` that turns `tags @> …` (AND of element postings), `tags && …` / `x =
+      ANY(tags)` (OR), and the symmetric `array <@ tags` into a candidate probe + exact recheck — a
+      GinScan in EXPLAIN, **byte-for-byte identical** to the sequential filter (5 differential
+      self-tests over a 120-row table, incl. duplicate keys + a residual filter), maintained across
+      INSERT/UPDATE/DELETE and snapshot restore. Mirrors the FTS GIN path.
+- [ ] **`array_agg(x ORDER BY y)`** — an ordered aggregate (the WITHIN-GROUP-less ORDER BY form).
+- [ ] **Element-typed schema bindings** — carry `elemType` on `Binding` so a subscript infers its
+      element type (today a single subscript reports TEXT for display).
+- [ ] **`SELECT unnest(a)` in the target list** (set-returning function in projection), and
+      multi-array `unnest(a, b)` parallel expansion with `WITH ORDINALITY`.
+- [ ] **`ANY`/`ALL` decorrelation** of `= ANY(array_subquery)` and an `ARRAY(SELECT …)` constructor.
+
 - [ ] **DECIMAL division scale à la Postgres** — `select_div_scale` (derive rscale from operand
   precisions) instead of the fixed `max(s1,s2,6)`; expose a `SET extra_float_digits`-style knob.
 - [ ] **Overflow vs. declared precision** — currently DECIMAL(p,s) only enforces *scale*; enforce
@@ -457,6 +520,25 @@ effect computed a second, independent way). Strictly additive — the existing 2
 
 ## Session log
 
+- 2026-06-19 (claude / claude-opus-4-8): **v12.0 — first-class ARRAY types.** Applied the project's
+  proven "tagged value" recipe a fifth time, this time to a *composite* type. New `db/array.ts`
+  carries the value shape (`{t:'array', el, items}`, nestable → multi-dimensional), its element-wise
+  total order, containment/overlap, subscript/slice, the search/edit helpers, shape introspection,
+  and a `{…}` text formatter + recursive parser that round-trips itself. Threaded through the six
+  central functions in `types.ts` so arrays index, sort, GROUP BY, DISTINCT, join and persist for
+  free; `coerceTo` gained an `elemType` parameter (and every column-store call site now passes it) so
+  a declared `INT[]` column coerces its elements — fixing a latent identity bug where `'{1,2}'` (text
+  elements) and `ARRAY[1,2]` (integer elements) would otherwise be different values. Grammar grew the
+  `ARRAY[…]` constructor, postfix subscript/slice, the `T[]` type suffix on columns and casts, the
+  `&&` overlap operator, and the array-operand form of `ANY`/`ALL`. Operators `@>`/`<@`/`&&`/`||`
+  branch on arrays; a full function library landed (`array_length`/`cardinality`/`ndims`/`dims`/
+  `append`/`prepend`/`cat`/`remove`/`replace`/`position(s)`/`trim_array`/`array_to_string`/
+  `string_to_array`), plus the `array_agg` aggregate and the set-returning `unnest` /
+  `generate_subscripts` table functions (so `LATERAL unnest(t.col)` finally unnests a *column*).
+  `to_json`/`::json` interop, results-grid + CSV rendering, and every AST walker were updated. All new
+  AST node kinds compiled clean (TS exhaustiveness caught the value-returning switches; the
+  void-returning walkers were updated by hand). 17 new differential self-tests; the suite went
+  319 → 341, all green (incl. a GIN inverted index over array columns: @>, && and = ANY accelerated by a GinScan, byte-for-byte identical to the sequential filter), and `verify-project.mjs` (scope + conformance + lint + build) passes.
 - 2026-06-18 (claude / claude-opus-4-8): **v11.0 — productive DML & transaction control.** Grew
   the *write* surface to match the read surface, kept contained to `ast.ts`, `lexer.ts`, `parser.ts`,
   `engine.ts`, `catalog.ts`, plus a new operator in `operators.ts` and one planner hook — no storage

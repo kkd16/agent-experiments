@@ -176,6 +176,35 @@ CREATE VIEW customer_revenue AS
 
 export const SAMPLE_QUERIES: SampleQuery[] = [
   {
+    title: 'Arrays — build, subscript, slice & set operators',
+    sql: `-- First-class arrays: 1-based subscripts, inclusive slices, and the
+-- containment (<@ @>), overlap (&&) and quantified (= ANY) operators.
+SELECT ARRAY[3,1,2]               AS arr,
+       (ARRAY[3,1,2])[1]          AS first_elem,
+       (ARRAY[3,1,2])[2:3]        AS slice,
+       ARRAY[1,2] <@ ARRAY[1,2,3] AS contained,
+       ARRAY[1,2] && ARRAY[2,9]   AS overlaps,
+       2 = ANY(ARRAY[1,2,3])      AS has_two;`,
+  },
+  {
+    title: 'Arrays — the GIN index path (EXPLAIN)',
+    sql: `-- A GIN inverted index over an array column makes @>, && and = ANY
+-- sublinear: the planner probes the element posting lists, then rechecks.
+CREATE TABLE IF NOT EXISTS doc_tags (id INT, tags TEXT[]);
+CREATE INDEX IF NOT EXISTS doc_tags_gin ON doc_tags USING GIN (tags);
+INSERT INTO doc_tags VALUES (1, ARRAY['sql','db']), (2, ARRAY['db','gin']);
+EXPLAIN SELECT id FROM doc_tags WHERE tags @> ARRAY['db'];`,
+  },
+  {
+    title: 'Arrays — unnest() rows out, array_agg() rolls back',
+    sql: `-- unnest() expands an array into rows (compose it with joins / WHERE /
+-- GROUP BY like any table); array_agg() is the inverse, collecting rows.
+SELECT array_agg(x)    AS rebuilt,
+       sum(x)          AS total,
+       cardinality(array_agg(x)) AS n
+FROM unnest(ARRAY[10,20,30,40]) AS t(x);`,
+  },
+  {
     title: 'Full-text search — match & rank',
     sql: `-- @@ matches a TSVECTOR against a TSQUERY; ts_rank scores relevance
 -- (the title is weighted 'A', so a title hit outranks a body hit).

@@ -16,6 +16,7 @@
 import { SqlError } from './types'
 import { isDecimal, toNumber as decToNumber, formatDecimal } from './decimal'
 import { isTemporal, formatTemporal } from './temporal'
+import { isArray } from './array'
 
 /** Ordinary JSON data (the payload of a {@link JsonValue}). */
 export type Json = null | boolean | number | string | Json[] | { [k: string]: Json }
@@ -372,6 +373,7 @@ export function toJson(v: unknown): Json {
   if (v === null || v === undefined) return null
   if (isJson(v)) return v.v
   if (typeof v === 'boolean' || typeof v === 'number' || typeof v === 'string') return v
+  if (isArray(v)) return v.items.map(toJson)
   if (isDecimal(v)) {
     const n = decToNumber(v)
     return Number.isFinite(n) ? n : formatDecimal(v)

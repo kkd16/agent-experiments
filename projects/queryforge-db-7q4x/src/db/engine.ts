@@ -263,6 +263,10 @@ export class Engine {
     if (stmt.using === 'GIN') {
       if (stmt.columns.length !== 1) throw new SqlError('a GIN index covers exactly one column', 'ddl')
       if (stmt.unique) throw new SqlError('a GIN index cannot be UNIQUE', 'ddl')
+      const gt = table.columnType(stmt.columns[0])
+      if (gt !== 'TSVECTOR' && gt !== 'ARRAY') {
+        throw new SqlError(`a GIN index requires a TSVECTOR or array column (got ${gt})`, 'ddl')
+      }
       table.createGinIndex(stmt.name, stmt.columns[0])
       return msg(`GIN index "${stmt.name}" created on ${stmt.table} (${cols})`, sql, t0)
     }
@@ -307,19 +311,19 @@ export class Engine {
     const insertValues = (values: SqlValue[]): void => {
       const row: Row = new Array(table.columns.length).fill(null)
       for (let i = 0; i < values.length; i++) {
-        row[colIndexes[i]] = coerceTo(table.columns[colIndexes[i]].type, values[i])
+        row[colIndexes[i]] = coerceTo(table.columns[colIndexes[i]].type, values[i], undefined, table.columns[colIndexes[i]].elemType)
       }
       // Columns not supplied take their DEFAULT (if any); the rest stay NULL.
       for (let i = 0; i < table.columns.length; i++) {
         const col = table.columns[i]
         if (!provided.has(i) && col.default) {
-          row[i] = coerceTo(col.type, evalConstant(col.default))
+          row[i] = coerceTo(col.type, evalConstant(col.default), undefined, col.elemType)
         }
       }
       if (upsert) {
         // Coerce types up front so the arbiter key matches the stored index keys.
         for (let i = 0; i < table.columns.length; i++) {
-          row[i] = coerceTo(table.columns[i].type, row[i], table.columns[i].scale)
+          row[i] = coerceTo(table.columns[i].type, row[i], table.columns[i].scale, table.columns[i].elemType)
         }
         const rowid = upsert.findConflict(row)
         if (rowid !== null) {
@@ -418,7 +422,7 @@ export class Engine {
       const combined = existing.concat(proposed)
       if (wherePred && !truthy(wherePred(combined))) return false
       const next = existing.slice()
-      for (const s of setters) next[s.i] = coerceTo(table.columns[s.i].type, s.fn(combined), table.columns[s.i].scale)
+      for (const s of setters) next[s.i] = coerceTo(table.columns[s.i].type, s.fn(combined), table.columns[s.i].scale, table.columns[s.i].elemType)
       this.db.updateChecked(table, rowid, next)
       return true
     }
@@ -442,7 +446,7 @@ export class Engine {
       const row = table.heap.get(rowid)
       if (!row) continue // a prior row's cascade may have removed it
       const next = row.slice()
-      for (const s of setters) next[s.i] = coerceTo(table.columns[s.i].type, s.fn(row))
+      for (const s of setters) next[s.i] = coerceTo(table.columns[s.i].type, s.fn(row), undefined, table.columns[s.i].elemType)
       this.db.updateChecked(table, rowid, next)
       if (stmt.returning) affected.push((table.heap.get(rowid) ?? next).slice())
     }
@@ -621,12 +625,12 @@ export class Engine {
       const row: Row = new Array(width).fill(null)
       if (action.valFns) {
         for (let k = 0; k < action.colIdx.length; k++) {
-          row[action.colIdx[k]] = coerceTo(target.columns[action.colIdx[k]].type, action.valFns[k](combined))
+          row[action.colIdx[k]] = coerceTo(target.columns[action.colIdx[k]].type, action.valFns[k](combined), undefined, target.columns[action.colIdx[k]].elemType)
         }
       }
       for (let i = 0; i < width; i++) {
         if (!action.provided.has(i) && target.columns[i].default) {
-          row[i] = coerceTo(target.columns[i].type, evalConstant(target.columns[i].default!))
+          row[i] = coerceTo(target.columns[i].type, evalConstant(target.columns[i].default!), undefined, target.columns[i].elemType)
         }
       }
       this.db.insertChecked(target, row)
@@ -650,7 +654,7 @@ export class Engine {
       if (a.kind === 'update') {
         touched.add(id)
         const next = (target.heap.get(id) ?? oldRow).slice()
-        for (const s of a.setters) next[s.i] = coerceTo(target.columns[s.i].type, s.fn(combined), target.columns[s.i].scale)
+        for (const s of a.setters) next[s.i] = coerceTo(target.columns[s.i].type, s.fn(combined), target.columns[s.i].scale, target.columns[s.i].elemType)
         this.db.updateChecked(target, id, next)
         nUpd++
         if (stmt.returning) affected.push((target.heap.get(id) ?? next).slice())

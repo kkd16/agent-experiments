@@ -13,7 +13,7 @@ const SECTIONS: Section[] = [
   {
     title: 'Data definition',
     entries: [
-      { syntax: 'CREATE TABLE t (col TYPE [PRIMARY KEY] [NOT NULL] [UNIQUE] [DEFAULT e] [CHECK (e)] [REFERENCES p(c) …], …)', note: 'Types: INTEGER, REAL, DECIMAL(p,s), TEXT, BOOLEAN, DATE/TIME/TIMESTAMP/INTERVAL, JSON, TSVECTOR, TSQUERY. PK/UNIQUE auto-create a B+Tree index; USING GIN builds an inverted index over a TSVECTOR column.' },
+      { syntax: 'CREATE TABLE t (col TYPE [PRIMARY KEY] [NOT NULL] [UNIQUE] [DEFAULT e] [CHECK (e)] [REFERENCES p(c) …], …)', note: 'Types: INTEGER, REAL, DECIMAL(p,s), TEXT, BOOLEAN, DATE/TIME/TIMESTAMP/INTERVAL, JSON, TSVECTOR, TSQUERY, and array types T[] (e.g. INTEGER[], TEXT[]). PK/UNIQUE auto-create a B+Tree index; USING GIN builds an inverted index over a TSVECTOR column.' },
       { syntax: 'CREATE [UNIQUE] INDEX name ON t (col1 [, col2, …])', note: 'Single- or multi-column B+Tree. A composite index answers an equality prefix plus one trailing range from one tree; a covering index can be read index-only (no heap fetch). Separate single-column indexes combine via a bitmap AND, and an IN-list scans one index via a bitmap OR.' },
       { syntax: 'ALTER TABLE t ADD [COLUMN] col TYPE … · ADD [CONSTRAINT n] CHECK/UNIQUE/FOREIGN KEY …', note: 'Evolve a table in place: a new column backfills existing rows with its DEFAULT; an added constraint is validated against the current data before it takes effect.' },
       { syntax: 'ALTER TABLE t RENAME [TO new | COLUMN c TO new] · DROP COLUMN c', note: 'Rename a table/column (referencing foreign keys are updated) or drop a column (refused while an index or constraint still needs it).' },
@@ -163,6 +163,22 @@ const SECTIONS: Section[] = [
       { syntax: "JSONB_SET(j, '{path}', value [, create]) · JSON_STRIP_NULLS(j) · JSON_PRETTY(j) · JSON_CONTAINS(a,b)", note: 'Transform: set/insert at a path (the value is itself JSON), drop null members, pretty-print, or test containment as a function.' },
       { syntax: 'JSON_AGG(x) · JSON_OBJECT_AGG(k, v)', note: 'Aggregate rows into a JSON array (NULLs preserved, input order kept) or a JSON object.' },
       { syntax: 'FROM JSON_ARRAY_ELEMENTS(j) · JSON_EACH(j) · JSON_EACH_TEXT(j) · JSON_OBJECT_KEYS(j)', note: 'Set-returning table functions: expand a JSON array/object into rows (value, or key+value) that compose with joins, WHERE, GROUP BY. (Arguments must be constant — LATERAL is not supported.)' },
+    ],
+  },
+  {
+    title: 'Arrays  —  first-class T[] values',
+    entries: [
+      { syntax: "ARRAY[1,2,3] · '{1,2,3}'::INT[] · CREATE TABLE t (tags TEXT[])", note: 'Build an array with the ARRAY[…] constructor or a Postgres {…} text literal (which parses and coerces its elements to the declared element type). Arrays are first-class: they index in the B+Tree, sort, GROUP BY, DISTINCT, join and persist like any value. Nested arrays (ARRAY[ARRAY[1,2],ARRAY[3,4]]) are multi-dimensional.' },
+      { syntax: 'a[i] · a[lo:hi] · a[lo:] · a[:hi]', note: 'Subscripts are 1-based; an out-of-range index is NULL. A slice returns a sub-array (omitted bounds clamp to the array ends).' },
+      { syntax: 'a || b · array_append(a,e) · array_prepend(e,a) · array_cat(a,b)', note: '|| concatenates two arrays, appends an element (array || elem) or prepends one (elem || array).' },
+      { syntax: 'a @> b · a <@ b · a && b', note: 'Containment (does a contain every element of b?), contained-by, and overlap (do they share an element?) — boolean, usable directly in WHERE.' },
+      { syntax: 'x = ANY(a) · x <op> ALL(a)', note: 'Quantified comparison against the elements of an array (the array-operand form), with full three-valued logic.' },
+      { syntax: 'array_length(a,d) · cardinality(a) · array_ndims(a) · array_dims(a) · array_upper/lower(a,d)', note: 'Shape introspection: length along a dimension, total leaf count, dimensionality, the [1:n][1:m] dims text, and per-dimension bounds.' },
+      { syntax: 'array_position(a,e) · array_positions(a,e) · array_remove(a,e) · array_replace(a,from,to) · trim_array(a,n)', note: 'Search and (copy-on-write) edit: first/all matching 1-based indices, remove or replace matching elements, or drop the last n.' },
+      { syntax: "array_to_string(a, sep [, null_str]) · string_to_array(t, sep [, null_str])", note: 'Render an array to a delimited string and back; an optional null-string controls how NULL elements are emitted / recognised.' },
+      { syntax: 'array_agg(x [DISTINCT]) · to_json(a) · a::JSON', note: 'Aggregate rows into an array (arrival order, NULLs kept; DISTINCT de-duplicates), and convert an array to a JSON array.' },
+      { syntax: 'FROM unnest(a) AS t(v) · generate_subscripts(a, d)', note: 'Set-returning table functions: expand an array into one row per element, or yield its 1..length index series. Compose with joins / WHERE / GROUP BY, and (via LATERAL) unnest a column per row.' },
+      { syntax: 'CREATE INDEX i ON t USING GIN (arr_col)', note: 'A GIN inverted index (element → row list) over an array column, maintained on every insert/update/delete and across snapshots. The planner turns col @> …, col && … and x = ANY(col) into a posting-list candidate probe (AND for @>, OR for && / ANY) plus an exact recheck — a GinScan in EXPLAIN — byte-for-byte identical to, but sublinear vs, the sequential filter.' },
     ],
   },
   {
