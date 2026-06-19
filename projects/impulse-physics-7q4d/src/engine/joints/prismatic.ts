@@ -18,6 +18,10 @@ export class PrismaticJoint implements Joint {
   private localPerpA: Vec2;
   private referenceAngle: number;
 
+  /** Breaking budgets: the slider breaks above this force (N) or torque (N·m). */
+  breakForce = Infinity;
+  breakTorque = Infinity;
+
   enableMotor = false;
   motorSpeed = 0;
   maxMotorForce = 0;
@@ -197,6 +201,28 @@ export class PrismaticJoint implements Joint {
     a.angularVelocity -= a.invInertia * lA;
     b.linearVelocity = b.linearVelocity.add(P.mul(b.invMass));
     b.angularVelocity += b.invInertia * lB;
+  }
+
+  /** Local anchor on body A — read by {@link GearJoint} when coupling joints. */
+  gearLocalAnchorA(): Vec2 {
+    return this.localAnchorA;
+  }
+  /** Local anchor on body B — read by {@link GearJoint}. */
+  gearLocalAnchorB(): Vec2 {
+    return this.localAnchorB;
+  }
+  /** Slider axis in body A's local frame — read by {@link GearJoint}. */
+  gearLocalAxisA(): Vec2 {
+    return this.localAxisA;
+  }
+
+  /** Magnitude of the perpendicular constraint reaction force (for breaking). */
+  reactionForce(invDt: number): number {
+    return Math.abs(this.impulse.x) * invDt;
+  }
+  /** Magnitude of the angular constraint reaction torque (for breaking). */
+  reactionTorque(invDt: number): number {
+    return Math.abs(this.impulse.y) * invDt;
   }
 
   anchorA(): Vec2 {

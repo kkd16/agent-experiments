@@ -5,15 +5,19 @@ import {
   Capsule,
   Circle,
   DistanceJoint,
+  GearJoint,
+  MotorJoint,
   MouseJoint,
   Polygon,
   PrismaticJoint,
+  PulleyJoint,
   RevoluteJoint,
   Rng,
   Vec2,
   WheelJoint,
   World,
   crossSV,
+  type Joint,
   type Shape,
 } from '../engine';
 
@@ -938,6 +942,297 @@ const sensors: SceneDef = {
   },
 };
 
+// ---- v4 mechanisms scenes --------------------------------------------------
+
+const pulley: SceneDef = {
+  id: 'pulley',
+  name: 'Pulley',
+  description:
+    'Two trays hang from a rope routed over two pulleys, so lengthA + lengthB is conserved — load one tray and the other rises. Weights drop onto the left tray on a timer; watch the right one climb. Box2D-style pulley constraint.',
+  category: 'Joints',
+  build: (world, rng) => {
+    ground(world, 16, -7);
+    const gay = 8;
+    const gax = 3.2;
+    const trayY = 3;
+    const trayA = world.addBody(
+      new Body(Polygon.box(1.3, 0.18), { position: new Vec2(-gax, trayY), density: 1.5, color: '#6ea8ff' }),
+    );
+    const trayB = world.addBody(
+      new Body(Polygon.box(1.3, 0.18), { position: new Vec2(gax, trayY), density: 1.5, color: '#ffd166' }),
+    );
+    world.addJoint(
+      new PulleyJoint(
+        trayA, trayB,
+        new Vec2(-gax, gay), new Vec2(gax, gay),
+        new Vec2(-gax, trayY), new Vec2(gax, trayY),
+        1,
+      ),
+    );
+    let acc = 0;
+    let dropped = 0;
+    return {
+      camera: { center: new Vec2(0, 3), scale: 26 },
+      update: (_t, dt) => {
+        acc += dt;
+        if (acc > 1.8 && dropped < 7) {
+          acc = 0;
+          dropped++;
+          world.addBody(
+            new Body(Polygon.box(0.32, 0.32), {
+              position: new Vec2(-gax + rng.range(-0.3, 0.3), 7),
+              density: 2,
+              friction: 0.7,
+              color: colorFor(dropped),
+            }),
+          );
+        }
+      },
+    };
+  },
+};
+
+const gearTrain: SceneDef = {
+  id: 'gears',
+  name: 'Gear Train',
+  description:
+    'A row of meshed gears, each pinned to the frame and coupled to its neighbour by a gear joint whose ratio is their size ratio — so they counter-rotate at speeds set by their radii. A motor drives the first. Below, a rack-and-pinion turns spin into the straight-line travel of a carriage.',
+  category: 'Joints',
+  build: (world) => {
+    const frame = world.addBody(new Body(new Circle(0.05), { type: BodyType.Static, position: new Vec2(0, 0) }));
+    const radii = [1.3, 0.8, 1.1, 0.7, 1.0];
+    const cy = 5.5;
+    let cx = -4.5;
+    const revs: RevoluteJoint[] = [];
+    for (let i = 0; i < radii.length; i++) {
+      if (i > 0) cx += radii[i - 1] + radii[i];
+      const center = new Vec2(cx, cy);
+      const sides = Math.max(8, Math.round(radii[i] * 12));
+      const gear = world.addBody(
+        new Body(Polygon.regular(sides, radii[i]), { position: center, density: 1, color: colorFor(i) }),
+      );
+      const rev = new RevoluteJoint(frame, gear, center);
+      world.addJoint(rev);
+      revs.push(rev);
+      if (i > 0) world.addJoint(new GearJoint(revs[i - 1], rev, radii[i] / radii[i - 1]));
+    }
+    revs[0].enableMotor = true;
+    revs[0].motorSpeed = 1.1;
+    revs[0].maxMotorTorque = 6000;
+
+    // Rack and pinion.
+    const pinionC = new Vec2(-4.5, 1.0);
+    const pinion = world.addBody(new Body(Polygon.regular(12, 0.7), { position: pinionC, density: 1, color: '#7CFFCB' }));
+    const pRev = new RevoluteJoint(frame, pinion, pinionC);
+    pRev.enableMotor = true;
+    pRev.motorSpeed = 1.6;
+    pRev.maxMotorTorque = 3000;
+    world.addJoint(pRev);
+    const rackStart = new Vec2(-4.5, 1.85);
+    const rack = world.addBody(new Body(Polygon.box(2.2, 0.22), { position: rackStart, density: 0.5, color: '#ffd166' }));
+    const pris = new PrismaticJoint(frame, rack, rackStart, new Vec2(1, 0));
+    world.addJoint(pris, true);
+    world.addJoint(new GearJoint(pRev, pris, -1 / 0.7));
+
+    return {
+      camera: { center: new Vec2(0, 3.5), scale: 22 },
+      update: () => {
+        // Reverse the pinion before the carriage runs off its short rail.
+        const dx = rack.worldCenter.x - rackStart.x;
+        if (dx > 3 && pRev.motorSpeed > 0) pRev.motorSpeed = -1.6;
+        if (dx < -3 && pRev.motorSpeed < 0) pRev.motorSpeed = 1.6;
+      },
+    };
+  },
+};
+
+const conveyor: SceneDef = {
+  id: 'conveyor',
+  name: 'Conveyor',
+  description:
+    'A cascade of conveyor belts at different speeds and tilts ferries crates across and down; the chevron arrows show each belt\'s surface velocity. The crates recirculate forever (anything that reaches the bottom is lifted back to the top), so the line never empties. Belt speed is a contact material solved right inside the friction constraint.',
+  category: 'Materials',
+  build: (world, rng) => {
+    const belt = (cx: number, cy: number, hw: number, angle: number, speed: number, color: string): void => {
+      world.addBody(
+        new Body(Polygon.box(hw, 0.25), {
+          type: BodyType.Static, position: new Vec2(cx, cy), angle, friction: 1, tangentSpeed: speed, color,
+        }),
+      );
+    };
+    belt(-3.5, 3.2, 3.4, 0, 4, '#6ea8ff'); // top, →
+    belt(2.2, 1.5, 2.8, -0.32, 4, '#7CFFCB'); // ramp, ↘
+    belt(-0.8, -0.6, 4.8, 0, -4.5, '#ffd166'); // return, ←
+    // Containment so crates stay roughly over the line.
+    world.addBody(new Body(Polygon.box(0.25, 2.4), { type: BodyType.Static, position: new Vec2(6.0, 0.6), color: '#5a6478' }));
+
+    const spawn = (): Vec2 => new Vec2(rng.range(-6.5, -5.0), 4.4 + rng.range(0, 0.6));
+    const crates: Body[] = [];
+    for (let i = 0; i < 16; i++) {
+      crates.push(
+        new Body(Polygon.box(0.3, 0.3), { position: spawn(), friction: 0.8, color: colorFor(i) }),
+      );
+      world.addBody(crates[i]);
+    }
+    return {
+      camera: { center: new Vec2(0, 1), scale: 30 },
+      update: () => {
+        // Recycle: lift any crate that has dropped past the bottom back to the top.
+        for (const c of crates) {
+          if (c.worldCenter.y < -4 || Math.abs(c.worldCenter.x) > 9) {
+            c.setTransform(spawn(), rng.range(-0.5, 0.5));
+            c.linearVelocity = Vec2.ZERO;
+            c.angularVelocity = 0;
+            c.wake();
+          }
+        }
+      },
+    };
+  },
+};
+
+const demolition: SceneDef = {
+  id: 'demolition',
+  name: 'Demolition',
+  description:
+    'A brick tower wired to a charge: a radial impulse at its base blows the bricks outward, with magnitude falling off by distance. A blast-proof bunker wall shadows the barrel behind it — the explosion is ray-occluded by static geometry, so it can\'t punch through walls. Rebuilds and detonates on a loop.',
+  category: 'Showcase',
+  build: (world) => {
+    ground(world, 18, -6);
+    // Bunker wall + the barrel it protects (which must survive every blast).
+    world.addBody(new Body(Polygon.box(0.4, 2.2), { type: BodyType.Static, position: new Vec2(6.5, -3.8), color: '#5a6478' }));
+    world.addBody(new Body(Capsule.of(1.0, 0.45, true), { position: new Vec2(8.0, -5), density: 1, color: '#7CFFCB' }));
+
+    let bricks: Body[] = [];
+    const buildTower = (): void => {
+      const cols = 4;
+      const rows = 9;
+      const bw = 0.55;
+      const bh = 0.3;
+      for (let r = 0; r < rows; r++) {
+        for (let cI = 0; cI < cols; cI++) {
+          const x = (cI - (cols - 1) / 2) * (bw * 2 + 0.02);
+          const y = -6 + bh + r * (bh * 2 + 0.01);
+          bricks.push(world.addBody(new Body(Polygon.box(bw, bh), { position: new Vec2(x, y), density: 1.5, color: r % 2 ? '#ff9e64' : '#ffd166' })));
+        }
+      }
+    };
+    buildTower();
+
+    let phase = 0;
+    let timer = 0;
+    return {
+      camera: { center: new Vec2(1, -2), scale: 28 },
+      update: (_t, dt) => {
+        timer += dt;
+        if (phase === 0 && timer > 2.5) {
+          world.applyRadialImpulse(new Vec2(0, -5.2), 14, 7, { falloff: 'linear', occlusion: true });
+          phase = 1;
+          timer = 0;
+        } else if (phase === 1 && timer > 3.5) {
+          for (const b of bricks) world.removeBody(b);
+          bricks = [];
+          buildTower();
+          phase = 0;
+          timer = 0;
+        }
+      },
+    };
+  },
+};
+
+const breakableBridge: SceneDef = {
+  id: 'breakbridge',
+  name: 'Breakable Bridge',
+  description:
+    'A plank bridge on revolute pins, each given a breaking-force budget. A heavy ball rolls out across it; once the load on a pin passes its limit the pin snaps and the span gives way, dropping the ball into the gorge. It all rebuilds on a timer so you can watch it fail again and again.',
+  category: 'Showcase',
+  build: (world) => {
+    ground(world, 26, -10);
+    const top = 2;
+    const span = 6.5;
+    for (const sx of [-span - 0.6, span + 0.6]) {
+      world.addBody(new Body(Polygon.box(0.6, 6), { type: BodyType.Static, position: new Vec2(sx, top - 6), color: '#5a6478' }));
+    }
+
+    let pieces: Body[] = [];
+    let pins: Joint[] = [];
+    let ball: Body | null = null;
+    const buildBridge = (): void => {
+      const planks = 16;
+      const pw = span / planks;
+      const ph = 0.13;
+      let prev = world.addBody(new Body(new Circle(0.08), { type: BodyType.Static, position: new Vec2(-span, top) }));
+      const anchorA = prev;
+      for (let i = 0; i < planks; i++) {
+        const x = -span + pw + i * (2 * pw);
+        const plank = world.addBody(new Body(Polygon.box(pw, ph), { position: new Vec2(x, top), density: 1.2, friction: 0.6, color: '#c0966b' }));
+        const pin = new RevoluteJoint(prev, plank, new Vec2(x - pw, top));
+        pin.breakForce = 42;
+        world.addJoint(pin);
+        pins.push(pin);
+        if (prev !== anchorA) pieces.push(prev);
+        prev = plank;
+      }
+      pieces.push(prev);
+      const anchorB = world.addBody(new Body(new Circle(0.08), { type: BodyType.Static, position: new Vec2(span, top) }));
+      const pinEnd = new RevoluteJoint(prev, anchorB, new Vec2(span, top));
+      pinEnd.breakForce = 42;
+      world.addJoint(pinEnd);
+      pins.push(pinEnd);
+      // The wrecking ball: heavy, rolls out across the deck.
+      ball = world.addBody(new Body(new Circle(0.5), { position: new Vec2(-span + 1, top + 0.7), density: 9, friction: 0.5, linearVelocity: new Vec2(3.5, 0), color: '#ff6b6b' }));
+      pieces.push(ball);
+    };
+    buildBridge();
+
+    let timer = 0;
+    return {
+      camera: { center: new Vec2(0, -1), scale: 24 },
+      update: (_t, dt) => {
+        timer += dt;
+        if (timer > 7) {
+          for (const p of pins) world.removeJoint(p);
+          for (const b of pieces) world.removeBody(b);
+          pins = [];
+          pieces = [];
+          ball = null;
+          buildBridge();
+          timer = 0;
+        }
+      },
+    };
+  },
+};
+
+const motorPlatform: SceneDef = {
+  id: 'motorplatform',
+  name: 'Powered Platform',
+  description:
+    'A platform held aloft and swept side to side by a motor joint — a force-limited actuator, not a rigid weld. It carries its cargo along; pile on more or drag it past its force budget and it sags or stalls, then recovers. Box2D\'s motor joint, ported here.',
+  category: 'Joints',
+  build: (world, rng) => {
+    ground(world, 30, -4);
+    const baseAt = new Vec2(0, 4);
+    const base = world.addBody(new Body(new Circle(0.12), { type: BodyType.Static, position: baseAt }));
+    const platform = world.addBody(new Body(Polygon.box(1.7, 0.22), { position: baseAt, density: 3, color: '#9ece6a' }));
+    const motor = new MotorJoint(base, platform, new Vec2(0, 0), 0);
+    motor.maxForce = 7000;
+    motor.maxTorque = 5000;
+    motor.correctionFactor = 0.5;
+    world.addJoint(motor);
+    for (let i = 0; i < 5; i++) {
+      world.addBody(new Body(Polygon.box(0.3, 0.3), { position: new Vec2(rng.range(-1.2, 1.2), 4.6 + i * 0.7), color: colorFor(i) }));
+    }
+    return {
+      camera: { center: new Vec2(0, 3), scale: 26 },
+      update: (t) => {
+        motor.linearOffset = new Vec2(Math.sin(t * 0.8) * 4, 0);
+      },
+    };
+  },
+};
+
 export const SCENES: SceneDef[] = [
   pyramid,
   stacks,
@@ -948,6 +1243,12 @@ export const SCENES: SceneDef[] = [
   ragdoll,
   springs,
   machine,
+  pulley,
+  gearTrain,
+  motorPlatform,
+  conveyor,
+  demolition,
+  breakableBridge,
   limits,
   car,
   tumbler,

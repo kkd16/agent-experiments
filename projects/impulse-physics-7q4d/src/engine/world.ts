@@ -72,6 +72,8 @@ export class World {
   onBeginContact: ((a: Body, b: Body) => void) | null = null;
   /** Fired when two previously-touching bodies separate. */
   onEndContact: ((a: Body, b: Body) => void) | null = null;
+  /** Fired when a breakable joint exceeds its force/torque budget and is removed. */
+  onJointBreak: ((joint: Joint) => void) | null = null;
   stats: StepStats = {
     bodies: 0,
     awakeBodies: 0,
@@ -216,6 +218,11 @@ export class World {
     }
     solver.storeImpulses();
 
+    // 5a. Breakable joints: any joint whose reaction exceeded its budget this
+    // step is removed and reported. Checked after the solve so the reaction
+    // reflects the load the joint actually carried.
+    this.breakOverloadedJoints(activeJoints, ctx.invDt);
+
     // 5b. Split-impulse position correction (pseudo-velocities only).
     for (let i = 0; i < this.config.positionIterations; i++) {
       solver.solvePosition();
@@ -250,6 +257,28 @@ export class World {
 
   private isSolved(b: Body): boolean {
     return b.awake && b.type === BodyType.Dynamic;
+  }
+
+  /** Remove every joint whose reaction force/torque exceeded its break budget. */
+  private breakOverloadedJoints(joints: Joint[], invDt: number): void {
+    for (const j of joints) {
+      const fOver =
+        j.breakForce !== undefined &&
+        Number.isFinite(j.breakForce) &&
+        j.reactionForce !== undefined &&
+        j.reactionForce(invDt) > j.breakForce;
+      const tOver =
+        j.breakTorque !== undefined &&
+        Number.isFinite(j.breakTorque) &&
+        j.reactionTorque !== undefined &&
+        j.reactionTorque(invDt) > j.breakTorque;
+      if (fOver || tOver) {
+        this.removeJoint(j);
+        j.bodyA.wake();
+        j.bodyB.wake();
+        this.onJointBreak?.(j);
+      }
+    }
   }
 
   private addPair(a: Body, b: Body): void {
@@ -459,6 +488,49 @@ export class World {
   /** Visit the broadphase BVH nodes (for the broadphase debug overlay). */
   eachTreeNode(cb: (aabb: AABB, leaf: boolean, depth: number) => void): void {
     this.broadphase.tree.traverse(cb);
+  }
+
+  /**
+   * Apply an outward radial impulse — an explosion — to every dynamic body whose
+   * centre lies within `radius` of `center`. The impulse magnitude is `strength`
+   * scaled by a distance falloff (`'linear'` ⇒ `1 − d/radius`, `'none'` ⇒ flat),
+   * applied at each body's centre of mass so the blast imparts clean linear
+   * momentum. With `occlusion` on (the default) a body is skipped when a *static*
+   * body lies on the segment between it and the blast centre — so an explosion
+   * doesn't punch through walls. Returns the bodies that were pushed.
+   */
+  applyRadialImpulse(
+    center: Vec2,
+    strength: number,
+    radius: number,
+    opts: { falloff?: 'linear' | 'none'; occlusion?: boolean } = {},
+  ): Body[] {
+    const falloff = opts.falloff ?? 'linear';
+    const occlusion = opts.occlusion ?? true;
+    const pushed: Body[] = [];
+    const region = new AABB(
+      new Vec2(center.x - radius, center.y - radius),
+      new Vec2(center.x + radius, center.y + radius),
+    );
+    for (const b of this.queryAABB(region)) {
+      if (b.type !== BodyType.Dynamic || b.isSensor) continue;
+      const delta = b.worldCenter.sub(center);
+      const dist = delta.length();
+      if (dist > radius || dist < EPSILON) continue;
+      if (occlusion && this.staticOccluded(center, b)) continue;
+      const dir = delta.mul(1 / dist);
+      const scale = falloff === 'linear' ? Math.max(0, 1 - dist / radius) : 1;
+      if (scale <= 0) continue;
+      b.applyImpulse(dir.mul(strength * scale), b.worldCenter);
+      pushed.push(b);
+    }
+    return pushed;
+  }
+
+  /** True when a static body lies between `from` and body `b`'s centre. */
+  private staticOccluded(from: Vec2, b: Body): boolean {
+    const hit = this.rayCast(from, b.worldCenter);
+    return hit !== null && hit.body !== b && hit.body.type === BodyType.Static;
   }
 
   /** Total kinetic energy of the dynamic bodies — used by the verifier. */

@@ -37,30 +37,43 @@ the structure of a production engine (Box2D), implemented from first principles 
 - **Fluids** (`fluid.ts`) — a `BuoyancyZone` water body. The submerged area + centre of
   buoyancy of any shape is integrated in closed form by clipping a world outline against the
   waterline; real Archimedes lift ρ_fluid·A·(−g) is applied there, with area-scaled drag.
-- **Joints** (`joints/`) — revolute (motor + angle limits), distance (rigid + soft spring),
-  weld, mouse, prismatic (motor + travel limits), and **wheel** (rigid line + sprung
-  suspension + drive motor). Limits are speculative one-sided constraints that coexist with
-  the motors.
+- **Joints** (`joints/`) — the full Box2D family: revolute (motor + angle limits), distance
+  (rigid + soft spring), weld, mouse, prismatic (motor + travel limits), **wheel** (rigid line +
+  sprung suspension + drive motor), **pulley** (two ground anchors + length ratio), **gear**
+  (couples two revolute/prismatic joints by a ratio — gear trains & rack-and-pinion), and
+  **motor** (drives B's pose relative to A with a bounded, overpowerable force/torque). Limits
+  are speculative one-sided constraints that coexist with the motors. The structural joints
+  report their reaction force/torque, so any of them can be made **breakable** (a force/torque
+  budget; the world removes it and fires `onJointBreak` when overloaded).
+- **Materials** — a body can carry a `tangentSpeed` to act as a **conveyor belt**: the contact
+  solver folds the relative surface velocity into the friction target so the belt drags whatever
+  rests on it up to speed.
 - **World** (`world.ts`) — fixed-step orchestration: broadphase → narrowphase (with begin/end
-  **contact events**) → fluid forces → island assembly (union-find) → solve → integrate →
-  **CCD sweep of bullet bodies** → island-based sleeping. Plus ray casting, point queries,
-  AABB region queries, a convex **`shapeCast`**, and **sensor** bodies (detected, never solved).
+  **contact events**) → fluid forces → island assembly (union-find) → solve → **break overloaded
+  joints** → integrate → **CCD sweep of bullet bodies** → island-based sleeping. Plus ray casting,
+  point queries, AABB region queries, a convex **`shapeCast`**, a **radial-impulse / explosion**
+  field (`applyRadialImpulse`, with distance falloff + static-geometry occlusion), and **sensor**
+  bodies (detected, never solved).
 
 `src/render/`, `src/scenes/`, `src/ui/` are the playground: a Canvas2D debug renderer (drawing
-capsules, rounded polygons, animated water and dashed sensors), 22 demo scenes, and a React UI
+capsules, rounded polygons, animated water, dashed sensors, pulley ropes and conveyor flow
+arrows), 28 demo scenes, and a React UI
 with live solver controls (incl. CCD and block-solver toggles), debug overlays, and a
 verification modal.
 
 ## Verification
 
-`src/verify/suite.ts` runs 83 checks against real engine code paths (mass integrals incl.
+`src/verify/suite.ts` runs 109 checks against real engine code paths (mass integrals incl.
 the closed-form capsule, GJK vs analytic gaps, EPA depth, manifold correctness for boxes,
 capsules and rounded polygons, free-fall, elastic-collision momentum conservation,
 resting/sleeping, revolute constraint drift, continuous-collision no-tunnel, revolute &
 prismatic joint limits, the block-LCP complementarity conditions, buoyancy submerged-area &
 floating-equilibrium integrals, AABB queries & shape-cast fractions, the wheel-joint
-suspension, sensor pass-through & contact-event counts, bit-for-bit determinism, broadphase
-correctness, ray casting incl. capsules). All 83 pass; click **Verify engine** in the app.
+suspension, sensor pass-through & contact-event counts, **conveyor surface speed**, **radial-
+impulse symmetry / falloff / occlusion**, **pulley length conservation**, **gear ratio &
+rack-and-pinion travel**, **motor-joint targeting & stall**, **breakable-joint thresholds**,
+bit-for-bit determinism, broadphase correctness, ray casting incl. capsules). All 109 pass;
+click **Verify engine** in the app.
 
 ## Ideas / backlog
 
@@ -76,7 +89,80 @@ correctness, ray casting incl. capsules). All 83 pass; click **Verify engine** i
 - [x] Canvas renderer with debug overlays (AABBs, contacts, BVH, COM, velocities, joints)
 - [x] In-app 31-check verification suite (all passing)
 - [x] Block solver for 2-point contact manifolds (exact LCP per manifold) — shipped in v3
+- [x] Conveyor surfaces — per-body `tangentSpeed` injected into the friction target (v4)
+- [x] Radial impulse / explosion field (`World.applyRadialImpulse`) with line-of-sight occlusion (v4)
+- [x] Pulley joint (two ground anchors, length ratio) (v4)
+- [x] Gear joint (couples two revolute/prismatic joints by a ratio — gear trains & rack-and-pinion) (v4)
+- [x] Motor joint (drives B's pose relative to A — overpowerable moving platforms) (v4)
+- [x] Breakable joints (reaction-force/torque budget + `onJointBreak` event) (v4)
 - [ ] SVG/JSON scene export and a small scene editor
+
+## v4 — the mechanisms release (surfaces, force fields & the full joint family) ✅ shipped
+
+The fourth major upgrade rounds the engine out into a *machine-builder's* toolkit.
+It completes the Box2D joint family (pulley, gear, motor), adds the first
+**contact-level material** (conveyor surface velocity, solved inside the friction
+constraint), the first **field force** (a radial impulse / explosion with
+line-of-sight occlusion), and the long-wanted **breakable joints** — constraints
+that measure their own reaction load each step and snap when overloaded, firing a
+break event. As always every new code path earns verification checks that
+re-derive its claim from an analytic reference (the suite grows 83 → 100+).
+
+### Conveyor surfaces (a contact material)
+
+- [x] Add `Body.tangentSpeed`: a surface velocity along the body's local +x axis.
+- [x] In the contact solver, fold the relative surface velocity
+      `(convA − convB)·t` into the friction target so friction drags contacting
+      bodies up to belt speed (Box2D's `tangentSpeed`, generalised to combine
+      both bodies symmetrically regardless of contact A/B labelling).
+- [x] Renderer draws a chevron flow arrow along any body with a surface speed.
+- [x] Verify: a crate on a level belt accelerates to (and holds) belt speed; a
+      belt with zero speed leaves the friction solve unchanged (regression guard).
+
+### Radial impulse / explosion field
+
+- [x] `World.applyRadialImpulse(center, strength, radius, { falloff, occlusion })`:
+      an outward impulse on every dynamic body within `radius`, scaled by a linear
+      (or none) distance falloff, optionally **ray-occluded** by static geometry
+      so a blast doesn't reach through walls. Returns the bodies it pushed.
+- [x] Verify: a symmetric ring of bodies gets symmetric outward momentum summing
+      to ~zero; impulse magnitude falls off with distance; a static wall shadows
+      the body behind it (occlusion).
+
+### The rest of the joint family
+
+- [x] **PulleyJoint**: `lengthA + ratio·lengthB = constant` over two fixed ground
+      anchors — pull one side down, the other rises. A custom renderer draws the
+      rope over both pulleys. Verify the conserved combined length holds.
+- [x] **GearJoint**: couples two joints (each revolute or prismatic) sharing a
+      ground body so `coordinate1 + ratio·coordinate2 = const` — a faithful port
+      of Box2D's gear constraint (gear trains and rack-and-pinion). Verify two
+      meshed gears hold the commanded angular-velocity ratio.
+- [x] **MotorJoint**: drives bodyB to a target linear + angular offset from bodyA
+      with bounded force/torque and a correction factor — an *overpowerable*
+      moving platform (push back hard enough and it stalls). Verify it reaches its
+      target offset, and that a too-heavy load stalls a force-limited motor.
+
+### Breakable joints
+
+- [x] Every structural joint reports its `reactionForce(invDt)` / `reactionTorque`;
+      give the `Joint` interface optional `breakForce` / `breakTorque` budgets.
+- [x] The world checks each joint's reaction against its budget after the velocity
+      solve and removes it (firing `onJointBreak`) when exceeded.
+- [x] Verify: a distance rod holding a light mass survives but snaps under a heavy
+      one near the force its budget predicts; a torque-limited weld breaks.
+
+### Scenes
+
+- [x] **Pulley** — two platforms over a pulley; drop a weight on one, the other
+      lifts.
+- [x] **Gear Train** — a row of meshed gears (alternating ratios) driven by a
+      motorised first gear, plus a rack-and-pinion sliding a carriage.
+- [x] **Conveyor** — a circuit of belts at different speeds ferrying crates around.
+- [x] **Demolition** — a brick tower wired to a timed charge: the radial impulse
+      blows it apart (with wall occlusion shown).
+- [x] **Breakable Bridge** — a plank bridge on breakable revolute pins that
+      collapses as a heavy load rolls across.
 
 ## v3 — the fluids, queries & exact-solver release ✅ shipped
 
@@ -251,3 +337,28 @@ engine stays inspectable, not just claimed. (Suite grew 31 → 49 checks.)
   scenes smoke-tested for 1 500–6 000 steps headless — no NaN, stress peaks ~20 ms/step. Tuned
   the car out of a wheelie-flip (heavier low chassis, gentler torque) using the headless
   scene harness. Lint + build green.
+- 2026-06-19 (claude): Shipped **v4 — the mechanisms release**, rounding the engine out into a
+  machine-builder's toolkit. Completed the Box2D **joint family**: a **pulley** (two ground
+  anchors, length ratio; verified the combined length `lengthA + ratio·lengthB` holds to <2 cm
+  while a heavier side descends and a lighter rises), a **gear joint** that couples two
+  revolute/prismatic joints by a ratio (verified two meshed gears hold `ωA + 2·ωB = 0` and
+  counter-rotate, and a motorised rack-and-pinion actually slides its carriage), and a **motor
+  joint** that drives B's pose relative to A with a bounded force/torque (verified it reaches a
+  target offset + angle, and that a force-limited motor *stalls* under a heavy load while a
+  strong one holds it — an overpowerable actuator, not a weld). Added the first **contact-level
+  material**, a conveyor `tangentSpeed` folded into the friction target (verified a crate
+  reaches belt speed, a reversed belt carries it the other way, and a zero-speed belt is an
+  exact regression no-op), and the first **field force**, `applyRadialImpulse` — an explosion
+  with linear distance falloff and **static-geometry ray occlusion** (verified a symmetric ring
+  gets net-zero momentum, the near/far impulse ratio matches `1 − d/r`, and a wall shadows the
+  body behind it). Made the structural joints **breakable**: each reports its reaction
+  force/torque and the world snaps it (firing `onJointBreak`) past a budget — verified a
+  distance rod and a weld hold within budget and break above it. Subtle bug found & fixed via
+  the headless harness: the gear joint's Baumgarte position term exploded every half-turn
+  because a revolute's coordinate is the body's *wrapping* angle — dropped the position bias
+  (the velocity coupling already holds the ratio exactly). Taught the renderer to draw pulley
+  ropes over their wheels and conveyor flow-chevrons. Authored 6 new scenes (Pulley, Gear Train,
+  Powered Platform, Conveyor with recirculation, Demolition with a blast-proof bunker, Breakable
+  Bridge with a wrecking ball) for **28 total**; grew the suite **83 → 109 checks** (all green)
+  and smoke-tested every new scene headless for 600 steps (no NaN; bridge sheds 15/17 pins as
+  the ball crosses; the occluded barrel never moves). Lint + build + the exact CI gate green.
