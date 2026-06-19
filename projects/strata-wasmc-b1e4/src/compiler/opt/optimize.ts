@@ -4,6 +4,7 @@ import { computeDom, succOfTerm } from '../ir/cfg';
 import { findNaturalLoops } from '../ir/loops';
 import { simplifyCFG } from './simplifycfg';
 import { unrollLoops } from './unroll';
+import { divRemByConst } from './divrem';
 import { dumpModule } from '../irdump';
 import { i32, satTruncI32, rotl32, rotr32, rotl64, rotr64 } from '../interp';
 
@@ -874,6 +875,7 @@ export function optimize(mod: IRModule, level: OptLevel, snapshots = false): Opt
     if (level >= 2) record('loop-unroll' + suffix, unrollLoops);
     record('if-convert' + suffix, ifConvert);
     record('strength-reduce' + suffix, peephole);
+    record('div-by-const' + suffix, divRemByConst);
     if (level >= 2) record('gvn/cse' + suffix, gvn);
     record('algebraic-simplify' + suffix, algebraic);
     if (level >= 2) record('licm' + suffix, licm);
