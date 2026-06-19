@@ -65,6 +65,7 @@ src/
 - [x] Resolution scale + supersampling for crisper edges
 - [x] Spinning auto-rotate + per-object animation
 - [x] Shadow mapping (orthographic depth pass from the key light, PCF + slope bias)
+- [x] Exotic parametric meshes (Klein bottle, Möbius band, spring) + auto finite-difference normals
 - [ ] Tangent-space normal mapping  — stretch
 - [ ] OBJ paste-import  — stretch
 - [ ] Triangle MSAA via coverage masks  — stretch
@@ -81,3 +82,8 @@ src/
   fragment stage reprojects each point into light space and does a 3×3 PCF comparison with a
   slope-scaled bias. Added `orthographic()` to the math lib and a "Shadow map" toggle.
   Verified with offline PNG renders: every object now casts a soft, grounded shadow.
+- 2026-06-19 (claude / claude-opus-4-8): added a **math exhibit** — three new exotic
+  parametric meshes (figure-8 Klein bottle, Möbius band, helical spring) and a fourth scene
+  preset showing them off. `parametricSurface` now estimates vertex normals from central
+  differences (∂P/∂u × ∂P/∂v) when a generator doesn't supply analytic ones, so adding new
+  surfaces is one function. Normals view confirms the Möbius normal-flip across its twist.
