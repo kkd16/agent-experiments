@@ -286,6 +286,56 @@ export default function Docs() {
           </p>
         </section>
 
+        <section>
+          <h3>Dynamic scheduling: the out-of-order superscalar core</h3>
+          <p className="docs-intro">
+            The Pipeline tab&rsquo;s second engine &mdash; the <strong>Out-of-order
+            superscalar</strong> toggle &mdash; is a from-scratch <strong>Tomasulo</strong>-style
+            dynamically-scheduled core, the high-performance sibling of the in-order pipeline. It
+            reads the very same retired trace (so, again, no architectural bit can change) but
+            models a real out-of-order machine: it fetches, dispatches and commits several
+            instructions per cycle and executes them <em>out of program order</em> to extract{' '}
+            <strong>instruction-level parallelism</strong>. On independent work the IPC climbs above
+            one toward the issue width; on a true dependence chain it stays near one no matter how
+            wide the machine &mdash; exactly the lesson the headline <strong>speed-up vs in-order</strong>{' '}
+            card makes concrete.
+          </p>
+          <p className="docs-intro">
+            <strong>Register renaming.</strong> A producer map records, for every architectural
+            register, the in-flight instruction that will write it. A consumer waits only for that{' '}
+            <em>true</em> producer, so <strong>WAR and WAW (false) dependences simply do not
+            exist</strong> &mdash; four back-to-back writes to the same register run fully in
+            parallel. <strong>The reorder buffer &amp; reservation stations.</strong> Dispatch is
+            in order into a fixed-size <strong>ROB</strong> (the instruction window) and a pool of{' '}
+            <strong>reservation stations</strong>; each cycle the oldest <em>ready</em> instructions
+            (operands available, a functional unit free) <strong>wake and issue</strong> onto a
+            configurable pool of typed units &mdash; pipelined ALU/mul/FP-add, and{' '}
+            <em>iterative</em> (non-pipelined) dividers that hold their unit for the whole latency.
+            Results broadcast on a bandwidth-limited <strong>common data bus</strong>, and the ROB{' '}
+            <strong>commits in order</strong> for precise state. A long-latency divide is therefore{' '}
+            <em>hidden</em> by independent work behind it &mdash; until the ROB is too small to see
+            past it, which the <em>where dispatch stalls</em> breakdown shows as ROB-full cycles.
+          </p>
+          <p className="docs-intro">
+            <strong>The load/store queue.</strong> Memory ops enter an <strong>LSQ</strong>. Stores
+            latch their address and data on execute and drain to the D-cache at <em>commit</em>;
+            loads do real <strong>address disambiguation</strong> &mdash; in{' '}
+            <code>disambiguate</code> mode a load bypasses non-aliasing older stores and{' '}
+            <strong>forwards</strong> a value straight out of the store buffer when one aliases,
+            while <code>in-order memory</code> serializes every access for contrast.{' '}
+            <strong>A dynamic misprediction penalty.</strong> Unlike the fixed in-order penalty, a
+            mispredicted branch here squashes the front end until the branch <em>resolves</em> in a
+            functional unit, then refills &mdash; so a branch that depends on a slow multiply costs
+            far more than one resolved early, the key out-of-order insight. The view reports IPC and
+            the speed-up, average/peak ROB occupancy, store-forward and memory-order counts,{' '}
+            <strong>functional-unit utilization</strong>, the dispatch-stall bottleneck breakdown,
+            and a colour-coded <strong>instruction-lifetime (Gantt) diagram</strong> &mdash; fetch
+            &rarr; reservation station &rarr; executing &rarr; waiting in the ROB &rarr; commit. All
+            of it is checked against hand-derived schedules and whole-program structural invariants
+            in the Verify suite.
+          </p>
+        </section>
+
         {GROUPS.map((grp) => (
           <section key={grp.title}>
             <h3>{grp.title}</h3>
