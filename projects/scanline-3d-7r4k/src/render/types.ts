@@ -6,6 +6,7 @@ export interface PipeVertex {
   clip: Vec4 // homogeneous clip-space position
   world: Vec3 // world-space position (for per-fragment lighting)
   normal: Vec3 // world-space normal
+  tangent: Vec4 // world-space tangent (xyz) + handedness (w), for normal mapping
   uv: Vec2
 }
 

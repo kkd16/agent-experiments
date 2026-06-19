@@ -1,9 +1,12 @@
-// Per-fragment lighting: Blinn–Phong with any number of directional and point
-// lights, an ambient term, optional rim light and distance fog. Works in a
-// roughly linear colour space; the renderer gamma-encodes on write.
+// Per-fragment lighting. Two interchangeable models share the same light list,
+// shadowing and fog: classic Blinn–Phong, and a metallic-roughness Cook–Torrance
+// PBR path (see pbr.ts). Both work in linear colour; the resolve pass tone-maps
+// and gamma-encodes on the way to the framebuffer.
 import { clamp01 } from '../math/scalar.ts'
 import type { Vec3 } from '../math/vec.ts'
 import { add, dot, length, normalize, scale, sub } from '../math/vec.ts'
+import { shadePBR } from './pbr.ts'
+import type { Environment } from './environment.ts'
 
 export interface DirLight {
   type: 'dir'
@@ -22,11 +25,16 @@ export interface PointLight {
 
 export type Light = DirLight | PointLight
 
+export type ShadingModel = 'phong' | 'pbr'
+
 export interface Material {
   albedo: Vec3
   specular: number
   shininess: number
   rim: number
+  // PBR parameters (used by the metallic-roughness path; ignored by Phong).
+  metallic?: number // 0 = dielectric, 1 = metal
+  roughness?: number // 0 = mirror, 1 = fully rough
 }
 
 export interface ShadowSampler {
@@ -41,6 +49,34 @@ export interface ShadeContext {
   fogColor: Vec3
   fogDensity: number
   shadow?: ShadowSampler
+  model: ShadingModel
+  environment?: Environment // image-based lighting (drives PBR ambient + reflections)
+}
+
+// Dispatch to the active lighting model. `base` is the albedo after texture
+// modulation; `n` is the (possibly normal-mapped) shading normal.
+export function shadeSurface(
+  base: Vec3,
+  worldPos: Vec3,
+  n: Vec3,
+  mat: Material,
+  ctx: ShadeContext,
+): Vec3 {
+  return ctx.model === 'pbr'
+    ? shadePBR(base, worldPos, n, mat, ctx)
+    : shadeFragment(base, worldPos, n, mat, ctx)
+}
+
+// Apply distance fog to an already-shaded linear colour. Shared by both models.
+export function applyFog(c: Vec3, worldPos: Vec3, ctx: ShadeContext): Vec3 {
+  if (ctx.fogDensity <= 0) return c
+  const dist = length(sub(worldPos, ctx.eye))
+  const f = clamp01(1 - Math.exp(-dist * ctx.fogDensity))
+  return [
+    c[0] + (ctx.fogColor[0] - c[0]) * f,
+    c[1] + (ctx.fogColor[1] - c[1]) * f,
+    c[2] + (ctx.fogColor[2] - c[2]) * f,
+  ]
 }
 
 // `worldPos` and `n` (already normalized) are the fragment's world position and
@@ -53,9 +89,16 @@ export function shadeFragment(
   ctx: ShadeContext,
 ): Vec3 {
   const viewDir = normalize(sub(ctx.eye, worldPos))
-  let r = base[0] * ctx.ambient[0]
-  let g = base[1] * ctx.ambient[1]
-  let b = base[2] * ctx.ambient[2]
+  // ambient: image-based irradiance when an environment is present, else flat
+  let ar = ctx.ambient[0], ag = ctx.ambient[1], ab = ctx.ambient[2]
+  if (ctx.environment) {
+    const irr = ctx.environment.irradiance(n)
+    const k = ctx.environment.intensity
+    ar = irr[0] * k; ag = irr[1] * k; ab = irr[2] * k
+  }
+  let r = base[0] * ar
+  let g = base[1] * ag
+  let b = base[2] * ab
 
   for (let li = 0; li < ctx.lights.length; li++) {
     const light = ctx.lights[li]
@@ -106,16 +149,7 @@ export function shadeFragment(
     b += fres
   }
 
-  // exponential distance fog
-  if (ctx.fogDensity > 0) {
-    const dist = length(sub(worldPos, ctx.eye))
-    const f = clamp01(1 - Math.exp(-dist * ctx.fogDensity))
-    r = r + (ctx.fogColor[0] - r) * f
-    g = g + (ctx.fogColor[1] - g) * f
-    b = b + (ctx.fogColor[2] - b) * f
-  }
-
-  return [r, g, b]
+  return applyFog([r, g, b], worldPos, ctx)
 }
 
 export const gammaEncode = (c: Vec3): Vec3 => [

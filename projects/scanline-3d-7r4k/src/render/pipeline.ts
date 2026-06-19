@@ -4,6 +4,7 @@
 import type { Mat4 } from '../math/mat4.ts'
 import { multiply, normalMatrix, transformMat3, transformPoint, transformVec4 } from '../math/mat4.ts'
 import { normalize } from '../math/vec.ts'
+import type { Vec3 } from '../math/vec.ts'
 import { clipNear } from './clip.ts'
 import { Framebuffer } from './framebuffer.ts'
 import { drawLine, rasterizeTriangle, screenOf } from './raster.ts'
@@ -38,10 +39,19 @@ export function drawObject(
   const clipPos = new Array<PipeVertex>(verts.length)
   for (let i = 0; i < verts.length; i++) {
     const v = verts[i]
+    // Tangents ride the model matrix's upper-left 3×3 (not the normal matrix) so
+    // they stay glued to the surface; w carries the bitangent handedness.
+    const tIn = v.tangent ?? [1, 0, 0, 1]
+    const tw: Vec3 = normalize([
+      model[0] * tIn[0] + model[4] * tIn[1] + model[8] * tIn[2],
+      model[1] * tIn[0] + model[5] * tIn[1] + model[9] * tIn[2],
+      model[2] * tIn[0] + model[6] * tIn[1] + model[10] * tIn[2],
+    ])
     clipPos[i] = {
       clip: transformVec4(mvp, [v.position[0], v.position[1], v.position[2], 1]),
       world: transformPoint(model, v.position),
       normal: normalize(transformMat3(nrm, v.normal)),
+      tangent: [tw[0], tw[1], tw[2], tIn[3]],
       uv: v.uv,
     }
   }

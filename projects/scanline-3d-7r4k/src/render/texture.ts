@@ -53,3 +53,78 @@ export const makeTexture = (kind: TextureKind): Texture | null => {
     case 'uv': return uvDebug
   }
 }
+
+// ── Procedural normal maps ───────────────────────────────────────────────────
+// A NormalMap returns a tangent-space normal (x,y ∈ −1..1, z ≈ 1) for a UV. Each
+// is derived by central-differencing a scalar height field, so the perturbation
+// always points "uphill" and stays unit-length.
+export type NormalMap = (u: number, v: number) => Vec3
+
+export type NormalMapKind = 'none' | 'bumps' | 'ripples' | 'brick' | 'scales'
+
+const heightToNormal = (height: (u: number, v: number) => number, strength: number): NormalMap => (u, v) => {
+  const e = 1 / 256
+  const hl = height(u - e, v)
+  const hr = height(u + e, v)
+  const hd = height(u, v - e)
+  const hu = height(u, v + e)
+  const dx = (hr - hl) * strength
+  const dy = (hu - hd) * strength
+  // gradient → tangent-space normal
+  const nx = -dx
+  const ny = -dy
+  const nz = 1
+  const inv = 1 / Math.sqrt(nx * nx + ny * ny + nz * nz)
+  return [nx * inv, ny * inv, nz * inv]
+}
+
+const hash2 = (x: number, y: number): number =>
+  fract(Math.sin(x * 127.1 + y * 311.7) * 43758.5453)
+
+export const makeNormalMap = (kind: NormalMapKind): NormalMap | null => {
+  switch (kind) {
+    case 'none':
+      return null
+    case 'bumps':
+      // hexish field of rounded bumps
+      return heightToNormal((u, v) => {
+        const s = 9
+        const cu = fract(u * s) - 0.5
+        const cv = fract(v * s) - 0.5
+        const d = Math.sqrt(cu * cu + cv * cv)
+        return smoothstep(0.42, 0.0, d)
+      }, 22)
+    case 'ripples':
+      return heightToNormal((u, v) => {
+        const d = Math.sqrt((u - 0.5) * (u - 0.5) + (v - 0.5) * (v - 0.5))
+        return Math.sin(d * 60) * 0.5 + 0.5
+      }, 6)
+    case 'brick':
+      // raised bricks with recessed mortar lines, matching the brick texture
+      return heightToNormal((u, v) => {
+        const s = 5
+        const row = Math.floor(v * s)
+        const offset = (row & 1) * 0.5
+        const bu = fract(u * s + offset)
+        const bv = fract(v * s)
+        const m = 0.07
+        const edge = Math.min(
+          smoothstep(0, m, bu) * smoothstep(0, m, 1 - bu),
+          smoothstep(0, m, bv) * smoothstep(0, m, 1 - bv),
+        )
+        return edge
+      }, 16)
+    case 'scales':
+      // staggered dimples with a little per-cell jitter
+      return heightToNormal((u, v) => {
+        const s = 11
+        const row = Math.floor(v * s)
+        const offset = (row & 1) * 0.5
+        const cu = fract(u * s + offset) - 0.5
+        const cv = fract(v * s) - 0.5
+        const j = hash2(Math.floor(u * s + offset), row) * 0.12
+        const d = Math.sqrt(cu * cu + cv * cv) + j
+        return 1 - smoothstep(0.0, 0.5, d)
+      }, 18)
+  }
+}

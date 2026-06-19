@@ -1,11 +1,13 @@
-// A Mesh is an indexed triangle list with per-vertex position / normal / uv.
-import type { Vec2, Vec3 } from '../math/vec.ts'
-import { add, cross, normalize, scale, sub } from '../math/vec.ts'
+// A Mesh is an indexed triangle list with per-vertex position / normal / uv, plus
+// a tangent (xyz + handedness in w) used to build the TBN frame for normal maps.
+import type { Vec2, Vec3, Vec4 } from '../math/vec.ts'
+import { add, cross, dot, length, normalize, scale, sub } from '../math/vec.ts'
 
 export interface Vertex {
   position: Vec3
   normal: Vec3
   uv: Vec2
+  tangent?: Vec4 // xyz = tangent, w = ±1 handedness of the bitangent
 }
 
 export interface Mesh {
@@ -30,6 +32,55 @@ export const recomputeNormals = (m: Mesh): void => {
     acc[ic] = add(acc[ic], n)
   }
   for (let i = 0; i < m.vertices.length; i++) m.vertices[i].normal = normalize(acc[i])
+}
+
+// Compute per-vertex tangents from positions, UVs and normals (Lengyel's
+// method): accumulate the per-triangle tangent/bitangent that map the UV axes to
+// world space, then Gram–Schmidt-orthonormalize against the vertex normal and
+// store the bitangent handedness in w. Meshes with degenerate UVs fall back to
+// an arbitrary tangent perpendicular to the normal.
+export const computeTangents = (m: Mesh): void => {
+  const tan: Vec3[] = m.vertices.map(() => [0, 0, 0])
+  const bit: Vec3[] = m.vertices.map(() => [0, 0, 0])
+  for (let i = 0; i < m.indices.length; i += 3) {
+    const ia = m.indices[i], ib = m.indices[i + 1], ic = m.indices[i + 2]
+    const va = m.vertices[ia], vb = m.vertices[ib], vc = m.vertices[ic]
+    const e1 = sub(vb.position, va.position)
+    const e2 = sub(vc.position, va.position)
+    const du1 = vb.uv[0] - va.uv[0], dv1 = vb.uv[1] - va.uv[1]
+    const du2 = vc.uv[0] - va.uv[0], dv2 = vc.uv[1] - va.uv[1]
+    const det = du1 * dv2 - du2 * dv1
+    if (Math.abs(det) < 1e-12) continue
+    const f = 1 / det
+    const t: Vec3 = [
+      f * (dv2 * e1[0] - dv1 * e2[0]),
+      f * (dv2 * e1[1] - dv1 * e2[1]),
+      f * (dv2 * e1[2] - dv1 * e2[2]),
+    ]
+    const bvec: Vec3 = [
+      f * (du1 * e2[0] - du2 * e1[0]),
+      f * (du1 * e2[1] - du2 * e1[1]),
+      f * (du1 * e2[2] - du2 * e1[2]),
+    ]
+    for (const idx of [ia, ib, ic]) {
+      tan[idx] = add(tan[idx], t)
+      bit[idx] = add(bit[idx], bvec)
+    }
+  }
+  for (let i = 0; i < m.vertices.length; i++) {
+    const n = m.vertices[i].normal
+    let t = tan[i]
+    // Gram–Schmidt: remove the normal component, then renormalize.
+    t = sub(t, scale(n, dot(n, t)))
+    if (length(t) < 1e-8) {
+      // arbitrary perpendicular when UVs gave us nothing usable
+      const ref: Vec3 = Math.abs(n[1]) < 0.99 ? [0, 1, 0] : [1, 0, 0]
+      t = cross(ref, n)
+    }
+    t = normalize(t)
+    const w = dot(cross(n, t), bit[i]) < 0 ? -1 : 1
+    m.vertices[i].tangent = [t[0], t[1], t[2], w]
+  }
 }
 
 // ── Parametric helpers ──────────────────────────────────────────────────────
@@ -294,9 +345,15 @@ export const makeSpring = (turns = 3.5, segU = 320, segV = 14, R = 0.55, r = 0.1
   )
 
 export type MeshKind =
-  | 'sphere' | 'torus' | 'knot' | 'cube' | 'cylinder' | 'klein' | 'mobius' | 'spring'
+  | 'sphere' | 'torus' | 'knot' | 'cube' | 'cylinder' | 'klein' | 'mobius' | 'spring' | 'custom'
 
 export const buildMesh = (kind: MeshKind): Mesh => {
+  const m = buildMeshRaw(kind)
+  computeTangents(m)
+  return m
+}
+
+const buildMeshRaw = (kind: MeshKind): Mesh => {
   switch (kind) {
     case 'sphere': return makeSphere()
     case 'torus': return makeTorus()
@@ -306,5 +363,6 @@ export const buildMesh = (kind: MeshKind): Mesh => {
     case 'klein': return makeKlein()
     case 'mobius': return makeMobius()
     case 'spring': return makeSpring()
+    case 'custom': return makeSphere() // placeholder; the renderer supplies the real custom mesh
   }
 }

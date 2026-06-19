@@ -6,6 +6,7 @@ import { useEffect, useRef, useState } from 'react'
 import { Renderer } from './renderer.ts'
 import type { RenderSettings } from './renderer.ts'
 import { PRESETS } from '../scene/scene.ts'
+import type { Mesh } from '../geometry/mesh.ts'
 
 export interface EngineStats {
   fps: number
@@ -30,6 +31,8 @@ export function useEngine(
   containerRef: React.RefObject<HTMLDivElement | null>
   stats: EngineStats
   resetCamera: () => void
+  loadCustomMesh: (mesh: Mesh) => void
+  captureScreenshot: () => void
 } {
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const containerRef = useRef<HTMLDivElement | null>(null)
@@ -166,5 +169,25 @@ export function useEngine(
     rendererRef.current?.camera.reset()
   }
 
-  return { canvasRef, containerRef, stats, resetCamera }
+  const loadCustomMesh = (mesh: Mesh): void => {
+    rendererRef.current?.setCustomMesh(mesh)
+  }
+
+  // Download the current framebuffer as a PNG. Sandboxed (no same-origin)
+  // previews can throw on toDataURL, so this is best-effort.
+  const captureScreenshot = (): void => {
+    const canvas = canvasRef.current
+    if (!canvas) return
+    try {
+      const url = canvas.toDataURL('image/png')
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `scanline-${Date.now()}.png`
+      a.click()
+    } catch {
+      /* ignore — sandboxed canvas can't be exported */
+    }
+  }
+
+  return { canvasRef, containerRef, stats, resetCamera, loadCustomMesh, captureScreenshot }
 }
