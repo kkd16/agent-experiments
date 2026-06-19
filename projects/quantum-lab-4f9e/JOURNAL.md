@@ -408,10 +408,83 @@ existing TFIM MPO and `QuantumState.entanglementEntropy` are exact.
 
 ### Future ideas
 - [ ] XY-model / general quadratic fermions (anisotropy γ), and the critical exponents from
-      finite-size scaling of the gap
+      finite-size scaling of the gap → **shipped in 9.0** (open + periodic anisotropic XY)
 - [ ] Periodic boundaries (the even/odd parity sectors) for a clean closed-form match
+      → **shipped in 9.0** (momentum-space anti-periodic sector, exact finite-N Loschmidt)
 - [ ] Free-fermion entanglement *negativity* and mutual information between disjoint blocks
-- [ ] Loschmidt echo / dynamical quantum phase transitions after the quench
+      → **mutual information shipped in 9.0**; negativity still open
+- [ ] Loschmidt echo / dynamical quantum phase transitions after the quench → **shipped in 9.0**
+
+## Quantum Lab 9.0 — Dynamical Quantum Phase Transitions, the XY model & periodic free fermions (planned + shipping this session)
+
+The free-fermion engine was, until now, the *open*, *isotropic* (Ising, γ=1) chain in
+*equilibrium plus a single quench observable*. 9.0 turns it into the full toolkit a condensed-matter
+theorist actually reaches for: the **anisotropic XY model** in a field (the Ising chain is its γ=1
+point), solved both as an open chain and — newly — in **momentum space with periodic boundaries**
+(the clean, factorising closed form), and used to compute the headline non-equilibrium phenomenon
+of the last decade: the **dynamical quantum phase transition (DQPT)** and its integer-quantised
+**dynamical topological order parameter**. Every new quantity is cross-checked against an
+independent dense 2ⁿ oracle that shares no code with the free-fermion path.
+
+The physics, validated end-to-end in a throwaway oracle before a line of TS was written:
+
+- The periodic chain factorises into independent 2×2 momentum modes (Anderson pseudospins). The
+  Loschmidt return amplitude is then a **product over modes**, exact at finite N in the
+  anti-periodic (even-parity) sector — matched to dense exact evolution to **~1e-15**.
+- A quench *across* the critical point produces **Fisher-zero lines** that cross the time axis: the
+  rate function l(t) = −lim (1/N) ln|⟨ψ₀|e^{−iH_f t}|ψ₀⟩|² develops **non-analytic cusps** at the
+  critical times tₙ* = (2n+1)π/εₖ* (kₖ* the critical mode where the initial and final pseudospins
+  are orthogonal). A quench that does *not* cross stays analytic — no DQPT.
+- The **dynamical topological order parameter** ν_D(t) (Budich–Heyl Pancharatnam geometric-phase
+  winding) is an **integer** that is 0 before the first DQPT and jumps by exactly **+1 at every
+  cusp** — validated to land on 0,1,2,3,… at the analytic critical times, and to stay 0 for every
+  non-crossing quench.
+
+### Plan / steps (this session)
+- [x] **`solveXY(n, J, h, γ)`** — generalise the open-chain BdG solver to the anisotropic XY model
+      (the only change is two off-diagonals of R = A−B: R[i,i+1] = −J(1−γ), R[i+1,i] = −J(1+γ));
+      `solveTFIM` becomes `solveXY(…, 1)`. Rᵀ = A+B still holds for any γ, so the SVD trick and all
+      downstream correlators/entropy carry over untouched. Cross-check vs dense XY diagonalisation.
+- [x] **`xyChain.ts` — periodic momentum-space engine.** Anderson-pseudospin field
+      d⃗(k) = (h − J cos k, J γ sin k), dispersion εₖ = 2|d⃗|, ground-energy density
+      e₀ = −(1/π)∫₀^π |d⃗| dk (reduces to Pfeuty at γ=1), field-direction magnetisation, and the
+      **XY phase diagram** (Ising line h=1 for γ≠0; the anisotropy/XX critical line γ=0, h<1).
+- [x] **Loschmidt echo / DQPT.** `loschmidtRate` (continuum integral of −ln|Gₖ|²,
+      |Gₖ(t)|² = 1 − sin²Δθₖ·sin²(εₖ^f t)), the **critical mode** (d⃗_i·d⃗_f = 0; for Ising
+      cos k* = (1+h_i h_f)/(h_i+h_f)) and the **critical times**; `loschmidtFiniteN` (exact product
+      over anti-periodic momenta) for the finite-N cross-check.
+- [x] **Dynamical topological order parameter** `dtop(t)` — per-mode 2×2 unitary evolution, the
+      Pancharatnam geometric phase φₖ^G = arg⟨u(0)|u(t)⟩ + Eₖ t, integrated to an integer winding
+      over k ∈ [0,π]; returns ν_D(t) and the φₖ^G(k) curve at a chosen time.
+- [x] **Dense periodic oracle** `loschmidtDense(n, …)` — builds the 2ⁿ periodic XY Hamiltonian,
+      exact ground state → exact time evolution → l_N(t); shares no code with the FF path.
+- [x] **Mutual information between disjoint blocks** `mutualInformation` on the open-chain ground
+      state (I(A:B) = S_A + S_B − S_{A∪B} from the Majorana covariance matrix), and its decay with
+      separation (exponential off-criticality, slow at h=J).
+- [x] **New `DynamicsLab.tsx` tab (🌀 Dynamics)** — a DQPT card (h_i/h_f/γ sliders; l(t) with cusps
+      marked at the critical times; "crosses critical point?" verdict; exact-dense overlay for n≤8)
+      and a DTOP card (ν_D(t) integer step function + the winding of φₖ^G across the Brillouin zone).
+- [x] **Extend `FreeFermionLab.tsx`** — an XY-anisotropy card (γ slider, dispersion & phase diagram)
+      and a disjoint-block mutual-information card.
+- [x] **Tests (72 → 80)** — solveXY≡solveTFIM at γ=1; open XY ground energy vs dense; Loschmidt
+      finite-N vs dense (~1e-14); DQPT cusps ⇔ critical-point crossing; ν_D integer, +1 per cusp,
+      0 for non-crossing; e₀ vs the closed-form integral; mutual information identity & decay.
+- [x] **Wire the tab + About entry + this journal.**
+
+### Verified
+- The exact finite-N Loschmidt rate (anti-periodic momentum product) matches an independent dense
+  2ⁿ time evolution of the periodic XY chain to **~1e-14** (n=6,8; Ising and anisotropic γ).
+- `criticalTimes` land exactly on the numerically-located cusps of the rate function
+  (1.171, 3.512, 5.854 for the h=2→0.5 Ising quench); ν_D(t) = 0 before the first cusp and jumps
+  **0→1→2→3** at each, and is identically 0 for every non-crossing quench.
+- `solveXY(γ=1)` reproduces `solveTFIM` to 0; the open anisotropic-XY ground energy matches exact
+  diagonalisation to ~5e-13 (incl. the XX point γ=0); the thermodynamic e₀ matches the open chain
+  to ~2e-3 at n=240; the disjoint-block mutual information satisfies I(A:Ā)=2S(L) to 1e-13 and is
+  ~1e-11 between separated blocks deep in the paramagnet but 0.012 at criticality.
+- Two real bugs caught in development (both via the dense oracle): the Loschmidt oscillates at the
+  full dispersion εₖ=2|d⃗| not |d⃗| (a missing factor of 2 in the per-mode frequency), and the
+  geometric-phase decomposition is φ^G = arg⟨u|U|u⟩ **+** Eₖt (a sign that, wrong, leaked a spurious
+  t-linear winding into ν_D). lint + tsc + build + 80/80 self-tests green.
 
 ## Session log
 
@@ -521,3 +594,28 @@ existing TFIM MPO and `QuantumState.entanglementEntropy` are exact.
   the way (mode-energy/mode-vector alignment in the quench phases; and G being only *real*-symmetric
   — its imaginary part is antisymmetric, Gᵀ=conj(G) — in the correlation-matrix products). In-browser
   suite 67 → 75 cases, all green; lint + tsc + build pass.
+- 2026-06-19 (claude/claude-opus-4-8): **Quantum Lab 9.0 — Dynamical Quantum Phase Transitions, the
+  XY model & periodic free fermions.** Turned the equilibrium, isotropic, open free-fermion engine
+  into the full non-equilibrium toolkit. Generalised the open-chain BdG solver to the **anisotropic
+  XY model** `solveXY(n,J,h,γ)` (the Ising chain is its γ=1 point; the only change is two
+  off-diagonals of R=A−B, and Rᵀ=A+B still holds so the SVD trick and every correlator/entropy carry
+  over untouched) — verified against exact diagonalisation of the dense XY Hamiltonian incl. the XX
+  point γ=0. Added a from-scratch **periodic momentum-space engine** (`xyChain.ts`): the chain
+  factorises into independent 2×2 Anderson-pseudospin modes d⃗(k)=(Jγ sin k, h−J cos k), dispersion
+  εₖ=2|d⃗|, ground-energy density (Pfeuty at γ=1), and the XY phase diagram. On it, the headline
+  result of the decade: the **dynamical quantum phase transition**. The Loschmidt return amplitude
+  factorises over modes, so the rate function l(t)=−lim(1/N)ln|⟨ψ₀|e^{−iH_f t}|ψ₀⟩|² develops
+  **non-analytic cusps** at the critical times tₙ*=(2n+1)π/εₖ* whenever the quench crosses the
+  critical point (a critical mode d⃗_i·d⃗_f=0 exists) — the exact finite-N rate (anti-periodic
+  momentum product) matched an **independent dense 2ⁿ time evolution to ~1e-14**. Built the integer
+  **dynamical topological order parameter** ν_D(t) (Budich–Heyl): the winding of the Pancharatnam
+  geometric phase φₖ^G=arg⟨u(0)|u(t)⟩+Eₖt across the Brillouin zone — 0 before the first cusp, jumping
+  0→1→2→3 at each, identically 0 for non-crossing quenches. Added exact **mutual information between
+  disjoint blocks** from the Majorana covariance matrix (I(A:Ā)=2S(L) to 1e-13; ~0 between separated
+  blocks in the paramagnet, 0.012 at criticality). New **Dynamics** tab (`DynamicsLab.tsx`): the DQPT
+  rate-function card (cusps + exact-dense overlay) and the DTOP card (integer step function + the
+  φₖ^G Brillouin-zone winding); the Free-Fermion lab gains an XY-anisotropy card (dispersion + phase
+  diagram) and a disjoint-block mutual-information decay card. Caught two real bugs via the dense
+  oracle along the way: the Loschmidt frequency is the full dispersion εₖ=2|d⃗| (a missing factor of
+  2), and the geometric-phase sign φ^G=arg⟨u|U|u⟩**+**Eₖt (wrong sign leaked a spurious t-linear
+  winding into ν_D). In-browser suite 72 → 80 cases, all green; lint + tsc + build pass.

@@ -24,10 +24,14 @@ import { tebdQuench, exactTFIM } from './tebd';
 import { tfimMPO, heisenbergMPO, exactGroundEnergyMPO, mpoToDense } from './MPO';
 import { runDMRG } from './dmrg';
 import {
-  solveTFIM, entropyProfile, pfeutyEnergyDensity,
-  thermalEnergyPerSite, centralCharge,
+  solveTFIM, solveXY, entropyProfile, pfeutyEnergyDensity,
+  thermalEnergyPerSite, centralCharge, blockEntropy, mutualInformation,
 } from './FreeFermion';
 import { ffQuench, exactQuenchDense } from './ffQuench';
+import {
+  loschmidtFiniteN, loschmidtDense, loschmidtRate, criticalModes,
+  criticalTimes, quenchCrosses, dtop, groundEnergyDensity,
+} from './xyChain';
 import { minWeightPerfectMatching, type Edge } from './surface/blossom';
 import { buildSurfaceCode, correctRound, logicalErrorRate, mulberry32 } from './surface/SurfaceCode';
 import { decodeMWPM, decodeUF } from './surface/decoder';
@@ -661,6 +665,97 @@ export function runTests(): TestResult[] {
     // half-chain entanglement from ≈0 — the quasiparticle light-cone.
     const lc = ffQuench(24, 1, 8, 1.0, 0.2, 24);
     add('Free fermions', 'global quench grows entanglement (light-cone)', lc.frames[0].entropy < 0.02 && lc.frames[24].entropy > lc.frames[0].entropy + 0.5, `S: ${lc.frames[0].entropy.toFixed(3)} → ${lc.frames[24].entropy.toFixed(2)}`);
+  }
+
+  // --- XY model, periodic free fermions & dynamical quantum phase transitions (9.0) ---
+  {
+    // solveXY at γ = 1 reduces EXACTLY to the Ising solveTFIM (energy + gap).
+    let wXY = 0;
+    for (const [n, h] of [[20, 0.7], [32, 1.3]] as [number, number][]) {
+      const a = solveXY(n, 1, h, 1), b = solveTFIM(n, 1, h);
+      wXY = Math.max(wXY, Math.abs(a.groundEnergy - b.groundEnergy), Math.abs(a.gap - b.gap));
+    }
+    add('XY & DQPT', 'solveXY(γ=1) reduces to the Ising solveTFIM', wXY < 1e-12, `max err ${wXY.toExponential(1)}`);
+
+    // Open XY ground energy vs an independent dense diagonalisation of the same Hamiltonian
+    //   H = −J Σ [ (1+γ)/2 XᵢXᵢ₊₁ + (1−γ)/2 YᵢYᵢ₊₁ ] − h Σ Zᵢ  (open boundaries).
+    const denseOpenXY = (n: number, J: number, h: number, g: number): number => {
+      const N = 1 << n;
+      const cxx = -J * (1 + g) / 2, cyy = -J * (1 - g) / 2;
+      const H: Complex[][] = Array.from({ length: N }, () => Array.from({ length: N }, () => C(0)));
+      for (let s = 0; s < N; s++) {
+        let diag = 0;
+        for (let i = 0; i < n; i++) diag += -h * (((s >> i) & 1) ? -1 : 1);
+        H[s][s] = H[s][s].add(C(diag));
+        for (let i = 0; i + 1 < n; i++) {
+          const f = s ^ (1 << i) ^ (1 << (i + 1));
+          const fi = ((s >> i) & 1) ? -1 : 1, fj = ((s >> (i + 1)) & 1) ? -1 : 1;
+          H[f][s] = H[f][s].add(C(cxx + cyy * -(fi * fj)));
+        }
+      }
+      const v = hermitianEig(H).values;
+      return Math.min(...v);
+    };
+    let wOpen = 0;
+    for (const [n, h, g] of [[6, 0.8, 0.5], [8, 1.4, 0.3], [6, 0.5, 0.0]] as [number, number, number][]) {
+      wOpen = Math.max(wOpen, Math.abs(solveXY(n, 1, h, g).groundEnergy - denseOpenXY(n, 1, h, g)));
+    }
+    add('XY & DQPT', 'open XY ground energy matches exact diagonalisation', wOpen < 1e-9, `max err ${wOpen.toExponential(1)}`);
+
+    // THE headline cross-check: the exact finite-N Loschmidt rate (anti-periodic momentum product)
+    // vs an independent dense 2ⁿ time evolution of the periodic XY chain.
+    let wL = 0;
+    const times = [0.3, 0.7, 1.0, 1.5, 2.0, 2.5, 3.0];
+    for (const [n, hi, hf, g] of [[6, 2, 0.5, 1], [8, 2, 0.5, 1], [8, 1.8, 0.6, 0.3], [6, 0.4, 1.6, 1]] as [number, number, number, number][]) {
+      const a = loschmidtFiniteN(n, 1, hi, hf, g, times);
+      const b = loschmidtDense(n, 1, hi, hf, g, times);
+      for (let i = 0; i < times.length; i++) wL = Math.max(wL, Math.abs(a[i] - b[i]));
+    }
+    add('XY & DQPT', 'Loschmidt return-rate matches exact dense evolution', wL < 1e-8, `max err ${wL.toExponential(1)}`);
+
+    // A DQPT occurs iff the quench crosses the critical point (a critical mode exists).
+    const cross = quenchCrosses(1, 2, 0.5, 1), noCross = quenchCrosses(1, 2, 1.4, 1);
+    add('XY & DQPT', 'DQPT ⇔ quench crosses the critical point', cross && !noCross && criticalModes(1, 2, 0.5, 1).length === 1, `crossing=${cross}, non-crossing=${noCross}`);
+
+    // The critical times are local maxima (cusps) of the rate function.
+    const ct = criticalTimes(1, 2, 0.5, 1, 7);
+    let cuspsOK = ct.length === 3;
+    for (const t of ct) {
+      const lm = loschmidtRate(1, 2, 0.5, 1, [t - 0.05, t, t + 0.05], 2000);
+      if (!(lm[1] > lm[0] && lm[1] > lm[2])) cuspsOK = false;
+    }
+    add('XY & DQPT', 'rate function has cusps exactly at the critical times', cuspsOK, `t* = ${ct.map((t) => t.toFixed(3)).join(', ')}`);
+
+    // The dynamical topological order parameter is an integer that jumps +1 at each DQPT,
+    // counting 1, 2, 3, …, and is identically 0 for a non-crossing quench.
+    let dtopOK = Math.abs(dtop(1, 2, 0.5, 1, 0.02).raw) < 1e-6;
+    for (let i = 0; i < ct.length; i++) {
+      const after = dtop(1, 2, 0.5, 1, ct[i] + 0.05).nu;
+      if (after !== i + 1) dtopOK = false;
+    }
+    let dtopZero = true;
+    for (const t of [0.5, 1.5, 3, 5, 7]) if (dtop(1, 2, 1.4, 1, t).nu !== 0) dtopZero = false;
+    add('XY & DQPT', 'dynamical topological order parameter ν_D jumps 0→1→2→3', dtopOK && dtopZero, dtopOK && dtopZero ? 'integer winding, +1 per DQPT' : 'mismatch');
+
+    // The infinite-chain ground-energy density agrees with the open-chain energy per site at large n.
+    let wE = 0;
+    for (const [h, g] of [[1.3, 1], [0.7, 0.5], [1.6, 0.4]] as [number, number][]) {
+      wE = Math.max(wE, Math.abs(groundEnergyDensity(1, h, g) - solveXY(240, 1, h, g).energyPerSite));
+    }
+    add('XY & DQPT', 'thermodynamic ground-energy density vs open chain', wE < 4e-3, `max err ${wE.toExponential(1)}`);
+
+    // Mutual information: non-negative, and for COMPLEMENTARY blocks I(A:B) = 2·S(L) (pure-state
+    // identity) — ties the disjoint-region entropy machinery to the verified contiguous blockEntropy.
+    const solMI = solveXY(16, 1, 1.0, 1);
+    const L = 6;
+    const A = Array.from({ length: L }, (_, i) => i);
+    const B = Array.from({ length: 16 - L }, (_, i) => L + i);
+    const Icomp = mutualInformation(solMI, A, B);
+    const id = Math.abs(Icomp - 2 * blockEntropy(solMI, L));
+    // And it decays: deep paramagnet ≈ 0 between two well-separated blocks, larger at criticality.
+    const Ipara = mutualInformation(solveXY(24, 1, 3.0, 1), [4, 5], [16, 17]);
+    const Icrit = mutualInformation(solveXY(24, 1, 1.0, 1), [4, 5], [16, 17]);
+    add('XY & DQPT', 'mutual information: I(A:Ā)=2S(L), ≥0, peaks at criticality', id < 1e-9 && Ipara >= 0 && Icrit > Ipara && Ipara < 1e-4, `id ${id.toExponential(1)}, para ${Ipara.toExponential(1)} < crit ${Icrit.toFixed(3)}`);
   }
 
   return r;

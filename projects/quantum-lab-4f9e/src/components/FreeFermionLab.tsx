@@ -1,7 +1,11 @@
 import { useMemo, useState } from 'react';
 import { motion } from 'framer-motion';
-import { solveTFIM, blockEntropy, pfeutyEnergyDensity, centralCharge } from '../quantum/FreeFermion';
+import {
+  solveTFIM, solveXY, blockEntropy, pfeutyEnergyDensity, centralCharge,
+  mutualInfoVsSeparation,
+} from '../quantum/FreeFermion';
 import { ffQuench, exactQuenchDense } from '../quantum/ffQuench';
+import { dispersion, groundEnergyDensity, transverseMagnetization } from '../quantum/xyChain';
 import { tfimMPO, exactGroundEnergyMPO } from '../quantum/MPO';
 
 /**
@@ -31,11 +35,169 @@ export default function FreeFermionLab() {
       </p>
 
       <SpectrumCard />
+      <XyCard />
       <PhaseCard />
+      <MutualInfoCard />
       <CentralChargeCard />
       <QuenchCard />
     </div>
   );
+}
+
+// --------------------------------------------------------------------------- XY anisotropy
+function XyCard() {
+  const [h, setH] = useState(1.0);
+  const [g, setG] = useState(0.5);
+  const data = useMemo(() => {
+    const disp = Array.from({ length: 80 }, (_, i) => {
+      const k = (i + 0.5) * Math.PI / 80;
+      return { k, e: dispersion(k, 1, h, g) };
+    });
+    const e0 = groundEnergyDensity(1, h, g);
+    const mz = transverseMagnetization(1, h, g);
+    const gap = solveXY(96, 1, h, g).gap;
+    return { disp, e0, mz, gap };
+  }, [h, g]);
+  return (
+    <Card title="The anisotropic XY model — beyond the Ising point" accent="#818cf8">
+      <p style={{ fontSize: 12, color: '#94a3b8', margin: '0 0 10px', lineHeight: 1.6 }}>
+        The transverse-field Ising chain is the <code style={{ color: '#67e8f9' }}>γ = 1</code> point of
+        a one-parameter family, the <b style={{ color: '#818cf8' }}>anisotropic XY model</b>{' '}
+        H = −Σ[(1+γ)/2 XX + (1−γ)/2 YY] − hΣZ. The Jordan–Wigner image is still quadratic — only the
+        pairing term changes — so the same SVD solves it for any γ. Its phase diagram has TWO critical
+        lines: the <b style={{ color: '#f472b6' }}>Ising transition h = 1</b> (any γ ≠ 0) and the{' '}
+        <b style={{ color: '#22d3ee' }}>anisotropy line γ = 0</b> for h &lt; 1 (the isotropic XX model,
+        a gapless critical phase).
+      </p>
+      <div style={{ display: 'flex', gap: 12, alignItems: 'center', marginBottom: 12, flexWrap: 'wrap' }}>
+        <Slider label="field h" min={0.05} max={2.5} step={0.05} value={h} onChange={setH} color="#4f46e5" accent="#818cf8" fmt={(v) => v.toFixed(2)} />
+        <Slider label="anisotropy γ" min={0} max={1} step={0.05} value={g} onChange={setG} color="#4f46e5" accent="#818cf8" fmt={(v) => v.toFixed(2)} />
+      </div>
+      <div style={{ display: 'flex', gap: 10, marginBottom: 12, flexWrap: 'wrap' }}>
+        <Metric label="energy / site e₀" value={data.e0.toFixed(5)} color="#818cf8" />
+        <Metric label="⟨Z⟩ magnetisation" value={data.mz.toFixed(4)} color="#67e8f9" />
+        <Metric label="gap (n=96)" value={data.gap.toFixed(4)} color={data.gap < 0.05 ? '#f472b6' : '#94a3b8'} />
+      </div>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+        <div>
+          <Label>Dispersion εₖ vs k</Label>
+          <DispersionPlot disp={data.disp} />
+        </div>
+        <div>
+          <Label>Phase diagram (h, γ) — you are here ●</Label>
+          <PhaseDiagram h={h} g={g} />
+        </div>
+      </div>
+    </Card>
+  );
+}
+
+// --------------------------------------------------------------------------- mutual information
+function MutualInfoCard() {
+  const [n, setN] = useState(48);
+  const [h, setH] = useState(1.0);
+  const [g, setG] = useState(1.0);
+  const [w, setW] = useState(2);
+  const pts = useMemo(() => {
+    const sol = solveXY(n, 1, h, g);
+    return mutualInfoVsSeparation(sol, w);
+  }, [n, h, g, w]);
+  const peak = pts.length ? Math.max(...pts.map((p) => p.I)) : 0;
+  return (
+    <Card title="Mutual information between disjoint blocks" accent="#34d399">
+      <p style={{ fontSize: 12, color: '#94a3b8', margin: '0 0 10px', lineHeight: 1.6 }}>
+        Two separated blocks A, B of width w. Their <b style={{ color: '#34d399' }}>mutual information</b>{' '}
+        I(A:B) = S_A + S_B − S_{'{A∪B}'} bounds <i>all</i> correlations between the regions — computed
+        exactly from the ground state&apos;s Majorana covariance matrix. Off criticality it{' '}
+        <b style={{ color: '#34d399' }}>decays exponentially</b> with the gap-set correlation length; at
+        the quantum critical point <b>h = 1</b> it decays only algebraically (a long-range echo of the
+        underlying CFT).
+      </p>
+      <div style={{ display: 'flex', gap: 12, alignItems: 'center', marginBottom: 12, flexWrap: 'wrap' }}>
+        <Slider label="sites n" min={16} max={96} value={n} onChange={setN} color="#059669" accent="#34d399" />
+        <Slider label="field h" min={0.1} max={2.5} step={0.05} value={h} onChange={setH} color="#059669" accent="#34d399" fmt={(v) => v.toFixed(2)} />
+        <Slider label="anisotropy γ" min={0.1} max={1} step={0.05} value={g} onChange={setG} color="#059669" accent="#34d399" fmt={(v) => v.toFixed(2)} />
+        <Slider label="block width w" min={1} max={4} value={w} onChange={setW} color="#059669" accent="#34d399" />
+      </div>
+      <div style={{ display: 'flex', gap: 10, marginBottom: 10, flexWrap: 'wrap' }}>
+        <Metric label="I(A:B) at d=1" value={pts.length ? pts[0].I.toFixed(4) : '—'} color="#34d399" />
+        <Metric label="peak I" value={peak.toFixed(4)} color="#67e8f9" />
+        <Metric label="regime" value={Math.abs(h - 1) < 0.06 ? 'critical' : h > 1 ? 'paramagnet' : 'ordered'} color="#a78bfa" />
+      </div>
+      <Label>I(A:B) vs block separation d (log axis) — straight line ⇒ exponential decay</Label>
+      <DecayPlot pts={pts} />
+    </Card>
+  );
+}
+
+function DispersionPlot({ disp }: { disp: { k: number; e: number }[] }) {
+  const wd = 270, ht = 120, pad = 30;
+  const eMax = Math.max(...disp.map((d) => d.e), 0.1) * 1.08;
+  const sx = (k: number) => pad + (k / Math.PI) * (wd - pad - 8);
+  const sy = (v: number) => 10 + (1 - v / eMax) * (ht - 28);
+  const path = disp.map((d, i) => `${i === 0 ? 'M' : 'L'}${sx(d.k).toFixed(1)},${sy(d.e).toFixed(1)}`).join(' ');
+  return (
+    <svg width="100%" viewBox={`0 0 ${wd} ${ht}`} style={{ background: 'rgba(2,6,23,0.5)', borderRadius: 6, border: '1px solid #1e293b' }}>
+      {[eMax, eMax / 2, 0].map((v, i) => (
+        <g key={i}><line x1={pad} y1={sy(v)} x2={wd - 8} y2={sy(v)} stroke="#1e293b" /><text x={pad - 3} y={sy(v) + 3} fontSize={7} fill="#475569" textAnchor="end">{v.toFixed(1)}</text></g>
+      ))}
+      <path d={path} fill="none" stroke="#818cf8" strokeWidth={1.8} />
+      <text x={pad} y={ht - 3} fontSize={7} fill="#475569">0</text>
+      <text x={wd - 8} y={ht - 3} fontSize={7} fill="#475569" textAnchor="end">π</text>
+    </svg>
+  );
+}
+
+function PhaseDiagram({ h, g }: { h: number; g: number }) {
+  const wd = 270, ht = 120, pad = 26;
+  const hMax = 2.5;
+  const sx = (gg: number) => pad + gg * (wd - pad - 8);
+  const sy = (hh: number) => ht - 22 - (hh / hMax) * (ht - 34);
+  return (
+    <svg width="100%" viewBox={`0 0 ${wd} ${ht}`} style={{ background: 'rgba(2,6,23,0.5)', borderRadius: 6, border: '1px solid #1e293b' }}>
+      {/* paramagnet shading h>1 */}
+      <rect x={sx(0)} y={sy(hMax)} width={wd - pad - 8} height={sy(1) - sy(hMax)} fill="rgba(244,114,182,0.06)" />
+      {/* Ising critical line h=1 */}
+      <line x1={sx(0)} y1={sy(1)} x2={sx(1)} y2={sy(1)} stroke="#f472b6" strokeWidth={1.6} />
+      {/* gamma=0 critical line for h<1 */}
+      <line x1={sx(0)} y1={sy(1)} x2={sx(0)} y2={sy(0)} stroke="#22d3ee" strokeWidth={1.6} />
+      <circle cx={sx(g)} cy={sy(Math.min(h, hMax))} r={3.4} fill="#fde047" stroke="#000" strokeWidth={0.5} />
+      <text x={sx(0.5)} y={sy(1.7)} fontSize={7} fill="#f472b6" textAnchor="middle">paramagnet</text>
+      <text x={sx(0.55)} y={sy(0.4)} fontSize={7} fill="#94a3b8" textAnchor="middle">ordered</text>
+      <text x={sx(1) - 2} y={ht - 3} fontSize={7} fill="#475569" textAnchor="end">γ=1</text>
+      <text x={sx(0) + 2} y={ht - 3} fontSize={7} fill="#475569">γ=0</text>
+      <text x={pad - 3} y={sy(1) + 2} fontSize={7} fill="#f472b6" textAnchor="end">h=1</text>
+    </svg>
+  );
+}
+
+function DecayPlot({ pts }: { pts: { d: number; I: number }[] }) {
+  const w = 540, h = 130, pad = 46;
+  if (pts.length === 0) return null;
+  const floor = 1e-7;
+  const ys = pts.map((p) => Math.log10(Math.max(p.I, floor)));
+  const yMax = Math.max(...ys, -1), yMin = Math.min(...ys, yMax - 1);
+  const xMax = Math.max(...pts.map((p) => p.d));
+  const sx = (d: number) => pad + ((d - 1) / (xMax - 1 || 1)) * (w - pad - 12);
+  const sy = (ly: number) => 12 + (1 - (ly - yMin) / (yMax - yMin || 1)) * (h - 34);
+  const path = pts.map((p, i) => `${i === 0 ? 'M' : 'L'}${sx(p.d).toFixed(1)},${sy(ys[i]).toFixed(1)}`).join(' ');
+  const yt = [yMax, (yMax + yMin) / 2, yMin];
+  return (
+    <svg width="100%" viewBox={`0 0 ${w} ${h}`} style={{ background: 'rgba(2,6,23,0.5)', borderRadius: 6, border: '1px solid #1e293b', marginBottom: 6 }}>
+      {yt.map((v, i) => (
+        <g key={i}><line x1={pad} y1={sy(v)} x2={w - 12} y2={sy(v)} stroke="#1e293b" /><text x={pad - 4} y={sy(v) + 3} fontSize={8} fill="#475569" textAnchor="end">10{sup(v)}</text></g>
+      ))}
+      <path d={path} fill="none" stroke="#34d399" strokeWidth={1.8} />
+      {pts.map((p, i) => <circle key={i} cx={sx(p.d)} cy={sy(ys[i])} r={2.1} fill="#34d399" />)}
+      <text x={w - 12} y={h - 4} fontSize={9} fill="#64748b" textAnchor="end">separation d</text>
+      <text x={pad - 4} y={9} fontSize={9} fill="#64748b" textAnchor="end">I(A:B)</text>
+    </svg>
+  );
+}
+function sup(v: number): string {
+  const n = Math.round(v);
+  const map: Record<string, string> = { '-': '⁻', '0': '⁰', '1': '¹', '2': '²', '3': '³', '4': '⁴', '5': '⁵', '6': '⁶', '7': '⁷', '8': '⁸', '9': '⁹' };
+  return String(n).split('').map((c) => map[c] || c).join('');
 }
 
 // --------------------------------------------------------------------------- Spectrum / energy

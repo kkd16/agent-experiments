@@ -16,14 +16,15 @@ import StabilizerLab from './components/StabilizerLab';
 import SurfaceLab from './components/SurfaceLab';
 import TensorLab from './components/TensorLab';
 import FreeFermionLab from './components/FreeFermionLab';
+import DynamicsLab from './components/DynamicsLab';
 import TestsPanel from './components/TestsPanel';
 import ExportPanel from './components/ExportPanel';
 import { schmidtDecompose } from './quantum/Schmidt';
 
-type Tab = 'builder' | 'algorithms' | 'variational' | 'stabilizer' | 'surface' | 'tensor' | 'freefermion' | 'tests' | 'about';
+type Tab = 'builder' | 'algorithms' | 'variational' | 'stabilizer' | 'surface' | 'tensor' | 'freefermion' | 'dynamics' | 'tests' | 'about';
 type VizTab = 'state' | 'probabilities' | 'bloch' | 'density' | 'measure';
 
-const PAGE_TABS: Tab[] = ['about', 'variational', 'stabilizer', 'surface', 'tensor', 'freefermion', 'tests'];
+const PAGE_TABS: Tab[] = ['about', 'variational', 'stabilizer', 'surface', 'tensor', 'freefermion', 'dynamics', 'tests'];
 
 // Parse a shared circuit from the URL hash (#c=…) once, before mount — sandbox-safe.
 function loadSharedCircuit(): { numQubits: number; ops: GateOp[] } | null {
@@ -135,7 +136,7 @@ export default function App() {
         </div>
 
         <nav style={{ display: 'flex', gap: 2, marginLeft: 'auto', flexWrap: 'wrap' }}>
-          {(['builder', 'algorithms', 'variational', 'stabilizer', 'surface', 'tensor', 'freefermion', 'tests', 'about'] as Tab[]).map((tab) => (
+          {(['builder', 'algorithms', 'variational', 'stabilizer', 'surface', 'tensor', 'freefermion', 'dynamics', 'tests', 'about'] as Tab[]).map((tab) => (
             <button
               key={tab}
               onClick={() => setActiveTab(tab)}
@@ -156,6 +157,7 @@ export default function App() {
                 : tab === 'variational' ? '🧬 Variational' : tab === 'stabilizer' ? '🧱 Stabilizer'
                 : tab === 'surface' ? '🔲 Surface' : tab === 'tensor' ? '🕸️ Tensor'
                 : tab === 'freefermion' ? '🪢 Free Fermion'
+                : tab === 'dynamics' ? '🌀 Dynamics'
                 : tab === 'tests' ? '🧪 Tests' : '📖 About'}
             </button>
           ))}
@@ -216,6 +218,7 @@ export default function App() {
               {activeTab === 'surface' && <SurfaceLab />}
               {activeTab === 'tensor' && <TensorLab />}
               {activeTab === 'freefermion' && <FreeFermionLab />}
+              {activeTab === 'dynamics' && <DynamicsLab />}
               {activeTab === 'tests' && <TestsPanel />}
             </motion.div>
           ) : (
@@ -601,8 +604,12 @@ function AboutPage() {
           content: 'The transverse-field Ising chain is secretly free: the Jordan–Wigner transform maps the spins onto non-interacting fermions, turning the 2ⁿ problem into a quadratic Hamiltonian that diagonalises EXACTLY in O(n³). The Lieb–Schultz–Mattis solution is, remarkably, just a singular-value decomposition of an n×n matrix — so the lab\'s from-scratch complex SVD does the work, giving the Bogoliubov single-particle spectrum and the ground energy E₀ = −½ΣΛ_k. This is an exact oracle: it reproduces the lab\'s own TFIM ground energy from exact diagonalisation and DMRG to machine precision, and then runs far past them — to hundreds of sites. The quasiparticle gap 2|J−h| closes at the quantum critical point h=J, where the half-chain entanglement peaks. Block entanglement comes from the ground state\'s Majorana covariance matrix (Peschel), and a Calabrese–Cardy fit of S(L) reads off the Ising-CFT central charge c=½ — the universal number naming the universality class — straight from the entanglement of an exactly-solved critical chain. The ground energy per site matches the closed-form Pfeuty thermodynamic integral. And a real-time quench (ground state at h_i, evolved under h_f) stays Gaussian forever, so its fermionic correlation matrices evolve in O(n³) per step — reproducing the entanglement light-cone (linear growth then saturation) at sizes whose Schmidt rank 2^S no MPS or exact simulator could ever store, with every small-n step checked against exact dense time evolution.',
         },
         {
+          title: 'Dynamical Quantum Phase Transitions & the XY Model',
+          content: 'The free-fermion engine, generalised to the anisotropic XY chain (the Ising point is γ=1) and solved in momentum space with periodic boundaries, makes the headline non-equilibrium phenomenon of the last decade exactly tractable. Quench the field across the critical point and the Loschmidt return-rate function l(t) = −lim (1/N) ln|⟨ψ₀|e^{−iH_f t}|ψ₀⟩|² develops non-analytic cusps in real time — a dynamical quantum phase transition (Heyl–Polkovnikov–Kehrein), the dynamical analogue of a free-energy singularity, where Fisher zeros of the boundary partition function cross the time axis at the critical times tₙ*=(2n+1)π/εₖ*. An integer dynamical topological order parameter ν_D(t) — the winding of the Pancharatnam geometric phase across the Brillouin zone (Budich–Heyl) — is 0 before the first cusp and jumps by exactly +1 at each one. Everything is cross-checked to machine precision against an independent dense 2ⁿ time evolution. The Free-Fermion lab also gains the XY phase diagram (the Ising line h=1 and the anisotropy line γ=0) and the exact mutual information between disjoint blocks, which decays exponentially off-criticality and algebraically at h=1.',
+        },
+        {
           title: 'Phase Estimation & Tooling',
-          content: 'Quantum Phase Estimation recovers eigenphases via phase kickback + inverse QFT. Circuits export to OpenQASM 2.0 (Qiskit/IBM-compatible) and JSON, with shareable URLs, depth/gate metrics, and a 75-case in-browser self-test suite proving the engine correct against exact references — including the free-fermion TFIM vs exact diagonalisation and the Pfeuty thermodynamic limit, the recovered central charge c=½, the quench vs exact dense evolution, DMRG vs exact diagonalisation, the surface-code MWPM decoder vs brute-force matching, the Union-Find decoder vs MWPM, and both the code-capacity and phenomenological QEC threshold crossings.',
+          content: 'Quantum Phase Estimation recovers eigenphases via phase kickback + inverse QFT. Circuits export to OpenQASM 2.0 (Qiskit/IBM-compatible) and JSON, with shareable URLs, depth/gate metrics, and an 80-case in-browser self-test suite proving the engine correct against exact references — including the free-fermion TFIM vs exact diagonalisation and the Pfeuty thermodynamic limit, the recovered central charge c=½, the quench vs exact dense evolution, the anisotropic-XY ground energy and the dynamical phase transition (Loschmidt rate + topological order parameter) vs exact dense time evolution, DMRG vs exact diagonalisation, the surface-code MWPM decoder vs brute-force matching, the Union-Find decoder vs MWPM, and both the code-capacity and phenomenological QEC threshold crossings.',
         },
       ].map(({ title, content }, i) => (
         <motion.div
