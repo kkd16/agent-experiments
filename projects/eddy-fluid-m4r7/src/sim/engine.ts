@@ -264,6 +264,8 @@ export class FluidEngine {
         ? { x: this.particles.x, y: this.particles.y, count: this.particles.capacity }
         : undefined,
       licPhase: this.licPhase,
+      ftleTime: this.settings.ftleTime,
+      ftleBackward: this.settings.ftleBackward,
       probe: probeMark,
     });
 

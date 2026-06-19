@@ -214,6 +214,19 @@ export function Controls(props: Props) {
           onChange={(dyeDissipation) => onParam({ dyeDissipation })}
         />
         <Slider
+          label="Dye diffusion κₛ (Schmidt)"
+          value={s.params.dyeDiffusion}
+          min={0}
+          max={0.0002}
+          step={0.000005}
+          fmt={(v) =>
+            v === 0
+              ? 'off'
+              : `${v.toExponential(1)} · Sc≈${s.params.viscosity > 0 ? (s.params.viscosity / v).toFixed(1) : '∞'}`
+          }
+          onChange={(dyeDiffusion) => onParam({ dyeDiffusion })}
+        />
+        <Slider
           label="Velocity damping"
           value={s.params.velocityDissipation}
           min={0}
@@ -368,8 +381,36 @@ export function Controls(props: Props) {
             { value: 'lic', label: 'LIC' },
             { value: 'schlieren', label: 'Schlieren' },
             { value: 'qcrit', label: 'Q-vortex' },
+            { value: 'ftle', label: 'LCS' },
           ]}
         />
+        {s.mode === 'ftle' && (
+          <>
+            <Segmented<'fwd' | 'bwd'>
+              value={s.ftleBackward ? 'bwd' : 'fwd'}
+              onChange={(d) => onChange({ ftleBackward: d === 'bwd' })}
+              options={[
+                { value: 'bwd', label: 'Attracting (backward)' },
+                { value: 'fwd', label: 'Repelling (forward)' },
+              ]}
+            />
+            <Slider
+              label="Integration time τ"
+              value={s.ftleTime}
+              min={0.2}
+              max={3}
+              step={0.1}
+              fmt={(v) => `${v.toFixed(1)} s`}
+              onChange={(ftleTime) => onChange({ ftleTime })}
+            />
+            <p className="scene-blurb">
+              <strong>Lagrangian Coherent Structures.</strong> Each pixel is the finite-time Lyapunov
+              exponent — how fast nearby tracers separate over τ. Bright ridges are transport barriers.{' '}
+              <strong>Attracting</strong> (backward-time) ridges are the filaments where dye collects;{' '}
+              <strong>repelling</strong> (forward-time) ridges are the watersheds it is flung from.
+            </p>
+          </>
+        )}
         {s.mode !== 'dye' && (
           <div className="colormaps">
             {(Object.keys(COLORMAPS) as ColorMapName[]).map((c) => (

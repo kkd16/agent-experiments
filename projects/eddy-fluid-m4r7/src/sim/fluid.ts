@@ -14,7 +14,18 @@
 
 import { Multigrid } from './multigrid';
 
-export type Boundary = 0 | 1 | 2; // 0 = scalar, 1 = u (x-velocity), 2 = v (y-velocity)
+// Boundary codes for `setBnd`: 0 = scalar (dye/temp/divergence), 1 = u
+// (x-velocity), 2 = v (y-velocity), 3 = pressure (so open *outflow* faces can take
+// a Dirichlet p = 0 while walls/inflow stay Neumann).
+export type Boundary = 0 | 1 | 2 | 3;
+
+export type Side = 'left' | 'right' | 'top' | 'bottom';
+/** A domain edge is a closed `wall`, an `inflow` (velocity imposed elsewhere), or
+ *  an `outflow` (open: zero-gradient velocity + Dirichlet pressure that lets the
+ *  flow leave the box instead of recirculating). */
+export type EdgeKind = 'wall' | 'inflow' | 'outflow';
+export type Boundaries = Record<Side, EdgeKind>;
+const CLOSED_BOX: Boundaries = { left: 'wall', right: 'wall', top: 'wall', bottom: 'wall' };
 
 export interface FluidParams {
   /** Kinematic viscosity. 0 = inviscid (crisp, turbulent). */
@@ -76,6 +87,14 @@ export interface FluidParams {
    * and sinks. Distinct from the thermal Boussinesq `buoyancy` term.
    */
   smokeBuoyancy: number;
+  /**
+   * Scalar (dye) diffusivity κ_s — molecular diffusion of the dye, decoupled from
+   * the momentum viscosity ν. Their ratio is the **Schmidt number** Sc = ν/κ_s,
+   * which controls how sharp the scalar's filaments stay relative to the velocity
+   * field: high Sc (κ_s → 0) lets ink fold into ever-finer streaks, low Sc blurs
+   * it. 0 = no diffusion (only numerical dissipation acts on the dye).
+   */
+  dyeDiffusion: number;
 }
 
 export const DEFAULT_PARAMS: FluidParams = {
@@ -96,6 +115,7 @@ export const DEFAULT_PARAMS: FluidParams = {
   ignition: 0.5,
   heatRelease: 2.5,
   smokeBuoyancy: 0,
+  dyeDiffusion: 0,
 };
 
 export class FluidSolver {
@@ -142,6 +162,14 @@ export class FluidSolver {
 
   // Obstacle mask. solid[i] !== 0 means the cell is a wall.
   solid: Uint8Array;
+
+  // Domain-edge conditions. Default is a fully closed box (reflective walls),
+  // identical to the original behaviour; a scene can open an edge to outflow so
+  // the wake leaves the domain (a true channel) instead of recirculating. Open
+  // boundaries are supported on the SOR projection (`project`), which the open
+  // scenes select.
+  boundaries: Boundaries = { ...CLOSED_BOX };
+  private anyOpen = false;
 
   // Geometric-multigrid hierarchy, built lazily the first time the `'mg'` or
   // `'mgcg'` solver is used (so the SOR/CG paths pay nothing for it).
@@ -211,6 +239,18 @@ export class FluidSolver {
     this.clearSolids();
     this.clearTemperature();
     this.clearFuel();
+    this.boundaries = { ...CLOSED_BOX };
+    this.anyOpen = false;
+  }
+
+  /** Set the domain-edge conditions (e.g. open the right edge to outflow). */
+  setBoundaries(b: Partial<Boundaries>): void {
+    this.boundaries = { ...this.boundaries, ...b };
+    this.anyOpen =
+      this.boundaries.left !== 'wall' ||
+      this.boundaries.right !== 'wall' ||
+      this.boundaries.top !== 'wall' ||
+      this.boundaries.bottom !== 'wall';
   }
 
   /** Deposit dye + impulse at grid cell (i, j) within a soft radius. */
@@ -325,13 +365,37 @@ export class FluidSolver {
   private setBnd(bnd: Boundary, x: Float32Array): void {
     const N = this.N;
     const IX = (i: number, j: number) => i + (N + 2) * j;
+    const b = this.boundaries;
 
-    // Domain walls: reflect the normal velocity component, copy others.
-    for (let i = 1; i <= N; i++) {
-      x[IX(0, i)] = bnd === 1 ? -x[IX(1, i)] : x[IX(1, i)];
-      x[IX(N + 1, i)] = bnd === 1 ? -x[IX(N, i)] : x[IX(N, i)];
-      x[IX(i, 0)] = bnd === 2 ? -x[IX(i, 1)] : x[IX(i, 1)];
-      x[IX(i, N + 1)] = bnd === 2 ? -x[IX(i, N)] : x[IX(i, N)];
+    if (!this.anyOpen) {
+      // Closed box (the default fast path): reflect the normal velocity component
+      // at every wall, copy everything else (Neumann). Pressure (bnd 3) ≡ scalar.
+      for (let i = 1; i <= N; i++) {
+        x[IX(0, i)] = bnd === 1 ? -x[IX(1, i)] : x[IX(1, i)];
+        x[IX(N + 1, i)] = bnd === 1 ? -x[IX(N, i)] : x[IX(N, i)];
+        x[IX(i, 0)] = bnd === 2 ? -x[IX(i, 1)] : x[IX(i, 1)];
+        x[IX(i, N + 1)] = bnd === 2 ? -x[IX(i, N)] : x[IX(i, N)];
+      }
+    } else {
+      // Open-aware ghosts. For a given edge with inward neighbour value `inner`:
+      //  - velocity *normal* to the edge: −inner at a wall (no penetration),
+      //    +inner at an open edge (zero-gradient, so flow can enter/leave);
+      //  - pressure (bnd 3): −inner at an *outflow* edge (Dirichlet p = 0 at the
+      //    face, which lets the box pass a net through-flow), +inner otherwise
+      //    (Neumann at walls and inflow);
+      //  - tangential velocity & passive scalars: +inner (Neumann) everywhere.
+      const ghost = (axis: 1 | 2, side: Side, inner: number): number => {
+        const kind = b[side];
+        if (bnd === axis) return kind === 'wall' ? -inner : inner;
+        if (bnd === 3) return kind === 'outflow' ? -inner : inner;
+        return inner;
+      };
+      for (let i = 1; i <= N; i++) {
+        x[IX(0, i)] = ghost(1, 'left', x[IX(1, i)]);
+        x[IX(N + 1, i)] = ghost(1, 'right', x[IX(N, i)]);
+        x[IX(i, 0)] = ghost(2, 'bottom', x[IX(i, 1)]);
+        x[IX(i, N + 1)] = ghost(2, 'top', x[IX(i, N)]);
+      }
     }
     // Corners average their two edge neighbours.
     x[IX(0, 0)] = 0.5 * (x[IX(1, 0)] + x[IX(0, 1)]);
@@ -554,9 +618,12 @@ export class FluidSolver {
         p[idx] = 0;
       }
     }
+    // Pressure boundary code: 3 (open-aware: Dirichlet at outflow) when any edge is
+    // open, else 0 (pure Neumann) — identical to the original closed-box solve.
+    const pb: Boundary = this.anyOpen ? 3 : 0;
     this.setBnd(0, div);
-    this.setBnd(0, p);
-    this.linSolve(0, p, div, 1, 4, iters, omega);
+    this.setBnd(pb, p);
+    this.linSolve(pb, p, div, 1, 4, iters, omega);
 
     for (let j = 1; j <= N; j++) {
       for (let i = 1; i <= N; i++) {
@@ -1121,6 +1188,19 @@ export class FluidSolver {
     advectDye(0, this.r, this.r0);
     advectDye(0, this.g, this.g0);
     advectDye(0, this.b, this.b0);
+
+    // Scalar (molecular) diffusion of the dye — the Schmidt-number physics. Solved
+    // implicitly on the same red-black stencil as heat/viscosity, so it is stable
+    // for any κ_s and conserves total dye under insulating walls.
+    const dyeDiffusion = params.dyeDiffusion ?? 0;
+    if (dyeDiffusion > 0) {
+      this.r0.set(this.r);
+      this.diffuse(0, this.r, this.r0, dyeDiffusion, dt, iterations, omega);
+      this.g0.set(this.g);
+      this.diffuse(0, this.g, this.g0, dyeDiffusion, dt, iterations, omega);
+      this.b0.set(this.b);
+      this.diffuse(0, this.b, this.b0, dyeDiffusion, dt, iterations, omega);
+    }
 
     if (dyeDissipation > 0) {
       const decay = Math.max(0, 1 - dyeDissipation * dt);

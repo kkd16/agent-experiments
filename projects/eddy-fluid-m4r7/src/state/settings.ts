@@ -24,6 +24,10 @@ export interface Settings {
   brushRadius: number;
   forceScale: number;
   sceneId: string;
+  /** FTLE/LCS integration horizon (seconds) for the `ftle` render mode. */
+  ftleTime: number;
+  /** Integrate the FTLE flow map backward (attracting LCS) instead of forward. */
+  ftleBackward: boolean;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -41,6 +45,8 @@ export const DEFAULT_SETTINGS: Settings = {
   brushRadius: 4,
   forceScale: 1,
   sceneId: 'blank',
+  ftleTime: 1.2,
+  ftleBackward: true,
 };
 
 const KEY = 'eddy-fluid:settings:v1';
