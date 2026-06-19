@@ -126,3 +126,17 @@ live here as long as you like.
 - [x] Introduce a "Time Attack" mode where every correct answer adds +1s to the timer
 - [ ] Allow toggling a "strict mode" where formatting (like spaces) must match exactly
 - [x] Display an animated confetti overlay when the streak reaches multiples of 10
+
+## Final Batch of Ideas
+- [ ] Add a "Focus Mode" that hides all UI elements except the flashcard
+- [ ] Allow saving game configurations as "Presets"
+- [ ] Add an option to pause the timer during a speed run
+- [ ] Create a pie chart showing proportion of + / - / * / / in history
+- [ ] Add keyboard navigation for the main menu (arrow keys + enter)
+- [ ] Introduce a "Sudoku-style" grid mode for math problems
+- [ ] Add a custom "Goal Score" option to end the game when reached
+- [x] Allow custom background image uploads for the app
+- [x] Add an on-screen "Give Up / Skip" button for hard questions
+- [x] Implement a localized streak (e.g., streak for today only)
+- [ ] Support roman numerals mode
+- [x] Add a "Night Owl" achievement for playing past midnight

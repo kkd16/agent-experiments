@@ -274,6 +274,9 @@ function App() {
   const [scoreBump, setScoreBump] = useState<boolean>(false);
 
   const [streak, setStreak] = useState<number>(getInitialStreak());
+  const [todayStreak, setTodayStreak] = useState<number>(0);
+  const [nightOwlUnlocked, setNightOwlUnlocked] = useState<boolean>(() => { try { return window.localStorage.getItem('mathFlashcardsNightOwl') === 'true'; } catch { return false; } });
+  const [bgImage, setBgImage] = useState<string>(() => { try { return window.localStorage.getItem('mathFlashcardsBgImage') || ''; } catch { return ''; } });
   const [highScore, setHighScore] = useState<number>(getInitialHighScore());
   const [bestHistoricalCombo, setBestHistoricalCombo] = useState<number>(getInitialBestCombo());
 
@@ -364,6 +367,19 @@ function App() {
     }
   }, [timeLeft, isSpeedRunActive, gameMode, startTime]);
 
+  const handleBgImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      const reader = new FileReader();
+      reader.onload = (event) => {
+        const url = event.target?.result as string;
+        setBgImage(url);
+        try { window.localStorage.setItem('mathFlashcardsBgImage', url); } catch(e) { console.error(e); }
+      };
+      reader.readAsDataURL(file);
+    }
+  };
+
   const updateBgColor = (color: string) => {
     setBgColor(color);
     try {
@@ -430,6 +446,18 @@ function App() {
     }
     return () => clearInterval(timerId);
   }, [isSpeedRunActive, gameMode, timeLeft]);
+
+  const handleGiveUp = () => {
+    const correctAns = operation === '+' ? num1 + num2 : operation === '-' ? num1 - num2 : operation === '*' ? num1 * num2 : Math.floor(num1 / num2);
+    const newHistoryItem: HistoryItem = { num1, num2, operation, userAnswer: 'Skipped', correctAnswer: correctAns, isCorrect: false };
+    setHistory(prev => [newHistoryItem, ...prev].slice(0, 100));
+    setStreak(0);
+    setTodayStreak(0);
+    if (soundEnabled) playSound('incorrect');
+    setMessage(`Skipped! Answer was ${correctAns}`);
+    setAnswerStatus('incorrect');
+    setTimeout(() => { generateProblem(); setAnswerStatus(null); }, 1000);
+  };
 
   const generateProblem = useCallback(() => {
     const { n1, n2, selectedOp } = generateRandomProblem(difficulty, allowedOperations, allowNegatives);
@@ -538,6 +566,11 @@ function App() {
   };
 
   const startSpeedRun = () => {
+    const hour = new Date().getHours();
+    if (hour >= 0 && hour < 4 && !nightOwlUnlocked) {
+      setNightOwlUnlocked(true);
+      try { window.localStorage.setItem('mathFlashcardsNightOwl', 'true'); } catch(e) { console.error(e); }
+    }
     setScore(0);
     updateStreak(0);
     if (gameMode === 'time' || gameMode === 'timeAttack') {
@@ -605,7 +638,7 @@ function App() {
       setScoreBump(true);
       setTimeout(() => setScoreBump(false), 400);
 
-      const newStreak = streak + 1;
+      const newStreak = streak + 1; setTodayStreak(ts => ts + 1);
       updateStreak(newStreak);
 
       if (isSpeedRunActive && gameMode === 'timeAttack') {
@@ -747,10 +780,10 @@ function App() {
   };
 
   return (
-    <div className={`app-wrapper ${theme} font-size-${accessibilityFontSize}`} style={{ backgroundColor: theme === 'light' && bgColor ? bgColor : undefined }}>
+    <div className={`app-wrapper ${theme} font-size-${accessibilityFontSize}`} style={{ backgroundColor: theme === 'light' && bgColor ? bgColor : undefined, backgroundImage: bgImage ? `url(${bgImage})` : 'none', backgroundSize: 'cover', backgroundPosition: 'center' }}>
     <div className={`app-container ${theme}`}>
       <div className="header-top">
-        <h1>Math Flashcards</h1>
+        <h1>Math Flashcards {nightOwlUnlocked && <span title="Night Owl">🦉</span>}</h1>
         <div>
           <button onClick={toggleTheme} className="theme-toggle" style={{ marginRight: '0.5rem' }}>
             {theme === 'light' ? '🌙 Dark' : '☀️ Light'}
@@ -769,6 +802,7 @@ function App() {
 
 
       <div className="color-picker" style={{ marginBottom: '1rem', display: 'flex', gap: '0.5rem', justifyContent: 'center' }}>
+        <label style={{fontSize: '0.8rem', marginRight: '1rem'}}>BG Image: <input type="file" accept="image/*" onChange={handleBgImageUpload} style={{width: '120px'}}/></label>
         <span style={{ alignSelf: 'center', fontSize: '0.9rem' }}>Background:</span>
         <button className="color-btn" style={{ backgroundColor: '#f0f4f8' }} onClick={() => updateBgColor('#f0f4f8')} title="Default"></button>
         <button className="color-btn" style={{ backgroundColor: '#e8f5e9' }} onClick={() => updateBgColor('#e8f5e9')} title="Light Green"></button>
@@ -784,7 +818,7 @@ function App() {
           <div className="stat">Score: <span className={scoreBump ? "score-bump" : ""}>{score}</span></div>
           <div className="stat" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
             <div>
-              Streak: {streak} 🔥
+              Streak: {streak} 🔥 | Today: {todayStreak}
               {streak >= 10 ? ' (x3)' : (streak >= 5 ? ' (x2)' : '')}
               <button onClick={resetStreak} className="reset-btn" title="Reset Streak" disabled={isSpeedRunActive}>↺</button>
             </div>
@@ -1055,7 +1089,7 @@ function App() {
       {message && <div className={`message ${message === 'Correct!' ? 'success' : (message.includes('Time') ? 'info' : 'error')}`}>{message}</div>}
       {streakMessage && <div className="message" style={{color: '#9b59b6', animation: 'pulse 1s infinite'}}>{streakMessage}</div>}
 
-      <button type="button" onClick={generateProblem} className="next-button" disabled={isSpeedRunActive && ((gameMode === 'time' || gameMode === 'timeAttack') ? timeLeft === 0 : (gameMode === 'questions' ? questionsAnswered >= questionLimit : false))}>Skip / Next Problem</button>
+      <button type="button" onClick={handleGiveUp} className="next-button" disabled={isSpeedRunActive && ((gameMode === 'time' || gameMode === 'timeAttack') ? timeLeft === 0 : (gameMode === 'questions' ? questionsAnswered >= questionLimit : false))}>Give Up / Skip</button>
 
       {showSummary && (
         <div className="summary-modal-overlay">
