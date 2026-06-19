@@ -234,7 +234,8 @@ export function OptPanel({ comp }: { comp: Compilation }) {
         <b>Pipeline:</b>{comp.level >= 2 ? ' tail-call → loop → function inlining (pre-SSA) → ' : ' '}
         copy-propagation → sparse conditional constant propagation → devirtualization →
         {comp.level >= 2 ? ' full loop unrolling (induction-variable + trip-count analysis) →' : ''}
-        {' '}if-conversion → strength reduction →
+        {' '}if-conversion → strength reduction (incl. division-by-constant) → memory optimization
+        (alias-based store→load forwarding, redundant-load &amp; dead-store elimination) →
         {comp.level >= 2 ? ' global value numbering (CSE) →' : ''} algebraic simplification →
         {comp.level >= 2 ? ' loop-invariant code motion →' : ''} dead-code elimination → CFG
         simplification (block coalescing), iterated to a fixed point
@@ -533,8 +534,9 @@ export function VerifyPanel() {
         (wrapping arithmetic, signed div/rem, shifts, floats &amp; ∞, casts, inlining, LICM, <b>loop unrolling</b>
         (counted/nested/reverse-step/<code>long</code> IVs, plus the loops that must <em>not</em> unroll), globals, ternary,
         compound assignment, the full <b>string runtime</b>: literals, concat, equality, indexing, str()/char()…,
-        the <b>transcendental math library</b> (exp/ln/sin/cos/pow/…, a shared Strata kernel) and the <b>f32</b>
-        single-precision type)
+        the <b>transcendental math library</b> (exp/ln/sin/cos/pow/…, a shared Strata kernel), the <b>f32</b>
+        single-precision type, and <b>memory optimization</b> (store→load forwarding, redundant-load &amp;
+        dead/silent-store elimination — with the aliasing, call-barrier and branch-merge cases that must stay conservative))
         — is compiled at -O0…-O3, executed as WebAssembly, and its output compared to the reference interpreter.
         Identical output at every level is the proof that each optimization — and the string runtime, which is itself
         written in Strata and compiled the same way — is sound.

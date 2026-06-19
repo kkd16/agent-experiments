@@ -1726,4 +1726,155 @@ fn main(){
   digits(0); digits(7); digits(100); digits(2024); digits(-98765);
 }`,
   },
+
+  // --- memory optimization: store→load forwarding · RLE · DSE ---------------
+  {
+    // A read-modify-write chain on one struct field: every load after the first
+    // store forwards the stored value, and only the final store survives. The
+    // printed values must be unchanged at every level.
+    name: 'mem-forward-chain',
+    source: `struct Box { v: long; }
+fn main(){
+  let b = Box(0L);
+  b.v = b.v + 1L;     print(b.v);
+  b.v = b.v + 10L;    print(b.v);
+  b.v = b.v * 3L;     print(b.v);
+  b.v = b.v - 7L;     print(b.v);
+  print(b.v + b.v);   // two forwarded loads of the same field
+}`,
+  },
+  {
+    // Dead-store elimination: each field is constructed, then overwritten before
+    // any read. The early stores are dead; the observed values are the last ones.
+    name: 'mem-dead-store',
+    source: `struct P { x: int; y: int; z: int; }
+fn main(){
+  let p = P(1, 2, 3);   // these three stores are all dead ...
+  p.x = 10;             // ... overwritten here ...
+  p.y = 20;
+  p.z = 30;
+  p.x = p.x + p.y + p.z; // load each (forwarded), store x
+  print(p.x); print(p.y); print(p.z);
+}`,
+  },
+  {
+    // Redundant-load elimination across reuse of the same handle, including a
+    // mixed-type struct (int / long / float / bool fields).
+    name: 'mem-rle-mixed',
+    source: `struct M { i: int; l: long; f: float; b: bool; }
+fn score(m: M) -> float {
+  // each field read twice — RLE should keep one load apiece
+  let a = float(m.i) + float(m.i);
+  let c = float(m.l) - float(m.l);
+  let d = m.f * m.f;
+  let e = m.b;
+  return a + c + d + (e ? 1.0 : 0.0);
+}
+fn main(){
+  let m = M(5, 9L, 2.5, true);
+  print(str(score(m)));
+  print(str(score(m)));
+}`,
+  },
+  {
+    // Aliasing across DISTINCT bases must stay correct: writes to one struct must
+    // never be forwarded across a write to another. The interpreter (objects) and
+    // the wasm (flat memory) agree only if the pass is conservative here.
+    name: 'mem-distinct-bases',
+    source: `struct C { v: int; }
+fn main(){
+  let a = C(100);
+  let b = C(200);
+  a.v = a.v + 1;   // store a.v
+  b.v = b.v + 2;   // store b.v  (different base)
+  a.v = a.v + b.v; // load a.v + load b.v  -> a.v = 101 + 202 = 303
+  print(a.v); print(b.v);
+}`,
+  },
+  {
+    // A call between a store and a load is a memory barrier: the callee might read
+    // OR write the object, so the store is not dead and the load must re-read.
+    // `tick` is recursive so it is not inlined away.
+    name: 'mem-call-barrier',
+    source: `struct C { v: int; }
+fn tick(c: C, n: int) { if (n > 0) { c.v = c.v + 1; tick(c, n - 1); } }
+fn main(){
+  let c = C(0);
+  c.v = 5;        // store
+  tick(c, 3);     // mutates c.v through a call — must observe 5, then write 8
+  print(c.v);     // re-load after the call -> 8
+  c.v = c.v + 100;
+  print(c.v);
+}`,
+  },
+  {
+    // Array element aliasing: a[i] and a[j] may be the same cell at run time, so a
+    // store to a[j] must kill any forwarded value for a[i]. Exercised with i==j
+    // and i!=j so a wrong forward would print the wrong number.
+    name: 'mem-array-alias',
+    source: `fn probe(i: int, j: int) -> int {
+  let a = int_array(4);
+  a[0] = 0; a[1] = 0; a[2] = 0; a[3] = 0;
+  a[i] = 7;       // store a[i]
+  a[j] = 9;       // store a[j] — aliases a[i] iff i==j
+  return a[i];    // must re-load: 9 when i==j, else 7
+}
+fn main(){
+  print(probe(1, 1));   // alias  -> 9
+  print(probe(1, 2));   // no alias-> 7
+  print(probe(3, 3));   // alias  -> 9
+  print(probe(0, 3));   // no alias-> 7
+}`,
+  },
+  {
+    // Cross-block forwarding: a value stored before a branch is still forwardable
+    // at a merge only when both arms agree. Here the field is re-stored in only
+    // one arm, so the merge must NOT forward a stale value.
+    name: 'mem-branch-merge',
+    source: `struct B { v: int; }
+fn pick(k: int) -> int {
+  let b = B(0);
+  b.v = 11;
+  if (k > 0) { b.v = 22; }   // only one arm overwrites
+  return b.v;                 // 22 if k>0 else 11
+}
+fn main(){
+  print(pick(-1)); print(pick(1)); print(pick(0));
+}`,
+  },
+  {
+    // Same-cell forwarding inside a loop body, plus a redundant load of an array
+    // element that is written and immediately read with the same index.
+    name: 'mem-loop-body',
+    source: `fn run(n: int) -> int {
+  let a = int_array(8);
+  let i = 0;
+  while (i < n) {
+    a[i] = i * i;       // store a[i]
+    a[i] = a[i] + 1;    // load a[i] (forward), store a[i]
+    i = i + 1;
+  }
+  let s = 0;
+  let j = 0;
+  while (j < n) { s = s + a[j]; j = j + 1; }
+  return s;
+}
+fn main(){ print(run(0)); print(run(1)); print(run(6)); }`,
+  },
+  {
+    // Silent (redundant) store elimination: writing a field the value it already
+    // holds is a no-op. The self-assignments and the no-op read-modify-writes must
+    // vanish without changing any printed value.
+    name: 'mem-silent-store',
+    source: `struct S { a: int; b: long; }
+fn main(){
+  let s = S(7, 100L);
+  s.a = s.a;          // silent: a already holds its value
+  s.b = s.b + 0L;     // folds to s.b = s.b -> silent after SCCP
+  s.a = s.a * 1;      // folds to s.a = s.a -> silent
+  print(s.a); print(s.b);
+  s.a = 7;            // same constant it already holds (after the no-ops) -> silent
+  print(s.a);
+}`,
+  },
 ];
