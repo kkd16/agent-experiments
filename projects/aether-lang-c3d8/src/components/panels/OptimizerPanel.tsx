@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react'
 import { runPipeline } from '../../lang/pipeline.ts'
 import { unparse } from '../../lang/unparse.ts'
 import { valueToString } from '../../lang/values.ts'
+import type { DtView, DtViewNode } from '../../lang/decisiontree.ts'
 
 interface Props {
   /** the current editor source */
@@ -25,6 +26,80 @@ const PASS_LABELS: Record<string, string> = {
   'field-proj': 'record field projection ({ a = e, … }.a ⇒ e)',
   'seq-clean': 'sequence cleanup (pure ; rest ⇒ rest)',
   cse: 'common-subexpression elimination (compute repeated work once)',
+  dt: 'pattern matching compiled to a decision tree (test each position once)',
+}
+
+/** Render one decision-tree node as an indented tree. */
+function TreeNode({ node }: { node: DtViewNode }) {
+  if (node.t === 'fail') return <div className="dt-leaf dt-fail">MATCH_FAIL</div>
+  if (node.t === 'leaf') {
+    return (
+      <div className="dt-leaf">
+        → arm #{node.row + 1}
+        {node.guard && <span className="dt-guard"> (when …)</span>}
+        {node.binds.length > 0 && (
+          <span className="dt-binds">
+            {' '}
+            {node.binds.map(([n, o]) => `${n}=${o}`).join(', ')}
+          </span>
+        )}
+      </div>
+    )
+  }
+  return (
+    <div className="dt-switch">
+      <div className="dt-test">
+        {node.tests ? 'switch' : 'destructure'} <code>{node.occ}</code>
+      </div>
+      <div className="dt-arms">
+        {node.arms.map((a, i) => (
+          <div className="dt-arm" key={i}>
+            <span className="dt-arm-label">
+              <code>{a.label}</code>
+              {a.sub.length > 0 && <span className="dt-sub"> → {a.sub.join(', ')}</span>}
+            </span>
+            <TreeNode node={a.child} />
+          </div>
+        ))}
+        {node.fallback && (
+          <div className="dt-arm">
+            <span className="dt-arm-label">
+              <code>_</code>
+            </span>
+            <TreeNode node={node.fallback} />
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function DecisionTrees({ trees }: { trees: DtView[] }) {
+  return (
+    <div className="opt-passes">
+      <h4>Decision trees (Aether 12.0)</h4>
+      <p className="panel-note" style={{ marginTop: 0 }}>
+        Each <code>match</code> below was compiled to a <strong>good decision tree</strong> (Maranget,
+        2008): instead of re-testing a shared constructor prefix once per arm, the tree tests each
+        scrutinee position <em>once</em> and branches. It lowers to ordinary core, so all three
+        backends run it unchanged — the equivalence checks still hold.
+      </p>
+      {trees.map((t, i) => (
+        <div className="dt-tree" key={i}>
+          <div className="dt-tree-head">
+            match #{i + 1} — {t.arms} arm{t.arms === 1 ? '' : 's'}, pattern tests{' '}
+            <strong>{t.naiveTests}</strong> (naive) → <strong>{t.treeTests}</strong> (tree)
+            {t.naiveTests > t.treeTests && (
+              <span className="opt-pct"> (−{t.naiveTests - t.treeTests})</span>
+            )}
+          </div>
+          <div className="dt-root">
+            <TreeNode node={t.root} />
+          </div>
+        </div>
+      ))}
+    </div>
+  )
 }
 
 interface Measured {
@@ -180,6 +255,8 @@ export default function OptimizerPanel({ code }: Props) {
           </table>
         </div>
       )}
+
+      {stats.decisionTrees.length > 0 && <DecisionTrees trees={stats.decisionTrees} />}
 
       {stats.pureFns.length > 0 && (
         <p className="panel-note">

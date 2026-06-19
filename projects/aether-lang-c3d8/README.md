@@ -153,6 +153,27 @@ four times and CSE collapses it to one. The **Optimizer** tab shows the rewrite 
 **round-by-round fixpoint trace**, the functions proven pure, the node-count reduction, the
 before/after core, and a one-click VM-step measurement.
 
+### Pattern matching compiled to good decision trees
+
+The naive `match` compiler tests each arm in turn, re-navigating the scrutinee, so two arms that
+share a constructor prefix (`Cons a (Cons b r)` then `Cons a Nil`) **re-test that outer `Cons`
+twice**. The middle-end now compiles each non-trivial `match` to a **good decision tree** (Maranget,
+*Compiling Pattern Matching to Good Decision Trees*, 2008): a pattern matrix whose columns track the
+sub-values matched so far. It repeatedly picks a column whose first-row pattern is refutable (the one
+tested by the most rows, to maximise sharing) and **switches once** on that occurrence — one arm per
+head constructor present, the matrix *specialized* per constructor (constructor rows expand their
+sub-patterns into new columns; wildcard rows propagate into every arm), plus a default arm only when
+the column's signature is incomplete — so each scrutinee position is tested **exactly once**. Guards
+keep the naive "first matching, guard-passing arm wins" semantics (`if g then body else <compile the
+rest>`), and a non-exhaustive switch is emitted *without* a default arm so it `MATCH_FAIL`s exactly
+where the source would. It is a **core-to-core** transformation — the tree lowers to single-column
+`match`es plus `let`-bound join-points for arm bodies reached from more than one leaf (so the tree
+never blows up code size) — so the VM, the JavaScript backend and the WebAssembly backend all compile
+it **unchanged**, the equivalence checks re-prove the answer never changed, and the per-example "never
+increases VM steps" gate proves it is never worse. The *"Decision-tree matching"* example is an
+expression simplifier whose rules share `Add`/`Mul` prefixes; the **Optimizer** tab draws the tree it
+compiles to and reports the pattern tests it shares away.
+
 ### Three backends
 
 The same type-checked, **optimized** AST is compiled three independent ways, which share the front
@@ -234,7 +255,8 @@ source ─▶ lexer ─▶ parser ─▶ HM inference ─▶ elaborate ─▶ op
 | `src/lang/classes.ts` | type-class evidence (incl. superclass projection) + dictionary-passing elaboration into core AST |
 | `src/lang/unparse.ts` | core-AST pretty-printer (renders the elaborated dictionaries) |
 | `src/lang/exhaustive.ts` | Maranget's pattern-usefulness algorithm (exhaustiveness + redundancy) |
-| `src/lang/optimize.ts` | the optimizing middle-end: a fixpoint of const-folding, algebra, β/η, capture-avoiding inlining, dead-binding elimination, known-constructor `match` reduction, field projection & **common-subexpression elimination** over the core AST, plus an **interprocedural effect-&-totality analysis** that powers it (feeds all three backends) |
+| `src/lang/decisiontree.ts` | Maranget's *good decision tree* compiler: a pattern-matrix → single-column-`match` lowering (with join-points + guards) that shares head tests across arms (feeds all three backends) |
+| `src/lang/optimize.ts` | the optimizing middle-end: a fixpoint of const-folding, algebra, β/η, capture-avoiding inlining, dead-binding elimination, known-constructor `match` reduction, field projection & **common-subexpression elimination** over the core AST, then **decision-tree pattern compilation**, plus an **interprocedural effect-&-totality analysis** that powers it (feeds all three backends) |
 | `src/lang/bytecode.ts` | opcodes + disassembler |
 | `src/lang/compiler.ts` | AST → bytecode; clox-style upvalues; tail-call detection |
 | `src/lang/vm.ts` | iterative stack VM; closures, currying, tail calls, snapshot trace |

@@ -368,6 +368,18 @@ back 50.0        clear ()`}</pre>
           the Optimizer tab's round-by-round trace shows it collapse to a single computation, lists
           the function it proved pure, and the VM steps falling with it.
         </p>
+        <p>
+          12.0 turns the same lens on <strong>pattern matching</strong>. The naive compiler tests
+          each arm in turn, so arms that share a constructor prefix re-test it; the middle-end now
+          compiles each non-trivial <code>match</code> to a <strong>good decision tree</strong>{' '}
+          (Maranget, 2008) that tests every scrutinee position <em>once</em> — switching on the
+          column tested by the most rows, specializing the matrix per constructor, and threading
+          guards through as <code>if g then … else &lt;the rest&gt;</code>. It lowers to ordinary
+          core (single-column <code>match</code>es plus join-points for shared arms), so all three
+          backends run it unchanged. The <strong>decision-tree matching</strong> example is an
+          expression simplifier whose rules share <code>Add</code>/<code>Mul</code> prefixes; the
+          Optimizer tab draws the tree it compiles to and "Measure VM steps" shows the work it saves.
+        </p>
       </section>
 
       <section>

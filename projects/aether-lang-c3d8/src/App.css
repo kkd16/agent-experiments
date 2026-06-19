@@ -1739,3 +1739,61 @@ body {
   color: var(--fg);
   white-space: pre;
 }
+
+/* Decision-tree view (Aether 12.0 — pattern matching → good decision trees) */
+.dt-tree {
+  margin-top: 0.7rem;
+  padding: 0.6rem 0.75rem;
+  background: var(--bg-1);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+.dt-tree-head {
+  font-size: 0.8rem;
+  color: var(--fg-dim);
+  margin-bottom: 0.45rem;
+}
+.dt-tree-head strong {
+  color: var(--fg);
+}
+.dt-root,
+.dt-switch,
+.dt-arms {
+  font-family: var(--mono);
+  font-size: 0.78rem;
+  line-height: 1.5;
+}
+.dt-test {
+  color: var(--accent);
+}
+.dt-test code,
+.dt-arm-label code {
+  color: var(--accent-2);
+  background: none;
+  padding: 0;
+}
+.dt-arms {
+  margin-left: 0.4rem;
+  padding-left: 0.85rem;
+  border-left: 1px solid var(--line-2);
+}
+.dt-arm {
+  margin-top: 0.2rem;
+}
+.dt-arm-label {
+  color: var(--fg);
+}
+.dt-sub,
+.dt-binds {
+  color: var(--fg-dim);
+}
+.dt-leaf {
+  color: var(--fg);
+  padding: 0.05rem 0;
+}
+.dt-guard {
+  color: var(--accent);
+}
+.dt-fail {
+  color: #ff8b8b;
+}

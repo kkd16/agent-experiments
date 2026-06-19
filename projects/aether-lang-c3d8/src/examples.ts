@@ -938,6 +938,58 @@ let px = 6 in let py = 8 in
 , dist2 ox oy px py + dist2 ox oy px py
 , dist2 ox oy px py * 2 )`,
   },
+  {
+    id: 'decision-tree',
+    title: 'Decision-tree matching',
+    blurb: 'Open the Optimizer tab: see the match compiled to a decision tree, and the VM steps drop.',
+    visual: false,
+    code: `// Aether 12.0 — compiling pattern matching to GOOD DECISION TREES (Maranget, 2008).
+//
+// 'reduce' is an expression-peephole simplifier. Many of its rules share an
+// outer constructor (Add …, Mul …) AND a nested inner one (Lit 0, Lit 1). The
+// naive match compiler re-tests "is it an Add?" / "is it a Mul?" once per rule;
+// the optimizing middle-end instead compiles the whole match to a DECISION TREE
+// that tests each scrutinee position exactly ONCE and branches.
+//
+// Open the "Optimizer" tab: the rewrite table lists 'dt', a "Decision trees"
+// section draws the tree, and "Measure VM steps" shows the work it saves. Because
+// the tree lowers to ordinary core, the VM, the JavaScript backend AND the
+// WebAssembly backend all run it — and the equivalence checks still hold.
+
+type Expr = Lit Int | Add Expr Expr | Mul Expr Expr in
+
+// the peephole rules — nested patterns that share constructor prefixes
+let reduce = fn e -> match e with
+  | Add (Lit 0) y -> y          // 0 + y  =  y
+  | Add x (Lit 0) -> x          // x + 0  =  x
+  | Mul (Lit 0) _ -> Lit 0      // 0 * _  =  0
+  | Mul _ (Lit 0) -> Lit 0      // _ * 0  =  0
+  | Mul (Lit 1) y -> y          // 1 * y  =  y
+  | Mul x (Lit 1) -> x          // x * 1  =  x
+  | other         -> other in
+
+// simplify bottom-up: reduce children first, then apply a rule at the root
+let rec simp = fn e -> match e with
+  | Lit n   -> Lit n
+  | Add a b -> reduce (Add (simp a) (simp b))
+  | Mul a b -> reduce (Mul (simp a) (simp b)) in
+
+let rec eval = fn e -> match e with
+  | Lit n   -> n
+  | Add a b -> eval a + eval b
+  | Mul a b -> eval a * eval b in
+
+let rec render = fn e -> match e with
+  | Lit n   -> show n
+  | Add a b -> "(" ^ render a ^ " + " ^ render b ^ ")"
+  | Mul a b -> "(" ^ render a ^ " * " ^ render b ^ ")" in
+
+// ((1 * 7) + (0 * 9)) * (3 + (6 * 1))   simplifies to   7 * (3 + 6)  =  63
+let e = Mul (Add (Mul (Lit 1) (Lit 7)) (Mul (Lit 0) (Lit 9)))
+            (Add (Lit 3) (Mul (Lit 6) (Lit 1))) in
+
+(render e, render (simp e), eval (simp e))`,
+  },
 ]
 
 export const DEFAULT_CODE = EXAMPLES[0].code
