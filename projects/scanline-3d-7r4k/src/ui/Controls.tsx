@@ -1,9 +1,12 @@
 import { useState } from 'react'
-import type { RenderSettings } from '../engine/renderer.ts'
+import type { Engine, RenderSettings, RTSettings } from '../engine/renderer.ts'
+import type { RTMode } from '../raytrace/raytracer.ts'
 import type { RenderMode } from '../render/types.ts'
 import type { PostSettings, ToneMap } from '../render/post.ts'
 import type { ShadingModel } from '../render/shading.ts'
 import { PRESET_LABELS } from '../scene/scene.ts'
+import { runRTSelfTest } from '../raytrace/verify.ts'
+import type { RTTest } from '../raytrace/verify.ts'
 
 const MODES: { key: RenderMode; label: string; blurb: string }[] = [
   { key: 'shaded', label: 'Shaded', blurb: 'Full HDR beauty pass — lighting, IBL, normal maps, tone mapping & post FX.' },
@@ -80,13 +83,35 @@ export default function Controls(props: Props) {
   const { settings, setSettings, preset, setPreset, resolutionScale, setResolutionScale } = props
   const set = (patch: Partial<RenderSettings>): void => setSettings({ ...settings, ...patch })
   const setPost = (patch: Partial<PostSettings>): void => set({ post: { ...settings.post, ...patch } })
+  const setRT = (patch: Partial<RTSettings>): void => set({ rt: { ...settings.rt, ...patch } })
   const activeMode = MODES.find((m) => m.key === settings.mode) ?? MODES[0]
   const post = settings.post
+  const rt = settings.rt
+  const isRT = settings.engine === 'rt'
   const [objText, setObjText] = useState('')
+  const [tests, setTests] = useState<RTTest[] | null>(null)
+  const [testing, setTesting] = useState(false)
+  const runTests = (): void => {
+    setTesting(true)
+    setTests(null)
+    // defer so the "running…" state paints before the synchronous test blocks
+    setTimeout(() => {
+      setTests(runRTSelfTest())
+      setTesting(false)
+    }, 30)
+  }
 
   const models: { key: ShadingModel; label: string }[] = [
     { key: 'pbr', label: 'PBR (Cook–Torrance)' },
     { key: 'phong', label: 'Blinn–Phong' },
+  ]
+  const engines: { key: Engine; label: string }[] = [
+    { key: 'raster', label: 'Rasterizer' },
+    { key: 'rt', label: 'Ray tracer' },
+  ]
+  const rtModes: { key: RTMode; label: string }[] = [
+    { key: 'path', label: 'Path tracer' },
+    { key: 'ao', label: 'Ambient occlusion' },
   ]
 
   return (
@@ -114,7 +139,27 @@ export default function Controls(props: Props) {
         </div>
       </Section>
 
-      <Section title="Render mode">
+      <Section title="Engine">
+        <div className="seg">
+          {engines.map((e) => (
+            <button
+              key={e.key}
+              className={settings.engine === e.key ? 'active' : ''}
+              onClick={() => set({ engine: e.key })}
+              type="button"
+            >
+              {e.label}
+            </button>
+          ))}
+        </div>
+        <p className="blurb">
+          {isRT
+            ? 'A from-scratch BVH path tracer renders the same scene as a physically-correct reference — progressive, so it refines while the camera is still.'
+            : 'The real-time software rasterizer: transform → clip → scan-convert → shade, ~60 fps.'}
+        </p>
+      </Section>
+
+      <Section title={isRT ? 'Raster view (left of split)' : 'Render mode'}>
         <div className="mode-grid">
           {MODES.map((m) => (
             <button
@@ -129,6 +174,86 @@ export default function Controls(props: Props) {
         </div>
         <p className="blurb">{activeMode.blurb}</p>
       </Section>
+
+      {isRT && (
+        <Section title="Path tracer">
+          <div className="seg">
+            {rtModes.map((m) => (
+              <button
+                key={m.key}
+                className={rt.mode === m.key ? 'active' : ''}
+                onClick={() => setRT({ mode: m.key })}
+                type="button"
+              >
+                {m.label}
+              </button>
+            ))}
+          </div>
+          <div className="toggles">
+            <Toggle label="Split-screen compare" value={rt.compare} onChange={(v) => setRT({ compare: v })} />
+            <Toggle label="Soft shadows" value={rt.softShadows} onChange={(v) => setRT({ softShadows: v })} />
+          </div>
+          {rt.compare && (
+            <Slider
+              label="Split position" value={rt.splitPos} min={0.1} max={0.9} step={0.01}
+              onChange={(v) => setRT({ splitPos: v })} format={(v) => `${(v * 100).toFixed(0)}%`}
+            />
+          )}
+          {rt.mode === 'path' && (
+            <Slider
+              label="Max bounces" value={rt.maxBounces} min={1} max={8} step={1}
+              onChange={(v) => setRT({ maxBounces: v })} format={(v) => v.toFixed(0)}
+            />
+          )}
+          {rt.mode === 'ao' && (
+            <Slider
+              label="AO radius" value={rt.aoRadius} min={0.2} max={4} step={0.1}
+              onChange={(v) => setRT({ aoRadius: v })} format={(v) => v.toFixed(1)}
+            />
+          )}
+          {rt.softShadows && (
+            <>
+              <Slider
+                label="Sun softness" value={rt.sunSoftness} min={0} max={8} step={0.5}
+                onChange={(v) => setRT({ sunSoftness: v })} format={(v) => `${v.toFixed(1)}°`}
+              />
+              <Slider
+                label="Point-light radius" value={rt.lightRadius} min={0} max={1} step={0.05}
+                onChange={(v) => setRT({ lightRadius: v })} format={(v) => v.toFixed(2)}
+              />
+            </>
+          )}
+          <Slider
+            label="RT resolution" value={rt.resolutionScale} min={0.25} max={1} step={0.05}
+            onChange={(v) => setRT({ resolutionScale: v })} format={(v) => `${(v * 100).toFixed(0)}%`}
+          />
+          <p className="blurb">
+            BVH-accelerated Möller–Trumbore tracing, next-event estimation to every light, and the
+            analytic sky as an infinite emitter — drag to orbit and it re-converges.
+          </p>
+        </Section>
+      )}
+
+      {isRT && (
+        <Section title="Verification">
+          <button className="reset" onClick={runTests} type="button" disabled={testing} style={{ width: '100%' }}>
+            {testing ? 'Running…' : 'Run RT self-test'}
+          </button>
+          {tests && (
+            <div className="rt-tests">
+              <p className="blurb">
+                {tests.filter((t) => t.pass).length}/{tests.length} checks passed — each re-derives a claim
+                from an independent reference.
+              </p>
+              {tests.map((t) => (
+                <p key={t.name} className={`obj-msg ${t.pass ? 'ok' : 'err'}`}>
+                  {t.pass ? '✓' : '✗'} {t.name} — {t.detail}
+                </p>
+              ))}
+            </div>
+          )}
+        </Section>
+      )}
 
       <Section title="Lighting model">
         <div className="seg">

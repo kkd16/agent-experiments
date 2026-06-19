@@ -36,6 +36,7 @@ export interface SceneConfig {
   fogColor: Vec3
   fogDensity: number
   sky: SkyParams
+  view?: { target: Vec3; yaw: number; pitch: number; distance: number } // optional camera framing
 }
 
 // Material with both Blinn–Phong (specular/shininess) and PBR (metallic/
@@ -259,12 +260,105 @@ export const customScene = (): SceneConfig => ({
   sky: DEFAULT_SKY,
 })
 
+// A Cornell box — five diffuse walls (classic red/green/white albedos) lit only by
+// an emissive ceiling panel. There are no punctual lights: every photon comes from
+// the panel and bounces, so the white surfaces pick up red/green colour bleed and
+// the objects cast soft contact shadows. The rasterizer (no area lights, no GI)
+// renders it nearly flat; the path tracer renders it correctly. Best in RT mode.
+const cornell = (): SceneConfig => {
+  const S = 3.0
+  const wWhite = mat([0.73, 0.73, 0.73], 0.0, 8, 0, 0, 0.9)
+  const wRed = mat([0.63, 0.065, 0.05], 0.0, 8, 0, 0, 0.9)
+  const wGreen = mat([0.14, 0.45, 0.091], 0.0, 8, 0, 0, 0.9)
+  const lightMat: Material = { albedo: [0, 0, 0], specular: 0, shininess: 1, rim: 0, metallic: 0, roughness: 1, emission: [10, 9.2, 7.5] }
+  const wall = (id: string, position: Vec3, baseRotation: Vec3, material: Material): SceneObject => ({
+    id, meshKind: 'quad', position, scale: S, spin: 0, tiltSpin: 0, baseRotation, material, texture: 'none', normalMap: 'none',
+  })
+  return {
+    name: 'Cornell Box',
+    ground: false,
+    groundTexture: 'none',
+    groundNormalMap: 'none',
+    groundMaterial: wWhite,
+    objects: [
+      wall('floor', [0, 0, 0], [0, 0, 0], wWhite),
+      wall('ceiling', [0, S, 0], [0, 0, 0], wWhite),
+      wall('back', [0, S / 2, -S / 2], [Math.PI / 2, 0, 0], wWhite),
+      wall('left', [-S / 2, S / 2, 0], [0, 0, Math.PI / 2], wRed),
+      wall('right', [S / 2, S / 2, 0], [0, 0, Math.PI / 2], wGreen),
+      { id: 'light', meshKind: 'quad', position: [0, S - 0.02, 0], scale: S * 0.32, spin: 0, tiltSpin: 0, baseRotation: [0, 0, 0], material: lightMat, texture: 'none', normalMap: 'none' },
+      { id: 'box', meshKind: 'cube', position: [-0.55, 0.5, -0.45], scale: 0.56, spin: 0, tiltSpin: 0, baseRotation: [0, 0.5, 0], material: mat([0.75, 0.75, 0.75], 0.1, 16, 0, 0, 0.8), texture: 'none', normalMap: 'none' },
+      { id: 'ball', meshKind: 'sphere', position: [0.62, 0.5, 0.5], scale: 0.5, spin: 0, tiltSpin: 0, baseRotation: [0, 0, 0], material: mat([0.95, 0.9, 0.6], 0.9, 90, 0, 1, 0.08), texture: 'none', normalMap: 'none' },
+    ],
+    lights: [],
+    ambient: [0, 0, 0],
+    bgTop: [0.01, 0.01, 0.012],
+    bgBottom: [0.01, 0.01, 0.012],
+    fogColor: [0, 0, 0],
+    fogDensity: 0,
+    sky: { zenith: [0.02, 0.02, 0.03], horizon: [0.02, 0.02, 0.03], ground: [0.01, 0.01, 0.01], sunDir: normalize([0, 1, 0]) as Vec3, sunColor: [0, 0, 0], sunIntensity: 0, sunAngularSize: 0.02, intensity: 1 },
+    view: { target: [0, 1.35, 0], yaw: 0, pitch: 0.05, distance: 5.0 },
+  }
+}
+
+// A hall of mirrors: metal spheres of rising roughness on a near-mirror floor under
+// the analytic sky. The spheres reflect each other and the floor reflects them all —
+// genuine inter-reflection the rasterizer's single IBL probe can only fake. Best in
+// RT mode (Path tracer, low roughness).
+const reflections = (): SceneConfig => {
+  const cols: Vec3[] = [
+    [1.0, 0.78, 0.35], [0.95, 0.95, 0.97], [0.95, 0.6, 0.4], [0.6, 0.78, 0.98], [0.7, 0.95, 0.7],
+  ]
+  const objects: SceneObject[] = cols.map((c, i) => ({
+    id: `m${i}`,
+    meshKind: 'sphere' as MeshKind,
+    position: [(i - (cols.length - 1) / 2) * 1.5, 0.7, 0] as Vec3,
+    scale: 0.66,
+    spin: 0,
+    tiltSpin: 0,
+    baseRotation: [0, 0, 0] as Vec3,
+    material: mat(c, 0.9, 120, 0, 1, 0.02 + (i / (cols.length - 1)) * 0.3),
+    texture: 'none' as TextureKind,
+    normalMap: 'none' as NormalMapKind,
+  }))
+  // a smaller floating sphere to be caught in the reflections
+  objects.push({
+    id: 'orb', meshKind: 'sphere', position: [0, 1.7, -1.4], scale: 0.42, spin: 0, tiltSpin: 0,
+    baseRotation: [0, 0, 0], material: mat([0.9, 0.3, 0.35], 0.8, 90, 0, 0, 0.18), texture: 'none', normalMap: 'none',
+  })
+  objects.push({
+    id: 'mirror-floor', meshKind: 'quad', position: [0, 0, 0], scale: 16, spin: 0, tiltSpin: 0,
+    baseRotation: [0, 0, 0], material: mat([0.55, 0.57, 0.6], 0.9, 120, 0, 0.9, 0.07), texture: 'none', normalMap: 'none',
+  })
+  return {
+    name: 'Reflections',
+    ground: false,
+    groundTexture: 'none',
+    groundNormalMap: 'none',
+    groundMaterial: mat([0.3, 0.3, 0.32], 0.2, 24, 0, 0, 0.5),
+    objects,
+    lights: [
+      { type: 'dir', direction: normalize([-0.4, -0.85, -0.35]) as Vec3, color: [1, 0.96, 0.9], intensity: 2.0 },
+      { type: 'point', position: [2.5, 2.6, 2.5], color: [0.6, 0.75, 1], intensity: 7, range: 12 },
+    ],
+    ambient: [0.12, 0.14, 0.18],
+    bgTop: [0.05, 0.07, 0.11],
+    bgBottom: [0.12, 0.14, 0.2],
+    fogColor: [0.1, 0.12, 0.16],
+    fogDensity: 0,
+    sky: DEFAULT_SKY,
+    view: { target: [0, 0.55, 0], yaw: 0.5, pitch: 0.16, distance: 6.2 },
+  }
+}
+
 export const PRESETS: Record<string, () => SceneConfig> = {
   showcase,
   materials,
   pbrSweep,
   primitives,
   exhibit,
+  cornell,
+  reflections,
   custom: customScene,
 }
 
@@ -274,5 +368,7 @@ export const PRESET_LABELS: { key: string; label: string }[] = [
   { key: 'pbrSweep', label: 'PBR Sweep' },
   { key: 'primitives', label: 'Primitives' },
   { key: 'exhibit', label: 'Math Exhibit' },
+  { key: 'cornell', label: 'Cornell Box' },
+  { key: 'reflections', label: 'Reflections' },
   { key: 'custom', label: 'Custom OBJ' },
 ]

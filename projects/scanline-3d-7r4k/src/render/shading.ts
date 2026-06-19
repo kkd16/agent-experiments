@@ -35,6 +35,7 @@ export interface Material {
   // PBR parameters (used by the metallic-roughness path; ignored by Phong).
   metallic?: number // 0 = dielectric, 1 = metal
   roughness?: number // 0 = mirror, 1 = fully rough
+  emission?: Vec3 // linear radiance this surface emits (drives the path-traced lights)
 }
 
 export interface ShadowSampler {
@@ -147,6 +148,12 @@ export function shadeFragment(
     r += fres
     g += fres
     b += fres
+  }
+
+  if (mat.emission) {
+    r += mat.emission[0]
+    g += mat.emission[1]
+    b += mat.emission[2]
   }
 
   return applyFog([r, g, b], worldPos, ctx)

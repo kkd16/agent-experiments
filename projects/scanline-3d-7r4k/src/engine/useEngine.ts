@@ -16,10 +16,13 @@ export interface EngineStats {
   pixelsFilled: number
   width: number
   height: number
+  rtSamples: number
+  rtNodes: number
 }
 
 const INITIAL: EngineStats = {
   fps: 0, ms: 0, trianglesIn: 0, trianglesDrawn: 0, pixelsFilled: 0, width: 0, height: 0,
+  rtSamples: 0, rtNodes: 0,
 }
 
 export function useEngine(
@@ -147,6 +150,8 @@ export function useEngine(
           pixelsFilled: s.pixelsFilled,
           width: renderer.fb.width,
           height: renderer.fb.height,
+          rtSamples: s.rtSamples,
+          rtNodes: s.rtNodes,
         })
         fpsAccum = 0
         fpsCount = 0

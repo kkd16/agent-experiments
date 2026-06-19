@@ -1,0 +1,396 @@
+// The path tracer. Given the BVH + triangle soup it estimates the radiance along a
+// ray with a metallic-roughness BSDF identical to the rasterizer's `pbr.ts`
+// (Lambert diffuse + GGX specular), next-event estimation to the scene's punctual
+// and emissive-area lights, multi-bounce indirect light, Russian-roulette
+// termination and the analytic sky as an infinite emitter. A second, cheaper
+// estimator renders pure ambient occlusion. Both share the BVH and accumulate
+// across frames in `raytracer.ts`.
+import type { Vec3 } from '../math/vec.ts'
+import type { Light } from '../render/shading.ts'
+import type { Environment } from '../render/environment.ts'
+import type { RTScene, RTMaterial } from './rtscene.ts'
+import type { BVH, ClosestHit } from './bvh.ts'
+import {
+  cosineHemisphere, distributionGGX, orthonormalBasis,
+  sampleGGX, toWorld, uniformCone, uniformSphere, type Rng,
+} from './sampling.ts'
+
+const PI = Math.PI
+const EPS = 1e-3
+const SPECULAR_ROUGH = 0.1 // ≤ this counts as a "specular" bounce for emitter visibility
+
+// The lighting environment the renderer supplies; the RayTracer pairs it with the
+// scene + BVH it owns to form the full RTContext below.
+export interface RTLighting {
+  lights: Light[]
+  env: Environment | null
+  ambient: Vec3
+  sky: (dx: number, dy: number, dz: number) => Vec3 // radiance for a ray that misses
+  maxBounces: number
+  sunCosHalf: number // cos of the directional-light cone half-angle (1 = hard shadows)
+  lightRadius: number // point-light sphere radius for soft shadows
+  aoRadius: number // ambient-occlusion ray reach
+}
+
+export interface RTContext extends RTLighting {
+  scene: RTScene
+  bvh: BVH
+}
+
+// The shaded surface at a hit, two-sided and normal-mapped, ready for the BSDF.
+interface Surface {
+  px: number; py: number; pz: number
+  nx: number; ny: number; nz: number // shading normal, facing the viewer
+  gx: number; gy: number; gz: number // geometric normal, facing the viewer
+  br: number; bg: number; bb: number // albedo after texture modulation
+  mat: RTMaterial
+}
+
+// Reconstruct the world-space surface at a barycentric hit. `dx,dy,dz` is the
+// incoming ray direction; the shading/geometric normals are flipped to face it so
+// planes (ground, walls) are lit from both sides.
+function surfaceAt(scene: RTScene, tri: number, u: number, v: number, dx: number, dy: number, dz: number): Surface {
+  const w = 1 - u - v
+  const o3 = tri * 3
+  const o2 = tri * 2
+  const o4 = tri * 4
+  const e1x = scene.e1[o3], e1y = scene.e1[o3 + 1], e1z = scene.e1[o3 + 2]
+  const e2x = scene.e2[o3], e2y = scene.e2[o3 + 1], e2z = scene.e2[o3 + 2]
+  const px = scene.p0[o3] + u * e1x + v * e2x
+  const py = scene.p0[o3 + 1] + u * e1y + v * e2y
+  const pz = scene.p0[o3 + 2] + u * e1z + v * e2z
+
+  // interpolated (smooth) shading normal
+  let nx = w * scene.n0[o3] + u * scene.n1[o3] + v * scene.n2[o3]
+  let ny = w * scene.n0[o3 + 1] + u * scene.n1[o3 + 1] + v * scene.n2[o3 + 1]
+  let nz = w * scene.n0[o3 + 2] + u * scene.n1[o3 + 2] + v * scene.n2[o3 + 2]
+  const nl = Math.hypot(nx, ny, nz) || 1
+  nx /= nl; ny /= nl; nz /= nl
+  // geometric normal from the edges
+  let gx = e1y * e2z - e1z * e2y
+  let gy = e1z * e2x - e1x * e2z
+  let gz = e1x * e2y - e1y * e2x
+  const gl = Math.hypot(gx, gy, gz) || 1
+  gx /= gl; gy /= gl; gz /= gl
+
+  // face both normals toward the viewer (two-sided shading)
+  const vDotG = -(gx * dx + gy * dy + gz * dz)
+  if (vDotG < 0) { gx = -gx; gy = -gy; gz = -gz }
+  const vDotN = -(nx * dx + ny * dy + nz * dz)
+  if (vDotN < 0) { nx = -nx; ny = -ny; nz = -nz }
+
+  const mat = scene.materials[scene.matIndex[tri]]
+  let br = mat.albedo[0], bg = mat.albedo[1], bb = mat.albedo[2]
+  let uu = 0, vv = 0
+  const needUV = mat.texture !== null || mat.normalMap !== null
+  if (needUV) {
+    uu = w * scene.uv0[o2] + u * scene.uv1[o2] + v * scene.uv2[o2]
+    vv = w * scene.uv0[o2 + 1] + u * scene.uv1[o2 + 1] + v * scene.uv2[o2 + 1]
+  }
+  if (mat.texture) {
+    const t = mat.texture(uu, vv)
+    br *= t[0]; bg *= t[1]; bb *= t[2]
+  }
+  // tangent-space normal map perturbs the shading normal (after the two-sided flip)
+  if (mat.normalMap) {
+    let Tx = scene.tan[o4], Ty = scene.tan[o4 + 1], Tz = scene.tan[o4 + 2]
+    const handed = scene.tan[o4 + 3]
+    // Gram–Schmidt against the (flipped) shading normal
+    const tDotN = Tx * nx + Ty * ny + Tz * nz
+    Tx -= nx * tDotN; Ty -= ny * tDotN; Tz -= nz * tDotN
+    const tl = Math.hypot(Tx, Ty, Tz)
+    if (tl > 1e-6) {
+      Tx /= tl; Ty /= tl; Tz /= tl
+      const Bx = (ny * Tz - nz * Ty) * handed
+      const By = (nz * Tx - nx * Tz) * handed
+      const Bz = (nx * Ty - ny * Tx) * handed
+      const m = mat.normalMap(uu, vv)
+      let mx = Tx * m[0] + Bx * m[1] + nx * m[2]
+      let my = Ty * m[0] + By * m[1] + ny * m[2]
+      let mz = Tz * m[0] + Bz * m[1] + nz * m[2]
+      const ml = Math.hypot(mx, my, mz) || 1
+      mx /= ml; my /= ml; mz /= ml
+      nx = mx; ny = my; nz = mz
+    }
+  }
+
+  return { px, py, pz, nx, ny, nz, gx, gy, gz, br, bg, bb, mat }
+}
+
+// The metallic-roughness BRDF (no cosine term), identical in form to pbr.ts.
+// Writes f into `out` (length-3). N, V, L are unit; base is the textured albedo.
+function evalBRDF(
+  out: Float64Array,
+  nx: number, ny: number, nz: number,
+  vx: number, vy: number, vz: number,
+  lx: number, ly: number, lz: number,
+  mat: RTMaterial, br: number, bg: number, bb: number,
+): void {
+  out[0] = 0; out[1] = 0; out[2] = 0
+  const NoL = nx * lx + ny * ly + nz * lz
+  const NoV = nx * vx + ny * vy + nz * vz
+  if (NoL <= 0 || NoV <= 0) return
+  const metallic = mat.metallic
+  const a = mat.roughness * mat.roughness
+  // half vector
+  let hx = vx + lx, hy = vy + ly, hz = vz + lz
+  const hl = Math.hypot(hx, hy, hz) || 1
+  hx /= hl; hy /= hl; hz /= hl
+  const NoH = Math.max(0, nx * hx + ny * hy + nz * hz)
+  const VoH = Math.max(0, vx * hx + vy * hy + vz * hz)
+
+  const f0r = 0.04 + (br - 0.04) * metallic
+  const f0g = 0.04 + (bg - 0.04) * metallic
+  const f0b = 0.04 + (bb - 0.04) * metallic
+  const fc = Math.pow(Math.max(0, 1 - VoH), 5)
+  const Fr = f0r + (1 - f0r) * fc
+  const Fg = f0g + (1 - f0g) * fc
+  const Fb = f0b + (1 - f0b) * fc
+
+  const D = distributionGGX(NoH, a)
+  // height-correlated Smith visibility (folds 1/(4·NoV·NoL))
+  const a2 = a * a
+  const gv = NoL * Math.sqrt(NoV * NoV * (1 - a2) + a2)
+  const gl = NoV * Math.sqrt(NoL * NoL * (1 - a2) + a2)
+  const Vis = 0.5 / (gv + gl + 1e-7)
+  const specCommon = D * Vis
+
+  const kdr = (1 - Fr) * (1 - metallic)
+  const kdg = (1 - Fg) * (1 - metallic)
+  const kdb = (1 - Fb) * (1 - metallic)
+  out[0] = kdr * br / PI + specCommon * Fr
+  out[1] = kdg * bg / PI + specCommon * Fg
+  out[2] = kdb * bb / PI + specCommon * Fb
+}
+
+// Next-event estimation: direct light from every punctual + emissive-area light,
+// each with a shadow ray. Returns the accumulated direct radiance.
+function directLight(s: Surface, vx: number, vy: number, vz: number, ctx: RTContext, rng: Rng, f: Float64Array): Vec3 {
+  const { bvh } = ctx
+  let r = 0, g = 0, b = 0
+  // shadow-ray origin nudged off the surface along the geometric normal
+  const ogx = s.px + s.gx * EPS
+  const ogy = s.py + s.gy * EPS
+  const ogz = s.pz + s.gz * EPS
+
+  for (let i = 0; i < ctx.lights.length; i++) {
+    const light = ctx.lights[i]
+    if (light.type === 'dir') {
+      let lx = -light.direction[0], ly = -light.direction[1], lz = -light.direction[2]
+      const ll = Math.hypot(lx, ly, lz) || 1
+      lx /= ll; ly /= ll; lz /= ll
+      if (ctx.sunCosHalf < 0.9999) {
+        const local = uniformCone(rng.next(), rng.next(), ctx.sunCosHalf)
+        const [t1, t2] = orthonormalBasis([lx, ly, lz])
+        const w = toWorld(local, t1, t2, [lx, ly, lz])
+        lx = w[0]; ly = w[1]; lz = w[2]
+      }
+      const NoL = s.nx * lx + s.ny * ly + s.nz * lz
+      if (NoL <= 0) continue
+      if (bvh.occluded(ogx, ogy, ogz, lx, ly, lz, EPS, 1e30)) continue
+      evalBRDF(f, s.nx, s.ny, s.nz, vx, vy, vz, lx, ly, lz, s.mat, s.br, s.bg, s.bb)
+      const ir = light.color[0] * light.intensity
+      const ig = light.color[1] * light.intensity
+      const ib = light.color[2] * light.intensity
+      r += f[0] * NoL * ir; g += f[1] * NoL * ig; b += f[2] * NoL * ib
+    } else {
+      let cx = light.position[0], cy = light.position[1], cz = light.position[2]
+      if (ctx.lightRadius > 0) {
+        const sph = uniformSphere(rng.next(), rng.next())
+        cx += sph[0] * ctx.lightRadius; cy += sph[1] * ctx.lightRadius; cz += sph[2] * ctx.lightRadius
+      }
+      let lx = cx - s.px, ly = cy - s.py, lz = cz - s.pz
+      const dist = Math.hypot(lx, ly, lz) || 1
+      lx /= dist; ly /= dist; lz /= dist
+      const NoL = s.nx * lx + s.ny * ly + s.nz * lz
+      if (NoL <= 0) continue
+      const fall = 1 - (dist * dist) / (light.range * light.range)
+      if (fall <= 0) continue
+      const atten = fall * fall
+      if (bvh.occluded(ogx, ogy, ogz, lx, ly, lz, EPS, dist - EPS)) continue
+      evalBRDF(f, s.nx, s.ny, s.nz, vx, vy, vz, lx, ly, lz, s.mat, s.br, s.bg, s.bb)
+      const ir = light.color[0] * light.intensity * atten
+      const ig = light.color[1] * light.intensity * atten
+      const ib = light.color[2] * light.intensity * atten
+      r += f[0] * NoL * ir; g += f[1] * NoL * ig; b += f[2] * NoL * ib
+    }
+  }
+
+  // emissive-area lights, sampled uniformly by world area
+  const scene = ctx.scene
+  const nE = scene.emissiveTris.length
+  if (nE > 0 && scene.totalEmissiveArea > 1e-9) {
+    const target = rng.next() * scene.totalEmissiveArea
+    // binary search the cumulative-area table
+    let lo = 0, hi = nE - 1
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1
+      if (scene.emissiveArea[mid] < target) lo = mid + 1
+      else hi = mid
+    }
+    const tri = scene.emissiveTris[lo]
+    const o3 = tri * 3
+    const e1x = scene.e1[o3], e1y = scene.e1[o3 + 1], e1z = scene.e1[o3 + 2]
+    const e2x = scene.e2[o3], e2y = scene.e2[o3 + 1], e2z = scene.e2[o3 + 2]
+    // uniform barycentric point on the triangle
+    const r1 = rng.next(); const r2 = rng.next()
+    const su = Math.sqrt(r1)
+    const bu = su * (1 - r2)
+    const bv = su * r2
+    const yx = scene.p0[o3] + bu * e1x + bv * e2x
+    const yy = scene.p0[o3 + 1] + bu * e1y + bv * e2y
+    const yz = scene.p0[o3 + 2] + bu * e1z + bv * e2z
+    let lx = yx - s.px, ly = yy - s.py, lz = yz - s.pz
+    const dist = Math.hypot(lx, ly, lz) || 1
+    lx /= dist; ly /= dist; lz /= dist
+    const NoL = s.nx * lx + s.ny * ly + s.nz * lz
+    if (NoL > 0) {
+      // light's geometric normal (two-sided emitter → use |cos|)
+      let gx = e1y * e2z - e1z * e2y
+      let gy = e1z * e2x - e1x * e2z
+      let gz = e1x * e2y - e1y * e2x
+      const gnl = Math.hypot(gx, gy, gz) || 1
+      gx /= gnl; gy /= gnl; gz /= gnl
+      const cosLight = Math.abs(gx * lx + gy * ly + gz * lz)
+      if (cosLight > 1e-4 && !bvh.occluded(ogx, ogy, ogz, lx, ly, lz, EPS, dist - EPS)) {
+        const mat = scene.materials[scene.matIndex[tri]]
+        const G = cosLight / (dist * dist)
+        const pdfInv = scene.totalEmissiveArea // 1 / pdfA
+        evalBRDF(f, s.nx, s.ny, s.nz, vx, vy, vz, lx, ly, lz, s.mat, s.br, s.bg, s.bb)
+        const k = NoL * G * pdfInv
+        r += f[0] * mat.emission[0] * k
+        g += f[1] * mat.emission[1] * k
+        b += f[2] * mat.emission[2] * k
+      }
+    }
+  }
+  return [r, g, b]
+}
+
+// Importance-sample the BSDF for the next bounce. Returns the new direction, the
+// throughput multiplier (f·cosθ / pdf) and whether the bounce was specular (for
+// emitter double-count avoidance). Returns false if the sample is invalid.
+interface BSDFSample { wx: number; wy: number; wz: number; wr: number; wg: number; wb: number; specular: boolean }
+function sampleBSDF(s: Surface, vx: number, vy: number, vz: number, rng: Rng, f: Float64Array, out: BSDFSample): boolean {
+  const mat = s.mat
+  const metallic = mat.metallic
+  const rough = mat.roughness
+  const a = rough * rough
+  const nx = s.nx, ny = s.ny, nz = s.nz
+  const diffR = s.br * (1 - metallic), diffG = s.bg * (1 - metallic), diffB = s.bb * (1 - metallic)
+  const f0 = 0.04 + (Math.max(s.br, s.bg, s.bb) - 0.04) * metallic
+  const maxDiff = Math.max(diffR, diffG, diffB)
+  let pSpec = maxDiff <= 1e-4 ? 1 : f0 / (f0 + maxDiff)
+  if (pSpec < 0.15) pSpec = 0.15
+  if (pSpec > 0.95) pSpec = 0.95
+
+  const [t1, t2] = orthonormalBasis([nx, ny, nz])
+  let wx: number, wy: number, wz: number
+  const chooseSpec = rng.next() < pSpec
+  if (chooseSpec) {
+    const m = sampleGGX(rng.next(), rng.next(), a)
+    const mw = toWorld(m, t1, t2, [nx, ny, nz])
+    // reflect V about the microfacet normal m: wi = 2(V·m)m − V
+    const vDotM = vx * mw[0] + vy * mw[1] + vz * mw[2]
+    wx = 2 * vDotM * mw[0] - vx
+    wy = 2 * vDotM * mw[1] - vy
+    wz = 2 * vDotM * mw[2] - vz
+  } else {
+    const l = cosineHemisphere(rng.next(), rng.next())
+    const lw = toWorld(l, t1, t2, [nx, ny, nz])
+    wx = lw[0]; wy = lw[1]; wz = lw[2]
+  }
+  const NoL = nx * wx + ny * wy + nz * wz
+  if (NoL <= 0) return false
+
+  // combined pdf (single-sample, balance-style) for the chosen direction
+  let hx = vx + wx, hy = vy + wy, hz = vz + wz
+  const hl = Math.hypot(hx, hy, hz) || 1
+  hx /= hl; hy /= hl; hz /= hl
+  const NoH = Math.max(0, nx * hx + ny * hy + nz * hz)
+  const VoH = Math.max(0, vx * hx + vy * hy + vz * hz)
+  const pdfDiff = NoL / PI
+  const pdfSpec = VoH > 1e-6 ? (distributionGGX(NoH, a) * NoH) / (4 * VoH) : 0
+  const pdf = pSpec * pdfSpec + (1 - pSpec) * pdfDiff
+  if (pdf <= 1e-8) return false
+
+  evalBRDF(f, nx, ny, nz, vx, vy, vz, wx, wy, wz, mat, s.br, s.bg, s.bb)
+  const inv = NoL / pdf
+  out.wx = wx; out.wy = wy; out.wz = wz
+  out.wr = f[0] * inv; out.wg = f[1] * inv; out.wb = f[2] * inv
+  out.specular = chooseSpec && rough <= SPECULAR_ROUGH
+  return true
+}
+
+const tmpHit: ClosestHit = { t: 0, tri: -1, u: 0, v: 0 }
+const tmpF = new Float64Array(3)
+const tmpSample: BSDFSample = { wx: 0, wy: 0, wz: 0, wr: 0, wg: 0, wb: 0, specular: false }
+
+// Estimate radiance along one camera ray with a unidirectional path tracer.
+export function tracePath(
+  ox: number, oy: number, oz: number,
+  dx: number, dy: number, dz: number,
+  ctx: RTContext, rng: Rng,
+): Vec3 {
+  let Lr = 0, Lg = 0, Lb = 0
+  let br = 1, bg = 1, bb = 1
+  let countEmis = true
+  for (let depth = 0; ; depth++) {
+    const hit = ctx.bvh.closest(ox, oy, oz, dx, dy, dz, 1e-4, 1e30, tmpHit)
+    if (!hit) {
+      const sky = ctx.sky(dx, dy, dz)
+      Lr += br * sky[0]; Lg += bg * sky[1]; Lb += bb * sky[2]
+      break
+    }
+    const s = surfaceAt(ctx.scene, hit.tri, hit.u, hit.v, dx, dy, dz)
+    const vx = -dx, vy = -dy, vz = -dz
+    const em = s.mat.emission
+    if (countEmis && (em[0] + em[1] + em[2]) > 0) {
+      Lr += br * em[0]; Lg += bg * em[1]; Lb += bb * em[2]
+    }
+    const dl = directLight(s, vx, vy, vz, ctx, rng, tmpF)
+    Lr += br * dl[0]; Lg += bg * dl[1]; Lb += bb * dl[2]
+
+    if (depth >= ctx.maxBounces) break
+    if (!sampleBSDF(s, vx, vy, vz, rng, tmpF, tmpSample)) break
+    br *= tmpSample.wr; bg *= tmpSample.wg; bb *= tmpSample.wb
+    countEmis = tmpSample.specular
+
+    // Russian roulette after a couple of bounces
+    if (depth >= 2) {
+      let q = Math.max(br, bg, bb)
+      if (q > 0.95) q = 0.95
+      if (q < 0.05) q = 0.05
+      if (rng.next() >= q) break
+      br /= q; bg /= q; bb /= q
+    }
+
+    // step the ray off the surface along the geometric normal toward the new dir
+    const wx = tmpSample.wx, wy = tmpSample.wy, wz = tmpSample.wz
+    const side = (s.gx * wx + s.gy * wy + s.gz * wz) >= 0 ? 1 : -1
+    ox = s.px + s.gx * EPS * side
+    oy = s.py + s.gy * EPS * side
+    oz = s.pz + s.gz * EPS * side
+    dx = wx; dy = wy; dz = wz
+  }
+  return [Lr, Lg, Lb]
+}
+
+// Pure ambient occlusion: one cosine-weighted hemisphere ray per call (accumulated
+// across frames). Returns white where unoccluded, darkening in creases.
+export function traceAO(
+  ox: number, oy: number, oz: number,
+  dx: number, dy: number, dz: number,
+  ctx: RTContext, rng: Rng,
+): Vec3 {
+  const hit = ctx.bvh.closest(ox, oy, oz, dx, dy, dz, 1e-4, 1e30, tmpHit)
+  if (!hit) return [1, 1, 1]
+  const s = surfaceAt(ctx.scene, hit.tri, hit.u, hit.v, dx, dy, dz)
+  const l = cosineHemisphere(rng.next(), rng.next())
+  const [t1, t2] = orthonormalBasis([s.nx, s.ny, s.nz])
+  const w = toWorld(l, t1, t2, [s.nx, s.ny, s.nz])
+  const ogx = s.px + s.gx * EPS, ogy = s.py + s.gy * EPS, ogz = s.pz + s.gz * EPS
+  const occ = ctx.bvh.occluded(ogx, ogy, ogz, w[0], w[1], w[2], EPS, ctx.aoRadius)
+  const a = occ ? 0.05 : 1
+  return [a, a, a]
+}

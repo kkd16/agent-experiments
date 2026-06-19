@@ -7,6 +7,7 @@ import { DEFAULT_POST } from './render/post.ts'
 import { parseOBJ, SAMPLE_OBJ } from './geometry/obj.ts'
 
 const DEFAULT_SETTINGS: RenderSettings = {
+  engine: 'raster',
   mode: 'shaded',
   cullBack: false,
   autoRotate: true,
@@ -19,7 +20,22 @@ const DEFAULT_SETTINGS: RenderSettings = {
   environment: true,
   normalMaps: true,
   post: DEFAULT_POST,
+  rt: {
+    mode: 'path',
+    maxBounces: 4,
+    softShadows: true,
+    sunSoftness: 1.5,
+    lightRadius: 0.25,
+    aoRadius: 1.5,
+    resolutionScale: 0.5,
+    compare: false,
+    splitPos: 0.5,
+  },
 }
+
+// Scenes that are built for global illumination — selecting one flips to the ray
+// tracer so they don't read as a flat rasterized box.
+const RT_SCENES = new Set(['cornell', 'reflections'])
 
 export default function App() {
   const [settings, setSettings] = useState<RenderSettings>(DEFAULT_SETTINGS)
@@ -30,6 +46,11 @@ export default function App() {
 
   const { canvasRef, containerRef, stats, resetCamera, loadCustomMesh, captureScreenshot } =
     useEngine(settings, preset, resolutionScale)
+
+  const choosePreset = (key: string): void => {
+    setPreset(key)
+    if (RT_SCENES.has(key) && settings.engine !== 'rt') setSettings((s) => ({ ...s, engine: 'rt' }))
+  }
 
   const fill = useMemo(() => {
     const px = stats.width * stats.height
@@ -55,7 +76,7 @@ export default function App() {
         settings={settings}
         setSettings={setSettings}
         preset={preset}
-        setPreset={setPreset}
+        setPreset={choosePreset}
         resolutionScale={resolutionScale}
         setResolutionScale={setResolutionScale}
         onResetCamera={resetCamera}
@@ -75,16 +96,27 @@ export default function App() {
             <span className="unit">fps</span>
             <span className="hud-sub">{stats.ms.toFixed(1)} ms/frame</span>
           </div>
-          <dl className="hud-stats">
-            <div><dt>Resolution</dt><dd>{stats.width}×{stats.height}</dd></div>
-            <div><dt>Triangles in</dt><dd>{stats.trianglesIn.toLocaleString()}</dd></div>
-            <div><dt>Drawn</dt><dd>{stats.trianglesDrawn.toLocaleString()}</dd></div>
-            <div><dt>Pixels shaded</dt><dd>{stats.pixelsFilled.toLocaleString()}</dd></div>
-            <div><dt>Fill / pixel</dt><dd>{fill.toFixed(2)}×</dd></div>
-          </dl>
+          {settings.engine === 'rt' ? (
+            <dl className="hud-stats">
+              <div><dt>Resolution</dt><dd>{stats.width}×{stats.height}</dd></div>
+              <div><dt>Triangles</dt><dd>{stats.trianglesIn.toLocaleString()}</dd></div>
+              <div><dt>BVH nodes</dt><dd>{stats.rtNodes.toLocaleString()}</dd></div>
+              <div><dt>Samples / px</dt><dd>{stats.rtSamples.toLocaleString()}</dd></div>
+            </dl>
+          ) : (
+            <dl className="hud-stats">
+              <div><dt>Resolution</dt><dd>{stats.width}×{stats.height}</dd></div>
+              <div><dt>Triangles in</dt><dd>{stats.trianglesIn.toLocaleString()}</dd></div>
+              <div><dt>Drawn</dt><dd>{stats.trianglesDrawn.toLocaleString()}</dd></div>
+              <div><dt>Pixels shaded</dt><dd>{stats.pixelsFilled.toLocaleString()}</dd></div>
+              <div><dt>Fill / pixel</dt><dd>{fill.toFixed(2)}×</dd></div>
+            </dl>
+          )}
         </div>
 
-        <div className="watermark">no WebGL · CPU rasterizer</div>
+        <div className="watermark">
+          no WebGL · CPU {settings.engine === 'rt' ? 'path tracer' : 'rasterizer'}
+        </div>
       </main>
     </div>
   )

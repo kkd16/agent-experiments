@@ -30,6 +30,14 @@ src/
     shadow.ts        orthographic depth pass from the key light + PCF sampler
     post.ts          HDR resolve: exposure, tone mapping, bloom, FXAA, vignette
     pipeline.ts      per-object vertex stage → clip → rasterize / wireframe
+  raytrace/          the ground-truth twin (engine = 'rt')
+    intersect.ts     Möller–Trumbore ray/triangle + branchless ray/AABB slab
+    bvh.ts           binned-SAH bounding volume hierarchy + closest/any-hit traversal
+    rtscene.ts       live scene → world-space triangle soup + material/area-light tables
+    sampling.ts      RNG + cosine/GGX/cone/sphere importance sampling + Fresnel
+    tracer.ts        microfacet path tracer (NEE + GI) and an ambient-occlusion estimator
+    raytracer.ts     progressive accumulation, jittered-ray AA, shared HDR resolve
+    verify.ts        in-app numerical self-test (incl. the furnace energy test)
   scene/
     camera.ts        orbit camera (yaw/pitch/distance) → view + projection
     scene.ts         scene description: objects, lights, materials, sky, presets
@@ -53,6 +61,53 @@ src/
 - **clip** — highlights triangles that were near-plane clipped
 
 ## Ideas / backlog
+
+### v3 — the ray-traced reference path: a from-scratch software path tracer (planned 2026-06-19)
+
+A third major pass that gives the rasterizer a **ground-truth twin**. The same scene,
+meshes, materials, lights and analytic environment are fed to a from-scratch CPU **ray
+tracer / path tracer** so you can flip — or split the screen — between the real-time
+raster approximation (shadow map, IBL probe, screen-space AA) and a physically-correct
+reference image (true ray-traced shadows, mirror reflections, ambient occlusion and full
+global illumination with colour bleeding). This is exactly the hybrid raster+RT split that
+modern GPUs do, written by hand into the same `Uint32` framebuffer — no WebGL, no GPU.
+
+New steps:
+
+- [x] **Möller–Trumbore ray–triangle intersection** (`raytrace/intersect.ts`) returning the
+      hit distance + barycentric coordinates, plus a branchless ray–AABB slab test.
+- [x] **A binned-SAH bounding volume hierarchy** (`raytrace/bvh.ts`) — surface-area-heuristic
+      split over 12 bins per axis, an iterative traversal stack for the closest hit and a
+      cheap any-hit `occluded()` for shadow rays. O(log n) instead of O(n) per ray.
+- [x] **World-space triangle soup builder** (`raytrace/rtscene.ts`) — flattens the live
+      animated scene (every mesh × its model matrix) into cache-friendly typed arrays with
+      per-vertex normals/uv/tangent and a material table, so the tracer sees exactly what the
+      rasterizer drew.
+- [x] **Monte-Carlo sampling kit** (`raytrace/sampling.ts`) — a per-pixel xorshift RNG seeded
+      by a hash, cosine-weighted hemisphere sampling, GGX/​VNDF microfacet importance sampling,
+      a branchless orthonormal basis (Duff et al.) and Fresnel–Schlick.
+- [x] **A microfacet path tracer** (`raytrace/tracer.ts`) consistent with `pbr.ts`: a
+      metallic-roughness BSDF (Lambert diffuse + GGX specular), **next-event estimation** to
+      punctual *and* emissive-area lights with multiple-bounce indirect light, Russian-roulette
+      termination, and the analytic sky as an infinite emitter — so diffuse colour bleeds
+      between surfaces.
+- [x] **A Whitted/direct mode and a pure ambient-occlusion mode** sharing the same BVH — fast,
+      low-noise reference shadows + recursive mirror reflections, and a hemisphere-AO render.
+- [x] **Soft shadows** — cone-sampled directional lights and radius-sampled point lights give
+      real penumbrae the shadow map can't.
+- [x] **Progressive accumulation** (`raytrace/raytracer.ts`) — a Float32 sample-accumulation
+      buffer refined a slice per frame while the camera is still, tone-mapped through the same
+      HDR resolve (exposure / ACES / bloom / vignette); it resets the instant the camera or
+      scene changes, exactly like a viewport renderer.
+- [x] **Split-screen compare** — rasterizer on the left, path tracer on the right, with a
+      draggable divider, so the approximations and the ground truth sit side by side.
+- [x] **Emissive materials + a Cornell box & a reflections scene** that only read correctly
+      under global illumination (colour bleeding, soft contact shadows, true inter-reflection).
+- [x] **An in-app RT verification suite** (`raytrace/verify.ts`) — Möller–Trumbore vs analytic
+      hits, BVH-vs-brute-force agreement on random rays, the cosine/GGX sampling statistics,
+      orthonormal-basis & Fresnel identities, and the **furnace test** (a white surface in a
+      uniform white environment re-emits exactly its lit radiance — energy conservation), run
+      live in the browser.
 
 ### v2 — physically based rendering, image-based lighting & post FX (planned 2026-06-19)
 
@@ -128,6 +183,24 @@ real PBR engine with an HDR pipeline. New steps:
   preset showing them off. `parametricSurface` now estimates vertex normals from central
   differences (∂P/∂u × ∂P/∂v) when a generator doesn't supply analytic ones, so adding new
   surfaces is one function. Normals view confirms the Möbius normal-flip across its twist.
+- 2026-06-19 (claude / claude-opus-4-8): **v3 — gave the rasterizer a ground-truth twin: a
+  from-scratch CPU path tracer.** New `raytrace/` module: `intersect.ts` (Möller–Trumbore +
+  branchless ray/AABB slab), `bvh.ts` (a binned-SAH bounding volume hierarchy, 12 bins/axis,
+  iterative closest-hit + any-hit shadow traversal in flat typed arrays), `rtscene.ts` (flattens
+  the live animated scene into a cache-friendly world-space triangle soup with a material table
+  and area-light list), `sampling.ts` (xorshift RNG, cosine/GGX/cone/sphere importance sampling,
+  Duff orthonormal basis, Fresnel), `tracer.ts` (a metallic-roughness BSDF identical to `pbr.ts`,
+  next-event estimation to punctual + emissive-area lights, multi-bounce GI, Russian roulette,
+  plus an ambient-occlusion estimator), `raytracer.ts` (progressive Float32 accumulation refined
+  a budgeted slice per frame, jittered-ray AA, tone-mapped through the shared HDR resolve), and
+  `verify.ts` (an in-app self-test). Wired an **Engine** switch (Rasterizer / Ray tracer) and a
+  full RT control panel into the UI, a **split-screen compare** (raster left, path tracer right,
+  draggable divider), emissive materials, per-scene camera framing, and two GI showcase scenes —
+  a **Cornell box** (colour bleeding, soft contact shadows) and a **hall of mirrors** (true
+  inter-reflection). Verified headlessly: the BVH matches brute force on 20k random rays with
+  zero mismatches and zero Δt; the furnace test returns 0.9996 of the unit environment (energy
+  conserving); all 8 self-tests pass; offline PNGs show the Cornell box, the mirror spheres, the
+  raster↔RT split and the AO clay-render all rendering correctly.
 - 2026-06-19 (claude / claude-opus-4-8): **v2 — turned the Blinn–Phong toy into a small PBR
   engine with an HDR pipeline.** New modules `render/pbr.ts` (Cook–Torrance metallic-roughness:
   GGX + Smith + Fresnel), `render/environment.ts` (analytic HDR sky → skybox + diffuse
