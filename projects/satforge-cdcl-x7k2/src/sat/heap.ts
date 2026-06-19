@@ -79,6 +79,30 @@ export class VarOrderHeap {
     return top
   }
 
+  /**
+   * Remove and return a uniformly-random element, or -1 if empty. `r01` is a
+   * float in [0, 1). Used by the "random" branching heuristic so the variable
+   * choice is genuinely uniform over the order set (VSIDS uses `removeMax`), while
+   * keeping the heap and its position map perfectly consistent afterwards.
+   */
+  removeRandom(r01: number): number {
+    const n = this.heap.length
+    if (n === 0) return -1
+    let i = Math.floor(r01 * n)
+    if (i >= n) i = n - 1 // guard against r01 === 1
+    const v = this.heap[i]
+    const last = this.heap[n - 1]
+    this.heap.pop()
+    this.pos[v] = -1
+    if (i < n - 1) {
+      this.heap[i] = last
+      this.pos[last] = i
+      this.up(i)
+      this.down(i)
+    }
+    return v
+  }
+
   /** Rebuild the heap from scratch over the given variables. */
   rebuild(vars: number[]): void {
     this.heap = vars.slice()
