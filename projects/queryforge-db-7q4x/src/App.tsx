@@ -8,6 +8,7 @@ import { SchemaPanel } from './ui/SchemaPanel'
 import { TestsPanel } from './ui/TestsPanel'
 import { Reference } from './ui/Reference'
 import { Internals } from './ui/Internals'
+import { ConcurrencyLab } from './ui/ConcurrencyLab'
 import { CsvImport } from './ui/CsvImport'
 import { SAMPLE_QUERIES } from './db/sampleData'
 import type { QueryResult } from './db/engine'
@@ -26,6 +27,7 @@ const TABS = [
   { id: 'playground', label: 'Playground' },
   { id: 'import', label: 'Import CSV' },
   { id: 'reference', label: 'Reference' },
+  { id: 'concurrency', label: 'Concurrency Lab' },
   { id: 'internals', label: 'Internals' },
   { id: 'tests', label: 'Self-tests' },
 ]
@@ -128,6 +130,7 @@ export default function App() {
         <div className="doc-layout">
           {route === 'import' && <CsvImport onRun={run} onPreview={previewQuery} />}
           {route === 'reference' && <Reference />}
+          {route === 'concurrency' && <ConcurrencyLab />}
           {route === 'internals' && <Internals />}
           {route === 'tests' && <TestsPanel />}
         </div>
@@ -139,7 +142,7 @@ export default function App() {
           {schema.reduce((n, t) => n + t.rowCount, 0)} rows ·{' '}
           {schema.reduce((n, t) => n + t.indexes.length, 0)} indexes
         </span>
-        <span className="status-right">IndexScan · Hash/Merge Join · HashAggregate · Window frames · External Sort · stats · B+Tree</span>
+        <span className="status-right">IndexScan · Hash/Merge Join · HashAggregate · Window frames · External Sort · stats · B+Tree · MVCC</span>
       </footer>
     </div>
   )
