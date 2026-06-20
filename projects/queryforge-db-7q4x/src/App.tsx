@@ -9,6 +9,7 @@ import { TestsPanel } from './ui/TestsPanel'
 import { Reference } from './ui/Reference'
 import { Internals } from './ui/Internals'
 import { ConcurrencyLab } from './ui/ConcurrencyLab'
+import { RecoveryLab } from './ui/RecoveryLab'
 import { OptimizerLab } from './ui/OptimizerLab'
 import { CsvImport } from './ui/CsvImport'
 import { SAMPLE_QUERIES } from './db/sampleData'
@@ -30,6 +31,7 @@ const TABS = [
   { id: 'reference', label: 'Reference' },
   { id: 'optimizer', label: 'Optimizer Lab' },
   { id: 'concurrency', label: 'Concurrency Lab' },
+  { id: 'recovery', label: 'Recovery Lab' },
   { id: 'internals', label: 'Internals' },
   { id: 'tests', label: 'Self-tests' },
 ]
@@ -136,6 +138,7 @@ export default function App() {
             <OptimizerLab engine={engine} version={version} onApply={(ddl) => run(ddl)} />
           )}
           {route === 'concurrency' && <ConcurrencyLab />}
+          {route === 'recovery' && <RecoveryLab />}
           {route === 'internals' && <Internals />}
           {route === 'tests' && <TestsPanel />}
         </div>
@@ -147,7 +150,7 @@ export default function App() {
           {schema.reduce((n, t) => n + t.rowCount, 0)} rows ·{' '}
           {schema.reduce((n, t) => n + t.indexes.length, 0)} indexes
         </span>
-        <span className="status-right">IndexScan · Hash/Merge/IndexNL Join · Index Advisor · HashAggregate · Window frames · External Sort · stats · B+Tree · MVCC</span>
+        <span className="status-right">IndexScan · Hash/Merge/IndexNL Join · Index Advisor · HashAggregate · Window frames · External Sort · stats · B+Tree · MVCC · ARIES WAL recovery</span>
       </footer>
     </div>
   )
