@@ -10,6 +10,10 @@ import { runRTSelfTest } from '../raytrace/verify.ts'
 import type { RTTest } from '../raytrace/verify.ts'
 import { runSSFXSelfTest } from '../render/ssfx_verify.ts'
 import type { SSFXTest } from '../render/ssfx_verify.ts'
+import { SDF_PRESETS } from '../sdf/scenes.ts'
+import { runSdfSelfTest } from '../sdf/verify.ts'
+import type { SdfTest } from '../sdf/verify.ts'
+import type { SdfInfo } from '../sdf/marchingcubes.ts'
 
 const MODES: { key: RenderMode; label: string; blurb: string }[] = [
   { key: 'shaded', label: 'Shaded', blurb: 'Full HDR beauty pass — lighting, IBL, normal maps, tone mapping & post FX.' },
@@ -46,6 +50,16 @@ interface Props {
   sampleOBJ: string
   objError: string | null
   objInfo: string | null
+  sdfPreset: string
+  setSdfPreset: (k: string) => void
+  sdfRes: number
+  setSdfRes: (n: number) => void
+  sdfSmooth: number
+  setSdfSmooth: (n: number) => void
+  sdfIso: number
+  setSdfIso: (n: number) => void
+  sdfInfo: SdfInfo | null
+  onViewImplicit: () => void
 }
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
@@ -119,6 +133,17 @@ export default function Controls(props: Props) {
       setSsfxTesting(false)
     }, 30)
   }
+  const [sdfTests, setSdfTests] = useState<SdfTest[] | null>(null)
+  const [sdfTesting, setSdfTesting] = useState(false)
+  const runSdf = (): void => {
+    setSdfTesting(true)
+    setSdfTests(null)
+    setTimeout(() => {
+      setSdfTests(runSdfSelfTest())
+      setSdfTesting(false)
+    }, 30)
+  }
+  const activeSdf = SDF_PRESETS.find((p) => p.key === props.sdfPreset) ?? SDF_PRESETS[0]
 
   const models: { key: ShadingModel; label: string }[] = [
     { key: 'pbr', label: 'PBR (Cook–Torrance)' },
@@ -413,6 +438,68 @@ export default function Controls(props: Props) {
           label="Light power" value={settings.lightBoost} min={0.2} max={2.5} step={0.1}
           onChange={(v) => set({ lightBoost: v })} format={(v) => `${v.toFixed(1)}×`}
         />
+      </Section>
+
+      <Section title="Implicit modelling (SDF → marching cubes)">
+        <div className="seg seg-wrap">
+          {SDF_PRESETS.map((p) => (
+            <button
+              key={p.key}
+              className={props.sdfPreset === p.key ? 'active' : ''}
+              onClick={() => { props.setSdfPreset(p.key); props.onViewImplicit() }}
+              type="button"
+            >
+              {p.label}
+            </button>
+          ))}
+        </div>
+        <p className="blurb">{activeSdf.blurb}</p>
+        <Slider
+          label="Grid resolution" value={props.sdfRes} min={16} max={96} step={4}
+          onChange={props.setSdfRes} format={(v) => `${v.toFixed(0)}³ cells`}
+        />
+        <Slider
+          label="Blend smoothness" value={props.sdfSmooth} min={0} max={0.6} step={0.01}
+          onChange={props.setSdfSmooth} format={(v) => v.toFixed(2)}
+        />
+        <Slider
+          label="Iso level" value={props.sdfIso} min={-0.4} max={0.4} step={0.02}
+          onChange={props.setSdfIso} format={(v) => v.toFixed(2)}
+        />
+        <div className="seg">
+          <button className="active" onClick={props.onViewImplicit} type="button">
+            View in scene
+          </button>
+        </div>
+        {props.sdfInfo && (
+          <p className={`obj-msg ${props.sdfInfo.watertight ? 'ok' : ''}`}>
+            {props.sdfInfo.triangles.toLocaleString()} triangles · {props.sdfInfo.vertices.toLocaleString()} welded
+            vertices · {props.sdfInfo.watertight ? 'watertight ✓' : 'open surface'} · {props.sdfInfo.ms.toFixed(0)} ms
+          </p>
+        )}
+        <p className="blurb">
+          A signed distance field — primitives combined with boolean and <em>smooth</em> CSG — is
+          sampled on a grid and polygonised by hand-written marching cubes. Vertices are welded
+          across cells (so the mesh is a closed manifold) and normals come straight from the field
+          gradient. The result drops into the same rasterizer <em>and</em> path tracer as any mesh.
+        </p>
+        <button className="reset" onClick={runSdf} type="button" disabled={sdfTesting} style={{ width: '100%' }}>
+          {sdfTesting ? 'Running…' : 'Run marching-cubes self-test'}
+        </button>
+        {sdfTests && (
+          <div className="rt-tests">
+            <p className="blurb">
+              {sdfTests.filter((t) => t.pass).length}/{sdfTests.length} checks passed — primitive
+              distances, the smooth-min identity, analytic volume, and the Euler characteristic that
+              fixes the topology (sphere χ=2, torus χ=0).
+            </p>
+            {sdfTests.map((t) => (
+              <p key={t.name} className={`obj-msg ${t.pass ? 'ok' : 'err'}`}>
+                {t.pass ? '✓' : '✗'} {t.name} — {t.detail}
+              </p>
+            ))}
+          </div>
+        )}
       </Section>
 
       <Section title="Import OBJ">

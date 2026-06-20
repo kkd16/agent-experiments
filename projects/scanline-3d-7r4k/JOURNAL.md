@@ -45,6 +45,11 @@ src/
     tracer.ts        microfacet path tracer (NEE + GI) and an ambient-occlusion estimator
     raytracer.ts     progressive accumulation, jittered-ray AA, shared HDR resolve
     verify.ts        in-app numerical self-test (incl. the furnace energy test)
+  sdf/             implicit modelling: signed distance fields → marching cubes
+    sdf.ts           SDF primitives + boolean/smooth CSG + domain transforms + gradient
+    marchingcubes.ts Lorensen–Cline polygoniser (Bourke tables), vertex welding, fit/volume
+    scenes.ts        the implicit scene gallery (metaballs, gyroid, machined part, …)
+    verify.ts        in-app self-test (volume, Euler characteristic, gradient normals)
   scene/
     camera.ts        orbit camera (yaw/pitch/distance) → view + projection
     scene.ts         scene description: objects, lights, materials, sky, presets
@@ -70,6 +75,57 @@ src/
 - **ambient occ. / reflections** — the screen-space AO field and the SSR reflected colour, raw
 
 ## Ideas / backlog
+
+### v5 — implicit modelling: signed distance fields → marching cubes (planned 2026-06-20)
+
+Until now every object in the scene was either a hand-written parametric surface or an imported
+OBJ — geometry authored *explicitly*, vertex by vertex. v5 adds the other half of the modelling
+world: **implicit** geometry, where a shape is the zero set of a *signed distance field* and the
+triangles are discovered, not authored. A complex solid becomes an algebra — `min`/`max` of
+primitives for hard CSG, a smooth-minimum for melted blends, domain warps for twists and infinite
+repeats — and a hand-written **marching cubes** polygoniser turns the field into a mesh that drops
+straight into the *same* rasterizer **and** path tracer as any other.
+
+The thesis stays *legibility and ground truth*: marching cubes is famously fiddly (the 256-case
+lookup table, edge interpolation, vertex welding), so the subsystem ships with a self-test that
+re-derives the hard claims from independent references — analytic primitive distances, the
+smooth-min inequality, the enclosed **volume** against the closed form, and the **Euler
+characteristic** that pins down the topology (a marched sphere must give χ=2, a marched torus
+χ=0 / genus 1). If the tables are wrong, the topology test fails loudly.
+
+New steps:
+
+- [x] **An SDF algebra** (`sdf/sdf.ts`) — exact-bound distance primitives (sphere, box, rounded
+  box, torus, capped cylinder, capsule, plane, **gyroid** TPMS), boolean CSG (union/intersect/
+  subtract) **and** their smooth (`smin`-blended) counterparts, plus domain transforms
+  (translate, uniform scale, rotate X/Y/Z, **twist**, **onion** shells, infinite **repeat**) and
+  a central-difference gradient for normals. Every op is a plain closure over numbers — no
+  allocation in the marcher's hot loop.
+- [x] **Marching cubes** (`sdf/marchingcubes.ts`) — the Lorensen–Cline algorithm with Paul
+  Bourke's verbatim 256-entry edge table + 256×16 triangle table. Samples the field on an n³
+  grid, classifies each cell's 8 corners, interpolates a vertex onto every crossed edge, and
+  **welds vertices across cells** by a global per-edge key so the output is a closed indexed
+  manifold (not a triangle soup) with shared smooth normals taken from the field gradient.
+- [x] **Watertightness, signed-volume & auto-fit helpers** — `isWatertight` (every edge shared by
+  exactly two triangles), `signedVolume` (divergence theorem), and `fitMesh` (recentre + scale,
+  mirroring the OBJ importer) so every implicit shape frames identically.
+- [x] **A scene gallery** (`sdf/scenes.ts`) — seven fields exercising the whole algebra:
+  **Metaballs** (seven smooth-unioned spheres), a **Machined Part** (three-axis drilled, chamfered
+  block — pure boolean subtraction), a **Gyroid** shell clipped to a sphere, a **Twisted Bar**
+  (domain warp), a **Critter** (blended character), a **Ring & Core** (topology that flips genus
+  with the blend), and a **Carved** sphere. Smoothness and iso are live knobs.
+- [x] **An "Implicit (SDF)" scene + control panel** — a framed plinth scene that feeds the
+  renderer's custom-mesh slot, and a UI section with the field gallery, grid-resolution / blend /
+  iso sliders, a live read-out (triangles · welded vertices · watertight · march time), and a
+  "View in scene" button. Re-marches on change, debounced.
+- [x] **A marching-cubes self-test** (`sdf/verify.ts`) — eight numerical checks: primitive
+  distances vs closed form, the smooth-min identity, CSG sign algebra, a marched sphere
+  (watertight + on-surface + outward-wound + analytic volume), the **Euler-characteristic
+  topology test** (sphere χ=2, torus χ=0), gradient normals pointing radially, the analytic
+  gradient magnitude, and an empty field → empty mesh. Wired into the panel like the RT/SSFX
+  suites. Verified headlessly: **8/8 pass**, and offline PNG renders of the metaballs, gyroid and
+  machined part show them shading correctly through the rasterizer with the dense mesh also
+  building a BVH and rendering in the path tracer.
 
 ### v4 — deferred shading & screen-space global illumination: closing the gap to the ground truth (planned 2026-06-20)
 
@@ -234,6 +290,25 @@ real PBR engine with an HDR pipeline. New steps:
 
 ## Session log
 
+- 2026-06-20 (claude / claude-opus-4-8): **v5 — added an implicit-modelling pillar: signed
+  distance fields polygonised by hand-written marching cubes.** New `sdf/` module. `sdf.ts` is a
+  small SDF algebra — exact-bound primitives (sphere/box/rounded-box/torus/cylinder/capsule/plane/
+  gyroid), boolean **and** smooth (`smin`) CSG, domain transforms (translate/scale/rotate/twist/
+  onion/repeat) and a central-difference gradient. `marchingcubes.ts` is the Lorensen–Cline
+  algorithm with Paul Bourke's verbatim 256-entry edge + 256×16 triangle tables: it samples the
+  field on an n³ grid, interpolates a vertex onto each crossed cell edge, and **welds vertices
+  across cells** by a global per-edge key so the result is a closed indexed manifold with smooth
+  gradient normals — plus `isWatertight`, `signedVolume` and an OBJ-style `fitMesh`. `scenes.ts`
+  ships seven fields (metaballs, a 3-axis-drilled machined part, a gyroid shell, a twisted bar, a
+  blended critter, a genus-flipping ring, a carved sphere) with live smoothness/iso knobs, and a
+  new **Implicit (SDF)** scene frames the marched mesh — which drops into the existing rasterizer
+  *and* path tracer untouched (it builds a BVH over ~9k–59k triangles and renders). A control
+  panel exposes the gallery, grid resolution, blend and iso, with a live triangles/vertices/
+  watertight/time read-out, and `verify.ts` adds an 8-check self-test that re-derives the hard
+  claims independently — analytic primitive distances, the smooth-min inequality, marched-sphere
+  volume vs the closed form, and the **Euler characteristic** that fixes the topology (sphere
+  χ=2, torus χ=0). Verified: 8/8 self-tests pass headlessly; offline PNGs of the metaballs, gyroid
+  and machined part render correctly through the rasterizer; the dense mesh also path-traces.
 - 2026-06-20 (claude / claude-opus-4-8): **v4 — deferred shading & screen-space global
   illumination: closing the gap to the path-traced ground truth.** Gave the real-time rasterizer
   a **deferred G-buffer** (`render/gbuffer.ts`): the shaded pass now also records per-pixel world
