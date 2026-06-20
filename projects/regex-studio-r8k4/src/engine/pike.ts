@@ -162,6 +162,60 @@ export function compileProgram(ast: RegexNode, groupCount: number): Program {
   return new Compiler().compileTop(ast, groupCount);
 }
 
+// --- Disassembly (for the bytecode view) -----------------------------------
+
+export interface DisasmLine {
+  pc: number;
+  op: Inst['op'];
+  text: string; // the operand, rendered
+  targets: number[]; // jump targets, for drawing control flow
+  note: string; // a short human gloss
+}
+
+function slotName(slot: number): string {
+  const g = slot >> 1;
+  const side = slot % 2 === 0 ? 'start' : 'end';
+  return g === 0 ? `match ${side}` : `group ${g} ${side}`;
+}
+
+export function disassemble(prog: Program): DisasmLine[] {
+  return prog.insts.map((inst, pc) => {
+    switch (inst.op) {
+      case 'char':
+        return { pc, op: inst.op, text: inst.set.label(), targets: [], note: 'consume one code point in this class' };
+      case 'match':
+        return { pc, op: inst.op, text: '', targets: [], note: 'accept — record the capture slots' };
+      case 'jmp':
+        return { pc, op: inst.op, text: `→ ${inst.x}`, targets: [inst.x], note: 'unconditional jump' };
+      case 'split':
+        return {
+          pc,
+          op: inst.op,
+          text: `→ ${inst.x}, ${inst.y}`,
+          targets: [inst.x, inst.y],
+          note: `fork: try ${inst.x} first, else ${inst.y} (priority = greedy/lazy preference)`,
+        };
+      case 'save':
+        return { pc, op: inst.op, text: `slot ${inst.slot}`, targets: [], note: `record position → ${slotName(inst.slot)}` };
+      case 'assert':
+        return { pc, op: inst.op, text: inst.kind, targets: [], note: zeroWidthNote(inst.kind) };
+    }
+  });
+}
+
+function zeroWidthNote(kind: 'bol' | 'eol' | 'wb' | 'nwb'): string {
+  switch (kind) {
+    case 'bol':
+      return 'assert start-of-line (^)';
+    case 'eol':
+      return 'assert end-of-line ($)';
+    case 'wb':
+      return 'assert word boundary (\\b)';
+    case 'nwb':
+      return 'assert non-boundary (\\B)';
+  }
+}
+
 // --- The thread-list simulator --------------------------------------------
 
 interface Thread {

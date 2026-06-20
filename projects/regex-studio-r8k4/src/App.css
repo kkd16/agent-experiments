@@ -1355,3 +1355,107 @@
 .redos-explainer code {
   color: var(--accent);
 }
+
+/* ---------- Pike VM bytecode ---------- */
+.pike-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+.pike-unsupported {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--panel);
+  padding: 14px 16px;
+}
+.pike-unsupported strong {
+  color: var(--warn);
+}
+.disasm {
+  font-family: var(--mono);
+  font-size: 12.5px;
+  border: 1px solid var(--border-soft);
+  border-radius: 10px;
+  overflow: hidden;
+}
+.disasm-row {
+  display: grid;
+  grid-template-columns: 44px 64px minmax(70px, max-content) 1fr;
+  gap: 10px;
+  align-items: baseline;
+  padding: 4px 12px;
+  border-bottom: 1px solid var(--border-soft);
+}
+.disasm-row:last-child {
+  border-bottom: none;
+}
+.disasm-row:nth-child(odd) {
+  background: rgba(255, 255, 255, 0.015);
+}
+.disasm-pc {
+  color: var(--muted-2);
+}
+.disasm-op {
+  font-weight: 700;
+  border-radius: 5px;
+  padding: 1px 7px;
+  text-align: center;
+  font-size: 11.5px;
+}
+.op-char {
+  color: var(--accent);
+  background: rgba(96, 165, 250, 0.14);
+}
+.op-split {
+  color: var(--accent-2);
+  background: rgba(167, 139, 250, 0.14);
+}
+.op-jmp {
+  color: var(--muted);
+  background: rgba(138, 151, 172, 0.14);
+}
+.op-save {
+  color: var(--good);
+  background: rgba(52, 211, 153, 0.14);
+}
+.op-assert {
+  color: var(--warn);
+  background: rgba(245, 158, 11, 0.14);
+}
+.op-match {
+  color: var(--bad);
+  background: rgba(248, 113, 113, 0.14);
+}
+.disasm-arg {
+  color: var(--text);
+}
+.disasm-note {
+  color: var(--muted-2);
+  font-family: var(--sans);
+  font-size: 12px;
+}
+.disasm-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  padding: 4px 2px;
+}
+.legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.legend-desc {
+  color: var(--muted);
+  font-size: 12px;
+}
+@media (max-width: 720px) {
+  .disasm-row {
+    grid-template-columns: 36px 56px 1fr;
+  }
+  .disasm-note {
+    display: none;
+  }
+}

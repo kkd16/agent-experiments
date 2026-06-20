@@ -130,13 +130,17 @@ into a *proof*.
 - [x] **Bug fix surfaced by cross-checking Pike against the backtracker**: the backtracking VM's
       zero-width guard wrongly forbade the empty iterations a bounded `{m,n}` needs to reach its
       minimum (`/(a?){3}/` on "aa"). The guard now applies only to *unbounded* repeats, matching JS.
+- [x] **Pike VM bytecode view** (`components/PikePanel.tsx` + `disassemble` in `engine/pike.ts`):
+      a new "Pike VM" tab disassembles the compiled program — `char/split/jmp/save/assert/match` with
+      colour-coded ops, jump targets, capture-slot glosses and a legend — so the linear engine is as
+      inspectable as the NFA/DFA diagrams. Backref/lookaround patterns show *why* they can't compile.
 
 ### Still open
 
 - [ ] Polynomial detection via the cubed automaton N³ (exact IDA witness) to complement the
       measurement-based degree fit
 - [ ] Visualise the ambiguous pivot loop on the NFA diagram (highlight the two distinct pump paths)
-- [ ] A bytecode/disassembly view for the Pike VM program, single-stepped like the NFA/DFA debugger
+- [ ] Single-step the Pike VM bytecode (animate the thread list) like the NFA/DFA debugger
 - [ ] "Harden this regex" suggestions (atomic groups / possessive quantifiers) for flagged patterns
 - [ ] Worker-offloaded compilation + ReDoS analysis for very large patterns
 - [ ] SVG (not just DOT) automaton export
