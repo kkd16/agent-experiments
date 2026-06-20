@@ -18,9 +18,10 @@ import { SmtStudio } from './components/SmtStudio'
 import { ModelChecker } from './components/ModelChecker'
 import { SolverLab } from './components/SolverLab'
 import { QbfStudio } from './components/QbfStudio'
+import { BddStudio } from './components/BddStudio'
 
 type Tab = 'solution' | 'stats' | 'count' | 'compile' | 'graph' | 'trace' | 'proof' | 'cnf'
-type Mode = 'sat' | 'smt' | 'qbf' | 'imc' | 'lab'
+type Mode = 'sat' | 'smt' | 'qbf' | 'imc' | 'bdd' | 'lab'
 
 export default function App() {
   const [mode, setMode] = useState<Mode>('sat')
@@ -94,7 +95,9 @@ export default function App() {
                     ? 'Quantified Boolean Formulas (PSPACE) by counterexample-guided expansion.'
                     : mode === 'imc'
                       ? 'Craig interpolation & interpolation-based safety model checking.'
-                      : 'An empirical lab that races CDCL heuristics across a benchmark suite.'}
+                      : mode === 'bdd'
+                        ? 'Binary Decision Diagrams: canonical Boolean functions, visualized & reordered.'
+                        : 'An empirical lab that races CDCL heuristics across a benchmark suite.'}
             </p>
           </div>
         </div>
@@ -111,6 +114,9 @@ export default function App() {
           <button className={mode === 'imc' ? 'active' : ''} onClick={() => setMode('imc')}>
             Model Checker
           </button>
+          <button className={mode === 'bdd' ? 'active' : ''} onClick={() => setMode('bdd')}>
+            BDD Studio
+          </button>
           <button className={mode === 'lab' ? 'active' : ''} onClick={() => setMode('lab')}>
             Solver Lab
           </button>
@@ -120,6 +126,7 @@ export default function App() {
       {mode === 'smt' && <SmtStudio />}
       {mode === 'qbf' && <QbfStudio />}
       {mode === 'imc' && <ModelChecker />}
+      {mode === 'bdd' && <BddStudio />}
       {mode === 'lab' && <SolverLab />}
 
       {mode === 'sat' && (

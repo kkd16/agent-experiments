@@ -60,6 +60,19 @@ conflict teaches the solver a new clause that prunes an exponential swath of the
   `eval.ts` is an independent exhaustive Shannon-expansion oracle; `encoders.ts` carries curated
   examples plus scalable families with values known by construction (the copy game, the parity
   ladder) and a random generator; `selfcheck.ts` cross-checks 1500+ instances solver-vs-oracle.
+- `src/bdd/*` — **Binary Decision Diagrams** (Session 16). `bdd.ts` is a from-scratch ROBDD
+  package: a unique-table-interned, canonical representation built around the universal `ite(f,g,h)`
+  apply (memoized), with every connective, cofactor/restrict, ∃/∀ quantification, functional
+  `compose`, exact BigInt `satCount`, and cube enumeration as thin wrappers — equivalence is a
+  pointer compare. `reorder.ts` rebuilds a function under any variable order by Shannon
+  reconstruction (the cofactor identity, provably function-preserving) and layers **Rudell sifting**
+  on top to shrink a diagram. `expr.ts` is a precedence-climbing Boolean-expression front-end;
+  `build.ts` compiles CNFs into BDDs and carries a gallery of order-sensitive classics (the
+  bit-match blow-up, word equality, the adder carry, parity, thresholds); `zdd.ts` is the dual
+  **Zero-suppressed BDD** for set families (∪/∩/∖, count, combinations); `layout.ts` positions a
+  diagram for SVG. `selfcheck.ts` pins the engine against a truth-table oracle, the project's OWN
+  CDCL + #SAT engines (a BDD from a CNF must agree on SAT/UNSAT and the model count), and closed-form
+  combinatorics for the ZDD.
 - `src/worker/solver.worker.ts` + `src/useSolver.ts` — runs the solver off the main thread.
 - `src/components/*` — Solution boards, statistics + search-dynamics chart, implication-graph
   view, step-through trace, CNF/DIMACS inspector, the #SAT Count view, the **Compile** view
@@ -67,7 +80,10 @@ conflict teaches the solver a new clause that prunes an exponential swath of the
   slider, a live variable-marginal bar chart, and a `.nnf` download), the SMT Studio, the
   **QBF Studio** (`QbfStudio.tsx` — QDIMACS editor, examples + random generator, the verdict with
   its brute-force agreement badge, a verified winning-move certificate, and a live refinement
-  trace), and the Model Checker studio (`ModelChecker.tsx`).
+  trace), the Model Checker studio (`ModelChecker.tsx`), and the **BDD Studio**
+  (`BddStudio.tsx` — a gallery + Boolean-expression editor, a live SVG of the diagram with the
+  1-edge/0-edge convention, node-count/model-count/status stats, and one-click reordering
+  — sift / reverse / shuffle / good-vs-bad order — that visibly grows or collapses the diagram).
 
 ## Correctness
 
@@ -88,7 +104,10 @@ gallery) and the **knowledge-compilation engine** (Session 14 — over 1200 rand
 sd-DNNF is checked for the three structural properties, its model count is matched against #SAT and
 brute force, its weighted model count and its one-pass differential marginals against brute force,
 and its enumeration against the exact model set with no duplicates) all compared against independent
-references. All **313 assertions** pass.
+references — and (Session 16) the **BDD/ZDD** engine (a truth-table oracle for every apply,
+cofactor, quantifier and reorder; a BDD compiled from a CNF cross-checked against the project's own
+CDCL solver and #SAT counter; the ZDD set algebra against closed-form combinatorics). All **412
+assertions** pass.
 
 ## Ideas / backlog
 
@@ -1264,3 +1283,42 @@ correct and obviously well-founded; the oracle caught the bug instantly.)
   smooth+decomposable+deterministic, WMC, the one-pass marginals and the max-product MPE match brute
   force (random and uniform weights), and enumeration equals the exact model set with no duplicates —
   harness now **296 → 313 assertions**. Lint + tsc + build + full gate green.
+
+### Session 16 — Binary Decision Diagrams (a fifth studio)
+
+Gave SatForge the other canonical form of a Boolean function. Where d-DNNF compiles for *counting*,
+a **BDD compiles for *equivalence*** — interned in a unique table with the two reduction rules, two
+formulas are equivalent **iff they are the same node**, so SAT, tautology and equivalence are a
+pointer compare.
+
+- [x] **`src/bdd/bdd.ts` — a from-scratch ROBDD package.** One universal memoized operator
+      `ite(f,g,h)` (Shannon's if-then-else) computes every connective; `not/and/or/xor/nand/nor/
+      implies/iff`, `restrict` (cofactor), `existsVar/forallVar` + `exists/forall`, functional
+      `compose`, `support`, `size`/`sharedSize`, exact **BigInt `satCount`** (skipped levels count as
+      ×2), `anySat`, cube enumeration and `evaluate` are all thin wrappers. Canonicity is real:
+      equality is `===` on node ids.
+- [x] **`src/bdd/reorder.ts` — variable reordering, the whole point.** `reorder` rebuilds a function
+      under any order by Shannon reconstruction (provably function-preserving — the cofactor
+      identity), and **`sift` (Rudell)** slides each variable to its best level to minimize the
+      diagram. Plus `reverseOrder`, `interleave`, seeded `randomOrder`. *Verified on the bit-match
+      function: grouped order 62 nodes → sift → 10; word-equality 93 → 15; parity stays 15 in every
+      order.* Caught + fixed a self-inflicted infinite recursion (an `ite(f,0,1)→¬f` shortcut that
+      called itself) before it shipped.
+- [x] **`src/bdd/expr.ts`** — a precedence-climbing Boolean-expression front-end (`! & | ^ -> <->`,
+      bare-name variables) with an AST evaluator used as the oracle.
+- [x] **`src/bdd/build.ts`** — `bddFromCnf` (conjoin shortest-first) and a gallery of order-sensitive
+      classics (bit-match, word equality, adder carry, parity, majority, thresholds) carrying their
+      good/bad orders.
+- [x] **`src/bdd/zdd.ts` — the dual Zero-suppressed BDD** for set families: union/intersect/diff,
+      count, `allSubsets` (2ⁿ), `combinations` (C(n,k)), `single`.
+- [x] **`src/bdd/layout.ts` + `BddStudio.tsx`** — a fifth studio: gallery/expression input, a live
+      SVG of the diagram (solid 1-edge, dashed 0-edge, terminal boxes), node-count/model-count/status
+      stats, and one-click **Sift / Reverse / Shuffle / Good / Bad** reordering that visibly grows or
+      collapses the picture, with a sift shrink-percentage readout and the live variable order as chips.
+- [x] **99 new cross-check assertions** (`src/bdd/selfcheck.ts`, folded into `selftest.ts`):
+      canonicity + Boolean identities; apply/satCount/cofactor/∃∀/compose vs a truth-table oracle over
+      hundreds of random functions; reorder + sift preserve the function and the count; the bit-match
+      blow-up is real and sift recovers it; **a BDD from a random CNF agrees with the project's own
+      CDCL solver (SAT/UNSAT) and #SAT counter (exact count)**; the expression compiler matches its
+      evaluator; and the ZDD set algebra matches 2ⁿ, C(n,k) and bit-mask set arithmetic. Harness
+      **313 → 412 assertions**, all green. Lint + tsc + build + full gate green.

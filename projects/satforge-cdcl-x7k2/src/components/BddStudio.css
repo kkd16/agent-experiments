@@ -1,0 +1,232 @@
+.bdd-studio {
+  display: grid;
+  grid-template-columns: 340px 1fr;
+  gap: 18px;
+  padding: 20px clamp(16px, 4vw, 48px);
+  align-items: start;
+}
+
+@media (max-width: 880px) {
+  .bdd-studio {
+    grid-template-columns: 1fr;
+  }
+}
+
+.bdd-side {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.bdd-card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 14px 16px;
+}
+.bdd-card h3 {
+  margin: 0 0 10px;
+  font-size: 0.95rem;
+  color: var(--accent);
+  letter-spacing: 0.02em;
+}
+
+.bdd-seg {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+.bdd-seg button {
+  flex: 1;
+  padding: 7px 10px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  color: var(--muted);
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 0.85rem;
+}
+.bdd-seg button.on {
+  color: var(--text);
+  border-color: var(--accent);
+  background: linear-gradient(135deg, rgba(110, 168, 254, 0.22), rgba(155, 140, 255, 0.22));
+}
+
+.bdd-select,
+.bdd-expr {
+  width: 100%;
+  box-sizing: border-box;
+  background: var(--bg-soft);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 8px;
+  padding: 9px 10px;
+  font-size: 0.9rem;
+}
+.bdd-expr {
+  font-family: var(--mono, ui-monospace, monospace);
+  resize: vertical;
+}
+.bdd-blurb {
+  margin: 10px 2px 0;
+  font-size: 0.84rem;
+  color: var(--muted);
+  line-height: 1.5;
+}
+.bdd-hint {
+  margin: 8px 2px 0;
+  font-size: 0.78rem;
+  color: var(--muted);
+  line-height: 1.5;
+}
+.bdd-hint code {
+  background: var(--bg-soft);
+  padding: 1px 5px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  font-size: 0.74rem;
+}
+.bdd-err {
+  margin-top: 8px;
+  padding: 7px 10px;
+  background: rgba(239, 71, 111, 0.14);
+  border: 1px solid var(--unsat);
+  border-radius: 8px;
+  color: #ffd2dc;
+  font-size: 0.82rem;
+}
+
+.bdd-order-btns {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+.bdd-order-btns button {
+  padding: 7px 11px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 0.82rem;
+  transition: border-color 0.15s, transform 0.05s;
+}
+.bdd-order-btns button:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+.bdd-order-btns button:active:not(:disabled) {
+  transform: translateY(1px);
+}
+.bdd-order-btns button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.bdd-sift-note {
+  margin-top: 10px;
+  font-size: 0.82rem;
+  color: var(--muted);
+}
+.bdd-sift-note strong {
+  color: var(--sat);
+}
+.bdd-shrink {
+  color: var(--accent);
+}
+
+.bdd-order-chips {
+  margin-top: 12px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+.bdd-chip {
+  font-family: var(--mono, ui-monospace, monospace);
+  font-size: 0.74rem;
+  padding: 2px 7px;
+  background: var(--bg-soft);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--text);
+}
+
+.bdd-stat-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 9px;
+}
+.bdd-stat {
+  background: var(--bg-soft);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  padding: 9px 11px;
+}
+.bdd-stat-v {
+  font-size: 1.05rem;
+  font-weight: 600;
+  color: var(--text);
+}
+.bdd-stat-l {
+  font-size: 0.72rem;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-top: 2px;
+}
+
+.bdd-canvas {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 14px;
+  min-height: 420px;
+}
+.bdd-legend {
+  display: flex;
+  gap: 18px;
+  flex-wrap: wrap;
+  align-items: center;
+  font-size: 0.78rem;
+  color: var(--muted);
+  margin-bottom: 10px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--border);
+}
+.bdd-legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.bdd-svg-wrap {
+  overflow: auto;
+  display: flex;
+  justify-content: center;
+}
+.bdd-svg {
+  display: block;
+}
+.bdd-node-label {
+  fill: var(--text);
+  font-size: 12px;
+  font-family: var(--mono, ui-monospace, monospace);
+  pointer-events: none;
+}
+.bdd-term-label {
+  fill: var(--text);
+  font-size: 13px;
+  font-weight: 700;
+  pointer-events: none;
+}
+
+.bdd-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 340px;
+  color: var(--muted);
+  text-align: center;
+  font-size: 0.92rem;
+  line-height: 1.6;
+  padding: 0 28px;
+}
