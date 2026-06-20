@@ -256,11 +256,70 @@ function collectFns(root: Expr, counts: Map<string, number>): Map<string, FnInfo
 
 type Env = Map<string, Rel>
 
-/** The size relation of an expression to the enclosing parameters, if any. Only
- *  a bare variable carries one (everything else is either bigger — a constructor
- *  application — or opaque). */
-function relOf(e: Expr, env: Env): Rel | null {
-  return e.kind === 'var' ? (env.get(e.name) ?? null) : null
+/** A walk context: the size of each in-scope variable, plus *reconstruction*
+ *  facts. When `match m with S p -> …` binds `p` to the field of `m`, the term
+ *  `S p` rebuilds `m` exactly — so it has the *same* size as `m`. Tracking that
+ *  (a ↓= arc) is what lets size-change prove lexicographic descent, e.g.
+ *  Ackermann's `ack (S p) q` keeps the first argument equal while the second
+ *  strictly shrinks. Keyed by the term's shape; each entry remembers the field
+ *  variables so a later rebinding can invalidate it. */
+interface Ctx {
+  sizes: Env
+  recon: Map<string, { rel: Rel; vars: string[] }>
+}
+
+function cloneCtx(c: Ctx): Ctx {
+  return { sizes: new Map(c.sizes), recon: new Map(c.recon) }
+}
+
+/** Drop every reconstruction fact that mentions `name` — its value just changed,
+ *  so any term rebuilt from it is no longer known to have the recorded size. */
+function invalidateRecon(c: Ctx, name: string): void {
+  for (const [k, v] of c.recon) if (v.vars.includes(name)) c.recon.delete(k)
+}
+
+/** The shape key of an all-variable constructor / cons / tuple term, or null. */
+function reconExprKey(e: Expr): string | null {
+  if (e.kind === 'app') {
+    const { head, args } = spine(e)
+    if (head.kind === 'var' && args.length > 0 && args.every((a) => a.kind === 'var')) {
+      return head.name + '|' + args.map((a) => (a as { name: string }).name).join(',')
+    }
+    return null
+  }
+  if (e.kind === 'binop' && e.op === '::' && e.left.kind === 'var' && e.right.kind === 'var') {
+    return '::|' + e.left.name + ',' + e.right.name
+  }
+  if (e.kind === 'tuple' && e.elements.length > 0 && e.elements.every((x) => x.kind === 'var')) {
+    return 'T' + e.elements.length + '|' + e.elements.map((x) => (x as { name: string }).name).join(',')
+  }
+  return null
+}
+
+/** The matching shape key of an all-variable constructor / cons / tuple pattern
+ *  (plus its bound field variables), or null. */
+function reconPatKey(p: Pattern): { key: string; vars: string[] } | null {
+  if (p.kind === 'pcon' && p.args.length > 0 && p.args.every((a) => a.kind === 'pvar')) {
+    const vars = p.args.map((a) => (a as { name: string }).name)
+    return { key: p.name + '|' + vars.join(','), vars }
+  }
+  if (p.kind === 'pcons' && p.head.kind === 'pvar' && p.tail.kind === 'pvar') {
+    return { key: '::|' + p.head.name + ',' + p.tail.name, vars: [p.head.name, p.tail.name] }
+  }
+  if (p.kind === 'ptuple' && p.elements.length > 0 && p.elements.every((a) => a.kind === 'pvar')) {
+    const vars = p.elements.map((a) => (a as { name: string }).name)
+    return { key: 'T' + p.elements.length + '|' + vars.join(','), vars }
+  }
+  return null
+}
+
+/** The size relation of an expression to the enclosing parameters, if any: a bare
+ *  variable carries its tracked size; a term that exactly reconstructs a matched
+ *  scrutinee carries that scrutinee's size (a non-increasing ↓= alias). */
+function relOf(e: Expr, c: Ctx): Rel | null {
+  if (e.kind === 'var') return c.sizes.get(e.name) ?? null
+  const key = reconExprKey(e)
+  return key ? (c.recon.get(key)?.rel ?? null) : null
 }
 
 /** Bind a pattern's variables to their size relative to the scrutinee `sr`. A
@@ -310,13 +369,13 @@ function buildScgs(fns: Map<string, FnInfo>): ScgBuild {
     // graph — so it disqualifies f (see the file header).
     const locals = new Set(f.params)
 
-    const recordCall = (g: FnInfo, args: Expr[], env: Env): void => {
+    const recordCall = (g: FnInfo, args: Expr[], ctx: Ctx): void => {
       callEdges.add(f.name + ' ' + g.name)
       const arcs: ScgArc[] = []
       const seen = new Map<string, number>() // dst param → index into arcs
       const n = Math.min(args.length, g.params.length)
       for (let i = 0; i < n; i++) {
-        const r = relOf(args[i], env)
+        const r = relOf(args[i], ctx)
         if (!r) continue
         const dst = g.params[i]
         const arc: ScgArc = { from: r.param, to: dst, strict: r.strict }
@@ -331,67 +390,79 @@ function buildScgs(fns: Map<string, FnInfo>): ScgBuild {
       scgs.push({ fromFn: f.name, toFn: g.name, arcs })
     }
 
-    const walk = (e: Expr, env: Env): void => {
+    const walk = (e: Expr, ctx: Ctx): void => {
       switch (e.kind) {
         case 'app': {
           const { head, args } = spine(e)
           if (head.kind === 'var') {
             if (FNAMES.has(head.name)) {
-              recordCall(fns.get(head.name)!, args, env)
+              recordCall(fns.get(head.name)!, args, ctx)
             } else if (locals.has(head.name)) {
               higherOrder.add(f.name) // applies a runtime-supplied function
             }
           }
           // a non-variable head (e.g. `(fn x -> …) a`, or `(g a) b`) still has its
           // pieces walked below for nested calls.
-          for (const a of args) walk(a, env)
-          if (head.kind !== 'var') walk(head, env)
+          for (const a of args) walk(a, ctx)
+          if (head.kind !== 'var') walk(head, ctx)
           return
         }
         case 'match': {
-          walk(e.scrutinee, env)
-          const sr = relOf(e.scrutinee, env)
+          walk(e.scrutinee, ctx)
+          const sr = relOf(e.scrutinee, ctx)
           for (const c of e.cases) {
-            const inner: Env = new Map(env)
+            const inner = cloneCtx(ctx)
             const bound = new Set<string>()
             patternVars(c.pattern, bound)
-            for (const b of bound) locals.add(b)
-            bindPattern(c.pattern, sr, 0, inner)
+            for (const b of bound) {
+              locals.add(b)
+              invalidateRecon(inner, b) // a rebinding stales any term built from it
+            }
+            bindPattern(c.pattern, sr, 0, inner.sizes)
+            // `C f1 .. fn` rebuilds this scrutinee exactly, so it shares its size
+            if (sr) {
+              const rp = reconPatKey(c.pattern)
+              if (rp) inner.recon.set(rp.key, { rel: sr, vars: rp.vars })
+            }
             if (c.guard) walk(c.guard, inner)
             walk(c.body, inner)
           }
           return
         }
         case 'let': {
-          walk(e.value, env)
+          walk(e.value, ctx)
           locals.add(e.name)
-          const inner: Env = new Map(env)
-          // copy-propagate a size fact through `let v = <var>`
-          const r = relOf(e.value, env)
-          if (r) inner.set(e.name, r)
-          else inner.delete(e.name)
+          const inner = cloneCtx(ctx)
+          invalidateRecon(inner, e.name)
+          // copy-propagate a size fact through `let v = <var or reconstruction>`
+          const r = relOf(e.value, ctx)
+          if (r) inner.sizes.set(e.name, r)
+          else inner.sizes.delete(e.name)
           walk(e.body, inner)
           return
         }
         case 'letrec': {
           for (const b of e.bindings) locals.add(b.name)
-          for (const b of e.bindings) walk(b.value, env)
-          walk(e.body, env)
+          for (const b of e.bindings) walk(b.value, ctx)
+          walk(e.body, ctx)
           return
         }
         case 'lambda': {
           locals.add(e.param)
-          walk(e.body, env)
+          const inner = cloneCtx(ctx)
+          invalidateRecon(inner, e.param)
+          inner.sizes.delete(e.param)
+          walk(e.body, inner)
           return
         }
         default:
-          for (const c of children(e)) walk(c, env)
+          for (const c of children(e)) walk(c, ctx)
       }
     }
 
-    const env0: Env = new Map()
-    for (const p of f.params) env0.set(p, { param: p, strict: false })
-    walk(f.body, env0)
+    const ctx0: Ctx = { sizes: new Map(), recon: new Map() }
+    for (const p of f.params) ctx0.sizes.set(p, { param: p, strict: false })
+    walk(f.body, ctx0)
   }
 
   return { scgs, higherOrder, callEdges }
