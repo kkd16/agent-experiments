@@ -2,6 +2,7 @@ import { useMemo } from 'react';
 import type { Compiled } from '../engine/compile';
 import { dfaAccepts, searchAll, toCodePoints } from '../engine/simulate';
 import { runVM, searchVM, type VMMatch } from '../engine/vm';
+import { searchPike } from '../engine/pike';
 
 interface Props {
   compiled: Compiled;
@@ -12,13 +13,19 @@ interface Props {
 const STEP_WARN = 50_000;
 
 export function MatchPanel({ compiled, text, onTextChange }: Props) {
-  const { ast, minDfa, groupCount, features } = compiled;
+  const { ast, minDfa, groupCount, groupNames, features } = compiled;
   const chars = useMemo(() => Array.from(text), [text]);
   const codeLen = useMemo(() => toCodePoints(text).length, [text]);
 
   const vm = useMemo(() => {
     if (!ast) return null;
     return searchVM(ast, groupCount, text, { stepLimit: 4_000_000 });
+  }, [ast, groupCount, text]);
+
+  // The Pike VM: linear-time *with* captures (declines backrefs / lookaround).
+  const pike = useMemo(() => {
+    if (!ast) return null;
+    return searchPike(ast, groupCount, text);
   }, [ast, groupCount, text]);
 
   // Whole-string acceptance: exact via DFA when regular, else an anchored VM run.
@@ -103,16 +110,20 @@ export function MatchPanel({ compiled, text, onTextChange }: Props) {
         steps={steps}
         aborted={aborted}
         dfaMatches={dfaResult?.matches.length ?? null}
+        pikeMatches={pike?.unsupported ? null : pike?.matches.length ?? null}
+        pikeSteps={pike?.steps ?? 0}
+        pikeUnsupported={pike?.unsupported ?? null}
       />
 
-      {groupCount > 0 && matches.length > 0 && <CaptureTable matches={matches} text={text} groupCount={groupCount} />}
+      {groupCount > 0 && matches.length > 0 && (
+        <CaptureTable matches={matches} text={text} groupCount={groupCount} groupNames={groupNames} />
+      )}
 
       <p className="muted-note">
-        The <strong>backtracking VM</strong> runs every feature (captures, backreferences, anchors, lookaround).{' '}
-        {minDfa
-          ? 'Because this pattern is regular, the minimal DFA also decides it in guaranteed linear time.'
-          : 'This pattern is non-regular, so only the VM can run it — there is no DFA.'}{' '}
-        {codeLen} code points scanned.
+        Three engines, one input. The <strong>DFA</strong> decides membership in guaranteed linear time but knows
+        nothing of groups; the <strong>Pike VM</strong> stays linear <em>and</em> recovers captures (no
+        backtracking); the <strong>backtracking VM</strong> runs every feature — backreferences, lookaround — but can
+        blow up. {codeLen} code points scanned.
       </p>
     </div>
   );
@@ -123,37 +134,66 @@ function EngineBar({
   steps,
   aborted,
   dfaMatches,
+  pikeMatches,
+  pikeSteps,
+  pikeUnsupported,
 }: {
   regular: boolean;
   steps: number;
   aborted: boolean;
   dfaMatches: number | null;
+  pikeMatches: number | null;
+  pikeSteps: number;
+  pikeUnsupported: string | null;
 }) {
   const hot = aborted || steps > STEP_WARN;
   return (
-    <div className="engine-bar">
-      <div className={`engine-stat${hot ? ' engine-hot' : ''}`}>
-        <span className="engine-name">backtracking VM</span>
-        <span className="engine-val">
-          {aborted ? 'step limit hit — catastrophic backtracking!' : `${steps.toLocaleString()} steps`}
-        </span>
-      </div>
+    <div className="engine-bar engine-bar-3">
       <div className="engine-stat engine-good">
-        <span className="engine-name">automaton (DFA)</span>
+        <span className="engine-name">DFA · linear, no captures</span>
         <span className="engine-val">
           {regular
-            ? `linear — one pass${dfaMatches != null ? `, ${dfaMatches} match${dfaMatches === 1 ? '' : 'es'}` : ''}`
-            : 'n/a — language is not regular'}
+            ? `O(n) — one pass${dfaMatches != null ? `, ${dfaMatches} match${dfaMatches === 1 ? '' : 'es'}` : ''}`
+            : 'n/a — not a regular language'}
+        </span>
+      </div>
+      <div className={`engine-stat${pikeUnsupported ? '' : ' engine-good'}`}>
+        <span className="engine-name">Pike VM · linear + captures</span>
+        <span className="engine-val">
+          {pikeUnsupported
+            ? 'n/a — needs the backtracker'
+            : `O(n·m) — ${pikeSteps.toLocaleString()} thread·steps${pikeMatches != null ? `, ${pikeMatches} match${pikeMatches === 1 ? '' : 'es'}` : ''}`}
+        </span>
+      </div>
+      <div className={`engine-stat${hot ? ' engine-hot' : ''}`}>
+        <span className="engine-name">Backtracking VM · full grammar</span>
+        <span className="engine-val">
+          {aborted ? 'step limit — catastrophic backtracking!' : `${steps.toLocaleString()} steps`}
         </span>
       </div>
     </div>
   );
 }
 
-function CaptureTable({ matches, text, groupCount }: { matches: VMMatch[]; text: string; groupCount: number }) {
+function CaptureTable({
+  matches,
+  text,
+  groupCount,
+  groupNames,
+}: {
+  matches: VMMatch[];
+  text: string;
+  groupCount: number;
+  groupNames: Record<string, number>;
+}) {
   const chars = Array.from(text);
   const slice = (a: number, b: number) => chars.slice(a, b).join('') || '∅';
   const shown = matches.slice(0, 6);
+  const nameOf = useMemo(() => {
+    const m: Record<number, string> = {};
+    for (const [name, idx] of Object.entries(groupNames)) m[idx] = name;
+    return m;
+  }, [groupNames]);
   return (
     <div className="capture-table">
       <table>
@@ -161,7 +201,7 @@ function CaptureTable({ matches, text, groupCount }: { matches: VMMatch[]; text:
           <tr>
             <th>match</th>
             {Array.from({ length: groupCount }, (_, i) => (
-              <th key={i}>#{i + 1}</th>
+              <th key={i}>{nameOf[i + 1] ? <span className="cap-name">{nameOf[i + 1]}</span> : `#${i + 1}`}</th>
             ))}
           </tr>
         </thead>

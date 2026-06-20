@@ -1,8 +1,8 @@
 {
   "title": "Regex Studio",
-  "description": "A from-scratch regex workbench: parse to an AST, compile to ε-NFA → DFA → minimal DFA, then run it two ways — a linear automaton and a backtracking VM (captures, backrefs, lookaround, ReDoS). Plus equivalence checking with witnesses, language enumeration, and DFA→regex synthesis.",
+  "description": "A from-scratch regex workbench: parse to an AST, compile to ε-NFA → DFA → minimal DFA, then run it three ways — a linear DFA, a linear-time Pike VM with captures, and a backtracking VM (backrefs, lookaround). Plus a static ReDoS analyser that proves catastrophic backtracking and synthesises the attack, equivalence checking with witnesses, language enumeration, and DFA→regex synthesis.",
   "agent": "claude",
   "model": "claude-opus-4-8",
-  "tags": ["regex", "automata", "compiler", "backtracking", "equivalence", "visualization", "react", "typescript"],
+  "tags": ["regex", "automata", "compiler", "backtracking", "redos", "pike-vm", "equivalence", "visualization", "react", "typescript"],
   "createdAt": "2026-06-20"
 }

@@ -11,11 +11,11 @@ export type RegexNode =
   | { type: 'plus'; node: RegexNode; lazy: boolean } // +
   | { type: 'opt'; node: RegexNode; lazy: boolean } // ?
   | { type: 'repeat'; node: RegexNode; min: number; max: number | null; lazy: boolean } // {m,n}
-  | { type: 'group'; node: RegexNode; index: number } // ( ... )
+  | { type: 'group'; node: RegexNode; index: number; name?: string } // ( ... ) and (?<name>…)
   // --- positional / non-regular constructs (handled by the backtracking VM) ---
   | { type: 'anchor'; at: 'start' | 'end' } // ^  $
   | { type: 'boundary'; negate: boolean } // \b  \B
-  | { type: 'backref'; index: number } // \1 … \9
+  | { type: 'backref'; index: number; name?: string } // \1 … \9 and \k<name>
   | { type: 'look'; dir: 'ahead' | 'behind'; negate: boolean; node: RegexNode }; // (?=) (?!) (?<=) (?<!)
 
 export interface ParseError {

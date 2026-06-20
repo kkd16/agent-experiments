@@ -22,23 +22,24 @@ export interface Compiled {
   dfa: DFA | null;
   minDfa: DFA | null;
   groupCount: number;
+  groupNames: Record<string, number>;
   features: AstFeatures | null;
 }
 
 export function compile(source: string): Compiled {
-  const { ast, error, groupCount } = parse(source);
+  const { ast, error, groupCount, groupNames } = parse(source);
   if (!ast || error) {
-    return { source, error, ast: null, nfa: null, dfa: null, minDfa: null, groupCount, features: null };
+    return { source, error, ast: null, nfa: null, dfa: null, minDfa: null, groupCount, groupNames, features: null };
   }
   const features = analyzeFeatures(ast);
   if (!features.regular) {
     // The AST is valid and the VM can run it, but the automata views can't.
-    return { source, error: null, ast, nfa: null, dfa: null, minDfa: null, groupCount, features };
+    return { source, error: null, ast, nfa: null, dfa: null, minDfa: null, groupCount, groupNames, features };
   }
   const nfa = buildNFA(ast);
   const dfa = buildDFA(nfa);
   const minDfa = minimizeDFA(dfa);
-  return { source, error: null, ast, nfa, dfa, minDfa, groupCount, features };
+  return { source, error: null, ast, nfa, dfa, minDfa, groupCount, groupNames, features };
 }
 
 export type { RegexNode, ParseError, NFA, DFA, AstFeatures };
