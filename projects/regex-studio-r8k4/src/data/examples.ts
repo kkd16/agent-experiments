@@ -69,6 +69,36 @@ export const EXAMPLES: Example[] = [
     sample: 'call (555) 123-4567 or 555.987.6543 today',
     note: 'A loose North-American phone-number pattern.',
   },
+  {
+    name: 'Doubled word (backref)',
+    pattern: '\\b(\\w+) \\1\\b',
+    sample: 'the the cat sat on on the mat',
+    note: 'Backreference \\1 — non-regular! Runs on the backtracking VM, not the DFA.',
+  },
+  {
+    name: 'ISO date (captures)',
+    pattern: '(\\d{4})-(\\d{2})-(\\d{2})',
+    sample: 'released 2026-06-20, patched 2026-07-01',
+    note: 'Three capture groups — see the year/month/day spans in the capture table.',
+  },
+  {
+    name: 'Anchored integer',
+    pattern: '^-?\\d+$',
+    sample: '42\nabc\n-7\n3.5',
+    note: 'Anchors ^ and $ — try multiline input; only whole-line integers fully match.',
+  },
+  {
+    name: 'Password rule (lookahead)',
+    pattern: '(?=.*\\d)(?=.*[a-z]).{6,}',
+    sample: 'abc123 short Ab1 password9',
+    note: 'Two positive lookaheads require a digit and a lowercase letter — a classic assertion.',
+  },
+  {
+    name: 'Catastrophic backtracking',
+    pattern: '(a+)+$',
+    sample: 'aaaaaaaaaaaaaaaaaaaaaaaa!',
+    note: 'ReDoS: watch the VM step counter explode while a DFA would stay linear.',
+  },
 ];
 
 export const DEFAULT_EXAMPLE = EXAMPLES[1];

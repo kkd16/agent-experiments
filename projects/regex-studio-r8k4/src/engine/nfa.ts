@@ -111,6 +111,13 @@ class Builder {
         for (let i = 0; i < frags.length - 1; i++) this.eps(frags[i].end, frags[i + 1].start);
         return { start: frags[0].start, end: frags[frags.length - 1].end };
       }
+      // Non-regular / positional constructs never reach Thompson's construction:
+      // `compile` checks `analyzeFeatures` first and routes these to the VM.
+      case 'anchor':
+      case 'boundary':
+      case 'backref':
+      case 'look':
+        throw new Error(`Cannot build an NFA for a non-regular construct ('${node.type}')`);
     }
   }
 }

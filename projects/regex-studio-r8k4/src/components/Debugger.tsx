@@ -65,6 +65,18 @@ export function Debugger({ nfa, dfa, nfaLayout, dfaLayout, text }: Props) {
     return new Set<number>();
   }, [nfaFrame, dfaFrame]);
 
+  // The states active one step earlier — lets the graph light the edge actually
+  // traversed when the current character was consumed.
+  const incoming = useMemo(() => {
+    if (clampedStep <= 0) return undefined;
+    if (mode === 'nfa') {
+      const prev = nfaTrace?.frames[clampedStep - 1];
+      return prev ? new Set(prev.active) : undefined;
+    }
+    const prev = dfaTrace?.frames[clampedStep - 1];
+    return prev && prev.state >= 0 ? new Set([prev.state]) : undefined;
+  }, [mode, clampedStep, nfaTrace, dfaTrace]);
+
   const layout = mode === 'nfa' ? nfaLayout : dfaLayout;
   const chars = useMemo(() => Array.from(text), [text]);
   const consumed = nfaFrame?.consumed ?? dfaFrame?.consumed ?? 0;
@@ -144,7 +156,12 @@ export function Debugger({ nfa, dfa, nfaLayout, dfaLayout, text }: Props) {
         )}
       </div>
 
-      <AutomatonGraph layout={layout} highlight={highlight} accent={mode === 'nfa' ? '#f59e0b' : '#34d399'} />
+      <AutomatonGraph
+        layout={layout}
+        highlight={highlight}
+        incoming={incoming}
+        accent={mode === 'nfa' ? '#f59e0b' : '#34d399'}
+      />
     </div>
   );
 }

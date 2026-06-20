@@ -3,49 +3,83 @@ import './App.css';
 import { compile } from './engine/compile';
 import { dfaToGraph, nfaToGraph } from './engine/graphdata';
 import { layoutGraph } from './engine/layout';
+import { toDot } from './engine/export';
 import { AstView } from './components/AstView';
 import { AutomatonGraph } from './components/AutomatonGraph';
 import { Debugger } from './components/Debugger';
-import { TestPanel } from './components/TestPanel';
+import { MatchPanel } from './components/MatchPanel';
+import { LanguagePanel } from './components/LanguagePanel';
+import { ComparePanel } from './components/ComparePanel';
+import { SynthesizePanel } from './components/SynthesizePanel';
+import { ExplainPanel } from './components/ExplainPanel';
 import { DEFAULT_EXAMPLE, EXAMPLES } from './data/examples';
 
-type Tab = 'ast' | 'nfa' | 'dfa' | 'min' | 'debug';
+type Tab = 'ast' | 'nfa' | 'dfa' | 'min' | 'debug' | 'language' | 'compare' | 'synth' | 'explain';
 
-const TABS: { id: Tab; label: string }[] = [
-  { id: 'ast', label: 'AST' },
-  { id: 'nfa', label: 'ε-NFA' },
-  { id: 'dfa', label: 'DFA' },
-  { id: 'min', label: 'Min-DFA' },
-  { id: 'debug', label: 'Debugger' },
+const TAB_GROUPS: { group: string; tabs: { id: Tab; label: string }[] }[] = [
+  {
+    group: 'pipeline',
+    tabs: [
+      { id: 'ast', label: 'AST' },
+      { id: 'nfa', label: 'ε-NFA' },
+      { id: 'dfa', label: 'DFA' },
+      { id: 'min', label: 'Min-DFA' },
+      { id: 'debug', label: 'Debugger' },
+    ],
+  },
+  {
+    group: 'analysis',
+    tabs: [
+      { id: 'language', label: 'Language' },
+      { id: 'compare', label: 'Compare' },
+      { id: 'synth', label: 'DFA→regex' },
+      { id: 'explain', label: 'Explain' },
+    ],
+  },
 ];
 
-const STORE_KEY = 'regex-studio.v1';
+const STORE_KEY = 'regex-studio.v2';
 
-function loadStored(): { pattern: string; text: string } {
+interface Stored {
+  pattern: string;
+  text: string;
+  compare: string;
+}
+
+function loadStored(): Stored {
   try {
     const raw = localStorage.getItem(STORE_KEY);
-    if (raw) return JSON.parse(raw);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      return {
+        pattern: parsed.pattern ?? DEFAULT_EXAMPLE.pattern,
+        text: parsed.text ?? DEFAULT_EXAMPLE.sample,
+        compare: parsed.compare ?? '',
+      };
+    }
   } catch {
     /* sandboxed preview: ignore */
   }
-  return { pattern: DEFAULT_EXAMPLE.pattern, text: DEFAULT_EXAMPLE.sample };
+  return { pattern: DEFAULT_EXAMPLE.pattern, text: DEFAULT_EXAMPLE.sample, compare: '[A-Za-z_]\\w*' };
 }
 
 export default function App() {
   const initial = useMemo(() => loadStored(), []);
   const [pattern, setPattern] = useState(initial.pattern);
   const [text, setText] = useState(initial.text);
+  const [comparePattern, setComparePattern] = useState(initial.compare);
   const [tab, setTab] = useState<Tab>('nfa');
 
   useEffect(() => {
     try {
-      localStorage.setItem(STORE_KEY, JSON.stringify({ pattern, text }));
+      localStorage.setItem(STORE_KEY, JSON.stringify({ pattern, text, compare: comparePattern }));
     } catch {
       /* ignore */
     }
-  }, [pattern, text]);
+  }, [pattern, text, comparePattern]);
 
   const compiled = useMemo(() => compile(pattern), [pattern]);
+  const regular = compiled.features ? compiled.features.regular : false;
 
   const nfaLayout = useMemo(() => (compiled.nfa ? layoutGraph(nfaToGraph(compiled.nfa)) : null), [compiled.nfa]);
   const dfaLayout = useMemo(() => (compiled.dfa ? layoutGraph(dfaToGraph(compiled.dfa)) : null), [compiled.dfa]);
@@ -68,6 +102,13 @@ export default function App() {
     setText(EXAMPLES[i].sample);
   };
 
+  // Why an automata view is unavailable, if it is.
+  const automataNotice = compiled.error
+    ? `Fix the pattern first.`
+    : compiled.features && !compiled.features.regular
+      ? `This pattern uses ${compiled.features.reasons.join(', ')} — beyond the regular languages, so it has no finite automaton. The Run panel above still executes it on the backtracking VM.`
+      : null;
+
   return (
     <div className="app">
       <header className="topbar">
@@ -75,7 +116,7 @@ export default function App() {
           <span className="logo">/<span className="logo-star">∗</span>/</span>
           <div>
             <h1>Regex Studio</h1>
-            <p>A regular-expression engine built from scratch — parse, compile, minimise, and watch it run.</p>
+            <p>A regular-expression engine built from scratch — parse, compile, minimise, run, compare and synthesise.</p>
           </div>
         </div>
         <a className="repo-link" href="https://en.wikipedia.org/wiki/Thompson%27s_construction" target="_blank" rel="noreferrer">
@@ -112,7 +153,12 @@ export default function App() {
                 </span>
               </div>
             ) : (
-              <div className="parse-ok">parses cleanly</div>
+              <div className="parse-ok">
+                parses cleanly
+                <span className={`engine-tag ${regular ? 'tag-regular' : 'tag-extended'}`}>
+                  {regular ? 'regular' : 'non-regular (VM only)'}
+                </span>
+              </div>
             )}
           </section>
 
@@ -150,54 +196,86 @@ export default function App() {
         </aside>
 
         <main className="main">
-          <TestPanel dfa={compiled.minDfa} text={text} onTextChange={setText} />
+          <MatchPanel compiled={compiled} text={text} onTextChange={setText} />
 
           <div className="tabs">
-            {TABS.map((t) => (
-              <button key={t.id} className={`tab${tab === t.id ? ' active' : ''}`} onClick={() => setTab(t.id)}>
-                {t.label}
-              </button>
+            {TAB_GROUPS.map((g) => (
+              <div className="tab-group" key={g.group}>
+                {g.tabs.map((t) => (
+                  <button key={t.id} className={`tab${tab === t.id ? ' active' : ''}`} onClick={() => setTab(t.id)}>
+                    {t.label}
+                  </button>
+                ))}
+              </div>
             ))}
           </div>
 
           <div className="view">
-            {compiled.error && tab !== 'ast' && (
-              <div className="placeholder">Fix the pattern to see the {labelFor(tab)}.</div>
+            {tab === 'ast' &&
+              (compiled.ast ? <AstView ast={compiled.ast} /> : <div className="placeholder">Fix the pattern to see the AST.</div>)}
+
+            {tab === 'nfa' &&
+              (nfaLayout && compiled.nfa ? (
+                <GraphPane
+                  title="ε-NFA — Thompson's construction"
+                  blurb="Non-deterministic, with ε (empty) transitions. Many states can be active at once."
+                  layout={nfaLayout}
+                  accent="#f59e0b"
+                  dot={() => toDot(nfaToGraph(compiled.nfa!), 'epsilon_NFA')}
+                />
+              ) : (
+                <div className="placeholder">{automataNotice}</div>
+              ))}
+
+            {tab === 'dfa' &&
+              (dfaLayout && compiled.dfa ? (
+                <GraphPane
+                  title="DFA — subset construction"
+                  blurb="Deterministic: exactly one active state per input character. Each state is a set of NFA states."
+                  layout={dfaLayout}
+                  accent="#60a5fa"
+                  dot={() => toDot(dfaToGraph(compiled.dfa!), 'DFA')}
+                />
+              ) : (
+                <div className="placeholder">{automataNotice}</div>
+              ))}
+
+            {tab === 'min' &&
+              (minLayout && compiled.minDfa ? (
+                <GraphPane
+                  title="Minimal DFA — Moore minimisation"
+                  blurb="Equivalent states merged. This is the smallest DFA recognising the same language."
+                  layout={minLayout}
+                  accent="#34d399"
+                  dot={() => toDot(dfaToGraph(compiled.minDfa!), 'minimal_DFA')}
+                />
+              ) : (
+                <div className="placeholder">{automataNotice}</div>
+              ))}
+
+            {tab === 'debug' &&
+              (compiled.nfa ? (
+                <Debugger nfa={compiled.nfa} dfa={compiled.dfa} nfaLayout={nfaLayout} dfaLayout={dfaLayout} text={text} />
+              ) : (
+                <div className="placeholder">{automataNotice}</div>
+              ))}
+
+            {tab === 'language' && <LanguagePanel dfa={compiled.minDfa} notice={automataNotice} />}
+
+            {tab === 'compare' && (
+              <ComparePanel dfaA={compiled.minDfa} noticeA={automataNotice} other={comparePattern} onOtherChange={setComparePattern} />
             )}
-            {tab === 'ast' && <AstView ast={compiled.ast} />}
-            {tab === 'nfa' && nfaLayout && (
-              <GraphPane
-                title="ε-NFA — Thompson's construction"
-                blurb="Non-deterministic, with ε (empty) transitions. Many states can be active at once."
-                layout={nfaLayout}
-                accent="#f59e0b"
-              />
-            )}
-            {tab === 'dfa' && dfaLayout && (
-              <GraphPane
-                title="DFA — subset construction"
-                blurb="Deterministic: exactly one active state per input character. Each state is a set of NFA states."
-                layout={dfaLayout}
-                accent="#60a5fa"
-              />
-            )}
-            {tab === 'min' && minLayout && (
-              <GraphPane
-                title="Minimal DFA — Moore minimisation"
-                blurb="Equivalent states merged. This is the smallest DFA recognising the same language."
-                layout={minLayout}
-                accent="#34d399"
-              />
-            )}
-            {tab === 'debug' && (
-              <Debugger nfa={compiled.nfa} dfa={compiled.dfa} nfaLayout={nfaLayout} dfaLayout={dfaLayout} text={text} />
-            )}
+
+            {tab === 'synth' && <SynthesizePanel dfa={compiled.minDfa} notice={automataNotice} />}
+
+            {tab === 'explain' && <ExplainPanel ast={compiled.ast} features={compiled.features} />}
           </div>
         </main>
       </div>
 
       <footer className="footer">
-        Parser · Thompson NFA · subset construction · Moore minimisation — all hand-written TypeScript, no regex library.
+        Parser · Thompson NFA · subset construction · Moore minimisation · backtracking VM · product-automaton
+        equivalence · state-elimination synthesis — all hand-written TypeScript, no regex library.
       </footer>
     </div>
   );
@@ -208,17 +286,38 @@ function GraphPane({
   blurb,
   layout,
   accent,
+  dot,
 }: {
   title: string;
   blurb: string;
   layout: ReturnType<typeof layoutGraph>;
   accent: string;
+  dot?: () => string;
 }) {
+  const [copied, setCopied] = useState(false);
+  const copyDot = () => {
+    if (!dot) return;
+    const text = dot();
+    try {
+      navigator.clipboard?.writeText(text);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1400);
+    } catch {
+      /* clipboard blocked (sandbox) — ignore */
+    }
+  };
   return (
     <div className="graph-pane">
-      <div className="pane-head">
-        <h2>{title}</h2>
-        <p>{blurb}</p>
+      <div className="pane-head graph-head">
+        <div>
+          <h2>{title}</h2>
+          <p>{blurb}</p>
+        </div>
+        {dot && (
+          <button className="dot-btn" onClick={copyDot} title="Copy this automaton as Graphviz DOT">
+            {copied ? 'copied ✓' : 'copy DOT'}
+          </button>
+        )}
       </div>
       <AutomatonGraph layout={layout} accent={accent} />
     </div>
@@ -232,8 +331,4 @@ function Stat({ label, value, accent }: { label: string; value: number; accent?:
       <span className="stat-label">{label}</span>
     </div>
   );
-}
-
-function labelFor(tab: Tab): string {
-  return TABS.find((t) => t.id === tab)?.label ?? '';
 }

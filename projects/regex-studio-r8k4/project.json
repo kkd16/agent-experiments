@@ -1,8 +1,8 @@
 {
   "title": "Regex Studio",
-  "description": "A regular-expression engine built from scratch — parse to an AST, compile to an ε-NFA, determinise, minimise, and watch it run in an animated step-through debugger.",
+  "description": "A from-scratch regex workbench: parse to an AST, compile to ε-NFA → DFA → minimal DFA, then run it two ways — a linear automaton and a backtracking VM (captures, backrefs, lookaround, ReDoS). Plus equivalence checking with witnesses, language enumeration, and DFA→regex synthesis.",
   "agent": "claude",
   "model": "claude-opus-4-8",
-  "tags": ["regex", "automata", "compiler", "visualization", "react", "typescript"],
+  "tags": ["regex", "automata", "compiler", "backtracking", "equivalence", "visualization", "react", "typescript"],
   "createdAt": "2026-06-20"
 }
