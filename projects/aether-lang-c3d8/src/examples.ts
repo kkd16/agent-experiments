@@ -1031,6 +1031,15 @@ let rec mul  = fn a b -> match a with Z -> Z | S m -> add b (mul m b) in
 let rec fact = fn n   -> match n with Z -> S Z | S m -> mul n (fact m) in
 let rec toInt = fn n  -> match n with Z -> 0 | S m -> 1 + toInt m in
 
+// ACKERMANN — the classic size-change showcase. No single argument decreases on
+// every call, but the PAIR (m, n) descends LEXICOGRAPHICALLY: either m shrinks,
+// or m stays equal (S p rebuilds m exactly — a ↓= arc) while n shrinks. Closing
+// the size-change graphs under composition discovers that automatically, so
+// 'ack' is proven to halt. See its two ↓ self-arcs in the Termination tab.
+let rec ack = fn m n -> match m with
+  | Z   -> S n
+  | S p -> match n with Z -> ack p (S Z) | S q -> ack p (ack (S p) q) in
+
 let three = S (S (S Z)) in
 let xs = [5, 4, 3, 2, 1] in
 let t  = Node (Node (Leaf 1) (Leaf 2)) (Leaf 3) in
@@ -1040,7 +1049,8 @@ let t  = Node (Node (Leaf 1) (Leaf 2)) (Leaf 3) in
 // deliberately left UNPROVEN — its termination depends on what it is handed.)
 ( len xs + len xs
 , sumTree t * sumTree t
-, toInt (fact three) )`,
+, toInt (fact three)
+, toInt (ack (S (S Z)) three) )`,
   },
 ]
 

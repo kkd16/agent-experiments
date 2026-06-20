@@ -508,6 +508,17 @@ let unused = ev [1,2,3] in ev [1,2,3,4]`,
   },
   {
     group: 'termination',
+    name: 'Ackermann on Nat (lexicographic descent)',
+    code: `type Nat = Z | S Nat in
+let rec ack = fn m n -> match m with
+  | Z   -> S n
+  | S p -> match n with Z -> ack p (S Z) | S q -> ack p (ack (S p) q) in
+let rec toInt = fn n -> match n with Z -> 0 | S m -> 1 + toInt m in
+toInt (ack (S (S Z)) (S Z))`,
+    expected: '5',
+  },
+  {
+    group: 'termination',
     name: 'higher-order map still correct (left unproven)',
     code: `let rec map = fn f xs -> match xs with [] -> [] | h :: t -> f h :: map f t in
 map (fn x -> x * x) [1,2,3,4]`,
