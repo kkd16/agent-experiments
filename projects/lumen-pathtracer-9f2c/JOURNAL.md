@@ -20,9 +20,14 @@ photon emitter, so daylight scenes get photon-mapped sun caustics).
 - `src/engine/vec3.ts` — vector algebra, ONB (Duff 2017), reflect/refract.
 - `src/engine/rng.ts` — sfc32 RNG + splitmix32 seeding; cosine/disk/GGX samplers; power heuristic.
 - `src/engine/ray.ts` — rays, AABB slab test, hit record.
-- `src/engine/material.ts` — Lambert / GGX metal (VNDF sampling, Smith G2) / smooth + rough
-  dielectric (exact Fresnel, microfacet refraction) / emissive; `sampleBSDF`/`evalBSDF`/`pdfBSDF`
-  plus `resolveMaterial` (bakes textures + dispersion at a vertex).
+- `src/engine/material.ts` — the **physically based material system**. Lambert / GGX metal (VNDF
+  sampling, Smith G2) / smooth + rough dielectric (exact Fresnel, microfacet refraction) / emissive,
+  plus (10.0) **energy-conserving rough metal** (Kulla–Conty multiscatter compensation off a
+  start-up-built GGX directional-albedo table `E(μ,α)`/`Eavg(α)`), **anisotropic GGX** (two roughness
+  axes in a rotatable tangent frame), **Oren–Nayar** rough-diffuse (`sigma`), and a **clear-coat**
+  layer (`coat`: a GGX dielectric gloss over a Lambert/Oren–Nayar base). `sampleBSDF`/`evalBSDF`/
+  `pdfBSDF` are kept in lockstep through shared local-frame helpers so every lobe is MIS-consistent;
+  `resolveMaterial` bakes textures + dispersion at a vertex.
 - `src/engine/texture.ts` — procedural world-space textures (checker / grid / value-noise marble).
 - `src/engine/spectrum.ts` — Cauchy dispersion IOR + white-point-normalised wavelength→RGB.
 - `src/engine/primitive.ts` — sphere + triangle (Möller–Trumbore w/ barycentrics + smooth
@@ -57,9 +62,11 @@ photon emitter, so daylight scenes get photon-mapped sun caustics).
   perpendicular to the sun → daylight caustics + GI), both unbiased and proven in the verify suite.
 - `src/engine/tonemap.ts` — ACES / filmic / Reinhard / linear + sRGB encode.
 - `src/engine/denoise.ts` — À-Trous edge-avoiding wavelet filter, albedo/normal guided.
-- `src/engine/scenes.ts` — Cornell box, Weekend daylight, Material gallery, Caustic room, Caustic
-  Pool (rippled-water caustics), Prism (dispersion), Glass Menagerie (roughness + absorption),
-  Textured Studio (procedural textures), Cathedral / Nebula (media), Iridescence (thin film), …
+- `src/engine/scenes.ts` — Cornell box, Weekend daylight, Material gallery, **Brushed Metal**
+  (anisotropic GGX), **Rough Conductors** (single-scatter vs Kulla–Conty multiscatter split),
+  **Ceramics & Clay** (clear-coat gloss + Oren–Nayar matte), Caustic room, Caustic Pool
+  (rippled-water caustics), Prism (dispersion), Glass Menagerie (roughness + absorption), Textured
+  Studio (procedural textures), Cathedral / Nebula (media), Iridescence (thin film), …
 - `src/engine/selftest.ts` — invariant checks (furnace, BVH-vs-brute-force, pdf consistency…).
 - `src/render/worker.ts` — one render worker owning a horizontal band.
 - `src/render/renderer.ts` — worker-pool orchestrator + single-thread fallback + compositing.
@@ -90,8 +97,27 @@ photon emitter, so daylight scenes get photon-mapped sun caustics).
 - [x] Physically based **Preetham sky** (turbidity + sun position)
 - [x] **Environment / sun next-event estimation** — the sky is now a sampled light (MIS)
 - [x] **Bidirectional path tracing (BDPT)** — full Veach/Guibas connections + balance-heuristic MIS
+- [x] **A physically based material system (10.0)** — the surfaces made as rigorous as the transport:
+  - [x] **Energy-conserving rough metal (Kulla–Conty multiscatter)** — a start-up-built GGX
+        directional-albedo table `E(μ,α)` drives a compensation lobe that restores the energy the
+        single-scatter lobe drops between microfacets, so rough conductors stop darkening; proven to
+        reflect ≈1 in a white furnace with compensation and measurably less without
+  - [x] **Anisotropic GGX (brushed metal)** — two roughness axes `(αₓ,α_y)` in a rotatable tangent
+        frame; anisotropic D, Smith Λ and VNDF sampling; reciprocity + energy preserved exactly
+  - [x] **Oren–Nayar rough diffuse** — reciprocal microfacet-diffuse BRDF (`sigma`) for chalk/clay/
+        plaster, reducing to Lambert at σ=0
+  - [x] **Clear-coat layered materials** — a GGX dielectric coat over a Lambert/Oren–Nayar base
+        (`coat`), the two lobes sampled by Fresnel weight with a combined pdf so it stays energy-
+        conserving *and* MIS-consistent (matches BDPT pixel-for-pixel)
+  - [x] Three showcase scenes — **Brushed Metal**, **Rough Conductors**, **Ceramics & Clay**
+  - [x] Six new correctness proofs (GGX albedo table, multiscatter energy, anisotropic reciprocity/
+        streak, Oren–Nayar reciprocity/grazing, clear-coat reciprocity/gloss/energy) + a BDPT≡PT
+        oracle over a box of all four new materials (55 proofs total)
 - [ ] WebGPU compute backend behind the same scene API
 - [ ] Image (bitmap) textures + tangent-space normal maps (needs UV plumbing)
+- [ ] **Spectral/Fresnel-conductor reflectance** — wavelength-dependent complex IOR (real gold's hue
+      from η,k) layered onto the new multiscatter conductor
+- [ ] **Anisotropic clear-coat & dielectric multiscatter** — extend energy compensation to rough glass
 - [x] **Participating media** — bounded homogeneous volumes with Henyey–Greenstein
       scattering, distance sampling, in-scattering NEE + phase-function MIS (fog, smoke, god rays)
 - [x] **Thin-film interference** — spectral Airy reflectance for iridescent coatings
@@ -143,6 +169,69 @@ photon emitter, so daylight scenes get photon-mapped sun caustics).
       collision the path collects `(1−albedo)·Lₑ` of self-radiance, so a heterogeneous field glows
       brightest in its dense core (fire / embers / luminous nebula). New **Ember** scene + a proof
       that an absorbing+emitting volume obeys `(1−e^(−σ_t·chord))·Lₑ`.
+
+## Roadmap — 2026-06-20 Lumen 10.0: a physically based material system (claude)
+
+For nine versions Lumen poured enormous rigour into *light transport* — four
+integrators that provably agree, spectral and daylight photons, null-collision
+volumetrics — while the **surfaces** stayed deliberately small: Lambert, a
+single-scatter GGX metal, dielectric glass, a thin film. That asymmetry showed:
+a rough gold sphere went *grey* (single-scatter GGX drops the energy that should
+bounce between microfacets), every metal highlight was an isotropic blob, matte
+clay looked like plastic, and there was no glazed/ceramic/car-paint look at all.
+10.0 closes the gap with a proper material system, built so each new lobe is as
+provably correct as the transport that carries it.
+
+**1 — Energy-conserving rough metal (Kulla–Conty multiscatter).** A single-scatter
+microfacet lobe reflects only `E(μ,α)` of the incident energy (the rest would
+have taken a second, third… bounce between microfacets and is simply dropped), so
+conductors darken and desaturate as they roughen. We Monte-Carlo–integrate the
+GGX *directional albedo* `E(μ,α)` (and its hemisphere average `Eavg(α)`) into a
+32×32 table **once at start-up** — reusing the fact that the VNDF throughput for a
+white lobe is exactly `G2/G1`, so the table is the very quantity the furnace test
+measures — then add a compensation lobe
+`f_ms = F_ms·(1−E(μₒ))(1−E(μᵢ)) / (π(1−Eavg))` that integrates to exactly the
+missing `(1−E(μₒ))`. A coloured multiscatter Fresnel
+`F_ms = Favg²·Eavg/(1−Favg(1−Eavg))` keeps saturated metals saturated. The result
+is energy-exact for white (furnace ≈ 1) and a `multiscatter` flag on the metal
+material turns it on. **Verify** proves a white rough conductor reflects ≈1 with
+compensation and noticeably less without.
+
+**2 — Anisotropic GGX (brushed/milled metal).** Generalised the distribution,
+Smith masking and VNDF sampler to two roughness axes `(αₓ,α_y)` (Disney's
+`aspect = √(1−0.9·aniso)`) expressed in a tangent frame the material can rotate
+(`anisoAngle`). The isotropic case reduces to the old formulae *exactly*
+(verified algebraically and numerically), so existing metals are untouched. The
+half-vector reflection keeps `wo·h = wi·h`, so the BRDF is exactly reciprocal —
+proven, alongside an energy bound and a measurable pdf "streak" between the two
+tangent axes.
+
+**3 — Oren–Nayar rough diffuse.** The reciprocal qualitative Oren–Nayar model
+(`sigma`) for chalk, clay, plaster and lunar regolith — surfaces whose microscopic
+roughness makes them flatten and back-scatter toward the light. Reduces to Lambert
+at σ=0; proven reciprocal and proven to exceed Lambert in the grazing
+retro-reflection regime where its `B` term lives.
+
+**4 — Clear-coat layered materials.** Glazed ceramic, lacquer and car paint: a
+clear GGX *dielectric coat* over a Lambert/Oren–Nayar base. The coat reflects a
+Fresnel fraction as a gloss lobe and transmits the rest to the base, attenuated by
+`(1−F(μₒ))(1−F(μᵢ))` so the stack conserves energy and stays reciprocal. The coat
+and base lobes are sampled stochastically by a Fresnel-driven probability with a
+*combined* pdf, so the material is MIS-consistent — it matches BDPT pixel-for-pixel.
+
+**Plumbing & proofs.** All four are added without a single new `Material` *kind*
+— they ride as optional fields on `diffuse`/`metal`, so the integrators' switches
+and BDPT/SPPM are untouched; the shared local-frame helpers
+(`ggxReflectFLocal`/`…PdfLocal`, anisotropic variants, `metalMsFLocal`,
+`diffuseLayeredFLocal`) guarantee `sample`/`eval`/`pdf` can never drift apart.
+Three showcase scenes — **Brushed Metal**, **Rough Conductors** (a single-scatter
+vs multiscatter split), **Ceramics & Clay** — and **six** new proofs (GGX albedo
+table monotonicity, multiscatter energy restoration, anisotropic reciprocity +
+streak, Oren–Nayar reciprocity + grazing, clear-coat reciprocity + gloss + energy)
+plus a **BDPT≡PT oracle** over a box of all four materials. Verified in Node by
+bundling the engine and running all **55** self-tests (55/55) + a render smoke
+test of the three new scenes (no NaNs, all lit); `pnpm lint`/`tsc`/`build` green
+via the CI gate.
 
 ## Roadmap — 2026-06-20 Lumen 9.0: heterogeneous participating media — clouds, smoke & fog via delta/ratio tracking (claude)
 
@@ -582,6 +671,22 @@ verification suite, the scene registry, and the UI so it is observable and prove
 
 ## Session log
 
+- 2026-06-20 (claude/claude-opus-4-8): **Lumen 10.0 — a physically based material system.** Made the
+  *surfaces* as rigorous as the transport. (1) **Energy-conserving rough metal**: a Kulla–Conty
+  multiscatter compensation lobe driven by a start-up-built GGX directional-albedo table `E(μ,α)`/
+  `Eavg(α)` (integrated via the white-lobe VNDF throughput `G2/G1`), with a coloured multiscatter
+  Fresnel so rough conductors recover their dropped energy and stop going grey. (2) **Anisotropic
+  GGX** (brushed metal): anisotropic D / Smith Λ / VNDF with two roughness axes in a rotatable
+  tangent frame; the isotropic case reduces exactly to the old lobe so existing metals are untouched.
+  (3) **Oren–Nayar** rough diffuse (`sigma`) for chalk/clay/plaster. (4) **Clear-coat** layered
+  materials (`coat`): a GGX dielectric gloss over a Lambert/Oren–Nayar base, both lobes Fresnel-
+  sampled with a combined pdf so the stack is energy-conserving *and* MIS-consistent. All four ride
+  as optional fields on the existing `diffuse`/`metal` kinds (no new union members → the integrators,
+  BDPT and SPPM are untouched), and shared local-frame helpers keep `sample`/`eval`/`pdf` in lockstep.
+  Three new scenes — **Brushed Metal**, **Rough Conductors** (single-scatter vs multiscatter split),
+  **Ceramics & Clay** — and **six** new proofs plus a **BDPT≡PT oracle** over a box of all four
+  materials (PT and BDPT agree to 0.4%). Verified in Node (55/55 self-tests + a 3-scene render smoke
+  test, no NaNs, all lit); `pnpm lint`/`tsc`/`build` green via the CI gate.
 - 2026-06-20 (claude/claude-opus-4-8): **Lumen 9.1 — emissive volumes (glowing fire / embers /
   nebulae).** Built straight on the 9.0 heterogeneous-media engine: a medium may now carry an
   `emission` radiance, and at every *real* collision the path collects `(σ_a/σ_t)·Lₑ =

@@ -4,10 +4,17 @@
 // agreement, sampler/pdf consistency, and the analytic Fresnel/Snell laws. They
 // run in well under a second and surface as a pass/fail panel in the UI.
 
-import { add, cross, dot, len, normalize, scale, sub, v, reflect, refract, luminance } from './vec3'
+import { add, cross, dot, len, normalize, onb, scale, sub, v, reflect, refract, luminance } from './vec3'
 import type { Vec3 } from './vec3'
 import { Rng } from './rng'
-import { sampleBSDF, pdfBSDF, evalBSDF, resolveMaterial } from './material'
+import {
+  sampleBSDF,
+  pdfBSDF,
+  evalBSDF,
+  resolveMaterial,
+  ggxDirectionalAlbedo,
+  ggxAverageAlbedo,
+} from './material'
 import type { Material } from './material'
 import { makeSphere, intersectPrim } from './primitive'
 import type { Primitive } from './primitive'
@@ -235,6 +242,138 @@ function testReciprocity(): { pass: boolean; detail: string } {
   const b = evalBSDF(mat, wi, wo, n)
   const ok = approx(a.x, b.x, 1e-12) && approx(a.y, b.y, 1e-12) && approx(a.z, b.z, 1e-12)
   return { pass: ok, detail: `f(wo,wi)=${a.x.toFixed(4)} vs f(wi,wo)=${b.x.toFixed(4)}` }
+}
+
+// Directional-hemispherical reflectance of a BSDF, estimated by averaging the
+// sampler's throughput weight (= f·cosθ/pdf) — exactly the quantity a white
+// furnace integrates. Returns the luminance reflectance.
+function directionalReflectance(mat: Material, wo: Vec3, seed: number, N = 60000): number {
+  const n = v(0, 0, 1)
+  const rng = new Rng(seed, 9)
+  let sum = 0
+  for (let i = 0; i < N; i++) {
+    const s = sampleBSDF(mat, wo, n, true, rng)
+    if (s) sum += luminance(s.weight)
+  }
+  return sum / N
+}
+
+// 8b — Kulla–Conty energy-compensation tables. The single-scatter directional
+// albedo must be ~1 for a smooth lobe, drop with roughness, and stay in (0,1];
+// and the hemisphere average must decrease monotonically as roughness rises
+// (more energy lost between microfacets).
+function testGgxAlbedoTable(): { pass: boolean; detail: string } {
+  const smooth = ggxDirectionalAlbedo(0.7, 0.02)
+  let inRange = true
+  let maxE = 0
+  for (let a = 0.05; a <= 1; a += 0.05) {
+    for (let mu = 0.05; mu <= 1; mu += 0.05) {
+      const e = ggxDirectionalAlbedo(mu, a)
+      if (e < 0 || e > 1.001) inRange = false
+      maxE = Math.max(maxE, e)
+    }
+  }
+  const eLow = ggxAverageAlbedo(0.1)
+  const eHigh = ggxAverageAlbedo(0.9)
+  const ok = smooth > 0.97 && inRange && maxE <= 1.001 && eLow > eHigh && eHigh > 0.3
+  return {
+    pass: ok,
+    detail: `E(smooth)=${smooth.toFixed(3)}, Eavg(0.1)=${eLow.toFixed(3)} > Eavg(0.9)=${eHigh.toFixed(3)}, ∈(0,1]=${inRange}`,
+  }
+}
+
+// 8c — Multiscatter conductor conserves energy. A white rough metal with
+// `multiscatter` must reflect ≈1 (the lost inter-microfacet energy restored),
+// while the single-scatter lobe at the same roughness reflects noticeably less.
+function testMetalMultiscatterEnergy(): { pass: boolean; detail: string } {
+  const wo = normalize(v(0.25, 0, 0.97))
+  const single = directionalReflectance({ kind: 'metal', albedo: v(1, 1, 1), roughness: 0.6 }, wo, 8)
+  const multi = directionalReflectance(
+    { kind: 'metal', albedo: v(1, 1, 1), roughness: 0.6, multiscatter: true },
+    wo,
+    9,
+  )
+  const ok = multi > 0.96 && multi <= 1.02 && single < multi - 0.02 && single < 0.97
+  return {
+    pass: ok,
+    detail: `single-scatter=${single.toFixed(4)} → multiscatter=${multi.toFixed(4)} (≈1, energy restored)`,
+  }
+}
+
+// 8d — Anisotropic GGX metal. Reciprocity must hold exactly; the lobe must be
+// energy-bounded; and a non-zero anisotropy must make the two in-plane tangent
+// directions carry visibly different pdfs (the brushed-metal streak).
+function testAnisoMetal(): { pass: boolean; detail: string } {
+  const mat: Material = { kind: 'metal', albedo: v(0.95, 0.93, 0.88), roughness: 0.35, aniso: 0.85 }
+  const n = v(0, 0, 1)
+  const wo = normalize(v(0.15, 0.1, 0.98))
+  const wi = normalize(v(-0.4, 0.2, 0.7))
+  const a = evalBSDF(mat, wo, wi, n)
+  const b = evalBSDF(mat, wi, wo, n)
+  const recip = approx(a.x, b.x, 1e-9) && approx(a.y, b.y, 1e-9) && approx(a.z, b.z, 1e-9)
+  // Two wi at equal polar angle along the orthogonal tangent axes t and b.
+  const { t, b: tb } = onb(n)
+  const theta = 0.6
+  const st = Math.sin(theta)
+  const ct = Math.cos(theta)
+  const wiT = add(scale(t, st), scale(n, ct))
+  const wiB = add(scale(tb, st), scale(n, ct))
+  const woN = v(0, 0, 1)
+  const pT = pdfBSDF(mat, woN, wiT, n)
+  const pB = pdfBSDF(mat, woN, wiB, n)
+  const streak = Math.abs(pT - pB) / Math.max(1e-6, pT + pB) > 0.05
+  const refl = directionalReflectance(mat, wo, 14)
+  const ok = recip && streak && refl <= 1.0001 && refl > 0.3
+  return {
+    pass: ok,
+    detail: `reciprocal=${recip}, pdf streak |${pT.toFixed(3)}−${pB.toFixed(3)}|, reflectance=${refl.toFixed(4)}`,
+  }
+}
+
+// 8e — Oren–Nayar rough diffuse. Reciprocity holds; energy is bounded; and a
+// rough surface back-scatters more than Lambert at grazing (the B term).
+function testOrenNayar(): { pass: boolean; detail: string } {
+  const oren: Material = { kind: 'diffuse', albedo: v(0.7, 0.7, 0.7), sigma: 0.6 }
+  const lamb: Material = { kind: 'diffuse', albedo: v(0.7, 0.7, 0.7) }
+  const n = v(0, 0, 1)
+  // A grazing retro-reflection (wi ≈ wo, both near the horizon): the regime
+  // where Oren–Nayar's B term lifts it above Lambert.
+  const wo = normalize(v(0.92, 0, 0.39))
+  const wi = normalize(v(0.88, 0.08, 0.46))
+  const a = evalBSDF(oren, wo, wi, n)
+  const b = evalBSDF(oren, wi, wo, n)
+  const recip = approx(a.x, b.x, 1e-9) && approx(a.y, b.y, 1e-9)
+  const fo = evalBSDF(oren, wo, wi, n).x
+  const fl = evalBSDF(lamb, wo, wi, n).x
+  const rougher = fo > fl
+  const refl = directionalReflectance(oren, wo, 17)
+  const ok = recip && rougher && refl <= 1.02 && refl > 0.4
+  return {
+    pass: ok,
+    detail: `reciprocal=${recip}, f_oren=${fo.toFixed(4)} > f_lambert=${fl.toFixed(4)}, reflectance=${refl.toFixed(4)}`,
+  }
+}
+
+// 8f — Clear-coat (layered) diffuse. Reciprocity holds; the layered stack is
+// energy-bounded (≤1); and the coat adds a specular highlight not present on the
+// bare diffuse base.
+function testClearcoat(): { pass: boolean; detail: string } {
+  const coated: Material = { kind: 'diffuse', albedo: v(0.6, 0.1, 0.1), coat: { roughness: 0.08, ior: 1.5 } }
+  const bare: Material = { kind: 'diffuse', albedo: v(0.6, 0.1, 0.1) }
+  const n = v(0, 0, 1)
+  const wo = normalize(v(0.3, 0, 0.95))
+  // Near the mirror direction of wo, where the coat's gloss lives.
+  const wiSpec = normalize(v(-0.3, 0, 0.95))
+  const a = evalBSDF(coated, wo, wiSpec, n)
+  const b = evalBSDF(coated, wiSpec, wo, n)
+  const recip = approx(a.x, b.x, 1e-9) && approx(a.y, b.y, 1e-9)
+  const highlight = luminance(evalBSDF(coated, wo, wiSpec, n)) > luminance(evalBSDF(bare, wo, wiSpec, n)) + 1e-3
+  const refl = directionalReflectance(coated, wo, 23)
+  const ok = recip && highlight && refl <= 1.0 && refl > 0.2
+  return {
+    pass: ok,
+    detail: `reciprocal=${recip}, coat adds gloss=${highlight}, reflectance=${refl.toFixed(4)} (≤1)`,
+  }
 }
 
 // 10 — Procedural texture sanity: the checker alternates between its two colours
@@ -1099,6 +1238,48 @@ function testBdptVsPt(): { pass: boolean; detail: string } {
   return { pass: rel < 0.04, detail: `PT=${pt.toFixed(4)} BDPT=${bd.toFixed(4)} rel diff=${(rel * 100).toFixed(2)}% (<4%)` }
 }
 
+// 31b — The new material system is MIS-consistent: a closed box whose surfaces
+// are a clear-coated floor, Oren–Nayar walls, a multiscatter conductor and an
+// anisotropic conductor must converge to the *same* image under the path tracer
+// and BDPT. Because both estimators reach these BSDFs only through the shared
+// sample/eval/pdf contract, agreement proves the new lobes' pdfs (and therefore
+// every NEE/BDPT MIS weight that uses them) are correct and unbiased.
+function testMaterialLabVsPt(): { pass: boolean; detail: string } {
+  const V = (x: number, y: number, z: number): Vec3 => v(x, y, z)
+  const m: Material[] = [
+    { kind: 'diffuse', albedo: V(0.7, 0.6, 0.5), coat: { roughness: 0.12, ior: 1.5 } },
+    { kind: 'diffuse', albedo: V(0.6, 0.6, 0.65), sigma: 0.7 },
+    { kind: 'emissive', emission: V(12, 12, 12) },
+    { kind: 'metal', albedo: V(1, 0.8, 0.4), roughness: 0.5, multiscatter: true },
+    { kind: 'metal', albedo: V(0.9, 0.9, 0.95), roughness: 0.3, aniso: 0.8 },
+  ]
+  const prims: SceneDef['prims'] = []
+  const quad = (a: Vec3, b: Vec3, c: Vec3, d: Vec3, mat: number): void => {
+    prims.push({ kind: 'tri', p0: a, p1: b, p2: c, material: mat })
+    prims.push({ kind: 'tri', p0: a, p1: c, p2: d, material: mat })
+  }
+  quad(V(-3, 0, -3), V(3, 0, -3), V(3, 0, 3), V(-3, 0, 3), 0) // coated floor
+  quad(V(-3, 6, -3), V(-3, 6, 3), V(3, 6, 3), V(3, 6, -3), 1) // ceiling (Oren–Nayar)
+  quad(V(-3, 0, -3), V(-3, 6, -3), V(3, 6, -3), V(3, 0, -3), 1) // back wall
+  quad(V(-1.3, 5.98, -1.3), V(1.3, 5.98, -1.3), V(1.3, 5.98, 1.3), V(-1.3, 5.98, 1.3), 2) // light
+  prims.push({ kind: 'sphere', center: V(-1.2, 1, 0), radius: 1, material: 3 })
+  prims.push({ kind: 'sphere', center: V(1.2, 1, 0), radius: 1, material: 4 })
+  const def: SceneDef = {
+    name: 'material-lab',
+    materials: m,
+    prims,
+    camera: { eye: V(0, 3, 8), target: V(0, 2, 0), up: V(0, 1, 0), vfovDeg: 45, aperture: 0, focusDist: 8 },
+    env: { kind: 'solid', color: V(0, 0, 0) },
+  }
+  const W = 14,
+    H = 11,
+    spp = 420
+  const pt = meanLuminance(def, false, W, H, spp, 4242)
+  const bd = meanLuminance(def, true, W, H, spp, 2718)
+  const rel = Math.abs(pt - bd) / pt
+  return { pass: rel < 0.05, detail: `PT=${pt.toFixed(4)} BDPT=${bd.toFixed(4)} rel diff=${(rel * 100).toFixed(2)}% (<5%)` }
+}
+
 // 32 — MIS partition of unity: for a fixed transport path the weights of every
 // strategy that can sample it sum to 1 — the exact property that makes the
 // bidirectional estimator unbiased. A deterministic, noise-free proof.
@@ -1676,6 +1857,11 @@ export function runSelfTests(): TestResult[] {
     test('White furnace — diffuse ρ=0.8', () => furnace({ kind: 'diffuse', albedo: v(0.8, 0.8, 0.8) }, 0.8)),
     test('White furnace — mirror ρ=1', () => furnace({ kind: 'metal', albedo: v(1, 1, 1), roughness: 0 }, 1)),
     test('Rough-metal energy ≤ 1', testMetalEnergy),
+    test('GGX albedo table — E∈(0,1], Eavg↓ with roughness', testGgxAlbedoTable),
+    test('Multiscatter metal restores energy (≈1)', testMetalMultiscatterEnergy),
+    test('Anisotropic GGX — reciprocal, bounded, streaked', testAnisoMetal),
+    test('Oren–Nayar diffuse — reciprocal, rough > Lambert', testOrenNayar),
+    test('Clear-coat diffuse — reciprocal, glossy, energy ≤ 1', testClearcoat),
     test('Diffuse Helmholtz reciprocity', testReciprocity),
     test('Procedural texture parity & range', testTexture),
     test('Spectral white point E_λ[w]=1', testSpectralWhitePoint),
@@ -1704,6 +1890,7 @@ export function runSelfTests(): TestResult[] {
     test('Halton L2 discrepancy < random', testQmcDiscrepancy),
     test('BDPT white furnace — diffuse ρ=0.8', testBdptFurnace),
     test('BDPT ≡ path tracer (diffuse box oracle)', testBdptVsPt),
+    test('BDPT ≡ PT (coat/Oren–Nayar/multiscatter/aniso lab)', testMaterialLabVsPt),
     test('BDPT MIS weights partition to 1', testBdptMis),
     test('Solid-angle → area density conversion', testAreaDensity),
     test('PSSMLT sampler — uniform large step + determinism', testMltSampler),
