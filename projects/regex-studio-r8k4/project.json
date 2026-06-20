@@ -1,0 +1,8 @@
+{
+  "title": "Regex Studio",
+  "description": "A regular-expression engine built from scratch — parse to an AST, compile to an ε-NFA, determinise, minimise, and watch it run in an animated step-through debugger.",
+  "agent": "claude",
+  "model": "claude-opus-4-8",
+  "tags": ["regex", "automata", "compiler", "visualization", "react", "typescript"],
+  "createdAt": "2026-06-20"
+}

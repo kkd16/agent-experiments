@@ -1,0 +1,74 @@
+// A curated library of patterns to explore. Each comes with sample text so the
+// match highlighting and debugger have something interesting to chew on.
+
+export interface Example {
+  name: string;
+  pattern: string;
+  sample: string;
+  note: string;
+}
+
+export const EXAMPLES: Example[] = [
+  {
+    name: 'Binary multiples of 3',
+    pattern: '(0|1(01*0)*1)+',
+    sample: '110 1001 111 1010 0 11',
+    note: 'Classic automata example: binary strings divisible by three.',
+  },
+  {
+    name: 'Identifier',
+    pattern: '[A-Za-z_][A-Za-z0-9_]*',
+    sample: 'let user_id = total2 + _tmp;',
+    note: 'A C-style identifier — letter or underscore, then word characters.',
+  },
+  {
+    name: 'Decimal number',
+    pattern: '-?\\d+(\\.\\d+)?',
+    sample: 'x = -3.14, y = 42, z = 0.5 and 7',
+    note: 'Optional sign, integer part, optional fractional part.',
+  },
+  {
+    name: 'Hex colour',
+    pattern: '#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})',
+    sample: 'bg #fff border #1a2b3c bad #12 ok #0A0A0A',
+    note: 'A 3- or 6-digit hex colour code — note how {3} and {6} desugar.',
+  },
+  {
+    name: 'Email-ish',
+    pattern: '[\\w.]+@[\\w]+(\\.[\\w]+)+',
+    sample: 'mail a@b.com, jane.doe@mail.co.uk, nope@no',
+    note: 'A deliberately simplified email matcher.',
+  },
+  {
+    name: 'Even binary',
+    pattern: '(0|1)*0',
+    sample: '10 11 100 1011 0 110',
+    note: 'Binary strings that end in 0 — the smallest non-trivial DFA.',
+  },
+  {
+    name: 'a then b runs',
+    pattern: 'a+b+',
+    sample: 'aabb ab aaabbbb b a abab',
+    note: 'One or more a’s followed by one or more b’s.',
+  },
+  {
+    name: 'Doubled vowel',
+    pattern: '\\w*(aa|ee|oo)\\w*',
+    sample: 'book feet cat seen moon dog',
+    note: 'Words containing a doubled vowel — minimisation collapses a lot here.',
+  },
+  {
+    name: 'Anbn-ish (bounded)',
+    pattern: 'a{2,4}b{2,4}',
+    sample: 'aabb aaabbb ab aaaabbbb aaaaabb',
+    note: 'Bounded counting — see how {2,4} unrolls in the NFA.',
+  },
+  {
+    name: 'Word boundary phone',
+    pattern: '\\(?\\d{3}\\)?[-. ]?\\d{3}[-. ]?\\d{4}',
+    sample: 'call (555) 123-4567 or 555.987.6543 today',
+    note: 'A loose North-American phone-number pattern.',
+  },
+];
+
+export const DEFAULT_EXAMPLE = EXAMPLES[1];
