@@ -91,6 +91,39 @@ export function About() {
           shadowing, or dielectric glass — smooth or <em>frosted</em>, the latter refracting through a
           microfacet interface. Rough lobes use <em>visible-normal (VNDF)</em> sampling for low variance.
         </Card>
+        <Card title="Energy-conserving rough metal">
+          A single-scatter GGX lobe silently drops the light that would have bounced{' '}
+          <em>multiple times</em> between microfacets, so rough metals darken unphysically — a rough
+          gold sphere goes grey. Lumen adds a <strong>Kulla–Conty</strong> multiple-scattering
+          compensation lobe driven by the GGX <em>directional albedo</em> <code>E(μ,α)</code>, which is
+          Monte-Carlo–integrated once into a table at start-up. The compensation exactly restores the
+          missing energy <code>(1−E(μₒ))</code>, with a coloured multiscatter Fresnel{' '}
+          <code>F_ms</code> so saturated metals stay saturated as they roughen. The <strong>Verify</strong>{' '}
+          tab proves a white rough conductor reflects ≈1 with compensation and measurably less without.
+          See it in <em>Rough Conductors</em>: the back row dims, the compensated front row stays bright.
+        </Card>
+        <Card title="Anisotropic (brushed) metal">
+          Milled, brushed and spun metals have microscopic grooves running one way, stretching the
+          highlight into a streak. Lumen's GGX lobe takes two roughness axes{' '}
+          <code>(αₓ,α_y)</code> in a tangent frame you can rotate, so the VNDF sampler, the BRDF and its
+          pdf all become anisotropic — reciprocity and energy still hold exactly (proven in{' '}
+          <strong>Verify</strong>). <em>Brushed Metal</em> rakes the streak across a row of spheres.
+        </Card>
+        <Card title="Oren–Nayar rough diffuse">
+          Real matte surfaces — clay, chalk, the moon, unfinished plaster — are not Lambertian: their
+          microscopic roughness makes them <em>flatten</em> and back-scatter toward the light, so a full
+          moon is a flat disc, not a shaded ball. Lumen models this with the reciprocal{' '}
+          <strong>Oren–Nayar</strong> microfacet-diffuse BRDF (roughness σ), reducing to Lambert at σ=0.
+          The matte spheres in <em>Ceramics &amp; Clay</em> show the chalky, shadowless look.
+        </Card>
+        <Card title="Clear-coat (layered) materials">
+          Glazed ceramic, lacquer and car paint are a <em>clear dielectric coat over a coloured base</em>:
+          a sharp Fresnel gloss floats over the pigment, and the light that enters the coat is attenuated
+          on the way in and out so the stack still conserves energy. Lumen layers a GGX dielectric coat
+          over a (Lambert or Oren–Nayar) base, sampling the two lobes by their Fresnel weight with a
+          combined pdf — so it stays MIS-consistent and matches BDPT pixel-for-pixel (proven). Try the
+          glossy row in <em>Ceramics &amp; Clay</em>.
+        </Card>
         <Card title="Spectral dispersion">
           Dispersive glass is given a wavelength-dependent index of refraction via Cauchy’s law, so a
           path commits to a random <em>hero wavelength</em> on entry and refracts blue more sharply than

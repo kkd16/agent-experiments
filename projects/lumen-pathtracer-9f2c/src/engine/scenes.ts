@@ -1250,6 +1250,109 @@ function hsv(h: number, s: number, val: number): Vec3 {
   }
 }
 
+// ---- Material lab scenes (Lumen 10.0) ---------------------------------------
+
+// A neutral studio: a large soft area light overhead and a matte floor, used by
+// the three material-lab scenes so the new BSDFs are compared under identical,
+// physically meaningful lighting.
+function studioShell(floorMat: Material): { materials: Material[]; prims: PrimDef[]; light: number } {
+  const materials: Material[] = [floorMat]
+  const prims: PrimDef[] = []
+  const g = 40
+  prims.push(...quad(v(-g, 0, -g), v(g, 0, -g), v(g, 0, g), v(-g, 0, g), 0))
+  materials.push({ kind: 'emissive', emission: v(5.5, 5.5, 5.6) })
+  const light = materials.length - 1
+  prims.push(...quad(v(-7, 11, -5), v(7, 11, -5), v(7, 11, 7), v(-7, 11, 7), light))
+  return { materials, prims, light }
+}
+
+// Brushed metal: a row of spheres whose anisotropy ramps 0 → ~0.95, each rotated
+// so the streak highlight rakes a different way — the signature of milled/brushed
+// metal that an isotropic GGX lobe simply cannot produce.
+function brushedMetal(): SceneDef {
+  const { materials, prims } = studioShell({ kind: 'diffuse', albedo: v(0.06, 0.06, 0.07) })
+  const cols = 6
+  const steel = v(0.95, 0.95, 0.97)
+  for (let i = 0; i < cols; i++) {
+    const aniso = (i / (cols - 1)) * 0.95
+    materials.push({
+      kind: 'metal',
+      albedo: steel,
+      roughness: 0.32,
+      aniso,
+      anisoAngle: (i / cols) * Math.PI,
+    })
+    const mat = materials.length - 1
+    prims.push({ kind: 'sphere', center: v((i - (cols - 1) / 2) * 2.5, 1.1, 0), radius: 1.1, material: mat })
+  }
+  // A back row of brushed copper discs (spheres) with a fixed strong anisotropy
+  // but sweeping orientation, to show the highlight rotate.
+  const copper = v(0.95, 0.64, 0.45)
+  for (let i = 0; i < cols; i++) {
+    materials.push({ kind: 'metal', albedo: copper, roughness: 0.22, aniso: 0.9, anisoAngle: (i / cols) * Math.PI })
+    const mat = materials.length - 1
+    prims.push({ kind: 'sphere', center: v((i - (cols - 1) / 2) * 2.5, 0.8, -3.4), radius: 0.8, material: mat })
+  }
+  return {
+    name: 'Brushed Metal',
+    materials,
+    prims,
+    camera: { eye: v(0, 4.2, 12), target: v(0, 1, -1), up: v(0, 1, 0), vfovDeg: 40, aperture: 0.04, focusDist: 12 },
+    env: { kind: 'gradient', top: v(0.16, 0.18, 0.24), bottom: v(0.03, 0.03, 0.04) },
+  }
+}
+
+// Energy comparison: two rows of identical gold spheres at rising roughness — the
+// back row single-scatter (darkening as it roughens), the front row with
+// Kulla–Conty multiscatter (staying bright and saturated). The visible split is
+// the energy the multiscatter lobe puts back.
+function roughConductors(): SceneDef {
+  const { materials, prims } = studioShell({ kind: 'diffuse', albedo: v(0.5, 0.5, 0.52) })
+  const cols = 6
+  const gold = v(1.0, 0.77, 0.34)
+  for (let i = 0; i < cols; i++) {
+    const r = 0.15 + (i / (cols - 1)) * 0.85
+    materials.push({ kind: 'metal', albedo: gold, roughness: r }) // single-scatter
+    const ss = materials.length - 1
+    prims.push({ kind: 'sphere', center: v((i - (cols - 1) / 2) * 2.5, 1.0, -3.0), radius: 1.0, material: ss })
+    materials.push({ kind: 'metal', albedo: gold, roughness: r, multiscatter: true }) // compensated
+    const ms = materials.length - 1
+    prims.push({ kind: 'sphere', center: v((i - (cols - 1) / 2) * 2.5, 1.0, 0.6), radius: 1.0, material: ms })
+  }
+  return {
+    name: 'Rough Conductors',
+    materials,
+    prims,
+    camera: { eye: v(0, 5, 13), target: v(0, 0.9, -1), up: v(0, 1, 0), vfovDeg: 40, aperture: 0, focusDist: 13 },
+    env: { kind: 'gradient', top: v(0.45, 0.5, 0.6), bottom: v(0.2, 0.22, 0.26) },
+  }
+}
+
+// Ceramics & clay: a front row of clear-coated (lacquered/glazed) colour spheres
+// — a sharp white gloss floating over saturated pigment — beside a back row of
+// Oren–Nayar matte clay (chalky, flat, no specular). The contrast shows the
+// layered coat and the rough-diffuse model side by side.
+function ceramics(): SceneDef {
+  const { materials, prims } = studioShell({ kind: 'diffuse', albedo: v(0.22, 0.2, 0.18), sigma: 0.7 })
+  const cols = 6
+  for (let i = 0; i < cols; i++) {
+    const hue = i / cols
+    materials.push({ kind: 'diffuse', albedo: hsv(hue, 0.75, 0.55), coat: { roughness: 0.06, ior: 1.5 } })
+    const glazed = materials.length - 1
+    prims.push({ kind: 'sphere', center: v((i - (cols - 1) / 2) * 2.4, 1.0, 0.4), radius: 1.0, material: glazed })
+    materials.push({ kind: 'diffuse', albedo: hsv(hue, 0.45, 0.7), sigma: 0.8 })
+    const clay = materials.length - 1
+    prims.push({ kind: 'sphere', center: v((i - (cols - 1) / 2) * 2.4, 1.0, -3.0), radius: 1.0, material: clay })
+  }
+  return {
+    name: 'Ceramics & Clay',
+    materials,
+    prims,
+    camera: { eye: v(0, 4.8, 12.5), target: v(0, 0.9, -1), up: v(0, 1, 0), vfovDeg: 40, aperture: 0.03, focusDist: 12.5 },
+    env: { kind: 'gradient', top: v(0.2, 0.23, 0.3), bottom: v(0.05, 0.06, 0.08) },
+  }
+}
+
 export interface ScenePreset {
   id: string
   label: string
@@ -1265,6 +1368,9 @@ export const SCENES: ScenePreset[] = [
   { id: 'cove', label: 'Cove (BDPT)', build: cove },
   { id: 'weekend', label: 'Weekend Daylight', build: weekend },
   { id: 'gallery', label: 'Material Gallery', build: gallery },
+  { id: 'brushed', label: 'Brushed Metal', build: brushedMetal },
+  { id: 'conductors', label: 'Rough Conductors', build: roughConductors },
+  { id: 'ceramics', label: 'Ceramics & Clay', build: ceramics },
   { id: 'caustic', label: 'Caustic Room', build: causticRoom },
   { id: 'pool', label: 'Caustic Pool', build: causticPool },
   { id: 'spectral-caustic', label: 'Spectral Caustic', build: spectralCaustic },

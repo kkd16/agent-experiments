@@ -716,7 +716,7 @@ export class SppmState {
       const n = v(this.nX[i], this.nY[i], this.nZ[i])
       // BSDF at the measurement point for (camera dir wo, photon dir wi).
       let f: Vec3
-      if (mat.kind === 'diffuse') {
+      if (mat.kind === 'diffuse' && !mat.sigma && !mat.coat) {
         if (dot(wi, n) <= 0 || dot(wo, n) <= 0) return
         f = scale(mat.albedo, INV_PI)
       } else {
