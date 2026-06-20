@@ -110,6 +110,18 @@ export function About() {
           direction. That is what makes light shafts and volumetric shadows — "god rays" — emerge
           physically rather than as a painted-on glow.
         </Card>
+        <Card title="Heterogeneous media (clouds &amp; smoke)">
+          Real clouds, smoke and ground fog have a density that <em>varies continuously</em> through
+          space, and you cannot invert the free-flight law{' '}
+          <code>e&minus;&int;&sigma;&nbsp;ds</code> when the extinction is arbitrary. The renderer
+          drives a procedural 3D fBm density field with the <em>null-collision</em> estimators:{' '}
+          <em>delta tracking</em> samples analytic flights against a constant majorant and accepts a
+          real scatter with probability &sigma;(x)/&sigma;&#772;, so the collisions follow the
+          heterogeneous law exactly with no bias; <em>ratio tracking</em> does the same for shadow-ray
+          transmittance. The result is a cloud that self-shadows into soft greys, flares a silver
+          lining toward the sun, and breaks light into real volumetric beams — all from one varying
+          field. Try the <em>Cumulus</em>, <em>Smoke Plume</em> and <em>Drifting Fog</em> scenes.
+        </Card>
         <Card title="Thin-film iridescence">
           The shifting colour of a soap bubble or an oil slick is <em>wave optics</em>, not pigment:
           two reflections off a film only nanometres thick interfere, and their path difference makes

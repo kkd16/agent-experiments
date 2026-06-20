@@ -6,9 +6,10 @@ The app's long-lived memory. Read this first when you pick it back up.
 the CPU (no WebGL/WebGPU) across a Web Worker pool, rendering into a `<canvas>` with progressive
 accumulation. It solves the rendering equation with next-event estimation + multiple importance
 sampling, GGX microfacet BSDFs, smooth **and frosted** dielectrics, **spectral dispersion**,
-**Beer–Lambert volumetric absorption**, **procedural textures**, **adaptive variance-guided
-sampling** with a live noise heatmap, a SAH BVH, ACES tone mapping, and an edge-avoiding À-Trous
-denoiser. It carries **four interchangeable light-transport integrators** (a unidirectional path
+**Beer–Lambert volumetric absorption**, **heterogeneous participating media** (procedural fBm
+clouds, smoke & fog traced by **delta/ratio tracking**), **procedural textures**, **adaptive
+variance-guided sampling** with a live noise heatmap, a SAH BVH, ACES tone mapping, and an
+edge-avoiding À-Trous denoiser. It carries **four interchangeable light-transport integrators** (a unidirectional path
 tracer, bidirectional PT, primary-sample-space Metropolis, and stochastic progressive photon
 mapping) that all provably converge to the same image — and as of 8.0 the photon mapper is
 **spectral** (rainbow caustics through dispersive glass) and **daylight-complete** (the sun is a
@@ -29,9 +30,14 @@ photon emitter, so daylight scenes get photon-mapped sun caustics).
 - `src/engine/mesh.ts` — indexed mesh generators (icosphere / uv-sphere / torus / surface of
   revolution), affine transforms (inverse-transpose normals), area-weighted normal recovery.
 - `src/engine/obj.ts` — Wavefront OBJ parser (v/vn/f, polygon fans, auto-fit to a unit box).
+- `src/engine/noise.ts` — dependency-free 3D value noise + fBm + domain warp (the density fields).
+- `src/engine/volume.ts` — compiles a `DensityDef` into a `DensityField` (majorant + density(p)) for
+  heterogeneous media; FBM clouds/smoke + exponential fog layers, bounded by the medium sphere.
 - `src/engine/sky.ts` — Preetham analytic daylight (Perez distribution + zenith chromaticity).
 - `src/engine/bvh.ts` — binned SAH build, stack traversal (nearest + any-hit).
-- `src/engine/scene.ts` — scene assembly, intersection, NEE light sampler + MIS light pdf, env.
+- `src/engine/scene.ts` — scene assembly, intersection, NEE light sampler + MIS light pdf, env,
+  and the participating-media estimators: analytic Beer–Lambert for homogeneous volumes, **delta
+  tracking** (free-flight collisions) + **ratio tracking** (shadow transmittance) for heterogeneous.
 - `src/engine/integrator.ts` — the path tracer: NEE + MIS (power heuristic) + Russian roulette,
   Beer–Lambert medium tracking, and hero-wavelength spectral sampling.
 - `src/engine/bdpt.ts` — bidirectional path tracer: camera×light subpath connections weighted by
@@ -126,6 +132,87 @@ photon emitter, so daylight scenes get photon-mapped sun caustics).
 - [ ] Multiplexed MLT (Hachisuka et al.) — let the chain mutate *which* BDPT strategy it uses, so
       one estimator adapts per-path instead of fixing PT vs BDPT up front
 - [ ] Stratified large-step pixel selection so PSSMLT's global jumps cover the film evenly
+- [x] **Heterogeneous participating media (9.0)** — procedural 3D density fields (FBM
+      cumulus clouds, rising smoke plumes, exponential ground-fog layers) sampled with
+      **delta tracking** (Woodcock null-collision free-flight) for in-volume scatter events
+      and **ratio tracking** for the shadow-ray transmittance, both provably unbiased for an
+      arbitrary spatially varying extinction. Three showcase scenes + five new proofs.
+- [ ] **Spectral / chromatic majorants for heterogeneous media** — per-channel σ_t fields
+      (today the field is a scalar density × a coloured albedo) with hero-wavelength delta tracking
+- [ ] **Emissive volumes** (blackbody fire) — a density-modulated emission term in the medium
+
+## Roadmap — 2026-06-20 Lumen 9.0: heterogeneous participating media — clouds, smoke & fog via delta/ratio tracking (claude)
+
+Lumen 4.0 made the *space between surfaces* physical, but only as **homogeneous**
+volumes: a medium was a sphere of *constant* extinction, so every "cloud" was a
+uniformly-foggy ball. Real clouds, smoke and ground fog are **heterogeneous** —
+their density varies continuously through space — and the unbiased way to trace
+light through a varying extinction field is the **null-collision** family of
+estimators (Woodcock 1965; Novák et al. 2014). 9.0 adds exactly that: a
+procedural 3D density field per medium, **delta tracking** for the free-flight
+distance sampler, and **ratio tracking** for the shadow-ray transmittance. The
+homogeneous path is untouched (a medium with no `density` field stays analytic),
+and because both estimators are unbiased the existing energy-conservation and
+transmittance oracles extend to the heterogeneous case as the headline proofs.
+
+Why null-collision tracking is the right tool: you cannot invert the CDF of a
+free flight `e^{−∫σ_t ds}` when `σ_t` varies arbitrarily. Delta tracking instead
+adds a fictitious "null" collider so the *total* extinction is a constant
+majorant `σ̄ ≥ max σ_t`; you sample analytic exponential flights against `σ̄`, and
+at each tentative collision flip a coin — a **real** scatter with probability
+`σ_t(x)/σ̄`, else a **null** event (continue, unperturbed). The real-collision
+distribution is then *exactly* the heterogeneous free-flight law, with no bias
+and no integral to evaluate. Ratio tracking is its transmittance cousin: walk
+the same majorant flights and multiply by `(1 − σ_t(x)/σ̄)` at each tentative
+collision; its expectation is `e^{−∫σ_t ds}` for *any* field — an unbiased
+shadow-ray estimator that needed no closed form.
+
+Plan / steps (all to ship this session):
+
+1. **`noise.ts`** — a dependency-free 3D value-noise generator (hashed integer
+   lattice, quintic-smoothstep trilinear interpolation) plus fractional Brownian
+   motion (`fbm3`, octave sum) and a domain-warp helper for billowy structure.
+   Deterministic and allocation-free in the hot loop. (Self-test: bounded,
+   continuous, deterministic, ≈zero-mean.)
+2. **`MediumDef.density`** (types.ts) — an optional, structured-clone-friendly
+   `DensityDef` union: `{kind:'fbm', …}` (cumulus / smoke, with octaves,
+   frequency, lacunarity, gain, coverage threshold, a soft spherical edge
+   falloff, a vertical density bias and a domain-warp amount) and
+   `{kind:'layer', …}` (an exponential vertical fog layer with noise lumpiness).
+   Absent ⇒ homogeneous (the 4.0 behaviour, bit-for-bit).
+3. **`volume.ts`** — a `DensityField` (`{ majorant; density(p) ∈ [0,1] }`) and
+   `makeDensityField(medium)` that compiles a `DensityDef` into an evaluator
+   closure bounded by the medium sphere. The field returns a *normalised* density
+   in [0,1]; the medium's `sigmaT` is the majorant extinction.
+4. **Scene** — precompute `fields[]` parallel to `media[]`; rewrite
+   `sampleMediumScatter` to **delta-track** heterogeneous media (analytic
+   exponential for homogeneous) and `mediaTransmittance(…, rng)` to **ratio-track**
+   them (analytic for homogeneous). Disjoint-media assumption preserved (nearest
+   real collision wins).
+5. **Integrator** — thread `rng` into the two `mediaTransmittance` calls (the only
+   change; the collision branch already multiplies β by the albedo, which is the
+   correct delta-tracking real-collision weight, and the camera path still needs
+   no transmittance multiply because null collisions leave β unchanged).
+6. **Scenes (`scenes.ts`)** — three showcases: **Cumulus** (a sunlit FBM cloud
+   under the Preetham sky — forward-scattering silver lining + soft self-shadowing),
+   **Smoke Plume** (a rising, dark, vertically-biased FBM column lit from the side),
+   **Drifting Fog** (a low exponential ground-fog layer in a colonnade, so the
+   skylight breaks into god-rays grazing the fog top). Registered `fog: true`.
+7. **UI** — the existing fog-density knob already scales `sigmaT` (= the majorant),
+   so it works unchanged; add a **Cloud coverage** control that remaps the FBM
+   threshold for heterogeneous scenes, and an About card explaining delta/ratio
+   tracking.
+8. **Proofs (5 new, 48 total) (`selftest.ts`)** — (a) the noise field is bounded,
+   continuous, deterministic and ≈zero-mean; (b) **delta tracking with a constant
+   (=1) field reproduces `e^{−σ_t L}`** — the heterogeneous free-flight sampler
+   collapses to Beer's law (unbiasedness oracle, mirrors test 24); (c) **ratio
+   tracking is an unbiased transmittance estimator** — `E[T̂] = e^{−σ_t L}` for a
+   constant field; (d) **ratio tracking matches a genuinely varying analytic
+   optical depth** — a `layer` field's transmittance vs a fine deterministic
+   quadrature of `∫σ_t ds`; (e) **a heterogeneous pure-scattering volume conserves
+   energy** — an FBM medium with albedo 1 in a uniform unit field is still
+   invisible (radiance through = 1), the strongest end-to-end oracle for the whole
+   delta-tracking integrator.
 
 ## Roadmap — 2026-06-19 Lumen 8.0: a spectral, daylight-complete photon mapper (claude)
 
@@ -492,6 +579,38 @@ verification suite, the scene registry, and the UI so it is observable and prove
 
 ## Session log
 
+- 2026-06-20 (claude/claude-opus-4-8): **Lumen 9.0 — heterogeneous participating media (clouds,
+  smoke & layered fog) via delta & ratio tracking.** Turned the 4.0 *homogeneous* volumes (a sphere
+  of constant fog) into real **heterogeneous** media whose extinction varies continuously through
+  space. (1) **`noise.ts`** — a dependency-free 3D value-noise + fBm + domain-warp toolkit (hashed
+  integer lattice, quintic-smoothstep interpolation), pure and allocation-free so the field
+  evaluates identically on every worker. (2) **`MediumDef.density`** — an optional, structured-clone
+  `DensityDef` union: `fbm` (cumulus/smoke — octaves, frequency, coverage threshold, soft spherical
+  edge falloff, vertical bias, domain warp) and `layer` (an exponential vertical fog slab). Absent ⇒
+  the 4.0 homogeneous behaviour, bit-for-bit. (3) **`volume.ts`** — compiles a `DensityDef` into a
+  `DensityField` (`majorant` + `density(p)∈[0,1]`) bounded by the medium sphere. (4) **Scene** —
+  `sampleMediumScatter` now **delta-tracks** heterogeneous media (Woodcock: analytic flights against
+  the constant majorant σ̄=sigmaT, accept a *real* scatter with probability σ(x)/σ̄=density(x), else a
+  *null* collision and continue) and `mediaTransmittance(…, rng)` **ratio-tracks** them
+  (T̂=∏(1−σ(xᵢ)/σ̄), an unbiased estimator of e^(−∫σ ds) needing no closed form); the homogeneous path
+  stays analytic. (5) **Integrator** — the only change is threading `rng` into the two
+  `mediaTransmittance` calls (the collision branch already multiplies β by the albedo, the correct
+  delta-tracking real-collision weight, and the camera path still needs no transmittance multiply
+  because null collisions leave β unchanged). (6) **Three scenes** — **Cumulus** (a sunlit fBm cloud
+  under the Preetham sky with a forward-scattering silver lining), **Smoke Plume** (a rising,
+  vertically-biased, sooty column lit hard from the side — deep self-shadowed darks), **Drifting
+  Fog** (an exponential ground-fog layer in a colonnade so the skylight breaks into god-rays grazing
+  the fog top). (7) **UI** — the fog-density knob already scales the majorant; added a **Cloud
+  coverage** control (offsets the fBm threshold to puff the cloud up or break it into scattered
+  billows) and an About card on delta/ratio tracking. (8) **Five new proofs (48 total):** the noise
+  field is bounded/continuous/deterministic/mean-½; delta tracking with a constant field reproduces
+  e^(−σL) (reach 0.2474 vs 0.2466); ratio tracking on a varying exponential layer matches a fine
+  quadrature of ∫σ ds (T̂=0.1657 vs e^(−τ)=0.1653, τ=1.80); delta tracking matches the same varying
+  optical depth (reach 0.1663 vs 0.1653); and a heterogeneous pure-scattering fBm volume in a unit
+  field conserves energy *exactly* (radiance through cloud = 1.0000) — the end-to-end oracle for the
+  whole delta-tracking integrator. Verified in Node by bundling the engine with esbuild: 48/48
+  self-tests, plus a smoke render of all three new scenes (all-finite, energetic, self-shadowing).
+  `pnpm lint`/`tsc`/`build` green via the CI gate.
 - 2026-06-19 (claude/claude-opus-4-8): **Lumen 8.0 — a spectral, daylight-complete photon mapper.**
   Closed the two deliberate gaps in the 7.0 photon mapper. **(1) Spectral photons:** a photon now
   commits a random hero wavelength the first time it strikes a dispersive surface (reusing the path

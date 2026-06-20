@@ -32,19 +32,57 @@ export type EnvDef =
       ground?: Vec3
     }
 
-// A bounded homogeneous participating medium: a sphere of fog / smoke / cloud.
-// `sigmaT` is the scalar extinction coefficient (collisions per world unit);
+// A procedural 3D density field that modulates a medium's extinction in space,
+// turning a uniformly-foggy sphere into a real cloud / smoke plume / fog layer.
+// The field is evaluated to a *normalised* density in [0, 1]; the medium's
+// `sigmaT` is the majorant extinction (the value at density 1), which is exactly
+// what delta/ratio tracking needs as its constant collision rate. Absent ⇒ the
+// medium is homogeneous (density ≡ 1) and the analytic Beer–Lambert path runs.
+export type DensityDef =
+  // Fractional-Brownian-motion noise: cumulus clouds and smoke. The raw fBm is
+  // thresholded by `coverage` (higher ⇒ sparser) and remapped to [0, 1]; `edge`
+  // is a soft spherical falloff width (fraction of radius) so the cloud fades to
+  // nothing at the medium boundary; `verticalBias` thins the field with height
+  // (>0, smoke dissipating upward) or with depth (<0); `warp` curls the billows.
+  | {
+      kind: 'fbm'
+      frequency: number // base spatial frequency (cycles per world unit)
+      octaves: number
+      lacunarity: number
+      gain: number
+      coverage: number // density floor subtracted before renormalising, [0,1)
+      edge: number // soft spherical edge falloff width, fraction of radius
+      verticalBias?: number // density attenuation per world unit of height
+      warp?: number // domain-warp displacement (world units)
+      seed?: number
+    }
+  // An exponential vertical fog layer: density peaks at world-y `base` and decays
+  // upward with e-folding height `scaleHeight`, optionally lumped by noise.
+  | {
+      kind: 'layer'
+      base: number
+      scaleHeight: number
+      noiseAmount?: number // 0 = smooth slab, →1 = lumpy fog bank
+      frequency?: number
+      seed?: number
+    }
+
+// A bounded participating medium: a sphere of fog / smoke / cloud. `sigmaT` is
+// the (majorant) scalar extinction coefficient (collisions per world unit);
 // `albedo` is the per-channel single-scattering albedo σ_s/σ_t (1 = lossless
 // scattering, 0 = pure absorption), which is also what tints the volume; `g` is
-// the Henyey–Greenstein anisotropy. Media are assumed not to overlap in depth
-// along any ray (each scene places at most one enclosing volume), which keeps
-// the free-flight estimator a simple nearest-collision search.
+// the Henyey–Greenstein anisotropy; the optional `density` field makes the
+// medium heterogeneous (a procedural cloud/smoke/fog) rather than uniform. Media
+// are assumed not to overlap in depth along any ray (each scene places at most
+// one enclosing volume), which keeps the free-flight estimator a simple
+// nearest-collision search.
 export interface MediumDef {
   center: Vec3
   radius: number
   sigmaT: number
   albedo: Vec3
   g: number
+  density?: DensityDef
 }
 
 export interface SceneDef {
