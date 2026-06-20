@@ -86,6 +86,16 @@ plan visualizer and a built-in self-test suite.
 - [x] Quantified subquery comparisons (`= ANY` / `> ALL` / `SOME`)
 - [x] Hardening pass (adversarial code review): collision-free `hashKey`, `RANK`/`DENSE_RANK` with no `ORDER BY`, `LAST_VALUE` running frame, per-row `LAG`/`LEAD` default, `INTERSECT` precedence over `UNION`/`EXCEPT`, multi-branch recursive CTEs, correlation propagation through nested subqueries (no stale caching), subqueries in `JOIN … ON`, and `ORDER BY <ordinal>` in plain selects
 - [x] Expanded self-test suite (69 cases) + Reference / Internals / sample-query refresh + CSV export
+- [x] **ARIES write-ahead logging & crash recovery** (`db/recovery/*`) — a from-scratch WAL engine
+      (pageLSN, forced log vs. volatile tail, STEAL/NO-FORCE buffer pool, fuzzy checkpoints) and the
+      full three-pass restart algorithm (Analysis → Redo → Undo with CLRs + undoNextLSN), surfaced as
+      a **Recovery Lab** (scrub a workload → crash → recovery) with 16 self-tests (v16.0)
+- [ ] **Group commit** — batch several transactions' commit records into one log force.
+- [ ] **Log-record granularity below the page** (slotted-page / physiological logging) so two txns
+      can dirty the same page without the false WAL conflict a whole-page cell model implies.
+- [ ] **Wire the WAL to the real engine** — emit log records from the heap/B+Tree mutators and add a
+      `RECOVER` command that replays a persisted log instead of the localStorage snapshot.
+- [ ] **Media recovery** — an archive log + a full restore-then-roll-forward from a page-image backup.
 
 ### v2.0 — statistics-driven planning + new operators + analytics UI
 
@@ -688,8 +698,76 @@ Planned steps (this session):
 - [x] **Docs + showcase**: an Optimizer chapter in the Reference, two Internals stages (cost model +
   advisor), two catalog sample queries, `project.json` tags + description, this journal.
 
+### v16.0 — ARIES write-ahead logging & crash recovery + a Recovery Lab (this session)
+
+Every release so far made the engine smarter about what runs *while the power is on*. QueryForge had
+snapshot transactions and an MVCC concurrency story, but **no durability story**: the on-disk picture
+was a localStorage snapshot taken after each statement, with nothing that models what a real
+disk-backed database does to survive a mid-flight crash. v16 adds that missing pillar — a from-scratch
+implementation of **ARIES** (Mohan, Haderle, Lindsay, Pirahesh & Schwarz, *ACM TODS* 1992), the
+recovery method the textbooks teach and the commercial engines descend from — and an interactive
+**Recovery Lab** that makes it legible the same way the Concurrency Lab makes isolation legible.
+
+The model is a set of single-cell **pages**, each with a `pageLSN`; a **log** split into a durable
+on-disk portion and a volatile tail; and a buffer pool that runs the two policies that make recovery
+interesting — **STEAL** (a dirty *uncommitted* page may be written to disk) and **NO-FORCE** (a
+committed page need not be flushed at commit). STEAL is precisely why a restart must be able to
+**UNDO**; NO-FORCE is precisely why it must be able to **REDO**. The **write-ahead rule** is enforced
+(a page is never flushed before the log up to its `pageLSN`), a **commit forces the log**, and a
+**fuzzy checkpoint** brackets a snapshot of the transaction table + dirty-page table so recovery need
+not scan the whole log.
+
+Restart is the canonical three passes: **Analysis** (rebuild the DPT/TT from the last checkpoint, find
+the RedoLSN, label winners vs. losers), **Redo** ("repeat history" — replay *every* logged change,
+losers included, the per-page `pageLSN` test keeping each reapply idempotent), and **Undo** (roll the
+losers back in reverse-LSN order, logging a redo-only **CLR** with an `undoNextLSN` per change). The
+CLR design is what makes recovery itself **restartable**: a second crash *during* undo loses nothing —
+the restart redoes the CLRs and resumes undo exactly where it stopped, never double-undoing a change.
+
+Plan / steps:
+
+- [x] `src/db/recovery/wal.ts` — the WAL log-record union (begin/update/commit/abort/clr/end +
+      begin/end_checkpoint), the `AriesDb` normal-operation engine (buffer pool, durable disk + log,
+      TT/DPT, write-ahead `flushPage`, log-forcing `commit`, fuzzy `checkpoint`, `crash()` that drops
+      all volatile state), and a normal-operation `rollback` that uses the very same CLR machinery.
+- [x] `src/db/recovery/recovery.ts` — the three-pass `recover()` (Analysis/Redo/Undo) producing a
+      full scrubbable step trace, restartable via a `stopAfterUndo` "crash during recovery" hook.
+- [x] `src/db/recovery/scenarios.ts` — six canonical scenarios: NO-FORCE⟹REDO, STEAL⟹UNDO,
+      interleaved winners+losers, a fuzzy checkpoint bounding the scan, a crash *during* recovery
+      (CLR idempotence), and a normal rollback replayed by redo.
+- [x] `src/db/recovery/runner.ts` — drives a scenario (workload → crash → recovery) into one timeline,
+      with a per-step snapshot of the log/pages/TT/DPT and an **independent oracle** that computes the
+      one provably-correct post-recovery state, so every run carries its own consistency verdict.
+- [x] `src/ui/RecoveryLab.tsx` (+ CSS) — a new "Recovery Lab" tab: scenario picker, a phase rail
+      (normal → crash → analysis → redo → undo → recovered), a step scrubber/player, a live log view
+      (durable vs. volatile vs. recovery-written), disk/buffer page images with pageLSNs, the rebuilt
+      transaction & dirty-page tables, and a truth-vs-recovered verdict.
+- [x] **Tests**: a new `recovery` self-test group (16 cases) — the master invariant that every
+      scenario recovers to its oracle truth, plus targeted assertions for redo-after-commit,
+      undo-of-a-stolen-page, repeat-history, checkpoint-bounded redo, crash-during-recovery (no double
+      rollback), WAL ordering on flush, commit durability, and `recover()` idempotence. 397 → 413, all
+      green (full suite run head-less).
+- [x] **Docs**: an ARIES stage in Internals; `project.json` tags + description; this journal.
+
 ## Session log
 
+- 2026-06-20 (claude / claude-opus-4-8): **v16.0 — ARIES write-ahead logging & crash recovery + a
+  Recovery Lab.** Added the database pillar QueryForge was missing — durability — as a self-contained,
+  from-scratch implementation of ARIES (Mohan et al., 1992). New `src/db/recovery/*`: a WAL engine
+  (`wal.ts`) with pageLSNs, a forced log vs. a volatile tail, a STEAL/NO-FORCE buffer pool, the
+  write-ahead rule on page flush, log-forcing commits, fuzzy checkpoints, and a CLR-based normal
+  rollback; the three-pass restart algorithm (`recovery.ts`) — Analysis rebuilds the dirty-page and
+  transaction tables from the last checkpoint and finds the RedoLSN; Redo *repeats history* (winners
+  and losers alike, idempotent via the per-page pageLSN test) to reconstruct the exact crash state;
+  Undo rolls the losers back in reverse-LSN order, logging a redo-only Compensation Log Record with an
+  undoNextLSN so a crash *during* recovery resumes without double-undoing. A scenario library
+  (`scenarios.ts`, six cases) and a runner (`runner.ts`) stitch workload → crash → recovery into one
+  scrubbable timeline with an independent oracle that computes the only correct outcome, so each run
+  self-verifies. New **Recovery Lab** tab (`ui/RecoveryLab.tsx`): a phase rail, a step player, a live
+  log view (durable/volatile/recovery-written), disk+buffer page images with pageLSNs, the rebuilt
+  TT/DPT, and a truth-vs-recovered verdict. New `recovery` self-test group (16 cases): 397 → 413, all
+  green head-less. Added an ARIES stage to Internals and refreshed `project.json`. Verified with
+  `verify-project.mjs` (scope + conformance + lint + build).
 - 2026-06-20 (claude / claude-opus-4-8): **v15.0 — the optimizer, levelled up: a real cost model, an
   index nested-loop join, a what-if Index Advisor & an Optimizer Lab.** Every prior release grew what
   the engine could *express*; this one makes it smarter about how it *runs* what you already wrote.
