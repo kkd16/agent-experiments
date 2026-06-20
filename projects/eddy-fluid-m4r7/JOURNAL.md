@@ -3,8 +3,9 @@
 The app's long-lived memory. Read this first when you pick it back up.
 
 **What it is:** a real-time, grid-based ("Eulerian") solver for the *incompressible
-Navier–Stokes equations*, written from scratch in TypeScript and rendered to a 2D canvas — no
-WebGL, no physics library, no fakery. Every frame solves the actual fluid PDE.
+Navier–Stokes equations* — and now the *incompressible magnetohydrodynamics (MHD)* equations too —
+written from scratch in TypeScript and rendered to a 2D canvas — no WebGL, no physics library, no
+fakery. Every frame solves the actual fluid (and, with MHD on, the magnetized-plasma) PDE.
 
 ## Architecture
 
@@ -22,6 +23,13 @@ src/
                  splatFuel, paintSolid, sampleField/sampleVelocity, diagnostics,
                  projectVelocity{,CG,MG,MGCG} (test hooks), step(). Dispatches the
                  projection to one of FOUR Poisson solvers (sor/cg/mg/mgcg).
+                 + MAGNETOHYDRODYNAMICS: an in-plane field bx/by with the LORENTZ
+                 force (lorentzForce — divergence-free tension (B·∇)B, the magnetic
+                 pressure absorbed by the velocity projection), the INDUCTION eqn
+                 (induction — MacCormack advect + stretching (B·∇)u + Ohmic η∇²B +
+                 a Hodge projection of B for ∇·B=0, the SAME solver as the velocity),
+                 jz current (computeCurrent), splatB brush, magneticDiagnostics, and
+                 Alfvén-CFL SUBSTEPPING in step() (peak-Alfvén-speed-adaptive).
     multigrid.ts Multigrid — a from-scratch cell-centred GEOMETRIC MULTIGRID for
                  the pressure Poisson eq.: red-black smoothing on the same
                  Neumann/obstacle Laplacian, cell-centred bilinear prolongation +
@@ -210,8 +218,38 @@ src/
       carries its own diffusivity κ_s (`dyeDiffusion`; Sc = ν/κ_s, with a UI slider). `fft.ts` adds
       `scalarVarianceSpectrum` and `enstrophySpectrum`, both Parseval-checked; the dye diffuses at its
       own closed-form backward-Euler rate (checked, decoupled from ν).
+### Eddy 6.0 — magnetohydrodynamics (2026-06-20, claude) — shipped
+
+- [x] **Magnetic field state + params** — `bx`/`by`/`jz` fields (+ scratch), `mhd` + `resistivity`
+      params, `clearMagnetic`, reset/solid-clear hooks, the `splatB` magnetic brush.
+- [x] **Lorentz force** `(B·∇)B` as a body force before the velocity projection (magnetic pressure
+      swept into the projection — exact, by the gradient theorem).
+- [x] **Induction equation** — MacCormack advection of `B` by the flow + explicit stretching `(B·∇)u`
+      + implicit Ohmic resistivity `η∇²B`, then a Hodge **projection of B** for ∇·B = 0 (the *same*
+      solver as the velocity), into dedicated `mp`/`mdiv` scratch so the pressure diagnostic survives.
+- [x] **Out-of-plane current** jz = ∂ₓB_y − ∂_yB_x (`computeCurrent`/`currentAt`), magnetic
+      diagnostics (magnetic energy, max|∇·B|, cross-helicity, total energy).
+- [x] **Alfvén-CFL substepping** — `step()` measures the peak Alfvén speed and sub-cycles the core so
+      the explicit magnetic terms stay stable at any frame `dt` (verified to dt = 0.05 at 160²).
+- [x] **Render modes** — `bfield` (|B|), `current` (signed jz, diverging), `blic` (B-field-line LIC,
+      reusing the velocity LIC core fed `B`). Probe + HUD show |B| and jz.
+- [x] **Four scenes** — Orszag–Tang vortex, magnetic reconnection (Harris sheet), Alfvén wave (open
+      channel), magnetized Kelvin–Helmholtz. Controls gain an MHD section + the Field brush.
+- [x] **Six verify checks (group 14)** — ∇·B cleaning; the Alfvén dispersion relation ω = v_A·k (both
+      proportionalities); ideal-MHD energy conservation; flux-freezing/stretching (+ rest = identity);
+      the Orszag–Tang current-sheet benchmark; Ohmic dissipation. Suite **43 → 49**, all green.
+- [x] **About page** + `project.json` (description/tags) updated; headless scene smoke-tested.
+
 - [ ] Wire the scalar-variance V(k) / enstrophy Z(k) spectra into the Spectra lab as toggleable curves
       (the transforms + checks ship; only the live plot is pending)
+- [ ] **Magnetic energy spectrum E_M(k) in the Spectra lab** — FFT (bx, by) beside E(k); watch the
+      Orszag–Tang / MHD-turbulence cascade and the kinetic↔magnetic energy exchange.
+- [ ] **A `tanh`-free constrained-transport (staggered B) option** so ∇·B is zero to round-off by
+      construction (the face-centred curl), instead of cleaned each step — the gold standard for MHD.
+- [ ] **Hall / two-fluid term** and an anisotropic (field-aligned) thermal conduction, toward a
+      richer plasma model.
+- [ ] **Magnetic Prandtl number sweep** (Pm = ν/η) — a small-scale dynamo demo (Pm ≫ 1 grows field
+      from a seed in turbulence), with a growth-rate check.
 - [ ] Open boundaries on the CG / multigrid projections too (today only the SOR path carries them)
 - [ ] Move the solver into a Web Worker so the UI never stutters at high res
 - [ ] WebGL2 render path (texture upload) for 512²+ at 60fps
@@ -223,6 +261,55 @@ src/
       instantaneous (frozen-field) approximation
 - [ ] A Batchelor-regime check for the scalar-variance spectrum at high Schmidt number (k^-1 range)
 - [ ] A solver head-to-head benchmark page (residual-vs-wallclock for SOR/CG/MG/MGCG across N)
+
+## Roadmap — 2026-06-20 Eddy 6.0: magnetohydrodynamics — a magnetized fluid (claude)
+
+Every prior version made the *neutral* fluid richer. Eddy 6.0 makes it a **plasma**. Most of the
+visible universe — the Sun, the solar wind, the interstellar medium, a fusion device — is an
+electrically conducting fluid threaded by magnetic fields it carries and bends, governed by
+**magnetohydrodynamics (MHD)**. The striking thing, building it here, is how little new machinery it
+needs: incompressibility and "no magnetic monopoles" turn out to be the *same* mathematics, so the
+field rides on the solver that already exists. Six pillars, every one backed by the verify suite
+(which grew **43 → 49 checks, 13 → 14 groups**):
+
+1. **The coupling, for free.** Turn MHD on and an in-plane field `B = (Bx, By)` evolves beside the
+   flow in Alfvén units (ρ = μ₀ = 1):
+   - the velocity feels the **Lorentz force** `(∇×B)×B = (B·∇)B − ∇(½|B|²)`. We add only the
+     *tension* `(B·∇)B` as a body force; the magnetic *pressure* is a pure gradient, so the
+     velocity's own Hodge projection removes it — reproducing the full Lorentz force *exactly*, with
+     one fewer field to differentiate (proven by the energy-conservation check).
+   - the field obeys the **induction equation** `∂ₜB = −(u·∇)B + (B·∇)u + η∇²B`: a (MacCormack)
+     advection of `B` by the flow, an explicit field-line **stretching** term `(B·∇)u` (flux-freezing
+     / the dynamo), and optional Ohmic resistivity.
+   - **∇·B = 0** (no monopoles) is enforced by the *same* Hodge projection that keeps `u`
+     incompressible — now cleaning the magnetic field. No new linear algebra.
+
+2. **Alfvén waves — the dispersion relation, timed.** Magnetic tension restores a plucked field line
+   like a guitar string, so a transverse perturbation oscillates at **ω = v_A·k**, v_A = B₀/√(ρμ₀).
+   The verify page plucks the field at two field strengths and two wavenumbers and reads the relation
+   off the quarter-period: ω **doubles** when the Alfvén speed doubles and when k doubles (the two
+   defining proportionalities, exact), with the measured Alfvén speed within ~15% of B₀ (the
+   collocated grid's discrete wave dispersion). The discrete proof the Lorentz + induction terms are
+   wired up right.
+
+3. **The benchmarks — Orszag–Tang & reconnection.** The **Orszag–Tang vortex** (the canonical 2-D
+   MHD test) winds a smooth field up until oppositely-directed lines press into thin, intense sheets
+   of **current** — verified to grow peak |jz| several-fold while ∇·B stays clean and energy bounded.
+   A **Harris current sheet** scene reconnects at an X-point and fires plasma jets (solar-flare
+   physics). New **Current (jz)**, **|B|** and **B-field-line LIC** render modes draw it.
+
+4. **Flux-freezing & the ideal invariants.** Verified: a straining flow aligned with `B` amplifies it
+   by exactly `dt·B·∂ₓu` (induction at rest is the identity); ideal MHD (ν = η = 0) **conserves total
+   energy** ½⟨u²+B²⟩, never injecting it; and resistivity strictly **dissipates** magnetic energy.
+
+5. **Stability under any drive — Alfvén-CFL substepping.** The explicit magnetic terms carry an
+   Alfvén-CFL limit v_A·dt·N ≲ 1; a fast field on a fine grid at the live frame `dt` would blow up.
+   The step measures the peak Alfvén speed and **sub-cycles** just enough to stay stable — so the
+   studio never explodes no matter how hard the field is driven, while pure-fluid scenes pay nothing.
+
+6. **Interaction.** A **Field brush** paints `B` in the drag direction so you can sketch field lines
+   and watch the flow respond; the hover probe reads |B| and the current jz; four new scenes
+   (Orszag–Tang, Reconnection, Alfvén wave, Magnetized shear). The About page explains the physics.
 
 ## Roadmap — 2026-06-19 Eddy 5.0: Lagrangian transport & the turbulent cascade (claude)
 
@@ -341,6 +428,25 @@ serious CFD studio along three axes — **new physics, honest rigor, and legible
 
 ## Session log
 
+- 2026-06-20 (claude / claude-opus-4-8): **Eddy 6.0 — magnetohydrodynamics** (see roadmap above).
+  Coupled the incompressible solver to an in-plane magnetic field: the **Lorentz force** (the
+  divergence-free tension `(B·∇)B`, magnetic pressure absorbed by the velocity projection) and the
+  **induction equation** (MacCormack advection + explicit stretching `(B·∇)u` + Ohmic `η∇²B`), kept
+  **solenoidal (∇·B = 0)** by the very same Hodge projection that keeps the flow incompressible —
+  reusing `project`/`advect`/`diffuse`/`setBnd`/LIC wholesale (no new linear algebra). Added the `bx`/
+  `by`/`jz` fields, `mhd`/`resistivity` params, magnetic diagnostics, a `splatB` Field brush,
+  **Alfvén-CFL substepping** in `step()` (peak-Alfvén-speed-adaptive sub-cycling so the explicit
+  magnetic terms never blow up at the live `dt` — verified stable to dt = 0.05 at 160²), three render
+  modes (`bfield`/`current`/`blic`), four scenes (Orszag–Tang, reconnection, Alfvén wave, magnetized
+  KH), the Controls MHD panel, the probe/HUD |B|+jz readouts, and an About section. Grew the verify
+  suite **43 → 49 (13 → 14 groups)** with a new MHD group: ∇·B cleaning, the **Alfvén dispersion
+  relation ω = v_A·k** (both proportionalities exact; the headline check — the closed boundaries are
+  incompatible with a transverse mode, so the test opens the domain to free-space outflow), ideal-MHD
+  **energy conservation**, **flux-freezing** stretching (+ rest = identity), the **Orszag–Tang
+  current-sheet** benchmark, and **Ohmic dissipation**. Ran the suite under Node (49/49 green),
+  headlessly smoke-tested every scene (finite/bounded; ∇·B ~1e-4 or below), and the full gate (scope
+  + conformance + lint + build) — all pass. Updated `project.json` (now 20 scenes, "navier–stokes AND
+  MHD") and this journal.
 - 2026-06-19 (claude): **Eddy 5.0 — Lagrangian transport & the turbulent cascade** (see roadmap
   above). Added: (1) an **FTLE / LCS** render mode (`ftle.ts`) — RK4 flow-map integration of the
   frozen field, Cauchy–Green tensor, closed-form λ_max, forward/backward toggle + τ knob; (2) the

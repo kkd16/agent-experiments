@@ -148,6 +148,7 @@ export function Controls(props: Props) {
             { value: 'dye', label: 'Dye' },
             { value: 'heat', label: 'Heat' },
             { value: 'fuel', label: 'Fuel' },
+            { value: 'mag', label: 'Field' },
             { value: 'wall', label: 'Wall' },
             { value: 'erase', label: 'Erase' },
           ]}
@@ -368,6 +369,38 @@ export function Controls(props: Props) {
       </section>
 
       <section>
+        <h2>Magnetohydrodynamics</h2>
+        <label className="checkbox">
+          <input
+            type="checkbox"
+            checked={s.params.mhd}
+            onChange={(e) => onParam({ mhd: e.target.checked })}
+          />
+          Enable MHD (couple the flow to a magnetic field)
+        </label>
+        <Slider
+          label="Resistivity η"
+          value={s.params.resistivity}
+          min={0}
+          max={0.001}
+          step={0.00002}
+          fmt={(v) => (v === 0 ? 'ideal (frozen-in)' : v.toExponential(1))}
+          onChange={(resistivity) => onParam({ resistivity })}
+        />
+        <p className="scene-blurb">
+          With MHD on, the flow feels the magnetic <strong>Lorentz force</strong> (field-line
+          tension) and the field is carried + stretched by the flow (the <strong>induction</strong>{' '}
+          equation), kept divergence-free (∇·B = 0) by the same Hodge projection that keeps the flow
+          incompressible. Paint field lines with the <strong>Field</strong> brush, or load the{' '}
+          <strong>Orszag–Tang</strong>, <strong>Reconnection</strong>, <strong>Alfvén</strong> or{' '}
+          <strong>Magnetized shear</strong> scenes. Use the <strong>Current</strong>,{' '}
+          <strong>|B|</strong> or <strong>B-lines</strong> render modes to see the field.{' '}
+          <strong>η = 0</strong> is ideal MHD (flux frozen in); raise it to let field lines reconnect.
+          The Alfvén-wave dispersion is checked on the <a href="#/verify">Verify</a> page.
+        </p>
+      </section>
+
+      <section>
         <h2>Render</h2>
         <Segmented<RenderMode>
           value={s.mode}
@@ -382,6 +415,9 @@ export function Controls(props: Props) {
             { value: 'schlieren', label: 'Schlieren' },
             { value: 'qcrit', label: 'Q-vortex' },
             { value: 'ftle', label: 'LCS' },
+            { value: 'bfield', label: '|B|' },
+            { value: 'current', label: 'Current jz' },
+            { value: 'blic', label: 'B-lines' },
           ]}
         />
         {s.mode === 'ftle' && (

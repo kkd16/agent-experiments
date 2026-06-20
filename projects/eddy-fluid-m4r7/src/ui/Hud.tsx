@@ -33,6 +33,10 @@ export function Hud({ stats }: { stats: Stats | null }) {
           <span title="pressure (last solve)">p {p.pressure.toExponential(1)}</span>
           <span title="temperature">T {p.temp.toFixed(3)}</span>
           {p.fuel > 1e-4 && <span title="fuel concentration">fuel {p.fuel.toFixed(3)}</span>}
+          {p.bmag > 1e-4 && <span title="magnetic field magnitude |B|">|B| {p.bmag.toFixed(3)}</span>}
+          {Math.abs(p.current) > 1e-4 && (
+            <span title="out-of-plane current density jz = ∂ₓB_y − ∂_yB_x">jz {p.current.toExponential(1)}</span>
+          )}
         </div>
       )}
     </>
