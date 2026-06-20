@@ -123,6 +123,24 @@ export const EXAMPLES: Example[] = [
     sample: '          x',
     note: 'Two adjacent stars — not exponential, but quadratic. The ReDoS tab fits the degree from the curve.',
   },
+  {
+    name: 'Derivative chain',
+    pattern: 'a(b|c)*d',
+    sample: 'abcbcd',
+    note: 'Open the Derivatives tab: watch the residual expression shrink one character at a time toward ε.',
+  },
+  {
+    name: 'Two roads, one DFA',
+    pattern: '(a|b)*abb',
+    sample: 'aababb abb babb',
+    note: 'The Derivatives tab builds a DFA straight from the regex; compare its size to subset construction — both minimise to the same machine.',
+  },
+  {
+    name: 'Nullable plus',
+    pattern: '(a?)+b',
+    sample: 'b ab aaab',
+    note: 'A repeat whose body can match empty. The fuzzer caught a backtracking-VM bug here — it now agrees with all other engines.',
+  },
 ];
 
 export const DEFAULT_EXAMPLE = EXAMPLES[1];

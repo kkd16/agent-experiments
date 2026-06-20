@@ -1459,3 +1459,314 @@
     display: none;
   }
 }
+
+/* ---------- graph head buttons (DOT + SVG) ---------- */
+.graph-head-btns {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+/* ---------- Derivatives panel ---------- */
+.deriv-panel .deriv-roads {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+  margin: 14px 0 4px;
+}
+.deriv-road {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 12px 18px;
+  min-width: 120px;
+}
+.deriv-road.accent {
+  border-color: #c084fc;
+  box-shadow: 0 0 22px rgba(192, 132, 252, 0.14) inset;
+}
+.deriv-road-n {
+  font-family: var(--mono);
+  font-size: 26px;
+  font-weight: 700;
+  color: var(--text);
+}
+.deriv-road.accent .deriv-road-n {
+  color: #d8b4fe;
+}
+.deriv-road-l {
+  font-size: 11px;
+  color: var(--muted);
+  text-align: center;
+}
+.deriv-arrow {
+  color: var(--muted-2);
+  font-size: 14px;
+  font-weight: 700;
+}
+.deriv-note {
+  margin-top: 6px;
+}
+.deriv-h3 {
+  margin: 22px 0 4px;
+  font-size: 15px;
+  color: var(--text);
+}
+.deriv-chain {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+.deriv-step {
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 8px 10px;
+  min-width: 90px;
+  max-width: 280px;
+}
+.deriv-step.last {
+  border-color: #c084fc;
+}
+.deriv-step.dead {
+  border-color: var(--bad);
+  opacity: 0.85;
+}
+.deriv-step-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 5px;
+}
+.deriv-step-char {
+  font-family: var(--mono);
+  font-size: 12px;
+  font-weight: 700;
+  color: #d8b4fe;
+  background: rgba(192, 132, 252, 0.12);
+  border-radius: 5px;
+  padding: 1px 6px;
+}
+.deriv-badge {
+  font-size: 10px;
+  font-weight: 700;
+  border-radius: 5px;
+  padding: 1px 6px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+.deriv-badge.nullable {
+  color: var(--good);
+  background: rgba(52, 211, 153, 0.12);
+}
+.deriv-badge.dead {
+  color: var(--bad);
+  background: rgba(248, 113, 113, 0.12);
+}
+.deriv-expr {
+  display: block;
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--text);
+  word-break: break-all;
+  white-space: pre-wrap;
+}
+.deriv-final {
+  margin-top: 14px;
+  padding: 10px 14px;
+  border-radius: 10px;
+  font-weight: 600;
+  font-size: 14px;
+}
+.deriv-final.ok {
+  color: var(--good);
+  background: rgba(52, 211, 153, 0.1);
+  border: 1px solid rgba(52, 211, 153, 0.3);
+}
+.deriv-final.no {
+  color: var(--bad);
+  background: rgba(248, 113, 113, 0.1);
+  border: 1px solid rgba(248, 113, 113, 0.3);
+}
+
+/* ---------- Fuzz panel ---------- */
+.fuzz-controls {
+  display: flex;
+  align-items: flex-end;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin: 14px 0;
+}
+.fuzz-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.fuzz-field input {
+  width: 130px;
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 10px;
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 13px;
+}
+.fuzz-run {
+  background: linear-gradient(180deg, #6d4ea8, #573e86);
+  color: #fff;
+  border: 1px solid #7c5cb8;
+  border-radius: 8px;
+  padding: 9px 18px;
+  font-weight: 700;
+  font-size: 13px;
+}
+.fuzz-run.secondary {
+  background: var(--panel-2);
+  color: var(--muted);
+  border-color: var(--border);
+}
+.fuzz-run:disabled {
+  opacity: 0.6;
+}
+.fuzz-engines {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 14px;
+}
+.fuzz-engine-chip {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--muted);
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 2px 8px;
+}
+.fuzz-verdict {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 16px 18px;
+  border-radius: 12px;
+  margin-bottom: 14px;
+}
+.fuzz-verdict.ok {
+  background: rgba(52, 211, 153, 0.1);
+  border: 1px solid rgba(52, 211, 153, 0.3);
+}
+.fuzz-verdict.bad {
+  background: rgba(248, 113, 113, 0.1);
+  border: 1px solid rgba(248, 113, 113, 0.3);
+}
+.fuzz-big {
+  font-size: 18px;
+  font-weight: 700;
+}
+.fuzz-verdict.ok .fuzz-big {
+  color: var(--good);
+}
+.fuzz-verdict.bad .fuzz-big {
+  color: var(--bad);
+}
+.fuzz-sub {
+  font-size: 13px;
+  color: var(--muted);
+}
+.fuzz-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+.fuzz-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px 14px;
+  min-width: 92px;
+}
+.fuzz-stat-v {
+  font-family: var(--mono);
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--text);
+}
+.fuzz-stat-k {
+  font-size: 11px;
+  color: var(--muted);
+}
+.fuzz-counter {
+  background: var(--panel-2);
+  border: 1px solid rgba(248, 113, 113, 0.3);
+  border-radius: 12px;
+  padding: 14px 16px;
+  margin-bottom: 12px;
+}
+.fuzz-counter h3 {
+  margin: 0 0 10px;
+  font-size: 14px;
+  color: var(--bad);
+}
+.fuzz-cx-row {
+  display: flex;
+  gap: 10px;
+  align-items: baseline;
+  margin-bottom: 6px;
+}
+.fuzz-cx-key {
+  font-size: 11px;
+  color: var(--muted);
+  text-transform: uppercase;
+  min-width: 56px;
+}
+.fuzz-cx-val {
+  font-family: var(--mono);
+  font-size: 13px;
+  color: var(--text);
+  word-break: break-all;
+}
+.fuzz-cx-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 8px;
+}
+.fuzz-cx-table th,
+.fuzz-cx-table td {
+  text-align: left;
+  padding: 5px 8px;
+  font-size: 12px;
+  border-bottom: 1px solid var(--border-soft);
+}
+.fuzz-pill {
+  font-size: 11px;
+  font-weight: 700;
+  border-radius: 5px;
+  padding: 1px 7px;
+}
+.fuzz-pill.yes {
+  color: var(--good);
+  background: rgba(52, 211, 153, 0.12);
+}
+.fuzz-pill.no {
+  color: var(--muted);
+  background: var(--bg-2);
+}
+.fuzz-pill.err {
+  color: var(--bad);
+  background: rgba(248, 113, 113, 0.12);
+}

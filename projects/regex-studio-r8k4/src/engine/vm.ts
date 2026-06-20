@@ -185,10 +185,14 @@ class Matcher {
     const canMore = max === null || count < max;
     if (canMore) {
       const more = this.m(node, pos, (p2) => {
-        // A zero-width iteration only risks an infinite loop on an *unbounded*
-        // repeat; a bounded {m,n} is capped by `max`, and an empty iteration may
-        // be exactly what lets it reach the minimum (e.g. /(a?){3}/ on "aa").
-        if (p2 === pos && max === null) return false;
+        // A zero-width iteration risks an infinite loop on an *unbounded* repeat,
+        // but only once the minimum is already met: an empty iteration may be
+        // exactly what lets the repeat reach its lower bound — e.g. /(a?)+/ on ""
+        // or /(a?){3}/ on "aa" both need empty iterations. So we block an empty
+        // step only when `count >= min` (further empties make no progress); the
+        // first `min` empty iterations are still allowed. Bounded {m,n} repeats
+        // are capped by `max`, so they never need this guard.
+        if (p2 === pos && max === null && count >= min) return false;
         return this.greedyMany(node, p2, min, max, k, count + 1);
       });
       if (more) return true;
@@ -210,7 +214,7 @@ class Matcher {
     const canMore = max === null || count < max;
     if (!canMore) return false;
     return this.m(node, pos, (p2) => {
-      if (p2 === pos && max === null) return false; // see greedyMany
+      if (p2 === pos && max === null && count >= min) return false; // see greedyMany
       return this.lazyMany(node, p2, min, max, k, count + 1);
     });
   }
