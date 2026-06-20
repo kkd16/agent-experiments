@@ -43,8 +43,12 @@ src/
     rtscene.ts       live scene → world-space triangle soup + material/area-light tables
     sampling.ts      RNG + cosine/GGX/cone/sphere importance sampling + Fresnel
     tracer.ts        microfacet path tracer (NEE + GI) and an ambient-occlusion estimator
-    raytracer.ts     progressive accumulation, jittered-ray AA, shared HDR resolve
+    raytracer.ts     progressive accumulation, jittered-ray AA, primary feature buffers,
+                     per-pixel variance, denoise integration + RT debug views, shared HDR resolve
+    denoise.ts       edge-avoiding À-Trous wavelet denoiser (Dammertz 2010) + SVGF (Schied 2017)
+                     variance guidance — turns the noisy low-spp tracer into a clean image
     verify.ts        in-app numerical self-test (incl. the furnace energy test)
+    denoise_verify.ts headless + in-app self-test for the denoiser (kernel, edges, variance, e2e)
   sdf/             implicit modelling: signed distance fields → marching cubes
     sdf.ts           SDF primitives + boolean/smooth CSG + domain transforms + gradient
     marchingcubes.ts Lorensen–Cline polygoniser (Bourke tables), vertex welding, fit/volume
@@ -74,7 +78,69 @@ src/
 - **position / roughness** — raw deferred G-buffer channels (world position, material roughness)
 - **ambient occ. / reflections** — the screen-space AO field and the SSR reflected colour, raw
 
+The **ray tracer** has its own view selector (v6 denoiser): **denoised** beauty, the raw **noisy**
+average, a **wipe** that splits noisy↔denoised, and the feature buffers the filter reads —
+**albedo**, **normal**, and the per-pixel **variance** heat field.
+
 ## Ideas / backlog
+
+### v6 — real-time denoised path tracing: À-Trous + SVGF-lite (planned 2026-06-20)
+
+The path tracer is the *ground truth*, but at the interactive sample counts it can afford while
+you orbit (often **1 spp**) it is buried in Monte-Carlo noise — the one place the rasterizer still
+looks better. v6 closes that the way a modern real-time path tracer does: a **denoiser** that
+reconstructs a clean image from a handful of samples by blurring **only** along surfaces, never
+across an edge, and only as hard as the local noise demands. It reuses the v3 tracer and borrows
+the v4 idea of feature buffers, but for the *primary hit* of the path tracer rather than the
+rasterizer.
+
+The thesis stays *legibility and ground truth*: the denoiser is variance-aware, so as the image
+converges it **decays to the exact progressive average** (no permanent over-blur), and it ships
+with a self-test that re-derives every claim independently — kernel correctness against a hand-
+computed wavelet, edge preservation against an edge-blind blur, **unbiased** variance reduction
+(mean preserved), and a real path-traced frame end-to-end.
+
+New steps:
+
+- [x] **Primary feature buffers** (`raytrace/tracer.ts` `primaryFeature` + `raytracer.ts`
+  `computeFeatures`) — one shading-free primary ray per pixel fills per-pixel **albedo / world
+  normal / world position / hit-mask**, computed once per accumulation reset (they're a pure
+  function of camera + geometry, which the reset key already tracks). These are the G-buffer the
+  denoiser's edge-stopping functions read.
+- [x] **Per-pixel Monte-Carlo variance** — the accumulator grows a second luminance moment
+  (`accumSq` = Σ luma²), giving the sample variance and hence the **variance of the mean
+  estimator** (÷ n) per pixel — SVGF's noise signal that drives how hard each pixel is filtered.
+- [x] **SVGF spatial-variance bootstrap** (`raytracer.ts` `spatialVarianceBootstrap`) — with < 4
+  samples the temporal variance is ~0 (one sample has no spread), so it's estimated instead from a
+  5×5 **normal-gated** spatial neighbourhood. This is what lets the filter clean up the *first*
+  frame (1 spp), exactly when the tracer is noisiest.
+- [x] **The edge-avoiding À-Trous wavelet** (`raytrace/denoise.ts`) — the Dammertz et al. (2010)
+  filter: a 5×5 cubic-B-spline (`[1 4 6 4 1]/16`) cross-bilateral convolution whose tap spacing
+  **doubles** every level (the "à-trous"/holes trick — N levels reach a 2^(N+2)-wide footprint at
+  N·25 taps). Each tap is reweighted by three edge-stopping functions: **luminance**
+  `exp(−|Δl|/(σ_l·√Var+ε))` (SVGF's noise-aware term), **normal** `max(0,n_p·n_q)^σ_n` (creases),
+  and **plane** `exp(−|n_p·(P_q−P_p)|/σ_p)` (depth cliffs). Variance rides along with the *squared*
+  weights. Pure passes over typed arrays — no DOM, no hot-loop allocation.
+- [x] **Albedo demodulation** — the filter operates on **irradiance = colour ÷ albedo** (guide
+  clamped away from zero) and re-modulates after, so texture/material detail is divided out before
+  the blur and never smeared. Toggleable.
+- [x] **Engine integration + caching** (`raytracer.ts` resolve) — the resolve pass averages the
+  accumulator into a `mean` buffer, estimates variance, optionally denoises, then composes the
+  requested view. The (expensive) wavelet is **cached on a signature** (pass count + settings) so
+  it re-runs only when its input actually changes, and it's **skipped past 512 spp** (the raw
+  average is already exact there — interaction stays free and the ground truth is never over-blurred).
+- [x] **RT view selector + UI** (`RTView`, `Controls.tsx`) — a **Denoiser** panel: enable, demodulate
+  and variance-guided toggles, a **wavelet-levels / colour-σ / normal-σ / plane-σ** set of sliders,
+  and a six-way view selector — **denoised** beauty, raw **noisy** average, a noisy↔denoised
+  **wipe**, and the **albedo / normal / variance** feature buffers — that the RT blit honours.
+- [x] **A denoiser self-test** (`raytrace/denoise_verify.ts`) — seven numerical checks: the
+  demodulate∘modulate **round-trip**, the à-trous filter equals an independent **B-spline wavelet**
+  reference (edge-stopping off), **unbiased variance reduction** on a flat noisy surface (variance
+  ↓ while the mean is preserved), **normal** and **plane/depth** edge preservation vs an edge-blind
+  blur, a **real Cornell frame** denoised end-to-end (≥ 40% less noise energy, brightness conserved),
+  and NaN-free across four GI scenes × all six views. Verified headlessly: **7/7 pass**, and offline
+  PNGs of a 1-spp Cornell box show the noise wipe collapse to a clean image with crisp box/sphere
+  edges and intact colour bleeding.
 
 ### v5 — implicit modelling: signed distance fields → marching cubes (planned 2026-06-20)
 
@@ -290,6 +356,31 @@ real PBR engine with an HDR pipeline. New steps:
 
 ## Session log
 
+- 2026-06-20 (claude / claude-opus-4-8): **v6 — real-time denoised path tracing: an
+  edge-avoiding À-Trous wavelet denoiser with SVGF-style variance guidance.** The path tracer is
+  the ground truth but at interactive sample counts (often 1 spp) it's buried in Monte-Carlo noise;
+  v6 reconstructs a clean image from a handful of samples by blurring **only** along surfaces.
+  New `raytrace/denoise.ts` is the Dammertz et al. (2010) edge-avoiding À-Trous filter — a 5×5
+  cubic-B-spline cross-bilateral whose tap spacing doubles each level (N levels → 2^(N+2)px at
+  N·25 taps), reweighted by **luminance** `exp(−|Δl|/(σ_l·√Var+ε))` (the SVGF noise-aware term),
+  **normal** `max(0,n·n)^σ_n` (creases) and **plane** `exp(−|n·ΔP|/σ_p)` (depth cliffs) edge stops,
+  filtering **colour ÷ albedo** (demodulated irradiance) so texture never smears and carrying
+  variance through with the squared weights. The tracer (`raytracer.ts`) grew **primary feature
+  buffers** (albedo/normal/position/mask from one shading-free primary ray per pixel, via a new
+  `primaryFeature` in `tracer.ts`), a **second luminance moment** (`accumSq`) for per-pixel
+  Monte-Carlo variance, and an **SVGF spatial-variance bootstrap** (a 5×5 normal-gated estimate for
+  the < 4-spp pixels where temporal variance is unavailable — this is what makes the *first* frame
+  clean up). The resolve pass averages, estimates variance, denoises (cached on a pass+settings
+  signature; skipped past 512 spp so the converged ground truth is never over-blurred) and composes
+  a chosen **view**: denoised beauty, raw noisy average, a noisy↔denoised **wipe**, or the
+  albedo/normal/variance feature buffers. A new **Denoiser** control panel exposes the toggles,
+  σ sliders and the view selector, and `denoise_verify.ts` adds a 7-check self-test re-deriving the
+  hard claims independently — the demodulate round-trip, the à-trous filter vs a hand-computed
+  B-spline wavelet, **unbiased** variance reduction (mean preserved), normal & depth edge
+  preservation vs an edge-blind blur, and a real Cornell frame end-to-end. Verified: **7/7** pass
+  headlessly (a 1-spp Cornell frame loses 54% of its noise energy at ×0.98 brightness), the RT/SSFX
+  suites still pass unchanged, and offline PNGs show the noisy↔denoised wipe collapse to a clean
+  image with crisp edges and intact colour bleeding. Pure CPU TypeScript — no WebGL.
 - 2026-06-20 (claude / claude-opus-4-8): **v5 — added an implicit-modelling pillar: signed
   distance fields polygonised by hand-written marching cubes.** New `sdf/` module. `sdf.ts` is a
   small SDF algebra — exact-bound primitives (sphere/box/rounded-box/torus/cylinder/capsule/plane/

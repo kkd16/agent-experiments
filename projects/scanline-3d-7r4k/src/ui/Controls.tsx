@@ -1,6 +1,9 @@
 import { useState } from 'react'
 import type { Engine, RenderSettings, RTSettings } from '../engine/renderer.ts'
-import type { RTMode } from '../raytrace/raytracer.ts'
+import type { RTMode, RTView } from '../raytrace/raytracer.ts'
+import type { DenoiseSettings } from '../raytrace/denoise.ts'
+import { runDenoiseSelfTest } from '../raytrace/denoise_verify.ts'
+import type { DenoiseTest } from '../raytrace/denoise_verify.ts'
 import type { RenderMode } from '../render/types.ts'
 import type { PostSettings, ToneMap } from '../render/post.ts'
 import type { SSFXSettings } from '../render/ssfx.ts'
@@ -106,6 +109,7 @@ export default function Controls(props: Props) {
   const setPost = (patch: Partial<PostSettings>): void => set({ post: { ...settings.post, ...patch } })
   const setRT = (patch: Partial<RTSettings>): void => set({ rt: { ...settings.rt, ...patch } })
   const setSSFX = (patch: Partial<SSFXSettings>): void => set({ ssfx: { ...settings.ssfx, ...patch } })
+  const setDen = (patch: Partial<DenoiseSettings>): void => setRT({ denoise: { ...settings.rt.denoise, ...patch } })
   const activeMode = MODES.find((m) => m.key === settings.mode) ?? MODES[0]
   const post = settings.post
   const rt = settings.rt
@@ -143,7 +147,25 @@ export default function Controls(props: Props) {
       setSdfTesting(false)
     }, 30)
   }
+  const [denTests, setDenTests] = useState<DenoiseTest[] | null>(null)
+  const [denTesting, setDenTesting] = useState(false)
+  const runDen = (): void => {
+    setDenTesting(true)
+    setDenTests(null)
+    setTimeout(() => {
+      setDenTests(runDenoiseSelfTest())
+      setDenTesting(false)
+    }, 30)
+  }
   const activeSdf = SDF_PRESETS.find((p) => p.key === props.sdfPreset) ?? SDF_PRESETS[0]
+  const rtViews: { key: RTView; label: string }[] = [
+    { key: 'denoised', label: 'Denoised' },
+    { key: 'noisy', label: 'Noisy' },
+    { key: 'split', label: 'Wipe' },
+    { key: 'albedo', label: 'Albedo' },
+    { key: 'normal', label: 'Normal' },
+    { key: 'variance', label: 'Variance' },
+  ]
 
   const models: { key: ShadingModel; label: string }[] = [
     { key: 'pbr', label: 'PBR (Cook–Torrance)' },
@@ -275,6 +297,79 @@ export default function Controls(props: Props) {
             BVH-accelerated Möller–Trumbore tracing, next-event estimation to every light, and the
             analytic sky as an infinite emitter — drag to orbit and it re-converges.
           </p>
+        </Section>
+      )}
+
+      {isRT && (
+        <Section title="Denoiser (À-Trous · SVGF-lite)">
+          <div className="toggles">
+            <Toggle label="Denoise" value={rt.denoise.enabled} onChange={(v) => setDen({ enabled: v })} />
+            <Toggle label="Demodulate albedo" value={rt.denoise.demodulate} onChange={(v) => setDen({ demodulate: v })} />
+            <Toggle label="Variance-guided" value={rt.denoise.varianceGuided} onChange={(v) => setDen({ varianceGuided: v })} />
+          </div>
+          <p className="blurb">Show:</p>
+          <div className="seg seg-wrap">
+            {rtViews.map((v) => (
+              <button
+                key={v.key}
+                className={rt.view === v.key ? 'active' : ''}
+                onClick={() => setRT({ view: v.key })}
+                type="button"
+              >
+                {v.label}
+              </button>
+            ))}
+          </div>
+          {rt.view === 'split' && (
+            <Slider
+              label="Wipe position" value={rt.splitPos} min={0.1} max={0.9} step={0.01}
+              onChange={(v) => setRT({ splitPos: v })} format={(v) => `${(v * 100).toFixed(0)}% noisy`}
+            />
+          )}
+          {rt.denoise.enabled && (
+            <>
+              <Slider
+                label="Wavelet levels" value={rt.denoise.iterations} min={1} max={6} step={1}
+                onChange={(v) => setDen({ iterations: v })} format={(v) => `${v.toFixed(0)} · ≈${1 << (v + 2)}px`}
+              />
+              <Slider
+                label="Colour σ" value={rt.denoise.sigmaColor} min={0.5} max={16} step={0.5}
+                onChange={(v) => setDen({ sigmaColor: v })} format={(v) => v.toFixed(1)}
+              />
+              <Slider
+                label="Normal σ" value={rt.denoise.sigmaNormal} min={4} max={128} step={4}
+                onChange={(v) => setDen({ sigmaNormal: v })} format={(v) => v.toFixed(0)}
+              />
+              <Slider
+                label="Plane σ" value={rt.denoise.sigmaPos} min={0.05} max={2} step={0.05}
+                onChange={(v) => setDen({ sigmaPos: v })} format={(v) => v.toFixed(2)}
+              />
+            </>
+          )}
+          <p className="blurb">
+            An edge-avoiding À-Trous wavelet (Dammertz 2010) with SVGF-style (Schied 2017) variance
+            guidance turns the noisy low-sample path tracer into a clean image: it blurs <em>only</em>
+            along surfaces — stopped at creases (normal), depth cliffs (plane) and detail (luminance) —
+            and only as hard as the local Monte-Carlo noise demands, filtering <em>colour ÷ albedo</em>
+            so texture never smears. Try <em>Wipe</em> for a noisy↔denoised split, or the feature
+            views the filter reads. As it converges it decays to the exact average.
+          </p>
+          <button className="reset" onClick={runDen} type="button" disabled={denTesting} style={{ width: '100%' }}>
+            {denTesting ? 'Running…' : 'Run denoiser self-test'}
+          </button>
+          {denTests && (
+            <div className="rt-tests">
+              <p className="blurb">
+                {denTests.filter((t) => t.pass).length}/{denTests.length} checks passed — kernel correctness,
+                edge preservation, unbiased variance reduction, and a real path-traced frame end-to-end.
+              </p>
+              {denTests.map((t) => (
+                <p key={t.name} className={`obj-msg ${t.pass ? 'ok' : 'err'}`}>
+                  {t.pass ? '✓' : '✗'} {t.name} — {t.detail}
+                </p>
+              ))}
+            </div>
+          )}
         </Section>
       )}
 

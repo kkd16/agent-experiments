@@ -5,6 +5,7 @@ import { useEngine } from './engine/useEngine.ts'
 import type { RenderSettings } from './engine/renderer.ts'
 import { DEFAULT_POST } from './render/post.ts'
 import { DEFAULT_SSFX } from './render/ssfx.ts'
+import { DEFAULT_DENOISE } from './raytrace/denoise.ts'
 import { parseOBJ, SAMPLE_OBJ } from './geometry/obj.ts'
 import { buildSdf } from './sdf/scenes.ts'
 import { marchingCubes, fitMesh } from './sdf/marchingcubes.ts'
@@ -35,6 +36,8 @@ const DEFAULT_SETTINGS: RenderSettings = {
     resolutionScale: 0.5,
     compare: false,
     splitPos: 0.5,
+    denoise: DEFAULT_DENOISE,
+    view: 'denoised',
   },
 }
 

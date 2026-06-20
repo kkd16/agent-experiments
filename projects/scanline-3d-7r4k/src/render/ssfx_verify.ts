@@ -8,6 +8,7 @@ import type { RenderSettings } from '../engine/renderer.ts'
 import { DEFAULT_POST } from './post.ts'
 import { DEFAULT_SSFX } from './ssfx.ts'
 import type { SSFXSettings } from './ssfx.ts'
+import { DEFAULT_DENOISE } from '../raytrace/denoise.ts'
 import { PRESETS } from '../scene/scene.ts'
 import { multiply } from '../math/mat4.ts'
 
@@ -35,6 +36,7 @@ const baseSettings = (ssfx: Partial<SSFXSettings>): RenderSettings => ({
   rt: {
     mode: 'path', maxBounces: 4, softShadows: true, sunSoftness: 1.5,
     lightRadius: 0.25, aoRadius: 1.5, resolutionScale: 0.5, compare: false, splitPos: 0.5,
+    denoise: DEFAULT_DENOISE, view: 'denoised',
   },
 })
 
