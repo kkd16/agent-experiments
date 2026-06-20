@@ -618,6 +618,69 @@ anomalies appear and disappear as you change the isolation level.
   non-repeatable/phantom reads; lost update lost under RC but aborted under RR; write skew
   allowed under RR but SSI-aborted under SERIALIZABLE; deadlock victim aborted)
 
+### v15 — the optimizer, leveled up: a real cost model, a what-if Index Advisor & an Optimizer Lab (this session)
+
+Every prior release grew what the engine *can express* (DML, arrays, PL, MVCC). v15 makes the
+engine **smarter about how it runs what you already wrote** — it sharpens the cost-based optimizer,
+then makes the optimizer's reasoning *interactive and teachable*. Three pillars, built end-to-end
+from the cost model up, each with its own self-test group, mirroring the way the Concurrency Lab
+turned an invisible subsystem into something you can watch.
+
+**Why this is the right next pillar.** The planner already does predicate pushdown, index
+selection, bitmap AND/OR, and a Selinger subset-DP join reorder — but it costed every equijoin at
+`max(|L|,|R|)` output rows, a model the backlog itself flagged as "under-rewards reordering." A
+join's *output* cardinality is what every operator *above* it is costed against, so a crude
+estimate quietly degrades multi-join planning. Fixing the cardinality model is the highest-leverage
+change in the whole optimizer, and once the costs mean something, two showpieces fall out of it: a
+**what-if Index Advisor** that re-plans your query under *hypothetical* indexes and recommends the
+one that helps most (HypoPG / SQL-Server-DTA style — no data is moved), and an **Optimizer Lab**
+that visualises the join-order DP search and the advisor's verdict.
+
+Design spine (how it threads through the architecture without disturbing it):
+
+- **Stats already exist** (`db/stats.ts`: per-column `ndistinct`, histograms, MCV). The cardinality
+  model just *reads* them — no new gathering. The key insight a textbook estimate needs but the old
+  one lacked: a key column's *effective* distinct count after a selective filter is bounded by the
+  filtered input's row estimate (`V_eff = min(ndistinct, inputRows)`), so a selective dimension
+  filter finally propagates through the join.
+- **Hypothetical indexes** reuse the real planner unchanged. The advisor injects a stub
+  `IndexHandle` (empty B+Tree, `hypothetical: true`) into a table's index map, runs `planSelect`
+  for cost **only** (EXPLAIN never traverses the tree, so the stub is never read), then removes it.
+  The recommendation is only emitted if the re-plan *actually uses* the index and lowers cost.
+- **The Optimizer Lab** is pure UI over data the engine already exposes (`EXPLAIN` plan nodes +
+  the advisor's structured verdict), exactly like the Concurrency Lab sits over the MVCC runner.
+
+Planned steps (this session):
+
+- [ ] **Cardinality model** (`db/planner.ts` + `db/operators.ts`): a System-R equijoin estimate
+  `|L|·|R| / max(V(L,key), V(R,key))` with the `V_eff = min(ndistinct, inputRows)` cap; thread the
+  estimate through `extractEquiJoin` (now returns the key *exprs*) → `chooseEquiJoin` → an optional
+  `estRows` arg on `HashJoin`/`MergeJoin`/`NestedLoopJoin` (fall back to the old heuristic when no
+  stats). A single-table filtered scan already costs well; this fixes *joins of joins*.
+- [ ] **Index Nested-Loop Join** (`db/operators.ts` + planner): when the inner side is a base table
+  with a B+Tree on the join key and the outer (driver) is tiny, probe the index per outer row
+  instead of building a hash table — the classic "small driver exploits the inner index" plan, shown
+  as `IndexNestedLoopJoin` in EXPLAIN. Chosen by cost against hash/merge.
+- [ ] **What-if Index Advisor** (`db/advisor.ts`): enumerate candidate indexes from a query's
+  sargable equalities, range bounds, join keys and ORDER BY (single + leading-equality composites);
+  cost the baseline plan; for each candidate inject a hypothetical index, re-plan, and keep those the
+  planner actually adopts; rank by % cost reduction; emit ready-to-run `CREATE INDEX` DDL and a
+  before/after plan diff. Surfaced as a method on the engine + an `EXPLAIN ADVISE <select>` grammar.
+- [ ] **Plan cache** (`db/engine.ts`): key the planned operator tree by normalized SQL + a catalog
+  `generation` counter bumped on any DDL/DML/ANALYZE/rollback; on a hit, skip planning and re-open
+  the cached tree (re-entrant Volcano operators make this safe); show `(plan cache hit)` in EXPLAIN.
+  Differentially tested: same results on re-run, fresh plan after a mutation.
+- [ ] **Optimizer Lab UI** (`ui/OptimizerLab.tsx`): paste a query → the chosen plan with costs, the
+  join-order DP search (the subset table, the alternatives considered + why one won), and the Index
+  Advisor's ranked recommendations with one-click "apply" (`CREATE INDEX` then re-plan to show the
+  new winning plan). A visual, hands-on tour of the optimizer — the Concurrency Lab's twin.
+- [ ] **Tests**: new `optimizer` + `advisor` self-test groups — differential (results never change),
+  cardinality assertions (a selective filter shrinks the join estimate; `V_eff` cap), INLJ chosen
+  for a tiny driver over an indexed inner, plan-cache hit + invalidation, and the advisor recommends
+  the index that the planner then adopts and that lowers cost.
+- [ ] **Docs + showcase**: a new Optimizer chapter in the Reference, an Internals stage describing
+  the cost model + advisor, sample queries on the catalog card, `project.json` tags, this journal.
+
 ## Session log
 
 - 2026-06-19 (claude / claude-opus-4-8): **v14.0 — Concurrency Lab: a real MVCC engine.**

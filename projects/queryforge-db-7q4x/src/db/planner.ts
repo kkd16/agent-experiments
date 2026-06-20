@@ -62,6 +62,7 @@ import {
   type Operator,
   type RangeBound,
   type SortKey,
+  type PlanNode,
 } from './operators'
 import { HashAggregate, type AggName, type AggSpec } from './aggregate'
 import { WindowExec, type FrameExec, type WindowSpecExec } from './window'
@@ -968,12 +969,17 @@ function chooseIndexAccess(
 interface EquiJoin {
   leftKey: Evaluator
   rightKey: Evaluator
+  /** The raw key expressions (left, right) — used for n-distinct cardinality. */
+  leftExpr: Expr
+  rightExpr: Expr
   residual: Expr[]
 }
 function extractEquiJoin(on: Expr, leftSchema: Schema, rightSchema: Schema): EquiJoin | null {
   const parts = conjuncts(on)
   let leftKey: Evaluator | null = null
   let rightKey: Evaluator | null = null
+  let leftExpr: Expr | null = null
+  let rightExpr: Expr | null = null
   const residual: Expr[] = []
   const leftCtx: CompileCtx = { resolve: (t, n) => resolveColumn(leftSchema, t, n) }
   const rightCtx: CompileCtx = { resolve: (t, n) => resolveColumn(rightSchema, t, n) }
@@ -988,18 +994,57 @@ function extractEquiJoin(on: Expr, leftSchema: Schema, rightSchema: Schema): Equ
       if (lInLeft && rInRight && !(lInRight && rInLeft && false)) {
         leftKey = compileExpr(part.left, leftCtx)
         rightKey = compileExpr(part.right, rightCtx)
+        leftExpr = part.left
+        rightExpr = part.right
         continue
       }
       if (lInRight && rInLeft) {
         leftKey = compileExpr(part.right, leftCtx)
         rightKey = compileExpr(part.left, rightCtx)
+        leftExpr = part.right
+        rightExpr = part.left
         continue
       }
     }
     residual.push(part)
   }
-  if (!leftKey || !rightKey) return null
-  return { leftKey, rightKey, residual }
+  if (!leftKey || !rightKey || !leftExpr || !rightExpr) return null
+  return { leftKey, rightKey, leftExpr, rightExpr, residual }
+}
+
+// --- equijoin output cardinality (System-R) ---------------------------------
+// Estimate |L ⋈ R| as |L|·|R| / max(V(L,key), V(R,key)), where V is the number
+// of distinct key values. The textbook subtlety the old `max(|L|,|R|)` model
+// missed: after a selective filter, a key column's *effective* distinct count
+// can't exceed the surviving row count, so V_eff = min(ndistinct, inputRows).
+// That cap is what lets a selective dimension filter shrink the join estimate —
+// the propagation the backlog flagged. Returns null when neither side's key is a
+// plain, stat-bearing column, so the caller falls back to the old heuristic.
+function distinctOf(expr: Expr, sc: StatCtx, inputRows: number): number | null {
+  if (expr.kind !== 'column') return null
+  const found = statForColumn(sc, expr)
+  if (!found) return null
+  const nd = Math.max(1, found.stat.ndistinct)
+  // Cap by the *input* row estimate (post-filter), never below 1.
+  return Math.max(1, Math.min(nd, Math.max(1, Math.round(inputRows))))
+}
+
+function estimateEquiJoinRows(
+  leftRows: number,
+  rightRows: number,
+  leftExpr: Expr,
+  rightExpr: Expr,
+  sc: StatCtx,
+): number | null {
+  const vl = distinctOf(leftExpr, sc, leftRows)
+  const vr = distinctOf(rightExpr, sc, rightRows)
+  if (vl === null && vr === null) return null
+  // If only one side has stats, use it as the divisor (the classic asymmetric
+  // fallback: the side with the containment relationship governs the fan-out).
+  const denom = Math.max(vl ?? vr!, vr ?? vl!)
+  const card = (leftRows * rightRows) / Math.max(1, denom)
+  // Clamp into the only range an inner equijoin can occupy.
+  return Math.max(1, Math.min(card, leftRows * rightRows))
 }
 
 // Cost-based pick between a hash join and a sort–merge join for an equijoin.
@@ -1014,16 +1059,81 @@ function chooseEquiJoin(
   rightKey: Evaluator,
   type: 'INNER' | 'LEFT' | 'RIGHT' | 'FULL',
   schema: Schema,
+  estRows?: number,
 ): Operator {
   const big = left.estRows >= MERGE_JOIN_MIN_ROWS && right.estRows >= MERGE_JOIN_MIN_ROWS
   const balanced = Math.max(left.estRows, right.estRows) <= 4 * Math.min(left.estRows, right.estRows) + 1
-  if (big && balanced) return new MergeJoin(left, right, leftKey, rightKey, type, schema)
-  return new HashJoin(left, right, leftKey, rightKey, type, schema)
+  if (big && balanced) return new MergeJoin(left, right, leftKey, rightKey, type, schema, estRows)
+  return new HashJoin(left, right, leftKey, rightKey, type, schema, estRows)
+}
+
+/** Output cardinality for an equijoin, given its key exprs and the live stats —
+ *  `undefined` (the operator's own heuristic) only an INNER join uses; an outer
+ *  join can't have fewer rows than its preserved side, so floor by that side. */
+function equiJoinCard(
+  left: Operator,
+  right: Operator,
+  equi: EquiJoin,
+  type: 'INNER' | 'LEFT' | 'RIGHT' | 'FULL',
+  sc: StatCtx,
+): number | undefined {
+  const inner = estimateEquiJoinRows(left.estRows, right.estRows, equi.leftExpr, equi.rightExpr, sc)
+  if (inner === null) return undefined
+  if (type === 'LEFT') return Math.max(inner, left.estRows)
+  if (type === 'RIGHT') return Math.max(inner, right.estRows)
+  if (type === 'FULL') return Math.max(inner, left.estRows, right.estRows)
+  return inner
 }
 
 // --- cost-based join reordering ---------------------------------------------
 // Cap the search at this many relations so the 2^n subset DP stays cheap.
 const MAX_REORDER_RELS = 8
+
+// --- join-order DP trace (for the Optimizer Lab) ----------------------------
+// When a trace sink is installed, planJoinOrder records the relations it is
+// reordering, every subset-extension it costs, and the winning plan per subset —
+// so the UI can replay the Selinger search. Tracing is opt-in (the sink is null
+// during normal planning) and never changes the plan that is chosen.
+export interface JoinSubsetEntry {
+  mask: number
+  relNames: string[]
+  cost: number
+  rows: number
+  op: string
+}
+export interface JoinCandidateEntry {
+  fromMask: number
+  newMask: number
+  fromNames: string[]
+  addRel: string
+  newNames: string[]
+  cost: number
+  rows: number
+  op: string
+  accepted: boolean
+}
+export interface JoinOrderTrace {
+  relations: string[]
+  candidates: JoinCandidateEntry[]
+  best: JoinSubsetEntry[]
+  finalOrder: string[]
+  finalCost: number
+}
+let joinOrderSink: JoinOrderTrace | null = null
+
+function maskNames(mask: number, relations: string[]): string[] {
+  const out: string[] = []
+  for (let i = 0; i < relations.length; i++) if (mask & (1 << i)) out.push(relations[i])
+  return out
+}
+function bitCount(m: number): number {
+  let c = 0
+  while (m) {
+    m &= m - 1
+    c++
+  }
+  return c
+}
 
 /** Reorder only a pure chain of INNER joins (each with an ON predicate). Outer
  *  joins and CROSS joins change the answer when reordered, so we leave them. */
@@ -1044,7 +1154,14 @@ interface JoinPlan {
 
 // Extend a left-deep plan covering some relation subset by one more relation
 // leaf, applying every join/where predicate that first becomes resolvable here.
-function joinStep(left: JoinPlan, rightOp: Operator, rightSchema: Schema, pool: Expr[], env: PlanEnv): JoinPlan {
+function joinStep(
+  left: JoinPlan,
+  rightOp: Operator,
+  rightSchema: Schema,
+  pool: Expr[],
+  env: PlanEnv,
+  sc: StatCtx,
+): JoinPlan {
   const combined: Schema = [...left.schema, ...rightSchema]
   const applicable = pool.filter(
     (p) => !left.applied.has(p) && resolvableIn(p, combined, env) && !resolvableIn(p, left.schema, env),
@@ -1060,9 +1177,11 @@ function joinStep(left: JoinPlan, rightOp: Operator, rightSchema: Schema, pool: 
     const onExpr = andAll(applicable)!
     const equi = extractEquiJoin(onExpr, left.schema, rightSchema)
     if (equi && equi.residual.length === 0) {
-      op = chooseEquiJoin(left.op, rightOp, equi.leftKey, equi.rightKey, 'INNER', combined)
+      const card = equiJoinCard(left.op, rightOp, equi, 'INNER', sc)
+      op = chooseEquiJoin(left.op, rightOp, equi.leftKey, equi.rightKey, 'INNER', combined, card)
     } else if (equi) {
-      op = chooseEquiJoin(left.op, rightOp, equi.leftKey, equi.rightKey, 'INNER', combined)
+      const card = equiJoinCard(left.op, rightOp, equi, 'INNER', sc)
+      op = chooseEquiJoin(left.op, rightOp, equi.leftKey, equi.rightKey, 'INNER', combined, card)
       const resid = andAll(equi.residual)!
       op = new Filter(op, compileExpr(resid, exprCtx(combined, env)), exprLabel(resid))
     } else {
@@ -1129,6 +1248,10 @@ function planJoinOrder(
   // Left-deep subset DP: dp[mask] = cheapest plan joining exactly that relation
   // subset. Ascending mask order guarantees every subset is finalized before it
   // is used to extend a larger one.
+  const sink = joinOrderSink
+  const relNames = rels.map((r) => r.alias)
+  if (sink) sink.relations = relNames
+
   const dp = new Map<number, JoinPlan>()
   for (let i = 0; i < n; i++) dp.set(1 << i, { op: leaves[i], schema: relSchemas[i], applied: new Set() })
   const full = (1 << n) - 1
@@ -1137,15 +1260,38 @@ function planJoinOrder(
     if (!left) continue
     for (let i = 0; i < n; i++) {
       if (mask & (1 << i)) continue
-      const cand = joinStep(left, leaves[i], relSchemas[i], pool, env)
+      const cand = joinStep(left, leaves[i], relSchemas[i], pool, env, statTables)
       const newMask = mask | (1 << i)
       const existing = dp.get(newMask)
-      if (!existing || cand.op.estCost < existing.op.estCost) dp.set(newMask, cand)
+      const accepted = !existing || cand.op.estCost < existing.op.estCost
+      if (accepted) dp.set(newMask, cand)
+      if (sink) {
+        sink.candidates.push({
+          fromMask: mask,
+          newMask,
+          fromNames: maskNames(mask, relNames),
+          addRel: relNames[i],
+          newNames: maskNames(newMask, relNames),
+          cost: cand.op.estCost,
+          rows: cand.op.estRows,
+          op: cand.op.plan().op,
+          accepted,
+        })
+      }
     }
   }
 
   const finalPlan = dp.get(full)
   if (!finalPlan) return null
+  if (sink) {
+    for (let mask = 1; mask <= full; mask++) {
+      const p = dp.get(mask)
+      if (!p) continue
+      sink.best.push({ mask, relNames: maskNames(mask, relNames), cost: p.op.estCost, rows: p.op.estRows, op: p.op.plan().op })
+    }
+    sink.best.sort((a, b) => bitCount(a.mask) - bitCount(b.mask) || a.mask - b.mask)
+    sink.finalCost = finalPlan.op.estCost
+  }
   // Never silently drop a predicate (e.g. an ambiguous unqualified column the
   // resolver couldn't place): fall back to the written-order planner instead.
   if (finalPlan.applied.size !== pool.length) return null
@@ -1174,6 +1320,40 @@ function planJoinOrder(
 // Public entry point: plan a (possibly compound, possibly WITH-prefixed) query.
 export function planSelect(stmt: SelectStmt, db: Database): Operator {
   return planQuery(stmt, { db, relations: new Map(), outer: [] })
+}
+
+/** Plan a SELECT while recording the join-order DP search, for the Optimizer Lab.
+ *  Returns the plan plus a trace (or `trace: null` when the query has too few
+ *  reorderable joins for the subset DP to run). Never affects the chosen plan. */
+export function planWithJoinTrace(stmt: SelectStmt, db: Database): { plan: PlanNode; trace: JoinOrderTrace | null } {
+  const sink: JoinOrderTrace = { relations: [], candidates: [], best: [], finalOrder: [], finalCost: 0 }
+  const prev = joinOrderSink
+  joinOrderSink = sink
+  let op: Operator
+  try {
+    op = planSelect(stmt, db)
+  } finally {
+    joinOrderSink = prev
+  }
+  const plan = op.plan()
+  if (sink.relations.length === 0) return { plan, trace: null }
+
+  // Reconstruct the winning left-deep order by backtracking the accepted
+  // candidates from the full subset down to the seed relation.
+  const winner = new Map<number, { fromMask: number; addRel: string }>()
+  for (const c of sink.candidates) if (c.accepted) winner.set(c.newMask, { fromMask: c.fromMask, addRel: c.addRel })
+  const full = (1 << sink.relations.length) - 1
+  const rev: string[] = []
+  let m = full
+  while (winner.has(m)) {
+    const w = winner.get(m)!
+    rev.push(w.addRel)
+    m = w.fromMask
+  }
+  // `m` is now a single-bit seed mask.
+  for (let i = 0; i < sink.relations.length; i++) if (m & (1 << i)) rev.push(sink.relations[i])
+  sink.finalOrder = rev.reverse()
+  return { plan, trace: sink }
 }
 
 // Plan a full query: materialize CTEs, plan the leading core, then fold in any
@@ -1571,9 +1751,11 @@ function planCore(stmt: SelectStmt, env: PlanEnv, embedOrderLimit: boolean): Ope
       } else {
         const equi = extractEquiJoin(join.on, schema, rSchema)
         if (equi && equi.residual.length === 0) {
-          op = chooseEquiJoin(op, rightOp, equi.leftKey, equi.rightKey, outerType, combined)
+          const card = equiJoinCard(op, rightOp, equi, outerType, statTables)
+          op = chooseEquiJoin(op, rightOp, equi.leftKey, equi.rightKey, outerType, combined, card)
         } else if (equi && join.type === 'INNER') {
-          op = chooseEquiJoin(op, rightOp, equi.leftKey, equi.rightKey, 'INNER', combined)
+          const card = equiJoinCard(op, rightOp, equi, 'INNER', statTables)
+          op = chooseEquiJoin(op, rightOp, equi.leftKey, equi.rightKey, 'INNER', combined, card)
           const resid = andAll(equi.residual)!
           op = new Filter(op, compileExpr(resid, exprCtx(combined, env)), exprLabel(resid))
         } else {

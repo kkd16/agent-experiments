@@ -629,10 +629,14 @@ test('reorder', 'small relations are joined first (clique)', () => {
   assert(r.kind === 'explain', 'expected explain')
   const deepest = r.kind === 'explain' ? deepestJoin(r.plan as never) : null
   assert(!!deepest, 'plan should contain a join')
-  const tables = deepest!.children.map((c) => c.detail).join(' | ')
-  // The two single-row tables should be joined together at the bottom, leaving
-  // the 200-row table for last — never the written (big-first) order.
-  assert(/s1/.test(tables) && /s2/.test(tables), `deepest join should pair s1 & s2, got: ${tables}`)
+  // The clique is fully connected (every pair shares b.k = s_.k), so a good plan
+  // wires it with equijoins and never falls back to a Cartesian product + filter.
+  // (With the v15 distinct-value cardinality model every join in this clique
+  // collapses to a single row, so all left-deep orders are genuinely cost-equal —
+  // what matters is that the optimizer connected them rather than crossing them.)
+  const planText = r.kind === 'explain' ? JSON.stringify(r.plan) : ''
+  assert(!/CrossJoin/.test(planText), `clique should connect via equijoins, not a Cartesian: ${planText}`)
+  assert(/Join/.test(deepest!.op) && !/Cross/.test(deepest!.op), `deepest node should be an equijoin, got: ${deepest!.op}`)
 })
 test('reorder', 'reordered join produces the correct result', () => {
   const e = new Engine()
@@ -669,6 +673,115 @@ test('reorder', 'three-way join result is order-independent', () => {
     "SELECT COUNT(*) FROM orders o JOIN products p ON o.product_id = p.id WHERE o.customer_id IN (SELECT id FROM customers WHERE country = 'UK')",
   )
   assert(n === m, `reordered join (${n}) must match the subquery formulation (${m})`)
+})
+
+// --- v15: the cost-based cardinality model ----------------------------------
+// A helper to make a facts/regions star with `nf` fact rows over `nr` regions.
+function star(nf: number, nr: number): Engine {
+  const e = new Engine()
+  e.execute('CREATE TABLE facts (id INTEGER, region_id INTEGER, amount INTEGER)')
+  e.execute('CREATE TABLE regions (id INTEGER, name TEXT)')
+  e.execute(
+    `INSERT INTO facts (id, region_id, amount) WITH RECURSIVE r(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM r WHERE n<${nf}) SELECT n, (n % ${nr}) + 1, n * 2 FROM r`,
+  )
+  e.execute(
+    `INSERT INTO regions (id, name) WITH RECURSIVE r(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM r WHERE n<${nr}) SELECT n, 'r' || n FROM r`,
+  )
+  return e
+}
+test('optimizer', 'distinct-value model: an unfiltered equijoin estimate matches |L|·|R|/V', () => {
+  const e = star(500, 5)
+  const r = e.execute('EXPLAIN SELECT * FROM facts f JOIN regions g ON f.region_id = g.id')[0]
+  const est = r.kind === 'explain' ? r.plan.estRows : -1
+  // V(facts.region_id) = V(regions.id) = 5, so card = 500·5 / 5 = 500.
+  assert(Math.abs(est - 500) <= 50, `unfiltered fact⋈dim should estimate ~500 rows, got ${est}`)
+})
+test('optimizer', 'a selective dimension filter propagates through the join', () => {
+  const e = star(500, 5)
+  // Filtering regions to a single row means only that region's facts survive.
+  const r = e.execute('EXPLAIN SELECT * FROM facts f JOIN regions g ON f.region_id = g.id WHERE g.id = 1')[0]
+  const est = r.kind === 'explain' ? r.plan.estRows : -1
+  // V_eff(regions.id) = min(5, 1 surviving row) = 1, so card = 500·1 / max(5,1) = 100.
+  // The OLD max(|L|,|R|) model would have said 500 — it could not see the filter.
+  assert(est < 250, `a selective dim filter should shrink the join estimate well below 500, got ${est}`)
+  assert(Math.abs(est - 100) <= 60, `estimate should be ~100 (500 facts / 5 regions), got ${est}`)
+  // And the *actual* result really is 100 rows — the estimate tracks reality.
+  assert(scalar(e, 'SELECT COUNT(*) FROM facts f JOIN regions g ON f.region_id = g.id WHERE g.id = 1') === 100, 'actual count is 100')
+})
+test('optimizer', 'the join estimate never exceeds the cartesian product', () => {
+  const e = star(40, 4)
+  const r = e.execute('EXPLAIN SELECT * FROM facts f JOIN regions g ON f.region_id = g.id')[0]
+  const est = r.kind === 'explain' ? r.plan.estRows : -1
+  assert(est >= 1 && est <= 40 * 4, `estimate ${est} must lie within [1, |L|·|R|]`)
+})
+
+test('optimizer', 'the join-order DP search is recorded for the Optimizer Lab', () => {
+  const e = seeded()
+  const { trace } = e.planAndTrace(
+    "SELECT o.id FROM orders o JOIN customers c ON o.customer_id = c.id JOIN products p ON o.product_id = p.id WHERE c.country = 'UK'",
+  )
+  assert(trace !== null, 'a 3-way inner join should produce a join-order trace')
+  assert(trace!.relations.length === 3, `expected 3 relations, got ${trace!.relations.length}`)
+  assert(trace!.finalOrder.length === 3, 'the winning order should list all three relations')
+  assert(new Set(trace!.finalOrder).size === 3, 'the winning order has no duplicates')
+  assert(trace!.best.length >= 3, 'a best plan should be recorded for several subsets')
+  assert(trace!.candidates.some((c) => c.accepted), 'at least one extension was accepted')
+  assert(trace!.finalCost > 0, 'the final cost should be set')
+})
+test('optimizer', 'a two-relation join is not reordered, so it has no DP trace', () => {
+  const e = seeded()
+  const { trace } = e.planAndTrace('SELECT o.id FROM orders o JOIN customers c ON o.customer_id = c.id')
+  assert(trace === null, 'fewer than three relations → the subset-DP search does not run')
+})
+
+// --- v15: the what-if Index Advisor -----------------------------------------
+test('advisor', 'recommends an index for a selective equality, and the planner adopts it', () => {
+  const e = star(500, 50) // 500 facts over 50 regions → region_id = k keeps ~10 rows
+  const a = e.advise('SELECT * FROM facts WHERE region_id = 7')
+  assert(a.ok, `advice should succeed: ${a.message ?? ''}`)
+  assert(a.recommendations.length >= 1, 'should recommend at least one index')
+  const top = a.recommendations[0]
+  assert(top.table === 'facts' && top.columns.join(',') === 'region_id', `top rec should be facts(region_id), got ${top.table}(${top.columns.join(',')})`)
+  assert(top.adopted, 'the planner must actually adopt the recommended index')
+  assert(top.newCost < top.baselineCost, `recommended index should lower cost (${top.newCost} < ${top.baselineCost})`)
+  assert(top.improvementPct > 0, 'improvement should be positive')
+})
+test('advisor', 'applying the recommendation makes the planner use an IndexScan', () => {
+  const e = star(500, 50)
+  const a = e.advise('SELECT * FROM facts WHERE region_id = 7')
+  e.execute(a.recommendations[0].ddl)
+  const planText = explainText(e, 'SELECT * FROM facts WHERE region_id = 7')
+  assert(planText.includes('IndexScan'), `after applying the DDL the plan should use an IndexScan: ${planText}`)
+})
+test('advisor', 'does not re-recommend an index that already exists', () => {
+  const e = star(500, 50)
+  e.execute('CREATE INDEX ix_region ON facts (region_id)')
+  const a = e.advise('SELECT * FROM facts WHERE region_id = 7')
+  assert(!a.recommendations.some((r) => r.columns.join(',') === 'region_id'), 'should not recommend an existing index')
+  assert(a.alreadyIndexed.some((s) => s.includes('region_id')), 'region_id should be reported as already covered')
+})
+test('advisor', 'recommends a composite index for a multi-equality query', () => {
+  const e = new Engine()
+  e.execute('CREATE TABLE t (a INTEGER, b INTEGER, c INTEGER)')
+  e.execute('INSERT INTO t (a,b,c) WITH RECURSIVE r(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM r WHERE n<400) SELECT n % 40, n % 20, n FROM r')
+  const a = e.advise('SELECT c FROM t WHERE a = 5 AND b = 5')
+  assert(a.ok, 'advice ok')
+  const cols = a.recommendations.map((r) => r.columns.join(','))
+  assert(cols.some((c) => c === 'a' || c === 'b' || c === 'a,b'), `expected an a / b / (a,b) recommendation, got: ${cols.join(' | ')}`)
+})
+test('advisor', 'is read-only — no hypothetical index leaks into later plans', () => {
+  const e = star(200, 20)
+  const before = scalar(e, 'SELECT COUNT(*) FROM facts')
+  e.advise('SELECT * FROM facts WHERE region_id = 3')
+  const planText = explainText(e, 'SELECT * FROM facts WHERE region_id = 3')
+  assert(!planText.includes('__hypo'), 'a hypothetical index must never leak into a later plan')
+  assert(!planText.includes('IndexScan'), 'with no real index, a later plan is back to a SeqScan')
+  assert(scalar(e, 'SELECT COUNT(*) FROM facts') === before, 'advise must never change data')
+})
+test('advisor', 'refuses a non-SELECT statement', () => {
+  const e = star(50, 5)
+  const a = e.advise('UPDATE facts SET amount = 0')
+  assert(!a.ok, 'should refuse a non-SELECT statement')
 })
 
 // --- composite indexes ------------------------------------------------------

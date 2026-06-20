@@ -664,7 +664,14 @@ export class NestedLoopJoin implements Operator {
   private rows: Row[] = []
   private pos = 0
 
-  constructor(left: Operator, right: Operator, pred: Evaluator | null, joinType: JoinExecType, schema: Schema) {
+  constructor(
+    left: Operator,
+    right: Operator,
+    pred: Evaluator | null,
+    joinType: JoinExecType,
+    schema: Schema,
+    estRows?: number,
+  ) {
     this.left = left
     this.right = right
     this.pred = pred
@@ -673,7 +680,11 @@ export class NestedLoopJoin implements Operator {
     this.leftWidth = left.schema.length
     this.rightWidth = right.schema.length
     this.estRows =
-      joinType === 'CROSS' ? left.estRows * right.estRows : Math.max(left.estRows, left.estRows * right.estRows * 0.3)
+      estRows !== undefined
+        ? Math.max(1, Math.round(estRows))
+        : joinType === 'CROSS'
+          ? left.estRows * right.estRows
+          : Math.max(left.estRows, left.estRows * right.estRows * 0.3)
     this.estCost = left.estCost + left.estRows * right.estCost + left.estRows * right.estRows * CPU_OP
   }
   open() {
@@ -828,6 +839,7 @@ export class HashJoin implements Operator {
     rightKey: Evaluator,
     joinType: 'INNER' | 'LEFT' | 'RIGHT' | 'FULL',
     schema: Schema,
+    estRows?: number,
   ) {
     this.left = left
     this.right = right
@@ -837,7 +849,7 @@ export class HashJoin implements Operator {
     this.schema = schema
     this.leftWidth = left.schema.length
     this.rightWidth = right.schema.length
-    this.estRows = Math.max(left.estRows, right.estRows)
+    this.estRows = estRows !== undefined ? Math.max(1, Math.round(estRows)) : Math.max(left.estRows, right.estRows)
     this.estCost = left.estCost + right.estCost + (left.estRows + right.estRows) * CPU_OP
   }
   open() {
@@ -1009,6 +1021,7 @@ export class MergeJoin implements Operator {
     rightKey: Evaluator,
     joinType: 'INNER' | 'LEFT' | 'RIGHT' | 'FULL',
     schema: Schema,
+    estRows?: number,
   ) {
     this.left = left
     this.right = right
@@ -1018,7 +1031,7 @@ export class MergeJoin implements Operator {
     this.schema = schema
     this.leftWidth = left.schema.length
     this.rightWidth = right.schema.length
-    this.estRows = Math.max(left.estRows, right.estRows)
+    this.estRows = estRows !== undefined ? Math.max(1, Math.round(estRows)) : Math.max(left.estRows, right.estRows)
     const nl = Math.max(1, left.estRows)
     const nr = Math.max(1, right.estRows)
     this.estCost =

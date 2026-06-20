@@ -212,6 +212,15 @@ const SECTIONS: Section[] = [
     ],
   },
   {
+    title: 'Query optimizer & EXPLAIN',
+    entries: [
+      { syntax: 'EXPLAIN SELECT … · EXPLAIN ANALYZE SELECT …', note: 'Show the physical operator tree the cost-based optimizer chose, with each node’s estimated rows and cost. ANALYZE also runs the query and reports actual rows per node, so you can spot mis-estimates. Visualized as a tree in the Optimizer Lab.' },
+      { syntax: 'cost model', note: 'Every operator carries an estimated cost. Scans cost by rows touched (an IndexScan beats a SeqScan for a selective predicate); joins add build/probe cost. An equijoin’s output is estimated by the distinct-value model |L|·|R| / max(V(L,key), V(R,key)), with each key’s distinct count capped by its input’s surviving rows — so a selective filter on one table propagates through the join.' },
+      { syntax: 'join-order search', note: 'A chain of 3–8 freely-reorderable INNER joins is reordered by a Selinger-style left-deep subset DP that keeps the cheapest plan for every relation subset. The Optimizer Lab replays the search; SELECT * column order is preserved regardless of the order chosen.' },
+      { syntax: 'Index Advisor (Optimizer Lab)', note: 'The what-if advisor enumerates candidate indexes from a query’s equalities, ranges, join keys and ORDER BY, builds each one hypothetically (no data is moved), re-plans, and recommends only the indexes the optimizer would actually adopt at a lower cost — ranked by the cost drop, each with a ready-to-run CREATE INDEX and one-click Apply.' },
+    ],
+  },
+  {
     title: 'Transactions',
     entries: [
       { syntax: 'BEGIN; … COMMIT;', note: 'Snapshot taken at BEGIN; COMMIT keeps changes.' },

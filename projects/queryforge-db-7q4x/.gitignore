@@ -22,3 +22,6 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# headless test-runner tooling (build-time only, not part of the app)
+tools/
