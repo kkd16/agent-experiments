@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { Compilation } from '../compiler/pipeline';
 import type { Block, Expr, FnDecl, Program, Stmt } from '../compiler/ast';
 import { tyName } from '../compiler/ast';
@@ -12,6 +12,9 @@ import type { VerifyResult } from '../compiler/verify';
 import type { OptLevel } from '../compiler/opt/optimize';
 import { EXAMPLES, TEST_PROGRAMS } from '../examples';
 import { TESTS } from '../compiler/tests';
+import { decodeModule } from '../wasm/decode';
+import { WasmVM } from '../wasm/vm';
+import type { VMState } from '../wasm/vm';
 
 // ---------------------------------------------------------------- Tokens
 
@@ -480,6 +483,200 @@ export function DebugPanel({ comp, onActiveLine }: { comp: Compilation; onActive
   );
 }
 
+// ---------------------------------------------------------------- WASM VM (time-travel)
+
+// The from-scratch WebAssembly VM, driven interactively. It decodes the very
+// bytes the backend emitted and single-steps them on a hand-written stack
+// machine, exposing the operand stack, locals, globals, linear memory and call
+// stack as the real bytecode executes. Time-travel (step back) is implemented by
+// re-running from the start to the previous instruction — the machine is
+// deterministic, so the replay is exact.
+const VM_RUN_CAP = 2_000_000;
+
+function buildVM(comp: Compilation): { mod: ReturnType<typeof decodeModule>; vm: WasmVM } | null {
+  if (!comp.ok || !comp.bytes) return null;
+  try {
+    const mod = decodeModule(comp.bytes);
+    return { mod, vm: new WasmVM(mod) };
+  } catch {
+    return null;
+  }
+}
+
+export function WasmVmPanel({ comp }: { comp: Compilation }) {
+  const [st, setSt] = useState<{ built: ReturnType<typeof buildVM>; snap: VMState | null }>(() => {
+    const built = buildVM(comp);
+    return { built, snap: built ? built.vm.state() : null };
+  });
+  const { built, snap } = st;
+  const activeRef = useRef<HTMLDivElement | null>(null);
+
+  // Keep the executing instruction in view as we step.
+  useEffect(() => {
+    activeRef.current?.scrollIntoView({ block: 'nearest' });
+  }, [snap]);
+
+  const refresh = (b: ReturnType<typeof buildVM>) => setSt({ built: b, snap: b ? b.vm.state() : null });
+  const rebuildTo = (target: number) => {
+    if (!built) return;
+    const vm = new WasmVM(built.mod);
+    let n = 0;
+    while (vm.steps < target && !vm.halted && n++ < VM_RUN_CAP) vm.step();
+    refresh({ mod: built.mod, vm });
+  };
+  const step = (k = 1) => {
+    if (!built) return;
+    for (let i = 0; i < k && !built.vm.halted; i++) built.vm.step();
+    refresh(built);
+  };
+  const run = () => {
+    if (!built) return;
+    built.vm.runToEnd(VM_RUN_CAP);
+    refresh(built);
+  };
+  const restart = () => refresh(buildVM(comp));
+  const stepBack = () => snap && rebuildTo(Math.max(0, snap.steps - 1));
+
+  if (!snap) {
+    return (
+      <div className="panel-scroll run-panel">
+        <p className="dim note">The program doesn’t compile yet — fix it on the left to run it on the from-scratch VM.</p>
+      </div>
+    );
+  }
+
+  const cur = snap.frames[snap.frames.length - 1];
+  return (
+    <div className="panel-scroll run-panel">
+      <div className="run-controls">
+        <button className="primary" onClick={() => step(1)} disabled={snap.halted}>▸ step</button>
+        <button onClick={() => step(10)} disabled={snap.halted}>▸▸ 10×</button>
+        <button onClick={stepBack} disabled={snap.steps === 0}>◂ back</button>
+        <button onClick={run} disabled={snap.halted}>⏩ run</button>
+        <button onClick={restart}>↺ restart</button>
+        <span className="dim">
+          {snap.steps} instr{snap.steps === 1 ? '' : 's'}
+          {snap.halted ? ' · halted' : cur ? ` · ${cur.funcName}() pc ${cur.pc}` : ''}
+        </span>
+        {snap.halted && snap.result !== undefined && <span className="badge ok">main() → {snap.result}</span>}
+        {snap.trap && <span className="badge bad">trap: {snap.trap}</span>}
+      </div>
+      <p className="dim note vm-blurb">
+        This is the project’s own <b>from-scratch WebAssembly virtual machine</b> — it decodes the bytes on the
+        Bytes tab and executes them one instruction at a time. The same engine cross-checks every Verify run, so
+        V8, the reference interpreter and this VM are proven to agree.
+      </p>
+
+      <div className="vm-grid">
+        <div className="vm-disasm">
+          <div className="col-head">{cur ? `${cur.funcName}() — disassembly` : 'disassembly'}</div>
+          <div className="vm-listing">
+            {cur ? cur.lines.map((ln, i) => (
+              <div
+                key={i}
+                ref={i === cur.pc ? activeRef : null}
+                className={'vm-line' + (i === cur.pc ? ' vm-line-cur' : '')}
+              >
+                <span className="vm-pc">{i.toString().padStart(3, ' ')}</span>
+                <span className="vm-code">{ln}</span>
+              </div>
+            )) : <div className="dim note">no active frame</div>}
+          </div>
+        </div>
+
+        <div className="vm-side">
+          <div className="vm-box">
+            <div className="col-head">Operand stack {cur && <span className="dim">(top first)</span>}</div>
+            {cur && cur.stack.length > 0 ? (
+              <table className="dbg-vars">
+                <tbody>
+                  {cur.stack.slice().reverse().map((slot, i) => (
+                    <tr key={i}>
+                      <td className="dim dbg-vty">{i === 0 ? '↑ top' : ''}</td>
+                      <td className="dim dbg-vty">{slot.ty}</td>
+                      <td className="mono dbg-vval">{slot.value}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            ) : <div className="dim dbg-novars">empty</div>}
+          </div>
+
+          <div className="vm-box">
+            <div className="col-head">Locals</div>
+            {cur && cur.locals.length > 0 ? (
+              <table className="dbg-vars">
+                <tbody>
+                  {cur.locals.map((slot, i) => (
+                    <tr key={i}>
+                      <td className="mono dbg-vname">{i}</td>
+                      <td className="dim dbg-vty">{slot.ty}</td>
+                      <td className="mono dbg-vval">{slot.value}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            ) : <div className="dim dbg-novars">none</div>}
+          </div>
+
+          <div className="vm-box">
+            <div className="col-head">Call stack</div>
+            <div className="vm-callstack">
+              {snap.frames.slice().reverse().map((fr, i) => (
+                <div key={i} className={'vm-csframe' + (i === 0 ? ' vm-csframe-cur' : '')}>
+                  <span className="mono">{fr.funcName}()</span> <span className="dim">pc {fr.pc}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {snap.globals.length > 0 && (
+            <div className="vm-box">
+              <div className="col-head">Globals</div>
+              <table className="dbg-vars">
+                <tbody>
+                  {snap.globals.map((slot, i) => (
+                    <tr key={i}>
+                      <td className="mono dbg-vname">{i}</td>
+                      <td className="dim dbg-vty">{slot.ty}</td>
+                      <td className="mono dbg-vval">{slot.value}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      </div>
+
+      <div className="vm-grid vm-grid-low">
+        <div className="vm-box">
+          <div className="col-head">Linear memory {snap.memUsed > 0 && <span className="dim">({snap.memUsed} B used)</span>}</div>
+          <pre className="code-pre hex-pre vm-mem">{memDump(snap.memory, snap.memUsed)}</pre>
+        </div>
+        <div className="vm-box">
+          <div className="col-head">Output</div>
+          <pre className="code-pre out-pre">{snap.output.join('\n') || '(no output yet)'}</pre>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function memDump(mem: Uint8Array, used: number): string {
+  if (used === 0) return '(memory is empty)';
+  const limit = Math.min(used, 512);
+  const rows: string[] = [];
+  for (let i = 0; i < limit; i += 16) {
+    const slice = mem.subarray(i, Math.min(i + 16, limit));
+    const hex = Array.from(slice, (b) => b.toString(16).padStart(2, '0')).join(' ');
+    const ascii = Array.from(slice, (b) => (b >= 32 && b < 127 ? String.fromCharCode(b) : '·')).join('');
+    rows.push(`${i.toString(16).padStart(5, '0')}  ${hex.padEnd(47)}  ${ascii}`);
+  }
+  if (used > limit) rows.push(`…  (${used - limit} more bytes)`);
+  return rows.join('\n');
+}
+
 // ---------------------------------------------------------------- Verify suite
 
 export function VerifyPanel() {
@@ -544,9 +741,11 @@ export function VerifyPanel() {
         local, branch-merged, loop-carried, aliased, mixed-width and escape-boundary cases), and
         <b>memory optimization</b> (store→load forwarding, redundant-load &amp;
         dead/silent-store elimination — with the aliasing, call-barrier and branch-merge cases that must stay conservative))
-        — is compiled at -O0…-O3, executed as WebAssembly, and its output compared to the reference interpreter.
-        Identical output at every level is the proof that each optimization — and the string runtime, which is itself
-        written in Strata and compiled the same way — is sound.
+        — is compiled at -O0…-O3 and run by <b>three independent engines</b>: the host’s <code>WebAssembly</code> (V8),
+        the tree-walking reference interpreter, and the project’s <b>own from-scratch WebAssembly VM</b> (which decodes
+        and executes the assembled bytes on a hand-written stack machine). A ✓ means all three printed the
+        <em>exact</em> same output — a far stronger proof than two engines agreeing that each optimization, and the
+        string runtime (itself written in Strata and compiled the same way), is sound.
       </p>
       {results.length > 0 && (
         <table className="verify-table">

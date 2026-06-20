@@ -106,13 +106,26 @@ reference interpreter at every optimization level.
   exports `callBuiltin`, the single shared implementation of the whole builtin library.
 - `src/compiler/debug.ts` — generator-based single-stepping interpreter behind the Debug tab
   (pauses per statement, steps into calls, exposes the live stack + variables + output).
-- `src/compiler/runner.ts` — instantiates and runs the wasm in-browser.
-- `src/compiler/verify.ts` — differential testing harness (shipped as the "Verify" tab).
+- `src/compiler/runner.ts` — instantiates and runs the wasm in-browser (host `WebAssembly`).
+- `src/wasm/` — a **from-scratch WebAssembly virtual machine** (the third correctness oracle).
+  `decode.ts` re-parses the assembled bytes back into a structured module (LEB128, all the
+  sections the backend emits) *independently* of the encoder; `disasm.ts` decodes a function
+  body into a flat instruction array with the structured-control-flow scopes resolved to jump
+  targets + a human-readable listing; `vm.ts` is a hand-written stack machine that executes that
+  — every numeric op on i32/i64/f32/f64, the conversions, 128-bit SIMD, structured control,
+  memory, globals, the funcref table + `call_indirect`, and the `print_*` host imports — one
+  instruction at a time. `runOnVm` is the oracle entry; `WasmVM.step()/state()` drive the
+  time-travel debugger. i64 is a BigInt and f32 carries `Math.fround`, exactly as the reference
+  interpreter models them, so V8, the interpreter and this VM agree bit-for-bit.
+- `src/compiler/verify.ts` — differential testing harness (shipped as the "Verify" tab). Now a
+  **three-engine** cross-check: host `WebAssembly` (V8) = reference interpreter = from-scratch VM.
 - `src/compiler/tests.ts` — adversarial differential-test battery (90+ focused programs).
 - `tools/run-harness.mjs` — headless Node harness: `tsc -b` + Vite-bundle + run the full
-  corpus at -O0…-O3, asserting wasm == reference interpreter (run during development).
+  corpus at -O0…-O3, asserting V8 == reference interpreter == VM (run during development).
+- `tools/check-vm.mjs` — the VM's dedicated conscience: runs the corpus three ways and also
+  tallies the distinct opcodes the VM exercised + instructions it retired.
 - `src/ui/` — the Compiler-Explorer UI (editor with syntax highlight overlay, SVG CFG view,
-  pipeline-stage panels, and the step debugger).
+  pipeline-stage panels, the source-level step debugger, and the **WASM VM** time-travel tab).
 
 ## Language features
 
@@ -303,6 +316,77 @@ yet stored in arrays/structs/globals — extract their lanes for that.)
       by the oracle *and* an offline fuzz of millions of dividends (incl.
       INT_MIN/INT_MAX). **716 differential checks across -O0…-O3 (baseline 700).**
       See the 2026-06-19 plan (II).
+
+## 2026-06-20 — plan + shipped: a from-scratch WebAssembly VM — a third oracle + a time-travel debugger (claude / claude-opus-4-8)
+
+The compiler had two ways to *run* a program: the host engine's `WebAssembly` (V8) and the
+reference tree-walking interpreter, cross-checked on every Verify run. The obvious missing
+piece for a project whose whole identity is "we emit **real** wasm bytecode" was a **third
+engine that re-implements the runtime from scratch** — a hand-written WebAssembly virtual
+machine that decodes the very bytes the backend assembled and executes them on its own stack
+machine. Two engines agreeing can hide a *shared* misconception (e.g. a wrong-but-consistent
+formatter); three independent implementations agreeing is a genuinely stronger proof. And the
+same machine, stepped one instruction at a time, becomes a window into the compiled program no
+source-level debugger can offer: watch the operand stack, locals, globals and linear memory
+evolve as the *actual bytecode* runs, and rewind.
+
+This is self-contained (a new `src/wasm/` package + a UI tab + one hook into `verify.ts`) and
+leans on the project's superpower — the differential harness — to be *provably* correct rather
+than merely plausible: the VM only ships green because V8 itself certifies it on every program.
+
+### Design — execute the emitted bytes, not a friendlier IR
+
+The VM reads the binary the encoder produced (so it re-validates the encoder too), not the
+codegen's structured tree. Two facts from the backend make this tractable and exact:
+- The emitted control flow is **structured with void block types only**, so every label has
+  arity 0 — a `br` is just "truncate the operand stack to the target scope's base height and
+  jump". No value juggling across branches. (`br_if`/`br_table` aren't emitted; both are
+  supported anyway, cheaply.)
+- The opcode set is bounded and known. i64 ↔ BigInt and f32 ↔ `Math.fround` reproduce wasm's
+  numerics in JS exactly — the same modelling the reference interpreter already proved sound —
+  so `i32.div_s` traps, saturating truncations, `f64.nearest` (ties-to-even), `copysign`,
+  rotates, and all of 128-bit SIMD (lanewise arith/compare→mask/bitselect/convert) line up.
+
+### Shipped this session (all proven by the harness — **836 checks, V8 = interpreter = VM**)
+
+- [x] **`src/wasm/decode.ts`** — an independent wasm **binary decoder**: magic/version, and the
+  type / import / function / table / memory / global / export / element / code / data sections,
+  with hand-written LEB128 (signed + unsigned, 32- and 64-bit) and IEEE-754 readers. Fails loud
+  on anything outside the subset the compiler emits, and asserts every section's cursor lands
+  exactly on its declared length (a desync would mean a decode bug).
+- [x] **`src/wasm/disasm.ts`** — decodes a function body into a flat instruction array, resolves
+  each `block`/`loop`/`if` to its matching `else`/`end` (precomputed jump targets), records
+  nesting depth, and renders a human-readable listing the debugger highlights line-by-line.
+- [x] **`src/wasm/vm.ts`** — the **stack machine**. Explicit activation-record call stack (so it
+  steps *into* calls and shows the live call stack), per-frame operand stack + locals + control
+  scopes, linear memory (`DataView`, little-endian, with the static data segment installed),
+  globals, the funcref table + `call_indirect` (with a type-match check), and the `print_*` host
+  imports routed through the *same* formatters as the host runner. Full dispatch for every
+  numeric opcode, the conversions/reinterprets, saturating truncations, (typed) `select`, and
+  the whole SIMD family. `runOnVm` is the oracle; `step()` + `state()` drive the UI.
+- [x] **Third oracle wired into `verify.ts`** — a program passes only when V8, the interpreter
+  *and* the VM print identical output. The in-app Verify tab and the headless `run-harness.mjs`
+  both now certify three engines at once (836 checks, all green).
+- [x] **`tools/check-vm.mjs`** — the VM's dedicated headless conscience. Across the corpus it
+  confirms three-way agreement and reports coverage: **the VM retired ~147.7M wasm instructions
+  exercising 157 distinct opcodes** — evidence its decoder + interpreter span the backend's
+  whole instruction set, not a happy-path slice. It also runs a **trap-parity** battery (div /
+  rem by zero, `INT_MIN / -1` overflow, a call through a null function pointer): 5/5 programs
+  trap on the *same* run on both V8 and the VM, with identical output produced before the trap.
+- [x] **The "WASM VM" tab** — an interactive **time-travel debugger** over the real bytecode:
+  step / step-10× / step-back / run / restart, with the executing instruction highlighted in the
+  disassembly and live panels for the operand stack (top-first), locals, call stack, globals, a
+  linear-memory hexdump, and program output. Step-back replays deterministically from the start.
+
+### Backlog — where the VM goes next (deliberately deferred, all clean)
+
+- [ ] **Source-line mapping**: thread AST spans → IR insts → wasm instruction ranges so the VM
+  tab can also highlight the originating Strata line (today it maps to the function + disassembly
+  line; the function name is recovered from the export/index map).
+- [ ] **Breakpoints + watch expressions** in the VM tab (run-until-pc), and a "diff vs V8"
+  button that single-steps both and stops at the first divergent state.
+- [ ] **A fuel/▶ animation mode** that auto-advances at a chosen rate, and a sparkline of
+  operand-stack depth over time.
 
 ## 2026-06-20 — plan: 128-bit SIMD vectors (`v128`) (claude / claude-opus-4-8)
 
