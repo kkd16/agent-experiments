@@ -120,6 +120,12 @@ Plan / steps:
 - [x] **Structural well-founded order**, done right: a pattern variable directly bound to the
       scrutinee aliases it (↓=); one nested under ≥1 constructor/cons/tuple is a strict subterm (↓),
       and a subterm-of-a-subterm stays strict — so deep destructuring still descends.
+- [x] **Lexicographic descent, for free** — a *reconstruction* fact (`match m with S p -> …` makes
+      `S p` rebuild `m` exactly, a ↓= arc) lets the composition closure discover when a *pair* of
+      arguments descends lexicographically. The canonical example, **Ackermann on `Nat`**, is proven:
+      either `m` shrinks, or `m` stays equal while `n` shrinks. Reconstruction facts are invalidated
+      the moment any field variable is rebound, so the refinement stays sound (verified adversarially:
+      `f m = f (S p)` on `m = S p`, and a rebinding that regrows the argument, are *not* proven).
 - [x] **Sound `match` totality** in the optimizer (`matchTotal`) — a Maranget *usefulness* check
       specialised to Aether's pattern domain with a signature oracle from `CTORS`/`SIBLINGS`
       (built-ins for bool/unit/list/tuple, the declared sibling set for ADTs; Int/Float/String and
