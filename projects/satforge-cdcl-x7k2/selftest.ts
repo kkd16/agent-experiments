@@ -62,6 +62,7 @@ import { runSmtChecks } from './src/smt/selfcheck'
 import { runBvChecks } from './src/smt/bv/selfcheck'
 import { runImcChecks } from './src/imc/selfcheck'
 import { runQbfChecks } from './src/qbf/selfcheck'
+import { runBddChecks } from './src/bdd/selfcheck'
 
 let pass = 0
 let fail = 0
@@ -1328,6 +1329,14 @@ function bruteMaxCut(g: WeightedGraph): number {
   for (const m of qbfr.messages) console.error(m)
   pass += qbfr.pass
   fail += qbfr.fail
+}
+
+// ---- BDD/ZDD: canonical decision diagrams, reordering, ZDD set algebra ------
+{
+  const bddr = runBddChecks()
+  for (const m of bddr.messages) console.error(m)
+  pass += bddr.pass
+  fail += bddr.fail
 }
 
 console.log(`\n${pass} passed, ${fail} failed`)
