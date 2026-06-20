@@ -21,6 +21,8 @@ import type { Rng } from './rng'
 import type { SceneDef, EnvDef, MediumDef } from './types'
 import { makeSky, skyRadiance } from './sky'
 import type { SkyState } from './sky'
+import { makeDensityField } from './volume'
+import type { DensityField } from './volume'
 
 // A directional "sun" the environment exposes as a sampled light: a cone of
 // half-angle `size` around `dir` (the direction toward the sun).
@@ -79,6 +81,11 @@ export class Scene {
   readonly hasEnvLight: boolean
   readonly media: MediumDef[]
   readonly hasMedia: boolean
+  // Per-medium procedural density field (null = homogeneous, analytic path). A
+  // non-null field makes that medium heterogeneous, sampled by delta/ratio
+  // tracking against the medium's `sigmaT` as the constant majorant.
+  readonly densityFields: (DensityField | null)[]
+  readonly hasHeterogeneous: boolean
 
   constructor(def: SceneDef) {
     const t0 = now()
@@ -103,6 +110,8 @@ export class Scene {
     this.hasEnvLight = this.envSun !== null
     this.media = (def.media ?? []).filter((m) => m.sigmaT > 0 && m.radius > 0)
     this.hasMedia = this.media.length > 0
+    this.densityFields = this.media.map((m) => makeDensityField(m))
+    this.hasHeterogeneous = this.densityFields.some((f) => f !== null)
     this.buildMs = now() - t0
   }
 
@@ -247,42 +256,129 @@ export class Scene {
   // ---- Participating media -------------------------------------------------
 
   // Sample the nearest free-flight collision along ray (o,d) within [0, tMax].
-  // For each bounded medium we clip its sphere onto the ray, then draw a distance
-  // from that segment's transmittance e^(−σ_t·s); a draw landing past the segment
-  // means "no collision in this medium" (the analytic exit weight is 1). The
-  // smallest collision across all (disjoint) media is the event; null ⇒ the ray
-  // travels unobstructed to the surface/environment at tMax.
+  //
+  // Homogeneous media: clip the sphere onto the ray and draw a distance from that
+  // segment's transmittance e^(−σ_t·s); a draw past the segment means "no
+  // collision" (analytic exit weight 1). Heterogeneous media: **delta tracking**
+  // (Woodcock) — sample analytic flights against the constant majorant σ̄ = sigmaT,
+  // and at each tentative collision accept a *real* scatter with probability
+  // σ_t(x)/σ̄ = density(x), else treat it as a *null* collision and continue. The
+  // accepted-collision distribution is then exactly the heterogeneous free-flight
+  // law, with no bias and no integral. The smallest collision across all
+  // (disjoint) media is the event; null ⇒ the ray reaches the surface at tMax.
   sampleMediumScatter(o: Vec3, d: Vec3, tMax: number, rng: Rng): MediumScatter | null {
     let best: MediumScatter | null = null
     let bestT = tMax
-    for (const m of this.media) {
+    for (let i = 0; i < this.media.length; i++) {
+      const m = this.media[i]
       const iv = sphereInterval(o, d, m.center, m.radius)
       if (!iv) continue
       const t0 = Math.max(iv.t0, 1e-4)
       const t1 = Math.min(iv.t1, bestT)
       if (t1 <= t0) continue
-      const t = t0 - Math.log(1 - rng.next()) / m.sigmaT
-      if (t < t1) {
-        best = { t, medium: m }
-        bestT = t
+      const field = this.densityFields[i]
+      if (field === null) {
+        // Homogeneous: one analytic exponential flight.
+        const t = t0 - Math.log(1 - rng.next()) / m.sigmaT
+        if (t < t1) {
+          best = { t, medium: m }
+          bestT = t
+        }
+      } else {
+        // Heterogeneous: delta-track to the first *real* collision in [t0, t1).
+        const t = this.deltaTrack(o, d, t0, t1, m, field, rng)
+        if (t >= 0 && t < bestT) {
+          best = { t, medium: m }
+          bestT = t
+        }
       }
     }
     return best
   }
 
-  // Scalar transmittance e^(−Σ σ_t·overlap) of a shadow segment of length `dist`
-  // through the media — what attenuates a next-event light through fog/smoke.
-  mediaTransmittance(o: Vec3, d: Vec3, dist: number): number {
+  // Woodcock delta tracking inside one heterogeneous medium: step by analytic
+  // majorant flights and accept a real collision with probability density(x).
+  // Returns the real-collision distance, or −1 if the ray exits the segment via
+  // only null collisions (i.e. it reaches the surface/next medium unobstructed).
+  private deltaTrack(
+    o: Vec3,
+    d: Vec3,
+    t0: number,
+    t1: number,
+    m: MediumDef,
+    field: DensityField,
+    rng: Rng,
+  ): number {
+    const sigmaBar = m.sigmaT * field.majorant
+    let t = t0
+    // Bound the loop defensively; with σ̄·(t1−t0) typically O(1–100) this exits
+    // almost immediately, and the cap only guards a pathological majorant.
+    for (let iter = 0; iter < 10000; iter++) {
+      t -= Math.log(1 - rng.next()) / sigmaBar
+      if (t >= t1) return -1 // escaped the medium with no real collision
+      const px = o.x + d.x * t
+      const py = o.y + d.y * t
+      const pz = o.z + d.z * t
+      const dens = field.density({ x: px, y: py, z: pz }) // σ_t/σ̄ ∈ [0,1]
+      if (rng.next() < dens) return t // real collision
+      // else a null collision: continue from t with β unchanged.
+    }
+    return -1
+  }
+
+  // Transmittance of a shadow segment of length `dist` through the media — what
+  // attenuates a next-event light through fog/smoke. Homogeneous media use the
+  // exact e^(−σ_t·overlap); heterogeneous media use **ratio tracking**, an
+  // unbiased Monte-Carlo estimator T̂ = ∏ (1 − σ_t(xᵢ)/σ̄) over majorant flights,
+  // whose expectation is e^(−∫σ_t ds) for an arbitrary field (no closed form
+  // required). `rng` is only consumed for heterogeneous media.
+  mediaTransmittance(o: Vec3, d: Vec3, dist: number, rng: Rng): number {
     if (!this.hasMedia) return 1
-    let tau = 0
-    for (const m of this.media) {
+    let tau = 0 // analytic optical depth accumulated from homogeneous media
+    let tr = 1 // ratio-tracking transmittance from heterogeneous media
+    for (let i = 0; i < this.media.length; i++) {
+      const m = this.media[i]
       const iv = sphereInterval(o, d, m.center, m.radius)
       if (!iv) continue
       const t0 = Math.max(iv.t0, 0)
       const t1 = Math.min(iv.t1, dist)
-      if (t1 > t0) tau += m.sigmaT * (t1 - t0)
+      if (t1 <= t0) continue
+      const field = this.densityFields[i]
+      if (field === null) {
+        tau += m.sigmaT * (t1 - t0)
+      } else {
+        tr *= this.ratioTrack(o, d, t0, t1, m, field, rng)
+        if (tr <= 0) return 0
+      }
     }
-    return tau > 0 ? Math.exp(-tau) : 1
+    const analytic = tau > 0 ? Math.exp(-tau) : 1
+    return analytic * tr
+  }
+
+  // Ratio tracking through one heterogeneous medium over [t0, t1].
+  private ratioTrack(
+    o: Vec3,
+    d: Vec3,
+    t0: number,
+    t1: number,
+    m: MediumDef,
+    field: DensityField,
+    rng: Rng,
+  ): number {
+    const sigmaBar = m.sigmaT * field.majorant
+    let t = t0
+    let tr = 1
+    for (let iter = 0; iter < 10000; iter++) {
+      t -= Math.log(1 - rng.next()) / sigmaBar
+      if (t >= t1) break
+      const px = o.x + d.x * t
+      const py = o.y + d.y * t
+      const pz = o.z + d.z * t
+      const dens = field.density({ x: px, y: py, z: pz }) // σ_t/σ̄ ∈ [0,1]
+      tr *= 1 - dens
+      if (tr < 1e-4) return 0 // negligible — treat as fully occluded
+    }
+    return tr
   }
 
   // Construct a primary ray helper (used by the self-test harness).

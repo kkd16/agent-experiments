@@ -40,6 +40,9 @@ export interface ControlState {
   turbidity: number
   // Volumetric scenes only: a multiplier on the scene's medium extinction.
   fogDensity: number
+  // Heterogeneous-cloud scenes only: an offset to the fBm coverage threshold
+  // (− puffs the cloud up / fills it in, + breaks it into scattered billows).
+  cloudCoverage: number
   // Custom-OBJ scene only: the pasted model text.
   objText: string
 }

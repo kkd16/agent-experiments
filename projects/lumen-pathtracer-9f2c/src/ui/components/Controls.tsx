@@ -73,7 +73,14 @@ export function Controls(props: {
       )}
 
       {preset?.fog && (
-        <Panel title="Volumetric haze" subtitle="Participating media — Henyey–Greenstein scattering">
+        <Panel
+          title="Volumetric haze"
+          subtitle={
+            preset?.cloud
+              ? 'Heterogeneous media — fBm density, delta/ratio tracking'
+              : 'Participating media — Henyey–Greenstein scattering'
+          }
+        >
           <Slider
             label="Fog density"
             value={state.fogDensity}
@@ -82,8 +89,20 @@ export function Controls(props: {
             step={0.05}
             onChange={(v) => set('fogDensity', v)}
             format={(v) => `${v.toFixed(2)}×`}
-            hint="Scales the medium's extinction. Higher = thicker haze, brighter light shafts and softer depth."
+            hint="Scales the medium's extinction (the tracking majorant). Higher = thicker haze, brighter light shafts, softer depth."
           />
+          {preset?.cloud && (
+            <Slider
+              label="Cloud coverage"
+              value={state.cloudCoverage}
+              min={-0.3}
+              max={0.4}
+              step={0.02}
+              onChange={(v) => set('cloudCoverage', v)}
+              format={(v) => (v > 0 ? `+${v.toFixed(2)}` : v.toFixed(2))}
+              hint="Offsets the fBm density threshold. Lower fills the cloud in (overcast); higher breaks it into scattered billows."
+            />
+          )}
         </Panel>
       )}
 

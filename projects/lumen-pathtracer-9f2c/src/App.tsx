@@ -47,6 +47,7 @@ const DEFAULTS: ControlState = {
   sunElevation: 24,
   turbidity: 2.6,
   fogDensity: 1,
+  cloudCoverage: 0,
   objText: '',
 }
 
@@ -77,9 +78,18 @@ function buildScene(ctrl: ControlState, orbit: Orbit): SceneDef {
       turbidity: ctrl.turbidity,
     }
   }
-  // Volumetric scenes: scale the medium extinction by the live fog-density knob.
-  if (preset.fog && def.media && ctrl.fogDensity !== 1) {
-    def.media = def.media.map((m) => ({ ...m, sigmaT: m.sigmaT * ctrl.fogDensity }))
+  // Volumetric scenes: scale the medium extinction by the live fog-density knob,
+  // and (for heterogeneous fBm clouds) offset the coverage threshold so the cloud
+  // can be puffed up or broken apart live. Both are pure data edits to `media`.
+  if (preset.fog && def.media && (ctrl.fogDensity !== 1 || (preset.cloud && ctrl.cloudCoverage !== 0))) {
+    def.media = def.media.map((m) => {
+      let next = ctrl.fogDensity !== 1 ? { ...m, sigmaT: m.sigmaT * ctrl.fogDensity } : { ...m }
+      if (preset.cloud && ctrl.cloudCoverage !== 0 && next.density && next.density.kind === 'fbm') {
+        const coverage = Math.min(0.95, Math.max(0, next.density.coverage + ctrl.cloudCoverage))
+        next = { ...next, density: { ...next.density, coverage } }
+      }
+      return next
+    })
   }
   const eye = orbitEye(orbit.target, orbit.radius, orbit.yaw, orbit.pitch)
   def.camera = {
@@ -166,6 +176,7 @@ export default function App() {
     el: ctrl.sunElevation,
     tb: ctrl.turbidity,
     fog: ctrl.fogDensity,
+    cc: ctrl.cloudCoverage,
     obj: ctrl.objText,
     o: orbit,
   })

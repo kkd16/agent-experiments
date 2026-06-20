@@ -29,6 +29,9 @@ import { makeSky, skyRadiance } from './sky'
 import { hgPhase, sampleHG } from './phase'
 import { thinFilmReflectance } from './thinfilm'
 import { radicalInverse } from './qmc'
+import { valueNoise3, fbm3 } from './noise'
+import { makeDensityField } from './volume'
+import type { MediumDef } from './types'
 
 export interface TestResult {
   name: string
@@ -679,6 +682,197 @@ function testVolumeAbsorb(): { pass: boolean; detail: string } {
   const measured = sum / N
   const expected = Math.exp(-sigmaT * 2 * radius) // chord through a centred sphere = 2r
   return { pass: approx(measured, expected, 1e-2), detail: `transmitted=${measured.toFixed(4)}, e^(−σ·2r)=${expected.toFixed(4)}` }
+}
+
+// 26b — The procedural noise underpinning heterogeneous media is well-behaved:
+// the value field and its fBm are bounded in [0,1], continuous (a tiny step in
+// position makes a tiny change in value — no creases, which would alias the
+// density), deterministic (identical input ⇒ identical output, so a field
+// renders the same on every worker), and ≈zero-centred at 0.5 (the corner values
+// are uniform, so their interpolation has the right mean — an unbiased density).
+function testNoiseField(): { pass: boolean; detail: string } {
+  const rng = new Rng(13, 7)
+  let lo = Infinity
+  let hi = -Infinity
+  let sum = 0
+  let sumF = 0
+  let maxJump = 0
+  let detOk = true
+  const N = 60000
+  for (let i = 0; i < N; i++) {
+    const x = (rng.next() - 0.5) * 40
+    const y = (rng.next() - 0.5) * 40
+    const z = (rng.next() - 0.5) * 40
+    const a = valueNoise3(x, y, z, 3)
+    lo = Math.min(lo, a)
+    hi = Math.max(hi, a)
+    sum += a
+    sumF += fbm3(x, y, z, 5, 2, 0.5, 3)
+    // Continuity: a 1e-3 step must not move the value by much (Lipschitz).
+    const b = valueNoise3(x + 1e-3, y, z, 3)
+    maxJump = Math.max(maxJump, Math.abs(a - b))
+    // Determinism: re-evaluating the same point reproduces the value exactly.
+    if (valueNoise3(x, y, z, 3) !== a) detOk = false
+  }
+  const mean = sum / N
+  const meanF = sumF / N
+  const bounded = lo >= 0 && hi <= 1
+  // fBm value mean should also centre near 0.5 (uniform corners, normalised sum).
+  const ok = bounded && detOk && maxJump < 0.05 && approx(mean, 0.5, 2e-2) && approx(meanF, 0.5, 2e-2)
+  return {
+    pass: ok,
+    detail: `range=[${lo.toFixed(3)},${hi.toFixed(3)}], mean=${mean.toFixed(3)}, fbm̄=${meanF.toFixed(3)}, maxΔ(1e-3)=${maxJump.toExponential(1)}, det=${detOk}`,
+  }
+}
+
+// A constant (≡1) density field: a `layer` whose floor sits far above the medium
+// so density saturates to 1 everywhere. Lets the heterogeneous delta-/ratio-
+// tracking paths be checked against the *exact* homogeneous Beer–Lambert law.
+function constantMedium(sigmaT: number): MediumDef {
+  return {
+    center: v(0, 0, 0),
+    radius: 1000,
+    sigmaT,
+    albedo: v(1, 1, 1),
+    g: 0,
+    density: { kind: 'layer', base: 1e9, scaleHeight: 1, noiseAmount: 0 },
+  }
+}
+
+// 26c — Delta tracking is unbiased: with a constant (=1) density field, the
+// null-collision free-flight sampler must reproduce Beer's law exactly — a ray
+// reaches distance L with probability e^(−σ_t·L), identical to the homogeneous
+// analytic sampler (test 24) but exercising the Woodcock accept/null loop.
+function testDeltaTrackConstant(): { pass: boolean; detail: string } {
+  const sigmaT = 0.7
+  const L = 2
+  const scene = new Scene({
+    name: 'dt', materials: [], prims: [],
+    camera: { eye: v(0, 0, 5), target: v(0, 0, 0), up: v(0, 1, 0), vfovDeg: 30, aperture: 0, focusDist: 5 },
+    env: { kind: 'solid', color: v(0, 0, 0) },
+    media: [constantMedium(sigmaT)],
+  })
+  const rng = new Rng(424, 9)
+  let reached = 0
+  const N = 200000
+  for (let i = 0; i < N; i++) {
+    if (!scene.sampleMediumScatter(v(0, 0, 0), v(1, 0, 0), L, rng)) reached++
+  }
+  const frac = reached / N
+  const expected = Math.exp(-sigmaT * L)
+  return { pass: approx(frac, expected, 5e-3), detail: `delta-track reach=${frac.toFixed(4)}, e^(−σL)=${expected.toFixed(4)}` }
+}
+
+// 26d — Ratio tracking matches a genuinely *varying* analytic optical depth. A
+// downward ray crosses an exponential `layer` fog whose density changes ~14× over
+// the segment; the ratio-tracking transmittance estimate, averaged, must equal
+// e^(−∫σ_t ds) where the integral is computed by an independent fine quadrature
+// of the very same field. This is the unbiasedness proof for the shadow-ray
+// estimator on a heterogeneous medium (no closed form assumed).
+function testRatioTrackVarying(): { pass: boolean; detail: string } {
+  const sigmaT = 0.9
+  const med: MediumDef = {
+    center: v(0, 0, 0), radius: 1000, sigmaT, albedo: v(1, 1, 1), g: 0,
+    density: { kind: 'layer', base: 0, scaleHeight: 3, noiseAmount: 0 },
+  }
+  const scene = new Scene({
+    name: 'rt', materials: [], prims: [],
+    camera: { eye: v(0, 0, 5), target: v(0, 0, 0), up: v(0, 1, 0), vfovDeg: 30, aperture: 0, focusDist: 5 },
+    env: { kind: 'solid', color: v(0, 0, 0) },
+    media: [med],
+  })
+  const o = v(0, 9, 0)
+  const d = v(0, -1, 0)
+  const dist = 8
+  // Reference optical depth: deterministic quadrature of σ_t·density along the ray.
+  const field = makeDensityField(med)!
+  let tau = 0
+  const Q = 200000
+  const dt = dist / Q
+  for (let i = 0; i < Q; i++) {
+    const t = (i + 0.5) * dt
+    tau += sigmaT * field.density({ x: o.x + d.x * t, y: o.y + d.y * t, z: o.z + d.z * t }) * dt
+  }
+  const expected = Math.exp(-tau)
+  // Monte-Carlo ratio-tracking estimate.
+  const rng = new Rng(733, 11)
+  let sum = 0
+  const N = 300000
+  for (let i = 0; i < N; i++) sum += scene.mediaTransmittance(o, d, dist, rng)
+  const measured = sum / N
+  return {
+    pass: approx(measured, expected, 6e-3),
+    detail: `ratio-track T̂=${measured.toFixed(4)}, e^(−∫σds)=${expected.toFixed(4)} (τ=${tau.toFixed(3)})`,
+  }
+}
+
+// 26e — Delta tracking on a *varying* field too: the reach-fraction (probability
+// of crossing the exponential fog with no real collision) must equal e^(−∫σ_t ds)
+// from the same quadrature — the collision sampler, not just the transmittance
+// estimator, follows the heterogeneous free-flight law.
+function testDeltaTrackVarying(): { pass: boolean; detail: string } {
+  const sigmaT = 0.9
+  const med: MediumDef = {
+    center: v(0, 0, 0), radius: 1000, sigmaT, albedo: v(1, 1, 1), g: 0,
+    density: { kind: 'layer', base: 0, scaleHeight: 3, noiseAmount: 0 },
+  }
+  const scene = new Scene({
+    name: 'dtv', materials: [], prims: [],
+    camera: { eye: v(0, 0, 5), target: v(0, 0, 0), up: v(0, 1, 0), vfovDeg: 30, aperture: 0, focusDist: 5 },
+    env: { kind: 'solid', color: v(0, 0, 0) },
+    media: [med],
+  })
+  const o = v(0, 9, 0)
+  const d = v(0, -1, 0)
+  const dist = 8
+  const field = makeDensityField(med)!
+  let tau = 0
+  const Q = 200000
+  const dt = dist / Q
+  for (let i = 0; i < Q; i++) {
+    const t = (i + 0.5) * dt
+    tau += sigmaT * field.density({ x: o.x, y: o.y - t, z: o.z }) * dt
+  }
+  const expected = Math.exp(-tau)
+  const rng = new Rng(9001, 13)
+  let reached = 0
+  const N = 300000
+  for (let i = 0; i < N; i++) {
+    if (!scene.sampleMediumScatter(o, d, dist, rng)) reached++
+  }
+  const frac = reached / N
+  return { pass: approx(frac, expected, 6e-3), detail: `delta-track reach=${frac.toFixed(4)}, e^(−∫σds)=${expected.toFixed(4)}` }
+}
+
+// 26f — End-to-end oracle for the whole heterogeneous integrator. A *purely
+// scattering* (albedo 1) volume with an arbitrary fBm density immersed in a
+// uniform unit radiance field must stay invisible — scattering only redistributes
+// directions and a uniform field is unchanged by that — so a camera ray through
+// the cloud still measures exactly 1. Any bias in the delta-tracking collisions,
+// the albedo weight, or the boundary handling would push this off 1.
+function testHeteroVolumeEnergy(): { pass: boolean; detail: string } {
+  const scene = new Scene({
+    name: 'hetero-energy', materials: [], prims: [],
+    camera: { eye: v(0, 0, 5), target: v(0, 0, 0), up: v(0, 1, 0), vfovDeg: 30, aperture: 0, focusDist: 5 },
+    env: { kind: 'solid', color: v(1, 1, 1) },
+    media: [
+      {
+        center: v(0, 0, 0), radius: 1, sigmaT: 2.0, albedo: v(1, 1, 1), g: 0.2,
+        density: { kind: 'fbm', frequency: 1.4, octaves: 4, lacunarity: 2, gain: 0.5, coverage: 0.3, edge: 0, warp: 0.6, seed: 4 },
+      },
+    ],
+  })
+  const rng = new Rng(8123, 3)
+  const settings = { maxDepth: 96, rrStart: 64, clampIndirect: 0 }
+  const stats: RayStats = { rays: 0 }
+  const N = 60000
+  let sum = 0
+  for (let i = 0; i < N; i++) {
+    const L = radiance(scene, { o: v(0, 0, 5), d: v(0, 0, -1), tMax: Infinity }, settings, rng, stats)
+    sum += luminance(L)
+  }
+  const measured = sum / N
+  return { pass: approx(measured, 1, 1.5e-2), detail: `radiance through fBm cloud=${measured.toFixed(4)} (exp 1)` }
 }
 
 // 27 — Thin-film reflectance is a physical reflectance: bounded in [0,1] for all
@@ -1467,6 +1661,11 @@ export function runSelfTests(): TestResult[] {
     test('Homogeneous medium transmittance e^(−σL)', testMediumTransmittance),
     test('Scattering volume conserves energy (=1)', testVolumeScatterEnergy),
     test('Absorbing volume e^(−σ·chord)', testVolumeAbsorb),
+    test('Procedural noise — bounded, continuous, det, mean½', testNoiseField),
+    test('Delta tracking ≡ e^(−σL) (constant field)', testDeltaTrackConstant),
+    test('Ratio tracking ≡ e^(−∫σds) (varying layer)', testRatioTrackVarying),
+    test('Delta tracking ≡ e^(−∫σds) (varying layer)', testDeltaTrackVarying),
+    test('Heterogeneous scattering volume conserves energy (=1)', testHeteroVolumeEnergy),
     test('Thin-film R∈[0,1], d→0 Fresnel, iridescent', testThinFilm),
     test('Halton L2 discrepancy < random', testQmcDiscrepancy),
     test('BDPT white furnace — diffuse ρ=0.8', testBdptFurnace),

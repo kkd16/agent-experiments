@@ -685,6 +685,181 @@ function nebula(): SceneDef {
   }
 }
 
+// ---- Scene 14: Cumulus — a sunlit procedural cloud (heterogeneous media) -----
+
+function cumulus(): SceneDef {
+  // A single fluffy fBm cloud floating over a hazy plain under the analytic sky.
+  // The cloud is a *heterogeneous* medium: its extinction varies continuously
+  // through space (delta tracking), so it self-shadows into soft grey undersides
+  // and — because the droplets scatter strongly forward (g≈0.6) — flares into a
+  // bright "silver lining" where the sun sits just behind a billow. Nudge the sun
+  // azimuth/elevation to walk the highlight around the cloud, and the Cloud-
+  // coverage knob to puff it up or break it into scattered cumulus.
+  const materials: Material[] = [
+    { kind: 'diffuse', albedo: v(0.46, 0.5, 0.42) }, // 0 distant ground
+  ]
+  const prims: PrimDef[] = []
+  const g = 400
+  prims.push(...quad(v(-g, 0, -g), v(g, 0, -g), v(g, 0, g), v(-g, 0, g), 0))
+  return {
+    name: 'Cumulus',
+    materials,
+    prims,
+    camera: {
+      eye: v(0, 5.5, 22),
+      target: v(0, 7.5, 0),
+      up: v(0, 1, 0),
+      vfovDeg: 46,
+      aperture: 0,
+      focusDist: 22,
+    },
+    env: { kind: 'sky', sunDir: sunFromAzEl(155, 22), turbidity: 2.4, intensity: 1.0, sunSize: 0.04 },
+    media: [
+      {
+        center: v(0, 8.5, 0),
+        radius: 7.5,
+        sigmaT: 3.2, // majorant extinction (dense core reads as a solid cloud)
+        albedo: v(0.96, 0.97, 1.0), // near-lossless scattering → bright cloud
+        g: 0.6, // forward scattering → silver lining toward the sun
+        density: {
+          kind: 'fbm',
+          frequency: 0.34,
+          octaves: 5,
+          lacunarity: 2.1,
+          gain: 0.55,
+          coverage: 0.46,
+          edge: 0.55, // soft round envelope, no hard rim
+          warp: 1.1, // curl the billows
+          seed: 7,
+        },
+      },
+    ],
+  }
+}
+
+// ---- Scene 15: Smoke Plume — a rising, self-shadowing column (heterogeneous) --
+
+function smokePlume(): SceneDef {
+  // A dark smoke column rising off a dim floor, lit hard from the right by a warm
+  // panel. The medium is an fBm field with a strong upward density bias, so it is
+  // thick and opaque at the base and dissipates into thinning wisps as it rises —
+  // and because the albedo is low (sooty smoke absorbs most of what it scatters),
+  // it self-shadows into deep, volumetric darks with a bright lit edge.
+  const materials: Material[] = [
+    { kind: 'diffuse', albedo: v(0.16, 0.16, 0.18) }, // 0 dim floor
+    { kind: 'emissive', emission: v(60, 46, 28) }, // 1 warm key panel
+    { kind: 'diffuse', albedo: v(0.05, 0.05, 0.06) }, // 2 dark backdrop
+  ]
+  const prims: PrimDef[] = []
+  const g = 30
+  prims.push(...quad(v(-g, 0, -g), v(g, 0, -g), v(g, 0, g), v(-g, 0, g), 0))
+  // A tall dark backdrop behind the plume to read the wisps against.
+  prims.push(...quad(v(-g, 0, -12), v(g, 0, -12), v(g, 30, -12), v(-g, 30, -12), 2))
+  // A bright warm panel on the right, facing left into the smoke.
+  prims.push(...quad(v(9, 1.5, -3), v(9, 1.5, 3), v(9, 11, 3), v(9, 11, -3), 1))
+  return {
+    name: 'Smoke Plume',
+    materials,
+    prims,
+    camera: {
+      eye: v(-2.5, 6.5, 18),
+      target: v(0, 6.0, 0),
+      up: v(0, 1, 0),
+      vfovDeg: 48,
+      aperture: 0,
+      focusDist: 18,
+    },
+    env: { kind: 'solid', color: v(0.01, 0.011, 0.014) },
+    media: [
+      {
+        center: v(0, 6, 0),
+        radius: 6.5,
+        sigmaT: 6.0,
+        albedo: v(0.34, 0.33, 0.32), // sooty: mostly absorbing
+        g: 0.1,
+        density: {
+          kind: 'fbm',
+          frequency: 0.42,
+          octaves: 6,
+          lacunarity: 2.0,
+          gain: 0.55,
+          coverage: 0.42,
+          edge: 0.4,
+          verticalBias: 0.26, // thick at the base, thinning as it rises
+          warp: 1.4, // turbulent curls
+          seed: 19,
+        },
+      },
+    ],
+  }
+}
+
+// ---- Scene 16: Drifting Fog — an exponential ground-fog layer + god rays ------
+
+function driftingFog(): SceneDef {
+  // A low bank of ground fog pooling in a colonnade, lit by a single overhead
+  // skylight slit. The medium's density is an *exponential vertical layer* —
+  // dense at the floor, fading with height — so the light shaft passes through
+  // clear air above and only ignites into a visible beam where it grazes the fog
+  // top, and the pillars carve it into banded god-rays that pool along the floor.
+  const materials: Material[] = [
+    { kind: 'diffuse', albedo: v(0.3, 0.29, 0.27) }, // 0 stone floor
+    { kind: 'diffuse', albedo: v(0.1, 0.095, 0.09) }, // 1 dark walls/ceiling
+    { kind: 'emissive', emission: v(85, 74, 56) }, // 2 warm skylight
+    { kind: 'diffuse', albedo: v(0.2, 0.19, 0.18) }, // 3 pillar stone
+  ]
+  const prims: PrimDef[] = []
+  const x0 = -8
+  const x1 = 8
+  const z0 = -13
+  const z1 = 7
+  const yT = 14
+  prims.push(...quad(v(x0, 0, z0), v(x1, 0, z0), v(x1, 0, z1), v(x0, 0, z1), 0)) // floor
+  prims.push(...quad(v(x0, yT, z0), v(x0, yT, z1), v(x1, yT, z1), v(x1, yT, z0), 1)) // ceiling
+  prims.push(...quad(v(x0, 0, z0), v(x0, yT, z0), v(x1, yT, z0), v(x1, 0, z0), 1)) // back
+  prims.push(...quad(v(x0, 0, z1), v(x0, 0, z0), v(x0, yT, z0), v(x0, yT, z1), 1)) // left
+  prims.push(...quad(v(x1, 0, z0), v(x1, 0, z1), v(x1, yT, z1), v(x1, yT, z0), 1)) // right
+  const lh = yT - 0.05
+  prims.push(...quad(v(-1.2, lh, -9), v(1.2, lh, -9), v(1.2, lh, 4), v(-1.2, lh, 4), 2)) // skylight slit
+  // Colonnade — pairs of pillars to break the shaft into beams.
+  for (let i = 0; i < 4; i++) {
+    const z = -9 + i * 4
+    prims.push(...box(v(-3.0, 4, z), v(0.5, 4, 0.5), 0, 3))
+    prims.push(...box(v(3.0, 4, z), v(0.5, 4, 0.5), 0, 3))
+  }
+  return {
+    name: 'Drifting Fog',
+    materials,
+    prims,
+    camera: {
+      eye: v(0.5, 3.0, 13),
+      target: v(0, 2.2, -4),
+      up: v(0, 1, 0),
+      vfovDeg: 54,
+      aperture: 0,
+      focusDist: 16,
+    },
+    env: { kind: 'solid', color: v(0.003, 0.003, 0.005) },
+    media: [
+      {
+        center: v(0, 4, -3),
+        radius: 22,
+        sigmaT: 0.55, // majorant; the layer profile keeps most of the volume thin
+        albedo: v(0.9, 0.89, 0.86),
+        g: 0.5, // forward-scattering haze → bright beams toward the light
+        density: {
+          kind: 'layer',
+          base: 0.4, // fog floor a touch above the ground
+          scaleHeight: 1.4, // e-folding height — a low bank
+          noiseAmount: 0.55, // lumpy, drifting fog
+          frequency: 0.35,
+          seed: 5,
+        },
+      },
+    ],
+  }
+}
+
 // ---- Scene: Cove — an indirect-lit room (a BDPT showcase) -------------------
 
 // A neutral room whose only emitter is a small, bright strip tucked *above* a
@@ -1029,6 +1204,7 @@ export interface ScenePreset {
   sky?: boolean // exposes interactive sun/turbidity controls
   obj?: boolean // accepts a pasted OBJ model
   fog?: boolean // contains participating media; exposes a fog-density control
+  cloud?: boolean // heterogeneous fBm cloud; also exposes a coverage control
 }
 
 export const SCENES: ScenePreset[] = [
@@ -1044,6 +1220,9 @@ export const SCENES: ScenePreset[] = [
   { id: 'menagerie', label: 'Glass Menagerie', build: glassMenagerie },
   { id: 'textured', label: 'Textured Studio', build: texturedStudio },
   { id: 'cathedral', label: 'Cathedral', build: cathedral, fog: true },
+  { id: 'cumulus', label: 'Cumulus (cloud)', build: cumulus, sky: true, fog: true, cloud: true },
+  { id: 'smoke', label: 'Smoke Plume', build: smokePlume, fog: true, cloud: true },
+  { id: 'fog', label: 'Drifting Fog', build: driftingFog, fog: true },
   { id: 'iridescence', label: 'Iridescence', build: iridescence },
   { id: 'nebula', label: 'Nebula', build: nebula, fog: true },
   { id: 'sky', label: 'Sky Studio', build: skyStudio, sky: true },

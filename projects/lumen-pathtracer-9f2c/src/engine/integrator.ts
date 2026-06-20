@@ -144,7 +144,7 @@ export function radiance(
             stats.rays++
             const maxT = ls.dist === Infinity ? Infinity : ls.dist - 1e-3
             if (!scene.occluded(x, ls.wi, EPS, maxT)) {
-              const tr = scene.mediaTransmittance(x, ls.wi, ls.dist)
+              const tr = scene.mediaTransmittance(x, ls.wi, ls.dist, rng)
               const w = powerHeuristic(1, ls.pdf, 1, phase)
               let c = scale(mul(beta, ls.radiance), (phase * tr * w) / ls.pdf)
               if (clampI > 0) c = clampContribution(c, clampI)
@@ -248,7 +248,7 @@ export function radiance(
             // β · f · Le · cosθ · w / pdf_light
             let c = mul(mul(beta, f), scale(ls.radiance, (cosX * w) / ls.pdf))
             // Attenuate the light by any media the shadow ray passes through.
-            if (scene.hasMedia) c = scale(c, scene.mediaTransmittance(shadowO, ls.wi, ls.dist))
+            if (scene.hasMedia) c = scale(c, scene.mediaTransmittance(shadowO, ls.wi, ls.dist, rng))
             if (clampI > 0) c = clampContribution(c, clampI)
             L = add(L, c)
           }
