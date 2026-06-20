@@ -3,7 +3,7 @@ import './App.css';
 import { compile } from './engine/compile';
 import { dfaToGraph, nfaToGraph } from './engine/graphdata';
 import { layoutGraph } from './engine/layout';
-import { toDot } from './engine/export';
+import { toDot, toSvg } from './engine/export';
 import { AstView } from './components/AstView';
 import { AutomatonGraph } from './components/AutomatonGraph';
 import { Debugger } from './components/Debugger';
@@ -14,9 +14,24 @@ import { SynthesizePanel } from './components/SynthesizePanel';
 import { ExplainPanel } from './components/ExplainPanel';
 import { RedosPanel } from './components/RedosPanel';
 import { PikePanel } from './components/PikePanel';
+import { DerivativesPanel } from './components/DerivativesPanel';
+import { FuzzPanel } from './components/FuzzPanel';
 import { DEFAULT_EXAMPLE, EXAMPLES } from './data/examples';
 
-type Tab = 'ast' | 'nfa' | 'dfa' | 'min' | 'debug' | 'pike' | 'language' | 'compare' | 'synth' | 'explain' | 'redos';
+type Tab =
+  | 'ast'
+  | 'nfa'
+  | 'dfa'
+  | 'min'
+  | 'deriv'
+  | 'debug'
+  | 'pike'
+  | 'language'
+  | 'compare'
+  | 'synth'
+  | 'explain'
+  | 'redos'
+  | 'fuzz';
 
 const TAB_GROUPS: { group: string; tabs: { id: Tab; label: string }[] }[] = [
   {
@@ -26,6 +41,7 @@ const TAB_GROUPS: { group: string; tabs: { id: Tab; label: string }[] }[] = [
       { id: 'nfa', label: 'ε-NFA' },
       { id: 'dfa', label: 'DFA' },
       { id: 'min', label: 'Min-DFA' },
+      { id: 'deriv', label: 'Derivatives' },
       { id: 'debug', label: 'Debugger' },
       { id: 'pike', label: 'Pike VM' },
     ],
@@ -38,6 +54,7 @@ const TAB_GROUPS: { group: string; tabs: { id: Tab; label: string }[] }[] = [
       { id: 'synth', label: 'DFA→regex' },
       { id: 'explain', label: 'Explain' },
       { id: 'redos', label: 'ReDoS' },
+      { id: 'fuzz', label: 'Fuzz' },
     ],
   },
 ];
@@ -120,7 +137,7 @@ export default function App() {
           <span className="logo">/<span className="logo-star">∗</span>/</span>
           <div>
             <h1>Regex Studio</h1>
-            <p>A regular-expression engine built from scratch — parse, compile, minimise, run, compare and synthesise.</p>
+            <p>A regular-expression engine built from scratch — parse, compile two ways, minimise, run four engines, fuzz, compare and synthesise.</p>
           </div>
         </div>
         <a className="repo-link" href="https://en.wikipedia.org/wiki/Thompson%27s_construction" target="_blank" rel="noreferrer">
@@ -226,6 +243,7 @@ export default function App() {
                   layout={nfaLayout}
                   accent="#f59e0b"
                   dot={() => toDot(nfaToGraph(compiled.nfa!), 'epsilon_NFA')}
+                  svgName="epsilon-nfa"
                 />
               ) : (
                 <div className="placeholder">{automataNotice}</div>
@@ -239,6 +257,7 @@ export default function App() {
                   layout={dfaLayout}
                   accent="#60a5fa"
                   dot={() => toDot(dfaToGraph(compiled.dfa!), 'DFA')}
+                  svgName="dfa"
                 />
               ) : (
                 <div className="placeholder">{automataNotice}</div>
@@ -252,6 +271,7 @@ export default function App() {
                   layout={minLayout}
                   accent="#34d399"
                   dot={() => toDot(dfaToGraph(compiled.minDfa!), 'minimal_DFA')}
+                  svgName="minimal-dfa"
                 />
               ) : (
                 <div className="placeholder">{automataNotice}</div>
@@ -263,6 +283,8 @@ export default function App() {
               ) : (
                 <div className="placeholder">{automataNotice}</div>
               ))}
+
+            {tab === 'deriv' && <DerivativesPanel compiled={compiled} text={text} />}
 
             {tab === 'pike' && (
               <PikePanel ast={compiled.ast} groupCount={compiled.groupCount} notice={compiled.error ? 'Fix the pattern first.' : null} />
@@ -287,13 +309,16 @@ export default function App() {
                 onUseAttack={setText}
               />
             )}
+
+            {tab === 'fuzz' && <FuzzPanel />}
           </div>
         </main>
       </div>
 
       <footer className="footer">
-        Parser · Thompson NFA · subset construction · Moore minimisation · three matching engines (DFA · Pike VM ·
-        backtracking VM) · product-automaton equivalence & ReDoS analysis · state-elimination synthesis — all
+        Parser · Thompson NFA · subset construction · Brzozowski derivatives · Moore minimisation · four matching
+        engines (DFA · derivative DFA · Pike VM · backtracking VM) cross-checked by a seeded differential fuzzer ·
+        product-automaton equivalence & ReDoS analysis · state-elimination synthesis · DOT/SVG export — all
         hand-written TypeScript, no regex library.
       </footer>
     </div>
@@ -306,12 +331,14 @@ function GraphPane({
   layout,
   accent,
   dot,
+  svgName,
 }: {
   title: string;
   blurb: string;
   layout: ReturnType<typeof layoutGraph>;
   accent: string;
   dot?: () => string;
+  svgName?: string;
 }) {
   const [copied, setCopied] = useState(false);
   const copyDot = () => {
@@ -325,6 +352,19 @@ function GraphPane({
       /* clipboard blocked (sandbox) — ignore */
     }
   };
+  const downloadSvg = () => {
+    try {
+      const blob = new Blob([toSvg(layout, { accent })], { type: 'image/svg+xml' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${svgName ?? 'automaton'}.svg`;
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch {
+      /* sandbox / download blocked — ignore */
+    }
+  };
   return (
     <div className="graph-pane">
       <div className="pane-head graph-head">
@@ -332,11 +372,16 @@ function GraphPane({
           <h2>{title}</h2>
           <p>{blurb}</p>
         </div>
-        {dot && (
-          <button className="dot-btn" onClick={copyDot} title="Copy this automaton as Graphviz DOT">
-            {copied ? 'copied ✓' : 'copy DOT'}
+        <div className="graph-head-btns">
+          <button className="dot-btn" onClick={downloadSvg} title="Download this automaton as a standalone SVG">
+            download SVG
           </button>
-        )}
+          {dot && (
+            <button className="dot-btn" onClick={copyDot} title="Copy this automaton as Graphviz DOT">
+              {copied ? 'copied ✓' : 'copy DOT'}
+            </button>
+          )}
+        </div>
       </div>
       <AutomatonGraph layout={layout} accent={accent} />
     </div>

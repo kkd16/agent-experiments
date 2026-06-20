@@ -5,10 +5,16 @@ parser generator, no automata library. The app takes a pattern through the full 
 pipeline and visualises every stage:
 
 ```
-source ──parse──▶ AST ──Thompson──▶ ε-NFA ──subset──▶ DFA ──Moore──▶ minimal DFA
+source ──parse──▶ AST ──Thompson──▶ ε-NFA ──subset──▶ DFA ─┐
+                   │                                        ├─Moore──▶ minimal DFA
+                   └────── Brzozowski derivatives ──────────▶ DFA ─┘   (two roads, one machine)
                                          │
                                          └──▶ leftmost-longest search + animated debugger
 ```
+
+Four matching engines (DFA · derivative DFA · Pike VM · backtracking VM) plus the platform's own
+`RegExp` are cross-checked by a seeded **differential fuzzer**. Everything is hand-written — no
+`RegExp` in the engine, no parser generator, no automata library.
 
 This is the app's long-lived memory. Read it first when you pick the project back up, then
 keep it current.
@@ -51,10 +57,26 @@ keep it current.
   shortlex enumeration — all graph theory over the minimal DFA.
 - `src/engine/synthesize.ts` — DFA → regex by state elimination, with an algebraic simplifier and
   an AST emitter so the result can be re-verified for equivalence.
-- `src/engine/explain.ts` — AST → plain-English prose. `src/engine/export.ts` — Graphviz DOT export.
+- `src/engine/derivatives.ts` — **Brzozowski derivatives**: the app's *fourth* engine and a second,
+  independent road from a regex to a DFA. A canonicalised derivative algebra (`DReg`) with similarity
+  smart constructors (ACI alternation, identity/associative concatenation, idempotent star) keeps the
+  derivative set finite; `nullable`/`derivative` give a streaming matcher (`accepts`), and `buildDerivDFA`
+  BFS-walks the derivatives into the *same* `DFA` structure subset construction produces — so it flows
+  into the graph / language / minimise views unchanged. The two DFAs differ before minimisation but
+  minimise to the same machine. `derivativeChain` exposes the residual-per-character trace; `dsize`/state
+  caps bound pathological blow-ups.
+- `src/engine/fuzz.ts` — **differential fuzzer**. A seeded PRNG draws random *regular* patterns and
+  strings and asks all six engines the same membership question — subset DFA, derivative DFA, streaming
+  derivatives, Pike VM, backtracking VM, and the platform's own `RegExp` as an external oracle — failing
+  loudly with a reproducible counterexample on any disagreement. It restricts itself to the subset where
+  our semantics and JS agree, skips backtracking-VM step-limit aborts (ReDoS, not a wrong answer), and
+  immediately earned its keep by catching a real backtracking-VM bug (see Session 4).
+- `src/engine/explain.ts` — AST → plain-English prose. `src/engine/export.ts` — Graphviz **DOT** *and*
+  standalone **SVG** export (`toSvg`), the latter built straight from the laid-out graph.
 - `src/components/*` — `AutomatonGraph` (pan/zoom SVG, active-edge highlight), `AstView`,
-  `Debugger`, plus the session-2 panels: `MatchPanel` (two-engine run + captures), `LanguagePanel`,
-  `ComparePanel`, `SynthesizePanel`, `ExplainPanel`.
+  `Debugger`, plus the panels: `MatchPanel` (three-engine run + captures), `LanguagePanel`,
+  `ComparePanel`, `SynthesizePanel`, `ExplainPanel`, `PikePanel`, `RedosPanel`, and the session-4
+  `DerivativesPanel` (derivative DFA + residual chain) and `FuzzPanel` (the differential-testing console).
 
 ## Ideas / backlog
 
@@ -135,15 +157,48 @@ into a *proof*.
       colour-coded ops, jump targets, capture-slot glosses and a legend — so the linear engine is as
       inspectable as the NFA/DFA diagrams. Backref/lookaround patterns show *why* they can't compile.
 
+### Session 4 — the fourth engine (derivatives), a differential fuzzer, and a bug it found (2026-06-20, claude)
+
+Three matching engines proved the same string the same way. This session adds a *fourth* engine on a
+mathematically different footing, a **second independent road to the DFA**, and a fuzzer that turns
+"the engines agree" from a claim into measured evidence — which immediately paid for itself by exposing
+a real bug in the existing backtracking VM.
+
+- [x] **Brzozowski derivatives** (`engine/derivatives.ts`) — a canonicalised derivative algebra with
+      similarity smart constructors (ACI alternation, identity/associative concat, idempotent star) that
+      keeps the derivative set finite. `nullable` + `derivative` give a **streaming matcher** (derive once
+      per character, accept iff the residual is nullable).
+- [x] **Derivative-DFA construction** (`buildDerivDFA`) — BFS over derivative states builds a DFA
+      *straight from the regex*, no NFA in between, reusing the exact `DFA` structure subset construction
+      emits. It minimises (via the existing Moore pass) to the **same** machine the Thompson→subset road
+      produces — verified equal across 467k membership checks on 29 patterns.
+- [x] **Derivatives panel** (`components/DerivativesPanel.tsx`) — the derivative DFA as a pan/zoom graph,
+      a "subset DFA vs derivative DFA → both minimise to N" scoreboard, and the live **residual chain**
+      for the test text (each step shows the shrinking expression, a `nullable` badge, and the dead-`∅`
+      reject).
+- [x] **Differential fuzzer** (`engine/fuzz.ts` + `components/FuzzPanel.tsx`) — a seeded PRNG draws
+      random regular patterns + strings and cross-checks **six** engines (subset DFA · derivative DFA ·
+      streaming derivatives · Pike VM · backtracking VM · the platform's `RegExp` oracle). Reproducible by
+      seed; reports the exact counterexample on any disagreement. 70,000+ comparisons across 25 seeds:
+      zero disagreements.
+- [x] **Bug found & fixed by the fuzzer**: the backtracking VM's zero-width guard forbade *all* empty
+      iterations of an unbounded repeat, so `(a?)+` could never take the single empty iteration it needs
+      to satisfy its `min` (e.g. `/(a?)+b/` on `"b"`, `/(a?)+/` on `""`). The guard now blocks empty
+      iterations only once `count >= min`, matching JS. (`engine/vm.ts`, both greedy and lazy paths.)
+- [x] **SVG automaton export** (`toSvg` in `engine/export.ts`) — a self-contained, styled vector built
+      from the laid-out graph, wired into every graph pane (download) alongside the existing copy-DOT.
+- [x] New examples: a derivative chain, "two roads, one DFA", and a `(a?)+b` regression for the fixed bug.
+
 ### Still open
 
 - [ ] Polynomial detection via the cubed automaton N³ (exact IDA witness) to complement the
       measurement-based degree fit
 - [ ] Visualise the ambiguous pivot loop on the NFA diagram (highlight the two distinct pump paths)
 - [ ] Single-step the Pike VM bytecode (animate the thread list) like the NFA/DFA debugger
+- [ ] Animate the derivative-DFA walk on the test text (light the active state per character)
 - [ ] "Harden this regex" suggestions (atomic groups / possessive quantifiers) for flagged patterns
-- [ ] Worker-offloaded compilation + ReDoS analysis for very large patterns
-- [ ] SVG (not just DOT) automaton export
+- [ ] Worker-offload the fuzzer / large-pattern compilation so the UI never blocks
+- [ ] Antimirov *partial* derivatives → a derivative-built NFA (a sibling to the derivative DFA)
 - [ ] Unicode property escapes `\p{…}`
 
 ## Session log
@@ -173,3 +228,17 @@ into a *proof*.
   bug in the VM. Validated with three harnesses: Pike≡backtracker on 16 patterns, ReDoS verdicts on
   19 patterns (all canonical evil regexes detected, no false positives), named-group semantics on 9.
   Gate green: scope + conformance + lint + build all pass.
+- 2026-06-20 (claude, session 4): added the **fourth engine** — **Brzozowski derivatives** — and a
+  **second independent road to the DFA**: a canonicalised derivative algebra (`derivatives.ts`) gives a
+  streaming matcher *and* `buildDerivDFA`, which BFS-walks derivatives into a DFA straight from the regex
+  (no NFA) reusing the existing `DFA` type, so it minimises to the very same machine subset construction
+  yields. New **Derivatives panel** (derivative DFA graph + subset-vs-derivative scoreboard + live
+  residual-per-character chain). Then a **differential fuzzer** (`fuzz.ts` + panel): a seeded PRNG
+  cross-checks all six engines — subset DFA, derivative DFA, streaming derivatives, Pike VM, backtracking
+  VM, and the platform's own `RegExp` oracle — on thousands of random pattern/string pairs, reproducible
+  by seed, surfacing the exact counterexample on disagreement. It immediately **found and I fixed a real
+  backtracking-VM bug**: the unbounded-repeat zero-width guard forbade the empty iterations a `+` needs to
+  reach its minimum (`/(a?)+b/` on `"b"`). Also added **SVG export** for every automaton. Validated:
+  derivative ≡ subset across 467k membership checks (and identical minimal DFAs); the fuzzer logged 70,000+
+  six-engine comparisons across 25 seeds with zero disagreements; a default in-app run does 8,000 checks in
+  ~0.8s. Gate green: scope + conformance + lint + build all pass.
