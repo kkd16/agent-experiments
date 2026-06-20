@@ -34,6 +34,10 @@ keep it current.
 - `src/engine/dfa.ts` — alphabet partitioning into atomic symbol classes + subset
   construction. Keeps a transition table for fast simulation.
 - `src/engine/minimize.ts` — Moore partition-refinement minimisation; drops the dead trap.
+- `src/engine/hopcroft.ts` — **Hopcroft's O(n·log n) minimisation**: a second, independent road to the
+  *minimal* DFA. Maintains a worklist of distinguisher blocks and splits by inverse transitions, always
+  re-queuing the smaller half (the log factor). Same Myhill–Nerode equivalence as Moore, so it produces the
+  same minimal machine — the Min-DFA tab verifies `Moore ≡ Hopcroft` live via the product-automaton check.
 - `src/engine/simulate.ts` — NFA/DFA step traces (for the debugger) and leftmost-longest,
   non-overlapping search (for highlighting).
 - `src/engine/layout.ts` — layered graph layout (BFS columns) for the SVG diagrams.
@@ -231,8 +235,13 @@ directly from the regex, the mirror image of Brzozowski's derivative DFA.
       and the Antimirov DFA join the cross-check. Validated: **all eight engines agree** across 8 seeds ×
       1,200 patterns × 16 strings = **153,600 membership checks**, zero disagreements (and the existing
       `RegExp` oracle still in the mix). A default in-app run cross-checks all eight in well under a second.
+- [x] **Hopcroft minimisation** (`engine/hopcroft.ts`) — a *second road to the minimal DFA*: the classic
+      O(n·log n) worklist refinement (split by inverse transitions, always re-queue the smaller half),
+      alongside the existing Moore O(n²) pass. Both compute Myhill–Nerode, so they must agree; the Min-DFA
+      tab now shows a live **"Moore ≡ Hopcroft ✓"** badge (verified via `compareDFAs` + equal state count).
+      Validated headless: identical to Moore (same #states + language-equal) on **4,024 patterns**.
 - [x] Two new examples (`(a|b|c|d)*` — the one-state collapse; `(ab|cd)+ef` — the third road), updated
-      header/footer/Fuzz copy to "three roads · five engines · eight cross-checked".
+      header/footer/Fuzz copy to "three roads · five engines · eight cross-checked · Moore≡Hopcroft".
 
 ### Still open
 
@@ -247,7 +256,7 @@ directly from the regex, the mirror image of Brzozowski's derivative DFA.
 - [ ] Unicode property escapes `\p{…}`
 - [ ] Brzozowski-vs-Antimirov side-by-side: align the two chains so you can watch one residual fork into a set
 - [ ] Animate the equation-automaton walk on the test text (light the live state set per character)
-- [ ] Hopcroft O(n log n) minimisation as a second road to the minimal DFA (compare against Moore)
+- [x] Hopcroft O(n log n) minimisation as a second road to the minimal DFA (compare against Moore) *(Session 5)*
 
 ## Session log
 
@@ -301,5 +310,7 @@ directly from the regex, the mirror image of Brzozowski's derivative DFA.
   `compareDFAs` on 17 patterns). New **Antimirov panel** (equation-automaton graph, Thompson-vs-equation size
   scoreboard with "≡ canonical ✓", and a live *set-of-residuals* chain). The **differential fuzzer now
   cross-checks eight engines** (added the partial-derivative matcher + Antimirov DFA): **153,600 checks across
-  8 seeds, zero disagreements**. Two new examples + updated header/footer/Fuzz copy. Gate green: scope +
-  conformance + lint + build all pass.
+  8 seeds, zero disagreements**. Also added **Hopcroft O(n·log n) minimisation** (`engine/hopcroft.ts`) as a
+  second, independent road to the minimal DFA: the Min-DFA tab now shows a live "Moore ≡ Hopcroft ✓" badge,
+  verified identical to the Moore pass (same #states + language-equal) across 4,024 patterns. Two new
+  examples + updated header/footer/Fuzz copy. Gate green: scope + conformance + lint + build all pass.
