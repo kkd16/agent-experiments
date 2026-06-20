@@ -171,6 +171,14 @@ class Parser {
         return T_FLOAT;
       case 'f32':
         return T_F32;
+      case 'int4':
+        return { kind: 'vec', lanes: 'i32x4' };
+      case 'float4':
+        return { kind: 'vec', lanes: 'f32x4' };
+      case 'long2':
+        return { kind: 'vec', lanes: 'i64x2' };
+      case 'double2':
+        return { kind: 'vec', lanes: 'f64x2' };
       case 'bool':
         return T_BOOL;
       case 'str':

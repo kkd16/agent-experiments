@@ -1,5 +1,6 @@
 import { CompileError } from './diagnostics';
-import type { Block, Expr, Program, Stmt, StructDecl, Ty } from './ast';
+import type { Block, Expr, Program, Stmt, StructDecl, Ty, VecLanes } from './ast';
+import { VEC_INFO, VEC_NAME_TO_LANES } from './ast';
 import { parse } from './parser';
 import { typecheck } from './types';
 import { MATH_PRELUDE } from './ir/prelude';
@@ -11,7 +12,16 @@ import { MATH_PRELUDE } from './ir/prelude';
 // semantics (wrapping, truncating division, saturating float->int casts) so the
 // two implementations agree bit-for-bit.
 
-export type RtValue = number | bigint | ArrayVal | string | StructVal | FnVal | null;
+export type RtValue = number | bigint | ArrayVal | string | StructVal | FnVal | VecVal | null;
+
+// A 128-bit SIMD vector value: the lane shape plus its lane values (numbers for
+// i32/f32/f64 lanes, BigInts for i64). Lanes are kept normalized to the lane
+// type's representation (i32 wrap, `Math.fround` for f32, i64 wrap), so the
+// oracle's lanes match the wasm v128 register bit-for-bit.
+export interface VecVal {
+  vec: VecLanes;
+  lanes: (number | bigint)[];
+}
 
 // A function value (the oracle's model of a function pointer): the target
 // function's name. Identity (`==`/`!=`) is name equality, matching the wasm
@@ -74,6 +84,42 @@ export const satTruncI32 = (x: number): number => {
 export const I64_MIN = -(2n ** 63n);
 export const I64_MAX = 2n ** 63n - 1n;
 export const asI64 = (x: bigint): bigint => BigInt.asIntN(64, x);
+
+// Normalize one lane value to its shape's representation (matching how a wasm
+// v128 lane stores it): i32 wrap, single-precision round, or i64 wrap.
+export function normLane(lanes: VecLanes, x: number | bigint): number | bigint {
+  switch (lanes) {
+    case 'i32x4': return i32(x as number);
+    case 'f32x4': return Math.fround(x as number);
+    case 'i64x2': return asI64(x as bigint);
+    case 'f64x2': return x as number;
+  }
+}
+/** Build a vector value with every lane normalized to the shape. */
+export function mkVec(lanes: VecLanes, vals: (number | bigint)[]): VecVal {
+  return { vec: lanes, lanes: vals.map((v) => normLane(lanes, v)) };
+}
+// The raw 16-byte little-endian image of a vector (its v128 register bits), and
+// the inverse. Used to model `v128.bitselect` exactly: a bitwise blend, whatever
+// the lane interpretation.
+function vecBytes(v: VecVal): Uint8Array {
+  const buf = new ArrayBuffer(16);
+  const dv = new DataView(buf);
+  if (v.vec === 'i32x4') for (let i = 0; i < 4; i++) dv.setInt32(i * 4, (v.lanes[i] as number) | 0, true);
+  else if (v.vec === 'f32x4') for (let i = 0; i < 4; i++) dv.setFloat32(i * 4, v.lanes[i] as number, true);
+  else if (v.vec === 'i64x2') for (let i = 0; i < 2; i++) dv.setBigInt64(i * 8, v.lanes[i] as bigint, true);
+  else for (let i = 0; i < 2; i++) dv.setFloat64(i * 8, v.lanes[i] as number, true);
+  return new Uint8Array(buf);
+}
+function vecFromBytes(lanes: VecLanes, b: Uint8Array): VecVal {
+  const dv = new DataView(b.buffer, b.byteOffset, 16);
+  const out: (number | bigint)[] = [];
+  if (lanes === 'i32x4') for (let i = 0; i < 4; i++) out.push(dv.getInt32(i * 4, true));
+  else if (lanes === 'f32x4') for (let i = 0; i < 4; i++) out.push(dv.getFloat32(i * 4, true));
+  else if (lanes === 'i64x2') for (let i = 0; i < 2; i++) out.push(dv.getBigInt64(i * 8, true));
+  else for (let i = 0; i < 2; i++) out.push(dv.getFloat64(i * 8, true));
+  return { vec: lanes, lanes: out };
+}
 // Saturating f64 -> i64 truncation (wasm `i64.trunc_sat_f64_s`): NaN -> 0, and
 // out-of-range magnitudes clamp to the i64 bounds instead of trapping.
 export const satTruncI64 = (x: number): bigint => {
@@ -492,6 +538,18 @@ export class Interpreter {
   }
 
   private evalUnary(e: Extract<Expr, { node: 'unary' }>, f: Frame): RtValue {
+    if (e.operand.ty?.kind === 'vec') {
+      const v = this.evalExpr(e.operand, f) as VecVal;
+      const lanes = v.vec;
+      const res = v.lanes.map((x) => {
+        if (e.op === '+') return x;
+        if (lanes === 'i64x2') { const b = x as bigint; return e.op === '-' ? asI64(-b) : asI64(~b); }
+        if (lanes === 'i32x4') { const n = x as number; return e.op === '-' ? i32(-n) : i32(~n); }
+        const n = x as number; // '-' on a float vector (the only valid float unary)
+        return lanes === 'f32x4' ? Math.fround(-n) : -n;
+      });
+      return { vec: lanes, lanes: res };
+    }
     if (e.operand.ty?.kind === 'long') {
       const v = this.evalExpr(e.operand, f) as bigint;
       switch (e.op) {
@@ -557,6 +615,8 @@ export class Interpreter {
       }
     }
 
+    if (e.left.ty?.kind === 'vec') return this.evalVecBinary(e, f);
+
     if (e.left.ty?.kind === 'long') return this.evalLongBinary(e, f);
 
     const a = this.evalExpr(e.left, f) as number;
@@ -608,6 +668,54 @@ export class Interpreter {
       case '!=':
         return a !== b ? 1 : 0;
     }
+  }
+
+  // Elementwise SIMD vector arithmetic, mirroring the wasm lane ops exactly:
+  // i32 lanes wrap (imul for `*`), i64 lanes wrap, float lanes round to their
+  // precision after each op (`Math.fround` for f32x4). `& | ^` are whole-vector
+  // bitwise on the integer shapes. The checker guarantees both operands share a
+  // shape and that the op is defined for it.
+  private evalVecBinary(e: Extract<Expr, { node: 'binary' }>, f: Frame): RtValue {
+    const a = this.evalExpr(e.left, f) as VecVal;
+    const b = this.evalExpr(e.right, f) as VecVal;
+    const lanes = a.vec;
+    const res: (number | bigint)[] = [];
+    for (let i = 0; i < a.lanes.length; i++) {
+      if (lanes === 'i64x2') {
+        const x = a.lanes[i] as bigint, y = b.lanes[i] as bigint;
+        switch (e.op) {
+          case '+': res.push(asI64(x + y)); break;
+          case '-': res.push(asI64(x - y)); break;
+          case '*': res.push(asI64(x * y)); break;
+          case '&': res.push(asI64(x & y)); break;
+          case '|': res.push(asI64(x | y)); break;
+          case '^': res.push(asI64(x ^ y)); break;
+          default: throw new Trap(`unsupported long2 operator '${e.op}'`);
+        }
+      } else if (lanes === 'i32x4') {
+        const x = a.lanes[i] as number, y = b.lanes[i] as number;
+        switch (e.op) {
+          case '+': res.push(i32(x + y)); break;
+          case '-': res.push(i32(x - y)); break;
+          case '*': res.push(Math.imul(x, y)); break;
+          case '&': res.push(i32(x & y)); break;
+          case '|': res.push(i32(x | y)); break;
+          case '^': res.push(i32(x ^ y)); break;
+          default: throw new Trap(`unsupported int4 operator '${e.op}'`);
+        }
+      } else {
+        const x = a.lanes[i] as number, y = b.lanes[i] as number;
+        const fr = lanes === 'f32x4' ? Math.fround : (z: number): number => z;
+        switch (e.op) {
+          case '+': res.push(fr(x + y)); break;
+          case '-': res.push(fr(x - y)); break;
+          case '*': res.push(fr(x * y)); break;
+          case '/': res.push(fr(x / y)); break;
+          default: throw new Trap(`unsupported float-vector operator '${e.op}'`);
+        }
+      }
+    }
+    return { vec: lanes, lanes: res };
   }
 
   // 64-bit integer arithmetic, mirroring wasm i64: wrapping add/sub/mul, signed
@@ -710,6 +818,97 @@ export function callBuiltin(
   out: string[],
 ): BuiltinResult {
   const H = (value: RtValue): BuiltinResult => ({ handled: true, value });
+
+  // --- SIMD vector builtins (model the wasm v128 lane ops exactly) ---
+  if (name in VEC_NAME_TO_LANES) {
+    const lanes = VEC_NAME_TO_LANES[name];
+    const count = VEC_INFO[lanes].count;
+    const vals = argv.length === 1 ? new Array(count).fill(argv[0]) : argv;
+    return H(mkVec(lanes, vals as (number | bigint)[]));
+  }
+  if (name === 'lane') {
+    const v = argv[0] as VecVal;
+    return H(v.lanes[argv[1] as number]);
+  }
+  if (name === 'withlane') {
+    const v = argv[0] as VecVal;
+    const out2 = v.lanes.slice();
+    out2[argv[1] as number] = normLane(v.vec, argv[2] as number | bigint);
+    return H({ vec: v.vec, lanes: out2 });
+  }
+  if (name === 'vmin' || name === 'vmax') {
+    const a = argv[0] as VecVal, b = argv[1] as VecVal;
+    const res = a.lanes.map((x, i) => {
+      const y = b.lanes[i] as number;
+      const xn = x as number;
+      const m = name === 'vmin' ? Math.min(xn, y) : Math.max(xn, y);
+      return a.vec === 'i32x4' ? i32(m) : a.vec === 'f32x4' ? Math.fround(m) : m;
+    });
+    return H({ vec: a.vec, lanes: res });
+  }
+  if (name === 'vsqrt') {
+    const v = argv[0] as VecVal;
+    const res = v.lanes.map((x) => (v.vec === 'f32x4' ? Math.fround(Math.sqrt(x as number)) : Math.sqrt(x as number)));
+    return H({ vec: v.vec, lanes: res });
+  }
+  if (name === 'vabs') {
+    const v = argv[0] as VecVal;
+    const res = v.lanes.map((x) => {
+      if (v.vec === 'i64x2') { const b = x as bigint; return b < 0n ? asI64(-b) : b; }
+      if (v.vec === 'i32x4') return i32(Math.abs(x as number));
+      const n = Math.abs(x as number);
+      return v.vec === 'f32x4' ? Math.fround(n) : n;
+    });
+    return H({ vec: v.vec, lanes: res });
+  }
+  if (name === 'hsum') {
+    const v = argv[0] as VecVal;
+    if (v.vec === 'i64x2') {
+      let acc = v.lanes[0] as bigint;
+      for (let i = 1; i < v.lanes.length; i++) acc = asI64(acc + (v.lanes[i] as bigint));
+      return H(acc);
+    }
+    const fr = v.vec === 'f32x4' ? Math.fround : v.vec === 'i32x4' ? i32 : (z: number): number => z;
+    let acc = v.lanes[0] as number;
+    for (let i = 1; i < v.lanes.length; i++) acc = fr(acc + (v.lanes[i] as number));
+    return H(acc);
+  }
+  if (name === 'veq' || name === 'vne' || name === 'vlt' || name === 'vle' || name === 'vgt' || name === 'vge') {
+    const a = argv[0] as VecVal, b = argv[1] as VecVal;
+    const maskLanes: VecLanes = a.vec === 'i64x2' || a.vec === 'f64x2' ? 'i64x2' : 'i32x4';
+    const T: number | bigint = maskLanes === 'i64x2' ? -1n : -1;
+    const F: number | bigint = maskLanes === 'i64x2' ? 0n : 0;
+    const res = a.lanes.map((x, i) => {
+      const y = b.lanes[i];
+      // The comparands keep their own type (bigint for i64x2), so JS relational
+      // operators compute the same ordered/unordered result as the wasm lane op.
+      let t: boolean;
+      switch (name) {
+        case 'veq': t = x === y; break;
+        case 'vne': t = x !== y; break;
+        case 'vlt': t = x < y; break;
+        case 'vle': t = x <= y; break;
+        case 'vgt': t = x > y; break;
+        default: t = x >= y; break;
+      }
+      return t ? T : F;
+    });
+    return H({ vec: maskLanes, lanes: res });
+  }
+  if (name === 'vselect') {
+    const m = argv[0] as VecVal, a = argv[1] as VecVal, b = argv[2] as VecVal;
+    const mb = vecBytes(m), ab = vecBytes(a), bb = vecBytes(b), r = new Uint8Array(16);
+    for (let i = 0; i < 16; i++) r[i] = (ab[i] & mb[i]) | (bb[i] & ~mb[i]);
+    return H(vecFromBytes(a.vec, r));
+  }
+  if (name === 'to_float4') {
+    const v = argv[0] as VecVal;
+    return H(mkVec('f32x4', (v.lanes as number[]).map((x) => Math.fround(x))));
+  }
+  if (name === 'to_int4') {
+    const v = argv[0] as VecVal;
+    return H(mkVec('i32x4', (v.lanes as number[]).map((x) => satTruncI32(x))));
+  }
   // Transcendental builtins run the shared MATH_PRELUDE kernel (see mathKernel),
   // the very source the wasm backend compiles — so the two agree bit-for-bit.
   if (MATH_KERNELS.has(name)) return H(mathKernel(name, argv));

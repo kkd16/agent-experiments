@@ -9,7 +9,7 @@ import type {
   StructDecl,
   Ty,
 } from './ast';
-import { T_BOOL, T_F32, T_FLOAT, T_INT, T_LONG, T_NULL, T_STR, T_VOID, tyEqual, tyName } from './ast';
+import { T_BOOL, T_F32, T_FLOAT, T_INT, T_LONG, T_NULL, T_STR, T_VOID, VEC_INFO, VEC_NAME_TO_LANES, laneTy, tyEqual, tyName } from './ast';
 
 // The type checker resolves every identifier, validates operators, and writes
 // the inferred `ty` back onto each expression node so later phases never have to
@@ -116,10 +116,26 @@ class Scope {
 // Names that may never be used for a `struct` (they already mean something as a
 // builtin, a primitive type, or a reserved conversion). Keeps the constructor
 // call `Name(...)` unambiguous.
+// The SIMD vector builtins: the four constructors (also the type names) plus the
+// lane/reduce/min-max/sqrt/abs operations. Reserved like any other hard builtin.
+const VEC_BUILTINS = new Set<string>([
+  'int4', 'float4', 'long2', 'double2',
+  'lane', 'withlane', 'vmin', 'vmax', 'vsqrt', 'vabs', 'hsum',
+  'veq', 'vne', 'vlt', 'vle', 'vgt', 'vge', 'vselect', 'to_float4', 'to_int4',
+]);
+
+// A lanewise comparison yields an integer mask vector whose lane width matches
+// the compared shape: 32-bit shapes (int4 / float4) → int4 mask, 64-bit shapes
+// (long2 / double2) → long2 mask.
+function maskShapeOf(lanes: import('./ast').VecLanes): Ty {
+  return lanes === 'i64x2' || lanes === 'f64x2' ? { kind: 'vec', lanes: 'i64x2' } : { kind: 'vec', lanes: 'i32x4' };
+}
+
 const RESERVED_NAMES = new Set<string>([
   'print', 'str', 'char', 'int', 'float', 'f32', 'long', 'len',
   'int_array', 'long_array', 'float_array', 'f32_array', 'str_array', 'fn_array',
   'bool', 'void',
+  ...VEC_BUILTINS,
 ]);
 
 class Checker {
@@ -155,7 +171,7 @@ class Checker {
       if (d.kind === 'fn') {
         if (!this.lowLevel && d.name.startsWith('__'))
           throw new CompileError(`names beginning with '__' are reserved`, d.span, 'type');
-        if (this.syms.functions.has(d.name) || this.syms.structs.has(d.name) || ARRAY_INTRINSICS.has(d.name) || STR_BUILTINS.has(d.name) || BIT_BUILTINS.has(d.name) || d.name === 'print' || d.name === 'long')
+        if (this.syms.functions.has(d.name) || this.syms.structs.has(d.name) || ARRAY_INTRINSICS.has(d.name) || STR_BUILTINS.has(d.name) || BIT_BUILTINS.has(d.name) || VEC_BUILTINS.has(d.name) || d.name === 'print' || d.name === 'long')
           throw new CompileError(`duplicate or reserved function name '${d.name}'`, d.span, 'type');
         for (const p of d.params) this.validateTy(p.ty, p.span);
         this.validateTy(d.retTy, d.span);
@@ -172,6 +188,7 @@ class Checker {
           throw new CompileError(`global '${d.name}' declared ${tyName(d.declTy)} but initialized with ${tyName(t)}`, d.span, 'type');
         if (declared.kind === 'void') throw new CompileError(`global '${d.name}' cannot be void`, d.span, 'type');
         if (declared.kind === 'fn') throw new CompileError(`a function pointer cannot be stored in a global (use a local or a parameter)`, d.span, 'type');
+        if (declared.kind === 'vec') throw new CompileError(`a SIMD vector cannot be a global (vectors are value-only — use a local or a parameter)`, d.span, 'type');
         if (declared.kind === 'null') throw new CompileError(`global '${d.name}' needs an explicit struct type for its null value (e.g. \`let ${d.name}: T = null;\`)`, d.span, 'type');
         if (declared.kind === 'array' && declared.elem.kind === 'struct' && declared.elem.name === '')
           throw new CompileError(`struct_array(...) needs an explicit element type — annotate the global`, d.span, 'type');
@@ -208,6 +225,8 @@ class Checker {
       throw new CompileError(`unknown type '${ty.name}'`, span, 'type');
     if (ty.kind === 'array' && ty.elem.kind === 'struct' && ty.elem.name !== '' && !this.syms.structs.has(ty.elem.name))
       throw new CompileError(`unknown type '${ty.elem.name}'`, span, 'type');
+    if (ty.kind === 'array' && (ty.elem as Ty).kind === 'vec')
+      throw new CompileError(`arrays of SIMD vectors are not supported yet`, span, 'type');
     // An array of function pointers — validate its element signature.
     if (ty.kind === 'array' && ty.elem.kind === 'fn') this.validateTy(ty.elem, span);
     if (ty.kind === 'fn') {
@@ -224,6 +243,8 @@ class Checker {
       seen.add(f.name);
       if (f.ty.kind === 'void')
         throw new CompileError(`struct field '${f.name}' cannot be void`, f.span, 'type');
+      if (f.ty.kind === 'vec')
+        throw new CompileError(`a SIMD vector cannot be a struct field (vectors are value-only — store its lanes instead)`, f.span, 'type');
       this.validateTy(f.ty, f.span);
     }
   }
@@ -449,19 +470,31 @@ class Checker {
     }
   }
 
+  // A lane index must be a compile-time `int` literal in range, because wasm's
+  // extract_lane/replace_lane take the lane as an immediate (not a stack value).
+  private constLaneIndex(e: Expr, count: number, who: string): number {
+    if (e.node !== 'int')
+      throw new CompileError(`${who}() lane index must be a constant integer literal`, e.span, 'type');
+    if (e.value < 0 || e.value >= count)
+      throw new CompileError(`${who}() lane index ${e.value} is out of range for a ${count}-lane vector (0..${count - 1})`, e.span, 'type');
+    return e.value;
+  }
+
   private checkUnary(e: Extract<Expr, { node: 'unary' }>): Ty {
     const t = this.checkExpr(e.operand);
     switch (e.op) {
       case '-':
       case '+':
         if (t.kind === 'int' || t.kind === 'long' || t.kind === 'float' || t.kind === 'f32') return t;
+        if (t.kind === 'vec') return t; // elementwise negate (any shape)
         throw new CompileError(`unary '${e.op}' requires a numeric operand, found ${tyName(t)}`, e.span, 'type');
       case '!':
         if (t.kind === 'bool') return T_BOOL;
         throw new CompileError(`'!' requires a bool operand, found ${tyName(t)}`, e.span, 'type');
       case '~':
         if (t.kind === 'int' || t.kind === 'long') return t;
-        throw new CompileError(`'~' requires an int or long operand, found ${tyName(t)}`, e.span, 'type');
+        if (t.kind === 'vec' && !VEC_INFO[t.lanes].isFloat) return t; // bitwise-not on integer vectors
+        throw new CompileError(`'~' requires an int, long, or integer-vector operand, found ${tyName(t)}`, e.span, 'type');
     }
   }
 
@@ -469,6 +502,27 @@ class Checker {
     const op: BinaryOp = e.op;
     const lt = this.checkExpr(e.left);
     const rt = this.checkExpr(e.right);
+
+    // SIMD vectors: elementwise arithmetic on matching shapes. `+ - *` apply to
+    // every shape; `/` is float-only (the SIMD spec has no integer lane divide);
+    // `& | ^` are integer-only (whole-vector bitwise). No `% << >>`, no
+    // comparisons — extract lanes or use vmin/vmax for those.
+    if (lt.kind === 'vec' || rt.kind === 'vec') {
+      if (!(lt.kind === 'vec' && rt.kind === 'vec' && tyEqual(lt, rt)))
+        throw new CompileError(`'${op}' requires two ${lt.kind === 'vec' ? tyName(lt) : tyName(rt)} operands, found ${tyName(lt)} and ${tyName(rt)}`, e.span, 'type');
+      const isFloat = VEC_INFO[lt.lanes].isFloat;
+      if (op === '+' || op === '-' || op === '*') return lt;
+      if (op === '/') {
+        if (isFloat) return lt;
+        throw new CompileError(`'/' is not defined for integer vectors (${tyName(lt)}) — SIMD has no lanewise integer divide`, e.span, 'type');
+      }
+      if (op === '&' || op === '|' || op === '^') {
+        if (!isFloat) return lt;
+        throw new CompileError(`'${op}' is a bitwise operator and needs an integer vector, found ${tyName(lt)}`, e.span, 'type');
+      }
+      throw new CompileError(`'${op}' is not defined for vectors (${tyName(lt)}) — extract lanes, or use vmin/vmax`, e.span, 'type');
+    }
+
     const sameNumeric = (lt.kind === 'int' || lt.kind === 'long' || lt.kind === 'float' || lt.kind === 'f32') && tyEqual(lt, rt);
 
     switch (op) {
@@ -571,6 +625,93 @@ class Checker {
       return { kind: 'struct', name };
     }
     // builtins
+    // --- SIMD vector builtins ------------------------------------------------
+    // Constructors: `int4(x)` splats one lane value; `int4(a,b,c,d)` fills lanes.
+    if (name in VEC_NAME_TO_LANES) {
+      const lanes = VEC_NAME_TO_LANES[name];
+      const info = VEC_INFO[lanes];
+      const lt = laneTy(lanes);
+      if (e.args.length !== 1 && e.args.length !== info.count)
+        throw new CompileError(`${name}() takes 1 (splat) or ${info.count} lane argument(s), got ${e.args.length}`, e.span, 'type');
+      for (const a of e.args) {
+        const at = this.checkExpr(a);
+        if (!this.coercible(at, lt))
+          throw new CompileError(`${name}() lane expects ${tyName(lt)}, found ${tyName(at)}`, a.span, 'type');
+      }
+      return { kind: 'vec', lanes };
+    }
+    if (name === 'lane') {
+      if (e.args.length !== 2) throw new CompileError(`lane() expects (vector, laneIndex)`, e.span, 'type');
+      const vt = this.checkExpr(e.args[0]);
+      if (vt.kind !== 'vec') throw new CompileError(`lane() argument 1 must be a vector, found ${tyName(vt)}`, e.args[0].span, 'type');
+      this.constLaneIndex(e.args[1], VEC_INFO[vt.lanes].count, 'lane');
+      return laneTy(vt.lanes);
+    }
+    if (name === 'withlane') {
+      if (e.args.length !== 3) throw new CompileError(`withlane() expects (vector, laneIndex, value)`, e.span, 'type');
+      const vt = this.checkExpr(e.args[0]);
+      if (vt.kind !== 'vec') throw new CompileError(`withlane() argument 1 must be a vector, found ${tyName(vt)}`, e.args[0].span, 'type');
+      this.constLaneIndex(e.args[1], VEC_INFO[vt.lanes].count, 'withlane');
+      const xt = this.checkExpr(e.args[2]);
+      if (!this.coercible(xt, laneTy(vt.lanes)))
+        throw new CompileError(`withlane() value expects ${tyName(laneTy(vt.lanes))}, found ${tyName(xt)}`, e.args[2].span, 'type');
+      return vt;
+    }
+    if (name === 'hsum') {
+      if (e.args.length !== 1) throw new CompileError(`hsum() expects 1 argument`, e.span, 'type');
+      const vt = this.checkExpr(e.args[0]);
+      if (vt.kind !== 'vec') throw new CompileError(`hsum() expects a vector, found ${tyName(vt)}`, e.args[0].span, 'type');
+      return laneTy(vt.lanes);
+    }
+    if (name === 'vsqrt' || name === 'vabs') {
+      if (e.args.length !== 1) throw new CompileError(`${name}() expects 1 argument`, e.span, 'type');
+      const vt = this.checkExpr(e.args[0]);
+      if (vt.kind !== 'vec') throw new CompileError(`${name}() expects a vector, found ${tyName(vt)}`, e.args[0].span, 'type');
+      if (name === 'vsqrt' && !VEC_INFO[vt.lanes].isFloat)
+        throw new CompileError(`vsqrt() needs a float vector (float4 or double2), found ${tyName(vt)}`, e.args[0].span, 'type');
+      return vt;
+    }
+    if (name === 'vmin' || name === 'vmax') {
+      if (e.args.length !== 2) throw new CompileError(`${name}() expects (a, b)`, e.span, 'type');
+      const at = this.checkExpr(e.args[0]);
+      const bt = this.checkExpr(e.args[1]);
+      if (at.kind !== 'vec' || !tyEqual(at, bt))
+        throw new CompileError(`${name}() expects two matching vectors, found ${tyName(at)} and ${tyName(bt)}`, e.span, 'type');
+      if (at.lanes === 'i64x2')
+        throw new CompileError(`${name}() is not available for long2 (the SIMD spec has no lanewise i64 min/max)`, e.span, 'type');
+      return at;
+    }
+    if (name === 'veq' || name === 'vne' || name === 'vlt' || name === 'vle' || name === 'vgt' || name === 'vge') {
+      if (e.args.length !== 2) throw new CompileError(`${name}() expects (a, b)`, e.span, 'type');
+      const at = this.checkExpr(e.args[0]);
+      const bt = this.checkExpr(e.args[1]);
+      if (at.kind !== 'vec' || !tyEqual(at, bt))
+        throw new CompileError(`${name}() expects two matching vectors, found ${tyName(at)} and ${tyName(bt)}`, e.span, 'type');
+      return maskShapeOf(at.lanes); // an integer mask vector
+    }
+    if (name === 'vselect') {
+      if (e.args.length !== 3) throw new CompileError(`vselect() expects (mask, a, b)`, e.span, 'type');
+      const mt = this.checkExpr(e.args[0]);
+      const at = this.checkExpr(e.args[1]);
+      const bt = this.checkExpr(e.args[2]);
+      if (at.kind !== 'vec' || !tyEqual(at, bt))
+        throw new CompileError(`vselect() values must be two matching vectors, found ${tyName(at)} and ${tyName(bt)}`, e.span, 'type');
+      if (!tyEqual(mt, maskShapeOf(at.lanes)))
+        throw new CompileError(`vselect() mask for ${tyName(at)} must be a ${tyName(maskShapeOf(at.lanes))} (from a comparison), found ${tyName(mt)}`, e.args[0].span, 'type');
+      return at;
+    }
+    if (name === 'to_float4') {
+      if (e.args.length !== 1) throw new CompileError(`to_float4() expects 1 argument`, e.span, 'type');
+      const t = this.checkExpr(e.args[0]);
+      if (t.kind !== 'vec' || t.lanes !== 'i32x4') throw new CompileError(`to_float4() expects an int4, found ${tyName(t)}`, e.args[0].span, 'type');
+      return { kind: 'vec', lanes: 'f32x4' };
+    }
+    if (name === 'to_int4') {
+      if (e.args.length !== 1) throw new CompileError(`to_int4() expects 1 argument`, e.span, 'type');
+      const t = this.checkExpr(e.args[0]);
+      if (t.kind !== 'vec' || t.lanes !== 'f32x4') throw new CompileError(`to_int4() expects a float4, found ${tyName(t)}`, e.args[0].span, 'type');
+      return { kind: 'vec', lanes: 'i32x4' };
+    }
     // Low-level float bit-reinterpretation intrinsics (prelude only): expose the
     // raw IEEE-754 representation of a double to the float-format runtime.
     if (this.lowLevel && (name === '__f64_bits' || name === '__f64_from_bits')) {

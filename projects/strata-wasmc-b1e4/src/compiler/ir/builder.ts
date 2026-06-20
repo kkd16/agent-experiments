@@ -1,4 +1,5 @@
-import type { BinaryOp, Block, Expr, Program, Stmt, Ty } from '../ast';
+import type { BinaryOp, Block, Expr, Program, Stmt, Ty, VecLanes } from '../ast';
+import { VEC_INFO, VEC_NAME_TO_LANES } from '../ast';
 import type { ConstNum, IRType, RetType } from './ir';
 import { parse } from '../parser';
 import { typecheck } from '../types';
@@ -93,10 +94,24 @@ function irTypeOf(t: Ty): IRType {
       return 'f32';
     case 'long':
       return 'i64';
+    case 'vec':
+      return 'v128';
     default:
       return 'i32'; // int, bool, and array handles are all i32
   }
 }
+// The wasm value type of one lane (the scalar an extract yields / a replace
+// consumes), and whether the lane is an integer (so hsum picks an `ibin` add).
+function laneIR(lanes: VecLanes): IRType {
+  return lanes === 'f32x4' ? 'f32' : lanes === 'f64x2' ? 'f64' : lanes === 'i64x2' ? 'i64' : 'i32';
+}
+// Vector comparison builtin → the wasm op suffix for integer vs float shapes
+// (integer ordering uses the signed `_s` form).
+const VCMP: Record<string, { i: string; f: string }> = {
+  veq: { i: 'eq', f: 'eq' }, vne: { i: 'ne', f: 'ne' },
+  vlt: { i: 'lt_s', f: 'lt' }, vle: { i: 'le_s', f: 'le' },
+  vgt: { i: 'gt_s', f: 'gt' }, vge: { i: 'ge_s', f: 'ge' },
+};
 function retTypeOf(t: Ty): RetType {
   return t.kind === 'void' ? 'void' : irTypeOf(t);
 }
@@ -504,6 +519,7 @@ class FnBuilder {
       case '+':
         return v;
       case '-':
+        if (e.operand.ty!.kind === 'vec') return this.def('v128', 'vunary', `${e.operand.ty!.lanes}.neg`, [v]);
         if (ity === 'f64' || ity === 'f32') return this.def(ity, 'fbin', 'sub', [{ tag: 'const', ty: ity, num: 0 }, v]);
         return ity === 'i64'
           ? this.def('i64', 'ibin', 'sub', [CL(0n), v])
@@ -511,6 +527,7 @@ class FnBuilder {
       case '!':
         return this.def('i32', 'icmp', 'eq', [v, CI(0)]);
       case '~':
+        if (e.operand.ty!.kind === 'vec') return this.def('v128', 'vunary', 'v128.not', [v]);
         return ity === 'i64'
           ? this.def('i64', 'ibin', 'xor', [v, CL(-1n)])
           : this.def('i32', 'ibin', 'xor', [v, CI(-1)]);
@@ -532,6 +549,18 @@ class FnBuilder {
       const cmp = this.def('i32', 'call', '__strcmp', [a, b]);
       const sub: Record<string, string> = { '<': 'lt_s', '<=': 'le_s', '>': 'gt_s', '>=': 'ge_s' };
       return this.def('i32', 'icmp', sub[e.op], [cmp, CI(0)]);
+    }
+    // Vector operators are elementwise: arithmetic maps to the shape's lane op
+    // (`f32x4.add`, …); bitwise `& | ^` map to the whole-vector v128 ops. No
+    // vector comparisons or `/ %` on integer shapes (the checker rejects those).
+    if (e.left.ty!.kind === 'vec') {
+      const shape = e.left.ty!.lanes;
+      const a = this.lowerExpr(e.left)!;
+      const b = this.lowerExpr(e.right)!;
+      const arith: Partial<Record<BinaryOp, string>> = { '+': 'add', '-': 'sub', '*': 'mul', '/': 'div' };
+      const bitwise: Partial<Record<BinaryOp, string>> = { '&': 'v128.and', '|': 'v128.or', '^': 'v128.xor' };
+      if (e.op in bitwise) return this.def('v128', 'vbin', bitwise[e.op]!, [a, b]);
+      return this.def('v128', 'vbin', `${shape}.${arith[e.op]!}`, [a, b]);
     }
     const a = this.lowerExpr(e.left)!;
     const b = this.lowerExpr(e.right)!;
@@ -751,6 +780,73 @@ class FnBuilder {
       const base = this.lowerExpr(e.args[0])!;
       return this.def('i32', 'load', 'i32', [base]);
     }
+    // --- SIMD vector builtins ------------------------------------------------
+    // A vector-type-named call constructs a vector: one argument splats; N fill
+    // the lanes. Built as a splat of lane 0 followed by replace_lane for the rest
+    // (every argument is lowered first, so evaluation stays left-to-right).
+    if (name in VEC_NAME_TO_LANES) {
+      const lanes = VEC_NAME_TO_LANES[name];
+      const argv = e.args.map((a) => this.lowerExpr(a)!);
+      if (argv.length === 1) return this.def('v128', 'vsplat', lanes, [argv[0]]);
+      let v = this.def('v128', 'vsplat', lanes, [argv[0]]);
+      for (let k = 1; k < argv.length; k++) v = this.def('v128', 'vreplace', `${lanes}.replace_lane:${k}`, [v, argv[k]]);
+      return v;
+    }
+    if (name === 'lane') {
+      const lanes = (e.args[0].ty as Extract<Ty, { kind: 'vec' }>).lanes;
+      const k = (e.args[1] as Extract<Expr, { node: 'int' }>).value;
+      return this.def(laneIR(lanes), 'vextract', `${lanes}.extract_lane:${k}`, [this.lowerExpr(e.args[0])!]);
+    }
+    if (name === 'withlane') {
+      const lanes = (e.args[0].ty as Extract<Ty, { kind: 'vec' }>).lanes;
+      const k = (e.args[1] as Extract<Expr, { node: 'int' }>).value;
+      const v = this.lowerExpr(e.args[0])!;
+      const x = this.lowerExpr(e.args[2])!;
+      return this.def('v128', 'vreplace', `${lanes}.replace_lane:${k}`, [v, x]);
+    }
+    if (name === 'vmin' || name === 'vmax') {
+      const lanes = (e.args[0].ty as Extract<Ty, { kind: 'vec' }>).lanes;
+      const a = this.lowerExpr(e.args[0])!;
+      const b = this.lowerExpr(e.args[1])!;
+      const op = VEC_INFO[lanes].isFloat ? (name === 'vmin' ? 'min' : 'max') : (name === 'vmin' ? 'min_s' : 'max_s');
+      return this.def('v128', 'vbin', `${lanes}.${op}`, [a, b]);
+    }
+    if (name === 'vsqrt' || name === 'vabs') {
+      const lanes = (e.args[0].ty as Extract<Ty, { kind: 'vec' }>).lanes;
+      return this.def('v128', 'vunary', `${lanes}.${name === 'vsqrt' ? 'sqrt' : 'abs'}`, [this.lowerExpr(e.args[0])!]);
+    }
+    if (name === 'hsum') {
+      // Horizontal reduction: extract every lane and fold with the lane type's
+      // add, left to right (the interpreter folds in the same order, so f32
+      // rounding agrees).
+      const lanes = (e.args[0].ty as Extract<Ty, { kind: 'vec' }>).lanes;
+      const li = laneIR(lanes);
+      const isInt = li === 'i32' || li === 'i64';
+      const v = this.lowerExpr(e.args[0])!;
+      const ext = (k: number): POperand => this.def(li, 'vextract', `${lanes}.extract_lane:${k}`, [v]);
+      let acc = ext(0);
+      for (let k = 1; k < VEC_INFO[lanes].count; k++) {
+        acc = this.def(li, isInt ? 'ibin' : 'fbin', 'add', [acc, ext(k)]);
+      }
+      return acc;
+    }
+    if (name in VCMP) {
+      // Lanewise comparison → an integer mask vector (all-ones / all-zero lanes).
+      const lanes = (e.args[0].ty as Extract<Ty, { kind: 'vec' }>).lanes;
+      const opn = VEC_INFO[lanes].isFloat ? VCMP[name].f : VCMP[name].i;
+      const a = this.lowerExpr(e.args[0])!;
+      const b = this.lowerExpr(e.args[1])!;
+      return this.def('v128', 'vbin', `${lanes}.${opn}`, [a, b]);
+    }
+    if (name === 'vselect') {
+      // bitselect(a, b, mask): lanewise `mask ? a : b`.
+      const m = this.lowerExpr(e.args[0])!;
+      const a = this.lowerExpr(e.args[1])!;
+      const b = this.lowerExpr(e.args[2])!;
+      return this.def('v128', 'vselect', '', [a, b, m]);
+    }
+    if (name === 'to_float4') return this.def('v128', 'vunary', 'f32x4.convert_i32x4_s', [this.lowerExpr(e.args[0])!]);
+    if (name === 'to_int4') return this.def('v128', 'vunary', 'i32x4.trunc_sat_f32x4_s', [this.lowerExpr(e.args[0])!]);
     // Soft float-math builtins (skipped when a user function shadows the name).
     if (name in FLOAT_UNARY_SUB && !this.userFns.has(name)) {
       return this.def('f64', 'cast', FLOAT_UNARY_SUB[name], [this.lowerExpr(e.args[0])!]);
