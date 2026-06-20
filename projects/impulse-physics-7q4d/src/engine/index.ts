@@ -37,6 +37,30 @@ export {
 } from './shapes';
 export { World, type RayHit, type ShapeCastHit, type StepStats } from './world';
 
+export {
+  collideParticle,
+  compliance,
+  DEFAULT_SOFT_CONFIG,
+  makeBlob,
+  makeCloth,
+  makeRope,
+  makeSoftBox,
+  Particle,
+  signedArea,
+  SoftBody,
+  stepSoftBodies,
+  type AreaConstraint,
+  type BlobOptions,
+  type ClothOptions,
+  type DistanceConstraint,
+  type ParticleHit,
+  type RopeOptions,
+  type SoftCommon,
+  type SoftConfig,
+  type SoftKind,
+  type SoftRender,
+} from './soft';
+
 export { type Joint, type JointContext } from './joints/joint';
 export { RevoluteJoint } from './joints/revolute';
 export { DistanceJoint } from './joints/distance';

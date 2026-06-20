@@ -3,6 +3,7 @@ import {
   BodyType,
   BuoyancyZone,
   PulleyJoint,
+  SoftBody,
   Vec2,
   World,
   type DistanceResult,
@@ -95,6 +96,8 @@ export class Renderer {
       if (opts.velocities) this.drawVelocity(body, camera);
       if (opts.centerOfMass) this.drawCOM(body, camera);
     }
+
+    for (const sb of world.softBodies) this.drawSoft(sb, camera, opts);
 
     for (const zone of world.fluidZones) this.drawWaterSurface(zone, camera);
 
@@ -228,6 +231,113 @@ export class Renderer {
       ctx.strokeStyle = strokeStyle;
       ctx.lineWidth = strokeWidth;
       ctx.stroke();
+    }
+  }
+
+  /** Dispatch a soft body to the right look: blob, rope or filled mesh. */
+  private drawSoft(sb: SoftBody, camera: Camera, opts: DebugOptions): void {
+    if (sb.render.kind === 'blob' && sb.render.loop) this.drawBlob(sb, camera, opts);
+    else if (sb.render.kind === 'rope') this.drawRope(sb, camera);
+    else this.drawMesh(sb, camera, opts);
+    if (opts.centerOfMass) {
+      const c = camera.worldToScreen(sb.centroid());
+      this.ctx.fillStyle = COLORS.com;
+      this.ctx.beginPath();
+      this.ctx.arc(c.x, c.y, 2.5, 0, Math.PI * 2);
+      this.ctx.fill();
+    }
+  }
+
+  /** A pressurised blob: a smooth filled outline through the ring particles. */
+  private drawBlob(sb: SoftBody, camera: Camera, opts: DebugOptions): void {
+    const ctx = this.ctx;
+    const loop = sb.render.loop!;
+    const pts = loop.map((i) => camera.worldToScreen(sb.particles[i].pos));
+    if (pts.length < 3) return;
+    smoothClosedPath(ctx, pts);
+    if (opts.fill) {
+      ctx.fillStyle = withAlpha(sb.render.color, 0.85);
+      ctx.fill();
+      // A soft top highlight sells the "jelly" look.
+      let top = pts[0];
+      for (const p of pts) if (p.y < top.y) top = p;
+      const grad = ctx.createRadialGradient(top.x, top.y + 4, 1, top.x, top.y + 6, 60);
+      grad.addColorStop(0, 'rgba(255,255,255,0.35)');
+      grad.addColorStop(1, 'rgba(255,255,255,0)');
+      ctx.fillStyle = grad;
+      ctx.fill();
+    }
+    if (opts.outlines) {
+      ctx.strokeStyle = shade(sb.render.color, 0.7);
+      ctx.lineWidth = 2;
+      ctx.lineJoin = 'round';
+      ctx.stroke();
+    }
+  }
+
+  /** A rope: a thick round-capped stroke through the chain of particles. */
+  private drawRope(sb: SoftBody, camera: Camera): void {
+    const ctx = this.ctx;
+    const pts = sb.particles.map((p) => camera.worldToScreen(p.pos));
+    if (pts.length < 2) return;
+    const w = Math.max(3, camera.toPixels(sb.particles[0].radius * 2.2));
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.beginPath();
+    ctx.moveTo(pts[0].x, pts[0].y);
+    for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
+    ctx.strokeStyle = shade(sb.render.color, 0.7);
+    ctx.lineWidth = w;
+    ctx.stroke();
+    ctx.strokeStyle = withAlpha(sb.render.color, 0.95);
+    ctx.lineWidth = Math.max(1.5, w - 3);
+    ctx.stroke();
+    // Pinned ends get a small anchor dot.
+    for (const p of sb.particles) {
+      if (!p.pinned) continue;
+      const s = camera.worldToScreen(p.pos);
+      ctx.fillStyle = COLORS.staticStroke;
+      ctx.beginPath();
+      ctx.arc(s.x, s.y, 4, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.lineCap = 'butt';
+  }
+
+  /** A cloth or soft solid: filled triangles plus the structural lattice. */
+  private drawMesh(sb: SoftBody, camera: Camera, opts: DebugOptions): void {
+    const ctx = this.ctx;
+    const screen = sb.particles.map((p) => camera.worldToScreen(p.pos));
+    const tris = sb.render.tris;
+    if (opts.fill && tris) {
+      ctx.fillStyle = withAlpha(sb.render.color, sb.render.kind === 'cloth' ? 0.5 : 0.8);
+      ctx.beginPath();
+      for (const [a, b, c] of tris) {
+        ctx.moveTo(screen[a].x, screen[a].y);
+        ctx.lineTo(screen[b].x, screen[b].y);
+        ctx.lineTo(screen[c].x, screen[c].y);
+        ctx.closePath();
+      }
+      ctx.fill();
+    }
+    if (opts.outlines) {
+      ctx.strokeStyle = withAlpha(shade(sb.render.color, 0.7), sb.render.kind === 'cloth' ? 0.55 : 0.85);
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      for (const [a, b] of sb.render.links) {
+        ctx.moveTo(screen[a].x, screen[a].y);
+        ctx.lineTo(screen[b].x, screen[b].y);
+      }
+      ctx.stroke();
+    }
+    // Pinned particles as small anchors.
+    for (const p of sb.particles) {
+      if (!p.pinned) continue;
+      const s = camera.worldToScreen(p.pos);
+      ctx.fillStyle = COLORS.staticStroke;
+      ctx.beginPath();
+      ctx.arc(s.x, s.y, 3, 0, Math.PI * 2);
+      ctx.fill();
     }
   }
 
@@ -541,6 +651,20 @@ export class Renderer {
     ctx.stroke();
     ctx.setLineDash([]);
   }
+}
+
+/** Trace a smooth closed curve through `pts` (quadratics via edge midpoints). */
+function smoothClosedPath(ctx: CanvasRenderingContext2D, pts: Vec2[]): void {
+  const n = pts.length;
+  ctx.beginPath();
+  const start = pts[n - 1].add(pts[0]).mul(0.5);
+  ctx.moveTo(start.x, start.y);
+  for (let i = 0; i < n; i++) {
+    const cur = pts[i];
+    const mid = cur.add(pts[(i + 1) % n]).mul(0.5);
+    ctx.quadraticCurveTo(cur.x, cur.y, mid.x, mid.y);
+  }
+  ctx.closePath();
 }
 
 function gridStep(scale: number): number {

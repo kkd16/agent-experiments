@@ -8,6 +8,8 @@ import { BuoyancyZone } from './fluid';
 import { type Joint } from './joints/joint';
 import { clamp, EPSILON, Transform, Vec2 } from './math';
 import { boundingRadius, computeAABB, type Shape } from './shapes';
+import { SoftBody } from './soft/softbody';
+import { DEFAULT_SOFT_CONFIG, stepSoftBodies, type SoftConfig } from './soft/solver';
 
 /** Per-step statistics surfaced to the UI HUD. */
 export interface StepStats {
@@ -63,6 +65,9 @@ export class World {
   readonly bodies: Body[] = [];
   readonly joints: Joint[] = [];
   readonly fluidZones: BuoyancyZone[] = [];
+  /** Deformable (XPBD) bodies, stepped after the rigid solve each frame. */
+  readonly softBodies: SoftBody[] = [];
+  softConfig: SoftConfig = { ...DEFAULT_SOFT_CONFIG };
   private broadphase = new BroadPhase<Body>();
   private contacts = new Map<number, Contact>();
   /** Body-pair keys for which collision is disabled (jointed bodies). */
@@ -118,6 +123,17 @@ export class World {
     return zone;
   }
 
+  /** Add a deformable body to the world. */
+  addSoftBody(soft: SoftBody): SoftBody {
+    this.softBodies.push(soft);
+    return soft;
+  }
+
+  removeSoftBody(soft: SoftBody): void {
+    const idx = this.softBodies.indexOf(soft);
+    if (idx >= 0) this.softBodies.splice(idx, 1);
+  }
+
   addJoint(joint: Joint, collideConnected = false): Joint {
     this.joints.push(joint);
     if (!collideConnected && joint.bodyA !== joint.bodyB) {
@@ -136,6 +152,7 @@ export class World {
     this.bodies.length = 0;
     this.joints.length = 0;
     this.fluidZones.length = 0;
+    this.softBodies.length = 0;
     this.contacts.clear();
     this.nonColliding.clear();
     this.broadphase = new BroadPhase<Body>();
@@ -238,6 +255,12 @@ export class World {
     // 6b. Continuous collision: sweep bullet bodies to their time of impact so
     // fast/thin bodies stop at the wall instead of teleporting through it.
     if (this.config.continuous) this.solveContinuous();
+
+    // 6c. Soft bodies: advance the XPBD subsystem against the freshly-integrated
+    // rigid poses, exchanging reaction impulses back into the rigid world.
+    if (this.softBodies.length > 0) {
+      stepSoftBodies(this.softBodies, this.bodies, this.gravity, dt, this.softConfig);
+    }
 
     // 7. Sleeping.
     if (this.enableSleep) this.updateSleep(islands, dt);

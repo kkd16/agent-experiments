@@ -1,6 +1,6 @@
 import { SCENES, sceneById, type SceneDef } from '../scenes';
 
-const CATEGORIES: SceneDef['category'][] = ['Stacking', 'Joints', 'Showcase', 'Materials', 'Stress'];
+const CATEGORIES: SceneDef['category'][] = ['Stacking', 'Joints', 'Soft', 'Showcase', 'Materials', 'Stress'];
 
 interface Props {
   active: string;

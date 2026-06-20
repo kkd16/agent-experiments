@@ -13,6 +13,7 @@ import {
   Capsule,
   Circle,
   collide,
+  collideParticle,
   computeMass,
   convexHull,
   DistanceJoint,
@@ -20,6 +21,9 @@ import {
   epaPenetration,
   GearJoint,
   gjkDistance,
+  makeBlob,
+  makeCloth,
+  makeRope,
   Mat22,
   MotorJoint,
   Polygon,
@@ -873,6 +877,119 @@ export function runVerification(): CheckResult[] {
     const strong = run(weight * 3);
     a.ok('Overloaded weld breaks & body falls', weak.broke && weak.fell, `broke=${weak.broke}, fell=${weak.fell}`);
     a.ok('Weld within budget holds', !strong.broke && !strong.fell, `broke=${strong.broke}, fell=${strong.fell}`);
+  }
+
+  // ---- Soft bodies (XPBD) --------------------------------------------------
+  a.section('Soft bodies (XPBD)');
+  {
+    // The particle-vs-rigid collision primitive against an analytic box face.
+    const box = new Body(Polygon.box(1, 1), { type: BodyType.Static });
+    const hit = collideParticle(box, new Vec2(1.05, 0), 0.1);
+    a.ok('Particle–box hit found', hit !== null, hit ? 'hit' : 'miss');
+    if (hit) {
+      a.close('Contact normal points +x', hit.normal.x, 1, 1e-6);
+      a.close('Penetration depth = 0.05', hit.depth, 0.05, 1e-6);
+    }
+    const miss = collideParticle(box, new Vec2(1.5, 0), 0.1);
+    a.ok('Particle clear of box ⇒ no hit', miss === null, miss ? 'hit' : 'miss');
+  }
+  {
+    // Internal constraints are symmetric, so a free blob (no gravity, no
+    // damping, no contact) conserves linear momentum exactly.
+    const w = new World(new Vec2(0, 0));
+    const blob = makeBlob(new Vec2(0, 0), 1, 16, { mass: 2, damping: 0 });
+    blob.applyImpulseToCenter(new Vec2(3, 1));
+    w.addSoftBody(blob);
+    const p0 = blob.linearMomentum();
+    for (let i = 0; i < 120; i++) w.step(1 / 60);
+    const p1 = blob.linearMomentum();
+    a.close('Free blob conserves momentum', p1.sub(p0).length(), 0, 1e-6);
+  }
+  {
+    // A blob settling on the ground preserves its area (incompressible) and
+    // rests on the surface rather than sinking through or exploding.
+    const w = new World(new Vec2(0, -9.8));
+    w.addBody(new Body(Polygon.box(30, 0.5), { type: BodyType.Static, position: new Vec2(0, -0.5) }));
+    const blob = makeBlob(new Vec2(0, 2), 0.9, 20, { mass: 2, pressure: 1 });
+    const rest = blob.area();
+    w.addSoftBody(blob);
+    for (let i = 0; i < 420; i++) w.step(1 / 60);
+    let finite = true;
+    let minY = Infinity;
+    for (const p of blob.particles) {
+      if (!p.pos.isFinite()) finite = false;
+      minY = Math.min(minY, p.pos.y);
+    }
+    a.ok('Blob stays finite (no blow-up)', finite, finite ? 'finite' : 'NaN/Inf');
+    a.close('Blob preserves area ±10%', blob.area() / rest, 1, 0.1);
+    a.ok('Blob rests on the ground', minY > -0.2 && minY < 0.3, `minY=${minY.toFixed(3)}`);
+  }
+  {
+    // Pressure > 1 inflates the rest area; the blob ends up visibly larger.
+    const w = new World(new Vec2(0, 0));
+    const b = makeBlob(new Vec2(0, 0), 1, 20, { pressure: 1.6 });
+    const r0 = b.area();
+    w.addSoftBody(b);
+    for (let i = 0; i < 180; i++) w.step(1 / 60);
+    a.ok('Pressure inflates the blob', b.area() > r0 * 1.3, `area ${r0.toFixed(2)}→${b.area().toFixed(2)}`);
+  }
+  {
+    // A rope pinned at one end hangs straight down under gravity.
+    const w = new World(new Vec2(0, -9.8));
+    const rope = makeRope(new Vec2(0, 3), new Vec2(3, 3), 18, { pinStart: true, mass: 1 });
+    w.addSoftBody(rope);
+    for (let i = 0; i < 400; i++) w.step(1 / 60);
+    const free = rope.particles[rope.particles.length - 1].pos;
+    const pin = rope.particles[0].pos;
+    a.ok('Pinned rope hangs vertically', free.y < pin.y - 1.5 && Math.abs(free.x - pin.x) < 0.8 && free.isFinite(),
+      `free=${free.toString()}`);
+  }
+  {
+    // Two-way coupling: a blob dropped onto a free rigid box pushes it down and
+    // the box never tunnels through the floor.
+    const w = new World(new Vec2(0, -9.8));
+    w.addBody(new Body(Polygon.box(30, 0.5), { type: BodyType.Static, position: new Vec2(0, -0.5) }));
+    const boxBody = w.addBody(new Body(Polygon.box(0.5, 0.4), { position: new Vec2(0, 0.4), density: 1 }));
+    w.addSoftBody(makeBlob(new Vec2(0, 2), 0.7, 18, { mass: 1.5, pressure: 1.05 }));
+    let minY = Infinity;
+    for (let i = 0; i < 300; i++) {
+      w.step(1 / 60);
+      minY = Math.min(minY, boxBody.worldCenter.y);
+    }
+    a.ok('Blob pushes the rigid box (coupling)', minY < 0.4, `box dipped to y=${minY.toFixed(3)}`);
+    a.ok('Coupled box never tunnels', boxBody.worldCenter.y > -0.1 && boxBody.worldCenter.isFinite(),
+      `y=${boxBody.worldCenter.y.toFixed(3)}`);
+  }
+  {
+    // A pinned cloth hammock catches a falling rigid ball (rigid-on-soft load).
+    const w = new World(new Vec2(0, -9.8));
+    const cloth = makeCloth(new Vec2(-4, 3), 8, 2.5, 24, 7, { pin: 'top-corners', mass: 3, stiffness: 0.9 });
+    w.addSoftBody(cloth);
+    for (let i = 0; i < 120; i++) w.step(1 / 60);
+    const ball = w.addBody(new Body(new Circle(0.5), { position: new Vec2(0, 5), density: 1 }));
+    let finite = true;
+    for (let i = 0; i < 360; i++) {
+      w.step(1 / 60);
+      if (!ball.worldCenter.isFinite()) finite = false;
+    }
+    a.ok('Hammock catches the ball', finite && ball.worldCenter.y > 0.5, `ball y=${ball.worldCenter.y.toFixed(2)}`);
+  }
+  {
+    // Determinism: identical soft-body setups evolve bit-for-bit identically.
+    const mk = (): World => {
+      const w = new World(new Vec2(0, -9.8));
+      w.addBody(new Body(Polygon.box(30, 0.5), { type: BodyType.Static, position: new Vec2(0, -0.5) }));
+      w.addSoftBody(makeBlob(new Vec2(0.13, 2.2), 0.8, 20, { mass: 2 }));
+      return w;
+    };
+    const wa = mk();
+    const wb = mk();
+    for (let i = 0; i < 200; i++) {
+      wa.step(1 / 60);
+      wb.step(1 / 60);
+    }
+    const d = wa.softBodies[0].centroid().sub(wb.softBodies[0].centroid()).length();
+    a.close('Soft simulation is deterministic', d, 0, 1e-12);
   }
 
   return a.results;
