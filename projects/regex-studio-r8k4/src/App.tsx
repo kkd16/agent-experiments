@@ -13,9 +13,10 @@ import { ComparePanel } from './components/ComparePanel';
 import { SynthesizePanel } from './components/SynthesizePanel';
 import { ExplainPanel } from './components/ExplainPanel';
 import { RedosPanel } from './components/RedosPanel';
+import { PikePanel } from './components/PikePanel';
 import { DEFAULT_EXAMPLE, EXAMPLES } from './data/examples';
 
-type Tab = 'ast' | 'nfa' | 'dfa' | 'min' | 'debug' | 'language' | 'compare' | 'synth' | 'explain' | 'redos';
+type Tab = 'ast' | 'nfa' | 'dfa' | 'min' | 'debug' | 'pike' | 'language' | 'compare' | 'synth' | 'explain' | 'redos';
 
 const TAB_GROUPS: { group: string; tabs: { id: Tab; label: string }[] }[] = [
   {
@@ -26,6 +27,7 @@ const TAB_GROUPS: { group: string; tabs: { id: Tab; label: string }[] }[] = [
       { id: 'dfa', label: 'DFA' },
       { id: 'min', label: 'Min-DFA' },
       { id: 'debug', label: 'Debugger' },
+      { id: 'pike', label: 'Pike VM' },
     ],
   },
   {
@@ -261,6 +263,10 @@ export default function App() {
               ) : (
                 <div className="placeholder">{automataNotice}</div>
               ))}
+
+            {tab === 'pike' && (
+              <PikePanel ast={compiled.ast} groupCount={compiled.groupCount} notice={compiled.error ? 'Fix the pattern first.' : null} />
+            )}
 
             {tab === 'language' && <LanguagePanel dfa={compiled.minDfa} notice={automataNotice} />}
 
