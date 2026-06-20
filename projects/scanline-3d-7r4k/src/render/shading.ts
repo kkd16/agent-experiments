@@ -54,18 +54,33 @@ export interface ShadeContext {
   environment?: Environment // image-based lighting (drives PBR ambient + reflections)
 }
 
+// The pre-fog decomposition of a shaded fragment into the three terms the deferred
+// screen-space passes modulate independently: `direct` (punctual lights — contact
+// shadows darken it), `ambient` (diffuse IBL — SSAO darkens it) and `spec` (the
+// specular-IBL probe — SSR replaces it). Emission is intentionally excluded so the
+// screen-space passes never touch self-lit surfaces.
+export interface ShadeComponents {
+  direct: Vec3
+  ambient: Vec3
+  spec: Vec3
+}
+
+export const emptyComponents = (): ShadeComponents => ({ direct: [0, 0, 0], ambient: [0, 0, 0], spec: [0, 0, 0] })
+
 // Dispatch to the active lighting model. `base` is the albedo after texture
-// modulation; `n` is the (possibly normal-mapped) shading normal.
+// modulation; `n` is the (possibly normal-mapped) shading normal. When `out` is
+// passed it is filled with the pre-fog direct/ambient/spec decomposition.
 export function shadeSurface(
   base: Vec3,
   worldPos: Vec3,
   n: Vec3,
   mat: Material,
   ctx: ShadeContext,
+  out?: ShadeComponents,
 ): Vec3 {
   return ctx.model === 'pbr'
-    ? shadePBR(base, worldPos, n, mat, ctx)
-    : shadeFragment(base, worldPos, n, mat, ctx)
+    ? shadePBR(base, worldPos, n, mat, ctx, out)
+    : shadeFragment(base, worldPos, n, mat, ctx, out)
 }
 
 // Apply distance fog to an already-shaded linear colour. Shared by both models.
@@ -88,6 +103,7 @@ export function shadeFragment(
   n: Vec3,
   mat: Material,
   ctx: ShadeContext,
+  out?: ShadeComponents,
 ): Vec3 {
   const viewDir = normalize(sub(ctx.eye, worldPos))
   // ambient: image-based irradiance when an environment is present, else flat
@@ -97,9 +113,11 @@ export function shadeFragment(
     const k = ctx.environment.intensity
     ar = irr[0] * k; ag = irr[1] * k; ab = irr[2] * k
   }
-  let r = base[0] * ar
-  let g = base[1] * ag
-  let b = base[2] * ab
+  const ambR = base[0] * ar, ambG = base[1] * ag, ambB = base[2] * ab
+  // r,g,b accumulate the *direct* (punctual) lighting only; ambient is tracked apart
+  let r = 0
+  let g = 0
+  let b = 0
 
   for (let li = 0; li < ctx.lights.length; li++) {
     const light = ctx.lights[li]
@@ -142,13 +160,23 @@ export function shadeFragment(
     }
   }
 
-  // rim / fresnel-ish edge light
+  // rim / fresnel-ish edge light (counts as direct)
   if (mat.rim > 0) {
     const fres = Math.pow(1 - clamp01(dot(n, viewDir)), 3) * mat.rim
     r += fres
     g += fres
     b += fres
   }
+
+  if (out) {
+    out.direct = [r, g, b]
+    out.ambient = [ambR, ambG, ambB]
+    out.spec = [0, 0, 0] // Blinn–Phong has no separate image-based specular term
+  }
+
+  r += ambR
+  g += ambG
+  b += ambB
 
   if (mat.emission) {
     r += mat.emission[0]

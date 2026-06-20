@@ -9,6 +9,7 @@ import { clipNear } from './clip.ts'
 import { Framebuffer } from './framebuffer.ts'
 import { drawLine, rasterizeTriangle, screenOf } from './raster.ts'
 import type { Uniforms } from './raster.ts'
+import type { GBuffer } from './gbuffer.ts'
 import type { Mesh } from '../geometry/mesh.ts'
 import type { FrameStats, PipeVertex } from './types.ts'
 
@@ -28,6 +29,7 @@ export function drawObject(
   obj: DrawObject,
   cullBack: boolean,
   stats: FrameStats,
+  gbuf: GBuffer | null = null,
 ): void {
   const { mesh, model, uniforms } = obj
   const mvp = multiply(proj, multiply(view, model))
@@ -79,7 +81,7 @@ export function drawObject(
         drawLine(fb, sc[0], sc[1], sa[0], sa[1], wcol)
         stats.trianglesDrawn++
       } else {
-        rasterizeTriangle(fb, [a, b, c], uni, stats, cullBack)
+        rasterizeTriangle(fb, [a, b, c], uni, stats, cullBack, gbuf)
       }
     }
     if (wasClipped) stats.trianglesClipped++

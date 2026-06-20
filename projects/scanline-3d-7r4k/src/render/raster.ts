@@ -10,8 +10,9 @@ import { clamp01 } from '../math/scalar.ts'
 import type { Vec2, Vec3, Vec4 } from '../math/vec.ts'
 import { cross, dot, length, negate, normalize, scale, sub } from '../math/vec.ts'
 import { Framebuffer } from './framebuffer.ts'
-import { gammaEncode, shadeSurface } from './shading.ts'
-import type { Material, ShadeContext } from './shading.ts'
+import { emptyComponents, gammaEncode, shadeSurface } from './shading.ts'
+import type { Material, ShadeComponents, ShadeContext } from './shading.ts'
+import type { GBuffer } from './gbuffer.ts'
 import type { NormalMap, Texture } from './texture.ts'
 import type { FrameStats, PipeVertex, RenderMode } from './types.ts'
 
@@ -88,8 +89,11 @@ export function rasterizeTriangle(
   uni: Uniforms,
   stats: FrameStats,
   cullBack: boolean,
+  gbuf: GBuffer | null = null,
 ): void {
   const { width: W, height: H, color, depth, overdraw, hdr } = fb
+  // scratch decomposition reused across this triangle's fragments (deferred capture)
+  const comps: ShadeComponents | null = gbuf ? emptyComponents() : null
   const a = project(tri[0], W, H)
   const b = project(tri[1], W, H)
   const c = project(tri[2], W, H)
@@ -190,11 +194,12 @@ export function rasterizeTriangle(
                 }
                 if (mode === 'shaded') {
                   // linear radiance → HDR buffer (resolve pass tone-maps it)
-                  const lit = shadeSurface(base, world, n, uni.material, uni.shade)
+                  const lit = shadeSurface(base, world, n, uni.material, uni.shade, comps ?? undefined)
                   const o = idx * 3
                   hdr[o] = lit[0]
                   hdr[o + 1] = lit[1]
                   hdr[o + 2] = lit[2]
+                  if (gbuf && comps) captureGBuffer(gbuf, idx, world, n, base, uni.material, uni.shade, comps)
                 } else {
                   // albedo / clip debug views pack straight to color
                   let lit: Vec3
@@ -224,6 +229,39 @@ export function rasterizeTriangle(
     rowB += sy2
     rowC += sy0
   }
+}
+
+// Record one front-most fragment into the deferred G-buffer. Runs only for the
+// nearest surface at a pixel (it sits inside the depth test), so the buffer holds
+// exactly what the screen-space passes should see.
+function captureGBuffer(
+  gbuf: GBuffer,
+  idx: number,
+  world: Vec3,
+  n: Vec3,
+  base: Vec3,
+  mat: Material,
+  shade: ShadeContext,
+  comps: ShadeComponents,
+): void {
+  const i3 = idx * 3
+  gbuf.pos[i3] = world[0]; gbuf.pos[i3 + 1] = world[1]; gbuf.pos[i3 + 2] = world[2]
+  gbuf.normal[i3] = n[0]; gbuf.normal[i3 + 1] = n[1]; gbuf.normal[i3 + 2] = n[2]
+  gbuf.albedo[i3] = base[0]; gbuf.albedo[i3 + 1] = base[1]; gbuf.albedo[i3 + 2] = base[2]
+  gbuf.direct[i3] = comps.direct[0]; gbuf.direct[i3 + 1] = comps.direct[1]; gbuf.direct[i3 + 2] = comps.direct[2]
+  gbuf.ambient[i3] = comps.ambient[0]; gbuf.ambient[i3 + 1] = comps.ambient[1]; gbuf.ambient[i3 + 2] = comps.ambient[2]
+  gbuf.spec[i3] = comps.spec[0]; gbuf.spec[i3 + 1] = comps.spec[1]; gbuf.spec[i3 + 2] = comps.spec[2]
+  gbuf.rough[idx] = Math.min(1, Math.max(0.04, mat.roughness ?? 0.5))
+  gbuf.metal[idx] = clamp01(mat.metallic ?? 0)
+  // fog factor matches shading.applyFog so the screen-space passes attenuate the
+  // indirect terms by the same amount the beauty pass already did
+  let f = 0
+  if (shade.fogDensity > 0) {
+    const dist = length(sub(world, shade.eye))
+    f = clamp01(1 - Math.exp(-dist * shade.fogDensity))
+  }
+  gbuf.fog[idx] = f
+  gbuf.mask[idx] = 1
 }
 
 // Map the overdraw counters to a heatmap after all triangles are drawn.

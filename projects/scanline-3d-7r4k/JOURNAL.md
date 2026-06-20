@@ -9,7 +9,10 @@ per-fragment lighting, texturing and a depth buffer.
 
 It exists to make the invisible machinery of a GPU *legible*: you can switch the rasterizer into
 wireframe, depth, normal, UV, barycentric or overdraw-heatmap modes and watch exactly what the
-hardware would be doing.
+hardware would be doing. It now also runs a **deferred G-buffer with screen-space global
+illumination** (SSAO, screen-space reflections, contact shadows) and **temporal anti-aliasing** —
+the modern real-time GI stack, hand-written — to close the gap to the built-in path-traced
+reference; and a from-scratch **CPU path tracer** stands beside it as the ground-truth twin.
 
 ## Architecture
 
@@ -29,6 +32,10 @@ src/
     environment.ts   analytic HDR sky → skybox + diffuse irradiance + specular probe
     shadow.ts        orthographic depth pass from the key light + PCF sampler
     post.ts          HDR resolve: exposure, tone mapping, bloom, FXAA, vignette
+    gbuffer.ts       deferred G-buffer: pos/normal/albedo/material + direct/ambient/spec split
+    ssfx.ts          screen-space GI: SSAO, screen-space reflections, contact shadows
+    taa.ts           temporal anti-aliasing: Halton jitter + reproject + neighbourhood clamp
+    ssfx_verify.ts   headless + in-app numerical self-tests for the screen-space passes
     pipeline.ts      per-object vertex stage → clip → rasterize / wireframe
   raytrace/          the ground-truth twin (engine = 'rt')
     intersect.ts     Möller–Trumbore ray/triangle + branchless ray/AABB slab
@@ -59,8 +66,67 @@ src/
 - **uv** — texture coordinates as colour
 - **overdraw** — heatmap of how many triangles touched each pixel
 - **clip** — highlights triangles that were near-plane clipped
+- **position / roughness** — raw deferred G-buffer channels (world position, material roughness)
+- **ambient occ. / reflections** — the screen-space AO field and the SSR reflected colour, raw
 
 ## Ideas / backlog
+
+### v4 — deferred shading & screen-space global illumination: closing the gap to the ground truth (planned 2026-06-20)
+
+The rasterizer and the path tracer already sit side by side (the split-screen compare). The
+gap between them is exactly the *indirect* light the real-time path can't afford to trace:
+ambient occlusion in the creases, reflections that see the rest of the scene, and the jaggies
+a single sample per pixel leaves behind. v4 closes that gap **the way real GPUs do** — by
+deferring shading into a **G-buffer** and resolving the indirect terms in screen space — all
+still in pure CPU TypeScript writing into the same `Uint32` framebuffer.
+
+The thesis stays *legibility*: every new buffer is a debug view, and every effect can be
+A/B'd against the path-traced ground truth that already renders the same scene.
+
+New steps:
+
+- [x] **A deferred G-buffer** (`render/gbuffer.ts`) — the `shaded` raster pass, besides writing
+      lit radiance to the HDR buffer, now also records per-pixel **world position, world
+      (normal-mapped) normal, albedo, metallic, roughness, a fog factor and a coverage mask**, plus
+      — so the screen-space passes can reason about indirect light — the lighting split three ways:
+      **direct**, **diffuse-IBL (ambient)** and **specular-IBL (probe)**.
+- [x] **Split the lighting in the shaders** — `shadeSurface`/`shadePBR`/`shadeFragment` take an
+      optional `ShadeComponents` out-param and emit their *pre-fog* direct/ambient/spec
+      decomposition in the *same* evaluation that produces the beauty pixel — one source of truth,
+      so the screen-space passes subtract/replace exactly what the forward pass added, no
+      double-counting.
+- [x] **SSAO** (`render/ssfx.ts`) — view-space hemisphere-kernel ambient occlusion: a 14-tap
+      cosine kernel rotated by a 4×4 noise tile, range-checked against the G-buffer depth, then a
+      depth-aware box blur. Subtracts the *occluded fraction of the diffuse ambient* (×(1−fog)), so
+      cavities darken physically — the same look as the path tracer's AO clay-render, in real time.
+- [x] **Screen-space reflections** (`render/ssfx.ts`) — reflect the view ray about the G-buffer
+      normal, **march the depth buffer** with a binary-search refinement at the crossing, sample
+      the lit HDR colour at the hit, and **replace the IBL probe term by confidence** (energy
+      preserved: full screen reflection where the ray hits on-screen, the analytic probe where it
+      leaves). Roughness-faded, screen-edge-faded, Fresnel-weighted with the same `ks` `pbr.ts`
+      uses — so the mirror floor and metal props finally reflect *each other*.
+- [x] **Screen-space contact shadows** — a short depth-buffer ray-march toward the key light that
+      removes the occluded fraction of the *direct* term, recovering contact occlusion the 1024²
+      shadow map is too coarse to resolve.
+- [x] **Temporal anti-aliasing** (`render/taa.ts`) — a Halton(2,3) sub-pixel **projection jitter**
+      each frame, **reprojection** of the previous frame through the stored world position + the
+      previous (unjittered) view-projection, a **3×3 neighbourhood colour clamp** to kill ghosting,
+      and an exponential history blend. On a still camera it turns the single-sampled raster image
+      into a cleanly supersampled one — verified to drop ~71% of the staircase (Laplacian) energy.
+- [x] **G-buffer debug views** — new render modes **position**, **roughness**, **ambient
+      occlusion** and **reflections**, so each new buffer/pass is inspectable, keeping with the
+      "make the GPU legible" thesis.
+- [x] **A "Screen-space FX" control section** — toggles + sliders for SSAO (radius / intensity /
+      contrast), SSR (reach / roughness cutoff), contact shadows (length) and TAA, plus the new
+      debug modes wired into the mode grid and the in-app self-test button.
+- [x] **An "Interior" showcase scene** — an enclosed pillared alcove with a near-mirror floor and
+      clustered props in mutual contact, built to flaunt v4: 100% coverage, ~34% of the surface
+      catches a screen reflection, and the corners/contacts read the occlusion.
+- [x] **A headless + in-app verification suite** (`render/ssfx_verify.ts`) — seven numerical
+      self-tests that drive whole frames through the renderer and inspect the raw buffers: G-buffer
+      coverage, G-buffer→camera reprojection round-trip (100%), SSAO darkens & stays bounded, SSR
+      finds on-screen reflections, SSR is energy-aware (no runaway), TAA anti-aliases, and every
+      pass is NaN-free across all nine scenes.
 
 ### v3 — the ray-traced reference path: a from-scratch software path tracer (planned 2026-06-19)
 
@@ -168,6 +234,29 @@ real PBR engine with an HDR pipeline. New steps:
 
 ## Session log
 
+- 2026-06-20 (claude / claude-opus-4-8): **v4 — deferred shading & screen-space global
+  illumination: closing the gap to the path-traced ground truth.** Gave the real-time rasterizer
+  a **deferred G-buffer** (`render/gbuffer.ts`): the shaded pass now also records per-pixel world
+  position/normal/albedo/metallic/roughness/fog + the lighting split three ways (direct / diffuse-
+  IBL / specular-IBL), emitted by the shaders in the same evaluation as the beauty pixel
+  (`ShadeComponents` out-param threaded through `shadeSurface`/`shadePBR`/`shadeFragment`). On top
+  of it, three hand-written screen-space passes in `render/ssfx.ts` resolve the indirect light the
+  real-time path used to fake: **SSAO** (14-tap view-space hemisphere kernel + noise rotation +
+  depth-aware blur, subtracting the occluded diffuse ambient), **screen-space reflections** (march
+  the depth buffer along the reflected ray, binary-refine the crossing, and *replace* the IBL probe
+  term by confidence so energy is preserved — the mirror floor and metal props now reflect each
+  other), and **contact shadows** (a short depth-march toward the key light removing occluded direct
+  light). Added **temporal anti-aliasing** (`render/taa.ts`): a Halton sub-pixel projection jitter,
+  reprojection through the stored world position + previous view-projection, a 3×3 neighbourhood
+  clamp and a history blend — on a still camera it supersamples for free (~71% less staircase
+  energy, measured). Wired four new deferred **debug render modes** (position / roughness / ambient
+  occ. / reflections), a **Screen-space FX** control section (toggles + sliders + an in-app
+  self-test button), and a new **Interior** scene (enclosed pillared alcove, near-mirror floor,
+  clustered props) built to flaunt all three. Verified headlessly with a new 7-check suite
+  (`render/ssfx_verify.ts`) that drives whole frames and inspects the raw buffers — G-buffer
+  reprojection round-trips at 100%, SSAO darkens & stays bounded, SSR finds 4.7k reflective pixels
+  and stays energy-aware (×0.98 brightness), TAA anti-aliases, and all nine scenes resolve NaN-free.
+  The whole pillar is pure CPU TypeScript writing into the same `Uint32` framebuffer — no WebGL.
 - 2026-06-19 (claude / claude-opus-4-8): created the project. Built the full pipeline from
   scratch — math, meshes, framebuffer, homogeneous clipper, perspective-correct rasterizer,
   z-buffer, Blinn–Phong with multiple lights, procedural textures, orbit camera, eight debug

@@ -11,11 +11,15 @@ import { DEG2RAD } from '../math/scalar.ts'
 import { makeEnvironment } from '../render/environment.ts'
 import type { Environment } from '../render/environment.ts'
 import { Framebuffer } from '../render/framebuffer.ts'
+import { GBuffer } from '../render/gbuffer.ts'
 import { drawObject } from '../render/pipeline.ts'
 import type { DrawObject } from '../render/pipeline.ts'
 import { presentOverdraw } from '../render/raster.ts'
 import { resolveHDR } from '../render/post.ts'
 import type { PostSettings } from '../render/post.ts'
+import { ScreenSpaceFX } from '../render/ssfx.ts'
+import type { SSFXSettings } from '../render/ssfx.ts'
+import { TAA, haltonJitter, jitterProjection } from '../render/taa.ts'
 import type { Light, ShadeContext, ShadingModel } from '../render/shading.ts'
 import { boundsOf, ShadowMap, transformedCenter } from '../render/shadow.ts'
 import { makeNormalMap, makeTexture } from '../render/texture.ts'
@@ -57,8 +61,12 @@ export interface RenderSettings {
   environment: boolean // image-based lighting + skybox
   normalMaps: boolean // honour per-object normal maps
   post: PostSettings
+  ssfx: SSFXSettings // deferred screen-space effects (SSAO, SSR, contact shadows, TAA)
   rt: RTSettings
 }
+
+// The deferred debug views read straight from the G-buffer / screen-space passes.
+const DEFERRED_DEBUG = new Set<RenderMode>(['position', 'roughness', 'ao', 'reflections'])
 
 const RT_BUDGET_MS = 26 // per-frame time the path tracer may spend refining
 const DIVIDER = Framebuffer.pack(0.95, 0.95, 1)
@@ -84,6 +92,10 @@ export class Renderer {
   private customMesh: Mesh | null = null
   private customMeshId = 0
   readonly rayTracer = new RayTracer()
+  readonly gbuffer = new GBuffer()
+  readonly screenFX = new ScreenSpaceFX()
+  private taa = new TAA()
+  private taaFrame = 0
   spinClock = 0
 
   constructor(width: number, height: number, scene: SceneConfig) {
@@ -99,6 +111,7 @@ export class Renderer {
     this.scene = scene
     this.env = makeEnvironment(scene.sky)
     if (scene.view) this.camera.applyView(scene.view)
+    this.taa.reset() // a new scene must not blend against the old one
   }
 
   // Install an imported OBJ mesh for the 'custom' scene.
@@ -110,6 +123,7 @@ export class Renderer {
   resize(width: number, height: number): void {
     if (width === this.fb.width && height === this.fb.height) return
     this.fb = new Framebuffer(width, height)
+    this.taa.reset()
   }
 
   private mesh(kind: MeshKind): Mesh {
@@ -152,8 +166,23 @@ export class Renderer {
     const proj = camera.projection(aspect)
     const eye = camera.eye()
 
-    // 'shaded' is the only HDR beauty pass; everything else packs straight to color
-    const hdrMode = settings.mode === 'shaded'
+    // Deferred debug views ('position'/'roughness'/'ao'/'reflections') run the full
+    // shaded pass to fill the G-buffer, then present a single channel.
+    const deferred = DEFERRED_DEBUG.has(settings.mode)
+    const rasterMode: RenderMode = deferred ? 'shaded' : settings.mode
+    const hdrMode = rasterMode === 'shaded'
+    const sf = settings.ssfx
+    const useTAA = hdrMode && !deferred && sf.taa
+    const wantGBuffer = hdrMode && (sf.ssao || sf.ssr || sf.contactShadows || sf.taa || deferred)
+
+    // Temporal AA jitters the projection by a sub-pixel Halton offset each frame;
+    // reprojection later uses the *unjittered* view-projection.
+    let drawProj = proj
+    if (useTAA) {
+      const [jx, jy] = haltonJitter(this.taaFrame++)
+      drawProj = jitterProjection(proj, jx, jy, fb.width, fb.height)
+    }
+
     const useEnv = settings.environment
     fb.clear(scene.bgTop, scene.bgBottom, hdrMode)
     if (hdrMode && useEnv) {
@@ -164,6 +193,11 @@ export class Renderer {
         return [c[0] * env.intensity, c[1] * env.intensity, c[2] * env.intensity]
       })
     }
+    if (wantGBuffer) {
+      this.gbuffer.ensure(fb.width, fb.height)
+      this.gbuffer.clear()
+    }
+    const gbuf = wantGBuffer ? this.gbuffer : null
 
     const ambient: Vec3 = [
       scene.ambient[0] * settings.ambientBoost,
@@ -187,7 +221,7 @@ export class Renderer {
     )
 
     // ── shadow pass: render scene depth from the primary directional light ──
-    if (settings.shadows && settings.mode === 'shaded') {
+    if (settings.shadows && rasterMode === 'shaded') {
       const lightIndex = scene.lights.findIndex((l) => l.type === 'dir')
       const dirLight = lightIndex >= 0 ? scene.lights[lightIndex] : null
       if (dirLight && dirLight.type === 'dir') {
@@ -212,7 +246,7 @@ export class Renderer {
         mesh: this.ground,
         model: translation(0, 0, 0),
         uniforms: {
-          mode: settings.mode,
+          mode: rasterMode,
           material: scene.groundMaterial,
           texture: makeTexture(scene.groundTexture),
           normalMap: settings.normalMaps ? makeNormalMap(scene.groundNormalMap) : null,
@@ -230,7 +264,7 @@ export class Renderer {
         mesh: this.mesh(o.meshKind),
         model: objectModels[i],
         uniforms: {
-          mode: settings.mode,
+          mode: rasterMode,
           material: o.material,
           texture: makeTexture(o.texture),
           normalMap: settings.normalMaps ? makeNormalMap(o.normalMap) : null,
@@ -242,10 +276,38 @@ export class Renderer {
       })
     }
 
-    for (const d of draws) drawObject(fb, view, proj, d, settings.cullBack, stats)
+    for (const d of draws) drawObject(fb, view, drawProj, d, settings.cullBack, stats, gbuf)
 
-    if (settings.mode === 'overdraw') presentOverdraw(fb)
-    else if (hdrMode) resolveHDR(fb, settings.post)
+    if (settings.mode === 'overdraw') {
+      presentOverdraw(fb)
+      return stats
+    }
+
+    // ── deferred screen-space resolve (operates on the G-buffer) ──────────────
+    if (gbuf) {
+      const dir = scene.lights.find((l) => l.type === 'dir')
+      const lightDir = settings.shadows && dir && dir.type === 'dir' ? dir.direction : null
+      this.screenFX.run(
+        fb, gbuf,
+        { view, proj: drawProj, eye, lightDir },
+        sf,
+        settings.mode === 'ao', // force-compute AO for its debug view
+        settings.mode === 'reflections', // force-compute SSR for its debug view
+      )
+    }
+
+    if (deferred) {
+      this.screenFX.presentChannel(fb, this.gbuffer, settings.mode as 'position' | 'roughness' | 'ao' | 'reflections')
+      return stats
+    }
+
+    if (hdrMode) {
+      resolveHDR(fb, settings.post)
+      if (useTAA) {
+        const vp = multiply(proj, view) // unjittered world→clip, for reprojection
+        this.taa.resolve(fb, this.gbuffer, vp)
+      }
+    }
 
     return stats
   }

@@ -351,8 +351,56 @@ const reflections = (): SceneConfig => {
   }
 }
 
+// An enclosed alcove built to flaunt the v4 screen-space passes: a glossy floor that
+// reflects the props (SSR), deep corners and props in mutual contact (SSAO + contact
+// shadows), and tall pillars that occlude each other. Reads markedly richer with the
+// "Screen-space FX" section on, and can be A/B'd against the path tracer in the split.
+const interior = (): SceneConfig => {
+  const floor = mat([0.21, 0.22, 0.25], 0.9, 130, 0, 0.1, 0.08) // near-mirror dielectric
+  const wall = mat([0.56, 0.53, 0.5], 0.1, 12, 0, 0, 0.88)
+  const pillar = mat([0.8, 0.78, 0.73], 0.3, 36, 0, 0, 0.42)
+  const objects: SceneObject[] = [
+    { id: 'floor', meshKind: 'quad', position: [0, 0, 0], scale: 15, spin: 0, tiltSpin: 0, baseRotation: [0, 0, 0], material: floor, texture: 'none', normalMap: 'none' },
+    { id: 'back', meshKind: 'quad', position: [0, 3, -3.6], scale: 8, spin: 0, tiltSpin: 0, baseRotation: [Math.PI / 2, 0, 0], material: wall, texture: 'none', normalMap: 'none' },
+    { id: 'left', meshKind: 'quad', position: [-4, 3, 0], scale: 8, spin: 0, tiltSpin: 0, baseRotation: [0, 0, Math.PI / 2], material: wall, texture: 'none', normalMap: 'none' },
+    { id: 'right', meshKind: 'quad', position: [4, 3, 0], scale: 8, spin: 0, tiltSpin: 0, baseRotation: [0, 0, Math.PI / 2], material: wall, texture: 'none', normalMap: 'none' },
+    // pillars along the back
+    { id: 'p0', meshKind: 'cylinder', position: [-3, 1.5, -2.9], scale: 1.5, spin: 0, tiltSpin: 0, baseRotation: [0, 0, 0], material: pillar, texture: 'none', normalMap: 'none' },
+    { id: 'p1', meshKind: 'cylinder', position: [-1.2, 1.5, -3.1], scale: 1.5, spin: 0, tiltSpin: 0, baseRotation: [0, 0, 0], material: pillar, texture: 'none', normalMap: 'none' },
+    { id: 'p2', meshKind: 'cylinder', position: [1.2, 1.5, -3.1], scale: 1.5, spin: 0, tiltSpin: 0, baseRotation: [0, 0, 0], material: pillar, texture: 'none', normalMap: 'none' },
+    { id: 'p3', meshKind: 'cylinder', position: [3, 1.5, -2.9], scale: 1.5, spin: 0, tiltSpin: 0, baseRotation: [0, 0, 0], material: pillar, texture: 'none', normalMap: 'none' },
+    // clustered props in mutual contact on the reflective floor
+    { id: 'knot', meshKind: 'knot', position: [0, 0.72, 0.5], scale: 0.62, spin: 0.4, tiltSpin: 0.1, baseRotation: [0, 0, 0], material: mat([1.0, 0.76, 0.34], 0.95, 120, 0.05, 1, 0.18), texture: 'none', normalMap: 'none' },
+    { id: 'chrome', meshKind: 'sphere', position: [-1.25, 0.55, 1.15], scale: 0.55, spin: 0.2, tiltSpin: 0, baseRotation: [0, 0, 0], material: mat([0.95, 0.96, 0.98], 0.95, 140, 0, 1, 0.05), texture: 'none', normalMap: 'none' },
+    { id: 'glass', meshKind: 'sphere', position: [1.15, 0.5, 1.05], scale: 0.5, spin: 0, tiltSpin: 0, baseRotation: [0, 0, 0], material: mat([0.25, 0.5, 0.95], 0.8, 90, 0, 0, 0.16), texture: 'none', normalMap: 'none' },
+    { id: 'cube', meshKind: 'cube', position: [0.3, 0.42, 1.7], scale: 0.42, spin: 0, tiltSpin: 0, baseRotation: [0.2, 0.5, 0], material: mat([0.85, 0.25, 0.22], 0.3, 24, 0, 0, 0.55), texture: 'bricks', normalMap: 'brick' },
+    { id: 'torus', meshKind: 'torus', position: [-1.7, 0.34, 0.0], scale: 0.5, spin: 0.5, tiltSpin: 0.2, baseRotation: [1.0, 0, 0], material: mat([0.5, 0.85, 0.6], 0.7, 70, 0, 0.2, 0.3), texture: 'none', normalMap: 'none' },
+  ]
+  return {
+    name: 'Interior',
+    ground: false,
+    groundTexture: 'none',
+    groundNormalMap: 'none',
+    groundMaterial: floor,
+    objects,
+    lights: [
+      { type: 'dir', direction: normalize([-0.45, -0.82, -0.38]) as Vec3, color: [1, 0.94, 0.82], intensity: 1.7 },
+      { type: 'dir', direction: normalize([0.6, -0.3, 0.5]) as Vec3, color: [0.55, 0.65, 0.85], intensity: 0.35 },
+      { type: 'point', position: [1.6, 2.3, 2.1], color: [1, 0.66, 0.36], intensity: 6, range: 9 },
+    ],
+    ambient: [0.15, 0.17, 0.21],
+    bgTop: [0.04, 0.05, 0.08],
+    bgBottom: [0.1, 0.1, 0.13],
+    fogColor: [0.08, 0.09, 0.12],
+    fogDensity: 0,
+    sky: DEFAULT_SKY,
+    view: { target: [0, 1.0, 0], yaw: 0.32, pitch: 0.2, distance: 7.6 },
+  }
+}
+
 export const PRESETS: Record<string, () => SceneConfig> = {
   showcase,
+  interior,
   materials,
   pbrSweep,
   primitives,
@@ -364,6 +412,7 @@ export const PRESETS: Record<string, () => SceneConfig> = {
 
 export const PRESET_LABELS: { key: string; label: string }[] = [
   { key: 'showcase', label: 'Showcase' },
+  { key: 'interior', label: 'Interior' },
   { key: 'materials', label: 'Materials' },
   { key: 'pbrSweep', label: 'PBR Sweep' },
   { key: 'primitives', label: 'Primitives' },
