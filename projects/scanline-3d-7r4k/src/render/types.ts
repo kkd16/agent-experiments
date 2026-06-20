@@ -19,6 +19,11 @@ export type RenderMode =
   | 'uv'
   | 'overdraw'
   | 'clip'
+  // deferred G-buffer / screen-space debug views (v4)
+  | 'position'
+  | 'roughness'
+  | 'ao'
+  | 'reflections'
 
 export interface FrameStats {
   trianglesIn: number

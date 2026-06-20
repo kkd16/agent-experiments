@@ -10,7 +10,7 @@
 import { clamp01 } from '../math/scalar.ts'
 import type { Vec3 } from '../math/vec.ts'
 import { add, dot, length, normalize, reflect, scale, sub } from '../math/vec.ts'
-import type { ShadeContext, Material } from './shading.ts'
+import type { ShadeComponents, ShadeContext, Material } from './shading.ts'
 import { applyFog } from './shading.ts'
 
 const PI = Math.PI
@@ -46,12 +46,17 @@ function fresnelRoughness(cosTheta: number, f0: Vec3, rough: number): Vec3 {
   return [f0[0] + (m - f0[0]) * f, f0[1] + (my - f0[1]) * f, f0[2] + (mz - f0[2]) * f]
 }
 
+// `out`, when supplied, receives the *pre-fog* decomposition of the radiance into
+// its direct, diffuse-IBL (ambient) and specular-IBL parts — the deferred G-buffer
+// and the screen-space passes (SSAO darkens `ambient`, SSR replaces `spec`, contact
+// shadows darken `direct`) all read it, so there is a single source of truth.
 export function shadePBR(
   base: Vec3,
   worldPos: Vec3,
   n: Vec3,
   mat: Material,
   ctx: ShadeContext,
+  out?: ShadeComponents,
 ): Vec3 {
   const metallic = clamp01(mat.metallic ?? 0)
   // clamp roughness away from 0 so the specular lobe stays finite
@@ -120,6 +125,11 @@ export function shadePBR(
     b += (kdB * diffuseColor[2] / PI + specB) * radiance[2] * w
   }
 
+  // r,g,b now hold the *direct* lighting; the indirect terms accumulate separately
+  // so the screen-space passes can isolate them.
+  let adr: number, adg: number, adb: number // diffuse IBL (ambient) — set in both branches
+  let asr = 0, asg = 0, asb = 0 // specular IBL (probe reflection) — only when an env is present
+
   // ── ambient: image-based lighting if available, else a flat ambient term ──
   if (ctx.environment) {
     const env = ctx.environment
@@ -129,22 +139,32 @@ export function shadePBR(
     const kdR = (1 - ks[0]) * (1 - metallic)
     const kdG = (1 - ks[1]) * (1 - metallic)
     const kdB = (1 - ks[2]) * (1 - metallic)
-    r += irr[0] * diffuseColor[0] * kdR * env.intensity
-    g += irr[1] * diffuseColor[1] * kdG * env.intensity
-    b += irr[2] * diffuseColor[2] * kdB * env.intensity
+    adr = irr[0] * diffuseColor[0] * kdR * env.intensity
+    adg = irr[1] * diffuseColor[1] * kdG * env.intensity
+    adb = irr[2] * diffuseColor[2] * kdB * env.intensity
     // specular IBL: reflect the view vector, sample the roughness-blurred probe.
     // A cheap analytic BRDF-LUT fit scales the probe by the Fresnel reflectance.
     const refl = reflect(scale(V, -1), n)
     const probe = env.specular(refl, rough)
     const ab = 1 - rough // crude environment-BRDF bias term
-    r += probe[0] * (ks[0] * ab + 0.04 * (1 - ab)) * env.intensity
-    g += probe[1] * (ks[1] * ab + 0.04 * (1 - ab)) * env.intensity
-    b += probe[2] * (ks[2] * ab + 0.04 * (1 - ab)) * env.intensity
+    asr = probe[0] * (ks[0] * ab + 0.04 * (1 - ab)) * env.intensity
+    asg = probe[1] * (ks[1] * ab + 0.04 * (1 - ab)) * env.intensity
+    asb = probe[2] * (ks[2] * ab + 0.04 * (1 - ab)) * env.intensity
   } else {
-    r += diffuseColor[0] * ctx.ambient[0]
-    g += diffuseColor[1] * ctx.ambient[1]
-    b += diffuseColor[2] * ctx.ambient[2]
+    adr = diffuseColor[0] * ctx.ambient[0]
+    adg = diffuseColor[1] * ctx.ambient[1]
+    adb = diffuseColor[2] * ctx.ambient[2]
   }
+
+  if (out) {
+    out.direct = [r, g, b]
+    out.ambient = [adr, adg, adb]
+    out.spec = [asr, asg, asb]
+  }
+
+  r += adr + asr
+  g += adg + asg
+  b += adb + asb
 
   if (mat.emission) {
     r += mat.emission[0]

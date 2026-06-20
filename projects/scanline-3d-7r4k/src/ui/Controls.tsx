@@ -3,10 +3,13 @@ import type { Engine, RenderSettings, RTSettings } from '../engine/renderer.ts'
 import type { RTMode } from '../raytrace/raytracer.ts'
 import type { RenderMode } from '../render/types.ts'
 import type { PostSettings, ToneMap } from '../render/post.ts'
+import type { SSFXSettings } from '../render/ssfx.ts'
 import type { ShadingModel } from '../render/shading.ts'
 import { PRESET_LABELS } from '../scene/scene.ts'
 import { runRTSelfTest } from '../raytrace/verify.ts'
 import type { RTTest } from '../raytrace/verify.ts'
+import { runSSFXSelfTest } from '../render/ssfx_verify.ts'
+import type { SSFXTest } from '../render/ssfx_verify.ts'
 
 const MODES: { key: RenderMode; label: string; blurb: string }[] = [
   { key: 'shaded', label: 'Shaded', blurb: 'Full HDR beauty pass — lighting, IBL, normal maps, tone mapping & post FX.' },
@@ -17,6 +20,10 @@ const MODES: { key: RenderMode; label: string; blurb: string }[] = [
   { key: 'uv', label: 'UV', blurb: 'Perspective-correct texture coordinates as colour.' },
   { key: 'overdraw', label: 'Overdraw', blurb: 'Heatmap of how many triangles touched each pixel.' },
   { key: 'clip', label: 'Clip', blurb: 'Red = triangles cut by the near-plane clipper.' },
+  { key: 'position', label: 'Position', blurb: 'Deferred G-buffer: world position wrapped into colour.' },
+  { key: 'roughness', label: 'Roughness', blurb: 'Deferred G-buffer: per-pixel material roughness (black = mirror).' },
+  { key: 'ao', label: 'Ambient occ.', blurb: 'Screen-space ambient occlusion buffer — the raster twin of the path tracer’s AO render.' },
+  { key: 'reflections', label: 'Reflections', blurb: 'Screen-space reflections: the on-screen colour each pixel reflects (black where the ray missed).' },
 ]
 
 const TONE_MAPS: { key: ToneMap; label: string }[] = [
@@ -84,9 +91,11 @@ export default function Controls(props: Props) {
   const set = (patch: Partial<RenderSettings>): void => setSettings({ ...settings, ...patch })
   const setPost = (patch: Partial<PostSettings>): void => set({ post: { ...settings.post, ...patch } })
   const setRT = (patch: Partial<RTSettings>): void => set({ rt: { ...settings.rt, ...patch } })
+  const setSSFX = (patch: Partial<SSFXSettings>): void => set({ ssfx: { ...settings.ssfx, ...patch } })
   const activeMode = MODES.find((m) => m.key === settings.mode) ?? MODES[0]
   const post = settings.post
   const rt = settings.rt
+  const ssfx = settings.ssfx
   const isRT = settings.engine === 'rt'
   const [objText, setObjText] = useState('')
   const [tests, setTests] = useState<RTTest[] | null>(null)
@@ -98,6 +107,16 @@ export default function Controls(props: Props) {
     setTimeout(() => {
       setTests(runRTSelfTest())
       setTesting(false)
+    }, 30)
+  }
+  const [ssfxTests, setSsfxTests] = useState<SSFXTest[] | null>(null)
+  const [ssfxTesting, setSsfxTesting] = useState(false)
+  const runSSFX = (): void => {
+    setSsfxTesting(true)
+    setSsfxTests(null)
+    setTimeout(() => {
+      setSsfxTests(runSSFXSelfTest())
+      setSsfxTesting(false)
     }, 30)
   }
 
@@ -283,6 +302,73 @@ export default function Controls(props: Props) {
           <Toggle label="Ground plane" value={settings.showGround} onChange={(v) => set({ showGround: v })} />
         </div>
       </Section>
+
+      {!isRT && (
+        <Section title="Screen-space FX (deferred)">
+          <div className="toggles">
+            <Toggle label="Ambient occlusion" value={ssfx.ssao} onChange={(v) => setSSFX({ ssao: v })} />
+            <Toggle label="Reflections (SSR)" value={ssfx.ssr} onChange={(v) => setSSFX({ ssr: v })} />
+            <Toggle label="Contact shadows" value={ssfx.contactShadows} onChange={(v) => setSSFX({ contactShadows: v })} />
+            <Toggle label="Temporal AA" value={ssfx.taa} onChange={(v) => setSSFX({ taa: v })} />
+          </div>
+          {ssfx.ssao && (
+            <>
+              <Slider
+                label="AO radius" value={ssfx.ssaoRadius} min={0.1} max={1.5} step={0.05}
+                onChange={(v) => setSSFX({ ssaoRadius: v })} format={(v) => v.toFixed(2)}
+              />
+              <Slider
+                label="AO intensity" value={ssfx.ssaoIntensity} min={0.2} max={3} step={0.1}
+                onChange={(v) => setSSFX({ ssaoIntensity: v })} format={(v) => `${v.toFixed(1)}×`}
+              />
+              <Slider
+                label="AO contrast" value={ssfx.ssaoPower} min={0.5} max={3} step={0.1}
+                onChange={(v) => setSSFX({ ssaoPower: v })} format={(v) => v.toFixed(1)}
+              />
+            </>
+          )}
+          {ssfx.ssr && (
+            <>
+              <Slider
+                label="SSR reach" value={ssfx.ssrMaxDist} min={1} max={16} step={0.5}
+                onChange={(v) => setSSFX({ ssrMaxDist: v })} format={(v) => v.toFixed(1)}
+              />
+              <Slider
+                label="SSR roughness cutoff" value={ssfx.ssrRoughnessCutoff} min={0.05} max={1} step={0.05}
+                onChange={(v) => setSSFX({ ssrRoughnessCutoff: v })} format={(v) => v.toFixed(2)}
+              />
+            </>
+          )}
+          {ssfx.contactShadows && (
+            <Slider
+              label="Contact length" value={ssfx.contactLength} min={0.05} max={1} step={0.05}
+              onChange={(v) => setSSFX({ contactLength: v })} format={(v) => v.toFixed(2)}
+            />
+          )}
+          <p className="blurb">
+            A deferred G-buffer resolves indirect light in screen space — occlusion in the creases,
+            true on-screen reflections, and temporal supersampling — closing the gap to the
+            path-traced reference. Switch <em>Auto-rotate</em> off to watch TAA sharpen. The
+            <em> Ambient occ.</em> &amp; <em>Reflections</em> render modes show each buffer raw.
+          </p>
+          <button className="reset" onClick={runSSFX} type="button" disabled={ssfxTesting} style={{ width: '100%' }}>
+            {ssfxTesting ? 'Running…' : 'Run screen-space self-test'}
+          </button>
+          {ssfxTests && (
+            <div className="rt-tests">
+              <p className="blurb">
+                {ssfxTests.filter((t) => t.pass).length}/{ssfxTests.length} checks passed — each drives whole
+                frames through the renderer and inspects the raw buffers.
+              </p>
+              {ssfxTests.map((t) => (
+                <p key={t.name} className={`obj-msg ${t.pass ? 'ok' : 'err'}`}>
+                  {t.pass ? '✓' : '✗'} {t.name} — {t.detail}
+                </p>
+              ))}
+            </div>
+          )}
+        </Section>
+      )}
 
       <Section title="Post FX (HDR · shaded view)">
         <div className="seg seg-wrap">

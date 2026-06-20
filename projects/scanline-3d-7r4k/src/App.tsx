@@ -4,6 +4,7 @@ import Controls from './ui/Controls.tsx'
 import { useEngine } from './engine/useEngine.ts'
 import type { RenderSettings } from './engine/renderer.ts'
 import { DEFAULT_POST } from './render/post.ts'
+import { DEFAULT_SSFX } from './render/ssfx.ts'
 import { parseOBJ, SAMPLE_OBJ } from './geometry/obj.ts'
 
 const DEFAULT_SETTINGS: RenderSettings = {
@@ -20,6 +21,7 @@ const DEFAULT_SETTINGS: RenderSettings = {
   environment: true,
   normalMaps: true,
   post: DEFAULT_POST,
+  ssfx: DEFAULT_SSFX,
   rt: {
     mode: 'path',
     maxBounces: 4,
