@@ -17,6 +17,10 @@ import {
   WheelJoint,
   World,
   crossSV,
+  makeBlob,
+  makeCloth,
+  makeRope,
+  makeSoftBox,
   type Joint,
   type Shape,
 } from '../engine';
@@ -36,7 +40,7 @@ export interface SceneDef {
   id: string;
   name: string;
   description: string;
-  category: 'Stacking' | 'Joints' | 'Showcase' | 'Materials' | 'Stress';
+  category: 'Stacking' | 'Joints' | 'Soft' | 'Showcase' | 'Materials' | 'Stress';
   build: (world: World, rng: Rng) => BuildResult;
 }
 
@@ -1233,6 +1237,193 @@ const motorPlatform: SceneDef = {
   },
 };
 
+// ---- Soft bodies (XPBD) ----------------------------------------------------
+
+const jellyPit: SceneDef = {
+  id: 'jelly-pit',
+  name: 'Jelly Pit',
+  description:
+    'Pressurised XPBD blobs poured into a bowl — they wobble, squash and pile up, each one two-way coupled to the rigid world. Grab a blob and fling it, or drop shapes on the pile.',
+  category: 'Soft',
+  build: (world, rng) => {
+    ground(world, 7);
+    walls(world, 7, 8);
+    const cols = ['#ff79c6', '#ffd166', '#7CFFCB', '#4dd2ff', '#c792ea', '#ff9e64', '#ff6b6b'];
+    for (let i = 0; i < 7; i++) {
+      const r = rng.range(0.62, 1.0);
+      world.addSoftBody(
+        makeBlob(new Vec2(rng.range(-4, 4), 2.5 + i * 1.9), r, 18, {
+          mass: r * r * 3,
+          stiffness: 0.9,
+          color: cols[i % cols.length],
+        }),
+      );
+    }
+    return { camera: { center: new Vec2(0, 4.5), scale: 32 } };
+  },
+};
+
+const clothHammock: SceneDef = {
+  id: 'cloth-hammock',
+  name: 'Hammock',
+  description:
+    'A pinned cloth sheet sags into a hammock and catches falling rigid bodies — the weight bends the cloth, the cloth holds the weight. Two-way coupling you can watch settle.',
+  category: 'Soft',
+  build: (world, rng) => {
+    ground(world, 16, -5);
+    world.addBody(new Body(Polygon.box(0.25, 2.2), { type: BodyType.Static, position: new Vec2(-4.2, 2) }));
+    world.addBody(new Body(Polygon.box(0.25, 2.2), { type: BodyType.Static, position: new Vec2(4.2, 2) }));
+    const cloth = makeCloth(new Vec2(-4, 4), 8, 2.6, 26, 8, {
+      pin: 'top-corners',
+      mass: 3.5,
+      stiffness: 0.9,
+      color: '#7CFFCB',
+    });
+    world.addSoftBody(cloth);
+    let dropped = 0;
+    return {
+      camera: { center: new Vec2(0, 2), scale: 34 },
+      update: (time) => {
+        if (dropped < 6 && time > dropped * 1.5 + 1) {
+          dropped++;
+          world.addBody(
+            new Body(new Circle(rng.range(0.3, 0.5)), {
+              position: new Vec2(rng.range(-2.4, 2.4), 6),
+              density: 1,
+              color: colorFor(dropped),
+            }),
+          );
+        }
+      },
+    };
+  },
+};
+
+const jelloCubes: SceneDef = {
+  id: 'jello-cubes',
+  name: 'Jello Cubes',
+  description:
+    'Deformable lattice solids — structural + shear + bend springs and per-cell area preservation — dropped onto the floor. They squash on impact, wobble back to shape, and jiggle when you grab and stretch them.',
+  category: 'Soft',
+  build: (world) => {
+    ground(world, 9);
+    walls(world, 9, 6);
+    const specs: Array<[number, number, number, string]> = [
+      [-2.4, 2.6, 0.45, '#6ea8ff'],
+      [0, 3.6, 0.6, '#c792ea'],
+      [2.4, 2.9, 0.5, '#7CFFCB'],
+    ];
+    for (const [x, y, h, color] of specs) {
+      world.addSoftBody(
+        makeSoftBox(new Vec2(x, y), h, h, 6, 6, {
+          mass: 1.4,
+          stiffness: 0.42,
+          restitution: 0.15,
+          color,
+        }),
+      );
+    }
+    return { camera: { center: new Vec2(0, 2.5), scale: 40 } };
+  },
+};
+
+const trampoline: SceneDef = {
+  id: 'trampoline',
+  name: 'Trampoline',
+  description:
+    'A springy cloth membrane pinned between two posts. Rigid balls rain down, the sheet stretches taut and flings them back — momentum handed cleanly from soft to rigid and back.',
+  category: 'Soft',
+  build: (world, rng) => {
+    ground(world, 14, -6);
+    world.addBody(new Body(Polygon.box(0.4, 1.5), { type: BodyType.Static, position: new Vec2(-5.4, 2.4) }));
+    world.addBody(new Body(Polygon.box(0.4, 1.5), { type: BodyType.Static, position: new Vec2(5.4, 2.4) }));
+    const mat = makeCloth(new Vec2(-5, 3.1), 10, 1.0, 30, 4, {
+      pin: 'sides',
+      mass: 6,
+      stiffness: 0.82,
+      color: '#4dd2ff',
+    });
+    world.addSoftBody(mat);
+    let dropped = 0;
+    return {
+      camera: { center: new Vec2(0, 2), scale: 34 },
+      update: (time) => {
+        if (dropped < 8 && time > dropped * 0.85 + 0.5) {
+          dropped++;
+          world.addBody(
+            new Body(new Circle(rng.range(0.3, 0.45)), {
+              position: new Vec2(rng.range(-3, 3), 7),
+              density: 1,
+              restitution: 0.2,
+              color: colorFor(dropped),
+            }),
+          );
+        }
+      },
+    };
+  },
+};
+
+const waterBalloons: SceneDef = {
+  id: 'water-balloons',
+  name: 'Water Balloons',
+  description:
+    'High-pressure, low-friction blobs dropped into a tank — they jiggle, splat and bounce off one another and the walls. Crank gravity down and watch them slosh in slow motion.',
+  category: 'Soft',
+  build: (world, rng) => {
+    ground(world, 7);
+    walls(world, 7, 11);
+    const cols = ['#4dd2ff', '#ff79c6', '#7CFFCB', '#ffd166'];
+    for (let i = 0; i < 5; i++) {
+      const r = rng.range(0.7, 0.95);
+      world.addSoftBody(
+        makeBlob(new Vec2(rng.range(-3.5, 3.5), 3 + i * 2.2), r, 20, {
+          mass: r * r * 3,
+          stiffness: 0.86,
+          areaStiffness: 4,
+          restitution: 0.18,
+          friction: 0.12,
+          color: cols[i % cols.length],
+        }),
+      );
+    }
+    return { camera: { center: new Vec2(0, 4), scale: 32 } };
+  },
+};
+
+const ropeSwings: SceneDef = {
+  id: 'rope-swings',
+  name: 'Rope Swings',
+  description:
+    'A row of ropes pinned at the top, each a slightly different stiffness. Grab and swing them, or let the falling blobs barge through — Verlet ropes coupled to the soft and rigid worlds.',
+  category: 'Soft',
+  build: (world, rng) => {
+    ground(world, 9, -1);
+    walls(world, 9, 9, -1);
+    const cols = ['#ffd166', '#ff79c6', '#7CFFCB', '#4dd2ff', '#c792ea'];
+    for (let i = 0; i < 5; i++) {
+      const x = -4 + i * 2;
+      world.addSoftBody(
+        makeRope(new Vec2(x, 5), new Vec2(x, 1.3), 14, {
+          pinStart: true,
+          mass: 0.8,
+          stiffness: 0.96,
+          color: cols[i % cols.length],
+        }),
+      );
+    }
+    for (let i = 0; i < 2; i++) {
+      world.addSoftBody(
+        makeBlob(new Vec2(-2.5 + i * 5, 7 + i), rng.range(0.6, 0.8), 16, {
+          mass: 2,
+          color: '#ff6b6b',
+        }),
+      );
+    }
+    return { camera: { center: new Vec2(0, 3), scale: 34 } };
+  },
+};
+
 export const SCENES: SceneDef[] = [
   pyramid,
   stacks,
@@ -1250,6 +1441,12 @@ export const SCENES: SceneDef[] = [
   demolition,
   breakableBridge,
   limits,
+  jellyPit,
+  clothHammock,
+  jelloCubes,
+  trampoline,
+  waterBalloons,
+  ropeSwings,
   car,
   tumbler,
   dominoes,

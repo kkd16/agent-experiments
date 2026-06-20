@@ -4,6 +4,7 @@ import {
   BodyType,
   DEFAULT_CONFIG,
   MouseJoint,
+  Particle,
   Rng,
   Vec2,
   World,
@@ -43,9 +44,36 @@ export interface SimulationProps {
 }
 
 interface Interaction {
-  mode: 'none' | 'drag' | 'maybe' | 'pan';
+  mode: 'none' | 'drag' | 'softgrab' | 'maybe' | 'pan';
   startX: number;
   startY: number;
+}
+
+/** A grabbed soft-body particle: pinned to the pointer until released. */
+interface SoftGrab {
+  particle: Particle;
+  savedInvMass: number;
+  prev: Vec2;
+  flingVel: Vec2;
+}
+
+const GRAB_RADIUS = 0.5; // world units — how close a click must land to grab
+
+/** Nearest soft-body particle to `wp` within `GRAB_RADIUS`, or null. */
+function findSoftParticle(world: World, wp: Vec2): Particle | null {
+  let best: Particle | null = null;
+  let bestD = GRAB_RADIUS;
+  for (const sb of world.softBodies) {
+    for (const p of sb.particles) {
+      if (p.invMass === 0) continue;
+      const d = p.pos.distanceTo(wp);
+      if (d < bestD) {
+        bestD = d;
+        best = p;
+      }
+    }
+  }
+  return best;
 }
 
 export default function Simulation(props: SimulationProps) {
@@ -60,6 +88,7 @@ export default function Simulation(props: SimulationProps) {
   const sceneUpdateRef = useRef<((time: number, dt: number) => void) | undefined>(undefined);
   const rngRef = useRef<Rng>(new Rng(0xc0ffee));
   const mouseJointRef = useRef<MouseJoint | null>(null);
+  const softGrabRef = useRef<SoftGrab | null>(null);
   const hoveredRef = useRef<Body | null>(null);
   const interactionRef = useRef<Interaction>({ mode: 'none', startX: 0, startY: 0 });
   const pointerWorldRef = useRef<Vec2>(Vec2.ZERO);
@@ -84,6 +113,7 @@ export default function Simulation(props: SimulationProps) {
       cameraRef.current.scale = result.camera.scale;
     }
     mouseJointRef.current = null;
+    softGrabRef.current = null;
     hoveredRef.current = null;
   }, [props.sceneId, props.resetSignal]);
 
@@ -145,6 +175,13 @@ export default function Simulation(props: SimulationProps) {
       }
       // Keep a dragged body's target current even while paused.
       if (mouseJointRef.current) mouseJointRef.current.target = pointerWorldRef.current;
+      // Keep a grabbed soft particle pinned to the pointer (a movable anchor).
+      if (softGrabRef.current) {
+        const g = softGrabRef.current;
+        g.particle.pos = pointerWorldRef.current;
+        g.particle.prev = pointerWorldRef.current;
+        g.particle.vel = Vec2.ZERO;
+      }
 
       const extras = computeExtras(world, controls, hoveredRef.current, mouseJointRef.current);
       ctx.save();
@@ -182,9 +219,19 @@ export default function Simulation(props: SimulationProps) {
       mouseJointRef.current = mj;
       body.wake();
       interactionRef.current = { mode: 'drag', startX: e.clientX, startY: e.clientY };
-    } else {
-      interactionRef.current = { mode: 'maybe', startX: e.clientX, startY: e.clientY };
+      return;
     }
+    const particle = findSoftParticle(world, wp);
+    if (particle) {
+      softGrabRef.current = { particle, savedInvMass: particle.invMass, prev: wp, flingVel: Vec2.ZERO };
+      particle.invMass = 0;
+      particle.pos = wp;
+      particle.prev = wp;
+      particle.vel = Vec2.ZERO;
+      interactionRef.current = { mode: 'softgrab', startX: e.clientX, startY: e.clientY };
+      return;
+    }
+    interactionRef.current = { mode: 'maybe', startX: e.clientX, startY: e.clientY };
   }
 
   function onPointerMove(e: React.PointerEvent): void {
@@ -195,6 +242,17 @@ export default function Simulation(props: SimulationProps) {
 
     if (it.mode === 'drag') {
       if (mouseJointRef.current) mouseJointRef.current.target = wp;
+      return;
+    }
+    if (it.mode === 'softgrab') {
+      const g = softGrabRef.current;
+      if (g) {
+        // Track a (clamped) fling velocity from the pointer's recent motion.
+        g.flingVel = clampLen(wp.sub(g.prev).mul(1 / FIXED_DT), 18);
+        g.prev = wp;
+        g.particle.pos = wp;
+        g.particle.prev = wp;
+      }
       return;
     }
     if (it.mode === 'maybe' || it.mode === 'pan') {
@@ -213,6 +271,11 @@ export default function Simulation(props: SimulationProps) {
     if (it.mode === 'drag' && mouseJointRef.current) {
       world.removeJoint(mouseJointRef.current);
       mouseJointRef.current = null;
+    } else if (it.mode === 'softgrab' && softGrabRef.current) {
+      const g = softGrabRef.current;
+      g.particle.invMass = g.savedInvMass;
+      g.particle.vel = g.flingVel; // release with the flick's momentum
+      softGrabRef.current = null;
     } else if (it.mode === 'maybe') {
       spawnBody(world, propsRef.current.controls.spawnKind, toWorld(e), rngRef.current);
     }
@@ -238,6 +301,12 @@ export default function Simulation(props: SimulationProps) {
       />
     </div>
   );
+}
+
+/** Clamp a vector's magnitude to at most `max`. */
+function clampLen(v: Vec2, max: number): Vec2 {
+  const len = v.length();
+  return len > max ? v.mul(max / len) : v;
 }
 
 function applyConfig(world: World, c: SimControls): void {

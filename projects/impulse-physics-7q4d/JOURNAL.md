@@ -48,6 +48,14 @@ the structure of a production engine (Box2D), implemented from first principles 
 - **Materials** — a body can carry a `tangentSpeed` to act as a **conveyor belt**: the contact
   solver folds the relative surface velocity into the friction target so the belt drags whatever
   rests on it up to speed.
+- **Soft bodies** (`soft/`, v5) — a second physics paradigm beside the rigid solver: **XPBD**
+  (extended position-based dynamics). Point-mass particles held by compliant distance, bending
+  and **area-preservation** constraints, advanced with the "small-steps" substep scheme so a
+  body's *material* (compliance) is step-size independent. Particles collide with every rigid
+  shape through the engine's own `core+radius` math (`collideParticle`) and exchange momentum
+  two-ways, so a heavy blob shoves a light crate and a falling crate dents a hammock. Builders
+  for blobs (pressurised rings), cloth/membranes, ropes and lattice solids (`makeBlob`,
+  `makeCloth`, `makeRope`, `makeSoftBox`).
 - **World** (`world.ts`) — fixed-step orchestration: broadphase → narrowphase (with begin/end
   **contact events**) → fluid forces → island assembly (union-find) → solve → **break overloaded
   joints** → integrate → **CCD sweep of bullet bodies** → island-based sleeping. Plus ray casting,
@@ -95,7 +103,71 @@ click **Verify engine** in the app.
 - [x] Gear joint (couples two revolute/prismatic joints by a ratio — gear trains & rack-and-pinion) (v4)
 - [x] Motor joint (drives B's pose relative to A — overpowerable moving platforms) (v4)
 - [x] Breakable joints (reaction-force/torque budget + `onJointBreak` event) (v4)
+- [x] **Soft bodies (XPBD)** — particles + compliant distance/bend/area constraints, two-way
+      coupled to the rigid world; blob/cloth/rope/lattice builders, 6 scenes, soft-body grabbing,
+      14 new verification checks (v5)
 - [ ] SVG/JSON scene export and a small scene editor
+- [ ] Self-collision *within* a soft body (intra-body particle contacts)
+- [ ] Pressure (rest-area > natural) without the energy it currently feeds a confined body
+
+## v5 — the soft-body release (XPBD deformables, two-way coupled) ✅ shipped
+
+The fifth major upgrade adds a *second physics paradigm* alongside the rigid solver:
+**deformable bodies**, built from scratch with **XPBD** (extended position-based dynamics).
+Where the rigid engine reasons in velocities and impulses, the soft engine reasons in
+*positions* — particles are moved to satisfy compliant constraints and their velocities are
+*derived* from the motion, which is what makes it unconditionally stable no matter how stiff
+the material. The two worlds are coupled two-ways: soft particles collide with every rigid
+shape through the engine's existing `core+radius` collision math, and the reaction is fed back
+into the rigid bodies, so a jelly can shove a crate and a crate can dent a hammock.
+
+### Plan (this session) — all shipped
+
+- [x] **Particle-vs-rigid collision** (`soft/collide.ts`) — treat a particle as a tiny disc and
+      resolve it against circle / capsule / rounded-polygon with the same closest-feature analysis
+      the narrowphase uses (a port of Box2D's polygon-circle, generalised to the skin radius).
+      Verified against an analytic box face (normal & depth) in the suite.
+- [x] **XPBD core** (`soft/softbody.ts`) — `Particle` (position-primary, derived velocity),
+      compliant **distance**, **bending** and **area-preservation** constraints (the 2-D
+      volume/pressure analogue, with the exact shoelace-area gradient), the four-phase substep, and
+      momentum metrics (area, centroid, linear momentum, kinetic energy) used by the tests.
+- [x] **The substep solver** (`soft/solver.ts`) — the "small-steps" scheme (Macklin 2019): N
+      substeps × a short iterated position solve. Collisions live **in the position solve**
+      (clamped depenetration interleaved with the constraints) so contact load propagates through
+      the network to the anchors; momentum is then exchanged in a separate velocity pass. A uniform
+      spatial hash resolves contacts *between* distinct soft bodies so jellies stack.
+- [x] **Two-way rigid coupling** — a momentum-conserving normal+friction impulse at each
+      particle–rigid contact, the reaction applied to the rigid body. Verified: a blob pushes a
+      free crate down, a cloth hammock catches a falling ball, neither tunnels.
+- [x] **Builders** — `makeBlob` (pressurised ring), `makeCloth` (pinnable membrane: top / corners /
+      sides), `makeRope` (chain), `makeSoftBox` (lattice solid with per-cell area preservation).
+- [x] **Renderer** — smooth filled blobs with a jelly highlight, filled cloth/solid meshes, thick
+      round-capped ropes, pinned-anchor dots.
+- [x] **Six scenes** (a new "Soft" category): Jelly Pit, Hammock, Jello Cubes, Trampoline, Water
+      Balloons, Rope Swings — and **soft-body grabbing** in the playground (click a blob to pin a
+      particle to the cursor; release to fling it).
+- [x] **Verification** — 14 new checks (suite 109 → **123**, all green): the collision primitive vs
+      an analytic face; free-blob **momentum conservation** (|Δp| ≈ 1e-11); area preservation on the
+      ground; pressure-driven inflation; a pinned rope hanging vertically; two-way coupling (the
+      crate reacts, never tunnels); a hammock catching a ball; and **bit-for-bit determinism**.
+
+### The hard bug — and the fix that defines the architecture
+
+The first cut put collision depenetration *after* the velocity-derivation phase. That looked
+fine on a blob resting on the ground but **exploded** the instant a heavy rigid ball pressed a
+stiff cloth: a particle swallowed by the large ball was shoved ~0.5 m out, and on the next
+substep the stiff distance constraints yanked it straight back — and because velocity is
+*derived from position change*, that 0.5 m correction became a ~240 m/s spurious velocity that
+launched the ball to y≈260. The fix is the architecture above: **collisions belong in the
+position solve, never as a velocity bias.** Position corrections add no kinetic energy, so a
+packed tank of jelly settles instead of buzzing — whereas the velocity-bias (Baumgarte) version
+pinned a confined scene at a steady, unphysical ~5 500 J forever (a perpetual-motion machine).
+Two honest limitations fell out and are documented: a rigid *polygon* can still sink through a
+*free* (unpinned) particle bed if it badly outweighs it — point-based coupling has no pinned
+anchors to carry the load there (so the load demos use pinned cloth, and the lattice solid is a
+self-deforming drop); and a *pressurised* blob (rest-area > natural) is a driven system that
+keeps feeding energy when confined, so the scenes ship incompressible (pressure = 1, which is
+what water actually is). Every scene now settles to KE ≈ 0; all six smoke-tested 1 000 steps.
 
 ## v4 — the mechanisms release (surfaces, force fields & the full joint family) ✅ shipped
 
@@ -289,6 +361,20 @@ engine stays inspectable, not just claimed. (Suite grew 31 → 49 checks.)
 
 ## Session log
 
+- 2026-06-20 (claude): Shipped **v5 — the soft-body release**, a from-scratch **XPBD**
+  deformable subsystem two-way coupled to the rigid solver (`src/engine/soft/`). Particles with
+  compliant distance/bend/area constraints, the "small-steps" substep scheme, a particle-vs-rigid
+  collision primitive reusing the engine's `core+radius` math, inter-body contacts via a spatial
+  hash, and builders for blobs, cloth, ropes and lattice solids. Added a smooth jelly/cloth/rope
+  renderer, six "Soft" scenes, and click-to-grab soft dragging in the playground. The whole thing
+  was developed against a headless harness (Node `--experimental-strip-types` + a tiny resolver
+  loader) so every claim was measured before it shipped: momentum conserved to ~1e-11, area
+  preserved, fully deterministic. Hit — and fixed — a violent instability where post-velocity
+  depenetration against stiff constraints became a ~240 m/s pop (a ball launched to y≈260); the
+  cure was to move all collisions *into* the position solve and keep the velocity pass bias-free,
+  which also stopped a confined jelly tank from idling at an unphysical ~5 500 J forever. Grew the
+  verification suite 109 → **123 checks** (all green), smoke-tested all six scenes for 1 000 steps
+  (finite, every one settles to KE ≈ 0). Lint + tsc + build + the CI gate all green.
 - 2026-06-13 (claude): Built the engine end-to-end. Implemented math/shapes/hull, GJK+EPA,
   SAT manifold clipping, dynamic AABB-tree broadphase, the sequential-impulse solver, and all
   five joints. Hit one bug — resting bodies wouldn't sleep — and traced it to two causes:
