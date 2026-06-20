@@ -260,6 +260,36 @@ export const customScene = (): SceneConfig => ({
   sky: DEFAULT_SKY,
 })
 
+// A stage for a marching-cubes implicit mesh. Like the OBJ scene it shows a single
+// object in the renderer's custom-mesh slot — the SDF panel keeps that slot fed — but
+// frames it on a darker plinth with a clean dielectric so the meshed surface reads.
+export const implicitScene = (): SceneConfig => ({
+  name: 'Implicit (SDF)',
+  ground: true,
+  groundTexture: 'grid',
+  groundNormalMap: 'none',
+  groundMaterial: mat([0.32, 0.33, 0.37], 0.4, 40, 0, 0.0, 0.45),
+  objects: [
+    {
+      id: 'custom', meshKind: 'custom', position: [0, 1.05, 0], scale: 1.15,
+      spin: 0.45, tiltSpin: 0.0, baseRotation: [0, 0, 0],
+      material: mat([0.86, 0.84, 0.9], 0.85, 95, 0.06, 0.1, 0.32), texture: 'none', normalMap: 'none',
+    },
+  ],
+  lights: [
+    { type: 'dir', direction: normalize([-0.45, -0.82, -0.4]) as Vec3, color: [1, 0.96, 0.9], intensity: 1.7 },
+    { type: 'dir', direction: normalize([0.7, -0.3, 0.5]) as Vec3, color: [0.45, 0.55, 0.8], intensity: 0.45 },
+    { type: 'point', position: [2.2, 2.6, 2.4], color: [1, 0.66, 0.4], intensity: 6, range: 10 },
+  ],
+  ambient: [0.18, 0.2, 0.26],
+  bgTop: [0.05, 0.07, 0.12],
+  bgBottom: [0.13, 0.12, 0.16],
+  fogColor: [0.1, 0.11, 0.15],
+  fogDensity: 0.006,
+  sky: DEFAULT_SKY,
+  view: { target: [0, 1.0, 0], yaw: 0.5, pitch: 0.12, distance: 5.4 },
+})
+
 // A Cornell box — five diffuse walls (classic red/green/white albedos) lit only by
 // an emissive ceiling panel. There are no punctual lights: every photon comes from
 // the panel and bounces, so the white surfaces pick up red/green colour bleed and
@@ -407,6 +437,7 @@ export const PRESETS: Record<string, () => SceneConfig> = {
   exhibit,
   cornell,
   reflections,
+  implicit: implicitScene,
   custom: customScene,
 }
 
@@ -419,5 +450,6 @@ export const PRESET_LABELS: { key: string; label: string }[] = [
   { key: 'exhibit', label: 'Math Exhibit' },
   { key: 'cornell', label: 'Cornell Box' },
   { key: 'reflections', label: 'Reflections' },
+  { key: 'implicit', label: 'Implicit (SDF)' },
   { key: 'custom', label: 'Custom OBJ' },
 ]
