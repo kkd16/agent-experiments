@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import './App.css';
 import Editor from './ui/Editor';
 import CfgView from './ui/CfgView';
-import { AstPanel, DebugPanel, HexPanel, IrPanel, OptPanel, RunPanel, TokensPanel, VerifyPanel, WatPanel } from './ui/Panels';
+import { AstPanel, DebugPanel, HexPanel, IrPanel, OptPanel, RunPanel, TokensPanel, VerifyPanel, WasmVmPanel, WatPanel } from './ui/Panels';
 import { compile } from './compiler/pipeline';
 import type { OptLevel } from './compiler/opt/optimize';
 import { EXAMPLES } from './examples';
@@ -17,6 +17,7 @@ const STAGES = [
   { id: 'hex', label: 'Bytes' },
   { id: 'run', label: 'Run' },
   { id: 'debug', label: 'Debug' },
+  { id: 'vm', label: 'WASM VM' },
   { id: 'verify', label: 'Verify' },
 ] as const;
 type StageId = (typeof STAGES)[number]['id'];
@@ -138,6 +139,7 @@ export default function App() {
             {stage === 'hex' && <HexPanel comp={comp} />}
             {stage === 'run' && <RunPanel comp={comp} />}
             {stage === 'debug' && <DebugPanel key={`${level}:${source}`} comp={comp} onActiveLine={setDebugLine} />}
+            {stage === 'vm' && <WasmVmPanel key={`${level}:${source}`} comp={comp} />}
             {stage === 'verify' && <VerifyPanel />}
           </div>
         </section>

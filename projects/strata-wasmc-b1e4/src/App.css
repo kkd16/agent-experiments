@@ -461,6 +461,42 @@
 }
 .dl-wasm:hover { background: var(--accent); color: #04201f; }
 
+/* --- wasm vm (time-travel debugger) --- */
+.vm-blurb { margin: 8px 0 12px; max-width: 980px; }
+.vm-grid { display: grid; grid-template-columns: 1.3fr 1fr; gap: 14px; align-items: start; }
+.vm-grid-low { grid-template-columns: 1fr 1fr; margin-top: 14px; }
+.vm-side { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.vm-box {
+  background: #0a0f17;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 10px;
+  min-width: 0;
+}
+.vm-disasm { min-width: 0; }
+.vm-listing {
+  background: #0a0f17;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 6px 0;
+  max-height: 52vh;
+  overflow: auto;
+  font-family: var(--mono);
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+.vm-line { display: flex; gap: 10px; padding: 0 10px; white-space: pre; }
+.vm-line-cur { background: #15233f; box-shadow: inset 3px 0 0 var(--accent); }
+.vm-pc { color: #44506a; user-select: none; }
+.vm-line-cur .vm-pc { color: var(--accent); }
+.vm-code { color: #cdd7ea; }
+.vm-line-cur .vm-code { color: #fff; }
+.vm-callstack { display: flex; flex-direction: column; gap: 4px; }
+.vm-csframe { font-size: 12.5px; padding: 3px 8px; border-radius: 6px; background: #0e1422; border: 1px solid var(--border); }
+.vm-csframe-cur { border-color: #2b4a8c; }
+.vm-csframe .mono { color: var(--accent2); }
+.vm-mem { min-height: 60px; max-height: 30vh; }
+
 /* cfg */
 .cfg-scroll { flex: 1; overflow: auto; padding: 16px; }
 .cfg-svg { display: block; }
