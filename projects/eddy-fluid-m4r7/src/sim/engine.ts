@@ -22,6 +22,8 @@ export interface ProbeReading {
   pressure: number;
   temp: number;
   fuel: number;
+  bmag: number;
+  current: number;
   solid: boolean;
 }
 
@@ -214,6 +216,16 @@ export class FluidEngine {
       p.dx = p.dy = 0;
       return;
     }
+    if (tool === 'mag') {
+      // Paint magnetic field in the drag direction (or a default if static), so you
+      // can sketch field lines and watch the flow respond through the Lorentz force.
+      const mag = Math.hypot(p.dx, p.dy);
+      const bx = mag > 1e-4 ? (p.dx / mag) * 1.2 : 1.0;
+      const by = mag > 1e-4 ? (p.dy / mag) * 1.2 : 0.0;
+      this.sim.splatB(p.gx, p.gy, bx, by, s.brushRadius);
+      p.dx = p.dy = 0;
+      return;
+    }
     // dye tool
     const fx = (p.dx / Math.max(dt, 1e-3)) * FORCE_BASE * s.forceScale;
     const fy = (p.dy / Math.max(dt, 1e-3)) * FORCE_BASE * s.forceScale;
@@ -288,6 +300,8 @@ export class FluidEngine {
       pressure: sim.p[idx],
       temp: sim.t[idx],
       fuel: sim.fuel[idx],
+      bmag: Math.hypot(sim.bx[idx], sim.by[idx]),
+      current: sim.currentAt(gx, gy),
       solid: sim.solid[idx] !== 0,
     };
   }

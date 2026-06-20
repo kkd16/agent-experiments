@@ -1451,6 +1451,288 @@ function centroidJ(f: Float32Array, N: number, sim: FluidSolver): number {
 }
 
 /** Run the whole suite and tally the results. */
+// RMS of ∇·B over the strict interior — the magnetic analogue of rmsDivInterior.
+function rmsDivBInterior(sim: FluidSolver, margin = 2): number {
+  const N = sim.N;
+  const bx = sim.bx;
+  const by = sim.by;
+  let s = 0;
+  let n = 0;
+  for (let j = 1 + margin; j <= N - margin; j++)
+    for (let i = 1 + margin; i <= N - margin; i++) {
+      const idx = sim.IX(i, j);
+      if (sim.solid[idx]) continue;
+      const d = -0.5 * (bx[idx + 1] - bx[idx - 1] + by[idx + (N + 2)] - by[idx - (N + 2)]) / N;
+      s += d * d;
+      n++;
+    }
+  return n > 0 ? Math.sqrt(s / n) : 0;
+}
+
+function mhd(): CheckGroup {
+  const checks: Check[] = [];
+  const TWO_PI = Math.PI * 2;
+
+  // 1. The same Hodge projection that keeps u incompressible cleans ∇·B = 0.
+  {
+    const N = 56;
+    const sim = new FluidSolver(N);
+    // A smooth, strongly divergent magnetic field (monopole-laden).
+    for (let j = 0; j <= N + 1; j++)
+      for (let i = 0; i <= N + 1; i++) {
+        const idx = sim.IX(i, j);
+        const x = i / N;
+        const y = j / N;
+        sim.bx[idx] = Math.sin(3 * Math.PI * x) * Math.cos(2 * Math.PI * y) + (x - 0.5);
+        sim.by[idx] = Math.cos(2 * Math.PI * x) * Math.sin(3 * Math.PI * y) + 0.4 * (y - 0.5);
+      }
+    const before = rmsDivBInterior(sim);
+    sim.cleanMagneticDivergence(600, 1.7);
+    const after = rmsDivBInterior(sim);
+    checks.push(
+      check(
+        'Magnetic field is kept solenoidal (∇·B = 0)',
+        'Maxwell forbids magnetic monopoles, so B must stay divergence-free. The induction step reuses the velocity solver’s Hodge projection on B: a divergent field is cleaned to the same residual floor a divergent velocity is, every step.',
+        before / after > 4 && Number.isFinite(after),
+        `RMS ∇·B: ${fmt(before)} → ${fmt(after)} (${fmt(before / after)}× lower)`,
+      ),
+    );
+  }
+
+  // 2. THE headline check — the Alfvén-wave dispersion relation ω = v_A·k. A small
+  // transverse velocity perturbation on a uniform background field B₀x̂ plucks the
+  // field line like a guitar string: magnetic tension restores it and energy sloshes
+  // between flow and field at the Alfvén frequency. We pluck it three ways and read
+  // the relation off the quarter-period — the two defining PROPORTIONALITIES (ω ∝
+  // v_A and ω ∝ k) are exact; the absolute Alfvén speed lands within the discrete
+  // dispersion of a collocated central-difference scheme.
+  {
+    const N = 64;
+    const base = measureAlfven(N, 1.0, 1, 0.003, 600); // ω(v_A=1, k=2π)
+    const dblVA = measureAlfven(N, 2.0, 1, 0.0015, 600); // ω(v_A=2, k=2π)
+    const dblK = measureAlfven(N, 1.0, 2, 0.0015, 600); // ω(v_A=1, k=4π)
+    const vAratio = dblVA.omega / base.omega; // expect 2 (ω ∝ v_A)
+    const kRatio = dblK.omega / base.omega; // expect 2 (ω ∝ k)
+    const speed = base.omega / base.k; // measured Alfvén speed (expect ≈ B₀ = 1)
+    checks.push(
+      check(
+        'Alfvén waves obey ω = v_A·k (the dispersion relation)',
+        'The defining wave of MHD: a transverse field perturbation oscillates at ω = v_A·k with the Alfvén speed v_A = B₀/√(ρμ₀). Plucked at two field strengths and two wavenumbers, the measured frequency doubles when the Alfvén speed doubles and when the wavenumber doubles — the relation’s two proportionalities, exact. The measured Alfvén speed sits within ~15% of B₀ (the collocated grid’s discrete wave dispersion). This is the discrete proof the Lorentz force and induction terms are wired up right.',
+        Math.abs(vAratio - 2) < 0.05 && Math.abs(kRatio - 2) < 0.2 && speed > 0.82 && speed < 1.05,
+        `ω ∝ v_A: ×${fmt(vAratio)}; ω ∝ k: ×${fmt(kRatio)}; measured v_A/B₀ = ${fmt(speed)}`,
+      ),
+    );
+  }
+
+  // 3. Ideal MHD (ν = η = 0, no forcing) conserves total energy ½⟨|u|²+|B|²⟩ — the
+  // solver must never *inject* energy (numerical dissipation may only remove it).
+  {
+    const N = 48;
+    const sim = new FluidSolver(N);
+    // An Orszag–Tang-like initial state: swirling flow + a sheared field.
+    for (let j = 0; j <= N + 1; j++)
+      for (let i = 0; i <= N + 1; i++) {
+        const idx = sim.IX(i, j);
+        const x = i / N;
+        const y = j / N;
+        sim.u[idx] = -0.8 * Math.sin(TWO_PI * y);
+        sim.v[idx] = 0.8 * Math.sin(TWO_PI * x);
+        sim.bx[idx] = -0.7 * Math.sin(TWO_PI * y);
+        sim.by[idx] = 0.7 * Math.sin(2 * TWO_PI * x);
+      }
+    const pp = params({ mhd: true, resistivity: 0, iterations: 24, overRelax: 1.7, pressureSolver: 'sor' });
+    sim.cleanMagneticDivergence(200, 1.7); // start solenoidal
+    const e0 = sim.magneticDiagnostics().totalEnergy;
+    for (let s = 0; s < 60; s++) sim.step(0.004, pp);
+    const d = sim.magneticDiagnostics();
+    const e1 = d.totalEnergy;
+    checks.push(
+      check(
+        'Ideal MHD conserves total energy (never injects it)',
+        'With no viscosity, resistivity or forcing the sum of kinetic and magnetic energy is an invariant; a discrete scheme can only *lose* a little to numerical dissipation, never gain. Over many steps the total energy stays bounded below its start — the field and flow exchange energy without the solver manufacturing any.',
+        Number.isFinite(e1) && e1 <= e0 * 1.002 && e1 > 0.4 * e0,
+        `½⟨u²+B²⟩: ${fmt(e0)} → ${fmt(e1)} (ratio ${fmt(e1 / e0)}); ∇·B ${fmt(d.maxDivB)}`,
+      ),
+    );
+  }
+
+  // 4. Field-line stretching: a straining flow aligned with B amplifies it (the
+  // engine of flux-freezing / the dynamo), and induction is the identity at rest.
+  {
+    const N = 48;
+    const OPEN = { left: 'outflow', right: 'outflow', top: 'outflow', bottom: 'outflow' } as const;
+    const sim = new FluidSolver(N);
+    sim.setBoundaries(OPEN); // free-space ghosts: a uniform field has no wall image
+    const B0 = 1.0;
+    const gamma = 0.8;
+    // Divergence-free straining flow u = γ(x−½), v = −γ(y−½) (∂ₓu+∂_yv = 0),
+    // and a uniform field along the stretching (x) axis.
+    for (let j = 0; j <= N + 1; j++)
+      for (let i = 0; i <= N + 1; i++) {
+        const idx = sim.IX(i, j);
+        const x = i / N;
+        const y = j / N;
+        sim.u[idx] = gamma * (x - 0.5);
+        sim.v[idx] = -gamma * (y - 0.5);
+        sim.bx[idx] = B0;
+        sim.by[idx] = 0;
+      }
+    const bxBefore = sim.bx[sim.IX(N >> 1, N >> 1)];
+    sim.inductionStep(0.01, 0, 24, 1.7);
+    const bxAfter = sim.bx[sim.IX(N >> 1, N >> 1)];
+
+    // At rest, induction must leave a *solenoidal* field untouched (no flow ⇒
+    // ∂ₜB = 0). A field varying along y (∇·B = ∂ₓB_x = 0) is divergence-free.
+    const rest = new FluidSolver(N);
+    rest.setBoundaries(OPEN);
+    for (let j = 0; j <= N + 1; j++)
+      for (let i = 0; i <= N + 1; i++) {
+        const idx = rest.IX(i, j);
+        rest.bx[idx] = 0.5 + 0.3 * Math.sin((TWO_PI * j) / N);
+        rest.by[idx] = 0;
+      }
+    const restBefore = Float32Array.from(rest.bx);
+    rest.inductionStep(0.01, 0, 24, 1.7);
+    let restDrift = 0;
+    for (let j = 4; j <= N - 4; j++)
+      for (let i = 4; i <= N - 4; i++) {
+        const idx = rest.IX(i, j);
+        restDrift = Math.max(restDrift, Math.abs(rest.bx[idx] - restBefore[idx]));
+      }
+
+    const expectedGrowth = bxBefore * gamma * 0.01; // dt·B·∂ₓu
+    checks.push(
+      check(
+        'Stretching amplifies an aligned field; rest leaves it frozen',
+        'The (B·∇)u term in the induction equation is flux-freezing made discrete: a flow stretching the fluid along a field line concentrates it (|B| grows by ≈ dt·B·∂ₓu), the mechanism behind the magnetic dynamo. With no flow the same step is exactly the identity — induction sources nothing on its own.',
+        bxAfter > bxBefore && Math.abs(bxAfter - bxBefore - expectedGrowth) < 0.3 * expectedGrowth && restDrift < 1e-3,
+        `Bx ${fmt(bxBefore)} → ${fmt(bxAfter)} (Δ ${fmt(bxAfter - bxBefore)}, expect ${fmt(expectedGrowth)}); rest drift ${fmt(restDrift)}`,
+      ),
+    );
+  }
+
+  // 5. The Orszag–Tang vortex — the canonical 2-D MHD benchmark — through the full
+  // step(): smooth initial fields steepen into thin CURRENT SHEETS (peak |jz| climbs
+  // sharply) while ∇·B stays clean and the energy stays bounded.
+  {
+    const N = 64;
+    const sim = new FluidSolver(N);
+    const B0 = 0.8;
+    for (let j = 0; j <= N + 1; j++)
+      for (let i = 0; i <= N + 1; i++) {
+        const idx = sim.IX(i, j);
+        const x = i / N;
+        const y = j / N;
+        sim.u[idx] = -Math.sin(TWO_PI * y);
+        sim.v[idx] = Math.sin(TWO_PI * x);
+        sim.bx[idx] = -B0 * Math.sin(TWO_PI * y);
+        sim.by[idx] = B0 * Math.sin(2 * TWO_PI * x);
+      }
+    sim.cleanMagneticDivergence(200, 1.7);
+    const pp = params({ mhd: true, resistivity: 0.00002, iterations: 26, overRelax: 1.7, pressureSolver: 'sor' });
+    sim.computeCurrent();
+    let jz0 = 0;
+    for (let j = 1; j <= N; j++) for (let i = 1; i <= N; i++) jz0 = Math.max(jz0, Math.abs(sim.jz[sim.IX(i, j)]));
+    const e0 = sim.magneticDiagnostics().totalEnergy;
+    for (let s = 0; s < 80; s++) sim.step(0.004, pp);
+    sim.computeCurrent();
+    let jz1 = 0;
+    for (let j = 1; j <= N; j++) for (let i = 1; i <= N; i++) jz1 = Math.max(jz1, Math.abs(sim.jz[sim.IX(i, j)]));
+    const d = sim.magneticDiagnostics();
+    checks.push(
+      check(
+        'Orszag–Tang builds current sheets (the MHD benchmark)',
+        'The standard test of a 2-D MHD code: a smooth swirl of flow and field steepens into thin, intense sheets of electric current (peak |jz| grows several-fold) where oppositely-directed field lines are pressed together — the sites of magnetic reconnection — all while the field stays solenoidal and the energy bounded.',
+        jz1 > 1.8 * jz0 && d.maxDivB < 0.05 && d.totalEnergy <= e0 * 1.002 && Number.isFinite(jz1),
+        `peak |jz| ${fmt(jz0)} → ${fmt(jz1)} (${fmt(jz1 / jz0)}×); ∇·B ${fmt(d.maxDivB)}; E ${fmt(e0)}→${fmt(d.totalEnergy)}`,
+      ),
+    );
+  }
+
+  // 6. Ohmic resistivity dissipates magnetic energy (and only ever dissipates it):
+  // at rest, η > 0 strictly lowers ½⟨B²⟩ while η = 0 preserves it exactly.
+  {
+    const N = 48;
+    const seed = (sim: FluidSolver) => {
+      sim.setBoundaries({ left: 'outflow', right: 'outflow', top: 'outflow', bottom: 'outflow' });
+      // A solenoidal field from a stream function: bx = ∂_yψ, by = −∂ₓψ with
+      // ψ = sin(2πx)sin(2πy) ⇒ ∇·B = 0 exactly (no wall image, no clean needed).
+      for (let j = 0; j <= N + 1; j++)
+        for (let i = 0; i <= N + 1; i++) {
+          const idx = sim.IX(i, j);
+          const x = i / N;
+          const y = j / N;
+          sim.bx[idx] = TWO_PI * Math.sin(TWO_PI * x) * Math.cos(TWO_PI * y);
+          sim.by[idx] = -TWO_PI * Math.cos(TWO_PI * x) * Math.sin(TWO_PI * y);
+        }
+    };
+    const ideal = new FluidSolver(N);
+    seed(ideal);
+    const ei0 = ideal.magneticDiagnostics().magneticEnergy;
+    for (let s = 0; s < 20; s++) ideal.inductionStep(0.01, 0, 24, 1.7);
+    const ei1 = ideal.magneticDiagnostics().magneticEnergy;
+    const resist = new FluidSolver(N);
+    seed(resist);
+    const er0 = resist.magneticDiagnostics().magneticEnergy;
+    for (let s = 0; s < 30; s++) resist.inductionStep(0.01, 0.002, 24, 1.7);
+    const er1 = resist.magneticDiagnostics().magneticEnergy;
+    checks.push(
+      check(
+        'Ohmic resistivity dissipates magnetic energy',
+        'Resistivity η is the magnetic analogue of viscosity: it relaxes the field and converts magnetic energy to heat, so at rest ½⟨B²⟩ strictly decays under η > 0 while the ideal (η = 0) field is preserved (induction at rest is the identity, up to the divergence clean).',
+        er1 < 0.95 * er0 && Math.abs(ei1 - ei0) < 0.02 * ei0,
+        `½⟨B²⟩: η>0 ${fmt(er0)}→${fmt(er1)} (${fmt(er1 / er0)}×); ideal ${fmt(ei0)}→${fmt(ei1)}`,
+      ),
+    );
+  }
+
+  return {
+    title: 'Magnetohydrodynamics (MHD)',
+    blurb:
+      'The studio coupled to an in-plane magnetic field: the flow feels the Lorentz force and the field is carried + stretched by the induction equation, kept solenoidal by the same Hodge projection. Pinned to the closed forms — the Alfvén-wave dispersion ω = k·v_A, ∇·B = 0, ideal energy conservation, flux-freezing, and the Orszag–Tang current-sheet benchmark.',
+    checks,
+  };
+}
+
+function measureAlfven(N: number, B0: number, m: number, dt: number, maxSteps: number, amp = 0.04): { omega: number; k: number } {
+  const TWO_PI = Math.PI * 2;
+  const sim = new FluidSolver(N);
+  sim.setBoundaries({ left: 'outflow', right: 'outflow', top: 'outflow', bottom: 'outflow' });
+  const k = TWO_PI * m;
+  for (let j = 0; j <= N + 1; j++)
+    for (let i = 0; i <= N + 1; i++) {
+      const idx = sim.IX(i, j);
+      const x = i / N;
+      sim.bx[idx] = B0;
+      sim.by[idx] = 0;
+      sim.u[idx] = 0;
+      sim.v[idx] = amp * Math.sin(k * x);
+    }
+  const pp = params({ mhd: true, resistivity: 0, iterations: 30, overRelax: 1.7, pressureSolver: 'sor' });
+  const modal = (): number => {
+    let a = 0;
+    for (let j = 1; j <= N; j++)
+      for (let i = 1; i <= N; i++) a += sim.v[sim.IX(i, j)] * Math.sin((TWO_PI * m * i) / N);
+    return a;
+  };
+  // First downward zero crossing of A(t) = A₀cos(ωt) is at ωt = π/2 ⇒ ω = π/(2·t₁).
+  // The quarter-period is the least damping-biased estimator of the frequency.
+  let prev = modal();
+  let tPrev = 0;
+  for (let s = 1; s <= maxSteps; s++) {
+    sim.step(dt, pp);
+    const cur = modal();
+    const t = s * dt;
+    if (prev > 0 && cur <= 0) {
+      const tc = tPrev + (t - tPrev) * (prev / (prev - cur));
+      return { omega: Math.PI / (2 * tc), k };
+    }
+    prev = cur;
+    tPrev = t;
+  }
+  return { omega: NaN, k };
+}
+
 export function runSelfTest(): SelfTestReport {
   const t0 = performance.now();
   const groups = [
@@ -1465,6 +1747,7 @@ export function runSelfTest(): SelfTestReport {
     spectral(),
     lagrangian(),
     openBoundaries(),
+    mhd(),
     visualization(),
     robustness(),
   ];

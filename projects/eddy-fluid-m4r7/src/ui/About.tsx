@@ -264,6 +264,45 @@ export function About() {
           exactly its own Schmidt-number rate.
         </p>
 
+        <h2>Magnetohydrodynamics — a magnetized fluid</h2>
+        <p>
+          Most fluids in the universe — the Sun, the solar wind, the interstellar medium, a tokamak —
+          are <em>plasmas</em>: electrically conducting, and threaded by magnetic fields they carry and
+          bend. <strong>Magnetohydrodynamics</strong> (MHD) is the fluid theory of that coupling. Turn
+          MHD on and Eddy evolves an in-plane field <code>B = (Bx, By)</code> alongside the flow, in
+          Alfvén units (<code>ρ = μ₀ = 1</code>):
+        </p>
+        <pre>{`∂u/∂t + (u·∇)u = −∇P* + ν∇²u + (B·∇)B     (Lorentz force)
+∂B/∂t + (u·∇)B = (B·∇)u + η∇²B            (induction)
+∇·u = 0,   ∇·B = 0`}</pre>
+        <p>
+          Two new pieces, and remarkably both reuse machinery already here. The{' '}
+          <strong>Lorentz force</strong> <code>(∇×B)×B = (B·∇)B − ∇(½|B|²)</code> is the field pushing
+          back on the flow; it splits into a <em>tension</em> along the field lines and a{' '}
+          <em>magnetic pressure</em>. We add only the tension <code>(B·∇)B</code> as a body force — the
+          magnetic pressure is a pure gradient, so the velocity’s own pressure projection removes it for
+          free, reproducing the full Lorentz force exactly. The <strong>induction equation</strong>{' '}
+          carries the field with the flow (a semi-Lagrangian advection of <code>B</code>) and{' '}
+          <strong>stretches</strong> it (<code>(B·∇)u</code>, the term that amplifies a field when the
+          flow pulls a field line taut — flux-freezing, and the engine of the dynamo).
+        </p>
+        <p>
+          And <code>∇·B = 0</code> — no magnetic monopoles — is enforced by the <em>same Hodge
+          projection</em> that keeps the velocity incompressible, now cleaning the magnetic field every
+          step. No new linear algebra: incompressibility and the no-monopole law are the same
+          mathematics. With resistivity <code>η = 0</code> the field is frozen into the fluid (Alfvén’s
+          theorem); raise <code>η</code> and field lines can slip and <strong>reconnect</strong>.
+        </p>
+        <p>
+          The payoff is real plasma physics: pluck a field line and it snaps back as an{' '}
+          <strong>Alfvén wave</strong> travelling at <code>v_A = B₀/√(ρμ₀)</code> (the Verify page times
+          it against the closed-form dispersion <code>ω = v_A·k</code>); wind the field up in the{' '}
+          <strong>Orszag–Tang</strong> vortex and it steepens into thin sheets of electric current; lay
+          two opposed fields against each other and they <strong>reconnect</strong>, firing plasma jets,
+          the mechanism of solar flares. Watch it in the <strong>Current (jz)</strong>,{' '}
+          <strong>|B|</strong> and <strong>B-field-line</strong> render modes.
+        </p>
+
         <h2>Does it actually work? The verification page</h2>
         <p>
           A solver you can’t check is a solver you can’t trust. The <a href="#/verify">Verify</a> page

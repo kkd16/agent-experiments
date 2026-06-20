@@ -19,7 +19,10 @@ export type RenderMode =
   | 'lic'
   | 'schlieren'
   | 'qcrit'
-  | 'ftle';
+  | 'ftle'
+  | 'bfield'
+  | 'current'
+  | 'blic';
 
 export interface ParticleField {
   x: Float32Array;
@@ -89,6 +92,89 @@ export class Renderer {
     const N = this.N;
     const data = this.image.data;
     const cmap = COLORMAPS[opts.colormap];
+
+    if (opts.mode === 'current') {
+      // Out-of-plane current density jz = ∂ₓB_y − ∂_yB_x (a signed field): thin,
+      // intense sheets of current light up where oppositely-directed field lines are
+      // pressed together — the sites of magnetic reconnection. Diverging ramp.
+      let maxAbs = 1e-6;
+      for (let j = 1; j <= N; j++)
+        for (let i = 1; i <= N; i++) {
+          const idx = sim.IX(i, j);
+          if (sim.solid[idx]) continue;
+          const a = Math.abs(sim.currentAt(i, j));
+          if (a > maxAbs) maxAbs = a;
+        }
+      const scale = (opts.exposure * 2.0) / maxAbs;
+      for (let j = 0; j < N; j++) {
+        for (let i = 0; i < N; i++) {
+          const idx = sim.IX(i + 1, j + 1);
+          const o = (j * N + i) * 4;
+          if (sim.solid[idx]) {
+            data[o] = 38; data[o + 1] = 42; data[o + 2] = 54; data[o + 3] = 255;
+            continue;
+          }
+          const [r, g, b] = diverging(sim.currentAt(i + 1, j + 1) * scale);
+          data[o] = r; data[o + 1] = g; data[o + 2] = b; data[o + 3] = 255;
+        }
+      }
+      return;
+    }
+
+    if (opts.mode === 'bfield') {
+      // Magnetic field magnitude |B|, normalised to its current peak.
+      let maxB = 1e-6;
+      for (let j = 1; j <= N; j++)
+        for (let i = 1; i <= N; i++) {
+          const idx = sim.IX(i, j);
+          if (sim.solid[idx]) continue;
+          const m = Math.hypot(sim.bx[idx], sim.by[idx]);
+          if (m > maxB) maxB = m;
+        }
+      const scale = (opts.exposure * 1.0) / maxB;
+      for (let j = 0; j < N; j++) {
+        for (let i = 0; i < N; i++) {
+          const idx = sim.IX(i + 1, j + 1);
+          const o = (j * N + i) * 4;
+          if (sim.solid[idx]) {
+            data[o] = 38; data[o + 1] = 42; data[o + 2] = 54; data[o + 3] = 255;
+            continue;
+          }
+          const s = Math.min(1, Math.hypot(sim.bx[idx], sim.by[idx]) * scale);
+          const [r, g, b] = cmap(s);
+          data[o] = r; data[o + 1] = g; data[o + 2] = b; data[o + 3] = 255;
+        }
+      }
+      return;
+    }
+
+    if (opts.mode === 'blic') {
+      // Line Integral Convolution of the *magnetic* field — the noise smears along
+      // the field lines, drawing the magnetic topology as flowing fabric, tinted by
+      // |B|. The same LIC core the velocity uses, fed B instead of u.
+      computeLIC(
+        { N, u: sim.bx, v: sim.by, noise: this.noise, solid: sim.solid },
+        this.licBuf,
+        { steps: Math.min(22, Math.max(10, Math.round(N / 8))), phase: opts.licPhase ?? 0 },
+      );
+      for (let j = 0; j < N; j++) {
+        for (let i = 0; i < N; i++) {
+          const idx = sim.IX(i + 1, j + 1);
+          const o = (j * N + i) * 4;
+          if (sim.solid[idx]) {
+            data[o] = 38; data[o + 1] = 42; data[o + 2] = 54; data[o + 3] = 255;
+            continue;
+          }
+          let tex = (this.licBuf[j * N + i] - 0.5) * 1.9 + 0.5;
+          tex = tex < 0 ? 0 : tex > 1 ? 1 : tex;
+          const bmag = Math.min(1, Math.hypot(sim.bx[idx], sim.by[idx]) * 0.8 * opts.exposure);
+          const [cr, cg, cb] = cmap(bmag);
+          const k = 0.22 + 0.78 * tex;
+          data[o] = cr * k; data[o + 1] = cg * k; data[o + 2] = cb * k; data[o + 3] = 255;
+        }
+      }
+      return;
+    }
 
     if (opts.mode === 'pressure' || opts.mode === 'curl') {
       // Signed fields: find a robust scale, then map with the diverging ramp.

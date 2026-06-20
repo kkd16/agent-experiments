@@ -95,6 +95,24 @@ export interface FluidParams {
    * it. 0 = no diffusion (only numerical dissipation acts on the dye).
    */
   dyeDiffusion: number;
+  /**
+   * **Magnetohydrodynamics.** When true the solver evolves an in-plane magnetic
+   * field B = (bx, by) coupled to the flow: the velocity feels the **Lorentz
+   * force** (the divergence-free part of the magnetic tension (B·∇)B, the magnetic
+   * pressure ∇(B²/2) being swept into the velocity's own pressure projection), and
+   * B is advanced by the **induction equation** ∂ₜB = ∇×(u×B) + η∇²B = −(u·∇)B +
+   * (B·∇)u + η∇²B and kept solenoidal (∇·B = 0) by the *same* Hodge projection that
+   * keeps u incompressible. Setting this turns the Navier–Stokes studio into an
+   * incompressible-MHD one (Alfvén waves, current sheets, reconnection).
+   */
+  mhd: boolean;
+  /**
+   * Magnetic diffusivity η (resistivity / Ohmic dissipation) for the induction
+   * equation — the magnetic analogue of viscosity. 0 = **ideal MHD** (the field is
+   * frozen into the fluid, Alfvén's theorem; reconnection happens only through the
+   * grid's numerical resistivity). η > 0 lets field lines slip and reconnect.
+   */
+  resistivity: number;
 }
 
 export const DEFAULT_PARAMS: FluidParams = {
@@ -116,6 +134,8 @@ export const DEFAULT_PARAMS: FluidParams = {
   heatRelease: 2.5,
   smokeBuoyancy: 0,
   dyeDiffusion: 0,
+  mhd: false,
+  resistivity: 0,
 };
 
 export class FluidSolver {
@@ -143,6 +163,20 @@ export class FluidSolver {
   // Fuel field for the reactive-flow (combustion) model + scratch.
   fuel: Float32Array;
   fuel0: Float32Array;
+
+  // In-plane magnetic field B = (bx, by) for the magnetohydrodynamics (MHD) path,
+  // with scratch, plus the out-of-plane current density jz = ∂ₓB_y − ∂_yB_x (a
+  // diagnostic the renderer/probe read). Solenoidal (∇·B = 0) is enforced each
+  // step by the same Hodge projection that keeps the velocity incompressible.
+  bx: Float32Array;
+  by: Float32Array;
+  bx0: Float32Array;
+  by0: Float32Array;
+  jz: Float32Array;
+  // Dedicated scratch for the magnetic divergence-clean (so the velocity `p`/`div`
+  // diagnostics — and the pressure render mode — survive an MHD step intact).
+  private mp: Float32Array;
+  private mdiv: Float32Array;
 
   // Solver scratch shared between the pressure & diffusion solves.
   p: Float32Array;
@@ -193,6 +227,13 @@ export class FluidSolver {
     this.t0 = z();
     this.fuel = z();
     this.fuel0 = z();
+    this.bx = z();
+    this.by = z();
+    this.bx0 = z();
+    this.by0 = z();
+    this.jz = z();
+    this.mp = z();
+    this.mdiv = z();
     this.p = z();
     this.div = z();
     this.curl = z();
@@ -233,12 +274,19 @@ export class FluidSolver {
     this.fuel.fill(0);
   }
 
+  clearMagnetic(): void {
+    this.bx.fill(0);
+    this.by.fill(0);
+    this.jz.fill(0);
+  }
+
   reset(): void {
     this.clearDye();
     this.clearVelocity();
     this.clearSolids();
     this.clearTemperature();
     this.clearFuel();
+    this.clearMagnetic();
     this.boundaries = { ...CLOSED_BOX };
     this.anyOpen = false;
   }
@@ -354,7 +402,32 @@ export class FluidSolver {
           this.b[idx] = 0;
           this.t[idx] = 0;
           this.fuel[idx] = 0;
+          this.bx[idx] = 0;
+          this.by[idx] = 0;
         }
+      }
+    }
+  }
+
+  /** Paint a magnetic-field vector (bx, by) into a soft disc — the `mag` brush. */
+  splatB(i: number, j: number, dbx: number, dby: number, radius: number): void {
+    const N = this.N;
+    const rad = Math.max(1, radius);
+    const r2 = rad * rad;
+    const lo = -Math.ceil(rad);
+    const hi = Math.ceil(rad);
+    for (let dj = lo; dj <= hi; dj++) {
+      for (let di = lo; di <= hi; di++) {
+        const d2 = di * di + dj * dj;
+        if (d2 > r2) continue;
+        const ci = i + di;
+        const cj = j + dj;
+        if (ci < 1 || ci > N || cj < 1 || cj > N) continue;
+        const idx = this.IX(ci, cj);
+        if (this.solid[idx]) continue;
+        const falloff = Math.exp(-d2 / (0.5 * r2 + 1e-6));
+        this.bx[idx] += dbx * falloff;
+        this.by[idx] += dby * falloff;
       }
     }
   }
@@ -1092,9 +1165,194 @@ export class FluidSolver {
     }
   }
 
+  // --- Magnetohydrodynamics -------------------------------------------------
+  //
+  // Incompressible 2-D MHD (in Alfvén units, ρ = μ₀ = 1) couples the flow to an
+  // in-plane magnetic field B = (bx, by):
+  //
+  //   ∂ₜu + (u·∇)u = −∇P* + ν∇²u + (B·∇)B,            ∇·u = 0
+  //   ∂ₜB + (u·∇)B = (B·∇)u + η∇²B,                   ∇·B = 0
+  //
+  // where P* = p + ½|B|² folds the magnetic pressure into the kinematic pressure.
+  // The whole thing reuses the existing machinery: the Lorentz force is just a
+  // body force on the velocity (its gradient part is removed by the *velocity*
+  // projection, exactly reproducing (∇×B)×B = (B·∇)B − ∇(½|B|²)); the induction
+  // equation is a semi-Lagrangian advection of B by u, an explicit field-line
+  // **stretching** term (B·∇)u, optional Ohmic diffusion, and a final Hodge
+  // projection of B that enforces ∇·B = 0 — the very same solver that keeps u
+  // incompressible, now cleaning the magnetic field. No new linear algebra.
+
+  /** Physical x-derivative ∂ₓf at (i,j) on the unit domain (cell size 1/N). */
+  private dfdx(f: Float32Array, idx: number): number {
+    return 0.5 * this.N * (f[idx + 1] - f[idx - 1]);
+  }
+
+  /** Physical y-derivative ∂_yf at (i,j) on the unit domain (cell size 1/N). */
+  private dfdy(f: Float32Array, idx: number): number {
+    return 0.5 * this.N * (f[idx + (this.N + 2)] - f[idx - (this.N + 2)]);
+  }
+
+  /**
+   * Add the magnetic tension force (B·∇)B to the velocity over `dt`. The magnetic
+   * *pressure* ∇(½|B|²) that completes the true Lorentz force (∇×B)×B is left out
+   * on purpose: the velocity's Hodge projection (run right after) removes every
+   * curl-free body force, so adding only the tension and projecting is identical to
+   * adding the full Lorentz force and projecting — the two differ by a pure
+   * gradient, which projection annihilates. One fewer field to differentiate, and
+   * exact by construction.
+   */
+  private lorentzForce(dt: number): void {
+    const N = this.N;
+    const solid = this.solid;
+    const bx = this.bx;
+    const by = this.by;
+    for (let j = 1; j <= N; j++) {
+      for (let i = 1; i <= N; i++) {
+        const idx = this.IX(i, j);
+        if (solid[idx]) continue;
+        const bxi = bx[idx];
+        const byi = by[idx];
+        // (B·∇)B = (bx ∂ₓbx + by ∂_ybx, bx ∂ₓby + by ∂_yby).
+        const fx = bxi * this.dfdx(bx, idx) + byi * this.dfdy(bx, idx);
+        const fy = bxi * this.dfdx(by, idx) + byi * this.dfdy(by, idx);
+        this.u[idx] += dt * fx;
+        this.v[idx] += dt * fy;
+      }
+    }
+    this.setBnd(1, this.u);
+    this.setBnd(2, this.v);
+  }
+
+  /**
+   * Advance the magnetic field one step by the induction equation. Splitting:
+   *  1. advect B by the (already incompressible) velocity — the −(u·∇)B term;
+   *  2. add the explicit field-line **stretching** term (B·∇)u, which is what
+   *     amplifies B when the flow stretches a field line and is the engine of the
+   *     dynamo / flux-freezing;
+   *  3. optional **Ohmic diffusion** η∇²B (implicit, on the shared red-black
+   *     stencil — unconditionally stable for any η);
+   *  4. a Hodge **projection of B** to restore ∇·B = 0 (numerical truncation in
+   *     steps 1–2 injects a little monopole charge; this cleans it every step).
+   * B obeys the same reflective wall ghosts as the velocity (codes 1 and 2).
+   */
+  private induction(dt: number, resistivity: number, iters: number, omega: number): void {
+    const N = this.N;
+    const solid = this.solid;
+    // 1. Advect each magnetic component through the flow (treat like velocity).
+    // MacCormack (2nd-order, clamped) keeps the field's numerical resistivity low —
+    // so ideal MHD stays close to flux-frozen and current sheets stay thin.
+    this.bx0.set(this.bx);
+    this.by0.set(this.by);
+    this.advectMacCormack(1, this.bx, this.bx0, this.u, this.v, dt);
+    this.advectMacCormack(2, this.by, this.by0, this.u, this.v, dt);
+
+    // 2. Stretching (B·∇)u. Read both B components first so the x-update can't feed
+    // the y-update (the increments depend only on the velocity gradient).
+    const bx = this.bx;
+    const by = this.by;
+    const u = this.u;
+    const v = this.v;
+    for (let j = 1; j <= N; j++) {
+      for (let i = 1; i <= N; i++) {
+        const idx = this.IX(i, j);
+        if (solid[idx]) continue;
+        const bxi = bx[idx];
+        const byi = by[idx];
+        const sbx = bxi * this.dfdx(u, idx) + byi * this.dfdy(u, idx);
+        const sby = bxi * this.dfdx(v, idx) + byi * this.dfdy(v, idx);
+        bx[idx] = bxi + dt * sbx;
+        by[idx] = byi + dt * sby;
+      }
+    }
+    this.setBnd(1, bx);
+    this.setBnd(2, by);
+
+    // 3. Ohmic (resistive) diffusion of B, implicit and stable for any η.
+    if (resistivity > 0) {
+      this.bx0.set(bx);
+      this.diffuse(1, bx, this.bx0, resistivity, dt, iters, omega);
+      this.by0.set(by);
+      this.diffuse(2, by, this.by0, resistivity, dt, iters, omega);
+    }
+
+    // 4. Project B divergence-free with the *same* Hodge solver as the velocity,
+    // into dedicated scratch so the velocity pressure diagnostic is untouched.
+    this.project(bx, by, this.mp, this.mdiv, iters, omega);
+  }
+
+  /**
+   * Restore ∇·B = 0 by one Hodge projection of the magnetic field (the cleaning
+   * step of `induction`, exposed for the verification suite). Uses the dedicated
+   * magnetic-pressure scratch so the velocity pressure field is left intact.
+   */
+  cleanMagneticDivergence(iters: number, omega = 1): void {
+    this.project(this.bx, this.by, this.mp, this.mdiv, iters, omega);
+  }
+
+  /**
+   * Public hook over the private induction step (advect B → stretch → Ohmic
+   * diffuse → clean ∇·B), for the verification suite to exercise the magnetic
+   * transport in isolation against the current velocity field.
+   */
+  inductionStep(dt: number, resistivity: number, iters: number, omega = 1): void {
+    this.induction(dt, resistivity, iters, omega);
+  }
+
+  /** Recompute the out-of-plane current density jz = ∂ₓB_y − ∂_yB_x. */
+  computeCurrent(): void {
+    const N = this.N;
+    const solid = this.solid;
+    for (let j = 1; j <= N; j++) {
+      for (let i = 1; i <= N; i++) {
+        const idx = this.IX(i, j);
+        if (solid[idx]) {
+          this.jz[idx] = 0;
+          continue;
+        }
+        this.jz[idx] = this.dfdx(this.by, idx) - this.dfdy(this.bx, idx);
+      }
+    }
+  }
+
+  /** Current density jz at interior cell (i, j) — used by the renderer/probe. */
+  currentAt(i: number, j: number): number {
+    const idx = this.IX(i, j);
+    return this.dfdx(this.by, idx) - this.dfdy(this.bx, idx);
+  }
+
   // --- Public step ----------------------------------------------------------
 
+  /**
+   * Advance the simulation by `dt`. For plain hydrodynamics this is a single core
+   * step. For **MHD** the explicit magnetic terms (the Lorentz force and field-line
+   * stretching) are forward-integrated, so they carry an **Alfvén-CFL limit**
+   * v_A·dt·N ≲ 1 — a fast field on a fine grid at the live frame `dt` would
+   * otherwise blow up. We measure the peak Alfvén speed (max|B|) and sub-cycle the
+   * core step just enough to keep that number small, so the studio stays stable no
+   * matter how hard the field is driven. Pure-fluid scenes pay nothing (one step).
+   */
   step(dt: number, params: FluidParams): void {
+    let nsub = 1;
+    if (params.mhd === true) {
+      const N = this.N;
+      let bmax = 1e-6;
+      for (let j = 1; j <= N; j++)
+        for (let i = 1; i <= N; i++) {
+          const idx = this.IX(i, j);
+          if (this.solid[idx]) continue;
+          const m = this.bx[idx] * this.bx[idx] + this.by[idx] * this.by[idx];
+          if (m > bmax) bmax = m;
+        }
+      // Alfvén CFL = v_A·dt·N with v_A = √bmax; keep the per-substep value ≲ 0.4.
+      // The generous cap keeps even a fast field under a low-framerate stall stable.
+      const cfl = Math.sqrt(bmax) * dt * N;
+      nsub = Math.max(1, Math.min(32, Math.ceil(cfl / 0.4)));
+    }
+    const sub = dt / nsub;
+    for (let k = 0; k < nsub; k++) this.stepCore(sub, params);
+  }
+
+  private stepCore(dt: number, params: FluidParams): void {
     const { viscosity, velocityDissipation, dyeDissipation, vorticity, iterations, gravity } = params;
     const omega = params.overRelax ?? 1;
     const { buoyancy, thermalDiffusion, cooling, ambient } = params;
@@ -1130,6 +1388,12 @@ export class FluidSolver {
       }
     }
 
+    // --- Lorentz force (MHD) --- the magnetic field pushes back on the flow. Added
+    // as a body force *before* the velocity projection so the projection removes the
+    // magnetic pressure ∇(½|B|²) for free, leaving the divergence-free tension.
+    const mhd = params.mhd === true;
+    if (mhd) this.lorentzForce(dt);
+
     this.vorticityConfinement(vorticity, dt);
 
     // --- Velocity step ---
@@ -1154,6 +1418,13 @@ export class FluidSolver {
         this.u[k] *= decay;
         this.v[k] *= decay;
       }
+    }
+
+    // --- Induction step (MHD) --- advance B with the now-incompressible velocity:
+    // advect, stretch, Ohmic-diffuse, and re-clean ∇·B = 0. Refresh the current jz.
+    if (mhd) {
+      this.induction(dt, params.resistivity ?? 0, iterations, omega);
+      this.computeCurrent();
     }
 
     // --- Temperature step --- advect, diffuse, and Newton-cool the T field.
@@ -1367,6 +1638,54 @@ export class FluidSolver {
       enstrophy: 0.5 * ens * inv,
       maxDivergence: maxDiv,
       meanTemp: tSum * inv,
+      cells,
+    };
+  }
+
+  /**
+   * MHD diagnostics over the fluid interior:
+   *  - magneticEnergy: mean ½|B|² (the Alfvénic energy reservoir),
+   *  - maxDivB: peak |∇·B| (how solenoidal the field actually is — should stay
+   *    tiny, the magnetic analogue of `maxDivergence`),
+   *  - crossHelicity: mean u·B (an ideal-MHD invariant, conserved when ν = η = 0),
+   *  - totalEnergy: mean ½(|u|² + |B|²) (conserved in ideal MHD up to dissipation).
+   */
+  magneticDiagnostics(): {
+    magneticEnergy: number;
+    maxDivB: number;
+    crossHelicity: number;
+    totalEnergy: number;
+    cells: number;
+  } {
+    const N = this.N;
+    const S = N + 2;
+    const u = this.u;
+    const v = this.v;
+    const bx = this.bx;
+    const by = this.by;
+    let me = 0;
+    let ke = 0;
+    let cross = 0;
+    let maxDivB = 0;
+    let cells = 0;
+    for (let j = 1; j <= N; j++) {
+      for (let i = 1; i <= N; i++) {
+        const idx = this.IX(i, j);
+        if (this.solid[idx]) continue;
+        me += bx[idx] * bx[idx] + by[idx] * by[idx];
+        ke += u[idx] * u[idx] + v[idx] * v[idx];
+        cross += u[idx] * bx[idx] + v[idx] * by[idx];
+        const divB = Math.abs(-0.5 * (bx[idx + 1] - bx[idx - 1] + by[idx + S] - by[idx - S]) / N);
+        if (divB > maxDivB) maxDivB = divB;
+        cells++;
+      }
+    }
+    const inv = cells > 0 ? 1 / cells : 0;
+    return {
+      magneticEnergy: 0.5 * me * inv,
+      maxDivB,
+      crossHelicity: cross * inv,
+      totalEnergy: 0.5 * (ke + me) * inv,
       cells,
     };
   }

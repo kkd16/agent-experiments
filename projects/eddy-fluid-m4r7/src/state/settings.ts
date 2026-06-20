@@ -7,7 +7,7 @@ import { DEFAULT_PARAMS, type FluidParams } from '../sim/fluid';
 import type { RenderMode } from '../render/renderer';
 import type { ColorMapName } from '../render/colormaps';
 
-export type Tool = 'dye' | 'heat' | 'fuel' | 'wall' | 'erase';
+export type Tool = 'dye' | 'heat' | 'fuel' | 'mag' | 'wall' | 'erase';
 
 export interface Settings {
   params: FluidParams;

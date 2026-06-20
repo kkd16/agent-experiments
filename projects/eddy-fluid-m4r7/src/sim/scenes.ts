@@ -518,6 +518,174 @@ export const SCENES: Scene[] = [
     },
   },
   {
+    id: 'mhd-orszag-tang',
+    name: 'Orszag–Tang (MHD)',
+    blurb:
+      'The canonical test of magnetohydrodynamics. A smooth swirl of flow AND magnetic field — u = (−sin2πy, sin2πx), B = (−sin2πy, sin4πx) — winds the field up until oppositely-directed lines are pressed into thin, intense sheets of electric CURRENT, the sites of magnetic reconnection and small-scale MHD turbulence. Switch the render mode to Current (jz) to see the sheets, or B-field lines to watch the topology tangle. The flow feels the field’s tension (the Lorentz force) and the field is carried + stretched by the flow (induction), kept divergence-free throughout.',
+    params: {
+      mhd: true,
+      resistivity: 0.0001,
+      viscosity: 0.0001,
+      vorticity: 0,
+      velocityDissipation: 0.004,
+      dyeDissipation: 0.01,
+      gravity: 0,
+      buoyancy: 0,
+      iterations: 30,
+      overRelax: 1.7,
+      pressureSolver: 'sor',
+    },
+    exposure: 1.2,
+    setup: (sim) => {
+      const N = sim.N;
+      const B0 = 0.8;
+      for (let j = 1; j <= N; j++)
+        for (let i = 1; i <= N; i++) {
+          const idx = sim.IX(i, j);
+          const x = i / N;
+          const y = j / N;
+          sim.u[idx] = -Math.sin(TAU * y);
+          sim.v[idx] = Math.sin(TAU * x);
+          sim.bx[idx] = -B0 * Math.sin(TAU * y);
+          sim.by[idx] = B0 * Math.sin(2 * TAU * x);
+          // Dye tracer painted by the flow's stream function so the swirl reads.
+          const psi = Math.cos(TAU * y) + 0.5 * Math.cos(TAU * x);
+          sim.r[idx] = 0.9 * Math.max(0, psi);
+          sim.b[idx] = 0.9 * Math.max(0, -psi);
+          sim.g[idx] = 0.3;
+        }
+      sim.cleanMagneticDivergence(120, 1.7);
+      sim.computeCurrent();
+    },
+  },
+  {
+    id: 'mhd-reconnection',
+    name: 'Magnetic reconnection',
+    blurb:
+      'A Harris current sheet: the magnetic field points one way above the midline and the opposite way below, with a thin layer of current between. A small pinch perturbs it, the oppositely-directed field lines break and re-connect at an X-point, and the released magnetic energy fires twin plasma jets out along the sheet — the mechanism behind solar flares and the aurora. Best seen in the Current (jz) or B-field-lines render mode. A little resistivity lets the lines actually reconnect.',
+    params: {
+      mhd: true,
+      resistivity: 0.0004,
+      viscosity: 0.0001,
+      vorticity: 0,
+      velocityDissipation: 0,
+      dyeDissipation: 0.012,
+      gravity: 0,
+      buoyancy: 0,
+      iterations: 30,
+      overRelax: 1.7,
+      pressureSolver: 'sor',
+    },
+    exposure: 1.2,
+    setup: (sim) => {
+      const N = sim.N;
+      const B0 = 1.0;
+      const delta = 0.04; // current-sheet half-thickness
+      for (let j = 1; j <= N; j++)
+        for (let i = 1; i <= N; i++) {
+          const idx = sim.IX(i, j);
+          const x = i / N;
+          const y = j / N;
+          // Anti-parallel field reversing across the midline.
+          sim.bx[idx] = B0 * Math.tanh((y - 0.5) / delta);
+          // A localized pinch (∝ sin2πx, peaked on the sheet) seeds an X-point.
+          const env = Math.exp(-((y - 0.5) * (y - 0.5)) / (0.02));
+          sim.by[idx] = 0.08 * B0 * Math.sin(TAU * x) * env;
+          // Colour the two field lobes so the reconnection is visible in Dye mode.
+          if (y > 0.5) { sim.r[idx] = 1.3; sim.g[idx] = 0.4; }
+          else { sim.b[idx] = 1.4; sim.g[idx] = 0.4; }
+        }
+      sim.cleanMagneticDivergence(200, 1.7);
+      sim.computeCurrent();
+    },
+  },
+  {
+    id: 'mhd-alfven',
+    name: 'Alfvén wave',
+    blurb:
+      'The defining wave of a magnetized fluid. A uniform field threads the box left-to-right; pluck it with a transverse flow and magnetic tension snaps it back like a guitar string, so energy sloshes between motion and field at the Alfvén speed v_A = B₀/√(ρμ₀). The field lines (B-field-lines render mode) ripple as a standing wave. The open edges make the tank a free channel so the pure wave isn’t fighting the walls — the same setup the Verify page times against the closed-form ω = v_A·k.',
+    params: {
+      mhd: true,
+      resistivity: 0,
+      viscosity: 0,
+      vorticity: 0,
+      velocityDissipation: 0,
+      dyeDissipation: 0.02,
+      gravity: 0,
+      buoyancy: 0,
+      iterations: 30,
+      overRelax: 1.7,
+      pressureSolver: 'sor',
+    },
+    exposure: 1.3,
+    setup: (sim) => {
+      const N = sim.N;
+      const B0 = 1.0;
+      sim.setBoundaries({ left: 'outflow', right: 'outflow', top: 'outflow', bottom: 'outflow' });
+      for (let j = 1; j <= N; j++)
+        for (let i = 1; i <= N; i++) {
+          const idx = sim.IX(i, j);
+          const x = i / N;
+          sim.bx[idx] = B0;
+          sim.by[idx] = 0;
+          sim.v[idx] = 0.35 * Math.sin(TAU * x); // transverse pluck
+          // Vertical dye stripes ride the field lines so the ripple shows.
+          const stripe = 0.5 + 0.5 * Math.cos(8 * TAU * x);
+          sim.r[idx] = 1.2 * stripe;
+          sim.g[idx] = 0.7 * stripe;
+          sim.b[idx] = 0.2;
+        }
+      sim.computeCurrent();
+    },
+  },
+  {
+    id: 'mhd-kh',
+    name: 'Magnetized shear (KH)',
+    blurb:
+      'Kelvin–Helmholtz, magnetized. Two streams slide past each other — but now a magnetic field runs ALONG the flow. Magnetic tension resists the bending that grows the billows, so a strong enough field suppresses the roll-up that the plain Kelvin–Helmholtz scene shows: the field stiffens the shear layer. Lower the field (or raise the shear) and the instability wins. Compare with the non-magnetic Kelvin–Helmholtz scene.',
+    params: {
+      mhd: true,
+      resistivity: 0.00002,
+      viscosity: 0.000012,
+      vorticity: 0,
+      velocityDissipation: 0,
+      dyeDissipation: 0.008,
+      gravity: 0,
+      buoyancy: 0,
+      iterations: 28,
+      overRelax: 1.6,
+      pressureSolver: 'sor',
+    },
+    exposure: 1.3,
+    setup: (sim) => {
+      const N = sim.N;
+      const mid = N / 2;
+      const B0 = 0.5; // field along the flow (x) — its tension fights the rollup
+      for (let j = 1; j <= N; j++)
+        for (let i = 1; i <= N; i++) {
+          const idx = sim.IX(i, j);
+          const top = j < mid;
+          sim.u[idx] = top ? 0.8 : -0.8;
+          const dyc = (j - mid) / (0.06 * N);
+          sim.v[idx] = 0.12 * Math.sin((12 * Math.PI * i) / N) * Math.exp(-dyc * dyc);
+          sim.bx[idx] = B0;
+          sim.by[idx] = 0;
+          if (top) { sim.r[idx] = 1.6; sim.g[idx] = 0.5; sim.b[idx] = 0.2; }
+          else { sim.r[idx] = 0.2; sim.g[idx] = 0.6; sim.b[idx] = 1.8; }
+        }
+      sim.computeCurrent();
+    },
+    emit: (sim) => {
+      const N = sim.N;
+      const mid = N / 2;
+      for (let j = 1; j <= N; j++) {
+        const top = j < mid;
+        const idx = sim.IX(top ? 2 : N - 1, j);
+        if (!sim.solid[idx]) sim.u[idx] = top ? 0.8 : -0.8;
+      }
+    },
+  },
+  {
     id: 'double-shear',
     name: 'Double shear layer',
     blurb:
