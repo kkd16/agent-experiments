@@ -111,6 +111,27 @@ export class CharSet {
     return this.ranges.length ? this.ranges[0].lo : null;
   }
 
+  // A *readable* representative: prefer a lowercase letter, digit, space, then
+  // common punctuation, so synthesised strings (e.g. ReDoS attacks) are legible.
+  // Falls back to the first code point in the set.
+  samplePrintable(): number | null {
+    if (this.isEmpty()) return null;
+    const prefs = [
+      0x61, 0x62, 0x63, // a b c
+      0x30, 0x31, // 0 1
+      0x20, // space
+      0x2c, 0x2e, 0x2d, 0x5f, 0x40, // , . - _ @
+      0x41, // A
+    ];
+    for (const c of prefs) if (this.contains(c)) return c;
+    for (const r of this.ranges) {
+      // first printable ASCII in any range, if any
+      const lo = Math.max(r.lo, 0x21);
+      if (lo <= r.hi && lo <= 0x7e) return lo;
+    }
+    return this.ranges[0].lo;
+  }
+
   equals(other: CharSet): boolean {
     if (this.ranges.length !== other.ranges.length) return false;
     for (let i = 0; i < this.ranges.length; i++) {

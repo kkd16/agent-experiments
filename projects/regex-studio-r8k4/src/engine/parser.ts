@@ -21,6 +21,7 @@ export interface ParseResult {
   ast: RegexNode | null;
   error: ParseError | null;
   groupCount: number;
+  groupNames: Record<string, number>; // capture name → 1-based group index
 }
 
 class ParseFailure extends Error {
@@ -42,10 +43,13 @@ export function parse(source: string): ParseResult {
     if (p.pos < source.length) {
       throw new ParseFailure(`Unexpected '${source[p.pos]}'`, p.pos);
     }
-    return { ast, error: null, groupCount: p.groupCount };
+    // Resolve named backreferences (\k<name>) now that every group name is known.
+    // Forward references are allowed; an unknown name is a parse error.
+    p.resolveNamedRefs();
+    return { ast, error: null, groupCount: p.groupCount, groupNames: p.groupNames };
   } catch (e) {
     if (e instanceof ParseFailure) {
-      return { ast: null, error: { message: e.msg, index: e.index }, groupCount: p.groupCount };
+      return { ast: null, error: { message: e.msg, index: e.index }, groupCount: p.groupCount, groupNames: p.groupNames };
     }
     throw e;
   }
@@ -54,9 +58,21 @@ export function parse(source: string): ParseResult {
 class Parser {
   pos = 0;
   groupCount = 0;
+  groupNames: Record<string, number> = {};
+  // Unresolved \k<name> nodes plus the source index, fixed up after parsing.
+  private pendingNamedRefs: { node: { index: number; name?: string }; index: number }[] = [];
   private src: string;
   constructor(src: string) {
     this.src = src;
+  }
+
+  // Walk once parsing is done and point every \k<name> at its group's index.
+  resolveNamedRefs(): void {
+    for (const { node, index } of this.pendingNamedRefs) {
+      const target = this.groupNames[node.name!];
+      if (target === undefined) throw new ParseFailure(`Unknown group name '${node.name}'`, index);
+      node.index = target;
+    }
   }
 
   private peek(): string | undefined {
@@ -68,6 +84,17 @@ class Parser {
   private expect(ch: string): void {
     if (this.peek() !== ch) throw new ParseFailure(`Expected '${ch}'`, this.pos);
     this.pos++;
+  }
+
+  // A capture-group name: a JS-identifier-like token [A-Za-z_][A-Za-z0-9_]*.
+  private readGroupName(): string {
+    const start = this.pos;
+    const first = this.peek() ?? '';
+    if (!/[A-Za-z_]/.test(first)) throw new ParseFailure('Group name must start with a letter or underscore', this.pos);
+    let name = this.eat();
+    while (/[A-Za-z0-9_]/.test(this.peek() ?? '')) name += this.eat();
+    if (name.length === 0) throw new ParseFailure('Empty group name', start);
+    return name;
   }
 
   parseAlt(): RegexNode {
@@ -169,7 +196,23 @@ class Parser {
           this.expect(')');
           return { type: 'look', dir: 'behind', negate: neg, node: inner };
         }
-        throw new ParseFailure('Unsupported group prefix — use (?:…), (?=…), (?!…), (?<=…) or (?<!…)', this.pos);
+        // Named capture group: (?<name>…)
+        if (c1 === '<') {
+          this.pos += 2; // consume '?<'
+          const nameStart = this.pos;
+          const name = this.readGroupName();
+          this.expect('>');
+          if (this.groupNames[name] !== undefined) {
+            throw new ParseFailure(`Duplicate group name '${name}'`, nameStart);
+          }
+          this.groupCount++;
+          const myIndex = this.groupCount;
+          this.groupNames[name] = myIndex;
+          const inner = this.parseAlt();
+          this.expect(')');
+          return { type: 'group', node: inner, index: myIndex, name };
+        }
+        throw new ParseFailure('Unsupported group prefix — use (?:…), (?<name>…), (?=…), (?!…), (?<=…) or (?<!…)', this.pos);
       }
       this.groupCount++;
       const myIndex = this.groupCount;
@@ -219,6 +262,19 @@ class Parser {
     if (ch >= '1' && ch <= '9') {
       this.eat();
       return { type: 'backref', index: ch.charCodeAt(0) - 48 };
+    }
+    // Named backreference \k<name>. Resolved to a group index after parsing.
+    if (ch === 'k' && this.src[this.pos + 1] === '<') {
+      this.pos += 2; // consume 'k<'
+      const nameStart = this.pos;
+      const name = this.readGroupName();
+      this.expect('>');
+      const node: RegexNode = { type: 'backref', index: this.groupNames[name] ?? -1, name };
+      if (node.index === -1) {
+        // Forward reference — record for resolution once the whole tree is parsed.
+        this.pendingNamedRefs.push({ node, index: nameStart });
+      }
+      return node;
     }
     const classSet = escapeClass(ch);
     if (classSet) {

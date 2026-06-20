@@ -12,9 +12,10 @@ import { LanguagePanel } from './components/LanguagePanel';
 import { ComparePanel } from './components/ComparePanel';
 import { SynthesizePanel } from './components/SynthesizePanel';
 import { ExplainPanel } from './components/ExplainPanel';
+import { RedosPanel } from './components/RedosPanel';
 import { DEFAULT_EXAMPLE, EXAMPLES } from './data/examples';
 
-type Tab = 'ast' | 'nfa' | 'dfa' | 'min' | 'debug' | 'language' | 'compare' | 'synth' | 'explain';
+type Tab = 'ast' | 'nfa' | 'dfa' | 'min' | 'debug' | 'language' | 'compare' | 'synth' | 'explain' | 'redos';
 
 const TAB_GROUPS: { group: string; tabs: { id: Tab; label: string }[] }[] = [
   {
@@ -34,6 +35,7 @@ const TAB_GROUPS: { group: string; tabs: { id: Tab; label: string }[] }[] = [
       { id: 'compare', label: 'Compare' },
       { id: 'synth', label: 'DFA→regex' },
       { id: 'explain', label: 'Explain' },
+      { id: 'redos', label: 'ReDoS' },
     ],
   },
 ];
@@ -269,13 +271,24 @@ export default function App() {
             {tab === 'synth' && <SynthesizePanel dfa={compiled.minDfa} notice={automataNotice} />}
 
             {tab === 'explain' && <ExplainPanel ast={compiled.ast} features={compiled.features} />}
+
+            {tab === 'redos' && (
+              <RedosPanel
+                ast={compiled.ast}
+                groupCount={compiled.groupCount}
+                features={compiled.features}
+                notice={compiled.error ? 'Fix the pattern first.' : null}
+                onUseAttack={setText}
+              />
+            )}
           </div>
         </main>
       </div>
 
       <footer className="footer">
-        Parser · Thompson NFA · subset construction · Moore minimisation · backtracking VM · product-automaton
-        equivalence · state-elimination synthesis — all hand-written TypeScript, no regex library.
+        Parser · Thompson NFA · subset construction · Moore minimisation · three matching engines (DFA · Pike VM ·
+        backtracking VM) · product-automaton equivalence & ReDoS analysis · state-elimination synthesis — all
+        hand-written TypeScript, no regex library.
       </footer>
     </div>
   );

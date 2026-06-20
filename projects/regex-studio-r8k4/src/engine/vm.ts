@@ -185,7 +185,10 @@ class Matcher {
     const canMore = max === null || count < max;
     if (canMore) {
       const more = this.m(node, pos, (p2) => {
-        if (p2 === pos) return false; // zero-width: stop to avoid looping forever
+        // A zero-width iteration only risks an infinite loop on an *unbounded*
+        // repeat; a bounded {m,n} is capped by `max`, and an empty iteration may
+        // be exactly what lets it reach the minimum (e.g. /(a?){3}/ on "aa").
+        if (p2 === pos && max === null) return false;
         return this.greedyMany(node, p2, min, max, k, count + 1);
       });
       if (more) return true;
@@ -207,7 +210,7 @@ class Matcher {
     const canMore = max === null || count < max;
     if (!canMore) return false;
     return this.m(node, pos, (p2) => {
-      if (p2 === pos) return false;
+      if (p2 === pos && max === null) return false; // see greedyMany
       return this.lazyMany(node, p2, min, max, k, count + 1);
     });
   }
@@ -236,6 +239,21 @@ export function runVM(ast: RegexNode, groupCount: number, text: string, opts: VM
       if (match) return { match, steps: matcher.steps, aborted: false };
     }
     return { match: null, steps: matcher.steps, aborted: false };
+  } catch (e) {
+    if (e instanceof StepLimitExceeded) return { match: null, steps: matcher.steps, aborted: true };
+    throw e;
+  }
+}
+
+// A single match attempt anchored at index 0. This isolates the *backtracking*
+// cost of one starting position — exactly what a ReDoS attack exploits — without
+// the extra O(n) factor of scanning every start that `runVM`/`searchVM` add.
+export function runVMAt0(ast: RegexNode, groupCount: number, text: string, opts: VMOptions = {}): VMRunResult {
+  const codes = toCodePoints(text);
+  const matcher = new Matcher(codes, groupCount, opts);
+  try {
+    const match = matcher.matchAt(ast, 0);
+    return { match, steps: matcher.steps, aborted: false };
   } catch (e) {
     if (e instanceof StepLimitExceeded) return { match: null, steps: matcher.steps, aborted: true };
     throw e;

@@ -97,7 +97,31 @@ export const EXAMPLES: Example[] = [
     name: 'Catastrophic backtracking',
     pattern: '(a+)+$',
     sample: 'aaaaaaaaaaaaaaaaaaaaaaaa!',
-    note: 'ReDoS: watch the VM step counter explode while a DFA would stay linear.',
+    note: 'ReDoS: open the ReDoS tab — it proves the exponential blow-up and synthesises the attack.',
+  },
+  {
+    name: 'Named captures (date)',
+    pattern: '(?<year>\\d{4})-(?<month>\\d{2})-(?<day>\\d{2})',
+    sample: 'ship 2026-06-20, freeze 2026-07-01',
+    note: 'Named groups (?<name>…). The capture table shows names; \\k<year> back-references one.',
+  },
+  {
+    name: 'Named backref (doubled word)',
+    pattern: '\\b(?<w>\\w+) \\k<w>\\b',
+    sample: 'the the cat sat on on the mat',
+    note: 'A named backreference \\k<w> — non-regular, so it runs on the backtracking VM only.',
+  },
+  {
+    name: 'Evil CSV (ReDoS)',
+    pattern: '(.*,)*$',
+    sample: 'a,b,c,d,e,f,g,h!',
+    note: 'A classic exponential pattern hiding in a CSV validator — the ReDoS tab finds and demonstrates it.',
+  },
+  {
+    name: 'Quadratic (polynomial)',
+    pattern: '\\s*\\s*$',
+    sample: '          x',
+    note: 'Two adjacent stars — not exponential, but quadratic. The ReDoS tab fits the degree from the curve.',
   },
 ];
 
