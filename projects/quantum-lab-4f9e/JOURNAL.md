@@ -619,3 +619,85 @@ The physics, validated end-to-end in a throwaway oracle before a line of TS was 
   oracle along the way: the Loschmidt frequency is the full dispersion εₖ=2|d⃗| (a missing factor of
   2), and the geometric-phase sign φ^G=arg⟨u|U|u⟩**+**Eₖt (wrong sign leaked a spurious t-linear
   winding into ν_D). In-browser suite 72 → 80 cases, all green; lint + tsc + build pass.
+
+## Quantum Lab 10.0 — Shor's Algorithm: integer factoring by quantum order-finding (this session)
+
+The lab has had the *pieces* of Shor's algorithm for a long time — a Quantum Fourier Transform, an
+inverse-QFT phase-estimation routine, Simon's period-finding — but never the headline result itself:
+**factoring an integer with a quantum computer.** 10.0 closes that, building the whole pipeline from
+scratch and, in the project's tradition, in *two* independent quantum paradigms cross-checked against
+an exact analytic reference and against each other.
+
+Shor's insight is that factoring reduces to **order-finding**: to factor N, pick a coprime `a` and
+find the multiplicative order `r` (the period of `x ↦ a·x mod N`); if `r` is even and `a^(r/2) ≢ −1`,
+then `gcd(a^(r/2) ± 1, N)` are non-trivial factors. The order is found quantumly by phase-estimating
+the eigenphase `s/r` of the modular-multiplication unitary `U_a|x⟩ = |a·x mod N⟩`, then recovering
+`r` from the measured `s/r` with a **continued-fraction** expansion. Everything below is one new
+self-contained module (`src/quantum/shor.ts`) + one lab tab (`ShorLab.tsx`) + new self-tests; no
+existing engine is touched.
+
+### Plan (this session)
+- [x] **Classical number theory** (`shor.ts`) — `gcd`/`egcd`, fast `modpow`, `multiplicativeOrder`,
+      primality (Miller–Rabin, deterministic for the small N we factor), perfect-power detection, and
+      the **continued-fraction convergents** that turn a measured `s/r` back into `r`.
+- [x] **A flat-amplitude quantum micro-engine** (Float64Array re/im) inside `shor.ts` — Hadamard,
+      (controlled) phase, SWAP, an inverse-QFT that mirrors the app's existing `inverseQFTOps`
+      convention, and the key primitive: **controlled modular multiplication** `|x⟩ ↦ |a·x mod N⟩`
+      built as an exact in-place permutation (unitary because ×a is a bijection on Z_N).
+- [x] **Full-register order-finding** (`orderFindFull`) — the textbook circuit: a `t = 2⌈log₂N⌉`-qubit
+      counting register in uniform superposition, `t` controlled-`U_a^{2^k}` modular multipliers onto an
+      `n`-qubit work register prepared in |1⟩, an inverse QFT, then read the counting register. Returns
+      the **exact output distribution** (marginalised over the work register) — the genuine quantum
+      probability comb, computed without ever knowing `r`.
+- [x] **Iterative / semiclassical order-finding** (`orderFindIterative`) — the hardware-friendly
+      one-ancilla variant (Kitaev): a *single* recycled control qubit measured bit-by-bit with
+      classical phase feedback, so it runs in `n+1` qubits and reaches far larger N than the full
+      register. Cross-checked to sample the same distribution.
+- [x] **Analytic ideal comb** (`idealOrderDistribution`) — the closed-form Dirichlet-kernel
+      distribution `P(y) = (1/r) Σ_s |Σ_k e^{2πik(s/r − y/2^t)}/2^t|²`, the exact reference the two
+      quantum simulators are graded against to machine precision.
+- [x] **The classical Shor wrapper** (`shorFactor`) — even/perfect-power/prime preprocessing, random
+      `a`, the `gcd` shortcut, quantum order-finding, the even-order & non-trivial-root checks, and the
+      `gcd(a^(r/2)±1, N)` factor extraction, with a full step log — actually factoring 15, 21, 33, 35…
+- [x] **Shor lab tab** (`ShorLab.tsx`) — a *Factor* card (pick N + seed, watch the attempts and the
+      factor tree resolve), an *Order-finding spectrum* card (the genuine full-register output
+      histogram with the `s/r` rational ticks and the recovered period), and a *Continued-fraction
+      convergents* card (the table that reconstructs `r` from the measurement).
+- [x] **Tests** — extend the in-browser suite: modpow/order vs brute force, continued fractions
+      reconstruct known rationals, the full-register distribution matches the analytic comb to ~1e-12,
+      the iterative sampler recovers the correct order with high probability, and end-to-end factoring
+      of several composites returns correct factors. Plus an About-page card.
+
+### Verified
+- The genuine **full-register state-vector** output distribution equals the closed-form analytic
+  comb to **~1e-14** for every tested (a, N) — `{7,2,4}/15`, `{2,5}/21` — and is normalised to 1e-9.
+  This validates the entire quantum circuit (controlled modular multiplication + inverse QFT) against
+  an independent reference *without ever using r*.
+- The **iterative one-ancilla** sampler recovers the correct order on 40–51 of 60 runs (a=7/N=15,
+  a=2/N=21, a=2/N=33) — the expected ≳½ success rate that a couple of attempts amplifies to certainty.
+- **End-to-end**: Shor's algorithm factors 15=3×5, 21=3×7, 33=3×11, 35=5×7, 39=3×13, 55=5×11,
+  rejects the prime 13, and short-circuits 14→2 classically. Multiplicative order matches brute force
+  for every coprime base of 15/21/33/35; continued fractions reconstruct 3/8 and the y/2⁸ phases.
+- A subtlety worth recording: the iterative scheme reuses a *single* control qubit, so after each
+  bit is measured the control must be projected, renormalised, **and reset to |0⟩** (an X when the
+  outcome was 1) before the next round — and the phase-feedback rotation diag(1, e^{−iπφ_acc}) must
+  cancel exactly the tail phase 2π(φ_acc/2) of the already-measured less-significant bits.
+- In-browser self-test suite **80 → 88 cases**, all green; lint + tsc + build pass (the exact CI gate).
+
+### Session log
+- 2026-06-20 (claude/claude-opus-4-8[1m]): **Quantum Lab 10.0 — Shor's Algorithm.** Added the one
+  iconic quantum algorithm the lab was missing: integer factoring by quantum order-finding, in one
+  self-contained module (`src/quantum/shor.ts`) + one tab (`ShorLab.tsx`) + 8 new self-tests, touching
+  no existing engine. Built a flat-amplitude (Float64Array re/im) quantum micro-engine with Hadamard,
+  (controlled) phase, SWAP, an inverse QFT mirroring the app's `inverseQFTOps` convention, and the key
+  primitive — **controlled modular multiplication** `|x⟩↦|c·x mod N⟩` as an exact in-place permutation.
+  On it: full-register order-finding (the textbook t=2⌈log₂N⌉ counting register + controlled-U_a^{2^k}
+  multipliers + iQFT, returning the exact output distribution), the **iterative/semiclassical** one-
+  ancilla variant (Kitaev, classical feedback) that scales past the full register, a closed-form
+  analytic comb reference, the classical number theory (gcd, modpow, Miller–Rabin, perfect-power,
+  continued-fraction convergents, `recoverOrder`), and the **`shorFactor` wrapper** that actually
+  factors composites with a full step log. The Shor tab factors 15/21/33/35/39/55 live with a factor
+  tree + step trace, an order-finding spectrum (genuine state-vector histogram with the k/r rational
+  ticks marked), and a continued-fraction convergent table. The full-register simulator matches the
+  analytic comb to ~1e-14 (no knowledge of r), and every composite factors correctly. Suite 80 → 88,
+  green; lint + tsc + build pass.
