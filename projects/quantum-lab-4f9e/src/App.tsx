@@ -17,14 +17,15 @@ import SurfaceLab from './components/SurfaceLab';
 import TensorLab from './components/TensorLab';
 import FreeFermionLab from './components/FreeFermionLab';
 import DynamicsLab from './components/DynamicsLab';
+import ShorLab from './components/ShorLab';
 import TestsPanel from './components/TestsPanel';
 import ExportPanel from './components/ExportPanel';
 import { schmidtDecompose } from './quantum/Schmidt';
 
-type Tab = 'builder' | 'algorithms' | 'variational' | 'stabilizer' | 'surface' | 'tensor' | 'freefermion' | 'dynamics' | 'tests' | 'about';
+type Tab = 'builder' | 'algorithms' | 'shor' | 'variational' | 'stabilizer' | 'surface' | 'tensor' | 'freefermion' | 'dynamics' | 'tests' | 'about';
 type VizTab = 'state' | 'probabilities' | 'bloch' | 'density' | 'measure';
 
-const PAGE_TABS: Tab[] = ['about', 'variational', 'stabilizer', 'surface', 'tensor', 'freefermion', 'dynamics', 'tests'];
+const PAGE_TABS: Tab[] = ['about', 'shor', 'variational', 'stabilizer', 'surface', 'tensor', 'freefermion', 'dynamics', 'tests'];
 
 // Parse a shared circuit from the URL hash (#c=…) once, before mount — sandbox-safe.
 function loadSharedCircuit(): { numQubits: number; ops: GateOp[] } | null {
@@ -136,7 +137,7 @@ export default function App() {
         </div>
 
         <nav style={{ display: 'flex', gap: 2, marginLeft: 'auto', flexWrap: 'wrap' }}>
-          {(['builder', 'algorithms', 'variational', 'stabilizer', 'surface', 'tensor', 'freefermion', 'dynamics', 'tests', 'about'] as Tab[]).map((tab) => (
+          {(['builder', 'algorithms', 'shor', 'variational', 'stabilizer', 'surface', 'tensor', 'freefermion', 'dynamics', 'tests', 'about'] as Tab[]).map((tab) => (
             <button
               key={tab}
               onClick={() => setActiveTab(tab)}
@@ -154,6 +155,7 @@ export default function App() {
               }}
             >
               {tab === 'builder' ? '🔧 Builder' : tab === 'algorithms' ? '⚡ Algorithms'
+                : tab === 'shor' ? '🔢 Shor'
                 : tab === 'variational' ? '🧬 Variational' : tab === 'stabilizer' ? '🧱 Stabilizer'
                 : tab === 'surface' ? '🔲 Surface' : tab === 'tensor' ? '🕸️ Tensor'
                 : tab === 'freefermion' ? '🪢 Free Fermion'
@@ -213,6 +215,7 @@ export default function App() {
               style={{ flex: 1, padding: '24px 32px', overflowY: 'auto' }}
             >
               {activeTab === 'about' && <AboutPage />}
+              {activeTab === 'shor' && <ShorLab />}
               {activeTab === 'variational' && <VariationalLab />}
               {activeTab === 'stabilizer' && <StabilizerLab />}
               {activeTab === 'surface' && <SurfaceLab />}
@@ -608,8 +611,12 @@ function AboutPage() {
           content: 'The free-fermion engine, generalised to the anisotropic XY chain (the Ising point is γ=1) and solved in momentum space with periodic boundaries, makes the headline non-equilibrium phenomenon of the last decade exactly tractable. Quench the field across the critical point and the Loschmidt return-rate function l(t) = −lim (1/N) ln|⟨ψ₀|e^{−iH_f t}|ψ₀⟩|² develops non-analytic cusps in real time — a dynamical quantum phase transition (Heyl–Polkovnikov–Kehrein), the dynamical analogue of a free-energy singularity, where Fisher zeros of the boundary partition function cross the time axis at the critical times tₙ*=(2n+1)π/εₖ*. An integer dynamical topological order parameter ν_D(t) — the winding of the Pancharatnam geometric phase across the Brillouin zone (Budich–Heyl) — is 0 before the first cusp and jumps by exactly +1 at each one. Everything is cross-checked to machine precision against an independent dense 2ⁿ time evolution. The Free-Fermion lab also gains the XY phase diagram (the Ising line h=1 and the anisotropy line γ=0) and the exact mutual information between disjoint blocks, which decays exponentially off-criticality and algebraically at h=1.',
         },
         {
+          title: "Shor's Algorithm — Factoring by Order-Finding",
+          content: "The result that launched quantum computing, built from scratch end to end: factoring an integer N into its prime factors. Shor's insight is that factoring reduces to ORDER-FINDING — find the period r of x ↦ a·x mod N for a random base a, and gcd(a^(r/2) ± 1, N) are real factors. The period is found quantumly by phase-estimating the eigenphase s/r of the modular-multiplication unitary, then recovering r from the measured s/r with a continued-fraction expansion. The lab builds the genuine circuit two independent ways — a full (n+t)-qubit register with t controlled modular multipliers + an inverse QFT, and the hardware-friendly iterative variant that recycles a single ancilla measured bit-by-bit with classical feedback — and grades both against an exact closed-form Dirichlet-kernel distribution to machine precision. The Shor tab actually factors 15, 21, 33, 35… live: watch the random base chosen, the order-finding spectrum peak at the rationals k/r, the continued fraction reconstruct r, and the factor tree resolve.",
+        },
+        {
           title: 'Phase Estimation & Tooling',
-          content: 'Quantum Phase Estimation recovers eigenphases via phase kickback + inverse QFT. Circuits export to OpenQASM 2.0 (Qiskit/IBM-compatible) and JSON, with shareable URLs, depth/gate metrics, and an 80-case in-browser self-test suite proving the engine correct against exact references — including the free-fermion TFIM vs exact diagonalisation and the Pfeuty thermodynamic limit, the recovered central charge c=½, the quench vs exact dense evolution, the anisotropic-XY ground energy and the dynamical phase transition (Loschmidt rate + topological order parameter) vs exact dense time evolution, DMRG vs exact diagonalisation, the surface-code MWPM decoder vs brute-force matching, the Union-Find decoder vs MWPM, and both the code-capacity and phenomenological QEC threshold crossings.',
+          content: 'Quantum Phase Estimation recovers eigenphases via phase kickback + inverse QFT. Circuits export to OpenQASM 2.0 (Qiskit/IBM-compatible) and JSON, with shareable URLs, depth/gate metrics, and an 88-case in-browser self-test suite proving the engine correct against exact references — including Shor\'s order-finding distribution vs an exact analytic comb and the end-to-end factoring of 15/21/33/35, the free-fermion TFIM vs exact diagonalisation and the Pfeuty thermodynamic limit, the recovered central charge c=½, the quench vs exact dense evolution, the anisotropic-XY ground energy and the dynamical phase transition (Loschmidt rate + topological order parameter) vs exact dense time evolution, DMRG vs exact diagonalisation, the surface-code MWPM decoder vs brute-force matching, the Union-Find decoder vs MWPM, and both the code-capacity and phenomenological QEC threshold crossings.',
         },
       ].map(({ title, content }, i) => (
         <motion.div

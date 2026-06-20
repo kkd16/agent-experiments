@@ -32,6 +32,10 @@ import {
   loschmidtFiniteN, loschmidtDense, loschmidtRate, criticalModes,
   criticalTimes, quenchCrosses, dtop, groundEnergyDensity,
 } from './xyChain';
+import {
+  gcd, modpow, multiplicativeOrder, isPrime, perfectPower, convergents, recoverOrder,
+  orderFindFull, orderFindIterative, idealOrderDistribution, shorFactor, shorRng,
+} from './shor';
 import { minWeightPerfectMatching, type Edge } from './surface/blossom';
 import { buildSurfaceCode, correctRound, logicalErrorRate, mulberry32 } from './surface/SurfaceCode';
 import { decodeMWPM, decodeUF } from './surface/decoder';
@@ -756,6 +760,74 @@ export function runTests(): TestResult[] {
     const Ipara = mutualInformation(solveXY(24, 1, 3.0, 1), [4, 5], [16, 17]);
     const Icrit = mutualInformation(solveXY(24, 1, 1.0, 1), [4, 5], [16, 17]);
     add('XY & DQPT', 'mutual information: I(A:Ā)=2S(L), ≥0, peaks at criticality', id < 1e-9 && Ipara >= 0 && Icrit > Ipara && Ipara < 1e-4, `id ${id.toExponential(1)}, para ${Ipara.toExponential(1)} < crit ${Icrit.toFixed(3)}`);
+  }
+
+  // --- Shor's algorithm (order-finding factoring) ---
+  {
+    // Classical number theory the algorithm rests on.
+    const ntOK = gcd(48, 36) === 12 && modpow(7, 13, 15) === 7 && modpow(2, 10, 1000) === 24
+      && isPrime(97) && !isPrime(91) && perfectPower(27)?.base === 3 && perfectPower(15) === null;
+    add('Shor', 'classical number theory: gcd, modpow, primality, perfect power', ntOK,
+      'gcd/modpow exact, Miller–Rabin & perfect-power detection correct');
+
+    // Multiplicative order matches brute force across many coprime (a, N).
+    let ordOK = true;
+    for (const N of [15, 21, 33, 35]) {
+      for (let a = 2; a < N; a++) {
+        if (gcd(a, N) !== 1) continue;
+        const r = multiplicativeOrder(a, N);
+        if (r === 0 || modpow(a, r, N) !== 1) { ordOK = false; break; }
+        for (let k = 1; k < r; k++) if (modpow(a, k, N) === 1) { ordOK = false; break; }
+      }
+    }
+    add('Shor', 'multiplicative order is the true minimal period (a^r≡1, none smaller)', ordOK);
+
+    // Continued-fraction convergents reconstruct known rationals.
+    const cv = convergents(3, 8);
+    const cvOK = cv.some((c) => c.p === 3 && c.q === 8)
+      && convergents(85, 256).some((c) => c.q === 3) // 85/256 ≈ 1/3
+      && recoverOrder(64, 8, 7, 15) === 4 && recoverOrder(192, 8, 7, 15) === 4;
+    add('Shor', 'continued fractions recover the period from a measured phase', cvOK,
+      '3/8 convergents include 3/8; y/2⁸ for a=7,N=15 → r=4');
+
+    // The genuine full-register output distribution matches the exact analytic comb to
+    // machine precision — validating the whole quantum circuit (controlled modular
+    // multiplication + inverse QFT) against a closed-form reference, with no knowledge of r.
+    let maxErr = 0, sumErr = 0;
+    for (const [a, N] of [[7, 15], [2, 15], [4, 15], [2, 21], [5, 21]] as [number, number][]) {
+      const f = orderFindFull(a, N);
+      const ideal = idealOrderDistribution(a, N);
+      let s = 0;
+      for (let y = 0; y < f.dist.length; y++) { maxErr = Math.max(maxErr, Math.abs(f.dist[y] - ideal.dist[y])); s += f.dist[y]; }
+      sumErr = Math.max(sumErr, Math.abs(s - 1));
+    }
+    add('Shor', 'full-register QPE distribution = analytic comb (and normalised)', maxErr < 1e-9 && sumErr < 1e-9,
+      `max |P_sim − P_ideal| = ${maxErr.toExponential(1)}, |Σ−1| = ${sumErr.toExponential(1)}`);
+
+    // The iterative (1-ancilla) sampler recovers the correct order a healthy fraction of the time.
+    let itOK = true, itDetail = '';
+    for (const [a, N] of [[7, 15], [2, 21], [2, 33]] as [number, number][]) {
+      const r = multiplicativeOrder(a, N);
+      const rng = shorRng(98765);
+      let good = 0; const trials = 40;
+      for (let i = 0; i < trials; i++) if (orderFindIterative(a, N, rng).order === r) good++;
+      if (good / trials < 0.3) itOK = false;
+      itDetail += `a=${a},N=${N}: ${good}/${trials}  `;
+    }
+    add('Shor', 'iterative (1-ancilla) order-finding samples the right period', itOK, itDetail.trim());
+
+    // End-to-end: Shor's algorithm actually factors composites into correct factors.
+    let facOK = true, facDetail = '';
+    for (const N of [15, 21, 33, 35, 39, 55]) {
+      const res = shorFactor(N, { rng: shorRng(2024), maxAttempts: 40 });
+      const f = res.factors;
+      const good = !!f && f[0] * f[1] === N && f[0] > 1 && f[1] > 1;
+      if (!good) facOK = false;
+      facDetail += f ? `${N}=${f[0]}×${f[1]} ` : `${N}=✗ `;
+    }
+    // And the classical guards: prime → no factor, even → 2.
+    facOK = facOK && shorFactor(13).factors === null && shorFactor(14).factors?.[0] === 2;
+    add('Shor', "Shor's algorithm factors 15, 21, 33, 35, 39, 55 (primes rejected)", facOK, facDetail.trim());
   }
 
   return r;
