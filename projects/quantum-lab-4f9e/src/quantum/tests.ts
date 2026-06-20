@@ -36,6 +36,10 @@ import {
   gcd, modpow, multiplicativeOrder, isPrime, perfectPower, convergents, recoverOrder,
   orderFindFull, orderFindIterative, idealOrderDistribution, shorFactor, shorRng,
 } from './shor';
+import {
+  PatternBuilder, buildExample, runPattern, oracleApply, fidelity, randomInput,
+  mbqcRng, clusterState, stabilizerGenerator, pauliExpectation, type ExampleId,
+} from './mbqc';
 import { minWeightPerfectMatching, type Edge } from './surface/blossom';
 import { buildSurfaceCode, correctRound, logicalErrorRate, mulberry32 } from './surface/SurfaceCode';
 import { decodeMWPM, decodeUF } from './surface/decoder';
@@ -828,6 +832,102 @@ export function runTests(): TestResult[] {
     // And the classical guards: prime → no factor, even → 2.
     facOK = facOK && shorFactor(13).factors === null && shorFactor(14).factors?.[0] === 2;
     add('Shor', "Shor's algorithm factors 15, 21, 33, 35, 39, 55 (primes rejected)", facOK, facDetail.trim());
+  }
+
+  // --- Measurement-Based Quantum Computation (the one-way quantum computer) ---
+  {
+    // Every named-gate / example pattern, run on the real cluster engine with random
+    // inputs and random measurement outcomes, must equal an INDEPENDENT dense
+    // circuit-model oracle — up to global phase — to machine precision.
+    const rng = mbqcRng(12345);
+    let worstEx = 1;
+    for (const ex of ['h', 's', 't', 'rz', 'rx', 'u', 'cnot', 'circuit'] as ExampleId[]) {
+      for (let trial = 0; trial < 24; trial++) {
+        const pat = buildExample(ex, 0.3 + trial * 0.17);
+        const inp = randomInput(pat.nWires, rng);
+        const res = runPattern(pat, inp, rng);
+        const got = res.state.amplitudes(pat.outputs);
+        const want = oracleApply(pat.logical, pat.nWires, inp);
+        worstEx = Math.min(worstEx, fidelity(got, want));
+      }
+    }
+    add('MBQC', 'every measurement pattern = independent circuit oracle (H/S/T/Rz/Rx/U/CNOT/Bell)',
+      worstEx > 1 - 1e-10, `min fidelity ${worstEx.toFixed(13)} over 8 patterns × 24 random inputs/outcomes`);
+
+    // The headline property: the CORRECTED logical output is independent of which
+    // random measurement outcomes occurred — i.e. measurement-driven computation is
+    // deterministic once the byproduct Pauli frame is undone.
+    let worstDet = 1;
+    for (const ex of ['u', 'rx', 'cnot', 'circuit'] as ExampleId[]) {
+      const pat = buildExample(ex, 1.1);
+      const inp = randomInput(pat.nWires, mbqcRng(7));
+      const base = runPattern(pat, inp, mbqcRng(1)).state.amplitudes(pat.outputs);
+      for (let s = 2; s < 40; s++) {
+        const other = runPattern(pat, inp, mbqcRng(s)).state.amplitudes(pat.outputs);
+        worstDet = Math.min(worstDet, fidelity(base, other));
+      }
+    }
+    add('MBQC', 'computation is deterministic up to a correctable Pauli frame (outcome-independent)',
+      worstDet > 1 - 1e-10, `min fidelity ${worstDet.toFixed(13)} across 38 distinct outcome strings`);
+
+    // Composition under load: random multi-gate two-wire circuits compile to a single
+    // cluster (dozens of physical qubits) yet keep the live register tiny.
+    const rng2 = mbqcRng(2024);
+    let worstRand = 1, maxPhys = 0;
+    for (let trial = 0; trial < 24; trial++) {
+      const b = new PatternBuilder(2);
+      const gates = 6 + Math.floor(rng2() * 6);
+      for (let g = 0; g < gates; g++) {
+        const w = rng2() < 0.5 ? 0 : 1; const pick = rng2();
+        if (pick < 0.2) b.h(w); else if (pick < 0.35) b.t(w); else if (pick < 0.5) b.s(w);
+        else if (pick < 0.65) b.rz(w, rng2() * 6.28); else if (pick < 0.8) b.rx(w, rng2() * 6.28);
+        else b.cnot(w, w ^ 1);
+      }
+      const pat = b.build();
+      maxPhys = Math.max(maxPhys, pat.nodes.length);
+      const inp = randomInput(2, rng2);
+      const res = runPattern(pat, inp, rng2);
+      worstRand = Math.min(worstRand, fidelity(res.state.amplitudes(pat.outputs), oracleApply(pat.logical, 2, inp)));
+    }
+    add('MBQC', 'random multi-gate 2-wire circuits = oracle (cluster of dozens of qubits)',
+      worstRand > 1 - 1e-10, `min fidelity ${worstRand.toFixed(13)}, up to ${maxPhys} physical qubits, live register ≤ 3`);
+
+    // A deep single-wire chain: T^8 = identity (8 gadgets, 16 measurements).
+    {
+      const b = new PatternBuilder(1); for (let i = 0; i < 8; i++) b.t(0);
+      const pat = b.build();
+      const inp = randomInput(1, mbqcRng(3));
+      const res = runPattern(pat, inp, mbqcRng(99));
+      add('MBQC', 'deep chain T⁸ = I (16 adaptive measurements collapse to identity)',
+        fidelity(res.state.amplitudes(pat.outputs), inp) > 1 - 1e-10);
+    }
+
+    // The cluster state really is a graph state: every generator K_v = X_v∏Z_w stabilises it.
+    let worstStab = 1;
+    const graphs = [
+      { n: 3, edges: [[0, 1], [1, 2]] as [number, number][] },
+      { n: 4, edges: [[0, 1], [1, 2], [2, 3], [3, 0]] as [number, number][] },
+      { n: 5, edges: [[0, 1], [0, 2], [0, 3], [0, 4]] as [number, number][] },
+    ];
+    for (const g of graphs) {
+      const st = clusterState(g);
+      for (let v = 0; v < g.n; v++) {
+        worstStab = Math.min(worstStab, pauliExpectation(st, stabilizerGenerator(g, v).paulis));
+      }
+    }
+    add('MBQC', 'cluster states are graph states: ⟨K_v⟩ = +1 for every generator (line/ring/star)',
+      worstStab > 1 - 1e-10, `min ⟨K_v⟩ = ${worstStab.toFixed(13)}`);
+
+    // The Bell circuit (H ; CNOT) measured out gives a maximally-entangled output.
+    {
+      const pat = buildExample('circuit');
+      const res = runPattern(pat, [{ re: 1, im: 0 }, { re: 0, im: 0 }, { re: 0, im: 0 }, { re: 0, im: 0 }], mbqcRng(42));
+      const a = res.state.amplitudes(pat.outputs);
+      const p = a.map((x) => x.re * x.re + x.im * x.im);
+      add('MBQC', 'Bell pattern yields P(00)=P(11)=½, P(01)=P(10)=0',
+        Math.abs(p[0] - 0.5) < 1e-9 && Math.abs(p[3] - 0.5) < 1e-9 && p[1] < 1e-9 && p[2] < 1e-9,
+        `p = [${p.map((x) => x.toFixed(3)).join(', ')}]`);
+    }
   }
 
   return r;

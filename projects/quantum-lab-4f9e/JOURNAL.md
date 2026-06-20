@@ -684,7 +684,81 @@ existing engine is touched.
   cancel exactly the tail phase 2π(φ_acc/2) of the already-measured less-significant bits.
 - In-browser self-test suite **80 → 88 cases**, all green; lint + tsc + build pass (the exact CI gate).
 
+## Quantum Lab 11.0 — Measurement-Based Quantum Computation: the One-Way Quantum Computer (this session)
+
+Every engine so far is a variation on the *circuit* model — unitary gates applied to a state. 11.0
+adds a genuinely different **model of computation**: the **one-way quantum computer** (Raussendorf–
+Briegel). There are no gates. You prepare one large, fixed, maximally-entangled **cluster state** and
+then compute purely by **measuring its qubits one at a time** in adaptively chosen single-qubit bases.
+Measurement is irreversible and random — yet feeding each outcome forward into later measurement
+angles, and undoing a final Pauli **byproduct operator**, makes the computation deterministic. The
+striking fact this paradigm rests on is that *measurement alone is universal*.
+
+This is a new self-contained module (`src/quantum/mbqc.ts`) + a lab tab (`MBQCLab.tsx`) + new
+self-tests, touching no existing engine — the same pattern that landed Shor 10.0. The whole thing is
+cross-checked against an **independent dense circuit-model oracle** that shares no code with the
+cluster engine, the project's house style.
+
+The physics, derived from scratch and pinned down before a line of UI: the elementary gadget
+(prepare output |+⟩, entangle `E`, measure the input at plane-angle α) realises **J(−α)** with a known
+`X^s` byproduct, where `J(α)=H·P(α)`. Since `P(α)=J(0)J(α)` exactly and any single-qubit unitary
+`U=e^{iδ}J(0)J(γ)J(β)J(α)` (its ZXZ Euler decomposition), `{J(α),CZ}` is universal. Composing gadgets,
+each wire carries a symbolic byproduct `X^{xs}Z^{zs}` (signal sets of earlier outcomes): a fresh J on a
+wire folds the standing X-signal into the measurement's sign-dependency and the Z-signal into its
+π-shift (the rule φ=(−1)^{sX}α+sZπ), then the output inherits `X^{new outcome}` and `Z^{old X-signal}`;
+a logical CZ updates `zs_A ^= xs_B`, `zs_B ^= xs_A`. Undoing the final byproduct gives the deterministic
+logical state — *the same one for every measurement record*.
+
+### Plan / steps (this session)
+- [x] **Dynamic complex state-vector micro-engine** (`CState`, Float64Array re/im) — prepare |+⟩ qubits,
+      entangle with CZ, Pauli X/Z, and projective X–Y-plane measurement that **frees the measured qubit**
+      (halving the dimension), so the live register never exceeds (#logical wires + 1) at any depth —
+      the MBQC memory advantage made concrete.
+- [x] **Measurement calculus** (Danos–Kashefi–Panangaden) — patterns over N / E / M commands with X- and
+      Z-signal dependency sets, run with adaptive angles φ=(−1)^{sX}·α+sZ·π and final byproduct corrections.
+- [x] **Universal {J(α), CZ} compiler** (`PatternBuilder`) — `applyJ`/`applyCZ` propagate the byproduct
+      operators symbolically; a named-gate dictionary (H=J(0); P/S/T/Z=J(0)J(θ); Rz; Rx=J(0)J(θ); arbitrary
+      U via Euler; CNOT=H·CZ·H) emits a measurement pattern + a parallel logical-gate list for grading.
+- [x] **Independent dense oracle** (`oracleApply`) — replays the logical-gate list as 2×2 (J) / diagonal CZ
+      matrices on a 2^{nWires} vector, sharing no code with the cluster runner; `fidelity` compares up to a
+      physically-irrelevant global phase.
+- [x] **Graph / cluster states** — `clusterState(G)`, the generators `K_v=X_v∏_{w∼v}Z_w`, and a Pauli-string
+      expectation routine proving ⟨K_v⟩=+1 (line / ring / star / box / box+diagonals).
+- [x] **MBQC lab tab** (`MBQCLab.tsx`) — a *Compile a gate to a cluster* card (pick H/S/T/Rz/Rx/U/CNOT/Bell,
+      see the cluster graph with measured outcomes + adapted angles, the byproduct correction this run, the
+      corrected output on |0…0⟩, and a live ✓ fidelity vs the oracle), a *Determinism from randomness* card
+      (the same computation under 10 different outcome strings, all fidelity-1 after correction), and a
+      *Graph states & their stabilizers* card (colour-coded Pauli generators with ⟨K_v⟩).
+- [x] **Tests (89 → 95)** — every pattern = oracle over 8 patterns × 24 random inputs/outcomes (fidelity 1);
+      outcome-independence over 38 outcome strings; 24 random multi-gate 2-wire circuits = oracle (clusters of
+      ~dozens of qubits, live register ≤ 3); T⁸=I; cluster ⟨K_v⟩=+1; the Bell pattern's output distribution.
+- [x] **Wire the tab + About entry + this journal.**
+
+### Verified
+- Every measurement pattern (H, S, T, Rz, Rx, arbitrary Euler U, CNOT, and the H;CNOT Bell circuit)
+  reproduces the independent dense circuit oracle to **fidelity 1.0 (15 nines)** over hundreds of random
+  inputs and random measurement outcomes.
+- **Determinism from randomness**: the corrected logical output is identical across dozens of distinct
+  measurement records (min fidelity 1.0) — the property that makes the one-way computer work.
+- Random 6–11-gate two-wire circuits compile to clusters of up to ~23 physical qubits yet are simulated
+  with a **live register of ≤ 3 qubits**, matching the oracle exactly — the MBQC memory advantage.
+- Cluster states are graph states: ⟨K_v⟩ = +1 for every generator on the line, ring, star and box graphs.
+- lint + tsc + build + **95/95 self-tests** green (the exact CI gate).
+
 ### Session log
+- 2026-06-20 (claude / claude-opus-4-8): **Quantum Lab 11.0 — Measurement-Based Quantum Computation.**
+  Added a wholly different model of computation: the one-way quantum computer, where computation is driven
+  by adaptive single-qubit *measurements* on a fixed entangled cluster state rather than by gates. One
+  self-contained module (`src/quantum/mbqc.ts`) — a dynamic state-vector engine that frees each qubit on
+  measurement (live register ≤ #wires at any depth), the measurement calculus (N/E/M with feed-forward
+  angles φ=(−1)^{sX}α+sZπ), a universal {J(α),CZ} compiler that propagates the Pauli byproduct operators
+  symbolically, an independent dense circuit oracle, and graph/cluster states with their K_v generators —
+  plus a `MBQCLab` tab and six new self-tests, touching no existing engine. Derived the gadget from
+  scratch (`J(α)=H·P(α)`, the elementary measurement realises J(−α) up to an X byproduct; any U via its
+  ZXZ Euler decomposition makes {J(α),CZ} universal) and verified it: every pattern reproduces the circuit
+  model to fidelity 1.0 over hundreds of random inputs/outcomes, the corrected output is determinism-
+  identical across dozens of measurement records, random multi-gate circuits spread over ~23 physical
+  qubits but simulate with ≤3 live, and cluster ⟨K_v⟩=+1. Suite 89 → 95, all green; lint + tsc + build pass.
 - 2026-06-20 (claude/claude-opus-4-8[1m]): **Quantum Lab 10.0 — Shor's Algorithm.** Added the one
   iconic quantum algorithm the lab was missing: integer factoring by quantum order-finding, in one
   self-contained module (`src/quantum/shor.ts`) + one tab (`ShorLab.tsx`) + 8 new self-tests, touching

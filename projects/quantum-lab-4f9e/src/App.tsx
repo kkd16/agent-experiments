@@ -18,14 +18,15 @@ import TensorLab from './components/TensorLab';
 import FreeFermionLab from './components/FreeFermionLab';
 import DynamicsLab from './components/DynamicsLab';
 import ShorLab from './components/ShorLab';
+import MBQCLab from './components/MBQCLab';
 import TestsPanel from './components/TestsPanel';
 import ExportPanel from './components/ExportPanel';
 import { schmidtDecompose } from './quantum/Schmidt';
 
-type Tab = 'builder' | 'algorithms' | 'shor' | 'variational' | 'stabilizer' | 'surface' | 'tensor' | 'freefermion' | 'dynamics' | 'tests' | 'about';
+type Tab = 'builder' | 'algorithms' | 'shor' | 'mbqc' | 'variational' | 'stabilizer' | 'surface' | 'tensor' | 'freefermion' | 'dynamics' | 'tests' | 'about';
 type VizTab = 'state' | 'probabilities' | 'bloch' | 'density' | 'measure';
 
-const PAGE_TABS: Tab[] = ['about', 'shor', 'variational', 'stabilizer', 'surface', 'tensor', 'freefermion', 'dynamics', 'tests'];
+const PAGE_TABS: Tab[] = ['about', 'shor', 'mbqc', 'variational', 'stabilizer', 'surface', 'tensor', 'freefermion', 'dynamics', 'tests'];
 
 // Parse a shared circuit from the URL hash (#c=…) once, before mount — sandbox-safe.
 function loadSharedCircuit(): { numQubits: number; ops: GateOp[] } | null {
@@ -137,7 +138,7 @@ export default function App() {
         </div>
 
         <nav style={{ display: 'flex', gap: 2, marginLeft: 'auto', flexWrap: 'wrap' }}>
-          {(['builder', 'algorithms', 'shor', 'variational', 'stabilizer', 'surface', 'tensor', 'freefermion', 'dynamics', 'tests', 'about'] as Tab[]).map((tab) => (
+          {(['builder', 'algorithms', 'shor', 'mbqc', 'variational', 'stabilizer', 'surface', 'tensor', 'freefermion', 'dynamics', 'tests', 'about'] as Tab[]).map((tab) => (
             <button
               key={tab}
               onClick={() => setActiveTab(tab)}
@@ -156,6 +157,7 @@ export default function App() {
             >
               {tab === 'builder' ? '🔧 Builder' : tab === 'algorithms' ? '⚡ Algorithms'
                 : tab === 'shor' ? '🔢 Shor'
+                : tab === 'mbqc' ? '🕹️ One-Way'
                 : tab === 'variational' ? '🧬 Variational' : tab === 'stabilizer' ? '🧱 Stabilizer'
                 : tab === 'surface' ? '🔲 Surface' : tab === 'tensor' ? '🕸️ Tensor'
                 : tab === 'freefermion' ? '🪢 Free Fermion'
@@ -216,6 +218,7 @@ export default function App() {
             >
               {activeTab === 'about' && <AboutPage />}
               {activeTab === 'shor' && <ShorLab />}
+              {activeTab === 'mbqc' && <MBQCLab />}
               {activeTab === 'variational' && <VariationalLab />}
               {activeTab === 'stabilizer' && <StabilizerLab />}
               {activeTab === 'surface' && <SurfaceLab />}
@@ -615,8 +618,12 @@ function AboutPage() {
           content: "The result that launched quantum computing, built from scratch end to end: factoring an integer N into its prime factors. Shor's insight is that factoring reduces to ORDER-FINDING — find the period r of x ↦ a·x mod N for a random base a, and gcd(a^(r/2) ± 1, N) are real factors. The period is found quantumly by phase-estimating the eigenphase s/r of the modular-multiplication unitary, then recovering r from the measured s/r with a continued-fraction expansion. The lab builds the genuine circuit two independent ways — a full (n+t)-qubit register with t controlled modular multipliers + an inverse QFT, and the hardware-friendly iterative variant that recycles a single ancilla measured bit-by-bit with classical feedback — and grades both against an exact closed-form Dirichlet-kernel distribution to machine precision. The Shor tab actually factors 15, 21, 33, 35… live: watch the random base chosen, the order-finding spectrum peak at the rationals k/r, the continued fraction reconstruct r, and the factor tree resolve.",
         },
         {
+          title: 'Measurement-Based Quantum Computation (the One-Way Computer)',
+          content: "A wholly different model of computation, built from scratch and cross-checked against the circuit model. Instead of applying gates, you prepare one large, fixed, entangled cluster state and compute purely by measuring its qubits one at a time in adaptively chosen single-qubit bases — the entanglement is the resource and (irreversible, random) measurement drives the computation. The lab implements the measurement calculus (Danos–Kashefi–Panangaden): patterns of N (prepare |+⟩), E (entangle with CZ), and M (measure at plane-angle φ = (−1)^{sX}·α + sZ·π, fed forward from earlier outcomes), with a universal {J(α), CZ} compiler that turns any single-qubit unitary (via its Euler angles) and CNOT into a cluster + a measurement schedule, propagating the Pauli byproduct operators symbolically. A dynamic state-vector engine frees each qubit the moment it is measured, so a computation of any depth keeps a live register no bigger than the number of logical wires — the MBQC memory advantage made concrete (a depth-deep two-wire circuit spreads over dozens of physical qubits but never holds more than three at once). The headline is determinism from randomness: every run records different measurement outcomes, yet undoing the known byproduct frame yields a byte-for-byte identical logical state — verified to machine precision against an independent dense circuit oracle over hundreds of random inputs and outcome strings. Cluster states are shown to be graph states, the +1 eigenstates of the generators K_v = X_v ∏_{w∼v} Z_w.",
+        },
+        {
           title: 'Phase Estimation & Tooling',
-          content: 'Quantum Phase Estimation recovers eigenphases via phase kickback + inverse QFT. Circuits export to OpenQASM 2.0 (Qiskit/IBM-compatible) and JSON, with shareable URLs, depth/gate metrics, and an 88-case in-browser self-test suite proving the engine correct against exact references — including Shor\'s order-finding distribution vs an exact analytic comb and the end-to-end factoring of 15/21/33/35, the free-fermion TFIM vs exact diagonalisation and the Pfeuty thermodynamic limit, the recovered central charge c=½, the quench vs exact dense evolution, the anisotropic-XY ground energy and the dynamical phase transition (Loschmidt rate + topological order parameter) vs exact dense time evolution, DMRG vs exact diagonalisation, the surface-code MWPM decoder vs brute-force matching, the Union-Find decoder vs MWPM, and both the code-capacity and phenomenological QEC threshold crossings.',
+          content: 'Quantum Phase Estimation recovers eigenphases via phase kickback + inverse QFT. Circuits export to OpenQASM 2.0 (Qiskit/IBM-compatible) and JSON, with shareable URLs, depth/gate metrics, and a 95-case in-browser self-test suite proving the engine correct against exact references — including the measurement-based one-way computer reproducing the circuit model to machine precision — including Shor\'s order-finding distribution vs an exact analytic comb and the end-to-end factoring of 15/21/33/35, the free-fermion TFIM vs exact diagonalisation and the Pfeuty thermodynamic limit, the recovered central charge c=½, the quench vs exact dense evolution, the anisotropic-XY ground energy and the dynamical phase transition (Loschmidt rate + topological order parameter) vs exact dense time evolution, DMRG vs exact diagonalisation, the surface-code MWPM decoder vs brute-force matching, the Union-Find decoder vs MWPM, and both the code-capacity and phenomenological QEC threshold crossings.',
         },
       ].map(({ title, content }, i) => (
         <motion.div
