@@ -153,6 +153,18 @@ export const EXAMPLES: Example[] = [
     sample: 'abef cdef ababef abcdef',
     note: 'The Antimirov tab builds a compact ε-free NFA; determinise + minimise and it equals the canonical machine — a third independent road.',
   },
+  {
+    name: 'Glushkov: position automaton',
+    pattern: '(a|b)*abb',
+    sample: 'abb aabb ababb babb bb',
+    note: 'The textbook Glushkov example. Open the Glushkov tab: five letters → exactly six states, ε-free, and read straight off the first/last/follow tables.',
+  },
+  {
+    name: 'Glushkov: four roads',
+    pattern: '(ab|ba)*(a|b)',
+    sample: 'a b aba abba baa abab',
+    note: 'Thompson, Brzozowski, Antimirov and Glushkov each build a different automaton — yet all four minimise to the very same canonical DFA.',
+  },
 ];
 
 export const DEFAULT_EXAMPLE = EXAMPLES[1];

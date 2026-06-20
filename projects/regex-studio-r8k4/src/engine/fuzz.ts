@@ -1,21 +1,23 @@
 // Differential fuzzing — turning "trust me, the engines agree" into evidence.
 //
-// This studio carries five independent, from-scratch matchers plus two roads to
+// This studio carries six independent, from-scratch matchers plus four roads to
 // a DFA. They *should* all agree on whether a string is in a regular language —
 // but agreement is a claim, and a fuzzer is how you earn it. Each trial draws a
 // random regular pattern and a batch of random strings from a seeded PRNG, then
 // asks every engine the same yes/no question:
 //
-//   1. subset-construction DFA   (Thompson NFA → determinise → minimise)
-//   2. derivative DFA            (Brzozowski derivatives → BFS)
-//   3. streaming derivatives     (derive once per character, test nullable)
-//   4. Antimirov DFA             (equation automaton → determinise)
-//   5. partial derivatives       (equation-automaton NFA simulated directly)
-//   6. Pike VM                   (bytecode thread-list, anchored)
-//   7. backtracking VM           (continuation-passing matcher, anchored)
-//   8. the platform's own RegExp (an external oracle — the one engine we did *not* write)
+//    1. subset-construction DFA   (Thompson NFA → determinise → minimise)
+//    2. derivative DFA            (Brzozowski derivatives → BFS)
+//    3. streaming derivatives     (derive once per character, test nullable)
+//    4. Antimirov DFA             (equation automaton → determinise)
+//    5. partial derivatives       (equation-automaton NFA simulated directly)
+//    6. Glushkov DFA              (position automaton → determinise)
+//    7. position automaton        (Glushkov NFA simulated directly)
+//    8. Pike VM                   (bytecode thread-list, anchored)
+//    9. backtracking VM           (continuation-passing matcher, anchored)
+//   10. the platform's own RegExp (an external oracle — the one engine we did *not* write)
 //
-// Eight implementations, one verdict. Any single disagreement is a real bug in
+// Ten implementations, one verdict. Any single disagreement is a real bug in
 // one of them, surfaced with the exact pattern and input that triggers it.
 // Because the PRNG is seeded, every run is perfectly reproducible.
 
@@ -23,6 +25,7 @@ import type { RegexNode } from './ast';
 import { compile } from './compile';
 import { fromAst, accepts, buildDerivDFA, dsize } from './derivatives';
 import { acceptsPartial, buildAntimirovNFA, buildAntimirovDFA } from './antimirov';
+import { buildGlushkov, buildGlushkovDFA, acceptsGlushkov, GlushkovTooBig } from './glushkov';
 import { dfaAccepts, toCodePoints } from './simulate';
 import { runPike } from './pike';
 import { runVM } from './vm';
@@ -200,7 +203,17 @@ export interface FuzzReport {
   elapsedMs: number;
 }
 
-const ENGINES_BASE = ['subset DFA', 'derivative DFA', 'streaming D', 'Antimirov DFA', 'partial D', 'Pike VM', 'backtracking VM'];
+const ENGINES_BASE = [
+  'subset DFA',
+  'derivative DFA',
+  'streaming D',
+  'Antimirov DFA',
+  'partial D',
+  'Glushkov DFA',
+  'position NFA',
+  'Pike VM',
+  'backtracking VM',
+];
 
 export function runFuzz(config: FuzzConfig = DEFAULT_FUZZ): FuzzReport {
   const t0 = typeof performance !== 'undefined' ? performance.now() : Date.now();
@@ -238,6 +251,17 @@ export function runFuzz(config: FuzzConfig = DEFAULT_FUZZ): FuzzReport {
     // streaming partial-derivative engine runs on every string regardless.
     const pn = dsize(d) <= 40 ? buildAntimirovNFA(d, 200, 600) : null;
     const adfa = pn && !pn.truncated ? buildAntimirovDFA(pn) : null;
+    // The Glushkov position automaton is ε-free with one state per letter
+    // occurrence, so it is cheap; the streaming position-automaton matcher runs
+    // on every string regardless. Cap the build for pathological linearisations.
+    let glush: ReturnType<typeof buildGlushkov> | null = null;
+    try {
+      glush = dsize(d) <= 60 ? buildGlushkov(c.ast, 200) : null;
+    } catch (e) {
+      if (!(e instanceof GlushkovTooBig)) throw e;
+      glush = null;
+    }
+    const gdfa = glush ? buildGlushkovDFA(glush) : null;
     const anc = anchored(c.ast);
     let oracle: RegExp | null = null;
     if (config.useOracle) {
@@ -261,6 +285,9 @@ export function runFuzz(config: FuzzConfig = DEFAULT_FUZZ): FuzzReport {
       // The equation automaton: determinised (when built) and simulated directly.
       if (adfa) results.push({ engine: 'Antimirov DFA', verdict: safe(() => dfaAccepts(adfa, input)) });
       results.push({ engine: 'partial D', verdict: safe(() => acceptsPartial(d, input)) });
+      // The position automaton: determinised (when built) and simulated directly.
+      if (gdfa) results.push({ engine: 'Glushkov DFA', verdict: safe(() => dfaAccepts(gdfa, input)) });
+      if (glush) results.push({ engine: 'position NFA', verdict: safe(() => acceptsGlushkov(glush!, input)) });
       results.push({
         engine: 'Pike VM',
         verdict: safe(() => {
