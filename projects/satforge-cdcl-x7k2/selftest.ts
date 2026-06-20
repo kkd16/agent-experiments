@@ -63,6 +63,7 @@ import { runBvChecks } from './src/smt/bv/selfcheck'
 import { runImcChecks } from './src/imc/selfcheck'
 import { runQbfChecks } from './src/qbf/selfcheck'
 import { runBddChecks } from './src/bdd/selfcheck'
+import { runPbChecks } from './src/pb/selfcheck'
 
 let pass = 0
 let fail = 0
@@ -1337,6 +1338,14 @@ function bruteMaxCut(g: WeightedGraph): number {
   for (const m of bddr.messages) console.error(m)
   pass += bddr.pass
   fail += bddr.fail
+}
+
+// ---- Pseudo-Boolean: native cutting-plane solving + 0/1 optimization --------
+{
+  const pbr = runPbChecks()
+  for (const m of pbr.messages) console.error(m)
+  pass += pbr.pass
+  fail += pbr.fail
 }
 
 console.log(`\n${pass} passed, ${fail} failed`)

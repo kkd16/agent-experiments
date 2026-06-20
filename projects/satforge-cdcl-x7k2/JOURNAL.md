@@ -73,6 +73,19 @@ conflict teaches the solver a new clause that prunes an exponential swath of the
   diagram for SVG. `selfcheck.ts` pins the engine against a truth-table oracle, the project's OWN
   CDCL + #SAT engines (a BDD from a CNF must agree on SAT/UNSAT and the model count), and closed-form
   combinatorics for the ZDD.
+- `src/pb/*` — **Pseudo-Boolean reasoning** (Session 17). A native 0/1 integer-linear engine
+  that does NOT go through the clausal core: `constraint.ts` is the normal-form PB constraint
+  `Σ aᵢ·ℓᵢ ≥ d` (signed-coefficient map, **bigint** throughout) with the sound cutting-plane
+  operations — add, multiply, Chvátal–Gomory divide, saturate, weaken — plus `normalizeLinear`
+  (any integer-linear inequality, any comparator, negative coefficients → normal form);
+  `solver.ts` is the **cutting-plane CDCL** solver (slack-based propagation + conflict analysis
+  by RoundingSat-style generalized resolution, with a decision-cut fall-back that guarantees
+  termination); `encode.ts` is the independent CNF oracle (lower each constraint to the existing
+  Generalized Totalizer + CDCL); `reference.ts` is the exhaustive brute-force oracle; `optimize.ts`
+  is 0/1 optimization by solution-improving (linear SAT-UNSAT) search; `examples.ts` carries the
+  pigeonhole separation, knapsack, set cover and dominating set; `opb.ts` is an OPB parser/printer;
+  `selfcheck.ts` cross-checks the native solver against brute force *and* the CNF oracle, the
+  optimizer against the brute-force optimum, and every cutting-plane rule for soundness.
 - `src/worker/solver.worker.ts` + `src/useSolver.ts` — runs the solver off the main thread.
 - `src/components/*` — Solution boards, statistics + search-dynamics chart, implication-graph
   view, step-through trace, CNF/DIMACS inspector, the #SAT Count view, the **Compile** view
@@ -106,7 +119,12 @@ brute force, its weighted model count and its one-pass differential marginals ag
 and its enumeration against the exact model set with no duplicates) all compared against independent
 references — and (Session 16) the **BDD/ZDD** engine (a truth-table oracle for every apply,
 cofactor, quantifier and reorder; a BDD compiled from a CNF cross-checked against the project's own
-CDCL solver and #SAT counter; the ZDD set algebra against closed-form combinatorics). All **412
+CDCL solver and #SAT counter; the ZDD set algebra against closed-form combinatorics) and
+(Session 17) the **pseudo-Boolean** engine (the native cutting-plane solver cross-checked,
+verdict-for-verdict, against brute force AND the independent CNF encoding on 4000 random
+instances with every SAT model re-verified; 0/1 optimization optima against the brute-force
+optimum; the pigeonhole UNSAT family; and the algebraic soundness of every cutting-plane rule —
+saturation, division, weakening and addition — over thousands of random constraints). All **437
 assertions** pass.
 
 ## Ideas / backlog
@@ -1322,3 +1340,64 @@ pointer compare.
       CDCL solver (SAT/UNSAT) and #SAT counter (exact count)**; the expression compiler matches its
       evaluator; and the ZDD set algebra matches 2ⁿ, C(n,k) and bit-mask set arithmetic. Harness
       **313 → 412 assertions**, all green. Lint + tsc + build + full gate green.
+
+### Session 17 — from *clauses* to *cutting planes*: a pseudo-Boolean engine (a sixth studio)
+
+Every reasoning engine in SatForge so far — CDCL, #SAT, MaxSAT, the SMT theories, IMC, QBF, BDDs —
+is ultimately powered by **resolution** over clauses. Resolution is provably *weak*: the pigeonhole
+principle PHPⁿ⁺¹ₙ ("n+1 pigeons don't fit one-per-hole in n holes") needs an **exponential** number
+of resolution steps, so CDCL grinds on it. This session gives SatForge a genuinely different and
+stronger proof system. A **pseudo-Boolean** constraint is a 0/1 integer-linear inequality
+`Σ aᵢ·ℓᵢ ≥ d` (every clause is the case `Σ ℓᵢ ≥ 1`, every cardinality constraint the unit-coefficient
+case), and the native solver learns in the **cutting-plane** system, which refutes pigeonhole in
+*polynomial* size. The studio demonstrates the separation live: PHP(8→7) is closed by the native
+solver in **7 conflicts** while the resolution-based CDCL core spends **~1565**.
+
+- [x] **`src/pb/constraint.ts` — the normal-form PB constraint and the cutting-plane algebra.**
+      `Σ aᵢ·ℓᵢ ≥ degree` stored as a signed-coefficient map (sign = literal polarity, magnitude =
+      coefficient), with **bigint** everywhere because cutting-plane reasoning makes coefficients
+      grow and 53-bit floats would corrupt a proof. The sound inference rules: `addConstraint`
+      (folds `x + ¬x = 1` into the degree), `multiply` (positive scaling), `divideCeil`
+      (Chvátal–Gomory rounding), `saturate` (cap coefficients at the degree), `weaken` (drop a
+      literal, lower the degree). `normalizeLinear` reduces *any* integer-linear inequality — any
+      comparator, negative coefficients, repeated variables, equalities — to normal form with the
+      same 0/1 solution set.
+- [x] **`src/pb/solver.ts` — the cutting-plane CDCL solver.** Slack-based unit propagation (a
+      literal whose coefficient exceeds the constraint's slack is forced; negative slack is a
+      conflict), and conflict analysis by **RoundingSat-style generalized resolution**: reduce the
+      reason that propagated the most-recent literal (weaken its non-divisible non-falsified
+      literals, then divide-and-round so the pivot's coefficient is 1) and add it to the running
+      conflict so the pivot cancels — repeated to a 1-UIP cut that asserts after back-jumping. A
+      **decision-cut fall-back** ("at least one decision must flip") guarantees termination, so the
+      search degrades to DPLL rather than ever looping. **Sound by construction**: every step is a
+      valid cutting-plane inference, so an UNSAT is a real refutation and every SAT model is
+      re-checked. Records the first conflict's full derivation for the UI.
+- [x] **`src/pb/encode.ts` — the independent CNF oracle.** Lowers each constraint
+      (`Σ aᵢℓᵢ ≥ d ⇔ Σ aᵢ¬ℓᵢ ≤ Σaᵢ − d`) onto the project's existing **Generalized Totalizer** and
+      solves with the from-scratch CDCL core — a different proof system reaching the same verdict,
+      and the source of the resolution-vs-cutting-planes conflict-count comparison.
+- [x] **`src/pb/reference.ts`** — the exhaustive brute-force oracle (decision + optimum by 2ⁿ
+      enumeration) the others are checked against.
+- [x] **`src/pb/optimize.ts` — 0/1 optimization.** Solution-improving (linear SAT-UNSAT) search:
+      find a feasible point, bound the objective strictly below it, re-solve; when the bounded
+      problem goes UNSAT the last incumbent is provably optimal. Keeps every improving incumbent so
+      the studio shows the search converging.
+- [x] **`src/pb/examples.ts`** — the pigeonhole family (the headline separation), 0/1 knapsack,
+      minimum set cover and minimum dominating set (the Petersen graph's domination number, 3),
+      plus a seeded random generator.
+- [x] **`src/pb/opb.ts`** — a tolerant parser/printer for **OPB**, the standard pseudo-Boolean file
+      format (`min:`/`max:` objective + `±a xᵢ … ⋈ b ;` constraints, `~xᵢ` negation).
+- [x] **`src/components/PbStudio.tsx` — a sixth studio.** Example/random/OPB-editor input; the
+      verdict (or proven optimum) with a **cross-check row** (native vs. CNF oracle vs. brute force,
+      each with an agreement badge); effort stats including the largest learned coefficient; a
+      **cutting-planes-vs-resolution** conflict-count bar chart; the optimization trace of improving
+      objective values; the model; the **cutting-plane derivation** of the first conflict; the
+      constraint database; and a **"Run verification suite"** button that runs the whole cross-check
+      live in the browser.
+- [x] **25 new cross-check assertions** (`src/pb/selfcheck.ts`, folded into `selftest.ts`):
+      `normalizeLinear` preserves the solution set; saturation/division/weakening/addition are each
+      sound over thousands of random constraints; **the native cutting-plane solver agrees with
+      brute force AND the CNF oracle on 4000 random instances with every SAT model re-verified**;
+      0/1 optimization optima match the brute-force optimum (random + curated knapsack/set-cover/
+      Petersen); the pigeonhole PHP(h+1→h) family is UNSAT for h = 2..8; an OPB round-trip; and
+      determinism. Harness **412 → 437 assertions**, all green. Lint + tsc + build + full gate green.

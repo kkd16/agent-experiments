@@ -19,9 +19,10 @@ import { ModelChecker } from './components/ModelChecker'
 import { SolverLab } from './components/SolverLab'
 import { QbfStudio } from './components/QbfStudio'
 import { BddStudio } from './components/BddStudio'
+import { PbStudio } from './components/PbStudio'
 
 type Tab = 'solution' | 'stats' | 'count' | 'compile' | 'graph' | 'trace' | 'proof' | 'cnf'
-type Mode = 'sat' | 'smt' | 'qbf' | 'imc' | 'bdd' | 'lab'
+type Mode = 'sat' | 'smt' | 'qbf' | 'imc' | 'bdd' | 'pb' | 'lab'
 
 export default function App() {
   const [mode, setMode] = useState<Mode>('sat')
@@ -97,7 +98,9 @@ export default function App() {
                       ? 'Craig interpolation & interpolation-based safety model checking.'
                       : mode === 'bdd'
                         ? 'Binary Decision Diagrams: canonical Boolean functions, visualized & reordered.'
-                        : 'An empirical lab that races CDCL heuristics across a benchmark suite.'}
+                        : mode === 'pb'
+                          ? 'Pseudo-Boolean 0/1 integer-linear solving by native cutting planes, plus optimization.'
+                          : 'An empirical lab that races CDCL heuristics across a benchmark suite.'}
             </p>
           </div>
         </div>
@@ -117,6 +120,9 @@ export default function App() {
           <button className={mode === 'bdd' ? 'active' : ''} onClick={() => setMode('bdd')}>
             BDD Studio
           </button>
+          <button className={mode === 'pb' ? 'active' : ''} onClick={() => setMode('pb')}>
+            PB Studio
+          </button>
           <button className={mode === 'lab' ? 'active' : ''} onClick={() => setMode('lab')}>
             Solver Lab
           </button>
@@ -127,6 +133,7 @@ export default function App() {
       {mode === 'qbf' && <QbfStudio />}
       {mode === 'imc' && <ModelChecker />}
       {mode === 'bdd' && <BddStudio />}
+      {mode === 'pb' && <PbStudio />}
       {mode === 'lab' && <SolverLab />}
 
       {mode === 'sat' && (
@@ -235,7 +242,11 @@ export default function App() {
         multiplier, restoring division and barrel shifters lowered to the very same CDCL core — plus a
         <b>QBF solver</b> for the full quantifier hierarchy (PSPACE) by RAReQS-style counterexample-guided
         expansion, every move proposed and refuted by that same engine and cross-checked against an
-        exhaustive oracle — all hand-written in TypeScript.
+        exhaustive oracle · plus a native <b>pseudo-Boolean (0/1 integer-linear) engine</b> that learns in
+        the <b>cutting-plane</b> proof system — generalized resolution with division and saturation, sound by
+        construction, refuting pigeonhole in a linear number of conflicts where resolution needs thousands —
+        with solution-improving 0/1 optimization, an OPB front-end, and every verdict cross-checked against an
+        independent CNF encoding and a brute-force oracle — all hand-written in TypeScript.
       </footer>
     </div>
   )
