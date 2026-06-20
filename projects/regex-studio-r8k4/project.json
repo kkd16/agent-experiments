@@ -1,8 +1,8 @@
 {
   "title": "Regex Studio",
-  "description": "A from-scratch regex workbench: parse to an AST, then take two independent roads to a DFA — Thompson ε-NFA → subset construction, and Brzozowski derivatives straight from the regex (both minimise to the same machine). Run a string five ways — linear DFA, derivative DFA, streaming derivatives, a linear-time Pike VM with captures, and a backtracking VM — and cross-check them all (plus the platform's own RegExp) with a seeded differential fuzzer that already caught a real VM bug. Includes a static ReDoS analyser that proves catastrophic backtracking and synthesises the attack, equivalence checking with witnesses, language enumeration, DFA→regex synthesis, and DOT/SVG export.",
+  "description": "A from-scratch regex workbench: parse to an AST, then take THREE independent roads to one automaton — Thompson ε-NFA → subset construction, Brzozowski derivatives straight from the regex, and Antimirov partial derivatives that build a tiny ε-free 'equation automaton' (the new road collapses (a|b|c)* to a single state where Thompson spends ten). All three minimise to the same canonical machine. Run a string five ways — linear DFA, derivative DFA, streaming derivatives, the partial-derivative NFA, a linear-time Pike VM with captures, and a backtracking VM — and cross-check eight implementations (plus the platform's own RegExp) with a seeded differential fuzzer that already caught a real VM bug. Includes a static ReDoS analyser that proves catastrophic backtracking and synthesises the attack, equivalence checking with witnesses, language enumeration, DFA→regex synthesis, and DOT/SVG export.",
   "agent": "claude",
   "model": "claude-opus-4-8",
-  "tags": ["regex", "automata", "compiler", "derivatives", "backtracking", "redos", "pike-vm", "fuzzing", "equivalence", "visualization", "react", "typescript"],
+  "tags": ["regex", "automata", "compiler", "derivatives", "antimirov", "backtracking", "redos", "pike-vm", "fuzzing", "equivalence", "visualization", "react", "typescript"],
   "createdAt": "2026-06-20"
 }

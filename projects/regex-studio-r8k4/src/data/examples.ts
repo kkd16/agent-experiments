@@ -141,6 +141,18 @@ export const EXAMPLES: Example[] = [
     sample: 'b ab aaab',
     note: 'A repeat whose body can match empty. The fuzzer caught a backtracking-VM bug here — it now agrees with all other engines.',
   },
+  {
+    name: 'Antimirov: tiny NFA',
+    pattern: '(a|b|c|d)*',
+    sample: 'abcd dcba aXbc',
+    note: 'Open the Antimirov tab: this collapses to a ONE-state equation automaton, where Thompson spends ten states and ten ε-edges.',
+  },
+  {
+    name: 'Antimirov: three roads',
+    pattern: '(ab|cd)+ef',
+    sample: 'abef cdef ababef abcdef',
+    note: 'The Antimirov tab builds a compact ε-free NFA; determinise + minimise and it equals the canonical machine — a third independent road.',
+  },
 ];
 
 export const DEFAULT_EXAMPLE = EXAMPLES[1];
