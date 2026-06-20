@@ -122,6 +122,18 @@ export function radiance(
       const ms = scene.sampleMediumScatter(r.o, r.d, tHit, rng)
       if (ms) {
         const med = ms.medium
+        // ---- Volumetric emission (a glowing medium: fire / embers / nebula). ----
+        // A real collision occurs at rate σ_t, of which σ_a = (1−albedo)·σ_t is
+        // absorption; an emissive medium re-radiates there, so the path collects
+        // (σ_a/σ_t)·Lₑ = (1−albedo)·Lₑ of self-emission, weighted by the throughput
+        // *before* the scattering albedo is applied. Because real collisions are
+        // density-modulated by delta tracking, the glow naturally pools in the
+        // dense core of a heterogeneous field.
+        if (med.emission) {
+          let ce = mul(beta, mul(v(1 - med.albedo.x, 1 - med.albedo.y, 1 - med.albedo.z), med.emission))
+          if (depth > 0 && clampI > 0) ce = clampContribution(ce, clampI)
+          L = add(L, ce)
+        }
         // β *= single-scattering albedo: the homogeneous distance estimator's
         // weight at a collision is σ_s/σ_t, which is exactly the albedo.
         beta = mul(beta, med.albedo)

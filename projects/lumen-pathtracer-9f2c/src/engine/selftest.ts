@@ -875,6 +875,39 @@ function testHeteroVolumeEnergy(): { pass: boolean; detail: string } {
   return { pass: approx(measured, 1, 1.5e-2), detail: `radiance through fBm cloud=${measured.toFixed(4)} (exp 1)` }
 }
 
+// 26g — Volumetric emission. A purely *absorbing+emitting* volume (albedo 0,
+// emitted radiance Lₑ, extinction σ_t) seen against a black background must glow
+// with exactly the emission–absorption law L = (1 − e^(−σ_t·chord))·Lₑ: a camera
+// ray contributes Lₑ iff it suffers a collision inside the medium (probability
+// 1 − e^(−σ_t·chord)) and nothing otherwise. This pins the (1−albedo)·Lₑ
+// collision-emission weight and that the path terminates on absorption.
+function testEmissiveVolume(): { pass: boolean; detail: string } {
+  const sigmaT = 0.8
+  const radius = 1
+  const Le = 2.0
+  const scene = new Scene({
+    name: 'vol-emit', materials: [], prims: [],
+    camera: { eye: v(0, 0, 5), target: v(0, 0, 0), up: v(0, 1, 0), vfovDeg: 30, aperture: 0, focusDist: 5 },
+    env: { kind: 'solid', color: v(0, 0, 0) },
+    media: [{ center: v(0, 0, 0), radius, sigmaT, albedo: v(0, 0, 0), g: 0, emission: v(Le, Le, Le) }],
+  })
+  const rng = new Rng(4242, 8)
+  const settings = { maxDepth: 8, rrStart: 6, clampIndirect: 0 }
+  const stats: RayStats = { rays: 0 }
+  const N = 60000
+  let sum = 0
+  for (let i = 0; i < N; i++) {
+    const L = radiance(scene, { o: v(0, 0, 5), d: v(0, 0, -1), tMax: Infinity }, settings, rng, stats)
+    sum += luminance(L)
+  }
+  const measured = sum / N
+  const expected = (1 - Math.exp(-sigmaT * 2 * radius)) * Le // chord = 2r
+  return {
+    pass: approx(measured, expected, 1.5e-2),
+    detail: `emitted L=${measured.toFixed(4)}, (1−e^(−σ·2r))·Lₑ=${expected.toFixed(4)}`,
+  }
+}
+
 // 27 — Thin-film reflectance is a physical reflectance: bounded in [0,1] for all
 // angles, wavelengths and thicknesses; as the film thickness → 0 it must collapse
 // to the bare Fresnel reflectance of the air→substrate interface (the film
@@ -1666,6 +1699,7 @@ export function runSelfTests(): TestResult[] {
     test('Ratio tracking ≡ e^(−∫σds) (varying layer)', testRatioTrackVarying),
     test('Delta tracking ≡ e^(−∫σds) (varying layer)', testDeltaTrackVarying),
     test('Heterogeneous scattering volume conserves energy (=1)', testHeteroVolumeEnergy),
+    test('Emissive volume (1−e^(−σ·chord))·Lₑ', testEmissiveVolume),
     test('Thin-film R∈[0,1], d→0 Fresnel, iridescent', testThinFilm),
     test('Halton L2 discrepancy < random', testQmcDiscrepancy),
     test('BDPT white furnace — diffuse ρ=0.8', testBdptFurnace),
