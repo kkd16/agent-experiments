@@ -86,6 +86,21 @@ conflict teaches the solver a new clause that prunes an exponential swath of the
   pigeonhole separation, knapsack, set cover and dominating set; `opb.ts` is an OPB parser/printer;
   `selfcheck.ts` cross-checks the native solver against brute force *and* the CNF oracle, the
   optimizer against the brute-force optimum, and every cutting-plane rule for soundness.
+- `src/sls/*` — **Incomplete & statistical-physics solvers** (Session 18 — the *Phys Studio*). The
+  first engines here that are **not** complete search: they sample instead of proving, so they
+  crack satisfiable instances (even at the phase transition) that stop CDCL cold, but can never
+  report UNSAT. `working.ts` is the incremental substrate — a `WorkingFormula` (per-variable
+  clause-occurrence lists) and a `SearchState` whose single-variable `flip` updates clause
+  true-counts, the unsatisfied set, and break/make counts in O(deg) rather than O(formula);
+  `localsearch.ts` is one engine with four strategies (**GSAT**, **WalkSAT/SKC**, **ProbSAT**,
+  **Novelty+**); `anneal.ts` is **simulated annealing** (energy = unsatisfied clauses, Metropolis
+  flips, geometric cooling with reheating restarts); `surveyprop.ts` is from-scratch **survey
+  propagation** — the Braunstein–Mézard–Zecchina cavity equations as message passing on the factor
+  graph, plus decimation and a WalkSAT clean-up of the paramagnetic residual; `phase.ts` sweeps the
+  clause/variable ratio α to draw the satisfiability threshold and the easy–hard–easy effort peak;
+  `race.ts` runs the whole field with the complete CDCL solver as the refereeing oracle;
+  `selfcheck.ts` checks the incremental `SearchState` against a from-scratch rebuild after *every*
+  flip, re-verifies every model, and forbids any stochastic solver from disagreeing with CDCL.
 - `src/worker/solver.worker.ts` + `src/useSolver.ts` — runs the solver off the main thread.
 - `src/components/*` — Solution boards, statistics + search-dynamics chart, implication-graph
   view, step-through trace, CNF/DIMACS inspector, the #SAT Count view, the **Compile** view
@@ -1401,3 +1416,89 @@ solver in **7 conflicts** while the resolution-based CDCL core spends **~1565**.
       0/1 optimization optima match the brute-force optimum (random + curated knapsack/set-cover/
       Petersen); the pigeonhole PHP(h+1→h) family is UNSAT for h = 2..8; an OPB round-trip; and
       determinism. Harness **412 → 437 assertions**, all green. Lint + tsc + build + full gate green.
+
+### Session 18 — from *proving* to *sampling*: incomplete solvers & statistical physics (a seventh studio)
+
+Every engine in SatForge until now is **complete**: it systematically searches and can prove both
+SAT *and* UNSAT. But the most striking instances in all of SAT — uniform random 3-SAT right at the
+ratio α ≈ 4.267 — are exactly where complete solvers fall off an exponential cliff, and where a
+completely different family of algorithms shines: **incomplete** solvers that never prove UNSAT but
+find satisfying assignments astonishingly fast by *sampling* the search space rather than mapping
+it. This session builds the whole family from scratch, headlined by **survey propagation** — the
+message-passing algorithm that came out of the statistical physics of spin glasses and solves
+random 3-SAT at the threshold by computing how "frozen" each variable is across the cluster of
+solutions. A seventh studio (**Phys Studio**) lets you watch all of it. The complete CDCL engine
+becomes the *referee*: every stochastic verdict and every model is cross-checked against it.
+
+- [x] **`src/sls/working.ts` — the incremental flip substrate.** A `WorkingFormula` precomputes,
+      per variable, the clauses it occurs in and the sign of its literal there; a `SearchState`
+      then maintains the current 0/1 assignment, each clause's satisfied-literal count, and the set
+      of unsatisfied clauses as a swap-to-back array (O(1) membership + uniform random pick). A
+      single `flip(v)` touches only `v`'s clauses, so it is **O(deg v)**, and `breakCount`/
+      `makeCount`/`delta` are computed on demand — the same trick real SLS solvers use to do tens
+      of millions of flips per second.
+- [x] **`src/sls/localsearch.ts` — four classic local-search strategies, one engine.** **GSAT**
+      (greedy global flip + random-walk escape), **WalkSAT/SKC** (focus an unsatisfied clause, flip
+      its min-break variable, take a zero-break "freebie" when one exists), **ProbSAT** (no greedy
+      step — flip variable v of a clause with probability ∝ cb^−break(v); Balint & Schöning 2012),
+      and **Novelty+** (best-by-score unless it's the youngest flip, then the runner-up; with a
+      random-walk escape). Random restarts, flip/try/time budgets, and a sampled energy trajectory
+      for the chart.
+- [x] **`src/sls/anneal.ts` — SAT as statistical mechanics.** Energy = unsatisfied clauses; flips
+      accepted by the Metropolis rule e^−ΔE/T (ΔE = break − make, read straight off `SearchState`);
+      a geometric schedule cools T over each cycle and **reheats with a fresh random restart**,
+      using the whole time budget. Reports the energy *and* temperature trajectories and the
+      fraction of uphill moves it accepted — the "did it tunnel?" gauge.
+- [x] **`src/sls/surveyprop.ts` — from-scratch survey propagation + decimation (the crown jewel).**
+      The canonical Braunstein–Mézard–Zecchina cavity equations implemented as message passing on
+      the formula's factor graph: each survey η_{a→i} is the probability that clause a forces
+      variable i, updated from the Π^u/Π^s/Π^0 cavity products over each neighbour's *other*
+      clauses (split into sign-agreeing and sign-disagreeing sets), iterated (optionally damped) to
+      a fixed point. From the converged surveys it reads each variable's bias W⁺/W⁻/W⁰, **fixes the
+      most-frozen variables** (decimation), unit-propagates the consequences, and recurses; when the
+      surveys collapse (the **paramagnetic** phase, η_max → 0) the under-constrained residual is
+      finished by WalkSAT. Returns the whole-formula bias field, the full decimation log, and a
+      verdict — `'sat'` (model always re-checked with `verifyModel`), `'contradiction'` (decimation
+      took a wrong turn), `'unconverged'`, or `'unknown'`. Solves random 3-SAT at α = 4.2 where the
+      surveys are genuinely non-trivial (η_max ≈ 0.9).
+- [x] **`src/sls/phase.ts` — the phase-transition explorer.** Holds n fixed and sweeps α; for each
+      ratio it samples random 3-SAT instances, decides each with the complete CDCL solver (the SAT
+      fraction → the **satisfiability threshold**) and times WalkSAT on the satisfiable ones (median
+      flips → the **easy–hard–easy** effort peak). Verified live: P(sat) falls 1→0 across α ≈ 4–5
+      and the WalkSAT effort peaks right at the transition.
+- [x] **`src/sls/race.ts` — the complete solver as referee.** Runs CDCL + all four SLS variants +
+      annealing + survey propagation on one instance under a shared budget, reports who found a
+      model and how much work it took, and asserts **consistency**: no stochastic solver may claim
+      SAT on a CDCL-proven-UNSAT instance, and every model must pass `verifyModel`.
+- [x] **`src/components/PhysStudio.tsx` — a seventh studio.** A random k-SAT generator (n, α, k,
+      seed) with a live "near the 4.27 threshold / likely UNSAT" readout; a method picker with a
+      noise slider; three views — **Single run** (verdict + effort + an inline-SVG energy
+      trajectory; for annealing the temperature overlay; for SP the per-variable **survey field**
+      bar chart and the decimation log), **Race** (the whole field tabled against the referee with
+      verified-model badges), and **Phase transition** (the dual-axis SAT-probability + effort chart
+      with the α ≈ 4.267 threshold line) — plus a live "Run verification suite" button.
+- [x] **12 new cross-check assertions** (`src/sls/selfcheck.ts`, folded into `selftest.ts`): the
+      incremental `SearchState` matches a from-scratch rebuild of clause counts/energy/break/make
+      after **every** flip and `delta` predicts the exact energy change; every SLS/anneal/SP model
+      verifies and none ever reports SAT on a proven-UNSAT instance (incl. pigeonhole); WalkSAT
+      solves ≥85% of satisfiable randoms, annealing ≥60%, SP ≥90% of under-constrained and ≥1
+      near-threshold instance; and `race()` is consistent over many random instances. Harness
+      **437 → 449 assertions**, all green. Lint + tsc + build + full gate green.
+
+**Ideas for next time (open):**
+- [ ] **Backbone-guided / focused Metropolis** and an explicit *reheat-on-stall* schedule; expose
+      the cooling curve as an editable control in the studio.
+- [ ] **Survey-Inspired Decimation variants**: belief propagation (sum-product) and warning
+      propagation (the zero-temperature limit) beside SP, to show the hierarchy of message-passing.
+- [ ] **SP with backtracking** (undo a decimation that hit a contradiction) so SP solves a larger
+      fraction at α > 4.2 instead of giving up.
+- [ ] **Animate the cavity iteration** — draw the factor graph and watch the surveys flow to their
+      fixed point, like the implication-graph view does for CDCL.
+- [ ] **Run the heavy work off the main thread** via the existing worker/task runner (the phase
+      sweep especially), with progressive streaming of points to the chart.
+- [ ] **2-SAT in linear time** (Tarjan SCC on the implication graph) as a complete-but-specialised
+      contrast, with the SCC condensation drawn.
+- [ ] **Configuration-checking / probSAT auto-tuning** and a head-to-head SLS leaderboard wired
+      into the existing Solver Lab harness.
+- [ ] **Weighted/Partial MaxSAT by local search** (e.g. WalkSAT with clause weights) cross-checked
+      against the exact MaxSAT engine.

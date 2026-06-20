@@ -2876,3 +2876,137 @@ table.bv-model tr:hover td {
   padding: 3px 8px;
   color: #cfe0ff;
 }
+
+/* ===== Phys Studio (stochastic local search + survey propagation) ========== */
+.sls-side .sls-gen,
+.sls-side .sls-methods,
+.sls-side .sls-actions {
+  margin-top: 18px;
+}
+.sls-side h3 {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+  margin: 0 0 8px;
+}
+.sls-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+.sls-grid label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.sls-grid input {
+  background: var(--bg-soft);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  padding: 5px 8px;
+  font-size: 13px;
+}
+.sls-ok { color: var(--sat); }
+.sls-warn { color: #f0a93b; }
+.sls-method-list {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.sls-method-list button {
+  text-align: left;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  color: var(--text);
+  padding: 7px 10px;
+  font-size: 13px;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+}
+.sls-method-list button:hover { border-color: var(--accent); }
+.sls-method-list button.active {
+  border-color: var(--accent);
+  background: linear-gradient(135deg, rgba(110, 168, 254, 0.18), rgba(155, 140, 255, 0.18));
+}
+.sls-noise {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--muted);
+  margin-top: 10px;
+}
+.sls-noise input { accent-color: var(--accent); }
+.sls-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.sls-chart {
+  width: 100%;
+  height: auto;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  display: block;
+}
+.sls-axis { stroke: var(--border); stroke-width: 1; }
+.sls-grid { stroke: rgba(36, 49, 84, 0.6); stroke-width: 1; stroke-dasharray: 3 3; }
+.sls-tick { fill: var(--muted); font-size: 11px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.sls-axis-label { fill: var(--muted); font-size: 12px; }
+.sls-threshold { stroke: #f0a93b; stroke-width: 1.5; stroke-dasharray: 5 4; }
+
+.sls-line-energy { stroke: var(--accent); stroke-width: 2; }
+.sls-line-temp { stroke: #f0a93b; stroke-width: 1.5; opacity: 0.8; }
+.sls-line-sat { stroke: var(--sat); stroke-width: 2.5; }
+.sls-line-effort { stroke: #9b8cff; stroke-width: 2; opacity: 0.9; }
+.sls-dot-sat { fill: var(--sat); }
+.sls-dot-effort { fill: #9b8cff; }
+.sls-solved-dot { fill: var(--sat); stroke: #fff; stroke-width: 1.5; }
+
+.sls-bar-pos { fill: var(--sat); }
+.sls-bar-neg { fill: var(--unsat); }
+.sls-bar-zero { fill: #2c3a5e; }
+
+.sls-leg {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  color: #0b1020;
+}
+.sls-leg-pos, .sls-leg-sat { background: var(--sat); }
+.sls-leg-neg { background: var(--unsat); color: #fff; }
+.sls-leg-zero { background: #2c3a5e; color: var(--text); }
+.sls-leg-energy { background: var(--accent); }
+.sls-leg-temp { background: #f0a93b; }
+.sls-leg-effort { background: #9b8cff; }
+
+.sls-log { overflow-x: auto; }
+.sls-log table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12.5px;
+}
+.sls-log th {
+  text-align: left;
+  color: var(--muted);
+  font-weight: 600;
+  padding: 5px 10px;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+.sls-log td {
+  padding: 5px 10px;
+  border-bottom: 1px solid rgba(36, 49, 84, 0.45);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.sls-log tr.sls-row-complete td { background: rgba(110, 168, 254, 0.08); }
+.sls-note { font-family: inherit; color: var(--muted); }

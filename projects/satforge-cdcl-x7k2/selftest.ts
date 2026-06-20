@@ -64,6 +64,7 @@ import { runImcChecks } from './src/imc/selfcheck'
 import { runQbfChecks } from './src/qbf/selfcheck'
 import { runBddChecks } from './src/bdd/selfcheck'
 import { runPbChecks } from './src/pb/selfcheck'
+import { runSlsChecks } from './src/sls/selfcheck'
 
 let pass = 0
 let fail = 0
@@ -1346,6 +1347,14 @@ function bruteMaxCut(g: WeightedGraph): number {
   for (const m of pbr.messages) console.error(m)
   pass += pbr.pass
   fail += pbr.fail
+}
+
+// ---- Stochastic local search + survey propagation (Phys Studio) -------------
+{
+  const slsr = runSlsChecks()
+  for (const m of slsr.messages) console.error(m)
+  pass += slsr.pass
+  fail += slsr.fail
 }
 
 console.log(`\n${pass} passed, ${fail} failed`)

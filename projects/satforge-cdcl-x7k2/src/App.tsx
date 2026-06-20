@@ -20,9 +20,10 @@ import { SolverLab } from './components/SolverLab'
 import { QbfStudio } from './components/QbfStudio'
 import { BddStudio } from './components/BddStudio'
 import { PbStudio } from './components/PbStudio'
+import { PhysStudio } from './components/PhysStudio'
 
 type Tab = 'solution' | 'stats' | 'count' | 'compile' | 'graph' | 'trace' | 'proof' | 'cnf'
-type Mode = 'sat' | 'smt' | 'qbf' | 'imc' | 'bdd' | 'pb' | 'lab'
+type Mode = 'sat' | 'smt' | 'qbf' | 'imc' | 'bdd' | 'pb' | 'phys' | 'lab'
 
 export default function App() {
   const [mode, setMode] = useState<Mode>('sat')
@@ -100,7 +101,9 @@ export default function App() {
                         ? 'Binary Decision Diagrams: canonical Boolean functions, visualized & reordered.'
                         : mode === 'pb'
                           ? 'Pseudo-Boolean 0/1 integer-linear solving by native cutting planes, plus optimization.'
-                          : 'An empirical lab that races CDCL heuristics across a benchmark suite.'}
+                          : mode === 'phys'
+                            ? 'Incomplete SAT by stochastic local search & survey propagation — SAT as statistical physics.'
+                            : 'An empirical lab that races CDCL heuristics across a benchmark suite.'}
             </p>
           </div>
         </div>
@@ -123,6 +126,9 @@ export default function App() {
           <button className={mode === 'pb' ? 'active' : ''} onClick={() => setMode('pb')}>
             PB Studio
           </button>
+          <button className={mode === 'phys' ? 'active' : ''} onClick={() => setMode('phys')}>
+            Phys Studio
+          </button>
           <button className={mode === 'lab' ? 'active' : ''} onClick={() => setMode('lab')}>
             Solver Lab
           </button>
@@ -134,6 +140,7 @@ export default function App() {
       {mode === 'imc' && <ModelChecker />}
       {mode === 'bdd' && <BddStudio />}
       {mode === 'pb' && <PbStudio />}
+      {mode === 'phys' && <PhysStudio />}
       {mode === 'lab' && <SolverLab />}
 
       {mode === 'sat' && (
@@ -246,7 +253,11 @@ export default function App() {
         the <b>cutting-plane</b> proof system — generalized resolution with division and saturation, sound by
         construction, refuting pigeonhole in a linear number of conflicts where resolution needs thousands —
         with solution-improving 0/1 optimization, an OPB front-end, and every verdict cross-checked against an
-        independent CNF encoding and a brute-force oracle — all hand-written in TypeScript.
+        independent CNF encoding and a brute-force oracle · plus a <b>Phys Studio</b> of <b>incomplete</b> solvers —
+        stochastic local search (GSAT, WalkSAT/SKC, ProbSAT, Novelty+), simulated annealing, and from-scratch{' '}
+        <b>survey propagation</b> with decimation (the cavity method of spin-glass physics, solving random 3-SAT at the
+        threshold), with a live phase-transition explorer and the complete solver refereeing every stochastic verdict —
+        all hand-written in TypeScript.
       </footer>
     </div>
   )
