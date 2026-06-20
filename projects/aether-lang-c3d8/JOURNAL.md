@@ -67,12 +67,81 @@ compile the same optimized core — and the equivalence checks prove it preserve
 - [x] **Compiling pattern matching to good decision trees** (Maranget 2008) — a core-to-core
       middle-end pass that shares tests across arms so all three backends run the shared tree
       (Aether 12.0)
+- [x] **Size-change termination** (Lee–Jones–Ben-Amram, POPL 2001) — a from-scratch analyzer that
+      proves recursive functions halt on the structural subterm order, upgrading the optimizer's
+      effect-&-totality analysis so CSE/DCE can share/drop *recursive* pure calls; with a Termination
+      panel that draws each function's descending ↓ thread (Aether 13.0)
 - [x] Optimizer pass: constant folding, dead-branch elimination, short-circuit simplification
 - [x] A full **optimizing middle-end** over the core (β/η, inlining, dead code, known-`match`,
       field projection) feeding all three backends — abstraction melts away (Aether 10.0)
 - [x] Records with row polymorphism (`{ x = 1 }`, `r.x`, inferred `{ x: a | ρ } -> a`)
 - [x] Functional record update (`{ r | x = 5 }`, type-safe, row-polymorphic)
 - [x] A REPL mode that keeps top-level bindings between runs
+
+### Aether 13.0 — size-change termination: proving recursion halts (planned + shipping this session)
+
+Since 11.0 the optimizer has carried an **effect-&-totality analysis** so CSE can share — and
+dead-code elimination can drop — a *call* to a pure helper. But its notion of "total" was blunt:
+a function counted as total **only if it was non-recursive** (`if (recursive && freeVars(value).has(name)) return`).
+That excluded essentially every interesting function — `length`, `append`, `reverse`, a tree fold —
+so a program that computes `length xs + length xs` still walked the list twice. The backlog item
+*"totality is approximated by 'non-recursive'; a structural argument…"* named exactly this gap.
+
+13.0 closes it with the **size-change principle for program termination** (Lee, Jones &
+Ben-Amram, *POPL 2001*). A program cannot loop forever when, on every potential infinite call
+sequence, some value drawn from a **well-founded order** would have to descend without end. Aether's
+order is the **structural subterm order** on finite data: a value peeled out of a constructor,
+cons-cell or tuple by a `match` is *strictly smaller* (a ↓ arc) than the whole — and because Aether
+is strict, all data is finite, so that order is genuinely well-founded. For every call `f → g` the
+analysis builds a **size-change graph** (arcs from `f`'s parameters to `g`'s arguments, labelled ↓
+strict-subterm or ↓= alias, read straight off the destructurings in scope), finds the call graph's
+**strongly-connected components**, closes each component's graphs under composition, and proves it
+terminating when **every idempotent self-graph carries a strict in-situ arc** `p ↓ p` — a parameter
+that descends on every way around the loop.
+
+The cut-off is deliberately **first-order**, and that is exactly what keeps the result *sound for the
+optimizer too*: a function that applies one of its own parameters (`map`, `foldr`) is never admitted,
+because both its termination **and** its effect-freedom depend on the function it is handed at
+runtime — invisible to the first-order call graph and to `isPure`. So the analysis is honest in both
+directions: it proves `length` / `append` / `reverse` / tree folds / mutually-recursive `even`/`odd`
+/ a Peano-`Nat` factorial, and it *correctly declines* an unbounded `Int` countdown (which really can
+diverge on a negative input) and every higher-order combinator. Once a recursive function is proven
+effect-free **and** terminating it joins the pure set; CSE then shares a repeated recursive call and
+DCE drops an unused one — and the project's byte-for-byte VM≡JS≡WASM equivalence checks re-prove, on
+every example, that the answer never changed.
+
+Plan / steps:
+
+- [x] `src/lang/termination.ts` — a from-scratch size-change termination analyzer. Collects the
+      program's named, never-shadowed, first-order functions; for each call site builds a size-change
+      graph by walking the body under a **size environment** (`match`/`let` destructurings record
+      `var ↦ (parameter, strict?)`); composes and closes the graphs per SCC (Tarjan), with a safety
+      cap; and applies the idempotent-self-graph test. Returns per-function verdicts + witnesses.
+- [x] **Structural well-founded order**, done right: a pattern variable directly bound to the
+      scrutinee aliases it (↓=); one nested under ≥1 constructor/cons/tuple is a strict subterm (↓),
+      and a subterm-of-a-subterm stays strict — so deep destructuring still descends.
+- [x] **Sound `match` totality** in the optimizer (`matchTotal`) — a Maranget *usefulness* check
+      specialised to Aether's pattern domain with a signature oracle from `CTORS`/`SIBLINGS`
+      (built-ins for bool/unit/list/tuple, the declared sibling set for ADTs; Int/Float/String and
+      any unknown constructor are infinite ⇒ only a wildcard covers). A match whose *unguarded*
+      patterns are exhaustive cannot `MATCH_FAIL`, so `isPure` now accepts a total, all-pure match on
+      an **unknown** scrutinee — which is what lets a function that matches its own parameter be pure.
+- [x] **Admit recursive groups into the pure set** (`analyzePurity`): gather the proven-terminating
+      cyclic SCCs and commit each **all-or-nothing** — tentatively assume the whole group pure (so
+      members' own recursive calls resolve), check every body is effect-free, keep them only if all
+      check out, else roll the group back. Termination from the proof, effect-freedom from the body
+      check; together, totality. The non-recursive path and every existing safety invariant are
+      untouched, and `minCost`/`bodyCost`'s cycle guard already tolerates recursive pure bodies.
+- [x] **Termination panel** (a new tab) — per-function verdict cards (terminates / higher-order /
+      not proven) with the plain-language reason, the **↓ descending thread** drawn as the self
+      size-change graph, the trivially-terminating non-recursive functions, and the first-order call
+      graph. The Optimizer panel cross-links to it.
+- [x] A `termination` gallery example (recursive `len`, a tree fold, and a Peano-`Nat` factorial,
+      with `len`/`sumTree` shared by CSE and `map` left pointedly unproven); an in-app self-test
+      group (`termination`); and a headless battery proving VM≡JS≡WASM and optimize-on ≡ optimize-off
+      across **every** example, that the soundness direction holds (idle loops, integer countdowns and
+      growing arguments are *never* claimed to terminate), and that higher-order functions stay out.
+- [x] Docs (About "Internals" card, `project.json`) updated.
 
 ### Aether 12.0 — compiling pattern matching to good decision trees (planned + shipping this session)
 
@@ -815,8 +884,10 @@ Deferred (future, Aether 11.x+):
 - [ ] **CSE across a `let`** — the frontier walk stops at every binder, so a subexpression repeated
       across a `let` boundary (but with all free vars in scope above it) is not yet shared; a
       dominator-based available-expressions pass would catch those.
-- [ ] **Effect-free *but partial* calls** — totality is approximated by "non-recursive"; a structural
-      termination check would let CSE share pure-but-recursive calls like `fib`.
+- [x] **Effect-free *but partial* calls** — totality was approximated by "non-recursive"; **Aether
+      13.0** replaces that with a real **size-change termination** analysis (`termination.ts`), so CSE
+      now shares pure-but-recursive calls (`length`, tree folds, a Peano-`Nat` factorial, …). Honest
+      and first-order: an unbounded `Int` countdown and higher-order combinators are left unproven.
 - [x] **Whitelisting total, effect-free *natives*** (`sqrt`/`sin`/`cos`/`floor`/`toFloat`/`abs`/
       `strlen`/`toUpper`/`toLower`/`parseInt`/`min`/`max`) so their repeated calls are shareable too —
       trusted only when the name is *not* shadowed by a user binding (the partial `head`/`tail` and the

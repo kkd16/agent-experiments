@@ -470,6 +470,49 @@ instance Disp Int where disp = fn n -> "x" in disp 1`,
     expected: null,
     expectError: true,
   },
+
+  // ---- size-change termination (Aether 13.0): optimization preserves results ----
+  {
+    group: 'termination',
+    name: 'recursive length, repeated (CSE shares it)',
+    code: `let rec len = fn xs -> match xs with [] -> 0 | _ :: t -> 1 + len t in
+let xs = [1,2,3,4,5] in len xs + len xs`,
+    expected: '10',
+  },
+  {
+    group: 'termination',
+    name: 'tree fold shared across a product',
+    code: `type Tree = Leaf Int | Node Tree Tree in
+let rec sumT = fn t -> match t with Leaf n -> n | Node l r -> sumT l + sumT r in
+let t = Node (Node (Leaf 1) (Leaf 2)) (Leaf 3) in sumT t * sumT t`,
+    expected: '36',
+  },
+  {
+    group: 'termination',
+    name: 'Peano-Nat factorial (structural recursion)',
+    code: `type Nat = Z | S Nat in
+let rec add = fn a b -> match a with Z -> b | S m -> S (add m b) in
+let rec mul = fn a b -> match a with Z -> Z | S m -> add b (mul m b) in
+let rec fact = fn n -> match n with Z -> S Z | S m -> mul n (fact m) in
+let rec toInt = fn n -> match n with Z -> 0 | S m -> 1 + toInt m in
+toInt (fact (S (S (S (S Z)))))`,
+    expected: '24',
+  },
+  {
+    group: 'termination',
+    name: 'mutually-recursive even/odd, unused call dropped',
+    code: `let rec ev = fn xs -> match xs with [] -> true | _ :: t -> od t
+and od = fn xs -> match xs with [] -> false | _ :: t -> ev t in
+let unused = ev [1,2,3] in ev [1,2,3,4]`,
+    expected: 'true',
+  },
+  {
+    group: 'termination',
+    name: 'higher-order map still correct (left unproven)',
+    code: `let rec map = fn f xs -> match xs with [] -> [] | h :: t -> f h :: map f t in
+map (fn x -> x * x) [1,2,3,4]`,
+    expected: '[1, 4, 9, 16]',
+  },
 ]
 
 export function runCase(tc: TestCase): TestResult {

@@ -261,7 +261,8 @@ export default function OptimizerPanel({ code }: Props) {
       {stats.pureFns.length > 0 && (
         <p className="panel-note">
           <strong>Effect-&amp;-totality analysis</strong> — proved these functions effect-free and
-          total, so common-subexpression elimination may share a repeated call and dead-code
+          total (recursive ones via <strong>size-change termination</strong> — see the Termination
+          tab), so common-subexpression elimination may share a repeated call and dead-code
           elimination may drop an unused one:{' '}
           {stats.pureFns.map((f, i) => (
             <span key={f}>

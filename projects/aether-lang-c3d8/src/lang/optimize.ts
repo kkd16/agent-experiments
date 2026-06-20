@@ -40,6 +40,8 @@
 import type { BinaryOp, Expr, MatchCase, Pattern } from './ast.ts'
 import { collectSiblings, compileMatches } from './decisiontree.ts'
 import type { DtStats, DtView } from './decisiontree.ts'
+import { analyzeTermination } from './termination.ts'
+import type { TerminationResult } from './termination.ts'
 
 export interface OptimizeStats {
   /** fixpoint rounds run */
@@ -61,6 +63,9 @@ export interface OptimizeStats {
   dt: DtStats
   /** one entry per `match` rewritten into a decision tree (for the panel) */
   decisionTrees: DtView[]
+  /** size-change termination analysis — the proof that lets the totality analysis
+   *  admit *recursive* functions (Aether 13.0). Null only if it wasn't run. */
+  termination: TerminationResult | null
 }
 
 export interface OptimizeResult {
@@ -84,6 +89,15 @@ function gensym(base: string): string {
 // recognise (saturated) constructor applications as data. Module-level for the
 // same reason as `freshCounter`: optimization is synchronous and single-shot.
 let CTORS = new Map<string, number>()
+
+// `ctorName -> the full set of sibling constructor names of its type`. Set once
+// per run; read by `matchTotal` to decide (soundly) whether a `match`'s patterns
+// are exhaustive — a total match cannot MATCH_FAIL, so it is pure & terminating.
+let SIBLINGS = new Map<string, Set<string>>()
+
+// The size-change termination analysis for this run (Aether 13.0). Computed by
+// `analyzePurity` and surfaced in the Optimizer/Termination panels.
+let TERMINATION: TerminationResult | null = null
 
 // `fnName -> { arity, body }` for every function the effect-&-totality analysis
 // proved **effect-free and total** — a non-recursive, never-shadowed binding
@@ -120,7 +134,9 @@ let SHADOWED = new Set<string>()
 export function optimizeCore(root: Expr): OptimizeResult {
   freshCounter = 0
   CTORS = collectCtors(root)
+  SIBLINGS = collectSiblings(root)
   SHADOWED = new Set(collectBinderCounts(root).keys())
+  TERMINATION = null
   PURE_FNS = analyzePurity(root)
   bodyCostMemo = new Map<string, number>()
   const passes: Record<string, number> = {}
@@ -149,7 +165,7 @@ export function optimizeCore(root: Expr): OptimizeResult {
   // Phase 2: compile pattern matching to good decision trees (Aether 12.0). A
   // core-to-core pass that shares tests across arms; emits ordinary core, so all
   // three backends compile it unchanged.
-  const dtResult = compileMatches(expr, { ctors: CTORS, siblings: collectSiblings(root) })
+  const dtResult = compileMatches(expr, { ctors: CTORS, siblings: SIBLINGS })
   const dt: DtStats = dtResult.stats
   const decisionTrees: DtView[] = dtResult.views
   if (dtResult.changed) {
@@ -173,6 +189,7 @@ export function optimizeCore(root: Expr): OptimizeResult {
       pureFns: [...PURE_FNS.keys()],
       dt,
       decisionTrees,
+      termination: TERMINATION,
     },
   }
 }
@@ -928,21 +945,176 @@ function isPure(e: Expr): boolean {
       return false
     }
     case 'match': {
-      // a match on a statically-known, *pure* shape with a definite, unguarded,
-      // pure arm is pure & total (the scrutinee has no effect and the chosen
-      // branch cannot fail)
-      if (!isStaticShape(e.scrutinee) || !isPure(e.scrutinee)) return false
-      for (const c of e.cases) {
-        const o = tryMatch(c.pattern, e.scrutinee)
-        if (o.tag === 'no') continue
-        if (o.tag === 'unknown' || c.guard) return false
-        return o.bindings.every((b) => isPure(b.value)) && isPure(c.body)
+      if (!isPure(e.scrutinee)) return false
+      // a match on a statically-known shape with a definite, unguarded, pure arm
+      // is pure & total (the scrutinee has no effect and the chosen branch cannot
+      // fail). If the shape is known but the chosen arm is guarded/indeterminate,
+      // fall through to the general totality test below.
+      if (isStaticShape(e.scrutinee)) {
+        for (const c of e.cases) {
+          const o = tryMatch(c.pattern, e.scrutinee)
+          if (o.tag === 'no') continue
+          if (o.tag === 'unknown' || c.guard) break
+          return o.bindings.every((b) => isPure(b.value)) && isPure(c.body)
+        }
       }
-      return false
+      // General case (Aether 13.0): a match whose *unguarded* patterns already
+      // cover every value cannot raise MATCH_FAIL, so — when its scrutinee, every
+      // guard, and every arm body are pure — the whole match is pure & total even
+      // on an unknown scrutinee (e.g. a function matching its own parameter). This
+      // is what lets a recursive, structurally-decreasing function be proven pure.
+      return (
+        matchTotal(e) &&
+        e.cases.every((c) => (!c.guard || isPure(c.guard)) && isPure(c.body))
+      )
     }
     default:
       return false
   }
+}
+
+// ---------------------------------------------------------------------------
+// Match totality (sound exhaustiveness, for purity)
+// ---------------------------------------------------------------------------
+//
+// A `match` cannot raise `MATCH_FAIL` when its (unguarded) patterns already cover
+// every value. We decide that with Maranget's "usefulness" algorithm specialised
+// to Aether's pattern domain: the patterns are exhaustive iff a fresh wildcard row
+// is *not useful* against them. The constructor signature of a type is read from
+// `CTORS`/`SIBLINGS` (built-ins for bool/unit/list/tuple, the declared sibling set
+// for user ADTs); Int/Float/String — and any constructor we can't classify — are
+// treated as *infinite*, so only a wildcard covers them. Every fallback here is
+// conservative: an undecidable case answers "not total", never a false "total".
+
+type NPat = { wild: true } | { wild: false; ctor: string; arity: number; args: NPat[] }
+const NWILD: NPat = { wild: true }
+
+function toNPat(p: Pattern): NPat {
+  switch (p.kind) {
+    case 'pwild':
+    case 'pvar':
+      return NWILD
+    case 'pint':
+      return { wild: false, ctor: 'int:' + p.value, arity: 0, args: [] }
+    case 'pfloat':
+      return { wild: false, ctor: 'float:' + p.value, arity: 0, args: [] }
+    case 'pstr':
+      return { wild: false, ctor: 'str:' + JSON.stringify(p.value), arity: 0, args: [] }
+    case 'pbool':
+      return { wild: false, ctor: p.value ? 'true' : 'false', arity: 0, args: [] }
+    case 'punit':
+      return { wild: false, ctor: 'unit', arity: 0, args: [] }
+    case 'pnil':
+      return { wild: false, ctor: 'nil', arity: 0, args: [] }
+    case 'pcons':
+      return { wild: false, ctor: 'cons', arity: 2, args: [toNPat(p.head), toNPat(p.tail)] }
+    case 'ptuple':
+      return { wild: false, ctor: 'tuple', arity: p.elements.length, args: p.elements.map(toNPat) }
+    case 'pcon':
+      return { wild: false, ctor: p.name, arity: p.args.length, args: p.args.map(toNPat) }
+  }
+}
+
+/** The constructors present in column 0 of a matrix, with their arity. */
+function columnCtors(matrix: NPat[][]): Map<string, number> {
+  const m = new Map<string, number>()
+  for (const row of matrix) {
+    const h = row[0]
+    if (!h.wild) m.set(h.ctor, h.arity)
+  }
+  return m
+}
+
+/** Given the constructors *present* in a column, the type's full signature (with
+ *  arities) and whether the present set already completes it. An infinite or
+ *  unrecognised domain is never complete. */
+function signatureOf(present: Map<string, number>): { complete: boolean; all: Map<string, number> } {
+  if (present.size === 0) return { complete: false, all: present }
+  type SigKind = 'bool' | 'unit' | 'list' | 'tuple' | 'user' | 'inf'
+  let kind: SigKind | null = null
+  for (const n of present.keys()) {
+    let k: SigKind
+    if (n === 'true' || n === 'false') k = 'bool'
+    else if (n === 'unit') k = 'unit'
+    else if (n === 'nil' || n === 'cons') k = 'list'
+    else if (n === 'tuple') k = 'tuple'
+    else if (n.startsWith('int:') || n.startsWith('float:') || n.startsWith('str:')) k = 'inf'
+    else if (CTORS.has(n)) k = 'user'
+    else k = 'inf'
+    if (kind === null) kind = k
+    else if (kind !== k) return { complete: false, all: present } // mixed ⇒ bail
+  }
+  switch (kind) {
+    case 'bool': {
+      const all = new Map([['true', 0], ['false', 0]])
+      return { complete: present.has('true') && present.has('false'), all }
+    }
+    case 'unit':
+      return { complete: true, all: new Map([['unit', 0]]) }
+    case 'list': {
+      const all = new Map([['nil', 0], ['cons', 2]])
+      return { complete: present.has('nil') && present.has('cons'), all }
+    }
+    case 'tuple':
+      return { complete: true, all: present } // a tuple type has exactly one ctor
+    case 'user': {
+      const some = [...present.keys()][0]
+      const sibs = SIBLINGS.get(some)
+      if (!sibs) return { complete: false, all: present }
+      const all = new Map<string, number>()
+      for (const s of sibs) all.set(s, CTORS.get(s) ?? 0)
+      let complete = true
+      for (const s of sibs) if (!present.has(s)) complete = false
+      return { complete, all }
+    }
+    default:
+      return { complete: false, all: present }
+  }
+}
+
+/** Specialise a matrix by constructor `c` of arity `a` (Maranget's S). */
+function specialize(matrix: NPat[][], c: string, a: number): NPat[][] {
+  const out: NPat[][] = []
+  for (const row of matrix) {
+    const h = row[0]
+    if (h.wild) out.push([...Array<NPat>(a).fill(NWILD), ...row.slice(1)])
+    else if (h.ctor === c) out.push([...h.args, ...row.slice(1)])
+  }
+  return out
+}
+
+/** The default matrix (Maranget's D): rows whose first pattern is a wildcard. */
+function defaultMatrix(matrix: NPat[][]): NPat[][] {
+  const out: NPat[][] = []
+  for (const row of matrix) if (row[0].wild) out.push(row.slice(1))
+  return out
+}
+
+/** Is query `q` useful against `matrix` — does it match some value no row does? */
+function usefulRows(matrix: NPat[][], q: NPat[]): boolean {
+  if (q.length === 0) return matrix.length === 0
+  const head = q[0]
+  if (!head.wild) {
+    return usefulRows(specialize(matrix, head.ctor, head.arity), [...head.args, ...q.slice(1)])
+  }
+  const present = columnCtors(matrix)
+  const sig = signatureOf(present)
+  if (sig.complete) {
+    for (const [c, a] of sig.all) {
+      const sq: NPat[] = [...Array<NPat>(a).fill(NWILD), ...q.slice(1)]
+      if (usefulRows(specialize(matrix, c, a), sq)) return true
+    }
+    return false
+  }
+  return usefulRows(defaultMatrix(matrix), q.slice(1))
+}
+
+/** A `match` is *total* when its unguarded patterns are exhaustive — i.e. a fresh
+ *  wildcard is not useful against them — so it can never fall through to a fail. */
+function matchTotal(e: Expr & { kind: 'match' }): boolean {
+  const rows = e.cases.filter((c) => !c.guard).map((c) => [toNPat(c.pattern)])
+  if (rows.length === 0) return false
+  return !usefulRows(rows, [NWILD])
 }
 
 // ---------------------------------------------------------------------------
@@ -1430,15 +1602,28 @@ function collectBinderCounts(root: Expr): Map<string, number> {
 }
 
 /**
- * Discover the functions that are provably **effect-free and total** — a
- * never-shadowed, non-recursive `let`/`letrec`-bound lambda whose body is pure
- * (transitively: it may only call constructors, other proven functions, and
- * itself never, since recursion could diverge). Computed as a monotone fixpoint:
- * a candidate joins the set once its body type-checks as pure under the set
- * discovered so far. Conservative by construction, so it can never lie.
+ * Discover the functions that are provably **effect-free and total**.
+ *
+ * A candidate is a never-shadowed `let`/`letrec`-bound lambda whose body is pure
+ * (transitively: it may only call constructors, total natives, and other proven
+ * functions). Two kinds qualify:
+ *
+ *  • **non-recursive** functions — admitted exactly as before, by a monotone
+ *    fixpoint: a candidate joins the set once its body type-checks as pure under
+ *    the set discovered so far;
+ *
+ *  • **recursive** functions (Aether 13.0) — admitted when the size-change
+ *    termination analysis proves their whole mutual-recursion group terminates
+ *    *and* the bodies are effect-free. A group is committed all-or-nothing: we
+ *    tentatively assume the members pure (so their own recursive calls resolve),
+ *    check every body, and keep them only if all check out — otherwise roll the
+ *    whole group back. Termination comes from the proof; effect-freedom from the
+ *    body check; together they give totality. Conservative by construction.
  */
 function analyzePurity(root: Expr): Map<string, { arity: number; body: Expr }> {
   const counts = collectBinderCounts(root)
+  TERMINATION = analyzeTermination(root)
+
   const candidates: { name: string; lam: Expr }[] = []
   const consider = (name: string, value: Expr, recursive: boolean): void => {
     if (value.kind !== 'lambda') return
@@ -1447,32 +1632,66 @@ function analyzePurity(root: Expr): Map<string, { arity: number; body: Expr }> {
     if (recursive && freeVars(value).has(name)) return // genuinely self-recursive
     candidates.push({ name, lam: value })
   }
+  // Every never-shadowed, non-effectful lambda binding by name — used to look up
+  // the members of a proven-terminating recursive group.
+  const fnByName = new Map<string, Expr>()
+  const noteFn = (name: string, value: Expr): void => {
+    if (value.kind === 'lambda' && counts.get(name) === 1 && !EFFECTFUL_NATIVES.has(name)) {
+      fnByName.set(name, value)
+    }
+  }
   const walk = (e: Expr): void => {
     if (e.kind === 'let') {
       consider(e.name, e.value, e.recursive)
+      noteFn(e.name, e.value)
     } else if (e.kind === 'letrec') {
       // a group is recursive iff any binder is referenced from any value; only a
-      // group with no internal references at all is total.
+      // group with no internal references at all is total *without* a proof.
       const groupFv = new Set<string>()
       for (const b of e.bindings) for (const v of freeVars(b.value)) groupFv.add(v)
       if (!e.bindings.some((b) => groupFv.has(b.name))) {
         for (const b of e.bindings) consider(b.name, b.value, false)
       }
+      for (const b of e.bindings) noteFn(b.name, b.value)
     }
     for (const c of childrenOf(e)) walk(c)
   }
   walk(root)
 
+  // Proven-terminating recursive groups, restricted to clean (named, unshadowed)
+  // members we can actually look up — admitted as whole groups below.
+  const recGroups: string[][] = TERMINATION.recursiveGroups
+    .map((g) => g.members)
+    .filter((members) => members.every((m) => fnByName.has(m)))
+
   const known = new Map<string, { arity: number; body: Expr }>()
   PURE_FNS = known // isPure consults PURE_FNS while the set is being built
+  const triedGroups = new Set<string>()
   let changed = true
   while (changed) {
     changed = false
+    // non-recursive candidates: admit any whose body is now pure
     for (const c of candidates) {
       if (known.has(c.name)) continue
       if (isPure(lambdaBody(c.lam))) {
         known.set(c.name, { arity: lambdaArity(c.lam), body: lambdaBody(c.lam) })
         changed = true
+      }
+    }
+    // recursive groups: tentative all-or-nothing commit
+    for (const members of recGroups) {
+      const key = members.join(',')
+      if (triedGroups.has(key)) continue
+      if (members.some((m) => known.has(m))) continue
+      for (const m of members) {
+        const lam = fnByName.get(m)!
+        known.set(m, { arity: lambdaArity(lam), body: lambdaBody(lam) })
+      }
+      if (members.every((m) => isPure(lambdaBody(fnByName.get(m)!)))) {
+        triedGroups.add(key) // committed for good
+        changed = true
+      } else {
+        for (const m of members) known.delete(m) // roll back; retry after deps grow
       }
     }
   }

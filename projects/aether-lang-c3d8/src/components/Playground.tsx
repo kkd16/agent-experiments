@@ -10,6 +10,7 @@ import BytecodePanel from './panels/BytecodePanel.tsx'
 import JsPanel from './panels/JsPanel.tsx'
 import WasmPanel from './panels/WasmPanel.tsx'
 import OptimizerPanel from './panels/OptimizerPanel.tsx'
+import TerminationPanel from './panels/TerminationPanel.tsx'
 import DerivationPanel from './panels/DerivationPanel.tsx'
 import ClassesPanel from './panels/ClassesPanel.tsx'
 import CheckPanel from './panels/CheckPanel.tsx'
@@ -38,6 +39,7 @@ type Tab =
   | 'deriv'
   | 'bytecode'
   | 'optimizer'
+  | 'termination'
   | 'js'
   | 'wasm'
   | 'debug'
@@ -53,6 +55,7 @@ const TABS: { id: Tab; label: string }[] = [
   { id: 'deriv', label: 'Derivation' },
   { id: 'bytecode', label: 'Bytecode' },
   { id: 'optimizer', label: 'Optimizer' },
+  { id: 'termination', label: 'Termination' },
   { id: 'js', label: 'JavaScript' },
   { id: 'wasm', label: 'WebAssembly' },
   { id: 'debug', label: 'Debugger' },
@@ -221,6 +224,7 @@ export default function Playground() {
           )}
           {tab === 'bytecode' && <BytecodePanel proto={analysis.proto} />}
           {tab === 'optimizer' && <OptimizerPanel code={code} />}
+          {tab === 'termination' && <TerminationPanel code={code} />}
           {tab === 'js' && (
             <JsPanel ast={analysis.optimizedCoreAst} code={code} optimize={optimizeOn} />
           )}

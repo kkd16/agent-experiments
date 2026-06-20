@@ -990,6 +990,58 @@ let e = Mul (Add (Mul (Lit 1) (Lit 7)) (Mul (Lit 0) (Lit 9)))
 
 (render e, render (simp e), eval (simp e))`,
   },
+  {
+    id: 'termination',
+    title: 'Size-change termination',
+    blurb: 'Open the Termination tab: see recursive functions PROVEN to halt — then watch CSE share them.',
+    visual: false,
+    code: `// Aether 13.0 — SIZE-CHANGE TERMINATION (Lee-Jones-Ben-Amram, POPL 2001).
+//
+// The optimizer used to call a function "total" only if it was NON-RECURSIVE.
+// Now it PROVES termination: for every call f -> g it builds a size-change graph
+// relating f's parameters to g's arguments, reading "strictly smaller" (a ↓ arc)
+// straight off the 'match' that peels a value apart. A loop terminates when some
+// parameter descends a well-founded order on every way around it.
+//
+// Open the "Termination" tab to see each function's verdict and its ↓ thread.
+// Then open "Optimizer" and "Measure VM steps": because these recursive helpers
+// are now proven effect-free AND terminating, CSE may compute a repeated call
+// ONCE and dead-code elimination may drop an unused one — and all three backends
+// still agree, byte for byte.
+
+// 'len' recurses on 't', a STRICT SUBTERM of its argument 'xs' (xs = h :: t).
+// The self size-change graph is { xs ↓ xs } — so 'len' provably halts.
+let rec len = fn xs -> match xs with
+  | []      -> 0
+  | _ :: t  -> 1 + len t in
+
+// 'sumTree' shrinks on both sub-trees — a strict descent on each recursive call.
+type Tree = Leaf Int | Node Tree Tree in
+let rec sumTree = fn t -> match t with
+  | Leaf n   -> n
+  | Node l r -> sumTree l + sumTree r in
+
+// Peano naturals: factorial by STRUCTURAL recursion (Z | S m). 'fact', 'mul' and
+// 'add' all descend the 'S' spine, so the whole nest is proven terminating —
+// whereas the same function on raw Int (an unbounded countdown) would NOT be,
+// because it can run forever on a negative input. Honest, not optimistic.
+type Nat = Z | S Nat in
+let rec add  = fn a b -> match a with Z -> b | S m -> S (add m b) in
+let rec mul  = fn a b -> match a with Z -> Z | S m -> add b (mul m b) in
+let rec fact = fn n   -> match n with Z -> S Z | S m -> mul n (fact m) in
+let rec toInt = fn n  -> match n with Z -> 0 | S m -> 1 + toInt m in
+
+let three = S (S (S Z)) in
+let xs = [5, 4, 3, 2, 1] in
+let t  = Node (Node (Leaf 1) (Leaf 2)) (Leaf 3) in
+
+// 'len xs' and 'sumTree t' each appear twice in guaranteed-evaluated position,
+// so CSE shares them. ('map', by contrast, applies its function argument and is
+// deliberately left UNPROVEN — its termination depends on what it is handed.)
+( len xs + len xs
+, sumTree t * sumTree t
+, toInt (fact three) )`,
+  },
 ]
 
 export const DEFAULT_CODE = EXAMPLES[0].code
