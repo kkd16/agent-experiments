@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import type { RegexNode, AstFeatures } from '../engine/ast';
-import { analyzeRedos, type RedosReport } from '../engine/redos';
+import { analyzeRedos, hardenSuggestions, type RedosReport } from '../engine/redos';
 
 interface Props {
   ast: RegexNode | null;
@@ -44,6 +44,8 @@ export function RedosPanel({ ast, groupCount, features, notice, onUseAttack }: P
       )}
 
       {report.empirical && report.empirical.length > 0 && <GrowthChart report={report} />}
+
+      <HardenBlock report={report} />
 
       <div className="redos-explainer">
         <h4>How this verdict was reached</h4>
@@ -104,6 +106,29 @@ function AttackBlock({ report, onUseAttack }: { report: RedosReport; onUseAttack
           {copied ? 'copied ✓' : 'copy attack'}
         </button>
       </div>
+    </div>
+  );
+}
+
+function HardenBlock({ report }: { report: RedosReport }) {
+  const tips = hardenSuggestions(report);
+  if (tips.length === 0) return null;
+  return (
+    <div className="harden-block">
+      <h4>Harden this regex</h4>
+      <p className="muted-note">
+        Three ways to kill the blow-up, strongest first. The pattern is left unchanged — an automatic rewrite that
+        silently altered the matched language would be worse than the ReDoS.
+      </p>
+      <ol className="harden-list">
+        {tips.map((t, i) => (
+          <li key={i} className="harden-tip">
+            <div className="harden-tip-title">{t.title}</div>
+            <div className="harden-tip-detail">{t.detail}</div>
+            {t.syntax && <code className="harden-syntax">{t.syntax}</code>}
+          </li>
+        ))}
+      </ol>
     </div>
   );
 }

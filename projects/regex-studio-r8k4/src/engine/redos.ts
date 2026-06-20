@@ -198,6 +198,56 @@ export interface RedosReport {
   ratio?: number; // mean step-multiplier per extra pump (status === 'exponential')
 }
 
+// --- "Harden this regex" — mitigations for a flagged pattern ----------------
+//
+// When the analyser *proves* super-linear backtracking, the next question is
+// "how do I fix it?". These are the canonical mitigations, ordered by how
+// decisively they kill the blow-up. We deliberately do *not* auto-rewrite the
+// pattern: a transformation that silently changes the matched language would be
+// worse than the ReDoS, and this studio's whole ethos is to never ship a claim
+// it can't stand behind. Instead we name the techniques and the engines that
+// support them, anchored to the loop the analysis actually found.
+
+export interface HardenTip {
+  title: string;
+  detail: string;
+  syntax?: string; // illustrative operator syntax (not a rewrite of *this* pattern)
+}
+
+export function hardenSuggestions(report: RedosReport): HardenTip[] {
+  if (report.status !== 'exponential' && report.status !== 'polynomial') return [];
+  const pump = report.pump ? (report.pump.length > 14 ? report.pump.slice(0, 14) + '…' : report.pump) : null;
+  const loop = pump ? `the repeated text “${pump}”` : 'the ambiguous loop';
+
+  return [
+    {
+      title: 'Make the loop atomic (or possessive)',
+      detail:
+        `The blow-up exists because the engine can split ${loop} across the quantifier in many ways, and re-tries ` +
+        `every split once the trailing suffix forces a failure. An atomic group commits to the inner match and ` +
+        `forbids that re-splitting, so the backtracking collapses to linear — without changing the language. ` +
+        `Supported by PCRE/Perl, Java, .NET and Ruby/Oniguruma; not by JavaScript or RE2.`,
+      syntax: '(?>…)   ·   a*+  a++  a?+  a{m,n}+',
+    },
+    {
+      title: 'Run it on a DFA-based engine',
+      detail:
+        `RE2 (C++), Go's regexp and Rust's regex crate compile to an automaton and match in guaranteed O(n) with no ` +
+        `backtracking at all — exactly like this studio's DFA and Pike VM tabs. They refuse backreferences and ` +
+        `lookaround precisely because those forfeit the linear-time bound. If you don't need those features, a ` +
+        `DFA engine is immune to ReDoS by construction.`,
+    },
+    {
+      title: 'Bound or disambiguate the repetition',
+      detail:
+        `If the grammar allows it, cap the repetition so the worst case is finite, or tighten the inner class so two ` +
+        `adjacent loop bodies can't both consume the same character — removing that overlap removes the ambiguity ` +
+        `the squared automaton found. Validate or cap input length before matching as defence in depth.`,
+      syntax: 'a{0,1000}   ·   replace  (.*,)*  with  ([^,]*,)*',
+    },
+  ];
+}
+
 const MAX_STATES_EDA = 240; // squared product stays ≤ 240² nodes
 
 export function analyzeRedos(ast: RegexNode, groupCount: number, features: AstFeatures): RedosReport {

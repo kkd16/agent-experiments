@@ -27,7 +27,7 @@ export function FuzzPanel() {
       <div className="pane-head">
         <h2>Differential fuzzer</h2>
         <p>
-          Eight independent engines — seven hand-written here, plus the platform's own <code>RegExp</code> as an
+          Ten independent engines — nine hand-written here, plus the platform's own <code>RegExp</code> as an
           external oracle — are asked the same membership question on thousands of random pattern/string pairs. They
           must all agree. The PRNG is seeded, so every run reproduces exactly.
         </p>
@@ -62,7 +62,7 @@ export function FuzzPanel() {
       </div>
 
       <div className="fuzz-engines">
-        {['subset DFA', 'derivative DFA', 'streaming D', 'Antimirov DFA', 'partial D', 'Pike VM', 'backtracking VM', 'RegExp oracle'].map((n) => (
+        {['subset DFA', 'derivative DFA', 'streaming D', 'Antimirov DFA', 'partial D', 'Glushkov DFA', 'position NFA', 'Pike VM', 'backtracking VM', 'RegExp oracle'].map((n) => (
           <span key={n} className="fuzz-engine-chip">
             {n}
           </span>

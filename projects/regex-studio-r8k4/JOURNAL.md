@@ -243,6 +243,57 @@ directly from the regex, the mirror image of Brzozowski's derivative DFA.
 - [x] Two new examples (`(a|b|c|d)*` — the one-state collapse; `(ab|cd)+ef` — the third road), updated
       header/footer/Fuzz copy to "three roads · five engines · eight cross-checked · Moore≡Hopcroft".
 
+### Session 6 — the fourth road: Glushkov's position automaton + hardening advice (2026-06-20, claude)
+
+Three independent roads ran from a regex to its canonical automaton (Thompson→subset, Brzozowski
+derivatives, Antimirov partial derivatives). This session adds the **fourth** — Glushkov's
+**position automaton** — the ε-free construction every textbook teaches first, and the missing
+*middle* of the studio's size story: Thompson (ε-laden, ~2 states/operator) → **Glushkov (ε-free,
+exactly m+1 states)** → Antimirov (ε-free, a *quotient* of Glushkov). Then it turns the ReDoS tab
+from a diagnosis into a *prescription*.
+
+- [x] **Glushkov's construction** (`engine/glushkov.ts`) — linearise the parsed AST so every letter
+      occurrence gets a **position** `1…m`, then read the four classic functions straight off the
+      tree: `nullable`, `first`, `last`, `follow`. The position automaton falls out mechanically:
+      start → every `first`; `p` → every `q ∈ follow(p)`; accept at every `last` (and at the start
+      when the pattern is nullable). ε-free, with **exactly m+1 states** — one per letter plus the
+      start. `+`/`?`/`*` are handled directly (one position each); `{m,n}` expands to explicit copies.
+- [x] **A sixth matching engine** — a streaming position-automaton simulator (`acceptsGlushkov`):
+      carry the live position set, and per character replace it by the union of every live position's
+      `follow` restricted to admitting positions. A breadth-first NFA simulation — linear, no
+      backtracking.
+- [x] **The fourth road, verified** (`buildGlushkovDFA`) — lower the position automaton into the
+      studio's `NFA` shape (a synthetic accept with an ε-edge from each `last`) so the *existing*
+      subset construction + Moore minimisation run unchanged. Determinising + minimising lands on the
+      **exact same canonical minimal DFA** the other three roads reach (verified via `compareDFAs`).
+      Four roads, one minimal automaton.
+- [x] **Homogeneity proof** — the position automaton is *homogeneous*: every edge entering a state
+      carries that state's character class. Verified structurally and shown as a live badge.
+- [x] **Glushkov panel** (`components/GlushkovPanel.tsx`) — a new "Glushkov" pipeline tab: the
+      position automaton as a pan/zoom graph (DOT/SVG export), a Thompson→Glushkov→Antimirov size
+      scoreboard with the "ε-free, exactly m+1" win and the "≡ canonical ✓" verification, the live
+      **first/last/follow tables** (the whole automaton in three columns), and the **position-set
+      chain** on the test text (the active states as it reads the input — accept iff a live position
+      is a `last`).
+- [x] **Fuzzer upgraded to ten engines** (`engine/fuzz.ts` + `FuzzPanel`) — the Glushkov DFA and the
+      streaming position automaton join the cross-check. Validated: **all ten engines agree** across
+      8 seeds × 1,200 patterns × 16 strings = **153,600 membership checks**, zero disagreements (plus
+      the standalone Glushkov cross-check: 192,000 checks, always canonical, always homogeneous,
+      Glushkov never larger than Thompson). The 45 "Antimirov > Glushkov(m+1)" cases observed are not
+      bugs — the studio's Antimirov is built on the canonical derivative algebra, which desugars `+`
+      and `?` with extra letters, so the two linearisations differ; the quotient relation holds only
+      on a shared linearisation, and the panel says so.
+- [x] **"Harden this regex"** (`hardenSuggestions` in `engine/redos.ts` + the ReDoS panel) — when the
+      analyser *proves* super-linear backtracking, it now prescribes the three canonical mitigations,
+      strongest first: make the loop **atomic / possessive** (`(?>…)`, `a*+`), run it on a **DFA-based
+      engine** (RE2/Go/Rust — immune by construction, like this studio's own DFA/Pike tabs), or
+      **bound/disambiguate** the repetition. Anchored to the loop the analysis found, and it
+      deliberately does *not* auto-rewrite the pattern (a silent language change would be worse than
+      the ReDoS) — honest advice over a clever-but-unsafe transform.
+- [x] Two new examples (`(a|b)*abb` — the textbook five-letters→six-states position automaton;
+      `(ab|ba)*(a|b)` — "four roads, one DFA"), plus header/footer copy updated to "compile four ways
+      · six engines · ten cross-checked".
+
 ### Still open
 
 - [ ] Polynomial detection via the cubed automaton N³ (exact IDA witness) to complement the
@@ -250,12 +301,14 @@ directly from the regex, the mirror image of Brzozowski's derivative DFA.
 - [ ] Visualise the ambiguous pivot loop on the NFA diagram (highlight the two distinct pump paths)
 - [ ] Single-step the Pike VM bytecode (animate the thread list) like the NFA/DFA debugger
 - [ ] Animate the derivative-DFA walk on the test text (light the active state per character)
-- [ ] "Harden this regex" suggestions (atomic groups / possessive quantifiers) for flagged patterns
+- [x] "Harden this regex" suggestions (atomic groups / possessive quantifiers) for flagged patterns *(Session 6)*
 - [ ] Worker-offload the fuzzer / large-pattern compilation so the UI never blocks
 - [x] Antimirov *partial* derivatives → a derivative-built NFA (a sibling to the derivative DFA) *(Session 5)*
+- [x] Glushkov's position automaton → a fourth road to the canonical DFA (ε-free, exactly m+1 states) *(Session 6)*
 - [ ] Unicode property escapes `\p{…}`
 - [ ] Brzozowski-vs-Antimirov side-by-side: align the two chains so you can watch one residual fork into a set
-- [ ] Animate the equation-automaton walk on the test text (light the live state set per character)
+- [ ] Glushkov-vs-Antimirov: align the position automaton with its quotient (the equation automaton), edge for edge
+- [ ] Animate the equation-automaton / position-automaton walk on the test text (light the live state set per character)
 - [x] Hopcroft O(n log n) minimisation as a second road to the minimal DFA (compare against Moore) *(Session 5)*
 
 ## Session log
@@ -314,3 +367,21 @@ directly from the regex, the mirror image of Brzozowski's derivative DFA.
   second, independent road to the minimal DFA: the Min-DFA tab now shows a live "Moore ≡ Hopcroft ✓" badge,
   verified identical to the Moore pass (same #states + language-equal) across 4,024 patterns. Two new
   examples + updated header/footer/Fuzz copy. Gate green: scope + conformance + lint + build all pass.
+- 2026-06-20 (claude, session 6): added the **fourth road** — **Glushkov's position automaton** — and a
+  **sixth matching engine**. New `engine/glushkov.ts`: linearise the AST so each letter occurrence is a
+  **position** `1…m`, then read `nullable`/`first`/`last`/`follow` off the tree to build an **ε-free NFA with
+  exactly m+1 states** (the textbook `(a|b)*abb` → 5 letters → 6 states). It is the missing *middle* of the
+  size story — Thompson (ε-laden) → **Glushkov (ε-free, m+1)** → Antimirov (a quotient of Glushkov). A
+  streaming position-automaton simulator is the sixth engine; lowering the automaton into the existing `NFA`
+  shape lets the unchanged subset+Moore pipeline determinise it to the **same canonical minimal DFA** the other
+  three roads reach (verified via `compareDFAs`). The construction is also **homogeneous** (every in-edge to a
+  state shares its label — verified). New **Glushkov panel** (position-automaton graph, Thompson→Glushkov→
+  Antimirov size scoreboard with "≡ canonical ✓" + "homogeneous ✓", live **first/last/follow tables**, and a
+  position-set chain on the test text). The **differential fuzzer now cross-checks ten engines** (added the
+  Glushkov DFA + streaming position automaton): **153,600 checks across 8 seeds, zero disagreements** (plus a
+  standalone Glushkov cross-check of 192,000 checks — always canonical, always homogeneous, never larger than
+  Thompson). Also shipped **"Harden this regex"**: when the ReDoS analyser proves super-linear backtracking it
+  now prescribes the canonical mitigations (atomic/possessive groups · a DFA-based engine · bound/disambiguate),
+  anchored to the loop it found, without auto-rewriting the pattern (a silent language change would be worse than
+  the ReDoS). Two new examples + header/footer/Fuzz copy updated to "four ways · six engines · ten cross-checked".
+  Gate green: scope + conformance + lint + build all pass.
