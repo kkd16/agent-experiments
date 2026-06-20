@@ -50,6 +50,7 @@ import {
   HashSemiJoin,
   IndexOnlyScan,
   IndexScan,
+  IndexNestedLoopJoin,
   LateralJoin,
   Limit,
   MergeJoin,
@@ -1052,6 +1053,34 @@ function estimateEquiJoinRows(
 // (its sort cost amortizes and it avoids building a big hash table) — the
 // classic sweet spot for sort–merge.
 const MERGE_JOIN_MIN_ROWS = 500
+// An index nested-loop join only pays off in its textbook sweet spot: a *tiny
+// outer driver* probing a *large, indexed inner*. We require the inner (right)
+// side to be a bare base-table scan (no pushed filter) with a single-column
+// B+Tree on the join key, the outer to be at least this many times smaller, and
+// the inner to be worth indexing — then we still only take it if it costs less.
+const INLJ_DRIVER_RATIO = 4
+const INLJ_MIN_INNER_ROWS = 50
+
+function tryIndexNestedLoop(
+  left: Operator,
+  right: Operator,
+  leftKey: Evaluator,
+  type: 'INNER' | 'LEFT' | 'RIGHT' | 'FULL',
+  schema: Schema,
+  equi: EquiJoin,
+  estRows?: number,
+): Operator | null {
+  if (type !== 'INNER' && type !== 'LEFT') return null
+  if (equi.residual.length > 0) return null
+  if (!(right instanceof SeqScan)) return null
+  if (equi.rightExpr.kind !== 'column') return null
+  if (right.estRows < INLJ_MIN_INNER_ROWS) return null
+  if (left.estRows * INLJ_DRIVER_RATIO > right.estRows) return null
+  const index = right.table.indexForColumn(equi.rightExpr.name)
+  if (!index) return null
+  return new IndexNestedLoopJoin(left, right.table, index, leftKey, type, schema, right.schema.length, estRows)
+}
+
 function chooseEquiJoin(
   left: Operator,
   right: Operator,
@@ -1060,11 +1089,20 @@ function chooseEquiJoin(
   type: 'INNER' | 'LEFT' | 'RIGHT' | 'FULL',
   schema: Schema,
   estRows?: number,
+  equi?: EquiJoin,
 ): Operator {
   const big = left.estRows >= MERGE_JOIN_MIN_ROWS && right.estRows >= MERGE_JOIN_MIN_ROWS
   const balanced = Math.max(left.estRows, right.estRows) <= 4 * Math.min(left.estRows, right.estRows) + 1
-  if (big && balanced) return new MergeJoin(left, right, leftKey, rightKey, type, schema, estRows)
-  return new HashJoin(left, right, leftKey, rightKey, type, schema, estRows)
+  const base: Operator =
+    big && balanced
+      ? new MergeJoin(left, right, leftKey, rightKey, type, schema, estRows)
+      : new HashJoin(left, right, leftKey, rightKey, type, schema, estRows)
+  // Take an index nested-loop join only when it's available *and* cheaper.
+  if (equi) {
+    const inlj = tryIndexNestedLoop(left, right, leftKey, type, schema, equi, estRows)
+    if (inlj && inlj.estCost < base.estCost) return inlj
+  }
+  return base
 }
 
 /** Output cardinality for an equijoin, given its key exprs and the live stats —
@@ -1178,7 +1216,7 @@ function joinStep(
     const equi = extractEquiJoin(onExpr, left.schema, rightSchema)
     if (equi && equi.residual.length === 0) {
       const card = equiJoinCard(left.op, rightOp, equi, 'INNER', sc)
-      op = chooseEquiJoin(left.op, rightOp, equi.leftKey, equi.rightKey, 'INNER', combined, card)
+      op = chooseEquiJoin(left.op, rightOp, equi.leftKey, equi.rightKey, 'INNER', combined, card, equi)
     } else if (equi) {
       const card = equiJoinCard(left.op, rightOp, equi, 'INNER', sc)
       op = chooseEquiJoin(left.op, rightOp, equi.leftKey, equi.rightKey, 'INNER', combined, card)
@@ -1752,7 +1790,7 @@ function planCore(stmt: SelectStmt, env: PlanEnv, embedOrderLimit: boolean): Ope
         const equi = extractEquiJoin(join.on, schema, rSchema)
         if (equi && equi.residual.length === 0) {
           const card = equiJoinCard(op, rightOp, equi, outerType, statTables)
-          op = chooseEquiJoin(op, rightOp, equi.leftKey, equi.rightKey, outerType, combined, card)
+          op = chooseEquiJoin(op, rightOp, equi.leftKey, equi.rightKey, outerType, combined, card, equi)
         } else if (equi && join.type === 'INNER') {
           const card = equiJoinCard(op, rightOp, equi, 'INNER', statTables)
           op = chooseEquiJoin(op, rightOp, equi.leftKey, equi.rightKey, 'INNER', combined, card)

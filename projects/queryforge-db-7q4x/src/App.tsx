@@ -147,7 +147,7 @@ export default function App() {
           {schema.reduce((n, t) => n + t.rowCount, 0)} rows ·{' '}
           {schema.reduce((n, t) => n + t.indexes.length, 0)} indexes
         </span>
-        <span className="status-right">IndexScan · Hash/Merge Join · HashAggregate · Window frames · External Sort · stats · B+Tree · MVCC</span>
+        <span className="status-right">IndexScan · Hash/Merge/IndexNL Join · Index Advisor · HashAggregate · Window frames · External Sort · stats · B+Tree · MVCC</span>
       </footer>
     </div>
   )

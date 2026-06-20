@@ -784,6 +784,82 @@ test('advisor', 'refuses a non-SELECT statement', () => {
   assert(!a.ok, 'should refuse a non-SELECT statement')
 })
 
+// --- v15: index nested-loop join --------------------------------------------
+// A tiny driver table joined to a big, key-indexed inner table.
+function driverAndBig(driverKeys: number[], bigRows = 400, dupKeys = false): Engine {
+  const e = new Engine()
+  e.execute('CREATE TABLE big (k INTEGER, v INTEGER)')
+  e.execute('CREATE INDEX ix_big_k ON big (k)')
+  e.execute('CREATE TABLE drv (k INTEGER)')
+  const keyExpr = dupKeys ? `(n % ${Math.max(1, Math.floor(bigRows / 2))}) + 1` : 'n'
+  e.execute(
+    `INSERT INTO big (k, v) WITH RECURSIVE r(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM r WHERE n<${bigRows}) SELECT ${keyExpr}, n*10 FROM r`,
+  )
+  e.execute(`INSERT INTO drv (k) VALUES ${driverKeys.map((k) => `(${k})`).join(', ')}`)
+  return e
+}
+test('inlj', 'a tiny driver over a big indexed inner picks an index nested-loop join', () => {
+  const e = driverAndBig([5, 17, 123])
+  const planText = explainText(e, 'SELECT d.k, b.v FROM drv d JOIN big b ON b.k = d.k')
+  assert(planText.includes('IndexNestedLoopJoin'), `expected an INLJ for a tiny driver, got: ${planText}`)
+})
+test('inlj', 'an index nested-loop join returns exactly the hash-join rows (INNER)', () => {
+  const e = driverAndBig([5, 17, 123])
+  const rows = rowsOf(e, 'SELECT d.k, b.v FROM drv d JOIN big b ON b.k = d.k ORDER BY d.k')
+  assert(eq(rows, [[5, 50], [17, 170], [123, 1230]]), `INNER INLJ rows wrong: ${JSON.stringify(rows)}`)
+})
+test('inlj', 'an index nested-loop LEFT join null-extends unmatched outer rows', () => {
+  const e = driverAndBig([5, 17, 99999])
+  const planText = explainText(e, 'SELECT d.k, b.v FROM drv d LEFT JOIN big b ON b.k = d.k')
+  assert(planText.includes('IndexNestedLoopJoin'), `expected a LEFT INLJ, got: ${planText}`)
+  const rows = rowsOf(e, 'SELECT d.k, b.v FROM drv d LEFT JOIN big b ON b.k = d.k ORDER BY d.k')
+  assert(eq(rows, [[5, 50], [17, 170], [99999, null]]), `LEFT INLJ rows wrong: ${JSON.stringify(rows)}`)
+})
+test('inlj', 'an index nested-loop join handles duplicate inner keys (multi-match)', () => {
+  // dupKeys makes every key appear exactly twice in big.
+  const e = driverAndBig([3, 8], 400, true)
+  const rows = rowsOf(e, 'SELECT d.k, b.v FROM drv d JOIN big b ON b.k = d.k ORDER BY d.k, b.v')
+  // Each driver key matches two inner rows.
+  assert(rows.length === 4, `expected 2 matches per key (4 rows), got ${rows.length}`)
+  assert(rows.every((r) => r[0] === 3 || r[0] === 8), 'only driver keys 3 and 8 appear')
+})
+test('inlj', 'no index nested-loop join when the inner key is unindexed', () => {
+  const e = new Engine()
+  e.execute('CREATE TABLE big (k INTEGER, v INTEGER)') // deliberately no index on k
+  e.execute('CREATE TABLE drv (k INTEGER)')
+  e.execute('INSERT INTO big (k, v) WITH RECURSIVE r(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM r WHERE n<400) SELECT n, n*10 FROM r')
+  e.execute('INSERT INTO drv (k) VALUES (5), (17), (123)')
+  const planText = explainText(e, 'SELECT d.k, b.v FROM drv d JOIN big b ON b.k = d.k')
+  assert(!planText.includes('IndexNestedLoopJoin'), `no inner index → must not be an INLJ: ${planText}`)
+})
+test('inlj', 'no index nested-loop join for a balanced join (no tiny driver)', () => {
+  const e = new Engine()
+  e.execute('CREATE TABLE a (k INTEGER); CREATE INDEX ix_a ON a (k)')
+  e.execute('CREATE TABLE b (k INTEGER); CREATE INDEX ix_b ON b (k)')
+  e.execute('INSERT INTO a (k) WITH RECURSIVE r(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM r WHERE n<300) SELECT n FROM r')
+  e.execute('INSERT INTO b (k) WITH RECURSIVE r(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM r WHERE n<300) SELECT n FROM r')
+  const planText = explainText(e, 'SELECT a.k FROM a JOIN b ON a.k = b.k')
+  assert(!planText.includes('IndexNestedLoopJoin'), `balanced 300×300 join should not use an INLJ: ${planText}`)
+})
+test('inlj', 'the Index Advisor recommends an index that enables an index nested-loop join', () => {
+  // No index on big.k → a tiny driver still hash-joins; the advisor should spot
+  // that an index on the inner key flips it to a cheaper index nested-loop join.
+  const e = new Engine()
+  e.execute('CREATE TABLE big (k INTEGER, v INTEGER)')
+  e.execute('CREATE TABLE drv (k INTEGER)')
+  e.execute('INSERT INTO big (k, v) WITH RECURSIVE r(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM r WHERE n<400) SELECT n, n*10 FROM r')
+  e.execute('INSERT INTO drv (k) VALUES (5), (17), (123)')
+  const before = explainText(e, 'SELECT d.k, b.v FROM drv d JOIN big b ON b.k = d.k')
+  assert(!before.includes('IndexNestedLoopJoin'), 'no index yet → not an INLJ')
+  const a = e.advise('SELECT d.k, b.v FROM drv d JOIN big b ON b.k = d.k')
+  const rec = a.recommendations.find((r) => r.table === 'big' && r.columns.join(',') === 'k')
+  assert(!!rec, `advisor should recommend big(k); got: ${a.recommendations.map((r) => r.table + '(' + r.columns.join(',') + ')').join(' | ')}`)
+  assert(rec!.adopted, 'the recommended big(k) index should be adopted')
+  e.execute(rec!.ddl)
+  const after = explainText(e, 'SELECT d.k, b.v FROM drv d JOIN big b ON b.k = d.k')
+  assert(after.includes('IndexNestedLoopJoin'), `after creating big(k) the plan should use an INLJ: ${after}`)
+})
+
 // --- composite indexes ------------------------------------------------------
 test('index', 'composite index is chosen over a single-column one', () => {
   const e = seeded()

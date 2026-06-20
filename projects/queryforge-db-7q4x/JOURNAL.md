@@ -507,11 +507,13 @@ on top, for 336.
 - [ ] **`TO_CHAR(temporal, fmt)`** — Postgres-style template formatting (we ship `STRFTIME`)
 - [ ] **Time zones** — everything is UTC today; add `TIMESTAMPTZ` + `AT TIME ZONE`
 - [ ] **`PERCENTILE_CONT` as a window function** (`… WITHIN GROUP … OVER (PARTITION BY …)`)
-- [ ] **Better join cardinality** — estimate equijoin output as `|L|·|R| / max(V(L),V(R))`
+- [x] **Better join cardinality** — estimate equijoin output as `|L|·|R| / max(V(L),V(R))`
   using per-key distinct-value counts, so a selective dimension filter propagates through the
-  join (the current `max(|L|,|R|)` model under-rewards reordering)
-- [ ] **Bushy / right-deep plans** — let the DP consider non-left-deep shapes and index-nested-loop
-  joins (probe a B+Tree per outer row) so a tiny driver can exploit the inner side's index
+  join (the current `max(|L|,|R|)` model under-rewards reordering) — **done in v15** (with the
+  `V_eff = min(ndistinct, inputRows)` cap that makes the propagation actually fire)
+- [x] **Index-nested-loop joins** (probe a B+Tree per outer row so a tiny driver can exploit the
+  inner side's index) — **done in v15** (`IndexNestedLoopJoin`). Bushy / right-deep *shapes* (vs.
+  left-deep) remain open.
 - [ ] **Index-only scans across joins** — collect per-relation covering sets in multi-table
   queries, not just single-table ones
 - [ ] **Bitmap OR + mixed AND/OR** — bitmap-union for `a = 1 OR a = 2`, and combine AND/OR trees
@@ -652,37 +654,74 @@ Design spine (how it threads through the architecture without disturbing it):
 
 Planned steps (this session):
 
-- [ ] **Cardinality model** (`db/planner.ts` + `db/operators.ts`): a System-R equijoin estimate
-  `|L|·|R| / max(V(L,key), V(R,key))` with the `V_eff = min(ndistinct, inputRows)` cap; thread the
-  estimate through `extractEquiJoin` (now returns the key *exprs*) → `chooseEquiJoin` → an optional
-  `estRows` arg on `HashJoin`/`MergeJoin`/`NestedLoopJoin` (fall back to the old heuristic when no
-  stats). A single-table filtered scan already costs well; this fixes *joins of joins*.
-- [ ] **Index Nested-Loop Join** (`db/operators.ts` + planner): when the inner side is a base table
-  with a B+Tree on the join key and the outer (driver) is tiny, probe the index per outer row
-  instead of building a hash table — the classic "small driver exploits the inner index" plan, shown
-  as `IndexNestedLoopJoin` in EXPLAIN. Chosen by cost against hash/merge.
-- [ ] **What-if Index Advisor** (`db/advisor.ts`): enumerate candidate indexes from a query's
+- [x] **Cardinality model** (`db/planner.ts` + `db/operators.ts`): a System-R equijoin estimate
+  `|L|·|R| / max(V(L,key), V(R,key))` with the `V_eff = min(ndistinct, inputRows)` cap; threaded
+  through `extractEquiJoin` (now returns the key *exprs*) → `equiJoinCard` → `chooseEquiJoin` → an
+  optional `estRows` arg on `HashJoin`/`MergeJoin`/`NestedLoopJoin` (falls back to the old heuristic
+  when no stats). A single-table filtered scan already costs well; this fixes *joins of joins*.
+- [x] **Index Nested-Loop Join** (`db/operators.ts` `IndexNestedLoopJoin` + planner
+  `tryIndexNestedLoop`): when the inner side is a bare base-table scan with a single-column B+Tree on
+  the join key, the outer (driver) is ≥4× smaller and the inner is worth indexing, probe the index
+  per outer row instead of building a hash table — the classic "small driver exploits the inner
+  index" plan, shown as `IndexNestedLoopJoin` in EXPLAIN. Taken only when it also costs less. INNER
+  and LEFT; differentially tested against the hash form (incl. duplicate keys + LEFT null-extension).
+- [x] **What-if Index Advisor** (`db/advisor.ts`): enumerates candidate indexes from a query's
   sargable equalities, range bounds, join keys and ORDER BY (single + leading-equality composites);
-  cost the baseline plan; for each candidate inject a hypothetical index, re-plan, and keep those the
-  planner actually adopts; rank by % cost reduction; emit ready-to-run `CREATE INDEX` DDL and a
-  before/after plan diff. Surfaced as a method on the engine + an `EXPLAIN ADVISE <select>` grammar.
-- [ ] **Plan cache** (`db/engine.ts`): key the planned operator tree by normalized SQL + a catalog
-  `generation` counter bumped on any DDL/DML/ANALYZE/rollback; on a hit, skip planning and re-open
-  the cached tree (re-entrant Volcano operators make this safe); show `(plan cache hit)` in EXPLAIN.
-  Differentially tested: same results on re-run, fresh plan after a mutation.
-- [ ] **Optimizer Lab UI** (`ui/OptimizerLab.tsx`): paste a query → the chosen plan with costs, the
-  join-order DP search (the subset table, the alternatives considered + why one won), and the Index
-  Advisor's ranked recommendations with one-click "apply" (`CREATE INDEX` then re-plan to show the
-  new winning plan). A visual, hands-on tour of the optimizer — the Concurrency Lab's twin.
-- [ ] **Tests**: new `optimizer` + `advisor` self-test groups — differential (results never change),
-  cardinality assertions (a selective filter shrinks the join estimate; `V_eff` cap), INLJ chosen
-  for a tiny driver over an indexed inner, plan-cache hit + invalidation, and the advisor recommends
-  the index that the planner then adopts and that lowers cost.
-- [ ] **Docs + showcase**: a new Optimizer chapter in the Reference, an Internals stage describing
-  the cost model + advisor, sample queries on the catalog card, `project.json` tags, this journal.
+  costs the baseline plan; for each candidate injects a *hypothetical* index (a genuine backfilled
+  B+Tree, retracted the instant the plan is read — data untouched), re-plans, and keeps those the
+  planner actually adopts at a lower cost; ranks by % cost reduction; emits ready-to-run `CREATE
+  INDEX` DDL. Surfaced as `engine.advise()`. It even recommends an index that flips a hash join into
+  a cheaper index nested-loop join.
+- [~] **Plan cache** — deferred. The headline trio (cardinality model + INLJ + advisor) plus the Lab
+  is a complete, coherent release; a correct plan cache means re-using stateful Volcano operator
+  trees, which is a separate, carefully-tested change. Left on the backlog rather than rushed.
+- [x] **Optimizer Lab UI** (`ui/OptimizerLab.tsx` + `planner.planWithJoinTrace`): paste a query → the
+  chosen plan with per-operator cost, the join-order subset-DP search (every relation subset, its
+  cheapest sub-plan, and the order it settled on), and the Index Advisor's ranked recommendations
+  with one-click **Apply** (`CREATE INDEX` then re-plan to show the new winning plan). A visual,
+  hands-on tour of the optimizer — the Concurrency Lab's twin.
+- [x] **Tests**: new `optimizer` (5), `advisor` (6) and `inlj` (7) self-test groups — differential
+  (results never change), cardinality assertions (a selective filter shrinks the join estimate; the
+  `V_eff` cap), the DP trace, INLJ chosen for a tiny driver over an indexed inner (and *not* for a
+  balanced join / an unindexed inner), and the advisor recommends an index the planner then adopts
+  (incl. the one that enables the INLJ). 379 → 397, all green.
+- [x] **Docs + showcase**: an Optimizer chapter in the Reference, two Internals stages (cost model +
+  advisor), two catalog sample queries, `project.json` tags + description, this journal.
 
 ## Session log
 
+- 2026-06-20 (claude / claude-opus-4-8): **v15.0 — the optimizer, levelled up: a real cost model, an
+  index nested-loop join, a what-if Index Advisor & an Optimizer Lab.** Every prior release grew what
+  the engine could *express*; this one makes it smarter about how it *runs* what you already wrote.
+  (1) **Cardinality model** — the planner costed every equijoin at `max(|L|,|R|)` output rows, a model
+  the backlog itself flagged. Replaced it with the System-R estimate `|L|·|R| / max(V(L,key),
+  V(R,key))`, reading the per-column distinct counts stats already gathered, with the textbook cap a
+  good estimator needs but the old one lacked: a key's *effective* distinct count after a selective
+  filter is bounded by the surviving row estimate (`V_eff = min(ndistinct, inputRows)`), so a
+  selective filter on one table finally propagates through the join. Threaded `extractEquiJoin` (now
+  returns the key exprs) → `equiJoinCard` → `chooseEquiJoin` → an optional `estRows` on the join
+  operators (old heuristic kept as a fallback). A symmetric clique's orders become genuinely
+  cost-equal under the accurate model — the old "small relations first" test was an artifact of the
+  crude over-estimate, so it now asserts the real invariant (the clique is connected by equijoins,
+  not a Cartesian), and a new `optimizer` group proves the selectivity propagation directly.
+  (2) **Index nested-loop join** — a new `IndexNestedLoopJoin` operator: when a *tiny* outer driver
+  meets a *large* inner base table that's B+Tree-indexed on the join key, descend the index once per
+  outer row instead of scanning-and-hashing the whole inner side. Guarded to its sweet spot (inner a
+  bare scan, outer ≥4× smaller, inner ≥50 rows) and taken only when it also costs less, so no
+  existing plan flips; differentially tested against the hash form (INNER, LEFT null-extension,
+  duplicate inner keys). (3) **What-if Index Advisor** (`db/advisor.ts`) — the headline: it
+  enumerates candidate indexes from a query's equalities/ranges/join-keys/ORDER BY, builds each one
+  *hypothetically* (a genuine backfilled B+Tree, retracted the instant the plan is costed — your data
+  is never changed; EXPLAIN never traverses it), re-plans, and recommends only the indexes the
+  optimizer actually adopts at a lower cost, ranked by the cost drop, each with ready-to-run DDL.
+  HypoPG / SQL-Server-DTA, distilled. It even spots an index that flips a hash join into a cheaper
+  index nested-loop join. (4) **Optimizer Lab** (`ui/OptimizerLab.tsx`, fed by `planWithJoinTrace`) —
+  the Concurrency Lab's twin: paste a query and watch the chosen plan with per-operator cost, the
+  join-order subset-DP search replayed (every relation subset, its cheapest sub-plan, the winning
+  order), and the advisor's recommendations with a one-click Apply that creates the index and
+  re-plans so the winning plan changes in front of you. Surfaced a Reference chapter, two Internals
+  stages, two catalog samples. Grew the suite 379 → 397 (new `optimizer`/`advisor`/`inlj` groups);
+  verified head-less and with `verify-project.mjs` (scope + conformance + lint + build), all green.
 - 2026-06-19 (claude / claude-opus-4-8): **v14.0 — Concurrency Lab: a real MVCC engine.**
   QueryForge's only "transactions" were coarse whole-DB snapshots — no concurrency at all. This
   session built a genuine **multi-version concurrency control engine** from scratch, standalone
