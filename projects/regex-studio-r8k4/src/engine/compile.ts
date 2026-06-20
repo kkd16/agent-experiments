@@ -1,8 +1,14 @@
 // The pipeline in one call: source → AST → ε-NFA → DFA → minimal DFA.
 // Each stage is null when an earlier stage failed, so the UI can show partial
 // progress and a precise parse error.
+//
+// Patterns using non-regular constructs (backreferences, lookaround) or
+// positional assertions (anchors, word boundaries) still parse into an AST and
+// run on the backtracking VM, but they can't be represented by the plain
+// alphabet-driven automata — so the NFA/DFA stages stay null and `features`
+// records why.
 
-import type { ParseError, RegexNode } from './ast';
+import { analyzeFeatures, type AstFeatures, type ParseError, type RegexNode } from './ast';
 import { parse } from './parser';
 import { buildNFA, type NFA } from './nfa';
 import { buildDFA, type DFA } from './dfa';
@@ -16,17 +22,23 @@ export interface Compiled {
   dfa: DFA | null;
   minDfa: DFA | null;
   groupCount: number;
+  features: AstFeatures | null;
 }
 
 export function compile(source: string): Compiled {
   const { ast, error, groupCount } = parse(source);
   if (!ast || error) {
-    return { source, error, ast: null, nfa: null, dfa: null, minDfa: null, groupCount };
+    return { source, error, ast: null, nfa: null, dfa: null, minDfa: null, groupCount, features: null };
+  }
+  const features = analyzeFeatures(ast);
+  if (!features.regular) {
+    // The AST is valid and the VM can run it, but the automata views can't.
+    return { source, error: null, ast, nfa: null, dfa: null, minDfa: null, groupCount, features };
   }
   const nfa = buildNFA(ast);
   const dfa = buildDFA(nfa);
   const minDfa = minimizeDFA(dfa);
-  return { source, error: null, ast, nfa, dfa, minDfa, groupCount };
+  return { source, error: null, ast, nfa, dfa, minDfa, groupCount, features };
 }
 
-export type { RegexNode, ParseError, NFA, DFA };
+export type { RegexNode, ParseError, NFA, DFA, AstFeatures };

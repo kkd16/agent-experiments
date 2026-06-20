@@ -41,6 +41,27 @@ function describe(node: RegexNode): NodeMeta {
       };
     case 'group':
       return { kind: `group #${node.index}`, detail: 'capturing', children: [node.node], cls: 'ast-group' };
+    case 'anchor':
+      return {
+        kind: node.at === 'start' ? '^' : '$',
+        detail: node.at === 'start' ? 'start anchor' : 'end anchor',
+        children: [],
+        cls: 'ast-assert',
+      };
+    case 'boundary':
+      return {
+        kind: node.negate ? '\\B' : '\\b',
+        detail: node.negate ? 'non-boundary' : 'word boundary',
+        children: [],
+        cls: 'ast-assert',
+      };
+    case 'backref':
+      return { kind: `\\${node.index}`, detail: `backref → group #${node.index}`, children: [], cls: 'ast-assert' };
+    case 'look': {
+      const sym = `(?${node.dir === 'behind' ? '<' : ''}${node.negate ? '!' : '='}…)`;
+      const word = `${node.negate ? 'negative ' : ''}look${node.dir}`;
+      return { kind: sym, detail: word, children: [node.node], cls: 'ast-look' };
+    }
   }
 }
 

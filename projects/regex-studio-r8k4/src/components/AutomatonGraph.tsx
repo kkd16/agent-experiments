@@ -6,6 +6,9 @@ interface Props {
   highlight?: Set<number>;
   // Optional secondary highlight (e.g. the states reached this step).
   trail?: Set<number>;
+  // States that were active the previous step — used to light up the edge(s)
+  // actually traversed into the current `highlight` set.
+  incoming?: Set<number>;
   accent: string;
   emptyHint?: string;
 }
@@ -18,7 +21,7 @@ interface View {
 
 const R = 22;
 
-export function AutomatonGraph({ layout, highlight, trail, accent, emptyHint }: Props) {
+export function AutomatonGraph({ layout, highlight, trail, incoming, accent, emptyHint }: Props) {
   const [view, setView] = useState<View>({ scale: 1, tx: 0, ty: 0 });
   const drag = useRef<{ x: number; y: number; tx: number; ty: number } | null>(null);
 
@@ -85,7 +88,10 @@ export function AutomatonGraph({ layout, highlight, trail, accent, emptyHint }: 
               to={nodeById.get(e.to)!}
               markerId={markerId}
               accent={accent}
-              hot={!!highlight && highlight.has(e.from) && highlight.has(e.to)}
+              hot={
+                (!!incoming && !e.epsilon && incoming.has(e.from) && !!highlight && highlight.has(e.to)) ||
+                (!incoming && !!highlight && highlight.has(e.from) && highlight.has(e.to))
+              }
             />
           ))}
           {layout.nodes.map((n) => (

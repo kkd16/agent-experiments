@@ -9,8 +9,10 @@
 // Supported: literals, '.', '*', '+', '?', '{m}', '{m,}', '{m,n}', lazy '?'
 // suffix, alternation '|', grouping '( )', character classes '[ ]' / '[^ ]'
 // with ranges and escapes, and the escapes \d \D \w \W \s \S \t \n \r \f \v \0
-// plus escaped metacharacters. Anchors (^ $) and backreferences are reported as
-// friendly errors — see JOURNAL.md backlog.
+// plus escaped metacharacters. It also parses the *non-regular* constructs the
+// backtracking VM understands: anchors '^' '$', word boundaries '\b' '\B',
+// backreferences '\1'…'\9', and lookaround '(?=…)' '(?!…)' '(?<=…)' '(?<!…)'.
+// `analyzeFeatures` (in ast.ts) decides whether a parsed tree stays regular.
 
 import type { ParseError, RegexNode } from './ast';
 import { CharSet, DIGIT, DOT, SPACE, WORD } from './charset';
@@ -144,27 +146,49 @@ class Parser {
     if (ch === undefined) throw new ParseFailure('Unexpected end of pattern', this.pos);
     if (ch === '(') {
       this.eat();
-      // Support non-capturing groups (?:...).
-      let capturing = true;
-      if (this.peek() === '?' && this.src[this.pos + 1] === ':') {
-        this.pos += 2;
-        capturing = false;
-      } else if (this.peek() === '?') {
-        throw new ParseFailure('Only (?:…) non-capturing groups are supported', this.pos);
+      // Group prefixes: (?:…) non-capturing, (?=…)/(?!…) lookahead,
+      // (?<=…)/(?<!…) lookbehind. A bare '(' is a capturing group.
+      if (this.peek() === '?') {
+        const c1 = this.src[this.pos + 1];
+        if (c1 === ':') {
+          this.pos += 2;
+          const inner = this.parseAlt();
+          this.expect(')');
+          return inner;
+        }
+        if (c1 === '=' || c1 === '!') {
+          this.pos += 2;
+          const inner = this.parseAlt();
+          this.expect(')');
+          return { type: 'look', dir: 'ahead', negate: c1 === '!', node: inner };
+        }
+        if (c1 === '<' && (this.src[this.pos + 2] === '=' || this.src[this.pos + 2] === '!')) {
+          const neg = this.src[this.pos + 2] === '!';
+          this.pos += 3;
+          const inner = this.parseAlt();
+          this.expect(')');
+          return { type: 'look', dir: 'behind', negate: neg, node: inner };
+        }
+        throw new ParseFailure('Unsupported group prefix — use (?:…), (?=…), (?!…), (?<=…) or (?<!…)', this.pos);
       }
+      this.groupCount++;
+      const myIndex = this.groupCount;
       const inner = this.parseAlt();
       this.expect(')');
-      if (!capturing) return inner;
-      this.groupCount++;
-      return { type: 'group', node: inner, index: this.groupCount };
+      return { type: 'group', node: inner, index: myIndex };
     }
     if (ch === '[') return this.parseClass();
     if (ch === '.') {
       this.eat();
       return { type: 'char', set: DOT, raw: '.' };
     }
-    if (ch === '^' || ch === '$') {
-      throw new ParseFailure(`Anchors ('${ch}') are not supported yet`, this.pos);
+    if (ch === '^') {
+      this.eat();
+      return { type: 'anchor', at: 'start' };
+    }
+    if (ch === '$') {
+      this.eat();
+      return { type: 'anchor', at: 'end' };
     }
     if (ch === ')' || ch === ']' || ch === '}') {
       throw new ParseFailure(`Unbalanced '${ch}'`, this.pos);
@@ -182,6 +206,20 @@ class Parser {
     this.eat(); // backslash
     const ch = this.peek();
     if (ch === undefined) throw new ParseFailure('Trailing backslash', start);
+    // Word boundaries are zero-width assertions, not characters.
+    if (ch === 'b') {
+      this.eat();
+      return { type: 'boundary', negate: false };
+    }
+    if (ch === 'B') {
+      this.eat();
+      return { type: 'boundary', negate: true };
+    }
+    // Backreference \1 … \9 (single digit; \0 stays the NUL literal).
+    if (ch >= '1' && ch <= '9') {
+      this.eat();
+      return { type: 'backref', index: ch.charCodeAt(0) - 48 };
+    }
     const classSet = escapeClass(ch);
     if (classSet) {
       this.eat();
