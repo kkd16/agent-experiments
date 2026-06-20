@@ -17,9 +17,10 @@ import { MaxSatView } from './components/MaxSatView'
 import { SmtStudio } from './components/SmtStudio'
 import { ModelChecker } from './components/ModelChecker'
 import { SolverLab } from './components/SolverLab'
+import { QbfStudio } from './components/QbfStudio'
 
 type Tab = 'solution' | 'stats' | 'count' | 'compile' | 'graph' | 'trace' | 'proof' | 'cnf'
-type Mode = 'sat' | 'smt' | 'imc' | 'lab'
+type Mode = 'sat' | 'smt' | 'qbf' | 'imc' | 'lab'
 
 export default function App() {
   const [mode, setMode] = useState<Mode>('sat')
@@ -89,9 +90,11 @@ export default function App() {
                 ? 'A from-scratch CDCL SAT solver, visualized.'
                 : mode === 'smt'
                   ? 'A from-scratch DPLL(T) SMT solver — plus QF_BV by bit-blasting.'
-                  : mode === 'imc'
-                    ? 'Craig interpolation & interpolation-based safety model checking.'
-                    : 'An empirical lab that races CDCL heuristics across a benchmark suite.'}
+                  : mode === 'qbf'
+                    ? 'Quantified Boolean Formulas (PSPACE) by counterexample-guided expansion.'
+                    : mode === 'imc'
+                      ? 'Craig interpolation & interpolation-based safety model checking.'
+                      : 'An empirical lab that races CDCL heuristics across a benchmark suite.'}
             </p>
           </div>
         </div>
@@ -101,6 +104,9 @@ export default function App() {
           </button>
           <button className={mode === 'smt' ? 'active' : ''} onClick={() => setMode('smt')}>
             SMT Studio
+          </button>
+          <button className={mode === 'qbf' ? 'active' : ''} onClick={() => setMode('qbf')}>
+            QBF Studio
           </button>
           <button className={mode === 'imc' ? 'active' : ''} onClick={() => setMode('imc')}>
             Model Checker
@@ -112,6 +118,7 @@ export default function App() {
       </header>
 
       {mode === 'smt' && <SmtStudio />}
+      {mode === 'qbf' && <QbfStudio />}
       {mode === 'imc' && <ModelChecker />}
       {mode === 'lab' && <SolverLab />}
 
@@ -218,8 +225,10 @@ export default function App() {
         — EUF by proof-producing congruence closure, QF_LRA/QF_LIA by a general simplex over exact
         δ-rationals with branch-and-bound, and QF_UFLIA by Ackermann combination · plus a complete
         <b>QF_BV bit-vector engine</b> by eager bit-blasting — from-scratch adders, a shift-add
-        multiplier, restoring division and barrel shifters lowered to the very same CDCL core — all
-        hand-written in TypeScript.
+        multiplier, restoring division and barrel shifters lowered to the very same CDCL core — plus a
+        <b>QBF solver</b> for the full quantifier hierarchy (PSPACE) by RAReQS-style counterexample-guided
+        expansion, every move proposed and refuted by that same engine and cross-checked against an
+        exhaustive oracle — all hand-written in TypeScript.
       </footer>
     </div>
   )

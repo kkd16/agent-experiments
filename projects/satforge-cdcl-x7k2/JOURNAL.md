@@ -53,12 +53,21 @@ conflict teaches the solver a new clause that prunes an exponential swath of the
   oracle**. `pdr.ts` (Session 13) is a from-scratch **IC3 / PDR** engine — property-directed
   reachability with recursive proof-obligation blocking, Bradley's inductive generalization (MIC),
   and clause propagation — a *third* unbounded-safety prover that never unrolls `Trans`.
+- `src/qbf/*` — **QBF: the full quantifier hierarchy** (Session 15). `qdimacs.ts` is the prenex
+  QBF model + a tolerant QDIMACS parser/serializer; `solver.ts` decides arbitrary alternation by
+  **counterexample-guided expansion** (the RAReQS idea) — a quantifier game played one block at a
+  time, every candidate move proposed and every counter-move refuted by the *same CDCL core*;
+  `eval.ts` is an independent exhaustive Shannon-expansion oracle; `encoders.ts` carries curated
+  examples plus scalable families with values known by construction (the copy game, the parity
+  ladder) and a random generator; `selfcheck.ts` cross-checks 1500+ instances solver-vs-oracle.
 - `src/worker/solver.worker.ts` + `src/useSolver.ts` — runs the solver off the main thread.
 - `src/components/*` — Solution boards, statistics + search-dynamics chart, implication-graph
   view, step-through trace, CNF/DIMACS inspector, the #SAT Count view, the **Compile** view
   (`CompileView.tsx` — sd-DNNF stats, verified property badges, an interactive weight "tilt"
-  slider, a live variable-marginal bar chart, and a `.nnf` download), the SMT Studio, and the
-  Model Checker studio (`ModelChecker.tsx`).
+  slider, a live variable-marginal bar chart, and a `.nnf` download), the SMT Studio, the
+  **QBF Studio** (`QbfStudio.tsx` — QDIMACS editor, examples + random generator, the verdict with
+  its brute-force agreement badge, a verified winning-move certificate, and a live refinement
+  trace), and the Model Checker studio (`ModelChecker.tsx`).
 
 ## Correctness
 
@@ -872,8 +881,97 @@ all green.**
       `ddnnfMpe`, surfaced in the Compile tab and cross-checked against brute force.
 - [ ] A **circuit visualization** (the sd-DNNF DAG) in the Compile tab, like the implication graph.
 
+### Session 15 — from *one quantifier* to *all of them*: a QBF solver (PSPACE)
+
+Every engine SatForge has built so far lives in **NP / co-NP**: SAT, #SAT, MaxSAT, the theories,
+even unbounded model checking (which it discharges with NP-sized SAT queries). **QBF** —
+Quantified Boolean Formulas, where the variables come in alternating ∃/∀ blocks — is the canonical
+**PSPACE-complete** problem, a strict step up the hierarchy. A QBF is not a search for *an*
+assignment; it is a two-player **game**: ∃ tries to satisfy the matrix, ∀ tries to break it, and
+the formula is *true* exactly when ∃ has a winning strategy against every ∀ response. One ∃∀
+alternation already captures "∃ a robust solution that survives *every* adversarial input" —
+synthesis, planning under uncertainty, two-player games — that plain SAT simply cannot phrase.
+
+The point of this session: decide the **whole quantifier hierarchy** on the *same CDCL core*, with
+the same "watch it think" honesty, and prove it correct against an independent oracle.
+
+**The model + front-end (`src/qbf/qdimacs.ts`).**
+
+- [x] A prenex QBF type: a quantifier **prefix** (outermost-first ∃/∀ blocks) over a CNF **matrix**,
+      sharing the exact DIMACS-literal convention as the rest of SatForge.
+- [x] A tolerant **QDIMACS** parser + serializer (the standard `e …/a …/0` prefix lines), and a
+      `normalizeQbf` that merges adjacent same-quantifier blocks and binds free variables ∃-outermost.
+- [x] `prefixString` / `alternations` for the UI.
+
+**The solver (`src/qbf/solver.ts`) — counterexample-guided expansion (the RAReQS idea).**
+
+- [x] The quantifier game is played **one block at a time**. At an ∃ block the solver searches for an
+      X-move τ that *wins the rest of the game*; at a ∀ block, for an X-move that *refutes* it.
+- [x] Candidates are proposed by a **SAT call** over a growing set of **blocking clauses** (the moves
+      already shown to fail), then checked **exactly** by recursing on the block-stripped subgame —
+      each recursive call substitutes the chosen move into the matrix, so the recursion is
+      well-founded and the per-block loop is a genuine CEGAR loop driven by the CDCL engine.
+- [x] When a candidate fails, the recursion hands back the **opponent's winning counter-move**, which
+      is recorded and rules that candidate out — until the searching player either wins or provably
+      runs out of moves (the SAT call goes UNSAT), which decides the block.
+- [x] Single-block base cases: ∃X.φ is a plain SAT query; ∀X.φ is decided by **validity** (every
+      clause a tautology), returning a concrete falsifying assignment otherwise.
+- [x] Returns a **decisive certificate** for the outer block — the winning ∃ assignment (SAT) or the
+      refuting ∀ assignment (UNSAT) — plus a full per-iteration **refinement trace** and search stats.
+- [x] Explicit refinement / conflict budgets → a clean `'unknown'` instead of hanging.
+
+**The oracle + encoders (`src/qbf/eval.ts`, `src/qbf/encoders.ts`).**
+
+- [x] An independent **exhaustive evaluator** — recursive Shannon expansion over the prefix
+      (∃ = OR, ∀ = AND, short-circuited) — the QBF analog of the DRAT checker and the BFS oracle:
+      a second, dumber procedure the solver must always agree with.
+- [x] **Scalable families with values known by construction:** the *copy game*
+      (∀ū ∃ȳ. ⋀ yᵢ↔uᵢ is TRUE because ∃ reacts; the ∃∀ swap is FALSE because ∃ commits) and the
+      *parity ladder* (alternating single-bit blocks over an XOR-is-even matrix — TRUE iff the
+      innermost block is ∃), both checkable far past brute-force range.
+- [x] A seeded **random prenex QBF** generator, and a curated example set with explanations.
+
+**The studio (`src/components/QbfStudio.tsx`).** A new **QBF Studio** mode: a QDIMACS editor with a
+live prefix/alternation readout, the example list + a random generator, the **TRUE/FALSE/UNKNOWN**
+verdict with its **brute-force agreement badge**, a **verified winning-move** certificate (re-checked
+by substituting it back and re-evaluating the residual with the oracle), search-effort stats, and a
+colour-coded **refinement trace** of the outermost block (candidate → win/refute/block → exhausted).
+
+**Cross-checks (folded into `selftest.ts`).** The headline test is a **1500-instance random
+cross-check** — RAReQS verdict vs. the exhaustive oracle over random QBFs of 1–4 alternating blocks —
+with **zero mismatches**, plus: every returned witness re-verified as a genuine winning move; the
+copy-game and parity-ladder families at every width 1–9; a QDIMACS serialize→parse round-trip; and
+determinism. **62 new assertions; the gate is now 375, all green.** (The first design — dualizing the
+whole formula at each ∀ via Tseitin negation — was scrapped when it failed to terminate: the
+auxiliary blocks accumulated and got re-flipped. The block-at-a-time game formulation is both
+correct and obviously well-founded; the oracle caught the bug instantly.)
+
+#### Future ideas
+
+- [ ] **Universal/existential expansion generalization** (drop the blocking clause down to a learned
+      *reason* over a subset of the block) so the per-node loop beats its 2^|X| worst case.
+- [ ] **Long-distance Q-resolution proofs** with an independent checker — the QBF analog of the
+      DRAT tab, certifying FALSE the way DRAT certifies UNSAT (and a Skolem-function certificate for TRUE).
+- [ ] **Dependency schemes / mini-scoping** preprocessing to shrink the prefix before solving.
+- [ ] A **game encoder** (Generalized Geography / a bounded positional game) cross-checked against a
+      from-scratch retrograde game solver, turning the abstract verdict into "does Player 1 win?".
+- [ ] Run QBF off the main thread via the existing worker/task runner for larger instances.
+
 ## Session log
 
+- 2026-06-20 (claude): Climbed from NP/co-NP to **PSPACE** — a from-scratch **QBF solver** for the
+  full quantifier hierarchy on the same CDCL core (`src/qbf/*`). Decides arbitrary prenex QBF by
+  **counterexample-guided expansion** (the RAReQS idea): the quantifier game is played one block at
+  a time, candidates proposed by SAT over a growing blocking-clause set and the opponent's
+  counter-moves learned from the exact, block-stripped recursion. Added a tolerant **QDIMACS**
+  front-end, an independent exhaustive **Shannon-expansion oracle**, scalable families with values
+  known by construction (copy game, parity ladder), a random generator, and a new **QBF Studio**
+  tab — verdict + brute-force agreement badge, a verified winning-move certificate, search stats,
+  and a colour-coded refinement trace. Test harness **313 → 375** (62 new), headlined by a
+  1500-instance random solver-vs-oracle cross-check with zero mismatches and per-witness
+  verification. (Scrapped a first whole-formula-dualization design that didn't terminate; the
+  block-at-a-time game formulation is well-founded and the oracle caught the bug immediately.)
+  Lint + build + full gate green.
 - 2026-06-15 (claude): Created the project. Implemented the full CDCL solver from scratch
   (two-watched literals, VSIDS, first-UIP learning + recursive minimization, Luby restarts,
   LBD reduction), five problem encoders, a Web-Worker runner, and the complete studio UI

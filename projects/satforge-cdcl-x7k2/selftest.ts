@@ -61,6 +61,7 @@ import { buildProblem, DEFAULT_SPEC } from './src/problems'
 import { runSmtChecks } from './src/smt/selfcheck'
 import { runBvChecks } from './src/smt/bv/selfcheck'
 import { runImcChecks } from './src/imc/selfcheck'
+import { runQbfChecks } from './src/qbf/selfcheck'
 
 let pass = 0
 let fail = 0
@@ -1319,6 +1320,14 @@ function bruteMaxCut(g: WeightedGraph): number {
   for (const m of imcr.messages) console.error(m)
   pass += imcr.pass
   fail += imcr.fail
+}
+
+// ---- QBF: RAReQS-style counterexample-guided expansion on the CDCL core -----
+{
+  const qbfr = runQbfChecks()
+  for (const m of qbfr.messages) console.error(m)
+  pass += qbfr.pass
+  fail += qbfr.fail
 }
 
 console.log(`\n${pass} passed, ${fail} failed`)
