@@ -24,10 +24,47 @@ export type Ty =
   // unifies with (is assignable to) any struct type and only ever compares with
   // `==`/`!=`. Lowers to the i32 constant 0.
   | { kind: 'null' }
+  // A 128-bit SIMD vector: a fixed-width pack of identical lanes that lowers to a
+  // single wasm `v128` value and whose elementwise operators map 1:1 to wasm SIMD
+  // opcodes. `lanes` names the lane interpretation (e.g. `i32x4` = four 32-bit
+  // ints). Spelled in source as `int4`/`float4`/`long2`/`double2`. The interpreter
+  // models it as a small JS array of lane values (with the lane type's rounding),
+  // so the two backends agree bit-for-bit. v128 never crosses the JS boundary, so
+  // vectors may not be `print`ed directly — extract a lane first.
+  | { kind: 'vec'; lanes: VecLanes }
   // A function pointer: a first-class value carrying a callable signature. It
   // lowers to an i32 (the function's slot in the wasm function table); the
   // interpreter models it as the target function's name. Written `fn(T, …) -> R`.
   | { kind: 'fn'; params: Ty[]; ret: Ty };
+
+// The lane interpretations of a 128-bit vector: four 32-bit ints/floats, or two
+// 64-bit longs/doubles. The string is exactly the wasm shape prefix, so the
+// backend builds opcode mnemonics (`i32x4.add`, …) by concatenation.
+export type VecLanes = 'i32x4' | 'f32x4' | 'i64x2' | 'f64x2';
+
+// Everything the rest of the compiler needs about a vector shape: its surface
+// spelling, lane count, and the scalar type a lane reads/writes as.
+export interface VecInfo {
+  /** surface type name (`int4`, …) */
+  name: string;
+  lanes: VecLanes;
+  /** number of lanes (4 or 2) */
+  count: number;
+  /** the scalar kind a lane holds */
+  laneKind: 'int' | 'f32' | 'long' | 'float';
+  /** true for the floating-point shapes (f32x4 / f64x2) */
+  isFloat: boolean;
+}
+export const VEC_INFO: Record<VecLanes, VecInfo> = {
+  i32x4: { name: 'int4', lanes: 'i32x4', count: 4, laneKind: 'int', isFloat: false },
+  f32x4: { name: 'float4', lanes: 'f32x4', count: 4, laneKind: 'f32', isFloat: true },
+  i64x2: { name: 'long2', lanes: 'i64x2', count: 2, laneKind: 'long', isFloat: false },
+  f64x2: { name: 'double2', lanes: 'f64x2', count: 2, laneKind: 'float', isFloat: true },
+};
+/** Surface type name (`int4`/`float4`/`long2`/`double2`) → lane shape. */
+export const VEC_NAME_TO_LANES: Record<string, VecLanes> = {
+  int4: 'i32x4', float4: 'f32x4', long2: 'i64x2', double2: 'f64x2',
+};
 
 // Array element types. `str` elements are i32 pointers into linear memory (just
 // like a bare `str`), so the wasm backend treats `str[]` exactly like an i32
@@ -54,6 +91,20 @@ export const T_BOOL: Ty = { kind: 'bool' };
 export const T_STR: Ty = { kind: 'str' };
 export const T_VOID: Ty = { kind: 'void' };
 export const T_NULL: Ty = { kind: 'null' };
+export const T_INT4: Ty = { kind: 'vec', lanes: 'i32x4' };
+export const T_FLOAT4: Ty = { kind: 'vec', lanes: 'f32x4' };
+export const T_LONG2: Ty = { kind: 'vec', lanes: 'i64x2' };
+export const T_DOUBLE2: Ty = { kind: 'vec', lanes: 'f64x2' };
+
+/** The scalar `Ty` of one lane of the given vector shape. */
+export function laneTy(lanes: VecLanes): Ty {
+  switch (VEC_INFO[lanes].laneKind) {
+    case 'int': return T_INT;
+    case 'f32': return T_F32;
+    case 'long': return T_LONG;
+    case 'float': return T_FLOAT;
+  }
+}
 
 export function tyEqual(a: Ty, b: Ty): boolean {
   if (a.kind !== b.kind) return false;
@@ -66,6 +117,7 @@ export function tyEqual(a: Ty, b: Ty): boolean {
     return true;
   }
   if (a.kind === 'struct' && b.kind === 'struct') return a.name === b.name;
+  if (a.kind === 'vec' && b.kind === 'vec') return a.lanes === b.lanes;
   if (a.kind === 'fn' && b.kind === 'fn') {
     if (a.params.length !== b.params.length) return false;
     for (let i = 0; i < a.params.length; i++) if (!tyEqual(a.params[i], b.params[i])) return false;
@@ -81,6 +133,7 @@ export function tyName(t: Ty): string {
     return `${en}[]`;
   }
   if (t.kind === 'struct') return t.name;
+  if (t.kind === 'vec') return VEC_INFO[t.lanes].name;
   if (t.kind === 'fn') return `fn(${t.params.map(tyName).join(', ')}) -> ${tyName(t.ret)}`;
   return t.kind;
 }

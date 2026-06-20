@@ -7,7 +7,7 @@
 // `kind` selects the family and `sub` the specific opcode; this keeps the
 // optimizer's rewriting code small and uniform.
 
-export type IRType = 'i32' | 'i64' | 'f64' | 'f32';
+export type IRType = 'i32' | 'i64' | 'f64' | 'f32' | 'v128';
 export type RetType = IRType | 'void';
 
 // Constant payloads are `number` for i32/f64/f32 and `bigint` for i64. The `ty`
@@ -62,6 +62,24 @@ export type InstKind =
   | 'alloc'
   | 'load'
   | 'store'
+  // --- 128-bit SIMD families. Each is a pure, never-trapping value op that
+  // lowers to one wasm SIMD instruction (0xfd-prefixed). `sub` carries the full
+  // wasm mnemonic so the backend builds the opcode by lookup; lane-indexed ops
+  // append `:K` (the constant lane). They are GVN-able by (kind, sub, args).
+  // `vbin`  — (v128, v128) -> v128   (e.g. `f32x4.add`, `v128.and`)
+  // `vunary`— (v128) -> v128         (e.g. `f32x4.neg`, `f32x4.sqrt`, `v128.not`)
+  // `vsplat`— (scalar) -> v128       (`sub` is the lane shape, e.g. `i32x4`)
+  // `vextract` — (v128) -> scalar    (`sub` = `f32x4.extract_lane:2`)
+  // `vreplace` — (v128, scalar) -> v128 (`sub` = `f32x4.replace_lane:2`)
+  | 'vbin'
+  | 'vunary'
+  | 'vsplat'
+  | 'vextract'
+  | 'vreplace'
+  // `vselect` — (v128 a, v128 b, v128 mask) -> v128: lanewise `mask ? a : b`,
+  // lowered to wasm `v128.bitselect` (bitwise, so a non-canonical mask blends
+  // per bit, exactly like the hardware).
+  | 'vselect'
   | 'copy';
 
 export interface Inst {
@@ -150,8 +168,16 @@ export function isPureValue(inst: Inst): boolean {
     case 'select':
     case 'copy':
     case 'funcaddr':
+    case 'vbin':
+    case 'vunary':
+    case 'vsplat':
+    case 'vextract':
+    case 'vreplace':
+    case 'vselect':
       // The pure value families. A funcaddr is a pure, constant i32 (a function's
-      // table slot): GVN-able and freely duplicable, just like a constant.
+      // table slot): GVN-able and freely duplicable, like a constant. The SIMD
+      // families (vbin…vselect) are pure and never trap — no SIMD integer divide
+      // exists — so GVN/CSE may deduplicate them and DCE may drop a dead one.
       return true;
     // loads and gget read mutable state; calls/prints/stores have effects.
     default:

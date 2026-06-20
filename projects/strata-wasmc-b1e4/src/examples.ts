@@ -306,6 +306,62 @@ fn main() {
 `,
   },
   {
+    id: 'simd',
+    title: 'SIMD vectors (v128)',
+    blurb: 'First-class int4 / float4 / long2 / double2 packed into one wasm v128 — elementwise +-*/ and &|^, lanewise min/max/sqrt/abs, compare→mask + vselect, and int↔float convert. Read the WASM tab: real f32x4.* opcodes.',
+    source: `// Strata has first-class 128-bit SIMD vectors that lower to a single wasm
+// v128 register. Four shapes pack the lanes:
+//   int4   = i32x4   float4 = f32x4   long2 = i64x2   double2 = f64x2
+// Arithmetic operators are elementwise (one wasm SIMD op per operator), and a
+// family of builtins covers lanes, reductions, compares and conversions:
+//   int4(a,b,c,d) / int4(x)·splat   lane(v,k)   withlane(v,k,x)   hsum(v)
+//   vmin vmax vsqrt vabs            veq vne vlt vle vgt vge -> mask
+//   vselect(mask,a,b)              to_float4(int4)  to_int4(float4)
+// The Verify tab proves every line matches the tree-walking interpreter at
+// -O0..-O3 — vectors flow through the optimizer (GVN, if-conversion, the
+// stackifier) untouched. Open the WASM tab to see the f32x4.mul / i32x4.add
+// / v128.bitselect instructions the backend emits.
+
+// A 4-wide dot product: multiply lanes, then reduce. One f32x4.mul + 3 adds.
+fn dot4(a: float4, b: float4) -> f32 { return hsum(a * b); }
+
+// Normalize a 3-vector held in a float4 (4th lane unused): rsqrt-free, exact.
+fn length(v: float4) -> f32 { return f32(sqrt(float(hsum(v * v)))); }
+
+fn main() {
+  let a = float4(f32(1.0), f32(2.0), f32(3.0), f32(4.0));
+  let b = float4(f32(4.0), f32(3.0), f32(2.0), f32(1.0));
+  print(dot4(a, b));                       // 1·4+2·3+3·2+4·1 = 20
+  print(length(float4(f32(3.0), f32(4.0), f32(0.0), f32(0.0))));  // 5
+
+  // Compare → mask → branchless select: clamp every lane to [10, 30].
+  let x = int4(5, 17, 42, 30);
+  let lo = vmax(x, int4(10));
+  let clamped = vmin(lo, int4(30));        // 10 17 30 30
+  print(lane(clamped, 0)); print(lane(clamped, 2));
+
+  // Escape time for four Mandelbrot points at once — no per-lane branch, just
+  // a compare mask added to the running counts each step. The four c-values
+  // escape at very different rates (the last is interior, so it caps at 50).
+  let cx = float4(f32(1.0), f32(0.5), f32(0.28), f32(-0.5));
+  let cy = float4(f32(0.0));
+  let zx = float4(f32(0.0));
+  let zy = float4(f32(0.0));
+  let cnt = int4(0);
+  for (let it = 0; it < 50; it = it + 1) {
+    let zx2 = zx * zx;
+    let zy2 = zy * zy;
+    let alive = vlt(zx2 + zy2, float4(f32(4.0)));      // lanes still bounded
+    cnt = cnt + vselect(alive, int4(1), int4(0));      // +1 to each alive lane
+    let nzx = zx2 - zy2 + cx;
+    zy = float4(f32(2.0)) * zx * zy + cy;
+    zx = nzx;
+  }
+  print(lane(cnt, 0)); print(lane(cnt, 1)); print(lane(cnt, 2)); print(lane(cnt, 3));
+}
+`,
+  },
+  {
     id: 'strings',
     title: 'Strings & text',
     blurb: 'First-class str type: concat with +, str()/char() conversions, len & byte indexing — a real string runtime compiled to wasm.',

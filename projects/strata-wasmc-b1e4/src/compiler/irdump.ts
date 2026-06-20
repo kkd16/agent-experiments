@@ -53,6 +53,18 @@ function inst(i: Inst): string {
       return `${dst}load.${i.sub} [${a[0]}]`;
     case 'store':
       return `store.${i.sub} [${a[0]}], ${a[1]}`;
+    case 'vsplat':
+      return `${dst}${i.sub}.splat ${a[0]}`;
+    case 'vunary':
+      return `${dst}${i.sub} ${a[0]}`;
+    case 'vbin':
+      return `${dst}${i.sub} ${a[0]}, ${a[1]}`;
+    case 'vextract':
+      return `${dst}${i.sub} ${a[0]}`;
+    case 'vreplace':
+      return `${dst}${i.sub} ${a[0]}, ${a[1]}`;
+    case 'vselect':
+      return `${dst}v128.bitselect ${a[2]} ? ${a[0]} : ${a[1]}`;
   }
 }
 

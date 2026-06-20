@@ -1973,4 +1973,139 @@ fn main(){
   print(dot(a, b));
 }`,
   },
+
+  // --- 128-bit SIMD vectors -------------------------------------------------
+  {
+    name: 'simd-int4-arith',
+    source: `fn main(){
+  let a = int4(1, 2, 3, 4);
+  let b = int4(10, 20, 30, 40);
+  let c = a + b; print(lane(c,0)); print(lane(c,1)); print(lane(c,2)); print(lane(c,3));
+  print(hsum(a * b));                  // 10+40+90+160 = 300
+  print(hsum(b - a));                  // 9+18+27+36 = 90
+  let m = int4(1000000, 1, 1, 1); print(lane(m * m, 0));   // i32 imul wrap
+  let o = int4(2147483647, 0, 0, 0); print(lane(o + int4(1,0,0,0), 0)); // wrap to INT_MIN
+}`,
+  },
+  {
+    name: 'simd-long2',
+    source: `fn main(){
+  let a = long2(1000000000000L, 5L);
+  let b = long2(2L, 7L);
+  print(lane(a * b, 0)); print(lane(a + b, 1)); print(hsum(a));
+  print(lane(-a, 0)); print(lane(~b, 1));
+}`,
+  },
+  {
+    name: 'simd-double2-dot',
+    source: `fn dot(a: double2, b: double2) -> float { return hsum(a * b); }
+fn main(){
+  let a = double2(3.0, 4.0);
+  let b = double2(0.5, 2.0);
+  print(dot(a, b)); print(lane(a / b, 0)); print(lane(a - b, 1));
+  print(lane(vmin(a, b), 1)); print(lane(vmax(a, b), 0));
+  print(lane(vsqrt(double2(9.0, 16.0)), 1));
+  print(lane(vabs(double2(-7.0, 4.0)), 0));
+}`,
+  },
+  {
+    name: 'simd-float4',
+    source: `fn main(){
+  let a = float4(f32(1.5), f32(2.5), f32(3.5), f32(4.5));
+  let b = float4(f32(2.0));                 // splat
+  let c = a * b; print(lane(c,0)); print(lane(c,3)); print(hsum(a));
+  print(hsum(a / b));
+  print(lane(vsqrt(float4(f32(4.0), f32(0.25), f32(1.0), f32(100.0))), 1));
+  let p = float4(f32(0.1), f32(0.2), f32(0.3), f32(0.0));   // f32 rounding
+  print(lane(p * float4(f32(0.1)), 0));
+}`,
+  },
+  {
+    name: 'simd-lanes-bitwise',
+    source: `fn main(){
+  let a = int4(7);
+  let b = withlane(a, 2, 99);
+  print(lane(b,0)); print(lane(b,2)); print(hsum(b));
+  print(hsum(vmin(a,b))); print(hsum(vmax(a,b)));
+  let x = int4(12, 10, 255, 1);
+  let y = int4(10, 6, 15, 1);
+  print(lane(x & y, 0)); print(lane(x | y, 1)); print(lane(x ^ y, 2)); print(lane(~x, 3));
+  print(lane(-x, 0));
+  print(lane(vabs(int4(-5, 3, -2147483648, 8)), 2));     // abs(INT_MIN) wraps
+}`,
+  },
+  {
+    name: 'simd-vec-params-loop',
+    source: `fn axpy(s: int, x: int4, y: int4) -> int4 { return int4(s) * x + y; }
+fn main(){
+  let acc = int4(0);
+  for (let i = 0; i < 5; i = i + 1) { acc = acc + axpy(i, int4(1,2,3,4), int4(i,i,i,i)); }
+  print(lane(acc,0)); print(lane(acc,1)); print(lane(acc,3)); print(hsum(acc));
+}`,
+  },
+  {
+    name: 'simd-vec-ternary',
+    source: `fn pick(c: bool, a: int4, b: int4) -> int4 { return c ? a : b; }
+fn main(){
+  print(hsum(pick(true,  int4(1,2,3,4), int4(9,9,9,9))));   // 10
+  print(hsum(pick(false, int4(1,2,3,4), int4(9,9,9,9))));   // 36
+}`,
+  },
+  {
+    name: 'simd-compare-select',
+    source: `fn main(){
+  let a = int4(10, 20, 30, 40);
+  let b = int4(1, 2, 3, 4);
+  let m = vgt(a, int4(25));                 // mask: 0,0,-1,-1
+  let r = vselect(m, a, b);                 // 1, 2, 30, 40
+  print(lane(r,0)); print(lane(r,2)); print(hsum(r));
+  print(lane(vlt(a,b),0)); print(lane(veq(a,a),3)); print(hsum(vne(a,b)));
+}`,
+  },
+  {
+    name: 'simd-compare-float',
+    source: `fn main(){
+  let a = float4(f32(1.0), f32(2.0), f32(3.0), f32(4.0));
+  let m = vlt(a, float4(f32(2.5)));
+  let r = vselect(m, a, float4(f32(9.0)));  // 1, 2, 9, 9
+  print(lane(r,0)); print(lane(r,2)); print(hsum(r));
+  let d = double2(1.5, 9.0);
+  let dm = vge(d, double2(2.0, 9.0));
+  let dr = vselect(dm, double2(100.0), double2(-1.0));
+  print(lane(dr,0)); print(lane(dr,1));
+}`,
+  },
+  {
+    name: 'simd-convert',
+    source: `fn main(){
+  let f = to_float4(int4(1, 2, 3, 4));
+  print(lane(f,0)); print(hsum(f));
+  let j = to_int4(float4(f32(1.9), f32(2.1), f32(-3.7), f32(100.5)));   // truncates
+  print(lane(j,0)); print(lane(j,2)); print(hsum(j));
+  let s = to_int4(float4(f32(3000000000.0), f32(-3000000000.0), f32(0.0), f32(5.0)));  // saturates
+  print(lane(s,0)); print(lane(s,1)); print(lane(s,3));
+}`,
+  },
+  {
+    name: 'simd-mandelbrot-row',
+    source: `// Four Mandelbrot pixels at once, branchless: each step masks the still-
+// escaping lanes and adds 1 to their iteration counts via vselect.
+fn main(){
+  let cx = float4(f32(-0.5), f32(0.0), f32(0.25), f32(-1.0));
+  let cy = float4(f32(0.0));
+  let zx = float4(f32(0.0));
+  let zy = float4(f32(0.0));
+  let cnt = int4(0);
+  for (let it = 0; it < 20; it = it + 1) {
+    let zx2 = zx * zx;
+    let zy2 = zy * zy;
+    let alive = vlt(zx2 + zy2, float4(f32(4.0)));
+    cnt = cnt - vselect(alive, int4(1), int4(0));     // count escaping lanes
+    let nzx = zx2 - zy2 + cx;
+    let nzy = float4(f32(2.0)) * zx * zy + cy;
+    zx = nzx; zy = nzy;
+  }
+  print(lane(cnt,0)); print(lane(cnt,1)); print(lane(cnt,2)); print(lane(cnt,3));
+}`,
+  },
 ];

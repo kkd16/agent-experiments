@@ -92,3 +92,4 @@ export const VT_I32 = 0x7f;
 export const VT_I64 = 0x7e;
 export const VT_F64 = 0x7c;
 export const VT_F32 = 0x7d;
+export const VT_V128 = 0x7b;

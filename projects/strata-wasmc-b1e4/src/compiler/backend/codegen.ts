@@ -1,6 +1,6 @@
 import type { Block, Inst, IRFunc, IRModule, IRType, Operand, RetType, Term } from '../ir/ir';
 import { operandType } from '../ir/ir';
-import { ByteWriter, VT_F32, VT_F64, VT_I32, VT_I64, WASM_MAGIC, WASM_VERSION, section, vec } from './encoder';
+import { ByteWriter, VT_F32, VT_F64, VT_I32, VT_I64, VT_V128, WASM_MAGIC, WASM_VERSION, section, vec } from './encoder';
 
 // The WebAssembly backend. Three responsibilities:
 //   (1) Recover structured control flow (block / loop / if + br) from the SSA
@@ -39,8 +39,49 @@ type W =
   | { k: 'load'; mem: 'i32' | 'i64' | 'f64' | 'f32' | 'i8' }
   | { k: 'store'; mem: 'i32' | 'i64' | 'f64' | 'f32' | 'i8' }
   | { k: 'op'; c: number; name: string }
+  // A 128-bit SIMD instruction: the 0xfd prefix, a single-byte sub-opcode `op`,
+  // and (for lane-indexed ops) an immediate `lane` byte. `name` is the mnemonic
+  // for the WAT printer.
+  | { k: 'simd'; op: number; lane?: number; name: string }
   | { k: 'select' }
+  | { k: 'tselect'; ty: IRType }
   | { k: 'cast'; sub: string };
+
+// SIMD sub-opcodes (after the 0xfd prefix). Keyed by the full wasm mnemonic so
+// the IR's `sub` string selects directly. Every value here is < 0x80, so its
+// unsigned-LEB encoding is a single byte. Lane-indexed ops (`*_lane`) are
+// followed by one immediate lane byte.
+const SIMD: Record<string, number> = {
+  // splat: scalar -> v128
+  'i32x4.splat': 0x11, 'i64x2.splat': 0x12, 'f32x4.splat': 0x13, 'f64x2.splat': 0x14,
+  // extract_lane / replace_lane (carry a lane immediate)
+  'i32x4.extract_lane': 0x1b, 'i32x4.replace_lane': 0x1c,
+  'i64x2.extract_lane': 0x1d, 'i64x2.replace_lane': 0x1e,
+  'f32x4.extract_lane': 0x1f, 'f32x4.replace_lane': 0x20,
+  'f64x2.extract_lane': 0x21, 'f64x2.replace_lane': 0x22,
+  // i32x4 integer arithmetic (no SIMD integer divide exists)
+  'i32x4.abs': 0xa0, 'i32x4.neg': 0xa1, 'i32x4.add': 0xae, 'i32x4.sub': 0xb1, 'i32x4.mul': 0xb5,
+  'i32x4.min_s': 0xb6, 'i32x4.max_s': 0xb8,
+  // i64x2 integer arithmetic (no lanewise min/max in the SIMD spec)
+  'i64x2.abs': 0xc0, 'i64x2.neg': 0xc1, 'i64x2.add': 0xce, 'i64x2.sub': 0xd1, 'i64x2.mul': 0xd5,
+  // f32x4 floating-point arithmetic
+  'f32x4.abs': 0xe0, 'f32x4.neg': 0xe1, 'f32x4.sqrt': 0xe3,
+  'f32x4.add': 0xe4, 'f32x4.sub': 0xe5, 'f32x4.mul': 0xe6, 'f32x4.div': 0xe7, 'f32x4.min': 0xe8, 'f32x4.max': 0xe9,
+  // f64x2 floating-point arithmetic
+  'f64x2.abs': 0xec, 'f64x2.neg': 0xed, 'f64x2.sqrt': 0xef,
+  'f64x2.add': 0xf0, 'f64x2.sub': 0xf1, 'f64x2.mul': 0xf2, 'f64x2.div': 0xf3, 'f64x2.min': 0xf4, 'f64x2.max': 0xf5,
+  // whole-vector bitwise (lane-agnostic; backs &/|/^/~ on integer vectors)
+  'v128.not': 0x4d, 'v128.and': 0x4e, 'v128.or': 0x50, 'v128.xor': 0x51,
+  // v128.bitselect: lanewise (bitwise) `mask ? a : b`
+  'v128.bitselect': 0x52,
+  // lanewise comparisons (each true lane is all-ones, false is all-zero)
+  'i32x4.eq': 0x37, 'i32x4.ne': 0x38, 'i32x4.lt_s': 0x39, 'i32x4.gt_s': 0x3b, 'i32x4.le_s': 0x3d, 'i32x4.ge_s': 0x3f,
+  'i64x2.eq': 0xd6, 'i64x2.ne': 0xd7, 'i64x2.lt_s': 0xd8, 'i64x2.gt_s': 0xd9, 'i64x2.le_s': 0xda, 'i64x2.ge_s': 0xdb,
+  'f32x4.eq': 0x41, 'f32x4.ne': 0x42, 'f32x4.lt': 0x43, 'f32x4.gt': 0x44, 'f32x4.le': 0x45, 'f32x4.ge': 0x46,
+  'f64x2.eq': 0x47, 'f64x2.ne': 0x48, 'f64x2.lt': 0x49, 'f64x2.gt': 0x4a, 'f64x2.le': 0x4b, 'f64x2.ge': 0x4c,
+  // lanewise int<->float conversions (signed, saturating truncation)
+  'f32x4.convert_i32x4_s': 0xfa, 'i32x4.trunc_sat_f32x4_s': 0xf8,
+};
 
 const I_BIN: Record<string, [number, string]> = {
   add: [0x6a, 'i32.add'], sub: [0x6b, 'i32.sub'], mul: [0x6c, 'i32.mul'],
@@ -144,7 +185,7 @@ interface Resolvers {
 // be recomputed at (i.e. sunk to) their single use without changing behavior.
 // Integer div_s/rem_s are deliberately absent — they can trap, so sinking them
 // past a side effect could reorder an observable trap.
-const STACKIFIABLE = new Set(['ibin', 'iunary', 'fbin', 'icmp', 'fcmp', 'cast', 'select', 'copy']);
+const STACKIFIABLE = new Set(['ibin', 'iunary', 'fbin', 'icmp', 'fcmp', 'cast', 'select', 'copy', 'vbin', 'vunary', 'vsplat', 'vextract', 'vreplace', 'vselect']);
 
 class FuncGen {
   fn: IRFunc;
@@ -417,10 +458,39 @@ class FuncGen {
       case 'cast':
         out.push(...this.pushOperand(inst.args[0]), { k: 'cast', sub: inst.sub });
         break;
-      case 'select':
-        // wasm `select`: [a, b, cond] -> a if cond!=0 else b.
-        out.push(...this.pushOperand(inst.args[0]), ...this.pushOperand(inst.args[1]), ...this.pushOperand(inst.args[2]), { k: 'select' });
+      case 'vsplat':
+        out.push(...this.pushOperand(inst.args[0]), { k: 'simd', op: SIMD[inst.sub + '.splat'], name: inst.sub + '.splat' });
         break;
+      case 'vunary':
+        out.push(...this.pushOperand(inst.args[0]), { k: 'simd', op: SIMD[inst.sub], name: inst.sub });
+        break;
+      case 'vbin':
+        out.push(...this.pushOperand(inst.args[0]), ...this.pushOperand(inst.args[1]), { k: 'simd', op: SIMD[inst.sub], name: inst.sub });
+        break;
+      case 'vextract': {
+        const [mn, ln] = inst.sub.split(':');
+        out.push(...this.pushOperand(inst.args[0]), { k: 'simd', op: SIMD[mn], lane: Number(ln), name: `${mn} ${ln}` });
+        break;
+      }
+      case 'vreplace': {
+        const [mn, ln] = inst.sub.split(':');
+        out.push(...this.pushOperand(inst.args[0]), ...this.pushOperand(inst.args[1]), { k: 'simd', op: SIMD[mn], lane: Number(ln), name: `${mn} ${ln}` });
+        break;
+      }
+      case 'vselect':
+        // v128.bitselect pops (a, b, mask) and yields, per bit, mask ? a : b.
+        out.push(...this.pushOperand(inst.args[0]), ...this.pushOperand(inst.args[1]), ...this.pushOperand(inst.args[2]),
+          { k: 'simd', op: SIMD['v128.bitselect'], name: 'v128.bitselect' });
+        break;
+      case 'select': {
+        // wasm `select`: [a, b, cond] -> a if cond!=0 else b. The bare opcode is
+        // untyped (valid for i32/i64/f32/f64); a `v128` result needs the *typed*
+        // select form, which carries an explicit result valtype.
+        const ty = operandType(this.fn, inst.args[0]);
+        out.push(...this.pushOperand(inst.args[0]), ...this.pushOperand(inst.args[1]), ...this.pushOperand(inst.args[2]),
+          ty === 'v128' ? { k: 'tselect', ty } : { k: 'select' });
+        break;
+      }
       case 'copy':
         out.push(...this.pushOperand(inst.args[0]));
         break;
@@ -546,13 +616,15 @@ function encodeBody(w: ByteWriter, tree: W[]): void {
         w.u8(op); w.u32(align); w.u32(0); break;
       }
       case 'op': w.u8(n.c); break;
+      case 'simd': w.u8(0xfd); w.u32(n.op); if (n.lane !== undefined) w.u8(n.lane); break;
       case 'select': w.u8(0x1b); break; // select (untyped — valid for numeric types incl. i64)
+      case 'tselect': w.u8(0x1c); w.u32(1); w.u8(vt(n.ty)); break; // typed select (required for v128)
       case 'cast': for (const b of CAST_OP[n.sub].bytes) w.u8(b); break;
     }
   }
 }
 
-const vt = (t: IRType): number => (t === 'f64' ? VT_F64 : t === 'f32' ? VT_F32 : t === 'i64' ? VT_I64 : VT_I32);
+const vt = (t: IRType): number => (t === 'f64' ? VT_F64 : t === 'f32' ? VT_F32 : t === 'i64' ? VT_I64 : t === 'v128' ? VT_V128 : VT_I32);
 
 interface PrintImport {
   kind: string;
@@ -878,7 +950,9 @@ function watBody(tree: W[], lines: string[], depth: number): void {
       case 'load': lines.push(`${pad}${n.mem === 'i64' ? 'i64.load' : n.mem === 'f64' ? 'f64.load' : n.mem === 'f32' ? 'f32.load' : n.mem === 'i8' ? 'i32.load8_u' : 'i32.load'}`); break;
       case 'store': lines.push(`${pad}${n.mem === 'i64' ? 'i64.store' : n.mem === 'f64' ? 'f64.store' : n.mem === 'f32' ? 'f32.store' : n.mem === 'i8' ? 'i32.store8' : 'i32.store'}`); break;
       case 'op': lines.push(`${pad}${n.name}`); break;
+      case 'simd': lines.push(`${pad}${n.name}`); break;
       case 'select': lines.push(`${pad}select`); break;
+      case 'tselect': lines.push(`${pad}select (result ${n.ty})`); break;
       case 'cast': lines.push(`${pad}${CAST_OP[n.sub].name}`); break;
     }
   }

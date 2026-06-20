@@ -188,8 +188,40 @@ slot number (which is never printable). And because a `funcaddr` is a known
 constant, a dedicated **devirtualization** pass turns a `call_indirect` whose
 target the optimizer can prove back into a cheaper **direct `call`** at -O1+.
 
+**128-bit SIMD vectors** make data parallelism a first-class value type that lowers
+to a single wasm **`v128`** register. Four shapes pack the lanes — **`int4`**
+(i32x4), **`float4`** (f32x4), **`long2`** (i64x2), **`double2`** (f64x2) — and are
+usable as locals, parameters, return values and loop-carried values (a v128 phi),
+even as the result of if-conversion (a v128 *typed* `select`). Operators are
+**elementwise**, one wasm lane op each: `+ - *` on every shape, `/` on the float
+shapes, and whole-vector `& | ^ ~` on the integer shapes. A builtin library covers
+the rest: `int4(a,b,c,d)` (or `int4(x)` to **splat**), **`lane(v,k)`** /
+**`withlane(v,k,x)`** (constant lane immediates), **`hsum(v)`** (horizontal
+reduction → a scalar), **`vmin`/`vmax`/`vsqrt`/`vabs`**, the six lanewise
+comparisons **`veq`/`vne`/`vlt`/`vle`/`vgt`/`vge`** (each yields an integer
+**mask**), **`vselect(mask, a, b)`** (a bit-exact `v128.bitselect`), and
+**`to_float4`/`to_int4`** (saturating f32x4↔i32x4 convert). Vectors flow through the
+optimizer untouched — GVN deduplicates lane ops, DCE drops dead vectors, the
+stackifier folds a single-use vector straight onto the operand stack — and the
+reference interpreter models each lane with the matching rounding (`Math.fround`
+per f32 lane, i32/i64 wrap, byte-exact bitselect), so a branchless **SIMD
+Mandelbrot** (four pixels per step, escape counts accumulated through a compare
+mask) is proven identical to the wasm at every level. (Vectors are value-only: not
+yet stored in arrays/structs/globals — extract their lanes for that.)
+
 ## Done
 
+- [x] **128-bit SIMD vectors (`v128`)** — first-class `int4`/`float4`/`long2`/
+      `double2` value types lowering to one wasm SIMD register. Elementwise
+      operators (one lane op each), splat/`lane`/`withlane`, `hsum`,
+      `vmin`/`vmax`/`vsqrt`/`vabs`, six compares→mask + `vselect`
+      (`v128.bitselect`), and saturating `to_float4`/`to_int4`. A new `'v128'`
+      `IRType` + six pure SIMD IR families ride the existing pipeline (GVN, DCE,
+      stackifier, SSA phis, the relooper) untouched; a **typed `select`** is
+      emitted for if-converted v128 diamonds. The reference interpreter reproduces
+      every lane (i32/i64 wrap, `Math.fround` per f32 lane, byte-exact bitselect),
+      so the headline branchless **SIMD-Mandelbrot** is proven identical to the
+      wasm. **836 differential checks across -O0…-O3.** See the 2026-06-20 plan.
 - [x] **Memory optimization — alias analysis · store→load forwarding · RLE ·
       dead/silent-store elimination** (`opt/memopt.ts`, -O1+). The first pass to
       reason about *linear memory*: until now a `struct` field or array element
@@ -271,6 +303,86 @@ target the optimizer can prove back into a cheaper **direct `call`** at -O1+.
       by the oracle *and* an offline fuzz of millions of dividends (incl.
       INT_MIN/INT_MAX). **716 differential checks across -O0…-O3 (baseline 700).**
       See the 2026-06-19 plan (II).
+
+## 2026-06-20 — plan: 128-bit SIMD vectors (`v128`) (claude / claude-opus-4-8)
+
+The compiler had every scalar wasm type (i32, i64, f32, f64) but **not the fifth
+one — `v128`**. An *optimizing compiler for wasm* with no SIMD was the obvious gap,
+so this session adds first-class fixed-width vectors end-to-end. The whole design
+leans on the project's superpower: the differential harness compiles each program
+to wasm *and* runs the tree-walking interpreter, and asserts identical output at
+-O0…-O3. SIMD lane semantics (i32/i64 wrap, single-precision rounding, saturating
+convert, bitwise blend) are exactly reproducible in JS, so every vector op is
+**provably correct**, not merely plausible. Headless, I bundled the pipeline with
+esbuild and ran the wasm under Node to iterate to green before committing.
+
+### Design — vectors as a value type, not a memory trick
+
+Vectors are modelled as a new `Ty` (`{kind:'vec'; lanes}`) and a new `IRType`
+(`'v128'`), so they ride the existing infrastructure: the type checker, SSA
+construction (a v128 phi is just a phi with `ty:'v128'`), the stackifier, GVN, DCE,
+locals/params/returns, and the relooper all treat them uniformly. Crucially `v128`
+**never crosses the JS boundary** (the wasm/JS ABI forbids it), so vectors can't be
+`print`ed or be array/struct/global members yet — you extract a lane (a scalar)
+first. That single restriction kept the surface area tiny while covering all the
+interesting compute.
+
+### Front-end (`ast.ts`, `parser.ts`, `types.ts`, `interp.ts`)
+
+- [x] Four shapes spelled `int4`/`float4`/`long2`/`double2`, with `VEC_INFO`
+      metadata (lane count, lane scalar, float-ness) shared by every stage.
+- [x] Type rules: elementwise `+ - *` (all shapes), `/` (float only), `& | ^ ~`
+      (integer only); unary `-` (all) / `~` (integer). `tyEqual` distinguishes
+      shapes (so `int4` ≠ `float4`); strict — no implicit lane coercion.
+- [x] A builtin library, all reserved like other hard builtins: constructors +
+      splat, `lane`/`withlane` (constant-immediate lane index, range-checked),
+      `hsum`, `vmin`/`vmax`/`vsqrt`/`vabs`, six compares → mask, `vselect`,
+      `to_float4`/`to_int4`.
+- [x] The reference interpreter models a vector as a JS lane array with the lane
+      type's normalization, `vselect` as a **byte-exact** bitselect over the 16-byte
+      register image, and folds `hsum`/compares in the same lane order the wasm does.
+
+### Back-end (`ir/ir.ts`, `ir/builder.ts`, `backend/codegen.ts`, `encoder.ts`)
+
+- [x] New pure IR families `vbin`/`vunary`/`vsplat`/`vextract`/`vreplace`/`vselect`
+      (GVN-able by `(kind, sub, args)`, DCE-able when dead, stackifiable).
+- [x] `VT_V128 = 0x7b` value type; a `simd` instruction node carrying the
+      `0xfd` prefix, a single-byte sub-opcode and an optional lane immediate; a
+      **typed `select` (0x1c)** emitted whenever an if-converted `select` is v128
+      (the untyped form is invalid for v128 — a real validation trap caught here).
+- [x] The full opcode table: splats, extract/replace_lane, i32x4/i64x2/f32x4/f64x2
+      arithmetic, whole-vector bitwise, lanewise comparisons, `v128.bitselect`, and
+      `f32x4.convert_i32x4_s` / `i32x4.trunc_sat_f32x4_s`.
+
+### Proof, examples, docs
+
+- [x] 12 new battery programs in `tests.ts` (arith + wrap, lanes/bitwise, params +
+      loop phi, vec ternary/select, compares + mask, convert + saturate, the
+      SIMD-Mandelbrot row) — all green vs. the interpreter at -O0…-O3.
+- [x] A `SIMD vectors (v128)` example (dot product, normalize, clamp via
+      `vmin`/`vmax`, branchless 4-wide Mandelbrot escape-time) and a Verify-panel
+      blurb. Total oracle coverage **836 checks across -O0…-O3**.
+
+### Backlog — where SIMD goes next (deliberately deferred, all clean)
+
+- [ ] **Vector arrays + aligned `v128.load`/`v128.store`** (`float4_array(n)`, a
+      16-byte stride) so data-parallel *loops* over arrays become real, not just
+      register-resident kernels. This is the gateway to everything below.
+- [ ] **An auto-vectorizer pass**: recognize a counted loop whose body is a
+      same-index elementwise map (`a[i] = f(b[i], c[i])`, no cross-lane dependence —
+      always safe regardless of aliasing) and rewrite it to a v128 loop + a scalar
+      remainder. The flagship optimizer feature once vector arrays land.
+- [ ] **More lane ops**: `shuffle`/`swizzle` (`i8x16.shuffle` with a constant mask),
+      lanewise shifts (`i32x4.shl` by a scalar), `i32x4.dot_i16x8_s`, `pmin`/`pmax`,
+      `any_true`/`all_true` reductions, `bitmask`.
+- [ ] **8- and 16-lane shapes** (`int8`=i8x16, `int16`=i16x8) with saturating
+      add/sub — the natural fit for pixel/audio kernels.
+- [ ] **i64x2 ↔ f64x2 conversions** and **f32x4↔f64x2 demote/promote pairs**
+      (`f32x4.demote_f64x2_zero` / `f64x2.promote_low_f32x4`).
+- [ ] **Constant folding of vector ops** in SCCP (a splat/arith of all-constant
+      lanes → a `v128.const`), plus a v128 immediate in the encoder.
+- [ ] **Let vectors live in memory** (array/struct/global members) once aligned
+      load/store exists, lifting the value-only restriction.
 
 ## 2026-06-19 — plan (III): memory optimization — alias analysis · store→load forwarding · RLE · dead/silent-store elimination (claude / claude-opus-4-8)
 
