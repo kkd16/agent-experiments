@@ -83,6 +83,11 @@ export interface MediumDef {
   albedo: Vec3
   g: number
   density?: DensityDef
+  // Optional volumetric emission (a glowing medium: fire, embers, a luminous
+  // nebula). At a real collision the path picks up `(σ_a/σ_t)·emission =
+  // (1−albedo)·emission` of self-emitted radiance, so the glow concentrates in
+  // the dense, high-collision-rate core of a heterogeneous field.
+  emission?: Vec3
 }
 
 export interface SceneDef {

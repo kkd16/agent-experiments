@@ -120,7 +120,11 @@ export function About() {
           heterogeneous law exactly with no bias; <em>ratio tracking</em> does the same for shadow-ray
           transmittance. The result is a cloud that self-shadows into soft greys, flares a silver
           lining toward the sun, and breaks light into real volumetric beams — all from one varying
-          field. Try the <em>Cumulus</em>, <em>Smoke Plume</em> and <em>Drifting Fog</em> scenes.
+          field. A medium can also <em>emit</em> light: at a real collision the path picks up{' '}
+          <code>(1&minus;albedo)&middot;L<sub>e</sub></code> of self-radiance, and because collisions
+          are density-proportional the glow pools in the dense core — a soft, physically integrated
+          fireball rather than a billboard. Try the <em>Cumulus</em>, <em>Smoke Plume</em>,{' '}
+          <em>Drifting Fog</em> and (glowing) <em>Ember</em> scenes.
         </Card>
         <Card title="Thin-film iridescence">
           The shifting colour of a soap bubble or an oil slick is <em>wave optics</em>, not pigment:

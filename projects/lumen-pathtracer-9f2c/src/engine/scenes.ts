@@ -860,6 +860,59 @@ function driftingFog(): SceneDef {
   }
 }
 
+// ---- Scene 17: Ember — a self-luminous volumetric fireball (emissive media) --
+
+function emberCloud(): SceneDef {
+  // A glowing ember/fireball floating in a dark room: a heterogeneous fBm medium
+  // that *emits* light volumetrically. At every real collision the path picks up
+  // (1−albedo)·emission of warm self-radiance, and because delta tracking makes
+  // collisions density-proportional, the glow pools in the dense core and fades
+  // through the wisps at the edges — a soft, physically integrated fire, not a
+  // billboard. The faint floor catches the spill from the lower scattering lobe.
+  const materials: Material[] = [
+    { kind: 'diffuse', albedo: v(0.18, 0.13, 0.1) }, // 0 dim warm floor
+  ]
+  const prims: PrimDef[] = []
+  const g = 60
+  prims.push(...quad(v(-g, 0, -g), v(g, 0, -g), v(g, 0, g), v(-g, 0, g), 0))
+  return {
+    name: 'Ember',
+    materials,
+    prims,
+    camera: {
+      eye: v(0, 4.0, 15),
+      target: v(0, 4.2, 0),
+      up: v(0, 1, 0),
+      vfovDeg: 46,
+      aperture: 0,
+      focusDist: 15,
+    },
+    env: { kind: 'solid', color: v(0.006, 0.004, 0.006) },
+    media: [
+      {
+        center: v(0, 4.2, 0),
+        radius: 3.4,
+        sigmaT: 4.5, // many collisions ⇒ a bright, opaque core
+        albedo: v(0.22, 0.14, 0.1), // sooty, slightly warm scattering
+        g: 0.3,
+        emission: v(7.0, 2.6, 0.7), // warm blackbody glow (orange → yellow core)
+        density: {
+          kind: 'fbm',
+          frequency: 0.5,
+          octaves: 5,
+          lacunarity: 2.1,
+          gain: 0.55,
+          coverage: 0.4,
+          edge: 0.5,
+          verticalBias: 0.16, // a touch denser low, thinning upward like flame
+          warp: 1.3,
+          seed: 11,
+        },
+      },
+    ],
+  }
+}
+
 // ---- Scene: Cove — an indirect-lit room (a BDPT showcase) -------------------
 
 // A neutral room whose only emitter is a small, bright strip tucked *above* a
@@ -1223,6 +1276,7 @@ export const SCENES: ScenePreset[] = [
   { id: 'cumulus', label: 'Cumulus (cloud)', build: cumulus, sky: true, fog: true, cloud: true },
   { id: 'smoke', label: 'Smoke Plume', build: smokePlume, fog: true, cloud: true },
   { id: 'fog', label: 'Drifting Fog', build: driftingFog, fog: true },
+  { id: 'ember', label: 'Ember (glowing)', build: emberCloud, fog: true, cloud: true },
   { id: 'iridescence', label: 'Iridescence', build: iridescence },
   { id: 'nebula', label: 'Nebula', build: nebula, fog: true },
   { id: 'sky', label: 'Sky Studio', build: skyStudio, sky: true },

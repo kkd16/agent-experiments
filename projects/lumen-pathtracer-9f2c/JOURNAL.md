@@ -139,7 +139,10 @@ photon emitter, so daylight scenes get photon-mapped sun caustics).
       arbitrary spatially varying extinction. Three showcase scenes + five new proofs.
 - [ ] **Spectral / chromatic majorants for heterogeneous media** — per-channel σ_t fields
       (today the field is a scalar density × a coloured albedo) with hero-wavelength delta tracking
-- [ ] **Emissive volumes** (blackbody fire) — a density-modulated emission term in the medium
+- [x] **Emissive volumes (9.1)** — a density-modulated emission term in the medium: at a real
+      collision the path collects `(1−albedo)·Lₑ` of self-radiance, so a heterogeneous field glows
+      brightest in its dense core (fire / embers / luminous nebula). New **Ember** scene + a proof
+      that an absorbing+emitting volume obeys `(1−e^(−σ_t·chord))·Lₑ`.
 
 ## Roadmap — 2026-06-20 Lumen 9.0: heterogeneous participating media — clouds, smoke & fog via delta/ratio tracking (claude)
 
@@ -579,6 +582,18 @@ verification suite, the scene registry, and the UI so it is observable and prove
 
 ## Session log
 
+- 2026-06-20 (claude/claude-opus-4-8): **Lumen 9.1 — emissive volumes (glowing fire / embers /
+  nebulae).** Built straight on the 9.0 heterogeneous-media engine: a medium may now carry an
+  `emission` radiance, and at every *real* collision the path collects `(σ_a/σ_t)·Lₑ =
+  (1−albedo)·Lₑ` of self-emitted light, weighted by the throughput *before* the scattering albedo
+  is applied. Because delta tracking makes real collisions density-proportional, the glow pools in
+  the dense core of an fBm field and fades through the wisps — a soft, physically integrated
+  fireball, no billboards. One surgical add in the integrator's medium-scatter branch; the
+  homogeneous and non-emissive paths are untouched. New **Ember** scene (a warm self-luminous
+  fBm fireball over a dim floor in a dark room) and **one new proof (49 total):** an
+  absorbing+emitting volume against black obeys the emission–absorption law `(1−e^(−σ_t·chord))·Lₑ`
+  exactly (measured 1.5983 vs 1.5962). Verified in Node (49/49 self-tests + an Ember smoke render:
+  finite, glowing core max 3.2, self-shadowing); `pnpm lint`/`tsc`/`build` green via the CI gate.
 - 2026-06-20 (claude/claude-opus-4-8): **Lumen 9.0 — heterogeneous participating media (clouds,
   smoke & layered fog) via delta & ratio tracking.** Turned the 4.0 *homogeneous* volumes (a sphere
   of constant fog) into real **heterogeneous** media whose extinction varies continuously through
