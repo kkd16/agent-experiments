@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
 import './App.css';
 import { compile } from './engine/compile';
+import { minimizeHopcroft } from './engine/hopcroft';
+import { compareDFAs } from './engine/equivalence';
 import { dfaToGraph, nfaToGraph } from './engine/graphdata';
 import { layoutGraph } from './engine/layout';
 import { toDot, toSvg } from './engine/export';
@@ -108,6 +110,15 @@ export default function App() {
   const nfaLayout = useMemo(() => (compiled.nfa ? layoutGraph(nfaToGraph(compiled.nfa)) : null), [compiled.nfa]);
   const dfaLayout = useMemo(() => (compiled.dfa ? layoutGraph(dfaToGraph(compiled.dfa)) : null), [compiled.dfa]);
   const minLayout = useMemo(() => (compiled.minDfa ? layoutGraph(dfaToGraph(compiled.minDfa)) : null), [compiled.minDfa]);
+
+  // A second, independent road to the minimal DFA: Hopcroft's O(n·log n) pass,
+  // cross-checked against the Moore result the pipeline already produced.
+  const hopcroft = useMemo(() => {
+    if (!compiled.dfa || !compiled.minDfa) return null;
+    const h = minimizeHopcroft(compiled.dfa);
+    const equal = h.states.length === compiled.minDfa.states.length && compareDFAs(h, compiled.minDfa).relation === 'equal';
+    return { states: h.states.length, equal };
+  }, [compiled.dfa, compiled.minDfa]);
 
   const stats = useMemo(() => {
     if (!compiled.nfa || !compiled.dfa || !compiled.minDfa) return null;
@@ -275,6 +286,14 @@ export default function App() {
                   accent="#34d399"
                   dot={() => toDot(dfaToGraph(compiled.minDfa!), 'minimal_DFA')}
                   svgName="minimal-dfa"
+                  badge={
+                    hopcroft
+                      ? hopcroft.equal
+                        ? 'Moore ≡ Hopcroft ✓ — two independent minimisers, one canonical machine (Hopcroft is O(n·log n))'
+                        : 'Moore / Hopcroft disagree — this should never happen'
+                      : undefined
+                  }
+                  badgeOk={hopcroft?.equal}
                 />
               ) : (
                 <div className="placeholder">{automataNotice}</div>
@@ -322,7 +341,7 @@ export default function App() {
 
       <footer className="footer">
         Parser · Thompson NFA · subset construction · Brzozowski derivatives · Antimirov partial derivatives (the
-        equation automaton) · Moore minimisation · five matching engines (DFA · derivative DFA · partial-derivative NFA ·
+        equation automaton) · Moore & Hopcroft minimisation (cross-checked) · five matching engines (DFA · derivative DFA · partial-derivative NFA ·
         Pike VM · backtracking VM) cross-checked by a seeded differential fuzzer · product-automaton equivalence & ReDoS
         analysis · state-elimination synthesis · DOT/SVG export — all hand-written TypeScript, no regex library.
       </footer>
@@ -337,6 +356,8 @@ function GraphPane({
   accent,
   dot,
   svgName,
+  badge,
+  badgeOk,
 }: {
   title: string;
   blurb: string;
@@ -344,6 +365,8 @@ function GraphPane({
   accent: string;
   dot?: () => string;
   svgName?: string;
+  badge?: string;
+  badgeOk?: boolean;
 }) {
   const [copied, setCopied] = useState(false);
   const copyDot = () => {
@@ -388,6 +411,7 @@ function GraphPane({
           )}
         </div>
       </div>
+      {badge && <div className={`graph-badge${badgeOk ? ' ok' : ' bad'}`}>{badge}</div>}
       <AutomatonGraph layout={layout} accent={accent} />
     </div>
   );
