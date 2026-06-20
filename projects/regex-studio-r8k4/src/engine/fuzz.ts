@@ -9,17 +9,20 @@
 //   1. subset-construction DFA   (Thompson NFA → determinise → minimise)
 //   2. derivative DFA            (Brzozowski derivatives → BFS)
 //   3. streaming derivatives     (derive once per character, test nullable)
-//   4. Pike VM                   (bytecode thread-list, anchored)
-//   5. backtracking VM           (continuation-passing matcher, anchored)
-//   6. the platform's own RegExp (an external oracle — the one engine we did *not* write)
+//   4. Antimirov DFA             (equation automaton → determinise)
+//   5. partial derivatives       (equation-automaton NFA simulated directly)
+//   6. Pike VM                   (bytecode thread-list, anchored)
+//   7. backtracking VM           (continuation-passing matcher, anchored)
+//   8. the platform's own RegExp (an external oracle — the one engine we did *not* write)
 //
-// Six implementations, one verdict. Any single disagreement is a real bug in one
-// of them, surfaced with the exact pattern and input that triggers it. Because
-// the PRNG is seeded, every run is perfectly reproducible.
+// Eight implementations, one verdict. Any single disagreement is a real bug in
+// one of them, surfaced with the exact pattern and input that triggers it.
+// Because the PRNG is seeded, every run is perfectly reproducible.
 
 import type { RegexNode } from './ast';
 import { compile } from './compile';
 import { fromAst, accepts, buildDerivDFA, dsize } from './derivatives';
+import { acceptsPartial, buildAntimirovNFA, buildAntimirovDFA } from './antimirov';
 import { dfaAccepts, toCodePoints } from './simulate';
 import { runPike } from './pike';
 import { runVM } from './vm';
@@ -197,7 +200,7 @@ export interface FuzzReport {
   elapsedMs: number;
 }
 
-const ENGINES_BASE = ['subset DFA', 'derivative DFA', 'streaming D', 'Pike VM', 'backtracking VM'];
+const ENGINES_BASE = ['subset DFA', 'derivative DFA', 'streaming D', 'Antimirov DFA', 'partial D', 'Pike VM', 'backtracking VM'];
 
 export function runFuzz(config: FuzzConfig = DEFAULT_FUZZ): FuzzReport {
   const t0 = typeof performance !== 'undefined' ? performance.now() : Date.now();
@@ -230,6 +233,11 @@ export function runFuzz(config: FuzzConfig = DEFAULT_FUZZ): FuzzReport {
     // that machine for every trial dominates the run. When skipped/truncated the
     // streaming derivative engine still exercises the derivative logic per string.
     const dd = dsize(d) <= 40 ? buildDerivDFA(d, 200, 600) : null;
+    // The Antimirov (equation-automaton) NFA is linear-size, so its determinised
+    // DFA is cheap; still, cap it for the same pathological-pattern safety. The
+    // streaming partial-derivative engine runs on every string regardless.
+    const pn = dsize(d) <= 40 ? buildAntimirovNFA(d, 200, 600) : null;
+    const adfa = pn && !pn.truncated ? buildAntimirovDFA(pn) : null;
     const anc = anchored(c.ast);
     let oracle: RegExp | null = null;
     if (config.useOracle) {
@@ -250,6 +258,9 @@ export function runFuzz(config: FuzzConfig = DEFAULT_FUZZ): FuzzReport {
       // pattern; a truncated machine is incomplete, not wrong, so skip it.
       if (dd && !dd.truncated) results.push({ engine: 'derivative DFA', verdict: safe(() => dfaAccepts(dd, input)) });
       results.push({ engine: 'streaming D', verdict: safe(() => accepts(d, input)) });
+      // The equation automaton: determinised (when built) and simulated directly.
+      if (adfa) results.push({ engine: 'Antimirov DFA', verdict: safe(() => dfaAccepts(adfa, input)) });
+      results.push({ engine: 'partial D', verdict: safe(() => acceptsPartial(d, input)) });
       results.push({
         engine: 'Pike VM',
         verdict: safe(() => {

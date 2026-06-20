@@ -15,6 +15,7 @@ import { ExplainPanel } from './components/ExplainPanel';
 import { RedosPanel } from './components/RedosPanel';
 import { PikePanel } from './components/PikePanel';
 import { DerivativesPanel } from './components/DerivativesPanel';
+import { AntimirovPanel } from './components/AntimirovPanel';
 import { FuzzPanel } from './components/FuzzPanel';
 import { DEFAULT_EXAMPLE, EXAMPLES } from './data/examples';
 
@@ -24,6 +25,7 @@ type Tab =
   | 'dfa'
   | 'min'
   | 'deriv'
+  | 'antimirov'
   | 'debug'
   | 'pike'
   | 'language'
@@ -42,6 +44,7 @@ const TAB_GROUPS: { group: string; tabs: { id: Tab; label: string }[] }[] = [
       { id: 'dfa', label: 'DFA' },
       { id: 'min', label: 'Min-DFA' },
       { id: 'deriv', label: 'Derivatives' },
+      { id: 'antimirov', label: 'Antimirov' },
       { id: 'debug', label: 'Debugger' },
       { id: 'pike', label: 'Pike VM' },
     ],
@@ -137,7 +140,7 @@ export default function App() {
           <span className="logo">/<span className="logo-star">∗</span>/</span>
           <div>
             <h1>Regex Studio</h1>
-            <p>A regular-expression engine built from scratch — parse, compile two ways, minimise, run four engines, fuzz, compare and synthesise.</p>
+            <p>A regular-expression engine built from scratch — parse, compile three ways, minimise, run five engines, fuzz, compare and synthesise.</p>
           </div>
         </div>
         <a className="repo-link" href="https://en.wikipedia.org/wiki/Thompson%27s_construction" target="_blank" rel="noreferrer">
@@ -286,6 +289,8 @@ export default function App() {
 
             {tab === 'deriv' && <DerivativesPanel compiled={compiled} text={text} />}
 
+            {tab === 'antimirov' && <AntimirovPanel compiled={compiled} text={text} />}
+
             {tab === 'pike' && (
               <PikePanel ast={compiled.ast} groupCount={compiled.groupCount} notice={compiled.error ? 'Fix the pattern first.' : null} />
             )}
@@ -316,10 +321,10 @@ export default function App() {
       </div>
 
       <footer className="footer">
-        Parser · Thompson NFA · subset construction · Brzozowski derivatives · Moore minimisation · four matching
-        engines (DFA · derivative DFA · Pike VM · backtracking VM) cross-checked by a seeded differential fuzzer ·
-        product-automaton equivalence & ReDoS analysis · state-elimination synthesis · DOT/SVG export — all
-        hand-written TypeScript, no regex library.
+        Parser · Thompson NFA · subset construction · Brzozowski derivatives · Antimirov partial derivatives (the
+        equation automaton) · Moore minimisation · five matching engines (DFA · derivative DFA · partial-derivative NFA ·
+        Pike VM · backtracking VM) cross-checked by a seeded differential fuzzer · product-automaton equivalence & ReDoS
+        analysis · state-elimination synthesis · DOT/SVG export — all hand-written TypeScript, no regex library.
       </footer>
     </div>
   );

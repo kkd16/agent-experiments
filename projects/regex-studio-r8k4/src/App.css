@@ -1595,6 +1595,42 @@
   border: 1px solid rgba(248, 113, 113, 0.3);
 }
 
+/* ---------- Antimirov panel extras ---------- */
+.anti-sub {
+  font-size: 10px;
+  color: var(--muted-2);
+  font-family: var(--mono);
+}
+.anti-ok {
+  color: var(--good);
+}
+.anti-set {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+}
+.anti-brace {
+  font-family: var(--mono);
+  font-size: 14px;
+  color: var(--muted-2);
+}
+.anti-term {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--text);
+  background: rgba(244, 114, 182, 0.1);
+  border: 1px solid rgba(244, 114, 182, 0.28);
+  border-radius: 5px;
+  padding: 1px 6px;
+  word-break: break-all;
+}
+.anti-count {
+  font-size: 10px;
+  color: var(--muted-2);
+  margin-left: 2px;
+}
+
 /* ---------- Fuzz panel ---------- */
 .fuzz-controls {
   display: flex;

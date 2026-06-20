@@ -65,18 +65,31 @@ keep it current.
   into the graph / language / minimise views unchanged. The two DFAs differ before minimisation but
   minimise to the same machine. `derivativeChain` exposes the residual-per-character trace; `dsize`/state
   caps bound pathological blow-ups.
+- `src/engine/antimirov.ts` — **Antimirov partial derivatives**: the app's *fifth* engine and a *third*,
+  independent road from a regex to an automaton. Where Brzozowski's derivative is one residual regex,
+  the *partial* derivative `∂c(r)` is a **set** of regexes whose union is Brzozowski's — and keeping the
+  set unmerged makes the construction non-deterministic. The `linearForm` (head-class → continuation
+  monomials) drives three things: a streaming **partial-derivative matcher** (`acceptsPartial`, a direct
+  breadth-first NFA simulation), the **equation automaton** (`buildAntimirovNFA`) whose states are the
+  partial-derivative terms — ε-free and provably **linear-size** (≤ one state per character occurrence + 1,
+  far smaller than Thompson's ε-NFA), and its determinisation (`buildAntimirovDFA`, which lowers the PNFA
+  into the studio's `NFA` shape with a synthetic accept and reuses `buildDFA` verbatim) — a third road that
+  minimises to the *same* canonical machine. `partialChain` exposes the per-character set of live terms for
+  the panel. Reuses the `DReg` similarity algebra from `derivatives.ts` so the term set stays finite.
 - `src/engine/fuzz.ts` — **differential fuzzer**. A seeded PRNG draws random *regular* patterns and
-  strings and asks all six engines the same membership question — subset DFA, derivative DFA, streaming
-  derivatives, Pike VM, backtracking VM, and the platform's own `RegExp` as an external oracle — failing
-  loudly with a reproducible counterexample on any disagreement. It restricts itself to the subset where
-  our semantics and JS agree, skips backtracking-VM step-limit aborts (ReDoS, not a wrong answer), and
-  immediately earned its keep by catching a real backtracking-VM bug (see Session 4).
+  strings and asks all **eight** engines the same membership question — subset DFA, derivative DFA,
+  streaming derivatives, Antimirov DFA, partial derivatives, Pike VM, backtracking VM, and the platform's
+  own `RegExp` as an external oracle — failing loudly with a reproducible counterexample on any
+  disagreement. It restricts itself to the subset where our semantics and JS agree, skips backtracking-VM
+  step-limit aborts (ReDoS, not a wrong answer), and immediately earned its keep by catching a real
+  backtracking-VM bug (see Session 4).
 - `src/engine/explain.ts` — AST → plain-English prose. `src/engine/export.ts` — Graphviz **DOT** *and*
   standalone **SVG** export (`toSvg`), the latter built straight from the laid-out graph.
 - `src/components/*` — `AutomatonGraph` (pan/zoom SVG, active-edge highlight), `AstView`,
   `Debugger`, plus the panels: `MatchPanel` (three-engine run + captures), `LanguagePanel`,
-  `ComparePanel`, `SynthesizePanel`, `ExplainPanel`, `PikePanel`, `RedosPanel`, and the session-4
-  `DerivativesPanel` (derivative DFA + residual chain) and `FuzzPanel` (the differential-testing console).
+  `ComparePanel`, `SynthesizePanel`, `ExplainPanel`, `PikePanel`, `RedosPanel`, the session-4
+  `DerivativesPanel` (derivative DFA + residual chain) and `FuzzPanel` (the differential-testing console),
+  and the session-5 `AntimirovPanel` (equation automaton + Thompson-size comparison + live live-term-set chain).
 
 ## Ideas / backlog
 
@@ -189,6 +202,38 @@ a real bug in the existing backtracking VM.
       from the laid-out graph, wired into every graph pane (download) alongside the existing copy-DOT.
 - [x] New examples: a derivative chain, "two roads, one DFA", and a `(a?)+b` regression for the fixed bug.
 
+### Session 5 — the fifth engine: Antimirov partial derivatives (the equation automaton) (2026-06-20, claude)
+
+Four engines and *two* roads to a DFA (Thompson→subset and Brzozowski). This session adds a *fifth* engine
+and a **third, independent road** — Antimirov's **partial** derivatives, which build a tiny ε-free NFA
+directly from the regex, the mirror image of Brzozowski's derivative DFA.
+
+- [x] **Antimirov partial derivatives** (`engine/antimirov.ts`) — the **linear form** `lf(r)` (head-class →
+      continuation *monomials*), reusing the canonical `DReg` similarity algebra so the partial-derivative
+      term set stays finite. From it: `partialDerivative` (the *set* `∂c(r)` whose union is Brzozowski's
+      derivative) and a streaming **partial-derivative matcher** (`acceptsPartial`) that is literally a
+      breadth-first NFA simulation — linear time, no backtracking.
+- [x] **The equation automaton** (`buildAntimirovNFA`) — states are partial-derivative terms; the result is
+      **ε-free** and **provably linear-size** (≤ one state per character occurrence + 1). Verified against
+      Thompson's ε-NFA on a battery of patterns: e.g. `(a|b|c)*` → **1 state** vs Thompson's 10 states +
+      10 ε-edges; `(a|b)*abb` → 4 vs 14; `ab|ba|aa|bb` → 4 vs 18. The bound held on every pattern tested.
+- [x] **The third road, verified** (`buildAntimirovDFA`) — the PNFA is lowered into the studio's `NFA` shape
+      (a synthetic accept state with an ε-edge from each nullable term) so the *existing* subset construction
+      and Moore minimisation run unchanged. Determinising + minimising the equation automaton lands on the
+      **exact same canonical machine** the Thompson→subset and Brzozowski roads reach — confirmed via the
+      product-automaton `compareDFAs` (relation = equal) on 17 patterns. Three roads, one minimal automaton.
+- [x] **Antimirov panel** (`components/AntimirovPanel.tsx`) — a new "Antimirov" pipeline tab: the equation
+      automaton as a pan/zoom graph (multiple double-circled accept states, DOT/SVG export), a Thompson-vs-
+      equation **size scoreboard** with the live "−N% states, no ε" win and the "≡ canonical ✓" verification,
+      and the **live-term-set chain** on the test text — where Brzozowski shows one shrinking residual, this
+      shows the *set* of live terms (the NFA's active states) forking and dying one character at a time.
+- [x] **Fuzzer upgraded to eight engines** (`engine/fuzz.ts` + `FuzzPanel`) — the partial-derivative matcher
+      and the Antimirov DFA join the cross-check. Validated: **all eight engines agree** across 8 seeds ×
+      1,200 patterns × 16 strings = **153,600 membership checks**, zero disagreements (and the existing
+      `RegExp` oracle still in the mix). A default in-app run cross-checks all eight in well under a second.
+- [x] Two new examples (`(a|b|c|d)*` — the one-state collapse; `(ab|cd)+ef` — the third road), updated
+      header/footer/Fuzz copy to "three roads · five engines · eight cross-checked".
+
 ### Still open
 
 - [ ] Polynomial detection via the cubed automaton N³ (exact IDA witness) to complement the
@@ -198,8 +243,11 @@ a real bug in the existing backtracking VM.
 - [ ] Animate the derivative-DFA walk on the test text (light the active state per character)
 - [ ] "Harden this regex" suggestions (atomic groups / possessive quantifiers) for flagged patterns
 - [ ] Worker-offload the fuzzer / large-pattern compilation so the UI never blocks
-- [ ] Antimirov *partial* derivatives → a derivative-built NFA (a sibling to the derivative DFA)
+- [x] Antimirov *partial* derivatives → a derivative-built NFA (a sibling to the derivative DFA) *(Session 5)*
 - [ ] Unicode property escapes `\p{…}`
+- [ ] Brzozowski-vs-Antimirov side-by-side: align the two chains so you can watch one residual fork into a set
+- [ ] Animate the equation-automaton walk on the test text (light the live state set per character)
+- [ ] Hopcroft O(n log n) minimisation as a second road to the minimal DFA (compare against Moore)
 
 ## Session log
 
@@ -242,3 +290,16 @@ a real bug in the existing backtracking VM.
   derivative ≡ subset across 467k membership checks (and identical minimal DFAs); the fuzzer logged 70,000+
   six-engine comparisons across 25 seeds with zero disagreements; a default in-app run does 8,000 checks in
   ~0.8s. Gate green: scope + conformance + lint + build all pass.
+- 2026-06-20 (claude, session 5): added the **fifth engine** — **Antimirov partial derivatives** — and a
+  **third independent road** from regex to automaton. New `engine/antimirov.ts`: the `linearForm` of head-class
+  → continuation monomials gives the partial derivative `∂c(r)` (a *set*, vs Brzozowski's single residual), a
+  streaming partial-derivative matcher (a direct BFS NFA simulation), and the **equation automaton** —
+  states are partial-derivative terms, ε-free and provably linear-size (≤ #char-classes + 1), typically far
+  smaller than Thompson's ε-NFA (`(a|b|c)*` collapses to **one** state vs Thompson's ten + ten ε-edges).
+  Lowering the PNFA into the existing `NFA` shape lets the unchanged subset construction + Moore pass
+  determinise it to the **same canonical minimal DFA** the other two roads reach (verified equal via
+  `compareDFAs` on 17 patterns). New **Antimirov panel** (equation-automaton graph, Thompson-vs-equation size
+  scoreboard with "≡ canonical ✓", and a live *set-of-residuals* chain). The **differential fuzzer now
+  cross-checks eight engines** (added the partial-derivative matcher + Antimirov DFA): **153,600 checks across
+  8 seeds, zero disagreements**. Two new examples + updated header/footer/Fuzz copy. Gate green: scope +
+  conformance + lint + build all pass.
