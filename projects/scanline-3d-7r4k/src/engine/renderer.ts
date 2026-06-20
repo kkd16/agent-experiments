@@ -29,7 +29,8 @@ import type { SceneConfig } from '../scene/scene.ts'
 import { lerp3 } from '../math/vec.ts'
 import { clamp01 } from '../math/scalar.ts'
 import { RayTracer } from '../raytrace/raytracer.ts'
-import type { RTCamera, RTMode } from '../raytrace/raytracer.ts'
+import type { RTCamera, RTMode, RTView } from '../raytrace/raytracer.ts'
+import type { DenoiseSettings } from '../raytrace/denoise.ts'
 import type { RTInstance } from '../raytrace/rtscene.ts'
 import type { RTLighting } from '../raytrace/tracer.ts'
 
@@ -45,6 +46,8 @@ export interface RTSettings {
   resolutionScale: number // RT internal resolution relative to the framebuffer
   compare: boolean // split-screen: rasterizer left, path tracer right
   splitPos: number // divider position, 0..1
+  denoise: DenoiseSettings // v6 — À-Trous / SVGF-lite denoiser config
+  view: RTView // what the RT pane presents (beauty / noisy / feature buffers / wipe)
 }
 
 export interface RenderSettings {
@@ -343,7 +346,10 @@ export class Renderer {
 
     const rtW = Math.max(16, Math.round(fb.width * rt.resolutionScale))
     const rtH = Math.max(16, Math.round(fb.height * rt.resolutionScale))
-    this.rayTracer.step(cam, light, rt.mode, settings.post, rtW, rtH, RT_BUDGET_MS, resetKey)
+    this.rayTracer.step(
+      cam, light, rt.mode, settings.post, rtW, rtH, RT_BUDGET_MS, resetKey,
+      rt.denoise, rt.view, rt.splitPos,
+    )
 
     const stats = emptyStats()
     if (rt.compare) {

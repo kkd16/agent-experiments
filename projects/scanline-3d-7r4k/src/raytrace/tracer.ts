@@ -376,6 +376,32 @@ export function tracePath(
   return [Lr, Lg, Lb]
 }
 
+// The primary-hit feature record the denoiser's edge-stopping functions read from:
+// world position + shading normal (both facing the camera) and the textured albedo.
+// Filled by a single, shading-free primary ray per pixel — cheap, deterministic.
+export interface PrimaryFeature {
+  hit: boolean
+  px: number; py: number; pz: number
+  nx: number; ny: number; nz: number
+  ar: number; ag: number; ab: number
+}
+
+// Trace one primary ray and read the surface it hits (no lighting). Returns the
+// G-buffer-style feature the denoiser needs; `hit=false` for a ray that escapes.
+export function primaryFeature(
+  ox: number, oy: number, oz: number,
+  dx: number, dy: number, dz: number,
+  ctx: RTContext, out: PrimaryFeature,
+): void {
+  const hit = ctx.bvh.closest(ox, oy, oz, dx, dy, dz, 1e-4, 1e30, tmpHit)
+  if (!hit) { out.hit = false; return }
+  const s = surfaceAt(ctx.scene, hit.tri, hit.u, hit.v, dx, dy, dz)
+  out.hit = true
+  out.px = s.px; out.py = s.py; out.pz = s.pz
+  out.nx = s.nx; out.ny = s.ny; out.nz = s.nz
+  out.ar = s.br; out.ag = s.bg; out.ab = s.bb
+}
+
 // Pure ambient occlusion: one cosine-weighted hemisphere ray per call (accumulated
 // across frames). Returns white where unoccluded, darkening in creases.
 export function traceAO(
