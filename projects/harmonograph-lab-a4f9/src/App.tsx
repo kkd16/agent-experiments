@@ -13,12 +13,14 @@ import {
   breatheLayer,
   computeLayerData,
   defaultAttractor,
+  defaultLSystem,
   defaultLiss,
   defaultRose,
   defaultSf,
   defaultSpiro,
   getLayerData,
   randomAttractor,
+  randomLSystem,
   randomLissajous,
   randomRose,
   randomSpiro,
@@ -48,6 +50,7 @@ import type {
   CurveKind,
   Layer,
   LissajousParams,
+  LSystemParams,
   Project,
   RoseParams,
   SpirographParams,
@@ -60,6 +63,7 @@ import { LayerList } from './components/LayerList'
 import {
   CurveAttractor,
   CurveHarmonograph,
+  CurveLSystem,
   CurveLissajous,
   CurveRose,
   CurveSpirograph,
@@ -109,6 +113,8 @@ function withRandomSource(l: Layer): Layer {
       return { ...l, sf: randomSuperformula() }
     case 'attractor':
       return { ...l, attractor: randomAttractor() }
+    case 'lsystem':
+      return { ...l, lsystem: randomLSystem() }
     case 'harmonograph':
     default:
       return { ...l, params: randomParams() }
@@ -303,6 +309,7 @@ export default function App() {
       if (kind === 'lissajous' && !next.liss) next.liss = defaultLiss()
       if (kind === 'superformula' && !next.sf) next.sf = defaultSf()
       if (kind === 'attractor' && !next.attractor) next.attractor = defaultAttractor()
+      if (kind === 'lsystem' && !next.lsystem) next.lsystem = defaultLSystem()
       return next
     })
   }
@@ -327,6 +334,13 @@ export default function App() {
     updateLayer(selected.id, (l) => ({
       ...l,
       attractor: { ...(l.attractor ?? defaultAttractor()), ...patch },
+    }))
+  }
+  const updateLSystem = (patch: Partial<LSystemParams>) => {
+    if (!selected) return
+    updateLayer(selected.id, (l) => ({
+      ...l,
+      lsystem: { ...(l.lsystem ?? defaultLSystem()), ...patch },
     }))
   }
   const updateDrift = (rate: number) => {
@@ -365,6 +379,7 @@ export default function App() {
       if (src.liss) copy.liss = { ...src.liss }
       if (src.sf) copy.sf = { ...src.sf }
       if (src.attractor) copy.attractor = { ...src.attractor }
+      if (src.lsystem) copy.lsystem = { ...src.lsystem }
       if (src.drift) copy.drift = { ...src.drift }
       const next = [...ls]
       next.splice(i + 1, 0, copy)
@@ -947,6 +962,9 @@ export default function App() {
                     update={updateAttractor}
                   />
                 )}
+                {theme.kind === 'lsystem' && (
+                  <CurveLSystem lsystem={theme.lsystem ?? defaultLSystem()} update={updateLSystem} />
+                )}
 
                 <section className="group">
                   <div className="group-title">Live evolution</div>
@@ -1241,8 +1259,10 @@ export default function App() {
               <strong>curve type</strong> in the Curve tab: a harmonograph, a{' '}
               <strong>spirograph</strong> (hypo/epitrochoid), a <strong>rose</strong>,
               a <strong>Lissajous</strong> figure, the wildly versatile{' '}
-              <strong>superformula</strong>, or a chaotic{' '}
-              <strong>strange attractor</strong> (de Jong / Clifford / Svensson). Use{' '}
+              <strong>superformula</strong>, a chaotic{' '}
+              <strong>strange attractor</strong> (de Jong / Clifford / Svensson / Dream),
+              or an <strong>L-system</strong> fractal (the Heighway dragon, Koch
+              snowflake, Hilbert &amp; Gosper space-fillers, Sierpinski gasket…). Use{' '}
               <em>Add</em> / <em>Screen</em> blends with glow for luminous overlaps, color
               along path / speed / curvature / direction, and turn up{' '}
               <strong>kaleidoscope symmetry</strong> for mandalas.

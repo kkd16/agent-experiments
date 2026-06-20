@@ -5,6 +5,7 @@
 // pipeline (speed / curvature / angle) and the renderer consume unchanged.
 
 import { buildLayerData, samplePath, type LayerData, type Point } from './harmonograph'
+import { defaultLSystem, lsystemById, randomLSystem, sampleLSystem } from './lsystem'
 import type {
   AttractorKind,
   AttractorParams,
@@ -28,6 +29,7 @@ export const CURVE_KINDS: { value: CurveKind; label: string }[] = [
   { value: 'lissajous', label: 'Lissajous' },
   { value: 'superformula', label: 'Superformula' },
   { value: 'attractor', label: 'Attractor' },
+  { value: 'lsystem', label: 'L-system' },
 ]
 
 // ---- spirograph (hypotrochoid / epitrochoid) ------------------------------
@@ -204,6 +206,13 @@ function attractorStep(type: AttractorKind, x: number, y: number, p: AttractorPa
         x: p.d * Math.sin(p.a * x) - Math.sin(p.b * y),
         y: p.c * Math.cos(p.a * x) + Math.cos(p.b * y),
       }
+    case 'fractaldream':
+      // Clifford Pickover's "Fractal Dream" — like de Jong but with a self-term
+      // weighted by c/d. Every term is a bounded sine, so the orbit can't escape.
+      return {
+        x: Math.sin(p.b * y) + p.c * Math.sin(p.b * x),
+        y: Math.sin(p.a * x) + p.d * Math.sin(p.a * y),
+      }
     case 'dejong':
     default:
       return {
@@ -245,6 +254,7 @@ export const ATTRACTOR_KINDS: { value: AttractorKind; label: string }[] = [
   { value: 'dejong', label: 'de Jong' },
   { value: 'clifford', label: 'Clifford' },
   { value: 'svensson', label: 'Svensson' },
+  { value: 'fractaldream', label: 'Dream' },
 ]
 
 export function defaultAttractor(): AttractorParams {
@@ -253,14 +263,15 @@ export function defaultAttractor(): AttractorParams {
 }
 
 export function randomAttractor(): AttractorParams {
-  const type = pick<AttractorKind>(['dejong', 'clifford', 'svensson'])
-  // Clifford's c/d are multipliers (kept moderate); the others read their four
-  // constants as angular frequencies, where a wider range stays interesting.
-  if (type === 'clifford') {
+  const type = pick<AttractorKind>(['dejong', 'clifford', 'svensson', 'fractaldream'])
+  // Clifford / Dream read c/d as multipliers (kept moderate); the others read
+  // their four constants as angular frequencies, where a wider range stays
+  // interesting. a/b are always frequencies.
+  if (type === 'clifford' || type === 'fractaldream') {
     return {
       type,
-      a: rand(-2, 2),
-      b: rand(-2, 2),
+      a: rand(-2.4, 2.4),
+      b: rand(-2.4, 2.4),
       c: rand(-1.2, 1.2),
       d: rand(-1.2, 1.2),
       steps: 14000,
@@ -292,6 +303,8 @@ export function sourceParams(layer: Layer): object {
       return (layer.sf ??= defaultSf())
     case 'attractor':
       return (layer.attractor ??= defaultAttractor())
+    case 'lsystem':
+      return (layer.lsystem ??= defaultLSystem())
     case 'harmonograph':
     default:
       return layer.params
@@ -310,6 +323,8 @@ export function sampleLayer(layer: Layer): Point[] {
       return sampleSuperformula(layer.sf ?? defaultSf())
     case 'attractor':
       return sampleAttractor(layer.attractor ?? defaultAttractor())
+    case 'lsystem':
+      return sampleLSystem(layer.lsystem ?? defaultLSystem())
     case 'harmonograph':
     default:
       return samplePath(layer.params)
@@ -353,6 +368,13 @@ export function breatheLayer(layer: Layer, t: number): Layer {
           c: s.c + 0.12 * Math.cos(a * 0.37),
         },
       }
+    }
+    case 'lsystem': {
+      // Sweep the fold angle around its set value. Because the expanded string
+      // doesn't depend on the angle, this only re-runs the cheap turtle pass — so
+      // a Hilbert curve ripples and a dragon unfolds and refolds in real time.
+      const s = layer.lsystem ?? defaultLSystem()
+      return { ...layer, lsystem: { ...s, angle: s.angle + 0.32 * Math.sin(a * 0.5) } }
     }
     case 'harmonograph':
     default: {
@@ -407,8 +429,13 @@ export function randomSourceFor(kind: CurveKind): Partial<Layer> {
       return { sf: randomSuperformula() }
     case 'attractor':
       return { attractor: randomAttractor() }
+    case 'lsystem':
+      return { lsystem: randomLSystem() }
     case 'harmonograph':
     default:
       return {}
   }
 }
+
+// Re-export so consumers can pull the L-system catalog helpers from `curves`.
+export { defaultLSystem, lsystemById, randomLSystem }

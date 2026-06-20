@@ -13,6 +13,7 @@ import type {
   Layer,
   LayerStyle,
   LissajousParams,
+  LSystemParams,
   Pendulum,
   Project,
   RoseParams,
@@ -71,6 +72,7 @@ interface PresetLayer {
   liss?: LissajousParams
   sf?: SuperformulaParams
   attractor?: AttractorParams
+  lsystem?: LSystemParams
 }
 
 // A harmonograph placeholder for layers whose real source is another kind.
@@ -503,6 +505,102 @@ export const PRESETS: Preset[] = [
       },
     ],
   },
+  {
+    name: 'Fractal Dream',
+    background: '#05060f',
+    bg2: '#120a22',
+    bgMode: 'radial',
+    vignette: 0.5,
+    layers: [
+      {
+        name: 'Dream',
+        kind: 'attractor',
+        params: dummyHarm(),
+        attractor: { type: 'fractaldream', a: -2.0, b: -2.34, c: 0.2, d: -0.65, steps: 16000 },
+        style: st('aurora', { colorMode: 'path', glow: 0.3, lineWidth: 0.55, blend: 'lighter', opacity: 0.85 }),
+      },
+    ],
+  },
+  {
+    name: 'Dragon Fold',
+    background: '#070b1a',
+    vignette: 0.42,
+    layers: [
+      {
+        name: 'Dragon',
+        kind: 'lsystem',
+        params: dummyHarm(),
+        lsystem: { system: 'dragon', iterations: 13, angle: PI / 2 },
+        style: st('plasma', { colorMode: 'path', glow: 0.28, lineWidth: 1.1, blend: 'lighter', opacity: 0.92 }),
+      },
+    ],
+  },
+  {
+    name: 'Hilbert Weave',
+    background: '#03140f',
+    vignette: 0.34,
+    layers: [
+      {
+        name: 'Hilbert',
+        kind: 'lsystem',
+        params: dummyHarm(),
+        lsystem: { system: 'hilbert', iterations: 6, angle: PI / 2 },
+        style: st('viridis', { colorMode: 'path', lineWidth: 1.2, glow: 0.18 }),
+      },
+    ],
+  },
+  {
+    name: 'Gosper Snow',
+    background: '#06060d',
+    vignette: 0.4,
+    layers: [
+      {
+        name: 'Flowsnake',
+        kind: 'lsystem',
+        params: dummyHarm(),
+        lsystem: { system: 'gosper', iterations: 4, angle: PI / 3 },
+        style: st('ice', { colorMode: 'angle', glow: 0.3, lineWidth: 1, blend: 'lighter', opacity: 0.9 }),
+      },
+    ],
+  },
+  {
+    name: 'Koch Crown',
+    background: '#0a0512',
+    vignette: 0.46,
+    layers: [
+      {
+        name: 'Snowflake',
+        kind: 'lsystem',
+        params: dummyHarm(),
+        lsystem: { system: 'snowflake', iterations: 4, angle: PI / 3 },
+        style: st('rose-gold', { colorMode: 'path', glow: 0.26, lineWidth: 1.1, blend: 'lighter', opacity: 0.9 }),
+      },
+    ],
+  },
+  {
+    name: 'Arrowhead Mandala',
+    background: '#0d0820',
+    bg2: '#06030f',
+    bgMode: 'radial',
+    vignette: 0.52,
+    layers: [
+      {
+        name: 'Gasket',
+        kind: 'lsystem',
+        params: dummyHarm(),
+        lsystem: { system: 'arrowhead', iterations: 7, angle: PI / 3 },
+        style: st('spectrum', {
+          colorMode: 'path',
+          glow: 0.3,
+          lineWidth: 0.85,
+          blend: 'lighter',
+          opacity: 0.9,
+          symmetry: 3,
+          mirror: true,
+        }),
+      },
+    ],
+  },
 ]
 
 export function loadPreset(preset: Preset): Project {
@@ -518,6 +616,7 @@ export function loadPreset(preset: Preset): Project {
       if (l.liss) extra.liss = structuredClone(l.liss)
       if (l.sf) extra.sf = structuredClone(l.sf)
       if (l.attractor) extra.attractor = structuredClone(l.attractor)
+      if (l.lsystem) extra.lsystem = structuredClone(l.lsystem)
       return makeLayer(l.name, structuredClone(l.params), structuredClone(l.style), extra)
     }),
   }

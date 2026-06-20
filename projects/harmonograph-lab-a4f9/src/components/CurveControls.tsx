@@ -7,11 +7,13 @@ import type {
   AttractorParams,
   Layer,
   LissajousParams,
+  LSystemParams,
   RoseParams,
   SpirographParams,
   SuperformulaParams,
 } from '../types'
 import { ATTRACTOR_KINDS } from '../curves'
+import { LSYSTEM_KINDS, lsystemById } from '../lsystem'
 import { Slider } from './Slider'
 import { Segmented } from './Segmented'
 
@@ -403,6 +405,55 @@ export function CurveAttractor({
       <p className="hint">
         A chaotic orbit fed back into itself — nudge a constant and the whole web
         reshapes. Try <em>Live</em> to watch it morph, or color along <em>Path</em>.
+      </p>
+    </section>
+  )
+}
+
+export function CurveLSystem({
+  lsystem,
+  update,
+}: {
+  lsystem: LSystemParams
+  update: (patch: Partial<LSystemParams>) => void
+}) {
+  const def = lsystemById(lsystem.system) ?? lsystemById(LSYSTEM_KINDS[0].value)!
+  return (
+    <section className="group">
+      <div className="group-title">L-system fractal</div>
+      <div className="seg-label">Rule set</div>
+      <Segmented
+        value={lsystem.system}
+        options={LSYSTEM_KINDS}
+        // Switching systems resets depth + angle to that fractal's canonical
+        // values, so the slider ranges always match the selected rule set.
+        onChange={(system) => {
+          const d = lsystemById(system)
+          update({ system, iterations: d?.defaultIter ?? 4, angle: d?.angle ?? Math.PI / 2 })
+        }}
+        wrap
+      />
+      <Slider
+        label="Iterations"
+        value={lsystem.iterations}
+        min={0}
+        max={def.maxIter}
+        step={1}
+        onChange={(v) => update({ iterations: v })}
+        fmt={(v) => v.toFixed(0)}
+      />
+      <Slider
+        label="Fold angle"
+        value={lsystem.angle}
+        min={5 * (Math.PI / 180)}
+        max={175 * (Math.PI / 180)}
+        step={0.5 * (Math.PI / 180)}
+        onChange={(v) => update({ angle: v })}
+        fmt={deg}
+      />
+      <p className="hint">
+        {def.note ?? 'A turtle walks a rewritten string, turning by the fold angle.'}{' '}
+        Hit <em>Live</em> (🌀) to sweep the fold angle and watch it morph.
       </p>
     </section>
   )

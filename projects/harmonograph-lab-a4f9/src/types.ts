@@ -36,6 +36,7 @@ export type CurveKind =
   | 'lissajous'
   | 'superformula'
   | 'attractor'
+  | 'lsystem'
 
 // Hypotrochoid / epitrochoid — a pen offset `d` on a circle of radius `r`
 // rolling inside (hypo) or outside (epi) a fixed circle of radius `R`. `decay`
@@ -97,7 +98,7 @@ export interface SuperformulaParams {
 // system. All three maps below are bounded, so the orbit never escapes; the
 // `a..d` constants reshape it completely. The renderer connects the iterates
 // into a polyline, which reads as a luminous tangle of the attractor's basin.
-export type AttractorKind = 'dejong' | 'clifford' | 'svensson'
+export type AttractorKind = 'dejong' | 'clifford' | 'svensson' | 'fractaldream'
 
 export interface AttractorParams {
   type: AttractorKind
@@ -106,6 +107,18 @@ export interface AttractorParams {
   c: number
   d: number
   steps: number
+}
+
+// L-system (Lindenmayer) fractal curve. `system` selects one of the classic
+// single-stroke rule sets in `lsystem.ts`; `iterations` is the rewriting depth
+// (clamped per-system so the full curve always renders); `angle` is the turtle's
+// turn angle in radians — overridable, which is what lets Live sweep it to morph
+// the fractal continuously. The expanded string depends only on system+iterations
+// (never the angle), so the turn can animate almost for free.
+export interface LSystemParams {
+  system: string
+  iterations: number
+  angle: number
 }
 
 // Per-layer "breathe" animation: how fast and how far the source phases drift
@@ -147,6 +160,7 @@ export interface Layer {
   liss?: LissajousParams
   sf?: SuperformulaParams
   attractor?: AttractorParams
+  lsystem?: LSystemParams
   drift?: LayerDrift
   style: LayerStyle
 }

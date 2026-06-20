@@ -59,9 +59,25 @@ scene with a **gradient**.
   exposes a smoothed overall `level` + low-frequency `bass`, used to pulse glow
   and stroke width. Feature-detected, permission-guarded and fully try/caught so
   it no-ops (rather than throws) when unavailable or sandboxed.
+- `lsystem.ts` — **the L-system fractal engine** (seventh curve family). A
+  catalog of 13 classic *single-stroke* Lindenmayer systems (Heighway dragon,
+  Koch curve + snowflake, quadratic Koch, Lévy C, terdragon, Hilbert, Moore,
+  Peano, Gosper flowsnake, Sierpinski arrowhead + triangle, McWorter pentigree),
+  a string-rewriting `expandLSystem` (memoised by system+iterations), and a
+  `turtle` interpreter that walks the string into one connected polyline. The
+  expansion is angle-independent, so Live can sweep the fold angle every frame and
+  re-run only the cheap turtle pass — the fractal morphs in real time. `maxIter`
+  per system is capped so the full curve always renders (never truncated).
+- `selftest.ts` — **dev-time invariant checks** for the curve engine: every
+  strange attractor stays finite & bounded for *any* slider value (2 400 random
+  param sets), and every L-system yields a finite polyline whose segment count
+  matches its exact growth law where one exists (dragon 2ⁿ, Koch 4ⁿ, snowflake
+  3·4ⁿ, terdragon 3ⁿ, …). Runs once in dev (logged), exposed on
+  `window.__harmonographSelfTest`, tree-shaken from production.
 - `components/` — `Slider`, `Segmented`, `LayerList`, and `CurveControls` (the
   per-kind parameter editors for the Curve tab, incl. the strange-attractor map
-  selector + a/b/c/d constants).
+  selector + a/b/c/d constants and the L-system rule-set / iterations / fold-angle
+  editor).
 
 ## Ideas / backlog
 
@@ -157,11 +173,41 @@ Shipped in v4 (this session) — **chaos, universal capture, and sound:**
 - [x] **"Generate" extended** to compose attractor pieces (hairline, solo).
 - [x] Shortcuts: **A** audio-reactive, **I** export GIF; help overlay updated.
 
+Shipped in v5 (this session) — **fractals: an L-system curve family + verified bounds:**
+
+- [x] **L-system fractal family** (`lsystem.ts`) — a seventh curve source wired
+      through the whole pipeline (sample / dispatch / breathe / randomize /
+      generate / preset / share-migrate). 13 classic single-stroke systems: the
+      Heighway **dragon**, **Koch** curve & **snowflake**, quadratic Koch, **Lévy
+      C**, **terdragon**, **Hilbert** & **Moore** space-fillers, **Peano**,
+      **Gosper** flowsnake, **Sierpinski** arrowhead & triangle, and McWorter's
+      **pentigree** — each colourable / glowing / kaleidoscopic like everything else.
+- [x] **Live fold-angle morphing** — because the rewritten string is
+      angle-independent, Live sweeps each L-system's turn angle every frame
+      (re-running only the O(n) turtle), so a dragon unfolds and a Hilbert curve
+      ripples in real time. Expansion is memoised by system+iterations.
+- [x] **Curve-tab L-system editor** — rule-set selector (resets depth + angle to
+      that fractal's canonical values), iterations, and a degree-readout fold-angle
+      slider, with a per-system explainer.
+- [x] **New strange attractor — "Dream"** (Clifford Pickover's Fractal Dream),
+      pure-trig so it's provably bounded; added to the map selector, randomizer and
+      generator.
+- [x] **Numerical self-tests** (`selftest.ts`) — attractor finiteness/bounds over
+      2 400 random parameter sets and L-system finiteness + exact segment-count
+      growth laws, run in dev and exposed for headless checks. Independently
+      re-verified here: all 13 L-systems finite with correct counts, and all four
+      attractors bounded (max |coord| = 4.0) across 80 000 random param sets.
+- [x] **Six new presets** — *Fractal Dream*, *Dragon Fold*, *Hilbert Weave*,
+      *Gosper Snow*, *Koch Crown*, and a kaleidoscopic *Arrowhead Mandala*.
+- [x] **"Generate" extended** to compose L-system pieces (solo, path/angle colour).
+
 Future:
 
 - [ ] Animated-GIF capture of the Live evolution (not just the drawing pass).
 - [ ] Attractor point-density shading (accumulate a heatmap instead of a polyline).
-- [ ] More attractor families (Peter de Jong variants, Hopalong, Bedhead).
+- [ ] More attractor families (Hopalong / Bedhead — need a robust auto-fit that
+      ignores outliers, since those maps aren't bounded by construction).
+- [ ] Branching L-systems (plants/trees) — needs multi-segment (pen-up) path support.
 - [ ] Beat detection so audio mode can also re-seed / randomize on transients.
 
 ## Session log
@@ -201,3 +247,17 @@ Future:
   glow/width pulse, sandbox-safe), surfaced the **per-layer drift rate**, four new
   presets, and **A**/**I** shortcuts. Verified with the full CI gate (scope +
   conformance + lint + build).
+- 2026-06-20 (claude): **v5 — fractals.** Added an **L-system fractal curve
+  family** (`lsystem.ts`): 13 classic single-stroke systems (dragon, Koch +
+  snowflake, quadratic Koch, Lévy C, terdragon, Hilbert, Moore, Peano, Gosper,
+  Sierpinski arrowhead + triangle, pentigree) with a memoised string-rewriter and a
+  turtle interpreter, wired end-to-end (types, dispatch, Curve-tab editor,
+  randomize, generate, presets, share migration). The expansion is
+  angle-independent, so **Live sweeps the fold angle** every frame (cheap turtle
+  re-run) and the fractal morphs — a dragon unfolds, a Hilbert curve ripples. Also
+  added a fourth, provably-bounded strange attractor (**Fractal Dream**), six new
+  presets, and a **numerical self-test module** (`selftest.ts`, dev-only) asserting
+  attractor bounds and exact L-system segment-count growth laws. Validated the
+  L-system catalog (segment counts, finiteness, spans) and attractor boundedness
+  (max |coord| = 4.0 over 80 000 random param sets) out of band, then passed the
+  full CI gate (scope + conformance + lint + build).
