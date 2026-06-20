@@ -329,6 +329,13 @@ export class Table {
     return handle
   }
 
+  /** Remove a secondary B+Tree index by name. Returns whether one was dropped.
+   *  Used by the what-if Index Advisor to retract a hypothetical index after
+   *  costing a plan with it, and as the building block for `DROP INDEX`. */
+  dropIndex(name: string): boolean {
+    return this.indexes.delete(name.toLowerCase())
+  }
+
   /** Build a GIN inverted index over a single tsvector column. */
   createGinIndex(name: string, column: string): GinIndexHandle {
     const ci = this.columnIndex(column)

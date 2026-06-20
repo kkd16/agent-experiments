@@ -8,7 +8,8 @@
 
 import { parse } from './parser'
 import { Database, Table, type Row, type SerializedDb } from './catalog'
-import { planSelect, inferType } from './planner'
+import { planSelect, planWithJoinTrace, inferType, type JoinOrderTrace } from './planner'
+import { adviseIndexes, type AdviceResult } from './advisor'
 import { compileExpr, truthy, setUserFunctionHook, type CompileCtx, type Evaluator, type UserScalarFn } from './eval'
 import { resolveColumn, type Binding, type Schema } from './schema'
 import { SqlError, coerceTo, type ColumnType, type SqlValue } from './types'
@@ -129,6 +130,22 @@ export class Engine implements PlHost {
   queryRows(select: SelectStmt): { schema: Binding[]; rows: Row[] } {
     const op = planSelect(select, this.db)
     return { schema: op.schema, rows: runOperator(op) }
+  }
+  /** The what-if Index Advisor: recommend indexes for a SELECT by re-planning it
+   *  under hypothetical indexes (HypoPG-style). Read-only — your data is untouched. */
+  advise(selectSql: string): AdviceResult {
+    return adviseIndexes(this.db, selectSql)
+  }
+
+  /** Plan a SELECT and return its plan tree plus the join-order DP search trace
+   *  (null when the query has too few reorderable joins). For the Optimizer Lab. */
+  planAndTrace(selectSql: string): { plan: PlanNode; trace: JoinOrderTrace | null } {
+    const stmts = parse(selectSql)
+    if (stmts.length !== 1) throw new SqlError('Provide exactly one SELECT statement.', 'plan')
+    let s = stmts[0]
+    if (s.kind === 'explain') s = s.statement
+    if (s.kind !== 'select') throw new SqlError('Only SELECT statements can be planned here.', 'plan')
+    return planWithJoinTrace(s, this.db)
   }
   execStatement(stmt: Statement): void {
     this.dispatch(stmt, '')

@@ -232,6 +232,25 @@ $$;
 
 export const SAMPLE_QUERIES: SampleQuery[] = [
   {
+    title: 'Optimizer — a selective filter propagates through a join (EXPLAIN)',
+    sql: `-- v15 cost model: a distinct-value estimate lets a selective filter on one
+-- side flow through the join, so the plan's top estimated row count shrinks.
+-- Run it, then delete the WHERE line and run again — watch the estimate change.
+EXPLAIN SELECT o.id, c.name
+FROM orders o JOIN customers c ON o.customer_id = c.id
+WHERE c.country = 'UK';`,
+  },
+  {
+    title: 'Optimizer — a cost-based 3-way join reorder (open the Optimizer Lab!)',
+    sql: `-- The planner reorders this INNER-join chain with a Selinger subset-DP.
+-- Paste it into the Optimizer Lab to replay the search and get index advice.
+EXPLAIN SELECT o.id, c.name, p.name
+FROM orders o
+  JOIN customers c ON o.customer_id = c.id
+  JOIN products p ON o.product_id = p.id
+WHERE c.country = 'UK';`,
+  },
+  {
     title: 'PL/QF — call a stored function from SQL',
     sql: `-- compound_interest() is written in the procedural language (a DECLARE'd
 -- accumulator + a FOR loop) yet is called like any built-in, here once per row.

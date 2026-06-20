@@ -43,7 +43,9 @@ export class SeqScan implements Operator {
   estRows: number
   estCost: number
   actualRows = 0
-  private readonly table: Table
+  /** The base table being scanned — exposed so the planner can recognise a bare
+   *  base-relation leaf and turn it into the inner side of an index nested loop. */
+  readonly table: Table
   private iter: IterableIterator<Row> | null = null
 
   constructor(table: Table, schema: Schema) {
@@ -664,7 +666,14 @@ export class NestedLoopJoin implements Operator {
   private rows: Row[] = []
   private pos = 0
 
-  constructor(left: Operator, right: Operator, pred: Evaluator | null, joinType: JoinExecType, schema: Schema) {
+  constructor(
+    left: Operator,
+    right: Operator,
+    pred: Evaluator | null,
+    joinType: JoinExecType,
+    schema: Schema,
+    estRows?: number,
+  ) {
     this.left = left
     this.right = right
     this.pred = pred
@@ -673,7 +682,11 @@ export class NestedLoopJoin implements Operator {
     this.leftWidth = left.schema.length
     this.rightWidth = right.schema.length
     this.estRows =
-      joinType === 'CROSS' ? left.estRows * right.estRows : Math.max(left.estRows, left.estRows * right.estRows * 0.3)
+      estRows !== undefined
+        ? Math.max(1, Math.round(estRows))
+        : joinType === 'CROSS'
+          ? left.estRows * right.estRows
+          : Math.max(left.estRows, left.estRows * right.estRows * 0.3)
     this.estCost = left.estCost + left.estRows * right.estCost + left.estRows * right.estRows * CPU_OP
   }
   open() {
@@ -721,6 +734,109 @@ export class NestedLoopJoin implements Operator {
       actualRows: this.actualRows,
       extra: ['rows are re-scanned for each outer row'],
       children: [this.left.plan(), this.right.plan()],
+    }
+  }
+}
+
+// An index nested-loop join: for each outer (left) row, probe a B+Tree on the
+// inner table's join column and fetch the matching inner rows, instead of
+// building a whole hash table. This is the textbook win when the outer side is
+// tiny (a selective driver) and the inner side is large but indexed on the key —
+// the cost is ~|outer| index descents rather than a scan-and-build of |inner|.
+// Supports INNER and LEFT (the left/outer side is the preserved one).
+export class IndexNestedLoopJoin implements Operator {
+  readonly schema: Schema
+  estRows: number
+  estCost: number
+  actualRows = 0
+  private readonly left: Operator
+  private readonly innerTable: Table
+  private readonly index: IndexHandle
+  private readonly leftKey: Evaluator
+  private readonly joinType: 'INNER' | 'LEFT'
+  private readonly innerWidth: number
+  private rows: Row[] = []
+  private pos = 0
+  private probes = 0
+
+  constructor(
+    left: Operator,
+    innerTable: Table,
+    index: IndexHandle,
+    leftKey: Evaluator,
+    joinType: 'INNER' | 'LEFT',
+    schema: Schema,
+    innerWidth: number,
+    estRows?: number,
+  ) {
+    this.left = left
+    this.innerTable = innerTable
+    this.index = index
+    this.leftKey = leftKey
+    this.joinType = joinType
+    this.schema = schema
+    this.innerWidth = innerWidth
+    this.estRows = estRows !== undefined ? Math.max(1, Math.round(estRows)) : Math.max(left.estRows, 1)
+    const h = Math.max(1, index.stats().height)
+    // Per outer row: one B+Tree descent plus a fetch of the matched inner rows.
+    const matchPerProbe = Math.max(1, this.estRows / Math.max(1, left.estRows))
+    this.estCost = left.estCost + left.estRows * (h * CPU_OP + matchPerProbe * CPU_TUPLE)
+  }
+  open() {
+    const out: Row[] = []
+    const emitNull = this.joinType === 'LEFT'
+    this.probes = 0
+    this.left.open()
+    try {
+      for (let l = this.left.next(); l !== null; l = this.left.next()) {
+        const k = this.leftKey(l)
+        let matched = false
+        if (k !== null) {
+          this.probes++
+          // Exact-match probe: range [k, k] inclusive over the inner index.
+          for (const rid of this.index.tree.range([k], [k], true, true)) {
+            const innerRow = this.innerTable.heap.get(rid)
+            if (innerRow) {
+              matched = true
+              out.push(l.concat(innerRow))
+            }
+          }
+        }
+        if (!matched && emitNull) out.push(l.concat(new Array(this.innerWidth).fill(null)))
+      }
+    } finally {
+      this.left.close()
+    }
+    this.rows = out
+    this.pos = 0
+  }
+  next(): Row | null {
+    if (this.pos >= this.rows.length) return null
+    this.actualRows++
+    return this.rows[this.pos++]
+  }
+  close() {
+    this.rows = []
+  }
+  plan(): PlanNode {
+    const s = this.index.stats()
+    const innerNode: PlanNode = {
+      op: 'IndexProbe',
+      detail: `${this.innerTable.name} via ${this.index.meta.name}`,
+      estRows: Math.max(1, Math.round(this.estRows / Math.max(1, this.left.estRows))),
+      estCost: 0,
+      actualRows: 0,
+      extra: [`on (${this.index.meta.columns.join(', ')}) = outer key`, `B+Tree h=${s.height}`],
+      children: [],
+    }
+    return {
+      op: `IndexNestedLoopJoin (${this.joinType})`,
+      detail: '',
+      estRows: this.estRows,
+      estCost: this.estCost,
+      actualRows: this.actualRows,
+      extra: [`probe the inner index once per outer row (${this.probes || Math.round(this.left.estRows)} probes)`],
+      children: [this.left.plan(), innerNode],
     }
   }
 }
@@ -828,6 +944,7 @@ export class HashJoin implements Operator {
     rightKey: Evaluator,
     joinType: 'INNER' | 'LEFT' | 'RIGHT' | 'FULL',
     schema: Schema,
+    estRows?: number,
   ) {
     this.left = left
     this.right = right
@@ -837,7 +954,7 @@ export class HashJoin implements Operator {
     this.schema = schema
     this.leftWidth = left.schema.length
     this.rightWidth = right.schema.length
-    this.estRows = Math.max(left.estRows, right.estRows)
+    this.estRows = estRows !== undefined ? Math.max(1, Math.round(estRows)) : Math.max(left.estRows, right.estRows)
     this.estCost = left.estCost + right.estCost + (left.estRows + right.estRows) * CPU_OP
   }
   open() {
@@ -1009,6 +1126,7 @@ export class MergeJoin implements Operator {
     rightKey: Evaluator,
     joinType: 'INNER' | 'LEFT' | 'RIGHT' | 'FULL',
     schema: Schema,
+    estRows?: number,
   ) {
     this.left = left
     this.right = right
@@ -1018,7 +1136,7 @@ export class MergeJoin implements Operator {
     this.schema = schema
     this.leftWidth = left.schema.length
     this.rightWidth = right.schema.length
-    this.estRows = Math.max(left.estRows, right.estRows)
+    this.estRows = estRows !== undefined ? Math.max(1, Math.round(estRows)) : Math.max(left.estRows, right.estRows)
     const nl = Math.max(1, left.estRows)
     const nr = Math.max(1, right.estRows)
     this.estCost =

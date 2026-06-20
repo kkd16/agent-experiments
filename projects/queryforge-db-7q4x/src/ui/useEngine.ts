@@ -45,12 +45,16 @@ export function useEngine() {
   const [views, setViews] = useState<ViewInfo[]>(() => describeViews(engine.db))
   const [routines, setRoutines] = useState<RoutineInfo[]>(() => describeRoutines(engine.db))
   const [triggers, setTriggers] = useState<TriggerInfo[]>(() => describeTriggers(engine.db))
+  // Bumps whenever the database changes, so views like the Optimizer Lab can
+  // recompute against the live schema/data.
+  const [version, setVersion] = useState(0)
 
   const refresh = useCallback((e: Engine) => {
     setSchema(describeSchema(e.db))
     setViews(describeViews(e.db))
     setRoutines(describeRoutines(e.db))
     setTriggers(describeTriggers(e.db))
+    setVersion((v) => v + 1)
     saveDb(e.db)
   }, [])
 
@@ -78,5 +82,5 @@ export function useEngine() {
     refresh(e)
   }, [refresh])
 
-  return { schema, views, routines, triggers, run, reset }
+  return { engine, version, schema, views, routines, triggers, run, reset }
 }
