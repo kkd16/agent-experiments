@@ -20,6 +20,7 @@
 
 import type { RegexNode } from './ast';
 import { CharSet, MAX_CODE_POINT } from './charset';
+import { atomIndexFor } from './dfa';
 import type { Atom, DFA, DFAState, DFATransition } from './dfa';
 
 // --- The extended derivative algebra ----------------------------------------
@@ -436,6 +437,22 @@ export interface DerivStepE {
   expr: string;
   nullable: boolean;
   dead: boolean;
+}
+
+// The DFA-state path the test text walks: `states[i]` is the state after reading
+// `i` characters (`states[0]` is the start). Stops at the implicit dead sink
+// (a trailing `-1`), so the residual chain and the lit graph state stay aligned.
+export function eregDFAPath(dfa: EregDFA, text: string): number[] {
+  const codes = Array.from(text, (ch) => ch.codePointAt(0)!);
+  const states: number[] = [dfa.start];
+  let s = dfa.start;
+  for (const c of codes) {
+    const idx = atomIndexFor(dfa.atoms, c);
+    s = idx < 0 ? -1 : dfa.table[s][idx];
+    states.push(s);
+    if (s < 0) break;
+  }
+  return states;
 }
 
 export function derivativeChainE(d: EReg, text: string): { steps: DerivStepE[]; accepted: boolean } {

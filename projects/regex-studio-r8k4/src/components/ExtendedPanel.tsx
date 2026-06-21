@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react';
 import { analyzeFeatures } from '../engine/ast';
 import { parseExtended } from '../engine/parser';
-import { buildEregDFA, derivativeChainE, fromAstE, type EReg, type EregDFA } from '../engine/ereg';
+import { buildEregDFA, derivativeChainE, eregDFAPath, fromAstE, type EReg, type EregDFA } from '../engine/ereg';
 import { minimizeDFA } from '../engine/minimize';
 import type { DFA } from '../engine/dfa';
 import { analyzeLanguage, type LanguageInfo } from '../engine/language';
@@ -96,6 +96,18 @@ export function ExtendedPanel({
   const laws = useMemo<Law[]>(() => (parsed.ast && ok ? verifyExtended(parsed.ast) : []), [parsed.ast, ok]);
   const layout = useMemo(() => (ok ? layoutGraph(dfaToGraph(ok.dfa)) : null), [ok]);
   const chain = useMemo(() => (ok ? derivativeChainE(ok.d, text) : null), [ok, text]);
+
+  // The DFA-state path the test text walks — drives the scrubber that lights the
+  // active state on the graph and the matching residual in the chain, in lockstep.
+  const path = useMemo(() => (ok ? eregDFAPath(ok.dfa, text) : null), [ok, text]);
+  const [rawStep, setRawStep] = useState<number | null>(null);
+  const charCount = Array.from(text).length;
+  // Default: rest at the end of the input. Clicking a chain step or dragging the
+  // scrubber pins a position; it re-clamps as the text changes.
+  const step = rawStep === null ? charCount : Math.min(rawStep, charCount);
+  const pathIdx = path ? Math.min(step, path.length - 1) : 0;
+  const activeState = path && path[pathIdx] >= 0 ? new Set([path[pathIdx]]) : undefined;
+  const prevState = path && pathIdx > 0 && path[pathIdx - 1] >= 0 ? new Set([path[pathIdx - 1]]) : undefined;
 
   const [fuzz, setFuzz] = useState<FuzzResult | null>(null);
   const [fuzzing, setFuzzing] = useState(false);
@@ -209,23 +221,44 @@ export function ExtendedPanel({
 
           <ProofGrid laws={laws} />
 
-          <GraphCard layout={layout} dfa={ok.dfa} />
+          <GraphCard layout={layout} dfa={ok.dfa} highlight={activeState} incoming={prevState} />
 
           <h3 className="deriv-h3">Boolean-derivative chain on the test text</h3>
           <p className="muted-note">
             The very same engine — but now residuals can carry <code>&amp;</code> and <code>~</code>. Accept iff the final
-            residual is nullable. <code>nullable(A&amp;B)=∧</code>, <code>nullable(~A)=¬</code>.
+            residual is nullable. <code>nullable(A&amp;B)=∧</code>, <code>nullable(~A)=¬</code>. Drag the scrubber (or
+            click a step) to walk the DFA — the lit graph state is this step’s residual.
           </p>
+          {charCount > 0 && (
+            <div className="ext-scrub">
+              <input
+                type="range"
+                min={0}
+                max={charCount}
+                value={step}
+                onChange={(e) => setRawStep(Number(e.target.value))}
+              />
+              <span className="ext-scrub-label">
+                read <strong>{pathIdx}</strong>/{charCount}
+                {pathIdx < step && <span className="ext-scrub-dead"> · dead ∅ (rejected early)</span>}
+              </span>
+            </div>
+          )}
           <div className="deriv-chain">
             {chain!.steps.map((s, i) => (
-              <div key={i} className={`deriv-step${s.dead ? ' dead' : ''}${i === chain!.steps.length - 1 ? ' last' : ''}`}>
+              <button
+                key={i}
+                type="button"
+                onClick={() => setRawStep(i)}
+                className={`deriv-step deriv-step-btn${s.dead ? ' dead' : ''}${i === chain!.steps.length - 1 ? ' last' : ''}${i === pathIdx ? ' active' : ''}`}
+              >
                 <div className="deriv-step-head">
                   <span className="deriv-step-char">{s.char === null ? 'start' : s.char === ' ' ? '␣' : s.char}</span>
                   {s.nullable && <span className="deriv-badge nullable">nullable</span>}
                   {s.dead && <span className="deriv-badge dead">dead ∅</span>}
                 </div>
                 <code className="deriv-expr">{s.expr}</code>
-              </div>
+              </button>
             ))}
           </div>
           <div className={`deriv-final ${chain!.accepted ? 'ok' : 'no'}`}>
@@ -304,7 +337,17 @@ function ProofGrid({ laws }: { laws: Law[] }) {
   );
 }
 
-function GraphCard({ layout, dfa }: { layout: ReturnType<typeof layoutGraph>; dfa: EregDFA }) {
+function GraphCard({
+  layout,
+  dfa,
+  highlight,
+  incoming,
+}: {
+  layout: ReturnType<typeof layoutGraph>;
+  dfa: EregDFA;
+  highlight?: Set<number>;
+  incoming?: Set<number>;
+}) {
   const [copied, setCopied] = useState(false);
   const copyDot = () => {
     try {
@@ -344,7 +387,7 @@ function GraphCard({ layout, dfa }: { layout: ReturnType<typeof layoutGraph>; df
           </button>
         </div>
       </div>
-      <AutomatonGraph layout={layout} accent={ACCENT} />
+      <AutomatonGraph layout={layout} accent={ACCENT} highlight={highlight} incoming={incoming} />
     </div>
   );
 }
