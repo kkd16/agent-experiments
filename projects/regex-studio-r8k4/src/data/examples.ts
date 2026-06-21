@@ -237,6 +237,30 @@ export const EXAMPLES: Example[] = [
     sample: 'aa aaa aaaa aaaaaa a',
     note: 'Length even or divisible by three. Its syntactic monoid is the cyclic group ℤ/6 — a single mod-6 counter, the lcm of the two periods, named on the variety ladder.',
   },
+  {
+    name: 'Learn: (a|b)*abb',
+    pattern: '(a|b)*abb',
+    sample: 'abb aabb babb ab abbb',
+    note: 'The textbook learning target. Open the Learn tab: Angluin’s L* hides the regex and rebuilds this exact 4-state minimal DFA from yes/no queries alone — watch the observation table grow and the counterexamples fold in.',
+  },
+  {
+    name: 'Learn: parity (aa)*',
+    pattern: '(aa)*',
+    sample: 'aa aaaa a aaa',
+    note: 'Even-length strings of a. L* recovers the 2-state minimal DFA in one conjecture; RPNI recovers it from a complete sample up to length 2 (positives {ε, aa}, negative {a}).',
+  },
+  {
+    name: 'Census: a*b* (linear)',
+    pattern: 'a*b*',
+    sample: 'aabb ab b aaa',
+    note: 'Open the Census tab: the generating function is 1/(1−x)², so there are exactly n+1 words of length n — polynomial (linear) growth, Perron root λ = 1, entropy 0.',
+  },
+  {
+    name: 'Census: (a|b)* (entropy ln 2)',
+    pattern: '(a|b)*',
+    sample: 'abba ab b aaa',
+    note: 'Every binary string. The generating function 1/(1−2x) gives 2ⁿ words of length n — exponential growth, Perron root λ = 2, topological entropy ln 2 ≈ 0.693.',
+  },
 ];
 
 export const DEFAULT_EXAMPLE = EXAMPLES[1];

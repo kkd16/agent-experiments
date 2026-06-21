@@ -2995,3 +2995,187 @@
   color: var(--muted-2);
   border-style: dashed;
 }
+
+/* ---------------- Learn panel (L* + RPNI) ---------------- */
+.learn-panel {
+  --learn: #c084fc;
+}
+.learn-alpha {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 7px;
+  margin: 6px 0 4px;
+}
+.learn-verdicts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin: 8px 0 12px;
+}
+.learn-graph {
+  margin-top: 14px;
+}
+.learn-h4 {
+  margin: 20px 0 4px;
+  font-size: 13px;
+  color: var(--text);
+}
+.learn-table table {
+  font-variant-numeric: tabular-nums;
+}
+.learn-table .cell-yes {
+  color: var(--good);
+  font-weight: 700;
+  text-align: center;
+}
+.learn-table .cell-no {
+  color: var(--muted-2);
+  text-align: center;
+}
+.learn-table .learn-row-s td:first-child code {
+  color: var(--learn);
+  font-weight: 600;
+}
+.learn-table .learn-row-b {
+  opacity: 0.78;
+}
+.learn-table .learn-row-b td:first-child code {
+  color: var(--muted);
+}
+.learn-rounds {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 8px 0;
+}
+.learn-round {
+  display: flex;
+  gap: 10px;
+  align-items: baseline;
+  padding: 7px 10px;
+  border: 1px solid var(--border-soft);
+  border-radius: 7px;
+  background: var(--panel-2);
+  font-size: 12.5px;
+}
+.learn-round-n {
+  font-family: var(--mono);
+  color: var(--learn);
+  font-weight: 700;
+  flex: 0 0 auto;
+}
+.learn-round-body {
+  color: var(--muted);
+}
+.learn-round-body strong {
+  color: var(--text);
+}
+.learn-cx {
+  color: var(--warn);
+  font-family: var(--mono);
+}
+.learn-accept {
+  color: var(--good);
+  font-weight: 600;
+}
+.learn-trace-wrap {
+  margin: 12px 0;
+}
+.learn-trace-wrap summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 12px;
+  user-select: none;
+}
+.learn-trace {
+  margin: 8px 0 0;
+  padding-left: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.learn-ev {
+  font-size: 12px;
+  color: var(--muted);
+  line-height: 1.5;
+}
+.learn-ev-kind {
+  display: inline-block;
+  min-width: 92px;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted-2);
+}
+.learn-ev-close .learn-ev-kind { color: var(--accent); }
+.learn-ev-consistent .learn-ev-kind { color: var(--accent-2); }
+.learn-ev-conjecture .learn-ev-kind { color: var(--learn); }
+.learn-ev-counterexample .learn-ev-kind { color: var(--warn); }
+.learn-ev-done .learn-ev-kind { color: var(--good); }
+.learn-ev-abort .learn-ev-kind { color: var(--bad); }
+.learn-abort {
+  padding: 12px 14px;
+  border: 1px solid color-mix(in srgb, var(--warn) 40%, var(--border));
+  background: color-mix(in srgb, var(--warn) 8%, transparent);
+  border-radius: 8px;
+  color: var(--text);
+  font-size: 13px;
+  margin: 8px 0;
+}
+.learn-fail-reason {
+  color: var(--bad);
+  font-size: 12px;
+  margin-left: 10px;
+}
+
+/* ---------------- Census panel (generating function & growth) ---------------- */
+.census-gf {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin: 8px 0 4px;
+  padding: 14px 18px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel-2);
+  font-family: var(--mono);
+  font-size: 15px;
+  overflow-x: auto;
+}
+.census-gf-label {
+  color: var(--accent-2);
+  font-weight: 700;
+  flex: 0 0 auto;
+}
+.census-frac {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+}
+.census-num {
+  padding: 0 10px 4px;
+  border-bottom: 2px solid var(--edge);
+  color: var(--text);
+  white-space: nowrap;
+}
+.census-den {
+  padding: 4px 10px 0;
+  color: var(--text);
+  white-space: nowrap;
+}
+.census-rec code {
+  color: var(--muted);
+}
+.census-verify {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin: 12px 0;
+}
+.census-counts {
+  overflow-x: auto;
+}
