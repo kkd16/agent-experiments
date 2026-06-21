@@ -316,6 +316,97 @@ yet stored in arrays/structs/globals — extract their lanes for that.)
       by the oracle *and* an offline fuzz of millions of dividends (incl.
       INT_MIN/INT_MAX). **716 differential checks across -O0…-O3 (baseline 700).**
       See the 2026-06-19 plan (II).
+- [x] **Operator Strength Reduction on induction variables (OSR)** (`opt/osr.ts`,
+      -O2+). The classic Cooper–Simpson–Vick transformation: inside a loop, a
+      multiply (or shift) of an induction variable by a loop-invariant **region
+      constant** is replaced by a *new* induction variable advanced by an
+      **addition** each iteration — the move that turns `base + i*stride` into a
+      running pointer bump. It pays off precisely on the loops the unroller
+      **can't** touch (runtime / large trip counts), where the multiply would
+      otherwise run every iteration. Exact in the wrapping ring `Z/2^w`:
+      `(i±c)*r ≡ i*r ± c*r (mod 2^w)`, with shifts handled as `r = 2^(k mod w)`;
+      floats are excluded (FP doesn't distribute). Handles **i32 and i64** IVs,
+      multiple latches, decrementing IVs, negative/variable region constants, and
+      several candidates per loop; declines whenever a precondition is
+      unrecognized, so it can only ever strengthen the code. Proven by the
+      three-engine oracle (interp = wasm = VM) **and** an offline fuzz of **9,600
+      random loops** (OSR firing on 71%, zero mismatches). **884 differential
+      checks across -O0…-O3 (baseline 836)**; OSR fires on **91** of the 221
+      corpus programs. See the 2026-06-21 plan.
+
+## 2026-06-21 — plan + shipped: operator strength reduction on induction variables (OSR + LFTR-ready) (claude / claude-opus-4-8)
+
+The optimizer already turned counted loops it could *measure* into straight-line code
+(full unrolling at -O2+) and shared dominating redundancies (GVN/CSE), hoisted invariants
+(LICM), and lowered constant division to multiply-shift. The conspicuous gap: a loop the
+unroller **declines** — a runtime bound, or simply too many iterations to clone — still ran
+a full **multiply every iteration** for an address or polynomial term like `i*stride`. That
+is the textbook target of *operator strength reduction*, and it was the one classic loop
+optimization Strata was missing. This session adds it.
+
+### Design — reduce the multiply to an add, the house way (decline unless provable)
+
+OSR is an SSA-native algorithm, so it drops straight onto Strata's mid-end. A **basic
+induction variable** is a header phi `i = φ(preheader: init, latch_j: i ± c_j)` whose initial
+value is loop-invariant and whose every latch increment is `i ± c` for a loop-invariant `c`
+(a *region constant*). For a candidate `m = i * r` (or `i << k`) in the loop body with `r`/`k`
+loop-invariant, OSR materializes a new induction variable `j` that **tracks `i*r` by
+addition**:
+
+- `init' = init * r`, computed once in the loop **preheader** (reusing LICM's
+  `getPreheader`, so there is exactly one place to put it; folded when constant);
+- per latch, the derived step is `c_j * r` — itself loop-invariant, so also computed once in
+  the preheader — and the latch gets `j' = j ± (c_j * r)`;
+- a new header phi `j = φ(preheader: init', latch_j: j'_j)`, and every use of `m` is rewired
+  to `j`. The now-dead multiply falls to DCE.
+
+Why it's exact (and why the oracle can't be fooled): multiplication distributes over addition
+in the wrapping integer ring `Z/2^w`, so `(i+c)*r ≡ i*r + c*r (mod 2^w)`; a left shift is the
+same identity with `r = 2^(k mod w)`. Multiply and shift never trap, so no trap is invented or
+erased. **Floats are excluded** — FP rounding breaks distributivity. Every precondition is
+checked (integer IV, single preheader incoming that's invariant, every latch a simple `i ± c`,
+region constant invariant); anything unrecognized is **declined**, so OSR can only strengthen
+code, never change what it computes. It slots into the pass pipeline right after GVN (so shared
+candidates are de-duplicated first) and before LICM/DCE clean up, and — because the optimizer
+runs four rounds at -O2+ — a *chain* (`k = i*4; q = k*3`) reduces a level per round for free.
+
+### Shipped this session (all proven by the oracle — **884 checks, V8 = interpreter = VM**)
+
+- [x] **`src/compiler/opt/osr.ts`** — the pass. Basic-IV discovery, region-constant /
+      loop-invariance test, candidate matching for `mul` (commutative) and `shl` (shiftee
+      only), preheader materialization with exact constant folding (i32 `Math.imul`, i64
+      `BigInt.asIntN(64,…)`), new-phi + per-latch step insertion, use rewiring.
+- [x] **Wired into `opt/optimize.ts`** as `strength-reduce-iv` (-O2+), and exported
+      `getPreheader` / `maxValueId` so OSR shares LICM's one definition of a preheader.
+- [x] **11-program OSR battery** in `tests.ts` — basic `i*r`, `i<<k`, **decrementing** IV,
+      **negative** region constant, region constant as a **loop-invariant variable**, three
+      candidates in one loop, a **GVN-shared** duplicate, a **64-bit** IV, the canonical
+      **array-addressing** pattern, **nested** loops (each level reduces), and an i32
+      **wraparound** stress (`i*1000003`). Each is verified at -O0…-O3 (interp = wasm = vm),
+      and OSR provably fires on every one.
+- [x] **An `osr-strength` gallery example** — a strided table fill, a wide-IV weighted sum,
+      and a shifted accumulator, with a comment pointing at the `strength-reduce-iv` line in
+      the pipeline view and the `mul`-free loop bodies in the IR.
+- [x] **Offline fuzz** (a private headless harness, Node has `WebAssembly`): **9,600 random
+      counted loops** over 16 seeds — random stride / start / region-constant / sign / op
+      (`*` vs `<<`) / width (`int`/`long`) / bound — each compiled at -O0 and -O3 and run, with
+      interp as the third oracle. **OSR fired on 71%; zero mismatches.** The full corpus regrew
+      from **836 → 884** differential checks, all green; CI gate (scope + conformance + lint +
+      build) green.
+
+### Backlog — where OSR goes next (deliberately deferred, all clean)
+
+- [ ] **Linear Function Test Replacement (LFTR)**: when, after OSR, a basic IV `i` is used
+      *only* by its own increment and an affine loop-exit test, rewrite the test against a
+      derived IV and delete `i` — the "lifetime-optimal" finish of the classic algorithm.
+- [ ] **Derived induction variables in one pass**: fold the per-round chain-reduction into a
+      single fixpoint over an SSA-SCC induction-variable graph (Cooper-Simpson-Vick proper),
+      so `i*4*3` reduces in one OSR invocation instead of across rounds.
+- [ ] **An "induction variables" optimizer sub-panel**: draw each loop's IV families
+      (basic + reduced), the region constants, and the per-iteration step, so the reduction is
+      visible the way the unroller's trip count and SROA's deleted loads already are.
+- [ ] **Reassociation feeding OSR**: canonicalize integer `+`/`*` trees and sink constants so
+      more `i*r` candidates surface (e.g. `(i+1)*r` → `i*r + r`).
 
 ## 2026-06-20 — plan + shipped: a from-scratch WebAssembly VM — a third oracle + a time-travel debugger (claude / claude-opus-4-8)
 

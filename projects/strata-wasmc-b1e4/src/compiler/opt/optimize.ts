@@ -7,6 +7,7 @@ import { unrollLoops } from './unroll';
 import { divRemByConst } from './divrem';
 import { memOpt } from './memopt';
 import { sroa } from './sroa';
+import { osr } from './osr';
 import { dumpModule } from '../irdump';
 import { i32, satTruncI32, rotl32, rotr32, rotl64, rotr64 } from '../interp';
 
@@ -540,7 +541,7 @@ export function dce(fn: IRFunc): number {
 
 const HOISTABLE = new Set(['ibin', 'iunary', 'fbin', 'icmp', 'fcmp', 'cast', 'copy']);
 
-function maxValueId(fn: IRFunc): number {
+export function maxValueId(fn: IRFunc): number {
   let m = -1;
   for (const k of fn.valueType.keys()) if (k > m) m = k;
   for (const b of fn.blocks) {
@@ -557,7 +558,7 @@ function redirectTerm(t: Block['term'], from: number, to: number): Block['term']
 }
 
 /** Find an existing single preheader for `header`, or splice a fresh one in. */
-function getPreheader(fn: IRFunc, header: Block, loop: Set<number>, idCtr: { n: number }): Block | null {
+export function getPreheader(fn: IRFunc, header: Block, loop: Set<number>, idCtr: { n: number }): Block | null {
   const byId = new Map(fn.blocks.map((b) => [b.id, b]));
   const outside = header.preds.filter((p) => !loop.has(p));
   const latch = header.preds.filter((p) => loop.has(p));
@@ -881,6 +882,7 @@ export function optimize(mod: IRModule, level: OptLevel, snapshots = false): Opt
     record('sroa' + suffix, sroa);
     record('mem-opt' + suffix, memOpt);
     if (level >= 2) record('gvn/cse' + suffix, gvn);
+    if (level >= 2) record('strength-reduce-iv' + suffix, osr);
     record('algebraic-simplify' + suffix, algebraic);
     if (level >= 2) record('licm' + suffix, licm);
     record('dead-code-elim' + suffix, dce);

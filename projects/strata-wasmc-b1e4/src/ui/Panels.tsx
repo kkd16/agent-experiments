@@ -242,7 +242,8 @@ export function OptPanel({ comp }: { comp: Compilation }) {
         of memory into SSA values via dominance-frontier phi insertion) → memory optimization
         (alias-based store→load forwarding, redundant-load &amp; dead-store elimination, with distinct
         allocations proven disjoint) →
-        {comp.level >= 2 ? ' global value numbering (CSE) →' : ''} algebraic simplification →
+        {comp.level >= 2 ? ' global value numbering (CSE) →' : ''}
+        {comp.level >= 2 ? ' operator strength reduction on induction variables (loop `i*stride` → a running add) →' : ''} algebraic simplification →
         {comp.level >= 2 ? ' loop-invariant code motion →' : ''} dead-code elimination → CFG
         simplification (block coalescing), iterated to a fixed point
         {comp.level >= 2 ? ', then CFG cleanup + dead-function elimination' : ''}.
@@ -732,7 +733,9 @@ export function VerifyPanel() {
       <p className="dim note">
         Every program — the {TEST_PROGRAMS.length} examples plus a {battery.length}-program adversarial battery
         (wrapping arithmetic, signed div/rem, shifts, floats &amp; ∞, casts, inlining, LICM, <b>loop unrolling</b>
-        (counted/nested/reverse-step/<code>long</code> IVs, plus the loops that must <em>not</em> unroll), globals, ternary,
+        (counted/nested/reverse-step/<code>long</code> IVs, plus the loops that must <em>not</em> unroll),
+        <b>operator strength reduction</b> (an induction-variable <code>i*r</code>/<code>i&lt;&lt;k</code> reduced to a
+        running add — basic/decrementing/multi-candidate/<code>long</code>/array-addressing/wraparound cases), globals, ternary,
         compound assignment, the full <b>string runtime</b>: literals, concat, equality, indexing, str()/char()…,
         the <b>transcendental math library</b> (exp/ln/sin/cos/pow/…, a shared Strata kernel), the <b>f32</b>
         single-precision type, <b>128-bit SIMD vectors</b> (int4/float4/long2/double2 — elementwise arithmetic,

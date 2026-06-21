@@ -1135,6 +1135,55 @@ fn main() {
 }
 `,
   },
+  {
+    id: 'osr-strength',
+    title: 'Strength reduction (loops of ×)',
+    blurb: 'Flip to -O2 and watch every induction `i*stride` become a running add — see the `strength-reduce-iv` pass.',
+    source: `// Operator Strength Reduction on induction variables (Cooper-Simpson-Vick).
+// These loops are too long to unroll, so without OSR each one would run a
+// multiply *every iteration*. At -O2+ the 'strength-reduce-iv' pass rewrites
+// each \`i * r\` (r a loop-invariant "region constant") into a brand-new
+// induction variable that is incremented by \`step * r\` with an ADDITION — the
+// exact move that turns an array address base + i*stride into a pointer bump.
+// It is an exact identity in the wrapping integer ring: (i+c)*r = i*r + c*r mod
+// 2^w, so the result is byte-for-byte what -O0 computes (the Verify panel proves
+// it: interp = wasm = VM at every level). Open the IR / pipeline view at -O2 and
+// the loop bodies have no 'mul' left — only 'add'.
+
+// 1) A polynomial table laid out at a runtime stride — the canonical case.
+fn fill(out: int, n: int, stride: int, base: int) -> int {
+  let acc = 0;
+  for (let i = 0; i < n; i = i + 1) {
+    let addr = base + i * stride;   // i*stride -> running add after OSR
+    out = out + addr;
+    acc = acc ^ (i * 7);            // a second, independent reducible multiply
+  }
+  return out + acc;
+}
+
+// 2) A 64-bit induction variable with a 64-bit region constant.
+fn weigh(n: int) -> long {
+  let sum: long = 0L;
+  for (let i: long = 0L; i < long(n); i = i + 1L) {
+    sum = sum + i * 1000003L;       // wide multiply -> wide add
+  }
+  return sum;
+}
+
+// 3) Shifts are multiplies too: i << k strength-reduces just like i * 2^k.
+fn shifted(n: int) -> int {
+  let acc = 0;
+  for (let i = 0; i < n; i = i + 2) { acc = acc + (i << 5); }
+  return acc;
+}
+
+fn main() {
+  print(fill(0, 200, 12, 1000));
+  print(weigh(300));
+  print(shifted(256));
+}
+`,
+  },
 ];
 
 export const TEST_PROGRAMS: { name: string; source: string }[] = EXAMPLES.map((e) => ({ name: e.id, source: e.source }));
