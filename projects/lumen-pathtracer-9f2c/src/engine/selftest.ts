@@ -35,6 +35,14 @@ import { parseObj, CUBE_OBJ } from './obj'
 import { makeSky, skyRadiance } from './sky'
 import { hgPhase, sampleHG } from './phase'
 import { thinFilmReflectance } from './thinfilm'
+import {
+  fresnelConductor,
+  conductorEta,
+  conductorK,
+  conductorF0RGB,
+  conductorAverageFresnel,
+} from './conductor'
+import type { ConductorName } from './conductor'
 import { radicalInverse } from './qmc'
 import { valueNoise3, fbm3 } from './noise'
 import { makeDensityField } from './volume'
@@ -1846,6 +1854,176 @@ function testEnvPhotonCaustic(): { pass: boolean; detail: string } {
   }
 }
 
+// 11.0-a — Complex-IOR conductor Fresnel is a physical reflectance: it stays in
+// [0,1] for every metal at every wavelength and angle, and rises to ≈1 at grazing
+// incidence (the universal Fresnel limit — even a dark metal turns mirror-bright
+// at the horizon).
+function testConductorFresnelRange(): { pass: boolean; detail: string } {
+  const names: ConductorName[] = ['gold', 'silver', 'copper', 'aluminium', 'iron', 'chromium']
+  let inRange = true
+  let minGraze = 1
+  for (const name of names) {
+    for (let lam = 400; lam <= 700; lam += 20) {
+      const eta = conductorEta(name, lam)
+      const k = conductorK(name, lam)
+      for (let mi = 0; mi <= 40; mi++) {
+        const mu = mi / 40
+        const r = fresnelConductor(mu, eta, k)
+        if (r < -1e-9 || r > 1 + 1e-9) inRange = false
+      }
+      minGraze = Math.min(minGraze, fresnelConductor(0.001, eta, k))
+    }
+  }
+  // Every conductor's reflectance → 1 at grazing; high-index metals only reach it
+  // very close to 90° (a pseudo-Brewster dip in p-polarisation lingers below that).
+  const ok = inRange && minGraze > 0.97
+  return { pass: ok, detail: `R∈[0,1]=${inRange}, min grazing R(89.9°)=${minGraze.toFixed(3)} (→1)` }
+}
+
+// 11.0-b — The conductor Fresnel reduces *exactly* to the dielectric Fresnel when
+// the absorption k→0 (a transparent "metal" is just a dielectric). This pins the
+// complex formula against the real-valued one we already trust.
+function testConductorDielectricLimit(): { pass: boolean; detail: string } {
+  let maxErr = 0
+  for (const eta of [1.2, 1.5, 2.0, 2.4]) {
+    for (let mi = 1; mi <= 20; mi++) {
+      const cos = mi / 20
+      const cond = fresnelConductor(cos, eta, 0)
+      // Exact unpolarised dielectric Fresnel for a 1→eta interface.
+      const e = 1 / eta
+      const sin2T = e * e * (1 - cos * cos)
+      const cosT = Math.sqrt(Math.max(0, 1 - sin2T))
+      const rp = (e * cos - cosT) / (e * cos + cosT)
+      const rs = (cos - e * cosT) / (cos + e * cosT)
+      const diel = 0.5 * (rp * rp + rs * rs)
+      maxErr = Math.max(maxErr, Math.abs(cond - diel))
+    }
+  }
+  return { pass: maxErr < 1e-9, detail: `max |R_conductor(k=0) − R_dielectric| = ${maxErr.toExponential(2)}` }
+}
+
+// 11.0-c — The measured spectra reproduce the textbook metal colours: gold and
+// copper are warm (R₀ ramps low-blue → high-red), silver and aluminium are bright
+// and near-neutral, iron and chromium are a flat mid grey. This guards the η/k
+// tables against transcription errors that would still pass the energy proofs.
+function testMetalColours(): { pass: boolean; detail: string } {
+  const au = conductorF0RGB('gold')
+  const ag = conductorF0RGB('silver')
+  const cu = conductorF0RGB('copper')
+  const al = conductorF0RGB('aluminium')
+  const fe = conductorF0RGB('iron')
+  const goldWarm = au.x > au.y && au.y > au.z && au.x - au.z > 0.25
+  const copperRed = cu.x > cu.y && cu.y > cu.z && cu.x - cu.z > 0.15
+  const silverBright = Math.min(ag.x, ag.y, ag.z) > 0.85 && Math.max(ag.x, ag.y, ag.z) - Math.min(ag.x, ag.y, ag.z) < 0.1
+  const alumBright = Math.min(al.x, al.y, al.z) > 0.85 && al.z >= al.x // faint blue lean
+  const ironGrey = luminance(fe) > 0.45 && luminance(fe) < 0.65 && Math.max(fe.x, fe.y, fe.z) - Math.min(fe.x, fe.y, fe.z) < 0.06
+  const ok = goldWarm && copperRed && silverBright && alumBright && ironGrey
+  return {
+    pass: ok,
+    detail: `gold=(${au.x.toFixed(2)},${au.y.toFixed(2)},${au.z.toFixed(2)}) warm=${goldWarm}, copper red=${copperRed}, silver/alu bright=${silverBright && alumBright}, iron grey=${ironGrey}`,
+  }
+}
+
+// 11.0-d — The headline oracle: a *smooth* spectral metal, rendered with the
+// hero-wavelength path tracer in a white furnace, must reconstruct the metal's
+// measured RGB reflectance. The head-on ray reflects with R(λ, μ=1) and escapes
+// to the unit environment, so its expected colour over wavelengths is exactly
+// conductorF0RGB(name) — the white-point proof for the whole spectral-conductor
+// pipeline (η/k tables → hero wavelength → wavelengthWeight → image).
+function testSpectralMetalReconstructsColour(): { pass: boolean; detail: string } {
+  const expected = conductorF0RGB('gold')
+  const def: SceneDef = {
+    name: 'metal-furnace',
+    materials: [{ kind: 'metal', albedo: expected, roughness: 0, spectrum: 'gold' }],
+    prims: [{ kind: 'sphere', center: v(0, 0, 0), radius: 1, material: 0 }],
+    camera: { eye: v(0, 0, 5), target: v(0, 0, 0), up: v(0, 1, 0), vfovDeg: 30, aperture: 0, focusDist: 5 },
+    env: { kind: 'solid', color: v(1, 1, 1) },
+  }
+  const scene = new Scene(def)
+  const rng = new Rng(770077, 2)
+  const settings = { maxDepth: 4, rrStart: 3, clampIndirect: 0 }
+  const stats: RayStats = { rays: 0 }
+  const N = 120000
+  let sx = 0
+  let sy = 0
+  let sz = 0
+  for (let i = 0; i < N; i++) {
+    const L = radiance(scene, { o: v(0, 0, 5), d: v(0, 0, -1), tMax: Infinity }, settings, rng, stats)
+    sx += L.x
+    sy += L.y
+    sz += L.z
+  }
+  const r = v(sx / N, sy / N, sz / N)
+  const ex = Math.abs(r.x - expected.x)
+  const ey = Math.abs(r.y - expected.y)
+  const ez = Math.abs(r.z - expected.z)
+  const ok = ex < 0.02 && ey < 0.02 && ez < 0.02 && r.x > r.y && r.y > r.z
+  return {
+    pass: ok,
+    detail: `rendered=(${r.x.toFixed(3)},${r.y.toFixed(3)},${r.z.toFixed(3)}) vs F0=(${expected.x.toFixed(3)},${expected.y.toFixed(3)},${expected.z.toFixed(3)})`,
+  }
+}
+
+// 11.0-e — MIS-consistency of the spectral-conductor lobe. After resolveMaterial
+// bakes (η,k) at a hero wavelength, the rough metal's sampler must report the same
+// pdf as the analytic pdfBSDF, and its throughput weight must equal f·cosθ/pdf —
+// the in-lockstep invariant that keeps next-event estimation and BDPT unbiased.
+// Checked for the plain GGX conductor *and* the Kulla–Conty multiscatter one.
+function testSpectralMetalConsistency(): { pass: boolean; detail: string } {
+  const n = v(0, 0, 1)
+  const wo = normalize(v(0.35, 0.12, 0.9))
+  let maxPdf = 0
+  let maxWeight = 0
+  for (const multiscatter of [false, true]) {
+    const base: Material = { kind: 'metal', albedo: v(0.86, 0.7, 0.42), roughness: 0.4, spectrum: 'gold', multiscatter }
+    const mat = resolveMaterial(base, v(0, 0, 0), 580) // bake (η,k) at 580 nm
+    const rng = new Rng(424242, 5)
+    for (let i = 0; i < 30000; i++) {
+      const s = sampleBSDF(mat, wo, n, true, rng)
+      if (!s || s.specular) continue
+      const p = pdfBSDF(mat, wo, s.wi, n)
+      maxPdf = Math.max(maxPdf, Math.abs(p - s.pdf) / Math.max(1e-6, s.pdf))
+      const f = evalBSDF(mat, wo, s.wi, n)
+      const cos = Math.max(0, dot(s.wi, n))
+      // weight should equal f·cos/pdf (compare on luminance to avoid 0/0 channels).
+      const wRef = luminance(f) * cos / Math.max(1e-9, s.pdf)
+      const wGot = luminance(s.weight)
+      maxWeight = Math.max(maxWeight, Math.abs(wRef - wGot) / Math.max(1e-6, wGot))
+    }
+  }
+  const ok = maxPdf < 1e-5 && maxWeight < 1e-4
+  return { pass: ok, detail: `max |Δpdf|/pdf=${maxPdf.toExponential(2)}, max |Δweight|/weight=${maxWeight.toExponential(2)}` }
+}
+
+// 11.0-f — Kulla–Conty multiscatter still restores energy for a *spectral* metal:
+// a rough gold lobe with multiscatter compensation reflects measurably more than
+// the single-scatter lobe at the same roughness, and never exceeds its physical
+// hemispherical-average reflectance F̄ (energy is restored, not invented).
+function testSpectralMetalMultiscatter(): { pass: boolean; detail: string } {
+  const wo = normalize(v(0.25, 0, 0.97))
+  const lam = 600
+  const favg = conductorAverageFresnel(conductorEta('gold', lam), conductorK('gold', lam))
+  const single = directionalReflectance(
+    resolveMaterial({ kind: 'metal', albedo: v(0.86, 0.7, 0.42), roughness: 0.6, spectrum: 'gold' }, v(0, 0, 0), lam),
+    wo,
+    31,
+  )
+  const multi = directionalReflectance(
+    resolveMaterial(
+      { kind: 'metal', albedo: v(0.86, 0.7, 0.42), roughness: 0.6, spectrum: 'gold', multiscatter: true },
+      v(0, 0, 0),
+      lam,
+    ),
+    wo,
+    32,
+  )
+  const ok = multi > single + 0.005 && multi <= favg + 0.02 && single < multi
+  return {
+    pass: ok,
+    detail: `single=${single.toFixed(4)} → multi=${multi.toFixed(4)} ≤ F̄=${favg.toFixed(4)} (energy restored, bounded)`,
+  }
+}
+
 export function runSelfTests(): TestResult[] {
   return [
     test('Vector algebra identities', testVectorMath),
@@ -1903,5 +2081,11 @@ export function runSelfTests(): TestResult[] {
     test('Spectral caustic is coloured, achromatic is grey', testSpectralCausticColour),
     test('Env-sun photons ≡ path tracer (daylight oracle)', testEnvPhotonOracle),
     test('Env photons resolve a daylight caustic (focused)', testEnvPhotonCaustic),
+    test('Conductor Fresnel R∈[0,1], grazing→1', testConductorFresnelRange),
+    test('Conductor Fresnel k→0 ≡ dielectric Fresnel', testConductorDielectricLimit),
+    test('Measured metal colours (Au/Cu warm, Ag/Al bright, Fe grey)', testMetalColours),
+    test('Spectral metal reconstructs measured RGB (furnace oracle)', testSpectralMetalReconstructsColour),
+    test('Spectral conductor lobe — sampler ↔ pdf ↔ weight', testSpectralMetalConsistency),
+    test('Spectral multiscatter metal restores energy (≤ F̄)', testSpectralMetalMultiscatter),
   ]
 }
