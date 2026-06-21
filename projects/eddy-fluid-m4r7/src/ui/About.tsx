@@ -327,11 +327,16 @@ export function About() {
           confirmed live.
         </p>
         <p>
-          The implementation is all from scratch and carries the real machinery: a{' '}
-          <strong>two-relaxation-time (TRT)</strong> collision whose “magic” parameter{' '}
-          <code>Λ = 3/16</code> pins the bounce-back wall exactly half-way between nodes (so a body-forced
-          channel reproduces the analytic Poiseuille parabola to ~0.1%, where single-relaxation{' '}
-          <strong>BGK</strong> would slip); <strong>Guo forcing</strong> for body forces; half-way{' '}
+          The implementation is all from scratch and carries the real machinery, including three
+          collision operators of increasing sophistication: single-relaxation <strong>BGK</strong>;{' '}
+          <strong>two-relaxation-time (TRT)</strong>, whose “magic” parameter <code>Λ = 3/16</code> pins
+          the bounce-back wall exactly half-way between nodes (so a body-forced channel reproduces the
+          analytic Poiseuille parabola to ~0.1%, where BGK would slip); and{' '}
+          <strong>multiple-relaxation-time (MRT)</strong>, which transforms the populations into nine
+          physical moments (density, momentum, energy, stresses…), relaxes each at its own rate — the
+          stresses carry the viscosity while the unphysical “ghost” modes are damped hard for stability —
+          and maps back through an inverse built numerically at load (so the transform can’t drift).{' '}
+          <strong>Guo forcing</strong> for body forces (projected into moment space for MRT); half-way{' '}
           <strong>bounce-back</strong> for no-slip walls and a moving-wall variant for the lid-driven
           cavity; a <strong>Zou–He</strong> velocity inlet and an extrapolation outflow for the open
           channel; and a <strong>Smagorinsky LES</strong> sub-grid model whose eddy viscosity is read
@@ -370,8 +375,9 @@ export function About() {
           equilibrium’s exact mass/momentum/Euler-stress moments, mass conservation, the{' '}
           <strong>Chapman–Enskog viscosity</strong> <code>ν = c_s²(τ−½)</code> measured from a shear
           wave, the exact <strong>Poiseuille</strong> parabola from the TRT magic wall, and the local
-          strain rate read from <code>Π^neq</code>. Each check reports the number it measured —{' '}
-          <strong>55 checks across 15 groups</strong>.
+          strain rate read from <code>Π^neq</code>, and that the <strong>MRT</strong> moment transform
+          round-trips exactly and reproduces the same viscosity. Each check reports the number it
+          measured — <strong>56 checks across 15 groups</strong>.
         </p>
 
         <h2>Rendering</h2>

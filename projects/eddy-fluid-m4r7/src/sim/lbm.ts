@@ -55,7 +55,57 @@ export const W = [4 / 9, 1 / 9, 1 / 9, 1 / 9, 1 / 9, 1 / 36, 1 / 36, 1 / 36, 1 /
 export const OPP = [0, 3, 4, 1, 2, 7, 8, 5, 6];
 export const Q = 9;
 
-export type Collision = 'bgk' | 'trt';
+export type Collision = 'bgk' | 'trt' | 'mrt';
+
+// --- MRT (multiple-relaxation-time) moment space -----------------------------
+//
+// The orthogonal moment basis of Lallemand & Luo (2000) for D2Q9, in this file's
+// velocity ordering. Rows: {ρ, e, ε, jx, qx, jy, qy, pxx, pxy}. MRT maps f into
+// these physical moments, relaxes EACH toward its own equilibrium at its OWN
+// rate, and maps back — so the kinematic shear modes (pxx, pxy) carry the
+// viscosity while the unphysical "ghost" modes are damped hard for stability.
+// BGK is the special case where every rate equals 1/τ; TRT lies in between.
+export const MRT_M: number[][] = [
+  [1, 1, 1, 1, 1, 1, 1, 1, 1], // ρ
+  [-4, -1, -1, -1, -1, 2, 2, 2, 2], // e (energy)
+  [4, -2, -2, -2, -2, 1, 1, 1, 1], // ε (energy²)
+  [0, 1, 0, -1, 0, 1, -1, -1, 1], // jx
+  [0, -2, 0, 2, 0, 1, -1, -1, 1], // qx (energy flux)
+  [0, 0, 1, 0, -1, 1, 1, -1, -1], // jy
+  [0, 0, -2, 0, 2, 1, 1, -1, -1], // qy
+  [0, 1, -1, 1, -1, 0, 0, 0, 0], // pxx (normal stress)
+  [0, 0, 0, 0, 0, 1, -1, 1, -1], // pxy (shear stress)
+];
+
+/** Invert a small dense matrix by Gauss–Jordan (done once at module load, so
+ *  the MRT transform matrix is never transcribed by hand and can't drift). */
+function invert(A: number[][]): number[][] {
+  const n = A.length;
+  const M = A.map((r, i) => [...r, ...Array.from({ length: n }, (_, j) => (i === j ? 1 : 0))]);
+  for (let c = 0; c < n; c++) {
+    let piv = c;
+    for (let r = c + 1; r < n; r++) if (Math.abs(M[r][c]) > Math.abs(M[piv][c])) piv = r;
+    [M[c], M[piv]] = [M[piv], M[c]];
+    const d = M[c][c];
+    for (let j = 0; j < 2 * n; j++) M[c][j] /= d;
+    for (let r = 0; r < n; r++) {
+      if (r === c) continue;
+      const f = M[r][c];
+      if (f === 0) continue;
+      for (let j = 0; j < 2 * n; j++) M[r][j] -= f * M[c][j];
+    }
+  }
+  return M.map((r) => r.slice(n));
+}
+
+export const MRT_MINV: number[][] = invert(MRT_M);
+
+// Relaxation rates for the non-hydrodynamic moments (Lallemand–Luo "optimal"
+// values). Conserved moments (ρ, jx, jy) have rate 0; the stress moments
+// pxx, pxy take 1/τ (the viscosity), set per-node at collision time.
+const MRT_S_E = 1.64; // energy
+const MRT_S_EPS = 1.54; // energy²
+const MRT_S_Q = 1.7; // energy flux
 
 export interface LbmConfig {
   nx: number;
@@ -263,9 +313,13 @@ export class Lbm {
     const om = this.omegaMinus;
     const bgk = cfg.collision === 'bgk' && !les;
 
+    const mrt = cfg.collision === 'mrt';
     // Scratch for one node.
     const fl = new Float64Array(Q);
     const eq = new Float64Array(Q);
+    const mom = new Float64Array(Q); // MRT: moments
+    const meq = new Float64Array(Q); // MRT: moment equilibria
+    const fhat = new Float64Array(Q); // MRT: force in moment space
 
     for (let node = 0; node < n; node++) {
       if (this.solid[node]) continue;
@@ -314,7 +368,54 @@ export class Lbm {
         }
       }
 
-      if (bgk) {
+      if (mrt) {
+        // MRT: relax in moment space, each moment at its own rate (the stress
+        // moments pxx, pxy carry the viscosity = opEff; ghost modes damped hard).
+        const sNu = opEff;
+        const S0 = 0,
+          S1 = MRT_S_E,
+          S2 = MRT_S_EPS,
+          S4 = MRT_S_Q,
+          S7 = sNu,
+          S8 = sNu;
+        // Forward transform f → moments and the Guo source → moment space.
+        for (let k = 0; k < Q; k++) {
+          const row = MRT_M[k];
+          let mk = 0;
+          let fk = 0;
+          for (let i = 0; i < Q; i++) {
+            mk += row[i] * fl[i];
+            if (hasForce) fk += row[i] * this.guoSource(i, ux, uy, gx, gy);
+          }
+          mom[k] = mk;
+          fhat[k] = fk;
+        }
+        const rhoM = mom[0];
+        const jx = ux * rhoM; // = (Σf·ex + ½gx), the force-shifted momentum
+        const jy = uy * rhoM;
+        const j2 = (jx * jx + jy * jy) / rhoM;
+        meq[0] = rhoM;
+        meq[1] = -2 * rhoM + 3 * j2;
+        meq[2] = rhoM - 3 * j2;
+        meq[3] = jx;
+        meq[4] = -jx;
+        meq[5] = jy;
+        meq[6] = -jy;
+        meq[7] = (jx * jx - jy * jy) / rhoM;
+        meq[8] = (jx * jy) / rhoM;
+        // Relax (conserved ρ, jx, jy have rate 0) + project the force.
+        const S = [S0, S1, S2, S0, S4, S0, S4, S7, S8];
+        for (let k = 0; k < Q; k++) {
+          mom[k] += -S[k] * (mom[k] - meq[k]) + (1 - 0.5 * S[k]) * fhat[k];
+        }
+        // Inverse transform back to populations.
+        for (let i = 0; i < Q; i++) {
+          const row = MRT_MINV[i];
+          let fi = 0;
+          for (let k = 0; k < Q; k++) fi += row[k] * mom[k];
+          f[i * n + node] = fi;
+        }
+      } else if (bgk) {
         for (let i = 0; i < Q; i++) {
           let post = fl[i] - opEff * (fl[i] - eq[i]);
           if (hasForce) post += (1 - 0.5 * opEff) * this.guoSource(i, ux, uy, gx, gy);

@@ -11,7 +11,7 @@
 // through walls or blows up. If any check fails, the studio says so out loud.
 
 import { FluidSolver, DEFAULT_PARAMS, type FluidParams } from './fluid';
-import { Lbm, feq, EX, EY, viscosityFromTau, CS2 } from './lbm';
+import { Lbm, feq, EX, EY, viscosityFromTau, CS2, MRT_M, MRT_MINV } from './lbm';
 import { computeLIC, makeNoise } from '../render/lic';
 import { fft1d, fft2d, energySpectrum, meanKineticEnergy, enstrophySpectrum, scalarVarianceSpectrum, energyTransfer } from './fft';
 import { computeFTLE } from './ftle';
@@ -1905,6 +1905,49 @@ function latticeBoltzmann(): CheckGroup {
         'The velocity gradient lives in the non-equilibrium part of f: S_αβ = −Π^neq_αβ/(2ρc_s²τ). Read off directly, 2·S_xy matches the analytic du/dy of the channel flow — the basis of the Smagorinsky sub-grid model.',
         relErr < 0.06,
         `2·S_xy ${fmt(2 * s.sxy)} vs du/dy ${fmt(dudyAna)} (${(relErr * 100).toFixed(2)}%)`,
+      ),
+    );
+  }
+
+  // 6. MRT collision — the moment transform must round-trip exactly, and the
+  //    multiple-relaxation collision must recover the *same* Chapman–Enskog
+  //    viscosity as BGK (it only changes the unphysical ghost-mode damping).
+  {
+    let invErr = 0;
+    for (let i = 0; i < 9; i++)
+      for (let j = 0; j < 9; j++) {
+        let s = 0;
+        for (let k = 0; k < 9; k++) s += MRT_M[i][k] * MRT_MINV[k][j];
+        invErr += Math.abs(s - (i === j ? 1 : 0));
+      }
+    const nx = 8;
+    const ny = 64;
+    const nuSet = 0.05;
+    const lbm = new Lbm({ nx, ny, bcX: 'periodic', bcY: 'periodic', viscosity: nuSet, collision: 'mrt' });
+    const k = (2 * Math.PI) / ny;
+    const U0 = 0.02;
+    lbm.initField((_i, j) => ({ rho: 1, ux: U0 * Math.cos(k * j), uy: 0 }));
+    const amp = (): number => {
+      let a = 0;
+      for (let j = 0; j < ny; j++) {
+        let row = 0;
+        for (let i = 0; i < nx; i++) row += lbm.ux[lbm.idx(i, j)];
+        a += (row / nx) * Math.cos(k * j);
+      }
+      return (2 / ny) * a;
+    };
+    const a0 = amp();
+    const T = 400;
+    for (let s = 0; s < T; s++) lbm.step();
+    const nuMeas = -Math.log(amp() / a0) / (k * k * T);
+    const nuFormula = viscosityFromTau(lbm.tau);
+    const relErr = Math.abs(nuMeas - nuFormula) / nuFormula;
+    checks.push(
+      check(
+        'MRT moment transform + viscosity',
+        'Multiple-relaxation-time relaxes all nine moments independently in moment space (M·f), then maps back (M⁻¹). The transform must round-trip exactly, and the collision must reproduce the same ν = c_s²(τ−½) — only the ghost-mode damping differs from BGK.',
+        invErr < 1e-9 && relErr < 0.03,
+        `‖M·M⁻¹−I‖ ${fmt(invErr)}, ν err ${(relErr * 100).toFixed(2)}%`,
       ),
     );
   }
