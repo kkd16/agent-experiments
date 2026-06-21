@@ -47,6 +47,15 @@ import {
   buildCodeCapacityGraph, buildSpaceTimeGraph, phenomLogicalErrorRate,
   codeCapacityRate, lambdaRatios, collapseFit,
 } from './surface/spacetime';
+import {
+  type SU2, su2Mul, su2Dag, su2Neg, su2Rot, su2Dist, gcDecompose, getNet,
+  basicApproximation, solovayKitaev, compileGate, sequenceToU2,
+  rzTarget, rxTarget, seededTarget, GATES, GATE_SU2,
+} from './solovay';
+import {
+  weightEnumerator, distill, exactThreshold, LEADING_THRESHOLD,
+  distillCascade, distillMonteCarlo,
+} from './distillation';
 
 export interface TestResult {
   group: string;
@@ -927,6 +936,128 @@ export function runTests(): TestResult[] {
       add('MBQC', 'Bell pattern yields P(00)=P(11)=½, P(01)=P(10)=0',
         Math.abs(p[0] - 0.5) < 1e-9 && Math.abs(p[3] - 0.5) < 1e-9 && p[1] < 1e-9 && p[2] < 1e-9,
         `p = [${p.map((x) => x.toFixed(3)).join(', ')}]`);
+    }
+  }
+
+  // ── Solovay–Kitaev: compiling arbitrary gates to {H, T} + Clifford ──
+  {
+    const seed = (() => { let s = 0xC0FFEE >>> 0; return () => { s = (s * 1664525 + 1013904223) >>> 0; return s / 4294967296; }; })();
+    const randSU2 = (maxAngle: number): SU2 => {
+      const u: [number, number, number] = [seed() - 0.5, seed() - 0.5, seed() - 0.5];
+      const nn = Math.hypot(u[0], u[1], u[2]);
+      return su2Rot([u[0] / nn, u[1] / nn, u[2] / nn], seed() * maxAngle);
+    };
+    const net = getNet();
+
+    // The SU(2) lift of each discrete gate matches its genuine U(2) matrix up to global phase.
+    {
+      let worst = 0;
+      for (const g of GATES) {
+        const M = sequenceToU2([g]);            // genuine U(2)
+        const det = M[0][0].mul(M[1][1]).sub(M[0][1].mul(M[1][0]));
+        const ph = Complex.fromPolar(1, det.phase() / 2);
+        const su: SU2 = { a: M[0][0].div(ph), b: M[0][1].div(ph) };
+        worst = Math.max(worst, Math.min(su2Dist(su, GATE_SU2[g]), su2Dist(su, su2Neg(GATE_SU2[g]))));
+      }
+      add('Solovay–Kitaev', 'gate SU(2) lifts match the genuine U(2) gates up to global phase', worst < 1e-12, `max err ${worst.toExponential(1)}`);
+    }
+
+    // gc-decompose: V W V† W† reconstructs Δ exactly for rotations near the identity.
+    {
+      let worst = 0;
+      for (let t = 0; t < 200; t++) {
+        const D = randSU2(0.7);
+        const { V, W } = gcDecompose(D);
+        const C = su2Mul(su2Mul(V, W), su2Mul(su2Dag(V), su2Dag(W)));
+        worst = Math.max(worst, su2Dist(C, D));
+      }
+      add('Solovay–Kitaev', 'group commutator V W V† W† reconstructs Δ (200 random near-identity rotations)', worst < 1e-9, `max err ${worst.toExponential(1)}`);
+    }
+
+    // The base net is a genuine ε₀-net: a few thousand words covering SU(2) finely.
+    {
+      let worst = 0;
+      for (let t = 0; t < 60; t++) { const U = randSU2(2 * Math.PI); worst = Math.max(worst, su2Dist(U, basicApproximation(U, net).U)); }
+      add('Solovay–Kitaev', `base net (${net.length} words ≤ length 16) covers SU(2) with radius < 0.25`, net.length > 5000 && worst < 0.25, `cover radius ${worst.toFixed(3)}`);
+    }
+
+    // SK converges: depth-3 error is small, and error strictly decreases with depth.
+    {
+      let worst3 = 0, monotone = true;
+      const targets = [rzTarget(Math.PI / 5), rxTarget(1), seededTarget(7), seededTarget(99)];
+      for (const U of targets) {
+        let prevErr = Infinity;
+        for (let n = 0; n <= 3; n++) {
+          const err = su2Dist(U, solovayKitaev(U, n, net).U);
+          if (n > 0 && err > prevErr + 1e-12) monotone = false;
+          prevErr = err;
+          if (n === 3) worst3 = Math.max(worst3, err);
+        }
+      }
+      add('Solovay–Kitaev', 'SK error decreases with depth and reaches < 5e-3 at depth 3 (4 targets)', monotone && worst3 < 5e-3, `worst depth-3 err ${worst3.toExponential(2)}`);
+    }
+
+    // Honest reconstruction: the compiled discrete word, multiplied out in genuine U(2),
+    // reproduces the target up to a physically-irrelevant global phase.
+    {
+      const U = rzTarget(Math.PI / 5);
+      const res = compileGate(U, 3);
+      const M = sequenceToU2(res.reduced);
+      const det = M[0][0].mul(M[1][1]).sub(M[0][1].mul(M[1][0]));
+      const ph = Complex.fromPolar(1, det.phase() / 2);
+      const su: SU2 = { a: M[0][0].div(ph), b: M[0][1].div(ph) };
+      const d = Math.min(su2Dist(U, su), su2Dist(U, su2Neg(su)));
+      add('Solovay–Kitaev', 'compiled {H,T} word multiplies back out to the target (genuine U(2), up to phase)', d < 5e-3 && res.length > 0, `‖word − target‖ = ${d.toExponential(2)}, ${res.length} gates, T-count ${res.tCount}`);
+    }
+
+    // A gate already in the set compiles to (near) zero error at depth 0.
+    {
+      const res = compileGate(GATE_SU2['T'], 0);
+      add('Solovay–Kitaev', 'an exact gate (T) is found by the base net at depth 0 (error ≈ 0)', res.error < 1e-9, `err ${res.error.toExponential(1)}`);
+    }
+  }
+
+  // ── Magic-state distillation: the 15-to-1 routine via the [15,11,3] Hamming code ──
+  {
+    // The Hamming code has the textbook weight enumerator (A₀=1, A₃=35, A₄=105, …).
+    {
+      const A = weightEnumerator();
+      const total = A.reduce((a, b) => a + b, 0);
+      add('Distillation', 'Hamming[15,11,3] code: 2048 codewords with the textbook weight enumerator',
+        total === 2048 && A[0] === 1 && A[3] === 35 && A[4] === 105 && A[12] === 35 && A[15] === 1,
+        `A₃=${A[3]}, A₄=${A[4]}, total ${total}`);
+    }
+
+    // The 15-to-1 routine suppresses error cubically: p_out / p³ → 35 as p → 0.
+    {
+      const c1 = distill(0.01).pOut / 1e-6;
+      const c2 = distill(0.002).pOut / 8e-9;
+      add('Distillation', 'output error suppressed cubically — p_out/p³ → 35 (the 35 weight-3 logicals)',
+        Math.abs(c1 - 35) < 1.5 && Math.abs(c2 - 35) < 0.6, `p_out/p³ = ${c1.toFixed(2)} (p=.01), ${c2.toFixed(2)} (p=.002)`);
+    }
+
+    // Distillation helps below threshold and hurts above it.
+    {
+      const below = distill(0.02), above = distill(0.25);
+      const thr = exactThreshold();
+      add('Distillation', `distillable below threshold p* ≈ ${thr.toFixed(3)} (helps at 2%, hurts at 25%)`,
+        below.improves && !above.improves && thr > 0.1 && thr < 0.18, `p* = ${thr.toFixed(4)}, 1/√35 = ${LEADING_THRESHOLD.toFixed(4)}`);
+    }
+
+    // Iterating the routine drives the error down super-exponentially.
+    {
+      const casc = distillCascade(0.05, 3);
+      const monotone = casc[1].p < casc[0].p && casc[2].p < casc[1].p && casc[3].p < casc[2].p;
+      add('Distillation', 'cascading rounds drive the error down doubly-exponentially (5% → 3 rounds)',
+        monotone && casc[3].p < 1e-9, `5% → ${casc[1].p.toExponential(1)} → ${casc[2].p.toExponential(1)} → ${casc[3].p.toExponential(1)}`);
+    }
+
+    // The Monte-Carlo post-selected protocol agrees with the exact enumeration.
+    {
+      const mc = distillMonteCarlo(0.1, 400000, 7);
+      const exact = distill(0.1).pOut;
+      add('Distillation', 'Monte-Carlo post-selected protocol matches the exact code enumeration (p=0.1)',
+        Math.abs(mc.pOut - exact) < 3e-3, `MC ${mc.pOut.toExponential(3)} vs exact ${exact.toExponential(3)} (${mc.accepted} accepted)`);
     }
   }
 

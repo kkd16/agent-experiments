@@ -19,14 +19,16 @@ import FreeFermionLab from './components/FreeFermionLab';
 import DynamicsLab from './components/DynamicsLab';
 import ShorLab from './components/ShorLab';
 import MBQCLab from './components/MBQCLab';
+import SolovayLab from './components/SolovayLab';
+import DistillationLab from './components/DistillationLab';
 import TestsPanel from './components/TestsPanel';
 import ExportPanel from './components/ExportPanel';
 import { schmidtDecompose } from './quantum/Schmidt';
 
-type Tab = 'builder' | 'algorithms' | 'shor' | 'mbqc' | 'variational' | 'stabilizer' | 'surface' | 'tensor' | 'freefermion' | 'dynamics' | 'tests' | 'about';
+type Tab = 'builder' | 'algorithms' | 'shor' | 'solovay' | 'distill' | 'mbqc' | 'variational' | 'stabilizer' | 'surface' | 'tensor' | 'freefermion' | 'dynamics' | 'tests' | 'about';
 type VizTab = 'state' | 'probabilities' | 'bloch' | 'density' | 'measure';
 
-const PAGE_TABS: Tab[] = ['about', 'shor', 'mbqc', 'variational', 'stabilizer', 'surface', 'tensor', 'freefermion', 'dynamics', 'tests'];
+const PAGE_TABS: Tab[] = ['about', 'shor', 'solovay', 'distill', 'mbqc', 'variational', 'stabilizer', 'surface', 'tensor', 'freefermion', 'dynamics', 'tests'];
 
 // Parse a shared circuit from the URL hash (#c=…) once, before mount — sandbox-safe.
 function loadSharedCircuit(): { numQubits: number; ops: GateOp[] } | null {
@@ -138,7 +140,7 @@ export default function App() {
         </div>
 
         <nav style={{ display: 'flex', gap: 2, marginLeft: 'auto', flexWrap: 'wrap' }}>
-          {(['builder', 'algorithms', 'shor', 'mbqc', 'variational', 'stabilizer', 'surface', 'tensor', 'freefermion', 'dynamics', 'tests', 'about'] as Tab[]).map((tab) => (
+          {(['builder', 'algorithms', 'shor', 'solovay', 'distill', 'mbqc', 'variational', 'stabilizer', 'surface', 'tensor', 'freefermion', 'dynamics', 'tests', 'about'] as Tab[]).map((tab) => (
             <button
               key={tab}
               onClick={() => setActiveTab(tab)}
@@ -157,6 +159,8 @@ export default function App() {
             >
               {tab === 'builder' ? '🔧 Builder' : tab === 'algorithms' ? '⚡ Algorithms'
                 : tab === 'shor' ? '🔢 Shor'
+                : tab === 'solovay' ? '🧭 Solovay–Kitaev'
+                : tab === 'distill' ? '💎 Distillation'
                 : tab === 'mbqc' ? '🕹️ One-Way'
                 : tab === 'variational' ? '🧬 Variational' : tab === 'stabilizer' ? '🧱 Stabilizer'
                 : tab === 'surface' ? '🔲 Surface' : tab === 'tensor' ? '🕸️ Tensor'
@@ -218,6 +222,8 @@ export default function App() {
             >
               {activeTab === 'about' && <AboutPage />}
               {activeTab === 'shor' && <ShorLab />}
+              {activeTab === 'solovay' && <SolovayLab />}
+              {activeTab === 'distill' && <DistillationLab />}
               {activeTab === 'mbqc' && <MBQCLab />}
               {activeTab === 'variational' && <VariationalLab />}
               {activeTab === 'stabilizer' && <StabilizerLab />}
@@ -618,12 +624,20 @@ function AboutPage() {
           content: "The result that launched quantum computing, built from scratch end to end: factoring an integer N into its prime factors. Shor's insight is that factoring reduces to ORDER-FINDING — find the period r of x ↦ a·x mod N for a random base a, and gcd(a^(r/2) ± 1, N) are real factors. The period is found quantumly by phase-estimating the eigenphase s/r of the modular-multiplication unitary, then recovering r from the measured s/r with a continued-fraction expansion. The lab builds the genuine circuit two independent ways — a full (n+t)-qubit register with t controlled modular multipliers + an inverse QFT, and the hardware-friendly iterative variant that recycles a single ancilla measured bit-by-bit with classical feedback — and grades both against an exact closed-form Dirichlet-kernel distribution to machine precision. The Shor tab actually factors 15, 21, 33, 35… live: watch the random base chosen, the order-finding spectrum peak at the rationals k/r, the continued fraction reconstruct r, and the factor tree resolve.",
         },
         {
+          title: 'Solovay–Kitaev — Compiling to a Fault-Tolerant Gate Set',
+          content: "A real fault-tolerant machine cannot apply an arbitrary rotation — it has only a discrete instruction set it can run cheaply and transversally: the Clifford gates plus the non-Clifford T = diag(1, e^{iπ/4}). The Clifford gates alone are classically simulable (the Gottesman–Knill theorem — exactly the lab's stabilizer engine), but adding T makes {H,T} dense in SU(2). The Solovay–Kitaev algorithm, built here from scratch, compiles ANY single-qubit gate into a word over {H,T,T†,S,S†,X,Y,Z} approximating it to precision ε with only O(log^c(1/ε)) gates. It works by a recursion: a precomputed ε₀-net of short words gives a crude base approximation, then the leftover error Δ = U·U_{n−1}† (a small rotation near the identity) is written as a BALANCED GROUP COMMUTATOR Δ = V W V† W† — via the Dawson–Nielsen construction using only rotations and axis–angle algebra, no eigensolver — whose factors V, W are √-closer to the identity, and V and W are themselves approximated recursively. The error contracts super-linearly, ε_n ≈ c·ε_{n−1}^{3/2}, so depth 3–5 reaches 10⁻³ to 10⁻⁶. The Solovay–Kitaev tab compiles a target you choose (a Rz(θ) slider or famous gates like V=√X), reports the error, gate count and the all-important T-count (the costly non-Clifford resource each compiled word consumes), shows the compiled word itself, and sweeps the recursion depth to plot the convergence law on a log scale. Verified to machine precision: every compiled word multiplied back out in genuine U(2) reproduces its target up to a global phase, the group-commutator identity holds to ~1e-13, and the error/length scaling follows the Solovay–Kitaev theorem.",
+        },
+        {
+          title: 'Magic-State Distillation — Manufacturing the T Gate',
+          content: "The partner of Solovay–Kitaev. SK tells you the T-count of a computation, but the T gate cannot be applied transversally on a fault-tolerant code — each one must be teleported in from a magic state |T⟩ = (|0⟩ + e^{iπ/4}|1⟩)/√2 prepared offline, and offline preparation is noisy. Magic-state distillation, built here from scratch, turns many low-fidelity copies into fewer high-fidelity ones using only Clifford gates and post-selection. The workhorse is the Bravyi–Kitaev 15-to-1 routine on the [[15,1,3]] punctured Reed–Muller code (the code that admits a transversal T). Its error analysis reduces exactly to the classical [15,11,3] Hamming code: a noisy |T⟩ carries a phase (Z) error with probability p; the routine post-selects on a trivial X-syndrome (the error must be a Hamming codeword) and the surviving error is a logical fault iff it is an odd-weight codeword. Because the Hamming code has distance 3 with exactly 35 weight-3 codewords, the output error obeys the celebrated cubic law p_out = 35 p³ — below a threshold p* ≈ 14.2% the output is cleaner than the input, so cascading the routine drives the error toward zero doubly-exponentially (the exponent triples each round) at a cost of 15^r raw states per output. The Distillation tab sweeps the input rate against the exact output (summed over all 2¹¹ Hamming codewords), shows the suppression curve crossing the break-even line at the threshold, plots the weight enumerator with its 35 weight-3 logicals highlighted, runs the cascade, and cross-checks the exact enumeration against a Monte-Carlo of the post-selected protocol.",
+        },
+        {
           title: 'Measurement-Based Quantum Computation (the One-Way Computer)',
           content: "A wholly different model of computation, built from scratch and cross-checked against the circuit model. Instead of applying gates, you prepare one large, fixed, entangled cluster state and compute purely by measuring its qubits one at a time in adaptively chosen single-qubit bases — the entanglement is the resource and (irreversible, random) measurement drives the computation. The lab implements the measurement calculus (Danos–Kashefi–Panangaden): patterns of N (prepare |+⟩), E (entangle with CZ), and M (measure at plane-angle φ = (−1)^{sX}·α + sZ·π, fed forward from earlier outcomes), with a universal {J(α), CZ} compiler that turns any single-qubit unitary (via its Euler angles) and CNOT into a cluster + a measurement schedule, propagating the Pauli byproduct operators symbolically. A dynamic state-vector engine frees each qubit the moment it is measured, so a computation of any depth keeps a live register no bigger than the number of logical wires — the MBQC memory advantage made concrete (a depth-deep two-wire circuit spreads over dozens of physical qubits but never holds more than three at once). The headline is determinism from randomness: every run records different measurement outcomes, yet undoing the known byproduct frame yields a byte-for-byte identical logical state — verified to machine precision against an independent dense circuit oracle over hundreds of random inputs and outcome strings. Cluster states are shown to be graph states, the +1 eigenstates of the generators K_v = X_v ∏_{w∼v} Z_w.",
         },
         {
           title: 'Phase Estimation & Tooling',
-          content: 'Quantum Phase Estimation recovers eigenphases via phase kickback + inverse QFT. Circuits export to OpenQASM 2.0 (Qiskit/IBM-compatible) and JSON, with shareable URLs, depth/gate metrics, and a 95-case in-browser self-test suite proving the engine correct against exact references — including the measurement-based one-way computer reproducing the circuit model to machine precision — including Shor\'s order-finding distribution vs an exact analytic comb and the end-to-end factoring of 15/21/33/35, the free-fermion TFIM vs exact diagonalisation and the Pfeuty thermodynamic limit, the recovered central charge c=½, the quench vs exact dense evolution, the anisotropic-XY ground energy and the dynamical phase transition (Loschmidt rate + topological order parameter) vs exact dense time evolution, DMRG vs exact diagonalisation, the surface-code MWPM decoder vs brute-force matching, the Union-Find decoder vs MWPM, and both the code-capacity and phenomenological QEC threshold crossings.',
+          content: 'Quantum Phase Estimation recovers eigenphases via phase kickback + inverse QFT. Circuits export to OpenQASM 2.0 (Qiskit/IBM-compatible) and JSON, with shareable URLs, depth/gate metrics, and a 106-case in-browser self-test suite proving the engine correct against exact references — including the Solovay–Kitaev compiler reproducing arbitrary gates up to global phase and magic-state distillation\'s 35 p³ law, the measurement-based one-way computer reproducing the circuit model to machine precision — including Shor\'s order-finding distribution vs an exact analytic comb and the end-to-end factoring of 15/21/33/35, the free-fermion TFIM vs exact diagonalisation and the Pfeuty thermodynamic limit, the recovered central charge c=½, the quench vs exact dense evolution, the anisotropic-XY ground energy and the dynamical phase transition (Loschmidt rate + topological order parameter) vs exact dense time evolution, DMRG vs exact diagonalisation, the surface-code MWPM decoder vs brute-force matching, the Union-Find decoder vs MWPM, and both the code-capacity and phenomenological QEC threshold crossings.',
         },
       ].map(({ title, content }, i) => (
         <motion.div
