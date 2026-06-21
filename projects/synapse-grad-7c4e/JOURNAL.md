@@ -2,7 +2,7 @@
 
 A tiny **deep-learning framework that runs in your browser**, built from scratch on a real
 reverse-mode **tensor autograd engine** (no TensorFlow.js, no ONNX, no WebGL math libs — every
-gradient is hand-derived and the tape is hand-rolled). Three labs share the one engine:
+gradient is hand-derived and the tape is hand-rolled). Four labs share the one engine:
 
 - **2-D Playground** — pick a dataset, sketch an MLP, and watch it learn in real time:
   decision boundary, per-neuron feature maps, loss/accuracy curves, and a live computation graph.
@@ -19,6 +19,14 @@ gradient is hand-derived and the tape is hand-rolled). Three labs share the one 
   transpose, a scaled dot-product, an additive causal mask, a row-wise softmax, a concat) and the
   whole network — every head's Q/K/V, the output projection, both LayerNorms, the GELU MLP — is
   gradchecked end-to-end to ~1e-7.
+- **Generative · VAE** — train a from-scratch **variational autoencoder** on those same procedural
+  glyphs and *generate*: the headline is a live, navigable **2-D latent manifold** of synthesised
+  digits, alongside input-vs-reconstruction pairs, a class-coloured latent-space scatter, samples
+  drawn straight from the prior `N(0, I)`, smooth interpolation between two glyphs, and a
+  slider-driven latent explorer. The stochastic latent layer uses the **reparameterization trick**
+  (the sampled noise is a frozen leaf, so the ELBO stays differentiable), a fused **BCE-with-logits**
+  Bernoulli reconstruction term, and the **closed-form Gaussian KL** — all hand-derived and the
+  whole VAE gradchecked end-to-end to ~1e-7.
 
 A built-in **numerical gradient checker** runs finite differences against the analytic gradients
 and reports the max error, so you can *prove* the engine — convolution included — is correct,
@@ -51,12 +59,15 @@ src/
                   multi-head causal self-attention, pre-LN GELU MLP blocks, weight-tied head,
                   greedy decode + per-head attention capture for the visualizer
     seqtasks.ts   procedural algorithmic tasks (copy / reverse / sort / add) over a 12-token vocab
+    vae.ts        a from-scratch Variational Autoencoder: MLP encoder (→ μ, logσ²) + decoder,
+                  the reparameterization trick, and `klDivStandardNormal` (closed-form Gaussian KL)
     optim.ts      SGD, Momentum, RMSProp, Adam, L2 weight decay
-    losses.ts     softmax cross-entropy (fused), masked CE (answer-span only), MSE/MAE/Huber
+    losses.ts     softmax CE (fused), masked CE (answer-span only), MSE/MAE/Huber, BCE-with-logits
     data.ts       2-D dataset generators (spiral, circles, moons, xor, gaussians, ring) + noise
     images.ts     procedural image datasets — stroke-rendered digits 0–9 & shapes (MNIST-free)
     gradcheck.ts  finite-difference gradient checker
-    selftest.ts   one-click gradcheck of *every* engine op — conv/pool AND the whole Transformer
+    selftest.ts   one-click gradcheck of *every* engine op — conv/pool, the whole Transformer AND
+                  the whole VAE end-to-end
   components/
     PlaygroundLab.tsx      the 2-D lab (decision boundary / regression) wiring
     DecisionBoundary.tsx   canvas heatmap of model output over the input plane
@@ -79,13 +90,26 @@ src/
       SamplePredictions.tsx held-out problems decoded greedily, per-token right/wrong coloring
       GenerateBox.tsx      type a problem, watch it decode with per-token confidence bars
       TokenEmbeddings.tsx  learned token vectors projected to 2-D via power-iteration PCA
+    gen/
+      GenLab.tsx           the Generative · VAE lab layout + keyboard shortcuts
+      GenPanel.tsx         dataset / VAE arch / latent dim / β / optimizer controls + stats
+      LatentManifold.tsx   the headline: decode an n×n sweep of the 2-D latent plane
+      Reconstructions.tsx  input vs. the VAE's reconstruction, side by side
+      LatentScatter.tsx    encoded means (PCA) plotted in 2-D, coloured by class
+      PriorSamples.tsx     glyphs decoded straight from z ~ N(0, I)
+      Interpolation.tsx    morph one sample into another along a latent-space line
+      LatentExplorer.tsx   two sliders fly a live-decoded glyph along the manifold axes
+      PixelGrid.tsx        shared crisp canvas for one intensity grid
+      GenChart.tsx         training curves: total −ELBO, reconstruction, KL
   hooks/
     useTrainer.ts        owns the MLP model+optimizer+data, steps the loop via rAF
     useVisionTrainer.ts  owns the CNN model+optimizer+image data, steps the loop via rAF
     useSeqTrainer.ts     owns the GPT+optimizer, microbatches sequences into one backward
+    useGenTrainer.ts     owns the VAE+optimizer, the ELBO loop, and the latent/decode views
   lib/
     raster.ts     canvas grid painting + color ramps for the vision views
-  App.tsx           tabbed shell: 2-D Playground ⟷ Vision · CNN ⟷ Transformer · Attention
+    pca.ts        2-D PCA (power iteration + deflation) for the latent scatter + manifold
+  App.tsx           tabbed shell: Playground ⟷ Vision · CNN ⟷ Transformer ⟷ Generative · VAE
 ```
 
 ## Backlog / ideas
@@ -255,6 +279,55 @@ project's defining promise: every new gradient is hand-derived and machine-prove
 - [ ] WebGL/WebGPU matmul + conv backend for bigger nets (stretch)
 - [ ] Per-parameter learning-rate heatmap
 
+### Session 5 — a from-scratch Variational Autoencoder + a generative lab (claude, 2026-06-21)
+
+The plan: give Synapse a *fourth* lab that closes the last obvious gap. It had discriminative
+models everywhere — MLP classifiers/regressors, a CNN, a decoder-only Transformer — but nothing
+**generative**. Build a real **Variational Autoencoder** on the existing autograd engine and make
+its headline payoff — a navigable 2-D **latent manifold** of freshly-synthesised glyphs — the
+centrepiece, while keeping the project's defining promise: every new gradient is hand-derived and
+machine-proven by the one-click self-test.
+
+A VAE is the perfect next move because it stresses parts of the engine the other labs never did:
+the **reparameterization trick** (a stochastic node that stays differentiable because the noise is
+a constant leaf), a **closed-form KL divergence** against a standard normal, and a **Bernoulli
+(logit) decoder** trained with binary cross-entropy. None of those existed yet.
+
+**Engine — the new differentiable pieces (all hand-derived backward, all gradchecked):**
+- [x] `bceWithLogits(logits, target)` — fused, numerically-stable binary cross-entropy with
+      logits (per-pixel reconstruction term), summed over features and averaged over the batch;
+      gradient is the clean `(σ(z) − t)/N` you only get by fusing the sigmoid and the log-loss
+- [x] `klDivStandardNormal(mu, logvar)` — the analytic KL between a diagonal Gaussian
+      `N(μ, σ²)` and the unit prior `N(0, I)`: `−½ Σ(1 + logσ² − μ² − σ²)`, averaged over the batch
+- [x] `reparameterize(mu, logvar, eps)` — `z = μ + exp(½·logvar)·ε` assembled from existing
+      primitive ops (scale → exp → mul → add), so the stochastic layer differentiates for free
+      while the sampled noise `ε` is a frozen leaf (the trick that makes the ELBO trainable)
+
+**Model — a real VAE (`vae.ts`):**
+- [x] `VAE`: a symmetric MLP encoder (→ μ and logσ² heads) + decoder (→ pixel logits) over the
+      shared `Linear`/activation modules, reusing the existing optimizer, schedules, clipping,
+      gradient check, save/load and URL sharing unchanged
+- [x] `encode` / `decode` / `forward(x, ε)` returning `{mu, logvar, z, logits}`; deterministic
+      eval path (`z = μ`) for clean reconstructions
+- [x] Architecture presets (Tiny · Standard · Deep); selectable latent dim (2 / 4 / 8 / 16)
+- [x] `parameters()`/export/import so persistence + sharing work with a new `#g=` hash namespace
+
+**Generative lab UI (new `Generative · VAE` tab):**
+- [x] **Latent manifold** (the headline) — decode a grid sweeping the 2-D latent plane (or the top-2
+      PCA axes of the encoded means for higher latent dims) into a wall of synthesised glyphs
+- [x] **Reconstructions** — input vs. its VAE reconstruction, side by side, sharpening live
+- [x] **Latent space** scatter — encoded means projected to 2-D (power-iteration PCA), coloured by
+      class, so you watch the classes separate in the latent code
+- [x] **Sample from the prior** — draw `z ~ N(0, I)`, decode, regenerate gallery
+- [x] **Interpolation** — morph one sample into another along a straight line in latent space
+- [x] **Latent explorer** — two sliders drive a live-decoded glyph along the manifold's axes
+- [x] Training curves (total / reconstruction / KL), live ELBO terms, β (KL weight) control to
+      watch posterior collapse vs. disentanglement, gradient check, engine self-test, save/share
+- [x] New `useGenTrainer` hook (owns VAE + optimizer + image data; rAF loop; throttled viz)
+- [x] `pca2d` helper (`lib/pca.ts`) shared by the manifold + scatter
+- [x] Self-test extended: `bceWithLogits`, `klDivStandardNormal` **and a whole-VAE end-to-end**
+      gradcheck (encoder, both heads, decoder, through the reparameterized ELBO)
+
 ## Session log
 
 - 2026-06-21 (claude): created from template. Built the autograd engine (tensor/nn/optim/losses),
@@ -287,4 +360,19 @@ project's defining promise: every new gradient is hand-derived and machine-prove
   `concatCols`, `maskedCE` **and a whole-GPT end-to-end gradcheck** into the engine self-test (max
   rel err ~3e-7). Validated training outside the browser (sort ≈97% exact-match @ ~400 steps; add
   ≈80% @ ~600) before wiring the UI; lint + build green via `node scripts/verify-project.mjs`.
+- 2026-06-21 (claude, session 5): added a fourth lab — a **from-scratch Variational Autoencoder**
+  ("Generative · VAE"), the project's first *generative* model. New engine pieces, all hand-derived:
+  `bceWithLogits` (fused, stable Bernoulli reconstruction loss) in `losses.ts`; `klDivStandardNormal`
+  and `reparameterize` in a new `vae.ts` alongside the `VAE` model (symmetric MLP encoder → μ/logσ²
+  heads → decoder, reusing the existing optimizer/schedules/clipping/gradcheck/save-share). A
+  `useGenTrainer` hook runs the ELBO loop (recon + β·KL) and serves the views; a `pca2d` helper
+  (`lib/pca.ts`) flattens the latent code. The lab UI: the headline **2-D latent manifold** (decode
+  a sweep of the latent plane into synthesised glyphs), **reconstructions**, a class-coloured
+  **latent-space scatter**, **samples from the prior**, latent **interpolation**, a slider **latent
+  explorer**, and total/recon/KL training curves with a β control. Folded `bceWithLogits`,
+  `klDivStandardNormal` **and a whole-VAE end-to-end gradcheck** into the engine self-test — every
+  op now verifies to ≤~4e-7 (max rel err 3.8e-7 across all 35 ops). Validated the new gradients
+  *and* end-to-end VAE training outside the browser (−ELBO 207→76, KL healthy at ~10 with no
+  posterior collapse, ~50 ms/step) before wiring the UI; the full CI gate (scope + conformance +
+  lint + tsc + vite build) is green via `node scripts/verify-project.mjs`.
 

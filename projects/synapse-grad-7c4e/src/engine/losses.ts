@@ -169,6 +169,41 @@ export function huber(pred: Tensor, target: Tensor, delta = 1): Tensor {
   return out;
 }
 
+// Fused, numerically-stable binary cross-entropy *with logits*. `logits` is raw pre-sigmoid
+// output [N, P]; `target` is the same shape with values in [0, 1]. We use the stable form
+//   bce(z, t) = max(z, 0) − z·t + log(1 + e^−|z|)
+// which never overflows, and sum it over the feature axis while averaging over the batch (the
+// N = rows divisor), so the per-sample reconstruction term is a *sum over pixels* — the right
+// scale to trade off against the per-sample KL in the VAE's ELBO. The fused backward gives the
+// clean gradient `(σ(z) − t)/N` that you only get when the sigmoid and the log-loss are
+// differentiated together (the same trick `softmaxCrossEntropy` uses for the multiclass case).
+export function bceWithLogits(logits: Tensor, target: Tensor): Tensor {
+  if (logits.rows !== target.rows || logits.cols !== target.cols) {
+    throw new Error('bceWithLogits shape mismatch');
+  }
+  const N = logits.rows;
+  const n = logits.size;
+  let total = 0;
+  for (let i = 0; i < n; i++) {
+    const z = logits.data[i];
+    const t = target.data[i];
+    total += Math.max(z, 0) - z * t + Math.log1p(Math.exp(-Math.abs(z)));
+  }
+  const out = Tensor.zeros(1, 1);
+  out.data[0] = total / N;
+  out.op = 'bceWithLogits';
+  out.prev = [logits];
+  out.backwardFn = () => {
+    const seed = out.grad[0];
+    const g = logits.grad;
+    for (let i = 0; i < n; i++) {
+      const s = 1 / (1 + Math.exp(-logits.data[i]));
+      g[i] += (seed * (s - target.data[i])) / N;
+    }
+  };
+  return out;
+}
+
 export type RegLoss = 'mse' | 'mae' | 'huber';
 
 export function regressionLoss(kind: RegLoss, pred: Tensor, target: Tensor): Tensor {
