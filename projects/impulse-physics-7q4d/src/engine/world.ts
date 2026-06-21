@@ -5,6 +5,7 @@ import { gjkDistance } from './collision/gjk';
 import { timeOfImpact } from './collision/toi';
 import { Contact, ContactSolver, DEFAULT_CONFIG, type SolverConfig } from './contact';
 import { BuoyancyZone } from './fluid';
+import { fractureBody, isFracturable, type FractureOptions } from './fracture/fracture';
 import { type Joint } from './joints/joint';
 import { clamp, EPSILON, Transform, Vec2 } from './math';
 import { boundingRadius, computeAABB, type Shape } from './shapes';
@@ -22,6 +23,25 @@ export interface StepStats {
   pairs: number;
   treeHeight: number;
   stepMs: number;
+}
+
+/** A transient impact spark left behind when a body shatters (render-only). */
+export interface FractureFlash {
+  /** World-space centre of the shatter. */
+  point: Vec2;
+  /** Seconds since the shatter. */
+  age: number;
+  /** Lifetime in seconds; the flash is culled once `age` exceeds it. */
+  ttl: number;
+  /** Number of shards produced (drives the spark count / intensity). */
+  shards: number;
+}
+
+/** A body queued to shatter at the end of the current step. */
+interface FractureRequest {
+  body: Body;
+  point: Vec2;
+  impulse: number;
 }
 
 /** Result of a world ray cast. */
@@ -79,6 +99,10 @@ export class World {
   onEndContact: ((a: Body, b: Body) => void) | null = null;
   /** Fired when a breakable joint exceeds its force/torque budget and is removed. */
   onJointBreak: ((joint: Joint) => void) | null = null;
+  /** Fired when a brittle body shatters: the parent, its shards, and the impact point. */
+  onFracture: ((parent: Body, shards: Body[], point: Vec2) => void) | null = null;
+  /** Live impact sparks left by recent shatters; decayed each step. */
+  readonly flashes: FractureFlash[] = [];
   stats: StepStats = {
     bodies: 0,
     awakeBodies: 0,
@@ -153,6 +177,7 @@ export class World {
     this.joints.length = 0;
     this.fluidZones.length = 0;
     this.softBodies.length = 0;
+    this.flashes.length = 0;
     this.contacts.clear();
     this.nonColliding.clear();
     this.broadphase = new BroadPhase<Body>();
@@ -240,6 +265,11 @@ export class World {
     // reflects the load the joint actually carried.
     this.breakOverloadedJoints(activeJoints, ctx.invDt);
 
+    // 5a′. Brittle bodies: gather the sharpest blow landed on each fracturable
+    // body this step (the solved normal impulse). Applied after integration so
+    // we never mutate the body set mid-solve.
+    const fractures = this.gatherFractures();
+
     // 5b. Split-impulse position correction (pseudo-velocities only).
     for (let i = 0; i < this.config.positionIterations; i++) {
       solver.solvePosition();
@@ -260,6 +290,17 @@ export class World {
     // rigid poses, exchanging reaction impulses back into the rigid world.
     if (this.softBodies.length > 0) {
       stepSoftBodies(this.softBodies, this.bodies, this.gravity, dt, this.softConfig);
+    }
+
+    // 6d. Shatter any body whose strongest contact this step beat its toughness.
+    if (fractures.length > 0) this.applyFractures(fractures);
+
+    // 6e. Decay impact sparks.
+    if (this.flashes.length > 0) {
+      for (const f of this.flashes) f.age += dt;
+      for (let i = this.flashes.length - 1; i >= 0; i--) {
+        if (this.flashes[i].age >= this.flashes[i].ttl) this.flashes.splice(i, 1);
+      }
     }
 
     // 7. Sleeping.
@@ -302,6 +343,63 @@ export class World {
         this.onJointBreak?.(j);
       }
     }
+  }
+
+  /**
+   * For every brittle (`body.fracture`) body, find the single largest normal
+   * impulse a contact delivered to it this step and where it landed. Bodies
+   * whose strongest blow beat their toughness — and that haven't already
+   * fractured to the generation limit — are returned as shatter requests.
+   */
+  private gatherFractures(): FractureRequest[] {
+    const worst = new Map<number, FractureRequest>();
+    for (const c of this.contacts.values()) {
+      if (c.sensor || !c.touching) continue;
+      for (let i = 0; i < c.points.length; i++) {
+        const impulse = c.points[i].normalImpulse;
+        if (impulse <= 0) continue;
+        const point = c.manifold.points[i]?.point;
+        if (!point) continue;
+        for (const body of [c.a, c.b]) {
+          const mat = body.fracture;
+          if (!mat || body.type !== BodyType.Dynamic) continue;
+          if (mat.generation >= mat.maxGeneration) continue;
+          if (impulse <= mat.toughness) continue;
+          if (!isFracturable(body.shape)) continue;
+          const cur = worst.get(body.id);
+          if (!cur || impulse > cur.impulse) {
+            worst.set(body.id, { body, point, impulse });
+          }
+        }
+      }
+    }
+    return [...worst.values()];
+  }
+
+  /** Execute queued shatters, ejecting shards in proportion to the blow. */
+  private applyFractures(requests: FractureRequest[]): void {
+    for (const req of requests) {
+      // The blow that broke it also flings the shards apart (an external impulse).
+      const eject = Math.min(req.impulse * 0.25, 4 * req.body.mass + 6);
+      this.fracture(req.body, req.point, { eject });
+    }
+  }
+
+  /**
+   * Shatter `body` into Voronoi shards centred on the world point `point`,
+   * swapping the shards in for the parent. Returns the new shard bodies (empty
+   * if the body couldn't shatter: a non-polygon, too small, or only one cell).
+   * Public so scenes — and the pointer tools — can trigger a shatter directly.
+   */
+  fracture(body: Body, point: Vec2, opts: FractureOptions = {}): Body[] {
+    if (this.bodies.indexOf(body) < 0) return [];
+    const shards = fractureBody(body, point, opts);
+    if (shards.length === 0) return [];
+    this.removeBody(body);
+    for (const s of shards) this.addBody(s);
+    this.flashes.push({ point, age: 0, ttl: 0.45, shards: shards.length });
+    this.onFracture?.(body, shards, point);
+    return shards;
   }
 
   private addPair(a: Body, b: Body): void {

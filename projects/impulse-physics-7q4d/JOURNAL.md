@@ -58,20 +58,31 @@ the structure of a production engine (Box2D), implemented from first principles 
   `makeCloth`, `makeRope`, `makeSoftBox`).
 - **World** (`world.ts`) — fixed-step orchestration: broadphase → narrowphase (with begin/end
   **contact events**) → fluid forces → island assembly (union-find) → solve → **break overloaded
-  joints** → integrate → **CCD sweep of bullet bodies** → island-based sleeping. Plus ray casting,
-  point queries, AABB region queries, a convex **`shapeCast`**, a **radial-impulse / explosion**
-  field (`applyRadialImpulse`, with distance falloff + static-geometry occlusion), and **sensor**
-  bodies (detected, never solved).
+  joints** → **gather impact loads** → integrate → **CCD sweep of bullet bodies** → **shatter
+  brittle bodies** → island-based sleeping. Plus ray casting, point queries, AABB region queries,
+  a convex **`shapeCast`**, a **radial-impulse / explosion** field (`applyRadialImpulse`, with
+  distance falloff + static-geometry occlusion), and **sensor** bodies (detected, never solved).
+- **Fracture** (`fracture/`, v6) — real-time rigid-body destruction. A body can carry a
+  `FractureMaterial` (toughness, seed count/pattern, generation cap) that makes it brittle.
+  `clip.ts` is a Sutherland–Hodgman convex half-plane clip + signed area + convex point test;
+  `voronoi.ts` builds a power-free **Voronoi partition** of the convex hull (clip against one
+  perpendicular-bisector half-plane per seed) and scatters seeds (uniform / glass-style radial
+  rings about the impact / jittered grid); `fracture.ts` turns the cells into shard bodies whose
+  motion is the parent's rigid velocity field `vᵢ = v + ω×(cᵢ−C)`, so mass, **linear momentum**
+  and **angular momentum** are conserved exactly. The world auto-shatters any brittle body whose
+  strongest contact this step beat its toughness (ejecting shards in proportion to the blow),
+  fires `onFracture`, and leaves a decaying impact spark for the renderer. A click-to-shatter
+  pointer tool (the **Shatter** spawn tool) triggers it by hand.
 
 `src/render/`, `src/scenes/`, `src/ui/` are the playground: a Canvas2D debug renderer (drawing
-capsules, rounded polygons, animated water, dashed sensors, pulley ropes and conveyor flow
-arrows), 28 demo scenes, and a React UI
-with live solver controls (incl. CCD and block-solver toggles), debug overlays, and a
-verification modal.
+capsules, rounded polygons, animated water, dashed sensors, pulley ropes, conveyor flow
+arrows and **fracture impact sparks**), 39 demo scenes, and a React UI
+with live solver controls (incl. CCD and block-solver toggles), a **Shatter** pointer tool,
+debug overlays, and a verification modal.
 
 ## Verification
 
-`src/verify/suite.ts` runs 109 checks against real engine code paths (mass integrals incl.
+`src/verify/suite.ts` runs 146 checks against real engine code paths (mass integrals incl.
 the closed-form capsule, GJK vs analytic gaps, EPA depth, manifold correctness for boxes,
 capsules and rounded polygons, free-fall, elastic-collision momentum conservation,
 resting/sleeping, revolute constraint drift, continuous-collision no-tunnel, revolute &
@@ -80,8 +91,11 @@ floating-equilibrium integrals, AABB queries & shape-cast fractions, the wheel-j
 suspension, sensor pass-through & contact-event counts, **conveyor surface speed**, **radial-
 impulse symmetry / falloff / occlusion**, **pulley length conservation**, **gear ratio &
 rack-and-pinion travel**, **motor-joint targeting & stall**, **breakable-joint thresholds**,
-bit-for-bit determinism, broadphase correctness, ray casting incl. capsules). All 109 pass;
-click **Verify engine** in the app.
+bit-for-bit determinism, broadphase correctness, ray casting incl. capsules, **half-plane
+clipping**, **Voronoi cells tiling their parent exactly + convexity + site-in-own-cell**, and
+**fracture conservation** — Σ shard mass/area = parent, Σ linear momentum = parent, Σ angular
+momentum about the COM = I·ω, deterministic shatters, live impact shatter + generation cap).
+All 146 pass; click **Verify engine** in the app.
 
 ## Ideas / backlog
 
@@ -106,9 +120,71 @@ click **Verify engine** in the app.
 - [x] **Soft bodies (XPBD)** — particles + compliant distance/bend/area constraints, two-way
       coupled to the rigid world; blob/cloth/rope/lattice builders, 6 scenes, soft-body grabbing,
       14 new verification checks (v5)
+- [x] **Rigid-body fracture (v6)** — from-scratch convex half-plane clip + power-free Voronoi
+      partition, glass-style radial seed scatter, momentum-conserving shard decomposition,
+      impact-triggered auto-shatter with a generation cap, a click-to-shatter pointer tool, an
+      impact-spark renderer, 5 scenes and 23 new verification checks
 - [ ] SVG/JSON scene export and a small scene editor
 - [ ] Self-collision *within* a soft body (intra-body particle contacts)
 - [ ] Pressure (rest-area > natural) without the energy it currently feeds a confined body
+- [ ] **Persistent micro-cracks**: accumulate sub-toughness impacts so a body weakens and
+      eventually shatters under repeated blows (fatigue), not just a single hard hit
+- [ ] **Pre-scored / stress-field fracture**: bias the Voronoi seeds along a supplied crack
+      pattern or the contact stress so breaks follow load paths, not just the impact point
+- [ ] **Concave / compound fracture**: decompose a non-convex parent (or capsule/circle) before
+      shattering so rounded and L-shaped bodies can break too
+- [ ] **Debris budget & fade-out**: cull or merge the smallest shards after they settle to keep
+      a long demolition session cheap
+- [ ] Run the Voronoi build + shatter off the main thread for very large slabs
+
+## v6 — the fracture release (real-time Voronoi destruction) ✅ shipped
+
+The sixth major upgrade lets rigid bodies **break**. A body marked brittle (it carries a
+`FractureMaterial`) shatters into convex shards the moment a contact hits it hard enough — the
+mechanism behind every glass pane, masonry wall and crumbling tower in the new scenes.
+
+**The plan (all shipped this session):**
+
+1. **Geometry foundation** (`fracture/clip.ts`). A Sutherland–Hodgman clip of a convex polygon
+   against a single half-plane `{ p : n·p ≤ d }`, plus a signed polygon area and a convex
+   point-in-polygon test. Three tiny pure functions, each verified directly.
+2. **Power-free Voronoi** (`fracture/voronoi.ts`). The cell of a seed is the boundary clipped
+   against one perpendicular-bisector half-plane per *other* seed — so on a convex boundary each
+   cell is convex and the cells tile the parent exactly. Made robust to coincident seeds (the
+   lowest index keeps the shared ground, the rest get an empty cell) so the partition stays
+   exact — caught a real 1%-overlap bug in the radial pattern when two seeds collapsed onto the
+   impact point. Three seed patterns: `uniform` (rejection sampling), `radial` (glass-style
+   concentric rings about the impact, fine at the hole and coarse at the rim) and `grid`.
+3. **Rigid decomposition** (`fracture/fracture.ts`). Each cell becomes a shard body sharing the
+   parent's transform; its velocity is the parent's rigid velocity field sampled at the shard's
+   own centre of mass, `vᵢ = v + ω×(cᵢ−C)`, with the parent's `ω`. This is provably
+   conservative: Σ mᵢ = M, Σ mᵢvᵢ = M·v, and Σ (Iᵢωᵢ + mᵢ rᵢ×vᵢ) = I_parent·ω (parallel-axis).
+   An optional outward `eject` impulse (a projectile's blow, intentionally *not* momentum-neutral)
+   adds the scatter; a generation counter caps the cascade.
+4. **World integration** (`world.ts`). After the velocity solve the world records the single
+   largest contact normal-impulse landed on each brittle body; after integration it shatters any
+   whose blow beat its `toughness` (ejecting shards ∝ the impulse), fires `onFracture`, and
+   pushes a decaying impact spark. A public `world.fracture(body, point, opts)` exposes it.
+5. **Interaction + render**. The **Shatter** spawn tool shatters a brittle body on click (and
+   drops fresh brittle slabs on empty space); the renderer draws a fading shock ring + radial
+   spark burst at each shatter.
+6. **Scenes** — a new **Fracture** category: *Glass Pane* (a framed pane drilled by a bullet, the
+   radial pattern spider-webbing from the hole), *Cannon & Wall* (a cannonball smashing a brittle
+   wall into 100+ pieces of rubble), *Shatter Tower* (a heavy ball cascading down a brittle
+   stack), *Crystal Gallery* (the same Voronoi carving triangles → octagons) and *Shatter Yard*
+   (a sandbox for the click tool).
+7. **Verification** — **23 new checks** (123 → 146, all green): clip area/whole/empty + point
+   test; Voronoi area-partition (uniform & radial) + convexity + every seed inside its own cell;
+   fracture conservation of mass, area, linear momentum and angular momentum (= I·ω); determinism;
+   a non-polygon never fractures; a live impact actually shatters a slab and grows the body count;
+   and the generation cap halts the cascade.
+
+Subtle bug found & fixed via the headless harness: a fast **bullet** fired horizontally into the
+wall froze at the CCD time-of-impact surface (no gravity to push it through, so the discrete
+solver never formed a manifold and no impulse — hence no fracture — transferred). Dropping the
+`bullet` flag on the cannonball lets it penetrate and deliver the blow; it can't tunnel since its
+per-step travel (~0.57 m) is far under a block's width. Peak step ~3.4 ms with 102 bodies of
+rubble. Lint + build + the exact CI gate all green.
 
 ## v5 — the soft-body release (XPBD deformables, two-way coupled) ✅ shipped
 
@@ -361,6 +437,24 @@ engine stays inspectable, not just claimed. (Suite grew 31 → 49 checks.)
 
 ## Session log
 
+- 2026-06-21 (claude): Shipped **v6 — the fracture release** (`src/engine/fracture/`). Added a
+  from-scratch convex half-plane clip + signed-area + point-in-convex (`clip.ts`), a power-free
+  **Voronoi** partition that tiles a convex hull exactly (`voronoi.ts`, with three seed patterns
+  incl. a glass-style radial scatter focused on the impact), and a momentum-conserving rigid
+  **shard decomposition** (`fracture.ts`) — each shard inherits the parent's velocity field
+  `v + ω×r`, so Σ mass, Σ linear momentum and Σ angular momentum (= I·ω) all return the parent's,
+  verified to 1e-9. Wired auto-shatter into the world step (the sharpest contact beyond a body's
+  toughness shatters it, ejecting shards ∝ the blow, with a generation cap bounding the cascade),
+  an `onFracture` hook + decaying impact-spark renderer, a public `world.fracture(...)`, and a
+  click-to-shatter **Shatter** pointer tool. Authored a new **Fracture** scene category — Glass
+  Pane, Cannon & Wall, Shatter Tower, Crystal Gallery, Shatter Yard (**34 → 39 scenes**) — and
+  grew the suite **123 → 146 checks** (all green: clip/Voronoi geometry, exact area partition,
+  cell convexity, every seed in its own cell, fracture conservation of mass/area/linear & angular
+  momentum, determinism, live impact shatter + generation cap). Fixed a Voronoi overlap bug
+  (coincident radial seeds doubling ~1% of the area) and a CCD-freeze (a horizontal bullet parking
+  at the time-of-impact surface without transferring an impulse — dropped `bullet` on the
+  cannonball). Headless-smoke-tested every new scene for 1 400 steps (no NaN; peak ~3.4 ms/step
+  with 102 rubble bodies). Lint + build + the exact CI gate green.
 - 2026-06-20 (claude): Shipped **v5 — the soft-body release**, a from-scratch **XPBD**
   deformable subsystem two-way coupled to the rigid solver (`src/engine/soft/`). Particles with
   compliant distance/bend/area constraints, the "small-steps" substep scheme, a particle-vs-rigid

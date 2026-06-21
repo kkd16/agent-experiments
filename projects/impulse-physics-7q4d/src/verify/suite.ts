@@ -12,11 +12,14 @@ import {
   BuoyancyZone,
   Capsule,
   Circle,
+  clipHalfPlane,
   collide,
   collideParticle,
   computeMass,
   convexHull,
   DistanceJoint,
+  fractureBody,
+  fractureMaterial,
   DynamicTree,
   epaPenetration,
   GearJoint,
@@ -26,14 +29,18 @@ import {
   makeRope,
   Mat22,
   MotorJoint,
+  pointInConvex,
   Polygon,
+  polygonArea,
   PrismaticJoint,
   PulleyJoint,
   RevoluteJoint,
   Rng,
+  scatterSites,
   solveBlockLcp,
   Transform,
   Vec2,
+  voronoiCells,
   WeldJoint,
   WheelJoint,
   World,
@@ -990,6 +997,168 @@ export function runVerification(): CheckResult[] {
     }
     const d = wa.softBodies[0].centroid().sub(wb.softBodies[0].centroid()).length();
     a.close('Soft simulation is deterministic', d, 0, 1e-12);
+  }
+
+  // ---- Fracture: clip + Voronoi geometry -----------------------------------
+  a.section('Fracture geometry');
+  {
+    const sq = [new Vec2(-1, -1), new Vec2(1, -1), new Vec2(1, 1), new Vec2(-1, 1)];
+    a.close('Unit-square signed area = 4 (CCW +)', polygonArea(sq), 4, 1e-12);
+    // Clip the square by { x ≤ 0 } → a 2×1-area half.
+    const left = clipHalfPlane(sq, new Vec2(1, 0), 0);
+    a.close('Half-plane clip keeps half the area', Math.abs(polygonArea(left)), 2, 1e-12);
+    // Fully inside → unchanged; fully outside → empty.
+    const inside = clipHalfPlane(sq, new Vec2(1, 0), 10);
+    a.ok('Clip leaves a fully-inside polygon whole', inside.length === 4, `n=${inside.length}`);
+    const outside = clipHalfPlane(sq, new Vec2(1, 0), -10);
+    a.ok('Clip empties a fully-outside polygon', outside.length === 0, `n=${outside.length}`);
+    a.ok('Point-in-convex: interior true', pointInConvex(sq, new Vec2(0.2, -0.3)), '(0.2,-0.3)');
+    a.ok('Point-in-convex: exterior false', !pointInConvex(sq, new Vec2(2, 0)), '(2,0)');
+  }
+  {
+    // A Voronoi partition of a convex boundary exactly tiles it: cell areas sum
+    // to the whole, every cell is convex, and each site sits inside its own cell.
+    const boundary = Polygon.regular(6, 1.4).vertices;
+    const whole = Math.abs(polygonArea(boundary));
+    const rng = new Rng(0x5eed);
+    const sites = scatterSites(boundary, rng, { count: 16, pattern: 'uniform' });
+    const cells = voronoiCells(boundary, sites);
+    let sum = 0;
+    let convexAll = true;
+    let siteInOwn = true;
+    for (let i = 0; i < cells.length; i++) {
+      const c = cells[i];
+      if (c.length < 3) continue;
+      sum += Math.abs(polygonArea(c));
+      for (let k = 0; k < c.length; k++) {
+        const p = c[k];
+        const q = c[(k + 1) % c.length];
+        const r = c[(k + 2) % c.length];
+        if (q.sub(p).cross(r.sub(q)) < -1e-7) convexAll = false;
+      }
+      if (!pointInConvex(c, sites[i], 1e-6)) siteInOwn = false;
+    }
+    a.close('Voronoi cells tile the boundary (Σarea = whole)', sum, whole, 1e-9);
+    a.ok('Every Voronoi cell is convex', convexAll, `${cells.length} cells`);
+    a.ok('Each site lies in its own cell', siteInOwn, '');
+  }
+  {
+    // The radial (glass) pattern also partitions exactly, focused off-centre.
+    const boundary = Polygon.box(2, 1.2).vertices;
+    const rng = new Rng(0xfeed);
+    const sites = scatterSites(boundary, rng, { count: 24, pattern: 'radial', focus: new Vec2(0.6, 0.3) });
+    const cells = voronoiCells(boundary, sites);
+    let sum = 0;
+    for (const c of cells) if (c.length >= 3) sum += Math.abs(polygonArea(c));
+    a.close('Radial-pattern Voronoi tiles the box (area = 9.6)', sum, 2 * 2 * 2 * 1.2, 1e-9);
+  }
+
+  // ---- Fracture: rigid-decomposition conservation --------------------------
+  a.section('Fracture conservation');
+  {
+    // Shatter a moving, spinning slab. Pure rigid splitting must conserve mass,
+    // area, linear momentum and angular momentum about the parent's COM.
+    const shape = Polygon.box(1, 0.6); // area 2.4
+    const density = 2.5;
+    const parent = new Body(shape, {
+      position: new Vec2(3, 4),
+      angle: 0.5,
+      density,
+      linearVelocity: new Vec2(2, -1),
+      angularVelocity: 1.7,
+      fracture: fractureMaterial({ minArea: 0, shards: 16, pattern: 'uniform' }),
+    });
+    const pm = computeMass(shape, density);
+    const shards = fractureBody(parent, parent.worldCenter, { eject: 0, rng: new Rng(99) });
+    a.ok('Shatter yields ≥ 2 shards', shards.length >= 2, `got ${shards.length}`);
+
+    let m = 0;
+    let area = 0;
+    let px = 0;
+    let py = 0;
+    let L = 0;
+    for (const s of shards) {
+      m += s.mass;
+      if (s.shape.kind === 'polygon') area += Math.abs(polygonArea(s.shape.vertices));
+      px += s.mass * s.linearVelocity.x;
+      py += s.mass * s.linearVelocity.y;
+      const r = s.worldCenter.sub(parent.worldCenter);
+      L += s.mass * r.cross(s.linearVelocity) + s.inertia * s.angularVelocity;
+    }
+    a.close('Σ shard mass = parent mass', m, pm.mass, 1e-9);
+    a.close('Σ shard area = parent area', area, 2.4, 1e-9);
+    a.close('Σ shard pₓ = parent pₓ', px, pm.mass * parent.linearVelocity.x, 1e-9);
+    a.close('Σ shard p_y = parent p_y', py, pm.mass * parent.linearVelocity.y, 1e-9);
+    a.close('Σ shard L (about COM) = I·ω', L, pm.inertia * parent.angularVelocity, 1e-9);
+  }
+  {
+    // Determinism: the same body + seed shatters bit-for-bit identically.
+    const mk = (): Body[] => {
+      const b = new Body(Polygon.regular(5, 1.0, 0.2), {
+        position: new Vec2(0, 0),
+        density: 1,
+        fracture: fractureMaterial({ minArea: 0, shards: 14, pattern: 'radial' }),
+      });
+      return fractureBody(b, new Vec2(0.2, 0.1), { eject: 0, rng: new Rng(0xabcdef) });
+    };
+    const x = mk();
+    const y = mk();
+    let identical = x.length === y.length;
+    for (let i = 0; i < x.length && identical; i++) {
+      if (x[i].worldCenter.distanceTo(y[i].worldCenter) > 1e-12) identical = false;
+    }
+    a.ok('Fracture is deterministic (count + geometry)', identical, `${x.length} vs ${y.length} shards`);
+  }
+  {
+    // A circle is not a polygon — it can never shatter.
+    const c = new Body(new Circle(0.5), { fracture: fractureMaterial() });
+    a.ok('Non-polygon body does not fracture', fractureBody(c, c.worldCenter).length === 0, '');
+  }
+
+  // ---- Fracture: live world behaviour --------------------------------------
+  a.section('Fracture dynamics');
+  {
+    // A fast heavy bullet hammers a brittle slab resting on the ground; the slab
+    // must shatter, growing the body count, and the impact spark must be logged.
+    const w = new World(new Vec2(0, -9.8));
+    w.addBody(new Body(Polygon.box(20, 0.5), { type: BodyType.Static, position: new Vec2(0, -0.5), friction: 0.6 }));
+    w.addBody(new Body(Polygon.box(2, 0.3), {
+      position: new Vec2(0, 3),
+      density: 1,
+      fracture: fractureMaterial({ toughness: 3, shards: 18, pattern: 'radial' }),
+    }));
+    w.addBody(new Body(Polygon.regular(8, 0.3), {
+      position: new Vec2(0, 6),
+      density: 8,
+      linearVelocity: new Vec2(0, -40),
+      bullet: true,
+    }));
+    let fired = 0;
+    w.onFracture = () => { fired++; };
+    const before = w.bodies.length;
+    for (let i = 0; i < 240 && fired === 0; i++) w.step(1 / 120);
+    a.ok('Impact shatters the slab', fired >= 1, `events=${fired}`);
+    a.ok('Shards added to the world', w.bodies.length > before, `bodies ${before}→${w.bodies.length}`);
+    a.ok('Impact spark recorded', w.flashes.length >= 1, `flashes=${w.flashes.length}`);
+    let finite = true;
+    for (let i = 0; i < 200; i++) { w.step(1 / 120); for (const b of w.bodies) if (!b.worldCenter.isFinite()) finite = false; }
+    a.ok('World stays finite after the shatter', finite, '');
+  }
+  {
+    // The generation cap halts the cascade: a slab whose shards are already at
+    // the limit (maxGeneration 0) must not shatter, however hard it is hit.
+    const w = new World(new Vec2(0, -9.8));
+    w.addBody(new Body(Polygon.box(20, 0.5), { type: BodyType.Static, position: new Vec2(0, -0.5) }));
+    w.addBody(new Body(Polygon.box(2, 0.3), {
+      position: new Vec2(0, 3),
+      density: 1,
+      fracture: fractureMaterial({ toughness: 1, maxGeneration: 0 }),
+    }));
+    w.addBody(new Body(new Circle(0.4), { position: new Vec2(0, 6), density: 12, linearVelocity: new Vec2(0, -50), bullet: true }));
+    let fired = 0;
+    w.onFracture = () => { fired++; };
+    for (let i = 0; i < 240; i++) w.step(1 / 120);
+    a.ok('Generation cap blocks fracture', fired === 0, `events=${fired}`);
   }
 
   return a.results;

@@ -108,8 +108,45 @@ export class Renderer {
     if (extras.mouseTarget) this.drawMouse(extras.mouseTarget, camera);
     if (extras.gjk) this.drawGjk(extras.gjk.result, camera);
     if (extras.spawnGhost) this.drawSpawnGhost(extras.spawnGhost, camera);
+    if (world.flashes.length > 0) this.drawFlashes(world, camera);
 
     ctx.restore();
+  }
+
+  /**
+   * Impact sparks left by recent shatters: a fading expanding ring plus a burst
+   * of short radial shards, their count scaled by how many pieces flew off.
+   */
+  private drawFlashes(world: World, camera: Camera): void {
+    const ctx = this.ctx;
+    for (const f of world.flashes) {
+      const t = Math.min(f.age / f.ttl, 1);
+      const fade = 1 - t;
+      if (fade <= 0) continue;
+      const c = camera.worldToScreen(f.point);
+      const ring = camera.toPixels(0.15 + t * 0.9);
+      ctx.save();
+      // Expanding shock ring.
+      ctx.beginPath();
+      ctx.arc(c.x, c.y, ring, 0, Math.PI * 2);
+      ctx.strokeStyle = withAlpha('#ffe9a8', fade * 0.8);
+      ctx.lineWidth = 2 * fade + 0.5;
+      ctx.stroke();
+      // Radial spark burst.
+      const spikes = Math.min(18, 5 + Math.round(f.shards * 0.6));
+      ctx.strokeStyle = withAlpha('#fff1c2', fade);
+      ctx.lineWidth = 1.5;
+      for (let i = 0; i < spikes; i++) {
+        const a = (i / spikes) * Math.PI * 2 + f.shards;
+        const r0 = ring * 0.5;
+        const r1 = ring * (0.9 + ((i * 37) % 10) / 25);
+        ctx.beginPath();
+        ctx.moveTo(c.x + Math.cos(a) * r0, c.y + Math.sin(a) * r0);
+        ctx.lineTo(c.x + Math.cos(a) * r1, c.y + Math.sin(a) * r1);
+        ctx.stroke();
+      }
+      ctx.restore();
+    }
   }
 
   private drawGrid(camera: Camera): void {
