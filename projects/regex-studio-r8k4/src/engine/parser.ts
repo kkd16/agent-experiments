@@ -37,7 +37,19 @@ class ParseFailure extends Error {
 const META = new Set(['(', ')', '[', ']', '{', '}', '*', '+', '?', '|', '.', '\\', '^', '$']);
 
 export function parse(source: string): ParseResult {
-  const p = new Parser(source);
+  return runParser(source, false);
+}
+
+// The *extended* grammar: the same regex, plus the Boolean operators
+// intersection `&`, complement `~` and difference `−` (`A − B = A & ~B`). It is
+// opt-in so the classic pipeline and its differential-fuzz guarantees are
+// untouched — in plain mode `& ~ −` stay literal characters exactly as before.
+export function parseExtended(source: string): ParseResult {
+  return runParser(source, true);
+}
+
+function runParser(source: string, extended: boolean): ParseResult {
+  const p = new Parser(source, extended);
   try {
     const ast = p.parseAlt();
     if (p.pos < source.length) {
@@ -62,8 +74,10 @@ class Parser {
   // Unresolved \k<name> nodes plus the source index, fixed up after parsing.
   private pendingNamedRefs: { node: { index: number; name?: string }; index: number }[] = [];
   private src: string;
-  constructor(src: string) {
+  private extended: boolean;
+  constructor(src: string, extended = false) {
     this.src = src;
+    this.extended = extended;
   }
 
   // Walk once parsing is done and point every \k<name> at its group's index.
@@ -98,22 +112,56 @@ class Parser {
   }
 
   parseAlt(): RegexNode {
-    const options = [this.parseConcat()];
+    const options = [this.parseInter()];
     while (this.peek() === '|') {
       this.eat();
-      options.push(this.parseConcat());
+      options.push(this.parseInter());
     }
     return options.length === 1 ? options[0] : { type: 'alt', options };
   }
 
+  // Intersection `&` and difference `−`, left-associative, between `|` and
+  // concatenation. Only active in extended mode — otherwise `&` and `−` are
+  // ordinary literals and this collapses to a single concat (no behaviour change).
+  parseInter(): RegexNode {
+    let left = this.parseConcat();
+    if (!this.extended) return left;
+    while (this.peek() === '&' || this.peek() === '-') {
+      const op = this.eat();
+      const right = this.parseConcat();
+      // A − B = A ∩ ¬B. Both fold into one n-ary intersect via the algebra later.
+      const term: RegexNode = op === '-' ? { type: 'complement', node: right } : right;
+      left = { type: 'intersect', parts: [left, term] };
+    }
+    return left;
+  }
+
   parseConcat(): RegexNode {
     const parts: RegexNode[] = [];
-    while (this.pos < this.src.length && this.peek() !== '|' && this.peek() !== ')') {
-      parts.push(this.parseRepeat());
+    while (this.pos < this.src.length && this.peek() !== '|' && this.peek() !== ')' && !this.atInterOp()) {
+      parts.push(this.parseUnary());
     }
     if (parts.length === 0) return { type: 'empty' };
     if (parts.length === 1) return parts[0];
     return { type: 'concat', parts };
+  }
+
+  // In extended mode `&` and `−` end the current concatenation (the intersection
+  // layer above consumes them). In plain mode they are literal atoms.
+  private atInterOp(): boolean {
+    if (!this.extended) return false;
+    const c = this.peek();
+    return c === '&' || c === '-';
+  }
+
+  // Prefix complement `~` (extended mode), binding looser than postfix but
+  // tighter than concatenation, so `~a*` = ~(a*) and `~ab` = (~a)b.
+  parseUnary(): RegexNode {
+    if (this.extended && this.peek() === '~') {
+      this.eat();
+      return { type: 'complement', node: this.parseUnary() };
+    }
+    return this.parseRepeat();
   }
 
   parseRepeat(): RegexNode {

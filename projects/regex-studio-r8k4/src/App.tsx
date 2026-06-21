@@ -19,6 +19,7 @@ import { PikePanel } from './components/PikePanel';
 import { DerivativesPanel } from './components/DerivativesPanel';
 import { AntimirovPanel } from './components/AntimirovPanel';
 import { GlushkovPanel } from './components/GlushkovPanel';
+import { ExtendedPanel } from './components/ExtendedPanel';
 import { FuzzPanel } from './components/FuzzPanel';
 import { DEFAULT_EXAMPLE, EXAMPLES } from './data/examples';
 
@@ -30,6 +31,7 @@ type Tab =
   | 'deriv'
   | 'antimirov'
   | 'glushkov'
+  | 'extended'
   | 'debug'
   | 'pike'
   | 'language'
@@ -50,6 +52,7 @@ const TAB_GROUPS: { group: string; tabs: { id: Tab; label: string }[] }[] = [
       { id: 'deriv', label: 'Derivatives' },
       { id: 'antimirov', label: 'Antimirov' },
       { id: 'glushkov', label: 'Glushkov' },
+      { id: 'extended', label: 'Extended &~' },
       { id: 'debug', label: 'Debugger' },
       { id: 'pike', label: 'Pike VM' },
     ],
@@ -73,7 +76,10 @@ interface Stored {
   pattern: string;
   text: string;
   compare: string;
+  extended: string;
 }
+
+const DEFAULT_EXTENDED = '.*[0-9].*&.*[a-z].*&.{6,}';
 
 function loadStored(): Stored {
   try {
@@ -84,12 +90,13 @@ function loadStored(): Stored {
         pattern: parsed.pattern ?? DEFAULT_EXAMPLE.pattern,
         text: parsed.text ?? DEFAULT_EXAMPLE.sample,
         compare: parsed.compare ?? '',
+        extended: parsed.extended ?? DEFAULT_EXTENDED,
       };
     }
   } catch {
     /* sandboxed preview: ignore */
   }
-  return { pattern: DEFAULT_EXAMPLE.pattern, text: DEFAULT_EXAMPLE.sample, compare: '[A-Za-z_]\\w*' };
+  return { pattern: DEFAULT_EXAMPLE.pattern, text: DEFAULT_EXAMPLE.sample, compare: '[A-Za-z_]\\w*', extended: DEFAULT_EXTENDED };
 }
 
 export default function App() {
@@ -97,15 +104,16 @@ export default function App() {
   const [pattern, setPattern] = useState(initial.pattern);
   const [text, setText] = useState(initial.text);
   const [comparePattern, setComparePattern] = useState(initial.compare);
+  const [extendedPattern, setExtendedPattern] = useState(initial.extended);
   const [tab, setTab] = useState<Tab>('nfa');
 
   useEffect(() => {
     try {
-      localStorage.setItem(STORE_KEY, JSON.stringify({ pattern, text, compare: comparePattern }));
+      localStorage.setItem(STORE_KEY, JSON.stringify({ pattern, text, compare: comparePattern, extended: extendedPattern }));
     } catch {
       /* ignore */
     }
-  }, [pattern, text, comparePattern]);
+  }, [pattern, text, comparePattern, extendedPattern]);
 
   const compiled = useMemo(() => compile(pattern), [pattern]);
   const regular = compiled.features ? compiled.features.regular : false;
@@ -154,7 +162,7 @@ export default function App() {
           <span className="logo">/<span className="logo-star">∗</span>/</span>
           <div>
             <h1>Regex Studio</h1>
-            <p>A regular-expression engine built from scratch — parse, compile four ways, minimise, run six engines, fuzz, compare and synthesise.</p>
+            <p>A regular-expression engine built from scratch — parse, compile four ways, minimise, run six engines, extend to the Boolean closure (&amp; ~ −), fuzz, compare and synthesise.</p>
           </div>
         </div>
         <a className="repo-link" href="https://en.wikipedia.org/wiki/Thompson%27s_construction" target="_blank" rel="noreferrer">
@@ -315,6 +323,10 @@ export default function App() {
 
             {tab === 'glushkov' && <GlushkovPanel compiled={compiled} text={text} />}
 
+            {tab === 'extended' && (
+              <ExtendedPanel pattern={extendedPattern} onPatternChange={setExtendedPattern} text={text} />
+            )}
+
             {tab === 'pike' && (
               <PikePanel ast={compiled.ast} groupCount={compiled.groupCount} notice={compiled.error ? 'Fix the pattern first.' : null} />
             )}
@@ -346,7 +358,8 @@ export default function App() {
 
       <footer className="footer">
         Parser · Thompson NFA · subset construction · Brzozowski derivatives · Antimirov partial derivatives (the
-        equation automaton) · Glushkov's position automaton · Moore & Hopcroft minimisation (cross-checked) · six matching engines (DFA · derivative DFA · partial-derivative NFA ·
+        equation automaton) · Glushkov's position automaton · <strong>Boolean derivatives — the intersection / complement / difference
+        closure no NFA can build</strong> · Moore & Hopcroft minimisation (cross-checked) · six matching engines (DFA · derivative DFA · partial-derivative NFA ·
         position automaton · Pike VM · backtracking VM) cross-checked by a seeded differential fuzzer · product-automaton equivalence & ReDoS
         analysis · state-elimination synthesis · DOT/SVG export — all hand-written TypeScript, no regex library.
       </footer>

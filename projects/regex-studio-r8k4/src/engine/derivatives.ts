@@ -148,7 +148,9 @@ export function fromAst(node: RegexNode): DReg {
     case 'boundary':
     case 'backref':
     case 'look':
-      throw new Error(`derivatives: '${node.type}' is not a regular construct`);
+    case 'intersect':
+    case 'complement':
+      throw new Error(`derivatives: '${node.type}' is not a regular construct (use ereg.ts for Boolean operators)`);
   }
 }
 

@@ -87,13 +87,27 @@ keep it current.
   disagreement. It restricts itself to the subset where our semantics and JS agree, skips backtracking-VM
   step-limit aborts (ReDoS, not a wrong answer), and immediately earned its keep by catching a real
   backtracking-VM bug (see Session 4).
+- `src/engine/ereg.ts` — **Boolean Brzozowski derivatives** (session 7): the studio's *fifth road* and the
+  first beyond the core algebra — the full **Boolean closure** (intersection `&`, complement `~`, difference `−`).
+  A self-contained extended algebra `EReg` (the core `DReg` plus `and`/`not`) with similarity smart constructors
+  (`&` ACI with `∅` annihilator + `Σ*=~∅` identity; `~` an involution). `nullable`/`derivative` extend by the
+  Boolean rules; `buildEregDFA` BFS-walks the derivatives into the studio's `DFA` shape over a **complete**
+  alphabet (the whole of Σ partitioned when a `~` is present, so `~A` accepts the characters `A` never names).
+  Also `ends` — an independent **span oracle** deciding membership straight from the algebra, no derivatives.
+- `src/engine/booldfa.ts` — the *classical* gold standard the Boolean engine is cross-checked against: the
+  **product automaton** (`∩`/`∪`/`−`) and a **complete-then-flip** complement, both on the studio's existing DFAs.
+- `src/engine/ereg-verify.ts` — the session-7 proofs: live algebraic-law badges (`compareDFAs`), the recursive
+  `tryClassicalDFA` cross-check (Boolean-derivative DFA ≡ classic product/complement), and the seeded
+  three-engine differential fuzzer (streaming derivative · derivative DFA · `ends` oracle).
 - `src/engine/explain.ts` — AST → plain-English prose. `src/engine/export.ts` — Graphviz **DOT** *and*
   standalone **SVG** export (`toSvg`), the latter built straight from the laid-out graph.
 - `src/components/*` — `AutomatonGraph` (pan/zoom SVG, active-edge highlight), `AstView`,
   `Debugger`, plus the panels: `MatchPanel` (three-engine run + captures), `LanguagePanel`,
   `ComparePanel`, `SynthesizePanel`, `ExplainPanel`, `PikePanel`, `RedosPanel`, the session-4
   `DerivativesPanel` (derivative DFA + residual chain) and `FuzzPanel` (the differential-testing console),
-  and the session-5 `AntimirovPanel` (equation automaton + Thompson-size comparison + live live-term-set chain).
+  and the session-5 `AntimirovPanel` (equation automaton + Thompson-size comparison + live live-term-set chain),
+  the session-6 `GlushkovPanel`, and the session-7 `ExtendedPanel` (Boolean-derivative DFA + proof badges +
+  Boolean-derivative chain + language stats + a "run cross-check" fuzz console).
 
 ## Ideas / backlog
 
@@ -294,6 +308,65 @@ from a diagnosis into a *prescription*.
       `(ab|ba)*(a|b)` — "four roads, one DFA"), plus header/footer copy updated to "compile four ways
       · six engines · ten cross-checked".
 
+### Session 7 plan — Extended (Boolean) regular expressions via Boolean derivatives
+
+The studio reaches an automaton four ways, but every road so far speaks the same *core*
+algebra: union, concatenation, star. The big gap is the **Boolean closure** of the regular
+languages — **intersection (`&`), complement (`~`), and difference (`−`)**. Classically these
+need the product / subset-complement constructions (and complement needs a *complete* DFA);
+there is no NFA fragment for them, so Thompson/Glushkov/Antimirov can't touch them. But
+**Brzozowski derivatives extend to the full Boolean algebra for free** — `∂c(A & B) = ∂cA &
+∂cB`, `∂c(~A) = ~(∂cA)`, `nullable(A & B) = nullable A ∧ nullable B`, `nullable(~A) = ¬nullable
+A`. So derivatives are the **one road of the four that builds these languages directly**, and
+that's the headline. This is a genuine new *language class* for the studio, not a new view of
+the old one.
+
+- [x] **Extended AST** (`ast.ts`) — two new nodes `intersect` (n-ary `&`) and `complement`
+      (`~`); `analyzeFeatures` learns an `extended` flag. The classic pipeline is untouched: the
+      main pattern bar still parses in *non-extended* mode, so `&` `~` `−` stay literals there and
+      the ten-engine fuzzer's guarantees are byte-for-byte unchanged. (Adding the two AST variants
+      did break the *exhaustive* switches in the regular-only engines — TS enforces exhaustiveness
+      once a union is fully covered — so `nfa`/`vm`/`glushkov`/`derivatives` now throw a clear
+      "not a regular construct" on them, and `explain`/`AstView` render them.)
+- [x] **Extended parser** (`parser.ts`) — an opt-in `extended` mode reusing 100% of the existing
+      atom / class / escape / quantifier parsing, adding one precedence layer: `|` (union) <
+      `&`,`−` (intersection / difference, left-assoc) < concat < `~` (prefix complement) < postfix.
+      `A − B` desugars to `A & ~B`. `\&` `\~` `\-` escape the literals. New `parseExtended(src)`.
+- [x] **Boolean derivative engine** (`ereg.ts`) — a self-contained extended algebra `EReg`
+      (`emp eps chr cat alt star and not`) with similarity smart constructors: `&` is
+      associative-commutative-idempotent with `∅` annihilator and `Σ*` identity, `~` is an
+      involution (`~~A = A`, `~∅ = Σ*`). `nullable` / `derivative` / `show` / streaming `accepts`.
+- [x] **Complement-correct alphabet** — derivatives of `~A` stay *alive* on characters `A` never
+      mentions, so the derivative DFA must be **complete**: when a `not` is present, partition the
+      *whole* of Σ (covered **and** uncovered ranges) into atoms so "every other character" routes
+      to a real state, not the dead sink. (Without a `not`, behave exactly as the plain derivative
+      DFA so a regular pattern still minimises to the very same canonical machine.)
+- [x] **`buildEregDFA`** — BFS the Boolean derivatives into the studio's own `DFA` shape, so the
+      result flows unchanged into the graph / minimise / **Language** (count·enumerate) views.
+- [x] **An independent semantic oracle** (`ends`) — evaluate extended membership *without*
+      derivatives, straight from the algebra: `ends(E,i)` = the set of span ends `j` with `E`
+      matching `w[i..j)`, where `ends(A&B)=ends A ∩ ends B` and `ends(~A,i)={j : j∉ends(A,i)}`.
+      A second engine to differentially test the DFA against.
+- [x] **Classical cross-check** (`booldfa.ts`) — product-automaton `∩`/`∪`/`−` and a
+      *complete-then-flip* complement on the studio's existing DFAs. The headline proof:
+      `derivativeDFA(A & B) ≡ product(DFA A, DFA B)` and `derivativeDFA(~A) ≡ complement(DFA A)`,
+      via a recursive `tryClassicalDFA` that rebuilds any &/~/− nesting over regular cores.
+- [x] **Live proof badges** — involution (`~~A ≡ A`), idempotence (`A & A ≡ A`), excluded middle
+      (`A ∪ ~A ≡ Σ*`), non-contradiction (`A ∩ ~A ≡ ∅`), and the classical cross-check, each
+      verified with `compareDFAs` and shown as a ✓ badge the way the other panels do.
+- [x] **Extended differential fuzzer** — a seeded generator of random `&`/`~` expressions over a
+      tiny alphabet, cross-checking the **three** extended engines (streaming derivative · DFA ·
+      `ends` oracle) over thousands of strings, reproducible by seed, surfacing the counterexample.
+- [x] **The Extended panel** (`components/ExtendedPanel.tsx`) — its own input + curated examples,
+      the derivative-built DFA graph (DOT/SVG export), the live Boolean-derivative chain on the
+      test text, language stats (min states · finite/∞ · members), the proof badges, and a
+      "run cross-check" button. A new top-level **Extended &~** tab.
+- [x] **Showcase examples** — the password lookahead `(?=.*\d)(?=.*[a-z]).{6,}` re-expressed as a
+      *true regular intersection* `.*[0-9].*&.*[a-z].*&.{6,}` (now it has a DFA!); "no `abc`
+      substring" via `~(.*abc.*)`; identifiers minus reserved words via `−`; even-`a`-even-`b`
+      `b*(ab*ab*)*&a*(ba*ba*)*` (the textbook 4-state product); "contains ab but not ba"; ÷6.
+- [x] Header/footer/`project.json` copy updated to "five roads · Boolean closure".
+
 ### Still open
 
 - [ ] Polynomial detection via the cubed automaton N³ (exact IDA witness) to complement the
@@ -385,3 +458,34 @@ from a diagnosis into a *prescription*.
   anchored to the loop it found, without auto-rewriting the pattern (a silent language change would be worse than
   the ReDoS). Two new examples + header/footer/Fuzz copy updated to "four ways · six engines · ten cross-checked".
   Gate green: scope + conformance + lint + build all pass.
+- 2026-06-21 (claude, session 7): added a **fifth road** that leaves the core algebra behind for the entire
+  **Boolean closure** of the regular languages — intersection `A&B`, complement `~A`, and difference `A−B`. No
+  ε-NFA can express these (there is no Thompson/Glushkov/Antimirov fragment for `&` or `~`), but **Brzozowski
+  derivatives extend to them for free** — `∂c(A&B)=∂cA&∂cB`, `∂c(~A)=~∂cA`, `nullable(A&B)=∧`, `nullable(~A)=¬` —
+  so the derivative method is the *one* road that builds an intersection or a complement directly. New
+  `engine/ereg.ts`: a self-contained extended algebra `EReg` (the core `DReg` plus `and`/`not`) with similarity
+  smart constructors (`&` associative-commutative-idempotent with `∅` annihilator and `Σ*=~∅` identity; `~` an
+  involution), and `buildEregDFA` that BFS-walks the Boolean derivatives into the studio's own `DFA` shape, so it
+  flows unchanged into the graph / minimise / Language views. The subtle part is the **complete alphabet**: `∂c(~A)`
+  stays alive on characters `A` never mentions, so when a `~` is present the DFA partitions *all* of Σ (covered
+  **and** uncovered) — that "Σ∖…" edge is what makes `~A` accept the symbols `A` never names; without a `~` it
+  behaves exactly as the plain derivative DFA, so a regular pattern still minimises to the very same canonical
+  machine. An opt-in `parseExtended` adds one precedence layer (`|` < `& −` < concat < `~` < postfix) reusing
+  100% of the existing atom/class/escape parsing, so the **classic pipeline and its ten-engine fuzzer are
+  byte-for-byte untouched** (`& ~ −` stay literals there). Verified the house way, three ways: (1) live
+  **algebraic-law badges** — involution `~~A≡A`, idempotence `A&A≡A`, excluded middle `A∪~A≡Σ*`, non-contradiction
+  `A∩~A≡∅` — each decided by `compareDFAs`; (2) a **classical cross-check** (`engine/booldfa.ts`) that rebuilds the
+  same language with the studio's *existing* automata — product-automaton `∩` and a complete-then-flip complement —
+  via a recursive `tryClassicalDFA`, proving `derivativeDFA(A&B) ≡ product(DFA A, DFA B)` and
+  `derivativeDFA(~A) ≡ complement(DFA A)` (the brand-new Boolean engine equals the classic Thompson→subset→Moore
+  pipeline); and (3) an **independent span oracle** `ends` — membership defined straight from the algebra
+  (`ends(A&B)=∩`, `ends(~A,i)={j : j∉ends(A,i)}`, no derivatives) — cross-checked against the streaming derivative
+  and the DFA by a seeded **three-engine differential fuzzer**: **480,000 checks across 8 seeds × 1,500 random
+  Boolean expressions × 40 strings, zero disagreements**; an in-app run does ~22k checks in <100 ms. Validated
+  offline before shipping: 40/40 hand-written assertions, all showcase examples pass all five proof badges, and
+  the even-`a`-even-`b` pattern is exhaustively correct over all 511 strings of length ≤8 (its minimal DFA is the
+  textbook 4-state product). New **Extended &~ panel** (own input + 7 curated examples — the password lookahead
+  re-expressed as a *true regular intersection* `.*[0-9].*&.*[a-z].*&.{6,}` that now has a finite DFA, `~(.*abc.*)`,
+  identifiers−keywords, even-even, "ab but not ba", ÷6 — the DFA graph with DOT/SVG export, the live
+  Boolean-derivative chain, language stats, the proof badges, and a "run cross-check" button). Header/footer/
+  `project.json` updated to "five roads · Boolean closure". Gate green: scope + conformance + lint + build all pass.

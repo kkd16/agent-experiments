@@ -62,6 +62,10 @@ function describe(node: RegexNode): NodeMeta {
       const word = `${node.negate ? 'negative ' : ''}look${node.dir}`;
       return { kind: sym, detail: word, children: [node.node], cls: 'ast-look' };
     }
+    case 'intersect':
+      return { kind: '&', detail: `intersection of ${node.parts.length}`, children: node.parts, cls: 'ast-bool' };
+    case 'complement':
+      return { kind: '~', detail: 'complement (Σ∗ ∖ A)', children: [node.node], cls: 'ast-bool' };
   }
 }
 

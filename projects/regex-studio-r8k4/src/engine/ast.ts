@@ -12,6 +12,9 @@ export type RegexNode =
   | { type: 'opt'; node: RegexNode; lazy: boolean } // ?
   | { type: 'repeat'; node: RegexNode; min: number; max: number | null; lazy: boolean } // {m,n}
   | { type: 'group'; node: RegexNode; index: number; name?: string } // ( ... ) and (?<name>…)
+  // --- extended (Boolean) regex — only produced by the opt-in extended parser ---
+  | { type: 'intersect'; parts: RegexNode[] } // a & b (n-ary intersection)
+  | { type: 'complement'; node: RegexNode } // ~a (complement over Σ*)
   // --- positional / non-regular constructs (handled by the backtracking VM) ---
   | { type: 'anchor'; at: 'start' | 'end' } // ^  $
   | { type: 'boundary'; negate: boolean } // \b  \B
@@ -31,6 +34,7 @@ export interface AstFeatures {
   boundaries: boolean;
   backrefs: boolean;
   lookaround: boolean;
+  extended: boolean; // uses intersection/complement — regular language, but Boolean-derivative road only
   reasons: string[]; // human-readable list of the non-regular features used
 }
 
@@ -41,6 +45,7 @@ export function analyzeFeatures(ast: RegexNode): AstFeatures {
     boundaries: false,
     backrefs: false,
     lookaround: false,
+    extended: false,
     reasons: [],
   };
   const walk = (n: RegexNode): void => {
@@ -74,6 +79,14 @@ export function analyzeFeatures(ast: RegexNode): AstFeatures {
         f.lookaround = true;
         walk(n.node);
         return;
+      case 'intersect':
+        f.extended = true;
+        n.parts.forEach(walk);
+        return;
+      case 'complement':
+        f.extended = true;
+        walk(n.node);
+        return;
     }
   };
   walk(ast);
@@ -81,6 +94,7 @@ export function analyzeFeatures(ast: RegexNode): AstFeatures {
   if (f.boundaries) f.reasons.push('word boundaries (\\b)');
   if (f.backrefs) f.reasons.push('backreferences (\\1)');
   if (f.lookaround) f.reasons.push('lookaround ((?=…))');
+  if (f.extended) f.reasons.push('intersection (&) / complement (~)');
   // Anchors and boundaries are positional assertions; backrefs and lookaround
   // can describe non-regular languages. All four fall outside the plain
   // alphabet-driven NFA/DFA model this app's automata views are built on.
