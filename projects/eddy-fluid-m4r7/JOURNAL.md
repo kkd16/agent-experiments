@@ -60,8 +60,10 @@ src/
     lbm.ts       Lbm — a SECOND, INDEPENDENT solver: a from-scratch D2Q9 LATTICE
                  BOLTZMANN kinetic method. Streams + collides a 9-velocity particle
                  distribution f (no PDE, no pressure solve); incompressible NS
-                 emerges via Chapman–Enskog (ν = c_s²(τ−½)). BGK + TWO-RELAXATION-TIME
-                 (TRT, magic Λ=3/16) collision, Guo forcing, half-way bounce-back
+                 emerges via Chapman–Enskog (ν = c_s²(τ−½)). THREE collision
+                 operators — BGK, TWO-RELAXATION-TIME (TRT, magic Λ=3/16) and
+                 MULTIPLE-RELAXATION-TIME (MRT, Lallemand–Luo moment basis, inverse
+                 built numerically at load) — Guo forcing, half-way bounce-back
                  walls + a moving-wall lid, Zou–He inlet / extrapolation outflow,
                  a SMAGORINSKY LES model read from the local Π^neq stress, and a
                  momentum-exchange solidForce() → drag/lift. Pure, DOM-free.
@@ -248,8 +250,12 @@ Re=100 cylinder sheds at St ≈ 0.198.
 - [x] **D2Q9 kinetic core** (`lbm.ts`) — the lattice (`EX/EY/W/OPP`), the Hermite-consistent
       equilibrium `f^eq`, macroscopic moments with the Guo half-force shift, and the stream+collide
       time step (pull scheme, two buffers).
-- [x] **BGK + TRT collision** — single- and two-relaxation-time. TRT's magic Λ=3/16 fixes the
-      bounce-back wall half-way between nodes regardless of ν (cures BGK's viscosity-dependent slip).
+- [x] **BGK + TRT + MRT collision** — single-, two- and multiple-relaxation-time. TRT's magic
+      Λ=3/16 fixes the bounce-back wall half-way between nodes regardless of ν (cures BGK's
+      viscosity-dependent slip). MRT (Lallemand–Luo moment basis) relaxes all nine moments
+      independently in moment space — stresses carry ν, ghost modes damped hard for stability — with
+      the inverse transform built numerically at load (`invert(MRT_M)`, checked M·M⁻¹=I) and Guo
+      forcing projected into moment space. All three recover ν = c_s²(τ−½) (verified).
 - [x] **Guo (2002) forcing**, split symmetric/antisymmetric per TRT rate — the momentum-carrying
       (antisymmetric) part must relax with ω⁻ or a steady shear comes out under-forced (debugged this:
       the bug showed as a constant 0.82× amplitude on Poiseuille; fixing the split made it exact).
@@ -262,16 +268,17 @@ Re=100 cylinder sheds at St ≈ 0.198.
       a Reynolds slider; lid-cavity / Poiseuille / Kelvin–Helmholtz presets; BGK↔TRT + LES toggles;
       vorticity/speed views (offscreen lattice buffer upscaled); a live wake oscilloscope; and a
       **live Strouhal measurement** (zero-up-crossing period of the wake probe) vs Williamson's fit.
-- [x] **Six verify checks (group 15)** — equilibrium mass/momentum + Euler-stress moments (machine
+- [x] **Seven verify checks (group 15)** — equilibrium mass/momentum + Euler-stress moments (machine
       precision), mass conservation, the **Chapman–Enskog viscosity** from a decaying shear wave,
-      the **exact TRT Poiseuille** parabola, and the strain rate read straight from Π^neq. Suite
-      **49 → 55 (14 → 15 groups)**, all green.
+      the **exact TRT Poiseuille** parabola, the strain rate read straight from Π^neq, and the **MRT**
+      moment transform round-tripping (M·M⁻¹=I) + recovering the same viscosity. Suite
+      **49 → 56 (14 → 15 groups)**, all green.
 - [x] **About page** + `project.json` (description/tags) updated.
 
 Backlog — where the kinetic pillar goes next:
 
-- [ ] **MRT (multiple-relaxation-time) collision** — relax every moment independently in moment
-      space; the most stable D2Q9 scheme, and a natural superset of TRT/BGK to toggle in the lab.
+- [x] **MRT (multiple-relaxation-time) collision** — shipped: relax every moment independently in
+      moment space; the most stable D2Q9 scheme, toggleable in the lab beside BGK/TRT.
 - [ ] **Thermal LBM** — a second distribution g for temperature (double-distribution / passive
       scalar) → lattice Rayleigh–Bénard, head-to-head with the studio's Boussinesq solver.
 - [ ] **Ghia et al. (1982) cavity benchmark** as a verify check — compare the lid-cavity centreline

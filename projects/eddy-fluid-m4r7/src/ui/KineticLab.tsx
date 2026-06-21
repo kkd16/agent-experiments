@@ -338,11 +338,14 @@ export function KineticLab() {
           </div>
 
           <div className="segmented" role="group">
+            <button type="button" className={collision === 'bgk' ? 'active' : ''} onClick={() => setCollision('bgk')}>
+              BGK
+            </button>
             <button type="button" className={collision === 'trt' ? 'active' : ''} onClick={() => setCollision('trt')}>
               TRT
             </button>
-            <button type="button" className={collision === 'bgk' ? 'active' : ''} onClick={() => setCollision('bgk')}>
-              BGK
+            <button type="button" className={collision === 'mrt' ? 'active' : ''} onClick={() => setCollision('mrt')}>
+              MRT
             </button>
           </div>
 
@@ -402,9 +405,11 @@ export function KineticLab() {
           <strong>C_d*/C_l*</strong> come from a from-scratch <strong>momentum-exchange</strong> sum over
           the bounce-back links (the <em>*</em> flags them as uncalibrated — the staircase cylinder and
           channel confinement inflate the absolute magnitude); their <em>oscillation</em> is the physics
-          to watch: lift cycles at the shedding frequency, drag at twice it. Switch{' '}
-          <strong>BGK→TRT</strong> or toggle the{' '}
-          <strong>LES</strong> sub-grid model to push to higher Re without the BGK solver going unstable.
+          to watch: lift cycles at the shedding frequency, drag at twice it. Step up the collision
+          operator <strong>BGK → TRT → MRT</strong> (each a stricter relaxation: TRT splits the even/odd
+          modes; MRT relaxes all nine moments independently in moment space, damping the unphysical ghost
+          modes for maximal stability) or toggle the <strong>LES</strong> sub-grid model to push to higher
+          Re without the single-relaxation BGK solver going unstable.
         </p>
 
         <a className="back" href="#/">
