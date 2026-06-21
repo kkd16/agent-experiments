@@ -24,7 +24,13 @@ import { harmony } from './harmony'
 import { lerpHue, mix } from './interpolate'
 import { toCSS } from './gradient'
 import { parseCssColor, parseCssGradient, splitTopLevel } from './parseCss'
-import type { Gradient, RGB, RGBA } from './types'
+import { deltaE2000Lab, deltaE76Lab, deltaE94Lab, deltaEOk } from './difference'
+import { cuspForHue, gamutMapOklch, inGamut, maxChromaForLh } from './gamut'
+import { cubicBezier, ease } from './easing'
+import { nearestNamedColor } from './names'
+import { hueRotated, sweepKeyframesCss } from './animate'
+import { decodeGradient, encodeGradient } from '../state/store'
+import type { Gradient, Lab, RGB, RGBA } from './types'
 
 export interface TestResult {
   group: string
@@ -194,7 +200,171 @@ export function runTests(): TestResult[] {
     )
   }
 
+  // ── ΔE color difference (CIEDE2000 against the Sharma–Wu–Dalal reference set) ─
+  {
+    // The canonical 34 test pairs from Sharma, Wu & Dalal (2005), "The CIEDE2000
+    // Color-Difference Formula: …". Each row is L1,a1,b1, L2,a2,b2, expected ΔE00.
+    const SHARMA: number[][] = [
+      [50, 2.6772, -79.7751, 50, 0, -82.7485, 2.0425],
+      [50, 3.1571, -77.2803, 50, 0, -82.7485, 2.8615],
+      [50, 2.8361, -74.02, 50, 0, -82.7485, 3.4412],
+      [50, -1.3802, -84.2814, 50, 0, -82.7485, 1.0],
+      [50, -1.1848, -84.8006, 50, 0, -82.7485, 1.0],
+      [50, -0.9009, -85.5211, 50, 0, -82.7485, 1.0],
+      [50, 0, 0, 50, -1, 2, 2.3669],
+      [50, -1, 2, 50, 0, 0, 2.3669],
+      [50, 2.49, -0.001, 50, -2.49, 0.0009, 7.1792],
+      [50, 2.49, -0.001, 50, -2.49, 0.001, 7.1792],
+      [50, 2.49, -0.001, 50, -2.49, 0.0011, 7.2195],
+      [50, 2.49, -0.001, 50, -2.49, 0.0012, 7.2195],
+      [50, -0.001, 2.49, 50, 0.0009, -2.49, 4.8045],
+      [50, -0.001, 2.49, 50, 0.001, -2.49, 4.8045],
+      [50, -0.001, 2.49, 50, 0.0011, -2.49, 4.7461],
+      [50, 2.5, 0, 50, 0, -2.5, 4.3065],
+      [50, 2.5, 0, 73, 25, -18, 27.1492],
+      [50, 2.5, 0, 61, -5, 29, 22.8977],
+      [50, 2.5, 0, 56, -27, -3, 31.903],
+      [50, 2.5, 0, 58, 24, 15, 19.4535],
+      [50, 2.5, 0, 50, 3.1736, 0.5854, 1.0],
+      [50, 2.5, 0, 50, 3.2972, 0, 1.0],
+      [50, 2.5, 0, 50, 1.8634, 0.5757, 1.0],
+      [50, 2.5, 0, 50, 3.2592, 0.335, 1.0],
+      [60.2574, -34.0099, 36.2677, 60.4626, -34.1751, 39.4387, 1.2644],
+      [63.0109, -31.0961, -5.8663, 62.8187, -29.7946, -4.0864, 1.263],
+      [61.2901, 3.7196, -5.3901, 61.4292, 2.248, -4.962, 1.8731],
+      [35.0831, -44.1164, 3.7933, 35.0232, -40.0716, 1.5901, 1.8645],
+      [22.7233, 20.0904, -46.694, 23.0331, 14.973, -42.5619, 2.0373],
+      [36.4612, 47.858, 18.3852, 36.2715, 50.5065, 21.2231, 1.4146],
+      [90.8027, -2.0831, 1.441, 91.1528, -1.6435, 0.0447, 1.4441],
+      [90.9257, -0.5406, -0.9208, 88.6381, -0.8985, -0.7239, 1.5381],
+      [6.7747, -0.2908, -2.4247, 5.8714, -0.0985, -2.2286, 0.6377],
+      [2.0776, 0.0795, -1.135, 0.9033, -0.0636, -0.5514, 0.9082],
+    ]
+    let worst = 0
+    let ok = true
+    for (const row of SHARMA) {
+      const a: Lab = { L: row[0], a: row[1], b: row[2] }
+      const b: Lab = { L: row[3], a: row[4], b: row[5] }
+      const got = deltaE2000Lab(a, b)
+      worst = Math.max(worst, Math.abs(got - row[6]))
+      if (Math.abs(got - row[6]) > 1e-4) ok = false
+    }
+    t('ΔE color difference', 'CIEDE2000 = Sharma et al. (34 pairs)', ok, `max error ${worst.toExponential(2)}`)
+    // ΔE76 is plain Euclidean in Lab.
+    t('ΔE color difference', 'ΔE76 = Euclidean Lab', approx(deltaE76Lab({ L: 0, a: 0, b: 0 }, { L: 3, a: 4, b: 0 }), 5, 1e-9))
+    // ΔE94 ≤ ΔE76 (the weighting only ever shrinks chroma/hue terms).
+    {
+      const a: Lab = { L: 50, a: 40, b: 30 }
+      const b: Lab = { L: 55, a: 10, b: 60 }
+      t('ΔE color difference', 'ΔE94 ≤ ΔE76', deltaE94Lab(a, b) <= deltaE76Lab(a, b) + 1e-9)
+    }
+    // identical colors → zero difference in every metric.
+    const red: RGB = { r: 0.8, g: 0.1, b: 0.2 }
+    t('ΔE color difference', 'ΔE(x,x)=0 (OK + 2000)', deltaEOk(red, red) < 1e-9)
+    // nearest named color of pure red is "red".
+    t('ΔE color difference', "nearest named(#f00) = 'red'", nearestNamedColor({ r: 1, g: 0, b: 0 }).name === 'red')
+    t('ΔE color difference', "nearest named(#fff) = 'white'", nearestNamedColor({ r: 1, g: 1, b: 1 }).name === 'white')
+  }
+
+  // ── Gamut mapping (CSS Color 4) ──────────────────────────────────────────────
+  {
+    // A wildly saturated Oklch teal is out of sRGB; mapping must return a displayable color.
+    const wild = { L: 0.7, C: 0.4, h: 160 }
+    t('Gamut mapping', 'wild Oklch is out of gamut', !inGamut(wild))
+    const mapped = gamutMapOklch(wild)
+    const disp = mapped.r >= -1e-6 && mapped.r <= 1 + 1e-6 && mapped.g >= -1e-6 && mapped.g <= 1 + 1e-6 && mapped.b >= -1e-6 && mapped.b <= 1 + 1e-6
+    t('Gamut mapping', 'mapped color is displayable', disp)
+    // an in-gamut color is returned ~unchanged.
+    const safe = { L: 0.6, C: 0.05, h: 30 }
+    const mappedSafe = gamutMapOklch(safe)
+    const orig = oklchToRgb(safe)
+    t('Gamut mapping', 'in-gamut color preserved', rgbClose(mappedSafe, orig, 2e-3))
+    // L=1 → white, L=0 → black, regardless of chroma asked for.
+    t('Gamut mapping', 'L=1 → white', rgbClose(gamutMapOklch({ L: 1, C: 0.3, h: 90 }), { r: 1, g: 1, b: 1 }, 1e-6))
+    t('Gamut mapping', 'L=0 → black', rgbClose(gamutMapOklch({ L: 0, C: 0.3, h: 90 }), { r: 0, g: 0, b: 0 }, 1e-6))
+    // maxChroma: zero chroma is always in gamut; the boundary is positive in the mid-range.
+    const cMax = maxChromaForLh(0.6, 30)
+    t('Gamut mapping', 'maxChromaForLh > 0 mid-range', cMax > 0.01 && inGamut({ L: 0.6, C: cMax, h: 30 }))
+    t('Gamut mapping', 'just past boundary is out', !inGamut({ L: 0.6, C: cMax + 0.01, h: 30 }))
+    const cusp = cuspForHue(30)
+    t('Gamut mapping', 'cusp chroma ≥ a mid slice', cusp.C >= cMax - 1e-3)
+  }
+
+  // ── Easing (cubic-bezier solver) ─────────────────────────────────────────────
+  {
+    t('Easing', 'ease endpoints 0→0, 1→1', approx(ease(0, 'ease'), 0, 1e-9) && approx(ease(1, 'ease'), 1, 1e-9))
+    t('Easing', 'linear is identity', approx(ease(0.37, 'linear'), 0.37, 1e-9))
+    // ease-in starts slow: at t=0.5 the output is below 0.5.
+    t('Easing', 'ease-in lags at midpoint', ease(0.5, 'ease-in') < 0.5)
+    t('Easing', 'ease-out leads at midpoint', ease(0.5, 'ease-out') > 0.5)
+    // smoothstep is symmetric about 0.5.
+    t('Easing', 'smoothstep symmetric', approx(ease(0.5, 'smoothstep'), 0.5, 1e-9) && approx(ease(0.25, 'smoothstep') + ease(0.75, 'smoothstep'), 1, 1e-9))
+    t('Easing', 'step snaps at 0.5', ease(0.49, 'step') === 0 && ease(0.5, 'step') === 1)
+    // a custom linear bezier reproduces identity.
+    const lin = cubicBezier(0.5, 0.5, 0.5, 0.5)
+    t('Easing', 'cubic-bezier solver monotone', lin(0.3) < lin(0.6) && lin(0.6) < lin(0.9))
+  }
+
+  // ── Animation ────────────────────────────────────────────────────────────────
+  {
+    const g: Gradient = {
+      type: 'linear', angle: 90, cx: 0.5, cy: 0.5, space: 'oklch', hue: 'shorter',
+      stops: [
+        { id: 'a', color: { r: 1, g: 0, b: 0, a: 1 }, pos: 0 },
+        { id: 'b', color: { r: 0, g: 0, b: 1, a: 1 }, pos: 1 },
+      ],
+    }
+    // rotating hue by 360° returns (≈) the original colors.
+    const full = hueRotated(g, 360)
+    t('Animation', 'hue rotate 360° ≈ identity', rgbClose(full.stops[0].color, g.stops[0].color, 2e-3) && rgbClose(full.stops[1].color, g.stops[1].color, 2e-3))
+    // rotating by 180° actually changes the colors.
+    const half = hueRotated(g, 180)
+    t('Animation', 'hue rotate 180° changes colors', !rgbClose(half.stops[0].color, g.stops[0].color, 0.05))
+    const css = sweepKeyframesCss(g, 4000)
+    t('Animation', 'sweep CSS has @keyframes + background-position', css.includes('@keyframes') && css.includes('background-position'))
+  }
+
+  // ── Serialization (easing + gamut survive the URL round-trip) ────────────────
+  {
+    const g: Gradient = {
+      type: 'radial', angle: 33, cx: 0.3, cy: 0.7, space: 'oklch', hue: 'longer', gamut: 'map',
+      stops: [
+        { id: 'a', color: { r: 0.1, g: 0.2, b: 0.9, a: 1 }, pos: 0, easing: 'ease-in-out' },
+        { id: 'b', color: { r: 0.9, g: 0.4, b: 0.1, a: 0.8 }, pos: 1, easing: 'smoothstep' },
+      ],
+    }
+    const back = decodeGradient(encodeGradient(g))
+    const okFields = !!back && back.type === 'radial' && back.gamut === 'map' && approx(back.angle, 33, 1e-6) && back.hue === 'longer'
+    const okEasing = !!back && back.stops[0].easing === 'ease-in-out' && back.stops[1].easing === 'smoothstep'
+    t('Serialization', 'gradient fields round-trip', okFields)
+    t('Serialization', 'per-stop easing round-trips', okEasing)
+    // a legacy link with no gamut/easing decodes to the defaults (clip / linear).
+    const legacy = decodeGradient(encodeGradient({ ...g, gamut: undefined, stops: g.stops.map((s) => ({ ...s, easing: undefined })) }))
+    t('Serialization', 'legacy link defaults (clip/linear)', !!legacy && legacy.gamut === 'clip' && legacy.stops[0].easing === undefined)
+  }
+
+  // gamut='map' keeps a wide gradient hue truer than naïve clipping
+  {
+    const wide: Gradient = {
+      type: 'linear', angle: 90, cx: 0.5, cy: 0.5, space: 'oklch', hue: 'shorter',
+      stops: [
+        { id: 'a', color: { r: 0, g: 0, b: 0, a: 1 }, pos: 0 },
+        { id: 'b', color: oklchToRgbA({ L: 0.8, C: 0.37, h: 145 }), pos: 1 },
+      ],
+    }
+    const clip = mix(wide.stops[0].color, wide.stops[1].color, 0.5, 'oklch', 'shorter', 'clip')
+    const map = mix(wide.stops[0].color, wide.stops[1].color, 0.5, 'oklch', 'shorter', 'map')
+    const both = [clip, map].every((c) => c.r >= 0 && c.r <= 1 && c.g >= 0 && c.g <= 1 && c.b >= 0 && c.b <= 1)
+    t('Gamut mapping', 'clip & map both stay in [0,1]', both)
+    t('Gamut mapping', 'clip and map differ on a wide ramp', !rgbClose(clip, map, 0.01))
+  }
+
   return out
+}
+
+function oklchToRgbA(c: { L: number; C: number; h: number }): RGBA {
+  const r = oklchToRgb(c)
+  return { r: r.r, g: r.g, b: r.b, a: 1 }
 }
 
 export function summarize(results: TestResult[]): { passed: number; total: number } {

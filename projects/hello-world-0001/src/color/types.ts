@@ -74,11 +74,19 @@ export type HueMode = 'shorter' | 'longer' | 'increasing' | 'decreasing'
 
 export type GradientType = 'linear' | 'radial' | 'conic'
 
+/** How a color produced outside the sRGB gamut is brought back in. */
+export type GamutMode = 'clip' | 'map'
+
+/** A per-segment easing curve name (see color/easing.ts). */
+export type Easing = 'linear' | 'ease' | 'ease-in' | 'ease-out' | 'ease-in-out' | 'smoothstep' | 'step'
+
 export interface Stop {
   id: string
   color: RGBA
   /** position along the gradient, 0..1 */
   pos: number
+  /** easing applied on the segment *leaving* this stop (optional; default linear). */
+  easing?: Easing
 }
 
 export interface Gradient {
@@ -91,6 +99,8 @@ export interface Gradient {
   space: InterpSpace
   hue: HueMode
   stops: Stop[]
+  /** how out-of-gamut interpolation results are handled (optional; default 'clip'). */
+  gamut?: GamutMode
 }
 
 export const SPACE_LABELS: Record<InterpSpace, string> = {
