@@ -12,6 +12,7 @@
 // and kaleidoscope handled exactly like the line renderer.
 
 import { iterateAttractor } from './curves'
+import { buildProjector, integrateFlow } from './attractors3d'
 import type { LayerData } from './harmonograph'
 import type { Layer } from './types'
 import type { Transform } from './render'
@@ -93,18 +94,40 @@ export function renderDensity(
   const hits = new Float32Array(res * res)
   const sc = res / size // model→pixel uses the full-size transform, scaled down
 
+  // A 3D attractor with depth-cueing on also accumulates a depth buffer, so each
+  // pixel can be coloured by the *average depth* of the orbit points that landed
+  // there — near filaments tinted one end of the palette, far ones the other, for
+  // a genuinely volumetric read of the 3D structure rather than a flat histogram.
+  const is3d = layer.kind === 'attractor3d' && !!layer.a3d
+  const depthCue = is3d && layer.a3d!.depthCue
+  const depthSum = depthCue ? new Float32Array(res * res) : null
+
   const tr = trace >= 1 ? 1 : Math.max(0.02, clamp01(trace))
   let maxHit = 0
-  const splat = (mx: number, my: number) => {
+  // Splat a model-space point with intensity weight `w` and normalised depth `dn`
+  // (front = 1). `w` lets the 3D depth cue make nearer points brighter.
+  const splatW = (mx: number, my: number, w: number, dn: number) => {
     const px = ((tf.ox + mx * tf.scale) * sc) | 0
     const py = ((tf.oy + my * tf.scale) * sc) | 0
     if (px < 0 || py < 0 || px >= res || py >= res) return
     const idx = py * res + px
-    const v = (hits[idx] += 1)
+    const v = (hits[idx] += w)
+    if (depthSum) depthSum[idx] += w * dn
     if (v > maxHit) maxHit = v
   }
+  const splat = (mx: number, my: number) => splatW(mx, my, 1, 0)
 
-  if (layer.kind === 'attractor' && layer.attractor) {
+  if (is3d) {
+    const a3d = layer.a3d!
+    const proj = buildProjector(a3d)
+    let count = Math.round(ds.iterations * 1000 * Math.max(0.05, quality) * tr)
+    count = Math.max(2000, Math.min(count, 2_500_000)) // RK4 is ~4× a 2D map step
+    integrateFlow(a3d, count, (x, y, z) => {
+      const pr = proj.project(x, y, z)
+      const w = depthCue ? 0.4 + 0.6 * pr.dn : 1
+      splatW(pr.x, pr.y, w, pr.dn)
+    })
+  } else if (layer.kind === 'attractor' && layer.attractor) {
     let count = Math.round(ds.iterations * 1000 * Math.max(0.05, quality) * tr)
     count = Math.max(2000, Math.min(count, 4_000_000))
     iterateAttractor(layer.attractor, count, splat)
@@ -121,6 +144,8 @@ export function renderDensity(
   // Tone-map: log compress (so the dynamic range of a chaotic orbit fits), then
   // a gamma to lift faint filaments, then through the palette. Alpha tracks
   // brightness so sparse regions fade into the background instead of fogging it.
+  // With depth-cueing the *colour* comes from average depth and the *brightness*
+  // (alpha) from density, so the palette reads the 3D shape volumetrically.
   const lut = rampLUT(layer.style.colors)
   const exposure = Math.max(0.05, ds.exposure)
   const gamma = Math.max(0.1, ds.gamma)
@@ -132,7 +157,8 @@ export function renderDensity(
     if (h <= 0) continue
     let t = denom > 0 ? Math.log1p(h * exposure) / denom : 0
     t = Math.pow(clamp01(t), gamma)
-    const c = lut[Math.min(255, (t * 255) | 0)]
+    const ci = depthSum ? clamp01(depthSum[i] / h) : t
+    const c = lut[Math.min(255, (ci * 255) | 0)]
     const o = i * 4
     out[o] = c[0]
     out[o + 1] = c[1]

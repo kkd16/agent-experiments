@@ -5,6 +5,7 @@
 
 import { cloneParams, defaultParams, makeLayer, randomParams } from './harmonograph'
 import {
+  random3D,
   randomAttractor,
   randomLSystem,
   randomLissajous,
@@ -191,6 +192,7 @@ function altLayer(kind: CurveKind, name: string, style: LayerStyle): Layer {
   else if (kind === 'lissajous') extra.liss = randomLissajous()
   else if (kind === 'superformula') extra.sf = randomSuperformula()
   else if (kind === 'attractor') extra.attractor = randomAttractor()
+  else if (kind === 'attractor3d') extra.a3d = random3D()
   else if (kind === 'lsystem') extra.lsystem = randomLSystem()
   return makeLayer(name, defaultParams(), style, extra)
 }
@@ -202,6 +204,7 @@ function generateAltProject(): Project {
     'lissajous',
     'superformula',
     'attractor',
+    'attractor3d',
     'lsystem',
   ])
   const background = pick(DARK_ALT)
@@ -214,7 +217,7 @@ function generateAltProject(): Project {
   // Attractors and L-systems are dense single figures — one reads best alone;
   // the smooth families layer nicely as one or two interleaved copies.
   const count =
-    kind === 'attractor' || kind === 'lsystem'
+    kind === 'attractor' || kind === 'attractor3d' || kind === 'lsystem'
       ? 1
       : kind === 'lissajous'
         ? pick([1, 2, 2])
@@ -228,15 +231,17 @@ function generateAltProject(): Project {
       mode,
     )
     if (kind === 'attractor') style.lineWidth = rand(0.5, 0.65)
+    if (kind === 'attractor3d') style.lineWidth = rand(0.5, 0.7)
     if (kind === 'lsystem') style.lineWidth = rand(0.9, 1.3)
     // Most generated attractors look best as a luminous density nebula rather
-    // than a polyline — splat the orbit instead of connecting it.
-    if (kind === 'attractor' && chance(0.7)) {
+    // than a polyline — splat the orbit instead of connecting it. The 3D flows
+    // are *always* shown as a depth-cued nebula (that's where they shine).
+    if ((kind === 'attractor' && chance(0.7)) || kind === 'attractor3d') {
       style.renderStyle = 'density'
       style.density = {
-        iterations: Math.round(rand(450, 900)),
-        exposure: rand(1.1, 1.8),
-        gamma: rand(0.42, 0.6),
+        iterations: Math.round(rand(700, 1000)),
+        exposure: rand(1.1, 1.6),
+        gamma: rand(0.45, 0.58),
       }
       style.blend = 'lighter'
       style.opacity = 1

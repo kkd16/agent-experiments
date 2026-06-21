@@ -11,6 +11,7 @@
 // that, and they double as living documentation of each family's guarantees.
 
 import { randomAttractor, sampleAttractor } from './curves'
+import { FLOW3D_KINDS, buildProjector, defaultsFor3D, integrateFlow, sample3DPolyline } from './attractors3d'
 import { LSYSTEMS, expandLSystem, sampleLSystem, sampleLSystemFull, turtle } from './lsystem'
 import type { AttractorKind, AttractorParams } from './types'
 
@@ -160,6 +161,75 @@ function testBranchingLSystems(): TestResult {
   )
 }
 
+// Every 3D flow must (a) integrate to finite points with a non-degenerate 3D
+// extent — a collapse to a point/line means the seed fell into a fixed-point
+// basin or an invariant axis (the Dadras trap) — and (b) project to a finite,
+// non-degenerate, on-screen-sized 2D polyline through the orbit camera. The
+// auto-fit framing divides by that 2D bounding box, so a zero-extent projection
+// would silently blank the canvas. This is the 3D analogue of the attractor
+// bounds tripwire, and it also pins the camera projection's numerical sanity.
+function testFlows3D(): TestResult {
+  let checked = 0
+  for (const { value: type } of FLOW3D_KINDS) {
+    const p = defaultsFor3D(type)
+    let minX = Infinity,
+      maxX = -Infinity,
+      minY = Infinity,
+      maxY = -Infinity,
+      minZ = Infinity,
+      maxZ = -Infinity
+    let nonfinite = 0
+    integrateFlow(p, 12000, (x, y, z) => {
+      if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) {
+        nonfinite++
+        return
+      }
+      minX = Math.min(minX, x)
+      maxX = Math.max(maxX, x)
+      minY = Math.min(minY, y)
+      maxY = Math.max(maxY, y)
+      minZ = Math.min(minZ, z)
+      maxZ = Math.max(maxZ, z)
+    })
+    if (nonfinite > 0) return fail('3d flows', `${type} produced ${nonfinite} non-finite point(s)`)
+    const extent = Math.max(maxX - minX, maxY - minY, maxZ - minZ)
+    if (!(extent > 1e-2)) {
+      return fail('3d flows', `${type} collapsed (3D extent ${extent.toExponential(2)})`)
+    }
+    const pts = sample3DPolyline(p)
+    let pMinX = Infinity,
+      pMaxX = -Infinity,
+      pMinY = Infinity,
+      pMaxY = -Infinity
+    for (const pt of pts) {
+      if (!Number.isFinite(pt.x) || !Number.isFinite(pt.y)) {
+        return fail('3d flows', `${type} projected to a non-finite point`)
+      }
+      pMinX = Math.min(pMinX, pt.x)
+      pMaxX = Math.max(pMaxX, pt.x)
+      pMinY = Math.min(pMinY, pt.y)
+      pMaxY = Math.max(pMaxY, pt.y)
+    }
+    const pw = pMaxX - pMinX
+    const ph = pMaxY - pMinY
+    if (!(pw > 1e-2) || !(ph > 1e-2) || pw > 100 || ph > 100) {
+      return fail('3d flows', `${type} projection ill-framed (${pw.toFixed(2)}×${ph.toFixed(2)})`)
+    }
+    // A full 2π turn of yaw is the identity — the guarantee the seamless looping
+    // export relies on. Projecting the same orbit point at yaw and yaw+2π must
+    // agree to round-off.
+    const a = buildProjector(p)
+    const b = buildProjector({ ...p, yaw: p.yaw + Math.PI * 2 })
+    const ra = a.project(maxX, maxY, maxZ)
+    const rb = b.project(maxX, maxY, maxZ)
+    if (Math.hypot(ra.x - rb.x, ra.y - rb.y) > 1e-6) {
+      return fail('3d flows', `${type} yaw is not 2π-periodic (loop would seam)`)
+    }
+    checked++
+  }
+  return pass('3d flows', `${checked} RK4 flows: finite, non-degenerate, well-framed, 2π-periodic`)
+}
+
 function rand(a: number, b: number): number {
   return a + Math.random() * (b - a)
 }
@@ -176,6 +246,7 @@ export function runSelfTests(): TestResult[] {
     testUnboundedAttractors(),
     testLSystems(),
     testBranchingLSystems(),
+    testFlows3D(),
   ]
 }
 

@@ -4,6 +4,7 @@
 // rotary controls; the rest drive the new parametric sources in `curves.ts`.
 
 import type {
+  Attractor3DParams,
   AttractorParams,
   Layer,
   LissajousParams,
@@ -13,6 +14,7 @@ import type {
   SuperformulaParams,
 } from '../types'
 import { ATTRACTOR_KINDS, attractorBounded, defaultsForAttractor } from '../curves'
+import { FLOW3D_KINDS, FLOW3D_NOTES, defaultsFor3D, ranges3D } from '../attractors3d'
 import { LSYSTEM_KINDS, lsystemById } from '../lsystem'
 import { Slider } from './Slider'
 import { Segmented } from './Segmented'
@@ -446,6 +448,76 @@ export function CurveAttractor({
         see it as a luminous nebula. Try <em>Live</em> to watch it morph.
       </p>
     </section>
+  )
+}
+
+export function CurveAttractor3D({
+  a3d,
+  update,
+}: {
+  a3d: Attractor3DParams
+  update: (patch: Partial<Attractor3DParams>) => void
+}) {
+  const r = ranges3D(a3d.type)
+  return (
+    <>
+      <section className="group">
+        <div className="group-title">3D strange attractor</div>
+        <div className="seg-label">Flow</div>
+        <Segmented
+          value={a3d.type}
+          options={FLOW3D_KINDS}
+          // Switching flow resets the constants + integration step to that
+          // system's canonical values (a stiff Chen needs a far smaller dt than a
+          // gentle Thomas), keeping camera + depth-cue settings.
+          onChange={(type) => {
+            const d = defaultsFor3D(type)
+            update({
+              type,
+              a: d.a,
+              b: d.b,
+              c: d.c,
+              d: d.d,
+              dt: d.dt,
+              steps: d.steps,
+            })
+          }}
+          wrap
+        />
+        {r.used.a && (
+          <Slider label="a" value={a3d.a} min={r.a[0]} max={r.a[1]} step={(r.a[1] - r.a[0]) / 200} onChange={(v) => update({ a: v })} fmt={(v) => v.toFixed(3)} />
+        )}
+        {r.used.b && (
+          <Slider label="b" value={a3d.b} min={r.b[0]} max={r.b[1]} step={(r.b[1] - r.b[0]) / 200} onChange={(v) => update({ b: v })} fmt={(v) => v.toFixed(3)} />
+        )}
+        {r.used.c && (
+          <Slider label="c" value={a3d.c} min={r.c[0]} max={r.c[1]} step={(r.c[1] - r.c[0]) / 200} onChange={(v) => update({ c: v })} fmt={(v) => v.toFixed(3)} />
+        )}
+        {r.used.d && (
+          <Slider label="d" value={a3d.d} min={r.d[0]} max={r.d[1]} step={(r.d[1] - r.d[0]) / 200} onChange={(v) => update({ d: v })} fmt={(v) => v.toFixed(3)} />
+        )}
+      </section>
+
+      <section className="group">
+        <div className="group-title">Orbit camera</div>
+        <Slider label="Yaw" value={a3d.yaw} min={0} max={TWO_PI} step={0.01} onChange={(v) => update({ yaw: v })} fmt={deg} />
+        <Slider label="Pitch" value={a3d.pitch} min={-1.4} max={1.4} step={0.01} onChange={(v) => update({ pitch: v })} fmt={deg} />
+        <Slider label="Distance" value={a3d.dist} min={1.7} max={6} step={0.05} onChange={(v) => update({ dist: v })} fmt={(v) => v.toFixed(2)} />
+        <Slider label="Field of view" value={a3d.fov} min={0.4} max={2.2} step={0.01} onChange={(v) => update({ fov: v })} fmt={deg} />
+        <Slider label="Auto-spin" value={a3d.spin} min={0} max={2} step={0.02} onChange={(v) => update({ spin: v })} fmt={(v) => (v <= 0 ? 'still' : `${v.toFixed(2)}×`)} />
+        <label className="check">
+          <input type="checkbox" checked={a3d.depthCue} onChange={(e) => update({ depthCue: e.target.checked })} />
+          Depth cue (colour &amp; brighten by depth)
+        </label>
+        <p className="hint">
+          {FLOW3D_NOTES[a3d.type]} A real 3-D flow, RK4-integrated and projected
+          through an orbit camera — <strong>drag the canvas to rotate it</strong>.
+          Switch to the <strong>Density</strong> render style (Color tab) for a
+          luminous volumetric nebula; <em>Live</em> (🌀) orbits it and the looping
+          GIF/WebM exporter captures a seamless full revolution.
+        </p>
+      </section>
+    </>
   )
 }
 
