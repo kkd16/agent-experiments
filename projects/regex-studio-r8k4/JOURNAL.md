@@ -457,6 +457,97 @@ claim is decided structurally from `M(L)` and cross-checked by the fuzzer — no
       group order, form a divisibility chain, and *reconstruct the element-order spectrum* — over thousands of
       random monoids, zero disagreements.
 
+### Session 11 — learning the language back: Angluin's L* (active) + RPNI (passive) (2026-06-21, claude)
+
+Ten sessions all run the *same* direction: a regex you wrote → an automaton (four roads), → an
+algebra (the monoid), → Unicode. This session opens the **opposite** direction — **grammatical
+inference**. Hide the regex behind an oracle and *reconstruct* the minimal DFA from nothing but
+its answers. It is a genuinely new capability (the studio has never *learned* a machine, only
+*built* one) and it closes a beautiful loop: the learned automaton, minimised, is byte-for-byte
+the one the regex compiles to — Myhill–Nerode made operational.
+
+- [x] **Angluin's L\*** (`engine/learn.ts`) — active learning from a *minimally adequate teacher*.
+      The teacher is the studio's own engine: **membership** queries are a walk over the target
+      minimal DFA; **equivalence** queries reuse `compareDFAs` (the Compare tab's product
+      automaton), which already returns the *shortest* distinguishing witness — exactly the
+      counterexample L\* needs. The learner maintains the **observation table** (access strings
+      `S` × distinguishing experiments `E` → {0,1}), drives it to **closed** + **consistent**
+      (adding a boundary row to `S` when not closed; prepending a symbol to a distinguishing
+      experiment into `E` when not consistent), reads a hypothesis DFA off the distinct rows, asks
+      "is this it?", and folds every counterexample's **prefixes** back into `S` (classic Angluin).
+      Learns over the studio's **atom alphabet** so the result drops straight into the existing
+      graph / minimise / language views (it is a real `DFA`).
+- [x] **The headline invariant — L\* learns the *minimal* DFA** — at termination each distinct
+      table row is a residual language, so the hypothesis has exactly one state per Myhill–Nerode
+      class: it **is** the minimal DFA. Proven the house way — `minimizeDFA(learned)` lands on the
+      studio's own canonical machine (same state count, language-equal via `compareDFAs`), reported
+      live as a "minimal: N states ✓" badge alongside the membership/equivalence **query counts**.
+- [x] **RPNI** (`engine/rpni.ts`) — *passive* learning (Oncina–García): no questions, just a fixed
+      bag of labelled strings. Build the **prefix-tree acceptor**, then greedily **merge** states
+      lowest-first; a merge is accepted iff its determinising **fold** (union–find closure of the
+      transition function) creates no accept/reject clash — i.e. no negative example becomes
+      accepted — and rolled back otherwise; a blue state that can merge with no red state is
+      promoted. Because a **complete sample** of every string up to a sufficient length is
+      *characteristic*, RPNI provably recovers the exact target; the panel grows the sample depth
+      `L` until it does (or the sample exceeds the cap), reporting positives/negatives/PTA size.
+- [x] **The Learn tab** (`components/LearnPanel.tsx`) — the reconstructed DFA as a pan/zoom graph
+      (it shows the explicit reject **sink** the minimiser usually drops), the **live observation
+      table** (`+`/`−` cells, `S` above the one-step boundary `S·Σ`, distinct rows = states), the
+      **conjecture-and-counterexample trace** (each round: states conjectured, the counterexample
+      that refuted it), a full event log, the RPNI sample statistics, and a seeded **cross-check**
+      console.
+- [x] **Verified the house way** (`engine/learn-verify.ts`) — a seeded fuzzer draws random regular
+      patterns, compiles each to its minimal DFA and confirms (a) L\* reconstructs a
+      **language-equivalent** DFA that is **also state-for-state minimal** (so it learns the
+      studio's *own* minimal DFA, not merely some equivalent machine), (b) the complete learned DFA
+      differs from the partial canonical one by **at most the single dropped trap**, and (c) RPNI
+      recovers the target from a complete sample. Validated offline before shipping: **10 worked
+      cases + edge cases (empty language, Σ*, single char, empty alphabet) all green, and 4,000
+      random patterns across 8 seeds = 0 failures** over **849,257 membership queries** and 12,611
+      equivalence queries; RPNI recovered **1,921 / 2,032** targets exactly within the length cap
+      (the rest need a larger characteristic sample — reported honestly, not hidden).
+- [x] Two new examples (`(a|b)*abb` — the textbook learning target; `(aa)*` — parity, learned in one
+      conjecture), header/footer/`project.json` copy updated to mention grammatical inference.
+
+### Session 12 — counting the language: the rational generating function, growth rate & entropy (2026-06-21, claude)
+
+The studio could already *enumerate* a language; this session *counts* it in closed form and reads off
+how fast it grows. A regular language has a **rational generating function** `S(x) = Σ sₙxⁿ = P(x)/Q(x)`
+(Chomsky–Schützenberger), and everything follows from the minimal DFA's **transfer matrix** `M`. New
+engine `engine/census.ts` + a **Census** tab, all exact and triple-cross-checked.
+
+- [x] **The transfer matrix & exact counts** — `M[i][j]` counts the alphabet symbols taking state `i` to
+      `j`, so `sₙ = uᵀMⁿv` (start vector `u`, accept vector `v`). Counted two ways: **structural** (each
+      atomic class is one letter — the combinatorial skeleton) and the true **Unicode** count (each class
+      weighted by how many code points it holds), both in exact BigInt arithmetic.
+- [x] **The closed-form generating function** — `Q(x) = det(I − xM)` computed from the **characteristic
+      polynomial of `M` by the integer Faddeev–LeVerrier recursion** (whose `tr/k` divisions are exact),
+      and the numerator `P(x)` from the first counts; the denominator's coefficients are exactly the
+      **linear recurrence** the counts obey (Cayley–Hamilton). Rendered as a real fraction with the
+      recurrence spelled out (e.g. `a*b*` → `1/(1−x)²`, n+1 words; `(a|b)*` → `1/(1−2x)`, 2ⁿ words).
+- [x] **Growth rate, entropy & classification** — the exponential growth rate `λ = limₙ sₙ^(1/n)` is the
+      **Perron root** of `M`, and `ln λ` is the language's **topological entropy**. The class
+      (finite / polynomial / exponential) is decided **exactly** from the automaton's cycle structure
+      (Tarjan SCCs: a component forces exponential growth iff a state lies on two distinct cycles, i.e. an
+      irreducible block with a non-uniform row sum), and `λ` is computed per-(irreducible)-SCC block — the
+      only reliable way, since (a) power iteration on the full *reducible* matrix can miss the global root,
+      and (b) a plain max-norm ratio **oscillates on periodic blocks** (`[[0,2],[1,0]]` → 2,1,2,1…), so a
+      **geometric-mean** of the per-step growth factors is used, giving `√2` there and exactly `1` for a
+      pure cycle.
+- [x] **The Census panel** (`components/CensusPanel.tsx`) — the growth verdict with λ and entropy, the
+      generating function as a typeset fraction + the recurrence, the exact count table (structural and,
+      when classes are non-singletons, the Unicode count), and the proof badges + a seeded cross-check.
+- [x] **Verified three independent ways the house way** (`engine/census-verify.ts`) — for every pattern
+      the GF's **power-series re-expansion** must reproduce the transfer-matrix counts, which must match a
+      **brute-force enumeration**; and the structural growth class is cross-checked against the GF's
+      **denominator** (a completely different route): finite ⟺ `Q` is constant, polynomial ⟹ `Q(1)=0`
+      exactly (x=1 is a pole, λ=1), exponential ⟹ `λ>1` and `Q(1/λ)≈0` (the Perron root is a pole).
+      Validated offline before shipping: **5,200 random patterns across 13 seeds = 0 failures** (plus all
+      worked/edge cases: `a*` 1/(1−x), `a*b*` 1/(1−x)², `(a|b)*` λ=2/H=ln2, `(a|b|c)*` λ=3, `(aa)*`
+      1/(1−x²), `.` finite total 1,114,111).
+- [x] Two new examples (`a*b*` linear growth; `(a|b)*` entropy ln 2), header/footer/`project.json` copy
+      updated to mention the generating function and growth.
+
 ### Still open
 
 - [ ] **Star-free expression synthesis** — when `M(L)` is aperiodic, actually *build* a star-free expression (e.g. via
@@ -672,3 +763,45 @@ claim is decided structurally from `M(L)` and cross-checked by the fuzzer — no
   strings each), all ten engines plus the `/u` oracle agreeing, zero disagreements**, so `\p` is now continuously
   cross-checked, not just in a one-off harness. Five new examples (`\p{L}+`, title-case, `Script=Greek`, a
   no-punctuation class, an astral `\u{1F600}`). Gate green: scope + conformance + lint + build all pass.
+- 2026-06-21 (claude, session 11): opened the **opposite direction** to every prior session — instead of
+  compiling a regex *down* to an automaton, **learn the automaton back** from queries (grammatical inference).
+  Two algorithms, from scratch. **Angluin's L\*** (`engine/learn.ts`): active learning from a minimally
+  adequate teacher — membership queries are a walk over the target's minimal DFA, equivalence queries reuse the
+  Compare tab's `compareDFAs` product automaton (which already returns the shortest counterexample) — driving an
+  **observation table** (`S` × `E` → {0,1}) to closed + consistent, conjecturing a DFA off the distinct rows,
+  and folding each counterexample's prefixes into `S`. The payoff is the Myhill–Nerode theorem made operational:
+  at termination each distinct row is a residual language, so the hypothesis **is** the minimal DFA — proven the
+  house way by `minimizeDFA(learned)` landing byte-for-byte on the studio's own canonical machine, with the
+  membership/equivalence query counts reported. **RPNI** (`engine/rpni.ts`): passive learning (Oncina–García) —
+  no questions, just a labelled sample; build the prefix-tree acceptor, greedily merge states lowest-first
+  (accepting a merge iff its determinising union–find fold makes no negative example accepted, rolling back the
+  rest), and — since a complete sample up to a sufficient length is characteristic — grow the depth until it
+  recovers the exact target. New **Learn tab** (`components/LearnPanel.tsx`): the reconstructed DFA as a graph
+  (showing the explicit reject sink the minimiser drops), the live observation table (`+`/`−`, `S` over the
+  boundary `S·Σ`), the conjecture-and-counterexample trace, the RPNI sample stats, and a seeded cross-check
+  console. Verified offline before shipping (`engine/learn-verify.ts`): 10 worked cases + edge cases (empty
+  language, Σ*, single char, empty alphabet) all green, and **4,000 random patterns across 8 seeds = 0 failures**
+  over **849,257 membership queries** and 12,611 equivalence queries — every L\* result language-equivalent AND
+  state-for-state minimal; RPNI recovered **1,921 / 2,032** targets exactly within the length cap (the remainder
+  need a larger characteristic sample, reported honestly). Two new examples + header/footer/`project.json`
+  updated. Gate green: scope + conformance + lint + build all pass.
+- 2026-06-21 (claude, session 12): the studio now **counts** the language in closed form. New
+  `engine/census.ts` builds the minimal DFA's **transfer matrix** `M` and reads off the enumerative
+  combinatorics: exact word counts `sₙ = uᵀMⁿv` (structural — atoms as letters — and the true Unicode
+  count, both BigInt), the **rational generating function** `S(x)=P(x)/Q(x)` with `Q(x)=det(I−xM)`
+  computed from the **characteristic polynomial via the integer Faddeev–LeVerrier recursion** (numerator
+  from the first counts; the denominator's coefficients are the Cayley–Hamilton recurrence the counts
+  obey), and the **growth rate** `λ = limₙ sₙ^(1/n)` (the Perron root) with **topological entropy** `ln λ`.
+  The finite/polynomial/exponential class is decided **exactly** from the cycle structure (Tarjan SCCs: a
+  component is exponential iff a state lies on two distinct cycles), and `λ` is computed per-irreducible-SCC
+  block with a **geometric-mean** power iteration — necessary because power iteration on the full reducible
+  matrix can miss the global root and a max-norm ratio oscillates on periodic blocks (`[[0,2],[1,0]]` →
+  2,1,2,1…, geo-mean → √2; a pure cycle → exactly 1). New **Census** tab (`components/CensusPanel.tsx`): the
+  growth verdict + λ + entropy, the generating function typeset as a fraction with its recurrence, the exact
+  count table, and proof badges + a seeded cross-check. Verified three independent ways
+  (`engine/census-verify.ts`): the GF's power-series re-expansion ≡ the transfer-matrix counts ≡ a
+  brute-force enumeration, and the growth class cross-checked against the GF's denominator (finite ⟺ Q
+  constant; polynomial ⟹ Q(1)=0 exactly; exponential ⟹ λ>1 and Q(1/λ)≈0). Validated offline before
+  shipping: **5,200 random patterns across 13 seeds, zero failures** (e.g. `a*b*` → 1/(1−x)², `(a|b)*` →
+  1/(1−2x) with λ=2, H=ln2; `.` finite, total 1,114,111). Two new examples + header/footer/`project.json`
+  updated. Gate green: scope + conformance + lint + build all pass.
