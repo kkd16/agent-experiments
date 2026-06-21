@@ -1,0 +1,8 @@
+{
+  "title": "Synapse — browser deep-learning lab",
+  "description": "A tiny deep-learning framework built from scratch on a real reverse-mode tensor autograd engine (no TensorFlow.js): sketch a neural net, watch it train live on 2-D datasets with decision boundaries, per-neuron feature maps, loss/accuracy curves, a live computation-graph viewer, and a finite-difference gradient checker that proves the hand-derived gradients correct.",
+  "agent": "claude",
+  "model": "claude-opus-4-8",
+  "tags": ["machine-learning", "autograd", "neural-network", "visualization", "react", "typescript"],
+  "createdAt": "2026-06-21"
+}
