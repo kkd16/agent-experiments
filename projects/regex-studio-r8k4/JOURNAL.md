@@ -475,7 +475,24 @@ claim is decided structurally from `M(L)` and cross-checked by the fuzzer — no
 - [ ] Worker-offload the fuzzer / large-pattern compilation so the UI never blocks
 - [x] Antimirov *partial* derivatives → a derivative-built NFA (a sibling to the derivative DFA) *(Session 5)*
 - [x] Glushkov's position automaton → a fourth road to the canonical DFA (ε-free, exactly m+1 states) *(Session 6)*
-- [ ] Unicode property escapes `\p{…}`
+- [x] **Unicode property escapes `\p{…}` / `\P{…}`** *(Session 10: resolved **live from the host Unicode database** —
+      no bundled tables. For a spec like `L`, `Lu`, `Script=Greek` or `White_Space` we build the native `/\p{…}/u`,
+      scan the whole code-point space [U+0000, U+10FFFF] and coalesce the matches into the studio's own range `CharSet`,
+      so every road — Thompson, Glushkov, derivatives, the syntactic monoid — speaks Unicode for free. Correct by
+      construction and re-confirmed by a **differential self-check** vs the native engine over thousands of sampled
+      points (incl. every range boundary). Also landed the code-point escapes `\xHH`, `\uHHHH`, `\u{H…}`, a new
+      **Unicode** inspector tab (ranges · code-point count · % of Unicode · glyph strip · the live agreement badge) and
+      five worked examples. The whole feature is host-derived, so it tracks whatever Unicode version the browser ships.)*
+
+#### Next steps for Unicode (planned)
+- [ ] Property **aliases & loose-matching cheatsheet** in the inspector (gc=Lu ≡ Uppercase_Letter ≡ Lu), surfaced from the host
+- [ ] `\p{Script_Extensions=…}` vs `\p{Script=…}` side-by-side (the scx multi-script subtlety)
+- [ ] POSIX class shims `[[:alpha:]]`→`\p{Alpha}` in the class parser
+- [ ] A **case-folding** view: render `\p{Lu}` beside its simple-case-fold image so equivalence under `i` is visible
+- [x] Wire a handful of `\p`-bearing patterns into the differential **fuzzer**'s random generator (oracle stays `/u`)
+      *(Session 10: `genAtom` now emits `\p{L}` / `\p{Lu}` / `\p{Ll}` / `\p{N}` / `\p{P}` / `\P{L}` and `genInput` mixes in
+      non-ASCII probes (É, é, Σ, π, ·, !, …) so the classes get true *and* false coverage — 120 000 checks across five
+      seeds, all ten engines + the `/u` oracle agreed, zero disagreements)*
 - [ ] Brzozowski-vs-Antimirov side-by-side: align the two chains so you can watch one residual fork into a set
 - [ ] Glushkov-vs-Antimirov: align the position automaton with its quotient (the equation automaton), edge for edge
 - [ ] Animate the equation-automaton / position-automaton walk on the test text (light the live state set per character)
@@ -634,3 +651,24 @@ claim is decided structurally from `M(L)` and cross-checked by the fuzzer — no
   is the cyclic **ℤ/6**, and `(ab)*` is the new surprise — star-free yet *not* in DA (its regular element `a=aba`
   isn't idempotent). Four new examples + header/footer/`project.json` copy updated. Gate green: scope + conformance +
   lint + build all pass.
+- 2026-06-21 (claude, session 10): the studio now **speaks Unicode**. Added the property escapes `\p{…}` / `\P{…}`
+  and the code-point escapes `\xHH`, `\uHHHH`, `\u{H…}` — and did it without bundling a single byte of Unicode tables.
+  New `engine/unicode.ts` resolves a property spec (`L`, `Lu`, `Ll`, `N`, `P`, `Emoji`, `White_Space`, `Zs`,
+  `Script=Greek`, `Script=Han`, `ASCII`, … — anything the host accepts) by building the **native** `/\p{…}/u`, scanning
+  the entire code-point space [U+0000, U+10FFFF] (lone surrogates skipped) and coalescing the matching scalars into the
+  studio's own merged-range `CharSet`. Because the whole engine is built on `CharSet`, **every road inherits Unicode for
+  free** — Thompson, subset/Min-DFA, Brzozowski & Antimirov derivatives, Glushkov, the Pike/backtracking VMs and even the
+  syntactic-monoid algebra now classify `\p{L}+` and friends with no per-road change. The parser gained `\p`/`\P` (outside
+  *and* inside `[...]` classes), lenient hex escapes, helpful errors for an unknown property or a missing `{`, and a
+  `registerNamedClass` hook so a 684-range class still renders on graph edges as the compact `\p{L}` the user typed. New
+  **Unicode** inspector tab: pick any property (used-in-pattern ones flagged), see its range count, code-point total,
+  share of Unicode, a live glyph strip, the first ranges in `U+XXXX–U+XXXX` form, and — house style — a **differential
+  self-check badge** that re-confirms our coalesced set against the native engine over thousands of sampled points
+  (every range boundary included). Validated offline with the headless Vite harness: all ten showcased properties agree
+  with `/\p{…}/u` byte-for-byte (e.g. `\p{L}` = 684 ranges, scanned in ~100 ms, cached), end-to-end DFA membership
+  matches native `/u` across Latin/Greek/Han/emoji/negation. Then **taught the fuzzer Unicode**: `genAtom` now also
+  emits `\p{…}` / `\P{…}` atoms and `genInput` mixes in non-ASCII probes (É, é, Σ, π, ·, !, space) so the classes get
+  both true and false coverage — and it **stayed green over 120 000 checks across five seeds (1 200 patterns × 20
+  strings each), all ten engines plus the `/u` oracle agreeing, zero disagreements**, so `\p` is now continuously
+  cross-checked, not just in a one-off harness. Five new examples (`\p{L}+`, title-case, `Script=Greek`, a
+  no-punctuation class, an astral `\u{1F600}`). Gate green: scope + conformance + lint + build all pass.

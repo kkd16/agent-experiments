@@ -2850,3 +2850,148 @@
   color: var(--warn);
   margin-right: 4px;
 }
+
+/* ---------- Unicode property panel ---------- */
+.uni-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.uni-intro h3 {
+  margin: 0 0 6px;
+  font-size: 15px;
+}
+.uni-intro code {
+  color: var(--accent);
+  font-family: var(--mono);
+}
+.uni-menu {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.uni-chip {
+  font-family: var(--mono);
+  font-size: 12.5px;
+  padding: 4px 9px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+  color: var(--muted);
+  cursor: pointer;
+  transition: border-color 0.12s, color 0.12s;
+}
+.uni-chip:hover {
+  border-color: var(--accent);
+  color: var(--text);
+}
+.uni-chip.active {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+.uni-chip.in-pattern {
+  border-style: dashed;
+  border-color: var(--accent-2);
+  color: var(--accent-2);
+}
+.uni-chip.in-pattern.active {
+  background: color-mix(in srgb, var(--accent-2) 14%, transparent);
+}
+.uni-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.uni-stats {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.uni-stat {
+  flex: 1 1 0;
+  min-width: 110px;
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+  padding: 12px 14px;
+  background: var(--panel-2);
+}
+.uni-stat-n {
+  font-family: var(--mono);
+  font-size: 22px;
+  font-weight: 700;
+  color: var(--accent);
+}
+.uni-stat-l {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted-2);
+  margin-top: 2px;
+}
+.uni-check {
+  font-size: 13px;
+  padding: 9px 12px;
+  border-radius: 7px;
+  border: 1px solid var(--border-soft);
+}
+.uni-check.good {
+  color: var(--good);
+  border-color: color-mix(in srgb, var(--good) 40%, var(--border));
+  background: color-mix(in srgb, var(--good) 8%, transparent);
+}
+.uni-check.bad {
+  color: var(--bad);
+  border-color: color-mix(in srgb, var(--bad) 40%, var(--border));
+  background: color-mix(in srgb, var(--bad) 8%, transparent);
+}
+.uni-check-note {
+  color: var(--muted);
+  font-weight: 400;
+}
+.uni-section-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted-2);
+  margin-bottom: -6px;
+}
+.uni-glyphs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+.uni-glyph {
+  min-width: 30px;
+  height: 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 6px;
+  font-size: 18px;
+  border: 1px solid var(--border-soft);
+  border-radius: 6px;
+  background: var(--panel-2);
+}
+.uni-glyph-code {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--muted);
+}
+.uni-ranges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+.uni-range {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--muted);
+  border: 1px solid var(--border-soft);
+  border-radius: 5px;
+  padding: 2px 7px;
+}
+.uni-range-more {
+  color: var(--muted-2);
+  border-style: dashed;
+}

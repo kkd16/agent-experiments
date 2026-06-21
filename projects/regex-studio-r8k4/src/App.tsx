@@ -22,6 +22,7 @@ import { GlushkovPanel } from './components/GlushkovPanel';
 import { ExtendedPanel } from './components/ExtendedPanel';
 import { MonoidPanel } from './components/MonoidPanel';
 import { FuzzPanel } from './components/FuzzPanel';
+import { UnicodePanel } from './components/UnicodePanel';
 import { DEFAULT_EXAMPLE, EXAMPLES } from './data/examples';
 
 type Tab =
@@ -41,6 +42,7 @@ type Tab =
   | 'synth'
   | 'explain'
   | 'redos'
+  | 'unicode'
   | 'fuzz';
 
 const TAB_GROUPS: { group: string; tabs: { id: Tab; label: string }[] }[] = [
@@ -68,6 +70,7 @@ const TAB_GROUPS: { group: string; tabs: { id: Tab; label: string }[] }[] = [
       { id: 'synth', label: 'DFA→regex' },
       { id: 'explain', label: 'Explain' },
       { id: 'redos', label: 'ReDoS' },
+      { id: 'unicode', label: 'Unicode' },
       { id: 'fuzz', label: 'Fuzz' },
     ],
   },
@@ -165,7 +168,7 @@ export default function App() {
           <span className="logo">/<span className="logo-star">∗</span>/</span>
           <div>
             <h1>Regex Studio</h1>
-            <p>A regular-expression engine built from scratch — parse, compile four ways, minimise, run six engines, extend to the Boolean closure (&amp; ~ −), read the language's <strong>syntactic monoid</strong> (the variety ladder: piecewise-testable · DA/FO² · star-free? · the named group · the egg-box), fuzz, compare and synthesise.</p>
+            <p>A regular-expression engine built from scratch — parse, compile four ways, minimise, run six engines, extend to the Boolean closure (&amp; ~ −), read the language's <strong>syntactic monoid</strong> (the variety ladder: piecewise-testable · DA/FO² · star-free? · the named group · the egg-box), speak <strong>Unicode</strong> via <code>\p{'{'}…{'}'}</code> derived live from the host, fuzz, compare and synthesise.</p>
           </div>
         </div>
         <a className="repo-link" href="https://en.wikipedia.org/wiki/Thompson%27s_construction" target="_blank" rel="noreferrer">
@@ -355,6 +358,8 @@ export default function App() {
                 onUseAttack={setText}
               />
             )}
+
+            {tab === 'unicode' && <UnicodePanel pattern={pattern} />}
 
             {tab === 'fuzz' && <FuzzPanel />}
           </div>
