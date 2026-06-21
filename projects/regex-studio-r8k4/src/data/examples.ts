@@ -187,7 +187,25 @@ export const EXAMPLES: Example[] = [
     name: 'Algebra: starred yet star-free',
     pattern: '(ab)*',
     sample: 'abab ab aba ababab',
-    note: 'A Kleene star that needs no star: (ab)* is aperiodic, so it is first-order definable. The Algebra tab shows an aperiodic monoid with counting modulus 1.',
+    note: 'A Kleene star that needs no star: (ab)* is aperiodic (first-order definable) — yet the variety ladder shows it is NOT in DA: the regular element a = aba is not idempotent, so it needs more than two variables.',
+  },
+  {
+    name: 'Algebra: DA / FO² (not piecewise)',
+    pattern: 'a(a|b)*',
+    sample: 'abba baab a b aaab',
+    note: 'Starts with a. The variety ladder lands it exactly in DA — definable with only two first-order variables (an unambiguous polynomial a·Σ*) — but NOT piecewise testable (not J-trivial).',
+  },
+  {
+    name: 'Algebra: Klein four ℤ/2×ℤ/2',
+    pattern: '((aa)|(bb)|((ab|ba)(aa|bb)*(ab|ba)))*',
+    sample: 'aabb abab abba aab',
+    note: 'Even number of a’s AND even number of b’s. The Algebra tab names the syntactic group: the Klein four-group ℤ/2 × ℤ/2 — two independent mod-2 counters, recovered as invariant factors.',
+  },
+  {
+    name: 'Algebra: cyclic ℤ/6',
+    pattern: '(aa)*|(aaa)*',
+    sample: 'aa aaa aaaa aaaaaa a',
+    note: 'Length even or divisible by three. Its syntactic monoid is the cyclic group ℤ/6 — a single mod-6 counter, the lcm of the two periods, named on the variety ladder.',
   },
 ];
 

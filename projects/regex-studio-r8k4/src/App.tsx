@@ -165,7 +165,7 @@ export default function App() {
           <span className="logo">/<span className="logo-star">∗</span>/</span>
           <div>
             <h1>Regex Studio</h1>
-            <p>A regular-expression engine built from scratch — parse, compile four ways, minimise, run six engines, extend to the Boolean closure (&amp; ~ −), read the language's <strong>syntactic monoid</strong> (star-free? · counter? · the egg-box), fuzz, compare and synthesise.</p>
+            <p>A regular-expression engine built from scratch — parse, compile four ways, minimise, run six engines, extend to the Boolean closure (&amp; ~ −), read the language's <strong>syntactic monoid</strong> (the variety ladder: piecewise-testable · DA/FO² · star-free? · the named group · the egg-box), fuzz, compare and synthesise.</p>
           </div>
         </div>
         <a className="repo-link" href="https://en.wikipedia.org/wiki/Thompson%27s_construction" target="_blank" rel="noreferrer">
@@ -366,7 +366,7 @@ export default function App() {
         equation automaton) · Glushkov's position automaton · <strong>Boolean derivatives — the intersection / complement / difference
         closure no NFA can build</strong> · Moore & Hopcroft minimisation (cross-checked) · six matching engines (DFA · derivative DFA · partial-derivative NFA ·
         position automaton · Pike VM · backtracking VM) cross-checked by a seeded differential fuzzer · product-automaton equivalence & ReDoS
-        analysis · state-elimination synthesis · the <strong>syntactic monoid</strong> with Green's relations (the egg-box) and Schützenberger's star-free / FO[&lt;] / counter-free test · DOT/SVG export — all hand-written TypeScript, no regex library.
+        analysis · state-elimination synthesis · the <strong>syntactic monoid</strong> with Green's relations (the egg-box) and the full <strong>variety ladder</strong> — piecewise-testable (Simon) ⊂ DA / FO²[&lt;] ⊂ star-free / FO[&lt;] / counter-free (Schützenberger) — with the syntactic <strong>group named</strong> (ℤ/n, Klein four, Dₙ, Q₈…) and every element wired back to the state-map it induces · DOT/SVG export — all hand-written TypeScript, no regex library.
       </footer>
     </div>
   );

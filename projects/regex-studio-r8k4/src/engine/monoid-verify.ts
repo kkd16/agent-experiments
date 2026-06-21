@@ -18,6 +18,16 @@ import {
   monoidProperties,
   counterFreeWitness,
 } from './monoid';
+import { varietyLadder, syntacticGroup } from './variety';
+
+// gcd/lcm for the group-decomposition cross-check.
+function gcd(a: number, b: number): number {
+  while (b) [a, b] = [b, a % b];
+  return a;
+}
+function lcm(a: number, b: number): number {
+  return (a / gcd(a, b)) * b;
+}
 
 export interface MonoidFuzzReport {
   seed: number;
@@ -28,6 +38,8 @@ export interface MonoidFuzzReport {
   firstFailure: string | null;
   aperiodic: number; // how many analyzed languages were star-free
   withGroups: number; // how many had a non-trivial syntactic group
+  inDA: number; // how many analyzed languages are in DA (FO²)
+  named: number; // how many syntactic groups were identified up to isomorphism
   ms: number;
 }
 
@@ -61,6 +73,8 @@ export function runMonoidFuzz(seed: number, patterns: number): MonoidFuzzReport 
   let firstFailure: string | null = null;
   let aperiodic = 0;
   let withGroups = 0;
+  let inDA = 0;
+  let named = 0;
 
   const note = (ok: boolean, why: string) => {
     checks++;
@@ -108,6 +122,46 @@ export function runMonoidFuzz(seed: number, patterns: number): MonoidFuzzReport 
 
     const cf = counterFreeWitness(m);
     note(cf.counterFree === p.aperiodic, `/${pat}/ — counter-free ⇎ aperiodic`);
+
+    // Session 9: the variety ladder + the named syntactic group.
+    const lad = varietyLadder(m, g, p);
+    if (lad.da.inDA) inDA++;
+
+    // DA ⊆ aperiodic ⊆ regular, and J-trivial ⊆ DA (the inclusion ladder).
+    note(!lad.da.inDA || p.aperiodic, `/${pat}/ — in DA but not aperiodic`);
+    note(!p.jTrivial || lad.da.inDA, `/${pat}/ — J-trivial but not in DA`);
+    // DA's witness must be a genuine regular, non-idempotent element when it fails.
+    if (!lad.da.inDA && lad.da.witness !== null) {
+      const w = m.elements[lad.da.witness];
+      note(!w.idempotent && g.dClasses[g.dClassOf[w.id]].regular, `/${pat}/ — bogus DA witness`);
+    }
+    // A language whose monoid is a group is in DA only if that group is trivial.
+    note(!p.group || lad.da.inDA === p.trivial, `/${pat}/ — group language DA-status wrong`);
+
+    // The identified syntactic group must match the counting modulus, and (abelian
+    // case) its invariant factors must multiply to the order, form a divisibility
+    // chain, and have exponent = the largest element order.
+    const grp = syntacticGroup(m, g);
+    if (grp) {
+      named++;
+      note(grp.order === p.countingModulus, `/${pat}/ — group order ≠ counting modulus`);
+      note(grp.order > 1, `/${pat}/ — surfaced a trivial group`);
+      if (grp.abelian) {
+        note(grp.cyclic === (grp.invariantFactors!.length === 1), `/${pat}/ — cyclic ⇎ single factor`);
+      }
+      if (grp.invariantFactors) {
+        const prod = grp.invariantFactors.reduce((a, b) => a * b, 1);
+        note(prod === grp.order, `/${pat}/ — invariant factors don't multiply to |G|`);
+        let chain = true;
+        for (let k = 1; k < grp.invariantFactors.length; k++) {
+          if (grp.invariantFactors[k] % grp.invariantFactors[k - 1] !== 0) chain = false;
+        }
+        note(chain, `/${pat}/ — invariant factors not a divisibility chain`);
+        const expFromFactors = grp.invariantFactors.reduce((a, b) => lcm(a, b), 1);
+        const maxOrder = Math.max(...grp.orderSpectrum.map((o) => o.order));
+        note(expFromFactors === maxOrder && maxOrder === grp.exponent, `/${pat}/ — abelian exponent mismatch`);
+      }
+    }
   }
 
   const t1 = (typeof performance !== 'undefined' ? performance.now() : Date.now());
@@ -120,6 +174,8 @@ export function runMonoidFuzz(seed: number, patterns: number): MonoidFuzzReport 
     firstFailure,
     aperiodic,
     withGroups,
+    inDA,
+    named,
     ms: Math.round(t1 - t0),
   };
 }

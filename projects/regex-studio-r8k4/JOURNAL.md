@@ -424,16 +424,48 @@ hardest-to-see properties straight off it. The headline is **Schützenberger's t
 - [x] Four new examples (`(aa)*` not star-free · `(aaa)*` mod-3 counter · `a*b*` star-free/piecewise-testable ·
       `(ab)*` starred-yet-star-free), header/footer/`project.json` copy updated to mention the syntactic monoid.
 
+### Session 9 plan — the variety ladder: DA / FO², the syntactic group, and the egg-box↔DFA bridge (2026-06-21, claude)
+
+Session 8 left the algebra one verdict deep: aperiodic-or-not. This session turns that single badge into a
+**legible classification ladder** and makes the abstract monoid *tangible* by tying every element back to the
+state-map it actually is. New engine module `engine/variety.ts` plus a heavily-extended Algebra panel. Every new
+claim is decided structurally from `M(L)` and cross-checked by the fuzzer — no assertions without a proof.
+
+- [x] **DA / FO²[<] membership** — a finite monoid is in **DA** iff every *regular* element is idempotent
+      (Schützenberger–Pin–Tesson–Thérien). This is exactly the languages definable in two-variable first-order logic
+      `FO²[<]`, equivalently the **unambiguous polynomials** `A₀*a₁A₁*…aₖAₖ*`, equivalently `Σ₂ ∩ Π₂`. Decide it,
+      return a witness (a regular non-idempotent element) when it fails, and prove `DA ⊆ aperiodic` automatically.
+- [x] **The syntactic group, named** — identify the structure group of `M(L)` (the whole monoid when it's a group,
+      else the group `H`-class of the top counting `D`-class): order, abelian?, exponent, and an **isomorphism type**
+      — trivial · cyclic `ℤ/n` · the full abelian **invariant-factor** decomposition `ℤ/d₁×…×ℤ/dₖ` (incl. the Klein
+      four) computed from the element-order spectrum by primary decomposition · dihedral `Dₙ` (incl. `S₃≅D₃`) ·
+      quaternion `Q₈` · `A₄` / `S₄` by signature · a safe "non-abelian order n" fallback — all read off the Cayley
+      table, so the counting modulus finally has a *name* and an operational reading.
+- [x] **The variety ladder** — classify `L` on the inclusion lattice trivial ⊂ piecewise-testable (`J`-trivial,
+      Simon, `BΣ₁[<]`) ⊂ `DA` (`FO²[<]`, unambiguous polynomials) ⊂ star-free (aperiodic, `FO[<]`, Schützenberger /
+      McNaughton–Papert, counter-free, LTL) ⊂ all-regular, with the group branch on the side. Each level carries the
+      theorem that justifies the language↔algebra correspondence and a one-line *operational* reading (what logic /
+      what query can and cannot express it). Compute the *tightest* variety `L` provably sits in.
+- [x] **Render the ladder** in the Algebra panel as a nested-inclusion diagram with `L`'s position highlighted,
+      replacing the flat badge row, each level expandable to its theorem + meaning.
+- [x] **Element ARE transformations — the egg-box↔DFA bridge.** Click any egg-box cell (or Cayley entry) to select
+      that monoid element and show the **state map it induces on the complete minimal DFA**: each state `s ↦ δ(s,w)`,
+      fixed points, the image (its rank), and any non-trivial **cycle** (the counter, when the element sits in a
+      group), with the realising word. Makes "an element is a word's transformation of the states" concrete.
+- [x] **Verify it the house way** — extend `engine/monoid-verify.ts`: `DA ⟹ aperiodic`, `J-trivial ⟹ DA`,
+      the identified group's order matches its `H`-class, and (abelian case) the invariant factors multiply to the
+      group order, form a divisibility chain, and *reconstruct the element-order spectrum* — over thousands of
+      random monoids, zero disagreements.
+
 ### Still open
 
 - [ ] **Star-free expression synthesis** — when `M(L)` is aperiodic, actually *build* a star-free expression (e.g. via
       the Krohn–Rhodes / counter-free decomposition or an FO[<]/LTL translation) instead of only certifying one exists
-- [ ] **DA / two-variable FO[<] (FO²)** and the **dot-depth / Straubing–Thérien** hierarchy badges (unambiguous
-      languages, `J`-orderings) — the next varieties below star-free
-- [ ] **Group-language structure** — when `M(L)` is a group, name it (cyclic ℤ/n, symmetric, …) and show the
-      permutation automaton with each generator's cycle structure highlighted
-- [ ] Align the **egg-box with the minimal DFA**: click a monoid element to light the states its word maps, and the
-      transition it induces, on the DFA graph
+- [ ] **dot-depth / Straubing–Thérien** hierarchy badges above `J`-trivial (the concatenation hierarchy levels)
+- [x] **Group-language structure** — name the syntactic group *and* show the permutation automaton with each
+      generator's cycle structure *(Session 9: ℤ/n, the abelian invariant-factor product incl. Klein four, Dₙ, Q₈,
+      A₄/S₄, named off the Cayley table; the group card lists every generator as a permutation in cycle notation with
+      its order — e.g. even-`a`-even-`b` shows a=(0 1)(2 3), b=(0 2)(1 3): two commuting involutions = ℤ/2×ℤ/2)*
 - [ ] Polynomial detection via the cubed automaton N³ (exact IDA witness) to complement the
       measurement-based degree fit
 - [ ] Visualise the ambiguous pivot loop on the NFA diagram (highlight the two distinct pump paths)
@@ -572,3 +604,33 @@ hardest-to-see properties straight off it. The headline is **Schützenberger's t
   8 structural invariants = **32,021 assertions, zero failures** (the three aperiodicity tests always agreed, `H=R∩L`,
   full egg-boxes, J-trivial ⇒ aperiodic). Four new examples + header/footer/`project.json` copy updated. Gate green:
   scope + conformance + lint + build all pass.
+- 2026-06-21 (claude, session 9): turned the one-bit "aperiodic?" verdict into a full **variety ladder** and made the
+  abstract monoid *tangible*. New `engine/variety.ts`. (1) **DA / FO²[<] membership** — decided by the clean
+  structural theorem *M ∈ DA ⇔ every regular element is idempotent* (Schützenberger–Pin–Tesson–Thérien), which alone
+  forces aperiodicity, so it slots exactly between piecewise-testable and star-free; it returns a genuine regular,
+  non-idempotent **witness** when it fails. DA is the languages of two-variable first-order logic `FO²[<]` =
+  unambiguous polynomials `A₀*a₁A₁*…aₖAₖ*` = `Σ₂ ∩ Π₂`. (2) **The syntactic group, NAMED** — the counting modulus
+  finally gets a name: the structure group of `M(L)` (the whole monoid when it's a group, else the group `H`-class of
+  the top counting `D`-class) is identified up to isomorphism straight from the Cayley table — cyclic `ℤ/n`, the full
+  abelian **invariant-factor decomposition** `ℤ/d₁×…×ℤ/dₖ` (incl. the Klein four) recovered from the element-order
+  spectrum by per-prime **primary decomposition**, dihedral `Dₙ` (incl. `S₃≅D₃`) via a structural rotation/reflection
+  probe, quaternion `Q₈`, `A₄`/`S₄` by signature, and a safe "non-abelian order n" fallback. (3) **The variety
+  ladder** places `L` on the nested lattice trivial ⊂ piecewise-testable (`J`-trivial, Simon, `BΣ₁[<]`) ⊂ `DA`
+  (`FO²[<]`) ⊂ star-free (aperiodic, `FO[<]`, Schützenberger / McNaughton–Papert, counter-free, LTL) ⊂ all-regular,
+  each level carrying its theorem and a one-line operational/logical reading, with the *tightest* class computed. (4)
+  **The egg-box↔DFA bridge** — click any egg-box cell or Cayley entry to light the **state-map** `s ↦ δ(s,w)` that
+  element induces on the complete minimal DFA: fixed points, the image (rank) and any non-trivial **cycle** (a cycle
+  > 1 is exactly the counter a group element does and an aperiodic one can't), so "an element *is* a transformation"
+  stops being abstract. New `MonoidPanel` UI: the nested ladder (replacing the flat badge row), the named-group card
+  with its order spectrum and — for group languages — every generator drawn as a **permutation** in cycle notation
+  with its order (the permutation automaton made legible, e.g. even-`a`-even-`b` → a=(0 1)(2 3), b=(0 2)(1 3)), and
+  the interactive state-map explorer. Verified the house way — `monoid-verify.ts` gained
+  the ladder's own invariants (`J`-trivial ⇒ `DA` ⇒ aperiodic; every `DA` failure exhibits a real regular
+  non-idempotent witness; each named group's order = the counting modulus and, abelian, its invariant factors
+  multiply to the order, form a divisibility chain and reproduce the exponent). Validated offline before shipping with
+  the headless harness: group identification matched hand-built `ℤ/n`, Klein four, `ℤ/2×ℤ/4`, `S₃≅D₃` and `Q₈` Cayley
+  tables, and **491,891 invariant checks over 48,000 random patterns produced zero disagreements**. So `a(a|b)*` now
+  lands exactly in DA (FO², not piecewise), even-`a`-even-`b` is named the **Klein four-group ℤ/2×ℤ/2**, `(aa)*∣(aaa)*`
+  is the cyclic **ℤ/6**, and `(ab)*` is the new surprise — star-free yet *not* in DA (its regular element `a=aba`
+  isn't idempotent). Four new examples + header/footer/`project.json` copy updated. Gate green: scope + conformance +
+  lint + build all pass.
