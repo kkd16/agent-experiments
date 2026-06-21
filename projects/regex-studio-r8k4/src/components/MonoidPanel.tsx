@@ -9,12 +9,14 @@ import {
   type GreenStructure,
   type MonoidProperties,
 } from '../engine/monoid';
+import { varietyLadder, stateMapOf, type VarietyLadder } from '../engine/variety';
 import { runMonoidFuzz, type MonoidFuzzReport } from '../engine/monoid-verify';
 
 interface Built {
   m: SyntacticMonoid;
   green: GreenStructure | null;
   props: MonoidProperties | null;
+  ladder: VarietyLadder | null;
 }
 
 // The shortest-word representative of an H-class (the egg-box cell).
@@ -34,15 +36,17 @@ export function MonoidPanel({ compiled }: { compiled: Compiled }) {
   const built = useMemo<Built | null>(() => {
     if (!compiled.minDfa || !features?.regular) return null;
     const m = buildSyntacticMonoid(compiled.minDfa);
-    if (m.truncated) return { m, green: null, props: null };
+    if (m.truncated) return { m, green: null, props: null, ladder: null };
     const green = greenRelations(m);
     const props = green ? monoidProperties(m, green) : null;
-    return { m, green, props };
+    const ladder = green && props ? varietyLadder(m, green, props) : null;
+    return { m, green, props, ladder };
   }, [compiled.minDfa, features]);
 
   const [showCayley, setShowCayley] = useState(false);
   const [fuzz, setFuzz] = useState<MonoidFuzzReport | null>(null);
   const [fuzzing, setFuzzing] = useState(false);
+  const [selected, setSelected] = useState<number | null>(null);
 
   if (!ast || !features?.regular || !built) {
     return (
@@ -54,9 +58,9 @@ export function MonoidPanel({ compiled }: { compiled: Compiled }) {
     );
   }
 
-  const { m, green, props } = built;
+  const { m, green, props, ladder } = built;
 
-  if (!green || !props) {
+  if (!green || !props || !ladder) {
     return (
       <div className="placeholder">
         This language's syntactic monoid has more than {m.cap.toLocaleString()} elements — too large to enumerate the
@@ -147,19 +151,52 @@ export function MonoidPanel({ compiled }: { compiled: Compiled }) {
         {m.zero >= 0 && <Metric label="zero" value={wordLabel(m.elements[m.zero].word, labels)} />}
       </div>
 
-      {/* ── variety badges ─────────────────────────────────────────────── */}
-      <h3 className="deriv-h3">Where this language sits</h3>
+      {/* ── the variety ladder ─────────────────────────────────────────── */}
+      <h3 className="deriv-h3">The variety ladder — where this language sits</h3>
       <p className="muted-note">
-        Each variety of finite monoid corresponds, by Eilenberg's theorem, to a class of regular languages. The badges
-        below are decided directly from <code>M(L)</code>'s structure.
+        By <strong>Eilenberg's variety theorem</strong>, each class of finite monoids corresponds to a class of
+        regular languages. These classes <em>nest</em>, and <code>M(L)</code>'s structure decides exactly how deep{' '}
+        <code>L</code> sits. Shaded rings are classes <code>L</code> belongs to; the{' '}
+        <span className="vl-here-key">★ marked</span> ring is the <strong>tightest</strong> one we can prove.
       </p>
+      <VarietyLadderView ladder={ladder} />
+
+      {/* ── the syntactic group, named ─────────────────────────────────── */}
+      {ladder.group && (
+        <div className="grp-card">
+          <div className="grp-head">
+            <span className="grp-badge">⟳ syntactic group</span>
+            <span className="grp-name">{ladder.group.name}</span>
+            <span className="grp-tags">
+              order {ladder.group.order} · {ladder.group.abelian ? 'abelian' : 'non-abelian'} · exponent{' '}
+              {ladder.group.exponent}
+              {ladder.group.cyclic ? ' · cyclic' : ''}
+            </span>
+          </div>
+          <p className="grp-meaning">
+            The counting modulus finally has a name: <code>M(L)</code>'s non-trivial group is{' '}
+            <strong>{ladder.group.name}</strong> — {ladder.group.meaning}{' '}
+            {ladder.group.invariantFactors && ladder.group.invariantFactors.length > 1 && (
+              <>
+                Its abelian <strong>invariant-factor decomposition</strong> is{' '}
+                <code>{ladder.group.invariantFactors.map((d) => `ℤ/${d}`).join(' × ')}</code> (each factor divides the
+                next), recovered from the element-order spectrum by primary decomposition.
+              </>
+            )}
+          </p>
+          <div className="grp-spectrum">
+            <span className="grp-spectrum-l">element orders:</span>
+            {ladder.group.orderSpectrum.map((o) => (
+              <span key={o.order} className="grp-ord">
+                <strong>{o.count}</strong>×<span className="grp-ord-k">ord {o.order}</span>
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* ── secondary structural badges ────────────────────────────────── */}
       <div className="mon-badges">
-        <Badge on={props.aperiodic} title="No non-trivial subgroup. Schützenberger: ⇔ star-free ⇔ FO[<]-definable.">
-          aperiodic · star-free · FO[&lt;]
-        </Badge>
-        <Badge on={props.jTrivial} title="Every J-class is a singleton. Simon's theorem: ⇔ piecewise testable.">
-          J-trivial · piecewise-testable
-        </Badge>
         <Badge on={props.rTrivial} title="Every R-class is a singleton — a 'partially ordered' / R-trivial language.">
           R-trivial
         </Badge>
@@ -174,9 +211,6 @@ export function MonoidPanel({ compiled }: { compiled: Compiled }) {
         </Badge>
         <Badge on={props.group} title="One idempotent (the identity) ⇒ M is a group ⇒ L is a group language (the DFA is a permutation automaton).">
           group language
-        </Badge>
-        <Badge on={props.trivial} title="|M| = 1 — the language is ∅ or Σ*.">
-          trivial
         </Badge>
       </div>
 
@@ -218,11 +252,15 @@ export function MonoidPanel({ compiled }: { compiled: Compiled }) {
                       return (
                         <td
                           key={l}
-                          className={`egg-cell${isIdem ? ' egg-idem' : ''}${isGroup ? ' egg-group' : ''}`}
+                          className={`egg-cell${isIdem ? ' egg-idem' : ''}${isGroup ? ' egg-group' : ''}${
+                            selected !== null && members.includes(selected) ? ' egg-sel' : ''
+                          }`}
+                          onClick={() => setSelected(rep)}
                           title={
                             members.map((e) => wordLabel(m.elements[e].word, labels)).join('  ·  ') +
                             (isIdem ? '  (idempotent)' : '') +
-                            (isGroup ? `  group of order ${members.length}` : '')
+                            (isGroup ? `  group of order ${members.length}` : '') +
+                            '  — click to see its state-map'
                           }
                         >
                           <code className="egg-word">{wordLabel(m.elements[rep].word, labels)}</code>
@@ -238,6 +276,18 @@ export function MonoidPanel({ compiled }: { compiled: Compiled }) {
           </div>
         ))}
       </div>
+
+      {/* ── an element IS a transformation: the egg-box ↔ DFA bridge ────── */}
+      <h3 className="deriv-h3">An element <em>is</em> a transformation of the states</h3>
+      <p className="muted-note">
+        Every monoid element is the state-map some word induces on the <strong>complete minimal DFA</strong> — that is
+        literally how <code>M(L)</code> was built. Click any egg-box cell above (or any Cayley entry below) to light up
+        the map <code>s ↦ δ(s, w)</code> it realises: which states are <span className="sm-key fix">fixed</span>, the{' '}
+        <span className="sm-key img">image</span> (its rank), and any non-trivial{' '}
+        <span className="sm-key cyc">cycle</span> — a cycle longer than one is exactly a <strong>counter</strong>, the
+        thing a group element does and an aperiodic one never can.
+      </p>
+      <StateMapView m={m} selected={selected} labels={labels} onClear={() => setSelected(null)} />
 
       {/* ── Cayley table ───────────────────────────────────────────────── */}
       <h3 className="deriv-h3">
@@ -270,7 +320,15 @@ export function MonoidPanel({ compiled }: { compiled: Compiled }) {
                   {m.elements.map((col) => {
                     const prod = m.mult![row.id * m.size + col.id];
                     return (
-                      <td key={col.id} className={`cayley-cell d${green.dClassOf[prod] % 6}`}>
+                      <td
+                        key={col.id}
+                        className={`cayley-cell d${green.dClassOf[prod] % 6}${prod === selected ? ' cayley-sel' : ''}`}
+                        onClick={() => setSelected(prod)}
+                        title={`${wordLabel(m.elements[row.id].word, labels)} · ${wordLabel(
+                          m.elements[col.id].word,
+                          labels,
+                        )} = ${wordLabel(m.elements[prod].word, labels)} — click for its state-map`}
+                      >
                         {wordLabel(m.elements[prod].word, labels)}
                       </td>
                     );
@@ -289,7 +347,10 @@ export function MonoidPanel({ compiled }: { compiled: Compiled }) {
       <p className="muted-note">
         Draw thousands of random regular patterns, build each one's syntactic monoid, and confirm the three roads to
         "aperiodic" agree and Green's relations stay structurally sound (H = R ∩ L, full egg-boxes, J-trivial ⇒
-        aperiodic). Any disagreement would be a bug — there should be none.
+        aperiodic). Session 9 adds the ladder's own invariants: <strong>J-trivial ⇒ DA ⇒ aperiodic</strong>, every DA
+        failure exhibits a genuine regular non-idempotent witness, and each named group's order matches its counting
+        modulus while its abelian invariant factors multiply to the order, form a divisibility chain and reproduce the
+        element-order spectrum. Any disagreement would be a bug — there should be none.
       </p>
       <div className="mon-fuzz">
         <button className="fuzz-run" onClick={runFuzz} disabled={fuzzing}>
@@ -298,8 +359,9 @@ export function MonoidPanel({ compiled }: { compiled: Compiled }) {
         {fuzz && (
           <div className={`mon-fuzz-out ${fuzz.disagreements === 0 ? 'ok' : 'bad'}`}>
             <strong>{fuzz.checks.toLocaleString()}</strong> invariant checks over{' '}
-            <strong>{fuzz.analyzed.toLocaleString()}</strong> monoids ·{' '}
-            {fuzz.aperiodic.toLocaleString()} star-free · {fuzz.withGroups.toLocaleString()} with a non-trivial group ·{' '}
+            <strong>{fuzz.analyzed.toLocaleString()}</strong> monoids · {fuzz.aperiodic.toLocaleString()} star-free ·{' '}
+            {fuzz.inDA.toLocaleString()} in DA · {fuzz.withGroups.toLocaleString()} with a group (
+            {fuzz.named.toLocaleString()} named) ·{' '}
             {fuzz.disagreements === 0 ? (
               <span className="anti-ok">0 disagreements ✓</span>
             ) : (
@@ -328,5 +390,121 @@ function Badge({ on, title, children }: { on: boolean; title: string; children: 
       <span className="mon-badge-mark">{on ? '✓' : '·'}</span>
       {children}
     </span>
+  );
+}
+
+// The inclusion ladder, drawn as nested rings (most general outermost). Rings L
+// belongs to are shaded; the tightest provable one carries the ★ "you are here".
+function VarietyLadderView({ ladder }: { ladder: VarietyLadder }) {
+  // levels come most-specific → most-general; nest from the outside in.
+  const outerToInner = [...ladder.levels].reverse();
+  const render = (i: number): React.ReactNode => {
+    if (i >= outerToInner.length) return null;
+    const lvl = outerToInner[i];
+    const here = lvl.id === ladder.tightestId;
+    return (
+      <div className={`vl-level${lvl.member ? ' member' : ' nonmember'}${here ? ' here' : ''}`}>
+        <div className="vl-row">
+          <span className="vl-mark">{lvl.member ? (here ? '★' : '✓') : '·'}</span>
+          <span className="vl-name">{lvl.name}</span>
+          <span className="vl-algebra" title="the condition decided on M(L)">
+            {lvl.algebra}
+          </span>
+        </div>
+        <div className="vl-meaning">{lvl.meaning}</div>
+        <div className="vl-theorem">{lvl.theorem}</div>
+        {render(i + 1)}
+      </div>
+    );
+  };
+  return (
+    <div className="vl-ladder">
+      {render(0)}
+      {ladder.isGroupLanguage && (
+        <div className="vl-group-note">
+          ⟳ Off the aperiodic spine entirely: <code>M(L)</code> is a <strong>group</strong>, so <code>L</code> is a{' '}
+          <strong>group language</strong> — the minimal DFA is a permutation automaton and membership is pure modular
+          counting (definable only with modular quantifiers, never in plain FO[&lt;]).
+        </div>
+      )}
+    </div>
+  );
+}
+
+// What the selected monoid element does to the complete DFA's states.
+function StateMapView({
+  m,
+  selected,
+  labels,
+  onClear,
+}: {
+  m: SyntacticMonoid;
+  selected: number | null;
+  labels: string[];
+  onClear: () => void;
+}) {
+  if (selected === null) {
+    return <div className="sm-empty">Click an egg-box cell or a Cayley entry to inspect the state-map it induces.</div>;
+  }
+  const view = stateMapOf(m, selected);
+  const comp = m.complete;
+  const inCycle = new Set<number>();
+  view.cycles.forEach((c) => c.forEach((s) => inCycle.add(s)));
+  const stateLabel = (s: number) => {
+    if (s === comp.sink) return '∅';
+    return String(s);
+  };
+  return (
+    <div className="sm-box">
+      <div className="sm-head">
+        <span className="sm-word">
+          element <code>{wordLabel(view.word, labels)}</code>
+        </span>
+        <span className="sm-stat">rank {view.rank}</span>
+        {view.idempotent && <span className="sm-stat idem">idempotent (e·e = e)</span>}
+        <span className={`sm-stat ${view.period > 1 ? 'counter' : 'nocounter'}`}>
+          {view.period > 1 ? `counter of period ${view.period}` : 'no counter (aperiodic transform)'}
+        </span>
+        <button className="mini-btn" onClick={onClear}>
+          clear
+        </button>
+      </div>
+      <div className="sm-grid">
+        {view.map.map((e) => {
+          const fromAccept = comp.accept[e.from];
+          const toAccept = comp.accept[e.to];
+          return (
+            <div
+              key={e.from}
+              className={`sm-edge${e.fixed ? ' fixed' : ''}${inCycle.has(e.from) ? ' cyc' : ''}`}
+              title={inCycle.has(e.from) ? 'on a non-trivial cycle (a counter)' : e.fixed ? 'fixed point' : ''}
+            >
+              <span className={`sm-state${fromAccept ? ' acc' : ''}${e.from === comp.start ? ' start' : ''}`}>
+                {stateLabel(e.from)}
+              </span>
+              <span className="sm-arrow">→</span>
+              <span className={`sm-state${toAccept ? ' acc' : ''}${e.to === comp.start ? ' start' : ''}`}>
+                {stateLabel(e.to)}
+              </span>
+            </div>
+          );
+        })}
+      </div>
+      <div className="sm-legend">
+        <span className="sm-state acc demo">n</span> accepting state ·{' '}
+        <span className="sm-state start demo">n</span> start · <code>∅</code> the dead sink ·{' '}
+        the <span className="sm-key img">image</span> has {view.rank} state{view.rank === 1 ? '' : 's'}
+        {view.cycles.length > 0 && (
+          <>
+            {' '}· cycle{view.cycles.length === 1 ? '' : 's'}:{' '}
+            {view.cycles.map((c, i) => (
+              <code key={i} className="sm-cycle">
+                ({c.map(stateLabel).join(' → ')} → {stateLabel(c[0])})
+              </code>
+            ))}
+          </>
+        )}
+      </div>
+    </div>
   );
 }

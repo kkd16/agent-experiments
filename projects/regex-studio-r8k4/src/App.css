@@ -2508,3 +2508,308 @@
 .mon-dim {
   color: var(--muted-2);
 }
+
+/* ---------- Session 9: the variety ladder ---------- */
+.vl-here-key {
+  color: var(--mon);
+  font-weight: 700;
+}
+.vl-ladder {
+  margin: 12px 0 6px;
+}
+.vl-level {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 10px 12px 6px;
+  margin: 0;
+  background: var(--bg-2);
+}
+.vl-level .vl-level {
+  margin-top: 8px;
+  border-left-width: 3px;
+}
+.vl-level.member {
+  background: linear-gradient(180deg, rgba(96, 165, 250, 0.08), rgba(96, 165, 250, 0.02));
+  border-color: rgba(96, 165, 250, 0.4);
+}
+.vl-level.nonmember {
+  opacity: 0.6;
+  border-style: dashed;
+}
+.vl-level.here {
+  background: linear-gradient(180deg, rgba(240, 171, 252, 0.12), rgba(240, 171, 252, 0.03));
+  border-color: var(--mon);
+  box-shadow: 0 0 0 1px rgba(240, 171, 252, 0.25);
+}
+.vl-row {
+  display: flex;
+  align-items: baseline;
+  gap: 9px;
+  flex-wrap: wrap;
+}
+.vl-mark {
+  font-family: var(--mono);
+  font-weight: 700;
+  color: var(--accent);
+  width: 1.1em;
+  text-align: center;
+}
+.vl-level.here .vl-mark {
+  color: var(--mon);
+}
+.vl-level.nonmember .vl-mark {
+  color: var(--muted-2);
+}
+.vl-name {
+  font-family: var(--mono);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+.vl-algebra {
+  margin-left: auto;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--muted-2);
+  border: 1px solid var(--border-soft);
+  border-radius: 999px;
+  padding: 1px 8px;
+  white-space: nowrap;
+}
+.vl-meaning {
+  font-size: 12.5px;
+  color: var(--muted);
+  margin: 4px 0 2px;
+  line-height: 1.45;
+}
+.vl-theorem {
+  font-size: 11px;
+  color: var(--accent-2);
+  font-style: italic;
+  margin-bottom: 4px;
+}
+.vl-level.nonmember .vl-theorem,
+.vl-level.nonmember .vl-meaning {
+  color: var(--muted-2);
+}
+.vl-group-note {
+  margin-top: 10px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--text);
+  background: linear-gradient(180deg, rgba(245, 158, 11, 0.1), rgba(245, 158, 11, 0.03));
+  border: 1px solid rgba(245, 158, 11, 0.4);
+}
+
+/* ---------- Session 9: the named syntactic group ---------- */
+.grp-card {
+  margin: 14px 0;
+  padding: 12px 14px;
+  border-radius: 12px;
+  border: 1px solid rgba(240, 171, 252, 0.4);
+  background: linear-gradient(180deg, rgba(240, 171, 252, 0.08), rgba(192, 38, 211, 0.03));
+}
+.grp-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.grp-badge {
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 700;
+  color: #2a0633;
+  background: var(--mon);
+  padding: 3px 9px;
+  border-radius: 999px;
+}
+.grp-name {
+  font-family: var(--mono);
+  font-size: 22px;
+  font-weight: 700;
+  color: var(--mon);
+}
+.grp-tags {
+  font-size: 12px;
+  color: var(--muted);
+}
+.grp-meaning {
+  font-size: 12.5px;
+  color: var(--text);
+  line-height: 1.5;
+  margin: 8px 0 6px;
+}
+.grp-spectrum {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+.grp-spectrum-l {
+  font-size: 11.5px;
+  color: var(--muted);
+}
+.grp-ord {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+  color: var(--text);
+}
+.grp-ord-k {
+  color: var(--muted);
+}
+
+/* ---------- Session 9: egg-box ↔ DFA bridge (the state map) ---------- */
+.egg-cell {
+  cursor: pointer;
+  transition: border-color 0.12s ease, transform 0.08s ease;
+}
+.egg-cell:hover {
+  border-color: var(--accent);
+}
+.egg-cell.egg-sel {
+  border-color: var(--accent) !important;
+  box-shadow: 0 0 0 2px rgba(96, 165, 250, 0.4);
+}
+.cayley-cell {
+  cursor: pointer;
+}
+.cayley-cell:hover {
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
+}
+.cayley-cell.cayley-sel {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.sm-key {
+  font-family: var(--mono);
+  font-size: 0.92em;
+  padding: 0 4px;
+  border-radius: 4px;
+}
+.sm-key.fix {
+  color: var(--accent);
+  background: rgba(96, 165, 250, 0.14);
+}
+.sm-key.img {
+  color: var(--good);
+  background: rgba(52, 211, 153, 0.14);
+}
+.sm-key.cyc {
+  color: var(--warn);
+  background: rgba(245, 158, 11, 0.14);
+}
+.sm-empty {
+  font-size: 12.5px;
+  color: var(--muted-2);
+  padding: 12px;
+  border: 1px dashed var(--border);
+  border-radius: 10px;
+  text-align: center;
+}
+.sm-box {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 12px 14px;
+  background: var(--bg-2);
+}
+.sm-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+.sm-word {
+  font-size: 13px;
+  color: var(--text);
+}
+.sm-stat {
+  font-family: var(--mono);
+  font-size: 11px;
+  padding: 2px 9px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+  color: var(--muted);
+}
+.sm-stat.idem {
+  color: var(--mon);
+  border-color: rgba(240, 171, 252, 0.45);
+}
+.sm-stat.counter {
+  color: var(--warn);
+  border-color: rgba(245, 158, 11, 0.45);
+}
+.sm-stat.nocounter {
+  color: var(--good);
+  border-color: rgba(52, 211, 153, 0.4);
+}
+.sm-head .mini-btn {
+  margin-left: auto;
+}
+.sm-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+.sm-edge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 8px;
+  border-radius: 8px;
+  border: 1px solid var(--border-soft);
+  background: var(--panel);
+}
+.sm-edge.fixed {
+  border-color: rgba(96, 165, 250, 0.5);
+  background: rgba(96, 165, 250, 0.08);
+}
+.sm-edge.cyc {
+  border-color: rgba(245, 158, 11, 0.55);
+  background: rgba(245, 158, 11, 0.1);
+}
+.sm-state {
+  font-family: var(--mono);
+  font-size: 12px;
+  min-width: 20px;
+  text-align: center;
+  padding: 1px 6px;
+  border-radius: 6px;
+  border: 1px solid var(--edge);
+  color: var(--text);
+}
+.sm-state.acc {
+  border-color: var(--good);
+  color: var(--good);
+  font-weight: 700;
+}
+.sm-state.start {
+  background: rgba(96, 165, 250, 0.16);
+}
+.sm-state.demo {
+  display: inline-block;
+}
+.sm-arrow {
+  color: var(--muted-2);
+  font-family: var(--mono);
+}
+.sm-legend {
+  margin-top: 10px;
+  font-size: 11.5px;
+  color: var(--muted);
+  line-height: 1.7;
+}
+.sm-cycle {
+  font-family: var(--mono);
+  color: var(--warn);
+  margin-right: 4px;
+}
