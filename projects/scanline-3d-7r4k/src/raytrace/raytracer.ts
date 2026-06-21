@@ -79,6 +79,11 @@ export class RayTracer {
     this.resetAccum()
   }
 
+  // World-space AABB of the current scene geometry (for fitting a medium box), or null.
+  sceneBounds(): { minx: number; miny: number; minz: number; maxx: number; maxy: number; maxz: number } | null {
+    return this.bvh ? this.bvh.worldBounds() : null
+  }
+
   private ensureBuffers(w: number, h: number): void {
     if (this.W === w && this.H === h && this.out) return
     this.W = w

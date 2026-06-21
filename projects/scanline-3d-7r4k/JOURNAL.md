@@ -47,8 +47,11 @@ src/
                      per-pixel variance, denoise integration + RT debug views, shared HDR resolve
     denoise.ts       edge-avoiding À-Trous wavelet denoiser (Dammertz 2010) + SVGF (Schied 2017)
                      variance guidance — turns the noisy low-spp tracer into a clean image
+    medium.ts        volumetric participating media: HG phase fn, fBm density field, spectral
+                     homogeneous + Woodcock delta/ratio tracking, presets (fog/haze/smoke/nebula)
     verify.ts        in-app numerical self-test (incl. the furnace energy test)
     denoise_verify.ts headless + in-app self-test for the denoiser (kernel, edges, variance, e2e)
+    medium_verify.ts headless + in-app self-test for the volumetrics (phase, Beer–Lambert, furnace)
   sdf/             implicit modelling: signed distance fields → marching cubes
     sdf.ts           SDF primitives + boolean/smooth CSG + domain transforms + gradient
     marchingcubes.ts Lorensen–Cline polygoniser (Bourke tables), vertex welding, fit/volume
@@ -83,6 +86,71 @@ average, a **wipe** that splits noisy↔denoised, and the feature buffers the fi
 **albedo**, **normal**, and the per-pixel **variance** heat field.
 
 ## Ideas / backlog
+
+### v7 — volumetric participating media: fog, god rays, smoke & nebulae (shipped 2026-06-21)
+
+Every renderer here, raster or path-traced, has so far modelled light as something that only
+interacts with **surfaces** — it travels through empty space untouched. v7 adds the missing
+physics: a bounded region of **participating media** that *absorbs* and *scatters* light along the
+ray itself. This is the layer that produces fog, haze, smoke, dusty god-ray beams and glowing
+nebulae — and it's the natural next frontier for the path tracer, which already had the BSDF, NEE
+and BVH machinery a volume integrator needs.
+
+The thesis is unchanged — *legibility and ground truth, everything from scratch, every claim
+re-derived*. The whole layer is unbiased Monte-Carlo: light is lost as transmittance
+*e^(−∫σ_t ds)* (Beer–Lambert), turns by the **Henyey–Greenstein** phase function, and the
+single-scattering albedo *σ_s/σ_t* is the fraction a collision keeps. Homogeneous media (fog, haze,
+beams) use an analytic **spectral (per-RGB) distance sampler** so fog can be *coloured* without
+bias; heterogeneous media (smoke, nebulae) use **Woodcock delta / ratio tracking** over a
+from-scratch 3-D fBm density field. It ships with an 8-check self-test that proves the phase
+function normalises (∫p dω = 1), the spectral and Woodcock estimators reproduce analytic
+Beer–Lambert, and a multiple-scattering **furnace** conserves energy (mean radiance 1.0012 of a
+unit sky for a lossless medium).
+
+New steps (all shipped):
+
+- [x] **The medium model** (`raytrace/medium.ts`) — a `Medium` (box, per-channel σ_t / σ_s, HG
+  anisotropy `g`, homo/hetero flag) plus the **Henyey–Greenstein** phase eval + exact importance
+  sampler (E[cosθ] = g), a hash-based **3-D fBm value-noise** density field (smoothstep-faded,
+  floor-carved, radially faded to the box so clouds don't clip flat), and a ray∩box span test.
+- [x] **Spectral homogeneous distance sampling** (`sampleHomogeneousDistance`) — picks an RGB
+  channel ∝ its extinction, samples a free flight along it, and reweights by the balance-style
+  mixture pdf over all three channels so the estimate is **unbiased per channel** (this is what
+  lets the "Amber smog" preset redden what it veils — blue is absorbed faster than red).
+- [x] **Woodcock tracking** (`sampleDeltaTracking` / `transmittanceRatioTracking`, with reusable
+  `deltaTrackCore` / `ratioTrackCore`) — delta tracking samples a real collision through the
+  turbulent field with probability σ_t/σ_max; ratio tracking estimates the shadow-ray
+  transmittance unbiased and **lower-variance** than the 0/1 delta estimator.
+- [x] **Volumetric path integration** (`raytrace/tracer.ts` `tracePath`) — each segment is tested
+  against the medium first: the ray may *scatter* inside it (turning by the phase function, with
+  in-scattered direct light from NEE) or pass through, attenuated by transmittance, to the surface
+  or sky it ends on. Volume scatters don't count against the surface-bounce budget, so multiple
+  scattering is bounded only by Russian roulette + an absolute guard. Surface NEE is now attenuated
+  by the medium too (`directLight`), so objects correctly dim in fog and shadow rays are shadowed.
+- [x] **Phase-function NEE** (`mediumDirectLight`) — next-event estimation at a scatter vertex to
+  every punctual + emissive-area light, each weighted by the HG phase and attenuated by the medium
+  transmittance along its own shadow ray. This is what carves real **god-ray** beams: where an
+  occluder blocks the key light, the in-scatter goes to zero and the shadow volume reads.
+- [x] **Six curated presets + a runtime builder** (`MEDIUM_PRESETS`, `buildMedium`) — Haze, Fog,
+  Sun beams, Amber smog (homogeneous, coloured), Smoke and Nebula (heterogeneous). Density scales
+  the extinction; the box is fit to the scene geometry each frame (padded, with headroom above for
+  beams) via a new `BVH.worldBounds()`.
+- [x] **Engine + UI wiring** (`renderer.ts` `buildMedium`/`buildRTLighting`, `RTSettings.medium`,
+  `Controls.tsx`) — an **Atmosphere** panel: enable toggle, preset chips, density + anisotropy
+  sliders, the reset key tracks the medium so accumulation re-converges on a change.
+- [x] **Two showcase scenes** (`scene/scene.ts`) — **Cathedral** (a colonnade whose columns split a
+  low key light into crepuscular floor shafts) and **Nebula** (a heterogeneous scattering cloud
+  glowing around a coloured core). Selecting either flips to the path tracer and turns the right
+  medium on.
+- [x] **A volumetrics self-test** (`raytrace/medium_verify.ts`) — eight numerical checks:
+  phase normalisation, isotropy/asymmetry, E[cosθ]=g sampling, Beer–Lambert + multiplicativity,
+  spectral-sampler unbiasedness per RGB channel, delta-tracking escape probability, ratio-tracking
+  unbiasedness + variance reduction, and the multiple-scattering energy-conservation furnace.
+
+Future volumetric ideas (not yet done): emissive media (fire), spectral MIS with a hero
+wavelength, an equiangular distance sampler for sharper beams near point lights, and extending the
+SVGF denoiser to the background/medium pixels (currently only surface hits are denoised, so empty
+volume converges by accumulation alone).
 
 ### v6 — real-time denoised path tracing: À-Trous + SVGF-lite (planned 2026-06-20)
 
@@ -356,6 +424,23 @@ real PBR engine with an HDR pipeline. New steps:
 
 ## Session log
 
+- 2026-06-21 (claude / claude-opus-4-8): **v7 — added a volumetric participating-media pillar
+  to the path tracer.** New `raytrace/medium.ts`: a `Medium` model (box, per-RGB σ_a/σ_s,
+  Henyey–Greenstein anisotropy, homo/hetero), the HG phase function + exact importance sampler
+  (verified E[cosθ]=g), a from-scratch 3-D fBm value-noise density field, a spectral (per-channel)
+  homogeneous distance sampler (so coloured fog stays unbiased), and Woodcock **delta / ratio
+  tracking** for heterogeneous smoke/nebulae. Rewrote `tracePath` to integrate the medium per
+  segment — scatter (phase-function turn + NEE in-scatter) or transmit to the surface/sky — added
+  phase-function NEE (`mediumDirectLight`) and medium attenuation to the surface NEE, so occluders
+  carve real **god-ray** beams and objects dim in fog. Wired six presets (Haze/Fog/Sun beams/Amber
+  smog/Smoke/Nebula), an **Atmosphere** control section, a `BVH.worldBounds()` to fit the medium
+  box to the scene, and two showcase scenes (**Cathedral** colonnade god rays, **Nebula** glowing
+  cloud). Verified with a new 8-check suite (`raytrace/medium_verify.ts`): phase normalises
+  (∫=1, max err 8.5e-3), spectral + Woodcock estimators match analytic Beer–Lambert, ratio
+  tracking beats delta-tracking variance, and the multiple-scattering **furnace conserves energy**
+  (mean 1.0012 of a unit sky). Existing RT / denoiser / SSFX / SDF suites still pass; offline PNGs
+  show the cathedral's crepuscular floor shafts and the nebula's coloured glow, NaN-free across all
+  scenes. Pure CPU TypeScript — no WebGL.
 - 2026-06-20 (claude / claude-opus-4-8): **v6 — real-time denoised path tracing: an
   edge-avoiding À-Trous wavelet denoiser with SVGF-style variance guidance.** The path tracer is
   the ground truth but at interactive sample counts (often 1 spp) it's buried in Monte-Carlo noise;

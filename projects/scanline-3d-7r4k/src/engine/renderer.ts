@@ -33,8 +33,17 @@ import type { RTCamera, RTMode, RTView } from '../raytrace/raytracer.ts'
 import type { DenoiseSettings } from '../raytrace/denoise.ts'
 import type { RTInstance } from '../raytrace/rtscene.ts'
 import type { RTLighting } from '../raytrace/tracer.ts'
+import type { Medium, MediumBox } from '../raytrace/medium.ts'
+import { buildMedium, MEDIUM_PRESETS } from '../raytrace/medium.ts'
 
 export type Engine = 'raster' | 'rt'
+
+export interface MediumSettings {
+  enabled: boolean // run the volumetric participating-media pass
+  preset: string // MEDIUM_PRESETS key (haze / fog / beams / amber / smoke / nebula)
+  density: number // multiplier on the medium's extinction
+  g: number // Henyey–Greenstein anisotropy (−0.9 back … 0.9 forward)
+}
 
 export interface RTSettings {
   mode: RTMode // 'path' (global illumination) | 'ao' (ambient occlusion)
@@ -48,6 +57,7 @@ export interface RTSettings {
   splitPos: number // divider position, 0..1
   denoise: DenoiseSettings // v6 — À-Trous / SVGF-lite denoiser config
   view: RTView // what the RT pane presents (beauty / noisy / feature buffers / wipe)
+  medium: MediumSettings // v7 — volumetric participating media (fog / haze / smoke / nebula)
 }
 
 export interface RenderSettings {
@@ -334,14 +344,17 @@ export class Renderer {
       `${scene.name}|${t.toFixed(4)}|${settings.showGround ? 1 : 0}|${settings.normalMaps ? 1 : 0}|${this.customMeshId}`
     this.rayTracer.setGeometry(instances, geomKey)
 
-    const light = this.buildRTLighting(settings)
+    const medium = this.buildMedium(settings)
+    const light = this.buildRTLighting(settings, medium)
     const rt = settings.rt
     const e3 = `${eye[0].toFixed(3)},${eye[1].toFixed(3)},${eye[2].toFixed(3)}`
     const f3 = `${cam.fx.toFixed(3)},${cam.fy.toFixed(3)},${cam.fz.toFixed(3)}`
+    const med = rt.medium
+    const medKey = med.enabled ? `${med.preset}:${med.density}:${med.g}` : '0'
     const resetKey = [
       geomKey, e3, f3, rt.mode, rt.maxBounces, rt.softShadows ? 1 : 0,
       rt.sunSoftness, rt.lightRadius, rt.aoRadius, settings.environment ? 1 : 0,
-      settings.lightBoost, settings.ambientBoost, settings.fog ? 1 : 0,
+      settings.lightBoost, settings.ambientBoost, settings.fog ? 1 : 0, medKey,
     ].join('|')
 
     const rtW = Math.max(16, Math.round(fb.width * rt.resolutionScale))
@@ -415,7 +428,26 @@ export class Renderer {
     return insts
   }
 
-  private buildRTLighting(settings: RenderSettings): RTLighting {
+  // Build the participating medium for this frame, fitting its box to the scene
+  // geometry (padded, with extra headroom above so god-ray beams have room to form).
+  // Returns null when the medium is off or there is no geometry to enclose.
+  private buildMedium(settings: RenderSettings): Medium | null {
+    const med = settings.rt.medium
+    if (!med.enabled || settings.rt.mode !== 'path') return null
+    const preset = MEDIUM_PRESETS.find((p) => p.key === med.preset) ?? MEDIUM_PRESETS[0]
+    const b = this.rayTracer.sceneBounds()
+    if (!b) return null
+    // pad by a fraction of the extent so the medium spills past the geometry
+    const ex = b.maxx - b.minx, ey = b.maxy - b.miny, ez = b.maxz - b.minz
+    const px = Math.max(1, ex * 0.25), py = Math.max(1, ey * 0.25), pz = Math.max(1, ez * 0.25)
+    const box: MediumBox = {
+      minx: b.minx - px, miny: b.miny - py * 0.5, minz: b.minz - pz,
+      maxx: b.maxx + px, maxy: b.maxy + py * 1.6, maxz: b.maxz + pz,
+    }
+    return buildMedium(preset, med.density, med.g, box)
+  }
+
+  private buildRTLighting(settings: RenderSettings, medium: Medium | null): RTLighting {
     const { scene } = this
     const ambient: Vec3 = [
       scene.ambient[0] * settings.ambientBoost,
@@ -443,6 +475,7 @@ export class Renderer {
       sunCosHalf: rt.softShadows ? Math.cos(rt.sunSoftness * DEG2RAD) : 1,
       lightRadius: rt.softShadows ? rt.lightRadius : 0,
       aoRadius: rt.aoRadius > 0 ? rt.aoRadius : 1e30,
+      medium: rt.mode === 'ao' ? null : medium,
     }
   }
 

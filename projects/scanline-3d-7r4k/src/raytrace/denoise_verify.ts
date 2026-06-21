@@ -72,7 +72,8 @@ const baseRender = (over: Partial<RenderSettings> = {}, rtOver: Partial<RenderSe
   rt: {
     mode: 'path', maxBounces: 4, softShadows: true, sunSoftness: 1.5,
     lightRadius: 0.25, aoRadius: 1.5, resolutionScale: 1, compare: false, splitPos: 0.5,
-    denoise: DEFAULT_DENOISE, view: 'denoised', ...rtOver,
+    denoise: DEFAULT_DENOISE, view: 'denoised',
+    medium: { enabled: false, preset: 'haze', density: 1, g: 0.55 }, ...rtOver,
   },
   ...over,
 })

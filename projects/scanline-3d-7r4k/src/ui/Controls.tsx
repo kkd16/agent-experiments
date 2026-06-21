@@ -11,6 +11,9 @@ import type { ShadingModel } from '../render/shading.ts'
 import { PRESET_LABELS } from '../scene/scene.ts'
 import { runRTSelfTest } from '../raytrace/verify.ts'
 import type { RTTest } from '../raytrace/verify.ts'
+import { MEDIUM_PRESETS } from '../raytrace/medium.ts'
+import { runMediumSelfTest } from '../raytrace/medium_verify.ts'
+import type { MediumTest } from '../raytrace/medium_verify.ts'
 import { runSSFXSelfTest } from '../render/ssfx_verify.ts'
 import type { SSFXTest } from '../render/ssfx_verify.ts'
 import { SDF_PRESETS } from '../sdf/scenes.ts'
@@ -110,6 +113,7 @@ export default function Controls(props: Props) {
   const setRT = (patch: Partial<RTSettings>): void => set({ rt: { ...settings.rt, ...patch } })
   const setSSFX = (patch: Partial<SSFXSettings>): void => set({ ssfx: { ...settings.ssfx, ...patch } })
   const setDen = (patch: Partial<DenoiseSettings>): void => setRT({ denoise: { ...settings.rt.denoise, ...patch } })
+  const setMed = (patch: Partial<RTSettings['medium']>): void => setRT({ medium: { ...settings.rt.medium, ...patch } })
   const activeMode = MODES.find((m) => m.key === settings.mode) ?? MODES[0]
   const post = settings.post
   const rt = settings.rt
@@ -155,6 +159,16 @@ export default function Controls(props: Props) {
     setTimeout(() => {
       setDenTests(runDenoiseSelfTest())
       setDenTesting(false)
+    }, 30)
+  }
+  const [medTests, setMedTests] = useState<MediumTest[] | null>(null)
+  const [medTesting, setMedTesting] = useState(false)
+  const runMed = (): void => {
+    setMedTesting(true)
+    setMedTests(null)
+    setTimeout(() => {
+      setMedTests(runMediumSelfTest())
+      setMedTesting(false)
     }, 30)
   }
   const activeSdf = SDF_PRESETS.find((p) => p.key === props.sdfPreset) ?? SDF_PRESETS[0]
@@ -297,6 +311,67 @@ export default function Controls(props: Props) {
             BVH-accelerated Möller–Trumbore tracing, next-event estimation to every light, and the
             analytic sky as an infinite emitter — drag to orbit and it re-converges.
           </p>
+        </Section>
+      )}
+
+      {isRT && rt.mode === 'path' && (
+        <Section title="Atmosphere — volumetric media">
+          <div className="toggles">
+            <Toggle label="Participating medium" value={rt.medium.enabled} onChange={(v) => setMed({ enabled: v })} />
+          </div>
+          {rt.medium.enabled && (
+            <>
+              <div className="seg seg-wrap">
+                {MEDIUM_PRESETS.map((p) => (
+                  <button
+                    key={p.key}
+                    className={rt.medium.preset === p.key ? 'active' : ''}
+                    onClick={() => setMed({ preset: p.key, g: p.g })}
+                    type="button"
+                  >
+                    {p.label}
+                  </button>
+                ))}
+              </div>
+              <p className="blurb">{(MEDIUM_PRESETS.find((p) => p.key === rt.medium.preset) ?? MEDIUM_PRESETS[0]).blurb}</p>
+              <Slider
+                label="Density" value={rt.medium.density} min={0.1} max={3} step={0.1}
+                onChange={(v) => setMed({ density: v })} format={(v) => `${v.toFixed(1)}×`}
+              />
+              <Slider
+                label="Anisotropy (g)" value={rt.medium.g} min={-0.9} max={0.9} step={0.05}
+                onChange={(v) => setMed({ g: v })}
+                format={(v) => (Math.abs(v) < 0.03 ? 'isotropic' : v > 0 ? `${v.toFixed(2)} forward` : `${v.toFixed(2)} back`)}
+              />
+            </>
+          )}
+          <p className="blurb">
+            A bounded region of <em>participating media</em> that absorbs and scatters light along
+            the ray, not just at surfaces — fog, haze, smoke and nebulae. Light is lost as
+            transmittance <em>e<sup>−∫σ ds</sup></em> (Beer–Lambert) and turns by the
+            Henyey–Greenstein phase function; in-scattered direct light comes from NEE through the
+            volume, so occluders carve real <em>god-ray</em> beams. Homogeneous media use a spectral
+            (per-RGB) estimator so fog can be coloured; heterogeneous smoke/nebulae use Woodcock
+            <em> delta / ratio tracking</em> over a from-scratch fBm density field. Try the
+            <em> Cathedral</em> &amp; <em>Nebula</em> scenes.
+          </p>
+          <button className="reset" onClick={runMed} type="button" disabled={medTesting} style={{ width: '100%' }}>
+            {medTesting ? 'Running…' : 'Run volumetrics self-test'}
+          </button>
+          {medTests && (
+            <div className="rt-tests">
+              <p className="blurb">
+                {medTests.filter((t) => t.pass).length}/{medTests.length} checks passed — the phase
+                function's normalisation, the spectral &amp; Woodcock estimators against analytic
+                Beer–Lambert, and a multiple-scattering furnace for energy conservation.
+              </p>
+              {medTests.map((t) => (
+                <p key={t.name} className={`obj-msg ${t.pass ? 'ok' : 'err'}`}>
+                  {t.pass ? '✓' : '✗'} {t.name} — {t.detail}
+                </p>
+              ))}
+            </div>
+          )}
         </Section>
       )}
 

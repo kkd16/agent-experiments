@@ -428,6 +428,84 @@ const interior = (): SceneConfig => {
   }
 }
 
+// A colonnade lit by a low, bright sun — built for the volumetric medium. The pillars
+// occlude the key light, so wherever the medium fills the shadow behind one the beam
+// is carved out, and the lit gaps between them glow with forward-scattered light: real
+// crepuscular "god rays", produced by next-event estimation through the medium rather
+// than any screen-space trick. Best in RT mode with the Atmosphere medium on (the
+// scene turns both on for you).
+const cathedral = (): SceneConfig => {
+  const stone = mat([0.66, 0.63, 0.58], 0.2, 28, 0, 0, 0.62)
+  const floor = mat([0.34, 0.33, 0.33], 0.2, 26, 0, 0, 0.7)
+  const objects: SceneObject[] = []
+  const N = 5
+  for (let i = 0; i < N; i++) {
+    // thin, well-spaced columns so the key light streams through the gaps between them
+    objects.push({
+      id: `col${i}`, meshKind: 'cylinder', position: [(i - (N - 1) / 2) * 2.15, 1.5, -0.6] as Vec3,
+      scale: 1.35, spin: 0, tiltSpin: 0, baseRotation: [0, 0, 0], material: stone, texture: 'none', normalMap: 'none',
+    })
+  }
+  // a couple of floating occluders to break the beams up overhead
+  objects.push({ id: 'orbA', meshKind: 'sphere', position: [0.1, 2.7, 0.6], scale: 0.5, spin: 0.2, tiltSpin: 0, baseRotation: [0, 0, 0], material: mat([0.7, 0.68, 0.64], 0.3, 40, 0, 0, 0.5), texture: 'none', normalMap: 'none' })
+  objects.push({ id: 'orbB', meshKind: 'torus', position: [2.3, 2.4, 0.2], scale: 0.65, spin: 0.4, tiltSpin: 0.2, baseRotation: [0.8, 0, 0], material: mat([0.72, 0.7, 0.66], 0.4, 50, 0, 0.2, 0.4), texture: 'none', normalMap: 'none' })
+  return {
+    name: 'Cathedral',
+    ground: true,
+    groundTexture: 'checker',
+    groundNormalMap: 'none',
+    groundMaterial: floor,
+    objects,
+    lights: [
+      { type: 'dir', direction: normalize([0.62, -0.5, 0.6]) as Vec3, color: [1, 0.9, 0.72], intensity: 2.7 },
+      { type: 'dir', direction: normalize([-0.4, -0.4, -0.5]) as Vec3, color: [0.4, 0.5, 0.72], intensity: 0.35 },
+    ],
+    ambient: [0.05, 0.06, 0.09],
+    bgTop: [0.03, 0.05, 0.09],
+    bgBottom: [0.1, 0.09, 0.1],
+    fogColor: [0.1, 0.1, 0.13],
+    fogDensity: 0,
+    sky: { ...DEFAULT_SKY, sunDir: normalize([-0.62, 0.5, -0.6]) as Vec3, sunColor: [1, 0.88, 0.66], sunIntensity: 3.4, sunAngularSize: 0.035, zenith: [0.05, 0.07, 0.13], horizon: [0.18, 0.15, 0.14], ground: [0.05, 0.05, 0.06] },
+    view: { target: [0, 1.3, 0], yaw: 0.18, pitch: 0.06, distance: 8.4 },
+  }
+}
+
+// A glowing interstellar cloud: a heterogeneous scattering medium lit from within by a
+// bright coloured core. There are no surfaces to speak of — the image is almost all
+// volume, so it only renders under the participating-media pass. A scatter of small
+// bodies sets the cloud's extent; the medium box fits to them. Turns the medium on for
+// you (preset "Nebula").
+const nebula = (): SceneConfig => {
+  const rock = mat([0.16, 0.16, 0.2], 0.2, 20, 0, 0, 0.7)
+  const coreMat: Material = { albedo: [0, 0, 0], specular: 0, shininess: 1, rim: 0, metallic: 0, roughness: 1, emission: [5, 3.6, 7] }
+  const objects: SceneObject[] = [
+    { id: 'core', meshKind: 'sphere', position: [0, 0.3, 0], scale: 0.34, spin: 0, tiltSpin: 0, baseRotation: [0, 0, 0], material: coreMat, texture: 'none', normalMap: 'none' },
+    { id: 'p1', meshKind: 'sphere', position: [-3.1, 1.4, -1.6], scale: 0.32, spin: 0.3, tiltSpin: 0, baseRotation: [0, 0, 0], material: rock, texture: 'none', normalMap: 'none' },
+    { id: 'p2', meshKind: 'sphere', position: [3.0, -1.0, 1.6], scale: 0.3, spin: 0.2, tiltSpin: 0, baseRotation: [0, 0, 0], material: rock, texture: 'none', normalMap: 'none' },
+    { id: 'p3', meshKind: 'sphere', position: [1.6, 2.4, -2.2], scale: 0.24, spin: 0.4, tiltSpin: 0, baseRotation: [0, 0, 0], material: rock, texture: 'none', normalMap: 'none' },
+    { id: 'p4', meshKind: 'sphere', position: [-1.9, -1.8, 2.2], scale: 0.26, spin: 0.3, tiltSpin: 0, baseRotation: [0, 0, 0], material: rock, texture: 'none', normalMap: 'none' },
+  ]
+  return {
+    name: 'Nebula',
+    ground: false,
+    groundTexture: 'none',
+    groundNormalMap: 'none',
+    groundMaterial: rock,
+    objects,
+    lights: [
+      { type: 'point', position: [0, 0.3, 0], color: [0.78, 0.55, 1.0], intensity: 26, range: 14 },
+      { type: 'point', position: [-2.4, 1.0, -1.0], color: [0.35, 0.7, 1.0], intensity: 9, range: 10 },
+    ],
+    ambient: [0, 0, 0],
+    bgTop: [0.012, 0.01, 0.03],
+    bgBottom: [0.02, 0.012, 0.035],
+    fogColor: [0, 0, 0],
+    fogDensity: 0,
+    sky: { ...DEFAULT_SKY, sunDir: normalize([0, 1, 0]) as Vec3, sunColor: [0, 0, 0], sunIntensity: 0, zenith: [0.015, 0.012, 0.035], horizon: [0.02, 0.012, 0.035], ground: [0.01, 0.008, 0.025], intensity: 1 },
+    view: { target: [0, 0.2, 0], yaw: 0.45, pitch: 0.12, distance: 8.6 },
+  }
+}
+
 export const PRESETS: Record<string, () => SceneConfig> = {
   showcase,
   interior,
@@ -437,6 +515,8 @@ export const PRESETS: Record<string, () => SceneConfig> = {
   exhibit,
   cornell,
   reflections,
+  cathedral,
+  nebula,
   implicit: implicitScene,
   custom: customScene,
 }
@@ -450,6 +530,8 @@ export const PRESET_LABELS: { key: string; label: string }[] = [
   { key: 'exhibit', label: 'Math Exhibit' },
   { key: 'cornell', label: 'Cornell Box' },
   { key: 'reflections', label: 'Reflections' },
+  { key: 'cathedral', label: 'Cathedral' },
+  { key: 'nebula', label: 'Nebula' },
   { key: 'implicit', label: 'Implicit (SDF)' },
   { key: 'custom', label: 'Custom OBJ' },
 ]
