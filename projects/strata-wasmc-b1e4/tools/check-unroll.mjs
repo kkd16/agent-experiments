@@ -73,7 +73,7 @@ for (const p of programs) {
     else bad++;
     console.log(
       `${pass ? 'ok  ' : 'FAIL'} ${p.name} -O${level}  fired=${fired} (changed=${r.partialUnrollChanged}) ` +
-        `loops ${r.loopsBefore}->${r.loopsAfter}  insts ${r.ssaInsts}->${r.optInsts}`,
+        `loops ${r.loopsBefore}->${r.loopsAfter}  insts ${r.ssaInsts}->${r.optInsts}  ${r.kinds}`,
     );
   }
 }

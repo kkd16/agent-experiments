@@ -10,6 +10,8 @@ import { runWasm } from '../compiler/runner';
 import { verifyAll } from '../compiler/verify';
 import type { VerifyResult } from '../compiler/verify';
 import type { OptLevel } from '../compiler/opt/optimize';
+import { analyzeLoops } from '../compiler/loopAnalysis';
+import type { LoopFact } from '../compiler/loopAnalysis';
 import { EXAMPLES, TEST_PROGRAMS } from '../examples';
 import { TESTS } from '../compiler/tests';
 import { decodeModule } from '../wasm/decode';
@@ -246,10 +248,88 @@ export function OptPanel({ comp }: { comp: Compilation }) {
         {comp.level >= 2 ? ' operator strength reduction on induction variables (loop `i*stride` → a running add) →' : ''} algebraic simplification →
         {comp.level >= 2 ? ' loop-invariant code motion →' : ''} dead-code elimination → CFG
         simplification (block coalescing), iterated to a fixed point
+        {comp.level >= 2 ? ', then partial loop unrolling (unroll-by-K + remainder loop, for the runtime- and large-trip loops full unrolling declines) and a cleanup round' : ''}
         {comp.level >= 2 ? ', then CFG cleanup + dead-function elimination' : ''}.
         The backend then <b>stackifies</b> — folding single-use pure values onto the wasm operand
         stack so they never need a local. {snaps.length > 0 && 'Click a pass to see exactly what it rewrote.'}
       </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------- Loops
+
+export function LoopsPanel({ comp, fnIdx }: { comp: Compilation; fnIdx: number }) {
+  if (!comp.ssa || !comp.optimized) return <Empty />;
+  const ssaFn = comp.ssa.funcs[fnIdx];
+  const optFn = comp.optimized.funcs[fnIdx];
+  if (!ssaFn) return <div className="panel-scroll dim note">no function</div>;
+  const before = analyzeLoops(ssaFn);
+  const after = optFn ? analyzeLoops(optFn) : [];
+  const stat = comp.optLog?.find((s) => s.name === 'partial-unroll');
+  const strided = after.filter((l) => l.kind === 'strided-main').length;
+
+  return (
+    <div className="panel-scroll loops-panel">
+      <div className="loops-summary">
+        <span className="loops-stat"><b>{before.length}</b> loop{before.length === 1 ? '' : 's'} in SSA</span>
+        <span className="loops-arrow">→</span>
+        <span className="loops-stat"><b>{after.length}</b> after -O{comp.level}</span>
+        {comp.level >= 2 && (
+          <span className="loops-stat dim">
+            full-unrolled {Math.max(0, before.length - after.length + strided)} · partial-strided {strided}
+            {stat ? ` (pass ×${stat.changed})` : ''}
+          </span>
+        )}
+      </div>
+
+      <LoopTable title={`SSA IR — ${ssaFn.name}()`} facts={before} />
+      {optFn && <LoopTable title={`Optimized (-O${comp.level}) — ${optFn.name}()`} facts={after} />}
+
+      <div className="loops-legend">
+        <b>What you're seeing.</b> A <i>counted</i> loop is a header phi
+        {' '}<code>i = [init, i ± c]</code> tested against a loop-invariant bound — the shape both
+        unrollers recognise. When the trip count is a small constant, <b>full unrolling</b> peels the
+        loop away entirely (it vanishes from the optimized column). When the bound is a
+        <i> runtime</i> value or too large, <b>partial unrolling</b> (-O2+) prepends a
+        {' '}<i>strided main loop</i> — its exit test is an exact, overflow-blind
+        {' '}<code>K more iterations?</code> guard — and reuses the original loop untouched as the
+        {' '}<i>remainder</i>. So a single runtime <code>for</code> becomes a strided-main loop plus a
+        counted remainder here.
+      </div>
+    </div>
+  );
+}
+
+function LoopTable({ title, facts }: { title: string; facts: LoopFact[] }) {
+  return (
+    <div className="loop-block">
+      <div className="loop-block-title mono">{title}</div>
+      {facts.length === 0 ? (
+        <div className="dim note">no loops</div>
+      ) : (
+        <table className="loop-table">
+          <thead>
+            <tr>
+              <th>header</th><th>depth</th><th>kind</th><th>induction</th><th>bound</th><th>trip</th><th>blocks</th><th>insts</th>
+            </tr>
+          </thead>
+          <tbody>
+            {facts.map((f) => (
+              <tr key={f.header} className={f.kind === 'strided-main' ? 'loop-strided' : f.kind === 'counted' ? 'loop-counted' : ''}>
+                <td className="mono">b{f.header}{f.depth > 1 ? <span className="dim"> ⟂b{f.parent}</span> : null}</td>
+                <td className="num">{f.depth}</td>
+                <td><span className={'loop-pill loop-pill-' + f.kind}>{f.kind}</span></td>
+                <td className="mono">{f.iv ? <>{f.iv} <span className="dim">{f.init !== undefined ? `= ${f.init}` : ''} {f.step ?? ''}</span></> : <span className="dim">—</span>}</td>
+                <td className="mono">{f.pred ?? <span className="dim">—</span>}</td>
+                <td className="num">{f.trip !== undefined ? f.trip : <span className="dim">runtime</span>}</td>
+                <td className="num">{f.bodyBlocks}</td>
+                <td className="num">{f.bodyInsts}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
     </div>
   );
 }

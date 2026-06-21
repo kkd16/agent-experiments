@@ -2227,4 +2227,102 @@ fn main(){
   print(acc);
 }`,
   },
+
+  // ---------------------------------------------------------------------------
+  // Partial loop unrolling (unroll-by-K + remainder). Each loop has a *runtime*
+  // or large bound the full unroller declines, so the strider engages; the
+  // remainder loop must mop up every leftover trip count exactly. The argument
+  // sets sweep trip counts mod K (0,1,2,3,4,…) so the remainder is exercised at
+  // every residue, including the zero- and one-iteration edges.
+  // ---------------------------------------------------------------------------
+  {
+    name: 'partial-sum-up',
+    source: `fn sum(n: int) -> int { let s = 0; for (let i = 0; i < n; i = i + 1) { s = s + i; } return s; }
+fn main(){ for (let n = 0; n <= 13; n = n + 1) { print(sum(n)); } print(sum(1000)); }`,
+  },
+  {
+    name: 'partial-countdown',
+    source: `fn f(n: int) -> int { let s = 0; for (let i = n; i > 0; i = i - 1) { s = s + i * 3 - 1; } return s; }
+fn main(){ for (let n = 0; n <= 11; n = n + 1) { print(f(n)); } print(f(777)); }`,
+  },
+  {
+    name: 'partial-stride-le',
+    source: `fn f(n: int) -> int { let s = 0; for (let i = 0; i <= n; i = i + 3) { s = s * 2 + i; } return s; }
+fn main(){ for (let n = 0; n <= 20; n = n + 1) { print(f(n)); } }`,
+  },
+  {
+    name: 'partial-stride-ge-neg',
+    source: `fn f(n: int) -> int { let s = 0; for (let i = n; i >= 0; i = i - 2) { s = s + (i ^ 5); } return s; }
+fn main(){ for (let n = 0; n <= 17; n = n + 1) { print(f(n)); } }`,
+  },
+  {
+    name: 'partial-ne-exact',
+    source: `// i counts 0,1,…,n with a !=-test that's reached exactly (n >= 0); the strider
+// must keep the body running until the precise stopping value.
+fn f(n: int) -> int { let s = 1; for (let i = 0; i != n; i = i + 1) { s = s + (i & 7) + 1; } return s; }
+fn main(){ for (let n = 0; n <= 14; n = n + 1) { print(f(n)); } print(f(513)); }`,
+  },
+  {
+    name: 'partial-side-effects',
+    source: `// A printing body: the strider may only run the K copies once it has proved all
+// K iterations happen, so the printed sequence and its length must be identical.
+fn run(n: int){ for (let i = 0; i < n; i = i + 1) { print(i * i - i); } }
+fn main(){ run(0); run(1); run(2); run(3); run(4); run(5); run(9); }`,
+  },
+  {
+    name: 'partial-two-reductions',
+    source: `fn f(n: int) -> int { let a = 0; let b = 1; for (let i = 0; i < n; i = i + 1) { a = a + i; b = b * 3 + a; } return a ^ b; }
+fn main(){ for (let n = 0; n <= 12; n = n + 1) { print(f(n)); } print(f(200)); }`,
+  },
+  {
+    name: 'partial-inner-if',
+    source: `// Control flow inside the body (a diamond) — the cloned region must keep its
+// internal branches and merges intact across all K copies.
+fn f(n: int) -> int { let s = 0; for (let i = 0; i < n; i = i + 1) { if (i % 2 == 0) { s = s + i; } else { s = s - i * 2; } } return s; }
+fn main(){ for (let n = 0; n <= 15; n = n + 1) { print(f(n)); } print(f(999)); }`,
+  },
+  {
+    name: 'partial-nested',
+    source: `// Inner loop is strided first; the outer loop's bound is runtime too.
+fn f(n: int) -> int { let s = 0; for (let i = 0; i < n; i = i + 1) { for (let j = 0; j < n; j = j + 1) { s = s + i * j; } } return s; }
+fn main(){ for (let n = 0; n <= 9; n = n + 1) { print(f(n)); } print(f(40)); }`,
+  },
+  {
+    name: 'partial-i64',
+    source: `// A 64-bit induction variable and a wrapping i64 reduction.
+fn f(n: long) -> long { let s = 0L; for (let i = 0L; i < n; i = i + 1L) { s = s * 1000003L + i; } return s; }
+fn main(){ for (let n = 0L; n <= 13L; n = n + 1L) { print(f(n)); } print(f(500L)); }`,
+  },
+  {
+    name: 'partial-i64-stride',
+    source: `fn f(n: long) -> long { let s = 7L; for (let i = n; i > 0L; i = i - 3L) { s = s + i * i; } return s; }
+fn main(){ for (let n = 0L; n <= 16L; n = n + 1L) { print(f(n)); } }`,
+  },
+  {
+    name: 'partial-large-const',
+    source: `// A constant bound far past the full-unroll limit: the strider should peel it
+// into a K-wide main loop, the remainder handling 300 mod K.
+fn main(){ let s = 0; for (let i = 0; i < 300; i = i + 1) { s = (s + i) * 3 - 1; } print(s); }`,
+  },
+  {
+    name: 'partial-invariant-bound',
+    source: `// The bound is a runtime loop-invariant computed in the preheader (m), not a
+// parameter — the strider must recognise it as invariant.
+fn f(k: int) -> int { let m = k * 2 + 3; let s = 0; for (let i = 0; i < m; i = i + 1) { s = s + i - k; } return s; }
+fn main(){ for (let k = 0; k <= 10; k = k + 1) { print(f(k)); } }`,
+  },
+  {
+    name: 'partial-wrap-body',
+    source: `// The loop counter stays in range, but the reduction multiply wraps i32 every
+// few iterations — the K strided copies must wrap exactly like the rolling loop.
+fn f(n: int) -> int { let s = 1; for (let i = 1; i <= n; i = i + 1) { s = s * 1000003 + i; } return s; }
+fn main(){ for (let n = 0; n <= 14; n = n + 1) { print(f(n)); } print(f(250)); }`,
+  },
+  {
+    name: 'partial-neg-init',
+    source: `// A negative runtime start with a positive step: the remainder must align even
+// when the iteration space straddles zero.
+fn f(a: int, b: int) -> int { let s = 0; for (let i = a; i < b; i = i + 1) { s = s + i * i - 1; } return s; }
+fn main(){ for (let b = -4; b <= 9; b = b + 1) { print(f(-4, b)); } print(f(-100, 100)); }`,
+  },
 ];

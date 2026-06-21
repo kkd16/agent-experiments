@@ -6,6 +6,7 @@
 // headless tool, never the app UI.
 import { compile } from './pipeline';
 import { findNaturalLoops } from './ir/loops';
+import { analyzeLoops } from './loopAnalysis';
 import type { IRModule } from './ir/ir';
 
 export interface UnrollProbe {
@@ -15,6 +16,8 @@ export interface UnrollProbe {
   loopsAfter: number;
   optInsts: number;
   ssaInsts: number;
+  /** Per-function loop kinds in the optimized IR, e.g. "f:[strided-main,counted]". */
+  kinds: string;
 }
 
 function countLoops(mod: IRModule | undefined): number {
@@ -27,6 +30,13 @@ function countLoops(mod: IRModule | undefined): number {
 export function probeUnroll(source: string, level: 0 | 1 | 2 | 3): UnrollProbe {
   const c = compile(source, level);
   const stat = c.optLog?.find((s) => s.name === 'partial-unroll');
+  const kinds = (c.optimized?.funcs ?? [])
+    .map((fn) => {
+      const ks = analyzeLoops(fn).map((l) => l.kind);
+      return ks.length ? `${fn.name}:[${ks.join(',')}]` : '';
+    })
+    .filter(Boolean)
+    .join(' ');
   return {
     level,
     partialUnrollChanged: stat?.changed ?? 0,
@@ -34,5 +44,6 @@ export function probeUnroll(source: string, level: 0 | 1 | 2 | 3): UnrollProbe {
     loopsAfter: countLoops(c.optimized),
     optInsts: c.metrics?.optInsts ?? 0,
     ssaInsts: c.metrics?.ssaInsts ?? 0,
+    kinds,
   };
 }

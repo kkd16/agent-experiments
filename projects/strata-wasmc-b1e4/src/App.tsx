@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import './App.css';
 import Editor from './ui/Editor';
 import CfgView from './ui/CfgView';
-import { AstPanel, DebugPanel, HexPanel, IrPanel, OptPanel, RunPanel, TokensPanel, VerifyPanel, WasmVmPanel, WatPanel } from './ui/Panels';
+import { AstPanel, DebugPanel, HexPanel, IrPanel, LoopsPanel, OptPanel, RunPanel, TokensPanel, VerifyPanel, WasmVmPanel, WatPanel } from './ui/Panels';
 import { compile } from './compiler/pipeline';
 import type { OptLevel } from './compiler/opt/optimize';
 import { EXAMPLES } from './examples';
@@ -12,6 +12,7 @@ const STAGES = [
   { id: 'ast', label: 'AST' },
   { id: 'ir', label: 'SSA IR' },
   { id: 'opt', label: 'Optimizer' },
+  { id: 'loops', label: 'Loops' },
   { id: 'cfg', label: 'CFG' },
   { id: 'wat', label: 'WASM' },
   { id: 'hex', label: 'Bytes' },
@@ -59,7 +60,7 @@ export default function App() {
   };
 
   const m = comp.metrics;
-  const showFnSelect = (stage === 'ir' || stage === 'cfg') && funcs.length > 1;
+  const showFnSelect = (stage === 'ir' || stage === 'cfg' || stage === 'loops') && funcs.length > 1;
 
   return (
     <div className="app">
@@ -133,6 +134,7 @@ export default function App() {
             {stage === 'ast' && <AstPanel comp={comp} />}
             {stage === 'ir' && <IrPanel comp={comp} fnIdx={safeFnIdx} />}
             {stage === 'opt' && <OptPanel comp={comp} />}
+            {stage === 'loops' && <LoopsPanel comp={comp} fnIdx={safeFnIdx} />}
             {stage === 'cfg' &&
               (funcs[safeFnIdx] ? <CfgView fn={funcs[safeFnIdx]} /> : <div className="panel-scroll dim note">no function</div>)}
             {stage === 'wat' && <WatPanel comp={comp} />}

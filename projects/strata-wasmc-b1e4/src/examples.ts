@@ -283,6 +283,44 @@ fn main() {
 `,
   },
   {
+    id: 'partial-unroll',
+    title: 'Partial unrolling (runtime trip)',
+    blurb: 'A runtime-bound loop can\'t fully unroll — so it\'s strided by K with a remainder loop. Open the Loops tab at -O2/-O3.',
+    source: `// When a loop's trip count is a *runtime* value (or simply too large), the
+// full unroller can't peel it. Partial unrolling (-O2+) handles exactly these:
+// it prepends a strided "main" loop that runs K body copies per back edge —
+// guarded by an exact, overflow-blind "K more iterations?" test — and reuses
+// the original loop untouched as the "remainder" that mops up the final < K
+// iterations. Open the **Loops** tab and step -O1 → -O2: the single runtime
+// loop splits into a strided-main loop + a counted remainder. The **Optimizer**
+// tab shows the 'partial-unroll' pass firing; the **CFG** tab shows the new shape.
+
+// Sum 0..n-1 with a runtime bound: the strider runs 4 adds per back edge.
+fn sum(n: int) -> int {
+  let s = 0;
+  for (let i = 0; i < n; i = i + 1) { s = s + i; }
+  return s;
+}
+
+// Horner-style polynomial evaluation over a runtime count — two loop-carried
+// values (the accumulator and the index) thread through the strided copies.
+fn poly(n: int) -> int {
+  let acc = 0;
+  for (let i = 1; i <= n; i = i + 1) { acc = acc * 31 + i; }
+  return acc;
+}
+
+fn main() {
+  // Sweep the trip count across every residue mod K so the remainder loop runs
+  // 0,1,2,3,… leftover iterations — the output is identical at every -O level.
+  for (let n = 0; n <= 10; n = n + 1) { print(sum(n)); }
+  print(sum(1000));
+  print(poly(7));
+  print(poly(250));
+}
+`,
+  },
+  {
     id: 'loop-vector',
     title: 'Fixed-size vector kernel',
     blurb: 'Small memory loops (trip ≤ 8) unroll into straight-line loads/stores — a vector-kernel win.',

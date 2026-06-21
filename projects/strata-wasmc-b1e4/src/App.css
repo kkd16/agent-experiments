@@ -362,6 +362,28 @@
 }
 .prelog-pill b { color: var(--text); }
 
+/* Loops panel */
+.loops-panel { font-size: 13px; }
+.loops-summary { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; margin-bottom: 16px; }
+.loops-stat { font-size: 13px; color: var(--text); }
+.loops-stat b { color: var(--accent); font-size: 15px; }
+.loops-stat.dim { color: var(--dim); }
+.loops-arrow { color: var(--dim); }
+.loop-block { margin-bottom: 20px; }
+.loop-block-title { font-size: 12px; color: var(--dim); margin-bottom: 6px; letter-spacing: 0.4px; }
+.loop-table { border-collapse: collapse; font-size: 12.5px; min-width: 560px; }
+.loop-table th { text-align: left; color: var(--dim); padding: 5px 12px; border-bottom: 1px solid var(--border); font-weight: 500; }
+.loop-table td { padding: 5px 12px; border-bottom: 1px solid #161d28; vertical-align: top; }
+.loop-table tr.loop-strided td { background: #15212e; }
+.loop-table tr.loop-counted td { background: #131a26; }
+.loop-pill { display: inline-block; border-radius: 12px; padding: 1px 9px; font-size: 11px; font-family: var(--mono); border: 1px solid var(--border2); }
+.loop-pill-counted { color: var(--accent2); background: #122031; }
+.loop-pill-strided-main { color: var(--green); background: #0e1f15; }
+.loop-pill-general { color: var(--dim); background: #161d28; }
+.loops-legend { font-size: 12.5px; color: var(--dim); line-height: 1.7; max-width: 78ch; margin-top: 10px; border-top: 1px solid var(--border); padding-top: 12px; }
+.loops-legend b { color: var(--text); }
+.loops-legend code { font-family: var(--mono); color: var(--accent2); background: #122031; padding: 0 4px; border-radius: 4px; }
+
 .ir-diff { margin-top: 14px; }
 .ir-diff-head { font-size: 12.5px; color: var(--dim); margin-bottom: 6px; }
 .ir-diff-head b { color: var(--accent); }
