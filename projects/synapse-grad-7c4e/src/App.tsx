@@ -1,13 +1,15 @@
 import { useState } from 'react';
 import PlaygroundLab from './components/PlaygroundLab';
 import VisionLab from './components/vision/VisionLab';
+import SeqLab from './components/seq/SeqLab';
 import './App.css';
 
-type Tab = 'playground' | 'vision';
+type Tab = 'playground' | 'vision' | 'transformer';
 
 // If the page was opened from a shared CNN link (#v=…), start on the vision tab.
 function initialTab(): Tab {
   try {
+    if (/[#&]t=/.test(location.hash)) return 'transformer';
     return /[#&]v=/.test(location.hash) ? 'vision' : 'playground';
   } catch {
     return 'playground';
@@ -35,6 +37,9 @@ export default function App() {
             <button className={tab === 'vision' ? 'on' : ''} onClick={() => setTab('vision')}>
               Vision · CNN
             </button>
+            <button className={tab === 'transformer' ? 'on' : ''} onClick={() => setTab('transformer')}>
+              Transformer · Attention
+            </button>
           </nav>
           <div className="kbd-hint">
             <kbd>space</kbd> train · <kbd>s</kbd> step · <kbd>r</kbd> reset · <kbd>g</kbd> gradcheck
@@ -42,7 +47,7 @@ export default function App() {
         </div>
       </header>
 
-      {tab === 'playground' ? <PlaygroundLab /> : <VisionLab />}
+      {tab === 'playground' ? <PlaygroundLab /> : tab === 'vision' ? <VisionLab /> : <SeqLab />}
 
       <footer className="foot">
         <span>

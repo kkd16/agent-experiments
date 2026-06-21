@@ -2,7 +2,7 @@
 
 A tiny **deep-learning framework that runs in your browser**, built from scratch on a real
 reverse-mode **tensor autograd engine** (no TensorFlow.js, no ONNX, no WebGL math libs — every
-gradient is hand-derived and the tape is hand-rolled). Two labs share the one engine:
+gradient is hand-derived and the tape is hand-rolled). Three labs share the one engine:
 
 - **2-D Playground** — pick a dataset, sketch an MLP, and watch it learn in real time:
   decision boundary, per-neuron feature maps, loss/accuracy curves, and a live computation graph.
@@ -10,6 +10,15 @@ gradient is hand-derived and the tape is hand-rolled). Two labs share the one en
   image set (handwritten-style digits 0–9 and shapes, rendered from strokes — no MNIST, no
   bundled data) and **draw your own glyph** to have it classified live, with learned-filter,
   feature-map and confusion-matrix views.
+- **Transformer · Attention** — train a from-scratch **decoder-only Transformer** (a tiny GPT)
+  on procedural algorithmic tasks (copy / reverse / sort / add two numbers) with next-token
+  prediction, and **watch the causal self-attention maps** crystallise per layer and head while
+  it learns to actually *solve* the problem. Type your own problem and watch it decode token by
+  token with per-token confidence; see the learned token embeddings organise themselves in 2-D.
+  Multi-head attention is assembled out of the engine's primitive ops (per-head matmuls, a
+  transpose, a scaled dot-product, an additive causal mask, a row-wise softmax, a concat) and the
+  whole network — every head's Q/K/V, the output projection, both LayerNorms, the GELU MLP — is
+  gradchecked end-to-end to ~1e-7.
 
 A built-in **numerical gradient checker** runs finite differences against the analytic gradients
 and reports the max error, so you can *prove* the engine — convolution included — is correct,
@@ -34,14 +43,20 @@ src/
   engine/
     tensor.ts     reverse-mode autograd Tensor (2-D matrix core, flat Float64Array tape)
     conv.ts       conv2d, maxPool2d, avgPool2d (NCHW, hand-derived backward) — the vision ops
+    ops.ts        higher-level ops: dropout, LayerNorm, BatchNorm + embedding (row gather)
+                  & concatCols (multi-head merge) — all hand-derived backward
     nn.ts         Linear layers, Sequential model, He/Xavier init, activation modules
     vision-nn.ts  ConvNet model (conv→act→pool blocks + dense head) + arch presets
+    transformer.ts  a from-scratch decoder-only Transformer (GPT): token+position embeddings,
+                  multi-head causal self-attention, pre-LN GELU MLP blocks, weight-tied head,
+                  greedy decode + per-head attention capture for the visualizer
+    seqtasks.ts   procedural algorithmic tasks (copy / reverse / sort / add) over a 12-token vocab
     optim.ts      SGD, Momentum, RMSProp, Adam, L2 weight decay
-    losses.ts     softmax cross-entropy (fused), MSE/MAE/Huber
+    losses.ts     softmax cross-entropy (fused), masked CE (answer-span only), MSE/MAE/Huber
     data.ts       2-D dataset generators (spiral, circles, moons, xor, gaussians, ring) + noise
     images.ts     procedural image datasets — stroke-rendered digits 0–9 & shapes (MNIST-free)
     gradcheck.ts  finite-difference gradient checker
-    selftest.ts   one-click gradcheck of *every* engine op, conv/pool included
+    selftest.ts   one-click gradcheck of *every* engine op — conv/pool AND the whole Transformer
   components/
     PlaygroundLab.tsx      the 2-D lab (decision boundary / regression) wiring
     DecisionBoundary.tsx   canvas heatmap of model output over the input plane
@@ -57,12 +72,20 @@ src/
       FilterGrid.tsx       learned first-layer conv kernels
       FeatureMaps.tsx      per-conv-layer activations for a chosen sample
       ConfusionMatrix.tsx  true-vs-predicted heatmap
+    seq/
+      SeqLab.tsx           the Transformer lab layout + keyboard shortcuts
+      SeqPanel.tsx         task / model-size / optimizer controls + live stats + gradcheck
+      AttentionMaps.tsx    the headline: per-layer × per-head causal attention heatmaps
+      SamplePredictions.tsx held-out problems decoded greedily, per-token right/wrong coloring
+      GenerateBox.tsx      type a problem, watch it decode with per-token confidence bars
+      TokenEmbeddings.tsx  learned token vectors projected to 2-D via power-iteration PCA
   hooks/
     useTrainer.ts        owns the MLP model+optimizer+data, steps the loop via rAF
     useVisionTrainer.ts  owns the CNN model+optimizer+image data, steps the loop via rAF
+    useSeqTrainer.ts     owns the GPT+optimizer, microbatches sequences into one backward
   lib/
     raster.ts     canvas grid painting + color ramps for the vision views
-  App.tsx           tabbed shell: 2-D Playground ⟷ Vision · CNN
+  App.tsx           tabbed shell: 2-D Playground ⟷ Vision · CNN ⟷ Transformer · Attention
 ```
 
 ## Backlog / ideas
@@ -173,8 +196,60 @@ draw. The showpiece is a draw-your-own pad that classifies your sketch in real t
 **Refactor:**
 - [x] Split the original lab into `PlaygroundLab`; `App` is now a tabbed shell hosting both labs
 
+### Session 4 — a from-scratch Transformer + attention lab (claude, 2026-06-21)
+
+The plan: give Synapse a *third* lab that closes the obvious gap — it had MLPs and CNNs but no
+attention. Build a real decoder-only Transformer on the existing autograd engine and make the
+thing that everyone wants to see — the **attention maps** — the centrepiece, while keeping the
+project's defining promise: every new gradient is hand-derived and machine-proven.
+
+**Engine — the new differentiable pieces (all hand-derived backward, all gradchecked):**
+- [x] `embedding(table, ids)` — row-gather with scatter-add backward (equivalent to one-hot @ E
+      but O(T·D)); a repeated id exercises gradient accumulation in the self-test
+- [x] `concatCols(parts)` — feature-axis concat with a slicing backward (merges the heads)
+- [x] `maskedCrossEntropy(logits, targets, keep)` — CE averaged over a chosen answer span only,
+      so loss focuses on the tokens that matter for an algorithmic task
+- [x] Reused the existing `softmax` (full-Jacobian VJP), `transpose`, `layerNorm`, `gelu`, and an
+      additive causal mask — attention needed **no** new primitive beyond the two ops above
+- [x] `selftest.ts` extended: `embedding`, `concatCols`, `maskedCE`, **and an end-to-end whole-GPT
+      gradcheck** (every head's Q/K/V, the output projection, both LayerNorms, the GELU MLP) — all
+      verified to ~3e-7, surfaced in the one-click self-test panel
+
+**Model — `transformer.ts` (a tiny GPT, from scratch):**
+- [x] Token + learned position embeddings; weight-tied output head (logits = h · Eᵀ)
+- [x] Multi-head **causal** self-attention assembled from primitive ops: per-head Q/K/V matmuls,
+      scaled dot-product, additive lower-triangular mask, row-wise softmax, value mix, head concat,
+      output projection
+- [x] Pre-LayerNorm residual blocks with a GELU feed-forward; configurable depth / width / heads
+- [x] Per-head attention capture on the forward pass for the visualizer; greedy autoregressive
+      `generate()`; `exportWeights`/`importWeights` for snapshotting
+
+**Tasks — `seqtasks.ts`, fully procedural (no bundled data):**
+- [x] `copy`, `reverse`, `sort`, and two-number `add`, each posed as "&lt;prompt&gt; = &lt;answer&gt;"
+      over a 12-token vocab (digits + `+` + `=`), with an answer-span mask for the loss
+
+**Transformer lab UI (new `Transformer · Attention` tab):**
+- [x] `useSeqTrainer` hook — builds the GPT + optimizer, generates fresh minibatches, sums the
+      scaled per-sequence losses into **one** scalar and back-props once (a single backward zeroes
+      then fills the whole reachable graph, so per-sample backward calls would be wrong)
+- [x] **Attention maps** — a per-layer × per-head grid of causal-attention heatmaps over a worked
+      example, token-labelled, with the answer boundary marked, updating live as it trains
+- [x] **Live decoding** — held-out problems decoded greedily, each answer token coloured against
+      ground truth (green right / pink wrong), with a running "solved" count
+- [x] **Try it** — type your own problem and watch it decode token-by-token with per-token
+      confidence bars and a correctness verdict
+- [x] **Token-embedding PCA** — the 12 learned token vectors projected to 2-D via power iteration
+- [x] Held-out training curves (cross-entropy + per-token & full-sequence accuracy), live model
+      stats, one-click gradient check, keyboard shortcuts (space / s / r / g)
+- [x] Verified outside the browser before wiring the UI: self-test passes at 3.46e-7; `sort` (4
+      digits) reaches ~97% exact-match in ~400 steps, `add` (2 digits) ~80% in ~600 steps
+
 ### Still open / future
 
+- [ ] KV-cache the decode path (currently re-runs the full forward each step — fine at this scale)
+- [ ] Transformer save/load + shareable `#t=` links (hook already snapshots weights)
+- [ ] Attention-rollout / head-ablation view; per-position next-token probability strip
+- [ ] A char-level text task (tiny grammar) alongside the algorithmic ones
 - [ ] Per-channel padding / stride controls in the conv UI (presets only for now)
 - [ ] More glyph classes (letters) and an "all classes" balanced sampler
 - [ ] WebGL/WebGPU matmul + conv backend for bigger nets (stretch)
@@ -201,4 +276,15 @@ draw. The showpiece is a draw-your-own pad that classifies your sketch in real t
   matrix; split the old lab into `PlaygroundLab` and made `App` a tabbed shell. Validated the new
   gradients and CNN training (≈100% on digits/shapes) outside the browser before wiring the UI;
   lint + build green via `node scripts/verify-project.mjs`.
+- 2026-06-21 (claude, session 4): added a third lab — a **from-scratch decoder-only Transformer**
+  ("Transformer · Attention"). New engine ops `embedding` and `concatCols` plus a `maskedCrossEntropy`
+  loss (all hand-derived backward); a complete `transformer.ts` GPT (token+position embeddings,
+  multi-head causal self-attention built only from the engine's primitive ops, pre-LN GELU blocks,
+  weight-tied head, greedy decode, per-head attention capture); four procedural sequence tasks
+  (`seqtasks.ts`: copy/reverse/sort/add); a `useSeqTrainer` hook; and the lab UI — live per-layer ×
+  per-head **attention heatmaps**, greedy live decoding with right/wrong coloring, an interactive
+  "type a problem" decoder with confidence bars, and a token-embedding PCA view. Folded `embedding`,
+  `concatCols`, `maskedCE` **and a whole-GPT end-to-end gradcheck** into the engine self-test (max
+  rel err ~3e-7). Validated training outside the browser (sort ≈97% exact-match @ ~400 steps; add
+  ≈80% @ ~600) before wiring the UI; lint + build green via `node scripts/verify-project.mjs`.
 
