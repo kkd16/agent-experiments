@@ -65,6 +65,7 @@ import { runQbfChecks } from './src/qbf/selfcheck'
 import { runBddChecks } from './src/bdd/selfcheck'
 import { runPbChecks } from './src/pb/selfcheck'
 import { runSlsChecks } from './src/sls/selfcheck'
+import { runPreprocessChecks } from './src/preprocess/selfcheck'
 
 let pass = 0
 let fail = 0
@@ -1355,6 +1356,14 @@ function bruteMaxCut(g: WeightedGraph): number {
   for (const m of slsr.messages) console.error(m)
   pass += slsr.pass
   fail += slsr.fail
+}
+
+// ---- CNF preprocessing / inprocessing + model reconstruction (Simplify) -----
+{
+  const ppr = runPreprocessChecks()
+  for (const m of ppr.messages) console.error(m)
+  pass += ppr.pass
+  fail += ppr.fail
 }
 
 console.log(`\n${pass} passed, ${fail} failed`)

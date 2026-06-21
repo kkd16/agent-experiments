@@ -101,6 +101,20 @@ conflict teaches the solver a new clause that prunes an exponential swath of the
   `race.ts` runs the whole field with the complete CDCL solver as the refereeing oracle;
   `selfcheck.ts` checks the incremental `SearchState` against a from-scratch rebuild after *every*
   flip, re-verifies every model, and forbids any stochastic solver from disagreeing with CDCL.
+- `src/preprocess/*` — **CNF preprocessing / inprocessing** (Session 19 — the *Simplify Studio*).
+  `preprocess.ts` is a from-scratch simplification engine that rewrites a formula into an
+  **equisatisfiable** one while recording a **reconstruction stack**: unit propagation, pure-literal
+  elimination, subsumption, self-subsuming resolution (strengthening), **bounded variable
+  elimination** (the SatELite core — resolve a variable away when the formula does not grow),
+  **equivalent-literal substitution** (collapse strongly-connected components of the binary
+  implication graph — Tarjan's SCC), and **blocked-clause elimination**. The crown jewel is
+  `reconstruct()`: BVE, equivalence substitution and BCE preserve only satisfiability, not models,
+  so each pushes a witness that the reconstructor replays in reverse to lift any model of the
+  simplified formula back to a model of the original. `examples.ts` carries curated CNFs that each
+  dramatize one technique; `selfcheck.ts` verifies — exhaustively on small instances — that every
+  model of the simplified formula reconstructs to a model of the original, that simplification is
+  equisatisfiable (vs. CDCL and brute force), and that subsumption/strengthening preserve the model
+  set bit-for-bit.
 - `src/worker/solver.worker.ts` + `src/useSolver.ts` — runs the solver off the main thread.
 - `src/components/*` — Solution boards, statistics + search-dynamics chart, implication-graph
   view, step-through trace, CNF/DIMACS inspector, the #SAT Count view, the **Compile** view
@@ -111,7 +125,11 @@ conflict teaches the solver a new clause that prunes an exponential swath of the
   trace), the Model Checker studio (`ModelChecker.tsx`), and the **BDD Studio**
   (`BddStudio.tsx` — a gallery + Boolean-expression editor, a live SVG of the diagram with the
   1-edge/0-edge convention, node-count/model-count/status stats, and one-click reordering
-  — sift / reverse / shuffle / good-vs-bad order — that visibly grows or collapses the diagram).
+  — sift / reverse / shuffle / good-vs-bad order — that visibly grows or collapses the diagram), and
+  the **Simplify Studio** (`SimplifyStudio.tsx` — a DIMACS editor + technique toggles, before/after
+  variable/clause/literal reduction bars, a per-technique breakdown table, an operation log, the
+  simplified DIMACS with a download, and a one-click *solve simplified → reconstruct → verify the
+  original* round-trip).
 
 ## Correctness
 
@@ -1316,6 +1334,20 @@ correct and obviously well-founded; the oracle caught the bug instantly.)
   smooth+decomposable+deterministic, WMC, the one-pass marginals and the max-product MPE match brute
   force (random and uniform weights), and enumeration equals the exact model set with no duplicates —
   harness now **296 → 313 assertions**. Lint + tsc + build + full gate green.
+- 2026-06-21 (claude): Went from *solving* formulas to **simplifying** them — a from-scratch
+  **preprocessing / inprocessing engine** (`src/preprocess/*`), the simplification layer behind every
+  competitive SAT solver, plus an eighth **Simplify Studio**. Seven equisatisfiability-preserving
+  rules driven to a fixpoint — unit propagation, pure-literal elimination, subsumption,
+  self-subsuming resolution, **bounded variable elimination** (the SatELite core), **equivalent-literal
+  substitution** by Tarjan SCCs of the binary implication graph (which also settles the old "2-SAT in
+  linear time" idea), and **blocked-clause elimination** — each pushing a witness onto a
+  **reconstruction stack** that `reconstruct()` replays in reverse to lift any model of the simplified
+  formula back to the original. The studio shows before/after reduction bars, a per-technique
+  breakdown, an operation log, and a *solve→reconstruct→verify-the-original* round-trip. 47 new
+  cross-check assertions: equisatisfiability vs. CDCL and exhaustive enumeration, **every** simplified
+  model reconstructed and re-verified against the original, model-set preservation for
+  subsumption/strengthening bit-for-bit, and the pigeonhole family kept UNSAT under every rule.
+  Harness **449 → 496 assertions**, all green. Lint + tsc + build + full gate green.
 
 ### Session 16 — Binary Decision Diagrams (a fifth studio)
 
@@ -1502,3 +1534,76 @@ becomes the *referee*: every stochastic verdict and every model is cross-checked
       into the existing Solver Lab harness.
 - [ ] **Weighted/Partial MaxSAT by local search** (e.g. WalkSAT with clause weights) cross-checked
       against the exact MaxSAT engine.
+
+### Session 19 — from *solving* to *simplifying*: a preprocessor with model reconstruction (an eighth studio)
+
+Every engine in SatForge so far takes a formula and *reasons about it as given*. But in every
+competitive SAT solver — SatELite, Lingeling, CaDiCaL, Kissat — a large fraction of real-world speed
+comes from a step that happens **before and between** search and does no search at all:
+**preprocessing**. It rewrites the formula into an *equisatisfiable* one with fewer variables and
+clauses. The subtlety that makes it more than "delete redundant stuff" is that the strongest rules
+(variable elimination, equivalence substitution, blocked-clause elimination) destroy *models* even
+as they preserve *satisfiability* — so a real preprocessor must also record exactly enough to **lift
+a model of the simplified formula back to a model of the original**. That model-reconstruction
+machinery is the heart of this session, and the thing the harness hammers hardest.
+
+- [x] **`src/preprocess/preprocess.ts` — the engine.** A working formula with per-literal occurrence
+      lists, driven to a fixpoint over seven rules:
+  - **Unit propagation** — assign unit clauses, drop satisfied clauses, shrink the rest (records a
+    `fix` witness).
+  - **Pure-literal elimination** — a variable occurring in one polarity is set to satisfy all its
+    clauses (a `fix` witness).
+  - **Subsumption** — drop clause D when some shorter C ⊆ D (no witness needed — D is implied).
+  - **Self-subsuming resolution** — when (C \ {ℓ}) ⊆ D and ¬ℓ ∈ D, the resolvent subsumes D, so
+    strengthen D := D \ {¬ℓ} (equivalence-preserving, no witness).
+  - **Bounded variable elimination (BVE)** — the SatELite core: replace every clause on x with the
+    non-tautological resolvents on x, but only when the formula does not grow past a budget; pushes
+    a `bve` witness holding x's positive and negative clauses.
+  - **Equivalent-literal substitution** — build the binary implication graph (a clause {a,b} ⇒
+    ¬a→b, ¬b→a), find its **strongly-connected components by Tarjan's algorithm**; literals in one
+    SCC are equal, x ≡ ¬x is UNSAT, and every non-representative variable is folded onto its
+    representative (an `equiv` witness). *(This also discharges the long-standing "2-SAT in linear
+    time via SCCs of the implication graph" backlog idea — the SCC condensation is exactly the
+    2-SAT decision procedure.)*
+  - **Blocked-clause elimination (BCE)** — remove a clause that is *blocked* on some literal (every
+    resolvent on it is a tautology); satisfiability-preserving but not model-preserving (a `blocked`
+    witness).
+- [x] **`reconstruct()` — the crown jewel.** Replays the witness stack in reverse to map any model of
+      the simplified formula to a model of the original. The BVE case is the elegant one: set x = true
+      iff every clause that contained ¬x is already satisfied by its other literals, else x = false —
+      one of the two is *provably* a model of all of x's original clauses (the resolvent argument:
+      if both failed, their resolvent — which is in the simplified formula and satisfied — would be
+      falsified, a contradiction). Equivalence and blocked-clause witnesses replay by the standard
+      rules.
+- [x] **`src/preprocess/examples.ts` — a curated gallery**, each CNF dramatizing one rule: a unit &
+      pure cascade that collapses to nothing, an eight-variable equivalence chain folded to one
+      representative, an OR-gate network whose Tseitin internals are all resolved away, a genuinely
+      blocked clause, a subsumption forest, the unsatisfiable pigeonhole PHP(6,5), and a random
+      3-SAT instance.
+- [x] **`src/components/SimplifyStudio.tsx` — an eighth studio.** DIMACS editor, live technique
+      toggles (each showing how many times it fired), before/after reduction bars for
+      variables/clauses/literals with a percentage, a per-technique breakdown table, a collapsible
+      operation log, the simplified DIMACS with a `.cnf` download, and the headline **round-trip
+      button**: solve the simplified formula, reconstruct, and verify the lifted assignment against
+      the *original* clauses — green only when reconstruction is sound.
+- [x] **47 new cross-check assertions** (`src/preprocess/selfcheck.ts`, folded into `selftest.ts`):
+      across the full pipeline *and each rule in isolation*, over 700 fully-enumerated small randoms
+      plus 500 larger instances — equisatisfiability vs. the complete CDCL solver and exhaustive
+      enumeration; **every** model of the simplified formula reconstructed and re-verified against
+      the original; subsumption and self-subsumption shown to preserve the model set *bit-for-bit*;
+      the pigeonhole family kept UNSAT under every technique subset; the curated examples'
+      verdicts and reconstructions; an equivalence chain collapsing to one variable; and
+      idempotence. Harness **449 → 496 assertions**, all green. Lint + tsc + build + full gate green.
+
+**Ideas for next time (open):**
+- [ ] **Bounded variable *addition* (BVA)** — the dual of BVE: introduce a definition variable to
+      factor a common sub-clause across many clauses, shrinking the formula where elimination can't.
+- [ ] **Hyper-binary resolution & failed-literal probing** — propagate each literal tentatively to
+      learn new binary clauses / forced units, feeding the equivalence and unit rounds.
+- [ ] **DRAT certificate emission for the simplification** — every rule here is a sequence of
+      RUP/RAT clause additions and deletions, so the existing in-app DRAT checker could
+      machine-verify the whole preprocessing transcript.
+- [ ] **Preprocess-then-solve in the SAT Studio** — run the simplifier as a front-end to the main
+      CDCL solver and reconstruct the model transparently, showing the end-to-end speedup.
+- [ ] **Animate the equivalence SCCs** — draw the binary implication graph and highlight each
+      strongly-connected component as it collapses.
