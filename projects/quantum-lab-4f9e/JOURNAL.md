@@ -775,3 +775,111 @@ logical state — *the same one for every measurement record*.
   ticks marked), and a continued-fraction convergent table. The full-register simulator matches the
   analytic comb to ~1e-14 (no knowledge of r), and every composite factors correctly. Suite 80 → 88,
   green; lint + tsc + build pass.
+
+## Quantum Lab 12.0 — Fault-tolerant universality: Solovay–Kitaev compilation + magic-state distillation (this session)
+
+The lab has spent versions 2.0–11.0 building the entire fault-tolerant *Clifford* substrate — the
+stabilizer tableau, the Steane and surface codes, the MWPM and Union-Find decoders, space-time
+fault tolerance. But a Clifford-only machine is, by Gottesman–Knill, **classically simulable**: it
+cannot do anything quantumly useful. 12.0 closes the loop with the two ideas that turn that substrate
+into a **universal** quantum computer, and they are duals of one another:
+
+1. **Solovay–Kitaev** — *given* the discrete fault-tolerant gate set {H, T} + Clifford, compile any
+   unitary into it. This tells you the **T-count** of a computation.
+2. **Magic-state distillation** — *supply* the non-Clifford T gates that compilation consumes, by
+   purifying noisy |T⟩ magic states with Clifford-only post-selection.
+
+Both are built from scratch, in the project's house style (a self-contained module + a lab tab +
+self-tests cross-checked against an independent reference), and both were validated in a throwaway
+oracle before a line of TS was written.
+
+### Solovay–Kitaev (`src/quantum/solovay.ts`)
+- [x] **Compact SU(2) core** — every operator is a pair (a, b) standing for [[a, b], [−b̄, ā]];
+      products stay in this form, with closed-form axis–angle extraction and an operator-norm
+      (largest-singular-value) distance. No matrix library, no eigensolver.
+- [x] **The discrete instruction set** {H, T, T†, S, S†, X, Y, Z} as exact SU(2) lifts (H lifted as
+      −iH), plus the genuine U(2) matrices for an honest reconstruction check.
+- [x] **The Dawson–Nielsen group-commutator decomposition** `gcDecompose(Δ)` — for Δ a rotation by θ
+      about n̂, take V₀=Rx(φ), W₀=Ry(φ) with φ=2·asin(√(√((1−cos(θ/2))/2))) so the commutator has angle
+      θ, then conjugate both by the rotation S carrying the commutator's axis onto n̂. Uses only
+      rotations and cross products — verified to reconstruct Δ = V W V† W† to ~1e-13.
+- [x] **The ε₀-net** — a breadth-first enumeration of every reduced word up to length 16,
+      deduplicated by SU(2) value (folding the global ± sign): ~9,900 words covering SU(2) with
+      radius ε₀ ≈ 0.20, built (and cached) in well under a second.
+- [x] **The recursion** `solovayKitaev(U, n)` — base approximation from the net, then approximate U at
+      depth n−1, write the leftover error as a balanced group commutator, recurse on V and W, and
+      reassemble V_{n−1} W_{n−1} V_{n−1}† W_{n−1}† U_{n−1}. Error contracts as ε_n ≈ c·ε_{n−1}^{3/2}.
+- [x] **The compile API** — `compileGate(target, depth)` returns the (simplified) word, the
+      approximation error, the gate count, and the **T-count** (the costly non-Clifford resource).
+      Named targets (Rz(π/5), V=√X, golden-ratio rotations, seeded Haar-ish gates) plus an adjustable
+      Rz(θ).
+- [x] **Solovay–Kitaev lab** (`SolovayLab.tsx`) — a *Compile* card (target + depth + a live word
+      preview with T/T† highlighted as the costly resource), a *Convergence* card that sweeps depth
+      0→5 and plots the error (log scale) and gate count against the SK law, and an *Instruction set &
+      base net* card (the eight generators, the net size and covering radius, the universality note).
+
+### Magic-state distillation (`src/quantum/distillation.ts`)
+- [x] **The [15,11,3] Hamming code from scratch** — parity-check columns = the binary numerals 1…15;
+      all 2¹¹ codewords enumerated, with the textbook weight enumerator (A₀=1, A₃=35, A₄=105, …, A₁₅=1).
+- [x] **The 15-to-1 routine, exactly** — the Bravyi–Kitaev protocol on the [[15,1,3]] Reed–Muller code
+      reduces to: an input |T⟩ phase (Z) error at rate p; accept iff the pattern is a Hamming codeword
+      (trivial X-syndrome); fail iff that codeword has **odd weight** (a Z-logical). `distill(p)` sums
+      over every codeword to get the exact p_out, the acceptance probability, and the improvement verdict.
+- [x] **The 35 p³ law** — because the code has distance 3 with exactly **35 weight-3 logicals**,
+      p_out/p³ → 35 as p → 0 (verified to 35.2 at p=0.002). The **threshold** where p_out = p is
+      computed exactly (p* ≈ 14.2%), below the leading-order 1/√35 ≈ 16.9% (the positive higher-order
+      terms lower it).
+- [x] **The cascade** `distillCascade(pIn, rounds)` — feed the output back in: round r reaches error
+      ~35^((3^r−1)/2)·p^(3^r) (the exponent triples each round) at a cost of 15^r raw states per output
+      — doubly-exponential suppression (5% → 5e-3 → 5e-6 → 4e-15 in three rounds).
+- [x] **Monte-Carlo cross-check** — a from-scratch mulberry32 RNG drives the post-selected protocol
+      directly; its p_out matches the exact code enumeration (4.76e-2 vs 4.77e-2 at p=0.1).
+- [x] **Distillation lab** (`DistillationLab.tsx`) — a *15-to-1 routine* card (the [[15,1,3]] code
+      facts, an input-p slider, p_out / 35p³ / acceptance / threshold verdict), a *Cascade* card (the
+      per-round error collapse and raw-state cost), and a *Suppression curve* card (the log-log p_out
+      vs p_in curve crossing the break-even line at the threshold, the weight enumerator with its 35
+      weight-3 logicals highlighted, and the MC-vs-exact cross-check).
+
+### Verified
+- gc-decompose reconstructs Δ = V W V† W† to ~4e-13 over 200 random near-identity rotations; the
+  gate SU(2) lifts match the genuine U(2) gates to ~1e-16; the base net (9,877 words) covers SU(2)
+  with radius 0.198.
+- SK error falls monotonically with depth and reaches **< 1e-3 at depth 3** (worst of four targets
+  9e-4); every compiled {H,T} word, multiplied back out in genuine U(2), reproduces its target up to
+  a global phase to the same error; an exact gate (T) is found by the net at depth 0 (error 0).
+- The full depth sweep shows the textbook scaling — error ~ε₀^{(3/2)^n} (≈0.07 → 0.034 → 0.008 →
+  0.001 → 5e-5 → 6e-7) and length ~5^n (16 → 80 → 388 → 1.9k → 9k → 42k) — at ≤ 400 ms per depth-5 compile.
+- Distillation: the Hamming code has 2048 codewords with the correct weight enumerator; p_out/p³ → 35;
+  distillation helps at 2% and hurts at 25% with p* ≈ 0.1415; the cascade drives 5% to 4e-15 in three
+  rounds; the Monte-Carlo agrees with the exact enumeration.
+- In-browser self-test suite **95 → 106 cases** (6 Solovay–Kitaev + 5 distillation), all green; lint +
+  tsc + build pass (the exact CI gate).
+
+### Future ideas
+- [x] Solovay–Kitaev gate compilation to {H, T} — shipped in 12.0
+- [x] Magic-state distillation (15-to-1, the 35 p³ law) — shipped in 12.0
+- [ ] Wire SK into the circuit builder so a custom circuit can be re-expressed as a fault-tolerant
+      {H,T} circuit with a total T-count
+- [ ] Two-qubit gate synthesis (KAK decomposition → CNOTs + single-qubit SK)
+- [ ] Block-code / multi-level distillation (the 116-to-12, or Bravyi–Haah triorthogonal codes) and
+      the resource-vs-fidelity trade-off curve
+- [ ] 5-qubit perfect [[5,1,3]] code (still open from 2.0)
+
+### Session log
+- 2026-06-21 (claude/claude-opus-4-8[1m]): **Quantum Lab 12.0 — Fault-tolerant universality.** Closed
+  the loop on the lab's fault-tolerance story: a Clifford-only machine is classically simulable, so
+  12.0 added the two dual ideas that make it universal. (1) **Solovay–Kitaev** (`solovay.ts`):
+  compile any single-qubit gate into the discrete set {H,T,T†,S,S†,X,Y,Z} to precision ε in
+  O(log^c(1/ε)) gates, built on a compact SU(2) (a,b) core, the Dawson–Nielsen group-commutator
+  decomposition (axis–angle algebra only, no eigensolver — verified to reconstruct Δ=VWV†W† to
+  ~1e-13), a ~9,900-word ε₀-net (covering radius 0.198), and the recursion whose error contracts
+  ε_n≈c·ε_{n−1}^{3/2}; `compileGate` reports the word, error, gate count and T-count. (2)
+  **Magic-state distillation** (`distillation.ts`): the Bravyi–Kitaev 15-to-1 routine on the
+  [[15,1,3]] Reed–Muller code, whose error analysis reduces exactly to the [15,11,3] Hamming code
+  (built from scratch, columns = numerals 1…15) — post-select on a trivial X-syndrome, fail on an
+  odd-weight codeword, and because the code has distance 3 with exactly 35 weight-3 logicals the
+  output obeys p_out=35p³ below a threshold p*≈14.2%, cascading to 4e-15 in three rounds; the exact
+  2048-codeword enumeration is cross-checked against a Monte-Carlo of the post-selected protocol. Two
+  new tabs (🧭 Solovay–Kitaev, 💎 Distillation), both with three cards, About entries, and 11 new
+  self-tests. Every result validated in a throwaway oracle first, then ported faithfully. Suite
+  95 → 106, all green; lint + tsc + build pass.
