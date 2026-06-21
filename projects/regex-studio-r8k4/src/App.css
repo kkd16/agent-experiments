@@ -2156,3 +2156,41 @@
   border-color: rgba(45, 212, 191, 0.5) !important;
   color: var(--ext, #2dd4bf);
 }
+
+/* ---------- Extended panel: chain scrubber ---------- */
+.ext-scrub {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 6px 0 12px;
+}
+.ext-scrub input[type='range'] {
+  flex: 1;
+  max-width: 420px;
+  accent-color: var(--ext, #2dd4bf);
+}
+.ext-scrub-label {
+  font-size: 12.5px;
+  color: var(--muted);
+}
+.ext-scrub-label strong {
+  color: var(--ext, #2dd4bf);
+}
+.ext-scrub-dead {
+  color: var(--bad);
+}
+.deriv-step-btn {
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  border: 1px solid var(--border-soft);
+  background: var(--panel);
+  transition: border-color 0.12s, transform 0.1s, box-shadow 0.12s;
+}
+.deriv-step-btn:hover {
+  transform: translateY(-1px);
+}
+.deriv-step-btn.active {
+  border-color: var(--ext, #2dd4bf);
+  box-shadow: 0 0 0 1px var(--ext, #2dd4bf), 0 0 14px rgba(45, 212, 191, 0.18);
+}

@@ -373,7 +373,7 @@ the old one.
       measurement-based degree fit
 - [ ] Visualise the ambiguous pivot loop on the NFA diagram (highlight the two distinct pump paths)
 - [ ] Single-step the Pike VM bytecode (animate the thread list) like the NFA/DFA debugger
-- [ ] Animate the derivative-DFA walk on the test text (light the active state per character)
+- [x] Animate the derivative-DFA walk on the test text (light the active state per character) *(Session 7 — in the Extended panel: a scrubber walks the Boolean-derivative DFA, lighting the active state on the graph and the matching residual in the chain in lockstep; click any chain step to jump)*
 - [x] "Harden this regex" suggestions (atomic groups / possessive quantifiers) for flagged patterns *(Session 6)*
 - [ ] Worker-offload the fuzzer / large-pattern compilation so the UI never blocks
 - [x] Antimirov *partial* derivatives → a derivative-built NFA (a sibling to the derivative DFA) *(Session 5)*
