@@ -223,6 +223,348 @@ export class Tensor {
     return out;
   }
 
+  // Elementwise multiply. Same broadcasting rule as `add` (other may be a [1,C] row).
+  mul(other: Tensor): Tensor {
+    if (this.cols !== other.cols || (other.rows !== this.rows && other.rows !== 1)) {
+      throw new Error(`mul shape mismatch [${this.rows},${this.cols}] * [${other.rows},${other.cols}]`);
+    }
+    const broadcast = other.rows === 1 && this.rows !== 1;
+    const out = Tensor.zeros(this.rows, this.cols);
+    const a = this.data;
+    const b = other.data;
+    const o = out.data;
+    for (let i = 0; i < this.rows; i++) {
+      for (let j = 0; j < this.cols; j++) {
+        const bv = broadcast ? b[j] : b[i * this.cols + j];
+        o[i * this.cols + j] = a[i * this.cols + j] * bv;
+      }
+    }
+    out.op = 'mul';
+    out.prev = [this, other];
+    out.backwardFn = () => {
+      const g = out.grad;
+      const ga = this.grad;
+      const gb = other.grad;
+      for (let i = 0; i < this.rows; i++) {
+        for (let j = 0; j < this.cols; j++) {
+          const k = i * this.cols + j;
+          const bv = broadcast ? b[j] : b[k];
+          ga[k] += g[k] * bv;
+          if (broadcast) gb[j] += g[k] * a[k];
+          else gb[k] += g[k] * a[k];
+        }
+      }
+    };
+    return out;
+  }
+
+  // Elementwise subtract (this - other), same broadcasting rule as `add`.
+  sub(other: Tensor): Tensor {
+    if (this.cols !== other.cols || (other.rows !== this.rows && other.rows !== 1)) {
+      throw new Error(`sub shape mismatch [${this.rows},${this.cols}] - [${other.rows},${other.cols}]`);
+    }
+    const broadcast = other.rows === 1 && this.rows !== 1;
+    const out = Tensor.zeros(this.rows, this.cols);
+    const a = this.data;
+    const b = other.data;
+    const o = out.data;
+    for (let i = 0; i < this.rows; i++) {
+      for (let j = 0; j < this.cols; j++) {
+        const bv = broadcast ? b[j] : b[i * this.cols + j];
+        o[i * this.cols + j] = a[i * this.cols + j] - bv;
+      }
+    }
+    out.op = 'sub';
+    out.prev = [this, other];
+    out.backwardFn = () => {
+      const g = out.grad;
+      const ga = this.grad;
+      const gb = other.grad;
+      for (let i = 0; i < this.rows; i++) {
+        for (let j = 0; j < this.cols; j++) {
+          const k = i * this.cols + j;
+          ga[k] += g[k];
+          if (broadcast) gb[j] -= g[k];
+          else gb[k] -= g[k];
+        }
+      }
+    };
+    return out;
+  }
+
+  // Elementwise divide (this / other), same broadcasting rule as `add`.
+  div(other: Tensor): Tensor {
+    if (this.cols !== other.cols || (other.rows !== this.rows && other.rows !== 1)) {
+      throw new Error(`div shape mismatch [${this.rows},${this.cols}] / [${other.rows},${other.cols}]`);
+    }
+    const broadcast = other.rows === 1 && this.rows !== 1;
+    const out = Tensor.zeros(this.rows, this.cols);
+    const a = this.data;
+    const b = other.data;
+    const o = out.data;
+    for (let i = 0; i < this.rows; i++) {
+      for (let j = 0; j < this.cols; j++) {
+        const bv = broadcast ? b[j] : b[i * this.cols + j];
+        o[i * this.cols + j] = a[i * this.cols + j] / bv;
+      }
+    }
+    out.op = 'div';
+    out.prev = [this, other];
+    out.backwardFn = () => {
+      const g = out.grad;
+      const ga = this.grad;
+      const gb = other.grad;
+      for (let i = 0; i < this.rows; i++) {
+        for (let j = 0; j < this.cols; j++) {
+          const k = i * this.cols + j;
+          const bv = broadcast ? b[j] : b[k];
+          ga[k] += g[k] / bv;
+          const contrib = (-g[k] * a[k]) / (bv * bv);
+          if (broadcast) gb[j] += contrib;
+          else gb[k] += contrib;
+        }
+      }
+    };
+    return out;
+  }
+
+  neg(): Tensor {
+    return this.scale(-1);
+  }
+
+  exp(): Tensor {
+    const out = Tensor.zeros(this.rows, this.cols);
+    const o = out.data;
+    const a = this.data;
+    for (let i = 0; i < a.length; i++) o[i] = Math.exp(a[i]);
+    out.op = 'exp';
+    out.prev = [this];
+    out.backwardFn = () => {
+      const g = out.grad;
+      const ga = this.grad;
+      for (let i = 0; i < g.length; i++) ga[i] += o[i] * g[i];
+    };
+    return out;
+  }
+
+  log(): Tensor {
+    const out = Tensor.zeros(this.rows, this.cols);
+    const o = out.data;
+    const a = this.data;
+    for (let i = 0; i < a.length; i++) o[i] = Math.log(a[i]);
+    out.op = 'log';
+    out.prev = [this];
+    out.backwardFn = () => {
+      const g = out.grad;
+      const ga = this.grad;
+      for (let i = 0; i < g.length; i++) ga[i] += g[i] / a[i];
+    };
+    return out;
+  }
+
+  pow(p: number): Tensor {
+    const out = Tensor.zeros(this.rows, this.cols);
+    const o = out.data;
+    const a = this.data;
+    for (let i = 0; i < a.length; i++) o[i] = Math.pow(a[i], p);
+    out.op = `pow${p}`;
+    out.prev = [this];
+    out.backwardFn = () => {
+      const g = out.grad;
+      const ga = this.grad;
+      for (let i = 0; i < g.length; i++) ga[i] += p * Math.pow(a[i], p - 1) * g[i];
+    };
+    return out;
+  }
+
+  // Sum of all elements -> scalar [1,1].
+  sumAll(): Tensor {
+    const out = Tensor.zeros(1, 1);
+    const a = this.data;
+    let s = 0;
+    for (let i = 0; i < a.length; i++) s += a[i];
+    out.data[0] = s;
+    out.op = 'sum';
+    out.prev = [this];
+    out.backwardFn = () => {
+      const seed = out.grad[0];
+      const ga = this.grad;
+      for (let i = 0; i < ga.length; i++) ga[i] += seed;
+    };
+    return out;
+  }
+
+  // Mean of all elements -> scalar [1,1].
+  meanAll(): Tensor {
+    const out = Tensor.zeros(1, 1);
+    const a = this.data;
+    const n = a.length;
+    let s = 0;
+    for (let i = 0; i < n; i++) s += a[i];
+    out.data[0] = s / n;
+    out.op = 'mean';
+    out.prev = [this];
+    out.backwardFn = () => {
+      const seed = out.grad[0] / n;
+      const ga = this.grad;
+      for (let i = 0; i < ga.length; i++) ga[i] += seed;
+    };
+    return out;
+  }
+
+  transpose(): Tensor {
+    const R = this.rows;
+    const C = this.cols;
+    const out = Tensor.zeros(C, R);
+    const a = this.data;
+    const o = out.data;
+    for (let i = 0; i < R; i++) for (let j = 0; j < C; j++) o[j * R + i] = a[i * C + j];
+    out.op = 'transpose';
+    out.prev = [this];
+    out.backwardFn = () => {
+      const g = out.grad;
+      const ga = this.grad;
+      for (let i = 0; i < R; i++) for (let j = 0; j < C; j++) ga[i * C + j] += g[j * R + i];
+    };
+    return out;
+  }
+
+  // Row-wise softmax. backward uses the full Jacobian VJP per row:
+  //   dL/dz_j = s_j * (g_j - sum_k g_k s_k).
+  softmax(): Tensor {
+    const R = this.rows;
+    const C = this.cols;
+    const out = Tensor.zeros(R, C);
+    const a = this.data;
+    const o = out.data;
+    for (let i = 0; i < R; i++) {
+      const base = i * C;
+      let max = -Infinity;
+      for (let j = 0; j < C; j++) max = Math.max(max, a[base + j]);
+      let sum = 0;
+      for (let j = 0; j < C; j++) {
+        const e = Math.exp(a[base + j] - max);
+        o[base + j] = e;
+        sum += e;
+      }
+      for (let j = 0; j < C; j++) o[base + j] /= sum;
+    }
+    out.op = 'softmax';
+    out.prev = [this];
+    out.backwardFn = () => {
+      const g = out.grad;
+      const ga = this.grad;
+      for (let i = 0; i < R; i++) {
+        const base = i * C;
+        let dot = 0;
+        for (let j = 0; j < C; j++) dot += g[base + j] * o[base + j];
+        for (let j = 0; j < C; j++) ga[base + j] += o[base + j] * (g[base + j] - dot);
+      }
+    };
+    return out;
+  }
+
+  leakyRelu(alpha = 0.01): Tensor {
+    const out = Tensor.zeros(this.rows, this.cols);
+    const o = out.data;
+    const a = this.data;
+    for (let i = 0; i < a.length; i++) o[i] = a[i] > 0 ? a[i] : alpha * a[i];
+    out.op = 'leakyRelu';
+    out.prev = [this];
+    out.backwardFn = () => {
+      const g = out.grad;
+      const ga = this.grad;
+      for (let i = 0; i < g.length; i++) ga[i] += (a[i] > 0 ? 1 : alpha) * g[i];
+    };
+    return out;
+  }
+
+  elu(alpha = 1): Tensor {
+    const out = Tensor.zeros(this.rows, this.cols);
+    const o = out.data;
+    const a = this.data;
+    for (let i = 0; i < a.length; i++) o[i] = a[i] > 0 ? a[i] : alpha * (Math.exp(a[i]) - 1);
+    out.op = 'elu';
+    out.prev = [this];
+    out.backwardFn = () => {
+      const g = out.grad;
+      const ga = this.grad;
+      // d/dx = 1 (x>0) else o + alpha = alpha*exp(x)
+      for (let i = 0; i < g.length; i++) ga[i] += (a[i] > 0 ? 1 : o[i] + alpha) * g[i];
+    };
+    return out;
+  }
+
+  // GELU (tanh approximation). o = 0.5 x (1 + tanh(c (x + 0.044715 x^3))), c = sqrt(2/pi).
+  gelu(): Tensor {
+    const C0 = Math.sqrt(2 / Math.PI);
+    const K = 0.044715;
+    const out = Tensor.zeros(this.rows, this.cols);
+    const o = out.data;
+    const a = this.data;
+    for (let i = 0; i < a.length; i++) {
+      const x = a[i];
+      const t = Math.tanh(C0 * (x + K * x * x * x));
+      o[i] = 0.5 * x * (1 + t);
+    }
+    out.op = 'gelu';
+    out.prev = [this];
+    out.backwardFn = () => {
+      const g = out.grad;
+      const ga = this.grad;
+      for (let i = 0; i < g.length; i++) {
+        const x = a[i];
+        const inner = C0 * (x + K * x * x * x);
+        const t = Math.tanh(inner);
+        const dInner = C0 * (1 + 3 * K * x * x);
+        const dt = (1 - t * t) * dInner;
+        ga[i] += (0.5 * (1 + t) + 0.5 * x * dt) * g[i];
+      }
+    };
+    return out;
+  }
+
+  // SiLU / swish: o = x * sigmoid(x). d/dx = s + x s (1 - s) = s (1 + x (1 - s)).
+  silu(): Tensor {
+    const out = Tensor.zeros(this.rows, this.cols);
+    const o = out.data;
+    const a = this.data;
+    for (let i = 0; i < a.length; i++) {
+      const s = 1 / (1 + Math.exp(-a[i]));
+      o[i] = a[i] * s;
+    }
+    out.op = 'silu';
+    out.prev = [this];
+    out.backwardFn = () => {
+      const g = out.grad;
+      const ga = this.grad;
+      for (let i = 0; i < g.length; i++) {
+        const s = 1 / (1 + Math.exp(-a[i]));
+        ga[i] += s * (1 + a[i] * (1 - s)) * g[i];
+      }
+    };
+    return out;
+  }
+
+  // Softplus: o = log(1 + e^x), numerically stable. d/dx = sigmoid(x).
+  softplus(): Tensor {
+    const out = Tensor.zeros(this.rows, this.cols);
+    const o = out.data;
+    const a = this.data;
+    for (let i = 0; i < a.length; i++) {
+      const x = a[i];
+      o[i] = x > 30 ? x : x < -30 ? Math.exp(x) : Math.log1p(Math.exp(x));
+    }
+    out.op = 'softplus';
+    out.prev = [this];
+    out.backwardFn = () => {
+      const g = out.grad;
+      const ga = this.grad;
+      for (let i = 0; i < g.length; i++) ga[i] += (1 / (1 + Math.exp(-a[i]))) * g[i];
+    };
+    return out;
+  }
+
   // ---- backward --------------------------------------------------------------------
 
   // Walk the graph in reverse topological order. The starting tensor is assumed to be a

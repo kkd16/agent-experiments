@@ -3,12 +3,14 @@ import { useEffect, useRef } from 'react';
 interface Props {
   loss: number[];
   acc: number[];
+  valLoss?: number[];
+  valAcc?: number[];
   accLabel: string; // "accuracy" or "R²"
   width: number;
   height: number;
 }
 
-export default function LossChart({ loss, acc, accLabel, width, height }: Props) {
+export default function LossChart({ loss, acc, valLoss, valAcc, accLabel, width, height }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
   useEffect(() => {
@@ -37,38 +39,47 @@ export default function LossChart({ loss, acc, accLabel, width, height }: Props)
     }
     if (n < 2) return;
 
-    const maxLoss = Math.max(...loss, 1e-6);
-    const xAt = (i: number) => pad + (i / (n - 1)) * (W - 2 * pad);
+    const finite = (arr: number[]) => arr.filter((v) => Number.isFinite(v));
+    const maxLoss = Math.max(...finite(loss), ...finite(valLoss ?? []), 1e-6);
+    const xAt = (i: number, len: number) => pad + (i / (len - 1)) * (W - 2 * pad);
 
-    // loss (log-ish scale by normalizing to its own max)
-    ctx.beginPath();
-    for (let i = 0; i < n; i++) {
-      const v = Math.min(1, loss[i] / maxLoss);
-      const y = pad + (1 - v) * (H - 2 * pad);
-      const x = xAt(i);
-      if (i === 0) ctx.moveTo(x, y);
-      else ctx.lineTo(x, y);
-    }
-    ctx.strokeStyle = '#fb7185';
-    ctx.lineWidth = 2;
-    ctx.stroke();
+    const line = (data: number[], norm: (v: number) => number, color: string, dashed: boolean) => {
+      if (data.length < 2) return;
+      ctx.setLineDash(dashed ? [4, 3] : []);
+      ctx.beginPath();
+      let started = false;
+      for (let i = 0; i < data.length; i++) {
+        if (!Number.isFinite(data[i])) continue;
+        const y = pad + (1 - norm(data[i])) * (H - 2 * pad);
+        const x = xAt(i, data.length);
+        if (!started) {
+          ctx.moveTo(x, y);
+          started = true;
+        } else ctx.lineTo(x, y);
+      }
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 2;
+      ctx.stroke();
+      ctx.setLineDash([]);
+    };
 
-    // accuracy / R^2 in [0,1]
-    ctx.beginPath();
-    for (let i = 0; i < n; i++) {
-      const v = Math.max(0, Math.min(1, acc[i]));
-      const y = pad + (1 - v) * (H - 2 * pad);
-      const x = xAt(i);
-      if (i === 0) ctx.moveTo(x, y);
-      else ctx.lineTo(x, y);
-    }
-    ctx.strokeStyle = '#4ade80';
-    ctx.lineWidth = 2;
-    ctx.stroke();
-  }, [loss, acc, width, height]);
+    const lossNorm = (v: number) => Math.min(1, v / maxLoss);
+    const accNorm = (v: number) => Math.max(0, Math.min(1, v));
 
-  const lastLoss = loss.length ? loss[loss.length - 1] : NaN;
-  const lastAcc = acc.length ? acc[acc.length - 1] : NaN;
+    // loss (train solid, val dashed) in rose; accuracy/R² (train solid, val dashed) in green
+    line(loss, lossNorm, '#fb7185', false);
+    if (valLoss && finite(valLoss).length) line(valLoss, lossNorm, '#fda4af', true);
+    line(acc, accNorm, '#4ade80', false);
+    if (valAcc && finite(valAcc).length) line(valAcc, accNorm, '#86efac', true);
+  }, [loss, acc, valLoss, valAcc, width, height]);
+
+  const last = (arr: number[]) => (arr.length ? arr[arr.length - 1] : NaN);
+  const fmtAcc = (v: number) =>
+    Number.isFinite(v) ? (accLabel === 'R²' ? v.toFixed(3) : `${(v * 100).toFixed(1)}%`) : '—';
+  const lastLoss = last(loss);
+  const lastAcc = last(acc);
+  const lastValAcc = valAcc ? last(valAcc) : NaN;
+  const hasVal = !!(valAcc && valAcc.some((v) => Number.isFinite(v)));
 
   return (
     <div className="chart-wrap">
@@ -79,9 +90,13 @@ export default function LossChart({ loss, acc, accLabel, width, height }: Props)
           <b>{Number.isFinite(lastLoss) ? lastLoss.toFixed(4) : '—'}</b>
         </span>
         <span className="legend-item">
-          <span className="swatch" style={{ background: '#4ade80' }} /> {accLabel}{' '}
-          <b>{Number.isFinite(lastAcc) ? (accLabel === 'R²' ? lastAcc.toFixed(3) : `${(lastAcc * 100).toFixed(1)}%`) : '—'}</b>
+          <span className="swatch" style={{ background: '#4ade80' }} /> {accLabel} <b>{fmtAcc(lastAcc)}</b>
         </span>
+        {hasVal && (
+          <span className="legend-item">
+            <span className="swatch dashed" style={{ background: '#86efac' }} /> val <b>{fmtAcc(lastValAcc)}</b>
+          </span>
+        )}
       </div>
     </div>
   );
