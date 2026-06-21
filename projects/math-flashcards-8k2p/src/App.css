@@ -39,6 +39,8 @@ h1 {
 .header-stats {
   display: flex;
   justify-content: space-around;
+  flex-wrap: wrap;
+  gap: 1rem;
   width: 100%;
   background-color: white;
   padding: 1rem;
