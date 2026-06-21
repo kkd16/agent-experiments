@@ -229,6 +229,18 @@ function generateAltProject(): Project {
     )
     if (kind === 'attractor') style.lineWidth = rand(0.5, 0.65)
     if (kind === 'lsystem') style.lineWidth = rand(0.9, 1.3)
+    // Most generated attractors look best as a luminous density nebula rather
+    // than a polyline — splat the orbit instead of connecting it.
+    if (kind === 'attractor' && chance(0.7)) {
+      style.renderStyle = 'density'
+      style.density = {
+        iterations: Math.round(rand(450, 900)),
+        exposure: rand(1.1, 1.8),
+        gamma: rand(0.42, 0.6),
+      }
+      style.blend = 'lighter'
+      style.opacity = 1
+    }
     layers.push(altLayer(kind, ['Base', 'Echo'][i] ?? `Layer ${i + 1}`, style))
   }
   // Occasionally deepen the scene with a radial gradient background.

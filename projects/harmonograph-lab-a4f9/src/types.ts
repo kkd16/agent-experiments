@@ -95,10 +95,22 @@ export interface SuperformulaParams {
 // Strange attractors — chaotic iterated maps. Unlike the parametric families
 // above (a smooth function of one angle), these feed each point back into the
 // map to produce the next, tracing the dense, web-like orbit of a 2D dynamical
-// system. All three maps below are bounded, so the orbit never escapes; the
-// `a..d` constants reshape it completely. The renderer connects the iterates
-// into a polyline, which reads as a luminous tangle of the attractor's basin.
-export type AttractorKind = 'dejong' | 'clifford' | 'svensson' | 'fractaldream'
+// system. The first four maps are bounded by construction, so the orbit never
+// escapes; the last four (Hopalong / Gumowski–Mira / Bedhead / Tinkerbell) are
+// *not* bounded by construction, so they are framed by robust percentile bounds
+// that clip the handful of outlier iterates. The `a..d` constants reshape every
+// map completely. The renderer can connect the iterates into a polyline, or —
+// far more beautifully — splat millions of them into a density field (see the
+// `density` render style), which is where these chaotic maps truly come alive.
+export type AttractorKind =
+  | 'dejong'
+  | 'clifford'
+  | 'svensson'
+  | 'fractaldream'
+  | 'hopalong'
+  | 'gumowski'
+  | 'bedhead'
+  | 'tinkerbell'
 
 export interface AttractorParams {
   type: AttractorKind
@@ -137,6 +149,19 @@ export type WidthMode = 'uniform' | 'speed'
 // Canvas composite operations we expose (also valid CSS mix-blend-mode values).
 export type BlendMode = 'source-over' | 'lighter' | 'screen'
 
+// How a layer is drawn: as a connected stroke (the historical default), or as a
+// density field — millions of sample points splatted into a per-pixel histogram
+// and tone-mapped through the palette. Density is what makes strange attractors
+// look like the famous luminous nebulae rather than a tangle of line segments.
+export type RenderStyle = 'line' | 'density'
+
+// Parameters for the density-field renderer.
+export interface DensityStyle {
+  iterations: number // points splatted, in thousands (so 350 ⇒ 350 000)
+  exposure: number // brightness lift applied before the tone curve
+  gamma: number // tone-curve shaping; < 1 lifts faint, sparse regions into view
+}
+
 export interface LayerStyle {
   colors: string[] // multi-stop palette ramp (>= 1 hex color)
   colorMode: ColorMode
@@ -147,6 +172,8 @@ export interface LayerStyle {
   glow: number // 0..1 soft-glow strength
   symmetry: number // radial copies, 1 = none (kaleidoscope)
   mirror: boolean // also draw a mirrored copy of each radial wedge
+  renderStyle?: RenderStyle // defaults to 'line'
+  density?: DensityStyle // density-field settings (used when renderStyle === 'density')
 }
 
 export interface Layer {

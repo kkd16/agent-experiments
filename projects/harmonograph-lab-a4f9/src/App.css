@@ -161,6 +161,18 @@ button.ghost {
 .transport .speed input {
   width: 84px;
 }
+.transport .beat-check {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  color: var(--muted);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.transport .beat-check input {
+  accent-color: var(--accent, #6366f1);
+}
 
 /* ---- panel ---- */
 .panel {
