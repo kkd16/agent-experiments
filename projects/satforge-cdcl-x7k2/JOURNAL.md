@@ -128,8 +128,9 @@ conflict teaches the solver a new clause that prunes an exponential swath of the
   — sift / reverse / shuffle / good-vs-bad order — that visibly grows or collapses the diagram), and
   the **Simplify Studio** (`SimplifyStudio.tsx` — a DIMACS editor + technique toggles, before/after
   variable/clause/literal reduction bars, a per-technique breakdown table, an operation log, the
-  simplified DIMACS with a download, and a one-click *solve simplified → reconstruct → verify the
-  original* round-trip).
+  simplified DIMACS with a download, a one-click *solve simplified → reconstruct → verify the
+  original* round-trip, and a *CDCL-effort comparison* that runs the same solver on the original and
+  the simplified formula and reports the reduction in conflicts/decisions/propagations).
 
 ## Correctness
 
@@ -1586,6 +1587,9 @@ machinery is the heart of this session, and the thing the harness hammers hardes
       operation log, the simplified DIMACS with a `.cnf` download, and the headline **round-trip
       button**: solve the simplified formula, reconstruct, and verify the lifted assignment against
       the *original* clauses — green only when reconstruction is sound.
+- [x] **CDCL-effort comparison in the studio** — solve the original and the simplified formula with
+      the same proved-correct CDCL core and table the reduction in conflicts/decisions/propagations,
+      making the *point* of preprocessing (cheaper search) visible.
 - [x] **47 new cross-check assertions** (`src/preprocess/selfcheck.ts`, folded into `selftest.ts`):
       across the full pipeline *and each rule in isolation*, over 700 fully-enumerated small randoms
       plus 500 larger instances — equisatisfiability vs. the complete CDCL solver and exhaustive
