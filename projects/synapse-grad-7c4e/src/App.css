@@ -677,3 +677,272 @@ button:disabled {
   border-bottom: 2px dashed currentColor;
   height: 0;
 }
+
+/* ============ session 3 — vision / CNN track ============ */
+
+/* header: tabs + hint */
+.header-right {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+}
+.tabs {
+  display: inline-flex;
+  gap: 4px;
+  background: var(--bg-soft);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 4px;
+}
+.tabs button {
+  background: transparent;
+  color: var(--muted);
+  border: none;
+  border-radius: 7px;
+  padding: 7px 14px;
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.tabs button.on {
+  background: linear-gradient(135deg, rgba(56, 189, 248, 0.22), rgba(167, 139, 250, 0.22));
+  color: #fff;
+}
+
+.arch-desc {
+  line-height: 1.5;
+  margin: 2px 0 0;
+}
+
+/* crisp pixel art for every small grid canvas */
+.img-canvas,
+.filter-canvas,
+.feat-canvas,
+.draw-canvas {
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
+}
+
+/* draw & classify */
+.drawpad {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.drawpad-main {
+  display: flex;
+  gap: 16px;
+  align-items: stretch;
+  flex-wrap: wrap;
+}
+.draw-canvas {
+  border-radius: 12px;
+  border: 1px solid var(--border-strong);
+  background: #05080f;
+  cursor: crosshair;
+  touch-action: none;
+  flex: 0 0 auto;
+}
+.draw-probs {
+  flex: 1 1 220px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 6px;
+  min-width: 200px;
+}
+.draw-prob {
+  display: grid;
+  grid-template-columns: 22px 1fr 30px;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+.draw-prob-l {
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+}
+.draw-prob-bar {
+  height: 12px;
+  background: var(--bg-soft);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+}
+.draw-prob-bar span {
+  display: block;
+  height: 100%;
+  border-radius: 6px;
+  transition: width 0.08s linear;
+}
+.draw-prob-v {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+}
+.draw-foot {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.draw-call {
+  color: var(--accent);
+  font-size: 14px;
+}
+
+/* sample gallery */
+.img-samples {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(54px, 1fr));
+  gap: 6px;
+}
+.img-sample {
+  position: relative;
+  padding: 0;
+  border: 2px solid var(--border);
+  border-radius: 8px;
+  background: #05080f;
+  overflow: hidden;
+  cursor: pointer;
+  aspect-ratio: 1 / 1;
+  display: grid;
+  place-items: center;
+}
+.img-sample.right {
+  border-color: rgba(74, 222, 128, 0.4);
+}
+.img-sample.wrong {
+  border-color: rgba(244, 114, 182, 0.6);
+}
+.img-sample.sel {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.img-canvas {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+.img-tag {
+  position: absolute;
+  right: 2px;
+  bottom: 1px;
+  font-size: 9px;
+  padding: 0 3px;
+  border-radius: 4px;
+  background: rgba(5, 8, 15, 0.78);
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+/* learned filters */
+.filters-title {
+  margin-top: 14px;
+}
+.filter-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(40px, 1fr));
+  gap: 6px;
+}
+.filter-canvas {
+  width: 100%;
+  height: auto;
+  aspect-ratio: 1 / 1;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+}
+
+/* feature maps */
+.feat-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.feat-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.feat-label {
+  width: 52px;
+  flex: 0 0 auto;
+  font-size: 11px;
+  color: var(--muted);
+  font-family: ui-monospace, monospace;
+}
+.feat-maps {
+  display: flex;
+  gap: 5px;
+  flex-wrap: wrap;
+}
+.feat-canvas {
+  border-radius: 5px;
+  border: 1px solid var(--border);
+  background: #05080f;
+}
+.feat-canvas.input {
+  border-color: var(--border-strong);
+}
+.feat-pred {
+  font-size: 12px;
+  color: var(--muted);
+}
+.feat-pred .ok {
+  color: #4ade80;
+}
+.feat-pred .bad {
+  color: #fb7185;
+}
+
+/* confusion matrix */
+.conf-card {
+  min-width: 0;
+}
+.confusion {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.conf-grid {
+  display: grid;
+  gap: 2px;
+  font-variant-numeric: tabular-nums;
+}
+.conf-corner {
+  background: transparent;
+}
+.conf-h {
+  font-size: 10.5px;
+  color: var(--muted);
+  text-align: center;
+  align-self: center;
+}
+.conf-h.row {
+  text-align: right;
+  padding-right: 4px;
+}
+.conf-cell {
+  aspect-ratio: 1 / 1;
+  display: grid;
+  place-items: center;
+  border-radius: 4px;
+  font-size: 10px;
+  color: #04121d;
+  min-width: 0;
+}
+.conf-cell.diag {
+  outline: 1px solid rgba(255, 255, 255, 0.35);
+  outline-offset: -1px;
+}
+.conf-foot {
+  font-variant-numeric: tabular-nums;
+}
+
+/* the vision stage row balances the two cards evenly */
+.draw-card .card-title,
+.feat-card .card-title {
+  display: block;
+}

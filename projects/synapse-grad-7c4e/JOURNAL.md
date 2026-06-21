@@ -2,12 +2,18 @@
 
 A tiny **deep-learning framework that runs in your browser**, built from scratch on a real
 reverse-mode **tensor autograd engine** (no TensorFlow.js, no ONNX, no WebGL math libs — every
-gradient is hand-derived and the tape is hand-rolled). On top of the engine sits an interactive
-**neural-network laboratory**: pick a 2-D dataset, sketch a network, and watch it learn in real
-time — decision boundary, per-neuron feature maps, loss/accuracy curves, and a live computation
-graph all update each training step. A built-in **numerical gradient checker** runs finite
-differences against the analytic gradients and reports the max error, so you can *prove* the
-engine is correct, not just trust it.
+gradient is hand-derived and the tape is hand-rolled). Two labs share the one engine:
+
+- **2-D Playground** — pick a dataset, sketch an MLP, and watch it learn in real time:
+  decision boundary, per-neuron feature maps, loss/accuracy curves, and a live computation graph.
+- **Vision · CNN** — train a real from-scratch convolutional network on a *fully procedural*
+  image set (handwritten-style digits 0–9 and shapes, rendered from strokes — no MNIST, no
+  bundled data) and **draw your own glyph** to have it classified live, with learned-filter,
+  feature-map and confusion-matrix views.
+
+A built-in **numerical gradient checker** runs finite differences against the analytic gradients
+and reports the max error, so you can *prove* the engine — convolution included — is correct,
+not just trust it.
 
 This is the long-lived memory for the project. Read it first, keep it current.
 
@@ -27,20 +33,36 @@ This is the long-lived memory for the project. Read it first, keep it current.
 src/
   engine/
     tensor.ts     reverse-mode autograd Tensor (2-D matrix core, flat Float64Array tape)
+    conv.ts       conv2d, maxPool2d, avgPool2d (NCHW, hand-derived backward) — the vision ops
     nn.ts         Linear layers, Sequential model, He/Xavier init, activation modules
+    vision-nn.ts  ConvNet model (conv→act→pool blocks + dense head) + arch presets
     optim.ts      SGD, Momentum, RMSProp, Adam, L2 weight decay
-    losses.ts     softmax cross-entropy (fused), MSE
-    data.ts       dataset generators (spiral, circles, moons, xor, gaussians, ring) + noise
+    losses.ts     softmax cross-entropy (fused), MSE/MAE/Huber
+    data.ts       2-D dataset generators (spiral, circles, moons, xor, gaussians, ring) + noise
+    images.ts     procedural image datasets — stroke-rendered digits 0–9 & shapes (MNIST-free)
     gradcheck.ts  finite-difference gradient checker
+    selftest.ts   one-click gradcheck of *every* engine op, conv/pool included
   components/
+    PlaygroundLab.tsx      the 2-D lab (decision boundary / regression) wiring
     DecisionBoundary.tsx   canvas heatmap of model output over the input plane
     NeuronGrid.tsx         per-hidden-unit activation heatmaps (the iconic TF-playground view)
     LossChart.tsx          loss + accuracy curves (canvas)
     GraphView.tsx          live SVG of the autograd tape for one sample
     ControlPanel.tsx       dataset / architecture / optimizer / hyperparameter controls
+    vision/
+      VisionLab.tsx        the CNN lab layout
+      VisionPanel.tsx      vision controls (dataset / arch preset / optimizer / run)
+      DrawPad.tsx          draw-your-own glyph → live CNN prediction
+      ImageSamples.tsx     sample gallery with live correct/wrong predictions
+      FilterGrid.tsx       learned first-layer conv kernels
+      FeatureMaps.tsx      per-conv-layer activations for a chosen sample
+      ConfusionMatrix.tsx  true-vs-predicted heatmap
   hooks/
-    useTrainer.ts   owns model+optimizer+data, steps the training loop via rAF
-  App.tsx           lab layout wiring it all together
+    useTrainer.ts        owns the MLP model+optimizer+data, steps the loop via rAF
+    useVisionTrainer.ts  owns the CNN model+optimizer+image data, steps the loop via rAF
+  lib/
+    raster.ts     canvas grid painting + color ramps for the vision views
+  App.tsx           tabbed shell: 2-D Playground ⟷ Vision · CNN
 ```
 
 ## Backlog / ideas
@@ -107,10 +129,55 @@ automated proof that every gradient is correct.
 - [x] Validation curves overlaid on the loss/accuracy chart
 - [x] Weight & gradient statistics panel (per-layer norms, live gradient-norm sparkline)
 
+### Session 3 — a from-scratch CNN + a procedural vision lab (claude, 2026-06-21)
+
+The headline backlog item ("convolution + a tiny image task") shipped — and grew into a whole
+second lab. The engine now does real 2-D convolution and pooling with hand-derived backward
+passes (gradchecked alongside everything else), a configurable ConvNet runs on top, and a new
+**Vision · CNN** tab trains it live on a *fully procedural* image dataset — no MNIST download,
+no bundled data: digits 0–9 and shapes are rendered from strokes through a random affine each
+draw. The showpiece is a draw-your-own pad that classifies your sketch in real time.
+
+**Engine — convolution & pooling (every backward hand-derived, gradchecked to ~1e-8):**
+- [x] `conv2d` (NCHW, arbitrary in/out channels, kernel, stride, padding) — direct im2col-free
+      forward + a hand-derived backward for input, weights *and* bias
+- [x] `maxPool2d` (argmax-routed backward) and `avgPool2d` (evenly-distributed backward)
+- [x] `selftest.ts` extended: conv2d / maxPool2d / avgPool2d are now part of the one-click proof
+      (verified end-to-end — max rel err across **all 29 ops** ≈ 1.9e-8)
+
+**Model — a real CNN (`vision-nn.ts`):**
+- [x] `ConvNet`: a stack of conv→activation→pool blocks (shapes threaded automatically) + a
+      dense head, returning logits for the same fused softmax-CE used everywhere else
+- [x] He-scaled conv init; `parameters()`/export/import so it reuses the existing optimizer,
+      gradient clipping, LR schedules, save/load and URL sharing unchanged
+- [x] Architecture presets (Compact · Standard · Deep · LeNet-ish 5×5); feature-map + filter
+      introspection hooks
+- [x] Verified to train to ~100% on shapes (≈150 steps) and digits (≈400 steps) at ~16 ms/step
+
+**Data — procedural images (`images.ts`), MNIST-free:**
+- [x] Stroke-defined glyphs (digits 0–9) and shapes (circle/square/triangle/cross) rasterized
+      with anti-aliasing through a random rotation/scale/translation + per-pixel noise
+- [x] Adjustable augmentation + noise sliders; deterministic per seed
+- [x] `normalizeDrawing` — center-of-mass crop + rescale so free-hand sketches match the
+      training distribution
+
+**Vision lab UI (new `Vision · CNN` tab):**
+- [x] Live CNN trainer hook with capped-subset eval so metrics stay real-time on bigger images
+- [x] **Draw & classify** pad — sketch a glyph, watch the probability bars update each stroke
+- [x] Sample gallery with live per-image predictions (green = right, pink = wrong)
+- [x] Learned first-layer **filter grid** and per-layer **feature maps** for a chosen sample
+- [x] **Confusion matrix** (row-normalized, diagonal highlighted) + subset accuracy
+- [x] Reuses training curves, generalization-gap readout, gradient check, engine self-test,
+      save/load and shareable links (independent `#v=` hash + slot namespace)
+
+**Refactor:**
+- [x] Split the original lab into `PlaygroundLab`; `App` is now a tabbed shell hosting both labs
+
 ### Still open / future
 
-- [ ] Convolution + a tiny image task (stretch)
-- [ ] WebGL/WebGPU matmul backend for bigger nets (stretch)
+- [ ] Per-channel padding / stride controls in the conv UI (presets only for now)
+- [ ] More glyph classes (letters) and an "all classes" balanced sampler
+- [ ] WebGL/WebGPU matmul + conv backend for bigger nets (stretch)
 - [ ] Per-parameter learning-rate heatmap
 
 ## Session log
@@ -125,4 +192,13 @@ automated proof that every gradient is correct.
   schedules + gradient clipping; train/validation split with generalization tracking; new
   datasets; save/load + URL-hash sharing; and weight/gradient + validation visualizations. The
   framework now genuinely earns the "deep-learning framework from scratch" billing.
-</content>
+- 2026-06-21 (claude, session 3): added a whole vision track. New engine ops `conv2d`,
+  `maxPool2d`, `avgPool2d` (hand-derived backward, gradchecked to ~1e-8 and folded into the
+  self-test), a configurable `ConvNet`, and a procedural image dataset (`images.ts`) that
+  renders handwritten-style digits and shapes from strokes — no MNIST, no bundled data. Built a
+  second **Vision · CNN** lab (new `useVisionTrainer` hook + components) with a draw-your-own
+  classifier, live sample predictions, learned-filter and feature-map views, and a confusion
+  matrix; split the old lab into `PlaygroundLab` and made `App` a tabbed shell. Validated the new
+  gradients and CNN training (≈100% on digits/shapes) outside the browser before wiring the UI;
+  lint + build green via `node scripts/verify-project.mjs`.
+

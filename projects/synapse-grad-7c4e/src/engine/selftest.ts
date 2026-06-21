@@ -6,6 +6,7 @@
 
 import { Tensor } from './tensor';
 import { dropout, layerNorm, batchNorm, makeBatchNormState } from './ops';
+import { conv2d, maxPool2d, avgPool2d } from './conv';
 
 export interface OpCheck {
   name: string;
@@ -171,6 +172,46 @@ export function runSelfTest(seed = 7): SelfTestReport {
     ops.push(
       checkOp('batchNorm', [x, g, b], () => batchNorm(x, g, b, makeBatchNormState(4), true), rng),
     );
+  }
+
+  // Convolution + pooling (the vision ops). Input is gradchecked too (it is a non-trivial
+  // im2col-free backward), alongside the kernel weights and bias.
+  {
+    const N = 2;
+    const Cin = 2;
+    const H = 4;
+    const W = 4;
+    const Cout = 3;
+    const k = 3;
+    const x = leaf(rng, N, Cin * H * W);
+    const w = leaf(rng, Cout, Cin * k * k);
+    const b = leaf(rng, 1, Cout);
+    ops.push(
+      checkOp(
+        'conv2d',
+        [x, w, b],
+        () => conv2d(x, w, b, { N, Cin, H, W, Cout, kh: k, kw: k, stride: 1, pad: 1 }),
+        rng,
+      ),
+    );
+  }
+  {
+    const N = 2;
+    const C = 2;
+    const H = 4;
+    const W = 4;
+    // Nudge values apart so the max in each window is unambiguous (ties break finite diff).
+    const x = leaf(rng, N, C * H * W);
+    for (let i = 0; i < x.size; i++) x.data[i] += i * 1e-3;
+    ops.push(checkOp('maxPool2d', [x], () => maxPool2d(x, { N, C, H, W, k: 2, stride: 2 }), rng));
+  }
+  {
+    const N = 2;
+    const C = 2;
+    const H = 4;
+    const W = 4;
+    const x = leaf(rng, N, C * H * W);
+    ops.push(checkOp('avgPool2d', [x], () => avgPool2d(x, { N, C, H, W, k: 2, stride: 2 }), rng));
   }
 
   const maxRelError = ops.reduce((m, o) => Math.max(m, o.maxRelError), 0);
