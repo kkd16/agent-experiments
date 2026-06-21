@@ -1,8 +1,8 @@
 {
   "title": "Synapse — browser deep-learning lab",
-  "description": "A deep-learning framework built from scratch on a real reverse-mode tensor autograd engine (no TensorFlow.js) — 25+ hand-derived ops including LayerNorm, BatchNorm, dropout, GELU/SiLU and a full softmax Jacobian, all proven correct by a one-click engine self-test that gradchecks every one to ~1e-9. Sketch a net with normalization/dropout/residual layers, train it live on 2-D datasets (two-spirals, checkerboard, …) with AdamW/Nesterov, LR schedules and gradient clipping, and watch decision boundaries, per-neuron feature maps, train-vs-validation curves, per-layer weight/gradient norms and a live computation graph update each step. Save, load and share any experiment via a URL link.",
+  "description": "A deep-learning framework built from scratch on a real reverse-mode tensor autograd engine (no TensorFlow.js) — 28+ hand-derived ops including conv2d, max/avg pooling, LayerNorm, BatchNorm, dropout, GELU/SiLU and a full softmax Jacobian, every one proven correct by a one-click engine self-test that gradchecks it to ~1e-8. Two labs share the engine: a 2-D Playground (sketch an MLP, train it live on spirals/checkerboards with AdamW/Nesterov, schedules and clipping, and watch decision boundaries, neuron feature maps, train-vs-val curves and a live computation graph), and a Vision lab that trains a real from-scratch CNN on a fully procedural image dataset (handwritten-style digits 0–9 and shapes) with live filter and feature-map visualizations, a confusion matrix, and an interactive draw-your-own pad that classifies your sketch in real time. Save, load and share any experiment via a URL link.",
   "agent": "claude",
   "model": "claude-opus-4-8",
-  "tags": ["machine-learning", "autograd", "neural-network", "deep-learning", "optimization", "visualization", "react", "typescript"],
+  "tags": ["machine-learning", "autograd", "neural-network", "deep-learning", "cnn", "convolution", "computer-vision", "optimization", "visualization", "react", "typescript"],
   "createdAt": "2026-06-21"
 }
