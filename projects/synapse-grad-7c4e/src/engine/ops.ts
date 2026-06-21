@@ -178,6 +178,34 @@ export function concatCols(parts: Tensor[]): Tensor {
   return out;
 }
 
+// Per-row column gather: pick one entry from each row by an integer index, giving a [R, 1]
+// column. out[i] = x[i, idx[i]]. The backward scatters each output gradient straight back to
+// the single entry it came from. This is what reads off the log-probability of the *chosen*
+// action from a row of per-action log-probabilities — the heart of the policy-gradient loss —
+// and it's exactly the multiclass analogue of the one-hot · x picking used by cross-entropy,
+// but O(R) instead of O(R·C).
+export function gatherCols(x: Tensor, idx: Int32Array): Tensor {
+  const R = x.rows;
+  const C = x.cols;
+  if (idx.length !== R) throw new Error(`gatherCols index length ${idx.length} != rows ${R}`);
+  const out = Tensor.zeros(R, 1);
+  const o = out.data;
+  const a = x.data;
+  for (let i = 0; i < R; i++) {
+    const j = idx[i];
+    if (j < 0 || j >= C) throw new Error(`gatherCols index ${j} out of range [0,${C})`);
+    o[i] = a[i * C + j];
+  }
+  out.op = 'gatherCols';
+  out.prev = [x];
+  out.backwardFn = () => {
+    const g = out.grad;
+    const gx = x.grad;
+    for (let i = 0; i < R; i++) gx[i * C + idx[i]] += g[i];
+  };
+  return out;
+}
+
 export interface BatchNormState {
   runningMean: Float64Array;
   runningVar: Float64Array;

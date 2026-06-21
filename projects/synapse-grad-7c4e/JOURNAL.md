@@ -27,6 +27,16 @@ gradient is hand-derived and the tape is hand-rolled). Four labs share the one e
   (the sampled noise is a frozen leaf, so the ELBO stays differentiable), a fused **BCE-with-logits**
   Bernoulli reconstruction term, and the **closed-form Gaussian KL** — all hand-derived and the
   whole VAE gradchecked end-to-end to ~1e-7.
+- **Control · RL** — train a from-scratch **policy-gradient agent** on two hand-written
+  environments (no Gym): **CartPole** with the real gym dynamics, and a **GridWorld** maze. Pick
+  **REINFORCE**, **REINFORCE + baseline**, or **advantage actor–critic with GAE(λ)** and watch the
+  agent *act live* every frame while it learns — the episode-return curve climbing (CartPole to the
+  500 cap, the maze to the goal), the policy **entropy** collapsing as it commits, the live action
+  distribution sharpening, and either the **CartPole policy phase-portrait** (the learned action over
+  angle × angular velocity) or the **GridWorld value heatmap** with greedy-policy arrows, where you
+  watch value flood backward from the goal. RL needed only **two** new differentiable ops —
+  `logSoftmax` and `gatherCols` — both hand-derived and gradchecked, plus a whole-policy end-to-end
+  gradient check, all in the one-click self-test.
 
 A built-in **numerical gradient checker** runs finite differences against the analytic gradients
 and reports the max error, so you can *prove* the engine — convolution included — is correct,
@@ -61,6 +71,10 @@ src/
     seqtasks.ts   procedural algorithmic tasks (copy / reverse / sort / add) over a 12-token vocab
     vae.ts        a from-scratch Variational Autoencoder: MLP encoder (→ μ, logσ²) + decoder,
                   the reparameterization trick, and `klDivStandardNormal` (closed-form Gaussian KL)
+    rl-env.ts     from-scratch RL environments: CartPole (gym dynamics) + a GridWorld maze
+                  (one-hot states, 4 hand-designed layouts), each a clean reset/step MDP
+    policy.ts     the RL agent: a categorical policy net + a value critic (both reuse `nn.MLP`),
+                  tape-free rollout forward, and the returns/GAE/advantage math (REINFORCE / A2C)
     optim.ts      SGD, Momentum, RMSProp, Adam, L2 weight decay
     losses.ts     softmax CE (fused), masked CE (answer-span only), MSE/MAE/Huber, BCE-with-logits
     data.ts       2-D dataset generators (spiral, circles, moons, xor, gaussians, ring) + noise
@@ -101,15 +115,25 @@ src/
       LatentExplorer.tsx   two sliders fly a live-decoded glyph along the manifold axes
       PixelGrid.tsx        shared crisp canvas for one intensity grid
       GenChart.tsx         training curves: total −ELBO, reconstruction, KL
+    rl/
+      RLLab.tsx            the Control · RL lab layout + save/share + keyboard shortcuts
+      RLPanel.tsx          environment / algorithm / hyperparameter controls + stats + gradcheck
+      EnvView.tsx          the headline: the live agent acting (animated CartPole / GridWorld)
+      ReturnChart.tsx      episode-return (raw + moving average) + policy-entropy learning curve
+      PolicyBars.tsx       the live action distribution π(a|s) + the critic's value estimate
+      ValueField.tsx       GridWorld value heatmap with the greedy policy drawn as per-cell arrows
+      PhasePortrait.tsx    CartPole policy over pole angle × angular velocity, live state overlaid
   hooks/
     useTrainer.ts        owns the MLP model+optimizer+data, steps the loop via rAF
     useVisionTrainer.ts  owns the CNN model+optimizer+image data, steps the loop via rAF
     useSeqTrainer.ts     owns the GPT+optimizer, microbatches sequences into one backward
     useGenTrainer.ts     owns the VAE+optimizer, the ELBO loop, and the latent/decode views
+    useRLTrainer.ts      owns the agent+optimizers+envs; rolls out batches, does the PG/critic
+                         updates, and runs an always-on demo episode for the live animation
   lib/
     raster.ts     canvas grid painting + color ramps for the vision views
     pca.ts        2-D PCA (power iteration + deflation) for the latent scatter + manifold
-  App.tsx           tabbed shell: Playground ⟷ Vision · CNN ⟷ Transformer ⟷ Generative · VAE
+  App.tsx           tabbed shell: Playground ⟷ Vision · CNN ⟷ Transformer ⟷ Generative · VAE ⟷ Control · RL
 ```
 
 ## Backlog / ideas
@@ -328,6 +352,84 @@ a constant leaf), a **closed-form KL divergence** against a standard normal, and
 - [x] Self-test extended: `bceWithLogits`, `klDivStandardNormal` **and a whole-VAE end-to-end**
       gradcheck (encoder, both heads, decoder, through the reparameterized ELBO)
 
+### Session 6 — a from-scratch RL lab: policy gradients on live environments (claude, 2026-06-21)
+
+The plan: every lab so far is **supervised or unsupervised gradient descent on a fixed dataset** —
+MLP classifiers/regressors, a CNN, a decoder-only Transformer, a VAE. The one whole paradigm of
+machine learning still missing is **reinforcement learning**: there is no dataset, only an agent
+acting in an environment, learning from a scalar reward via the **policy-gradient theorem**. That is
+the biggest remaining conceptual gap, and the live payoff — *watching an agent learn to balance a
+pole, or thread a maze, in real time* — is iconic. So this session builds a fifth lab on the exact
+same autograd engine, keeping the project's defining promise: every new gradient is hand-derived and
+machine-proven by the one-click self-test.
+
+RL is the perfect next move because it stresses the engine in a way nothing else did: the loss is not
+a fit to labels but **−E[advantage · logπ(a|s)]**, the score-function estimator, where the advantage
+is a *constant weight* (a frozen leaf) and the only thing that must differentiate is the chosen
+action's log-probability. That needs exactly two ops the engine lacked.
+
+**Engine — the two new differentiable pieces (both hand-derived backward, both gradchecked):**
+- [x] `Tensor.logSoftmax()` — row-wise, numerically-stable log-softmax in log-sum-exp form, with the
+      clean VJP `g_j − softmaxᵢⱼ · Σ_k g_k` (the right way to get a log-probability without ever
+      forming the tiny softmax values first)
+- [x] `gatherCols(x, idx)` — per-row column gather → `[R,1]`, reading off the chosen action's
+      log-prob, with a scatter backward (the multiclass analogue of one-hot picking, O(R) not O(R·C))
+- [x] Everything else the policy gradient needs (softmax, mul, meanAll, sumAll, scale, neg, mse for
+      the critic) already existed and is reused unchanged
+
+**Engine self-test (the headline honesty feature) extended:**
+- [x] `logSoftmax`, `gatherCols`, **and a whole-policy end-to-end gradcheck** through the REINFORCE
+      objective (with the entropy bonus) folded into the one-click panel — **39 ops** now verify, max
+      rel err ~3.5e-7 (the new ops at 1.6e-10 / 1.1e-11 / 2.1e-9)
+
+**Environments — `rl-env.ts`, from scratch (no Gym, no bundled data):**
+- [x] `CartPole` — the real gym CartPole-v1 dynamics (semi-implicit Euler), 4-D state, 2 actions,
+      +1/step, terminate past 12° / ±2.4, truncate at 500; observations pre-normalized for the net
+- [x] `GridWorld` — a one-hot-state maze, 4 actions, +1 goal / −1 pit / small step cost, with **four
+      hand-designed solvable layouts** (Cliff walk, Four rooms, Snake corridor, Twin lakes), all
+      verified to learn outside the browser; the step cost is tuned so wandering-to-timeout is never
+      worse than a pit (no "suicide" degenerate optimum) yet shortest paths are still encouraged
+
+**Agent & algorithms — `policy.ts`:**
+- [x] `Agent` = a categorical **policy** MLP + a **value critic** MLP (both reuse `nn.MLP`, so they
+      inherit the optimizers, schedules, clipping, gradient-check and save/share for free), plus a
+      tape-free `forwardNumeric` for fast rollout sampling
+- [x] Three algorithms behind one switch: **REINFORCE** (Monte-Carlo returns), **REINFORCE +
+      baseline** (advantage = G − V), and **A2C with GAE(λ)** (advantage = GAE, value target = Â + V)
+- [x] `computeTargets` (per-episode discounted returns + GAE with time-limit bootstrapping) and
+      `normalizeAdvantages` (the single most reliable PG variance-reduction trick), plus an
+      **entropy bonus** for exploration
+- [x] Validated outside the browser: self-test 3.46e-7; CartPole REINFORCE/baseline reach the 500
+      cap; all four mazes learn to reach the goal (returns ~0.7–0.97)
+
+**RL lab UI (new `Control · RL` tab):**
+- [x] `useRLTrainer` hook — rolls out a batch of complete episodes, takes one policy-gradient step
+      (and a value-regression step for the critic algorithms), and runs an **always-on demo episode**
+      stepped every frame so you can watch the current policy act even while paused
+- [x] **Live agent view** (the headline) — an animated CartPole (cart, hinged pole, track limits,
+      live angle/position readout) or GridWorld (maze, agent, ★ goal, ✖ pits)
+- [x] **Learning curve** — per-batch mean return (raw + EMA) with a solved-line at 500 for CartPole,
+      and the policy **entropy** on its own axis
+- [x] **Action policy bars** — π(a|s) for the live state with the chosen action highlighted, plus the
+      critic's V(s)
+- [x] **CartPole policy phase-portrait** — the learned action across angle × angular velocity (a clean
+      diagonal once solved), live state overlaid; **GridWorld value heatmap** — V(s) per cell with the
+      greedy action drawn as arrows, value flooding back from the goal
+- [x] Full controls (environment, maze, algorithm, network preset, activation, γ, GAE λ, entropy
+      coef, advantage-normalization toggle, policy/value lr, batch size, grad clip, speed, greedy vs
+      sampling demo), gradient check, the engine self-test, and save/load/shareable `#r=` links
+
+**Refactor / wiring:**
+- [x] `App` tab shell extended to five labs; `serialize.ts` gains an `RL_SLOT_PREFIX` so RL saves
+      and `#r=` shares are namespaced independently of the other four labs
+
+### Still open / future (RL)
+- [ ] More environments: MountainCar (sparse reward), Acrobot, a continuous-action variant (Gaussian policy)
+- [ ] PPO (clipped surrogate + multiple epochs per batch) alongside REINFORCE/A2C
+- [ ] An episode-replay scrubber and a return-distribution histogram
+- [ ] Exploring-starts / ε-greedy demo toggle; per-state visitation heatmap for GridWorld
+- [ ] Reward-shaping and discount sweeps visualized side by side
+
 ## Session log
 
 - 2026-06-21 (claude): created from template. Built the autograd engine (tensor/nn/optim/losses),
@@ -375,4 +477,20 @@ a constant leaf), a **closed-form KL divergence** against a standard normal, and
   *and* end-to-end VAE training outside the browser (−ELBO 207→76, KL healthy at ~10 with no
   posterior collapse, ~50 ms/step) before wiring the UI; the full CI gate (scope + conformance +
   lint + tsc + vite build) is green via `node scripts/verify-project.mjs`.
+- 2026-06-21 (claude, session 6): added a fifth lab — a from-scratch **reinforcement-learning** track
+  ("Control · RL"), the project's first non-dataset paradigm. New engine ops `logSoftmax`
+  (`tensor.ts`) and `gatherCols` (`ops.ts`), both hand-derived and folded into the self-test along
+  with a whole-policy end-to-end gradcheck (**39 ops**, max rel err 3.46e-7). New `rl-env.ts`
+  (CartPole with the gym dynamics + a one-hot GridWorld with four solvable hand-designed mazes) and
+  `policy.ts` (a categorical policy + value critic reusing `nn.MLP`, tape-free rollout, and the
+  returns/GAE/advantage math for REINFORCE / REINFORCE+baseline / A2C-GAE, with advantage
+  normalization and an entropy bonus). A `useRLTrainer` hook rolls out episode batches, does the
+  policy-gradient + critic updates, and runs an always-on demo episode for the live animation. The
+  lab UI: the headline **live agent view** (animated CartPole / GridWorld), the **return + entropy**
+  learning curve, **action-policy bars** with the critic's value, and the env-specific analysis —
+  the **CartPole policy phase-portrait** or the **GridWorld value heatmap with greedy arrows** — plus
+  full hyperparameter controls, gradient check, engine self-test, and save/share `#r=` links.
+  Validated the new gradients *and* training outside the browser before wiring the UI (CartPole
+  REINFORCE/baseline reach the 500 cap; all four mazes reach the goal at ~0.7–0.97 return); the full
+  CI gate (scope + conformance + lint + tsc + vite build) is green via `node scripts/verify-project.mjs`.
 

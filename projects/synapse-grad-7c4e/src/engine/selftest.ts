@@ -5,11 +5,12 @@
 // machine-checked proof that the hand-derived backward passes are correct, surfaced in the UI.
 
 import { Tensor } from './tensor';
-import { dropout, layerNorm, batchNorm, makeBatchNormState, embedding, concatCols } from './ops';
+import { dropout, layerNorm, batchNorm, makeBatchNormState, embedding, concatCols, gatherCols } from './ops';
 import { conv2d, maxPool2d, avgPool2d } from './conv';
 import { maskedCrossEntropy, bceWithLogits } from './losses';
 import { GPT } from './transformer';
 import { VAE, klDivStandardNormal } from './vae';
+import { Agent } from './policy';
 
 export interface OpCheck {
   name: string;
@@ -141,6 +142,7 @@ export function runSelfTest(seed = 7): SelfTestReport {
     ['meanAll', (t) => t.meanAll(), false],
     ['transpose', (t) => t.transpose(), false],
     ['softmax', (t) => t.softmax(), false],
+    ['logSoftmax', (t) => t.logSoftmax(), false],
     ['relu', (t) => t.relu(), false],
     ['tanh', (t) => t.tanh(), false],
     ['sigmoid', (t) => t.sigmoid(), false],
@@ -234,6 +236,43 @@ export function runSelfTest(seed = 7): SelfTestReport {
     const targets = Int32Array.from([1, 3, 0, 2, 1]);
     const keep = Uint8Array.from([0, 1, 1, 0, 1]); // only the masked rows count
     ops.push(checkOp('maskedCE', [logits], () => maskedCrossEntropy(logits, targets, keep).loss, rng));
+  }
+
+  // Reinforcement-learning op: per-row column gather (reads off the chosen action's log-prob).
+  {
+    const x = leaf(rng, 5, 4);
+    const idx = Int32Array.from([0, 3, 1, 2, 0]);
+    ops.push(checkOp('gatherCols', [x], () => gatherCols(x, idx), rng));
+  }
+
+  // End-to-end: a whole policy network through the policy-gradient objective — the clipped-free
+  // REINFORCE loss −E[advantage · logπ(a|s)] minus an entropy bonus, assembled from logSoftmax,
+  // gatherCols, softmax and the basic reductions. The advantage is a frozen leaf (it is a constant
+  // weight in the policy-gradient estimator), so the loss is a clean function of the policy params.
+  {
+    const agent = new Agent(4, 3, [6], 'tanh', rngFrom(11));
+    const B = 5;
+    const sd = new Float64Array(B * 4);
+    for (let i = 0; i < sd.length; i++) sd[i] = rng() * 2 - 1;
+    const states = Tensor.fromFlat(sd, B, 4, false);
+    const actions = Int32Array.from([0, 2, 1, 2, 0]);
+    const advd = new Float64Array(B);
+    for (let i = 0; i < B; i++) advd[i] = rng() * 2 - 1;
+    const adv = Tensor.fromFlat(advd, B, 1, false);
+    ops.push(
+      checkOp(
+        'policy-grad (e2e)',
+        agent.policy.parameters(),
+        () => {
+          const logits = agent.policyLogits(states);
+          const logp = gatherCols(logits.logSoftmax(), actions);
+          const pg = logp.mul(adv).meanAll().neg();
+          const ent = logits.softmax().mul(logits.logSoftmax()).sumAll().scale(-1 / B);
+          return pg.add(ent.scale(-0.01));
+        },
+        rng,
+      ),
+    );
   }
 
   // End-to-end: a whole tiny GPT — every parameter (embeddings, all heads' Q/K/V, the output
