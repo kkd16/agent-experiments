@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import './App.css'
 import {
   cloneParams,
+  defaultDensity,
   defaultStyle,
   makeId,
   makeLayer,
@@ -12,6 +13,7 @@ import {
   CURVE_KINDS,
   breatheLayer,
   computeLayerData,
+  loopLayer,
   defaultAttractor,
   defaultLSystem,
   defaultLiss,
@@ -48,10 +50,12 @@ import type {
   BlendMode,
   ColorMode,
   CurveKind,
+  DensityStyle,
   Layer,
   LissajousParams,
   LSystemParams,
   Project,
+  RenderStyle,
   RoseParams,
   SpirographParams,
   SuperformulaParams,
@@ -94,6 +98,10 @@ const BG_MODES: { value: BackgroundMode; label: string }[] = [
   { value: 'solid', label: 'Solid' },
   { value: 'linear', label: 'Linear' },
   { value: 'radial', label: 'Radial' },
+]
+const RENDER_STYLES: { value: RenderStyle; label: string }[] = [
+  { value: 'line', label: 'Stroke' },
+  { value: 'density', label: 'Density' },
 ]
 
 function initialProject(): Project {
@@ -156,6 +164,7 @@ export default function App() {
   const [gifBusy, setGifBusy] = useState(false)
   const [audioOn, setAudioOn] = useState(false)
   const [audioGain, setAudioGain] = useState(1)
+  const [beatReseed, setBeatReseed] = useState(false)
   const [exportScale, setExportScale] = useState(2)
   const [gallery, setGallery] = useState<GalleryItem[]>(() => loadGallery())
   const [galleryName, setGalleryName] = useState('')
@@ -169,6 +178,13 @@ export default function App() {
   useEffect(() => {
     audioGainRef.current = audioGain
   }, [audioGain])
+  const beatReseedRef = useRef(false)
+  useEffect(() => {
+    beatReseedRef.current = beatReseed
+  }, [beatReseed])
+  // A stable handle to the current "randomize everything" action, so the audio
+  // loop can fire it on a detected beat without being torn down each render.
+  const reseedRef = useRef<() => void>(() => {})
 
   // Build render data per layer. `getLayerData` caches by params identity, so a
   // style edit (which keeps the params object) is essentially free here.
@@ -211,7 +227,10 @@ export default function App() {
         map.set(dl.id, computeLayerData(dl))
         return dl
       })
-      drawProject(ctx, { ...project, layers: drifted }, map, RENDER, { transform: tf })
+      drawProject(ctx, { ...project, layers: drifted }, map, RENDER, {
+        transform: tf,
+        densityQuality: 0.35,
+      })
       raf = requestAnimationFrame(loop)
     }
     raf = requestAnimationFrame(loop)
@@ -230,8 +249,9 @@ export default function App() {
     let raf = 0
     const loop = () => {
       reactor.sample()
+      if (beatReseedRef.current && reactor.consumeOnset()) reseedRef.current()
       const pulsed = pulseProject(project, reactor.getLevel(), reactor.getBass(), audioGainRef.current)
-      drawProject(ctx, pulsed, datas, RENDER, { transform: tf })
+      drawProject(ctx, pulsed, datas, RENDER, { transform: tf, densityQuality: 0.5 })
       raf = requestAnimationFrame(loop)
     }
     raf = requestAnimationFrame(loop)
@@ -285,6 +305,13 @@ export default function App() {
   const updateStyle = (patch: Partial<Layer['style']>) => {
     if (!selected) return
     updateLayer(selected.id, (l) => ({ ...l, style: { ...l.style, ...patch } }))
+  }
+  const updateDensity = (patch: Partial<DensityStyle>) => {
+    if (!selected) return
+    updateLayer(selected.id, (l) => ({
+      ...l,
+      style: { ...l.style, density: { ...(l.style.density ?? defaultDensity()), ...patch } },
+    }))
   }
   const updateParams = (patch: Partial<Layer['params']>) => {
     if (!selected) return
@@ -417,14 +444,17 @@ export default function App() {
     updateLayer(selected.id, (l) => withRandomSource(l))
   }, [selected, updateLayer])
 
-  const randomizeAll = () => {
+  const randomizeAll = useCallback(() => {
     setLayers((ls) =>
       ls.map((l) => ({
         ...withRandomSource(l),
         style: { ...l.style, colors: randomPalette().colors },
       })),
     )
-  }
+  }, [setLayers])
+  useEffect(() => {
+    reseedRef.current = randomizeAll
+  }, [randomizeAll])
 
   const generate = useCallback(() => {
     const proj = generateProject()
@@ -577,6 +607,26 @@ export default function App() {
 
   // ---- video capture ------------------------------------------------------
 
+  // Render one frame of the seamless evolution loop at phase u ∈ [0,1). Framing
+  // is computed from the *base* figure so it never jitters as the loop breathes.
+  const renderLoopFrame = useCallback(
+    (ctx2: CanvasRenderingContext2D, size: number, u: number, quality: number) => {
+      const tf = computeTransform(project.layers, datas, size)
+      const phase = u * Math.PI * 2
+      const map = new Map<string, LayerData>()
+      const looped = project.layers.map((l) => {
+        const dl = loopLayer(l, phase)
+        map.set(dl.id, computeLayerData(dl))
+        return dl
+      })
+      drawProject(ctx2, { ...project, layers: looped }, map, size, {
+        transform: tf,
+        densityQuality: quality,
+      })
+    },
+    [project, datas],
+  )
+
   const recordVideo = useCallback(async () => {
     const canvas = canvasRef.current
     const ctx = canvas?.getContext('2d')
@@ -585,6 +635,7 @@ export default function App() {
       flash('Video capture is not supported in this browser')
       return
     }
+    const loopMode = live
     setLive(false)
     setPlaying(false)
     if (audioRef.current) {
@@ -596,8 +647,11 @@ export default function App() {
     try {
       const blob = await recordWebm(
         canvas,
-        (tr) => drawProject(ctx, project, datas, RENDER, { trace: tr }),
-        { duration: 7, fps: 60, hold: 1.4 },
+        (tr) =>
+          loopMode
+            ? renderLoopFrame(ctx, RENDER, tr, 0.6)
+            : drawProject(ctx, project, datas, RENDER, { trace: tr }),
+        loopMode ? { duration: 6, fps: 60, hold: 0 } : { duration: 7, fps: 60, hold: 1.4 },
       )
       const url = URL.createObjectURL(blob)
       const a = document.createElement('a')
@@ -605,7 +659,7 @@ export default function App() {
       a.download = 'harmonograph.webm'
       a.click()
       URL.revokeObjectURL(url)
-      flash('Saved WebM video')
+      flash(loopMode ? 'Saved looping WebM' : 'Saved WebM video')
     } catch (err) {
       flash(err instanceof Error ? err.message : 'Recording failed')
     } finally {
@@ -613,7 +667,7 @@ export default function App() {
       traceRef.current = 1
       setTrace(1)
     }
-  }, [project, datas, flash])
+  }, [project, datas, live, renderLoopFrame, flash])
 
   // ---- animated GIF (universal) -------------------------------------------
 
@@ -622,6 +676,7 @@ export default function App() {
       flash('GIF export is not supported here')
       return
     }
+    const loopMode = live
     setLive(false)
     setPlaying(false)
     if (audioRef.current) {
@@ -630,11 +685,16 @@ export default function App() {
       setAudioOn(false)
     }
     setGifBusy(true)
-    flash('Rendering GIF…')
+    flash(loopMode ? 'Rendering looping GIF…' : 'Rendering GIF…')
     try {
       const blob = await recordGif(
-        (ctx, size, tr) => drawProject(ctx, project, datas, size, { trace: tr }),
-        { size: 420, frames: 36, delayMs: 60, holdMs: 900 },
+        (ctx, size, tr) =>
+          loopMode
+            ? renderLoopFrame(ctx, size, tr, 0.5)
+            : drawProject(ctx, project, datas, size, { trace: tr }),
+        loopMode
+          ? { size: 420, frames: 48, delayMs: 55, holdMs: 0 }
+          : { size: 420, frames: 36, delayMs: 60, holdMs: 900 },
       )
       const url = URL.createObjectURL(blob)
       const a = document.createElement('a')
@@ -648,7 +708,7 @@ export default function App() {
     } finally {
       setGifBusy(false)
     }
-  }, [project, datas, flash])
+  }, [project, datas, live, renderLoopFrame, flash])
 
   // ---- audio-reactive mode -------------------------------------------------
 
@@ -812,6 +872,14 @@ export default function App() {
                     value={audioGain}
                     onChange={(e) => setAudioGain(parseFloat(e.target.value))}
                   />
+                </label>
+                <label className="beat-check" title="Re-randomize the whole piece on each detected beat">
+                  <input
+                    type="checkbox"
+                    checked={beatReseed}
+                    onChange={(e) => setBeatReseed(e.target.checked)}
+                  />
+                  beat reseed
                 </label>
               </>
             ) : live ? (
@@ -987,6 +1055,58 @@ export default function App() {
 
             {tab === 'style' && theme && (
               <>
+                <section className="group">
+                  <div className="group-title">Render style</div>
+                  <Segmented
+                    value={theme.style.renderStyle ?? 'line'}
+                    options={RENDER_STYLES}
+                    onChange={(v) => updateStyle({ renderStyle: v })}
+                  />
+                  {(theme.style.renderStyle ?? 'line') === 'density' ? (
+                    <>
+                      <Slider
+                        label="Quality"
+                        value={(theme.style.density ?? defaultDensity()).iterations}
+                        min={20}
+                        max={1500}
+                        step={10}
+                        onChange={(v) => updateDensity({ iterations: v })}
+                        fmt={(v) => `${(v / 1000).toFixed(2)}M pts`}
+                      />
+                      <Slider
+                        label="Exposure"
+                        value={(theme.style.density ?? defaultDensity()).exposure}
+                        min={0.1}
+                        max={6}
+                        step={0.05}
+                        onChange={(v) => updateDensity({ exposure: v })}
+                        fmt={(v) => `${v.toFixed(2)}×`}
+                      />
+                      <Slider
+                        label="Tone (gamma)"
+                        value={(theme.style.density ?? defaultDensity()).gamma}
+                        min={0.2}
+                        max={1.6}
+                        step={0.02}
+                        onChange={(v) => updateDensity({ gamma: v })}
+                        fmt={(v) => v.toFixed(2)}
+                      />
+                      <p className="hint">
+                        Millions of orbit points splatted into a glowing histogram,
+                        tone-mapped through the palette. Lower <em>tone</em> reveals faint
+                        filaments; higher <em>exposure</em> brightens. Pairs beautifully
+                        with the <strong>Attractor</strong> curve type and an{' '}
+                        <em>Add</em> blend.
+                      </p>
+                    </>
+                  ) : (
+                    <p className="hint">
+                      Draws the curve as a connected stroke. Switch to{' '}
+                      <strong>Density</strong> for luminous attractor nebulae.
+                    </p>
+                  )}
+                </section>
+
                 <section className="group">
                   <div className="group-title">Palette</div>
                   <div className="palette-grid">
@@ -1182,11 +1302,23 @@ export default function App() {
                     <button onClick={downloadSvg}>⬇ SVG</button>
                   </div>
                   <button className="wide" onClick={downloadGif} disabled={gifBusy || recording}>
-                    {gifBusy ? '● Rendering GIF…' : '🖼 Export animated GIF (universal)'}
+                    {gifBusy
+                      ? '● Rendering GIF…'
+                      : live
+                        ? '🖼 Export looping GIF (evolution)'
+                        : '🖼 Export animated GIF (drawing pass)'}
                   </button>
                   <button className="wide" onClick={recordVideo} disabled={recording || gifBusy}>
-                    {recording ? '● Recording…' : '🎬 Record WebM (drawing pass)'}
+                    {recording
+                      ? '● Recording…'
+                      : live
+                        ? '🎬 Record looping WebM (evolution)'
+                        : '🎬 Record WebM (drawing pass)'}
                   </button>
+                  <p className="hint">
+                    Tip: turn on <strong>🌀 Live</strong> first and these capture a{' '}
+                    <em>seamless loop</em> of the figure evolving, instead of the drawing pass.
+                  </p>
                   <button className="wide" onClick={doShare}>
                     🔗 Copy share link
                   </button>
@@ -1260,17 +1392,21 @@ export default function App() {
               <strong>spirograph</strong> (hypo/epitrochoid), a <strong>rose</strong>,
               a <strong>Lissajous</strong> figure, the wildly versatile{' '}
               <strong>superformula</strong>, a chaotic{' '}
-              <strong>strange attractor</strong> (de Jong / Clifford / Svensson / Dream),
-              or an <strong>L-system</strong> fractal (the Heighway dragon, Koch
-              snowflake, Hilbert &amp; Gosper space-fillers, Sierpinski gasket…). Use{' '}
-              <em>Add</em> / <em>Screen</em> blends with glow for luminous overlaps, color
-              along path / speed / curvature / direction, and turn up{' '}
-              <strong>kaleidoscope symmetry</strong> for mandalas.
+              <strong>strange attractor</strong> (de Jong, Clifford, Svensson, Dream,
+              Hopalong, Gumowski–Mira, Bedhead, Tinkerbell), or an{' '}
+              <strong>L-system</strong> fractal — both classic single-stroke curves
+              (dragon, Koch, Hilbert, Gosper…) and <strong>branching plants &amp; trees</strong>.
+              In the Color tab, switch any layer to the <strong>Density</strong> render
+              style to splat millions of points into a glowing nebula — the way strange
+              attractors are meant to be seen. Use <em>Add</em> / <em>Screen</em> blends with
+              glow for luminous overlaps, color along path / speed / curvature / direction,
+              and turn up <strong>kaleidoscope symmetry</strong> for mandalas.
               Hit <strong>Animate</strong> to watch the pen draw, <strong>Live</strong> to
               let the figure slowly evolve (per-layer <em>drift rate</em>), and{' '}
-              <strong>🎙 Audio</strong> to pulse glow and stroke to your microphone.
-              Export an <strong>animated GIF</strong> that plays anywhere, a{' '}
-              <strong>WebM</strong> video, or a high-res <strong>PNG/SVG</strong>.
+              <strong>🎙 Audio</strong> to pulse glow and stroke to your microphone — tick{' '}
+              <em>beat reseed</em> to re-roll the whole piece on every beat. Export a{' '}
+              <strong>seamless looping GIF/WebM</strong> of the evolution (turn on Live first),
+              an animated drawing-pass GIF, or a high-res <strong>PNG/SVG</strong>.
               Everything lives in the URL, so the <strong>Share</strong> link reproduces
               your exact piece.
             </p>

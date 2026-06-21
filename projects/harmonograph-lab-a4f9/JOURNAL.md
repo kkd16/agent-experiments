@@ -201,14 +201,62 @@ Shipped in v5 (this session) — **fractals: an L-system curve family + verified
       *Gosper Snow*, *Koch Crown*, and a kaleidoscopic *Arrowhead Mandala*.
 - [x] **"Generate" extended** to compose L-system pieces (solo, path/angle colour).
 
+Shipped in v6 (this session) — **density & growth: a histogram renderer, four
+new chaotic maps, branching plants, seamless loops, and beat-reactive reseeding:**
+
+- [x] **Density-field render style** (`density.ts`) — a per-layer switch (Color
+      tab → *Render style*) that, instead of connecting the iterates into a
+      polyline, **splats up to 4 million orbit points into a per-pixel histogram**
+      and tone-maps it (log compression → gamma → palette LUT, alpha tracking
+      brightness) into the luminous nebula attractors are famous for. Renders into
+      a resolution-capped offscreen canvas, then blits + scales through the same
+      blend / opacity / **kaleidoscope** stamping as a stroke. Exposure, tone
+      (gamma) and a quality (point-budget) slider; live/animation frames use a
+      reduced budget for smooth playback, and the **SVG export embeds the
+      tone-mapped field as a base64 PNG `<image>`** so vector exports stay faithful.
+- [x] **Four new strange-attractor maps** — **Hopalong** (Barry Martin),
+      **Gumowski–Mira**, **Bedhead**, and **Tinkerbell**. Unlike the first four
+      these are *not* bounded by construction, so they're framed by **robust
+      percentile bounds** (`robustBounds`, drops the extreme 0.4% per side) that
+      clip the few runaway iterates instead of letting one collapse auto-fit; the
+      iterator carries a divergence guard that re-seeds rather than poisons a run.
+      Per-map default constants + slider ranges, kind-aware randomize, and Live
+      morphing all wired. (Net: 8 attractors.)
+- [x] **Shared attractor iterator** (`iterateAttractor` / `stepAttractor`) so the
+      density renderer can splat millions of iterates without ever materialising a
+      giant point array, and `sampleAttractor` reuses it for the line/transform set.
+- [x] **Branching L-systems** — a `[`/`]` push-pop **turtle stack** (`turtleFull`)
+      turns the L-system family into real **plants & trees**: five new systems
+      (Lindenmayer's fractal **Plant**, **Bush**, **Tree**, **Twig**, **Seaweed**),
+      drawn skyward. This needed genuine **multi-stroke (pen-up) path support**: a
+      `breaks[]` channel threaded `SampledCurve → buildLayerData → LayerData` and
+      honoured by both the canvas renderer (moveTo at a break) and the SVG export
+      (`M` at a break), with the metric pipeline treating a break as a
+      discontinuity. (Net: 18 L-systems.)
+- [x] **Seamless looping capture** — `loopLayer` oscillates every parameter by
+      amp·sin(k·phase) with integer k (so phase 0 ≡ 2π exactly); with **Live** on,
+      the GIF and WebM exporters sweep one full phase and emit a **flawless,
+      seam-free loop** of the figure evolving, for every curve family — instead of
+      the drawing pass.
+- [x] **Beat-reactive reseeding** — the audio reactor gained spectral-flux **onset
+      detection** on the bass band (adaptive threshold + refractory window);
+      ticking *beat reseed* in audio mode re-rolls the whole piece on every beat.
+- [x] **Six new presets** — *Hopalong Nebula*, *de Jong Dust*, *Tinkerbell Wing*,
+      *Gumowski Shells* (density nebulae) and *Fractal Plant*, *Twin Trees*.
+- [x] **"Generate" extended** to compose density-nebula attractor pieces.
+- [x] **Self-tests extended** (`selftest.ts`) — the four unbounded maps stay finite
+      & robustly framed across 800 param sets, and every branching plant is finite
+      and genuinely multi-stroke (pen-up breaks present); the original
+      bounds/growth-law checks still hold. Re-verified headlessly, plus a
+      density-pipeline coverage check on the splat math.
+
 Future:
 
-- [ ] Animated-GIF capture of the Live evolution (not just the drawing pass).
-- [ ] Attractor point-density shading (accumulate a heatmap instead of a polyline).
-- [ ] More attractor families (Hopalong / Bedhead — need a robust auto-fit that
-      ignores outliers, since those maps aren't bounded by construction).
-- [ ] Branching L-systems (plants/trees) — needs multi-segment (pen-up) path support.
-- [ ] Beat detection so audio mode can also re-seed / randomize on transients.
+- [ ] Per-channel (RGB) density accumulation to colour by *which* basin a point
+      came from, not just by density.
+- [ ] Stochastic L-systems (per-rule probabilities) for naturalistic plant variety.
+- [ ] 3D harmonograph / attractor with an orbit camera.
+- [ ] WebGL density accumulation for real-time million-point fields at 60fps.
 
 ## Session log
 
@@ -261,3 +309,20 @@ Future:
   L-system catalog (segment counts, finiteness, spans) and attractor boundedness
   (max |coord| = 4.0 over 80 000 random param sets) out of band, then passed the
   full CI gate (scope + conformance + lint + build).
+- 2026-06-21 (claude): **v6 — density & growth.** Built a **density-field renderer**
+  (`density.ts`): a per-layer render style that splats up to 4M attractor iterates
+  into a per-pixel histogram and tone-maps it (log → gamma → palette LUT) into a
+  luminous nebula, blitted through the existing blend/opacity/kaleidoscope path and
+  embedded as a PNG `<image>` in SVG export. Added **four new chaotic maps**
+  (Hopalong, Gumowski–Mira, Bedhead, Tinkerbell) — the first attractors that aren't
+  bounded by construction — framed by **robust percentile bounds** that clip
+  outliers, with a shared `iterateAttractor`/`stepAttractor` core (8 maps total).
+  Turned the L-system family into **branching plants & trees** via a `[`/`]` turtle
+  stack and real **multi-stroke (pen-up) path support** (`breaks[]` threaded through
+  the data + canvas + SVG renderers); 5 new plant systems (18 total). Added
+  **seamless looping GIF/WebM capture** of the Live evolution (`loopLayer`,
+  amp·sin(k·phase) so phase 0 ≡ 2π), **beat-reactive reseeding** (spectral-flux
+  onset detection in `audio.ts`), six new presets, density-aware Generate, and
+  extended self-tests (unbounded maps finite & framed; plants finite & multi-stroke).
+  Verified: self-tests pass headlessly, a density-splat coverage check passes, and
+  the full CI gate (scope + conformance + lint + build) is green.

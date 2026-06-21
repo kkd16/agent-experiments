@@ -6,6 +6,7 @@
 
 import type { LayerData, Point } from './harmonograph'
 import type { ColorMode, Layer, LayerStyle, Project } from './types'
+import { renderDensity } from './density'
 
 // Field the base line widths are authored against; widths scale with render size.
 const FIELD = 720
@@ -107,6 +108,7 @@ function toPixel(p: Point, tf: Transform): Point {
 export interface RenderOptions {
   trace?: number // 0..1, default 1 (whole curve)
   transform?: Transform // override auto-fit (Live mode freezes framing)
+  densityQuality?: number // 0..1 iteration-budget scale for density layers
 }
 
 function layerLimit(n: number, trace: number): number {
@@ -137,6 +139,7 @@ function strokeCurve(
   trace: number,
 ) {
   const pts = data.points
+  const breaks = data.breaks
   const n = pts.length
   const limit = layerLimit(n, trace)
   const widthScale = size / FIELD
@@ -159,7 +162,10 @@ function strokeCurve(
     ctx.moveTo(f.x, f.y)
     for (let i = start + 1; i < end; i++) {
       const p = toPixel(pts[i], tf)
-      ctx.lineTo(p.x, p.y)
+      // A pen-up break starts a fresh sub-path (branching plants/trees) rather
+      // than drawing a connecting chord back to the branch point.
+      if (breaks?.[i]) ctx.moveTo(p.x, p.y)
+      else ctx.lineTo(p.x, p.y)
     }
     ctx.stroke()
   }
@@ -179,17 +185,40 @@ function strokeCurve(
 
 function drawLayer(
   ctx: CanvasRenderingContext2D,
+  layer: Layer,
   data: LayerData,
-  style: LayerStyle,
   tf: Transform,
   size: number,
   trace: number,
+  densityQuality: number,
 ) {
+  const style = layer.style
   if (data.points.length < 2) return
   const copies = symmetryCopies(style)
   const dim = copies.length > 1 ? 0.92 : 1
   const cx = size / 2
   const cy = size / 2
+
+  // Density field: render the histogram once into an offscreen canvas, then
+  // stamp it through the same blend / opacity / kaleidoscope copies as a stroke.
+  if (style.renderStyle === 'density') {
+    const result = renderDensity(layer, data, tf, size, trace, densityQuality)
+    if (!result) return
+    for (const copy of copies) {
+      ctx.save()
+      ctx.globalCompositeOperation = style.blend
+      ctx.globalAlpha = style.opacity * dim
+      ctx.translate(cx, cy)
+      ctx.rotate(copy.rot)
+      if (copy.flip) ctx.scale(-1, 1)
+      ctx.translate(-cx, -cy)
+      ctx.imageSmoothingEnabled = true
+      ctx.drawImage(result.canvas, 0, 0, size, size)
+      ctx.restore()
+    }
+    return
+  }
+
   for (const copy of copies) {
     ctx.save()
     ctx.globalCompositeOperation = style.blend
@@ -265,10 +294,11 @@ export function drawProject(
   ctx.fillRect(0, 0, size, size)
 
   const tf = opts.transform ?? computeTransform(project.layers, datas, size)
+  const dq = opts.densityQuality ?? 1
   for (const layer of project.layers) {
     if (!layer.visible) continue
     const d = datas.get(layer.id)
-    if (d) drawLayer(ctx, d, layer.style, tf, size, trace)
+    if (d) drawLayer(ctx, layer, d, tf, size, trace, dq)
   }
   drawVignette(ctx, size, project.vignette)
 }
@@ -293,7 +323,39 @@ export function toSvg(
     const data = datas.get(layer.id)
     if (!data) continue
     const style = layer.style
+
+    // Density layers are inherently raster — embed the tone-mapped histogram as
+    // a base64 PNG <image>, stamped through the same symmetry copies as strokes.
+    if (style.renderStyle === 'density') {
+      const result = renderDensity(layer, data, tf, size, trace, opts.densityQuality ?? 1)
+      if (!result) continue
+      let href: string
+      try {
+        href = result.canvas.toDataURL('image/png')
+      } catch {
+        continue
+      }
+      const copies = symmetryCopies(style)
+      const dim = copies.length > 1 ? 0.92 : 1
+      const cx = size / 2
+      const cy = size / 2
+      const img = `<image href="${href}" x="0" y="0" width="${size}" height="${size}" preserveAspectRatio="none"/>`
+      const stamped = copies
+        .map((copy) => {
+          const deg = (copy.rot * 180) / Math.PI
+          const flip = copy.flip ? ' scale(-1 1)' : ''
+          const tform = `translate(${cx} ${cy}) rotate(${deg.toFixed(3)})${flip} translate(${-cx} ${-cy})`
+          return `<g transform="${tform}">${img}</g>`
+        })
+        .join('\n')
+      groups.push(
+        `<g style="mix-blend-mode:${style.blend}" opacity="${(style.opacity * dim).toFixed(3)}">\n${stamped}\n</g>`,
+      )
+      continue
+    }
+
     const pts = data.points
+    const dbreaks = data.breaks
     const n = pts.length
     if (n < 2) continue
     const limit = layerLimit(n, trace)
@@ -320,7 +382,8 @@ export function toSvg(
       let d = ''
       for (let i = start; i < end; i++) {
         const p = toPixel(pts[i], tf)
-        d += `${i === start ? 'M' : 'L'}${p.x.toFixed(2)} ${p.y.toFixed(2)} `
+        const move = i === start || dbreaks?.[i]
+        d += `${move ? 'M' : 'L'}${p.x.toFixed(2)} ${p.y.toFixed(2)} `
       }
       paths.push(
         `<path d="${d.trim()}" fill="none" stroke="${rgb(color)}" stroke-width="${Math.max(w, 0.2).toFixed(2)}" stroke-linecap="round" stroke-linejoin="round"/>`,

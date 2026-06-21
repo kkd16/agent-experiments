@@ -36,6 +36,12 @@ export class AudioReactor {
   private freq: Uint8Array<ArrayBuffer> | null = null
   private level = 0
   private bass = 0
+  // Onset (beat) detection on the bass band: spectral-flux gate with an adaptive
+  // threshold and a refractory window, so a kick drum fires once, cleanly.
+  private prevBass = 0
+  private threshold = 0.04
+  private lastOnset = 0
+  private onsetPending = false
 
   // Resolves true once the mic is live and analysing, false if anything along
   // the way is unavailable or refused. Never throws.
@@ -91,7 +97,29 @@ export class AudioReactor {
     // musical pulse rather than a jitter.
     this.level += (overall - this.level) * (overall > this.level ? 0.6 : 0.12)
     this.bass += (bassNow - this.bass) * (bassNow > this.bass ? 0.7 : 0.14)
+
+    // Onset detection runs on the *raw* (un-smoothed) bass so transients aren't
+    // blurred away. Positive flux past an adaptive threshold, gated by a minimum
+    // energy and a refractory period, marks a beat.
+    const flux = bassNow - this.prevBass
+    this.prevBass = bassNow
+    this.threshold = Math.max(0.04, this.threshold * 0.94)
+    const now = typeof performance !== 'undefined' ? performance.now() : Date.now()
+    if (flux > this.threshold && bassNow > 0.28 && now - this.lastOnset > 220) {
+      this.onsetPending = true
+      this.lastOnset = now
+      this.threshold = flux * 1.5
+    }
     return this.level
+  }
+
+  // Returns true exactly once per detected beat, then clears the flag.
+  consumeOnset(): boolean {
+    if (this.onsetPending) {
+      this.onsetPending = false
+      return true
+    }
+    return false
   }
 
   getLevel(): number {
@@ -118,5 +146,9 @@ export class AudioReactor {
     this.freq = null
     this.level = 0
     this.bass = 0
+    this.prevBass = 0
+    this.threshold = 0.04
+    this.lastOnset = 0
+    this.onsetPending = false
   }
 }

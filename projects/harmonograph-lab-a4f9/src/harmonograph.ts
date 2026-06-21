@@ -5,6 +5,7 @@
 // rotary pendulum rotates the whole coordinate frame as it draws.
 
 import type {
+  DensityStyle,
   HarmonographParams,
   Layer,
   LayerStyle,
@@ -16,6 +17,15 @@ export interface Point {
   y: number
 }
 
+// A freshly sampled curve. Single-stroke families return just `points`; the
+// branching L-systems (plants/trees) also return `breaks`, a per-point flag
+// marking where the pen lifts and a *new* sub-path begins (so the turtle can
+// jump back to a saved branch point without drawing a connecting segment).
+export interface SampledCurve {
+  points: Point[]
+  breaks?: boolean[]
+}
+
 // Precomputed per-curve data the renderer and color engine consume. The metric
 // arrays are normalised to [0, 1] so any color mode can map straight into a ramp.
 export interface LayerData {
@@ -23,6 +33,7 @@ export interface LayerData {
   speed: number[] // normalised pen speed at each point
   curvature: number[] // normalised local turn rate
   angle: number[] // normalised direction of travel (0..1 ≈ -π..π)
+  breaks?: boolean[] // pen-up flags for multi-stroke (branching) curves
 }
 
 const TWO_PI = Math.PI * 2
@@ -71,7 +82,10 @@ function normalise(values: number[]): number[] {
 // Build the full render-ready dataset for a curve, including the metric arrays
 // used by velocity / curvature / direction coloring and speed-based width. The
 // caller supplies the already-sampled points so any curve source can feed in.
-export function buildLayerData(points: Point[]): LayerData {
+// `breaks` (optional) marks pen-up points: the segment *into* a break point is a
+// jump, not a stroke, so its speed/curvature contribute nothing and its
+// direction is held over from the previous real segment.
+export function buildLayerData(points: Point[], breaks?: boolean[]): LayerData {
   const n = points.length
   const rawSpeed = new Array<number>(n)
   const angle = new Array<number>(n)
@@ -79,14 +93,15 @@ export function buildLayerData(points: Point[]): LayerData {
 
   let prevAngle = 0
   for (let i = 0; i < n; i++) {
+    const brk = breaks?.[i] === true
     const a = points[Math.max(i - 1, 0)]
     const b = points[i]
     const dx = b.x - a.x
     const dy = b.y - a.y
-    rawSpeed[i] = Math.hypot(dx, dy)
-    const ang = i === 0 ? 0 : Math.atan2(dy, dx)
+    rawSpeed[i] = brk ? 0 : Math.hypot(dx, dy)
+    const ang = i === 0 || brk ? prevAngle : Math.atan2(dy, dx)
     angle[i] = ang
-    let d = ang - prevAngle
+    let d = brk ? 0 : ang - prevAngle
     while (d > Math.PI) d -= TWO_PI
     while (d < -Math.PI) d += TWO_PI
     rawCurv[i] = Math.abs(d)
@@ -98,6 +113,7 @@ export function buildLayerData(points: Point[]): LayerData {
     speed: normalise(rawSpeed),
     curvature: normalise(rawCurv),
     angle: angle.map((a) => (a + Math.PI) / TWO_PI),
+    breaks,
   }
 }
 
@@ -157,6 +173,10 @@ let idCounter = 0
 export function makeId(): string {
   idCounter += 1
   return `l${Date.now().toString(36)}${idCounter.toString(36)}`
+}
+
+export function defaultDensity(): DensityStyle {
+  return { iterations: 350, exposure: 1, gamma: 0.5 }
 }
 
 export function defaultStyle(colors: string[]): LayerStyle {

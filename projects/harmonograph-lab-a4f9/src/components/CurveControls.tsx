@@ -12,7 +12,7 @@ import type {
   SpirographParams,
   SuperformulaParams,
 } from '../types'
-import { ATTRACTOR_KINDS } from '../curves'
+import { ATTRACTOR_KINDS, attractorBounded, defaultsForAttractor } from '../curves'
 import { LSYSTEM_KINDS, lsystemById } from '../lsystem'
 import { Slider } from './Slider'
 import { Segmented } from './Segmented'
@@ -377,6 +377,43 @@ export function CurveSuperformula({
   )
 }
 
+// Sensible slider ranges per map: the four bounded maps read their constants as
+// angular frequencies (wide range); the unbounded classics live in much tighter
+// parameter windows where they stay structured rather than diverging.
+function attractorRanges(type: AttractorParams['type']): {
+  a: [number, number]
+  b: [number, number]
+  c: [number, number]
+  d: [number, number]
+} {
+  switch (type) {
+    case 'clifford':
+    case 'fractaldream':
+      return { a: [-3, 3], b: [-3, 3], c: [-1.5, 1.5], d: [-1.5, 1.5] }
+    case 'hopalong':
+      return { a: [-8, 8], b: [0, 2], c: [0, 3], d: [-1, 1] }
+    case 'gumowski':
+      return { a: [-1, 1], b: [0.8, 1.0], c: [-1, 1], d: [-1, 1] }
+    case 'bedhead':
+      return { a: [-1, 1], b: [-1, 1], c: [-1, 1], d: [-1, 1] }
+    case 'tinkerbell':
+      return { a: [0.5, 1], b: [-1, 0], c: [1, 2.4], d: [0, 1] }
+    default:
+      return { a: [-3, 3], b: [-3, 3], c: [-3, 3], d: [-3, 3] }
+  }
+}
+
+const ATTRACTOR_NOTES: Record<string, string> = {
+  dejong: 'Peter de Jong\'s four-frequency map — a lacy, symmetric web.',
+  clifford: 'Clifford Pickover\'s map — c/d set the amplitudes; flowing ribbons.',
+  svensson: 'Johnny Svensson\'s variant — sharp, blade-like filaments.',
+  fractaldream: 'Pickover\'s "Fractal Dream" — soft, dreamlike interleaving.',
+  hopalong: "Barry Martin's Hopalong — a sprayed spiral of fine filaments.",
+  gumowski: 'Gumowski–Mira — near-conservative; gorgeous concentric shells.',
+  bedhead: 'The Bedhead map — tight swirling knots.',
+  tinkerbell: 'The Tinkerbell map — a folded, wing-like basin.',
+}
+
 export function CurveAttractor({
   attractor,
   update,
@@ -384,10 +421,8 @@ export function CurveAttractor({
   attractor: AttractorParams
   update: (patch: Partial<AttractorParams>) => void
 }) {
-  // Clifford reads c/d as amplitude multipliers, so a tighter range suits it;
-  // de Jong / Svensson read all four as angular frequencies and roam wider.
-  const wide = attractor.type !== 'clifford'
-  const cdMax = wide ? 3 : 1.5
+  const r = attractorRanges(attractor.type)
+  const bounded = attractorBounded(attractor.type)
   return (
     <section className="group">
       <div className="group-title">Strange attractor</div>
@@ -395,16 +430,20 @@ export function CurveAttractor({
       <Segmented
         value={attractor.type}
         options={ATTRACTOR_KINDS}
-        onChange={(type) => update({ type })}
+        // Switching map resets the constants to that map's canonical values, so
+        // a de Jong's frequencies don't get reinterpreted as a diverging map.
+        onChange={(type) => update(defaultsForAttractor(type))}
         wrap
       />
-      <Slider label="a" value={attractor.a} min={-3} max={3} step={0.001} onChange={(v) => update({ a: v })} fmt={(v) => v.toFixed(3)} />
-      <Slider label="b" value={attractor.b} min={-3} max={3} step={0.001} onChange={(v) => update({ b: v })} fmt={(v) => v.toFixed(3)} />
-      <Slider label="c" value={attractor.c} min={-cdMax} max={cdMax} step={0.001} onChange={(v) => update({ c: v })} fmt={(v) => v.toFixed(3)} />
-      <Slider label="d" value={attractor.d} min={-cdMax} max={cdMax} step={0.001} onChange={(v) => update({ d: v })} fmt={(v) => v.toFixed(3)} />
+      <Slider label="a" value={attractor.a} min={r.a[0]} max={r.a[1]} step={0.001} onChange={(v) => update({ a: v })} fmt={(v) => v.toFixed(3)} />
+      <Slider label="b" value={attractor.b} min={r.b[0]} max={r.b[1]} step={0.001} onChange={(v) => update({ b: v })} fmt={(v) => v.toFixed(3)} />
+      <Slider label="c" value={attractor.c} min={r.c[0]} max={r.c[1]} step={0.001} onChange={(v) => update({ c: v })} fmt={(v) => v.toFixed(3)} />
+      <Slider label="d" value={attractor.d} min={r.d[0]} max={r.d[1]} step={0.001} onChange={(v) => update({ d: v })} fmt={(v) => v.toFixed(3)} />
       <p className="hint">
-        A chaotic orbit fed back into itself — nudge a constant and the whole web
-        reshapes. Try <em>Live</em> to watch it morph, or color along <em>Path</em>.
+        {ATTRACTOR_NOTES[attractor.type]}{' '}
+        {bounded ? '' : 'Framed by robust bounds (outliers clipped). '}
+        Switch this layer to the <strong>Density</strong> render style (Color tab) to
+        see it as a luminous nebula. Try <em>Live</em> to watch it morph.
       </p>
     </section>
   )

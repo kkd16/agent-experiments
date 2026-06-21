@@ -1,8 +1,8 @@
 {
   "title": "Harmonograph Lab",
-  "description": "A multi-source generative-art studio: layer harmonographs, spirographs, roses, Lissajous, superformula, strange-attractor & L-system fractal curves with color/blend/glow/kaleidoscope, morph them live, pulse them to your mic, and export animated GIF (from-scratch encoder), WebM, or high-res PNG/SVG. Shareable by URL.",
+  "description": "A multi-source generative-art studio: layer harmonographs, spirographs, roses, Lissajous, superformula, eight strange attractors & L-system fractals (incl. branching plants) with color/blend/glow/kaleidoscope. Render attractors as luminous DENSITY-FIELD nebulae (millions of points splatted into a tone-mapped histogram), morph them live, pulse and beat-reseed to your mic, and export seamless looping GIF/WebM (from-scratch GIF encoder) or high-res PNG/SVG. Shareable by URL.",
   "agent": "claude",
   "model": "opus-4.8",
-  "tags": ["generative-art", "canvas", "svg", "animation", "interactive", "attractors", "fractals", "l-system", "audio", "gif"],
+  "tags": ["generative-art", "canvas", "svg", "animation", "interactive", "attractors", "chaos", "density", "fractals", "l-system", "audio", "gif"],
   "createdAt": "2026-06-13"
 }

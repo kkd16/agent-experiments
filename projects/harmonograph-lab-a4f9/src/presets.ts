@@ -9,6 +9,7 @@ import type {
   BlendMode,
   ColorMode,
   CurveKind,
+  DensityStyle,
   HarmonographParams,
   Layer,
   LayerStyle,
@@ -16,6 +17,7 @@ import type {
   LSystemParams,
   Pendulum,
   Project,
+  RenderStyle,
   RoseParams,
   RotaryPendulum,
   SpirographParams,
@@ -46,6 +48,8 @@ interface StyleOpts {
   glow?: number
   symmetry?: number
   mirror?: boolean
+  renderStyle?: RenderStyle
+  density?: DensityStyle
 }
 
 function st(paletteId: string, o: StyleOpts = {}): LayerStyle {
@@ -59,6 +63,8 @@ function st(paletteId: string, o: StyleOpts = {}): LayerStyle {
     glow: o.glow ?? 0,
     symmetry: o.symmetry ?? 1,
     mirror: o.mirror ?? false,
+    ...(o.renderStyle ? { renderStyle: o.renderStyle } : {}),
+    ...(o.density ? { density: o.density } : {}),
   }
 }
 
@@ -598,6 +604,120 @@ export const PRESETS: Preset[] = [
           symmetry: 3,
           mirror: true,
         }),
+      },
+    ],
+  },
+  // --- v6: density-field nebulae & branching plants ------------------------
+  {
+    name: 'Hopalong Nebula',
+    background: '#04040a',
+    bg2: '#0a0616',
+    bgMode: 'radial',
+    vignette: 0.5,
+    layers: [
+      {
+        name: 'Nebula',
+        kind: 'attractor',
+        params: dummyHarm(),
+        attractor: { type: 'hopalong', a: 7.7, b: 0.64, c: 1.6, d: 0, steps: 14000 },
+        style: st('plasma', {
+          renderStyle: 'density',
+          density: { iterations: 700, exposure: 1.4, gamma: 0.45 },
+          blend: 'lighter',
+        }),
+      },
+    ],
+  },
+  {
+    name: 'de Jong Dust',
+    background: '#050509',
+    vignette: 0.45,
+    layers: [
+      {
+        name: 'Dust',
+        kind: 'attractor',
+        params: dummyHarm(),
+        attractor: { type: 'dejong', a: -2.0, b: -2.0, c: -1.2, d: 2.0, steps: 14000 },
+        style: st('aurora', {
+          renderStyle: 'density',
+          density: { iterations: 800, exposure: 1.2, gamma: 0.5 },
+          blend: 'lighter',
+        }),
+      },
+    ],
+  },
+  {
+    name: 'Tinkerbell Wing',
+    background: '#070310',
+    bg2: '#02040c',
+    bgMode: 'radial',
+    vignette: 0.5,
+    layers: [
+      {
+        name: 'Wing',
+        kind: 'attractor',
+        params: dummyHarm(),
+        attractor: { type: 'tinkerbell', a: 0.9, b: -0.6013, c: 2.0, d: 0.5, steps: 14000 },
+        style: st('neon', {
+          renderStyle: 'density',
+          density: { iterations: 650, exposure: 1.6, gamma: 0.5 },
+          blend: 'lighter',
+        }),
+      },
+    ],
+  },
+  {
+    name: 'Gumowski Shells',
+    background: '#03060a',
+    vignette: 0.48,
+    layers: [
+      {
+        name: 'Shells',
+        kind: 'attractor',
+        params: dummyHarm(),
+        attractor: { type: 'gumowski', a: -0.48, b: 0.93, c: 0, d: 0, steps: 14000 },
+        style: st('jade', {
+          renderStyle: 'density',
+          density: { iterations: 700, exposure: 1.3, gamma: 0.55 },
+          blend: 'lighter',
+        }),
+      },
+    ],
+  },
+  {
+    name: 'Fractal Plant',
+    background: '#060a08',
+    bg2: '#03120c',
+    bgMode: 'radial',
+    vignette: 0.42,
+    layers: [
+      {
+        name: 'Plant',
+        kind: 'lsystem',
+        params: dummyHarm(),
+        lsystem: { system: 'plant', iterations: 6, angle: 25 * (PI / 180) },
+        style: st('jade', { colorMode: 'path', glow: 0.18, lineWidth: 0.7 }),
+      },
+    ],
+  },
+  {
+    name: 'Twin Trees',
+    background: '#05060c',
+    vignette: 0.4,
+    layers: [
+      {
+        name: 'Bush',
+        kind: 'lsystem',
+        params: dummyHarm(),
+        lsystem: { system: 'bush', iterations: 5, angle: 22.5 * (PI / 180) },
+        style: st('aurora', { colorMode: 'angle', glow: 0.2, lineWidth: 0.7, blend: 'lighter', opacity: 0.85 }),
+      },
+      {
+        name: 'Twig',
+        kind: 'lsystem',
+        params: dummyHarm(),
+        lsystem: { system: 'twig', iterations: 6, angle: 20 * (PI / 180) },
+        style: st('ember', { colorMode: 'path', glow: 0.22, lineWidth: 0.65, blend: 'lighter', opacity: 0.8 }),
       },
     ],
   },
