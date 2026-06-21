@@ -14,7 +14,9 @@ import { randomSeedString } from './wfc/prng';
 import { decodeHash, encodeHash } from './wfc/permalink';
 import { sampleByKey, type Sample } from './wfc/samples';
 import Studio3D from './components/Studio3D';
+import InfiniteStudio from './components/InfiniteStudio';
 import { decodeHash3, hashMode, type Mode } from './wfc3d/permalink3';
+import { decodeHashInf } from './infinite/permalink_inf';
 
 const DEFAULTS: ControllerConfig = {
   model: 'overlap',
@@ -224,7 +226,9 @@ export default function App() {
             <p>
               {mode === '3d'
                 ? 'Wave Function Collapse in three dimensions — a from-scratch voxel engine.'
-                : 'A Wave Function Collapse studio — watch constraints crystallise into form.'}
+                : mode === 'inf'
+                  ? 'Boundless — a deterministic, endlessly-pannable Wave Function Collapse world.'
+                  : 'A Wave Function Collapse studio — watch constraints crystallise into form.'}
             </p>
           </div>
         </div>
@@ -236,6 +240,9 @@ export default function App() {
             <button className={`seg ${mode === '3d' ? 'active' : ''}`} type="button" onClick={() => setMode('3d')}>
               3D
             </button>
+            <button className={`seg ${mode === 'inf' ? 'active' : ''}`} type="button" onClick={() => setMode('inf')} title="Boundless — an infinite WFC world">
+              ∞
+            </button>
           </div>
           <a className="repo-link" href="https://en.wikipedia.org/wiki/Model_synthesis" target="_blank" rel="noreferrer">
             what is WFC?
@@ -245,6 +252,8 @@ export default function App() {
 
       {mode === '3d' ? (
         <Studio3D initial={decodeHash3(window.location.hash)} />
+      ) : mode === 'inf' ? (
+        <InfiniteStudio initial={decodeHashInf(window.location.hash)} />
       ) : (
         <main className="layout">
           <div className="stage">
@@ -294,7 +303,19 @@ export default function App() {
       {editing && mode === '2d' && <SampleEditor value={editorSample} onChange={onSampleChange} onClose={() => setEditing(false)} />}
 
       <footer className="footer">
-        {mode === '3d' ? (
+        {mode === 'inf' ? (
+          <>
+            <span>
+              Built from scratch — <strong>Boundless</strong>: a deterministic, infinite WFC plane. A CW-complex of
+              junctions / 1-D seams / chunk interiors, each solved by the real solver and shared across neighbours, so
+              every cell is a pure function of (seed, x, y) and the endless tiling is globally adjacency-valid · lazy
+              chunked generation · in-app Infinite Proof Lab.
+            </span>
+            <span className="keys">
+              <kbd>space</kbd> auto-pan · <kbd>n</kbd> new world · <kbd>r</kbd> home · <kbd>e</kbd> png · <kbd>g</kbd> grid · <kbd>j</kbd> junctions · drag to pan · scroll to zoom
+            </span>
+          </>
+        ) : mode === '3d' ? (
           <>
             <span>
               Built from scratch — 3D Wave Function Collapse on a 6-neighbour voxel lattice · cube-group socket algebra ·
