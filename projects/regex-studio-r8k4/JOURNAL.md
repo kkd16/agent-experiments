@@ -462,8 +462,10 @@ claim is decided structurally from `M(L)` and cross-checked by the fuzzer — no
 - [ ] **Star-free expression synthesis** — when `M(L)` is aperiodic, actually *build* a star-free expression (e.g. via
       the Krohn–Rhodes / counter-free decomposition or an FO[<]/LTL translation) instead of only certifying one exists
 - [ ] **dot-depth / Straubing–Thérien** hierarchy badges above `J`-trivial (the concatenation hierarchy levels)
-- [ ] Polynomial detection via the cubed automaton N³ (exact IDA witness) to complement the
-      measurement-based degree fit
+- [x] **Group-language structure** — name the syntactic group *and* show the permutation automaton with each
+      generator's cycle structure *(Session 9: ℤ/n, the abelian invariant-factor product incl. Klein four, Dₙ, Q₈,
+      A₄/S₄, named off the Cayley table; the group card lists every generator as a permutation in cycle notation with
+      its order — e.g. even-`a`-even-`b` shows a=(0 1)(2 3), b=(0 2)(1 3): two commuting involutions = ℤ/2×ℤ/2)*
 - [ ] Polynomial detection via the cubed automaton N³ (exact IDA witness) to complement the
       measurement-based degree fit
 - [ ] Visualise the ambiguous pivot loop on the NFA diagram (highlight the two distinct pump paths)
@@ -620,7 +622,9 @@ claim is decided structurally from `M(L)` and cross-checked by the fuzzer — no
   element induces on the complete minimal DFA: fixed points, the image (rank) and any non-trivial **cycle** (a cycle
   > 1 is exactly the counter a group element does and an aperiodic one can't), so "an element *is* a transformation"
   stops being abstract. New `MonoidPanel` UI: the nested ladder (replacing the flat badge row), the named-group card
-  with its order spectrum, and the interactive state-map explorer. Verified the house way — `monoid-verify.ts` gained
+  with its order spectrum and — for group languages — every generator drawn as a **permutation** in cycle notation
+  with its order (the permutation automaton made legible, e.g. even-`a`-even-`b` → a=(0 1)(2 3), b=(0 2)(1 3)), and
+  the interactive state-map explorer. Verified the house way — `monoid-verify.ts` gained
   the ladder's own invariants (`J`-trivial ⇒ `DA` ⇒ aperiodic; every `DA` failure exhibits a real regular
   non-idempotent witness; each named group's order = the counting modulus and, abelian, its invariant factors
   multiply to the order, form a divisibility chain and reproduce the exponent). Validated offline before shipping with

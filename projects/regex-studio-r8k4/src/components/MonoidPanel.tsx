@@ -19,6 +19,37 @@ interface Built {
   ladder: VarietyLadder | null;
 }
 
+function gcd(a: number, b: number): number {
+  while (b) [a, b] = [b, a % b];
+  return a;
+}
+
+// Cycle-decompose a permutation transform into standard cycle notation, and read
+// off its order (the lcm of the cycle lengths). Fixed points are shown as 1-cycles
+// only when the permutation is the identity; otherwise omitted for readability.
+function permNotation(t: Int32Array): { notation: string; order: number } {
+  const n = t.length;
+  const seen = new Array<boolean>(n).fill(false);
+  const cycles: number[][] = [];
+  for (let s = 0; s < n; s++) {
+    if (seen[s]) continue;
+    const cyc: number[] = [];
+    let x = s;
+    while (!seen[x]) {
+      seen[x] = true;
+      cyc.push(x);
+      x = t[x];
+    }
+    cycles.push(cyc);
+  }
+  let order = 1;
+  for (const c of cycles) order = (order / gcd(order, c.length)) * c.length;
+  const nonTrivial = cycles.filter((c) => c.length > 1);
+  if (nonTrivial.length === 0) return { notation: 'id', order: 1 };
+  const notation = nonTrivial.map((c) => `(${c.join(' ')})`).join('');
+  return { notation, order };
+}
+
 // The shortest-word representative of an H-class (the egg-box cell).
 function repOf(members: number[], m: SyntacticMonoid): number {
   let best = members[0];
@@ -192,6 +223,27 @@ export function MonoidPanel({ compiled }: { compiled: Compiled }) {
               </span>
             ))}
           </div>
+          {ladder.isGroupLanguage && (
+            <div className="grp-perms">
+              <span className="grp-spectrum-l">
+                a permutation automaton — each generator permutes the {m.complete.numStates} DFA states:
+              </span>
+              <div className="grp-perm-list">
+                {m.complete.atomLabels.map((lab, a) => {
+                  const perm = m.elements[m.generators[a]].transform;
+                  const { notation, order } = permNotation(perm);
+                  return (
+                    <div key={a} className="grp-perm" title={`generator ${lab} as a permutation; cycle lengths give its order`}>
+                      <code className="grp-perm-lab">{lab}</code>
+                      <span className="grp-perm-eq">=</span>
+                      <code className="grp-perm-cyc">{notation}</code>
+                      <span className="grp-perm-ord">order {order}</span>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
         </div>
       )}
 

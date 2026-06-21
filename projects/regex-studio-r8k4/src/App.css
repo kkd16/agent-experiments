@@ -2664,6 +2664,43 @@
 .grp-ord-k {
   color: var(--muted);
 }
+.grp-perms {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border-soft);
+}
+.grp-perm-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 6px;
+}
+.grp-perm {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 4px 9px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+}
+.grp-perm-lab {
+  font-family: var(--mono);
+  font-weight: 700;
+  color: var(--mon);
+}
+.grp-perm-eq {
+  color: var(--muted-2);
+}
+.grp-perm-cyc {
+  font-family: var(--mono);
+  font-size: 12.5px;
+  color: var(--text);
+}
+.grp-perm-ord {
+  font-size: 10.5px;
+  color: var(--muted);
+}
 
 /* ---------- Session 9: egg-box ↔ DFA bridge (the state map) ---------- */
 .egg-cell {
