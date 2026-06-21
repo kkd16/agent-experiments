@@ -117,6 +117,8 @@ class Builder {
       case 'boundary':
       case 'backref':
       case 'look':
+      case 'intersect':
+      case 'complement':
         throw new Error(`Cannot build an NFA for a non-regular construct ('${node.type}')`);
     }
   }

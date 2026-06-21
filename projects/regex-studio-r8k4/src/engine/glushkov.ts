@@ -112,6 +112,8 @@ class Linealiser {
       case 'boundary':
       case 'backref':
       case 'look':
+      case 'intersect':
+      case 'complement':
         throw new Error(`glushkov: '${node.type}' is not a regular construct`);
     }
   }

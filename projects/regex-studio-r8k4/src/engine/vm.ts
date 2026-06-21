@@ -164,6 +164,13 @@ class Matcher {
         }
         return matched !== node.negate ? k(pos) : false;
       }
+
+      case 'intersect':
+      case 'complement':
+        // Boolean operators are an automata-only construct in this studio — the
+        // backtracking VM never receives them (the Extended panel runs them on
+        // the Boolean-derivative engine instead).
+        throw new Error(`vm: '${node.type}' is handled by the Boolean-derivative engine, not the VM`);
     }
   }
 

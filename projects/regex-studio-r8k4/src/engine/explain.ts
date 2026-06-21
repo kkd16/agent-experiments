@@ -60,6 +60,10 @@ export function explain(node: RegexNode): string {
       const not = node.negate ? 'not ' : '';
       return `a position ${not}${verb} [${explain(node.node)}]`;
     }
+    case 'intersect':
+      return 'a string matching every one of [' + node.parts.map(explain).join('] and [') + ']';
+    case 'complement':
+      return `any string that does NOT match [${explain(node.node)}]`;
   }
 }
 
