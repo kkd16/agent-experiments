@@ -109,6 +109,19 @@ export function About() {
           pdf all become anisotropic — reciprocity and energy still hold exactly (proven in{' '}
           <strong>Verify</strong>). <em>Brushed Metal</em> rakes the streak across a row of spheres.
         </Card>
+        <Card title="Real metals (complex IOR)">
+          A real conductor's colour is not an RGB tint — it is a <em>spectral</em> reflectance set by
+          its complex refractive index <code>n̄(λ) = η(λ) − i·k(λ)</code>. Lumen carries measured{' '}
+          <code>η/k</code> spectra (Johnson &amp; Christy for gold/silver/copper, Rakić for aluminium)
+          and evaluates the <strong>exact unpolarised conductor Fresnel</strong> at the path's hero
+          wavelength, so a metal's hue emerges spectrally — the same machinery that fans glass into a
+          rainbow. That is why gold rims warm, copper reads red, silver stays bright-neutral and
+          aluminium leans faintly blue, with the correct desaturation toward the horizon that
+          Schlick-from-RGB can never capture. The Fresnel rides on every lobe — anisotropic and
+          Kulla–Conty multiscatter included. <strong>Verify</strong> proves <code>R∈[0,1]</code>, the{' '}
+          <code>k→0</code> reduction to the dielectric Fresnel, the textbook metal colours, and that a
+          rendered gold sphere reconstructs its measured RGB. See <em>Metals of the World</em>.
+        </Card>
         <Card title="Oren–Nayar rough diffuse">
           Real matte surfaces — clay, chalk, the moon, unfinished plaster — are not Lambertian: their
           microscopic roughness makes them <em>flatten</em> and back-scatter toward the light, so a full

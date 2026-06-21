@@ -22,6 +22,8 @@ import type { Texture } from './texture'
 import { evalTexture } from './texture'
 import { cauchyIor } from './spectrum'
 import { thinFilmReflectance } from './thinfilm'
+import type { ConductorName } from './conductor'
+import { conductorAverageFresnel, conductorEta, conductorK, fresnelConductor } from './conductor'
 
 // A clear dielectric coat layered over a diffuse base (lacquer / car paint /
 // glazed ceramic). `roughness` frosts the coat's GGX highlight (0 = a sharp
@@ -48,6 +50,13 @@ export type Material =
   // microfacets); `aniso` ∈ [0,1) stretches the GGX lobe into an anisotropic
   // (brushed-metal) streak, oriented by `anisoAngle` (radians in the tangent
   // plane). `aniso` and `multiscatter` are independent upgrades to the lobe.
+  // `spectrum` names a real metal (gold/copper/silver/…): the Schlick-from-RGB
+  // Fresnel is then replaced by the exact complex-IOR conductor Fresnel evaluated
+  // at the path's committed hero wavelength (so the metal is `isSpectral` and its
+  // hue emerges spectrally, like dispersion through glass). `albedo` is still used
+  // as the denoiser/BDPT colour guide (set it to conductorF0RGB(name)). `cond` is
+  // baked by resolveMaterial — the scalar (η,k) and hemispherical average at the
+  // hero wavelength — and is never set by scenes.
   | {
       kind: 'metal'
       albedo: Vec3
@@ -56,6 +65,8 @@ export type Material =
       multiscatter?: boolean
       aniso?: number
       anisoAngle?: number
+      spectrum?: ConductorName
+      cond?: { eta: number; k: number; favg: number }
     }
   // Dielectric (glass/water). `tint` colours transmitted radiance; `roughness`
   // (0 = smooth) frosts it via a microfacet interface; `absorption` is the
@@ -87,8 +98,20 @@ export function resolveMaterial(m: Material, p: Vec3, lambdaNm: number): Materia
   switch (m.kind) {
     case 'diffuse':
       return m.tex ? { ...m, albedo: evalTexture(m.tex, p), tex: undefined } : m
-    case 'metal':
-      return m.tex ? { ...m, albedo: evalTexture(m.tex, p), tex: undefined } : m
+    case 'metal': {
+      let r = m
+      if (r.tex) r = { ...r, albedo: evalTexture(r.tex, p), tex: undefined }
+      // Bake the measured complex index at the hero wavelength into a scalar
+      // (η,k) + hemispherical average. At λ=0 (the achromatic BDPT path) we leave
+      // `cond` unset, so the lobe falls back to Schlick(albedo) — albedo already
+      // carries the metal's band-integrated RGB, giving a sensible colour there.
+      if (r.spectrum && lambdaNm > 0) {
+        const eta = conductorEta(r.spectrum, lambdaNm)
+        const k = conductorK(r.spectrum, lambdaNm)
+        r = { ...r, cond: { eta, k, favg: conductorAverageFresnel(eta, k) } }
+      }
+      return r
+    }
     case 'dielectric':
       return m.cauchyB && lambdaNm > 0 ? { ...m, ior: cauchyIor(m.ior, m.cauchyB, lambdaNm) } : m
     case 'thinfilm':
@@ -108,7 +131,9 @@ export const isDelta = (m: Material): boolean =>
 // True for materials whose response varies with wavelength, so the integrator
 // must commit a hero wavelength before shading them (dispersive glass; a film).
 export const isSpectral = (m: Material): boolean =>
-  m.kind === 'thinfilm' || (m.kind === 'dielectric' && m.cauchyB !== undefined && m.cauchyB > 0)
+  m.kind === 'thinfilm' ||
+  (m.kind === 'dielectric' && m.cauchyB !== undefined && m.cauchyB > 0) ||
+  (m.kind === 'metal' && m.spectrum !== undefined)
 
 // ---------------------------------------------------------------------------
 // Fresnel
@@ -124,6 +149,38 @@ function fresnelSchlick(cosTheta: number, f0: Vec3): Vec3 {
     y: f0.y + (1 - f0.y) * p,
     z: f0.z + (1 - f0.z) * p,
   }
+}
+
+// A conductor's reflectance is described either by an RGB Schlick F0 (the legacy
+// metal: `albedo` is F0) or by a measured complex index η−ik baked at the hero
+// wavelength (`spectrum` metals). Both feed every microfacet lobe through the two
+// helpers below, so a metal can be spectral, anisotropic and multiscatter-
+// compensated at once without any lobe ever branching on which Fresnel it has.
+type FresnelSpec = { f0: Vec3 } | { eta: number; k: number; favg: number }
+
+// Fresnel reflectance at micro-angle `cos`, as an RGB triple. The complex-IOR
+// branch is a scalar (a metal reflects one fraction per wavelength); colour comes
+// from the path's committed hero wavelength, so we broadcast it to grey here.
+function fresnelSpec(cos: number, fr: FresnelSpec): Vec3 {
+  if ('eta' in fr) {
+    const r = fresnelConductor(cos, fr.eta, fr.k)
+    return { x: r, y: r, z: r }
+  }
+  return fresnelSchlick(cos, fr.f0)
+}
+
+// The cosine-weighted hemispherical-average Fresnel a lobe needs for Kulla–Conty
+// multiscatter compensation: the analytic Schlick average for an RGB F0, or the
+// measured conductor average baked into `cond`.
+function fresnelAvgSpec(fr: FresnelSpec): Vec3 {
+  if ('eta' in fr) return { x: fr.favg, y: fr.favg, z: fr.favg }
+  return fresnelAvg(fr.f0)
+}
+
+// The Fresnel description of a (resolved) metal: complex-IOR if a spectrum was
+// baked, otherwise Schlick with albedo as F0.
+function metalFresnel(m: Extract<Material, { kind: 'metal' }>): FresnelSpec {
+  return m.cond ? { eta: m.cond.eta, k: m.cond.k, favg: m.cond.favg } : { f0: m.albedo }
 }
 
 // Exact unpolarised dielectric Fresnel reflectance. cosI is the cosine of the
@@ -205,13 +262,13 @@ const INV_PI = 1 / Math.PI
 // ---------------------------------------------------------------------------
 
 // GGX reflection BRDF f = F·D·G2 / (4 cosθo cosθi), local frame, wo.z,wi.z > 0.
-function ggxReflectFLocal(wo: Vec3, wi: Vec3, alpha: number, f0: Vec3): Vec3 {
+function ggxReflectFLocal(wo: Vec3, wi: Vec3, alpha: number, fr: FresnelSpec): Vec3 {
   if (wo.z <= 0 || wi.z <= 0) return v(0, 0, 0)
   const h = norm(v(wo.x + wi.x, wo.y + wi.y, wo.z + wi.z))
   const D = ggxD(h.z, alpha)
   const G = g2(wo.z, wi.z, alpha)
   // For a reflection half-vector dot(wo,h) === dot(wi,h), so F is reciprocal.
-  const F = fresnelSchlick(Math.max(0, dot(wo, h)), f0)
+  const F = fresnelSpec(Math.max(0, dot(wo, h)), fr)
   return scale(F, (D * G) / (4 * wo.z * wi.z))
 }
 
@@ -364,12 +421,14 @@ function multiscatterFresnel(favg: Vec3, eavg: number): Vec3 {
 }
 
 // Total energy-compensated conductor BRDF: single-scatter GGX + Kulla–Conty
-// multiscatter lobe (local frame).
-function metalMsFLocal(wo: Vec3, wi: Vec3, alpha: number, albedo: Vec3, eo: number): Vec3 {
-  const fs = ggxReflectFLocal(wo, wi, alpha, albedo)
+// multiscatter lobe (local frame). `fr` carries either the Schlick RGB F0 or the
+// measured complex-IOR Fresnel; the multiscatter Fresnel uses the matching
+// hemispherical average, so spectral metals are energy-compensated correctly too.
+function metalMsFLocal(wo: Vec3, wi: Vec3, alpha: number, fr: FresnelSpec, eo: number): Vec3 {
+  const fs = ggxReflectFLocal(wo, wi, alpha, fr)
   const ei = ggxDirectionalAlbedo(wi.z, alpha)
   const eavg = ggxAverageAlbedo(alpha)
-  const fms = multiscatterFresnel(fresnelAvg(albedo), eavg)
+  const fms = multiscatterFresnel(fresnelAvgSpec(fr), eavg)
   const k = ((1 - eo) * (1 - ei)) / (Math.PI * Math.max(1e-4, 1 - eavg))
   return add(fs, scale(fms, k))
 }
@@ -480,10 +539,11 @@ export function sampleBSDF(
       const { t, b } = m.aniso ? rotatedFrame(n, m.anisoAngle ?? 0) : onb(n)
       const wo = worldToLocal(woW, t, b, n)
       if (wo.z <= 0) return null
+      const fr = metalFresnel(m)
       if (m.roughness < ROUGHNESS_DELTA) {
         // Perfect mirror: a delta lobe handled analytically.
         const wi = v(-wo.x, -wo.y, wo.z)
-        const F = fresnelSchlick(wo.z, m.albedo)
+        const F = fresnelSpec(wo.z, fr)
         return { wi: toWorld(wi, t, b, n), weight: F, pdf: 1, specular: true }
       }
       if (m.aniso) return sampleMetalAniso(m, wo, t, b, n, rng)
@@ -495,7 +555,7 @@ export function sampleBSDF(
       // Reflect wo about the sampled microfacet normal h.
       const wi = v(2 * woDotH * h.x - wo.x, 2 * woDotH * h.y - wo.y, 2 * woDotH * h.z - wo.z)
       if (wi.z <= 0) return null
-      const F = fresnelSchlick(woDotH, m.albedo)
+      const F = fresnelSpec(woDotH, fr)
       // With VNDF sampling the throughput f·cosθ_i/pdf collapses analytically to
       // F·G2(wo,wi)/G1(wo) — the cosine and the distribution term cancel.
       const gv = g1(wo.z, alpha)
@@ -599,12 +659,12 @@ type MetalMat = Extract<Material, { kind: 'metal' }>
 type DiffuseMat = Extract<Material, { kind: 'diffuse' }>
 
 // Anisotropic GGX reflection BRDF (local, rotated tangent frame).
-function ggxReflectFLocalAniso(wo: Vec3, wi: Vec3, ax: number, ay: number, f0: Vec3): Vec3 {
+function ggxReflectFLocalAniso(wo: Vec3, wi: Vec3, ax: number, ay: number, fr: FresnelSpec): Vec3 {
   if (wo.z <= 0 || wi.z <= 0) return v(0, 0, 0)
   const h = norm(v(wo.x + wi.x, wo.y + wi.y, wo.z + wi.z))
   const D = ggxDAniso(h, ax, ay)
   const G = g2A(wo, wi, ax, ay)
-  const F = fresnelSchlick(Math.max(0, dot(wo, h)), f0)
+  const F = fresnelSpec(Math.max(0, dot(wo, h)), fr)
   return scale(F, (D * G) / (4 * wo.z * wi.z))
 }
 function ggxReflectPdfLocalAniso(wo: Vec3, wi: Vec3, ax: number, ay: number): number {
@@ -621,7 +681,7 @@ function sampleMetalAniso(m: MetalMat, wo: Vec3, t: Vec3, b: Vec3, n: Vec3, rng:
   if (woDotH <= 0) return null
   const wi = v(2 * woDotH * h.x - wo.x, 2 * woDotH * h.y - wo.y, 2 * woDotH * h.z - wo.z)
   if (wi.z <= 0) return null
-  const F = fresnelSchlick(woDotH, m.albedo)
+  const F = fresnelSpec(woDotH, metalFresnel(m))
   const weight = scale(F, g2A(wo, wi, ax, ay) / g1A(wo, ax, ay))
   const pdf = (g1A(wo, ax, ay) * ggxDAniso(h, ax, ay)) / (4 * wo.z)
   return { wi: toWorld(wi, t, b, n), weight, pdf, specular: false }
@@ -646,7 +706,7 @@ function sampleMetalMs(m: MetalMat, wo: Vec3, t: Vec3, b: Vec3, n: Vec3, rng: Rn
   } else {
     wi = cosineSample(rng.next(), rng.next())
   }
-  const f = metalMsFLocal(wo, wi, alpha, m.albedo, eo)
+  const f = metalMsFLocal(wo, wi, alpha, metalFresnel(m), eo)
   const pdf = ps * ggxReflectPdfLocal(wo, wi, alpha) + (1 - ps) * wi.z * INV_PI
   if (pdf <= 0) return null
   return { wi: toWorld(wi, t, b, n), weight: scale(f, wi.z / pdf), pdf, specular: false }
@@ -669,7 +729,7 @@ function diffuseLayeredFLocal(m: DiffuseMat, wo: Vec3, wi: Vec3): Vec3 {
   if (m.coat) {
     const ca = Math.max(1e-3, m.coat.roughness * m.coat.roughness)
     const f0 = coatF0(m.coat.ior)
-    f = add(f, ggxReflectFLocal(wo, wi, ca, v(f0, f0, f0)))
+    f = add(f, ggxReflectFLocal(wo, wi, ca, { f0: v(f0, f0, f0) }))
   }
   return f
 }
@@ -725,15 +785,16 @@ export function evalBSDF(m: Material, woW: Vec3, wiW: Vec3, n: Vec3): Vec3 {
       const wi = worldToLocal(wiW, t, b, n)
       if (wo.z <= 0 || wi.z <= 0) return v(0, 0, 0)
       const alpha = m.roughness * m.roughness
+      const fr = metalFresnel(m)
       if (m.aniso) {
         const { ax, ay } = anisoAlphas(m.roughness, m.aniso)
-        return ggxReflectFLocalAniso(wo, wi, ax, ay, m.albedo)
+        return ggxReflectFLocalAniso(wo, wi, ax, ay, fr)
       }
-      if (m.multiscatter) return metalMsFLocal(wo, wi, alpha, m.albedo, ggxDirectionalAlbedo(wo.z, alpha))
+      if (m.multiscatter) return metalMsFLocal(wo, wi, alpha, fr, ggxDirectionalAlbedo(wo.z, alpha))
       const h = norm(v(wo.x + wi.x, wo.y + wi.y, wo.z + wi.z))
       const D = ggxD(h.z, alpha)
       const G = g2(wo.z, wi.z, alpha)
-      const F = fresnelSchlick(Math.max(0, dot(wo, h)), m.albedo)
+      const F = fresnelSpec(Math.max(0, dot(wo, h)), fr)
       const denom = 4 * wo.z * wi.z
       return scale(F, (D * G) / denom)
     }

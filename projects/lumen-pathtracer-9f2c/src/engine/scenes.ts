@@ -10,6 +10,8 @@ import type { Material } from './material'
 import type { PrimDef, SceneDef } from './types'
 import { Rng } from './rng'
 import { emitMesh, icosphere, surfaceOfRevolution, torus, transformMesh, uvSphere } from './mesh'
+import { conductorF0RGB } from './conductor'
+import type { ConductorName } from './conductor'
 import { CUBE_OBJ, parseObj } from './obj'
 
 // ---- small builders ----------------------------------------------------------
@@ -1353,6 +1355,50 @@ function ceramics(): SceneDef {
   }
 }
 
+// Metals of the World — the six measured conductors (gold, copper, silver,
+// aluminium, chromium, iron) as a front row of glossy spheres under the analytic
+// Preetham sky, where the warm sun and broad skylight reveal each metal's true
+// spectral hue (gold/copper warm, silver/aluminium bright-neutral, iron/chromium
+// grey). The back row shows the complex-IOR Fresnel composed with the other
+// material upgrades: brushed (anisotropic) gold, multiscatter-compensated rough
+// copper, and a smooth silver mirror — proving the new physical Fresnel rides on
+// every existing lobe at once.
+function metalsOfTheWorld(): SceneDef {
+  const materials: Material[] = [{ kind: 'diffuse', albedo: v(0.32, 0.33, 0.35), sigma: 0.4 }]
+  const prims: PrimDef[] = []
+  const g = 60
+  prims.push(...quad(v(-g, 0, -g), v(g, 0, -g), v(g, 0, g), v(-g, 0, g), 0))
+
+  const names: ConductorName[] = ['gold', 'copper', 'silver', 'aluminium', 'chromium', 'iron']
+  const cols = names.length
+  for (let i = 0; i < cols; i++) {
+    const name = names[i]
+    materials.push({ kind: 'metal', albedo: conductorF0RGB(name), roughness: 0.12, spectrum: name })
+    prims.push({ kind: 'sphere', center: v((i - (cols - 1) / 2) * 2.5, 1.1, 0), radius: 1.1, material: materials.length - 1 })
+  }
+  materials.push({
+    kind: 'metal',
+    albedo: conductorF0RGB('gold'),
+    roughness: 0.3,
+    spectrum: 'gold',
+    aniso: 0.85,
+    anisoAngle: 0.4,
+  })
+  prims.push({ kind: 'sphere', center: v(-3.2, 0.85, -3.7), radius: 0.85, material: materials.length - 1 })
+  materials.push({ kind: 'metal', albedo: conductorF0RGB('copper'), roughness: 0.55, spectrum: 'copper', multiscatter: true })
+  prims.push({ kind: 'sphere', center: v(0, 0.85, -3.7), radius: 0.85, material: materials.length - 1 })
+  materials.push({ kind: 'metal', albedo: conductorF0RGB('silver'), roughness: 0.02, spectrum: 'silver' })
+  prims.push({ kind: 'sphere', center: v(3.2, 0.85, -3.7), radius: 0.85, material: materials.length - 1 })
+
+  return {
+    name: 'Metals of the World',
+    materials,
+    prims,
+    camera: { eye: v(0, 4.5, 13), target: v(0, 1.0, -1), up: v(0, 1, 0), vfovDeg: 40, aperture: 0.03, focusDist: 13 },
+    env: { kind: 'sky', sunDir: sunFromAzEl(140, 26), turbidity: 2.4, intensity: 1.0, sunSize: 0.04 },
+  }
+}
+
 export interface ScenePreset {
   id: string
   label: string
@@ -1370,6 +1416,7 @@ export const SCENES: ScenePreset[] = [
   { id: 'gallery', label: 'Material Gallery', build: gallery },
   { id: 'brushed', label: 'Brushed Metal', build: brushedMetal },
   { id: 'conductors', label: 'Rough Conductors', build: roughConductors },
+  { id: 'metals', label: 'Metals of the World', build: metalsOfTheWorld, sky: true },
   { id: 'ceramics', label: 'Ceramics & Clay', build: ceramics },
   { id: 'caustic', label: 'Caustic Room', build: causticRoom },
   { id: 'pool', label: 'Caustic Pool', build: causticPool },

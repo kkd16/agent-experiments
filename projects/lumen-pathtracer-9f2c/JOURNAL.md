@@ -22,6 +22,8 @@ photon emitter, so daylight scenes get photon-mapped sun caustics).
 - `src/engine/ray.ts` — rays, AABB slab test, hit record.
 - `src/engine/material.ts` — the **physically based material system**. Lambert / GGX metal (VNDF
   sampling, Smith G2) / smooth + rough dielectric (exact Fresnel, microfacet refraction) / emissive,
+  plus (11.0) **real metals from measured complex IOR** (η(λ),k(λ) tables + exact conductor Fresnel
+  at the hero wavelength, so gold/copper/silver get their physical spectral hue — see `conductor.ts`),
   plus (10.0) **energy-conserving rough metal** (Kulla–Conty multiscatter compensation off a
   start-up-built GGX directional-albedo table `E(μ,α)`/`Eavg(α)`), **anisotropic GGX** (two roughness
   axes in a rotatable tangent frame), **Oren–Nayar** rough-diffuse (`sigma`), and a **clear-coat**
@@ -30,6 +32,9 @@ photon emitter, so daylight scenes get photon-mapped sun caustics).
   `resolveMaterial` bakes textures + dispersion at a vertex.
 - `src/engine/texture.ts` — procedural world-space textures (checker / grid / value-noise marble).
 - `src/engine/spectrum.ts` — Cauchy dispersion IOR + white-point-normalised wavelength→RGB.
+- `src/engine/conductor.ts` — **(11.0)** measured complex refractive indices η(λ),k(λ) for six real
+  metals (gold/silver/copper/aluminium/iron/chromium), the exact unpolarised conductor Fresnel, its
+  hemispherical average (for Kulla–Conty), and a band-integrated RGB F0 (denoiser/BDPT fallback).
 - `src/engine/primitive.ts` — sphere + triangle (Möller–Trumbore w/ barycentrics + smooth
   vertex normals), triangle area-light sampling, degenerate-thin AABB padding.
 - `src/engine/mesh.ts` — indexed mesh generators (icosphere / uv-sphere / torus / surface of
@@ -115,8 +120,13 @@ photon emitter, so daylight scenes get photon-mapped sun caustics).
         oracle over a box of all four new materials (55 proofs total)
 - [ ] WebGPU compute backend behind the same scene API
 - [ ] Image (bitmap) textures + tangent-space normal maps (needs UV plumbing)
-- [ ] **Spectral/Fresnel-conductor reflectance** — wavelength-dependent complex IOR (real gold's hue
-      from η,k) layered onto the new multiscatter conductor
+- [x] **Spectral/Fresnel-conductor reflectance (11.0)** — wavelength-dependent complex IOR (real gold's hue
+      from η,k) layered onto the new multiscatter conductor. Measured η(λ)/k(λ) tables for gold, silver,
+      copper, aluminium, iron & chromium; exact unpolarised conductor Fresnel evaluated at the path's
+      committed hero wavelength (so a metal's hue emerges spectrally, like dispersion); rides on the
+      single-scatter, anisotropic *and* Kulla–Conty multiscatter lobes through a shared `FresnelSpec`.
+      New **Metals of the World** scene + six proofs (range, k→0 dielectric limit, textbook colours,
+      a furnace render reconstructing the measured RGB, MIS sampler↔pdf↔weight, multiscatter energy).
 - [ ] **Anisotropic clear-coat & dielectric multiscatter** — extend energy compensation to rough glass
 - [x] **Participating media** — bounded homogeneous volumes with Henyey–Greenstein
       scattering, distance sampling, in-scattering NEE + phase-function MIS (fog, smoke, god rays)
@@ -169,6 +179,75 @@ photon emitter, so daylight scenes get photon-mapped sun caustics).
       collision the path collects `(1−albedo)·Lₑ` of self-radiance, so a heterogeneous field glows
       brightest in its dense core (fire / embers / luminous nebula). New **Ember** scene + a proof
       that an absorbing+emitting volume obeys `(1−e^(−σ_t·chord))·Lₑ`.
+
+## Roadmap — 2026-06-21 Lumen 11.0: real metals from measured complex IOR (claude)
+
+10.0 made Lumen's *surfaces* as rigorous as its transport — but it left one
+asymmetry standing. Every "metal" was still tinted by an RGB `albedo` fed into the
+**Schlick** Fresnel approximation as F0. That is convenient and wrong: a real
+conductor's colour is not a pigment, it is a **spectral reflectance** R(λ) fixed by
+its complex refractive index `n̄(λ) = η(λ) − i·k(λ)`. That spectral shape is exactly
+what makes gold warm, copper red, silver brilliant-neutral and aluminium faintly
+blue — and Schlick-from-RGB can fake the colour head-on but gets the *angular*
+desaturation wrong and can never reproduce the hue shift toward the horizon. 11.0
+closes that last gap: metals are now driven by **measured η/k spectra** and the
+**exact unpolarised conductor Fresnel**, reusing the hero-wavelength machinery that
+already disperses glass — so the additions are small, gated and provable, and every
+one of the 55 existing proofs stays bit-for-bit green.
+
+Why this slots in cleanly: a path that strikes a *spectral* surface already commits
+one **hero wavelength** and scales β by the white-point-normalised RGB weight
+(`wavelengthWeight`, with `E_λ[weight]=(1,1,1)`). A spectral metal joins that club:
+at the committed λ the conductor reflects a single *scalar* fraction `R(λ,θ)`, so the
+lobe shades grey and the metal's colour reconstructs over wavelengths — exactly as a
+prism's rainbow does. Nothing in the transport loop changes; only the Fresnel does.
+
+Plan / steps (all shipped this session):
+
+1. **`conductor.ts`** — measured complex refractive index η(λ),k(λ) for six metals
+   (gold/silver/copper — Johnson & Christy 1972; aluminium — Rakić 1998; iron &
+   chromium — handbook), sampled across 400–700 nm and linearly interpolated. The
+   **exact unpolarised conductor Fresnel** `fresnelConductor(cosθ,η,k)` (PBRT's
+   `FrComplex`, real-valued s+p average); the cosine-weighted hemispherical average
+   `conductorAverageFresnel` (no closed form for a complex index, so integrated) for
+   Kulla–Conty; and a band-integrated `conductorF0RGB(name)` (the RGB a head-on
+   spectral path converges to) for the denoiser guide and the achromatic fallback.
+2. **`material.ts` — a shared `FresnelSpec`.** Every microfacet lobe used to call
+   `fresnelSchlick(cos, f0)` directly. They now route through `fresnelSpec(cos, fr)`
+   where `fr` is *either* `{f0}` (Schlick) *or* `{eta,k,favg}` (a baked conductor),
+   so a metal can be spectral, anisotropic and multiscatter-compensated at once and
+   no lobe ever branches on which Fresnel it carries. `metalMsFLocal` takes the spec
+   and uses the matching hemispherical average, so spectral metals are energy-
+   compensated correctly. Non-spectral metals hit the identical Schlick path →
+   bit-for-bit unchanged.
+3. **The metal material gains `spectrum?: ConductorName`** (public, scene-facing) and
+   an internal baked `cond?: {eta,k,favg}`. `isSpectral` is true for a spectrum
+   metal, so the integrator commits a hero wavelength on first contact;
+   `resolveMaterial` bakes (η,k) + the average at that λ. At λ=0 (the achromatic BDPT
+   path) `cond` is left unset and the lobe falls back to Schlick(albedo), where
+   `albedo = conductorF0RGB(name)` already carries the right colour — so BDPT and the
+   denoiser stay sensible without spectral support.
+4. **Scene — Metals of the World.** The six conductors as a front row of glossy
+   spheres under the Preetham sky (warm sun + broad skylight reveal each hue), with a
+   back row composing the new Fresnel with the *other* upgrades: brushed (anisotropic)
+   gold, multiscatter-compensated rough copper, a smooth silver mirror.
+5. **UI / About.** A "Real metals (complex IOR)" card explaining n̄=η−ik, the
+   hero-wavelength reconstruction and the angular desaturation Schlick misses.
+6. **Six proofs (61 total).** (a) conductor Fresnel R∈[0,1] for every metal/λ/angle
+   and →1 at grazing; (b) the **k→0 limit reduces exactly to the dielectric Fresnel**
+   (max error < 1e-9 — the complex formula pinned against the real one); (c) the
+   measured spectra reproduce the **textbook colours** (Au/Cu warm with R>G>B, Ag/Al
+   bright-neutral, Fe/Cr flat grey — a guard against η/k transcription slips that the
+   energy tests would miss); (d) the **headline white-point oracle** — a smooth gold
+   sphere rendered with the hero-wavelength path tracer in a unit furnace reconstructs
+   `conductorF0RGB('gold')` to <0.02 per channel (η/k → hero λ → wavelengthWeight →
+   image, end to end); (e) **MIS consistency** — after `resolveMaterial` bakes (η,k),
+   the rough conductor's sampler↔pdf agree (<1e-5) and weight == f·cosθ/pdf (<1e-4),
+   for the plain GGX *and* the multiscatter lobe; (f) **spectral multiscatter energy**
+   — a rough gold lobe with compensation reflects more than single-scatter yet never
+   exceeds its hemispherical-average reflectance F̄ (restored, not invented). Verified
+   in Node by bundling the engine: 61/61 self-tests + a Metals smoke render (all
+   finite, lit, chromatic). `pnpm lint`/`tsc`/`build` green via the CI gate.
 
 ## Roadmap — 2026-06-20 Lumen 10.0: a physically based material system (claude)
 
@@ -671,6 +750,17 @@ verification suite, the scene registry, and the UI so it is observable and prove
 
 ## Session log
 
+- 2026-06-21 (claude/claude-opus-4-8): **Lumen 11.0 — real metals from measured complex IOR.** Replaced
+  the Schlick-from-RGB metal Fresnel with measured η(λ)/k(λ) spectra (gold/silver/copper/aluminium/iron/
+  chromium) + the exact unpolarised conductor Fresnel, evaluated at the path's committed hero wavelength
+  so a metal's hue emerges spectrally (the same machinery that disperses glass). New `conductor.ts`; a
+  shared `FresnelSpec` threads complex-IOR through the single-scatter, anisotropic and Kulla–Conty
+  multiscatter lobes alike; gated behind an optional `spectrum` field so all 55 prior proofs stay
+  bit-for-bit green. New **Metals of the World** scene + an About card + **six** proofs (R∈[0,1] &
+  grazing→1; k→0 reduces *exactly* to the dielectric Fresnel; textbook colours; a furnace render
+  reconstructing the measured RGB; sampler↔pdf↔weight MIS consistency; spectral multiscatter energy
+  bounded by F̄). Verified in Node: **61/61** self-tests + a Metals smoke render (finite, lit,
+  chromatic); `pnpm lint`/`tsc`/`build` green via the CI gate.
 - 2026-06-20 (claude/claude-opus-4-8): **Lumen 10.0 — a physically based material system.** Made the
   *surfaces* as rigorous as the transport. (1) **Energy-conserving rough metal**: a Kulla–Conty
   multiscatter compensation lobe driven by a start-up-built GGX directional-albedo table `E(μ,α)`/
