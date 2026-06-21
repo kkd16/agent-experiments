@@ -21,9 +21,10 @@ import { QbfStudio } from './components/QbfStudio'
 import { BddStudio } from './components/BddStudio'
 import { PbStudio } from './components/PbStudio'
 import { PhysStudio } from './components/PhysStudio'
+import { SimplifyStudio } from './components/SimplifyStudio'
 
 type Tab = 'solution' | 'stats' | 'count' | 'compile' | 'graph' | 'trace' | 'proof' | 'cnf'
-type Mode = 'sat' | 'smt' | 'qbf' | 'imc' | 'bdd' | 'pb' | 'phys' | 'lab'
+type Mode = 'sat' | 'smt' | 'qbf' | 'imc' | 'bdd' | 'pb' | 'phys' | 'simplify' | 'lab'
 
 export default function App() {
   const [mode, setMode] = useState<Mode>('sat')
@@ -103,7 +104,9 @@ export default function App() {
                           ? 'Pseudo-Boolean 0/1 integer-linear solving by native cutting planes, plus optimization.'
                           : mode === 'phys'
                             ? 'Incomplete SAT by stochastic local search & survey propagation — SAT as statistical physics.'
-                            : 'An empirical lab that races CDCL heuristics across a benchmark suite.'}
+                            : mode === 'simplify'
+                              ? 'CNF preprocessing & inprocessing: equisatisfiable simplification with model reconstruction.'
+                              : 'An empirical lab that races CDCL heuristics across a benchmark suite.'}
             </p>
           </div>
         </div>
@@ -129,6 +132,9 @@ export default function App() {
           <button className={mode === 'phys' ? 'active' : ''} onClick={() => setMode('phys')}>
             Phys Studio
           </button>
+          <button className={mode === 'simplify' ? 'active' : ''} onClick={() => setMode('simplify')}>
+            Simplify Studio
+          </button>
           <button className={mode === 'lab' ? 'active' : ''} onClick={() => setMode('lab')}>
             Solver Lab
           </button>
@@ -141,6 +147,7 @@ export default function App() {
       {mode === 'bdd' && <BddStudio />}
       {mode === 'pb' && <PbStudio />}
       {mode === 'phys' && <PhysStudio />}
+      {mode === 'simplify' && <SimplifyStudio />}
       {mode === 'lab' && <SolverLab />}
 
       {mode === 'sat' && (
@@ -256,7 +263,11 @@ export default function App() {
         independent CNF encoding and a brute-force oracle · plus a <b>Phys Studio</b> of <b>incomplete</b> solvers —
         stochastic local search (GSAT, WalkSAT/SKC, ProbSAT, Novelty+), simulated annealing, and from-scratch{' '}
         <b>survey propagation</b> with decimation (the cavity method of spin-glass physics, solving random 3-SAT at the
-        threshold), with a live phase-transition explorer and the complete solver refereeing every stochastic verdict —
+        threshold), with a live phase-transition explorer and the complete solver refereeing every stochastic verdict ·
+        plus a <b>preprocessing / inprocessing engine</b> — unit &amp; pure-literal elimination, subsumption,
+        self-subsuming resolution, <b>bounded variable elimination</b>, equivalent-literal substitution by SCCs of the
+        binary implication graph, and blocked-clause elimination — each with a <b>model-reconstruction</b> stack that
+        provably lifts any model of the simplified formula back to the original, cross-checked exhaustively —
         all hand-written in TypeScript.
       </footer>
     </div>

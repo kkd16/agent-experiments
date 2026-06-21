@@ -3010,3 +3010,131 @@ table.bv-model tr:hover td {
 }
 .sls-log tr.sls-row-complete td { background: rgba(110, 168, 254, 0.08); }
 .sls-note { font-family: inherit; color: var(--muted); }
+
+/* ---- Simplify Studio (Session 19) ---- */
+.simp-techniques { margin-top: 18px; }
+.simp-techniques h3 {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+  margin: 0 0 8px;
+}
+.simp-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 8px;
+  border-radius: 7px;
+  font-size: 13px;
+  cursor: pointer;
+  transition: background 0.12s;
+}
+.simp-toggle:hover { background: var(--panel-2); }
+.simp-toggle input { accent-color: var(--accent); }
+.simp-toggle span { flex: 1; }
+.simp-badge {
+  flex: none;
+  min-width: 20px;
+  text-align: center;
+  background: rgba(110, 168, 254, 0.18);
+  color: var(--accent);
+  border-radius: 999px;
+  padding: 1px 7px;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.simp-bars { display: flex; flex-direction: column; gap: 12px; margin: 6px 0 20px; }
+.simp-bar-row { display: grid; grid-template-columns: 92px 1fr 64px; align-items: center; gap: 12px; }
+.simp-bar-label { color: var(--muted); font-size: 13px; }
+.simp-bar-track {
+  position: relative;
+  height: 28px;
+  border-radius: 8px;
+  background: var(--panel-2);
+  overflow: hidden;
+  border: 1px solid var(--border);
+}
+.simp-bar-before { position: absolute; inset: 0; background: rgba(155, 140, 255, 0.12); }
+.simp-bar-after {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  background: linear-gradient(90deg, var(--accent), var(--accent-2));
+  transition: width 0.4s ease;
+}
+.simp-bar-text {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.55);
+}
+.simp-bar-pct { text-align: right; font-size: 13px; font-variant-numeric: tabular-nums; color: var(--muted); }
+.simp-bar-pct.good { color: #5fe3a1; }
+.simp-bar-pct.bad { color: #ff9b9b; }
+
+.simp-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+  margin: 4px 0 20px;
+}
+.simp-table th, .simp-table td {
+  text-align: right;
+  padding: 7px 10px;
+  border-bottom: 1px solid rgba(36, 49, 84, 0.5);
+  font-variant-numeric: tabular-nums;
+}
+.simp-table th { color: var(--muted); font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; }
+.simp-table th:first-child, .simp-table td:first-child { text-align: left; }
+.simp-table tbody tr:hover { background: var(--panel-2); }
+
+.simp-roundtrip, .simp-output { margin: 0 0 20px; }
+.simp-roundtrip .check-ok, .simp-roundtrip .check-bad { margin-left: 12px; font-size: 13px; }
+.simp-output textarea, .simp-log + * { width: 100%; }
+.simp-output textarea {
+  width: 100%;
+  box-sizing: border-box;
+  background: var(--bg-soft);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  resize: vertical;
+}
+
+.simp-model { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; }
+.simp-lit {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  padding: 2px 7px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+}
+.simp-lit.on { background: rgba(95, 227, 161, 0.12); color: #9ff0c6; }
+.simp-lit.off { background: rgba(255, 155, 155, 0.10); color: #ffbcbc; }
+
+.simp-log { margin: 0 0 20px; border: 1px solid var(--border); border-radius: 8px; padding: 8px 12px; }
+.simp-log summary { cursor: pointer; color: var(--accent); font-size: 13px; }
+.simp-log ol { margin: 10px 0 4px; padding-left: 22px; display: flex; flex-direction: column; gap: 5px; }
+.simp-log li { font-size: 12.5px; color: var(--text); display: flex; align-items: baseline; gap: 8px; }
+.simp-log-round { color: var(--muted); font-variant-numeric: tabular-nums; }
+.simp-log-tag {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10.5px;
+  padding: 1px 6px;
+  border-radius: 5px;
+  background: rgba(110, 168, 254, 0.14);
+  color: var(--accent);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
