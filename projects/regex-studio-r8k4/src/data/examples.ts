@@ -124,6 +124,36 @@ export const EXAMPLES: Example[] = [
     note: 'Two adjacent stars — not exponential, but quadratic. The ReDoS tab fits the degree from the curve.',
   },
   {
+    name: 'Unicode letters \\p{L}',
+    pattern: '\\p{L}+',
+    sample: 'Héllo Ωμέγα 日本語 cliché naïve a1b2',
+    note: 'A Unicode property escape. The class \\p{L} (every letter, in every script) is derived live from the host’s own Unicode database — so it flows through every road: Thompson, Glushkov, derivatives and the syntactic monoid all speak Unicode for free.',
+  },
+  {
+    name: 'Title-case word \\p{Lu}\\p{Ll}*',
+    pattern: '\\p{Lu}\\p{Ll}*',
+    sample: 'Hello world ÉCOLE Café Ωμέγα',
+    note: 'An uppercase letter then lowercase letters — \\p{Lu} and \\p{Ll} are General_Category subclasses. Run a few strings: only capitalised words fully match (ALLCAPS does not).',
+  },
+  {
+    name: 'Greek script \\p{Script=Greek}',
+    pattern: '\\p{Script=Greek}+',
+    sample: 'αβγ Ωμέγα abc λόγος 123',
+    note: 'Property *key=value* form: Script=Greek. The studio asks the host engine for the script’s exact code-point ranges and reshapes them into its own CharSet — correct by construction, re-checked against the native engine.',
+  },
+  {
+    name: 'No punctuation [^\\p{P}\\p{Zs}]',
+    pattern: '[^\\p{P}\\p{Zs}]+',
+    sample: 'don’t—stop, now',
+    note: 'Property escapes compose inside character classes and negate: a run of characters that are neither punctuation (\\p{P}) nor a space separator (\\p{Zs}).',
+  },
+  {
+    name: 'Astral escape \\u{1F600}',
+    pattern: '\\u{1F600}+',
+    sample: '😀😀😀 x 😀',
+    note: 'A code-point escape past the BMP. \\u{1F600} is 😀 (U+1F600); the engine matches by code point, so one emoji is one symbol — \\xHH and \\uHHHH work too.',
+  },
+  {
     name: 'Derivative chain',
     pattern: 'a(b|c)*d',
     sample: 'abcbcd',

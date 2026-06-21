@@ -8,14 +8,17 @@
 //
 // Supported: literals, '.', '*', '+', '?', '{m}', '{m,}', '{m,n}', lazy '?'
 // suffix, alternation '|', grouping '( )', character classes '[ ]' / '[^ ]'
-// with ranges and escapes, and the escapes \d \D \w \W \s \S \t \n \r \f \v \0
-// plus escaped metacharacters. It also parses the *non-regular* constructs the
+// with ranges and escapes, and the escapes \d \D \w \W \s \S \t \n \r \f \v \0,
+// the Unicode property escapes \p{…} / \P{…} (resolved live from the host Unicode
+// database — see engine/unicode.ts) and the hex/code-point escapes \xHH, \uHHHH,
+// \u{H…}, plus escaped metacharacters. It also parses the *non-regular* constructs the
 // backtracking VM understands: anchors '^' '$', word boundaries '\b' '\B',
 // backreferences '\1'…'\9', and lookaround '(?=…)' '(?!…)' '(?<=…)' '(?<!…)'.
 // `analyzeFeatures` (in ast.ts) decides whether a parsed tree stays regular.
 
 import type { ParseError, RegexNode } from './ast';
-import { CharSet, DIGIT, DOT, SPACE, WORD } from './charset';
+import { CharSet, DIGIT, DOT, MAX_CODE_POINT, SPACE, WORD } from './charset';
+import { resolveUnicodeProperty } from './unicode';
 
 export interface ParseResult {
   ast: RegexNode | null;
@@ -324,6 +327,17 @@ class Parser {
       }
       return node;
     }
+    // Unicode property escapes: \p{L}, \P{Lu}, \p{Script=Greek}, …
+    if (ch === 'p' || ch === 'P') {
+      const set = this.readUnicodeProp(ch === 'P');
+      return { type: 'char', set, raw: this.src.slice(start, this.pos) };
+    }
+    // Hex / code-point escapes: \xHH, \uHHHH, \u{H…}. Lenient: a malformed escape
+    // falls back to the literal letter (matching engines without the /u flag).
+    if (ch === 'x' || ch === 'u') {
+      const code = this.readHexEscape(ch);
+      if (code !== null) return { type: 'char', set: CharSet.fromChar(code), raw: this.src.slice(start, this.pos) };
+    }
     const classSet = escapeClass(ch);
     if (classSet) {
       this.eat();
@@ -337,6 +351,61 @@ class Parser {
     // An escaped metacharacter or plain char.
     this.eat();
     return { type: 'char', set: CharSet.fromChar(ch.codePointAt(0)!), raw: '\\' + ch };
+  }
+
+  // Read `\p{…}` / `\P{…}` with the cursor sitting on the 'p'/'P'. Derives the
+  // class from the host Unicode database (engine/unicode.ts).
+  private readUnicodeProp(negate: boolean): CharSet {
+    const opener = this.pos;
+    this.eat(); // 'p' / 'P'
+    if (this.peek() !== '{') {
+      throw new ParseFailure("Expected '{' after \\p — write \\p{L}, \\p{Lu}, \\p{N}, \\p{Script=Greek}, …", this.pos);
+    }
+    this.eat(); // '{'
+    const nameStart = this.pos;
+    let spec = '';
+    while (this.peek() !== '}' && this.pos < this.src.length) spec += this.eat();
+    if (this.peek() !== '}') throw new ParseFailure('Unterminated \\p{…} property escape', opener);
+    this.eat(); // '}'
+    const set = resolveUnicodeProperty(spec);
+    if (set === null) {
+      throw new ParseFailure(
+        `Unknown Unicode property '\\p{${spec}}'. Try \\p{L}, \\p{Lu}, \\p{N}, \\p{P}, \\p{White_Space}, \\p{Script=Greek}, …`,
+        nameStart,
+      );
+    }
+    return negate ? set.negate() : set;
+  }
+
+  // Read a hex escape with the cursor on the 'x'/'u'. Returns the code point, or
+  // null (restoring the cursor) when the digits are missing — the caller then
+  // treats the letter as an ordinary literal.
+  private readHexEscape(kind: string): number | null {
+    const saved = this.pos;
+    this.eat(); // 'x' / 'u'
+    if (kind === 'u' && this.peek() === '{') {
+      this.eat();
+      let h = '';
+      while (/[0-9a-fA-F]/.test(this.peek() ?? '')) h += this.eat();
+      if (h === '' || this.peek() !== '}') {
+        this.pos = saved;
+        return null;
+      }
+      this.eat(); // '}'
+      const code = parseInt(h, 16);
+      if (code > MAX_CODE_POINT) throw new ParseFailure('Code point out of range in \\u{…}', saved);
+      return code;
+    }
+    const want = kind === 'x' ? 2 : 4;
+    let h = '';
+    for (let i = 0; i < want; i++) {
+      if (!/[0-9a-fA-F]/.test(this.peek() ?? '')) {
+        this.pos = saved;
+        return null;
+      }
+      h += this.eat();
+    }
+    return parseInt(h, 16);
   }
 
   private parseClass(): RegexNode {
@@ -392,6 +461,15 @@ class Parser {
       this.eat();
       const esc = this.peek();
       if (esc === undefined) throw new ParseFailure('Trailing backslash in class', this.pos);
+      // \p{…} / \P{…} inside a class contributes a whole set member.
+      if (esc === 'p' || esc === 'P') {
+        return { kind: 'set', set: this.readUnicodeProp(esc === 'P') };
+      }
+      // \xHH / \uHHHH / \u{H…} inside a class is a single code point.
+      if (esc === 'x' || esc === 'u') {
+        const code = this.readHexEscape(esc);
+        if (code !== null) return { kind: 'code', code };
+      }
       const cls = escapeClass(esc);
       if (cls) {
         this.eat();

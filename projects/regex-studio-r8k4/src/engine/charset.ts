@@ -163,6 +163,11 @@ export class CharSet {
     if (neg.size() < this.size() && neg.size() <= 12) {
       return `[^${renderRanges(neg.ranges)}]`;
     }
+    // Unicode property classes registered at parse time (e.g. \p{L}, \p{Greek}).
+    for (const named of EXTRA_NAMED_CLASSES) {
+      if (this.equals(named.set)) return named.label;
+      if (this.equals(named.set.negate())) return named.negLabel;
+    }
     const body = renderRanges(this.ranges);
     return this.size() === 1 ? body : `[${body}]`;
   }
@@ -221,3 +226,15 @@ const NAMED_CLASSES: { set: CharSet; label: string; negLabel: string }[] = [
   { set: WORD, label: '\\w', negLabel: '\\W' },
   { set: SPACE, label: '\\s', negLabel: '\\S' },
 ];
+
+// Extensible registry for classes discovered at parse time — chiefly the Unicode
+// property escapes \p{…}, whose code-point ranges are derived live from the host
+// Unicode database (see engine/unicode.ts). Registering a derived set here lets
+// every graph edge and AST label render it back as the compact `\p{L}` the user
+// wrote, instead of a 700-range character class.
+const EXTRA_NAMED_CLASSES: { set: CharSet; label: string; negLabel: string }[] = [];
+
+export function registerNamedClass(set: CharSet, label: string, negLabel: string): void {
+  if (EXTRA_NAMED_CLASSES.some((e) => e.label === label)) return;
+  EXTRA_NAMED_CLASSES.push({ set, label, negLabel });
+}

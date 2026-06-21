@@ -73,7 +73,17 @@ class Rng {
 
 const LITERALS = ['a', 'b', 'c', 'd'] as const;
 
+// A small, safe roster of Unicode property escapes to fold into the grammar. The
+// oracle compiles with the `u` flag, our engines derive the same class live from
+// the host, so whole-string membership must still agree on every one — which is
+// exactly what the fuzzer now also checks. Kept short so the one-time per-spec
+// scan cost (cached) stays bounded.
+const PROP_ATOMS = ['\\p{L}', '\\p{Lu}', '\\p{Ll}', '\\p{N}', '\\p{P}', '\\P{L}'] as const;
+
 function genAtom(rng: Rng, depth: number): string {
+  // Occasionally emit a Unicode property escape (cross-checks \p{…} across all
+  // ten engines and the /u oracle, against the unicode-probe inputs below).
+  if (rng.chance(0.08)) return rng.pick(PROP_ATOMS);
   // Bias hard toward terminals so patterns stay small and legible — and so the
   // full automata pipeline (the per-trial cost) doesn't blow up. Wide-alphabet
   // atoms (`.`, `\d`) and groups are kept rare and shallow: they are what make
@@ -150,11 +160,18 @@ function genAlt(rng: Rng, depth: number): string {
 }
 
 const INPUT_ALPHABET = 'abcd012'.split('');
+// A handful of non-ASCII / punctuation code points so the \p{…} atoms get genuine
+// true *and* false coverage: uppercase, accented and Greek letters (\p{L}/\p{Lu}/
+// \p{Ll}), punctuation (\p{P}) and a separator. Drawn rarely so most inputs stay
+// ASCII and the compiled DFAs stay small.
+const UNICODE_PROBES = ['A', 'Z', 'É', 'é', 'Σ', 'π', '!', '·', ' ', '5'];
 
 function genInput(rng: Rng, maxLen: number): string {
   const len = rng.int(maxLen + 1);
   let s = '';
-  for (let i = 0; i < len; i++) s += rng.pick(INPUT_ALPHABET);
+  for (let i = 0; i < len; i++) {
+    s += rng.chance(0.18) ? rng.pick(UNICODE_PROBES) : rng.pick(INPUT_ALPHABET);
+  }
   return s;
 }
 
