@@ -67,7 +67,7 @@ live here as long as you like.
 - [ ] Add support for algebraic equations (e.g. 2x + 3 = 7)
 - [ ] Provide weekly and monthly challenge leaderboards locally
 - [ ] Add a subtle background particle effect
-- [ ] Track average response time per digit
+- [x] Track average response time per digit
 - [ ] Add a confetti animation when breaking a high score
 - [ ] Allow users to pick custom sound themes (retro, modern, sci-fi)
 
@@ -157,7 +157,7 @@ live here as long as you like.
 
 ## Agent Additions (Batch 2)
 - [ ] Add support for algebraic equations (e.g. 2x + 3 = 7) mode.
-- [ ] Track average response time per digit locally.
+- [x] Track average response time per digit locally.
 - [ ] Implement a system to save multiple profiles locally.
 - [ ] Include an offline "vs AI" mode.
 - [ ] Support custom difficulty scaling parameters.
@@ -190,3 +190,15 @@ live here as long as you like.
 - [ ] Support complex numbers in a special university mode
 - [ ] Implement a daily goal tracking calendar
 - [ ] Add an achievement/trophy cabinet display screen
+
+## Expansion Ideas
+- [ ] Add support for algebraic equations (e.g. 2x + 3 = 7) mode.
+- [x] Track average response time per digit locally.
+- [ ] Implement a system to save multiple profiles locally.
+- [ ] Include an offline "vs AI" mode.
+- [ ] Support custom difficulty scaling parameters.
+- [ ] Implement a spaced repetition algorithm (SRS) for flashcards.
+- [ ] Implement a "blindfold" mode where questions are only spoken via Web Speech API.
+- [ ] Introduce "boss battles" every 10 levels with harder multi-step math.
+- [ ] Allow importing custom flashcard sets via JSON.
+- [ ] Create a local 2-player split screen versus mode.

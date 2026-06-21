@@ -317,6 +317,26 @@ function getInitialLifetimeQuestions(): number {
   return 0;
 }
 
+function getInitialAvgTimePerDigit(): number {
+  try {
+    const stored = window.localStorage.getItem('mathFlashcardsAvgTimePerDigit');
+    if (stored) return parseFloat(stored);
+  } catch (e) {
+    console.error("Local storage error:", e);
+  }
+  return 0;
+}
+
+function getInitialTotalDigitsAnswered(): number {
+  try {
+    const stored = window.localStorage.getItem('mathFlashcardsTotalDigitsAnswered');
+    if (stored) return parseInt(stored, 10);
+  } catch (e) {
+    console.error("Local storage error:", e);
+  }
+  return 0;
+}
+
 
 function playSound(type: 'correct' | 'incorrect') {
   try {
@@ -498,6 +518,17 @@ function App() {
   const [showSummary, setShowSummary] = useState<boolean>(false);
   const [animationClass, setAnimationClass] = useState<string>('');
   const [streakMessage, setStreakMessage] = useState<string>('');
+  const [avgTimePerDigit, setAvgTimePerDigit] = useState<number>(getInitialAvgTimePerDigit());
+  const [totalDigitsAnswered, setTotalDigitsAnswered] = useState<number>(getInitialTotalDigitsAnswered());
+  const [questionStartTime, setQuestionStartTime] = useState<number>(0);
+
+  useEffect(() => {
+    try { window.localStorage.setItem('mathFlashcardsAvgTimePerDigit', avgTimePerDigit.toString()); } catch (e) { console.error(e); }
+  }, [avgTimePerDigit]);
+
+  useEffect(() => {
+    try { window.localStorage.setItem('mathFlashcardsTotalDigitsAnswered', totalDigitsAnswered.toString()); } catch (e) { console.error(e); }
+  }, [totalDigitsAnswered]);
   const [soundEnabled, setSoundEnabled] = useState<boolean>(true);
   const [numpadLayout, setNumpadLayout] = useState<'phone' | 'calculator'>(getInitialNumpadLayout());
   const [bgColor, setBgColor] = useState<string>(() => {
@@ -605,6 +636,7 @@ function App() {
       setOperation(selectedOp);
       setUserAnswer('');
       setMessage('');
+      setQuestionStartTime(Date.now());
     }, 0);
   }, [difficulty, allowedOperations, allowNegatives]);
 
@@ -658,6 +690,7 @@ function App() {
     setNum2(n2);
     setOperation(selectedOp);
     setUserAnswer('');
+    setQuestionStartTime(Date.now());
     if (isHardcoreMode) {
       setHideOperator(true);
       setTimeout(() => {
@@ -794,6 +827,16 @@ function App() {
     if (isNaN(answer)) {
       setMessage("Please enter a valid number.");
       return;
+    }
+
+    const responseTime = Date.now() - questionStartTime;
+    const digitCount = userAnswer.replace(/[^0-9]/g, '').length;
+    if (digitCount > 0) {
+      const timePerDigit = responseTime / 1000 / digitCount;
+      const newTotalDigits = totalDigitsAnswered + digitCount;
+      const newAvgTime = ((avgTimePerDigit * totalDigitsAnswered) + (timePerDigit * digitCount)) / newTotalDigits;
+      setTotalDigitsAnswered(newTotalDigits);
+      setAvgTimePerDigit(newAvgTime);
     }
 
     let correctAnswer = 0;
@@ -1085,6 +1128,7 @@ function App() {
             <button onClick={resetHighScore} className="reset-btn" title="Reset High Score" disabled={isSpeedRunActive}>↺</button>
           </div>
           <div className="stat">Total Questions: {lifetimeQuestions} | Lifetime Acc: {lifetimeQuestions > 0 ? (lifetimeCorrectAnswers / lifetimeQuestions * 100).toFixed(1) : 0}%</div>
+          <div className="stat">Avg Time / Digit: {avgTimePerDigit > 0 ? avgTimePerDigit.toFixed(2) + 's' : 'N/A'}</div>
         </div>
       </div>
       )}
