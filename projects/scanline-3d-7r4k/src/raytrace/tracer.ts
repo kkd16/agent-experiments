@@ -14,6 +14,11 @@ import {
   cosineHemisphere, distributionGGX, orthonormalBasis,
   sampleGGX, toWorld, uniformCone, uniformSphere, type Rng,
 } from './sampling.ts'
+import type { Medium, DistanceSample } from './medium.ts'
+import {
+  mediumTransmittance, phaseHG, raySpan, sampleDeltaTracking,
+  sampleHomogeneousDistance, samplePhaseHG,
+} from './medium.ts'
 
 const PI = Math.PI
 const EPS = 1e-3
@@ -30,6 +35,7 @@ export interface RTLighting {
   sunCosHalf: number // cos of the directional-light cone half-angle (1 = hard shadows)
   lightRadius: number // point-light sphere radius for soft shadows
   aoRadius: number // ambient-occlusion ray reach
+  medium?: Medium | null // optional participating medium (fog / haze / smoke / nebula)
 }
 
 export interface RTContext extends RTLighting {
@@ -167,6 +173,7 @@ function evalBRDF(
 // each with a shadow ray. Returns the accumulated direct radiance.
 function directLight(s: Surface, vx: number, vy: number, vz: number, ctx: RTContext, rng: Rng, f: Float64Array): Vec3 {
   const { bvh } = ctx
+  const m = ctx.medium ?? null
   let r = 0, g = 0, b = 0
   // shadow-ray origin nudged off the surface along the geometric normal
   const ogx = s.px + s.gx * EPS
@@ -189,9 +196,11 @@ function directLight(s: Surface, vx: number, vy: number, vz: number, ctx: RTCont
       if (NoL <= 0) continue
       if (bvh.occluded(ogx, ogy, ogz, lx, ly, lz, EPS, 1e30)) continue
       evalBRDF(f, s.nx, s.ny, s.nz, vx, vy, vz, lx, ly, lz, s.mat, s.br, s.bg, s.bb)
-      const ir = light.color[0] * light.intensity
-      const ig = light.color[1] * light.intensity
-      const ib = light.color[2] * light.intensity
+      let tr0 = 1, tr1 = 1, tr2 = 1
+      if (m) { const tr = mediumTransmittance(m, ogx, ogy, ogz, lx, ly, lz, 1e30, rng); tr0 = tr[0]; tr1 = tr[1]; tr2 = tr[2] }
+      const ir = light.color[0] * light.intensity * tr0
+      const ig = light.color[1] * light.intensity * tr1
+      const ib = light.color[2] * light.intensity * tr2
       r += f[0] * NoL * ir; g += f[1] * NoL * ig; b += f[2] * NoL * ib
     } else {
       let cx = light.position[0], cy = light.position[1], cz = light.position[2]
@@ -209,9 +218,11 @@ function directLight(s: Surface, vx: number, vy: number, vz: number, ctx: RTCont
       const atten = fall * fall
       if (bvh.occluded(ogx, ogy, ogz, lx, ly, lz, EPS, dist - EPS)) continue
       evalBRDF(f, s.nx, s.ny, s.nz, vx, vy, vz, lx, ly, lz, s.mat, s.br, s.bg, s.bb)
-      const ir = light.color[0] * light.intensity * atten
-      const ig = light.color[1] * light.intensity * atten
-      const ib = light.color[2] * light.intensity * atten
+      let tr0 = 1, tr1 = 1, tr2 = 1
+      if (m) { const tr = mediumTransmittance(m, ogx, ogy, ogz, lx, ly, lz, dist, rng); tr0 = tr[0]; tr1 = tr[1]; tr2 = tr[2] }
+      const ir = light.color[0] * light.intensity * atten * tr0
+      const ig = light.color[1] * light.intensity * atten * tr1
+      const ib = light.color[2] * light.intensity * atten * tr2
       r += f[0] * NoL * ir; g += f[1] * NoL * ig; b += f[2] * NoL * ib
     }
   }
@@ -258,10 +269,111 @@ function directLight(s: Surface, vx: number, vy: number, vz: number, ctx: RTCont
         const pdfInv = scene.totalEmissiveArea // 1 / pdfA
         evalBRDF(f, s.nx, s.ny, s.nz, vx, vy, vz, lx, ly, lz, s.mat, s.br, s.bg, s.bb)
         const k = NoL * G * pdfInv
-        r += f[0] * mat.emission[0] * k
-        g += f[1] * mat.emission[1] * k
-        b += f[2] * mat.emission[2] * k
+        let tr0 = 1, tr1 = 1, tr2 = 1
+        if (m) { const tr = mediumTransmittance(m, ogx, ogy, ogz, lx, ly, lz, dist, rng); tr0 = tr[0]; tr1 = tr[1]; tr2 = tr[2] }
+        r += f[0] * mat.emission[0] * k * tr0
+        g += f[1] * mat.emission[1] * k * tr1
+        b += f[2] * mat.emission[2] * k * tr2
       }
+    }
+  }
+  return [r, g, b]
+}
+
+// In-scattered direct light at a volume scattering vertex: next-event estimation
+// using the Henyey–Greenstein phase function in place of a surface BRDF (no cosine
+// term — the medium scatters over the full sphere), with each light's contribution
+// attenuated by the medium transmittance along its own shadow ray. `dx,dy,dz` is the
+// ray's incoming propagation direction (the phase axis).
+function mediumDirectLight(
+  px: number, py: number, pz: number,
+  dx: number, dy: number, dz: number,
+  ctx: RTContext, rng: Rng,
+): Vec3 {
+  const m = ctx.medium
+  if (!m) return [0, 0, 0]
+  const { bvh } = ctx
+  let r = 0, g = 0, b = 0
+
+  for (let i = 0; i < ctx.lights.length; i++) {
+    const light = ctx.lights[i]
+    if (light.type === 'dir') {
+      let lx = -light.direction[0], ly = -light.direction[1], lz = -light.direction[2]
+      const ll = Math.hypot(lx, ly, lz) || 1
+      lx /= ll; ly /= ll; lz /= ll
+      if (ctx.sunCosHalf < 0.9999) {
+        const local = uniformCone(rng.next(), rng.next(), ctx.sunCosHalf)
+        const [t1, t2] = orthonormalBasis([lx, ly, lz])
+        const w = toWorld(local, t1, t2, [lx, ly, lz])
+        lx = w[0]; ly = w[1]; lz = w[2]
+      }
+      if (bvh.occluded(px, py, pz, lx, ly, lz, EPS, 1e30)) continue
+      const ph = phaseHG(m.g, dx * lx + dy * ly + dz * lz)
+      const tr = mediumTransmittance(m, px, py, pz, lx, ly, lz, 1e30, rng)
+      r += ph * tr[0] * light.color[0] * light.intensity
+      g += ph * tr[1] * light.color[1] * light.intensity
+      b += ph * tr[2] * light.color[2] * light.intensity
+    } else {
+      let cx = light.position[0], cy = light.position[1], cz = light.position[2]
+      if (ctx.lightRadius > 0) {
+        const sph = uniformSphere(rng.next(), rng.next())
+        cx += sph[0] * ctx.lightRadius; cy += sph[1] * ctx.lightRadius; cz += sph[2] * ctx.lightRadius
+      }
+      let lx = cx - px, ly = cy - py, lz = cz - pz
+      const dist = Math.hypot(lx, ly, lz) || 1
+      lx /= dist; ly /= dist; lz /= dist
+      const fall = 1 - (dist * dist) / (light.range * light.range)
+      if (fall <= 0) continue
+      const atten = fall * fall
+      if (bvh.occluded(px, py, pz, lx, ly, lz, EPS, dist - EPS)) continue
+      const ph = phaseHG(m.g, dx * lx + dy * ly + dz * lz)
+      const tr = mediumTransmittance(m, px, py, pz, lx, ly, lz, dist, rng)
+      r += ph * atten * tr[0] * light.color[0] * light.intensity
+      g += ph * atten * tr[1] * light.color[1] * light.intensity
+      b += ph * atten * tr[2] * light.color[2] * light.intensity
+    }
+  }
+
+  // emissive-area lights, sampled by world area (same scheme as the surface NEE)
+  const scene = ctx.scene
+  const nE = scene.emissiveTris.length
+  if (nE > 0 && scene.totalEmissiveArea > 1e-9) {
+    const target = rng.next() * scene.totalEmissiveArea
+    let lo = 0, hi = nE - 1
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1
+      if (scene.emissiveArea[mid] < target) lo = mid + 1
+      else hi = mid
+    }
+    const tri = scene.emissiveTris[lo]
+    const o3 = tri * 3
+    const e1x = scene.e1[o3], e1y = scene.e1[o3 + 1], e1z = scene.e1[o3 + 2]
+    const e2x = scene.e2[o3], e2y = scene.e2[o3 + 1], e2z = scene.e2[o3 + 2]
+    const r1 = rng.next(); const r2 = rng.next()
+    const su = Math.sqrt(r1)
+    const bu = su * (1 - r2)
+    const bv = su * r2
+    const yx = scene.p0[o3] + bu * e1x + bv * e2x
+    const yy = scene.p0[o3 + 1] + bu * e1y + bv * e2y
+    const yz = scene.p0[o3 + 2] + bu * e1z + bv * e2z
+    let lx = yx - px, ly = yy - py, lz = yz - pz
+    const dist = Math.hypot(lx, ly, lz) || 1
+    lx /= dist; ly /= dist; lz /= dist
+    let gx = e1y * e2z - e1z * e2y
+    let gy = e1z * e2x - e1x * e2z
+    let gz = e1x * e2y - e1y * e2x
+    const gnl = Math.hypot(gx, gy, gz) || 1
+    gx /= gnl; gy /= gnl; gz /= gnl
+    const cosLight = Math.abs(gx * lx + gy * ly + gz * lz)
+    if (cosLight > 1e-4 && !bvh.occluded(px, py, pz, lx, ly, lz, EPS, dist - EPS)) {
+      const mat = scene.materials[scene.matIndex[tri]]
+      const G = cosLight / (dist * dist)
+      const ph = phaseHG(m.g, dx * lx + dy * ly + dz * lz)
+      const tr = mediumTransmittance(m, px, py, pz, lx, ly, lz, dist, rng)
+      const k = ph * G * scene.totalEmissiveArea
+      r += mat.emission[0] * k * tr[0]
+      g += mat.emission[1] * k * tr[1]
+      b += mat.emission[2] * k * tr[2]
     }
   }
   return [r, g, b]
@@ -325,8 +437,15 @@ function sampleBSDF(s: Surface, vx: number, vy: number, vz: number, rng: Rng, f:
 const tmpHit: ClosestHit = { t: 0, tri: -1, u: 0, v: 0 }
 const tmpF = new Float64Array(3)
 const tmpSample: BSDFSample = { wx: 0, wy: 0, wz: 0, wr: 0, wg: 0, wb: 0, specular: false }
+const tmpSpan = { t0: 0, t1: 0 }
+const tmpDist: DistanceSample = { scatter: false, t: 0, wr: 1, wg: 1, wb: 1 }
+const MAX_PATH = 256 // absolute interaction guard (volume multiple-scattering safety net)
 
-// Estimate radiance along one camera ray with a unidirectional path tracer.
+// Estimate radiance along one camera ray with a unidirectional volumetric path
+// tracer. Each segment is first tested against the participating medium (if any):
+// the ray may *scatter* inside it — turning by the phase function, with in-scattered
+// direct light from NEE — or pass through, attenuated by transmittance, to the
+// surface (or sky) the segment ends on. Surface interactions are unchanged.
 export function tracePath(
   ox: number, oy: number, oz: number,
   dx: number, dy: number, dz: number,
@@ -335,14 +454,58 @@ export function tracePath(
   let Lr = 0, Lg = 0, Lb = 0
   let br = 1, bg = 1, bb = 1
   let countEmis = true
-  for (let depth = 0; ; depth++) {
+  const m = ctx.medium ?? null
+  let surfaceBounces = 0
+  for (let iter = 0; iter < MAX_PATH; iter++) {
     const hit = ctx.bvh.closest(ox, oy, oz, dx, dy, dz, 1e-4, 1e30, tmpHit)
+    const tMax = hit ? tmpHit.t : 1e30
+
+    // ── participating medium over the open segment [0, tMax] ──────────────────
+    let scattered = false
+    if (m && raySpan(m, ox, oy, oz, dx, dy, dz, 1e-4, tMax, tmpSpan)) {
+      const t0 = tmpSpan.t0, t1 = tmpSpan.t1
+      const span = t1 - t0
+      if (span > 1e-6) {
+        let st = -1
+        if (m.heterogeneous) {
+          const td = sampleDeltaTracking(m, ox, oy, oz, dx, dy, dz, t0, t1, rng)
+          if (td >= 0) { st = td; br *= m.albedo[0]; bg *= m.albedo[1]; bb *= m.albedo[2] }
+        } else {
+          sampleHomogeneousDistance(m.sigmaT, m.sigmaS, span, rng, tmpDist)
+          br *= tmpDist.wr; bg *= tmpDist.wg; bb *= tmpDist.wb // scatter albedo, or transmittance-to-end
+          if (tmpDist.scatter) st = t0 + tmpDist.t
+        }
+        if (st >= 0) {
+          const sx = ox + dx * st, sy = oy + dy * st, sz = oz + dz * st
+          const dl = mediumDirectLight(sx, sy, sz, dx, dy, dz, ctx, rng)
+          Lr += br * dl[0]; Lg += bg * dl[1]; Lb += bb * dl[2]
+          const nd = samplePhaseHG(m.g, dx, dy, dz, rng.next(), rng.next())
+          ox = sx; oy = sy; oz = sz; dx = nd[0]; dy = nd[1]; dz = nd[2]
+          countEmis = false // direct light already counted via NEE
+          scattered = true
+        }
+      }
+    }
+
+    if (scattered) {
+      // Russian roulette (shared with surface paths): bounds dense/multiple scattering.
+      if (iter >= 2) {
+        let q = Math.max(br, bg, bb)
+        if (q > 0.95) q = 0.95
+        if (q < 0.05) q = 0.05
+        if (rng.next() >= q) break
+        br /= q; bg /= q; bb /= q
+      }
+      continue
+    }
+
+    // ── no scatter: the segment reaches the surface (or the sky) ──────────────
     if (!hit) {
       const sky = ctx.sky(dx, dy, dz)
       Lr += br * sky[0]; Lg += bg * sky[1]; Lb += bb * sky[2]
       break
     }
-    const s = surfaceAt(ctx.scene, hit.tri, hit.u, hit.v, dx, dy, dz)
+    const s = surfaceAt(ctx.scene, tmpHit.tri, tmpHit.u, tmpHit.v, dx, dy, dz)
     const vx = -dx, vy = -dy, vz = -dz
     const em = s.mat.emission
     if (countEmis && (em[0] + em[1] + em[2]) > 0) {
@@ -351,13 +514,14 @@ export function tracePath(
     const dl = directLight(s, vx, vy, vz, ctx, rng, tmpF)
     Lr += br * dl[0]; Lg += bg * dl[1]; Lb += bb * dl[2]
 
-    if (depth >= ctx.maxBounces) break
+    if (surfaceBounces >= ctx.maxBounces) break
+    surfaceBounces++
     if (!sampleBSDF(s, vx, vy, vz, rng, tmpF, tmpSample)) break
     br *= tmpSample.wr; bg *= tmpSample.wg; bb *= tmpSample.wb
     countEmis = tmpSample.specular
 
     // Russian roulette after a couple of bounces
-    if (depth >= 2) {
+    if (iter >= 2) {
       let q = Math.max(br, bg, bb)
       if (q > 0.95) q = 0.95
       if (q < 0.05) q = 0.05

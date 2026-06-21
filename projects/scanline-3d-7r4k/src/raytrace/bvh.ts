@@ -337,4 +337,14 @@ export class BVH {
     }
     return false
   }
+
+  // The world-space AABB of the whole scene (the root node's bounds), or null when
+  // there is no geometry. Used to fit a participating medium's box to the scene.
+  worldBounds(): { minx: number; miny: number; minz: number; maxx: number; maxy: number; maxz: number } | null {
+    if (this.scene.count === 0) return null
+    return {
+      minx: this.nodeMin[0], miny: this.nodeMin[1], minz: this.nodeMin[2],
+      maxx: this.nodeMax[0], maxy: this.nodeMax[1], maxz: this.nodeMax[2],
+    }
+  }
 }

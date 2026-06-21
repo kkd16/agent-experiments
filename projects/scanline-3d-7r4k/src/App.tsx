@@ -38,12 +38,20 @@ const DEFAULT_SETTINGS: RenderSettings = {
     splitPos: 0.5,
     denoise: DEFAULT_DENOISE,
     view: 'denoised',
+    medium: { enabled: false, preset: 'haze', density: 1, g: 0.55 },
   },
 }
 
 // Scenes that are built for global illumination — selecting one flips to the ray
 // tracer so they don't read as a flat rasterized box.
-const RT_SCENES = new Set(['cornell', 'reflections'])
+const RT_SCENES = new Set(['cornell', 'reflections', 'cathedral', 'nebula'])
+
+// Scenes built to show off the volumetric medium — selecting one switches to the ray
+// tracer AND turns the medium on with a fitting preset.
+const MEDIUM_SCENES: Record<string, { preset: string; density: number; g: number }> = {
+  cathedral: { preset: 'beams', density: 0.6, g: 0.8 },
+  nebula: { preset: 'nebula', density: 1, g: 0.25 },
+}
 
 export default function App() {
   const [settings, setSettings] = useState<RenderSettings>(DEFAULT_SETTINGS)
@@ -79,7 +87,16 @@ export default function App() {
 
   const choosePreset = (key: string): void => {
     setPreset(key)
-    if (RT_SCENES.has(key) && settings.engine !== 'rt') setSettings((s) => ({ ...s, engine: 'rt' }))
+    const med = MEDIUM_SCENES[key]
+    if (RT_SCENES.has(key) || med) {
+      setSettings((s) => ({
+        ...s,
+        engine: 'rt',
+        rt: med
+          ? { ...s.rt, mode: 'path', medium: { ...s.rt.medium, enabled: true, ...med } }
+          : s.rt,
+      }))
+    }
   }
 
   const viewImplicit = (): void => setPreset('implicit')
