@@ -41,6 +41,17 @@ reference interpreter at every optimization level.
   body clones with SSA threaded across iterations. Sound by precondition (single latch,
   two-pred header, single exit, header-phi-only live-outs, innermost, growth-bounded) — it
   declines whenever uncertain, so the differential oracle proves it never changes behaviour.
+- `src/compiler/opt/partial-unroll.ts` — **partial loop unrolling** (unroll-by-K + remainder)
+  at -O2+, for the runtime- and large-trip loops full unrolling declines: it prepends a
+  **strided main loop** running `K` body copies per back edge — guarded by an exact,
+  **overflow-blind** "K more iterations?" test (the real predicate evaluated at `i, i+c, …,
+  i+(K−1)c`, ANDed) — and **reuses the original loop untouched as the remainder**, so every
+  loop-exit value and live-out is still computed by the original machinery. Runs once after the
+  fixpoint rounds (full unrolling has already taken the small constant-trip loops), then a
+  cleanup round optimizes across the contiguous copies.
+- `src/compiler/loopAnalysis.ts` — best-effort, never-throwing induction-variable/loop
+  classifier (counted / strided-main / general, with IV, step, bound, static trip count) that
+  powers the **Loops** tab; descriptive only, never mutates the IR.
 - `src/compiler/opt/simplifycfg.ts` — **CFG simplification** at -O1+: straight-line block
   coalescing (merge `A —br→ B` when `B`'s only pred is `A`) and branch-to-branch threading
   (splice out empty forwarding blocks), cleaning up after SCCP / if-conversion / inlining /
@@ -224,6 +235,17 @@ yet stored in arrays/structs/globals — extract their lanes for that.)
 
 ## Done
 
+- [x] **Partial loop unrolling (unroll-by-K + remainder loop)** (`opt/partial-unroll.ts`,
+      -O2+) — the production complement to full unrolling: for a loop with a **runtime** or
+      large trip count it prepends a **strided main loop** running `K` body copies per back edge
+      (guarded by an exact, **overflow-blind** "K more iterations?" test) and **reuses the
+      original loop untouched as the remainder**, so no live-out is ever disturbed. Handles
+      i32/i64 IVs, any predicate (incl. `!=`), either step sign, side-effecting bodies,
+      reductions, inner control flow and nested loops; declines (deferring to full unrolling)
+      on small constant-trip loops. A **Loops** tab classifies every loop (counted /
+      strided-main / general) with its IV, step, bound and trip count. Proven by the
+      three-engine oracle (interp = wasm = VM) at -O0…-O3; corpus **884 → 948** checks. See the
+      2026-06-21 plan.
 - [x] **128-bit SIMD vectors (`v128`)** — first-class `int4`/`float4`/`long2`/
       `double2` value types lowering to one wasm SIMD register. Elementwise
       operators (one lane op each), splat/`lane`/`withlane`, `hsum`,
@@ -334,6 +356,93 @@ yet stored in arrays/structs/globals — extract their lanes for that.)
       checks across -O0…-O3 (baseline 836)**; OSR fires on **91** of the 221
       corpus programs. See the 2026-06-21 plan.
 
+## 2026-06-21 — plan + shipped: partial loop unrolling (unroll-by-K + remainder loop) + a Loops/IV panel (claude / claude-opus-4-8)
+
+Strata could already make a counted loop **vanish** when it could *measure* the trip count
+(full unrolling at -O2+), and could **strengthen** the loops it couldn't measure (OSR turns an
+`i*stride` into a running add). But the loops it couldn't measure — a `for i in 0..n` with a
+**runtime** bound, or one with too many iterations to clone — still paid a branch *and* a
+loop-carried-dependence stall on **every** back edge. The marquee optimization that closes that
+gap is **partial unrolling**: run the body `K` times per back edge, so `K−1` of every `K` back
+edges disappear and the `K` body copies sit contiguously where GVN/LICM/OSR/scheduling can work
+across them. This session ships it — the headline deferred item from the 2026-06-19 loop-suite
+plan — plus a **Loops** tab that makes the whole induction-variable story visible (which also
+retires the "induction variables sub-panel" item from the OSR backlog).
+
+### Design — stride a main loop, keep the original as the remainder
+
+The transform splits the iteration space into a **strided main loop** (strides by `K`) and a
+**remainder loop** (the last `< K` iterations), but with one decision that makes it *safer*
+than full unrolling: **the remainder loop is the original loop, reused untouched.** Partial
+unrolling only ever *prepends* a strided main loop:
+
+```
+preheader → main-header ──(guard: K more?)──┐ no
+   main body = K body copies, no test  ◄────┘ yes (back edge)
+            │ no
+            ▼
+   original loop (the remainder) → exit      ← unchanged: every loop-exit value,
+                                                exit-block phi and live-out is still
+                                                computed by the original machinery
+```
+
+Because the original header, its exit edge, and all its phis survive verbatim, partial
+unrolling **cannot disturb a single live-out** — the part full unrolling has to rebuild by hand.
+The main loop only ever feeds the remainder its strided header-phi values; everything downstream
+is the original program.
+
+The main loop's "K more iterations?" guard is **exact and overflow-blind**. It evaluates the
+*real* loop predicate at `i, i+c, …, i+(K−1)c` with the same wrapping i32/i64 arithmetic and
+signed `icmp` the program uses, ANDs the K results, and enters the K-wide body only when *all*
+say "iterate". No closed-form trip count, no monotonicity assumption, no non-overflow
+precondition — so the rewrite is an exact identity on **every** counted-loop shape (any
+predicate incl. `!=`, either step sign, wrapping included). When a precondition is unmet it
+declines and leaves the IR untouched. It runs **once**, after the -O2 fixpoint rounds (so full
+unrolling has already consumed every small constant-trip loop), then a single cleanup round
+(copy-prop · SCCP · mem-opt · GVN · OSR · LICM · algebraic · DCE · simplify-cfg) optimizes
+across the freshly contiguous copies — which on the runtime loops actually *shrinks* the IR.
+
+### Shipped this session (all proven by the oracle — **948 checks, V8 = interpreter = VM**)
+
+- [x] **`src/compiler/opt/partial-unroll.ts`** — the pass. Counted-loop recognition (shared
+      shape with the full unroller, but the bound may be a **runtime loop-invariant**, not just
+      a constant); a "leave small constant-trip loops to the full unroller" gate; K-copy body
+      cloning with SSA threaded across copies (header phis resolve to the previous copy's latch
+      value); the overflow-blind AND-chain guard; preheader/remainder rewiring; and a
+      per-header `done` set so the remainder is never re-strided.
+- [x] **Wired into `opt/optimize.ts`** as `partial-unroll` (-O2+), once after the rounds, with a
+      dedicated post-unroll cleanup round.
+- [x] **A 15-program partial-unroll battery** in `tests.ts` — runtime `<`/`>`/`<=`/`>=`/`!=`
+      bounds, +1 / −1 / +3 / −2 strides, a **printing** body (side-effect count & order must be
+      exact), **two reductions**, an **inner if** (a body diamond cloned K times), **nested**
+      loops, **i64** IVs, a **runtime invariant** bound computed in the preheader, a wrapping
+      reduction, and a **negative/zero-straddling** range — each swept across every trip-count
+      residue mod K, verified at -O0…-O3 (interp = wasm = vm).
+- [x] **A `partial-unroll` gallery example** — a runtime-bound sum + a Horner polynomial, with a
+      comment pointing at the Loops tab and the `partial-unroll` pass line.
+- [x] **A `Loops` tab** (`src/compiler/loopAnalysis.ts` + `LoopsPanel` in `ui/Panels.tsx`):
+      side-by-side SSA-vs-optimized loop tables classifying every natural loop as **counted**
+      (with IV, init, step, bound and static trip count), **strided-main** (the guard shape), or
+      **general**, plus a summary that shows full-unrolled vs partial-strided counts and the
+      pass's firing count. Best-effort and never-throwing, so it renders at any -O level.
+- [x] **A headless activity probe** (`tools/check-unroll.mjs`, `tools/_unrollentry.js`,
+      `src/compiler/unrollProbe.ts`) — confirms the strider *fires* on runtime/large-trip loops
+      and correctly *defers* small constant-trip loops to the full unroller, and exercises the
+      loop analyzer (10/10). Corpus grew **884 → 948** differential checks, all green; the
+      three-engine VM check agrees 948/948; CI gate (scope + conformance + lint + build) green.
+
+### Backlog — where loop unrolling goes next (deliberately deferred, all clean)
+
+- [ ] **A single-test main loop** for the provably-non-wrapping case (i32 `<` with `bound ≤
+      INT_MAX − (K−1)c`, guarded once in the preheader): test only `i+(K−1)c < bound` per K
+      iterations instead of all K — fewer dynamic compares when overflow is ruled out.
+- [x] **Choose K from the body** — shipped: `chooseK` strides tiny bodies (≤4 insts) by 8,
+      medium by 4, fat by 2, all under one growth budget.
+- [ ] **Unroll-and-jam** an inner loop into an outer one once both are counted (the next
+      structural step beyond a single-loop stride).
+- [ ] **LFTR across the strided + remainder pair** so the main loop's exit guard and the
+      remainder share one derived IV (couples cleanly with the deferred OSR/LFTR item).
+
 ## 2026-06-21 — plan + shipped: operator strength reduction on induction variables (OSR + LFTR-ready) (claude / claude-opus-4-8)
 
 The optimizer already turned counted loops it could *measure* into straight-line code
@@ -402,9 +511,9 @@ runs four rounds at -O2+ — a *chain* (`k = i*4; q = k*3`) reduces a level per 
 - [ ] **Derived induction variables in one pass**: fold the per-round chain-reduction into a
       single fixpoint over an SSA-SCC induction-variable graph (Cooper-Simpson-Vick proper),
       so `i*4*3` reduces in one OSR invocation instead of across rounds.
-- [ ] **An "induction variables" optimizer sub-panel**: draw each loop's IV families
-      (basic + reduced), the region constants, and the per-iteration step, so the reduction is
-      visible the way the unroller's trip count and SROA's deleted loads already are.
+- [x] **An "induction variables" optimizer sub-panel** — shipped 2026-06-21 (later session) as
+      the **Loops** tab: classifies each loop (counted / strided-main / general) with its IV,
+      step, bound and static trip count, side by side for SSA vs the optimized IR.
 - [ ] **Reassociation feeding OSR**: canonicalize integer `+`/`*` trees and sink constants so
       more `i*r` candidates surface (e.g. `(i+1)*r` → `i*r + r`).
 
@@ -896,9 +1005,10 @@ overflows the limit — correctly decline, all proven identical at -O0…-O3.
       gate (conformance + lint + build).
 
 ### Deliberately deferred (clean, documented limitations)
-- [ ] **Partial unrolling** (unroll-by-K with a remainder loop) for *non-constant*
-      trip counts — the production case. Needs a synthesized remainder loop + guard;
-      a larger change, left as the next step on this foundation.
+- [x] **Partial unrolling** (unroll-by-K with a remainder loop) for *non-constant*
+      trip counts — the production case. **Shipped 2026-06-21 (later session)**
+      (`opt/partial-unroll.ts`): a strided main loop with an overflow-blind "K more?"
+      guard, reusing the original loop verbatim as the remainder. See that plan.
 - [ ] **Induction-variable strength reduction / LFTR** (derived IVs `j = a*i + b`
       reduced to additions) — the loop forest + basic-IV analysis here are the
       groundwork.

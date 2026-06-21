@@ -4,6 +4,7 @@ import { computeDom, succOfTerm } from '../ir/cfg';
 import { findNaturalLoops } from '../ir/loops';
 import { simplifyCFG } from './simplifycfg';
 import { unrollLoops } from './unroll';
+import { partialUnroll } from './partial-unroll';
 import { divRemByConst } from './divrem';
 import { memOpt } from './memopt';
 import { sroa } from './sroa';
@@ -887,6 +888,23 @@ export function optimize(mod: IRModule, level: OptLevel, snapshots = false): Opt
     if (level >= 2) record('licm' + suffix, licm);
     record('dead-code-elim' + suffix, dce);
     record('simplify-cfg' + suffix, simplifyCFG);
+  }
+  // Partial loop unrolling runs once, after the fixpoint rounds: the full
+  // unroller has already consumed every small constant-trip loop, so what's left
+  // for striding is exactly the runtime- and large-trip loops. It runs once (the
+  // remainder loop it leaves behind would otherwise be re-strided forever), then
+  // a single cleanup round optimizes across the freshly contiguous body copies.
+  if (level >= 2) {
+    record('partial-unroll', partialUnroll);
+    record('copy-propagation (post-unroll)', copyProp);
+    record('sccp (post-unroll)', sccp);
+    record('mem-opt (post-unroll)', memOpt);
+    record('gvn/cse (post-unroll)', gvn);
+    record('strength-reduce-iv (post-unroll)', osr);
+    record('licm (post-unroll)', licm);
+    record('algebraic-simplify (post-unroll)', algebraic);
+    record('dead-code-elim (post-unroll)', dce);
+    record('simplify-cfg (post-unroll)', simplifyCFG);
   }
   // a final cleanup pass that always runs
   record('cfg-cleanup', (fn) => pruneUnreachable(fn));
