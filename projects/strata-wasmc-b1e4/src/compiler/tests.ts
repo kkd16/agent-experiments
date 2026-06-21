@@ -2108,4 +2108,123 @@ fn main(){
   print(lane(cnt,0)); print(lane(cnt,1)); print(lane(cnt,2)); print(lane(cnt,3));
 }`,
   },
+
+  // --- Operator strength reduction on induction variables (OSR). Each loop is
+  // large enough that the unroller declines, so the multiply/shift of the IV
+  // survives to -O2/-O3 and OSR reduces it to an addition. The differential
+  // oracle proves the reduced wasm prints exactly what the interpreter does, so
+  // these double as the proof that `(i+c)*r ≡ i*r + c*r (mod 2^w)` is exact. --
+  {
+    name: 'osr-mul-basic',
+    source: `fn main(){
+  let acc = 0;
+  for (let i = 0; i < 200; i = i + 1) { acc = acc + i * 7; }
+  print(acc);
+}`,
+  },
+  {
+    name: 'osr-shl-iv',
+    source: `fn main(){
+  let acc = 0;
+  for (let i = 0; i < 150; i = i + 1) { acc = acc + (i << 3); }
+  print(acc);
+}`,
+  },
+  {
+    name: 'osr-neg-stride',
+    source: `fn main(){
+  // a decrementing induction variable: step -3, region constant 5.
+  let acc = 0;
+  for (let i = 300; i > 0; i = i - 3) { acc = acc ^ (i * 5); }
+  print(acc);
+}`,
+  },
+  {
+    name: 'osr-neg-rc',
+    source: `fn main(){
+  // negative region constant exercises the signed wraparound of the derived step.
+  let acc = 0;
+  for (let i = 0; i < 175; i = i + 2) { acc = acc + i * -11; }
+  print(acc);
+}`,
+  },
+  {
+    name: 'osr-invariant-rc',
+    source: `fn main(){
+  // the region constant is a loop-invariant *variable*, not a literal.
+  let n = 130;
+  let r = n * 2 + 1;
+  let acc = 0;
+  for (let i = 0; i < n; i = i + 1) { acc = acc + i * r; }
+  print(acc); print(r);
+}`,
+  },
+  {
+    name: 'osr-multi-candidate',
+    source: `fn main(){
+  // three reducible candidates over one induction variable in one loop.
+  let a = 0; let b = 0; let c = 0;
+  for (let i = 0; i < 160; i = i + 1) {
+    a = a + i * 3;
+    b = b ^ (i << 2);
+    c = c + i * 9;
+  }
+  print(a); print(b); print(c);
+}`,
+  },
+  {
+    name: 'osr-gvn-shared',
+    source: `fn main(){
+  // i*9 appears twice; GVN folds them, OSR reduces the single survivor.
+  let acc = 0;
+  for (let i = 0; i < 180; i = i + 1) {
+    let t = i * 9;
+    acc = acc + t + (i * 9);
+  }
+  print(acc);
+}`,
+  },
+  {
+    name: 'osr-long-iv',
+    source: `fn main(){
+  // 64-bit induction variable and a 64-bit region constant.
+  let acc: long = 0L;
+  for (let i: long = 0L; i < 200L; i = i + 1L) { acc = acc + i * 1000003L; }
+  print(acc);
+}`,
+  },
+  {
+    name: 'osr-addressing',
+    source: `fn main(){
+  // the canonical use: an array address base + i*stride becomes a running bump.
+  let n = 120;
+  let a = int_array(n);
+  for (let i = 0; i < n; i = i + 1) { a[i] = i * 4 + 1000; }
+  let sum = 0;
+  for (let i = 0; i < n; i = i + 1) { sum = sum ^ a[i]; }
+  print(sum);
+}`,
+  },
+  {
+    name: 'osr-nested-loops',
+    source: `fn main(){
+  // each loop level carries its own reducible induction multiply.
+  let acc = 0;
+  for (let i = 0; i < 60; i = i + 1) {
+    acc = acc + i * 17;
+    for (let j = 0; j < 120; j = j + 1) { acc = acc ^ (j * 13 + i); }
+  }
+  print(acc);
+}`,
+  },
+  {
+    name: 'osr-wrap-i32',
+    source: `fn main(){
+  // a big multiplier so i*r wraps i32 every few iterations — the reduced add
+  // chain must wrap the same way.
+  let acc = 0;
+  for (let i = 0; i < 250; i = i + 1) { acc = acc + i * 1000003; }
+  print(acc);
+}`,
+  },
 ];
