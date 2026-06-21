@@ -7,8 +7,9 @@
 import { Tensor } from './tensor';
 import { dropout, layerNorm, batchNorm, makeBatchNormState, embedding, concatCols } from './ops';
 import { conv2d, maxPool2d, avgPool2d } from './conv';
-import { maskedCrossEntropy } from './losses';
+import { maskedCrossEntropy, bceWithLogits } from './losses';
 import { GPT } from './transformer';
+import { VAE, klDivStandardNormal } from './vae';
 
 export interface OpCheck {
   name: string;
@@ -247,6 +248,47 @@ export function runSelfTest(seed = 7): SelfTestReport {
         'transformer (e2e)',
         gpt.parameters(),
         () => maskedCrossEntropy(gpt.forward(ids), targets, keep).loss,
+        rng,
+      ),
+    );
+  }
+
+  // Generative (VAE) ops: the Bernoulli reconstruction loss and the closed-form KL.
+  {
+    const logits = leaf(rng, 4, 3);
+    const td = new Float64Array(12);
+    for (let i = 0; i < td.length; i++) td[i] = 0.1 + rng() * 0.8; // targets in (0,1)
+    const target = Tensor.fromFlat(td, 4, 3, false);
+    ops.push(checkOp('bceWithLogits', [logits], () => bceWithLogits(logits, target), rng));
+  }
+  {
+    const mu = leaf(rng, 4, 3);
+    const logvar = leaf(rng, 4, 3); // kept in [-1,1] so e^{logvar} stays well-conditioned
+    ops.push(checkOp('klDivStdNormal', [mu, logvar], () => klDivStandardNormal(mu, logvar), rng));
+  }
+
+  // End-to-end: a whole tiny VAE — encoder, the μ and logσ² heads, and the decoder — gradchecked
+  // through the reparameterized ELBO (BCE reconstruction + KL). ε is a fixed leaf so the
+  // stochastic latent sample is a well-defined function of the parameters for finite differences.
+  {
+    const vae = new VAE({ px: 6, hidden: [8], latent: 3, activation: 'gelu' }, rngFrom(5));
+    const xd = new Float64Array(12);
+    for (let i = 0; i < xd.length; i++) xd[i] = rng() * 2 - 1;
+    const x = Tensor.fromFlat(xd, 2, 6, false);
+    const td = new Float64Array(12);
+    for (let i = 0; i < td.length; i++) td[i] = 0.1 + rng() * 0.8;
+    const target = Tensor.fromFlat(td, 2, 6, false);
+    const epsd = new Float64Array(6);
+    for (let i = 0; i < epsd.length; i++) epsd[i] = rng() * 2 - 1;
+    const eps = Tensor.fromFlat(epsd, 2, 3, false);
+    ops.push(
+      checkOp(
+        'vae (e2e)',
+        vae.parameters(),
+        () => {
+          const { logits, mu, logvar } = vae.forward(x, eps);
+          return bceWithLogits(logits, target).add(klDivStandardNormal(mu, logvar));
+        },
         rng,
       ),
     );

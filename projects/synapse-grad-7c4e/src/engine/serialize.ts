@@ -86,6 +86,7 @@ export function listSlots(prefix = SLOT_PREFIX): string[] {
 }
 
 export const VISION_SLOT_PREFIX = 'synapse:vslot:';
+export const GEN_SLOT_PREFIX = 'synapse:gslot:';
 
 // ---- URL hash sharing --------------------------------------------------------------
 

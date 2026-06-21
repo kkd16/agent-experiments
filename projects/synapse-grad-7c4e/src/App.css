@@ -1159,3 +1159,163 @@ button:disabled {
 .chart-foot {
   margin: 8px 0 0;
 }
+
+/* ============================================================================
+   Session 5 — Generative · VAE lab
+   ========================================================================== */
+
+/* headline latent manifold */
+.manifold {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.manifold-grid {
+  display: grid;
+  gap: 2px;
+  background: #05080f;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 4px;
+}
+.manifold-cell {
+  width: 100%;
+  height: auto;
+  aspect-ratio: 1 / 1;
+  border-radius: 2px;
+}
+.manifold-axes {
+  display: flex;
+  justify-content: space-between;
+  color: var(--muted);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+}
+.manifold-axes .v {
+  opacity: 0.75;
+}
+
+/* reconstructions */
+.recon-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+.recon-pair {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  align-items: center;
+}
+.recon-pair .img-canvas {
+  width: auto;
+  height: auto;
+  border-radius: 5px;
+  border: 1px solid var(--border);
+  background: #05080f;
+}
+.recon-pair .recon-out {
+  border-color: rgba(56, 189, 248, 0.5);
+}
+
+/* latent scatter */
+.scatter {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.scatter-canvas {
+  width: 100%;
+  max-width: 300px;
+  height: auto;
+  aspect-ratio: 1 / 1;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  align-self: center;
+}
+.scatter-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  font-size: 11.5px;
+  color: var(--muted);
+}
+.scatter-key {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.scatter-key .dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  display: inline-block;
+}
+
+/* interpolation strip */
+.interp {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.interp-end {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+}
+.interp-strip {
+  display: flex;
+  gap: 2px;
+}
+.interp .img-canvas {
+  width: auto;
+  height: auto;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  background: #05080f;
+}
+.interp-strip .interp-cell {
+  border-color: rgba(167, 139, 250, 0.45);
+}
+.interp-arrow {
+  color: var(--muted);
+  opacity: 0.6;
+}
+.interp-new {
+  float: right;
+}
+
+/* sample-from-prior gallery */
+.prior-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(44px, 1fr));
+  gap: 5px;
+}
+.prior-grid .img-canvas {
+  width: 100%;
+  height: auto;
+  aspect-ratio: 1 / 1;
+  border-radius: 5px;
+  border: 1px solid var(--border);
+  background: #05080f;
+}
+
+/* latent explorer */
+.explorer {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.explorer .img-canvas {
+  width: 100%;
+  height: auto;
+  aspect-ratio: 1 / 1;
+  border-radius: 10px;
+  border: 1px solid var(--border-strong);
+  background: #05080f;
+}
+.explorer-title {
+  margin-top: 16px;
+}

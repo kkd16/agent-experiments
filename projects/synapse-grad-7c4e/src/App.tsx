@@ -2,14 +2,16 @@ import { useState } from 'react';
 import PlaygroundLab from './components/PlaygroundLab';
 import VisionLab from './components/vision/VisionLab';
 import SeqLab from './components/seq/SeqLab';
+import GenLab from './components/gen/GenLab';
 import './App.css';
 
-type Tab = 'playground' | 'vision' | 'transformer';
+type Tab = 'playground' | 'vision' | 'transformer' | 'generative';
 
-// If the page was opened from a shared CNN link (#v=…), start on the vision tab.
+// Open the lab a shared link points at (#v= vision, #t= transformer, #g= generative).
 function initialTab(): Tab {
   try {
     if (/[#&]t=/.test(location.hash)) return 'transformer';
+    if (/[#&]g=/.test(location.hash)) return 'generative';
     return /[#&]v=/.test(location.hash) ? 'vision' : 'playground';
   } catch {
     return 'playground';
@@ -40,6 +42,9 @@ export default function App() {
             <button className={tab === 'transformer' ? 'on' : ''} onClick={() => setTab('transformer')}>
               Transformer · Attention
             </button>
+            <button className={tab === 'generative' ? 'on' : ''} onClick={() => setTab('generative')}>
+              Generative · VAE
+            </button>
           </nav>
           <div className="kbd-hint">
             <kbd>space</kbd> train · <kbd>s</kbd> step · <kbd>r</kbd> reset · <kbd>g</kbd> gradcheck
@@ -47,7 +52,15 @@ export default function App() {
         </div>
       </header>
 
-      {tab === 'playground' ? <PlaygroundLab /> : tab === 'vision' ? <VisionLab /> : <SeqLab />}
+      {tab === 'playground' ? (
+        <PlaygroundLab />
+      ) : tab === 'vision' ? (
+        <VisionLab />
+      ) : tab === 'transformer' ? (
+        <SeqLab />
+      ) : (
+        <GenLab />
+      )}
 
       <footer className="foot">
         <span>
