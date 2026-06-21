@@ -99,6 +99,23 @@ keep it current.
 - `src/engine/ereg-verify.ts` — the session-7 proofs: live algebraic-law badges (`compareDFAs`), the recursive
   `tryClassicalDFA` cross-check (Boolean-derivative DFA ≡ classic product/complement), and the seeded
   three-engine differential fuzzer (streaming derivative · derivative DFA · `ends` oracle).
+- `src/engine/monoid.ts` — **the syntactic monoid** (session 8): the algebraic theory of the language. `completeDFA`
+  re-adds the dead sink the minimiser dropped (the transition monoid needs a *total* transition function);
+  `buildSyntacticMonoid` then BFS-closes the per-atom state-transformations under composition into the full transition
+  monoid — which, for the *minimal* complete DFA, **is** the syntactic monoid `M(L)`. Each element carries a shortest
+  realising word, its image-rank, and an idempotent flag; the Cayley table, the idempotents and any two-sided zero fall
+  out. `greenRelations` computes the five **Green's relations** R/L/J/H/D on that table (right/left/two-sided ideals;
+  `H = R ∩ L`; `D = R∘L` as connected components, `= J` in a finite monoid) and assembles the **egg-box** structure —
+  each D-class as a grid of R-classes × L-classes, the group H-classes (those with an idempotent) flagged with their
+  order. `counterFreeWitness` is the DFA-side aperiodicity test (no word induces a non-trivial cycle), and
+  `monoidProperties` reads off the variety membership: **aperiodic ⇔ star-free ⇔ FO[<] ⇔ counter-free**
+  (Schützenberger / McNaughton–Papert, decided three independent ways and cross-checked), **J-trivial ⇔ piecewise
+  testable** (Simon), R/L-trivial, commutative, band, group language, and the **counting modulus** (the largest group
+  order — 1 iff star-free). Capped at 1500 elements with graceful degradation.
+- `src/engine/monoid-verify.ts` — the session-8 proof console: a seeded fuzzer draws random regular patterns, builds
+  each one's syntactic monoid, and asserts the three roads to "aperiodic" agree plus Green's-relation sanity
+  (`H = R ∩ L`, full egg-boxes, R,L ⊆ D, J-trivial ⇒ aperiodic, aperiodic ⇔ modulus 1) — reproducible by seed,
+  surfacing any counterexample. Drives the panel's "run cross-check" button.
 - `src/engine/explain.ts` — AST → plain-English prose. `src/engine/export.ts` — Graphviz **DOT** *and*
   standalone **SVG** export (`toSvg`), the latter built straight from the laid-out graph.
 - `src/components/*` — `AutomatonGraph` (pan/zoom SVG, active-edge highlight), `AstView`,
@@ -107,7 +124,9 @@ keep it current.
   `DerivativesPanel` (derivative DFA + residual chain) and `FuzzPanel` (the differential-testing console),
   and the session-5 `AntimirovPanel` (equation automaton + Thompson-size comparison + live live-term-set chain),
   the session-6 `GlushkovPanel`, and the session-7 `ExtendedPanel` (Boolean-derivative DFA + proof badges +
-  Boolean-derivative chain + language stats + a "run cross-check" fuzz console).
+  Boolean-derivative chain + language stats + a "run cross-check" fuzz console), and the session-8 `MonoidPanel`
+  (the **Algebra** tab: the star-free/aperiodic verdict with its three-way cross-check, the variety badges, the
+  monoid summary, the **egg-box diagram**, the Cayley table, and the fuzz cross-check).
 
 ## Ideas / backlog
 
@@ -367,8 +386,54 @@ the old one.
       `b*(ab*ab*)*&a*(ba*ba*)*` (the textbook 4-state product); "contains ab but not ba"; ÷6.
 - [x] Header/footer/`project.json` copy updated to "five roads · Boolean closure".
 
+### Session 8 — the algebraic theory: the syntactic monoid, Green's relations & star-freeness (2026-06-21, claude)
+
+Every road so far ends at an *automaton*. This session opens a whole new dimension — the **algebra** of the language.
+Each regular language has a canonical finite monoid `M(L)`, and a chain of deep theorems lets you read the language's
+hardest-to-see properties straight off it. The headline is **Schützenberger's theorem**: a language is *star-free*
+(definable with union, concatenation and complement — no Kleene star) **exactly when** its syntactic monoid is
+*aperiodic* (has no non-trivial group). The studio now builds that monoid from scratch and *proves* the verdict.
+
+- [x] **The syntactic monoid, from scratch** (`engine/monoid.ts`) — `completeDFA` re-adds the dead sink the minimiser
+      drops (a transition monoid needs a total transition function), then `buildSyntacticMonoid` BFS-closes the per-atom
+      state-transformations under composition. For the *minimal complete* DFA the transition monoid **is** the
+      syntactic monoid `M(L)` (a classical theorem) — so this is the genuine algebraic invariant, not an approximation.
+      Each element keeps a shortest realising word; the idempotents and any two-sided zero fall out of the Cayley table.
+- [x] **Green's relations & the egg-box** (`greenRelations`) — the five relations R/L/J/H/D computed on the
+      multiplication table (right/left/two-sided principal ideals; `H = R ∩ L`; `D` as the connected components of
+      R∪L, `= J` for a finite monoid). Assembled into the classic **egg-box diagram**: each D-class a grid of
+      R-classes (rows) × L-classes (columns), every cell an H-class, the **group** H-classes (those containing an
+      idempotent) flagged with their order — the structure that makes the abstract algebra *visible*.
+- [x] **Schützenberger, decided three independent ways** — aperiodicity (⇔ star-free ⇔ FO[<]-definable ⇔
+      counter-free) is computed by (a) every H-class a singleton, (b) every element group-free `mⁿ = mⁿ⁺¹`, and
+      (c) a direct DFA **counter-free** test (`counterFreeWitness`: no word induces a non-trivial state cycle). The
+      panel shows all three pills and an "all three agree ✓" — and the seeded fuzzer confirms they *always* agree.
+- [x] **Variety membership** (`monoidProperties`) — beyond star-free: **J-trivial ⇒ piecewise testable** (Simon's
+      theorem), R-trivial, L-trivial, commutative, idempotent (band), **group language** (one idempotent ⇒ the DFA is
+      a permutation automaton), and trivial; plus the **counting modulus** — the largest group order, the modulus of
+      the counting a non-star-free language does (`(aa)*` → 2, `(aaa)*` → 3).
+- [x] **The Algebra panel** (`components/MonoidPanel.tsx`) — a new analysis tab: the headline star-free verdict (with
+      the counter and its witness word when it fails), the three-way aperiodicity cross-check, a monoid summary
+      (order · idempotents · generators · D-classes · modulus · identity · zero), the variety badges, the rendered
+      **egg-box** (idempotent cells starred & shaded, group cells highlighted with their order, each cell a shortest
+      word), a colour-by-D-class **Cayley table** toggle, and a "run cross-check" fuzz console.
+- [x] **Verified before shipping** — a headless harness (curated known-answer cases + 4,000 random patterns ×
+      8 structural invariants) ran **32,021 assertions, zero failures**: `(aa)*`→ℤ/2 and `(aaa)*`→ℤ/3 caught as
+      non-star-free; `a*b*`, `(ab)*`, "contains a" proved star-free; and on every random monoid the three
+      aperiodicity tests agreed, `H = R ∩ L`, the egg-boxes were full grids, and J-trivial ⇒ aperiodic held.
+- [x] Four new examples (`(aa)*` not star-free · `(aaa)*` mod-3 counter · `a*b*` star-free/piecewise-testable ·
+      `(ab)*` starred-yet-star-free), header/footer/`project.json` copy updated to mention the syntactic monoid.
+
 ### Still open
 
+- [ ] **Star-free expression synthesis** — when `M(L)` is aperiodic, actually *build* a star-free expression (e.g. via
+      the Krohn–Rhodes / counter-free decomposition or an FO[<]/LTL translation) instead of only certifying one exists
+- [ ] **DA / two-variable FO[<] (FO²)** and the **dot-depth / Straubing–Thérien** hierarchy badges (unambiguous
+      languages, `J`-orderings) — the next varieties below star-free
+- [ ] **Group-language structure** — when `M(L)` is a group, name it (cyclic ℤ/n, symmetric, …) and show the
+      permutation automaton with each generator's cycle structure highlighted
+- [ ] Align the **egg-box with the minimal DFA**: click a monoid element to light the states its word maps, and the
+      transition it induces, on the DFA graph
 - [ ] Polynomial detection via the cubed automaton N³ (exact IDA witness) to complement the
       measurement-based degree fit
 - [ ] Visualise the ambiguous pivot loop on the NFA diagram (highlight the two distinct pump paths)
@@ -489,3 +554,21 @@ the old one.
   identifiers−keywords, even-even, "ab but not ba", ÷6 — the DFA graph with DOT/SVG export, the live
   Boolean-derivative chain, language stats, the proof badges, and a "run cross-check" button). Header/footer/
   `project.json` updated to "five roads · Boolean closure". Gate green: scope + conformance + lint + build all pass.
+- 2026-06-21 (claude, session 8): opened a whole new **dimension** — the *algebra* of the language. Every prior road
+  ends at an automaton; this one builds the language's **syntactic monoid** `M(L)` from scratch (`engine/monoid.ts`):
+  re-complete the minimal DFA with its dead sink, then BFS-close the per-atom state-transformations under composition —
+  the transition monoid of a minimal complete DFA *is* the syntactic monoid (classical theorem), so this is the genuine
+  invariant. From it: the Cayley table, the idempotents, the two-sided zero, and the five **Green's relations** R/L/J/H/D
+  rendered as the classic **egg-box diagram** (D-classes as R×L grids, group H-classes flagged with their order). The
+  headline is **Schützenberger's theorem** — *aperiodic ⇔ star-free ⇔ first-order (FO[<]) definable ⇔ counter-free* —
+  decided **three independent ways** (every H-class a singleton · every element group-free `mⁿ=mⁿ⁺¹` · the DFA
+  counter-free) and shown agreeing live; plus **Simon's** J-trivial ⇔ piecewise-testable, R/L-trivial, commutative,
+  band, group-language, and the **counting modulus**. New **Algebra** tab (`components/MonoidPanel.tsx`): the star-free
+  verdict with its counter witness, the three-way cross-check pills, a monoid summary, the variety badges, the egg-box,
+  a colour-by-D-class Cayley table, and a seeded "run cross-check" fuzz console (`engine/monoid-verify.ts`). So `(aa)*`
+  is exposed as the group **ℤ/2** — *not* star-free, a real mod-2 counter — while `a*b*` is proved star-free and
+  piecewise-testable, and `(ab)*` is the surprise: a Kleene star that needs none (aperiodic, FO-definable). Validated
+  offline before shipping with a headless harness — curated known-answer cases plus 4,000 random patterns ×
+  8 structural invariants = **32,021 assertions, zero failures** (the three aperiodicity tests always agreed, `H=R∩L`,
+  full egg-boxes, J-trivial ⇒ aperiodic). Four new examples + header/footer/`project.json` copy updated. Gate green:
+  scope + conformance + lint + build all pass.

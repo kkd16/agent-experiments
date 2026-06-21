@@ -165,6 +165,30 @@ export const EXAMPLES: Example[] = [
     sample: 'a b aba abba baa abab',
     note: 'Thompson, Brzozowski, Antimirov and Glushkov each build a different automaton — yet all four minimise to the very same canonical DFA.',
   },
+  {
+    name: 'Algebra: NOT star-free',
+    pattern: '(aa)*',
+    sample: 'aa aaaa a aaa',
+    note: 'Even number of a’s. Open the Algebra tab: its syntactic monoid is the group ℤ/2 — the textbook example of a language that is NOT star-free / not first-order definable.',
+  },
+  {
+    name: 'Algebra: mod-3 counter',
+    pattern: '(aaa)*',
+    sample: 'aaa aaaaaa a',
+    note: 'Length divisible by three. The Algebra tab finds the group ℤ/3 in the syntactic monoid — a counter of period 3, so genuine modular counting (not star-free).',
+  },
+  {
+    name: 'Algebra: star-free a*b*',
+    pattern: 'a*b*',
+    sample: 'aabb ab b aaa ba',
+    note: 'Aperiodic, J-trivial → piecewise testable (Simon). The Algebra tab proves it is star-free three independent ways and draws the egg-box.',
+  },
+  {
+    name: 'Algebra: starred yet star-free',
+    pattern: '(ab)*',
+    sample: 'abab ab aba ababab',
+    note: 'A Kleene star that needs no star: (ab)* is aperiodic, so it is first-order definable. The Algebra tab shows an aperiodic monoid with counting modulus 1.',
+  },
 ];
 
 export const DEFAULT_EXAMPLE = EXAMPLES[1];
