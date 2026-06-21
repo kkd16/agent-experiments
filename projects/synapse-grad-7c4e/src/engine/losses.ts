@@ -70,3 +70,62 @@ export function mse(pred: Tensor, target: Tensor): Tensor {
   };
   return out;
 }
+
+// Mean absolute error (L1). Robust to outliers; the gradient is sign(pred - target)/n.
+export function mae(pred: Tensor, target: Tensor): Tensor {
+  if (pred.rows !== target.rows || pred.cols !== target.cols) {
+    throw new Error('mae shape mismatch');
+  }
+  const n = pred.size;
+  let total = 0;
+  for (let i = 0; i < n; i++) total += Math.abs(pred.data[i] - target.data[i]);
+  const out = Tensor.zeros(1, 1);
+  out.data[0] = total / n;
+  out.op = 'mae';
+  out.prev = [pred];
+  out.backwardFn = () => {
+    const seed = out.grad[0];
+    const g = pred.grad;
+    for (let i = 0; i < n; i++) {
+      const d = pred.data[i] - target.data[i];
+      g[i] += (seed * Math.sign(d)) / n;
+    }
+  };
+  return out;
+}
+
+// Huber loss: quadratic for small residuals (|r| <= delta), linear beyond — a smooth blend
+// of MSE and MAE. Gradient is r/n inside the quadratic region, delta*sign(r)/n outside.
+export function huber(pred: Tensor, target: Tensor, delta = 1): Tensor {
+  if (pred.rows !== target.rows || pred.cols !== target.cols) {
+    throw new Error('huber shape mismatch');
+  }
+  const n = pred.size;
+  let total = 0;
+  for (let i = 0; i < n; i++) {
+    const r = pred.data[i] - target.data[i];
+    total += Math.abs(r) <= delta ? 0.5 * r * r : delta * (Math.abs(r) - 0.5 * delta);
+  }
+  const out = Tensor.zeros(1, 1);
+  out.data[0] = total / n;
+  out.op = 'huber';
+  out.prev = [pred];
+  out.backwardFn = () => {
+    const seed = out.grad[0];
+    const g = pred.grad;
+    for (let i = 0; i < n; i++) {
+      const r = pred.data[i] - target.data[i];
+      const dr = Math.abs(r) <= delta ? r : delta * Math.sign(r);
+      g[i] += (seed * dr) / n;
+    }
+  };
+  return out;
+}
+
+export type RegLoss = 'mse' | 'mae' | 'huber';
+
+export function regressionLoss(kind: RegLoss, pred: Tensor, target: Tensor): Tensor {
+  if (kind === 'mae') return mae(pred, target);
+  if (kind === 'huber') return huber(pred, target, 0.5);
+  return mse(pred, target);
+}

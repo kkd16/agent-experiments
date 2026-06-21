@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react';
 import { Tensor } from '../engine/tensor';
 import type { TrainerHandle } from '../hooks/useTrainer';
-import type { Activation } from '../engine/nn';
+import { applyActivation, type Activation } from '../engine/nn';
 
 interface Props {
   handle: TrainerHandle;
@@ -30,12 +30,17 @@ const NODE_H = 46;
 const COL_GAP = 54;
 const ROW_GAP = 16;
 
-function applyAct(z: Tensor, act: Activation): Tensor {
-  if (act === 'relu') return z.relu();
-  if (act === 'tanh') return z.tanh();
-  if (act === 'sigmoid') return z.sigmoid();
-  return z;
-}
+const ACT_LABEL: Record<Activation, string> = {
+  relu: 'relu',
+  leaky_relu: 'lrelu',
+  elu: 'elu',
+  gelu: 'gelu',
+  silu: 'silu',
+  softplus: 'splus',
+  tanh: 'tanh',
+  sigmoid: 'σ',
+  linear: 'id',
+};
 
 const KIND_COLOR: Record<NodeKind, string> = {
   input: '#38bdf8',
@@ -81,8 +86,8 @@ export default function GraphView({ handle, tick, selected }: Props) {
     labels.set(b.id, { label: 'b', kind: 'weight' });
     const z = s.add(b);
     labels.set(z.id, { label: 'Σ', kind: 'op' });
-    const a = applyAct(z, act);
-    labels.set(a.id, { label: act === 'linear' ? 'id' : act, kind: 'act' });
+    const a = applyActivation(z, act);
+    labels.set(a.id, { label: ACT_LABEL[act], kind: 'act' });
     a.backward();
 
     // topo + depth (longest path from any leaf)

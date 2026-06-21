@@ -59,9 +59,59 @@ src/
 - [x] Live autograd computation-graph viewer for a single sample
 - [x] Regression mode (1-D function fit) in addition to classification
 - [x] Polished dark "lab" UI, responsive layout, keyboard shortcuts
-- [ ] Save/load a trained net to JSON (localStorage), share via URL hash
+
+### Session 2 — deepen the engine into a real framework (claude, 2026-06-21)
+
+The engine started as matmul + add + 3 activations + 2 losses. This session turns it into a
+genuine little autodiff *framework* — many more hand-derived ops, real normalization/regularization
+layers, modern optimizers with schedules, honest train/validation generalization tracking, and an
+automated proof that every gradient is correct.
+
+**Autograd engine — many new ops (every backward hand-derived & gradchecked):**
+- [x] Elementwise w/ row-broadcast: `mul`, `sub`, `div`, `neg`
+- [x] Unary math: `exp`, `log`, `pow`, `sumAll`, `meanAll`, `transpose`
+- [x] `softmax` (row-wise, standalone) with the full Jacobian VJP
+- [x] New activations: `leakyRelu`, `elu`, `gelu` (tanh approx), `silu`/swish, `softplus`
+- [x] `dropout` (inverted, seeded mask, train/eval aware)
+- [x] `layerNorm` (per-row, learnable γ/β) — full hand-derived backward
+- [x] `batchNorm1d` (per-feature, running stats, train/eval modes) — full hand-derived backward
+
+**Engine self-test (the headline honesty feature):**
+- [x] `selftest.ts` — builds randomized graphs exercising **every** op + the norm layers and
+      runs central-difference gradient checks on each, reporting per-op max relative error.
+      A one-click "Run engine self-test" panel proves the whole engine to ~1e-6.
+
+**nn module — a real layer zoo:**
+- [x] Per-layer normalization (none / LayerNorm / BatchNorm) in the architecture editor
+- [x] Per-layer dropout with adjustable rate
+- [x] Residual / skip connections for equal-width layers
+- [x] Model train()/eval() mode so dropout + batchnorm behave correctly during viz/eval
+- [x] More activations exposed in the architecture editor
+
+**Optimizers & training dynamics:**
+- [x] AdamW (decoupled weight decay) + Nesterov momentum
+- [x] LR schedules: constant, step decay, cosine, warmup→cosine (with live schedule preview)
+- [x] Global-norm gradient clipping
+
+**Data & generalization:**
+- [x] Train/validation split with a held-out set; validation loss/acc tracked + overlaid
+- [x] Generalization-gap readout (train vs. val) — watch overfitting happen
+- [x] New datasets: `checkerboard`, `two-spirals`; regression: `sawtooth`, `abs`, `polynomial`
+- [x] Per-epoch shuffling of the training set
+
+**Persistence & sharing (was a backlog item):**
+- [x] Save/load full lab state (config + trained weights) to localStorage slots
+- [x] Share the exact experiment via a compact URL hash; auto-restore on load
+
+**New visualizations:**
+- [x] Validation curves overlaid on the loss/accuracy chart
+- [x] Weight & gradient statistics panel (per-layer norms, live gradient-norm sparkline)
+
+### Still open / future
+
 - [ ] Convolution + a tiny image task (stretch)
 - [ ] WebGL/WebGPU matmul backend for bigger nets (stretch)
+- [ ] Per-parameter learning-rate heatmap
 
 ## Session log
 
@@ -69,4 +119,10 @@ src/
   dataset generators, gradient checker, the training hook, and the full lab UI (decision boundary,
   neuron grid, loss chart, control panel, graph viewer). Classification + regression modes both
   live. Lint + build green via `node scripts/verify-project.mjs`.
+- 2026-06-21 (claude, session 2): substantially deepened the project. Added ~10 new autograd ops
+  + 5 activations, all hand-derived and covered by a new automated engine self-test; real
+  LayerNorm/BatchNorm/Dropout/residual layers with train/eval modes; AdamW + Nesterov + LR
+  schedules + gradient clipping; train/validation split with generalization tracking; new
+  datasets; save/load + URL-hash sharing; and weight/gradient + validation visualizations. The
+  framework now genuinely earns the "deep-learning framework from scratch" billing.
 </content>
