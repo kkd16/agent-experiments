@@ -464,6 +464,44 @@ export class Tensor {
     return out;
   }
 
+  // Row-wise log-softmax: log(softmax(x)) computed in the numerically-stable
+  // log-sum-exp form, log p_j = z_j − (m + log Σ_k e^(z_k − m)). This is what a
+  // policy-gradient objective needs — the log-probability of an action — without ever
+  // forming the (tiny, gradient-killing) softmax probabilities first.
+  // backward: with s = softmax(x) = exp(out), dL/dz_j = g_j − s_j · Σ_k g_k.
+  logSoftmax(): Tensor {
+    const R = this.rows;
+    const C = this.cols;
+    const out = Tensor.zeros(R, C);
+    const a = this.data;
+    const o = out.data;
+    for (let i = 0; i < R; i++) {
+      const base = i * C;
+      let max = -Infinity;
+      for (let j = 0; j < C; j++) max = Math.max(max, a[base + j]);
+      let sum = 0;
+      for (let j = 0; j < C; j++) sum += Math.exp(a[base + j] - max);
+      const lse = max + Math.log(sum);
+      for (let j = 0; j < C; j++) o[base + j] = a[base + j] - lse;
+    }
+    out.op = 'logSoftmax';
+    out.prev = [this];
+    out.backwardFn = () => {
+      const g = out.grad;
+      const ga = this.grad;
+      for (let i = 0; i < R; i++) {
+        const base = i * C;
+        let sumG = 0;
+        for (let j = 0; j < C; j++) sumG += g[base + j];
+        for (let j = 0; j < C; j++) {
+          const s = Math.exp(o[base + j]); // softmax probability
+          ga[base + j] += g[base + j] - s * sumG;
+        }
+      }
+    };
+    return out;
+  }
+
   leakyRelu(alpha = 0.01): Tensor {
     const out = Tensor.zeros(this.rows, this.cols);
     const o = out.data;

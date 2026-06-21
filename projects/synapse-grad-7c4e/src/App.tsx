@@ -3,15 +3,17 @@ import PlaygroundLab from './components/PlaygroundLab';
 import VisionLab from './components/vision/VisionLab';
 import SeqLab from './components/seq/SeqLab';
 import GenLab from './components/gen/GenLab';
+import RLLab from './components/rl/RLLab';
 import './App.css';
 
-type Tab = 'playground' | 'vision' | 'transformer' | 'generative';
+type Tab = 'playground' | 'vision' | 'transformer' | 'generative' | 'control';
 
-// Open the lab a shared link points at (#v= vision, #t= transformer, #g= generative).
+// Open the lab a shared link points at (#v= vision, #t= transformer, #g= generative, #r= RL).
 function initialTab(): Tab {
   try {
     if (/[#&]t=/.test(location.hash)) return 'transformer';
     if (/[#&]g=/.test(location.hash)) return 'generative';
+    if (/[#&]r=/.test(location.hash)) return 'control';
     return /[#&]v=/.test(location.hash) ? 'vision' : 'playground';
   } catch {
     return 'playground';
@@ -45,6 +47,9 @@ export default function App() {
             <button className={tab === 'generative' ? 'on' : ''} onClick={() => setTab('generative')}>
               Generative · VAE
             </button>
+            <button className={tab === 'control' ? 'on' : ''} onClick={() => setTab('control')}>
+              Control · RL
+            </button>
           </nav>
           <div className="kbd-hint">
             <kbd>space</kbd> train · <kbd>s</kbd> step · <kbd>r</kbd> reset · <kbd>g</kbd> gradcheck
@@ -58,8 +63,10 @@ export default function App() {
         <VisionLab />
       ) : tab === 'transformer' ? (
         <SeqLab />
-      ) : (
+      ) : tab === 'generative' ? (
         <GenLab />
+      ) : (
+        <RLLab />
       )}
 
       <footer className="foot">

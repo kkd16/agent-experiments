@@ -1302,6 +1302,132 @@ button:disabled {
   background: #05080f;
 }
 
+/* ============================================================================
+   Control · RL lab
+   ========================================================================== */
+
+/* live environment view */
+.env-view {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.env-canvas {
+  width: 100%;
+  height: auto;
+  aspect-ratio: 480 / 300;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: #05080f;
+}
+.env-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  font-size: 12px;
+  color: var(--muted);
+}
+.env-stat b,
+.env-foot b {
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+/* action-probability bars */
+.policy-bars {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.pbar-row {
+  display: grid;
+  grid-template-columns: 70px 1fr 40px;
+  align-items: center;
+  gap: 8px;
+  font-size: 12.5px;
+}
+.pbar-label {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.pbar-row.chosen .pbar-label {
+  color: var(--text);
+  font-weight: 600;
+}
+.pbar-track {
+  height: 14px;
+  background: var(--bg-soft);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  overflow: hidden;
+}
+.pbar-fill {
+  display: block;
+  height: 100%;
+  border-radius: 7px;
+  background: rgba(56, 189, 248, 0.45);
+  transition: width 0.1s linear;
+}
+.pbar-row.chosen .pbar-fill {
+  background: linear-gradient(90deg, #38bdf8, #a78bfa);
+}
+.pbar-val {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+}
+.pbar-value {
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.pbar-value b {
+  color: var(--accent-2, #a78bfa);
+  font-variant-numeric: tabular-nums;
+}
+
+/* value field (gridworld) + phase portrait (cartpole) */
+.value-field,
+.phase-portrait {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.value-canvas,
+.phase-canvas {
+  width: 100%;
+  max-width: 300px;
+  height: auto;
+  aspect-ratio: 1 / 1;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: #05080f;
+  align-self: center;
+  image-rendering: pixelated;
+}
+.value-legend {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  font-size: 11px;
+}
+.value-ramp,
+.phase-ramp {
+  display: inline-block;
+  width: 90px;
+  height: 9px;
+  border-radius: 4px;
+}
+.value-ramp {
+  background: linear-gradient(90deg, rgb(15, 23, 42), rgb(14, 116, 144), rgb(34, 197, 94), rgb(250, 204, 21));
+}
+.phase-ramp {
+  background: linear-gradient(90deg, #f472b6, #0f172a, #38bdf8);
+}
+
 /* latent explorer */
 .explorer {
   display: flex;
