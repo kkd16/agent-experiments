@@ -12,9 +12,11 @@ import type { Gradient, RGBA } from './types'
 const DENSITY = 24
 
 function densify(g: Gradient, n = DENSITY): { color: RGBA; pos: number }[] {
-  // For the perceptual spaces we sample evenly; for plain sRGB we can keep the original stops
-  // (no densification needed — CSS already does sRGB). This keeps simple gradients tidy.
-  if (g.space === 'srgb') {
+  // For plain sRGB with no per-segment easing or gamut mapping we can keep the original stops
+  // (CSS already mixes in sRGB) — this keeps simple gradients tidy. Anything that re-times or
+  // re-shapes the curve (easing, gamut-map, a perceptual space) must be baked into dense samples.
+  const needsBake = g.space !== 'srgb' || g.gamut === 'map' || g.stops.some((s) => s.easing && s.easing !== 'linear')
+  if (!needsBake) {
     return sortedStops(g.stops).map((s) => ({ color: s.color, pos: s.pos }))
   }
   const colors = ramp(g, n)

@@ -8,8 +8,9 @@ import { sortedStops } from '../color/interpolate'
 import { toCSS } from '../color/gradient'
 import { parseCssGradient } from '../color/parseCss'
 import { museGradient } from '../color/random'
+import { EASING_LABELS, EASINGS } from '../color/easing'
 import { SPACE_BLURB, SPACE_LABELS } from '../color/types'
-import type { Gradient, GradientType, HueMode, InterpSpace, RGBA, Stop } from '../color/types'
+import type { Easing, GamutMode, Gradient, GradientType, HueMode, InterpSpace, RGBA, Stop } from '../color/types'
 import { randomSeed, loadGallery, saveGallery, encodeGradient } from '../state/store'
 import { ColorPicker } from './ColorPicker'
 import { ComparisonStrip } from './ComparisonStrip'
@@ -83,6 +84,12 @@ export function Studio({ gradient, setGradient }: { gradient: Gradient; setGradi
   }
 
   const isCylindrical = CYLINDRICAL.includes(gradient.space)
+  const gamutMode: GamutMode = gradient.gamut ?? 'clip'
+  // The easing on a stop only affects the segment leaving it — i.e. when it isn't the last stop.
+  const ordered = sortedStops(gradient.stops)
+  const isLastByPos = !!selected && ordered[ordered.length - 1]?.id === selected.id
+  const setSelectedEasing = (easing: Easing) =>
+    setStops(gradient.stops.map((s) => (s.id === selectedId ? { ...s, easing: easing === 'linear' ? undefined : easing } : s)))
 
   return (
     <div className="studio">
@@ -145,6 +152,14 @@ export function Studio({ gradient, setGradient }: { gradient: Gradient; setGradi
           </label>
         )}
 
+        <label className="ctrl">
+          <span>Gamut</span>
+          <select value={gamutMode} onChange={(e) => patch({ gamut: e.target.value as GamutMode })} title="How out-of-gamut interpolation is recovered">
+            <option value="clip">Clip</option>
+            <option value="map">Map (CSS 4)</option>
+          </select>
+        </label>
+
         <div className="toolbar-spacer" />
         <button className="btn ghost" onClick={reverse} title="Reverse stop order">
           ⇄ Reverse
@@ -181,6 +196,17 @@ export function Studio({ gradient, setGradient }: { gradient: Gradient; setGradi
                   onChange={(e) => setStops(gradient.stops.map((s) => (s.id === selectedId ? { ...s, pos: Number(e.target.value) } : s)))}
                 />
                 <b>{Math.round(selected.pos * 100)}%</b>
+              </label>
+              <label className="ctrl wide">
+                <span>Easing →</span>
+                <select value={selected.easing ?? 'linear'} onChange={(e) => setSelectedEasing(e.target.value as Easing)} disabled={isLastByPos} title="Easing for the segment leaving this stop">
+                  {EASINGS.map((e) => (
+                    <option key={e} value={e}>
+                      {EASING_LABELS[e]}
+                    </option>
+                  ))}
+                </select>
+                <b className="muted small">{isLastByPos ? 'last stop' : 'to next'}</b>
               </label>
               <div className="stop-swatches">
                 {sortedStops(gradient.stops).map((s) => (

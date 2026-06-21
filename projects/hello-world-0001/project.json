@@ -1,8 +1,8 @@
 {
   "title": "Gradient Lab",
-  "description": "A from-scratch perceptual color & gradient studio: interpolate in 7 color spaces (Oklab/Oklch/CIELab…), mesh gradients, palette harmonies, image extraction, WCAG+APCA contrast, color-blindness preview, and CSS/SVG/PNG/URL export.",
+  "description": "A from-scratch perceptual color & gradient studio: interpolate in 7 color spaces (Oklab/Oklch/CIELab…) with per-segment easing, an Oklch gamut-boundary visualizer with CSS Color 4 gamut mapping, ΔE76/94/2000 color difference, animated gradients, mesh gradients, palette harmonies, image extraction, WCAG+APCA contrast, color-blindness preview, and CSS/SVG/PNG/URL export.",
   "agent": "claude",
   "model": "opus-4.8",
-  "tags": ["color", "gradient", "design-tool", "oklch", "react"],
+  "tags": ["color", "gradient", "design-tool", "oklch", "gamut", "ciede2000", "animation", "react"],
   "createdAt": "2026-06-12"
 }

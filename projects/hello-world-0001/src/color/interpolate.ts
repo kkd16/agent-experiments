@@ -20,7 +20,10 @@ import {
   linearToRgb,
   wrapHue,
 } from './convert'
-import type { Gradient, HueMode, InterpSpace, RGBA, Stop } from './types'
+import { gamutMapRgb } from './gamut'
+import { ease } from './easing'
+import { isOutOfGamut } from './convert'
+import type { GamutMode, Gradient, HueMode, InterpSpace, RGBA, Stop } from './types'
 
 const lerp = (a: number, b: number, t: number) => a + (b - a) * t
 
@@ -48,8 +51,12 @@ export function lerpHue(h0: number, h1: number, t: number, mode: HueMode): numbe
   return wrapHue(a + d * t)
 }
 
-/** Mix two sRGB colors at t∈[0,1] in the given working space. Alpha is linear. */
-export function mix(c0: RGBA, c1: RGBA, t: number, space: InterpSpace, hue: HueMode): RGBA {
+/**
+ * The *raw* mix of two sRGB colors at t in the given working space — before any gamut recovery,
+ * so the result may have channels outside [0,1]. This is what `isOutOfGamut` should be tested
+ * against to know whether perceptual interpolation has strayed off-screen.
+ */
+export function mixRaw(c0: RGBA, c1: RGBA, t: number, space: InterpSpace, hue: HueMode): RGBA {
   const a = clamp01(lerp(c0.a, c1.a, t))
   let rgb
   switch (space) {
@@ -105,8 +112,24 @@ export function mix(c0: RGBA, c1: RGBA, t: number, space: InterpSpace, hue: HueM
       break
     }
   }
-  const clamped = clampRgb(rgb)
-  return { ...clamped, a }
+  return { ...rgb, a }
+}
+
+/** Mix two sRGB colors at t∈[0,1] in the given working space, recovered into gamut. */
+export function mix(
+  c0: RGBA,
+  c1: RGBA,
+  t: number,
+  space: InterpSpace,
+  hue: HueMode,
+  gamut: GamutMode = 'clip',
+): RGBA {
+  const raw = mixRaw(c0, c1, t, space, hue)
+  // Bring the mixed color back into the displayable sRGB gamut. 'clip' clamps each channel
+  // (fast, can shift hue); 'map' reduces chroma in Oklch the CSS Color 4 way (hue-preserving).
+  const recovered = gamut === 'clip' ? clampRgb(raw) : isOutOfGamut(raw) ? gamutMapRgb(raw) : raw
+  const clamped = clampRgb(recovered)
+  return { ...clamped, a: raw.a }
 }
 
 /** Stops sorted by position, with positions clamped to [0,1]. */
@@ -127,8 +150,10 @@ export function sampleAt(g: Gradient, t: number): RGBA {
     const b = stops[i + 1]
     if (t >= a.pos && t <= b.pos) {
       const span = b.pos - a.pos
-      const local = span < 1e-9 ? 0 : (t - a.pos) / span
-      return mix(a.color, b.color, local, g.space, g.hue)
+      const linear = span < 1e-9 ? 0 : (t - a.pos) / span
+      // re-time the segment through the easing curve leaving stop `a`
+      const local = ease(linear, a.easing)
+      return mix(a.color, b.color, local, g.space, g.hue, g.gamut)
     }
   }
   return last.color
@@ -139,4 +164,33 @@ export function ramp(g: Gradient, n: number): RGBA[] {
   const out: RGBA[] = []
   for (let i = 0; i < n; i++) out.push(sampleAt(g, n === 1 ? 0 : i / (n - 1)))
   return out
+}
+
+/** Sample the gradient at t WITHOUT gamut recovery (channels may exceed [0,1]). */
+export function rawSampleAt(g: Gradient, t: number): RGBA {
+  const stops = sortedStops(g.stops)
+  if (stops.length === 0) return { r: 0, g: 0, b: 0, a: 1 }
+  if (stops.length === 1) return stops[0].color
+  if (t <= stops[0].pos) return stops[0].color
+  const last = stops[stops.length - 1]
+  if (t >= last.pos) return last.color
+  for (let i = 0; i < stops.length - 1; i++) {
+    const a = stops[i]
+    const b = stops[i + 1]
+    if (t >= a.pos && t <= b.pos) {
+      const span = b.pos - a.pos
+      const linear = span < 1e-9 ? 0 : (t - a.pos) / span
+      return mixRaw(a.color, b.color, ease(linear, a.easing), g.space, g.hue)
+    }
+  }
+  return last.color
+}
+
+/** Fraction (0..1) of N evenly-spaced samples whose raw mix falls outside the sRGB gamut. */
+export function outOfGamutFraction(g: Gradient, n = 128): number {
+  let oog = 0
+  for (let i = 0; i < n; i++) {
+    if (isOutOfGamut(rawSampleAt(g, n === 1 ? 0 : i / (n - 1)))) oog++
+  }
+  return oog / n
 }

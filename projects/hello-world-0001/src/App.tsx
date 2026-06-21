@@ -4,6 +4,8 @@ import type { Gradient } from './color/types'
 import { decodeGradient, defaultGradient, encodeGradient } from './state/store'
 import { navigate, replaceParams, ROUTES, useHash } from './state/router'
 import { Studio } from './ui/Studio'
+import { Gamut } from './ui/Gamut'
+import { Animate } from './ui/Animate'
 import { Mesh } from './ui/Mesh'
 import { Palette } from './ui/Palette'
 import { Gallery } from './ui/Gallery'
@@ -52,6 +54,8 @@ export default function App() {
 
       <main className="content">
         {route === 'studio' && <Studio gradient={gradient} setGradient={setGradient} />}
+        {route === 'gamut' && <Gamut gradient={gradient} setGradient={setGradient} />}
+        {route === 'animate' && <Animate gradient={gradient} />}
         {route === 'mesh' && <Mesh />}
         {route === 'palette' && <Palette onUse={setGradient} />}
         {route === 'gallery' && <Gallery onUse={setGradient} />}

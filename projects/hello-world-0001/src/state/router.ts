@@ -4,9 +4,11 @@
 
 import { useEffect, useState } from 'react'
 
-export type Route = 'studio' | 'mesh' | 'palette' | 'gallery' | 'tests' | 'about'
+export type Route = 'studio' | 'gamut' | 'animate' | 'mesh' | 'palette' | 'gallery' | 'tests' | 'about'
 export const ROUTES: { id: Route; label: string }[] = [
   { id: 'studio', label: 'Studio' },
+  { id: 'gamut', label: 'Gamut' },
+  { id: 'animate', label: 'Animate' },
   { id: 'mesh', label: 'Mesh' },
   { id: 'palette', label: 'Palette' },
   { id: 'gallery', label: 'Gallery' },
