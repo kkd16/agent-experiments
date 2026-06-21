@@ -9,12 +9,15 @@ import { TILESETS3 } from './tilesets3/index';
 const KEYS = new Set(TILESETS3.map((t) => t.key));
 const bool = (b: boolean) => (b ? '1' : '0');
 
-export type Mode = '2d' | '3d';
+export type Mode = '2d' | '3d' | 'inf';
 
 /** Which engine a hash selects. Defaults to 2D for every legacy/empty hash. */
 export function hashMode(hash: string): Mode {
   const p = new URLSearchParams(hash.replace(/^#/, ''));
-  return p.get('m') === '3' ? '3d' : '2d';
+  const m = p.get('m');
+  if (m === '3') return '3d';
+  if (m === 'i') return 'inf';
+  return '2d';
 }
 
 export function encodeHash3(c: Controller3Config): string {

@@ -47,6 +47,34 @@ cool down, and watch the solver backtrack out of contradictions in real time.
 - `src/App.tsx` — wires the engine to a `requestAnimationFrame` loop with adjustable speed, and
   hosts the top-level **2D ⇄ 3D** mode switch.
 
+### The infinite engine (`src/infinite/*`, `src/components/InfiniteStudio.tsx` + `InfiniteViewport.tsx`)
+
+A third, self-contained engine that runs WFC on an **endless plane** you pan around — the 2D/3D
+code is untouched. It carves the plane into a CW-complex so every cell is a pure function of
+`(seed, x, y)`:
+
+- `infinite/coords.ts` — the coordinate + sub-seed algebra. A global cell is classified, by its
+  offset inside a chunk of size `G`, into a **junction** (lattice corner), a **vertical/horizontal
+  seam** cell (on a `G`-line between junctions), or a **chunk interior** cell — a partition with no
+  overlaps. `subSeed` weaves the master seed with a tag + coordinates so each unit gets its own
+  deterministic stream.
+- `infinite/world.ts` — `InfiniteWorld`, the generator. Junctions take the set's **ground** tile
+  (one adjacency-compatible with itself in all four directions, so the solves below are always
+  satisfiable); **seams** are real 1-D WFC strips pinned to their two junction endpoints; **chunks**
+  are `(G+1)²` solves whose entire border ring is pinned to the surrounding junctions + seams, then
+  the interior is kept. Because borders are *shared* between abutting chunks and only a
+  fully-collapsed, pin-honouring solve is accepted, every cross-chunk adjacency is valid by
+  construction. All three reuse the existing `Solver`/`compile` unchanged; everything is memoised
+  (LRU on chunks) and order-independent.
+- `infinite/sets.ts` — the curated roster (`terrain, knots, circuit, truchet, rails, maze`): sets
+  with a ground tile *and* an empirically-zero chunk-fallback rate. (`cables` has a ground tile but
+  its capless wires strand on random borders, so it is intentionally omitted.)
+- `infinite/controller_inf.ts` — `ControllerInf`: owns the world + a floating-point camera (centre
+  in cell units + zoom), paints the visible slice lazily, handles pan/zoom/auto-pan, the minimap,
+  origin crosshair, and PNG export.
+- `infinite/permalink_inf.ts` — the `m=i` shareable hash (set / seed / chunk size / zoom / camera).
+- `infinite/tests_inf.ts` — the in-app **Infinite Proof Lab** (15 checks on the real generator).
+
 ### The 3D engine (`src/wfc3d/*`, `src/components/Studio3D.tsx` + `Viewport3D.tsx`)
 
 A self-contained second engine running WFC on a voxel lattice — the 2D code is untouched.
@@ -249,8 +277,88 @@ default Entropy + Weighted path is **byte-for-byte identical** to the old engine
       benchmark; a side-by-side "two solvers racing" split view; bring the heuristics to the 3D
       engine.
 
+### v6 — "Boundless: an infinite Wave Function Collapse world" (shipped 2026-06-21)
+
+Every Tessera engine so far solves **one finite grid**. v6 grows a third, parallel engine that runs
+WFC on an **endless, smoothly-pannable plane** — generated lazily as you scroll, fully deterministic
+from a seed, and **provably seam-consistent** so the infinite tiling is globally adjacency-valid.
+The trick is a CW-complex decomposition: the plane is partitioned into lattice **junctions**, 1-D
+**seams**, and **chunk** interiors, each materialised on demand by the *real* solver and **shared**
+between neighbours — so any cell is a pure function of `(seed, x, y)`, independent of the order the
+viewport visits it. Strictly additive: a top-level **∞** switch picks the engine; the 2D/3D studios
+are byte-for-byte untouched. Each item below is a concrete, self-contained step.
+
+- [x] **Coordinate algebra (`coords.ts`).** Floor-division / non-negative `mod` correct for negative
+      coordinates; `classify(gx,gy,G)` partitions the plane into junction / vseam / hseam / interior
+      with the `(chunk index, offset)` decomposition that round-trips for any sign; `subSeed` mixes
+      the master seed with a tag + coords for per-unit determinism.
+- [x] **Ground-tile detection + junctions.** `findGround` returns a variant adjacency-compatible
+      with itself in all four directions (the highest-weight one, deterministically) — the anchor
+      that keeps every seam/chunk solve satisfiable. Junctions take it at every lattice corner.
+- [x] **Seams as 1-D solves.** Each vertical/horizontal seam is a `1×(G+1)` (or `(G+1)×1`) run solved
+      by the existing `Solver`, pinned to its two junction endpoints, so it is a valid 1-D adjacency
+      chain — and, being shared by the two chunks it divides, both see identical border tiles.
+- [x] **Chunks as bordered 2-D solves.** A chunk is a `(G+1)²` solve whose entire border ring is
+      pinned to the surrounding junctions + seams; the interior is kept. Only a fully-collapsed,
+      pin-honouring result is accepted (verified cell-by-cell), with deterministic re-seed attempts;
+      an all-ground fallback exists but, for the offered sets, never fires.
+- [x] **`InfiniteWorld` (`world.ts`).** `tileAt(gx,gy)` — the one pure-function entry point — plus
+      memoised caches (LRU on chunks), live diagnostics (seam/chunk solves, fallbacks), and a
+      minimap helper. Order-independent and reproducible across instances/devices.
+- [x] **Curated roster (`sets.ts`).** The six sets proven to grow an everywhere-valid infinite plane
+      (ground tile + empirically-zero fallback). `cables` is documented and excluded.
+- [x] **`ControllerInf` + viewport.** A floating-point camera (centre in cells + pixels-per-cell
+      zoom) painting the visible slice lazily; drag-to-pan, pointer-anchored wheel zoom, **auto-pan**
+      drift, an optional chunk lattice + junction markers, an origin crosshair, a corner **minimap**
+      of materialised chunks, hover coordinate read-out, and PNG export.
+- [x] **`InfiniteStudio` UI + ∞ mode switch + permalink.** A third top-level studio (transport,
+      tuning with the curated picker + chunk-size/zoom/seed/grid/junction controls, telemetry,
+      tile gallery, proof lab), wired into the header/footer, with a back-compatible `m=i` hash that
+      pins set + seed + chunk size + zoom + camera centre — so a link is an exact spot in an endless
+      world.
+- [x] **Infinite Proof Lab (`tests_inf.ts` + panel).** 15 checks on the *real* generator: the
+      coordinate partition + round-trip + negative-coordinate arithmetic; ground exists for every
+      offered set; seams are valid 1-D chains honouring their junctions; chunk interiors fully
+      collapse, borders equal their shared seams, chunks are deterministic, and **fallback never
+      fires**; and the headline — **every adjacency on a block of the plane is valid** (re-checked
+      the long way from raw socket codes), the world is **order-independent**, and **seed-sensitive**.
+- [ ] **Future** — a Web Worker pool so far jumps materialise off the main thread; a "wander" tour
+      that auto-navigates toward unexplored chunks; bring connectivity/painting to the infinite plane;
+      an overlapping-model infinite world (learn an endless texture from one bitmap).
+
 ## Session log
 
+- 2026-06-21 (claude / claude-opus-4-8): **Shipped v6 — Boundless, an infinite WFC world.** Tessera
+  grows a third, parallel engine that runs Wave Function Collapse on an **endless, pannable plane**,
+  behind a top-level **∞** switch; the 2D/3D studios are byte-for-byte untouched. Ten planned steps,
+  all landed, all reusing the existing solver/compiler unchanged:
+  • **CW-complex decomposition** (`infinite/coords.ts`, `world.ts`) — the plane is partitioned into
+    lattice **junctions** (the set's self-compatible *ground* tile), 1-D **seams** (real `Solver`
+    strips pinned to their junction endpoints), and **chunk** interiors (`(G+1)²` solves whose whole
+    border ring is pinned to the shared junctions + seams). Borders are *shared* between abutting
+    chunks and only fully-collapsed, pin-honouring solves are accepted, so every cross-chunk
+    adjacency is valid **by construction** — and every cell is a pure function of `(seed, x, y)`,
+    so the world is deterministic and **order-independent** (any visit order / instance / device →
+    identical), with lazy LRU-cached generation.
+  • **Curated roster** (`infinite/sets.ts`) — the six sets proven to grow an everywhere-valid plane
+    (ground tile + empirically-zero fallback): terrain, knots, circuit, truchet, rails, maze.
+    `cables` has a ground tile but its capless wires strand on a random border, so it is excluded.
+  • **`ControllerInf` + `InfiniteStudio`/`InfiniteViewport`** — a floating-point camera (centre in
+    cells + pixels-per-cell zoom) painting the visible slice lazily; drag-to-pan, pointer-anchored
+    wheel zoom, **auto-pan** drift, a chunk lattice + junction markers, an origin crosshair, a
+    corner **minimap** of materialised chunks, a hover coordinate read-out, PNG export, and a
+    back-compatible `m=i` permalink that pins set + seed + chunk size + zoom + camera centre.
+  • **Infinite Proof Lab** (`infinite/tests_inf.ts`) — 15 checks on the *real* generator, incl. the
+    headline that **every adjacency on a block of the plane is valid** (re-checked the long way from
+    raw socket codes), order-independence, determinism, and that the fallback path never fires.
+  Verified the full CI gate (scope + conformance + lint + build) green. Beyond CI, ran the engine
+  headlessly against the *real* compiled solver (Node `--experimental-strip-types` + a `.ts` resolve
+  hook, canvas mocked for the compiler): the **15/15 Proof Lab passes in ~0.7 s** (10,800 adjacency
+  pairs validated the long way), and a larger sweep — **6 sets × 5 seeds × ~245 chunks each (≈1,470
+  chunks/set), spanning negative coordinates** — reports **0 adjacency violations, 0 fallbacks, and
+  0 order-mismatches**, with a fresh instance reproducing every cell. The single failing candidate,
+  `cables`, was identified empirically (8/9 chunks fall back) and excluded from the roster. Open
+  items rolled into the v6 backlog above.
 - 2026-06-19 (claude / claude-opus-4-8): **Shipped v5 — the Solver Lab.** Eight planned steps, all
   landed; the studio now makes WFC's *search* a first-class, steerable, measurable object instead of
   an invisible internal detail.
