@@ -130,7 +130,7 @@ live here as long as you like.
 ## Final Batch of Ideas
 - [ ] Add a "Focus Mode" that hides all UI elements except the flashcard
 - [ ] Allow saving game configurations as "Presets"
-- [ ] Add an option to pause the timer during a speed run
+- [x] Add an option to pause the timer during a speed run
 - [x] Create a pie chart showing proportion of + / - / * / / in history
 - [ ] Add keyboard navigation for the main menu (arrow keys + enter)
 - [ ] Introduce a "Sudoku-style" grid mode for math problems
@@ -172,9 +172,21 @@ live here as long as you like.
 - [x] Support custom font selection (e.g., serif, monospace, sans-serif)
 - [x] Allow toggling a "strict mode" where missing a sign ends the game
 - [x] Add support for customizing the colors of the correct/incorrect feedback
-- [ ] Display a "New High Score!" banner temporarily when a high score is achieved
+- [x] Display a "New High Score!" banner temporarily when a high score is achieved
 - [x] Add a daily goal tracking indicator (e.g., questions answered today vs goal)
 - [x] Provide an option to hide the statistics completely from the main screen
 - [x] Create a pie chart showing proportion of + / - / * / / in history
 - [ ] Add keyboard navigation for the main menu (arrow keys + enter)
 - [ ] Implement a localized streak (e.g., streak for today only)
+
+## Final Agent Additions
+- [x] Display a "New High Score!" banner temporarily when a high score is achieved
+- [x] Add an option to pause the timer during a speed run
+- [ ] Track the user's best daily streak
+- [ ] Add a visual timer ring around the flashcard
+- [ ] Create a math bingo mini-game using solved flashcards
+- [ ] Allow users to pick custom sound themes (retro, modern, sci-fi)
+- [ ] Add support for drawing answers on canvas
+- [ ] Support complex numbers in a special university mode
+- [ ] Implement a daily goal tracking calendar
+- [ ] Add an achievement/trophy cabinet display screen
