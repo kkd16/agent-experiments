@@ -11,6 +11,7 @@
 // through walls or blows up. If any check fails, the studio says so out loud.
 
 import { FluidSolver, DEFAULT_PARAMS, type FluidParams } from './fluid';
+import { Lbm, feq, EX, EY, viscosityFromTau, CS2 } from './lbm';
 import { computeLIC, makeNoise } from '../render/lic';
 import { fft1d, fft2d, energySpectrum, meanKineticEnergy, enstrophySpectrum, scalarVarianceSpectrum, energyTransfer } from './fft';
 import { computeFTLE } from './ftle';
@@ -1733,10 +1734,194 @@ function measureAlfven(N: number, B0: number, m: number, dt: number, maxSteps: n
   return { omega: NaN, k };
 }
 
+// --- Lattice Boltzmann (the kinetic solver) ---------------------------------
+
+/** The D2Q9 Lattice Boltzmann method reaches the *same* Navier–Stokes physics
+ *  by a completely different route — evolving a particle distribution f, not a
+ *  velocity field. These checks pin down that bridge: the equilibrium's exact
+ *  Hermite moments, mass conservation, the Chapman–Enskog viscosity ν = c_s²(τ−½)
+ *  measured back out of a decaying shear wave, the analytic Poiseuille profile
+ *  recovered to machine precision by the magic-parameter TRT wall, and the local
+ *  strain rate read straight from the non-equilibrium stress. */
+function latticeBoltzmann(): CheckGroup {
+  const checks: Check[] = [];
+
+  // 1. Equilibrium moments — the lattice's truncated Maxwellian must carry mass,
+  //    momentum and the Euler stress exactly: Σf^eq = ρ, Σf^eq e = ρu,
+  //    Σf^eq e_α e_β = ρc_s²δ_αβ + ρu_α u_β.
+  {
+    const rho = 1.037;
+    const ux = 0.061;
+    const uy = -0.043;
+    let m0 = 0;
+    let mx = 0;
+    let my = 0;
+    let pxx = 0;
+    let pyy = 0;
+    let pxy = 0;
+    for (let i = 0; i < 9; i++) {
+      const fe = feq(i, rho, ux, uy);
+      m0 += fe;
+      mx += EX[i] * fe;
+      my += EY[i] * fe;
+      pxx += EX[i] * EX[i] * fe;
+      pyy += EY[i] * EY[i] * fe;
+      pxy += EX[i] * EY[i] * fe;
+    }
+    const eMom = Math.abs(m0 - rho) + Math.abs(mx - rho * ux) + Math.abs(my - rho * uy);
+    const eStr =
+      Math.abs(pxx - (rho * CS2 + rho * ux * ux)) +
+      Math.abs(pyy - (rho * CS2 + rho * uy * uy)) +
+      Math.abs(pxy - rho * ux * uy);
+    checks.push(
+      check(
+        'Equilibrium carries mass & momentum',
+        'The D2Q9 equilibrium f^eq is the lattice’s Maxwell–Boltzmann. Its zeroth and first moments must return ρ and ρu exactly (machine precision), for any density and velocity.',
+        eMom < 1e-12,
+        `Σ|err| = ${fmt(eMom)}`,
+      ),
+    );
+    checks.push(
+      check(
+        'Equilibrium second moment = Euler stress',
+        'The momentum-flux moment Σf^eq e_α e_β must equal ρc_s²δ_αβ + ρu_α u_β — the inviscid (Euler) stress tensor. This identity is *why* the slow moments of the kinetic update obey Navier–Stokes.',
+        eStr < 1e-12,
+        `Σ|err| = ${fmt(eStr)}`,
+      ),
+    );
+  }
+
+  // 2. Mass conservation — stream + collide moves f around but creates no fluid.
+  {
+    const lbm = new Lbm({ nx: 32, ny: 32, bcX: 'periodic', bcY: 'periodic', viscosity: 0.05, collision: 'bgk' });
+    let seed = 0x2545f4;
+    const rnd = () => {
+      seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+      return seed / 0x7fffffff;
+    };
+    lbm.initField(() => ({ rho: 1 + 0.01 * (rnd() - 0.5), ux: 0.05 * (rnd() - 0.5), uy: 0.05 * (rnd() - 0.5) }));
+    const m0 = lbm.totalMass();
+    for (let s = 0; s < 200; s++) lbm.step();
+    const drift = Math.abs(lbm.totalMass() - m0) / m0;
+    checks.push(
+      check(
+        'Mass conserved (Σρ) over 200 steps',
+        'Streaming only relocates populations and collision conserves them locally, so total density is invariant to round-off on a periodic domain.',
+        drift < 1e-9,
+        `rel. drift = ${fmt(drift)}`,
+      ),
+    );
+  }
+
+  // 3. Chapman–Enskog viscosity — a sinusoidal shear mode u_x = U₀cos(ky) decays
+  //    as exp(−νk²t). Measure ν back out and compare to the formula c_s²(τ−½).
+  {
+    const nx = 8;
+    const ny = 64;
+    const nuSet = 0.05;
+    const lbm = new Lbm({ nx, ny, bcX: 'periodic', bcY: 'periodic', viscosity: nuSet, collision: 'bgk' });
+    const k = (2 * Math.PI) / ny;
+    const U0 = 0.02;
+    lbm.initField((_i, j) => ({ rho: 1, ux: U0 * Math.cos(k * j), uy: 0 }));
+    const amp = (): number => {
+      let a = 0;
+      for (let j = 0; j < ny; j++) {
+        let row = 0;
+        for (let i = 0; i < nx; i++) row += lbm.ux[lbm.idx(i, j)];
+        a += (row / nx) * Math.cos(k * j);
+      }
+      return (2 / ny) * a;
+    };
+    const a0 = amp();
+    const T = 400;
+    for (let s = 0; s < T; s++) lbm.step();
+    const nuMeas = -Math.log(amp() / a0) / (k * k * T);
+    const nuFormula = viscosityFromTau(lbm.tau);
+    const relErr = Math.abs(nuMeas - nuFormula) / nuFormula;
+    checks.push(
+      check(
+        'Chapman–Enskog: ν = c_s²(τ−½)',
+        'The headline bridge from kinetics to hydrodynamics. A shear wave decays purely viscously; the rate we measure recovers the viscosity the relaxation time τ encodes — Navier–Stokes emerging from a particle model.',
+        relErr < 0.03,
+        `ν meas ${fmt(nuMeas)} vs ${fmt(nuFormula)} (${(relErr * 100).toFixed(2)}%)`,
+      ),
+    );
+  }
+
+  // 4. Poiseuille flow — a body-force-driven channel. The magic-parameter TRT
+  //    wall sits exactly half-way between nodes, so the analytic parabola
+  //    u(y) = (g/2ν)y(H−y) is reproduced essentially to machine precision.
+  {
+    const nx = 6;
+    const ny = 21;
+    const nu = 0.1;
+    const g = 1e-4;
+    const lbm = new Lbm({ nx, ny, bcX: 'periodic', bcY: 'wall', viscosity: nu, collision: 'trt', magic: 3 / 16, forceX: g });
+    lbm.initEquilibrium(1, 0, 0);
+    for (let s = 0; s < 7000; s++) lbm.step();
+    const H = ny;
+    let l2n = 0;
+    let l2d = 0;
+    let umax = -Infinity;
+    for (let j = 0; j < ny; j++) {
+      const y = j + 0.5;
+      const ana = (g / (2 * nu)) * y * (H - y);
+      const meas = lbm.ux[lbm.idx(nx >> 1, j)];
+      l2n += (meas - ana) * (meas - ana);
+      l2d += ana * ana;
+      if (meas > umax) umax = meas;
+    }
+    const rel = Math.sqrt(l2n / l2d);
+    const umaxAna = (g * H * H) / (8 * nu);
+    checks.push(
+      check(
+        'Poiseuille profile (TRT magic wall)',
+        'A constant body force in a no-slip channel must settle to the exact parabola u(y)=(g/2ν)y(H−y). The two-relaxation-time collision with Λ=3/16 fixes the bounce-back wall location independent of ν, recovering it to ~0.1%.',
+        rel < 0.01,
+        `L2 err ${(rel * 100).toFixed(3)}%, u_max ${fmt(umax)}/${fmt(umaxAna)}`,
+      ),
+    );
+  }
+
+  // 5. Local strain from non-equilibrium moments — LBM hands you the strain-rate
+  //    tensor at every node without finite differences (this is what the LES
+  //    model uses). On the steady Poiseuille flow, 2·S_xy must equal du/dy.
+  {
+    const nx = 6;
+    const ny = 21;
+    const nu = 0.1;
+    const g = 1e-4;
+    const lbm = new Lbm({ nx, ny, bcX: 'periodic', bcY: 'wall', viscosity: nu, collision: 'trt', forceX: g });
+    for (let s = 0; s < 7000; s++) lbm.step();
+    const H = ny;
+    const j = 5;
+    const y = j + 0.5;
+    const s = lbm.strainFromMoments(nx >> 1, j);
+    const dudyAna = (g / (2 * nu)) * (H - 2 * y);
+    const relErr = Math.abs(2 * s.sxy - dudyAna) / Math.abs(dudyAna);
+    checks.push(
+      check(
+        'Strain rate from Π^neq (no derivatives)',
+        'The velocity gradient lives in the non-equilibrium part of f: S_αβ = −Π^neq_αβ/(2ρc_s²τ). Read off directly, 2·S_xy matches the analytic du/dy of the channel flow — the basis of the Smagorinsky sub-grid model.',
+        relErr < 0.06,
+        `2·S_xy ${fmt(2 * s.sxy)} vs du/dy ${fmt(dudyAna)} (${(relErr * 100).toFixed(2)}%)`,
+      ),
+    );
+  }
+
+  return {
+    title: 'Lattice Boltzmann — kinetic Navier–Stokes',
+    blurb:
+      'A second, independent solver reaches the same incompressible Navier–Stokes equations from the bottom up — a D2Q9 particle distribution relaxing toward equilibrium (stream + collide), no pressure solve. These checks confirm the kinetic→hydrodynamic bridge directly.',
+    checks,
+  };
+}
+
 export function runSelfTest(): SelfTestReport {
   const t0 = performance.now();
   const groups = [
     incompressibility(),
+    latticeBoltzmann(),
     linearSolver(),
     conjugateGradient(),
     multigrid(),

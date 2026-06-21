@@ -57,11 +57,22 @@ src/
                  last three default to the MGCG solver). + a seeded mulberry32 PRNG.
     particles.ts ParticleSystem — passive tracer ensemble advected by the flow,
                  recycled on death/escape, drawn as velocity-aligned streaks.
-    selftest.ts  runSelfTest() — the numerical verification suite (43 invariant /
-                 closed-form checks across 13 groups, incl. CG, MULTIGRID/MGCG,
+    lbm.ts       Lbm — a SECOND, INDEPENDENT solver: a from-scratch D2Q9 LATTICE
+                 BOLTZMANN kinetic method. Streams + collides a 9-velocity particle
+                 distribution f (no PDE, no pressure solve); incompressible NS
+                 emerges via Chapman–Enskog (ν = c_s²(τ−½)). BGK + TWO-RELAXATION-TIME
+                 (TRT, magic Λ=3/16) collision, Guo forcing, half-way bounce-back
+                 walls + a moving-wall lid, Zou–He inlet / extrapolation outflow,
+                 a SMAGORINSKY LES model read from the local Π^neq stress, and a
+                 momentum-exchange solidForce() → drag/lift. Pure, DOM-free.
+    selftest.ts  runSelfTest() — the numerical verification suite (55 invariant /
+                 closed-form checks across 15 groups, incl. CG, MULTIGRID/MGCG,
                  analytic diffusion decay, FFT/Parseval, exact energy-transfer
                  conservation, FTLE strain rates, open-channel through-flow,
-                 Schmidt-number dye diffusion, combustion, LIC, Q-criterion). Pure,
+                 Schmidt-number dye diffusion, combustion, LIC, Q-criterion, the MHD
+                 group, AND a LATTICE-BOLTZMANN group: equilibrium moments, mass
+                 conservation, the Chapman–Enskog viscosity from a shear wave, the
+                 exact TRT Poiseuille parabola, and strain from Π^neq). Pure,
                  DOM-free, deterministic. (Run headless: `node runtest.mjs`.)
     engine.ts    FluidEngine — rAF loop, pointer→force plumbing, scene state,
                  tracer-particle update, HOVER-PROBE readout, LIC phase advance,
@@ -79,8 +90,13 @@ src/
                  hex→dye helper. (localStorage wrapped in try/catch for the
                  sandboxed catalog thumbnail.)
   hooks/
-    useHashRoute.ts  hash-only router (#/ , #/spectra, #/about, #/verify).
+    useHashRoute.ts  hash-only router (#/ , #/kinetic, #/spectra, #/about, #/verify).
   ui/
+    KineticLab.tsx  the live #/kinetic lab: an interactive Lattice-Boltzmann studio.
+                 Flow past a cylinder (von Kármán street) with a Reynolds-number
+                 slider, plus lid-cavity / Poiseuille / Kelvin–Helmholtz presets,
+                 BGK↔TRT + LES toggles, vorticity/speed views, and a LIVE STROUHAL
+                 measurement (wake-probe zero-crossings vs Williamson) + drag/lift.
     Studio.tsx   canvas + engine wiring + pointer/keyboard + WebM recording.
     Controls.tsx scene picker, playback, record, brush (incl. heat), fluid +
                  thermal params (incl. the 4-way solver picker), render options.
@@ -218,6 +234,57 @@ src/
       carries its own diffusivity κ_s (`dyeDiffusion`; Sc = ν/κ_s, with a UI slider). `fft.ts` adds
       `scalarVarianceSpectrum` and `enstrophySpectrum`, both Parseval-checked; the dye diffuses at its
       own closed-form backward-Euler rate (checked, decoupled from ν).
+
+### Eddy 7.0 — the kinetic solver: Lattice Boltzmann (2026-06-21, claude) — shipped
+
+The studio's whole first six versions march Navier–Stokes *directly* (Stable Fluids). v7 adds the
+opposite paradigm: a **second, fully independent solver** that never writes the PDE down at all and
+recovers the same fluid from the bottom up — a from-scratch **D2Q9 Lattice Boltzmann** method in
+`sim/lbm.ts`, with its own interactive lab and its own verification group. Two numerical universes,
+one fluid. Validated offline under Node (`--experimental-strip-types`) before wiring the UI: TRT
+Poiseuille is exact (L2 = 0.000%), the shear-wave viscosity matches `c_s²(τ−½)` to 0.45%, and a
+Re=100 cylinder sheds at St ≈ 0.198.
+
+- [x] **D2Q9 kinetic core** (`lbm.ts`) — the lattice (`EX/EY/W/OPP`), the Hermite-consistent
+      equilibrium `f^eq`, macroscopic moments with the Guo half-force shift, and the stream+collide
+      time step (pull scheme, two buffers).
+- [x] **BGK + TRT collision** — single- and two-relaxation-time. TRT's magic Λ=3/16 fixes the
+      bounce-back wall half-way between nodes regardless of ν (cures BGK's viscosity-dependent slip).
+- [x] **Guo (2002) forcing**, split symmetric/antisymmetric per TRT rate — the momentum-carrying
+      (antisymmetric) part must relax with ω⁻ or a steady shear comes out under-forced (debugged this:
+      the bug showed as a constant 0.82× amplitude on Poiseuille; fixing the split made it exact).
+- [x] **Boundaries** — half-way bounce-back walls, a moving-wall variant (lid-driven cavity), a
+      Zou–He velocity inlet + extrapolation outflow (open channel), and periodic.
+- [x] **Smagorinsky LES** — eddy viscosity from the *local* non-equilibrium stress Π^neq (free at
+      every node), so the cylinder wake stays stable into the shedding regime without fine grids.
+- [x] **Momentum-exchange drag/lift** (`solidForce`) — Ladd/Mei sum over bounce-back links.
+- [x] **Kinetic lab** (`ui/KineticLab.tsx`, route `#/kinetic`, nav tab) — flow past a cylinder with
+      a Reynolds slider; lid-cavity / Poiseuille / Kelvin–Helmholtz presets; BGK↔TRT + LES toggles;
+      vorticity/speed views (offscreen lattice buffer upscaled); a live wake oscilloscope; and a
+      **live Strouhal measurement** (zero-up-crossing period of the wake probe) vs Williamson's fit.
+- [x] **Six verify checks (group 15)** — equilibrium mass/momentum + Euler-stress moments (machine
+      precision), mass conservation, the **Chapman–Enskog viscosity** from a decaying shear wave,
+      the **exact TRT Poiseuille** parabola, and the strain rate read straight from Π^neq. Suite
+      **49 → 55 (14 → 15 groups)**, all green.
+- [x] **About page** + `project.json` (description/tags) updated.
+
+Backlog — where the kinetic pillar goes next:
+
+- [ ] **MRT (multiple-relaxation-time) collision** — relax every moment independently in moment
+      space; the most stable D2Q9 scheme, and a natural superset of TRT/BGK to toggle in the lab.
+- [ ] **Thermal LBM** — a second distribution g for temperature (double-distribution / passive
+      scalar) → lattice Rayleigh–Bénard, head-to-head with the studio's Boussinesq solver.
+- [ ] **Ghia et al. (1982) cavity benchmark** as a verify check — compare the lid-cavity centreline
+      profile to the tabulated Re=100/1000 data (needs an iterate-to-steady harness).
+- [ ] **Curved-boundary interpolated bounce-back** (Bouzidi/Filippova) so the cylinder is a true
+      circle, not a staircase — sharpens the drag coefficient toward the textbook Cd≈1.4.
+- [ ] **Free-surface / multiphase** Shan–Chen pseudopotential — surface tension and droplets from a
+      single extra inter-particle force.
+- [ ] **A D2Q9 energy-spectrum readout** in the Kinetic lab (reuse `fft.ts`) so the Kelvin–Helmholtz
+      roll-up shows its cascade.
+- [ ] **Drag/lift calibration pass** — reconcile the momentum-exchange magnitude against a
+      low-blockage reference so Cd is quantitative, not just trend-correct.
+
 ### Eddy 6.0 — magnetohydrodynamics (2026-06-20, claude) — shipped
 
 - [x] **Magnetic field state + params** — `bx`/`by`/`jz` fields (+ scratch), `mhd` + `resistivity`

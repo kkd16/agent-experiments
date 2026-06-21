@@ -612,9 +612,62 @@ main {
   font-weight: 600;
 }
 
+/* ---- Kinetic (Lattice Boltzmann) lab ---- */
+.kin-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.7rem 1rem;
+  margin: 0.4rem 0 0.2rem;
+}
+.kin-controls .segmented {
+  margin-bottom: 0;
+  max-width: none;
+}
+.kin-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  color: var(--muted);
+  font-size: 0.85rem;
+  user-select: none;
+}
+.kin-check input {
+  accent-color: var(--accent);
+}
+.kin-re {
+  display: flex;
+  align-items: center;
+  gap: 0.8rem;
+  flex-wrap: wrap;
+  margin: 0.7rem 0 0.2rem;
+}
+.kin-re label {
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+.kin-re input[type='range'] {
+  flex: 1 1 240px;
+  accent-color: var(--accent);
+}
+.kin-re-hint {
+  color: var(--accent);
+  font-size: 0.82rem;
+}
+.kin-grid {
+  grid-template-columns: 2.4fr 1fr;
+  align-items: start;
+}
+.kin-fig .lab-canvas {
+  background: #0b0e16;
+}
+
 /* ---- Responsive ---- */
 @media (max-width: 860px) {
   .lab-grid {
+    grid-template-columns: 1fr;
+  }
+  .kin-grid {
     grid-template-columns: 1fr;
   }
   body {
