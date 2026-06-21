@@ -45,12 +45,19 @@ import type { NaturalLoop } from '../ir/loops';
 // can only ever miss an opportunity — the differential oracle (interpreter ==
 // wasm == VM, at every -O level) proves it never changes behaviour.
 
-/** How many body copies the strided main loop runs per back edge. */
-const K = 4;
 /** Don't unroll if the K copies would exceed this many instructions. */
 const MAX_GROWTH = 800;
 /** A constant trip count this small is the *full* unroller's job — defer to it. */
 const FULL_UNROLL_LIMIT = 64;
+
+/** Pick the unroll factor from the body size: a tiny body wants a wide stride
+ *  (more back edges removed per copy), a fat one a narrow stride (so the K copies
+ *  stay within the growth budget and the guard's K compares don't dominate). */
+function chooseK(bodyInsts: number): number {
+  if (bodyInsts <= 4) return 8;
+  if (bodyInsts <= 12) return 4;
+  return 2;
+}
 
 export function partialUnroll(fn: IRFunc): number {
   // Headers we have already strided: the remainder reuses the original header id,
@@ -119,10 +126,12 @@ function tryPartial(fn: IRFunc, loop: NaturalLoop, done: Set<number>): boolean {
     if (defBlk === null || body.has(defBlk)) return false;
   }
 
-  // Cost: K straight-line copies of the body must stay within budget.
+  // Cost: K straight-line copies of the body must stay within budget. K is
+  // adaptive — wide for tiny bodies, narrow for fat ones.
   let bodyInsts = 0;
   for (const bid of body) bodyInsts += byId.get(bid)!.insts.length;
-  if (bodyInsts * K > MAX_GROWTH) return false;
+  const KF = chooseK(bodyInsts);
+  if (bodyInsts * KF > MAX_GROWTH) return false;
 
   // ====================================================================
   // Build the strided main loop and splice it ahead of the original (which
@@ -143,7 +152,7 @@ function tryPartial(fn: IRFunc, loop: NaturalLoop, done: Set<number>): boolean {
   // --- clone the body K times -----------------------------------------
   const blockMaps: Map<number, number>[] = [];
   const valMaps: Map<number, Operand>[] = [];
-  for (let k = 0; k < K; k++) {
+  for (let k = 0; k < KF; k++) {
     const blockMap = new Map<number, number>();
     for (const bid of body) blockMap.set(bid, nextBlock++);
     const valMap = new Map<number, Operand>();
@@ -164,12 +173,12 @@ function tryPartial(fn: IRFunc, loop: NaturalLoop, done: Set<number>): boolean {
   }
 
   const newBlocks: Block[] = [];
-  for (let k = 0; k < K; k++) {
+  for (let k = 0; k < KF; k++) {
     const valMap = valMaps[k];
     const blockMap = blockMaps[k];
     // A branch back to the header means "advance an iteration": route it to the
     // next copy, and on the last copy back to the main header (the back edge).
-    const mapTarget = (s: number): number => (s === H.id ? (k < K - 1 ? blockMaps[k + 1].get(H.id)! : MH) : blockMap.get(s)!);
+    const mapTarget = (s: number): number => (s === H.id ? (k < KF - 1 ? blockMaps[k + 1].get(H.id)! : MH) : blockMap.get(s)!);
     for (const bid of body) {
       const ob = byId.get(bid)!;
       const nb: Block = { id: blockMap.get(bid)!, phis: [], insts: [], term: { op: 'unreachable' }, preds: [] };
@@ -201,13 +210,13 @@ function tryPartial(fn: IRFunc, loop: NaturalLoop, done: Set<number>): boolean {
       ty: hp.ty,
       incomings: [
         { pred: PH, val: clone(ivOrPhiInit(hp, PH).val) },
-        { pred: blockMaps[K - 1].get(latchId)!, val: remap(valMaps[K - 1], latchIncoming(hp, latchId).val) },
+        { pred: blockMaps[KF - 1].get(latchId)!, val: remap(valMaps[KF - 1], latchIncoming(hp, latchId).val) },
       ],
     });
   }
   const ivMain: Operand = { tag: 'val', id: mainPhiRes.get(ivPhi.res)! };
   let allK: Operand | null = null;
-  for (let j = 0; j < K; j++) {
+  for (let j = 0; j < KF; j++) {
     // The induction value this iteration would see: i + j*step (wrapping).
     const ivj: Operand = j === 0 ? ivMain : pushInst(mh, fn, nextVal++, ty, 'ibin', 'add', [ivMain, constOf(ty, mulStep(step, j, ty))]);
     // The original predicate, evaluated at ivj against the (invariant) bound.

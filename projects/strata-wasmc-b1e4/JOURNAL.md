@@ -436,8 +436,10 @@ across the freshly contiguous copies — which on the runtime loops actually *sh
 - [ ] **A single-test main loop** for the provably-non-wrapping case (i32 `<` with `bound ≤
       INT_MAX − (K−1)c`, guarded once in the preheader): test only `i+(K−1)c < bound` per K
       iterations instead of all K — fewer dynamic compares when overflow is ruled out.
-- [ ] **Choose K from the body** (a fatter body wants a smaller K; a tiny body a larger one),
-      and **unroll-and-jam** an inner loop into an outer one once both are counted.
+- [x] **Choose K from the body** — shipped: `chooseK` strides tiny bodies (≤4 insts) by 8,
+      medium by 4, fat by 2, all under one growth budget.
+- [ ] **Unroll-and-jam** an inner loop into an outer one once both are counted (the next
+      structural step beyond a single-loop stride).
 - [ ] **LFTR across the strided + remainder pair** so the main loop's exit guard and the
       remainder share one derived IV (couples cleanly with the deferred OSR/LFTR item).
 
