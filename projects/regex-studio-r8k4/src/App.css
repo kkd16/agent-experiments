@@ -2194,3 +2194,317 @@
   border-color: var(--ext, #2dd4bf);
   box-shadow: 0 0 0 1px var(--ext, #2dd4bf), 0 0 14px rgba(45, 212, 191, 0.18);
 }
+
+/* ====================== session 8 — the syntactic monoid (Algebra tab) ====================== */
+.mon-panel {
+  --mon: #f0abfc;
+  --mon-deep: #c026d3;
+}
+
+.mon-verdict {
+  display: flex;
+  gap: 14px;
+  align-items: flex-start;
+  padding: 14px 16px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  margin: 14px 0 6px;
+  line-height: 1.5;
+}
+.mon-verdict.ok {
+  background: linear-gradient(180deg, rgba(52, 211, 153, 0.1), rgba(52, 211, 153, 0.03));
+  border-color: rgba(52, 211, 153, 0.4);
+}
+.mon-verdict.no {
+  background: linear-gradient(180deg, rgba(240, 171, 252, 0.1), rgba(192, 38, 211, 0.04));
+  border-color: rgba(240, 171, 252, 0.4);
+}
+.mon-verdict-tag {
+  flex: none;
+  font-family: var(--mono);
+  font-weight: 700;
+  font-size: 13px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+.mon-verdict.ok .mon-verdict-tag {
+  color: #052e22;
+  background: var(--good);
+}
+.mon-verdict.no .mon-verdict-tag {
+  color: #2a0633;
+  background: var(--mon);
+}
+.mon-verdict-text {
+  color: var(--text);
+  font-size: 13.5px;
+}
+
+.mon-xcheck {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin: 10px 0 4px;
+}
+.mon-xcheck-label {
+  color: var(--muted);
+  font-size: 12.5px;
+  margin-right: 2px;
+}
+.mon-pill {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  padding: 3px 9px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+}
+.mon-pill.on {
+  color: var(--good);
+  border-color: rgba(52, 211, 153, 0.4);
+}
+.mon-pill.off {
+  color: var(--muted-2);
+}
+.mon-agree {
+  font-family: var(--mono);
+  font-size: 12px;
+  font-weight: 700;
+  padding: 3px 10px;
+  border-radius: 999px;
+}
+.mon-agree.ok {
+  color: var(--good);
+  background: rgba(52, 211, 153, 0.12);
+}
+.mon-agree.bad {
+  color: var(--bad);
+  background: rgba(248, 113, 113, 0.14);
+}
+
+.mon-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin: 14px 0;
+}
+.mon-metric {
+  flex: 1 1 120px;
+  min-width: 110px;
+  background: var(--panel-2);
+  border: 1px solid var(--border-soft);
+  border-radius: 10px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.mon-metric.accent {
+  border-color: rgba(240, 171, 252, 0.4);
+}
+.mon-metric-v {
+  font-family: var(--mono);
+  font-size: 20px;
+  color: var(--text);
+  word-break: break-all;
+}
+.mon-metric.accent .mon-metric-v {
+  color: var(--mon);
+}
+.mon-metric-l {
+  font-size: 11.5px;
+  color: var(--muted);
+}
+
+.mon-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 10px 0 4px;
+}
+.mon-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--mono);
+  font-size: 12px;
+  padding: 5px 11px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+  color: var(--muted-2);
+}
+.mon-badge.on {
+  color: var(--text);
+  border-color: rgba(240, 171, 252, 0.45);
+  background: rgba(240, 171, 252, 0.08);
+}
+.mon-badge-mark {
+  font-weight: 700;
+}
+.mon-badge.on .mon-badge-mark {
+  color: var(--mon);
+}
+
+/* ---------- the egg-box diagram ---------- */
+.egg-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin: 12px 0;
+}
+.egg-box {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
+  background: var(--panel);
+}
+.egg-box.regular {
+  border-color: rgba(240, 171, 252, 0.3);
+}
+.egg-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 8px 12px;
+  background: var(--panel-2);
+  border-bottom: 1px solid var(--border-soft);
+}
+.egg-title {
+  font-family: var(--mono);
+  font-size: 13px;
+  color: var(--mon);
+  font-weight: 600;
+}
+.egg-meta {
+  font-size: 11.5px;
+  color: var(--muted);
+  font-family: var(--mono);
+}
+.egg-grid {
+  border-collapse: separate;
+  border-spacing: 6px;
+  margin: 4px;
+}
+.egg-cell {
+  position: relative;
+  min-width: 56px;
+  height: 40px;
+  padding: 4px 10px;
+  text-align: center;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--bg-2);
+  vertical-align: middle;
+}
+.egg-cell.empty {
+  border-style: dashed;
+  background: transparent;
+  opacity: 0.3;
+}
+.egg-cell.egg-group {
+  background: rgba(245, 158, 11, 0.12);
+  border-color: rgba(245, 158, 11, 0.5);
+}
+.egg-cell.egg-idem {
+  background: rgba(240, 171, 252, 0.14);
+  border-color: rgba(240, 171, 252, 0.55);
+}
+.egg-cell.egg-idem.egg-group {
+  background: rgba(245, 158, 11, 0.18);
+}
+.egg-word {
+  font-family: var(--mono);
+  font-size: 13px;
+  color: var(--text);
+}
+.egg-star {
+  position: absolute;
+  top: 2px;
+  right: 4px;
+  font-size: 10px;
+  color: var(--mon);
+}
+.egg-size {
+  position: absolute;
+  bottom: 1px;
+  right: 4px;
+  font-size: 9.5px;
+  color: var(--warn);
+  font-family: var(--mono);
+}
+
+/* ---------- Cayley table ---------- */
+.mini-btn {
+  font-family: var(--mono);
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+  color: var(--muted);
+}
+.mini-btn:hover {
+  color: var(--text);
+  border-color: var(--mon);
+}
+.cayley-wrap {
+  overflow: auto;
+  max-width: 100%;
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+  margin: 8px 0;
+}
+.cayley {
+  border-collapse: collapse;
+  font-family: var(--mono);
+  font-size: 11px;
+}
+.cayley th,
+.cayley td {
+  border: 1px solid var(--border-soft);
+  padding: 3px 7px;
+  text-align: center;
+  white-space: nowrap;
+}
+.cayley th {
+  background: var(--panel-2);
+  color: var(--mon);
+  position: sticky;
+  top: 0;
+}
+.cayley-corner {
+  color: var(--muted) !important;
+}
+.cayley-cell.d0 { background: rgba(96, 165, 250, 0.1); }
+.cayley-cell.d1 { background: rgba(52, 211, 153, 0.1); }
+.cayley-cell.d2 { background: rgba(245, 158, 11, 0.1); }
+.cayley-cell.d3 { background: rgba(240, 171, 252, 0.1); }
+.cayley-cell.d4 { background: rgba(167, 139, 250, 0.1); }
+.cayley-cell.d5 { background: rgba(248, 113, 113, 0.1); }
+
+/* ---------- in-app cross-check ---------- */
+.mon-fuzz {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: center;
+  margin: 8px 0 4px;
+}
+.mon-fuzz-out {
+  font-size: 12.5px;
+  color: var(--muted);
+}
+.mon-fuzz-out.ok {
+  color: var(--text);
+}
+.mon-fail {
+  color: var(--bad);
+}
+.mon-dim {
+  color: var(--muted-2);
+}
