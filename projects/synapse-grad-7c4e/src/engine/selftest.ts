@@ -5,8 +5,10 @@
 // machine-checked proof that the hand-derived backward passes are correct, surfaced in the UI.
 
 import { Tensor } from './tensor';
-import { dropout, layerNorm, batchNorm, makeBatchNormState } from './ops';
+import { dropout, layerNorm, batchNorm, makeBatchNormState, embedding, concatCols } from './ops';
 import { conv2d, maxPool2d, avgPool2d } from './conv';
+import { maskedCrossEntropy } from './losses';
+import { GPT } from './transformer';
 
 export interface OpCheck {
   name: string;
@@ -212,6 +214,42 @@ export function runSelfTest(seed = 7): SelfTestReport {
     const W = 4;
     const x = leaf(rng, N, C * H * W);
     ops.push(checkOp('avgPool2d', [x], () => avgPool2d(x, { N, C, H, W, k: 2, stride: 2 }), rng));
+  }
+
+  // Transformer ops: the row-gather embedding and the multi-head concat.
+  {
+    const table = leaf(rng, 5, 4);
+    const ids = Int32Array.from([0, 3, 1, 3, 4]); // a repeated id exercises gradient accumulation
+    ops.push(checkOp('embedding', [table], () => embedding(table, ids), rng));
+  }
+  {
+    const a = leaf(rng, 4, 2);
+    const b = leaf(rng, 4, 3);
+    const c = leaf(rng, 4, 2);
+    ops.push(checkOp('concatCols', [a, b, c], () => concatCols([a, b, c]), rng));
+  }
+  {
+    const logits = leaf(rng, 5, 4);
+    const targets = Int32Array.from([1, 3, 0, 2, 1]);
+    const keep = Uint8Array.from([0, 1, 1, 0, 1]); // only the masked rows count
+    ops.push(checkOp('maskedCE', [logits], () => maskedCrossEntropy(logits, targets, keep).loss, rng));
+  }
+
+  // End-to-end: a whole tiny GPT — every parameter (embeddings, all heads' Q/K/V, the output
+  // projection, both LayerNorms, the GELU feed-forward) gradchecked through the masked loss.
+  {
+    const gpt = new GPT({ vocab: 5, dModel: 4, nHeads: 2, nLayers: 1, dFF: 6, maxLen: 6, seed: 3 });
+    const ids = Int32Array.from([2, 0, 4, 1, 3]);
+    const targets = Int32Array.from([0, 4, 1, 3, 2]);
+    const keep = Uint8Array.from([0, 0, 1, 1, 1]);
+    ops.push(
+      checkOp(
+        'transformer (e2e)',
+        gpt.parameters(),
+        () => maskedCrossEntropy(gpt.forward(ids), targets, keep).loss,
+        rng,
+      ),
+    );
   }
 
   const maxRelError = ops.reduce((m, o) => Math.max(m, o.maxRelError), 0);

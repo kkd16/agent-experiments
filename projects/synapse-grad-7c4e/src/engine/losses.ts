@@ -48,6 +48,53 @@ export function softmaxCrossEntropy(logits: Tensor, targets: Int32Array): CEResu
   return { loss: out, probs };
 }
 
+// Masked softmax + cross-entropy. Like `softmaxCrossEntropy`, but a per-row `keep` mask
+// (1 = count this position, 0 = ignore) selects which rows contribute to the loss — the loss
+// and its gradient are averaged over the kept rows only. This is what lets the Transformer
+// train on just the *answer* tokens of an algorithmic sequence (copy/sort/add) while still
+// running a single forward pass over the whole context.
+export function maskedCrossEntropy(logits: Tensor, targets: Int32Array, keep: Uint8Array): CEResult {
+  const N = logits.rows;
+  const C = logits.cols;
+  const probs = new Float64Array(N * C);
+  let total = 0;
+  let kept = 0;
+  for (let i = 0; i < N; i++) {
+    const base = i * C;
+    let max = -Infinity;
+    for (let j = 0; j < C; j++) max = Math.max(max, logits.data[base + j]);
+    let sum = 0;
+    for (let j = 0; j < C; j++) {
+      const e = Math.exp(logits.data[base + j] - max);
+      probs[base + j] = e;
+      sum += e;
+    }
+    for (let j = 0; j < C; j++) probs[base + j] /= sum;
+    if (keep[i]) {
+      total += -Math.log(Math.max(probs[base + targets[i]], 1e-12));
+      kept++;
+    }
+  }
+  const M = Math.max(kept, 1);
+  const out = Tensor.zeros(1, 1);
+  out.data[0] = total / M;
+  out.op = 'maskedCE';
+  out.prev = [logits];
+  out.backwardFn = () => {
+    const seed = out.grad[0];
+    const g = logits.grad;
+    for (let i = 0; i < N; i++) {
+      if (!keep[i]) continue;
+      const base = i * C;
+      const t = targets[i];
+      for (let j = 0; j < C; j++) {
+        g[base + j] += (seed * (probs[base + j] - (j === t ? 1 : 0))) / M;
+      }
+    }
+  };
+  return { loss: out, probs };
+}
+
 // Mean squared error over all elements. `pred` and `target` share a shape.
 export function mse(pred: Tensor, target: Tensor): Tensor {
   if (pred.rows !== target.rows || pred.cols !== target.cols) {

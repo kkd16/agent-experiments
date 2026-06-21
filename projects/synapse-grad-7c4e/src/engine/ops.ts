@@ -105,6 +105,79 @@ export function layerNorm(x: Tensor, gamma: Tensor, beta: Tensor, eps = 1e-5): T
   return out;
 }
 
+// Embedding lookup: gather rows of a table [V, D] by integer ids -> [T, D]. The forward is a
+// plain copy; the backward scatter-adds each output row's gradient back into the row of the
+// table it came from (a row used by several positions accumulates all of their gradients).
+// This is exactly equivalent to a one-hot @ table matmul, but O(T·D) instead of O(T·V·D).
+export function embedding(table: Tensor, ids: Int32Array): Tensor {
+  const V = table.rows;
+  const D = table.cols;
+  const T = ids.length;
+  const out = Tensor.zeros(T, D);
+  const o = out.data;
+  const e = table.data;
+  for (let t = 0; t < T; t++) {
+    const id = ids[t];
+    if (id < 0 || id >= V) throw new Error(`embedding id ${id} out of range [0,${V})`);
+    const src = id * D;
+    const dst = t * D;
+    for (let j = 0; j < D; j++) o[dst + j] = e[src + j];
+  }
+  out.op = 'embedding';
+  out.prev = [table];
+  out.backwardFn = () => {
+    const g = out.grad;
+    const gt = table.grad;
+    for (let t = 0; t < T; t++) {
+      const src = ids[t] * D;
+      const dst = t * D;
+      for (let j = 0; j < D; j++) gt[src + j] += g[dst + j];
+    }
+  };
+  return out;
+}
+
+// Concatenate several tensors along the feature (column) axis. All must share the row count;
+// the result is [R, Σ cols]. Backward slices the output gradient back to each part. Used to
+// merge the per-head outputs of multi-head attention before the output projection.
+export function concatCols(parts: Tensor[]): Tensor {
+  if (parts.length === 0) throw new Error('concatCols needs at least one tensor');
+  const R = parts[0].rows;
+  let total = 0;
+  for (const p of parts) {
+    if (p.rows !== R) throw new Error('concatCols row mismatch');
+    total += p.cols;
+  }
+  const out = Tensor.zeros(R, total);
+  const o = out.data;
+  let colOff = 0;
+  for (const p of parts) {
+    const a = p.data;
+    for (let i = 0; i < R; i++) {
+      const dst = i * total + colOff;
+      const src = i * p.cols;
+      for (let j = 0; j < p.cols; j++) o[dst + j] = a[src + j];
+    }
+    colOff += p.cols;
+  }
+  out.op = 'concatCols';
+  out.prev = parts.slice();
+  out.backwardFn = () => {
+    const g = out.grad;
+    let off = 0;
+    for (const p of parts) {
+      const gp = p.grad;
+      for (let i = 0; i < R; i++) {
+        const src = i * total + off;
+        const dst = i * p.cols;
+        for (let j = 0; j < p.cols; j++) gp[dst + j] += g[src + j];
+      }
+      off += p.cols;
+    }
+  };
+  return out;
+}
+
 export interface BatchNormState {
   runningMean: Float64Array;
   runningVar: Float64Array;
