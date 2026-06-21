@@ -303,6 +303,46 @@ export function About() {
           <strong>|B|</strong> and <strong>B-field-line</strong> render modes.
         </p>
 
+        <h2>The kinetic route — Lattice Boltzmann (the Kinetic lab)</h2>
+        <p>
+          Everything above marches the Navier–Stokes equations <em>directly</em>: a velocity field, a
+          pressure solve, operator splitting. The <a href="#/kinetic">Kinetic lab</a> reaches the very
+          same physics from the opposite end. It never writes Navier–Stokes down at all. It tracks a
+          fictitious gas of particles through their distribution <code>f(x, e, t)</code> — “how much
+          fluid at <code>x</code> is streaming along lattice velocity <code>e</code>” — on the{' '}
+          <strong>D2Q9</strong> lattice (a rest state plus eight neighbours), and evolves it by two
+          spectacularly simple local rules:
+        </p>
+        <pre>{`fᵢ(x + eᵢ, t+1) = fᵢ(x, t) − Ωᵢ          (stream, then collide)
+Ωᵢ = ωⁱ (fᵢ − fᵢᵉ𐞥),   fᵢᵉ𐞥 = wᵢρ[1 + 3(eᵢ·u) + 4.5(eᵢ·u)² − 1.5|u|²]`}</pre>
+        <p>
+          <em>Stream</em>: every population hops to its neighbour. <em>Collide</em>: it relaxes toward a
+          local equilibrium <code>fᵉ𐞥</code> (the lattice’s truncated Maxwell–Boltzmann). That is the
+          whole algorithm — no global pressure solve, perfectly local, the density and velocity recovered
+          as the moments <code>ρ = Σfᵢ</code>, <code>ρu = Σfᵢeᵢ</code>. And yet a{' '}
+          <strong>Chapman–Enskog</strong> multi-scale expansion proves that the slow moments of this
+          update obey incompressible Navier–Stokes to second order, with a viscosity set <em>only</em> by
+          the relaxation time: <code>ν = c_s²(τ − ½)</code>, <code>c_s² = ⅓</code>. The Verify page
+          measures that ν straight back out of a decaying shear wave — the kinetic-to-hydrodynamic bridge,
+          confirmed live.
+        </p>
+        <p>
+          The implementation is all from scratch and carries the real machinery: a{' '}
+          <strong>two-relaxation-time (TRT)</strong> collision whose “magic” parameter{' '}
+          <code>Λ = 3/16</code> pins the bounce-back wall exactly half-way between nodes (so a body-forced
+          channel reproduces the analytic Poiseuille parabola to ~0.1%, where single-relaxation{' '}
+          <strong>BGK</strong> would slip); <strong>Guo forcing</strong> for body forces; half-way{' '}
+          <strong>bounce-back</strong> for no-slip walls and a moving-wall variant for the lid-driven
+          cavity; a <strong>Zou–He</strong> velocity inlet and an extrapolation outflow for the open
+          channel; and a <strong>Smagorinsky LES</strong> sub-grid model whose eddy viscosity is read
+          from the <em>local non-equilibrium stress</em> <code>Π^neq</code> — a strain-rate tensor LBM
+          hands you for free at every node, no finite differences. Flow past the cylinder sheds a{' '}
+          <strong>von Kármán vortex street</strong>; the lab times the wake oscillation and reports its{' '}
+          <strong>Strouhal number</strong> against Williamson’s experimental fit, and reads the drag and
+          lift off a from-scratch <strong>momentum-exchange</strong> sum over the bounce-back links (lift
+          oscillates at the shedding frequency, drag at twice it). Two solvers, two universes, one fluid.
+        </p>
+
         <h2>Does it actually work? The verification page</h2>
         <p>
           A solver you can’t check is a solver you can’t trust. The <a href="#/verify">Verify</a> page
@@ -324,8 +364,14 @@ export function About() {
           energy transfer is <em>exactly conservative</em> (<code>∑ₖ T(k) = 0</code>), the FTLE
           reproduces the analytic strain rate of a saddle and vanishes on a rigid rotation, an open
           channel sustains a through-flow a closed box stalls, and the dye diffuses at its own
-          Schmidt-number rate. Each check reports the number it measured —{' '}
-          <strong>43 checks across 13 groups</strong>.
+          Schmidt-number rate. The MHD pillar is held to the same bar (∇·B cleaning, the Alfvén
+          dispersion relation, ideal-MHD energy conservation, flux-freezing, the Orszag–Tang
+          current-sheet). And the <strong>Lattice Boltzmann</strong> solver earns its own group: the
+          equilibrium’s exact mass/momentum/Euler-stress moments, mass conservation, the{' '}
+          <strong>Chapman–Enskog viscosity</strong> <code>ν = c_s²(τ−½)</code> measured from a shear
+          wave, the exact <strong>Poiseuille</strong> parabola from the TRT magic wall, and the local
+          strain rate read from <code>Π^neq</code>. Each check reports the number it measured —{' '}
+          <strong>55 checks across 15 groups</strong>.
         </p>
 
         <h2>Rendering</h2>

@@ -3,6 +3,7 @@ import { Studio } from './ui/Studio';
 import { About } from './ui/About';
 import { Verify } from './ui/Verify';
 import { SpectraLab } from './ui/SpectraLab';
+import { KineticLab } from './ui/KineticLab';
 import './App.css';
 
 export default function App() {
@@ -10,6 +11,7 @@ export default function App() {
   const onAbout = route.startsWith('/about');
   const onVerify = route.startsWith('/verify');
   const onSpectra = route.startsWith('/spectra');
+  const onKinetic = route.startsWith('/kinetic');
 
   return (
     <div className="app">
@@ -23,8 +25,11 @@ export default function App() {
           </span>
         </a>
         <nav>
-          <a className={!onAbout && !onVerify && !onSpectra ? 'active' : ''} href="#/">
+          <a className={!onAbout && !onVerify && !onSpectra && !onKinetic ? 'active' : ''} href="#/">
             Studio
+          </a>
+          <a className={onKinetic ? 'active' : ''} href="#/kinetic">
+            Kinetic
           </a>
           <a className={onSpectra ? 'active' : ''} href="#/spectra">
             Spectra
@@ -38,7 +43,17 @@ export default function App() {
         </nav>
       </header>
       <main>
-        {onAbout ? <About /> : onVerify ? <Verify /> : onSpectra ? <SpectraLab /> : <Studio />}
+        {onAbout ? (
+          <About />
+        ) : onVerify ? (
+          <Verify />
+        ) : onSpectra ? (
+          <SpectraLab />
+        ) : onKinetic ? (
+          <KineticLab />
+        ) : (
+          <Studio />
+        )}
       </main>
     </div>
   );
