@@ -20,7 +20,7 @@ import {
 import type { Row } from './catalog'
 import type { Schema } from './schema'
 import type { Evaluator } from './eval'
-import type { Operator, PlanNode } from './operators'
+import { DEFAULT_WORK_MEM, spillHash, type MemStats, type Operator, type PlanNode } from './operators'
 
 export type AggName =
   | 'COUNT'
@@ -290,6 +290,16 @@ interface Group {
   bitmap: number
 }
 
+/** Per-pass spill statistics accumulated across the recursive Grace aggregation. */
+interface AggSpillStats {
+  peak: number
+  spilled: number
+  partitions: number
+  passes: number
+}
+const AGG_PARTS = 16
+const AGG_MAX_DEPTH = 6
+
 export class HashAggregate implements Operator {
   readonly schema: Schema
   estRows: number
@@ -302,8 +312,12 @@ export class HashAggregate implements Operator {
   private readonly groupingSets: number[][]
   /** Append a trailing INTEGER column holding each row's grouping-set bitmap. */
   private readonly emitGroupingCol: boolean
+  private readonly workMem: number
   private groups: Group[] = []
   private pos = 0
+  // Spill diagnostics surfaced in EXPLAIN / the Execution Lab.
+  private spill: AggSpillStats = { peak: 0, spilled: 0, partitions: 0, passes: 1 }
+  private opened = false
 
   constructor(
     child: Operator,
@@ -312,6 +326,7 @@ export class HashAggregate implements Operator {
     schema: Schema,
     groupingSets?: number[][],
     emitGroupingCol = false,
+    workMem?: number,
   ) {
     this.child = child
     this.groupExprs = groupExprs
@@ -319,6 +334,7 @@ export class HashAggregate implements Operator {
     this.schema = schema
     this.groupingSets = groupingSets ?? [groupExprs.map((_, i) => i)]
     this.emitGroupingCol = emitGroupingCol
+    this.workMem = workMem ?? DEFAULT_WORK_MEM
     const sets = this.groupingSets.length
     this.estRows = groupExprs.length === 0 ? sets : Math.max(1, Math.round(child.estRows * 0.5 * sets))
     this.estCost = child.estCost + child.estRows * sets * (aggs.length + groupExprs.length) * 0.0025
@@ -328,7 +344,74 @@ export class HashAggregate implements Operator {
     for (const i of set) bm |= 1 << i
     return bm
   }
+  /** True when this is a plain GROUP BY with one non-empty grouping set — the
+   *  only shape the Grace spill path handles. ROLLUP/CUBE/multiple sets and the
+   *  whole-table / grand-total aggregate keep the in-memory path unchanged. */
+  private spillEligible(): boolean {
+    return this.groupingSets.length === 1 && this.groupExprs.length > 0 && this.groupingSets[0].length > 0
+  }
+  /** Grace hash aggregation over a single grouping set. Builds groups in memory
+   *  in first-seen order; once `work_mem` distinct groups are live, the *raw rows*
+   *  of any further new key are partitioned by a salted hash of the key and
+   *  buffered (spilled). After the input, each spilled partition is re-aggregated
+   *  independently — recursing with a fresh salt if it still overflows. Because
+   *  all rows of a group share a key they land in one partition, so no group is
+   *  ever split: DISTINCT and ordered aggregates stay exact, and the result
+   *  equals the in-memory aggregation (output order aside). */
+  private aggregateInto(rows: Iterable<Row>, theSet: number[], bitmap: number, depth: number): Group[] {
+    const map = new Map<string, Group>()
+    const order: Group[] = []
+    const canSpill = depth < AGG_MAX_DEPTH
+    let partBuf: Row[][] | null = null
+    for (const r of rows) {
+      const allKeys = this.groupExprs.map((g) => g(r))
+      const idKey = hashKey(theSet.map((i) => allKeys[i]))
+      let group = map.get(idKey)
+      if (group) {
+        for (let i = 0; i < this.aggs.length; i++) group.accs[i].update(this.aggs[i], r)
+      } else if (map.size < this.workMem || !canSpill) {
+        const keys = this.groupExprs.map((_, i) => (theSet.includes(i) ? allKeys[i] : null))
+        group = { keys, accs: this.aggs.map((a) => new Accumulator(a)), bitmap }
+        map.set(idKey, group)
+        order.push(group)
+        for (let i = 0; i < this.aggs.length; i++) group.accs[i].update(this.aggs[i], r)
+      } else {
+        if (!partBuf) {
+          partBuf = Array.from({ length: AGG_PARTS }, () => [] as Row[])
+          this.spill.partitions = Math.max(this.spill.partitions, AGG_PARTS)
+        }
+        partBuf[spillHash(idKey, depth + 1) % AGG_PARTS].push(r)
+        this.spill.spilled++
+      }
+    }
+    this.spill.peak = Math.max(this.spill.peak, map.size)
+    if (partBuf) {
+      this.spill.passes = Math.max(this.spill.passes, depth + 2)
+      for (const part of partBuf) {
+        if (part.length === 0) continue
+        for (const g of this.aggregateInto(part, theSet, bitmap, depth + 1)) order.push(g)
+      }
+    }
+    return order
+  }
   open() {
+    this.opened = true
+    this.spill = { peak: 0, spilled: 0, partitions: 0, passes: 1 }
+    if (this.spillEligible()) {
+      const theSet = this.groupingSets[0]
+      const bitmap = this.bitmapOf(theSet)
+      this.child.open()
+      const child = this.child
+      const firstPass: Iterable<Row> = {
+        *[Symbol.iterator]() {
+          for (let r = child.next(); r !== null; r = child.next()) yield r
+        },
+      }
+      this.groups = this.aggregateInto(firstPass, theSet, bitmap, 0)
+      this.child.close()
+      this.pos = 0
+      return
+    }
     this.child.open()
     const map = new Map<string, Group>()
     let any = false
@@ -365,6 +448,7 @@ export class HashAggregate implements Operator {
         }
       }
     }
+    this.spill.peak = this.groups.length
     this.pos = 0
   }
   next(): Row | null {
@@ -384,9 +468,27 @@ export class HashAggregate implements Operator {
     const detail =
       (this.groupExprs.length ? `group by ${this.groupExprs.length} key(s); ` : 'whole table; ') +
       this.aggs.map((a) => a.label).join(', ')
+    const spilled = this.opened ? this.spill.spilled > 0 : this.spillEligible() && this.child.estRows * 0.5 > this.workMem
     const extra: string[] = []
-    if (this.groupExprs.length) extra.push('build hash table on grouping keys')
+    if (this.groupExprs.length) {
+      extra.push(
+        spilled
+          ? this.opened
+            ? `grace hash aggregate: ${this.spill.partitions} partitions, ${this.spill.passes} pass(es), spilled ${this.spill.spilled} rows (work_mem ${this.workMem})`
+            : `grace hash aggregate (est. groups > work_mem ${this.workMem})`
+          : 'build hash table on grouping keys',
+      )
+    }
     if (multi) extra.push(`${this.groupingSets.length} grouping sets (ROLLUP/CUBE/GROUPING SETS)`)
+    const mem: MemStats = {
+      method: spilled ? 'grace hash aggregate' : 'in-memory hash',
+      budget: this.workMem,
+      peakRows: this.opened ? this.spill.peak : Math.min(this.estRows, this.workMem),
+      spilledRows: this.opened ? this.spill.spilled : 0,
+      partitions: spilled ? (this.opened ? this.spill.partitions : AGG_PARTS) : undefined,
+      passes: this.opened ? this.spill.passes : spilled ? 2 : 1,
+      measured: this.opened,
+    }
     return {
       op: multi ? 'GroupingSetsAggregate' : 'HashAggregate',
       detail,
@@ -395,6 +497,7 @@ export class HashAggregate implements Operator {
       actualRows: this.actualRows,
       extra,
       children: [this.child.plan()],
+      mem,
     }
   }
 }

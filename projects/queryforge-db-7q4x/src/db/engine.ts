@@ -14,7 +14,7 @@ import { compileExpr, truthy, setUserFunctionHook, type CompileCtx, type Evaluat
 import { resolveColumn, type Binding, type Schema } from './schema'
 import { SqlError, coerceTo, type ColumnType, type SqlValue } from './types'
 import { callRoutine, fireTrigger, routineFromStmt, triggerFromStmt, type PlHost, type Routine } from './pl'
-import type { Operator, PlanNode } from './operators'
+import { DEFAULT_WORK_MEM, type Operator, type PlanNode } from './operators'
 import type {
   CallStmt,
   CreateRoutineStmt,
@@ -24,6 +24,8 @@ import type {
   OnConflictClause,
   SelectItem,
   SelectStmt,
+  SetStmt,
+  ShowStmt,
   Statement,
 } from './ast'
 
@@ -61,8 +63,20 @@ const CONST_CTX: CompileCtx = {
   },
 }
 
+/** Session-configurable settings (the `SET`/`SHOW` surface). */
+export interface SessionSettings {
+  /** `work_mem` — the per-operator in-memory row budget before an operator spills. */
+  workMem: number
+}
+
+/** Statement kinds whose parse output is safe to cache: read-only, and never
+ *  mutated during planning/execution (stored views already reuse a `SelectStmt`). */
+const CACHEABLE_KINDS = new Set<Statement['kind']>(['select', 'explain', 'show'])
+
 export class Engine implements PlHost {
   db: Database
+  /** Session settings (work_mem, …). Reset only by `RESET`/`SET … TO DEFAULT`. */
+  settings: SessionSettings = { workMem: DEFAULT_WORK_MEM }
   private txnStack: SerializedDb[] = []
   /** Named savepoints within the current transaction (innermost last). */
   private savepoints: { name: string; snap: SerializedDb }[] = []
@@ -70,9 +84,42 @@ export class Engine implements PlHost {
   private notices: string[] = []
   /** Routine/trigger call nesting (guards runaway recursion). */
   private callDepth = 0
+  // A small LRU cache of parsed statement scripts (read-only scripts only).
+  private parseCache = new Map<string, Statement[]>()
+  private parseHits = 0
+  private parseMisses = 0
+  private readonly PARSE_CACHE_MAX = 128
 
   constructor(db = new Database()) {
     this.db = db
+  }
+
+  /** Parse a script, serving a cached AST for repeated read-only scripts. The
+   *  AST is re-planned on every run, so it never goes stale as stats/catalog
+   *  change — exactly how stored views reuse their `SelectStmt`. */
+  private parseCached(sql: string): Statement[] {
+    const hit = this.parseCache.get(sql)
+    if (hit) {
+      this.parseHits++
+      this.parseCache.delete(sql) // LRU: move to most-recent
+      this.parseCache.set(sql, hit)
+      return hit
+    }
+    this.parseMisses++
+    const stmts = parse(sql)
+    if (stmts.length > 0 && stmts.every((s) => CACHEABLE_KINDS.has(s.kind))) {
+      this.parseCache.set(sql, stmts)
+      if (this.parseCache.size > this.PARSE_CACHE_MAX) {
+        const oldest = this.parseCache.keys().next().value
+        if (oldest !== undefined) this.parseCache.delete(oldest)
+      }
+    }
+    return stmts
+  }
+
+  /** Parse-cache instrumentation (surfaced in the Execution Lab + a self-test). */
+  parseCacheStats(): { hits: number; misses: number; size: number } {
+    return { hits: this.parseHits, misses: this.parseMisses, size: this.parseCache.size }
   }
 
   /** Point the expression compiler's user-function resolver at this engine, so a
@@ -95,7 +142,7 @@ export class Engine implements PlHost {
   /** Run a script of one or more `;`-separated statements. */
   execute(sql: string): QueryResult[] {
     this.installHooks()
-    const stmts = parse(sql)
+    const stmts = this.parseCached(sql)
     const results: QueryResult[] = []
     for (const stmt of stmts) {
       results.push(this.runStatement(stmt, sql))
@@ -128,7 +175,7 @@ export class Engine implements PlHost {
 
   // --- PlHost (services the procedural interpreter calls back into) ---------
   queryRows(select: SelectStmt): { schema: Binding[]; rows: Row[] } {
-    const op = planSelect(select, this.db)
+    const op = planSelect(select, this.db, this.settings.workMem)
     return { schema: op.schema, rows: runOperator(op) }
   }
   /** The what-if Index Advisor: recommend indexes for a SELECT by re-planning it
@@ -199,6 +246,10 @@ export class Engine implements PlHost {
         return this.explain(stmt, sql, t0)
       case 'txn':
         return this.txn(stmt, sql, t0)
+      case 'set':
+        return this.setSetting(stmt, sql, t0)
+      case 'show':
+        return this.showSetting(stmt, sql, t0)
       case 'create_routine':
         return this.createRoutine(stmt, sql, t0)
       case 'drop_routine':
@@ -555,7 +606,7 @@ export class Engine implements PlHost {
 
     if (stmt.select) {
       // INSERT … SELECT — run the query and feed each result row in.
-      const rows = runOperator(planSelect(stmt.select, this.db))
+      const rows = runOperator(planSelect(stmt.select, this.db, this.settings.workMem))
       for (const r of rows) {
         if (r.length !== targetCols.length) {
           throw new SqlError(`INSERT … SELECT produced ${r.length} columns for ${targetCols.length} target columns`, 'bind')
@@ -700,7 +751,7 @@ export class Engine implements PlHost {
 
   // --- SELECT / EXPLAIN -----------------------------------------------------
   private select(stmt: SelectStmt, sql: string, t0: number): RowsResult {
-    const op = planSelect(stmt, this.db)
+    const op = planSelect(stmt, this.db, this.settings.workMem)
     const rows = runOperator(op)
     return {
       kind: 'rows',
@@ -717,7 +768,7 @@ export class Engine implements PlHost {
     if (inner.kind !== 'select') {
       throw new SqlError('EXPLAIN currently supports SELECT statements', 'plan')
     }
-    const op = planSelect(inner, this.db)
+    const op = planSelect(inner, this.db, this.settings.workMem)
     if (stmt.analyze) runOperator(op)
     return { kind: 'explain', plan: op.plan(), analyze: stmt.analyze, elapsedMs: performance.now() - t0, sql }
   }
@@ -763,6 +814,39 @@ export class Engine implements PlHost {
     }
   }
 
+  // --- session settings (SET / SHOW / RESET) --------------------------------
+  /** `SET work_mem = N` / `SET work_mem TO N` / `RESET work_mem`. */
+  private setSetting(stmt: SetStmt, sql: string, t0: number): QueryResult {
+    const name = stmt.name.toLowerCase()
+    if (name === 'work_mem') {
+      if (stmt.value === null) {
+        this.settings.workMem = DEFAULT_WORK_MEM
+        return msg(`work_mem reset to ${DEFAULT_WORK_MEM} rows (default)`, sql, t0)
+      }
+      if (!Number.isInteger(stmt.value) || stmt.value < 1) {
+        throw new SqlError('work_mem must be a positive whole number of rows', 'eval')
+      }
+      this.settings.workMem = stmt.value
+      return msg(`work_mem set to ${stmt.value} rows`, sql, t0)
+    }
+    throw new SqlError(`unknown configuration parameter "${stmt.name}" (supported: work_mem)`, 'eval')
+  }
+  /** `SHOW work_mem` — report a setting as a 1×1 result. */
+  private showSetting(stmt: ShowStmt, sql: string, t0: number): RowsResult {
+    const name = stmt.name.toLowerCase()
+    let value: SqlValue
+    if (name === 'work_mem') value = this.settings.workMem
+    else throw new SqlError(`unknown configuration parameter "${stmt.name}" (supported: work_mem)`, 'eval')
+    return {
+      kind: 'rows',
+      columns: [{ table: '', name, type: 'INTEGER' }],
+      rows: [[value]],
+      rowCount: 1,
+      elapsedMs: performance.now() - t0,
+      sql,
+    }
+  }
+
   /** Index of the most recent savepoint with `name` (errors if none exists). */
   private findSavepoint(name: string): number {
     for (let i = this.savepoints.length - 1; i >= 0; i--) {
@@ -787,7 +871,7 @@ export class Engine implements PlHost {
       groupBy: [],
       orderBy: [],
     }
-    const sourceOp = planSelect(sourceSelect, this.db)
+    const sourceOp = planSelect(sourceSelect, this.db, this.settings.workMem)
     const sourceRows = runOperator(sourceOp)
     // A `SELECT *` projection drops table qualifiers, so re-tag the source
     // columns under the source's relation name (its alias, or the table name)

@@ -952,4 +952,31 @@ SELECT d.id, d.body ->> 'kind' AS kind, tag.value AS tag
 FROM documents d, LATERAL json_array_elements(d.body -> 'tags') AS tag
 ORDER BY d.id, tag;`,
   },
+  {
+    title: 'work_mem — make a sort spill, then watch top-N',
+    sql: `-- Lower the memory budget, then EXPLAIN ANALYZE shows the algorithm change.
+-- Build 1,500 rows, sort them on a tight budget (external merge sort), then add
+-- a LIMIT so the same sort becomes a bounded top-N heapsort. See the Execution Lab.
+CREATE TABLE big_sort (k INTEGER);
+INSERT INTO big_sort (k)
+  WITH RECURSIVE s(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM s WHERE n < 1500)
+  SELECT 1501 - n FROM s;
+SET work_mem = 200;
+EXPLAIN ANALYZE SELECT k FROM big_sort ORDER BY k;          -- external merge sort
+EXPLAIN ANALYZE SELECT k FROM big_sort ORDER BY k LIMIT 10; -- top-N heapsort
+RESET work_mem;`,
+  },
+  {
+    title: 'work_mem — a GROUP BY that spills to a grace hash aggregate',
+    sql: `-- Past work_mem distinct groups, the aggregate partitions overflow keys to
+-- "disk" and re-aggregates each partition. The answer is identical to the
+-- in-memory run — EXPLAIN ANALYZE reports the spilled rows, partitions & passes.
+CREATE TABLE big_agg (g INTEGER, v INTEGER);
+INSERT INTO big_agg (g, v)
+  WITH RECURSIVE s(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM s WHERE n < 1200)
+  SELECT n % 60, n % 200 FROM s;
+SET work_mem = 8;
+EXPLAIN ANALYZE SELECT g, COUNT(*), SUM(v) FROM big_agg GROUP BY g ORDER BY g;
+RESET work_mem;`,
+  },
 ]

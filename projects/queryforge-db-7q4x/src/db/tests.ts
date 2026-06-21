@@ -3257,6 +3257,137 @@ test('pl', 'BEFORE UPDATE trigger clamps the NEW row', () => {
   assert(scalar(e, 'SELECT pct FROM gauge') === 100, 'over-range value clamped to 100 by the trigger')
 })
 
+// --- v17: memory-bounded execution (work_mem, top-N, spilling agg/join) -----
+
+/** Generate a single-column big table via a recursive CTE (the corpus-tested
+ *  row generator). `expr` is computed from the running counter `n` (1..count). */
+function gen(e: Engine, ddl: string, table: string, cols: string, count: number, selectExpr: string) {
+  e.execute(ddl)
+  e.execute(
+    `INSERT INTO ${table} (${cols}) WITH RECURSIVE s(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM s WHERE n < ${count}) SELECT ${selectExpr} FROM s`,
+  )
+}
+/** Run a query at a given work_mem and return its rows. */
+function atMem(e: Engine, workMem: number | 'default', sql: string): Row[] {
+  e.execute(workMem === 'default' ? 'RESET work_mem' : `SET work_mem = ${workMem}`)
+  return rowsOf(e, sql)
+}
+/** The EXPLAIN ANALYZE plan JSON for a query at a given work_mem. */
+function explainAt(e: Engine, workMem: number, sql: string): string {
+  e.execute(`SET work_mem = ${workMem}`)
+  const r = e.execute(`EXPLAIN ANALYZE ${sql}`)[0]
+  return JSON.stringify(r.kind === 'explain' ? r.plan : {})
+}
+
+test('execution', 'SET / SHOW / RESET work_mem', () => {
+  const e = new Engine()
+  assert(scalar(e, 'SHOW work_mem') === 100000, 'default work_mem is 100000 rows')
+  e.execute('SET work_mem = 256')
+  assert(scalar(e, 'SHOW work_mem') === 256, 'SET work_mem = 256')
+  e.execute('SET work_mem TO 64')
+  assert(scalar(e, 'SHOW work_mem') === 64, 'SET work_mem TO 64')
+  e.execute('RESET work_mem')
+  assert(scalar(e, 'SHOW work_mem') === 100000, 'RESET restores the default')
+  e.execute('SET work_mem TO DEFAULT')
+  assert(scalar(e, 'SHOW work_mem') === 100000, 'SET … TO DEFAULT restores the default')
+  throws(e, 'SET work_mem = 0', 'positive')
+  throws(e, 'SET nonesuch = 1', 'unknown configuration')
+  throws(e, 'SHOW nonesuch', 'unknown configuration')
+})
+
+test('execution', 'top-N heapsort equals a full sort then limit', () => {
+  const e = new Engine()
+  gen(e, 'CREATE TABLE tn (k INTEGER, g INTEGER)', 'tn', 'k, g', 1500, '(1500 - n) * 7 % 101, n % 13')
+  // Differential: top-N (bounded) vs the full external sort then slice. Several
+  // shapes incl. OFFSET, DESC, and a secondary key with ties.
+  for (const q of [
+    'SELECT k, g FROM tn ORDER BY k LIMIT 10',
+    'SELECT k, g FROM tn ORDER BY k LIMIT 10 OFFSET 25',
+    'SELECT k, g FROM tn ORDER BY k DESC, g ASC LIMIT 17',
+    'SELECT k, g FROM tn ORDER BY g, k LIMIT 40 OFFSET 5',
+  ]) {
+    const bounded = atMem(e, 4, q)
+    const full = atMem(e, 'default', q)
+    assert(eq(bounded, full), `top-N must equal full sort for: ${q}`)
+  }
+  // The plan reports the heapsort method at a small budget.
+  assert(explainAt(e, 4, 'SELECT k FROM tn ORDER BY k LIMIT 10').includes('top-N heapsort'), 'EXPLAIN should show top-N heapsort')
+})
+
+test('execution', 'work_mem caps the external merge-sort run size', () => {
+  const e = new Engine()
+  gen(e, 'CREATE TABLE ms (k INTEGER)', 'ms', 'k', 1200, '1201 - n')
+  const tight = explainAt(e, 100, 'SELECT k FROM ms ORDER BY k')
+  assert(tight.includes('external merge sort'), 'a tight budget forces an external sort')
+  assert(tight.includes('run size 100'), 'the run size tracks work_mem')
+  // Result is still correct.
+  assert(eq(atMem(e, 100, 'SELECT k FROM ms ORDER BY k LIMIT 3').map((r) => r[0]), [1, 2, 3]), 'external sort order')
+})
+
+test('execution', 'spilling hash aggregate equals the in-memory aggregate', () => {
+  const e = new Engine()
+  // 1200 rows over 60 groups, with values that exercise SUM/COUNT/MIN/MAX and a
+  // DISTINCT aggregate (whose per-group set must survive the spill intact).
+  gen(e, 'CREATE TABLE agg (g INTEGER, v INTEGER)', 'agg', 'g, v', 1200, 'n % 60, n % 200')
+  const q = 'SELECT g, COUNT(*), SUM(v), MIN(v), MAX(v), COUNT(DISTINCT v) FROM agg GROUP BY g ORDER BY g'
+  const spilled = atMem(e, 8, q)
+  const full = atMem(e, 'default', q)
+  assert(eq(spilled, full), 'grace hash aggregate must match the in-memory result')
+  assert(spilled.length === 60, 'all 60 groups present after spilling')
+  const plan = explainAt(e, 8, 'SELECT g, COUNT(*) FROM agg GROUP BY g')
+  assert(plan.includes('grace hash aggregate'), 'EXPLAIN should show a grace hash aggregate')
+  assert(/spilled [1-9]/.test(plan), 'EXPLAIN should report spilled rows')
+})
+
+test('execution', 'array_agg stays in arrival order across an aggregate spill', () => {
+  const e = new Engine()
+  gen(e, 'CREATE TABLE ord (g INTEGER, v INTEGER)', 'ord', 'g, v', 400, 'n % 40, n')
+  const q = 'SELECT g, array_agg(v) FROM ord GROUP BY g ORDER BY g'
+  assert(eq(atMem(e, 4, q), atMem(e, 'default', q)), 'array_agg order preserved through spill')
+})
+
+test('execution', 'grace hash join equals the in-memory join (every flavour)', () => {
+  const e = new Engine()
+  // Unindexed join keys + under the merge-join threshold ⇒ the planner picks a
+  // HashJoin; duplicates and NULL keys stress the partitioning + outer-join paths.
+  gen(e, 'CREATE TABLE jl (id INTEGER, k INTEGER)', 'jl', 'id, k', 300, 'n, CASE WHEN n <= 6 THEN NULL ELSE n % 37 END')
+  gen(e, 'CREATE TABLE jr (id INTEGER, k INTEGER)', 'jr', 'id, k', 280, 'n, CASE WHEN n <= 4 THEN NULL ELSE n % 41 END')
+  for (const type of ['INNER', 'LEFT', 'RIGHT', 'FULL']) {
+    const join = type === 'INNER' ? 'JOIN' : `${type} JOIN`
+    const q = `SELECT jl.id, jl.k, jr.id, jr.k FROM jl ${join} jr ON jl.k = jr.k ORDER BY jl.id, jr.id, jl.k, jr.k`
+    const spilled = atMem(e, 8, q)
+    const full = atMem(e, 'default', q)
+    assert(eq(spilled, full), `grace ${type} join must match in-memory`)
+  }
+  const plan = explainAt(e, 8, 'SELECT jl.id FROM jl JOIN jr ON jl.k = jr.k')
+  assert(plan.includes('HashJoin') && plan.includes('grace hash join'), 'EXPLAIN should show a grace hash join')
+})
+
+test('execution', 'a deeply skewed aggregate still terminates and is correct', () => {
+  const e = new Engine()
+  // Few groups but many rows per group: spilling can re-spill a partition whose
+  // keys collide; the recursion depth guard must still produce the right answer.
+  gen(e, 'CREATE TABLE skew (g INTEGER, v INTEGER)', 'skew', 'g, v', 800, 'n % 3, n')
+  const q = 'SELECT g, COUNT(*), SUM(v) FROM skew GROUP BY g ORDER BY g'
+  assert(eq(atMem(e, 2, q), atMem(e, 'default', q)), 'highly skewed aggregate stays correct under a tiny budget')
+})
+
+test('execution', 'the statement parse cache serves repeated read-only queries', () => {
+  const e = seeded()
+  const before = e.parseCacheStats().hits
+  const sql = 'SELECT id, name FROM products ORDER BY id LIMIT 3'
+  const a = rowsOf(e, sql)
+  const b = rowsOf(e, sql)
+  const c = rowsOf(e, sql)
+  assert(eq(a, b) && eq(b, c), 'cached parse yields identical results')
+  assert(e.parseCacheStats().hits >= before + 2, 'repeated runs register cache hits')
+  // A DML statement is never cached (so it can never serve a stale/mutated plan).
+  const m0 = e.parseCacheStats().misses
+  e.execute("UPDATE products SET price = price WHERE id = 1")
+  e.execute("UPDATE products SET price = price WHERE id = 1")
+  assert(e.parseCacheStats().misses >= m0 + 2, 'DML is re-parsed every time, never cached')
+})
+
 export function runTests(): TestResult[] {
   return cases.concat(mvccCases).concat(recoveryCases).map((c) => {
     try {
