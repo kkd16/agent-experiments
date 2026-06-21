@@ -78,6 +78,8 @@ export interface PlanEnv {
   outer: OuterScope[]
   /** Names of views currently being materialized, to break definition cycles. */
   viewTrail?: Set<string>
+  /** The session `work_mem` budget (rows) spillable operators plan under. */
+  workMem?: number
 }
 
 /** Run an operator to completion, collecting all rows. */
@@ -1090,13 +1092,14 @@ function chooseEquiJoin(
   schema: Schema,
   estRows?: number,
   equi?: EquiJoin,
+  workMem?: number,
 ): Operator {
   const big = left.estRows >= MERGE_JOIN_MIN_ROWS && right.estRows >= MERGE_JOIN_MIN_ROWS
   const balanced = Math.max(left.estRows, right.estRows) <= 4 * Math.min(left.estRows, right.estRows) + 1
   const base: Operator =
     big && balanced
       ? new MergeJoin(left, right, leftKey, rightKey, type, schema, estRows)
-      : new HashJoin(left, right, leftKey, rightKey, type, schema, estRows)
+      : new HashJoin(left, right, leftKey, rightKey, type, schema, estRows, workMem)
   // Take an index nested-loop join only when it's available *and* cheaper.
   if (equi) {
     const inlj = tryIndexNestedLoop(left, right, leftKey, type, schema, equi, estRows)
@@ -1216,10 +1219,10 @@ function joinStep(
     const equi = extractEquiJoin(onExpr, left.schema, rightSchema)
     if (equi && equi.residual.length === 0) {
       const card = equiJoinCard(left.op, rightOp, equi, 'INNER', sc)
-      op = chooseEquiJoin(left.op, rightOp, equi.leftKey, equi.rightKey, 'INNER', combined, card, equi)
+      op = chooseEquiJoin(left.op, rightOp, equi.leftKey, equi.rightKey, 'INNER', combined, card, equi, env.workMem)
     } else if (equi) {
       const card = equiJoinCard(left.op, rightOp, equi, 'INNER', sc)
-      op = chooseEquiJoin(left.op, rightOp, equi.leftKey, equi.rightKey, 'INNER', combined, card)
+      op = chooseEquiJoin(left.op, rightOp, equi.leftKey, equi.rightKey, 'INNER', combined, card, undefined, env.workMem)
       const resid = andAll(equi.residual)!
       op = new Filter(op, compileExpr(resid, exprCtx(combined, env)), exprLabel(resid))
     } else {
@@ -1356,8 +1359,8 @@ function planJoinOrder(
 
 // ============================================================================
 // Public entry point: plan a (possibly compound, possibly WITH-prefixed) query.
-export function planSelect(stmt: SelectStmt, db: Database): Operator {
-  return planQuery(stmt, { db, relations: new Map(), outer: [] })
+export function planSelect(stmt: SelectStmt, db: Database, workMem?: number): Operator {
+  return planQuery(stmt, { db, relations: new Map(), outer: [], workMem })
 }
 
 /** Plan a SELECT while recording the join-order DP search, for the Optimizer Lab.
@@ -1429,7 +1432,12 @@ function planQuery(stmt: SelectStmt, env: PlanEnv): Operator {
     for (let i = 0; i < ops.length; i++) {
       op = new SetOpExec(op, operands[i + 1], ops[i].op, ops[i].all, unified)
     }
-    if (stmt.orderBy.length) op = new Sort(op, compoundSortKeys(stmt.orderBy, op.schema, env2))
+    if (stmt.orderBy.length) {
+      // A set-op's ORDER BY feeds straight into LIMIT (no Project/Distinct
+      // between), so a top-N bound is safe here too.
+      const topN = stmt.limit !== undefined ? stmt.limit + (stmt.offset ?? 0) : undefined
+      op = new Sort(op, compoundSortKeys(stmt.orderBy, op.schema, env2), { limit: topN, workMem: env2.workMem })
+    }
     if (stmt.limit !== undefined) op = new Limit(op, stmt.limit, stmt.offset ?? 0)
     return op
   }
@@ -1495,7 +1503,7 @@ function relationFor(item: FromItem | JoinClause, env: PlanEnv): { table: Table;
     const childTrail = new Set(trail)
     childTrail.add(name.toLowerCase())
     const alias = item.alias ?? view.name
-    const viewEnv: PlanEnv = { db: env.db, relations: new Map(), outer: [], viewTrail: childTrail }
+    const viewEnv: PlanEnv = { db: env.db, relations: new Map(), outer: [], viewTrail: childTrail, workMem: env.workMem }
     const t = materialize(view.select, viewEnv, alias, view.columns)
     return { table: t, alias }
   }
@@ -1790,10 +1798,10 @@ function planCore(stmt: SelectStmt, env: PlanEnv, embedOrderLimit: boolean): Ope
         const equi = extractEquiJoin(join.on, schema, rSchema)
         if (equi && equi.residual.length === 0) {
           const card = equiJoinCard(op, rightOp, equi, outerType, statTables)
-          op = chooseEquiJoin(op, rightOp, equi.leftKey, equi.rightKey, outerType, combined, card, equi)
+          op = chooseEquiJoin(op, rightOp, equi.leftKey, equi.rightKey, outerType, combined, card, equi, env.workMem)
         } else if (equi && join.type === 'INNER') {
           const card = equiJoinCard(op, rightOp, equi, 'INNER', statTables)
-          op = chooseEquiJoin(op, rightOp, equi.leftKey, equi.rightKey, 'INNER', combined, card)
+          op = chooseEquiJoin(op, rightOp, equi.leftKey, equi.rightKey, 'INNER', combined, card, undefined, env.workMem)
           const resid = andAll(equi.residual)!
           op = new Filter(op, compileExpr(resid, exprCtx(combined, env)), exprLabel(resid))
         } else {
@@ -1916,7 +1924,7 @@ function planCore(stmt: SelectStmt, env: PlanEnv, embedOrderLimit: boolean): Ope
         )
       : undefined
     const gsetSlot = stmt.groupBy.length + aggExprs.length
-    op = new HashAggregate(op, groupEvals, aggSpecs, aggSchema, groupingSetsIdx, true)
+    op = new HashAggregate(op, groupEvals, aggSpecs, aggSchema, groupingSetsIdx, true, env.workMem)
 
     // GROUPING(a, …) → an integer whose bits flag which arguments were rolled up
     // (1 = aggregated away to NULL in this grouping set, 0 = present).
@@ -2038,7 +2046,12 @@ function planCore(stmt: SelectStmt, env: PlanEnv, embedOrderLimit: boolean): Ope
       }
       return { eval: compileExpr(e, outCtx), dir: o.dir }
     })
-    op = new Sort(op, keys)
+    // Top-N heapsort: a LIMIT with no intervening DISTINCT lets the Sort keep only
+    // the top (limit + offset) rows. With a DISTINCT between Sort and Limit the
+    // row count changes downstream, so we must sort everything.
+    const topN =
+      embedOrderLimit && stmt.limit !== undefined && !stmt.distinct ? stmt.limit + (stmt.offset ?? 0) : undefined
+    op = new Sort(op, keys, { limit: topN, workMem: env.workMem })
   }
 
   // --- projection -----------------------------------------------------------
@@ -2144,7 +2157,7 @@ function compileSubqueryExpr(
       s.row = v
     },
   }))
-  const innerEnv: PlanEnv = { db: env.db, relations: env.relations, outer: [...wrappedOuter, scope] }
+  const innerEnv: PlanEnv = { db: env.db, relations: env.relations, outer: [...wrappedOuter, scope], workMem: env.workMem }
   const innerOp = planQuery(e.select, innerEnv)
 
   if (e.kind === 'subquery' || e.kind === 'in_subquery' || e.kind === 'quantified') {
@@ -2298,7 +2311,7 @@ function materialize(stmt: SelectStmt, env: PlanEnv, name: string, columnNames?:
 // Build a child env with each CTE materialized (earlier CTEs visible to later).
 function withCtes(stmt: SelectStmt, env: PlanEnv): PlanEnv {
   const relations = new Map(env.relations)
-  const childEnv: PlanEnv = { db: env.db, relations, outer: env.outer }
+  const childEnv: PlanEnv = { db: env.db, relations, outer: env.outer, workMem: env.workMem }
   for (const cte of stmt.ctes!) {
     const t =
       stmt.recursive && isRecursiveCte(cte)
@@ -2379,7 +2392,7 @@ function materializeRecursive(cte: CteDef, env: PlanEnv): Table {
     for (const r of frontier) wt.insertRawRow(r.slice())
     const childRel = new Map(env.relations)
     childRel.set(cte.name.toLowerCase(), wt)
-    const childEnv: PlanEnv = { db: env.db, relations: childRel, outer: env.outer }
+    const childEnv: PlanEnv = { db: env.db, relations: childRel, outer: env.outer, workMem: env.workMem }
     const next: Row[] = []
     for (const b of recursives) {
       const op = planQuery(b, childEnv)

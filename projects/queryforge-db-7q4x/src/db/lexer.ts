@@ -62,6 +62,9 @@ export const KEYWORDS = new Set([
   // (LOOP/WHILE/FOR/RETURN/EXIT/CONTINUE) are intentionally left non-reserved.
   'FUNCTION', 'PROCEDURE', 'TRIGGER', 'RETURNS', 'DECLARE', 'RAISE', 'PERFORM',
   'ELSIF', 'BEFORE', 'AFTER', 'EXECUTE', 'CALL', 'LANGUAGE',
+  // v17 — session settings. SET is already reserved (UPDATE … SET); SHOW/RESET
+  // only ever appear in statement position, matched by token value.
+  'SHOW', 'RESET',
 ])
 
 // Multi-character operators, longest first so the scanner is greedy. The

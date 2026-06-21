@@ -1824,3 +1824,270 @@ body {
   .rl-log-head, .rl-log-row { grid-template-columns: 2rem 4.2rem 2.2rem 2.2rem 1fr; }
   .rl-log-links { display: none; }
 }
+
+/* ===========================================================================
+   Execution Lab (v17) — memory-bounded execution visualizer
+   =========================================================================== */
+.exec-lab {
+  padding: 18px 22px 40px;
+  max-width: 1180px;
+  margin: 0 auto;
+}
+.exec-lab .lab-head h2 {
+  margin: 0 0 4px;
+  font-size: 19px;
+  letter-spacing: 0.2px;
+}
+.exec-lab .lab-sub {
+  margin: 0 0 16px;
+  color: var(--txt-dim);
+  font-size: 13px;
+}
+.exec-scenarios {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.exec-scn {
+  background: var(--bg-2);
+  color: var(--txt-dim);
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  padding: 7px 13px;
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.12s ease;
+}
+.exec-scn:hover {
+  color: var(--txt);
+  border-color: var(--line-2);
+}
+.exec-scn.active {
+  background: linear-gradient(180deg, rgba(110, 168, 254, 0.18), rgba(110, 168, 254, 0.06));
+  color: var(--accent);
+  border-color: var(--accent);
+}
+.exec-blurb {
+  color: var(--txt-dim);
+  font-size: 13px;
+  line-height: 1.55;
+  margin: 4px 0 16px;
+  max-width: 880px;
+}
+.exec-controls {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  flex-wrap: wrap;
+  background: var(--bg-1);
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  padding: 13px 16px;
+  margin-bottom: 16px;
+}
+.exec-slider-label {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  min-width: 320px;
+  flex: 1;
+  font-size: 12.5px;
+  color: var(--txt-dim);
+}
+.exec-slider-label strong {
+  color: var(--accent-2);
+  font-family: var(--mono);
+}
+.exec-slider-label input[type='range'] {
+  width: 100%;
+  accent-color: var(--accent);
+}
+.exec-note {
+  font-size: 12px;
+  color: var(--txt-faint);
+  max-width: 360px;
+}
+.lab-error {
+  color: var(--red);
+  background: rgba(255, 122, 144, 0.08);
+  border: 1px solid rgba(255, 122, 144, 0.3);
+  border-radius: 8px;
+  padding: 12px 14px;
+  font-family: var(--mono);
+  font-size: 12.5px;
+}
+.exec-verdict-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+.exec-verdict {
+  font-weight: 700;
+  font-size: 13px;
+  padding: 5px 12px;
+  border-radius: 7px;
+}
+.exec-verdict.ok {
+  color: var(--green);
+  background: rgba(87, 217, 138, 0.12);
+  border: 1px solid rgba(87, 217, 138, 0.35);
+}
+.exec-verdict.bad {
+  color: var(--red);
+  background: rgba(255, 122, 144, 0.12);
+  border: 1px solid rgba(255, 122, 144, 0.4);
+}
+.exec-stat {
+  font-size: 12.5px;
+  color: var(--txt);
+  font-family: var(--mono);
+}
+.exec-stat.dim {
+  color: var(--txt-faint);
+}
+.exec-query {
+  background: var(--bg-1);
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--accent);
+  border-radius: 8px;
+  padding: 11px 14px;
+  margin-bottom: 16px;
+  overflow-x: auto;
+}
+.exec-query code {
+  font-family: var(--mono);
+  font-size: 12.5px;
+  color: var(--txt);
+  white-space: pre;
+}
+.exec-plans {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 18px;
+}
+@media (max-width: 900px) {
+  .exec-plans {
+    grid-template-columns: 1fr;
+  }
+}
+.exec-plan-col {
+  min-width: 0;
+}
+.exec-plan-title {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--accent);
+  margin-bottom: 8px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+.exec-plan-title.dim {
+  color: var(--txt-faint);
+}
+.exec-lab .plan-root,
+.exec-lab .plan-children {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.exec-lab .plan-children {
+  padding-left: 16px;
+  border-left: 1px dashed var(--line-2);
+  margin-left: 8px;
+  margin-top: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.exec-node {
+  background: var(--bg-2);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 9px 11px;
+}
+.exec-node.inmem {
+  border-color: var(--line-2);
+}
+.exec-node.spilled {
+  border-color: rgba(255, 203, 107, 0.5);
+  background: linear-gradient(180deg, rgba(255, 203, 107, 0.07), transparent);
+}
+.exec-node-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 5px;
+}
+.exec-node .plan-op {
+  font-weight: 700;
+  font-size: 12.5px;
+  color: var(--txt);
+}
+.exec-node .plan-detail {
+  font-size: 11.5px;
+  color: var(--txt-dim);
+}
+.exec-method {
+  margin-left: auto;
+  font-size: 11px;
+  font-family: var(--mono);
+  color: var(--accent-2);
+  background: rgba(87, 217, 195, 0.1);
+  border: 1px solid rgba(87, 217, 195, 0.25);
+  border-radius: 5px;
+  padding: 1px 7px;
+}
+.exec-method.spilled {
+  color: var(--amber);
+  background: rgba(255, 203, 107, 0.12);
+  border-color: rgba(255, 203, 107, 0.35);
+}
+.exec-node .plan-metrics {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  font-size: 11.5px;
+  color: var(--txt-dim);
+  font-family: var(--mono);
+  margin-bottom: 6px;
+}
+.exec-spill-badge {
+  color: var(--amber) !important;
+  font-weight: 700;
+}
+.exec-mem-bar {
+  height: 6px;
+  background: var(--bg-3);
+  border-radius: 3px;
+  overflow: hidden;
+  margin-bottom: 6px;
+}
+.exec-mem-fill {
+  height: 100%;
+  background: linear-gradient(90deg, var(--accent), var(--accent-2));
+  border-radius: 3px;
+  transition: width 0.2s ease;
+}
+.exec-mem-fill.over {
+  background: linear-gradient(90deg, var(--amber), var(--red));
+}
+.exec-node .plan-extra {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 11px;
+  color: var(--txt-faint);
+  font-family: var(--mono);
+}
+.exec-explain {
+  margin-top: 18px;
+  color: var(--txt-dim);
+  font-size: 12.5px;
+  line-height: 1.6;
+  max-width: 900px;
+}

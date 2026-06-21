@@ -173,9 +173,40 @@ class Parser {
         return this.parseTxn()
       case 'CALL':
         return this.parseCall()
+      case 'SET':
+      case 'RESET':
+        return this.parseSet()
+      case 'SHOW':
+        return this.parseShow()
       default:
         throw this.err(`unexpected statement; expected SELECT/INSERT/UPDATE/DELETE/CREATE/DROP/EXPLAIN`)
     }
+  }
+
+  /** `SET name = value` | `SET name TO value` | `SET name TO DEFAULT` | `RESET name`.
+   *  A session-configuration knob; the value is an integer (e.g. `work_mem`). */
+  private parseSet(): Statement {
+    const verb = this.next().value // SET | RESET
+    const name = this.parseIdent('setting name')
+    if (verb === 'RESET') return { kind: 'set', name, value: null }
+    if (!this.accept('=') && !this.accept('TO')) throw this.err('expected "=" or "TO" in SET')
+    if (this.accept('DEFAULT')) return { kind: 'set', name, value: null }
+    return { kind: 'set', name, value: this.parseIntValue('a setting value') }
+  }
+
+  /** `SHOW name` — report the current value of a session setting. */
+  private parseShow(): Statement {
+    this.next() // SHOW
+    return { kind: 'show', name: this.parseIdent('setting name') }
+  }
+
+  /** Read a (possibly signed) non-negative integer token. */
+  private parseIntValue(what: string): number {
+    const neg = this.accept('-')
+    const t = this.peek()
+    if (t.kind !== 'number' || !/^\d+$/.test(t.value)) throw this.err(`expected ${what}`)
+    this.pos++
+    return neg ? -Number(t.value) : Number(t.value)
   }
 
   private parseTxn(): Statement {

@@ -504,6 +504,19 @@ export interface TxnStmt {
   /** Savepoint name for `savepoint` / `release` / `rollback_to`. */
   savepoint?: string
 }
+/** `SET name = value` / `SET name TO value` / `RESET name` (value === null ⇒ reset
+ *  the setting to its default). A session-configuration knob — e.g. `work_mem`. */
+export interface SetStmt {
+  kind: 'set'
+  name: string
+  /** The new integer value, or null for `RESET` / `SET … TO DEFAULT`. */
+  value: number | null
+}
+/** `SHOW name` — report the current value of a session setting as a 1×1 result. */
+export interface ShowStmt {
+  kind: 'show'
+  name: string
+}
 
 // ---------------------------------------------------------------------------
 // PL/QF — the procedural language (stored functions/procedures + triggers)
@@ -603,6 +616,8 @@ export type Statement =
   | SelectStmt
   | ExplainStmt
   | TxnStmt
+  | SetStmt
+  | ShowStmt
   | CreateRoutineStmt
   | DropRoutineStmt
   | CallStmt

@@ -222,6 +222,17 @@ const SECTIONS: Section[] = [
     ],
   },
   {
+    title: 'Memory & spilling  —  work_mem',
+    entries: [
+      { syntax: 'SET work_mem = N · SET work_mem TO N · RESET work_mem · SHOW work_mem', note: 'The per-operator in-memory row budget (default 100 000). A blocking operator that would exceed it spills to “disk” and finishes the right answer instead of failing. RESET (or SET … TO DEFAULT) restores the default. Watch it all in the Execution Lab.' },
+      { syntax: 'top-N heapsort', note: 'ORDER BY … LIMIT k (with no DISTINCT in between) keeps only the top k + offset rows in a bounded max-heap — O(k) memory, O(n·log k) time — instead of sorting the whole input. Provably identical to a full sort then LIMIT (ties break on input position).' },
+      { syntax: 'external merge sort', note: 'A sort larger than work_mem generates work_mem-sized sorted runs and k-way-merges them. A smaller budget means more, smaller runs and more merge passes — reported in EXPLAIN.' },
+      { syntax: 'grace hash aggregate', note: 'A GROUP BY with more distinct groups than work_mem partitions the overflow keys’ rows by a hash and spills them, then re-aggregates each partition independently (recursing on skew). Because every row of a group shares its key, a group is never split — COUNT(DISTINCT …) and ARRAY_AGG stay exact.' },
+      { syntax: 'grace hash join', note: 'When the build side exceeds work_mem, both inputs are partitioned by a hash of the join key and joined partition-by-partition (recursing on a salt for skew). NULL keys (which never equijoin) are streamed separately so every outer-join flavour stays correct. EXPLAIN ANALYZE reports peak memory, spilled rows, partitions and passes per operator.' },
+      { syntax: 'statement cache', note: 'Repeated read-only statement scripts reuse a cached parse (the AST is re-planned every run, so it never goes stale as statistics or the catalog change). DML/DDL is always re-parsed.' },
+    ],
+  },
+  {
     title: 'Transactions',
     entries: [
       { syntax: 'BEGIN; … COMMIT;', note: 'Snapshot taken at BEGIN; COMMIT keeps changes.' },

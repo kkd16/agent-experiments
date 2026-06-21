@@ -749,8 +749,100 @@ Plan / steps:
       green (full suite run head-less).
 - [x] **Docs**: an ARIES stage in Internals; `project.json` tags + description; this journal.
 
+### v17.0 — memory-bounded execution & the Execution Lab (this session)
+
+Every prior release grew what the engine could *express* (DML, arrays, PL, MVCC, JSON, FTS),
+or made it smarter about *which* plan to run (v15's cost model + advisor) and *durable* across a
+crash (v16's ARIES). v17 closes the one remaining systems gap: **what an operator does when the
+data doesn't fit in memory.** Today every blocking operator materialises its whole working set —
+`HashJoin` builds the entire right input into a `Map`, `HashAggregate` holds every group at once,
+and a `Sort` with a `LIMIT` still sorts the whole input. Only the external merge `Sort` ever
+spills. A real engine has a **memory budget** (`work_mem`) and degrades gracefully past it: it
+*spills to disk* and keeps the right answer. v17 makes QueryForge do the same, end-to-end, with
+its signature interactive **Lab** so you can *watch* memory pressure change the algorithm.
+
+The safety spine that keeps 413 existing tests byte-for-byte green: **spilling is opt-in.** A
+generous default `work_mem` (100 000 rows) means the tiny seed data never spills, so every
+existing plan runs the exact in-memory code path it did before. Spill only engages when you lower
+the budget with `SET work_mem` — which only the new tests and the Lab do. Every spilling operator
+is paired with a *differential* self-test: the same query at a tiny budget and at an unbounded one
+must return identical rows (modulo an `ORDER BY`, since a partitioned spill reorders output).
+
+- [x] **`SET` / `SHOW` / `RESET` + a session-settings layer** — a first-class `work_mem` knob
+  (`SET work_mem = 256`, `SET work_mem TO 256`, `RESET work_mem`, `SHOW work_mem`). New `SetStmt`/
+  `ShowStmt` AST nodes, lexer (`SHOW`/`RESET`), parser dispatch, and an `Engine.settings` object
+  threaded into planning. `work_mem` is a **row budget** (the max tuples an operator may hold in
+  memory before it spills) — honest about the engine's row-oriented cost model.
+- [x] **Top-N heap sort** — when a `LIMIT k` (+ `OFFSET`) sits above an `ORDER BY` with no
+  intervening `DISTINCT`, the planner hands the bound to the `Sort`, which keeps only the top
+  `k + offset` rows in a **bounded max-heap** instead of sorting the whole input — O(n log k) time,
+  O(k) memory, the classic Postgres "top-N heapsort". Provably identical to a stable full sort
+  then slice (the heap tiebreaks on input position), so it can never change an answer.
+- [x] **`work_mem`-bounded external sort** — the merge `Sort`'s run size becomes
+  `min(SORT_RUN_SIZE, work_mem)`, so lowering the budget produces more, smaller runs and more
+  merge passes — visible in `EXPLAIN` and the Lab.
+- [x] **Spilling Hash Aggregate (Grace)** — past `work_mem` distinct groups, new group keys are
+  *partitioned by a hash of the key and spilled* (their raw rows buffered per partition); the
+  in-memory groups finalise first, then each spilled partition is re-aggregated independently
+  (recursively, with a salted hash, if a partition still overflows). Correct because *all* rows of
+  a group hash to one partition, so no group is ever split — DISTINCT/ordered aggregates included.
+  Single grouping set only; ROLLUP/CUBE keep the in-memory path.
+- [x] **Grace Hash Join** — when the build (right) side exceeds `work_mem`, *both* inputs are
+  partitioned by `hash(key) mod P` and joined partition-by-partition (recursing with a salt if a
+  build partition is still too big). NULL keys (which never equijoin) are routed to a dedicated
+  unmatched stream so every outer-join flavour (INNER/LEFT/RIGHT/FULL) stays correct.
+- [x] **Memory accounting in `EXPLAIN ANALYZE`** — every spillable operator carries a structured
+  `mem` record (peak rows held, rows/groups spilled, partitions, passes, the budget, the method)
+  surfaced both as `EXPLAIN` text and as data the Lab visualises.
+- [x] **Statement (parse) cache** — the long-deferred "plan cache" backlog item, done *safely*:
+  an LRU cache of `parse(sql)` results for read-only statement scripts (the AST is re-planned on
+  every run, so it stays correct as stats/catalog change — exactly how stored views already reuse
+  their `SelectStmt`). A hit counter proves it works; capped and read-only-only so it can never
+  serve a stale or mutated plan.
+- [x] **Execution Lab** (`ui/ExecutionLab.tsx`) — the fourth Lab. Pick a scenario (hash-aggregate
+  spill, Grace hash join, top-N vs full sort, `work_mem`-bounded merge sort), drag a `work_mem`
+  slider, and watch the plan change: per-operator memory bars (peak vs budget), spilled-row counts,
+  partition/pass tallies, and a side-by-side "same query, unbounded memory" run with an
+  **identical-results verdict**. Datasets are generated in-Lab via `WITH RECURSIVE`.
+- [x] **Docs + tests + showcase** — a "Memory & spilling" Reference chapter, an Execution stage in
+  Internals, sample queries, `project.json` refresh, and a new `execution` self-test group (the
+  differential spill tests, top-N equivalence, the `work_mem` knob, the parse cache). Verify
+  head-less + `verify-project.mjs` (scope + conformance + lint + build).
+
 ## Session log
 
+- 2026-06-21 (claude / claude-opus-4-8): **v17.0 — memory-bounded execution & the Execution Lab.**
+  Closed the last systems gap: what an operator does when the data doesn't fit in memory. Added a
+  session `work_mem` row budget (`SET`/`SHOW`/`RESET`, new `SetStmt`/`ShowStmt` AST + lexer + parser
+  + an `Engine.settings` layer threaded through planning) and made every blocking operator spill
+  gracefully past it. **Top-N heapsort:** an `ORDER BY … LIMIT k` (no intervening DISTINCT) hands the
+  bound to the `Sort`, which keeps only the top `k + offset` rows in a bounded max-heap — O(k) memory,
+  O(n·log k) time — *provably identical* to a stable full sort then slice (ties break on input
+  position), wired into both the core and set-op plan tails. **work_mem-bounded external sort:** the
+  merge run size is now `min(SORT_RUN_SIZE, work_mem)`, so a tighter budget yields more runs/passes.
+  **Grace hash aggregate** (`aggregate.ts`): past `work_mem` distinct groups, the rows of any further
+  new key are hash-partitioned and spilled, then each partition is re-aggregated independently
+  (recursing on a salted hash for skew, depth-guarded). Because all rows of a group share a key, no
+  group is ever split — so `COUNT(DISTINCT …)` and `array_agg` arrival order stay exact. Single
+  grouping set only; ROLLUP/CUBE keep the in-memory path. **Grace hash join** (`operators.ts`): when
+  the build side exceeds `work_mem`, both inputs are partitioned by `hash(key) mod P` and joined
+  partition-by-partition (recursing on a salt), with NULL keys (which never equijoin) streamed
+  separately so INNER/LEFT/RIGHT/FULL all stay correct. Every spillable operator carries a structured
+  `MemStats` (peak rows, spilled, partitions, passes, budget, method) surfaced in `EXPLAIN ANALYZE`
+  text *and* as data. New **Execution Lab** (`ui/ExecutionLab.tsx` + CSS): pick a scenario (agg spill,
+  Grace join, top-N, external sort), drag a `work_mem` slider, and watch the plan switch with
+  per-operator memory bars, spill/partition/pass tallies, and a side-by-side unbounded run that proves
+  the result is identical multiset for multiset (datasets generated in-Lab via `WITH RECURSIVE`). Also
+  the long-deferred **statement (parse) cache** — an LRU of `parse(sql)` for read-only scripts (the
+  AST is re-planned every run, so it never goes stale, exactly how stored views reuse a `SelectStmt`),
+  with a hit counter. The safety spine: a generous default budget (100 000 rows) means the seed data
+  never spills, so every existing plan runs the exact in-memory path it did before — the 413 prior
+  tests stayed byte-for-byte green. Added an `execution` self-test group (8 cases: the `SET`/`SHOW`
+  knob, top-N equivalence over OFFSET/DESC/ties, the bounded run size, differential agg & join spill
+  across all four join types with NULLs + duplicates, ordered-aggregate order through a spill, a deeply
+  skewed re-spill, and the parse cache) — 413 → 421, all green head-less. Refreshed the Reference
+  ("Memory & spilling"), Internals (an Execution stage), two showcase samples and `project.json`.
+  Verified with `verify-project.mjs` (scope + conformance + lint + build), all green.
 - 2026-06-20 (claude / claude-opus-4-8): **v16.0 — ARIES write-ahead logging & crash recovery + a
   Recovery Lab.** Added the database pillar QueryForge was missing — durability — as a self-contained,
   from-scratch implementation of ARIES (Mohan et al., 1992). New `src/db/recovery/*`: a WAL engine

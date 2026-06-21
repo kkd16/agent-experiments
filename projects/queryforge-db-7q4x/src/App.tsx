@@ -11,6 +11,7 @@ import { Internals } from './ui/Internals'
 import { ConcurrencyLab } from './ui/ConcurrencyLab'
 import { RecoveryLab } from './ui/RecoveryLab'
 import { OptimizerLab } from './ui/OptimizerLab'
+import { ExecutionLab } from './ui/ExecutionLab'
 import { CsvImport } from './ui/CsvImport'
 import { SAMPLE_QUERIES } from './db/sampleData'
 import type { QueryResult } from './db/engine'
@@ -30,6 +31,7 @@ const TABS = [
   { id: 'import', label: 'Import CSV' },
   { id: 'reference', label: 'Reference' },
   { id: 'optimizer', label: 'Optimizer Lab' },
+  { id: 'execution', label: 'Execution Lab' },
   { id: 'concurrency', label: 'Concurrency Lab' },
   { id: 'recovery', label: 'Recovery Lab' },
   { id: 'internals', label: 'Internals' },
@@ -137,6 +139,7 @@ export default function App() {
           {route === 'optimizer' && (
             <OptimizerLab engine={engine} version={version} onApply={(ddl) => run(ddl)} />
           )}
+          {route === 'execution' && <ExecutionLab />}
           {route === 'concurrency' && <ConcurrencyLab />}
           {route === 'recovery' && <RecoveryLab />}
           {route === 'internals' && <Internals />}
@@ -150,7 +153,7 @@ export default function App() {
           {schema.reduce((n, t) => n + t.rowCount, 0)} rows ·{' '}
           {schema.reduce((n, t) => n + t.indexes.length, 0)} indexes
         </span>
-        <span className="status-right">IndexScan · Hash/Merge/IndexNL Join · Index Advisor · HashAggregate · Window frames · External Sort · stats · B+Tree · MVCC · ARIES WAL recovery</span>
+        <span className="status-right">IndexScan · Hash/Merge/IndexNL Join · Index Advisor · HashAggregate · Window frames · Spilling exec (work_mem) · MVCC · ARIES WAL recovery</span>
       </footer>
     </div>
   )

@@ -13,6 +13,26 @@ import type { Schema } from './schema'
 import type { Evaluator } from './eval'
 import { ginCandidates, tsMatch, asTsVector, type TsQuery } from './fts'
 
+/** Per-operator memory accounting, attached to spillable operators after they
+ *  run (EXPLAIN ANALYZE) or predicted from estimates (plain EXPLAIN). Drives the
+ *  Execution Lab's memory bars and the `EXPLAIN` spill annotations. */
+export interface MemStats {
+  /** Algorithm actually used, e.g. `top-N heapsort`, `in-memory hash`, `grace hash join`. */
+  method: string
+  /** The `work_mem` budget (rows) this operator was planned under. */
+  budget: number
+  /** Peak rows held in memory at once. */
+  peakRows: number
+  /** Rows (or groups) that spilled past the budget. */
+  spilledRows: number
+  /** Number of partitions a spill fanned out into (Grace operators). */
+  partitions?: number
+  /** Number of merge / re-aggregation passes (recursion depth + 1). */
+  passes?: number
+  /** True once the operator has actually executed (ANALYZE), false for a prediction. */
+  measured: boolean
+}
+
 export interface PlanNode {
   op: string
   detail: string
@@ -21,6 +41,24 @@ export interface PlanNode {
   actualRows: number
   extra: string[]
   children: PlanNode[]
+  /** Memory accounting for spillable operators (Sort / HashAggregate / HashJoin). */
+  mem?: MemStats
+}
+
+/** Default `work_mem` (rows budget). Generous enough that the seed data never
+ *  spills, so existing in-memory plans are byte-for-byte unchanged; lower it with
+ *  `SET work_mem = N` to exercise the spilling paths (and the Execution Lab). */
+export const DEFAULT_WORK_MEM = 100_000
+
+/** A tiny, deterministic string hash (FNV-1a) for partitioning spill buckets.
+ *  Salted so a re-partition of an overflowing partition uses a different split. */
+export function spillHash(s: string, salt: number): number {
+  let h = 0x811c9dc5 ^ salt
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i)
+    h = Math.imul(h, 0x01000193)
+  }
+  return (h >>> 0)
 }
 
 export interface Operator {
@@ -921,6 +959,14 @@ export class LateralJoin implements Operator {
   }
 }
 
+/** A keyed row: the row plus the canonical hash of its (single-column) join key.
+ *  NULL-key rows are excluded — they can never participate in an equijoin. */
+interface Keyed {
+  r: Row
+  hk: string
+}
+const GRACE_MAX_DEPTH = 6
+
 export class HashJoin implements Operator {
   readonly schema: Schema
   estRows: number
@@ -933,9 +979,17 @@ export class HashJoin implements Operator {
   private readonly joinType: 'INNER' | 'LEFT' | 'RIGHT' | 'FULL'
   private readonly leftWidth: number
   private readonly rightWidth: number
+  private readonly workMem: number
   private rows: Row[] = []
   private pos = 0
   private buildSize = 0
+  // Spill diagnostics surfaced in EXPLAIN / the Execution Lab.
+  private grace = false
+  private peakRows = 0
+  private spilledRows = 0
+  private partitions = 0
+  private passes = 1
+  private opened = false
 
   constructor(
     left: Operator,
@@ -945,6 +999,7 @@ export class HashJoin implements Operator {
     joinType: 'INNER' | 'LEFT' | 'RIGHT' | 'FULL',
     schema: Schema,
     estRows?: number,
+    workMem?: number,
   ) {
     this.left = left
     this.right = right
@@ -954,48 +1009,140 @@ export class HashJoin implements Operator {
     this.schema = schema
     this.leftWidth = left.schema.length
     this.rightWidth = right.schema.length
+    this.workMem = workMem ?? DEFAULT_WORK_MEM
     this.estRows = estRows !== undefined ? Math.max(1, Math.round(estRows)) : Math.max(left.estRows, right.estRows)
     this.estCost = left.estCost + right.estCost + (left.estRows + right.estRows) * CPU_OP
   }
   open() {
-    // Build a hash table on the right input (NULL keys never match but are kept
-    // so RIGHT/FULL can still emit them as unmatched).
+    this.opened = true
     const rightRows = drain(this.right)
+    const leftRows = drain(this.left)
     this.buildSize = rightRows.length
-    const table = new Map<string, number[]>()
-    rightRows.forEach((r, i) => {
-      const k = this.rightKey(r)
-      if (k === null) return
-      const key = hashKey([k])
-      const arr = table.get(key)
-      if (arr) arr.push(i)
-      else table.set(key, [i])
-    })
     const emitLeftNull = this.joinType === 'LEFT' || this.joinType === 'FULL'
     const emitRightNull = this.joinType === 'RIGHT' || this.joinType === 'FULL'
-    const rightMatched = new Array(rightRows.length).fill(false)
+    const rNull = new Array(this.rightWidth).fill(null)
+    const lNull = new Array(this.leftWidth).fill(null)
     const out: Row[] = []
+    this.grace = rightRows.length > this.workMem
+    this.peakRows = 0
+    this.spilledRows = 0
+    this.partitions = 0
+    this.passes = 1
 
-    for (const l of drain(this.left)) {
-      const k = this.leftKey(l)
-      const bucket = k === null ? undefined : table.get(hashKey([k]))
-      if (bucket && bucket.length) {
-        for (const j of bucket) {
-          rightMatched[j] = true
-          out.push(l.concat(rightRows[j]))
-        }
-      } else if (emitLeftNull) {
-        out.push(l.concat(new Array(this.rightWidth).fill(null)))
-      }
-    }
-    if (emitRightNull) {
-      const leftNulls = new Array(this.leftWidth).fill(null)
-      rightRows.forEach((r, j) => {
-        if (!rightMatched[j]) out.push(leftNulls.concat(r))
+    if (!this.grace) {
+      // --- in-memory hash join (the build side fits work_mem) -----------------
+      // Identical to the classic single-pass algorithm: build on the right
+      // (NULL keys kept so RIGHT/FULL can still emit them), probe with the left
+      // in order, then trail the unmatched right rows. This path is byte-for-byte
+      // what the engine did before work_mem existed.
+      this.peakRows = rightRows.length
+      const table = new Map<string, number[]>()
+      rightRows.forEach((r, i) => {
+        const k = this.rightKey(r)
+        if (k === null) return
+        const key = hashKey([k])
+        const arr = table.get(key)
+        if (arr) arr.push(i)
+        else table.set(key, [i])
       })
+      const rightMatched = new Array(rightRows.length).fill(false)
+      for (const l of leftRows) {
+        const k = this.leftKey(l)
+        const bucket = k === null ? undefined : table.get(hashKey([k]))
+        if (bucket && bucket.length) {
+          for (const j of bucket) {
+            rightMatched[j] = true
+            out.push(l.concat(rightRows[j]))
+          }
+        } else if (emitLeftNull) {
+          out.push(l.concat(rNull))
+        }
+      }
+      if (emitRightNull) {
+        rightRows.forEach((r, j) => {
+          if (!rightMatched[j]) out.push(lNull.concat(r))
+        })
+      }
+      this.rows = out
+      this.pos = 0
+      return
     }
+
+    // --- Grace hash join (the build side overflows work_mem) ------------------
+    // Split off NULL-key rows: `x = NULL` is unknown, so they never match; they
+    // still surface as unmatched rows for the preserved side of an outer join.
+    const L: Keyed[] = []
+    const R: Keyed[] = []
+    for (const l of leftRows) {
+      const k = this.leftKey(l)
+      if (k === null) {
+        if (emitLeftNull) out.push(l.concat(rNull))
+      } else L.push({ r: l, hk: hashKey([k]) })
+    }
+    for (const r of rightRows) {
+      const k = this.rightKey(r)
+      if (k === null) {
+        if (emitRightNull) out.push(lNull.concat(r))
+      } else R.push({ r, hk: hashKey([k]) })
+    }
+    this.joinPart(L, R, 0, emitLeftNull, emitRightNull, rNull, lNull, out)
+
     this.rows = out
     this.pos = 0
+  }
+  /** Recursive Grace hash join: build the right side in memory once it fits the
+   *  budget, else partition both inputs by a salted hash of the key and recurse.
+   *  Equal keys hash identically, so a group never spans partitions — every
+   *  match (and every outer-join non-match) is found within one partition. */
+  private joinPart(
+    L: Keyed[],
+    R: Keyed[],
+    depth: number,
+    emitLeftNull: boolean,
+    emitRightNull: boolean,
+    rNull: SqlValue[],
+    lNull: SqlValue[],
+    out: Row[],
+  ): void {
+    if (R.length <= this.workMem || depth >= GRACE_MAX_DEPTH) {
+      // In-memory hash join: build on the (now budget-sized) right partition.
+      this.peakRows = Math.max(this.peakRows, R.length)
+      const table = new Map<string, number[]>()
+      R.forEach((r, i) => {
+        const arr = table.get(r.hk)
+        if (arr) arr.push(i)
+        else table.set(r.hk, [i])
+      })
+      const matched = emitRightNull ? new Array(R.length).fill(false) : null
+      for (const l of L) {
+        const bucket = table.get(l.hk)
+        if (bucket && bucket.length) {
+          for (const j of bucket) {
+            if (matched) matched[j] = true
+            out.push(l.r.concat(R[j].r))
+          }
+        } else if (emitLeftNull) {
+          out.push(l.r.concat(rNull))
+        }
+      }
+      if (matched) {
+        for (let j = 0; j < R.length; j++) if (!matched[j]) out.push(lNull.concat(R[j].r))
+      }
+      return
+    }
+    // Partition both sides and recurse — the build side doesn't fit in work_mem.
+    const P = Math.min(64, Math.max(2, Math.ceil(R.length / Math.max(1, this.workMem))))
+    this.partitions = Math.max(this.partitions, P)
+    this.passes = Math.max(this.passes, depth + 2)
+    this.spilledRows += L.length + R.length
+    const lp: Keyed[][] = Array.from({ length: P }, () => [])
+    const rp: Keyed[][] = Array.from({ length: P }, () => [])
+    for (const l of L) lp[spillHash(l.hk, depth + 1) % P].push(l)
+    for (const r of R) rp[spillHash(r.hk, depth + 1) % P].push(r)
+    for (let p = 0; p < P; p++) {
+      if (rp[p].length === 0 && lp[p].length === 0) continue
+      this.joinPart(lp[p], rp[p], depth + 1, emitLeftNull, emitRightNull, rNull, lNull, out)
+    }
   }
   next(): Row | null {
     if (this.pos >= this.rows.length) return null
@@ -1006,14 +1153,32 @@ export class HashJoin implements Operator {
     this.rows = []
   }
   plan(): PlanNode {
+    const willSpill = this.right.estRows > this.workMem
+    const measured = this.opened
+    const grace = measured ? this.grace : willSpill
+    const extra = grace
+      ? measured
+        ? [`grace hash join: ${this.partitions} partitions, ${this.passes} pass(es), spilled ${this.spilledRows} rows (work_mem ${this.workMem})`]
+        : [`grace hash join (build ${this.right.estRows} rows > work_mem ${this.workMem})`]
+      : [`build hash table on right input (${this.buildSize || this.right.estRows} rows)`]
+    const mem: MemStats = {
+      method: grace ? 'grace hash join' : 'in-memory hash',
+      budget: this.workMem,
+      peakRows: measured ? this.peakRows : Math.min(this.right.estRows, this.workMem),
+      spilledRows: measured ? this.spilledRows : grace ? this.right.estRows : 0,
+      partitions: grace ? (measured ? this.partitions : Math.ceil(this.right.estRows / Math.max(1, this.workMem))) : undefined,
+      passes: measured ? this.passes : grace ? 2 : 1,
+      measured,
+    }
     return {
       op: `HashJoin (${this.joinType})`,
       detail: '',
       estRows: this.estRows,
       estCost: this.estCost,
       actualRows: this.actualRows,
-      extra: [`build hash table on right input (${this.buildSize || this.right.estRows} rows)`],
+      extra,
       children: [this.left.plan(), this.right.plan()],
+      mem,
     }
   }
 }
@@ -1228,7 +1393,8 @@ export interface SortKey {
 // Rows-per-sorted-run before the Sort spills to an external (run-generating)
 // merge sort. Small inputs sort in one pass; larger ones are split into sorted
 // runs that are then k-way merged — the classic external-sort algorithm, here
-// reported in EXPLAIN so you can watch it kick in.
+// reported in EXPLAIN so you can watch it kick in. The effective run size is
+// capped by `work_mem`, so lowering the budget produces more, smaller runs.
 const SORT_RUN_SIZE = 1024
 
 export class Sort implements Operator {
@@ -1238,21 +1404,31 @@ export class Sort implements Operator {
   actualRows = 0
   private readonly child: Operator
   private readonly keys: SortKey[]
+  /** Top-N bound: rows to retain (LIMIT + OFFSET), or undefined for a full sort. */
+  private readonly topN: number | undefined
+  private readonly workMem: number
   private rows: Row[] = []
   private pos = 0
-  // Diagnostics surfaced in EXPLAIN.
+  // Diagnostics surfaced in EXPLAIN / the Execution Lab.
   private runs = 1
   private passes = 0
-  private external = false
+  private method: 'in-memory' | 'external' | 'topN' = 'in-memory'
+  private peakRows = 0
+  private spilledRows = 0
+  private inputRows = 0
   private opened = false
 
-  constructor(child: Operator, keys: SortKey[]) {
+  constructor(child: Operator, keys: SortKey[], opts?: { limit?: number; workMem?: number }) {
     this.child = child
     this.keys = keys
+    this.topN = opts?.limit
+    this.workMem = opts?.workMem ?? DEFAULT_WORK_MEM
     this.schema = child.schema
-    this.estRows = child.estRows
+    this.estRows = this.topN !== undefined ? Math.min(child.estRows, this.topN) : child.estRows
     const n = Math.max(1, child.estRows)
-    this.estCost = child.estCost + n * Math.log2(n + 1) * CPU_OP
+    // A bounded top-N sort costs n·log(k), not n·log(n).
+    const sortFactor = this.topN !== undefined ? Math.log2(Math.max(2, this.topN)) : Math.log2(n + 1)
+    this.estCost = child.estCost + n * sortFactor * CPU_OP
   }
   private cmp = (a: Row, b: Row): number => {
     for (const k of this.keys) {
@@ -1261,35 +1437,58 @@ export class Sort implements Operator {
     }
     return 0
   }
+  private runSize(): number {
+    return Math.max(1, Math.min(SORT_RUN_SIZE, this.workMem))
+  }
   open() {
     this.opened = true
     this.child.open()
     const input: Row[] = []
     for (let r = this.child.next(); r !== null; r = this.child.next()) input.push(r)
     this.child.close()
+    this.inputRows = input.length
 
-    if (input.length <= SORT_RUN_SIZE) {
-      input.sort(this.cmp)
-      this.rows = input
+    // --- top-N heapsort ------------------------------------------------------
+    // When a LIMIT bounds the sort, keep only the k smallest rows in a bounded
+    // max-heap (O(k) memory) instead of sorting everything. The result is
+    // provably identical to a stable full sort then slice: ties break on input
+    // position, so the same k rows survive in the same order.
+    if (this.topN !== undefined && this.topN < input.length) {
+      this.method = 'topN'
+      this.rows = topNSort(input, this.cmp, this.topN)
+      this.peakRows = this.topN
+      this.spilledRows = 0
       this.runs = 1
       this.passes = 1
-      this.external = false
+      this.pos = 0
+      return
+    }
+
+    const runSize = this.runSize()
+    if (input.length <= runSize) {
+      input.sort(this.cmp)
+      this.rows = input
+      this.method = 'in-memory'
+      this.runs = 1
+      this.passes = 1
+      this.peakRows = input.length
+      this.spilledRows = 0
       this.pos = 0
       return
     }
 
     // --- external merge sort -------------------------------------------------
-    this.external = true
-    // Pass 0: cut the input into fixed-size runs and sort each in place.
+    this.method = 'external'
+    // Pass 0: cut the input into work_mem-sized runs and sort each in place.
     let runs: Row[][] = []
-    for (let i = 0; i < input.length; i += SORT_RUN_SIZE) {
-      const run = input.slice(i, i + SORT_RUN_SIZE)
+    for (let i = 0; i < input.length; i += runSize) {
+      const run = input.slice(i, i + runSize)
       run.sort(this.cmp)
       runs.push(run)
     }
     this.runs = runs.length
     let passes = 1
-    // Merge passes: pairwise k-way (binary) merge until a single run remains.
+    // Merge passes: pairwise (binary) merge until a single run remains.
     while (runs.length > 1) {
       const next: Row[][] = []
       for (let i = 0; i < runs.length; i += 2) {
@@ -1300,6 +1499,8 @@ export class Sort implements Operator {
       passes++
     }
     this.passes = passes
+    this.peakRows = runSize
+    this.spilledRows = input.length
     this.rows = runs[0] ?? []
     this.pos = 0
   }
@@ -1312,14 +1513,36 @@ export class Sort implements Operator {
     this.rows = []
   }
   plan(): PlanNode {
-    // When EXPLAIN hasn't actually executed us, predict spilling from the
-    // estimated input size so the plan still shows the algorithm we'd use.
-    const willSpill = this.opened ? this.external : this.child.estRows > SORT_RUN_SIZE
-    const extra = willSpill
-      ? this.opened
-        ? [`external merge sort: ${this.runs} runs, ${this.passes} passes (run size ${SORT_RUN_SIZE})`]
-        : [`external merge sort (est. ${Math.ceil(this.child.estRows / SORT_RUN_SIZE)} runs, run size ${SORT_RUN_SIZE})`]
-      : ['in-memory sort']
+    const runSize = this.runSize()
+    // When EXPLAIN hasn't executed us, predict the algorithm from the estimate.
+    const predTopN = this.topN !== undefined && this.topN < this.child.estRows
+    const predExternal = !predTopN && this.child.estRows > runSize
+    const method = this.opened ? this.method : predTopN ? 'topN' : predExternal ? 'external' : 'in-memory'
+    const extra: string[] = []
+    const mem: MemStats = {
+      method:
+        method === 'topN'
+          ? 'top-N heapsort'
+          : method === 'external'
+            ? 'external merge sort'
+            : 'quicksort (in memory)',
+      budget: this.workMem,
+      peakRows: this.opened ? this.peakRows : method === 'topN' ? (this.topN ?? 0) : method === 'external' ? runSize : this.child.estRows,
+      spilledRows: this.opened ? this.spilledRows : method === 'external' ? this.child.estRows : 0,
+      passes: this.opened ? this.passes : method === 'external' ? Math.ceil(Math.log2(Math.max(2, this.child.estRows / runSize))) + 1 : 1,
+      measured: this.opened,
+    }
+    if (method === 'topN') {
+      extra.push(this.opened ? `top-N heapsort: kept ${this.topN} of ${this.inputRows} rows (heap of ${this.topN})` : `top-N heapsort (keep ${this.topN})`)
+    } else if (method === 'external') {
+      extra.push(
+        this.opened
+          ? `external merge sort: ${this.runs} runs, ${this.passes} passes (run size ${runSize}, work_mem ${this.workMem})`
+          : `external merge sort (est. ${Math.ceil(this.child.estRows / runSize)} runs, run size ${runSize})`,
+      )
+    } else {
+      extra.push('in-memory sort')
+    }
     return {
       op: 'Sort',
       detail: this.keys.map((_, i) => `key${i}`).join(', '),
@@ -1328,8 +1551,55 @@ export class Sort implements Operator {
       actualRows: this.actualRows,
       extra,
       children: [this.child.plan()],
+      mem,
     }
   }
+}
+
+/** Keep the `k` smallest rows under `cmp` (ties broken by original input
+ *  position) and return them sorted ascending. A bounded max-heap gives O(n·log k)
+ *  time and O(k) memory; the result equals a stable full sort then `slice(0, k)`. */
+function topNSort(input: Row[], cmp: (a: Row, b: Row) => number, k: number): Row[] {
+  // worse(a, b) > 0 ⇒ a should be evicted before b (a sorts later / has a larger
+  // original index among ties), so the heap root is always the current "worst".
+  const worse = (a: { r: Row; i: number }, b: { r: Row; i: number }): number => {
+    const c = cmp(a.r, b.r)
+    return c !== 0 ? c : a.i - b.i
+  }
+  const heap: { r: Row; i: number }[] = []
+  const siftUp = (n: number) => {
+    while (n > 0) {
+      const p = (n - 1) >> 1
+      if (worse(heap[n], heap[p]) <= 0) break
+      ;[heap[n], heap[p]] = [heap[p], heap[n]]
+      n = p
+    }
+  }
+  const siftDown = (n: number) => {
+    const len = heap.length
+    for (;;) {
+      let largest = n
+      const l = 2 * n + 1
+      const r = 2 * n + 2
+      if (l < len && worse(heap[l], heap[largest]) > 0) largest = l
+      if (r < len && worse(heap[r], heap[largest]) > 0) largest = r
+      if (largest === n) break
+      ;[heap[n], heap[largest]] = [heap[largest], heap[n]]
+      n = largest
+    }
+  }
+  for (let i = 0; i < input.length; i++) {
+    const item = { r: input[i], i }
+    if (heap.length < k) {
+      heap.push(item)
+      siftUp(heap.length - 1)
+    } else if (worse(item, heap[0]) < 0) {
+      // The new row is better than the current worst — it belongs in the top k.
+      heap[0] = item
+      siftDown(0)
+    }
+  }
+  return heap.sort(worse).map((x) => x.r)
 }
 
 /** Stable merge of two already-sorted runs. */
