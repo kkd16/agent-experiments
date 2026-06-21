@@ -36,6 +36,7 @@ export type CurveKind =
   | 'lissajous'
   | 'superformula'
   | 'attractor'
+  | 'attractor3d'
   | 'lsystem'
 
 // Hypotrochoid / epitrochoid — a pen offset `d` on a circle of radius `r`
@@ -121,6 +122,41 @@ export interface AttractorParams {
   steps: number
 }
 
+// Three-dimensional strange attractors — continuous flows dx/dt = f(x,y,z)
+// integrated with RK4 (`attractors3d.ts`) and projected onto the 2D model plane
+// through an orbit camera, so they flow through the exact same line / density /
+// SVG / GIF pipeline as every other curve family. `a..d` reshape the vector
+// field (per-flow meaning; constants a flow doesn't expose are fixed); the camera
+// block (`yaw`/`pitch`/`dist`/`fov`) orbits the figure and `spin` is its Live /
+// looping auto-rotation rate. `depthCue` turns on depth-weighted brightness and
+// depth→palette colouring in the density renderer for a volumetric look.
+export type Flow3DKind =
+  | 'lorenz'
+  | 'rossler'
+  | 'aizawa'
+  | 'thomas'
+  | 'halvorsen'
+  | 'chen'
+  | 'dadras'
+  | 'sprott'
+  | 'lorenz84'
+
+export interface Attractor3DParams {
+  type: Flow3DKind
+  a: number
+  b: number
+  c: number
+  d: number
+  dt: number // RK4 integration step
+  steps: number // sampled polyline length (line render + auto-fit bounds)
+  yaw: number // camera azimuth (radians)
+  pitch: number // camera elevation (radians)
+  dist: number // camera distance (in normalised radii)
+  fov: number // field of view (radians)
+  depthCue: boolean // depth-weighted intensity + depth→palette colour (density)
+  spin: number // auto-rotation rate for Live / looping capture
+}
+
 // L-system (Lindenmayer) fractal curve. `system` selects one of the classic
 // single-stroke rule sets in `lsystem.ts`; `iterations` is the rewriting depth
 // (clamped per-system so the full curve always renders); `angle` is the turtle's
@@ -187,6 +223,7 @@ export interface Layer {
   liss?: LissajousParams
   sf?: SuperformulaParams
   attractor?: AttractorParams
+  a3d?: Attractor3DParams
   lsystem?: LSystemParams
   drift?: LayerDrift
   style: LayerStyle

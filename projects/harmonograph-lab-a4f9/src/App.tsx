@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import type { PointerEvent as ReactPointerEvent } from 'react'
 import './App.css'
 import {
   cloneParams,
@@ -14,6 +15,7 @@ import {
   breatheLayer,
   computeLayerData,
   loopLayer,
+  default3D,
   defaultAttractor,
   defaultLSystem,
   defaultLiss,
@@ -21,6 +23,7 @@ import {
   defaultSf,
   defaultSpiro,
   getLayerData,
+  random3D,
   randomAttractor,
   randomLSystem,
   randomLissajous,
@@ -45,6 +48,7 @@ import {
   type GalleryItem,
 } from './share'
 import type {
+  Attractor3DParams,
   AttractorParams,
   BackgroundMode,
   BlendMode,
@@ -66,6 +70,7 @@ import { Segmented } from './components/Segmented'
 import { LayerList } from './components/LayerList'
 import {
   CurveAttractor,
+  CurveAttractor3D,
   CurveHarmonograph,
   CurveLSystem,
   CurveLissajous,
@@ -121,6 +126,8 @@ function withRandomSource(l: Layer): Layer {
       return { ...l, sf: randomSuperformula() }
     case 'attractor':
       return { ...l, attractor: randomAttractor() }
+    case 'attractor3d':
+      return { ...l, a3d: random3D() }
     case 'lsystem':
       return { ...l, lsystem: randomLSystem() }
     case 'harmonograph':
@@ -336,6 +343,7 @@ export default function App() {
       if (kind === 'lissajous' && !next.liss) next.liss = defaultLiss()
       if (kind === 'superformula' && !next.sf) next.sf = defaultSf()
       if (kind === 'attractor' && !next.attractor) next.attractor = defaultAttractor()
+      if (kind === 'attractor3d' && !next.a3d) next.a3d = default3D()
       if (kind === 'lsystem' && !next.lsystem) next.lsystem = defaultLSystem()
       return next
     })
@@ -363,6 +371,13 @@ export default function App() {
       attractor: { ...(l.attractor ?? defaultAttractor()), ...patch },
     }))
   }
+  const updateA3d = (patch: Partial<Attractor3DParams>) => {
+    if (!selected) return
+    updateLayer(selected.id, (l) => ({
+      ...l,
+      a3d: { ...(l.a3d ?? default3D()), ...patch },
+    }))
+  }
   const updateLSystem = (patch: Partial<LSystemParams>) => {
     if (!selected) return
     updateLayer(selected.id, (l) => ({
@@ -373,6 +388,32 @@ export default function App() {
   const updateDrift = (rate: number) => {
     if (!selected) return
     updateLayer(selected.id, (l) => ({ ...l, drift: { rate } }))
+  }
+
+  // ---- drag-to-orbit (3D attractor layers) --------------------------------
+  // When the selected layer is a 3D attractor, dragging across the canvas spins
+  // its orbit camera. Deltas are taken from the gesture start (absolute, not
+  // incremental) so there's no drift, and pitch is clamped to stay upright.
+  const orbitDrag = useRef<{ x: number; y: number; yaw: number; pitch: number } | null>(null)
+  const isOrbitable = selected?.kind === 'attractor3d'
+  const onCanvasPointerDown = (e: ReactPointerEvent) => {
+    if (!selected || selected.kind !== 'attractor3d') return
+    const a3d = selected.a3d ?? default3D()
+    orbitDrag.current = { x: e.clientX, y: e.clientY, yaw: a3d.yaw, pitch: a3d.pitch }
+    e.currentTarget.setPointerCapture?.(e.pointerId)
+  }
+  const onCanvasPointerMove = (e: ReactPointerEvent) => {
+    const d = orbitDrag.current
+    if (!d || !selected || selected.kind !== 'attractor3d') return
+    const w = canvasRef.current?.getBoundingClientRect().width || 600
+    const dx = ((e.clientX - d.x) / w) * Math.PI * 2
+    const dy = ((e.clientY - d.y) / w) * Math.PI * 2
+    const pitch = Math.max(-1.4, Math.min(1.4, d.pitch - dy))
+    updateA3d({ yaw: d.yaw + dx, pitch })
+  }
+  const onCanvasPointerUp = (e: ReactPointerEvent) => {
+    orbitDrag.current = null
+    e.currentTarget.releasePointerCapture?.(e.pointerId)
   }
 
 
@@ -406,6 +447,7 @@ export default function App() {
       if (src.liss) copy.liss = { ...src.liss }
       if (src.sf) copy.sf = { ...src.sf }
       if (src.attractor) copy.attractor = { ...src.attractor }
+      if (src.a3d) copy.a3d = { ...src.a3d }
       if (src.lsystem) copy.lsystem = { ...src.lsystem }
       if (src.drift) copy.drift = { ...src.drift }
       const next = [...ls]
@@ -853,7 +895,17 @@ export default function App() {
       <div className="stage">
         <div className="canvas-col">
           <div className="canvas-wrap" style={{ background: project.background }}>
-            <canvas ref={canvasRef} width={RENDER} height={RENDER} className="canvas" />
+            <canvas
+              ref={canvasRef}
+              width={RENDER}
+              height={RENDER}
+              className="canvas"
+              style={isOrbitable ? { cursor: 'grab', touchAction: 'none' } : undefined}
+              onPointerDown={onCanvasPointerDown}
+              onPointerMove={onCanvasPointerMove}
+              onPointerUp={onCanvasPointerUp}
+              onPointerCancel={onCanvasPointerUp}
+            />
           </div>
           <div className="transport">
             {audioOn ? (
@@ -1029,6 +1081,9 @@ export default function App() {
                     attractor={theme.attractor ?? defaultAttractor()}
                     update={updateAttractor}
                   />
+                )}
+                {theme.kind === 'attractor3d' && (
+                  <CurveAttractor3D a3d={theme.a3d ?? default3D()} update={updateA3d} />
                 )}
                 {theme.kind === 'lsystem' && (
                   <CurveLSystem lsystem={theme.lsystem ?? defaultLSystem()} update={updateLSystem} />
@@ -1393,7 +1448,10 @@ export default function App() {
               a <strong>Lissajous</strong> figure, the wildly versatile{' '}
               <strong>superformula</strong>, a chaotic{' '}
               <strong>strange attractor</strong> (de Jong, Clifford, Svensson, Dream,
-              Hopalong, Gumowski–Mira, Bedhead, Tinkerbell), or an{' '}
+              Hopalong, Gumowski–Mira, Bedhead, Tinkerbell), a real{' '}
+              <strong>3D strange attractor</strong> (Lorenz, Rössler, Aizawa, Thomas,
+              Halvorsen, Chen, Dadras, Sprott, Lorenz-84) — an RK4-integrated flow you{' '}
+              <strong>drag the canvas to orbit</strong> — or an{' '}
               <strong>L-system</strong> fractal — both classic single-stroke curves
               (dragon, Koch, Hilbert, Gosper…) and <strong>branching plants &amp; trees</strong>.
               In the Color tab, switch any layer to the <strong>Density</strong> render

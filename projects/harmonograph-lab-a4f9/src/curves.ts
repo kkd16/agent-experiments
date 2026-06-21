@@ -17,6 +17,7 @@ import {
   randomLSystem,
   sampleLSystemFull,
 } from './lsystem'
+import { default3D, random3D, sample3DPolyline } from './attractors3d'
 import type {
   AttractorKind,
   AttractorParams,
@@ -40,6 +41,7 @@ export const CURVE_KINDS: { value: CurveKind; label: string }[] = [
   { value: 'lissajous', label: 'Lissajous' },
   { value: 'superformula', label: 'Superformula' },
   { value: 'attractor', label: 'Attractor' },
+  { value: 'attractor3d', label: '3D Attractor' },
   { value: 'lsystem', label: 'L-system' },
 ]
 
@@ -441,6 +443,8 @@ export function sourceParams(layer: Layer): object {
       return (layer.sf ??= defaultSf())
     case 'attractor':
       return (layer.attractor ??= defaultAttractor())
+    case 'attractor3d':
+      return (layer.a3d ??= default3D())
     case 'lsystem':
       return (layer.lsystem ??= defaultLSystem())
     case 'harmonograph':
@@ -461,6 +465,8 @@ export function sampleLayer(layer: Layer): SampledCurve {
       return { points: sampleSuperformula(layer.sf ?? defaultSf()) }
     case 'attractor':
       return { points: sampleAttractor(layer.attractor ?? defaultAttractor()) }
+    case 'attractor3d':
+      return { points: sample3DPolyline(layer.a3d ?? default3D()) }
     case 'lsystem':
       // L-systems may branch (plants/trees), so this carries pen-up `breaks`.
       return sampleLSystemFull(layer.lsystem ?? defaultLSystem())
@@ -506,6 +512,16 @@ export function breatheLayer(layer: Layer, t: number): Layer {
           a: s.a + 0.12 * Math.sin(a * 0.45),
           c: s.c + 0.12 * Math.cos(a * 0.37),
         },
+      }
+    }
+    case 'attractor3d': {
+      // Orbit the camera: advance yaw monotonically (a full 2π turn is the
+      // identity, so the nebula simply spins) and gently bob the pitch. Only the
+      // cheap projection re-runs — the geometry pass is cached by flow shape.
+      const s = layer.a3d ?? default3D()
+      return {
+        ...layer,
+        a3d: { ...s, yaw: s.yaw + a * s.spin, pitch: s.pitch + 0.12 * Math.sin(a * 0.31) },
       }
     }
     case 'lsystem': {
@@ -565,6 +581,12 @@ export function loopLayer(layer: Layer, phase: number): Layer {
       const s = layer.attractor ?? defaultAttractor()
       return { ...layer, attractor: { ...s, a: s.a + osc(1, 0.12), c: s.c + osc(2, 0.12) } }
     }
+    case 'attractor3d': {
+      // A full revolution per loop: yaw advances 0→2π as phase does, so the last
+      // frame is byte-for-byte the first — a flawless orbiting-camera loop.
+      const s = layer.a3d ?? default3D()
+      return { ...layer, a3d: { ...s, yaw: s.yaw + phase } }
+    }
     case 'lsystem': {
       const s = layer.lsystem ?? defaultLSystem()
       return { ...layer, lsystem: { ...s, angle: s.angle + osc(1, 0.35) } }
@@ -622,6 +644,8 @@ export function randomSourceFor(kind: CurveKind): Partial<Layer> {
       return { sf: randomSuperformula() }
     case 'attractor':
       return { attractor: randomAttractor() }
+    case 'attractor3d':
+      return { a3d: random3D() }
     case 'lsystem':
       return { lsystem: randomLSystem() }
     case 'harmonograph':
@@ -632,3 +656,5 @@ export function randomSourceFor(kind: CurveKind): Partial<Layer> {
 
 // Re-export so consumers can pull the L-system catalog helpers from `curves`.
 export { defaultLSystem, lsystemById, randomLSystem }
+// …and the 3D-flow helpers, so the app + editors import them from one place.
+export { default3D, defaultsFor3D, random3D, FLOW3D_KINDS, ranges3D } from './attractors3d'

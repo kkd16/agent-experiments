@@ -28,6 +28,14 @@ scene with a **gradient**.
   default + random factories, the `sampleLayer` kind dispatcher, the WeakMap
   render-data cache (`getLayerData`), the uncached `computeLayerData` Live mode
   uses, and `breatheLayer` (per-kind phase drift for the Live animation).
+- `attractors3d.ts` — **the 3D flow engine (v7).** Nine continuous strange-attractor
+  vector fields, an RK4 integrator (`integrateFlow`), and an **orbit camera**
+  (`buildProjector`: auto-centre/scale cached by flow shape, yaw+pitch rotation,
+  pinhole perspective) that projects the 3D orbit onto the 2D model plane so the
+  existing renderers consume it unchanged. `sample3DPolyline` feeds the line/
+  auto-fit path; `density.ts` calls `integrateFlow` + the projector directly for
+  the depth-cued nebula. A full 2π of yaw is the identity, which is what makes the
+  orbiting-camera loop seamless.
 - `record.ts` — **WebM capture.** Grabs the canvas as a `MediaStream` and drives
   the trace 0→1 in real time through a `MediaRecorder`, feature-detected and
   fully try/caught so unsupported browsers / the sandbox degrade gracefully.
@@ -250,13 +258,69 @@ new chaotic maps, branching plants, seamless loops, and beat-reactive reseeding:
       bounds/growth-law checks still hold. Re-verified headlessly, plus a
       density-pipeline coverage check on the splat math.
 
+### v7 — into the third dimension (3D strange attractors + orbit camera)
+
+The big one. The whole studio was 2D: every source emitted a list of (x, y)
+model points. v7 adds a genuinely **three-dimensional** curve family — continuous
+**strange-attractor flows** dx/dt = f(x, y, z) — and a way to *see* them, without
+the renderer ever learning it's looking at a 3D object. The trick is a single
+projection step: an **orbit camera** turns the 3D orbit into the same 2D model
+points the line / density / SVG / GIF pipeline already consumes. Drag the canvas
+to rotate; turn on Live and it orbits; export a looping GIF and a full 2π camera
+revolution is, by construction, a flawless seamless loop.
+
+- [x] **`attractors3d.ts` — the 3D flow engine.** Nine canonical chaotic flows
+      (Lorenz, Rössler, Aizawa, Thomas, Halvorsen, Chen, Dadras, Sprott–Linz F,
+      Lorenz-84), each a hand-written vector field whose four sliders a/b/c/d reshape
+      it (per-flow meaning; unexposed constants fixed at canonical values), traced by
+      a **4th-order Runge–Kutta** integrator with a per-flow integration step (stiff
+      Chen/Lorenz need a far smaller `dt` than gentle Thomas) and a divergence guard
+      that re-seeds rather than poisoning the run.
+- [x] **Off-axis seed.** Several flows (notably **Dadras**) keep `y=z=0` as an
+      invariant manifold whose only orbit is a fixed point — a seed *on* it never
+      reaches the attractor. Seeding off every axis-plane lands in the chaotic basin.
+- [x] **Orbit camera.** The orbit is auto-centred and scaled into a unit ball
+      (cached by flow shape, so a spinning camera never re-runs the geometry pass),
+      rotated by **yaw + pitch**, and projected with a **pinhole perspective**
+      (distance + field-of-view). A full 2π of yaw is the identity ⇒ seamless loops.
+- [x] **Depth-cued volumetric density.** The density renderer gained a 3D path: it
+      integrates the flow fresh for millions of RK4 steps and splats the *projected*
+      points, accumulating a parallel **depth buffer** so each pixel is coloured by
+      the average depth of the orbit there (near filaments one end of the palette,
+      far the other) while brightness still tracks density — a real volumetric read
+      of the 3D structure, not a flat histogram. Nearer points also splat brighter.
+- [x] **Drag-to-orbit.** Pointer-drag across the canvas spins the selected 3D
+      layer's camera (absolute from the gesture start, so no drift; pitch clamped).
+- [x] **Live orbit + seamless looping capture.** `breatheLayer` advances yaw
+      monotonically (and bobs pitch) so Live *orbits* the nebula; `loopLayer` sweeps
+      yaw exactly 0→2π over the loop so the GIF/WebM exporter captures one flawless
+      revolution.
+- [x] **Full pipeline wiring** — new `attractor3d` `CurveKind` threaded through
+      types, `curves.ts` (dispatch / sourceParams / breathe / loop / randomize), the
+      Curve-tab editor (`CurveAttractor3D`: flow picker, per-flow a–d ranges, camera
+      yaw/pitch/distance/FOV, auto-spin, depth-cue toggle), kind-switch defaults,
+      duplicate, the **Generate** composer (3D nebulae), and three showcase presets
+      (*Lorenz Butterfly*, *Aizawa Orb*, *Thomas Lattice*).
+- [x] **Self-tests extended** (`selftest.ts`) — every flow integrates to a finite,
+      non-degenerate 3D extent (the anti-collapse / anti-Dadras-trap tripwire),
+      projects to a finite well-framed 2D polyline (auto-fit divides by that box),
+      and its yaw is verified **2π-periodic** to round-off (the seamless-loop
+      guarantee). Re-verified numerically out of band across all nine flows.
+
 Future:
 
 - [ ] Per-channel (RGB) density accumulation to colour by *which* basin a point
       came from, not just by density.
 - [ ] Stochastic L-systems (per-rule probabilities) for naturalistic plant variety.
-- [ ] 3D harmonograph / attractor with an orbit camera.
-- [ ] WebGL density accumulation for real-time million-point fields at 60fps.
+- [ ] **3D harmonograph** (a spatial Lissajous / pendulum) flown through the same
+      orbit camera, reusing the v7 projector.
+- [ ] **Per-axis depth fog + a ground-plane shadow** for the 3D nebulae, to read
+      depth even more strongly.
+- [ ] **Scroll-wheel / pinch dolly** on the canvas to drive camera distance.
+- [ ] WebGL density accumulation for real-time million-point fields at 60fps
+      (the CPU splatter already carries the 3D flows; a GPU path would lift the
+      iteration ceiling by an order of magnitude).
+- [ ] A **stereographic / anaglyph** export mode for the 3D attractors.
 
 ## Session log
 
@@ -326,3 +390,23 @@ Future:
   extended self-tests (unbounded maps finite & framed; plants finite & multi-stroke).
   Verified: self-tests pass headlessly, a density-splat coverage check passes, and
   the full CI gate (scope + conformance + lint + build) is green.
+- 2026-06-21 (claude): **v7 — into the third dimension.** Added a genuinely 3D
+  curve family: nine continuous **strange-attractor flows** (Lorenz, Rössler,
+  Aizawa, Thomas, Halvorsen, Chen, Dadras, Sprott–Linz F, Lorenz-84) in a new
+  `attractors3d.ts` — hand-written vector fields traced by a 4th-order **Runge–Kutta**
+  integrator (per-flow `dt`; divergence-guarded; off-axis seed so the Dadras
+  fixed-point trap is avoided) and flown through a from-scratch **orbit camera**
+  (auto-centre/scale cached by flow shape, yaw+pitch, pinhole perspective) that
+  projects the 3D orbit onto the 2D model plane — so the *entire* existing line /
+  density / SVG / GIF pipeline renders it unchanged. The density renderer gained a
+  **depth-cued volumetric path**: it integrates the flow fresh for millions of RK4
+  steps, splats the projected points, and accumulates a parallel depth buffer so
+  each pixel is coloured by average depth (near vs far ends of the palette) while
+  brightness tracks density. Added **drag-to-orbit** on the canvas, **Live** camera
+  orbiting, and — because a full 2π yaw turn is the identity — a **flawless seamless
+  looping** GIF/WebM of one revolution. Wired the new `attractor3d` kind through
+  types / `curves.ts` (dispatch, breathe, loop, randomize) / a Curve-tab editor
+  (`CurveAttractor3D`) / Generate / three showcase presets, and extended the
+  self-tests (every flow finite, non-degenerate, well-framed, and yaw 2π-periodic).
+  Verified: all nine flows checked numerically out of band; full CI gate (scope +
+  conformance + lint + build) is green.

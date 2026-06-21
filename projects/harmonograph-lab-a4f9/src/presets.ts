@@ -5,6 +5,7 @@
 import { makeLayer } from './harmonograph'
 import { paletteById } from './palettes'
 import type {
+  Attractor3DParams,
   AttractorParams,
   BlendMode,
   ColorMode,
@@ -78,7 +79,17 @@ interface PresetLayer {
   liss?: LissajousParams
   sf?: SuperformulaParams
   attractor?: AttractorParams
+  a3d?: Attractor3DParams
   lsystem?: LSystemParams
+}
+
+// Camera defaults for the 3D-attractor presets — a three-quarter view that reads
+// the depth well, with a gentle auto-spin and depth-cueing on.
+function cam3d(o: Partial<Attractor3DParams> = {}): Pick<
+  Attractor3DParams,
+  'yaw' | 'pitch' | 'dist' | 'fov' | 'depthCue' | 'spin'
+> {
+  return { yaw: 0.7, pitch: 0.42, dist: 2.6, fov: 1.0, depthCue: true, spin: 0.6, ...o }
 }
 
 // A harmonograph placeholder for layers whose real source is another kind.
@@ -721,6 +732,64 @@ export const PRESETS: Preset[] = [
       },
     ],
   },
+  {
+    name: 'Lorenz Butterfly',
+    background: '#04060f',
+    bg2: '#01020a',
+    bgMode: 'radial',
+    vignette: 0.5,
+    layers: [
+      {
+        name: 'Butterfly',
+        kind: 'attractor3d',
+        params: dummyHarm(),
+        a3d: { type: 'lorenz', a: 10, b: 28, c: 2.667, d: 0, dt: 0.006, steps: 18000, ...cam3d({ yaw: 0.9, pitch: 0.32 }) },
+        style: st('ice', {
+          renderStyle: 'density',
+          density: { iterations: 900, exposure: 1.3, gamma: 0.5 },
+          blend: 'lighter',
+        }),
+      },
+    ],
+  },
+  {
+    name: 'Aizawa Orb',
+    background: '#0a0410',
+    bg2: '#02030c',
+    bgMode: 'radial',
+    vignette: 0.5,
+    layers: [
+      {
+        name: 'Orb',
+        kind: 'attractor3d',
+        params: dummyHarm(),
+        a3d: { type: 'aizawa', a: 0.95, b: 0.7, c: 0.6, d: 3.5, dt: 0.01, steps: 20000, ...cam3d({ yaw: 0.5, pitch: 0.6 }) },
+        style: st('plasma', {
+          renderStyle: 'density',
+          density: { iterations: 1000, exposure: 1.2, gamma: 0.5 },
+          blend: 'lighter',
+        }),
+      },
+    ],
+  },
+  {
+    name: 'Thomas Lattice',
+    background: '#03080a',
+    vignette: 0.46,
+    layers: [
+      {
+        name: 'Lattice',
+        kind: 'attractor3d',
+        params: dummyHarm(),
+        a3d: { type: 'thomas', a: 0.208, b: 0, c: 0, d: 0, dt: 0.025, steps: 22000, ...cam3d({ yaw: 0.78, pitch: 0.5 }) },
+        style: st('mint', {
+          renderStyle: 'density',
+          density: { iterations: 950, exposure: 1.25, gamma: 0.52 },
+          blend: 'lighter',
+        }),
+      },
+    ],
+  },
 ]
 
 export function loadPreset(preset: Preset): Project {
@@ -736,6 +805,7 @@ export function loadPreset(preset: Preset): Project {
       if (l.liss) extra.liss = structuredClone(l.liss)
       if (l.sf) extra.sf = structuredClone(l.sf)
       if (l.attractor) extra.attractor = structuredClone(l.attractor)
+      if (l.a3d) extra.a3d = structuredClone(l.a3d)
       if (l.lsystem) extra.lsystem = structuredClone(l.lsystem)
       return makeLayer(l.name, structuredClone(l.params), structuredClone(l.style), extra)
     }),
