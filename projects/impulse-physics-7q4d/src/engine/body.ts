@@ -1,4 +1,5 @@
 import { AABB } from './aabb';
+import type { FractureMaterial } from './fracture/fracture';
 import { crossSV, Rot, Transform, Vec2 } from './math';
 import { computeAABB, computeMass, type Shape } from './shapes';
 
@@ -45,6 +46,12 @@ export interface BodyDef {
    * friction solve untouched.
    */
   tangentSpeed?: number;
+  /**
+   * Marks a (convex-polygon) body as brittle: when a single contact delivers a
+   * normal impulse beyond `fracture.toughness` the world shatters it into
+   * momentum-conserving Voronoi shards. Omit to leave the body unbreakable.
+   */
+  fracture?: FractureMaterial;
 }
 
 let nextBodyId = 1;
@@ -102,6 +109,8 @@ export class Body {
 
   /** Conveyor surface speed along the local +x axis (0 = not a belt). */
   tangentSpeed: number;
+  /** Brittle-fracture material, or null for an unbreakable body. */
+  fracture: FractureMaterial | null;
   /** Continuous-collision flag (swept to time of impact each step). */
   bullet: boolean;
   /** Sensor flag: contacts are detected & reported but never solved. */
@@ -130,6 +139,7 @@ export class Body {
     this.gravityScale = def.gravityScale ?? 1;
     this.allowSleep = def.allowSleep ?? true;
     this.tangentSpeed = def.tangentSpeed ?? 0;
+    this.fracture = def.fracture ?? null;
     this.bullet = def.bullet ?? false;
     this.isSensor = def.isSensor ?? false;
     this.color = def.color ?? '#6ea8ff';

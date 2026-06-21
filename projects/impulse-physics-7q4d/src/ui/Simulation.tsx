@@ -3,6 +3,7 @@ import {
   Body,
   BodyType,
   DEFAULT_CONFIG,
+  isFracturable,
   MouseJoint,
   Particle,
   Rng,
@@ -213,6 +214,18 @@ export default function Simulation(props: SimulationProps) {
     const wp = toWorld(e);
     pointerWorldRef.current = wp;
     const body = world.queryPoint(wp);
+    // The Shatter tool: clicking a brittle body splinters it on the spot.
+    if (
+      body &&
+      body.type === BodyType.Dynamic &&
+      propsRef.current.controls.spawnKind === 'shatter' &&
+      body.fracture &&
+      isFracturable(body.shape)
+    ) {
+      world.fracture(body, wp, { eject: 2 + body.mass });
+      interactionRef.current = { mode: 'none', startX: e.clientX, startY: e.clientY };
+      return;
+    }
     if (body && body.type === BodyType.Dynamic) {
       const mj = new MouseJoint(body, wp, body.mass * 1000 + 500);
       world.addJoint(mj, true);

@@ -5,6 +5,7 @@ import {
   Capsule,
   Circle,
   DistanceJoint,
+  fractureMaterial,
   GearJoint,
   MotorJoint,
   MouseJoint,
@@ -40,7 +41,7 @@ export interface SceneDef {
   id: string;
   name: string;
   description: string;
-  category: 'Stacking' | 'Joints' | 'Soft' | 'Showcase' | 'Materials' | 'Stress';
+  category: 'Stacking' | 'Joints' | 'Soft' | 'Fracture' | 'Showcase' | 'Materials' | 'Stress';
   build: (world: World, rng: Rng) => BuildResult;
 }
 
@@ -1424,6 +1425,218 @@ const ropeSwings: SceneDef = {
   },
 };
 
+// ---- Fracture scenes -------------------------------------------------------
+
+/** Remove every dynamic body, leaving the static set, for a clean rebuild. */
+function clearDynamic(world: World): void {
+  for (const b of [...world.bodies]) {
+    if (b.type === BodyType.Dynamic) world.removeBody(b);
+  }
+}
+
+const glassPane: SceneDef = {
+  id: 'glass',
+  name: 'Glass Pane',
+  description:
+    'A pane of glass held in a frame, drilled through the middle by a bullet on a loop. The Voronoi shatter spider-webs out from the impact — fine cracks at the hole, coarse shards at the rim — and the freed pieces rain down. Rebuilds and fires again.',
+  category: 'Fracture',
+  build: (world) => {
+    ground(world, 14, -6);
+    // A window frame: two posts and a lintel pin the pane upright.
+    world.addBody(new Body(Polygon.box(0.35, 4.6), { type: BodyType.Static, position: new Vec2(-3.6, -1.4), color: '#5a6478' }));
+    world.addBody(new Body(Polygon.box(0.35, 4.6), { type: BodyType.Static, position: new Vec2(3.6, -1.4), color: '#5a6478' }));
+    world.addBody(new Body(Polygon.box(3.95, 0.35), { type: BodyType.Static, position: new Vec2(0, 3.45), color: '#5a6478' }));
+    const buildPane = (): void => {
+      world.addBody(new Body(Polygon.box(3.2, 4.2), {
+        position: new Vec2(0, -1.4),
+        density: 0.7,
+        friction: 0.3,
+        restitution: 0,
+        color: '#9fd8ff',
+        fracture: fractureMaterial({ toughness: 5, shards: 46, pattern: 'radial', jitter: 0.3, maxGeneration: 1 }),
+      }));
+    };
+    buildPane();
+    let phase = 0;
+    let timer = 0;
+    return {
+      camera: { center: new Vec2(0, -0.6), scale: 42 },
+      update: (_t, dt) => {
+        timer += dt;
+        if (phase === 0 && timer > 1.8) {
+          world.addBody(new Body(new Circle(0.2), { position: new Vec2(-11, -1.2), density: 14, linearVelocity: new Vec2(40, 1.5), bullet: true, color: '#ff6b6b' }));
+          phase = 1;
+          timer = 0;
+        } else if (phase === 1 && timer > 4.5) {
+          clearDynamic(world);
+          buildPane();
+          phase = 0;
+          timer = 0;
+        }
+      },
+    };
+  },
+};
+
+const shatterWall: SceneDef = {
+  id: 'shatterwall',
+  name: 'Cannon & Wall',
+  description:
+    'A masonry wall of brittle blocks takes a cannonball at speed. Every block hit hard enough shatters into Voronoi rubble that tumbles and piles; glancing blocks just topple. The cannon reloads and fires on a loop.',
+  category: 'Fracture',
+  build: (world) => {
+    ground(world, 22, -6);
+    const buildWall = (): void => {
+      const cols = 2;
+      const rows = 6;
+      const bw = 0.7;
+      const bh = 0.9;
+      for (let r = 0; r < rows; r++) {
+        for (let c = 0; c < cols; c++) {
+          const x = 6 + c * (bw * 2 + 0.02);
+          const y = -6 + bh + r * (bh * 2 + 0.02);
+          world.addBody(new Body(Polygon.box(bw, bh), {
+            position: new Vec2(x, y),
+            density: 1.3,
+            friction: 0.55,
+            color: (r + c) % 2 ? '#c0966b' : '#a87b58',
+            fracture: fractureMaterial({ toughness: 6, shards: 9, pattern: 'uniform', jitter: 0.5, maxGeneration: 1 }),
+          }));
+        }
+      }
+    };
+    buildWall();
+    let phase = 0;
+    let timer = 0;
+    return {
+      camera: { center: new Vec2(4, -2), scale: 26 },
+      update: (_t, dt) => {
+        timer += dt;
+        if (phase === 0 && timer > 1.5) {
+          world.addBody(new Body(new Circle(0.55), { position: new Vec2(-10, -3.4), density: 24, linearVelocity: new Vec2(34, 3), color: '#5a6478' }));
+          phase = 1;
+          timer = 0;
+        } else if (phase === 1 && timer > 5) {
+          clearDynamic(world);
+          buildWall();
+          phase = 0;
+          timer = 0;
+        }
+      },
+    };
+  },
+};
+
+const shatterTower: SceneDef = {
+  id: 'shattertower',
+  name: 'Shatter Tower',
+  description:
+    "A tower of brittle slabs with a heavy ball dropped onto its crown. The top slab bursts into shards, and lower slabs crack as the rubble lands — a fracture cascade bounded by each slab's generation cap. Rebuilds on a timer.",
+  category: 'Fracture',
+  build: (world) => {
+    ground(world, 16, -6);
+    const buildTower = (): void => {
+      const n = 6;
+      const hw = 1.1;
+      const hh = 0.42;
+      for (let i = 0; i < n; i++) {
+        world.addBody(new Body(Polygon.box(hw, hh), {
+          position: new Vec2(0, -6 + hh + i * (hh * 2 + 0.01)),
+          density: 1.1,
+          friction: 0.6,
+          color: i % 2 ? '#7CFFCB' : '#4dd2ff',
+          fracture: fractureMaterial({ toughness: 9, shards: 12, pattern: 'radial', maxGeneration: 1 }),
+        }));
+      }
+    };
+    buildTower();
+    let phase = 0;
+    let timer = 0;
+    return {
+      camera: { center: new Vec2(0, -2.5), scale: 34 },
+      update: (_t, dt) => {
+        timer += dt;
+        if (phase === 0 && timer > 1.2) {
+          world.addBody(new Body(new Circle(0.6), { position: new Vec2(0.15, 6), density: 20, color: '#ff6b6b', bullet: true }));
+          phase = 1;
+          timer = 0;
+        } else if (phase === 1 && timer > 5) {
+          clearDynamic(world);
+          buildTower();
+          phase = 0;
+          timer = 0;
+        }
+      },
+    };
+  },
+};
+
+const crystalGallery: SceneDef = {
+  id: 'crystals',
+  name: 'Crystal Gallery',
+  description:
+    'A row of brittle crystals — triangle, square, pentagon, hexagon, octagon — bombarded from above one after another. Watch the same Voronoi fracture carve every convex parent shape, focused on each impact point. Reloads on a loop.',
+  category: 'Fracture',
+  build: (world) => {
+    ground(world, 18, -6);
+    const sidesList = [3, 4, 5, 6, 8];
+    const buildRow = (): void => {
+      sidesList.forEach((s, i) => {
+        const x = (i - (sidesList.length - 1) / 2) * 3;
+        world.addBody(new Body(Polygon.regular(s, 1.0, Math.PI / 2), {
+          position: new Vec2(x, -4.4),
+          density: 1,
+          friction: 0.5,
+          color: colorFor(i),
+          fracture: fractureMaterial({ toughness: 6, shards: 14, pattern: 'radial', maxGeneration: 1 }),
+        }));
+      });
+    };
+    buildRow();
+    let phase = 0;
+    let timer = 0;
+    let idx = 0;
+    return {
+      camera: { center: new Vec2(0, -3), scale: 30 },
+      update: (_t, dt) => {
+        timer += dt;
+        if (phase === 0 && timer > 0.9) {
+          const x = (idx - (sidesList.length - 1) / 2) * 3;
+          world.addBody(new Body(new Circle(0.25), { position: new Vec2(x, 5), density: 14, linearVelocity: new Vec2(0, -26), bullet: true, color: '#ff6b6b' }));
+          idx++;
+          timer = 0;
+          if (idx >= sidesList.length) {
+            phase = 1;
+            idx = 0;
+          }
+        } else if (phase === 1 && timer > 3.5) {
+          clearDynamic(world);
+          buildRow();
+          phase = 0;
+          timer = 0;
+        }
+      },
+    };
+  },
+};
+
+const shatterYard: SceneDef = {
+  id: 'shatteryard',
+  name: 'Shatter Yard',
+  description:
+    'A sandbox for the Shatter tool. Pick the Shatter spawn tool (bottom toolbar), then click any brittle slab or crystal to splinter it into Voronoi shards — pieces can re-shatter once more. Click empty space to drop fresh brittle slabs, or lob heavy shapes at them.',
+  category: 'Fracture',
+  build: (world) => {
+    ground(world, 18, -6);
+    walls(world, 12, 9, -6);
+    const mat = () => fractureMaterial({ toughness: 7, shards: 16, pattern: 'radial', maxGeneration: 2 });
+    world.addBody(new Body(Polygon.box(1.6, 1.0), { position: new Vec2(-4, -4.5), density: 1, friction: 0.5, color: '#9fd8ff', fracture: mat() }));
+    world.addBody(new Body(Polygon.box(1.2, 1.2), { position: new Vec2(0, -4.5), density: 1, friction: 0.5, color: '#c792ea', fracture: mat() }));
+    world.addBody(new Body(Polygon.regular(6, 1.1, Math.PI / 2), { position: new Vec2(4, -4.2), density: 1, friction: 0.5, color: '#7CFFCB', fracture: mat() }));
+    return { camera: { center: new Vec2(0, -3), scale: 30 } };
+  },
+};
+
 export const SCENES: SceneDef[] = [
   pyramid,
   stacks,
@@ -1447,6 +1660,11 @@ export const SCENES: SceneDef[] = [
   trampoline,
   waterBalloons,
   ropeSwings,
+  glassPane,
+  shatterWall,
+  shatterTower,
+  crystalGallery,
+  shatterYard,
   car,
   tumbler,
   dominoes,

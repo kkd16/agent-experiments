@@ -35,7 +35,25 @@ export {
   type MassData,
   type Shape,
 } from './shapes';
-export { World, type RayHit, type ShapeCastHit, type StepStats } from './world';
+export { World, type RayHit, type ShapeCastHit, type StepStats, type FractureFlash } from './world';
+
+export {
+  clipHalfPlane,
+  polygonArea,
+  pointInConvex,
+  polygonBounds,
+  voronoiCells,
+  scatterSites,
+  fractureBody,
+  fractureMaterial,
+  isFracturable,
+  shapeMass,
+  DEFAULT_FRACTURE,
+  type SitePattern,
+  type SiteOptions,
+  type FractureMaterial,
+  type FractureOptions,
+} from './fracture';
 
 export {
   collideParticle,
