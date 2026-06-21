@@ -27,6 +27,11 @@ interface RoundTrip {
   failingClause: number
 }
 
+interface Speedup {
+  orig: { status: string; conflicts: number; decisions: number; propagations: number; ms: number }
+  simp: { status: string; conflicts: number; decisions: number; propagations: number; ms: number }
+}
+
 export function SimplifyStudio() {
   const [exampleIdx, setExampleIdx] = useState(DEFAULT_EXAMPLE)
   const [src, setSrc] = useState<string>(() => toDimacs(EXAMPLES[DEFAULT_EXAMPLE].build()))
@@ -35,6 +40,7 @@ export function SimplifyStudio() {
   const [checks, setChecks] = useState<PreprocessCheckReport | null>(null)
   const [checking, setChecking] = useState(false)
   const [roundTrip, setRoundTrip] = useState<RoundTrip | null>(null)
+  const [speedup, setSpeedup] = useState<Speedup | null>(null)
 
   const parsed = useMemo<{ ok: true; cnf: CNF } | { ok: false; error: string }>(() => {
     try {
@@ -54,17 +60,20 @@ export function SimplifyStudio() {
     setSrc(toDimacs(EXAMPLES[i].build()))
     setDirty(false)
     setRoundTrip(null)
+    setSpeedup(null)
   }
 
   const onEdit = (text: string) => {
     setSrc(text)
     setDirty(true)
     setRoundTrip(null)
+    setSpeedup(null)
   }
 
   const toggle = (t: Technique) => {
     setEnabled((e) => ({ ...e, [t]: !e[t] }))
     setRoundTrip(null)
+    setSpeedup(null)
   }
 
   const runRoundTrip = () => {
@@ -88,6 +97,31 @@ export function SimplifyStudio() {
     } else {
       setRoundTrip({ status: 'unsat', verified: sres.status === 'unsat', failingClause: -1 })
     }
+  }
+
+  const runSpeedup = () => {
+    if (!parsed.ok || !result) return
+    const cap = { maxConflicts: 2_000_000, maxTimeMs: 8000 }
+    const o = solve(parsed.cnf, cap)
+    const s = result.status === 'unsat' ? null : solve(result.cnf, cap)
+    setSpeedup({
+      orig: {
+        status: o.status,
+        conflicts: o.stats.conflicts,
+        decisions: o.stats.decisions,
+        propagations: o.stats.propagations,
+        ms: o.stats.timeMs,
+      },
+      simp: s
+        ? {
+            status: s.status,
+            conflicts: s.stats.conflicts,
+            decisions: s.stats.decisions,
+            propagations: s.stats.propagations,
+            ms: s.stats.timeMs,
+          }
+        : { status: 'unsat', conflicts: 0, decisions: 0, propagations: 0, ms: 0 },
+    })
   }
 
   const runVerify = () => {
@@ -217,6 +251,17 @@ export function SimplifyStudio() {
                 reverse, and check the lifted assignment against the <em>original</em> clauses.
               </p>
               {roundTrip?.model && <ModelGrid model={roundTrip.model} numVars={parsed.ok ? parsed.cnf.numVars : 0} />}
+            </div>
+
+            <div className="simp-roundtrip">
+              <button className="count-btn" onClick={runSpeedup}>
+                Measure CDCL effort: original vs. simplified
+              </button>
+              <p className="count-note">
+                The payoff. Run the same proved-correct CDCL solver on the original formula and on the
+                simplified one, and compare the work — preprocessing exists to make search cheaper.
+              </p>
+              {speedup && <SpeedTable s={speedup} />}
             </div>
 
             <OpLog result={result} />
@@ -352,6 +397,42 @@ function OpLog({ result }: { result: SimplifyResult }) {
         ))}
       </ol>
     </details>
+  )
+}
+
+function SpeedTable({ s }: { s: Speedup }) {
+  const rows: { label: string; o: number; v: number }[] = [
+    { label: 'Conflicts', o: s.orig.conflicts, v: s.simp.conflicts },
+    { label: 'Decisions', o: s.orig.decisions, v: s.simp.decisions },
+    { label: 'Propagations', o: s.orig.propagations, v: s.simp.propagations },
+  ]
+  const pct = (o: number, v: number) => (o > 0 ? Math.round((1 - v / o) * 100) : 0)
+  return (
+    <table className="simp-table" style={{ marginTop: 12 }}>
+      <thead>
+        <tr>
+          <th>Metric</th>
+          <th>original ({s.orig.status})</th>
+          <th>simplified ({s.simp.status})</th>
+          <th>change</th>
+        </tr>
+      </thead>
+      <tbody>
+        {rows.map((r) => {
+          const p = pct(r.o, r.v)
+          return (
+            <tr key={r.label}>
+              <td>{r.label}</td>
+              <td>{r.o.toLocaleString()}</td>
+              <td>{r.v.toLocaleString()}</td>
+              <td className={`simp-bar-pct ${p > 0 ? 'good' : p < 0 ? 'bad' : ''}`}>
+                {p > 0 ? `−${p}%` : p < 0 ? `+${-p}%` : '0%'}
+              </td>
+            </tr>
+          )
+        })}
+      </tbody>
+    </table>
   )
 }
 
