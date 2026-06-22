@@ -1512,3 +1512,135 @@ button:disabled {
 .explorer-title {
   margin-top: 16px;
 }
+
+/* ============================================================================
+   Diffusion · DDPM / DDIM lab
+   ============================================================================ */
+.traj-card .traj-bar,
+.interp-card .traj-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+.inline-field {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.inline-field select {
+  padding: 3px 6px;
+}
+.mono {
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+}
+
+.traj {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.traj-big {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 18px;
+}
+.traj-pane {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+}
+.traj-pane .img-canvas {
+  width: 150px;
+  height: 150px;
+  image-rendering: pixelated;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: #05080f;
+}
+.traj-arrow {
+  font-size: 26px;
+  color: var(--muted);
+  opacity: 0.7;
+}
+.traj-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.traj-controls input[type="range"] {
+  flex: 1;
+}
+.traj-strip {
+  display: flex;
+  gap: 3px;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+.traj-cell .img-canvas {
+  width: 46px;
+  height: 46px;
+  image-rendering: pixelated;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  background: #05080f;
+}
+.traj-cell.final .img-canvas {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+
+.sample-gallery {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.gallery-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.gallery-label {
+  width: 28px;
+  text-align: right;
+  color: var(--muted);
+  font-size: 12px;
+  flex: 0 0 auto;
+}
+.gallery-cells {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+.gallery-cells .img-canvas {
+  width: 40px;
+  height: 40px;
+  image-rendering: pixelated;
+  border-radius: 5px;
+  border: 1px solid var(--border);
+  background: #05080f;
+}
+.interp-card .interp-strip {
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 4px;
+}
+.interp-card .interp-strip .img-canvas {
+  width: 52px;
+  height: 52px;
+  image-rendering: pixelated;
+  border-radius: 5px;
+  border: 1px solid var(--border);
+  background: #05080f;
+}
+.interp-card .interp-strip .interp-end {
+  border-color: rgba(167, 139, 250, 0.55);
+  box-shadow: 0 0 0 1px rgba(167, 139, 250, 0.35);
+}
+.card-title.sub {
+  margin-top: 14px;
+  font-size: 13px;
+}

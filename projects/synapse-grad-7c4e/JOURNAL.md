@@ -2,7 +2,7 @@
 
 A tiny **deep-learning framework that runs in your browser**, built from scratch on a real
 reverse-mode **tensor autograd engine** (no TensorFlow.js, no ONNX, no WebGL math libs — every
-gradient is hand-derived and the tape is hand-rolled). Five labs share the one engine:
+gradient is hand-derived and the tape is hand-rolled). Six labs share the one engine:
 
 - **2-D Playground** — pick a dataset, sketch an MLP, and watch it learn in real time:
   decision boundary, per-neuron feature maps, loss/accuracy curves, and a live computation graph.
@@ -27,6 +27,16 @@ gradient is hand-derived and the tape is hand-rolled). Five labs share the one e
   (the sampled noise is a frozen leaf, so the ELBO stays differentiable), a fused **BCE-with-logits**
   Bernoulli reconstruction term, and the **closed-form Gaussian KL** — all hand-derived and the
   whole VAE gradchecked end-to-end to ~1e-7.
+- **Diffusion · DDPM/DDIM** — train a from-scratch **denoising diffusion model** on those same
+  glyphs: a fixed Gaussian noising process is *reversed* by a time-conditioned residual MLP
+  ε_θ(x_t, t) that predicts the noise, trained on the Ho et al. "simple" ε-MSE objective with
+  classifier-free label dropout. The headline is **watching the reverse trajectory** — a glyph
+  condensing out of pure N(0, I) noise step by step, with the model's live x̂₀ prediction beside it.
+  Sample with **DDIM** (fast, deterministic, η-tunable) or **DDPM** (ancestral), steer with
+  **classifier-free guidance**, browse a class-conditional sample sheet, **slerp between two noise
+  seeds** through the deterministic DDIM map, and read the **noise schedule** (ᾱ_t / β_t / SNR)
+  straight off a plot. The denoiser is gradchecked end-to-end and the schedule, posterior and DDIM
+  identities are proven to machine precision in the self-test.
 - **Control · RL** — train a from-scratch **policy-gradient agent** on four hand-written
   environments (no Gym): **CartPole** with the real gym dynamics, a **GridWorld** maze, **Pendulum**
   (continuous swing-up) and **MountainCar** (sparse-reward exploration). Pick **REINFORCE**,
@@ -76,6 +86,10 @@ src/
     seqtasks.ts   procedural algorithmic tasks (copy / reverse / sort / add) over a 12-token vocab
     vae.ts        a from-scratch Variational Autoencoder: MLP encoder (→ μ, logσ²) + decoder,
                   the reparameterization trick, and `klDivStandardNormal` (closed-form Gaussian KL)
+    diffusion.ts  a from-scratch DDPM/DDIM: the linear/cosine NoiseSchedule, the forward marginal
+                  qSample, a time-conditioned residual-MLP Denoiser (sinusoidal t-embed + learned
+                  class embed for classifier-free guidance), and the DDPM/DDIM reverse steps,
+                  x̂₀ prediction, posterior mean & guidance combine — all hand-derived
     rl-env.ts     from-scratch RL environments: CartPole (gym dynamics), a GridWorld maze
                   (one-hot states, 4 layouts), Pendulum (continuous-torque swing-up) and
                   MountainCar (sparse reward + potential-based shaping), each a reset/step MDP
@@ -88,8 +102,9 @@ src/
     data.ts       2-D dataset generators (spiral, circles, moons, xor, gaussians, ring) + noise
     images.ts     procedural image datasets — stroke-rendered digits 0–9 & shapes (MNIST-free)
     gradcheck.ts  finite-difference gradient checker
-    selftest.ts   one-click gradcheck of *every* engine op — conv/pool, the whole Transformer AND
-                  the whole VAE end-to-end
+    selftest.ts   one-click gradcheck of *every* engine op — conv/pool, the whole Transformer, the
+                  whole VAE AND the whole denoiser end-to-end, plus the diffusion schedule /
+                  forward-marginal / posterior / DDIM+CFG value identities (machine precision)
   components/
     PlaygroundLab.tsx      the 2-D lab (decision boundary / regression) wiring
     DecisionBoundary.tsx   canvas heatmap of model output over the input plane
@@ -123,6 +138,14 @@ src/
       LatentExplorer.tsx   two sliders fly a live-decoded glyph along the manifold axes
       PixelGrid.tsx        shared crisp canvas for one intensity grid
       GenChart.tsx         training curves: total −ELBO, reconstruction, KL
+    diff/
+      DiffLab.tsx          the Diffusion · DDPM/DDIM lab layout + keyboard shortcuts + save/share
+      DiffPanel.tsx        dataset / schedule / T / sampler / guidance / optimizer controls + stats
+      ReverseTrajectory.tsx the headline: animated noise → glyph, with the live x̂₀ prediction
+      SampleGallery.tsx    a class-conditional sample sheet (one trained label per row)
+      NoiseSchedulePlot.tsx the ᾱ_t / β_t / log-SNR curves — the forward process made visible
+      DiffInterpolation.tsx slerp two noise seeds, decode each blend with deterministic DDIM
+      DiffChart.tsx        the ε-prediction MSE curve (train + validation)
     rl/
       RLLab.tsx            the Control · RL lab layout + save/share + keyboard shortcuts
       RLPanel.tsx          environment / algorithm / hyperparameter controls + stats + gradcheck
@@ -136,12 +159,14 @@ src/
     useVisionTrainer.ts  owns the CNN model+optimizer+image data, steps the loop via rAF
     useSeqTrainer.ts     owns the GPT+optimizer, microbatches sequences into one backward
     useGenTrainer.ts     owns the VAE+optimizer, the ELBO loop, and the latent/decode views
+    useDiffusionTrainer.ts owns the denoiser+optimizer, the ε-MSE loop with label dropout, and the
+                         reverse-sampling / DDIM-slerp / class-grid generation paths
     useRLTrainer.ts      owns the agent+optimizers+envs; rolls out batches, does the PG/critic
                          updates, and runs an always-on demo episode for the live animation
   lib/
     raster.ts     canvas grid painting + color ramps for the vision views
     pca.ts        2-D PCA (power iteration + deflation) for the latent scatter + manifold
-  App.tsx           tabbed shell: Playground ⟷ Vision · CNN ⟷ Transformer ⟷ Generative · VAE ⟷ Control · RL
+  App.tsx           tabbed shell: Playground ⟷ Vision · CNN ⟷ Transformer ⟷ Generative · VAE ⟷ Diffusion · DDPM ⟷ Control · RL
 ```
 
 ## Backlog / ideas
@@ -521,6 +546,62 @@ Pendulum (continuous) −1291 → ≈ −150** (a real swing-up, σ self-anneali
 MountainCar (shaped) −192 → −106** (it reaches the flag). Full CI gate (scope + conformance + lint +
 tsc + vite build) green via `node scripts/verify-project.mjs synapse-grad-7c4e`.
 
+### Session 8 — a sixth lab: Diffusion · DDPM / DDIM (claude, 2026-06-22)
+
+The generative track had one model (the VAE). This session adds the *other* modern generative
+paradigm — a **denoising diffusion probabilistic model**, built honestly on the same autograd
+engine — as a complete sixth lab. A diffusion model learns to *reverse* a fixed noising process:
+corrupt a glyph into pure Gaussian noise over T steps, then train a network ε_θ(x_t, t) to predict
+the noise that was added, and *sample* by walking that prediction backwards from N(0, I) all the way
+to a clean digit. The headline is watching that reverse trajectory denoise, live, in your browser.
+Every formula below is hand-derived and gradchecked, and the schedule/posterior identities are
+proven numerically in the engine self-test.
+
+**Engine — `diffusion.ts` (new):**
+- [x] `NoiseSchedule`: precomputed β_t, α_t = 1−β_t, and the cumulative ᾱ_t = ∏α_s, for **linear**
+      (Ho et al.) and **cosine** (Nichol & Dhariwal, ᾱ_t = cos²(...)) schedules; plus ᾱ_{t−1}, the
+      forward √ᾱ / √(1−ᾱ) coefficients, and the true posterior variance β̃_t = (1−ᾱ_{t−1})/(1−ᾱ_t)·β_t
+- [x] `qSample(x0, t, ε)` — the closed-form forward marginal x_t = √ᾱ_t·x0 + √(1−ᾱ_t)·ε
+- [x] `sinusoidalTimeEmbedding(t, dim)` — Transformer-style sin/cos features of the normalised step
+      (a frozen leaf — the conditioning input, not a parameter)
+- [x] `Denoiser` — a **time-conditioned residual MLP** ε_θ: an input projection, a 2-layer time-MLP
+      on the sinusoidal features injected into every block, optional **learned class embedding** (a
+      `numClasses+1` table with a null token for classifier-free guidance), pre-LayerNorm SiLU residual
+      blocks, and an output projection back to pixel space — assembled entirely from `Linear`,
+      `layerNorm`, `silu`, `embedding`, `add` so the whole thing is one differentiable graph
+- [x] `ddpmStep` (ancestral) and `ddimStep` (deterministic η, with the x̂₀ prediction) reverse updates
+- [x] `classifierFreeGuidance` — ε̃ = ε_uncond + w·(ε_cond − ε_uncond)
+- [x] `posteriorMean` — the true q(x_{t−1}|x_t, x_0) mean μ̃_t, for the self-test identity
+
+**Engine self-test — six new rigorous checks (the project's whole point: *prove* it):**
+- [x] `diffusion-denoiser (e2e)` — gradcheck **every** denoiser parameter through the ε-prediction MSE
+- [x] schedule self-consistency: ∏α_t ≡ ᾱ_T and the variance recursion v_t = α_t v_{t−1} + β_t ≡ 1−ᾱ_T
+- [x] forward-marginal identity: √ᾱ_t² + √(1−ᾱ_t)² ≡ 1 and ᾱ monotonically decreasing, ᾱ_0 ≈ 1
+- [x] posterior identity: the DDPM update mean with the *true* ε equals the closed-form μ̃_t
+- [x] DDIM x̂₀ exactness: feeding the true ε into the x̂₀ formula reconstructs x_0 to machine precision
+- [x] guidance linearity: w = 0 ⇒ ε̃ = ε_cond, and the combine is affine in w
+
+**Hook — `useDiffusionTrainer.ts` (new):** owns the denoiser + optimizer + image data; each step
+samples t ~ U{1..T} and ε ~ N(0, I), forms x_t, predicts ε̂, minimises `mse(ε̂, ε)`, with
+classifier-free **label dropout**; exposes a gradcheck, a full **reverse-sampling** path (DDPM or
+DDIM, k steps, guidance w, per-step capture of both x_t and the x̂₀ prediction), a class-conditional
+**sample grid**, a **slerp** between two noise seeds through DDIM, and snapshot/load for save/share.
+
+**UI — `components/diff/` (new), wired into the tab shell as `#d=`:**
+- [x] `DiffLab` + `DiffPanel` — schedule / T / steps / sampler / guidance / arch / optimizer controls
+- [x] `ReverseTrajectory` — the headline: the denoising strip from noise → glyph, with the model's
+      live **x̂₀ prediction** underneath each step
+- [x] `SampleGallery` — a class-conditional grid (one trained label per column) sampled on demand
+- [x] `NoiseSchedulePlot` — the ᾱ_t / β_t / SNR curves (the math made visible)
+- [x] `DiffInterpolation` — a spherical-interpolation morph between two seeds, decoded by DDIM
+- [x] `DiffChart` — the ε-prediction loss curve (train + val)
+- [x] App tab + hash route `#d=`, a `DIFF_SLOT_PREFIX` for independent save/share
+
+**Validation:** gradcheck the denoiser and prove the four diffusion identities outside the browser
+first, train to a falling ε-loss and confirm DDIM sampling produces recognisable class-conditional
+glyphs, then keep the full CI gate (scope + conformance + lint + tsc + vite build) green via
+`node scripts/verify-project.mjs synapse-grad-7c4e`.
+
 ## Session log
 
 - 2026-06-21 (claude): created from template. Built the autograd engine (tensor/nn/optim/losses),
@@ -606,3 +687,27 @@ tsc + vite build) green via `node scripts/verify-project.mjs synapse-grad-7c4e`.
   PPO Pendulum continuous −1291 → ≈ −150, σ self-annealing 0.63 → 0.34; PPO MountainCar shaped −192 →
   −106 — it reaches the flag); the full CI gate (scope + conformance + lint + tsc + vite build) is green
   via `node scripts/verify-project.mjs synapse-grad-7c4e`.
+
+- 2026-06-22 (claude, session 8): added a **sixth lab — Diffusion · DDPM/DDIM**, the project's second
+  generative paradigm (after the VAE) and the modern one. New `diffusion.ts` (no ML libs, every
+  formula hand-derived): a `NoiseSchedule` (linear + cosine ᾱ_t, posterior variance β̃_t), the forward
+  marginal `qSample`, a `sinusoidalTimeEmbedding`, and a **time-conditioned residual-MLP `Denoiser`**
+  ε_θ(x_t, t) — an input projection, a 2-layer time-MLP injected into every pre-LayerNorm SiLU
+  residual block, a **learned class embedding with a null token for classifier-free guidance**, and an
+  output projection — assembled from `Linear`/`layerNorm`/`silu`/`embedding`/`add` so the whole net is
+  one differentiable graph. Reverse process: ancestral `ddpmStep`, deterministic/η-stochastic
+  `ddimStep` with the (clamped) x̂₀ prediction, the `posteriorMean`, and the `classifierFreeGuidance`
+  combine. The engine **self-test grew to 48 ops** (max rel err 4.8e-7): the denoiser is gradchecked
+  end-to-end (1.4e-7), and four diffusion *value identities* are proven to machine precision — schedule
+  self-consistency (∏α_t ≡ ᾱ_T and the variance recursion ≡ 1−ᾱ_T), the forward-marginal unit-variance
+  identity, the DDPM-mean ≡ closed-form posterior-mean, and DDIM x̂₀ exactness + CFG affinity. A
+  `useDiffusionTrainer` hook runs the ε-prediction MSE loop (per-sample t ~ U{1..T}, ε ~ N(0,I), with
+  classifier-free label dropout) in the data's [−1,1] space, and serves the reverse-sampling,
+  DDIM-slerp and class-grid views. The lab UI: the headline **animated reverse trajectory** (a glyph
+  condensing out of noise with the live x̂₀ guess beside it + a scrubber), a **class-conditional sample
+  sheet**, the **noise-schedule plot** (ᾱ_t / β_t / log-SNR), **noise-space slerp interpolation**, the
+  ε-MSE training curve, full schedule/sampler/guidance/optimizer controls, gradient check, self-test,
+  and save/share `#d=` links. Validated outside the browser first — self-test 4.8e-7 across 48 ops;
+  5000-step training drops the ε-MSE from ~5.8 to <1 and DDIM sampling (clamped x̂₀) produces bounded,
+  digit-like class-conditional glyphs. Full CI gate (scope + conformance + lint + tsc + vite build)
+  green via `node scripts/verify-project.mjs synapse-grad-7c4e`.
