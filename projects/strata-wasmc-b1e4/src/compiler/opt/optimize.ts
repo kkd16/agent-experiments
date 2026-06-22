@@ -9,6 +9,7 @@ import { divRemByConst } from './divrem';
 import { memOpt } from './memopt';
 import { sroa } from './sroa';
 import { osr } from './osr';
+import { reassociate } from './reassoc';
 import { dumpModule } from '../irdump';
 import { i32, satTruncI32, rotl32, rotr32, rotl64, rotr64 } from '../interp';
 
@@ -882,6 +883,7 @@ export function optimize(mod: IRModule, level: OptLevel, snapshots = false): Opt
     record('div-by-const' + suffix, divRemByConst);
     record('sroa' + suffix, sroa);
     record('mem-opt' + suffix, memOpt);
+    if (level >= 2) record('reassociate' + suffix, reassociate);
     if (level >= 2) record('gvn/cse' + suffix, gvn);
     if (level >= 2) record('strength-reduce-iv' + suffix, osr);
     record('algebraic-simplify' + suffix, algebraic);
@@ -899,6 +901,7 @@ export function optimize(mod: IRModule, level: OptLevel, snapshots = false): Opt
     record('copy-propagation (post-unroll)', copyProp);
     record('sccp (post-unroll)', sccp);
     record('mem-opt (post-unroll)', memOpt);
+    record('reassociate (post-unroll)', reassociate);
     record('gvn/cse (post-unroll)', gvn);
     record('strength-reduce-iv (post-unroll)', osr);
     record('licm (post-unroll)', licm);
