@@ -1,124 +1,61 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import './App.css'
-import { parse } from './engine/parser'
-import { deriveAlphabet } from './engine/alphabet'
-import { buildNfa } from './engine/nfa'
-import { minimizeDfa, subsetConstruction } from './engine/dfa'
-import { dfaToGraph, nfaToGraph } from './engine/graph'
-import { dfaToRegex } from './engine/gnfa'
-import { simulateDfa, simulateNfa } from './engine/simulate'
-import type { SimResult } from './engine/simulate'
-import { accepts, sampleLanguage } from './engine/sample'
-import { showSym } from './engine/types'
-import Graph from './components/Graph'
-import AstView from './components/AstView'
-import { EXAMPLES } from './examples'
+import ExploreView from './views/ExploreView'
+import type { ExploreTab } from './views/ExploreView'
+import CompareView from './views/CompareView'
+import { copyText } from './lib/download'
+import { decodeHash, encodeHash } from './lib/hash'
+import type { AppState, Mode } from './lib/hash'
+import { COMPARE_EXAMPLES, EXAMPLES } from './examples'
 
-type Tab = 'ast' | 'nfa' | 'dfa' | 'min'
+const VALID_TABS: ExploreTab[] = ['ast', 'nfa', 'dfa', 'min', 'der']
+const VALID_OPS = ['union', 'inter', 'diffAB', 'diffBA', 'symdiff']
 
-const TABS: { id: Tab; label: string }[] = [
-  { id: 'ast', label: 'Parse tree' },
-  { id: 'nfa', label: 'ε-NFA' },
-  { id: 'dfa', label: 'DFA' },
-  { id: 'min', label: 'Minimal DFA' },
-]
+const DEFAULT_STATE: AppState = {
+  mode: 'explore',
+  explore: { regex: EXAMPLES[0].regex, tab: 'nfa', input: EXAMPLES[0].test },
+  compare: {
+    a: COMPARE_EXAMPLES[0].a,
+    b: COMPARE_EXAMPLES[0].b,
+    op: 'inter',
+    input: '',
+  },
+}
+
+/** Sanitize a decoded state so a hand-edited URL can never wedge a view. */
+function clean(s: AppState): AppState {
+  const tab = VALID_TABS.includes(s.explore.tab as ExploreTab) ? s.explore.tab : 'nfa'
+  const op = VALID_OPS.includes(s.compare.op) ? s.compare.op : 'inter'
+  return { ...s, explore: { ...s.explore, tab }, compare: { ...s.compare, op } }
+}
 
 export default function App() {
-  const [regex, setRegex] = useState(EXAMPLES[0].regex)
-  const [tab, setTab] = useState<Tab>('nfa')
-  const [input, setInput] = useState(EXAMPLES[0].test)
-  const [rawStep, setStep] = useState(0)
-  const [playing, setPlaying] = useState(false)
-  const [member, setMember] = useState('')
-
-  // --- compile the regex through the whole pipeline -------------------------
-  const compiled = useMemo(() => {
-    const res = parse(regex)
-    if (!res.ok) return { ok: false as const, error: res.error }
-    const ast = res.ast
-    const alpha = deriveAlphabet(ast)
-    const nfa = buildNfa(ast)
-    const dfaFull = subsetConstruction(nfa)
-    const minimal = minimizeDfa(dfaFull)
-    return {
-      ok: true as const,
-      ast,
-      alpha,
-      nfa,
-      dfaFull,
-      minimal,
-      nfaGraph: nfaToGraph(nfa),
-      dfaGraph: dfaToGraph(dfaFull),
-      minGraph: dfaToGraph(minimal),
-      reconstructed: dfaToRegex(minimal),
-    }
-  }, [regex])
-
-  // --- simulation for the currently displayed machine -----------------------
-  const sim: SimResult | null = useMemo(() => {
-    if (!compiled.ok) return null
-    if (tab === 'dfa') return simulateDfa(compiled.dfaFull, input, compiled.alpha)
-    if (tab === 'min') return simulateDfa(compiled.minimal, input, compiled.alpha)
-    // 'nfa' and 'ast' both use the NFA trace.
-    return simulateNfa(compiled.nfa, input, compiled.alpha)
-  }, [compiled, tab, input])
-
-  const maxStep = sim ? sim.steps.length - 1 : 0
-  // Derive the visible step rather than clamping in an effect (avoids cascading renders).
-  const step = Math.min(rawStep, maxStep)
-  const isPlaying = playing && step < maxStep
-
-  // Auto-play through the trace. The "stop at the end" decision lives in the guard, not in a
-  // synchronous setState, so this effect only ever schedules a timer.
-  const playRef = useRef<number | null>(null)
-  useEffect(() => {
-    if (!playing || step >= maxStep) return
-    playRef.current = window.setTimeout(() => setStep((s) => Math.min(s + 1, maxStep)), 650)
-    return () => {
-      if (playRef.current) window.clearTimeout(playRef.current)
-    }
-  }, [playing, step, maxStep])
-
-  const highlight = sim?.steps[step]?.active ?? []
-
-  // --- language sampler -----------------------------------------------------
-  const samples = useMemo(
-    () => (compiled.ok ? sampleLanguage(compiled.minimal, 14) : []),
-    [compiled],
+  const [state, setState] = useState<AppState>(() =>
+    clean(decodeHash(window.location.hash, DEFAULT_STATE)),
   )
-  const memberVerdict = useMemo(() => {
-    if (!compiled.ok || member === '') return null
-    return accepts(compiled.minimal, member, compiled.alpha)
-  }, [compiled, member])
+  const [shared, setShared] = useState(false)
 
-  const loadExample = (i: number) => {
-    setRegex(EXAMPLES[i].regex)
-    setInput(EXAMPLES[i].test)
-    setStep(0)
-    setPlaying(false)
-  }
+  // Keep the URL hash in sync with state (write only when it actually differs).
+  const lastHash = useRef('')
+  useEffect(() => {
+    const h = encodeHash(state)
+    lastHash.current = h
+    if (window.location.hash !== h) {
+      window.history.replaceState(null, '', h)
+    }
+  }, [state])
 
-  const graph = !compiled.ok
-    ? null
-    : tab === 'nfa'
-      ? compiled.nfaGraph
-      : tab === 'dfa'
-        ? compiled.dfaGraph
-        : tab === 'min'
-          ? compiled.minGraph
-          : null
+  // Respond to external hash changes (shared links, back/forward).
+  useEffect(() => {
+    const onHash = () => {
+      const next = clean(decodeHash(window.location.hash, state))
+      if (encodeHash(next) !== encodeHash(state)) setState(next)
+    }
+    window.addEventListener('hashchange', onHash)
+    return () => window.removeEventListener('hashchange', onHash)
+  }, [state])
 
-  const stats = compiled.ok
-    ? {
-        alpha: compiled.alpha.symbols.length,
-        nfa: compiled.nfa.numStates,
-        dfa: compiled.dfaFull.numStates,
-        min: compiled.minimal.numStates,
-      }
-    : null
-
-  const machineName =
-    tab === 'dfa' ? 'DFA' : tab === 'min' ? 'minimal DFA' : 'ε-NFA'
+  const setMode = (mode: Mode) => setState((s) => ({ ...s, mode }))
 
   return (
     <div className="app">
@@ -127,262 +64,70 @@ export default function App() {
           <span className="logo">◎</span>
           <div>
             <h1>Automata Forge</h1>
-            <p className="tag">regex → ε-NFA → DFA → minimal DFA, built from scratch</p>
+            <p className="tag">
+              {state.mode === 'explore'
+                ? 'regex → ε-NFA → DFA → minimal DFA → derivatives, built from scratch'
+                : 'compare two regexes: product construction, boolean algebra & equivalence'}
+            </p>
           </div>
         </div>
-        {stats && (
-          <div className="statline">
-            <Stat k="Σ" v={stats.alpha} title="alphabet size (incl. ∗ = any other char)" />
-            <Stat k="NFA" v={stats.nfa} title="ε-NFA states (Thompson)" />
-            <Stat k="DFA" v={stats.dfa} title="subset-construction states (complete, with trap)" />
-            <Stat k="min" v={stats.min} title="Hopcroft-minimized states" />
-            {stats.dfa > 0 && (
-              <span className="reduce" title="DFA states removed by minimization">
-                −{Math.round((1 - stats.min / stats.dfa) * 100)}%
-              </span>
-            )}
+        <div className="header-actions">
+          <div className="mode-switch" role="tablist" aria-label="mode">
+            <button
+              role="tab"
+              aria-selected={state.mode === 'explore'}
+              className={`mode-btn${state.mode === 'explore' ? ' active' : ''}`}
+              onClick={() => setMode('explore')}
+            >
+              Explore
+            </button>
+            <button
+              role="tab"
+              aria-selected={state.mode === 'compare'}
+              className={`mode-btn${state.mode === 'compare' ? ' active' : ''}`}
+              onClick={() => setMode('compare')}
+            >
+              Compare
+            </button>
           </div>
-        )}
+          <button
+            className="share-btn"
+            title="Copy a shareable link to this exact workspace"
+            onClick={async () => {
+              const url = window.location.origin + window.location.pathname + encodeHash(state)
+              const ok = await copyText(url)
+              if (ok) {
+                setShared(true)
+                window.setTimeout(() => setShared(false), 1500)
+              }
+            }}
+          >
+            {shared ? '✓ link copied' : '🔗 share'}
+          </button>
+        </div>
       </header>
 
-      <section className="input-bar">
-        <label className="regex-field">
-          <span className="slash">/</span>
-          <input
-            value={regex}
-            spellCheck={false}
-            autoCapitalize="off"
-            autoCorrect="off"
-            onChange={(e) => {
-              setRegex(e.target.value)
-              setStep(0)
-              setPlaying(false)
-            }}
-            placeholder="type a regular expression…"
-            aria-label="regular expression"
-          />
-          <span className="slash">/</span>
-        </label>
-        <select
-          className="examples"
-          value=""
-          onChange={(e) => e.target.value && loadExample(Number(e.target.value))}
-          aria-label="load an example"
-        >
-          <option value="">examples ▾</option>
-          {EXAMPLES.map((ex, i) => (
-            <option key={i} value={i}>
-              {ex.name}
-            </option>
-          ))}
-        </select>
-      </section>
-
-      {!compiled.ok ? (
-        <div className="parse-error">
-          <pre>
-            {'/' + regex + '/'}
-            {'\n  '}
-            {' '.repeat(compiled.error.pos)}
-            <span className="caret">^</span>
-          </pre>
-          <span className="err-msg">parse error: {compiled.error.message}</span>
-        </div>
+      {state.mode === 'explore' ? (
+        <ExploreView
+          regex={state.explore.regex}
+          onRegex={(regex) => setState((s) => ({ ...s, explore: { ...s.explore, regex } }))}
+          input={state.explore.input}
+          onInput={(input) => setState((s) => ({ ...s, explore: { ...s.explore, input } }))}
+          tab={state.explore.tab as ExploreTab}
+          onTab={(tab) => setState((s) => ({ ...s, explore: { ...s.explore, tab } }))}
+        />
       ) : (
-        <div className="alpha-bar">
-          <span className="alpha-tag">alphabet</span>
-          {compiled.alpha.symbols.map((s, i) => (
-            <code key={i} className="alpha-sym">
-              {showSym(s)}
-            </code>
-          ))}
-          {compiled.alpha.truncated && (
-            <span className="warn">large range truncated for display</span>
-          )}
-        </div>
+        <CompareView
+          a={state.compare.a}
+          b={state.compare.b}
+          op={state.compare.op}
+          input={state.compare.input}
+          onA={(a) => setState((s) => ({ ...s, compare: { ...s.compare, a } }))}
+          onB={(b) => setState((s) => ({ ...s, compare: { ...s.compare, b } }))}
+          onOp={(op) => setState((s) => ({ ...s, compare: { ...s.compare, op } }))}
+          onInput={(input) => setState((s) => ({ ...s, compare: { ...s.compare, input } }))}
+        />
       )}
-
-      <div className="workspace">
-        <main className="viewer">
-          <nav className="tabs">
-            {TABS.map((t) => (
-              <button
-                key={t.id}
-                className={`tab${tab === t.id ? ' active' : ''}`}
-                onClick={() => setTab(t.id)}
-              >
-                {t.label}
-              </button>
-            ))}
-          </nav>
-          <div className="canvas">
-            {!compiled.ok ? (
-              <div className="empty">Fix the pattern to see its machines.</div>
-            ) : tab === 'ast' ? (
-              <AstView ast={compiled.ast} />
-            ) : graph ? (
-              <Graph graph={graph} highlight={highlight} fitKey={`${regex}|${tab}`} />
-            ) : null}
-          </div>
-          {compiled.ok && tab !== 'ast' && (
-            <div className="legend">
-              <span>
-                <i className="dot start" /> start
-              </span>
-              <span>
-                <i className="dot accept" /> accepting
-              </span>
-              <span>
-                <i className="dot active" /> active
-              </span>
-              <span className="hint">scroll = zoom · drag = pan · drag a node to move it</span>
-            </div>
-          )}
-        </main>
-
-        <aside className="rail">
-          <section className="panel">
-            <h2>Simulate</h2>
-            <p className="panel-sub">
-              Run a string through the <strong>{machineName}</strong>.
-              {tab === 'nfa' || tab === 'ast'
-                ? ' The whole active set (ε-closure) lights up at each step.'
-                : ' One state is active at each step.'}
-            </p>
-            <input
-              className="sim-input"
-              value={input}
-              spellCheck={false}
-              onChange={(e) => {
-                setInput(e.target.value)
-                setStep(0)
-                setPlaying(false)
-              }}
-              placeholder="input string"
-              aria-label="simulation input string"
-            />
-            <div className="tape">
-              {input.length === 0 && <span className="tape-empty">ε (empty string)</span>}
-              {[...input].map((ch, i) => {
-                const consumed = i < step
-                const current = i === step - 1
-                return (
-                  <span
-                    key={i}
-                    className={`cell${consumed ? ' consumed' : ''}${current ? ' current' : ''}`}
-                  >
-                    {ch === ' ' ? '␣' : ch}
-                  </span>
-                )
-              })}
-            </div>
-            <div className="sim-controls">
-              <button onClick={() => { setStep(0); setPlaying(false) }} disabled={step === 0}>⏮</button>
-              <button onClick={() => { setStep((s) => Math.max(0, s - 1)); setPlaying(false) }} disabled={step === 0}>◀</button>
-              <button
-                className="play"
-                onClick={() => {
-                  if (step >= maxStep) {
-                    setStep(0)
-                    setPlaying(true)
-                  } else {
-                    setPlaying((p) => !p)
-                  }
-                }}
-              >
-                {isPlaying ? '⏸ pause' : '▶ play'}
-              </button>
-              <button onClick={() => { setStep((s) => Math.min(maxStep, s + 1)); setPlaying(false) }} disabled={step >= maxStep}>▶</button>
-              <button onClick={() => { setStep(maxStep); setPlaying(false) }} disabled={step >= maxStep}>⏭</button>
-            </div>
-            <div className="sim-status">
-              <span className="step-count">step {step} / {maxStep}</span>
-              {sim && step === maxStep && (
-                <span className={`verdict ${sim.accepted ? 'accept' : 'reject'}`}>
-                  {sim.accepted ? '✓ accepted' : sim.stuck ? '✗ rejected (stuck)' : '✗ rejected'}
-                </span>
-              )}
-              {sim && (
-                <span className="active-states">
-                  active: {highlight.length ? highlight.map((s) => `q${s}`).join(', ') : '∅'}
-                </span>
-              )}
-            </div>
-          </section>
-
-          <section className="panel">
-            <h2>Language</h2>
-            <p className="panel-sub">
-              Shortest strings the minimal DFA accepts (∗ = any other char) — click to load:
-            </p>
-            <div className="samples">
-              {samples.length === 0 ? (
-                <span className="tape-empty">∅ — the language is empty</span>
-              ) : (
-                samples.map((s, i) => (
-                  <code
-                    key={i}
-                    className="sample"
-                    onClick={() => {
-                      setInput(s.display === 'ε' ? '' : s.display.replace(/∗/g, '?'))
-                      setStep(0)
-                      setPlaying(false)
-                    }}
-                  >
-                    {s.display}
-                  </code>
-                ))
-              )}
-            </div>
-            <div className="member">
-              <input
-                value={member}
-                spellCheck={false}
-                onChange={(e) => setMember(e.target.value)}
-                placeholder="test membership…"
-                aria-label="membership test string"
-              />
-              {memberVerdict !== null && (
-                <span className={`pill ${memberVerdict ? 'yes' : 'no'}`}>
-                  {memberVerdict ? 'in language' : 'rejected'}
-                </span>
-              )}
-            </div>
-          </section>
-
-          {compiled.ok && (
-            <section className="panel">
-              <h2>Regex from the DFA</h2>
-              <p className="panel-sub">
-                State elimination (GNFA) run on the minimal DFA — the other half of Kleene's
-                theorem. Equivalent to your input, though rarely identical:
-              </p>
-              <code className="reconstructed">/{compiled.reconstructed}/</code>
-            </section>
-          )}
-
-          <section className="panel about">
-            <h2>How it works</h2>
-            <ol>
-              <li>A recursive-descent parser turns the regex into an AST.</li>
-              <li>An alphabet is derived; unseen characters fold onto the ∗ symbol.</li>
-              <li>Thompson's construction wires the AST into an ε-NFA.</li>
-              <li>Subset construction determinizes it into a complete DFA.</li>
-              <li>Hopcroft's algorithm merges equivalent states into the minimal DFA.</li>
-              <li>State elimination turns the DFA back into a regex (the loop closes).</li>
-            </ol>
-          </section>
-        </aside>
-      </div>
     </div>
-  )
-}
-
-function Stat({ k, v, title }: { k: string; v: number; title: string }) {
-  return (
-    <span className="stat" title={title}>
-      <span className="stat-k">{k}</span>
-      <span className="stat-v">{v}</span>
-    </span>
   )
 }
