@@ -5,6 +5,7 @@ import { useEngine } from './engine/useEngine.ts'
 import type { RenderSettings } from './engine/renderer.ts'
 import { DEFAULT_POST } from './render/post.ts'
 import { DEFAULT_SSFX } from './render/ssfx.ts'
+import { DEFAULT_TRANSPARENCY } from './render/oit.ts'
 import { DEFAULT_DENOISE } from './raytrace/denoise.ts'
 import { parseOBJ, SAMPLE_OBJ } from './geometry/obj.ts'
 import { buildSdf } from './sdf/scenes.ts'
@@ -26,6 +27,7 @@ const DEFAULT_SETTINGS: RenderSettings = {
   normalMaps: true,
   post: DEFAULT_POST,
   ssfx: DEFAULT_SSFX,
+  transparency: DEFAULT_TRANSPARENCY,
   rt: {
     mode: 'path',
     maxBounces: 4,
@@ -44,7 +46,7 @@ const DEFAULT_SETTINGS: RenderSettings = {
 
 // Scenes that are built for global illumination — selecting one flips to the ray
 // tracer so they don't read as a flat rasterized box.
-const RT_SCENES = new Set(['cornell', 'reflections', 'cathedral', 'nebula'])
+const RT_SCENES = new Set(['cornell', 'reflections', 'glass', 'prism', 'cathedral', 'nebula'])
 
 // Scenes built to show off the volumetric medium — selecting one switches to the ray
 // tracer AND turns the medium on with a fitting preset.

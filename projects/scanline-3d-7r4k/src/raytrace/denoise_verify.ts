@@ -69,6 +69,7 @@ const baseRender = (over: Partial<RenderSettings> = {}, rtOver: Partial<RenderSe
   normalMaps: true,
   post: { ...DEFAULT_POST, bloom: false, fxaa: false, vignette: false },
   ssfx: DEFAULT_SSFX,
+  transparency: { enabled: false, refraction: 28, thickness: 1.1 },
   rt: {
     mode: 'path', maxBounces: 4, softShadows: true, sunSoftness: 1.5,
     lightRadius: 0.25, aoRadius: 1.5, resolutionScale: 1, compare: false, splitPos: 0.5,

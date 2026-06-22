@@ -33,6 +33,7 @@ const baseSettings = (ssfx: Partial<SSFXSettings>): RenderSettings => ({
   normalMaps: true,
   post: { ...DEFAULT_POST, bloom: false, fxaa: false, vignette: false },
   ssfx: { ...DEFAULT_SSFX, ssao: false, ssr: false, contactShadows: false, taa: false, ...ssfx },
+  transparency: { enabled: false, refraction: 28, thickness: 1.1 },
   rt: {
     mode: 'path', maxBounces: 4, softShadows: true, sunSoftness: 1.5,
     lightRadius: 0.25, aoRadius: 1.5, resolutionScale: 0.5, compare: false, splitPos: 0.5,

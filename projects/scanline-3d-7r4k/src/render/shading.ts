@@ -36,6 +36,12 @@ export interface Material {
   metallic?: number // 0 = dielectric, 1 = metal
   roughness?: number // 0 = mirror, 1 = fully rough
   emission?: Vec3 // linear radiance this surface emits (drives the path-traced lights)
+  // Dielectric transmission (v8) — drives the path tracer's rough-dielectric BSDF and
+  // the rasterizer's order-independent transparency. > 0 makes the surface glass.
+  transmission?: number // 0 = opaque, 1 = fully transmissive (refracting)
+  ior?: number // index of refraction (1.0 = air, ~1.5 = glass, ~2.4 = diamond)
+  attenuation?: Vec3 // Beer–Lambert absorption per world-unit *inside* the body (tint)
+  dispersion?: number // 0 = achromatic; > 0 fans the IOR by wavelength (prism rainbow)
 }
 
 export interface ShadowSampler {

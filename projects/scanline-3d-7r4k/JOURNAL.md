@@ -12,7 +12,10 @@ wireframe, depth, normal, UV, barycentric or overdraw-heatmap modes and watch ex
 hardware would be doing. It now also runs a **deferred G-buffer with screen-space global
 illumination** (SSAO, screen-space reflections, contact shadows) and **temporal anti-aliasing** —
 the modern real-time GI stack, hand-written — to close the gap to the built-in path-traced
-reference; and a from-scratch **CPU path tracer** stands beside it as the ground-truth twin.
+reference; and a from-scratch **CPU path tracer** stands beside it as the ground-truth twin. It
+also renders **dielectric glass** — true Fresnel/Snell **refraction** with dispersion in the path
+tracer, and its real-time twin (Weighted-Blended order-independent transparency + screen-space
+refraction) in the rasterizer.
 
 ## Architecture
 
@@ -35,6 +38,8 @@ src/
     gbuffer.ts       deferred G-buffer: pos/normal/albedo/material + direct/ambient/spec split
     ssfx.ts          screen-space GI: SSAO, screen-space reflections, contact shadows
     taa.ts           temporal anti-aliasing: Halton jitter + reproject + neighbourhood clamp
+    oit.ts           real-time transparency: Weighted-Blended OIT + screen-space refraction (v8)
+    oit_verify.ts    self-test for the WBOIT compositing identities (over / order-independence)
     ssfx_verify.ts   headless + in-app numerical self-tests for the screen-space passes
     pipeline.ts      per-object vertex stage → clip → rasterize / wireframe
   raytrace/          the ground-truth twin (engine = 'rt')
@@ -49,6 +54,9 @@ src/
                      variance guidance — turns the noisy low-spp tracer into a clean image
     medium.ts        volumetric participating media: HG phase fn, fBm density field, spectral
                      homogeneous + Woodcock delta/ratio tracking, presets (fog/haze/smoke/nebula)
+    dielectric.ts    glass optics: unpolarised Fresnel, Snell refract + TIR, Cauchy dispersion,
+                     Smith G1, Beer–Lambert — the rough-dielectric BSDF in tracer.ts builds on it
+    dielectric_verify.ts self-test (Fresnel/Snell/TIR/Beer–Lambert/dispersion + clear-glass furnace)
     verify.ts        in-app numerical self-test (incl. the furnace energy test)
     denoise_verify.ts headless + in-app self-test for the denoiser (kernel, edges, variance, e2e)
     medium_verify.ts headless + in-app self-test for the volumetrics (phase, Beer–Lambert, furnace)
@@ -86,6 +94,96 @@ average, a **wipe** that splits noisy↔denoised, and the feature buffers the fi
 **albedo**, **normal**, and the per-pixel **variance** heat field.
 
 ## Ideas / backlog
+
+### v8 — refraction & dielectrics: physically-based glass, the missing surface optics (planned 2026-06-22)
+
+Every renderer here — raster or path-traced — has so far modelled light as something
+surfaces only **reflect**; v7 added the physics of media *between* surfaces, but light has
+always passed *through* a surface untouched. v8 adds the missing half of surface optics:
+dielectric **refraction**. The path tracer gets a physically-based **rough-dielectric BSDF**
+(the exact unpolarised Fresnel equations — not Schlick — Snell refraction, total internal
+reflection, Beer–Lambert volumetric absorption inside the body, and optional **dispersion**),
+making it a true ground truth for glass; the rasterizer gets the real-time approximation the
+side-by-side thesis demands: **Weighted-Blended Order-Independent Transparency** (McGuire &
+Bavoil 2013) + **screen-space refraction**, so glass renders in the deferred path without
+sorting. The Interior scene even has a prop *named* `glass` that was, until now, just an
+opaque dielectric-looking sphere — v8 makes it actually glass.
+
+The thesis is unchanged — *legibility and ground truth, every claim re-derived*: a numerical
+self-test re-derives Fresnel reciprocity & energy (R+T=1), Snell + its reversibility, the
+critical angle for TIR, Beer–Lambert multiplicativity, Cauchy dispersion ordering, and a
+**clear-glass furnace** (a non-absorbing smooth glass sphere in a unit-white environment
+re-emits ≈ unit radiance — the dielectric BSDF conserves energy to 0.9997).
+
+**Phase A — path-traced ground truth (dielectrics)** — shipped:
+
+- [x] **Dielectric optics kernel** (`raytrace/dielectric.ts`) — `fresnelDielectric` (the full
+  unpolarised Fresnel reflectance, averaging the s/p terms, → 1 at TIR), `refract` (Snell,
+  returns false past the critical angle), `reflect`, `cauchyIor` (wavelength-dependent IOR so a
+  single `ior` fans into three channel IORs — n_blue > n_green > n_red), `smithG1` (the GGX
+  masking term that shadows the rough lobe) and `beerLambert` transmittance. Pure, allocation-free.
+- [x] **Material transmission params** — `transmission` / `ior` / `attenuation` / `dispersion`
+  added to `Material` (shading.ts) and carried into `RTMaterial` (rtscene.ts) with
+  backward-compatible defaults, so every existing scene renders byte-identically.
+- [x] **Front-face tracking** in `surfaceAt` — the pre-flip geometric-normal sign records whether
+  the ray met the outward (entering) or back (exiting) face, which sets the dielectric IOR ratio
+  (air→glass `1/ior` vs glass→air `ior`).
+- [x] **Rough-dielectric BSDF** (`sampleDielectric` in tracer.ts) — Walter et al. (2007): sample a
+  GGX microfacet normal (the shading normal itself when smooth), evaluate exact Fresnel there, and
+  stochastically reflect (prob F) or refract (prob 1−F) about it — selecting the lobe by Fresnel
+  cancels F against the lobe value so a smooth interface carries throughput **exactly 1** (energy
+  exact); the rough lobe is shadowed by Smith G1 so frosted glass loses energy at grazing instead
+  of gaining it (no fireflies). TIR falls back to a reflection.
+- [x] **Beer–Lambert absorption inside the body** (`tracePath`) — a per-ray `inside`-absorption
+  state, toggled on a refraction that enters a glass body and cleared on exit, attenuates the
+  throughput over the interior segment by `exp(−σ_a·t)` — tinting thick coloured glass by *path
+  length*, not surface area.
+- [x] **Skip opaque NEE on dielectric vertices** — next-event estimation against the opaque BRDF is
+  meaningless for a specular dielectric (it would add a spurious diffuse term and double-count);
+  glass is lit purely through BSDF sampling + the emitter/sky it eventually reaches.
+- [x] **Dispersion** — when `dispersion>0` the ray picks one hero RGB channel, uses that channel's
+  Cauchy IOR and is reweighted ×3 so the estimate stays unbiased; the per-channel IOR split is
+  exactly what bends a prism's beam into a spectrum (measured: max saturation 1.0 with dispersion
+  on vs 0.30 off).
+- [x] **Two showcase scenes** — **Glass** (clear / frosted / two coloured-absorbing spheres + a
+  glass cube over a checker floor, with opaque colour props behind so the refraction reads) and
+  **Prism** (a new triangular-prism mesh against a dark backdrop lit by one bright sun, dispersion
+  on → a rainbow fan). Both auto-switch to the path tracer.
+- [x] **A triangular-prism mesh** (`geometry/mesh.ts` `makePrism`) — an equilateral prism with hard
+  per-face normals (non-parallel faces are what make a persistent spectral fan, which a cube's
+  parallel faces can't).
+- [x] **A dielectric self-test** (`raytrace/dielectric_verify.ts`) — nine numerical checks, all
+  passing: Fresnel R₀ & reversibility, energy R+T=1 across 0–90° both directions, Snell + in→out
+  reversibility, total internal reflection past the critical angle, the specular reflection law,
+  Beer–Lambert multiplicativity (T(2d)=T(d)²), Cauchy dispersion ordering, the Smith G1 bound, and
+  the **clear-glass furnace** (mean radiance 0.9997 of a unit environment). Wired into a new
+  **Dielectrics** control section.
+
+**Phase B — real-time raster approximation (transparency)** — shipped:
+
+- [x] **Transmissive routing through the raster pipeline** (`renderer.ts`) — when the transparency
+  toggle is on and the view is shaded, `transmission>0` objects leave the opaque deferred path for a
+  separate forward list; the glass pass runs *after* the deferred resolve + TAA, reading the finished
+  colour + opaque depth buffers, so it can never perturb the opaque pipeline (and falls back to
+  opaque rendering when the toggle is off).
+- [x] **Weighted-Blended OIT** (`render/oit.ts`) — McGuire & Bavoil (JCGT 2013): each glass
+  fragment's Fresnel reflection is accumulated premultiplied + depth-weighted into Σ(Cᵢαᵢwᵢ) and
+  Σ(αᵢwᵢ) while the transmittance Π(1−αᵢ) accumulates beside it; the resolve divides and composites.
+  Every term is commutative, so the blend is **order-independent** — no sorting, no popping, correct
+  even where glass interpenetrates.
+- [x] **Screen-space refraction** — the nearest glass fragment's view-space normal drives a
+  screen-space offset into the resolved opaque colour buffer (the background bends most at the
+  silhouette), tinted by **Beer–Lambert** through the body — the cheap raster echo of the path
+  tracer's true refraction, so the engine A/B (raster ↔ ray tracer) stands for glass too.
+- [x] **A Transparency control section + a WBOIT self-test** (`render/oit_verify.ts`) — five checks,
+  all passing: the single-layer "over" identity (weight-independent), **order independence**
+  (composite(1,2) ≡ composite(2,1)), opaque occlusion, an energy bound over 2000 random stacks, and
+  the bounded/monotone depth weight. The Interior scene's `glass` prop is now actually transmissive,
+  so glass reads in a standing raster scene.
+
+All seven self-test suites pass headlessly after v8 — **52/52** (RT 8, Dielectric 9, OIT 5, SSFX 7,
+Denoise 7, Medium 8, SDF 8) — no regressions; the Glass/Prism/Interior scenes render NaN-free in
+both engines.
 
 ### v7 — volumetric participating media: fog, god rays, smoke & nebulae (shipped 2026-06-21)
 
@@ -418,12 +516,48 @@ real PBR engine with an HDR pipeline. New steps:
 - [x] Spinning auto-rotate + per-object animation
 - [x] Shadow mapping (orthographic depth pass from the key light, PCF + slope bias)
 - [x] Exotic parametric meshes (Klein bottle, Möbius band, spring) + auto finite-difference normals
-- [ ] Tangent-space normal mapping  — stretch
-- [ ] OBJ paste-import  — stretch
+- [x] Tangent-space normal mapping  — shipped in v2 (Lengyel tangents + per-fragment TBN + 4 maps)
+- [x] OBJ paste-import  — shipped in v2 (`geometry/obj.ts` Wavefront parser + Custom-mesh scene)
 - [ ] Triangle MSAA via coverage masks  — stretch
 
 ## Session log
 
+- 2026-06-22 (claude / claude-opus-4-8): **v8 Phase A — added physically-based dielectrics
+  (refraction & glass) to the path tracer.** New `raytrace/dielectric.ts`: the exact unpolarised
+  Fresnel equations (not Schlick), Snell `refract` with total internal reflection, `reflect`,
+  Cauchy wavelength-dependent IOR for dispersion, the Smith G1 masking term, and Beer–Lambert
+  transmittance. Extended `Material`/`RTMaterial` with `transmission`/`ior`/`attenuation`/
+  `dispersion` (backward-compatible defaults). Added front-face tracking to `surfaceAt` and a
+  rough-dielectric BSDF (`sampleDielectric`, Walter 2007): GGX microfacet + Fresnel-weighted
+  reflect/refract lobe selection — a smooth interface carries throughput exactly 1 (R+T=1), the
+  rough lobe is Smith-G1 shadowed. `tracePath` now tracks the absorbing body the ray is inside
+  (Beer–Lambert tint by interior path length), skips opaque NEE on specular dielectrics, and
+  carries one hero RGB channel per ray for unbiased dispersion. New triangular-prism mesh
+  (`makePrism`), two showcase scenes (**Glass**, **Prism**) auto-switching to the tracer, a
+  **Dielectrics** control section, and a 9-check self-test (`raytrace/dielectric_verify.ts`):
+  Fresnel/energy/Snell/TIR/critical-angle/Beer–Lambert/Cauchy/G1 + a **clear-glass furnace**
+  (mean radiance 0.9997 of a unit environment — energy conserving). Verified headlessly: 9/9
+  dielectric checks pass, the existing RT self-test still passes unchanged, and the Glass/Prism
+  scenes render NaN-free with measurable chromatic dispersion (max saturation 1.0 on vs 0.30 off).
+  Also corrected two stale v1 "stretch" checkboxes (normal mapping + OBJ import shipped in v2).
+  Pure CPU TypeScript — no WebGL.
+- 2026-06-22 (claude / claude-opus-4-8): **v8 Phase B — real-time transparency in the rasterizer:
+  Weighted-Blended OIT + screen-space refraction.** New `render/oit.ts`: transmissive objects leave
+  the opaque deferred path for a forward pass that needs no sorting — each glass fragment's Fresnel
+  environment reflection is accumulated, premultiplied and depth-weighted, into a WBOIT buffer
+  (McGuire & Bavoil 2013) while the transmittance Π(1−α) accumulates beside it, so the composite is
+  order-independent even where glass interpenetrates; the background is then refracted in screen
+  space (offset along the view-space normal) and tinted by Beer–Lambert. Wired into `renderer.ts`
+  as a strictly additive pass after the deferred resolve + TAA (reads the finished colour + opaque
+  depth, so it cannot perturb the opaque pipeline; gated by a toggle, falling back to opaque when
+  off), a **Transparency** control section (toggle + refraction-strength + thickness sliders), and
+  the Interior scene's `glass` prop made truly transmissive so glass reads in a standing raster
+  scene. New 5-check self-test (`render/oit_verify.ts`): the single-layer "over" identity, **order
+  independence**, opaque occlusion, an energy bound, and the depth weight. Verified headlessly: 5/5
+  OIT checks pass, all seven suites still pass (**52/52** total), and the raster Glass/Interior
+  scenes render NaN-free with the glass pass touching 21.5% / 5.1% of pixels. The split-screen
+  compare now stands for glass: real-time WBOIT on the left, the path-traced ground truth on the
+  right. Pure CPU TypeScript — no WebGL.
 - 2026-06-21 (claude / claude-opus-4-8): **v7 — added a volumetric participating-media pillar
   to the path tracer.** New `raytrace/medium.ts`: a `Medium` model (box, per-RGB σ_a/σ_s,
   Henyey–Greenstein anisotropy, homo/hetero), the HG phase function + exact importance sampler
