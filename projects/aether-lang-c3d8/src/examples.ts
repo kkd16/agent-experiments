@@ -1140,6 +1140,42 @@ let twice = fn n -> n + n in
 
 (norm, ramp 100 0, map twice [1, 2, 3], twice 10)`,
   },
+  {
+    id: 'eqsat',
+    title: 'Equality saturation',
+    blurb: 'An e-graph superoptimizer factors arithmetic the greedy passes cannot.',
+    visual: false,
+    code: `// Aether 16.0 — equality saturation (open the "Eq-Sat" tab).
+//
+// The greedy middle-end rewrites one move at a time, so it can never factor
+// 'a*2 + a*3' into 'a*5': that needs to see the WHOLE expression at once. The
+// e-graph pass applies every algebraic law (commutativity, associativity,
+// factoring, identities, cancellation) simultaneously and extracts the cheapest
+// equivalent form. Each rewrite below is a proven integer identity (validated by
+// Schwartz–Zippel polynomial identity testing) — exact for every input in the
+// ±2^53 range, the overflow-free assumption a real compiler makes to reassociate.
+//
+// These functions all keep their parameters SYMBOLIC (they run on list elements),
+// so the constant-folder cannot pre-compute them — only the algebra can shrink
+// them. Watch the Eq-Sat tab name each island and show 'a*2+a*3 ⟶ a*5'.
+
+// factoring out a shared variable: a*2 + a*3  ⟶  a * 5
+let weight = fn a -> a * 2 + a * 3 in
+
+// reassociate + fold round a symbol:  (x + 100) + 200  ⟶  x + 300
+let shift = fn x -> (x + 100) + 200 in
+
+// cancellation through commutativity:  a*b - b*a  ⟶  0
+let cancel = fn a b -> a * b - b * a in
+
+// a three-term common factor:  a*4 + a*5 + a*6  ⟶  a * 15
+let combine = fn a -> a * 4 + a * 5 + a * 6 in
+
+( map weight  [1, 2, 3, 4]
+, map shift   [1, 2, 3]
+, map (cancel 7) [10, 20]
+, map combine [1, 10, 100] )`,
+  },
 ]
 
 export const DEFAULT_CODE = EXAMPLES[0].code

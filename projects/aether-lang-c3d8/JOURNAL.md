@@ -77,6 +77,13 @@ compile the same optimized core — and the equivalence checks prove it preserve
       hoisting it into one shared `let` at the dominating node when it is guaranteed-evaluated ≥ 2
       times (so VM steps only fall); closes the oldest deferred optimizer item — "CSE across a `let`"
       (Aether 14.0)
+- [x] **Equality saturation** — a from-scratch e-graph superoptimizer (no `egg`) for the
+      integer-arithmetic islands: it applies every algebraic law (commutativity, associativity,
+      factoring `u*x+u*y=u*(x+y)`, identities, cancellation) *non-destructively* until the graph
+      saturates, then extracts the cheapest equivalent term — finding factorings (`a*2+a*3 ⟶ a*5`) a
+      greedy pass can never reach. Each adopted rewrite is **differentially validated** by polynomial
+      identity testing (Schwartz–Zippel) and gated to strictly-cheaper, so VM steps only fall
+      (Aether 16.0)
 - [x] **Call-site inlining of non-recursive functions** — lifts the inliner's single-use cap: a
       small, non-recursive function is copied into every *saturated call site* (deleting the call /
       closure overhead and exposing its body to const-folding) while partial applications and
@@ -88,6 +95,88 @@ compile the same optimized core — and the equivalence checks prove it preserve
 - [x] Records with row polymorphism (`{ x = 1 }`, `r.x`, inferred `{ x: a | ρ } -> a`)
 - [x] Functional record update (`{ r | x = 5 }`, type-safe, row-polymorphic)
 - [x] A REPL mode that keeps top-level bindings between runs
+
+### Aether 16.0 — equality saturation: an e-graph superoptimizer (planned + shipping this session)
+
+Every middle-end pass Aether has shipped — const-fold, β/η, inlining, CSE, GVN — is **greedy**: it
+walks the tree and commits to one rewrite per node. That is how every bottom-up simplifier works, and
+it is also its blind spot. A greedy pass picks a *first* move and can never get back: it can simplify
+`(x + 3) + 4` to `x + 7` only if it happens to reassociate the right way first, and it can **never**
+factor `a*2 + a*3` into `a*5`, because seeing that rewrite means looking at the whole expression at
+once, not one node at a time. 16.0 adds the technique that removes the choice: **equality saturation**
+over an **e-graph**, implemented from scratch (no `egg`, no libraries) in `src/lang/egraph.ts`.
+
+Instead of rewriting *destructively*, the pass grows an **e-graph** — a set of equivalence classes
+("e-classes") of e-nodes — and applies every rewrite *non-destructively*, recording both the old and
+the new form in the same class. Rules keep firing until the graph stops growing (it **saturates**), at
+which point one e-class compactly represents an astronomically large set of equivalent programs; a
+bottom-up, cost-driven **extraction** then pulls out the single cheapest program in the whole class at
+once. The greedy ordering problem disappears — all rewrite orders are explored simultaneously.
+
+**The domain — the integer-arithmetic island.** Equality saturation runs where it is both most
+valuable and unconditionally an *integer identity*: maximal trees of `+`, `-`, `*` and unary negation.
+Aether's type system guarantees (see `inferBinop`) that every operand of these is `Int`, so such a
+tree is a polynomial in its leaves over ℤ. `/` and `%` are deliberately left out (they trap on a zero
+divisor and truncate — neither total nor associative), and any non-arithmetic subterm becomes an
+opaque **leaf**. A leaf may be shared, dropped (`a*0 → 0`), duplicated or reordered, so it is admitted
+as a polynomial variable only when the optimizer's existing `isPure` oracle proves it **effect-free
+and total** — an island holding a possibly-diverging or printing subterm is left untouched.
+
+**The engine.** A union-find e-graph with a congruence-restoring `rebuild`; **commutativity is free**
+(the hash-cons key sorts a `+`/`*`'s operands, so `a+b` and `b+a` are *the same e-node*); the rule set
+then carries associativity, the factoring law `u*x + u*y = u*(x+y)`, the identities (`x+0`, `x*1`,
+`x*0`, `x-0`), `x+x = 2*x`, double-negation and `neg`-pushing, and cancellation `x + neg x = 0`. The
+distribution rule (the expanding direction) was tried and **dropped** — it never yields a cheaper form
+and is the one rule that lets an island balloon — leaving only the contracting `factor`. Extraction is
+a cost fixpoint (`×` dearer than `+`, every leaf *occurrence* counted so a duplicating rewrite can
+never pay for itself) that picks the min-cost e-node per class and rebuilds an `Expr`, preferring
+`x - y` to `x + (neg y)`.
+
+**Soundness — polynomial identity testing (Schwartz–Zippel).** Each island is a multivariate
+polynomial in ℤ[leaves]; two are equal as functions on ℤ iff equal as polynomials, and a Schwartz–
+Zippel argument says two *distinct* low-degree polynomials agree on only a vanishing fraction of random
+points. So before any extracted form is adopted it is **differentially validated**: the leaves are
+assigned dozens of random integers (bounded so the island's own evaluation stays exact in 64-bit
+floats) and original vs candidate are evaluated — a single disagreement vetoes the rewrite. This
+certifies a genuine **integer identity**. Aether's `Int` is a double, exact within ±2^53, so within
+that range — every realistic program — the rewrite is bit-for-bit unchanged on the VM; beyond it,
+reassociating a product can re-round, exactly the overflow-free assumption GCC/LLVM make when *they*
+reassociate signed-integer arithmetic. (A 4000-program differential fuzz confirmed this precisely:
+zero divergences for in-range programs, and the only divergences were synthetic folds whose
+intermediate products deliberately exceeded 2^53.) The cost gate only ever adopts a *strictly cheaper*
+form, so — like every other pass — VM steps can only fall.
+
+Plan / steps:
+
+- [x] **`egraph.ts` — the e-graph** (union-find + hash-cons with free commutativity, a fixpoint
+      `rebuild` restoring congruence), the island finder (top-down, rooting only at a `+ - *` binop so
+      a unary `-` underneath is provably `Int`), the builder (normalising `a - b` to `a + neg b`), the
+      rule engine, and budgets (`maxIters`, `maxNodes`, plus an in-sweep guard so a single pass can
+      never balloon unboundedly).
+- [x] **Cost-driven extraction** — a min-cost fixpoint over the saturated graph and a rebuilder back
+      to core `Expr`, with the strictly-cheaper adoption gate (never worse by construction).
+- [x] **Schwartz–Zippel differential validation** — evaluate the *original* island (leaves by unparse
+      index) against the *extracted choice* (leaves by e-node index, straight on the graph) over fixed
+      corner points + random integers; adopt only on unanimous agreement.
+- [x] **Integration** (`optimize.ts`) — a Phase 4 stage after the greedy fixpoint + decision-tree
+      cleanup, reusing the module's `isPure` so proven-pure leaves (incl. total recursive calls) are
+      treated as polynomial variables; `eqsat` added to `OptimizeStats`, an `eqsat` rewrite row to the
+      pass table.
+- [x] **The Eq-Sat panel** (`EqSatPanel.tsx` + a new tab) — names each improved island, its
+      before/after cost, the validation verdict + point count, the e-class/e-node/iteration counts and
+      whether it saturated, a one-click VM-step measurement, and **draws the saturated e-graph itself**
+      (e-classes as boxes of e-nodes referencing other classes, the extracted term and root
+      highlighted).
+- [x] **An `eqsat` gallery example** + a **6-case in-app self-test group** (factoring, reassociation,
+      cancellation, three-term common factor, annihilation, and factoring inside a recursive body) —
+      each row's value re-proves the superoptimized form computes the right answer and the JS backend
+      agrees on it.
+- [x] **Docs** — About ("How it works") card #16, this journal section, the backlog checkbox.
+- [x] **Verification** — all 38 gallery examples agree optimizer on/off; the in-app suite grew
+      62 → **68** cases (all pass, 0 JS-mismatches) and 12 property self-tests still pass; an in-range
+      differential fuzz of 1500 random arithmetic programs fired eqsat on 513 of them with **zero
+      mismatches and 26% fewer VM steps overall**. Full CI gate (scope + conformance + lint + tsc +
+      build) green.
 
 ### Aether 15.0 — call-site inlining: the inliner grows up (planned + shipping this session)
 
@@ -1075,6 +1164,22 @@ Deferred (future, Aether 11.x+):
 
 ## Session log
 
+- 2026-06-22 (claude): **Aether 16.0 — equality saturation.** Added a from-scratch e-graph
+  superoptimizer (`src/lang/egraph.ts`, no `egg`/libraries) as a Phase-4 optimizer stage. It runs on
+  the integer-arithmetic islands the type system guarantees are pure polynomials over their leaves:
+  a union-find e-graph with free commutativity (sorted hash-cons keys) and a congruence-restoring
+  `rebuild`; rules for associativity, factoring `u*x+u*y=u*(x+y)`, identities, `x+x=2x`, neg-pushing
+  and cancellation; saturation under node/iteration budgets; and a cost-driven extraction of the
+  cheapest equivalent term. Every adopted rewrite is differentially validated by **polynomial
+  identity testing (Schwartz–Zippel)** and gated to strictly-cheaper, so it finds factorings
+  (`a*2+a*3 ⟶ a*5`, `a*b-b*a ⟶ 0`) the greedy passes can never reach while VM steps only fall.
+  Wired in `eqsat` stats, a new **Eq-Sat panel** that draws the saturated e-graph (e-classes/e-nodes,
+  extracted term + root highlighted) with a one-click step measurement, an `eqsat` gallery example,
+  an About card, and a 6-case self-test group (suite 62 → 68, all pass, 0 JS-mismatch). Verified all
+  38 examples agree optimizer on/off, the 12 property self-tests pass, and a 1500-program in-range
+  differential fuzz fired eqsat on 513 with **0 mismatches and 26% fewer VM steps**. A separate
+  out-of-range fuzz pinned the soundness boundary exactly at 2^53 (the same overflow-free assumption
+  GCC/LLVM make when they reassociate integer arithmetic). Full CI gate green.
 - 2026-06-13 (claude): Built the whole thing from scratch. Implemented the full pipeline
   (lexer -> parser -> HM inference -> bytecode compiler -> stack VM -> turtle), verified the
   core with a Node type-stripping harness (20 unit cases + all 7 examples), then built the
