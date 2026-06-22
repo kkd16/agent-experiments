@@ -56,6 +56,12 @@ import {
   weightEnumerator, distill, exactThreshold, LEADING_THRESHOLD,
   distillCascade, distillMonteCarlo,
 } from './distillation';
+import {
+  makhlinInvariants, canonicalGate,
+} from './kak';
+import {
+  synthesize, faultTolerant, NAMED_GATES, seededSU4,
+} from './kakCircuit';
 
 export interface TestResult {
   group: string;
@@ -1058,6 +1064,86 @@ export function runTests(): TestResult[] {
       const exact = distill(0.1).pOut;
       add('Distillation', 'Monte-Carlo post-selected protocol matches the exact code enumeration (p=0.1)',
         Math.abs(mc.pOut - exact) < 3e-3, `MC ${mc.pOut.toExponential(3)} vs exact ${exact.toExponential(3)} (${mc.accepted} accepted)`);
+    }
+  }
+
+  // ── Two-qubit synthesis: the KAK / Cartan decomposition ──
+  {
+    // The synthesised {Rz,Ry,CNOT} circuit reproduces every named gate, and both local
+    // layers really are single-qubit (tensor) products — the heart of the decomposition.
+    {
+      let worstRecon = 0, worstLoc = 0;
+      for (const g of NAMED_GATES) {
+        const s = synthesize(g.make());
+        worstRecon = Math.max(worstRecon, s.reconError);
+        worstLoc = Math.max(worstLoc, s.localityError);
+      }
+      add('Two-qubit synthesis', 'KAK synthesis reconstructs every named gate from {Rz, Ry, CNOT}, both layers local',
+        worstRecon < 1e-9 && worstLoc < 1e-9, `worst recon ${worstRecon.toExponential(1)}, worst non-locality ${worstLoc.toExponential(1)}`);
+    }
+
+    // Reconstruction holds over a sweep of random SU(4) gates.
+    {
+      let worst = 0;
+      for (let s = 1; s <= 64; s++) worst = Math.max(worst, synthesize(seededSU4(s * 2654435761)).reconError);
+      add('Two-qubit synthesis', 'synthesis reproduces 64 random SU(4) gates to machine precision',
+        worst < 1e-8, `worst reconstruction ‖circuit − U‖ = ${worst.toExponential(2)}`);
+    }
+
+    // The Weyl-chamber coordinates land on the textbook canonical classes.
+    {
+      const sC = synthesize(NAMED_GATES.find((g) => g.id === 'cnot')!.make()).canonCoords;
+      const sS = synthesize(NAMED_GATES.find((g) => g.id === 'swap')!.make()).canonCoords;
+      const sI = synthesize(NAMED_GATES.find((g) => g.id === 'iswap')!.make()).canonCoords;
+      const k = Math.PI / 4;
+      const near = (a: readonly number[], b: number[]) => a.every((v, i) => Math.abs(Math.abs(v) - b[i]) < 1e-6);
+      add('Two-qubit synthesis', 'canonical coordinates match the textbook classes: CNOT (π/4,0,0), iSWAP (π/4,π/4,0), SWAP (π/4,π/4,π/4)',
+        near(sC, [k, 0, 0]) && near(sI, [k, k, 0]) && near(sS, [k, k, k]),
+        `CNOT (${sC.map((v) => (v / k).toFixed(2)).join(',')})·π/4, SWAP (${sS.map((v) => (v / k).toFixed(2)).join(',')})·π/4`);
+    }
+
+    // The optimal CNOT cost is geometric and correct for the named gates.
+    {
+      const counts = Object.fromEntries(NAMED_GATES.map((g) => [g.id, synthesize(g.make()).optimalCnots]));
+      const ok = counts.cnot === 1 && counts.cz === 1 && counts.iswap === 2 && counts.sqrtiswap === 2
+        && counts.b === 2 && counts.sqrtswap === 3 && counts.swap === 3 && counts.random === 3;
+      add('Two-qubit synthesis', 'minimum CNOT count is correct: CNOT/CZ→1, iSWAP/√iSWAP/B→2, √SWAP/SWAP/generic→3',
+        ok, `CNOT ${counts.cnot}, iSWAP ${counts.iswap}, B ${counts.b}, √SWAP ${counts.sqrtswap}, SWAP ${counts.swap}`);
+    }
+
+    // The Makhlin local invariants take their famous values.
+    {
+      const gC = makhlinInvariants(NAMED_GATES.find((g) => g.id === 'cnot')!.make());
+      const gS = makhlinInvariants(NAMED_GATES.find((g) => g.id === 'swap')!.make());
+      const gI = makhlinInvariants(NAMED_GATES.find((g) => g.id === 'iswap')!.make());
+      const cl = (z: Complex, re: number, im: number) => Math.abs(z.re - re) < 1e-9 && Math.abs(z.im - im) < 1e-9;
+      add('Two-qubit synthesis', 'Makhlin invariants: CNOT (G₁=0,G₂=1), iSWAP (G₁=0,G₂=−1), SWAP (G₁=−1,G₂=−3)',
+        cl(gC.G1, 0, 0) && Math.abs(gC.G2.re - 1) < 1e-9 && cl(gI.G1, 0, 0) && Math.abs(gI.G2.re + 1) < 1e-9 && cl(gS.G1, -1, 0) && Math.abs(gS.G2.re + 3) < 1e-9,
+        `CNOT G₂=${gC.G2.re.toFixed(2)}, iSWAP G₂=${gI.G2.re.toFixed(2)}, SWAP G₁=${gS.G1.re.toFixed(2)}`);
+    }
+
+    // The recovered coordinates rebuild a gate with the SAME local invariants (chirality and
+    // all) — an independent, gauge-invariant check of the whole pipeline over random gates.
+    {
+      let worst = 0;
+      for (let s = 1; s <= 64; s++) {
+        const U = seededSU4(s * 40503);
+        const c = synthesize(U).canonCoords;
+        const mu = makhlinInvariants(U), mc = makhlinInvariants(canonicalGate(c[0], c[1], c[2]));
+        worst = Math.max(worst, mu.G1.sub(mc.G1).abs() + mu.G2.sub(mc.G2).abs());
+      }
+      add('Two-qubit synthesis', 'recovered Weyl coordinates rebuild the same Makhlin invariants (chirality preserved)',
+        worst < 1e-7, `worst |ΔG₁|+|ΔG₂| over 64 random gates = ${worst.toExponential(2)}`);
+    }
+
+    // End to end: the fully discrete {H,T,CNOT} circuit reproduces the gate; Clifford gates
+    // cost zero T, a generic gate costs thousands.
+    {
+      const ftR = faultTolerant(seededSU4(123456789), 3);
+      const ftS = faultTolerant(NAMED_GATES.find((g) => g.id === 'swap')!.make(), 3);
+      add('Two-qubit synthesis', 'fault-tolerant {H,T,CNOT} compile: generic gate reproduced (≤depth-3 SK), SWAP is Clifford (0 T)',
+        ftR.error < 2e-2 && ftR.tCount > 100 && ftS.tCount === 0 && ftS.error < 1e-9,
+        `random: err ${ftR.error.toExponential(1)}, ${ftR.tCount} T, ${ftR.cnots} CNOT · SWAP: ${ftS.tCount} T`);
     }
   }
 

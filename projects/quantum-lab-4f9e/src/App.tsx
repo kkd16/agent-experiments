@@ -20,15 +20,16 @@ import DynamicsLab from './components/DynamicsLab';
 import ShorLab from './components/ShorLab';
 import MBQCLab from './components/MBQCLab';
 import SolovayLab from './components/SolovayLab';
+import SynthLab from './components/SynthLab';
 import DistillationLab from './components/DistillationLab';
 import TestsPanel from './components/TestsPanel';
 import ExportPanel from './components/ExportPanel';
 import { schmidtDecompose } from './quantum/Schmidt';
 
-type Tab = 'builder' | 'algorithms' | 'shor' | 'solovay' | 'distill' | 'mbqc' | 'variational' | 'stabilizer' | 'surface' | 'tensor' | 'freefermion' | 'dynamics' | 'tests' | 'about';
+type Tab = 'builder' | 'algorithms' | 'shor' | 'solovay' | 'synth' | 'distill' | 'mbqc' | 'variational' | 'stabilizer' | 'surface' | 'tensor' | 'freefermion' | 'dynamics' | 'tests' | 'about';
 type VizTab = 'state' | 'probabilities' | 'bloch' | 'density' | 'measure';
 
-const PAGE_TABS: Tab[] = ['about', 'shor', 'solovay', 'distill', 'mbqc', 'variational', 'stabilizer', 'surface', 'tensor', 'freefermion', 'dynamics', 'tests'];
+const PAGE_TABS: Tab[] = ['about', 'shor', 'solovay', 'synth', 'distill', 'mbqc', 'variational', 'stabilizer', 'surface', 'tensor', 'freefermion', 'dynamics', 'tests'];
 
 // Parse a shared circuit from the URL hash (#c=…) once, before mount — sandbox-safe.
 function loadSharedCircuit(): { numQubits: number; ops: GateOp[] } | null {
@@ -140,7 +141,7 @@ export default function App() {
         </div>
 
         <nav style={{ display: 'flex', gap: 2, marginLeft: 'auto', flexWrap: 'wrap' }}>
-          {(['builder', 'algorithms', 'shor', 'solovay', 'distill', 'mbqc', 'variational', 'stabilizer', 'surface', 'tensor', 'freefermion', 'dynamics', 'tests', 'about'] as Tab[]).map((tab) => (
+          {(['builder', 'algorithms', 'shor', 'solovay', 'synth', 'distill', 'mbqc', 'variational', 'stabilizer', 'surface', 'tensor', 'freefermion', 'dynamics', 'tests', 'about'] as Tab[]).map((tab) => (
             <button
               key={tab}
               onClick={() => setActiveTab(tab)}
@@ -160,6 +161,7 @@ export default function App() {
               {tab === 'builder' ? '🔧 Builder' : tab === 'algorithms' ? '⚡ Algorithms'
                 : tab === 'shor' ? '🔢 Shor'
                 : tab === 'solovay' ? '🧭 Solovay–Kitaev'
+                : tab === 'synth' ? '🔧 2-Qubit Synthesis'
                 : tab === 'distill' ? '💎 Distillation'
                 : tab === 'mbqc' ? '🕹️ One-Way'
                 : tab === 'variational' ? '🧬 Variational' : tab === 'stabilizer' ? '🧱 Stabilizer'
@@ -223,6 +225,7 @@ export default function App() {
               {activeTab === 'about' && <AboutPage />}
               {activeTab === 'shor' && <ShorLab />}
               {activeTab === 'solovay' && <SolovayLab />}
+              {activeTab === 'synth' && <SynthLab />}
               {activeTab === 'distill' && <DistillationLab />}
               {activeTab === 'mbqc' && <MBQCLab />}
               {activeTab === 'variational' && <VariationalLab />}
@@ -630,6 +633,10 @@ function AboutPage() {
         {
           title: 'Magic-State Distillation — Manufacturing the T Gate',
           content: "The partner of Solovay–Kitaev. SK tells you the T-count of a computation, but the T gate cannot be applied transversally on a fault-tolerant code — each one must be teleported in from a magic state |T⟩ = (|0⟩ + e^{iπ/4}|1⟩)/√2 prepared offline, and offline preparation is noisy. Magic-state distillation, built here from scratch, turns many low-fidelity copies into fewer high-fidelity ones using only Clifford gates and post-selection. The workhorse is the Bravyi–Kitaev 15-to-1 routine on the [[15,1,3]] punctured Reed–Muller code (the code that admits a transversal T). Its error analysis reduces exactly to the classical [15,11,3] Hamming code: a noisy |T⟩ carries a phase (Z) error with probability p; the routine post-selects on a trivial X-syndrome (the error must be a Hamming codeword) and the surviving error is a logical fault iff it is an odd-weight codeword. Because the Hamming code has distance 3 with exactly 35 weight-3 codewords, the output error obeys the celebrated cubic law p_out = 35 p³ — below a threshold p* ≈ 14.2% the output is cleaner than the input, so cascading the routine drives the error toward zero doubly-exponentially (the exponent triples each round) at a cost of 15^r raw states per output. The Distillation tab sweeps the input rate against the exact output (summed over all 2¹¹ Hamming codewords), shows the suppression curve crossing the break-even line at the threshold, plots the weight enumerator with its 35 weight-3 logicals highlighted, runs the cascade, and cross-checks the exact enumeration against a Monte-Carlo of the post-selected protocol.",
+        },
+        {
+          title: 'Two-Qubit Synthesis & the KAK Decomposition (compiling any gate to CNOTs)',
+          content: "The partner of Solovay–Kitaev, lifted to two qubits. A real machine has no \"arbitrary U(4)\" instruction — only single-qubit rotations and ONE entangler, the CNOT. The structure theorem that makes universal compilation possible is the KAK (Cartan) decomposition of SU(4), built here from scratch: every two-qubit gate factors as U = e^{iφ}(A₀⊗A₁)·exp(i(cx XX + cy YY + cz ZZ))·(B₀⊗B₁) — a layer of single-qubit gates, a purely non-local interaction fixed by three numbers (cx,cy,cz), and another single-qubit layer. The recovery is the magic-basis trick (Kraus–Cirac/Makhlin): in the Bell basis a single-qubit pair becomes a REAL orthogonal matrix and the interaction becomes diagonal, so U is O₁·F·O₂ with O₁,O₂ ∈ SO(4) — extracted by a real SIMULTANEOUS DIAGONALISATION of the commuting real and imaginary parts of ŨŨᵀ (robust even when eigenvalues coincide, as they do for CNOT and iSWAP). The triple (cx,cy,cz) is a complete local invariant living in the Weyl chamber, and it dictates the geometric MINIMUM number of CNOTs: 0 (local), 1 (the CNOT corner), 2 (the cz=0 face — iSWAP, √iSWAP, the Berkeley B gate), or 3 (the interior — SWAP, √SWAP, a generic gate). The canonical interaction is realised by the optimal three-CNOT Cartan circuit (Vatan–Williams) whose rotation angles are read straight off (cx,cy,cz), and the whole gate is synthesised into {Rz, Ry, CNOT} reproducing it to ~1e-12. Then the fault-tolerant step closes the loop with the lab's Solovay–Kitaev engine: every single-qubit gate is compiled into a discrete {H,T,…} word, so an arbitrary two-qubit gate becomes a real {H,T,CNOT} circuit with a total T-count — the magic-state budget. The 2-Qubit Synthesis tab decomposes CNOT/CZ/iSWAP/√iSWAP/√SWAP/SWAP/the B gate/a random SU(4) (or a custom interaction), plots its address in the Weyl-chamber tetrahedron, shows the Makhlin local invariants G₁,G₂, draws the synthesised circuit, and compiles the fault-tolerant version live. Verified to machine precision: reconstruction over hundreds of random gates, the recovered coordinates matching the input class, the locality of both layers, the optimal CNOT counts of the named gates, and the end-to-end fault-tolerant circuit.",
         },
         {
           title: 'Measurement-Based Quantum Computation (the One-Way Computer)',
