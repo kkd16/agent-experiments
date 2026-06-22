@@ -21,6 +21,7 @@ import {
   classifierFreeGuidance,
 } from './diffusion';
 import { RealNVP } from './flows';
+import { GNN, buildAdj, type ConvKind } from './gnn';
 
 export interface OpCheck {
   name: string;
@@ -582,6 +583,35 @@ export function runSelfTest(seed = 7): SelfTestReport {
     const logAbsDet = Math.log(Math.abs(det));
     const reported = flow.forward(Tensor.fromFlat(x0.slice(), 1, 2, false)).logdet.data[0];
     ops.push(relCheck('flow-logdet (Jacobian)', [[logAbsDet, reported]]));
+  }
+
+  // ---- Graph neural network (GCN · SAGE · GAT) --------------------------------------
+  // End-to-end on a tiny fixed graph: each message-passing convolution (every layer's weight,
+  // bias, and — for GAT — multi-head attention vectors) backpropagated through the masked
+  // cross-entropy of a semi-supervised split, vs. finite differences. Dropout is off so the
+  // loss is a clean function of the parameters. This proves the dense-propagation message
+  // passing differentiates correctly through the engine's existing ops.
+  {
+    const n = 6;
+    const edges: [number, number][] = [
+      [0, 1], [1, 2], [2, 0], [2, 3], [3, 4], [4, 5], [5, 3],
+    ];
+    const labels = Int32Array.from([0, 0, 0, 1, 1, 1]);
+    const keep = Uint8Array.from([1, 0, 0, 1, 0, 0]); // one labeled node per community
+    const inDim = 3;
+    const X = leaf(rng, n, inDim);
+    X.requiresGrad = false;
+    const adj = buildAdj(n, edges, true);
+    const mk = (conv: ConvKind, heads: number) =>
+      new GNN({ inDim, hidden: [4], numClasses: 2, conv, activation: 'relu', dropout: 0, heads }, adj, rngFrom(conv === 'gat' ? 41 : 19));
+    for (const [conv, heads, name] of [
+      ['gcn', 1, 'gnn-gcn (e2e)'],
+      ['sage', 1, 'gnn-sage (e2e)'],
+      ['gat', 2, 'gnn-gat·2head (e2e)'],
+    ] as [ConvKind, number, string][]) {
+      const model = mk(conv, heads);
+      ops.push(checkOp(name, model.parameters(), () => maskedCrossEntropy(model.forward(X), labels, keep).loss, rng));
+    }
   }
 
   const maxRelError = ops.reduce((m, o) => Math.max(m, o.maxRelError), 0);

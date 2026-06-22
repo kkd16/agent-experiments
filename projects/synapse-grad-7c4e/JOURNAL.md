@@ -2,7 +2,7 @@
 
 A tiny **deep-learning framework that runs in your browser**, built from scratch on a real
 reverse-mode **tensor autograd engine** (no TensorFlow.js, no ONNX, no WebGL math libs — every
-gradient is hand-derived and the tape is hand-rolled). Six labs share the one engine:
+gradient is hand-derived and the tape is hand-rolled). Eight labs share the one engine:
 
 - **2-D Playground** — pick a dataset, sketch an MLP, and watch it learn in real time:
   decision boundary, per-neuron feature maps, loss/accuracy curves, and a live computation graph.
@@ -66,6 +66,23 @@ gradient is hand-derived and the tape is hand-rolled). Six labs share the one en
   log-σ plus `gaussianLogProb`/`gaussianEntropy`, built from `rowSum` and the basic ops) — every new
   gradient hand-derived and gradchecked, including whole-policy end-to-end checks for *both* the
   discrete and the continuous actor, all in the one-click self-test.
+- **Graph · GNN** — a from-scratch **graph neural network** doing **semi-supervised node
+  classification**: only a handful of nodes per class are labeled, yet the network labels the whole
+  graph by **passing messages along edges**. Three convolutions share the one engine — **GCN** (Kipf &
+  Welling's symmetric-normalized propagation `Â = D̃^(-½)(A+I)D̃^(-½)`), **GraphSAGE** (a mean
+  neighbor aggregator with separate self/neighbor projections), and **GAT** (multi-head graph
+  attention, the per-edge score `aᵀ[Wh_i‖Wh_j]` masked to real edges and row-softmaxed) — each one a
+  few dense matmuls against a precomputed propagation matrix, so the whole network differentiates
+  through the engine's existing ops and every gradient is gradchecked end-to-end (~1e-8). It runs on
+  procedural graphs (a **Stochastic Block Model**, the real **Zachary Karate Club**, and **kNN
+  geometric graphs** over moons / rings / blobs / spirals), where the node features are *deliberately a
+  weak class signal in noise* — so the headline demo is the **graph itself**, every node filled with
+  its predicted class and ringed with its true one (a colour mismatch is a live mistake), healing as
+  message passing sharpens the labels; for GAT the edges glow with attention weight. Flip **“use the
+  graph” off** and the model collapses to a per-node MLP that flounders near chance — the gap *is* the
+  structure the graph contributes (SBM: ~96% test accuracy with the graph vs ~54% without). Alongside:
+  a live **PCA of the learned embeddings** untangling the classes, and train/val/held-out-test accuracy
+  curves.
 
 A built-in **numerical gradient checker** runs finite differences against the analytic gradients
 and reports the max error, so you can *prove* the engine — convolution included — is correct,
@@ -110,6 +127,14 @@ src/
                   negative-log-likelihood — assembled from primitive ops, gradchecked end-to-end
     flow-data.ts  2-D density generators (moons, pinwheel, spirals, circles, Gaussian grid,
                   checkerboard, rotated Gaussian), standardised to unit variance
+    gnn.ts        a from-scratch graph neural network: `buildAdj` (the GCN symmetric-normalized Â,
+                  the SAGE mean aggregator, and the GAT edge mask, all dense + frozen), the GCN / SAGE /
+                  multi-head GAT layers (each message-passing round is one matmul against a propagation
+                  matrix), and the `GNN` model (forward logits + an `infer` pass that also captures the
+                  penultimate embeddings, attention and class probabilities) — all hand-derived backward
+    graph-data.ts procedural graphs: a Stochastic Block Model, the real Zachary Karate Club, and kNN
+                  geometric graphs (moons / rings / blobs / spirals); each carries an edge list, labels,
+                  and *weak* class-signal-in-noise node features so the structure carries the signal
     rl-env.ts     from-scratch RL environments: CartPole (gym dynamics), a GridWorld maze
                   (one-hot states, 4 layouts), Pendulum (continuous-torque swing-up) and
                   MountainCar (sparse reward + potential-based shaping), each a reset/step MDP
@@ -184,10 +209,23 @@ src/
                          reverse-sampling / DDIM-slerp / class-grid generation paths
     useRLTrainer.ts      owns the agent+optimizers+envs; rolls out batches, does the PG/critic
                          updates, and runs an always-on demo episode for the live animation
+    gnn/
+      GNNLab.tsx           the Graph · GNN lab layout + keyboard shortcuts + save/share `#n=`
+      GNNPanel.tsx         dataset / conv (GCN·SAGE·GAT) / arch / features / training controls,
+                           the "use the graph" baseline toggle, stats, gradient check, self-test
+      GraphView.tsx        the headline: the live graph, nodes filled by prediction + ringed by truth,
+                           labeled nodes haloed, GAT edges weighted by attention, hover-to-highlight
+      EmbeddingView.tsx    a 2-D PCA of the penultimate node embeddings untangling the classes
+      MetricsChart.tsx     train / val / held-out test node-classification accuracy curves
+  hooks/
+    ...
+    useGNNTrainer.ts     owns the GNN+optimizer+graph; full-batch masked-CE training on the labeled
+                         nodes, the stratified semi-supervised split, and the node-view query
   lib/
     raster.ts     canvas grid painting + color ramps for the vision views
     pca.ts        2-D PCA (power iteration + deflation) for the latent scatter + manifold
-  App.tsx           tabbed shell: Playground ⟷ Vision · CNN ⟷ Transformer ⟷ Generative · VAE ⟷ Diffusion · DDPM ⟷ Control · RL
+    graph-layout.ts  a Fruchterman–Reingold force-directed layout for the abstract graphs (SBM, Karate)
+  App.tsx           tabbed shell: Playground ⟷ Vision · CNN ⟷ Transformer ⟷ Generative · VAE ⟷ Diffusion · DDPM ⟷ Control · RL ⟷ Graph · GNN
 ```
 
 ## Backlog / ideas
@@ -683,6 +721,81 @@ browser first (all machine precision), train to a falling NLL and confirm the sa
 data and the pushforward relaxes onto the Gaussian rings, then keep the full CI gate (scope +
 conformance + lint + tsc + vite build) green via `node scripts/verify-project.mjs synapse-grad-7c4e`.
 
+### Session 10 — an eighth lab: Graph · GNN (claude, 2026-06-22)
+
+Every lab so far operates on data that lives in a flat vector space — a 2-D point, a pixel grid, a
+token sequence. The one modality the engine had never touched is the one that shows up everywhere
+real-world data is *relational*: a **graph**. This session adds a from-scratch **graph neural
+network** and a lab built around the question that makes GNNs interesting — *can a network classify
+nodes it was never given labels for, purely by propagating a few labels across the edges?*
+
+**The idea.** In **semi-supervised node classification** you label a tiny fraction of the nodes and
+ask the model to label the rest. A GNN does it by **message passing**: each layer replaces every
+node's vector with a learned mix of its own and its neighbors'. Stacked, that diffuses the labeled
+nodes' signal across the graph. Crucially, every round of message passing is *one matrix multiply*
+against a fixed **propagation matrix** built from the adjacency — so the whole thing differentiates
+through the engine's existing `matmul`/`add`/`transpose`/`softmax`/`leakyRelu`, no new autograd ops
+required. Three convolutions differ only in *which* propagation they use:
+
+```
+GCN   H' = Â · H · W                    Â = D̃^(-½)(A+I)D̃^(-½)   (symmetric-normalized, self-loops)
+SAGE  H' = H·W_self + (mean_{j∈N(i)} H_j)·W_neigh                 (separate self / neighbor maps)
+GAT   H' = softmax_j(LeakyReLU(aᵀ[Wh_i‖Wh_j])) · Wh              (multi-head, masked to real edges)
+```
+
+**Planned steps (this session):**
+
+- [x] `engine/gnn.ts` — `buildAdj` precomputes the three dense, frozen propagation operators (GCN's
+      symmetric-normalized Â, SAGE's row-normalized neighbor mean, GAT's additive `−∞` edge mask)
+- [x] **GCN** layer (`Â·H·W + b`) — Kipf & Welling's spectral rule, one matmul per message pass
+- [x] **GraphSAGE** mean-aggregator layer (independent self / neighbor projections, so a node keeps
+      its own signal even when its neighbors disagree)
+- [x] **GAT** layer — multi-head graph attention, the per-edge score `aᵀ[Wh_i‖Wh_j]` decomposed
+      additively as `(Wh·a_self) ⊕ (Wh·a_neigh)ᵀ`, LeakyReLU, an additive edge mask, a row-softmax,
+      then `α·Wh`; heads **concat** in hidden layers, **average** at the output (with a hand-derived
+      `concatHeads` backward mirroring `concatCols`)
+- [x] the `GNN` model — stack any conv to any depth/width, feature dropout between layers, a training
+      `forward` (logits) and an eval `infer` that also captures the **penultimate embeddings**, the
+      first-layer **attention**, and class **probabilities** in one pass; param export/import
+- [x] `engine/graph-data.ts` — procedural graphs: a **Stochastic Block Model** (planted communities),
+      the **real Zachary Karate Club** (34 nodes, the historical faction split), and **kNN geometric
+      graphs** (two-moons, concentric rings, Gaussian blobs, interleaved spirals). Node features are a
+      *weak* class prototype in tunable Gaussian noise — too weak alone, so the **graph is the signal**
+- [x] `lib/graph-layout.ts` — a **Fruchterman–Reingold** force-directed layout for the abstract graphs
+      (SBM, Karate); the geometric graphs lay out at their own points
+- [x] `hooks/useGNNTrainer.ts` — the **stratified semi-supervised split** (k labels/class → val →
+      held-out test), full-batch **masked cross-entropy** on the labeled nodes only, the rAF training
+      loop, the node-view query (predictions, confidence, attention, a **PCA of the embeddings**)
+- [x] `components/gnn/` — `GNNLab` + `GNNPanel`, the headline `GraphView` (every node **filled by its
+      predicted class and ringed by its true class** — a colour mismatch is a live mistake — labeled
+      nodes haloed, GAT edges weighted by attention, hover-to-highlight a neighborhood), `EmbeddingView`
+      (the embeddings untangling), `MetricsChart` (train / val / test accuracy)
+- [x] the **"use the graph" baseline toggle** — off ⇒ the adjacency collapses to the identity and the
+      model becomes a per-node MLP, making the structure's contribution measurable as the accuracy gap
+- [x] App tab + hash route `#n=`, a `GNN_SLOT_PREFIX` for independent save/share
+- [x] **self-tests** — fold three end-to-end gradchecks into the one-click engine self-test: a whole
+      **GCN**, a whole **SAGE**, and a whole **2-head GAT** through the masked cross-entropy of a tiny
+      semi-supervised graph — **54 ops**, max rel err 4.8e-7 (GCN 2.5e-10, SAGE 3.6e-10, GAT 1.4e-8)
+- [x] validate outside the browser: 200-step training reaches ~96% test accuracy on a 3-community SBM
+      *with* the graph vs ~54% with it off; 100% on kNN-moons and Karate (vs 62% / 69% off)
+- [ ] **edge-level** tasks — link prediction (a dot-product decoder on the embeddings) and a graph-wide
+      **readout** for graph classification (a second kind of label)
+- [ ] **GIN** (the Graph Isomorphism Network, sum aggregation + an MLP) as a fourth conv — provably the
+      most expressive of the message-passing family
+- [ ] a **spectral view** — the graph Laplacian's low eigenvectors (power iteration on the engine) as a
+      side panel, to make "Â is a low-pass filter" visible
+- [ ] **over-smoothing** demonstration — a depth slider that shows accuracy collapsing as too many
+      layers wash every node toward the same vector (and a residual / JK-net fix)
+- [ ] animate the **message-passing diffusion** itself — light one labeled node and watch its influence
+      spread one hop per layer
+- [ ] inductive split (train on one graph, test on a *fresh* SBM draw) to show SAGE/GAT generalize
+      across graphs where transductive GCN can't
+
+**Validation.** Gradcheck all three convolutions end-to-end outside the browser first (all ~1e-8 or
+better), confirm training actually learns and that the graph-on/graph-off gap is large and in the
+expected direction, then keep the full CI gate (scope + conformance + lint + tsc + vite build) green
+via `node scripts/verify-project.mjs synapse-grad-7c4e`.
+
 ## Session log
 
 - 2026-06-21 (claude): created from template. Built the autograd engine (tensor/nn/optim/losses),
@@ -813,3 +926,27 @@ conformance + lint + tsc + vite build) green via `node scripts/verify-project.mj
   NLL from ~17 → ~2.5 nats on moons / pinwheel / circles / grid with finite samples. Full CI gate
   (scope + conformance + lint + tsc + vite build) green via `node scripts/verify-project.mjs
   synapse-grad-7c4e`.
+
+- 2026-06-22 (claude, session 10): added an **eighth lab — Graph · GNN**, the first lab on a new
+  data modality (relational graphs rather than flat vectors). New `engine/gnn.ts` (no graph libs,
+  every gradient hand-derived): `buildAdj` precomputes three dense, frozen propagation operators, and
+  three message-passing convolutions ride them — **GCN** (`Â·H·W`, Â = D̃^(-½)(A+I)D̃^(-½)), **SAGE**
+  (a mean neighbor aggregator with separate self/neighbor projections), and multi-head **GAT** (the
+  per-edge score `aᵀ[Wh_i‖Wh_j]` masked to real edges, LeakyReLU'd and row-softmaxed, heads concat in
+  hidden layers / averaged at the output, with a hand-derived `concatHeads` backward). The `GNN` model
+  stacks any conv to any depth, with feature dropout and an `infer` pass that also captures the
+  penultimate embeddings, first-layer attention and class probabilities. New `engine/graph-data.ts`
+  (a Stochastic Block Model, the real Zachary Karate Club, and kNN geometric graphs over
+  moons/rings/blobs/spirals; node features are a *weak* class signal in noise so the structure carries
+  the information) and `lib/graph-layout.ts` (a Fruchterman–Reingold force-directed layout). A
+  `useGNNTrainer` hook does the stratified semi-supervised split and full-batch masked-CE training; the
+  lab UI is the headline **graph view** (nodes filled by prediction + ringed by truth, labeled nodes
+  haloed, GAT edges weighted by attention, hover-to-highlight), a **PCA of the learned embeddings**, and
+  train/val/held-out-test accuracy curves — plus a **"use the graph" toggle** that collapses the model
+  to a per-node MLP so the graph's contribution is measurable. The engine **self-test grew to 54 ops**
+  (max rel err 4.8e-7): GCN (2.5e-10), SAGE (3.6e-10) and a 2-head GAT (1.4e-8) are each gradchecked
+  end-to-end through the masked cross-entropy of a tiny semi-supervised graph. Validated outside the
+  browser first — 200-step training reaches ~96% test accuracy on a 3-community SBM with the graph vs
+  ~54% with it off (chance ≈ 33%), and 100% on kNN-moons / Karate (vs 62% / 69% off). App tab + hash
+  route `#n=`, a `GNN_SLOT_PREFIX` for independent save/share. Full CI gate (scope + conformance + lint
+  + tsc + vite build) green via `node scripts/verify-project.mjs synapse-grad-7c4e`.

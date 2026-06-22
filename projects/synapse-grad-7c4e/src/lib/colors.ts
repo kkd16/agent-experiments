@@ -8,6 +8,17 @@ export const CLASS_COLORS: [number, number, number][] = [
   [251, 191, 36], // amber
 ];
 
+// A wider palette (up to 6 classes) for the graph lab, where the SBM / blob datasets can have
+// more communities than the 2-D playground's four-class maximum.
+export const GRAPH_CLASS_COLORS: [number, number, number][] = [
+  [56, 189, 248], // sky
+  [244, 114, 182], // pink
+  [163, 230, 53], // lime
+  [251, 191, 36], // amber
+  [167, 139, 250], // violet
+  [45, 212, 191], // teal
+];
+
 export const POSITIVE_COLOR: [number, number, number] = [56, 189, 248];
 export const NEGATIVE_COLOR: [number, number, number] = [244, 114, 182];
 
