@@ -6,6 +6,7 @@
 import { cloneParams, defaultParams, makeLayer, randomParams } from './harmonograph'
 import {
   random3D,
+  random3DHarmonograph,
   randomAttractor,
   randomLSystem,
   randomLissajous,
@@ -193,6 +194,7 @@ function altLayer(kind: CurveKind, name: string, style: LayerStyle): Layer {
   else if (kind === 'superformula') extra.sf = randomSuperformula()
   else if (kind === 'attractor') extra.attractor = randomAttractor()
   else if (kind === 'attractor3d') extra.a3d = random3D()
+  else if (kind === 'harmonograph3d') extra.h3d = random3DHarmonograph()
   else if (kind === 'lsystem') extra.lsystem = randomLSystem()
   return makeLayer(name, defaultParams(), style, extra)
 }
@@ -205,8 +207,10 @@ function generateAltProject(): Project {
     'superformula',
     'attractor',
     'attractor3d',
+    'harmonograph3d',
     'lsystem',
   ])
+  const is3d = kind === 'attractor3d' || kind === 'harmonograph3d'
   const background = pick(DARK_ALT)
   const vignette = rand(0.38, 0.55)
   const palettes = [pick(PALETTES), pick(PALETTES)]
@@ -214,10 +218,10 @@ function generateAltProject(): Project {
   // along the path or by direction instead.
   const mode: ColorMode =
     kind === 'lsystem' ? pick(['path', 'angle']) : pick(['path', 'angle', 'velocity'])
-  // Attractors and L-systems are dense single figures — one reads best alone;
-  // the smooth families layer nicely as one or two interleaved copies.
+  // Attractors, 3D figures and L-systems are dense single figures — one reads
+  // best alone; the smooth families layer nicely as one or two interleaved copies.
   const count =
-    kind === 'attractor' || kind === 'attractor3d' || kind === 'lsystem'
+    kind === 'attractor' || is3d || kind === 'lsystem'
       ? 1
       : kind === 'lissajous'
         ? pick([1, 2, 2])
@@ -232,11 +236,17 @@ function generateAltProject(): Project {
     )
     if (kind === 'attractor') style.lineWidth = rand(0.5, 0.65)
     if (kind === 'attractor3d') style.lineWidth = rand(0.5, 0.7)
+    if (kind === 'harmonograph3d') style.lineWidth = rand(0.7, 1)
     if (kind === 'lsystem') style.lineWidth = rand(0.9, 1.3)
     // Most generated attractors look best as a luminous density nebula rather
     // than a polyline — splat the orbit instead of connecting it. The 3D flows
-    // are *always* shown as a depth-cued nebula (that's where they shine).
-    if ((kind === 'attractor' && chance(0.7)) || kind === 'attractor3d') {
+    // are *always* shown as a depth-cued nebula (that's where they shine); the
+    // spatial harmonograph reads beautifully both ways, so split the difference.
+    if (
+      (kind === 'attractor' && chance(0.7)) ||
+      kind === 'attractor3d' ||
+      (kind === 'harmonograph3d' && chance(0.5))
+    ) {
       style.renderStyle = 'density'
       style.density = {
         iterations: Math.round(rand(700, 1000)),
@@ -248,11 +258,13 @@ function generateAltProject(): Project {
     }
     layers.push(altLayer(kind, ['Base', 'Echo'][i] ?? `Layer ${i + 1}`, style))
   }
+  // 3D scenes occasionally pop into a red-cyan anaglyph for genuine depth.
+  const stereo = is3d && chance(0.25) ? { stereo: 'anaglyph' as const, stereoBaseline: 0.08 } : {}
   // Occasionally deepen the scene with a radial gradient background.
   if (chance(0.4)) {
-    return { background, bg2: pick(DARK_ALT), bgMode: 'radial', vignette, layers }
+    return { background, bg2: pick(DARK_ALT), bgMode: 'radial', vignette, layers, ...stereo }
   }
-  return { background, vignette, layers }
+  return { background, vignette, layers, ...stereo }
 }
 
 export function generateProject(): Project {

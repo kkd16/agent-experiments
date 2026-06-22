@@ -13,6 +13,7 @@
 
 import { iterateAttractor } from './curves'
 import { buildProjector, integrateFlow } from './attractors3d'
+import { projectH3DPoints } from './harmonograph3d'
 import type { LayerData } from './harmonograph'
 import type { Layer } from './types'
 import type { Transform } from './render'
@@ -98,8 +99,14 @@ export function renderDensity(
   // pixel can be coloured by the *average depth* of the orbit points that landed
   // there — near filaments tinted one end of the palette, far ones the other, for
   // a genuinely volumetric read of the 3D structure rather than a flat histogram.
-  const is3d = layer.kind === 'attractor3d' && !!layer.a3d
-  const depthCue = is3d && layer.a3d!.depthCue
+  const is3dFlow = layer.kind === 'attractor3d' && !!layer.a3d
+  const is3dHarm = layer.kind === 'harmonograph3d' && !!layer.h3d
+  const cam3d = is3dFlow ? layer.a3d! : is3dHarm ? layer.h3d! : null
+  const depthCue = !!cam3d && cam3d.depthCue
+  // Exponential depth fog: far filaments fade toward the void so the volume reads
+  // with real front-to-back ordering. `dn` is 1 at the camera, 0 at the back.
+  const fog = cam3d ? Math.max(0, Math.min(1, cam3d.fog ?? 0)) : 0
+  const fogWeight = (dn: number) => (fog > 0 ? Math.exp(-fog * 3.2 * (1 - dn)) : 1)
   const depthSum = depthCue ? new Float32Array(res * res) : null
 
   const tr = trace >= 1 ? 1 : Math.max(0.02, clamp01(trace))
@@ -117,15 +124,25 @@ export function renderDensity(
   }
   const splat = (mx: number, my: number) => splatW(mx, my, 1, 0)
 
-  if (is3d) {
+  if (is3dFlow) {
     const a3d = layer.a3d!
     const proj = buildProjector(a3d)
     let count = Math.round(ds.iterations * 1000 * Math.max(0.05, quality) * tr)
     count = Math.max(2000, Math.min(count, 2_500_000)) // RK4 is ~4× a 2D map step
     integrateFlow(a3d, count, (x, y, z) => {
       const pr = proj.project(x, y, z)
-      const w = depthCue ? 0.4 + 0.6 * pr.dn : 1
+      const w = (depthCue ? 0.4 + 0.6 * pr.dn : 1) * fogWeight(pr.dn)
       splatW(pr.x, pr.y, w, pr.dn)
+    })
+  } else if (is3dHarm) {
+    // A smooth space curve: oversample the analytic figure so the projected
+    // ribbon fills in densely rather than reading as a sparse dotted thread.
+    const h3d = layer.h3d!
+    let count = Math.round(ds.iterations * 1000 * Math.max(0.05, quality) * tr)
+    count = Math.max(2000, Math.min(count, 3_000_000))
+    projectH3DPoints(h3d, count, (x, y, dn) => {
+      const w = (depthCue ? 0.4 + 0.6 * dn : 1) * fogWeight(dn)
+      splatW(x, y, w, dn)
     })
   } else if (layer.kind === 'attractor' && layer.attractor) {
     let count = Math.round(ds.iterations * 1000 * Math.max(0.05, quality) * tr)

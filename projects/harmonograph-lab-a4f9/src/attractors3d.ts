@@ -29,6 +29,11 @@ export const FLOW3D_KINDS: { value: Flow3DKind; label: string }[] = [
   { value: 'dadras', label: 'Dadras' },
   { value: 'sprott', label: 'Sprott' },
   { value: 'lorenz84', label: 'Lorenz-84' },
+  { value: 'sprottb', label: 'Sprott-B' },
+  { value: 'nosehoover', label: 'Nosé–Hoover' },
+  { value: 'rikitake', label: 'Rikitake' },
+  { value: 'chenlee', label: 'Chen–Lee' },
+  { value: 'burkeshaw', label: 'Burke–Shaw' },
 ]
 
 export const FLOW3D_NOTES: Record<Flow3DKind, string> = {
@@ -41,11 +46,17 @@ export const FLOW3D_NOTES: Record<Flow3DKind, string> = {
   dadras: 'The Dadras–Momeni attractor — broad sweeping wings.',
   sprott: 'Sprott–Linz F — one of Sprott\'s minimal chaotic flows; a delicate twisted shell.',
   lorenz84: "Lorenz's 1984 global-circulation toy model — a compact chaotic knot.",
+  sprottb: "Sprott's case-B flow — a folded conservative-looking scroll; a scales the yz coupling.",
+  nosehoover: 'The Nosé–Hoover thermostat (Sprott A) — a near-conservative chaotic sea of nested tori; a is the target temperature.',
+  rikitake: "The Rikitake two-disk dynamo — a toy of the geomagnetic field's chaotic reversals; a is the damping, b the bias.",
+  chenlee: 'The Chen–Lee system — a rigid-body Euler top with feedback; broad three-lobed wings (a/b/c are the principal-axis gains).',
+  burkeshaw: 'The Burke–Shaw attractor — a tightly wound double helix with mirror symmetry; a is the swirl, b the drift.',
 }
 
 // The vector field. As with the 2D maps, the four sliders a/b/c/d reshape each
 // system; constants a system doesn't expose are fixed at their canonical values.
-type V3 = { x: number; y: number; z: number }
+export type Vec3 = { x: number; y: number; z: number }
+type V3 = Vec3
 
 function deriv(type: Flow3DKind, x: number, y: number, z: number, p: Attractor3DParams): V3 {
   const { a, b, c, d } = p
@@ -85,6 +96,21 @@ function deriv(type: Flow3DKind, x: number, y: number, z: number, p: Attractor3D
         y: x * y - b * x * z - y + d,
         z: b * x * y + x * z - z,
       }
+    case 'sprottb':
+      // Sprott case B: ẋ = a·yz, ẏ = x − y, ż = 1 − xy.
+      return { x: a * y * z, y: x - y, z: 1 - x * y }
+    case 'nosehoover':
+      // Nosé–Hoover thermostat (Sprott A): ẋ = y, ẏ = −x + yz, ż = a − y².
+      return { x: y, y: -x + y * z, z: a - y * y }
+    case 'rikitake':
+      // Rikitake two-disk dynamo: a = damping μ, b = bias.
+      return { x: -a * x + z * y, y: -a * y + (z - b) * x, z: 1 - x * y }
+    case 'chenlee':
+      // Chen–Lee rigid-body top: a/b/c are the principal-axis gains.
+      return { x: a * x - y * z, y: b * y + x * z, z: c * z + (x * y) / 3 }
+    case 'burkeshaw':
+      // Burke–Shaw: a = swirl, b = drift.
+      return { x: -a * (x + y), y: -y - a * x * z, z: a * x * y + b }
     case 'lorenz':
     default:
       // a = σ, b = ρ, c = β.
@@ -164,6 +190,73 @@ export interface Projector {
   project: (x: number, y: number, z: number) => { x: number; y: number; dn: number }
 }
 
+// The camera block shared by every 3D curve family (strange-attractor flows and
+// the spatial harmonograph). Both feed the same orbit projector below.
+export interface CameraView {
+  yaw: number
+  pitch: number
+  dist: number
+  fov: number
+}
+
+// Build the pure projection closure for a pre-measured point set (centre + the
+// normalising scale that fits it into a unit-ish ball). Shared by the flow
+// projector and the spatial-harmonograph projector so the orbit camera, the
+// depth cue and the seamless 2π yaw loop behave identically across both.
+export function makeProjector(center: V3, scale: number, cam: CameraView) {
+  const cy = Math.cos(cam.yaw)
+  const sy = Math.sin(cam.yaw)
+  const cp = Math.cos(cam.pitch)
+  const sp = Math.sin(cam.pitch)
+  const f = 1 / Math.tan(Math.max(0.2, Math.min(2.8, cam.fov)) / 2)
+  const dist = Math.max(1.6, cam.dist)
+  return (x: number, y: number, z: number) => {
+    const nx = (x - center.x) * scale
+    const ny = (y - center.y) * scale
+    const nz = (z - center.z) * scale
+    // yaw about the world up-axis (y), then pitch about the camera's right (x).
+    const x1 = nx * cy + nz * sy
+    const z1 = -nx * sy + nz * cy
+    const y1 = ny
+    const y2 = y1 * cp - z1 * sp
+    const z2 = y1 * sp + z1 * cp
+    let viewZ = dist - z2
+    if (viewZ < 0.1) viewZ = 0.1
+    const px = (x1 * f) / viewZ
+    const py = (-y2 * f) / viewZ
+    // z2 ∈ ~[-1, 1] (unit ball); map to [0,1] with 1 = nearest the camera.
+    let dn = (z2 + 1) / 2
+    dn = dn < 0 ? 0 : dn > 1 ? 1 : dn
+    return { x: px, y: py, dn }
+  }
+}
+
+// Centre + normalising scale of an explicit point cloud (the spatial
+// harmonograph hands us a finite list rather than an integrable flow). Mirrors
+// `computeGeometry` (mean centre, 1/(max-radius) scale) so both look the same
+// size in front of the camera.
+export function geometryFromPoints(pts: V3[]): { center: V3; scale: number } {
+  let sx = 0
+  let sy = 0
+  let sz = 0
+  for (const p of pts) {
+    sx += p.x
+    sy += p.y
+    sz += p.z
+  }
+  const n = Math.max(1, pts.length)
+  const center: V3 = { x: sx / n, y: sy / n, z: sz / n }
+  let maxR = 1e-6
+  for (const p of pts) {
+    const dx = p.x - center.x
+    const dy = p.y - center.y
+    const dz = p.z - center.z
+    const r = Math.sqrt(dx * dx + dy * dy + dz * dz)
+    if (r > maxR) maxR = r
+  }
+  return { center, scale: 1 / (maxR * 1.04) }
+}
+
 // The centre + radius of a flow depend only on its shape (type + constants + dt),
 // never the camera — so cache them by that signature. This keeps a spinning
 // camera (Live / looping export builds a fresh params object every frame) from
@@ -213,32 +306,7 @@ function getGeometry(p: Attractor3DParams): Geometry {
 
 export function buildProjector(p: Attractor3DParams): Projector {
   const { center, scale } = getGeometry(p)
-  const cy = Math.cos(p.yaw)
-  const sy = Math.sin(p.yaw)
-  const cp = Math.cos(p.pitch)
-  const sp = Math.sin(p.pitch)
-  const f = 1 / Math.tan(Math.max(0.2, Math.min(2.8, p.fov)) / 2)
-  const dist = Math.max(1.6, p.dist)
-  const project = (x: number, y: number, z: number) => {
-    const nx = (x - center.x) * scale
-    const ny = (y - center.y) * scale
-    const nz = (z - center.z) * scale
-    // yaw about the world up-axis (y), then pitch about the camera's right (x).
-    const x1 = nx * cy + nz * sy
-    const z1 = -nx * sy + nz * cy
-    const y1 = ny
-    const y2 = y1 * cp - z1 * sp
-    const z2 = y1 * sp + z1 * cp
-    let viewZ = dist - z2
-    if (viewZ < 0.1) viewZ = 0.1
-    const px = (x1 * f) / viewZ
-    const py = (-y2 * f) / viewZ
-    // z2 ∈ ~[-1, 1] (unit ball); map to [0,1] with 1 = nearest the camera.
-    let dn = (z2 + 1) / 2
-    dn = dn < 0 ? 0 : dn > 1 ? 1 : dn
-    return { x: px, y: py, dn }
-  }
-  return { center, scale, project }
+  return { center, scale, project: makeProjector(center, scale, p) }
 }
 
 // Trace the flow into a projected 2D polyline — the `line` render style and the
@@ -262,7 +330,7 @@ export function sample3DPolyline(p: Attractor3DParams): Point[] {
 // the stiffer systems (Chen, Lorenz) need a smaller `dt` than the gentle ones
 // (Thomas, Aizawa) to stay on the attractor.
 
-const CAMERA = { yaw: 0.7, pitch: 0.42, dist: 2.6, fov: 1.0, depthCue: true, spin: 0.6 }
+const CAMERA = { yaw: 0.7, pitch: 0.42, dist: 2.6, fov: 1.0, depthCue: true, fog: 0, spin: 0.6 }
 
 export function defaultsFor3D(type: Flow3DKind): Attractor3DParams {
   const cam = { ...CAMERA }
@@ -283,6 +351,16 @@ export function defaultsFor3D(type: Flow3DKind): Attractor3DParams {
       return { type, a: 0.5, b: 0, c: 0, d: 0, dt: 0.02, steps: 20000, ...cam }
     case 'lorenz84':
       return { type, a: 0.25, b: 4, c: 8, d: 1, dt: 0.01, steps: 20000, ...cam }
+    case 'sprottb':
+      return { type, a: 1, b: 0, c: 0, d: 0, dt: 0.02, steps: 20000, ...cam }
+    case 'nosehoover':
+      return { type, a: 1, b: 0, c: 0, d: 0, dt: 0.02, steps: 22000, ...cam }
+    case 'rikitake':
+      return { type, a: 2, b: 5, c: 0, d: 0, dt: 0.01, steps: 20000, ...cam }
+    case 'chenlee':
+      return { type, a: 5, b: -10, c: -0.38, d: 0, dt: 0.004, steps: 18000, ...cam }
+    case 'burkeshaw':
+      return { type, a: 10, b: 4.272, c: 0, d: 0, dt: 0.005, steps: 18000, ...cam }
     case 'lorenz':
     default:
       return { type, a: 10, b: 28, c: 2.667, d: 0, dt: 0.006, steps: 18000, ...cam }
@@ -337,6 +415,16 @@ export function ranges3D(type: Flow3DKind): {
       return { a: [0.3, 0.7], b: [0, 0], c: [0, 0], d: [0, 0], used: u(1, 0, 0, 0) }
     case 'lorenz84':
       return { a: [0.15, 0.4], b: [3, 5], c: [6, 10], d: [0.5, 1.5], used: u(1, 1, 1, 1) }
+    case 'sprottb':
+      return { a: [0.6, 1.6], b: [0, 0], c: [0, 0], d: [0, 0], used: u(1, 0, 0, 0) }
+    case 'nosehoover':
+      return { a: [0.7, 1.4], b: [0, 0], c: [0, 0], d: [0, 0], used: u(1, 0, 0, 0) }
+    case 'rikitake':
+      return { a: [1.5, 3], b: [3, 7], c: [0, 0], d: [0, 0], used: u(1, 1, 0, 0) }
+    case 'chenlee':
+      return { a: [4, 6], b: [-12, -8], c: [-0.6, -0.2], d: [0, 0], used: u(1, 1, 1, 0) }
+    case 'burkeshaw':
+      return { a: [8, 13], b: [3.5, 5], c: [0, 0], d: [0, 0], used: u(1, 1, 0, 0) }
     case 'lorenz':
     default:
       return { a: [6, 16], b: [22, 34], c: [1.5, 4], d: [0, 0], used: u(1, 1, 1, 0) }

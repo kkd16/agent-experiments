@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { PointerEvent as ReactPointerEvent } from 'react'
+import type { PointerEvent as ReactPointerEvent, WheelEvent as ReactWheelEvent } from 'react'
 import './App.css'
 import {
   cloneParams,
@@ -23,7 +23,12 @@ import {
   defaultSf,
   defaultSpiro,
   getLayerData,
+  is3dKind,
+  layerCamera,
+  patchLayerCamera,
   random3D,
+  random3DHarmonograph,
+  default3DHarmonograph,
   randomAttractor,
   randomLSystem,
   randomLissajous,
@@ -55,6 +60,7 @@ import type {
   ColorMode,
   CurveKind,
   DensityStyle,
+  Harmonograph3DParams,
   Layer,
   LissajousParams,
   LSystemParams,
@@ -62,6 +68,7 @@ import type {
   RenderStyle,
   RoseParams,
   SpirographParams,
+  StereoMode,
   SuperformulaParams,
   WidthMode,
 } from './types'
@@ -72,6 +79,7 @@ import {
   CurveAttractor,
   CurveAttractor3D,
   CurveHarmonograph,
+  CurveHarmonograph3D,
   CurveLSystem,
   CurveLissajous,
   CurveRose,
@@ -108,6 +116,12 @@ const RENDER_STYLES: { value: RenderStyle; label: string }[] = [
   { value: 'line', label: 'Stroke' },
   { value: 'density', label: 'Density' },
 ]
+const STEREO_MODES: { value: StereoMode; label: string }[] = [
+  { value: 'off', label: 'Off' },
+  { value: 'anaglyph', label: 'Anaglyph' },
+  { value: 'sbs', label: 'Side-by-side' },
+  { value: 'crosseye', label: 'Cross-eye' },
+]
 
 function initialProject(): Project {
   return readHashProject() ?? loadPreset(PRESETS[0])
@@ -128,6 +142,8 @@ function withRandomSource(l: Layer): Layer {
       return { ...l, attractor: randomAttractor() }
     case 'attractor3d':
       return { ...l, a3d: random3D() }
+    case 'harmonograph3d':
+      return { ...l, h3d: random3DHarmonograph() }
     case 'lsystem':
       return { ...l, lsystem: randomLSystem() }
     case 'harmonograph':
@@ -206,6 +222,10 @@ export default function App() {
   const selected = useMemo(
     () => project.layers.find((l) => l.id === selectedId) ?? project.layers[0],
     [project.layers, selectedId],
+  )
+  const scene3dCount = useMemo(
+    () => project.layers.filter((l) => is3dKind(l.kind)).length,
+    [project.layers],
   )
 
   // Draw the static figure. While Live mode or a recording is running, those
@@ -344,6 +364,7 @@ export default function App() {
       if (kind === 'superformula' && !next.sf) next.sf = defaultSf()
       if (kind === 'attractor' && !next.attractor) next.attractor = defaultAttractor()
       if (kind === 'attractor3d' && !next.a3d) next.a3d = default3D()
+      if (kind === 'harmonograph3d' && !next.h3d) next.h3d = default3DHarmonograph()
       if (kind === 'lsystem' && !next.lsystem) next.lsystem = defaultLSystem()
       return next
     })
@@ -378,6 +399,13 @@ export default function App() {
       a3d: { ...(l.a3d ?? default3D()), ...patch },
     }))
   }
+  const updateH3d = (patch: Partial<Harmonograph3DParams>) => {
+    if (!selected) return
+    updateLayer(selected.id, (l) => ({
+      ...l,
+      h3d: { ...(l.h3d ?? default3DHarmonograph()), ...patch },
+    }))
+  }
   const updateLSystem = (patch: Partial<LSystemParams>) => {
     if (!selected) return
     updateLayer(selected.id, (l) => ({
@@ -390,30 +418,82 @@ export default function App() {
     updateLayer(selected.id, (l) => ({ ...l, drift: { rate } }))
   }
 
-  // ---- drag-to-orbit (3D attractor layers) --------------------------------
-  // When the selected layer is a 3D attractor, dragging across the canvas spins
-  // its orbit camera. Deltas are taken from the gesture start (absolute, not
-  // incremental) so there's no drift, and pitch is clamped to stay upright.
+  // ---- orbit + dolly camera gestures (any 3D layer) -----------------------
+  // When the selected layer is a 3D family (a strange-attractor flow or the
+  // spatial harmonograph) the canvas becomes a turntable: one-finger drag orbits
+  // the camera (yaw/pitch), the scroll wheel or a two-finger pinch dollies it in
+  // and out. Both 3D families share one camera through `patchLayerCamera`, so the
+  // gestures don't care which one they're driving. Deltas are taken from the
+  // gesture start (absolute, not incremental) so there's no drift.
+  const DIST_MIN = 1.7
+  const DIST_MAX = 6
+  const clampDist = (v: number) => Math.max(DIST_MIN, Math.min(DIST_MAX, v))
   const orbitDrag = useRef<{ x: number; y: number; yaw: number; pitch: number } | null>(null)
-  const isOrbitable = selected?.kind === 'attractor3d'
+  // Active pointers + the pinch gesture baseline (two-finger dolly).
+  const pointers = useRef<Map<number, { x: number; y: number }>>(new Map())
+  const pinch = useRef<{ dist0: number; camDist: number } | null>(null)
+  const isOrbitable = !!selected && is3dKind(selected.kind)
+  const patchCam = (patch: Partial<Attractor3DParams>) => {
+    if (!selected) return
+    updateLayer(selected.id, (l) => patchLayerCamera(l, patch))
+  }
+  const twoFingerDist = () => {
+    const pts = [...pointers.current.values()]
+    if (pts.length < 2) return 0
+    return Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y)
+  }
   const onCanvasPointerDown = (e: ReactPointerEvent) => {
-    if (!selected || selected.kind !== 'attractor3d') return
-    const a3d = selected.a3d ?? default3D()
-    orbitDrag.current = { x: e.clientX, y: e.clientY, yaw: a3d.yaw, pitch: a3d.pitch }
+    if (!selected || !is3dKind(selected.kind)) return
+    pointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY })
     e.currentTarget.setPointerCapture?.(e.pointerId)
+    if (pointers.current.size === 2) {
+      // Second finger down → start a pinch dolly; suspend the orbit drag.
+      orbitDrag.current = null
+      const cam = layerCamera(selected)
+      pinch.current = { dist0: twoFingerDist(), camDist: cam?.dist ?? 2.6 }
+    } else if (pointers.current.size === 1) {
+      const cam = layerCamera(selected)
+      orbitDrag.current = { x: e.clientX, y: e.clientY, yaw: cam?.yaw ?? 0, pitch: cam?.pitch ?? 0 }
+    }
   }
   const onCanvasPointerMove = (e: ReactPointerEvent) => {
+    if (!selected || !is3dKind(selected.kind)) return
+    if (pointers.current.has(e.pointerId)) {
+      pointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY })
+    }
+    const p = pinch.current
+    if (p && pointers.current.size >= 2) {
+      const d = twoFingerDist()
+      if (p.dist0 > 0 && d > 0) {
+        // Fingers apart → zoom in (smaller distance), together → zoom out.
+        patchCam({ dist: clampDist(p.camDist * (p.dist0 / d)) })
+      }
+      return
+    }
     const d = orbitDrag.current
-    if (!d || !selected || selected.kind !== 'attractor3d') return
+    if (!d) return
     const w = canvasRef.current?.getBoundingClientRect().width || 600
     const dx = ((e.clientX - d.x) / w) * Math.PI * 2
     const dy = ((e.clientY - d.y) / w) * Math.PI * 2
     const pitch = Math.max(-1.4, Math.min(1.4, d.pitch - dy))
-    updateA3d({ yaw: d.yaw + dx, pitch })
+    patchCam({ yaw: d.yaw + dx, pitch })
   }
   const onCanvasPointerUp = (e: ReactPointerEvent) => {
-    orbitDrag.current = null
+    pointers.current.delete(e.pointerId)
     e.currentTarget.releasePointerCapture?.(e.pointerId)
+    if (pointers.current.size < 2) pinch.current = null
+    if (pointers.current.size === 0) orbitDrag.current = null
+  }
+  const onCanvasWheel = (e: ReactWheelEvent) => {
+    if (!selected || !is3dKind(selected.kind)) return
+    e.preventDefault()
+    const cam = layerCamera(selected)
+    const base = cam?.dist ?? 2.6
+    // Exponential so each notch feels the same regardless of current distance.
+    patchCam({ dist: clampDist(base * Math.exp(e.deltaY * 0.0012)) })
+  }
+  const resetCamera = () => {
+    patchCam({ yaw: 0.7, pitch: 0.42, dist: 2.6, fov: 1.0 })
   }
 
 
@@ -448,6 +528,7 @@ export default function App() {
       if (src.sf) copy.sf = { ...src.sf }
       if (src.attractor) copy.attractor = { ...src.attractor }
       if (src.a3d) copy.a3d = { ...src.a3d }
+      if (src.h3d) copy.h3d = { ...src.h3d }
       if (src.lsystem) copy.lsystem = { ...src.lsystem }
       if (src.drift) copy.drift = { ...src.drift }
       const next = [...ls]
@@ -905,6 +986,7 @@ export default function App() {
               onPointerMove={onCanvasPointerMove}
               onPointerUp={onCanvasPointerUp}
               onPointerCancel={onCanvasPointerUp}
+              onWheel={onCanvasWheel}
             />
           </div>
           <div className="transport">
@@ -1083,7 +1165,14 @@ export default function App() {
                   />
                 )}
                 {theme.kind === 'attractor3d' && (
-                  <CurveAttractor3D a3d={theme.a3d ?? default3D()} update={updateA3d} />
+                  <CurveAttractor3D a3d={theme.a3d ?? default3D()} update={updateA3d} onResetCamera={resetCamera} />
+                )}
+                {theme.kind === 'harmonograph3d' && (
+                  <CurveHarmonograph3D
+                    h3d={theme.h3d ?? default3DHarmonograph()}
+                    update={updateH3d}
+                    onResetCamera={resetCamera}
+                  />
                 )}
                 {theme.kind === 'lsystem' && (
                   <CurveLSystem lsystem={theme.lsystem ?? defaultLSystem()} update={updateLSystem} />
@@ -1326,6 +1415,40 @@ export default function App() {
                 </section>
 
                 <section className="group">
+                  <div className="group-title">Stereoscopic 3D</div>
+                  <Segmented
+                    value={project.stereo ?? 'off'}
+                    options={STEREO_MODES}
+                    onChange={(v) => setProject((p) => ({ ...p, stereo: v }))}
+                    wrap
+                  />
+                  {(project.stereo ?? 'off') !== 'off' && (
+                    <Slider
+                      label="Eye separation"
+                      value={project.stereoBaseline ?? 0.08}
+                      min={0.01}
+                      max={0.3}
+                      step={0.005}
+                      onChange={(v) => setProject((p) => ({ ...p, stereoBaseline: v }))}
+                      fmt={(v) => v.toFixed(3)}
+                    />
+                  )}
+                  <p className="hint">
+                    {scene3dCount > 0 ? (
+                      <>
+                        Renders the scene from two eye viewpoints for genuine depth.{' '}
+                        <strong>Anaglyph</strong> needs red-cyan glasses;{' '}
+                        <strong>side-by-side</strong> suits a cardboard/VR viewer;{' '}
+                        <strong>cross-eye</strong> is for free-viewing. Bigger eye
+                        separation = stronger depth (and more ghosting).
+                      </>
+                    ) : (
+                      <>Add a <strong>3D Attractor</strong> or <strong>3D Harmonograph</strong> layer to use stereoscopy.</>
+                    )}
+                  </p>
+                </section>
+
+                <section className="group">
                   <div className="group-title">Presets</div>
                   <div className="preset-grid">
                     {PRESETS.map((p, i) => (
@@ -1449,14 +1572,20 @@ export default function App() {
               <strong>superformula</strong>, a chaotic{' '}
               <strong>strange attractor</strong> (de Jong, Clifford, Svensson, Dream,
               Hopalong, Gumowski–Mira, Bedhead, Tinkerbell), a real{' '}
-              <strong>3D strange attractor</strong> (Lorenz, Rössler, Aizawa, Thomas,
-              Halvorsen, Chen, Dadras, Sprott, Lorenz-84) — an RK4-integrated flow you{' '}
-              <strong>drag the canvas to orbit</strong> — or an{' '}
+              <strong>3D strange attractor</strong> (fourteen real flows — Lorenz, Rössler,
+              Aizawa, Thomas, Halvorsen, Chen, Dadras, Sprott, Lorenz-84, Sprott-B,
+              Nosé–Hoover, Rikitake, Chen–Lee, Burke–Shaw) or a{' '}
+              <strong>3D harmonograph</strong> (a spatial pendulum tracing a knotted
+              3-D Lissajous figure) — flown through an orbit camera you{' '}
+              <strong>drag to rotate and scroll/pinch to zoom</strong> — or an{' '}
               <strong>L-system</strong> fractal — both classic single-stroke curves
               (dragon, Koch, Hilbert, Gosper…) and <strong>branching plants &amp; trees</strong>.
               In the Color tab, switch any layer to the <strong>Density</strong> render
               style to splat millions of points into a glowing nebula — the way strange
-              attractors are meant to be seen. Use <em>Add</em> / <em>Screen</em> blends with
+              attractors are meant to be seen — with optional <strong>depth fog</strong> for
+              real front-to-back volume. Render any 3-D scene in{' '}
+              <strong>stereoscopic 3D</strong> (Scene tab): a red-cyan <strong>anaglyph</strong>,
+              or a side-by-side / cross-eye pair. Use <em>Add</em> / <em>Screen</em> blends with
               glow for luminous overlaps, color along path / speed / curvature / direction,
               and turn up <strong>kaleidoscope symmetry</strong> for mandalas.
               Hit <strong>Animate</strong> to watch the pen draw, <strong>Live</strong> to
