@@ -18,6 +18,7 @@ import { ProfilePanel } from './ProfilePanel'
 import { RelativityPanel } from './RelativityPanel'
 import { GravWavePanel } from './GravWavePanel'
 import { BlackHolePanel } from './BlackHolePanel'
+import { KerrPanel } from './KerrPanel'
 import { SymplecticPanel } from './SymplecticPanel'
 import { Section, Segmented, Select, Slider, Toggle } from './primitives'
 
@@ -319,6 +320,10 @@ export function Sidebar(p: SidebarProps) {
 
       <Section title="Black Hole Lab" defaultOpen={false}>
         <BlackHolePanel />
+      </Section>
+
+      <Section title="Kerr Lab" defaultOpen={false}>
+        <KerrPanel />
       </Section>
 
       <Section title="Rendering">

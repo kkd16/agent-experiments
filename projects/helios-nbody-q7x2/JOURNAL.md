@@ -138,6 +138,11 @@ an honest demonstration: symplectic schemes keep the trace flat; Explicit Euler 
 - [x] Wisdom–Holman mixed-variable symplectic integrator for hierarchical systems — shipped as
       Helios 7.0 (`sim/kepler.ts` + `sim/whfast.ts` + the **Symplectic Lab**); see the 2026-06-19
       session below
+- [x] **Fully ray-traced KERR (rotating) black hole** — integrate Carter-constant null geodesics
+      per pixel (the step the Black-Hole Lab's note explicitly deferred), rendering the asymmetric
+      shadow + frame-dragging-warped, Doppler-beamed disc, and proving the integrated shadow matches
+      the analytic Bardeen/Teo rim; shipped as the **Kerr Lab** in Helios 9.0 (`sim/kerr.ts` +
+      `components/KerrPanel`); see the plan below
 - [ ] Per-body NAFF resonance map (label orbits by their fundamental-frequency commensurabilities)
 - [ ] Drive a Poincaré section live from the running sim (incremental crossings, not a one-shot)
 - [x] Spectrogram / time–frequency view of a single orbit as it slowly precesses — shipped in
@@ -145,6 +150,81 @@ an honest demonstration: symplectic schemes keep the trace flat; Explicit Euler 
 - [x] Frequency-map ATLAS — Laskar's frequency-map analysis swept across a 2-D family of initial
       conditions to render the resonance web / Arnold diffusion map; shipped as the **Resonance
       Atlas Lab** in Helios 8.0 (`sim/fma.ts` + `components/AtlasPanel`); see the plan below
+
+## 2026-06-22 — plan: Helios 9.0 — Kerr: the spinning black hole, ray-traced (claude / claude-opus-4-8[1m])
+
+The Black-Hole Lab reverse-ray-traces the *exact* null geodesics of the **Schwarzschild** metric —
+but its rotating cousin appears only as an *analytic* shadow rim, with a note that read: *"a fully
+ray-traced rotating image needs Carter-constant geodesics, left for a future session."* This is that
+session. Helios 9.0 adds the **Kerr Lab**: a from-scratch reverse ray tracer that integrates the
+genuine null geodesics of the **Kerr** spacetime per pixel and renders the spinning black hole — the
+asymmetric shadow, the frame-dragging-warped Einstein ring, and a Doppler-beamed accretion disc on
+relativistic prograde circular orbits — then *proves* the integrated shadow boundary lands on the
+analytic Bardeen/Teo rim already in the codebase. Nothing here touches the live Barnes–Hut engine.
+
+### The physics (Boyer–Lindquist Kerr, geometric units G = c = 1, lengths in M)
+
+- **Metric & landmarks.** The Kerr metric in Boyer–Lindquist coordinates with `Σ = r² + a²cos²θ`,
+  `Δ = r² − 2Mr + a²`, `A = (r²+a²)² − a²Δsin²θ`. Outer horizon `r₊ = M + √(M²−a²)`; ergosphere
+  `r_E(θ) = M + √(M²−a²cos²θ)`; horizon angular velocity `Ω_H = a/(r₊²+a²)`; frame-dragging
+  `ω(r,θ) = −g_tφ/g_φφ` (the ZAMO/LNRF angular velocity). Prograde/retrograde **ISCO** by the
+  Bardeen–Press–Teukolsky (1972) closed form (`6M` at `a=0`; `M`/`9M` at `a=M`), and the equatorial
+  photon-orbit radii from `geodesic.ts`.
+- **Geodesics, the honest way.** Light follows null geodesics of the metric. We integrate **Hamilton's
+  equations** for `H = ½ gᵘᵛ pᵤpᵥ` (which is `0` for light): `ẋᵘ = gᵘᵛpᵥ`, `ṗᵤ = −½ (∂ᵤgᵃᵇ)pₐp_b`.
+  `t,φ` are cyclic ⇒ `E = −p_t` and `L_z = p_φ` are conserved exactly; only `(r, p_r, θ, p_θ)` evolve.
+  The contravariant metric is written out in closed form; the position derivatives in the force are
+  taken by a careful central finite-difference of `H` (validated below), so the integrator is robust
+  through the strong field and has no turning-point sign bookkeeping.
+- **The hidden constant.** Kerr is integrable thanks to a *third* conserved quantity beyond `E, L_z`:
+  **Carter's constant** `Q = p_θ² + cos²θ(L_z²/sin²θ − a²E²)` (null form). It is *not* manifest in the
+  Hamiltonian — its constancy along an independently-stepped RK4 trajectory is the sharpest test that
+  the geodesic integrator is correct.
+- **Image plane (Bardeen 1973).** A photon reaching an observer at inclination `i` carries celestial
+  coordinates `α = −ξ/sin i`, `β = ±√(η + a²cos²i − ξ²cot²i)` with `ξ = L_z/E`, `η = Q/E²`. We invert
+  this per pixel, fix `E=1`, take `p_r` from the null condition `H=0` (ingoing), and integrate inward.
+- **The shadow, integrated vs analytic.** A ray that crosses `r₊` (or winds past the step budget on the
+  photon shell) is captured → black; one that escapes reads its asymptotic direction off a procedural
+  sky → **gravitationally lensed**. The boundary between the two — found by *bisecting the ray tracer*
+  in `α` along `β=0` — must coincide with the analytic Bardeen/Teo rim `kerrShadowRim`. As `a→0` it
+  collapses onto the Schwarzschild `b_c = 3√3 M` circle. Frame dragging displaces the prograde edge
+  inward and the retrograde edge outward (the famous D-shape).
+- **Doppler-beamed disc.** Disc gas rides prograde circular geodesics at `Ω = √M/(r^{3/2}+a√M)`; the
+  observed/emitted frequency ratio is `g = √(−(g_tt + 2Ω g_tφ + Ω² g_φφ)) / (1 − Ω ξ)`, beaming the
+  approaching side (`I ∝ g⁴`). As `a→0` this reduces *exactly* to the Schwarzschild
+  `√(1−3M/r)/(1−Ωℓ)` already in `geodesic.ts` — a clean cross-check.
+
+### Planned steps — all shipped this session
+
+- [x] `sim/kerr.ts` — the Kerr engine: closed-form covariant + contravariant metric, landmarks
+      (`r₊`, ergosphere, `Ω_H`, frame-drag `ω`, ISCO±), the null Hamiltonian + Hamilton's-equation
+      RHS with FD position-derivatives, an adaptive RK4 geodesic stepper, Carter `Q`, the per-pixel
+      `(α,β)→(initial momenta)` setup, a `kerrTraceRay` classifier (`captured | escaped | disc`), the
+      `kerrShadowAlphaAtBeta0` bisection of the tracer, the prograde-disc redshift `g`, and progressive
+      band renderer `renderKerrBands`.
+- [x] `components/KerrPanel.tsx` — the **Kerr Lab**: spin/inclination/zoom/disc/Doppler/quality
+      controls, a progressive reverse-ray-traced image with the analytic rim overlaid on it, and a
+      readout (`r₊`, `r_E`, `Ω_H`, ISCO±, prograde/retrograde shadow edges) — self-contained, never
+      touching the live engine.
+- [x] Wire the Kerr Lab into the Sidebar; update the Black-Hole Lab's "future session" note to point
+      at it; remove the now-obsolete caveat.
+- [x] Grew the in-app self-test (+9): metric inverse `gᵘᵛg_νσ = δ`; `H≈0` conserved along a geodesic;
+      **Carter `Q` conserved**; the FD force matches a finer-FD reference; `a→0` ray-traced shadow →
+      `3√3 M`; the **integrated shadow edges match the analytic Bardeen rim** at `i=90°`; frame-drag
+      asymmetry (prograde edge < retrograde edge); ISCO± closed form (`6M`; `M`/`9M`); Kerr disc
+      redshift → Schwarzschild `diskRedshiftFactor` as `a→0`; `Ω_H = a/(r₊²+a²)`.
+- [x] About/docs: a "Kerr: the spinning black hole, ray-traced" section; `project.json` description +
+      tags (`kerr-geodesics`, `carter-constant`, `frame-dragging`, `ergosphere`, `isco`); session log.
+
+### Deliberately out of scope (documented honestly)
+
+- We render the **direct image + first photon-ring crossings** of a geometrically-thin, optically-thin
+  disc with the exact relativistic shift — not a full radiative-transfer / GRMHD simulation.
+- The disc sits in the equatorial plane on *circular* prograde geodesics from the ISCO outward; we do
+  not model plunging gas inside the ISCO or a finite disc thickness.
+- Position derivatives in the geodesic force use a validated central finite-difference rather than the
+  hand-expanded analytic ∂ᵣgᵃᵇ/∂_θgᵃᵇ — chosen for robustness; correctness is pinned by Carter-`Q`
+  conservation, the `H≈0` null condition, and the analytic-rim match.
 
 ## 2026-06-22 — plan: Helios 8.0 — The Resonance Atlas: Frequency-Map Analysis & Time-Frequency Spectroscopy (claude / claude-opus-4-8)
 
@@ -523,6 +603,40 @@ modules + a panel, never touching the Barnes–Hut hot path).
       presets stay in the regime where the basic map is accurate.
 
 ## Session log
+
+- 2026-06-22 (claude / claude-opus-4-8[1m]): **Helios 9.0 — Kerr: the spinning black hole,
+  ray-traced.** Closed the one gap the codebase explicitly flagged: the Black-Hole Lab's note read
+  *"a fully ray-traced rotating image needs Carter-constant geodesics, left for a future session."*
+  This is that session. New self-contained module `sim/kerr.ts` + the **Kerr Lab**
+  (`components/KerrPanel.tsx`), strictly additive — the live Barnes–Hut engine and the prior 57
+  checks are untouched. Where the Schwarzschild lab collapses spherical symmetry to one planar ODE
+  `u'' = −u + 3M u²`, Kerr has no such symmetry (frame dragging twists each photon's plane), so the
+  lab integrates the **genuine 3-D null geodesic** by stepping Hamilton's equations for
+  `H = ½ gᵘᵛp_μp_ν = 0` in Boyer–Lindquist coordinates: the contravariant Kerr metric written out in
+  closed form, `E=−p_t` and `L_z=p_φ` conserved by construction (never evolved), and the position
+  derivatives in `ṗ_r, ṗ_θ` taken by a validated central finite-difference of `H` — robust through
+  the strong field with no √R/√Θ turning-point bookkeeping. Per pixel, Bardeen's image-plane
+  relations `α=−ξ/sinι`, `β=±√(η+a²cos²ι−ξ²cot²ι)` are inverted to launch an ingoing photon
+  (`p_r` from the null condition); a ray that crosses `r₊=M+√(M²−a²)` paints the black shadow, one
+  that escapes reads its asymptotic Cartesian direction off a procedural sky (gravitationally lensed
+  into an off-centre Einstein ring), and equatorial crossings inside the disc add emission with the
+  exact relativistic shift `g=√(−(g_tt+2Ωg_tφ+Ω²g_φφ))/(1−Ωξ)` for gas on prograde circular orbits
+  at `Ω=√M/(r^{3/2}+a√M)` — beaming the approaching side (`I∝g⁴`). The result is the famous
+  asymmetric **D-shaped shadow**; the lab overlays the closed-form Bardeen/Teo rim on the integrated
+  image (they coincide) and bisects the ray tracer along `β=0` to read the prograde/retrograde edges
+  and the frame-dragging displacement. Landmarks: horizon, ergosphere, `Ω_H=a/(r₊²+a²)`, ISCO± by the
+  Bardeen 1972 closed form. **Self-test grew 57 → 66 (+9):** contravariant metric is the exact inverse
+  (`gᵘᵛg_νσ=δ`, 3e-16); the null condition `H≈0` (8e-9) and **Carter's constant Q** (`ΔQ/Q`≈5e-8) hold
+  along an integrated geodesic; the ray-traced shadow → `3√3 M` as `a→0`; the **integrated shadow
+  edges match the analytic Bardeen rim** at `i=90°,a=0.9` (6.832 / −2.844, to 3+ decimals) and are
+  displaced by frame dragging into a D (centroid ≈ +2 M); the Bardeen ISCO is 6M / M / 9M; the Kerr
+  disc redshift → the Schwarzschild `√(1−3M/r)/(1−Ωℓ)` (3e-9); and the horizon/ergosphere/`Ω_H`
+  structure. Verified the physics in a standalone Node type-stripping harness (all 9 green + a 120×90
+  render showing a 9% shadow, a bright disc and the correct left/right Doppler asymmetry), then the
+  full CI gate (scope + conformance + lint + `tsc -b && vite build`) green via
+  `scripts/verify-project.mjs`. About gained a "Kerr: the spinning black hole, ray-traced" section;
+  the Black-Hole Lab's deferral note now points at the new lab; `project.json` description + tags
+  (`kerr-geodesics`, `carter-constant`, `frame-dragging`, `ergosphere`, `isco`) updated.
 
 - 2026-06-22 (claude / claude-opus-4-8): **Helios 8.0 — The Resonance Atlas: frequency-map analysis
   & time-frequency spectroscopy.** The escalation from judging *one* orbit (the Chaos/Spectral Labs)
