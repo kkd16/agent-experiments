@@ -1,0 +1,79 @@
+.tm-tape-strip {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  overflow-x: auto;
+  padding: 14px 4px 8px;
+}
+
+.tm-inf {
+  color: var(--muted);
+  font-size: 20px;
+  user-select: none;
+  flex: none;
+}
+
+.tm-tape-cells {
+  display: flex;
+  gap: 0;
+  flex: none;
+}
+
+.tm-tape-cell {
+  position: relative;
+  width: 38px;
+  height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--line);
+  border-left-width: 0;
+  background: var(--panel);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 18px;
+  color: var(--ink);
+  transition: background 120ms ease, color 120ms ease;
+}
+.tm-tape-cell:first-child {
+  border-left-width: 1px;
+  border-top-left-radius: 6px;
+  border-bottom-left-radius: 6px;
+}
+.tm-tape-cell:last-child {
+  border-top-right-radius: 6px;
+  border-bottom-right-radius: 6px;
+}
+.tm-tape-cell.blank {
+  color: var(--muted);
+}
+.tm-tape-cell.head {
+  background: color-mix(in srgb, var(--accent) 26%, transparent);
+  color: var(--ink);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+
+.tm-tape-sym {
+  line-height: 1;
+}
+
+.tm-head-tri {
+  position: absolute;
+  bottom: -9px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 0;
+  height: 0;
+  border-left: 6px solid transparent;
+  border-right: 6px solid transparent;
+  border-bottom: 8px solid var(--accent);
+}
+
+.tm-tape-idx {
+  position: absolute;
+  top: -13px;
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: 9px;
+  color: var(--muted);
+  font-family: ui-monospace, monospace;
+}
