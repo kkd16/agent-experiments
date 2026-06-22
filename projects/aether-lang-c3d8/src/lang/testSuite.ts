@@ -581,6 +581,48 @@ toInt (ack (S (S Z)) (S Z))`,
 map (fn x -> x * x) [1,2,3,4]`,
     expected: '[1, 4, 9, 16]',
   },
+
+  // ---- equality saturation (Aether 16.0) ----
+  // Each keeps its parameter symbolic (runs on list elements) so only the
+  // e-graph algebra — not the constant-folder — can simplify it. The expected
+  // value re-proves the superoptimized form still computes the right answer
+  // (and the row's JS check re-proves the JS backend agrees on it).
+  {
+    group: 'equality saturation',
+    name: 'factor a*2 + a*3 ⟶ a*5',
+    code: 'map (fn a -> a * 2 + a * 3) [1, 2, 3, 7]',
+    expected: '[5, 10, 15, 35]',
+  },
+  {
+    group: 'equality saturation',
+    name: 'reassociate (x+100)+200 ⟶ x+300',
+    code: 'map (fn x -> (x + 100) + 200) [1, 2, 3]',
+    expected: '[301, 302, 303]',
+  },
+  {
+    group: 'equality saturation',
+    name: 'cancellation a*b - b*a ⟶ 0',
+    code: 'map (fn a -> a * 11 - 11 * a) [4, 9, 100]',
+    expected: '[0, 0, 0]',
+  },
+  {
+    group: 'equality saturation',
+    name: 'three-term common factor a*4+a*5+a*6 ⟶ a*15',
+    code: 'map (fn a -> a * 4 + a * 5 + a * 6) [1, 10, 100]',
+    expected: '[15, 150, 1500]',
+  },
+  {
+    group: 'equality saturation',
+    name: 'x - x + x ⟶ x (annihilation + cancellation)',
+    code: 'map (fn x -> x - x + x * 1) [5, 9, 13]',
+    expected: '[5, 9, 13]',
+  },
+  {
+    group: 'equality saturation',
+    name: 'factoring inside a recursive body',
+    code: `let rec f = fn a -> if a <= 0 then 0 else (a * 2 + a * 3) + f (a - 1) in f 10`,
+    expected: '275',
+  },
 ]
 
 export function runCase(tc: TestCase): TestResult {

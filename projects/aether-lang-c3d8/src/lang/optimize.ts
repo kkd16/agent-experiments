@@ -44,6 +44,8 @@ import { collectSiblings, compileMatches } from './decisiontree.ts'
 import type { DtStats, DtView } from './decisiontree.ts'
 import { analyzeTermination } from './termination.ts'
 import type { TerminationResult } from './termination.ts'
+import { equalitySaturate } from './egraph.ts'
+import type { EqSatStats } from './egraph.ts'
 
 export interface OptimizeStats {
   /** fixpoint rounds run */
@@ -74,6 +76,9 @@ export interface OptimizeStats {
   /** size-change termination analysis — the proof that lets the totality analysis
    *  admit *recursive* functions (Aether 13.0). Null only if it wasn't run. */
   termination: TerminationResult | null
+  /** equality-saturation superoptimizer over the integer-arithmetic islands
+   *  (Aether 16.0) — the islands found and the ones it improved. */
+  eqsat: EqSatStats | null
 }
 
 export interface OptimizeResult {
@@ -227,6 +232,19 @@ export function optimizeCore(root: Expr): OptimizeResult {
     fixpoint()
   }
 
+  // Phase 4: equality saturation (Aether 16.0). A non-destructive, e-graph based
+  // superoptimizer for the integer-arithmetic islands the greedy fixpoint above
+  // cannot fully simplify — it considers all reassociations / distributions /
+  // factorings at once and extracts the cheapest equivalent form, then validates
+  // each adopted rewrite by polynomial identity testing. Run last, on the already
+  // shrunk core, and gated to *strictly cheaper* forms so VM steps only fall.
+  const eqsatRun = equalitySaturate(expr, { isPure })
+  const eqsat: EqSatStats = eqsatRun.stats
+  if (eqsatRun.stats.rewrites.length > 0) {
+    expr = eqsatRun.expr
+    passes['eqsat'] = (passes['eqsat'] ?? 0) + eqsatRun.stats.rewrites.length
+  }
+
   return {
     expr,
     stats: {
@@ -242,6 +260,7 @@ export function optimizeCore(root: Expr): OptimizeResult {
       dt,
       decisionTrees,
       termination: TERMINATION,
+      eqsat,
     },
   }
 }

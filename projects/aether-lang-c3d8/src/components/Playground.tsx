@@ -10,6 +10,7 @@ import BytecodePanel from './panels/BytecodePanel.tsx'
 import JsPanel from './panels/JsPanel.tsx'
 import WasmPanel from './panels/WasmPanel.tsx'
 import OptimizerPanel from './panels/OptimizerPanel.tsx'
+import EqSatPanel from './panels/EqSatPanel.tsx'
 import TerminationPanel from './panels/TerminationPanel.tsx'
 import DerivationPanel from './panels/DerivationPanel.tsx'
 import ClassesPanel from './panels/ClassesPanel.tsx'
@@ -39,6 +40,7 @@ type Tab =
   | 'deriv'
   | 'bytecode'
   | 'optimizer'
+  | 'eqsat'
   | 'termination'
   | 'js'
   | 'wasm'
@@ -55,6 +57,7 @@ const TABS: { id: Tab; label: string }[] = [
   { id: 'deriv', label: 'Derivation' },
   { id: 'bytecode', label: 'Bytecode' },
   { id: 'optimizer', label: 'Optimizer' },
+  { id: 'eqsat', label: 'Eq-Sat' },
   { id: 'termination', label: 'Termination' },
   { id: 'js', label: 'JavaScript' },
   { id: 'wasm', label: 'WebAssembly' },
@@ -224,6 +227,7 @@ export default function Playground() {
           )}
           {tab === 'bytecode' && <BytecodePanel proto={analysis.proto} />}
           {tab === 'optimizer' && <OptimizerPanel code={code} />}
+          {tab === 'eqsat' && <EqSatPanel code={code} />}
           {tab === 'termination' && <TerminationPanel code={code} />}
           {tab === 'js' && (
             <JsPanel ast={analysis.optimizedCoreAst} code={code} optimize={optimizeOn} />
