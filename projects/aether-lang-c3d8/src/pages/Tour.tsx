@@ -391,6 +391,16 @@ back 50.0        clear ()`}</pre>
           <strong>global value numbering</strong> example recomputes one window as the value of three
           different <code>let</code>s; GVN shares it once and roughly halves the kernel's VM steps.
         </p>
+        <p>
+          15.0 grows up the <strong>inliner</strong>. It used to copy a function only when its binding
+          was used <em>once</em>; now a small, non-recursive helper is copied into every{' '}
+          <strong>saturated call site</strong> — deleting the call overhead and letting its body fold
+          against the literals there — while a partial application or a higher-order <em>escape</em>{' '}
+          keeps one shared closure. An inlined call runs fewer instructions and an un-taken copy costs
+          nothing, so the step count can only fall. The <strong>call-site inlining</strong> example
+          folds <code>sq 3 + sq 4 + sq 12</code> to a single <code>169</code> and sheds a call per
+          iteration from a hot loop, cutting its VM steps by ~45%.
+        </p>
       </section>
 
       <section>

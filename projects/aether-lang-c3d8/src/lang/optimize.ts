@@ -38,6 +38,7 @@
 // constructor collapses to its arm.
 
 import type { BinaryOp, Expr, MatchCase, Pattern } from './ast.ts'
+import { cloneExpr } from './ast.ts'
 import { unparse } from './unparse.ts'
 import { collectSiblings, compileMatches } from './decisiontree.ts'
 import type { DtStats, DtView } from './decisiontree.ts'
@@ -63,6 +64,9 @@ export interface OptimizeStats {
   /** one entry per expression the global value-numbering pass hoisted across a
    *  binder into a shared `let` (Aether 14.0) — for the Optimizer panel. */
   gvnHoists: { expr: string; sites: number }[]
+  /** one entry per non-recursive function the call-site inliner copied into its
+   *  saturated call sites (Aether 15.0) — for the Optimizer panel. */
+  inlinedFns: { name: string; sites: number; size: number; escaped: boolean }[]
   /** decision-tree compilation statistics (Aether 12.0) */
   dt: DtStats
   /** one entry per `match` rewritten into a decision tree (for the panel) */
@@ -131,6 +135,26 @@ const TOTAL_NATIVES = new Map<string, number>([
 // native of that name). Populated per run; guards the TOTAL_NATIVES shortcut.
 let SHADOWED = new Set<string>()
 
+// One entry per non-recursive function the call-site inliner copied into its
+// saturated call sites this run (Aether 15.0). Module-level for the same reason
+// as `freshCounter` — optimization is synchronous and single-shot — and surfaced
+// in the Optimizer panel. Reset per run.
+let INLINES: { name: string; sites: number; size: number; escaped: boolean }[] = []
+
+// Whether the multi-use call-site inliner is active. It melts *source-level*
+// abstraction, so it runs in the main optimization phase but is switched off for
+// the post-decision-tree cleanup fixpoint — that phase is reserved for copy-
+// propagating the tree's own bindings, and inlining there would only re-duplicate
+// the join-points the decision-tree pass deliberately introduced to share code.
+let ALLOW_FN_INLINE = true
+
+// Upper bound (in core-AST nodes) on the size of a function body the call-site
+// inliner will copy. Inlining never increases *runtime* steps (an inlined call is
+// cheaper than a real one and un-taken copies cost nothing), so this gate only
+// bounds *code growth* — it keeps small, hot helpers inline-worthy while leaving
+// large definitions a single shared closure.
+const INLINE_SIZE_LIMIT = 20
+
 // ---------------------------------------------------------------------------
 // Public entry
 // ---------------------------------------------------------------------------
@@ -143,6 +167,8 @@ export function optimizeCore(root: Expr): OptimizeResult {
   TERMINATION = null
   PURE_FNS = analyzePurity(root)
   bodyCostMemo = new Map<string, number>()
+  INLINES = []
+  ALLOW_FN_INLINE = true
   const passes: Record<string, number> = {}
   const bump = (name: string): void => {
     passes[name] = (passes[name] ?? 0) + 1
@@ -194,7 +220,10 @@ export function optimizeCore(root: Expr): OptimizeResult {
     passes['dt'] = (passes['dt'] ?? 0) + dt.matchesCompiled
     // Phase 3: re-run the fixpoint to clean up the introduced bindings — copy-
     // propagate the `let v = occ` occurrence aliases and inline single-use
-    // join-points — and to fold anything the new structure exposes.
+    // join-points — and to fold anything the new structure exposes. The multi-use
+    // call-site inliner is held off here so it cannot re-duplicate the shared
+    // join-points the decision-tree pass just introduced.
+    ALLOW_FN_INLINE = false
     fixpoint()
   }
 
@@ -209,6 +238,7 @@ export function optimizeCore(root: Expr): OptimizeResult {
       trace,
       pureFns: [...PURE_FNS.keys()],
       gvnHoists,
+      inlinedFns: INLINES,
       dt,
       decisionTrees,
       termination: TERMINATION,
@@ -419,7 +449,149 @@ function reduceLet(e: Extract<Expr, { kind: 'let' }>, bump: Bump): Expr | null {
     return subst(e.name, e.value, e.body)
   }
 
+  // Multi-use call-site inlining (Aether 15.0). A *small, non-recursive* function
+  // bound here is worth copying into each of its *saturated call sites* — that
+  // removes the closure-application + call overhead the site pays, and exposes the
+  // body to const-folding/known-match at the site — while every *other* occurrence
+  // (a partial application, or an escape into a higher-order argument) keeps
+  // referring to the binding, so its one closure is built at most once. The rewrite
+  // strictly lowers VM steps (an inlined call is cheaper than a real one, and a copy
+  // on an un-taken path costs nothing at runtime) and never speculates, so the
+  // harness's never-increase-steps invariant is preserved by construction.
+  if (
+    ALLOW_FN_INLINE &&
+    e.value.kind === 'lambda' &&
+    uses >= 2 &&
+    !freeVars(e.value).has(e.name) && // the value never refers to its own binder
+    lambdaBody(e.value).kind !== 'match' && // leave match-bodied fns to the DT pass
+    size(e.value) <= INLINE_SIZE_LIMIT
+  ) {
+    const inlined = inlineCallSites(e.name, e.value, e.body, e.span, bump)
+    if (inlined) return inlined
+  }
+
   return null
+}
+
+// ---------------------------------------------------------------------------
+// Call-site inlining of non-recursive functions (Aether 15.0)
+// ---------------------------------------------------------------------------
+//
+// The single-use inliner above copies a function whose binding is used exactly
+// once. This pass lifts that cap for *small, non-recursive* functions: it copies
+// the body into every **saturated** call site (an application spine `f e1 … ek`
+// of at least the lambda's arity `k`), while leaving partial applications and
+// bare-`var` escapes pointing at a single retained closure. The three-step
+// rewrite leans on the module's proven capture-avoiding machinery:
+//
+//   1. `markHeads` rewrites each saturated call-spine head `f` to a globally
+//      fresh placeholder `inl$…`, leaving every other `f` occurrence untouched
+//      (it stops at any binder that re-binds `f`, so inner shadows are safe);
+//   2. `rename` renames the surviving (escape) `f` occurrences to a fresh `alt`;
+//   3. `subst` replaces the placeholders with the lambda — and because `subst`
+//      freshens any binder on the path that would capture one of the lambda's
+//      free variables, the inlined copies denote exactly what the call did.
+//
+// If an escape remains, the lambda is re-bound to `alt` (one closure for all the
+// escapes); if not, the function is fully inlined and no closure is ever built.
+
+/** The head and ordered argument spine of a (possibly empty) application chain.
+ *  `f a b` ⇒ `{ head: var f, args: [a, b] }`; a non-app ⇒ `{ head: e, args: [] }`. */
+function appSpine(e: Expr): { head: Expr; args: Expr[] } {
+  const args: Expr[] = []
+  let cur: Expr = e
+  while (cur.kind === 'app') {
+    args.unshift(cur.arg)
+    cur = cur.fn
+  }
+  return { head: cur, args }
+}
+
+/** Rewrite each saturated call-spine head `name e1 … e_arity …` to `var ph`,
+ *  counting the rewrites, and leaving every other (escaping / partial) occurrence
+ *  of `name` in place. Stops at any binder that shadows `name`. */
+function markHeads(
+  name: string,
+  ph: string,
+  arity: number,
+  e: Expr,
+  counter: { n: number },
+): Expr {
+  if (!freeVars(e).has(name)) return e
+  const rec = (x: Expr): Expr => markHeads(name, ph, arity, x, counter)
+  switch (e.kind) {
+    case 'app': {
+      const { head, args } = appSpine(e)
+      if (head.kind === 'var' && head.name === name && args.length >= arity) {
+        counter.n++
+        let out: Expr = { kind: 'var', name: ph, span: head.span }
+        for (const a of args) out = { kind: 'app', fn: out, arg: rec(a), span: e.span }
+        return out
+      }
+      return { ...e, fn: rec(e.fn), arg: rec(e.arg) }
+    }
+    case 'var':
+      return e // a bare escape occurrence — left for `rename` to redirect
+    case 'lambda':
+      return e.param === name ? e : { ...e, body: rec(e.body) }
+    case 'let': {
+      const value = e.recursive && e.name === name ? e.value : rec(e.value)
+      const body = e.name === name ? e.body : rec(e.body)
+      return { ...e, value, body }
+    }
+    case 'letrec':
+      if (e.bindings.some((b) => b.name === name)) return e
+      return {
+        ...e,
+        bindings: e.bindings.map((b) => ({ name: b.name, value: rec(b.value) })),
+        body: rec(e.body),
+      }
+    case 'match':
+      return {
+        ...e,
+        scrutinee: rec(e.scrutinee),
+        cases: e.cases.map((c) => {
+          const bound = new Set<string>()
+          patternVars(c.pattern, bound)
+          if (bound.has(name)) return c
+          return { pattern: c.pattern, guard: c.guard ? rec(c.guard) : undefined, body: rec(c.body) }
+        }),
+      }
+    case 'typedecl':
+      return e.ctors.some((c) => c.name === name) ? e : { ...e, body: rec(e.body) }
+    default:
+      return mapAllChildren(e, rec)
+  }
+}
+
+/** Inline `name = lam` into its saturated call sites within `body`. Returns the
+ *  replacement for the whole `let name = lam in body` node, or null if there is no
+ *  saturated call to gain from. */
+function inlineCallSites(
+  name: string,
+  lam: Expr,
+  body: Expr,
+  span: Expr['span'],
+  bump: Bump,
+): Expr | null {
+  const arity = lambdaArity(lam)
+  const ph = gensym('inl')
+  const counter = { n: 0 }
+  const marked = markHeads(name, ph, arity, body, counter)
+  if (counter.n === 0) return null // nothing saturated to inline — skip (no win)
+
+  const alt = gensym(name)
+  const escaped = rename(name, alt, marked)
+  let out = subst(ph, lam, escaped)
+  const escapes = countUses(alt, out)
+  if (escapes > 0) {
+    out = { kind: 'let', name: alt, value: lam, body: out, recursive: false, span }
+  }
+  for (let i = 0; i < counter.n; i++) bump('inline-fn')
+  INLINES.push({ name, sites: counter.n, size: size(lam), escaped: escapes > 0 })
+  // Freshen every node's identity (`subst` shares the lambda object across the
+  // inlined sites), so the identity-keyed passes that run later stay sound.
+  return cloneExpr(out)
 }
 
 function reduceLetrec(e: Extract<Expr, { kind: 'letrec' }>, bump: Bump): Expr | null {

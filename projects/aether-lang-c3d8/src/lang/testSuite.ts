@@ -357,6 +357,41 @@ type Color = Red | Green | Blue deriving (Eq, Show) in
     expected: '355',
   },
 
+  // ---- optimizer: call-site inlining (Aether 15.0) ----
+  // A small, non-recursive function is copied into each saturated call site;
+  // escapes keep a shared closure. Each runs the whole pipeline (so the inlined
+  // core ships) and is also run on JS — a green row proves the answer is unchanged.
+  {
+    group: 'inlining',
+    name: 'a small helper used many times folds to a constant',
+    code: 'let sq = fn x -> x * x in sq 3 + sq 4 + sq 12',
+    expected: '169',
+  },
+  {
+    group: 'inlining',
+    name: 'a curried helper inlines at every saturated site',
+    code: 'let avg = fn a b -> (a + b) / 2 in avg 10 20 + avg 4 8 + avg 100 200',
+    expected: '171',
+  },
+  {
+    group: 'inlining',
+    name: 'an escaping function keeps one shared closure',
+    code: 'let f = fn x -> x + 1 in (map f [1, 2, 3], f 10, f 20)',
+    expected: '([2, 3, 4], 11, 21)',
+  },
+  {
+    group: 'inlining',
+    name: 'inlining never captures a shadowing binder',
+    code: 'let n = 100 in let f = fn x -> x + n in let n = 999 in (f 1, f 2)',
+    expected: '(101, 102)',
+  },
+  {
+    group: 'inlining',
+    name: 'a helper inlined into a hot recursive loop',
+    code: 'let step = fn x -> x * 2 + 1 in let rec go = fn n acc -> if n == 0 then acc else go (n - 1) (acc + step n) in go 20 0',
+    expected: '440',
+  },
+
   // ---- decision-tree pattern compilation (Aether 12.0) ----
   // Each runs through the whole pipeline (so the decision-tree lowering ships)
   // and is also run on the JavaScript backend — a green row proves DT ≡ naive.
