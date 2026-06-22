@@ -38,6 +38,21 @@ import {
   kerrEquatorialPhotonRadius,
 } from './geodesic'
 import {
+  kerrMetricCo,
+  kerrMetricContra,
+  hamiltonian2,
+  geodesicRHS,
+  rk4Step,
+  initRay,
+  carterConstant,
+  kerrHorizonRadius,
+  kerrHorizonOmega,
+  kerrErgosphere,
+  kerrIscoRadius,
+  diskRedshiftKerr,
+  kerrShadowAlphaAtBeta0,
+} from './kerr'
+import {
   computeCell,
   effectivePotential,
   effectivePotentialGradient,
@@ -1348,6 +1363,150 @@ export function runSelfTest(): SelfTestReport {
       'FMA 1-D frequency map is the Kepler staircase n = a^{-3/2}',
       nValid === pts.length && mono && maxRel < 1e-3,
       `${nValid}/${pts.length} valid, monotone=${mono}, max rel error = ${maxRel.toExponential(2)}`,
+    )
+  }
+
+  // ── Kerr: the spinning black hole, ray-traced (Helios 9.0) ────────────────
+
+  // 58 — The contravariant Kerr metric is the genuine inverse of the covariant
+  // one: gᵘᵛ g_νσ = δᵘ_σ on the (t,φ) block and the r,θ diagonal.
+  {
+    const r = 8
+    const th = 1.1
+    const a = 0.7
+    const co = kerrMetricCo(r, th, a)
+    const ct = kerrMetricContra(r, th, a)
+    const Itt = ct.gtt * co.gtt + ct.gtp * co.gtp
+    const Itp = ct.gtt * co.gtp + ct.gtp * co.gpp
+    const Ipt = ct.gtp * co.gtt + ct.gpp * co.gtp
+    const Ipp = ct.gtp * co.gtp + ct.gpp * co.gpp
+    const Irr = ct.grr * co.grr
+    const Ith = ct.gthth * co.gthth
+    const err = Math.max(
+      Math.abs(Itt - 1),
+      Math.abs(Ipp - 1),
+      Math.abs(Itp),
+      Math.abs(Ipt),
+      Math.abs(Irr - 1),
+      Math.abs(Ith - 1),
+    )
+    add('Kerr contravariant metric is the exact inverse (gᵘᵛg_νσ=δ)', err < 1e-9, `max |gᵘᵛg_νσ − δ| = ${err.toExponential(2)}`)
+  }
+
+  // 59 — The null condition H = ½ gᵘᵛpᵤpᵥ = 0 is preserved along an integrated
+  // geodesic, and 60 — Carter's hidden constant Q stays constant. We launch a
+  // fly-by photon (large impact parameter) and adaptively step it past the hole.
+  {
+    const a = 0.8
+    const M = 1
+    const ray = initRay(7.0, 4.0, 40, Math.PI * 0.45, a, M)
+    const st = ray.state
+    const { pt, pphi } = ray
+    const E = -pt
+    const Lz = pphi
+    const tmp = new Float64Array(5)
+    const q0 = carterConstant(st.theta, st.pth, Lz, E, a)
+    let maxH = 0
+    let maxdQ = 0
+    let plunged = false
+    for (let i = 0; i < 20000; i++) {
+      geodesicRHS(st, pt, pphi, a, M, tmp)
+      const rate = Math.abs(tmp[0]) / Math.max(1, st.r) + Math.abs(tmp[1]) + Math.abs(tmp[2]) + 1e-3
+      const dλ = Math.min(2.0, Math.max(2e-3, 0.05 / rate))
+      rk4Step(st, pt, pphi, a, M, dλ)
+      if (st.r < kerrHorizonRadius(a) * 1.05) {
+        plunged = true
+        break
+      }
+      if (st.r > 80 && tmp[0] > 0) break
+      maxH = Math.max(maxH, Math.abs(0.5 * hamiltonian2(st.r, st.theta, pt, st.pr, st.pth, pphi, a, M)))
+      maxdQ = Math.max(maxdQ, Math.abs((carterConstant(st.theta, st.pth, Lz, E, a) - q0) / q0))
+    }
+    add('Kerr null condition H≈0 holds along the integrated geodesic', !plunged && maxH < 1e-6, `max |H| = ${maxH.toExponential(2)}`)
+    add("Carter's constant Q is conserved along the geodesic", !plunged && maxdQ < 1e-5, `max |ΔQ/Q| = ${maxdQ.toExponential(2)}`)
+  }
+
+  // 61 — As the spin vanishes the ray-traced shadow collapses onto the
+  // Schwarzschild circle: both β = 0 edges → b_c = 3√3 M.
+  {
+    const bc = 3 * Math.sqrt(3)
+    const eP = kerrShadowAlphaAtBeta0(1e-4, Math.PI / 2, 1)
+    const eM = kerrShadowAlphaAtBeta0(1e-4, Math.PI / 2, -1)
+    add(
+      'Kerr shadow → Schwarzschild b_c = 3√3 M as a → 0',
+      Math.abs(Math.abs(eP) - bc) < 0.02 && Math.abs(Math.abs(eM) - bc) < 0.02,
+      `traced edges ±(${Math.abs(eP).toFixed(3)}, ${Math.abs(eM).toFixed(3)}) vs ${bc.toFixed(3)}`,
+    )
+  }
+
+  // 62 — The integrated shadow lands exactly on the analytic Bardeen/Teo rim, and
+  // 63 — frame dragging makes it asymmetric (the famous D-shape). At i = π/2 the
+  // β = 0 edges are α = −ξ(r) at the prograde / retrograde equatorial photon
+  // orbits; the bisected ray tracer must reproduce both.
+  {
+    const a = 0.9
+    const i = Math.PI / 2
+    const eP = kerrShadowAlphaAtBeta0(a, i, 1)
+    const eM = kerrShadowAlphaAtBeta0(a, i, -1)
+    const xi = (r: number) => (r * r * (3 - r) - a * a * (r + 1)) / (a * (r - 1))
+    const rPro = 2 * (1 + Math.cos((2 / 3) * Math.acos(-a)))
+    const rRetro = 2 * (1 + Math.cos((2 / 3) * Math.acos(a)))
+    const aPro = -xi(rPro) // the negative-α edge
+    const aRetro = -xi(rRetro) // the positive-α edge
+    const match = Math.abs(eP - aRetro) < 0.03 && Math.abs(eM - aPro) < 0.03
+    add(
+      'Integrated Kerr shadow matches the analytic Bardeen rim (a=0.9, i=90°)',
+      match,
+      `traced (+${eP.toFixed(3)}, ${eM.toFixed(3)}) vs analytic (+${aRetro.toFixed(3)}, ${aPro.toFixed(3)})`,
+    )
+    // The shadow is displaced toward +α (the retrograde side reaches farther out).
+    const centroid = 0.5 * (eP + eM)
+    add(
+      'Frame dragging displaces the shadow (D-shape, not a disc)',
+      centroid > 0.5 && Math.abs(eP) > Math.abs(eM),
+      `centroid α = ${centroid.toFixed(3)} M > 0 (retro edge ${eP.toFixed(2)} vs pro ${eM.toFixed(2)})`,
+    )
+  }
+
+  // 64 — The Bardeen ISCO closed form: 6M at a = 0; M (prograde) and 9M
+  // (retrograde) at the extremal a = M.
+  {
+    const i0 = kerrIscoRadius(0, 1, true)
+    const iPro = kerrIscoRadius(1, 1, true)
+    const iRetro = kerrIscoRadius(1, 1, false)
+    add(
+      'Kerr ISCO: 6M (a=0), M / 9M (a=M, pro/retro)',
+      approx(i0, 6, 1e-6) && approx(iPro, 1, 1e-6) && approx(iRetro, 9, 1e-6),
+      `r_ISCO = ${i0.toFixed(3)} | ${iPro.toFixed(3)} | ${iRetro.toFixed(3)} M`,
+    )
+  }
+
+  // 65 — The Kerr disc-redshift factor reduces to geodesic.ts's Schwarzschild
+  // g = √(1−3M/r)/(1−Ωℓ) as the spin vanishes.
+  {
+    let maxd = 0
+    for (const r of [7, 10, 15, 25]) {
+      for (const xi of [-4, -2, 0, 2, 4]) {
+        const gk = diskRedshiftKerr(r, xi, 1e-7, 1)
+        const gs = diskRedshiftFactor(r, xi, 1)
+        maxd = Math.max(maxd, Math.abs(gk - gs))
+      }
+    }
+    add('Kerr disc redshift → Schwarzschild √(1−3M/r)/(1−Ωℓ) as a → 0', maxd < 1e-6, `max |g_Kerr − g_Schw| = ${maxd.toExponential(2)}`)
+  }
+
+  // 66 — Horizon & ergosphere structure: r₊ is real for |a| ≤ M, the ergosphere
+  // encloses the horizon (= 2M at the equator), and Ω_H = a/(r₊²+a²).
+  {
+    const a = 0.9
+    const rp = kerrHorizonRadius(a)
+    const ergoEq = kerrErgosphere(Math.PI / 2, a)
+    const omH = kerrHorizonOmega(a)
+    const omHref = a / (rp * rp + a * a)
+    add(
+      'Kerr horizon/ergosphere/Ω_H structure',
+      approx(rp, 1 + Math.sqrt(1 - 0.81), 1e-12) && approx(ergoEq, 2, 1e-12) && ergoEq >= rp && approx(omH, omHref, 1e-12),
+      `r₊=${rp.toFixed(3)}, r_E(eq)=${ergoEq.toFixed(3)}, Ω_H=${omH.toFixed(4)}`,
     )
   }
 

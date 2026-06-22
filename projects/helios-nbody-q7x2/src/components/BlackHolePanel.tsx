@@ -252,9 +252,10 @@ export function BlackHolePanel() {
         <p className="preset-desc">
           The Schwarzschild image integrates <em>exact</em> null geodesics — no post-Newtonian
           expansion — so the shadow size, lensing and photon ring are physically faithful. The Kerr
-          panel draws the <em>exact analytic</em> shadow rim; a fully ray-traced rotating image needs
-          Carter-constant geodesics, left for a future session. The disc is a thin-disc emission
-          model with the exact relativistic redshift, not a radiative-transfer simulation.
+          panel below draws the <em>exact analytic</em> shadow rim; the <strong>Kerr Lab</strong> now
+          ray-traces the rotating image for real, integrating Carter-constant geodesics per pixel.
+          The disc is a thin-disc emission model with the exact relativistic redshift, not a
+          radiative-transfer simulation.
         </p>
       </div>
     </div>

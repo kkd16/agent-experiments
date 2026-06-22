@@ -278,10 +278,39 @@ export function About({ onClose }: Props) {
         <p>
           A <strong>rotating</strong> (Kerr) black hole drags space around itself, so its shadow is
           not a circle but a <strong>D-shape</strong>, flattened and displaced on the co-rotating
-          side. The lab draws that boundary in closed form from the unstable spherical photon orbits
-          (Bardeen 1973), reducing to the <code>3√3 M</code> circle as the spin vanishes. The full
-          ray-traced rotating image — needing Carter-constant geodesics — is left for a later
-          session; this ships the exact analytic rim.
+          side. The Black-Hole Lab draws that boundary in closed form from the unstable spherical
+          photon orbits (Bardeen 1973), reducing to the <code>3√3 M</code> circle as the spin
+          vanishes.
+        </p>
+
+        <h2>Kerr: the spinning black hole, ray-traced</h2>
+        <p>
+          The <strong>Kerr Lab</strong> stops drawing the rotating shadow and starts{' '}
+          <em>integrating</em> it. Spherical symmetry is gone, so the planar <code>u(φ)</code> trick
+          fails: frame dragging twists each photon's plane around the spin axis. Instead the lab
+          integrates the genuine 3-D null geodesic by stepping <strong>Hamilton's equations</strong>{' '}
+          for <code>H = ½ gᵘᵛ pᵤpᵥ = 0</code> in Boyer–Lindquist coordinates. Because the Kerr metric
+          ignores <code>t</code> and <code>φ</code>, the energy <code>E = −p_t</code> and the axial
+          angular momentum <code>L_z = p_φ</code> are conserved automatically — and Kerr hides a{' '}
+          <em>fourth</em> integral, <strong>Carter's constant</strong>{' '}
+          <code>Q = p_θ² + cos²θ(L_z²/sin²θ − a²E²)</code>, which makes the geometry separable. None
+          of these are built into the stepper, so their constancy along an independently-integrated
+          ray is the proof the geodesic is right (the self-test holds <code>H</code> and <code>Q</code>{' '}
+          to a part in <code>10⁷</code>).
+        </p>
+        <p>
+          Per pixel we invert Bardeen's image-plane relations <code>α = −ξ/sin ι</code>,{' '}
+          <code>β = ±√(η + a²cos²ι − ξ²cot²ι)</code> to launch a photon and trace it inward. One that
+          crosses the horizon <code>r₊ = M + √(M²−a²)</code> paints the black shadow; one that
+          escapes reads its outgoing direction off a procedural sky, gravitationally{' '}
+          <strong>lensed</strong> into an off-centre Einstein ring. Disc gas rides prograde circular
+          geodesics at <code>Ω = √M/(r^{'{'}3/2{'}'}+a√M)</code>, beamed by the full relativistic
+          shift <code>g = √(−(g_tt+2Ωg_tφ+Ω²g_φφ))/(1−Ωξ)</code> (which reduces exactly to the
+          Schwarzschild <code>√(1−3M/r)/(1−Ωℓ)</code> as the spin vanishes). The result is the famous
+          asymmetric <strong>D-shaped shadow</strong>: the prograde edge — the side dragged toward you
+          — is pushed inward, the retrograde edge outward, so the whole shadow is displaced. The
+          dashed curve laid over the image is the closed-form Bardeen/Teo rim; the integrated boundary
+          (found by bisecting the ray tracer) lands right on it.
         </p>
 
         <h2>Symplectic planetary dynamics: integrating exactly the right thing</h2>
@@ -363,8 +392,15 @@ export function About({ onClose }: Props) {
           Einstein's <code>4M/b</code> and diverges logarithmically (matching Bozza 2002) at{' '}
           <code>b_c</code>, that the exact orbit equation reproduces the <code>2π(1/√(1−6M/r)−1)</code>{' '}
           precession, that the disc redshift is exactly <code>√½</code> at the ISCO, and that the
-          Kerr shadow collapses to the <code>3√3 M</code> circle as its spin vanishes. And the
-          symplectic battery: that the universal-variable Kepler propagator matches the analytic{' '}
+          Kerr shadow collapses to the <code>3√3 M</code> circle as its spin vanishes. The Kerr
+          battery proves the rotating ray tracer outright: that the contravariant metric is the exact
+          inverse of the covariant one, that the null condition <code>H ≈ 0</code> and{' '}
+          <strong>Carter's constant Q</strong> hold along an integrated geodesic, that the ray-traced
+          shadow reproduces the analytic Bardeen rim and is displaced by frame dragging into a D, that
+          the Bardeen ISCO is <code>6M</code> at <code>a=0</code> and <code>M</code>/<code>9M</code>{' '}
+          at <code>a=M</code>, and that the Kerr disc redshift reduces to the Schwarzschild formula as
+          the spin vanishes. And the symplectic battery: that the universal-variable Kepler propagator
+          matches the analytic{' '}
           <code>E − e·sinE</code> solution to machine precision, that its Lagrange coefficients
           satisfy <code>f·ġ − ḟ·g = 1</code>, that Wisdom–Holman is exact for two bodies and beats
           Verlet on energy by <code>~10⁴×</code> (with RK4's secular drift as a control), that its
@@ -408,6 +444,7 @@ export function About({ onClose }: Props) {
           <li>Open the <em>Wave Lab</em>, press <em>Generate inspiral</em>, and watch two bodies spiral together as they radiate — then press <em>Hear the chirp</em> to listen to the merger. Push the eccentricity up and watch the orbit circularise; check the measured merger time against Peters' formula.</li>
           <li>Open the <em>Black Hole Lab</em>, press <em>Render black hole</em>, and watch the shadow, the lensed sky grid and the Doppler-beamed disc trace out row by row — then set the inclination near 90° to see the disc's far side lensed up over the top, the <em>Interstellar</em> image.</li>
           <li>In the <em>Black Hole Lab</em>, drag the Kerr <em>spin</em> up toward 1 and watch the shadow morph from a circle into the lopsided D-shape, flattening on the side space is dragged toward you.</li>
+          <li>Open the <em>Kerr Lab</em>, push the <em>spin</em> toward 1 at 90° inclination, and press <em>Render</em> — watch the integrated shadow slide off-centre and flatten into a D, with the dashed analytic rim sitting right on the boundary. Then press <em>Measure shadow edges</em> to read the prograde/retrograde displacement straight off the ray tracer.</li>
           <li>Open the <em>Symplectic Lab</em>, pick <em>Four inner planets</em>, push Δt up and press <em>Run the race</em> — on the log-scale energy-error plot watch Wisdom–Holman stay flat while Verlet ripples far above it and RK4 climbs off the top. Toggle <em>WH 4th order</em> to drop the green curve another decade.</li>
           <li>Open the <em>Resonance Atlas</em>, press <em>Compute Atlas</em> and watch the resonance web fill in row by row. Switch <em>Strong perturber</em> and flip <em>Colour by</em> to <em>Frequency</em> to see the resonance plateaus, then back to <em>Chaos</em> for the Arnold web — and click a bright thread to watch its spectrogram ridge wander.</li>
           <li>Click a planet in <em>Solar System</em> to read its orbital energy, then <em>Share</em> a permalink to your setup.</li>
