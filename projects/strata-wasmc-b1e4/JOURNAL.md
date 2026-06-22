@@ -28,7 +28,9 @@ reference interpreter at every optimization level.
   conditional constant propagation), **devirtualization**, **full loop unrolling**,
   **if-conversion** (control-flow diamond → branchless `select`), **strength reduction**,
   **SROA** (escape analysis + scalar replacement of aggregates), **memory optimization**,
-  dominator-scoped **GVN/CSE**, algebraic simplification, **LICM** (loop-invariant code
+  **reassociation** (canonicalize integer affine trees → `Σ cᵢ·xᵢ + K`),
+  dominator-scoped **GVN/CSE**, **operator strength reduction on induction variables (OSR)**,
+  algebraic simplification, **LICM** (loop-invariant code
   motion), **DCE**, **CFG simplification**, CFG cleanup, and whole-module
   **dead-function elimination**, iterated to a fixed point.
 - `src/compiler/ir/loops.ts` — the **natural-loop forest** (headers, latches, bodies,
@@ -67,6 +69,18 @@ reference interpreter at every optimization level.
   `|C| >= 2` (where signed division cannot trap), so it can never erase a trap the program
   would raise; every rewrite is an exact identity, proven by the differential oracle and an
   offline fuzz of millions of dividends. See the 2026-06-19 plan (II).
+- `src/compiler/opt/reassoc.ts` — **reassociation** at -O2+: reads an integer
+  add/sub/×-constant/«-constant tree as a **linear combination** `Σ cᵢ·xᵢ + K`, then
+  rebuilds the smallest expression that computes it — summing the coefficients of like
+  terms (`a·x + b·x → (a+b)·x`), folding scattered constants into one, distributing a
+  constant over a sum, folding multiplicative constant chains (`i*4*3 → i*12`) and
+  cancelling commuted operands. Exact in the wrapping ring (coefficients combined with
+  the backend's own `Math.imul` / i64 `asIntN`); floats excluded. Only single-use,
+  same-block nodes are absorbed (no shared computation duplicated, SSA preserved), and a
+  rewrite fires only when **strictly smaller** than the chain it replaces — so it can
+  only improve code and is guaranteed to terminate. Runs before GVN and OSR, surfacing
+  fresh `i·r` candidates for strength reduction and merging more equal expressions. See
+  the 2026-06-22 plan.
 - `src/compiler/opt/sroa.ts` — **SROA: escape analysis + scalar replacement of aggregates**
   at -O1+. Struct construction lowers to a first-class **`alloc` IR op** (`ir/ir.ts`); this
   pass traces each `alloc`'s handle (and every address derived from it by adding a *constant*),
@@ -355,6 +369,112 @@ yet stored in arrays/structs/globals — extract their lanes for that.)
       random loops** (OSR firing on 71%, zero mismatches). **884 differential
       checks across -O0…-O3 (baseline 836)**; OSR fires on **91** of the 221
       corpus programs. See the 2026-06-21 plan.
+- [x] **Reassociation — canonicalize integer affine expression trees**
+      (`opt/reassoc.ts`, -O2+). A classic mid-end canonicalization (LLVM's
+      `-reassociate`): an integer add / sub / ×-constant / «-constant tree is read
+      as a **linear combination** `Σ cᵢ·xᵢ + K` over opaque atoms, then rebuilt as
+      the smallest expression that computes it — summing the coefficients of **like
+      terms** (`a·x + b·x → (a+b)·x`), folding every scattered constant into one,
+      **distributing** a constant over a sum, folding **multiplicative constant
+      chains** (`i*4*3 → i*12`), and **cancelling** commuted operands
+      (`(a+b)-(b+a)+a → a`). Each rewrite is an exact identity in the wrapping ring
+      `Z/2^w` (coefficients combined with the backend's own `Math.imul` / i64
+      `asIntN`), so it can only canonicalize, never change a value; floats are
+      excluded. Only **single-use, same-block** nodes are absorbed (no shared
+      computation is duplicated, SSA stays valid), and the rewrite fires only when
+      it is **strictly smaller** than the chain it replaces — which both guarantees
+      improvement and makes the pass terminate. It runs just before GVN and OSR, so
+      both see the canonical form (it surfaces fresh `i·r` candidates for strength
+      reduction and merges more equal expressions). Proven by the three-engine
+      oracle (interp = wasm = VM) at -O0…-O3 **and** an offline fuzz of **15,000
+      random affine programs** (i32+i64, reassociation firing on ~82%, zero
+      mismatches). **948 → 992 differential checks.** See the 2026-06-22 plan.
+
+## 2026-06-22 — plan + shipped: reassociation — canonicalize integer affine expression trees (claude / claude-opus-4-8)
+
+The strength-reduction story had one classic gap left open by the 2026-06-21 OSR
+session (its own backlog flagged it first): the optimizer reduced an induction
+multiply to an add, shared dominating redundancies, and lowered division by a
+constant — but it never **reassociated**. A handwritten `x*8 + x*1024 + 2*x` stayed
+three multiplies and two adds; `(a+3)+(b+5)` kept both literals; `(i*4)*3` ran two
+multiplies; `(a+b)-(b+a)` never noticed it was zero. Reassociation is *the* canonical
+pre-pass that LLVM, GCC and every serious optimizer run to expose these, and it was
+the one missing piece feeding OSR/GVN. This session adds it.
+
+### Design — read the tree as a linear combination, rebuild the minimum (decline unless smaller)
+
+An integer add / sub / ×-constant / shift-by-constant expression is exactly a
+**linear combination** `c₁·x₁ + … + cₙ·xₙ + K` of atoms `xᵢ` (opaque sub-values) and
+a folded constant `K`. The pass flattens a root into that form, then rebuilds the
+smallest instruction sequence that computes it:
+
+- **flatten** recurses through `add` (merge), `sub` (merge the negated form), a
+  constant-scaled `mul`/`shl` (scale the sub-form's coefficients by the constant —
+  this is what **distributes** `c·(a+b)` into `c·a + c·b`), and treats anything else
+  (a load, a call, a multi-use value, a cross-block def, a multiply of two unknowns)
+  as an opaque atom;
+- **merge** sums the coefficients of like atoms (so `a·x` and `b·x` become `(a+b)·x`)
+  and adds the constants; **scale** multiplies a whole sub-form through;
+- **build** lays the surviving nonzero terms out by ascending atom id (deterministic,
+  so re-running is a fixpoint): positive coefficients summed first, then `K`, then
+  negative coefficients subtracted; a `|c|≠1` coefficient becomes a `mul` (which the
+  existing strength-reduce peephole may turn back into a shift if `|c|` is a power of
+  two).
+
+Why it's exact (and the oracle can't be fooled): addition is associative and
+commutative mod 2^w, multiplication distributes over addition mod 2^w, and a left
+shift `x<<k` is the multiply `x·2^(k mod w)`. Coefficients are combined with the
+**same** wrapping arithmetic the backend emits — `Math.imul` for i32,
+`BigInt.asIntN(64,…)` for i64 — so `a·x + b·x` and `(a+b)·x` are the identical
+2^w-residue. Multiply, shift and add never trap, so no trap is invented or erased.
+**Floats are excluded** (FP rounding breaks both associativity and distributivity).
+Two safety rails keep it sound and terminating: only **single-use, same-block** nodes
+are ever decomposed (a multi-use value stays an atom, so no shared computation is
+duplicated and SSA validity holds — the now-dead chain falls to DCE), and a rewrite
+**fires only when the rebuilt expression is strictly smaller** than the chain it
+consumed (so it can only improve code, and the total instruction count strictly
+decreases each time it fires — the pass cannot loop). It slots into the pipeline
+right before `gvn/cse` and `strength-reduce-iv` at -O2+ (and in the post-unroll
+cleanup), so both see the canonical form: it surfaces fresh `i·r` candidates for OSR
+and lets GVN recognize more equal expressions.
+
+### Shipped this session (all proven by the oracle — **992 checks, V8 = interpreter = VM**)
+
+- [x] **`src/compiler/opt/reassoc.ts`** — the pass. Linear-form flatten/merge/scale
+      over i32 and i64, single-use/same-block absorption, constant distribution,
+      deterministic minimal rebuild, the strictly-smaller firing gate, and value-type
+      registration for every fresh SSA id.
+- [x] **Wired into `opt/optimize.ts`** as `reassociate` (-O2+), before `gvn/cse` and
+      `strength-reduce-iv`, in both the fixpoint rounds and the post-unroll cleanup.
+- [x] **11-program reassociation battery** in `tests.ts` — like-term collection,
+      constant folding, multiplicative chain folding, exact cancellation, a negative
+      combined coefficient, a beneficial constant distribution, shift-coded multiples,
+      an **i32 wraparound** (two huge multiples whose summed coefficient wraps), a
+      **multi-use** subterm that must stay shared, and two **i64** cases (wide-coeff
+      and 64-bit cancellation). Each verified at -O0…-O3 (interp = wasm = VM), and
+      reassociation provably fires on every one.
+- [x] **A `reassoc-canon` gallery example** — like-term collection, literal+chain
+      folding, cancellation, and a loop whose `i*3 + i*5 + i*7` collapses to `i*15`
+      and is then strength-reduced by OSR, with a comment pointing at the
+      `reassociate` line in the pipeline view.
+- [x] **Offline fuzz** (`tools/check-reassoc.mjs`, `_reassocentry.js`): **15,000
+      random affine programs** (i32+i64) over multiple seeds — random trees of
+      `+`/`-`/`×const`/`«const` over loop-carried atoms spanning negative and
+      wrap-inducing ranges, each compiled at -O0 and -O3 and run on Node's
+      `WebAssembly`. **Reassociation fired on ~82%; zero mismatches.** The corpus grew
+      from **948 → 992** differential checks, all green; CI gate (scope + conformance
+      + lint + build) green.
+
+### Backlog — where reassociation goes next (deliberately deferred, all clean)
+
+- [ ] **Distribute a non-constant region constant** (`(i+1)*r → i·r + r` with `r` a
+      loop-invariant *variable*) — sound, but it doesn't fit the constant-coefficient
+      linear form; it belongs with an OSR-side derived-IV rule. The size gate already
+      declines the constant-`r` cases where distribution would grow the code.
+- [ ] **Reassociate boolean/bitwise trees** (`and`/`or`/`xor` are also commutative,
+      associative monoids with constant folding) — a second linear-form flavour.
+- [ ] **Factor a common atom back out** (`a·x + a·y → a·(x+y)`) when it shrinks code —
+      the inverse direction, useful when `x+y` is itself reused.
 
 ## 2026-06-21 — plan + shipped: partial loop unrolling (unroll-by-K + remainder loop) + a Loops/IV panel (claude / claude-opus-4-8)
 
@@ -514,8 +634,11 @@ runs four rounds at -O2+ — a *chain* (`k = i*4; q = k*3`) reduces a level per 
 - [x] **An "induction variables" optimizer sub-panel** — shipped 2026-06-21 (later session) as
       the **Loops** tab: classifies each loop (counted / strided-main / general) with its IV,
       step, bound and static trip count, side by side for SSA vs the optimized IR.
-- [ ] **Reassociation feeding OSR**: canonicalize integer `+`/`*` trees and sink constants so
-      more `i*r` candidates surface (e.g. `(i+1)*r` → `i*r + r`).
+- [x] **Reassociation feeding OSR**: canonicalize integer `+`/`*` trees and sink constants so
+      more `i*r` candidates surface — shipped 2026-06-22 as `opt/reassoc.ts` (linear-form
+      term collection, constant folding, constant distribution, multiplicative-chain folding
+      and cancellation; 15,000-program fuzz, corpus 948 → 992). The variable-`r` distribution
+      `(i+1)*r → i*r + r` remains open (it belongs with an OSR-side derived-IV rule).
 
 ## 2026-06-20 — plan + shipped: a from-scratch WebAssembly VM — a third oracle + a time-travel debugger (claude / claude-opus-4-8)
 

@@ -1222,6 +1222,47 @@ fn main() {
 }
 `,
   },
+  {
+    id: 'reassoc-canon',
+    title: 'Reassociation (collect affine terms)',
+    blurb: 'Flip to -O2 and watch tangled integer arithmetic collapse to a canonical `Σ cᵢ·xᵢ + K` — see the `reassociate` pass.',
+    source: `// Reassociation canonicalizes integer affine expression trees. An add / sub /
+// ×-constant tree is a *linear combination* of atoms; the 'reassociate' pass at
+// -O2+ flattens it, sums the coefficients of like atoms, folds every scattered
+// constant into one, distributes a constant over a sum, and rebuilds the smallest
+// expression — laid out canonically so OSR and GVN see more. Every rewrite is an
+// exact identity in the wrapping ring (a·x + b·x = (a+b)·x and c·(a+b) = c·a + c·b
+// mod 2^w), so the result is byte-for-byte what -O0 computes — the Verify panel
+// proves it (interp = wasm = VM). Open the IR view at -O2 and compare to -O0.
+
+// 1) Like terms collect into a single multiply: x*8 + x*1024 + 2*x  ->  x*1034.
+fn weighted(x: int) -> int { return x * 8 + x * 1024 + 2 * x; }
+
+// 2) Scattered literals fold, and a multiplicative chain collapses.
+fn folded(a: int, b: int) -> int {
+  return (a + 3) + (b + 5) + (a * 4) * 3;   // -> 13*a + b + 8
+}
+
+// 3) Commuted operands cancel exactly to nothing.
+fn cancels(p: int, q: int) -> int { return (p + q) - (q + p) + p; }   // -> p
+
+// 4) Reassociation exposes a clean induction multiply for OSR to strength-reduce.
+fn poly(n: int) -> int {
+  let acc = 0;
+  for (let i = 0; i < n; i = i + 1) {
+    acc = acc + (i * 3 + i * 5 + i * 7);    // -> i*15, then a running add (OSR)
+  }
+  return acc;
+}
+
+fn main() {
+  print(weighted(5));
+  print(folded(10, 20));
+  print(cancels(6, 9));
+  print(poly(300));
+}
+`,
+  },
 ];
 
 export const TEST_PROGRAMS: { name: string; source: string }[] = EXAMPLES.map((e) => ({ name: e.id, source: e.source }));

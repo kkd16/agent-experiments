@@ -2228,6 +2228,118 @@ fn main(){
 }`,
   },
 
+  // --- Reassociation: canonicalize integer affine expression trees. Each body
+  // is built over a loop counter (so the expression stays symbolic past SCCP and
+  // reassociation actually fires at -O2/-O3), and the differential oracle pins the
+  // result bit-for-bit at -O0..-O3 — so these prove every reassociation identity
+  // (`a·x + b·x ≡ (a+b)·x`, constant folding, `c·x·d ≡ (c·d)·x`, distribution and
+  // cancellation) is exact in the wrapping ring Z/2^w, including the wrap edges. --
+  {
+    name: 'reassoc-like-terms',
+    source: `fn main(){
+  // three multiples of one value collect into a single multiply: x*1034.
+  let acc = 0;
+  for (let i = 0; i < 160; i = i + 1) { acc = acc + (i * 8 + i * 1024 + 2 * i); }
+  print(acc);
+}`,
+  },
+  {
+    name: 'reassoc-const-fold',
+    source: `fn main(){
+  // scattered literals fold into one: (x+3)+(x+5) -> 2x+8.
+  let acc = 0;
+  for (let i = 0; i < 140; i = i + 1) { let x = i; acc = acc ^ ((x + 3) + (x + 5)); }
+  print(acc);
+}`,
+  },
+  {
+    name: 'reassoc-mul-chain',
+    source: `fn main(){
+  // a multiplicative constant chain folds: (i*4)*3 -> i*12.
+  let acc = 0;
+  for (let i = 0; i < 150; i = i + 1) { acc = acc + (i * 4) * 3; }
+  print(acc);
+}`,
+  },
+  {
+    name: 'reassoc-cancel',
+    source: `fn main(){
+  // commuted operands cancel exactly: (i+j) - (j+i) + i -> i.
+  let acc = 0;
+  for (let i = 0; i < 120; i = i + 1) { let j = i * 2 + 1; acc = acc + ((i + j) - (j + i) + i); }
+  print(acc);
+}`,
+  },
+  {
+    name: 'reassoc-neg-coeff',
+    source: `fn main(){
+  // like terms with opposite signs combine to a negative coefficient: 5x - 9x -> -4x.
+  let acc = 0;
+  for (let i = 0; i < 130; i = i + 1) { acc = acc + (i * 5 - i * 9); }
+  print(acc);
+}`,
+  },
+  {
+    name: 'reassoc-distribute',
+    source: `fn main(){
+  // a constant distributes over a sum and then folds: 2*(i+i+3) -> 4i+6.
+  let acc = 0;
+  for (let i = 0; i < 110; i = i + 1) { acc = acc ^ (2 * (i + i + 3)); }
+  print(acc);
+}`,
+  },
+  {
+    name: 'reassoc-shl-terms',
+    source: `fn main(){
+  // shift-coded multiples collect through the shift coefficient: (i<<3)+(i<<1) -> i*10.
+  let acc = 0;
+  for (let i = 0; i < 145; i = i + 1) { acc = acc + ((i << 3) + (i << 1) + i); }
+  print(acc);
+}`,
+  },
+  {
+    name: 'reassoc-wrap-i32',
+    source: `fn main(){
+  // two huge multiples sum past 2^31, so the combined coefficient wraps i32 — the
+  // single reduced multiply must wrap identically to the two it replaced.
+  let acc = 0;
+  for (let i = 0; i < 200; i = i + 1) { acc = acc + (i * 2000000000 + i * 2000000000); }
+  print(acc);
+}`,
+  },
+  {
+    name: 'reassoc-multi-use',
+    source: `fn main(){
+  // a multi-use subterm (t) must stay a shared atom, not be duplicated.
+  let acc = 0;
+  for (let i = 0; i < 125; i = i + 1) { let t = i * 3 + 1; acc = acc + (t + t + t); print(t); }
+  print(acc);
+}`,
+  },
+  {
+    name: 'reassoc-long',
+    source: `fn main(){
+  // 64-bit affine reassociation with wide coefficients that wrap i64.
+  let acc: long = 0L;
+  for (let i: long = 0L; i < 200L; i = i + 1L) {
+    acc = acc + (i * 5000000000L + i * 7000000000L + 11L + 13L);
+  }
+  print(acc);
+}`,
+  },
+  {
+    name: 'reassoc-long-cancel',
+    source: `fn main(){
+  // i64 cancellation: (a + b*4) - b*4 -> a, with a 64-bit loop variable.
+  let acc: long = 0L;
+  for (let i: long = 0L; i < 160L; i = i + 1L) {
+    let b = i * 3L;
+    acc = acc ^ ((i + b * 4L) - b * 4L);
+  }
+  print(acc);
+}`,
+  },
+
   // ---------------------------------------------------------------------------
   // Partial loop unrolling (unroll-by-K + remainder). Each loop has a *runtime*
   // or large bound the full unroller declines, so the strider engages; the
