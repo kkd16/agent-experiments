@@ -489,6 +489,19 @@ function checkOpt(name, src, opts = {}) {
     problems.push(`DT fired on ${dt.matchesCompiled} match(es) (expected none — already flat)`)
   if (opts.minJoins !== undefined && (!dt || dt.joinPoints < opts.minJoins))
     problems.push(`only ${dt ? dt.joinPoints : 0} join-points (expected >= ${opts.minJoins})`)
+  const inlined = on.optimization ? (on.optimization.inlinedFns ?? []) : []
+  const inlineSites = inlined.reduce((n, f) => n + f.sites, 0)
+  if (opts.minInline !== undefined && inlined.length < opts.minInline)
+    problems.push(`only ${inlined.length} function(s) call-site inlined (expected >= ${opts.minInline})`)
+  if (opts.minInlineSites !== undefined && inlineSites < opts.minInlineSites)
+    problems.push(`only ${inlineSites} inlined call site(s) (expected >= ${opts.minInlineSites})`)
+  if (opts.noInline && inlined.length !== 0)
+    problems.push(`call-site inliner fired on ${inlined.length} function(s) (expected none)`)
+  if (opts.inlineEscaped !== undefined) {
+    const got = inlined.find((f) => f.name.startsWith(opts.inlineEscaped))
+    if (!got) problems.push(`'${opts.inlineEscaped}' was not inlined at all`)
+    else if (!got.escaped) problems.push(`'${opts.inlineEscaped}' inlined but no escape binding kept (expected one)`)
+  }
   if (opts.pure !== undefined) {
     const pureFns = on.optimization ? on.optimization.pureFns : []
     for (const f of opts.pure) if (!pureFns.includes(f)) problems.push(`'${f}' not proven pure (got [${pureFns}])`)
@@ -722,6 +735,56 @@ checkOpt('dt skips a flat Option match',
 checkOpt('dt skips a flat enum match',
   'type C = R | G | B in let f = fn c -> match c with R -> 1 | G -> 2 | B -> 3 in (f R, f G, f B)',
   { expect: '(1, 2, 3)', noDt: true })
+
+// ---------------------------------------------------------------------------
+// Call-site inlining battery (Aether 15.0). `checkOpt` already proves the
+// inlined program agrees with the unoptimized one (result, output, effect count)
+// and — the load-bearing invariant — never raises the VM step count. Here we
+// additionally assert the inliner *fired* on the multi-use cases, *cut real
+// steps*, kept an escape binding when the function also escapes, left the
+// single-shared decision-tree path alone, and never fired where it must not.
+// ---------------------------------------------------------------------------
+
+// Headline: a small helper used many times is copied into each call site, so the
+// closure-application overhead vanishes and const-folding finishes the job.
+checkOpt('inline small helper many times',
+  'let sq = fn x -> x * x in sq 3 + sq 4 + sq 5',
+  { expect: '50', minInline: 1, minInlineSites: 3, minStepCut: 40, maxNodes: 4 })
+// A pure helper called from inside a recursive loop: every iteration drops a call.
+checkOpt('inline helper in a hot loop',
+  'let dist = fn a b -> a * a + b * b in let rec go = fn n acc -> if n == 0 then acc else go (n - 1) (acc + dist n n) in go 30 0',
+  { expect: '18910', minStepCut: 25 })
+// Multi-argument currying: the whole spine `avg a b` is inlined and folded.
+checkOpt('inline multi-arg curried helper',
+  'let avg = fn a b -> (a + b) / 2 in avg 10 20 + avg 4 8 + avg 100 200',
+  { expect: '171', minInline: 1, minInlineSites: 3 })
+// Escape + call mix: `f` both escapes into `map` and is called directly. The
+// direct calls inline; the escape keeps one shared closure (`escaped` flag set).
+checkOpt('inline keeps an escape binding',
+  'let f = fn x -> x + 1 in (map f [1, 2, 3], f 10, f 20)',
+  { expect: '([2, 3, 4], 11, 21)', minInlineSites: 2, inlineEscaped: 'f' })
+// Partial application is an escape: `add 1` must keep referring to the binding,
+// while the saturated `add 2 3` / `add 10 20` inline. Result must be unchanged.
+checkOpt('inline preserves a partial application',
+  'let add = fn a b -> a + b in let inc = add 1 in (inc 5, add 2 3, add 10 20)',
+  { expect: '(6, 5, 30)', inlineEscaped: 'add' })
+// Capture avoidance: the helper closes over `n`, and the call site re-binds `n`.
+// Inlining must still read the *definition-site* `n` (100), not the shadow (999).
+checkOpt('inline avoids variable capture',
+  'let n = 100 in let f = fn x -> x + n in let n = 999 in (f 1, f 2)',
+  { expect: '(101, 102)', minInline: 1 })
+// A self-recursive function is never inlined (it would not terminate).
+checkOpt('inline skips a recursive function',
+  'let rec fib = fn n -> if n < 2 then n else fib (n - 1) + fib (n - 2) in (fib 10, fib 11)',
+  { expect: '(55, 89)', noInline: true })
+// A match-bodied function is left shared for the decision-tree pass to own.
+checkOpt('inline skips a match-bodied function',
+  'type Opt a = None | Some a in let unwrap = fn d o -> match o with None -> d | Some x -> x in (unwrap 0 (Some 7), unwrap 9 None, unwrap 1 (Some 3))',
+  { expect: '(7, 9, 3)', noInline: true })
+// A large helper exceeds the size budget and stays a single shared closure.
+checkOpt('inline respects the size budget',
+  'let big = fn x -> let a = x + 1 in let b = a + x in let c = b + a in let d = c + b in let e = d + c in let g = e + d in g + a + b + c + d + e in (big 1, big 2)',
+  { expect: '(52, 84)', noInline: true })
 
 // Aggregate: the optimizer fires somewhere on the gallery, and at least one
 // example's core strictly shrinks (proves real reduction, not a no-op).

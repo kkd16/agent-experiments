@@ -172,6 +172,31 @@ recomputes a pure window `sq n + sq (n+1) + sq (n+2)` as the value of three diff
 the frontier CSE never sees — and GVN shares it once, roughly halving the kernel's VM steps; the
 **Optimizer** tab lists the `gvn` rule and the expression it shared.
 
+### Call-site inlining — the inliner grows up
+
+For its first fourteen versions Aether's inliner copied a function's body only when its binding was
+used **exactly once** — the blunt rule that guarantees code can never blow up, but that leaves the
+commonest shape in real code untouched: a small helper called from several places, or inside a loop,
+keeps paying the closure-application + frame overhead at every call. **Call-site inlining** (Aether
+15.0) lifts that cap for small, **non-recursive** functions. When such a function is used more than
+once and its body fits a node budget (and is not match-bodied — the decision-tree pass owns those), it
+is copied into every **saturated call site** (`f e₁ … eₖ` of at least its arity), while every partial
+application or higher-order **escape** (handing `f` to `map`/`fold` as a value) keeps a single shared
+closure. The rewrite reuses the optimizer's proven machinery instead of re-deriving capture avoidance:
+it marks each saturated call-spine head with a globally fresh placeholder (stopping at any binder that
+re-binds the name), renames the surviving escapes to a fresh binder, then substitutes the lambda for
+the placeholders — and because that substitution freshens any binder on the path that would capture
+one of the lambda's free variables, the inlined copies denote *exactly* what the call did. If an
+escape survives the function keeps one closure; if not, it is fully inlined and **no closure is ever
+built**. The pass is **monotone by construction**: an inlined call (`let x = a in body`) runs strictly
+fewer VM instructions than the real call it replaces, the body runs the same number of times either
+way (only source text is duplicated, never runtime work), and a copy on a branch never taken costs
+nothing — so the harness's *"optimizer never increases VM steps"* gate holds with no speculation gate
+needed. The *"Call-site inlining"* example folds `sq 3 + sq 4 + sq 12` to the literal `169` (so `sq`
+vanishes) and sheds a call per iteration from a hot loop, cutting its VM steps by ~45%; the
+**Optimizer** tab names each inlined function, its call-site count, and whether an escape closure was
+kept.
+
 ### Pattern matching compiled to good decision trees
 
 The naive `match` compiler tests each arm in turn, re-navigating the scrutinee, so two arms that
@@ -275,7 +300,7 @@ source ─▶ lexer ─▶ parser ─▶ HM inference ─▶ elaborate ─▶ op
 | `src/lang/unparse.ts` | core-AST pretty-printer (renders the elaborated dictionaries) |
 | `src/lang/exhaustive.ts` | Maranget's pattern-usefulness algorithm (exhaustiveness + redundancy) |
 | `src/lang/decisiontree.ts` | Maranget's *good decision tree* compiler: a pattern-matrix → single-column-`match` lowering (with join-points + guards) that shares head tests across arms (feeds all three backends) |
-| `src/lang/optimize.ts` | the optimizing middle-end: a fixpoint of const-folding, algebra, β/η, capture-avoiding inlining, dead-binding elimination, known-constructor `match` reduction, field projection & **common-subexpression elimination** over the core AST, then **global value numbering** (CSE across binders) and **decision-tree pattern compilation**, plus an **interprocedural effect-&-totality analysis** that powers them (feeds all three backends) |
+| `src/lang/optimize.ts` | the optimizing middle-end: a fixpoint of const-folding, algebra, β/η, capture-avoiding inlining (single-use **and** size-bounded **call-site inlining** of non-recursive functions), dead-binding elimination, known-constructor `match` reduction, field projection & **common-subexpression elimination** over the core AST, then **global value numbering** (CSE across binders) and **decision-tree pattern compilation**, plus an **interprocedural effect-&-totality analysis** that powers them (feeds all three backends) |
 | `src/lang/bytecode.ts` | opcodes + disassembler |
 | `src/lang/compiler.ts` | AST → bytecode; clox-style upvalues; tail-call detection |
 | `src/lang/vm.ts` | iterative stack VM; closures, currying, tail calls, snapshot trace |

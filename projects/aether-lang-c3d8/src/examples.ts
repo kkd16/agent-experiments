@@ -1093,6 +1093,53 @@ let rec kernel = fn n ->
 
 kernel 30`,
   },
+  {
+    id: 'inline',
+    title: 'Call-site inlining',
+    blurb: 'Open the Optimizer tab: small helpers are copied into each call site, then fold away.',
+    visual: false,
+    code: `// Aether 15.0 — CALL-SITE INLINING: the inliner grows up.
+//
+// Aether's inliner used to copy a function's body only when its binding was used
+// EXACTLY ONCE (so code could never blow up). 15.0 lifts that cap for small,
+// non-recursive functions: each is copied into every SATURATED call site — which
+// deletes the closure-application + call the site paid and exposes the body to
+// const-folding right there — while any partial application or higher-order
+// ESCAPE keeps pointing at a single shared closure.
+//
+// The rewrite strictly lowers VM steps (an inlined call is cheaper than a real
+// one, and a copy on a branch never taken costs nothing at runtime), so it never
+// speculates: the harness's "steps never increase" invariant holds by
+// construction. Because it emits ordinary core, the bytecode VM, the JavaScript
+// backend AND the WebAssembly backend all run the inlined program, and the
+// equivalence checks re-prove the answer never changed.
+//
+// Open the "Optimizer" tab: the rewrite table lists 'inline-fn', an "Inlining"
+// section names each function and its call-site count, and "Measure VM steps"
+// shows the work it saves. Flip "show before" to watch 'lerp'/'sq' disappear.
+
+// Two tiny pure helpers, each used many times.
+let sq   = fn x -> x * x in
+let lerp = fn a b t -> a + (b - a) * t / 100 in
+
+// 'norm' uses 'sq' three times: each call inlines, then the literals fold so the
+// whole function reduces to a single constant. 'sq' itself vanishes — no closure
+// is ever built for it.
+let norm = sq 3 + sq 4 + sq 12 in
+
+// A hot loop. 'lerp' is inlined into the recursive body, so every iteration drops
+// a three-argument call down to plain arithmetic.
+let rec ramp = fn i acc ->
+  if i == 0 then acc
+  else ramp (i - 1) (acc + lerp 0 1000 i) in
+
+// 'twice' both ESCAPES (handed to 'map' as a value) and is called directly: the
+// direct call 'twice 10' inlines while the escape keeps one shared closure, so
+// the optimizer reports it inlined with an escape binding still in place.
+let twice = fn n -> n + n in
+
+(norm, ramp 100 0, map twice [1, 2, 3], twice 10)`,
+  },
 ]
 
 export const DEFAULT_CODE = EXAMPLES[0].code

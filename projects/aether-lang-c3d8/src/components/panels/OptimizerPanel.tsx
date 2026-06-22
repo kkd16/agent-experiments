@@ -18,6 +18,7 @@ const PASS_LABELS: Record<string, string> = {
   'beta-float': 'let-floating through application (curried β)',
   eta: 'η-contraction (fn x -> f x ⇒ f)',
   inline: 'inlining a single-use value binding',
+  'inline-fn': 'call-site inlining (copy a small non-recursive function into each saturated call)',
   'copy-prop': 'copy propagation (let x = y)',
   'dead-let': 'dead binding elimination (pure, unused let)',
   'dead-let-seq': 'unused effect kept as a sequence',
@@ -275,6 +276,35 @@ export default function OptimizerPanel({ code }: Props) {
                   <td className="opt-pass-count">{h.sites}×</td>
                   <td className="opt-pass-desc">
                     shared <code>{h.expr}</code>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {stats.inlinedFns.length > 0 && (
+        <div className="opt-passes">
+          <h4>Call-site inlining (Aether 15.0)</h4>
+          <p className="panel-note" style={{ marginTop: 0 }}>
+            Where the single-use inliner only copies a function used exactly once, this pass copies a
+            small, non-recursive function into <em>every saturated call site</em> — deleting the
+            closure-application the site paid and exposing its body to const-folding — while any
+            partial application or higher-order <em>escape</em> keeps a single shared closure. An
+            inlined call is cheaper than a real one and an un-taken copy costs nothing at runtime, so
+            the VM step count can only fall:
+          </p>
+          <table className="opt-table">
+            <tbody>
+              {stats.inlinedFns.map((f, i) => (
+                <tr key={i}>
+                  <td className="opt-pass-count">{f.sites}×</td>
+                  <td className="opt-pass-name">
+                    <code>{f.name}</code>
+                  </td>
+                  <td className="opt-pass-desc">
+                    {f.size}-node body{f.escaped ? ', escape closure kept' : ', fully inlined'}
                   </td>
                 </tr>
               ))}

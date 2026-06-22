@@ -77,12 +77,78 @@ compile the same optimized core — and the equivalence checks prove it preserve
       hoisting it into one shared `let` at the dominating node when it is guaranteed-evaluated ≥ 2
       times (so VM steps only fall); closes the oldest deferred optimizer item — "CSE across a `let`"
       (Aether 14.0)
+- [x] **Call-site inlining of non-recursive functions** — lifts the inliner's single-use cap: a
+      small, non-recursive function is copied into every *saturated call site* (deleting the call /
+      closure overhead and exposing its body to const-folding) while partial applications and
+      higher-order *escapes* keep one shared closure; monotone by construction, so the harness's
+      "never increase VM steps" gate proves it is never worse (Aether 15.0)
 - [x] Optimizer pass: constant folding, dead-branch elimination, short-circuit simplification
 - [x] A full **optimizing middle-end** over the core (β/η, inlining, dead code, known-`match`,
       field projection) feeding all three backends — abstraction melts away (Aether 10.0)
 - [x] Records with row polymorphism (`{ x = 1 }`, `r.x`, inferred `{ x: a | ρ } -> a`)
 - [x] Functional record update (`{ r | x = 5 }`, type-safe, row-polymorphic)
 - [x] A REPL mode that keeps top-level bindings between runs
+
+### Aether 15.0 — call-site inlining: the inliner grows up (planned + shipping this session)
+
+Aether's optimizing middle-end has, since 10.0, inlined a `let`-bound function — but only when its
+binding is used **exactly once**. That cap is the safe, blunt rule that guarantees code can never blow
+up: copy a body that is referenced twice and you risk doubling it at every level. The cost is that the
+single most common shape in real functional code — a small helper (`sq`, `lerp`, `dist`, a projection)
+called from several places, or from inside a loop — is never inlined, so every call keeps paying the
+closure-application + frame-push + return overhead, and the body never gets to fold against the
+literals at the site. 15.0 lifts the cap the way a real compiler does: **size-bounded, call-site
+inlining of non-recursive functions.**
+
+The pass, in `reduceLet`, fires on a non-recursive `let f = λ… in body` when `f` is used more than
+once, its body is at most `INLINE_SIZE_LIMIT` core nodes, and it is *not* match-bodied (those are left
+for the decision-tree pass, 12.0, to own and share). It then copies `f` into each **saturated call
+site** — an application spine `f e₁ … eₖ` of at least `f`'s arity — while every *other* occurrence (a
+partial application like `add 1`, or an *escape* where `f` is handed to a higher-order function as a
+value) keeps referring to a single retained closure. The three-step rewrite reuses the module's
+already-proven machinery rather than hand-rolling capture avoidance:
+
+1. **`markHeads`** rewrites each saturated call-spine head `f` to a globally fresh placeholder
+   `inl$…`, leaving every non-head occurrence of `f` in place and stopping at any binder that
+   re-binds `f` (so an inner shadow is never touched);
+2. **`rename`** redirects the surviving (escape / partial) `f` occurrences to a fresh `alt`; and
+3. **`subst`** replaces the placeholders with the lambda — and because `subst` already freshens any
+   binder on the path that would capture one of the lambda's free variables, the inlined copies
+   denote *exactly* what the call denoted (the harness's `inline avoids variable capture` case —
+   `let n=100 in let f = fn x -> x+n in let n=999 in f 1` — proves the definition-site `n` wins).
+
+If an escape survives, the lambda is re-bound to `alt` (one closure for all the escapes); if not, the
+function is **fully inlined and no closure is ever built**. The placeholder-then-`subst` detour also
+means the existing β-reduction (`(λx.b) a ⇒ let x = a in b`) and const-folding finish the job for
+free: `sq 3 + sq 4 + sq 12` inlines to three immediately-applied lambdas, β-reduces to lets, folds to
+`9 + 16 + 144`, and collapses to the literal `169` — `sq` vanishes entirely.
+
+**The load-bearing property is monotonicity.** Every other middle-end win Aether ships is gated to
+*provably* never raise the VM step count (CSE/GVN require ≥ 2 *guaranteed* evaluations; DCE only drops
+*pure* work), and the harness enforces `steps(optimized) ≤ steps(unoptimized)` on every gallery
+example and every targeted case. Call-site inlining keeps that contract by construction: an inlined
+call (`let x = a in B`) executes strictly fewer instructions than the real call it replaces (no frame
+push/pop, no closure application), the body `B` runs the *same number of times* either way (so no work
+is duplicated at runtime — only source text is), and a copy that lands on a branch never taken costs
+nothing. The one closure that *was* built for `f` is either still built once (an escape remains) or
+never built at all (fully inlined), so even the allocation count only falls. Two design choices keep
+the pass from fighting its neighbours: match-bodied functions are skipped (the decision-tree pass
+compiles a `match` once and shares its arms via join-points — inlining would re-duplicate them), and
+the inliner is switched **off** during the post-decision-tree cleanup fixpoint (that phase is reserved
+for copy-propagating the tree's own bindings).
+
+Because it emits ordinary core, the bytecode VM, the JavaScript backend and the WebAssembly backend
+all compile the inlined program unchanged, and the byte-for-byte equivalence checks re-prove the
+answer never changed. The **Optimizer panel** gained an "inline-fn" rewrite row and a "Call-site
+inlining" section naming each inlined function, its call-site count, its body size, and whether an
+escape closure was kept. A new `inline` gallery example showcases it: a numeric kernel whose helpers
+fold away and whose hot loop sheds a call per iteration cuts VM steps **3727 → 2039 (−45%)**.
+Verification: the harness grew 367 → **386** — the new example auto-flows through the JS / WASM /
+GC-stress / disassembler / optimizer batteries (so inlined ≡ naive on result + output + effects +
+never-increased steps across all three backends), plus a focused inlining battery (fires on the
+multi-use cases, cuts real steps, keeps an escape binding when the function also escapes, avoids
+capture, respects the size budget, and declines on recursive / match-bodied functions), plus a 5-case
+in-app self-test group. Full CI gate (scope + conformance + lint + tsc + build) green.
 
 ### Aether 14.0 — global value numbering: common-subexpression elimination across binders (planned + shipping this session)
 
@@ -875,6 +941,32 @@ Deferred (future, Aether 10.x+):
       enable e.g. specialising `show`/`compare` to a known monomorphic type, or unboxing.
 - [ ] **A worst-case-cost / fuel view** in the panel, and per-pass before/after diffs.
 
+Deferred (future, building on Aether 15.0 call-site inlining):
+
+- [ ] **Recursion-aware inlining (one unrolling)** — the inliner skips recursive functions outright.
+      A single controlled unroll of a self-recursive loop (peel one iteration into the call site, like
+      GHC's loopification) would expose the first step to const-folding while staying terminating; gate
+      it on the body fitting the size budget so it cannot blow up.
+- [ ] **Static argument transformation** (Santos / GHC's SAT) — a recursive function that threads a
+      parameter *unchanged* through every self-call (the classic `fold`/`loop` function argument) can
+      lift that argument out into an enclosing binding and drop it from the recursive worker, shedding
+      one application per iteration. Subtle here: it is *not* unconditionally step-monotone (a loop run
+      ~0 times pays the wrapper for no gain), so it needs a firing gate the harness's never-increase
+      invariant will accept — likely "only when the function is provably entered with ≥ 1 recursion".
+- [ ] **Call-pattern specialisation** (Peyton Jones, *SpecConstr*, ICFP 2007) — specialise a recursive
+      function for the constructor shape it is repeatedly called with (e.g. a loop always re-matching a
+      `Cons`), removing the redundant scrutiny per iteration; pairs naturally with the decision-tree
+      pass and the 15.0 inliner.
+- [ ] **Worker/wrapper for single-constructor arguments** — a function that immediately destructures a
+      tuple/record argument (`fn p -> match p with (a, b) -> …`) can be split into a worker taking the
+      fields and a wrapper that re-boxes, so a caller passing a literal `(x, y)` skips building the
+      tuple; the wrapper inlines (15.0) and the box vanishes.
+- [ ] **An inlining-budget / cost view in the Optimizer panel** — show, per candidate function, its
+      body cost, its call-site count, and the size delta inlining would cost, so the size-budget
+      decision is visible (a first cut of the long-deferred "worst-case-cost / fuel view").
+- [ ] **Dead-parameter elimination** — drop a parameter never used in a function's body and at all of
+      its (now-known, post-inlining) saturated call sites, shrinking both the lambda and every call.
+
 ### Aether 11.0 — common-subexpression elimination + a from-scratch effect-&-totality analysis (planned + shipping this session)
 
 Aether 10.0 made *single-use* abstraction melt: a dictionary used once is inlined, its method
@@ -1355,3 +1447,43 @@ Deferred (future, Aether 11.x+):
   steps, shares the right number of sites, and — the safety half — declines to speculate across `if`-arms,
   declines when only one evaluation is guaranteed, and never moves an effect; plus a 3-case in-app
   self-test group. Full CI gate (scope + conformance + lint + tsc + build) green.
+- 2026-06-22 (claude): **Aether 15.0 — call-site inlining: the inliner grows up.** Since 10.0 the
+  optimizing middle-end has inlined a `let`-bound function only when its binding is used *exactly once*
+  — the blunt rule that keeps code from blowing up, at the price of never inlining the most common
+  shape in real code: a small helper (`sq`, `lerp`, a projection) called from several places or inside
+  a loop, which keeps paying the closure-application + frame overhead per call and never folds against
+  the literals at the site. 15.0 lifts the cap with **size-bounded, call-site inlining of non-recursive
+  functions** in `reduceLet`. It fires on a non-recursive `let f = λ… in body` where `f` is used more
+  than once, its body is ≤ `INLINE_SIZE_LIMIT` (20) core nodes, and it is not match-bodied (those are
+  left for the 12.0 decision-tree pass to own and share), and copies `f` into each **saturated call
+  site** (`f e₁ … eₖ` of at least `f`'s arity) while every partial application or higher-order *escape*
+  keeps one shared closure. The rewrite reuses the module's proven capture-avoiding machinery instead
+  of hand-rolling it: `markHeads` rewrites each saturated call-spine head to a globally fresh
+  placeholder (stopping at any binder that re-binds `f`), `rename` redirects the surviving escape
+  occurrences to a fresh `alt`, and `subst` replaces the placeholders with the lambda — and because
+  `subst` already freshens any binder on the path that would capture one of the lambda's free
+  variables, the inlined copies denote exactly what the call did (proved by the `let n=100 in let f =
+  fn x -> x+n in let n=999 in f 1` capture case → the definition-site `n=100` wins). If an escape
+  survives, the lambda is re-bound to `alt`; if not, the function is fully inlined and **no closure is
+  ever built**. The placeholder-then-`subst` detour also lets the existing β-reduction + const-folding
+  finish the job: `sq 3 + sq 4 + sq 12` inlines, β-reduces to lets, folds to `9 + 16 + 144`, and
+  collapses to `169` with `sq` gone entirely. The load-bearing property is **monotonicity**: an inlined
+  call runs strictly fewer VM instructions than the real call it replaces, the body runs the *same
+  number of times* either way (only source text is duplicated, never runtime work), and a copy on an
+  un-taken branch costs nothing — so the harness's `steps(optimized) ≤ steps(unoptimized)` invariant
+  holds by construction, with no speculation gate needed. Two choices keep the pass from fighting its
+  neighbours: match-bodied functions are skipped (the decision-tree pass shares their arms via
+  join-points — inlining would re-duplicate them), and the inliner is switched off during the
+  post-decision-tree cleanup fixpoint (reserved for copy-propagating the tree's own bindings). Because
+  it emits ordinary core, the VM, the JavaScript backend and the WebAssembly backend all compile the
+  inlined program unchanged, and the byte-for-byte equivalence checks re-prove the answer never
+  changed. The **Optimizer panel** gained an `inline-fn` rewrite row and a "Call-site inlining" section
+  naming each inlined function, its site count, body size, and whether an escape closure was kept; a
+  new `inline` gallery example (a numeric kernel whose helpers fold away and whose hot loop sheds a call
+  per iteration) cuts VM steps **3727 → 2039 (−45%)**. Verification: the harness grew 367 → **386** —
+  the new example auto-flows through the JS / WASM / GC-stress / disassembler / optimizer batteries (so
+  inlined ≡ naive on result + output + effects + never-increased steps across all three backends), plus
+  a focused inlining battery (fires on the multi-use cases, cuts real steps, keeps an escape binding
+  when the function also escapes, avoids capture, respects the size budget, and declines on recursive /
+  match-bodied functions), plus a 5-case in-app self-test group. Full CI gate (scope + conformance +
+  lint + tsc + build) green.
