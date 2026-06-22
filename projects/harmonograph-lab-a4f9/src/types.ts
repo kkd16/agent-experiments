@@ -37,6 +37,7 @@ export type CurveKind =
   | 'superformula'
   | 'attractor'
   | 'attractor3d'
+  | 'harmonograph3d'
   | 'lsystem'
 
 // Hypotrochoid / epitrochoid — a pen offset `d` on a circle of radius `r`
@@ -140,6 +141,11 @@ export type Flow3DKind =
   | 'dadras'
   | 'sprott'
   | 'lorenz84'
+  | 'sprottb'
+  | 'nosehoover'
+  | 'rikitake'
+  | 'chenlee'
+  | 'burkeshaw'
 
 export interface Attractor3DParams {
   type: Flow3DKind
@@ -154,7 +160,35 @@ export interface Attractor3DParams {
   dist: number // camera distance (in normalised radii)
   fov: number // field of view (radians)
   depthCue: boolean // depth-weighted intensity + depth→palette colour (density)
+  fog?: number // 0..1 exponential depth fog: far filaments dissolve toward the void
   spin: number // auto-rotation rate for Live / looping capture
+}
+
+// Three-dimensional harmonograph — the spatial pendulum. The historical
+// harmonograph swings two pendulums in a plane; lift it into space and each of
+// the three axes is driven by its own pair of damped sinusoids, so the pen
+// traces a knotted 3D Lissajous figure. It is *not* a chaotic flow: it is an
+// exact closed-form curve (a sum of decaying sines), sampled smoothly and then
+// flown through the very same orbit camera as the strange-attractor flows, so it
+// inherits drag-to-orbit, the depth cue, stereo, and the seamless looping export
+// for free. Each axis pendulum reuses the planar `Pendulum` shape (freq / phase
+// / amp / damp); the camera block mirrors `Attractor3DParams`.
+export interface Harmonograph3DParams {
+  x1: Pendulum
+  x2: Pendulum
+  y1: Pendulum
+  y2: Pendulum
+  z1: Pendulum
+  z2: Pendulum
+  duration: number // total "time" traced, in radians of the base oscillation
+  steps: number // sampled points along the space curve
+  yaw: number
+  pitch: number
+  dist: number
+  fov: number
+  depthCue: boolean
+  fog?: number
+  spin: number
 }
 
 // L-system (Lindenmayer) fractal curve. `system` selects one of the classic
@@ -224,6 +258,7 @@ export interface Layer {
   sf?: SuperformulaParams
   attractor?: AttractorParams
   a3d?: Attractor3DParams
+  h3d?: Harmonograph3DParams
   lsystem?: LSystemParams
   drift?: LayerDrift
   style: LayerStyle
@@ -231,10 +266,18 @@ export interface Layer {
 
 export type BackgroundMode = 'solid' | 'linear' | 'radial'
 
+// Stereoscopic 3D output. When any 3D layer is present the scene can be rendered
+// from two slightly-rotated eye viewpoints and composited for genuine depth:
+// `anaglyph` (red-cyan glasses), `sbs` (parallel side-by-side for cardboard/VR
+// viewers) or `crosseye` (side-by-side swapped for free cross-eyed viewing).
+export type StereoMode = 'off' | 'anaglyph' | 'sbs' | 'crosseye'
+
 export interface Project {
   background: string
   bg2?: string // second stop for gradient backgrounds
   bgMode?: BackgroundMode // defaults to 'solid'
   vignette: number // 0..1 darkening at the frame edges
+  stereo?: StereoMode // defaults to 'off' (only affects scenes with a 3D layer)
+  stereoBaseline?: number // eye separation as a yaw offset (radians); defaults to 0.08
   layers: Layer[]
 }

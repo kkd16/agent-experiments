@@ -3,12 +3,15 @@
 // that family of curve. The harmonograph editor keeps the original pendulum +
 // rotary controls; the rest drive the new parametric sources in `curves.ts`.
 
+import type { ReactNode } from 'react'
 import type {
   Attractor3DParams,
   AttractorParams,
+  Harmonograph3DParams,
   Layer,
   LissajousParams,
   LSystemParams,
+  Pendulum,
   RoseParams,
   SpirographParams,
   SuperformulaParams,
@@ -454,9 +457,11 @@ export function CurveAttractor({
 export function CurveAttractor3D({
   a3d,
   update,
+  onResetCamera,
 }: {
   a3d: Attractor3DParams
   update: (patch: Partial<Attractor3DParams>) => void
+  onResetCamera?: () => void
 }) {
   const r = ranges3D(a3d.type)
   return (
@@ -498,25 +503,122 @@ export function CurveAttractor3D({
         )}
       </section>
 
+      <OrbitCameraControls cam={a3d} update={update} onResetCamera={onResetCamera}>
+        {FLOW3D_NOTES[a3d.type]} A real 3-D flow, RK4-integrated and projected
+        through an orbit camera — <strong>drag to rotate, scroll/pinch to zoom</strong>.
+        Switch to the <strong>Density</strong> render style (Color tab) for a
+        luminous volumetric nebula; <em>Live</em> (🌀) orbits it and the looping
+        GIF/WebM exporter captures a seamless full revolution.
+      </OrbitCameraControls>
+    </>
+  )
+}
+
+// Shared orbit-camera console for both 3D families (strange-attractor flows and
+// the spatial harmonograph). They carry the identical camera block, so the
+// yaw/pitch/distance/fov/spin/depth-cue/fog sliders live in one place.
+interface CameraBlock {
+  yaw: number
+  pitch: number
+  dist: number
+  fov: number
+  spin: number
+  depthCue: boolean
+  fog?: number
+}
+function OrbitCameraControls({
+  cam,
+  update,
+  onResetCamera,
+  children,
+}: {
+  cam: CameraBlock
+  update: (patch: Partial<CameraBlock>) => void
+  onResetCamera?: () => void
+  children: ReactNode
+}) {
+  return (
+    <section className="group">
+      <div className="group-title">
+        Orbit camera
+        {onResetCamera && (
+          <button type="button" className="mini-btn" onClick={onResetCamera} title="Reset the camera">
+            reset
+          </button>
+        )}
+      </div>
+      <Slider label="Yaw" value={cam.yaw} min={0} max={TWO_PI} step={0.01} onChange={(v) => update({ yaw: v })} fmt={deg} />
+      <Slider label="Pitch" value={cam.pitch} min={-1.4} max={1.4} step={0.01} onChange={(v) => update({ pitch: v })} fmt={deg} />
+      <Slider label="Distance" value={cam.dist} min={1.7} max={6} step={0.05} onChange={(v) => update({ dist: v })} fmt={(v) => v.toFixed(2)} />
+      <Slider label="Field of view" value={cam.fov} min={0.4} max={2.2} step={0.01} onChange={(v) => update({ fov: v })} fmt={deg} />
+      <Slider label="Auto-spin" value={cam.spin} min={0} max={2} step={0.02} onChange={(v) => update({ spin: v })} fmt={(v) => (v <= 0 ? 'still' : `${v.toFixed(2)}×`)} />
+      <Slider label="Depth fog" value={cam.fog ?? 0} min={0} max={1} step={0.01} onChange={(v) => update({ fog: v })} fmt={(v) => (v <= 0 ? 'off' : `${(v * 100).toFixed(0)}%`)} />
+      <label className="check">
+        <input type="checkbox" checked={cam.depthCue} onChange={(e) => update({ depthCue: e.target.checked })} />
+        Depth cue (colour &amp; brighten by depth)
+      </label>
+      <p className="hint">{children}</p>
+    </section>
+  )
+}
+
+const H3D_AXES = [
+  { key: 'x', a: 'x1', b: 'x2', label: 'X' },
+  { key: 'y', a: 'y1', b: 'y2', label: 'Y' },
+  { key: 'z', a: 'z1', b: 'z2', label: 'Z' },
+] as const
+
+export function CurveHarmonograph3D({
+  h3d,
+  update,
+  onResetCamera,
+}: {
+  h3d: Harmonograph3DParams
+  update: (patch: Partial<Harmonograph3DParams>) => void
+  onResetCamera?: () => void
+}) {
+  const setPend = (
+    field: 'x1' | 'x2' | 'y1' | 'y2' | 'z1' | 'z2',
+    k: keyof Pendulum,
+    v: number,
+  ) => update({ [field]: { ...h3d[field], [k]: v } } as Partial<Harmonograph3DParams>)
+  return (
+    <>
       <section className="group">
-        <div className="group-title">Orbit camera</div>
-        <Slider label="Yaw" value={a3d.yaw} min={0} max={TWO_PI} step={0.01} onChange={(v) => update({ yaw: v })} fmt={deg} />
-        <Slider label="Pitch" value={a3d.pitch} min={-1.4} max={1.4} step={0.01} onChange={(v) => update({ pitch: v })} fmt={deg} />
-        <Slider label="Distance" value={a3d.dist} min={1.7} max={6} step={0.05} onChange={(v) => update({ dist: v })} fmt={(v) => v.toFixed(2)} />
-        <Slider label="Field of view" value={a3d.fov} min={0.4} max={2.2} step={0.01} onChange={(v) => update({ fov: v })} fmt={deg} />
-        <Slider label="Auto-spin" value={a3d.spin} min={0} max={2} step={0.02} onChange={(v) => update({ spin: v })} fmt={(v) => (v <= 0 ? 'still' : `${v.toFixed(2)}×`)} />
-        <label className="check">
-          <input type="checkbox" checked={a3d.depthCue} onChange={(e) => update({ depthCue: e.target.checked })} />
-          Depth cue (colour &amp; brighten by depth)
-        </label>
-        <p className="hint">
-          {FLOW3D_NOTES[a3d.type]} A real 3-D flow, RK4-integrated and projected
-          through an orbit camera — <strong>drag the canvas to rotate it</strong>.
-          Switch to the <strong>Density</strong> render style (Color tab) for a
-          luminous volumetric nebula; <em>Live</em> (🌀) orbits it and the looping
-          GIF/WebM exporter captures a seamless full revolution.
-        </p>
+        <div className="group-title">3D harmonograph (spatial pendulum)</div>
+        <Slider
+          label="Trace length"
+          value={h3d.duration}
+          min={60}
+          max={420}
+          step={1}
+          onChange={(v) => update({ duration: v })}
+          fmt={(v) => v.toFixed(0)}
+        />
       </section>
+      {H3D_AXES.map(({ key, a, b, label }) => (
+        <section className="group" key={key}>
+          <div className="group-title">
+            Axis <span className="tag">{label}</span>
+          </div>
+          {([a, b] as const).map((field, idx) => (
+            <div key={field}>
+              <div className="seg-label">{idx === 0 ? 'Pendulum 1' : 'Pendulum 2'}</div>
+              <Slider label="Frequency" value={h3d[field].freq} min={0.5} max={8} step={0.001} onChange={(v) => setPend(field, 'freq', v)} />
+              <Slider label="Phase" value={h3d[field].phase} min={0} max={TWO_PI} step={0.01} onChange={(v) => setPend(field, 'phase', v)} fmt={deg} />
+              <Slider label="Amplitude" value={h3d[field].amp} min={0} max={1.2} step={0.01} onChange={(v) => setPend(field, 'amp', v)} />
+              <Slider label="Damping" value={h3d[field].damp} min={0} max={0.02} step={0.0002} onChange={(v) => setPend(field, 'damp', v)} fmt={(v) => v.toFixed(4)} />
+            </div>
+          ))}
+        </section>
+      ))}
+      <OrbitCameraControls cam={h3d} update={update} onResetCamera={onResetCamera}>
+        A spatial harmonograph: three axes, each driven by two damped pendulums,
+        trace a knotted 3-D Lissajous figure flown through the same orbit camera —{' '}
+        <strong>drag to rotate, scroll/pinch to zoom</strong>. Switch to{' '}
+        <strong>Density</strong> (Color tab) for a glowing volumetric ribbon;
+        <em>Live</em> (🌀) orbits it and the looping exporter captures a seamless turn.
+      </OrbitCameraControls>
     </>
   )
 }

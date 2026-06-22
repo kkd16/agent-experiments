@@ -5,8 +5,9 @@
 // `trace` (0..1) reveals the curve progressively for the animated drawing pass.
 
 import type { LayerData, Point } from './harmonograph'
-import type { ColorMode, Layer, LayerStyle, Project } from './types'
+import type { ColorMode, Layer, LayerStyle, Project, StereoMode } from './types'
 import { renderDensity } from './density'
+import { computeLayerData, is3dKind, layerCamera, patchLayerCamera } from './curves'
 
 // Field the base line widths are authored against; widths scale with render size.
 const FIELD = 720
@@ -278,6 +279,35 @@ function backgroundFill(
   return project.background
 }
 
+// Draw the full scene (background + every visible layer + vignette) with a given
+// shared transform. Extracted so the stereo path can render two eyes through it.
+function drawSceneInto(
+  ctx: CanvasRenderingContext2D,
+  project: Project,
+  datas: Map<string, LayerData>,
+  size: number,
+  tf: Transform,
+  trace: number,
+  dq: number,
+) {
+  ctx.setTransform(1, 0, 0, 1, 0, 0)
+  ctx.globalCompositeOperation = 'source-over'
+  ctx.globalAlpha = 1
+  ctx.clearRect(0, 0, size, size)
+  ctx.fillStyle = backgroundFill(ctx, project, size)
+  ctx.fillRect(0, 0, size, size)
+  for (const layer of project.layers) {
+    if (!layer.visible) continue
+    const d = datas.get(layer.id)
+    if (d) drawLayer(ctx, layer, d, tf, size, trace, dq)
+  }
+  drawVignette(ctx, size, project.vignette)
+}
+
+function hasVisible3d(project: Project): boolean {
+  return project.layers.some((l) => l.visible && is3dKind(l.kind))
+}
+
 export function drawProject(
   ctx: CanvasRenderingContext2D,
   project: Project,
@@ -286,21 +316,122 @@ export function drawProject(
   opts: RenderOptions = {},
 ) {
   const trace = opts.trace ?? 1
+  const dq = opts.densityQuality ?? 1
+  // The transform is shared across both eyes so the stereo pair stays registered,
+  // and is always measured from the base (centre-eye) datas.
+  const tf = opts.transform ?? computeTransform(project.layers, datas, size)
+
+  const stereo = project.stereo ?? 'off'
+  if (stereo !== 'off' && hasVisible3d(project)) {
+    if (drawStereo(ctx, project, datas, size, tf, trace, dq, stereo)) return
+    // fall through to mono if the offscreen buffers couldn't be created (sandbox)
+  }
+  drawSceneInto(ctx, project, datas, size, tf, trace, dq)
+}
+
+// Per-eye datas: re-project every 3D *line* layer from the eye-offset camera so
+// it shows the right parallax (density 3D layers read their camera from the
+// per-eye project clone instead — see `eyeProject`). 2D layers are shared.
+function eyeDatas(
+  project: Project,
+  datas: Map<string, LayerData>,
+  eyeYaw: number,
+): Map<string, LayerData> {
+  if (eyeYaw === 0) return datas
+  const m = new Map(datas)
+  for (const layer of project.layers) {
+    if (!layer.visible || !is3dKind(layer.kind)) continue
+    if (layer.style.renderStyle === 'density') continue // density reads the clone's camera
+    const cam = layerCamera(layer)
+    if (!cam) continue
+    m.set(layer.id, computeLayerData(patchLayerCamera(layer, { yaw: cam.yaw + eyeYaw })))
+  }
+  return m
+}
+
+// Per-eye project clone: 3D layers get their camera yaw nudged so density layers
+// (which read the camera straight off the layer) splat from the eye viewpoint.
+function eyeProject(project: Project, eyeYaw: number): Project {
+  if (eyeYaw === 0) return project
+  return {
+    ...project,
+    layers: project.layers.map((l) => {
+      if (!is3dKind(l.kind)) return l
+      const cam = layerCamera(l)
+      return cam ? patchLayerCamera(l, { yaw: cam.yaw + eyeYaw }) : l
+    }),
+  }
+}
+
+// Render the scene twice (left / right eye) into offscreen buffers and composite
+// them: a red-cyan anaglyph, or a side-by-side pair (parallel or cross-eyed).
+// Returns false if the offscreen buffers couldn't be created so the caller can
+// gracefully fall back to a mono render. Both eyes share `tf`, so they register.
+function drawStereo(
+  ctx: CanvasRenderingContext2D,
+  project: Project,
+  datas: Map<string, LayerData>,
+  size: number,
+  tf: Transform,
+  trace: number,
+  dq: number,
+  mode: StereoMode,
+): boolean {
+  const baseline = project.stereoBaseline ?? 0.08
+  const half = baseline / 2
+  let left: HTMLCanvasElement
+  let right: HTMLCanvasElement
+  try {
+    left = document.createElement('canvas')
+    right = document.createElement('canvas')
+  } catch {
+    return false
+  }
+  left.width = left.height = size
+  right.width = right.height = size
+  const lc = left.getContext('2d')
+  const rc = right.getContext('2d')
+  if (!lc || !rc) return false
+
+  drawSceneInto(lc, eyeProject(project, -half), eyeDatas(project, datas, -half), size, tf, trace, dq)
+  drawSceneInto(rc, eyeProject(project, +half), eyeDatas(project, datas, +half), size, tf, trace, dq)
+
   ctx.setTransform(1, 0, 0, 1, 0, 0)
   ctx.globalCompositeOperation = 'source-over'
   ctx.globalAlpha = 1
   ctx.clearRect(0, 0, size, size)
-  ctx.fillStyle = backgroundFill(ctx, project, size)
-  ctx.fillRect(0, 0, size, size)
 
-  const tf = opts.transform ?? computeTransform(project.layers, datas, size)
-  const dq = opts.densityQuality ?? 1
-  for (const layer of project.layers) {
-    if (!layer.visible) continue
-    const d = datas.get(layer.id)
-    if (d) drawLayer(ctx, layer, d, tf, size, trace, dq)
+  if (mode === 'anaglyph') {
+    // Colour anaglyph: red channel from the left eye, green+blue from the right.
+    let lImg: ImageData
+    let rImg: ImageData
+    try {
+      lImg = lc.getImageData(0, 0, size, size)
+      rImg = rc.getImageData(0, 0, size, size)
+    } catch {
+      return false
+    }
+    const a = lImg.data
+    const b = rImg.data
+    for (let i = 0; i < a.length; i += 4) {
+      // a[i] (left red) stays; pull green/blue from the right eye.
+      a[i + 1] = b[i + 1]
+      a[i + 2] = b[i + 2]
+      a[i + 3] = 255
+    }
+    ctx.putImageData(lImg, 0, 0)
+    return true
   }
-  drawVignette(ctx, size, project.vignette)
+
+  // Side-by-side: two half-width eyes. `crosseye` swaps them for free-viewing.
+  const first = mode === 'crosseye' ? right : left
+  const second = mode === 'crosseye' ? left : right
+  ctx.fillStyle = project.background
+  ctx.fillRect(0, 0, size, size)
+  ctx.imageSmoothingEnabled = true
+  ctx.drawImage(first, 0, 0, size, size, 0, 0, size / 2, size)
+  ctx.drawImage(second, 0, 0, size, size, size / 2, 0, size / 2, size)
+  return true
 }
 
 // ---- SVG export -----------------------------------------------------------

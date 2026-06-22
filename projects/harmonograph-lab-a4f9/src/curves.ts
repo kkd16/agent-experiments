@@ -17,7 +17,12 @@ import {
   randomLSystem,
   sampleLSystemFull,
 } from './lsystem'
-import { default3D, random3D, sample3DPolyline } from './attractors3d'
+import { default3D, random3D, sample3DPolyline, type CameraView } from './attractors3d'
+import {
+  default3DHarmonograph,
+  random3DHarmonograph,
+  sampleH3DPolyline,
+} from './harmonograph3d'
 import type {
   AttractorKind,
   AttractorParams,
@@ -42,8 +47,46 @@ export const CURVE_KINDS: { value: CurveKind; label: string }[] = [
   { value: 'superformula', label: 'Superformula' },
   { value: 'attractor', label: 'Attractor' },
   { value: 'attractor3d', label: '3D Attractor' },
+  { value: 'harmonograph3d', label: '3D Harmonograph' },
   { value: 'lsystem', label: 'L-system' },
 ]
+
+// ---- 3D camera helpers ----------------------------------------------------
+// Two curve families live in 3-space (the strange-attractor flows and the
+// spatial harmonograph) and share one orbit camera. These helpers let the app,
+// the renderer and the density splatter treat "the 3D layer's camera"
+// uniformly — drag-to-orbit, the scroll/pinch dolly, Live spin and stereoscopy
+// all go through them without caring which 3D family they're driving.
+
+export function is3dKind(kind: CurveKind): boolean {
+  return kind === 'attractor3d' || kind === 'harmonograph3d'
+}
+
+// The full camera block of a 3D layer (yaw/pitch/dist/fov + spin/depthCue/fog),
+// or null for a 2D layer. Returns the live source object's camera fields.
+export interface FullCamera extends CameraView {
+  spin: number
+  depthCue: boolean
+  fog?: number
+}
+
+export function layerCamera(layer: Layer): FullCamera | null {
+  if (layer.kind === 'attractor3d') return layer.a3d ?? default3D()
+  if (layer.kind === 'harmonograph3d') return layer.h3d ?? default3DHarmonograph()
+  return null
+}
+
+// Return a new layer with the camera fields patched onto whichever 3D source it
+// carries (a no-op for 2D layers).
+export function patchLayerCamera(layer: Layer, patch: Partial<FullCamera>): Layer {
+  if (layer.kind === 'attractor3d') {
+    return { ...layer, a3d: { ...(layer.a3d ?? default3D()), ...patch } }
+  }
+  if (layer.kind === 'harmonograph3d') {
+    return { ...layer, h3d: { ...(layer.h3d ?? default3DHarmonograph()), ...patch } }
+  }
+  return layer
+}
 
 // ---- spirograph (hypotrochoid / epitrochoid) ------------------------------
 
@@ -445,6 +488,8 @@ export function sourceParams(layer: Layer): object {
       return (layer.attractor ??= defaultAttractor())
     case 'attractor3d':
       return (layer.a3d ??= default3D())
+    case 'harmonograph3d':
+      return (layer.h3d ??= default3DHarmonograph())
     case 'lsystem':
       return (layer.lsystem ??= defaultLSystem())
     case 'harmonograph':
@@ -467,6 +512,8 @@ export function sampleLayer(layer: Layer): SampledCurve {
       return { points: sampleAttractor(layer.attractor ?? defaultAttractor()) }
     case 'attractor3d':
       return { points: sample3DPolyline(layer.a3d ?? default3D()) }
+    case 'harmonograph3d':
+      return { points: sampleH3DPolyline(layer.h3d ?? default3DHarmonograph()) }
     case 'lsystem':
       // L-systems may branch (plants/trees), so this carries pen-up `breaks`.
       return sampleLSystemFull(layer.lsystem ?? defaultLSystem())
@@ -522,6 +569,15 @@ export function breatheLayer(layer: Layer, t: number): Layer {
       return {
         ...layer,
         a3d: { ...s, yaw: s.yaw + a * s.spin, pitch: s.pitch + 0.12 * Math.sin(a * 0.31) },
+      }
+    }
+    case 'harmonograph3d': {
+      // Same as the flows: orbit the camera (geometry is cached by curve shape,
+      // so only the cheap re-projection runs each frame).
+      const s = layer.h3d ?? default3DHarmonograph()
+      return {
+        ...layer,
+        h3d: { ...s, yaw: s.yaw + a * s.spin, pitch: s.pitch + 0.12 * Math.sin(a * 0.31) },
       }
     }
     case 'lsystem': {
@@ -587,6 +643,11 @@ export function loopLayer(layer: Layer, phase: number): Layer {
       const s = layer.a3d ?? default3D()
       return { ...layer, a3d: { ...s, yaw: s.yaw + phase } }
     }
+    case 'harmonograph3d': {
+      // A full revolution per loop — the orbiting camera returns byte-for-byte.
+      const s = layer.h3d ?? default3DHarmonograph()
+      return { ...layer, h3d: { ...s, yaw: s.yaw + phase } }
+    }
     case 'lsystem': {
       const s = layer.lsystem ?? defaultLSystem()
       return { ...layer, lsystem: { ...s, angle: s.angle + osc(1, 0.35) } }
@@ -646,6 +707,8 @@ export function randomSourceFor(kind: CurveKind): Partial<Layer> {
       return { attractor: randomAttractor() }
     case 'attractor3d':
       return { a3d: random3D() }
+    case 'harmonograph3d':
+      return { h3d: random3DHarmonograph() }
     case 'lsystem':
       return { lsystem: randomLSystem() }
     case 'harmonograph':
@@ -658,3 +721,4 @@ export function randomSourceFor(kind: CurveKind): Partial<Layer> {
 export { defaultLSystem, lsystemById, randomLSystem }
 // …and the 3D-flow helpers, so the app + editors import them from one place.
 export { default3D, defaultsFor3D, random3D, FLOW3D_KINDS, ranges3D } from './attractors3d'
+export { default3DHarmonograph, random3DHarmonograph } from './harmonograph3d'

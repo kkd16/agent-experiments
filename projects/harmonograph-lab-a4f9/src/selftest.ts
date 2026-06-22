@@ -12,6 +12,12 @@
 
 import { randomAttractor, sampleAttractor } from './curves'
 import { FLOW3D_KINDS, buildProjector, defaultsFor3D, integrateFlow, sample3DPolyline } from './attractors3d'
+import {
+  default3DHarmonograph,
+  projectH3DPoints,
+  random3DHarmonograph,
+  sampleH3DPolyline,
+} from './harmonograph3d'
 import { LSYSTEMS, expandLSystem, sampleLSystem, sampleLSystemFull, turtle } from './lsystem'
 import type { AttractorKind, AttractorParams } from './types'
 
@@ -230,6 +236,56 @@ function testFlows3D(): TestResult {
   return pass('3d flows', `${checked} RK4 flows: finite, non-degenerate, well-framed, 2π-periodic`)
 }
 
+// The spatial harmonograph is an exact closed-form space curve (a sum of decaying
+// sines), so — unlike the chaotic flows — it can never diverge. The tripwire here
+// is the *projection*: the curve must project (through the shared orbit camera) to
+// a finite, non-degenerate, on-screen-sized polyline, the depth-splat path must
+// agree, and yaw must be 2π-periodic so the looping export stays seamless.
+function testHarmonograph3D(): TestResult {
+  let checked = 0
+  for (let s = 0; s < 120; s++) {
+    const p = s === 0 ? default3DHarmonograph() : random3DHarmonograph()
+    const pts = sampleH3DPolyline(p)
+    let minX = Infinity,
+      maxX = -Infinity,
+      minY = Infinity,
+      maxY = -Infinity
+    for (const pt of pts) {
+      if (!Number.isFinite(pt.x) || !Number.isFinite(pt.y)) {
+        return fail('3d harmonograph', `projected to a non-finite point (seed ${s})`)
+      }
+      minX = Math.min(minX, pt.x)
+      maxX = Math.max(maxX, pt.x)
+      minY = Math.min(minY, pt.y)
+      maxY = Math.max(maxY, pt.y)
+    }
+    const pw = maxX - minX
+    const ph = maxY - minY
+    if (!(pw > 1e-2) || !(ph > 1e-2) || pw > 100 || ph > 100) {
+      return fail('3d harmonograph', `ill-framed projection ${pw.toFixed(2)}×${ph.toFixed(2)} (seed ${s})`)
+    }
+    // The density depth-splat path must also stay finite and produce a valid
+    // normalised depth dn ∈ [0,1] for every point.
+    let badDepth = 0
+    projectH3DPoints(p, 800, (x, y, dn) => {
+      if (!Number.isFinite(x) || !Number.isFinite(y) || !(dn >= 0 && dn <= 1)) badDepth++
+    })
+    if (badDepth > 0) return fail('3d harmonograph', `${badDepth} bad depth samples (seed ${s})`)
+    // A full 2π turn of yaw is the identity — the seamless-loop guarantee.
+    const a = sampleH3DPolyline(p)
+    const b = sampleH3DPolyline({ ...p, yaw: p.yaw + Math.PI * 2 })
+    let maxDiff = 0
+    for (let i = 0; i < a.length; i++) {
+      maxDiff = Math.max(maxDiff, Math.hypot(a[i].x - b[i].x, a[i].y - b[i].y))
+    }
+    if (maxDiff > 1e-6) {
+      return fail('3d harmonograph', `yaw not 2π-periodic (Δ=${maxDiff.toExponential(2)}, seed ${s})`)
+    }
+    checked++
+  }
+  return pass('3d harmonograph', `${checked} spatial figures: finite, well-framed, depth-valid, 2π-periodic`)
+}
+
 function rand(a: number, b: number): number {
   return a + Math.random() * (b - a)
 }
@@ -247,6 +303,7 @@ export function runSelfTests(): TestResult[] {
     testLSystems(),
     testBranchingLSystems(),
     testFlows3D(),
+    testHarmonograph3D(),
   ]
 }
 

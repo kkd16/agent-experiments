@@ -28,14 +28,21 @@ scene with a **gradient**.
   default + random factories, the `sampleLayer` kind dispatcher, the WeakMap
   render-data cache (`getLayerData`), the uncached `computeLayerData` Live mode
   uses, and `breatheLayer` (per-kind phase drift for the Live animation).
-- `attractors3d.ts` — **the 3D flow engine (v7).** Nine continuous strange-attractor
-  vector fields, an RK4 integrator (`integrateFlow`), and an **orbit camera**
-  (`buildProjector`: auto-centre/scale cached by flow shape, yaw+pitch rotation,
-  pinhole perspective) that projects the 3D orbit onto the 2D model plane so the
-  existing renderers consume it unchanged. `sample3DPolyline` feeds the line/
-  auto-fit path; `density.ts` calls `integrateFlow` + the projector directly for
-  the depth-cued nebula. A full 2π of yaw is the identity, which is what makes the
-  orbiting-camera loop seamless.
+- `attractors3d.ts` — **the 3D flow engine (v7, expanded v8).** Fourteen continuous
+  strange-attractor vector fields, an RK4 integrator (`integrateFlow`), and an
+  **orbit camera** (`buildProjector`: auto-centre/scale cached by flow shape,
+  yaw+pitch rotation, pinhole perspective) that projects the 3D orbit onto the 2D
+  model plane so the existing renderers consume it unchanged. v8 extracted the
+  reusable core — `makeProjector` (the pure pinhole closure) + `geometryFromPoints`
+  (centre/scale of any point cloud) — so the spatial harmonograph shares the exact
+  same camera. `sample3DPolyline` feeds the line/auto-fit path; `density.ts` calls
+  `integrateFlow` + the projector directly for the depth-cued nebula. A full 2π of
+  yaw is the identity, which is what makes the orbiting-camera loop seamless.
+- `harmonograph3d.ts` — **the spatial-harmonograph engine (v8).** A 3D curve family:
+  three axes, each the sum of two damped sinusoids, tracing a knotted 3-D Lissajous
+  figure (an exact closed form, not a chaotic flow). Geometry cached by curve shape;
+  projects through `attractors3d`'s shared orbit camera so it inherits line/density/
+  SVG/GIF rendering, drag-to-orbit, Live spin, depth cue, stereo and seamless loops.
 - `record.ts` — **WebM capture.** Grabs the canvas as a `MediaStream` and drives
   the trace 0→1 in real time through a `MediaRecorder`, feature-detected and
   fully try/caught so unsupported browsers / the sandbox degrade gracefully.
@@ -312,15 +319,76 @@ Future:
 - [ ] Per-channel (RGB) density accumulation to colour by *which* basin a point
       came from, not just by density.
 - [ ] Stochastic L-systems (per-rule probabilities) for naturalistic plant variety.
-- [ ] **3D harmonograph** (a spatial Lissajous / pendulum) flown through the same
-      orbit camera, reusing the v7 projector.
-- [ ] **Per-axis depth fog + a ground-plane shadow** for the 3D nebulae, to read
-      depth even more strongly.
-- [ ] **Scroll-wheel / pinch dolly** on the canvas to drive camera distance.
+- [x] **3D harmonograph** (a spatial Lissajous / pendulum) flown through the same
+      orbit camera, reusing the v7 projector. → **shipped in v8**
+- [x] **Depth fog** for the 3D nebulae, to read depth even more strongly.
+      → **shipped in v8** (exponential depth fog on both 3D families)
+- [ ] A **ground-plane shadow** under the 3D nebulae (the other half of that idea).
+- [x] **Scroll-wheel / pinch dolly** on the canvas to drive camera distance.
+      → **shipped in v8**
 - [ ] WebGL density accumulation for real-time million-point fields at 60fps
       (the CPU splatter already carries the 3D flows; a GPU path would lift the
       iteration ceiling by an order of magnitude).
-- [ ] A **stereographic / anaglyph** export mode for the 3D attractors.
+- [x] A **stereographic / anaglyph** mode for the 3D scenes. → **shipped in v8**
+      (red-cyan anaglyph + side-by-side / cross-eye pairs, live and in every export).
+
+### v8 — depth made real (spatial harmonograph · stereoscopy · five new flows)
+
+v7 lifted the studio into 3-space with strange-attractor flows and an orbit
+camera. v8 makes that third dimension *land*: a brand-new 3D curve family, true
+**stereoscopic** output you can view with red-cyan glasses, a turntable **dolly**,
+volumetric **depth fog**, and **five more** canonical chaotic flows — all reusing
+(and generalising) the v7 camera so they inherit drag-to-orbit, Live spin, the
+depth cue, and the seamless looping export for free.
+
+- [x] **3D harmonograph (`harmonograph3d.ts`)** — the spatial pendulum. Each of
+      the three axes is driven by its own *pair* of damped sinusoids, so the pen
+      traces a knotted 3-D Lissajous figure (an exact closed form, not a chaotic
+      flow). It is sampled and flown through the **same orbit camera** as the
+      flows, so the renderer never learns it's 3D — line, density, SVG, GIF, drag,
+      Live, loop and stereo all work unchanged.
+- [x] **Generalised orbit camera.** Extracted `makeProjector` + `geometryFromPoints`
+      in `attractors3d.ts` so *any* 3D point set (an integrable flow **or** an
+      explicit space curve) projects through the identical yaw/pitch/dist/fov
+      pinhole. Geometry is cached by curve *shape* (not camera), so spinning costs
+      only the cheap re-projection. Central `is3dKind` / `layerCamera` /
+      `patchLayerCamera` helpers (`curves.ts`) let the app, renderer and density
+      splatter treat "the 3D layer's camera" uniformly across both families.
+- [x] **Stereoscopic 3D (`render.ts`).** Any scene with a 3D layer can render from
+      two eye viewpoints (a small yaw offset per eye, sharing the auto-fit transform
+      so the pair stays registered) and composite them: a colour **anaglyph**
+      (left-eye red + right-eye cyan), or a half-width **side-by-side** / **cross-eye**
+      pair. Works live and in every raster export; degrades gracefully to mono if the
+      offscreen buffers can't be created (the sandbox).
+- [x] **Scroll / pinch dolly + reset camera.** The canvas is now a turntable: drag
+      orbits, the **scroll wheel** (exponential, so each notch feels equal) and a
+      **two-finger pinch** drive camera distance, and a one-click **reset** restores
+      the framing. All routed through `patchLayerCamera`, so they drive either 3D
+      family.
+- [x] **Exponential depth fog.** A per-layer **fog** control fades far filaments
+      toward the void (`w·e^{-fog·k·(1−depth)}`) in the density renderer, giving the
+      nebulae genuine front-to-back ordering — on both the flows and the spatial
+      harmonograph.
+- [x] **Five new strange-attractor flows** (9 → 14): **Sprott-B**, **Nosé–Hoover**
+      (Sprott A thermostat), the **Rikitake** two-disk geodynamo, **Chen–Lee**
+      (a rigid-body Euler top), and the mirror-symmetric **Burke–Shaw** double helix
+      — each with canonical constants, a stable per-flow `dt`, per-flow slider ranges,
+      and a one-line note. Numerically pre-validated (bounded, non-degenerate) before
+      wiring.
+- [x] **Full pipeline wiring** — new `harmonograph3d` `CurveKind` and the camera /
+      stereo / fog fields threaded through `types.ts`, `curves.ts` (dispatch /
+      sourceParams / breathe / loop / randomize / camera helpers), the Curve-tab
+      editors (`CurveHarmonograph3D` + a shared `OrbitCameraControls` with the new
+      fog + reset), kind-switch defaults, duplicate, the **Generate** composer (3D
+      harmonographs, occasional auto-anaglyph), and **five new presets** — *Spatial
+      Knot*, *Spatial Nebula*, *Lorenz in 3D (anaglyph)*, *Burke–Shaw Helix*,
+      *Rikitake Dynamo*. Scene tab gained a **Stereoscopic 3D** panel (mode + eye
+      separation).
+- [x] **Self-tests extended** (`selftest.ts`) — the 3D-flow tripwire now covers all
+      **14** flows, and a new **3D-harmonograph** check asserts 120 spatial figures
+      project finite, well-framed, with valid normalised depth, and **2π-periodic**
+      yaw (the seamless-loop guarantee). Re-verified headlessly, plus a render-path
+      smoke test across every new preset × all four stereo modes (no throws).
 
 ## Session log
 
@@ -410,3 +478,24 @@ Future:
   self-tests (every flow finite, non-degenerate, well-framed, and yaw 2π-periodic).
   Verified: all nine flows checked numerically out of band; full CI gate (scope +
   conformance + lint + build) is green.
+- 2026-06-22 (claude): **v8 — depth made real.** Built on v7's orbit camera with a
+  whole new 3D curve family and true stereoscopy. **3D harmonograph**
+  (`harmonograph3d.ts`): three axes, each two damped pendulums, tracing a knotted
+  spatial Lissajous figure — an exact closed form flown through a **generalised**
+  orbit camera (extracted `makeProjector` + `geometryFromPoints` so any 3D point
+  cloud or flow projects identically; geometry cached by shape, not camera).
+  **Stereoscopic 3D** in `render.ts`: render both eyes (yaw-offset, shared
+  transform) and composite as a red-cyan **anaglyph** or a half-width
+  **side-by-side / cross-eye** pair — live and in every raster export, sandbox-safe.
+  Added a turntable **scroll/pinch dolly** + **reset camera**, exponential
+  **depth fog** for the nebulae, and **five new flows** (Sprott-B, Nosé–Hoover,
+  Rikitake dynamo, Chen–Lee, Burke–Shaw, 9 → 14). Central `is3dKind` /
+  `layerCamera` / `patchLayerCamera` helpers unify the two 3D families across the
+  app, renderer and density splatter. Wired the new kind + camera/stereo/fog fields
+  through types / `curves.ts` / Curve-tab editors (`CurveHarmonograph3D` + shared
+  `OrbitCameraControls`) / kind-switch / duplicate / Generate / Scene-tab stereo
+  panel, plus five new presets. Self-tests now cover all 14 flows and 120 spatial
+  harmonograph figures (finite, well-framed, depth-valid, 2π-periodic). Verified:
+  self-tests pass headlessly, a render-path smoke test runs every new preset × all
+  four stereo modes with no throws, and the full CI gate (scope + conformance +
+  lint + build) is green.

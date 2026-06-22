@@ -11,6 +11,7 @@ import type {
   ColorMode,
   CurveKind,
   DensityStyle,
+  Harmonograph3DParams,
   HarmonographParams,
   Layer,
   LayerStyle,
@@ -22,6 +23,7 @@ import type {
   RoseParams,
   RotaryPendulum,
   SpirographParams,
+  StereoMode,
   SuperformulaParams,
   WidthMode,
 } from './types'
@@ -80,16 +82,22 @@ interface PresetLayer {
   sf?: SuperformulaParams
   attractor?: AttractorParams
   a3d?: Attractor3DParams
+  h3d?: Harmonograph3DParams
   lsystem?: LSystemParams
 }
 
-// Camera defaults for the 3D-attractor presets — a three-quarter view that reads
-// the depth well, with a gentle auto-spin and depth-cueing on.
+// Camera defaults for the 3D presets — a three-quarter view that reads the depth
+// well, with a gentle auto-spin and depth-cueing on. Shared by the attractor and
+// spatial-harmonograph presets (both carry the identical camera block).
 function cam3d(o: Partial<Attractor3DParams> = {}): Pick<
   Attractor3DParams,
-  'yaw' | 'pitch' | 'dist' | 'fov' | 'depthCue' | 'spin'
+  'yaw' | 'pitch' | 'dist' | 'fov' | 'depthCue' | 'fog' | 'spin'
 > {
-  return { yaw: 0.7, pitch: 0.42, dist: 2.6, fov: 1.0, depthCue: true, spin: 0.6, ...o }
+  return { yaw: 0.7, pitch: 0.42, dist: 2.6, fov: 1.0, depthCue: true, fog: 0, spin: 0.6, ...o }
+}
+
+function h3dPend(freq: number, phase: number, amp: number, damp: number): Pendulum {
+  return { freq, phase, amp, damp }
 }
 
 // A harmonograph placeholder for layers whose real source is another kind.
@@ -111,6 +119,8 @@ export interface Preset {
   bg2?: string
   bgMode?: 'solid' | 'linear' | 'radial'
   vignette: number
+  stereo?: StereoMode
+  stereoBaseline?: number
   layers: PresetLayer[]
 }
 
@@ -790,6 +800,125 @@ export const PRESETS: Preset[] = [
       },
     ],
   },
+  // --- v8: spatial harmonograph, new flows, stereoscopy --------------------
+  {
+    name: 'Spatial Knot',
+    background: '#05030f',
+    bg2: '#01010a',
+    bgMode: 'radial',
+    vignette: 0.5,
+    layers: [
+      {
+        name: 'Knot',
+        kind: 'harmonograph3d',
+        params: dummyHarm(),
+        h3d: {
+          x1: h3dPend(2, 0, 1, 0.0016),
+          x2: h3dPend(3, PI / 2, 0.42, 0.004),
+          y1: h3dPend(3, PI / 4, 1, 0.0016),
+          y2: h3dPend(2, 0, 0.42, 0.004),
+          z1: h3dPend(4, PI / 3, 0.85, 0.0026),
+          z2: h3dPend(5, PI / 6, 0.3, 0.005),
+          duration: 240,
+          steps: 9000,
+          ...cam3d({ yaw: 0.6, pitch: 0.4 }),
+        },
+        style: st('spectrum', { colorMode: 'path', glow: 0.4, lineWidth: 0.9, blend: 'lighter', opacity: 0.95 }),
+      },
+    ],
+  },
+  {
+    name: 'Spatial Nebula',
+    background: '#04040c',
+    bg2: '#01020a',
+    bgMode: 'radial',
+    vignette: 0.52,
+    layers: [
+      {
+        name: 'Ribbon',
+        kind: 'harmonograph3d',
+        params: dummyHarm(),
+        h3d: {
+          x1: h3dPend(3, 0, 1, 0.001),
+          x2: h3dPend(5, PI / 3, 0.4, 0.003),
+          y1: h3dPend(2, PI / 2, 1, 0.001),
+          y2: h3dPend(4, PI / 5, 0.4, 0.003),
+          z1: h3dPend(5, PI / 4, 0.7, 0.002),
+          z2: h3dPend(3, 0, 0.35, 0.004),
+          duration: 280,
+          steps: 9000,
+          ...cam3d({ yaw: 0.9, pitch: 0.5, fog: 0.45 }),
+        },
+        style: st('aurora', {
+          renderStyle: 'density',
+          density: { iterations: 1100, exposure: 1.3, gamma: 0.5 },
+          blend: 'lighter',
+        }),
+      },
+    ],
+  },
+  {
+    name: 'Lorenz in 3D (anaglyph)',
+    background: '#04060f',
+    bg2: '#01020a',
+    bgMode: 'radial',
+    vignette: 0.48,
+    stereo: 'anaglyph',
+    stereoBaseline: 0.08,
+    layers: [
+      {
+        name: 'Butterfly',
+        kind: 'attractor3d',
+        params: dummyHarm(),
+        a3d: { type: 'lorenz', a: 10, b: 28, c: 2.667, d: 0, dt: 0.006, steps: 18000, ...cam3d({ yaw: 0.9, pitch: 0.3, fog: 0.3 }) },
+        style: st('ice', {
+          renderStyle: 'density',
+          density: { iterations: 900, exposure: 1.3, gamma: 0.5 },
+          blend: 'lighter',
+        }),
+      },
+    ],
+  },
+  {
+    name: 'Burke–Shaw Helix',
+    background: '#070310',
+    bg2: '#02020a',
+    bgMode: 'radial',
+    vignette: 0.5,
+    layers: [
+      {
+        name: 'Helix',
+        kind: 'attractor3d',
+        params: dummyHarm(),
+        a3d: { type: 'burkeshaw', a: 10, b: 4.272, c: 0, d: 0, dt: 0.005, steps: 18000, ...cam3d({ yaw: 0.5, pitch: 0.55, fog: 0.35 }) },
+        style: st('neon', {
+          renderStyle: 'density',
+          density: { iterations: 1000, exposure: 1.3, gamma: 0.5 },
+          blend: 'lighter',
+        }),
+      },
+    ],
+  },
+  {
+    name: 'Rikitake Dynamo',
+    background: '#0a0604',
+    bg2: '#02030a',
+    bgMode: 'radial',
+    vignette: 0.48,
+    layers: [
+      {
+        name: 'Dynamo',
+        kind: 'attractor3d',
+        params: dummyHarm(),
+        a3d: { type: 'rikitake', a: 2, b: 5, c: 0, d: 0, dt: 0.01, steps: 20000, ...cam3d({ yaw: 0.8, pitch: 0.42, fog: 0.4 }) },
+        style: st('ember', {
+          renderStyle: 'density',
+          density: { iterations: 950, exposure: 1.3, gamma: 0.52 },
+          blend: 'lighter',
+        }),
+      },
+    ],
+  },
 ]
 
 export function loadPreset(preset: Preset): Project {
@@ -798,6 +927,8 @@ export function loadPreset(preset: Preset): Project {
     bg2: preset.bg2,
     bgMode: preset.bgMode,
     vignette: preset.vignette,
+    stereo: preset.stereo,
+    stereoBaseline: preset.stereoBaseline,
     layers: preset.layers.map((l) => {
       const extra: Partial<Layer> = { kind: l.kind ?? 'harmonograph' }
       if (l.spiro) extra.spiro = structuredClone(l.spiro)
@@ -806,6 +937,7 @@ export function loadPreset(preset: Preset): Project {
       if (l.sf) extra.sf = structuredClone(l.sf)
       if (l.attractor) extra.attractor = structuredClone(l.attractor)
       if (l.a3d) extra.a3d = structuredClone(l.a3d)
+      if (l.h3d) extra.h3d = structuredClone(l.h3d)
       if (l.lsystem) extra.lsystem = structuredClone(l.lsystem)
       return makeLayer(l.name, structuredClone(l.params), structuredClone(l.style), extra)
     }),
