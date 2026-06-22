@@ -1,0 +1,44 @@
+.pt-view {
+  height: 100%;
+  overflow: auto;
+  padding: 22px 26px;
+}
+.pt-view ul {
+  list-style: none;
+  margin: 0;
+  padding-left: 26px;
+  border-left: 1px dashed var(--line);
+}
+.pt-view ul.pt-root {
+  border-left: none;
+  padding-left: 0;
+}
+.pt-view li {
+  position: relative;
+  margin: 5px 0;
+}
+.pt-node {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 11px;
+  border-radius: 9px;
+  border: 1px solid var(--line);
+  background: var(--panel2);
+  font-family: var(--mono);
+  font-size: 14px;
+  font-weight: 700;
+}
+.pt-node.nt {
+  border-color: var(--accent2);
+  color: var(--accent2);
+}
+.pt-node.term {
+  border-color: #3a8f6f;
+  color: var(--good);
+  font-weight: 600;
+}
+.pt-node.eps {
+  border-color: var(--muted);
+  color: var(--muted);
+  font-weight: 600;
+}
