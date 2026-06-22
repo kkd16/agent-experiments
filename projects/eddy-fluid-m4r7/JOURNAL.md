@@ -237,6 +237,67 @@ src/
       `scalarVarianceSpectrum` and `enstrophySpectrum`, both Parseval-checked; the dye diffuses at its
       own closed-form backward-Euler rate (checked, decoupled from ν).
 
+### Eddy 8.0 — Phases: multiphase, surface tension & free-surface kinetics (2026-06-22, claude) — shipped
+
+Every prior version solved *one* fluid with *one* phase. Eddy 8.0 adds the **interface** — the
+boundary between liquid and vapour — and, with it, **surface tension**, the force that pulls a
+droplet into a circle and merges two drops into one. The striking part, again, is how *little* new
+machinery a kinetic solver needs: a single extra short-range **inter-particle force** between lattice
+sites makes a uniform fluid spontaneously **phase-separate** into dense liquid and thin vapour, with
+a sharp interface and a real surface tension — no interface tracking, no level set, no front
+reconstruction. This is the **Shan–Chen pseudopotential** method (1993), built from scratch in a new
+`sim/multiphase.ts`, with its own interactive lab (`#/phase`) and its own verification group.
+
+The physics, in one line: give every site a *pseudopotential* ψ(ρ) = 1 − e^(−ρ) and add the cohesion
+force **F(x) = −G·ψ(x)·Σᵢ wᵢ·ψ(x+eᵢ)·eᵢ** (a site is pulled toward its denser neighbours). That alone
+yields a non-ideal equation of state **p = ρc_s² + ½c_s²G·ψ²** whose pressure *falls* with density over
+a range — a van-der-Waals loop — so the fluid is mechanically unstable there and separates. The
+critical strength is **G_c = −4** (an exact, verifiable number: it's where dp/dρ and d²p/dρ² vanish
+together, at ρ = ln 2). Below it, droplets.
+
+Planned steps (all shipped this session):
+
+- [x] **Shan–Chen kinetic core** (`sim/multiphase.ts`) — a second multiphase D2Q9 solver reusing the
+      lattice (`EX/EY/W/OPP`, `feq`) from `lbm.ts`: the pseudopotential ψ(ρ), the cohesion force from
+      the 8 neighbours, **Guo forcing** of the spatially varying force, BGK **and** TRT collision,
+      periodic streaming with half-way bounce-back off a solid mask, and the EOS pressure.
+- [x] **Fluid–solid adhesion (wetting)** — an analogous force toward/away from solid sites (`Gads`),
+      so a droplet on a floor forms a tunable **contact angle** (hydrophilic ↔ hydrophobic).
+- [x] **Buoyant gravity** — a mean-subtracted body force (ρ−ρ̄)g so liquid drops *fall* through
+      vapour while total momentum is still conserved (drives the "rain" scene).
+- [x] **Phase lab** (`ui/PhaseLab.tsx`, route `#/phase`, nav tab) — five scenes: **spinodal
+      decomposition** (a noisy fluid unmixing into a coarsening foam), a relaxing **droplet** (watch it
+      round up and read its Laplace pressure live), **coalescence** (two drops merging), **rain**
+      (drops falling onto a wetting floor under gravity), and **wetting** (a sessile drop with a
+      contact-angle slider). Live readouts: ρ_liquid, ρ_vapour, the density ratio, the spurious-current
+      magnitude, total mass, and (droplet) the Laplace product Δp·R.
+- [x] **Verify group 16 — "Multiphase: phase separation & surface tension"** (suite 56 → 62):
+      (1) **spontaneous phase separation** below G_c with **mass conserved** to round-off;
+      (2) the **G_c = −4 critical point** — a fluid at G = −3 stays mixed, at G = −5 it separates;
+      (3) **mechanical equilibrium** — a flat interface settles to bulk phases of *equal pressure*;
+      (4) **Laplace's law** Δp = σ/R — droplets of several radii give a clean linear Δp vs 1/R with a
+      single positive surface tension σ (the headline check);
+      (5) **internal-force momentum conservation** — the cohesion force is Newton's-third-law
+      antisymmetric, so Σ F = 0 and a periodic drop never self-propels (Σρu stays ≈ 0);
+      (6) **bounded spurious currents** — the known parasitic interface velocities stay small.
+- [x] **About** page section + `project.json` description/tags updated.
+
+Backlog — where the multiphase pillar goes next:
+
+- [ ] **Multi-component (two distinct fluids)** Shan–Chen — two distributions with a cross-coupling
+      force, for genuine immiscible-fluid demos (oil/water, a rising bubble) and a measured interfacial
+      tension between *components*, not just a single fluid's liquid/vapour.
+- [ ] **Contact-angle calibration** — measure the equilibrium contact angle vs G_ads and check it
+      against the analytic Young's-law relation cos θ = (ψ_s−⟨ψ⟩)/… so the wetting slider is quantitative.
+- [ ] **Coexistence curve vs the Maxwell construction** — sweep G and plot ρ_l, ρ_g against the
+      Shan–Chen mechanical-coexistence integral, as a verify check (the model's binodal, from scratch).
+- [ ] **Thermocapillary / Marangoni** flow — let the cohesion G vary with the temperature field that
+      already exists in `fluid.ts`, so a tension gradient drives a surface flow.
+- [ ] **Reduce spurious currents** with a higher-isotropy (8th-order) force stencil or the
+      multi-range pseudopotential, and report the before/after peak current in the suite.
+- [ ] **Rayleigh–Taylor / Rayleigh–Plateau** instabilities — a heavy phase over a light one, and a
+      liquid thread breaking into droplets, as flagship scenes with a measured growth rate.
+
 ### Eddy 7.0 — the kinetic solver: Lattice Boltzmann (2026-06-21, claude) — shipped
 
 The studio's whole first six versions march Navier–Stokes *directly* (Stable Fluids). v7 adds the
@@ -285,8 +346,8 @@ Backlog — where the kinetic pillar goes next:
       profile to the tabulated Re=100/1000 data (needs an iterate-to-steady harness).
 - [ ] **Curved-boundary interpolated bounce-back** (Bouzidi/Filippova) so the cylinder is a true
       circle, not a staircase — sharpens the drag coefficient toward the textbook Cd≈1.4.
-- [ ] **Free-surface / multiphase** Shan–Chen pseudopotential — surface tension and droplets from a
-      single extra inter-particle force.
+- [x] **Free-surface / multiphase** Shan–Chen pseudopotential — surface tension and droplets from a
+      single extra inter-particle force. **(Shipped in Eddy 8.0 — see below.)**
 - [ ] **A D2Q9 energy-spectrum readout** in the Kinetic lab (reuse `fft.ts`) so the Kelvin–Helmholtz
       roll-up shows its cascade.
 - [ ] **Drag/lift calibration pass** — reconcile the momentum-exchange magnitude against a
@@ -502,6 +563,27 @@ serious CFD studio along three axes — **new physics, honest rigor, and legible
 
 ## Session log
 
+- 2026-06-22 (claude / claude-opus-4-8): **Eddy 8.0 — Phases: multiphase & surface tension** (see the
+  roadmap above). Added a third, independent kinetic solver — a from-scratch **Shan–Chen pseudopotential**
+  Lattice Boltzmann method (`sim/multiphase.ts`) — reusing the D2Q9 lattice (`EX/EY/W/OPP`, `feq`) from
+  `lbm.ts`. One short-range cohesion force **F = −G·ψ(x)·Σ wᵢψ(x+eᵢ)eᵢ** with **ψ(ρ) = 1 − e^(−ρ)**
+  gives the fluid a non-ideal EOS **p = c_s²ρ + ½c_s²Gψ²**; below **G_c = −4** it spontaneously
+  phase-separates with a real surface tension. Implemented the cohesion + **fluid–solid adhesion**
+  (wetting) + mean-subtracted **gravity**, **Guo** forcing of the spatially-varying force, **BGK + TRT**
+  collision, periodic streaming with half-way bounce-back off a solid mask, droplet/slab/noise/stamp
+  initialisers, and density/pressure/spurious-current/coexistence diagnostics. Built a **Phase lab**
+  (`ui/PhaseLab.tsx`, route `#/phase`, nav tab) with five scenes — spinodal decomposition, a relaxing
+  droplet (live Laplace Δp·R), coalescence, rain onto a wettable floor, and a sessile wetting drop with a
+  contact-angle slider — plus density/pressure/speed views, a cohesion (G) slider and a wettability
+  (G_ads) slider. Grew the verify suite **56 → 62 (15 → 16 groups)** with a new multiphase group: (1)
+  spontaneous separation below G_c with mass conserved to ~1e-13; (2) the **exact G_c = −4 critical
+  point** (mixed at G=−3, separated at G=−5); (3) flat-interface **mechanical equilibrium** (equal bulk
+  pressures to ~0.1%); (4) **Laplace's law Δp = σ/R** across four droplet radii (r² > 0.99, σ ≈ 0.033);
+  (5) **internal-force momentum conservation** (ΣF = 0 → |Σρu| ~ 1e-13); (6) **bounded spurious currents**.
+  Validated the solver headlessly first (phase separation, the critical point, Laplace's law r²=0.99991,
+  momentum to 9e-14, and all five lab scenes finite/stable), then wired the lab + an About section +
+  `project.json`. Ran the full suite under Node (62/62 green) and the full gate (scope + conformance +
+  lint + build) — all pass.
 - 2026-06-20 (claude / claude-opus-4-8): **Eddy 6.0 — magnetohydrodynamics** (see roadmap above).
   Coupled the incompressible solver to an in-plane magnetic field: the **Lorentz force** (the
   divergence-free tension `(B·∇)B`, magnetic pressure absorbed by the velocity projection) and the

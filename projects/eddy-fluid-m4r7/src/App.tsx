@@ -4,6 +4,7 @@ import { About } from './ui/About';
 import { Verify } from './ui/Verify';
 import { SpectraLab } from './ui/SpectraLab';
 import { KineticLab } from './ui/KineticLab';
+import { PhaseLab } from './ui/PhaseLab';
 import './App.css';
 
 export default function App() {
@@ -12,6 +13,7 @@ export default function App() {
   const onVerify = route.startsWith('/verify');
   const onSpectra = route.startsWith('/spectra');
   const onKinetic = route.startsWith('/kinetic');
+  const onPhase = route.startsWith('/phase');
 
   return (
     <div className="app">
@@ -25,11 +27,14 @@ export default function App() {
           </span>
         </a>
         <nav>
-          <a className={!onAbout && !onVerify && !onSpectra && !onKinetic ? 'active' : ''} href="#/">
+          <a className={!onAbout && !onVerify && !onSpectra && !onKinetic && !onPhase ? 'active' : ''} href="#/">
             Studio
           </a>
           <a className={onKinetic ? 'active' : ''} href="#/kinetic">
             Kinetic
+          </a>
+          <a className={onPhase ? 'active' : ''} href="#/phase">
+            Phase
           </a>
           <a className={onSpectra ? 'active' : ''} href="#/spectra">
             Spectra
@@ -51,6 +56,8 @@ export default function App() {
           <SpectraLab />
         ) : onKinetic ? (
           <KineticLab />
+        ) : onPhase ? (
+          <PhaseLab />
         ) : (
           <Studio />
         )}

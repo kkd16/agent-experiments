@@ -12,6 +12,7 @@
 
 import { FluidSolver, DEFAULT_PARAMS, type FluidParams } from './fluid';
 import { Lbm, feq, EX, EY, viscosityFromTau, CS2, MRT_M, MRT_MINV } from './lbm';
+import { ShanChen, pressureOf } from './multiphase';
 import { computeLIC, makeNoise } from '../render/lic';
 import { fft1d, fft2d, energySpectrum, meanKineticEnergy, enstrophySpectrum, scalarVarianceSpectrum, energyTransfer } from './fft';
 import { computeFTLE } from './ftle';
@@ -1960,11 +1961,186 @@ function latticeBoltzmann(): CheckGroup {
   };
 }
 
+// --- Multiphase (Shan–Chen) — phase separation & surface tension ------------
+
+/** Run a Shan–Chen fluid seeded with small density noise and report the bulk
+ *  liquid/vapour densities + mass drift after `steps` lattice updates. */
+function scSeparate(G: number, steps: number): { rhoL: number; rhoG: number; ratio: number; drift: number } {
+  const sc = new ShanChen({ nx: 48, ny: 48, G, viscosity: 1 / 6 });
+  sc.initNoise(1.0, 0.05, 7);
+  const m0 = sc.totalMass();
+  for (let s = 0; s < steps; s++) sc.step();
+  const b = sc.bulkDensities();
+  return { ...b, drift: Math.abs(sc.totalMass() - m0) / m0 };
+}
+
+/** The Shan–Chen pseudopotential model: a single short-range attractive force
+ *  between lattice sites turns one fluid into two phases (liquid + vapour) with a
+ *  real surface tension — no interface tracking. These checks pin that down: the
+ *  fluid only separates below the exact critical strength G_c = −4, mass is
+ *  conserved to round-off, a flat interface settles to bulk phases of EQUAL
+ *  pressure, droplets obey Laplace's law Δp = σ/R with one positive σ, the
+ *  internal cohesion force conserves momentum (ΣF = 0), and the parasitic
+ *  interface "spurious currents" stay small. */
+function multiphase(): CheckGroup {
+  const checks: Check[] = [];
+
+  // 1. Spontaneous phase separation below G_c, with mass conserved exactly.
+  const low = scSeparate(-5, 1000);
+  checks.push(
+    check(
+      'Spontaneous phase separation (G < G_c)',
+      'A uniform fluid plus tiny density noise, given the cohesion force with G = −5, must unmix into a dense liquid and a thin vapour — a van-der-Waals instability emerging from a purely local kinetic rule. Streaming + collision create no fluid, so total mass is invariant to round-off.',
+      low.ratio > 4 && low.rhoL > 1.5 && low.rhoG < 0.4 && low.drift < 1e-9,
+      `ρ_l/ρ_g = ${fmt(low.rhoL)}/${fmt(low.rhoG)} = ${fmt(low.ratio)}×, mass drift ${fmt(low.drift)}`,
+    ),
+  );
+
+  // 2. The critical point G_c = −4 — above it the fluid stays mixed.
+  const high = scSeparate(-3, 1000);
+  const spreadHi = high.rhoL - high.rhoG;
+  const spreadLo = low.rhoL - low.rhoG;
+  checks.push(
+    check(
+      'Critical interaction strength G_c = −4',
+      'For ψ(ρ) = 1 − e^{−ρ} the equation of state p = c_s²ρ + ½c_s²Gψ² loses mechanical stability (dp/dρ < 0) exactly at G = −4 (where dp/dρ and d²p/dρ² vanish together, at ρ = ln 2). So at G = −3 the fluid must stay uniform; at G = −5 it separates strongly — the verified critical point.',
+      spreadHi < 0.02 && spreadLo > 1.0,
+      `spread(G=−3) ${fmt(spreadHi)} ≪ spread(G=−5) ${fmt(spreadLo)}`,
+    ),
+  );
+
+  // 3. Flat-interface mechanical equilibrium — equal bulk pressures (no curvature
+  //    ⇒ no Laplace jump). The scalar EOS pressure deep in each phase must match.
+  {
+    const G = -5;
+    const sc = new ShanChen({ nx: 24, ny: 96, G, viscosity: 1 / 6 });
+    sc.initSlab(48, 22, 1.9, 0.14);
+    for (let s = 0; s < 5000; s++) sc.step();
+    const rhoL = sc.rho[sc.idx(12, 48)];
+    const rhoG = sc.rho[sc.idx(12, 4)];
+    const pL = pressureOf(rhoL, G);
+    const pG = pressureOf(rhoG, G);
+    const rel = Math.abs(pL - pG) / Math.abs(pL);
+    checks.push(
+      check(
+        'Flat interface: equal bulk pressures',
+        'A planar liquid–vapour interface has no curvature, so mechanical equilibrium demands equal pressure on both sides. The non-ideal EOS evaluated deep in each phase (where density gradients vanish) must return the same pressure — the coexistence condition, met to a fraction of a percent.',
+        rel < 0.01,
+        `p_l ${fmt(pL)} vs p_g ${fmt(pG)} (${(rel * 100).toFixed(2)}%)`,
+      ),
+    );
+  }
+
+  // 4. Laplace's law Δp = σ/R — the headline. Droplets of several radii relax,
+  //    and the inside-minus-outside pressure jump must be linear in 1/R through a
+  //    single positive surface tension σ.
+  {
+    const G = -5;
+    const xs: number[] = [];
+    const ys: number[] = [];
+    for (const R of [9, 12, 15, 18]) {
+      const N = 64;
+      const sc = new ShanChen({ nx: N, ny: N, G, viscosity: 1 / 6 });
+      sc.initDroplet(N / 2, N / 2, R, 1.9, 0.14);
+      for (let s = 0; s < 2500; s++) sc.step();
+      const c = N / 2;
+      let pin = 0;
+      let nin = 0;
+      let pout = 0;
+      let nout = 0;
+      for (let node = 0; node < sc.n; node++) {
+        const i = node % N;
+        const j = (node / N) | 0;
+        if (Math.hypot(i - c, j - c) < R / 2) {
+          pin += sc.pressureAt(node);
+          nin++;
+        }
+      }
+      for (let j = 2; j <= 8; j++)
+        for (let i = 2; i <= 8; i++) {
+          pout += sc.pressureAt(sc.idx(i, j));
+          nout++;
+        }
+      pin /= nin;
+      pout /= nout;
+      // Radius from the liquid area (cells denser than the mid-density).
+      const b = sc.bulkDensities();
+      const mid = 0.5 * (b.rhoL + b.rhoG);
+      let area = 0;
+      for (let node = 0; node < sc.n; node++) if (sc.rho[node] > mid) area++;
+      xs.push(Math.sqrt(Math.PI / area)); // 1/R
+      ys.push(pin - pout); // Δp
+    }
+    // Least-squares Δp = σ·(1/R) and Pearson r².
+    const m = xs.length;
+    let sx = 0;
+    let sy = 0;
+    let sxx = 0;
+    let sxy = 0;
+    let syy = 0;
+    for (let i = 0; i < m; i++) {
+      sx += xs[i];
+      sy += ys[i];
+      sxx += xs[i] * xs[i];
+      sxy += xs[i] * ys[i];
+      syy += ys[i] * ys[i];
+    }
+    const sigma = sxy / sxx; // slope through the origin = surface tension
+    const r = (m * sxy - sx * sy) / Math.sqrt((m * sxx - sx * sx) * (m * syy - sy * sy));
+    const r2 = r * r;
+    checks.push(
+      check(
+        "Laplace's law Δp = σ/R (surface tension)",
+        'The pressure inside a 2-D droplet exceeds the outside by σ/R, where σ is the surface tension. Across four droplet radii the measured jump Δp must be a clean straight line through the origin in 1/R, with a single positive σ — surface tension, emergent from one extra inter-particle force.',
+        r2 > 0.99 && sigma > 0.01,
+        `σ = ${fmt(sigma)}, r² = ${fmt(r2)}`,
+      ),
+    );
+  }
+
+  // 5 & 6. A relaxed droplet at rest: the internal cohesion force is Newton's-
+  //   third-law antisymmetric (ΣF = 0), so total momentum stays ≈ 0 (no
+  //   self-propulsion), and the parasitic "spurious currents" at the interface —
+  //   the model's known artefact — stay small.
+  {
+    const sc = new ShanChen({ nx: 48, ny: 48, G: -5, viscosity: 1 / 6 });
+    sc.initDroplet(24, 24, 11, 1.9, 0.14);
+    for (let s = 0; s < 1200; s++) sc.step();
+    const mom = sc.totalMomentum();
+    const pmag = Math.hypot(mom.px, mom.py);
+    const spur = sc.maxSpuriousSpeed();
+    checks.push(
+      check(
+        'Internal force conserves momentum (ΣF = 0)',
+        'The cohesion between two sites is equal and opposite (the pairwise sum is antisymmetric), so the force injects no net momentum. A periodic droplet at rest must keep Σρu ≈ 0 — it can never spontaneously start drifting.',
+        pmag < 1e-9,
+        `|Σρu| = ${fmt(pmag)}`,
+      ),
+    );
+    checks.push(
+      check(
+        'Spurious interface currents stay small',
+        'Pseudopotential models generate small parasitic velocities at a curved interface even at equilibrium (a discrete-isotropy artefact). We report it honestly rather than hide it: the peak spurious speed stays a small fraction of the lattice speed of sound.',
+        spur < 0.02,
+        `max|u| = ${fmt(spur)} (c_s = ${fmt(Math.sqrt(CS2))})`,
+      ),
+    );
+  }
+
+  return {
+    title: 'Multiphase — phase separation & surface tension',
+    blurb:
+      'A third kinetic model: the Shan–Chen pseudopotential method adds one short-range attractive force between lattice sites, and a single fluid spontaneously splits into liquid and vapour with a real surface tension — droplets, coalescence, wetting — no interface tracking at all. These checks confirm the critical point, mechanical equilibrium, and Laplace’s law directly.',
+    checks,
+  };
+}
+
 export function runSelfTest(): SelfTestReport {
   const t0 = performance.now();
   const groups = [
     incompressibility(),
     latticeBoltzmann(),
+    multiphase(),
     linearSolver(),
     conjugateGradient(),
     multigrid(),
