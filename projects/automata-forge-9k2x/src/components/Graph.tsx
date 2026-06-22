@@ -3,6 +3,8 @@ import type { PointerEvent as ReactPointerEvent, WheelEvent as ReactWheelEvent }
 import type { GraphModel } from '../engine/types'
 import { layout } from '../layout/layout'
 import type { Point } from '../layout/layout'
+import { toDot } from '../engine/dot'
+import { copyText, downloadSvg } from '../lib/download'
 import './Graph.css'
 
 const R = 22 // node radius
@@ -20,6 +22,8 @@ interface Props {
   highlight?: number[]
   /** A key that, when it changes, refits the view (e.g. when the source regex changes). */
   fitKey?: string
+  /** Enables the "copy DOT" / "save SVG" export buttons; used as the file/graph name. */
+  exportName?: string
 }
 
 function unit(dx: number, dy: number): Point {
@@ -27,9 +31,10 @@ function unit(dx: number, dy: number): Point {
   return { x: dx / m, y: dy / m }
 }
 
-export default function Graph({ graph, highlight, fitKey }: Props) {
+export default function Graph({ graph, highlight, fitKey, exportName }: Props) {
   const base = useMemo(() => layout(graph), [graph])
   const svgRef = useRef<SVGSVGElement | null>(null)
+  const [copied, setCopied] = useState(false)
 
   // Node positions can be dragged; start from the computed layout.
   const [override, setOverride] = useState<Map<number, Point>>(new Map())
@@ -248,16 +253,42 @@ export default function Graph({ graph, highlight, fitKey }: Props) {
           )
         })}
       </svg>
-      <button
-        className="graph-fit"
-        onClick={() => {
-          setOverride(new Map())
-          setVb(fit())
-        }}
-        title="Reset view & layout"
-      >
-        ⤢ fit
-      </button>
+      <div className="graph-tools">
+        {exportName && (
+          <>
+            <button
+              className="graph-tool"
+              title="Copy this automaton as Graphviz DOT"
+              onClick={async () => {
+                const ok = await copyText(toDot(graph, exportName))
+                if (ok) {
+                  setCopied(true)
+                  window.setTimeout(() => setCopied(false), 1400)
+                }
+              }}
+            >
+              {copied ? '✓ copied' : '⧉ DOT'}
+            </button>
+            <button
+              className="graph-tool"
+              title="Download this diagram as an SVG file"
+              onClick={() => svgRef.current && downloadSvg(svgRef.current, `${exportName}.svg`)}
+            >
+              ↓ SVG
+            </button>
+          </>
+        )}
+        <button
+          className="graph-tool"
+          onClick={() => {
+            setOverride(new Map())
+            setVb(fit())
+          }}
+          title="Reset view & layout"
+        >
+          ⤢ fit
+        </button>
+      </div>
     </div>
   )
 }

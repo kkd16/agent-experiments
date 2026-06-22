@@ -103,8 +103,15 @@ function build(node: Ast, b: Builder, alpha: Alphabet): Fragment {
   }
 }
 
-export function buildNfa(ast: Ast): Nfa {
-  const alpha = deriveAlphabet(ast)
+/**
+ * Compile an AST into an ε-NFA. By default the alphabet is derived from the AST itself; pass an
+ * explicit `alpha` to compile *over a wider alphabet* (used by the product construction, where two
+ * regexes must be built over their shared alphabet so every concrete character is handled the same
+ * way by both machines). Widening is semantics-preserving: a symbol that is "OTHER" for this AST
+ * but explicit in the shared alphabet is matched by exactly the predicates that would have matched
+ * OTHER (`.` and negated classes), so the recognized language over real strings is unchanged.
+ */
+export function buildNfa(ast: Ast, alpha: Alphabet = deriveAlphabet(ast)): Nfa {
   const b = new Builder()
   const frag = build(ast, b, alpha)
   return {
