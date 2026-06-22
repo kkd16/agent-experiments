@@ -49,6 +49,36 @@ function generateRandomProblem(difficulty: Difficulty, allowedOps: Operation[], 
 
 
 
+function getInitialLowBatteryMode(): boolean {
+  try {
+    const stored = window.localStorage.getItem('mathFlashcardsLowBatteryMode');
+    if (stored !== null) return stored === 'true';
+  } catch (e) {
+    console.error("Local storage error:", e);
+  }
+  return false;
+}
+
+function getInitialMirrorMode(): boolean {
+  try {
+    const stored = window.localStorage.getItem('mathFlashcardsMirrorMode');
+    if (stored !== null) return stored === 'true';
+  } catch (e) {
+    console.error("Local storage error:", e);
+  }
+  return false;
+}
+
+function getInitialHideStreak(): boolean {
+  try {
+    const stored = window.localStorage.getItem('mathFlashcardsHideStreak');
+    if (stored !== null) return stored === 'true';
+  } catch (e) {
+    console.error("Local storage error:", e);
+  }
+  return false;
+}
+
 function getInitialHideTimer(): boolean {
   try {
     const stored = window.localStorage.getItem('mathFlashcardsHideTimer');
@@ -415,8 +445,14 @@ function App() {
   const [dailyGoal, setDailyGoal] = useState<number>(getInitialDailyGoal());
   const [dailyQuestions, setDailyQuestions] = useState<{ date: string, count: number }>(getInitialDailyQuestions());
   const [hideStats, setHideStats] = useState<boolean>(getInitialHideStats());
+  const [hideStreak, setHideStreak] = useState<boolean>(getInitialHideStreak());
+  const [mirrorMode, setMirrorMode] = useState<boolean>(getInitialMirrorMode());
+  const [lowBatteryMode, setLowBatteryMode] = useState<boolean>(getInitialLowBatteryMode());
 
 
+  useEffect(() => { try { window.localStorage.setItem('mathFlashcardsLowBatteryMode', lowBatteryMode.toString()); } catch (e) { console.error(e); } }, [lowBatteryMode]);
+  useEffect(() => { try { window.localStorage.setItem('mathFlashcardsMirrorMode', mirrorMode.toString()); } catch (e) { console.error(e); } }, [mirrorMode]);
+  useEffect(() => { try { window.localStorage.setItem('mathFlashcardsHideStreak', hideStreak.toString()); } catch (e) { console.error(e); } }, [hideStreak]);
   useEffect(() => { try { window.localStorage.setItem('mathFlashcardsFontFamily', fontFamily); } catch (e) { console.error(e); } }, [fontFamily]);
   useEffect(() => { try { window.localStorage.setItem('mathFlashcardsStrictMode', strictMode.toString()); } catch (e) { console.error(e); } }, [strictMode]);
   useEffect(() => { try { window.localStorage.setItem('mathFlashcardsCorrectColor', correctColor); } catch (e) { console.error(e); } }, [correctColor]);
@@ -1054,7 +1090,7 @@ function App() {
   };
 
   return (
-    <div className={`app-wrapper ${theme} font-size-${accessibilityFontSize} ${streak >= 5 ? 'streak-active-bg' : ''}`} style={{ backgroundColor: theme === 'light' && bgColor ? bgColor : undefined, backgroundImage: bgImage ? `url(${bgImage})` : 'none', backgroundSize: 'cover', backgroundPosition: 'center' }}>
+    <div className={`app-wrapper ${theme} font-size-${accessibilityFontSize} ${streak >= 5 && !lowBatteryMode ? 'streak-active-bg' : ''}`} style={{ backgroundColor: theme === 'light' && bgColor ? bgColor : undefined, backgroundImage: bgImage ? `url(${bgImage})` : 'none', backgroundSize: 'cover', backgroundPosition: 'center' }}>
     <div className={`app-container ${theme}`} style={{ fontFamily }}>
       <div className="header-top">
         <h1>Math Flashcards {nightOwlUnlocked && <span title="Night Owl">🦉</span>}</h1>
@@ -1089,6 +1125,9 @@ function App() {
         <label htmlFor="fontFamily">Font: <select id="fontFamily" value={fontFamily} onChange={(e) => setFontFamily(e.target.value)}><option value="sans-serif">Sans-serif</option><option value="serif">Serif</option><option value="monospace">Monospace</option></select></label>
         <label htmlFor="strictMode"><input id="strictMode" type="checkbox" checked={strictMode} onChange={(e) => setStrictMode(e.target.checked)} disabled={isSpeedRunActive} /> Strict Mode</label>
         <label htmlFor="hideStats"><input id="hideStats" type="checkbox" checked={hideStats} onChange={(e) => setHideStats(e.target.checked)} /> Hide Stats</label>
+        <label htmlFor="hideStreak"><input id="hideStreak" type="checkbox" checked={hideStreak} onChange={(e) => setHideStreak(e.target.checked)} /> Hide Streak</label>
+        <label htmlFor="mirrorMode"><input id="mirrorMode" type="checkbox" checked={mirrorMode} onChange={(e) => setMirrorMode(e.target.checked)} /> Mirror Mode</label>
+        <label htmlFor="lowBatteryMode"><input id="lowBatteryMode" type="checkbox" checked={lowBatteryMode} onChange={(e) => setLowBatteryMode(e.target.checked)} /> Low Battery Mode</label>
       </div>
 
       <div className="color-picker" style={{ marginBottom: '1rem', display: 'flex', gap: '0.5rem', justifyContent: 'center' }}>
@@ -1115,6 +1154,7 @@ function App() {
         </div>}
         <div className="header-stats">
           <div className="stat">Score: <span className={scoreBump ? "score-bump" : ""}>{score}</span></div>
+          {!hideStreak && (
           <div className="stat" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
             <div>
               Streak: {streak} 🔥 | Today: {todayStreak}
@@ -1123,6 +1163,7 @@ function App() {
             </div>
             <progress value={streak % 5} max={5} style={{ width: '80px', marginTop: '4px' }} title="Next Milestone"></progress>
           </div>
+          )}
           <div className="stat">
             High Score: {highScore}
             <button onClick={resetHighScore} className="reset-btn" title="Reset High Score" disabled={isSpeedRunActive}>↺</button>
@@ -1332,7 +1373,7 @@ function App() {
       </div>
 
 
-      {showConfetti && (
+      {showConfetti && !lowBatteryMode && (
         <div className="confetti-container">
           {confettiPieces.map((piece, i) => (
             <div key={i} className="confetti-piece" style={{ left: piece.left, animationDelay: piece.delay, backgroundColor: piece.color }}></div>
@@ -1340,7 +1381,7 @@ function App() {
         </div>
       )}
 
-      <div className={`flashcard flashcard-${flashcardSize} ${animationClass}`}>
+      <div className={`flashcard flashcard-${flashcardSize} ${animationClass} ${mirrorMode ? 'mirror-mode' : ''}`}>
 
         <div className="problem" style={{position: 'relative'}}>
           {answerStatus && (
@@ -1494,6 +1535,29 @@ function App() {
                 </div>
               </div>
             )}
+
+            {history.filter(h => !h.isCorrect).length > 0 && (() => {
+              const missed = history.filter(h => !h.isCorrect);
+              const counts: Record<string, { count: number, item: HistoryItem }> = {};
+              missed.forEach(h => {
+                const key = `${h.num1} ${h.operation} ${h.num2}`;
+                if (!counts[key]) counts[key] = { count: 0, item: h };
+                counts[key].count++;
+              });
+              const hardest = Object.values(counts).sort((a, b) => b.count - a.count).slice(0, 3);
+              return (
+                <div className="history-container" style={{ marginBottom: '1rem' }}>
+                  <h3 style={{margin: '0 0 0.5rem 0'}}>Hardest Questions</h3>
+                  <ul className="history-list">
+                    {hardest.map(({ count, item }, index) => (
+                      <li key={index} className="history-incorrect">
+                        {item.num1} {item.operation} {item.num2} = ? <span>(Missed {count} times) (Correct: {item.correctAnswer})</span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              );
+            })()}
 
             <div className="history-container">
               <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem'}}>

@@ -202,3 +202,17 @@ live here as long as you like.
 - [ ] Introduce "boss battles" every 10 levels with harder multi-step math.
 - [ ] Allow importing custom flashcard sets via JSON.
 - [ ] Create a local 2-player split screen versus mode.
+
+## Quality of Life & Fun Additions
+- [ ] Add a "Low Battery Mode" toggle to disable animations and reduce frame rate.
+- [ ] Allow user to customize the background color for light mode.
+- [ ] Include a "Hardest Questions" summary list at the end of a session.
+- [ ] Add an option to hide the "Streak" counter for a less stressful experience.
+- [ ] Add a visual progress indicator inside the main menu.
+- [ ] Add an option to flip the layout (e.g. flashcard at bottom, keypad at top).
+- [ ] Track the time of day the user is most accurate.
+- [ ] Support custom vibration patterns for correct/incorrect answers via navigator.vibrate.
+- [ ] Create a "Mirror Mode" where digits are horizontally flipped.
+- [ ] Allow users to save their favorite math problems.
+- [ ] Add an offline PWA manifest to install the app on mobile devices.
+- [ ] Add a screen showing the user's "Math Rank" (e.g. Novice, Scholar, Wizard).
