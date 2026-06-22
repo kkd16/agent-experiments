@@ -11,6 +11,8 @@ import type { ShadingModel } from '../render/shading.ts'
 import { PRESET_LABELS } from '../scene/scene.ts'
 import { runRTSelfTest } from '../raytrace/verify.ts'
 import type { RTTest } from '../raytrace/verify.ts'
+import { runDielectricSelfTest } from '../raytrace/dielectric_verify.ts'
+import type { DielectricTest } from '../raytrace/dielectric_verify.ts'
 import { MEDIUM_PRESETS } from '../raytrace/medium.ts'
 import { runMediumSelfTest } from '../raytrace/medium_verify.ts'
 import type { MediumTest } from '../raytrace/medium_verify.ts'
@@ -159,6 +161,16 @@ export default function Controls(props: Props) {
     setTimeout(() => {
       setDenTests(runDenoiseSelfTest())
       setDenTesting(false)
+    }, 30)
+  }
+  const [dieTests, setDieTests] = useState<DielectricTest[] | null>(null)
+  const [dieTesting, setDieTesting] = useState(false)
+  const runDie = (): void => {
+    setDieTesting(true)
+    setDieTests(null)
+    setTimeout(() => {
+      setDieTests(runDielectricSelfTest())
+      setDieTesting(false)
     }, 30)
   }
   const [medTests, setMedTests] = useState<MediumTest[] | null>(null)
@@ -460,6 +472,37 @@ export default function Controls(props: Props) {
                 from an independent reference.
               </p>
               {tests.map((t) => (
+                <p key={t.name} className={`obj-msg ${t.pass ? 'ok' : 'err'}`}>
+                  {t.pass ? '✓' : '✗'} {t.name} — {t.detail}
+                </p>
+              ))}
+            </div>
+          )}
+        </Section>
+      )}
+
+      {isRT && rt.mode === 'path' && (
+        <Section title="Dielectrics — refraction & glass">
+          <p className="blurb">
+            The missing half of surface optics: dielectric <em>refraction</em>. Each glass facet
+            obeys the exact unpolarised <em>Fresnel</em> equations and <em>Snell's law</em> —
+            reflecting some light, bending the rest (with total internal reflection past the
+            critical angle), tinting it by <em>Beer–Lambert</em> absorption through the body, and
+            (with <em>dispersion</em> on) fanning each wavelength by its own IOR into a spectrum.
+            A smooth interface is exactly energy-conserving (R+T=1); frosted glass roughens the
+            microfacet. Try the <em>Glass</em> &amp; <em>Prism</em> scenes and let them converge.
+          </p>
+          <button className="reset" onClick={runDie} type="button" disabled={dieTesting} style={{ width: '100%' }}>
+            {dieTesting ? 'Running…' : 'Run dielectric self-test'}
+          </button>
+          {dieTests && (
+            <div className="rt-tests">
+              <p className="blurb">
+                {dieTests.filter((t) => t.pass).length}/{dieTests.length} checks passed — Fresnel
+                endpoints &amp; energy (R+T=1), Snell + reversibility, total internal reflection, the
+                critical angle, Beer–Lambert, Cauchy dispersion ordering, and a clear-glass furnace.
+              </p>
+              {dieTests.map((t) => (
                 <p key={t.name} className={`obj-msg ${t.pass ? 'ok' : 'err'}`}>
                   {t.pass ? '✓' : '✗'} {t.name} — {t.detail}
                 </p>

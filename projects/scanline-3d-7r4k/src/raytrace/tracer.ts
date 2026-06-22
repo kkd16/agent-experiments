@@ -19,6 +19,7 @@ import {
   mediumTransmittance, phaseHG, raySpan, sampleDeltaTracking,
   sampleHomogeneousDistance, samplePhaseHG,
 } from './medium.ts'
+import { cauchyIor, fresnelDielectric, reflect, refract, smithG1 } from './dielectric.ts'
 
 const PI = Math.PI
 const EPS = 1e-3
@@ -50,6 +51,7 @@ interface Surface {
   gx: number; gy: number; gz: number // geometric normal, facing the viewer
   br: number; bg: number; bb: number // albedo after texture modulation
   mat: RTMaterial
+  frontFace: boolean // true when the ray struck the outward (entering) side — sets the dielectric IOR ratio
 }
 
 // Reconstruct the world-space surface at a barycentric hit. `dx,dy,dz` is the
@@ -79,8 +81,12 @@ function surfaceAt(scene: RTScene, tri: number, u: number, v: number, dx: number
   const gl = Math.hypot(gx, gy, gz) || 1
   gx /= gl; gy /= gl; gz /= gl
 
-  // face both normals toward the viewer (two-sided shading)
+  // face both normals toward the viewer (two-sided shading). The pre-flip sign tells
+  // us which side we hit: vDotG ≥ 0 means the ray met the outward face (entering a
+  // solid); < 0 means it met the back face from inside (exiting). The dielectric BSDF
+  // needs this to pick the IOR ratio (air→glass vs glass→air).
   const vDotG = -(gx * dx + gy * dy + gz * dz)
+  const frontFace = vDotG >= 0
   if (vDotG < 0) { gx = -gx; gy = -gy; gz = -gz }
   const vDotN = -(nx * dx + ny * dy + nz * dz)
   if (vDotN < 0) { nx = -nx; ny = -ny; nz = -nz }
@@ -120,7 +126,7 @@ function surfaceAt(scene: RTScene, tri: number, u: number, v: number, dx: number
     }
   }
 
-  return { px, py, pz, nx, ny, nz, gx, gy, gz, br, bg, bb, mat }
+  return { px, py, pz, nx, ny, nz, gx, gy, gz, br, bg, bb, mat, frontFace }
 }
 
 // The metallic-roughness BRDF (no cosine term), identical in form to pbr.ts.
@@ -382,8 +388,87 @@ function mediumDirectLight(
 // Importance-sample the BSDF for the next bounce. Returns the new direction, the
 // throughput multiplier (f·cosθ / pdf) and whether the bounce was specular (for
 // emitter double-count avoidance). Returns false if the sample is invalid.
-interface BSDFSample { wx: number; wy: number; wz: number; wr: number; wg: number; wb: number; specular: boolean }
+interface BSDFSample { wx: number; wy: number; wz: number; wr: number; wg: number; wb: number; specular: boolean; transmitted: boolean }
+
+const SMOOTH_DIELECTRIC = 0.04 // roughness ≤ this is treated as a perfectly smooth interface
+const tmpRefract = new Float64Array(3)
+
+// Importance-sample a rough-dielectric (glass) interface following Walter et al. (2007):
+// pick a GGX microfacet normal `m` (the shading normal itself when smooth), evaluate the
+// exact unpolarised Fresnel reflectance there, then stochastically *reflect* (prob F) or
+// *refract* (prob 1−F) about `m` via Snell — total internal reflection falls back to a
+// reflection. Selecting the lobe by Fresnel cancels F against the lobe weight, so a smooth
+// interface carries throughput 1 (energy-exact: R+T=1); the rough lobe is shadowed by the
+// Smith G1 masking term so frosted glass loses energy at grazing rather than gaining it.
+// `dispersion` fans the IOR per RGB channel: one hero channel is chosen and reweighted ×3
+// so the estimate stays unbiased, which is what bends a prism's beam into a spectrum.
+function sampleDielectric(s: Surface, vx: number, vy: number, vz: number, rng: Rng, out: BSDFSample): boolean {
+  const mat = s.mat
+  const nx = s.nx, ny = s.ny, nz = s.nz // shading normal, already facing the viewer (incident side)
+  const rough = mat.roughness
+  const a = rough * rough
+  const smooth = rough <= SMOOTH_DIELECTRIC
+
+  // wavelength-dependent IOR (dispersion): pick a hero channel, reweight ×3 to stay unbiased
+  let tintR = 1, tintG = 1, tintB = 1
+  let ior = mat.ior
+  if (mat.dispersion > 0) {
+    const ch = (rng.next() * 3) | 0
+    const c = ch > 2 ? 2 : ch
+    ior = cauchyIor(mat.ior, mat.dispersion, c)
+    tintR = c === 0 ? 3 : 0; tintG = c === 1 ? 3 : 0; tintB = c === 2 ? 3 : 0
+  }
+  const etaI = s.frontFace ? 1.0 : ior
+  const etaT = s.frontFace ? ior : 1.0
+
+  // microfacet normal m around n (m = n when smooth)
+  let mx = nx, my = ny, mz = nz
+  if (!smooth) {
+    const [t1, t2] = orthonormalBasis([nx, ny, nz])
+    const mm = sampleGGX(rng.next(), rng.next(), a)
+    const mw = toWorld(mm, t1, t2, [nx, ny, nz])
+    mx = mw[0]; my = mw[1]; mz = mw[2]
+  }
+  let VoH = vx * mx + vy * my + vz * mz
+  if (VoH < 0) { mx = -mx; my = -my; mz = -mz; VoH = -VoH }
+  if (VoH <= 1e-5) return false
+
+  const F = fresnelDielectric(VoH, etaI, etaT)
+  // incident propagation direction I = −V
+  const ix = -vx, iy = -vy, iz = -vz
+  let wx: number, wy: number, wz: number
+  let transmitted: boolean
+
+  if (rng.next() < F) {
+    // reflection lobe
+    reflect(ix, iy, iz, mx, my, mz, tmpRefract)
+    wx = tmpRefract[0]; wy = tmpRefract[1]; wz = tmpRefract[2]
+    transmitted = false
+  } else {
+    // refraction lobe (Snell about m); TIR can't happen here (F would have been 1)
+    const eta = etaI / etaT
+    if (!refract(ix, iy, iz, mx, my, mz, eta, tmpRefract)) {
+      reflect(ix, iy, iz, mx, my, mz, tmpRefract)
+      wx = tmpRefract[0]; wy = tmpRefract[1]; wz = tmpRefract[2]
+      transmitted = false
+    } else {
+      wx = tmpRefract[0]; wy = tmpRefract[1]; wz = tmpRefract[2]
+      transmitted = true
+    }
+  }
+
+  // smooth → throughput 1; rough → Smith G1 masking on the outgoing direction (≤ 1)
+  const w = smooth ? 1 : smithG1(nx * wx + ny * wy + nz * wz, a)
+  out.wx = wx; out.wy = wy; out.wz = wz
+  out.wr = tintR * w; out.wg = tintG * w; out.wb = tintB * w
+  out.specular = true // a dielectric bounce is specular (or near it) — counts emitters directly
+  out.transmitted = transmitted
+  return true
+}
+
 function sampleBSDF(s: Surface, vx: number, vy: number, vz: number, rng: Rng, f: Float64Array, out: BSDFSample): boolean {
+  if (s.mat.transmission > 0) return sampleDielectric(s, vx, vy, vz, rng, out)
+  out.transmitted = false
   const mat = s.mat
   const metallic = mat.metallic
   const rough = mat.roughness
@@ -436,7 +521,7 @@ function sampleBSDF(s: Surface, vx: number, vy: number, vz: number, rng: Rng, f:
 
 const tmpHit: ClosestHit = { t: 0, tri: -1, u: 0, v: 0 }
 const tmpF = new Float64Array(3)
-const tmpSample: BSDFSample = { wx: 0, wy: 0, wz: 0, wr: 0, wg: 0, wb: 0, specular: false }
+const tmpSample: BSDFSample = { wx: 0, wy: 0, wz: 0, wr: 0, wg: 0, wb: 0, specular: false, transmitted: false }
 const tmpSpan = { t0: 0, t1: 0 }
 const tmpDist: DistanceSample = { scatter: false, t: 0, wr: 1, wg: 1, wb: 1 }
 const MAX_PATH = 256 // absolute interaction guard (volume multiple-scattering safety net)
@@ -456,9 +541,16 @@ export function tracePath(
   let countEmis = true
   const m = ctx.medium ?? null
   let surfaceBounces = 0
+  // Beer–Lambert absorption of the glass body the ray is currently *inside* (0 = outside).
+  let absR = 0, absG = 0, absB = 0
   for (let iter = 0; iter < MAX_PATH; iter++) {
     const hit = ctx.bvh.closest(ox, oy, oz, dx, dy, dz, 1e-4, 1e30, tmpHit)
     const tMax = hit ? tmpHit.t : 1e30
+
+    // attenuate by the absorbing body we are travelling through (this segment's length)
+    if ((absR > 0 || absG > 0 || absB > 0) && tMax < 1e29) {
+      br *= Math.exp(-absR * tMax); bg *= Math.exp(-absG * tMax); bb *= Math.exp(-absB * tMax)
+    }
 
     // ── participating medium over the open segment [0, tMax] ──────────────────
     let scattered = false
@@ -511,14 +603,30 @@ export function tracePath(
     if (countEmis && (em[0] + em[1] + em[2]) > 0) {
       Lr += br * em[0]; Lg += bg * em[1]; Lb += bb * em[2]
     }
-    const dl = directLight(s, vx, vy, vz, ctx, rng, tmpF)
-    Lr += br * dl[0]; Lg += bg * dl[1]; Lb += bb * dl[2]
+    // Next-event estimation only makes sense for the opaque (diffuse+glossy) BRDF; a
+    // specular dielectric is lit purely through BSDF sampling + the emitter/sky it ends
+    // on, so NEE against it would add a spurious diffuse term and double-count.
+    const isGlass = s.mat.transmission > 0
+    if (!isGlass) {
+      const dl = directLight(s, vx, vy, vz, ctx, rng, tmpF)
+      Lr += br * dl[0]; Lg += bg * dl[1]; Lb += bb * dl[2]
+    }
 
     if (surfaceBounces >= ctx.maxBounces) break
     surfaceBounces++
     if (!sampleBSDF(s, vx, vy, vz, rng, tmpF, tmpSample)) break
     br *= tmpSample.wr; bg *= tmpSample.wg; bb *= tmpSample.wb
     countEmis = tmpSample.specular
+
+    // A refraction that crosses the interface flips which body we are inside: entering a
+    // glass body (front face) turns on its Beer–Lambert absorption; exiting clears it.
+    if (tmpSample.transmitted) {
+      if (s.frontFace) {
+        absR = s.mat.attenuation[0]; absG = s.mat.attenuation[1]; absB = s.mat.attenuation[2]
+      } else {
+        absR = 0; absG = 0; absB = 0
+      }
+    }
 
     // Russian roulette after a couple of bounces
     if (iter >= 2) {

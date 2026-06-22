@@ -281,6 +281,45 @@ export const makeCube = (s = 0.9): Mesh => {
   return { name: 'Cube', vertices, indices }
 }
 
+// An equilateral triangular prism (apex up) extruded along Z, with hard per-face
+// normals — the canonical shape for refraction & dispersion: a beam enters one
+// slanted face and leaves through another whose non-parallel orientation bends each
+// wavelength by a different amount, fanning white light into a spectrum.
+export const makePrism = (radius = 0.85, depth = 0.7): Mesh => {
+  const vertices: Vertex[] = []
+  const indices: number[] = []
+  // triangular cross-section in XY: apex at 90°, base corners at 210° / 330°
+  const ang = [Math.PI / 2, (7 * Math.PI) / 6, (11 * Math.PI) / 6]
+  const tri: Vec2[] = ang.map((a) => [Math.cos(a) * radius, Math.sin(a) * radius])
+  const d = depth / 2
+  const addFace = (verts: Vec3[], n: Vec3, uvs: Vec2[]): void => {
+    const base = vertices.length
+    for (let i = 0; i < verts.length; i++) vertices.push({ position: verts[i], normal: n, uv: uvs[i] })
+    // fan-triangulate the (3- or 4-vertex) face
+    for (let i = 1; i < verts.length - 1; i++) indices.push(base, base + i, base + i + 1)
+  }
+  // two triangular caps (front +Z, back −Z)
+  addFace(tri.map((p) => [p[0], p[1], d] as Vec3), [0, 0, 1], [[0, 0], [1, 0], [0.5, 1]])
+  addFace(tri.map((p) => [p[0], p[1], -d] as Vec3).reverse(), [0, 0, -1], [[0, 0], [1, 0], [0.5, 1]])
+  // three rectangular side faces, each with the outward edge normal (in the XY plane)
+  for (let i = 0; i < 3; i++) {
+    const a = tri[i], b = tri[(i + 1) % 3]
+    const ex = b[0] - a[0], ey = b[1] - a[1]
+    let nx = ey, ny = -ex // perpendicular to the edge in XY
+    const nl = Math.hypot(nx, ny) || 1
+    nx /= nl; ny /= nl
+    // ensure it points away from the centre
+    const mx = (a[0] + b[0]) / 2, my = (a[1] + b[1]) / 2
+    if (nx * mx + ny * my < 0) { nx = -nx; ny = -ny }
+    addFace(
+      [[a[0], a[1], d], [b[0], b[1], d], [b[0], b[1], -d], [a[0], a[1], -d]],
+      [nx, ny, 0],
+      [[0, 0], [1, 0], [1, 1], [0, 1]],
+    )
+  }
+  return { name: 'Prism', vertices, indices }
+}
+
 // Figure-8 immersion of the Klein bottle — normals come from finite differences.
 export const makeKlein = (segU = 128, segV = 64): Mesh =>
   parametricSurface(
@@ -345,7 +384,7 @@ export const makeSpring = (turns = 3.5, segU = 320, segV = 14, R = 0.55, r = 0.1
   )
 
 export type MeshKind =
-  | 'sphere' | 'torus' | 'knot' | 'cube' | 'cylinder' | 'klein' | 'mobius' | 'spring' | 'quad' | 'custom'
+  | 'sphere' | 'torus' | 'knot' | 'cube' | 'cylinder' | 'klein' | 'mobius' | 'spring' | 'quad' | 'prism' | 'custom'
 
 export const buildMesh = (kind: MeshKind): Mesh => {
   const m = buildMeshRaw(kind)
@@ -364,6 +403,7 @@ const buildMeshRaw = (kind: MeshKind): Mesh => {
     case 'mobius': return makeMobius()
     case 'spring': return makeSpring()
     case 'quad': return makePlane(1, 1) // a unit quad for building walls / area lights
+    case 'prism': return makePrism()
     case 'custom': return makeSphere() // placeholder; the renderer supplies the real custom mesh
   }
 }

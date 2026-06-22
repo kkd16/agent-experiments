@@ -506,6 +506,79 @@ const nebula = (): SceneConfig => {
   }
 }
 
+// A glass cabinet — the v8 dielectric showcase. A row of transmissive bodies over a
+// checker floor with a few opaque colour props behind them, so the refraction reads:
+// a clear smooth glass sphere, a frosted (rough-dielectric) sphere, two coloured
+// absorbing spheres (Beer–Lambert tint by path length), and a solid glass cube. There
+// are no tricks — every bend is the path tracer solving Snell + Fresnel at each facet,
+// so the spheres act as lenses (the checker behind them flips) and pool light beneath.
+// Reads correctly only under the path tracer (it auto-switches).
+const glass = (): SceneConfig => {
+  const glassMat = (albedo: Vec3, roughness: number, ior: number, attenuation: Vec3, dispersion = 0): Material =>
+    ({ albedo, specular: 0.9, shininess: 120, rim: 0, metallic: 0, roughness, transmission: 1, ior, attenuation, dispersion })
+  const objects: SceneObject[] = [
+    { id: 'clear', meshKind: 'sphere', position: [-2.5, 0.75, 0], scale: 0.72, spin: 0, tiltSpin: 0, baseRotation: [0, 0, 0], material: glassMat([1, 1, 1], 0.0, 1.5, [0, 0, 0]), texture: 'none', normalMap: 'none' },
+    { id: 'frost', meshKind: 'sphere', position: [-0.85, 0.75, 0], scale: 0.72, spin: 0, tiltSpin: 0, baseRotation: [0, 0, 0], material: glassMat([1, 1, 1], 0.18, 1.5, [0, 0, 0]), texture: 'none', normalMap: 'none' },
+    { id: 'amber', meshKind: 'sphere', position: [0.85, 0.75, 0], scale: 0.72, spin: 0, tiltSpin: 0, baseRotation: [0, 0, 0], material: glassMat([1, 1, 1], 0.0, 1.5, [0.35, 1.1, 2.4]), texture: 'none', normalMap: 'none' },
+    { id: 'cube', meshKind: 'cube', position: [2.55, 0.7, 0], scale: 0.6, spin: 0.15, tiltSpin: 0, baseRotation: [0.2, 0.5, 0], material: glassMat([1, 1, 1], 0.0, 1.5, [1.9, 0.6, 0.25]), texture: 'none', normalMap: 'none' },
+    // opaque colour props set behind the glass so the refraction has something to bend
+    { id: 'b0', meshKind: 'sphere', position: [-1.7, 0.45, -2.2], scale: 0.4, spin: 0, tiltSpin: 0, baseRotation: [0, 0, 0], material: mat([0.9, 0.3, 0.32], 0.4, 40, 0, 0, 0.4), texture: 'none', normalMap: 'none' },
+    { id: 'b1', meshKind: 'sphere', position: [0, 0.45, -2.4], scale: 0.4, spin: 0, tiltSpin: 0, baseRotation: [0, 0, 0], material: mat([0.3, 0.85, 0.45], 0.4, 40, 0, 0, 0.4), texture: 'none', normalMap: 'none' },
+    { id: 'b2', meshKind: 'sphere', position: [1.7, 0.45, -2.2], scale: 0.4, spin: 0, tiltSpin: 0, baseRotation: [0, 0, 0], material: mat([0.35, 0.55, 0.95], 0.4, 40, 0, 0, 0.4), texture: 'none', normalMap: 'none' },
+  ]
+  return {
+    name: 'Glass',
+    ground: true,
+    groundTexture: 'checker',
+    groundNormalMap: 'none',
+    groundMaterial: mat([0.82, 0.83, 0.86], 0.2, 24, 0, 0, 0.5),
+    objects,
+    lights: [
+      { type: 'dir', direction: normalize([-0.45, -0.85, -0.35]) as Vec3, color: [1, 0.97, 0.92], intensity: 2.0 },
+      { type: 'point', position: [2.6, 2.8, 2.6], color: [0.6, 0.75, 1], intensity: 7, range: 12 },
+    ],
+    ambient: [0.14, 0.16, 0.2],
+    bgTop: [0.07, 0.09, 0.14],
+    bgBottom: [0.16, 0.16, 0.2],
+    fogColor: [0.1, 0.12, 0.16],
+    fogDensity: 0,
+    sky: DEFAULT_SKY,
+    view: { target: [0, 0.7, 0], yaw: 0.32, pitch: 0.14, distance: 7.2 },
+  }
+}
+
+// A dispersion prism — a triangular glass prism against a dark backdrop lit by a single
+// bright sun. Each wavelength has a slightly different IOR (Cauchy), so the prism bends
+// red least and blue most and the refracted image of the sun fans into a spectrum. The
+// path tracer renders one hero RGB channel per ray with that channel's IOR, recombining
+// to the rainbow over many samples. Dispersion is on; let it converge.
+const prism = (): SceneConfig => {
+  const prismMat: Material = { albedo: [1, 1, 1], specular: 0.9, shininess: 130, rim: 0, metallic: 0, roughness: 0, transmission: 1, ior: 1.52, attenuation: [0, 0, 0], dispersion: 1.4 }
+  const objects: SceneObject[] = [
+    { id: 'prism', meshKind: 'prism', position: [0, 1.0, 0], scale: 1.5, spin: 0, tiltSpin: 0, baseRotation: [0, 0.0, 0], material: prismMat, texture: 'none', normalMap: 'none' },
+    // a bright emissive bar behind the prism acts as the light source the prism disperses
+    { id: 'lamp', meshKind: 'cube', position: [-3.2, 1.4, -1.0], scale: 0.12, spin: 0, tiltSpin: 0, baseRotation: [0, 0, 0], material: { albedo: [0, 0, 0], specular: 0, shininess: 1, rim: 0, metallic: 0, roughness: 1, emission: [22, 22, 22] }, texture: 'none', normalMap: 'none' },
+  ]
+  return {
+    name: 'Prism',
+    ground: true,
+    groundTexture: 'none',
+    groundNormalMap: 'none',
+    groundMaterial: mat([0.16, 0.17, 0.2], 0.2, 24, 0, 0, 0.6),
+    objects,
+    lights: [
+      { type: 'dir', direction: normalize([0.7, -0.35, -0.2]) as Vec3, color: [1, 1, 1], intensity: 1.4 },
+    ],
+    ambient: [0.02, 0.02, 0.03],
+    bgTop: [0.015, 0.018, 0.025],
+    bgBottom: [0.02, 0.022, 0.03],
+    fogColor: [0, 0, 0],
+    fogDensity: 0,
+    sky: { ...DEFAULT_SKY, zenith: [0.02, 0.025, 0.04], horizon: [0.04, 0.04, 0.05], ground: [0.01, 0.01, 0.012], sunDir: normalize([-0.7, 0.4, 0.2]) as Vec3, sunColor: [1, 1, 1], sunIntensity: 6, sunAngularSize: 0.012 },
+    view: { target: [0, 1.0, 0], yaw: 0.0, pitch: 0.05, distance: 6.4 },
+  }
+}
+
 export const PRESETS: Record<string, () => SceneConfig> = {
   showcase,
   interior,
@@ -515,6 +588,8 @@ export const PRESETS: Record<string, () => SceneConfig> = {
   exhibit,
   cornell,
   reflections,
+  glass,
+  prism,
   cathedral,
   nebula,
   implicit: implicitScene,
@@ -530,6 +605,8 @@ export const PRESET_LABELS: { key: string; label: string }[] = [
   { key: 'exhibit', label: 'Math Exhibit' },
   { key: 'cornell', label: 'Cornell Box' },
   { key: 'reflections', label: 'Reflections' },
+  { key: 'glass', label: 'Glass' },
+  { key: 'prism', label: 'Prism' },
   { key: 'cathedral', label: 'Cathedral' },
   { key: 'nebula', label: 'Nebula' },
   { key: 'implicit', label: 'Implicit (SDF)' },

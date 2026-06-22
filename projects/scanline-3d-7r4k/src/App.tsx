@@ -44,7 +44,7 @@ const DEFAULT_SETTINGS: RenderSettings = {
 
 // Scenes that are built for global illumination — selecting one flips to the ray
 // tracer so they don't read as a flat rasterized box.
-const RT_SCENES = new Set(['cornell', 'reflections', 'cathedral', 'nebula'])
+const RT_SCENES = new Set(['cornell', 'reflections', 'glass', 'prism', 'cathedral', 'nebula'])
 
 // Scenes built to show off the volumetric medium — selecting one switches to the ray
 // tracer AND turns the medium on with a fitting preset.

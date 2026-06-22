@@ -20,6 +20,11 @@ export interface RTMaterial {
   emission: Vec3
   texture: Texture | null
   normalMap: NormalMap | null
+  // dielectric transmission (v8)
+  transmission: number // 0 = opaque, > 0 = glass (rough-dielectric BSDF)
+  ior: number // index of refraction
+  attenuation: Vec3 // Beer–Lambert absorption coeff inside the body (1/world-unit)
+  dispersion: number // wavelength IOR spread (prism rainbow)
 }
 
 export interface RTInstance {
@@ -40,6 +45,10 @@ function toRTMaterial(m: Material, texture: Texture | null, normalMap: NormalMap
     emission: m.emission ?? [0, 0, 0],
     texture,
     normalMap,
+    transmission: m.transmission ?? 0,
+    ior: m.ior ?? 1.5,
+    attenuation: m.attenuation ?? [0, 0, 0],
+    dispersion: m.dispersion ?? 0,
   }
 }
 
