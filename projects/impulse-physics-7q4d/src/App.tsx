@@ -85,9 +85,10 @@ export default function App() {
           <div>
             <h1>Impulse</h1>
             <p className="tagline">
-              A 2D rigid-body physics engine, from scratch — GJK/EPA, capsules &amp; rounded
-              shapes, continuous collision, an exact block solver, buoyancy &amp; fluid drag,
-              wheel-joint suspension, sensors, shape-casting and joints with limits.
+              A 2D physics engine, from scratch — rigid bodies (GJK/EPA, an exact block solver,
+              continuous collision), XPBD soft bodies, real-time Voronoi fracture, and now an
+              incompressible <strong>Position-Based Fluid</strong>: thousands of SPH particles that
+              splash, pour and float rigid bodies — all two-way coupled.
             </p>
           </div>
         </div>

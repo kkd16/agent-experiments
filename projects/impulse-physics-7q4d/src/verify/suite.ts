@@ -22,9 +22,13 @@ import {
   fractureMaterial,
   DynamicTree,
   epaPenetration,
+  FluidSystem,
+  fluidParams,
   GearJoint,
   gjkDistance,
+  Kernels,
   makeBlob,
+  SpatialHash,
   makeCloth,
   makeRope,
   Mat22,
@@ -1159,6 +1163,182 @@ export function runVerification(): CheckResult[] {
     w.onFracture = () => { fired++; };
     for (let i = 0; i < 240; i++) w.step(1 / 120);
     a.ok('Generation cap blocks fracture', fired === 0, `events=${fired}`);
+  }
+
+  // ---- Fluids: SPH kernels -------------------------------------------------
+  a.section('Fluids · SPH kernels');
+  {
+    const h = 1.0;
+    const k = new Kernels(h);
+    // The poly6 kernel must integrate to 1 over the plane (2-D normalisation) —
+    // a midpoint Riemann sum over the support disc confirms the 4/(π h⁸) factor.
+    let integral = 0;
+    const N = 300;
+    const step = (2 * h) / N;
+    for (let i = 0; i < N; i++) {
+      for (let j = 0; j < N; j++) {
+        const x = -h + (i + 0.5) * step;
+        const y = -h + (j + 0.5) * step;
+        integral += k.W(Math.hypot(x, y)) * step * step;
+      }
+    }
+    a.close('poly6 integrates to 1 (2-D)', integral, 1, 0.02);
+    a.ok('poly6 positive & decreasing', k.W(0) > k.W(h / 2) && k.W(h / 2) > 0, `W0=${k.W(0).toFixed(3)}`);
+    a.ok('poly6 has compact support', k.W(h) === 0 && k.W(h * 1.1) === 0, '');
+    // The spiky gradient vanishes at r=h, is finite (non-zero) near the origin,
+    // and points *toward* the neighbour (−rij) so compressed pairs separate.
+    a.ok('spiky gradient zero at r=h', k.gradSpiky(new Vec2(h, 0)).length() < 1e-12, '');
+    const gNear = k.gradSpiky(new Vec2(0.05 * h, 0));
+    a.ok('spiky gradient finite & non-zero near 0', gNear.length() > 0 && Number.isFinite(gNear.length()),
+      `|∇|=${gNear.length().toFixed(2)}`);
+    a.ok('spiky gradient points toward neighbour', k.gradSpiky(new Vec2(0.5 * h, 0)).x < 0, '');
+  }
+
+  // ---- Fluids: spatial hash ------------------------------------------------
+  a.section('Fluids · spatial hash');
+  {
+    const rng = new Rng(0x1234);
+    const pts: Vec2[] = [];
+    for (let i = 0; i < 200; i++) pts.push(new Vec2(rng.range(-5, 5), rng.range(-5, 5)));
+    const h = 0.7;
+    const hash = new SpatialHash(h);
+    hash.build(pts);
+    let mismatches = 0;
+    for (let i = 0; i < pts.length; i++) {
+      const brute = new Set<number>();
+      for (let j = 0; j < pts.length; j++) {
+        if (j !== i && pts[i].sub(pts[j]).length() < h) brute.add(j);
+      }
+      const found = new Set<number>();
+      hash.forEachNeighbor(i, (j) => {
+        if (pts[i].sub(pts[j]).length() < h) found.add(j);
+      });
+      // Every true neighbour must be among the hash candidates.
+      for (const j of brute) if (!found.has(j)) mismatches++;
+    }
+    a.ok('Hash finds every within-radius neighbour (vs brute force)', mismatches === 0, `misses=${mismatches}`);
+  }
+
+  // ---- Fluids: rest density & incompressibility ----------------------------
+  a.section('Fluids · incompressibility');
+  {
+    // A rest-packed block sits at the rest density ρ₀ = m/dx² (the discretisation
+    // is self-consistent): the densest interior particle is within a few % of ρ₀.
+    const fs = new FluidSystem({ spacing: 0.25 });
+    fs.fillBox(new Vec2(-2, -2), new Vec2(2, 2));
+    fs.recomputeDensities();
+    let center = fs.particles[0];
+    let cd = Infinity;
+    for (const p of fs.particles) {
+      const d = p.pos.length();
+      if (d < cd) { cd = d; center = p; }
+    }
+    a.close('Rest-packed block sits at ρ₀', center.density / fs.params.restDensity, 1, 0.1);
+  }
+  {
+    // A column of water released in a tank settles: it stays finite, conserves
+    // mass, comes to rest, never over-compresses, and never escapes the domain.
+    const w = new World(new Vec2(0, -9.8));
+    const fs = new FluidSystem({ spacing: 0.25, bounds: new AABB(new Vec2(-3, 0), new Vec2(3, 12)) });
+    fs.fillBox(new Vec2(-2.8, 0.2), new Vec2(2.8, 6));
+    w.setFluid(fs);
+    const n0 = fs.particles.length;
+    let finite = true;
+    for (let i = 0; i < 600; i++) {
+      w.step(1 / 60);
+      for (const p of fs.particles) if (!p.pos.isFinite()) finite = false;
+    }
+    fs.recomputeDensities();
+    const st = fs.stats();
+    let maxAbsX = 0;
+    for (const p of fs.particles) maxAbsX = Math.max(maxAbsX, Math.abs(p.pos.x));
+    a.ok('Settling column stays finite', finite, '');
+    a.ok('Mass conserved (particle count)', fs.particles.length === n0, `n=${fs.particles.length}`);
+    a.close('Settled average density ≈ ρ₀', st.averageDensity / fs.params.restDensity, 1, 0.15);
+    a.ok('Incompressible (compression error ≈ 0)', st.densityError < 0.05, `err=${st.densityError.toFixed(4)}`);
+    a.ok('Comes to hydrostatic rest (KE → 0)', st.kineticEnergy / n0 < 0.1, `KE/n=${(st.kineticEnergy / n0).toFixed(4)}`);
+    a.ok('Fluid stays inside the tank (no escape)', maxAbsX < 3.01, `maxX=${maxAbsX.toFixed(3)}`);
+  }
+  {
+    // Communicating vessels: water poured into one chamber crosses a floor gap
+    // under a central wall and equalises the levels on both sides.
+    const w = new World(new Vec2(0, -9.8));
+    const fs = new FluidSystem({ spacing: 0.28, bounds: new AABB(new Vec2(-5, 0), new Vec2(5, 14)) });
+    w.addBody(new Body(Polygon.box(0.2, 4), { type: BodyType.Static, position: new Vec2(0, 5) }));
+    fs.fillBox(new Vec2(-4.7, 0.2), new Vec2(-0.4, 7));
+    w.setFluid(fs);
+    for (let i = 0; i < 1400; i++) w.step(1 / 60);
+    let lN = 0, rN = 0, lH = 0, rH = 0;
+    for (const p of fs.particles) {
+      if (p.pos.x < 0) { lN++; lH += p.pos.y; } else { rN++; rH += p.pos.y; }
+    }
+    a.ok('Fluid crosses to the empty chamber', rN > fs.particles.length * 0.25, `L=${lN} R=${rN}`);
+    if (lN > 0 && rN > 0) {
+      a.close('Vessel levels equalise', lH / lN, rH / rN, 0.6);
+    } else {
+      a.ok('Vessel levels equalise', false, 'one side empty');
+    }
+  }
+
+  // ---- Fluids: two-way rigid coupling --------------------------------------
+  a.section('Fluids · two-way coupling');
+  {
+    // Buoyancy by density: a light box floats well above the floor while a dense
+    // box of the same size sinks to the bottom of the same tank.
+    const settle = (densFactor: number): number => {
+      const w = new World(new Vec2(0, -9.8));
+      const rho = fluidParams({ spacing: 0.22 }).restDensity;
+      const fs = new FluidSystem({ spacing: 0.22, bounds: new AABB(new Vec2(-3, 0.4), new Vec2(3, 12)) });
+      w.addBody(new Body(Polygon.box(3, 0.4), { type: BodyType.Static, position: new Vec2(0, 0) }));
+      w.addBody(new Body(Polygon.box(0.4, 6), { type: BodyType.Static, position: new Vec2(-3.4, 6) }));
+      w.addBody(new Body(Polygon.box(0.4, 6), { type: BodyType.Static, position: new Vec2(3.4, 6) }));
+      fs.fillBox(new Vec2(-2.9, 0.6), new Vec2(2.9, 5));
+      w.setFluid(fs);
+      const box = w.addBody(new Body(Polygon.box(0.7, 0.7), { position: new Vec2(0, 6), density: rho * densFactor }));
+      let finite = true;
+      for (let i = 0; i < 900; i++) {
+        w.step(1 / 60);
+        if (!box.worldCenter.isFinite()) finite = false;
+      }
+      return finite ? box.worldCenter.y : NaN;
+    };
+    const corkY = settle(0.2);
+    const ingotY = settle(5);
+    a.ok('Light body floats above a dense one', Number.isFinite(corkY) && Number.isFinite(ingotY) && corkY > ingotY + 0.3,
+      `cork y=${corkY.toFixed(2)}  ingot y=${ingotY.toFixed(2)}`);
+    a.ok('Dense body sinks to the floor', Number.isFinite(ingotY) && ingotY < 1.5, `ingot y=${ingotY.toFixed(2)}`);
+  }
+  {
+    // A jet of fluid fired horizontally at a free block transfers momentum and
+    // pushes it in the jet direction (the coupling reaction, the other way round).
+    const w = new World(new Vec2(0, 0));
+    const fs = new FluidSystem({ spacing: 0.2, viscosity: 0 });
+    const box = w.addBody(new Body(Polygon.box(0.6, 0.9), { position: new Vec2(2, 0), density: 1, gravityScale: 0 }));
+    for (let row = 0; row < 9; row++) fs.add(new Vec2(-1, -0.8 + row * 0.2), new Vec2(8, 0));
+    w.setFluid(fs);
+    for (let i = 0; i < 120; i++) w.step(1 / 60);
+    a.ok('A fluid jet pushes a free body downstream', box.worldCenter.x > 2.05 && box.linearVelocity.x > 0,
+      `x=${box.worldCenter.x.toFixed(2)} vx=${box.linearVelocity.x.toFixed(2)}`);
+  }
+
+  // ---- Fluids: determinism -------------------------------------------------
+  a.section('Fluids · determinism');
+  {
+    const mk = (): FluidSystem => {
+      const w = new World(new Vec2(0, -9.8));
+      const fs = new FluidSystem({ spacing: 0.25, bounds: new AABB(new Vec2(-3, 0), new Vec2(3, 10)) });
+      fs.fillBox(new Vec2(-2, 1), new Vec2(2, 4));
+      w.setFluid(fs);
+      for (let i = 0; i < 200; i++) w.step(1 / 60);
+      return fs;
+    };
+    const fa = mk();
+    const fb = mk();
+    let drift = 0;
+    for (let i = 0; i < fa.particles.length; i++) {
+      drift += fa.particles[i].pos.sub(fb.particles[i].pos).length();
+    }
+    a.close('Fluid simulation is deterministic', drift, 0, 1e-12);
   }
 
   return a.results;

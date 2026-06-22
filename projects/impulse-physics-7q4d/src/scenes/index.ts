@@ -1,10 +1,12 @@
 import {
+  AABB,
   Body,
   BodyType,
   BuoyancyZone,
   Capsule,
   Circle,
   DistanceJoint,
+  FluidSystem,
   fractureMaterial,
   GearJoint,
   MotorJoint,
@@ -15,6 +17,7 @@ import {
   RevoluteJoint,
   Rng,
   Vec2,
+  WeldJoint,
   WheelJoint,
   World,
   crossSV,
@@ -22,6 +25,7 @@ import {
   makeCloth,
   makeRope,
   makeSoftBox,
+  type FluidParams,
   type Joint,
   type Shape,
 } from '../engine';
@@ -41,7 +45,7 @@ export interface SceneDef {
   id: string;
   name: string;
   description: string;
-  category: 'Stacking' | 'Joints' | 'Soft' | 'Fracture' | 'Showcase' | 'Materials' | 'Stress';
+  category: 'Stacking' | 'Joints' | 'Soft' | 'Fluid' | 'Fracture' | 'Showcase' | 'Materials' | 'Stress';
   build: (world: World, rng: Rng) => BuildResult;
 }
 
@@ -1637,6 +1641,214 @@ const shatterYard: SceneDef = {
   },
 };
 
+// ---- Fluid (Position-Based SPH) -------------------------------------------
+
+/**
+ * A rigid tank — floor + two walls — paired with an SPH {@link FluidSystem} whose
+ * domain box matches the inner cavity (the box gives cheap reflecting walls; the
+ * rigid faces let dropped bodies share the same container). Returns the system so
+ * the scene can fill it, add emitters and read it back.
+ */
+function fluidTank(
+  world: World,
+  hw: number,
+  height: number,
+  fluidOpts: Partial<FluidParams> = {},
+): FluidSystem {
+  const t = 0.4;
+  world.addBody(new Body(Polygon.box(hw + t, t), {
+    type: BodyType.Static,
+    position: new Vec2(0, -t),
+    friction: 0.4,
+  }));
+  world.addBody(new Body(Polygon.box(t, height), {
+    type: BodyType.Static,
+    position: new Vec2(-hw - t, height - t),
+    friction: 0.2,
+  }));
+  world.addBody(new Body(Polygon.box(t, height), {
+    type: BodyType.Static,
+    position: new Vec2(hw + t, height - t),
+    friction: 0.2,
+  }));
+  const bounds = new AABB(new Vec2(-hw, 0), new Vec2(hw, height * 2 + 4));
+  const fs = new FluidSystem({ bounds, ...fluidOpts });
+  world.setFluid(fs);
+  return fs;
+}
+
+const damBreak: SceneDef = {
+  id: 'dam-break',
+  name: 'Dam Break',
+  description:
+    'The canonical SPH benchmark: a tall column of water is released into an empty tank and collapses, rushing across the floor, climbing the far wall and sloshing back in a breaking wave. Built from ~500 incompressible particles — watch the average density (in the HUD) hold near 1.0 the whole time. Spray more in with the 💧 tool.',
+  category: 'Fluid',
+  build: (world) => {
+    const fs = fluidTank(world, 8, 9, { spacing: 0.28 });
+    fs.fillBox(new Vec2(-7.6, 0.15), new Vec2(-2.6, 8));
+    return { camera: { center: new Vec2(0, 4), scale: 30 } };
+  },
+};
+
+const fountain: SceneDef = {
+  id: 'fountain',
+  name: 'Fountain',
+  description:
+    'A nozzle in the floor jets a continuous stream of water upward; it arcs over, rains back into the growing pool, and the whole basin finds its level. The jet particles glow brighter the faster they move. A live emitter feeding a capped particle budget.',
+  category: 'Fluid',
+  build: (world) => {
+    const fs = fluidTank(world, 7, 11, { spacing: 0.26, maxParticles: 900, viscosity: 0.04 });
+    fs.fillBox(new Vec2(-6.7, 0.15), new Vec2(6.7, 1.4));
+    fs.addEmitter({
+      origin: new Vec2(0, 0.6),
+      dir: new Vec2(0, 1),
+      speed: 11,
+      rate: 230,
+      spread: 0.14,
+      width: 0.5,
+    });
+    return { camera: { center: new Vec2(0, 4.5), scale: 26 } };
+  },
+};
+
+const vessels: SceneDef = {
+  id: 'communicating-vessels',
+  name: 'Communicating Vessels',
+  description:
+    'Two chambers joined by a gap under a central wall. All the water starts on the left; it flows under the divider until both sides reach the same level — hydrostatic equilibrium, emergent from nothing but the per-particle incompressibility constraint. "Water finds its own level," simulated.',
+  category: 'Fluid',
+  build: (world) => {
+    const fs = fluidTank(world, 8, 9, { spacing: 0.28 });
+    // Central divider with a gap along the floor.
+    world.addBody(new Body(Polygon.box(0.3, 3.2), {
+      type: BodyType.Static,
+      position: new Vec2(0, 4.6),
+      friction: 0.2,
+    }));
+    fs.fillBox(new Vec2(-7.6, 0.15), new Vec2(-0.5, 7));
+    return { camera: { center: new Vec2(0, 4), scale: 30 } };
+  },
+};
+
+const splashPool: SceneDef = {
+  id: 'splash-pool',
+  name: 'Splash Pool',
+  description:
+    'A pool of water with rigid bodies raining in. Light rafts and corks bob on the surface (real two-way buoyancy — every particle pushes up on what it touches), heavy ingots punch through and sink to the floor, and each impact throws up a crown of spray. Density decides destiny.',
+  category: 'Fluid',
+  build: (world, rng) => {
+    const fs = fluidTank(world, 9, 9, { spacing: 0.3, maxParticles: 900 });
+    fs.fillBox(new Vec2(-8.6, 0.15), new Vec2(8.6, 4.2));
+    const rho = fs.params.restDensity;
+    let dropped = 0;
+    const drops: Array<{ hw: number; hh: number; dens: number; color: string; circle?: boolean }> = [
+      { hw: 1.4, hh: 0.3, dens: rho * 0.25, color: '#ffd166' }, // light raft → floats
+      { hw: 0.5, hh: 0.5, dens: rho * 6, color: '#9aa7b8' }, // dense ingot → sinks
+      { hw: 0, hh: 0.55, dens: rho * 0.4, color: '#7CFFCB', circle: true }, // cork ball
+      { hw: 1.6, hh: 0.35, dens: rho * 0.3, color: '#ff9e64' }, // raft
+      { hw: 0.55, hh: 0.55, dens: rho * 5, color: '#c0c8d4' }, // ingot
+    ];
+    return {
+      camera: { center: new Vec2(0, 4), scale: 26 },
+      update: (time) => {
+        if (dropped < drops.length && time > dropped * 1.8 + 1) {
+          const d = drops[dropped++];
+          const shape = d.circle ? new Circle(d.hh) : Polygon.box(d.hw, d.hh);
+          world.addBody(new Body(shape, {
+            position: new Vec2(rng.range(-3, 3), 8.5),
+            density: d.dens,
+            friction: 0.4,
+            restitution: 0.05,
+            color: d.color,
+          }));
+        }
+      },
+    };
+  },
+};
+
+const waterwheel: SceneDef = {
+  id: 'waterwheel',
+  name: 'Waterwheel',
+  description:
+    'A jet of water hammers the paddles of a free-spinning wheel and drives it round — momentum carried from the fluid into a rigid mechanism through the two-way coupling. The same impulse that splashes the water turns the wheel. Pure water power, no scripted motion.',
+  category: 'Fluid',
+  build: (world) => {
+    const fs = fluidTank(world, 8, 11, { spacing: 0.26, maxParticles: 800, viscosity: 0.03 });
+    fs.fillBox(new Vec2(-7.6, 0.15), new Vec2(7.6, 1.2));
+
+    // A four-armed paddle wheel: two crossed bars welded together, the pair free
+    // to spin on a revolute pivot anchored to a static hub.
+    const cx = 1.5;
+    const cy = 5.2;
+    const hub = world.addBody(new Body(new Circle(0.18), {
+      type: BodyType.Static,
+      position: new Vec2(cx, cy),
+    }));
+    const armA = world.addBody(new Body(Polygon.box(2.2, 0.16), {
+      position: new Vec2(cx, cy),
+      density: 1.2,
+      color: '#9fd8ff',
+    }));
+    const armB = world.addBody(new Body(Polygon.box(0.16, 2.2), {
+      position: new Vec2(cx, cy),
+      density: 1.2,
+      color: '#9fd8ff',
+    }));
+    world.addJoint(new WeldJoint(armA, armB, new Vec2(cx, cy)));
+    world.addJoint(new RevoluteJoint(hub, armA, new Vec2(cx, cy)));
+
+    fs.addEmitter({
+      origin: new Vec2(cx - 3.4, cy + 2.4),
+      dir: new Vec2(0.55, -1),
+      speed: 12,
+      rate: 200,
+      spread: 0.06,
+      width: 0.4,
+    });
+    return { camera: { center: new Vec2(0, 4.5), scale: 24 } };
+  },
+};
+
+const funnel: SceneDef = {
+  id: 'funnel',
+  name: 'Funnel',
+  description:
+    'Water poured into a steep funnel necks down through the throat and streams into the basin below, the flow rate set by the gap. A study in constriction — the particles accelerate (and brighten) as they squeeze through, then spread and settle.',
+  category: 'Fluid',
+  build: (world) => {
+    const fs = fluidTank(world, 8, 12, { spacing: 0.26, maxParticles: 950, viscosity: 0.03 });
+    // A V-funnel: two angled ramps leaving a throat at the centre.
+    world.addBody(new Body(Polygon.box(4, 0.3), {
+      type: BodyType.Static,
+      position: new Vec2(-3.0, 6.4),
+      angle: -0.62,
+      friction: 0.1,
+    }));
+    world.addBody(new Body(Polygon.box(4, 0.3), {
+      type: BodyType.Static,
+      position: new Vec2(3.0, 6.4),
+      angle: 0.62,
+      friction: 0.1,
+    }));
+    fs.fillBox(new Vec2(-4.2, 7.2), new Vec2(4.2, 11));
+    return { camera: { center: new Vec2(0, 5.5), scale: 22 } };
+  },
+};
+
+const waterSandbox: SceneDef = {
+  id: 'water-sandbox',
+  name: 'Water Sandbox',
+  description:
+    'An empty tank and the 💧 water tool — pick it in the Spawn panel and click-drag to paint water wherever you like. Drop in rigid shapes too (switch the spawn shape) and watch them splash, float or sink. Your aquarium.',
+  category: 'Fluid',
+  build: (world) => {
+    const fs = fluidTank(world, 9, 9, { spacing: 0.28, maxParticles: 1400 });
+    fs.fillBox(new Vec2(-8.6, 0.15), new Vec2(8.6, 2.2));
+    return { camera: { center: new Vec2(0, 4), scale: 24 } };
+  },
+};
+
 export const SCENES: SceneDef[] = [
   pyramid,
   stacks,
@@ -1660,6 +1872,13 @@ export const SCENES: SceneDef[] = [
   trampoline,
   waterBalloons,
   ropeSwings,
+  damBreak,
+  fountain,
+  vessels,
+  splashPool,
+  waterwheel,
+  funnel,
+  waterSandbox,
   glassPane,
   shatterWall,
   shatterTower,

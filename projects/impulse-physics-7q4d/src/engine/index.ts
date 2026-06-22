@@ -79,6 +79,17 @@ export {
   type SoftRender,
 } from './soft';
 
+export {
+  FluidParticle,
+  FluidSystem,
+  fluidParams,
+  Kernels,
+  SpatialHash,
+  type Emitter,
+  type FluidParams,
+  type FluidStats,
+} from './sph';
+
 export { type Joint, type JointContext } from './joints/joint';
 export { RevoluteJoint } from './joints/revolute';
 export { DistanceJoint } from './joints/distance';
