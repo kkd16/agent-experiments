@@ -5,14 +5,18 @@ import type { ExploreTab } from './views/ExploreView'
 import CompareView from './views/CompareView'
 import BuildView from './views/BuildView'
 import type { BuildTab } from './views/BuildView'
+import GrammarView from './views/GrammarView'
+import type { GrammarTab } from './views/GrammarView'
 import { copyText } from './lib/download'
 import { decodeHash, encodeHash } from './lib/hash'
 import type { AppState, Mode } from './lib/hash'
 import { COMPARE_EXAMPLES, EXAMPLES } from './examples'
+import { GRAMMAR_EXAMPLES } from './engine/cfg/examples'
 import { BUILD_TEMPLATES } from './engine/edit'
 
 const VALID_TABS: ExploreTab[] = ['ast', 'nfa', 'dfa', 'min', 'der', 'mn']
 const VALID_BUILD_TABS: BuildTab[] = ['editor', 'dfa', 'min', 'mn']
+const VALID_GRAMMAR_TABS: GrammarTab[] = ['analyze', 'cnf', 'cyk', 'earley', 'tree', 'sampler', 'pda', 'pumping']
 const VALID_OPS = ['union', 'inter', 'diffAB', 'diffBA', 'symdiff']
 
 const DEFAULT_STATE: AppState = {
@@ -25,6 +29,7 @@ const DEFAULT_STATE: AppState = {
     input: '',
   },
   build: { automaton: BUILD_TEMPLATES[0].make(), tab: 'editor', input: 'aab' },
+  grammar: { text: GRAMMAR_EXAMPLES[0].text, tab: 'cyk', input: GRAMMAR_EXAMPLES[0].test },
 }
 
 /** Sanitize a decoded state so a hand-edited URL can never wedge a view. */
@@ -32,11 +37,13 @@ function clean(s: AppState): AppState {
   const tab = VALID_TABS.includes(s.explore.tab as ExploreTab) ? s.explore.tab : 'nfa'
   const op = VALID_OPS.includes(s.compare.op) ? s.compare.op : 'inter'
   const btab = VALID_BUILD_TABS.includes(s.build.tab as BuildTab) ? s.build.tab : 'editor'
+  const gtab = VALID_GRAMMAR_TABS.includes(s.grammar.tab as GrammarTab) ? s.grammar.tab : 'cyk'
   return {
     ...s,
     explore: { ...s.explore, tab },
     compare: { ...s.compare, op },
     build: { ...s.build, tab: btab },
+    grammar: { ...s.grammar, tab: gtab },
   }
 }
 
@@ -80,7 +87,9 @@ export default function App() {
                 ? 'regex → ε-NFA → DFA → minimal DFA → derivatives, built from scratch'
                 : state.mode === 'compare'
                   ? 'compare two regexes: product construction, boolean algebra & equivalence'
-                  : 'draw your own automaton — determinize, minimize & read off a regex'}
+                  : state.mode === 'build'
+                    ? 'draw your own automaton — determinize, minimize & read off a regex'
+                    : 'context-free grammars: normalize, parse (CYK & Earley), build a PDA & pump'}
             </p>
           </div>
         </div>
@@ -110,6 +119,14 @@ export default function App() {
             >
               Build
             </button>
+            <button
+              role="tab"
+              aria-selected={state.mode === 'grammar'}
+              className={`mode-btn${state.mode === 'grammar' ? ' active' : ''}`}
+              onClick={() => setMode('grammar')}
+            >
+              Grammar
+            </button>
           </div>
           <button
             className="share-btn"
@@ -128,7 +145,16 @@ export default function App() {
         </div>
       </header>
 
-      {state.mode === 'explore' ? (
+      {state.mode === 'grammar' ? (
+        <GrammarView
+          text={state.grammar.text}
+          onText={(text) => setState((s) => ({ ...s, grammar: { ...s.grammar, text } }))}
+          input={state.grammar.input}
+          onInput={(input) => setState((s) => ({ ...s, grammar: { ...s.grammar, input } }))}
+          tab={state.grammar.tab as GrammarTab}
+          onTab={(tab) => setState((s) => ({ ...s, grammar: { ...s.grammar, tab } }))}
+        />
+      ) : state.mode === 'explore' ? (
         <ExploreView
           regex={state.explore.regex}
           onRegex={(regex) => setState((s) => ({ ...s, explore: { ...s.explore, regex } }))}

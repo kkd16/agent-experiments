@@ -164,14 +164,96 @@ and adds closure-property constructions. Everything stays from-scratch and libra
   languages are closed under reversal and complement, shown as derived machines in Build mode
 - [x] Differential-tested: L(reverse(A)) = reverse(L(A)) and L(complement(A)) = Σ* − L(A) on samples
 
+## v4 — climbing the Chomsky hierarchy: the context-free laboratory (planned + built this session)
+
+The whole app so far lives at level 3 of the Chomsky hierarchy — **regular** languages: regex, NFA,
+DFA, minimization, Myhill–Nerode, derivatives, the product algebra. v4 climbs one level up to the
+**context-free** languages (level 2): you write a grammar, watch it get normalised, parsed two
+different ways, turned into a pushdown automaton, and stress-tested with the CFL pumping lemma. It
+also builds the **bridge** down to the regular world (every DFA is a right-linear grammar), so the
+two halves of the app reason about the same languages. Everything stays from-scratch and
+library-free; every algorithm is differential-tested against the others and against brute force.
+
+### The CFG engine (`src/engine/cfg/`)
+
+- [x] `grammar.ts` — the data model (`Grammar`, `Production`), a tolerant text **parser** (single
+  uppercase letters = nonterminals, everything else = terminals; `->`/`→`/`::=`, `|` alternation,
+  `ε`/empty for the empty word, `#` comments) with line/column error reporting, and a pretty-printer.
+- [x] `analyze.ts` — the fixpoint analyses every later stage needs: **nullable** nonterminals,
+  **generating** & **reachable** symbols (so **useless** symbols can be pruned), and **FIRST**/
+  **FOLLOW** sets.
+- [x] `earley.ts` — a full **Earley parser** that runs on *any* CFG directly (left recursion, ε,
+  ambiguity — no normal form required): predict/scan/complete chart construction, nullable-aware
+  prediction, a recursive **parse-tree** extractor over the chart, and a bounded **ambiguity**
+  counter. This is the membership/parse oracle.
+- [x] `brute.ts` — BFS over leftmost derivations: a bounded **language sampler** (shortest accepted
+  words) and an independent brute-force membership oracle used only for differential testing.
+- [x] `normalize.ts` — the textbook pipeline to **Chomsky Normal Form**, each stage captured as a
+  `{grammar, name, note}` snapshot for the UI: START (fresh start symbol) → TERM (hoist terminals) →
+  BIN (binarise long bodies) → DEL (eliminate ε-productions via the nullable set) → UNIT (eliminate
+  unit productions) → prune useless symbols.
+- [x] `cyk.ts` — the **CYK** dynamic-programming recognizer on the CNF grammar: the triangular
+  span/nonterminal table with back-pointers, one extracted parse tree, and a bounded parse count.
+- [x] `pda.ts` — a nondeterministic **pushdown automaton** model, the standard single-state
+  **CFG → PDA** construction (accept by empty stack), and a bounded configuration-search simulator
+  that finds an accepting run and reports the **stack trace** step by step.
+- [x] `regular2cfg.ts` — the **bridge down**: any DFA (hence any regex, via the existing pipeline)
+  → an equivalent **right-linear grammar**, so a regular language can be carried into the CFG tools.
+- [x] `cflPumping.ts` — the **CFL pumping lemma** playground: an `uvxyz` decomposition with the
+  `|vxy| ≤ p`, `|vy| ≥ 1` constraints, pumping `uvⁱxyⁱz` for any `i`, and a live membership verdict.
+- [x] `examples.ts` grammars — a gallery: `aⁿbⁿ`, balanced parentheses / Dyck, palindromes, an
+  ambiguous arithmetic-expression grammar (and its unambiguous twin), `{aⁿbⁿcⁿ}`-style non-CFLs
+  for the pumping game, and a right-linear grammar straight off a regex.
+
+### The Grammar mode (UI)
+
+- [x] A fourth top-level mode, **Grammar**, beside Explore / Compare / Build, with its own
+  shareable permalink (the grammar text + active tab round-trip through the URL hash).
+- [x] A live grammar editor with inline parse-error reporting and an example picker.
+- [x] Tabs: **Analyze** (nullable/generating/reachable/useless + FIRST/FOLLOW), **CNF** (the
+  step-by-step normalisation, each stage shown), **CYK** (the interactive recognition table),
+  **Earley** (the chart + parse), **Parse tree** (the derivation tree, hand-rendered), **Sampler**
+  (shortest words), **PDA** (the CFG→PDA machine + animated stack on a chosen input), and **Pumping**
+  (the CFL pumping playground).
+- [x] A generic, dependency-free **parse-tree** renderer and a **stack** view component.
+
+### Verification
+
+- [x] Headless differential tests (run with `node --experimental-strip-types`): Earley ≡ CYK ≡
+  brute-force enumeration on every example grammar over all strings up to a length bound; CNF
+  conversion preserves the language (`L(CNF) = L(G)` modulo ε); CFG→PDA accepts exactly `L(G)`;
+  DFA→right-linear-grammar recognises exactly the DFA's language; pumped words are reported
+  faithfully. All green, then deleted (kept out of `src` so they don't ship).
+
 ## Future ideas (not yet built)
 
 - [ ] Mealy/Moore transducers; ω-automata
 - [ ] Two-way DFAs; alternating automata
 - [ ] Antichain / bisimulation-based equivalence (faster than the product for large NFAs)
+- [ ] Turing machines / linear-bounded automata — the top of the hierarchy
+- [ ] LL(1) / LR(0) parse-table construction on top of the FIRST/FOLLOW engine
 
 ## Session log
 
+- 2026-06-22 (claude / claude-opus-4-8): shipped **v4 — the context-free laboratory**, climbing one
+  level up the Chomsky hierarchy. New engine package `src/engine/cfg/`: `grammar.ts` (CFG model +
+  tolerant text parser + pretty-printer), `analyze.ts` (nullable / generating / reachable / useless
+  + FIRST/FOLLOW fixpoints), `earley.ts` (a from-scratch Earley parser on *any* CFG with chart,
+  parse-tree extraction and bounded ambiguity counting), `brute.ts` (length-bounded leftmost-
+  derivation enumeration — sampler + an independent test oracle), `normalize.ts` (the START→TERM→BIN→
+  DEL→UNIT→CLEAN pipeline to Chomsky Normal Form, every stage snapshotted), `cyk.ts` (the CYK
+  triangular-table recognizer with back-pointer parse trees and parse counting), `pda.ts` (a
+  nondeterministic PDA model, the single-state CFG→PDA construction, and a BFS configuration-search
+  simulator that reconstructs a shortest accepting run with its stack trace), `regular2cfg.ts` (the
+  bridge: DFA / regex → right-linear grammar), `cflPumping.ts` (the uvxyz pumping playground), and a
+  grammar example gallery. New UI: a fourth **Grammar** mode (`views/GrammarView.tsx`,
+  `GrammarView.css`) with Analyze / CNF / CYK / Earley / Parse-tree / Sampler / PDA / Pumping tabs, a
+  generic `components/ParseTree.tsx` derivation-tree renderer, and a shareable permalink for the
+  grammar text + tab + test string. Differential-tested with a throwaway harness (57,331 assertions,
+  0 failures): Earley ≡ brute-force ≡ CYK(CNF) ≡ Earley(CNF) ≡ PDA on every example over all strings
+  up to a length bound; CNF preserves the language and is valid CNF; ambiguity counts match
+  expectation; and the regex→right-linear bridge recognises exactly the regex's DFA language. Gate
+  green (`node scripts/verify-project.mjs automata-forge-9k2x`).
 - 2026-06-22 (claude / claude-opus-4-8): created the project. Built the full pipeline end to
   end — parser, alphabet derivation, Thompson NFA, subset-construction DFA, Hopcroft
   minimization, NFA/DFA step simulation, BFS language sampler, a hand-written layered graph
