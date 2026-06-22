@@ -386,6 +386,31 @@ export function About() {
           three universes, one fluid.
         </p>
 
+        <h2>Two different fluids that won’t mix — multi-component Shan–Chen (the Phase lab’s second model)</h2>
+        <p>
+          The model above splits <em>one</em> fluid into its own liquid and vapour. Flip the{' '}
+          <a href="#/phase">Phase lab</a> to <strong>“Two fluids · immiscible”</strong> and you get the other
+          canonical Shan–Chen model: <strong>two genuinely different fluids</strong> — “red” and “blue”, the
+          way oil and water are — that refuse to blend. Each species streams and collides on its <em>own</em>{' '}
+          D2Q9 lattice, and the only coupling is a single short-range <strong>cross-repulsion</strong>: each
+          fluid is pushed away from the <em>other</em>’s dense neighbours,
+        </p>
+        <pre>{`F_σ(x) = −G · ρ_σ(x) · Σᵢ wᵢ ρ_σ′(x + eᵢ) eᵢ        (σ′ is the other fluid)`}</pre>
+        <p>
+          giving the binary mixture the non-ideal pressure <code>p = c_s²(ρ₁+ρ₂) + c_s²G·ρ₁ρ₂</code>. Above a
+          critical coupling the well-mixed state is unstable: the fluids <strong>demix</strong> into pure
+          domains separated by a thin interface with a real, emergent <strong>surface tension</strong> — and
+          from that one force every classic immiscible-fluid phenomenon follows. A heavy fluid resting on a
+          light one <strong>fingers downward</strong> (the <strong>Rayleigh–Taylor</strong> instability); a
+          liquid <strong>thread pinches into a row of drops</strong> (<strong>Rayleigh–Plateau</strong>); a
+          suspended drop of one fluid in the other obeys <strong>Laplace’s law</strong> Δp = σ/R (read live,
+          and pinned across four radii on the Verify page); and a <strong>sessile</strong> drop’s{' '}
+          <strong>contact angle</strong> bends with how strongly each fluid wets the wall. Both species share a
+          momentum-conserving <strong>common velocity</strong>, so the interaction injects no net momentum —
+          the box can never spontaneously propel itself (<code>ΣF = 0</code>, checked to ~1e-13), and each
+          fluid’s mass is conserved separately to round-off. Four solvers now, four universes.
+        </p>
+
         <h2>Does it actually work? The verification page</h2>
         <p>
           A solver you can’t check is a solver you can’t trust. The <a href="#/verify">Verify</a> page
@@ -420,8 +445,11 @@ export function About() {
           interface settles to bulk phases of <em>equal pressure</em>, droplets obey{' '}
           <strong>Laplace’s law</strong> <code>Δp = σ/R</code> with one positive surface tension, the
           internal cohesion force conserves momentum (<code>ΣF = 0</code>), and the spurious interface
-          currents stay small. Each check reports the number it measured —{' '}
-          <strong>62 checks across 16 groups</strong>.
+          currents stay small. The <strong>multi-component</strong> (two-fluid) model earns a group of its
+          own as well: a blended mixture <em>demixes</em> above the critical coupling (and stays mixed below
+          it), each species’ mass and the total momentum are conserved to round-off, and a drop of one fluid
+          suspended in the other obeys <strong>Laplace’s law</strong> across four radii. Each check reports
+          the number it measured — <strong>67 checks across 17 groups</strong>.
         </p>
 
         <h2>Rendering</h2>
