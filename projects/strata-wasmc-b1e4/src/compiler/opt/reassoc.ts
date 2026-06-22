@@ -91,17 +91,22 @@ export function reassociate(fn: IRFunc): number {
       if (inst.res === null) continue;
       const ty = inst.ty;
       if (ty !== 'i32' && ty !== 'i64') continue;
-      if (!isReassocRoot(inst)) continue;
-      // Skip a node that is itself a single-use operand of another reassoc root in
-      // this block — its parent will absorb it, so processing it here is wasted.
-      if ((uses.get(inst.res) ?? 0) === 1 && consumedByParent(inst.res, block, defs, uses)) continue;
 
-      const absorbed = new Set<number>();
-      const form = flatten({ tag: 'val', id: inst.res }, ty, defs, uses, absorbed, true);
-      // `absorbed` holds every node decomposed *under* the root; the root counts too.
-      absorbed.add(inst.res);
-
-      const built = build(fn, form, ty, idCtr);
+      // `absorbed` accumulates every node the chain consumes (the root included);
+      // each analyzer rebuilds the canonical form and reports it.
+      const absorbed = new Set<number>([inst.res]);
+      let built: { insts: Inst[]; result: Operand };
+      if (isReassocRoot(inst)) {
+        // Skip a node that is itself a single-use operand of another reassoc root in
+        // this block — its parent will absorb it, so processing it here is wasted.
+        if ((uses.get(inst.res) ?? 0) === 1 && consumedByParent(inst.res, block, defs, uses)) continue;
+        const form = flatten({ tag: 'val', id: inst.res }, ty, defs, uses, absorbed, true);
+        built = build(fn, form, ty, idCtr);
+      } else if (isBitwiseRoot(inst)) {
+        built = buildBitwise(fn, inst, ty, defs, uses, absorbed, idCtr);
+      } else {
+        continue;
+      }
       // Fire only when the rebuilt expression is strictly smaller than the chain it
       // replaces — guarantees monotone progress (termination) and net improvement.
       if (built.insts.length < absorbed.size) {
@@ -138,6 +143,96 @@ function isReassocRoot(inst: Inst): boolean {
   if (inst.sub === 'mul') return inst.args[0].tag === 'const' || inst.args[1].tag === 'const';
   if (inst.sub === 'shl') return inst.args[1].tag === 'const';
   return false;
+}
+
+// =====================================================================
+// Bitwise reassociation — and / or / xor monoids
+// =====================================================================
+//
+// `and`, `or` and `xor` are each associative and commutative, so a same-operator
+// chain is canonicalized exactly like the additive one — but over a *monoid*, not a
+// ring. A chain folds to a **set of distinct atoms** combined with a folded
+// constant `K`, exploiting each operator's algebra: `and`/`or` are **idempotent**
+// (a repeated atom collapses to one) with **absorbing** elements (`x & 0 ≡ 0`,
+// `x | ~0 ≡ ~0`, which short-circuit the whole chain to a constant); `xor` is its
+// own inverse, so an atom appearing an **even** number of times cancels (tracked by
+// parity) and there is no absorbing element. All three fold their constants exactly
+// (no wrap subtlety — these are pure bit operations), with identity `~0`/`0`/`0`.
+// As with the arithmetic pass, only single-use same-block same-operator nodes are
+// absorbed, and the rewrite fires only when strictly smaller, so it is sound,
+// non-duplicating and terminating — the differential oracle pins it bit-for-bit.
+
+const isBitwiseRoot = (inst: Inst): boolean =>
+  inst.kind === 'ibin' && (inst.sub === 'and' || inst.sub === 'or' || inst.sub === 'xor');
+
+type BitOp = 'and' | 'or' | 'xor';
+const bidentity = (op: BitOp, ty: IntTy): Num => (op === 'and' ? (ty === 'i64' ? -1n : -1) : zero(ty));
+function bfold(op: BitOp, ty: IntTy, a: Num, b: Num): Num {
+  if (ty === 'i64') {
+    const x = a as bigint, y = b as bigint;
+    return BigInt.asIntN(64, op === 'and' ? x & y : op === 'or' ? x | y : x ^ y);
+  }
+  const x = a as number, y = b as number;
+  return op === 'and' ? (x & y) | 0 : op === 'or' ? (x | y) | 0 : (x ^ y) | 0;
+}
+/** The absorbing constant short-circuits the whole chain: `and`→0, `or`→~0; xor has none. */
+const absorbs = (op: BitOp, ty: IntTy, k: Num): boolean =>
+  op === 'and' ? isZero(ty, k) : op === 'or' ? (ty === 'i64' ? k === -1n : k === -1) : false;
+
+function buildBitwise(
+  fn: IRFunc,
+  root: Inst,
+  ty: IntTy,
+  defs: Map<number, Inst>,
+  uses: Map<number, number>,
+  absorbed: Set<number>,
+  idCtr: { n: number },
+): { insts: Inst[]; result: Operand } {
+  const op = root.sub as BitOp;
+  const counts = new Map<number, number>(); // atom id -> occurrence count (parity matters for xor)
+  let K = bidentity(op, ty);
+  let shortCircuit = false;
+
+  const collect = (operand: Operand, isRoot: boolean): void => {
+    if (shortCircuit) return;
+    if (operand.tag === 'const') {
+      K = bfold(op, ty, K, operand.num);
+      if (absorbs(op, ty, K)) shortCircuit = true;
+      return;
+    }
+    const def = defs.get(operand.id);
+    const decomposable = def && (isRoot || (uses.get(operand.id) ?? 0) <= 1);
+    if (def && decomposable && def.kind === 'ibin' && def.sub === op) {
+      if (!isRoot) absorbed.add(operand.id);
+      collect(def.args[0], false);
+      collect(def.args[1], false);
+    } else {
+      counts.set(operand.id, (counts.get(operand.id) ?? 0) + 1);
+    }
+  };
+  collect({ tag: 'val', id: root.res! }, true);
+
+  const insts: Inst[] = [];
+  const emit = (args: Operand[]): Operand => {
+    const res = idCtr.n++;
+    fn.valueType.set(res, ty);
+    insts.push({ res, ty, kind: 'ibin', sub: op, args });
+    return { tag: 'val', id: res };
+  };
+
+  if (shortCircuit) return { insts, result: constOp(ty, K) }; // x & 0 / x | ~0
+
+  // `and`/`or` keep each distinct atom once (idempotent); `xor` keeps the odd-parity ones.
+  const present = [...counts.keys()].filter((id) => (op === 'xor' ? counts.get(id)! % 2 === 1 : true)).sort((a, b) => a - b);
+  let acc: Operand | null = null;
+  for (const id of present) acc = acc === null ? { tag: 'val', id } : emit([acc, { tag: 'val', id }]);
+  if (K !== bidentity(op, ty)) {
+    // a non-identity constant survives (`… & 0xF0`, `… | 0x0F`, `… ^ 0x55`)
+    const kc = constOp(ty, K);
+    acc = acc === null ? kc : emit([acc, kc]);
+  }
+  if (acc === null) acc = constOp(ty, bidentity(op, ty)); // empty chain → the identity
+  return { insts, result: acc };
 }
 
 /** Is `res`'s single use as an operand of a reassoc root defined in this block? */

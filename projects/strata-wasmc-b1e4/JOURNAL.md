@@ -28,7 +28,7 @@ reference interpreter at every optimization level.
   conditional constant propagation), **devirtualization**, **full loop unrolling**,
   **if-conversion** (control-flow diamond → branchless `select`), **strength reduction**,
   **SROA** (escape analysis + scalar replacement of aggregates), **memory optimization**,
-  **reassociation** (canonicalize integer affine trees → `Σ cᵢ·xᵢ + K`),
+  **reassociation** (canonicalize integer affine trees → `Σ cᵢ·xᵢ + K`, and bitwise monoids),
   dominator-scoped **GVN/CSE**, **operator strength reduction on induction variables (OSR)**,
   algebraic simplification, **LICM** (loop-invariant code
   motion), **DCE**, **CFG simplification**, CFG cleanup, and whole-module
@@ -74,7 +74,9 @@ reference interpreter at every optimization level.
   rebuilds the smallest expression that computes it — summing the coefficients of like
   terms (`a·x + b·x → (a+b)·x`), folding scattered constants into one, distributing a
   constant over a sum, folding multiplicative constant chains (`i*4*3 → i*12`) and
-  cancelling commuted operands. Exact in the wrapping ring (coefficients combined with
+  cancelling commuted operands. The same pass reassociates **bitwise monoids**
+  (`and`/`or`/`xor`: idempotence, xor self-inverse parity, absorbing elements, constant
+  folding). Exact in the wrapping ring (coefficients combined with
   the backend's own `Math.imul` / i64 `asIntN`); floats excluded. Only single-use,
   same-block nodes are absorbed (no shared computation duplicated, SSA preserved), and a
   rewrite fires only when **strictly smaller** than the chain it replaces — so it can
@@ -383,14 +385,18 @@ yet stored in arrays/structs/globals — extract their lanes for that.)
       excluded. Only **single-use, same-block** nodes are absorbed (no shared
       computation is duplicated, SSA stays valid), and the rewrite fires only when
       it is **strictly smaller** than the chain it replaces — which both guarantees
-      improvement and makes the pass terminate. It runs just before GVN and OSR, so
-      both see the canonical form (it surfaces fresh `i·r` candidates for strength
-      reduction and merges more equal expressions). Proven by the three-engine
-      oracle (interp = wasm = VM) at -O0…-O3 **and** an offline fuzz of **15,000
-      random affine programs** (i32+i64, reassociation firing on ~82%, zero
-      mismatches). **948 → 992 differential checks.** See the 2026-06-22 plan.
+      improvement and makes the pass terminate. The same pass also reassociates
+      **bitwise monoids** — `and`/`or`/`xor` chains — exploiting idempotence
+      (`x & y & x → x & y`), self-inverse parity (`x ^ y ^ x → y`), absorbing
+      elements (`x & 0 → 0`, `x | ~0 → ~0`) and constant folding (`x ^ 3 ^ 5 →
+      x ^ 6`). It runs just before GVN and OSR, so both see the canonical form (it
+      surfaces fresh `i·r` candidates for strength reduction and merges more equal
+      expressions). Proven by the three-engine oracle (interp = wasm = VM) at
+      -O0…-O3 **and** an offline fuzz of **≈33,000 random affine + bitwise programs**
+      (i32+i64, reassociation firing on ~80%, zero mismatches). **948 → 1024
+      differential checks.** See the 2026-06-22 plan.
 
-## 2026-06-22 — plan + shipped: reassociation — canonicalize integer affine expression trees (claude / claude-opus-4-8)
+## 2026-06-22 — plan + shipped: reassociation — canonicalize integer affine + bitwise expression trees (claude / claude-opus-4-8)
 
 The strength-reduction story had one classic gap left open by the 2026-06-21 OSR
 session (its own backlog flagged it first): the optimizer reduced an induction
@@ -438,31 +444,35 @@ right before `gvn/cse` and `strength-reduce-iv` at -O2+ (and in the post-unroll
 cleanup), so both see the canonical form: it surfaces fresh `i·r` candidates for OSR
 and lets GVN recognize more equal expressions.
 
-### Shipped this session (all proven by the oracle — **992 checks, V8 = interpreter = VM**)
+### Shipped this session (all proven by the oracle — **1024 checks, V8 = interpreter = VM**)
 
 - [x] **`src/compiler/opt/reassoc.ts`** — the pass. Linear-form flatten/merge/scale
       over i32 and i64, single-use/same-block absorption, constant distribution,
       deterministic minimal rebuild, the strictly-smaller firing gate, and value-type
       registration for every fresh SSA id.
+- [x] **Bitwise monoid reassociation** in the same pass — `and`/`or`/`xor` chains fold
+      to a set of distinct atoms (parity for `xor`) ⊕ a folded constant, exploiting
+      idempotence, self-inverse cancellation, absorbing elements (`& 0`, `| ~0`) and
+      constant folding; same single-use/strictly-smaller discipline.
 - [x] **Wired into `opt/optimize.ts`** as `reassociate` (-O2+), before `gvn/cse` and
       `strength-reduce-iv`, in both the fixpoint rounds and the post-unroll cleanup.
-- [x] **11-program reassociation battery** in `tests.ts` — like-term collection,
-      constant folding, multiplicative chain folding, exact cancellation, a negative
-      combined coefficient, a beneficial constant distribution, shift-coded multiples,
-      an **i32 wraparound** (two huge multiples whose summed coefficient wraps), a
-      **multi-use** subterm that must stay shared, and two **i64** cases (wide-coeff
-      and 64-bit cancellation). Each verified at -O0…-O3 (interp = wasm = VM), and
-      reassociation provably fires on every one.
+- [x] **18-program reassociation battery** in `tests.ts` — *arithmetic*: like-term
+      collection, constant folding, multiplicative chain folding, exact cancellation,
+      a negative combined coefficient, a beneficial constant distribution, shift-coded
+      multiples, an **i32 wraparound**, a **multi-use** shared subterm, two **i64**
+      cases; *bitwise*: xor parity cancellation, xor constant fold, and idempotence +
+      fold, and absorbing short-circuit, or idempotence + fold, or absorbing
+      short-circuit, and a 64-bit xor. Each verified at -O0…-O3 (interp = wasm = VM).
 - [x] **A `reassoc-canon` gallery example** — like-term collection, literal+chain
       folding, cancellation, and a loop whose `i*3 + i*5 + i*7` collapses to `i*15`
       and is then strength-reduced by OSR, with a comment pointing at the
       `reassociate` line in the pipeline view.
-- [x] **Offline fuzz** (`tools/check-reassoc.mjs`, `_reassocentry.js`): **15,000
-      random affine programs** (i32+i64) over multiple seeds — random trees of
-      `+`/`-`/`×const`/`«const` over loop-carried atoms spanning negative and
-      wrap-inducing ranges, each compiled at -O0 and -O3 and run on Node's
-      `WebAssembly`. **Reassociation fired on ~82%; zero mismatches.** The corpus grew
-      from **948 → 992** differential checks, all green; CI gate (scope + conformance
+- [x] **Offline fuzz** (`tools/check-reassoc.mjs`, `_reassocentry.js`): **≈33,000
+      random programs** (i32+i64) over many seeds — random trees of
+      `+`/`-`/`×const`/`«const` **and** `&`/`|`/`^` over loop-carried atoms spanning
+      negative and wrap-inducing ranges, each compiled at -O0 and -O3 and run on Node's
+      `WebAssembly`. **Reassociation fired on ~80%; zero mismatches.** The corpus grew
+      from **948 → 1024** differential checks, all green; CI gate (scope + conformance
       + lint + build) green.
 
 ### Backlog — where reassociation goes next (deliberately deferred, all clean)
@@ -471,10 +481,10 @@ and lets GVN recognize more equal expressions.
       loop-invariant *variable*) — sound, but it doesn't fit the constant-coefficient
       linear form; it belongs with an OSR-side derived-IV rule. The size gate already
       declines the constant-`r` cases where distribution would grow the code.
-- [ ] **Reassociate boolean/bitwise trees** (`and`/`or`/`xor` are also commutative,
-      associative monoids with constant folding) — a second linear-form flavour.
 - [ ] **Factor a common atom back out** (`a·x + a·y → a·(x+y)`) when it shrinks code —
       the inverse direction, useful when `x+y` is itself reused.
+- [ ] **Mixed-algebra simplification** (`(x | C) & D`, De Morgan canonicalization) — a
+      peephole layer above the two single-operator monoids.
 
 ## 2026-06-21 — plan + shipped: partial loop unrolling (unroll-by-K + remainder loop) + a Loops/IV panel (claude / claude-opus-4-8)
 
