@@ -1,0 +1,161 @@
+.edit-wrap.tool-state .graph-svg {
+  cursor: crosshair;
+}
+.edit-wrap.tool-edge .graph-svg {
+  cursor: cell;
+}
+.edit-wrap.tool-delete .graph-svg {
+  cursor: not-allowed;
+}
+
+/* a fat invisible hit area so thin edges are easy to click (esp. to delete) */
+.edge-hit {
+  stroke: transparent;
+  stroke-width: 16;
+}
+.edge.deletable {
+  cursor: pointer;
+}
+.edge.deletable:hover .edge-path {
+  stroke: var(--bad);
+}
+.edge.deletable:hover .edge-label {
+  fill: var(--bad);
+}
+
+.edit-node .node-circle {
+  cursor: inherit;
+}
+.edit-wrap.tool-move .edit-node {
+  cursor: grab;
+}
+.edit-node.picking .node-circle {
+  stroke: var(--accent);
+  stroke-width: 3;
+}
+.edge-pending-ring {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 1.5;
+  stroke-dasharray: 4 4;
+  opacity: 0.8;
+}
+.node-start-tag {
+  fill: var(--accent);
+  font-family: var(--mono);
+  font-size: 11px;
+  pointer-events: none;
+}
+
+.edit-hint-empty {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  color: var(--muted);
+  font-size: 14px;
+  text-align: center;
+  padding: 24px;
+  pointer-events: none;
+}
+.edit-hint-empty b {
+  color: var(--accent);
+}
+
+.edge-draft {
+  position: absolute;
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--panel);
+  border: 1px solid var(--accent);
+  border-radius: 10px;
+  padding: 7px 10px;
+  box-shadow: 0 8px 26px rgba(0, 0, 0, 0.45);
+  z-index: 5;
+}
+.edge-draft-label {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.edge-draft input {
+  width: 92px;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  color: var(--ink);
+  font-family: var(--mono);
+  font-size: 14px;
+  padding: 6px 9px;
+  outline: none;
+}
+.edge-draft input:focus {
+  border-color: var(--accent);
+}
+.edge-draft button {
+  font: inherit;
+  font-size: 13px;
+  font-family: var(--mono);
+  border-radius: 7px;
+  padding: 6px 10px;
+  cursor: pointer;
+  border: 1px solid var(--line);
+  background: var(--panel2);
+  color: var(--ink);
+}
+.edge-draft-add {
+  background: linear-gradient(90deg, var(--accent), var(--accent2)) !important;
+  color: var(--bg) !important;
+  font-weight: 700;
+  border: none !important;
+}
+.edge-draft button:hover {
+  border-color: var(--accent);
+}
+
+/* toolbar */
+.edit-toolbar {
+  display: flex;
+  gap: 4px;
+  padding: 6px;
+  border-bottom: 1px solid var(--line);
+  background: var(--bg2);
+  flex-wrap: wrap;
+  align-items: center;
+}
+.edit-tool {
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--muted);
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  padding: 7px 12px;
+  cursor: pointer;
+  transition: all 0.12s;
+}
+.edit-tool:hover {
+  color: var(--ink);
+  background: var(--panel2);
+}
+.edit-tool.active {
+  color: var(--bg);
+  background: linear-gradient(90deg, var(--accent), var(--accent2));
+}
+.edit-tool-spacer {
+  flex: 1;
+}
+.edit-tool.ghost {
+  color: var(--muted);
+  border: 1px solid var(--line);
+}
+.edit-tool.ghost:hover {
+  color: var(--bad);
+  border-color: var(--bad);
+}

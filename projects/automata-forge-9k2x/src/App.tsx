@@ -3,12 +3,16 @@ import './App.css'
 import ExploreView from './views/ExploreView'
 import type { ExploreTab } from './views/ExploreView'
 import CompareView from './views/CompareView'
+import BuildView from './views/BuildView'
+import type { BuildTab } from './views/BuildView'
 import { copyText } from './lib/download'
 import { decodeHash, encodeHash } from './lib/hash'
 import type { AppState, Mode } from './lib/hash'
 import { COMPARE_EXAMPLES, EXAMPLES } from './examples'
+import { BUILD_TEMPLATES } from './engine/edit'
 
-const VALID_TABS: ExploreTab[] = ['ast', 'nfa', 'dfa', 'min', 'der']
+const VALID_TABS: ExploreTab[] = ['ast', 'nfa', 'dfa', 'min', 'der', 'mn']
+const VALID_BUILD_TABS: BuildTab[] = ['editor', 'dfa', 'min', 'mn']
 const VALID_OPS = ['union', 'inter', 'diffAB', 'diffBA', 'symdiff']
 
 const DEFAULT_STATE: AppState = {
@@ -20,13 +24,20 @@ const DEFAULT_STATE: AppState = {
     op: 'inter',
     input: '',
   },
+  build: { automaton: BUILD_TEMPLATES[0].make(), tab: 'editor', input: 'aab' },
 }
 
 /** Sanitize a decoded state so a hand-edited URL can never wedge a view. */
 function clean(s: AppState): AppState {
   const tab = VALID_TABS.includes(s.explore.tab as ExploreTab) ? s.explore.tab : 'nfa'
   const op = VALID_OPS.includes(s.compare.op) ? s.compare.op : 'inter'
-  return { ...s, explore: { ...s.explore, tab }, compare: { ...s.compare, op } }
+  const btab = VALID_BUILD_TABS.includes(s.build.tab as BuildTab) ? s.build.tab : 'editor'
+  return {
+    ...s,
+    explore: { ...s.explore, tab },
+    compare: { ...s.compare, op },
+    build: { ...s.build, tab: btab },
+  }
 }
 
 export default function App() {
@@ -67,7 +78,9 @@ export default function App() {
             <p className="tag">
               {state.mode === 'explore'
                 ? 'regex → ε-NFA → DFA → minimal DFA → derivatives, built from scratch'
-                : 'compare two regexes: product construction, boolean algebra & equivalence'}
+                : state.mode === 'compare'
+                  ? 'compare two regexes: product construction, boolean algebra & equivalence'
+                  : 'draw your own automaton — determinize, minimize & read off a regex'}
             </p>
           </div>
         </div>
@@ -88,6 +101,14 @@ export default function App() {
               onClick={() => setMode('compare')}
             >
               Compare
+            </button>
+            <button
+              role="tab"
+              aria-selected={state.mode === 'build'}
+              className={`mode-btn${state.mode === 'build' ? ' active' : ''}`}
+              onClick={() => setMode('build')}
+            >
+              Build
             </button>
           </div>
           <button
@@ -115,6 +136,15 @@ export default function App() {
           onInput={(input) => setState((s) => ({ ...s, explore: { ...s.explore, input } }))}
           tab={state.explore.tab as ExploreTab}
           onTab={(tab) => setState((s) => ({ ...s, explore: { ...s.explore, tab } }))}
+        />
+      ) : state.mode === 'build' ? (
+        <BuildView
+          automaton={state.build.automaton}
+          onAutomaton={(automaton) => setState((s) => ({ ...s, build: { ...s.build, automaton } }))}
+          tab={state.build.tab as BuildTab}
+          onTab={(tab) => setState((s) => ({ ...s, build: { ...s.build, tab } }))}
+          input={state.build.input}
+          onInput={(input) => setState((s) => ({ ...s, build: { ...s.build, input } }))}
         />
       ) : (
         <CompareView
