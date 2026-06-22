@@ -41,8 +41,10 @@ import {
   computeCell,
   effectivePotential,
   effectivePotentialGradient,
+  frequencyProfile,
   recordOrbit,
 } from './fma'
+import type { AtlasModel } from './fma'
 import { spectrogram } from './spectrogram'
 import { keplerStep, lagrangeIdentityResidual } from './kepler'
 import type { KeplerState } from './kepler'
@@ -1321,6 +1323,31 @@ export function runSelfTest(): SelfTestReport {
       'Spectrogram ridge: flat for a tone, rising for a chirp',
       toneFlat && rising,
       `tone ridge spread=${(rmax - rmin).toExponential(1)}; chirp ridge ${first.toFixed(3)}→${last.toFixed(3)} (+${(last - first).toFixed(3)})`,
+    )
+  }
+
+  // 57 — The 1-D frequency map (Laskar's cross-section): at small μ the measured
+  // mean motion n(a) is a strictly decreasing staircase matching the Kepler law
+  // n = a^{-3/2} — the resonance-plateau backbone the diffusion spikes sit on.
+  {
+    const model: AtlasModel = { id: 't', name: 't', blurb: '', mu: 1e-6, aMin: 0.45, aMax: 0.75, eMin: 0, eMax: 0.5 }
+    const pts = frequencyProfile(model, 0.0, 24, { samples: 256, periods: 30, minSub: 10 })
+    let mono = true
+    let maxRel = 0
+    let prev = Infinity
+    let nValid = 0
+    for (const p of pts) {
+      if (!p.valid) continue
+      nValid++
+      const exp = Math.pow(p.a, -1.5)
+      maxRel = Math.max(maxRel, Math.abs(p.freq - exp) / exp)
+      if (p.freq > prev + 1e-9) mono = false
+      prev = p.freq
+    }
+    add(
+      'FMA 1-D frequency map is the Kepler staircase n = a^{-3/2}',
+      nValid === pts.length && mono && maxRel < 1e-3,
+      `${nValid}/${pts.length} valid, monotone=${mono}, max rel error = ${maxRel.toExponential(2)}`,
     )
   }
 

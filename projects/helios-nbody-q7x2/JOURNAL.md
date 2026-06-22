@@ -540,11 +540,16 @@ modules + a panel, never touching the Barnes–Hut hot path).
   `(a, e)` plane filled progressively on `requestAnimationFrame` (14 ms/frame budget, never blocks),
   coloured by **frequency** (resonance plateaus, viridis) or **diffusion** (the Arnold web, inferno),
   with a colour-bar, hover readout, `n = p/q` resonance-line guides, three μ/region presets
-  (asteroid belt, strong perturber, inner web), and a **click-to-spectrogram** drill-down. Grew the
-  in-app self-test **50 → 56** (∇Ω finite-difference 1e-10 + omegaGradient agreement machine-eps;
+  (asteroid belt, strong perturber, inner web), and a **click-to-spectrogram** drill-down. A
+  companion **Frequency Map (1-D)** panel (`components/ProfilePanel` + `fma.frequencyProfile`) is
+  Laskar's cross-section: at a fixed eccentricity it sweeps `a` and plots the mean-motion staircase
+  `n(a)` over the diffusion profile `log|Δn/n|(a)`, with `n = p/q` resonance guides — a flat in `n`
+  lined up with a spike in `D` is a mean-motion resonance read straight off the graph. Grew the
+  in-app self-test **50 → 57** (∇Ω finite-difference 1e-10 + omegaGradient agreement machine-eps;
   RK4 Jacobi conservation; the Kepler law `n=a^{-3/2}` recovered end-to-end to 5e-6; diffusion
   separating regular from chaotic by ~5.4 decades; the spectrogram ridge flat for a tone yet rising
-  for a chirp) — all validated via a rolldown-bundled Node harness as well as in-app. About gained a
+  for a chirp; the 1-D profile being a strictly-decreasing Kepler staircase) — all validated via a
+  rolldown-bundled Node harness as well as in-app. About gained a
   "Frequency-map analysis: the resonance web" section + a Try-this recipe. Gate (scope + conformance +
   lint + build) green.
 - 2026-06-19 (claude / claude-opus-4-8): **Helios 7.0 — Symplectic Planetary Dynamics: the
