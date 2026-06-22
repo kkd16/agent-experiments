@@ -11,6 +11,43 @@ import { FB_BASE, FB_W } from './constants';
 import { decode } from './decode';
 import { disassemble, disassembleUnit } from './disassembler';
 import { decompress } from './compressed';
+import { PRIV_M, PRIV_S } from './mmu';
+
+// A reusable assembly snippet: build the Sv32 page tables (root @ 0x10020000, an L2 table @
+// 0x10021000, a data buffer @ 0x10022000), enable Sv32, and `mret` into S-mode at `smain`.
+// Identity-maps the code/data/stack megapages and remaps VA 0x40000000 → the buffer.
+const SV32_PROLOGUE = `
+  .equ ROOT, 0x10020000
+  .equ L2,   0x10021000
+  .equ BUF,  0x10022000
+main:
+  li t0, ROOT
+  li t1, 0x000000CF
+  sw t1, 0(t0)            # root[0]   identity megapage vpn1=0   (code)
+  li t1, 0x040000CF
+  sw t1, 256(t0)          # root[64]  identity megapage vpn1=64  (data + tables)
+  li t1, 0x1FF000CF
+  sw t1, 2044(t0)         # root[511] identity megapage vpn1=511 (stack)
+  li t1, 0x04008401
+  sw t1, 1024(t0)         # root[256] -> L2  (non-leaf; covers VA 0x40000000)
+  li t0, L2
+  li t1, 0x040088C7
+  sw t1, 0(t0)            # L2[0] -> BUF leaf, R/W
+  li t0, 0x80010020       # satp = MODE(Sv32) | rootppn(0x10020)
+  csrw satp, t0
+  sfence.vma
+  la t0, mtrap
+  csrw mtvec, t0
+  csrr t0, mstatus
+  li t1, 0xFFFFE7FF       # clear MPP
+  and t0, t0, t1
+  li t1, 0x800            # MPP = S (01)
+  or t0, t0, t1
+  csrw mstatus, t0
+  la t0, smain
+  csrw mepc, t0
+  mret
+`;
 
 export interface TestResult {
   name: string;
@@ -1405,6 +1442,323 @@ const TESTS: Test[] = [
       cpu.load(result);
       cpu.run(1000);
       eq(cpu.status, 'halted', 'runs');
+    },
+  },
+
+  // --- privileged architecture: supervisor mode + Sv32 virtual memory --------
+  {
+    name: 'priv: sret / sfence.vma encode & disassemble',
+    fn: () => {
+      const r = assemble('main:\n  sret\n  sfence.vma\n');
+      assert(r.ok, 'assembles');
+      eq(r.instrs[0].word >>> 0, 0x10200073, 'sret encoding');
+      eq(r.instrs[1].word >>> 0, 0x12000073, 'sfence.vma encoding');
+      eq(disassemble(r.instrs[0].word), 'sret', 'sret disasm');
+      eq(disassemble(r.instrs[1].word), 'sfence.vma', 'sfence.vma disasm');
+    },
+  },
+  {
+    name: 'priv: sstatus is a window onto mstatus (S-bits only)',
+    fn: () => {
+      // Set SUM (bit 18) + SIE (bit 1) via sstatus; MPP (bits 12:11) only via mstatus.
+      const cpu = run(`
+        main:
+          li t0, 0x40002         # SUM | SIE
+          csrw sstatus, t0
+          csrr s0, sstatus       # reads back SUM|SIE
+          csrr s1, mstatus       # the same bits are visible in mstatus
+          li t0, 0x1800          # try to set MPP through sstatus...
+          csrw sstatus, t0
+          csrr s2, mstatus       # ...MPP must be unaffected (still 0)
+          li a7, 10
+          ecall
+      `);
+      eq(cpu.regs[8] >>> 0, 0x40002, 'sstatus reads SUM|SIE');
+      eq(cpu.regs[9] & 0x40002, 0x40002, 'mstatus shows the same S-bits');
+      eq(cpu.regs[10] & 0x1800, 0, 'sstatus cannot write MPP');
+    },
+  },
+  {
+    name: 'priv: mret drops to U-mode; a U-mode ecall traps to M (cause 8)',
+    fn: () => {
+      const cpu = run(`
+        main:
+          la t0, mtrap
+          csrw mtvec, t0
+          csrr t0, mstatus
+          li t1, 0xFFFFE7FF      # MPP = U (00)
+          and t0, t0, t1
+          csrw mstatus, t0
+          la t0, user
+          csrw mepc, t0
+          mret                   # → U-mode
+        user:
+          li a7, 99              # an arbitrary "syscall number"
+          ecall                  # U-mode ecall → exception, not a host call
+        mtrap:
+          csrr s0, mcause        # 8 = environment call from U-mode
+          li a7, 10
+          ecall                  # back in M-mode: host exit
+      `);
+      eq(cpu.regs[8] | 0, 8, 'mcause = ecall-from-U');
+      eq(cpu.status, 'halted', 'status');
+    },
+  },
+  {
+    name: 'priv: medeleg routes a U-mode ecall to the S-mode handler',
+    fn: () => {
+      const cpu = run(`
+        main:
+          la t0, strap
+          csrw stvec, t0
+          la t0, mtrap
+          csrw mtvec, t0
+          li t0, 0x100           # medeleg bit 8 (ecall-from-U) → delegate to S
+          csrw medeleg, t0
+          csrr t0, mstatus
+          li t1, 0xFFFFE7FF      # MPP = U
+          and t0, t0, t1
+          csrw mstatus, t0
+          la t0, user
+          csrw mepc, t0
+          mret
+        user:
+          ecall                  # → delegated to S
+        strap:
+          csrr s1, scause        # 8, captured in S-mode
+          ecall                  # ecall-from-S (cause 9) → not delegated → M
+        mtrap:
+          csrr s2, mcause        # 9
+          li a7, 10
+          ecall
+      `);
+      eq(cpu.regs[9] | 0, 8, 'scause = ecall-from-U (handled in S)');
+      eq(cpu.regs[18] | 0, 9, 'mcause = ecall-from-S (escalated to M)');
+      eq(cpu.status, 'halted', 'status');
+    },
+  },
+  {
+    name: 'Sv32: identity map + a remapped page alias the same physical frame',
+    fn: () => {
+      const cpu = run(
+        SV32_PROLOGUE +
+          `
+        smain:
+          li t0, 0x40000000      # the remapped VA
+          li t1, 0xCAFE
+          sw t1, 0(t0)           # store through the MMU → physical BUF
+          li t0, 0x10022000      # BUF's identity VA
+          lw s0, 0(t0)           # read it back: proves VA 0x40000000 ≡ BUF
+          ecall                  # S-mode ecall → M handler exits
+        mtrap:
+          li a7, 10
+          ecall
+      `,
+      );
+      eq(cpu.regs[8] >>> 0, 0xcafe, 'translated store is visible at the physical frame');
+      eq(cpu.status, 'halted', 'status');
+    },
+  },
+  {
+    name: 'Sv32: an unmapped store traps with scause=15 and stval=faulting VA',
+    fn: () => {
+      const cpu = run(`
+        .equ ROOT, 0x10020000
+        main:
+          li t0, ROOT
+          li t1, 0x000000CF
+          sw t1, 0(t0)            # identity vpn1=0 (code)
+          li t1, 0x040000CF
+          sw t1, 256(t0)          # identity vpn1=64 (data)
+          li t1, 0x1FF000CF
+          sw t1, 2044(t0)         # identity vpn1=511 (stack)
+          li t0, 0x8000
+          csrw medeleg, t0        # delegate store page faults (cause 15) to S
+          la t0, strap
+          csrw stvec, t0
+          la t0, mtrap
+          csrw mtvec, t0
+          li t0, 0x80010020
+          csrw satp, t0
+          sfence.vma
+          csrr t0, mstatus
+          li t1, 0xFFFFE7FF
+          and t0, t0, t1
+          li t1, 0x800            # MPP = S
+          or t0, t0, t1
+          csrw mstatus, t0
+          la t0, smain
+          csrw mepc, t0
+          mret
+        smain:
+          li t0, 0x50000000       # unmapped
+          li t1, 7
+          sw t1, 0(t0)            # → store page fault → S handler
+          ecall
+        strap:
+          csrr s0, scause         # 15
+          csrr s1, stval          # 0x50000000
+          ecall                   # → M handler exits
+        mtrap:
+          li a7, 10
+          ecall
+      `);
+      eq(cpu.regs[8] | 0, 15, 'scause = store/AMO page fault');
+      eq(cpu.regs[9] >>> 0, 0x50000000, 'stval = faulting VA');
+      eq(cpu.status, 'halted', 'status');
+    },
+  },
+  {
+    name: 'Sv32: S-mode load of a user page faults without SUM, succeeds with SUM',
+    fn: () => {
+      // Map VA 0x40000000 as a *user* page (U=1). A supervisor load must fault unless SUM=1.
+      const build = (sum: boolean) => `
+        .equ ROOT, 0x10020000
+        .equ L2,   0x10021000
+        .equ BUF,  0x10022000
+        main:
+          li t0, ROOT
+          li t1, 0x000000CF
+          sw t1, 0(t0)
+          li t1, 0x040000CF
+          sw t1, 256(t0)
+          li t1, 0x1FF000CF
+          sw t1, 2044(t0)
+          li t1, 0x04008401
+          sw t1, 1024(t0)
+          li t0, L2
+          li t1, 0x040088D7      # leaf with U=1 (user page), R/W
+          sw t1, 0(t0)
+          li t0, BUF
+          li t1, 0x1234
+          sw t1, 0(t0)           # seed the buffer (M-mode identity write)
+          li t0, 0xA000          # delegate load (13) + store (15) page faults to S
+          csrw medeleg, t0
+          la t0, strap
+          csrw stvec, t0
+          la t0, mtrap
+          csrw mtvec, t0
+          ${sum ? 'li t0, 0x40000\n          csrs mstatus, t0' : ''}
+          li t0, 0x80010020
+          csrw satp, t0
+          sfence.vma
+          csrr t0, mstatus
+          li t1, 0xFFFFE7FF
+          and t0, t0, t1
+          li t1, 0x800
+          or t0, t0, t1
+          csrw mstatus, t0
+          la t0, smain
+          csrw mepc, t0
+          mret
+        smain:
+          li t0, 0x40000000
+          li s0, -1
+          lw s0, 0(t0)           # S reads a user page
+          ecall
+        strap:
+          li s0, 13              # mark "load page fault taken"
+          ecall
+        mtrap:
+          li a7, 10
+          ecall
+      `;
+      const noSum = run(build(false));
+      eq(noSum.regs[8] | 0, 13, 'without SUM, the S-mode load faults');
+      const withSum = run(build(true));
+      eq(withSum.regs[8] >>> 0, 0x1234, 'with SUM, the S-mode load succeeds');
+    },
+  },
+  {
+    name: 'Sv32: probeTranslate matches the live walk (4 KiB page + superpage)',
+    fn: () => {
+      const result = assemble(
+        SV32_PROLOGUE +
+          `
+        smain:
+          ecall
+        mtrap:
+          li a7, 10
+          ecall
+      `,
+      );
+      assert(result.ok, 'assembles');
+      const cpu = new Cpu();
+      cpu.load(result);
+      // Step until satp is enabled and we have entered S-mode (mret executed).
+      for (let i = 0; i < 200 && cpu.priv === PRIV_M; i++) cpu.step();
+      eq(cpu.priv, PRIV_S, 'reached supervisor mode');
+      const remap = cpu.probeTranslate(0x40000000, 'store');
+      assert(remap.active, 'translation active in S-mode');
+      eq(remap.pa! >>> 0, 0x10022000, 'remapped VA → BUF');
+      eq(remap.levels.length, 2, 'a 4 KiB page is a two-level walk');
+      const ident = cpu.probeTranslate(0x10022000, 'load');
+      eq(ident.pa! >>> 0, 0x10022000, 'identity megapage');
+      eq(ident.levels.length, 1, 'a superpage resolves at level 1');
+      const miss = cpu.probeTranslate(0x50000000, 'load');
+      assert(miss.fault !== undefined, 'unmapped VA reports a fault in the probe');
+    },
+  },
+  {
+    name: 'priv: time-travel reverts a page-fault trap (priv + S-CSRs restored)',
+    fn: () => {
+      const result = assemble(`
+        .equ ROOT, 0x10020000
+        main:
+          li t0, ROOT
+          li t1, 0x000000CF
+          sw t1, 0(t0)
+          li t1, 0x040000CF
+          sw t1, 256(t0)
+          li t1, 0x1FF000CF
+          sw t1, 2044(t0)
+          li t0, 0x8000
+          csrw medeleg, t0
+          la t0, strap
+          csrw stvec, t0
+          li t0, 0x80010020
+          csrw satp, t0
+          sfence.vma
+          csrr t0, mstatus
+          li t1, 0xFFFFE7FF
+          and t0, t0, t1
+          li t1, 0x800
+          or t0, t0, t1
+          csrw mstatus, t0
+          la t0, smain
+          csrw mepc, t0
+          mret
+        smain:
+          li t0, 0x50000000
+          sw zero, 0(t0)         # page fault → S
+        strap:
+          nop
+      `);
+      assert(result.ok, 'assembles');
+      const cpu = new Cpu();
+      cpu.load(result);
+      // Run up to the faulting store (still in S-mode, scause untouched).
+      let guard = 0;
+      while (cpu.priv === PRIV_M && guard++ < 200) cpu.step();
+      eq(cpu.priv, PRIV_S, 'entered S-mode');
+      cpu.step(); // execute `li t0, 0x50000000`; pc now sits on the faulting store
+      const beforePc = cpu.pc >>> 0;
+      const beforeScause = cpu.scause | 0;
+      // Step the faulting store: it traps into the S handler (store page fault = cause 15).
+      cpu.step();
+      eq(cpu.scause | 0, 15, 'store page fault recorded');
+      cpu.stepBack();
+      eq(cpu.priv, PRIV_S, 'priv restored to S after undo');
+      eq(cpu.pc >>> 0, beforePc, 'pc restored to the faulting store');
+      eq(cpu.scause | 0, beforeScause, 'scause restored');
+    },
+  },
+  {
+    name: 'example: the Sv32 paging program prints the round-trip',
+    fn: () => {
+      const cpu = run(EXAMPLES.find((e) => e.id === 'paging')!.code);
+      assert(cpu.output.includes('0x0000cafe'), `paging example output: ${JSON.stringify(cpu.output)}`);
+      eq(cpu.status, 'halted', 'status');
     },
   },
 ];

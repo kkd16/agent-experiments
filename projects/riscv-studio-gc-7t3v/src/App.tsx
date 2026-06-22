@@ -7,6 +7,7 @@ import type { Example } from './vm/examples';
 import { programFromUrl, buildShareUrl } from './vm/share';
 import Editor from './ui/Editor';
 import Registers from './ui/Registers';
+import MmuView from './ui/MmuView';
 import MemoryView from './ui/MemoryView';
 import Disasm from './ui/Disasm';
 import Console from './ui/Console';
@@ -18,6 +19,7 @@ import CCStudio from './ui/CCStudio';
 
 const TABS: { id: string; label: string }[] = [
   { id: 'registers', label: 'Registers' },
+  { id: 'mmu', label: 'MMU' },
   { id: 'disasm', label: 'Disassembly' },
   { id: 'memory', label: 'Memory' },
   { id: 'console', label: 'Console' },
@@ -97,7 +99,7 @@ export default function App() {
           <span className="logo">RV</span>
           <div>
             <h1>RISC-V Studio <span className="brand-gc">GC</span></h1>
-            <p>an RV32GC (IMAFDC + Zicsr) assembler, emulator &amp; time-travel debugger</p>
+            <p>an RV32GC (IMAFDC + Zicsr) assembler &amp; time-travel emulator — now with M/S/U privilege + Sv32 paging</p>
           </div>
         </div>
         <nav className="tabs">
@@ -197,6 +199,7 @@ export default function App() {
 
           <section className="right">
             {route === 'registers' && <Registers cpu={vm.cpu} prevRegs={vm.prevRegs} />}
+            {route === 'mmu' && <MmuView cpu={vm.cpu} tick={vm.tick} />}
             {route === 'disasm' && <Disasm cpu={vm.cpu} assembly={vm.assembly} />}
             {route === 'memory' && <MemoryView cpu={vm.cpu} />}
             {route === 'console' && <Console cpu={vm.cpu} />}
@@ -216,7 +219,7 @@ export default function App() {
           {vm.historyDepth} undo
         </span>
         <span>
-          {vm.cpu.error ? <span className="err-text">{vm.cpu.error}</span> : 'RV32GC · IMAFDC + Zicsr · traps · little-endian · 32-bit'}
+          {vm.cpu.error ? <span className="err-text">{vm.cpu.error}</span> : 'RV32GC · IMAFDC + Zicsr · M/S/U + Sv32 · traps · 32-bit'}
         </span>
       </footer>
     </div>

@@ -5,6 +5,7 @@
 import { useState } from 'react';
 import type { Cpu } from '../vm/cpu';
 import { ABI_NAMES, REG_ROLES, FREG_ABI_NAMES, FREG_ROLES } from '../vm/registers';
+import { privName, privLong } from '../vm/mmu';
 import { formatWord, hexWord } from '../vm/format';
 import type { Radix } from '../vm/format';
 import { f32FromBits, f64FromBits } from '../vm/fp';
@@ -104,6 +105,10 @@ export default function Registers({ cpu, prevRegs }: Props) {
         <div className="reg-cell">
           <span className="reg-name">cycle</span>
           <span className="reg-val">{cpu.cycles.toLocaleString()}</span>
+        </div>
+        <div className="reg-cell" title={`current privilege: ${privLong(cpu.priv)} mode`}>
+          <span className="reg-name">priv</span>
+          <span className={`reg-val priv-${privName(cpu.priv)}`}>{privName(cpu.priv)} · {privLong(cpu.priv)}</span>
         </div>
         <div className="reg-cell">
           <span className="reg-name">status</span>

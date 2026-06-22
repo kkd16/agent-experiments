@@ -114,6 +114,8 @@ export const INSTRUCTIONS: Record<string, InstrSpec> = {
   ecall: { name: 'ecall', format: 'SYS', opcode: OPC.SYSTEM, funct3: 0, funct7: 0 },
   ebreak: { name: 'ebreak', format: 'SYS', opcode: OPC.SYSTEM, funct3: 0, funct7: 1 },
   mret: { name: 'mret', format: 'SYS', opcode: OPC.SYSTEM, funct3: 0 },
+  sret: { name: 'sret', format: 'SYS', opcode: OPC.SYSTEM, funct3: 0 },
+  'sfence.vma': { name: 'sfence.vma', format: 'SYS', opcode: OPC.SYSTEM, funct3: 0 },
   wfi: { name: 'wfi', format: 'SYS', opcode: OPC.SYSTEM, funct3: 0 },
   fence: { name: 'fence', format: 'FENCE', opcode: OPC.MISC_MEM, funct3: 0 },
 };
@@ -123,6 +125,9 @@ export const SYS_WORDS: Record<string, number> = {
   ecall: 0x0000_0073,
   ebreak: 0x0010_0073,
   mret: 0x3020_0073,
+  sret: 0x1020_0073,
+  // SFENCE.VMA x0, x0 — flush the whole TLB (the common, operand-free form).
+  'sfence.vma': 0x1200_0073,
   wfi: 0x1050_0073,
 };
 
@@ -182,5 +187,17 @@ export const CSR_NUMBERS: Record<string, number> = {
   mcause: 0x342,
   mtval: 0x343,
   mip: 0x344,
+  medeleg: 0x302,
+  mideleg: 0x303,
   mhartid: 0xf14,
+  // Supervisor-mode trap CSRs + Sv32 address translation
+  sstatus: 0x100,
+  sie: 0x104,
+  stvec: 0x105,
+  sscratch: 0x140,
+  sepc: 0x141,
+  scause: 0x142,
+  stval: 0x143,
+  sip: 0x144,
+  satp: 0x180,
 };

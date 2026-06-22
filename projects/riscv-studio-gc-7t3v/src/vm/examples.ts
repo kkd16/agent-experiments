@@ -574,6 +574,89 @@ done:
         ecall
 `;
 
+const PAGING = `# Supervisor mode + Sv32 virtual memory.
+# M-mode builds a two-level page table: identity "megapages" (4 MiB) for code/data/stack,
+# plus a remapped 4 KiB page that points VA 0x40000000 at a physical buffer. It enables
+# Sv32 paging and 'mret's into S-mode. The supervisor code then uses ordinary syscalls —
+# an M-mode trap handler acts as a "supervisor-call gate", forwarding each S-mode ecall to
+# the host environment. Open the MMU tab to watch the walk and the TLB.
+.equ ROOT, 0x10020000            # root page table   (4 KiB aligned)
+.equ L2,   0x10021000            # second-level page table
+.equ BUF,  0x10022000            # the physical frame that VA 0x40000000 maps to
+.text
+main:
+        # --- build the page tables (in M-mode, writes go straight to physical memory) ---
+        li   t0, ROOT
+        li   t1, 0x000000CF      # V R W X A D, leaf → identity megapage vpn1=0   (code)
+        sw   t1, 0(t0)
+        li   t1, 0x040000CF      #              leaf → identity megapage vpn1=64  (data+tables)
+        sw   t1, 256(t0)
+        li   t1, 0x1FF000CF      #              leaf → identity megapage vpn1=511 (stack)
+        sw   t1, 2044(t0)
+        li   t1, 0x04008401      # V only, non-leaf → L2 table  (covers VA 0x40000000)
+        sw   t1, 1024(t0)
+        li   t0, L2
+        li   t1, 0x040088C7      # V R W A D, leaf → BUF  (the remapped 4 KiB page)
+        sw   t1, 0(t0)
+        # --- turn translation on ---
+        li   t0, 0x80010020      # satp = MODE(Sv32) | (ROOT >> 12)
+        csrw satp, t0
+        sfence.vma
+        # --- install the supervisor-call gate and drop into S-mode ---
+        la   t0, gate
+        csrw mtvec, t0
+        csrr t0, mstatus
+        li   t1, 0xFFFFE7FF      # MPP <- 0
+        and  t0, t0, t1
+        li   t1, 0x800           # MPP <- S (01)
+        or   t0, t0, t1
+        csrw mstatus, t0
+        la   t0, smain
+        csrw mepc, t0
+        mret                     # → S-mode at smain, with virtual memory live
+
+# ---- supervisor code (every address below is virtual) ----------------------
+smain:
+        la   a0, banner
+        li   a7, 4
+        ecall                    # a plain syscall — traps to the gate, which forwards it
+        li   t0, 0x40000000      # the remapped virtual address...
+        li   t1, 0xCAFE
+        sw   t1, 0(t0)           # ...store lands in the physical buffer BUF
+        la   a0, msg1
+        li   a7, 4
+        ecall
+        li   t0, 0x10022000      # read the buffer back via its identity mapping
+        lw   a0, 0(t0)           # same physical frame → 0xCAFE
+        li   a7, 34              # print_hex
+        ecall
+        la   a0, nl
+        li   a7, 4
+        ecall
+        li   a7, 10              # exit (forwarded through the gate, then halts)
+        ecall
+
+# ---- the supervisor-call gate (M-mode) --------------------------------------
+# An ecall from S-mode is environment-call-from-S (cause 9). We re-issue the same syscall
+# in M-mode (where ecall is the host call), then return to just past the S-mode ecall.
+gate:
+        csrr t6, mcause
+        li   t5, 9
+        bne  t6, t5, ghalt
+        csrr t6, mepc
+        addi t6, t6, 4           # resume after the ecall
+        csrw mepc, t6
+        ecall                    # M-mode ecall = host syscall (halts here if a7 = exit)
+        mret
+ghalt:
+        li   a7, 10
+        ecall
+.data
+banner: .asciz "Supervisor mode + Sv32 paging\\n"
+msg1:   .asciz "wrote 0xcafe to VA 0x40000000; read back PA 0x10022000: "
+nl:     .asciz "\\n"
+`;
+
 export const EXAMPLES: readonly Example[] = [
   { id: 'hello', title: 'Hello, RISC-V', blurb: 'print_string syscall basics', focus: 'console', code: HELLO },
   { id: 'fib', title: 'Fibonacci', blurb: 'loops, registers, print_int', focus: 'console', code: FIB },
@@ -589,6 +672,7 @@ export const EXAMPLES: readonly Example[] = [
   { id: 'compressed', title: 'Compressed (RVC)', blurb: 'RV32C 16-bit instructions', focus: 'console', code: COMPRESSED },
   { id: 'timerirq', title: 'Timer interrupts', blurb: 'mtvec/mret + CLINT timer (traps)', focus: 'console', code: TIMER_IRQ },
   { id: 'double', title: 'Double precision √2', blurb: 'RV32D Newton iteration (15 digits)', focus: 'console', code: DOUBLE_SQRT },
+  { id: 'paging', title: 'Sv32 virtual memory', blurb: 'supervisor mode + page tables + a syscall gate', focus: 'console', code: PAGING },
   { id: 'mandelbrot', title: 'Mandelbrot (fixed)', blurb: 'Q12 fixed-point fractal → framebuffer', focus: 'framebuffer', code: MANDELBROT },
   { id: 'mandelf', title: 'Mandelbrot (float)', blurb: 'RV32F fractal → framebuffer', focus: 'framebuffer', code: MANDEL_FLOAT },
   { id: 'rings', title: 'Colour rings', blurb: 'memory-mapped graphics', focus: 'framebuffer', code: RINGS },

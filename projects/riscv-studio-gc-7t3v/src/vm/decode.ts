@@ -219,7 +219,9 @@ function resolveMnemonic(opcode: number, funct3: number, funct7: number, w: numb
     case OPC.SYSTEM:
       if (funct3 === 0) {
         if (w === 0x3020_0073) return 'mret';
+        if (w === 0x1020_0073) return 'sret';
         if (w === 0x1050_0073) return 'wfi';
+        if (((w >>> 25) & 0x7f) === 0x09) return 'sfence.vma'; // SFENCE.VMA rs1, rs2
         return (w & 0x0010_0000) !== 0 ? 'ebreak' : 'ecall';
       }
       return { 1: 'csrrw', 2: 'csrrs', 3: 'csrrc', 5: 'csrrwi', 6: 'csrrsi', 7: 'csrrci' }[funct3] ?? 'unknown';

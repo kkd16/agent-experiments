@@ -143,10 +143,23 @@ const GROUPS: { title: string; items: InsDoc[] }[] = [
     ],
   },
   {
+    title: 'Supervisor mode & Sv32 virtual memory',
+    items: [
+      { m: 'satp', desc: 'address translation: MODE[31] (0=Bare, 1=Sv32) · ASID · root PPN[21:0]' },
+      { m: 'sstatus', desc: 'a restricted view of mstatus (SIE/SPIE/SPP/SUM/MXR)' },
+      { m: 'stvec / sepc / scause / stval', desc: 'supervisor trap vector / pc / cause / value' },
+      { m: 'sie / sip / sscratch', desc: 'supervisor interrupt enable / pending / scratch' },
+      { m: 'medeleg / mideleg', desc: 'cause bitmaps: which traps are handled in S- instead of M-mode' },
+      { m: 'sret', desc: 'return from a supervisor trap: restore SIE from SPIE, drop to SPP' },
+      { m: 'sfence.vma', desc: 'flush the (incoherent) TLB after editing a page table' },
+    ],
+  },
+  {
     title: 'System',
     items: [
-      { m: 'ecall', desc: 'environment call — dispatched on a7 (see syscalls)' },
+      { m: 'ecall', desc: 'environment call: a host syscall from M-mode, an exception from S/U' },
       { m: 'ebreak', desc: 'breakpoint — pauses the debugger' },
+      { m: 'mret', desc: 'return from a machine trap: restore MIE from MPIE, drop to MPP' },
       { m: 'fence', desc: 'memory fence (a no-op on this single-hart machine)' },
     ],
   },
@@ -186,7 +199,7 @@ export default function Docs() {
   return (
     <div className="panel docs">
       <div className="panel-head">
-        <h2>RV32GC (IMAFDC) + Zicsr reference</h2>
+        <h2>RV32GC (IMAFDC) + Zicsr · M/S/U + Sv32 reference</h2>
       </div>
       <div className="docs-scroll">
         <p className="docs-intro">
@@ -194,7 +207,8 @@ export default function Docs() {
           <strong>M</strong> (multiply/divide), <strong>A</strong> (atomics),{' '}
           <strong>F</strong>/<strong>D</strong> (single- and double-precision float) and{' '}
           <strong>C</strong> (16-bit compressed) extensions, together with <strong>Zicsr</strong>,
-          the hardware counters and machine-mode <strong>traps &amp; interrupts</strong> — every
+          the hardware counters, <strong>traps &amp; interrupts</strong>, all three{' '}
+          <strong>privilege modes</strong> (M/S/U) and <strong>Sv32 virtual memory</strong> — every
           instruction below executes on the built-in interpreter. Compressed (<code>c.*</code>)
           instructions are decoded and disassembled inline; float ops take an optional
           rounding-mode operand (<code>rne·rtz·rdn·rup·rmm·dyn</code>); and the debugger can
@@ -323,6 +337,43 @@ export default function Docs() {
               </tr>
             </tbody>
           </table>
+        </section>
+
+        <section>
+          <h3>Privilege modes &amp; Sv32 paging (the MMU tab)</h3>
+          <p className="docs-intro">
+            The hart runs at one of three privilege levels — <strong>M</strong>achine,{' '}
+            <strong>S</strong>upervisor, <strong>U</strong>ser — shown live on the{' '}
+            <strong>MMU</strong> tab and in the register inspector. A program starts in M-mode.{' '}
+            <code>mret</code>/<code>sret</code> drop to the privilege held in{' '}
+            <code>mstatus.MPP</code>/<code>SPP</code>, so an M-mode boot stub can hand control to
+            a supervisor, which can in turn enter user code.
+          </p>
+          <p className="docs-intro">
+            Synchronous exceptions (page faults, illegal instructions, environment calls) and the
+            timer interrupt trap to M-mode by default, but each cause can be{' '}
+            <strong>delegated</strong> to S-mode through <code>medeleg</code>/<code>mideleg</code>.
+            An <code>ecall</code> from M-mode is the studio&rsquo;s host syscall ABI (so every
+            existing program is unchanged); from S- or U-mode it is a real{' '}
+            <em>environment-call exception</em> (cause 9 / 8), letting an operating system build
+            its own syscall layer — the <em>Sv32 virtual memory</em> example does exactly that with
+            an M-mode &ldquo;supervisor-call gate&rdquo;.
+          </p>
+          <p className="docs-intro">
+            When <code>satp.MODE = Sv32</code> and the effective privilege is S or U, every fetch
+            and load/store is translated by a two-level <strong>Sv32</strong> page-table walk:{' '}
+            <code>VA = vpn1(10) · vpn0(10) · offset(12)</code>. A level-1 leaf is a 4&nbsp;MiB
+            superpage; a level-0 leaf is a 4&nbsp;KiB page. Each PTE carries{' '}
+            <code>V R W X U G A D</code> permission bits; a violation raises an instruction
+            (12), load (13) or store (15) <strong>page fault</strong> with the faulting address in{' '}
+            <code>*tval</code>. <code>SUM</code> lets supervisor code touch user pages and{' '}
+            <code>MXR</code> makes execute-only pages readable. Translations are cached in a small{' '}
+            <strong>TLB</strong> that, like real hardware, is <em>not</em> kept coherent with
+            page-table writes — software must issue <code>sfence.vma</code> (or rewrite{' '}
+            <code>satp</code>) to flush it. The MMU tab probes any virtual address and shows the
+            walk PTE-by-PTE, the resulting physical address (or fault), and the TLB&rsquo;s
+            contents and hit-rate.
+          </p>
         </section>
 
         <section>
