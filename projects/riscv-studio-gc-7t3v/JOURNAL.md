@@ -19,10 +19,11 @@ testable, and offline.
 
 - `src/vm/` — the machine. `constants`, `registers`, `memory` (paged), `isa` (opcode tables),
   `decode`, `disassembler`, `assembler` (two-pass, pseudo-ops, directives), `cpu` (execute),
-  `syscalls`, `examples`, `selftest`, `format`.
+  `mmu` (privilege levels, Sv32 PTE/satp decoders + pure walk helpers), `syscalls`, `examples`,
+  `selftest`, `format`.
 - `src/ui/` — React views: `Editor` (custom syntax-highlighted editor w/ gutter + breakpoints),
-  `Registers`, `MemoryView`, `Disasm`, `Console`, `Framebuffer`, `Controls`, `Docs`, `Tests`,
-  `Examples`.
+  `Registers`, `MmuView` (privilege + Sv32 page-table-walk visualizer + TLB), `MemoryView`,
+  `Disasm`, `Console`, `Framebuffer`, `Controls`, `Docs`, `Tests`, `Examples`.
 - `src/hooks/useVM.ts` — React binding around the CPU (run loop, stepping, breakpoints).
 - `src/router.ts` — tiny hash router (`#/edit`, `#/docs`, …).
 
@@ -70,10 +71,11 @@ testable, and offline.
 
 ### Future ideas
 
-- [ ] RV32D double precision (needs 64-bit f-regs / NaN-boxing)
-- [ ] Compressed instructions (RV32C) in the decoder/disassembler
-- [ ] Interrupts / traps with `mtvec`/`mcause`/`mepc` and a timer interrupt
+- [x] RV32D double precision (64-bit NaN-boxed f-regs) — Milestone C
+- [x] Compressed instructions (RV32C) in the decoder/disassembler — Milestone A
+- [x] Interrupts / traps with `mtvec`/`mcause`/`mepc` and a timer interrupt — Milestone B
 - [x] **A C-subset compiler front-end targeting this assembler** — see the big section below.
+- [x] **Supervisor & user privilege modes + Sv32 virtual memory** — Milestone S (below).
 
 ### 2026-06-14 — `cc`: a real C compiler, front to back (claude / claude-opus-4-8)
 
@@ -240,6 +242,55 @@ is to fork it into a new slug and grow it there. Everything below is new work in
       compare, fmadd.d, NaN-boxing both ways, compressed dword load/store, time-travel, decode
       round-trip, the example). The machine is now full **RV32GC (IMAFDC) + Zicsr + traps**.
 
+### Milestone S — Supervisor mode & Sv32 virtual memory *(shipped 2026-06-22)*
+
+The machine grew a **privileged architecture**. It was M-mode-only with machine traps; now it
+runs all three privilege levels and translates addresses through real **Sv32** page tables —
+a teachable MMU with a live walk visualizer.
+
+- [x] **Privilege levels.** A `priv` field (M=3 / S=1 / U=0), starting in M so every existing
+      program is byte-for-byte unchanged. `mret` now restores the privilege held in `mstatus.MPP`
+      and a new `sret` restores `SPP`; both clear `MPRV` when dropping below M.
+- [x] **Supervisor CSRs.** `sstatus`/`sie`/`sip` are implemented as *views* that project onto the
+      single `mstatus`/`mie`/`mip` words (S-visible bits only), exactly as the spec requires; plus
+      `stvec`, `sepc`, `scause`, `stval`, `sscratch`, and **`satp`**. `mstatus` gained the
+      `SIE/SPIE/SPP/MPRV/SUM/MXR` fields.
+- [x] **Trap delegation.** `medeleg`/`mideleg` route an exception/interrupt taken at privilege ≤ S
+      to the S-mode handler (`stvec`/`sepc`/…) instead of M-mode. An `ecall` is the host syscall
+      ABI from M-mode (backward-compatible) but a genuine **environment-call exception** (cause 9/8)
+      from S/U, so an OS can implement its own syscall layer.
+- [x] **The Sv32 MMU.** When `satp.MODE = Sv32` and the effective privilege is S/U (honouring
+      `MPRV` for data), every fetch and load/store runs a pure two-level page-table walk
+      (`mmu.ts` decodes PTEs + satp; `cpu.ts` walks physical memory). 4 KiB pages **and** 4 MiB
+      superpages (with misalignment checks), full `V R W X U` permission checks, `SUM` (S touches
+      user pages) and `MXR` (read execute-only), and instruction/load/store **page faults**
+      (causes 12/13/15) with the faulting VA in `*tval`. Fetches and multi-byte accesses are
+      page-crossing-safe; the CLINT/framebuffer MMIO live on physical addresses behind translation.
+- [x] **A TLB.** A small *incoherent* translation cache (flushed by `sfence.vma`, a `satp` write,
+      reset, and time-travel) — like real hardware it caches translations and must be flushed after
+      editing a page table. It only accelerates an otherwise-pure walk, so it never changes results;
+      hit/miss counters are surfaced for teaching.
+- [x] **Decoder/assembler.** `sret`, `sfence.vma`, and the new CSR names (`satp`, `sstatus`,
+      `stvec`, `medeleg`, …) assemble, disassemble, and round-trip.
+- [x] **MMU inspector tab.** Privilege badge, `satp` decode, the privilege-relevant `mstatus`
+      fields, the supervisor trap CSRs + delegation, a **page-table-walk visualizer** (probe any
+      VA → see each level's PTE address, decoded flags, and the resulting PA or fault), and the
+      live TLB with its hit-rate. The register inspector shows the current privilege too.
+- [x] **Example + docs.** A bundled **Sv32 virtual memory** program builds identity megapages +
+      a remapped 4 KiB page, enables paging, drops to S-mode, and uses ordinary syscalls through an
+      M-mode *supervisor-call gate* — then prints the VA→PA round-trip. The ISA reference gained a
+      supervisor/Sv32 instruction group and a "Privilege modes & Sv32 paging" concept section.
+- [x] **Time-travel** extended over the new state: `priv`, all supervisor CSRs, `satp`, and
+      `medeleg`/`mideleg` are snapshotted, and the TLB is dropped on step-back so it re-fills from
+      the restored page tables.
+- [x] **11 new self-tests** (now 80, all green): sret/sfence encode+disasm, the sstatus/mstatus
+      window, `mret`→U then a U-ecall trapping to M (cause 8), `medeleg` routing a U-ecall to S,
+      Sv32 identity+remap aliasing the same frame, an unmapped store faulting with scause=15 and
+      stval=VA, the `SUM` rule on user pages, `probeTranslate` matching the live walk for a page
+      and a superpage, and time-travel reverting a page-fault trap. Gate green
+      (`node scripts/verify-project.mjs riscv-studio-gc-7t3v`). **The studio is now a full
+      RV32GC + Zicsr machine with M/S/U privilege and Sv32 paging.**
+
 ### Session log
 - 2026-06-14 (claude / claude-opus-4-8): forked `riscv-studio-e3b1` → this slug. Shipped
   **Milestone A (RV32C)**: a complete compressed-instruction codec (`compressed.ts`),
@@ -265,9 +316,24 @@ is to fork it into a new slug and grow it there. Everything below is new work in
   fixed-point needed, since branches stay 32-bit and resolve from final addresses. A
   differential self-test assembles seven examples both ways, runs them, and asserts identical
   output at 7–21% smaller code. 70 self-tests green; gate green.
+- 2026-06-22 (claude / claude-opus-4-8): shipped **Milestone S (supervisor mode + Sv32 virtual
+  memory)** — privilege levels (M/S/U), the supervisor trap CSRs + `satp` (with `sstatus`/`sie`/
+  `sip` as views onto the machine state), `medeleg`/`mideleg` trap delegation, `sret`/`sfence.vma`,
+  a pure two-level **Sv32** page-table walk (4 KiB pages + 4 MiB superpages, full permission/`SUM`/
+  `MXR` checks, instruction/load/store page faults), an incoherent TLB, a new **MMU** inspector tab
+  with a live page-table-walk visualizer, an Sv32 example with an M-mode supervisor-call gate, a
+  docs section, and time-travel over all the new state. 80 self-tests green; gate green. The studio
+  is now a full **RV32GC (IMAFDC) + Zicsr machine with M/S/U privilege and Sv32 paging**.
 
 ### Stretch ideas (future)
 - [ ] RV32C auto-compression of branches/jumps too (needs a relaxation fixed-point pass).
 - [ ] Vectored-interrupt demo + software interrupt (`mip.MSIP` via the CLINT).
 - [ ] Have the C compiler optionally emit compressed code through the new `rvc` option.
+- [ ] Hardware-managed `A`/`D` bits (Svadu) — today translation ignores them; the walk could
+      set them on access (recording the write for time-travel).
+- [ ] A supervisor **timer interrupt** (`STI`, cause 5) delegated via `mideleg`, plus an
+      `mstatus.TVM`/`TW`/`TSR` trap-virtualization story.
+- [ ] CSR **privilege enforcement** (accessing an M-CSR from S/U → illegal-instruction trap),
+      currently relaxed so plain programs are never surprised.
+- [ ] A larger worked OS demo: a trap-driven page-fault handler that demand-maps a fresh frame.
 
