@@ -7,10 +7,19 @@
 import { Tensor } from './tensor';
 import { dropout, layerNorm, batchNorm, makeBatchNormState, embedding, concatCols, gatherCols } from './ops';
 import { conv2d, maxPool2d, avgPool2d } from './conv';
-import { maskedCrossEntropy, bceWithLogits } from './losses';
+import { maskedCrossEntropy, bceWithLogits, mse } from './losses';
 import { GPT } from './transformer';
 import { VAE, klDivStandardNormal } from './vae';
 import { Agent, gaussianLogProb, gaussianEntropy, categoricalLogProb, categoricalEntropy } from './policy';
+import {
+  NoiseSchedule,
+  Denoiser,
+  sinusoidalTimeEmbedding,
+  qSampleData,
+  predictX0,
+  posteriorMean,
+  classifierFreeGuidance,
+} from './diffusion';
 
 export interface OpCheck {
   name: string;
@@ -93,6 +102,21 @@ function checkOp(
     }
   }
   return { name, maxRelError: maxRel, meanRelError: count ? sumRel / count : 0, checked: count };
+}
+
+// A *value* identity check (not a gradient check): the maximum relative disagreement between a
+// list of (actual, expected) pairs. Used to prove the diffusion schedule/posterior identities,
+// which are exact algebraic facts about the noise process rather than backward passes.
+function relCheck(name: string, pairs: [number, number][]): OpCheck {
+  let maxRel = 0;
+  let sum = 0;
+  for (const [a, b] of pairs) {
+    const denom = Math.max(Math.abs(a) + Math.abs(b), 1e-8);
+    const rel = Math.abs(a - b) / denom;
+    maxRel = Math.max(maxRel, rel);
+    sum += rel;
+  }
+  return { name, maxRelError: maxRel, meanRelError: pairs.length ? sum / pairs.length : 0, checked: pairs.length };
 }
 
 export function runSelfTest(seed = 7): SelfTestReport {
@@ -377,6 +401,125 @@ export function runSelfTest(seed = 7): SelfTestReport {
         rng,
       ),
     );
+  }
+
+  // ---- Diffusion (DDPM/DDIM) -------------------------------------------------------
+  //
+  // End-to-end: a whole time-conditioned denoiser — input projection, the time MLP, the learned
+  // class embedding, every residual block's LayerNorm + SiLU Linears, and the output projection —
+  // gradchecked through the eps-prediction MSE. x_t, the timestep embedding and the class ids are
+  // frozen leaves (they are the network's *input*, exactly like the VAE's eps), so the loss is a
+  // clean function of the parameters for finite differences.
+  {
+    const sched = new NoiseSchedule(20, 'cosine');
+    const den = new Denoiser({ px: 6, hidden: 8, depth: 2, timeDim: 8, numClasses: 3 }, rngFrom(21));
+    const B = 3;
+    const tIdx = Int32Array.from([2, 11, 17]);
+    const xtd = new Float64Array(B * 6);
+    for (let i = 0; i < xtd.length; i++) xtd[i] = rng() * 2 - 1;
+    const xt = Tensor.fromFlat(xtd, B, 6, false);
+    const temb = sinusoidalTimeEmbedding(tIdx, sched.T, 8);
+    const classIds = Int32Array.from([0, 2, 1]);
+    const targd = new Float64Array(B * 6);
+    for (let i = 0; i < targd.length; i++) targd[i] = rng() * 2 - 1;
+    const target = Tensor.fromFlat(targd, B, 6, false);
+    ops.push(
+      checkOp(
+        'diffusion-denoiser (e2e)',
+        den.parameters(),
+        () => mse(den.forward(xt, temb, classIds), target),
+        rng,
+      ),
+    );
+  }
+
+  // Schedule self-consistency: the cumulative product of alpha_t equals abar_T, and the variance
+  // recursion v_t = alpha_t·v_{t-1} + beta_t (v_0 = 0) accumulates to exactly 1 - abar_T. This is
+  // the proof that the noising chain's per-step kernel and its closed-form marginal agree.
+  {
+    const s = new NoiseSchedule(60, 'cosine');
+    let prod = 1;
+    let v = 0;
+    for (let i = 0; i < s.T; i++) {
+      prod *= s.alpha[i];
+      v = s.alpha[i] * v + s.beta[i];
+    }
+    ops.push(
+      relCheck('diffusion-schedule', [
+        [prod, s.alphaBar[s.T - 1]],
+        [v, 1 - s.alphaBar[s.T - 1]],
+      ]),
+    );
+  }
+
+  // Forward-marginal identity: sqrt(abar_t)^2 + sqrt(1-abar_t)^2 ≡ 1 at every step, and abar is a
+  // strictly decreasing sequence starting near 1 — so the forward kernel really is a unit-variance
+  // interpolation between the data and Gaussian noise.
+  {
+    const s = new NoiseSchedule(40, 'linear');
+    const pairs: [number, number][] = [];
+    let mono = 0;
+    for (let i = 0; i < s.T; i++) {
+      pairs.push([s.sqrtAlphaBar[i] * s.sqrtAlphaBar[i] + s.sqrtOneMinusAlphaBar[i] * s.sqrtOneMinusAlphaBar[i], 1]);
+      if (i > 0 && s.alphaBar[i] > s.alphaBar[i - 1]) mono = 1;
+    }
+    pairs.push([s.alphaBar[0], s.alpha[0]]); // abar_1 == alpha_1
+    pairs.push([mono, 0]); // 0 if abar is monotonically decreasing
+    ops.push(relCheck('diffusion-marginal', pairs));
+  }
+
+  // Posterior identity: the DDPM reverse-step *mean* (using the true eps that produced x_t) equals
+  // the closed-form forward-posterior mean μ̃_t(x_0, x_t). The two are algebraically identical — this
+  // verifies the reverse update targets the right Gaussian.
+  {
+    const s = new NoiseSchedule(50, 'cosine');
+    const px = 8;
+    const x0 = new Float64Array(px);
+    const eps = new Float64Array(px);
+    for (let i = 0; i < px; i++) {
+      x0[i] = rng() * 2 - 1;
+      eps[i] = rng() * 2 - 1;
+    }
+    const ti = 23;
+    const xt = qSampleData(x0, eps, Int32Array.from([ti]), px, s);
+    // The classic eps-form reverse mean  1/sqrt(alpha)·(x_t - beta/sqrt(1-abar)·eps), computed inline
+    // (independent of ddpmStep), must equal the closed-form forward-posterior mean μ̃_t(x0, x_t).
+    const invSqrtA = 1 / Math.sqrt(s.alpha[ti]);
+    const coef = s.beta[ti] / s.sqrtOneMinusAlphaBar[ti];
+    const muPost = posteriorMean(x0, xt, ti, s);
+    const pairs: [number, number][] = [];
+    for (let i = 0; i < px; i++) pairs.push([invSqrtA * (xt[i] - coef * eps[i]), muPost[i]]);
+    ops.push(relCheck('diffusion-posterior', pairs));
+  }
+
+  // DDIM x̂0 exactness: recovering x_0 from x_t with the true eps is exact, and classifier-free
+  // guidance is the affine combine eps_uncond + w·(eps_cond − eps_uncond) — at w = 0 it is exactly
+  // the conditional prediction.
+  {
+    const s = new NoiseSchedule(50, 'linear');
+    const px = 8;
+    const x0 = new Float64Array(px);
+    const eps = new Float64Array(px);
+    const epsCond = new Float64Array(px);
+    const epsUncond = new Float64Array(px);
+    for (let i = 0; i < px; i++) {
+      x0[i] = rng() * 2 - 1;
+      eps[i] = rng() * 2 - 1;
+      epsCond[i] = rng() * 2 - 1;
+      epsUncond[i] = rng() * 2 - 1;
+    }
+    const ti = 31;
+    const xt = qSampleData(x0, eps, Int32Array.from([ti]), px, s);
+    const x0hat = predictX0(xt, eps, ti, s);
+    const g0 = classifierFreeGuidance(epsCond, epsUncond, 0);
+    const g2 = classifierFreeGuidance(epsCond, epsUncond, 2);
+    const pairs: [number, number][] = [];
+    for (let i = 0; i < px; i++) {
+      pairs.push([x0hat[i], x0[i]]); // x̂0 reconstructs x0
+      pairs.push([g0[i], epsCond[i]]); // strength w=0 ⇒ plain conditional
+      pairs.push([g2[i], 3 * epsCond[i] - 2 * epsUncond[i]]); // (1+w)·cond − w·uncond, w=2
+    }
+    ops.push(relCheck('diffusion-ddim+cfg', pairs));
   }
 
   const maxRelError = ops.reduce((m, o) => Math.max(m, o.maxRelError), 0);

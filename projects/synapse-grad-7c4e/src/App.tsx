@@ -3,16 +3,18 @@ import PlaygroundLab from './components/PlaygroundLab';
 import VisionLab from './components/vision/VisionLab';
 import SeqLab from './components/seq/SeqLab';
 import GenLab from './components/gen/GenLab';
+import DiffLab from './components/diff/DiffLab';
 import RLLab from './components/rl/RLLab';
 import './App.css';
 
-type Tab = 'playground' | 'vision' | 'transformer' | 'generative' | 'control';
+type Tab = 'playground' | 'vision' | 'transformer' | 'generative' | 'diffusion' | 'control';
 
-// Open the lab a shared link points at (#v= vision, #t= transformer, #g= generative, #r= RL).
+// Open the lab a shared link points at (#v= vision, #t= transformer, #g= generative, #d= diffusion, #r= RL).
 function initialTab(): Tab {
   try {
     if (/[#&]t=/.test(location.hash)) return 'transformer';
     if (/[#&]g=/.test(location.hash)) return 'generative';
+    if (/[#&]d=/.test(location.hash)) return 'diffusion';
     if (/[#&]r=/.test(location.hash)) return 'control';
     return /[#&]v=/.test(location.hash) ? 'vision' : 'playground';
   } catch {
@@ -47,6 +49,9 @@ export default function App() {
             <button className={tab === 'generative' ? 'on' : ''} onClick={() => setTab('generative')}>
               Generative · VAE
             </button>
+            <button className={tab === 'diffusion' ? 'on' : ''} onClick={() => setTab('diffusion')}>
+              Diffusion · DDPM
+            </button>
             <button className={tab === 'control' ? 'on' : ''} onClick={() => setTab('control')}>
               Control · RL
             </button>
@@ -65,6 +70,8 @@ export default function App() {
         <SeqLab />
       ) : tab === 'generative' ? (
         <GenLab />
+      ) : tab === 'diffusion' ? (
+        <DiffLab />
       ) : (
         <RLLab />
       )}
