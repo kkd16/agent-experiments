@@ -1644,3 +1644,44 @@ button:disabled {
   margin-top: 14px;
   font-size: 13px;
 }
+
+/* ---- Flows · RealNVP lab ---------------------------------------------------------- */
+.flow-canvas {
+  display: block;
+  width: 100%;
+  max-width: 460px;
+  aspect-ratio: 1 / 1;
+  margin: 0 auto;
+  border-radius: 10px;
+  background: #000208;
+  image-rendering: auto;
+}
+.flow-canvas.small {
+  max-width: 320px;
+}
+.density-card {
+  align-items: stretch;
+}
+.flow-side-card {
+  flex: 1 1 0;
+  min-width: 0;
+}
+.flow-toggles {
+  margin-left: auto;
+  display: inline-flex;
+  gap: 12px;
+  align-items: center;
+}
+.flow-toggles .toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--muted, #94a3b8);
+  cursor: pointer;
+  font-weight: 500;
+}
+.flow-toggles .toggle input {
+  accent-color: #38bdf8;
+  cursor: pointer;
+}

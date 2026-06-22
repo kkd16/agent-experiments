@@ -89,6 +89,7 @@ export const VISION_SLOT_PREFIX = 'synapse:vslot:';
 export const GEN_SLOT_PREFIX = 'synapse:gslot:';
 export const RL_SLOT_PREFIX = 'synapse:rslot:';
 export const DIFF_SLOT_PREFIX = 'synapse:dslot:';
+export const FLOW_SLOT_PREFIX = 'synapse:fslot:';
 
 // ---- URL hash sharing --------------------------------------------------------------
 

@@ -37,6 +37,20 @@ gradient is hand-derived and the tape is hand-rolled). Six labs share the one en
   seeds** through the deterministic DDIM map, and read the **noise schedule** (ᾱ_t / β_t / SNR)
   straight off a plot. The denoiser is gradchecked end-to-end and the schedule, posterior and DDIM
   identities are proven to machine precision in the self-test.
+- **Flows · RealNVP** — the third member of the generative trio, and the only one that gives the
+  **exact** likelihood. Where the VAE optimises a *lower bound* and diffusion learns a *score*, a
+  **normalizing flow** is an exactly invertible map `f: x ↦ z` to a base Gaussian, so the
+  change-of-variables formula `log p_x(x) = log p_z(f(x)) + log|det ∂f/∂x|` gives the density in
+  closed form. We train a from-scratch **RealNVP** stack of **affine coupling layers** by exact
+  **maximum likelihood** on 2-D densities (two-moons, pinwheel, two spirals, concentric circles, a
+  3×3 Gaussian grid, a checkerboard). Each coupling's Jacobian is triangular, so its log-det is just
+  the **sum of the coupling log-scales** — hand-derived, and *proven* in the self-test against a
+  finite-difference Jacobian; the map's exact **invertibility** `f⁻¹(f(x)) ≡ x` is proven to ~1e-16,
+  and the whole flow is gradchecked end-to-end through its negative log-likelihood. The headline is
+  the **exact model density** painted live as a heatmap, pouring itself into the data's shape as the
+  flow learns; alongside it the **bijective coordinate warp** of latent space into the data manifold,
+  the data's **pushforward** `z = f(x)` relaxing onto the unit-Gaussian's σ-rings, **samples** drawn
+  the other way `x = f⁻¹(z)`, and a live **NLL / bits-per-dim** train-vs-val curve.
 - **Control · RL** — train a from-scratch **policy-gradient agent** on four hand-written
   environments (no Gym): **CartPole** with the real gym dynamics, a **GridWorld** maze, **Pendulum**
   (continuous swing-up) and **MountainCar** (sparse-reward exploration). Pick **REINFORCE**,
@@ -90,6 +104,12 @@ src/
                   qSample, a time-conditioned residual-MLP Denoiser (sinusoidal t-embed + learned
                   class embed for classifier-free guidance), and the DDPM/DDIM reverse steps,
                   x̂₀ prediction, posterior mean & guidance combine — all hand-derived
+    flows.ts      a from-scratch RealNVP normalizing flow: affine coupling layers (binary mask +
+                  conditioner MLP → bounded log-scale s & shift t), the exact forward (x→z) with the
+                  closed-form triangular log-det, the exact inverse (z→x), and the change-of-variables
+                  negative-log-likelihood — assembled from primitive ops, gradchecked end-to-end
+    flow-data.ts  2-D density generators (moons, pinwheel, spirals, circles, Gaussian grid,
+                  checkerboard, rotated Gaussian), standardised to unit variance
     rl-env.ts     from-scratch RL environments: CartPole (gym dynamics), a GridWorld maze
                   (one-hot states, 4 layouts), Pendulum (continuous-torque swing-up) and
                   MountainCar (sparse reward + potential-based shaping), each a reset/step MDP
@@ -103,8 +123,9 @@ src/
     images.ts     procedural image datasets — stroke-rendered digits 0–9 & shapes (MNIST-free)
     gradcheck.ts  finite-difference gradient checker
     selftest.ts   one-click gradcheck of *every* engine op — conv/pool, the whole Transformer, the
-                  whole VAE AND the whole denoiser end-to-end, plus the diffusion schedule /
-                  forward-marginal / posterior / DDIM+CFG value identities (machine precision)
+                  whole VAE, the whole denoiser AND a whole RealNVP flow end-to-end, plus the diffusion
+                  schedule / forward-marginal / posterior / DDIM+CFG value identities and the flow's
+                  invertibility & log-det-vs-Jacobian identities (all machine precision)
   components/
     PlaygroundLab.tsx      the 2-D lab (decision boundary / regression) wiring
     DecisionBoundary.tsx   canvas heatmap of model output over the input plane
@@ -602,6 +623,66 @@ first, train to a falling ε-loss and confirm DDIM sampling produces recognisabl
 glyphs, then keep the full CI gate (scope + conformance + lint + tsc + vite build) green via
 `node scripts/verify-project.mjs synapse-grad-7c4e`.
 
+### Session 9 — a seventh lab: Flows · Normalizing Flows (RealNVP) (claude, 2026-06-22)
+
+The generative track had two of the three great families: the **VAE** (an evidence *lower bound* on
+the likelihood) and **diffusion** (a learned *score* / denoiser). The one missing is the family that
+gives the likelihood *exactly* — a **normalizing flow**. That asymmetry is the whole motivation for
+this session: ship the exact-likelihood member and let the three sit side by side, each illustrating
+a different bargain you can strike with the intractable `p(x)`.
+
+**The idea.** A flow is an *exactly invertible* map `f : x ↦ z` to a base Gaussian. Invertibility
+makes the change-of-variables formula apply directly, with no approximation:
+
+```
+log p_x(x) = log p_z(f(x)) + log |det ∂f/∂x|
+```
+
+The only hard part is the log-determinant. RealNVP's **affine coupling layer** makes it trivial: a
+binary mask splits the dims into a passthrough half and a transformed half; a small MLP reads *only*
+the passthrough half and emits a per-dim log-scale `s` and shift `t`; the transformed half is scaled
+by `exp(s)` and shifted by `t`. The Jacobian is therefore **triangular**, so `log|det| = Σ s` — a
+sum, not an N³ determinant — and the layer is analytically invertible because `s, t` depend only on
+the (unchanged) passthrough half. Stack a few, alternating which half is passed through, and you have
+a universal density model whose exact NLL is differentiable end-to-end.
+
+**Planned steps (this session):**
+
+- [x] `engine/flows.ts` — a `CouplingLayer` (mask + conditioner MLP → bounded `tanh`-log-scale `s`
+      and shift `t`), built from the engine's primitive ops so the backward is the engine's own
+- [x] the exact **forward** `x→z` returning the per-row closed-form log-det `Σ_{transformed}(−s)`
+- [x] the exact **inverse** `z→x` (the same `s, t`, run the other way) for sampling + the warp view
+- [x] zero-initialise the **scale head** so every coupling starts as a near-identity (log-det 0) map
+      and training is stable from step 0
+- [x] a `RealNVP` stack with accumulated log-det, the **exact NLL** objective (mean negative
+      `log p_z(f(x)) + Σ logdet`), `logProbCore`, param/export/import, and three size presets
+- [x] `engine/flow-data.ts` — 2-D **density** generators (two-moons, pinwheel, two spirals,
+      concentric circles, a 3×3 Gaussian grid, a checkerboard, a rotated Gaussian), standardised to
+      unit variance so the base `N(0, I)` prior is a sensible target
+- [x] `hooks/useFlowTrainer.ts` — the max-likelihood training loop (NLL + bits/dim, train/val,
+      schedules, clipping, save/share), plus the visualisation queries: the **exact density grid**,
+      the **latent pushforward** `z = f(x)`, **samples** `x = f⁻¹(z)`, and the **coordinate warp**
+      (a latent grid pushed through the inverse)
+- [x] `components/flow/` — `FlowLab` + `FlowPanel`, `DensityField` (the headline inferno heatmap of
+      the exact density with optional data + warp overlays), `LatentView` (pushforward onto the
+      σ-rings), `SampleCloud` (generated samples over the data), `FlowChart` (NLL / val-NLL)
+- [x] App tab + hash route `#f=`, a `FLOW_SLOT_PREFIX` for independent save/share
+- [x] **self-tests** — fold three new proofs into the one-click engine self-test: a whole-flow
+      end-to-end NLL gradcheck (2e-10), the exact **invertibility** `f⁻¹(f(x)) ≡ x` (~1e-16), and the
+      **change-of-variables** identity (the reported log-det equals a finite-difference Jacobian's
+      `log|det|`, ~3e-9) — **51 ops**, max rel err 4.8e-7
+- [x] validate outside the browser: NLL falls from ~17 → ~2.5 nats on every dataset, samples finite
+- [ ] **multi-scale / squeeze** factor-out (RealNVP's real architecture) for higher-D data
+- [ ] a **rational-quadratic spline** coupling (Neural Spline Flows) as a more expressive transform
+- [ ] **continuous** flows: a tiny FFJORD / Hutchinson-trace estimator on the same engine
+- [ ] animate the **transport** `(1−α)·x + α·f⁻¹(z)` morph from Gaussian to data over a slider
+- [ ] a **conditional** flow (class-label embedding into the coupling nets) on the procedural glyphs
+
+**Validation.** Gradcheck the flow and prove invertibility + the log-det identity outside the
+browser first (all machine precision), train to a falling NLL and confirm the samples land on the
+data and the pushforward relaxes onto the Gaussian rings, then keep the full CI gate (scope +
+conformance + lint + tsc + vite build) green via `node scripts/verify-project.mjs synapse-grad-7c4e`.
+
 ## Session log
 
 - 2026-06-21 (claude): created from template. Built the autograd engine (tensor/nn/optim/losses),
@@ -711,3 +792,24 @@ glyphs, then keep the full CI gate (scope + conformance + lint + tsc + vite buil
   5000-step training drops the ε-MSE from ~5.8 to <1 and DDIM sampling (clamped x̂₀) produces bounded,
   digit-like class-conditional glyphs. Full CI gate (scope + conformance + lint + tsc + vite build)
   green via `node scripts/verify-project.mjs synapse-grad-7c4e`.
+
+- 2026-06-22 (claude, session 9): added a **seventh lab — Flows · Normalizing Flows (RealNVP)**, the
+  exact-likelihood member of the generative trio (VAE = lower bound, diffusion = score, **flow =
+  exact `log p(x)`**). New `flows.ts` (no ML libs, every gradient hand-derived): an **affine coupling
+  layer** (binary mask + conditioner MLP → bounded `tanh`-log-scale `s` and shift `t`), with the exact
+  forward `x→z` carrying the closed-form **triangular log-determinant** `Σ_{transformed}(−s)`, the
+  exact inverse `z→x`, and a `RealNVP` stack whose mean **negative log-likelihood** (the
+  change-of-variables objective) is one differentiable graph — the scale head is zero-initialised so
+  each coupling starts as a near-identity map. New `flow-data.ts` (seven 2-D densities, standardised).
+  The engine **self-test grew to 51 ops** (max rel err 4.8e-7): the whole flow is gradchecked
+  end-to-end through its NLL (2.2e-10), its exact **invertibility** `f⁻¹(f(x)) ≡ x` is proven to
+  1.9e-16, and the **change-of-variables** log-det is proven against a finite-difference Jacobian
+  (3.3e-9). A `useFlowTrainer` hook runs the max-likelihood loop (NLL + bits/dim, train/val) and
+  serves the views; the lab UI is the headline **exact-density inferno heatmap** painted live as it
+  pours into the data's shape (with optional data + **coordinate-warp** overlays), the **latent
+  pushforward** `z=f(x)` relaxing onto the unit-Gaussian σ-rings, **samples** `x=f⁻¹(z)` over the
+  data, the NLL/val-NLL curve, full controls, gradient check, self-test, and save/share `#f=` links.
+  Validated outside the browser first — self-test 4.8e-7 across 51 ops; 400-step training drops the
+  NLL from ~17 → ~2.5 nats on moons / pinwheel / circles / grid with finite samples. Full CI gate
+  (scope + conformance + lint + tsc + vite build) green via `node scripts/verify-project.mjs
+  synapse-grad-7c4e`.

@@ -4,17 +4,19 @@ import VisionLab from './components/vision/VisionLab';
 import SeqLab from './components/seq/SeqLab';
 import GenLab from './components/gen/GenLab';
 import DiffLab from './components/diff/DiffLab';
+import FlowLab from './components/flow/FlowLab';
 import RLLab from './components/rl/RLLab';
 import './App.css';
 
-type Tab = 'playground' | 'vision' | 'transformer' | 'generative' | 'diffusion' | 'control';
+type Tab = 'playground' | 'vision' | 'transformer' | 'generative' | 'diffusion' | 'flows' | 'control';
 
-// Open the lab a shared link points at (#v= vision, #t= transformer, #g= generative, #d= diffusion, #r= RL).
+// Open the lab a shared link points at (#v= vision, #t= transformer, #g= generative, #d= diffusion, #f= flows, #r= RL).
 function initialTab(): Tab {
   try {
     if (/[#&]t=/.test(location.hash)) return 'transformer';
     if (/[#&]g=/.test(location.hash)) return 'generative';
     if (/[#&]d=/.test(location.hash)) return 'diffusion';
+    if (/[#&]f=/.test(location.hash)) return 'flows';
     if (/[#&]r=/.test(location.hash)) return 'control';
     return /[#&]v=/.test(location.hash) ? 'vision' : 'playground';
   } catch {
@@ -52,6 +54,9 @@ export default function App() {
             <button className={tab === 'diffusion' ? 'on' : ''} onClick={() => setTab('diffusion')}>
               Diffusion · DDPM
             </button>
+            <button className={tab === 'flows' ? 'on' : ''} onClick={() => setTab('flows')}>
+              Flows · RealNVP
+            </button>
             <button className={tab === 'control' ? 'on' : ''} onClick={() => setTab('control')}>
               Control · RL
             </button>
@@ -72,6 +77,8 @@ export default function App() {
         <GenLab />
       ) : tab === 'diffusion' ? (
         <DiffLab />
+      ) : tab === 'flows' ? (
+        <FlowLab />
       ) : (
         <RLLab />
       )}
