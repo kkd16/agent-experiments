@@ -1,8 +1,8 @@
 {
   "title": "Automata Forge",
-  "description": "A from-scratch theory-of-computation lab. Compile a regex into a parse tree, Thompson e-NFA, subset-construction DFA, Hopcroft-minimized DFA and a Brzozowski-derivative DFA, then step strings through any of them. NEW: a two-regex Compare workbench that builds the product automaton for union, intersection, difference and symmetric difference, decides equivalence and containment, and proves inequality with the shortest distinguishing string; a pumping-lemma playground; a live derivative explorer; Graphviz DOT / SVG export; and shareable permalinks. No libraries — every algorithm, the graph layout and the SVG renderer are hand-written.",
+  "description": "A from-scratch theory-of-computation lab. Compile a regex into a parse tree, Thompson e-NFA, subset-construction DFA, Hopcroft-minimized DFA and a Brzozowski-derivative DFA, then step strings through any of them. Compare two regexes via the product automaton (union, intersection, difference, symmetric difference), decide equivalence and containment, and prove inequality with the shortest distinguishing string. NEW in v3 — Build mode: draw your own DFA / NFA / e-NFA on a canvas and watch the whole pipeline run on it live (determinize, minimize, read off a regex by state elimination, reverse and complement it). Plus a Myhill-Nerode distinguishability table with witnesses sitting beside Hopcroft's partition, a direct NFA-to-regex, a pumping-lemma playground, DOT / SVG export and shareable permalinks. No libraries — every algorithm, the graph layout and the SVG renderer are hand-written.",
   "agent": "claude",
   "model": "claude-opus-4-8",
-  "tags": ["automata", "regex", "compiler", "visualization", "education", "derivatives", "equivalence", "react"],
+  "tags": ["automata", "regex", "compiler", "visualization", "education", "derivatives", "equivalence", "myhill-nerode", "editor", "react"],
   "createdAt": "2026-06-22"
 }

@@ -14,18 +14,21 @@ import { OTHER, showSym } from '../engine/types'
 import type { Ast, Dfa, Sym } from '../engine/types'
 import { astToDer, buildDfaByDerivatives, derivative, nullable, show } from '../engine/derivative'
 import { decompose, findPumpableWord, pump, pumpingLength } from '../engine/pumping'
+import { nerode } from '../engine/myhill'
 import Graph from '../components/Graph'
 import AstView from '../components/AstView'
+import NerodeTable from '../components/NerodeTable'
 import { Stat } from '../components/Stat'
 import { EXAMPLES } from '../examples'
 
-export type ExploreTab = 'ast' | 'nfa' | 'dfa' | 'min' | 'der'
+export type ExploreTab = 'ast' | 'nfa' | 'dfa' | 'min' | 'der' | 'mn'
 
 const TABS: { id: ExploreTab; label: string }[] = [
   { id: 'ast', label: 'Parse tree' },
   { id: 'nfa', label: 'ε-NFA' },
   { id: 'dfa', label: 'DFA' },
   { id: 'min', label: 'Minimal DFA' },
+  { id: 'mn', label: 'Myhill–Nerode' },
   { id: 'der', label: 'Derivatives' },
 ]
 
@@ -69,6 +72,7 @@ export default function ExploreView({ regex, onRegex, input, onInput, tab, onTab
       dfaGraph: dfaToGraph(dfaFull),
       minGraph: dfaToGraph(minimal),
       derGraph,
+      nerode: nerode(dfaFull),
       reconstructed: dfaToRegex(minimal),
     }
   }, [regex])
@@ -76,7 +80,7 @@ export default function ExploreView({ regex, onRegex, input, onInput, tab, onTab
   // --- simulation for the currently displayed machine -----------------------
   const sim: SimResult | null = useMemo(() => {
     if (!compiled.ok) return null
-    if (tab === 'dfa') return simulateDfa(compiled.dfaFull, input, compiled.alpha)
+    if (tab === 'dfa' || tab === 'mn') return simulateDfa(compiled.dfaFull, input, compiled.alpha)
     if (tab === 'min') return simulateDfa(compiled.minimal, input, compiled.alpha)
     if (tab === 'der') return simulateDfa(compiled.der.dfa, input, compiled.alpha)
     return simulateNfa(compiled.nfa, input, compiled.alpha)
@@ -135,7 +139,7 @@ export default function ExploreView({ regex, onRegex, input, onInput, tab, onTab
     : null
 
   const machineName =
-    tab === 'dfa'
+    tab === 'dfa' || tab === 'mn'
       ? 'DFA'
       : tab === 'min'
         ? 'minimal DFA'
@@ -233,6 +237,8 @@ export default function ExploreView({ regex, onRegex, input, onInput, tab, onTab
               <div className="empty">Fix the pattern to see its machines.</div>
             ) : tab === 'ast' ? (
               <AstView ast={compiled.ast} />
+            ) : tab === 'mn' ? (
+              <NerodeTable result={compiled.nerode} />
             ) : graph ? (
               <Graph
                 graph={graph}
@@ -242,7 +248,7 @@ export default function ExploreView({ regex, onRegex, input, onInput, tab, onTab
               />
             ) : null}
           </div>
-          {compiled.ok && tab !== 'ast' && (
+          {compiled.ok && tab !== 'ast' && tab !== 'mn' && (
             <div className="legend">
               <span>
                 <i className="dot start" /> start
@@ -334,6 +340,22 @@ export default function ExploreView({ regex, onRegex, input, onInput, tab, onTab
 
           {compiled.ok && tab === 'der' && (
             <DerivativeExplorer ast={compiled.ast} alpha={compiled.alpha} />
+          )}
+
+          {compiled.ok && tab === 'mn' && (
+            <section className="panel">
+              <h2>Myhill–Nerode</h2>
+              <p className="panel-sub">
+                The <strong>table-filling algorithm</strong> on the DFA above. A pair of states is
+                marked when some string tells them apart: first the ones ε separates (one accepts,
+                one doesn't), then propagate — (p, q) is marked when a symbol sends them to an
+                already-marked pair. Each filled cell shows the <strong>round</strong> it fell in;
+                hover it for the actual distinguishing string. The surviving unmarked pairs are the{' '}
+                <strong>equivalence classes</strong> — exactly the states Hopcroft merges. There are{' '}
+                <strong>{compiled.nerode.classes.length}</strong> of them (the trap counts as one),
+                matching the minimal DFA.
+              </p>
+            </section>
           )}
 
           <section className="panel">

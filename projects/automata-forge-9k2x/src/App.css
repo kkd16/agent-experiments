@@ -798,3 +798,172 @@
 .pump-input:focus {
   border-color: var(--accent);
 }
+
+/* ===================== Build view ===================== */
+.kind-badge {
+  font-family: var(--mono);
+  font-size: 12px;
+  font-weight: 700;
+  padding: 6px 11px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  white-space: nowrap;
+}
+.kind-badge.dfa {
+  color: var(--good);
+  border-color: rgba(70, 224, 160, 0.4);
+  background: rgba(70, 224, 160, 0.1);
+}
+.kind-badge.nfa {
+  color: var(--accent2);
+  border-color: rgba(177, 140, 255, 0.4);
+  background: rgba(177, 140, 255, 0.1);
+}
+.kind-badge.empty {
+  color: var(--muted);
+}
+
+.edit-toolhint {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--muted);
+  opacity: 0.8;
+  padding-right: 8px;
+}
+.tabs.subtabs {
+  background: var(--panel);
+}
+
+.struct-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.struct-list li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--mono);
+  font-size: 13px;
+  padding: 5px 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--bg);
+}
+.struct-q {
+  font-weight: 700;
+  color: var(--accent);
+  min-width: 26px;
+}
+.struct-ctl {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--muted);
+  cursor: pointer;
+}
+.struct-ctl input {
+  accent-color: var(--accent);
+}
+.struct-del {
+  margin-left: auto;
+  font: inherit;
+  font-size: 12px;
+  color: var(--muted);
+  background: var(--panel2);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 2px 8px;
+  cursor: pointer;
+}
+.struct-del:hover {
+  color: var(--bad);
+  border-color: var(--bad);
+}
+.struct-trans {
+  color: var(--ink);
+}
+.struct-arrow {
+  color: var(--accent2);
+}
+
+.trans-add {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 10px;
+  flex-wrap: wrap;
+}
+.trans-add select {
+  background: var(--bg);
+  color: var(--ink);
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  padding: 6px 7px;
+  font-family: var(--mono);
+  font-size: 13px;
+  cursor: pointer;
+}
+.trans-sym {
+  width: 52px;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  color: var(--ink);
+  font-family: var(--mono);
+  font-size: 13px;
+  padding: 6px 8px;
+  outline: none;
+}
+.trans-sym:focus {
+  border-color: var(--accent);
+}
+.trans-sym:disabled {
+  opacity: 0.5;
+}
+.trans-eps {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  font-family: var(--mono);
+  font-size: 13px;
+  color: var(--muted);
+  cursor: pointer;
+}
+.trans-addbtn {
+  font: inherit;
+  font-size: 13px;
+  font-family: var(--mono);
+  color: var(--bg);
+  background: linear-gradient(90deg, var(--accent), var(--accent2));
+  border: none;
+  border-radius: 7px;
+  padding: 6px 12px;
+  cursor: pointer;
+  font-weight: 700;
+}
+
+.closure-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+.closure-tag {
+  font-family: var(--mono);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  color: var(--muted);
+  min-width: 78px;
+}
+.reconstructed.inline {
+  flex: 1;
+  max-height: none;
+  padding: 6px 9px;
+  font-size: 12px;
+}
