@@ -153,6 +153,25 @@ four times and CSE collapses it to one. The **Optimizer** tab shows the rewrite 
 **round-by-round fixpoint trace**, the functions proven pure, the node-count reduction, the
 before/after core, and a one-click VM-step measurement.
 
+### Global value numbering — CSE across binders
+
+The CSE above is *local*: it only shares an expression among the children on a single node's
+binder-free strict frontier, so it cannot touch the same work recomputed on either side of a `let`,
+inside a `λ` body, or across a `match`. **Global value numbering** (Aether 14.0) closes that gap with
+a top-down, dominator-style **available-expressions** pass: at each node it finds a pure, costly
+expression that is **guaranteed-evaluated at least twice** across binders and **hoists it into one
+shared `let`** at the dominating node, rewriting every occurrence — including the conditional ones (a
+`match`/`if` arm, a `λ` body) — to read the shared variable. The hoist is sound on three counts: only
+effect-free, *terminating* expressions are ever moved (moving a pure computation earlier on a
+guaranteed path is observationally invisible in a strict language); the bound name is `$`-fresh and
+every free variable is in scope at the hoist point (so nothing is captured or shadowed); and the two
+guaranteed evaluations mean the value would have been computed at least twice anyway, so the VM step
+count can only **fall**. Because it emits an ordinary `let`, all three backends compile it unchanged
+and the equivalence checks re-prove the answer never changed. The *"Global value numbering"* example
+recomputes a pure window `sq n + sq (n+1) + sq (n+2)` as the value of three different `let`s — work
+the frontier CSE never sees — and GVN shares it once, roughly halving the kernel's VM steps; the
+**Optimizer** tab lists the `gvn` rule and the expression it shared.
+
 ### Pattern matching compiled to good decision trees
 
 The naive `match` compiler tests each arm in turn, re-navigating the scrutinee, so two arms that
@@ -256,7 +275,7 @@ source ─▶ lexer ─▶ parser ─▶ HM inference ─▶ elaborate ─▶ op
 | `src/lang/unparse.ts` | core-AST pretty-printer (renders the elaborated dictionaries) |
 | `src/lang/exhaustive.ts` | Maranget's pattern-usefulness algorithm (exhaustiveness + redundancy) |
 | `src/lang/decisiontree.ts` | Maranget's *good decision tree* compiler: a pattern-matrix → single-column-`match` lowering (with join-points + guards) that shares head tests across arms (feeds all three backends) |
-| `src/lang/optimize.ts` | the optimizing middle-end: a fixpoint of const-folding, algebra, β/η, capture-avoiding inlining, dead-binding elimination, known-constructor `match` reduction, field projection & **common-subexpression elimination** over the core AST, then **decision-tree pattern compilation**, plus an **interprocedural effect-&-totality analysis** that powers it (feeds all three backends) |
+| `src/lang/optimize.ts` | the optimizing middle-end: a fixpoint of const-folding, algebra, β/η, capture-avoiding inlining, dead-binding elimination, known-constructor `match` reduction, field projection & **common-subexpression elimination** over the core AST, then **global value numbering** (CSE across binders) and **decision-tree pattern compilation**, plus an **interprocedural effect-&-totality analysis** that powers them (feeds all three backends) |
 | `src/lang/bytecode.ts` | opcodes + disassembler |
 | `src/lang/compiler.ts` | AST → bytecode; clox-style upvalues; tail-call detection |
 | `src/lang/vm.ts` | iterative stack VM; closures, currying, tail calls, snapshot trace |

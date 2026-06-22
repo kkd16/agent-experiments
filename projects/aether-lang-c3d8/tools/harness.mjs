@@ -471,6 +471,15 @@ function checkOpt(name, src, opts = {}) {
     problems.push(`only ${cseCount} CSE rewrites (expected >= ${opts.minCse})`)
   if (opts.noCse && cseCount !== 0)
     problems.push(`CSE fired ${cseCount}× (expected none — would be speculative)`)
+  const gvnCount = on.optimization ? (on.optimization.passes.gvn ?? 0) : 0
+  if (opts.minGvn !== undefined && gvnCount < opts.minGvn)
+    problems.push(`only ${gvnCount} GVN rewrites (expected >= ${opts.minGvn})`)
+  if (opts.noGvn && gvnCount !== 0)
+    problems.push(`GVN fired ${gvnCount}× (expected none — would speculate or duplicate)`)
+  if (opts.minGvnSites !== undefined) {
+    const sites = on.optimization ? (on.optimization.gvnHoists ?? []).reduce((n, h) => n + h.sites, 0) : 0
+    if (sites < opts.minGvnSites) problems.push(`only ${sites} GVN sites shared (expected >= ${opts.minGvnSites})`)
+  }
   if (opts.minStepCut !== undefined && on.run && off.run && off.run.steps - on.run.steps < opts.minStepCut)
     problems.push(`steps cut by only ${off.run.steps - on.run.steps} (expected >= ${opts.minStepCut})`)
   const dt = on.optimization ? on.optimization.dt : null
@@ -587,6 +596,49 @@ checkOpt('cse does not speculate across branches',
 checkOpt('cse rejects recursive functions',
   'let rec f = fn n -> if n == 0 then 0 else n + f (n - 1) in (f 5, f 5)',
   { expect: '(15, 15)', notPure: ['f'] })
+
+// ---------------------------------------------------------------------------
+// Global value-numbering battery (Aether 14.0). GVN shares a pure, costly
+// expression recomputed across BINDERS — work the binder-free frontier CSE
+// (11.0) cannot reach. `checkOpt` already proves the result, output, effects and
+// (never-increased) step count agree with the unoptimized run; here we also
+// assert GVN *fired*, *cut real steps*, shared the right number of sites, and —
+// the safety half — declined to speculate or to move an effect.
+// ---------------------------------------------------------------------------
+
+// The headline: a pure window recomputed as the value of three different `let`s
+// (so frontier CSE never sees it) is hoisted once and shared across all three.
+checkOpt('gvn shares a window across three lets',
+  `let sq = fn x -> x * x in
+   let rec k = fn n -> if n == 0 then 0
+     else let a = sq n + sq (n + 1) + sq (n + 2) in
+          let b = (sq n + sq (n + 1) + sq (n + 2)) * 3 in
+          let c = (sq n + sq (n + 1) + sq (n + 2)) - 1 in
+          a + b + c + k (n - 1) in
+   k 12`,
+  { expect: '12378', minGvn: 1, minGvnSites: 3, minStepCut: 300, pure: ['sq'] })
+
+// A plain arithmetic expression recomputed across a single `let` binder. Frontier
+// CSE leaves it (the two copies are the values of different lets); GVN shares it.
+checkOpt('gvn shares across one let binder',
+  'let rec f = fn n -> if n == 0 then 0 else let a = (n * n * n + n * n + n) in let b = (n * n * n + n * n + n) * 2 in a + b + f (n - 1) in f 12',
+  { expect: '20436', minGvn: 1, minStepCut: 30 })
+
+// --- safety: GVN must change nothing observable, and never speculate ---
+// Redundant only in two `if` arms — each only conditionally evaluated — so
+// hoisting would add work on the path that takes the other arm. GVN must decline.
+checkOpt('gvn does not speculate across if-arms',
+  'let rec f = fn n -> if n == 0 then 0 else if n % 2 == 0 then (n*n*n+n*n)+1 else (n*n*n+n*n)+2 in f 9 + f 8',
+  { expect: '1389', noGvn: true })
+// Guaranteed once (before the match) plus once inside an arm: only ONE guaranteed
+// evaluation, so sharing could add work — GVN must decline (no speculation).
+checkOpt('gvn needs two guaranteed evaluations',
+  'let rec f = fn n -> if n == 0 then 0 else (n*n*n+n*n) + (match n % 2 with 0 -> (n*n*n+n*n) | _ -> n) + f (n-1) in f 9',
+  { expect: '3255', noGvn: true })
+// An effectful expression repeated across a let is NEVER moved (both effects run).
+checkOpt('gvn never moves an effect',
+  'let log = fn x -> let u = print x in x in let a = log 5 in let b = log 5 in a + b',
+  { expect: '10', noGvn: true })
 
 // ---------------------------------------------------------------------------
 // Decision-tree pattern compilation battery (Aether 12.0). `checkOpt` already

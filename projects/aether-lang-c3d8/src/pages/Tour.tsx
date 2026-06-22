@@ -380,6 +380,17 @@ back 50.0        clear ()`}</pre>
           expression simplifier whose rules share <code>Add</code>/<code>Mul</code> prefixes; the
           Optimizer tab draws the tree it compiles to and "Measure VM steps" shows the work it saves.
         </p>
+        <p>
+          14.0 lets CSE see <strong>through binders</strong>. The local CSE only shares work among one
+          node's binder-free frontier, so the same computation on either side of a <code>let</code>,
+          inside a <code>λ</code>, or across a <code>match</code> survives. <strong>Global value
+          numbering</strong> is a top-down, dominator-style <strong>available-expressions</strong> pass
+          that finds a pure, costly expression <em>guaranteed-evaluated twice</em> across binders and
+          hoists it into one shared <code>let</code> at the dominating node — never speculating it onto
+          a path that did not need it, so the step count only falls. The{' '}
+          <strong>global value numbering</strong> example recomputes one window as the value of three
+          different <code>let</code>s; GVN shares it once and roughly halves the kernel's VM steps.
+        </p>
       </section>
 
       <section>

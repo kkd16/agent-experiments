@@ -1052,6 +1052,47 @@ let t  = Node (Node (Leaf 1) (Leaf 2)) (Leaf 3) in
 , toInt (fact three)
 , toInt (ack (S (S Z)) three) )`,
   },
+  {
+    id: 'gvn',
+    title: 'Global value numbering',
+    blurb: 'Open the Optimizer tab: CSE that sees THROUGH binders shares work across three lets.',
+    visual: false,
+    code: `// Aether 14.0 — GLOBAL VALUE NUMBERING: common-subexpression elimination that
+// sees THROUGH binders.
+//
+// Aether's local CSE (11.0) only shares an expression among the children on a
+// single node's binder-free strict frontier. It cannot touch the same work
+// recomputed on either side of a 'let', inside a 'λ' body, or across a 'match'.
+// 14.0 adds a top-down, dominator-style available-expressions pass that does:
+// it finds a pure, costly expression GUARANTEED to be evaluated more than once
+// across binders and hoists it into ONE shared 'let' at the dominating node.
+//
+// Open the "Optimizer" tab: the rewrite table now lists 'gvn', a "Global value
+// numbering" section shows the expression it shared and how many sites collapsed,
+// and "Measure VM steps" shows the work it saves. Because it emits an ordinary
+// 'let', the VM, the JavaScript backend AND the WebAssembly backend all run the
+// shared program — the byte-for-byte equivalence checks re-prove the answer never
+// changed, and the step count only ever falls.
+
+// 'sq' is a pure helper. The effect-&-totality analysis (11.0) proves it
+// effect-free and total, so a repeated *call* to it is shareable.
+let sq = fn x -> x * x in
+
+// A numeric kernel. The window 'sq n + sq (n+1) + sq (n+2)' is recomputed three
+// times — but each occurrence is the value of a DIFFERENT 'let', so the local
+// frontier CSE (which never crosses the 'let a =' / 'let b =' binders) leaves all
+// three. Global value numbering hoists the window once and the three lets share
+// it (one 'gvn' rewrite, 3 sites). Watch the VM steps roughly halve.
+let rec kernel = fn n ->
+  if n == 0 then 0
+  else
+    let a = sq n + sq (n + 1) + sq (n + 2) in
+    let b = (sq n + sq (n + 1) + sq (n + 2)) * 3 in
+    let c = (sq n + sq (n + 1) + sq (n + 2)) - 1 in
+    a + b + c + kernel (n - 1) in
+
+kernel 30`,
+  },
 ]
 
 export const DEFAULT_CODE = EXAMPLES[0].code

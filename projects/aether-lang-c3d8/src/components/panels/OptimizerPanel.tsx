@@ -26,6 +26,7 @@ const PASS_LABELS: Record<string, string> = {
   'field-proj': 'record field projection ({ a = e, … }.a ⇒ e)',
   'seq-clean': 'sequence cleanup (pure ; rest ⇒ rest)',
   cse: 'common-subexpression elimination (compute repeated work once)',
+  gvn: 'global value numbering (share work across `let` / `λ` / `match` binders)',
   dt: 'pattern matching compiled to a decision tree (test each position once)',
 }
 
@@ -248,6 +249,32 @@ export default function OptimizerPanel({ code }: Props) {
                   <td className="opt-pass-desc">
                     {t.nodes} core nodes{' '}
                     <span className="opt-pct">({pct(stats.nodesBefore, t.nodes)})</span>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {stats.gvnHoists.length > 0 && (
+        <div className="opt-passes">
+          <h4>Global value numbering (Aether 14.0)</h4>
+          <p className="panel-note" style={{ marginTop: 0 }}>
+            Where the local CSE only shares work among a single node's binder-free strict frontier,
+            this top-down pass shares a pure, costly expression recomputed <em>across</em> binders —
+            on either side of a <code>let</code>, inside a <code>λ</code> body, or across a{' '}
+            <code>match</code> — hoisting it into one shared <code>let</code> at the dominating node.
+            It only fires when the expression is guaranteed-evaluated more than once, so the VM step
+            count can only fall:
+          </p>
+          <table className="opt-table">
+            <tbody>
+              {stats.gvnHoists.map((h, i) => (
+                <tr key={i}>
+                  <td className="opt-pass-count">{h.sites}×</td>
+                  <td className="opt-pass-desc">
+                    shared <code>{h.expr}</code>
                   </td>
                 </tr>
               ))}
