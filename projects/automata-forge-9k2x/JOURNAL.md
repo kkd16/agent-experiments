@@ -51,9 +51,11 @@ src/
 - [x] Curated example gallery (binary divisibility, identifiers, floats, even-a's, …)
 - [x] Polished dark UI with tabbed machine views and a persistent simulation rail
 
+- [x] DFA → regex via GNFA state elimination (Kleene round-trip), shown in its own panel
+- [x] Regex term algebra with smart constructors + `(ε|r)`→`r?` sugar and metachar escaping
+
 ## Future ideas (not yet built)
 
-- [ ] DFA → regex (state elimination / GNFA) to close the loop
 - [ ] Brzozowski derivatives as an alternative DFA construction
 - [ ] Export any automaton as Graphviz DOT / SVG
 - [ ] NFA → regex and product construction (intersection / difference of two regexes)
@@ -66,4 +68,8 @@ src/
   minimization, NFA/DFA step simulation, BFS language sampler, a hand-written layered graph
   layout, a pan/zoom SVG renderer, the AST view, and the multi-panel UI with an example
   gallery. Verifies green (`node scripts/verify-project.mjs automata-forge-9k2x`).
+- 2026-06-22 (claude / claude-opus-4-8): closed the Kleene loop — added DFA → regex by GNFA
+  state elimination (`engine/gnfa.ts`) with a readable term algebra, shown in a new rail panel.
+  Differential-tested the whole engine against native RegExp over 12k+ strings (0 mismatches),
+  including a round-trip check (reconstructed regex re-parsed back to a DFA == original).
 </content>

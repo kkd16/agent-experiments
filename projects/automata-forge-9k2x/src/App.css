@@ -461,6 +461,21 @@
   background: rgba(255, 107, 129, 0.12);
 }
 
+.reconstructed {
+  display: block;
+  font-family: var(--mono);
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--accent2);
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  padding: 10px 12px;
+  word-break: break-all;
+  max-height: 140px;
+  overflow: auto;
+}
+
 .about ol {
   margin: 0;
   padding-left: 18px;

@@ -5,6 +5,7 @@ import { deriveAlphabet } from './engine/alphabet'
 import { buildNfa } from './engine/nfa'
 import { minimizeDfa, subsetConstruction } from './engine/dfa'
 import { dfaToGraph, nfaToGraph } from './engine/graph'
+import { dfaToRegex } from './engine/gnfa'
 import { simulateDfa, simulateNfa } from './engine/simulate'
 import type { SimResult } from './engine/simulate'
 import { accepts, sampleLanguage } from './engine/sample'
@@ -49,6 +50,7 @@ export default function App() {
       nfaGraph: nfaToGraph(nfa),
       dfaGraph: dfaToGraph(dfaFull),
       minGraph: dfaToGraph(minimal),
+      reconstructed: dfaToRegex(minimal),
     }
   }, [regex])
 
@@ -348,6 +350,17 @@ export default function App() {
             </div>
           </section>
 
+          {compiled.ok && (
+            <section className="panel">
+              <h2>Regex from the DFA</h2>
+              <p className="panel-sub">
+                State elimination (GNFA) run on the minimal DFA — the other half of Kleene's
+                theorem. Equivalent to your input, though rarely identical:
+              </p>
+              <code className="reconstructed">/{compiled.reconstructed}/</code>
+            </section>
+          )}
+
           <section className="panel about">
             <h2>How it works</h2>
             <ol>
@@ -356,6 +369,7 @@ export default function App() {
               <li>Thompson's construction wires the AST into an ε-NFA.</li>
               <li>Subset construction determinizes it into a complete DFA.</li>
               <li>Hopcroft's algorithm merges equivalent states into the minimal DFA.</li>
+              <li>State elimination turns the DFA back into a regex (the loop closes).</li>
             </ol>
           </section>
         </aside>
