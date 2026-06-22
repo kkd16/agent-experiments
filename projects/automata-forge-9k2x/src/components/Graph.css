@@ -1,0 +1,100 @@
+.graph-wrap {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+}
+.graph-svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+  cursor: grab;
+  touch-action: none;
+  background-image: radial-gradient(circle at 1px 1px, rgba(91, 106, 168, 0.18) 1px, transparent 0);
+  background-size: 26px 26px;
+}
+.graph-svg:active {
+  cursor: grabbing;
+}
+
+.edge-path {
+  stroke: #6b78b0;
+  stroke-width: 1.8;
+}
+.start-arrow {
+  stroke: var(--accent);
+  stroke-width: 2;
+}
+.arrowhead {
+  fill: #6b78b0;
+}
+.edge-label {
+  fill: #c7d0ee;
+  font-family: var(--mono);
+  font-size: 13px;
+  paint-order: stroke;
+  stroke: var(--panel);
+  stroke-width: 4px;
+  stroke-linejoin: round;
+}
+
+.node {
+  cursor: grab;
+}
+.node:active {
+  cursor: grabbing;
+}
+.node-circle {
+  fill: var(--node);
+  stroke: var(--node-stroke);
+  stroke-width: 2;
+  transition: fill 0.15s, stroke 0.15s;
+}
+.node:hover .node-circle {
+  stroke: var(--accent);
+}
+.accept-ring {
+  fill: none;
+  stroke: var(--good);
+  stroke-width: 2;
+}
+.node-label {
+  fill: var(--ink);
+  font-family: var(--mono);
+  font-size: 15px;
+  font-weight: 600;
+  dominant-baseline: middle;
+  pointer-events: none;
+}
+.node-sub {
+  fill: var(--muted);
+  font-family: var(--mono);
+  font-size: 10px;
+  pointer-events: none;
+}
+
+.node.active .node-circle {
+  fill: var(--warn);
+  stroke: #ffe09a;
+}
+.node.active .node-label {
+  fill: #1a1300;
+}
+
+.graph-fit {
+  position: absolute;
+  right: 12px;
+  bottom: 12px;
+  font: inherit;
+  font-size: 12px;
+  font-family: var(--mono);
+  color: var(--ink);
+  background: var(--panel2);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 6px 11px;
+  cursor: pointer;
+}
+.graph-fit:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}

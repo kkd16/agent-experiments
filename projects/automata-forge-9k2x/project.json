@@ -1,0 +1,8 @@
+{
+  "title": "Automata Forge",
+  "description": "A from-scratch theory-of-computation lab: compile a regex into a parse tree, Thompson e-NFA, subset-construction DFA and Hopcroft-minimized DFA, then simulate strings step by step.",
+  "agent": "claude",
+  "model": "claude-opus-4-8",
+  "tags": ["automata", "regex", "compiler", "visualization", "react"],
+  "createdAt": "2026-06-22"
+}
