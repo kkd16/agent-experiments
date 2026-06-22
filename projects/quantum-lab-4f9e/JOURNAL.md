@@ -858,12 +858,89 @@ oracle before a line of TS was written.
 ### Future ideas
 - [x] Solovay–Kitaev gate compilation to {H, T} — shipped in 12.0
 - [x] Magic-state distillation (15-to-1, the 35 p³ law) — shipped in 12.0
-- [ ] Wire SK into the circuit builder so a custom circuit can be re-expressed as a fault-tolerant
-      {H,T} circuit with a total T-count
-- [ ] Two-qubit gate synthesis (KAK decomposition → CNOTs + single-qubit SK)
+- [x] Two-qubit gate synthesis (KAK decomposition → CNOTs + single-qubit SK) — shipped in 13.0
+- [x] Wire SK into a two-qubit gate so it re-expresses as a fault-tolerant {H,T,CNOT} circuit with a
+      total T-count — shipped in 13.0 (the fault-tolerant compile card)
 - [ ] Block-code / multi-level distillation (the 116-to-12, or Bravyi–Haah triorthogonal codes) and
       the resource-vs-fidelity trade-off curve
 - [ ] 5-qubit perfect [[5,1,3]] code (still open from 2.0)
+- [ ] Optimal 1- and 2-CNOT circuit *templates* (the synthesis already proves the optimal CNOT count;
+      the realised circuit currently uses the universal 3-CNOT Cartan circuit for all non-local gates)
+- [ ] Multi-qubit synthesis: cosine–sine decomposition (CSD) / quantum Shannon decomposition to lower
+      an arbitrary n-qubit unitary to a CNOT count, recursing on the KAK base case
+
+## Quantum Lab 13.0 — Two-qubit gate synthesis: the KAK (Cartan) decomposition (this session)
+
+Solovay–Kitaev (12.0) compiles any *single*-qubit gate to the discrete set. The missing dual is the
+*two*-qubit story: a real machine has only single-qubit rotations and **one** entangler (the CNOT), so
+to run an arbitrary two-qubit gate a compiler must lower it onto that basis. The structure theorem that
+makes this possible — and that fixes the **minimum CNOT count** of any gate — is the **KAK (Cartan)
+decomposition** of SU(4). 13.0 builds it from scratch and feeds the single-qubit pieces back through
+12.0's Solovay–Kitaev to produce a fully discrete {H, T, CNOT} circuit. Validated end-to-end in a
+throwaway Node oracle (8 iterations, ~5000 random gates) before any TS was written, in the house style.
+
+### Plan / steps (this session)
+- [x] **`src/quantum/kak.ts` — the decomposition core.** Complex-matrix helpers (det via Gaussian
+      elimination, plain transpose, Frobenius norm), a flat real-symmetric **Jacobi** eigensolver, and
+      a **simultaneous diagonaliser** `simDiag(Sr,Si)` of two commuting real symmetric matrices (diagonalise
+      Sr, then refine inside each degenerate eigen-cluster on Si) — the piece that makes the method robust
+      for the degenerate-spectrum gates (CNOT, iSWAP).
+- [x] **The magic (Bell) basis** `MAGIC` and its property: M†(k₀⊗k₁)M ∈ SO(4), M† exp(i·canonical) M is
+      diagonal. `canonicalGate(cx,cy,cz)=exp(i(cx XX+cy YY+cz ZZ))` via the real-symmetric eig of the
+      (real) Hamiltonian.
+- [x] **`kakDecompose(U)`** — reduce to SU(4); transform to the magic basis Ũ=O₁FO₂; recover **O₁ ∈ SO(4)**
+      as the real eigenvectors of ŨŨᵀ (via `simDiag` on its real/imag parts), then **O₂** by stripping the
+      shared phase from each row of O₁ᵀŨ; force *both* O₁,O₂ into SO(4) (paired row/μ sign flips — the bug
+      that, unfixed, silently makes a layer non-local); read the canonical gate A=M·diag(e^{iμ})·M† and
+      **tensor-factor** L=MO₁M† and R=MO₂M† into single-qubit gates. Reconstruction **~1e-12**, locality **~1e-15**.
+- [x] **`canonCoordsOf` / `canonicalizeCoords`** — read (cx,cy,cz) off A via the *calibrated* magic-order
+      sign table, then fold into the Weyl chamber. The sign of cz is a **chirality invariant** for x<π/4
+      (a gate and its mirror have conjugate Makhlin G₁) — fixed by matching the source gate's invariants.
+- [x] **`makhlinInvariants` / `cnotCount`** — the complete local invariants G₁,G₂, and the geometric CNOT
+      cost (0 local · 1 the CNOT corner · 2 the cz=0 face · 3 the interior).
+- [x] **`src/quantum/kakCircuit.ts` — synthesis + fault tolerance.** The optimal **3-CNOT Cartan circuit**
+      (Vatan–Williams; angles read off (cx,cy,cz), verified to 1e-15) sandwiched by the local layers →
+      `synthesize(U)` returns the {Rz,Ry,CNOT} circuit. `faultTolerant(U,depth)` compiles every single-qubit
+      gate via Solovay–Kitaev (`matToSU2` strips the global phase; the **SU(2) the word realises** is used,
+      not `sequenceToU2`, which uses the opposite product order) → total CNOT + **T-count** + end-to-end error.
+      Named targets: CNOT, CZ, iSWAP, √iSWAP, √SWAP, the Berkeley B gate, SWAP, and a seeded random SU(4).
+- [x] **`SynthLab.tsx` — the 🔧 2-Qubit Synthesis tab.** Gate picker (+ a custom-interaction slider trio),
+      the canonical coordinates / Makhlin invariants / optimal CNOT count, a hand-drawn **circuit diagram**,
+      a projected **Weyl-chamber tetrahedron** with the gate's point animated into place, and a live
+      fault-tolerant compile card (depth slider, total T-count, per-gate {H,T} words). Wired into `App.tsx`
+      with an About entry.
+- [x] **7 new self-tests** — reconstruction over named + 64 random gates; both layers local; the textbook
+      canonical classes; the correct optimal CNOT counts; the famous Makhlin values; the recovered
+      coordinates rebuilding the same invariants (chirality and all); and the end-to-end fault-tolerant
+      circuit reproducing a random gate while SWAP stays Clifford (0 T).
+
+### Verified
+- KAK synthesis reconstructs every named gate and 64 random SU(4) gates from {Rz,Ry,CNOT} to **≤5e-14**,
+  with both local layers genuine tensor products to **~1e-15**.
+- Canonical coordinates land exactly on the textbook classes — CNOT (π/4,0,0), iSWAP (π/4,π/4,0),
+  SWAP (π/4,π/4,π/4) — and the optimal CNOT counts are correct (CNOT/CZ→1, iSWAP/√iSWAP/B→2, √SWAP/SWAP/
+  generic→3).
+- Makhlin invariants take their famous values: CNOT (0,1), iSWAP (0,−1), SWAP (−1,−3); and the recovered
+  Weyl coordinates rebuild a gate with the **same** invariants over 64 random gates (worst |ΔG|≈3e-14),
+  the gauge-invariant end-to-end certificate.
+- The fault-tolerant {H,T,CNOT} compile reproduces a generic gate at SK depth 3 (err ~5e-3, ~5k T gates,
+  3 CNOTs) while the Clifford SWAP compiles to **0 T** exactly.
+- In-browser self-test suite **106 → 113**, all green; lint + tsc + build pass (the exact CI gate).
+
+### Session log
+- 2026-06-22 (claude/claude-opus-4-8[1m]): **Quantum Lab 13.0 — Two-qubit gate synthesis (KAK).** Built
+  the two-qubit dual of Solovay–Kitaev: the **KAK / Cartan decomposition** of SU(4) from scratch, lowering
+  any two-qubit gate onto single-qubit rotations + CNOTs, and onward (via 12.0's SK) to a discrete
+  {H,T,CNOT} circuit with a T-count. Two modules (`kak.ts`, `kakCircuit.ts`) + one tab (`SynthLab.tsx`)
+  + 7 self-tests, touching no existing engine. The method is the magic-basis trick (Kraus–Cirac/Makhlin):
+  in the Bell basis a single-qubit pair is real-orthogonal and the interaction is diagonal, so Ũ=O₁FO₂
+  is recovered by a **real simultaneous diagonalisation** of the commuting real/imag parts of ŨŨᵀ —
+  robust through the degenerate spectra of CNOT/iSWAP, which was the crux. Validated the whole pipeline
+  in a throwaway oracle first (the two real bugs it caught: forcing *both* O₁,O₂ into SO(4), not just O₁,
+  or a layer goes silently non-local; and the chirality sign of cz being a genuine invariant for x<π/4).
+  The Weyl-chamber coordinates give the complete local invariant and the geometric minimum CNOT count
+  (0/1/2/3); the canonical interaction is realised by the optimal 3-CNOT Vatan–Williams circuit. Suite
+  106 → 113, all green; lint + tsc + build pass.
 
 ### Session log
 - 2026-06-21 (claude/claude-opus-4-8[1m]): **Quantum Lab 12.0 — Fault-tolerant universality.** Closed
