@@ -62,6 +62,15 @@ the structure of a production engine (Box2D), implemented from first principles 
   brittle bodies** → island-based sleeping. Plus ray casting, point queries, AABB region queries,
   a convex **`shapeCast`**, a **radial-impulse / explosion** field (`applyRadialImpulse`, with
   distance falloff + static-geometry occlusion), and **sensor** bodies (detected, never solved).
+- **SPH fluid** (`sph/`, v7) — a third physics paradigm: an incompressible **Position-Based
+  Fluid** (Macklin & Müller 2013). `kernels.ts` holds the 2-D poly6 / spiky-gradient SPH kernels;
+  `hash.ts` a uniform spatial hash for O(n) neighbour finding; `fluid.ts` the `FluidSystem` — the
+  density-constraint Jacobi solve (CFM relaxation, compression-only λ), XSPH viscosity, vorticity
+  confinement, jet emitters, and **two-way rigid coupling** (particles depenetrate from shapes via
+  the soft engine's `collideParticle`, and the body is pushed back inverse-mass-weighted, giving
+  genuine hydrostatic buoyancy — a light body floats, a dense one sinks). Stepped after the soft
+  bodies; one `world.fluid`. A metaball renderer colours particles by speed, and a 💧 spray tool
+  paints water into any scene.
 - **Fracture** (`fracture/`, v6) — real-time rigid-body destruction. A body can carry a
   `FractureMaterial` (toughness, seed count/pattern, generation cap) that makes it brittle.
   `clip.ts` is a Sutherland–Hodgman convex half-plane clip + signed area + convex point test;
@@ -76,13 +85,13 @@ the structure of a production engine (Box2D), implemented from first principles 
 
 `src/render/`, `src/scenes/`, `src/ui/` are the playground: a Canvas2D debug renderer (drawing
 capsules, rounded polygons, animated water, dashed sensors, pulley ropes, conveyor flow
-arrows and **fracture impact sparks**), 39 demo scenes, and a React UI
-with live solver controls (incl. CCD and block-solver toggles), a **Shatter** pointer tool,
-debug overlays, and a verification modal.
+arrows, **fracture impact sparks** and a **speed-shaded SPH metaball fluid**), 46 demo scenes, and
+a React UI with live solver controls (incl. CCD and block-solver toggles), **Shatter** &amp;
+**💧 water** pointer tools, debug overlays, a live fluid telemetry HUD, and a verification modal.
 
 ## Verification
 
-`src/verify/suite.ts` runs 146 checks against real engine code paths (mass integrals incl.
+`src/verify/suite.ts` runs 166 checks against real engine code paths (mass integrals incl.
 the closed-form capsule, GJK vs analytic gaps, EPA depth, manifold correctness for boxes,
 capsules and rounded polygons, free-fall, elastic-collision momentum conservation,
 resting/sleeping, revolute constraint drift, continuous-collision no-tunnel, revolute &
@@ -94,8 +103,12 @@ rack-and-pinion travel**, **motor-joint targeting & stall**, **breakable-joint t
 bit-for-bit determinism, broadphase correctness, ray casting incl. capsules, **half-plane
 clipping**, **Voronoi cells tiling their parent exactly + convexity + site-in-own-cell**, and
 **fracture conservation** — Σ shard mass/area = parent, Σ linear momentum = parent, Σ angular
-momentum about the COM = I·ω, deterministic shatters, live impact shatter + generation cap).
-All 146 pass; click **Verify engine** in the app.
+momentum about the COM = I·ω, deterministic shatters, live impact shatter + generation cap),
+and **SPH fluids** (the poly6 kernel numerically integrating to 1, the spiky gradient's sign &
+support, the spatial hash vs brute force, rest-density recovery, a settling column's
+incompressibility / mass conservation / hydrostatic rest / no-escape, communicating-vessel level
+equalisation, two-way buoyancy (float vs sink) + a jet pushing a body, and fluid determinism).
+All 166 pass; click **Verify engine** in the app.
 
 ## Ideas / backlog
 
@@ -124,6 +137,12 @@ All 146 pass; click **Verify engine** in the app.
       partition, glass-style radial seed scatter, momentum-conserving shard decomposition,
       impact-triggered auto-shatter with a generation cap, a click-to-shatter pointer tool, an
       impact-spark renderer, 5 scenes and 23 new verification checks
+- [x] **Position-Based Fluids — SPH (v7)** — a third physics paradigm: incompressible
+      particle fluid (Macklin & Müller 2013). From-scratch 2-D SPH kernels (poly6 + spiky),
+      a uniform spatial hash, the density-constraint Jacobi solve with CFM relaxation,
+      artificial-pressure surface tension, XSPH viscosity, vorticity confinement, jet emitters,
+      and two-way rigid coupling through the engine's own `collideParticle`; a metaball renderer,
+      a "spray water" pointer tool, 7 scenes (a new Fluid category) and 20 new verification checks
 - [ ] SVG/JSON scene export and a small scene editor
 - [ ] Self-collision *within* a soft body (intra-body particle contacts)
 - [ ] Pressure (rest-area > natural) without the energy it currently feeds a confined body
@@ -136,6 +155,121 @@ All 146 pass; click **Verify engine** in the app.
 - [ ] **Debris budget & fade-out**: cull or merge the smallest shards after they settle to keep
       a long demolition session cheap
 - [ ] Run the Voronoi build + shatter off the main thread for very large slabs
+
+## v7 — the fluids release (Position-Based SPH, two-way coupled)
+
+The seventh major upgrade adds a **third physics paradigm** beside the rigid solver and the
+XPBD soft bodies: a genuine **incompressible particle fluid**. Where v3's `BuoyancyZone` is an
+*analytic* water body (a half-plane that integrates the submerged area of a rigid shape and
+applies Archimedes lift), v7 simulates the water itself as thousands of Lagrangian SPH particles
+with **Position-Based Fluids** (Macklin & Müller, SIGGRAPH 2013) — the position-space cousin of
+the soft engine, so it inherits the same unconditional stability and the same `collideParticle`
+bridge into the rigid world. Fluid sloshes, splashes, makes waves, pours through funnels, drives
+a waterwheel, and floats or sinks rigid bodies by their density — all from scratch, no libraries.
+
+**Why PBF (and not SPH pressure forces).** Classic WCSPH/PCISPH push particles apart with a
+stiff pressure force, which demands a tiny timestep. PBF instead treats incompressibility as a
+*constraint* `C_i(p) = ρ_i/ρ₀ − 1 = 0` and solves it in position space with a few Jacobi
+iterations per step — exactly the XPBD philosophy already proven in v5. It stays stable at the
+engine's fixed 1/60 step, couples cleanly to the rigid solver (positions then a velocity pass),
+and the incompressibility is *measurable* (average density → ρ₀), which makes it verifiable.
+
+### Plan (this session)
+
+1. **SPH kernels** (`sph/kernels.ts`). The 2-D **poly6** density kernel `W = 4/(πh⁸)(h²−r²)³`
+   and the **spiky** gradient `∇W = −30/(πh⁵)(h−r)² r̂` (spiky's non-vanishing gradient at the
+   origin is what stops particle clustering). Pure functions; the suite checks the analytic
+   properties *and* numerically integrates poly6 over the disc to confirm it normalises to 1.
+2. **Uniform spatial hash** (`sph/hash.ts`). A grid keyed by cell = `floor(p/h)`; `build` then
+   `forEachNeighbor(i, cb)` visits the 3×3 cell block — O(n) neighbour finding. Cross-checked
+   against brute force in the suite.
+3. **The fluid system** (`sph/fluid.ts`). `FluidParticle` (position-primary, λ, density,
+   accumulators) and `FluidSystem`:
+   - predict positions (gravity, semi-implicit) → build the hash → cache the per-particle
+     neighbour lists for the substep;
+   - **density-constraint Jacobi solve** (`solverIterations` passes): density `ρ_i`, constraint
+     `C_i`, the CFM-relaxed multiplier `λ_i = −C_i / (Σ|∇C|² + ε)`, then the symmetric position
+     delta `Δp_i = 1/ρ₀ Σ(λ_i+λ_j+s_corr)∇W` with the **artificial-pressure** `s_corr` term
+     (Δq, k, n) for surface tension / negative-pressure clustering control; depenetrate against
+     the rigid candidates after each pass (positions, never a velocity bias — the v5 lesson);
+   - derive velocities, then **XSPH viscosity** (cohesion) and **vorticity confinement** (puts
+     back the swirl the constraint solve damps);
+   - a final **velocity pass** that exchanges a restitution+friction impulse with each touched
+     rigid body — the equal-and-opposite reaction is the two-way coupling — and clamps to an
+     optional domain AABB (cheap walls so a tank needn't be boxed in rigid geometry);
+   - **jet emitters** (origin, direction, speed, spread, rate) for fountains/hoses, a capacity
+     cap, and metrics: count, average density, incompressibility error, mass, momentum, KE.
+   - A `fillBox` builder packs a rectangle at rest spacing for scenes and tests.
+4. **World integration** (`world.ts`). One optional `world.fluid: FluidSystem`; stepped right
+   after the soft bodies (rigid poses already integrated → fixed colliders this step, reaction
+   lands next step, the same stable one-step co-sim as v5). Particle count + average density
+   added to `StepStats`; cleared in `clear()`.
+5. **Renderer** (`renderer.ts`). A **metaball** look: each particle a radial-gradient disc,
+   tinted by speed (deep blue at rest → cyan/white in fast jets), layered translucently so the
+   field reads as a continuous surface; a `fluid` debug toggle, and a discrete-points mode.
+6. **Interaction + scenes**. A **💧 water** pointer tool sprays fluid at the cursor (creating a
+   default system if the scene has none). A new **Fluid** scene category: *Dam Break* (the
+   canonical SPH benchmark), *Fountain* (an emitter raining back down), *Communicating Vessels*
+   (levels equalise), *Splash Pool* (drop rigids: float vs sink by density), *Waterwheel* (a jet
+   spins a revolute paddle wheel — coupling showcase), *Funnel* (draining through a gap) and a
+   *Water Sandbox* for the spray tool.
+7. **Verification** (`suite.ts`). A new **Fluids (SPH / PBF)** section, 20 checks: kernel
+   sign/monotonicity/compact support + the **poly6 disc integral = 1**; spiky gradient zero at
+   `r=h`; the spatial hash matching brute force exactly; **rest-density recovery** on a packed
+   block (measured ρ ≈ ρ₀); **incompressibility** of a settled column (avg ρ ≈ ρ₀, bounded error,
+   stays finite, no tunnelling out of the tank); **mass conservation**; **hydrostatic rest**
+   (KE → 0); **communicating vessels** equalising; **two-way coupling** (a cork floats, an ingot
+   sinks, the system stays finite); and **bit-for-bit determinism**.
+
+Everything lives under `src/engine/sph/` + edits to the render/scene/verify/UI layer — no change
+to the rigid or soft engine internals. Validated headlessly first (rest density, incompressibility,
+coupling), then wired into the app. Target ≥ green on the exact CI gate (conformance + lint + build)
+with the suite all-passing.
+
+### Verified — all shipped ✅
+
+- All four engine modules built (`kernels.ts`, `hash.ts`, `fluid.ts`, `sph/index.ts`), wired into
+  `World` (one optional `world.fluid`, stepped after the soft bodies, particle count + average
+  density surfaced in `StepStats`), the renderer (speed-shaded metaball fluid + a `fluidPoints`
+  debug overlay), 7 scenes in a new **Fluid** category, the **💧 water** spray tool (works in any
+  scene), the HUD fluid telemetry, and the verification suite.
+- **20 new checks (146 → 166, all green).** Headline numbers from the headless harness: poly6
+  integrates to **1.0000**; the spatial hash matches brute force with **0 misses**; a rest-packed
+  block sits at **1.007 ρ₀**; a settling column ends at **0.996 ρ₀** with compression error
+  **0.0027** and KE/n **0.04** (hydrostatic rest), never escaping the tank; communicating vessels
+  equalise to **1.31 vs 1.25**; a light body floats (**y≈1.77**) while a dense one sinks
+  (**y≈1.23**); a jet pushes a free block downstream; and two identical sims stay bit-for-bit
+  identical.
+
+### The two bugs the headless harness caught (before any UI)
+
+1. **Spiky-gradient sign.** The first cut had `∇W` pointing *away* from the neighbour. In the PBF
+   update `Δp ∝ Σ(λ_i+λ_j)∇W`, a compressed pair (λ < 0) then moved *together* — the column
+   imploded to **avg density 12.6 ρ₀** and **KE ≈ 1.2 M**. The gradient must point *toward* the
+   neighbour (`−rij`); one sign flip turned collapse into a stable fluid.
+2. **Free-surface explosion.** With the constraint resolving both compression *and* rarefaction,
+   sparse surface particles (a density deficit and a near-singular gradient sum) got an enormous λ
+   and were flung at ~90 m/s. The robust standard fix — **resolve compression only** (`C = max(0,…)`)
+   plus a spacing-relative correction clamp — settled it; cohesion is supplied instead by XSPH
+   viscosity. A follow-on tuning find: the **artificial-pressure** term, on by default, holds the
+   fluid ~0.74 ρ₀ (it's a repulsion); turning it off lets the fluid settle to a true **1.0 ρ₀**.
+
+The one honest limitation: with a *velocity-only* (drag) coupling a small floating box drifts to
+the floor (fluid escapes around it). Genuine buoyancy needed the **two-way position coupling** —
+push the body out of the fluid, inverse-mass + inertia weighted — after which float-vs-sink became
+robust and monotonic in density. A scalar-math rewrite of the hot neighbour loops (no `Vec2`
+allocations) then ~halved the cost: **1075 particles at ~7 ms/step**.
+
+### Session log
+- 2026-06-22 (claude/claude-opus-4-8[1m]): **Impulse v7 — the fluids release (Position-Based SPH).**
+  Added a third physics paradigm beside the rigid and soft solvers: an incompressible particle
+  fluid (Macklin & Müller 2013), from scratch — 2-D SPH kernels, a uniform spatial hash, the
+  density-constraint Jacobi solve, XSPH viscosity, vorticity confinement, jet emitters, and
+  **two-way rigid coupling** that floats and sinks bodies by density. A speed-shaded metaball
+  renderer, a 💧 spray tool, 7 scenes (Dam Break, Fountain, Communicating Vessels, Splash Pool,
+  Waterwheel, Funnel, Water Sandbox) and 20 verification checks. Validated headlessly first (which
+  caught the gradient-sign collapse and the free-surface explosion before any pixels), then wired
+  into the app. Suite **146 → 166**, all green; scope + conformance + lint + build all pass.
 
 ## v6 — the fracture release (real-time Voronoi destruction) ✅ shipped
 

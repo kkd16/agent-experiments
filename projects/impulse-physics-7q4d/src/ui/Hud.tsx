@@ -37,6 +37,12 @@ export default function Hud({ stats }: { stats: StepStats | null }) {
     ['BVH height', stats ? `${stats.treeHeight}` : '—'],
   ];
 
+  // Fluid telemetry only when an SPH system is live.
+  if (stats && stats.fluidParticles > 0) {
+    rows.push(['Fluid particles', `${stats.fluidParticles}`]);
+    rows.push(['Fluid density', `${stats.fluidDensity.toFixed(3)} ρ₀`]);
+  }
+
   return (
     <div className="hud">
       {rows.map(([label, value]) => (

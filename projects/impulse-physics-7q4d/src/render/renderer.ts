@@ -2,6 +2,7 @@ import {
   Body,
   BodyType,
   BuoyancyZone,
+  FluidSystem,
   PulleyJoint,
   SoftBody,
   Vec2,
@@ -22,6 +23,8 @@ export interface DebugOptions {
   joints: boolean;
   broadphaseTree: boolean;
   sleeping: boolean;
+  /** Overlay discrete SPH particle centres (off ⇒ the smooth metaball look). */
+  fluidPoints: boolean;
 }
 
 export const DEFAULT_DEBUG: DebugOptions = {
@@ -34,6 +37,7 @@ export const DEFAULT_DEBUG: DebugOptions = {
   joints: true,
   broadphaseTree: false,
   sleeping: true,
+  fluidPoints: false,
 };
 
 /** Extra one-frame overlays passed in from interaction (drag, GJK inspector). */
@@ -67,6 +71,9 @@ const COLORS = {
   waterLine: 'rgba(140,210,255,0.65)',
 };
 
+/** Speed ramp for SPH particles: deep/still → fast/foamy. */
+const FLUID_RAMP = ['#1f5fae', '#2f86d4', '#4fbdec', '#bfeeff'];
+
 /** Draws a {@link World} and its debug overlays onto a 2D canvas. */
 export class Renderer {
   private ctx: CanvasRenderingContext2D;
@@ -98,6 +105,8 @@ export class Renderer {
     }
 
     for (const sb of world.softBodies) this.drawSoft(sb, camera, opts);
+
+    if (world.fluid && world.fluid.particles.length > 0) this.drawFluid(world.fluid, camera, opts);
 
     for (const zone of world.fluidZones) this.drawWaterSurface(zone, camera);
 
@@ -375,6 +384,51 @@ export class Renderer {
       ctx.beginPath();
       ctx.arc(s.x, s.y, 3, 0, Math.PI * 2);
       ctx.fill();
+    }
+  }
+
+  /**
+   * The SPH fluid. Particles are drawn as overlapping translucent discs bucketed
+   * by speed (deep blue at rest → bright cyan/white in fast jets and foam), so the
+   * field reads as a continuous, flowing surface that builds up where the fluid is
+   * deep and lightens where it sprays. Batching one `Path2D` per speed bucket keeps
+   * a thousand particles to a handful of fills.
+   */
+  private drawFluid(fluid: FluidSystem, camera: Camera, opts: DebugOptions): void {
+    const ctx = this.ctx;
+    const ps = fluid.particles;
+    const rPix = Math.max(1.5, camera.toPixels(fluid.params.particleRadius) * 2.0);
+    const refSpeed = 7; // m/s mapped to the top of the colour ramp
+    const buckets = FLUID_RAMP.length;
+    const paths: Path2D[] = Array.from({ length: buckets }, () => new Path2D());
+
+    for (const p of ps) {
+      const s = camera.worldToScreen(p.pos);
+      // Cull off-screen particles cheaply.
+      if (s.x < -rPix || s.x > camera.width + rPix || s.y < -rPix || s.y > camera.height + rPix) {
+        continue;
+      }
+      const speed = Math.hypot(p.vel.x, p.vel.y);
+      let b = Math.floor((speed / refSpeed) * buckets);
+      if (b < 0) b = 0;
+      else if (b >= buckets) b = buckets - 1;
+      paths[b].moveTo(s.x + rPix, s.y);
+      paths[b].arc(s.x, s.y, rPix, 0, Math.PI * 2);
+    }
+
+    ctx.save();
+    for (let b = 0; b < buckets; b++) {
+      ctx.fillStyle = withAlpha(FLUID_RAMP[b], b === 0 ? 0.5 : 0.6);
+      ctx.fill(paths[b]);
+    }
+    ctx.restore();
+
+    if (opts.fluidPoints) {
+      ctx.fillStyle = 'rgba(230,245,255,0.9)';
+      for (const p of ps) {
+        const s = camera.worldToScreen(p.pos);
+        ctx.fillRect(s.x - 0.75, s.y - 0.75, 1.5, 1.5);
+      }
     }
   }
 

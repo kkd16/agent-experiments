@@ -14,7 +14,7 @@ import {
 import { Camera } from '../render/camera';
 import { Renderer, type DebugOptions, type RenderExtras } from '../render/renderer';
 import { sceneById } from '../scenes';
-import { spawnBody, type SpawnKind } from './spawn';
+import { spawnBody, sprayFluid, type SpawnKind } from './spawn';
 
 const FIXED_DT = 1 / 60;
 const MAX_STEPS_PER_FRAME = 5;
@@ -45,7 +45,7 @@ export interface SimulationProps {
 }
 
 interface Interaction {
-  mode: 'none' | 'drag' | 'softgrab' | 'maybe' | 'pan';
+  mode: 'none' | 'drag' | 'softgrab' | 'maybe' | 'pan' | 'spray';
   startX: number;
   startY: number;
 }
@@ -213,6 +213,12 @@ export default function Simulation(props: SimulationProps) {
     const world = worldRef.current;
     const wp = toWorld(e);
     pointerWorldRef.current = wp;
+    // The water tool: press-and-drag to paint fluid into the world.
+    if (propsRef.current.controls.spawnKind === 'water') {
+      sprayFluid(world, wp, rngRef.current);
+      interactionRef.current = { mode: 'spray', startX: e.clientX, startY: e.clientY };
+      return;
+    }
     const body = world.queryPoint(wp);
     // The Shatter tool: clicking a brittle body splinters it on the spot.
     if (
@@ -255,6 +261,10 @@ export default function Simulation(props: SimulationProps) {
 
     if (it.mode === 'drag') {
       if (mouseJointRef.current) mouseJointRef.current.target = wp;
+      return;
+    }
+    if (it.mode === 'spray') {
+      sprayFluid(world, wp, rngRef.current);
       return;
     }
     if (it.mode === 'softgrab') {

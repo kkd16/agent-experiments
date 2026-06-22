@@ -1,4 +1,4 @@
-import { Body, Capsule, Circle, fractureMaterial, Polygon, Rng, Vec2, World, type Shape } from '../engine';
+import { Body, Capsule, Circle, FluidSystem, fractureMaterial, Polygon, Rng, Vec2, World, type Shape } from '../engine';
 
 export type SpawnKind =
   | 'circle'
@@ -8,7 +8,8 @@ export type SpawnKind =
   | 'triangle'
   | 'pentagon'
   | 'random'
-  | 'shatter';
+  | 'shatter'
+  | 'water';
 
 export const SPAWN_KINDS: SpawnKind[] = [
   'circle',
@@ -19,6 +20,7 @@ export const SPAWN_KINDS: SpawnKind[] = [
   'pentagon',
   'random',
   'shatter',
+  'water',
 ];
 
 const COLORS = ['#6ea8ff', '#7CFFCB', '#ffd166', '#ff6b6b', '#c792ea', '#4dd2ff', '#ff9e64', '#9ece6a'];
@@ -41,12 +43,35 @@ export function spawnShape(kind: SpawnKind, size: number, rng: Rng): Shape {
     case 'shatter':
       // A brittle slab — drop a few, then click them with the Shatter tool.
       return Polygon.box(size * 1.6, size * 1.1);
+    case 'water':
+      // The water tool sprays particles (see sprayFluid); this fallback shape is
+      // only here for exhaustiveness and is never actually spawned as a body.
+      return new Circle(size);
     case 'random': {
       const pick = rng.int(0, 4);
       if (pick === 0) return new Circle(size);
       if (pick === 1) return Capsule.of(size * 2.4, size * 0.6);
       return Polygon.regular(pick + 1, size * 1.1, rng.range(0, Math.PI));
     }
+  }
+}
+
+/**
+ * Spray a small clump of SPH fluid at a world point. If the scene has no fluid
+ * system, one is created on the fly (no domain box, so it rests on whatever rigid
+ * geometry the scene already has) — letting you add water to *any* scene.
+ */
+export function sprayFluid(world: World, at: Vec2, rng: Rng): void {
+  let fs = world.fluid;
+  if (!fs) {
+    fs = new FluidSystem({ spacing: 0.3, maxParticles: 1500 });
+    world.setFluid(fs);
+  }
+  const spread = fs.params.spacing * 1.2;
+  for (let k = 0; k < 5; k++) {
+    if (fs.particles.length >= fs.params.maxParticles) break;
+    const off = new Vec2(rng.range(-spread, spread), rng.range(-spread, spread));
+    fs.add(at.add(off), new Vec2(rng.range(-0.6, 0.6), rng.range(-1.5, -0.3)));
   }
 }
 

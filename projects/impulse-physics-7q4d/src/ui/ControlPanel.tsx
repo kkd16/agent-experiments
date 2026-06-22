@@ -36,6 +36,7 @@ const DEBUG_LABELS: Array<[keyof DebugOptions, string]> = [
   ['velocities', 'Velocities'],
   ['joints', 'Joints'],
   ['sleeping', 'Sleep tint'],
+  ['fluidPoints', 'Fluid points'],
 ];
 
 function Slider(props: {

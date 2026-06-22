@@ -11,6 +11,7 @@ import { clamp, EPSILON, Transform, Vec2 } from './math';
 import { boundingRadius, computeAABB, type Shape } from './shapes';
 import { SoftBody } from './soft/softbody';
 import { DEFAULT_SOFT_CONFIG, stepSoftBodies, type SoftConfig } from './soft/solver';
+import { FluidSystem } from './sph/fluid';
 
 /** Per-step statistics surfaced to the UI HUD. */
 export interface StepStats {
@@ -23,6 +24,10 @@ export interface StepStats {
   pairs: number;
   treeHeight: number;
   stepMs: number;
+  /** Live SPH fluid particle count (0 when no fluid is present). */
+  fluidParticles: number;
+  /** Mean SPH density relative to rest (1.0 = incompressible), 0 when no fluid. */
+  fluidDensity: number;
 }
 
 /** A transient impact spark left behind when a body shatters (render-only). */
@@ -88,6 +93,8 @@ export class World {
   /** Deformable (XPBD) bodies, stepped after the rigid solve each frame. */
   readonly softBodies: SoftBody[] = [];
   softConfig: SoftConfig = { ...DEFAULT_SOFT_CONFIG };
+  /** Optional Position-Based-Fluids system, stepped after the soft bodies. */
+  fluid: FluidSystem | null = null;
   private broadphase = new BroadPhase<Body>();
   private contacts = new Map<number, Contact>();
   /** Body-pair keys for which collision is disabled (jointed bodies). */
@@ -113,6 +120,8 @@ export class World {
     pairs: 0,
     treeHeight: 0,
     stepMs: 0,
+    fluidParticles: 0,
+    fluidDensity: 0,
   };
 
   constructor(gravity = new Vec2(0, -9.8), config: SolverConfig = { ...DEFAULT_CONFIG }) {
@@ -158,6 +167,12 @@ export class World {
     if (idx >= 0) this.softBodies.splice(idx, 1);
   }
 
+  /** Attach (or replace) the world's SPH fluid system. */
+  setFluid(fluid: FluidSystem | null): FluidSystem | null {
+    this.fluid = fluid;
+    return fluid;
+  }
+
   addJoint(joint: Joint, collideConnected = false): Joint {
     this.joints.push(joint);
     if (!collideConnected && joint.bodyA !== joint.bodyB) {
@@ -177,6 +192,7 @@ export class World {
     this.joints.length = 0;
     this.fluidZones.length = 0;
     this.softBodies.length = 0;
+    this.fluid = null;
     this.flashes.length = 0;
     this.contacts.clear();
     this.nonColliding.clear();
@@ -292,6 +308,10 @@ export class World {
       stepSoftBodies(this.softBodies, this.bodies, this.gravity, dt, this.softConfig);
     }
 
+    // 6c′. SPH fluid: advance the Position-Based-Fluids system against the same
+    // freshly-integrated rigid poses, feeding its reaction impulses back in.
+    if (this.fluid) this.fluid.step(this.bodies, this.gravity, dt);
+
     // 6d. Shatter any body whose strongest contact this step beat its toughness.
     if (fractures.length > 0) this.applyFractures(fractures);
 
@@ -316,6 +336,8 @@ export class World {
       pairs: pairs.length,
       treeHeight: this.broadphase.tree.height(),
       stepMs: now() - t0,
+      fluidParticles: this.fluid ? this.fluid.particles.length : 0,
+      fluidDensity: this.fluid ? this.fluid.stats().averageDensity / this.fluid.params.restDensity : 0,
     };
   }
 
