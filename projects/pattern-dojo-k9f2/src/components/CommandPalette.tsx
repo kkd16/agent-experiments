@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { patterns } from "../data/patterns";
+import { challenges } from "../dojo/challenges";
 import { navigate } from "../lib/router";
 import { useTheme } from "../lib/theme";
 
@@ -45,6 +46,7 @@ export default function CommandPalette() {
   const commands = useMemo<Cmd[]>(() => {
     const pages: Cmd[] = [
       { id: "go-home", label: "All patterns", icon: "◆", group: "Go to", run: () => navigate("/") },
+      { id: "go-practice", label: "Code Dojo", hint: "solve problems, in-browser judge", icon: "⌨️", group: "Go to", run: () => navigate("/practice") },
       { id: "go-review", label: "Spaced review", hint: "study due cards", icon: "🗂️", group: "Go to", run: () => navigate("/review") },
       { id: "go-roadmap", label: "Roadmap", icon: "🗺️", group: "Go to", run: () => navigate("/roadmap") },
       { id: "go-quiz", label: "Pattern trainer", icon: "🎯", group: "Go to", run: () => navigate("/quiz") },
@@ -72,7 +74,15 @@ export default function CommandPalette() {
         group: "Patterns",
         run: () => navigate(`/pattern/${p.id}`),
       }));
-    return [...pages, ...actions, ...pats];
+    const probs: Cmd[] = challenges.map((c) => ({
+      id: `c-${c.id}`,
+      label: c.title,
+      hint: `${c.difficulty} · solve`,
+      icon: "⌨️",
+      group: "Practice problems",
+      run: () => navigate(`/practice/${c.id}`),
+    }));
+    return [...pages, ...actions, ...pats, ...probs];
   }, [theme, toggle]);
 
   const results = useMemo(() => {

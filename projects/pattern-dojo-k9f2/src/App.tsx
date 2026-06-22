@@ -7,12 +7,15 @@ import Review from "./pages/Review";
 import Cheatsheet from "./pages/Cheatsheet";
 import Stats from "./pages/Stats";
 import Settings from "./pages/Settings";
+import Practice from "./pages/Practice";
+import Challenge from "./pages/Challenge";
 import CommandPalette from "./components/CommandPalette";
 import { useTheme } from "./lib/theme";
 import { useSRS } from "./lib/srs";
 
 const NAV = [
   { path: "/", label: "Patterns" },
+  { path: "/practice", label: "Code Dojo" },
   { path: "/review", label: "Review" },
   { path: "/roadmap", label: "Roadmap" },
   { path: "/quiz", label: "Trainer" },
@@ -28,6 +31,8 @@ export default function App() {
 
   let page;
   if (route === "pattern" && seg[1]) page = <PatternDetail id={seg[1]} />;
+  else if (route === "practice" && seg[1]) page = <Challenge key={seg[1]} id={seg[1]} />;
+  else if (route === "practice") page = <Practice />;
   else if (route === "roadmap") page = <Roadmap />;
   else if (route === "quiz") page = <Quiz />;
   else if (route === "review") page = <Review />;

@@ -4,6 +4,7 @@ import "./index.css";
 import "./components/components.css";
 import "./visualizers/viz.css";
 import "./styles/enhance.css";
+import "./dojo/dojo.css";
 import App from "./App.tsx";
 import { initTheme } from "./lib/theme";
 

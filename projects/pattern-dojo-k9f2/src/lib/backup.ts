@@ -8,6 +8,7 @@
 const KEYS = [
   "pattern-dojo:srs:v1",
   "pattern-dojo:streak:v1",
+  "pattern-dojo:dojo:v1",
   "pattern-dojo:theme",
 ];
 
@@ -76,6 +77,7 @@ export function restoreBackup(json: unknown): ImportResult {
     // Notify every store hook to re-read.
     window.dispatchEvent(new CustomEvent("pd-srs-change"));
     window.dispatchEvent(new CustomEvent("pd-streak-change"));
+    window.dispatchEvent(new CustomEvent("pd-dojo-change"));
     window.dispatchEvent(new CustomEvent("pd-theme-change"));
     return { ok: true, keys: n };
   } catch (e) {

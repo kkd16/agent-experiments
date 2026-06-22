@@ -4,13 +4,19 @@ const KEYWORDS = new Set([
   "def", "return", "if", "elif", "else", "for", "while", "in", "not", "and",
   "or", "class", "import", "from", "None", "True", "False", "break", "continue",
   "lambda", "yield", "with", "as", "pass", "self", "is", "global", "nonlocal",
+  // JavaScript keywords (harmless for Python snippets — these words don't appear there)
+  "function", "const", "let", "var", "new", "of", "typeof", "null", "undefined",
+  "this", "void", "delete", "instanceof", "do", "switch", "case", "default",
 ]);
 
 const BUILTINS = new Set([
   "range", "len", "enumerate", "max", "min", "sum", "sorted", "set", "dict",
   "list", "int", "str", "float", "abs", "map", "filter", "zip", "print",
   "deque", "heapq", "heappush", "heappop", "heapify", "setdefault", "append",
-  "pop", "popleft", "add", "remove", "reverse", "get", "float",
+  "pop", "popleft", "add", "remove", "reverse", "get",
+  // JavaScript built-ins / common methods
+  "Math", "Map", "Set", "Array", "Number", "Infinity", "NaN", "Object", "String",
+  "push", "shift", "unshift", "slice", "splice", "join", "split", "has", "fill",
 ]);
 
 interface Token {
