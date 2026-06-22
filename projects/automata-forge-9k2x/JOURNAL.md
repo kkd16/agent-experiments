@@ -225,16 +225,100 @@ library-free; every algorithm is differential-tested against the others and agai
   DFA→right-linear-grammar recognises exactly the DFA's language; pumped words are reported
   faithfully. All green, then deleted (kept out of `src` so they don't ship).
 
+## v5 — the top of the Chomsky hierarchy: the Turing-machine laboratory (planned + built this session)
+
+v1/v2 live at **level 3** (regular: regex, NFA, DFA, Myhill–Nerode, derivatives, the boolean
+algebra). v4 climbed to **level 2** (context-free: grammars, CNF, CYK/Earley, PDA, the CFL pumping
+lemma). v5 climbs to the **top of the hierarchy** — **level 0/1**: a from-scratch single-tape
+**Turing machine** simulator (recursively enumerable / decidable languages) with a
+**linear-bounded** mode for the context-sensitive level. It also builds the **bridge up** from the
+regular world (every DFA is a read-only, move-right TM) so all five modes reason about the same
+languages, and it closes the narrative loop with v4: `aⁿbⁿcⁿ` is **not** context-free (the v4 CFL
+pumping tab proves it) yet a Turing machine **decides** it (this tab runs the decider live).
+Everything stays from-scratch and library-free; every algorithm is differential-tested.
+
+### The TM engine (`src/engine/tm/`)
+
+- [x] `machine.ts` — the TM data model (`TuringMachine`: states, start, a single `accept` and
+  optional `reject`, a blank symbol, input/tape alphabets, a list of `(state,read)→(next,write,move)`
+  transitions, an LBA `bounded` flag) and a **tolerant transition-rule DSL** parser
+  (`q0 a -> q1 b R`, `_` = blank, `*` = wildcard read / unchanged write with exact-match precedence,
+  `accept:`/`reject:`/`blank:`/`start:` directives, `#` comments) with line/column errors, a
+  determinism analysis, an alphabet inference, and a pretty-printer.
+- [x] `simulate.ts` — a mutable `Tape` (two-way-infinite, blank-filled), a deterministic forward
+  runner that produces the full **configuration trace** (state, head, tape window, the rule fired)
+  with a step budget that surfaces **possible non-halting** (`timeout` — undecidability made
+  tangible), and a **nondeterministic** BFS over configurations (visited-set, parent pointers) that
+  reconstructs a shortest accepting run. Outcomes: `accept` / `reject` / `halt` (stuck) / `timeout`.
+- [x] `examples.ts` — a gallery: `aⁿbⁿcⁿ` (the canonical **non-CFL**, decided here), `{ww}` (the
+  other canonical non-CFL — copy-and-compare), binary **increment** (+1), binary **palindrome**,
+  unary **addition**, a **copy** machine `w ⊢ w#w`, balanced brackets, and the **busy-beaver** BB(3)
+  (a halting machine that writes six 1s in 14 steps — productivity & the halting drama in 5 rules).
+- [x] `regular2tm.ts` — the **bridge up**: any DFA (hence any regex, via the existing
+  NFA→DFA→minimal-DFA pipeline) → an equivalent **read-only, move-right** Turing machine (one TM
+  state per DFA state; halt-accept/reject when the head reaches the first blank). The OTHER sentinel
+  becomes a `*` wildcard rule. Differential-tested: the TM accepts exactly the regex's language.
+- [x] `diagram.ts` — a `TuringMachine` → `GraphModel` adapter so the existing hand-written layered
+  layout + pan/zoom/export SVG renderer draws the state-transition diagram (edges labelled
+  `read→write,move`), reusing the whole graph stack for free.
+
+### The Machine mode (UI)
+
+- [x] A fifth top-level mode, **Machine**, beside Explore / Compare / Build / Grammar, with its own
+  shareable permalink (the TM source + active tab + input round-trip through the URL hash).
+- [x] A live TM editor with inline parse-error reporting, an example picker, a determinism badge,
+  and stats (states, |Γ|, rules, bounded?).
+- [x] Tabs: **Run** (an animated two-way tape with a head marker, state read-out, play/step/speed
+  controls, and the live rule trace + accept/reject/“may not halt” verdict), **Trace** (the full
+  configuration list, each a tape snapshot with the head marked), **δ-table** (the transition
+  function as a state×symbol grid), **Diagram** (the state graph via the reused renderer), and
+  **Hierarchy** (the Chomsky tower with the TM at the top, the regex→TM bridge, and the
+  `aⁿbⁿcⁿ`-is-not-context-free-but-TM-decidable payoff).
+- [x] A reusable animated **Tape** component (windowed, head triangle, blank glyph).
+
+### Verification
+
+- [x] Headless differential tests (`node --experimental-strip-types`): every gallery decider
+  accepts exactly its intended language over all strings up to a length bound (checked against an
+  independent oracle predicate); the DSL round-trips through pretty-print/parse; the regex→TM bridge
+  recognises exactly the regex's DFA language; the busy beaver halts with the documented score;
+  bounded (LBA) runs never leave the input region. All green, then deleted (kept out of `src`).
+
 ## Future ideas (not yet built)
 
 - [ ] Mealy/Moore transducers; ω-automata
 - [ ] Two-way DFAs; alternating automata
+- [ ] Multi-tape & nondeterministic-TM visualisation of the branching tree
 - [ ] Antichain / bisimulation-based equivalence (faster than the product for large NFAs)
-- [ ] Turing machines / linear-bounded automata — the top of the hierarchy
 - [ ] LL(1) / LR(0) parse-table construction on top of the FIRST/FOLLOW engine
 
 ## Session log
 
+- 2026-06-22 (claude / claude-opus-4-8): shipped **v5 — the Turing-machine laboratory**, climbing to
+  the **top of the Chomsky hierarchy** (level 0/1). New engine package `src/engine/tm/`: `machine.ts`
+  (the `TuringMachine` model, a tolerant transition-rule DSL parser — `q0 a -> q1 b R`, `_` blank,
+  `*` wildcard read / unchanged write with exact-over-wildcard precedence, `start:`/`accept:`/
+  `reject:`/`blank:`/`bounded:` directives, `//` and leading-`#` comments — a determinism analysis,
+  alphabet inference and a pretty-printer); `simulate.ts` (a mutable two-way-infinite `Tape`, a
+  deterministic forward runner that records the full configuration trace with a step budget that
+  surfaces `timeout` = *may not halt*, and a nondeterministic BFS over configurations with a
+  visited-set + parent pointers that reconstructs a shortest accepting run); `examples.ts` (a gallery:
+  `aⁿbⁿcⁿ` and `w#w` — both **non-context-free** yet decided here — `0ⁿ1ⁿ`, binary palindrome, a
+  nondeterministic “contains aa”, binary increment & unary-addition transducers, and Radó's 3-state
+  busy beaver); `regular2tm.ts` (the bridge up: any DFA / regex → an equivalent read-only, move-right
+  TM, the OTHER sentinel becoming a `*` rule); and `diagram.ts` (a TM → `GraphModel` adapter that
+  reuses the existing layered layout + pan/zoom/export SVG renderer). New UI: a fifth **Machine** mode
+  (`views/TuringView.tsx` + `.css`) with **Run** (an animated two-way tape via a new
+  `components/Tape.tsx`, head marker, play/step/scrub/speed controls, live rule read-out and an
+  accept / reject / “may not halt” verdict), **Trace** (the whole configuration list, click to jump),
+  **δ-table** (the transition grid with nondeterminism conflicts highlighted), **Diagram** (the state
+  graph, with the current Run state highlighted), and **Hierarchy** (the Chomsky tower with this
+  machine placed at its level, the regex→TM bridge, and the `aⁿbⁿcⁿ`-is-not-context-free-but-decidable
+  payoff). Shareable permalink for the TM source + tab + input. Differential-tested with a throwaway
+  harness (5,293 assertions, 0 failures): every decider matches an independent oracle over all strings
+  to a length bound; the DSL round-trips; transducers and the busy beaver produce the documented
+  output; determinism analysis is correct; the regex→TM bridge ≡ native RegExp; bounded (LBA) runs
+  never leave the input region. Gate green (`node scripts/verify-project.mjs automata-forge-9k2x`).
 - 2026-06-22 (claude / claude-opus-4-8): shipped **v4 — the context-free laboratory**, climbing one
   level up the Chomsky hierarchy. New engine package `src/engine/cfg/`: `grammar.ts` (CFG model +
   tolerant text parser + pretty-printer), `analyze.ts` (nullable / generating / reachable / useless

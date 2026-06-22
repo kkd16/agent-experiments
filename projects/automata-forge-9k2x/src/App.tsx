@@ -7,16 +7,20 @@ import BuildView from './views/BuildView'
 import type { BuildTab } from './views/BuildView'
 import GrammarView from './views/GrammarView'
 import type { GrammarTab } from './views/GrammarView'
+import TuringView from './views/TuringView'
+import type { TuringTab } from './views/TuringView'
 import { copyText } from './lib/download'
 import { decodeHash, encodeHash } from './lib/hash'
 import type { AppState, Mode } from './lib/hash'
 import { COMPARE_EXAMPLES, EXAMPLES } from './examples'
 import { GRAMMAR_EXAMPLES } from './engine/cfg/examples'
+import { TM_EXAMPLES } from './engine/tm/examples'
 import { BUILD_TEMPLATES } from './engine/edit'
 
 const VALID_TABS: ExploreTab[] = ['ast', 'nfa', 'dfa', 'min', 'der', 'mn']
 const VALID_BUILD_TABS: BuildTab[] = ['editor', 'dfa', 'min', 'mn']
 const VALID_GRAMMAR_TABS: GrammarTab[] = ['analyze', 'cnf', 'cyk', 'earley', 'tree', 'sampler', 'pda', 'pumping']
+const VALID_MACHINE_TABS: TuringTab[] = ['run', 'trace', 'table', 'diagram', 'hierarchy']
 const VALID_OPS = ['union', 'inter', 'diffAB', 'diffBA', 'symdiff']
 
 const DEFAULT_STATE: AppState = {
@@ -30,6 +34,7 @@ const DEFAULT_STATE: AppState = {
   },
   build: { automaton: BUILD_TEMPLATES[0].make(), tab: 'editor', input: 'aab' },
   grammar: { text: GRAMMAR_EXAMPLES[0].text, tab: 'cyk', input: GRAMMAR_EXAMPLES[0].test },
+  machine: { source: TM_EXAMPLES[0].source, tab: 'run', input: TM_EXAMPLES[0].input },
 }
 
 /** Sanitize a decoded state so a hand-edited URL can never wedge a view. */
@@ -38,12 +43,14 @@ function clean(s: AppState): AppState {
   const op = VALID_OPS.includes(s.compare.op) ? s.compare.op : 'inter'
   const btab = VALID_BUILD_TABS.includes(s.build.tab as BuildTab) ? s.build.tab : 'editor'
   const gtab = VALID_GRAMMAR_TABS.includes(s.grammar.tab as GrammarTab) ? s.grammar.tab : 'cyk'
+  const mtab = VALID_MACHINE_TABS.includes(s.machine.tab as TuringTab) ? s.machine.tab : 'run'
   return {
     ...s,
     explore: { ...s.explore, tab },
     compare: { ...s.compare, op },
     build: { ...s.build, tab: btab },
     grammar: { ...s.grammar, tab: gtab },
+    machine: { ...s.machine, tab: mtab },
   }
 }
 
@@ -89,7 +96,9 @@ export default function App() {
                   ? 'compare two regexes: product construction, boolean algebra & equivalence'
                   : state.mode === 'build'
                     ? 'draw your own automaton — determinize, minimize & read off a regex'
-                    : 'context-free grammars: normalize, parse (CYK & Earley), build a PDA & pump'}
+                    : state.mode === 'grammar'
+                      ? 'context-free grammars: normalize, parse (CYK & Earley), build a PDA & pump'
+                      : 'Turing machines: the top of the hierarchy — run, trace & watch the tape'}
             </p>
           </div>
         </div>
@@ -127,6 +136,14 @@ export default function App() {
             >
               Grammar
             </button>
+            <button
+              role="tab"
+              aria-selected={state.mode === 'machine'}
+              className={`mode-btn${state.mode === 'machine' ? ' active' : ''}`}
+              onClick={() => setMode('machine')}
+            >
+              Machine
+            </button>
           </div>
           <button
             className="share-btn"
@@ -145,7 +162,16 @@ export default function App() {
         </div>
       </header>
 
-      {state.mode === 'grammar' ? (
+      {state.mode === 'machine' ? (
+        <TuringView
+          source={state.machine.source}
+          onSource={(source) => setState((s) => ({ ...s, machine: { ...s.machine, source } }))}
+          input={state.machine.input}
+          onInput={(input) => setState((s) => ({ ...s, machine: { ...s.machine, input } }))}
+          tab={state.machine.tab as TuringTab}
+          onTab={(tab) => setState((s) => ({ ...s, machine: { ...s.machine, tab } }))}
+        />
+      ) : state.mode === 'grammar' ? (
         <GrammarView
           text={state.grammar.text}
           onText={(text) => setState((s) => ({ ...s, grammar: { ...s.grammar, text } }))}
