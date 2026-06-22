@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Tensor } from '../engine/tensor';
-import { gatherCols } from '../engine/ops';
 import { mse } from '../engine/losses';
 import { Optimizer, defaultOptimizer, clipGradGlobalNorm } from '../engine/optim';
 import { mulberry32, type Activation } from '../engine/nn';
@@ -12,6 +11,12 @@ import {
   computeTargets,
   normalizeAdvantages,
   sampleCategorical,
+  sampleGaussian,
+  gaussianLogProb,
+  gaussianLogProbNumeric,
+  gaussianEntropy,
+  categoricalLogProb,
+  categoricalEntropy,
   argmax,
   RL_ALGOS,
   type RLAlgo,
@@ -32,6 +37,11 @@ export interface RLConfig {
   batchSteps: number; // env steps collected per update
   clipNorm: number;
   normAdv: boolean;
+  // PPO-specific knobs (ignored by the other algorithms).
+  ppoClip: number; // surrogate clip ε
+  ppoEpochs: number; // optimization passes over each collected batch
+  minibatch: number; // SGD minibatch size within each epoch
+  targetKL: number; // early-stop the epochs if mean KL exceeds this (0 = off)
   stepsPerFrame: number; // training updates per animation frame
   demoSpeed: number; // demo env steps per frame
   greedyDemo: boolean;
@@ -49,10 +59,15 @@ export interface RLMetrics {
   entropy: number;
   valueLoss: number;
   policyLoss: number;
+  clipFrac: number; // PPO: fraction of samples outside the trust region
+  approxKL: number; // PPO: mean KL(π_old ‖ π) over the batch (Schulman k3 estimator)
+  explainedVar: number; // critic quality: 1 − Var(ret − V)/Var(ret)
+  stdMean: number; // continuous: mean action standard deviation (NaN for discrete)
   returnHistory: number[];
   smoothHistory: number[];
   entropyHistory: number[];
   valueLossHistory: number[];
+  returnDist: number[]; // most recent batch's per-episode returns (for the histogram)
 }
 
 const EMPTY: RLMetrics = {
@@ -65,10 +80,15 @@ const EMPTY: RLMetrics = {
   entropy: NaN,
   valueLoss: NaN,
   policyLoss: NaN,
+  clipFrac: NaN,
+  approxKL: NaN,
+  explainedVar: NaN,
+  stdMean: NaN,
   returnHistory: [],
   smoothHistory: [],
   entropyHistory: [],
   valueLossHistory: [],
+  returnDist: [],
 };
 
 const MAX_HISTORY = 600;
@@ -82,13 +102,45 @@ export interface RLHandle {
 }
 
 export interface DemoInfo {
-  probs: Float64Array | null;
+  probs: Float64Array | null; // discrete: π(a|s)
+  continuous: boolean;
+  mean: Float64Array | null; // continuous: Gaussian mean
+  std: Float64Array | null; // continuous: Gaussian σ
+  actionVec: Float64Array | null; // continuous: the action actually taken
   value: number;
-  action: number;
+  action: number; // discrete action index (continuous: 0)
   episodeReturn: number;
   episodeSteps: number;
   lastEpisodeReturn: number;
   episodeCount: number;
+}
+
+function emptyDemo(continuous: boolean): DemoInfo {
+  return {
+    probs: null,
+    continuous,
+    mean: null,
+    std: null,
+    actionVec: null,
+    value: 0,
+    action: 0,
+    episodeReturn: 0,
+    episodeSteps: 0,
+    lastEpisodeReturn: NaN,
+    episodeCount: 0,
+  };
+}
+
+// Population variance of an array, used for explained-variance.
+function variance(arr: number[]): number {
+  const n = arr.length;
+  if (n === 0) return 0;
+  let mean = 0;
+  for (const v of arr) mean += v;
+  mean /= n;
+  let s = 0;
+  for (const v of arr) s += (v - mean) * (v - mean);
+  return s / n;
 }
 
 export function useRLTrainer(cfg: RLConfig) {
@@ -109,15 +161,7 @@ export function useRLTrainer(cfg: RLConfig) {
   const pendingStep = useRef(0);
 
   // Live demo rollout bookkeeping (mutated outside React state for smooth animation).
-  const demoInfoRef = useRef<DemoInfo>({
-    probs: null,
-    value: 0,
-    action: 0,
-    episodeReturn: 0,
-    episodeSteps: 0,
-    lastEpisodeReturn: NaN,
-    episodeCount: 0,
-  });
+  const demoInfoRef = useRef<DemoInfo>(emptyDemo(false));
 
   const [running, setRunning] = useState(false);
   const [tick, setTick] = useState(0);
@@ -145,35 +189,30 @@ export function useRLTrainer(cfg: RLConfig) {
     setRunning(false);
     runningRef.current = false;
     const rng = mulberry32(cfg.seed ^ 0x51ed);
+    // Probe the environment for its dimensions and action space so the agent matches it exactly.
+    const probe = makeEnv(cfg.envKind, cfg.gridLayoutId, rng, cfg.gamma);
     const agent = buildAgent(
-      cfg.envKind === 'gridworld' ? makeEnv('gridworld', cfg.gridLayoutId, rng).stateDim : 4,
-      cfg.envKind === 'gridworld' ? 4 : 2,
+      probe.stateDim,
+      probe.continuous ? probe.actDim : probe.nActions,
       cfg.presetId,
       cfg.activation,
       cfg.seed,
+      probe.continuous,
     );
     agentRef.current = agent;
-    pOptRef.current = new Optimizer(agent.policy.parameters(), defaultOptimizer('adam', cfg.policyLr));
+    pOptRef.current = new Optimizer(agent.policyParams(), defaultOptimizer('adam', cfg.policyLr));
     vOptRef.current = new Optimizer(agent.critic.parameters(), defaultOptimizer('adam', cfg.valueLr));
     trainRng.current = mulberry32(cfg.seed ^ 0xa5a5);
     demoRng.current = mulberry32(cfg.seed ^ 0x1234);
-    trainEnvRef.current = makeEnv(cfg.envKind, cfg.gridLayoutId, mulberry32(cfg.seed ^ 0x2222));
-    const demoEnv = makeEnv(cfg.envKind, cfg.gridLayoutId, mulberry32(cfg.seed ^ 0x3333));
+    trainEnvRef.current = makeEnv(cfg.envKind, cfg.gridLayoutId, mulberry32(cfg.seed ^ 0x2222), cfg.gamma);
+    const demoEnv = makeEnv(cfg.envKind, cfg.gridLayoutId, mulberry32(cfg.seed ^ 0x3333), cfg.gamma);
     demoEnv.reset();
     demoEnvRef.current = demoEnv;
     iterRef.current = 0;
     envStepRef.current = 0;
     smoothRef.current = NaN;
     bestRef.current = NaN;
-    demoInfoRef.current = {
-      probs: null,
-      value: 0,
-      action: 0,
-      episodeReturn: 0,
-      episodeSteps: 0,
-      lastEpisodeReturn: NaN,
-      episodeCount: 0,
-    };
+    demoInfoRef.current = emptyDemo(probe.continuous);
 
     if (pendingWeights.current) {
       if (agent.importWeights(pendingWeights.current)) iterRef.current = pendingStep.current;
@@ -199,8 +238,10 @@ export function useRLTrainer(cfg: RLConfig) {
   }, [cfg.policyLr, cfg.valueLr]);
 
   // One training iteration: roll out a batch of complete episodes with the current stochastic
-  // policy, compute per-step returns/advantages, then take a single policy-gradient step (and a
-  // value-regression step for the critic-based algorithms). Returns the batch statistics.
+  // policy, compute per-step returns/advantages, then update. REINFORCE/baseline/A2C take a single
+  // full-batch policy-gradient step; PPO runs several epochs of clipped-surrogate minibatch SGD over
+  // the same data. Works for both the categorical (discrete) and diagonal-Gaussian (continuous)
+  // policies. Returns the batch statistics.
   const trainIter = useCallback(() => {
     const agent = agentRef.current;
     const pOpt = pOptRef.current;
@@ -209,12 +250,19 @@ export function useRLTrainer(cfg: RLConfig) {
     const rng = trainRng.current;
     if (!agent || !pOpt || !vOpt || !env) return undefined;
     const c = cfgRef.current;
-    const usesCritic = RL_ALGOS.find((a) => a.id === c.algo)!.usesCritic;
+    const meta = RL_ALGOS.find((a) => a.id === c.algo)!;
+    const usesCritic = meta.usesCritic;
+    const isPPO = c.algo === 'ppo';
+    const cont = agent.continuous;
+    const A = agent.actDim;
 
     const states: Float64Array[] = [];
-    const actions: number[] = [];
+    const actionsI: number[] = []; // discrete action indices
+    const actionsC: number[] = []; // continuous actions, flattened [B*A]
+    const oldLogp: number[] = [];
     const advAll: number[] = [];
     const retAll: number[] = [];
+    const valAll: number[] = [];
     const epReturns: number[] = [];
     let collected = 0;
 
@@ -222,16 +270,26 @@ export function useRLTrainer(cfg: RLConfig) {
       env.reset();
       const ep: EpisodeTrace = { rewards: [], values: [], bootstrap: 0 };
       const epS: Float64Array[] = [];
-      const epA: number[] = [];
       let epRet = 0;
       let obs = env.observe();
       for (;;) {
-        const probs = agent.actionProbs(obs);
-        const a = sampleCategorical(probs, rng);
         const v = usesCritic ? agent.valueOf(obs) : 0;
-        const r = env.step(a);
+        let r;
+        if (cont) {
+          const mean = agent.actionMean(obs);
+          const logStd = agent.logStd!.data;
+          const a = sampleGaussian(mean, logStd, rng);
+          oldLogp.push(gaussianLogProbNumeric(mean, logStd, a));
+          for (let d = 0; d < A; d++) actionsC.push(a[d]);
+          r = env.step(a);
+        } else {
+          const probs = agent.actionProbs(obs);
+          const a = sampleCategorical(probs, rng);
+          oldLogp.push(Math.log(Math.max(probs[a], 1e-12)));
+          actionsI.push(a);
+          r = env.step(a);
+        }
         epS.push(obs);
-        epA.push(a);
         ep.rewards.push(r.reward);
         ep.values.push(v);
         epRet += r.reward;
@@ -245,54 +303,156 @@ export function useRLTrainer(cfg: RLConfig) {
       const { adv, ret } = computeTargets(ep, c.gamma, c.lambda, c.algo);
       for (let i = 0; i < adv.length; i++) {
         states.push(epS[i]);
-        actions.push(epA[i]);
         advAll.push(adv[i]);
         retAll.push(ret[i]);
+        valAll.push(ep.values[i]);
       }
       epReturns.push(epRet);
     }
 
     if (c.normAdv) normalizeAdvantages(advAll);
     const B = states.length;
-    const sd = new Float64Array(B * agent.stateDim);
-    for (let i = 0; i < B; i++) sd.set(states[i], i * agent.stateDim);
-    const statesT = Tensor.fromFlat(sd, B, agent.stateDim, false);
-    const actionsI = Int32Array.from(actions);
-    const advT = Tensor.fromFlat(Float64Array.from(advAll), B, 1, false);
 
-    // Policy-gradient step: minimize −E[Â·logπ(a|s)] − entCoef·H(π).
-    pOpt.zeroGrad();
-    const logits = agent.policyLogits(statesT);
-    const logp = gatherCols(logits.logSoftmax(), actionsI);
-    const pg = logp.mul(advT).meanAll().neg();
-    const ent = logits.softmax().mul(logits.logSoftmax()).sumAll().scale(-1 / B);
-    const policyLoss = pg.add(ent.scale(-c.entCoef));
-    policyLoss.backward();
-    clipGradGlobalNorm(agent.policy.parameters(), c.clipNorm);
-    pOpt.step();
+    // Pack the whole batch into flat tensors once; minibatches index into them.
+    const sdAll = new Float64Array(B * agent.stateDim);
+    for (let i = 0; i < B; i++) sdAll.set(states[i], i * agent.stateDim);
 
-    // Critic step: regress V(s) onto the return targets.
-    let valueLoss = NaN;
-    if (usesCritic) {
-      vOpt.zeroGrad();
-      const values = agent.values(statesT);
-      const retT = Tensor.fromFlat(Float64Array.from(retAll), B, 1, false);
-      const vloss = mse(values, retT);
-      vloss.backward();
-      clipGradGlobalNorm(agent.critic.parameters(), c.clipNorm);
-      vOpt.step();
-      valueLoss = vloss.data[0];
+    // Build the differentiable per-sample log-prob and the policy entropy for a set of row indices.
+    const buildLogp = (idx: number[]) => {
+      const m = idx.length;
+      const sd = new Float64Array(m * agent.stateDim);
+      for (let i = 0; i < m; i++) sd.set(states[idx[i]], i * agent.stateDim);
+      const statesT = Tensor.fromFlat(sd, m, agent.stateDim, false);
+      const out = agent.policyLogits(statesT); // logits (discrete) or means (continuous)
+      let logp: Tensor;
+      let ent: Tensor;
+      if (cont) {
+        const acts = new Float64Array(m * A);
+        for (let i = 0; i < m; i++) for (let d = 0; d < A; d++) acts[i * A + d] = actionsC[idx[i] * A + d];
+        const actsT = Tensor.fromFlat(acts, m, A, false);
+        logp = gaussianLogProb(out, agent.logStd!, actsT);
+        ent = gaussianEntropy(agent.logStd!);
+      } else {
+        const acts = new Int32Array(m);
+        for (let i = 0; i < m; i++) acts[i] = actionsI[idx[i]];
+        logp = categoricalLogProb(out, acts);
+        ent = categoricalEntropy(out);
+      }
+      return { statesT, logp, ent };
+    };
+
+    // A single policy(+critic) update over a set of row indices. `clip > 0` selects the PPO
+    // clipped-surrogate objective; otherwise the vanilla score-function objective −E[Â·logπ].
+    const update = (idx: number[], clip: number) => {
+      const m = idx.length;
+      const advd = new Float64Array(m);
+      for (let i = 0; i < m; i++) advd[i] = advAll[idx[i]];
+      pOpt.zeroGrad();
+      const { statesT, logp, ent } = buildLogp(idx);
+
+      let surrogate: Tensor;
+      let clipped = 0;
+      let kl = 0;
+      if (clip > 0) {
+        const oldd = new Float64Array(m);
+        for (let i = 0; i < m; i++) oldd[i] = oldLogp[idx[i]];
+        const oldT = Tensor.fromFlat(oldd, m, 1, false);
+        const logratio = logp.sub(oldT); // [m,1]
+        const ratio = logratio.exp(); // [m,1]
+        // Decide, per sample, whether the unclipped branch wins the min (so its gradient flows).
+        const activeAdv = new Float64Array(m);
+        for (let i = 0; i < m; i++) {
+          const r = ratio.data[i];
+          const a = advd[i];
+          const surr1 = r * a;
+          const cr = Math.max(1 - clip, Math.min(1 + clip, r));
+          const surr2 = cr * a;
+          activeAdv[i] = surr1 <= surr2 ? a : 0; // clipped samples contribute zero gradient
+          if (Math.abs(r - 1) > clip) clipped++;
+          const lr = logratio.data[i];
+          kl += r - 1 - lr; // Schulman k3 KL estimator (always ≥ 0)
+        }
+        const activeT = Tensor.fromFlat(activeAdv, m, 1, false);
+        surrogate = ratio.mul(activeT).meanAll().neg();
+        kl /= m;
+      } else {
+        const advT = Tensor.fromFlat(advd, m, 1, false);
+        surrogate = logp.mul(advT).meanAll().neg();
+      }
+
+      const policyLoss = surrogate.add(ent.scale(-c.entCoef));
+      policyLoss.backward();
+      clipGradGlobalNorm(agent.policyParams(), c.clipNorm);
+      pOpt.step();
+
+      let valueLoss = NaN;
+      if (usesCritic) {
+        vOpt.zeroGrad();
+        const retd = new Float64Array(m);
+        for (let i = 0; i < m; i++) retd[i] = retAll[idx[i]];
+        const values = agent.values(statesT);
+        const vloss = mse(values, Tensor.fromFlat(retd, m, 1, false));
+        vloss.backward();
+        clipGradGlobalNorm(agent.critic.parameters(), c.clipNorm);
+        vOpt.step();
+        valueLoss = vloss.data[0];
+      }
+      return { policyLoss: policyLoss.data[0], entropy: ent.data[0], valueLoss, clipFrac: clipped / m, approxKL: kl };
+    };
+
+    const order = Array.from({ length: B }, (_, i) => i);
+    let lastPolicyLoss = NaN;
+    let lastEntropy = NaN;
+    let lastValueLoss = NaN;
+    let clipFracAcc = 0;
+    let klAcc = 0;
+    let updates = 0;
+    if (isPPO) {
+      const mb = Math.max(32, Math.min(c.minibatch, B));
+      outer: for (let ep = 0; ep < c.ppoEpochs; ep++) {
+        // Fisher–Yates shuffle so each epoch sees fresh minibatches.
+        for (let i = B - 1; i > 0; i--) {
+          const j = Math.floor(rng() * (i + 1));
+          const t = order[i];
+          order[i] = order[j];
+          order[j] = t;
+        }
+        for (let s = 0; s < B; s += mb) {
+          const idx = order.slice(s, Math.min(s + mb, B));
+          const r = update(idx, c.ppoClip);
+          lastPolicyLoss = r.policyLoss;
+          lastEntropy = r.entropy;
+          lastValueLoss = r.valueLoss;
+          clipFracAcc += r.clipFrac;
+          klAcc += r.approxKL;
+          updates++;
+        }
+        // Early-stop the remaining epochs if the policy has already moved too far (trust region).
+        if (c.targetKL > 0 && updates > 0 && klAcc / updates > c.targetKL) break outer;
+      }
+    } else {
+      const r = update(order, 0);
+      lastPolicyLoss = r.policyLoss;
+      lastEntropy = r.entropy;
+      lastValueLoss = r.valueLoss;
+      updates = 1;
     }
 
     iterRef.current++;
     envStepRef.current += collected;
     const meanReturn = epReturns.reduce((a, b) => a + b, 0) / epReturns.length;
+    const explainedVar = usesCritic ? explainedVariance(retAll, valAll) : NaN;
     return {
       meanReturn,
       episodes: epReturns.length,
-      entropy: ent.data[0],
-      policyLoss: policyLoss.data[0],
-      valueLoss,
+      entropy: lastEntropy,
+      policyLoss: lastPolicyLoss,
+      valueLoss: lastValueLoss,
+      clipFrac: isPPO ? clipFracAcc / Math.max(1, updates) : NaN,
+      approxKL: isPPO ? klAcc / Math.max(1, updates) : NaN,
+      explainedVar,
+      stdMean: cont ? mean(agent.stdVec()) : NaN,
+      returnDist: epReturns.slice(),
     };
   }, []);
 
@@ -304,13 +464,29 @@ export function useRLTrainer(cfg: RLConfig) {
     const c = cfgRef.current;
     const info = demoInfoRef.current;
     const obs = env.observe();
-    const probs = agent.actionProbs(obs);
-    const action = c.greedyDemo ? argmax(probs) : sampleCategorical(probs, demoRng.current);
     const value = agent.valueOf(obs);
-    const r = env.step(action);
-    info.probs = probs;
+    let r;
+    if (agent.continuous) {
+      const mean = agent.actionMean(obs);
+      const std = agent.stdVec();
+      const a = c.greedyDemo ? mean : sampleGaussian(mean, agent.logStd!.data, demoRng.current);
+      info.mean = mean;
+      info.std = std;
+      info.actionVec = a;
+      info.probs = null;
+      info.action = 0;
+      r = env.step(a);
+    } else {
+      const probs = agent.actionProbs(obs);
+      const action = c.greedyDemo ? argmax(probs) : sampleCategorical(probs, demoRng.current);
+      info.probs = probs;
+      info.action = action;
+      info.mean = null;
+      info.std = null;
+      info.actionVec = null;
+      r = env.step(action);
+    }
     info.value = value;
-    info.action = action;
     info.episodeReturn += r.reward;
     info.episodeSteps += 1;
     if (r.terminated || r.truncated) {
@@ -349,10 +525,15 @@ export function useRLTrainer(cfg: RLConfig) {
         entropy: last.entropy,
         valueLoss: last.valueLoss,
         policyLoss: last.policyLoss,
+        clipFrac: last.clipFrac,
+        approxKL: last.approxKL,
+        explainedVar: last.explainedVar,
+        stdMean: last.stdMean,
         returnHistory,
         smoothHistory,
         entropyHistory,
         valueLossHistory,
+        returnDist: last.returnDist,
       };
     });
   }, []);
@@ -397,51 +578,63 @@ export function useRLTrainer(cfg: RLConfig) {
   }, [trainIter, pushMetrics]);
   const resetDemo = useCallback(() => {
     const env = demoEnvRef.current;
+    const agent = agentRef.current;
     if (env) env.reset();
-    demoInfoRef.current = {
-      probs: null,
-      value: 0,
-      action: 0,
-      episodeReturn: 0,
-      episodeSteps: 0,
-      lastEpisodeReturn: NaN,
-      episodeCount: 0,
-    };
+    demoInfoRef.current = emptyDemo(agent ? agent.continuous : false);
     setTick((t) => t + 1);
   }, []);
 
   const demoInfo = useCallback((): DemoInfo => demoInfoRef.current, []);
 
-  // Gradient-check the whole policy through the REINFORCE objective on a small captured batch.
+  // Gradient-check the whole policy through its policy-gradient objective on a small captured batch
+  // — categorical (logSoftmax + gatherCols) or diagonal-Gaussian (gaussianLogProb), as appropriate.
   const runGradCheck = useCallback((): GradCheckResult | null => {
     const agent = agentRef.current;
     const env = trainEnvRef.current;
     if (!agent || !env) return null;
     const rng = mulberry32(99);
     const B = 8;
+    const A = agent.actDim;
     const sd = new Float64Array(B * agent.stateDim);
-    const acts = new Int32Array(B);
     const advd = new Float64Array(B);
+    const actsI = new Int32Array(B);
+    const actsC = new Float64Array(B * Math.max(1, A));
     env.reset();
     let obs = env.observe();
     for (let i = 0; i < B; i++) {
       sd.set(obs, i * agent.stateDim);
-      const probs = agent.actionProbs(obs);
-      const a = sampleCategorical(probs, rng);
-      acts[i] = a;
       advd[i] = rng() * 2 - 1;
-      const r = env.step(a);
+      let r;
+      if (agent.continuous) {
+        const mean = agent.actionMean(obs);
+        const a = sampleGaussian(mean, agent.logStd!.data, rng);
+        for (let d = 0; d < A; d++) actsC[i * A + d] = a[d];
+        r = env.step(a);
+      } else {
+        const probs = agent.actionProbs(obs);
+        const a = sampleCategorical(probs, rng);
+        actsI[i] = a;
+        r = env.step(a);
+      }
       obs = r.terminated || r.truncated ? (env.reset(), env.observe()) : r.obs;
     }
     const statesT = Tensor.fromFlat(sd, B, agent.stateDim, false);
     const advT = Tensor.fromFlat(advd, B, 1, false);
+    const actsCT = agent.continuous ? Tensor.fromFlat(actsC, B, A, false) : null;
     return gradCheck(
-      agent.policy.parameters(),
+      agent.policyParams(),
       () => {
-        const logits = agent.policyLogits(statesT);
-        const logp = gatherCols(logits.logSoftmax(), acts);
+        const out = agent.policyLogits(statesT);
+        let logp: Tensor;
+        let ent: Tensor;
+        if (agent.continuous) {
+          logp = gaussianLogProb(out, agent.logStd!, actsCT!);
+          ent = gaussianEntropy(agent.logStd!);
+        } else {
+          logp = categoricalLogProb(out, actsI);
+          ent = categoricalEntropy(out);
+        }
         const pg = logp.mul(advT).meanAll().neg();
-        const ent = logits.softmax().mul(logits.logSoftmax()).sumAll().scale(-1 / B);
         return pg.add(ent.scale(-0.01));
       },
       { samplesPerParam: 5 },
@@ -473,4 +666,18 @@ export function useRLTrainer(cfg: RLConfig) {
     snapshot,
     prepareLoad,
   };
+}
+
+function mean(arr: Float64Array): number {
+  let s = 0;
+  for (let i = 0; i < arr.length; i++) s += arr[i];
+  return arr.length ? s / arr.length : NaN;
+}
+
+// 1 − Var(returns − values)/Var(returns): how much of the return's variance the critic explains.
+function explainedVariance(ret: number[], val: number[]): number {
+  const vr = variance(ret);
+  if (vr < 1e-12) return NaN;
+  const resid = ret.map((r, i) => r - val[i]);
+  return 1 - variance(resid) / vr;
 }

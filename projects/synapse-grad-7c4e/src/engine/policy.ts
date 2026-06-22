@@ -7,15 +7,20 @@
 // needs are `logSoftmax` and `gatherCols`, both hand-derived and in the engine self-test.
 
 import { Tensor } from './tensor';
+import { gatherCols } from './ops';
 import { MLP, mulberry32, type Activation, type LayerSpec } from './nn';
 
-export type RLAlgo = 'reinforce' | 'baseline' | 'a2c';
+export type RLAlgo = 'reinforce' | 'baseline' | 'a2c' | 'ppo';
 
-export const RL_ALGOS: { id: RLAlgo; label: string; usesCritic: boolean }[] = [
-  { id: 'reinforce', label: 'REINFORCE', usesCritic: false },
-  { id: 'baseline', label: 'REINFORCE + baseline', usesCritic: true },
-  { id: 'a2c', label: 'Advantage Actor–Critic (GAE)', usesCritic: true },
+export const RL_ALGOS: { id: RLAlgo; label: string; usesCritic: boolean; usesGae: boolean }[] = [
+  { id: 'reinforce', label: 'REINFORCE', usesCritic: false, usesGae: false },
+  { id: 'baseline', label: 'REINFORCE + baseline', usesCritic: true, usesGae: false },
+  { id: 'a2c', label: 'Advantage Actor–Critic (GAE)', usesCritic: true, usesGae: true },
+  { id: 'ppo', label: 'PPO (clipped, GAE)', usesCritic: true, usesGae: true },
 ];
+
+const LOG_2PI = Math.log(2 * Math.PI);
+const HALF_LOG_2PI_E = 0.5 * Math.log(2 * Math.PI * Math.E);
 
 export interface RLPreset {
   id: string;
@@ -35,23 +40,53 @@ function hiddenSpec(hidden: number[], act: Activation): LayerSpec[] {
 }
 
 // Bundles the two networks and the few utilities the trainer needs. Weight export/import
-// concatenates policy then critic so a single flat vector round-trips through save/share.
+// concatenates policy (then the continuous policy's log-σ vector) then critic so a single flat
+// vector round-trips through save/share.
+//
+// The agent serves two action spaces from the same engine:
+//   • discrete   — the policy MLP emits per-action logits; the distribution is a softmax and the
+//                  score function differentiates logSoftmax + gatherCols (the original RL lab).
+//   • continuous — the policy MLP emits the mean of a diagonal Gaussian and a *separate* learnable
+//                  log-σ vector (state-independent, the standard PPO/A2C parameterization) gives the
+//                  spread; the score function differentiates the Gaussian log-density (gaussianLogProb
+//                  below, which sums a per-dimension log-density with rowSum). Both are hand-derived
+//                  and gradchecked end-to-end in the engine self-test.
 export class Agent {
   policy: MLP;
   critic: MLP;
   readonly stateDim: number;
-  readonly nActions: number;
+  readonly nActions: number; // categorical action count (discrete) or action dimension (continuous)
+  readonly continuous: boolean;
+  readonly actDim: number; // continuous action dimension (0 for discrete)
+  logStd: Tensor | null; // [1, actDim] learnable log standard deviation (continuous only)
 
-  constructor(stateDim: number, nActions: number, hidden: number[], act: Activation, rng: () => number) {
+  constructor(
+    stateDim: number,
+    nActions: number,
+    hidden: number[],
+    act: Activation,
+    rng: () => number,
+    continuous = false,
+  ) {
     this.stateDim = stateDim;
     this.nActions = nActions;
-    this.policy = new MLP(stateDim, hiddenSpec(hidden, act), nActions, rng);
+    this.continuous = continuous;
+    this.actDim = continuous ? nActions : 0;
+    const outDim = continuous ? nActions : nActions; // mean per dim (continuous) or logit per action
+    this.policy = new MLP(stateDim, hiddenSpec(hidden, act), outDim, rng);
     this.critic = new MLP(stateDim, hiddenSpec(hidden, act), 1, rng);
+    // Start the Gaussian fairly exploratory: σ ≈ exp(-0.5) ≈ 0.61.
+    this.logStd = continuous ? Tensor.fromFlat(new Float64Array(nActions).fill(-0.5), 1, nActions, true).named('logσ') : null;
   }
 
-  // Forward a batch of observations [B, stateDim] through the policy → logits [B, nActions].
+  // Forward a batch of observations [B, stateDim] through the policy → logits/means [B, out].
   policyLogits(obs: Tensor): Tensor {
     return this.policy.forward(obs);
+  }
+
+  // The parameters the policy optimizer trains: the policy MLP plus (continuous) the log-σ vector.
+  policyParams(): Tensor[] {
+    return this.continuous ? [...this.policy.parameters(), this.logStd!] : this.policy.parameters();
   }
 
   // Forward a batch of observations through the critic → values [B, 1].
@@ -60,10 +95,23 @@ export class Agent {
   }
 
   // Action distribution for a single observation, computed without building a tape (the hot path
-  // during environment rollout). Returns the softmax probabilities over actions.
+  // during environment rollout). Returns the softmax probabilities over actions (discrete only).
   actionProbs(obs: Float64Array): Float64Array {
     const logits = forwardNumeric(this.policy, obs);
     return softmaxInPlace(logits);
+  }
+
+  // The Gaussian mean for a single observation, tape-free (continuous only).
+  actionMean(obs: Float64Array): Float64Array {
+    return forwardNumeric(this.policy, obs);
+  }
+
+  // The current standard-deviation vector σ = exp(log σ) (continuous only).
+  stdVec(): Float64Array {
+    const ls = this.logStd!.data;
+    const out = new Float64Array(ls.length);
+    for (let i = 0; i < ls.length; i++) out[i] = Math.exp(ls[i]);
+    return out;
   }
 
   // V(s) for a single observation, tape-free.
@@ -72,19 +120,89 @@ export class Agent {
   }
 
   paramCount(): number {
-    return this.policy.paramCount() + this.critic.paramCount();
+    return this.policy.paramCount() + (this.continuous ? this.actDim : 0) + this.critic.paramCount();
   }
 
   exportWeights(): number[] {
-    return [...this.policy.exportWeights(), ...this.critic.exportWeights()];
+    const head = this.continuous ? Array.from(this.logStd!.data) : [];
+    return [...this.policy.exportWeights(), ...head, ...this.critic.exportWeights()];
   }
 
   importWeights(flat: number[]): boolean {
     const pn = this.policy.paramCount();
+    const ln = this.continuous ? this.actDim : 0;
     const cn = this.critic.paramCount();
-    if (flat.length !== pn + cn) return false;
-    return this.policy.importWeights(flat.slice(0, pn)) && this.critic.importWeights(flat.slice(pn));
+    if (flat.length !== pn + ln + cn) return false;
+    if (!this.policy.importWeights(flat.slice(0, pn))) return false;
+    if (this.continuous) this.logStd!.data.set(flat.slice(pn, pn + ln));
+    return this.critic.importWeights(flat.slice(pn + ln));
   }
+}
+
+// ---- diagonal-Gaussian policy (continuous control) ------------------------------------------
+//
+// All three pieces below are hand-derived and gradchecked. The log-density of a diagonal Gaussian
+// at action a, with mean μ and (per-dimension) standard deviation σ = exp(logσ), summed over the
+// action dimensions, is
+//   log π(a|s) = Σ_d [ −½·((a_d − μ_d)/σ_d)² − logσ_d − ½·log(2π) ].
+// It is assembled entirely from existing engine ops (sub, mul, exp, scale, rowSum), so the tape
+// differentiates it w.r.t. both the network's μ output *and* the learnable logσ.
+
+// Differentiable joint log-prob [B,1] of actions [B,A] under N(mu [B,A], diag(exp(logStd)²)),
+// where logStd is the shared [1,A] parameter (row-broadcast across the batch).
+export function gaussianLogProb(mu: Tensor, logStd: Tensor, actions: Tensor): Tensor {
+  const A = mu.cols;
+  const invStd = logStd.neg().exp(); // [1,A] = 1/σ
+  const z = actions.sub(mu).mul(invStd); // [B,A] standardized residual
+  // per-dim log-density = −½ z² − logStd − ½ log(2π)
+  const perDim = z.mul(z).scale(-0.5).sub(logStd); // [B,A] (the −½log2π constant added after the sum)
+  const sum = perDim.rowSum(); // [B,1]
+  const c = Tensor.fromFlat(new Float64Array([(-0.5 * LOG_2PI * A)]), 1, 1, false);
+  return sum.add(c); // [B,1] broadcast constant
+}
+
+// Differentiable scalar entropy [1,1] of the diagonal Gaussian: H = Σ_d (logσ_d + ½·log(2πe)).
+// (State-independent here, so it is a pure function of the shared logStd vector.)
+export function gaussianEntropy(logStd: Tensor): Tensor {
+  const A = logStd.cols;
+  const c = Tensor.fromFlat(new Float64Array([HALF_LOG_2PI_E * A]), 1, 1, false);
+  return logStd.sumAll().add(c);
+}
+
+// Tape-free Gaussian log-prob of a single action (used to record the behavior log-prob at rollout
+// time, the πθ_old(a|s) that PPO's importance ratio divides by).
+export function gaussianLogProbNumeric(mu: Float64Array, logStd: Float64Array, a: Float64Array): number {
+  let s = 0;
+  for (let d = 0; d < mu.length; d++) {
+    const z = (a[d] - mu[d]) * Math.exp(-logStd[d]);
+    s += -0.5 * z * z - logStd[d] - 0.5 * LOG_2PI;
+  }
+  return s;
+}
+
+// Sample an action vector from N(mu, diag(exp(logStd)²)) using the supplied rng (Box–Muller).
+export function sampleGaussian(mu: Float64Array, logStd: Float64Array, rng: () => number): Float64Array {
+  const out = new Float64Array(mu.length);
+  for (let d = 0; d < mu.length; d++) out[d] = mu[d] + Math.exp(logStd[d]) * randnFrom(rng);
+  return out;
+}
+
+function randnFrom(rng: () => number): number {
+  let u = 0;
+  let v = 0;
+  while (u === 0) u = rng();
+  while (v === 0) v = rng();
+  return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v);
+}
+
+// Discrete log-prob of the chosen actions, differentiable [B,1]: gatherCols(logSoftmax(logits)).
+export function categoricalLogProb(logits: Tensor, actions: Int32Array): Tensor {
+  return gatherCols(logits.logSoftmax(), actions);
+}
+
+// Differentiable scalar mean entropy [1,1] of the per-row categorical policies: −Σ p·log p / B.
+export function categoricalEntropy(logits: Tensor): Tensor {
+  return logits.softmax().mul(logits.logSoftmax()).sumAll().scale(-1 / logits.rows);
 }
 
 // A tape-free forward pass mirroring MLP.forward for the (norm/dropout-free) RL nets: each layer
@@ -202,13 +320,14 @@ export interface Targets {
 
 // Per-episode returns and advantages. The Monte-Carlo discounted return G_t (with bootstrap at a
 // time-limit truncation) is always available; GAE(λ) is computed from the critic for A2C.
-//   reinforce : adv = G_t,            (no critic)
-//   baseline  : adv = G_t − V(s_t),   ret = G_t
-//   a2c (GAE) : adv = Â_t (GAE),      ret = Â_t + V(s_t)
+//   reinforce    : adv = G_t,            (no critic)
+//   baseline     : adv = G_t − V(s_t),   ret = G_t
+//   a2c/ppo (GAE): adv = Â_t (GAE),      ret = Â_t + V(s_t)
 export function computeTargets(ep: EpisodeTrace, gamma: number, lambda: number, algo: RLAlgo): Targets {
   const T = ep.rewards.length;
   const ret: number[] = new Array(T).fill(0);
   const adv: number[] = new Array(T).fill(0);
+  const usesGae = RL_ALGOS.find((a) => a.id === algo)?.usesGae ?? false;
 
   // Monte-Carlo discounted returns.
   const mc: number[] = new Array(T).fill(0);
@@ -218,7 +337,7 @@ export function computeTargets(ep: EpisodeTrace, gamma: number, lambda: number, 
     mc[t] = g;
   }
 
-  if (algo === 'a2c') {
+  if (usesGae) {
     let gae = 0;
     for (let t = T - 1; t >= 0; t--) {
       const vNext = t + 1 < T ? ep.values[t + 1] : ep.bootstrap;
@@ -262,7 +381,8 @@ export function buildAgent(
   presetId: string,
   act: Activation,
   seed: number,
+  continuous = false,
 ): Agent {
   const preset = RL_PRESETS.find((p) => p.id === presetId) ?? RL_PRESETS[1];
-  return new Agent(stateDim, nActions, preset.hidden, act, mulberry32(seed));
+  return new Agent(stateDim, nActions, preset.hidden, act, mulberry32(seed), continuous);
 }
