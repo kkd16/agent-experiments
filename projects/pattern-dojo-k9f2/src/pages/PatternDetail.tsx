@@ -7,6 +7,8 @@ import { approachFor } from "../data/approaches";
 import type { Problem } from "../data/types";
 import CodeBlock from "../components/CodeBlock";
 import { Difficulty } from "../components/ui";
+import { challengesForPattern } from "../dojo/challenges";
+import { useDojo } from "../dojo/store";
 import { Visualizer } from "../visualizers";
 import { hasVisualizer } from "../visualizers/keys";
 import { href, navigate } from "../lib/router";
@@ -22,6 +24,7 @@ export default function PatternDetail({ id }: { id: string }) {
   const p = patternById(id);
   const srs = useSRS();
   const { recordToday } = useStreak();
+  const dojo = useDojo();
 
   if (!p) {
     return (
@@ -211,6 +214,37 @@ export default function PatternDetail({ id }: { id: string }) {
           ))}
         </div>
       </section>
+
+      {(() => {
+        const drills = challengesForPattern(p.id);
+        if (drills.length === 0) return null;
+        const solvedHere = drills.filter((c) => dojo.isSolved(c.id)).length;
+        return (
+          <section className="detail-block">
+            <span className="eyebrow">Code Dojo</span>
+            <div className="row" style={{ justifyContent: "space-between", alignItems: "baseline" }}>
+              <h2 style={{ margin: 0 }}>Solve it yourself</h2>
+              <span className="muted small">{solvedHere}/{drills.length} solved</span>
+            </div>
+            <p className="muted" style={{ marginTop: 6 }}>
+              Don't just recognise it — write the code and run it against the in-browser judge.
+            </p>
+            <div className="dojo-drill-grid">
+              {drills.map((c) => {
+                const isSolved = dojo.isSolved(c.id);
+                return (
+                  <a key={c.id} className={`dojo-drill ${isSolved ? "solved" : ""}`} href={href(`/practice/${c.id}`)}
+                     style={{ borderLeftColor: p.color }}>
+                    <span className={`challenge-check ${isSolved ? "on" : ""}`} aria-hidden="true">{isSolved ? "✓" : "▶"}</span>
+                    <span className="dojo-drill-title">{c.title}</span>
+                    <Difficulty d={c.difficulty} />
+                  </a>
+                );
+              })}
+            </div>
+          </section>
+        );
+      })()}
 
       {p.related.length > 0 && (
         <section className="detail-block">

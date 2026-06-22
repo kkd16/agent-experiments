@@ -4,6 +4,8 @@ import { useStreak } from "../lib/streak";
 import { patternOfTheDay } from "../lib/daily";
 import { PatternCard, ProgressDonut } from "../components/ui";
 import { href } from "../lib/router";
+import { challenges } from "../dojo/challenges";
+import { useDojo } from "../dojo/store";
 import type { Pattern } from "../data/types";
 
 const order: Pattern["level"][] = ["foundational", "core", "advanced"];
@@ -12,6 +14,7 @@ export default function Home() {
   const srs = useSRS();
   const { current: streak, longest } = useStreak();
   const { learned, due, mastered, learning } = srs.counts;
+  const dojo = useDojo();
   const potd = patternOfTheDay(patterns);
 
   const grouped = order.map((lvl) => ({
@@ -93,6 +96,13 @@ export default function Home() {
           <div className="today-streak-num">{streak} {streak > 0 && "🔥"}</div>
           <div className="muted" style={{ fontSize: "0.85rem" }}>
             {streak === 0 ? "review a pattern to start a streak →" : `best: ${longest} day${longest === 1 ? "" : "s"} · view stats →`}
+          </div>
+        </a>
+        <a className="today-card dojo-card" href={href("/practice")}>
+          <span className="eyebrow">Code Dojo</span>
+          <div className="today-review-num">{dojo.solvedCount}<span className="muted" style={{ fontSize: "1rem", fontWeight: 600 }}>/{challenges.length}</span></div>
+          <div className="muted" style={{ fontSize: "0.85rem" }}>
+            {dojo.solvedCount === 0 ? "solve your first problem →" : "problems solved · keep going →"}
           </div>
         </a>
       </section>

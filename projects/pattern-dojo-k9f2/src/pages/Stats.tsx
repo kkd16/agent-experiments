@@ -6,6 +6,8 @@ import { useStreak, dayKey } from "../lib/streak";
 import { downloadBackup, importFromFile } from "../lib/backup";
 import type { ImportResult } from "../lib/backup";
 import { href } from "../lib/router";
+import { challenges } from "../dojo/challenges";
+import { useDojo } from "../dojo/store";
 
 const WEEKS = 18;
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -54,6 +56,7 @@ function buildGrid(counts: Record<string, number>) {
 export default function Stats() {
   const srs = useSRS();
   const { current, longest, counts: dayCounts } = useStreak();
+  const dojo = useDojo();
   const [msg, setMsg] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
@@ -83,11 +86,12 @@ export default function Stats() {
         Everything below lives only in your browser. Back it up to move it between devices.
       </p>
 
-      <div className="review-dash" style={{ gridTemplateColumns: "repeat(4, 1fr)" }}>
+      <div className="review-dash" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(108px, 1fr))" }}>
         <Stat label="Day streak" value={current > 0 ? `${current} 🔥` : "0"} />
         <Stat label="Best streak" value={longest} />
         <Stat label="Total reviews" value={totalReviews} />
         <Stat label="Mastered" value={`${counts.mastered}/${patterns.length}`} />
+        <Stat label="Problems solved" value={`${dojo.solvedCount}/${challenges.length}`} />
       </div>
 
       <section className="stats-block">

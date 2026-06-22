@@ -71,6 +71,42 @@ complexity, pitfalls, and representative problems.
 - [ ] A full keyboard-accessibility / focus-trap pass on the command palette and modals
 - [ ] PWA / offline install
 
+## Code Dojo — in-browser coding practice with auto-grading (planned + shipping this session)
+
+The app teaches you to *recognize* a pattern and previews the *approach* — but you could never
+actually **write the code and find out if it works**. That's the biggest missing loop in interview
+prep. Code Dojo closes it: a real, dependency-free judge that runs your JavaScript against test
+cases right in the browser and tells you which cases pass, fail, error, or time out — then feeds a
+solve back into the spaced-repetition engine. The pattern you just *solved* graduates into review.
+
+- [x] **Sandboxed judge** — a Web Worker test-runner built from a Blob (no bundler worker plumbing,
+  works under the relative GitHub-Pages base). Per-test results stream back so we can attribute a
+  pass/fail/error to each case; a rolling main-thread timeout terminates the worker on infinite
+  loops and reports **Time Limit Exceeded** against the offending case. (`runner.ts`)
+- [x] **Deterministic comparator** (`equal.ts`) — a stable canonical serializer that handles
+  `NaN`/`±Infinity`/`-0`, plus comparison modes: `deep`, `unordered` (top-level multiset),
+  `unordered-deep` (order-irrelevant everywhere — for subsets/permutations/anagram groups), and
+  `approx` (float tolerance — for `pow`).
+- [x] **A real code editor** (`CodeEditor.tsx`, zero deps) — line-number gutter synced to scroll,
+  Tab/Shift-Tab (indent/outdent, multi-line aware), auto-indent on newline, bracket-aware close-dedent.
+- [x] **A curated problem set** (`challenges.ts`) — 36 classic NeetCode-style problems across 17
+  patterns, each with a statement, signature, starter code, sample + hidden judge tests, a verified
+  reference solution, staged hints, and target complexity. Trees use nested `{val,left,right}`
+  nodes; linked-list problems are framed over arrays so every problem is a pure JSON-in/JSON-out
+  function. **All 36 reference solutions (163 tests) were validated against their own tests in Node
+  before shipping** (caught a real spiral-matrix bound bug), so the judge can never disagree with
+  the answer key. The exact Web Worker source was also driven through a fake `self` to verify the
+  compile-error / runtime-error-attribution / console-capture paths.
+- [x] **Practice hub** (`#/practice`) — challenges grouped by pattern, difficulty + solved filters,
+  search, a solved/total progress ring, and per-pattern solve tallies.
+- [x] **Solve page** (`#/practice/<id>`) — split layout: statement + hints + reference on the left,
+  editor + Run (sample tests) / Submit (full judge) + a collapsible results console on the right.
+  Drafts autosave per-problem; a first solve records best runtime, marks the pattern learned in the
+  SRS, and feeds the daily streak. ⌘/Ctrl+Enter submits.
+- [x] **Wire-up everywhere** — nav entry + ⌘K palette (hub *and* every challenge), a "Solve it
+  yourself" panel on each pattern detail page, a Code-Dojo solved tile on Stats, a home strip card,
+  and dojo state folded into JSON backup/restore.
+
 ## Session log
 
 - 2026-06-13 (claude): Initial build. Full design system, 18 authored patterns, 4 pages
@@ -108,3 +144,20 @@ complexity, pitfalls, and representative problems.
 - 2026-06-14 (claude): **Settings.** Added `#/settings` (gear icon + ⌘K) to tune the study flow —
   session size (caps the due queue, 5–50) and new-patterns-per-session (1–18), persisted via
   `settings.ts` and applied throughout the review flow, plus a theme selector. Gate green.
+- 2026-06-22 (claude): **Major release — Code Dojo: in-browser coding practice with a real judge.**
+  Closed the app's biggest missing loop — you could *recognise* a pattern and preview the approach,
+  but never actually write code and find out if it works. Built a from-scratch, dependency-free
+  judge: a Web Worker constructed from a Blob (`runner.ts`) runs your JavaScript against sample +
+  hidden tests, streaming one result per case so each gets its own pass/wrong/error verdict, with a
+  rolling main-thread timeout that terminates the worker on infinite loops and reports a time-limit.
+  A deterministic comparator (`equal.ts`) handles `NaN`/`±Infinity`/`-0` and four modes
+  (`deep`/`unordered`/`unordered-deep`/`approx`). Authored **36 curated problems across 17 patterns**
+  (`challenges.ts`) — pure JSON-in/JSON-out functions (trees as nested nodes, lists as arrays) with
+  statements, signatures, starter code, staged hints, verified reference solutions and target
+  complexity. Added a zero-dep code editor with a synced line-number gutter and editor-grade key
+  handling (`CodeEditor.tsx`), a Practice hub (`#/practice`) with filters/search/progress ring, and a
+  split solve page (`#/practice/<id>`) with autosaving drafts; a first solve graduates the pattern
+  into spaced review and feeds the streak. Wired into the nav, ⌘K palette (hub + every problem), each
+  pattern detail page, the Stats tiles, the home strip, and JSON backup/restore. **Validated all 36
+  references (163 tests) and the worker source itself in Node before shipping** (the harness caught a
+  real spiral-matrix bound bug). Full gate (scope + conformance + lint + build) green.
