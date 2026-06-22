@@ -348,6 +348,44 @@ export function About() {
           oscillates at the shedding frequency, drag at twice it). Two solvers, two universes, one fluid.
         </p>
 
+        <h2>Two phases of one fluid — Shan–Chen multiphase (the Phase lab)</h2>
+        <p>
+          The kinetic solver above carries a single fluid. The <a href="#/phase">Phase lab</a> carries the
+          <em> interface</em> — the boundary between a liquid and its own vapour — and the force that lives
+          on it: <strong>surface tension</strong>. Remarkably, it takes just one extra ingredient. Give
+          every lattice site a <strong>pseudopotential</strong> <code>ψ(ρ) = 1 − e^(−ρ)</code> and add, as
+          a body force, a short-range attraction toward denser neighbours (Shan &amp; Chen, 1993):
+        </p>
+        <pre>{`F(x) = −G · ψ(x) · Σᵢ wᵢ ψ(x + eᵢ) eᵢ        (sum over the 8 links)`}</pre>
+        <p>
+          A Chapman–Enskog expansion shows this force endows the fluid with a <strong>non-ideal equation of
+          state</strong> <code>p = c_s²ρ + ½c_s²G·ψ²</code> — a van-der-Waals-like loop. When the cohesion
+          <code> G</code> is strong enough that <code>dp/dρ</code> goes <em>negative</em> over a band of
+          densities, the fluid is mechanically unstable there and spontaneously <strong>separates</strong>{' '}
+          into a dense liquid and a thin vapour, with a sharp interface a few cells wide. For this ψ the
+          threshold is <strong>exactly <code>G_c = −4</code></strong> — the point where <code>dp/dρ</code>{' '}
+          and <code>d²p/dρ²</code> vanish together, at <code>ρ = ln 2</code>. Surface tension then falls out
+          for free: the inside of a droplet sits at a higher pressure than the outside by exactly{' '}
+          <strong>Δp = σ/R</strong> (<strong>Laplace’s law</strong>, in 2-D), with a single constant{' '}
+          <code>σ</code>. The Verify page measures that line across four droplet radii (r² &gt; 0.99); the
+          Droplet scene reads <code>Δp·R</code> live. There is no interface tracking, no level set, no front
+          reconstruction anywhere — the boundary is simply <em>wherever the density jumps</em>.
+        </p>
+        <p>
+          From that one force the whole zoo follows. <strong>Spinodal decomposition</strong>: a noisy fluid
+          unmixes into a foam of droplets that <em>coarsen</em> over time (small drops evaporate into big
+          ones — Ostwald ripening). <strong>Coalescence</strong>: two drops touching merge into one,
+          because a single larger drop has less interface. <strong>Wetting</strong>: an analogous adhesion
+          force toward solid sites, <code>G_ads</code>, sets a droplet’s <strong>contact angle</strong> on a
+          floor — hydrophilic (spreads) for positive adhesion, hydrophobic (beads up) for negative. And with
+          a mean-subtracted gravity, liquid drops <strong>rain</strong> down through the vapour and splash on
+          the floor — while, because the cohesion is Newton’s-third-law antisymmetric (<code>ΣF = 0</code>),
+          total momentum is still conserved to round-off. The one honest blemish, reported rather than
+          hidden, is the small <strong>spurious current</strong> a curved discrete interface generates at
+          equilibrium — a known pseudopotential artefact, kept small here by the smooth ψ. Three solvers,
+          three universes, one fluid.
+        </p>
+
         <h2>Does it actually work? The verification page</h2>
         <p>
           A solver you can’t check is a solver you can’t trust. The <a href="#/verify">Verify</a> page
@@ -376,8 +414,14 @@ export function About() {
           <strong>Chapman–Enskog viscosity</strong> <code>ν = c_s²(τ−½)</code> measured from a shear
           wave, the exact <strong>Poiseuille</strong> parabola from the TRT magic wall, and the local
           strain rate read from <code>Π^neq</code>, and that the <strong>MRT</strong> moment transform
-          round-trips exactly and reproduces the same viscosity. Each check reports the number it
-          measured — <strong>56 checks across 15 groups</strong>.
+          round-trips exactly and reproduces the same viscosity. The <strong>multiphase</strong> solver
+          earns its own group too: the fluid only separates below the exact critical strength{' '}
+          <code>G_c = −4</code> (and stays mixed above it), mass is conserved to round-off, a flat
+          interface settles to bulk phases of <em>equal pressure</em>, droplets obey{' '}
+          <strong>Laplace’s law</strong> <code>Δp = σ/R</code> with one positive surface tension, the
+          internal cohesion force conserves momentum (<code>ΣF = 0</code>), and the spurious interface
+          currents stay small. Each check reports the number it measured —{' '}
+          <strong>62 checks across 16 groups</strong>.
         </p>
 
         <h2>Rendering</h2>
