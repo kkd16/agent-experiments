@@ -2340,6 +2340,77 @@ fn main(){
 }`,
   },
 
+  // --- Bitwise reassociation (and/or/xor monoids). Same canonicalization over a
+  // monoid instead of a ring: idempotence (and/or), self-inverse parity (xor),
+  // absorbing elements (`& 0`, `| ~0`) and constant folding. Built over a loop
+  // counter so the chains stay symbolic; the oracle pins each at -O0..-O3. --------
+  {
+    name: 'reassoc-xor-cancel',
+    source: `fn main(){
+  // xor self-inverse: x ^ y ^ x -> y (the repeated atom cancels by parity).
+  let acc = 0;
+  for (let i = 0; i < 130; i = i + 1) { let x = i * 3; let y = i + 7; acc = acc + (x ^ y ^ x); }
+  print(acc);
+}`,
+  },
+  {
+    name: 'reassoc-xor-const',
+    source: `fn main(){
+  // scattered xor constants fold into one: x ^ 3 ^ 5 -> x ^ 6.
+  let acc = 0;
+  for (let i = 0; i < 140; i = i + 1) { acc = acc ^ (i ^ 3 ^ 5); }
+  print(acc);
+}`,
+  },
+  {
+    name: 'reassoc-and-idem',
+    source: `fn main(){
+  // and idempotence + constant fold: x & y & x & 0xF0 & 0x3C -> (x & y) & 0x30.
+  let acc = 0;
+  for (let i = 0; i < 125; i = i + 1) { let x = i * 5; let y = i + 1; acc = acc + (x & y & x & 240 & 60); }
+  print(acc);
+}`,
+  },
+  {
+    name: 'reassoc-and-absorb',
+    source: `fn main(){
+  // and absorbing element short-circuits the whole chain to 0.
+  let acc = 0;
+  for (let i = 0; i < 100; i = i + 1) { let x = i * 7 + 3; acc = acc + ((x & i) & 0); }
+  print(acc);
+}`,
+  },
+  {
+    name: 'reassoc-or-fold',
+    source: `fn main(){
+  // or idempotence + constant fold: x | 0xF0 | x | 0x0F -> x | 0xFF.
+  let acc = 0;
+  for (let i = 0; i < 135; i = i + 1) { let x = i * 9; acc = acc ^ (x | 240 | x | 15); }
+  print(acc);
+}`,
+  },
+  {
+    name: 'reassoc-or-absorb',
+    source: `fn main(){
+  // or absorbing element (all ones) short-circuits to -1.
+  let acc = 0;
+  for (let i = 0; i < 90; i = i + 1) { acc = acc + ((i | 7) | -1); }
+  print(acc);
+}`,
+  },
+  {
+    name: 'reassoc-xor-long',
+    source: `fn main(){
+  // 64-bit xor: cancellation + wide constant fold (255L ^ 256L = 511L).
+  let acc: long = 0L;
+  for (let i: long = 0L; i < 150L; i = i + 1L) {
+    let x = i * 3L; let y = i + 1L;
+    acc = acc ^ (x ^ y ^ x ^ 255L ^ 256L);
+  }
+  print(acc);
+}`,
+  },
+
   // ---------------------------------------------------------------------------
   // Partial loop unrolling (unroll-by-K + remainder). Each loop has a *runtime*
   // or large bound the full unroller declines, so the strider engages; the

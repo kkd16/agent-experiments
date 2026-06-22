@@ -1,5 +1,6 @@
-// Reassociation fuzz: generate thousands of random integer *affine* expression
-// trees (i32 and i64), each built over loop-carried values so they stay symbolic
+// Reassociation fuzz: generate thousands of random integer expression trees —
+// *affine* (+, -, ×const, «const) and *bitwise* (&, |, ^) — over i32 and i64,
+// each built over loop-carried values so they stay symbolic
 // past SCCP, and assert the optimized wasm (-O3, where reassociation runs) prints
 // exactly what the unoptimized wasm (-O0, where it does not) does. Reassociation
 // is the only pass that differs in what it canonicalizes here, so any divergence
@@ -34,10 +35,13 @@ function genExpr(r, vars, L, depth) {
   }
   const k = r();
   const a = () => genExpr(r, vars, L, depth - 1);
-  if (k < 0.34) return `(${a()} + ${a()})`;
-  if (k < 0.6) return `(${a()} - ${a()})`;
-  if (k < 0.84) return r() < 0.5 ? `(${a()} * ${coeff(r, L)})` : `(${coeff(r, L)} * ${a()})`;
-  return `(${a()} << ${((r() * (L === 'long' ? 12 : 6)) | 0)}${L === 'long' ? 'L' : ''})`;
+  if (k < 0.26) return `(${a()} + ${a()})`;
+  if (k < 0.46) return `(${a()} - ${a()})`;
+  if (k < 0.64) return r() < 0.5 ? `(${a()} * ${coeff(r, L)})` : `(${coeff(r, L)} * ${a()})`;
+  if (k < 0.76) return `(${a()} << ${((r() * (L === 'long' ? 12 : 6)) | 0)}${L === 'long' ? 'L' : ''})`;
+  // bitwise monoid chains: and / or / xor over atoms and constants
+  const bop = pick(r, ['&', '|', '^']);
+  return `(${a()} ${bop} ${r() < 0.4 ? konst(r, L) : a()})`;
 }
 function konst(r, L) {
   const big = r() < 0.25;
@@ -108,5 +112,5 @@ for (let n = 0; n < COUNT; n++) {
   }
 }
 const pct = ((fired / COUNT) * 100).toFixed(1);
-console.log(`${COUNT} random affine programs (i32+i64) — reassociation fired on ${fired} (${pct}%); mismatches: ${mismatches}`);
+console.log(`${COUNT} random affine+bitwise programs (i32+i64) — reassociation fired on ${fired} (${pct}%); mismatches: ${mismatches}`);
 process.exit(mismatches === 0 ? 0 : 1);
