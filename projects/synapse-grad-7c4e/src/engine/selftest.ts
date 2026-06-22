@@ -20,6 +20,7 @@ import {
   posteriorMean,
   classifierFreeGuidance,
 } from './diffusion';
+import { RealNVP } from './flows';
 
 export interface OpCheck {
   name: string;
@@ -520,6 +521,67 @@ export function runSelfTest(seed = 7): SelfTestReport {
       pairs.push([g2[i], 3 * epsCond[i] - 2 * epsUncond[i]]); // (1+w)·cond − w·uncond, w=2
     }
     ops.push(relCheck('diffusion-ddim+cfg', pairs));
+  }
+
+  // ---- Normalizing flow (RealNVP) --------------------------------------------------
+  //
+  // End-to-end: a whole flow — every coupling layer's conditioner MLP, its bounded log-scale
+  // and shift heads — gradchecked through the *exact* negative log-likelihood (the change-of-
+  // variables objective −[log p_z(f(x)) + Σ logdet]). x is a frozen leaf (the network's input),
+  // so the loss is a clean function of the parameters for finite differences.
+  {
+    const flow = new RealNVP({ D: 2, hidden: [6], layers: 3, activation: 'tanh' }, rngFrom(31));
+    const B = 4;
+    const xd = new Float64Array(B * 2);
+    for (let i = 0; i < xd.length; i++) xd[i] = rng() * 2 - 1;
+    const x = Tensor.fromFlat(xd, B, 2, false);
+    ops.push(checkOp('flow-nll (e2e)', flow.parameters(), () => flow.nllLoss(x), rng));
+  }
+
+  // Invertibility: f⁻¹(f(x)) ≡ x to machine precision — the property that makes the exact
+  // density valid in the first place. A random flow maps x → z and straight back.
+  {
+    const flow = new RealNVP({ D: 2, hidden: [8], layers: 6, activation: 'gelu' }, rngFrom(73));
+    const B = 6;
+    const xd = new Float64Array(B * 2);
+    for (let i = 0; i < xd.length; i++) xd[i] = rng() * 2 - 1;
+    const x = Tensor.fromFlat(xd, B, 2, false);
+    const z = flow.forward(x).z;
+    const xback = flow.inverse(z);
+    const pairs: [number, number][] = [];
+    for (let i = 0; i < B * 2; i++) pairs.push([xback.data[i], xd[i]]);
+    ops.push(relCheck('flow-invertibility', pairs));
+  }
+
+  // Change-of-variables exactness: the analytic log-determinant the flow reports for a point
+  // equals log|det J| of its forward map, estimated by a central-difference Jacobian. This is
+  // the proof that the triangular-Jacobian shortcut (Σ s) really is the volume change.
+  {
+    const flow = new RealNVP({ D: 2, hidden: [8], layers: 4, activation: 'tanh' }, rngFrom(91));
+    // The scale head is zero-initialised (identity start), so a fresh flow has logdet ≡ 0 —
+    // a degenerate ~0-vs-~0 comparison. Nudge every parameter off the init so the volume
+    // change is genuinely non-trivial before we check it.
+    for (const p of flow.parameters()) for (let i = 0; i < p.size; i++) p.data[i] += rng() * 0.6 - 0.3;
+    const x0 = new Float64Array([rng() * 2 - 1, rng() * 2 - 1]);
+    const fwdZ = (xv: Float64Array): Float64Array => flow.forward(Tensor.fromFlat(xv.slice(), 1, 2, false)).z.data;
+    const h = 1e-4;
+    const J = [
+      [0, 0],
+      [0, 0],
+    ];
+    for (let b = 0; b < 2; b++) {
+      const xp = x0.slice();
+      xp[b] += h;
+      const zp = fwdZ(xp).slice();
+      const xm = x0.slice();
+      xm[b] -= h;
+      const zm = fwdZ(xm).slice();
+      for (let a = 0; a < 2; a++) J[a][b] = (zp[a] - zm[a]) / (2 * h);
+    }
+    const det = J[0][0] * J[1][1] - J[0][1] * J[1][0];
+    const logAbsDet = Math.log(Math.abs(det));
+    const reported = flow.forward(Tensor.fromFlat(x0.slice(), 1, 2, false)).logdet.data[0];
+    ops.push(relCheck('flow-logdet (Jacobian)', [[logAbsDet, reported]]));
   }
 
   const maxRelError = ops.reduce((m, o) => Math.max(m, o.maxRelError), 0);
