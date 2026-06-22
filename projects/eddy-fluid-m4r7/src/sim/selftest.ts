@@ -13,6 +13,7 @@
 import { FluidSolver, DEFAULT_PARAMS, type FluidParams } from './fluid';
 import { Lbm, feq, EX, EY, viscosityFromTau, CS2, MRT_M, MRT_MINV } from './lbm';
 import { ShanChen, pressureOf } from './multiphase';
+import { ShanChenMulti } from './multicomponent';
 import { computeLIC, makeNoise } from '../render/lic';
 import { fft1d, fft2d, energySpectrum, meanKineticEnergy, enstrophySpectrum, scalarVarianceSpectrum, energyTransfer } from './fft';
 import { computeFTLE } from './ftle';
@@ -2135,12 +2136,158 @@ function multiphase(): CheckGroup {
   };
 }
 
+// --- Multi-component (two immiscible fluids) — Shan–Chen cross-repulsion -----
+
+/** The MULTI-component Shan–Chen model: two distinct fluids ("red" + "blue"),
+ *  each its own D2Q9 distribution, coupled by a short-range cross-REPULSION
+ *  F_σ = −G ρ_σ Σ_i w_i ρ_{σ'}(x+e_i) e_i. Above a critical G the well-mixed state
+ *  is unstable and the fluids demix into pure domains with a real surface tension.
+ *  These checks pin that down independently of the single-fluid (liquid/vapour)
+ *  model: per-species mass is conserved to round-off, the antisymmetric inter-
+ *  species force injects no net momentum, a strong coupling demixes a blended
+ *  fluid into nearly-pure domains while a weak one stays mixed (the threshold), a
+ *  drop of one fluid in the other obeys Laplace's law Δp = σ/R, and the parasitic
+ *  spurious currents stay small. */
+function multicomponent(): CheckGroup {
+  const checks: Check[] = [];
+
+  // 1, 2 & 3. A blended binary fluid at G = 1 demixes into pure domains, while
+  //   conserving each species' mass and the total momentum exactly.
+  const G = 1;
+  const sc = new ShanChenMulti({ nx: 64, ny: 64, G });
+  sc.initMixed(1, 0.05, 7);
+  const m0 = sc.masses();
+  const pur0 = sc.meanPurity();
+  for (let s = 0; s < 3000; s++) sc.step();
+  const m1 = sc.masses();
+  const mom = sc.totalMomentum();
+  const pur = sc.meanPurity();
+  const corr = sc.speciesCorrelation();
+  const d1 = Math.abs(m1.m1 - m0.m1) / m0.m1;
+  const d2 = Math.abs(m1.m2 - m0.m2) / m0.m2;
+
+  // Below-threshold control: a weak coupling leaves the fluid blended.
+  const scLo = new ShanChenMulti({ nx: 64, ny: 64, G: 0.4 });
+  scLo.initMixed(1, 0.05, 7);
+  for (let s = 0; s < 3000; s++) scLo.step();
+  const purLo = scLo.meanPurity();
+
+  checks.push(
+    check(
+      'Spontaneous demixing above the critical coupling',
+      'Two blended fluids (each ρ ≈ 1 everywhere, with independent tiny noise) feel a mutual short-range repulsion. Above a critical G the mixed state is unstable: the fluids separate into nearly pure red/blue domains, so the mean local purity ⟨|φ|⟩ climbs from ≈ 0 toward 1 and the two species densities become strongly anti-correlated. A weak coupling (G = 0.4) stays blended — the demixing threshold.',
+      pur0 < 0.05 && pur > 0.7 && corr < -0.5 && purLo < 0.1,
+      `purity ${fmt(pur0)}→${fmt(pur)} (G=1) vs ${fmt(purLo)} (G=0.4), corr ${fmt(corr)}`,
+    ),
+  );
+  checks.push(
+    check(
+      'Per-species mass conserved (no inter-species leakage)',
+      'Streaming and collision move each species independently and create no fluid: the total mass of red and of blue must each be invariant to round-off, even as they reorganise into domains. There is no diffusive leak from one species into the other.',
+      d1 < 1e-10 && d2 < 1e-10,
+      `Δm₁/m₁ = ${fmt(d1)}, Δm₂/m₂ = ${fmt(d2)}`,
+    ),
+  );
+  checks.push(
+    check(
+      'Inter-species force conserves momentum (ΣF = 0)',
+      'The cross-repulsion between two sites is equal and opposite (the pairwise sum over the lattice is antisymmetric), and both species share a relaxation time, so the interaction injects zero net momentum. A periodic box with no gravity must keep Σρu ≈ 0 — the demixing can never spontaneously propel the fluid.',
+      Math.hypot(mom.px, mom.py) < 1e-9,
+      `|Σρu| = ${fmt(Math.hypot(mom.px, mom.py))}`,
+    ),
+  );
+
+  // 4. Laplace's law for a drop of fluid-1 embedded in fluid-2: Δp linear in 1/R
+  //    through a single positive surface tension σ.
+  {
+    const Gd = 1.8;
+    const xs: number[] = [];
+    const ys: number[] = [];
+    for (const R of [10, 13, 16, 20]) {
+      const N = 64;
+      const d = new ShanChenMulti({ nx: N, ny: N, G: Gd });
+      d.initDrop(N / 2, N / 2, R, 1);
+      for (let s = 0; s < 3000; s++) d.step();
+      const c = N / 2;
+      let pin = 0;
+      let nin = 0;
+      let pout = 0;
+      let nout = 0;
+      let area = 0;
+      for (let node = 0; node < d.n; node++) {
+        const i = node % N;
+        const j = (node / N) | 0;
+        if (Math.hypot(i - c, j - c) < R / 2) {
+          pin += d.pressureAt(node);
+          nin++;
+        }
+        if (d.phaseAt(node) > 0) area++;
+      }
+      for (let j = 2; j <= 8; j++)
+        for (let i = 2; i <= 8; i++) {
+          pout += d.pressureAt(d.idx(i, j));
+          nout++;
+        }
+      xs.push(Math.sqrt(Math.PI / area)); // 1/R
+      ys.push(pin / nin - pout / nout); // Δp
+    }
+    const m = xs.length;
+    let sx = 0;
+    let sy = 0;
+    let sxx = 0;
+    let sxy = 0;
+    let syy = 0;
+    for (let i = 0; i < m; i++) {
+      sx += xs[i];
+      sy += ys[i];
+      sxx += xs[i] * xs[i];
+      sxy += xs[i] * ys[i];
+      syy += ys[i] * ys[i];
+    }
+    const sigma = sxy / sxx;
+    const r = (m * sxy - sx * sy) / Math.sqrt((m * sxx - sx * sx) * (m * syy - sy * sy));
+    const r2 = r * r;
+    checks.push(
+      check(
+        "Laplace's law for a drop of one fluid in the other",
+        'A circular drop of fluid-1 surrounded by fluid-2 carries a curvature pressure jump Δp = σ/R from the emergent interfacial tension. Across four radii the measured inside-minus-outside jump must be a clean straight line through the origin in 1/R, with a single positive σ.',
+        r2 > 0.99 && sigma > 0.01,
+        `σ = ${fmt(sigma)}, r² = ${fmt(r2)}`,
+      ),
+    );
+  }
+
+  // 5. The parasitic spurious currents at a curved interface stay small.
+  {
+    const d = new ShanChenMulti({ nx: 48, ny: 48, G: 1.8 });
+    d.initDrop(24, 24, 12, 1);
+    for (let s = 0; s < 1500; s++) d.step();
+    const spur = d.maxSpuriousSpeed();
+    checks.push(
+      check(
+        'Spurious interface currents stay small',
+        'Like every pseudopotential model, the two-fluid interface generates small parasitic velocities at equilibrium (a discrete-isotropy artefact). We report it rather than hide it: the peak spurious speed stays a small fraction of the lattice speed of sound.',
+        spur < 0.02,
+        `max|u| = ${fmt(spur)} (c_s = ${fmt(Math.sqrt(CS2))})`,
+      ),
+    );
+  }
+
+  return {
+    title: 'Multi-component — two immiscible fluids',
+    blurb:
+      'A fourth kinetic model: TWO distinct fluids, each its own distribution, pushed apart by a short-range cross-repulsion. Above a critical coupling a blended mixture demixes into pure red/blue domains with a real surface tension — Rayleigh–Taylor fingers, a thread breaking into drops (Rayleigh–Plateau), wetting — with both species masses and the total momentum conserved exactly. These checks confirm the demixing threshold, the conservation laws, and Laplace’s law for a drop of one fluid suspended in the other.',
+    checks,
+  };
+}
+
 export function runSelfTest(): SelfTestReport {
   const t0 = performance.now();
   const groups = [
     incompressibility(),
     latticeBoltzmann(),
     multiphase(),
+    multicomponent(),
     linearSolver(),
     conjugateGradient(),
     multigrid(),

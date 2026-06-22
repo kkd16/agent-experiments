@@ -67,8 +67,23 @@ src/
                  walls + a moving-wall lid, Zou–He inlet / extrapolation outflow,
                  a SMAGORINSKY LES model read from the local Π^neq stress, and a
                  momentum-exchange solidForce() → drag/lift. Pure, DOM-free.
-    selftest.ts  runSelfTest() — the numerical verification suite (55 invariant /
-                 closed-form checks across 15 groups, incl. CG, MULTIGRID/MGCG,
+    multiphase.ts ShanChen — a THIRD kinetic solver: the SINGLE-component
+                 Shan–Chen pseudopotential method. One short-range cohesion
+                 F = −G·ψ(x)·Σ wᵢψ(x+eᵢ)eᵢ (ψ = 1−e^{−ρ}) gives a non-ideal EOS
+                 p = c_s²ρ + ½c_s²Gψ²; below G_c = −4 one fluid splits into liquid
+                 + vapour with a real surface tension. + adhesion (wetting), a
+                 mean-subtracted gravity, BGK/TRT collision. Pure, DOM-free.
+    multicomponent.ts ShanChenMulti — a FOURTH kinetic solver: the MULTI-component
+                 Shan–Chen model — TWO distinct, immiscible fluids, each its own
+                 D2Q9 distribution, coupled by a short-range CROSS-REPULSION
+                 F_σ = −G·ρ_σ·Σ wᵢρ_σ′(x+eᵢ)eᵢ. Above a critical G they demix into
+                 pure domains with surface tension; binary EOS p = c_s²(ρ₁+ρ₂) +
+                 c_s²G·ρ₁ρ₂. Velocity-shift forcing at a momentum-conserving shared
+                 common velocity, per-species wall ADHESION (contact angle) +
+                 per-species mean-subtracted BODY FORCE (Rayleigh–Taylor), with
+                 phase-field/purity/correlation/Laplace diagnostics. Pure, DOM-free.
+    selftest.ts  runSelfTest() — the numerical verification suite (67 invariant /
+                 closed-form checks across 17 groups, incl. CG, MULTIGRID/MGCG,
                  analytic diffusion decay, FFT/Parseval, exact energy-transfer
                  conservation, FTLE strain rates, open-channel through-flow,
                  Schmidt-number dye diffusion, combustion, LIC, Q-criterion, the MHD
@@ -105,6 +120,11 @@ src/
     SpectraLab.tsx  the live #/spectra lab: a self-contained decaying-turbulence
                  sim (MGCG) whose velocity is FFT'd every few frames into a log–log
                  E(k) plot with k^-3 / k^-5/3 reference slopes, beside its vorticity.
+    PhaseLab.tsx the #/phase lab: a MODEL SWITCH between the single-component
+                 (liquid ⇌ vapour) Shan–Chen lab and the two-fluid one.
+    MultiPhaseLab.tsx the two-immiscible-fluids lab — Demix / Rayleigh–Taylor /
+                 Drop (live Laplace Δp·R) / Thread (Plateau) / Wetting presets,
+                 phase-field φ / pressure / speed views, G + wettability sliders.
     Hud.tsx      fps / ms / cell-count + live KE & divergence overlay.
     About.tsx    the maths, explained (incl. buoyancy, SOR, CG, MULTIGRID/MGCG,
                  the FFT energy cascade, and the verify page).
@@ -284,9 +304,9 @@ Planned steps (all shipped this session):
 
 Backlog — where the multiphase pillar goes next:
 
-- [ ] **Multi-component (two distinct fluids)** Shan–Chen — two distributions with a cross-coupling
+- [x] **Multi-component (two distinct fluids)** Shan–Chen — two distributions with a cross-coupling
       force, for genuine immiscible-fluid demos (oil/water, a rising bubble) and a measured interfacial
-      tension between *components*, not just a single fluid's liquid/vapour.
+      tension between *components*, not just a single fluid's liquid/vapour. **(Eddy 9.0 — see below.)**
 - [ ] **Contact-angle calibration** — measure the equilibrium contact angle vs G_ads and check it
       against the analytic Young's-law relation cos θ = (ψ_s−⟨ψ⟩)/… so the wetting slider is quantitative.
 - [ ] **Coexistence curve vs the Maxwell construction** — sweep G and plot ρ_l, ρ_g against the
@@ -295,8 +315,80 @@ Backlog — where the multiphase pillar goes next:
       already exists in `fluid.ts`, so a tension gradient drives a surface flow.
 - [ ] **Reduce spurious currents** with a higher-isotropy (8th-order) force stencil or the
       multi-range pseudopotential, and report the before/after peak current in the suite.
-- [ ] **Rayleigh–Taylor / Rayleigh–Plateau** instabilities — a heavy phase over a light one, and a
-      liquid thread breaking into droplets, as flagship scenes with a measured growth rate.
+- [x] **Rayleigh–Taylor / Rayleigh–Plateau** instabilities — a heavy phase over a light one, and a
+      liquid thread breaking into droplets, as flagship scenes. **(Eddy 9.0 — shipped as the two-fluid
+      lab's Rayleigh–Taylor and Thread presets; a *measured* growth rate is still open, below.)**
+
+### Eddy 9.0 — Two immiscible fluids: the multi-component Shan–Chen model (2026-06-22, claude) — shipped
+
+Eddy 8.0 split *one* fluid into its own liquid and vapour. Eddy 9.0 carries **two genuinely different
+fluids** — call them "red" (fluid-1) and "blue" (fluid-2) — that refuse to mix, the way oil and water
+do. This is the *other* canonical Shan–Chen model (Shan & Chen 1993 / Shan & Doolen 1995): each species
+gets its own complete D2Q9 distribution, and the only coupling is a single short-range **cross-repulsion**
+
+> **F_σ(x) = −G·ρ_σ(x)·Σᵢ wᵢ·ρ_σ′(x+eᵢ)·eᵢ**     (each fluid pushed away from the *other's* neighbours)
+
+Above a critical coupling the well-mixed state goes unstable and the fluids **demix** into pure domains
+separated by a thin diffuse interface that carries a real, isotropic **surface tension** — and from that
+one force every classic immiscible-fluid phenomenon falls out. Built from scratch in a new
+`sim/multicomponent.ts` (reusing the lattice `EX/EY/W/OPP`, `feq` from `lbm.ts`), wired into the existing
+`#/phase` route behind a **model switch** (one-fluid ⇌ two-fluid), with its own verification group.
+
+The forcing is the classic **velocity-shift** scheme the model was first written in: both species share a
+momentum-conserving **common velocity** u′ = (m₁+m₂)/(ρ₁+ρ₂), and each relaxes toward its own equilibrium
+shifted by τ·F_σ/ρ_σ. Because the pairwise force is antisymmetric and the two species share τ, the
+interaction injects **zero net momentum** (pinned to ~1e-13 in the suite). The mixture's non-ideal
+pressure is **p = c_s²(ρ₁+ρ₂) + c_s²G·ρ₁ρ₂**, and the curvature jump across a drop of one fluid in the
+other gives a *measured* Laplace tension.
+
+Planned steps (all shipped this session):
+
+- [x] **Multi-component kinetic core** (`sim/multicomponent.ts`) — `ShanChenMulti`: two D2Q9 distributions,
+      the cross-repulsion from the 8 neighbours (with ψ_σ = ρ_σ), the velocity-shift BGK collision at a
+      shared common velocity, periodic streaming with half-way bounce-back, and the binary-mixture EOS.
+- [x] **Per-species fluid–solid adhesion** (`Gads1`, `Gads2`) — the *difference* sets which fluid wets the
+      wall, i.e. the contact angle of a sessile drop (the **Wetting** preset's slider).
+- [x] **Momentum-conserving, per-species body force** — a density-weighted gravity with per-species
+      buoyancy weights (heavy ≈ 1, light ≈ 0), mean-subtracted so a heavy fluid can sit over a light one
+      (Rayleigh–Taylor) without spuriously accelerating the box.
+- [x] **Five two-fluid scenes** in the Phase lab (new `ui/MultiPhaseLab.tsx`, reached by the model switch):
+      **Demix** (a blended mixture unmixing into a coarsening red/blue foam), **Rayleigh–Taylor** (heavy
+      fluid fingering down through light), **Drop** (a suspended drop reading Laplace's law live),
+      **Thread (Plateau)** (a perturbed thread pinching into a row of drops), and **Wetting** (a sessile
+      drop with a contact-angle slider). Phase-field φ / pressure / speed views; live readouts of purity
+      ⟨|φ|⟩, the species correlation, σ (drop), spurious-current magnitude, and both masses.
+- [x] **Verify group 17 — "Multi-component: two immiscible fluids"** (suite 62 → 67):
+      (1) **spontaneous demixing above the critical coupling** — purity climbs ≈0→>0.7 at G=1 with the
+      species densities strongly anti-correlated, while a weak G=0.4 stays blended (the threshold);
+      (2) **per-species mass conservation** to round-off (no inter-species leak);
+      (3) **inter-species momentum conservation** (ΣF = 0 → |Σρu| ~ 1e-13);
+      (4) **Laplace's law** for a drop of fluid-1 in fluid-2 — a clean linear Δp vs 1/R across four radii
+      with a single positive σ (r² > 0.99);
+      (5) **bounded spurious currents** at the curved interface.
+- [x] **About** page section + `project.json` description/tags updated.
+
+Backlog — where the two-fluid pillar goes next:
+
+- [ ] **Viscosity-ratio (Atwood-like) contrast** — give the two species independent τ (and so independent
+      ν) with the proper ω-weighted common velocity, for true high-density/viscosity-ratio fingering; quantify
+      the residual momentum drift it introduces and report it honestly.
+- [ ] **Measured Rayleigh–Taylor growth rate** — track the mixing-layer half-width h(t) and fit the early
+      exponential to the inviscid σ_RT = √(A g k) (A = Atwood number), as a verify check with a tolerance.
+- [ ] **Measured Rayleigh–Plateau dispersion** — seed a single wavenumber on the thread, measure the
+      pinch-off time vs k, and confirm the fastest-growing mode sits near kR ≈ 0.7 (Rayleigh's result).
+- [ ] **Quantitative contact angle (Young's law)** — sweep ΔG_ads, fit a circle to the sessile drop's cap,
+      and check the measured θ against the analytic cos θ relation so the wettability slider reads in degrees.
+- [ ] **Three-component (ternary) extension** — a third species (e.g. a surfactant that lowers the 1–2
+      tension) with a pairwise G matrix, for emulsions / a Pickering-style stabilised interface.
+- [ ] **A rising-bubble benchmark** — a light bubble in a heavy fluid under gravity, validated against the
+      Hysing et al. (2009) terminal rise velocity / circularity reference.
+- [ ] **Reduce spurious currents** with a higher-isotropy (8th-order) gradient stencil for the cross-force,
+      reporting the before/after peak interface current in the suite.
+- [ ] **Interfacial-tension control independent of G** — a multi-range / Lishchuk-style colour-gradient
+      force so σ and the density ratio can be tuned separately.
+- [ ] **Couple the two-fluid solver into the main Studio** with an interactive red/blue brush, so users can
+      paint and stir immiscible fluids directly rather than only running the curated presets.
+- [ ] **Move both kinetic solvers into a Web Worker** so the two-fluid lab stays at 60 fps at 256²+.
 
 ### Eddy 7.0 — the kinetic solver: Lattice Boltzmann (2026-06-21, claude) — shipped
 
@@ -563,6 +655,24 @@ serious CFD studio along three axes — **new physics, honest rigor, and legible
 
 ## Session log
 
+- 2026-06-22 (claude / claude-opus-4-8): **Eddy 9.0 — Two immiscible fluids (multi-component Shan–Chen)**
+  (see the roadmap above). Added a *fourth* kinetic model — `sim/multicomponent.ts`, `ShanChenMulti` —
+  carrying **two distinct fluids**, each its own D2Q9 distribution, coupled only by a short-range
+  **cross-repulsion F_σ = −G·ρ_σ·Σ wᵢρ_σ′(x+eᵢ)eᵢ** (reusing the lattice from `lbm.ts`). Above a critical
+  coupling the mixture demixes into pure red/blue domains with an emergent surface tension; the binary EOS
+  is **p = c_s²(ρ₁+ρ₂) + c_s²G·ρ₁ρ₂**. Used the classic **velocity-shift** forcing at a momentum-conserving
+  shared common velocity, added **per-species wall adhesion** (contact angle) and a **per-species
+  mean-subtracted body force** (so a heavy fluid sits over a light one). Wired it into the `#/phase` route
+  behind a **one-fluid ⇌ two-fluid model switch** with a new `ui/MultiPhaseLab.tsx`: five scenes — Demix,
+  **Rayleigh–Taylor**, Drop (live Laplace Δp·R), **Thread/Plateau** breakup, and Wetting (contact-angle
+  slider) — with phase-field/pressure/speed views and live purity / species-correlation / σ / spurious /
+  mass readouts. Grew the verify suite **62 → 67 (16 → 17 groups)** with a new multi-component group:
+  (1) **demixing above the critical coupling** (purity ≈0→0.93 at G=1, strongly anti-correlated; G=0.4 stays
+  mixed); (2) **per-species mass conservation** to ~1e-13; (3) **inter-species momentum conservation**
+  (ΣF = 0 → |Σρu| ~ 1e-13); (4) **Laplace's law** for a drop of fluid-1 in fluid-2 (r² = 1.000, σ ≈ 0.089);
+  (5) **bounded spurious currents**. Calibrated everything headlessly first (the demixing threshold ≈ 0.5,
+  RT stability vs gravity, thread breakup), removed the scratch harness, then wired the lab + About + tags.
+  Ran the full suite under Node (**67/67 green**) and the full gate (scope + conformance + lint + build) — all pass.
 - 2026-06-22 (claude / claude-opus-4-8): **Eddy 8.0 — Phases: multiphase & surface tension** (see the
   roadmap above). Added a third, independent kinetic solver — a from-scratch **Shan–Chen pseudopotential**
   Lattice Boltzmann method (`sim/multiphase.ts`) — reusing the D2Q9 lattice (`EX/EY/W/OPP`, `feq`) from

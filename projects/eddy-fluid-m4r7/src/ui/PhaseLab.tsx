@@ -12,6 +12,31 @@
 import { useEffect, useRef, useState } from 'react';
 import { ShanChen, pressureOf } from '../sim/multiphase';
 import { inferno, ice, diverging } from '../render/colormaps';
+import { MultiPhaseLab } from './MultiPhaseLab';
+
+// The Phase route hosts TWO kinetic two-phase models behind a model switch:
+//   • single-component (liquid ⇌ vapour of ONE fluid — the van-der-Waals loop), and
+//   • multi-component (two DISTINCT immiscible fluids pushed apart by a cross-force).
+// Both are from-scratch Shan–Chen pseudopotential solvers; this wrapper just lets
+// you flip between them.
+export function PhaseLab() {
+  const [model, setModel] = useState<'one' | 'two'>('one');
+  return (
+    <>
+      <div style={{ display: 'flex', justifyContent: 'center', paddingTop: 18 }}>
+        <div className="segmented" role="group" aria-label="Phase model">
+          <button type="button" className={model === 'one' ? 'active' : ''} onClick={() => setModel('one')}>
+            One fluid · liquid ⇌ vapour
+          </button>
+          <button type="button" className={model === 'two' ? 'active' : ''} onClick={() => setModel('two')}>
+            Two fluids · immiscible
+          </button>
+        </div>
+      </div>
+      {model === 'one' ? <SinglePhaseLab /> : <MultiPhaseLab />}
+    </>
+  );
+}
 
 type Preset = 'spinodal' | 'droplet' | 'coalesce' | 'rain' | 'wetting';
 type Viz = 'density' | 'pressure' | 'speed';
@@ -81,7 +106,7 @@ function buildPreset(preset: Preset, G: number, Gads: number): Build {
   return { sc, sub: 2, isDroplet: false, rain: false };
 }
 
-export function PhaseLab() {
+function SinglePhaseLab() {
   const flowRef = useRef<HTMLCanvasElement | null>(null);
 
   const [preset, setPreset] = useState<Preset>('spinodal');
