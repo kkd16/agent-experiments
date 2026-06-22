@@ -38,6 +38,7 @@
 // constructor collapses to its arm.
 
 import type { BinaryOp, Expr, MatchCase, Pattern } from './ast.ts'
+import { unparse } from './unparse.ts'
 import { collectSiblings, compileMatches } from './decisiontree.ts'
 import type { DtStats, DtView } from './decisiontree.ts'
 import { analyzeTermination } from './termination.ts'
@@ -59,6 +60,9 @@ export interface OptimizeStats {
   /** the functions the effect-&-totality analysis proved pure (effect-free and
    * total), whose saturated calls CSE / dead-code-elimination may share or drop */
   pureFns: string[]
+  /** one entry per expression the global value-numbering pass hoisted across a
+   *  binder into a shared `let` (Aether 14.0) — for the Optimizer panel. */
+  gvnHoists: { expr: string; sites: number }[]
   /** decision-tree compilation statistics (Aether 12.0) */
   dt: DtStats
   /** one entry per `match` rewritten into a decision tree (for the panel) */
@@ -146,6 +150,7 @@ export function optimizeCore(root: Expr): OptimizeResult {
 
   const nodesBefore = size(root)
   const trace: { round: number; rewrites: number; nodes: number }[] = []
+  const gvnHoists: { expr: string; sites: number }[] = []
   let expr = root
   let rounds = 0
   const fixpoint = (): void => {
@@ -161,6 +166,22 @@ export function optimizeCore(root: Expr): OptimizeResult {
   // Phase 1: rewrite to a fixpoint (folds, inlining, known-match, CSE, …) so the
   // abstraction the front end adds has already melted before we touch matching.
   fixpoint()
+
+  // Phase 1b: global value numbering (Aether 14.0). The bottom-up CSE above only
+  // shares an expression with its *binder-free strict frontier* siblings; this
+  // top-down pass shares a pure, costly expression recomputed across `let` / `λ` /
+  // `match` binders, hoisting it into one shared `let` at the dominating node. It
+  // is gated on the expression being guaranteed-evaluated ≥ 2 times (so VM steps
+  // can only fall), so it runs *after* the fixpoint melted the abstraction (more
+  // redundancy is exposed) and re-runs the fixpoint to clean up what it uncovers.
+  {
+    const g = globalValueNumber(expr, bump)
+    if (g.hoists.length > 0) {
+      expr = g.expr
+      gvnHoists.push(...g.hoists)
+      fixpoint()
+    }
+  }
 
   // Phase 2: compile pattern matching to good decision trees (Aether 12.0). A
   // core-to-core pass that shares tests across arms; emits ordinary core, so all
@@ -187,6 +208,7 @@ export function optimizeCore(root: Expr): OptimizeResult {
       nodesAfter: size(expr),
       trace,
       pureFns: [...PURE_FNS.keys()],
+      gvnHoists,
       dt,
       decisionTrees,
       termination: TERMINATION,
@@ -1989,6 +2011,364 @@ function canonPat(p: Pattern): string {
     case 'pcon':
       return 'C' + p.name + '(' + p.args.map(canonPat).join(',') + ')'
   }
+}
+
+// ---------------------------------------------------------------------------
+// Global value numbering — common-subexpression elimination across binders
+// (Aether 14.0)
+// ---------------------------------------------------------------------------
+//
+// The bottom-up `tryCse` above only shares an expression among the children on a
+// single node's *binder-free strict frontier*. That deliberately misses the most
+// valuable redundancy — the same pure work recomputed on either side of a `let`,
+// inside a `λ` body, or across a `match` — because handling it needs a *global*
+// view: a top-down pass that knows, at each node, which pure values are already
+// computed and still in scope. This is that pass: a dominator-style available-
+// expressions / value-numbering optimizer.
+//
+// For a node N it finds a pure, costly expression `s` that
+//   (1) is **guaranteed-evaluated ≥ 2 times** within N (so sharing can only *cut*
+//       VM steps — the existing step-count invariant the harness enforces), and
+//   (2) has every free variable **bound above N** (so N may legally bind it), with
+//       no occurrence sitting under a binder that re-binds one of those variables;
+// then hoists `s` into a single fresh `let gvn = s in N[every occurrence ↦ gvn]`.
+// Occurrences that are only *conditionally* evaluated (a `match`/`if` arm, a `λ`
+// body) are replaced too — pure bonus, never a cost, since the value is computed
+// once on the mainline regardless. The hoist is:
+//   • effect-safe — only effect-free, terminating `s` is ever moved, and moving a
+//     pure/total computation earlier on a guaranteed path is observationally
+//     invisible in a strict language;
+//   • scope- & capture-safe — `s`'s free vars are all in scope at N and the bound
+//     name is `$`-fresh, so no variable is captured and none is shadowed; and
+//   • non-speculative — the ≥ 2 guaranteed evaluations mean the shared value would
+//     have been computed at least twice anyway, so steps never rise.
+// Because it emits an ordinary `let`, all three backends compile it unchanged and
+// the byte-for-byte equivalence checks re-prove that the answer never changed.
+
+interface GvnGroup {
+  nodes: Expr[] // every occurrence (guaranteed and conditional), by identity
+  guaranteed: number // how many sit on a guaranteed-evaluation path
+  cost: number // minCost of the (shared) expression
+}
+
+/** Run the global value-numbering pass to a fixpoint. */
+function globalValueNumber(root: Expr, bump: Bump): { expr: Expr; hoists: { expr: string; sites: number }[] } {
+  const hoists: { expr: string; sites: number }[] = []
+  let expr = root
+  for (let round = 0; round < MAX_ROUNDS; round++) {
+    let changed = false
+    const go = (e: Expr, scope: Set<string>): Expr => {
+      const h = tryHoist(e)
+      if (h) {
+        changed = true
+        bump('gvn')
+        hoists.push({ expr: truncate(unparse(h.value), 60), sites: h.sites })
+        // recurse into the wrapped `let gvn = value in body`
+        const value = go(h.value, scope)
+        const body = go(h.body, new Set(scope).add(h.name))
+        return { kind: 'let', name: h.name, value, body, recursive: false, span: e.span }
+      }
+      return mapChildrenScoped(e, scope, go)
+    }
+    expr = go(expr, new Set())
+    if (!changed) break
+  }
+  return { expr, hoists }
+}
+
+/** Try a single value-numbering hoist at node `e`. Returns the chosen expression,
+ *  its fresh binder name, the rewritten body and the number of replaced sites — or
+ *  null if nothing here is worth hoisting. A node qualifies only if its free
+ *  variables are all bound *above* `e` (disjoint from names bound inside it), so
+ *  binding it to wrap `e` is always in scope. */
+function tryHoist(e: Expr): { name: string; value: Expr; body: Expr; sites: number } | null {
+  const groups = new Map<string, GvnGroup>()
+  const record = (n: Expr, guaranteed: boolean): void => {
+    const k = canon(n)
+    let g = groups.get(k)
+    if (!g) {
+      g = { nodes: [], guaranteed: 0, cost: minCost(n) }
+      groups.set(k, g)
+    }
+    g.nodes.push(n)
+    if (guaranteed) g.guaranteed++
+  }
+  // Walk `e`'s descendants (never `e` itself), recording every pure, costly node
+  // whose free variables are all bound *above* `e` (disjoint from the names bound
+  // on the way down to it) — so it is both hoistable to `e` and denotes the same
+  // value wherever it recurs.
+  const scan = (n: Expr, guaranteed: boolean, boundInside: Set<string>): void => {
+    if (
+      isPure(n) &&
+      minCost(n) >= COST_THRESHOLD &&
+      disjoint(freeVars(n), boundInside)
+    ) {
+      record(n, guaranteed)
+    }
+    for (const c of scopedChildren(n, guaranteed, boundInside)) {
+      scan(c.child, c.guaranteed, c.bound)
+    }
+  }
+  for (const c of scopedChildren(e, true, new Set())) scan(c.child, c.guaranteed, c.bound)
+
+  // Pick the duplicate group with the largest guaranteed saving. Requiring two
+  // *guaranteed* evaluations is what makes the hoist provably non-increasing.
+  let best: GvnGroup | null = null
+  let bestSaving = 0
+  for (const g of groups.values()) {
+    if (g.guaranteed < 2) continue
+    const saving = (g.guaranteed - 1) * g.cost
+    if (saving > bestSaving) {
+      bestSaving = saving
+      best = g
+    }
+  }
+  if (!best || bestSaving < COST_THRESHOLD) return null
+
+  const value = best.nodes[0]
+  const targets = new Set(best.nodes)
+  const name = gensym('gvn')
+  const body = replaceNodes(e, targets, name)
+  return { name, value, body, sites: best.nodes.length }
+}
+
+/** Replace every node in `targets` (by identity) with `var name`, rebuilding the
+ *  rest of the tree. The fresh `name` is in scope throughout, so this is safe. */
+function replaceNodes(e: Expr, targets: Set<Expr>, name: string): Expr {
+  const rep = (n: Expr): Expr =>
+    targets.has(n) ? { kind: 'var', name, span: n.span } : mapAllChildren(n, rep)
+  return rep(e)
+}
+
+interface ScopedChild {
+  child: Expr
+  /** is this child guaranteed-evaluated whenever the parent is (and the parent's
+   *  own guaranteed flag held)? */
+  guaranteed: boolean
+  /** the names bound *inside* the parent that are in scope for this child */
+  bound: Set<string>
+}
+
+/** The children of `e`, each tagged with whether it stays on a guaranteed-
+ *  evaluation path and which freshly-bound names are visible to it. Mirrors the
+ *  cost model in `minCost`/`frontierChildren`: an `if`/`match` arm, a `&&`/`||`
+ *  right operand and a `λ` body are *not* guaranteed; everything strict is. */
+function scopedChildren(e: Expr, guaranteed: boolean, bound: Set<string>): ScopedChild[] {
+  const ext = (...names: string[]): Set<string> => {
+    if (names.length === 0) return bound
+    const s = new Set(bound)
+    for (const n of names) s.add(n)
+    return s
+  }
+  const G = (child: Expr): ScopedChild => ({ child, guaranteed, bound })
+  const C = (child: Expr, b = bound): ScopedChild => ({ child, guaranteed: false, bound: b })
+  switch (e.kind) {
+    case 'lambda':
+      return [C(e.body, ext(e.param))]
+    case 'app':
+      return [G(e.fn), G(e.arg)]
+    case 'let': {
+      const inner = ext(e.name)
+      return [
+        { child: e.value, guaranteed, bound: e.recursive ? inner : bound },
+        { child: e.body, guaranteed, bound: inner },
+      ]
+    }
+    case 'letrec': {
+      const inner = ext(...e.bindings.map((b) => b.name))
+      return [
+        ...e.bindings.map((b) => ({ child: b.value, guaranteed, bound: inner })),
+        { child: e.body, guaranteed, bound: inner },
+      ]
+    }
+    case 'if':
+      return [G(e.cond), C(e.then), C(e.else)]
+    case 'binop':
+      return e.op === '&&' || e.op === '||' ? [G(e.left), C(e.right)] : [G(e.left), G(e.right)]
+    case 'unop':
+      return [G(e.operand)]
+    case 'seq':
+      return [G(e.first), G(e.rest)]
+    case 'tuple':
+    case 'list':
+      return e.elements.map(G)
+    case 'record':
+      return e.fields.map((f) => G(f.value))
+    case 'recordUpdate':
+      return [G(e.record), ...e.fields.map((f) => G(f.value))]
+    case 'field':
+      return [G(e.record)]
+    case 'match': {
+      const out: ScopedChild[] = [G(e.scrutinee)]
+      for (const c of e.cases) {
+        const pv = new Set<string>()
+        patternVars(c.pattern, pv)
+        const inner = ext(...pv)
+        if (c.guard) out.push(C(c.guard, inner))
+        out.push(C(c.body, inner))
+      }
+      return out
+    }
+    case 'typedecl':
+      return [{ child: e.body, guaranteed, bound: ext(...e.ctors.map((c) => c.name)) }]
+    case 'classdecl':
+      return [G(e.body)]
+    case 'instancedecl':
+      return [...e.methods.map((m) => C(m.value)), G(e.body)]
+    default:
+      return []
+  }
+}
+
+/** Rebuild `e`, mapping *every* child through `f` (scope-unaware; used only where
+ *  the replacement variable is in scope everywhere, i.e. node-identity rewrites). */
+function mapAllChildren(e: Expr, f: (x: Expr) => Expr): Expr {
+  switch (e.kind) {
+    case 'lambda':
+      return { ...e, body: f(e.body) }
+    case 'app':
+      return { ...e, fn: f(e.fn), arg: f(e.arg) }
+    case 'let':
+      return { ...e, value: f(e.value), body: f(e.body) }
+    case 'letrec':
+      return {
+        ...e,
+        bindings: e.bindings.map((b) => ({ name: b.name, value: f(b.value) })),
+        body: f(e.body),
+      }
+    case 'if':
+      return { ...e, cond: f(e.cond), then: f(e.then), else: f(e.else) }
+    case 'binop':
+      return { ...e, left: f(e.left), right: f(e.right) }
+    case 'unop':
+      return { ...e, operand: f(e.operand) }
+    case 'seq':
+      return { ...e, first: f(e.first), rest: f(e.rest) }
+    case 'tuple':
+    case 'list':
+      return { ...e, elements: e.elements.map(f) }
+    case 'record':
+      return { ...e, fields: e.fields.map((fl) => ({ label: fl.label, value: f(fl.value) })) }
+    case 'recordUpdate':
+      return {
+        ...e,
+        record: f(e.record),
+        fields: e.fields.map((fl) => ({ label: fl.label, value: f(fl.value) })),
+      }
+    case 'field':
+      return { ...e, record: f(e.record) }
+    case 'match':
+      return {
+        ...e,
+        scrutinee: f(e.scrutinee),
+        cases: e.cases.map((c) => ({
+          pattern: c.pattern,
+          guard: c.guard ? f(c.guard) : undefined,
+          body: f(c.body),
+        })),
+      }
+    case 'typedecl':
+      return { ...e, body: f(e.body) }
+    case 'classdecl':
+      return { ...e, body: f(e.body) }
+    case 'instancedecl':
+      return {
+        ...e,
+        methods: e.methods.map((m) => ({ ...m, value: f(m.value) })),
+        body: f(e.body),
+      }
+    default:
+      return e
+  }
+}
+
+/** Rebuild `e`, mapping each child through `f` with the scope each child sees. */
+function mapChildrenScoped(e: Expr, scope: Set<string>, f: (x: Expr, s: Set<string>) => Expr): Expr {
+  const kids = scopedChildren(e, true, scope)
+  let i = 0
+  const next = (): Expr => {
+    const c = kids[i++]
+    return f(c.child, c.bound)
+  }
+  switch (e.kind) {
+    case 'lambda':
+      return { ...e, body: next() }
+    case 'app': {
+      const fn = next()
+      const arg = next()
+      return { ...e, fn, arg }
+    }
+    case 'let': {
+      const value = next()
+      const body = next()
+      return { ...e, value, body }
+    }
+    case 'letrec': {
+      const bindings = e.bindings.map((b) => ({ name: b.name, value: next() }))
+      const body = next()
+      return { ...e, bindings, body }
+    }
+    case 'if': {
+      const cond = next()
+      const then = next()
+      const els = next()
+      return { ...e, cond, then, else: els }
+    }
+    case 'binop': {
+      const left = next()
+      const right = next()
+      return { ...e, left, right }
+    }
+    case 'unop':
+      return { ...e, operand: next() }
+    case 'seq': {
+      const first = next()
+      const rest = next()
+      return { ...e, first, rest }
+    }
+    case 'tuple':
+    case 'list':
+      return { ...e, elements: e.elements.map(() => next()) }
+    case 'record':
+      return { ...e, fields: e.fields.map((fl) => ({ label: fl.label, value: next() })) }
+    case 'recordUpdate': {
+      const record = next()
+      return { ...e, record, fields: e.fields.map((fl) => ({ label: fl.label, value: next() })) }
+    }
+    case 'field':
+      return { ...e, record: next() }
+    case 'match': {
+      const scrutinee = next()
+      const cases = e.cases.map((c) => {
+        const guard = c.guard ? next() : undefined
+        const body = next()
+        return { pattern: c.pattern, guard, body }
+      })
+      return { ...e, scrutinee, cases }
+    }
+    case 'typedecl':
+      return { ...e, body: next() }
+    case 'classdecl':
+      return { ...e, body: next() }
+    case 'instancedecl': {
+      const methods = e.methods.map((m) => ({ ...m, value: next() }))
+      const body = next()
+      return { ...e, methods, body }
+    }
+    default:
+      return e
+  }
+}
+
+function disjoint(a: Set<string>, b: Set<string>): boolean {
+  if (a.size > b.size) [a, b] = [b, a]
+  for (const x of a) if (b.has(x)) return false
+  return true
+}
+
+function truncate(s: string, n: number): string {
+  const flat = s.replace(/\s+/g, ' ').trim()
+  return flat.length > n ? flat.slice(0, n - 1) + '…' : flat
 }
 
 // ---------------------------------------------------------------------------

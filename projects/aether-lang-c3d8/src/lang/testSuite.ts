@@ -335,6 +335,28 @@ type Color = Red | Green | Blue deriving (Eq, Show) in
     expected: '(1, 1)',
   },
 
+  // ---- optimizer: global value numbering (Aether 14.0) ----
+  // CSE across binders. Each runs the whole pipeline (so the shared `let` ships)
+  // and is also run on JS — a green row proves GVN preserved the answer.
+  {
+    group: 'gvn',
+    name: 'work shared across a `let` binder equals the unshared answer',
+    code: 'let rec f = fn n -> if n == 0 then 0 else let a = (n * n * n + n) in let b = (n * n * n + n) * 2 in a + b + f (n - 1) in f 6',
+    expected: '1386',
+  },
+  {
+    group: 'gvn',
+    name: 'a pure window across three lets is shared once',
+    code: 'let sq = fn x -> x * x in let rec k = fn n -> if n == 0 then 0 else let a = sq n + sq (n+1) in let b = (sq n + sq (n+1)) * 3 in a + b + k (n-1) in k 6',
+    expected: '920',
+  },
+  {
+    group: 'gvn',
+    name: 'redundancy split across if-arms is NOT hoisted (no speculation)',
+    code: 'let rec f = fn n -> if n == 0 then 0 else if n % 2 == 0 then (n*n*n+n)+1 else (n*n*n+n)+2 in f 6 + f 5',
+    expected: '355',
+  },
+
   // ---- decision-tree pattern compilation (Aether 12.0) ----
   // Each runs through the whole pipeline (so the decision-tree lowering ships)
   // and is also run on the JavaScript backend — a green row proves DT ≡ naive.

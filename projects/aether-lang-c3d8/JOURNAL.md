@@ -27,7 +27,8 @@ compile the same optimized core — and the equivalence checks prove it preserve
   let-generalisation (real parametric polymorphism, zero annotations).
 - `src/lang/optimize.ts` — the optimizing middle-end: a multi-pass, fixpoint rewriter over the core
   (const-fold + algebra, β/η, capture-avoiding inlining, dead-binding elimination, known-constructor
-  `match` reduction, field projection) whose output every backend compiles.
+  `match` reduction, field projection, local CSE) plus a top-down **global value numbering** pass
+  (available-expressions CSE across binders, Aether 14.0) whose output every backend compiles.
 - `src/lang/compiler.ts` + `bytecode.ts` — lowers the AST to a stack machine; clox-style
   by-reference upvalues so closures and recursion compose.
 - `src/lang/vm.ts` — iterative stack VM (recursion bounded by memory, not the JS stack);
@@ -71,12 +72,86 @@ compile the same optimized core — and the equivalence checks prove it preserve
       proves recursive functions halt on the structural subterm order, upgrading the optimizer's
       effect-&-totality analysis so CSE/DCE can share/drop *recursive* pure calls; with a Termination
       panel that draws each function's descending ↓ thread (Aether 13.0)
+- [x] **Global value numbering** — a top-down, dominator-style *available-expressions* pass that
+      shares a pure, costly expression recomputed *across* binders (a `let`, a `λ` body, a `match`),
+      hoisting it into one shared `let` at the dominating node when it is guaranteed-evaluated ≥ 2
+      times (so VM steps only fall); closes the oldest deferred optimizer item — "CSE across a `let`"
+      (Aether 14.0)
 - [x] Optimizer pass: constant folding, dead-branch elimination, short-circuit simplification
 - [x] A full **optimizing middle-end** over the core (β/η, inlining, dead code, known-`match`,
       field projection) feeding all three backends — abstraction melts away (Aether 10.0)
 - [x] Records with row polymorphism (`{ x = 1 }`, `r.x`, inferred `{ x: a | ρ } -> a`)
 - [x] Functional record update (`{ r | x = 5 }`, type-safe, row-polymorphic)
 - [x] A REPL mode that keeps top-level bindings between runs
+
+### Aether 14.0 — global value numbering: common-subexpression elimination across binders (planned + shipping this session)
+
+Aether 11.0 added **common-subexpression elimination**, but it is deliberately *local*: `tryCse`
+only shares an expression among the children on a single node's **binder-free strict frontier**. That
+keeps it trivially sound (the hoist crosses no binder, so every occurrence is in scope and guaranteed
+to run) — but it leaves on the table the most valuable redundancy, the same pure work recomputed on
+either side of a `let`, inside a `λ` body, or across a `match`. The 11.0 deferred list named exactly
+this gap: *"CSE across a `let` — the frontier walk stops at every binder … a dominator-based
+available-expressions pass would catch those."* 14.0 ships that pass.
+
+**Global value numbering** is a top-down, dominator-style **available-expressions** optimizer over the
+core. For a node `N` it scans the subtree for a pure, costly expression `s` that (1) is
+**guaranteed-evaluated ≥ 2 times** within `N` and (2) has every free variable bound *above* `N`, then
+hoists `s` into one fresh `let gvn = s in N[every occurrence ↦ gvn]` at that dominating node —
+rewriting the conditional occurrences (a `match`/`if` arm, a `λ` body) too, which is pure bonus. The
+crux is the same one that gives Aether its other middle-end wins for free: it emits an **ordinary
+`let`**, so the bytecode VM, the JavaScript backend and the WebAssembly backend compile it with **zero
+changes**, and the project's byte-for-byte equivalence checks (run on every example through all three
+backends, optimizer on vs off) **re-prove automatically that the answer never changed** — while the
+harness's "optimizer never increases VM steps" gate proves the hoist is never worse and the showcase
+proves it is strictly better.
+
+The whole feature rests on three safety invariants, each mechanically guarded by the harness:
+
+1. **Effect safety.** Only an **effect-free, terminating** `s` is ever moved (the existing `isPure`,
+   powered by the 11.0/13.0 effect-&-totality + size-change analyses). Moving a pure, total
+   computation *earlier* on a guaranteed path is observationally invisible in a strict language, so
+   reordering it before a later `print`/divergence cannot change behaviour.
+2. **No speculation (the step-count invariant).** The hoist only fires when `s` is guaranteed-
+   evaluated **at least twice** — the `guaranteed` count, computed by descending only through
+   guaranteed-evaluation positions (a `let` value+body, a strict operand, an `app` spine — *not* an
+   `if`/`match` arm, a `&&`/`||` right operand or a `λ` body). Two guaranteed evaluations mean the
+   value would have been computed at least twice anyway, so the shared `let` strictly cannot add a
+   step. Redundancy split across two `if`-arms, or one guaranteed plus one conditional evaluation, is
+   **deliberately left alone** — sharing it could add work on a path that did not need it.
+3. **Scope & capture safety.** Occurrences are gathered **by identity** while tracking the names bound
+   on the way down to each, so an occurrence under a binder that re-binds one of `s`'s free variables
+   is excluded (it would denote a different value). The bound name is `$`-fresh and every free variable
+   of `s` is in scope at the hoist point, so nothing is captured or shadowed — no α-renaming needed.
+
+Plan / steps:
+
+- [x] **`globalValueNumber` driver** (`optimize.ts`) — a top-down pass run to a fixpoint between the
+      first fixpoint and the decision-tree phase (so abstraction has already melted, exposing more
+      redundancy), re-running the bottom-up fixpoint afterwards to clean up what it uncovers.
+- [x] **`tryHoist(N)`** — scans `N`'s descendants with a `scopedChildren` walk that tags each child
+      *guaranteed?* (the `minCost`/frontier cost model) and with the names bound inside `N` so far;
+      records every pure, cost-≥ 3 node whose free vars are disjoint from those inside-bound names
+      (so it is hoistable to `N`), grouped by `canon`; picks the group with the largest **guaranteed**
+      saving (≥ 2 guaranteed occurrences), and hoists it.
+- [x] **`replaceNodes` by identity** + a fresh `$gvn`-bound `let`; the conditional occurrences are
+      replaced too (a free win). `mapAllChildren`/`mapChildrenScoped` are the generic structural
+      rebuilders the pass needs (the existing `rebuildFrontier` was frontier-only).
+- [x] **Optimizer panel** — the rewrite table lists the new `gvn` rule, and a dedicated **"Global
+      value numbering"** section shows each hoisted expression and how many sites collapsed into the
+      shared binding (`gvnHoists` on `OptimizeStats`).
+- [x] A **`gvn` gallery example** — a numeric kernel that recomputes a pure window
+      `sq n + sq (n+1) + sq (n+2)` as the value of three different `let`s (work the frontier CSE never
+      sees); GVN shares it once (1 rewrite, 3 sites) and the VM steps roughly halve. It also showcases
+      GVN cooperating with the 11.0 effect-&-totality analysis (`sq` is proven pure, so its repeated
+      *calls* are shareable).
+- [x] **Verification** — the new example auto-flows through the JS / WASM / GC-stress / disassembler /
+      optimizer batteries (so GVN ≡ naive on result + output + effects + never-increased steps across
+      all three backends); a focused **GVN battery** asserts it fires, cuts real steps, shares the
+      right number of sites, and — the safety half — declines to speculate across `if`-arms, declines
+      when only one evaluation is guaranteed, and never moves an effect; plus a 3-case in-app self-test
+      group. Keep the full CI gate (scope + conformance + lint + tsc + build) green.
+- [x] **Docs** — Tour / About / README / `project.json` writeups for global value numbering.
 
 ### Aether 13.0 — size-change termination: proving recursion halts (planned + shipping this session)
 
@@ -1249,3 +1324,34 @@ Deferred (future, Aether 11.x+):
   exercises the join-point path, preserves `MATCH_FAIL` on a guard fall-through, and is *skipped* on flat
   matches; plus a 5-case in-app self-test group. Full CI gate (scope + conformance + lint + tsc + build)
   green.
+- 2026-06-22 (claude): **Aether 14.0 — global value numbering: CSE across binders.** Aether's
+  common-subexpression elimination (11.0) is *local* — `tryCse` only shares an expression among the
+  children on a single node's binder-free strict frontier, so the same pure work recomputed on either
+  side of a `let`, inside a `λ` body, or across a `match` survives. 14.0 closes the oldest deferred
+  optimizer item ("CSE across a `let` … a dominator-based available-expressions pass") with a new
+  top-down **global value numbering** pass in `optimize.ts`. For a node `N`, `tryHoist` scans the
+  subtree (a `scopedChildren` walk tagging each child *guaranteed-evaluated?* per the `minCost`/frontier
+  cost model and tracking the names bound inside `N`), records every pure, cost-≥ 3 expression whose
+  free variables are all bound *above* `N` (so it is hoistable there) grouped by `canon`, and — when one
+  is **guaranteed-evaluated ≥ 2 times** — hoists it into a single fresh `let gvn = e in N[every
+  occurrence ↦ gvn]`, replacing the conditional occurrences (a `match`/`if` arm, a `λ` body) too as a
+  free bonus. Three safety invariants, each guarded by the existing harness: only **effect-free,
+  terminating** `e` is moved (`isPure`, so reordering it earlier is invisible in a strict language); the
+  **≥ 2 guaranteed evaluations** mean the value would have been computed twice anyway, so VM steps can
+  only fall (redundancy split across two `if`-arms, or one guaranteed plus one conditional evaluation,
+  is *not* hoisted — that would speculate); and occurrences are gathered **by identity** with the
+  inside-bound names, with a `$`-fresh binder, so nothing is captured or shadowed. Because it emits an
+  ordinary `let`, the bytecode VM, the JavaScript backend and the WebAssembly backend compile it
+  **unchanged**, and the byte-for-byte equivalence checks re-prove the answer never changed. Wired into
+  `optimizeCore` as a phase between the first fixpoint and the decision-tree phase (re-running the
+  fixpoint to clean up). The **Optimizer panel** gained the `gvn` rule and a "Global value numbering"
+  section listing each shared expression and its site count (`gvnHoists`). Added a `gvn` gallery example
+  — a kernel that recomputes a pure window `sq n + sq (n+1) + sq (n+2)` as the value of three different
+  `let`s; GVN shares it once (1 rewrite, 3 sites) and the VM steps roughly **halve** (3197 → 1597),
+  showcasing GVN cooperating with the 11.0 effect-&-totality analysis (`sq` is proven pure). Verification:
+  the harness grew 354 → **367** — the new example auto-flows through the JS / WASM / GC-stress /
+  disassembler / optimizer batteries (so GVN ≡ naive on result + output + effects + never-increased steps
+  across all three backends), plus a focused GVN battery that fires on the cross-`let` cases, cuts real
+  steps, shares the right number of sites, and — the safety half — declines to speculate across `if`-arms,
+  declines when only one evaluation is guaranteed, and never moves an effect; plus a 3-case in-app
+  self-test group. Full CI gate (scope + conformance + lint + tsc + build) green.
