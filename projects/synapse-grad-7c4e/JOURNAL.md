@@ -2,7 +2,7 @@
 
 A tiny **deep-learning framework that runs in your browser**, built from scratch on a real
 reverse-mode **tensor autograd engine** (no TensorFlow.js, no ONNX, no WebGL math libs — every
-gradient is hand-derived and the tape is hand-rolled). Four labs share the one engine:
+gradient is hand-derived and the tape is hand-rolled). Five labs share the one engine:
 
 - **2-D Playground** — pick a dataset, sketch an MLP, and watch it learn in real time:
   decision boundary, per-neuron feature maps, loss/accuracy curves, and a live computation graph.
@@ -27,16 +27,21 @@ gradient is hand-derived and the tape is hand-rolled). Four labs share the one e
   (the sampled noise is a frozen leaf, so the ELBO stays differentiable), a fused **BCE-with-logits**
   Bernoulli reconstruction term, and the **closed-form Gaussian KL** — all hand-derived and the
   whole VAE gradchecked end-to-end to ~1e-7.
-- **Control · RL** — train a from-scratch **policy-gradient agent** on two hand-written
-  environments (no Gym): **CartPole** with the real gym dynamics, and a **GridWorld** maze. Pick
-  **REINFORCE**, **REINFORCE + baseline**, or **advantage actor–critic with GAE(λ)** and watch the
-  agent *act live* every frame while it learns — the episode-return curve climbing (CartPole to the
-  500 cap, the maze to the goal), the policy **entropy** collapsing as it commits, the live action
-  distribution sharpening, and either the **CartPole policy phase-portrait** (the learned action over
-  angle × angular velocity) or the **GridWorld value heatmap** with greedy-policy arrows, where you
-  watch value flood backward from the goal. RL needed only **two** new differentiable ops —
-  `logSoftmax` and `gatherCols` — both hand-derived and gradchecked, plus a whole-policy end-to-end
-  gradient check, all in the one-click self-test.
+- **Control · RL** — train a from-scratch **policy-gradient agent** on four hand-written
+  environments (no Gym): **CartPole** with the real gym dynamics, a **GridWorld** maze, **Pendulum**
+  (continuous swing-up) and **MountainCar** (sparse-reward exploration). Pick **REINFORCE**,
+  **REINFORCE + baseline**, **advantage actor–critic with GAE(λ)** or **PPO** (the clipped surrogate,
+  several epochs of minibatch SGD per batch, with live clip-fraction, approx-KL and explained-variance
+  read-outs) and watch the agent *act live* every frame while it learns — the episode-return curve
+  climbing, the per-batch **return-distribution histogram** the mean hides, the policy **entropy**
+  collapsing as it commits, the live action distribution sharpening, and the env-specific portrait:
+  the **CartPole phase-portrait**, the **GridWorld value heatmap** with greedy arrows, the **Pendulum
+  torque field** (the energy-pumping pinwheel of a learned swing-up), or the **MountainCar position ×
+  velocity** policy/value map. Both action spaces share the one engine: a **categorical** policy
+  (`logSoftmax` + `gatherCols`) and a **diagonal-Gaussian** policy for continuous control (a learnable
+  log-σ plus `gaussianLogProb`/`gaussianEntropy`, built from `rowSum` and the basic ops) — every new
+  gradient hand-derived and gradchecked, including whole-policy end-to-end checks for *both* the
+  discrete and the continuous actor, all in the one-click self-test.
 
 A built-in **numerical gradient checker** runs finite differences against the analytic gradients
 and reports the max error, so you can *prove* the engine — convolution included — is correct,
@@ -71,10 +76,13 @@ src/
     seqtasks.ts   procedural algorithmic tasks (copy / reverse / sort / add) over a 12-token vocab
     vae.ts        a from-scratch Variational Autoencoder: MLP encoder (→ μ, logσ²) + decoder,
                   the reparameterization trick, and `klDivStandardNormal` (closed-form Gaussian KL)
-    rl-env.ts     from-scratch RL environments: CartPole (gym dynamics) + a GridWorld maze
-                  (one-hot states, 4 hand-designed layouts), each a clean reset/step MDP
-    policy.ts     the RL agent: a categorical policy net + a value critic (both reuse `nn.MLP`),
-                  tape-free rollout forward, and the returns/GAE/advantage math (REINFORCE / A2C)
+    rl-env.ts     from-scratch RL environments: CartPole (gym dynamics), a GridWorld maze
+                  (one-hot states, 4 layouts), Pendulum (continuous-torque swing-up) and
+                  MountainCar (sparse reward + potential-based shaping), each a reset/step MDP
+    policy.ts     the RL agent: a categorical *or* diagonal-Gaussian policy net (a learnable log-σ
+                  for continuous control) + a value critic (both reuse `nn.MLP`), tape-free rollout,
+                  the gaussianLogProb/Entropy gradients, and the returns/GAE/advantage math
+                  (REINFORCE / A2C / PPO)
     optim.ts      SGD, Momentum, RMSProp, Adam, L2 weight decay
     losses.ts     softmax CE (fused), masked CE (answer-span only), MSE/MAE/Huber, BCE-with-logits
     data.ts       2-D dataset generators (spiral, circles, moons, xor, gaussians, ring) + noise
@@ -424,11 +432,94 @@ action's log-probability. That needs exactly two ops the engine lacked.
       and `#r=` shares are namespaced independently of the other four labs
 
 ### Still open / future (RL)
-- [ ] More environments: MountainCar (sparse reward), Acrobot, a continuous-action variant (Gaussian policy)
-- [ ] PPO (clipped surrogate + multiple epochs per batch) alongside REINFORCE/A2C
-- [ ] An episode-replay scrubber and a return-distribution histogram
+- [x] More environments: **MountainCar** (sparse reward, potential-based shaping) + a **continuous-action
+      variant (Pendulum, diagonal-Gaussian policy)** — shipped in Session 7. Acrobot still open.
+- [x] **PPO** (clipped surrogate + multiple epochs of minibatch SGD per batch) alongside REINFORCE/A2C
+      — shipped in Session 7, with clip-fraction / approx-KL / explained-variance diagnostics and a
+      target-KL early stop; works for both the discrete and continuous policies.
+- [x] A **return-distribution histogram** of the latest batch — shipped in Session 7 (the episode-replay
+      scrubber is still open).
+- [ ] Acrobot (a third classic-control discrete env); an episode-replay scrubber
 - [ ] Exploring-starts / ε-greedy demo toggle; per-state visitation heatmap for GridWorld
 - [ ] Reward-shaping and discount sweeps visualized side by side
+- [ ] State-dependent σ for the Gaussian policy (a second network head) and a squashed-tanh policy
+      with the exact change-of-variables log-det correction
+- [ ] Value-function clipping in PPO and a KL-adaptive learning-rate variant
+
+### Session 7 — PPO + continuous control: a Gaussian actor swings up a pendulum (claude, 2026-06-22)
+
+The plan: the RL lab proved policy gradients on the engine, but it stopped at the *simplest* slice —
+on-policy REINFORCE/A2C, one full-batch step per rollout, and a **categorical** policy only. The two
+things that make modern deep RL actually work, and that the lab was missing, are **PPO** (the
+trust-region clipped surrogate that lets you safely *reuse* each batch for several epochs of minibatch
+SGD) and a **continuous action space** (a Gaussian actor — the thing you need for torques, throttles,
+steering). Both stress the engine in genuinely new ways, and both are headline-grade payoffs: PPO
+visibly stabilises the noisy curve, and a continuous policy learns to **swing a pendulum upright** — a
+task a discrete left/right push fundamentally cannot express. Keeping the project's promise, every new
+gradient is hand-derived and machine-proven by the one-click self-test.
+
+**Engine — the continuous-policy gradients (all hand-derived, all gradchecked):**
+- [x] `Tensor.rowSum()` — a column-axis reduction → `[R,1]` (the analogue of `gatherCols` for the
+      Gaussian: it collapses a per-action-dimension log-density into the joint log-prob), with the
+      broadcast-back VJP
+- [x] `gaussianLogProb(mu, logStd, a)` — the differentiable diagonal-Gaussian log-density `[B,1]`,
+      assembled from `sub`/`mul`/`exp`/`scale`/`rowSum`, differentiating w.r.t. **both** the network's
+      μ output and the shared learnable **log-σ** vector
+- [x] `gaussianEntropy(logStd)` — the closed-form Gaussian entropy `Σ(logσ + ½log2πe)`, differentiable
+      w.r.t. log-σ (the entropy bonus that keeps a continuous policy exploring)
+- [x] `gaussianLogProbNumeric` / `sampleGaussian` — the tape-free rollout twins (Box–Muller sampling +
+      the behavior log-prob πθ_old that PPO's importance ratio divides by)
+- [x] Self-test extended to **43 ops**, max rel err ~4.8e-7: `rowSum` (5.9e-12), `gaussianLogProb`
+      (4.0e-10), `gaussianEntropy` (1.9e-11), **and a whole continuous-control policy end-to-end**
+      (μ-network + log-σ together, 7.3e-10), beside the existing discrete policy e2e
+
+**Algorithm — PPO (`useRLTrainer`), shared across both action spaces:**
+- [x] The clipped surrogate `min(r·Â, clip(r,1±ε)·Â)` implemented so autograd gets the **exact** PPO
+      gradient: per sample we pick whichever branch wins the min and zero the gradient of the clipped
+      ones (since `clip` is flat there), so `−mean(ratio · activeÂ)` back-props correctly — no min/clamp
+      op needed
+- [x] Several **epochs of minibatch SGD** over each collected batch (Fisher–Yates shuffle per epoch),
+      with a **target-KL early stop** (Schulman's k3 KL estimator) so the policy never leaves the trust
+      region
+- [x] Live PPO diagnostics: **clip fraction**, **approx KL**, **explained variance** of the critic
+- [x] The same `update()` path drives REINFORCE/baseline/A2C (clip = 0, one full-batch pass) *and* PPO,
+      and the categorical *and* the Gaussian policy, by branching only the log-prob/entropy builders
+
+**Environments — two new, from scratch (`rl-env.ts`):**
+- [x] `Pendulum` — the gym Pendulum-v1 dynamics; 3-D obs `[cosθ, sinθ, θ̇]`, **1-D continuous torque**
+      `u ∈ [−2,2]`, reward `−(θ² + 0.1θ̇² + 0.001u²)`, truncated at 200 — the canonical continuous
+      benchmark (the torque is too weak to lift directly, so the agent must learn to pump energy)
+- [x] `MountainCar` — the gym MountainCar-v0 dynamics; 2-D obs, 3 discrete actions, native −1/step. To
+      keep the famously hard sparse-reward task learnable in a live demo **without changing the optimal
+      policy**, it adds **potential-based reward shaping** (Ng–Harada–Russell 1999): `F = γΦ(s′) − Φ(s)`
+      with Φ a mechanical-energy potential — provably optimality-preserving (it telescopes to a constant
+      over any trajectory)
+- [x] The `Env` interface generalised with `continuous`/`actDim` and a `number | Float64Array` action;
+      the agent now probes the env for its action space and builds a categorical or Gaussian actor to
+      match
+
+**Agent (`policy.ts`):**
+- [x] `Agent` gains a continuous mode: the policy MLP emits the Gaussian **mean**, a separate learnable
+      **log-σ** `[1,A]` gives the spread (the standard state-independent PPO/A2C parameterization),
+      `policyParams()` trains both, and export/import/share round-trips log-σ alongside the weights
+- [x] `RL_ALGOS` gains a `usesGae` flag so PPO reuses the exact GAE(λ) advantage/return targets
+
+**RL lab UI:**
+- [x] Environment selector extended to four tasks; a **PPO controls** group (clip ε, epochs, minibatch,
+      target-KL) that appears for PPO; the diagnostics surfaced in the run panel (clip frac, approx KL,
+      explained var, mean σ / entropy)
+- [x] **Pendulum** rendered live (rod from a pivot, speed-tinted, a torque arc and σ read-out) with a
+      **policy torque field** over θ × θ̇; **MountainCar** rendered as a car on a `sin(3x)` hill with a
+      goal flag, plus a **position × velocity** greedy-action/value portrait
+- [x] **Continuous PolicyBars** — a μ ± σ gauge with the sampled action marked — replaces the discrete
+      bars when the policy is Gaussian; a **return-distribution histogram** card for every env
+- [x] Gradient-check button now checks the **Gaussian** policy objective when the env is continuous
+
+**Validated outside the browser before wiring the UI** (a faithful re-implementation of the trainer's
+PPO update): self-test 4.8e-7 across 43 ops; **PPO CartPole → 500** (solved by ~iter 12); **PPO
+Pendulum (continuous) −1291 → ≈ −150** (a real swing-up, σ self-annealing 0.63 → 0.34); **PPO
+MountainCar (shaped) −192 → −106** (it reaches the flag). Full CI gate (scope + conformance + lint +
+tsc + vite build) green via `node scripts/verify-project.mjs synapse-grad-7c4e`.
 
 ## Session log
 
@@ -494,3 +585,24 @@ action's log-probability. That needs exactly two ops the engine lacked.
   REINFORCE/baseline reach the 500 cap; all four mazes reach the goal at ~0.7–0.97 return); the full
   CI gate (scope + conformance + lint + tsc + vite build) is green via `node scripts/verify-project.mjs`.
 
+- 2026-06-22 (claude, session 7): brought the RL lab up to modern deep RL — **PPO** and **continuous
+  control**. New engine gradients (all hand-derived, all gradchecked to ~1e-10): `Tensor.rowSum`
+  (column-axis reduction), and a diagonal-Gaussian policy — `gaussianLogProb` / `gaussianEntropy`
+  (differentiating both the μ-network output and a learnable log-σ vector) plus the tape-free
+  `sampleGaussian` / `gaussianLogProbNumeric` rollout twins; the self-test now verifies **43 ops** at
+  max rel err 4.8e-7, including a whole continuous-control policy end-to-end. `useRLTrainer` gained a
+  **PPO** path: the clipped surrogate written so autograd gets the exact gradient (pick the min branch,
+  zero the clipped ones), several epochs of shuffled minibatch SGD per batch, a Schulman-k3 target-KL
+  early stop, and clip-fraction / approx-KL / explained-variance diagnostics — and the one `update()`
+  drives REINFORCE/baseline/A2C *and* PPO, categorical *and* Gaussian, by branching only the
+  log-prob/entropy builders. Two new from-scratch environments: **Pendulum** (gym v1 dynamics, 1-D
+  continuous torque — the canonical swing-up) and **MountainCar** (gym v0, with optimality-preserving
+  potential-based shaping so the sparse-reward task learns live). The `Env` interface generalised to a
+  `number | Float64Array` action with `continuous`/`actDim`; the agent probes the env and builds a
+  categorical or Gaussian actor accordingly (log-σ round-trips through save/share). UI: a four-task env
+  selector, a PPO controls group, a live Pendulum render + **policy torque field**, a MountainCar
+  hill render + position×velocity policy/value portrait, a continuous **μ ± σ** policy gauge, and a
+  per-batch **return-distribution histogram**. Validated outside the browser first (PPO CartPole → 500;
+  PPO Pendulum continuous −1291 → ≈ −150, σ self-annealing 0.63 → 0.34; PPO MountainCar shaped −192 →
+  −106 — it reaches the flag); the full CI gate (scope + conformance + lint + tsc + vite build) is green
+  via `node scripts/verify-project.mjs synapse-grad-7c4e`.

@@ -10,7 +10,7 @@ import { conv2d, maxPool2d, avgPool2d } from './conv';
 import { maskedCrossEntropy, bceWithLogits } from './losses';
 import { GPT } from './transformer';
 import { VAE, klDivStandardNormal } from './vae';
-import { Agent } from './policy';
+import { Agent, gaussianLogProb, gaussianEntropy, categoricalLogProb, categoricalEntropy } from './policy';
 
 export interface OpCheck {
   name: string;
@@ -140,6 +140,7 @@ export function runSelfTest(seed = 7): SelfTestReport {
     ['pow(2.5)', (t) => t.pow(2.5), true],
     ['sumAll', (t) => t.sumAll(), false],
     ['meanAll', (t) => t.meanAll(), false],
+    ['rowSum', (t) => t.rowSum(), false],
     ['transpose', (t) => t.transpose(), false],
     ['softmax', (t) => t.softmax(), false],
     ['logSoftmax', (t) => t.logSoftmax(), false],
@@ -265,9 +266,54 @@ export function runSelfTest(seed = 7): SelfTestReport {
         agent.policy.parameters(),
         () => {
           const logits = agent.policyLogits(states);
-          const logp = gatherCols(logits.logSoftmax(), actions);
+          const logp = categoricalLogProb(logits, actions);
           const pg = logp.mul(adv).meanAll().neg();
-          const ent = logits.softmax().mul(logits.logSoftmax()).sumAll().scale(-1 / B);
+          const ent = categoricalEntropy(logits);
+          return pg.add(ent.scale(-0.01));
+        },
+        rng,
+      ),
+    );
+  }
+
+  // Continuous-control ops: the diagonal-Gaussian policy's log-density (differentiated w.r.t. both
+  // the mean and the shared log-σ) and its entropy (w.r.t. log-σ).
+  {
+    const mu = leaf(rng, 5, 2);
+    const logStd = leaf(rng, 1, 2);
+    const acts = leaf(rng, 5, 2);
+    ops.push(checkOp('gaussianLogProb', [mu, logStd], () => gaussianLogProb(mu, logStd, acts), rng));
+  }
+  {
+    const logStd = leaf(rng, 1, 3);
+    ops.push(checkOp('gaussianEntropy', [logStd], () => gaussianEntropy(logStd), rng));
+  }
+
+  // End-to-end: a whole continuous-control policy (a diagonal-Gaussian actor) through the
+  // policy-gradient objective −E[advantage · logπ(a|s)] minus an entropy bonus, assembled from
+  // gaussianLogProb (sub, mul, exp, scale, rowSum) and gaussianEntropy. Both the policy MLP *and*
+  // the learnable log-σ vector are gradchecked together (agent.policyParams()).
+  {
+    const agent = new Agent(4, 2, [6], 'tanh', rngFrom(13), true);
+    const B = 5;
+    const sd = new Float64Array(B * 4);
+    for (let i = 0; i < sd.length; i++) sd[i] = rng() * 2 - 1;
+    const states = Tensor.fromFlat(sd, B, 4, false);
+    const actd = new Float64Array(B * 2);
+    for (let i = 0; i < actd.length; i++) actd[i] = rng() * 2 - 1;
+    const acts = Tensor.fromFlat(actd, B, 2, false);
+    const advd = new Float64Array(B);
+    for (let i = 0; i < B; i++) advd[i] = rng() * 2 - 1;
+    const adv = Tensor.fromFlat(advd, B, 1, false);
+    ops.push(
+      checkOp(
+        'gaussian-policy (e2e)',
+        agent.policyParams(),
+        () => {
+          const mu = agent.policyLogits(states);
+          const logp = gaussianLogProb(mu, agent.logStd!, acts);
+          const pg = logp.mul(adv).meanAll().neg();
+          const ent = gaussianEntropy(agent.logStd!);
           return pg.add(ent.scale(-0.01));
         },
         rng,

@@ -37,6 +37,26 @@ const BATCHES = [500, 1000, 1500, 2500, 4000];
 const CLIPS = [0, 0.5, 1, 2, 5];
 const SPEEDS = [1, 2, 3, 4];
 const DEMO_SPEEDS = [1, 2, 4, 8];
+const PPO_CLIPS = [0.1, 0.2, 0.3];
+const PPO_EPOCHS = [1, 2, 4, 8];
+const MINIBATCHES = [64, 128, 256, 512];
+const TARGET_KLS = [0, 0.01, 0.02, 0.05];
+
+const ENV_LIST: { id: EnvKind; label: string }[] = [
+  { id: 'cartpole', label: 'CartPole' },
+  { id: 'gridworld', label: 'GridWorld' },
+  { id: 'pendulum', label: 'Pendulum · continuous' },
+  { id: 'mountaincar', label: 'MountainCar' },
+];
+
+const ENV_BLURB: Record<EnvKind, string> = {
+  cartpole: 'Balance a pole on a cart by pushing left/right. +1 per step; the episode caps at 500.',
+  gridworld: 'Navigate a maze to the ★ goal, avoiding ✖ pits. Reward −0.005 per move, +1 goal, −1 pit.',
+  pendulum:
+    'Swing up an underactuated pendulum with a real-valued torque — a diagonal-Gaussian policy. Reward −(θ²+0.1θ̇²+0.001u²); a clean swing-up nears −150.',
+  mountaincar:
+    'Rock an underpowered car up a hill it can’t climb directly (3 actions). −1 per step with potential-based shaping; reach the flag at x = 0.5.',
+};
 
 export default function RLPanel({
   config,
@@ -60,21 +80,26 @@ export default function RLPanel({
 }: Props) {
   const [slotName, setSlotName] = useState('agent-1');
   const set = <K extends keyof RLConfig>(key: K, value: RLConfig[K]) => setConfig((c) => ({ ...c, [key]: value }));
-  const usesCritic = RL_ALGOS.find((a) => a.id === config.algo)!.usesCritic;
+  const algoMeta = RL_ALGOS.find((a) => a.id === config.algo)!;
+  const usesCritic = algoMeta.usesCritic;
+  const usesGae = algoMeta.usesGae;
+  const isPPO = config.algo === 'ppo';
   const isGrid = config.envKind === 'gridworld';
 
   return (
     <aside className="panel">
       <section className="group">
         <h3>Environment</h3>
-        <div className="seg">
-          <button className={config.envKind === 'cartpole' ? 'on' : ''} onClick={() => set('envKind', 'cartpole' as EnvKind)}>
-            CartPole
-          </button>
-          <button className={isGrid ? 'on' : ''} onClick={() => set('envKind', 'gridworld' as EnvKind)}>
-            GridWorld
-          </button>
-        </div>
+        <label className="field">
+          <span>Task</span>
+          <select value={config.envKind} onChange={(e) => set('envKind', e.target.value as EnvKind)}>
+            {ENV_LIST.map((env) => (
+              <option key={env.id} value={env.id}>
+                {env.label}
+              </option>
+            ))}
+          </select>
+        </label>
         {isGrid && (
           <label className="field">
             <span>Maze</span>
@@ -87,11 +112,7 @@ export default function RLPanel({
             </select>
           </label>
         )}
-        <p className="muted small task-blurb">
-          {isGrid
-            ? 'Navigate a maze to the ★ goal, avoiding ✖ pits. Reward −0.005 per move, +1 goal, −1 pit.'
-            : 'Balance a pole on a cart by pushing left/right. +1 per step; the episode caps at 500.'}
-        </p>
+        <p className="muted small task-blurb">{ENV_BLURB[config.envKind]}</p>
         <div className="two">
           <label className="field">
             <span>Demo</span>
@@ -165,7 +186,7 @@ export default function RLPanel({
           </label>
           <label className="field">
             <span>GAE λ · {config.lambda}</span>
-            <select value={config.lambda} onChange={(e) => set('lambda', Number(e.target.value))} disabled={config.algo !== 'a2c'}>
+            <select value={config.lambda} onChange={(e) => set('lambda', Number(e.target.value))} disabled={!usesGae}>
               {LAMBDAS.map((v) => (
                 <option key={v} value={v}>
                   {v}
@@ -192,6 +213,62 @@ export default function RLPanel({
           {config.normAdv ? '✓ ' : ''}Normalize advantages
         </button>
       </section>
+
+      {isPPO && (
+        <section className="group">
+          <h3>
+            PPO <span className="muted small">· clipped surrogate</span>
+          </h3>
+          <div className="two">
+            <label className="field">
+              <span>Clip ε · {config.ppoClip}</span>
+              <select value={config.ppoClip} onChange={(e) => set('ppoClip', Number(e.target.value))}>
+                {PPO_CLIPS.map((v) => (
+                  <option key={v} value={v}>
+                    {v}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="field">
+              <span>Epochs</span>
+              <select value={config.ppoEpochs} onChange={(e) => set('ppoEpochs', Number(e.target.value))}>
+                {PPO_EPOCHS.map((v) => (
+                  <option key={v} value={v}>
+                    {v}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
+          <div className="two">
+            <label className="field">
+              <span>Minibatch</span>
+              <select value={config.minibatch} onChange={(e) => set('minibatch', Number(e.target.value))}>
+                {MINIBATCHES.map((v) => (
+                  <option key={v} value={v}>
+                    {v}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="field">
+              <span>Target KL</span>
+              <select value={config.targetKL} onChange={(e) => set('targetKL', Number(e.target.value))}>
+                {TARGET_KLS.map((v) => (
+                  <option key={v} value={v}>
+                    {v === 0 ? 'off' : v}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
+          <p className="muted small task-blurb">
+            Reuses each batch for several epochs of minibatch SGD on min(r·Â, clip(r, 1±ε)·Â); Target KL early-stops the
+            epochs once the policy has moved too far.
+          </p>
+        </section>
+      )}
 
       <section className="group">
         <h3>Training</h3>
@@ -290,6 +367,35 @@ export default function RLPanel({
             <span className="muted small">best</span>
             <b>{Number.isFinite(metrics.bestReturn) ? metrics.bestReturn.toFixed(1) : '—'}</b>
           </div>
+        </div>
+        <div className="stat-row">
+          {usesCritic && (
+            <div className="stat">
+              <span className="muted small">expl. var</span>
+              <b>{Number.isFinite(metrics.explainedVar) ? metrics.explainedVar.toFixed(2) : '—'}</b>
+            </div>
+          )}
+          <div className="stat">
+            <span className="muted small">entropy</span>
+            <b>{Number.isFinite(metrics.entropy) ? metrics.entropy.toFixed(2) : '—'}</b>
+          </div>
+          {isPPO && (
+            <div className="stat">
+              <span className="muted small">clip frac</span>
+              <b>{Number.isFinite(metrics.clipFrac) ? (metrics.clipFrac * 100).toFixed(0) + '%' : '—'}</b>
+            </div>
+          )}
+          {isPPO ? (
+            <div className="stat">
+              <span className="muted small">approx KL</span>
+              <b>{Number.isFinite(metrics.approxKL) ? metrics.approxKL.toFixed(3) : '—'}</b>
+            </div>
+          ) : (
+            <div className="stat">
+              <span className="muted small">{Number.isFinite(metrics.stdMean) ? 'mean σ' : 'episodes'}</span>
+              <b>{Number.isFinite(metrics.stdMean) ? metrics.stdMean.toFixed(2) : metrics.episodes}</b>
+            </div>
+          )}
         </div>
       </section>
 

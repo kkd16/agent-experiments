@@ -412,6 +412,37 @@ export class Tensor {
     return out;
   }
 
+  // Row-wise sum over the column (feature) axis -> [R,1]. The backward broadcasts each row's
+  // output gradient back across every column it summed. This is the reduction the diagonal-
+  // Gaussian policy needs: it collapses a per-action-dimension log-density [B, actDim] into the
+  // joint log-probability of the whole action vector [B, 1], exactly as gatherCols does for the
+  // categorical policy — but summing instead of picking.
+  rowSum(): Tensor {
+    const R = this.rows;
+    const C = this.cols;
+    const out = Tensor.zeros(R, 1);
+    const a = this.data;
+    const o = out.data;
+    for (let i = 0; i < R; i++) {
+      let s = 0;
+      const base = i * C;
+      for (let j = 0; j < C; j++) s += a[base + j];
+      o[i] = s;
+    }
+    out.op = 'rowSum';
+    out.prev = [this];
+    out.backwardFn = () => {
+      const g = out.grad;
+      const ga = this.grad;
+      for (let i = 0; i < R; i++) {
+        const gi = g[i];
+        const base = i * C;
+        for (let j = 0; j < C; j++) ga[base + j] += gi;
+      }
+    };
+    return out;
+  }
+
   transpose(): Tensor {
     const R = this.rows;
     const C = this.cols;

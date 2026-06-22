@@ -1427,6 +1427,73 @@ button:disabled {
 .phase-ramp {
   background: linear-gradient(90deg, #f472b6, #0f172a, #38bdf8);
 }
+.pend-ramp {
+  display: inline-block;
+  width: 90px;
+  height: 9px;
+  border-radius: 4px;
+  background: linear-gradient(90deg, #38bdf8, #0f172a, #f87171);
+}
+
+/* continuous (Gaussian) policy gauge */
+.gauss-row {
+  display: grid;
+  grid-template-columns: 70px 1fr;
+  align-items: center;
+  gap: 8px;
+}
+.gauss-track {
+  position: relative;
+  height: 20px;
+  background: var(--bg-soft);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+}
+.gauss-zero {
+  position: absolute;
+  left: 50%;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: rgba(148, 163, 184, 0.45);
+}
+.gauss-band {
+  position: absolute;
+  top: 3px;
+  bottom: 3px;
+  background: rgba(167, 139, 250, 0.28);
+  border-radius: 5px;
+  transition: left 0.1s linear, width 0.1s linear;
+}
+.gauss-mean {
+  position: absolute;
+  top: 1px;
+  bottom: 1px;
+  width: 2px;
+  margin-left: -1px;
+  background: #a78bfa;
+  transition: left 0.1s linear;
+}
+.gauss-action {
+  position: absolute;
+  top: -2px;
+  bottom: -2px;
+  width: 2px;
+  margin-left: -1px;
+  background: #4ade80;
+  transition: left 0.1s linear;
+}
+.gauss-readout {
+  display: flex;
+  gap: 14px;
+  margin-top: 8px;
+  font-size: 12.5px;
+  color: var(--muted);
+}
+.gauss-readout b {
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
 
 /* latent explorer */
 .explorer {
