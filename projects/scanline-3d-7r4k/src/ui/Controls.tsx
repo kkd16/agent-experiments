@@ -18,6 +18,9 @@ import { runMediumSelfTest } from '../raytrace/medium_verify.ts'
 import type { MediumTest } from '../raytrace/medium_verify.ts'
 import { runSSFXSelfTest } from '../render/ssfx_verify.ts'
 import type { SSFXTest } from '../render/ssfx_verify.ts'
+import type { TransparencySettings } from '../render/oit.ts'
+import { runOITSelfTest } from '../render/oit_verify.ts'
+import type { OITTest } from '../render/oit_verify.ts'
 import { SDF_PRESETS } from '../sdf/scenes.ts'
 import { runSdfSelfTest } from '../sdf/verify.ts'
 import type { SdfTest } from '../sdf/verify.ts'
@@ -114,6 +117,7 @@ export default function Controls(props: Props) {
   const setPost = (patch: Partial<PostSettings>): void => set({ post: { ...settings.post, ...patch } })
   const setRT = (patch: Partial<RTSettings>): void => set({ rt: { ...settings.rt, ...patch } })
   const setSSFX = (patch: Partial<SSFXSettings>): void => set({ ssfx: { ...settings.ssfx, ...patch } })
+  const setTransp = (patch: Partial<TransparencySettings>): void => set({ transparency: { ...settings.transparency, ...patch } })
   const setDen = (patch: Partial<DenoiseSettings>): void => setRT({ denoise: { ...settings.rt.denoise, ...patch } })
   const setMed = (patch: Partial<RTSettings['medium']>): void => setRT({ medium: { ...settings.rt.medium, ...patch } })
   const activeMode = MODES.find((m) => m.key === settings.mode) ?? MODES[0]
@@ -161,6 +165,16 @@ export default function Controls(props: Props) {
     setTimeout(() => {
       setDenTests(runDenoiseSelfTest())
       setDenTesting(false)
+    }, 30)
+  }
+  const [oitTests, setOitTests] = useState<OITTest[] | null>(null)
+  const [oitTesting, setOitTesting] = useState(false)
+  const runOit = (): void => {
+    setOitTesting(true)
+    setOitTests(null)
+    setTimeout(() => {
+      setOitTests(runOITSelfTest())
+      setOitTesting(false)
     }, 30)
   }
   const [dieTests, setDieTests] = useState<DielectricTest[] | null>(null)
@@ -599,6 +613,52 @@ export default function Controls(props: Props) {
                 frames through the renderer and inspects the raw buffers.
               </p>
               {ssfxTests.map((t) => (
+                <p key={t.name} className={`obj-msg ${t.pass ? 'ok' : 'err'}`}>
+                  {t.pass ? '✓' : '✗'} {t.name} — {t.detail}
+                </p>
+              ))}
+            </div>
+          )}
+        </Section>
+      )}
+
+      {!isRT && (
+        <Section title="Transparency (WBOIT + refraction)">
+          <div className="toggles">
+            <Toggle label="Glass (order-independent)" value={settings.transparency.enabled} onChange={(v) => setTransp({ enabled: v })} />
+          </div>
+          {settings.transparency.enabled && (
+            <>
+              <Slider
+                label="Refraction" value={settings.transparency.refraction} min={0} max={64} step={2}
+                onChange={(v) => setTransp({ refraction: v })} format={(v) => `${v.toFixed(0)} px`}
+              />
+              <Slider
+                label="Glass thickness" value={settings.transparency.thickness} min={0.1} max={4} step={0.1}
+                onChange={(v) => setTransp({ thickness: v })} format={(v) => v.toFixed(1)}
+              />
+            </>
+          )}
+          <p className="blurb">
+            The real-time twin of the path tracer's glass. Transmissive objects leave the opaque
+            deferred path for a forward pass that needs no sorting: each glass fragment's Fresnel
+            reflection is accumulated with a depth weight into a <em>Weighted-Blended OIT</em> buffer
+            (McGuire &amp; Bavoil 2013) while the transmittance Π(1−α) accumulates beside it, so the
+            blend is <em>order-independent</em> even where glass interpenetrates. The background is
+            then refracted in screen space — sampled at an offset along the surface normal — and
+            tinted by Beer–Lambert. Switch the engine to <em>Ray tracer</em> on the <em>Glass</em>
+            scene to A/B it against the true refraction. Best seen on <em>Interior</em> &amp; <em>Glass</em>.
+          </p>
+          <button className="reset" onClick={runOit} type="button" disabled={oitTesting} style={{ width: '100%' }}>
+            {oitTesting ? 'Running…' : 'Run transparency self-test'}
+          </button>
+          {oitTests && (
+            <div className="rt-tests">
+              <p className="blurb">
+                {oitTests.filter((t) => t.pass).length}/{oitTests.length} checks passed — the single-layer
+                "over" identity, order independence, opaque occlusion, an energy bound, and the depth weight.
+              </p>
+              {oitTests.map((t) => (
                 <p key={t.name} className={`obj-msg ${t.pass ? 'ok' : 'err'}`}>
                   {t.pass ? '✓' : '✗'} {t.name} — {t.detail}
                 </p>

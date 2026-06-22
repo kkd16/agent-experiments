@@ -402,7 +402,7 @@ const interior = (): SceneConfig => {
     // clustered props in mutual contact on the reflective floor
     { id: 'knot', meshKind: 'knot', position: [0, 0.72, 0.5], scale: 0.62, spin: 0.4, tiltSpin: 0.1, baseRotation: [0, 0, 0], material: mat([1.0, 0.76, 0.34], 0.95, 120, 0.05, 1, 0.18), texture: 'none', normalMap: 'none' },
     { id: 'chrome', meshKind: 'sphere', position: [-1.25, 0.55, 1.15], scale: 0.55, spin: 0.2, tiltSpin: 0, baseRotation: [0, 0, 0], material: mat([0.95, 0.96, 0.98], 0.95, 140, 0, 1, 0.05), texture: 'none', normalMap: 'none' },
-    { id: 'glass', meshKind: 'sphere', position: [1.15, 0.5, 1.05], scale: 0.5, spin: 0, tiltSpin: 0, baseRotation: [0, 0, 0], material: mat([0.25, 0.5, 0.95], 0.8, 90, 0, 0, 0.16), texture: 'none', normalMap: 'none' },
+    { id: 'glass', meshKind: 'sphere', position: [1.15, 0.5, 1.05], scale: 0.5, spin: 0, tiltSpin: 0, baseRotation: [0, 0, 0], material: { albedo: [0.85, 0.92, 1], specular: 0.9, shininess: 120, rim: 0, metallic: 0, roughness: 0.04, transmission: 1, ior: 1.5, attenuation: [0.15, 0.05, 0.02], dispersion: 0 }, texture: 'none', normalMap: 'none' },
     { id: 'cube', meshKind: 'cube', position: [0.3, 0.42, 1.7], scale: 0.42, spin: 0, tiltSpin: 0, baseRotation: [0.2, 0.5, 0], material: mat([0.85, 0.25, 0.22], 0.3, 24, 0, 0, 0.55), texture: 'bricks', normalMap: 'brick' },
     { id: 'torus', meshKind: 'torus', position: [-1.7, 0.34, 0.0], scale: 0.5, spin: 0.5, tiltSpin: 0.2, baseRotation: [1.0, 0, 0], material: mat([0.5, 0.85, 0.6], 0.7, 70, 0, 0.2, 0.3), texture: 'none', normalMap: 'none' },
   ]

@@ -20,6 +20,8 @@ import type { PostSettings } from '../render/post.ts'
 import { ScreenSpaceFX } from '../render/ssfx.ts'
 import type { SSFXSettings } from '../render/ssfx.ts'
 import { TAA, haltonJitter, jitterProjection } from '../render/taa.ts'
+import { Transparency } from '../render/oit.ts'
+import type { TransparencySettings } from '../render/oit.ts'
 import type { Light, ShadeContext, ShadingModel } from '../render/shading.ts'
 import { boundsOf, ShadowMap, transformedCenter } from '../render/shadow.ts'
 import { makeNormalMap, makeTexture } from '../render/texture.ts'
@@ -75,6 +77,7 @@ export interface RenderSettings {
   normalMaps: boolean // honour per-object normal maps
   post: PostSettings
   ssfx: SSFXSettings // deferred screen-space effects (SSAO, SSR, contact shadows, TAA)
+  transparency: TransparencySettings // v8 — real-time order-independent glass (WBOIT + refraction)
   rt: RTSettings
 }
 
@@ -107,6 +110,7 @@ export class Renderer {
   readonly rayTracer = new RayTracer()
   readonly gbuffer = new GBuffer()
   readonly screenFX = new ScreenSpaceFX()
+  private transparency = new Transparency()
   private taa = new TAA()
   private taaFrame = 0
   spinClock = 0
@@ -253,6 +257,10 @@ export class Renderer {
 
     const stats = emptyStats()
     const draws: DrawObject[] = []
+    // v8 — transmissive (glass) objects leave the opaque path for a forward
+    // order-independent-transparency pass composited after the deferred resolve.
+    const doGlass = hdrMode && !deferred && settings.transparency.enabled
+    const glassDraws: { mesh: Mesh; model: Mat4; material: typeof scene.objects[number]['material'] }[] = []
 
     if (settings.showGround && scene.ground) {
       draws.push({
@@ -273,6 +281,10 @@ export class Renderer {
 
     for (let i = 0; i < scene.objects.length; i++) {
       const o = scene.objects[i]
+      if (doGlass && (o.material.transmission ?? 0) > 0) {
+        glassDraws.push({ mesh: this.mesh(o.meshKind), model: objectModels[i], material: o.material })
+        continue
+      }
       draws.push({
         mesh: this.mesh(o.meshKind),
         model: objectModels[i],
@@ -320,6 +332,18 @@ export class Renderer {
         const vp = multiply(proj, view) // unjittered world→clip, for reprojection
         this.taa.resolve(fb, this.gbuffer, vp)
       }
+    }
+
+    // ── transparency: composite glass over the finished opaque image ──────────
+    // Runs last, reading the resolved colour + opaque depth buffers, so it sees the
+    // background it refracts and can never perturb the opaque pipeline above.
+    if (doGlass && glassDraws.length > 0) {
+      const env = settings.environment ? this.env : null
+      this.transparency.begin(fb.width, fb.height)
+      for (const g of glassDraws) {
+        this.transparency.drawObject(fb, view, drawProj, g.mesh, g.model, g.material, env, eye, settings.transparency)
+      }
+      this.transparency.composite(fb)
     }
 
     return stats

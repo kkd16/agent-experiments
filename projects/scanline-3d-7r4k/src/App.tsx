@@ -5,6 +5,7 @@ import { useEngine } from './engine/useEngine.ts'
 import type { RenderSettings } from './engine/renderer.ts'
 import { DEFAULT_POST } from './render/post.ts'
 import { DEFAULT_SSFX } from './render/ssfx.ts'
+import { DEFAULT_TRANSPARENCY } from './render/oit.ts'
 import { DEFAULT_DENOISE } from './raytrace/denoise.ts'
 import { parseOBJ, SAMPLE_OBJ } from './geometry/obj.ts'
 import { buildSdf } from './sdf/scenes.ts'
@@ -26,6 +27,7 @@ const DEFAULT_SETTINGS: RenderSettings = {
   normalMaps: true,
   post: DEFAULT_POST,
   ssfx: DEFAULT_SSFX,
+  transparency: DEFAULT_TRANSPARENCY,
   rt: {
     mode: 'path',
     maxBounces: 4,
