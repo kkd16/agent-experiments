@@ -380,3 +380,43 @@ function gcd(a: number, b: number): number {
   }
   return a
 }
+
+export interface ProfilePoint {
+  a: number
+  /** Measured mean motion n (NaN if the orbit escaped / NAFF failed). */
+  freq: number
+  /** Frequency diffusion log₁₀|Δn/n| (NaN if unavailable). */
+  logDiff: number
+  valid: boolean
+}
+
+/**
+ * A 1-D Laskar frequency map: sweep the semimajor axis a across the model's band
+ * at a *fixed* eccentricity, returning the measured mean motion n(a) (a monotone
+ * staircase whose flats are the resonance plateaus) and the diffusion D(a) (whose
+ * spikes mark the chaotic resonances). The classic cross-section that complements
+ * the 2-D atlas. `onProgress` (if given) is called with each completed index so a
+ * caller can fill a plot live.
+ */
+export function frequencyProfile(
+  model: AtlasModel,
+  e: number,
+  count: number,
+  opts: FmaOptions = {},
+  onProgress?: (i: number, p: ProfilePoint) => void,
+): ProfilePoint[] {
+  const out: ProfilePoint[] = []
+  for (let i = 0; i < count; i++) {
+    const a = model.aMin + ((i + 0.5) / count) * (model.aMax - model.aMin)
+    const c = computeCell(a, e, model.mu, opts)
+    const p: ProfilePoint = {
+      a,
+      freq: c.valid ? c.freq : NaN,
+      logDiff: c.valid ? c.logDiffusion : NaN,
+      valid: c.valid,
+    }
+    out.push(p)
+    onProgress?.(i, p)
+  }
+  return out
+}

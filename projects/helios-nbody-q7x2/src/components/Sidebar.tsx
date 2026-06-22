@@ -14,6 +14,7 @@ import { ChaosPanel } from './ChaosPanel'
 import { SpectralPanel } from './SpectralPanel'
 import { PoincarePanel } from './PoincarePanel'
 import { AtlasPanel } from './AtlasPanel'
+import { ProfilePanel } from './ProfilePanel'
 import { RelativityPanel } from './RelativityPanel'
 import { GravWavePanel } from './GravWavePanel'
 import { BlackHolePanel } from './BlackHolePanel'
@@ -298,6 +299,10 @@ export function Sidebar(p: SidebarProps) {
 
       <Section title="Resonance Atlas" defaultOpen={false}>
         <AtlasPanel />
+      </Section>
+
+      <Section title="Frequency Map (1-D)" defaultOpen={false}>
+        <ProfilePanel />
       </Section>
 
       <Section title="Relativity Lab" defaultOpen={false}>
