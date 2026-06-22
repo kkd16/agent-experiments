@@ -2091,3 +2091,86 @@ body {
   line-height: 1.6;
   max-width: 900px;
 }
+
+/* --- Vectorize Lab ------------------------------------------------------- */
+.vec-controls {
+  display: flex;
+  align-items: flex-end;
+  gap: 1.4rem;
+  flex-wrap: wrap;
+  margin: 0.8rem 0 0.6rem;
+}
+.vec-controls .exec-slider-label { min-width: 200px; }
+.vec-run-btn {
+  font-family: var(--sans);
+  font-weight: 700;
+  font-size: 0.9rem;
+  color: var(--bg);
+  background: linear-gradient(135deg, var(--accent-2), var(--accent));
+  border: none;
+  border-radius: 8px;
+  padding: 0.55rem 1.1rem;
+  cursor: pointer;
+}
+.vec-run-btn:disabled { opacity: 0.55; cursor: progress; }
+.vec-query {
+  background: var(--bg-1);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0.7rem 0.9rem;
+  margin: 0.5rem 0;
+  overflow-x: auto;
+}
+.vec-query code { font-family: var(--mono); font-size: 0.82rem; color: var(--txt); white-space: pre; }
+.vec-running { color: var(--accent-2); font-style: italic; margin: 0.8rem 0; }
+.vec-verdict-row {
+  display: flex;
+  align-items: center;
+  gap: 0.9rem;
+  flex-wrap: wrap;
+  margin: 0.9rem 0 0.6rem;
+}
+.vec-speedup {
+  font-family: var(--mono);
+  font-weight: 800;
+  font-size: 1.05rem;
+  color: var(--bg);
+  background: linear-gradient(135deg, var(--green), var(--accent-2));
+  padding: 0.15rem 0.6rem;
+  border-radius: 6px;
+}
+.vec-timing { display: flex; flex-direction: column; gap: 0.5rem; margin: 0.6rem 0 1rem; }
+.vec-bar-row { display: flex; align-items: center; gap: 0.8rem; }
+.vec-bar-label { width: 180px; font-size: 0.82rem; color: var(--txt-dim); flex-shrink: 0; }
+.vec-bar-track { flex: 1; height: 18px; background: var(--bg-1); border: 1px solid var(--line); border-radius: 5px; overflow: hidden; }
+.vec-bar-fill { height: 100%; border-radius: 4px 0 0 4px; transition: width 0.3s ease; }
+.vec-bar-fill.volcano { background: linear-gradient(90deg, var(--amber), #ff9a6b); }
+.vec-bar-fill.vector { background: linear-gradient(90deg, var(--accent-2), var(--accent)); }
+.vec-bar-num { width: 84px; text-align: right; font-family: var(--mono); font-size: 0.82rem; color: var(--txt); flex-shrink: 0; }
+.vec-metrics {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 0.7rem;
+  margin: 0.8rem 0 1.1rem;
+}
+.vec-metric {
+  background: var(--bg-1);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0.7rem 0.85rem;
+}
+.vec-metric-val { font-family: var(--mono); font-weight: 700; font-size: 1.05rem; color: var(--accent-2); }
+.vec-metric-lbl { font-size: 0.72rem; color: var(--txt-dim); margin-top: 0.2rem; text-transform: uppercase; letter-spacing: 0.03em; }
+.vec-sub-title { font-size: 0.82rem; color: var(--txt-dim); margin: 0.6rem 0 0.4rem; }
+.vec-sweep { margin: 0.8rem 0 1rem; }
+.vec-sweep-svg { width: 100%; max-width: 520px; height: auto; display: block; background: var(--bg-1); border: 1px solid var(--line); border-radius: 8px; padding: 6px; }
+.vec-bar { fill: color-mix(in srgb, var(--accent) 55%, var(--bg-3)); }
+.vec-bar.best { fill: var(--accent-2); }
+.vec-axis { fill: var(--txt-faint); font-size: 9px; font-family: var(--mono); }
+.vec-axis-val { fill: var(--txt-dim); font-size: 8px; font-family: var(--mono); }
+.vec-axis-caption { font-size: 0.72rem; color: var(--txt-faint); margin-top: 0.3rem; }
+.vec-output { margin: 0.6rem 0 1rem; overflow-x: auto; }
+.vec-table { border-collapse: collapse; font-family: var(--mono); font-size: 0.8rem; }
+.vec-table th, .vec-table td { border: 1px solid var(--line); padding: 0.28rem 0.6rem; text-align: right; }
+.vec-table th { color: var(--accent); background: var(--bg-2); }
+.vec-table td { color: var(--txt); }
