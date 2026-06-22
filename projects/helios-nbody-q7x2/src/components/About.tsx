@@ -310,6 +310,40 @@ export function About({ onClose }: Props) {
           MERCURY, REBOUND) are all built on the Wisdom–Holman map.
         </p>
 
+        <h2>Frequency-map analysis: the resonance web</h2>
+        <p>
+          The <strong>Chaos Lab</strong> and <strong>Spectral Lab</strong> each judge <em>one</em>{' '}
+          orbit. The <strong>Resonance Atlas</strong> sweeps that judgement across a whole{' '}
+          <em>family</em> of orbits — and the structure it paints is the most celebrated portrait in
+          modern celestial mechanics: <strong>Laskar's frequency-map analysis</strong> (1990), the
+          technique behind the diffusion map of the Solar System and the asteroid belt's resonance
+          web — the <em>Arnold web</em>.
+        </p>
+        <p>
+          The principle is exact. A regular (quasi-periodic) orbit lives on an invariant torus, so
+          its fundamental frequency is <em>frozen</em>; a chaotic orbit wanders across resonances, so
+          its frequency <em>drifts</em>. Measure the frequency on the first half of an orbit versus
+          the second (with <strong>NAFF</strong>, super-resolved between FFT bins) and the relative
+          drift <code>log₁₀|Δn/n|</code> is an exquisitely sensitive chaos indicator — near sampling
+          precision (<code>≲ −6</code>) on a torus, large (<code>≳ −2</code>) in the chaotic zones.
+        </p>
+        <p>
+          The Atlas computes this in the canonical testbed — the <strong>planar circular restricted
+          three-body problem</strong> in the rotating frame of a Sun–Jupiter pair — independent of
+          the live engine, so it is exactly reproducible. Each pixel launches a test particle from
+          its own osculating ellipse <code>(a, e)</code>, integrates it (RK4, conserving the Jacobi
+          constant to a part in <code>10⁹</code>), and records the inertial signal{' '}
+          <code>Z(t) = (x+iy)·e^{'{'}i t{'}'}</code> whose dominant NAFF frequency is the orbit's mean
+          motion <code>n</code> (the Keplerian limit <code>n = a^{'{'}−3/2{'}'}</code> is recovered
+          to a part in <code>10⁶</code>). Coloured by <strong>frequency</strong> the map shows the
+          resonance plateaus; coloured by <strong>diffusion</strong> it shows the bright chaotic
+          threads where mean-motion resonances <code>n/n_J = p/q</code> live and overlap (Chirikov's
+          route to chaos, the mechanism behind the Kirkwood gaps). Click any cell to drill into that
+          orbit's <strong>time-frequency spectrogram</strong> — a regular orbit draws dead-straight
+          spectral lines; a chaotic one draws a wandering, smeared ridge: frequency diffusion made
+          directly visible.
+        </p>
+
         <h2>Run the numbers yourself</h2>
         <p>
           None of the above is taken on faith. The button below runs a battery of numerical checks in
@@ -375,6 +409,7 @@ export function About({ onClose }: Props) {
           <li>Open the <em>Black Hole Lab</em>, press <em>Render black hole</em>, and watch the shadow, the lensed sky grid and the Doppler-beamed disc trace out row by row — then set the inclination near 90° to see the disc's far side lensed up over the top, the <em>Interstellar</em> image.</li>
           <li>In the <em>Black Hole Lab</em>, drag the Kerr <em>spin</em> up toward 1 and watch the shadow morph from a circle into the lopsided D-shape, flattening on the side space is dragged toward you.</li>
           <li>Open the <em>Symplectic Lab</em>, pick <em>Four inner planets</em>, push Δt up and press <em>Run the race</em> — on the log-scale energy-error plot watch Wisdom–Holman stay flat while Verlet ripples far above it and RK4 climbs off the top. Toggle <em>WH 4th order</em> to drop the green curve another decade.</li>
+          <li>Open the <em>Resonance Atlas</em>, press <em>Compute Atlas</em> and watch the resonance web fill in row by row. Switch <em>Strong perturber</em> and flip <em>Colour by</em> to <em>Frequency</em> to see the resonance plateaus, then back to <em>Chaos</em> for the Arnold web — and click a bright thread to watch its spectrogram ridge wander.</li>
           <li>Click a planet in <em>Solar System</em> to read its orbital energy, then <em>Share</em> a permalink to your setup.</li>
         </ul>
 

@@ -37,6 +37,13 @@ import {
   kerrShadowRim,
   kerrEquatorialPhotonRadius,
 } from './geodesic'
+import {
+  computeCell,
+  effectivePotential,
+  effectivePotentialGradient,
+  recordOrbit,
+} from './fma'
+import { spectrogram } from './spectrogram'
 import { keplerStep, lagrangeIdentityResidual } from './kepler'
 import type { KeplerState } from './kepler'
 import {
@@ -1213,6 +1220,107 @@ export function runSelfTest(): SelfTestReport {
       'Wisdom–Holman is reversible & conserves p, L',
       pass,
       `return error=${ret.toExponential(2)}, |p|=${pMag.toExponential(1)}, |ΔL/L|=${Ldrift.toExponential(1)}`,
+    )
+  }
+
+  // 51 — The Resonance Atlas's analytic effective-potential gradient ∇Ω matches a
+  // central finite difference of Ω (the position-force the rotating-frame solver uses).
+  {
+    const mu = 0.01
+    const h = 1e-6
+    let maxRel = 0
+    for (const [x, y] of [[0.3, 0.2], [-0.4, 0.5], [0.8, -0.3]] as Array<[number, number]>) {
+      const [gx, gy] = effectivePotentialGradient(x, y, mu)
+      const fdx = (effectivePotential(x + h, y, mu) - effectivePotential(x - h, y, mu)) / (2 * h)
+      const fdy = (effectivePotential(x, y + h, mu) - effectivePotential(x, y - h, mu)) / (2 * h)
+      maxRel = Math.max(maxRel, Math.abs(gx - fdx) / (Math.abs(fdx) + 1), Math.abs(gy - fdy) / (Math.abs(fdy) + 1))
+    }
+    add('FMA ∇Ω matches a central finite difference', maxRel < 1e-6, `max rel error = ${maxRel.toExponential(2)}`)
+  }
+
+  // 52 — That same ∇Ω is consistent (to machine precision) with the restricted-3-body
+  // module's independently-written omegaGradient — two derivations, one answer.
+  {
+    const mu = 0.0123
+    let maxAbs = 0
+    for (const [x, y] of [[0.25, 0.15], [-0.6, 0.4], [1.1, -0.2]] as Array<[number, number]>) {
+      const [gx, gy] = effectivePotentialGradient(x, y, mu)
+      const [ox, oy] = omegaGradient(x, y, mu)
+      maxAbs = Math.max(maxAbs, Math.abs(gx - ox), Math.abs(gy - oy))
+    }
+    add('FMA ∇Ω agrees with restricted3body.omegaGradient', maxAbs < 1e-12, `max |Δ| = ${maxAbs.toExponential(2)}`)
+  }
+
+  // 53 — The RK4 rotating-frame integrator conserves the Jacobi constant along a
+  // regular orbit (the lone integral of the restricted three-body problem).
+  {
+    const rec = recordOrbit(0.6, 0.05, 0.001, { samples: 256, periods: 30, minSub: 10 })
+    add(
+      'FMA RK4 integrator conserves the Jacobi constant',
+      rec.valid && rec.jacobiDrift < 1e-6,
+      `relative Jacobi drift over 30 orbits = ${rec.jacobiDrift.toExponential(2)}`,
+    )
+  }
+
+  // 54 — The Kepler frequency law recovered end-to-end (IC construction + RK4 +
+  // rotating→inertial map + NAFF): the measured mean motion of a near-Keplerian
+  // orbit (μ→0) is n = a^{-3/2}.
+  {
+    let maxRel = 0
+    for (const [a, e] of [[0.6, 0.0], [0.7, 0.05], [0.5, 0.1]] as Array<[number, number]>) {
+      const c = computeCell(a, e, 1e-6, { samples: 256, periods: 30, minSub: 10 })
+      const nExp = Math.pow(a, -1.5)
+      maxRel = Math.max(maxRel, Math.abs(c.freq - nExp) / nExp)
+    }
+    add('FMA recovers the Kepler frequency law n = a^{-3/2}', maxRel < 1e-3, `max rel error vs a^{-3/2} = ${maxRel.toExponential(2)}`)
+  }
+
+  // 55 — Frequency-map diffusion separates a regular orbit from a chaotic one by
+  // many decades — the whole point of the Atlas. A near-circular orbit away from
+  // resonance is regular; a resonant eccentric orbit under a heavy perturber is chaotic.
+  {
+    const reg = computeCell(0.54, 0.0, 0.01, { samples: 256, periods: 30, minSub: 10 })
+    const cha = computeCell(0.72, 0.3, 0.01, { samples: 256, periods: 30, minSub: 10 })
+    const sep = cha.logDiffusion - reg.logDiffusion
+    const pass = reg.valid && cha.valid && reg.logDiffusion < -4 && cha.logDiffusion > -2.5 && sep > 3
+    add(
+      'FMA diffusion separates regular from chaotic',
+      pass,
+      `regular log|Δn/n|=${reg.logDiffusion.toFixed(2)} vs chaotic ${cha.logDiffusion.toFixed(2)} — ${sep.toFixed(1)} decades apart`,
+    )
+  }
+
+  // 56 — The time-frequency spectrogram's NAFF ridge is dead-flat for a pure tone
+  // and tracks a linear chirp upward — frequency drift made visible.
+  {
+    const N = 2048
+    const dt = 0.05
+    const re = new Float64Array(N)
+    const im = new Float64Array(N)
+    const w0 = 1.3
+    for (let k = 0; k < N; k++) { const t = k * dt; re[k] = Math.cos(w0 * t); im[k] = Math.sin(w0 * t) }
+    const tone = spectrogram(re, im, dt, { window: 256, hop: 64 })
+    let rmin = Infinity
+    let rmax = -Infinity
+    for (let c = 0; c < tone.cols; c++) { const f = tone.ridge[c]; if (Number.isFinite(f)) { rmin = Math.min(rmin, f); rmax = Math.max(rmax, f) } }
+    const toneFlat = tone.valid && rmax - rmin < 1e-3 && Math.abs(0.5 * (rmin + rmax) - w0) < 1e-2
+
+    const re2 = new Float64Array(N)
+    const im2 = new Float64Array(N)
+    const alpha = 0.0009
+    let ph = 0
+    for (let k = 0; k < N; k++) { ph += (0.8 + alpha * k * dt) * dt; re2[k] = Math.cos(ph); im2[k] = Math.sin(ph) }
+    const chirp = spectrogram(re2, im2, dt, { window: 256, hop: 64 })
+    let first = NaN
+    let last = NaN
+    for (let c = 0; c < chirp.cols; c++) if (Number.isFinite(chirp.ridge[c])) { first = chirp.ridge[c]; break }
+    for (let c = chirp.cols - 1; c >= 0; c--) if (Number.isFinite(chirp.ridge[c])) { last = chirp.ridge[c]; break }
+    const rising = last - first > 0.05
+
+    add(
+      'Spectrogram ridge: flat for a tone, rising for a chirp',
+      toneFlat && rising,
+      `tone ridge spread=${(rmax - rmin).toExponential(1)}; chirp ridge ${first.toFixed(3)}→${last.toFixed(3)} (+${(last - first).toFixed(3)})`,
     )
   }
 

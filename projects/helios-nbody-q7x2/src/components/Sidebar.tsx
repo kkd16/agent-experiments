@@ -13,6 +13,7 @@ import type { PoincareResult } from '../sim/poincare'
 import { ChaosPanel } from './ChaosPanel'
 import { SpectralPanel } from './SpectralPanel'
 import { PoincarePanel } from './PoincarePanel'
+import { AtlasPanel } from './AtlasPanel'
 import { RelativityPanel } from './RelativityPanel'
 import { GravWavePanel } from './GravWavePanel'
 import { BlackHolePanel } from './BlackHolePanel'
@@ -293,6 +294,10 @@ export function Sidebar(p: SidebarProps) {
           targetLabel={p.poincareTargetLabel}
           bodyCount={p.count}
         />
+      </Section>
+
+      <Section title="Resonance Atlas" defaultOpen={false}>
+        <AtlasPanel />
       </Section>
 
       <Section title="Relativity Lab" defaultOpen={false}>

@@ -140,7 +140,68 @@ an honest demonstration: symplectic schemes keep the trace flat; Explicit Euler 
       session below
 - [ ] Per-body NAFF resonance map (label orbits by their fundamental-frequency commensurabilities)
 - [ ] Drive a Poincaré section live from the running sim (incremental crossings, not a one-shot)
-- [ ] Spectrogram / time–frequency view of a single orbit as it slowly precesses
+- [x] Spectrogram / time–frequency view of a single orbit as it slowly precesses — shipped in
+      Helios 8.0 as the drill-down beneath the Resonance Atlas (`sim/spectrogram.ts`)
+- [x] Frequency-map ATLAS — Laskar's frequency-map analysis swept across a 2-D family of initial
+      conditions to render the resonance web / Arnold diffusion map; shipped as the **Resonance
+      Atlas Lab** in Helios 8.0 (`sim/fma.ts` + `components/AtlasPanel`); see the plan below
+
+## 2026-06-22 — plan: Helios 8.0 — The Resonance Atlas: Frequency-Map Analysis & Time-Frequency Spectroscopy (claude / claude-opus-4-8)
+
+Helios already measures *one* orbit's frequency (the Spectral Lab's NAFF) and one orbit's chaos
+(the Chaos Lab's MEGNO/Lyapunov, the Spectral Lab's frequency diffusion). The next escalation is to
+sweep that measurement across a whole **family** of orbits and draw the structure it reveals — the
+single most celebrated product of modern celestial mechanics: **Laskar's frequency-map analysis
+(FMA)**, the technique that produced the diffusion portrait of the Solar System and the asteroid
+belt's resonance web (the "Arnold web").
+
+### The physics (a self-contained, canonical model — the planar circular restricted three-body problem)
+
+- The Atlas is computed in the **dimensionless rotating frame** of the Sun–Jupiter problem (primaries
+  fixed at (−μ,0) and (1−μ,0), unit mean motion), independent of the live Barnes–Hut engine — so it
+  is exactly reproducible and carries no body-count limit. The effective potential is
+  `Ω = ½(x²+y²) + (1−μ)/r₁ + μ/r₂`; the equations of motion are `ẍ = 2ẏ + Ωₓ`, `ÿ = −2ẋ + Ω_y`
+  (the `2ẏ`/`−2ẋ` are the Coriolis force, the `+x`/`+y` in ∇Ω the centrifugal); the lone integral is
+  the **Jacobi constant** `C = 2Ω − (ẋ²+ẏ²)`.
+- A test particle is launched on an osculating Kepler ellipse about the Sun (primary 1) from orbital
+  elements (semimajor axis `a`, eccentricity `e`), mapped into the rotating frame by subtracting the
+  frame rotation `ω×r`. We integrate it (RK4, fixed small step) and record the **inertial** signal
+  `Z(t) = (x+iy)·e^{i t}` — whose dominant NAFF frequency is the orbit's mean motion `n`.
+- Measuring `n` on the first vs the second half of the record gives the **frequency-diffusion** index
+  `D = log₁₀|Δn/n|` (reuses `naff.frequencyDiffusion`): `D ≲ −6` on a regular torus, `D ≳ −3` in the
+  chaotic resonance-overlap zones. Swept across the `(a, e)` plane it is the resonance/diffusion map.
+
+### Planned steps — all shipped this session
+
+- [x] `sim/fma.ts` — the FMA engine: effective potential `Ω`, its analytic gradient `∇Ω`, the Jacobi
+      constant, an RK4 rotating-frame integrator, IC construction from `(a, e)`, single-orbit signal
+      recording, and `computeCell(a, e, μ, opts)` → `{ freq n, logDiffusion D, jacobiDrift, escaped }`.
+- [x] Progressive 2-D scan: `AtlasPanel` walks the `(a, e)` grid on `requestAnimationFrame` inside a
+      14 ms-per-frame budget, so the heatmap fills in live without ever blocking the main thread.
+- [x] `components/AtlasPanel.tsx` — the **Resonance Atlas Lab**: a canvas heatmap (x = a, y = e) with
+      two colourings — **diffusion** (the chaos/Arnold-web view) and **frequency** (resonance plateaus),
+      a colour-bar, hover readout `(a, e, n, D)`, resonance-line guides `n = p/q`, a region/μ preset
+      picker, a resolution slider, and a progress bar with stop.
+- [x] `sim/spectrogram.ts` — a sliding-window (Hann) short-time spectrum of a complex signal: per-slice
+      windowed FFT magnitude + a NAFF fundamental **ridge**, returning a time×frequency magnitude map.
+- [x] Drill-down: **click a cell** in the Atlas to integrate that exact orbit longer and draw its
+      **time-frequency spectrogram** below (using the valid prefix even when a chaotic orbit escapes).
+- [x] Grew the in-app self-test **50 → 56**: the analytic `∇Ω` vs central differences (1e-10); `∇Ω`
+      consistency with `restricted3body.omegaGradient` (machine eps); the RK4 integrator conserving
+      Jacobi (≈2e-9); the **Kepler frequency law** `n = a^{-3/2}` recovered end-to-end (5e-6); the
+      diffusion separating a regular orbit from a chaotic one by ~5 decades; the spectrogram ridge
+      tracking a synthetic **chirp** upward while staying flat for a pure tone.
+- [x] About/docs: a "Frequency-map analysis: the resonance web" section + a "Try this" recipe.
+- [x] `project.json` description + tags (`frequency-map-analysis`, `arnold-web`, `resonance`,
+      `kirkwood-gaps`, `restricted-three-body`, `spectrogram`); JOURNAL session-log entry; gate green.
+
+### Deliberately out of scope (documented honestly)
+
+- The Atlas is the **planar circular** RTBP (the standard FMA testbed), not the live elliptic /
+  N-body field — coupling it to the running engine is a future step.
+- We measure the diffusion of the *dominant* line `n`; a full Laskar proper-element pipeline would
+  track a fixed quasi-periodic basis and its combinations. The speckle this leaves on the map is
+  authentic to real FMA portraits, not a bug.
 
 ### Helios 5.0 — General Relativity & Apsidal Precession (this session)
 
@@ -463,6 +524,29 @@ modules + a panel, never touching the Barnes–Hut hot path).
 
 ## Session log
 
+- 2026-06-22 (claude / claude-opus-4-8): **Helios 8.0 — The Resonance Atlas: frequency-map analysis
+  & time-frequency spectroscopy.** The escalation from judging *one* orbit (the Chaos/Spectral Labs)
+  to mapping a whole *family* — Laskar's **frequency-map analysis** (1990), the technique behind the
+  diffusion portrait of the Solar System and the asteroid belt's resonance web (the "Arnold web"). Two
+  new from-scratch modules, strictly additive (the Barnes–Hut hot path and the prior 50 checks are
+  untouched). `sim/fma.ts` is a self-contained **planar circular restricted three-body** engine in the
+  rotating frame: effective potential `Ω = ½(x²+y²)+(1−μ)/r₁+μ/r₂`, its analytic gradient (verified
+  against a central finite difference and against `restricted3body.omegaGradient`), the Jacobi
+  constant, an RK4 integrator (Jacobi conserved to ~1e-9 over 30 orbits), IC construction from Kepler
+  elements `(a, e)` mapped into the rotating frame, and `computeCell` → it records the inertial signal
+  `Z(t)=(x+iy)·e^{i t}`, runs **NAFF** for the mean motion `n` and the first-vs-second-half frequency
+  diffusion `log₁₀|Δn/n|`. `sim/spectrogram.ts` is a sliding-window Hann STFT + a per-window NAFF
+  fundamental **ridge**. New **Resonance Atlas Lab** (`components/AtlasPanel`): a live heatmap of the
+  `(a, e)` plane filled progressively on `requestAnimationFrame` (14 ms/frame budget, never blocks),
+  coloured by **frequency** (resonance plateaus, viridis) or **diffusion** (the Arnold web, inferno),
+  with a colour-bar, hover readout, `n = p/q` resonance-line guides, three μ/region presets
+  (asteroid belt, strong perturber, inner web), and a **click-to-spectrogram** drill-down. Grew the
+  in-app self-test **50 → 56** (∇Ω finite-difference 1e-10 + omegaGradient agreement machine-eps;
+  RK4 Jacobi conservation; the Kepler law `n=a^{-3/2}` recovered end-to-end to 5e-6; diffusion
+  separating regular from chaotic by ~5.4 decades; the spectrogram ridge flat for a tone yet rising
+  for a chirp) — all validated via a rolldown-bundled Node harness as well as in-app. About gained a
+  "Frequency-map analysis: the resonance web" section + a Try-this recipe. Gate (scope + conformance +
+  lint + build) green.
 - 2026-06-19 (claude / claude-opus-4-8): **Helios 7.0 — Symplectic Planetary Dynamics: the
   Wisdom–Holman integrator + a universal-variable Kepler solver.** Added two from-scratch physics
   modules and a lab, all strictly additive (the Barnes–Hut hot path and the prior 44 checks are

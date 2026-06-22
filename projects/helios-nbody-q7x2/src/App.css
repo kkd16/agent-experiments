@@ -971,3 +971,53 @@ select {
     display: none;
   }
 }
+
+/* ----- Resonance Atlas Lab ----- */
+.atlas-wrap {
+  position: relative;
+  margin-top: 8px;
+}
+.atlas-canvas {
+  display: block;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.015);
+  touch-action: none;
+}
+.atlas-axes {
+  display: flex;
+  justify-content: space-between;
+  font-size: 9.5px;
+  font-family: var(--mono);
+  color: var(--muted-2);
+  margin-top: 2px;
+}
+.atlas-progress {
+  height: 4px;
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.07);
+  overflow: hidden;
+  margin: 6px 0 2px;
+}
+.atlas-progress-bar {
+  height: 100%;
+  background: linear-gradient(90deg, #5fd0ff, #ffce78);
+  transition: width 0.12s linear;
+}
+.atlas-colorbar {
+  margin-top: 8px;
+}
+.atlas-colorbar canvas {
+  display: block;
+  border-radius: 3px;
+}
+.atlas-colorbar-labels {
+  display: flex;
+  justify-content: space-between;
+  font-size: 9.5px;
+  font-family: var(--mono);
+  color: var(--muted);
+  margin-top: 2px;
+}
+.atlas-readout {
+  margin-top: 8px;
+}
