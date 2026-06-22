@@ -676,3 +676,7 @@ h1 {
 .streak-active-bg {
   animation: bgPulse 2s infinite;
 }
+
+.mirror-mode {
+  transform: scaleX(-1);
+}
