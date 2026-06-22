@@ -233,6 +233,16 @@ const SECTIONS: Section[] = [
     ],
   },
   {
+    title: 'Vectorized execution  —  the columnar engine',
+    entries: [
+      { syntax: 'two execution engines', note: 'The default executor is Volcano (volcano-iterator): a tree of operators, each pulling one row at a time through next(). QueryForge also ships a second, from-scratch VECTORIZED engine (src/db/vectorized/*) for the analytic subset — single table, numeric WHERE / GROUP BY / aggregates — that processes batches of a column at a time. Race them in the Vectorize Lab.' },
+      { syntax: 'columnar store + selection vector', note: 'A relation is transposed once into per-column arrays (numeric columns into a packed Float64Array). A batch is a window of rows plus an Int32Array selection vector of the still-active positions, so a filter only narrows the selection — no intermediate tuples are materialized.' },
+      { syntax: 'type-specialized kernels', note: 'WHERE / arithmetic / comparisons compile to closures over the captured typed arrays (col[i] directly, no boxed SqlValue, no generic comparator), with NULL propagation and Kleene three-valued logic matched byte-for-byte to the row engine.' },
+      { syntax: 'native hash aggregate', note: 'GROUP BY hashes the numeric key tuple with an open-addressing table and accumulates COUNT/SUM/AVG/MIN/MAX into flat typed arrays — no per-row string key. Order-preserving, so even a floating-point SUM matches the Volcano engine bit-for-bit. The result is an identical multiset, typically several× faster (20×+ on group-by roll-ups).' },
+      { syntax: 'safe fall-back', note: 'A conservative analyzer accepts only what the kernels provably match; anything else (joins, DISTINCT, non-numeric keys, window/ordered-set aggregates, …) declines and the query runs on Volcano. Correct over fast, always.' },
+    ],
+  },
+  {
     title: 'Transactions',
     entries: [
       { syntax: 'BEGIN; … COMMIT;', note: 'Snapshot taken at BEGIN; COMMIT keeps changes.' },

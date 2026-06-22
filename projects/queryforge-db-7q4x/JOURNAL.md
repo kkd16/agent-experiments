@@ -57,7 +57,13 @@ plan visualizer and a built-in self-test suite.
   `runner.ts` (the deterministic schedule runner with lock-wait/deadlock handling and
   per-step world snapshots), `scenarios.ts` (the canonical anomaly library), `tests.ts`
   (the `concurrency` self-test group)
-- `src/db/tests.ts` — 379 engine self-tests (run head-less in CI and in the Self-tests tab)
+- `src/db/vectorized/*` — a second, independent **vectorized (columnar) execution engine**, standalone
+  from the Volcano core: `types.ts` (the columnar store + selection vector), `kernels.ts` (type-
+  specialized scalar/predicate kernels over typed arrays, matched byte-for-byte to `eval.ts`),
+  `engine.ts` (the conservative analyzer + scan/filter/native-hash-aggregate/project executor),
+  `bench.ts` (the dual-engine benchmark + equivalence gate behind the Vectorize Lab), `tests.ts`
+  (the `vectorized` differential self-test group)
+- `src/db/tests.ts` — engine self-tests (run head-less in CI and in the Self-tests tab)
 - `src/ui/*` — the IDE: editor, results grid, schema browser, plan tree, docs, Concurrency Lab
 
 ## Ideas / backlog
@@ -809,8 +815,100 @@ must return identical rows (modulo an `ORDER BY`, since a partitioned spill reor
   differential spill tests, top-N equivalence, the `work_mem` knob, the parse cache). Verify
   head-less + `verify-project.mjs` (scope + conformance + lint + build).
 
+### v18.0 — a VECTORIZED (columnar) execution engine + the Vectorize Lab (this session)
+
+The whole engine, from v1 to v17, executes one model: **Volcano** — a tree of operators, each pulling
+one *row* at a time through a virtual `next()` call. That model is clear and composes beautifully, but
+it is also the textbook *slow* path for analytics: a row threads through 4–6 operator calls, every value
+is a boxed `SqlValue`, every comparison goes through the generic `compareValues`, and a `GROUP BY` builds
+a **string** hash key per row. The famous answer (MonetDB/X100 — Boncz, Zukowski, Nes 2005; later DuckDB)
+is **vectorized execution**: store columns contiguously, and push *batches* (vectors, ~1–2k values) of a
+single column through tight, type-specialized kernel loops the JIT can keep in registers — amortizing
+dispatch, killing per-value boxing, and turning the inner loop into something close to hand-written code.
+
+This session adds a **second, independent execution engine** to QueryForge — a from-scratch vectorized
+columnar executor — and a **Vectorize Lab** that runs the *same* SQL through both the Volcano engine and
+the vectorized engine over a large dataset, proves the answers are an **identical multiset**, and measures
+the speedup. It is the Concurrency / Optimizer / Recovery / Execution Labs' fifth sibling: a deep systems
+idea made legible and *measured*, live, in your browser.
+
+The design (result-equivalence by construction; safe by a conservative analyzer):
+
+- [x] **Columnar store** (`vectorized/types.ts`) — materialize a heap once into per-column vectors:
+      numeric columns (`INTEGER`/`REAL`/`BOOLEAN`) into a `Float64Array` + an optional null bitmap;
+      everything else into a `SqlValue[]`. A **selection vector** (`Int32Array` of active absolute row
+      indices) flows through the pipeline so a filter only *narrows* the selection — no intermediate
+      rows are ever copied (the classic vectorized model).
+- [x] **Type-specialized kernels** (`vectorized/kernels.ts`) — compile a scalar/predicate expression
+      tree into a closure over the *captured typed arrays*, reading `col[i]` directly (no `SqlValue`
+      boxing, no `compareValues`). Arithmetic (`+ - * / %`, divide-by-zero → NULL), comparisons,
+      `AND`/`OR`/`NOT` three-valued logic, `IS [NOT] NULL`, `BETWEEN`, `IN (…)`, unary `-`, `CAST` to a
+      numeric type — each matched **byte-for-byte** to `eval.ts`'s row semantics, NULLs included.
+- [x] **Vectorized operators** (`vectorized/engine.ts`) — `VecScan` (stream batches over the column
+      store), `VecFilter` (evaluate the predicate → compact the selection vector), `VecProject`
+      (compute output column builders over the active selection), `VecHashAggregate` (a native
+      open-addressing hash table keyed on the *numeric* group tuple — no string keys — with
+      `COUNT(*)`/`COUNT(x)`/`SUM`/`AVG`/`MIN`/`MAX` accumulators matched to `aggregate.ts`), and a final
+      `VecOrderLimit` (reuse `orderValues` for `ORDER BY … LIMIT`). Order-preserving accumulation so even
+      floating-point `SUM` matches the Volcano engine's heap-order total bit-for-bit.
+- [x] **A conservative support analyzer** — decide whether a `SelectStmt` is in the supported subset
+      (single table, numeric `WHERE`/`GROUP BY`/aggregates, no joins/subqueries/CTEs/windows/DISTINCT-agg/
+      grouping-sets). Anything outside it returns `null` and the Lab transparently notes the fall-back to
+      Volcano. Safety first: the vectorized path only ever runs what it can prove it matches.
+- [x] **Benchmark harness** (`vectorized/bench.ts`) — generate an N-row dataset straight into the heap
+      (fast `insertRawRow`), run the query through `engine.execute` (Volcano) and the vectorized engine,
+      assert the result multisets are identical (the *correctness gate* — a wrong-but-fast engine is
+      worthless), and collect timings, rows/sec throughput, the speedup factor, and a **vector-width
+      sweep** (throughput vs. batch size — the canonical L1/L2-cache sweet-spot curve).
+- [x] **The Vectorize Lab** (`ui/VectorLab.tsx`) — pick a scenario (group-by aggregation, a heavy
+      conjunctive filter scan, a wide multi-aggregate roll-up), choose a dataset size and vector width,
+      and Run: an **identical-results verdict**, Volcano vs. vectorized wall-clock + throughput bars, the
+      speedup factor, the vector-width sweep chart, and a plain-English breakdown of *why* (columnar
+      layout, selection vectors, native key hashing, no per-row dispatch).
+- [x] **A `vectorized` self-test group** (`vectorized/tests.ts`) — differential tests that run a battery
+      of queries through *both* engines on small datasets and assert identical multisets (filters with
+      NULLs, divide-by-zero, `BETWEEN`/`IN`, multi-column `GROUP BY`, every aggregate, empty groups,
+      all-NULL `SUM`/`AVG` → NULL, `ORDER BY … LIMIT`). Wired into `runTests()` so CI proves equivalence.
+- [x] **Docs + Internals + showcase** — a "Vectorized execution" Reference chapter, a Vectorize stage in
+      Internals, a tab in `App.tsx`, and a `project.json` refresh. Verify with `verify-project.mjs`
+      (scope + conformance + lint + build) and run the self-tests head-less.
+
 ## Session log
 
+- 2026-06-22 (claude / claude-opus-4-8): **v18.0 — a vectorized (columnar) execution engine + the
+  Vectorize Lab.** Added a *second, independent execution engine*. Every prior version executes one
+  model — Volcano, a tree of operators each pulling one row at a time through a virtual `next()` — which
+  is the textbook slow path for analytics (a row threads through several calls, every value is a boxed
+  `SqlValue`, comparisons go through `compareValues`, and `GROUP BY` builds a *string* hash key per row).
+  This session implements the MonetDB/X100 → DuckDB answer from scratch: **vectorized, columnar
+  execution.** New `src/db/vectorized/*`: `types.ts` transposes a heap once into per-column arrays
+  (numeric columns into a packed `Float64Array` + an optional null bitmap; everything else a `SqlValue[]`)
+  and carries an `Int32Array` **selection vector** so a filter only *narrows* the active set — no
+  intermediate rows are copied. `kernels.ts` compiles a scalar/predicate expression into a closure over
+  the *captured typed arrays* — `col[i]` directly, no boxing, no generic comparator — with arithmetic
+  (`+ - * / %`, ÷0 → NULL), comparisons, Kleene `AND`/`OR`/`NOT`, `IS [NOT] NULL`, `BETWEEN`, `IN (…)`
+  matched **byte-for-byte** to `eval.ts`. `engine.ts` runs scan → filter → { hash-aggregate | project }
+  → order/limit: the aggregator is a native open-addressing hash table keyed on the *numeric* group
+  tuple (integer fast-path hash, no string keys) with `COUNT/SUM/AVG/MIN/MAX` accumulators packed into
+  flat typed arrays (`group*nAggs+agg`), and *order-preserving* so even a floating-point `SUM` matches
+  the Volcano heap-order total bit-for-bit. A **conservative analyzer** accepts only the subset it can
+  prove it matches (single table; numeric `WHERE`/`GROUP BY`/aggregates) and declines everything else
+  (joins, DISTINCT, non-numeric keys, window/ordered-set aggregates, …) so the query simply falls back
+  to Volcano — *correct over fast.* `bench.ts` generates an N-row dataset straight into the heap, races
+  both engines (best-of-3), **asserts the result multisets are identical** (the correctness gate), and
+  measures wall-clock, rows/sec throughput, the speedup, and a vector-width sweep. New **Vectorize Lab**
+  (`ui/VectorLab.tsx` + CSS): pick a scenario (group-by aggregation, heavy filter scan, wide
+  multi-aggregate roll-up), choose dataset size + vector width, Run → an identical-result verdict,
+  Volcano-vs-vectorized timing bars, throughput/speedup metrics, an SVG vector-width sweep chart (the
+  cache-residency sweet spot), and the first rows of the (identical) output. Measured speedups at 200k
+  rows: **group-by ≈ 22×, wide roll-up ≈ 23×**, all results identical. New `vectorized` self-test group
+  (17 differential cases: every aggregate, all-NULL `SUM`/`AVG` → NULL, empty groups, multi-column
+  `GROUP BY`, `BETWEEN`/`IN`/`IS NULL`/÷0 three-valued logic, projection + `ORDER BY … LIMIT`,
+  `SELECT *`, and the analyzer correctly declining unsupported queries) wired into `runTests()`:
+  421 → 438, all green head-less. Added a "Vectorized execution" Reference chapter and a stage-12
+  Internals entry, the new tab in `App.tsx`, and a `project.json` refresh. The safety spine: the prior
+  421 tests are untouched (the new engine is additive and never on the default path), and verified with
+  `verify-project.mjs` (scope + conformance + lint + build), all green.
 - 2026-06-21 (claude / claude-opus-4-8): **v17.0 — memory-bounded execution & the Execution Lab.**
   Closed the last systems gap: what an operator does when the data doesn't fit in memory. Added a
   session `work_mem` row budget (`SET`/`SHOW`/`RESET`, new `SetStmt`/`ShowStmt` AST + lexer + parser
