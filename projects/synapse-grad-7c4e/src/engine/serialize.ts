@@ -94,6 +94,7 @@ export const GNN_SLOT_PREFIX = 'synapse:nslot:';
 export const KAN_SLOT_PREFIX = 'synapse:kslot:';
 export const NODE_SLOT_PREFIX = 'synapse:oslot:';
 export const GAN_SLOT_PREFIX = 'synapse:aslot:';
+export const BAYES_SLOT_PREFIX = 'synapse:uslot:';
 
 // ---- URL hash sharing --------------------------------------------------------------
 

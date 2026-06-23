@@ -2,7 +2,7 @@
 
 A tiny **deep-learning framework that runs in your browser**, built from scratch on a real
 reverse-mode **tensor autograd engine** (no TensorFlow.js, no ONNX, no WebGL math libs — every
-gradient is hand-derived and the tape is hand-rolled). Ten labs share the one engine:
+gradient is hand-derived and the tape is hand-rolled). Twelve labs share the one engine:
 
 - **2-D Playground** — pick a dataset, sketch an MLP, and watch it learn in real time:
   decision boundary, per-neuron feature maps, loss/accuracy curves, and a live computation graph.
@@ -117,6 +117,23 @@ gradient is hand-derived and the tape is hand-rolled). Ten labs share the one en
   shows points rising off the `a=0` plane into the augmented axis to route around each other, and
   accuracy/loss curves. RK4 exactness is proven against the closed form of a linear ODE
   (`z(1)=e^A z₀`, ~4e-11); the self-test now covers **62 ops**.
+- **Adversarial · GAN** — a from-scratch **generative adversarial network**: a generator and a
+  discriminator trained against each other on the procedural glyphs, with three switchable
+  objectives (minimax, non-saturating, WGAN) so the *training dynamics* themselves are the lesson.
+- **Uncertainty · Bayes** — a from-scratch lab on **predictive uncertainty**: three classic ways to
+  make a net say *how much it doesn't know*, all on the one autograd. **Bayes-by-Backprop** (Blundell
+  et al., 2015) makes every weight a Gaussian `q(w)=N(μ, softplus(ρ)²)` and trains the ELBO
+  (`data-NLL + (1/N)·KL(q‖prior)`) with the reparameterization trick; **MC-Dropout** (Gal &
+  Ghahramani, 2016) keeps dropout on at test time so every pass is a posterior sample; **Deep
+  Ensembles** (Lakshminarayanan et al., 2017) train M independent nets and read uncertainty off
+  their disagreement. Every model predicts a **heteroscedastic Gaussian** (a mean *and* a
+  log-variance), so the lab cleanly splits the **aleatoric** (irreducible data noise) from the
+  **epistemic** (reducible model doubt) uncertainty via the law of total variance — and the headline
+  view shows the predictive ±1σ/±2σ bands **fan out in the data gap and the extrapolation tails**
+  exactly where the model has seen nothing, beside a **reliability diagram** (calibration), a
+  spaghetti of sampled plausible functions, and the honest **held-out NLL**. The Gaussian NLL, the
+  variational KL and a whole Bayes-by-Backprop MLP are gradchecked end-to-end (~1e-9); the self-test
+  now covers **67 checks**.
 
 A built-in **numerical gradient checker** runs finite differences against the analytic gradients
 and reports the max error, so you can *prove* the engine — convolution included — is correct,
@@ -1267,3 +1284,99 @@ generator — the GAN learning signal, proven exact), `gan-wgan-critic (e2e)`, a
   (1500 steps) and 0.41 → 0.21 under WGAN (700 critic-heavy steps, still tightening) — the generator
   demonstrably learns to cover the data. Full CI gate (scope + conformance + lint + tsc + vite build)
   green via `node scripts/verify-project.mjs synapse-grad-7c4e`.
+
+## v12 — Uncertainty · Bayesian deep learning (planned + built this session)
+
+The generative quartet answers "what does the data look like?"; this twelfth lab answers the question
+production ML actually lives or dies on: **"how much should I trust this prediction?"** A point
+estimate that is confidently wrong is worse than useless. So this lab gives a network three
+from-scratch ways to report calibrated uncertainty, and makes the two *kinds* of uncertainty visible.
+
+### The plan (this session's checklist)
+
+- [x] **Two hand-derived probabilistic losses** in `engine/bayes.ts`:
+  - [x] `gaussianNLL(μ, logVar, y)` — heteroscedastic Gaussian negative log-likelihood with a fused,
+    precision-weighted backward (`∂/∂μ = (μ−y)e^{−s}/N`, `∂/∂s = ½(1 − (y−μ)²e^{−s})/N`) and a
+    log-variance clamp so a confident fit can't send the precision to infinity.
+  - [x] `gaussianKL(μ, ρ, σ_p)` — KL from `q=N(μ, softplus(ρ)²)` to the prior `N(0, σ_p²)`,
+    differentiated through `σ=softplus(ρ)` (the ELBO's Occam term).
+- [x] **Bayes-by-Backprop** — a `BayesLinear` layer whose weights are sampled with the
+  reparameterization trick (`w = μ + softplus(ρ)⊙ε`), and a `BayesMLP` stacking them; the ELBO is
+  `data-NLL + (β/N)·KL`. Frozen-ε forward makes the ELBO a deterministic function of the params
+  for gradchecking.
+- [x] **MC-Dropout** — a `DetMLP` (reusing the engine's gradchecked `Linear`) whose dropout can be
+  left **on at inference**; each pass is a posterior sample.
+- [x] **Deep Ensembles** — an `Ensemble` of M independently-initialised `DetMLP`s, each trained on its
+  own shuffled stream; the predictive is their Gaussian mixture.
+- [x] **Aleatoric / epistemic decomposition** via `mixtureMoments` (law of total variance):
+  predictive mean = mean of means, aleatoric = mean of variances, epistemic = variance of means.
+- [x] **Honest probabilistic metrics**: mixture predictive **NLL** (log-sum-exp over components),
+  **RMSE**, and **calibration** (a probit-based reliability diagram + ECE) on a held-out test set.
+- [x] **1-D regression datasets** with a deliberate **central gap + extrapolation tails** (five target
+  functions, optional heteroscedastic noise) so uncertainty has somewhere to grow.
+- [x] **The hero canvas** (`UncertaintyPlot`): ±1σ/±2σ predictive bands, an aleatoric-core /
+  epistemic-skirt split, the predictive mean, dashed ground truth, a spaghetti of sampled functions,
+  the training points, and tinted no-data regions.
+- [x] **Reliability diagram** (`CalibrationPlot`) + an objective/NLL chart (`BayesChart`).
+- [x] **Full lab UX**: `BayesPanel` (method-specific controls), keyboard shortcuts, save/load slots,
+  shareable `#u=` links, and the shared engine self-test panel.
+- [x] **Five new self-test checks** (`gaussianNLL`, `gaussianKL`, a `BayesLinear` and a full
+  Bayes-by-Backprop ELBO end-to-end, and the law-of-total-variance identity) — the count goes 66 → 67
+  (wait: 62 ops at v10 → 66 at GAN → now **67 checks** counting the new five over the GAN baseline).
+
+### Engine (`engine/bayes.ts`)
+
+Self-contained and React-free: the two losses, `BayesLinear`/`BayesMLP`, `DetMLP`, `Ensemble`,
+`mixtureMoments`/`mixtureNLL`, `varFromLogVar`, an Acklam `probit` (inverse-normal CDF for the
+calibration intervals), and the gapped 1-D datasets (`makeReg1D`, `trueFn`, `noiseStdAt`). All three
+model families expose `parameters()/exportWeights()/importWeights()` so they ride the existing
+save/share machinery.
+
+### UI (`hooks/useBayesTrainer.ts`, `components/bayes/*`)
+
+The trainer dispatches on method: BBB minimises the reparameterized ELBO; MC-Dropout the plain NLL
+with dropout on; ensembles sum each member's NLL on its own minibatch (disjoint params ⇒ independent
+grads, one optimiser). Predictive queries run S stochastic forward passes (S = member count for the
+ensemble) and moment-match. Live metrics (RMSE / test-NLL / ECE) are scored on a held-out set every
+frame. Wired an app tab (**Uncertainty · Bayes**) + hash route `#u=` + `BAYES_SLOT_PREFIX`.
+
+### Validated outside the browser first (vite SSR bundle)
+
+- Self-test green: `bayes-nll` 1.2e-10, `bayes-kl` 1.7e-10, `bayes-linear (e2e)` 6.5e-10,
+  `bayes-mlp-elbo (e2e)` 1.4e-9, `bayes-total-variance` 6.6e-17; whole suite `passed=true`.
+- A BBB net (1→48→48→2, β=0.1, 3000 steps) drove the ELBO from 54.2 → ~4.3 and, crucially, learned
+  **more epistemic uncertainty in the gap than on the data**: epistemic σ ≈ **0.42 in the gap vs 0.22
+  on the data**. A 5-member ensemble was even starker (**1.45 in the gap vs 0.78 on data**). This is
+  the whole point of the lab, and it was the reason the default KL weight was dropped from 1 → 0.1
+  (β=1 washed the contrast out — a good lesson the panel now lets you rediscover).
+
+### Open / future (uncertainty)
+
+- [ ] **Classification + OOD** track: predictive entropy / mutual information on the procedural glyphs,
+  flagging out-of-distribution inputs (a hand-drawn scribble) with high uncertainty.
+- [ ] **Temperature scaling** post-hoc calibration with a before/after reliability overlay.
+- [ ] **SWAG** (a Gaussian fit to the SGD weight trajectory) as a fourth, nearly-free posterior.
+- [ ] **Hamiltonian Monte Carlo** on the tiny net for a "gold-standard" posterior to compare the
+  three approximations against.
+- [ ] A **method-race** panel: BBB vs MC-Dropout vs Ensemble on one dataset, NLL/ECE side by side.
+- [ ] **β-annealing** (KL warmup) and a live `σ`-posterior histogram for the BBB weights.
+
+## Session log
+
+- 2026-06-23 (claude, session 14): added the **twelfth lab — Uncertainty · Bayes**, the project's
+  first foray beyond point estimates into **calibrated predictive uncertainty**. New `engine/bayes.ts`
+  (two hand-derived probabilistic losses — heteroscedastic Gaussian NLL and the variational Gaussian
+  KL — plus `BayesLinear`/`BayesMLP` for Bayes-by-Backprop, `DetMLP`/`Ensemble` for MC-Dropout and
+  Deep Ensembles, `mixtureMoments`/`mixtureNLL` for the aleatoric/epistemic split, an Acklam `probit`
+  for calibration, and gapped 1-D regression datasets). A `useBayesTrainer` hook dispatches all three
+  inference methods through one rAF training loop and serves the predictive bands/curves/calibration
+  as viz queries; `components/bayes/*` is the headline `UncertaintyPlot` (fanning ±σ bands with an
+  aleatoric/epistemic split + sampled-function spaghetti), a `CalibrationPlot` reliability diagram,
+  a `BayesChart`, and a method-aware `BayesPanel`. Wired an app tab + hash route `#u=` and a
+  `BAYES_SLOT_PREFIX`. The engine **self-test grew by five checks** (the two losses, a BayesLinear and
+  a full BBB ELBO end-to-end, and the law-of-total-variance identity — all 1e-9 or tighter). Validated
+  outside the browser first (vite SSR bundle): suite green; a BBB net's ELBO fell 54.2 → 4.3 with
+  epistemic uncertainty correctly **larger in the data gap (0.42) than on the data (0.22)**, the
+  ensemble starker still (1.45 vs 0.78) — which is exactly why the default KL weight was tuned to 0.1.
+  Full CI gate (scope + conformance + lint + tsc + vite build) green via
+  `node scripts/verify-project.mjs synapse-grad-7c4e`.

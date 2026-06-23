@@ -25,6 +25,7 @@ import { GAN } from './gan';
 import { GNN, buildAdj, type ConvKind } from './gnn';
 import { KAN, KANLayer, makeGrid, evalSplineBasis } from './kan';
 import { NeuralODE, ODEFunc, odeIntegrate, adjointDynamicsGrad, terminalAdjointCE, makeNodeDataset } from './node-ode';
+import { gaussianNLL, gaussianKL, BayesLinear, BayesMLP, mixtureMoments } from './bayes';
 
 export interface OpCheck {
   name: string;
@@ -804,6 +805,111 @@ export function runSelfTest(seed = 7): SelfTestReport {
     const pairs: [number, number][] = [];
     for (let pi = 0; pi < bp.length; pi++) for (let i = 0; i < bp[pi].length; i++) pairs.push([paramGrads[pi][i], bp[pi][i]]);
     ops.push(relCheck('node-adjoint=backprop', pairs));
+  }
+
+  // ---- Bayesian deep learning (uncertainty lab) -------------------------------------
+  //
+  // The two hand-derived probabilistic losses, a single reparameterized variational layer, and a
+  // whole Bayes-by-Backprop MLP gradchecked end-to-end through its ELBO. The variational forward
+  // path draws weights w = μ + softplus(ρ)⊙ε; freezing ε once (per check) makes the ELBO a clean
+  // deterministic function of the parameters, exactly the way the VAE's reparameterization is
+  // gradchecked.
+  {
+    const B = 5;
+    const mu = leaf(rng, B, 1);
+    const lv = leaf(rng, B, 1); // log-variance in [-1,1] — inside the precision clamp, so exact
+    const td = new Float64Array(B);
+    for (let i = 0; i < B; i++) td[i] = rng() * 2 - 1;
+    const target = Tensor.fromFlat(td, B, 1, false);
+    ops.push(checkOp('bayes-nll', [mu, lv], () => gaussianNLL(mu, lv, target), rng));
+  }
+  {
+    const muK = leaf(rng, 3, 4);
+    const rhoK = leaf(rng, 3, 4);
+    ops.push(checkOp('bayes-kl', [muK, rhoK], () => gaussianKL(muK, rhoK, 0.5), rng));
+  }
+  {
+    const inF = 3;
+    const B = 4;
+    const layer = new BayesLinear(inF, 2, 'tanh', rngFrom(91), -2);
+    const eps = layer.sampleEps(rngFrom(123)); // frozen ⇒ deterministic
+    const xd = new Float64Array(B * inF);
+    for (let i = 0; i < xd.length; i++) xd[i] = rng() * 1.4 - 0.7;
+    const x = Tensor.fromFlat(xd, B, inF, false);
+    const td = new Float64Array(B);
+    for (let i = 0; i < B; i++) td[i] = rng() * 2 - 1;
+    const target = Tensor.fromFlat(td, B, 1, false);
+    const z = new Int32Array(B);
+    const o = new Int32Array(B).fill(1);
+    ops.push(
+      checkOp(
+        'bayes-linear (e2e)',
+        layer.parameters(),
+        () => {
+          const out = layer.forwardWith(x, eps);
+          return gaussianNLL(gatherCols(out, z), gatherCols(out, o), target);
+        },
+        rng,
+      ),
+    );
+  }
+  {
+    const net = new BayesMLP(2, [4], rngFrom(97), 'tanh', -2);
+    const eps = net.sampleAllEps(rngFrom(131));
+    const B = 5;
+    const xd = new Float64Array(B * 2);
+    for (let i = 0; i < xd.length; i++) xd[i] = rng() * 1.4 - 0.7;
+    const x = Tensor.fromFlat(xd, B, 2, false);
+    const td = new Float64Array(B);
+    for (let i = 0; i < B; i++) td[i] = rng() * 2 - 1;
+    const target = Tensor.fromFlat(td, B, 1, false);
+    const z = new Int32Array(B);
+    const o = new Int32Array(B).fill(1);
+    const N = 80;
+    ops.push(
+      checkOp(
+        'bayes-mlp-elbo (e2e)',
+        net.parameters(),
+        () => {
+          const out = net.forwardWith(x, eps);
+          const nll = gaussianNLL(gatherCols(out, z), gatherCols(out, o), target);
+          return nll.add(net.kl(0.5).scale(1 / N));
+        },
+        rng,
+      ),
+    );
+  }
+  {
+    // Law of total variance: the mixture predictive variance (aleatoric + epistemic) must equal
+    // the brute-force second moment (1/S)Σ(var_s + mean_s²) − (mean of means)².
+    const S = 6;
+    const G = 4;
+    const means: Float64Array[] = [];
+    const vars: Float64Array[] = [];
+    for (let s = 0; s < S; s++) {
+      const m = new Float64Array(G);
+      const v = new Float64Array(G);
+      for (let g = 0; g < G; g++) {
+        m[g] = rng() * 2 - 1;
+        v[g] = 0.2 + rng();
+      }
+      means.push(m);
+      vars.push(v);
+    }
+    const pm = mixtureMoments(means, vars, G);
+    const pairs: [number, number][] = [];
+    for (let g = 0; g < G; g++) {
+      let m2 = 0;
+      let mBar = 0;
+      for (let s = 0; s < S; s++) {
+        m2 += vars[s][g] + means[s][g] * means[s][g];
+        mBar += means[s][g];
+      }
+      mBar /= S;
+      const brute = m2 / S - mBar * mBar;
+      pairs.push([pm.aleatoric[g] + pm.epistemic[g], brute]);
+    }
+    ops.push(relCheck('bayes-total-variance', pairs));
   }
 
   const maxRelError = ops.reduce((m, o) => Math.max(m, o.maxRelError), 0);
