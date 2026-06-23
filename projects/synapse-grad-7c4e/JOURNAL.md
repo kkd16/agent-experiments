@@ -2,7 +2,7 @@
 
 A tiny **deep-learning framework that runs in your browser**, built from scratch on a real
 reverse-mode **tensor autograd engine** (no TensorFlow.js, no ONNX, no WebGL math libs — every
-gradient is hand-derived and the tape is hand-rolled). Eight labs share the one engine:
+gradient is hand-derived and the tape is hand-rolled). Nine labs share the one engine:
 
 - **2-D Playground** — pick a dataset, sketch an MLP, and watch it learn in real time:
   decision boundary, per-neuron feature maps, loss/accuracy curves, and a live computation graph.
@@ -83,6 +83,22 @@ gradient is hand-derived and the tape is hand-rolled). Eight labs share the one 
   structure the graph contributes (SBM: ~96% test accuracy with the graph vs ~54% without). Alongside:
   a live **PCA of the learned embeddings** untangling the classes, and train/val/held-out-test accuracy
   curves.
+- **KAN · Splines** — a from-scratch **Kolmogorov–Arnold Network** (Liu et al., 2024), the
+  architecture that moves the nonlinearity from the *nodes* to the *edges*: every connection carries a
+  **learned univariate function** φ(x) = w·silu(x) + a **B-spline**, and a node simply sums. The whole
+  layer is **one fused autograd op** whose hand-derived backward differentiates the output w.r.t. the
+  base weights, every spline coefficient, *and the input x* — the chain rule through the analytic
+  B-spline derivative B′(x), which is what lets KAN layers stack (gradchecked end-to-end to ~1e-6,
+  including the dx path, in the self-test). The headline is the **iconic KAN diagram**: the network
+  drawn as a graph of functions, with each edge's spline **rendered inline** and animating as it
+  trains — unimportant edges fade as the net prunes itself, and you can literally read the computation
+  off the picture. Click any edge to **inspect** its φ with the spline's knots marked. It does both
+  **2-D classification** (live decision boundary) and **1-D regression** (the learned curve through the
+  noisy data — a tiny KAN nails sharp steps/sawtooths a same-size ReLU MLP smears, R²≈0.98). And it
+  exposes the architecture's superpower: the B-spline basis is a **partition of unity** (proven to
+  machine precision) and the coefficients can be **re-solved onto a new knot vector by least squares**,
+  so a *trained* KAN can be **refined live** (×2 grid resolution) or **re-centred** onto its real
+  activation range **without forgetting** — the curves are preserved to ~1e-5.
 
 A built-in **numerical gradient checker** runs finite differences against the analytic gradients
 and reports the max error, so you can *prove* the engine — convolution included — is correct,
@@ -135,6 +151,11 @@ src/
     graph-data.ts procedural graphs: a Stochastic Block Model, the real Zachary Karate Club, and kNN
                   geometric graphs (moons / rings / blobs / spirals); each carries an edge list, labels,
                   and *weak* class-signal-in-noise node features so the structure carries the signal
+    kan.ts        a from-scratch Kolmogorov–Arnold Network: the extended-uniform B-spline grid +
+                  `evalSplineBasis` (Cox–de Boor recursion with the exact analytic derivative), one fused
+                  differentiable `KANLayer` (φ = SiLU base + spline per edge; backward into base/coeff/
+                  bias *and* x), grid refitting by least squares (`refitToGrid` → grid extension /
+                  re-centring, function-preserving), and the `KAN` model (forward + tape-free `infer`)
     rl-env.ts     from-scratch RL environments: CartPole (gym dynamics), a GridWorld maze
                   (one-hot states, 4 layouts), Pendulum (continuous-torque swing-up) and
                   MountainCar (sparse reward + potential-based shaping), each a reset/step MDP
@@ -150,7 +171,9 @@ src/
     selftest.ts   one-click gradcheck of *every* engine op — conv/pool, the whole Transformer, the
                   whole VAE, the whole denoiser AND a whole RealNVP flow end-to-end, plus the diffusion
                   schedule / forward-marginal / posterior / DDIM+CFG value identities and the flow's
-                  invertibility & log-det-vs-Jacobian identities (all machine precision)
+                  invertibility & log-det-vs-Jacobian identities, AND the fused KAN B-spline layer
+                  end-to-end (x + every param), the spline partition-of-unity and grid-refit
+                  preservation (all machine precision / ~1e-6)
   components/
     PlaygroundLab.tsx      the 2-D lab (decision boundary / regression) wiring
     DecisionBoundary.tsx   canvas heatmap of model output over the input plane
@@ -217,15 +240,26 @@ src/
                            labeled nodes haloed, GAT edges weighted by attention, hover-to-highlight
       EmbeddingView.tsx    a 2-D PCA of the penultimate node embeddings untangling the classes
       MetricsChart.tsx     train / val / held-out test node-classification accuracy curves
+    kan/
+      KANLab.tsx           the KAN · Splines lab layout + keyboard shortcuts + save/share `#k=`
+      KANPanel.tsx         task (classify/regress) / dataset / arch / spline-grid / training controls,
+                           the live ×2-grid-refine and fit-grid-to-data buttons, stats, gradcheck, self-test
+      KANDiagram.tsx       the headline: the network as a graph of functions, each edge's spline drawn
+                           inline and animating, edge prominence ∝ φ magnitude, click-to-inspect
+      EdgeInspector.tsx    a magnified view of one edge's φ(x) with the spline's knot positions marked
+      KANBoundary.tsx      the classification decision-boundary field behind the data points
+      KANFunctionFit.tsx   the 1-D regression view: the learned curve through the noisy samples
   hooks/
     ...
     useGNNTrainer.ts     owns the GNN+optimizer+graph; full-batch masked-CE training on the labeled
                          nodes, the stratified semi-supervised split, and the node-view query
+    useKANTrainer.ts     owns the KAN+optimizer+data; full-batch CE/MSE training, the boundary/fit/diagram
+                         views, train/val accuracy-or-R² tracking, and the live grid refine/refit actions
   lib/
     raster.ts     canvas grid painting + color ramps for the vision views
     pca.ts        2-D PCA (power iteration + deflation) for the latent scatter + manifold
     graph-layout.ts  a Fruchterman–Reingold force-directed layout for the abstract graphs (SBM, Karate)
-  App.tsx           tabbed shell: Playground ⟷ Vision · CNN ⟷ Transformer ⟷ Generative · VAE ⟷ Diffusion · DDPM ⟷ Control · RL ⟷ Graph · GNN
+  App.tsx           tabbed shell: Playground ⟷ Vision · CNN ⟷ Transformer ⟷ Generative · VAE ⟷ Diffusion · DDPM ⟷ Control · RL ⟷ Graph · GNN ⟷ KAN · Splines
 ```
 
 ## Backlog / ideas
@@ -796,6 +830,82 @@ better), confirm training actually learns and that the graph-on/graph-off gap is
 expected direction, then keep the full CI gate (scope + conformance + lint + tsc + vite build) green
 via `node scripts/verify-project.mjs synapse-grad-7c4e`.
 
+### Session 11 — a ninth lab: KAN · Splines (claude, 2026-06-23)
+
+Every lab so far is a *node*-nonlinearity network: a fixed activation (ReLU/GELU/tanh) sits on each
+neuron, and learning happens in the **scalar** weights on the edges. This session adds the
+architecture that inverts that bargain — the **Kolmogorov–Arnold Network** (Liu et al., 2024). A
+KAN puts a **learned univariate function on every edge** and makes the nodes do nothing but sum:
+
+```
+φ_{j,i}(x) = w_b · silu(x) + Σ_k c_{(j,i),k} · B_k(x)          (a SiLU base + a B-spline)
+y_j        = bias_j + Σ_i φ_{j,i}(x_i)                          (a node is just a sum)
+```
+
+The Kolmogorov–Arnold representation theorem says any multivariate continuous function is a finite
+composition of such 1-D functions, so even a tiny KAN is expressive — and, unlike an MLP, you can
+*read its computation off the diagram*, because each edge **is** a plottable function.
+
+**The hard part — and why it's a real engine contribution.** Stacking KAN layers needs the gradient
+of the output w.r.t. the **input** x, not just the parameters, and x flows through the B-spline basis
+— so the backward has to differentiate through `B_k(x)`. The whole layer is therefore implemented as
+**one fused autograd op** that caches, per (sample, input), the SiLU value/derivative and the basis
+values **and analytic derivatives** `B′_k(x)` (the exact Cox–de Boor derivative recursion), then in
+backward accumulates into the base weights, every spline coefficient, the bias, *and* `x` via
+`Σ_j g_j·(w_b·silu′(x) + Σ_k c_k·B′_k(x))`. All hand-derived; gradchecked (input path included) to
+~1e-6 in the self-test.
+
+**The superpower.** Because the spline is a linear combination of basis functions, its coefficients
+can be **re-solved onto a different knot vector by least squares** so the *function is preserved*.
+That gives two genuinely KAN-only moves, both exposed live: **grid extension** (double the spline
+resolution of a *trained* net mid-training — curves preserved to ~1e-5) and **grid re-centring** (fit
+each layer's grid to the activation range it actually sees). The basis is a true **partition of
+unity** (Σ_k B_k(x) ≡ 1), proven to machine precision in the self-test.
+
+**Planned steps (this session):**
+
+- [x] `engine/kan.ts` — the extended-uniform B-spline grid (`makeGrid`) and `evalSplineBasis`: the
+      Cox–de Boor recursion for the values **and** the exact analytic recursion for the derivatives
+- [x] the fused, differentiable **`KANLayer`** — forward caches SiLU + basis (value & derivative);
+      backward into base weights, every spline coefficient, the bias, **and the input x** (the B′(x)
+      chain rule that lets layers stack)
+- [x] a tape-free `evalNumeric` inference path (for the boundary/fit/diagram queries) + `edgeCurve`
+      readout (sample φ over the domain, with an importance = mean|φ| for diagram prominence/pruning)
+- [x] grid refitting by **least squares** (`refitToGrid`, a small Gaussian-elimination solver): the
+      function-preserving **grid extension** (`setGridSize`) and **re-centring** (`fitGridToData`)
+- [x] the `KAN` model — stack layers to any depth/width, classification (softmax-CE) **and** 1-D
+      regression (MSE) heads, `layerCurves` for the diagram, param export/import for save/share
+- [x] `hooks/useKANTrainer.ts` — full-batch CE/MSE training, train/val **accuracy-or-R²** tracking,
+      the boundary/fit/diagram view queries, and the live refine/refit actions (rebuilding the
+      optimizer after a grid resize changes the coefficient tensors' shapes)
+- [x] `components/kan/` — `KANLab` + `KANPanel`; the headline **`KANDiagram`** (the network as a
+      graph of functions, each edge's spline drawn inline and animating, prominence ∝ |φ|,
+      click-to-inspect), `EdgeInspector` (magnified φ with the spline knots), `KANBoundary`
+      (classification field), `KANFunctionFit` (the 1-D learned curve through the data)
+- [x] App tab + hash route `#k=`, a `KAN_SLOT_PREFIX` for independent save/share
+- [x] **self-tests** — fold into the one-click engine self-test: a single KAN layer gradchecked
+      through **x + every parameter**, a whole **classification** KAN and a whole **regression** KAN
+      end-to-end, the **partition-of-unity** value identity, and the **grid-refit preservation**
+      identity — **59 ops**, max rel err 2.5e-6 (kan-layer 4.2e-9, refit 2.3e-6, partition 1e-16)
+- [x] validate outside the browser: 400-step training hits **R²=0.985** on the step function and
+      **100%** on two-moons; a ×2 grid refit drifts predictions by only **1e-5** (curves preserved)
+- [ ] **per-edge symbolic regression** — fit each learned φ against a library of candidate functions
+      (sin, exp, x², …) and snap to the best, turning a trained KAN into a readable formula (the KAN
+      paper's headline interpretability move)
+- [ ] **L1 + entropy sparsification** of the edge functions and a **prune** button that drops
+      low-importance edges, then a re-fit — watch the network shrink to its essential skeleton
+- [ ] **multiplicative nodes** (KAN 2.0) alongside the additive ones, for rational/product structure
+- [ ] a **KAN-vs-MLP** head-to-head panel: same parameter budget, same dataset, both curves on one
+      chart, to make the accuracy-per-parameter trade-off concrete
+- [ ] adaptive grids that **update during training** on a schedule (not just on demand), and a
+      per-input-dimension grid range instead of one range per layer
+- [ ] expose the B-spline **order** sweep visually (piecewise-linear → cubic) on a single edge
+
+**Validation.** Gradcheck the fused layer (x + params) and both end-to-end KANs outside the browser
+first (all ≤~2.5e-6), confirm training converges and the grid refit actually preserves the learned
+function, then keep the full CI gate (scope + conformance + lint + tsc + vite build) green via
+`node scripts/verify-project.mjs synapse-grad-7c4e`.
+
 ## Session log
 
 - 2026-06-21 (claude): created from template. Built the autograd engine (tensor/nn/optim/losses),
@@ -950,3 +1060,22 @@ via `node scripts/verify-project.mjs synapse-grad-7c4e`.
   ~54% with it off (chance ≈ 33%), and 100% on kNN-moons / Karate (vs 62% / 69% off). App tab + hash
   route `#n=`, a `GNN_SLOT_PREFIX` for independent save/share. Full CI gate (scope + conformance + lint
   + tsc + vite build) green via `node scripts/verify-project.mjs synapse-grad-7c4e`.
+- 2026-06-23 (claude, session 11): added a ninth lab — a from-scratch **Kolmogorov–Arnold Network**
+  ("KAN · Splines"), the architecture that puts a *learned 1-D function on every edge* (a SiLU base +
+  a B-spline) and makes nodes just sum. New `engine/kan.ts`: the extended-uniform B-spline grid +
+  `evalSplineBasis` (Cox–de Boor values **and** the exact analytic derivative B′(x)); one **fused
+  differentiable `KANLayer`** whose hand-derived backward goes into the base weights, every spline
+  coefficient, the bias, **and the input x** (the B′(x) chain rule that lets layers stack); a tape-free
+  `evalNumeric` + `edgeCurve` readout; and **grid refitting by least squares** (`refitToGrid`) powering
+  two KAN-only superpowers — function-preserving **grid extension** (×2 resolution live) and
+  **re-centring** onto the activation range. A `useKANTrainer` hook does full-batch CE/MSE training with
+  train/val accuracy-or-R² tracking and the live refine/refit actions; the lab UI is the headline
+  **`KANDiagram`** (the network as a graph of functions, each edge's spline drawn inline and animating,
+  prominence ∝ |φ|, click-to-inspect), an `EdgeInspector` (φ with its knots), and the classification
+  **decision-boundary** / 1-D **function-fit** views. The engine **self-test grew to 59 ops** (max rel
+  err 2.5e-6): a KAN layer gradchecked through **x + every param** (4.2e-9), whole classification &
+  regression KANs end-to-end, the spline **partition-of-unity** (1e-16) and **grid-refit preservation**
+  (2.3e-6). Validated outside the browser first — 400-step training hits **R²=0.985** on the step
+  function and **100%** on two-moons, and a ×2 grid refit drifts predictions by only **1e-5**. App tab +
+  hash route `#k=`, a `KAN_SLOT_PREFIX` for independent save/share. Full CI gate (scope + conformance +
+  lint + tsc + vite build) green via `node scripts/verify-project.mjs synapse-grad-7c4e`.

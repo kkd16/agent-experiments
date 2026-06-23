@@ -7,11 +7,12 @@ import DiffLab from './components/diff/DiffLab';
 import FlowLab from './components/flow/FlowLab';
 import RLLab from './components/rl/RLLab';
 import GNNLab from './components/gnn/GNNLab';
+import KANLab from './components/kan/KANLab';
 import './App.css';
 
-type Tab = 'playground' | 'vision' | 'transformer' | 'generative' | 'diffusion' | 'flows' | 'control' | 'graph';
+type Tab = 'playground' | 'vision' | 'transformer' | 'generative' | 'diffusion' | 'flows' | 'control' | 'graph' | 'kan';
 
-// Open the lab a shared link points at (#v= vision, #t= transformer, #g= generative, #d= diffusion, #f= flows, #r= RL, #n= graph).
+// Open the lab a shared link points at (#v= vision, #t= transformer, #g= generative, #d= diffusion, #f= flows, #r= RL, #n= graph, #k= KAN).
 function initialTab(): Tab {
   try {
     if (/[#&]t=/.test(location.hash)) return 'transformer';
@@ -20,6 +21,7 @@ function initialTab(): Tab {
     if (/[#&]f=/.test(location.hash)) return 'flows';
     if (/[#&]r=/.test(location.hash)) return 'control';
     if (/[#&]n=/.test(location.hash)) return 'graph';
+    if (/[#&]k=/.test(location.hash)) return 'kan';
     return /[#&]v=/.test(location.hash) ? 'vision' : 'playground';
   } catch {
     return 'playground';
@@ -65,6 +67,9 @@ export default function App() {
             <button className={tab === 'graph' ? 'on' : ''} onClick={() => setTab('graph')}>
               Graph · GNN
             </button>
+            <button className={tab === 'kan' ? 'on' : ''} onClick={() => setTab('kan')}>
+              KAN · Splines
+            </button>
           </nav>
           <div className="kbd-hint">
             <kbd>space</kbd> train · <kbd>s</kbd> step · <kbd>r</kbd> reset · <kbd>g</kbd> gradcheck
@@ -86,8 +91,10 @@ export default function App() {
         <FlowLab />
       ) : tab === 'control' ? (
         <RLLab />
-      ) : (
+      ) : tab === 'graph' ? (
         <GNNLab />
+      ) : (
+        <KANLab />
       )}
 
       <footer className="foot">

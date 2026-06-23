@@ -1745,3 +1745,14 @@ button:disabled {
   line-height: 1.55;
   margin: 0;
 }
+
+/* ---- KAN lab ---- */
+.kan-diagram {
+  display: block;
+  width: 100%;
+  height: auto;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: #0b1220;
+  cursor: pointer;
+}
