@@ -14,6 +14,7 @@ import { ChaosPanel } from './ChaosPanel'
 import { SpectralPanel } from './SpectralPanel'
 import { PoincarePanel } from './PoincarePanel'
 import { AtlasPanel } from './AtlasPanel'
+import { AnosovaPanel } from './AnosovaPanel'
 import { ProfilePanel } from './ProfilePanel'
 import { RelativityPanel } from './RelativityPanel'
 import { GravWavePanel } from './GravWavePanel'
@@ -65,6 +66,7 @@ export interface SidebarProps {
   poincareRunning: boolean
   onAnalyzePoincare: () => void
   poincareTargetLabel: string
+  onLaunchThreeBody: (x3: number, y3: number) => void
 }
 
 const integrator = INTEGRATORS.reduce<Record<string, (typeof INTEGRATORS)[number]>>((acc, it) => {
@@ -300,6 +302,10 @@ export function Sidebar(p: SidebarProps) {
 
       <Section title="Resonance Atlas" defaultOpen={false}>
         <AtlasPanel />
+      </Section>
+
+      <Section title="Three-Body Atlas" defaultOpen={false}>
+        <AnosovaPanel onLaunch={p.onLaunchThreeBody} />
       </Section>
 
       <Section title="Frequency Map (1-D)" defaultOpen={false}>

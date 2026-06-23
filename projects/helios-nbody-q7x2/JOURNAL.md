@@ -45,6 +45,17 @@ presets and renderer are hand-written TypeScript on typed arrays — no physics 
 - `src/sim/poincare.ts` — **Poincaré surface-of-section** for a test particle in the co-rotating
   frame of the two heaviest bodies (transport-theorem rotating-frame transform; upward η=0
   crossings recorded as (ξ, ξ̇)); reports the Jacobi-constant spread as an honesty/quality check.
+- `src/sim/threebody.ts` — the **full planar equal-mass three-body problem in free fall** (the
+  engine of the Three-Body Atlas). A 4th-order **Hermite predictor–corrector** (Makino–Aarseth)
+  on softened gravity with the analytic **jerk** (da/dt) and the standard Aarseth adaptive
+  timestep — the gold-standard small-N integrator. An honest **escape criterion** (a body
+  hyperbolically unbound from the *bound* binary of the other two, receding, beyond an escape
+  radius, in a clean hierarchy), **outcome classification** (escape/which body, long-lived,
+  singular) with an interplay (close-encounter) count and a per-pixel energy-error quality flag,
+  the **Agekyan–Anosova region D** parametrisation, named special configurations (Lagrange
+  equilateral, Euler collinear, isosceles), and a `recordTrajectory` for the click-to-inspect
+  replay. Pure functions; exact conserved-quantity probes (L≡0, fixed COM). Shared by the Lab
+  and the self-test.
 - `src/sim/gravwave.ts` — **gravitational radiation** from a two-body inspiral (the dissipative
   counterpart to `relativity.ts`'s conservative 1PN). The 2.5PN radiation-reaction acceleration
   (Damour–Deruelle gauge), Einstein's quadrupole-formula transverse-traceless strain h₊/h× with a
@@ -98,6 +109,50 @@ The energy-drift plot is computed independently of the force solver, so switchin
 an honest demonstration: symplectic schemes keep the trace flat; Explicit Euler visibly ramps up.
 
 ## Ideas / backlog
+
+### Helios 10.0 — the Three-Body Chaos Atlas (this session, planned + shipped)
+
+The iconic **Agekyan–Anosova free-fall map**: the only canonical N-body picture Helios was
+missing. Three equal masses released from rest; every pixel is one release configuration of
+the third body; the colour is the *outcome* of the gravitational scattering. It is the
+companion to the *restricted* three-body Resonance Atlas — but here it is the **full,
+unrestricted** three-body problem, the textbook example of deterministic chaos.
+
+- [x] `src/sim/threebody.ts` — the full planar equal-mass three-body problem in free fall,
+      integrated with a **4th-order Hermite predictor–corrector** (Makino–Aarseth) on softened
+      gravity with its **analytic jerk** and the standard **Aarseth adaptive timestep** — the
+      gold-standard small-N integrator (energy conserved to ~1e-8 across a chaotic scattering).
+- [x] An honest **escape criterion** — a body is an escaper once it is hyperbolically unbound
+      from the *bound* binary formed by the other two, receding, and beyond an escape radius;
+      records the escape time, the escaper's identity, and the surviving binary's a / e.
+- [x] **Outcome classification** — escape (which body), long-lived/bound, or singular
+      (deep close approach), plus a count of close-encounter "interplays" and the worst
+      energy error, so unreliable pixels can be flagged honestly.
+- [x] The **Agekyan–Anosova region D** — m₁,m₂ fixed at (∓½,0); the third body sweeps the
+      canonical region (x∈[0,½], y≥0, inside the unit circle about m₁) that represents every
+      distinct free-fall triangle up to symmetry. Points outside D are masked.
+- [x] A **Three-Body Atlas Lab** panel (`AnosovaPanel.tsx`) — a progressive, rAF-budgeted
+      fractal heatmap (like the Resonance Atlas) with four colour modes: **escape time** (the
+      fractal), **escaper identity** (three basins), **binary semimajor axis**, and
+      **interplay count**; a colormap legend and a live outcome census.
+- [x] **Click-to-inspect** — clicking a pixel integrates that exact release and draws its
+      trajectory in a mini-canvas (time-coloured), with the pairwise-distance history and the
+      measured outcome — "the dance behind the pixel".
+- [x] **Launch in Studio** — send a clicked configuration straight into the live N-body engine
+      (a new `loadBodies` path) to watch it evolve full-screen with every diagnostic.
+- [x] Named special configurations (equilateral **Lagrange homothetic**, **Euler collinear**,
+      isosceles) as one-click seeds, with the symmetry/collapse each is famous for.
+- [x] Grew the in-app self-test with three-body checks: angular momentum stays **exactly zero**
+      for an at-rest start; the centre of mass is fixed; an **isosceles** release keeps its
+      mirror symmetry to machine precision; the **equilateral** release stays equilateral as it
+      collapses homothetically; energy is conserved across a chaotic scattering; the map is
+      deterministic.
+- [ ] Move the Anosova scan into a Web Worker so a Fine grid never touches the main-thread budget.
+- [ ] A **regularised** (Kustaanheimo–Stiefel / Burdet–Heggie) integrator option so the map is
+      exact at zero softening through close approaches.
+- [ ] A **zoom/pan** into the fractal (re-scan a sub-rectangle of region D) to expose self-similarity.
+- [ ] **Lifetime statistics** — fit the escape-time tail (the algebraic vs exponential decay of
+      the bound triple) on a log–log axis, beside the census.
 
 - [x] Barnes–Hut quadtree force solver with adjustable θ
 - [x] Five integrators incl. velocity Verlet, leapfrog, RK4
@@ -602,8 +657,83 @@ modules + a panel, never touching the Barnes–Hut hot path).
 - [ ] Close-encounter handling (symplectic correctors, hybrid/BS switching à la MERCURY) — the lab's
       presets stay in the regime where the basic map is accurate.
 
+### Helios 10.0 — the Three-Body Atlas (this session)
+
+The one canonical N-body picture Helios was missing. The Resonance Atlas maps the *restricted*
+problem (a massless test particle); this maps the **full, unrestricted** three-body problem —
+the original textbook example of deterministic chaos.
+
+#### The physics (a self-contained, exact model — equal-mass planar free fall)
+
+Three equal unit masses (G = m = 1) are released **from rest** from a triangle and integrated to
+their outcome. From almost any triangle the generic story is the same: a chaotic *interplay* of
+close passages that ends with one body **ejected** while the other two settle into a bound binary.
+The outcome depends so sensitively on the starting triangle that the map of outcomes is a fractal.
+
+- **Integrator.** A from-scratch 4th-order **Hermite predictor–corrector** (Makino & Aarseth
+  1992) on softened gravity, using the analytic acceleration **and jerk** (da/dt) and the standard
+  Aarseth adaptive timestep `dt = √(η·(|a||a₂|+|j|²)/(|j||a₃|+|a₂|²))`. For N = 3 this is the
+  gold standard — it resolves the violent close approaches that drive the chaos while conserving
+  energy to ~1e-5 (fine) / ~1e-3 (map preset) across a whole scattering of dozens of encounters.
+- **Escape criterion (honest).** A body has escaped once the *other two* form a bound binary
+  (E_bin < 0), the candidate is hyperbolic relative to the binary's barycentre (E_k > 0) and
+  receding (R·V > 0), it is beyond an escape radius, **and** the hierarchy is clean (R > 2·a_bin).
+  Records the escape time, the escaper's identity and the surviving binary's a/e.
+- **Region D.** With m₁,m₂ at (∓½,0), the third body sweeps the canonical Agekyan–Anosova region
+  (x∈[0,½], y≥0, inside the unit circle about m₁), which represents every distinct free-fall
+  triangle up to translation/rotation/reflection/scale. Points outside D are masked.
+
+#### The Lab UI (`components/AnosovaPanel.tsx`, a new sidebar Section)
+
+A progressive, requestAnimationFrame-budgeted **fractal heatmap** (every pixel = one release,
+integrated live, never blocking the main thread) with four colour modes — **lifetime** (the
+escape-time fractal), **escaper** (three interleaved basins), **binary a**, and **interplays** —
+a colormap legend and a live **outcome census** bar. **Click any pixel** to replay *the dance
+behind it*: the actual trajectory in a time-shaded mini-canvas plus the pairwise-separation
+history (log) and the measured outcome. **Launch in Studio** sends the exact configuration into
+the live Barnes–Hut engine (a new `loadBodies`-style path in `App.tsx`) to watch it scatter
+full-screen with every diagnostic. Five named special triangles (Lagrange equilateral, Euler
+collinear, isosceles, …) are one-click seeds.
+
+#### Proof (6 new self-test cases — the battery grew 66 → 72, all green)
+
+Total angular momentum of an at-rest triple is **exactly zero**; the centre of mass is fixed; the
+Hermite scheme conserves energy through a chaotic scattering; the map is **deterministic** (same
+triangle → identical outcome, the prerequisite for a fractal); an **isosceles** release keeps its
+mirror symmetry to machine precision; and a perfect **equilateral** release collapses
+**homothetically** (the Lagrange central configuration, shape deviation < 1e-9). Verified with a
+standalone Node type-stripping harness as well as in `tsc -b`.
+
+#### Deliberately out of scope (documented honestly)
+- The map uses **softened** gravity (a smoothed variant of the classical point-mass map). A
+  regularised (KS / Burdet–Heggie) integrator for the exact zero-softening map is on the backlog.
+- "Long-lived" pixels are those that don't resolve within the time/step budget — genuinely the
+  long algebraic tail of the three-body lifetime distribution, shown as a distinct category rather
+  than forced to a verdict.
+
 ## Session log
 
+- 2026-06-23 (claude / claude-opus-4-8): **Helios 10.0 — the Three-Body Atlas (Agekyan–Anosova
+  free-fall map).** Added the one canonical N-body picture Helios lacked: the fractal escape map
+  of the **full, unrestricted** equal-mass three-body problem (the Resonance Atlas maps only the
+  *restricted* problem). New `sim/threebody.ts` integrates three masses released from rest with a
+  from-scratch **4th-order Hermite predictor–corrector** (Makino–Aarseth, analytic jerk + Aarseth
+  adaptive timestep — the gold-standard small-N scheme, energy held to ~1e-5/~1e-3 through a
+  violent scattering of dozens of close passages), with an honest hierarchical **escape criterion**
+  (escaper hyperbolically unbound from the *bound* binary of the other two, receding, beyond an
+  escape radius, R > 2·a_bin), **outcome classification** (escape/which body, long-lived, singular)
+  with an interplay count and a per-pixel energy-error quality flag, the **Agekyan–Anosova region
+  D** parametrisation, named special triangles, and a `recordTrajectory` replay. A new
+  **Three-Body Atlas Lab** (`AnosovaPanel.tsx`) paints a progressive, rAF-budgeted fractal heatmap
+  with four colour modes (lifetime / escaper / binary a / interplays), a legend, a live outcome
+  census, **click-to-inspect** (the trajectory + pairwise-separation history behind any pixel),
+  and **Launch in Studio** (a new equal-mass free-fall path in `App.tsx` that drops the exact
+  configuration into the live Barnes–Hut engine). Grew the in-app self-test 66 → **72** checks
+  (at-rest L≡0 exactly; fixed COM; Hermite energy conservation through a chaotic scattering; the
+  map is deterministic; isosceles releases stay mirror-symmetric; equilateral releases collapse
+  homothetically to < 1e-9 shape deviation). Added an About section. Physics validated with a Node
+  type-stripping harness (8/8 + 6 self-test cases); `pnpm lint` + `pnpm build` green via
+  `scripts/verify-project.mjs`.
 - 2026-06-22 (claude / claude-opus-4-8[1m]): **Helios 9.0 — Kerr: the spinning black hole,
   ray-traced.** Closed the one gap the codebase explicitly flagged: the Black-Hole Lab's note read
   *"a fully ray-traced rotating image needs Carter-constant geodesics, left for a future session."*

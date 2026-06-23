@@ -73,6 +73,15 @@ import {
   LAB_PRESETS,
 } from './whfast'
 import type { IntegratorId } from './types'
+import {
+  anosovaState,
+  scatter as scatterThreeBody,
+  recordTrajectory as recordThreeBody,
+  angularMomentum as angularMomentum3,
+  inRegion as inRegionD,
+  DEFAULT_OPTS as TB_OPTS,
+  MAP_OPTS as TB_MAP_OPTS,
+} from './threebody'
 
 export interface TestCase {
   name: string
@@ -1508,6 +1517,70 @@ export function runSelfTest(): SelfTestReport {
       approx(rp, 1 + Math.sqrt(1 - 0.81), 1e-12) && approx(ergoEq, 2, 1e-12) && ergoEq >= rp && approx(omH, omHref, 1e-12),
       `r₊=${rp.toFixed(3)}, r_E(eq)=${ergoEq.toFixed(3)}, Ω_H=${omH.toFixed(4)}`,
     )
+  }
+
+  // ---- the Three-Body Chaos Atlas (the Agekyan–Anosova free-fall map) --------
+
+  // 67 — Three equal masses released from rest have ZERO total angular momentum
+  // (and it is conserved exactly, the planar central-force invariant). This is the
+  // exact symmetry the at-rest map is built on.
+  {
+    const L = angularMomentum3(anosovaState(0.3, 0.4))
+    add('Free-fall triple: total angular momentum is exactly zero', approx(L, 0, 1e-15), `L = ${L.toExponential(2)}`)
+  }
+
+  // 68 — The 4th-order Hermite integrator conserves energy across a violent
+  // chaotic scattering (dozens of close passages) to a part in ~10⁴ — the honest
+  // proof that the map's outcomes are physical, not numerical noise.
+  {
+    const r = scatterThreeBody(anosovaState(0.3, 0.4), TB_OPTS)
+    add(
+      'Hermite conserves energy through a chaotic scattering',
+      r.energyError < 1e-4 && r.outcome === 'escape',
+      `max |ΔE/E| = ${r.energyError.toExponential(2)} over ${r.steps} steps, ${r.interplays} interplays → ${r.outcome}`,
+    )
+  }
+
+  // 69 — The map is DETERMINISTIC: the same release triangle always yields the same
+  // outcome (the prerequisite for a fractal — sensitivity, not randomness).
+  {
+    const a = scatterThreeBody(anosovaState(0.31, 0.27), TB_MAP_OPTS)
+    const b = scatterThreeBody(anosovaState(0.31, 0.27), TB_MAP_OPTS)
+    add(
+      'Agekyan–Anosova map is deterministic',
+      a.outcome === b.outcome && a.escaper === b.escaper && a.tEscape === b.tEscape,
+      `(${a.outcome}, escaper ${a.escaper}, t=${a.tEscape.toFixed(3)}) reproduced exactly`,
+    )
+  }
+
+  // 70 — An isosceles release (third body on the perpendicular bisector) keeps its
+  // mirror symmetry to machine precision forever — body 3 never leaves the axis.
+  {
+    const tr = recordThreeBody(anosovaState(0, 0.45), 400, TB_MAP_OPTS)
+    let maxX = 0
+    for (let k = 0; k < tr.px[2].length; k++) maxX = Math.max(maxX, Math.abs(tr.px[2][k]))
+    add('Isosceles release stays mirror-symmetric', maxX < 1e-8, `max |x₃| = ${maxX.toExponential(2)}`)
+  }
+
+  // 71 — A perfect equilateral release collapses HOMOTHETICALLY: all three pairwise
+  // distances stay equal (the Lagrange central configuration) on the way down.
+  {
+    const tr = recordThreeBody(anosovaState(0, Math.sqrt(3) / 2), 3000, { ...TB_MAP_OPTS, softening: 0.01, tMax: 5 })
+    let dev = 0, n = 0
+    for (let k = 0; k < tr.sep[0].length; k++) {
+      const a = tr.sep[0][k], b = tr.sep[1][k], c = tr.sep[2][k]
+      const mn = Math.min(a, b, c)
+      if (mn < 0.5) break
+      dev = Math.max(dev, (Math.max(a, b, c) - mn) / Math.max(a, b, c))
+      n++
+    }
+    add('Equilateral release collapses homothetically', dev < 1e-9 && n > 5, `max shape deviation = ${dev.toExponential(2)} over ${n} samples`)
+  }
+
+  // 72 — The region-D mask is correct: inside the unit circle about m₁ counts,
+  // outside does not.
+  {
+    add('Agekyan–Anosova region D mask', inRegionD(0.2, 0.3) && !inRegionD(0.45, 0.85), 'inside ✓ / outside ✓')
   }
 
   const passed = cases.filter((c) => c.pass).length
