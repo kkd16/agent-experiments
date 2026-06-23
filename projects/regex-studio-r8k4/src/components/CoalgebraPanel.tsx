@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react';
 import { compile } from '../engine/compile';
 import { compareDFAs, type Relation as DfaRelation } from '../engine/equivalence';
-import { runEquivalence, type EquivReport, type EquivResult } from '../engine/coalgebra';
+import { runEquivalence, traceEquivalence, type EquivReport, type EquivResult, type TracedRun } from '../engine/coalgebra';
 import { relationByAntichains, decideUniversality } from '../engine/antichain';
 import { DEFAULT_VERIFY, runCoalgebraVerify, type VerifyReport } from '../engine/coalgebra-verify';
 
@@ -46,6 +46,8 @@ export function CoalgebraPanel({ patternA, other, onOtherChange, onUsePair, noti
   const nfaB = compiledB.nfa;
   const dfaA = compiledA.minDfa;
   const dfaB = compiledB.minDfa;
+
+  const traced = useMemo<TracedRun | null>(() => (nfaA && nfaB ? traceEquivalence(nfaA, nfaB, 'hkc') : null), [nfaA, nfaB]);
 
   const data = useMemo(() => {
     if (!nfaA || !nfaB || !dfaA || !dfaB) return null;
@@ -138,6 +140,11 @@ export function CoalgebraPanel({ patternA, other, onOtherChange, onUsePair, noti
             union — the strongest, and it shows in how few pairs it must expand.
           </p>
           <ModeBars equiv={data.equiv} />
+
+          {/* ---- step through the HKC worklist ---- */}
+          {traced && traced.result.trace && traced.result.trace.length > 0 && (
+            <TraceStepper key={`${patternA}|${other}`} traced={traced} />
+          )}
 
           {/* ---- the relation R that HKC built ---- */}
           {data.equiv.hkc.equivalent && data.equiv.hkc.relationPairs.length > 0 && (
@@ -436,6 +443,96 @@ function CrossCheck() {
         </>
       )}
     </>
+  );
+}
+
+// --- Step through the HKC worklist -----------------------------------------
+
+const ACTION_META: Record<'expand' | 'discharge' | 'split', { label: string; cls: string; blurb: string }> = {
+  expand: { label: 'expand', cls: 'exp', blurb: 'new pair — outputs match, add to R and queue its successors' },
+  discharge: { label: 'discharge', cls: 'dis', blurb: 'already in the congruence closure of R — skipped for free' },
+  split: { label: 'split', cls: 'spl', blurb: 'outputs disagree — the languages differ, here is the witness' },
+};
+
+function TraceStepper({ traced }: { traced: TracedRun }) {
+  const steps = traced.result.trace ?? [];
+  const [i, setI] = useState(steps.length - 1);
+  const idx = Math.min(i, steps.length - 1);
+  const step = steps[idx];
+  const fmt = (ids: number[], isB: boolean) => '{' + ids.map((n) => (isB ? n - traced.offsetB : n)).join(',') + '}';
+  // Running tallies up to and including the current step.
+  let expanded = 0;
+  let discharged = 0;
+  for (let s = 0; s <= idx; s++) {
+    if (steps[s].action === 'expand') expanded++;
+    else if (steps[s].action === 'discharge') discharged++;
+  }
+
+  return (
+    <div className="coalg-trace">
+      <h3 className="lang-h3">Step through the search — watch congruence discharge pairs</h3>
+      <p className="muted-note">
+        Each tick is one pair popped from the worklist: <span className="coalg-tk exp" /> expanded into R,{' '}
+        <span className="coalg-tk dis" /> discharged by the congruence closure of what's already proved, or{' '}
+        <span className="coalg-tk spl" /> a split where the two sides' acceptance disagrees. The discharges are the
+        pairs the determinised product would have built in full.
+      </p>
+
+      <div className="coalg-ticks">
+        {steps.map((s, n) => (
+          <button
+            key={n}
+            className={`coalg-tk ${ACTION_META[s.action].cls}${n === idx ? ' cur' : ''}${n <= idx ? ' done' : ''}`}
+            title={`#${n} /${s.wordDisplay}/ — ${ACTION_META[s.action].label}`}
+            onClick={() => setI(n)}
+          />
+        ))}
+      </div>
+
+      <div className="coalg-trace-controls">
+        <button className="coalg-step-btn" disabled={idx <= 0} onClick={() => setI(idx - 1)}>
+          ◂ prev
+        </button>
+        <input
+          className="coalg-trace-range"
+          type="range"
+          min={0}
+          max={steps.length - 1}
+          value={idx}
+          onChange={(e) => setI(Number(e.target.value))}
+        />
+        <button className="coalg-step-btn" disabled={idx >= steps.length - 1} onClick={() => setI(idx + 1)}>
+          next ▸
+        </button>
+        <span className="coalg-trace-count">
+          step {idx + 1} / {steps.length}
+        </span>
+      </div>
+
+      {step && (
+        <div className={`coalg-step-card ${ACTION_META[step.action].cls}`}>
+          <div className="coalg-step-head">
+            <span className={`coalg-step-tag ${ACTION_META[step.action].cls}`}>{ACTION_META[step.action].label}</span>
+            <span className="coalg-step-word">
+              prefix <code>{step.wordDisplay}</code>
+            </span>
+            <span className="coalg-step-tally">
+              {expanded} in R · {discharged} discharged
+            </span>
+          </div>
+          <p className="muted-note">{ACTION_META[step.action].blurb}</p>
+          <div className="coalg-step-pair">
+            <span>
+              X = <code>{fmt(step.x, false)}</code> <em>{step.oX ? 'accepts' : 'rejects'}</em>
+            </span>
+            <span className="coalg-step-rel">{step.action === 'split' ? '≠' : '≈'}</span>
+            <span>
+              Y = <code>{fmt(step.y, true)}</code> <em>{step.oY ? 'accepts' : 'rejects'}</em>
+            </span>
+          </div>
+        </div>
+      )}
+    </div>
   );
 }
 

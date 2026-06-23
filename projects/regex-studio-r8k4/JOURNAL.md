@@ -605,13 +605,19 @@ over thousands of fuzzed pattern pairs. New `engine/coalgebra.ts` + `engine/anti
       two faces of Σ*, idempotence, a strict subset, a disjoint pair, a universal/witness case), the verdict card
       with the triple-agreement badge, the three-mode bar chart, the bisimulation `R` table, the witness grid,
       the per-direction antichain inclusion stats, and the universality badges — plus the seeded cross-check.
+- [x] **The HKC worklist, stepped.** `traceEquivalence` records every pair popped from the worklist — expanded
+      into `R`, **discharged by the congruence closure**, or a **split** (acceptance disagrees ⇒ the witness) — and
+      the panel animates it: a tick strip coloured by action, a scrubber + prev/next, and a per-step card showing
+      the prefix word, the pair `(X, Y)`, each side's acceptance, and the running "in R / discharged" tally. On the
+      bomb it tells the whole story at a glance — **27 pairs expanded, 20 discharged for free** — the discharges
+      being exactly what the determinised product would have built in full. (Recording is opt-in, so the fuzzer's
+      hot path is untouched.)
 - [x] Header/footer prose updated to name the new road; `project.json` tags + description updated.
 
 ### Still open
 
-- [ ] **Bisimulation up to congruence, animated** — step the HKC worklist and watch each new pair either expand
-      or get discharged by the congruence closure (highlight the rules `U → U∪V` that fire), the way the NFA/DFA
-      debugger steps the automaton.
+- [ ] **Highlight the firing congruence rule** in the stepper — when a pair is discharged, show *which* earlier
+      pairs' `U → U∪V` rewrites fold its two sides to a common normal form.
 - [ ] **Antichain frontier on the NFA diagram** — light the macrostates `(q, S)` of the live inclusion search and
       show the ⊑-subsumption that prunes a node, edge for edge.
 - [ ] **HKC vs DFA-product, side by side** — a head-to-head counter (pairs explored / states built / wall-clock)
@@ -885,7 +891,9 @@ over thousands of fuzzed pattern pairs. New `engine/coalgebra.ts` + `engine/anti
   antichain size against the full product it replaces. New **Coalgebra** tab
   (`components/CoalgebraPanel.tsx`): preset gallery, a triple-agreement verdict (HKC · antichains ·
   DFA-product), the three-mode bar chart, the bisimulation `R` table, witnesses, per-direction
-  inclusion stats, universality badges, and a seeded cross-check button. Verified offline before
+  inclusion stats, universality badges, a **step-through** of the HKC worklist (a tick strip + scrubber that
+  shows each pair expanded into R, discharged by the congruence closure, or split into the witness — 27 expanded /
+  20 discharged on the bomb), and a seeded cross-check button. Verified offline before
   shipping (`engine/coalgebra-verify.ts`): **25,000 random pattern pairs across 10 seeds, zero
   mismatches** — the three HKC modes agree with each other and with `compareDFAs`, the antichain road
   rebuilds the same relation, universality matches a DFA oracle, every witness genuinely separates the

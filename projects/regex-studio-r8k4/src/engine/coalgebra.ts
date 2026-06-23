@@ -177,7 +177,7 @@ function union(a: Set<number>, b: Set<number>): Set<number> {
 // pair (x, y) is *already* implied by R under the chosen closure, in which case
 // it need not be explored.
 
-type Mode = 'naive' | 'hk' | 'hkc';
+export type Mode = 'naive' | 'hk' | 'hkc';
 
 interface Pair {
   x: Set<number>;
@@ -256,6 +256,20 @@ export interface EquivResult {
   skipped: number; // pairs popped but discharged by the up-to closure
   relationPairs: { x: number[]; y: number[]; accept: boolean }[]; // R, for display
   budgetHit: boolean;
+  trace?: TraceStep[]; // populated only when recording — for the step-through view
+}
+
+// One popped pair in the worklist, for the step-through animation.
+export type TraceAction = 'expand' | 'discharge' | 'split';
+export interface TraceStep {
+  word: number[]; // the prefix word reaching this pair
+  wordDisplay: string;
+  x: number[]; // A-states in the pair
+  y: number[]; // B-states in the pair (combined ids; subtract offsetB for display)
+  oX: boolean; // o(X): does X accept?
+  oY: boolean; // o(Y): does Y accept?
+  action: TraceAction; // expand (added to R) · discharge (up-to skip) · split (o disagree ⇒ ≠)
+  rIndexAtStep: number; // |R| when this pair was popped (how much was already proved)
 }
 
 export interface Witness {
@@ -278,9 +292,23 @@ export function makeWitness(codes: number[]): Witness {
 
 const DEFAULT_BUDGET = 20000;
 
-export function decideEquivalence(c: Combined, mode: Mode, budget = DEFAULT_BUDGET): EquivResult {
+export function decideEquivalence(c: Combined, mode: Mode, budget = DEFAULT_BUDGET, record = false): EquivResult {
   const R: Pair[] = [];
   const seen = new Set<string>(); // processed-pair keys (for naïve skip)
+  const trace: TraceStep[] | undefined = record ? [] : undefined;
+  const mkStep = (pair: Pair, k: string, action: TraceAction): TraceStep => {
+    const word = pathTo(k);
+    return {
+      word,
+      wordDisplay: makeWitness(word).display,
+      x: [...pair.x].sort((a, b) => a - b),
+      y: [...pair.y].sort((a, b) => a - b),
+      oX: accepting(c, pair.x),
+      oY: accepting(c, pair.y),
+      action,
+      rIndexAtStep: R.length,
+    };
+  };
 
   interface Node {
     pair: Pair;
@@ -320,17 +348,19 @@ export function decideEquivalence(c: Combined, mode: Mode, budget = DEFAULT_BUDG
 
   while (queue.length) {
     if (processed + skipped > budget) {
-      return { mode, equivalent: false, witness: null, processed, skipped, relationPairs: relPairs(R, c), budgetHit: true };
+      return { mode, equivalent: false, witness: null, processed, skipped, relationPairs: relPairs(R, c), budgetHit: true, trace };
     }
     const { pair } = queue.shift()!;
     const { x, y } = pair;
     const k = pairKey(pair);
 
     if (skipTest(x, y)) {
+      if (trace) trace.push(mkStep(pair, k, 'discharge'));
       skipped++;
       continue;
     }
     if (accepting(c, x) !== accepting(c, y)) {
+      if (trace) trace.push(mkStep(pair, k, 'split'));
       return {
         mode,
         equivalent: false,
@@ -339,8 +369,10 @@ export function decideEquivalence(c: Combined, mode: Mode, budget = DEFAULT_BUDG
         skipped,
         relationPairs: relPairs(R, c),
         budgetHit: false,
+        trace,
       };
     }
+    if (trace) trace.push(mkStep(pair, k, 'expand'));
     for (let ai = 0; ai < c.atoms.length; ai++) {
       const nx = move(c, x, ai);
       const ny = move(c, y, ai);
@@ -357,7 +389,7 @@ export function decideEquivalence(c: Combined, mode: Mode, budget = DEFAULT_BUDG
     processed++;
   }
 
-  return { mode, equivalent: true, witness: null, processed, skipped, relationPairs: relPairs(R, c), budgetHit: false };
+  return { mode, equivalent: true, witness: null, processed, skipped, relationPairs: relPairs(R, c), budgetHit: false, trace };
 }
 
 function relPairs(R: Pair[], c: Combined): { x: number[]; y: number[]; accept: boolean }[] {
@@ -376,6 +408,17 @@ export interface EquivReport {
   agree: boolean; // all three returned the same verdict
   offsetB: number; // combined ids ≥ offsetB belong to B (for display)
   atomCount: number;
+}
+
+// A single recorded run, for the step-through view. We trace HKC by default —
+// it's the mode whose discharges are the interesting story.
+export interface TracedRun {
+  result: EquivResult;
+  offsetB: number;
+}
+export function traceEquivalence(a: NFA, b: NFA, mode: Mode = 'hkc', budget = DEFAULT_BUDGET): TracedRun {
+  const c = buildCombined(a, b);
+  return { result: decideEquivalence(c, mode, budget, true), offsetB: c.offsetB };
 }
 
 export function runEquivalence(a: NFA, b: NFA, budget = DEFAULT_BUDGET): EquivReport {
