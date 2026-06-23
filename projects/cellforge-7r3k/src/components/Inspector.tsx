@@ -27,8 +27,10 @@ export default function Inspector({ wb, active, version }: Props) {
   const raw = wb.getRaw(active)
   const display = wb.getDisplay(active)
   const parseError = wb.parseErrorAt(active)
-  const precedents = wb.precedentsOf(active).map((c) => coordToA1(c.row, c.col))
-  const dependents = wb.dependentsOf(active).map((c) => coordToA1(c.row, c.col))
+  const label = (rr: { sheetName: string; sameSheet: boolean; coord: { row: number; col: number } }) =>
+    (rr.sameSheet ? '' : `${rr.sheetName}!`) + coordToA1(rr.coord.row, rr.coord.col)
+  const precedents = wb.precedentsOf(active).map(label)
+  const dependents = wb.dependentsOf(active).map(label)
 
   return (
     <div className="panel inspector">

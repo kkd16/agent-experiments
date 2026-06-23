@@ -6,6 +6,8 @@
 import { Workbook } from './workbook'
 import { parseRef } from './address'
 import type { Coord } from './address'
+import { displayWithFormat } from './format'
+import { dateToSerial } from './dates'
 
 export interface TestResult {
   group: string
@@ -111,13 +113,164 @@ export function runSelfTests(): TestResult[] {
   eq('errors', 'ISERROR', ev('ISERROR(1/0)'), 'TRUE')
   eq('errors', 'NA', ev('ISNA(NA())'), 'TRUE')
 
+  // --- dates ---
+  eq('dates', 'DATE -> serial', ev('DATE(2026,6,23)'), String(dateToSerial(2026, 6, 23)))
+  eq('dates', 'YEAR', ev('YEAR(DATE(2026,6,23))'), '2026')
+  eq('dates', 'MONTH', ev('MONTH(DATE(2026,6,23))'), '6')
+  eq('dates', 'DAY', ev('DAY(DATE(2026,6,23))'), '23')
+  eq('dates', 'WEEKDAY (2026-06-23 = Tue)', ev('WEEKDAY(DATE(2026,6,23))'), '3')
+  eq('dates', 'EDATE +2 months', ev('EDATE(DATE(2026,1,31),1)'), String(dateToSerial(2026, 2, 28)))
+  eq('dates', 'EOMONTH', ev('EOMONTH(DATE(2026,6,10),0)'), String(dateToSerial(2026, 6, 30)))
+  eq('dates', 'DAYS between', ev('DAYS(DATE(2026,6,23),DATE(2026,6,13))'), '10')
+  eq('dates', 'DATEDIF years', ev('DATEDIF(DATE(2000,1,1),DATE(2026,6,23),"Y")'), '26')
+  eq('dates', 'TEXT date pattern', ev('TEXT(DATE(2026,6,23),"yyyy-mm-dd")'), '2026-06-23')
+  eq('dates', 'TEXT month name', ev('TEXT(DATE(2026,6,23),"mmm d, yyyy")'), 'Jun 23, 2026')
+
+  // --- conditional aggregates & lookup ---
+  const grid = { A1: 'x', B1: '10', A2: 'y', B2: '20', A3: 'x', B3: '5', A4: 'z', B4: '40' }
+  eq('condagg', 'SUMIFS one criterion', ev('SUMIFS(B1:B4,A1:A4,"x")', grid), '15')
+  eq('condagg', 'COUNTIFS', ev('COUNTIFS(A1:A4,"x")', grid), '2')
+  eq('condagg', 'COUNTIFS two', ev('COUNTIFS(A1:A4,"x",B1:B4,">6")', grid), '1')
+  eq('condagg', 'AVERAGEIFS', ev('AVERAGEIFS(B1:B4,A1:A4,"x")', grid), '7.5')
+  eq('condagg', 'MAXIFS', ev('MAXIFS(B1:B4,A1:A4,"x")', grid), '10')
+  eq('condagg', 'AVERAGEIF', ev('AVERAGEIF(A1:A4,"x",B1:B4)', grid), '7.5')
+  eq('lookup', 'XLOOKUP', ev('XLOOKUP("z",A1:A4,B1:B4)', grid), '40')
+  eq('lookup', 'XLOOKUP not found', ev('XLOOKUP("q",A1:A4,B1:B4,"none")', grid), 'none')
+  eq('lookup', 'SUMPRODUCT', ev('SUMPRODUCT(B1:B4,B1:B4)', grid), String(100 + 400 + 25 + 1600))
+
+  // --- more stats & math ---
+  const fives = { A1: '2', A2: '4', A3: '4', A4: '4', A5: '5', A6: '5', A7: '7', A8: '9' }
+  eq('stats2', 'STDEVP', ev('STDEVP(A1:A8)', fives), '2')
+  eq('stats2', 'MODE', ev('MODE(A1:A8)', fives), '4')
+  eq('stats2', 'LARGE 2nd', ev('LARGE(A1:A8,2)', fives), '7')
+  eq('stats2', 'SMALL 1st', ev('SMALL(A1:A8,1)', fives), '2')
+  eq('stats2', 'MEDIAN via PERCENTILE', ev('PERCENTILE(A1:A8,0.5)', fives), '4.5')
+  eq('stats2', 'RANK desc', ev('RANK(7,A1:A8)', fives), '2')
+  eq('math2', 'MROUND', ev('MROUND(17,5)'), '15')
+  eq('math2', 'EVEN', ev('EVEN(3)'), '4')
+  eq('math2', 'ODD', ev('ODD(4)'), '5')
+  eq('math2', 'FACT', ev('FACT(5)'), '120')
+  eq('math2', 'COMBIN', ev('COMBIN(5,2)'), '10')
+  eq('math2', 'PERMUT', ev('PERMUT(5,2)'), '20')
+  eq('math2', 'SUMSQ', ev('SUMSQ(3,4)'), '25')
+  eq('math2', 'CEILING.MATH', ev('CEILING.MATH(4.2,1)'), '5')
+
+  // --- logic utilities & text/regex ---
+  eq('logic2', 'IFS', ev('IFS(FALSE,"a",TRUE,"b")'), 'b')
+  eq('logic2', 'SWITCH', ev('SWITCH(2,1,"one",2,"two","other")'), 'two')
+  eq('logic2', 'SWITCH default', ev('SWITCH(9,1,"one","other")'), 'other')
+  eq('logic2', 'IFNA', ev('IFNA(NA(),"fallback")'), 'fallback')
+  eq('text2', 'TEXT number', ev('TEXT(1234.5,"#,##0.00")'), '1,234.50')
+  eq('text2', 'TEXT percent', ev('TEXT(0.125,"0.0%")'), '12.5%')
+  eq('text2', 'REGEXMATCH', ev('REGEXMATCH("abc123","\\d+")'), 'TRUE')
+  eq('text2', 'REGEXEXTRACT', ev('REGEXEXTRACT("order-42","(\\d+)")'), '42')
+  eq('text2', 'REGEXREPLACE', ev('REGEXREPLACE("a1b2c3","\\d","#")'), 'a#b#c#')
+  eq('text2', 'NUMBERVALUE', ev('NUMBERVALUE("1,234.5")'), '1234.5')
+
+  // --- number formats (pure display) ---
+  eq('format', 'currency', displayWithFormat(1234.5, { nf: 'currency' }), '$1,234.50')
+  eq('format', 'percent', displayWithFormat(0.125, { nf: 'percent', decimals: 1 }), '12.5%')
+  eq('format', 'thousands', displayWithFormat(1234567, { nf: 'thousands' }), '1,234,567')
+  eq('format', 'scientific', displayWithFormat(12345, { nf: 'scientific', decimals: 2 }), '1.23E+4')
+  eq('format', 'plain decimals', displayWithFormat(3.14159, { nf: 'plain', decimals: 2 }), '3.14')
+  eq('format', 'date', displayWithFormat(dateToSerial(2026, 6, 23), { nf: 'date' }), '2026-06-23')
+  eq('format', 'negative currency', displayWithFormat(-50, { nf: 'currency', decimals: 0 }), '-$50')
+
   // --- the dependency graph ---
   r.push(depGraphTests())
   r.push(cycleTest())
   r.push(transitiveTest())
   r.push(fillRewriteTest())
+  r.push(multiSheetTests())
+  r.push(crossSheetRecalcTest())
+  r.push(definedNameTests())
+  r.push(nameCycleTest())
+  r.push(renameSheetTest())
 
   return r.flat()
+}
+
+// ---- multi-sheet, names, and rename ----------------------------------------
+
+function multiSheetTests(): TestResult[] {
+  const wb = new Workbook(40, 20)
+  const s1 = wb.activeSheetId
+  const s2 = wb.addSheet('Data')
+  wb.setActiveSheet(s1)
+  wb.setMany([{ coord: { row: 0, col: 0 }, raw: '100' }], s1) // Sheet1!A1
+  wb.setMany([{ coord: { row: 0, col: 0 }, raw: '7' }], s2) // Data!A1
+  wb.setCell({ row: 1, col: 0 }, '=A1+Data!A1', s1) // Sheet1!A2 = 100 + 7
+  const out: TestResult[] = []
+  const got = wb.getDisplay({ row: 1, col: 0 }, s1)
+  out.push({ group: 'sheets', name: 'cross-sheet add (=A1+Data!A1)', pass: got === '107', detail: got === '107' ? undefined : `got ${got}` })
+  const bad = (() => {
+    wb.setCell({ row: 2, col: 0 }, '=Nope!A1', s1)
+    return wb.getDisplay({ row: 2, col: 0 }, s1)
+  })()
+  out.push({ group: 'sheets', name: 'missing sheet -> #REF!', pass: bad === '#REF!', detail: bad === '#REF!' ? undefined : `got ${bad}` })
+  return out
+}
+
+function crossSheetRecalcTest(): TestResult[] {
+  // A value chain that hops Sheet1 -> Two -> Three and must recalc on a Sheet1 edit.
+  const wb = new Workbook(40, 20)
+  const s1 = wb.activeSheetId
+  const s2 = wb.addSheet('Two')
+  const s3 = wb.addSheet('Three')
+  wb.setCell({ row: 0, col: 0 }, '5', s1) // Sheet1!A1 = 5
+  wb.setCell({ row: 0, col: 0 }, '=Sheet1!A1*2', s2) // Two!A1 = 10
+  wb.setCell({ row: 0, col: 0 }, '=Two!A1+1', s3) // Three!A1 = 11
+  const before = wb.getDisplay({ row: 0, col: 0 }, s3)
+  wb.setCell({ row: 0, col: 0 }, '50', s1) // ripple across all three sheets
+  const after = wb.getDisplay({ row: 0, col: 0 }, s3)
+  const pass = before === '11' && after === '101'
+  return [{ group: 'sheets', name: 'recalc ripples across 3 sheets', pass, detail: pass ? undefined : `got ${before} then ${after}` }]
+}
+
+function definedNameTests(): TestResult[] {
+  const wb = new Workbook(40, 20)
+  const s1 = wb.activeSheetId
+  wb.setMany(
+    [
+      { coord: { row: 0, col: 0 }, raw: '10' }, // A1
+      { coord: { row: 1, col: 0 }, raw: '20' }, // A2
+      { coord: { row: 2, col: 0 }, raw: '30' }, // A3
+    ],
+    s1,
+  )
+  wb.setName('Tax', '0.1')
+  wb.setName('Vals', 'A1:A3')
+  wb.setCell({ row: 0, col: 2 }, '=SUM(Vals)*(1+Tax)', s1) // C1 = 60 * 1.1 = 66
+  const out: TestResult[] = []
+  const got = wb.getDisplay({ row: 0, col: 2 }, s1)
+  out.push({ group: 'names', name: 'named range + named constant', pass: got === '66', detail: got === '66' ? undefined : `got ${got}` })
+  // Changing an underlying cell must recompute the formula through the name.
+  wb.setCell({ row: 0, col: 0 }, '40', s1) // A1 10 -> 40, SUM 90
+  const got2 = wb.getDisplay({ row: 0, col: 2 }, s1)
+  out.push({ group: 'names', name: 'name recalculates on cell change', pass: got2 === '99', detail: got2 === '99' ? undefined : `got ${got2}` })
+  return out
+}
+
+function nameCycleTest(): TestResult[] {
+  const wb = new Workbook(40, 20)
+  wb.setName('Loop', 'Loop+1') // self-referential
+  wb.setCell({ row: 0, col: 0 }, '=Loop')
+  const got = wb.getDisplay({ row: 0, col: 0 })
+  const pass = got === '#CIRC!'
+  return [{ group: 'names', name: 'self-referential name -> #CIRC!', pass, detail: pass ? undefined : `got ${got}` }]
+}
+
+function renameSheetTest(): TestResult[] {
+  const wb = new Workbook(40, 20)
+  const s1 = wb.activeSheetId
+  const s2 = wb.addSheet('Data')
+  wb.setCell({ row: 0, col: 0 }, '42', s2) // Data!A1
+  wb.setCell({ row: 0, col: 0 }, '=Data!A1+1', s1) // Sheet1!A1 = 43
+  wb.renameSheet(s2, 'Numbers') // formula should be rewritten to =Numbers!A1+1
+  const raw = wb.getRaw({ row: 0, col: 0 }, s1)
+  const got = wb.getDisplay({ row: 0, col: 0 }, s1)
+  const pass = got === '43' && raw === '=Numbers!A1+1'
+  return [{ group: 'sheets', name: 'rename rewrites cross-sheet refs', pass, detail: pass ? undefined : `raw=${raw} val=${got}` }]
 }
 
 function depGraphTests(): TestResult[] {

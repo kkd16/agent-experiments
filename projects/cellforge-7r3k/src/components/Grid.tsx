@@ -4,6 +4,7 @@ import type { Coord, RangeBox } from '../engine/address'
 import { colToLetters, boxContains } from '../engine/address'
 import type { Workbook } from '../engine/workbook'
 import { isError, isSparkline, isBlank } from '../engine/values'
+import { defaultRightAlign } from '../engine/format'
 import Sparkline from './Sparkline'
 
 export const ROW_H = 26
@@ -14,6 +15,7 @@ const OVERSCAN = 3
 
 interface Props {
   wb: Workbook
+  sheetId: string
   version: number
   rows: number
   cols: number
@@ -48,7 +50,7 @@ function heatColor(t: number): string {
 }
 
 export default function Grid(props: Props) {
-  const { wb, rows, cols, active, selection, editing, heatmap, containerRef } = props
+  const { wb, sheetId, rows, cols, active, selection, editing, heatmap, containerRef } = props
   const scrollerRef = useRef<HTMLDivElement | null>(null)
   const [scroll, setScroll] = useState({ top: 0, left: 0 })
   const [vp, setVp] = useState({ w: 900, h: 560 })
@@ -93,7 +95,7 @@ export default function Grid(props: Props) {
     let max = -Infinity
     for (let r = heatmap.top; r <= heatmap.bottom; r++) {
       for (let c = heatmap.left; c <= heatmap.right; c++) {
-        const v = wb.getValue({ row: r, col: c })
+        const v = wb.getValue({ row: r, col: c }, sheetId)
         if (typeof v === 'number') {
           if (v < min) min = v
           if (v > max) max = v
@@ -108,28 +110,37 @@ export default function Grid(props: Props) {
   for (let r = firstRow; r <= lastRow; r++) {
     for (let c = firstCol; c <= lastCol; c++) {
       const coord = { row: r, col: c }
-      const v = wb.getValue(coord)
+      const v = wb.getValue(coord, sheetId)
+      const f = wb.getFormat(coord, sheetId)
       const selected = boxContains(selection, coord)
       const isActive = r === active.row && c === active.col
       const err = isError(v)
       const numeric = typeof v === 'number'
+      const alignRight = f?.align ? f.align === 'right' : defaultRightAlign(v, f)
       const cls = ['cell']
       if (selected) cls.push('sel')
       if (isActive) cls.push('active')
       if (err) cls.push('err')
-      if (numeric || err) cls.push('right')
+      if (numeric || err) cls.push('num')
+      if (alignRight) cls.push('right')
+      else if (f?.align === 'center') cls.push('center')
 
       let bg: string | undefined
       if (heatRange && heatmap && boxContains(heatmap, coord) && numeric) {
         const t = heatRange.max === heatRange.min ? 0.5 : (v - heatRange.min) / (heatRange.max - heatRange.min)
         bg = heatColor(t)
       }
+      if (f?.bg) bg = f.bg // explicit fill wins over the heatmap
 
       const style: React.CSSProperties = {
         transform: `translate(${c * COL_W}px, ${r * ROW_H}px)`,
         width: COL_W,
         height: ROW_H,
         background: bg,
+        fontWeight: f?.bold ? 700 : undefined,
+        fontStyle: f?.italic ? 'italic' : undefined,
+        textDecoration: f?.underline ? 'underline' : undefined,
+        color: f?.color,
       }
 
       let content: React.ReactNode
@@ -158,7 +169,7 @@ export default function Grid(props: Props) {
       } else if (isSparkline(v)) {
         content = <Sparkline spark={v} />
       } else if (!isBlank(v)) {
-        content = <span className="cell-text">{wb.getDisplay(coord)}</span>
+        content = <span className="cell-text">{wb.getDisplay(coord, sheetId)}</span>
       }
 
       cellsOut.push(
