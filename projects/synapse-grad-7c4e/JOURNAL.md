@@ -2,7 +2,7 @@
 
 A tiny **deep-learning framework that runs in your browser**, built from scratch on a real
 reverse-mode **tensor autograd engine** (no TensorFlow.js, no ONNX, no WebGL math libs — every
-gradient is hand-derived and the tape is hand-rolled). Nine labs share the one engine:
+gradient is hand-derived and the tape is hand-rolled). Ten labs share the one engine:
 
 - **2-D Playground** — pick a dataset, sketch an MLP, and watch it learn in real time:
   decision boundary, per-neuron feature maps, loss/accuracy curves, and a live computation graph.
@@ -99,6 +99,24 @@ gradient is hand-derived and the tape is hand-rolled). Nine labs share the one e
   machine precision) and the coefficients can be **re-solved onto a new knot vector by least squares**,
   so a *trained* KAN can be **refined live** (×2 grid resolution) or **re-centred** onto its real
   activation range **without forgetting** — the curves are preserved to ~1e-5.
+- **Neural ODE · Continuous depth** — a from-scratch **continuous-depth** classifier: instead of
+  stacking discrete residual blocks, a *single* learned vector field defines the whole trajectory
+  by an ODE, `dz/dt = f_θ(z, t)`, with the prediction read off the terminal state `head(z(1))`.
+  "Depth" becomes integration **time** and a hand-written **Euler / midpoint / RK4** solver
+  replaces the layer stack — and because every solver step is built from the engine's own tape
+  ops, back-prop runs **straight through the solver** (gradchecked end-to-end to ~6e-6). It
+  implements the two ideas that made Neural ODEs famous: the **adjoint method** — the O(1)-memory
+  gradient got by integrating a *second* ODE backwards in time (its vector–Jacobian products taken
+  with the engine's own reverse mode), which the lab proves reproduces back-prop-through-the-solver
+  on a live batch (to ~3e-7, tightening as steps refine); and **Augmented Neural ODEs** (Dupont et
+  al., 2019) — extra zero-initialised state channels that let trajectories leave the plane, since a
+  2-D ODE flow is a homeomorphism and *cannot* unlink concentric rings without crossing
+  trajectories. The headline is one canvas fusing the **terminal decision regions**, the
+  **time-dependent learned vector field** `f_θ(·, t)` as a quiver you **scrub through time**, and
+  the **live trajectory** of every sample point flowing `t=0 → t=1` — beside a **lift view** that
+  shows points rising off the `a=0` plane into the augmented axis to route around each other, and
+  accuracy/loss curves. RK4 exactness is proven against the closed form of a linear ODE
+  (`z(1)=e^A z₀`, ~4e-11); the self-test now covers **62 ops**.
 
 A built-in **numerical gradient checker** runs finite differences against the analytic gradients
 and reports the max error, so you can *prove* the engine — convolution included — is correct,
@@ -1086,3 +1104,77 @@ function, then keep the full CI gate (scope + conformance + lint + tsc + vite bu
   function and **100%** on two-moons, and a ×2 grid refit drifts predictions by only **1e-5**. App tab +
   hash route `#k=`, a `KAN_SLOT_PREFIX` for independent save/share. Full CI gate (scope + conformance +
   lint + tsc + vite build) green via `node scripts/verify-project.mjs synapse-grad-7c4e`.
+
+## v10 — Neural ODE · Continuous depth (planned + built this session)
+
+The studio had the discrete-architecture story (MLP, CNN, Transformer, KAN) and the generative
+trio (VAE, diffusion, flow), plus RL and GNN — but nothing on **continuous-depth** models, the
+idea that ties deep nets to dynamical systems and ODE solvers. This lab fills that gap. Everything
+stays from-scratch and rides the existing tensor autograd; the only new maths is the solver, the
+adjoint ODE, and the augmentation lift.
+
+### Engine (`engine/node-ode.ts`)
+- [x] **`ODEFunc`** — the learned vector field `f_θ(z, t)`: a small MLP from the augmented state
+  to a velocity, with **time injected** as an additive first-layer bias (`tw·t`) so the field is
+  non-autonomous without needing a concat op; output layer initialised small so the initial flow
+  is gentle. Carries both a **tape forward** (for training/adjoint) and a **tape-free `evalRaw`**
+  (packed `Float64Array`, no graph) so the live grid/field/trajectory views never allocate a tape.
+- [x] **Solvers** — hand-written **Euler**, **midpoint (RK2)** and **classic RK4**, each built from
+  `add`/`scale`/`matmul` so they're differentiable on the tape; a tape-free `odeIntegrateRawTrace`
+  captures every intermediate frame for the time scrubber.
+- [x] **`NeuralODE`** — lift input → integrate `t∈[0,1]` → linear head → softmax-CE. Augmentation =
+  zero-padded extra channels (`state ∈ R^{2+aug}`). Tape-free `classifyRaw` / `traceRaw` for views.
+- [x] **Adjoint method** (`adjointDynamicsGrad`) — the O(1)-memory gradient: integrate the augmented
+  `(z, a)` system backwards, `da/dt = -(∂f/∂z)^T a`, accumulating `∫ a^T ∂f/∂θ dt`, with each VJP
+  taken by seeding `f`'s output grad with `a` and back-propagating on a fresh tape. Re-derives `z(t)`
+  backwards instead of storing it. RK4 / midpoint / Euler variants with matching stage weights.
+- [x] **Datasets** reuse the playground's labelled 2-D sets (circles / moons / spirals / …).
+
+### Self-test (3 new ops, now 62 total; max rel err ~5.7e-6)
+- [x] `node-classify (e2e)` — the whole continuous-depth classifier gradchecked through the RK4
+  solver against finite differences (~5.7e-6).
+- [x] `node-rk4-exactness` — realise a *linear* field `dz/dt = λz` with a 1-layer linear `ODEFunc`
+  and check the integral against the closed form `z₀·e^λ` (~4e-11).
+- [x] `node-adjoint=backprop` — the continuous adjoint vs back-prop-through-the-solver on a real
+  batch (~2.6e-7).
+
+### UI (`hooks/useNodeTrainer.ts`, `components/node/*`)
+- [x] `FlowField` — the headline canvas: terminal decision regions + the **time-dependent vector
+  field** quiver + **live trajectories** + the moving cloud, all driven by a **time scrubber** with
+  a play button (cached by training tick so scrubbing stays smooth).
+- [x] `LiftView` — the `(x, a₀)` plane showing points **lift off** `a=0` into the augmented axis
+  (the geometric reason augmentation works); a friendly empty-state when `aug=0`.
+- [x] `NodePanel` — dataset, augment dim, field width/depth/activation, **solver + steps** (with an
+  `fn-evals` read-out), optimizer/schedule/clip, a **Gradient check** and a **Run adjoint vs
+  back-prop** button, the engine self-test, and save/share.
+- [x] `NodeChart`, app **tab + hash route `#o=`**, `NODE_SLOT_PREFIX` for independent save/share.
+
+### Validated outside the browser first (vite SSR bundle)
+- [x] Augmented (aug=1) **concentric circles → 100%** at 150 steps; vanilla (aug=0) lags (97.5% @150,
+  ~99.9% @400) and reaches it only by straining the field against the topology — the teachable gap.
+- [x] moons aug=1 → 100% @150; two-spirals aug=2 → 99.7% @400.
+- [x] adjoint vs back-prop **relative L2 gap** falls `2.6e-10 → 4.5e-15` as steps go `8 → 128`.
+
+### Open / future
+- [ ] **Continuous Normalizing Flow (FFJORD)** on the same solver — a Hutchinson trace estimator
+  for `d log p/dt`, turning this lab's vector field into an exact-likelihood generative model.
+- [ ] **Adaptive step size** (Dormand–Prince RK45 with error control) and an `NFE`-vs-tolerance plot.
+- [ ] **ODE-RNN / latent-ODE** for irregularly-sampled time series.
+- [ ] A **phase-portrait** export and a depth-vs-time slider that morphs a discrete ResNet into its
+  ODE limit.
+
+## Session log
+
+- 2026-06-23 (claude, session 12): added the **tenth lab — Neural ODE · Continuous depth**. New
+  `engine/node-ode.ts` (the learned vector field with tape + tape-free paths, Euler/RK2/RK4 solvers
+  built from tape ops, the `NeuralODE` classifier with Augmented-Neural-ODE channels, and the
+  continuous **adjoint** gradient with its backward-in-time augmented ODE), a `useNodeTrainer` hook,
+  and `components/node/*` (the headline `FlowField` with a live time scrubber over the
+  time-dependent vector field + trajectories, the `LiftView` augmentation visual, `NodePanel`,
+  `NodeChart`). Wired an app tab + hash route `#o=` and a `NODE_SLOT_PREFIX`. The engine **self-test
+  grew to 62 ops** (max rel err 5.7e-6): the whole continuous-depth classifier gradchecked through
+  the RK4 solver (5.7e-6), RK4 exactness against `z₀·e^λ` (4e-11), and the continuous adjoint proven
+  to reproduce back-prop-through-the-solver (2.6e-7). Validated outside the browser first — augmented
+  circles hit 100% while the vanilla 2-D flow strains against the ring topology, and the adjoint gap
+  shrinks `2.6e-10 → 4.5e-15` from 8 → 128 steps. Full CI gate (scope + conformance + lint + tsc +
+  vite build) green via `node scripts/verify-project.mjs synapse-grad-7c4e`.
