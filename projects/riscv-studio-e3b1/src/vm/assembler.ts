@@ -889,6 +889,10 @@ function expandReal(
     case 'R':
       NEED(op, ops, 3);
       return M({ rd: parseReg(ops[0]), rs1: parseReg(ops[1]), rs2: parseReg(ops[2]) });
+    case 'UNARY':
+      // Single-operand bit-manip op (`op rd, rs1`): clz/ctz/cpop/sext.*/zext.h/orc.b/rev8.
+      NEED(op, ops, 2);
+      return M({ rd: parseReg(ops[0]), rs1: parseReg(ops[1]) });
     case 'SHIFT':
       NEED(op, ops, 3);
       return M({ rd: parseReg(ops[0]), rs1: parseReg(ops[1]), imm: { kind: 'num', value: parseImmValue(ops[2], consts) } });
@@ -1009,6 +1013,9 @@ function encode(m: MicroInstr, addr: number, symbols: Map<string, number>): numb
   switch (spec.format) {
     case 'R':
       return u32((f7 << 25) | (rs2 << 20) | (rs1 << 15) | (f3 << 12) | (rd << 7) | opc);
+    case 'UNARY':
+      // Fixed 12-bit funct (funct7:rs2) with the single source in rs1.
+      return u32((f7 << 25) | ((spec.rs2 ?? 0) << 20) | (rs1 << 15) | (f3 << 12) | (rd << 7) | opc);
     case 'SHIFT': {
       const shamt = checkRange(resolveImm(m.imm, addr, symbols), 0, 31, 'shift amount');
       return u32((f7 << 25) | (shamt << 20) | (rs1 << 15) | (f3 << 12) | (rd << 7) | opc);

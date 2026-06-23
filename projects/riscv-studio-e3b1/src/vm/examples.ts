@@ -652,8 +652,99 @@ s_handler:
         ecall                     # exit(0)
 `;
 
+const BITMANIP = `# The bit-manipulation extension (Zba / Zbb / Zbc / Zbs) — a guided tour.
+# Each line prints a label and the result of exactly one new Zb instruction, so you can
+# single-step it and watch the dedicated hardware do in one cycle what used to take a loop.
+.data
+l_pop:  .string "cpop(0xDEADBEEF)   = "      # Zbb population count
+l_clz:  .string "clz(0x0000FFFF)    = "      # Zbb count-leading-zeros
+l_ctz:  .string "ctz(0x00018000)    = "      # Zbb count-trailing-zeros
+l_rev:  .string "rev8(0x11223344)   = "      # Zbb byte-reverse (endianness swap)
+l_rot:  .string "ror(0x12345678, 8) = "      # Zbb rotate-right
+l_max:  .string "max(-7, 42)        = "      # Zbb signed maximum
+l_clm:  .string "clmul(0xD, 0xB)    = "      # Zbc carry-less multiply
+nl:     .string "\\n"
+.text
+main:
+        la   a0, l_pop          # --- cpop: how many bits are set ---
+        li   a7, 4
+        ecall
+        li   t0, 0xDEADBEEF
+        cpop a0, t0             # = 24
+        li   a7, 1
+        ecall
+        call newline
+
+        la   a0, l_clz          # --- clz: leading zeros ---
+        li   a7, 4
+        ecall
+        li   t0, 0x0000FFFF
+        clz  a0, t0             # = 16
+        li   a7, 1
+        ecall
+        call newline
+
+        la   a0, l_ctz          # --- ctz: trailing zeros ---
+        li   a7, 4
+        ecall
+        li   t0, 0x00018000
+        ctz  a0, t0             # = 15
+        li   a7, 1
+        ecall
+        call newline
+
+        la   a0, l_rev          # --- rev8: reverse byte order (hex) ---
+        li   a7, 4
+        ecall
+        li   t0, 0x11223344
+        rev8 a0, t0             # = 0x44332211
+        li   a7, 34
+        ecall
+        call newline
+
+        la   a0, l_rot          # --- ror: rotate right by 8 (hex) ---
+        li   a7, 4
+        ecall
+        li   t0, 0x12345678
+        li   t1, 8
+        ror  a0, t0, t1         # = 0x78123456
+        li   a7, 34
+        ecall
+        call newline
+
+        la   a0, l_max          # --- max: signed maximum ---
+        li   a7, 4
+        ecall
+        li   t0, -7
+        li   t1, 42
+        max  a0, t0, t1         # = 42
+        li   a7, 1
+        ecall
+        call newline
+
+        la   a0, l_clm          # --- clmul: carry-less (XOR) multiply ---
+        li   a7, 4
+        ecall
+        li   t0, 0xD
+        li   t1, 0xB
+        clmul a0, t0, t1        # = 127
+        li   a7, 1
+        ecall
+        call newline
+
+        li   a7, 10             # exit
+        ecall
+
+newline:                       # print a single '\\n' (preserves ra; no nested calls)
+        la   a0, nl
+        li   a7, 4
+        ecall
+        ret
+`;
+
 export const EXAMPLES: readonly Example[] = [
   { id: 'hello', title: 'Hello, RISC-V', blurb: 'print_string syscall basics', focus: 'console', code: HELLO },
+  { id: 'bitmanip', title: 'Bit manipulation (Zb)', blurb: 'Zba/Zbb/Zbc/Zbs: cpop, clz, rev8, ror, clmul', focus: 'console', code: BITMANIP },
   { id: 'paging', title: 'Virtual memory (Sv32)', blurb: 'page tables, S-mode, a page-fault handler', focus: 'console', code: PAGING },
   { id: 'rvc', title: 'Compressed (RV32C)', blurb: 'c.* 16-bit ops + .option rvc auto-compress', focus: 'console', code: RVC },
   { id: 'timer', title: 'Timer interrupts', blurb: 'CLINT timer + mtvec/mret machine-mode trap', focus: 'console', code: TIMER_IRQ },

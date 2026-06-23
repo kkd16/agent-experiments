@@ -4,7 +4,7 @@
 // funct7) and format. The assembler reads this table to encode, and the decoder reads it
 // to disassemble — a single source of truth that keeps the two halves in lock-step.
 
-export type Format = 'R' | 'I' | 'S' | 'B' | 'U' | 'J' | 'SHIFT' | 'SYS' | 'FENCE';
+export type Format = 'R' | 'I' | 'S' | 'B' | 'U' | 'J' | 'SHIFT' | 'SYS' | 'FENCE' | 'UNARY';
 
 export interface InstrSpec {
   readonly name: string;
@@ -13,6 +13,8 @@ export interface InstrSpec {
   readonly funct3?: number;
   /** funct7 for R-type, or the high immediate bit for shift-immediate ops. */
   readonly funct7?: number;
+  /** Fixed rs2/funct5 field for a single-operand (UNARY) bit-manipulation op. */
+  readonly rs2?: number;
 }
 
 // Opcodes (the low 7 bits).
@@ -45,6 +47,10 @@ function s(name: string, funct3: number): InstrSpec {
 }
 function b(name: string, funct3: number): InstrSpec {
   return { name, format: 'B', opcode: OPC.BRANCH, funct3 };
+}
+/** A single-operand bit-manip op (`op rd, rs1`): a fixed 12-bit funct (funct7:rs2). */
+function un(name: string, opcode: number, funct3: number, funct7: number, rs2 = 0): InstrSpec {
+  return { name, format: 'UNARY', opcode, funct3, funct7, rs2 };
 }
 
 /** Mnemonic → encoding spec for every base instruction the assembler understands. */
@@ -110,6 +116,61 @@ export const INSTRUCTIONS: Record<string, InstrSpec> = {
   rem: r('rem', 6, 0x01),
   remu: r('remu', 7, 0x01),
 
+  // ---------------------------------------------------------------------------
+  // Bit-manipulation extension (Zba + Zbb + Zbc + Zbs). Every encoding below is
+  // the ratified RISC-V Zb* layout, woven into the OP / OP-IMM opcode space and
+  // disambiguated purely by funct3/funct7 (and, for the single-operand forms, the
+  // fixed rs2 selector). The assembler/decoder/executor all read these specs.
+  // ---------------------------------------------------------------------------
+
+  // Zba — shift-and-add address generation (rd = (rs1 << k) + rs2).
+  sh1add: r('sh1add', 2, 0x10),
+  sh2add: r('sh2add', 4, 0x10),
+  sh3add: r('sh3add', 6, 0x10),
+
+  // Zbb — logical with negated operand.
+  andn: r('andn', 7, 0x20),
+  orn: r('orn', 6, 0x20),
+  xnor: r('xnor', 4, 0x20),
+
+  // Zbb — integer minimum / maximum (signed + unsigned).
+  min: r('min', 4, 0x05),
+  minu: r('minu', 5, 0x05),
+  max: r('max', 6, 0x05),
+  maxu: r('maxu', 7, 0x05),
+
+  // Zbb — rotate (register + immediate).
+  rol: r('rol', 1, 0x30),
+  ror: r('ror', 5, 0x30),
+  rori: shift('rori', 5, 0x30),
+
+  // Zbb — bit counting and sign/zero extension (single-operand).
+  clz: un('clz', OPC.OP_IMM, 1, 0x30, 0x00),
+  ctz: un('ctz', OPC.OP_IMM, 1, 0x30, 0x01),
+  cpop: un('cpop', OPC.OP_IMM, 1, 0x30, 0x02),
+  'sext.b': un('sext.b', OPC.OP_IMM, 1, 0x30, 0x04),
+  'sext.h': un('sext.h', OPC.OP_IMM, 1, 0x30, 0x05),
+  'zext.h': un('zext.h', OPC.OP, 4, 0x04, 0x00),
+
+  // Zbb — OR-combine bytes / byte-reverse (single-operand).
+  'orc.b': un('orc.b', OPC.OP_IMM, 5, 0x14, 0x07),
+  rev8: un('rev8', OPC.OP_IMM, 5, 0x34, 0x18),
+
+  // Zbc — carry-less multiply.
+  clmul: r('clmul', 1, 0x05),
+  clmulr: r('clmulr', 2, 0x05),
+  clmulh: r('clmulh', 3, 0x05),
+
+  // Zbs — single-bit set / clear / invert / extract (register + immediate).
+  bclr: r('bclr', 1, 0x24),
+  bclri: shift('bclri', 1, 0x24),
+  bset: r('bset', 1, 0x14),
+  bseti: shift('bseti', 1, 0x14),
+  binv: r('binv', 1, 0x34),
+  binvi: shift('binvi', 1, 0x34),
+  bext: r('bext', 5, 0x24),
+  bexti: shift('bexti', 5, 0x24),
+
   // System / misc
   ecall: { name: 'ecall', format: 'SYS', opcode: OPC.SYSTEM, funct3: 0, funct7: 0 },
   ebreak: { name: 'ebreak', format: 'SYS', opcode: OPC.SYSTEM, funct3: 0, funct7: 1 },
@@ -133,8 +194,30 @@ export const SYS_WORDS: Record<string, number> = {
   'sfence.vma': 0x1200_0073, // sfence.vma x0, x0 — flush everything
 };
 
-/** Set of every recognised base (RV32IM) mnemonic (lowercased). */
+/** Set of every recognised base (RV32IM + Zb) mnemonic (lowercased). */
 export const REAL_MNEMONICS: ReadonlySet<string> = new Set(Object.keys(INSTRUCTIONS));
+
+/** The bit-manipulation (Zba/Zbb/Zbc/Zbs) mnemonics — a subset of `INSTRUCTIONS`. */
+export const ZB_MNEMONICS: ReadonlySet<string> = new Set([
+  'sh1add', 'sh2add', 'sh3add',
+  'andn', 'orn', 'xnor',
+  'min', 'minu', 'max', 'maxu',
+  'rol', 'ror', 'rori',
+  'clz', 'ctz', 'cpop', 'sext.b', 'sext.h', 'zext.h',
+  'orc.b', 'rev8',
+  'clmul', 'clmulr', 'clmulh',
+  'bclr', 'bclri', 'bset', 'bseti', 'binv', 'binvi', 'bext', 'bexti',
+]);
+
+/** Single-operand (`op rd, rs1`) Zbb mnemonics, used by the decoder/disassembler. */
+export const ZB_UNARY_MNEMONICS: ReadonlySet<string> = new Set([
+  'clz', 'ctz', 'cpop', 'sext.b', 'sext.h', 'zext.h', 'orc.b', 'rev8',
+]);
+
+/** Shift-immediate-shaped Zb mnemonics (`op rd, rs1, shamt`; shamt sits in the rs2 field). */
+export const ZB_SHIFT_IMM_MNEMONICS: ReadonlySet<string> = new Set([
+  'rori', 'bclri', 'bseti', 'binvi', 'bexti',
+]);
 
 // ---------------------------------------------------------------------------
 // RV32A (atomics) and Zicsr encoding data — kept here as the single source of

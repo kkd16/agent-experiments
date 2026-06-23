@@ -175,6 +175,71 @@ function mulhsu(a: number, b: number): number {
   return Number((BigInt(a | 0) * BigInt(b >>> 0)) >> 32n) | 0;
 }
 
+// ---------------------------------------------------------------------------
+// Bit-manipulation (Zb*) primitives — pure 32-bit functions used by the executor.
+// ---------------------------------------------------------------------------
+
+/** Population count of a 32-bit word (the classic SWAR popcount). */
+function popcount32(v: number): number {
+  let x = v >>> 0;
+  x = x - ((x >>> 1) & 0x5555_5555);
+  x = (x & 0x3333_3333) + ((x >>> 2) & 0x3333_3333);
+  x = (x + (x >>> 4)) & 0x0f0f_0f0f;
+  return (Math.imul(x, 0x0101_0101) >>> 24) & 0x3f;
+}
+
+/** Rotate left / right by `s` (0..31); a zero shift is the identity (avoids the `>>>32` trap). */
+function rotl32(a: number, s: number): number {
+  return s === 0 ? a | 0 : ((a << s) | (a >>> (32 - s))) | 0;
+}
+function rotr32(a: number, s: number): number {
+  return s === 0 ? a | 0 : ((a >>> s) | (a << (32 - s))) | 0;
+}
+
+/** orc.b — each output byte is 0xFF if the matching input byte is non-zero, else 0x00. */
+function orcb(a: number): number {
+  let r = 0;
+  for (let i = 0; i < 4; i++) {
+    if (((a >>> (i * 8)) & 0xff) !== 0) r |= 0xff << (i * 8);
+  }
+  return r | 0;
+}
+
+/** rev8 — reverse the byte order of a 32-bit word (an endianness swap). */
+function byteReverse(a: number): number {
+  return (
+    (((a >>> 24) & 0xff) | (((a >>> 16) & 0xff) << 8) | (((a >>> 8) & 0xff) << 16) | ((a & 0xff) << 24)) | 0
+  );
+}
+
+/** Carry-less product low word (clmul): XOR-accumulate rs1<<i for every set bit i of rs2. */
+function clmul(a: number, b: number): number {
+  const A = a >>> 0;
+  let lo = 0;
+  for (let i = 0; i < 32; i++) {
+    if ((b >>> i) & 1) lo ^= A << i;
+  }
+  return lo | 0;
+}
+/** Carry-less product high word (clmulh): the bits that fall past bit 31. */
+function clmulh(a: number, b: number): number {
+  const A = a >>> 0;
+  let hi = 0;
+  for (let i = 1; i < 32; i++) {
+    if ((b >>> i) & 1) hi ^= A >>> (32 - i);
+  }
+  return hi | 0;
+}
+/** Reversed carry-less product (clmulr): output bit i ^= rs1 >> (31 - i) for each set bit of rs2. */
+function clmulr(a: number, b: number): number {
+  const A = a >>> 0;
+  let r = 0;
+  for (let i = 0; i < 32; i++) {
+    if ((b >>> i) & 1) r ^= A >>> (31 - i);
+  }
+  return r | 0;
+}
+
 export class Cpu {
   readonly regs = new Int32Array(32);
   /** RV32F float registers, stored as raw 32-bit patterns (FLEN = 32, no NaN-boxing). */
@@ -1007,6 +1072,119 @@ export class Cpu {
         return false;
       case 'remu':
         this.set(rd, this.urem(a, b));
+        return false;
+
+      // ---- Zba: shift-and-add address generation ----------------------
+      case 'sh1add':
+        this.set(rd, ((a << 1) + b) | 0);
+        return false;
+      case 'sh2add':
+        this.set(rd, ((a << 2) + b) | 0);
+        return false;
+      case 'sh3add':
+        this.set(rd, ((a << 3) + b) | 0);
+        return false;
+
+      // ---- Zbb: logical with negate -----------------------------------
+      case 'andn':
+        this.set(rd, a & ~b);
+        return false;
+      case 'orn':
+        this.set(rd, a | ~b);
+        return false;
+      case 'xnor':
+        this.set(rd, ~(a ^ b));
+        return false;
+
+      // ---- Zbb: integer min / max -------------------------------------
+      case 'min':
+        this.set(rd, a < b ? a : b);
+        return false;
+      case 'max':
+        this.set(rd, a > b ? a : b);
+        return false;
+      case 'minu':
+        this.set(rd, (a >>> 0) < (b >>> 0) ? a : b);
+        return false;
+      case 'maxu':
+        this.set(rd, (a >>> 0) > (b >>> 0) ? a : b);
+        return false;
+
+      // ---- Zbb: bit counting + sign/zero extension --------------------
+      case 'clz':
+        this.set(rd, Math.clz32(a));
+        return false;
+      case 'ctz':
+        this.set(rd, a === 0 ? 32 : 31 - Math.clz32(a & -a));
+        return false;
+      case 'cpop':
+        this.set(rd, popcount32(a));
+        return false;
+      case 'sext.b':
+        this.set(rd, signExtend(a & 0xff, 8));
+        return false;
+      case 'sext.h':
+        this.set(rd, signExtend(a & 0xffff, 16));
+        return false;
+      case 'zext.h':
+        this.set(rd, a & 0xffff);
+        return false;
+
+      // ---- Zbb: rotate ------------------------------------------------
+      case 'rol':
+        this.set(rd, rotl32(a, b & 31));
+        return false;
+      case 'ror':
+        this.set(rd, rotr32(a, b & 31));
+        return false;
+      case 'rori':
+        // The rotate amount sits in the shift-immediate (rs2) field, like slli/srli.
+        this.set(rd, rotr32(a, rs2 & 31));
+        return false;
+
+      // ---- Zbb: byte combine / reverse --------------------------------
+      case 'orc.b':
+        this.set(rd, orcb(a));
+        return false;
+      case 'rev8':
+        this.set(rd, byteReverse(a));
+        return false;
+
+      // ---- Zbc: carry-less multiply -----------------------------------
+      case 'clmul':
+        this.set(rd, clmul(a, b));
+        return false;
+      case 'clmulh':
+        this.set(rd, clmulh(a, b));
+        return false;
+      case 'clmulr':
+        this.set(rd, clmulr(a, b));
+        return false;
+
+      // ---- Zbs: single-bit set / clear / invert / extract -------------
+      case 'bset':
+        this.set(rd, a | (1 << (b & 31)));
+        return false;
+      case 'bseti':
+        this.set(rd, a | (1 << (rs2 & 31)));
+        return false;
+      case 'bclr':
+        this.set(rd, a & ~(1 << (b & 31)));
+        return false;
+      case 'bclri':
+        this.set(rd, a & ~(1 << (rs2 & 31)));
+        return false;
+      case 'binv':
+        this.set(rd, a ^ (1 << (b & 31)));
+        return false;
+      case 'binvi':
+        this.set(rd, a ^ (1 << (rs2 & 31)));
+        return false;
+      case 'bext':
+        this.set(rd, (a >>> (b & 31)) & 1);
+        return false;
+      case 'bexti':
+        this.set(rd, (a >>> (rs2 & 31)) & 1);
         return false;
 
       // ---- system -----------------------------------------------------

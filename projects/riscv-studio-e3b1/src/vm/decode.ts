@@ -43,6 +43,22 @@ function bits(word: number, hi: number, lo: number): number {
   return (word >>> lo) & ((1 << (hi - lo + 1)) - 1);
 }
 
+// Bit-manipulation R-type ops (Zba/Zbb/Zbc/Zbs) in the OP opcode, keyed by `funct7 * 8 + funct3`
+// so the decoder resolves them with a single table lookup before the base-ISA fall-through.
+const ZB_OP: Record<number, string> = Object.fromEntries(
+  (
+    [
+      [0x10, 2, 'sh1add'], [0x10, 4, 'sh2add'], [0x10, 6, 'sh3add'],
+      [0x20, 7, 'andn'], [0x20, 6, 'orn'], [0x20, 4, 'xnor'],
+      [0x05, 4, 'min'], [0x05, 5, 'minu'], [0x05, 6, 'max'], [0x05, 7, 'maxu'],
+      [0x30, 1, 'rol'], [0x30, 5, 'ror'],
+      [0x04, 4, 'zext.h'],
+      [0x05, 1, 'clmul'], [0x05, 2, 'clmulr'], [0x05, 3, 'clmulh'],
+      [0x24, 1, 'bclr'], [0x24, 5, 'bext'], [0x34, 1, 'binv'], [0x14, 1, 'bset'],
+    ] as [number, number, string][]
+  ).map(([f7, f3, name]) => [f7 * 8 + f3, name]),
+);
+
 function formatOf(opcode: number, funct3: number): DecodedFormat {
   switch (opcode) {
     case OPC.LUI:
@@ -187,17 +203,53 @@ function resolveMnemonic(opcode: number, funct3: number, funct7: number, w: numb
       return { 0: 'lb', 1: 'lh', 2: 'lw', 4: 'lbu', 5: 'lhu' }[funct3] ?? '?';
     case OPC.STORE:
       return { 0: 'sb', 1: 'sh', 2: 'sw' }[funct3] ?? '?';
-    case OPC.OP_IMM:
-      if (funct3 === 1) return 'slli';
-      if (funct3 === 5) return funct7 === 0x20 ? 'srai' : 'srli';
+    case OPC.OP_IMM: {
+      const rs2 = (w >>> 20) & 0x1f;
+      if (funct3 === 1) {
+        switch (funct7) {
+          case 0x24:
+            return 'bclri';
+          case 0x34:
+            return 'binvi';
+          case 0x14:
+            return 'bseti';
+          case 0x30:
+            return (
+              { 0x00: 'clz', 0x01: 'ctz', 0x02: 'cpop', 0x04: 'sext.b', 0x05: 'sext.h' }[rs2] ?? 'slli'
+            );
+          default:
+            return 'slli';
+        }
+      }
+      if (funct3 === 5) {
+        switch (funct7) {
+          case 0x20:
+            return 'srai';
+          case 0x30:
+            return 'rori';
+          case 0x24:
+            return 'bexti';
+          case 0x14:
+            return rs2 === 0x07 ? 'orc.b' : 'srli';
+          case 0x34:
+            return rs2 === 0x18 ? 'rev8' : 'srli';
+          default:
+            return 'srli';
+        }
+      }
       return { 0: 'addi', 2: 'slti', 3: 'sltiu', 4: 'xori', 6: 'ori', 7: 'andi' }[funct3] ?? '?';
-    case OPC.OP:
+    }
+    case OPC.OP: {
       if (funct7 === 0x01) {
         return ['mul', 'mulh', 'mulhsu', 'mulhu', 'div', 'divu', 'rem', 'remu'][funct3];
       }
+      // Bit-manipulation R-type ops live in this opcode, keyed by (funct7, funct3).
+      const zb = ZB_OP[funct7 * 8 + funct3];
+      if (zb) return zb;
       if (funct3 === 0) return funct7 === 0x20 ? 'sub' : 'add';
       if (funct3 === 5) return funct7 === 0x20 ? 'sra' : 'srl';
       return { 1: 'sll', 2: 'slt', 3: 'sltu', 4: 'xor', 6: 'or', 7: 'and' }[funct3] ?? '?';
+    }
     case OPC.AMO: {
       const funct5 = (funct7 >> 2) & 0x1f;
       return (

@@ -9,7 +9,7 @@ import type { DecodedInstruction } from './decode';
 import { ABI_NAMES, FREG_ABI_NAMES } from './registers';
 import { hexWord } from './format';
 import { FP_SPECS, RM_NAMES } from './fp';
-import { CSR_NUMBERS } from './isa';
+import { CSR_NUMBERS, ZB_UNARY_MNEMONICS, ZB_SHIFT_IMM_MNEMONICS } from './isa';
 import { formatCompressed } from './rvc';
 
 function reg(i: number): string {
@@ -59,8 +59,10 @@ function render(d: DecodedInstruction, pc: number): string {
         if (d.rd === 0 && d.imm === 0) return `jr ${reg(d.rs1)}`;
         return `jalr ${reg(d.rd)}, ${d.imm}(${reg(d.rs1)})`;
       }
+      // Single-operand Zbb ops (clz/ctz/cpop/sext.b/sext.h/orc.b/rev8) take just `rd, rs1`.
+      if (ZB_UNARY_MNEMONICS.has(m)) return `${m} ${reg(d.rd)}, ${reg(d.rs1)}`;
       // Shift-immediate ops carry the shift amount in the rs2 bit-field, not the full imm.
-      if (m === 'slli' || m === 'srli' || m === 'srai') {
+      if (m === 'slli' || m === 'srli' || m === 'srai' || ZB_SHIFT_IMM_MNEMONICS.has(m)) {
         return `${m} ${reg(d.rd)}, ${reg(d.rs1)}, ${d.rs2}`;
       }
       if (m === 'addi' && d.rd === 0 && d.rs1 === 0 && d.imm === 0) return 'nop';
@@ -69,6 +71,8 @@ function render(d: DecodedInstruction, pc: number): string {
       return `${m} ${reg(d.rd)}, ${reg(d.rs1)}, ${d.imm}`;
     case 'R':
       if (m === 'sub' && d.rs1 === 0) return `neg ${reg(d.rd)}, ${reg(d.rs2)}`;
+      // zext.h is the one R-type Zbb op with a single source operand.
+      if (m === 'zext.h') return `zext.h ${reg(d.rd)}, ${reg(d.rs1)}`;
       return `${m} ${reg(d.rd)}, ${reg(d.rs1)}, ${reg(d.rs2)}`;
     case 'SYS':
       return m;

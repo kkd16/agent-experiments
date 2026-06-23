@@ -1142,6 +1142,134 @@ const TESTS: Test[] = [
       }
     },
   },
+
+  // ---- Bit-manipulation extension (Zba / Zbb / Zbc / Zbs) -------------------
+  {
+    name: 'Zbb: count, extend, logic, min/max, rotate, byte ops',
+    fn: () => {
+      // Each case computes a single op into a0 and prints it as a signed decimal.
+      const ev = (body: string): string =>
+        run(`main:\n${body}\n  li a7, 1\n  ecall\n  li a7, 10\n  ecall\n`).output;
+      const cases: [string, string][] = [
+        // clz / ctz / cpop
+        ['  li t0, 1\n  clz a0, t0', '31'],
+        ['  li t0, 0\n  clz a0, t0', '32'],
+        ['  li t0, 0x80000000\n  clz a0, t0', '0'],
+        ['  li t0, 0x80000000\n  ctz a0, t0', '31'],
+        ['  li t0, 0\n  ctz a0, t0', '32'],
+        ['  li t0, 1\n  ctz a0, t0', '0'],
+        ['  li t0, -1\n  cpop a0, t0', '32'],
+        ['  li t0, 0\n  cpop a0, t0', '0'],
+        ['  li t0, 0xF0\n  cpop a0, t0', '4'],
+        // sign / zero extension
+        ['  li t0, 0xFF\n  sext.b a0, t0', '-1'],
+        ['  li t0, 0x7F\n  sext.b a0, t0', '127'],
+        ['  li t0, 0x8000\n  sext.h a0, t0', '-32768'],
+        ['  li t0, -1\n  zext.h a0, t0', '65535'],
+        // logic-with-negate
+        ['  li t0, 0xFF\n  li t1, 0x0F\n  andn a0, t0, t1', '240'],
+        ['  li t1, 0x0F\n  orn a0, x0, t1', '-16'],
+        ['  li t0, 0xFF\n  xnor a0, t0, t0', '-1'],
+        // min / max (signed + unsigned)
+        ['  li t0, -5\n  li t1, 3\n  min a0, t0, t1', '-5'],
+        ['  li t0, -5\n  li t1, 3\n  max a0, t0, t1', '3'],
+        ['  li t0, -5\n  li t1, 3\n  minu a0, t0, t1', '3'],
+        ['  li t0, -5\n  li t1, 3\n  maxu a0, t0, t1', '-5'],
+        // rotate (register + immediate)
+        ['  li t0, 0x80000000\n  li t1, 1\n  rol a0, t0, t1', '1'],
+        ['  li t0, 1\n  li t1, 1\n  ror a0, t0, t1', '-2147483648'],
+        ['  li t0, 1\n  rori a0, t0, 1', '-2147483648'],
+        // orc.b / rev8
+        ['  li t0, 0x00FF0001\n  orc.b a0, t0', '16711935'],
+        ['  li t0, 0x12345678\n  rev8 a0, t0', '2018915346'],
+      ];
+      for (const [body, want] of cases) eq(ev(body), want, body.trim().replace(/\n\s*/g, ' '));
+    },
+  },
+  {
+    name: 'Zba/Zbs: shift-add and single-bit set/clear/invert/extract',
+    fn: () => {
+      const ev = (body: string): string =>
+        run(`main:\n${body}\n  li a7, 1\n  ecall\n  li a7, 10\n  ecall\n`).output;
+      const cases: [string, string][] = [
+        ['  li t0, 3\n  li t1, 5\n  sh1add a0, t0, t1', '11'],
+        ['  li t0, 3\n  li t1, 5\n  sh2add a0, t0, t1', '17'],
+        ['  li t0, 3\n  li t1, 5\n  sh3add a0, t0, t1', '29'],
+        ['  li t1, 3\n  bset a0, x0, t1', '8'],
+        ['  li t0, 0xFF\n  bclr a0, t0, x0', '254'],
+        ['  li t1, 5\n  binv a0, x0, t1', '32'],
+        ['  li t0, 8\n  li t1, 3\n  bext a0, t0, t1', '1'],
+        ['  bseti a0, x0, 3', '8'],
+        ['  li t0, 0xFF\n  bclri a0, t0, 0', '254'],
+        ['  binvi a0, x0, 5', '32'],
+        ['  li t0, 8\n  bexti a0, t0, 3', '1'],
+      ];
+      for (const [body, want] of cases) eq(ev(body), want, body.trim().replace(/\n\s*/g, ' '));
+    },
+  },
+  {
+    name: 'Zbc: carry-less multiply (clmul / clmulh / clmulr)',
+    fn: () => {
+      const ev = (body: string): string =>
+        run(`main:\n${body}\n  li a7, 1\n  ecall\n  li a7, 10\n  ecall\n`).output;
+      // clmul(3,3) = 3<<0 ^ 3<<1 = 3 ^ 6 = 5.
+      eq(ev('  li t0, 3\n  li t1, 3\n  clmul a0, t0, t1'), '5', 'clmul');
+      // clmulh(0x80000000, 2): bit 1 of rs2 set → rs1 >> (32-1) = 1.
+      eq(ev('  li t0, 0x80000000\n  li t1, 2\n  clmulh a0, t0, t1'), '1', 'clmulh');
+      // clmulr(0x80000000, 1): bit 0 set → rs1 >> (31-0) = 1.
+      eq(ev('  li t0, 0x80000000\n  li t1, 1\n  clmulr a0, t0, t1'), '1', 'clmulr');
+    },
+  },
+  {
+    name: 'Zb: encode → decode → disassemble → re-assemble round-trips',
+    fn: () => {
+      const wordOf = (src: string): number => {
+        const r = assemble(`main:\n  ${src}\n`);
+        assert(r.ok, `${src} assembles (${r.errors.map((e) => e.message).join(';')})`);
+        const by = r.writes[0].bytes;
+        return (by[0] | (by[1] << 8) | (by[2] << 16) | (by[3] << 24)) >>> 0;
+      };
+      const cases: [string, string][] = [
+        // R-type (rd, rs1, rs2)
+        ['sh1add a0, a1, a2', 'sh1add'], ['sh2add a0, a1, a2', 'sh2add'],
+        ['sh3add a0, a1, a2', 'sh3add'], ['andn a0, a1, a2', 'andn'],
+        ['orn a0, a1, a2', 'orn'], ['xnor a0, a1, a2', 'xnor'],
+        ['min a0, a1, a2', 'min'], ['minu a0, a1, a2', 'minu'],
+        ['max a0, a1, a2', 'max'], ['maxu a0, a1, a2', 'maxu'],
+        ['rol a0, a1, a2', 'rol'], ['ror a0, a1, a2', 'ror'],
+        ['clmul a0, a1, a2', 'clmul'], ['clmulr a0, a1, a2', 'clmulr'],
+        ['clmulh a0, a1, a2', 'clmulh'], ['bclr a0, a1, a2', 'bclr'],
+        ['bset a0, a1, a2', 'bset'], ['binv a0, a1, a2', 'binv'],
+        ['bext a0, a1, a2', 'bext'],
+        // single-operand (rd, rs1)
+        ['clz a0, a1', 'clz'], ['ctz a0, a1', 'ctz'], ['cpop a0, a1', 'cpop'],
+        ['sext.b a0, a1', 'sext.b'], ['sext.h a0, a1', 'sext.h'],
+        ['zext.h a0, a1', 'zext.h'], ['orc.b a0, a1', 'orc.b'], ['rev8 a0, a1', 'rev8'],
+        // shift-immediate (rd, rs1, shamt)
+        ['rori a0, a1, 7', 'rori'], ['bclri a0, a1, 7', 'bclri'],
+        ['bseti a0, a1, 7', 'bseti'], ['binvi a0, a1, 7', 'binvi'],
+        ['bexti a0, a1, 7', 'bexti'],
+      ];
+      for (const [src, mn] of cases) {
+        const w = wordOf(src);
+        eq(decode(w).mnemonic, mn, `${src} decodes to ${mn}`);
+        // The disassembly must itself re-assemble to the identical word (a closed loop).
+        const text = disassemble(w);
+        eq(wordOf(text), w, `${src} round-trips through "${text}"`);
+      }
+    },
+  },
+  {
+    name: 'Zb: the bundled bit-manipulation example runs',
+    fn: () => {
+      const ex = EXAMPLES.find((e) => e.id === 'bitmanip');
+      assert(!!ex, 'bitmanip example is registered');
+      const cpu = run(ex!.code);
+      eq(cpu.status, 'halted', 'example halts');
+      assert(cpu.output.includes('= 24'), `popcount(0xDEADBEEF)=24 printed (got: ${cpu.output})`);
+      assert(cpu.output.includes('= 127'), `clmul(0xD,0xB)=127 printed (got: ${cpu.output})`);
+    },
+  },
 ];
 
 export function runSelfTests(): TestResult[] {
