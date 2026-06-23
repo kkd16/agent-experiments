@@ -866,8 +866,85 @@ oracle before a line of TS was written.
 - [ ] 5-qubit perfect [[5,1,3]] code (still open from 2.0)
 - [ ] Optimal 1- and 2-CNOT circuit *templates* (the synthesis already proves the optimal CNOT count;
       the realised circuit currently uses the universal 3-CNOT Cartan circuit for all non-local gates)
-- [ ] Multi-qubit synthesis: cosine–sine decomposition (CSD) / quantum Shannon decomposition to lower
-      an arbitrary n-qubit unitary to a CNOT count, recursing on the KAK base case
+- [x] Multi-qubit synthesis: cosine–sine decomposition (CSD) / quantum Shannon decomposition to lower
+      an arbitrary n-qubit unitary to a CNOT count — **shipped in 14.0**
+- [ ] **Optimised QSD CNOT counts** — the (9/16)·4ⁿ Shende–Bullock–Markov optimisation (absorb one CNOT
+      of each demultiplexed R_z into the adjacent diagonal), and the (23/48)·4ⁿ variant; report the
+      improved count alongside the current (¾)·4ⁿ
+- [ ] **Recurse the QSD base case into the optimal 2-qubit KAK circuit** (≤3 CNOTs) instead of going all
+      the way to 1-qubit ZYZ leaves — reuses 13.0 and cuts the constant factor
+- [ ] **Quantum multiplexor diagonalisation across the recursion** — fuse the central R_z multiplexor of a
+      child with the parent's, the standard QSD CNOT saving
+- [ ] **CSD-based state preparation** — the same machinery prepares an arbitrary n-qubit state |ψ⟩ from
+      |0…0⟩ with a column-only cosine–sine recursion (cheaper than full unitary synthesis)
+- [ ] **Animated recursion-tree explorer** — click into a node to watch its CSD split and the multiplexors
+      demultiplex, all the way to the ZYZ leaves
+
+## Quantum Lab 14.0 — n-Qubit gate synthesis: the Quantum Shannon Decomposition (this session)
+
+The compilation story had a 1-qubit engine (Solovay–Kitaev, 12.0) and a 2-qubit engine (the KAK
+decomposition, 13.0). 14.0 finishes it: the **Quantum Shannon Decomposition** (Shende–Bullock–Markov)
+synthesises *any* n-qubit unitary into a {Rz, Ry, CNOT} circuit, built from scratch on top of the lab's
+existing complex linear algebra. As always, the whole algorithm was validated numerically in a throwaway
+Node oracle (`scratchpad/qsd*.mjs`) before a line of TS was written — that oracle caught the three real
+bugs (below) at machine speed.
+
+### New ideas this needed (`shannon.ts`)
+- [x] **Eigendecomposition of a UNITARY (normal) matrix** — `eigUnitary`. W normal ⇒ its Hermitian parts
+      (W+W†)/2 and (W−W†)/2i commute and share an eigenbasis; diagonalise the first (reusing the lab's
+      Hermitian Jacobi solver) and resolve each degenerate cluster with the second. Robust through the
+      repeated eigenvalues of structured gates.
+- [x] **The cosine–sine decomposition** — `cosineSineDecomposition`. Partition a 2ⁿ×2ⁿ unitary by its top
+      qubit; U = diag(L0,L1)·[[C,−S],[S,C]]·diag(R0†,R1†), recovered from a block SVD (Hermitian eig of
+      the Gram matrix) + an orthonormal completion. cos²+sin²=1, every block unitary. The right factor R1
+      is read off the bottom-right block of CS†·diag(L0†,L1†)·U — **division-free**, so it survives the
+      degenerate cos=0/sin=0 rows of permutations & reflections.
+- [x] **Demultiplexing a quantum multiplexor** — `demultiplex`. diag(A,B) = (I⊗V)·(uniformly-controlled
+      R_z)·(I⊗W) with V,e^{iφ}=eig(A·B†), W=D†V†A. Reproduces both blocks exactly (no dropped phase).
+- [x] **Uniformly-controlled rotation → CNOTs** at the **optimal 2^m** count via the Gray-code /
+      Walsh–Hadamard angle transform (Möttönen et al.) — θ_i = 2⁻ᵐ Σ_j (−1)^{popcount(gray(i)&j)} α_j.
+- [x] **The recursion** — `shannonDecompose`: CSD → demux the two multiplexors → recurse on the four
+      (n−1)-qubit gates, bottoming out in the 1-qubit ZYZ. Exactly **(¾)·4ⁿ − 3·2ⁿ⁻¹** CNOTs (6/36/168/720
+      for n=2…5), reproducing the gate to ~1e-11 at 5 qubits.
+- [x] **Peephole optimiser** — `optimizeCircuit`: adjacent-CNOT cancellation + same-axis rotation fusion +
+      zero-rotation drop. Collapses structured gates far below the generic bound (Toffoli 36→16, C²Z 36→14,
+      C³X 168→80, QFT-3 36→28) while a Haar-random SU(2ⁿ) stays exactly on it.
+- [x] **Fault-tolerant {H,T,CNOT} compile** — `faultTolerantShannon`: every rotation → a Solovay–Kitaev
+      word, so an arbitrary n-qubit unitary gets a real T-count, closing the loop with the 1- and 2-qubit
+      synthesis.
+
+### The three bugs the oracle / self-tests caught
+- The CSD's right factor is **R†, not R** (the recursion was structurally wrong until this was fixed).
+- `distModPhase` minimised over the **wrong global-phase sign** (cost the base case its reconstruction).
+- The orthonormal **completion seeded from e_c**, which for a permutation's degenerate Gram is *already an
+  occupied column* — it collapsed to a duplicate and broke unitarity. Fixed by searching e₀…e_{m−1} for a
+  genuinely independent residual. (Increment & Grover diffusion went from err ~3 → ~1e-15/3e-8.)
+
+### UI + verification
+- [x] New tab **🪜 n-Qubit Synthesis** (`ShannonLab.tsx`): pick a gate (QFT/Toffoli/Fredkin/C²Z/C³X/Grover
+      diffusion/modular increment/Haar-random SU(2ⁿ), 2–5 qubits), see the {Rz,Ry,CNOT} circuit, the
+      per-level recursion breakdown summing to the closed form, the ¾·4ⁿ cost curve with the gate marked,
+      a peephole-optimise toggle, and the live fault-tolerant compile with a total T-count.
+- [x] `shannonGates.ts` — the named n-qubit gate registry (QFT, Toffoli, Fredkin, C²Z, C³X, Grover
+      diffusion, modular adders, seeded Haar-random unitaries).
+- [x] About-page entry; `project.json` description + tags; test-suite count 113 → **124**.
+- [x] **11 new self-tests** (unitary eigensolver, CSD reconstruction + Pythagorean identity + unitary
+      blocks, exact demultiplexor, uniformly-controlled rotation at 2^m CNOTs, full QSD on random SU(2ⁿ)
+      and structured gates, the closed-form CNOT count, the 1-qubit base case, the optimiser, the
+      end-to-end fault-tolerant compile, and a regression test over every registry gate incl. the
+      degenerate permutations/reflections). Suite **124/124**; lint + tsc + build all green (the exact CI gate).
+
+### Session log
+- 2026-06-23 (claude/claude-opus-4-8[1m]): **Quantum Lab 14.0 — n-qubit synthesis (Quantum Shannon
+  Decomposition).** Generalised the lab's 1-qubit (Solovay–Kitaev) and 2-qubit (KAK) synthesis to *any*
+  number of qubits, from scratch: the cosine–sine decomposition (built on two block SVDs + an orthonormal
+  completion), the eigendecomposition of a unitary matrix (commuting-Hermitian simultaneous
+  diagonalisation), demultiplexing via eig(A·B†), and the optimal Gray-code uniformly-controlled rotation,
+  recursing to the ZYZ base case at exactly (¾)·4ⁿ−3·2ⁿ⁻¹ CNOTs. Two modules (`shannon.ts`,
+  `shannonGates.ts`) + one tab (`ShannonLab.tsx`) + 11 self-tests, touching no existing engine. Validated
+  in a throwaway Node oracle first (which caught the R-vs-R† and phase-sign bugs); the self-tests caught
+  the degenerate-completion bug on permutations/reflections. Closes the loop with SK for a fault-tolerant
+  {H,T,CNOT} compile and a T-count. Suite 113 → 124, all green; lint + tsc + build pass.
 
 ## Quantum Lab 13.0 — Two-qubit gate synthesis: the KAK (Cartan) decomposition (this session)
 
