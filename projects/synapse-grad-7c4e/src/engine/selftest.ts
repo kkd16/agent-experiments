@@ -23,6 +23,7 @@ import {
 import { RealNVP } from './flows';
 import { GNN, buildAdj, type ConvKind } from './gnn';
 import { KAN, KANLayer, makeGrid, evalSplineBasis } from './kan';
+import { NeuralODE, ODEFunc, odeIntegrate, adjointDynamicsGrad, terminalAdjointCE, makeNodeDataset } from './node-ode';
 
 export interface OpCheck {
   name: string;
@@ -685,6 +686,57 @@ export function runSelfTest(seed = 7): SelfTestReport {
     // skip the very edges where the open knot vector has the most freedom
     for (let s = 4; s < 36; s++) pairs.push([after.ys[s], before.ys[s]]);
     ops.push(relCheck('kan-grid-refit', pairs));
+  }
+
+  // ---- Neural ODE (continuous depth · adjoint) --------------------------------------
+  {
+    // (1) the whole continuous-depth classifier, gradchecked through the ODE solver end-to-end.
+    const model = new NeuralODE(
+      { inDim: 2, classes: 2, arch: { hidden: 8, depth: 2, activation: 'tanh', augDim: 1 }, solver: 'rk4', steps: 5, t0: 0, t1: 1 },
+      rngFrom(seed ^ 0x0de),
+    );
+    const ds = makeNodeDataset('moons', 12, 0.05, 4);
+    const X = Tensor.fromFlat(ds.X.slice(0, 24), 12, 2);
+    const y = ds.y.slice(0, 12);
+    ops.push(checkOp('node-classify (e2e)', model.parameters(), () => softmaxCrossEntropy(model.forward(X), y).loss, rng));
+  }
+  {
+    // (2) RK4 exactness: realise a *linear* field dz/dt = λz with a 1-layer linear ODEFunc
+    // (W0 = I, Wout = λI), integrate to t=1, and compare against the closed form z0·e^λ.
+    const D = 3;
+    const lambda = 0.7;
+    const func = new ODEFunc(D, { hidden: D, depth: 1, activation: 'linear', augDim: 0 }, rngFrom(1));
+    func.W[0].data.fill(0);
+    for (let i = 0; i < D; i++) func.W[0].data[i * D + i] = 1; // W0 = I
+    func.b[0].data.fill(0);
+    func.tw.data.fill(0);
+    func.Wout.data.fill(0);
+    for (let i = 0; i < D; i++) func.Wout.data[i * D + i] = lambda; // Wout = λI
+    func.bout.data.fill(0);
+    const z0 = Tensor.from([[1.3, -0.7, 0.4]]);
+    const z1 = odeIntegrate(func, z0, 64, 0, 1, 'rk4');
+    const pairs: [number, number][] = [];
+    for (let i = 0; i < D; i++) pairs.push([z1.data[i], z0.data[i] * Math.exp(lambda)]);
+    ops.push(relCheck('node-rk4-exactness', pairs));
+  }
+  {
+    // (3) the continuous adjoint must reproduce back-prop-through-the-solver on a real batch.
+    const model = new NeuralODE(
+      { inDim: 2, classes: 2, arch: { hidden: 16, depth: 1, activation: 'tanh', augDim: 1 }, solver: 'rk4', steps: 16, t0: 0, t1: 1 },
+      rngFrom(seed ^ 0xad),
+    );
+    const ds = makeNodeDataset('moons', 24, 0.05, 9);
+    const X = Tensor.fromFlat(ds.X.slice(0, 48), 24, 2);
+    const y = ds.y.slice(0, 24);
+    const logits = model.forward(X);
+    softmaxCrossEntropy(logits, y).loss.backward();
+    const bp = model.func.parameters().map((p) => p.grad.slice());
+    const z1 = model.flow(X);
+    const { aT } = terminalAdjointCE(model, z1, y);
+    const { paramGrads } = adjointDynamicsGrad(model.func, z1.data, aT, 24, 16, 0, 1, 'rk4');
+    const pairs: [number, number][] = [];
+    for (let pi = 0; pi < bp.length; pi++) for (let i = 0; i < bp[pi].length; i++) pairs.push([paramGrads[pi][i], bp[pi][i]]);
+    ops.push(relCheck('node-adjoint=backprop', pairs));
   }
 
   const maxRelError = ops.reduce((m, o) => Math.max(m, o.maxRelError), 0);

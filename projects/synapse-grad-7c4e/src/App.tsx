@@ -8,11 +8,12 @@ import FlowLab from './components/flow/FlowLab';
 import RLLab from './components/rl/RLLab';
 import GNNLab from './components/gnn/GNNLab';
 import KANLab from './components/kan/KANLab';
+import NodeLab from './components/node/NodeLab';
 import './App.css';
 
-type Tab = 'playground' | 'vision' | 'transformer' | 'generative' | 'diffusion' | 'flows' | 'control' | 'graph' | 'kan';
+type Tab = 'playground' | 'vision' | 'transformer' | 'generative' | 'diffusion' | 'flows' | 'control' | 'graph' | 'kan' | 'node';
 
-// Open the lab a shared link points at (#v= vision, #t= transformer, #g= generative, #d= diffusion, #f= flows, #r= RL, #n= graph, #k= KAN).
+// Open the lab a shared link points at (#v= vision, #t= transformer, #g= generative, #d= diffusion, #f= flows, #r= RL, #n= graph, #k= KAN, #o= Neural ODE).
 function initialTab(): Tab {
   try {
     if (/[#&]t=/.test(location.hash)) return 'transformer';
@@ -22,6 +23,7 @@ function initialTab(): Tab {
     if (/[#&]r=/.test(location.hash)) return 'control';
     if (/[#&]n=/.test(location.hash)) return 'graph';
     if (/[#&]k=/.test(location.hash)) return 'kan';
+    if (/[#&]o=/.test(location.hash)) return 'node';
     return /[#&]v=/.test(location.hash) ? 'vision' : 'playground';
   } catch {
     return 'playground';
@@ -70,6 +72,9 @@ export default function App() {
             <button className={tab === 'kan' ? 'on' : ''} onClick={() => setTab('kan')}>
               KAN · Splines
             </button>
+            <button className={tab === 'node' ? 'on' : ''} onClick={() => setTab('node')}>
+              Neural ODE
+            </button>
           </nav>
           <div className="kbd-hint">
             <kbd>space</kbd> train · <kbd>s</kbd> step · <kbd>r</kbd> reset · <kbd>g</kbd> gradcheck
@@ -93,8 +98,10 @@ export default function App() {
         <RLLab />
       ) : tab === 'graph' ? (
         <GNNLab />
-      ) : (
+      ) : tab === 'kan' ? (
         <KANLab />
+      ) : (
+        <NodeLab />
       )}
 
       <footer className="foot">
