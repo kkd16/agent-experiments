@@ -14,7 +14,6 @@ import {
   anosovaState,
   scatter,
   recordTrajectory,
-  cellToXY,
   inRegion,
   REGION,
   MAP_OPTS,
@@ -25,6 +24,11 @@ import { sampleColorMap } from '../render/colormap'
 import { Segmented, Select } from './primitives'
 
 type ColorMode = 'time' | 'escaper' | 'abin' | 'interplays'
+
+interface Rect { xMin: number; xMax: number; yMin: number; yMax: number }
+
+// Escape-time histogram: log-spaced bins from ~0.8 to tMax.
+const HIST_BINS = 24
 
 const RESOLUTIONS = [
   { value: '40', label: 'Coarse' },
@@ -92,6 +96,9 @@ interface Census {
   inRegion: number
   escape: [number, number, number]
   longLived: number
+  hist: number[] // escape-time histogram (log bins)
+  histMax: number
+  meanInterplays: number
 }
 
 export interface AnosovaPanelProps {
@@ -108,13 +115,29 @@ export function AnosovaPanel({ onLaunch }: AnosovaPanelProps) {
   const [census, setCensus] = useState<Census | null>(null)
   const [hover, setHover] = useState<{ x: number; y: number; st: number; t: number; e: number; ip: number } | null>(null)
   const [sel, setSel] = useState<{ x: number; y: number; traj: Trajectory } | null>(null)
+  // The viewport into region D — zooming re-scans a sub-rectangle to expose the
+  // fractal's self-similarity.
+  const [view, setView] = useState<Rect>(() => ({ ...REGION }))
+  const [dragBox, setDragBox] = useState<{ x: number; y: number; w: number; h: number } | null>(null)
 
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const miniRef = useRef<HTMLCanvasElement | null>(null)
+  // Pointer-drag start in CSS pixels relative to the canvas (for box-zoom vs click).
+  const dragStart = useRef<{ cx: number; cy: number } | null>(null)
+  const firstScan = useRef(true)
 
   const cols = parseInt(resolution, 10)
-  const aspect = (REGION.yMax - REGION.yMin) / (REGION.xMax - REGION.xMin)
-  const rows = Math.round(cols * aspect)
+  const aspect = (view.yMax - view.yMin) / (view.xMax - view.xMin)
+  const rows = Math.max(1, Math.round(cols * aspect))
+
+  // Map a grid cell to its release point (x, y) in the *current* viewport.
+  const cellXY = useCallback(
+    (c: number, r: number, colsN: number, rowsN: number) => ({
+      x: view.xMin + ((c + 0.5) / colsN) * (view.xMax - view.xMin),
+      y: view.yMin + ((rowsN - 0.5 - r) / rowsN) * (view.yMax - view.yMin),
+    }),
+    [view],
+  )
 
   const scan = useRef<{
     running: boolean
@@ -188,7 +211,11 @@ export function AnosovaPanel({ onLaunch }: AnosovaPanelProps) {
 
     const cw = canvas.width / cols
     const ch = canvas.height / rows
-    const cen: Census = { inRegion: 0, escape: [0, 0, 0], longLived: 0 }
+    const hist = new Array<number>(HIST_BINS).fill(0)
+    const lnLo = Math.log(0.8)
+    const lnHi = Math.log(MAP_OPTS.tMax)
+    let ipSum = 0
+    const cen: Census = { inRegion: 0, escape: [0, 0, 0], longLived: 0, hist, histMax: 0, meanInterplays: 0 }
 
     const tick = () => {
       if (!s.running) return
@@ -197,12 +224,13 @@ export function AnosovaPanel({ onLaunch }: AnosovaPanelProps) {
         const i = s.idx
         const c = i % cols
         const r = (i / cols) | 0
-        const { x, y } = cellToXY(c, r, cols, rows)
+        const { x, y } = cellXY(c, r, cols, rows)
         if (!inRegion(x, y)) {
           data.state[i] = ST_OUTSIDE
         } else {
           const res: ThreeBodyResult = scatter(anosovaState(x, y), MAP_OPTS)
           cen.inRegion++
+          ipSum += res.interplays
           if (res.outcome === 'escape') {
             data.state[i] = ST_ESCAPE
             data.escaper[i] = res.escaper
@@ -210,6 +238,8 @@ export function AnosovaPanel({ onLaunch }: AnosovaPanelProps) {
             data.aBin[i] = res.aBin
             data.interplays[i] = Math.min(65535, res.interplays)
             if (res.escaper >= 0 && res.escaper < 3) cen.escape[res.escaper]++
+            const b = Math.min(HIST_BINS - 1, Math.max(0, Math.floor(((Math.log(Math.max(0.8, res.tEscape)) - lnLo) / (lnHi - lnLo)) * HIST_BINS)))
+            hist[b]++
           } else {
             data.state[i] = ST_LONGLIVED
             data.tEsc[i] = res.tEscape
@@ -225,13 +255,15 @@ export function AnosovaPanel({ onLaunch }: AnosovaPanelProps) {
         s.running = false
         setComputing(false)
         setDone(true)
-        setCensus({ ...cen })
+        cen.histMax = hist.reduce((m, v) => Math.max(m, v), 0)
+        cen.meanInterplays = cen.inRegion > 0 ? ipSum / cen.inRegion : 0
+        setCensus({ ...cen, hist: [...hist] })
         return
       }
       s.raf = requestAnimationFrame(tick)
     }
     s.raf = requestAnimationFrame(tick)
-  }, [cols, rows, paintCell, stopScan])
+  }, [cols, rows, paintCell, stopScan, cellXY])
 
   // Repaint on a colour-mode flip without recomputing.
   useEffect(() => { if (done) repaint() }, [colorMode, done, repaint])
@@ -244,33 +276,83 @@ export function AnosovaPanel({ onLaunch }: AnosovaPanelProps) {
     setSel({ x, y, traj })
   }, [])
 
+  // Re-scan automatically whenever the viewport changes (a zoom or a reset),
+  // but never on the initial mount — the user must press Scan the first time.
+  useEffect(() => {
+    if (firstScan.current) { firstScan.current = false; return }
+    startScan()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [view])
+
+  const onDown = (ev: React.PointerEvent<HTMLCanvasElement>) => {
+    const canvas = canvasRef.current
+    if (!canvas || !done) return
+    const rect = canvas.getBoundingClientRect()
+    dragStart.current = { cx: ev.clientX - rect.left, cy: ev.clientY - rect.top }
+    canvas.setPointerCapture(ev.pointerId)
+  }
+
   const onMove = (ev: React.PointerEvent<HTMLCanvasElement>) => {
     const s = scan.current
     const canvas = canvasRef.current
     if (!s || !canvas) return
     const rect = canvas.getBoundingClientRect()
+    // box-drag in progress?
+    if (dragStart.current) {
+      const cx = Math.max(0, Math.min(rect.width, ev.clientX - rect.left))
+      const cy = Math.max(0, Math.min(rect.height, ev.clientY - rect.top))
+      const x0 = dragStart.current.cx, y0 = dragStart.current.cy
+      setDragBox({ x: Math.min(x0, cx), y: Math.min(y0, cy), w: Math.abs(cx - x0), h: Math.abs(cy - y0) })
+    }
     const c = Math.floor(((ev.clientX - rect.left) / rect.width) * s.cols)
     const r = Math.floor(((ev.clientY - rect.top) / rect.height) * s.rows)
     if (c < 0 || c >= s.cols || r < 0 || r >= s.rows) { setHover(null); return }
     const i = r * s.cols + c
     const st = s.data.state[i]
     if (st === ST_EMPTY || st === ST_OUTSIDE) { setHover(null); return }
-    const { x, y } = cellToXY(c, r, s.cols, s.rows)
+    const { x, y } = cellXY(c, r, s.cols, s.rows)
     setHover({ x, y, st, t: s.data.tEsc[i], e: s.data.escaper[i], ip: s.data.interplays[i] })
   }
 
-  const onClick = (ev: React.PointerEvent<HTMLCanvasElement>) => {
-    const s = scan.current
+  const onUp = (ev: React.PointerEvent<HTMLCanvasElement>) => {
     const canvas = canvasRef.current
-    if (!s || !canvas) return
+    const start = dragStart.current
+    dragStart.current = null
+    setDragBox(null)
+    if (!canvas || !start) return
     const rect = canvas.getBoundingClientRect()
-    const c = Math.floor(((ev.clientX - rect.left) / rect.width) * s.cols)
-    const r = Math.floor(((ev.clientY - rect.top) / rect.height) * s.rows)
-    if (c < 0 || c >= s.cols || r < 0 || r >= s.rows) return
-    const { x, y } = cellToXY(c, r, s.cols, s.rows)
-    if (!inRegion(x, y)) return
-    inspect(x, y)
+    const cx = ev.clientX - rect.left, cy = ev.clientY - rect.top
+    const dx = cx - start.cx, dy = cy - start.cy
+    // A genuine drag (box) zooms; a click inspects.
+    if (Math.abs(dx) > 6 && Math.abs(dy) > 6) {
+      const fx0 = Math.max(0, Math.min(1, Math.min(start.cx, cx) / rect.width))
+      const fx1 = Math.max(0, Math.min(1, Math.max(start.cx, cx) / rect.width))
+      const fy0 = Math.max(0, Math.min(1, Math.min(start.cy, cy) / rect.height))
+      const fy1 = Math.max(0, Math.min(1, Math.max(start.cy, cy) / rect.height))
+      const vw = view.xMax - view.xMin, vh = view.yMax - view.yMin
+      // y is inverted (row 0 = top = high y)
+      const nx0 = view.xMin + fx0 * vw, nx1 = view.xMin + fx1 * vw
+      const ny1 = view.yMax - fy0 * vh, ny0 = view.yMax - fy1 * vh
+      const next: Rect = {
+        xMin: Math.max(REGION.xMin, Math.min(nx0, nx1)),
+        xMax: Math.min(REGION.xMax, Math.max(nx0, nx1)),
+        yMin: Math.max(REGION.yMin, Math.min(ny0, ny1)),
+        yMax: Math.min(REGION.yMax, Math.max(ny0, ny1)),
+      }
+      if (next.xMax - next.xMin > 1e-4 && next.yMax - next.yMin > 1e-4) setView(next)
+      return
+    }
+    // click → inspect
+    const { x, y } = cellXY(
+      Math.floor((cx / rect.width) * scan.current!.cols),
+      Math.floor((cy / rect.height) * scan.current!.rows),
+      scan.current!.cols,
+      scan.current!.rows,
+    )
+    if (inRegion(x, y)) inspect(x, y)
   }
+
+  const zoomedIn = view.xMin !== REGION.xMin || view.xMax !== REGION.xMax || view.yMin !== REGION.yMin || view.yMax !== REGION.yMax
 
   // ---- draw the selected trajectory into the mini-canvas -------------------
   useEffect(() => {
@@ -337,7 +419,8 @@ export function AnosovaPanel({ onLaunch }: AnosovaPanelProps) {
         <strong>The Agekyan–Anosova map.</strong> Three equal masses dropped from rest from every
         triangle in region D; each pixel's colour is the <em>outcome</em> of the gravitational
         scattering. The boundaries between basins are a genuine fractal — the signature of
-        deterministic chaos in the full (unrestricted) three-body problem.
+        deterministic chaos in the full (unrestricted) three-body problem. <em>Click</em> a pixel to
+        replay it; <em>drag a box</em> to zoom in and watch the fractal repeat itself.
       </p>
 
       <Select<string>
@@ -373,11 +456,19 @@ export function AnosovaPanel({ onLaunch }: AnosovaPanelProps) {
           className="atlas-canvas"
           style={{ width: '100%', cursor: done ? 'crosshair' : 'default' }}
           onPointerMove={onMove}
-          onPointerLeave={() => setHover(null)}
-          onPointerDown={onClick}
+          onPointerLeave={() => { setHover(null) }}
+          onPointerDown={onDown}
+          onPointerUp={onUp}
         />
+        {dragBox && dragBox.w > 1 && dragBox.h > 1 && (
+          <div className="anosova-dragbox" style={{ left: dragBox.x, top: dragBox.y, width: dragBox.w, height: dragBox.h }} />
+        )}
       </div>
-      <div className="atlas-axes"><span>x = 0</span><span>region D (m₃ release)</span><span>x = ½</span></div>
+      <div className="atlas-axes">
+        <span>x = {view.xMin.toFixed(3)}</span>
+        <span>{zoomedIn ? <button className="anosova-reset" onClick={() => setView({ ...REGION })}>⤢ reset zoom</button> : 'region D (m₃ release)'}</span>
+        <span>x = {view.xMax.toFixed(3)}</span>
+      </div>
 
       {colorMode === 'escaper' ? (
         <div className="wh-legend">
@@ -408,8 +499,9 @@ export function AnosovaPanel({ onLaunch }: AnosovaPanelProps) {
           <p className="preset-desc" style={{ margin: 0 }}>
             {census.inRegion.toLocaleString()} configurations · m₁ {pct(census.escape[0], census.inRegion)} ·
             m₂ {pct(census.escape[1], census.inRegion)} · m₃ {pct(census.escape[2], census.inRegion)} ·
-            long-lived {pct(census.longLived, census.inRegion)}
+            long-lived {pct(census.longLived, census.inRegion)} · mean {census.meanInterplays.toFixed(0)} interplays
           </p>
+          <LifetimeHistogram census={census} />
         </div>
       )}
 
@@ -529,6 +621,20 @@ function CensusBar({ census }: { census: Census }) {
       {segs.map((s, i) => (
         <span key={i} style={{ width: `${(100 * s.v) / total}%`, background: s.c }} />
       ))}
+    </div>
+  )
+}
+
+// The escape-time distribution — log-spaced bins, so the long algebraic tail of
+// the three-body lifetime is visible as a slow falloff to the right.
+function LifetimeHistogram({ census }: { census: Census }) {
+  const max = Math.max(1, census.histMax)
+  return (
+    <div className="anosova-hist" title="distribution of escape times (log-spaced bins)">
+      {census.hist.map((v, i) => (
+        <span key={i} style={{ height: `${(100 * v) / max}%` }} />
+      ))}
+      <span className="anosova-hist-axis">escape time (log) →</span>
     </div>
   )
 }
