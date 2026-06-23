@@ -72,6 +72,12 @@ import {
   qft as qsdQft, toffoli as qsdToffoli, fredkin as qsdFredkin, seededUnitary as qsdRandU,
   SHANNON_GATES,
 } from './shannonGates';
+import {
+  bellState, correlator, chshValue, chshWinProb, optimizeCHSH, tsirelsonCeiling,
+  OPTIMAL_CHSH, CLASSICAL_BOUND, TSIRELSON_BOUND, CHSH_GAME_QUANTUM,
+  merminExpectations, ghzClassicalMax, ghzQuantumWin,
+  magicSquareAlgebra, magicClassicalMax, magicQuantumWin, MAGIC_CLASSICAL,
+} from './nonlocality';
 
 export interface TestResult {
   group: string;
@@ -1307,6 +1313,91 @@ export function runTests(): TestResult[] {
       }
       add('Quantum Shannon decomposition', 'every registry gate reconstructs — including degenerate permutations (modular increment) & reflections (Grover diffusion), raw + optimised',
         worst < 1e-6 && labels.length === 0, `worst reconstruction over all ${SHANNON_GATES.length} gates = ${worst.toExponential(1)}`);
+    }
+  }
+
+  // --- Nonlocality: Bell tests & quantum pseudo-telepathy ---
+  {
+    const phi = bellState('phi+');
+
+    // (1) The engine reproduces the textbook correlator E(a,b) = cos(a−b) on |Φ⁺⟩.
+    {
+      let worst = 0;
+      for (let k = 0; k < 12; k++) {
+        const a = (k * 0.37) % (2 * Math.PI), b = (k * 1.13) % (2 * Math.PI);
+        worst = Math.max(worst, Math.abs(correlator(phi, a, b) - Math.cos(a - b)));
+      }
+      add('Nonlocality', 'CHSH correlator on |Φ⁺⟩ reproduces cos(a−b) to machine precision (built from 4 Pauli terms on the engine)',
+        worst < 1e-12, `max err ${worst.toExponential(1)}`);
+    }
+
+    // (2) The canonical angles hit Tsirelson's bound S = 2√2, well above the classical |S| ≤ 2.
+    {
+      const S = chshValue(phi, OPTIMAL_CHSH);
+      add('Nonlocality', `CHSH at the canonical angles violates the LHV bound: S = ${S.toFixed(4)} > 2, reaching Tsirelson 2√2`,
+        close(S, TSIRELSON_BOUND, 1e-9) && S > CLASSICAL_BOUND, `S = ${S.toFixed(6)}, 2√2 = ${TSIRELSON_BOUND.toFixed(6)}`);
+    }
+
+    // (3) Nelder–Mead rediscovers the optimum from a random start.
+    {
+      const { S } = optimizeCHSH(phi, 12345);
+      add('Nonlocality', 'Nelder–Mead maximisation over the four measurement angles rediscovers S → 2√2 from a random start',
+        S > TSIRELSON_BOUND - 1e-4, `optimised S = ${S.toFixed(6)}`);
+    }
+
+    // (4) Monte-Carlo certificate: Tsirelson is a ceiling — no random qubit strategy exceeds 2√2.
+    {
+      const worst = tsirelsonCeiling(phi, 40000, 9);
+      add('Nonlocality', 'Tsirelson ceiling: 40,000 random qubit strategies all obey |S| ≤ 2√2 (the bound is not just reached, it caps)',
+        worst <= TSIRELSON_BOUND + 1e-9, `max |S| sampled = ${worst.toFixed(6)} ≤ ${TSIRELSON_BOUND.toFixed(6)}`);
+    }
+
+    // (5) The CHSH game win-probability dictionary p = (S+4)/8: classical 0.75, quantum cos²(π/8).
+    {
+      const pq = chshWinProb(TSIRELSON_BOUND), pc = chshWinProb(CLASSICAL_BOUND);
+      add('Nonlocality', `CHSH game: quantum win ${(pq * 100).toFixed(1)}% = cos²(π/8) beats the classical ${(pc * 100).toFixed(0)}% — no communication`,
+        close(pq, CHSH_GAME_QUANTUM, 1e-9) && close(pc, 0.75, 1e-12), `p_q = ${pq.toFixed(6)}, p_c = ${pc.toFixed(2)}`);
+    }
+
+    // (6) GHZ / Mermin operator expectations: ⟨XXX⟩ = +1, the three with two Y's = −1.
+    {
+      const m = merminExpectations();
+      const ok = close(m[0].value, 1, 1e-9) && m.slice(1).every((t) => close(t.value, -1, 1e-9));
+      add('Nonlocality', 'Mermin operators on |GHZ⟩: ⟨XXX⟩ = +1 and ⟨XYY⟩ = ⟨YXY⟩ = ⟨YYX⟩ = −1 (the pseudo-telepathy constraints)',
+        ok, m.map((t) => `${t.label}=${t.value.toFixed(2)}`).join(' '));
+    }
+
+    // (7) GHZ game: quantum wins with certainty, the best classical strategy only 3/4.
+    {
+      const q = ghzQuantumWin();
+      const cls = ghzClassicalMax();
+      add('Nonlocality', `GHZ game pseudo-telepathy: quantum win = ${q.toFixed(2)} (certain) vs the best of all 64 classical strategies = ${cls.max.toFixed(2)}`,
+        close(q, 1, 1e-12) && close(cls.max, 0.75, 1e-12), `quantum 1, classical max ${cls.max} (${cls.count} strategies)`);
+    }
+
+    // (8) Magic-square operator algebra: observables, commutation, and the row/column product identities.
+    {
+      const a = magicSquareAlgebra();
+      const ok = a.involutory && a.hermitian && a.rowsCommute && a.colsCommute
+        && a.rowProducts.every((p) => p === '+I')
+        && a.colProducts[0] === '+I' && a.colProducts[1] === '+I' && a.colProducts[2] === '-I';
+      add('Nonlocality', 'Magic square: 9 ±1-observables, each row/column mutually commuting, rows → +I and columns → +I,+I,−I (verified on 4×4 matrices)',
+        ok, `rows ${a.rowProducts.join(',')} | cols ${a.colProducts.join(',')}`);
+    }
+
+    // (9) The parity contradiction — the certificate that no classical assignment exists — and the 8/9 cap.
+    {
+      const a = magicSquareAlgebra();
+      const cls = magicClassicalMax();
+      add('Nonlocality', `Magic square: ∏rows = +1 but ∏columns = −1 (a parity contradiction) so the best classical play is ${cls.toFixed(4)} = 8/9`,
+        a.parityContradiction && close(cls, MAGIC_CLASSICAL, 1e-12), `contradiction ${a.parityContradiction}, classical ${cls.toFixed(4)}`);
+    }
+
+    // (10) Quantum magic-square strategy on two Bell pairs wins all 81 questions with certainty.
+    {
+      const m = magicQuantumWin();
+      add('Nonlocality', 'Magic square quantum strategy: on two shared Bell pairs all 9 shared cells correlate at +1, so quantum players win every one of the 81 questions',
+        m.allAgree && close(m.win, 1, 1e-12), `win = ${m.win}, worst cell deviation ${m.worstDeviation.toExponential(1)}`);
     }
   }
 

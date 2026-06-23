@@ -23,14 +23,15 @@ import SolovayLab from './components/SolovayLab';
 import SynthLab from './components/SynthLab';
 import ShannonLab from './components/ShannonLab';
 import DistillationLab from './components/DistillationLab';
+import NonlocalityLab from './components/NonlocalityLab';
 import TestsPanel from './components/TestsPanel';
 import ExportPanel from './components/ExportPanel';
 import { schmidtDecompose } from './quantum/Schmidt';
 
-type Tab = 'builder' | 'algorithms' | 'shor' | 'solovay' | 'synth' | 'shannon' | 'distill' | 'mbqc' | 'variational' | 'stabilizer' | 'surface' | 'tensor' | 'freefermion' | 'dynamics' | 'tests' | 'about';
+type Tab = 'builder' | 'algorithms' | 'shor' | 'solovay' | 'synth' | 'shannon' | 'distill' | 'bell' | 'mbqc' | 'variational' | 'stabilizer' | 'surface' | 'tensor' | 'freefermion' | 'dynamics' | 'tests' | 'about';
 type VizTab = 'state' | 'probabilities' | 'bloch' | 'density' | 'measure';
 
-const PAGE_TABS: Tab[] = ['about', 'shor', 'solovay', 'synth', 'shannon', 'distill', 'mbqc', 'variational', 'stabilizer', 'surface', 'tensor', 'freefermion', 'dynamics', 'tests'];
+const PAGE_TABS: Tab[] = ['about', 'shor', 'solovay', 'synth', 'shannon', 'distill', 'bell', 'mbqc', 'variational', 'stabilizer', 'surface', 'tensor', 'freefermion', 'dynamics', 'tests'];
 
 // Parse a shared circuit from the URL hash (#c=…) once, before mount — sandbox-safe.
 function loadSharedCircuit(): { numQubits: number; ops: GateOp[] } | null {
@@ -142,7 +143,7 @@ export default function App() {
         </div>
 
         <nav style={{ display: 'flex', gap: 2, marginLeft: 'auto', flexWrap: 'wrap' }}>
-          {(['builder', 'algorithms', 'shor', 'solovay', 'synth', 'shannon', 'distill', 'mbqc', 'variational', 'stabilizer', 'surface', 'tensor', 'freefermion', 'dynamics', 'tests', 'about'] as Tab[]).map((tab) => (
+          {(['builder', 'algorithms', 'shor', 'solovay', 'synth', 'shannon', 'distill', 'bell', 'mbqc', 'variational', 'stabilizer', 'surface', 'tensor', 'freefermion', 'dynamics', 'tests', 'about'] as Tab[]).map((tab) => (
             <button
               key={tab}
               onClick={() => setActiveTab(tab)}
@@ -165,6 +166,7 @@ export default function App() {
                 : tab === 'synth' ? '🔧 2-Qubit Synthesis'
                 : tab === 'shannon' ? '🪜 n-Qubit Synthesis'
                 : tab === 'distill' ? '💎 Distillation'
+                : tab === 'bell' ? '🔔 Bell'
                 : tab === 'mbqc' ? '🕹️ One-Way'
                 : tab === 'variational' ? '🧬 Variational' : tab === 'stabilizer' ? '🧱 Stabilizer'
                 : tab === 'surface' ? '🔲 Surface' : tab === 'tensor' ? '🕸️ Tensor'
@@ -230,6 +232,7 @@ export default function App() {
               {activeTab === 'synth' && <SynthLab />}
               {activeTab === 'shannon' && <ShannonLab />}
               {activeTab === 'distill' && <DistillationLab />}
+              {activeTab === 'bell' && <NonlocalityLab />}
               {activeTab === 'mbqc' && <MBQCLab />}
               {activeTab === 'variational' && <VariationalLab />}
               {activeTab === 'stabilizer' && <StabilizerLab />}
@@ -628,6 +631,10 @@ function AboutPage() {
         {
           title: "Shor's Algorithm — Factoring by Order-Finding",
           content: "The result that launched quantum computing, built from scratch end to end: factoring an integer N into its prime factors. Shor's insight is that factoring reduces to ORDER-FINDING — find the period r of x ↦ a·x mod N for a random base a, and gcd(a^(r/2) ± 1, N) are real factors. The period is found quantumly by phase-estimating the eigenphase s/r of the modular-multiplication unitary, then recovering r from the measured s/r with a continued-fraction expansion. The lab builds the genuine circuit two independent ways — a full (n+t)-qubit register with t controlled modular multipliers + an inverse QFT, and the hardware-friendly iterative variant that recycles a single ancilla measured bit-by-bit with classical feedback — and grades both against an exact closed-form Dirichlet-kernel distribution to machine precision. The Shor tab actually factors 15, 21, 33, 35… live: watch the random base chosen, the order-finding spectrum peak at the rationals k/r, the continued fraction reconstruct r, and the factor tree resolve.",
+        },
+        {
+          title: 'Nonlocality, Bell Tests & Quantum Pseudo-telepathy',
+          content: "Quantum mechanics does not merely compute faster — it describes a genuinely non-classical world, and this pillar makes that precise, all on the exact state-vector engine. (1) THE CHSH INEQUALITY: Alice and Bob each choose one of two ±1 observables A(θ)=cosθ·Z+sinθ·X on a shared Bell pair, forming the correlator E(a,b)=⟨ψ|A(a)⊗B(b)|ψ⟩ (computed by expanding the tensor product into the four Pauli terms ZZ,ZX,XZ,XX). The Bell quantity S=E(a,b)+E(a,b′)+E(a′,b)−E(a′,b′) can never exceed 2 in ANY local-hidden-variable theory (Bell 1964 / CHSH 1969) — yet the Bell state reaches S=2√2≈2.828, TSIRELSON'S BOUND. A from-scratch Nelder–Mead maximiser rediscovers the optimum, a Monte-Carlo certificate shows thousands of random qubit strategies never exceed 2√2 (the bound is a ceiling, not a coincidence), and the live S(θ) sweep plots the violation against the classical band. Reframed as the CHSH game (referee sends x,y; players win iff a⊕b=x∧y), the dictionary p=(S+4)/8 turns this into a strict quantum advantage: cos²(π/8)≈85.4% vs the classical 75%, with no communication. (2) THE GHZ / MERMIN GAME — quantum PSEUDO-TELEPATHY: three players sharing |GHZ⟩ answer a⊕b⊕c=x∨y∨z (for questions with x⊕y⊕z=0) and win EVERY time by measuring X for input 0 and Y for input 1; the Mermin correlations ⟨XXX⟩=+1, ⟨XYY⟩=⟨YXY⟩=⟨YYX⟩=−1 (verified on the engine) force a perfect win, while a brute force over all 64 classical strategies caps at 3/4 — multiplying the four win constraints yields 0=1, a parity contradiction proving no classical strategy can be perfect. (3) THE MERMIN–PERES MAGIC-SQUARE GAME: a 3×3 grid of two-qubit Pauli observables whose every row multiplies to +I and every column to +I except the last (−I). The whole operator algebra is verified from scratch on 4×4 matrices — each cell is an involutory (±1-valued) Hermitian observable, the three cells of any row/column mutually commute (jointly measurable), and the product identities hold exactly — and the product-of-everything parity (+1 by rows, −1 by columns) is the certificate bounding classical play at 8/9. Two shared Bell pairs let quantum players win all 81 questions with certainty: on |Φ⁺⟩⊗|Φ⁺⟩ all nine shared cells correlate at exactly +1 (the entangled-state identity (M⊗I)|Ω⟩=(I⊗Mᵀ)|Ω⟩), verified by an explicit 4-qubit simulation. Every headline number is proven to machine precision in the Tests tab.",
         },
         {
           title: 'Solovay–Kitaev — Compiling to a Fault-Tolerant Gate Set',

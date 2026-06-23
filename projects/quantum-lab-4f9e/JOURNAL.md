@@ -31,6 +31,74 @@ Full quantum circuit simulator built from scratch in TypeScript. No external mat
 - [x] Dark space-themed UI with framer-motion animations
 - [x] About page with physics explanations
 
+## Quantum Lab 15.0 — Nonlocality, Bell Tests & Quantum Pseudo-telepathy (this session)
+
+The lab has been deep on *circuits* (algorithms, Shor), *codes* (3/9-qubit, Steane, surface,
+distillation), *many-body* (MPS/DMRG/free fermions) and *compilation* (SK / KAK / Shannon) — but it
+had **no foundations-of-nonlocality pillar**. 15.0 adds the one piece of quantum information that is
+not about computing faster but about the world being *non-classical*: entanglement produces
+correlations no local-hidden-variable (LHV) theory can reproduce, and in some games quantum players
+win with *certainty* where the best classical players provably cannot. Everything runs on the exact
+state-vector engine and every headline number is proven to machine precision in the self-test suite.
+
+A genuinely new engine module `nonlocality.ts` + a `NonlocalityLab.tsx` tab (🔔 Bell), touching no
+existing engine, plus an About entry and a block of new self-tests.
+
+### The physics, built from scratch
+
+- [x] **±1 dichotomic observables & correlators.** A measurement direction `θ` in the X–Z plane is
+  the observable `A(θ) = cosθ·Z + sinθ·X` (Hermitian, eigenvalues ±1). The two-party correlator
+  `E(a,b) = ⟨ψ| A(a) ⊗ B(b) |ψ⟩` is evaluated on the real engine by expanding the tensor product into
+  four Pauli terms (ZZ, ZX, XZ, XX) and using the lab's `expectation`. On the Bell state |Φ⁺⟩ this
+  reproduces the textbook `E(a,b) = cos(a−b)` to machine precision.
+- [x] **The CHSH inequality.** `S = E(a,b) + E(a,b′) + E(a′,b) − E(a′,b′)`. Any LHV theory obeys
+  `|S| ≤ 2` (the Bell–CHSH bound); the singlet/|Φ⁺⟩ with the canonical angles {Z, X} × {(Z±X)/√2}
+  reaches `S = 2√2 ≈ 2.828` — **Tsirelson's bound**. Both constants are exposed, and a sweep of one
+  angle plots S(θ) against the classical band ±2 and the Tsirelson lines ±2√2.
+- [x] **Tsirelson's bound, two ways.** (1) A from-scratch Nelder–Mead **maximiser over the four
+  measurement angles** rediscovers `S → 2√2` from a random start. (2) A **Monte-Carlo certificate**:
+  thousands of random qubit strategies are checked to *never* exceed 2√2 — the bound is not just
+  achieved, it is a ceiling. The analytic Tsirelson vector argument (`|v+v′| + |v−v′| ≤ 2√2` by
+  Cauchy–Schwarz on `‖v±v′‖² = 4`) is reproduced numerically over the geometric representation.
+- [x] **The CHSH game.** Reframed as a cooperative game: a referee sends bits x,y; players answer
+  a,b; they win iff `a ⊕ b = x ∧ y`. The dictionary `p_win = (S + 4)/8` turns the classical bound
+  into `0.75` and Tsirelson into `cos²(π/8) = (2+√2)/4 ≈ 0.854` — a strictly larger win rate with no
+  communication.
+- [x] **The GHZ / Mermin game — quantum pseudo-telepathy.** Three players share |GHZ⟩; on inputs
+  (x,y,z) with x⊕y⊕z = 0 they must answer a⊕b⊕c = x∨y∨z. The Mermin operators (⟨XXX⟩ = +1,
+  ⟨XYY⟩ = ⟨YXY⟩ = ⟨YYX⟩ = −1, all verified on the engine) make the quantum strategy "measure X for
+  input 0, Y for input 1" win **all four questions with certainty (p = 1)**, while a brute force over
+  all 64 deterministic classical strategies tops out at exactly **3/4** — proven, not asserted. The
+  parity contradiction (multiplying the four constraints gives 0 = 1) is the certificate that no
+  perfect LHV strategy exists.
+- [x] **The Mermin–Peres magic-square game.** A 3×3 grid of two-qubit Pauli observables in which every
+  row multiplies to +I and every column to +I *except the last, which is −I*. The whole operator
+  algebra is verified from scratch on 4×4 matrices: each cell is involutory (O²=I, so ±1-valued), the
+  three cells of any row/column mutually commute (so they're jointly measurable), and the row/column
+  product identities hold exactly. The product-of-everything parity (+1 by rows, −1 by columns) is the
+  contradiction that bounds classical play at **8/9** (confirmed by brute force over all consistent
+  ±1 tables), while two shared Bell pairs let quantum players win **all 81 question pairs (p = 1)** —
+  verified by an explicit 4-qubit shared-state simulation.
+- [x] **Self-tests:** correlator = cos(a−b); CHSH classical ≤ 2 and Tsirelson = 2√2; Nelder–Mead
+  rediscovers the optimum; Monte-Carlo Tsirelson ceiling; CHSH-game win-rate dictionary; GHZ Mermin
+  expectations; GHZ quantum p=1 vs classical 3/4; magic-square involutivity, commutation, row/column
+  products, classical 8/9 and quantum p=1.
+- [x] **`NonlocalityLab.tsx` tab** with interactive cards: a CHSH explorer (four angle sliders, live S
+  meter against the classical band and Tsirelson lines, the S(θ) sweep, the optimiser button, the
+  game-win bars), the GHZ game (the four-question truth table, the Mermin-operator expectations, the
+  classical-vs-quantum bars), and the magic square (the 3×3 operator grid with live row/column product
+  badges, the parity contradiction, classical-vs-quantum bars).
+- [x] **About entry** explaining Bell's theorem, Tsirelson's bound and pseudo-telepathy.
+
+### Future ideas (open)
+- [ ] The CH/Eberhard inequality and the **detection-loophole** threshold (η > 2/3 for the singlet).
+- [ ] The **I3322** inequality (the next Bell inequality, where qubits are *not* optimal — needs
+  higher dimension), as a contrast to CHSH.
+- [ ] **EPR steering** and the steering ellipsoid; the LHS-model bound vs the quantum violation.
+- [ ] A genuine **device-independent randomness** demo: bits certified by the CHSH violation.
+- [ ] The **CHSH semidefinite (NPA level-1) relaxation** to prove Tsirelson's bound as an upper bound
+  rather than sample it.
+
 ## Quantum Lab 2.0 — Open Systems, Error Correction & Verification (this session)
 
 Shipped a major upgrade turning the pure-state toy into a genuine open-system + variational
