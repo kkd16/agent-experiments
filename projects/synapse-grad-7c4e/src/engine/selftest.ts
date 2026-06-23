@@ -21,6 +21,7 @@ import {
   classifierFreeGuidance,
 } from './diffusion';
 import { RealNVP } from './flows';
+import { GAN } from './gan';
 import { GNN, buildAdj, type ConvKind } from './gnn';
 import { KAN, KANLayer, makeGrid, evalSplineBasis } from './kan';
 import { NeuralODE, ODEFunc, odeIntegrate, adjointDynamicsGrad, terminalAdjointCE, makeNodeDataset } from './node-ode';
@@ -585,6 +586,72 @@ export function runSelfTest(seed = 7): SelfTestReport {
     const logAbsDet = Math.log(Math.abs(det));
     const reported = flow.forward(Tensor.fromFlat(x0.slice(), 1, 2, false)).logdet.data[0];
     ops.push(relCheck('flow-logdet (Jacobian)', [[logAbsDet, reported]]));
+  }
+
+  // ---- Generative adversarial network (GAN) ----------------------------------------
+  //
+  // The two players are trained against each other, so each gets its own end-to-end gradcheck.
+  //
+  // Discriminator: with a frozen real batch and a frozen (detached) fake batch, the binary
+  // cross-entropy classifier loss is a clean function of D's parameters — exactly the update
+  // alternating-GD applies to the critic. Both players' MLPs are exercised here too.
+  {
+    const gan = new GAN({ D: 2, zDim: 3, gHidden: [8], dHidden: [8], gAct: 'tanh', dAct: 'tanh', objective: 'nonsat' }, rngFrom(202));
+    const B = 5;
+    const rd = new Float64Array(B * 2);
+    const fd = new Float64Array(B * 2);
+    for (let i = 0; i < B * 2; i++) {
+      rd[i] = rng() * 2 - 1;
+      fd[i] = rng() * 2 - 1;
+    }
+    const real = Tensor.fromFlat(rd, B, 2, false);
+    const fake = Tensor.fromFlat(fd, B, 2, false);
+    ops.push(checkOp('gan-D (e2e)', gan.discParameters(), () => gan.discLoss(real, fake).loss, rng));
+  }
+
+  // Generator: with z frozen and the discriminator's weights held fixed, the non-saturating
+  // generator loss −log D(G(z)) is a clean function of G's parameters. Its gradient is the
+  // signal D back-propagates *through itself* into the generator — proving that learning
+  // signal exact is proving the whole GAN trains correctly.
+  {
+    const gan = new GAN({ D: 2, zDim: 3, gHidden: [8], dHidden: [8], gAct: 'gelu', dAct: 'tanh', objective: 'nonsat' }, rngFrom(303));
+    const B = 5;
+    const zd = new Float64Array(B * 3);
+    for (let i = 0; i < zd.length; i++) zd[i] = rng() * 2 - 1;
+    const z = Tensor.fromFlat(zd, B, 3, false);
+    ops.push(checkOp('gan-G (e2e)', gan.genParameters(), () => gan.genLoss(gan.generate(z)).loss, rng));
+  }
+
+  // Wasserstein critic: the WGAN critic loss is differentiable too (it is just a difference of
+  // means of D's outputs), and its gradcheck proves the EM-distance objective trains the critic.
+  {
+    // A smooth critic activation here so the finite-difference check isn't biased by a ReLU-kink
+    // (the live lab defaults to leaky_relu; the gradient is identical away from the kink).
+    const gan = new GAN({ D: 2, zDim: 2, gHidden: [6], dHidden: [8], gAct: 'tanh', dAct: 'tanh', objective: 'wgan' }, rngFrom(404));
+    const B = 6;
+    const rd = new Float64Array(B * 2);
+    const fd = new Float64Array(B * 2);
+    for (let i = 0; i < B * 2; i++) {
+      rd[i] = rng() * 2 - 1;
+      fd[i] = rng() * 2 - 1;
+    }
+    const real = Tensor.fromFlat(rd, B, 2, false);
+    const fake = Tensor.fromFlat(fd, B, 2, false);
+    ops.push(checkOp('gan-wgan-critic (e2e)', gan.discParameters(), () => gan.discLoss(real, fake).loss, rng));
+
+    // Value identity: the critic loss really is mean(D(fake)) − mean(D(real)), recomputed by
+    // hand from the raw critic scores — the exact algebraic definition of the EM objective.
+    const dReal = gan.discriminate(real);
+    const dFake = gan.discriminate(fake);
+    let mR = 0;
+    let mF = 0;
+    for (let i = 0; i < B; i++) {
+      mR += dReal.data[i];
+      mF += dFake.data[i];
+    }
+    const manual = mF / B - mR / B;
+    const reported = gan.discLoss(real, fake).loss.data[0];
+    ops.push(relCheck('gan-wgan-loss (identity)', [[manual, reported]]));
   }
 
   // ---- Graph neural network (GCN · SAGE · GAT) --------------------------------------

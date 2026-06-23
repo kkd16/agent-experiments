@@ -161,6 +161,13 @@ src/
                   negative-log-likelihood — assembled from primitive ops, gradchecked end-to-end
     flow-data.ts  2-D density generators (moons, pinwheel, spirals, circles, Gaussian grid,
                   checkerboard, rotated Gaussian), standardised to unit variance
+    gan.ts        a from-scratch Generative Adversarial Network: an MLP generator G(z) and an MLP
+                  discriminator/critic D(x), three objectives (the original saturating minimax, the
+                  non-saturating log D(G(z)) trick, and a Wasserstein critic with weight-clipping),
+                  the per-player loss builders (fused stable BCE-with-logits for the games, an
+                  Earth-Mover difference-of-means for WGAN), detached-fake D updates, and Lipschitz
+                  weight clipping — gradchecked end-to-end for BOTH players (the gradient D
+                  back-propagates into G is the GAN learning signal, and it is verified exact)
     gnn.ts        a from-scratch graph neural network: `buildAdj` (the GCN symmetric-normalized Â,
                   the SAGE mean aggregator, and the GAT edge mask, all dense + frozen), the GCN / SAGE /
                   multi-head GAT layers (each message-passing round is one matmul against a propagation
@@ -1178,3 +1185,85 @@ adjoint ODE, and the augmentation lift.
   circles hit 100% while the vanilla 2-D flow strains against the ring topology, and the adjoint gap
   shrinks `2.6e-10 → 4.5e-15` from 8 → 128 steps. Full CI gate (scope + conformance + lint + tsc +
   vite build) green via `node scripts/verify-project.mjs synapse-grad-7c4e`.
+
+## v11 — Adversarial · GAN (planned + built this session)
+
+The generative quartet was missing its most famous member. The lab already learns a 2-D density
+three ways — the **VAE** maximises an ELBO (a *lower bound* on the likelihood), **Diffusion**
+learns a *score*, **Flows** give the *exact* likelihood — and now the **GAN** completes it as the
+fourth and most different: it learns to **sample** the data without ever writing down a density,
+by playing a two-player game between a generator and a discriminator. Adding it makes the
+deep-generative story on one engine complete: bound, score, exact-likelihood, and adversarial.
+
+### Engine (`engine/gan.ts`)
+
+- A `GAN` of two MLPs on the existing autograd: generator `G : z∈ℝ^zDim → ℝ²` and a
+  discriminator/critic `D : ℝ² → 1`, both built from the lab's `MLP`/`Linear`/activations.
+- **Three objectives**, because the *training dynamics* are the whole point of GANs:
+  - `minimax` — the original saturating game (`min_G max_D  E log D(x) + E log(1−D(G(z)))`);
+    instructive to watch G stall while D is winning.
+  - `nonsat` — the non-saturating trick (G maximises `log D(G(z))`); strong gradients, the default.
+  - `wgan` — a Wasserstein critic trained on `E[D(real)] − E[D(fake)]` (an Earth-Mover estimate),
+    kept ~1-Lipschitz by **weight clipping** to `±c` (Arjovsky et al.).
+- Loss builders reuse the engine's fused, numerically-stable `bceWithLogits` for the games and a
+  difference-of-means for WGAN; D trains on **detached** fakes so the critic update never reaches
+  into G (textbook alternating-GD GAN training).
+
+### UI (`hooks/useGANTrainer.ts`, `components/gan/*`)
+
+- A genuinely new training loop vs. every other lab: **two optimisers, two objectives**, alternating
+  `dSteps` critic updates and one generator update each frame (Adam with β₁=0.5, the standard GAN
+  stabiliser). The lab's existing `flow-data.ts` 2-D distributions are reused as the target.
+- Headline `DiscriminatorField`: the discriminator's **decision surface** painted live on a
+  diverging blue↔amber ramp (fake↔real) with real (cyan) and generated (amber) points on top, plus
+  an optional **generator pushforward** of the latent grid (when z is 2-D). `GANSamples` shows
+  G(z) over the data so **mode collapse** is visible; `GANChart` plots the two losses chasing each
+  other (and, for WGAN, the Wasserstein estimate that actually trends to 0). Full `GANPanel`,
+  save/share (`#a=`, `GAN_SLOT_PREFIX`), and an app tab.
+
+### Self-test (4 new checks, max rel err ~1e-8)
+
+Both players gradchecked **end to end** against finite differences: `gan-D (e2e)` 1.8e-8,
+`gan-G (e2e)` 3.5e-9 (this is the gradient the discriminator back-propagates *into* the
+generator — the GAN learning signal, proven exact), `gan-wgan-critic (e2e)`, and an exact
+`gan-wgan-loss (identity)` (0.0e+0) showing the critic loss really is `mean(D(fake)) − mean(D(real))`.
+
+### Backlog / ideas (GAN)
+
+- [x] `GAN` engine: MLP generator + MLP discriminator/critic on the existing autograd
+- [x] Three objectives — saturating minimax, non-saturating, Wasserstein (weight-clipped)
+- [x] Alternating two-optimiser training loop (`dSteps` critic : 1 generator), Adam β₁=0.5
+- [x] Detached-fake discriminator update; Lipschitz weight-clipping for WGAN
+- [x] Reuse the 2-D `flow-data` distributions as targets
+- [x] Live discriminator decision-surface field (diverging map) + real/fake scatter
+- [x] Generator pushforward (latent grid → data) overlay when z is 2-D
+- [x] Generated-samples panel (mode-collapse visible) + dual-loss / Wasserstein chart
+- [x] Per-player live stats (D σ on real/fake, ‖grad‖, Ŵ distance)
+- [x] End-to-end gradcheck of BOTH players + the WGAN loss identity in the engine self-test
+- [x] Save / load / shareable `#a=` links; app tab + keyboard shortcuts
+- [ ] **WGAN-GP** — replace weight-clipping with a gradient penalty on `‖∇_x D‖` (needs a
+  double-backward / input-gradient term through the engine)
+- [ ] **Spectral normalisation** of the discriminator's weights as a cleaner Lipschitz control
+- [ ] **Conditional GAN** — feed a class/label embedding into G and D (the procedural-glyph classes)
+- [ ] **Minibatch-stddev** feature in D and **feature-matching** loss to fight mode collapse, with a
+  live coverage/precision-recall readout
+- [ ] **TTUR** (separate G/D learning rates) and an EMA of the generator weights for sampling
+- [ ] A side-by-side **objective race** (minimax vs non-saturating vs WGAN on the same target)
+
+## Session log
+
+- 2026-06-23 (claude, session 13): added the **eleventh lab — Adversarial · GAN**, completing the
+  generative quartet (VAE · Diffusion · Flows · GAN). New `engine/gan.ts` (two-MLP generator +
+  discriminator/critic, three objectives — saturating minimax / non-saturating / Wasserstein
+  weight-clipped — fused-BCE and EM loss builders, detached-fake D updates, Lipschitz clipping), a
+  `useGANTrainer` hook with a genuinely new **two-optimiser alternating** training loop (Adam β₁=0.5,
+  `dSteps` critic : 1 generator), and `components/gan/*` (the headline `DiscriminatorField` decision
+  surface + generator-pushforward overlay, `GANSamples`, dual-loss/Wasserstein `GANChart`, full
+  `GANPanel`). Wired an app tab + hash route `#a=` and a `GAN_SLOT_PREFIX`. The engine **self-test
+  grew to 66 ops**: both players gradchecked end-to-end (`gan-D` 1.8e-8, `gan-G` 3.5e-9 — the
+  D→G learning signal proven exact), plus the WGAN critic and an exact `mean(D(fake))−mean(D(real))`
+  loss identity. Validated outside the browser first (CJS transpile): a 128×128 GAN on two-moons cut
+  the mean nearest-data distance of its samples from 0.41 → 0.08 under the non-saturating objective
+  (1500 steps) and 0.41 → 0.21 under WGAN (700 critic-heavy steps, still tightening) — the generator
+  demonstrably learns to cover the data. Full CI gate (scope + conformance + lint + tsc + vite build)
+  green via `node scripts/verify-project.mjs synapse-grad-7c4e`.

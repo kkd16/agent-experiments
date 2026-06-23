@@ -93,6 +93,7 @@ export const FLOW_SLOT_PREFIX = 'synapse:fslot:';
 export const GNN_SLOT_PREFIX = 'synapse:nslot:';
 export const KAN_SLOT_PREFIX = 'synapse:kslot:';
 export const NODE_SLOT_PREFIX = 'synapse:oslot:';
+export const GAN_SLOT_PREFIX = 'synapse:aslot:';
 
 // ---- URL hash sharing --------------------------------------------------------------
 

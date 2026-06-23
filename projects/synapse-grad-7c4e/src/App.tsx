@@ -9,17 +9,19 @@ import RLLab from './components/rl/RLLab';
 import GNNLab from './components/gnn/GNNLab';
 import KANLab from './components/kan/KANLab';
 import NodeLab from './components/node/NodeLab';
+import GANLab from './components/gan/GANLab';
 import './App.css';
 
-type Tab = 'playground' | 'vision' | 'transformer' | 'generative' | 'diffusion' | 'flows' | 'control' | 'graph' | 'kan' | 'node';
+type Tab = 'playground' | 'vision' | 'transformer' | 'generative' | 'diffusion' | 'flows' | 'adversarial' | 'control' | 'graph' | 'kan' | 'node';
 
-// Open the lab a shared link points at (#v= vision, #t= transformer, #g= generative, #d= diffusion, #f= flows, #r= RL, #n= graph, #k= KAN, #o= Neural ODE).
+// Open the lab a shared link points at (#v= vision, #t= transformer, #g= generative, #d= diffusion, #f= flows, #a= GAN, #r= RL, #n= graph, #k= KAN, #o= Neural ODE).
 function initialTab(): Tab {
   try {
     if (/[#&]t=/.test(location.hash)) return 'transformer';
     if (/[#&]g=/.test(location.hash)) return 'generative';
     if (/[#&]d=/.test(location.hash)) return 'diffusion';
     if (/[#&]f=/.test(location.hash)) return 'flows';
+    if (/[#&]a=/.test(location.hash)) return 'adversarial';
     if (/[#&]r=/.test(location.hash)) return 'control';
     if (/[#&]n=/.test(location.hash)) return 'graph';
     if (/[#&]k=/.test(location.hash)) return 'kan';
@@ -63,6 +65,9 @@ export default function App() {
             <button className={tab === 'flows' ? 'on' : ''} onClick={() => setTab('flows')}>
               Flows · RealNVP
             </button>
+            <button className={tab === 'adversarial' ? 'on' : ''} onClick={() => setTab('adversarial')}>
+              Adversarial · GAN
+            </button>
             <button className={tab === 'control' ? 'on' : ''} onClick={() => setTab('control')}>
               Control · RL
             </button>
@@ -94,6 +99,8 @@ export default function App() {
         <DiffLab />
       ) : tab === 'flows' ? (
         <FlowLab />
+      ) : tab === 'adversarial' ? (
+        <GANLab />
       ) : tab === 'control' ? (
         <RLLab />
       ) : tab === 'graph' ? (
