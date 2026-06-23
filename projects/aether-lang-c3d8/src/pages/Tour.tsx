@@ -401,6 +401,19 @@ back 50.0        clear ()`}</pre>
           folds <code>sq 3 + sq 4 + sq 12</code> to a single <code>169</code> and sheds a call per
           iteration from a hot loop, cutting its VM steps by ~45%.
         </p>
+        <p>
+          17.0 makes loops first-order. A recursive function often threads a parameter round its loop
+          completely <em>unchanged</em> — the function argument of a recursive <code>map</code>, the
+          limit of a counting loop. The <strong>static-argument transformation</strong> (Santos 1995;
+          Peyton Jones &amp; Santos 1998) splits it into a thin <strong>wrapper</strong> that binds the
+          static arguments once and a recursive <strong>worker</strong> that loops on only the{' '}
+          <em>dynamic</em> ones, capturing the static ones as free variables — so each iteration passes
+          one fewer argument (34–42% fewer VM steps on the canonical loops). Because the wrapper is no
+          longer recursive, a <em>known</em> function flowing into a lifted slot is then inlined and
+          β-reduced into the loop: the <strong>static-argument transformation</strong> example shows{' '}
+          <code>each (fn x -&gt; x*x) xs</code> collapse to a bare first-order loop with the function
+          parameter gone entirely — the effect SpecConstr is famous for, reached by composition.
+        </p>
       </section>
 
       <section>
