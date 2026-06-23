@@ -9,7 +9,7 @@ import { TILESETS3 } from './tilesets3/index';
 const KEYS = new Set(TILESETS3.map((t) => t.key));
 const bool = (b: boolean) => (b ? '1' : '0');
 
-export type Mode = '2d' | '3d' | 'inf';
+export type Mode = '2d' | '3d' | 'inf' | 'hex';
 
 /** Which engine a hash selects. Defaults to 2D for every legacy/empty hash. */
 export function hashMode(hash: string): Mode {
@@ -17,6 +17,7 @@ export function hashMode(hash: string): Mode {
   const m = p.get('m');
   if (m === '3') return '3d';
   if (m === 'i') return 'inf';
+  if (m === 'h') return 'hex';
   return '2d';
 }
 

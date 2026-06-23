@@ -1090,3 +1090,54 @@ kbd {
   font-variant-numeric: tabular-nums;
   font-weight: 600;
 }
+
+/* ---- Hex studio ---- */
+.viewport-hex {
+  position: relative;
+  padding: 0;
+  overflow: hidden;
+}
+.board-hex {
+  width: 100%;
+  height: auto;
+  max-width: 980px;
+  aspect-ratio: 980 / 720;
+  image-rendering: auto;
+  border-radius: var(--radius);
+  background: linear-gradient(180deg, #0c1018, #070a10);
+  display: block;
+  cursor: crosshair;
+  touch-action: none;
+}
+.hex-lens {
+  position: absolute;
+  z-index: 5;
+  pointer-events: none;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  background: rgba(7, 10, 18, 0.92);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 6px 10px;
+  font-size: 11.5px;
+  color: var(--muted);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45);
+}
+.hex-lens strong {
+  color: var(--text);
+  font-size: 12.5px;
+  letter-spacing: 0.01em;
+}
+.tile-pick-hex {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: linear-gradient(180deg, #0d1626, #0a0f1c);
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  padding: 4px;
+}
+.tile-pick-hex img {
+  image-rendering: auto;
+}
