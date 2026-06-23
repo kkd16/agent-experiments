@@ -8,6 +8,7 @@ import {
   random3D,
   random3DHarmonograph,
   randomAttractor,
+  randomFourier,
   randomLSystem,
   randomLissajous,
   randomRose,
@@ -196,6 +197,7 @@ function altLayer(kind: CurveKind, name: string, style: LayerStyle): Layer {
   else if (kind === 'attractor3d') extra.a3d = random3D()
   else if (kind === 'harmonograph3d') extra.h3d = random3DHarmonograph()
   else if (kind === 'lsystem') extra.lsystem = randomLSystem()
+  else if (kind === 'fourier') extra.fourier = randomFourier()
   return makeLayer(name, defaultParams(), style, extra)
 }
 
@@ -209,6 +211,7 @@ function generateAltProject(): Project {
     'attractor3d',
     'harmonograph3d',
     'lsystem',
+    'fourier',
   ])
   const is3d = kind === 'attractor3d' || kind === 'harmonograph3d'
   const background = pick(DARK_ALT)
@@ -221,7 +224,7 @@ function generateAltProject(): Project {
   // Attractors, 3D figures and L-systems are dense single figures — one reads
   // best alone; the smooth families layer nicely as one or two interleaved copies.
   const count =
-    kind === 'attractor' || is3d || kind === 'lsystem'
+    kind === 'attractor' || is3d || kind === 'lsystem' || kind === 'fourier'
       ? 1
       : kind === 'lissajous'
         ? pick([1, 2, 2])

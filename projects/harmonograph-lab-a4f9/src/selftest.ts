@@ -19,6 +19,15 @@ import {
   sampleH3DPolyline,
 } from './harmonograph3d'
 import { LSYSTEMS, expandLSystem, sampleLSystem, sampleLSystemFull, turtle } from './lsystem'
+import {
+  FOURIER_SHAPES,
+  chainAt,
+  dft,
+  epicyclesForShape,
+  reconstructAt,
+  sampleFourier,
+  shapeSamples,
+} from './fourier'
 import type { AttractorKind, AttractorParams } from './types'
 
 export interface TestResult {
@@ -286,6 +295,105 @@ function testHarmonograph3D(): TestResult {
   return pass('3d harmonograph', `${checked} spatial figures: finite, well-framed, depth-valid, 2π-periodic`)
 }
 
+// ---- Fourier (epicycle) engine ---------------------------------------------
+// The DFT is the one curve family with a *provable* contract, so the tests prove
+// it rather than just sanity-check it: the inverse transform reproduces the input
+// exactly, and partial reconstructions converge monotonically as harmonics grow.
+
+const FOURIER_IDS = FOURIER_SHAPES.map((s) => s.value)
+
+// Mean-square error between the K-term reconstruction (on the DFT sample grid)
+// and the original centred samples.
+function fourierMse(id: string, k: number): number {
+  const samples = shapeSamples(id)
+  const eps = epicyclesForShape(id)
+  const N = samples.length
+  let sum = 0
+  for (let i = 0; i < N; i++) {
+    const p = reconstructAt(eps, k, i / N, 0)
+    const dx = p.x - samples[i].x
+    const dy = p.y - samples[i].y
+    sum += dx * dx + dy * dy
+  }
+  return sum / N
+}
+
+// (1) Inverse-DFT exactness: with all N epicycles the reconstruction reproduces
+// the original samples to machine precision, for every shape.
+function testFourierExact(): TestResult {
+  let worst = 0
+  for (const id of FOURIER_IDS) {
+    const samples = shapeSamples(id)
+    const eps = dft(samples)
+    const N = samples.length
+    for (let i = 0; i < N; i++) {
+      const p = reconstructAt(eps, N, i / N, 0)
+      const e = Math.hypot(p.x - samples[i].x, p.y - samples[i].y)
+      if (e > worst) worst = e
+      if (e > 1e-7) {
+        return fail('fourier inverse-DFT exact', `${id}[${i}] reconstruction error ${e.toExponential(2)}`)
+      }
+    }
+  }
+  return pass('fourier inverse-DFT exact', `${FOURIER_IDS.length} shapes round-trip, max err ${worst.toExponential(2)}`)
+}
+
+// (2) Monotone convergence: adding harmonics never increases the error (the basis
+// is orthogonal on the sample grid, so the K-term error is the energy of the
+// omitted terms). This is the mathematical guarantee behind the harmonics slider.
+function testFourierConvergence(): TestResult {
+  const ks = [1, 2, 4, 8, 16, 32, 64, 128, 256]
+  for (const id of FOURIER_IDS) {
+    let prev = Infinity
+    for (const k of ks) {
+      const mse = fourierMse(id, k)
+      if (!Number.isFinite(mse)) return fail('fourier convergence', `${id} non-finite MSE at K=${k}`)
+      // Allow a hair of floating-point slack; the trend must be non-increasing.
+      if (mse > prev * (1 + 1e-9) + 1e-12) {
+        return fail('fourier convergence', `${id} MSE rose at K=${k}: ${mse.toExponential(3)} > ${prev.toExponential(3)}`)
+      }
+      prev = mse
+    }
+  }
+  return pass('fourier convergence', `MSE monotonically non-increasing over ${ks.length} K-steps × ${FOURIER_IDS.length} shapes`)
+}
+
+// (3) Finiteness + a closed loop: every shape, across a sweep of harmonic counts,
+// yields finite, sanely-bounded points whose first and last samples coincide (the
+// reconstruction is exactly 1-periodic), and the overlay chain's tip lands on the
+// curve.
+function testFourierFinite(): TestResult {
+  const BOUND = 6
+  for (const id of FOURIER_IDS) {
+    for (const harmonics of [1, 3, 12, 48, 200]) {
+      const pts = sampleFourier({ shape: id, harmonics, phase: 0.3, epicycles: true, steps: 400 })
+      for (const p of pts) {
+        if (!Number.isFinite(p.x) || !Number.isFinite(p.y)) {
+          return fail('fourier finite', `${id} K=${harmonics} produced a non-finite point`)
+        }
+        if (Math.abs(p.x) > BOUND || Math.abs(p.y) > BOUND) {
+          return fail('fourier finite', `${id} K=${harmonics} escaped the box (${p.x.toFixed(2)}, ${p.y.toFixed(2)})`)
+        }
+      }
+      const loopErr = Math.hypot(pts[0].x - pts[pts.length - 1].x, pts[0].y - pts[pts.length - 1].y)
+      if (loopErr > 1e-9) {
+        return fail('fourier finite', `${id} K=${harmonics} loop not closed (gap ${loopErr.toExponential(2)})`)
+      }
+      // The chain tip must equal the directly-reconstructed pen position.
+      const eps = epicyclesForShape(id)
+      const k = Math.min(harmonics, eps.length)
+      const chain = chainAt(eps, k, 0.42, 0.3)
+      const tip = chain[chain.length - 1]
+      const direct = reconstructAt(eps, k, 0.42, 0.3)
+      const tipErr = Math.hypot(tip.x - direct.x, tip.y - direct.y)
+      if (tipErr > 1e-9) {
+        return fail('fourier finite', `${id} K=${harmonics} chain tip ≠ reconstruction (${tipErr.toExponential(2)})`)
+      }
+    }
+  }
+  return pass('fourier finite', `${FOURIER_IDS.length} shapes finite, closed & chain-consistent across 5 harmonic counts`)
+}
+
 function rand(a: number, b: number): number {
   return a + Math.random() * (b - a)
 }
@@ -304,6 +412,9 @@ export function runSelfTests(): TestResult[] {
     testBranchingLSystems(),
     testFlows3D(),
     testHarmonograph3D(),
+    testFourierExact(),
+    testFourierConvergence(),
+    testFourierFinite(),
   ]
 }
 

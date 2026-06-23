@@ -17,6 +17,7 @@ import {
   loopLayer,
   default3D,
   defaultAttractor,
+  defaultFourier,
   defaultLSystem,
   defaultLiss,
   defaultRose,
@@ -60,6 +61,7 @@ import type {
   ColorMode,
   CurveKind,
   DensityStyle,
+  FourierParams,
   Harmonograph3DParams,
   Layer,
   LissajousParams,
@@ -78,6 +80,7 @@ import { LayerList } from './components/LayerList'
 import {
   CurveAttractor,
   CurveAttractor3D,
+  CurveFourier,
   CurveHarmonograph,
   CurveHarmonograph3D,
   CurveLSystem,
@@ -366,6 +369,7 @@ export default function App() {
       if (kind === 'attractor3d' && !next.a3d) next.a3d = default3D()
       if (kind === 'harmonograph3d' && !next.h3d) next.h3d = default3DHarmonograph()
       if (kind === 'lsystem' && !next.lsystem) next.lsystem = defaultLSystem()
+      if (kind === 'fourier' && !next.fourier) next.fourier = defaultFourier()
       return next
     })
   }
@@ -411,6 +415,13 @@ export default function App() {
     updateLayer(selected.id, (l) => ({
       ...l,
       lsystem: { ...(l.lsystem ?? defaultLSystem()), ...patch },
+    }))
+  }
+  const updateFourier = (patch: Partial<FourierParams>) => {
+    if (!selected) return
+    updateLayer(selected.id, (l) => ({
+      ...l,
+      fourier: { ...(l.fourier ?? defaultFourier()), ...patch },
     }))
   }
   const updateDrift = (rate: number) => {
@@ -624,7 +635,8 @@ export default function App() {
       c.height = size
       const ctx = c.getContext('2d')
       if (!ctx) return null
-      drawProject(ctx, project, datas, size, { trace: 1 })
+      // No epicycle overlay in the still export — the art should stand alone.
+      drawProject(ctx, project, datas, size, { trace: 1, overlays: false })
       return c
     },
     [project, datas],
@@ -1176,6 +1188,9 @@ export default function App() {
                 )}
                 {theme.kind === 'lsystem' && (
                   <CurveLSystem lsystem={theme.lsystem ?? defaultLSystem()} update={updateLSystem} />
+                )}
+                {theme.kind === 'fourier' && (
+                  <CurveFourier fourier={theme.fourier ?? defaultFourier()} update={updateFourier} />
                 )}
 
                 <section className="group">

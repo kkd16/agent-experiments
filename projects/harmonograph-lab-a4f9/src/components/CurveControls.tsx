@@ -7,6 +7,7 @@ import type { ReactNode } from 'react'
 import type {
   Attractor3DParams,
   AttractorParams,
+  FourierParams,
   Harmonograph3DParams,
   Layer,
   LissajousParams,
@@ -16,7 +17,13 @@ import type {
   SpirographParams,
   SuperformulaParams,
 } from '../types'
-import { ATTRACTOR_KINDS, attractorBounded, defaultsForAttractor } from '../curves'
+import {
+  ATTRACTOR_KINDS,
+  attractorBounded,
+  defaultsForAttractor,
+  FOURIER_MAX_HARMONICS,
+  FOURIER_SHAPES,
+} from '../curves'
 import { FLOW3D_KINDS, FLOW3D_NOTES, defaultsFor3D, ranges3D } from '../attractors3d'
 import { LSYSTEM_KINDS, lsystemById } from '../lsystem'
 import { Slider } from './Slider'
@@ -620,6 +627,64 @@ export function CurveHarmonograph3D({
         <em>Live</em> (🌀) orbits it and the looping exporter captures a seamless turn.
       </OrbitCameraControls>
     </>
+  )
+}
+
+export function CurveFourier({
+  fourier,
+  update,
+}: {
+  fourier: FourierParams
+  update: (patch: Partial<FourierParams>) => void
+}) {
+  return (
+    <section className="group">
+      <div className="group-title">
+        Fourier <span className="tag">{fourier.harmonics} circles</span>
+      </div>
+      <div className="seg-label">Shape</div>
+      <Segmented
+        value={fourier.shape}
+        options={FOURIER_SHAPES}
+        onChange={(shape) => update({ shape })}
+        wrap
+      />
+      <Slider
+        label="Harmonics (K)"
+        value={fourier.harmonics}
+        min={1}
+        max={FOURIER_MAX_HARMONICS}
+        step={1}
+        onChange={(v) => update({ harmonics: v })}
+        fmt={(v) => v.toFixed(0)}
+      />
+      <Slider
+        label="Rotation"
+        value={fourier.phase}
+        min={0}
+        max={TWO_PI}
+        step={0.01}
+        onChange={(v) => update({ phase: v })}
+        fmt={deg}
+      />
+      <label className="check">
+        <input
+          type="checkbox"
+          checked={fourier.epicycles}
+          onChange={(e) => update({ epicycles: e.target.checked })}
+        />
+        Show epicycles (rotating circles)
+      </label>
+      <p className="hint">
+        A from-scratch <strong>DFT</strong> breaks the shape into {fourier.harmonics}{' '}
+        rotating vectors — the first <em>K</em> are the best <em>K</em>-term
+        approximation, so sliding <strong>Harmonics</strong> shows Fourier{' '}
+        <strong>convergence</strong> live (watch the corners of a{' '}
+        <em>square</em> or <em>triangle</em> ring into focus — the Gibbs
+        phenomenon). Hit <em>Play</em> (▶) to watch the nested circles{' '}
+        <strong>draw it</strong>; <em>Live</em> (🌀) spins it.
+      </p>
+    </section>
   )
 }
 
