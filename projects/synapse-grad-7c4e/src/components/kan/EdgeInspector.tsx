@@ -1,5 +1,5 @@
-import { useEffect, useRef } from 'react';
-import type { LayerCurves } from '../../engine/kan';
+import { useEffect, useMemo, useRef } from 'react';
+import { suggestSymbolic, type LayerCurves } from '../../engine/kan';
 
 interface Sel {
   layer: number;
@@ -119,12 +119,30 @@ export default function EdgeInspector({ layers, selected, tick, width, height }:
 
   const label = selected ? `layer ${selected.layer + 1}: node ${selected.i} → node ${selected.j}` : '—';
 
+  // Closest elementary formula to the learned curve — KAN interpretability in one line.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const symbolic = useMemo(() => {
+    if (!layers || !selected || selected.layer >= layers.length) return null;
+    const edge = layers[selected.layer].edges.find((e) => e.i === selected.i && e.j === selected.j);
+    if (!edge) return null;
+    return suggestSymbolic(edge.xs, edge.ys);
+  }, [layers, selected, tick]);
+
+  const fmt = (v: number) => (Math.abs(v) >= 0.01 ? v.toFixed(2) : v.toExponential(1));
+  const best = symbolic && symbolic[0];
+
   return (
     <div>
       <canvas ref={ref} style={{ width, height, maxWidth: '100%' }} className="chart" />
       <div className="muted small" style={{ marginTop: 6, fontFamily: 'ui-monospace, monospace' }}>
         φ on {label}
       </div>
+      {best && (
+        <div className="muted small" style={{ marginTop: 4, fontFamily: 'ui-monospace, monospace' }}>
+          ≈ <b style={{ color: '#7dd3fc' }}>{best.name === '1' ? fmt(best.b) : `${fmt(best.a)}·${best.name}${best.b >= 0 ? ' + ' : ' − '}${fmt(Math.abs(best.b))}`}</b>{' '}
+          <span style={{ color: best.r2 > 0.97 ? '#a3e635' : 'var(--muted)' }}>(R²={best.r2.toFixed(3)})</span>
+        </div>
+      )}
     </div>
   );
 }

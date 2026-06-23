@@ -246,7 +246,8 @@ src/
                            the live ×2-grid-refine and fit-grid-to-data buttons, stats, gradcheck, self-test
       KANDiagram.tsx       the headline: the network as a graph of functions, each edge's spline drawn
                            inline and animating, edge prominence ∝ φ magnitude, click-to-inspect
-      EdgeInspector.tsx    a magnified view of one edge's φ(x) with the spline's knot positions marked
+      EdgeInspector.tsx    a magnified view of one edge's φ(x) with the spline's knot positions marked,
+                           plus its closest elementary formula (symbolic regression over φ, with R²)
       KANBoundary.tsx      the classification decision-boundary field behind the data points
       KANFunctionFit.tsx   the 1-D regression view: the learned curve through the noisy samples
   hooks/
@@ -882,6 +883,9 @@ unity** (Σ_k B_k(x) ≡ 1), proven to machine precision in the self-test.
       graph of functions, each edge's spline drawn inline and animating, prominence ∝ |φ|,
       click-to-inspect), `EdgeInspector` (magnified φ with the spline knots), `KANBoundary`
       (classification field), `KANFunctionFit` (the 1-D learned curve through the data)
+- [x] **symbolic regression** (`suggestSymbolic`) — fit each learned φ against a 14-function library by
+      closed-form least squares and show the closest formula + R² in the inspector (recovers known
+      forms to R²=1.0), the KAN paper's interpretability headline
 - [x] App tab + hash route `#k=`, a `KAN_SLOT_PREFIX` for independent save/share
 - [x] **self-tests** — fold into the one-click engine self-test: a single KAN layer gradchecked
       through **x + every parameter**, a whole **classification** KAN and a whole **regression** KAN
@@ -889,9 +893,12 @@ unity** (Σ_k B_k(x) ≡ 1), proven to machine precision in the self-test.
       identity — **59 ops**, max rel err 2.5e-6 (kan-layer 4.2e-9, refit 2.3e-6, partition 1e-16)
 - [x] validate outside the browser: 400-step training hits **R²=0.985** on the step function and
       **100%** on two-moons; a ×2 grid refit drifts predictions by only **1e-5** (curves preserved)
-- [ ] **per-edge symbolic regression** — fit each learned φ against a library of candidate functions
-      (sin, exp, x², …) and snap to the best, turning a trained KAN into a readable formula (the KAN
-      paper's headline interpretability move)
+- [x] **per-edge symbolic regression (suggest)** — `suggestSymbolic` fits each learned φ against a
+      library of 14 elementary functions (x, x², x³, |x|, √|x|, sin/cos, tanh, exp, σ, gaussian, log)
+      by closed-form 1-D least squares and ranks by R²; the EdgeInspector shows the closest formula
+      live (e.g. "≈ 1.98·sin(πx) + 0.01, R²=0.999"), recovering known forms to R²=1.0 in testing
+- [ ] **symbolic snap** — replace a selected edge with its best-fit formula (freeze it as a fixed
+      function), then keep training the rest, distilling the trained KAN into a readable equation
 - [ ] **L1 + entropy sparsification** of the edge functions and a **prune** button that drops
       low-importance edges, then a re-fit — watch the network shrink to its essential skeleton
 - [ ] **multiplicative nodes** (KAN 2.0) alongside the additive ones, for rational/product structure

@@ -393,6 +393,91 @@ export class KANLayer {
   }
 }
 
+// ---- symbolic regression (interpretability) -----------------------------------------
+
+export interface SymbolicFit {
+  name: string; // human-readable form, e.g. "sin(x)"
+  a: number; // best-fit scale
+  b: number; // best-fit offset
+  r2: number; // coefficient of determination over the sampled curve
+}
+
+interface Candidate {
+  name: string;
+  g: (x: number) => number;
+}
+
+// The library of elementary functions a learned edge φ(x) is matched against. Each is fit as
+// y ≈ a·g(x) + b by ordinary 1-D least squares, and ranked by R² — turning an opaque spline into
+// a readable formula, the headline interpretability move of the KAN paper.
+const SYMBOLIC_LIBRARY: Candidate[] = [
+  { name: '1', g: () => 1 },
+  { name: 'x', g: (x) => x },
+  { name: 'x²', g: (x) => x * x },
+  { name: 'x³', g: (x) => x * x * x },
+  { name: '|x|', g: (x) => Math.abs(x) },
+  { name: '√|x|', g: (x) => Math.sqrt(Math.abs(x)) },
+  { name: 'sin(πx)', g: (x) => Math.sin(Math.PI * x) },
+  { name: 'cos(πx)', g: (x) => Math.cos(Math.PI * x) },
+  { name: 'sin(2πx)', g: (x) => Math.sin(2 * Math.PI * x) },
+  { name: 'tanh(2x)', g: (x) => Math.tanh(2 * x) },
+  { name: 'exp(x)', g: (x) => Math.exp(x) },
+  { name: 'σ(4x)', g: (x) => 1 / (1 + Math.exp(-4 * x)) },
+  { name: 'exp(−x²)', g: (x) => Math.exp(-x * x) },
+  { name: 'log(|x|+1)', g: (x) => Math.log(Math.abs(x) + 1) },
+];
+
+// Fit every library function to a sampled curve (xs, ys) and return them best-R²-first. The fit
+// y ≈ a·g(x)+b has the closed-form least-squares solution from the sums of g, y, g², gy.
+export function suggestSymbolic(xs: Float64Array, ys: Float64Array): SymbolicFit[] {
+  const n = xs.length;
+  let meanY = 0;
+  for (let i = 0; i < n; i++) meanY += ys[i];
+  meanY /= n;
+  let ssTot = 0;
+  for (let i = 0; i < n; i++) ssTot += (ys[i] - meanY) ** 2;
+
+  const out: SymbolicFit[] = [];
+  for (const cand of SYMBOLIC_LIBRARY) {
+    let sg = 0;
+    let sy = 0;
+    let sgg = 0;
+    let sgy = 0;
+    let ok = true;
+    for (let i = 0; i < n; i++) {
+      const g = cand.g(xs[i]);
+      if (!Number.isFinite(g)) {
+        ok = false;
+        break;
+      }
+      sg += g;
+      sy += ys[i];
+      sgg += g * g;
+      sgy += g * ys[i];
+    }
+    if (!ok) continue;
+    const denom = n * sgg - sg * sg;
+    let a = 0;
+    let b = meanY;
+    if (cand.name === '1') {
+      a = 0;
+      b = meanY; // the constant model
+    } else if (Math.abs(denom) > 1e-12) {
+      a = (n * sgy - sg * sy) / denom;
+      b = (sy - a * sg) / n;
+    }
+    let ssRes = 0;
+    for (let i = 0; i < n; i++) {
+      const pred = cand.name === '1' ? b : a * cand.g(xs[i]) + b;
+      ssRes += (ys[i] - pred) ** 2;
+    }
+    const r2 = ssTot > 1e-12 ? 1 - ssRes / ssTot : cand.name === '1' ? 1 : 0;
+    out.push({ name: cand.name, a, b, r2 });
+  }
+  out.sort((p, q) => q.r2 - p.r2);
+  return out;
+}
+
 // ---- the network --------------------------------------------------------------------
 
 export interface KANSpec {
