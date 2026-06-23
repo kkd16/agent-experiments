@@ -15,6 +15,7 @@ export type Node =
   | { type: 'error'; code: ErrorCode }
   | { type: 'ref'; ref: CellRef }
   | { type: 'range'; from: CellRef; to: CellRef }
+  | { type: 'name'; name: string }
   | { type: 'unary'; op: UnaryOp; operand: Node }
   | { type: 'percent'; operand: Node }
   | { type: 'binary'; op: BinaryOp; left: Node; right: Node }

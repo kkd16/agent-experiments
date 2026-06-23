@@ -6,8 +6,19 @@
 
 import type { Node } from './ast'
 import type { FnImpl, FnHelpers } from './evaluator'
-import type { Scalar, ErrorValue, RuntimeValue, SparklineValue } from './values'
-import { BLANK, err, isError, isBlank, toNumber, toText, toBool } from './values'
+import type { Scalar, ErrorValue, RuntimeValue, SparklineValue, MatrixValue } from './values'
+import { BLANK, err, isError, isBlank, toNumber, toText, toBool, matrix } from './values'
+import {
+  dateToSerial,
+  timeToFraction,
+  serialToDate,
+  serialToTime,
+  todaySerial,
+  nowSerial,
+  addMonths,
+  endOfMonth,
+  formatSerialPattern,
+} from './dates'
 
 // ---- argument helpers -------------------------------------------------------
 
@@ -436,6 +447,295 @@ export const FUNCTIONS: Record<string, FnImpl> = {
     const spark: SparklineValue = { kind: 'sparkline', mode, data: ns }
     return spark
   },
+
+  // ---- dates & time ----
+  TODAY: () => todaySerial(),
+  NOW: () => nowSerial(),
+  DATE: (args, h) => {
+    const y = numAt(args, 0, h)
+    if (isError(y)) return y
+    const m = numAt(args, 1, h)
+    if (isError(m)) return m
+    const d = numAt(args, 2, h)
+    if (isError(d)) return d
+    return dateToSerial(Math.trunc(y), Math.trunc(m), Math.trunc(d))
+  },
+  TIME: (args, h) => {
+    const hh = numAt(args, 0, h)
+    if (isError(hh)) return hh
+    const mm = numAt(args, 1, h)
+    if (isError(mm)) return mm
+    const ss = numAt(args, 2, h, 0)
+    if (isError(ss)) return ss
+    const frac = timeToFraction(hh, mm, ss)
+    return frac - Math.floor(frac)
+  },
+  YEAR: datePart((d) => d.year),
+  MONTH: datePart((d) => d.month),
+  DAY: datePart((d) => d.day),
+  WEEKDAY: (args, h) => {
+    const s = numAt(args, 0, h)
+    if (isError(s)) return s
+    const type = numAt(args, 1, h, 1)
+    if (isError(type)) return type
+    const dow = serialToDate(s).weekday // 0=Sun..6=Sat
+    if (type === 2) return dow === 0 ? 7 : dow // Mon=1..Sun=7
+    if (type === 3) return dow === 0 ? 6 : dow - 1 // Mon=0..Sun=6
+    return dow + 1 // Sun=1..Sat=7
+  },
+  HOUR: timePart((t) => t.hour),
+  MINUTE: timePart((t) => t.minute),
+  SECOND: timePart((t) => t.second),
+  EDATE: (args, h) => {
+    const s = numAt(args, 0, h)
+    if (isError(s)) return s
+    const m = numAt(args, 1, h)
+    if (isError(m)) return m
+    return addMonths(s, Math.trunc(m))
+  },
+  EOMONTH: (args, h) => {
+    const s = numAt(args, 0, h)
+    if (isError(s)) return s
+    const m = numAt(args, 1, h)
+    if (isError(m)) return m
+    return endOfMonth(s, Math.trunc(m))
+  },
+  DAYS: (args, h) => {
+    const end = numAt(args, 0, h)
+    if (isError(end)) return end
+    const start = numAt(args, 1, h)
+    if (isError(start)) return start
+    return Math.trunc(end) - Math.trunc(start)
+  },
+  DATEVALUE: (args, h) => {
+    const s = textAt(args, 0, h)
+    if (isError(s)) return s
+    const m = /^(\d{4})-(\d{1,2})-(\d{1,2})$/.exec(s.trim()) || /^(\d{1,2})\/(\d{1,2})\/(\d{4})$/.exec(s.trim())
+    if (!m) return err('#VALUE!')
+    return m[1].length === 4 ? dateToSerial(+m[1], +m[2], +m[3]) : dateToSerial(+m[3], +m[1], +m[2])
+  },
+  DATEDIF: (args, h) => {
+    const start = numAt(args, 0, h)
+    if (isError(start)) return start
+    const end = numAt(args, 1, h)
+    if (isError(end)) return end
+    const unit = textAt(args, 2, h)
+    if (isError(unit)) return unit
+    return dateDif(Math.trunc(start), Math.trunc(end), unit.toUpperCase())
+  },
+
+  // ---- conditional aggregates ----
+  AVERAGEIF: (args, h) => {
+    const range = h.asMatrix(args[0])
+    if (isError(range)) return range
+    const crit = scalarAt(args, 1, h)
+    if (isError(crit)) return crit
+    const avgRange = args.length > 2 ? h.asMatrix(args[2]) : range
+    if (isError(avgRange)) return avgRange
+    const flatR = range.data.flat()
+    const flatA = avgRange.data.flat()
+    let total = 0
+    let count = 0
+    for (let i = 0; i < flatR.length; i++) {
+      if (matchCriteria(flatR[i], crit)) {
+        const v = flatA[i] ?? BLANK
+        if (typeof v === 'number') {
+          total += v
+          count++
+        }
+      }
+    }
+    return count ? total / count : err('#DIV/0!')
+  },
+  SUMIFS: (args, h) => ifsReduce(args, h, 'sum'),
+  COUNTIFS: (args, h) => ifsCount(args, h),
+  AVERAGEIFS: (args, h) => ifsReduce(args, h, 'avg'),
+  MAXIFS: (args, h) => ifsReduce(args, h, 'max'),
+  MINIFS: (args, h) => ifsReduce(args, h, 'min'),
+
+  // ---- lookup ----
+  XLOOKUP: (args, h) => {
+    const key = h.scalarOf(args[0])
+    if (isError(key)) return key
+    const lookup = h.asMatrix(args[1])
+    if (isError(lookup)) return lookup
+    const ret = h.asMatrix(args[2])
+    if (isError(ret)) return ret
+    const lvec = lookup.data.flat()
+    const rvec = ret.data.flat()
+    for (let i = 0; i < lvec.length; i++) if (looseCompare(lvec[i], key) === 0) return rvec[i] ?? err('#N/A')
+    return args.length > 3 ? h.scalarOf(args[3]) : err('#N/A') // optional if-not-found
+  },
+  SUMPRODUCT: (args, h) => {
+    const mats = args.map((a) => h.asMatrix(a))
+    for (const m of mats) if (isError(m)) return m
+    const flats = (mats as MatrixValue[]).map((m) => m.data.flat())
+    const len = flats[0]?.length ?? 0
+    for (const f of flats) if (f.length !== len) return err('#VALUE!')
+    let total = 0
+    for (let i = 0; i < len; i++) {
+      let prod = 1
+      for (const f of flats) {
+        const v = f[i]
+        prod *= typeof v === 'number' ? v : typeof v === 'boolean' ? (v ? 1 : 0) : 0
+      }
+      total += prod
+    }
+    return total
+  },
+
+  // ---- more stats ----
+  VARP: (args, h) => need(numbers(args, h), (ns) => populationVariance(ns, false)),
+  STDEVP: (args, h) => need(numbers(args, h), (ns) => populationVariance(ns, true)),
+  GEOMEAN: (args, h) =>
+    need(numbers(args, h), (ns) => {
+      if (!ns.length) return err('#NUM!')
+      let prod = 1
+      for (const n of ns) {
+        if (n <= 0) return err('#NUM!')
+        prod *= n
+      }
+      return Math.pow(prod, 1 / ns.length)
+    }),
+  MODE: (args, h) =>
+    need(numbers(args, h), (ns) => {
+      const counts = new Map<number, number>()
+      let best: number | null = null
+      let bestC = 1
+      for (const n of ns) {
+        const c = (counts.get(n) ?? 0) + 1
+        counts.set(n, c)
+        if (c > bestC) {
+          bestC = c
+          best = n
+        }
+      }
+      return best === null ? err('#N/A') : best
+    }),
+  LARGE: (args, h) => nthOrder(args, h, 'large'),
+  SMALL: (args, h) => nthOrder(args, h, 'small'),
+  RANK: (args, h) => {
+    const x = numAt(args, 0, h)
+    if (isError(x)) return x
+    const ns = numbers([args[1]], h)
+    if (isError(ns)) return ns
+    const order = args.length > 2 ? numAt(args, 2, h) : 0
+    if (isError(order)) return order
+    const sorted = [...ns].sort((a, b) => (order ? a - b : b - a))
+    const idx = sorted.indexOf(x)
+    return idx === -1 ? err('#N/A') : idx + 1
+  },
+  PERCENTILE: (args, h) => {
+    const ns = numbers([args[0]], h)
+    if (isError(ns)) return ns
+    const p = numAt(args, 1, h)
+    if (isError(p)) return p
+    return percentile(ns, p)
+  },
+  QUARTILE: (args, h) => {
+    const ns = numbers([args[0]], h)
+    if (isError(ns)) return ns
+    const q = numAt(args, 1, h)
+    if (isError(q)) return q
+    if (q < 0 || q > 4) return err('#NUM!')
+    return percentile(ns, q / 4)
+  },
+
+  // ---- more math ----
+  MROUND: (args, h) => {
+    const x = numAt(args, 0, h)
+    if (isError(x)) return x
+    const m = numAt(args, 1, h)
+    if (isError(m)) return m
+    if (m === 0) return 0
+    return Math.round(x / m) * m
+  },
+  EVEN: unaryMath((x) => (x >= 0 ? Math.ceil(x / 2) * 2 : Math.floor(x / 2) * 2)),
+  ODD: unaryMath((x) => {
+    const r = x >= 0 ? Math.ceil(x) : Math.floor(x)
+    return r % 2 === 0 ? r + Math.sign(x || 1) : r
+  }),
+  FACT: (args, h) => need(numAt(args, 0, h), (n) => factorial(Math.trunc(n))),
+  COMBIN: (args, h) => {
+    const n = numAt(args, 0, h)
+    if (isError(n)) return n
+    const k = numAt(args, 1, h)
+    if (isError(k)) return k
+    return combinations(Math.trunc(n), Math.trunc(k))
+  },
+  PERMUT: (args, h) => {
+    const n = numAt(args, 0, h)
+    if (isError(n)) return n
+    const k = numAt(args, 1, h)
+    if (isError(k)) return k
+    const c = combinations(Math.trunc(n), Math.trunc(k))
+    if (isError(c)) return c
+    const f = factorial(Math.trunc(k))
+    return isError(f) ? f : c * f
+  },
+  SUMSQ: (args, h) => need(numbers(args, h), (ns) => ns.reduce((a, b) => a + b * b, 0)),
+  'CEILING.MATH': (args, h) => {
+    const x = numAt(args, 0, h)
+    if (isError(x)) return x
+    const sig = numAt(args, 1, h, 1)
+    if (isError(sig)) return sig
+    if (sig === 0) return 0
+    return Math.ceil(x / Math.abs(sig)) * Math.abs(sig)
+  },
+
+  // ---- logic / utility ----
+  IFS: (args, h) => {
+    for (let i = 0; i + 1 < args.length; i += 2) {
+      const cond = toBool(h.scalarOf(args[i]))
+      if (isError(cond)) return cond
+      if (cond) return h.eval(args[i + 1])
+    }
+    return err('#N/A')
+  },
+  SWITCH: (args, h) => {
+    const subject = h.scalarOf(args[0])
+    if (isError(subject)) return subject
+    let i = 1
+    for (; i + 1 < args.length; i += 2) {
+      const c = h.scalarOf(args[i])
+      if (isError(c)) return c
+      if (looseCompare(subject, c) === 0) return h.eval(args[i + 1])
+    }
+    return i < args.length ? h.eval(args[i]) : err('#N/A') // trailing default
+  },
+  IFNA: (args, h) => {
+    const v = h.eval(args[0])
+    return isError(v) && v.code === '#N/A' ? (args.length > 1 ? h.eval(args[1]) : '') : v
+  },
+
+  // ---- text / regex ----
+  TEXT: (args, h) => {
+    const v = scalarAt(args, 0, h)
+    if (isError(v)) return v
+    const pattern = textAt(args, 1, h)
+    if (isError(pattern)) return pattern
+    return textFormat(v, pattern)
+  },
+  NUMBERVALUE: (args, h) => {
+    const s = textAt(args, 0, h)
+    if (isError(s)) return s
+    const cleaned = s.replace(/[\s,]/g, '')
+    const n = Number(cleaned)
+    return Number.isNaN(n) ? err('#VALUE!') : n
+  },
+  SPLIT: (args, h) => {
+    const s = textAt(args, 0, h)
+    if (isError(s)) return s
+    const delim = textAt(args, 1, h, ' ')
+    if (isError(delim)) return delim
+    const parts = delim === '' ? [...s] : s.split(delim).filter((p) => p !== '')
+    return matrix([parts.length ? parts : ['']])
+  },
+  REGEXMATCH: (args, h) => regexOp(args, h, 'match'),
+  REGEXEXTRACT: (args, h) => regexOp(args, h, 'extract'),
+  REGEXREPLACE: (args, h) => regexOp(args, h, 'replace'),
+  UNICHAR: (args, h) => need(numAt(args, 0, h), (n) => (n >= 1 && n <= 0x10ffff ? String.fromCodePoint(Math.floor(n)) : err('#VALUE!'))),
+  UNICODE: (args, h) => need(textAt(args, 0, h), (s) => (s.length ? s.codePointAt(0)! : err('#VALUE!'))),
 }
 
 // ---- shared implementations -------------------------------------------------
@@ -580,4 +880,199 @@ function sampleVariance(ns: number[], sqrtIt: boolean): number | ErrorValue {
   const mean = ns.reduce((a, b) => a + b, 0) / ns.length
   const v = ns.reduce((a, b) => a + (b - mean) ** 2, 0) / (ns.length - 1)
   return sqrtIt ? Math.sqrt(v) : v
+}
+
+function populationVariance(ns: number[], sqrtIt: boolean): number | ErrorValue {
+  if (ns.length < 1) return err('#DIV/0!')
+  const mean = ns.reduce((a, b) => a + b, 0) / ns.length
+  const v = ns.reduce((a, b) => a + (b - mean) ** 2, 0) / ns.length
+  return sqrtIt ? Math.sqrt(v) : v
+}
+
+// ---- dates ------------------------------------------------------------------
+
+function datePart(get: (d: ReturnType<typeof serialToDate>) => number): FnImpl {
+  return (args, h) => need(numAt(args, 0, h), (n) => get(serialToDate(n)))
+}
+function timePart(get: (t: ReturnType<typeof serialToTime>) => number): FnImpl {
+  return (args, h) => need(numAt(args, 0, h), (n) => get(serialToTime(n)))
+}
+
+function dateDif(start: number, end: number, unit: string): number | ErrorValue {
+  if (end < start) return err('#NUM!')
+  const a = serialToDate(start)
+  const b = serialToDate(end)
+  switch (unit) {
+    case 'D':
+      return end - start
+    case 'M':
+      return (b.year - a.year) * 12 + (b.month - a.month) - (b.day < a.day ? 1 : 0)
+    case 'Y': {
+      let years = b.year - a.year
+      if (b.month < a.month || (b.month === a.month && b.day < a.day)) years--
+      return years
+    }
+    case 'MD': {
+      // Days, ignoring months and years; borrow from the month before `end` if needed.
+      if (b.day >= a.day) return b.day - a.day
+      const daysInPrevMonth = new Date(Date.UTC(b.year, b.month - 1, 0)).getUTCDate()
+      return daysInPrevMonth - a.day + b.day
+    }
+    case 'YM':
+      return ((b.month - a.month - (b.day < a.day ? 1 : 0)) % 12 + 12) % 12
+    case 'YD': {
+      // Days, ignoring years: move the start to end's year (or the year before if
+      // that anniversary falls after `end`), then count the gap.
+      let anniv = dateToSerial(b.year, a.month, a.day)
+      if (anniv > end) anniv = dateToSerial(b.year - 1, a.month, a.day)
+      return end - anniv
+    }
+    default:
+      return err('#NUM!')
+  }
+}
+
+// ---- conditional aggregates -------------------------------------------------
+
+/** Indices into the first criteria range that satisfy *every* (range, criterion) pair. */
+function matchingIndices(pairsStart: number, args: Node[], h: FnHelpers): number[] | ErrorValue {
+  const ranges: Scalar[][] = []
+  const crits: Scalar[] = []
+  for (let i = pairsStart; i + 1 < args.length; i += 2) {
+    const m = h.asMatrix(args[i])
+    if (isError(m)) return m
+    ranges.push(m.data.flat())
+    const c = h.scalarOf(args[i + 1])
+    if (isError(c)) return c
+    crits.push(c)
+  }
+  if (!ranges.length) return []
+  const len = ranges[0].length
+  const out: number[] = []
+  for (let i = 0; i < len; i++) {
+    let ok = true
+    for (let p = 0; p < ranges.length; p++) {
+      if (!matchCriteria(ranges[p][i] ?? BLANK, crits[p])) {
+        ok = false
+        break
+      }
+    }
+    if (ok) out.push(i)
+  }
+  return out
+}
+
+function ifsReduce(args: Node[], h: FnHelpers, mode: 'sum' | 'avg' | 'max' | 'min'): RuntimeValue {
+  const target = h.asMatrix(args[0])
+  if (isError(target)) return target
+  const idx = matchingIndices(1, args, h)
+  if (isError(idx)) return idx
+  const flat = target.data.flat()
+  const picked: number[] = []
+  for (const i of idx) {
+    const v = flat[i] ?? BLANK
+    if (typeof v === 'number') picked.push(v)
+  }
+  if (mode === 'sum') return picked.reduce((a, b) => a + b, 0)
+  if (mode === 'avg') return picked.length ? picked.reduce((a, b) => a + b, 0) / picked.length : err('#DIV/0!')
+  if (mode === 'max') return picked.length ? Math.max(...picked) : 0
+  return picked.length ? Math.min(...picked) : 0
+}
+
+function ifsCount(args: Node[], h: FnHelpers): RuntimeValue {
+  const idx = matchingIndices(0, args, h)
+  if (isError(idx)) return idx
+  return idx.length
+}
+
+// ---- order statistics -------------------------------------------------------
+
+function nthOrder(args: Node[], h: FnHelpers, which: 'large' | 'small'): RuntimeValue {
+  const ns = numbers([args[0]], h)
+  if (isError(ns)) return ns
+  const k = numAt(args, 1, h)
+  if (isError(k)) return k
+  const i = Math.trunc(k)
+  if (i < 1 || i > ns.length) return err('#NUM!')
+  const sorted = [...ns].sort((a, b) => (which === 'large' ? b - a : a - b))
+  return sorted[i - 1]
+}
+
+function percentile(ns: number[], p: number): number | ErrorValue {
+  if (!ns.length || p < 0 || p > 1) return err('#NUM!')
+  const sorted = [...ns].sort((a, b) => a - b)
+  if (sorted.length === 1) return sorted[0]
+  const rank = p * (sorted.length - 1)
+  const lo = Math.floor(rank)
+  const frac = rank - lo
+  return lo + 1 < sorted.length ? sorted[lo] + frac * (sorted[lo + 1] - sorted[lo]) : sorted[lo]
+}
+
+// ---- combinatorics ----------------------------------------------------------
+
+function factorial(n: number): number | ErrorValue {
+  if (n < 0 || n > 170) return err('#NUM!')
+  let r = 1
+  for (let i = 2; i <= n; i++) r *= i
+  return r
+}
+function combinations(n: number, k: number): number | ErrorValue {
+  if (k < 0 || n < 0 || k > n) return err('#NUM!')
+  k = Math.min(k, n - k)
+  let r = 1
+  for (let i = 0; i < k; i++) r = (r * (n - i)) / (i + 1)
+  return Math.round(r)
+}
+
+// ---- TEXT formatting --------------------------------------------------------
+
+function textFormat(v: Scalar, pattern: string): string | ErrorValue {
+  if (isBlank(v)) return ''
+  const n = toNumber(v)
+  // Date/time pattern (contains a date/time letter) applied to a numeric serial.
+  if (!isError(n) && /[ymdhs]/i.test(pattern) && !/[#0]/.test(pattern)) {
+    return formatSerialPattern(n, pattern)
+  }
+  if (isError(n)) return toText(v)
+  return numericTextFormat(n, pattern)
+}
+
+function numericTextFormat(n: number, pattern: string): string {
+  const percent = pattern.includes('%')
+  const currency = /[$€£¥]/.exec(pattern)?.[0]
+  const grouped = pattern.includes(',')
+  const dot = pattern.indexOf('.')
+  const decimals = dot === -1 ? 0 : (pattern.slice(dot + 1).match(/[0#]/g) ?? []).length
+  const value = percent ? n * 100 : n
+  const neg = value < 0
+  let body = Math.abs(value).toFixed(decimals)
+  if (grouped) {
+    const [intPart, frac] = body.split('.')
+    const g = intPart.replace(/\B(?=(\d{3})+(?!\d))/g, ',')
+    body = frac !== undefined ? `${g}.${frac}` : g
+  }
+  return (neg ? '-' : '') + (currency ?? '') + body + (percent ? '%' : '')
+}
+
+// ---- regex ------------------------------------------------------------------
+
+function regexOp(args: Node[], h: FnHelpers, op: 'match' | 'extract' | 'replace'): RuntimeValue {
+  const s = textAt(args, 0, h)
+  if (isError(s)) return s
+  const pat = textAt(args, 1, h)
+  if (isError(pat)) return pat
+  let re: RegExp
+  try {
+    re = new RegExp(pat, op === 'replace' ? 'g' : '')
+  } catch {
+    return err('#VALUE!', 'invalid regular expression')
+  }
+  if (op === 'match') return re.test(s)
+  if (op === 'extract') {
+    const m = re.exec(s)
+    return m ? (m[1] ?? m[0]) : err('#N/A')
+  }
+  const repl = textAt(args, 2, h)
+  if (isError(repl)) return repl
+  return s.replace(re, repl)
 }

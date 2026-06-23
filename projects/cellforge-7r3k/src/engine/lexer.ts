@@ -9,12 +9,14 @@ export type TokenType =
   | 'str'
   | 'ref'
   | 'func'
-  | 'name' // TRUE/FALSE, error literals, anything alphabetic that isn't a ref or call
+  | 'name' // TRUE/FALSE, error literals, defined names, anything alphabetic that isn't a ref or call
+  | 'sheetname' // a quoted sheet name, e.g. 'Q3 Data' (always followed by `!`)
   | 'op'
   | 'lparen'
   | 'rparen'
   | 'comma'
   | 'colon'
+  | 'bang' // the `!` that separates a sheet qualifier from a reference
   | 'eof'
 
 export interface Token {
@@ -65,6 +67,29 @@ export function tokenize(input: string): Token[] {
       }
       if (j >= n) throw new LexError('unterminated string literal')
       tokens.push({ type: 'str', value: str, pos: i })
+      i = j + 1
+      continue
+    }
+
+    // Quoted sheet name: 'My Sheet' with '' as an embedded apostrophe. Always a
+    // sheet qualifier — the parser expects a `!` to follow.
+    if (ch === "'") {
+      let j = i + 1
+      let str = ''
+      while (j < n) {
+        if (input[j] === "'") {
+          if (input[j + 1] === "'") {
+            str += "'"
+            j += 2
+            continue
+          }
+          break
+        }
+        str += input[j]
+        j++
+      }
+      if (j >= n) throw new LexError('unterminated sheet name')
+      tokens.push({ type: 'sheetname', value: str, pos: i })
       i = j + 1
       continue
     }
@@ -125,6 +150,9 @@ export function tokenize(input: string): Token[] {
         break
       case ':':
         tokens.push({ type: 'colon', value: ch, pos: i })
+        break
+      case '!':
+        tokens.push({ type: 'bang', value: ch, pos: i })
         break
       case '+':
       case '-':

@@ -10,13 +10,28 @@ import type { RuntimeValue, Scalar, ErrorValue, MatrixValue } from './values'
 import { err, isError, isMatrix, isSparkline, matrix, asScalar, toNumber, toText } from './values'
 import { FUNCTIONS } from './functions'
 
+/** A defined name's resolved definition: its parsed formula and the sheet that
+ *  unqualified references inside it bind to. */
+export interface NameBinding {
+  readonly ast: Node
+  readonly scopeSheet: string
+}
+
 export interface EvalContext {
-  /** Current scalar value of a cell, or BLANK if empty/never set. */
-  getCell(coord: Coord): Scalar
   readonly rows: number
   readonly cols: number
   /** The cell being evaluated, for context-aware functions like ROW()/COLUMN(). */
   readonly current?: Coord
+  /** Sheet id of the formula being evaluated — the home for unqualified references. */
+  readonly currentSheet: string
+  /** Current scalar value of a cell on a specific sheet, or BLANK if empty. */
+  getCellAt(sheetId: string, coord: Coord): Scalar
+  /** Map a sheet name (case-insensitive) to its id, or null when no such sheet exists. */
+  resolveSheetId(name: string): string | null
+  /** Resolve a defined name (upper-cased) to its binding, or null. */
+  resolveName?(name: string): NameBinding | null
+  /** Names currently being expanded — guards against self-referential definitions. */
+  readonly nameStack?: ReadonlySet<string>
 }
 
 export interface FnHelpers {
@@ -80,12 +95,16 @@ function evalNode(node: Node, ctx: EvalContext, h: FnHelpers): RuntimeValue {
       return err(node.code)
 
     case 'ref': {
+      const sheetId = node.ref.sheet ? ctx.resolveSheetId(node.ref.sheet) : ctx.currentSheet
+      if (sheetId === null) return err('#REF!', `unknown sheet "${node.ref.sheet}"`)
       const coord: Coord = { row: node.ref.row, col: node.ref.col }
       if (!inBounds(coord, ctx)) return err('#REF!', 'reference outside the sheet')
-      return ctx.getCell(coord)
+      return ctx.getCellAt(sheetId, coord)
     }
 
     case 'range': {
+      const sheetId = node.from.sheet ? ctx.resolveSheetId(node.from.sheet) : ctx.currentSheet
+      if (sheetId === null) return err('#REF!', `unknown sheet "${node.from.sheet}"`)
       const from: Coord = { row: node.from.row, col: node.from.col }
       const to: Coord = { row: node.to.row, col: node.to.col }
       if (!inBounds(from, ctx) || !inBounds(to, ctx)) return err('#REF!', 'range outside the sheet')
@@ -93,10 +112,23 @@ function evalNode(node: Node, ctx: EvalContext, h: FnHelpers): RuntimeValue {
       const data: Scalar[][] = []
       for (let r = box.top; r <= box.bottom; r++) {
         const row: Scalar[] = []
-        for (let c = box.left; c <= box.right; c++) row.push(ctx.getCell({ row: r, col: c }))
+        for (let c = box.left; c <= box.right; c++) row.push(ctx.getCellAt(sheetId, { row: r, col: c }))
         data.push(row)
       }
       return matrix(data)
+    }
+
+    case 'name': {
+      const binding = ctx.resolveName?.(node.name.toUpperCase())
+      if (!binding) return err('#NAME?', `unknown name "${node.name}"`)
+      const key = node.name.toUpperCase()
+      if (ctx.nameStack?.has(key)) return err('#CIRC!', `name "${node.name}" refers to itself`)
+      const sub: EvalContext = {
+        ...ctx,
+        currentSheet: binding.scopeSheet,
+        nameStack: new Set([...(ctx.nameStack ?? []), key]),
+      }
+      return evaluate(binding.ast, sub)
     }
 
     case 'unary': {

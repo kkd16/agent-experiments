@@ -12,6 +12,8 @@ export interface CellRef {
   readonly col: number
   readonly rowAbs: boolean // had a `$` before the row number
   readonly colAbs: boolean // had a `$` before the column letters
+  /** Sheet name this reference is qualified to (`Sheet2!A1`), or undefined for "this sheet". */
+  readonly sheet?: string
 }
 
 export const coordKey = (row: number, col: number): string => `${row},${col}`

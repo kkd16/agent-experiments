@@ -4,12 +4,17 @@
 // inputs ready to hand to Workbook.loadJSON via coordKey conversion in App.
 
 import { parseRef, coordKey } from './engine/address'
+import type { RangeBox } from './engine/address'
+import { Workbook } from './engine/workbook'
+import type { WorkbookSnapshot } from './engine/workbook'
+import type { CellFormat } from './engine/format'
 
 export interface Demo {
   id: string
   name: string
   blurb: string
-  build: () => Record<string, string> // A1 ref -> raw input
+  build?: () => Record<string, string> // A1 ref -> raw input (single-sheet demos)
+  snapshot?: () => WorkbookSnapshot // full multi-sheet workbooks
 }
 
 const budget = (): Record<string, string> => ({
@@ -97,7 +102,104 @@ const timesTable = (): Record<string, string> => {
   return cells
 }
 
+// A multi-sheet workbook: raw regional sales on one sheet, cross-sheet aggregates +
+// a defined name + formatting + a chart on another. Built through the real API and
+// serialized, so it exercises exactly the features it shows off.
+function salesDashboard(): WorkbookSnapshot {
+  const wb = new Workbook()
+  const sales = wb.activeSheetId
+  wb.renameSheet(sales, 'Sales')
+
+  const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun']
+  const north = [42, 48, 51, 60, 66, 71]
+  const south = [30, 33, 38, 41, 47, 52]
+  const west = [25, 29, 31, 36, 44, 49]
+  const set = (a1: string, raw: string) => {
+    const ref = parseRef(a1)
+    if (ref) wb.setCell({ row: ref.row, col: ref.col }, raw, sales)
+  }
+  set('A1', 'Month')
+  set('B1', 'North')
+  set('C1', 'South')
+  set('D1', 'West')
+  set('E1', 'Total')
+  months.forEach((m, i) => {
+    const row = i + 2
+    set(`A${row}`, m)
+    set(`B${row}`, String(north[i] * 1000))
+    set(`C${row}`, String(south[i] * 1000))
+    set(`D${row}`, String(west[i] * 1000))
+    set(`E${row}`, `=SUM(B${row}:D${row})`)
+  })
+  set('A8', 'Total')
+  set('B8', '=SUM(B2:B7)')
+  set('C8', '=SUM(C2:C7)')
+  set('D8', '=SUM(D2:D7)')
+  set('E8', '=SUM(E2:E7)')
+
+  const box = (a1: string, a2: string): RangeBox => {
+    const f = parseRef(a1)!
+    const t = parseRef(a2)!
+    return { top: f.row, left: f.col, bottom: t.row, right: t.col }
+  }
+  wb.applyFormat(box('A1', 'E1'), { bold: true, align: 'center' }, sales)
+  wb.applyFormat(box('B2', 'E8'), { nf: 'currency', decimals: 0 }, sales)
+  wb.applyFormat(box('A8', 'E8'), { bold: true }, sales)
+
+  // A defined name spanning the monthly totals.
+  wb.setName('Revenue', 'Sales!E2:E7', sales)
+
+  // A summary sheet that reads across via cross-sheet refs and a name.
+  const summary = wb.addSheet('Summary')
+  const sset = (a1: string, raw: string) => {
+    const ref = parseRef(a1)
+    if (ref) wb.setCell({ row: ref.row, col: ref.col }, raw, summary)
+  }
+  sset('A1', 'Region')
+  sset('B1', 'Revenue')
+  sset('C1', 'Share')
+  sset('A2', 'North')
+  sset('B2', '=Sales!B8')
+  sset('A3', 'South')
+  sset('B3', '=Sales!C8')
+  sset('A4', 'West')
+  sset('B4', '=Sales!D8')
+  sset('C2', '=B2/$B$5')
+  sset('C3', '=B3/$B$5')
+  sset('C4', '=B4/$B$5')
+  sset('A5', 'Total')
+  sset('B5', '=SUM(Revenue)')
+  sset('A7', 'Best month')
+  sset('B7', '=TEXT(INDEX(Sales!A2:A7,MATCH(MAX(Revenue),Revenue,0)),"@")')
+  sset('A8', 'Avg / month')
+  sset('B8', '=AVERAGE(Revenue)')
+
+  const sfmt = (a1: string, a2: string, patch: CellFormat) => {
+    const f = parseRef(a1)!
+    const t = parseRef(a2)!
+    wb.applyFormat({ top: f.row, left: f.col, bottom: t.row, right: t.col }, patch, summary)
+  }
+  sfmt('A1', 'C1', { bold: true, align: 'center' })
+  sfmt('B2', 'B5', { nf: 'currency', decimals: 0 })
+  sfmt('C2', 'C4', { nf: 'percent', decimals: 1 })
+  sfmt('A5', 'B5', { bold: true })
+  sfmt('B8', 'B8', { nf: 'currency', decimals: 0 })
+
+  wb.addChart(
+    { type: 'column', range: box('A1', 'B4'), title: 'Revenue by region', x: 360, y: 30, w: 380, h: 250, headers: true, labels: true },
+    summary,
+  )
+  wb.addChart(
+    { type: 'pie', range: box('A2', 'B4'), title: 'Share', x: 360, y: 300, w: 380, h: 230, headers: false, labels: true },
+    summary,
+  )
+
+  wb.setActiveSheet(summary)
+  return wb.serialize()
+}
+
 export const DEMOS: Demo[] = [
+  { id: 'sales', name: 'Sales Dashboard', blurb: 'Multi-sheet: cross-sheet refs, a named range, formatting & charts', snapshot: salesDashboard },
   { id: 'budget', name: 'Monthly Budget', blurb: 'SUM, percentages, IF and a bar sparkline', build: budget },
   { id: 'fib', name: 'Fibonacci & Stats', blurb: 'Self-referential formula chains and a line sparkline', build: fibonacci },
   { id: 'times', name: 'Times Table', blurb: 'A 10×10 grid from one mixed-reference formula', build: timesTable },
@@ -106,7 +208,7 @@ export const DEMOS: Demo[] = [
 /** Convert an A1-keyed demo into the coordKey-keyed cell map Workbook.loadJSON wants. */
 export function demoToCells(demo: Demo): Record<string, string> {
   const out: Record<string, string> = {}
-  for (const [a1, raw] of Object.entries(demo.build())) {
+  for (const [a1, raw] of Object.entries(demo.build?.() ?? {})) {
     const ref = parseRef(a1)
     if (ref) out[coordKey(ref.row, ref.col)] = raw
   }

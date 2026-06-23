@@ -51,6 +51,9 @@ class Parser {
   private peek(): Token {
     return this.tokens[this.pos]
   }
+  private peekAt(offset: number): Token {
+    return this.tokens[this.pos + offset] ?? this.tokens[this.tokens.length - 1]
+  }
   private next(): Token {
     return this.tokens[this.pos++]
   }
@@ -113,29 +116,32 @@ class Parser {
       return { type: 'str', value: t.value }
     }
 
+    // Sheet-qualified reference: a quoted name + `!`, or a bareword/ref token that
+    // is immediately followed by `!` (e.g. `Sheet2!A1`, `'Q3 Data'!A1:C9`, `Data!B2`).
+    if (t.type === 'sheetname') {
+      this.next()
+      this.expect('bang')
+      return this.parseRefOrRange(t.value)
+    }
+    if ((t.type === 'name' || t.type === 'ref') && this.peekAt(1).type === 'bang') {
+      this.next() // the sheet name
+      this.next() // the bang
+      return this.parseRefOrRange(t.value)
+    }
+
     if (t.type === 'name') {
       this.next()
       const upper = t.value.toUpperCase()
       if (upper === 'TRUE') return { type: 'bool', value: true }
       if (upper === 'FALSE') return { type: 'bool', value: false }
       if (ERROR_CODES.has(upper)) return { type: 'error', code: upper as ErrorCode }
-      throw new ParseError(`unknown name "${t.value}"`)
+      // Anything else is a defined-name reference, resolved by the evaluator.
+      return { type: 'name', name: t.value }
     }
 
     if (t.type === 'ref') {
       this.next()
-      const from = parseRef(t.value)
-      if (!from) throw new ParseError(`invalid reference "${t.value}"`)
-      if (this.peek().type === 'colon') {
-        this.next()
-        const toTok = this.peek()
-        if (toTok.type !== 'ref') throw new ParseError('expected a reference after ":"')
-        this.next()
-        const to = parseRef(toTok.value)
-        if (!to) throw new ParseError(`invalid reference "${toTok.value}"`)
-        return { type: 'range', from, to }
-      }
-      return { type: 'ref', ref: from }
+      return this.parseRefOrRange(undefined, t.value)
     }
 
     if (t.type === 'func') {
@@ -161,6 +167,36 @@ class Parser {
     }
 
     throw new ParseError(`unexpected "${t.value || t.type}"`)
+  }
+
+  /**
+   * Parse a (possibly sheet-qualified) reference or range. `firstRefText` is the
+   * first reference token if it was already consumed by the caller; otherwise the
+   * next token is taken and must be a reference. A `sheet` qualifier (already past
+   * its `!`) is attached to both ends of a range.
+   */
+  private parseRefOrRange(sheet: string | undefined, firstRefText?: string): Node {
+    let text = firstRefText
+    if (text === undefined) {
+      const tok = this.peek()
+      if (tok.type !== 'ref') throw new ParseError(`expected a reference after "${sheet}!"`)
+      this.next()
+      text = tok.value
+    }
+    const from = parseRef(text)
+    if (!from) throw new ParseError(`invalid reference "${text}"`)
+    const fromS: CellRef = sheet === undefined ? from : { ...from, sheet }
+    if (this.peek().type === 'colon') {
+      this.next()
+      const toTok = this.peek()
+      if (toTok.type !== 'ref') throw new ParseError('expected a reference after ":"')
+      this.next()
+      const to = parseRef(toTok.value)
+      if (!to) throw new ParseError(`invalid reference "${toTok.value}"`)
+      const toS: CellRef = sheet === undefined ? to : { ...to, sheet }
+      return { type: 'range', from: fromS, to: toS }
+    }
+    return { type: 'ref', ref: fromS }
   }
 }
 
