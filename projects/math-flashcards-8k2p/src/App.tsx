@@ -607,6 +607,13 @@ function App() {
       console.error(e);
     }
   }, [allowNegatives]);
+
+  const [graphPaper, setGraphPaper] = useState<boolean>(() => { try { return window.localStorage.getItem('mathFlashcardsGraphPaper') === 'true'; } catch { return false; } });
+  useEffect(() => { try { window.localStorage.setItem('mathFlashcardsGraphPaper', graphPaper.toString()); } catch (e) { console.error(e); } }, [graphPaper]);
+
+  const [correctIcon, setCorrectIcon] = useState<string>(() => { try { return window.localStorage.getItem('mathFlashcardsCorrectIcon') || '✓'; } catch { return '✓'; } });
+  useEffect(() => { try { window.localStorage.setItem('mathFlashcardsCorrectIcon', correctIcon); } catch (e) { console.error(e); } }, [correctIcon]);
+
   const [history, setHistory] = useState<HistoryItem[]>([]);
   const [, setFullHistory] = useState<HistoryItem[]>(getInitialFullHistory());
   const [hapticEnabled, setHapticEnabled] = useState(getInitialHapticEnabled());
@@ -1090,7 +1097,7 @@ function App() {
   };
 
   return (
-    <div className={`app-wrapper ${theme} font-size-${accessibilityFontSize} ${streak >= 5 && !lowBatteryMode ? 'streak-active-bg' : ''}`} style={{ backgroundColor: theme === 'light' && bgColor ? bgColor : undefined, backgroundImage: bgImage ? `url(${bgImage})` : 'none', backgroundSize: 'cover', backgroundPosition: 'center' }}>
+    <div className={`app-wrapper ${theme} font-size-${accessibilityFontSize} ${streak >= 5 && !lowBatteryMode ? 'streak-active-bg' : ''} ${graphPaper ? 'graph-paper-bg' : ''}`} style={{ backgroundColor: theme === 'light' && bgColor ? bgColor : undefined, backgroundImage: bgImage && !graphPaper ? `url(${bgImage})` : (graphPaper ? undefined : 'none'), backgroundSize: 'cover', backgroundPosition: 'center' }}>
     <div className={`app-container ${theme}`} style={{ fontFamily }}>
       <div className="header-top">
         <h1>Math Flashcards {nightOwlUnlocked && <span title="Night Owl">🦉</span>}</h1>
@@ -1276,6 +1283,27 @@ function App() {
             <input type="checkbox" checked={hapticEnabled} onChange={(e) => setHapticEnabled(e.target.checked)} />
             Haptic Feedback
           </label>
+          <label style={{display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer', marginTop: '0.5rem'}}>
+            <input type="checkbox" checked={graphPaper} onChange={(e) => setGraphPaper(e.target.checked)} />
+            Graph Paper
+          </label>
+
+          <div style={{display: 'flex', alignItems: 'center', gap: '0.5rem', marginTop: '0.5rem'}}>
+            <label htmlFor="correctIconSelect">Correct Icon:</label>
+            <select
+              id="correctIconSelect"
+              value={correctIcon}
+              onChange={(e) => setCorrectIcon(e.target.value)}
+              style={{padding: '0.2rem', borderRadius: '4px', border: '1px solid #bdc3c7'}}
+            >
+              <option value="✓">✓</option>
+              <option value="⭐">⭐</option>
+              <option value="👍">👍</option>
+              <option value="🎉">🎉</option>
+              <option value="🌟">🌟</option>
+            </select>
+          </div>
+
           <button onClick={handleFactoryReset} className="reset-btn" style={{marginTop: '0.5rem', padding: '0.5rem', background: '#e74c3c', color: 'white', borderRadius: '4px', cursor: 'pointer', border: 'none', width: '100%'}}>
             Factory Reset
           </button>
@@ -1386,7 +1414,7 @@ function App() {
         <div className="problem" style={{position: 'relative'}}>
           {answerStatus && (
             <div className={`answer-feedback ${answerStatus}`} style={{ color: answerStatus === 'correct' ? correctColor : incorrectColor }}>
-              {answerStatus === 'correct' ? '✓' : '✗'}
+              {answerStatus === 'correct' ? correctIcon : '✗'}
             </div>
           )}
           {streak >= 5 && (
@@ -1451,6 +1479,20 @@ function App() {
           </button>
         </div>
       </div>
+
+      {history.length > 0 && !isSpeedRunActive && !showSummary && (
+        <div className="mini-history" style={{marginTop: '1rem', width: '100%', maxWidth: '250px'}}>
+          <h4 style={{margin: '0 0 0.5rem 0', textAlign: 'center'}}>Recent</h4>
+          <ul className="history-list" style={{fontSize: '0.9rem', textAlign: 'center'}}>
+            {history.slice(-5).reverse().map((item, index) => (
+               <li key={index} className={item.isCorrect ? 'history-correct' : 'history-incorrect'}>
+                 {item.num1} {item.operation} {item.num2} = {item.userAnswer}
+                 {!item.isCorrect && <span> ({item.correctAnswer})</span>}
+               </li>
+            ))}
+          </ul>
+        </div>
+      )}
 
       {showHighScoreBanner && <div className="message" style={{color: '#f39c12', animation: 'pulse 0.5s infinite'}}>New High Score! 🏆</div>}
       {message && <div className={`message ${message === 'Correct!' ? 'success' : (message.includes('Time') ? 'info' : 'error')}`}>{message}</div>}
