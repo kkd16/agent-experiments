@@ -83,6 +83,14 @@ scene with a **gradient**.
   expansion is angle-independent, so Live can sweep the fold angle every frame and
   re-run only the cheap turtle pass — the fractal morphs in real time. `maxIter`
   per system is capped so the full curve always renders (never truncated).
+- `fourier.ts` — **the Fourier / epicycle engine (v9).** A from-scratch complex
+  **Discrete Fourier Transform** that decomposes a closed shape into a chain of
+  rotating vectors (*epicycles*). Ten built-in centred shapes (smooth parametric +
+  arc-length-resampled sharp polygons), `dft` (O(N²), N = 512, memoised per
+  shape), `reconstructAt` (the inverse DFT — sums the top-*K* amplitude terms, the
+  optimal *K*-term L² approximation), and `chainAt` (the nested vector tips for the
+  overlay). Shapes are mean-centred so a global phase shift is a rigid rotation
+  (clean Live spin + seamless loop). Feeds the same point pipeline as every family.
 - `selftest.ts` — **dev-time invariant checks** for the curve engine: every
   strange attractor stays finite & bounded for *any* slider value (2 400 random
   param sets), and every L-system yields a finite polyline whose segment count
@@ -390,8 +398,88 @@ depth cue, and the seamless looping export for free.
       yaw (the seamless-loop guarantee). Re-verified headlessly, plus a render-path
       smoke test across every new preset × all four stereo modes (no throws).
 
+### v9 — Fourier: any shape as a sum of rotating circles (the epicycle engine)
+
+A harmonograph *is* a sum of sinusoids — so the studio has, all along, been one
+half of the Fourier story (synthesis: pile up frequencies, watch the figure
+emerge). v9 ships the **other half — analysis**. Hand it a closed shape (a
+heart, a star, a square) and a from-scratch **Discrete Fourier Transform** breaks
+it into a chain of rotating vectors (*epicycles*). Slide the **harmonics**
+control and watch the celebrated **convergence** happen live: one circle draws an
+off-centre ellipse, a handful rough out the silhouette, a few dozen snap the
+sharp corners into focus — the **Gibbs phenomenon** ringing visibly around every
+corner of the square and triangle. Press **Play** and the nested circles spin and
+*draw the shape with their pen*, the most famous animation in mathematical art —
+now flowing through the studio's whole colour / glow / kaleidoscope / Live /
+GIF / WebM / SVG pipeline like every other curve family.
+
+- [x] **`fourier.ts` — the DFT epicycle engine (from scratch).** A complex
+      Discrete Fourier Transform (`dft`, O(N²), N = 512) turns a closed shape's
+      512 complex samples into 512 **epicycles** — each a signed harmonic
+      frequency `k`, an amplitude (circle radius) and a phase — sorted by
+      amplitude so the first *K* are the provably-optimal *K*-term least-squares
+      approximation. `reconstructAt(eps, K, u, δ)` sums the first *K* rotating
+      vectors at draw-parameter `u∈[0,1)` (the inverse DFT); `chainAt` returns the
+      nested vector-tip positions for the overlay (re-sorted by |k| for the
+      classic nested look — the sum is order-independent). Shapes are **mean-
+      centred** so a global phase offset `δ` is a clean rigid **rotation** (every
+      coefficient times `e^{iδ}`), which is what lets Live spin the figure and the
+      looping exporter return to itself byte-for-byte. Epicycle sets are memoised
+      by shape id, so dragging the harmonics slider only re-slices a cached array.
+- [x] **Ten built-in shapes**, each a centred closed loop resampled to 512 points:
+      smooth parametric (`heart`, `infinity` lemniscate, `flower`, `gear`,
+      `moth`, `blob`) and **sharp-cornered** polylines resampled by arc length
+      (`square`, `triangle`, `star`, `pentagon`) — the corners are the whole
+      point: they make Fourier convergence and Gibbs ringing impossible to miss.
+- [x] **Wired the new `fourier` kind end-to-end** — `types.ts` (`FourierParams`),
+      `curves.ts` (dispatch / `sourceParams` cache key / `breatheLayer` +
+      `loopLayer` rotate via the global phase / `randomSourceFor` / `CURVE_KINDS`),
+      `App.tsx` (kind-switch default, `updateFourier`, editor mount), and a new
+      `CurveFourier` editor (shape picker, harmonics slider with a live "K of N"
+      read-out, show-epicycles toggle).
+- [x] **The epicycle overlay (`render.ts`).** When a Fourier layer has *show
+      circles* on, the renderer draws the nested chain — faint circles, radial
+      arms, a glowing pen dot — at draw-parameter `u = trace`, so it rides the
+      existing **Play** pen-drawing animation for free: the circles orbit and
+      trace the shape. Drawn once (never per kaleidoscope copy), guarded, and
+      suppressed in PNG/SVG exports so art output stays clean.
+- [x] **Self-tests (`selftest.ts`) — the DFT, proven.** Four new invariant checks
+      across all ten shapes: (1) **inverse-DFT exactness** — `K = N`
+      reconstruction reproduces the original samples to < 1e-9; (2) **monotone
+      convergence** — mean-square error is non-increasing as harmonics are added
+      (orthogonality of the basis), the mathematical heart of the convergence
+      slider; (3) **finiteness** — every shape × every `K` yields finite, sanely
+      bounded points; (4) **closed loop** — `u = 0` and `u = 1` coincide (the
+      reconstruction is exactly 1-periodic).
+- [x] **A Fourier showcase preset** + a Generate path that occasionally designs a
+      Fourier piece, so the new family surfaces in the gallery and the dice.
+
 ## Session log
 
+- 2026-06-23 (claude): **v9 — Fourier: any shape as a sum of rotating circles.**
+  Shipped the eighth curve family and the studio's first *analysis* engine. New
+  `fourier.ts`: a from-scratch complex **Discrete Fourier Transform** (O(N²),
+  N = 512, memoised per shape) decomposes a closed shape into rotating
+  **epicycles**, sorted by amplitude so the first *K* are the optimal *K*-term
+  least-squares approximation — `reconstructAt` is the inverse transform and
+  `chainAt` returns the nested vector tips for the overlay. Ten centred built-in
+  shapes (smooth parametric `heart`/`infinity`/`flower`/`gear`/`moth`/`blob` +
+  arc-length-resampled sharp `square`/`triangle`/`star`/`pentagon`, whose corners
+  make Fourier convergence and **Gibbs ringing** vivid). Shapes are mean-centred,
+  so a global phase offset is a rigid rotation — which is how Live spins the
+  figure and the looping export returns to itself. Wired the new `fourier` kind
+  end-to-end through `types.ts`, `curves.ts` (dispatch / cache key / breathe +
+  loop / randomize / `CURVE_KINDS`), `App.tsx`, a new `CurveFourier` editor
+  (shape picker, harmonics slider, show-circles toggle), two presets (`Fourier
+  Heart`, `Fourier Square (Gibbs)`) and a Generate path. The **epicycle overlay**
+  in `render.ts` draws the nested circles + arms + glowing pen at draw-parameter
+  `u = trace`, so it rides the existing **Play** animation — the circles orbit and
+  draw the shape — drawn once, guarded, suppressed in still exports. Four new
+  self-tests prove the engine: inverse-DFT exactness (round-trip err **1.9e-13**),
+  monotone MSE convergence, finiteness, and a closed loop. Verified: the Fourier
+  engine tested headlessly (all pass, exact), a render smoke test drew **all 42
+  presets × 3 trace states (126) with no throw**, and the full CI gate (scope +
+  conformance + lint + build) is green.
 - 2026-06-13 (claude): created from the template; built the full first version —
   harmonograph math, canvas + SVG rendering, themed gradient strokes, per-pendulum
   controls, randomizer, and SVG/PNG export. Verified with lint + build.

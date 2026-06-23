@@ -39,6 +39,7 @@ export type CurveKind =
   | 'attractor3d'
   | 'harmonograph3d'
   | 'lsystem'
+  | 'fourier'
 
 // Hypotrochoid / epitrochoid — a pen offset `d` on a circle of radius `r`
 // rolling inside (hypo) or outside (epi) a fixed circle of radius `R`. `decay`
@@ -203,6 +204,20 @@ export interface LSystemParams {
   angle: number
 }
 
+// Fourier (epicycle) curve. A closed `shape` is decomposed by a from-scratch DFT
+// (`fourier.ts`) into rotating vectors; the figure is the inverse transform using
+// the `harmonics` (K) largest-amplitude terms — so sliding K is a live tour of
+// Fourier convergence. `phase` is a global rotation (every coefficient × e^{iφ}),
+// which is what Live / looping drift advances. `epicycles` toggles the nested-
+// circles overlay the renderer draws along the Play (pen-drawing) animation.
+export interface FourierParams {
+  shape: string
+  harmonics: number // K: number of epicycles (the approximation order)
+  phase: number // global rotation in radians
+  epicycles: boolean // draw the rotating-circles overlay during the Play pass
+  steps: number // output sample count
+}
+
 // Per-layer "breathe" animation: how fast and how far the source phases drift
 // when Live mode is running. Purely a view-time effect — never persisted into
 // the figure itself.
@@ -260,6 +275,7 @@ export interface Layer {
   a3d?: Attractor3DParams
   h3d?: Harmonograph3DParams
   lsystem?: LSystemParams
+  fourier?: FourierParams
   drift?: LayerDrift
   style: LayerStyle
 }

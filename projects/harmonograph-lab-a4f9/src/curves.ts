@@ -23,6 +23,7 @@ import {
   random3DHarmonograph,
   sampleH3DPolyline,
 } from './harmonograph3d'
+import { defaultFourier, randomFourier, sampleFourier } from './fourier'
 import type {
   AttractorKind,
   AttractorParams,
@@ -49,6 +50,7 @@ export const CURVE_KINDS: { value: CurveKind; label: string }[] = [
   { value: 'attractor3d', label: '3D Attractor' },
   { value: 'harmonograph3d', label: '3D Harmonograph' },
   { value: 'lsystem', label: 'L-system' },
+  { value: 'fourier', label: 'Fourier' },
 ]
 
 // ---- 3D camera helpers ----------------------------------------------------
@@ -492,6 +494,8 @@ export function sourceParams(layer: Layer): object {
       return (layer.h3d ??= default3DHarmonograph())
     case 'lsystem':
       return (layer.lsystem ??= defaultLSystem())
+    case 'fourier':
+      return (layer.fourier ??= defaultFourier())
     case 'harmonograph':
     default:
       return layer.params
@@ -517,6 +521,8 @@ export function sampleLayer(layer: Layer): SampledCurve {
     case 'lsystem':
       // L-systems may branch (plants/trees), so this carries pen-up `breaks`.
       return sampleLSystemFull(layer.lsystem ?? defaultLSystem())
+    case 'fourier':
+      return { points: sampleFourier(layer.fourier ?? defaultFourier()) }
     case 'harmonograph':
     default:
       return { points: samplePath(layer.params) }
@@ -587,6 +593,13 @@ export function breatheLayer(layer: Layer, t: number): Layer {
       const s = layer.lsystem ?? defaultLSystem()
       return { ...layer, lsystem: { ...s, angle: s.angle + 0.32 * Math.sin(a * 0.5) } }
     }
+    case 'fourier': {
+      // Advance the global phase → a rigid rotation of the whole figure (every
+      // epicycle coefficient × e^{iδ}). The geometry/DFT is untouched, so only the
+      // cheap inverse-transform re-runs and the figure slowly spins.
+      const s = layer.fourier ?? defaultFourier()
+      return { ...layer, fourier: { ...s, phase: s.phase + a * 0.4 } }
+    }
     case 'harmonograph':
     default: {
       const p = layer.params
@@ -652,6 +665,12 @@ export function loopLayer(layer: Layer, phase: number): Layer {
       const s = layer.lsystem ?? defaultLSystem()
       return { ...layer, lsystem: { ...s, angle: s.angle + osc(1, 0.35) } }
     }
+    case 'fourier': {
+      // A full revolution per loop: the global phase sweeps 0→2π as `phase` does,
+      // rotating the figure exactly once back to itself — a flawless loop.
+      const s = layer.fourier ?? defaultFourier()
+      return { ...layer, fourier: { ...s, phase: s.phase + phase } }
+    }
     case 'harmonograph':
     default: {
       const p = layer.params
@@ -711,6 +730,8 @@ export function randomSourceFor(kind: CurveKind): Partial<Layer> {
       return { h3d: random3DHarmonograph() }
     case 'lsystem':
       return { lsystem: randomLSystem() }
+    case 'fourier':
+      return { fourier: randomFourier() }
     case 'harmonograph':
     default:
       return {}
@@ -722,3 +743,5 @@ export { defaultLSystem, lsystemById, randomLSystem }
 // …and the 3D-flow helpers, so the app + editors import them from one place.
 export { default3D, defaultsFor3D, random3D, FLOW3D_KINDS, ranges3D } from './attractors3d'
 export { default3DHarmonograph, random3DHarmonograph } from './harmonograph3d'
+// …and the Fourier helpers, so the app imports every source default from one place.
+export { defaultFourier, randomFourier, FOURIER_SHAPES, FOURIER_MAX_HARMONICS } from './fourier'

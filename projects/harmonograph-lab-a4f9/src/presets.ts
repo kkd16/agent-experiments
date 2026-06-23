@@ -11,6 +11,7 @@ import type {
   ColorMode,
   CurveKind,
   DensityStyle,
+  FourierParams,
   Harmonograph3DParams,
   HarmonographParams,
   Layer,
@@ -84,6 +85,7 @@ interface PresetLayer {
   a3d?: Attractor3DParams
   h3d?: Harmonograph3DParams
   lsystem?: LSystemParams
+  fourier?: FourierParams
 }
 
 // Camera defaults for the 3D presets — a three-quarter view that reads the depth
@@ -916,6 +918,39 @@ export const PRESETS: Preset[] = [
           density: { iterations: 950, exposure: 1.3, gamma: 0.52 },
           blend: 'lighter',
         }),
+      },
+    ],
+  },
+  // --- v9: Fourier epicycles -----------------------------------------------
+  {
+    name: 'Fourier Heart',
+    background: '#0a0510',
+    bg2: '#02010a',
+    bgMode: 'radial',
+    vignette: 0.5,
+    layers: [
+      {
+        name: 'Epicycles',
+        kind: 'fourier',
+        params: dummyHarm(),
+        fourier: { shape: 'heart', harmonics: 64, phase: 0, epicycles: true, steps: 5000 },
+        style: st('ember', { colorMode: 'angle', glow: 0.4, lineWidth: 1.2, blend: 'lighter' }),
+      },
+    ],
+  },
+  {
+    name: 'Fourier Square (Gibbs)',
+    background: '#04060f',
+    vignette: 0.45,
+    layers: [
+      {
+        name: 'Ringing',
+        kind: 'fourier',
+        params: dummyHarm(),
+        // A modest harmonic count leaves the corners visibly ringing — the Gibbs
+        // phenomenon as a design feature.
+        fourier: { shape: 'square', harmonics: 14, phase: 0, epicycles: true, steps: 5000 },
+        style: st('ice', { colorMode: 'velocity', glow: 0.35, lineWidth: 1.1, blend: 'lighter' }),
       },
     ],
   },

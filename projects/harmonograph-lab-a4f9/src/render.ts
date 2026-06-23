@@ -8,6 +8,7 @@ import type { LayerData, Point } from './harmonograph'
 import type { ColorMode, Layer, LayerStyle, Project, StereoMode } from './types'
 import { renderDensity } from './density'
 import { computeLayerData, is3dKind, layerCamera, patchLayerCamera } from './curves'
+import { chainAt, epicyclesForShape } from './fourier'
 
 // Field the base line widths are authored against; widths scale with render size.
 const FIELD = 720
@@ -110,6 +111,7 @@ export interface RenderOptions {
   trace?: number // 0..1, default 1 (whole curve)
   transform?: Transform // override auto-fit (Live mode freezes framing)
   densityQuality?: number // 0..1 iteration-budget scale for density layers
+  overlays?: boolean // draw annotations (the Fourier epicycle chain); default true
 }
 
 function layerLimit(n: number, trace: number): number {
@@ -184,6 +186,67 @@ function strokeCurve(
   }
 }
 
+// The Fourier epicycle overlay: the nested chain of rotating circles that draws
+// the shape. Drawn once (not per kaleidoscope copy), in base orientation, on top
+// of the stroke. The chain tip sits at draw-parameter `u = trace`, so it rides
+// the existing Play (pen-drawing) animation — the circles orbit and trace out the
+// figure. Pure annotation: a contrasting colour independent of the palette.
+function drawEpicycles(
+  ctx: CanvasRenderingContext2D,
+  layer: Layer,
+  tf: Transform,
+  size: number,
+  trace: number,
+) {
+  const f = layer.fourier
+  if (!f || !f.epicycles) return
+  const eps = epicyclesForShape(f.shape)
+  const k = Math.max(1, Math.min(Math.round(f.harmonics), eps.length))
+  // At trace = 1 the pen has closed the loop; snapshot the start arrangement.
+  const u = trace >= 1 ? 0 : trace
+  const chain = chainAt(eps, k, u, f.phase)
+  const widthScale = size / FIELD
+  ctx.save()
+  ctx.globalCompositeOperation = 'source-over'
+  ctx.globalAlpha = 1
+  ctx.lineJoin = 'round'
+  ctx.lineCap = 'round'
+
+  // The faint circles, one per rotating vector.
+  ctx.strokeStyle = 'rgba(255,255,255,0.16)'
+  ctx.lineWidth = Math.max(0.6 * widthScale, 0.4)
+  for (let i = 0; i < chain.length - 1; i++) {
+    const c = toPixel(chain[i], tf)
+    const next = chain[i + 1]
+    const r = Math.hypot(next.x - chain[i].x, next.y - chain[i].y) * tf.scale
+    if (r < 0.4) continue
+    ctx.beginPath()
+    ctx.arc(c.x, c.y, r, 0, Math.PI * 2)
+    ctx.stroke()
+  }
+
+  // The radial arms (the vectors themselves), brighter.
+  ctx.strokeStyle = 'rgba(255,255,255,0.5)'
+  ctx.lineWidth = Math.max(0.9 * widthScale, 0.6)
+  ctx.beginPath()
+  for (let i = 0; i < chain.length; i++) {
+    const p = toPixel(chain[i], tf)
+    if (i === 0) ctx.moveTo(p.x, p.y)
+    else ctx.lineTo(p.x, p.y)
+  }
+  ctx.stroke()
+
+  // The pen tip — a glowing dot where the chain meets the curve.
+  const tip = toPixel(chain[chain.length - 1], tf)
+  ctx.fillStyle = '#ffffff'
+  ctx.shadowColor = 'rgba(255,255,255,0.9)'
+  ctx.shadowBlur = 10 * widthScale
+  ctx.beginPath()
+  ctx.arc(tip.x, tip.y, Math.max(2.4 * widthScale, 1.8), 0, Math.PI * 2)
+  ctx.fill()
+  ctx.restore()
+}
+
 function drawLayer(
   ctx: CanvasRenderingContext2D,
   layer: Layer,
@@ -192,6 +255,7 @@ function drawLayer(
   size: number,
   trace: number,
   densityQuality: number,
+  overlays: boolean,
 ) {
   const style = layer.style
   if (data.points.length < 2) return
@@ -233,6 +297,8 @@ function drawLayer(
     strokeCurve(ctx, data, style, tf, size, trace)
     ctx.restore()
   }
+
+  if (overlays && layer.kind === 'fourier') drawEpicycles(ctx, layer, tf, size, trace)
 }
 
 function drawVignette(ctx: CanvasRenderingContext2D, size: number, amount: number) {
@@ -289,6 +355,7 @@ function drawSceneInto(
   tf: Transform,
   trace: number,
   dq: number,
+  overlays: boolean,
 ) {
   ctx.setTransform(1, 0, 0, 1, 0, 0)
   ctx.globalCompositeOperation = 'source-over'
@@ -299,7 +366,7 @@ function drawSceneInto(
   for (const layer of project.layers) {
     if (!layer.visible) continue
     const d = datas.get(layer.id)
-    if (d) drawLayer(ctx, layer, d, tf, size, trace, dq)
+    if (d) drawLayer(ctx, layer, d, tf, size, trace, dq, overlays)
   }
   drawVignette(ctx, size, project.vignette)
 }
@@ -317,16 +384,17 @@ export function drawProject(
 ) {
   const trace = opts.trace ?? 1
   const dq = opts.densityQuality ?? 1
+  const overlays = opts.overlays ?? true
   // The transform is shared across both eyes so the stereo pair stays registered,
   // and is always measured from the base (centre-eye) datas.
   const tf = opts.transform ?? computeTransform(project.layers, datas, size)
 
   const stereo = project.stereo ?? 'off'
   if (stereo !== 'off' && hasVisible3d(project)) {
-    if (drawStereo(ctx, project, datas, size, tf, trace, dq, stereo)) return
+    if (drawStereo(ctx, project, datas, size, tf, trace, dq, stereo, overlays)) return
     // fall through to mono if the offscreen buffers couldn't be created (sandbox)
   }
-  drawSceneInto(ctx, project, datas, size, tf, trace, dq)
+  drawSceneInto(ctx, project, datas, size, tf, trace, dq, overlays)
 }
 
 // Per-eye datas: re-project every 3D *line* layer from the eye-offset camera so
@@ -376,6 +444,7 @@ function drawStereo(
   trace: number,
   dq: number,
   mode: StereoMode,
+  overlays: boolean,
 ): boolean {
   const baseline = project.stereoBaseline ?? 0.08
   const half = baseline / 2
@@ -393,8 +462,8 @@ function drawStereo(
   const rc = right.getContext('2d')
   if (!lc || !rc) return false
 
-  drawSceneInto(lc, eyeProject(project, -half), eyeDatas(project, datas, -half), size, tf, trace, dq)
-  drawSceneInto(rc, eyeProject(project, +half), eyeDatas(project, datas, +half), size, tf, trace, dq)
+  drawSceneInto(lc, eyeProject(project, -half), eyeDatas(project, datas, -half), size, tf, trace, dq, overlays)
+  drawSceneInto(rc, eyeProject(project, +half), eyeDatas(project, datas, +half), size, tf, trace, dq, overlays)
 
   ctx.setTransform(1, 0, 0, 1, 0, 0)
   ctx.globalCompositeOperation = 'source-over'
