@@ -33,7 +33,7 @@ import type { Ray } from './ray'
 import type { Scene } from './scene'
 import type { Rng } from './rng'
 import { powerHeuristic } from './rng'
-import type { Material } from './material'
+import type { Material, Subsurface } from './material'
 import { evalBSDF, isDelta, isSpectral, pdfBSDF, resolveMaterial, sampleBSDF } from './material'
 import { hgPhase, sampleHG } from './phase'
 import { LAMBDA_MAX, LAMBDA_MIN, wavelengthWeight } from './spectrum'
@@ -81,7 +81,9 @@ function albedoGuide(m: Material): Vec3 {
     case 'metal':
       return m.albedo
     case 'dielectric':
-      return v(0.9, 0.95, 1)
+      // A translucent (subsurface) dielectric guides the denoiser with its
+      // interior albedo — the colour the eye reads — rather than glass white.
+      return m.interior ? m.interior.albedo : v(0.9, 0.95, 1)
     case 'thinfilm':
       return m.base ?? v(0.85, 0.85, 0.95)
     case 'emissive':
@@ -110,15 +112,59 @@ export function radiance(
   // wavelength for spectral dispersion (0 = not yet chosen / achromatic).
   let medium: Vec3 | null = null
   let lambda = 0
+  // Subsurface state: the scattering medium filling the translucent dielectric the
+  // path is currently *inside* (null = in vacuum / ordinary glass). Set when the
+  // path refracts into a dielectric carrying an `interior` medium, cleared when it
+  // refracts back out. While non-null the path random-walks (below) instead of
+  // flying straight to the next surface — that walk *is* the subsurface scattering.
+  let sss: Subsurface | null = null
 
   for (let depth = 0; depth <= settings.maxDepth; depth++) {
     stats.rays++
     const hit = scene.intersect(r)
     const tHit = hit ? hit.t : Infinity
 
+    // ---- Subsurface scattering: a random walk inside a translucent dielectric. ----
+    // Homogeneous free-flight to the next collision: a distance drawn from the
+    // interior's transmittance e^(−σ_t·t). A collision before the boundary scatters
+    // via the phase function (β ×= the single-scattering albedo — the surviving
+    // fraction, so a low-albedo channel darkens with path length, which is what
+    // tints marble/jade/skin); no collision means the path reaches the boundary
+    // surface with weight 1 (its survival probability e^(−σ_t·tHit) exactly cancels
+    // its own pdf), where the dielectric's Fresnel interface refracts it out or
+    // total-internally-reflects it back in (handled by the surface BSDF below). We
+    // phase-sample only — no interior NEE: the lights live outside a refractive
+    // boundary, so the surrounding scene's NEE takes over unbiasedly once the path
+    // exits. This is unidirectional volumetric transport bounded by real geometry.
+    if (sss) {
+      const tColl = -Math.log(1 - rng.next()) / sss.sigmaT
+      if (tColl < tHit) {
+        beta = mul(beta, sss.albedo)
+        if (isBlack(beta)) break
+        const x = madd(r.o, r.d, tColl)
+        const wo = neg(r.d)
+        // Russian roulette: an interior scatter counts as a bounce.
+        if (depth >= settings.rrStart) {
+          const q = clamp(maxComponent(beta), 0.05, 0.95)
+          if (rng.next() >= q) break
+          beta = scale(beta, 1 / q)
+        }
+        const ph = sampleHG(wo, sss.g, rng)
+        // No NEE was done here, so whatever light the walk eventually reaches must
+        // be counted in full — flag the event so emitter/env MIS uses weight 1.
+        specularBounce = true
+        prevPdf = ph.pdf
+        prevPoint = x
+        r = makeRay(x, ph.wi)
+        continue
+      }
+      // No collision before the boundary: fall through to shade the surface (the
+      // dielectric interface) at `hit`, reached with unit weight.
+    }
+
     // ---- Participating media: a free-flight collision before the next surface
     // makes the path scatter *inside* a volume rather than reach the surface. ----
-    if (scene.hasMedia) {
+    if (scene.hasMedia && !sss) {
       const ms = scene.sampleMediumScatter(r.o, r.d, tHit, rng)
       if (ms) {
         const med = ms.medium
@@ -275,10 +321,20 @@ export function radiance(
     specularBounce = bs.specular
     prevPdf = bs.pdf
     prevPoint = hit.p
-    // ---- Track medium crossings for Beer–Lambert absorption. ----
+    // ---- Track medium crossings (Beer–Lambert absorption / subsurface walk). ----
     if (bs.transmission && rawMat.kind === 'dielectric') {
-      // Entering through the front face starts the medium; exiting clears it.
-      medium = hit.frontFace ? rawMat.absorption ?? null : null
+      if (hit.frontFace) {
+        // Entering: an `interior` scattering medium begins a subsurface random
+        // walk (its absorption is carried by the per-collision albedo, so no
+        // separate Beer–Lambert is applied); otherwise a plain `absorption`
+        // coefficient drives the analytic Beer–Lambert attenuation above.
+        sss = rawMat.interior ?? null
+        medium = rawMat.interior ? null : rawMat.absorption ?? null
+      } else {
+        // Exiting through the back face clears both interior states.
+        medium = null
+        sss = null
+      }
     }
     r = makeRay(offsetOrigin(hit.p, hit.ng, bs.wi), bs.wi)
   }

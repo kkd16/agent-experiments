@@ -38,6 +38,27 @@ export interface Coat {
   tint?: Vec3
 }
 
+// A homogeneous scattering medium filling a dielectric's *interior*, turning the
+// glass into a translucent solid — marble, wax, jade, milk, skin. Light refracts
+// in through the dielectric's Fresnel boundary, then random-walks among
+// microscopic scatterers before refracting back out: the hallmark "subsurface"
+// glow that a surface BRDF can never produce. `sigmaT` is the scalar extinction
+// (collisions per world unit, so 1/σ_t is the mean free path); `albedo` is the
+// single-scattering albedo σ_s/σ_t — *per channel*, since its hue is exactly what
+// tints the translucency (1−albedo is the fraction absorbed at each collision, so
+// a low-albedo channel darkens with depth); `g` is the Henyey–Greenstein
+// anisotropy of the interior phase function (forward, g>0, for most organic
+// media). The boundary is the dielectric's own interface, so the surface still
+// reflects a Fresnel sheen and total-internal-reflection traps light inside — all
+// reusing the existing smooth/rough dielectric BSDF, with the random walk run by
+// the integrator (see `radiance`). Present ⇒ the dielectric is translucent;
+// absent ⇒ it is ordinary glass (clear, or Beer–Lambert `absorption`-tinted).
+export interface Subsurface {
+  sigmaT: number
+  albedo: Vec3
+  g: number
+}
+
 export type Material =
   // `tex`, when present, overrides `albedo` with a procedural pattern evaluated
   // at the hit point (resolved away before any BSDF call — see resolveMaterial).
@@ -71,8 +92,19 @@ export type Material =
   // Dielectric (glass/water). `tint` colours transmitted radiance; `roughness`
   // (0 = smooth) frosts it via a microfacet interface; `absorption` is the
   // Beer–Lambert coefficient σ_a (per world unit) applied to interior path
-  // segments by the integrator; `cauchyB` (µm²) turns on wavelength dispersion.
-  | { kind: 'dielectric'; ior: number; tint: Vec3; roughness?: number; absorption?: Vec3; cauchyB?: number }
+  // segments by the integrator; `cauchyB` (µm²) turns on wavelength dispersion;
+  // `interior`, when present, fills the solid with a scattering medium so it
+  // renders as a **translucent / subsurface** material (the integrator random-
+  // walks inside it) instead of clear glass (see `Subsurface`).
+  | {
+      kind: 'dielectric'
+      ior: number
+      tint: Vec3
+      roughness?: number
+      absorption?: Vec3
+      cauchyB?: number
+      interior?: Subsurface
+    }
   // A thin-film-coated specular reflector (iridescent). `thickness` (nm) and
   // `filmIor` set the interference; `baseIor` is the substrate the film coats;
   // `base`, when present, tints the reflection (e.g. a coloured metal under the
