@@ -348,6 +348,46 @@ export function About() {
           oscillates at the shedding frequency, drag at twice it). Two solvers, two universes, one fluid.
         </p>
 
+        <h2>Heat that drives the flow — thermal lattice Boltzmann (the Convection lab)</h2>
+        <p>
+          The kinetic solver above carries momentum. Temperature is a <em>second</em> conserved field, so
+          the textbook way to make a lattice fluid convect is the <strong>double-distribution model</strong>:
+          carry a <em>second</em> nine-velocity distribution <code>g</code> whose single conserved moment is
+          the temperature, <code>T = Σᵢ gᵢ</code>, relaxing toward the advection–diffusion equilibrium{' '}
+          <code>g^eq_i = wᵢ T (1 + eᵢ·u / c_s²)</code>. A Chapman–Enskog expansion of <em>its</em> stream +
+          collide gives the advection–diffusion equation <code>∂ₜT + u·∇T = α∇²T</code> with a thermal
+          diffusivity fixed only by <code>g</code>’s relaxation time — the exact scalar twin of the viscosity
+          law:
+        </p>
+        <pre>{`α = c_s² (τ_g − ½)        (the scalar Chapman–Enskog bridge)`}</pre>
+        <p>
+          The two lattices are coupled <em>both</em> ways: <code>g</code> is advected by the velocity{' '}
+          <code>u</code> it reads off the flow, and the flow <code>f</code> feels a per-node{' '}
+          <strong>Boussinesq buoyancy</strong> body force <code>F = ρ·gβ·(T − T_ref)·ĝ</code> — hot fluid is
+          lighter, so it rises — injected with the very same exact second-order Guo forcing the Kinetic lab
+          uses. That tiny addition is enough to make the two most iconic instabilities in fluid dynamics fall
+          out of nothing but stream + collide. Thermal walls are first-class: a fixed-temperature (Dirichlet)
+          wall is an <strong>anti-bounce-back</strong> <code>gᵢ = −g*_ī + 2wᵢT_wall</code> that pins{' '}
+          <code>T</code> half-way between nodes, an adiabatic (zero-flux) wall is plain bounce-back, and a
+          direction can be periodic.
+        </p>
+        <p>
+          The <a href="#/thermal">Convection lab</a> dials the dimensionless <strong>Rayleigh number</strong>{' '}
+          <code>Ra = gβΔT·H³/(να)</code> — buoyancy’s strength relative to the diffusive damping that fights
+          it — and the <strong>Prandtl number</strong> <code>Pr = ν/α</code>, deriving ν, α and the buoyancy
+          coefficient from them at a fixed low-Mach free-fall velocity. In <strong>Rayleigh–Bénard</strong>{' '}
+          (hot floor, cold ceiling) the motionless conduction state is linearly stable below the{' '}
+          <strong>critical Rayleigh number</strong> <code>Ra_c ≈ 1708</code> and breaks into counter-rotating{' '}
+          <strong>convection rolls</strong> above it; the lab measures this onset on the Verify page and lands
+          it on the textbook value. The <strong>heated cavity</strong> is the de Vahl Davis (1983)
+          natural-convection benchmark — hot and cold side walls driving one recirculation, whose average{' '}
+          <strong>Nusselt number</strong> the suite reproduces to a few percent. The <strong>thermal plume</strong>{' '}
+          is a continuous buoyant updraft mushrooming off a hot floor patch. The lab reads the Nusselt number{' '}
+          <code>Nu = 1 + ⟨u·T⟩·H/(αΔT)</code> — the ratio of total to purely conductive heat transport — live;
+          it sits at exactly 1 while the fluid is still and climbs as the rolls carry heat. Four kinetic
+          solvers now, four universes, one fluid.
+        </p>
+
         <h2>Two phases of one fluid — Shan–Chen multiphase (the Phase lab)</h2>
         <p>
           The kinetic solver above carries a single fluid. The <a href="#/phase">Phase lab</a> carries the
@@ -448,8 +488,14 @@ export function About() {
           currents stay small. The <strong>multi-component</strong> (two-fluid) model earns a group of its
           own as well: a blended mixture <em>demixes</em> above the critical coupling (and stays mixed below
           it), each species’ mass and the total momentum are conserved to round-off, and a drop of one fluid
-          suspended in the other obeys <strong>Laplace’s law</strong> across four radii. Each check reports
-          the number it measured — <strong>67 checks across 17 groups</strong>.
+          suspended in the other obeys <strong>Laplace’s law</strong> across four radii. The newest{' '}
+          <strong>thermal LBM</strong> earns its own group as well: the scalar’s{' '}
+          <strong>Chapman–Enskog diffusivity</strong> <code>α = c_s²(τ_g−½)</code> read off a decaying
+          temperature wave, the exact conduction limit (a linear profile and Nusselt number{' '}
+          <code>Nu = 1</code>), adiabatic walls that leak no heat, the recovery of the textbook{' '}
+          <strong>critical Rayleigh number</strong> <code>Ra_c ≈ 1708</code> for the onset of convection, and
+          the <strong>de Vahl Davis</strong> heated-cavity Nusselt number reproduced to a few percent. Each
+          check reports the number it measured — <strong>73 checks across 18 groups</strong>.
         </p>
 
         <h2>Rendering</h2>

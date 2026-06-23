@@ -4,6 +4,7 @@ import { About } from './ui/About';
 import { Verify } from './ui/Verify';
 import { SpectraLab } from './ui/SpectraLab';
 import { KineticLab } from './ui/KineticLab';
+import { ThermalLab } from './ui/ThermalLab';
 import { PhaseLab } from './ui/PhaseLab';
 import './App.css';
 
@@ -13,6 +14,7 @@ export default function App() {
   const onVerify = route.startsWith('/verify');
   const onSpectra = route.startsWith('/spectra');
   const onKinetic = route.startsWith('/kinetic');
+  const onThermal = route.startsWith('/thermal');
   const onPhase = route.startsWith('/phase');
 
   return (
@@ -27,11 +29,14 @@ export default function App() {
           </span>
         </a>
         <nav>
-          <a className={!onAbout && !onVerify && !onSpectra && !onKinetic && !onPhase ? 'active' : ''} href="#/">
+          <a className={!onAbout && !onVerify && !onSpectra && !onKinetic && !onThermal && !onPhase ? 'active' : ''} href="#/">
             Studio
           </a>
           <a className={onKinetic ? 'active' : ''} href="#/kinetic">
             Kinetic
+          </a>
+          <a className={onThermal ? 'active' : ''} href="#/thermal">
+            Convection
           </a>
           <a className={onPhase ? 'active' : ''} href="#/phase">
             Phase
@@ -56,6 +61,8 @@ export default function App() {
           <SpectraLab />
         ) : onKinetic ? (
           <KineticLab />
+        ) : onThermal ? (
+          <ThermalLab />
         ) : onPhase ? (
           <PhaseLab />
         ) : (
