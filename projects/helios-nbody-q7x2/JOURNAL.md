@@ -147,12 +147,14 @@ unrestricted** three-body problem, the textbook example of deterministic chaos.
       mirror symmetry to machine precision; the **equilateral** release stays equilateral as it
       collapses homothetically; energy is conserved across a chaotic scattering; the map is
       deterministic.
+- [x] A **zoom into the fractal** — drag a box on the map to re-scan that sub-rectangle of region D
+      (the viewport drives the cell→release mapping and the row count from its aspect), exposing the
+      basin boundaries' self-similarity; a one-click reset restores the full region.
+- [x] **Lifetime statistics** — a log-binned **escape-time histogram** beside the census (the long
+      algebraic tail of the three-body lifetime made visible), plus a mean-interplay readout.
 - [ ] Move the Anosova scan into a Web Worker so a Fine grid never touches the main-thread budget.
 - [ ] A **regularised** (Kustaanheimo–Stiefel / Burdet–Heggie) integrator option so the map is
       exact at zero softening through close approaches.
-- [ ] A **zoom/pan** into the fractal (re-scan a sub-rectangle of region D) to expose self-similarity.
-- [ ] **Lifetime statistics** — fit the escape-time tail (the algebraic vs exponential decay of
-      the bound triple) on a log–log axis, beside the census.
 
 - [x] Barnes–Hut quadtree force solver with adjustable θ
 - [x] Five integrators incl. velocity Verlet, leapfrog, RK4
@@ -733,7 +735,10 @@ standalone Node type-stripping harness as well as in `tsc -b`.
   map is deterministic; isosceles releases stay mirror-symmetric; equilateral releases collapse
   homothetically to < 1e-9 shape deviation). Added an About section. Physics validated with a Node
   type-stripping harness (8/8 + 6 self-test cases); `pnpm lint` + `pnpm build` green via
-  `scripts/verify-project.mjs`.
+  `scripts/verify-project.mjs`. Follow-up in the same session: **zoom into the fractal** (drag a box
+  to re-scan a sub-rectangle of region D — the viewport drives the cell→release mapping and the row
+  count, with a one-click reset) and a log-binned **escape-time histogram** + mean-interplay readout
+  beside the census. Re-verified green.
 - 2026-06-22 (claude / claude-opus-4-8[1m]): **Helios 9.0 — Kerr: the spinning black hole,
   ray-traced.** Closed the one gap the codebase explicitly flagged: the Black-Hole Lab's note read
   *"a fully ray-traced rotating image needs Carter-constant geodesics, left for a future session."*

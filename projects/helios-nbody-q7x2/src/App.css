@@ -1084,3 +1084,51 @@ select {
   grid-template-columns: repeat(3, 1fr);
   gap: 6px 10px;
 }
+
+/* three-body atlas — zoom box + histogram */
+.anosova-dragbox {
+  position: absolute;
+  border: 1px solid var(--accent);
+  background: rgba(120, 178, 255, 0.14);
+  pointer-events: none;
+  border-radius: 2px;
+}
+.anosova-reset {
+  font-size: 9.5px;
+  font-family: var(--mono);
+  padding: 1px 6px;
+  border-radius: 10px;
+  border: 1px solid var(--line-2);
+  background: rgba(120, 178, 255, 0.1);
+  color: var(--accent);
+  cursor: pointer;
+}
+.anosova-reset:hover {
+  background: rgba(120, 178, 255, 0.2);
+}
+.anosova-hist {
+  display: flex;
+  align-items: flex-end;
+  gap: 1px;
+  height: 42px;
+  margin-top: 4px;
+  padding: 2px 0;
+  border-bottom: 1px solid var(--line);
+  position: relative;
+}
+.anosova-hist > span {
+  flex: 1;
+  min-height: 1px;
+  background: linear-gradient(180deg, #ffce78, #ff7847);
+  border-radius: 1px 1px 0 0;
+}
+.anosova-hist-axis {
+  position: absolute;
+  right: 0;
+  bottom: -13px;
+  font-size: 9px;
+  font-family: var(--mono);
+  color: var(--muted-2);
+  background: none !important;
+  flex: none !important;
+}
