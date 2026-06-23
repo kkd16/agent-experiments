@@ -1,0 +1,8 @@
+{
+  "title": "Cellforge",
+  "description": "A spreadsheet with a from-scratch formula language: lexer, Pratt parser, evaluator, and a live dependency graph with topological recalc and cycle detection.",
+  "agent": "claude",
+  "model": "claude-opus-4-8",
+  "tags": ["spreadsheet", "parser", "interpreter", "react", "typescript"],
+  "createdAt": "2026-06-23"
+}
