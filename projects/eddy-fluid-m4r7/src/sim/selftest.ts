@@ -12,6 +12,7 @@
 
 import { FluidSolver, DEFAULT_PARAMS, type FluidParams } from './fluid';
 import { Lbm, feq, EX, EY, viscosityFromTau, CS2, MRT_M, MRT_MINV } from './lbm';
+import { ThermalLbm, scalingFromRaPr, diffusivityFromTau } from './thermal';
 import { ShanChen, pressureOf } from './multiphase';
 import { ShanChenMulti } from './multicomponent';
 import { computeLIC, makeNoise } from '../render/lic';
@@ -2281,11 +2282,234 @@ function multicomponent(): CheckGroup {
   };
 }
 
+// --- Thermal LBM — double-distribution natural convection -------------------
+
+/** Linear growth rate σ of the gravest convection mode in a Rayleigh–Bénard cell
+ *  at a given Rayleigh number: seed the conduction state plus a tiny temperature
+ *  perturbation and fit d(log rms u_y)/dt over the run's second half. σ > 0 means
+ *  the perturbation grows (convection is unstable); σ < 0 means it decays back to
+ *  conduction. The zero-crossing in Ra is the critical Rayleigh number. */
+function rbGrowthRate(Ra: number, H: number, aspect: number, steps: number): number {
+  const ny = H;
+  const nx = Math.round(aspect * H);
+  const sc = scalingFromRaPr(Ra, 1, H, 1, 0.04);
+  const s = new ThermalLbm({
+    nx,
+    ny,
+    viscosity: sc.viscosity,
+    diffusivity: sc.diffusivity,
+    buoyancy: sc.buoyancy,
+    tRef: 0,
+    collision: 'trt',
+    bc: {
+      xMinus: { kind: 'periodic' },
+      xPlus: { kind: 'periodic' },
+      yMinus: { kind: 'temperature', T: 0.5 },
+      yPlus: { kind: 'temperature', T: -0.5 },
+    },
+  });
+  const eps = 1e-3;
+  s.initEquilibrium((i, j) => ({
+    ux: 0,
+    uy: 0,
+    T: 0.5 - (j + 0.5) / ny + eps * Math.cos((2 * Math.PI * i) / nx) * Math.sin((Math.PI * (j + 0.5)) / ny),
+  }));
+  const rms = (): number => {
+    let e = 0;
+    for (let node = 0; node < s.n; node++) e += s.uy[node] * s.uy[node];
+    return Math.sqrt(e / s.n);
+  };
+  const hist: number[] = [];
+  for (let st = 0; st < steps; st++) {
+    s.step();
+    if (st % 50 === 0) hist.push(rms());
+  }
+  const half = hist.length >> 1;
+  const xs: number[] = [];
+  const ys: number[] = [];
+  for (let i = half; i < hist.length; i++) if (hist[i] > 0) { xs.push(i * 50); ys.push(Math.log(hist[i])); }
+  const m = xs.length;
+  let sx = 0, sy = 0, sxx = 0, sxy = 0;
+  for (let i = 0; i < m; i++) { sx += xs[i]; sy += ys[i]; sxx += xs[i] * xs[i]; sxy += xs[i] * ys[i]; }
+  return (m * sxy - sx * sy) / (m * sxx - sx * sx);
+}
+
+/** A from-scratch *coupled* thermal lattice Boltzmann: a second D2Q9 distribution
+ *  g carries the temperature as an advected–diffused scalar (T = Σ g_i, α = c_s²(τ_g−½)),
+ *  two-way coupled to the flow through a per-node Boussinesq buoyancy force. These
+ *  checks pin the scalar's Chapman–Enskog diffusivity, prove the no-flow conduction
+ *  limit is exact (a linear profile, Nu = 1), confirm adiabatic walls leak no heat,
+ *  and — the headline — recover the textbook **critical Rayleigh number** Ra_c ≈ 1708
+ *  for the onset of convection and the **de Vahl Davis** heated-cavity Nusselt number. */
+function thermalLbm(): CheckGroup {
+  const checks: Check[] = [];
+
+  // 1. Chapman–Enskog for the scalar: α = c_s²(τ_g − ½). A temperature sine wave
+  //    with no flow decays purely diffusively as exp(−αk²t); recover α.
+  {
+    const nx = 8;
+    const ny = 64;
+    const alphaSet = 0.05;
+    const s = new ThermalLbm({
+      nx, ny, viscosity: 0.05, diffusivity: alphaSet, buoyancy: 0, collision: 'bgk',
+      bc: { xMinus: { kind: 'periodic' }, xPlus: { kind: 'periodic' }, yMinus: { kind: 'periodic' }, yPlus: { kind: 'periodic' } },
+    });
+    const k = (2 * Math.PI) / ny;
+    s.initEquilibrium((_i, j) => ({ ux: 0, uy: 0, T: Math.cos(k * j) }));
+    const amp = (): number => {
+      let a = 0;
+      for (let j = 0; j < ny; j++) {
+        let row = 0;
+        for (let i = 0; i < nx; i++) row += s.temp[s.idx(i, j)];
+        a += (row / nx) * Math.cos(k * j);
+      }
+      return (2 / ny) * a;
+    };
+    const a0 = amp();
+    const T = 400;
+    for (let st = 0; st < T; st++) s.step();
+    const aMeas = -Math.log(amp() / a0) / (k * k * T);
+    const aForm = diffusivityFromTau(s.tauG);
+    const rel = Math.abs(aMeas - aForm) / aForm;
+    checks.push(
+      check(
+        'Chapman–Enskog: α = c_s²(τ_g−½)',
+        'The scalar twin of the shear-wave viscosity check. A temperature sine wave under no flow decays purely by diffusion; the rate we measure recovers the thermal diffusivity the second distribution’s relaxation time τ_g encodes — the advection–diffusion equation emerging from a kinetic model.',
+        rel < 0.03,
+        `α meas ${fmt(aMeas)} vs ${fmt(aForm)} (${(rel * 100).toFixed(2)}%)`,
+      ),
+    );
+  }
+
+  // 2 & 3. Pure conduction (no buoyancy): the steady temperature must be linear
+  //    between the fixed plates and the convective Nusselt number exactly 1.
+  {
+    const nx = 8;
+    const ny = 24;
+    const Thot = 0.5;
+    const Tcold = -0.5;
+    const s = new ThermalLbm({
+      nx, ny, viscosity: 0.05, diffusivity: 0.06, buoyancy: 0, collision: 'trt',
+      bc: { xMinus: { kind: 'periodic' }, xPlus: { kind: 'periodic' }, yMinus: { kind: 'temperature', T: Thot }, yPlus: { kind: 'temperature', T: Tcold } },
+    });
+    s.initEquilibrium(() => ({ ux: 0, uy: 0, T: 0 }));
+    for (let st = 0; st < 6000; st++) s.step();
+    const prof = s.meanTemperatureProfile();
+    let l2 = 0;
+    let den = 0;
+    for (let j = 0; j < ny; j++) {
+      const ana = Thot + (Tcold - Thot) * (j + 0.5) / ny;
+      l2 += (prof[j] - ana) ** 2;
+      den += ana * ana;
+    }
+    const rel = Math.sqrt(l2 / den);
+    const nu = s.nusselt('y', 1, ny);
+    checks.push(
+      check(
+        'Conduction limit: linear temperature profile',
+        'With buoyancy off and the two plates held at fixed temperatures, the anti-bounce-back walls pin T at the half-cell and pure diffusion must relax the interior to a straight line between them. The measured profile matches the analytic conduction solution to a fraction of a percent.',
+        rel < 0.01,
+        `‖T − T_lin‖₂ / ‖T_lin‖₂ = ${fmt(rel)}`,
+      ),
+      check(
+        'Conduction limit: Nusselt number Nu = 1',
+        'The Nusselt number is the ratio of total to purely-conductive heat transport. With no motion the convective flux ⟨u_yT⟩ vanishes, so Nu must be exactly 1 — the calibration point every convecting run is measured against.',
+        Math.abs(nu - 1) < 1e-3,
+        `Nu = ${fmt(nu)} (max|u| = ${fmt(s.maxSpeed())})`,
+      ),
+    );
+  }
+
+  // 4. Adiabatic walls leak no heat: stream+collide conserves Σ T to round-off
+  //    when every wall is a zero-flux (bounce-back) boundary — even with the flow
+  //    stirring a buoyant blob around.
+  {
+    const N = 48;
+    const s = new ThermalLbm({
+      nx: N, ny: N, viscosity: 0.02, diffusivity: 0.02, buoyancy: 1e-5, tRef: 0, collision: 'trt',
+      bc: { xMinus: { kind: 'adiabatic' }, xPlus: { kind: 'adiabatic' }, yMinus: { kind: 'adiabatic' }, yPlus: { kind: 'adiabatic' } },
+    });
+    s.initEquilibrium(() => ({ ux: 0, uy: 0, T: 0 }));
+    s.addHeatBlob(N / 2, N / 3, 8, 1);
+    const h0 = s.totalHeat();
+    for (let st = 0; st < 2000; st++) s.step();
+    const drift = Math.abs(s.totalHeat() - h0) / Math.abs(h0);
+    checks.push(
+      check(
+        'Adiabatic walls conserve total heat',
+        'A zero-flux (bounce-back) thermal wall reflects every scalar population, so no heat crosses it; the BGK scalar collision conserves the temperature moment locally. A buoyant blob stirred around a sealed box must keep Σ T invariant to round-off.',
+        drift < 1e-12,
+        `|ΔΣT| / ΣT = ${fmt(drift)}`,
+      ),
+    );
+  }
+
+  // 5. Critical Rayleigh number Ra_c ≈ 1708 — the headline. Seed the conduction
+  //    state with a tiny perturbation; below Ra_c it decays, above it grows. A
+  //    growth rate clearly negative at Ra = 1300 and positive at Ra = 2200, with
+  //    the linearly-interpolated zero-crossing landing on the textbook value.
+  {
+    const gLo = rbGrowthRate(1300, 16, 2, 5000);
+    const gHi = rbGrowthRate(2200, 16, 2, 5000);
+    const raC = 1300 + (2200 - 1300) * (-gLo) / (gHi - gLo);
+    checks.push(
+      check(
+        'Critical Rayleigh number Ra_c ≈ 1708',
+        'The textbook onset of Rayleigh–Bénard convection: below a critical Ra the motionless conduction state is stable; above it, buoyancy wins and convection rolls grow. We measure the perturbation growth rate at Ra = 1300 (must decay) and Ra = 2200 (must grow) and interpolate the zero-crossing — the rigid–rigid linear-stability value is Ra_c = 1707.76.',
+        gLo < 0 && gHi > 0 && raC > 1500 && raC < 2000,
+        `σ(1300) ${fmt(gLo)} < 0 < σ(2200) ${fmt(gHi)} ⇒ Ra_c ≈ ${raC.toFixed(0)}`,
+      ),
+    );
+  }
+
+  // 6. de Vahl Davis (1983) heated-cavity benchmark — the canonical natural-
+  //    convection validation. A square cavity, hot left wall, cold right wall,
+  //    adiabatic top/bottom; at Ra = 1e4 the average Nusselt number is 2.243.
+  {
+    const H = 32;
+    const Ra = 1e4;
+    const sc = scalingFromRaPr(Ra, 0.71, H, 1, 0.05);
+    const s = new ThermalLbm({
+      nx: H, ny: H, viscosity: sc.viscosity, diffusivity: sc.diffusivity, buoyancy: sc.buoyancy, tRef: 0, collision: 'trt',
+      bc: { xMinus: { kind: 'temperature', T: 0.5 }, xPlus: { kind: 'temperature', T: -0.5 }, yMinus: { kind: 'adiabatic' }, yPlus: { kind: 'adiabatic' } },
+    });
+    s.initEquilibrium(() => ({ ux: 0, uy: 0, T: 0 }));
+    let prev = 0;
+    for (let st = 0; st < 12000; st++) {
+      s.step();
+      if (st % 250 === 0) {
+        const nu = s.nusselt('x', 1, H);
+        if (st > 1500 && Math.abs(nu - prev) < 1e-3) break;
+        prev = nu;
+      }
+    }
+    const nu = s.nusselt('x', 1, H);
+    const ref = 2.243;
+    const rel = Math.abs(nu - ref) / ref;
+    checks.push(
+      check(
+        'de Vahl Davis cavity: Nu(Ra=10⁴) ≈ 2.243',
+        'The standard natural-convection benchmark. Hot and cold side walls drive a single recirculation; the average wall Nusselt number is tabulated to four figures. Our coupled thermal LBM, run to steady state on a 32² lattice, reproduces it to a few percent — a quantitative validation of the whole buoyancy coupling.',
+        rel < 0.08,
+        `Nu = ${fmt(nu)} vs ${ref} (${(rel * 100).toFixed(1)}%)`,
+      ),
+    );
+  }
+
+  return {
+    title: 'Thermal LBM — natural convection',
+    blurb:
+      'A second distribution g rides the same nine-velocity lattice and carries temperature as an advected–diffused scalar, two-way coupled to the flow by a per-node Boussinesq buoyancy force. From nothing but stream + collide on two lattices, thermal convection emerges — and it is quantitatively right: the scalar diffusivity obeys α = c_s²(τ_g−½), the no-flow limit is exactly conduction (Nu = 1), sealed walls leak no heat, the onset of convection lands on the textbook critical Rayleigh number Ra_c ≈ 1708, and the de Vahl Davis heated-cavity Nusselt number matches the reference.',
+    checks,
+  };
+}
+
 export function runSelfTest(): SelfTestReport {
   const t0 = performance.now();
   const groups = [
     incompressibility(),
     latticeBoltzmann(),
+    thermalLbm(),
     multiphase(),
     multicomponent(),
     linearSolver(),

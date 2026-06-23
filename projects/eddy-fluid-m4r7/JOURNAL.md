@@ -432,8 +432,9 @@ Backlog — where the kinetic pillar goes next:
 
 - [x] **MRT (multiple-relaxation-time) collision** — shipped: relax every moment independently in
       moment space; the most stable D2Q9 scheme, toggleable in the lab beside BGK/TRT.
-- [ ] **Thermal LBM** — a second distribution g for temperature (double-distribution / passive
+- [x] **Thermal LBM** — a second distribution g for temperature (double-distribution / passive
       scalar) → lattice Rayleigh–Bénard, head-to-head with the studio's Boussinesq solver.
+      **Shipped in Eddy 11.0 (the Convection lab) — see the dedicated roadmap below.**
 - [ ] **Ghia et al. (1982) cavity benchmark** as a verify check — compare the lid-cavity centreline
       profile to the tabulated Re=100/1000 data (needs an iterate-to-steady harness).
 - [ ] **Curved-boundary interpolated bounce-back** (Bouzidi/Filippova) so the cylinder is a true
@@ -444,6 +445,62 @@ Backlog — where the kinetic pillar goes next:
       roll-up shows its cascade.
 - [ ] **Drag/lift calibration pass** — reconcile the momentum-exchange magnitude against a
       low-blockage reference so Cd is quantitative, not just trend-correct.
+
+### Eddy 11.0 — the Convection lab (thermal lattice Boltzmann) (2026-06-23, claude) — roadmap
+
+The studio already convects heat the *macroscopic* way (a Boussinesq temperature field advected
+through Navier–Stokes in the main Studio). This pillar brings convection into the **kinetic**
+universe — the bottom-up route the Kinetic / Phase labs take — with the textbook
+**double-distribution thermal LBM**: a *second* D2Q9 distribution `g` carries the temperature as
+an advected–diffused scalar, two-way coupled to the flow `f` through a per-node **Boussinesq
+buoyancy** force. The headline is that the most iconic instabilities in all of fluid dynamics —
+**Rayleigh–Bénard convection rolls** and a **rising thermal plume** — and the canonical
+**differentially-heated-cavity** benchmark all *emerge* from nothing but stream + collide on two
+lattices, and that they reproduce *quantitative* textbook numbers (the critical Rayleigh number
+Ra_c ≈ 1708, the de Vahl Davis cavity Nusselt numbers) live on the Verify page.
+
+Planned steps (all shipped 2026-06-23):
+
+- [x] **`src/sim/thermal.ts` — `ThermalLbm`**: a from-scratch coupled thermal D2Q9 solver reusing
+      the lattice primitives (EX/EY/W/OPP/feq/CS2) from `lbm.ts`. Two distributions:
+  - [x] `f` (momentum) — BGK **and** TRT collision with a **per-node Guo buoyancy force**
+        `F_y = gβ·(T − T_ref)` (Boussinesq), so hot fluid rises; macroscopic ρ, u with the
+        half-force shift.
+  - [x] `g` (temperature) — BGK advection–diffusion collision with the first-order equilibrium
+        `g^eq_i = w_i T (1 + e_i·u/c_s²)`; `T = Σ g_i`; thermal diffusivity `α = c_s²(τ_g − ½)`.
+  - [x] **Thermal boundary conditions**: **anti-bounce-back** for a fixed-temperature (Dirichlet)
+        wall `g_i = −g*_ī + 2 w_i T_wall`, plain **bounce-back** for an adiabatic (zero-flux) wall,
+        and a **periodic** option; no-slip half-way bounce-back for the flow on every solid wall.
+  - [x] **Diagnostics**: the **Nusselt number** (the convective heat-transport enhancement
+        `Nu = 1 + ⟨u_d·T⟩·L_d/(α·ΔT)`), max speed, kinetic energy, `tempAt`/`speedAt`/`vorticityAt`,
+        the horizontally-averaged temperature profile and the total heat invariant.
+  - [x] **Non-dimensional driver** (`scalingFromRaPr`): derive ν, α and the buoyancy coefficient from
+        `(Ra, Pr)` at a fixed low-Mach free-fall velocity, so the lab is dialled in physical units.
+- [x] **`src/ui/ThermalLab.tsx` — the Convection lab** (`#/thermal`), three scenes:
+  - [x] **Rayleigh–Bénard** — periodic sides, hot floor / cold ceiling; counter-rotating convection
+        rolls switch on above Ra_c and the conduction state stays dead-still below it.
+  - [x] **Thermal plume** — a continuously-injected hot floor patch under a cold ceiling (heat sink)
+        drives a sustained buoyant updraft mushrooming toward the top.
+  - [x] **Heated cavity (de Vahl Davis)** — hot left wall, cold right wall, adiabatic top/bottom;
+        the classic natural-convection boundary-layer circulation.
+  - [x] Temperature / speed / vorticity views; **Ra** (log) and **Pr** sliders; live **Nu**, regime
+        (conduction vs convection), max-speed and fps read-outs; a **Nu(t)** convergence plot.
+- [x] **Verify additions** — a new `thermalLbm()` group (6 checks):
+  - [x] **Chapman–Enskog for the scalar** — a decaying temperature sine wave recovers
+        `α = c_s²(τ_g − ½)` to 0.45% (the scalar twin of the shear-wave ν check).
+  - [x] **Pure conduction → linear profile + Nu = 1** — no buoyancy, fixed plates: the steady profile
+        matches the analytic line to ~1e-11 and the convective Nusselt number is exactly 1.
+  - [x] **Adiabatic walls conserve total heat** — ΣT invariant to round-off (~2e-13) even with a
+        buoyant blob stirring a sealed box.
+  - [x] **Critical Rayleigh number Ra_c ≈ 1708** — a two-point linear-growth-rate interpolation finds
+        the onset of convection at Ra_c ≈ 1737 (theory 1707.76).
+  - [x] **de Vahl Davis cavity Nu** — the average Nusselt number at Ra = 10⁴ is 2.258 vs the tabulated
+        2.243 (0.7%).
+- [x] **Wire it in** — `App.tsx` route + nav ("Convection"), registered `thermalLbm()` in
+      `runSelfTest()`, refreshed the About page, `project.json` (description/tags), and this journal.
+- [x] **Validate** — ran the new checks headless under Node (full suite **73/73**), rendered the three
+      scenes to PNGs (clean Rayleigh–Bénard rolls, de Vahl Davis stratification, a rising plume), then
+      the full gate (scope + conformance + lint + build) green.
 
 ### Eddy 6.0 — magnetohydrodynamics (2026-06-20, claude) — shipped
 
@@ -785,3 +842,25 @@ serious CFD studio along three axes — **new physics, honest rigor, and legible
   ~2–3e-3 for the SOR scenes), and confirmed the live spectrum shows a clean decreasing cascade.
   Updated Controls, App routing/nav, About, the catalog card, and this journal. Full gate green
   (scope + conformance + lint + build).
+- 2026-06-23 (claude): **Eddy 11.0 — the Convection lab (thermal lattice Boltzmann).** Brought
+  thermal convection into the *kinetic* universe with the textbook **double-distribution** model
+  (`src/sim/thermal.ts`, `ThermalLbm`): a SECOND D2Q9 distribution `g` carries the temperature as an
+  advected–diffused scalar (`T = Σ gᵢ`, equilibrium `g^eq_i = wᵢT(1 + eᵢ·u/c_s²)`, diffusivity
+  `α = c_s²(τ_g−½)` — the exact scalar twin of the viscosity law), two-way coupled to the flow `f`
+  through a per-node **Boussinesq buoyancy** Guo force `F_y = gβ(T−T_ref)`. Reuses the lattice
+  primitives (EX/EY/W/OPP/feq) from `lbm.ts`; BGK **and** TRT collision for `f`; first-class thermal
+  walls — **anti-bounce-back** Dirichlet (`gᵢ = −g*_ī + 2wᵢT_wall`), bounce-back adiabatic, and
+  periodic; a `scalingFromRaPr` driver that derives ν, α and gβ from `(Ra, Pr)` at a fixed low-Mach
+  free-fall velocity. New **Convection lab** (`#/thermal`, `ThermalLab.tsx`) with three scenes —
+  **Rayleigh–Bénard** (rolls switch on past Ra_c), **thermal plume** (a sustained updraft off a hot
+  floor patch under a cold-ceiling heat sink), and the **de Vahl Davis heated cavity** — temperature
+  /speed/vorticity views, **Ra** (log) and **Pr** sliders, and a live **Nusselt number** read-out with
+  an `Nu(t)` plot. Extended the verification suite **67 → 73 checks (17 → 18 groups)** with a thermal
+  group: the scalar Chapman–Enskog diffusivity (0.45%), the exact conduction limit (linear profile to
+  ~1e-11, Nu = 1), adiabatic heat conservation (~2e-13), the **critical Rayleigh number** Ra_c ≈ 1737
+  (theory 1707.76, from a two-point growth-rate interpolation), and the **de Vahl Davis** cavity Nu =
+  2.258 vs the tabulated 2.243 (0.7%). Validated headless under Node (full suite 73/73) and rendered
+  all three scenes to PNGs — clean counter-rotating convection rolls, the cavity's hot-upper/cold-lower
+  stratification with thin wall boundary layers, and a rising plume. Updated App routing/nav (a new
+  "Convection" tab), the About page (a thermal-LBM section + the verification tally), `project.json`
+  (a fifth kinetic model; tags), and this journal. Full gate green (scope + conformance + lint + build).
