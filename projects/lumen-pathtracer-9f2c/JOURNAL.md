@@ -137,8 +137,9 @@ photon emitter, so daylight scenes get photon-mapped sun caustics).
 - [x] **Subsurface scattering (12.0)** — random-walk volumetric transport *inside* a translucent
       dielectric (marble/jade/wax/skin): a `Subsurface { sigmaT, albedo, g }` interior, an interior
       free-flight + HG phase walk bounded by the real surface, Fresnel-boundary entry/exit + TIR.
-      Two scenes (**Subsurface Studio**, **Jade Idol**) + four proofs (pure-scatter furnace ≡ 1 ∀g,
-      pure-absorb ≡ e^(−σ·2r), whole-object Fresnel+TIR+scatter energy ≡ 1, per-channel albedo R>G>B).
+      Two scenes (**Subsurface Studio**, **Jade Idol**) + five proofs (pure-scatter furnace ≡ 1 ∀g,
+      pure-absorb ≡ e^(−σ·2r), whole-object Fresnel+TIR+scatter energy ≡ 1, per-channel albedo R>G>B,
+      reflectance strictly monotone in albedo).
 - [ ] **Subsurface NEE through the boundary** — importance-sample a light *and* the refraction toward
       it (a refracted-shadow connection) to kill the phase-only glow's variance
 - [ ] **Separable BSSRDF / diffusion-dipole fast-path** — for very dense media the random walk samples
@@ -239,10 +240,11 @@ Plan / steps (all shipped this session):
    jade/honey-wax/rose spheres) and **Jade Idol** (a watertight surface-of-
    revolution lathe in jade). A `translucent()` builder keeps `tint` white so the
    colour comes purely from the interior albedo.
-4. **`selftest.ts` — four proofs** (a shared `subsurfaceFurnaceRGB` harness):
+4. **`selftest.ts` — five proofs** (a shared `subsurfaceFurnaceRGB` harness):
    pure-scatter furnace ≡ 1 ∀g (zero-variance energy conservation + unbiased phase
    walk); pure-absorb ≡ e^(−σ·2r) (Beer's law from the free-flight); the whole
-   object (Fresnel + TIR + scatter) ≡ 1; per-channel albedo tints R>G>B, bounded ≤1.
+   object (Fresnel + TIR + scatter) ≡ 1; per-channel albedo tints R>G>B, bounded ≤1;
+   and reflectance strictly monotone in the interior albedo (0.3→0.6→0.9, ≤1).
 
 Next (open): subsurface NEE through the boundary (importance-sample a light *and*
 the refraction toward it) to denoise the glow; a separable BSSRDF / diffusion
@@ -832,11 +834,12 @@ verification suite, the scene registry, and the UI so it is observable and prove
   (no interior NEE) — the surrounding scene's NEE takes over once the path exits, so the estimator stays
   unbiased. Two showcase scenes — **Subsurface Studio** (a back-lit row of marble/jade/honey-wax/rose
   spheres glowing from within) and **Jade Idol** (a hand-turned translucent lathe figurine) — plus
-  **four** new proofs: a pure-scattering index-matched furnace returns *exactly* 1 for any phase g
+  **five** new proofs: a pure-scattering index-matched furnace returns *exactly* 1 for any phase g
   (zero variance — every path yields 1); a pure-absorbing interior reproduces Beer's law e^(−σ·2r) from
   the free-flight sampler; the **whole** translucent object (real Fresnel boundary + TIR + multiple
   scattering) conserves energy to ≈1; and a per-channel albedo tints the exitance R>G>B (the marble/jade
-  mechanism), all bounded ≤1. Verified in Node by bundling the suite with Vite: **65/65** self-tests +
+  mechanism), all bounded ≤1, and the reflectance rises strictly with the interior albedo. Verified in
+  Node by bundling the suite with Vite: **66/66** self-tests +
   a render smoke-test of both scenes (finite, fully lit, no leaks through the 1.7k-triangle lathe);
   `pnpm lint`/`tsc`/`build` green via the CI gate. Reuses the volume/phase machinery and changes nothing
   in the transport loop except the new interior walk, so all 61 prior proofs stay green.
