@@ -899,3 +899,128 @@ over thousands of fuzzed pattern pairs. New `engine/coalgebra.ts` + `engine/anti
   rebuilds the same relation, universality matches a DFA oracle, every witness genuinely separates the
   languages, and HKC never expands more pairs than naïve. Header/footer/`project.json` updated. Gate
   green: scope + conformance + lint + build all pass.
+
+### Session 14 plan — the converse of the whole studio: Logic ⇒ Automaton (Büchi–Elgot–Trakhtenbrot) (2026-06-23, claude)
+
+Every prior road runs **one** direction — a *regex* (or a query, or a sample) is compiled *down* to an
+automaton, and sessions 8–9 then *classify* the resulting language by which **logic** can define it
+(`FO[<]`, `FO²`, `MSO`). But the studio never let you go the other way: **write a logic formula and build the
+automaton it denotes.** That converse is one of the deepest theorems in the field —
+
+> **Büchi–Elgot–Trakhtenbrot (1960):** a language is regular **iff** it is definable by a sentence of
+> **monadic second-order logic** `MSO[<]` over word positions.
+
+and it nests exactly onto the variety ladder this studio already computes:
+
+```
+LTLf  ⊆  FO[<]      ⊊      MSO[<]   =   regular
+ │        │ (Kamp)         │ (Büchi)     │ (Kleene)
+ └─ temporal              star-free    all of the studio
+    operators            (sess. 8–9)
+```
+
+McNaughton–Papert says `FO[<]` is exactly the **star-free** languages — so a formula with *no second-order
+quantifier* must compile to a language the **existing monoid engine** independently certifies star-free, and
+one that *needs* a set quantifier (e.g. "even length") must come back **not** star-free. That makes this
+session self-verifying against machinery already in the repo: the compiler asserts `FO ⇒ star-free` by asking
+session 9's `varietyLadder`, not by trusting itself.
+
+New `engine/logic/` package (kept self-contained, lowered into the studio's own `DFA` so it flows into the
+graph / Min-DFA / Language / Census / Algebra views unchanged), plus a new **Logic** tab.
+
+- [ ] **Formula AST + parser** (`logic/ast.ts`, `logic/parser.ts`) — first-order variables `x,y,…` and
+      second-order (set) variables `X,Y,…`; atoms `Qa(x)` (position `x` carries letter `a`), order `x<y`,
+      `x<=y`, `x=y`, successor `S(x,y)`, membership `x in X`, constants `true/false`; connectives
+      `~ & | -> <->`; quantifiers `exists x`, `forall x`, `exists X`, `forall X` (and the Unicode spellings
+      `∃ ∀ ¬ ∧ ∨ → ↔ ∈ ≤`). Friendly parse errors with an index, house style. Free-variable analysis +
+      an `isFirstOrder` predicate (no second-order quantifier anywhere).
+- [ ] **The bit-automaton** (`logic/bitaut.ts`) — a DFA/NFA over the **product alphabet** `Σ × {0,1}^V`:
+      one *track* per free variable, a symbol is a letter plus one bit per track (does this position equal
+      the FO variable / lie in the SO set). Operations: `lift` (cylindrify onto more tracks), `product`
+      (`∧`/`∨`), `complement` (within the **validity** language — every FO track a singleton), `project`
+      (drop a track → NFA → subset-determinize), Moore `minimize`, reachable-trim, emptiness witness.
+- [ ] **The inductive Büchi compiler** (`logic/compile.ts`) — structural recursion building one
+      bit-automaton per subformula over its own free tracks: tiny hand-built atomic automata (each FO atom
+      enforcing its variables are singletons), `∧`→product, `∨`→union, `¬`→complement-within-validity,
+      `∃x`→project+determinize, `∀x ≡ ¬∃x¬`, second-order `∃X`/`∀X` the same but with no singleton
+      constraint. Per-node automaton sizes are recorded so the panel can **show the non-elementary blow-up**.
+      State/track caps with a friendly "this formula blew up to N states" instead of a hang — itself a lesson.
+- [ ] **Lowering + the variety bridge** — a *sentence* (no free tracks) leaves an automaton over just `Σ`;
+      lower it to the studio `DFA`, `minimizeDFA`, and run it through session 9's
+      `buildSyntacticMonoid → greenRelations → varietyLadder`. Assert **`FO ⇒ star-free`** live (a green
+      badge when the formula is first-order and the ladder agrees), and surface the actual variety verdict
+      for MSO formulas so `FO ⊊ MSO` is *shown* (even-length comes back the group `ℤ/2`, not star-free).
+- [ ] **The brute-force oracle** (`logic/semantics.ts`) — a direct Tarski-style evaluator: interpret the
+      quantifiers literally over positions (FO) and position-*subsets* (SO, `2^n`) of a concrete word. The
+      independent ground truth the compiled DFA is differentially checked against.
+- [ ] **LTLf mode** (Kamp's theorem for free) — parse **linear temporal logic on finite traces**
+      (`X F G`, `U`, `R`, boolean connectives, atomic prop = a letter) and **desugar to `FO[<]`** with one
+      free "now" variable (`⟦Xφ⟧(x)=∃y.S(x,y)∧⟦φ⟧(y)`, `⟦φUψ⟧(x)=∃y.x≤y∧⟦ψ⟧(y)∧∀z.(x≤z<y→⟦φ⟧(z))`, …),
+      closed at the first position. Reuses the whole FO pipeline, so an LTL formula compiles to a DFA and
+      lands in **star-free** automatically — Kamp's theorem (`LTL = FO`) made operational.
+- [ ] **The Logic panel** (`components/LogicPanel.tsx`) — MSO/LTLf mode toggle, a configurable alphabet,
+      formula input + a curated gallery (contains-`a`, "every `a` is immediately followed by `b`",
+      even-length, "the `b`'s are exactly the even positions", a∗b∗, parity), the compiled DFA as a pan/zoom
+      graph with DOT/SVG export, the **variety verdict** with the `FO ⇒ star-free` badge, language stats
+      (count + growth, reusing Census), a **truth table** over short words (oracle ✓ vs DFA, agreement
+      badge), the per-subformula **size trace** (the blow-up), and a seeded **cross-check** console.
+- [ ] **The proof console** (`logic/verify.ts`) — a seeded fuzzer drawing random FO + MSO sentences over a
+      small alphabet: compile → DFA, brute-force the oracle over **all** words up to length `L`, and assert
+      the DFA accepts *exactly* the true words; assert `∀x.φ ≡ ¬∃x¬φ` (build both, compare DFAs); assert
+      every FO sentence's language is star-free and every sentence's language is regular. Reproducible by
+      seed, zero mismatches the bar — drives the panel's "run cross-check" button.
+- [ ] Wire the tab into `App.tsx`, refresh the header/footer/`project.json` copy to "compile logic to
+      automata — Büchi–Elgot–Trakhtenbrot", add the Logic examples, and re-run the gate to green.
+
+### Session 14 — Logic ⇒ Automaton: the Büchi–Elgot–Trakhtenbrot construction (2026-06-23, claude)
+
+Shipped the converse of the entire studio — a from-scratch compiler from **logic to automata**, closing the
+loop with the variety ladder sessions 8–9 built. New `engine/logic/` package + a new **Logic** tab.
+
+- [x] **Formula AST + parser** (`logic/ast.ts`, `logic/parser.ts`) — MSO[<] with FO position variables
+      (lowercase) and SO set variables (uppercase); atoms `Qa(x)`, `x<y`/`x<=y`/`x=y`, successor `S(x,y)`,
+      membership `x in X`, `true`/`false`; connectives `~ & | -> <->`; quantifiers `exists/forall` (the
+      variable's case picks first- vs second-order), with Unicode spellings (`∃ ∀ ¬ ∧ ∨ → ↔ ∈ ≤`). Friendly
+      index-tagged parse errors, free-variable analysis, and an `isFirstOrder` predicate.
+- [x] **The bit-automaton** (`logic/bitaut.ts`) — a DFA/NFA over the product alphabet `Σ × {0,1}^V`, one
+      *track* per free variable. `lift` (cylindrify), `product` (∧/∨), `complement` (within the validity
+      language — every FO track a singleton), `projectToNFA` + `determinize`, Moore `minimize`,
+      `reachableTrim`, `witness`/`isEmpty`, `languageEqual`. State/track caps with a `LogicError` instead of
+      a hang (the non-elementary cost, surfaced as a lesson).
+- [x] **The inductive Büchi compiler** (`logic/compile.ts`) — tiny hand-built atomic automata (each FO atom
+      enforcing its variables are singletons), `∧`→product, `∨`→union, `¬`→complement-within-validity,
+      `∃x`→project + re-determinise, `∀ ≡ ¬∃¬`, second-order `∃X`/`∀X` the same with no singleton constraint.
+      Maintains the invariant "accepts exactly the valid (all-FO-singleton) encodings satisfying the formula",
+      minimises at every node, and records a **per-step size trace** (with the determinisation blow-up).
+- [x] **Lowering + the variety bridge** (`logic/lower.ts`, `logic/index.ts`) — a *sentence* leaves an
+      automaton over just Σ; lowered into the studio `DFA`, minimised, and run through session 9's
+      `buildSyntacticMonoid → greenRelations → varietyLadder`. The panel asserts **FO ⇒ star-free** live
+      (McNaughton–Papert), and for MSO formulas surfaces the real verdict — **even length** comes back the
+      group **ℤ/2**, not star-free, so `FO ⊊ MSO` is *shown*. Free-variable formulas render the bit-automaton
+      directly (each edge labelled with its letter + per-track bit pattern, `x̄` = bit off).
+- [x] **The brute-force oracle** (`logic/semantics.ts`) — a direct Tarski evaluator: quantifiers interpreted
+      literally over positions (FO) and the `2^n` position-subsets (SO) of a concrete word. The independent
+      ground truth.
+- [x] **LTLf mode** (`logic/ltlf.ts`) — linear temporal logic on finite traces (`X F G`, `U`, `R`, boolean
+      connectives, atomic prop = a letter), parsed and **desugared to FO[<]** with one "now" variable (Kamp's
+      theorem), closed at the first position. Reuses the whole FO pipeline, so an LTL spec compiles to a DFA
+      and lands star-free automatically — `LTL = FO ⊆ star-free`, operational.
+- [x] **The Logic panel** (`components/LogicPanel.tsx`) — MSO/LTLf mode toggle, configurable alphabet,
+      formula input + curated galleries, the compiled DFA as a pan/zoom graph with DOT/SVG export, the variety
+      verdict with the FO⇒star-free badge, language stats (Census/Language reused), a **truth table** (oracle
+      vs automaton over short words, agreement badge), the per-subformula **size trace** (the blow-up made
+      visible), and a seeded **cross-check** console.
+- [x] **The proof console** (`logic/verify.ts`) — a seeded fuzzer drawing random FO + MSO sentences:
+      compile → DFA, brute-force the oracle over every word up to length L, assert the DFA accepts exactly the
+      true words; assert the `∀ ≡ ¬∃¬` duality (a negation-normal-form recompile lands on the same language);
+      assert every FO sentence's language is star-free and every sentence's language is regular.
+- [x] Wired the Logic tab into `App.tsx` (persisted source + mode), refreshed header/footer/`project.json`
+      copy, added the Logic CSS, and re-ran the gate to green.
+
+Validated offline before shipping with the esbuild headless harness: **55/55 known-answer cases** (contains-a,
+"every a immediately followed by b", a∗b∗, first-letter-a, even-length-is-ℤ/2-and-not-star-free, the LTLf
+suite incl. release and strong-next semantics), and the fuzzer at **665,520 checks across 22 seeds — random FO
+and MSO sentences over 2- and 3-letter alphabets, every word up to length 7, duality, and the star-free bridge
+— zero disagreements, zero state-cap blow-ups**. So `forall x.(Qa(x) -> exists y. S(x,y) & Qb(y))` compiles to
+a star-free DFA the Algebra tab independently certifies aperiodic, while the even-length MSO sentence is named
+ℤ/2 and `G(a -> X b)` (LTLf) is proved star-free by Kamp. Gate green: scope + conformance + lint + build all pass.
