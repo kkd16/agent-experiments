@@ -62,6 +62,16 @@ import {
 import {
   synthesize, faultTolerant, NAMED_GATES, seededSU4,
 } from './kakCircuit';
+import { type Mat as ShMat } from './kak';
+import {
+  eigUnitary, cosineSineDecomposition, demultiplex, uniformlyControlledRotation,
+  shannonDecompose, circuitToMatrix as qsdCircuitMatrix, optimizeCircuit, distModPhase as qsdDist,
+  faultTolerantShannon,
+} from './shannon';
+import {
+  qft as qsdQft, toffoli as qsdToffoli, fredkin as qsdFredkin, seededUnitary as qsdRandU,
+  SHANNON_GATES,
+} from './shannonGates';
 
 export interface TestResult {
   group: string;
@@ -1144,6 +1154,159 @@ export function runTests(): TestResult[] {
       add('Two-qubit synthesis', 'fault-tolerant {H,T,CNOT} compile: generic gate reproduced (≤depth-3 SK), SWAP is Clifford (0 T)',
         ftR.error < 2e-2 && ftR.tCount > 100 && ftS.tCount === 0 && ftS.error < 1e-9,
         `random: err ${ftR.error.toExponential(1)}, ${ftR.tCount} T, ${ftR.cnots} CNOT · SWAP: ${ftS.tCount} T`);
+    }
+  }
+
+  // ─────────────────────── Quantum Shannon Decomposition (n-qubit synthesis) ───────────────────────
+  {
+    const frobM = (A: ShMat, B: ShMat) => { let s = 0; for (let i = 0; i < A.length; i++) for (let j = 0; j < A[0].length; j++) s += A[i][j].sub(B[i][j]).abs2(); return Math.sqrt(s); };
+    const idM = (n: number): ShMat => Array.from({ length: n }, (_, i) => Array.from({ length: n }, (_, j) => C(i === j ? 1 : 0)));
+    const unitarity = (U: ShMat) => frobM(matMul(dagger(U), U), idM(U.length));
+
+    // (1) Eigendecomposition of a general UNITARY (normal) matrix: W = V diag(e^{iφ}) V†.
+    {
+      let worst = 0, worstV = 0;
+      for (let s = 1; s <= 6; s++) {
+        const W = qsdRandU(2 + (s % 3), s * 7919);
+        const n = W.length;
+        const { vectors: V, phases } = eigUnitary(W);
+        const D: ShMat = Array.from({ length: n }, (_, i) => Array.from({ length: n }, (_, j) => (i === j ? Complex.fromPolar(1, phases[i]) : C(0))));
+        const recon = matMul(matMul(V, D), dagger(V));
+        worst = Math.max(worst, frobM(recon, W));
+        worstV = Math.max(worstV, unitarity(V));
+      }
+      add('Quantum Shannon decomposition', 'eig of a general unitary: W = V·diag(e^{iφ})·V† with V unitary (commuting-Hermitian simultaneous diagonalisation)',
+        worst < 1e-8 && worstV < 1e-8, `worst recon ${worst.toExponential(1)}, worst |V†V−I| ${worstV.toExponential(1)}`);
+    }
+
+    // (2) The cosine–sine decomposition reconstructs U, with cos²+sin²=1 and unitary factors.
+    {
+      let worst = 0, worstPyth = 0, worstFac = 0;
+      for (const n of [2, 3, 4]) {
+        const U = qsdRandU(n, n * 104729);
+        const csd = cosineSineDecomposition(U);
+        worst = Math.max(worst, csd.error);
+        for (const t of csd.theta) worstPyth = Math.max(worstPyth, Math.abs(Math.cos(t) ** 2 + Math.sin(t) ** 2 - 1));
+        for (const F of [csd.L0, csd.L1, csd.R0, csd.R1]) worstFac = Math.max(worstFac, unitarity(F));
+      }
+      add('Quantum Shannon decomposition', 'cosine–sine decomposition U = diag(L0,L1)·[[C,−S],[S,C]]·diag(R0†,R1†) with cos²+sin²=1, all blocks unitary',
+        worst < 1e-9 && worstPyth < 1e-12 && worstFac < 1e-8,
+        `worst recon ${worst.toExponential(1)}, worst |cos²+sin²−1| ${worstPyth.toExponential(1)}, worst block |U†U−I| ${worstFac.toExponential(1)}`);
+    }
+
+    // (3) The demultiplexor is exact: A = V·D·W and B = V·D†·W (no dropped phase).
+    {
+      let worst = 0;
+      for (let s = 1; s <= 5; s++) {
+        const A = qsdRandU(2, s * 1299709), B = qsdRandU(2, s * 15485863);
+        const { V, W, rzAngles } = demultiplex(A, B);
+        const n = A.length;
+        const D: ShMat = Array.from({ length: n }, (_, i) => Array.from({ length: n }, (_, j) => (i === j ? Complex.fromPolar(1, -rzAngles[i] / 2) : C(0))));
+        const Dd: ShMat = Array.from({ length: n }, (_, i) => Array.from({ length: n }, (_, j) => (i === j ? Complex.fromPolar(1, rzAngles[i] / 2) : C(0))));
+        worst = Math.max(worst, frobM(matMul(matMul(V, D), W), A), frobM(matMul(matMul(V, Dd), W), B));
+      }
+      add('Quantum Shannon decomposition', 'demultiplexor diag(A,B) = (I⊗V)·R_z-mux·(I⊗W) reproduces both blocks exactly (eigenvalues of A·B†)',
+        worst < 1e-10, `worst |A−VDW|,|B−VD†W| = ${worst.toExponential(1)}`);
+    }
+
+    // (4) The uniformly-controlled rotation reproduces the block-diagonal target at 2^m CNOTs.
+    {
+      let worst = 0, cnotOk = true;
+      let sd = 7;
+      const rnd = () => { sd = (sd * 1664525 + 1013904223) >>> 0; return sd / 4294967296; };
+      for (const m of [1, 2, 3]) {
+        const N = 1 << m;
+        const angles = Array.from({ length: N }, () => rnd() * 4 - 2);
+        const controls = Array.from({ length: m }, (_, i) => i + 1);
+        const ops = uniformlyControlledRotation(angles, 'ry', 0, controls);
+        cnotOk = cnotOk && ops.filter((o) => o.kind === 'cnot').length === N;
+        const M = qsdCircuitMatrix(ops, m + 1);
+        const dim = 1 << (m + 1);
+        const E: ShMat = Array.from({ length: dim }, () => Array.from({ length: dim }, () => C(0)));
+        for (let j = 0; j < N; j++) {
+          const c = Math.cos(angles[j] / 2), s = Math.sin(angles[j] / 2);
+          E[j][j] = C(c); E[N + j][N + j] = C(c); E[j][N + j] = C(-s); E[N + j][j] = C(s);
+        }
+        worst = Math.max(worst, frobM(M, E));
+      }
+      add('Quantum Shannon decomposition', 'uniformly-controlled R_y reproduces its block-diagonal target at the optimal 2^m CNOTs (Gray-code angle transform)',
+        worst < 1e-10 && cnotOk, `worst err ${worst.toExponential(1)}, CNOT count = 2^m: ${cnotOk}`);
+    }
+
+    // (5) Full QSD reproduces random SU(2ⁿ) up to a global phase, for n = 2..5.
+    {
+      let worst = 0;
+      for (const n of [2, 3, 4, 5]) {
+        const U = qsdRandU(n, n * 49979687);
+        worst = Math.max(worst, shannonDecompose(U, n).reconError);
+      }
+      add('Quantum Shannon decomposition', 'full QSD synthesises a generic n-qubit unitary into {Rz,Ry,CNOT}, reproducing it to machine precision (n=2..5)',
+        worst < 1e-8, `worst ‖circuit − U‖ over n=2..5 = ${worst.toExponential(1)}`);
+    }
+
+    // (6) The CNOT count equals the textbook closed form (3/4)·4ⁿ − 3·2ⁿ⁻¹.
+    {
+      const counts = [2, 3, 4, 5].map((n) => shannonDecompose(qsdRandU(n, 1234567 * n), n));
+      const expected = [6, 36, 168, 720];
+      const ok = counts.every((c, i) => c.cnots === expected[i] && c.cnots === c.theoreticalCnots);
+      add('Quantum Shannon decomposition', 'CNOT count matches the closed form (3/4)·4ⁿ − 3·2ⁿ⁻¹: 6, 36, 168, 720 for n=2..5',
+        ok, `counts = ${counts.map((c) => c.cnots).join(', ')}`);
+    }
+
+    // (7) QSD reproduces named structured gates exactly: QFT, Toffoli, Fredkin.
+    {
+      const cases: [string, ShMat, number][] = [
+        ['QFT-3', qsdQft(3), 3], ['QFT-4', qsdQft(4), 4], ['Toffoli', qsdToffoli(), 3], ['Fredkin', qsdFredkin(), 3],
+      ];
+      let worst = 0;
+      for (const [, U, n] of cases) worst = Math.max(worst, shannonDecompose(U, n).reconError);
+      add('Quantum Shannon decomposition', 'QSD reproduces structured gates (QFT-3, QFT-4, Toffoli, Fredkin) to machine precision',
+        worst < 1e-8, `worst err = ${worst.toExponential(1)}`);
+    }
+
+    // (8) A 1-qubit gate costs 0 CNOTs and matches its ZYZ (base case).
+    {
+      const U = qsdRandU(1, 424242);
+      const sh = shannonDecompose(U, 1);
+      add('Quantum Shannon decomposition', 'base case: a 1-qubit gate decomposes to Rz·Ry·Rz with 0 CNOTs, reproducing it exactly',
+        sh.cnots === 0 && sh.reconError < 1e-12 && sh.gates.length === 3, `CNOTs ${sh.cnots}, err ${sh.reconError.toExponential(1)}`);
+    }
+
+    // (9) The peephole optimiser preserves the unitary and collapses structured gates below generic.
+    {
+      const U = qsdQft(3);
+      const raw = shannonDecompose(U, 3);
+      const opt = optimizeCircuit(raw.gates);
+      const optErr = qsdDist(U, qsdCircuitMatrix(opt, 3));
+      const optCnots = opt.filter((g) => g.kind === 'cnot').length;
+      const genericCnots = shannonDecompose(qsdRandU(3, 9), 3).cnots;
+      add('Quantum Shannon decomposition', 'peephole optimiser preserves the unitary and collapses a structured gate (QFT-3) below the generic CNOT count',
+        optErr < 1e-8 && optCnots < genericCnots, `QFT-3 optimised to ${optCnots} CNOTs (< generic ${genericCnots}), err ${optErr.toExponential(1)}`);
+    }
+
+    // (10) End-to-end fault-tolerant {H,T,CNOT}: a generic n-qubit gate gets a real T-count.
+    {
+      const ft = faultTolerantShannon(qsdRandU(3, 0xc0ffee), 3, 2);
+      add('Quantum Shannon decomposition', 'fault-tolerant compile of a 3-qubit gate: every rotation → {H,T,…} via Solovay–Kitaev, a large T-count, circuit reproduced (depth-2 SK)',
+        ft.error < 0.5 && ft.tCount > 1000 && ft.cnots === 36,
+        `${ft.cnots} CNOT, ${ft.tCount} T, depth-2 SK err ${ft.error.toExponential(1)}`);
+    }
+
+    // (11) Degenerate gates (permutations & reflections) — the case that needs the division-free CSD
+    //      read-off and the robust orthonormal completion. Every registry gate must reconstruct.
+    {
+      let worst = 0;
+      const labels: string[] = [];
+      for (const gt of SHANNON_GATES) {
+        const U = gt.id.startsWith('rand') ? qsdRandU(gt.qubits, 0xabcdef) : gt.make();
+        const sh = shannonDecompose(U, gt.qubits);
+        const optErr = qsdDist(U, qsdCircuitMatrix(optimizeCircuit(sh.gates), gt.qubits));
+        const e = Math.max(sh.reconError, optErr);
+        if (e > worst) { worst = e; }
+        if (['grover3', 'incr3', 'incr4'].includes(gt.id) && e > 1e-6) labels.push(gt.id);
+      }
+      add('Quantum Shannon decomposition', 'every registry gate reconstructs — including degenerate permutations (modular increment) & reflections (Grover diffusion), raw + optimised',
+        worst < 1e-6 && labels.length === 0, `worst reconstruction over all ${SHANNON_GATES.length} gates = ${worst.toExponential(1)}`);
     }
   }
 

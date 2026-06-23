@@ -21,15 +21,16 @@ import ShorLab from './components/ShorLab';
 import MBQCLab from './components/MBQCLab';
 import SolovayLab from './components/SolovayLab';
 import SynthLab from './components/SynthLab';
+import ShannonLab from './components/ShannonLab';
 import DistillationLab from './components/DistillationLab';
 import TestsPanel from './components/TestsPanel';
 import ExportPanel from './components/ExportPanel';
 import { schmidtDecompose } from './quantum/Schmidt';
 
-type Tab = 'builder' | 'algorithms' | 'shor' | 'solovay' | 'synth' | 'distill' | 'mbqc' | 'variational' | 'stabilizer' | 'surface' | 'tensor' | 'freefermion' | 'dynamics' | 'tests' | 'about';
+type Tab = 'builder' | 'algorithms' | 'shor' | 'solovay' | 'synth' | 'shannon' | 'distill' | 'mbqc' | 'variational' | 'stabilizer' | 'surface' | 'tensor' | 'freefermion' | 'dynamics' | 'tests' | 'about';
 type VizTab = 'state' | 'probabilities' | 'bloch' | 'density' | 'measure';
 
-const PAGE_TABS: Tab[] = ['about', 'shor', 'solovay', 'synth', 'distill', 'mbqc', 'variational', 'stabilizer', 'surface', 'tensor', 'freefermion', 'dynamics', 'tests'];
+const PAGE_TABS: Tab[] = ['about', 'shor', 'solovay', 'synth', 'shannon', 'distill', 'mbqc', 'variational', 'stabilizer', 'surface', 'tensor', 'freefermion', 'dynamics', 'tests'];
 
 // Parse a shared circuit from the URL hash (#c=…) once, before mount — sandbox-safe.
 function loadSharedCircuit(): { numQubits: number; ops: GateOp[] } | null {
@@ -141,7 +142,7 @@ export default function App() {
         </div>
 
         <nav style={{ display: 'flex', gap: 2, marginLeft: 'auto', flexWrap: 'wrap' }}>
-          {(['builder', 'algorithms', 'shor', 'solovay', 'synth', 'distill', 'mbqc', 'variational', 'stabilizer', 'surface', 'tensor', 'freefermion', 'dynamics', 'tests', 'about'] as Tab[]).map((tab) => (
+          {(['builder', 'algorithms', 'shor', 'solovay', 'synth', 'shannon', 'distill', 'mbqc', 'variational', 'stabilizer', 'surface', 'tensor', 'freefermion', 'dynamics', 'tests', 'about'] as Tab[]).map((tab) => (
             <button
               key={tab}
               onClick={() => setActiveTab(tab)}
@@ -162,6 +163,7 @@ export default function App() {
                 : tab === 'shor' ? '🔢 Shor'
                 : tab === 'solovay' ? '🧭 Solovay–Kitaev'
                 : tab === 'synth' ? '🔧 2-Qubit Synthesis'
+                : tab === 'shannon' ? '🪜 n-Qubit Synthesis'
                 : tab === 'distill' ? '💎 Distillation'
                 : tab === 'mbqc' ? '🕹️ One-Way'
                 : tab === 'variational' ? '🧬 Variational' : tab === 'stabilizer' ? '🧱 Stabilizer'
@@ -226,6 +228,7 @@ export default function App() {
               {activeTab === 'shor' && <ShorLab />}
               {activeTab === 'solovay' && <SolovayLab />}
               {activeTab === 'synth' && <SynthLab />}
+              {activeTab === 'shannon' && <ShannonLab />}
               {activeTab === 'distill' && <DistillationLab />}
               {activeTab === 'mbqc' && <MBQCLab />}
               {activeTab === 'variational' && <VariationalLab />}
@@ -639,12 +642,16 @@ function AboutPage() {
           content: "The partner of Solovay–Kitaev, lifted to two qubits. A real machine has no \"arbitrary U(4)\" instruction — only single-qubit rotations and ONE entangler, the CNOT. The structure theorem that makes universal compilation possible is the KAK (Cartan) decomposition of SU(4), built here from scratch: every two-qubit gate factors as U = e^{iφ}(A₀⊗A₁)·exp(i(cx XX + cy YY + cz ZZ))·(B₀⊗B₁) — a layer of single-qubit gates, a purely non-local interaction fixed by three numbers (cx,cy,cz), and another single-qubit layer. The recovery is the magic-basis trick (Kraus–Cirac/Makhlin): in the Bell basis a single-qubit pair becomes a REAL orthogonal matrix and the interaction becomes diagonal, so U is O₁·F·O₂ with O₁,O₂ ∈ SO(4) — extracted by a real SIMULTANEOUS DIAGONALISATION of the commuting real and imaginary parts of ŨŨᵀ (robust even when eigenvalues coincide, as they do for CNOT and iSWAP). The triple (cx,cy,cz) is a complete local invariant living in the Weyl chamber, and it dictates the geometric MINIMUM number of CNOTs: 0 (local), 1 (the CNOT corner), 2 (the cz=0 face — iSWAP, √iSWAP, the Berkeley B gate), or 3 (the interior — SWAP, √SWAP, a generic gate). The canonical interaction is realised by the optimal three-CNOT Cartan circuit (Vatan–Williams) whose rotation angles are read straight off (cx,cy,cz), and the whole gate is synthesised into {Rz, Ry, CNOT} reproducing it to ~1e-12. Then the fault-tolerant step closes the loop with the lab's Solovay–Kitaev engine: every single-qubit gate is compiled into a discrete {H,T,…} word, so an arbitrary two-qubit gate becomes a real {H,T,CNOT} circuit with a total T-count — the magic-state budget. The 2-Qubit Synthesis tab decomposes CNOT/CZ/iSWAP/√iSWAP/√SWAP/SWAP/the B gate/a random SU(4) (or a custom interaction), plots its address in the Weyl-chamber tetrahedron, shows the Makhlin local invariants G₁,G₂, draws the synthesised circuit, and compiles the fault-tolerant version live. Verified to machine precision: reconstruction over hundreds of random gates, the recovered coordinates matching the input class, the locality of both layers, the optimal CNOT counts of the named gates, and the end-to-end fault-tolerant circuit.",
         },
         {
+          title: 'n-Qubit Synthesis — the Quantum Shannon Decomposition (compiling ANY gate)',
+          content: "The capstone of the lab's compilation story: having synthesised one qubit (Solovay–Kitaev) and two (the KAK decomposition), the Quantum Shannon Decomposition (Shende–Bullock–Markov) does ANY number of qubits, built here from scratch. The structure theorem is the COSINE–SINE DECOMPOSITION: partition a 2ⁿ×2ⁿ unitary by its top qubit into four 2ⁿ⁻¹ blocks, and it factors as U = diag(L0,L1)·[[C,−S],[S,C]]·diag(R0†,R1†) — two block-diagonal 'quantum multiplexors' (controlled by the top qubit) sandwiching a central [[C,−S],[S,C]] that is exactly a uniformly-controlled Rʏ on the top qubit, with C=cos θ, S=sin θ. The CSD is recovered from two block SVDs (via the lab's Hermitian eigensolver on the Gram matrix) plus an orthonormal completion; cos²+sin²=1 and every block stays unitary. Each multiplexor diag(A,B) then DEMULTIPLEXES: diag(A,B) = (I⊗V)·(uniformly-controlled R_z)·(I⊗W) where V and the rotation angles come from the EIGENDECOMPOSITION OF A UNITARY matrix A·B† — itself new machinery, built by simultaneously diagonalising the two commuting Hermitian parts (W+W†)/2 and (W−W†)/2i, robust through the repeated eigenvalues of structured gates. That leaves two (n−1)-qubit gates V,W applied unconditionally to the lower wires — recurse — and three uniformly-controlled rotations, each lowered to the OPTIMAL 2ⁿ⁻¹ CNOTs via the Gray-code / Walsh–Hadamard angle transform (Möttönen et al.). The base case n=1 is the ZYZ Euler decomposition. The whole synthesis reproduces any gate to machine precision (~1e-11 at 5 qubits) at exactly (¾)·4ⁿ − 3·2ⁿ⁻¹ CNOTs — 6, 36, 168, 720 for n=2…5. A peephole optimiser (adjacent-CNOT cancellation + rotation fusion) then collapses STRUCTURED gates — QFT, Toffoli, Fredkin, the Grover diffusion, modular adders — far below that generic bound, while a Haar-random SU(2ⁿ) sits exactly on it (the cost is irreducible by counting). The n-Qubit Synthesis tab decomposes a chosen gate, draws the {Rz,Ry,CNOT} circuit, shows the per-level recursion breakdown summing to the closed form, plots the ¾·4ⁿ cost curve with your gate marked, and — closing the loop with Solovay–Kitaev — compiles every rotation into a discrete {H,T,…} word so an arbitrary n-qubit unitary becomes a real {H,T,CNOT} circuit with a total T-count, the magic-state bill of universality. Verified to machine precision across ten new self-tests: the unitary eigensolver, the CSD reconstruction and Pythagorean identity, the exact demultiplexor, the uniformly-controlled rotation at the optimal CNOT count, the full QSD on random SU(2ⁿ) and on QFT/Toffoli/Fredkin, the closed-form CNOT count, and the end-to-end fault-tolerant compile.",
+        },
+        {
           title: 'Measurement-Based Quantum Computation (the One-Way Computer)',
           content: "A wholly different model of computation, built from scratch and cross-checked against the circuit model. Instead of applying gates, you prepare one large, fixed, entangled cluster state and compute purely by measuring its qubits one at a time in adaptively chosen single-qubit bases — the entanglement is the resource and (irreversible, random) measurement drives the computation. The lab implements the measurement calculus (Danos–Kashefi–Panangaden): patterns of N (prepare |+⟩), E (entangle with CZ), and M (measure at plane-angle φ = (−1)^{sX}·α + sZ·π, fed forward from earlier outcomes), with a universal {J(α), CZ} compiler that turns any single-qubit unitary (via its Euler angles) and CNOT into a cluster + a measurement schedule, propagating the Pauli byproduct operators symbolically. A dynamic state-vector engine frees each qubit the moment it is measured, so a computation of any depth keeps a live register no bigger than the number of logical wires — the MBQC memory advantage made concrete (a depth-deep two-wire circuit spreads over dozens of physical qubits but never holds more than three at once). The headline is determinism from randomness: every run records different measurement outcomes, yet undoing the known byproduct frame yields a byte-for-byte identical logical state — verified to machine precision against an independent dense circuit oracle over hundreds of random inputs and outcome strings. Cluster states are shown to be graph states, the +1 eigenstates of the generators K_v = X_v ∏_{w∼v} Z_w.",
         },
         {
           title: 'Phase Estimation & Tooling',
-          content: 'Quantum Phase Estimation recovers eigenphases via phase kickback + inverse QFT. Circuits export to OpenQASM 2.0 (Qiskit/IBM-compatible) and JSON, with shareable URLs, depth/gate metrics, and a 106-case in-browser self-test suite proving the engine correct against exact references — including the Solovay–Kitaev compiler reproducing arbitrary gates up to global phase and magic-state distillation\'s 35 p³ law, the measurement-based one-way computer reproducing the circuit model to machine precision — including Shor\'s order-finding distribution vs an exact analytic comb and the end-to-end factoring of 15/21/33/35, the free-fermion TFIM vs exact diagonalisation and the Pfeuty thermodynamic limit, the recovered central charge c=½, the quench vs exact dense evolution, the anisotropic-XY ground energy and the dynamical phase transition (Loschmidt rate + topological order parameter) vs exact dense time evolution, DMRG vs exact diagonalisation, the surface-code MWPM decoder vs brute-force matching, the Union-Find decoder vs MWPM, and both the code-capacity and phenomenological QEC threshold crossings.',
+          content: 'Quantum Phase Estimation recovers eigenphases via phase kickback + inverse QFT. Circuits export to OpenQASM 2.0 (Qiskit/IBM-compatible) and JSON, with shareable URLs, depth/gate metrics, and a 123-case in-browser self-test suite proving the engine correct against exact references — including the Quantum Shannon Decomposition synthesising arbitrary n-qubit gates to machine precision at the textbook ¾·4ⁿ CNOT count, the Solovay–Kitaev compiler reproducing arbitrary gates up to global phase and magic-state distillation\'s 35 p³ law, the measurement-based one-way computer reproducing the circuit model to machine precision — including Shor\'s order-finding distribution vs an exact analytic comb and the end-to-end factoring of 15/21/33/35, the free-fermion TFIM vs exact diagonalisation and the Pfeuty thermodynamic limit, the recovered central charge c=½, the quench vs exact dense evolution, the anisotropic-XY ground energy and the dynamical phase transition (Loschmidt rate + topological order parameter) vs exact dense time evolution, DMRG vs exact diagonalisation, the surface-code MWPM decoder vs brute-force matching, the Union-Find decoder vs MWPM, and both the code-capacity and phenomenological QEC threshold crossings.',
         },
       ].map(({ title, content }, i) => (
         <motion.div
