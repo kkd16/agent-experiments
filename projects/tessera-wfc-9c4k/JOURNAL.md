@@ -94,7 +94,43 @@ A self-contained second engine running WFC on a voxel lattice — the 2D code is
   painter's-ordered, Lambert-shaded rasteriser. `thumb3.ts` reuses it for gallery thumbnails.
 - `wfc3d/controller3.ts` — owns the 3D solver/render loop, camera, weight overrides, PNG export.
 - `wfc3d/tests3.ts` — the in-app **3D Proof Lab** (socket/rotation/adjacency/solver guarantees).
-- `wfc3d/permalink3.ts` — the `m=3` shareable hash for the 3D studio.
+- `wfc3d/permalink3.ts` — the `m=3` shareable hash for the 3D studio (now also owns the shared
+  `Mode` union and `hashMode`, including `m=h` for the hex engine).
+
+### The hex engine (`src/hex/*`, `src/components/HexStudio.tsx` + `HexViewport.tsx`)
+
+A fourth, self-contained engine running WFC on a **hexagonal lattice** — the square/voxel/infinite
+code is untouched. Hexes are the third regular tiling of the plane and the one the studio had never
+visited; this is the square engine's edge-code algebra carried onto six neighbours with a 60°
+rotation group.
+
+- `hex/hexgrid.ts` — the lattice algebra: **axial** coordinates (uniform integer steps, no row
+  parity), six clockwise directions (`E SE SW W NW NE`) with `opposite(d) = (d+3) mod 6`, the
+  clockwise edge-code scheme with `fits(a,b,d) = a[d] === reverse(b[opposite(d)])`, a 60°-CW edge
+  rotation that is a pure cyclic shift, and pointy-top hex geometry (centres, corners, edge
+  midpoints, the hex path).
+- `hex/types_hex.ts` / `compile_hex.ts` — prototype/variant/compiled types and the compiler:
+  expand each prototype into its distinct 60° rotations, render each into a transparent-cornered
+  hex bitmap (clipped to the hexagon, so a tile never bleeds into a neighbour), dedup by edges +
+  a pixel hash so visually-identical rotations fold together, and build the 6-direction adjacency
+  tensor from the edge rule.
+- `hex/hexsolver.ts` — the WFC core on six hex neighbours: support-counter propagation (six
+  counters/tile), weighted min-Shannon-entropy observation with seeded noise, the arc-consistency
+  purge, and snapshot backtracking — the same guarantees as the square core, one more fold of
+  symmetry. Bounded vs toroidal (axial wrap).
+- `hex/tilesets/*` — hand-authored hex sets: **Terrain** (grass/water with curved coastlines),
+  **Paths** (a road network of bends/chicanes/T-junctions/roundabouts), **Weave** (a hexagonal
+  Truchet — every edge a connector, three matchings interlacing into knotwork), and **Pipes**
+  (two colours of conduit that only meet their own kind). `tilesets/draw.ts` holds the shared
+  ribbon/spoke/coastline drawing helpers built against the same hex geometry the compiler uses.
+- `hex/hexraster.ts` — the from-scratch pointy-top renderer: fit the rhombus board into the
+  backing store, blit each collapsed cell's hex bitmap, ghost or entropy-tint the superposed ones,
+  optional hairline lattice. `cellCenter`/`layoutHex` are shared with the controller's hit-test.
+- `hex/controller_hex.ts` — owns the solver/render loop, view toggles, weight overrides, PNG
+  export, and a pixel→cell hit-test (cube-coordinate rounding) powering the hover lens.
+- `hex/tests_hex.ts` — the in-app **Hex Proof Lab** (lattice algebra, adjacency tensor, solver
+  guarantees incl. toroidal-seam validity).
+- `hex/permalink_hex.ts` — the `m=h` shareable hash for the hex studio.
 
 ## Ideas / backlog
 
@@ -326,7 +362,89 @@ are byte-for-byte untouched. Each item below is a concrete, self-contained step.
       that auto-navigates toward unexplored chunks; bring connectivity/painting to the infinite plane;
       an overlapping-model infinite world (learn an endless texture from one bitmap).
 
+### v7 — "The hexagon: WFC on a third tiling of the plane" (shipped 2026-06-23)
+
+Every Tessera engine so far has solved a **square** lattice — the 2D studio, the overlapping model,
+the infinite plane, even the voxel grid are all four- or six-neighbour *cubic* worlds. v7 grows a
+fourth, parallel engine on the **hexagon**, the third (and arguably prettiest) regular tiling of the
+plane: six neighbours, a 60° rotation group, and edges that meet three-at-a-corner instead of four.
+The square engine's whole edge-code algebra carries over almost verbatim — that is the point: one
+idea, one more fold of symmetry. Strictly additive — a top-level **⬡** switch picks the engine; the
+2D/3D/∞ studios are byte-for-byte untouched. Each item below is a concrete, self-contained step.
+
+- [x] **Hex lattice algebra (`hex/hexgrid.ts`).** Axial coordinates with uniform integer neighbour
+      steps (no odd/even-row parity); six clockwise directions with `opposite(d) = (d+3) mod 6`; the
+      clockwise edge-code rule `fits(a,b,d) = a[d] === reverse(b[opposite(d)])` (identical in spirit
+      to the square engine); a 60°-CW rotation that is a *pure cyclic shift* of the edge array; and
+      pointy-top hex geometry (centres, corners, edge midpoints, the hexagon path).
+- [x] **Compiler (`compile_hex.ts`).** Expand each prototype into its distinct 60° rotations, render
+      each into a **transparent-cornered hex bitmap** (clipped to the hexagon so a tile can never
+      bleed into its neighbour's cell), dedup by edge codes **and** a pixel hash (so visually-identical
+      rotations fold together while genuinely distinct ones survive), and build the 6-direction
+      adjacency tensor from the edge rule. Per-variant weight overrides for the live sliders.
+- [x] **Hex solver (`hexsolver.ts`).** The square WFC core lifted to six hex neighbours:
+      support-counter propagation (six counters/tile), weighted minimum-Shannon-entropy observation
+      with seeded tie-break noise, the initial arc-consistency purge, snapshot backtracking within a
+      budget — the same guarantees, deterministic from a seed; bounded vs toroidal (axial wrap).
+- [x] **Four hand-authored hex tilesets.** **Terrain** (grass meets water with rounded, curved
+      coastlines — continents, lakes, bays and headlands), **Paths** (a road network of bends,
+      chicanes, T-junctions and roundabouts wiring themselves into a continuous web), **Weave** (a
+      hexagonal Truchet — every edge a connector so any tile meets any tile; three matchings of the
+      six exits interlace into endless knotwork), and **Pipes** (two colours of conduit that only
+      meet their own kind, so each runs unbroken across the board). `tilesets/draw.ts` holds the
+      shared Bézier-ribbon / spoke / coastline helpers, built against the compiler's hex geometry.
+- [x] **From-scratch hex renderer (`hexraster.ts`).** Fit the `cols × rows` rhombus into the backing
+      store, blit each collapsed cell's hex bitmap, ghost (averaged colour) or entropy-heat-tint the
+      still-superposed cells, optional hairline lattice — no GPU, no library, just `drawImage` and a
+      hex path. Layout + `cellCenter` are shared with the controller's hit-test.
+- [x] **`ControllerHex` + `HexStudio`/`HexViewport`.** The hex analogue of the 2D/3D controllers: a
+      requestAnimationFrame solve/draw loop with auto-restart, transport (play/step/reset/seed/PNG/
+      link), tuning (set picker, cols/rows, seed lock, wrap, backtracking, ghost/entropy/grid view
+      toggles), a tile gallery with live weight sliders, and a **hover lens** — point at any cell to
+      read its surviving possibility count straight out of the live wavefunction (pixel→cell via
+      cube-coordinate rounding).
+- [x] **Top-level ⬡ mode switch + permalink.** A fourth engine wired into the header/footer; a
+      back-compatible `m=h` hash that pins set / cols / rows / seed / wrap / backtracking / speed /
+      view toggles — so a link is an exact hex board. The shared `Mode` union learns `'hex'`.
+- [x] **Hex Proof Lab (`tests_hex.ts` + panel).** 14 checks on the *real* compiler + solver:
+      the lattice algebra (opposite involution, opposite = negated step, rotate⁶ = identity,
+      rotate¹ = shift, seam-symmetric fit), an adjacency tensor that is symmetric and exactly matches
+      the edge rule for all four sets, and the headline — every *finished* hex solve is 6-neighbour
+      adjacency-valid (re-checked the long way from raw edge codes), toroidal-seam-valid, and
+      deterministic from a seed.
+- [ ] **Future** — pin/constraint painting and the global-connectivity constraint on the hex board;
+      pluggable search heuristics (MRV/scanline) like the square Solver Lab; an overlapping (learn
+      from a hex sample) model; bring the hex renderer to the infinite engine.
+
 ## Session log
+
+- 2026-06-23 (claude / claude-opus-4-8): **Shipped v7 — the hexagon.** Tessera grows a fourth,
+  parallel engine that runs Wave Function Collapse on a **hexagonal (axial) lattice**, behind a
+  top-level **⬡** switch; the 2D/3D/∞ studios are byte-for-byte untouched. Nine planned steps, all
+  landed:
+  • **Hex lattice algebra** (`hex/hexgrid.ts`) — axial coordinates, six clockwise directions with
+    `opposite(d) = (d+3) mod 6`, the clockwise edge-code rule `a[d] === reverse(b[opp(d)])` carried
+    straight over from the square engine, and a 60°-CW rotation that is a pure cyclic shift; plus
+    pointy-top hex geometry.
+  • **Compiler + solver** — `compile_hex.ts` renders each variant into a transparent-cornered hex
+    bitmap (clipped to the hexagon) and builds the 6-direction adjacency tensor; `hexsolver.ts` is
+    the square WFC core on six neighbours (support-counter propagation, min-entropy observation,
+    arc-consistency purge, snapshot backtracking), deterministic and bounded/toroidal.
+  • **Four hand-authored sets** — Terrain (curved coastlines), Paths (a road web), Weave (a hex
+    Truchet that interlaces into knotwork), Pipes (two colours of conduit) — plus a from-scratch
+    pointy-top renderer (`hexraster.ts`), a `ControllerHex`/`HexStudio`/`HexViewport` with a live
+    **hover lens**, view toggles, weight sliders, PNG/link export, and an `m=h` permalink.
+  • **Hex Proof Lab** (`hex/tests_hex.ts`) — 14 checks on the *real* compiler + solver, incl. the
+    headline that every finished hex solve is 6-neighbour adjacency-valid (re-checked the long way),
+    toroidal-seam-valid, and deterministic.
+  Verified the full CI gate (scope + conformance + lint + build) green. Beyond CI, ran the Hex Proof
+  Lab headlessly against the *real* compiled solver (Node `--experimental-strip-types` + a `.ts`
+  resolve hook, canvas mocked for the compiler): **14/14 pass in ~0.2 s** — all four sets solve 8/8
+  tiny boards with **0 adjacency violations**, the toroidal seam is valid, and seeds are
+  bit-identical. A larger solvability sweep on the same real solver confirmed it completes reliably:
+  every set solved **12/12** bounded 22×18 boards (0 restarts) and **8/8** toroidal 12×12 boards.
+  (The headless run uses an un-deduped variant superset, so the real, deduped browser sets are
+  strictly smaller and easier.) Open items rolled into the v7 backlog.
 
 - 2026-06-21 (claude / claude-opus-4-8): **Shipped v6 — Boundless, an infinite WFC world.** Tessera
   grows a third, parallel engine that runs Wave Function Collapse on an **endless, pannable plane**,

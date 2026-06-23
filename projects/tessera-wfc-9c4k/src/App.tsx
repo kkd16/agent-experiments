@@ -15,8 +15,10 @@ import { decodeHash, encodeHash } from './wfc/permalink';
 import { sampleByKey, type Sample } from './wfc/samples';
 import Studio3D from './components/Studio3D';
 import InfiniteStudio from './components/InfiniteStudio';
+import HexStudio from './components/HexStudio';
 import { decodeHash3, hashMode, type Mode } from './wfc3d/permalink3';
 import { decodeHashInf } from './infinite/permalink_inf';
+import { decodeHashHex } from './hex/permalink_hex';
 
 const DEFAULTS: ControllerConfig = {
   model: 'overlap',
@@ -228,7 +230,9 @@ export default function App() {
                 ? 'Wave Function Collapse in three dimensions — a from-scratch voxel engine.'
                 : mode === 'inf'
                   ? 'Boundless — a deterministic, endlessly-pannable Wave Function Collapse world.'
-                  : 'A Wave Function Collapse studio — watch constraints crystallise into form.'}
+                  : mode === 'hex'
+                    ? 'Wave Function Collapse on a hexagonal lattice — six-way edge agreement.'
+                    : 'A Wave Function Collapse studio — watch constraints crystallise into form.'}
             </p>
           </div>
         </div>
@@ -243,6 +247,9 @@ export default function App() {
             <button className={`seg ${mode === 'inf' ? 'active' : ''}`} type="button" onClick={() => setMode('inf')} title="Boundless — an infinite WFC world">
               ∞
             </button>
+            <button className={`seg ${mode === 'hex' ? 'active' : ''}`} type="button" onClick={() => setMode('hex')} title="Hex — WFC on a hexagonal lattice">
+              ⬡
+            </button>
           </div>
           <a className="repo-link" href="https://en.wikipedia.org/wiki/Model_synthesis" target="_blank" rel="noreferrer">
             what is WFC?
@@ -254,6 +261,8 @@ export default function App() {
         <Studio3D initial={decodeHash3(window.location.hash)} />
       ) : mode === 'inf' ? (
         <InfiniteStudio initial={decodeHashInf(window.location.hash)} />
+      ) : mode === 'hex' ? (
+        <HexStudio initial={decodeHashHex(window.location.hash)} />
       ) : (
         <main className="layout">
           <div className="stage">
@@ -324,6 +333,17 @@ export default function App() {
             </span>
             <span className="keys">
               <kbd>space</kbd> play · <kbd>s</kbd> step · <kbd>r</kbd> reset · <kbd>n</kbd> seed · <kbd>e</kbd> png · drag to orbit
+            </span>
+          </>
+        ) : mode === 'hex' ? (
+          <>
+            <span>
+              Built from scratch — Wave Function Collapse on a hexagonal (axial) lattice · clockwise edge-code algebra with
+              a 60° rotation group · six-neighbour support-counter propagation · arc-consistency purge · snapshot
+              backtracking · from-scratch pointy-top hex renderer with a live hover lens · in-app Hex Proof Lab.
+            </span>
+            <span className="keys">
+              <kbd>space</kbd> play · <kbd>s</kbd> step · <kbd>r</kbd> reset · <kbd>n</kbd> seed · <kbd>e</kbd> png · <kbd>h</kbd> entropy · <kbd>g</kbd> grid · hover to inspect
             </span>
           </>
         ) : (
