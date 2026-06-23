@@ -2704,4 +2704,34 @@ fn k(seed: int) -> int {
 }
 fn main(){ print(k(2)); print(k(5)); print(k(8)); }`,
   },
+  {
+    name: 'sink-one-arm',
+    source: `// Code sinking: 't' is a pure value used on only the 'then' arm. The print
+// keeps that arm non-speculable so if-conversion declines, leaving a real branch;
+// sinking must push 't' into the arm (computed only when cond) without changing
+// any printed value. Seed loop is too long to unroll, so cond/a/b are runtime.
+fn k(seed: int) -> int {
+  let g = 0; for (let t = 0; t < 150; t = t + 1) { g = g + seed * t - 1; }
+  let a = (g & 15) - 6; let b = (g & 7) - 3;
+  let t = a * a + b * b - a * b;
+  let s = a + b;
+  if ((g & 16) > 0) { print(t); s = s + t * 2; } else { s = s - b; }
+  return s;
+}
+fn main(){ print(k(1)); print(k(2)); print(k(5)); print(k(9)); }`,
+  },
+  {
+    name: 'sink-two-values',
+    source: `// Two independent pure values, each used on a different arm: each must sink
+// into its own arm. A value used on BOTH arms (w) must stay put.
+fn k(seed: int) -> int {
+  let g = 1; for (let t = 0; t < 140; t = t + 1) { g = g ^ (seed * t + 3); }
+  let a = (g & 15) - 6; let b = (g & 9) - 4;
+  let t = a * a + b; let u = b * b - a; let w = a + b * 2;
+  let s = w;
+  if ((g & 8) > 0) { print(t); s = s + t - w; } else { print(u); s = s - u + w; }
+  return s;
+}
+fn main(){ print(k(2)); print(k(4)); print(k(7)); print(k(13)); }`,
+  },
 ];
