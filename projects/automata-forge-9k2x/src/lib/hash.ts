@@ -5,7 +5,7 @@
 import { decodeEdit, encodeEdit, emptyAutomaton } from '../engine/edit'
 import type { EditAutomaton } from '../engine/edit'
 
-export type Mode = 'explore' | 'compare' | 'build' | 'grammar' | 'machine' | 'parse'
+export type Mode = 'explore' | 'compare' | 'build' | 'grammar' | 'machine' | 'parse' | 'learn'
 
 export interface AppState {
   mode: Mode
@@ -15,6 +15,7 @@ export interface AppState {
   grammar: { text: string; tab: string; input: string }
   machine: { source: string; tab: string; input: string }
   parse: { text: string; tab: string; input: string }
+  learn: { regex: string; tab: string; strategy: string }
 }
 
 export function encodeHash(s: AppState): string {
@@ -49,6 +50,12 @@ export function encodeHash(s: AppState): string {
     q.set('t', s.parse.tab)
     if (s.parse.input) q.set('i', s.parse.input)
     return `#/parse?${q.toString()}`
+  }
+  if (s.mode === 'learn') {
+    q.set('r', s.learn.regex)
+    q.set('t', s.learn.tab)
+    q.set('s', s.learn.strategy)
+    return `#/learn?${q.toString()}`
   }
   q.set('r', s.explore.regex)
   q.set('t', s.explore.tab)
@@ -118,6 +125,17 @@ export function decodeHash(raw: string, fallback: AppState): AppState {
           text: q.get('g') ?? fallback.parse.text,
           tab: q.get('t') ?? fallback.parse.tab,
           input: q.get('i') ?? '',
+        },
+      }
+    }
+    if (path === 'learn') {
+      return {
+        ...fallback,
+        mode: 'learn',
+        learn: {
+          regex: q.get('r') ?? fallback.learn.regex,
+          tab: q.get('t') ?? fallback.learn.tab,
+          strategy: q.get('s') ?? fallback.learn.strategy,
         },
       }
     }

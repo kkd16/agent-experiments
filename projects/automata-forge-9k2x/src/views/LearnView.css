@@ -1,0 +1,92 @@
+/* Strategy toggle in the input bar — mirrors the header's mode switch. */
+.strat-switch {
+  display: inline-flex;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 3px;
+  gap: 3px;
+}
+.strat-btn {
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--muted);
+  background: none;
+  border: none;
+  border-radius: 7px;
+  padding: 5px 12px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s, color 0.15s;
+}
+.strat-btn:hover {
+  color: var(--ink);
+}
+.strat-btn.active {
+  color: var(--bg);
+  background: linear-gradient(90deg, var(--accent), var(--accent2));
+}
+
+.learn-hint {
+  margin-left: auto;
+  font-size: 11.5px;
+  color: var(--muted);
+  font-style: italic;
+}
+
+.learn-legend .learn-defect-key {
+  color: #ffcf6e;
+}
+
+.learn-progress {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 8px;
+}
+
+/* Event card */
+.learn-event .panel-sub code {
+  color: #e6eefc;
+  background: rgba(120, 150, 220, 0.12);
+  padding: 0 4px;
+  border-radius: 4px;
+}
+
+.ev-tag {
+  display: inline-block;
+  font-size: 10.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 2px 7px;
+  border-radius: 6px;
+  margin-right: 7px;
+  vertical-align: middle;
+}
+.ev-tag.close {
+  background: rgba(110, 231, 168, 0.18);
+  color: #6ee7a8;
+}
+.ev-tag.consistent {
+  background: rgba(209, 139, 255, 0.18);
+  color: #d18bff;
+}
+.ev-tag.conj {
+  background: rgba(110, 168, 255, 0.18);
+  color: #6ea8ff;
+}
+.ev-tag.ce {
+  background: rgba(255, 164, 110, 0.18);
+  color: #ffa46e;
+}
+.ev-tag.ok {
+  background: rgba(110, 231, 168, 0.22);
+  color: #6ee7a8;
+}
+
+.ev-chip {
+  display: inline-block;
+  margin: 0 2px;
+}

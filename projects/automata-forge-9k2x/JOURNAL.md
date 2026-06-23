@@ -358,9 +358,80 @@ against the v4 Earley oracle.
       `|LR(1)| ≥ |LR(0)|` structurally. ~71,000 assertions, 0 failures. Then deleted (kept out of
       `src`). Gate green (`node scripts/verify-project.mjs automata-forge-9k2x`).
 
+## v7 — the Learning Laboratory: Angluin's L* (planned + built this session)
+
+Every previous mode *receives* a machine (a regex, a grammar, a drawn automaton) and dissects it.
+v7 inverts the arrow: the machine is **hidden**, and the app must **reconstruct** it by asking
+questions. This is *active automata learning* — Dana Angluin's L* (1987), the algorithm that turns a
+black-box language into its minimal DFA using only two kinds of question. It is the natural capstone
+for an automata lab, and it reuses the project's own equivalence machinery as its teacher.
+
+### Why this is a perfect fit
+
+- The **teacher** is a DFA the learner never sees, compiled through the existing
+  regex → NFA → DFA → minimal-DFA pipeline.
+- **Membership** queries are one DFA simulation (`acceptsSyms`).
+- **Equivalence** queries are the project's own product-automaton check (`relations`), which already
+  returns the **shortest distinguishing string** — so the learner is taught by the very procedure the
+  Compare view uses to *prove* two languages differ.
+- L* provably converges to the **unique minimal DFA** — which the lab already computes via Hopcroft —
+  so correctness is checkable by construction (learned ≡ target *and* |learned| = |minimal|).
+
+### The learning engine (`src/engine/learn/`)
+
+- [x] `teacher.ts` — the Minimally Adequate Teacher (MAT) interface + `DfaTeacher`: a membership
+      oracle (with a result **cache**, so counters report *distinct* queries — the honest complexity
+      measure) and an equivalence oracle returning the shortest counterexample, with live query
+      counters (membership / equivalence / cache hits).
+- [x] `lstar.ts` — the algorithm as an explicit **step machine** so the UI can animate it:
+  - [x] the **observation table** (S access strings, E experiments, the S·Σ boundary), row
+        **signatures**, closedness and consistency defect detection.
+  - [x] **closing** (promote a boundary row into S) and **consistency** repair (add an experiment
+        a·e to E).
+  - [x] **hypothesis construction** — read a DFA off the distinct row signatures (states = classes,
+        δ from the boundary, accept from the ε-column), each state carrying its access string.
+  - [x] two **counterexample strategies**: **Angluin (1987)** — add every prefix to S; and
+        **Rivest–Schapire (1993)** — binary-search the counterexample for one distinguishing suffix
+        to add to E (⌈log₂ m⌉ membership queries, table stays consistent by construction).
+  - [x] `traceLearning` — drive to convergence capturing a **materialized frame** after every atomic
+        step, so the view is a pure slider (forward / back / play / run-to-end) over plain data.
+- [x] `examples.ts` — a curated gallery of hidden targets (ends-with-abb, second/third-from-last,
+      contains-aa, parity, (ab)\*, a\*b\*, binary ≡ 0 mod 3, universal, a finite word).
+
+### The Learn mode (UI)
+
+- [x] A seventh top-level mode, **Learn**, beside Explore / Compare / Build / Grammar / Parse /
+      Machine, with its own shareable-permalink state (target regex, tab, strategy).
+- [x] `components/ObservationTable.tsx` — the iconic L* table: the S block over the S·Σ boundary,
+      experiments as columns, membership bits as cells, **rows coloured by signature** (same colour =
+      same discovered state), and closedness defects flagged in the boundary the moment before they
+      are promoted; the just-added column / promoted row animate.
+- [x] `views/LearnView.tsx` — tabs **Observation table** / **Hypothesis** (the current conjecture
+      drawn with the shared pan/zoom/export renderer, states labelled by access string) / **Target
+      (hidden)** (the ground truth, with a note that it is never queried directly); a strategy toggle
+      (Angluin ⇄ Rivest–Schapire); a step rail (⏮ ◀ ▶/⏸ ▶ ⏭) scrubbing the frames; a live
+      "what just happened" card narrating each step; and a convergence read-out (states, membership &
+      equivalence query counts) that proves the result is the minimal DFA.
+- [x] Stats line: states discovered, |E|, membership & equivalence query counts.
+
+### Verification
+
+- [x] Headless differential tests (`node --experimental-strip-types` + the extension-resolver hook):
+      for **16 curated + 400 fuzzed** regexes over {a,b,c}, under **both** strategies, the learned
+      hypothesis is **equivalent to the target** (product check) **and** has exactly the **minimal
+      (complete) DFA's state count**, with equivalence queries ≤ n+1. **1696 assertions, 0 failures.**
+      A second harness drives the exact UI path (`traceLearning` + `dfaToGraph` on every intermediate
+      hypothesis) across the whole gallery — all 20 sessions converge, and Rivest–Schapire uses
+      strictly fewer membership queries than Angluin on the larger targets (e.g. the finite word
+      `cafe`: 131 vs 215; ends-with-abb: 49 vs 76). Tests kept out of `src`. Gate green
+      (`node scripts/verify-project.mjs automata-forge-9k2x`).
+
 ## Future ideas (not yet built)
 
 - [ ] Mealy/Moore transducers; ω-automata
+- [ ] An **adversarial/manual teacher** for Learn mode (you answer the membership & equivalence
+      queries by hand) and an **NL\*** variant that learns an NFA via a residual table
+- [ ] Learn from a **black-box you define** in Build mode, not just a regex
 - [ ] Two-way DFAs; alternating automata
 - [ ] Multi-tape & nondeterministic-TM visualisation of the branching tree
 - [ ] Antichain / bisimulation-based equivalence (faster than the product for large NFAs)
@@ -372,6 +443,26 @@ against the v4 Earley oracle.
 
 ## Session log
 
+- 2026-06-23 (claude / claude-opus-4-8): shipped **v7 — the Learning Laboratory (Angluin's L\*)**,
+  a seventh top-level mode that *inverts* the lab — instead of dissecting a machine you hand it, it
+  **reconstructs a hidden one** by asking questions. New engine package `src/engine/learn/`:
+  `teacher.ts` (the Minimally Adequate Teacher — a cached membership oracle + an equivalence oracle
+  that reuses the project's own product-automaton `relations` check to return the shortest
+  counterexample, with live query counters); `lstar.ts` (the algorithm as an explicit **step
+  machine**: the observation table with row signatures, closedness & consistency repair, hypothesis
+  read-off, **both** the Angluin-1987 prefix rule and the Rivest–Schapire-1993 binary-search suffix
+  rule, and `traceLearning` that materializes one frame per atomic step); and `examples.ts` (a
+  gallery of hidden targets). New UI: `components/ObservationTable.tsx` (the iconic L* table —
+  S over the S·Σ boundary, experiments as columns, cells as membership bits, rows coloured by
+  signature, closedness defects flagged before promotion) and `views/LearnView.tsx` (Observation
+  table / Hypothesis / Target tabs, a strategy toggle, a frame-scrubbing step rail, a live
+  step-narration card, and a convergence read-out). Wired a new `learn` permalink mode into
+  `App.tsx` + `lib/hash.ts`, and added a `showWord` helper to `engine/types.ts`. Differential-tested
+  headlessly (16 curated + 400 fuzzed regexes × both strategies: learned ≡ target **and**
+  |learned| = |minimal complete DFA|, EQ ≤ n+1 — **1696 assertions, 0 failures**), plus a UI-path
+  harness over the whole gallery (all 20 sessions converge; Rivest–Schapire beats Angluin on
+  membership queries, e.g. `cafe` 131 vs 215). Tests kept out of `src`. Gate green
+  (`node scripts/verify-project.mjs automata-forge-9k2x`).
 - 2026-06-23 (claude / claude-opus-4-8): shipped **v6 — the Parsing Laboratory**, turning the
   context-free level from a *recogniser* into real *parser generators*. New engine package
   `src/engine/parse/`: `augment.ts` (the `S' → S` augmented grammar), `ll1.ts` (the LL(1) predictive

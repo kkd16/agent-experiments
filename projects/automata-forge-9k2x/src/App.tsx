@@ -11,6 +11,9 @@ import TuringView from './views/TuringView'
 import type { TuringTab } from './views/TuringView'
 import ParseView from './views/ParseView'
 import type { ParseTab } from './views/ParseView'
+import LearnView from './views/LearnView'
+import type { LearnTab } from './views/LearnView'
+import type { Strategy } from './engine/learn/lstar'
 import { copyText } from './lib/download'
 import { decodeHash, encodeHash } from './lib/hash'
 import type { AppState, Mode } from './lib/hash'
@@ -18,6 +21,7 @@ import { COMPARE_EXAMPLES, EXAMPLES } from './examples'
 import { GRAMMAR_EXAMPLES } from './engine/cfg/examples'
 import { TM_EXAMPLES } from './engine/tm/examples'
 import { PARSE_EXAMPLES } from './engine/parse/examples'
+import { LEARN_EXAMPLES } from './engine/learn/examples'
 import { BUILD_TEMPLATES } from './engine/edit'
 
 const VALID_TABS: ExploreTab[] = ['ast', 'nfa', 'dfa', 'min', 'der', 'mn']
@@ -25,6 +29,8 @@ const VALID_BUILD_TABS: BuildTab[] = ['editor', 'dfa', 'min', 'mn']
 const VALID_GRAMMAR_TABS: GrammarTab[] = ['analyze', 'cnf', 'cyk', 'earley', 'tree', 'sampler', 'pda', 'pumping']
 const VALID_MACHINE_TABS: TuringTab[] = ['run', 'trace', 'table', 'diagram', 'hierarchy']
 const VALID_PARSE_TABS: ParseTab[] = ['class', 'll1', 'automaton', 'table', 'parse']
+const VALID_LEARN_TABS: LearnTab[] = ['table', 'hypothesis', 'target']
+const VALID_STRATEGIES: Strategy[] = ['angluin', 'rivest-schapire']
 const VALID_OPS = ['union', 'inter', 'diffAB', 'diffBA', 'symdiff']
 
 const DEFAULT_STATE: AppState = {
@@ -40,6 +46,7 @@ const DEFAULT_STATE: AppState = {
   grammar: { text: GRAMMAR_EXAMPLES[0].text, tab: 'cyk', input: GRAMMAR_EXAMPLES[0].test },
   machine: { source: TM_EXAMPLES[0].source, tab: 'run', input: TM_EXAMPLES[0].input },
   parse: { text: PARSE_EXAMPLES[1].text, tab: 'class', input: PARSE_EXAMPLES[1].test },
+  learn: { regex: LEARN_EXAMPLES[0].regex, tab: 'table', strategy: 'rivest-schapire' },
 }
 
 /** Sanitize a decoded state so a hand-edited URL can never wedge a view. */
@@ -50,6 +57,10 @@ function clean(s: AppState): AppState {
   const gtab = VALID_GRAMMAR_TABS.includes(s.grammar.tab as GrammarTab) ? s.grammar.tab : 'cyk'
   const mtab = VALID_MACHINE_TABS.includes(s.machine.tab as TuringTab) ? s.machine.tab : 'run'
   const ptab = VALID_PARSE_TABS.includes(s.parse.tab as ParseTab) ? s.parse.tab : 'class'
+  const ltab = VALID_LEARN_TABS.includes(s.learn.tab as LearnTab) ? s.learn.tab : 'table'
+  const lstrat = VALID_STRATEGIES.includes(s.learn.strategy as Strategy)
+    ? s.learn.strategy
+    : 'rivest-schapire'
   return {
     ...s,
     explore: { ...s.explore, tab },
@@ -58,6 +69,7 @@ function clean(s: AppState): AppState {
     grammar: { ...s.grammar, tab: gtab },
     machine: { ...s.machine, tab: mtab },
     parse: { ...s.parse, tab: ptab },
+    learn: { ...s.learn, tab: ltab, strategy: lstrat },
   }
 }
 
@@ -107,7 +119,9 @@ export default function App() {
                       ? 'context-free grammars: normalize, parse (CYK & Earley), build a PDA & pump'
                       : state.mode === 'parse'
                         ? 'parser generators: LL(1) & LR(0)/SLR/LALR/LR(1) tables, the item automaton & live parses'
-                        : 'Turing machines: the top of the hierarchy — run, trace & watch the tape'}
+                        : state.mode === 'learn'
+                          ? 'active learning: Angluin’s L* infers the minimal DFA from membership & equivalence queries'
+                          : 'Turing machines: the top of the hierarchy — run, trace & watch the tape'}
             </p>
           </div>
         </div>
@@ -155,6 +169,14 @@ export default function App() {
             </button>
             <button
               role="tab"
+              aria-selected={state.mode === 'learn'}
+              className={`mode-btn${state.mode === 'learn' ? ' active' : ''}`}
+              onClick={() => setMode('learn')}
+            >
+              Learn
+            </button>
+            <button
+              role="tab"
               aria-selected={state.mode === 'machine'}
               className={`mode-btn${state.mode === 'machine' ? ' active' : ''}`}
               onClick={() => setMode('machine')}
@@ -196,6 +218,15 @@ export default function App() {
           onInput={(input) => setState((s) => ({ ...s, parse: { ...s.parse, input } }))}
           tab={state.parse.tab as ParseTab}
           onTab={(tab) => setState((s) => ({ ...s, parse: { ...s.parse, tab } }))}
+        />
+      ) : state.mode === 'learn' ? (
+        <LearnView
+          regex={state.learn.regex}
+          onRegex={(regex) => setState((s) => ({ ...s, learn: { ...s.learn, regex } }))}
+          strategy={state.learn.strategy as Strategy}
+          onStrategy={(strategy) => setState((s) => ({ ...s, learn: { ...s.learn, strategy } }))}
+          tab={state.learn.tab as LearnTab}
+          onTab={(tab) => setState((s) => ({ ...s, learn: { ...s.learn, tab } }))}
         />
       ) : state.mode === 'grammar' ? (
         <GrammarView

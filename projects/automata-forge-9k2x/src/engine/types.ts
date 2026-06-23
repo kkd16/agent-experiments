@@ -18,6 +18,11 @@ export function showSym(s: Sym): string {
   return showChar(s)
 }
 
+/** Render a word (sequence of alphabet symbols), using ε for the empty string. */
+export function showWord(w: Sym[]): string {
+  return w.length ? w.map(showSym).join('') : 'ε'
+}
+
 /** Render a raw character, escaping the ones that are hard to see. */
 export function showChar(c: string): string {
   switch (c) {
