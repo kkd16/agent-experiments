@@ -1,0 +1,444 @@
+/* Parse mode — the parsing laboratory (LL(1) + LR family). Reuses the global workspace/rail/panel
+   layout from App.css; everything here is parse-specific. */
+
+.parse-ws .grammar-input {
+  width: 100%;
+  resize: vertical;
+  background: var(--bg);
+  color: var(--ink);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 10px 12px;
+  font-family: var(--mono);
+  font-size: 13px;
+  line-height: 1.6;
+}
+.parse-ws .grammar-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.tabwrap {
+  padding: 18px 20px 40px;
+  max-width: 1000px;
+}
+
+.sec-h {
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+  margin: 22px 0 12px;
+  font-weight: 700;
+}
+.tabwrap > .sec-h:first-child {
+  margin-top: 2px;
+}
+
+.prose,
+.hint {
+  color: var(--muted);
+  font-size: 13.5px;
+  line-height: 1.7;
+  margin: 0 0 14px;
+}
+.hint {
+  font-size: 12.5px;
+}
+.hint code,
+.prose code {
+  font-family: var(--mono);
+  background: var(--bg);
+  padding: 1px 5px;
+  border-radius: 5px;
+  color: var(--accent);
+  font-size: 0.92em;
+}
+.warn-text {
+  color: var(--warn);
+}
+.prodref {
+  display: inline-block;
+  font-family: var(--mono);
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 1px 6px;
+  margin: 2px 4px 2px 0;
+  font-size: 11.5px;
+  color: var(--ink);
+}
+.prodref b {
+  color: var(--accent2);
+}
+
+/* ---- verdict banner ---- */
+.verdict {
+  border-radius: 10px;
+  padding: 10px 14px;
+  font-size: 13.5px;
+  font-weight: 600;
+  margin-bottom: 14px;
+  border: 1px solid var(--line);
+}
+.verdict.yes {
+  background: color-mix(in srgb, var(--good) 14%, var(--panel));
+  border-color: color-mix(in srgb, var(--good) 45%, var(--line));
+  color: var(--good);
+}
+.verdict.no {
+  background: color-mix(in srgb, var(--bad) 12%, var(--panel));
+  border-color: color-mix(in srgb, var(--bad) 40%, var(--line));
+  color: var(--bad);
+}
+
+/* ---- class cards ---- */
+.class-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 12px;
+  margin-bottom: 18px;
+}
+.class-card {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 13px 15px;
+  background: var(--panel);
+}
+.class-card.ok {
+  border-color: color-mix(in srgb, var(--good) 45%, var(--line));
+}
+.class-card.no {
+  border-color: color-mix(in srgb, var(--bad) 30%, var(--line));
+}
+.cc-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.cc-name {
+  font-family: var(--mono);
+  font-weight: 700;
+  font-size: 15px;
+  color: var(--ink);
+}
+.cc-badge {
+  font-size: 11px;
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: 20px;
+}
+.cc-badge.ok {
+  background: color-mix(in srgb, var(--good) 22%, transparent);
+  color: var(--good);
+}
+.cc-badge.no {
+  background: color-mix(in srgb, var(--bad) 20%, transparent);
+  color: var(--bad);
+}
+.cc-family {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+  margin: 4px 0 8px;
+}
+.cc-detail {
+  font-size: 12.5px;
+  color: var(--ink);
+  line-height: 1.55;
+}
+.class-verdict {
+  border: 1px dashed var(--line);
+  border-radius: 10px;
+  padding: 12px 15px;
+  font-size: 14px;
+  line-height: 1.6;
+  background: var(--bg);
+}
+.class-verdict strong {
+  color: var(--accent);
+}
+
+/* ---- parse tables ---- */
+.table-scroll {
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  margin-bottom: 8px;
+}
+.ptable {
+  border-collapse: collapse;
+  font-family: var(--mono);
+  font-size: 12px;
+  min-width: 100%;
+}
+.ptable th,
+.ptable td {
+  border: 1px solid var(--line);
+  padding: 5px 9px;
+  text-align: left;
+  vertical-align: top;
+  white-space: nowrap;
+}
+.ptable thead th {
+  background: var(--panel2);
+  color: var(--accent);
+  text-align: center;
+  position: sticky;
+  top: 0;
+}
+.ptable .corner {
+  background: var(--panel2);
+}
+.ptable .rowhead {
+  background: var(--panel2);
+  color: var(--accent2);
+  font-weight: 700;
+  text-align: center;
+  position: sticky;
+  left: 0;
+}
+.ptable td.filled {
+  background: color-mix(in srgb, var(--accent) 7%, var(--bg));
+}
+.ptable td.conflict {
+  background: color-mix(in srgb, var(--bad) 20%, var(--bg));
+  outline: 1px solid var(--bad);
+}
+.cell-prod {
+  font-size: 11px;
+}
+.lrtable td,
+.lrtable th {
+  text-align: center;
+}
+.act {
+  display: inline-block;
+  padding: 0 3px;
+  border-radius: 4px;
+  margin: 0 1px;
+}
+.act.shift {
+  color: var(--accent);
+}
+.act.reduce {
+  color: var(--good);
+}
+.act.accept {
+  color: var(--warn);
+  font-weight: 700;
+}
+.goto-col {
+  color: var(--accent2);
+}
+.goto-col.filled {
+  background: color-mix(in srgb, var(--accent2) 10%, var(--bg));
+}
+
+/* ---- segmented controls ---- */
+.seg {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+.seg-btn {
+  font-family: var(--mono);
+  font-size: 12px;
+  padding: 5px 11px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--muted);
+  cursor: pointer;
+}
+.seg-btn:hover {
+  color: var(--ink);
+  border-color: var(--accent);
+}
+.seg-btn.active {
+  background: color-mix(in srgb, var(--accent) 18%, var(--panel));
+  color: var(--accent);
+  border-color: var(--accent);
+}
+.seg-note {
+  font-size: 12px;
+  color: var(--muted);
+  margin-left: 4px;
+}
+.bad-note {
+  color: var(--bad);
+}
+.statewrap {
+  max-height: 96px;
+  overflow: auto;
+}
+
+/* ---- LR automaton ---- */
+.lr-graphwrap {
+  height: 420px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  overflow: hidden;
+  background: var(--bg);
+  margin-bottom: 8px;
+}
+.itemlist {
+  font-family: var(--mono);
+  font-size: 13px;
+  line-height: 1.7;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 12px 16px;
+  margin: 0;
+  overflow-x: auto;
+}
+
+/* ---- parse configuration (stacks) ---- */
+.lr-config,
+.ll-config {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  align-items: flex-end;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 14px 16px;
+  margin-bottom: 4px;
+}
+.lr-col {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+.lr-col.grow {
+  flex: 1;
+}
+.lr-cap {
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+}
+.lr-row {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+.lr-cell {
+  font-family: var(--mono);
+  font-size: 13px;
+  min-width: 24px;
+  text-align: center;
+  padding: 5px 8px;
+  border-radius: 7px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+}
+.lr-cell.st {
+  color: var(--muted);
+  background: var(--panel2);
+}
+.lr-cell.sym {
+  color: var(--ink);
+}
+.lr-cell.in {
+  color: var(--muted);
+}
+.lr-cell.in.next,
+.lr-cell.sym.next {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 14%, var(--panel));
+}
+.lr-empty {
+  color: var(--muted);
+  font-family: var(--mono);
+  padding: 5px 8px;
+}
+
+.action-line {
+  font-family: var(--mono);
+  font-size: 13px;
+  padding: 9px 14px;
+  border-radius: 10px;
+  margin: 10px 0 4px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  color: var(--ink);
+}
+.action-kind {
+  display: inline-block;
+  text-transform: uppercase;
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  padding: 2px 7px;
+  border-radius: 5px;
+  margin-right: 10px;
+  background: var(--panel2);
+  color: var(--muted);
+}
+.action-line.shift .action-kind {
+  background: color-mix(in srgb, var(--accent) 25%, transparent);
+  color: var(--accent);
+}
+.action-line.reduce .action-kind,
+.action-line.predict .action-kind {
+  background: color-mix(in srgb, var(--good) 22%, transparent);
+  color: var(--good);
+}
+.action-line.match .action-kind {
+  background: color-mix(in srgb, var(--accent2) 22%, transparent);
+  color: var(--accent2);
+}
+.action-line.accept .action-kind {
+  background: color-mix(in srgb, var(--warn) 28%, transparent);
+  color: var(--warn);
+}
+.action-line.error .action-kind {
+  background: color-mix(in srgb, var(--bad) 24%, transparent);
+  color: var(--bad);
+}
+.action-line.amb {
+  border-color: var(--bad);
+}
+
+/* ---- stepper ---- */
+.stepper {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 10px 0 6px;
+}
+.stepper button {
+  font-size: 14px;
+  width: 34px;
+  height: 30px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--ink);
+  cursor: pointer;
+}
+.stepper button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.stepper button:not(:disabled):hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.step-count {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--muted);
+  min-width: 110px;
+  text-align: center;
+}

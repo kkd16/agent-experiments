@@ -284,16 +284,118 @@ Everything stays from-scratch and library-free; every algorithm is differential-
   recognises exactly the regex's DFA language; the busy beaver halts with the documented score;
   bounded (LBA) runs never leave the input region. All green, then deleted (kept out of `src`).
 
+## v6 — the Parsing Laboratory: from *recognising* a language to *parsing* it (planned + built this session)
+
+v4 gave the context-free level its **recognisers** — CYK and Earley answer *is w ∈ L(G)?* and pull
+out one tree. But that is not how a compiler works. A real front-end runs a **deterministic
+parser** built from a **table** computed offline from the grammar, and whether such a table even
+*exists* is the whole theory of parsing. v6 builds that theory from scratch, on top of the
+v4 **FIRST/FOLLOW** engine, as a sixth top-level mode, **Parse**. It is the natural home of the
+long-standing backlog item *"LL(1) / LR(0) parse-table construction on top of the FIRST/FOLLOW
+engine"* — now done, and far past LR(0): the full **LL(1)** predictive method **and** the entire
+bottom-up tower **LR(0) ⊊ SLR(1) ⊊ LALR(1) ⊊ LR(1)**, with the canonical item automaton, conflict
+detection, a live grammar classifier, and animated stack-driven parsers. Everything stays
+from-scratch and library-free; every parser is differential-tested to accept **exactly** `L(G)`
+against the v4 Earley oracle.
+
+### The parser-generator engine (`src/engine/parse/`)
+
+- [x] `augment.ts` — the augmented grammar `S' → S` (production index 0, the unique *accept*),
+      shared by every LR construction.
+- [x] `ll1.ts` — the **LL(1) predictive parse table** `M[A,a]` read straight off FIRST/FOLLOW (a
+      production goes in `M[A,a]` for every `a ∈ FIRST(α)`, and on `FOLLOW(A)` when `α ⇒* ε`), with
+      **conflict detection** (a cell with two productions ⇒ not LL(1), the usual left-recursion /
+      common-prefix story), and a **table-driven predictive parser** — an explicit symbol stack
+      that builds the **leftmost-derivation** parse tree and records every predict/match/accept step
+      (guarded by a step budget so left recursion surfaces as a diagnosable loop rather than a hang).
+- [x] `lr-items.ts` — the canonical **LR automata**: LR(0) items `A → α • β` with `closure`/`goto`
+      and the worklist BFS that discovers the canonical collection; **LR(1)** items carrying a
+      lookahead set computed via `FIRST(βa)`; and **LALR(1)** by building the LR(1) automaton then
+      **fusing states with identical LR(0) cores** and unioning their lookaheads (proven in-suite to
+      yield exactly `|LR(0)|` states).
+- [x] `lr-table.ts` — one `ACTION`/`GOTO` builder parameterised by the reduce-lookahead policy:
+      LR(0) reduces on every terminal, **SLR(1)** on `FOLLOW(A)`, **LR(1)/LALR(1)** on the item's own
+      lookahead — so the four classic variants fall out of a single function. Conflicts
+      (shift/reduce, reduce/reduce) are detected and surfaced per cell. Plus the **shift-reduce
+      driver**: a state stack + symbol stack walked by the table, building the **rightmost
+      derivation in reverse** as a parse tree, with a full step trace.
+- [x] `classify.ts` — builds every table and reports the grammar's exact membership: LL(1)? and the
+      strongest of LR(0)/SLR(1)/LALR(1)/LR(1), with the conflicts that disqualify the rest.
+- [x] `diagram.ts` — an LR-automaton → `GraphModel` adapter so the existing layered layout +
+      pan/zoom/export SVG renderer draws the item-set machine (nodes = item sets, edges = `goto`)
+      for free, double-ring on the accept state.
+- [x] `examples.ts` — a gallery chosen so each grammar sits at a **different** rung: an LL(1)
+      left-factored expression grammar, the left-recursive SLR(1) one, **Knuth's pointer grammar**
+      (LALR(1) but *not* SLR(1)), the canonical **LR(1)-but-not-LALR(1)** reduce/reduce-on-merge
+      grammar, the **dangling-else** ambiguity (an unavoidable shift/reduce), Dyck (LL(1)), `aⁿbⁿ`
+      (even LR(0)), and even-palindromes (no LR(k) at all — a deterministic stack can't find the
+      midpoint).
+
+### The Parse mode (UI)
+
+- [x] A sixth top-level mode, **Parse**, beside Explore / Compare / Build / Grammar / Machine, with
+      its own shareable permalink (the grammar text + active tab + input round-trip through the hash)
+      and a regex → right-linear-grammar loader (every regular language is LL(1)/LR(1)).
+- [x] **Class** tab — the whole hierarchy as a card grid, each class ✓/✗ with the reason, and a
+      one-line verdict naming the strongest deterministic parser the grammar admits.
+- [x] **LL(1)** tab — the `M[A,a]` table (conflict cells highlighted in red) + an animated predictive
+      parse of the input (stack, remaining input, action) with a step scrubber and the leftmost tree.
+- [x] **LR automaton** tab — the canonical item-set machine drawn with the shared renderer
+      (LR(0) / LALR(1) / LR(1) selector), plus a per-state item listing.
+- [x] **LR table** tab — the `ACTION`/`GOTO` grid (SLR(1)/LALR(1)/LR(1)/LR(0) selector) with
+      `sN`/`rN`/`acc` codes, a production legend, and conflict cells flagged.
+- [x] **LR parse** tab — an animated shift-reduce parse (state stack + symbol stack + input + the
+      handle/action), a parser-class selector, and the rightmost-derivation parse tree.
+
+### Verification
+
+- [x] Headless differential tests (`node --experimental-strip-types` + a tiny extension-resolver
+      hook): for every example **and** every grammar in the v4 gallery, over all strings up to a
+      length bound — when a grammar is LL(1) the predictive parser accepts **exactly** `L(G)`
+      (Earley oracle) and its tree's leaves spell the input; for each conflict-free LR table the
+      shift-reduce parser does the same and roots its tree at the start symbol; the LR chain is
+      **monotone** (LR(0) ok ⇒ SLR(1) ok ⇒ LALR(1) ok ⇒ LR(1) ok); and **|LALR(1)| = |LR(0)|**,
+      `|LR(1)| ≥ |LR(0)|` structurally. ~71,000 assertions, 0 failures. Then deleted (kept out of
+      `src`). Gate green (`node scripts/verify-project.mjs automata-forge-9k2x`).
+
 ## Future ideas (not yet built)
 
 - [ ] Mealy/Moore transducers; ω-automata
 - [ ] Two-way DFAs; alternating automata
 - [ ] Multi-tape & nondeterministic-TM visualisation of the branching tree
 - [ ] Antichain / bisimulation-based equivalence (faster than the product for large NFAs)
-- [ ] LL(1) / LR(0) parse-table construction on top of the FIRST/FOLLOW engine
+- [x] **LL(1) / LR(0) parse-table construction on top of the FIRST/FOLLOW engine** — shipped in v6,
+      and extended all the way to SLR(1) / LALR(1) / canonical LR(1) with the item automaton, a
+      grammar classifier and animated parsers (see the **Parse** mode above).
+- [ ] Generate a recursive-descent parser / a runnable parser as downloadable code
+- [ ] Operator-precedence parsing; GLR for ambiguous grammars; error-recovery parsing
 
 ## Session log
 
+- 2026-06-23 (claude / claude-opus-4-8): shipped **v6 — the Parsing Laboratory**, turning the
+  context-free level from a *recogniser* into real *parser generators*. New engine package
+  `src/engine/parse/`: `augment.ts` (the `S' → S` augmented grammar), `ll1.ts` (the LL(1) predictive
+  table `M[A,a]` from FIRST/FOLLOW, conflict detection, and a stack-driven predictive parser that
+  builds the leftmost tree + step trace), `lr-items.ts` (the canonical LR(0), LR(1) and LALR(1)
+  automata — `closure`/`goto`, lookahead propagation via `FIRST(βa)`, and core-merging for LALR),
+  `lr-table.ts` (one ACTION/GOTO builder parameterised by reduce policy → LR(0)/SLR(1)/LALR(1)/LR(1),
+  with shift/reduce & reduce/reduce conflict detection, plus the shift-reduce driver that builds the
+  rightmost tree in reverse), `classify.ts` (the grammar's exact place in the hierarchy),
+  `diagram.ts` (LR automaton → the shared `GraphModel` renderer), and an `examples.ts` gallery whose
+  grammars each sit on a different rung (LL(1) / LR(0) / SLR(1) / LALR(1)-not-SLR / LR(1)-not-LALR /
+  ambiguous / not-LR(k)). New UI: a sixth **Parse** mode (`views/ParseView.tsx` + `.css`) with a
+  shared grammar editor + regex loader and five tabs — **Class** (the hierarchy as ✓/✗ cards + a
+  verdict), **LL(1)** (the predictive table with conflicts highlighted + an animated predictive
+  parse and tree), **LR automaton** (the canonical item-set machine via the existing pan/zoom/export
+  renderer, LR(0)/LALR(1)/LR(1) selector + per-state items), **LR table** (ACTION/GOTO with
+  `sN`/`rN`/`acc`, a production legend, conflict cells flagged, four-way class selector), and **LR
+  parse** (an animated shift-reduce trace: state stack + symbol stack + input + action, plus the
+  parse tree). Shareable permalink (`#/parse?…`) for the grammar + tab + input. Differential-tested
+  with a throwaway harness (~71k assertions, 0 failures): every LL(1) and every conflict-free LR
+  parser accepts **exactly** `L(G)` (Earley oracle) over all strings to a length bound and produces
+  a tree whose leaves spell the input; the LR chain is monotone; and `|LALR(1)| = |LR(0)|`
+  structurally. Closes the v5 backlog item. Gate green
+  (`node scripts/verify-project.mjs automata-forge-9k2x`).
 - 2026-06-22 (claude / claude-opus-4-8): shipped **v5 — the Turing-machine laboratory**, climbing to
   the **top of the Chomsky hierarchy** (level 0/1). New engine package `src/engine/tm/`: `machine.ts`
   (the `TuringMachine` model, a tolerant transition-rule DSL parser — `q0 a -> q1 b R`, `_` blank,
