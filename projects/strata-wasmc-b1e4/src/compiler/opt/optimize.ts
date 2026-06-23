@@ -5,6 +5,7 @@ import { findNaturalLoops } from '../ir/loops';
 import { simplifyCFG } from './simplifycfg';
 import { unrollLoops } from './unroll';
 import { unswitchLoops } from './unswitch';
+import { sinkCode } from './sink';
 import { partialUnroll } from './partial-unroll';
 import { divRemByConst } from './divrem';
 import { vectorize } from './vectorize';
@@ -912,6 +913,10 @@ export function optimize(mod: IRModule, level: OptLevel, snapshots = false): Opt
     if (level >= 2) record('strength-reduce-iv' + suffix, osr);
     record('algebraic-simplify' + suffix, algebraic);
     if (level >= 2) record('licm' + suffix, licm);
+    // Sinking is the dual of LICM: push a pure value used on only one arm of a
+    // branch down into that arm, so the other path never computes it. Runs after
+    // LICM (which has pulled the loop-invariant work the other way) and before DCE.
+    if (level >= 2) record('sink' + suffix, sinkCode);
     record('dead-code-elim' + suffix, dce);
     record('simplify-cfg' + suffix, simplifyCFG);
   }

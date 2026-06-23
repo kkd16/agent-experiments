@@ -249,7 +249,7 @@ export function OptPanel({ comp }: { comp: Compilation }) {
         allocations proven disjoint) →
         {comp.level >= 2 ? ' global value numbering (CSE) →' : ''}
         {comp.level >= 2 ? ' operator strength reduction on induction variables (loop `i*stride` → a running add) →' : ''} algebraic simplification →
-        {comp.level >= 2 ? ' loop-invariant code motion →' : ''} dead-code elimination → CFG
+        {comp.level >= 2 ? ' loop-invariant code motion → code sinking (a value used on only one branch arm pushed into it — partial dead-code elimination) →' : ''} dead-code elimination → CFG
         simplification (block coalescing), iterated to a fixed point
         {comp.level >= 2 ? ', then partial loop unrolling (unroll-by-K + remainder loop, for the runtime- and large-trip loops full unrolling declines) and a cleanup round' : ''}
         {comp.level >= 2 ? ', then CFG cleanup + dead-function elimination' : ''}.

@@ -34,8 +34,9 @@ reference interpreter at every optimization level.
   **reassociation** (canonicalize integer affine trees → `Σ cᵢ·xᵢ + K`, and bitwise monoids),
   dominator-scoped **GVN/CSE**, **operator strength reduction on induction variables (OSR)**,
   algebraic simplification, **LICM** (loop-invariant code
-  motion), **DCE**, **CFG simplification**, CFG cleanup, and whole-module
-  **dead-function elimination**, iterated to a fixed point.
+  motion), **code sinking** (a pure value used on only one branch arm pushed into it —
+  partial dead-code elimination, see `opt/sink.ts`), **DCE**, **CFG simplification**, CFG cleanup,
+  and whole-module **dead-function elimination**, iterated to a fixed point.
 - `src/compiler/ir/loops.ts` — the **natural-loop forest** (headers, latches, bodies,
   nesting depth + immediate parent), discovered from back edges. One definition of "what a
   loop is" shared by LICM and the unroller (`findNaturalLoops` / `dominates` / `isInnermost`).
@@ -57,6 +58,14 @@ reference interpreter at every optimization level.
   is the loop's one exit) — which makes the exit SSA repair exact (every escaping value is a
   header def, merged back at the single exit with a fresh φ) — and it declines whenever a
   precondition is unmet, so the three-engine oracle proves it never changes behaviour.
+- `src/compiler/opt/sink.ts` — **code sinking** (partial dead-code elimination) at -O2+, the dual
+  of LICM: a **pure** value computed in a block that ends in a two-way branch but **used on only
+  one arm** is pushed *down* into that arm, so the other path never computes it. Sound by
+  precondition — the target arm must be entered only from the branch block (`S.preds == [B]`, so
+  the value's operands, available at `B` which dominates `S`, are still available after the move),
+  every use must be dominated by `S`, the value must not feed a φ (whose use is on a predecessor
+  edge), and to never pessimize it refuses to sink into a deeper loop nest — so it only ever moves
+  work off a path, never changes a result, as the three-engine oracle proves.
 - `src/compiler/opt/partial-unroll.ts` — **partial loop unrolling** (unroll-by-K + remainder)
   at -O2+, for the runtime- and large-trip loops full unrolling declines: it prepends a
   **strided main loop** running `K` body copies per back edge — guarded by an exact,
@@ -427,6 +436,65 @@ yet stored in arrays/structs/globals — extract their lanes for that.)
       -O0…-O3 **and** an offline fuzz of **≈33,000 random affine + bitwise programs**
       (i32+i64, reassociation firing on ~80%, zero mismatches). **948 → 1024
       differential checks.** See the 2026-06-22 plan.
+
+## 2026-06-23 — plan + shipped: code sinking — partial dead-code elimination (the dual of LICM) (claude / claude-opus-4-8)
+
+Right after shipping loop unswitching, the natural next move: the optimizer could pull
+loop-invariant work *out* of a loop (LICM) and now hoist an invariant branch *above* one
+(unswitching), but it had nothing that pushed conditionally-used work *down*. A pure value
+computed before a two-way branch but **used on only one arm** was still computed on every path,
+the result thrown away whenever the other arm was taken. **Code sinking** closes that — it is the
+exact dual of LICM: LICM lifts invariants out of a loop; sinking pushes conditionally-used values
+into the branch that needs them.
+
+```
+B: t = a*a + b*b          B: condbr(cond, S, E)
+   condbr(cond, S, E)  ⟶  S: t = a*a + b*b   ← computed only when cond
+S: … uses t …             S: … uses t …
+E: … (no use of t) …      E: … (t never computed)
+```
+
+When `E` is taken, `t` is never evaluated — a strict win — and `t`'s live range shrinks, which
+also eases the stackifier. It is **partial dead-code elimination**: `t` isn't dead (one arm uses
+it), it's just dead *on a path*.
+
+What shipped:
+
+- [x] **`src/compiler/opt/sink.ts`** — the pass. For a block `B` ending in a two-way `condbr`,
+      each **pure** instruction `t` whose every use is dominated by one successor `S` — where `S`
+      is entered **only** from `B` (`S.preds == [B]`), so `t`'s operands (available at `B`, which
+      dominates `S`) survive the move — is relocated to the front of `S`. It declines when `t` is
+      used in `B` itself (including the branch condition), feeds a φ (whose use lives on a
+      predecessor edge, not the φ's block), or `S` sits in a **deeper loop nest** than `B` (which
+      would turn one evaluation into many — sinking must never pessimize). Bottom-up within a block
+      so a producer lands ahead of a consumer it feeds; iterated to a fixpoint.
+- [x] **Wired into `opt/optimize.ts`** (-O2+) in the fixpoint rounds, right after `licm` (which has
+      just pulled the loop-invariant work the *other* way) and before `dce`.
+- [x] **`src/compiler/sinkProbe.ts`** + **`tools/check-sink.mjs`** — an activity probe (does it
+      fire on a one-arm use, and correctly **decline** when the value is used on both arms or in the
+      branch condition?) and a **seeded differential fuzzer**: 240 random programs that compute a
+      pure value used on only one arm of a runtime branch (a `print` on the using arm keeps it
+      non-speculable so if-conversion — which would make the value unconditional — declines),
+      compiled at -O0..-O3 and proven to print exactly what the reference interpreter and the
+      from-scratch VM print.
+- [x] **Two regression programs** added to the differential battery (`tests.ts`): `sink-one-arm`
+      and `sink-two-values` (two independent values, each sunk into its own arm; a value used on
+      *both* arms correctly stays put). Plus UI copy in the Optimizer pass-list.
+
+Validated offline with the Vite-SSR headless harness: the **full battery is 1080/1080 across
+-O0..-O3** (curated examples + 231 adversarial programs, V8 ≡ interpreter ≡ VM), the new fuzzer is
+**960/960 differential checks over 240 random programs, sinking firing on 212 of the -O2/-O3
+compiles**, and the activity suite is **8/8** (it fires on a one-arm use and declines on the
+both-arms and condition-use cases). Gate green: scope + conformance + lint + build all pass.
+
+### Backlog (code sinking)
+
+- [ ] **Sink past a chain of single-pred blocks** (sink to the nearest dominator of the uses, not
+      only an immediate successor) so a value used two arms deep still sinks.
+- [ ] **Sink into *both* arms with duplication** when a value is used on each but the branch is
+      heavily lopsided — a cost-model call, today declined.
+- [ ] **Partial-redundancy elimination (PRE)** — the general lazy-code-motion framework that
+      subsumes both LICM and sinking; sinking is the cheap, local first step toward it.
 
 ## 2026-06-23 — plan + shipped: loop unswitching — hoist a loop-invariant branch out of a loop (claude / claude-opus-4-8)
 
