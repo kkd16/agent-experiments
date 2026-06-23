@@ -6,6 +6,7 @@ import { simplifyCFG } from './simplifycfg';
 import { unrollLoops } from './unroll';
 import { partialUnroll } from './partial-unroll';
 import { divRemByConst } from './divrem';
+import { vectorize } from './vectorize';
 import { memOpt } from './memopt';
 import { sroa } from './sroa';
 import { osr } from './osr';
@@ -870,6 +871,19 @@ export function optimize(mod: IRModule, level: OptLevel, snapshots = false): Opt
     log.push({ name, changed: total });
     snap();
   };
+
+  // Auto-vectorization runs once, up front (-O2+): it needs the *canonical* element
+  // addresses the front-end emits (`handle + ARRAY_HEADER + i·4`, before strength
+  // reduction rewrites the `·4` to a shift or reassociation folds the tree) and the
+  // pristine counted-loop shape (before unrolling strides it). A light copy-prop +
+  // SCCP first removes SSA copies and folds a constant bound so recognition is clean.
+  // The vector main loop + scalar remainder it leaves behind then flow through the
+  // normal fixpoint (GVN/LICM/DCE/…) like any other code.
+  if (level >= 2) {
+    record('copy-propagation (pre-vectorize)', copyProp);
+    record('sccp (pre-vectorize)', sccp);
+    record('vectorize', vectorize);
+  }
 
   const rounds = level >= 2 ? 4 : 1;
   for (let r = 0; r < rounds; r++) {

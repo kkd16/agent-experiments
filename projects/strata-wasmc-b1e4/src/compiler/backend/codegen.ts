@@ -43,6 +43,11 @@ type W =
   // and (for lane-indexed ops) an immediate `lane` byte. `name` is the mnemonic
   // for the WAT printer.
   | { k: 'simd'; op: number; lane?: number; name: string }
+  // 128-bit SIMD memory access: `v128.load` (0xfd 0x00) / `v128.store` (0xfd 0x0b),
+  // each followed by a memarg (align, offset). `align` is only a hint, so 0 is always
+  // valid even for unaligned array element data.
+  | { k: 'vload' }
+  | { k: 'vstore' }
   | { k: 'select' }
   | { k: 'tselect'; ty: IRType }
   | { k: 'cast'; sub: string };
@@ -506,6 +511,12 @@ class FuncGen {
       case 'store':
         out.push(...this.pushOperand(inst.args[0]), ...this.pushOperand(inst.args[1]), { k: 'store', mem: inst.sub as 'i32' | 'i64' | 'f64' | 'i8' });
         break;
+      case 'vload':
+        out.push(...this.pushOperand(inst.args[0]), { k: 'vload' });
+        break;
+      case 'vstore':
+        out.push(...this.pushOperand(inst.args[0]), ...this.pushOperand(inst.args[1]), { k: 'vstore' });
+        break;
       case 'print':
         out.push(...this.pushOperand(inst.args[0]), { k: 'call', i: this.res.printIndex(inst.sub) });
         break;
@@ -617,6 +628,8 @@ function encodeBody(w: ByteWriter, tree: W[]): void {
       }
       case 'op': w.u8(n.c); break;
       case 'simd': w.u8(0xfd); w.u32(n.op); if (n.lane !== undefined) w.u8(n.lane); break;
+      case 'vload': w.u8(0xfd); w.u32(0x00); w.u32(0); w.u32(0); break; // v128.load align=0 offset=0
+      case 'vstore': w.u8(0xfd); w.u32(0x0b); w.u32(0); w.u32(0); break; // v128.store align=0 offset=0
       case 'select': w.u8(0x1b); break; // select (untyped — valid for numeric types incl. i64)
       case 'tselect': w.u8(0x1c); w.u32(1); w.u8(vt(n.ty)); break; // typed select (required for v128)
       case 'cast': for (const b of CAST_OP[n.sub].bytes) w.u8(b); break;
@@ -951,6 +964,8 @@ function watBody(tree: W[], lines: string[], depth: number): void {
       case 'store': lines.push(`${pad}${n.mem === 'i64' ? 'i64.store' : n.mem === 'f64' ? 'f64.store' : n.mem === 'f32' ? 'f32.store' : n.mem === 'i8' ? 'i32.store8' : 'i32.store'}`); break;
       case 'op': lines.push(`${pad}${n.name}`); break;
       case 'simd': lines.push(`${pad}${n.name}`); break;
+      case 'vload': lines.push(`${pad}v128.load`); break;
+      case 'vstore': lines.push(`${pad}v128.store`); break;
       case 'select': lines.push(`${pad}select`); break;
       case 'tselect': lines.push(`${pad}select (result ${n.ty})`); break;
       case 'cast': lines.push(`${pad}${CAST_OP[n.sub].name}`); break;

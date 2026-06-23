@@ -476,6 +476,9 @@ export class WasmVM {
   // --- SIMD ---
   private execSimd(ins: Instr, s: Value[]): void {
     const sub = ins.sub;
+    // v128 memory access — 16 contiguous little-endian bytes. (offset is always 0.)
+    if (sub === 0x00) { const a = s.pop() as number; s.push(this.mem.slice(a, a + 16)); return; } // v128.load
+    if (sub === 0x0b) { const v = s.pop() as Uint8Array; const a = s.pop() as number; this.mem.set(v, a); return; } // v128.store
     // splat
     if (sub === 0x11) { const x = s.pop() as number; s.push(writeLanes('i32x4', [x, x, x, x])); return; }
     if (sub === 0x12) { const x = s.pop() as bigint; s.push(writeLanes('i64x2', [x, x])); return; }

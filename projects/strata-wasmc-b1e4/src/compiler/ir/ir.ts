@@ -80,6 +80,14 @@ export type InstKind =
   // lowered to wasm `v128.bitselect` (bitwise, so a non-canonical mask blends
   // per bit, exactly like the hardware).
   | 'vselect'
+  // 128-bit SIMD memory ops, emitted only by the auto-vectorizer (`opt/vectorize.ts`).
+  // `vload` reads 16 contiguous bytes of linear memory as a v128 (like `load`, it reads
+  // mutable state — not GVN-able, not freely reorderable); `vstore` writes 16 bytes and
+  // has a memory side effect (like `store`). `sub` carries the lane shape (`i32x4`/`f32x4`)
+  // for the dumper; the wasm op itself (`v128.load`/`v128.store`) is shape-agnostic.
+  // `vload`:  (i32 addr) -> v128       `vstore`: (i32 addr, v128 val) -> void
+  | 'vload'
+  | 'vstore'
   | 'copy';
 
 export interface Inst {
@@ -153,7 +161,7 @@ export function blockById(fn: IRFunc, id: number): Block {
 
 /** Instructions whose removal would change observable behavior. */
 export function hasSideEffect(inst: Inst): boolean {
-  return inst.kind === 'print' || inst.kind === 'gset' || inst.kind === 'store' || inst.kind === 'call' || inst.kind === 'callind';
+  return inst.kind === 'print' || inst.kind === 'gset' || inst.kind === 'store' || inst.kind === 'vstore' || inst.kind === 'call' || inst.kind === 'callind';
 }
 
 /** Pure value-producing instructions that GVN/CSE may deduplicate. */

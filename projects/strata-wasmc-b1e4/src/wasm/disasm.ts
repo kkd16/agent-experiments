@@ -81,9 +81,12 @@ const SIMD_NAMES: Record<number, string> = {
   0x41: 'f32x4.eq', 0x42: 'f32x4.ne', 0x43: 'f32x4.lt', 0x44: 'f32x4.gt', 0x45: 'f32x4.le', 0x46: 'f32x4.ge',
   0x47: 'f64x2.eq', 0x48: 'f64x2.ne', 0x49: 'f64x2.lt', 0x4a: 'f64x2.gt', 0x4b: 'f64x2.le', 0x4c: 'f64x2.ge',
   0xfa: 'f32x4.convert_i32x4_s', 0xf8: 'i32x4.trunc_sat_f32x4_s',
+  0x00: 'v128.load', 0x0b: 'v128.store',
 };
 // SIMD sub-opcodes that carry a one-byte lane immediate (extract / replace lane).
 const SIMD_LANE = new Set([0x1b, 0x1c, 0x1d, 0x1e, 0x1f, 0x20, 0x21, 0x22]);
+// SIMD sub-opcodes that carry a memarg (align, offset) — the v128 load/store.
+const SIMD_MEM = new Set([0x00, 0x0b]);
 
 const VT_NAME: Record<number, string> = { 0x7f: 'i32', 0x7e: 'i64', 0x7d: 'f32', 0x7c: 'f64', 0x7b: 'v128' };
 
@@ -127,6 +130,7 @@ export function disassemble(body: Uint8Array): Disasm {
       case 0xfd: {
         ins.sub = r.u32();
         if (SIMD_LANE.has(ins.sub)) ins.imm = r.u8();
+        else if (SIMD_MEM.has(ins.sub)) { r.u32(); r.u32(); } // memarg align, offset (offset is 0)
         ins.text = (SIMD_NAMES[ins.sub] ?? `simd.${ins.sub}`) + (SIMD_LANE.has(ins.sub) ? ` ${ins.imm}` : '');
         break;
       }
