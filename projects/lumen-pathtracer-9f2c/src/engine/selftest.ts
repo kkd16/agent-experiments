@@ -2125,6 +2125,28 @@ function testSubsurfaceColour(): { pass: boolean; detail: string } {
   }
 }
 
+// SSS-5 — Subsurface reflectance is strictly monotonic in the interior albedo.
+// With a fixed Fresnel boundary (ior 1.5) and extinction, raising the
+// single-scattering albedo (less absorbed per collision) must make a translucent
+// object reflect *more* of a uniform field — and never exceed it. A monotone
+// rising sequence (0.3 → 0.6 → 0.9), all bounded ≤1, proves the per-collision
+// absorption β ×= albedo behaves physically across the whole range, not just at
+// the lossless (=1) and fully-absorbing (=0) endpoints the other proofs pin down.
+function testSubsurfaceAlbedoMonotone(): { pass: boolean; detail: string } {
+  const settings = { maxDepth: 48, rrStart: 24, clampIndirect: 0 }
+  const r: number[] = []
+  for (const a of [0.3, 0.6, 0.9]) {
+    const c = subsurfaceFurnaceRGB({ sigmaT: 1.0, albedo: v(a, a, a), g: 0.4 }, 1.5, settings, 18000, 555 + Math.round(a * 100))
+    r.push(luminance(c))
+  }
+  const rising = r[1] > r[0] + 0.01 && r[2] > r[1] + 0.01
+  const bounded = r[2] <= 1.01
+  return {
+    pass: rising && bounded,
+    detail: `reflectance: a=0.3→${r[0].toFixed(3)}, 0.6→${r[1].toFixed(3)}, 0.9→${r[2].toFixed(3)} (rising=${rising}, ≤1=${bounded})`,
+  }
+}
+
 export function runSelfTests(): TestResult[] {
   return [
     test('Vector algebra identities', testVectorMath),
@@ -2192,5 +2214,6 @@ export function runSelfTests(): TestResult[] {
     test('Subsurface Beer — pure absorb ≡ e^(−σ·2r)', testSubsurfaceBeer),
     test('Subsurface interface energy ≡ 1 (Fresnel+TIR+scatter)', testSubsurfaceInterfaceEnergy),
     test('Subsurface colour — per-channel albedo tints (R>G>B)', testSubsurfaceColour),
+    test('Subsurface reflectance monotone in albedo (≤1)', testSubsurfaceAlbedoMonotone),
   ]
 }
