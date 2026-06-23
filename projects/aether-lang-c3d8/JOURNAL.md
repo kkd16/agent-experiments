@@ -89,12 +89,100 @@ compile the same optimized core — and the equivalence checks prove it preserve
       closure overhead and exposing its body to const-folding) while partial applications and
       higher-order *escapes* keep one shared closure; monotone by construction, so the harness's
       "never increase VM steps" gate proves it is never worse (Aether 15.0)
+- [x] **Static-argument transformation** (Santos 1995; Peyton Jones & Santos 1998) — a recursive
+      function's *loop-invariant* parameter (the function arg of a recursive `map`, the limit of a
+      counting loop) is lifted into a thin **wrapper** so the recursive **worker** loops on only the
+      *dynamic* arguments, capturing the static ones as free variables. Each iteration passes one
+      fewer argument (34–42 % fewer VM steps on the canonical loops). Because the wrapper is no longer
+      recursive, a *known* function flowing into a lifted slot is then inlined and β-reduced into the
+      loop — a SpecConstr-like specialisation reached by composition (`each (fn x -> x*x) xs` collapses
+      to a bare first-order loop). Re-proved by the VM ≡ JS ≡ WASM checks (Aether 17.0)
 - [x] Optimizer pass: constant folding, dead-branch elimination, short-circuit simplification
 - [x] A full **optimizing middle-end** over the core (β/η, inlining, dead code, known-`match`,
       field projection) feeding all three backends — abstraction melts away (Aether 10.0)
 - [x] Records with row polymorphism (`{ x = 1 }`, `r.x`, inferred `{ x: a | ρ } -> a`)
 - [x] Functional record update (`{ r | x = 5 }`, type-safe, row-polymorphic)
 - [x] A REPL mode that keeps top-level bindings between runs
+
+### Aether 17.0 — the static-argument transformation: turning loops first-order (planned + shipped this session)
+
+Every loop Aether compiles has been paying a tax we never named. Look at the hand-written recursive
+`map` everyone writes:
+
+```
+let rec map = fn f -> fn xs ->
+  match xs with [] -> [] | x :: t -> f x :: map f t
+```
+
+`f` never moves. Every single recursive call passes it straight back through — and the VM dutifully
+re-binds it and re-pushes it on every iteration, forever, for a value that is the same on the first
+element and the millionth. The argument is **static**; threading it round the loop is pure overhead.
+17.0 adds the classic fix — the **static-argument transformation** (Santos, 1995; Peyton Jones &
+Santos, *A transformation-based optimiser for Haskell*, 1998) — implemented from scratch in
+`src/lang/optimize.ts` as a new core-to-core pass that the bytecode VM, the JavaScript backend and the
+WebAssembly backend all run unchanged.
+
+**What it does.** SAT splits a self-recursive function into two pieces:
+
+```
+let map = fn f -> fn xs ->                  -- wrapper: binds the static `f` ONCE
+  let rec go = fn xs ->                      -- worker: recurses on the dynamic `xs` only
+    match xs with [] -> [] | x :: t -> f x :: go t   -- `f` is now a captured FREE variable
+  in go xs
+```
+
+The recursive *worker* `go` loops on only the dynamic argument; the static `f` is captured by the
+enclosing wrapper closure, so each iteration passes one fewer argument. On the canonical loops (a
+recursive `map`, a counting accumulator, a `foldl`) this is a measured **34–42 % drop in VM steps**,
+identical on all three backends.
+
+**The real prize — specialisation for free.** Because the wrapper is no longer recursive, it is now a
+legal target for the Aether 15.0 call-site inliner. So when a *known* function flows into a lifted
+slot, the passes compose into something much bigger than either alone:
+
+```
+each (fn x -> x * x) [1, 2, 3]
+  -- SAT lifts `g` out of `each`;  the wrapper inlines at the call site;
+  -- the literal lambda `fn x -> x*x` lands on the captured `g`;  `g x` β-reduces:
+  ⟶  let rec go = fn xs -> match xs with [] -> 0 | x :: t -> (x * x) + go t in go [1,2,3]
+```
+
+`g` has vanished entirely — the higher-order loop has been **specialised into a first-order one** with
+zero closure overhead. That is the effect the SpecConstr pass (Peyton Jones, ICFP 2007) is famous for,
+reached here purely by composition of two simpler transformations. The optimized-core view shows it
+directly: flip "show before" and watch `each` grow a wrapper, then collapse.
+
+**Soundness (all conservative, and re-proved mechanically).** SAT fires on `let rec f = fn p0 … p_{k-1}
+-> body` only when:
+
+- `f` is genuinely self-recursive in `body`;
+- **every** free occurrence of `f` in `body` is a *saturated* call (a spine of ≥ k arguments) — a bare
+  or partially-applied `f` would escape, so the pass simply declines (the `map f` handed to a
+  higher-order combinator, and any `apptwice g`-style escape, are left exactly as written);
+- a position counts as *static* only if every recursive call passes precisely `var p_i` there **and**
+  `p_i` is not shadowed at that call site (an inner `let a = a + 1` rebinding defeats staticness — a
+  case in the test suite);
+- at least one static **and** one dynamic parameter remain, so the worker is always a real loop on a
+  varying argument (this is also the firing gate that keeps SAT from pessimising a never-recursing
+  function — there is nothing to lift past if nothing varies).
+
+The dynamic parameters are α-renamed to fresh names inside the worker so they never collide with the
+wrapper's identically-named binders, and the whole rewrite is built on the optimizer's existing
+capture-avoiding `rename`/`subst`/scoped-traversal machinery. As with every other pass, correctness is
+not argued — it is **re-proved on every example** by the byte-for-byte VM ≡ JS ≡ WASM equivalence
+checks; six new self-tests cover the canonical loops, the SpecConstr-style specialisation, multi-static
+folds, the shadowing counter-case, an escaping recursive function (left untransformed), and guards in
+the worker body. Full CI gate (scope + conformance + lint + tsc + build) green; the in-app suite is
+**74/74**. The `tools/harness.mjs` semantic harness grew an 8-case SAT battery (SAT fires with the
+*exact* static/dynamic split, cuts real steps, reaches the SpecConstr specialisation, and declines on
+escapes / rebound parameters / non-recursive functions) plus a **differential fuzz** — 400 randomly
+generated, well-typed-by-construction recursive integer loops with a random static/dynamic split per
+parameter, each checked for identical optimized-vs-unoptimized value, never-increased VM steps, and a
+classifier verdict matching how the program was actually built: **417 harness checks, all green, 0
+mismatches.**
+
+The Optimizer panel gains a **"Static-argument transformation"** section listing each function, the
+parameter(s) it lifted, and the dynamic ones the worker still threads; the rewrite table counts `sat`.
 
 ### Aether 16.0 — equality saturation: an e-graph superoptimizer (planned + shipping this session)
 
@@ -1036,12 +1124,15 @@ Deferred (future, building on Aether 15.0 call-site inlining):
       A single controlled unroll of a self-recursive loop (peel one iteration into the call site, like
       GHC's loopification) would expose the first step to const-folding while staying terminating; gate
       it on the body fitting the size budget so it cannot blow up.
-- [ ] **Static argument transformation** (Santos / GHC's SAT) — a recursive function that threads a
-      parameter *unchanged* through every self-call (the classic `fold`/`loop` function argument) can
-      lift that argument out into an enclosing binding and drop it from the recursive worker, shedding
-      one application per iteration. Subtle here: it is *not* unconditionally step-monotone (a loop run
-      ~0 times pays the wrapper for no gain), so it needs a firing gate the harness's never-increase
-      invariant will accept — likely "only when the function is provably entered with ≥ 1 recursion".
+- [x] **Static argument transformation** (Santos / GHC's SAT) — **shipped in Aether 17.0.** A
+      recursive function that threads a parameter *unchanged* through every self-call (the classic
+      `fold`/`map`/`loop` function argument) is split into a thin **wrapper** that binds the static
+      parameters once and a recursive **worker** that loops on only the *dynamic* ones, capturing the
+      static ones as free variables — shedding one application per iteration (34–42 % fewer VM steps on
+      the canonical loops). The firing gate the deferred note worried about turned out to be the
+      *structure* itself: SAT only fires when there is ≥ 1 static **and** ≥ 1 dynamic parameter, so the
+      worker is always a genuine loop on a varying argument; and it composes with the 15.0 inliner to
+      reach SpecConstr-like specialisation for free (see Aether 17.0 below).
 - [ ] **Call-pattern specialisation** (Peyton Jones, *SpecConstr*, ICFP 2007) — specialise a recursive
       function for the constructor shape it is repeatedly called with (e.g. a loop always re-matching a
       `Cons`), removing the redundant scrutiny per iteration; pairs naturally with the decision-tree
@@ -1055,6 +1146,29 @@ Deferred (future, building on Aether 15.0 call-site inlining):
       decision is visible (a first cut of the long-deferred "worst-case-cost / fuel view").
 - [ ] **Dead-parameter elimination** — drop a parameter never used in a function's body and at all of
       its (now-known, post-inlining) saturated call sites, shrinking both the lambda and every call.
+
+Deferred (future, building on Aether 17.0 static-argument transformation):
+
+- [ ] **SAT for mutually-recursive groups (`let rec … and …`)** — the current pass handles a single
+      self-recursive binding; extend the static/dynamic classification across a whole `letrec` SCC so a
+      parameter passed unchanged through *every* call in the group (to itself and its siblings) is
+      lifted into one shared wrapper enclosing the group's worker loop.
+- [ ] **Proper SpecConstr (call-pattern specialisation, Peyton Jones ICFP 2007)** — SAT + inlining
+      already specialises a *known function* in a static slot; the next step is to specialise a worker
+      for the *constructor shape* its dynamic argument is repeatedly called with (a loop forever
+      re-matching `Cons`), generating a specialised copy whose recursive calls hit it directly so the
+      per-iteration scrutiny disappears. Pairs with the decision-tree pass and the 17.0 worker form.
+- [ ] **Float the worker's loop-invariant *expressions* out too** — once SAT has captured the static
+      arguments, any sub-expression of the worker body that depends only on them (not on a dynamic
+      param) is loop-invariant and can be hoisted into the wrapper, computed once instead of per
+      iteration; this is loop-invariant code motion riding on the static/dynamic split SAT computes.
+- [ ] **A "wrapper/worker" badge in the Optimizer core view** — render the lifted vs. threaded
+      parameters inline on the optimized core (greyed static binders on the wrapper, live ones on the
+      worker) so the transformation is legible at a glance, not just in the rewrite table.
+- [ ] **Cost-model gate + measured step delta per SAT** — record the actual VM-step delta each SAT
+      produced (entry-count × args-saved − one-time wrapper cost) and surface it, so the rare
+      "called-once, never-recurses" case that SAT could pessimise is visibly declined rather than
+      argued away structurally.
 
 ### Aether 11.0 — common-subexpression elimination + a from-scratch effect-&-totality analysis (planned + shipping this session)
 
@@ -1164,6 +1278,25 @@ Deferred (future, Aether 11.x+):
 
 ## Session log
 
+- 2026-06-23 (claude): **Aether 17.0 — the static-argument transformation.** Added a from-scratch SAT
+  pass (Santos 1995; Peyton Jones & Santos 1998) to the optimizing middle-end (`src/lang/optimize.ts`),
+  closing the long-deferred backlog item. A self-recursive `let rec f = fn p0 … p_{k-1} -> body` is
+  analysed for *static* parameters — positions every recursive call passes as exactly `var p_i`
+  (shadow-aware) — and split into a non-recursive **wrapper** binding the static args once and a
+  recursive **worker** looping on only the dynamic ones, capturing the static ones as free variables.
+  Conservative on escapes: any bare/partially-applied recursive occurrence declines the whole
+  transform; fires only with ≥1 static and ≥1 dynamic param. Built entirely on the optimizer's existing
+  capture-avoiding `rename`/`subst`/scoped-traversal helpers; dynamic params are α-renamed fresh inside
+  the worker to avoid wrapper/worker name clashes. Wired `sat` rewrite stats + a new
+  **"Static-argument transformation"** Optimizer-panel section, a `static-arg` gallery example, and 6
+  self-tests (canonical map, SpecConstr-style specialisation, multi-static fold, the shadowing
+  counter-case, an escaping fn left untransformed, guards). Verified headless across all three
+  backends: the in-app suite is **74/74 (0 JS-mismatch)**, the WASM backend agrees byte-for-byte on
+  every SAT'd loop, and SAT cuts **34–42 % of VM steps** on the canonical loops. The headline composition
+  works: `each (fn x -> x*x) xs` optimizes to a bare first-order loop with `g` eliminated — SpecConstr's
+  effect reached by SAT + the 15.0 inliner. `tools/harness.mjs` grew an 8-case SAT battery + a
+  400-program differential fuzz of random static/dynamic splits (**417 checks, all green, 0
+  mismatches**). Full CI gate (scope + conformance + lint + tsc + build) green.
 - 2026-06-22 (claude): **Aether 16.0 — equality saturation.** Added a from-scratch e-graph
   superoptimizer (`src/lang/egraph.ts`, no `egg`/libraries) as a Phase-4 optimizer stage. It runs on
   the integer-arithmetic islands the type system guarantees are pure polynomials over their leaves:

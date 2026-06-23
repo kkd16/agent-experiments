@@ -29,6 +29,8 @@ const PASS_LABELS: Record<string, string> = {
   cse: 'common-subexpression elimination (compute repeated work once)',
   gvn: 'global value numbering (share work across `let` / `λ` / `match` binders)',
   dt: 'pattern matching compiled to a decision tree (test each position once)',
+  sat: 'static-argument transformation (lift a loop-invariant argument into a wrapper)',
+  eqsat: 'equality saturation (e-graph superoptimiser over integer-arithmetic islands)',
 }
 
 /** Render one decision-tree node as an indented tree. */
@@ -305,6 +307,50 @@ export default function OptimizerPanel({ code }: Props) {
                   </td>
                   <td className="opt-pass-desc">
                     {f.size}-node body{f.escaped ? ', escape closure kept' : ', fully inlined'}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {stats.satTransforms.length > 0 && (
+        <div className="opt-passes">
+          <h4>Static-argument transformation (Aether 17.0)</h4>
+          <p className="panel-note" style={{ marginTop: 0 }}>
+            A recursive function often threads an argument round its loop completely{' '}
+            <em>unchanged</em> — the function argument of a recursive <code>map</code>, the limit of a
+            counting loop. This pass (Santos 1995; Peyton Jones &amp; Santos 1998) splits it into a
+            thin <strong>wrapper</strong> that binds the static arguments once and a recursive{' '}
+            <strong>worker</strong> that loops on only the <em>dynamic</em> ones, capturing the static
+            ones as free variables — so each iteration passes one fewer argument. Because the wrapper
+            is no longer recursive, a <em>known</em> function flowing into a lifted slot is then
+            inlined and β-reduced into the loop — a SpecConstr-like specialisation:
+          </p>
+          <table className="opt-table">
+            <tbody>
+              {stats.satTransforms.map((s, i) => (
+                <tr key={i}>
+                  <td className="opt-pass-count">{s.calls}×</td>
+                  <td className="opt-pass-name">
+                    <code>{s.name}</code>
+                  </td>
+                  <td className="opt-pass-desc">
+                    lifted{' '}
+                    {s.static.map((p, j) => (
+                      <span key={p}>
+                        {j > 0 ? ', ' : ''}
+                        <code>{p}</code>
+                      </span>
+                    ))}{' '}
+                    out of the loop; worker recurses on{' '}
+                    {s.dynamic.map((p, j) => (
+                      <span key={p}>
+                        {j > 0 ? ', ' : ''}
+                        <code>{p}</code>
+                      </span>
+                    ))}
                   </td>
                 </tr>
               ))}

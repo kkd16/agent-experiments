@@ -1141,6 +1141,58 @@ let twice = fn n -> n + n in
 (norm, ramp 100 0, map twice [1, 2, 3], twice 10)`,
   },
   {
+    id: 'static-arg',
+    title: 'Static-argument transformation',
+    blurb: 'Open the Optimizer tab: a loop-invariant argument is lifted out of the loop, then a known function is specialised into it.',
+    visual: false,
+    code: `// Aether 17.0 — the STATIC-ARGUMENT TRANSFORMATION (open the "Optimizer" tab).
+//
+// A recursive function often threads an argument round its loop completely
+// UNCHANGED. The classic case is the function argument of a recursive 'map':
+// every recursive call passes 'f' as itself, so re-binding and re-passing it each
+// iteration is pure overhead. SAT (Santos 1995; Peyton Jones & Santos 1998) splits
+// such a function into a thin WRAPPER that binds the static arguments once and a
+// recursive WORKER that loops on only the DYNAMIC ones — capturing the static ones
+// as free variables. Each iteration then passes one fewer argument.
+//
+// The real prize is what it UNLOCKS. Once the static argument is lifted, the
+// wrapper is no longer recursive — so when a KNOWN function flows into a lifted
+// slot, the call-site inliner copies the wrapper in, the known lambda lands on the
+// captured variable, and 'f x' β-reduces away. The higher-order loop is
+// SPECIALISED into a first-order one with zero closure overhead — the effect the
+// SpecConstr pass is famous for, reached here by composition.
+//
+// Every rewrite is re-proved by the byte-for-byte VM ≡ JS ≡ WASM equivalence
+// checks. Open the Optimizer tab: the rewrite table lists 'sat', the
+// "Static-argument transformation" section names each function and the parameter
+// it lifted, and "Measure VM steps" shows the saving. Flip "show before" to watch
+// 'mymap'/'each' grow a wrapper — and watch 'each (fn x -> x*x)' collapse to a
+// bare first-order loop with no 'g' left at all.
+
+// A hand-written recursive map. 'f' is loop-invariant (static); 'xs' varies.
+let rec mymap = fn f -> fn xs ->
+  match xs with
+  | []      -> []
+  | x :: t  -> f x :: mymap f t in
+
+// 'each' folds a function over a list. Calling it with a KNOWN lambda lets the
+// whole thing specialise: after SAT + inlining the optimized core is just
+//   let rec go = fn xs -> match xs with [] -> 0 | x::t -> (x * x) + go t in go …
+// — 'g' has vanished entirely.
+let rec each = fn g -> fn xs ->
+  match xs with
+  | []      -> 0
+  | x :: t  -> g x + each g t in
+
+// A counting loop: 'base' is static, the counter 'n' is dynamic.
+let rec power = fn base -> fn n ->
+  if n == 0 then 1 else base * power base (n - 1) in
+
+( mymap (fn n -> n * 10) [1, 2, 3, 4]
+, each (fn x -> x * x) [1, 2, 3, 4, 5, 6]
+, power 2 10 )`,
+  },
+  {
     id: 'eqsat',
     title: 'Equality saturation',
     blurb: 'An e-graph superoptimizer factors arithmetic the greedy passes cannot.',

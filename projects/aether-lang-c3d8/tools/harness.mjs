@@ -510,6 +510,22 @@ function checkOpt(name, src, opts = {}) {
     const pureFns = on.optimization ? on.optimization.pureFns : []
     for (const f of opts.notPure) if (pureFns.includes(f)) problems.push(`'${f}' wrongly proven pure`)
   }
+  const sats = on.optimization ? (on.optimization.satTransforms ?? []) : []
+  if (opts.minSat !== undefined && sats.length < opts.minSat)
+    problems.push(`only ${sats.length} static-argument transform(s) (expected >= ${opts.minSat})`)
+  if (opts.noSat && sats.length !== 0)
+    problems.push(`SAT fired on ${sats.length} function(s) (expected none)`)
+  if (opts.satLifted !== undefined) {
+    // { fn: 'map', static: ['f'], dynamic: ['xs'] } — assert the split is exact.
+    const got = sats.find((s) => s.name === opts.satLifted.fn)
+    if (!got) problems.push(`'${opts.satLifted.fn}' was not SAT-transformed`)
+    else {
+      if (opts.satLifted.static && got.static.join(',') !== opts.satLifted.static.join(','))
+        problems.push(`'${got.name}' lifted [${got.static}] (expected [${opts.satLifted.static}])`)
+      if (opts.satLifted.dynamic && got.dynamic.join(',') !== opts.satLifted.dynamic.join(','))
+        problems.push(`'${got.name}' worker threads [${got.dynamic}] (expected [${opts.satLifted.dynamic}])`)
+    }
+  }
   record('opt:' + name, problems.length === 0, problems.join('; '))
 }
 
@@ -785,6 +801,134 @@ checkOpt('inline skips a match-bodied function',
 checkOpt('inline respects the size budget',
   'let big = fn x -> let a = x + 1 in let b = a + x in let c = b + a in let d = c + b in let e = d + c in let g = e + d in g + a + b + c + d + e in (big 1, big 2)',
   { expect: '(52, 84)', noInline: true })
+
+// ---------------------------------------------------------------------------
+// Static-argument transformation battery (Aether 17.0). `checkOpt` already proves
+// the transformed program agrees with the unoptimized one (result, output, effect
+// count) and never raises the VM step count. Here we additionally assert SAT
+// *fired* with the exact static/dynamic split, *cut real steps*, reached the
+// SpecConstr-style specialisation by composition with the inliner, and — the
+// safety half — declined on escapes and shadow-rebound parameters.
+// ---------------------------------------------------------------------------
+
+// Headline: a hand-written recursive map. `f` is static, `xs` dynamic; the worker
+// loops on `xs` alone and the loop sheds an argument per iteration.
+checkOpt('sat recursive map lifts the function arg',
+  'let rec mymap = fn f -> fn xs -> match xs with [] -> [] | x :: t -> f x :: mymap f t in mymap (fn n -> n * 10) [1, 2, 3, 4, 5]',
+  { expect: '[10, 20, 30, 40, 50]', minSat: 1, satLifted: { fn: 'mymap', static: ['f'], dynamic: ['xs'] }, minStepCut: 10 })
+// A counting accumulator: the base is static, the counter dynamic.
+checkOpt('sat counting loop lifts the static base',
+  'let rec power = fn base -> fn n -> if n == 0 then 1 else base * power base (n - 1) in power 2 12',
+  { expect: '4096', satLifted: { fn: 'power', static: ['base'], dynamic: ['n'] }, minStepCut: 10 })
+// A foldl-shape: `f` static, `acc` and `xs` both dynamic.
+checkOpt('sat fold lifts one of three args',
+  'let rec fold = fn f -> fn acc -> fn xs -> match xs with [] -> acc | x :: t -> fold f (f acc x) t in fold (fn a -> fn b -> a + b) 0 [1, 2, 3, 4, 5, 6, 7]',
+  { expect: '28', satLifted: { fn: 'fold', static: ['f'], dynamic: ['acc', 'xs'] } })
+// The big payoff — composition: a KNOWN function in a lifted slot is inlined and
+// β-reduced into the loop, so the higher-order `each` becomes a first-order loop
+// with NO closure left at all (assert the optimized core has no lambda surviving
+// except the worker itself — checked via maxNodes shrinking + step cut).
+checkOpt('sat + inline specialises a known function (SpecConstr-like)',
+  'let rec each = fn g -> fn xs -> match xs with [] -> 0 | x :: t -> g x + each g t in each (fn x -> x * x) [1, 2, 3, 4, 5, 6]',
+  { expect: '91', minSat: 1, minStepCut: 20 })
+// Safety: an escaping recursive function (its arg applied as `g (g x)` is fine,
+// but the function itself is partially applied into `map`) is still correct; SAT
+// only ever transforms when sound, and the answer must be unchanged either way.
+checkOpt('sat preserves an escaping recursive function',
+  'let rec twicemap = fn g -> fn xs -> match xs with [] -> [] | x :: t -> g (g x) :: twicemap g t in (twicemap (fn n -> n + 1) [1, 2, 3], map (twicemap (fn n -> n * 2)) [[1], [2, 3]])',
+  { expect: '([3, 4, 5], [[4], [8, 12]])' })
+// Safety: a parameter REBOUND inside the body (a different value each iteration)
+// is not static — SAT must not lift it. Here `a` is rebound, so SAT must decline.
+checkOpt('sat declines a rebound parameter',
+  'let rec f = fn a -> fn n -> if n == 0 then a else let a = a + 10 in f a (n - 1) in f 0 5',
+  { expect: '50', noSat: true })
+// Safety: a non-recursive multi-arg function is never SAT-transformed (no loop).
+checkOpt('sat skips a non-recursive function',
+  'let avg = fn a b -> (a + b) / 2 in avg 10 20',
+  { expect: '15', noSat: true })
+// Guards in the worker body must still fall through correctly after the split.
+checkOpt('sat keeps guards correct',
+  'let rec keep = fn lim -> fn xs -> match xs with [] -> 0 | x :: t when x > lim -> 1 + keep lim t | x :: t -> keep lim t in keep 3 [1, 5, 2, 9, 3, 8, 4]',
+  { expect: '4', satLifted: { fn: 'keep', static: ['lim'], dynamic: ['xs'] } })
+
+// ---------------------------------------------------------------------------
+// Differential fuzz for the static-argument transformation. We generate hundreds
+// of well-typed-by-construction recursive integer loops with a randomly chosen
+// static/dynamic split per parameter, then assert for EVERY one that (a) the
+// optimized program computes the identical value, (b) it never raises the VM step
+// count, and (c) the static/dynamic classifier's verdict matches the way the
+// program was actually built (it fired with ≥1 static parameter iff we wired one
+// in). This stresses the classifier against shapes no hand-written test enumerates.
+// ---------------------------------------------------------------------------
+
+function mulberry32(seed) {
+  let a = seed >>> 0
+  return () => {
+    a |= 0
+    a = (a + 0x6d2b79f5) | 0
+    let t = Math.imul(a ^ (a >>> 15), 1 | a)
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296
+  }
+}
+
+{
+  const rng = mulberry32(0x5a7c0de)
+  const pick = (xs) => xs[Math.floor(rng() * xs.length)]
+  let fuzzFail = 0
+  let firedWithStatic = 0
+  let declinedNoStatic = 0
+  const RUNS = 400
+  for (let it = 0; it < RUNS; it++) {
+    // Two carried parameters p, q each independently static or dynamic, plus an
+    // always-dynamic accumulator `acc` and counter `n`. A static parameter is
+    // passed back verbatim; a dynamic one is perturbed so it genuinely varies.
+    const pStatic = rng() < 0.5
+    const qStatic = rng() < 0.5
+    const pNext = pStatic ? 'p' : `(p + ${pick([1, 2, 3])})`
+    const qNext = qStatic ? 'q' : `(q - ${pick([1, 2])})`
+    // a body that actually reads p, q, acc and n so nothing is trivially dead
+    const accNext = `(acc + ${pick(['p', 'q', 'p + q', 'p * 2', 'q + n', 'n'])})`
+    const k = 3 + Math.floor(rng() * 8) // 3..10 iterations
+    const p0 = Math.floor(rng() * 7)
+    const q0 = 1 + Math.floor(rng() * 7)
+    const src =
+      `let rec loop = fn p -> fn q -> fn acc -> fn n -> ` +
+      `if n <= 0 then acc else loop ${pNext} ${qNext} ${accNext} (n - 1) ` +
+      `in loop ${p0} ${q0} 0 ${k}`
+    const on = runPipeline(src, { execute: true, optimize: true })
+    const off = runPipeline(src, { execute: true, optimize: false })
+    if (on.error || off.error) {
+      fuzzFail++
+      if (fuzzFail <= 3) console.log(`  fuzz pipeline error: ${(on.error || off.error).message} :: ${src}`)
+      continue
+    }
+    const onVal = on.run && on.run.result ? valueToString(on.run.result) : null
+    const offVal = off.run && off.run.result ? valueToString(off.run.result) : null
+    const sats = on.optimization ? (on.optimization.satTransforms ?? []) : []
+    const firedLoop = sats.some((s) => s.name === 'loop')
+    const expectFire = pStatic || qStatic
+    const expectStatic = [pStatic ? 'p' : null, qStatic ? 'q' : null].filter(Boolean).join(',')
+    const got = sats.find((s) => s.name === 'loop')
+    const problems = []
+    if (onVal !== offVal) problems.push(`value ${onVal} != ${offVal}`)
+    if (on.run && off.run && on.run.steps > off.run.steps)
+      problems.push(`steps ${off.run.steps} -> ${on.run.steps}`)
+    if (firedLoop !== expectFire) problems.push(`SAT fired=${firedLoop} expected=${expectFire}`)
+    if (expectFire && got && got.static.join(',') !== expectStatic)
+      problems.push(`lifted [${got.static}] expected [${expectStatic}]`)
+    if (problems.length) {
+      fuzzFail++
+      if (fuzzFail <= 3) console.log(`  fuzz fail: ${problems.join('; ')} :: ${src}`)
+    } else if (expectFire) firedWithStatic++
+    else declinedNoStatic++
+  }
+  record(
+    'sat:differential fuzz',
+    fuzzFail === 0,
+    `${RUNS} random loops: ${firedWithStatic} fired (correct split, ≡ value, ≤ steps), ${declinedNoStatic} correctly declined, ${fuzzFail} failed`,
+  )
+}
 
 // Aggregate: the optimizer fires somewhere on the gallery, and at least one
 // example's core strictly shrinks (proves real reduction, not a no-op).

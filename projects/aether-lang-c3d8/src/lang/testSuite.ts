@@ -392,6 +392,48 @@ type Color = Red | Green | Blue deriving (Eq, Show) in
     expected: '440',
   },
 
+  // ---- static-argument transformation (Aether 17.0) ----
+  // The loop-invariant argument of a recursive function is lifted out of the loop
+  // into a thin wrapper, leaving the worker to recurse on only the dynamic args.
+  // Each runs the whole pipeline (so the transformed core ships) and is also run
+  // on JS — a green row proves the wrapper/worker split preserved the answer.
+  {
+    group: 'static argument',
+    name: 'recursive map: the function argument is loop-invariant',
+    code: 'let rec mymap = fn f -> fn xs -> match xs with [] -> [] | x :: t -> f x :: mymap f t in mymap (fn n -> n * 10) [1, 2, 3, 4]',
+    expected: '[10, 20, 30, 40]',
+  },
+  {
+    group: 'static argument',
+    name: 'specialises a known function into the lifted slot (SpecConstr-like)',
+    code: 'let rec each = fn g -> fn xs -> match xs with [] -> 0 | x :: t -> g x + each g t in each (fn x -> x * x) [1, 2, 3, 4, 5, 6]',
+    expected: '91',
+  },
+  {
+    group: 'static argument',
+    name: 'two static args + one accumulator (fold)',
+    code: 'let rec fold = fn f -> fn acc -> fn xs -> match xs with [] -> acc | x :: t -> fold f (f acc x) t in fold (fn a -> fn b -> a + b) 0 [1, 2, 3, 4, 5, 6, 7]',
+    expected: '28',
+  },
+  {
+    group: 'static argument',
+    name: 'a rebound parameter is NOT treated as static',
+    code: 'let rec f = fn a -> fn n -> if n == 0 then a else let a = a + 10 in f a (n - 1) in f 0 4',
+    expected: '40',
+  },
+  {
+    group: 'static argument',
+    name: 'an escaping recursive function is left untransformed',
+    code: 'let rec apptwice = fn g -> fn xs -> match xs with [] -> [] | x :: t -> g (g x) :: apptwice g t in (apptwice (fn n -> n + 1) [1, 2, 3], map (apptwice (fn n -> n * 2)) [[1], [2, 3]])',
+    expected: '([3, 4, 5], [[4], [8, 12]])',
+  },
+  {
+    group: 'static argument',
+    name: 'guards in the worker body fall through correctly',
+    code: 'let rec keep = fn lim -> fn xs -> match xs with [] -> 0 | x :: t when x > lim -> 1 + keep lim t | x :: t -> keep lim t in keep 3 [1, 5, 2, 9, 3, 8, 4]',
+    expected: '4',
+  },
+
   // ---- decision-tree pattern compilation (Aether 12.0) ----
   // Each runs through the whole pipeline (so the decision-tree lowering ships)
   // and is also run on the JavaScript backend — a green row proves DT ≡ naive.

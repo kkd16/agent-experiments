@@ -30,6 +30,9 @@
 //                        dropping arms that provably cannot match
 //   • field projection — `{ a = e1, … }.a` ⇒ e1 (when the dropped fields are pure)
 //   • seq cleanup      — `(); rest` and `pure; rest` ⇒ rest
+//   • static-arg xform — a loop-invariant parameter of a recursive function is
+//                        lifted into a thin wrapper so the worker loop recurses on
+//                        only the dynamic arguments (Aether 17.0; Santos 1995)
 //
 // `known-match` + `field projection` + `inline` are what make the abstraction the
 // front end adds — type-class dictionaries, `deriving`, `do`-notation, list
@@ -69,6 +72,9 @@ export interface OptimizeStats {
   /** one entry per non-recursive function the call-site inliner copied into its
    *  saturated call sites (Aether 15.0) — for the Optimizer panel. */
   inlinedFns: { name: string; sites: number; size: number; escaped: boolean }[]
+  /** one entry per recursive function the static-argument transformation lifted a
+   *  loop-invariant argument out of (Aether 17.0) — for the Optimizer panel. */
+  satTransforms: { name: string; arity: number; static: string[]; dynamic: string[]; calls: number }[]
   /** decision-tree compilation statistics (Aether 12.0) */
   dt: DtStats
   /** one entry per `match` rewritten into a decision tree (for the panel) */
@@ -146,6 +152,12 @@ let SHADOWED = new Set<string>()
 // in the Optimizer panel. Reset per run.
 let INLINES: { name: string; sites: number; size: number; escaped: boolean }[] = []
 
+// One entry per recursive function the static-argument transformation rewrote
+// this run (Aether 17.0). Module-level for the same reason as `freshCounter` —
+// optimization is synchronous and single-shot — and surfaced in the Optimizer
+// panel. Reset per run.
+let SATS: { name: string; arity: number; static: string[]; dynamic: string[]; calls: number }[] = []
+
 // Whether the multi-use call-site inliner is active. It melts *source-level*
 // abstraction, so it runs in the main optimization phase but is switched off for
 // the post-decision-tree cleanup fixpoint — that phase is reserved for copy-
@@ -173,6 +185,7 @@ export function optimizeCore(root: Expr): OptimizeResult {
   PURE_FNS = analyzePurity(root)
   bodyCostMemo = new Map<string, number>()
   INLINES = []
+  SATS = []
   ALLOW_FN_INLINE = true
   const passes: Record<string, number> = {}
   const bump = (name: string): void => {
@@ -257,6 +270,7 @@ export function optimizeCore(root: Expr): OptimizeResult {
       pureFns: [...PURE_FNS.keys()],
       gvnHoists,
       inlinedFns: INLINES,
+      satTransforms: SATS,
       dt,
       decisionTrees,
       termination: TERMINATION,
@@ -442,6 +456,10 @@ function reduceLet(e: Extract<Expr, { kind: 'let' }>, bump: Bump): Expr | null {
       bump('dead-let')
       return e.body
     }
+    // static-argument transformation (Aether 17.0): lift a loop-invariant
+    // parameter out of the recursive loop, leaving it captured as a free var.
+    const sat = staticArgumentTransform(e, bump)
+    if (sat) return sat
     return null
   }
 
@@ -611,6 +629,162 @@ function inlineCallSites(
   // Freshen every node's identity (`subst` shares the lambda object across the
   // inlined sites), so the identity-keyed passes that run later stay sound.
   return cloneExpr(out)
+}
+
+// ---------------------------------------------------------------------------
+// Static-argument transformation (Aether 17.0)
+// ---------------------------------------------------------------------------
+//
+// The classic GHC pass (Santos 1995; Peyton Jones & Santos, "A transformation-
+// based optimiser for Haskell", 1998). A *recursive* function often threads an
+// argument through its loop completely unchanged — the canonical example is the
+// function argument of a recursive `map`/`filter`/`foldr`:
+//
+//     let rec map = fn f -> fn xs ->
+//       match xs with [] -> [] | x :: t -> f x :: map f t
+//
+// Here `f` is **static**: every recursive call `map f t` passes it *as itself*.
+// Threading it round the loop is pure overhead — each iteration re-binds and
+// re-passes a value that never moves. SAT splits the function into a thin outer
+// **wrapper** that binds the static parameters once and an inner **worker loop**
+// that recurses on only the *dynamic* arguments, capturing the static ones as
+// free variables of its closure:
+//
+//     let map = fn f -> fn xs ->                 -- wrapper: binds the static `f`
+//       let rec go = fn xs ->                    -- worker: recurses on `xs` only
+//         match xs with [] -> [] | x :: t -> f x :: go t   -- `f` is now FREE
+//       in go xs
+//
+// The worker's loop now passes one fewer argument per iteration, so the VM step
+// count per recursive call falls. Crucially, the wrapper is no longer recursive,
+// so once a *known* function flows into a static position (e.g. `map (fn x -> x*2)
+// ys`) the existing call-site inliner can copy the wrapper into the call site,
+// turning `f` into a literal lambda the loop body can β-reduce — a SpecConstr-like
+// specialisation that the greedy passes alone could never reach. Every rewrite is
+// re-proved semantics-preserving by the byte-for-byte VM ≡ JS ≡ WASM checks.
+//
+// Soundness conditions (all conservative):
+//   • the binding is a genuinely self-recursive `let rec f = fn p0 … p_{k-1} -> body`;
+//   • EVERY free occurrence of `f` in `body` is a *saturated* call (spine of ≥ k
+//     args) — a bare or partially-applied `f` would escape and is left untouched
+//     (we simply decline to transform);
+//   • a position is *static* only if every recursive call passes exactly `var p_i`
+//     there AND `p_i` is not shadowed at that call site (so the variable really is
+//     the parameter, not an inner rebinding);
+//   • at least one static AND one dynamic parameter remain (a loop with no varying
+//     argument is left alone — there is nothing to recurse on to lift it past).
+
+function staticArgumentTransform(
+  e: Extract<Expr, { kind: 'let' }>,
+  bump: Bump,
+): Expr | null {
+  const f = e.name
+  // Peel the curried parameters off the recursive value.
+  const params: string[] = []
+  let cur: Expr = e.value
+  while (cur.kind === 'lambda') {
+    params.push(cur.param)
+    cur = cur.body
+  }
+  const body0 = cur
+  const k = params.length
+  if (k === 0) return null
+  if (new Set(params).size !== k) return null // duplicate params: bail (rare)
+  if (!freeVars(body0).has(f)) return null // not actually recursive in the body
+
+  // Pass 1 — analyse: classify each position static/dynamic and verify that
+  // every recursive occurrence of `f` is a saturated call (otherwise it escapes).
+  const staticMask = params.map(() => true)
+  let eligible = true
+  let calls = 0
+  const scan = (node: Expr, scope: Set<string>): void => {
+    if (!eligible) return
+    if (node.kind === 'var') {
+      if (node.name === f && !scope.has(f)) eligible = false // bare escape
+      return
+    }
+    if (node.kind === 'app') {
+      const sp = spineHead(node)
+      if (sp && sp.name === f && !scope.has(f)) {
+        if (sp.args.length < k) {
+          eligible = false // partial application — `f` escapes under-saturated
+          return
+        }
+        calls++
+        for (let i = 0; i < k; i++) {
+          const a = sp.args[i]
+          const isStatic = a.kind === 'var' && a.name === params[i] && !scope.has(params[i])
+          if (!isStatic) staticMask[i] = false
+        }
+        for (const a of sp.args) scan(a, scope) // arguments only; head chain is `f`
+        return
+      }
+    }
+    for (const c of scopedChildren(node, true, scope)) scan(c.child, c.bound)
+  }
+  scan(body0, new Set())
+
+  if (!eligible || calls === 0) return null
+  const staticIdx = staticMask.flatMap((s, i) => (s ? [i] : []))
+  const dynamicIdx = staticMask.flatMap((s, i) => (s ? [] : [i]))
+  if (staticIdx.length === 0 || dynamicIdx.length === 0) return null
+
+  // Pass 2 — rewrite. Rename the dynamic parameters to fresh names inside the
+  // worker (so the worker's loop variables never collide with the wrapper's
+  // identically-named parameters), then redirect every recursive call to the
+  // worker, dropping the static arguments.
+  const worker = gensym('sat')
+  const dynFresh = dynamicIdx.map((i) => gensym(params[i]))
+  let bodyR: Expr = body0
+  dynamicIdx.forEach((i, j) => {
+    bodyR = rename(params[i], dynFresh[j], bodyR)
+  })
+
+  const rw = (node: Expr, scope: Set<string>): Expr => {
+    if (node.kind === 'app') {
+      const sp = spineHead(node)
+      if (sp && sp.name === f && !scope.has(f)) {
+        // dynamic arguments (recursively rewritten) + any over-application tail
+        const passed: Expr[] = []
+        dynamicIdx.forEach((i) => passed.push(rw(sp.args[i], scope)))
+        for (let i = k; i < sp.args.length; i++) passed.push(rw(sp.args[i], scope))
+        let call: Expr = { kind: 'var', name: worker, span: node.span }
+        for (const a of passed) call = { kind: 'app', fn: call, arg: a, span: node.span }
+        return call
+      }
+    }
+    return mapChildrenScoped(node, scope, rw)
+  }
+  // The recursive-call args reference the *renamed* dynamic params, so `worker`'s
+  // scope must shield those fresh names from being treated as the original `f`.
+  const workerBody = rw(bodyR, new Set())
+
+  // Build the worker loop: `let rec go = fn d0 … dm -> workerBody in go d0 … dm`.
+  const span = e.span
+  let loop: Expr = workerBody
+  for (let j = dynFresh.length - 1; j >= 0; j--) {
+    loop = { kind: 'lambda', param: dynFresh[j], body: loop, span }
+  }
+  let seed: Expr = { kind: 'var', name: worker, span }
+  for (const i of dynamicIdx) seed = { kind: 'app', fn: seed, arg: { kind: 'var', name: params[i], span }, span }
+  const inner: Expr = { kind: 'let', name: worker, value: loop, body: seed, recursive: true, span }
+
+  // Wrap it back under the original parameters → the public `f` keeps its arity.
+  let wrapper: Expr = inner
+  for (let i = k - 1; i >= 0; i--) {
+    wrapper = { kind: 'lambda', param: params[i], body: wrapper, span }
+  }
+
+  bump('sat')
+  SATS.push({
+    name: f,
+    arity: k,
+    static: staticIdx.map((i) => params[i]),
+    dynamic: dynamicIdx.map((i) => params[i]),
+    calls,
+  })
+  // Fresh identities everywhere — later identity-keyed passes (CSE/GVN) stay sound.
+  return cloneExpr({ ...e, recursive: false, value: wrapper, body: e.body })
 }
 
 function reduceLetrec(e: Extract<Expr, { kind: 'letrec' }>, bump: Bump): Expr | null {
