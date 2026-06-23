@@ -109,8 +109,11 @@ export interface IntegratorSettings {
   // 'pssmlt' is primary-sample-space Metropolis light transport (a Markov chain
   // over the path tracer's random stream); 'sppm' is stochastic progressive
   // photon mapping (photons from the lights + a shrinking-radius density
-  // estimate), which excels at caustics. All four converge to the same image.
-  integrator?: 'pt' | 'bdpt' | 'pssmlt' | 'sppm'
+  // estimate), which excels at caustics; 'guided' is the unidirectional path
+  // tracer augmented with **practical path guiding** — an SD-tree that learns the
+  // incident-radiance field online and importance-samples it (mixed with the BSDF
+  // via MIS), cutting indirect-light noise. All converge to the same image.
+  integrator?: 'pt' | 'bdpt' | 'pssmlt' | 'sppm' | 'guided'
 }
 
 // Tone-mapping operators applied on the UI thread to the accumulated HDR buffer.

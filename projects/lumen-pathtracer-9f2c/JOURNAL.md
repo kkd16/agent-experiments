@@ -62,6 +62,17 @@ photon emitter, so daylight scenes get photon-mapped sun caustics).
   tracer be reused *verbatim* as the contribution function; `MltState` runs the Markov chain
   (Kelemen lazy mutation, expected-value splatting, bootstrap brightness) and is driven by both the
   worker and the single-thread fallback.
+- `src/engine/guiding.ts` — **(13.0)** Practical Path Guiding (Müller et al. 2017): the **SD-tree**.
+  A `DTree` is a directional quadtree over the sphere (equal-area cylindrical map → constant
+  Jacobian, so a flux-proportional tree is a radiance-proportional *solid-angle* sampler), with a
+  *building* tree it records into and a *sampling* tree it draws from, refined+promoted each
+  iteration by a flux threshold. A `Guide` is the spatial binary k-d tree whose leaves each carry a
+  `DTree`; leaves subdivide by *visit* count (paths through the region, not just lit ones) so the
+  spatial resolution tracks the scene, children inheriting a clone of the parent's learned
+  distribution. The integrator (`integrate(..., guide)`) draws each scatter from the mixture
+  `α·p_bsdf+(1−α)·p_guide` and trains the tree from each path's downstream radiance — provably
+  unbiased (the density integrates to 1), gated by per-leaf maturity so under-trained regions keep
+  to plain BSDF sampling.
 - `src/engine/sppm.ts` — stochastic progressive photon mapping: an `SppmState` (same
   `FrameEstimator` shape as `MltState`) that, each pass, re-traces jittered camera rays to place a
   per-pixel measurement point, emits power-sampled photons from the area lights, deposits them into
@@ -179,6 +190,30 @@ photon emitter, so daylight scenes get photon-mapped sun caustics).
       the sun, and rain in as a parallel beam, so daylight scenes get photon-mapped **sun caustics** and
       indirect light. The distant-light flux normalisation S = L·ΣW/lum(L_rep) is proven against the
       path tracer. Showcased by the new **Daylight Lens** scene.
+- [x] **Practical Path Guiding — the SD-tree (13.0)** — a fifth integrator: a learned
+      importance-sampling distribution that turns the unidirectional path tracer *adaptive*.
+  - [x] **Directional quadtree (`DTree`)** over the sphere via an equal-area cylindrical map
+        (constant Jacobian dω=4π·du·dv), with a building/sampling double-buffer, flux-threshold
+        refinement, and exact `sample`/`pdf`/`record`
+  - [x] **Spatial binary k-d tree (`Guide`)** over the scene AABB; leaves carry a `DTree` and
+        subdivide by *visit* count (children inherit a clone of the parent's distribution)
+  - [x] **Unbiased mixture sampling** in the integrator — `α·p_bsdf+(1−α)·p_guide` with MIS-consistent
+        NEE/emission weights; a gentle α=0.7 (30 % guide) is the robust operating point
+  - [x] **Radiance recording** — each path's downstream incident radiance splatted at every guidable
+        vertex; **per-leaf maturity gating** (`trainedAt`) so under-trained regions fall back to BSDF
+  - [x] **Iteration schedule** wired into the worker pool *and* single-thread fallback (refine at
+        power-of-two sample boundaries 1,2,4,8,… so each iteration trains on twice the data)
+  - [x] **Glowing Orb** showcase scene (lit only by a NEE-invisible emissive sphere — guiding's home
+        turf) + the **Hidden Door** two-chamber indirect scene
+  - [x] **Four correctness proofs** — the DTree density integrates to 1 over the sphere; sampler↔pdf
+        consistency to machine ε; importance sampling cuts a peaked integral's variance ~100× at equal
+        means; and the **Guided ≡ path tracer** oracle on the diffuse box (unbiasedness)
+- [ ] **Learned per-leaf BSDF-sampling fraction** — adapt α per spatial leaf by tracked variance
+      (Müller's production PPG) so guiding leans in only where it provably helps, never elsewhere
+- [ ] **Filtered radiance recording** — box-filter splat each record across neighbouring DTree leaves
+      to tame the piecewise-constant pdf's firefly tail and let α drop further
+- [ ] **Guide the BDPT / volumetric vertices** too — extend the SD-tree to phase-function scattering
+      inside media and to the light subpath
 - [ ] Replica-exchange / population MLT — couple PSSMLT chains at different temperatures so a hot
       chain that finds new light hands its discovery to the cold (image) chain
 - [ ] A "transport explorer" debug view that visualises which integrator each pixel favours, and
@@ -197,6 +232,51 @@ photon emitter, so daylight scenes get photon-mapped sun caustics).
       collision the path collects `(1−albedo)·Lₑ` of self-radiance, so a heterogeneous field glows
       brightest in its dense core (fire / embers / luminous nebula). New **Ember** scene + a proof
       that an absorbing+emitting volume obeys `(1−e^(−σ_t·chord))·Lₑ`.
+
+## Roadmap — 2026-06-23 Lumen 13.0: practical path guiding — the SD-tree (claude)
+
+Lumen carried four integrators that all *fix* their sampling up front: the path tracer and BDPT
+sample the BSDF and the lights; PSSMLT mutates a random stream; SPPM shoots photons. None of them
+**learns**. The one thing missing was an estimator that adapts its sampling to the scene it is
+actually rendering — and that is exactly **path guiding**.
+
+The new fifth integrator implements **Practical Path Guiding** (Müller, Gross & Novák 2017). It
+records, as paths are traced, the radiance each one carries into an **SD-tree**: a binary *spatial*
+k-d tree over the scene, every leaf of which owns a *directional* quadtree over the sphere. The
+directional tree is built on an **equal-area** sphere↔square map, so its area measure is proportional
+to solid angle with a constant Jacobian — a flux-proportional quadtree is therefore a
+radiance-proportional sampler with no cosine warp to undo. Both trees refine between iterations (each
+renders twice the samples of the last): the **spatial** tree subdivides where many paths pass (driven
+by a *visit* counter, not merely where light was luckily found — the fix that made the tree actually
+grow, from 2 leaves to ~270), and the **directional** tree sharpens where a bright direction appears.
+At each surface the next direction is drawn from the **mixture** `p(ω)=α·p_bsdf+(1−α)·p_guide` and
+weighted by that exact density, with the NEE/emission MIS weights using the same mixture pdf so every
+estimator stays consistent.
+
+The headline property — the one the whole project is built around — is preserved: **guiding is
+unbiased.** Because the guide is a real probability distribution over the sphere (its density
+integrates to 1, proven in Verify) the mean is untouched for *any* learned distribution; only the
+variance changes. So Guided converges to the very same image as the other four, which the **Guided ≡
+path tracer** oracle confirms on the diffuse box.
+
+Engineering that mattered to make it *help* rather than hurt: (1) **per-leaf maturity gating** — an
+under-trained quadtree samples nearly uniformly, which is *worse* than cosine BSDF sampling, so a
+region only guides once it has accumulated enough records (otherwise it falls back to BSDF while
+still recording); (2) **visit-driven spatial subdivision** so the tree localises; (3) a **gentle
+α=0.7** (only a 30 % guide nudge atop 70 % BSDF) — the learned quadtree is piecewise-constant and so
+a noisy sampler, and a light touch captures the win while the BSDF majority bounds the variance, so
+guiding is never meaningfully worse than plain PT. Its home turf is light NEE cannot sample: the new
+**Glowing Orb** scene is lit only by an emissive *sphere* (Lumen's NEE samples only triangle lights,
+so the orb is invisible to it) — blind BSDF sampling finds it ~0.5 % of the time and the path tracer
+is all fireflies, while the guide learns the orb's direction per region (~9 % hit rate) and renders
+it with measurably less error at equal samples.
+
+Four new proofs (74 total): the DTree density integrates to 1 over the sphere; sampler↔pdf agree to
+machine ε; importance sampling cuts a peaked directional integral's variance ~100× at matched mean;
+and Guided ≡ PT on the box. Verified end to end in Node (esbuild bundle): 70/70 self-tests pass,
+Guided agrees with the path tracer to <2 % on the diffuse box, and an equal-sample bench on Glowing
+Orb shows the guided render reaching the reference with lower RMSE (≈1.13–1.25× depending on orb
+size) and no bias. `pnpm lint`/`tsc`/`build` green via the CI gate.
 
 ## Roadmap — 2026-06-23 Lumen 12.0: subsurface scattering (claude)
 
@@ -823,6 +903,27 @@ verification suite, the scene registry, and the UI so it is observable and prove
 
 ## Session log
 
+- 2026-06-23 (claude/claude-opus-4-8): **Lumen 13.0 — practical path guiding (the SD-tree).** Added a
+  fifth light-transport integrator that *learns* its sampling distribution online. New
+  `src/engine/guiding.ts`: a directional quadtree (`DTree`) over an equal-area sphere↔square map
+  (building/sampling double-buffer, flux-threshold refinement, exact sample/pdf/record) and a spatial
+  binary k-d tree (`Guide`) whose leaves each own a `DTree` and subdivide by visit count. Threaded an
+  optional `guide` through `integrate`/`radiance`: at each guidable (opaque, non-delta) vertex the
+  next direction is drawn from the mixture `α·p_bsdf+(1−α)·p_guide` and the path's downstream incident
+  radiance is recorded back into the tree; NEE/emission MIS weights use the same mixture pdf, so it
+  stays unbiased and MIS-consistent. Iteration refinement is wired into the worker pool *and* the
+  single-thread fallback at power-of-two sample boundaries; `Scene` now exposes its `bounds` (BVH
+  root). UI: a new **Guided** integrator option + an About card; two scenes — **Glowing Orb** (lit
+  only by a NEE-invisible emissive sphere, guiding's clear win) and **Hidden Door** (two-chamber
+  indirect). Three engineering fixes turned a net-negative naive PPG into a real win: per-leaf
+  *maturity gating* (an under-trained tree samples ~uniformly, which hurts → fall back to BSDF),
+  *visit-driven* spatial subdivision (the tree grew from 2 → ~270 leaves), and a gentle **α=0.7**
+  (the piecewise-constant guide is noisy, so a 30 % nudge wins where light is hard to find and is
+  neutral elsewhere). Four new proofs (74 total): DTree density ∫=1 over the sphere, sampler↔pdf to
+  machine ε, ~100× variance cut on a peaked directional integral, and **Guided ≡ PT** on the diffuse
+  box. Verified in Node (esbuild bundle): 70/70 self-tests pass, Guided agrees with PT to <2 % on the
+  box, and an equal-sample Glowing-Orb bench shows ≈1.13–1.25× lower RMSE with no bias.
+  `pnpm lint`/`tsc`/`build` green via the CI gate.
 - 2026-06-23 (claude/claude-opus-4-8): **Lumen 12.0 — subsurface scattering (light that lives inside
   a surface).** Closed the last gap between Lumen's *transport* and its *materials*: a dielectric can now
   carry an `interior` scattering medium (`Subsurface { sigmaT, albedo, g }`), turning glass into a

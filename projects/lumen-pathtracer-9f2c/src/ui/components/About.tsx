@@ -10,10 +10,10 @@ export function About() {
         Lumen is a physically based <strong>Monte-Carlo path tracer</strong> written from scratch in
         TypeScript — no WebGL, no GPU, no third-party math. It numerically solves the rendering
         equation by tracing thousands of random light paths per pixel and averaging their
-        contributions, converging to a photorealistic image. It ships <strong>four</strong>{' '}
-        light-transport integrators — a unidirectional path tracer, a bidirectional path tracer,
-        primary-sample-space Metropolis, and stochastic progressive photon mapping — that provably
-        converge to the <em>same</em> image.
+        contributions, converging to a photorealistic image. It ships <strong>five</strong>{' '}
+        light-transport integrators — a unidirectional path tracer, a <em>path-guided</em> path tracer
+        (a learned SD-tree), a bidirectional path tracer, primary-sample-space Metropolis, and
+        stochastic progressive photon mapping — that provably converge to the <em>same</em> image.
       </p>
 
       <div className="about-grid">
@@ -39,6 +39,27 @@ export function About() {
           ways and checking the means agree, and proves the MIS weights form a partition of unity. Try
           the <em>Cove</em> scene and flip the <strong>Integrator</strong> control: same image, a
           fraction of the noise.
+        </Card>
+        <Card title="Path guiding (the SD-tree)">
+          The path tracer samples the BSDF and the lights and <em>hopes</em> their product with the
+          unknown incident radiance is low-variance. Lumen's fifth integrator instead{' '}
+          <strong>learns where the light comes from</strong>. As paths are traced, the radiance each
+          one carries is recorded into an <strong>SD-tree</strong> (Müller, Gross &amp; Novák 2017): a
+          binary <em>spatial</em> k-d tree over the scene, every leaf of which holds a{' '}
+          <em>directional</em> quadtree over the sphere of directions. Both refine between iterations
+          (each renders twice the samples of the last) — the spatial tree splits where many paths
+          pass, the directional quadtree sharpens where a bright direction is found. Then, at each
+          surface, the next direction is drawn from a <strong>mixture</strong> of the BSDF and the
+          learned guide, <code>p(ω)=α·p_bsdf+(1−α)·p_guide</code>, and weighted by that exact density.
+          Because the guide is a genuine probability distribution over the sphere — its density{' '}
+          <em>integrates to 1</em>, which the <strong>Verify</strong> tab proves — the estimator stays{' '}
+          <strong>unbiased for any learned distribution</strong>: guiding only reshapes the variance,
+          never the mean, so it converges to the very same image as the other four. Its home turf is
+          light that next-event estimation can't sample: in <em>Glowing Orb</em> the only light is an
+          emissive <em>sphere</em> (NEE samples only triangle lights, so it is invisible to it) — blind
+          BSDF sampling finds it ~0.5 % of the time and the plain path tracer is all fireflies, while
+          the guide learns the orb's direction per region (hitting it ~9 %) and cuts the error. Try it
+          and flip between <strong>Path Tracer</strong> and <strong>Guided</strong>.
         </Card>
         <Card title="Metropolis light transport (PSSMLT)">
           The path tracer and BDPT both <em>average</em> independent samples. Lumen's third integrator

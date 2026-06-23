@@ -13,7 +13,14 @@ import { integrate } from '../engine/integrator'
 import type { GBuffer, RayStats } from '../engine/integrator'
 import { MltState, DEFAULT_MLT } from '../engine/pssmlt'
 import { SppmState, DEFAULT_SPPM } from '../engine/sppm'
+import { Guide } from '../engine/guiding'
 import type { FromWorker, InitMsg, IntegratorSettings, ToWorker } from '../engine/types'
+
+// A power of two ≥ 1 — the path-guiding iteration boundaries (1,2,4,8,…), at
+// which the SD-tree refines and doubles the data backing the next iteration.
+function isPow2(n: number): boolean {
+  return n >= 1 && (n & (n - 1)) === 0
+}
 
 // A full-frame estimator (PSSMLT or SPPM): both advance with step(n), expose a
 // progress figure, and read back a fresh HDR image. Each worker owns the *whole*
@@ -36,6 +43,9 @@ let settings: IntegratorSettings = { maxDepth: 8, rrStart: 4, clampIndirect: 0 }
 let rng: Rng = new Rng(1)
 let frame: FrameEstimator | null = null
 let frameKind: 'pssmlt' | 'sppm' | null = null
+// The path-guiding SD-tree (only for the 'guided' integrator); persists across
+// passes so it can learn the incident-radiance field over successive iterations.
+let guide: Guide | null = null
 
 function handleInit(msg: InitMsg): void {
   width = msg.width
@@ -48,6 +58,7 @@ function handleInit(msg: InitMsg): void {
   rng = new Rng(msg.seed ^ (bandStart * 0x9e3779b1), bandStart + 1)
   frame = null
   frameKind = null
+  guide = settings.integrator === 'guided' ? new Guide(scene.bounds) : null
   if (settings.integrator === 'pssmlt') {
     // Bootstrap scales gently with resolution but stays bounded so startup is
     // quick; chains are seeded from a per-worker seed so each is decorrelated.
@@ -126,7 +137,7 @@ function handlePass(sampleIndex: number, captureGBuffer: boolean): void {
       const u = (x + pj.x) / width
       const vScreen = 1 - (y + pj.y) / height // flip so +v is up
       const ray = camera.generateRay(u, vScreen, rng, lens)
-      const L = integrate(scene, ray, settings, rng, stats, gbuf)
+      const L = integrate(scene, ray, settings, rng, stats, gbuf, guide ?? undefined)
       const idx = (row + x) * 3
       rad[idx] = L.x
       rad[idx + 1] = L.y
@@ -141,6 +152,10 @@ function handlePass(sampleIndex: number, captureGBuffer: boolean): void {
       }
     }
   }
+
+  // Close a path-guiding iteration at every power-of-two sample count, so each
+  // iteration trains on twice the samples of the last and the SD-tree sharpens.
+  if (guide && isPow2(sampleIndex + 1)) guide.endIteration()
 
   const transfer: ArrayBuffer[] = [rad.buffer]
   if (alb) transfer.push(alb.buffer)

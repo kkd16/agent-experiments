@@ -10,7 +10,7 @@
 
 import type { Vec3 } from './vec3'
 import { add, dot, lerp, madd, neg, normalize, onb, scale, sub, toWorld, v, clamp } from './vec3'
-import type { Hit } from './ray'
+import type { Hit, Aabb } from './ray'
 import { makeRay } from './ray'
 import type { Ray } from './ray'
 import type { Material } from './material'
@@ -86,6 +86,8 @@ export class Scene {
   // tracking against the medium's `sigmaT` as the constant majorant.
   readonly densityFields: (DensityField | null)[]
   readonly hasHeterogeneous: boolean
+  // World-space bounding box (the BVH root), exposed for path guiding's spatial tree.
+  readonly bounds: Aabb
 
   constructor(def: SceneDef) {
     const t0 = now()
@@ -98,6 +100,7 @@ export class Scene {
         : makeTriangle(p.p0, p.p1, p.p2, p.material, p.n0, p.n1, p.n2),
     )
     this.bvh = new Bvh(this.prims)
+    this.bounds = this.bvh.rootBounds
     this.lights = []
     for (let i = 0; i < this.prims.length; i++) {
       const prim = this.prims[i]

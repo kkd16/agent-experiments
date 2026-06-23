@@ -21,6 +21,7 @@ import {
   clamp,
   dot,
   isBlack,
+  luminance,
   madd,
   maxComponent,
   mul,
@@ -39,6 +40,7 @@ import { hgPhase, sampleHG } from './phase'
 import { LAMBDA_MAX, LAMBDA_MIN, wavelengthWeight } from './spectrum'
 import type { IntegratorSettings } from './types'
 import { radianceBDPT } from './bdpt'
+import type { Guide } from './guiding'
 
 export interface RayStats {
   rays: number
@@ -49,9 +51,23 @@ export interface GBuffer {
   normal: Vec3
 }
 
-// Dispatch a primary ray to the configured light-transport algorithm. Both
+// Materials a learned guiding distribution applies to: the *non-delta, opaque
+// reflectors* (Lambert/Oren–Nayar diffuse without a specular coat, and rough
+// metal). These never transmit and never return a delta sub-lobe, so the BSDF
+// pdf is well defined everywhere and the mixture density α·p_bsdf+(1−α)·p_guide
+// is exact — keeping the guided estimator provably unbiased. Specular and
+// transmissive transport (mirrors, glass, coated/thin-film surfaces) keeps to
+// plain BSDF sampling, which already handles it well.
+function guidable(m: Material): boolean {
+  if (m.kind === 'diffuse') return !m.coat
+  if (m.kind === 'metal') return m.roughness >= 1e-3
+  return false
+}
+
+// Dispatch a primary ray to the configured light-transport algorithm. All
 // estimators share this signature so the worker and the single-thread fallback
-// stay agnostic about which is selected.
+// stay agnostic about which is selected. `guide`, when present (the 'guided'
+// integrator), is the SD-tree the path tracer importance-samples from and trains.
 export function integrate(
   scene: Scene,
   ray: Ray,
@@ -59,10 +75,11 @@ export function integrate(
   rng: Rng,
   stats: RayStats,
   gbuf?: GBuffer,
+  guide?: Guide,
 ): Vec3 {
   return settings.integrator === 'bdpt'
     ? radianceBDPT(scene, ray, settings, rng, stats, gbuf)
-    : radiance(scene, ray, settings, rng, stats, gbuf)
+    : radiance(scene, ray, settings, rng, stats, gbuf, guide)
 }
 
 const EPS = 1e-4
@@ -91,6 +108,17 @@ function albedoGuide(m: Material): Vec3 {
   }
 }
 
+// A guiding vertex deferred for radiance recording: after the whole path's
+// radiance is known, the incident radiance along the direction sampled here is
+// (L_final − L_at_this_vertex) / throughput_after_this_vertex — which is exactly
+// what we splat into the SD-tree so it learns where the light comes from.
+interface GuideRecord {
+  p: Vec3
+  wi: Vec3
+  lumPrefix: number // luminance of L collected up to & including this vertex
+  lumBeta: number // luminance of the throughput carried past this vertex
+}
+
 export function radiance(
   scene: Scene,
   ray: Ray,
@@ -98,6 +126,7 @@ export function radiance(
   rng: Rng,
   stats: RayStats,
   gbuf?: GBuffer,
+  guide?: Guide,
 ): Vec3 {
   let L = v(0, 0, 0)
   let beta = v(1, 1, 1)
@@ -107,6 +136,7 @@ export function radiance(
   let prevPoint = ray.o
   let captured = false
   const clampI = settings.clampIndirect
+  const records: GuideRecord[] | null = guide ? [] : null
   // Beer–Lambert state: the absorption coefficient σ_a of the medium the ray is
   // currently travelling through (null = vacuum). And the path's committed "hero"
   // wavelength for spectral dispersion (0 = not yet chosen / achromatic).
@@ -292,6 +322,11 @@ export function radiance(
     }
 
     // ---- Next-event estimation (skip for delta/specular lobes). ----
+    // When guiding is active at a guidable vertex whose region is *trained*, the
+    // continuation sampler the MIS power heuristic competes against is the
+    // *mixture* of the BSDF and the guide, so its pdf for the light direction is
+    // α·p_bsdf+(1−α)·p_guide. Under-trained regions keep to plain BSDF sampling.
+    const guideTrained = guide !== undefined && guidable(mat) && guide.trainedAt(hit.p)
     if (!isDelta(mat)) {
       const ls = scene.sampleLight(hit.p, rng)
       if (ls && ls.pdf > 0 && !isBlack(ls.radiance)) {
@@ -301,7 +336,10 @@ export function radiance(
           const shadowO = offsetOrigin(hit.p, hit.ng, ls.wi)
           stats.rays++
           if (!scene.occluded(shadowO, ls.wi, EPS, ls.dist - 1e-3)) {
-            const bp = pdfBSDF(mat, wo, ls.wi, hit.n)
+            let bp = pdfBSDF(mat, wo, ls.wi, hit.n)
+            if (guideTrained) {
+              bp = guide!.alpha * bp + (1 - guide!.alpha) * guide!.pdf(hit.p, ls.wi)
+            }
             const w = powerHeuristic(1, ls.pdf, 1, bp)
             // β · f · Le · cosθ · w / pdf_light
             let c = mul(mul(beta, f), scale(ls.radiance, (cosX * w) / ls.pdf))
@@ -312,6 +350,56 @@ export function radiance(
           }
         }
       }
+    }
+
+    // ---- Guided sampling: a learned SD-tree drives the next direction. ----
+    // At a guidable vertex we draw the continuation from the mixture
+    // p(ω)=α·p_bsdf+(1−α)·p_guide and weight by f·cosθ/p(ω); the guide trains
+    // from each path's eventual radiance (recorded below). Because p(ω) is an
+    // exact density this stays unbiased — guiding only reshapes the variance.
+    if (guide !== undefined && guidable(mat)) {
+      const alpha = guide.alpha
+      let bsWi: Vec3
+      let recordWi: Vec3 | null = null
+      if (guideTrained && rng.next() >= alpha) {
+        const gs = guide.sample(hit.p, rng)
+        const cosI = Math.abs(dot(hit.n, gs.wi))
+        const f = evalBSDF(mat, wo, gs.wi, hit.n)
+        if (isBlack(f) || cosI <= 0 || gs.pdf <= 0) break
+        const pB = pdfBSDF(mat, wo, gs.wi, hit.n)
+        const mix = alpha * pB + (1 - alpha) * gs.pdf
+        if (mix <= 0) break
+        beta = mul(beta, scale(f, cosI / mix))
+        specularBounce = false
+        prevPdf = mix
+        bsWi = gs.wi
+        recordWi = gs.wi
+      } else {
+        const bs = sampleBSDF(mat, wo, hit.n, hit.frontFace, rng)
+        if (!bs || bs.pdf <= 0 || isBlack(bs.weight)) break
+        if (bs.specular) {
+          // A guidable material shouldn't return a delta lobe; if one slips
+          // through, fall back to plain BSDF sampling and don't record it.
+          beta = mul(beta, bs.weight)
+          specularBounce = true
+          prevPdf = bs.pdf
+        } else {
+          const pG = guideTrained ? guide.pdf(hit.p, bs.wi) : 0
+          const mix = guideTrained ? alpha * bs.pdf + (1 - alpha) * pG : bs.pdf
+          beta = mul(beta, scale(bs.weight, bs.pdf / mix))
+          specularBounce = false
+          prevPdf = mix
+          recordWi = bs.wi
+        }
+        bsWi = bs.wi
+      }
+      if (isBlack(beta)) break
+      prevPoint = hit.p
+      if (records && recordWi) {
+        records.push({ p: hit.p, wi: recordWi, lumPrefix: luminance(L), lumBeta: luminance(beta) })
+      }
+      r = makeRay(offsetOrigin(hit.p, hit.ng, bsWi), bsWi)
+      continue
     }
 
     // ---- BSDF sampling: choose the next path direction. ----
@@ -342,6 +430,24 @@ export function radiance(
   // Guard against NaN/Inf leaking into the accumulation buffer.
   if (!Number.isFinite(L.x) || !Number.isFinite(L.y) || !Number.isFinite(L.z)) {
     return v(0, 0, 0)
+  }
+
+  // ---- Train the guide: splat each vertex's eventual incident radiance. ----
+  // The light gathered *downstream* of a vertex (L_final minus what had been
+  // collected when we left it), divided by the throughput carried past it, is a
+  // Monte-Carlo estimate of the incident radiance along the direction sampled
+  // there — exactly the quantity the SD-tree should be proportional to.
+  if (guide && records && records.length > 0) {
+    const lumL = luminance(L)
+    for (let k = 0; k < records.length; k++) {
+      const rec = records[k]
+      const down = lumL - rec.lumPrefix
+      // Every visited vertex is recorded (so the spatial tree subdivides by path
+      // density); the splatted radiance is the downstream-incident estimate, or 0
+      // when this path found no light along that direction.
+      const value = down > 0 && rec.lumBeta > 1e-6 && Number.isFinite(down) ? down / rec.lumBeta : 0
+      guide.record(rec.p, rec.wi, value)
+    }
   }
   return L
 }

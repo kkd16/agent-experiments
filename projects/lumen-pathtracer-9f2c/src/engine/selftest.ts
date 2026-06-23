@@ -22,6 +22,7 @@ import { Bvh } from './bvh'
 import { Scene } from './scene'
 import { radiance } from './integrator'
 import type { RayStats } from './integrator'
+import { Guide, DTree, dirToSquare, squareToDir } from './guiding'
 import { radianceBDPT, areaDensity, misPartitionResidual } from './bdpt'
 import { Camera } from './camera'
 import { MltState, PssmltSampler } from './pssmlt'
@@ -2147,6 +2148,150 @@ function testSubsurfaceAlbedoMonotone(): { pass: boolean; detail: string } {
   }
 }
 
+// ---- Path guiding (the SD-tree, Müller et al. 2017) -------------------------
+
+// 62 — The learned directional quadtree is a valid probability density: its
+// solid-angle pdf must integrate to 1 over the whole sphere. We train a DTree on
+// a concentrated lobe + a dim background, refine it, then Monte-Carlo-integrate
+// ∫ pdf(ω) dω by sampling the sphere uniformly (density 1/4π) — the mean pdf must
+// be 1/4π, i.e. ∫ = mean·4π = 1. A density that integrates to 1 is exactly what
+// keeps the guided estimator unbiased for any learned distribution.
+function testGuideDensityNormalised(): { pass: boolean; detail: string } {
+  const dt = new DTree()
+  const rng = new Rng(99, 1)
+  for (let i = 0; i < 60000; i++) dt.record(0.9 + rng.next() * 0.08, rng.next(), 5)
+  for (let i = 0; i < 20000; i++) dt.record(rng.next(), rng.next(), 0.2)
+  dt.build()
+  let sum = 0
+  const N = 300000
+  for (let i = 0; i < N; i++) {
+    const z = 2 * rng.next() - 1
+    const phi = 2 * Math.PI * rng.next()
+    const r = Math.sqrt(Math.max(0, 1 - z * z))
+    const sq = dirToSquare(v(r * Math.cos(phi), z, r * Math.sin(phi)))
+    sum += dt.pdf(sq.u, sq.v)
+  }
+  const integral = (sum / N) * 4 * Math.PI
+  return { pass: approx(integral, 1, 0.02), detail: `∫pdf dω=${integral.toFixed(4)} (target 1)` }
+}
+
+// 63 — Sampler ↔ pdf consistency: the density `sample()` reports for a drawn
+// direction must equal what `pdf()` independently computes for it — the invariant
+// every MIS weight in the guided integrator leans on. Must hold to machine ε.
+function testGuideSamplerPdf(): { pass: boolean; detail: string } {
+  const dt = new DTree()
+  const rng = new Rng(123, 1)
+  for (let i = 0; i < 40000; i++) dt.record(0.3 + 0.3 * rng.next(), 0.5 + 0.3 * rng.next(), 3)
+  dt.build()
+  let maxRel = 0
+  for (let i = 0; i < 40000; i++) {
+    const s = dt.sample(rng)
+    const p = dt.pdf(s.u, s.v)
+    maxRel = Math.max(maxRel, Math.abs(p - s.pdf) / (s.pdf + 1e-12))
+    // The sampled (u,v) and its round-tripped direction must agree too.
+    const d = squareToDir(s.u, s.v)
+    const back = dirToSquare(d)
+    maxRel = Math.max(maxRel, Math.abs(back.u - s.u), Math.abs(back.v - s.v))
+  }
+  return { pass: maxRel < 1e-6, detail: `max rel error=${maxRel.toExponential(2)} (<1e-6)` }
+}
+
+// 64 — Importance sampling provably cuts variance. Integrate a concentrated
+// "light" lobe two ways — uniformly vs. from a DTree trained on it over several
+// refine iterations — at equal sample counts. The means must agree (unbiased)
+// while the guided variance collapses (this is the entire point of guiding).
+function testGuideVarianceReduction(): { pass: boolean; detail: string } {
+  const rng = new Rng(5, 1)
+  const target = (d: Vec3) => (d.x > 0.95 ? 60 : 0) + 0.02
+  const dt = new DTree()
+  for (let iter = 0; iter < 8; iter++) {
+    for (let i = 0; i < 120000; i++) {
+      const z = 2 * rng.next() - 1
+      const phi = 2 * Math.PI * rng.next()
+      const r = Math.sqrt(Math.max(0, 1 - z * z))
+      const d = v(r * Math.cos(phi), z, r * Math.sin(phi))
+      const sq = dirToSquare(d)
+      dt.record(sq.u, sq.v, target(d))
+    }
+    dt.build()
+  }
+  const M = 150000
+  let su = 0,
+    su2 = 0
+  for (let i = 0; i < M; i++) {
+    const z = 2 * rng.next() - 1
+    const phi = 2 * Math.PI * rng.next()
+    const r = Math.sqrt(Math.max(0, 1 - z * z))
+    const f = target(v(r * Math.cos(phi), z, r * Math.sin(phi))) * 4 * Math.PI
+    su += f
+    su2 += f * f
+  }
+  const meanU = su / M
+  const varU = su2 / M - meanU * meanU
+  let sg = 0,
+    sg2 = 0
+  for (let i = 0; i < M; i++) {
+    const s = dt.sample(rng)
+    const f = target(squareToDir(s.u, s.v)) / s.pdf
+    sg += f
+    sg2 += f * f
+  }
+  const meanG = sg / M
+  const varG = sg2 / M - meanG * meanG
+  const sameMean = Math.abs(meanU - meanG) / meanU < 0.02
+  const ratio = varG / varU
+  return {
+    pass: sameMean && ratio < 0.3,
+    detail: `mean U=${meanU.toFixed(3)} G=${meanG.toFixed(3)}; var ratio G/U=${ratio.toExponential(2)} (<0.3)`,
+  }
+}
+
+// Mean image luminance of the diffuse box rendered by the *guided* path tracer,
+// driving the SD-tree's iteration refinement at power-of-two sample boundaries
+// exactly as the renderer does. Deterministic for a fixed seed.
+function meanLuminanceGuided(def: SceneDef, W: number, H: number, spp: number, seed: number): number {
+  const scene = new Scene(def)
+  const c = def.camera
+  const fwd = normalize(sub(c.target, c.eye))
+  const right = normalize(cross(fwd, c.up))
+  const upv = cross(right, fwd)
+  const halfH = Math.tan((c.vfovDeg * Math.PI) / 180 / 2)
+  const halfW = halfH * (W / H)
+  const rng = new Rng(seed, 5)
+  const settings = { maxDepth: 6, rrStart: 100, clampIndirect: 0, integrator: 'guided' as const }
+  const stats: RayStats = { rays: 0 }
+  const guide = new Guide(scene.bounds)
+  let sum = 0
+  for (let s = 0; s < spp; s++) {
+    for (let y = 0; y < H; y++) {
+      for (let x = 0; x < W; x++) {
+        const px = ((x + rng.next()) / W) * 2 - 1
+        const py = 1 - ((y + rng.next()) / H) * 2
+        const dir = normalize(add(add(scale(fwd, 1), scale(right, px * halfW)), scale(upv, py * halfH)))
+        const Lr = radiance(scene, { o: c.eye, d: dir, tMax: Infinity }, settings, rng, stats, undefined, guide)
+        sum += luminance(Lr)
+      }
+    }
+    if ((s + 1 & s) === 0) guide.endIteration() // power-of-two boundary
+  }
+  return sum / (spp * W * H)
+}
+
+// 65 — The unbiasedness oracle: the guided path tracer must converge to the SAME
+// image as the plain path tracer on a real indirect-lit box. Agreement to within
+// Monte-Carlo error proves the mixture-density weighting (α·p_bsdf+(1−α)·p_guide)
+// and the radiance recording introduce no bias — guiding only reshapes variance.
+function testGuideVsPt(): { pass: boolean; detail: string } {
+  const def = diffuseBox()
+  const W = 12,
+    H = 9,
+    spp = 320
+  const pt = meanLuminance(def, false, W, H, spp, 1234)
+  const g = meanLuminanceGuided(def, W, H, spp, 4321)
+  const rel = Math.abs(pt - g) / pt
+  return { pass: rel < 0.04, detail: `PT=${pt.toFixed(4)} Guided=${g.toFixed(4)} rel diff=${(rel * 100).toFixed(2)}% (<4%)` }
+}
+
 export function runSelfTests(): TestResult[] {
   return [
     test('Vector algebra identities', testVectorMath),
@@ -2215,5 +2360,9 @@ export function runSelfTests(): TestResult[] {
     test('Subsurface interface energy ≡ 1 (Fresnel+TIR+scatter)', testSubsurfaceInterfaceEnergy),
     test('Subsurface colour — per-channel albedo tints (R>G>B)', testSubsurfaceColour),
     test('Subsurface reflectance monotone in albedo (≤1)', testSubsurfaceAlbedoMonotone),
+    test('Path guiding — DTree density integrates to 1', testGuideDensityNormalised),
+    test('Path guiding — sampler ↔ pdf consistent', testGuideSamplerPdf),
+    test('Path guiding — importance sampling cuts variance', testGuideVarianceReduction),
+    test('Path guiding ≡ path tracer (diffuse box oracle)', testGuideVsPt),
   ]
 }
