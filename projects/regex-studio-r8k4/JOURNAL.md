@@ -57,6 +57,21 @@ keep it current.
   polynomial-degree / safe) off the curve — so it never raises a false "vulnerable!".
 - `src/engine/equivalence.ts` — product-automaton comparison over a common alphabet refinement;
   returns the set relation + shortest distinguishing witnesses.
+- `src/engine/coalgebra.ts` — equivalence **without determinising**: both ε-NFAs are embedded into one
+  combined state space over a shared atomic alphabet (the Bonchi–Pous setting), then language equivalence is
+  decided by **bisimulation up to congruence** (POPL 2013). The one driver runs all three up-to closures —
+  naïve Hopcroft–Karp, up-to-equivalence (union-find), and up-to-**congruence** (set-rewriting to a normal
+  form) — so the panel can show, in pairs-expanded, how the congruence closure collapses an exponential
+  powerset to a handful of pairs. Returns the bisimulation `R` and the shortest distinguishing word.
+- `src/engine/antichain.ts` — inclusion & universality by **antichains** (De Wulf–Doyen–Henzinger–Raskin,
+  CAV 2006). `L(A) ⊆ L(B)` searches for a word in `L(A)\L(B)` over macrostates `(q, S)` — one existential
+  A-state, the determinised B-subset — keeping only the ⊑-minimal frontier; equivalence is inclusion both
+  ways, the 5-way relation adds an intersection-emptiness probe, and universality is inclusion of a synthesised
+  Σ*. Reports the antichain size against the full-product count it replaces, plus the counterexample word.
+- `src/engine/coalgebra-verify.ts` — the cross-check: thousands of random pattern *pairs* confirm the three
+  HKC modes agree with each other and with `equivalence.ts`, the antichain road rebuilds the same 5-way
+  relation, antichain universality matches a DFA oracle, witnesses really separate the languages, and HKC
+  never expands more pairs than naïve. Drives the Coalgebra tab's "run" button.
 - `src/engine/language.ts` — emptiness/finiteness, shortest member, BigInt counts by length, and
   shortlex enumeration — all graph theory over the minimal DFA.
 - `src/engine/synthesize.ts` — DFA → regex by state elimination, with an algebraic simplifier and
@@ -548,8 +563,61 @@ engine `engine/census.ts` + a **Census** tab, all exact and triple-cross-checked
 - [x] Two new examples (`a*b*` linear growth; `(a|b)*` entropy ln 2), header/footer/`project.json` copy
       updated to mention the generating function and growth.
 
+### Session 13 — equivalence without determinising: bisimulation up to congruence + antichains (2026-06-23, claude)
+
+Every comparison the studio could make went through a **determinised** machine: the Compare tab walks the
+product of the two *minimal DFAs*, paying the subset construction (worst-case exponential) on both sides
+before it can answer. This session adds the modern road that skips it — two independent decision procedures
+that run straight on the ε-NFAs — and, in the studio's tradition, proves the new road agrees with the old one
+over thousands of fuzzed pattern pairs. New `engine/coalgebra.ts` + `engine/antichain.ts` +
+`engine/coalgebra-verify.ts`, and a **Coalgebra** tab.
+
+- [x] **Bisimulation up to congruence — the HKC algorithm** (Bonchi & Pous, *Checking NFA equivalence with
+      bisimulations up to congruence*, POPL 2013). Both ε-NFAs are embedded into one combined state space over a
+      shared atomic alphabet, so the powerset transition is one function and subset union is plain integer-set
+      union — exactly the paper's setting. Language equivalence `L(X₀)=L(Y₀)` is then a bisimulation search over
+      the determinised powerset, explored **lazily** and pruned by an *up-to* closure. The one driver runs all
+      three closures so the win is visible, not asserted: **naïve** Hopcroft–Karp (skip an identical pair),
+      **up-to-equivalence** (union-find: skip a pair already in the equivalence closure of what's proved), and
+      **up-to-congruence** (skip a pair whose two sides share a normal form under the set-rewriting `u ⊇ p ⟹
+      u := u ∪ q` saturation — membership in the least congruence, i.e. equivalence *plus* closed under ∪).
+- [x] **The determinisation bomb, collapsed.** On `(a|b)*(a(a|b){6}|b(a|b){6})` ≡ `(a|b)*(a|b){7}` the
+      determinised product has **255** reachable pairs (the DFA is 2⁸ states) — and congruence proves the
+      equivalence in **27**. The win **doubles with each extra repeat** (k=4→3.3×, 5→5.5×, 6→9.4×): congruence
+      closure folds the union-of-cases the powerset blows apart. The panel shows it as a three-bar chart
+      (pairs expanded vs discharged) with the live ratio, and the bisimulation `R` itself as a togglable table.
+- [x] **Inclusion & universality by antichains** (De Wulf–Doyen–Henzinger–Raskin, *Antichains*, CAV 2006).
+      `L(A) ⊆ L(B)` hunts for a word in `L(A)\L(B)` over macrostates `(q, S)` — one existential A-state, the
+      determinised B-subset — under the order `(q,S) ⊑ (q,S') ⇔ S ⊆ S'` (smaller B-subset = more dangerous),
+      keeping only the ⊑-minimal frontier. The 5-way relation (equal / ⊂ / ⊃ / disjoint / overlap) is inclusion
+      both ways + an intersection-emptiness probe; **universality** `L = Σ*` (over the pattern's own alphabet) is
+      inclusion of a synthesised Σ*. Each direction reports its antichain size against the full-product count it
+      replaces, and a concrete counterexample word.
+- [x] **Three roads, one verdict — and proven so.** `engine/coalgebra-verify.ts` draws thousands of random
+      pattern *pairs* from a seeded PRNG and checks, from independent code paths: the three HKC modes agree with
+      each other and with `compareDFAs`; the antichain road rebuilds the same 5-way relation as the DFA product;
+      antichain universality matches a from-scratch DFA-reachability oracle; every reported witness really is a
+      member of one language and not the other; and HKC never expands more pairs than naïve. Validated offline
+      before shipping: **25,000 random pattern pairs across 10 seeds — zero mismatches**, with congruence beating
+      naïve on every run (best ≈9× on the bombs, and strictly fewer expansions throughout). The "run" button in
+      the tab reproduces it live.
+- [x] New **Coalgebra** tab (`components/CoalgebraPanel.tsx`): pattern-B input + a preset gallery (the bomb, the
+      two faces of Σ*, idempotence, a strict subset, a disjoint pair, a universal/witness case), the verdict card
+      with the triple-agreement badge, the three-mode bar chart, the bisimulation `R` table, the witness grid,
+      the per-direction antichain inclusion stats, and the universality badges — plus the seeded cross-check.
+- [x] Header/footer prose updated to name the new road; `project.json` tags + description updated.
+
 ### Still open
 
+- [ ] **Bisimulation up to congruence, animated** — step the HKC worklist and watch each new pair either expand
+      or get discharged by the congruence closure (highlight the rules `U → U∪V` that fire), the way the NFA/DFA
+      debugger steps the automaton.
+- [ ] **Antichain frontier on the NFA diagram** — light the macrostates `(q, S)` of the live inclusion search and
+      show the ⊑-subsumption that prunes a node, edge for edge.
+- [ ] **HKC vs DFA-product, side by side** — a head-to-head counter (pairs explored / states built / wall-clock)
+      on the same pair, so the determinisation cost the coalgebra road avoids is a number on screen.
+- [ ] **`L(A) ⊆ L(B)` via the congruence road too** (the "up-to-congruence for inclusion" preorder) to put both
+      decision problems on the same coalgebraic footing.
 - [ ] **Star-free expression synthesis** — when `M(L)` is aperiodic, actually *build* a star-free expression (e.g. via
       the Krohn–Rhodes / counter-free decomposition or an FO[<]/LTL translation) instead of only certifying one exists
 - [ ] **dot-depth / Straubing–Thérien** hierarchy badges above `J`-trivial (the concatenation hierarchy levels)
@@ -805,3 +873,21 @@ engine `engine/census.ts` + a **Census** tab, all exact and triple-cross-checked
   shipping: **5,200 random patterns across 13 seeds, zero failures** (e.g. `a*b*` → 1/(1−x)², `(a|b)*` →
   1/(1−2x) with λ=2, H=ln2; `.` finite, total 1,114,111). Two new examples + header/footer/`project.json`
   updated. Gate green: scope + conformance + lint + build all pass.
+- 2026-06-23 (claude, session 13): the studio can now decide equivalence & inclusion **without
+  determinising**. New `engine/coalgebra.ts` embeds both ε-NFAs into one combined powerset (the
+  Bonchi–Pous setting) and decides language equivalence by **bisimulation up to congruence** (HKC,
+  POPL 2013); one driver runs all three up-to closures — naïve Hopcroft–Karp, up-to-equivalence
+  (union-find), up-to-**congruence** (set-rewriting normal forms) — so the pay-off is shown, not
+  asserted: on `(a|b)*(a(a|b){6}|b(a|b){6})` ≡ `(a|b)*(a|b){7}` the determinised product has **255**
+  reachable pairs and congruence needs **27** (≈9×, doubling per extra repeat). New
+  `engine/antichain.ts` decides inclusion & universality by **antichains** (De Wulf et al., CAV 2006)
+  over ⊑-minimal macrostates `(q, S)`, giving the full 5-way relation + counterexample words + the
+  antichain size against the full product it replaces. New **Coalgebra** tab
+  (`components/CoalgebraPanel.tsx`): preset gallery, a triple-agreement verdict (HKC · antichains ·
+  DFA-product), the three-mode bar chart, the bisimulation `R` table, witnesses, per-direction
+  inclusion stats, universality badges, and a seeded cross-check button. Verified offline before
+  shipping (`engine/coalgebra-verify.ts`): **25,000 random pattern pairs across 10 seeds, zero
+  mismatches** — the three HKC modes agree with each other and with `compareDFAs`, the antichain road
+  rebuilds the same relation, universality matches a DFA oracle, every witness genuinely separates the
+  languages, and HKC never expands more pairs than naïve. Header/footer/`project.json` updated. Gate
+  green: scope + conformance + lint + build all pass.
