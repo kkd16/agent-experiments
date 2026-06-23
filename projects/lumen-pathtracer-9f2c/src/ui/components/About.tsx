@@ -122,6 +122,22 @@ export function About() {
           <code>k→0</code> reduction to the dielectric Fresnel, the textbook metal colours, and that a
           rendered gold sphere reconstructs its measured RGB. See <em>Metals of the World</em>.
         </Card>
+        <Card title="Subsurface scattering">
+          Marble, jade, wax, milk and skin are <em>translucent</em>: light refracts into the solid,
+          random-walks among microscopic scatterers, and re-emerges somewhere else — the soft inner glow
+          a surface shader can never fake. Lumen lets a dielectric carry an <strong>interior scattering
+          medium</strong> (<code>σ_t</code>, a per-channel single-scattering albedo, and Henyey–Greenstein{' '}
+          <code>g</code>); while a path is <em>inside</em> the object the integrator free-flights between
+          collisions, scatters off the phase function and multiplies throughput by the albedo (so the
+          absorbed fraction grows with depth — the per-channel albedo <em>is</em> the colour of the
+          translucency), and at the boundary refracts out through the dielectric's Fresnel interface or is{' '}
+          <strong>total-internally-reflected</strong> back in. It reuses the volume free-flight, phase
+          function and dielectric BSDF verbatim. <strong>Verify</strong> proves a pure-scattering object
+          is invisible in a white furnace for <em>any</em> g, a pure-absorbing one reproduces Beer's law,
+          the whole object (boundary + TIR + scattering) conserves energy, and a coloured albedo tints the
+          glow. See <em>Subsurface Studio</em> and <em>Jade Idol</em> — and raise <strong>Max Depth</strong>{' '}
+          for a creamier, deeper-penetrating look.
+        </Card>
         <Card title="Oren–Nayar rough diffuse">
           Real matte surfaces — clay, chalk, the moon, unfinished plaster — are not Lambertian: their
           microscopic roughness makes them <em>flatten</em> and back-scatter toward the light, so a full

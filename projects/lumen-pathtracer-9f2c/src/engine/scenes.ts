@@ -1399,6 +1399,107 @@ function metalsOfTheWorld(): SceneDef {
   }
 }
 
+// ---- Subsurface scattering (Lumen 12.0) -------------------------------------
+
+// A translucent dielectric: clear glass of index `ior` whose interior is a
+// scattering medium, so light refracts in, random-walks among the scatterers, and
+// glows back out. `tint` stays white — the colour comes entirely from the
+// interior single-scattering albedo (1−albedo is absorbed per collision).
+function translucent(ior: number, sigmaT: number, albedo: Vec3, g: number, roughness = 0): Material {
+  return { kind: 'dielectric', ior, tint: v(1, 1, 1), roughness, interior: { sigmaT, albedo, g } }
+}
+
+// Subsurface Studio — a row of translucent spheres (marble, jade, honey-wax,
+// rose-quartz) strongly *back-lit* so light bleeds through each one: the
+// unmistakable subsurface glow that an opaque BRDF can never fake — the rim stays
+// lit and the shadow side is warmed from within. The colour of each is set by its
+// interior albedo, not a surface pigment. Raise **Max Depth** for a creamier,
+// deeper-penetrating, milkier look (every interior scatter is one path bounce, so
+// a higher budget lets light walk further before it is cut off).
+function subsurfaceStudio(): SceneDef {
+  const materials: Material[] = [{ kind: 'diffuse', albedo: v(0.26, 0.26, 0.29), sigma: 0.5 }]
+  const prims: PrimDef[] = []
+  const g = 40
+  prims.push(...quad(v(-g, 0, -g), v(g, 0, -g), v(g, 0, g), v(-g, 0, g), 0))
+  // A bright warm back-light low behind the row → transmission through the spheres.
+  materials.push({ kind: 'emissive', emission: v(7.5, 6.9, 6.1) })
+  const back = materials.length - 1
+  prims.push(...quad(v(-10, 0.15, -6), v(10, 0.15, -6), v(10, 6, -6), v(-10, 6, -6), back))
+  // A soft cool key from high in front to read the surface form.
+  materials.push({ kind: 'emissive', emission: v(2.0, 2.2, 2.7) })
+  const key = materials.length - 1
+  prims.push(...quad(v(-7, 12, 3), v(7, 12, 3), v(7, 12, 10), v(-7, 12, 10), key))
+
+  const specs: { ior: number; sigmaT: number; albedo: Vec3; g: number }[] = [
+    { ior: 1.46, sigmaT: 1.2, albedo: v(0.93, 0.92, 0.9), g: 0.35 }, // marble
+    { ior: 1.5, sigmaT: 1.0, albedo: v(0.36, 0.8, 0.52), g: 0.6 }, // jade
+    { ior: 1.44, sigmaT: 0.85, albedo: v(0.96, 0.74, 0.42), g: 0.78 }, // honey wax
+    { ior: 1.4, sigmaT: 1.4, albedo: v(0.94, 0.56, 0.55), g: 0.5 }, // rose quartz / skin
+  ]
+  const n = specs.length
+  for (let i = 0; i < n; i++) {
+    const s = specs[i]
+    materials.push(translucent(s.ior, s.sigmaT, s.albedo, s.g))
+    prims.push({ kind: 'sphere', center: v((i - (n - 1) / 2) * 2.6, 1.1, 0), radius: 1.1, material: materials.length - 1 })
+  }
+  return {
+    name: 'Subsurface Studio',
+    materials,
+    prims,
+    camera: { eye: v(0, 3.0, 11), target: v(0, 1.0, -1), up: v(0, 1, 0), vfovDeg: 40, aperture: 0.03, focusDist: 11 },
+    env: { kind: 'gradient', top: v(0.04, 0.045, 0.06), bottom: v(0.015, 0.015, 0.02) },
+  }
+}
+
+// A solid, closed, organic lathe form (egg → waist → flared lip → base), r = 0 at
+// both poles so the revolved mesh is a *watertight solid* the subsurface walk can
+// fill and be bounded by.
+function idolProfile(): { r: number; y: number }[] {
+  return [
+    { r: 0.0, y: 0.0 },
+    { r: 0.62, y: 0.18 },
+    { r: 0.78, y: 0.55 },
+    { r: 0.66, y: 1.05 },
+    { r: 0.9, y: 1.7 },
+    { r: 0.82, y: 2.35 },
+    { r: 0.45, y: 2.9 },
+    { r: 0.52, y: 3.15 },
+    { r: 0.3, y: 3.35 },
+    { r: 0.0, y: 3.5 },
+  ]
+}
+
+// Jade Idol — a single hand-turned figurine of translucent jade under one warm
+// key light and a cool rim, on a dark plinth. Light pours into the rounded belly
+// and re-emerges as a deep green inner glow that pools where the form is thinnest
+// (the neck, the lip); the high-IOR boundary throws a glassy Fresnel sheen and
+// total-internal-reflection keeps light bouncing inside. The same lathe rendered
+// opaque would be a flat green silhouette.
+function jadeIdol(): SceneDef {
+  const materials: Material[] = [{ kind: 'diffuse', albedo: v(0.08, 0.085, 0.1), sigma: 0.6 }]
+  const prims: PrimDef[] = []
+  const g = 40
+  prims.push(...quad(v(-g, 0, -g), v(g, 0, -g), v(g, 0, g), v(-g, 0, g), 0))
+  // Warm key, high and to the left.
+  materials.push({ kind: 'emissive', emission: v(9, 7.8, 6 ) })
+  prims.push(...quad(v(-9, 9, 1), v(-3, 9, -3), v(-3, 13, -3), v(-9, 13, 1), materials.length - 1))
+  // Cool rim, low behind to the right → backlit translucency.
+  materials.push({ kind: 'emissive', emission: v(2.6, 3.0, 4.0) })
+  prims.push(...quad(v(2.5, 0.2, -5), v(8, 0.2, -5), v(8, 5, -5), v(2.5, 5, -5), materials.length - 1))
+
+  materials.push(translucent(1.52, 1.05, v(0.3, 0.74, 0.46), 0.62))
+  const jade = materials.length - 1
+  prims.push(...emitMesh(transformMesh(surfaceOfRevolution(idolProfile(), 96), { scale: 1.25, translate: v(0, 0, 0) }), jade))
+
+  return {
+    name: 'Jade Idol',
+    materials,
+    prims,
+    camera: { eye: v(0.6, 3.0, 9), target: v(0, 2.0, 0), up: v(0, 1, 0), vfovDeg: 38, aperture: 0.02, focusDist: 9 },
+    env: { kind: 'gradient', top: v(0.03, 0.04, 0.05), bottom: v(0.01, 0.012, 0.016) },
+  }
+}
+
 export interface ScenePreset {
   id: string
   label: string
@@ -1418,6 +1519,8 @@ export const SCENES: ScenePreset[] = [
   { id: 'conductors', label: 'Rough Conductors', build: roughConductors },
   { id: 'metals', label: 'Metals of the World', build: metalsOfTheWorld, sky: true },
   { id: 'ceramics', label: 'Ceramics & Clay', build: ceramics },
+  { id: 'subsurface', label: 'Subsurface Studio', build: subsurfaceStudio },
+  { id: 'jade', label: 'Jade Idol', build: jadeIdol },
   { id: 'caustic', label: 'Caustic Room', build: causticRoom },
   { id: 'pool', label: 'Caustic Pool', build: causticPool },
   { id: 'spectral-caustic', label: 'Spectral Caustic', build: spectralCaustic },

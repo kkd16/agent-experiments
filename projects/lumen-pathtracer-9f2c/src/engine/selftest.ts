@@ -2024,6 +2024,107 @@ function testSpectralMetalMultiscatter(): { pass: boolean; detail: string } {
   }
 }
 
+// ---- Subsurface scattering (Lumen 12.0) -------------------------------------
+
+// Render a translucent dielectric sphere of radius 1 head-on in a uniform unit
+// environment and return its mean RGB radiance — the workhorse for the subsurface
+// energy/colour proofs (the SSS analogue of the diffuse white furnace).
+function subsurfaceFurnaceRGB(
+  interior: { sigmaT: number; albedo: Vec3; g: number },
+  ior: number,
+  settings: { maxDepth: number; rrStart: number; clampIndirect: number },
+  N: number,
+  seed: number,
+): Vec3 {
+  const def: SceneDef = {
+    name: 'sss-furnace',
+    materials: [{ kind: 'dielectric', ior, tint: v(1, 1, 1), interior }],
+    prims: [{ kind: 'sphere', center: v(0, 0, 0), radius: 1, material: 0 }],
+    camera: { eye: v(0, 0, 5), target: v(0, 0, 0), up: v(0, 1, 0), vfovDeg: 30, aperture: 0, focusDist: 5 },
+    env: { kind: 'solid', color: v(1, 1, 1) },
+  }
+  const scene = new Scene(def)
+  const rng = new Rng(seed, 5)
+  const stats: RayStats = { rays: 0 }
+  let sx = 0
+  let sy = 0
+  let sz = 0
+  for (let i = 0; i < N; i++) {
+    const L = radiance(scene, { o: v(0, 0, 5), d: v(0, 0, -1), tMax: Infinity }, settings, rng, stats)
+    sx += L.x
+    sy += L.y
+    sz += L.z
+  }
+  return v(sx / N, sy / N, sz / N)
+}
+
+// SSS-1 — Subsurface furnace: a purely *scattering* interior (albedo 1) inside an
+// index-matched boundary (ior 1, so the surface neither reflects nor bends) must
+// leave a uniform field exactly unchanged — scattering only redistributes
+// directions, and a uniform field is invariant under that. This must hold for ANY
+// phase anisotropy g, so it doubles as the unbiasedness proof for the interior
+// Henyey–Greenstein random walk. (Exercises the SSS code path, not the global
+// participating-media one — the medium here is bounded by the actual surface.)
+function testSubsurfaceFurnace(): { pass: boolean; detail: string } {
+  const settings = { maxDepth: 64, rrStart: 48, clampIndirect: 0 }
+  let worst = 0
+  let detail = ''
+  for (const g of [0, 0.8, -0.6]) {
+    const c = subsurfaceFurnaceRGB({ sigmaT: 0.6, albedo: v(1, 1, 1), g }, 1, settings, 20000, 9001 + Math.round(g * 100))
+    const m = luminance(c)
+    worst = Math.max(worst, Math.abs(m - 1))
+    detail += `g=${g}:${m.toFixed(4)} `
+  }
+  return { pass: worst < 1.5e-2, detail: `${detail}(worst|Δ|=${worst.toFixed(4)})` }
+}
+
+// SSS-2 — Beer's law from the interior free-flight: a purely *absorbing* interior
+// (albedo 0, index-matched ior 1) kills the path at its first collision, so the
+// only radiance reaching the camera is the unscattered ray straight through the
+// sphere — transmitted with probability e^(−σ_t·chord). For a centred sphere the
+// axial chord is the diameter 2r, so the measured radiance must equal e^(−σ_t·2r).
+// This proves the interior distance sampler is exactly Beer's law (and that
+// 1−albedo absorbs correctly).
+function testSubsurfaceBeer(): { pass: boolean; detail: string } {
+  const sigmaT = 0.8
+  const settings = { maxDepth: 8, rrStart: 4, clampIndirect: 0 }
+  const c = subsurfaceFurnaceRGB({ sigmaT, albedo: v(0, 0, 0), g: 0 }, 1, settings, 60000, 2024)
+  const measured = luminance(c)
+  const expected = Math.exp(-sigmaT * 2) // chord = 2r, r = 1
+  return { pass: approx(measured, expected, 1e-2), detail: `transmitted=${measured.toFixed(4)}, e^(−σ·2r)=${expected.toFixed(4)}` }
+}
+
+// SSS-3 — The *whole translucent object* conserves energy. With a real Fresnel
+// boundary (ior 1.5) and a lossless scattering interior (albedo 1), a furnace must
+// still return ≈1: every photon is either reflected at the interface, or refracts
+// in, scatters losslessly (with total-internal-reflection trapping it through many
+// internal bounces), and refracts back out — none created, none destroyed. This is
+// the strongest SSS invariant: it couples the dielectric interface, TIR, and the
+// multiple-scattering walk into one energy balance.
+function testSubsurfaceInterfaceEnergy(): { pass: boolean; detail: string } {
+  const settings = { maxDepth: 64, rrStart: 48, clampIndirect: 0 }
+  const c = subsurfaceFurnaceRGB({ sigmaT: 0.6, albedo: v(1, 1, 1), g: 0.3 }, 1.5, settings, 30000, 7777)
+  const measured = luminance(c)
+  return { pass: measured > 0.98 && measured <= 1.02, detail: `translucent furnace=${measured.toFixed(4)} (Fresnel + TIR + scatter, exp 1)` }
+}
+
+// SSS-4 — Per-channel albedo tints subsurface transport. With a real boundary
+// (ior 1.5) and an interior albedo (0.9, 0.5, 0.2), the lightly-absorbed red must
+// exit brighter than green than blue (R > G > B), and every channel stays ≤ 1
+// (energy bounded). This is the mechanism behind the colour of marble, jade and
+// skin — a spectral absorption that deepens with the distance light travels
+// inside, not a surface pigment.
+function testSubsurfaceColour(): { pass: boolean; detail: string } {
+  const settings = { maxDepth: 32, rrStart: 16, clampIndirect: 0 }
+  const c = subsurfaceFurnaceRGB({ sigmaT: 1.2, albedo: v(0.9, 0.5, 0.2), g: 0.4 }, 1.5, settings, 24000, 13337)
+  const ordered = c.x > c.y + 0.01 && c.y > c.z + 0.01
+  const bounded = c.x <= 1.01 && c.z >= 0
+  return {
+    pass: ordered && bounded,
+    detail: `rendered=(${c.x.toFixed(3)},${c.y.toFixed(3)},${c.z.toFixed(3)}) R>G>B=${ordered}, ≤1=${bounded}`,
+  }
+}
+
 export function runSelfTests(): TestResult[] {
   return [
     test('Vector algebra identities', testVectorMath),
@@ -2087,5 +2188,9 @@ export function runSelfTests(): TestResult[] {
     test('Spectral metal reconstructs measured RGB (furnace oracle)', testSpectralMetalReconstructsColour),
     test('Spectral conductor lobe — sampler ↔ pdf ↔ weight', testSpectralMetalConsistency),
     test('Spectral multiscatter metal restores energy (≤ F̄)', testSpectralMetalMultiscatter),
+    test('Subsurface furnace — pure scatter ≡ 1 (any g)', testSubsurfaceFurnace),
+    test('Subsurface Beer — pure absorb ≡ e^(−σ·2r)', testSubsurfaceBeer),
+    test('Subsurface interface energy ≡ 1 (Fresnel+TIR+scatter)', testSubsurfaceInterfaceEnergy),
+    test('Subsurface colour — per-channel albedo tints (R>G>B)', testSubsurfaceColour),
   ]
 }

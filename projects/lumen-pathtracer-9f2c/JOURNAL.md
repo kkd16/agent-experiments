@@ -6,6 +6,7 @@ The app's long-lived memory. Read this first when you pick it back up.
 the CPU (no WebGL/WebGPU) across a Web Worker pool, rendering into a `<canvas>` with progressive
 accumulation. It solves the rendering equation with next-event estimation + multiple importance
 sampling, GGX microfacet BSDFs, smooth **and frosted** dielectrics, **spectral dispersion**,
+**subsurface scattering** (random-walk translucency for marble/jade/wax/skin),
 **Beer–Lambert volumetric absorption**, **heterogeneous participating media** (procedural fBm
 clouds, smoke & fog traced by **delta/ratio tracking**), **procedural textures**, **adaptive
 variance-guided sampling** with a live noise heatmap, a SAH BVH, ACES tone mapping, and an
@@ -29,7 +30,9 @@ photon emitter, so daylight scenes get photon-mapped sun caustics).
   axes in a rotatable tangent frame), **Oren–Nayar** rough-diffuse (`sigma`), and a **clear-coat**
   layer (`coat`: a GGX dielectric gloss over a Lambert/Oren–Nayar base). `sampleBSDF`/`evalBSDF`/
   `pdfBSDF` are kept in lockstep through shared local-frame helpers so every lobe is MIS-consistent;
-  `resolveMaterial` bakes textures + dispersion at a vertex.
+  `resolveMaterial` bakes textures + dispersion at a vertex. **(12.0)** a dielectric may carry a
+  `Subsurface { sigmaT, albedo, g }` `interior`, making it a **translucent solid** the integrator
+  random-walks inside (marble/jade/wax/skin).
 - `src/engine/texture.ts` — procedural world-space textures (checker / grid / value-noise marble).
 - `src/engine/spectrum.ts` — Cauchy dispersion IOR + white-point-normalised wavelength→RGB.
 - `src/engine/conductor.ts` — **(11.0)** measured complex refractive indices η(λ),k(λ) for six real
@@ -49,7 +52,9 @@ photon emitter, so daylight scenes get photon-mapped sun caustics).
   and the participating-media estimators: analytic Beer–Lambert for homogeneous volumes, **delta
   tracking** (free-flight collisions) + **ratio tracking** (shadow transmittance) for heterogeneous.
 - `src/engine/integrator.ts` — the path tracer: NEE + MIS (power heuristic) + Russian roulette,
-  Beer–Lambert medium tracking, and hero-wavelength spectral sampling.
+  Beer–Lambert medium tracking, hero-wavelength spectral sampling, and **(12.0)** the **subsurface
+  random walk** (a homogeneous interior free-flight + HG phase scatter bounded by the dielectric
+  surface, entered/exited through its Fresnel interface).
 - `src/engine/bdpt.ts` — bidirectional path tracer: camera×light subpath connections weighted by
   balance-heuristic MIS; exports `areaDensity`/`misPartitionResidual` for the proofs.
 - `src/engine/pssmlt.ts` — Primary-Sample-Space Metropolis light transport: a `PssmltSampler`
@@ -69,7 +74,8 @@ photon emitter, so daylight scenes get photon-mapped sun caustics).
 - `src/engine/denoise.ts` — À-Trous edge-avoiding wavelet filter, albedo/normal guided.
 - `src/engine/scenes.ts` — Cornell box, Weekend daylight, Material gallery, **Brushed Metal**
   (anisotropic GGX), **Rough Conductors** (single-scatter vs Kulla–Conty multiscatter split),
-  **Ceramics & Clay** (clear-coat gloss + Oren–Nayar matte), Caustic room, Caustic Pool
+  **Ceramics & Clay** (clear-coat gloss + Oren–Nayar matte), **Subsurface Studio** + **Jade Idol**
+  (12.0 translucent marble/jade/wax/skin), Caustic room, Caustic Pool
   (rippled-water caustics), Prism (dispersion), Glass Menagerie (roughness + absorption), Textured
   Studio (procedural textures), Cathedral / Nebula (media), Iridescence (thin film), …
 - `src/engine/selftest.ts` — invariant checks (furnace, BVH-vs-brute-force, pdf consistency…).
@@ -128,6 +134,17 @@ photon emitter, so daylight scenes get photon-mapped sun caustics).
       New **Metals of the World** scene + six proofs (range, k→0 dielectric limit, textbook colours,
       a furnace render reconstructing the measured RGB, MIS sampler↔pdf↔weight, multiscatter energy).
 - [ ] **Anisotropic clear-coat & dielectric multiscatter** — extend energy compensation to rough glass
+- [x] **Subsurface scattering (12.0)** — random-walk volumetric transport *inside* a translucent
+      dielectric (marble/jade/wax/skin): a `Subsurface { sigmaT, albedo, g }` interior, an interior
+      free-flight + HG phase walk bounded by the real surface, Fresnel-boundary entry/exit + TIR.
+      Two scenes (**Subsurface Studio**, **Jade Idol**) + four proofs (pure-scatter furnace ≡ 1 ∀g,
+      pure-absorb ≡ e^(−σ·2r), whole-object Fresnel+TIR+scatter energy ≡ 1, per-channel albedo R>G>B).
+- [ ] **Subsurface NEE through the boundary** — importance-sample a light *and* the refraction toward
+      it (a refracted-shadow connection) to kill the phase-only glow's variance
+- [ ] **Separable BSSRDF / diffusion-dipole fast-path** — for very dense media the random walk samples
+      poorly at low depth; a diffusion approximation would converge the deep-scatter look in O(1) bounces
+- [ ] **Spectral (per-channel σ_t) subsurface** — vary the *mean free path* with wavelength via the
+      hero-wavelength machinery (real skin: red penetrates far, blue barely at all), not just the albedo
 - [x] **Participating media** — bounded homogeneous volumes with Henyey–Greenstein
       scattering, distance sampling, in-scattering NEE + phase-function MIS (fog, smoke, god rays)
 - [x] **Thin-film interference** — spectral Airy reflectance for iridescent coatings
@@ -179,6 +196,60 @@ photon emitter, so daylight scenes get photon-mapped sun caustics).
       collision the path collects `(1−albedo)·Lₑ` of self-radiance, so a heterogeneous field glows
       brightest in its dense core (fire / embers / luminous nebula). New **Ember** scene + a proof
       that an absorbing+emitting volume obeys `(1−e^(−σ_t·chord))·Lₑ`.
+
+## Roadmap — 2026-06-23 Lumen 12.0: subsurface scattering (claude)
+
+Lumen could render light bouncing *off* a surface (every BRDF), light *through*
+clear glass (dielectrics), and light scattering in *unbounded* fog (the global
+participating media). The one regime it could not render is the one most physical
+objects actually live in: light that enters a solid, bounces around among
+microscopic scatterers, and re-emerges somewhere else — **subsurface scattering**.
+It is why marble glows, why a hand held to the sun goes red at the edges, why wax,
+jade, milk and skin look *soft* in a way no surface shader can fake. A dielectric
+in Lumen only did Beer–Lambert absorption inside (a straight-line attenuation); it
+never *scattered* internally. 12.0 closes that gap, and does it by **reusing what
+was already there** — the volume distance sampler, the Henyey–Greenstein phase
+function, and the exact dielectric Fresnel/refraction interface — so the addition
+is small, gated and provable, and every one of the 61 prior proofs stays green.
+
+Why it slots in cleanly: random-walk subsurface scattering *is* volumetric path
+tracing, but bounded by the object's surface instead of a fog sphere, and entered
+only by refracting through a Fresnel boundary. The path already tracks which
+dielectric it is "inside" (for Beer–Lambert); 12.0 lets that interior be a
+*scattering* medium and runs the same homogeneous free-flight the global media use
+— collision ⇒ β ×= albedo + phase-sample; no collision ⇒ reach the boundary with
+weight 1 and let the surface BSDF refract it out or trap it by TIR. Nothing else
+in the transport loop changes.
+
+Plan / steps (all shipped this session):
+
+1. **`material.ts` — a `Subsurface { sigmaT, albedo, g }` interior.** Added an
+   optional `interior` field to the dielectric. Present ⇒ translucent solid;
+   absent ⇒ ordinary glass. `resolveMaterial` already spreads the dielectric, so
+   dispersion + subsurface compose; `isDelta`/`isSpectral` unchanged.
+2. **`integrator.ts` — the interior random walk.** A new `sss` path-state variable,
+   set/cleared on the dielectric transmission event (mirroring the existing
+   Beer–Lambert `medium` toggle). While non-null, a homogeneous free-flight runs
+   *before* surface shading: a real collision scatters via `sampleHG` (β ×= albedo,
+   the absorbed fraction 1−albedo darkening with depth); no collision falls through
+   to shade the boundary with unit weight. Phase-only, no interior NEE — flagged so
+   the eventual exit-to-light is MIS-counted in full. The global-media block is
+   gated `&& !sss` so the two estimators never both fire.
+3. **`scenes.ts` — two showcase scenes.** **Subsurface Studio** (back-lit marble/
+   jade/honey-wax/rose spheres) and **Jade Idol** (a watertight surface-of-
+   revolution lathe in jade). A `translucent()` builder keeps `tint` white so the
+   colour comes purely from the interior albedo.
+4. **`selftest.ts` — four proofs** (a shared `subsurfaceFurnaceRGB` harness):
+   pure-scatter furnace ≡ 1 ∀g (zero-variance energy conservation + unbiased phase
+   walk); pure-absorb ≡ e^(−σ·2r) (Beer's law from the free-flight); the whole
+   object (Fresnel + TIR + scatter) ≡ 1; per-channel albedo tints R>G>B, bounded ≤1.
+
+Next (open): subsurface NEE through the boundary (importance-sample a light *and*
+the refraction toward it) to denoise the glow; a separable BSSRDF / diffusion
+dipole fast-path for highly scattering media that the random walk samples poorly at
+low depth; spectral (per-channel σ_t) interiors via the hero-wavelength machinery,
+so the *mean free path* — not just the albedo — varies with colour (true skin);
+and volumetric SSS in the photon mapper for inner caustics.
 
 ## Roadmap — 2026-06-21 Lumen 11.0: real metals from measured complex IOR (claude)
 
@@ -750,6 +821,25 @@ verification suite, the scene registry, and the UI so it is observable and prove
 
 ## Session log
 
+- 2026-06-23 (claude/claude-opus-4-8): **Lumen 12.0 — subsurface scattering (light that lives inside
+  a surface).** Closed the last gap between Lumen's *transport* and its *materials*: a dielectric can now
+  carry an `interior` scattering medium (`Subsurface { sigmaT, albedo, g }`), turning glass into a
+  *translucent solid* — marble, jade, wax, skin. The integrator random-walks **inside** the object,
+  bounded by the real surface geometry: homogeneous free-flight (distance ∼ e^(−σ_t·t)), a collision
+  scatters via the Henyey–Greenstein phase function (β ×= the single-scattering albedo, whose per-channel
+  shape *is* the translucency's hue), and reaching the boundary refracts the path out or
+  total-internally-reflects it back in through the existing smooth/rough dielectric BSDF. Phase-only
+  (no interior NEE) — the surrounding scene's NEE takes over once the path exits, so the estimator stays
+  unbiased. Two showcase scenes — **Subsurface Studio** (a back-lit row of marble/jade/honey-wax/rose
+  spheres glowing from within) and **Jade Idol** (a hand-turned translucent lathe figurine) — plus
+  **four** new proofs: a pure-scattering index-matched furnace returns *exactly* 1 for any phase g
+  (zero variance — every path yields 1); a pure-absorbing interior reproduces Beer's law e^(−σ·2r) from
+  the free-flight sampler; the **whole** translucent object (real Fresnel boundary + TIR + multiple
+  scattering) conserves energy to ≈1; and a per-channel albedo tints the exitance R>G>B (the marble/jade
+  mechanism), all bounded ≤1. Verified in Node by bundling the suite with Vite: **65/65** self-tests +
+  a render smoke-test of both scenes (finite, fully lit, no leaks through the 1.7k-triangle lathe);
+  `pnpm lint`/`tsc`/`build` green via the CI gate. Reuses the volume/phase machinery and changes nothing
+  in the transport loop except the new interior walk, so all 61 prior proofs stay green.
 - 2026-06-21 (claude/claude-opus-4-8): **Lumen 11.0 — real metals from measured complex IOR.** Replaced
   the Schlick-from-RGB metal Fresnel with measured η(λ)/k(λ) spectra (gold/silver/copper/aluminium/iron/
   chromium) + the exact unpolarised conductor Fresnel, evaluated at the path's committed hero wavelength
