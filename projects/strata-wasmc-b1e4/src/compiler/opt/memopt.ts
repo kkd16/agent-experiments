@@ -181,9 +181,16 @@ export function memOpt(fn: IRFunc): number {
         if (inst.sub !== 'i8') gen(s, { root: addr.root, off: addr.off, width, sub: inst.sub, val: inst.args[1] });
         break;
       }
+      // A `vstore` writes 16 bytes the scalar alias model can't place precisely, and a
+      // `vload` could be made redundant only by reasoning we don't do — so clear the whole
+      // available-value state across either (just like a call). The vectorized loop body
+      // holds only vector memory ops, so nothing of value is lost; this only stops a scalar
+      // load from forwarding a stale value across the vector loop.
       case 'call':
       case 'callind':
-        s.clear(); // a callee may read or write any memory
+      case 'vload':
+      case 'vstore':
+        s.clear(); // a callee or vector memory op may read or write any tracked cell
         break;
       // print reads but never writes linear memory ⇒ transparent.
       // gget/gset touch globals, not the tracked memory cells ⇒ transparent.
@@ -357,9 +364,15 @@ export function memOpt(fn: IRFunc): number {
           readAlias(resolveAddr(inst.args[0]), width);
           break;
         }
+        // A `vload`/`vstore` touches 16 bytes the scalar alias analysis doesn't model.
+        // Treat both as reading any memory (like a call/print): that conservatively
+        // protects every pending store from elimination, so dead-store removal never
+        // drops a write a vector op depends on.
         case 'call':
         case 'callind':
         case 'print':
+        case 'vload':
+        case 'vstore':
           readAll(); // may read any memory
           break;
         default:

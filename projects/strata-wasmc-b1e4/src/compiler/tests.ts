@@ -2508,4 +2508,147 @@ fn main(){ for (let n = 0; n <= 14; n = n + 1) { print(f(n)); } print(f(250)); }
 fn f(a: int, b: int) -> int { let s = 0; for (let i = a; i < b; i = i + 1) { s = s + i * i - 1; } return s; }
 fn main(){ for (let b = -4; b <= 9; b = b + 1) { print(f(-4, b)); } print(f(-100, 100)); }`,
   },
+
+  // ===================================================================
+  // Auto-vectorizer battery — counted array loops widened to v128 SIMD.
+  // Each kernel is verified bit-identical (interp = V8 = VM) at -O0..-O3,
+  // so the 4-wide vector main loop + scalar remainder it lowers to at -O2+
+  // must agree exactly with the scalar loop at -O0. Lengths are chosen to
+  // straddle a multiple of 4 (so the remainder loop is always exercised).
+  // ===================================================================
+  {
+    name: 'vec-int-elementwise',
+    source: `// c[i] = a[i]*b[i] + a[i] over an i32 array — three v128.loads, an i32x4.mul,
+// an i32x4.add and a v128.store per four elements. Length 23 = 5·4 + 3.
+fn sum(a: int[], n: int) -> int { let s = 0; for (let i = 0; i < n; i = i + 1) { s = s + a[i]; } return s; }
+fn main(){
+  let n = 23;
+  let a = int_array(n); let b = int_array(n); let c = int_array(n);
+  for (let i = 0; i < n; i = i + 1) { a[i] = i - 7; b[i] = i * 3 - 2; }
+  for (let i = 0; i < n; i = i + 1) { c[i] = a[i] * b[i] + a[i]; }
+  print(sum(c, n)); print(c[0]); print(c[n - 1]); print(c[20]);
+}`,
+  },
+  {
+    name: 'vec-int-bitwise-wrap',
+    source: `// Lanewise &, |, ^ plus a wrapping i32x4.mul — every lane must wrap mod 2^32
+// exactly like the scalar imul. A few negative inputs exercise the sign bits.
+fn main(){
+  let n = 30;
+  let a = int_array(n); let b = int_array(n); let r = int_array(n);
+  for (let i = 0; i < n; i = i + 1) { a[i] = i * 87654321 - 13; b[i] = (i - 15) * 1000003; }
+  for (let i = 0; i < n; i = i + 1) { r[i] = (a[i] & b[i]) | (a[i] ^ b[i]) * 7; }
+  for (let i = 0; i < n; i = i + 1) { print(r[i]); }
+}`,
+  },
+  {
+    name: 'vec-f32-saxpy',
+    source: `// The canonical SAXPY y[i] = a*x[i] + y[i] over f32 arrays: a splatted scalar,
+// two v128.loads, an f32x4.mul, an f32x4.add, a v128.store. Length 18 = 4·4 + 2.
+fn main(){
+  let n = 18;
+  let x = f32_array(n); let y = f32_array(n);
+  for (let i = 0; i < n; i = i + 1) { x[i] = f32(i) * f32(0.5); y[i] = f32(100 - i); }
+  let a = f32(2.25);
+  for (let i = 0; i < n; i = i + 1) { y[i] = a * x[i] + y[i]; }
+  for (let i = 0; i < n; i = i + 1) { print(y[i]); }
+}`,
+  },
+  {
+    name: 'vec-f32-fused',
+    source: `// A longer f32 expression (mul, div, sub) to exercise f32x4.div and
+// single-precision rounding per lane (the round-trip must match the scalar).
+fn main(){
+  let n = 21;
+  let a = f32_array(n); let b = f32_array(n); let c = f32_array(n);
+  for (let i = 0; i < n; i = i + 1) { a[i] = f32(i + 1); b[i] = f32(2 * i + 3); }
+  for (let i = 0; i < n; i = i + 1) { c[i] = a[i] * a[i] / b[i] - b[i]; }
+  for (let i = 0; i < n; i = i + 1) { print(c[i]); }
+}`,
+  },
+  {
+    name: 'vec-inplace-alias',
+    source: `// In-place update a[i] = a[i] + a[i]: the load and store address the SAME array
+// at the SAME index, so the vstore/vload pair is within-lane — soundness must
+// hold under aliasing. Length 20 (a clean multiple of 4: no remainder).
+fn main(){
+  let n = 20;
+  let a = int_array(n);
+  for (let i = 0; i < n; i = i + 1) { a[i] = i * i - 50; }
+  for (let i = 0; i < n; i = i + 1) { a[i] = a[i] + a[i] * 3; }
+  let s = 0; for (let i = 0; i < n; i = i + 1) { s = s + a[i]; } print(s);
+}`,
+  },
+  {
+    name: 'vec-runtime-bound',
+    source: `// A runtime trip count passed as a parameter (not a constant): the "4 more?"
+// guard must compute the vector/remainder split at run time, for many lengths
+// including 0,1,2,3 (all-remainder) and exact multiples of 4. The fused kernel
+// a[i] = a[i]*k + b[i] (k and the two array handles all loop-invariant) is the
+// part that widens; checksum stays scalar.
+fn fuse(a: int[], b: int[], n: int, k: int) { for (let i = 0; i < n; i = i + 1) { a[i] = a[i] * k + b[i]; } }
+fn checksum(a: int[], n: int) -> int { let s = 0; for (let i = 0; i < n; i = i + 1) { s = s * 31 + a[i]; } return s; }
+fn main(){
+  for (let n = 0; n <= 17; n = n + 1) {
+    let a = int_array(n + 1); let b = int_array(n + 1);
+    for (let i = 0; i < n; i = i + 1) { a[i] = (i + 1) * (i + 1); b[i] = i * 7 - 3; }
+    fuse(a, b, n, 5);
+    print(checksum(a, n));
+  }
+}`,
+  },
+  {
+    name: 'vec-copy-clear',
+    source: `// Pure copy b[i] = a[i] (one vload, one vstore) and a splatted-constant clear
+// a[i] = 0 (a splat + vstore, no load). Both are degenerate but must vectorize.
+fn main(){
+  let n = 26;
+  let a = int_array(n); let b = int_array(n);
+  for (let i = 0; i < n; i = i + 1) { a[i] = i * 7 - 3; }
+  for (let i = 0; i < n; i = i + 1) { b[i] = a[i]; }
+  for (let i = 0; i < n; i = i + 1) { a[i] = 0; }
+  let s = 0; for (let i = 0; i < n; i = i + 1) { s = s + b[i] - a[i]; } print(s);
+}`,
+  },
+  {
+    name: 'vec-decline-stencil',
+    source: `// a[i] = a[i] + a[i-1] carries a true dependence (iteration i reads what i-1
+// wrote): the subscript i-1 is not the IV, so the pass MUST decline and leave
+// the scalar loop — proven by the result still matching at every -O level.
+fn main(){
+  let n = 19;
+  let a = int_array(n);
+  for (let i = 0; i < n; i = i + 1) { a[i] = i; }
+  for (let i = 1; i < n; i = i + 1) { a[i] = a[i] + a[i - 1]; }
+  for (let i = 0; i < n; i = i + 1) { print(a[i]); }
+}`,
+  },
+  {
+    name: 'vec-decline-reduction',
+    source: `// A reduction s += a[i] has a second loop-carried value (the accumulator), so
+// the pass declines (horizontal reduce is future work) — but the read of a[i]
+// in a separate pure-map loop above it still vectorizes. Result must match.
+fn main(){
+  let n = 22;
+  let a = int_array(n); let b = int_array(n);
+  for (let i = 0; i < n; i = i + 1) { a[i] = i - 11; }
+  for (let i = 0; i < n; i = i + 1) { b[i] = a[i] * a[i]; }
+  let s = 0; let p = 1;
+  for (let i = 0; i < n; i = i + 1) { s = s + b[i]; p = p * 3 + b[i]; }
+  print(s); print(p);
+}`,
+  },
+  {
+    name: 'vec-nonzero-start',
+    source: `// A loop that starts at a runtime offset and uses <= (inclusive bound): the
+// guard polarity and the vector IV's init must both be honoured.
+fn run(a: int[], lo: int, hi: int) { for (let i = lo; i <= hi; i = i + 1) { a[i] = a[i] + 1000; } }
+fn main(){
+  let n = 40;
+  let a = int_array(n);
+  for (let i = 0; i < n; i = i + 1) { a[i] = i * i; }
+  run(a, 3, 33);
+  let s = 0; for (let i = 0; i < n; i = i + 1) { s = s * 7 + a[i]; } print(s);
+}`,
+  },
 ];

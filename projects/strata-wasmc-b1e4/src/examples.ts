@@ -400,6 +400,54 @@ fn main() {
 `,
   },
   {
+    id: 'autovec',
+    title: 'Auto-vectorization (SIMD)',
+    blurb: 'Write a plain scalar array loop; the optimizer discovers the data parallelism and emits real f32x4 / i32x4 v128.load → lanewise arith → v128.store. Compare -O0 vs -O3 in the WASM/CFG tabs — and read the Optimizer panel for the vectorize pass.',
+    source: `// These are ORDINARY scalar loops — no SIMD types, no intrinsics. At -O2+ the
+// auto-vectorizer recognizes each counted "a[i] = f(a[i], b[i], …)" loop, proves
+// the four iterations independent, and runs four lanes at once: one v128.load per
+// array, lanewise i32x4/f32x4 arithmetic, one v128.store — plus a scalar remainder
+// loop for the trailing < 4 elements. Open the WASM tab at -O3 and search for
+// 'v128.load' / 'f32x4.mul'; flip to -O0 to see the scalar loads it replaced. The
+// Verify tab proves the vectorized code matches the interpreter at every -O level.
+
+// Sum the elements of an i32 array (a plain reduction — left scalar on purpose:
+// horizontal reduce isn't vectorized, only the elementwise maps below are).
+fn isum(a: int[], n: int) -> int { let s = 0; for (let i = 0; i < n; i = i + 1) { s = s + a[i]; } return s; }
+
+fn main() {
+  let n = 23;                          // 5·4 + 3 — the remainder loop runs too
+  let a = int_array(n);
+  let b = int_array(n);
+  let c = int_array(n);
+
+  // An elementwise i32 kernel: c[i] = a[i]*b[i] + a[i]. At -O3 this loop becomes
+  // v128.load a, v128.load b, i32x4.mul, i32x4.add, v128.store c (×⌊n/4⌋), then a
+  // 3-iteration scalar tail.
+  for (let i = 0; i < n; i = i + 1) { a[i] = i - 11; b[i] = i * 2 + 1; }
+  for (let i = 0; i < n; i = i + 1) { c[i] = a[i] * b[i] + a[i]; }
+  print(isum(c, n));                   // 671
+
+  // A single-precision SAXPY y[i] = α·x[i] + y[i]: α is splatted across a lane,
+  // then f32x4.mul + f32x4.add. Floating-point lanes round to single precision
+  // exactly like the scalar f32 path, so the result is bit-identical.
+  let m = 18;
+  let x = f32_array(m);
+  let y = f32_array(m);
+  for (let i = 0; i < m; i = i + 1) { x[i] = f32(i) * f32(0.5); y[i] = f32(100 - i); }
+  let alpha = f32(2.25);
+  for (let i = 0; i < m; i = i + 1) { y[i] = alpha * x[i] + y[i]; }
+  print(y[0]); print(y[7]); print(y[m - 1]);
+
+  // In-place a[i] = a[i] + a[i]*3 — the load and store hit the SAME array at the
+  // SAME index, so the vstore/vload pair is within-lane: vectorizing stays sound
+  // under aliasing.
+  for (let i = 0; i < n; i = i + 1) { a[i] = a[i] + a[i] * 3; }
+  print(isum(a, n));
+}
+`,
+  },
+  {
     id: 'strings',
     title: 'Strings & text',
     blurb: 'First-class str type: concat with +, str()/char() conversions, len & byte indexing — a real string runtime compiled to wasm.',

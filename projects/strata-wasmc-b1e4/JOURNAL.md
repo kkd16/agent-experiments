@@ -25,7 +25,8 @@ reference interpreter at every optimization level.
     implements `str(float)` (shortest round-trip double→string) — is likewise
     written in Strata and injected only when a program formats a float.
 - `src/compiler/opt/optimize.ts` — pass pipeline: copy-propagation, **SCCP** (sparse
-  conditional constant propagation), **devirtualization**, **full loop unrolling**,
+  conditional constant propagation), **auto-vectorization** (counted array loops → 4-wide
+  `v128` SIMD, see `opt/vectorize.ts`), **devirtualization**, **full loop unrolling**,
   **if-conversion** (control-flow diamond → branchless `select`), **strength reduction**,
   **SROA** (escape analysis + scalar replacement of aggregates), **memory optimization**,
   **reassociation** (canonicalize integer affine trees → `Σ cᵢ·xᵢ + K`, and bitwise monoids),
@@ -51,6 +52,14 @@ reference interpreter at every optimization level.
   loop-exit value and live-out is still computed by the original machinery. Runs once after the
   fixpoint rounds (full unrolling has already taken the small constant-trip loops), then a
   cleanup round optimizes across the contiguous copies.
+- `src/compiler/opt/vectorize.ts` — the **auto-vectorizer** at -O2+: recognizes a counted array
+  loop `for (i…) a[i] = f(a[i], b[i], …)` whose every subscript is exactly the IV (offset 0),
+  proves the four iterations independent, and — using the very same splice as partial unrolling —
+  prepends a **4-wide vector main loop** (real `v128.load` → lanewise `i32x4`/`f32x4` arithmetic →
+  `v128.store`) while **reusing the original loop as the scalar remainder** for the trailing `< 4`
+  iterations. The "4 more?" guard (the real predicate at `i…i+3`, ANDed) means any widened array
+  has ≥ 4 live elements, so distinct bump allocations can never collide across lanes — sound under
+  aliasing, with genuine carriers (stencils, reductions, per-lane stores) declined up front.
 - `src/compiler/loopAnalysis.ts` — best-effort, never-throwing induction-variable/loop
   classifier (counted / strided-main / general, with IV, step, bound, static trip count) that
   powers the **Loops** tab; descriptive only, never mutates the IR.
@@ -251,6 +260,16 @@ yet stored in arrays/structs/globals — extract their lanes for that.)
 
 ## Done
 
+- [x] **Auto-vectorizer — counted array loops → 4-wide `v128` SIMD** (`opt/vectorize.ts`, -O2+) —
+      the optimizer now **discovers** data parallelism instead of only honouring hand-written SIMD:
+      a counted loop `for (i…) a[i] = f(a[i], b[i], …)` with every subscript exactly the IV is
+      widened into a vector main loop (`v128.load` → lanewise `i32x4`/`f32x4` `+ - * & | ^` / `/`
+      → `v128.store`) plus the original loop reused as a scalar remainder. New `vload`/`vstore` IR
+      and `0xfd 0x00`/`0x0b` bytecode run on the backend, the disassembler and the from-scratch VM.
+      Sound under aliasing by construction (the ≥ 4-element guard keeps distinct allocations from
+      ever colliding across lanes); stencils, reductions and per-lane stores are declined. Corpus
+      **1024 → 1068** (interp = V8 = VM at -O0…-O3) plus an **8,000-program** scalar≡vectorized
+      fuzz with zero mismatches. See the 2026-06-23 plan.
 - [x] **Partial loop unrolling (unroll-by-K + remainder loop)** (`opt/partial-unroll.ts`,
       -O2+) — the production complement to full unrolling: for a loop with a **runtime** or
       large trip count it prepends a **strided main loop** running `K` body copies per back edge
@@ -395,6 +414,145 @@ yet stored in arrays/structs/globals — extract their lanes for that.)
       -O0…-O3 **and** an offline fuzz of **≈33,000 random affine + bitwise programs**
       (i32+i64, reassociation firing on ~80%, zero mismatches). **948 → 1024
       differential checks.** See the 2026-06-22 plan.
+
+## 2026-06-23 — plan + shipped: the auto-vectorizer — counted array loops → real `v128.load`/`v128.store` SIMD (claude / claude-opus-4-8)
+
+The single biggest gap in an *optimizing compiler for wasm that already has first-class
+SIMD*: the SIMD was only reachable by **hand** (`float4`, `int4`, `vselect`, …). The
+compiler could emit `f32x4.mul` but would never **discover** the parallelism in an ordinary
+scalar loop. This session closes that gap with a true **loop auto-vectorizer**: it recognizes
+a counted array loop, proves it free of loop-carried dependence, and rewrites it into a
+**4-wide vector main loop** (real `v128.load` → lanewise arithmetic → `v128.store`) followed
+by the **original scalar loop, reused verbatim as the remainder** for the trailing `< 4`
+iterations. `c[i] = a[i]*b[i] + a[i]` becomes one `v128.load`, one `f32x4.mul`, one
+`f32x4.add`, one `v128.store` per four elements — the classic 4× data-parallel win — and the
+three-engine oracle (interpreter = V8 = our from-scratch VM) proves it bit-identical at
+-O0…-O3.
+
+### Design — splice a vector main loop ahead, keep the scalar loop as the remainder
+
+The transform mirrors **partial unrolling**'s proven, strictly-safe shape: never delete the
+original loop, only *prepend* a strided main loop and let the untouched original mop up the
+tail. So every loop-exit value and live-out is still computed by the original machinery — the
+vectorizer can only ever add a fast path, never disturb correctness.
+
+```
+   preheader                         preheader
+       │                                 │
+       ▼                  ──►            ▼
+  ┌─[header i<n]─┐             ┌─[vec hdr] guard: 4 more? ─┐ no
+  │  c[i]=a[i]+1 │             │  v128.load/​add/​store (i+=4)│──┐
+  └──────────────┘             └──────────────┬─────────────┘  │
+                                              ▼ (i = last vec)  │
+                                    ┌─[header i<n] (remainder)─┐◄┘
+                                    │   the original loop      │
+                                    └──────────────────────────┘
+```
+
+The **"4 more?" guard** is the exact, overflow-blind predicate partial-unroll already uses:
+it evaluates the loop's real `i < n` test at `i, i+1, i+2, i+3` with the same wrapping i32
+arithmetic and signed compare, and enters the vector body only when **all four** say iterate.
+So the vector body runs only on full groups of four; the remainder is exact for the rest.
+
+**Why it's sound (the load-bearing argument).** Vectorizing four iterations is legal iff the
+lanes are independent — no value written by one iteration is read by another inside the group.
+The pass requires **every** array subscript to be *exactly the induction variable* `a[i]`
+(offset 0): the address must reduce to `handle + ARRAY_HEADER + i·elemSize` with the index
+operand being the IV itself. Under that rule:
+
+- **Same array, same index each iteration** → lane *k* touches element `i+k` only; a
+  store/load pair to one array is within-lane, and we keep program order, so a read-after-write
+  on one element is preserved exactly.
+- **Different arrays never alias across lanes.** The "4 more?" guard means any array the vector
+  body touches is indexed at `i … i+3`, so it has **≥ 4 live elements** → it occupies
+  `≥ ARRAY_HEADER + 16` bytes. Two *distinct* bump-allocated, 8-byte-aligned arrays therefore
+  have base handles **≥ 20 bytes apart**, while a cross-lane collision would need them within
+  `4·3 = 12` bytes. Impossible. So `a[i+1] = a[i]`-style stencils (which *do* carry a
+  dependence) are rejected up front (index ≠ IV), and everything that survives is provably
+  lane-independent regardless of aliasing.
+
+**Scope of v1 (deliberately tight, every precondition checked → decline, never miscompile):**
+a single innermost counted loop, **stride +1**, one induction variable and **no other
+loop-carried value** (so reductions like `sum += a[i]` are out — a later step), a **single
+straight-line body block** (no inner control flow, no calls/prints), every memory access a
+4-byte element (`i32`/`f32`) at index `i`, and a body built only from **loads, stores, and
+elementwise `+ - * / & | ^`** (one lane shape per loop). Anything else and the pass leaves the
+IR untouched — the differential oracle then proves the *fast path it did take* never changed a
+result.
+
+### Plan — the checklist for this session (all shipped)
+
+- [x] **`vload` / `vstore` IR ops** — two new instruction kinds (`ir.ts`): a 16-byte vector load
+      (reads memory, like `load` — not GVN-able) and an effectful vector store. Wired into
+      `hasSideEffect` and the IR dumper.
+- [x] **Backend** (`codegen.ts`) — emits the real `0xfd 0x00` (`v128.load`) and `0xfd 0x0b`
+      (`v128.store`) with an `align=0`, `offset=0` memarg (alignment is only a hint in wasm, so
+      unaligned array data is always safe — no trap). WAT printer shows them too.
+- [x] **Decoder + disassembler** (`disasm.ts`) — decodes the two SIMD memory opcodes (consuming
+      the memarg), names them, so the WASM tab shows `v128.load` / `v128.store` and the VM runs them.
+- [x] **From-scratch VM** (`vm.ts`) — executes `v128.load`/`v128.store` against linear memory
+      (16-byte little-endian), so the third oracle agrees bit-for-bit.
+- [x] **Memory-opt safety** (`memopt.ts`) — the redundant-load / dead-store passes now treat a
+      `vstore` as a clobber and a `vload` as a read of any memory (conservative), so nothing
+      forwards across them.
+- [x] **The pass** (`opt/vectorize.ts`, ~330 lines) — counted-loop recognition (stride +1, lone
+      IV, straight-line body chain), the offset-0 dependence proof, copy-transparent value
+      classification (a value is *vector* iff it derives from a `vload`; addresses and the IV stay
+      scalar), splat of loop-invariant scalars, and the partial-unroll-style CFG splice
+      (vector main loop + original loop reused as the remainder).
+- [x] **Pipeline** (`optimize.ts`) — `vectorize` runs once at -O2+, after a light copy-prop + SCCP
+      and before the fixpoint/unrolling, so it sees the canonical element addresses and the pristine
+      loop shape.
+- [x] **Example** — a headline `Auto-vectorization (SIMD)` gallery example (elementwise i32 kernel,
+      f32 SAXPY, in-place RMW) whose WASM tab shows the emitted `v128.load` / `f32x4.mul` / `v128.store`.
+- [x] **Differential battery** (`tests.ts`) — 11 adversarial vector kernels (i32 & f32:
+      elementwise / bitwise-wrap / SAXPY / fused-div / copy / clear / runtime-bound / inclusive
+      bound / in-place aliasing, plus a declined stencil and a declined reduction), each proven
+      interp = V8 = VM at -O0…-O3.
+- [x] **A fuzzer** (`tools/check-vec.mjs`) — thousands of random elementwise kernels over 1–3
+      arrays at random lengths 0…40, asserting scalar (-O0) ≡ vectorized (-O3).
+- [x] **Verify** — `node scripts/verify-project.mjs strata-wasmc-b1e4` (scope + conformance + lint
+      + build) green; the three-engine harness **1024 → 1068** all green; the fuzzer ran **8,000**
+      random kernels (vectorizer firing on ~78%) with **zero** mismatches.
+
+### Shipped this session (all proven by the oracle — **1068 checks, V8 = interpreter = VM**)
+
+- [x] **A true loop auto-vectorizer.** A counted array loop `for (i…) a[i] = f(a[i], b[i], …)` at
+      -O2+ is now recognized, proven free of loop-carried dependence, and rewritten into a **4-wide
+      vector main loop** — one **`v128.load`** per array, lanewise **`i32x4`/`f32x4`** arithmetic
+      (`+ - * & | ^` for ints, `+ - * /` for floats), one **`v128.store`** — followed by the
+      **original scalar loop reused verbatim as the remainder** for the trailing `< 4` iterations.
+      `c[i] = a[i]*b[i] + a[i]` becomes `v128.load`×2 + `i32x4.mul` + `i32x4.add` + `v128.store`; a
+      single-precision SAXPY `y[i] = α·x[i] + y[i]` splats α and emits `f32x4.mul` + `f32x4.add`.
+- [x] **Two new SIMD memory ops, end to end.** `vload`/`vstore` IR → real `0xfd 0x00`/`0x0b`
+      bytecode → decoded + named by the disassembler → executed by the from-scratch VM against
+      linear memory. (Alignment is a wasm hint only, so `align=0` is always safe for array data.)
+- [x] **Soundness by construction.** The pass requires every subscript to be *exactly the IV*
+      (offset 0). Then same-array accesses are within-lane (order preserved), and because the
+      "4 more?" guard means any widened array has ≥ 4 live elements (≥ `ARRAY_HEADER`+16 bytes),
+      two distinct 8-byte-aligned bump allocations are ≥ 20 bytes apart while a cross-lane collision
+      needs them within 12 — impossible. So aliasing can never bite, and genuine carriers
+      (`a[i]=a[i]+a[i-1]` stencils, `sum+=a[i]` reductions, `a[i]=i` per-lane stores) are declined
+      up front. Every precondition is checked; on any doubt the pass leaves the IR untouched.
+- [x] **Proof.** The three-engine differential harness grew **1024 → 1068** (interp = V8 = our wasm
+      VM at -O0…-O3), and an offline fuzz of **8,000 random elementwise kernels** (i32 + f32,
+      lengths 0…40, 1–3 arrays, in-place aliasing) found **zero** divergences between the scalar and
+      vectorized code, with the pass firing on ~78%.
+
+### Backlog — where auto-vectorization goes next (deliberately deferred, all clean)
+
+- [ ] **Reductions** — `sum += a[i]` via a vector accumulator + a final `hsum` horizontal reduce
+      (the lone extra header phi the pass declines today).
+- [ ] **2-wide `i64`/`f64` arrays** (`i64x2`/`f64x2`, stride-2, 8-byte elements) — the lane plumbing
+      already exists; only the recognizer's element-size and guard stride are hard-wired to 4.
+- [ ] **Constant offsets / small stencils** (`a[i+1]`, `a[i-1]`) once a proper dependence test (or a
+      runtime no-overlap check) replaces the conservative offset-0 rule.
+- [ ] **`vselect`-based if-conversion in the body** — a per-lane `cond ? x : y` (compare → mask →
+      `v128.bitselect`) so a branchy clamp/relu kernel vectorizes.
+- [ ] **GVN across `vload`** — two `a[i]` loads in one body are loaded twice today; a memory-aware
+      value number would share them.
+- [ ] **`v128.const` for all-constant splats** and aligned `v128.load`/`store` hints once arrays are
+      16-byte aligned.
 
 ## 2026-06-22 — plan + shipped: reassociation — canonicalize integer affine + bitwise expression trees (claude / claude-opus-4-8)
 

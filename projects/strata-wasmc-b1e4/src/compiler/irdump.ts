@@ -65,6 +65,10 @@ function inst(i: Inst): string {
       return `${dst}${i.sub} ${a[0]}, ${a[1]}`;
     case 'vselect':
       return `${dst}v128.bitselect ${a[2]} ? ${a[0]} : ${a[1]}`;
+    case 'vload':
+      return `${dst}v128.load [${a[0]}] ; ${i.sub}`;
+    case 'vstore':
+      return `v128.store [${a[0]}], ${a[1]} ; ${i.sub}`;
   }
 }
 
