@@ -1380,3 +1380,94 @@ frame. Wired an app tab (**Uncertainty · Bayes**) + hash route `#u=` + `BAYES_S
   ensemble starker still (1.45 vs 0.78) — which is exactly why the default KL weight was tuned to 0.1.
   Full CI gate (scope + conformance + lint + tsc + vite build) green via
   `node scripts/verify-project.mjs synapse-grad-7c4e`.
+
+## v13 — Sparse · Mixture-of-Experts (planned + built this session)
+
+Twelve labs cover the modern ML zoo — but every one of them is **dense**: every parameter fires on
+every token. The architecture that actually powers today's frontier language models (Mixtral,
+DeepSeek-V3, GShard, Switch) is the one thing missing: a **sparse Mixture-of-Experts (MoE)**, where a
+small *router* sends each token to only `k` of `E` expert sub-networks, so the model's *capacity*
+(total params) decouples from its *cost* (active params per token). This thirteenth lab builds a
+from-scratch sparse-MoE decoder-only Transformer on the same hand-rolled autograd engine, trains it
+on the existing procedural algorithmic tasks (copy / reverse / sort / add), and makes the three
+things that make MoE *work* — **routing**, **load-balancing**, and **expert specialisation** — visible
+and live. The headline: watch tokens get routed, watch the auxiliary loss force the experts into
+balanced use, and read the "8 experts of capacity, 2 active per token" sparsity dividend right off
+the panel.
+
+### The plan (this session's checklist)
+
+- [x] **Two new hand-derived autograd ops** in `engine/moe.ts`, each gradchecked in the self-test:
+  - [x] `scaleRows(x[T,D], w[T,1])` — multiply every row of `x` by a per-row scalar gate weight
+    (`out[t,j] = x[t,j]·w[t]`); backward `dx[t,j]=g·w[t]`, `dw[t]=Σ_j g·x[t,j]`. This is the
+    differentiable "combine" that mixes expert outputs by their router weight.
+  - [x] `selectCol(x[T,E], e)` — pull column `e` of the router-weight matrix as a `[T,1]` gate
+    column; backward scatters straight back to column `e`.
+- [x] **The MoE layer** — a router + `E` expert MLPs, all on the engine:
+  - [x] Router logits `G = LN(h)·W_g` `[T,E]`; full softmax `P = softmax(G)` for the load term.
+  - [x] **Top-`k` routing** via the elegant identity `combine = softmax(G + topkMask)` — an additive
+    `−1e9` mask on the non-top-`k` experts makes the softmax renormalise over exactly the chosen `k`
+    (Mixtral's "softmax of the top-k logits"), and stays fully differentiable in `G`.
+  - [x] Dense-compute experts (`gelu(LN(h)·W1_e + b1_e)·W2_e + b2_e`), combined by
+    `Σ_e scaleRows(y_e, selectCol(combine, e))` — sparse *in which experts touch each token*, the part
+    we visualise; real compute-skipping is a noted efficiency follow-up.
+  - [x] **Switch-Transformer load-balancing aux loss** `L_aux = E·Σ_i f_i·P_i` (`f_i` = fraction of
+    tokens dispatched to expert `i`, a detached constant; `P_i` = mean router prob, differentiable —
+    the gradient flows through `P` exactly as in the paper) plus a small **router z-loss**
+    `mean_t (logsumexp_e G)²` for logit stability.
+- [x] **`MoEGPT`** — a decoder-only Transformer reusing the exact multi-head causal-attention assembly,
+  with the dense FFN swapped for the MoE layer in every block; captures a **routing snapshot**
+  (per-layer combine weights + top-k assignment) and exposes `lastAux` so the trainer folds the
+  balancing loss into one backward. `paramCount()` vs `activeParamCount()` reports the sparsity
+  dividend.
+- [x] **`useMoETrainer` hook** — one-backward training over the combined CE + aux objective, a held-out
+  eval set, a routing/utilisation aggregator (per-expert load + coefficient-of-variation imbalance,
+  and an expert×token-class specialisation matrix), gradcheck, and save/load.
+- [x] **`components/moe/*`** — the headline **RouterHeatmap** (token×expert routing for a probe, top-k
+  highlighted, per-layer), an **ExpertUtilization** bar (vs the uniform ideal + a live imbalance
+  number), an **ExpertSpecialisation** matrix (what each expert learned to take), an **MoEGenerateBox**
+  (decode a typed problem), `SamplePredictions`, training curves, and a full `MoEPanel` with an
+  experts/top-k/aux-coef control surface and the active-vs-total param readout.
+- [x] **Wire it in** — an app tab "Sparse · MoE", a hash route `#x=`, and grow the engine self-test
+  (the two ops + a whole `MoEGPT` gradchecked end-to-end through the CE+aux loss).
+- [x] **Validate outside the browser first** (vite SSR bundle): self-test green, and a real MoE solves
+  an algorithmic task while the aux loss drives the per-expert load to near-uniform.
+- [x] **Ship**: full CI gate green via `node scripts/verify-project.mjs synapse-grad-7c4e`.
+
+### Open / future (MoE)
+
+- [ ] **True sparse compute** — gather tokens per expert and run each expert on only its assigned rows
+  (skip the dense all-experts pass) for a real FLOPs win, with a capacity factor + token-dropping.
+- [ ] **Expert-choice routing** (each expert picks its top tokens) as a load-balanced alternative to
+  token-choice top-k.
+- [ ] **Shared + routed experts** (DeepSeek-style) and **fine-grained experts** (more, smaller).
+- [ ] **Noisy top-k gating** (Shazeer) and a **router-temperature** anneal.
+- [ ] A **dense-vs-sparse race** panel: same active-param budget, both curves on one chart.
+
+## Session log (v13)
+
+- 2026-06-23 (claude, session 15): added the **thirteenth lab — Sparse · Mixture-of-Experts**, the
+  architecture that powers today's frontier LLMs (Mixtral / DeepSeek / GShard / Switch) and the one
+  thing the other twelve labs weren't: *sparse*. New `engine/moe.ts` — two hand-derived autograd ops
+  (`scaleRows`, `selectCol`) and a full **`MoEGPT`**: the exact multi-head causal-attention assembly
+  reused verbatim, with the dense FFN replaced in every block by `E` expert MLPs + a linear router.
+  Top-`k` routing uses the `softmax(G + topkMask)` identity (an additive `−1e9` mask renormalises the
+  softmax over exactly the chosen `k` — fully differentiable in the router logits), experts are mixed
+  by `Σ_e scaleRows(y_e, selectCol(combine, e))`, and the router is balanced by the **Switch
+  load-balancing aux loss** `E·Σ_i f_i·P_i` (detached dispatch-fraction `f`, differentiable mean prob
+  `P`) plus a router z-loss. A `useMoETrainer` hook folds CE + aux into **one backward**, aggregates
+  per-expert utilisation + an expert×token specialisation matrix, and tracks the load coefficient of
+  variation; `components/moe/*` is the headline **RouterHeatmap** (token×expert routing per layer,
+  top-k outlined), **ExpertUtilization** (load bars vs the uniform ideal + a live imbalance CV),
+  **ExpertSpecialisation** (what each expert took), a **BalanceChart** (CV + aux falling), an
+  **MoEGenerateBox**, **MoESamplePredictions**, and a full `MoEPanel` with experts/top-k/aux-weight
+  controls and an active-vs-total **sparsity readout**. Wired an app tab "Sparse · MoE" + hash route
+  `#x=`. The engine **self-test grew by three checks** (`scaleRows` 1.8e-11, `selectCol` 9.8e-12, and
+  a whole `MoEGPT` gradchecked end-to-end through the CE+aux loss — ~3e-5 in the self-test, ~3e-7 on a
+  clean masked-CE probe) — **74 ops in all**. Validated outside the browser first (vite SSR bundle):
+  the ops and model gradcheck, and a 6-expert top-2 model **solved the sort task to 100% token &
+  sequence accuracy by step ~600** while the load-balancing aux drove the per-expert imbalance from
+  **CV 0.36 → 0.06** (near-perfect uniform), at **52% active params per token** — the sparsity
+  dividend made concrete. All five UI components additionally SSR smoke-rendered without error. Full
+  CI gate (scope + conformance + lint + tsc + vite build) green via
+  `node scripts/verify-project.mjs synapse-grad-7c4e`.
