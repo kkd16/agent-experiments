@@ -1024,3 +1024,56 @@ and MSO sentences over 2- and 3-letter alphabets, every word up to length 7, dua
 — zero disagreements, zero state-cap blow-ups**. So `forall x.(Qa(x) -> exists y. S(x,y) & Qb(y))` compiles to
 a star-free DFA the Algebra tab independently certifies aperiodic, while the even-length MSO sentence is named
 ℤ/2 and `G(a -> X b)` (LTLf) is proved star-free by Kamp. Gate green: scope + conformance + lint + build all pass.
+
+## Regex Studio — Ambiguity & Multiplicity (this session)
+
+The studio could count **words** (Census) and prove **exponential backtracking** (ReDoS), but it had no pillar
+for the dual, deeper question every NFA poses: for one input word, *how many distinct accepting runs are there?*
+That is an NFA's **degree of ambiguity**, and the **Weber–Seidl theorem** (1991) says it falls into exactly four
+classes — **unambiguous** (≤1 run ever) ⊂ **finitely ambiguous** (a constant cap) ⊂ **polynomially ambiguous**
+of a precise integer **degree d** (runs ~ nᵈ) ⊂ **exponentially ambiguous** (runs ~ 2ⁿ) — and each class is
+decided *structurally* by two combinatorial criteria on the trimmed NFA:
+
+- **EDA** (exponential): a state q and a non-empty word v with **two distinct** cycles q ─v→ q — found as an SCC
+  of the **squared** automaton N×N touching both the diagonal (q,q) and an off-diagonal (a,b≠a). This is exactly
+  the ReDoS exponential condition, now read off the ε-free **Glushkov** automaton and tied back to that tab.
+- **IDA** (the cubed automaton, the journal's standing open item): states **p≠q** and a word v with paths
+  p→p, p→q, q→q — found as a reachability `(p,p,q) ⇝ (p,q,q)` in the **triple** automaton N×N×N. The **degree** of
+  polynomial ambiguity is the longest IDA-chain of states (a longest path in the acyclic IDA relation).
+
+This pillar implements all of it from scratch, proves it the house way (every structural verdict cross-checked
+against a brute-force **run count** over the pattern's symbol atoms, and the **total runs** Rₙ proven equal to an
+integer transfer-matrix `e₀ᵀBⁿf`), and connects the three views: **Census counts words, Ambiguity counts runs,
+and their gap _is_ the ambiguity** (Rₙ = words ⇔ unambiguous).
+
+- [x] `engine/ambiguity.ts` — ε-free NFA from the Glushkov position automaton; trim (reachable ∧ co-reachable);
+      the squared product (unambiguity + EDA via Tarjan SCC) and the triple product (IDA + degree via longest
+      path in the acyclic IDA relation, restricted to cyclic states for speed); concrete **witnesses** (a word
+      with two runs + its two position-paths, the EDA prefix·pump·suffix, the IDA p,q,v), and the integer
+      transfer matrix Rₙ = e₀ᵀBⁿf + the brute am(n) over the pattern's symbol **atoms** (the Boolean-algebra
+      partition the classes induce). Squared-product cap 150 states (decides unambiguity + EDA outright);
+      cubed-product cap 26 (refines the degree); when the cube is skipped the verdict degrades honestly to
+      "polynomially bounded, degree not computed" rather than guessing.
+- [x] `engine/ambiguity-verify.ts` — a seeded fuzzer: random regular patterns; the **exact** check Rₙ (transfer
+      matrix) ≡ Rₙ (brute) at every length; the rigorous `unambiguous ⇔ runs = words`; direct witness
+      confirmations (an "ambiguous" word truly has ≥2 runs; the EDA pump genuinely multiplies the run count via
+      prefix·pumpᵏ·suffix); and the structural invariant EDA ⇒ IDA. (The earlier idea of cross-checking the
+      growth *class* empirically was dropped as unsound — at small n a high-degree polynomial is indistinguishable
+      from an exponential by ratio alone; the exact + direct-witness checks catch real bugs without false alarms.)
+- [x] `components/AmbiguityPanel.tsx` — the colour-coded verdict badge + Weber–Seidl explainer, the EDA/IDA
+      criteria cards, a word matched two ways (the two position-paths with the divergence lit), the EDA pump's
+      2ᵏ growth, the Glushkov graph with the witness states highlighted, the **runs vs words** table (the
+      ambiguity gap, with the transfer-matrix ≡ brute badge), and the seeded cross-check console.
+- [x] Wired the **Ambiguity** tab into `App.tsx`, added three showcase examples ((a|a)* EDA, the Fibonacci
+      (aa|a)*, and the sliding-match polynomial \w*(aa|ee|oo)\w*), refreshed header/footer/`project.json`, added
+      the Ambiguity CSS, and re-ran the gate to green.
+
+Validated offline with the typescript-transpile headless harness: **12/12 known-answer cases** (deterministic
+regexes unambiguous; `.*a.*` and `\w*(aa|ee|oo)\w*` polynomial degree 1; `(a|b)*a(a|b)*a(a|b)*` degree 2; `(a|a)*`
+and `(aa|a)*` exponential via EDA; `(a|a)` and `(a|a)(a|a)` finite) and the seeded fuzzer at **1,600 random
+patterns across 8 seeds — 1,600 exact Rₙ≡brute equalities and ~1,600 direct witness confirmations, zero
+failures**, observing degrees up to 6 and a healthy spread across all four classes. A subtle truth surfaced and is
+now documented: the Glushkov automaton is ε-free, so `(a*)*` and `(.*)*` collapse to a *deterministic* self-loop
+and are genuinely **unambiguous** here — their exponential character is a property of the ε-NFA / backtracking
+structure, which is precisely what the **ReDoS** tab analyses. Gate green: scope + conformance + lint + build all
+pass.

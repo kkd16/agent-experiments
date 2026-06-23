@@ -261,6 +261,24 @@ export const EXAMPLES: Example[] = [
     sample: 'abba ab b aaa',
     note: 'Every binary string. The generating function 1/(1−2x) gives 2ⁿ words of length n — exponential growth, Perron root λ = 2, topological entropy ln 2 ≈ 0.693.',
   },
+  {
+    name: 'Ambiguity: (a|a)* (EDA)',
+    pattern: '(a|a)*',
+    sample: 'aaaa aa a',
+    note: 'Open the Ambiguity tab: two copies of “a” mean the word aⁿ can be matched 2ⁿ ways — exponentially ambiguous (the EDA doubled-cycle), the same structure that makes a backtracker blow up (see ReDoS).',
+  },
+  {
+    name: 'Ambiguity: Fibonacci (aa|a)*',
+    pattern: '(aa|a)*',
+    sample: 'aaaaa aaa a',
+    note: 'The number of ways to tile aⁿ with 1- and 2-blocks is the Fibonacci number Fₙ₊₁ ≈ φⁿ — exponentially ambiguous, growth rate the golden ratio.',
+  },
+  {
+    name: 'Ambiguity: sliding match (polynomial)',
+    pattern: '\\w*(aa|ee|oo)\\w*',
+    sample: 'aardvark feed moo book a',
+    note: 'A doubled vowel can sit at any of n positions, so the run count grows linearly — polynomially ambiguous, degree 1 (IDA but no EDA).',
+  },
 ];
 
 export const DEFAULT_EXAMPLE = EXAMPLES[1];

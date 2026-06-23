@@ -26,6 +26,7 @@ import { LogicPanel } from './components/LogicPanel';
 import { LearnPanel } from './components/LearnPanel';
 import type { LogicMode } from './engine/logic';
 import { CensusPanel } from './components/CensusPanel';
+import { AmbiguityPanel } from './components/AmbiguityPanel';
 import { FuzzPanel } from './components/FuzzPanel';
 import { UnicodePanel } from './components/UnicodePanel';
 import { DEFAULT_EXAMPLE, EXAMPLES } from './data/examples';
@@ -43,6 +44,7 @@ type Tab =
   | 'pike'
   | 'language'
   | 'census'
+  | 'ambiguity'
   | 'monoid'
   | 'logic'
   | 'learn'
@@ -75,6 +77,7 @@ const TAB_GROUPS: { group: string; tabs: { id: Tab; label: string }[] }[] = [
     tabs: [
       { id: 'language', label: 'Language' },
       { id: 'census', label: 'Census' },
+      { id: 'ambiguity', label: 'Ambiguity' },
       { id: 'monoid', label: 'Algebra' },
       { id: 'logic', label: 'Logic' },
       { id: 'learn', label: 'Learn' },
@@ -198,7 +201,7 @@ export default function App() {
           <span className="logo">/<span className="logo-star">∗</span>/</span>
           <div>
             <h1>Regex Studio</h1>
-            <p>A regular-expression engine built from scratch — parse, compile four ways, minimise, run six engines, extend to the Boolean closure (&amp; ~ −), read the language's <strong>syntactic monoid</strong> (the variety ladder: piecewise-testable · DA/FO² · star-free? · the named group · the egg-box), speak <strong>Unicode</strong> via <code>\p{'{'}…{'}'}</code> derived live from the host, <strong>learn the minimal DFA back from queries</strong> (Angluin's L* · RPNI), <strong>count the language</strong> (the rational generating function · growth rate · entropy), decide equivalence &amp; inclusion <strong>without determinising</strong> (bisimulation up to congruence · antichains), and now run the whole studio <strong>in reverse — compile a logic formula to its automaton</strong> (Büchi–Elgot–Trakhtenbrot: <code>MSO[&lt;]</code> = regular, <code>FO[&lt;]</code> = star-free, LTLf via Kamp), fuzz, compare and synthesise.</p>
+            <p>A regular-expression engine built from scratch — parse, compile four ways, minimise, run six engines, extend to the Boolean closure (&amp; ~ −), read the language's <strong>syntactic monoid</strong> (the variety ladder: piecewise-testable · DA/FO² · star-free? · the named group · the egg-box), speak <strong>Unicode</strong> via <code>\p{'{'}…{'}'}</code> derived live from the host, <strong>learn the minimal DFA back from queries</strong> (Angluin's L* · RPNI), <strong>count the language</strong> (the rational generating function · growth rate · entropy), classify its <strong>ambiguity</strong> — unambiguous · finite · polynomial-degree-d · exponential (Weber–Seidl, EDA/IDA on the squared &amp; cubed automata) — decide equivalence &amp; inclusion <strong>without determinising</strong> (bisimulation up to congruence · antichains), and now run the whole studio <strong>in reverse — compile a logic formula to its automaton</strong> (Büchi–Elgot–Trakhtenbrot: <code>MSO[&lt;]</code> = regular, <code>FO[&lt;]</code> = star-free, LTLf via Kamp), fuzz, compare and synthesise.</p>
           </div>
         </div>
         <a className="repo-link" href="https://en.wikipedia.org/wiki/Thompson%27s_construction" target="_blank" rel="noreferrer">
@@ -371,6 +374,10 @@ export default function App() {
 
             {tab === 'census' && <CensusPanel dfa={compiled.minDfa} notice={automataNotice} />}
 
+            {tab === 'ambiguity' && (
+              <AmbiguityPanel ast={compiled.ast} regular={regular} notice={automataNotice} onUseText={setText} />
+            )}
+
             {tab === 'monoid' && <MonoidPanel compiled={compiled} />}
 
             {tab === 'logic' && (
@@ -424,7 +431,7 @@ export default function App() {
         position automaton · Pike VM · backtracking VM) cross-checked by a seeded differential fuzzer · product-automaton equivalence — plus the modern road that skips
         determinisation: <strong>bisimulation up to congruence</strong> (Bonchi–Pous, the naïve / up-to-equivalence / up-to-congruence ladder) and
         <strong>antichain</strong> inclusion &amp; universality (De Wulf et al.), every verdict cross-checked against the DFA product · ReDoS
-        analysis · state-elimination synthesis · the <strong>syntactic monoid</strong> with Green's relations (the egg-box) and the full <strong>variety ladder</strong> — piecewise-testable (Simon) ⊂ DA / FO²[&lt;] ⊂ star-free / FO[&lt;] / counter-free (Schützenberger) — with the syntactic <strong>group named</strong> (ℤ/n, Klein four, Dₙ, Q₈…) and every element wired back to the state-map it induces · <strong>grammatical inference</strong> — Angluin's <strong>L*</strong> reconstructs the minimal DFA from membership &amp; equivalence queries (the observation table, Myhill–Nerode made tangible) and <strong>RPNI</strong> infers it passively from labelled data · <strong>enumerative census</strong> — the rational generating function S(x)=P(x)/Q(x) (Chomsky–Schützenberger) from the transfer matrix, exact word counts, and the growth rate λ (Perron root) with topological entropy ln λ, classifying the language finite / polynomial / exponential · <strong>logic ⇒ automaton</strong> — the <strong>Büchi–Elgot–Trakhtenbrot</strong> construction compiles an <strong>MSO[&lt;]</strong> sentence (∧ = product, ¬ = complement-within-validity, ∃ = projection + determinisation) to a finite automaton, lowered into the studio DFA; an FO[&lt;] formula provably lands star-free (McNaughton–Papert, checked against the syntactic monoid) and LTLf desugars to FO (Kamp), every formula differentially checked against a brute-force MSO oracle · DOT/SVG export — all hand-written TypeScript, no regex library.
+        analysis · state-elimination synthesis · the <strong>syntactic monoid</strong> with Green's relations (the egg-box) and the full <strong>variety ladder</strong> — piecewise-testable (Simon) ⊂ DA / FO²[&lt;] ⊂ star-free / FO[&lt;] / counter-free (Schützenberger) — with the syntactic <strong>group named</strong> (ℤ/n, Klein four, Dₙ, Q₈…) and every element wired back to the state-map it induces · <strong>grammatical inference</strong> — Angluin's <strong>L*</strong> reconstructs the minimal DFA from membership &amp; equivalence queries (the observation table, Myhill–Nerode made tangible) and <strong>RPNI</strong> infers it passively from labelled data · <strong>enumerative census</strong> — the rational generating function S(x)=P(x)/Q(x) (Chomsky–Schützenberger) from the transfer matrix, exact word counts, and the growth rate λ (Perron root) with topological entropy ln λ, classifying the language finite / polynomial / exponential · <strong>ambiguity analysis</strong> — the <strong>Weber–Seidl</strong> degree-of-ambiguity hierarchy (unambiguous ⊂ finitely ⊂ polynomially-degree-d ⊂ exponentially ambiguous) decided structurally by EDA (the squared automaton's doubled cycle) and IDA (the cubed automaton's <code>(p,p,q)⇝(p,q,q)</code>), every verdict cross-checked against an exact transfer-matrix run count Rₙ=e₀ᵀBⁿf and a brute-force enumeration · <strong>logic ⇒ automaton</strong> — the <strong>Büchi–Elgot–Trakhtenbrot</strong> construction compiles an <strong>MSO[&lt;]</strong> sentence (∧ = product, ¬ = complement-within-validity, ∃ = projection + determinisation) to a finite automaton, lowered into the studio DFA; an FO[&lt;] formula provably lands star-free (McNaughton–Papert, checked against the syntactic monoid) and LTLf desugars to FO (Kamp), every formula differentially checked against a brute-force MSO oracle · DOT/SVG export — all hand-written TypeScript, no regex library.
       </footer>
     </div>
   );
