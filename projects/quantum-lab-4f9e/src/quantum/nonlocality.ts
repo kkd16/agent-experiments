@@ -367,3 +367,82 @@ export function magicQuantumWin(): MagicQuantum {
 }
 
 export const MAGIC_CLASSICAL = 8 / 9;
+
+// ───────────────────────────── Mermin–Klyshko inequality ─────────────────────────────
+// The n-party generalisation of CHSH (Belinskii–Klyshko / Mermin). The Mermin polynomial M_n is
+// built from a recursion; every local-hidden-variable theory obeys |⟨M_n⟩| ≤ 1, but the n-qubit
+// GHZ state reaches 2^{(n-1)/2} — so the quantum violation grows EXPONENTIALLY with the number of
+// parties, a stark contrast to the bounded CHSH ratio.
+
+/** The local-realistic (LHV) bound on the normalised Mermin polynomial. */
+export const MERMIN_CLASSICAL_BOUND = 1;
+
+/** The optimal observable angle for party j of n: αⱼ = −(j−1)·π/(2n) (the rest at αⱼ + π/2). */
+function merminAngle(j: number, n: number): number { return -((j - 1) * Math.PI) / (2 * n); }
+
+/** A ±1 observable in the X–Y plane at angle φ: cosφ·X + sinφ·Y. */
+function planeObs(phi: number): Mat { return matAdd(matScale(PX, Math.cos(phi)), matScale(PY, Math.sin(phi))); }
+function matAdd(A: Mat, B: Mat): Mat { return A.map((row, i) => row.map((x, j) => x.add(B[i][j]))); }
+
+/** The Mermin operator M_n on n qubits, built recursively with the GHZ-optimal X–Y plane settings. */
+function merminOperator(n: number): Mat {
+  const build = (k: number): { M: Mat; Mp: Mat } => {
+    const a = merminAngle(k, n);
+    const A = planeObs(a), Ap = planeObs(a + Math.PI / 2);
+    if (k === 1) return { M: A, Mp: Ap };
+    const prev = build(k - 1);
+    const sum = matAdd(A, Ap), diff = matAdd(A, matScale(Ap, -1));
+    const M = matScale(matAdd(kron(prev.M, sum), kron(prev.Mp, diff)), 0.5);
+    const sump = matAdd(Ap, A), diffp = matAdd(Ap, matScale(A, -1));
+    const Mp = matScale(matAdd(kron(prev.Mp, sump), kron(prev.M, diffp)), 0.5);
+    return { M, Mp };
+  };
+  return build(n).M;
+}
+
+function ghzVector(n: number): Complex[] {
+  const dim = 1 << n;
+  const v = Array.from({ length: dim }, () => C(0));
+  v[0] = C(1 / Math.SQRT2); v[dim - 1] = C(1 / Math.SQRT2);
+  return v;
+}
+
+/** ⟨M_n⟩ on the n-qubit GHZ state with the optimal settings — equals 2^{(n-1)/2}. */
+export function merminQuantumValue(n: number): number {
+  return Math.abs(expectationMat(ghzVector(n), merminOperator(n)));
+}
+
+/** The closed-form quantum maximum 2^{(n-1)/2}. */
+export function merminQuantumBound(n: number): number { return Math.pow(2, (n - 1) / 2); }
+
+/** Brute-force the classical (LHV) maximum |M_n| over all 2²ⁿ deterministic ±1 assignments — equals 1. */
+export function merminClassicalMax(n: number): number {
+  const scalar = (vals: number[]): number => {
+    const rec = (k: number): { M: number; Mp: number } => {
+      const a = vals[2 * (k - 1)], ap = vals[2 * (k - 1) + 1];
+      if (k === 1) return { M: a, Mp: ap };
+      const prev = rec(k - 1);
+      return { M: 0.5 * (prev.M * (a + ap) + prev.Mp * (a - ap)), Mp: 0.5 * (prev.Mp * (ap + a) + prev.M * (ap - a)) };
+    };
+    return rec(n).M;
+  };
+  let best = 0;
+  for (let s = 0; s < (1 << (2 * n)); s++) {
+    const vals: number[] = [];
+    for (let b = 0; b < 2 * n; b++) vals.push((s >> b) & 1 ? 1 : -1);
+    best = Math.max(best, Math.abs(scalar(vals)));
+  }
+  return best;
+}
+
+export interface MerminRow { n: number; classical: number; quantum: number; ratio: number; }
+
+/** The Mermin violation for n = 2…maxN: classical bound 1 vs quantum 2^{(n-1)/2} (from the engine). */
+export function merminTable(maxN = 8): MerminRow[] {
+  const rows: MerminRow[] = [];
+  for (let n = 2; n <= maxN; n++) {
+    const quantum = merminQuantumValue(n);
+    rows.push({ n, classical: MERMIN_CLASSICAL_BOUND, quantum, ratio: quantum / MERMIN_CLASSICAL_BOUND });
+  }
+  return rows;
+}

@@ -77,6 +77,7 @@ import {
   OPTIMAL_CHSH, CLASSICAL_BOUND, TSIRELSON_BOUND, CHSH_GAME_QUANTUM,
   merminExpectations, ghzClassicalMax, ghzQuantumWin,
   magicSquareAlgebra, magicClassicalMax, magicQuantumWin, MAGIC_CLASSICAL,
+  merminQuantumValue, merminQuantumBound, merminClassicalMax, MERMIN_CLASSICAL_BOUND,
 } from './nonlocality';
 
 export interface TestResult {
@@ -1398,6 +1399,23 @@ export function runTests(): TestResult[] {
       const m = magicQuantumWin();
       add('Nonlocality', 'Magic square quantum strategy: on two shared Bell pairs all 9 shared cells correlate at +1, so quantum players win every one of the 81 questions',
         m.allAgree && close(m.win, 1, 1e-12), `win = ${m.win}, worst cell deviation ${m.worstDeviation.toExponential(1)}`);
+    }
+
+    // (11) Mermin–Klyshko: the n-qubit GHZ state reaches the quantum maximum 2^{(n−1)/2}.
+    {
+      let worst = 0;
+      for (let n = 2; n <= 8; n++) worst = Math.max(worst, Math.abs(merminQuantumValue(n) - merminQuantumBound(n)));
+      add('Nonlocality', 'Mermin–Klyshko: the n-qubit GHZ state reaches ⟨Mₙ⟩ = 2^{(n−1)/2} for n = 2…8 (the optimal X–Y plane settings, on the engine)',
+        worst < 1e-9, `max |⟨Mₙ⟩ − 2^{(n−1)/2}| = ${worst.toExponential(1)}`);
+    }
+
+    // (12) The classical bound is 1 for every n, so the quantum violation grows EXPONENTIALLY.
+    {
+      let classicalOk = true;
+      for (let n = 2; n <= 7; n++) if (!close(merminClassicalMax(n), MERMIN_CLASSICAL_BOUND, 1e-12)) classicalOk = false;
+      const ratio8 = merminQuantumBound(8) / MERMIN_CLASSICAL_BOUND;
+      add('Nonlocality', `Mermin–Klyshko: the LHV bound is 1 for all n (brute-forced n = 2…7), so the violation 2^{(n−1)/2} grows exponentially — ${ratio8.toFixed(1)}× at n = 8`,
+        classicalOk && ratio8 > 11, `classical bound = 1 ✓, ratio at n=8 = ${ratio8.toFixed(2)}×`);
     }
   }
 

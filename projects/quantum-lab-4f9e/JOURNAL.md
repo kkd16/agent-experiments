@@ -79,6 +79,14 @@ existing engine, plus an About entry and a block of new self-tests.
   contradiction that bounds classical play at **8/9** (confirmed by brute force over all consistent
   ±1 tables), while two shared Bell pairs let quantum players win **all 81 question pairs (p = 1)** —
   verified by an explicit 4-qubit shared-state simulation.
+- [x] **Mermin–Klyshko — exponentially growing nonlocality.** The n-party generalisation of CHSH.
+  The Mermin polynomial Mₙ (built by the Belinskii–Klyshko recursion `Mₙ = ½[Mₙ₋₁(Aₙ+Aₙ′) +
+  M′ₙ₋₁(Aₙ−Aₙ′)]`) obeys |⟨Mₙ⟩| ≤ 1 for every LHV theory, but the n-qubit GHZ state reaches
+  **2^((n−1)/2)** with the optimal X–Y-plane settings αⱼ = −(j−1)π/2n (found and verified to machine
+  precision). Unlike CHSH's fixed 2√2 ceiling, the quantum/classical ratio *doubles every two
+  parties* — at n=10 it is already 22.6×. The quantum value is read off the engine (the Mermin
+  operator on |GHZₙ⟩); the LHV bound 1 is brute-forced over all 2²ⁿ deterministic assignments. A
+  fourth card plots the exponential separation.
 - [x] **Self-tests:** correlator = cos(a−b); CHSH classical ≤ 2 and Tsirelson = 2√2; Nelder–Mead
   rediscovers the optimum; Monte-Carlo Tsirelson ceiling; CHSH-game win-rate dictionary; GHZ Mermin
   expectations; GHZ quantum p=1 vs classical 3/4; magic-square involutivity, commutation, row/column
@@ -86,9 +94,11 @@ existing engine, plus an About entry and a block of new self-tests.
 - [x] **`NonlocalityLab.tsx` tab** with interactive cards: a CHSH explorer (four angle sliders, live S
   meter against the classical band and Tsirelson lines, the S(θ) sweep, the optimiser button, the
   game-win bars), the GHZ game (the four-question truth table, the Mermin-operator expectations, the
-  classical-vs-quantum bars), and the magic square (the 3×3 operator grid with live row/column product
-  badges, the parity contradiction, classical-vs-quantum bars).
-- [x] **About entry** explaining Bell's theorem, Tsirelson's bound and pseudo-telepathy.
+  classical-vs-quantum bars), the magic square (the 3×3 operator grid with live row/column product
+  badges, the parity contradiction, classical-vs-quantum bars), and the Mermin–Klyshko exponential-
+  violation plot + table (n = 2…10).
+- [x] **About entry** explaining Bell's theorem, Tsirelson's bound, pseudo-telepathy and the
+  exponential Mermin–Klyshko violation.
 
 ### Future ideas (open)
 - [ ] The CH/Eberhard inequality and the **detection-loophole** threshold (η > 2/3 for the singlet).
