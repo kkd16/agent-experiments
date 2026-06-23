@@ -2734,4 +2734,33 @@ fn k(seed: int) -> int {
 }
 fn main(){ print(k(2)); print(k(4)); print(k(7)); print(k(13)); }`,
   },
+  {
+    name: 'hoist-common-expr',
+    source: `// Code hoisting: both arms begin by computing the same pure value 'e'. A print
+// in each arm keeps it non-speculable so if-conversion declines; hoisting must
+// pull one copy above the branch (computed once) without changing any print.
+fn k(seed: int) -> int {
+  let g = 0; for (let t = 0; t < 150; t = t + 1) { g = g + seed * t - 1; }
+  let a = (g & 15) - 6; let b = (g & 7) - 3;
+  let s = a + b;
+  if ((g & 16) > 0) { let e = a * a + b * b - a * b; print(e); s = s + a; }
+  else { let e = a * a + b * b - a * b; print(e); s = s - b; }
+  return s;
+}
+fn main(){ print(k(1)); print(k(2)); print(k(5)); print(k(9)); }`,
+  },
+  {
+    name: 'hoist-vs-distinct',
+    source: `// One common sub-expression (a*b) shared by both arms is hoisted; the rest of
+// each arm differs and must stay put. Exercises partial (not whole-arm) hoisting.
+fn k(seed: int) -> int {
+  let g = 1; for (let t = 0; t < 140; t = t + 1) { g = g ^ (seed * t + 3); }
+  let a = (g & 15) - 6; let b = (g & 9) - 4;
+  let s = a + b;
+  if ((g & 8) > 0) { let e = a * b; print(e); s = s + e - a; }
+  else { let e = a * b; print(e); s = s - e + b; }
+  return s;
+}
+fn main(){ print(k(2)); print(k(4)); print(k(7)); print(k(13)); }`,
+  },
 ];

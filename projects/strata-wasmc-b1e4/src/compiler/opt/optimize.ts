@@ -6,6 +6,7 @@ import { simplifyCFG } from './simplifycfg';
 import { unrollLoops } from './unroll';
 import { unswitchLoops } from './unswitch';
 import { sinkCode } from './sink';
+import { hoistCode } from './hoist';
 import { partialUnroll } from './partial-unroll';
 import { divRemByConst } from './divrem';
 import { vectorize } from './vectorize';
@@ -917,6 +918,10 @@ export function optimize(mod: IRModule, level: OptLevel, snapshots = false): Opt
     // branch down into that arm, so the other path never computes it. Runs after
     // LICM (which has pulled the loop-invariant work the other way) and before DCE.
     if (level >= 2) record('sink' + suffix, sinkCode);
+    // Hoisting is sinking's mirror: when *both* arms of a branch begin with the
+    // same pure value, pull one copy up above the branch (GVN can't — neither arm
+    // dominates the other). Runs right after sink so the two are adjacent.
+    if (level >= 2) record('hoist' + suffix, hoistCode);
     record('dead-code-elim' + suffix, dce);
     record('simplify-cfg' + suffix, simplifyCFG);
   }

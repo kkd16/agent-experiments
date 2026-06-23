@@ -35,7 +35,9 @@ reference interpreter at every optimization level.
   dominator-scoped **GVN/CSE**, **operator strength reduction on induction variables (OSR)**,
   algebraic simplification, **LICM** (loop-invariant code
   motion), **code sinking** (a pure value used on only one branch arm pushed into it —
-  partial dead-code elimination, see `opt/sink.ts`), **DCE**, **CFG simplification**, CFG cleanup,
+  partial dead-code elimination, see `opt/sink.ts`), **code hoisting** (a pure value computed in
+  *both* arms pulled up above the branch — very-busy expressions, see `opt/hoist.ts`),
+  **DCE**, **CFG simplification**, CFG cleanup,
   and whole-module **dead-function elimination**, iterated to a fixed point.
 - `src/compiler/ir/loops.ts` — the **natural-loop forest** (headers, latches, bodies,
   nesting depth + immediate parent), discovered from back edges. One definition of "what a
@@ -66,6 +68,14 @@ reference interpreter at every optimization level.
   every use must be dominated by `S`, the value must not feed a φ (whose use is on a predecessor
   edge), and to never pessimize it refuses to sink into a deeper loop nest — so it only ever moves
   work off a path, never changes a result, as the three-engine oracle proves.
+- `src/compiler/opt/hoist.ts` — **code hoisting** (very-busy / partially-redundant expressions) at
+  -O2+, sinking's mirror: when *both* arms of a two-way branch begin by computing the same **pure**
+  value, one copy is pulled *up* above the branch so it runs once instead of on each path. GVN/CSE
+  can't — neither arm dominates the other, so the two copies are partial (not dominating)
+  redundancies. Sound by the same single-pred precondition as sinking (each arm entered only from
+  the branch block, so a value computed there is available wherever the originals were) and only
+  pure instructions whose operands are all available at the branch block are eligible — so hoisting
+  never adds a path, only removes a duplicate.
 - `src/compiler/opt/partial-unroll.ts` — **partial loop unrolling** (unroll-by-K + remainder)
   at -O2+, for the runtime- and large-trip loops full unrolling declines: it prepends a
   **strided main loop** running `K` body copies per back edge — guarded by an exact,
@@ -436,6 +446,68 @@ yet stored in arrays/structs/globals — extract their lanes for that.)
       -O0…-O3 **and** an offline fuzz of **≈33,000 random affine + bitwise programs**
       (i32+i64, reassociation firing on ~80%, zero mismatches). **948 → 1024
       differential checks.** See the 2026-06-22 plan.
+
+## 2026-06-23 — plan + shipped: code hoisting — very-busy expressions (the third corner of code motion) (claude / claude-opus-4-8)
+
+With LICM (invariants *up out of* a loop), unswitching (an invariant branch *above* a loop) and
+sinking (a one-arm value *down into* its arm) all in hand, one corner of code motion was still
+open: a value computed **identically in both arms** of a branch. GVN/CSE can't touch it — neither
+arm dominates the other, so it is a *partial* redundancy, not a dominating one — and if-conversion
+only helps when both arms are pure and small (then it flattens the diamond and GVN dedupes). When
+the arms have side effects, the duplicate stands. **Code hoisting** removes it: pull one copy *up*
+above the branch, where it runs once on the way in.
+
+```
+B: condbr(cond, T, F)          B: x = a*a + b*b
+T: x = a*a + b*b   ⟶              condbr(cond, T, F)
+   … uses x …                  T: … uses x …
+F: y = a*a + b*b               F: … uses x …   (y folded into x)
+   … uses y …
+```
+
+It is the exact mirror of sinking — sinking pushes a value used on *one* arm down into it; hoisting
+pulls a value computed on *both* arms up out of them — and together (LICM · unswitch · sink · hoist)
+they cover all four directions a pure value can move relative to a branch or loop.
+
+What shipped:
+
+- [x] **`src/compiler/opt/hoist.ts`** — the pass. For a block `B` ending in a two-way `condbr`
+      whose arms `T`, `F` are each entered **only** from `B` (`preds == [B]`), it indexes `F`'s
+      eligible instructions by a structural signature (`kind|sub|ty|args`) and, for each matching
+      **pure** instruction in `T`, moves one copy up into `B` (just before the terminator), rewrites
+      every use of `F`'s copy to it, and drops `F`'s copy. Only instructions whose operands are all
+      **available at `B`** (defined in neither arm) are eligible — so the hoisted copy needs nothing
+      the branch block can't see, and since `B` dominates both arms it never adds a path, only
+      removes a duplicate. Sub-expression chains hoist over successive fixpoint rounds (once `a*a`
+      and `b*b` are in `B`, `a*a + b*b` becomes eligible). Declines otherwise, so the three-engine
+      oracle proves it never changes a result.
+- [x] **Wired into `opt/optimize.ts`** (-O2+) in the fixpoint rounds, immediately after `sink` —
+      the two mirror passes sit adjacent — and before `dce`.
+- [x] **`src/compiler/hoistProbe.ts`** + **`tools/check-hoist.mjs`** — an activity probe (does it
+      fire when both arms share a sub-expression, and **decline** when the arms differ?) and a
+      **seeded differential fuzzer**: 240 random programs whose two arms begin with the same pure
+      expression (a `print` in each arm keeps them non-speculable so if-conversion declines, leaving
+      the cross-arm redundancy only hoisting can remove), compiled at -O0..-O3 and proven to print
+      exactly what the reference interpreter and the from-scratch VM print.
+- [x] **Two regression programs** added to the differential battery (`tests.ts`): `hoist-common-expr`
+      (a whole sub-expression shared by both arms) and `hoist-vs-distinct` (one shared atom `a*b`
+      hoisted, the rest of each arm left in place). Plus UI copy in the Optimizer pass-list.
+
+Validated offline with the Vite-SSR headless harness: the **full battery is 1088/1088 across
+-O0..-O3** (curated examples + 233 adversarial programs, V8 ≡ interpreter ≡ VM), the new fuzzer is
+**960/960 differential checks over 240 random programs, hoisting firing on every one of the 480
+-O2/-O3 compiles**, and the activity suite is **6/6** (it fires on a shared expression and declines
+when the arms differ). Gate green: scope + conformance + lint + build all pass.
+
+### Backlog (code hoisting)
+
+- [ ] **Hoist past a chain of single-pred blocks** (to the nearest common dominator of the two
+      computations, not only the immediate branch block) so deeper shared work also lifts.
+- [ ] **Cross-jumping / tail merging** — the control-flow analogue: factor an identical *tail*
+      shared by two predecessors of a block into that block (the size optimization, with the φ that
+      reconciles the differing inputs).
+- [ ] **Full PRE (lazy code motion)** — the dataflow framework (anticipated + available + a
+      partial-redundancy frontier) that subsumes LICM, sinking and hoisting in one pass.
 
 ## 2026-06-23 — plan + shipped: code sinking — partial dead-code elimination (the dual of LICM) (claude / claude-opus-4-8)
 
