@@ -4,6 +4,7 @@ import { computeDom, succOfTerm } from '../ir/cfg';
 import { findNaturalLoops } from '../ir/loops';
 import { simplifyCFG } from './simplifycfg';
 import { unrollLoops } from './unroll';
+import { unswitchLoops } from './unswitch';
 import { partialUnroll } from './partial-unroll';
 import { divRemByConst } from './divrem';
 import { vectorize } from './vectorize';
@@ -883,6 +884,15 @@ export function optimize(mod: IRModule, level: OptLevel, snapshots = false): Opt
     record('copy-propagation (pre-vectorize)', copyProp);
     record('sccp (pre-vectorize)', sccp);
     record('vectorize', vectorize);
+    // Loop unswitching runs once, on the pristine loop shape (after vectorize has
+    // consumed the canonical counted loops it needs). A LICM pass first hoists the
+    // invariant *condition* (e.g. the `a > b` an in-loop `if` lowers to) into the
+    // preheader, so unswitching sees a loop-invariant branch to hoist. Pulling that
+    // branch above the loop leaves two specialized clones whose now-constant
+    // branches and dead arms the fixpoint rounds below (SCCP/DCE/CFG-simplify)
+    // sweep away — turning a per-iteration test into a single pre-loop one.
+    record('licm (pre-unswitch)', licm);
+    record('loop-unswitch', unswitchLoops);
   }
 
   const rounds = level >= 2 ? 4 : 1;

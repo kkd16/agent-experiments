@@ -26,7 +26,9 @@ reference interpreter at every optimization level.
     written in Strata and injected only when a program formats a float.
 - `src/compiler/opt/optimize.ts` — pass pipeline: copy-propagation, **SCCP** (sparse
   conditional constant propagation), **auto-vectorization** (counted array loops → 4-wide
-  `v128` SIMD, see `opt/vectorize.ts`), **devirtualization**, **full loop unrolling**,
+  `v128` SIMD, see `opt/vectorize.ts`), **loop unswitching** (a loop-invariant branch hoisted
+  above the loop → two branch-free clones, see `opt/unswitch.ts`), **devirtualization**,
+  **full loop unrolling**,
   **if-conversion** (control-flow diamond → branchless `select`), **strength reduction**,
   **SROA** (escape analysis + scalar replacement of aggregates), **memory optimization**,
   **reassociation** (canonicalize integer affine trees → `Σ cᵢ·xᵢ + K`, and bitwise monoids),
@@ -44,6 +46,17 @@ reference interpreter at every optimization level.
   body clones with SSA threaded across iterations. Sound by precondition (single latch,
   two-pred header, single exit, header-phi-only live-outs, innermost, growth-bounded) — it
   declines whenever uncertain, so the differential oracle proves it never changes behaviour.
+- `src/compiler/opt/unswitch.ts` — **loop unswitching** at -O2+: when a loop body contains a
+  branch on a **loop-invariant** condition `C` (a runtime flag whose single SSA definition lies
+  outside the loop, so it never changes across iterations), the test is hoisted *above* the loop
+  and the loop is cloned into two versions — one with every `if (C)` collapsed to its then-arm,
+  one to its else-arm — so the per-iteration branch (and, after the following DCE/CFG-simplify,
+  the dead arm of each) vanishes. A LICM pass runs first to lift the invariant condition (the
+  `a > b` an in-loop `if` lowers to) into the preheader so unswitching can see it. Sound by the
+  same structured-loop precondition the unroller uses (single preheader, the header conditional
+  is the loop's one exit) — which makes the exit SSA repair exact (every escaping value is a
+  header def, merged back at the single exit with a fresh φ) — and it declines whenever a
+  precondition is unmet, so the three-engine oracle proves it never changes behaviour.
 - `src/compiler/opt/partial-unroll.ts` — **partial loop unrolling** (unroll-by-K + remainder)
   at -O2+, for the runtime- and large-trip loops full unrolling declines: it prepends a
   **strided main loop** running `K` body copies per back edge — guarded by an exact,
@@ -414,6 +427,79 @@ yet stored in arrays/structs/globals — extract their lanes for that.)
       -O0…-O3 **and** an offline fuzz of **≈33,000 random affine + bitwise programs**
       (i32+i64, reassociation firing on ~80%, zero mismatches). **948 → 1024
       differential checks.** See the 2026-06-22 plan.
+
+## 2026-06-23 — plan + shipped: loop unswitching — hoist a loop-invariant branch out of a loop (claude / claude-opus-4-8)
+
+Strata had every *intra-loop* trick — LICM, full + partial unrolling, OSR, auto-vectorization —
+but not the loop optimization that attacks **control flow**: **loop unswitching**. When a loop's
+body branches on a value that is the same on every iteration (a runtime flag passed in, or computed
+before the loop), the branch is re-decided every trip for nothing. Unswitching turns the loop
+inside-out: it lifts the test *above* the loop and specializes the loop into two branch-free
+clones, one per outcome — `for { if (C) A else B }` becomes `if (C) { for { A } } else { for { B } }`.
+That is a genuine win the existing passes could not get: LICM can hoist the *condition* but not the
+*branch*; if-conversion only flattens a diamond into a `select` (still evaluated every iteration);
+unrolling needs a constant trip count. Unswitching is the missing one, and it composes with all of
+them (the two clean clones then unroll / stride / vectorize).
+
+The headline: a runtime-flagged loop's preheader now tests the flag **once** — `v20 = cmp.gt_s
+v10,0; condbr v20 ? loopᵀ : loopᶠ` — and each clone is a tight, branch-free loop (`s = s + i*2` on
+one side, `s = s - i` on the other), their results merged at the single exit by a fresh φ. Proven,
+as always, by the three-engine oracle (interpreter ≡ V8 wasm ≡ from-scratch VM).
+
+What shipped:
+
+- [x] **`src/compiler/opt/unswitch.ts`** — the pass. Discovers a natural loop in the structured
+      shape the unroller also requires (a single preheader, and a header conditional that is the
+      loop's **one** exit — every other body edge stays in the body), finds a non-header body block
+      ending in `condbr(C, …)` whose `C` is **loop-invariant** (its single SSA def is outside the
+      body, so by SSA it is constant across the loop), materializes a clean preheader (reusing the
+      project's `getPreheader`), and **clones the whole body twice** — fresh block + value ids,
+      operands/targets/φ-incomings remapped the unroller's way. In each clone *every* branch on `C`
+      (not just the one found) is specialized to the side it must take; the preheader is rewired to
+      `condbr(C, loopᵀ, loopᶠ)` (C is invariant ⇒ dominates the preheader ⇒ available there). The
+      **SSA repair at the single exit** is exact because the single-exit-from-header shape forces
+      every escaping value to be a header def: each exit-φ incoming from the old header is split to
+      arrive from both clone headers carrying that clone's copy, and any header value used *directly*
+      after the loop is merged by a fresh φ placed in the exit (which dominates all such uses).
+      Bounded (≤400 body insts, ≤8 clones/fn) and **declines whenever a precondition is unmet**, so
+      a bug can only miss an opportunity, never miscompile.
+- [x] **Wired into `opt/optimize.ts`** (-O2+), once, right after `vectorize`, preceded by a
+      `licm (pre-unswitch)` pass that hoists the invariant **condition** (the `a > b` an in-loop
+      `if` lowers to an `icmp` *inside* the loop) into the preheader — without it, the branch's
+      condition reads as loop-variant and unswitching would always decline. The two clones it
+      leaves then flow through the normal fixpoint rounds, where SCCP/DCE/CFG-simplify delete each
+      clone's now-dead arm.
+- [x] **`src/compiler/unswitchProbe.ts`** + **`tools/check-unswitch.mjs`** — an activity probe
+      (does the pass fire, and correctly *decline* on a variant branch or a flag mutated in-loop?)
+      and a **seeded differential fuzzer**: 240 random loops-with-invariant-branches (one/two flags,
+      nested loops, both header polarities), each compiled at -O0..-O3 and proven to print exactly
+      what the reference interpreter and the from-scratch VM print. The fuzzer derives its flags
+      from loops too long to unroll, so they stay genuine runtime invariants (a constant flag would
+      just be folded by SCCP, with no loop to clone).
+- [x] **Three regression programs** added to the differential battery (`tests.ts`):
+      `unswitch-basic`, `unswitch-two-flags` (two flags → up to four clones, countdown header),
+      `unswitch-nested` (the branch wraps a nested loop; a second *variant* branch is correctly
+      left intact). Plus UI copy in the Optimizer pass-list and the Verify note.
+
+Validated offline before shipping with the Vite-SSR headless harness: the **full battery is
+1068/1068 across -O0..-O3** (the curated examples + 229 adversarial programs, V8 ≡ interpreter ≡
+VM), and the new fuzzer is **960/960 differential checks over 240 random programs, with unswitching
+firing on all 480 of the -O2/-O3 compiles** (and the activity suite 10/10 — it fires on every
+invariant branch and declines on the two it must). A dumped example confirms the *win*: the
+per-iteration `if (flag)` is gone, replaced by one pre-loop test feeding two branch-free clones.
+Gate green: scope + conformance + lint + build all pass.
+
+### Backlog (loop unswitching)
+
+- [ ] **Trivial / non-trivial unswitching of a loop-invariant *exit* branch** (a `break` whose
+      condition is invariant) — peel it so the loop either runs or is skipped, the partial-unswitch
+      case the single-exit-from-header precondition currently declines.
+- [ ] **Unswitch on an invariant *switch*** once the language grows a multi-way `match` in loops
+      (clone per arm, not just two-way).
+- [ ] **Cost-guided ordering** — unswitch the *outermost* invariant branch first and cap total
+      growth across nested loops with a smarter budget than the flat ≤8 clones/fn.
+- [ ] **Partial unswitching** — when only *part* of a loop is guarded by the invariant test,
+      unswitch just that region rather than cloning the whole body.
 
 ## 2026-06-23 — plan + shipped: the auto-vectorizer — counted array loops → real `v128.load`/`v128.store` SIMD (claude / claude-opus-4-8)
 
