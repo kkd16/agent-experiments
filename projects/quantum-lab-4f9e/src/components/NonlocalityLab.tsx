@@ -6,6 +6,7 @@ import {
   CHSH_GAME_CLASSICAL, CHSH_GAME_QUANTUM,
   merminExpectations, ghzClassicalMax, ghzGameTable, ghzQuantumWin,
   magicSquareAlgebra, magicClassicalMax, magicQuantumWin, magicCellLabel, MAGIC_CLASSICAL,
+  merminTable,
 } from '../quantum/nonlocality';
 
 export default function NonlocalityLab() {
@@ -24,7 +25,81 @@ export default function NonlocalityLab() {
       <CHSHCard />
       <GHZCard />
       <MagicSquareCard />
+      <MerminCard />
     </div>
+  );
+}
+
+// ─────────────────────────────── Mermin–Klyshko ───────────────────────────────
+
+function MerminCard() {
+  const rows = useMemo(() => merminTable(10), []);
+  const maxRatio = rows[rows.length - 1].ratio;
+  return (
+    <Card title="Mermin–Klyshko — nonlocality that grows exponentially with size" accent="#f472b6">
+      <p style={{ color: '#475569', fontSize: 11, margin: '0 0 12px', lineHeight: 1.6 }}>
+        CHSH is the two-party case. Its n-party generalisation — the Mermin polynomial Mₙ, built by a
+        recursion <code style={{ color: '#67e8f9' }}>Mₙ = ½[Mₙ₋₁(Aₙ+Aₙ′) + M′ₙ₋₁(Aₙ−Aₙ′)]</code> — obeys{' '}
+        <b style={{ color: '#f59e0b' }}>|⟨Mₙ⟩| ≤ 1</b> in every local-hidden-variable theory, yet the
+        n-qubit GHZ state reaches <b style={{ color: '#34d399' }}>2^((n−1)/2)</b>. Unlike CHSH's fixed
+        2√2, the quantum-over-classical ratio <i>doubles every two parties</i> — macroscopic
+        entanglement is overwhelmingly non-classical.
+      </p>
+
+      <ViolationPlot rows={rows} />
+
+      <table style={{ borderCollapse: 'collapse', fontSize: 11, fontFamily: 'monospace', width: '100%', marginTop: 12 }}>
+        <thead>
+          <tr style={{ color: '#94a3b8' }}>
+            <th style={th}>parties n</th>
+            <th style={th}>LHV bound</th>
+            <th style={th}>quantum ⟨Mₙ⟩</th>
+            <th style={th}>violation</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row) => (
+            <tr key={row.n} style={{ color: '#cbd5e1', background: row.n % 2 ? 'rgba(2,6,23,0.4)' : 'transparent' }}>
+              <td style={td}>{row.n}</td>
+              <td style={{ ...td, color: '#f59e0b' }}>1</td>
+              <td style={{ ...td, color: '#34d399' }}>{row.quantum.toFixed(4)}</td>
+              <td style={{ ...td, color: '#f472b6', fontWeight: 700 }}>{row.ratio.toFixed(2)}×</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <p style={{ color: '#475569', fontSize: 10, margin: '10px 0 0', lineHeight: 1.5 }}>
+        The quantum values come straight from the engine (the Mermin operator on the GHZ state with the
+        optimal X–Y plane settings αⱼ = −(j−1)π/2n); the LHV bound 1 is brute-forced over all 2²ⁿ
+        deterministic ±1 assignments. At n = 10 the violation is already{' '}
+        <b style={{ color: '#f472b6' }}>{maxRatio.toFixed(1)}×</b> the classical limit.
+      </p>
+    </Card>
+  );
+}
+
+function ViolationPlot({ rows }: { rows: { n: number; quantum: number; ratio: number }[] }) {
+  const W = 800, H = 200, padL = 40, padR = 12, padT = 12, padB = 26;
+  const nMax = rows[rows.length - 1].n, yMax = rows[rows.length - 1].quantum * 1.08;
+  const xPix = (n: number) => padL + ((n - 2) / (nMax - 2)) * (W - padL - padR);
+  const yPix = (y: number) => padT + ((yMax - y) / yMax) * (H - padT - padB);
+  const qPath = rows.map((p, i) => `${i === 0 ? 'M' : 'L'}${xPix(p.n).toFixed(1)},${yPix(p.quantum).toFixed(1)}`).join(' ');
+  return (
+    <svg viewBox={`0 0 ${W} ${H}`} style={{ width: '100%', height: 'auto', background: 'rgba(2,6,23,0.5)', border: '1px solid #1e293b', borderRadius: 8 }}>
+      {/* classical bound line at y=1 */}
+      <line x1={padL} y1={yPix(1)} x2={W - padR} y2={yPix(1)} stroke="#f59e0b" strokeWidth={1.2} strokeDasharray="4 3" />
+      <text x={padL + 4} y={yPix(1) - 4} fontSize={10} fill="#f59e0b">classical bound = 1</text>
+      {/* quantum curve */}
+      <path d={qPath} fill="none" stroke="#34d399" strokeWidth={2} />
+      {rows.map((p) => (
+        <g key={p.n}>
+          <circle cx={xPix(p.n)} cy={yPix(p.quantum)} r={3.5} fill="#34d399" />
+          <text x={xPix(p.n)} y={H - 10} fontSize={9} fill="#475569" textAnchor="middle">{p.n}</text>
+        </g>
+      ))}
+      <text x={W / 2} y={H - 1} fontSize={9} fill="#64748b" textAnchor="middle">number of parties n</text>
+      <text x={padL + 4} y={padT + 10} fontSize={10} fill="#34d399">quantum ⟨Mₙ⟩ = 2^((n−1)/2)</text>
+    </svg>
   );
 }
 
