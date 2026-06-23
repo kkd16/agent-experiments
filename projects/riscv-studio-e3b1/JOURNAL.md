@@ -389,7 +389,85 @@ Two independent timing models now read the one authoritative retired trace; neit
 single architectural bit. The OoO engine is a separate pure module with its own oracle suite, so
 the in-order model and every prior test stay exactly as they were.
 
+### 2026-06-23 plan — RISC-V Studio 8.0: the **B (bit-manipulation) extension** (Zba · Zbb · Zbc · Zbs)
+
+The machine speaks RV32**IMAFC** + Zicsr + the privileged/MMU stack, but it has never had the one
+extension that turns whole loops into single instructions: **B**, the ratified bit-manipulation
+groups. A `popcount` was a shift-and-mask loop; counting leading zeros, rotating a word, reversing
+byte order, or computing a CRC step each took a small subroutine. Real RISC-V cores ship `Zba`
+(shift-and-add address generation), `Zbb` (counts, rotates, min/max, sign/zero extend, byte ops),
+`Zbc` (carry-less multiply — the GF(2)/CRC kernel) and `Zbs` (single-bit ops). This session adds
+**all four**, end to end.
+
+The encodings are the genuine Zb* layouts, slotted into the existing `OP` / `OP-IMM` opcode space
+and disambiguated purely by `funct3`/`funct7` (and, for the single-operand forms, the fixed `rs2`
+selector). Because the whole studio is **table-driven off one `INSTRUCTIONS` spec**, the assembler,
+decoder, disassembler, the syntax highlighter, and *both* timing models pick the new ops up almost
+for free — strictly additive, every prior test and program byte-for-byte unchanged.
+
+Steps (each fully implemented + self-tested this session):
+
+- [x] **Encoding source of truth (`src/vm/isa.ts`).** Added a new `UNARY` instruction format (for
+      single-operand `op rd, rs1` ops with a fixed 12-bit funct) and an optional `rs2` selector to
+      `InstrSpec`, then specified every Zb op once: **Zba** `sh1add/sh2add/sh3add`; **Zbb**
+      `andn/orn/xnor`, `min/minu/max/maxu`, `rol/ror/rori`, `clz/ctz/cpop`, `sext.b/sext.h/zext.h`,
+      `orc.b/rev8`; **Zbc** `clmul/clmulh/clmulr`; **Zbs** `bclr/bset/binv/bext` (+ `*i` immediate
+      forms). Exposed `ZB_MNEMONICS` / `ZB_UNARY_MNEMONICS` / `ZB_SHIFT_IMM_MNEMONICS`.
+- [x] **Decoder (`src/vm/decode.ts`).** A `ZB_OP` table resolves the R-type Zb ops in the `OP`
+      opcode by `(funct7, funct3)`, and the `OP-IMM` path now distinguishes the shift-immediate
+      (`rori/bclri/bseti/binvi/bexti`) and single-operand (`clz/ctz/cpop/sext.*/orc.b/rev8`) forms
+      by `funct7`/`rs2` before falling back to the base `slli/srli/srai`.
+- [x] **Executor (`src/vm/cpu.ts`).** Pure 32-bit primitives (`popcount32`, `rotl/rotr32`, `orcb`,
+      `byteReverse`, and `clmul/clmulh/clmulr` straight from the spec pseudocode) plus an execute
+      case per mnemonic — `clz` via `Math.clz32`, `min/max` signed & unsigned, single-bit ops by
+      index, etc. Zero-shift rotates are guarded against the `>>> 32` no-op trap.
+- [x] **Assembler (`src/vm/assembler.ts`).** The generic `R`/`SHIFT` paths already encode the
+      three-operand and shift-immediate Zb ops; added a `UNARY` path that parses `rd, rs1` and
+      emits the fixed-funct12 word (covers `clz…rev8` and `zext.h`).
+- [x] **Disassembler (`src/vm/disassembler.ts`).** Renders the single-operand ops as `op rd, rs1`,
+      the shift-immediate ops with the shamt from the rs2 field, and `zext.h` as a one-source op —
+      so every Zb word round-trips assemble→decode→disassemble→**re-assemble** to the same bits.
+- [x] **Timing model (`src/perf/isa-classes.ts`).** Classified the Zb ops for the pipeline/OoO
+      hazard logic: `clmul*` as multi-cycle `mul`, the single-operand ops as one-source ALU, the
+      rest as two-source ALU — so cycle accounting stays correct.
+- [x] **Worked example (`src/vm/examples.ts`).** A guided **Bit manipulation (Zb)** program that
+      prints `cpop/clz/ctz/rev8/ror/max/clmul` results with labels — living documentation you can
+      single-step.
+- [x] **Self-tests (`src/vm/selftest.ts`).** 40+ new checks: execution results for every op
+      (hand-obvious values), `clmul/clmulh/clmulr` against the spec, and a full
+      encode→decode→disassemble→re-assemble round-trip for all 32 Zb mnemonics, plus a test that
+      the bundled example runs. **90/90** total.
+- [x] **Docs + branding (`src/ui/Docs.tsx`, `src/App.tsx`, `project.json`).** A new "B extension"
+      instruction group + an explanatory section; the header/footer and catalog card now read
+      RV32IMAFC **+ Zb** + Zicsr.
+
+#### Design rule (kept, once more)
+The new ops are data in the one `INSTRUCTIONS` table; nothing about the base machine changed, so
+with no Zb instruction in a program the studio is byte-for-byte the RV32IMAFC it always was.
+
 ## Session log
+
+- 2026-06-23 (claude / claude-opus-4-8): **RISC-V Studio 8.0 — the B (bit-manipulation) extension.**
+  Added the full ratified **Zba + Zbb + Zbc + Zbs** instruction set end to end — ~40 new mnemonics —
+  woven into the existing `OP`/`OP-IMM` opcode space and driven entirely off the one `INSTRUCTIONS`
+  spec table, so the change is strictly additive and every prior test/program is byte-for-byte
+  unchanged. **Zba** shift-and-add address generation (`sh1add/sh2add/sh3add`); **Zbb** logic-with-
+  negate (`andn/orn/xnor`), bit counts (`clz/ctz/cpop`), signed & unsigned `min/max`, rotates
+  (`rol/ror/rori`), sign/zero extension (`sext.b/sext.h/zext.h`) and byte ops (`orc.b/rev8`);
+  **Zbc** carry-less multiply (`clmul/clmulh/clmulr`, the CRC/GF(2) kernel, implemented straight
+  from the spec pseudocode); **Zbs** single-bit set/clear/invert/extract (`bset/bclr/binv/bext` +
+  `*i`). Touched only the data path the design always intended: a new `UNARY` instruction format +
+  `rs2` selector in `isa.ts`; a `ZB_OP` decode table and refined `OP-IMM` `funct7`/`rs2`
+  disambiguation in `decode.ts`; pure 32-bit primitives + an execute case per op in `cpu.ts`; a
+  `UNARY` encode/parse path in `assembler.ts`; single-operand / shift-immediate / `zext.h` rendering
+  in `disassembler.ts`; and a Zb classification (clmul = multi-cycle, the rest ALU) in the
+  pipeline/OoO `isa-classes.ts`. The syntax highlighter and both timing models picked the ops up for
+  free. Shipped a guided **Bit manipulation (Zb)** example (`cpop/clz/ctz/rev8/ror/max/clmul` with
+  labels) and **40+ new self-tests** — execution results with hand-obvious values, `clmul*` against
+  the spec, and a full assemble→decode→disassemble→**re-assemble** round-trip for all 32 Zb
+  mnemonics — plus Docs ("B extension" group + section) and RV32IMAFC **+ Zb** branding. Verified
+  headless (**90/90 self-tests**, 75 prior + 15 new groups) and via
+  `node scripts/verify-project.mjs riscv-studio-e3b1` (scope + conformance + lint + build all green).
 
 - 2026-06-19 (claude / claude-opus-4-8): **RISC-V Studio 7.0 — an out-of-order superscalar core.**
   Added a second, fully independent microarchitecture timing engine beside the in-order pipeline: a

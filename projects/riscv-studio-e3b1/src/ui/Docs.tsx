@@ -66,6 +66,20 @@ const GROUPS: { title: string; items: InsDoc[] }[] = [
     ],
   },
   {
+    title: 'B extension — bit manipulation (Zba / Zbb / Zbc / Zbs)',
+    items: [
+      { m: 'sh1add / sh2add / sh3add', desc: 'Zba: rd = (rs1 << 1/2/3) + rs2 — scaled-index addressing' },
+      { m: 'andn / orn / xnor', desc: 'Zbb: rs1 op ~rs2 (and-not / or-not / xor-not)' },
+      { m: 'clz / ctz / cpop', desc: 'Zbb: count leading / trailing zeros, population count' },
+      { m: 'min / max / minu / maxu', desc: 'Zbb: integer minimum / maximum, signed & unsigned' },
+      { m: 'sext.b / sext.h / zext.h', desc: 'Zbb: sign- / zero-extend a byte or half-word' },
+      { m: 'rol / ror / rori', desc: 'Zbb: rotate left / right (register or immediate amount)' },
+      { m: 'orc.b / rev8', desc: 'Zbb: byte OR-combine (0x00→0x00, else 0xFF) / byte-order reverse' },
+      { m: 'clmul / clmulh / clmulr', desc: 'Zbc: carry-less (XOR) multiply — low / high / reversed word' },
+      { m: 'bset / bclr / binv / bext (+ i)', desc: 'Zbs: set / clear / invert / extract a single bit (rs2 or imm index)' },
+    ],
+  },
+  {
     title: 'F extension — single-precision float (RV32F)',
     items: [
       { m: 'flw / fsw', desc: 'load / store a 32-bit float  —  flw fd, off(rs1)' },
@@ -177,20 +191,37 @@ export default function Docs() {
   return (
     <div className="panel docs">
       <div className="panel-head">
-        <h2>RV32IMAFC + Zicsr reference</h2>
+        <h2>RV32IMAFC + Zicsr + Zb reference</h2>
       </div>
       <div className="docs-scroll">
         <p className="docs-intro">
           This studio implements the <strong>RV32I</strong> base integer ISA plus the{' '}
           <strong>M</strong> (multiply/divide), <strong>A</strong> (atomics),{' '}
-          <strong>F</strong> (single-precision float) and <strong>C</strong> (compressed 16-bit)
-          extensions, together with <strong>Zicsr</strong>, the hardware counters, and a
-          machine-mode <strong>trap &amp; interrupt</strong> architecture — every instruction below
-          executes on the built-in interpreter. Float ops take an optional rounding-mode operand
+          <strong>F</strong> (single-precision float), <strong>C</strong> (compressed 16-bit) and{' '}
+          <strong>B</strong> (bit manipulation: <code>Zba/Zbb/Zbc/Zbs</code>) extensions, together
+          with <strong>Zicsr</strong>, the hardware counters, and a machine-mode{' '}
+          <strong>trap &amp; interrupt</strong> architecture — every instruction below executes on
+          the built-in interpreter. Float ops take an optional rounding-mode operand
           (<code>rne·rtz·rdn·rup·rmm·dyn</code>); the debugger can also <strong>step backward</strong>{' '}
           to undo instructions one at a time. The assembler accepts the full pseudo-instruction
           set and common GNU/RARS directives.
         </p>
+        <section>
+          <h3>The B (bit-manipulation) extension</h3>
+          <p className="docs-intro">
+            The ratified <code>Zba/Zbb/Zbc/Zbs</code> groups give hardware to operations that
+            otherwise cost a loop or a long instruction sequence: <strong>Zba</strong> folds an
+            index shift into an add (<code>sh1add/sh2add/sh3add</code>) for array addressing;{' '}
+            <strong>Zbb</strong> adds bit counting (<code>clz/ctz/cpop</code>), rotates, min/max,
+            sign/zero extension, and the byte ops <code>orc.b</code>/<code>rev8</code>;{' '}
+            <strong>Zbc</strong> adds carry-less multiply (<code>clmul</code> — the kernel of CRCs
+            and GF(2) arithmetic); and <strong>Zbs</strong> sets, clears, inverts or extracts a
+            single bit by index. They slot into the existing <code>OP</code>/<code>OP-IMM</code>{' '}
+            opcode space, so the assembler, decoder, disassembler and the pipeline/cache timing
+            model all understand them with no special casing. Try the{' '}
+            <strong>Bit manipulation (Zb)</strong> example.
+          </p>
+        </section>
         <section>
           <h3>The C (compressed) extension</h3>
           <p className="docs-intro">

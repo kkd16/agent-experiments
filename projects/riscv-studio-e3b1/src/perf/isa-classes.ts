@@ -151,6 +151,45 @@ export function classify(
     case 'remu':
       return base('div', [x(rs1), x(rs2)], x(rd));
 
+    // ---- Zb (bit manipulation) ----
+    // Carry-less multiply is a multi-cycle EX op (it shares the multiplier port); the rest are
+    // single-cycle ALU ops. The single-operand forms read only rs1.
+    case 'clmul':
+    case 'clmulh':
+    case 'clmulr':
+      return base('mul', [x(rs1), x(rs2)], x(rd));
+    case 'sh1add':
+    case 'sh2add':
+    case 'sh3add':
+    case 'andn':
+    case 'orn':
+    case 'xnor':
+    case 'min':
+    case 'minu':
+    case 'max':
+    case 'maxu':
+    case 'rol':
+    case 'ror':
+    case 'bclr':
+    case 'bset':
+    case 'binv':
+    case 'bext':
+      return base('alu', [x(rs1), x(rs2)], x(rd));
+    case 'clz':
+    case 'ctz':
+    case 'cpop':
+    case 'sext.b':
+    case 'sext.h':
+    case 'zext.h':
+    case 'orc.b':
+    case 'rev8':
+    case 'rori':
+    case 'bclri':
+    case 'bseti':
+    case 'binvi':
+    case 'bexti':
+      return base('alu', [x(rs1)], x(rd));
+
     // ---- A extension (treated as a load (lr) or store (sc / amo) for the cache) ----
     case 'lr.w':
       return base('load', [x(rs1)], x(rd));
