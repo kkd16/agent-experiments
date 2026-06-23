@@ -373,6 +373,42 @@ export function About({ onClose }: Props) {
           directly visible.
         </p>
 
+        <h2>The Three-Body Atlas: the Agekyan–Anosova map</h2>
+        <p>
+          The Resonance Atlas maps the <em>restricted</em> problem — a massless test particle in a
+          fixed binary's field. The <strong>Three-Body Atlas</strong> maps the <em>full</em>,
+          unrestricted three-body problem, the original home of deterministic chaos. Three{' '}
+          <strong>equal masses are released from rest</strong> from a triangle, and gravity does the
+          rest: a chaotic sequence of close passages — the <em>interplay</em> — that almost always
+          ends the same way, with one body <strong>ejected</strong> and the other two left as a bound
+          binary. Which body escapes, and how long the dance lasts, depends so sensitively on the
+          starting triangle that a map of the outcome is a <strong>fractal</strong>.
+        </p>
+        <p>
+          Each pixel is one release configuration: <code>m₁, m₂</code> pinned at{' '}
+          <code>(∓½, 0)</code> and the third body placed across the canonical{' '}
+          <strong>region D</strong> (Agekyan &amp; Anosova 1968) — the patch of the plane that
+          represents every distinct free-fall triangle up to symmetry and scale. Behind every pixel
+          the full problem is integrated by a <strong>4th-order Hermite predictor–corrector</strong>{' '}
+          (Makino–Aarseth) that uses the analytic <em>jerk</em> (<code>da/dt</code>) and the standard
+          adaptive timestep — the gold-standard small-N scheme, conserving energy through a violent
+          scattering to a part in <code>10³–10⁴</code>. Colour the map by <strong>lifetime</strong>{' '}
+          (the fractal escape-time portrait), by <strong>escaper</strong> (three interleaved basins),
+          by the surviving <strong>binary's size</strong>, or by the <strong>interplay count</strong>.
+          The bright islands are <em>long-lived</em> resonant triples — the algebraic tail of the
+          three-body lifetime distribution.
+        </p>
+        <p>
+          Because the system starts at rest its total <strong>angular momentum is exactly zero</strong>{' '}
+          and its centre of mass is fixed — exact invariants the self-test verifies, alongside two
+          beautiful special triangles: an <strong>isosceles</strong> release stays mirror-symmetric to
+          machine precision forever, and a perfect <strong>equilateral</strong> release collapses{' '}
+          <em>homothetically</em>, staying equilateral all the way down (the Lagrange central
+          configuration). Click any pixel to replay <em>the dance behind it</em> — the actual
+          trajectory and the pairwise-distance history — or send it straight into the live studio with{' '}
+          <strong>Launch in Studio</strong> and watch it scatter full-screen.
+        </p>
+
         <h2>Run the numbers yourself</h2>
         <p>
           None of the above is taken on faith. The button below runs a battery of numerical checks in

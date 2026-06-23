@@ -1021,3 +1021,66 @@ select {
 .atlas-readout {
   margin-top: 8px;
 }
+
+/* ---------- three-body atlas (Agekyan–Anosova map) ---------- */
+.anosova-hover {
+  font-size: 10.5px;
+  font-family: var(--mono);
+  color: var(--muted);
+  margin: 2px 0 0;
+}
+.anosova-census {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  margin-top: 4px;
+}
+.anosova-bar {
+  display: flex;
+  width: 100%;
+  height: 8px;
+  border-radius: 4px;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.05);
+}
+.anosova-bar > span {
+  height: 100%;
+}
+.anosova-named {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px;
+  margin-top: 2px;
+}
+.anosova-named-label {
+  font-size: 10px;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: var(--muted-2);
+  width: 100%;
+}
+.anosova-chip {
+  font-size: 10.5px;
+  font-family: var(--mono);
+  padding: 3px 8px;
+  border-radius: 12px;
+  border: 1px solid var(--line-2);
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--text);
+  cursor: pointer;
+  transition: background 0.12s, border-color 0.12s;
+}
+.anosova-chip:hover {
+  background: rgba(120, 178, 255, 0.12);
+  border-color: var(--accent);
+}
+.anosova-inspect-head {
+  font-size: 11.5px;
+  color: var(--text);
+}
+.anosova-readout {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px 10px;
+}

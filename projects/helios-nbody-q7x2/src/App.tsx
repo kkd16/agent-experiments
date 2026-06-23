@@ -15,6 +15,7 @@ import { naff, frequencyDiffusion } from './sim/naff'
 import type { FreqDiffusion, NaffResult } from './sim/naff'
 import { poincareSection, POINCARE_BODY_LIMIT } from './sim/poincare'
 import type { PoincareResult } from './sim/poincare'
+import { anosovaState } from './sim/threebody'
 import { SPECTRAL_BODY_LIMIT } from './components/SpectralPanel'
 import { Ring } from './util/ring'
 import { Sidebar } from './components/Sidebar'
@@ -662,6 +663,45 @@ export default function App() {
     applyParams(loadScenario(presetId, count, seed))
   }
 
+  // Launch a Three-Body Atlas release configuration into the live engine: three
+  // equal masses at rest, scaled up to the renderer's world units (the same scale
+  // the figure-eight preset uses) so the free-fall scattering plays out full-screen.
+  const handleLaunchThreeBody = useCallback((x3: number, y3: number) => {
+    const sim = simRef.current!
+    const L = 150 // world length scale
+    const Mb = 300 // mass per body
+    const s = anosovaState(x3, y3)
+    const posX = new Float64Array(3)
+    const posY = new Float64Array(3)
+    const velX = new Float64Array(3)
+    const velY = new Float64Array(3)
+    const mass = new Float64Array(3)
+    for (let i = 0; i < 3; i++) {
+      posX[i] = s.x[i] * L
+      posY[i] = s.y[i] * L
+      velX[i] = 0
+      velY[i] = 0
+      mass[i] = Mb
+    }
+    sim.setBodies(3, posX, posY, velX, velY, mass)
+    fitExtentRef.current = L * 1.8
+    cameraRef.current.centerX = 0
+    cameraRef.current.centerY = 0
+    cameraRef.current.fitExtent(L * 1.8)
+    energyRing.current.clear()
+    momentumRing.current.clear()
+    trajRef.current = null
+    lastMergeRef.current = 0
+    setSelectedIndex(-1)
+    setChaosResult(null)
+    setSpectralResult(null)
+    setSpectralDiffusion(null)
+    setPoincareResult(null)
+    setCount(3)
+    setParams((prev) => ({ ...prev, g: 1, dt: 0.2, softening: 1.0, theta: 0.2, integrator: 'yoshida6', gr: false }))
+    setRunning(true)
+  }, [])
+
   return (
     <div className="app">
       <header className="topbar">
@@ -755,6 +795,7 @@ export default function App() {
           poincareTargetLabel={
             selectedIndex >= 0 ? `#${selectedIndex} (selected)` : 'auto — lightest particle'
           }
+          onLaunchThreeBody={handleLaunchThreeBody}
         />
 
         <main className="stage" ref={containerRef}>
