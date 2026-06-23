@@ -7,7 +7,7 @@
 import { Tensor } from './tensor';
 import { dropout, layerNorm, batchNorm, makeBatchNormState, embedding, concatCols, gatherCols } from './ops';
 import { conv2d, maxPool2d, avgPool2d } from './conv';
-import { maskedCrossEntropy, bceWithLogits, mse } from './losses';
+import { softmaxCrossEntropy, maskedCrossEntropy, bceWithLogits, mse } from './losses';
 import { GPT } from './transformer';
 import { VAE, klDivStandardNormal } from './vae';
 import { Agent, gaussianLogProb, gaussianEntropy, categoricalLogProb, categoricalEntropy } from './policy';
@@ -22,6 +22,7 @@ import {
 } from './diffusion';
 import { RealNVP } from './flows';
 import { GNN, buildAdj, type ConvKind } from './gnn';
+import { KAN, KANLayer, makeGrid, evalSplineBasis } from './kan';
 
 export interface OpCheck {
   name: string;
@@ -612,6 +613,78 @@ export function runSelfTest(seed = 7): SelfTestReport {
       const model = mk(conv, heads);
       ops.push(checkOp(name, model.parameters(), () => maskedCrossEntropy(model.forward(X), labels, keep).loss, rng));
     }
+  }
+
+  // ---- Kolmogorov–Arnold Network (B-spline edges) -----------------------------------
+  //
+  // One fused KAN layer, gradchecked through ALL of its parameters AND its input: the SiLU base
+  // weights, every spline coefficient, the bias, and x itself (the chain rule through the B-spline
+  // derivative B'(x) — the part that lets KAN layers stack). x is a real (requiresGrad) input here
+  // so the dx backward is exercised exactly like every other tensor's.
+  {
+    const inF = 3;
+    const outF = 2;
+    const grid = makeGrid(5, 3, -1.2, 1.2);
+    const layer = new KANLayer(inF, outF, grid, rngFrom(61), 0.6);
+    const x = leaf(rng, 4, inF); // values in [-1,1], inside the grid
+    ops.push(checkOp('kan-layer (x+params)', [x, ...layer.parameters()], () => layer.forward(x), rng));
+  }
+
+  // End-to-end: a whole KAN — two B-spline layers — gradchecked through the classification
+  // cross-entropy, proving the stacked layers differentiate correctly through one another.
+  {
+    const kan = new KAN({ inDim: 2, hidden: [3], outDim: 3, gridSize: 5, degree: 3, domain: 1.2 }, rngFrom(67));
+    const B = 5;
+    const xd = new Float64Array(B * 2);
+    for (let i = 0; i < xd.length; i++) xd[i] = rng() * 1.6 - 0.8;
+    const x = Tensor.fromFlat(xd, B, 2, false);
+    const targets = Int32Array.from([0, 2, 1, 2, 0]);
+    ops.push(checkOp('kan-classify (e2e)', kan.parameters(), () => softmaxCrossEntropy(kan.forward(x), targets).loss, rng));
+  }
+
+  // End-to-end regression KAN through MSE (the 1-D function-fitting head).
+  {
+    const kan = new KAN({ inDim: 1, hidden: [4], outDim: 1, gridSize: 6, degree: 3, domain: 1 }, rngFrom(71));
+    const B = 5;
+    const xd = new Float64Array(B);
+    for (let i = 0; i < B; i++) xd[i] = rng() * 1.6 - 0.8;
+    const x = Tensor.fromFlat(xd, B, 1, false);
+    const td = new Float64Array(B);
+    for (let i = 0; i < B; i++) td[i] = rng() * 2 - 1;
+    const target = Tensor.fromFlat(td, B, 1, false);
+    ops.push(checkOp('kan-regress (e2e)', kan.parameters(), () => mse(kan.forward(x), target), rng));
+  }
+
+  // B-spline partition of unity: at any interior point the basis values sum to 1 — the property
+  // that makes the spline a true convex blend of its control points.
+  {
+    const grid = makeGrid(6, 3, -1, 1);
+    const val = new Float64Array(grid.numBasis);
+    const der = new Float64Array(grid.numBasis);
+    const pairs: [number, number][] = [];
+    for (const x of [-0.73, -0.21, 0.05, 0.4, 0.88]) {
+      evalSplineBasis(grid, x, val, der);
+      let s = 0;
+      for (let k = 0; k < grid.numBasis; k++) s += val[k];
+      pairs.push([s, 1]);
+    }
+    ops.push(relCheck('kan-spline-partition', pairs));
+  }
+
+  // Grid refit preservation: re-solving the spline coefficients onto a finer grid (G → 2G) keeps
+  // the learned function nearly unchanged — the "grid extension" property that lets a trained KAN
+  // be refined without forgetting. We compare φ before/after the refit at interior sample points.
+  {
+    const inF = 1;
+    const outF = 1;
+    const layer = new KANLayer(inF, outF, makeGrid(5, 3, -1, 1), rngFrom(83), 1.0);
+    const before = layer.edgeCurve(0, 0, 40);
+    layer.refitToGrid(makeGrid(10, 3, -1, 1));
+    const after = layer.edgeCurve(0, 0, 40);
+    const pairs: [number, number][] = [];
+    // skip the very edges where the open knot vector has the most freedom
+    for (let s = 4; s < 36; s++) pairs.push([after.ys[s], before.ys[s]]);
+    ops.push(relCheck('kan-grid-refit', pairs));
   }
 
   const maxRelError = ops.reduce((m, o) => Math.max(m, o.maxRelError), 0);
