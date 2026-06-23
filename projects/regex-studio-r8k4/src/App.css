@@ -3469,3 +3469,149 @@
   font-size: 13px;
   color: var(--muted);
 }
+
+/* coalgebra trace step-through */
+.coalg-trace {
+  margin: 8px 0;
+}
+.coalg-tk {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 3px;
+  vertical-align: -1px;
+  margin: 0 1px;
+}
+.coalg-tk.exp {
+  background: var(--coalg);
+}
+.coalg-tk.dis {
+  background: var(--warn);
+}
+.coalg-tk.spl {
+  background: var(--bad);
+}
+.coalg-ticks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  border: 1px solid var(--border-soft);
+  background: var(--panel);
+  margin-bottom: 8px;
+}
+.coalg-ticks .coalg-tk {
+  width: 14px;
+  height: 18px;
+  margin: 0;
+  border: none;
+  cursor: pointer;
+  opacity: 0.32;
+  transition: opacity 0.12s, transform 0.12s;
+  padding: 0;
+}
+.coalg-ticks .coalg-tk.done {
+  opacity: 1;
+}
+.coalg-ticks .coalg-tk.cur {
+  transform: scaleY(1.25);
+  outline: 2px solid var(--text);
+  outline-offset: 1px;
+}
+.coalg-trace-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+.coalg-step-btn {
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  color: var(--text);
+  font-size: 12.5px;
+  padding: 4px 10px;
+  cursor: pointer;
+}
+.coalg-step-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.coalg-trace-range {
+  flex: 1;
+  accent-color: var(--coalg);
+}
+.coalg-trace-count {
+  font-size: 12px;
+  color: var(--muted);
+  font-family: var(--mono);
+  white-space: nowrap;
+}
+.coalg-step-card {
+  padding: 12px 14px;
+  border-radius: 10px;
+  border: 1px solid var(--border-soft);
+  background: var(--panel);
+  border-left: 3px solid var(--coalg);
+}
+.coalg-step-card.dis {
+  border-left-color: var(--warn);
+}
+.coalg-step-card.spl {
+  border-left-color: var(--bad);
+}
+.coalg-step-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.coalg-step-tag {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 2px 8px;
+  border-radius: 6px;
+  color: #04121c;
+  background: var(--coalg);
+}
+.coalg-step-tag.dis {
+  background: var(--warn);
+}
+.coalg-step-tag.spl {
+  background: var(--bad);
+  color: #fff;
+}
+.coalg-step-word code {
+  color: var(--accent);
+}
+.coalg-step-tally {
+  margin-left: auto;
+  font-size: 12px;
+  color: var(--muted);
+  font-family: var(--mono);
+}
+.coalg-step-pair {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+  font-size: 13.5px;
+  margin-top: 4px;
+}
+.coalg-step-pair code {
+  color: var(--coalg);
+  font-size: 13px;
+}
+.coalg-step-pair em {
+  color: var(--muted-2);
+  font-style: normal;
+  font-size: 12px;
+}
+.coalg-step-rel {
+  font-family: var(--mono);
+  font-size: 17px;
+  color: var(--muted);
+}
