@@ -12,6 +12,7 @@ import { Debugger } from './components/Debugger';
 import { MatchPanel } from './components/MatchPanel';
 import { LanguagePanel } from './components/LanguagePanel';
 import { ComparePanel } from './components/ComparePanel';
+import { CoalgebraPanel } from './components/CoalgebraPanel';
 import { SynthesizePanel } from './components/SynthesizePanel';
 import { ExplainPanel } from './components/ExplainPanel';
 import { RedosPanel } from './components/RedosPanel';
@@ -43,6 +44,7 @@ type Tab =
   | 'monoid'
   | 'learn'
   | 'compare'
+  | 'coalgebra'
   | 'synth'
   | 'explain'
   | 'redos'
@@ -73,6 +75,7 @@ const TAB_GROUPS: { group: string; tabs: { id: Tab; label: string }[] }[] = [
       { id: 'monoid', label: 'Algebra' },
       { id: 'learn', label: 'Learn' },
       { id: 'compare', label: 'Compare' },
+      { id: 'coalgebra', label: 'Coalgebra' },
       { id: 'synth', label: 'DFA→regex' },
       { id: 'explain', label: 'Explain' },
       { id: 'redos', label: 'ReDoS' },
@@ -174,7 +177,7 @@ export default function App() {
           <span className="logo">/<span className="logo-star">∗</span>/</span>
           <div>
             <h1>Regex Studio</h1>
-            <p>A regular-expression engine built from scratch — parse, compile four ways, minimise, run six engines, extend to the Boolean closure (&amp; ~ −), read the language's <strong>syntactic monoid</strong> (the variety ladder: piecewise-testable · DA/FO² · star-free? · the named group · the egg-box), speak <strong>Unicode</strong> via <code>\p{'{'}…{'}'}</code> derived live from the host, <strong>learn the minimal DFA back from queries</strong> (Angluin's L* · RPNI), <strong>count the language</strong> (the rational generating function · growth rate · entropy), fuzz, compare and synthesise.</p>
+            <p>A regular-expression engine built from scratch — parse, compile four ways, minimise, run six engines, extend to the Boolean closure (&amp; ~ −), read the language's <strong>syntactic monoid</strong> (the variety ladder: piecewise-testable · DA/FO² · star-free? · the named group · the egg-box), speak <strong>Unicode</strong> via <code>\p{'{'}…{'}'}</code> derived live from the host, <strong>learn the minimal DFA back from queries</strong> (Angluin's L* · RPNI), <strong>count the language</strong> (the rational generating function · growth rate · entropy), decide equivalence &amp; inclusion <strong>without determinising</strong> (bisimulation up to congruence · antichains), fuzz, compare and synthesise.</p>
           </div>
         </div>
         <a className="repo-link" href="https://en.wikipedia.org/wiki/Thompson%27s_construction" target="_blank" rel="noreferrer">
@@ -355,6 +358,19 @@ export default function App() {
               <ComparePanel dfaA={compiled.minDfa} noticeA={automataNotice} other={comparePattern} onOtherChange={setComparePattern} />
             )}
 
+            {tab === 'coalgebra' && (
+              <CoalgebraPanel
+                patternA={pattern}
+                other={comparePattern}
+                onOtherChange={setComparePattern}
+                onUsePair={(a, b) => {
+                  setPattern(a);
+                  setComparePattern(b);
+                }}
+                noticeA={automataNotice}
+              />
+            )}
+
             {tab === 'synth' && <SynthesizePanel dfa={compiled.minDfa} notice={automataNotice} />}
 
             {tab === 'explain' && <ExplainPanel ast={compiled.ast} features={compiled.features} />}
@@ -380,7 +396,9 @@ export default function App() {
         Parser · Thompson NFA · subset construction · Brzozowski derivatives · Antimirov partial derivatives (the
         equation automaton) · Glushkov's position automaton · <strong>Boolean derivatives — the intersection / complement / difference
         closure no NFA can build</strong> · Moore & Hopcroft minimisation (cross-checked) · six matching engines (DFA · derivative DFA · partial-derivative NFA ·
-        position automaton · Pike VM · backtracking VM) cross-checked by a seeded differential fuzzer · product-automaton equivalence & ReDoS
+        position automaton · Pike VM · backtracking VM) cross-checked by a seeded differential fuzzer · product-automaton equivalence — plus the modern road that skips
+        determinisation: <strong>bisimulation up to congruence</strong> (Bonchi–Pous, the naïve / up-to-equivalence / up-to-congruence ladder) and
+        <strong>antichain</strong> inclusion &amp; universality (De Wulf et al.), every verdict cross-checked against the DFA product · ReDoS
         analysis · state-elimination synthesis · the <strong>syntactic monoid</strong> with Green's relations (the egg-box) and the full <strong>variety ladder</strong> — piecewise-testable (Simon) ⊂ DA / FO²[&lt;] ⊂ star-free / FO[&lt;] / counter-free (Schützenberger) — with the syntactic <strong>group named</strong> (ℤ/n, Klein four, Dₙ, Q₈…) and every element wired back to the state-map it induces · <strong>grammatical inference</strong> — Angluin's <strong>L*</strong> reconstructs the minimal DFA from membership &amp; equivalence queries (the observation table, Myhill–Nerode made tangible) and <strong>RPNI</strong> infers it passively from labelled data · <strong>enumerative census</strong> — the rational generating function S(x)=P(x)/Q(x) (Chomsky–Schützenberger) from the transfer matrix, exact word counts, and the growth rate λ (Perron root) with topological entropy ln λ, classifying the language finite / polynomial / exponential · DOT/SVG export — all hand-written TypeScript, no regex library.
       </footer>
     </div>
