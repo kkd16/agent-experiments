@@ -14,6 +14,7 @@ import { integrate } from '../engine/integrator'
 import type { GBuffer, RayStats } from '../engine/integrator'
 import { MltState, DEFAULT_MLT } from '../engine/pssmlt'
 import { SppmState, DEFAULT_SPPM } from '../engine/sppm'
+import { Guide } from '../engine/guiding'
 import { tonemapToBytes, noiseToBytes } from '../engine/tonemap'
 import { denoise } from '../engine/denoise'
 import type { DenoiseParams } from '../engine/denoise'
@@ -68,7 +69,7 @@ export interface RenderStats {
   noise: number // mean relative error across the image (0 = converged)
   converged: number // fraction of bands that hit the adaptive threshold
   done: boolean
-  integrator: 'pt' | 'bdpt' | 'pssmlt' | 'sppm'
+  integrator: 'pt' | 'bdpt' | 'pssmlt' | 'sppm' | 'guided'
 }
 
 const GBUFFER_PASSES = 16 // accumulate denoise guides over the first N samples
@@ -120,6 +121,7 @@ export class Renderer {
   private stRng = new Rng(1)
   private stRow = 0
   private stSample = 0
+  private stGuide: Guide | null = null // path-guiding SD-tree (single-thread)
 
   // Full-frame estimator mode (PSSMLT / SPPM): each worker reports a full-frame
   // estimate; we hold the latest from each and display their progress-weighted
@@ -243,6 +245,7 @@ export class Renderer {
     this.mltMpp = []
     this.mltB = []
     this.stFrame = null
+    this.stGuide = null
   }
 
   // ---- worker pool -----------------------------------------------------------
@@ -331,6 +334,7 @@ export class Renderer {
     this.stScene = new Scene(this.sceneDef)
     this.stCamera = new Camera(this.sceneDef.camera, this.width / this.height)
     this.stRng = new Rng((Math.random() * 0xffffffff) >>> 0, 1)
+    this.stGuide = this.settings.integrator === 'guided' ? new Guide(this.stScene.bounds) : null
     this.bandSamples = [0]
     this.bandConverged = [false]
     this.bands = [{ start: 0, end: this.height }]
@@ -505,7 +509,7 @@ export class Renderer {
         const u = (x + pj.x) / this.width
         const vScreen = 1 - (y + pj.y) / this.height
         const ray = camera.generateRay(u, vScreen, this.stRng, lens)
-        const L = integrate(scene, ray, this.settings, this.stRng, stats, gbuf)
+        const L = integrate(scene, ray, this.settings, this.stRng, stats, gbuf, this.stGuide ?? undefined)
         const idx = (base + x) * 3
         this.accum[idx] += L.x
         this.accum[idx + 1] += L.y
@@ -527,6 +531,8 @@ export class Renderer {
         this.stRow = 0
         this.stSample++
         this.bandSamples[0] = this.stSample
+        // Close a path-guiding iteration at each power-of-two sample count.
+        if (this.stGuide && isPow2(this.stSample)) this.stGuide.endIteration()
         if (this.stSample >= this.targetSpp) break
         if (
           this.adaptive.enabled &&
@@ -786,4 +792,9 @@ function sliceBands(height: number, count: number): { start: number; end: number
 
 function now(): number {
   return typeof performance !== 'undefined' ? performance.now() : Date.now()
+}
+
+// Path-guiding iteration boundaries fall at powers of two (1,2,4,8,…).
+function isPow2(n: number): boolean {
+  return n >= 1 && (n & (n - 1)) === 0
 }

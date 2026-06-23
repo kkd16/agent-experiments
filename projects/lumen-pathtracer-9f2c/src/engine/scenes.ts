@@ -1500,6 +1500,108 @@ function jadeIdol(): SceneDef {
   }
 }
 
+// The Glowing Orb — a path-guiding showcase. The room's only light is a small,
+// bright *emissive sphere*. Lumen samples lights by next-event estimation only on
+// triangle emitters, so an emissive sphere is INVISIBLE to NEE: every photon the
+// camera sees must be found by a scattered ray that happens to strike the orb —
+// which cosine BSDF sampling does only ~0.5 % of the time, so the plain path
+// tracer is a storm of fireflies. The guided integrator learns, per region of the
+// room, the direction back to the orb and aims a share of its samples there
+// (hitting it ~9 % of the time after a few iterations), cutting the error
+// markedly. It is the textbook case where path guiding earns its keep — and it
+// still converges to the very same image (unbiased), only faster.
+function glowingOrb(): SceneDef {
+  const W = 10
+  const orbR = 0.55
+  const em = 60 / (orbR * orbR)
+  const materials: Material[] = [
+    { kind: 'diffuse', albedo: v(0.78, 0.77, 0.74) }, // 0 neutral shell
+    { kind: 'diffuse', albedo: v(0.62, 0.13, 0.12) }, // 1 red wall
+    { kind: 'diffuse', albedo: v(0.13, 0.33, 0.55) }, // 2 blue wall
+    { kind: 'emissive', emission: v(em, em * 0.86, em * 0.66) }, // 3 the orb (NEE-invisible)
+    { kind: 'metal', albedo: v(0.96, 0.95, 0.92), roughness: 0.16 }, // 4 glossy sphere
+    { kind: 'diffuse', albedo: v(0.82, 0.78, 0.55) }, // 5 pedestal
+  ]
+  const prims: PrimDef[] = []
+  prims.push(...quad(v(0, 0, 0), v(W, 0, 0), v(W, 0, W), v(0, 0, W), 0)) // floor
+  prims.push(...quad(v(0, W, 0), v(0, W, W), v(W, W, W), v(W, W, 0), 0)) // ceiling
+  prims.push(...quad(v(0, 0, W), v(W, 0, W), v(W, W, W), v(0, W, W), 0)) // back
+  prims.push(...quad(v(0, 0, 0), v(0, 0, W), v(0, W, W), v(0, W, 0), 1)) // left red
+  prims.push(...quad(v(W, 0, 0), v(W, W, 0), v(W, W, W), v(W, 0, W), 2)) // right blue
+  prims.push({ kind: 'sphere', center: v(5, 6.7, 5.6), radius: orbR, material: 3 }) // the orb
+  prims.push({ kind: 'sphere', center: v(6.7, 1.7, 3.0), radius: 1.7, material: 4 }) // glossy catcher
+  prims.push(...box(v(3.0, 1.05, 3.4), v(1.05, 1.05, 1.05), 0.4, 5)) // pedestal
+  return {
+    name: 'Glowing Orb',
+    materials,
+    prims,
+    camera: {
+      eye: v(5, 4.6, -6.8),
+      target: v(5, 3.6, 5),
+      up: v(0, 1, 0),
+      vfovDeg: 50,
+      aperture: 0,
+      focusDist: 11.5,
+    },
+    env: { kind: 'solid', color: v(0, 0, 0) },
+  }
+}
+
+// The Hidden Door — a two-chamber indirect-light scene (good for BDPT/guiding).
+// A wall with a single doorway separates the camera's room from a chamber holding
+// a bright down-facing strip light; everything the camera sees is light that has
+// streamed through the doorway and bounced around the near room.
+function hiddenDoor(): SceneDef {
+  const W = 10
+  const materials: Material[] = [
+    { kind: 'diffuse', albedo: v(0.76, 0.75, 0.72) }, // 0 neutral shell
+    { kind: 'diffuse', albedo: v(0.62, 0.13, 0.12) }, // 1 near-room red wall
+    { kind: 'diffuse', albedo: v(0.13, 0.33, 0.55) }, // 2 near-room blue wall
+    { kind: 'emissive', emission: v(48, 40, 28) }, // 3 hidden warm strip (far chamber)
+    { kind: 'diffuse', albedo: v(0.85, 0.62, 0.32) }, // 4 far-chamber warm wall (colour bleed)
+    { kind: 'metal', albedo: v(0.96, 0.95, 0.92), roughness: 0.14 }, // 5 glossy sphere
+    { kind: 'diffuse', albedo: v(0.82, 0.78, 0.55) }, // 6 pedestal
+  ]
+  const prims: PrimDef[] = []
+  // Shell (front, at z=0, is open toward the camera).
+  prims.push(...quad(v(0, 0, 0), v(W, 0, 0), v(W, 0, W), v(0, 0, W), 0)) // floor
+  prims.push(...quad(v(0, W, 0), v(0, W, W), v(W, W, W), v(W, W, 0), 0)) // ceiling
+  prims.push(...quad(v(0, 0, 0), v(0, 0, W), v(0, W, W), v(0, W, 0), 1)) // left red
+  prims.push(...quad(v(W, 0, 0), v(W, W, 0), v(W, W, W), v(W, 0, W), 2)) // right blue
+  prims.push(...quad(v(0, 0, W), v(4, 0, W), v(4, W, W), v(0, W, W), 4)) // far back (warm)
+  prims.push(...quad(v(4, 0, W), v(W, 0, W), v(W, W, W), v(4, W, W), 4)) // far back (warm)
+  // Dividing wall at z=Z, with a doorway hole (x∈[3.8,6.2], y∈[0,3.6]).
+  const Z = 5
+  const dx0 = 3.8,
+    dx1 = 6.2,
+    dy = 3.6
+  prims.push(...quad(v(0, 0, Z), v(dx0, 0, Z), v(dx0, W, Z), v(0, W, Z), 0)) // left of door
+  prims.push(...quad(v(dx1, 0, Z), v(W, 0, Z), v(W, W, Z), v(dx1, W, Z), 0)) // right of door
+  prims.push(...quad(v(dx0, dy, Z), v(dx1, dy, Z), v(dx1, W, Z), v(dx0, W, Z), 0)) // lintel above door
+  // The hidden emitter: a down-facing ceiling strip in the far chamber (z>Z),
+  // wound (like the Cornell light) so its geometric normal points −y, into the
+  // far room. Bright and fully occluded from the near room except via the door.
+  const ey = W - 0.02
+  prims.push(...quad(v(2.6, ey, 6.6), v(7.4, ey, 6.6), v(7.4, ey, 9.2), v(2.6, ey, 9.2), 3))
+  // Near-room objects to catch the soft, directional bounce light.
+  prims.push({ kind: 'sphere', center: v(6.6, 1.7, 2.3), radius: 1.7, material: 5 })
+  prims.push(...box(v(2.7, 1.15, 2.6), v(1.15, 1.15, 1.15), 0.4, 6))
+  return {
+    name: 'Hidden Door',
+    materials,
+    prims,
+    camera: {
+      eye: v(5, 4.6, -7.6),
+      target: v(5, 3.4, 5),
+      up: v(0, 1, 0),
+      vfovDeg: 48,
+      aperture: 0,
+      focusDist: 12.5,
+    },
+    env: { kind: 'solid', color: v(0, 0, 0) },
+  }
+}
+
 export interface ScenePreset {
   id: string
   label: string
@@ -1513,6 +1615,8 @@ export interface ScenePreset {
 export const SCENES: ScenePreset[] = [
   { id: 'cornell', label: 'Cornell Box', build: cornell },
   { id: 'cove', label: 'Cove (BDPT)', build: cove },
+  { id: 'glowing-orb', label: 'Glowing Orb (Guided)', build: glowingOrb },
+  { id: 'hidden-door', label: 'Hidden Door', build: hiddenDoor },
   { id: 'weekend', label: 'Weekend Daylight', build: weekend },
   { id: 'gallery', label: 'Material Gallery', build: gallery },
   { id: 'brushed', label: 'Brushed Metal', build: brushedMetal },

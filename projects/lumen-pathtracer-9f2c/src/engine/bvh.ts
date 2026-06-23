@@ -44,6 +44,12 @@ export class Bvh {
   readonly leafCount: number = 0
   readonly maxDepth: number = 0
 
+  // The root node's AABB = the bounds of the whole scene (used by path guiding to
+  // anchor its spatial tree, and by anyone needing the world extent).
+  get rootBounds(): Aabb {
+    return this.nodes.length > 0 ? this.nodes[0].box : aabbEmpty()
+  }
+
   constructor(prims: Primitive[]) {
     this.prims = prims
     const n = prims.length
