@@ -9,6 +9,7 @@ import { dropout, layerNorm, batchNorm, makeBatchNormState, embedding, concatCol
 import { conv2d, maxPool2d, avgPool2d } from './conv';
 import { softmaxCrossEntropy, maskedCrossEntropy, bceWithLogits, mse } from './losses';
 import { GPT } from './transformer';
+import { MoEGPT, scaleRows, selectCol } from './moe';
 import { VAE, klDivStandardNormal } from './vae';
 import { Agent, gaussianLogProb, gaussianEntropy, categoricalLogProb, categoricalEntropy } from './policy';
 import {
@@ -363,6 +364,50 @@ export function runSelfTest(seed = 7): SelfTestReport {
         'transformer (e2e)',
         gpt.parameters(),
         () => maskedCrossEntropy(gpt.forward(ids), targets, keep).loss,
+        rng,
+      ),
+    );
+  }
+
+  // The two ops the sparse-MoE combine is built from: a per-row scalar scale (mix an expert's
+  // whole output by its router weight) and a single-column gather (pull one expert's gate column).
+  {
+    const x = leaf(rng, 4, 5);
+    const w = leaf(rng, 4, 1);
+    ops.push(checkOp('scaleRows', [x, w], () => scaleRows(x, w), rng));
+  }
+  {
+    const x = leaf(rng, 4, 6);
+    ops.push(checkOp('selectCol', [x], () => selectCol(x, 3), rng));
+  }
+
+  // End-to-end: a whole sparse Mixture-of-Experts Transformer — every parameter (embeddings,
+  // attention, the router, all E experts) gradchecked through the combined task + load-balancing
+  // loss. topK = nExperts here so the top-k selection is smooth (no argmax kink under the finite
+  // difference); the identical code path runs sparsely during training.
+  {
+    const moe = new MoEGPT({
+      vocab: 5,
+      dModel: 4,
+      nHeads: 2,
+      nLayers: 1,
+      dFF: 6,
+      nExperts: 3,
+      topK: 3,
+      maxLen: 6,
+      seed: 3,
+    });
+    const ids = Int32Array.from([2, 0, 4, 1, 3]);
+    const targets = Int32Array.from([0, 4, 1, 3, 2]);
+    const keep = Uint8Array.from([0, 0, 1, 1, 1]);
+    ops.push(
+      checkOp(
+        'moe-transformer (e2e, CE+aux)',
+        moe.parameters(),
+        () => {
+          const logits = moe.forward(ids);
+          return maskedCrossEntropy(logits, targets, keep).loss.add(moe.lastAux!);
+        },
         rng,
       ),
     );

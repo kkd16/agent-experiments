@@ -1860,3 +1860,148 @@ label.toggle input {
   accent-color: #38bdf8;
   cursor: pointer;
 }
+
+/* ===== Sparse · MoE lab ===== */
+.moe-layer-seg {
+  margin: 6px 0 10px;
+  grid-template-columns: repeat(auto-fit, minmax(70px, 1fr));
+}
+.moe-heatmap-wrap {
+  display: flex;
+  justify-content: center;
+  overflow-x: auto;
+  padding: 4px 0 2px;
+}
+
+/* sparsity readout (panel) */
+.moe-sparsity-readout {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+  margin: 4px 0 10px;
+}
+.moe-bigstat {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 8px 4px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: linear-gradient(180deg, rgba(167, 139, 250, 0.08), rgba(167, 139, 250, 0.02));
+}
+.moe-bigstat b {
+  font-size: 18px;
+  color: var(--accent-2);
+  letter-spacing: -0.02em;
+}
+
+/* expert utilisation bars */
+.moe-util {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 6px 0 8px;
+}
+.moe-util-row {
+  display: grid;
+  grid-template-columns: 26px 1fr 40px;
+  align-items: center;
+  gap: 8px;
+}
+.moe-util-name {
+  font: 600 12px ui-monospace, monospace;
+  color: var(--muted);
+}
+.moe-util-track {
+  position: relative;
+  height: 16px;
+  border-radius: 5px;
+  background: rgba(148, 163, 184, 0.08);
+  overflow: hidden;
+}
+.moe-util-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  border-radius: 5px;
+  background: linear-gradient(90deg, #7c3aed, #a78bfa);
+}
+.moe-util-ideal {
+  position: absolute;
+  top: -2px;
+  bottom: -2px;
+  width: 0;
+  border-left: 1.5px dashed rgba(226, 232, 240, 0.55);
+  z-index: 2;
+}
+.moe-util-val {
+  font: 600 12px ui-monospace, monospace;
+  text-align: right;
+  color: var(--text);
+}
+.moe-util-foot {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 9px;
+  border-radius: 999px;
+  font-size: 12px;
+  border: 1px solid var(--border-strong);
+  background: rgba(148, 163, 184, 0.08);
+}
+.pill b {
+  font-family: ui-monospace, monospace;
+}
+.pill.ok {
+  border-color: rgba(34, 197, 94, 0.5);
+  background: rgba(34, 197, 94, 0.12);
+  color: #86efac;
+}
+.pill.warn {
+  border-color: rgba(251, 191, 36, 0.5);
+  background: rgba(251, 191, 36, 0.12);
+  color: #fcd34d;
+}
+
+/* expert specialisation matrix */
+.moe-spec {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin: 6px 0 2px;
+  overflow-x: auto;
+}
+.moe-spec-head,
+.moe-spec-row {
+  display: grid;
+  grid-template-columns: 26px repeat(12, 1fr) 30px;
+  gap: 2px;
+  align-items: center;
+}
+.moe-spec-coltok {
+  text-align: center;
+  font: 600 10px ui-monospace, monospace;
+  color: var(--muted);
+}
+.moe-spec-corner {
+  width: 26px;
+}
+.moe-spec-name {
+  font: 600 11px ui-monospace, monospace;
+  color: var(--muted);
+}
+.moe-spec-cell {
+  height: 16px;
+  border-radius: 3px;
+  border: 1px solid rgba(0, 0, 0, 0.25);
+}
+.moe-spec-load {
+  text-align: right;
+  font-family: ui-monospace, monospace;
+}
