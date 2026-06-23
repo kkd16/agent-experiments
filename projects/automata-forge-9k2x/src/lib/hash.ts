@@ -5,7 +5,7 @@
 import { decodeEdit, encodeEdit, emptyAutomaton } from '../engine/edit'
 import type { EditAutomaton } from '../engine/edit'
 
-export type Mode = 'explore' | 'compare' | 'build' | 'grammar' | 'machine'
+export type Mode = 'explore' | 'compare' | 'build' | 'grammar' | 'machine' | 'parse'
 
 export interface AppState {
   mode: Mode
@@ -14,6 +14,7 @@ export interface AppState {
   build: { automaton: EditAutomaton; tab: string; input: string }
   grammar: { text: string; tab: string; input: string }
   machine: { source: string; tab: string; input: string }
+  parse: { text: string; tab: string; input: string }
 }
 
 export function encodeHash(s: AppState): string {
@@ -42,6 +43,12 @@ export function encodeHash(s: AppState): string {
     q.set('t', s.machine.tab)
     if (s.machine.input) q.set('i', s.machine.input)
     return `#/machine?${q.toString()}`
+  }
+  if (s.mode === 'parse') {
+    q.set('g', s.parse.text)
+    q.set('t', s.parse.tab)
+    if (s.parse.input) q.set('i', s.parse.input)
+    return `#/parse?${q.toString()}`
   }
   q.set('r', s.explore.regex)
   q.set('t', s.explore.tab)
@@ -99,6 +106,17 @@ export function decodeHash(raw: string, fallback: AppState): AppState {
         machine: {
           source: q.get('tm') ?? fallback.machine.source,
           tab: q.get('t') ?? fallback.machine.tab,
+          input: q.get('i') ?? '',
+        },
+      }
+    }
+    if (path === 'parse') {
+      return {
+        ...fallback,
+        mode: 'parse',
+        parse: {
+          text: q.get('g') ?? fallback.parse.text,
+          tab: q.get('t') ?? fallback.parse.tab,
           input: q.get('i') ?? '',
         },
       }
