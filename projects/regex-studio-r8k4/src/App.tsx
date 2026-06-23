@@ -22,7 +22,9 @@ import { AntimirovPanel } from './components/AntimirovPanel';
 import { GlushkovPanel } from './components/GlushkovPanel';
 import { ExtendedPanel } from './components/ExtendedPanel';
 import { MonoidPanel } from './components/MonoidPanel';
+import { LogicPanel } from './components/LogicPanel';
 import { LearnPanel } from './components/LearnPanel';
+import type { LogicMode } from './engine/logic';
 import { CensusPanel } from './components/CensusPanel';
 import { FuzzPanel } from './components/FuzzPanel';
 import { UnicodePanel } from './components/UnicodePanel';
@@ -42,6 +44,7 @@ type Tab =
   | 'language'
   | 'census'
   | 'monoid'
+  | 'logic'
   | 'learn'
   | 'compare'
   | 'coalgebra'
@@ -73,6 +76,7 @@ const TAB_GROUPS: { group: string; tabs: { id: Tab; label: string }[] }[] = [
       { id: 'language', label: 'Language' },
       { id: 'census', label: 'Census' },
       { id: 'monoid', label: 'Algebra' },
+      { id: 'logic', label: 'Logic' },
       { id: 'learn', label: 'Learn' },
       { id: 'compare', label: 'Compare' },
       { id: 'coalgebra', label: 'Coalgebra' },
@@ -92,9 +96,12 @@ interface Stored {
   text: string;
   compare: string;
   extended: string;
+  logic: string;
+  logicMode: LogicMode;
 }
 
 const DEFAULT_EXTENDED = '.*[0-9].*&.*[a-z].*&.{6,}';
+const DEFAULT_LOGIC = 'forall x. (Qa(x) -> exists y. (S(x,y) & Qb(y)))';
 
 function loadStored(): Stored {
   try {
@@ -106,12 +113,21 @@ function loadStored(): Stored {
         text: parsed.text ?? DEFAULT_EXAMPLE.sample,
         compare: parsed.compare ?? '',
         extended: parsed.extended ?? DEFAULT_EXTENDED,
+        logic: parsed.logic ?? DEFAULT_LOGIC,
+        logicMode: parsed.logicMode === 'ltlf' ? 'ltlf' : 'mso',
       };
     }
   } catch {
     /* sandboxed preview: ignore */
   }
-  return { pattern: DEFAULT_EXAMPLE.pattern, text: DEFAULT_EXAMPLE.sample, compare: '[A-Za-z_]\\w*', extended: DEFAULT_EXTENDED };
+  return {
+    pattern: DEFAULT_EXAMPLE.pattern,
+    text: DEFAULT_EXAMPLE.sample,
+    compare: '[A-Za-z_]\\w*',
+    extended: DEFAULT_EXTENDED,
+    logic: DEFAULT_LOGIC,
+    logicMode: 'mso',
+  };
 }
 
 export default function App() {
@@ -120,15 +136,20 @@ export default function App() {
   const [text, setText] = useState(initial.text);
   const [comparePattern, setComparePattern] = useState(initial.compare);
   const [extendedPattern, setExtendedPattern] = useState(initial.extended);
+  const [logicSource, setLogicSource] = useState(initial.logic);
+  const [logicMode, setLogicMode] = useState<LogicMode>(initial.logicMode);
   const [tab, setTab] = useState<Tab>('nfa');
 
   useEffect(() => {
     try {
-      localStorage.setItem(STORE_KEY, JSON.stringify({ pattern, text, compare: comparePattern, extended: extendedPattern }));
+      localStorage.setItem(
+        STORE_KEY,
+        JSON.stringify({ pattern, text, compare: comparePattern, extended: extendedPattern, logic: logicSource, logicMode }),
+      );
     } catch {
       /* ignore */
     }
-  }, [pattern, text, comparePattern, extendedPattern]);
+  }, [pattern, text, comparePattern, extendedPattern, logicSource, logicMode]);
 
   const compiled = useMemo(() => compile(pattern), [pattern]);
   const regular = compiled.features ? compiled.features.regular : false;
@@ -177,7 +198,7 @@ export default function App() {
           <span className="logo">/<span className="logo-star">∗</span>/</span>
           <div>
             <h1>Regex Studio</h1>
-            <p>A regular-expression engine built from scratch — parse, compile four ways, minimise, run six engines, extend to the Boolean closure (&amp; ~ −), read the language's <strong>syntactic monoid</strong> (the variety ladder: piecewise-testable · DA/FO² · star-free? · the named group · the egg-box), speak <strong>Unicode</strong> via <code>\p{'{'}…{'}'}</code> derived live from the host, <strong>learn the minimal DFA back from queries</strong> (Angluin's L* · RPNI), <strong>count the language</strong> (the rational generating function · growth rate · entropy), decide equivalence &amp; inclusion <strong>without determinising</strong> (bisimulation up to congruence · antichains), fuzz, compare and synthesise.</p>
+            <p>A regular-expression engine built from scratch — parse, compile four ways, minimise, run six engines, extend to the Boolean closure (&amp; ~ −), read the language's <strong>syntactic monoid</strong> (the variety ladder: piecewise-testable · DA/FO² · star-free? · the named group · the egg-box), speak <strong>Unicode</strong> via <code>\p{'{'}…{'}'}</code> derived live from the host, <strong>learn the minimal DFA back from queries</strong> (Angluin's L* · RPNI), <strong>count the language</strong> (the rational generating function · growth rate · entropy), decide equivalence &amp; inclusion <strong>without determinising</strong> (bisimulation up to congruence · antichains), and now run the whole studio <strong>in reverse — compile a logic formula to its automaton</strong> (Büchi–Elgot–Trakhtenbrot: <code>MSO[&lt;]</code> = regular, <code>FO[&lt;]</code> = star-free, LTLf via Kamp), fuzz, compare and synthesise.</p>
           </div>
         </div>
         <a className="repo-link" href="https://en.wikipedia.org/wiki/Thompson%27s_construction" target="_blank" rel="noreferrer">
@@ -352,6 +373,10 @@ export default function App() {
 
             {tab === 'monoid' && <MonoidPanel compiled={compiled} />}
 
+            {tab === 'logic' && (
+              <LogicPanel source={logicSource} onSourceChange={setLogicSource} mode={logicMode} onModeChange={setLogicMode} />
+            )}
+
             {tab === 'learn' && <LearnPanel dfa={compiled.minDfa} notice={automataNotice} />}
 
             {tab === 'compare' && (
@@ -399,7 +424,7 @@ export default function App() {
         position automaton · Pike VM · backtracking VM) cross-checked by a seeded differential fuzzer · product-automaton equivalence — plus the modern road that skips
         determinisation: <strong>bisimulation up to congruence</strong> (Bonchi–Pous, the naïve / up-to-equivalence / up-to-congruence ladder) and
         <strong>antichain</strong> inclusion &amp; universality (De Wulf et al.), every verdict cross-checked against the DFA product · ReDoS
-        analysis · state-elimination synthesis · the <strong>syntactic monoid</strong> with Green's relations (the egg-box) and the full <strong>variety ladder</strong> — piecewise-testable (Simon) ⊂ DA / FO²[&lt;] ⊂ star-free / FO[&lt;] / counter-free (Schützenberger) — with the syntactic <strong>group named</strong> (ℤ/n, Klein four, Dₙ, Q₈…) and every element wired back to the state-map it induces · <strong>grammatical inference</strong> — Angluin's <strong>L*</strong> reconstructs the minimal DFA from membership &amp; equivalence queries (the observation table, Myhill–Nerode made tangible) and <strong>RPNI</strong> infers it passively from labelled data · <strong>enumerative census</strong> — the rational generating function S(x)=P(x)/Q(x) (Chomsky–Schützenberger) from the transfer matrix, exact word counts, and the growth rate λ (Perron root) with topological entropy ln λ, classifying the language finite / polynomial / exponential · DOT/SVG export — all hand-written TypeScript, no regex library.
+        analysis · state-elimination synthesis · the <strong>syntactic monoid</strong> with Green's relations (the egg-box) and the full <strong>variety ladder</strong> — piecewise-testable (Simon) ⊂ DA / FO²[&lt;] ⊂ star-free / FO[&lt;] / counter-free (Schützenberger) — with the syntactic <strong>group named</strong> (ℤ/n, Klein four, Dₙ, Q₈…) and every element wired back to the state-map it induces · <strong>grammatical inference</strong> — Angluin's <strong>L*</strong> reconstructs the minimal DFA from membership &amp; equivalence queries (the observation table, Myhill–Nerode made tangible) and <strong>RPNI</strong> infers it passively from labelled data · <strong>enumerative census</strong> — the rational generating function S(x)=P(x)/Q(x) (Chomsky–Schützenberger) from the transfer matrix, exact word counts, and the growth rate λ (Perron root) with topological entropy ln λ, classifying the language finite / polynomial / exponential · <strong>logic ⇒ automaton</strong> — the <strong>Büchi–Elgot–Trakhtenbrot</strong> construction compiles an <strong>MSO[&lt;]</strong> sentence (∧ = product, ¬ = complement-within-validity, ∃ = projection + determinisation) to a finite automaton, lowered into the studio DFA; an FO[&lt;] formula provably lands star-free (McNaughton–Papert, checked against the syntactic monoid) and LTLf desugars to FO (Kamp), every formula differentially checked against a brute-force MSO oracle · DOT/SVG export — all hand-written TypeScript, no regex library.
       </footer>
     </div>
   );
