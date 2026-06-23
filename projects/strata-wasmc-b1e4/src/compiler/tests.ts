@@ -2651,4 +2651,57 @@ fn main(){
   let s = 0; for (let i = 0; i < n; i = i + 1) { s = s * 7 + a[i]; } print(s);
 }`,
   },
+  {
+    name: 'unswitch-basic',
+    source: `// Loop unswitching: a loop-invariant flag tested every iteration. The seed
+// loop is too long to unroll, so 'flag' and 'n' are genuine runtime values; the
+// optimizer must hoist the if(flag) out and run a branch-free specialized loop.
+// Both flag polarities and several trip counts must print identically to the
+// reference interpreter.
+fn k(seed: int) -> int {
+  let r = 0; for (let t = 0; t < 150; t = t + 1) { r = r + seed * t - 1; }
+  let flag = (r & 8) - 4;
+  let n = (r & 15) + 4;
+  let s = r & 31;
+  for (let i = 0; i < n; i = i + 1) {
+    if (flag > 0) { s = s + i * 2; } else { s = s - i; }
+  }
+  return s;
+}
+fn main(){ print(k(1)); print(k(2)); print(k(3)); print(k(7)); }`,
+  },
+  {
+    name: 'unswitch-two-flags',
+    source: `// Two invariant flags in one loop: unswitching clones twice (up to 4 versions).
+// A countdown loop (gt, step -1) also varies the header polarity.
+fn k(seed: int) -> int {
+  let r = 1; for (let t = 0; t < 130; t = t + 1) { r = r ^ (seed * t + 5); }
+  let a = (r & 4); let b = (r & 9) - 4;
+  let n = (r & 15) + 5; let s = 0;
+  for (let i = n; i > 0; i = i - 1) {
+    if (a == 0) { s = s + i; } else { s = s - i; }
+    if (b > 0) { s = s * 2 - 1; } else { s = s + 3; }
+  }
+  return s;
+}
+fn main(){ print(k(1)); print(k(4)); print(k(6)); print(k(11)); }`,
+  },
+  {
+    name: 'unswitch-nested',
+    source: `// The unswitched branch wraps a nested counted loop; cloning duplicates the
+// inner loop into each version. A second, *variant* branch (on i) must be left
+// alone, so both its arms survive in each clone.
+fn k(seed: int) -> int {
+  let r = 0; for (let t = 0; t < 160; t = t + 1) { r = r + (seed ^ t); }
+  let flag = (r & 16) - 8;
+  let n = (r & 7) + 3; let s = r & 63;
+  for (let i = 0; i < n; i = i + 1) {
+    if (flag > 0) { for (let j = 0; j < 4; j = j + 1) { s = s + i * j; } }
+    else { s = s - i; }
+    if (i > 2) { s = s + 100; } else { s = s - 1; }
+  }
+  return s;
+}
+fn main(){ print(k(2)); print(k(5)); print(k(8)); }`,
+  },
 ];

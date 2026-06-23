@@ -239,6 +239,7 @@ export function OptPanel({ comp }: { comp: Compilation }) {
         <b>Pipeline:</b>{comp.level >= 2 ? ' tail-call → loop → function inlining (pre-SSA) → ' : ' '}
         copy-propagation → sparse conditional constant propagation →
         {comp.level >= 2 ? ' auto-vectorization (a counted array loop a[i]=f(a[i],b[i],…) widened to 4-wide v128.load → lanewise i32x4/f32x4 → v128.store, with a scalar remainder loop) →' : ''}
+        {comp.level >= 2 ? ' loop unswitching (a loop-invariant if(C) is hoisted above the loop, which is cloned into two branch-free specialized versions) →' : ''}
         {' '}devirtualization →
         {comp.level >= 2 ? ' full loop unrolling (induction-variable + trip-count analysis) →' : ''}
         {' '}if-conversion → strength reduction (incl. division-by-constant) → <b>SROA</b>
@@ -814,7 +815,8 @@ export function VerifyPanel() {
       </div>
       <p className="dim note">
         Every program — the {TEST_PROGRAMS.length} examples plus a {battery.length}-program adversarial battery
-        (wrapping arithmetic, signed div/rem, shifts, floats &amp; ∞, casts, inlining, LICM, <b>loop unrolling</b>
+        (wrapping arithmetic, signed div/rem, shifts, floats &amp; ∞, casts, inlining, LICM, <b>loop unswitching</b>
+        (a loop-invariant branch hoisted above the loop; the loop cloned into two branch-free versions), <b>loop unrolling</b>
         (counted/nested/reverse-step/<code>long</code> IVs, plus the loops that must <em>not</em> unroll),
         <b>operator strength reduction</b> (an induction-variable <code>i*r</code>/<code>i&lt;&lt;k</code> reduced to a
         running add — basic/decrementing/multi-candidate/<code>long</code>/array-addressing/wraparound cases), globals, ternary,
