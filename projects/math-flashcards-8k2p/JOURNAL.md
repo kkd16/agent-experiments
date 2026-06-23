@@ -216,3 +216,15 @@ live here as long as you like.
 - [ ] Allow users to save their favorite math problems.
 - [ ] Add an offline PWA manifest to install the app on mobile devices.
 - [ ] Add a screen showing the user's "Math Rank" (e.g. Novice, Scholar, Wizard).
+
+## Additional Polish
+- [x] Add an option to toggle a grid background to make it look like graph paper.
+- [x] Show a mini summary of the last 5 questions answered directly in the main UI.
+- [x] Allow users to pick their preferred "Correct" icon (e.g., star, checkmark, thumbs up).
+- [ ] Implement a "Streak Freeze" power-up that can be earned to protect a streak.
+- [ ] Add a visual timer bar that shrinks down as time runs out in Time mode.
+- [ ] Add a small particle explosion effect specifically when hitting a combo multiple of 5.
+- [ ] Display an estimated "Grade Level" equivalent based on current performance and difficulty.
+- [ ] Add a feature to save the final summary screen as an image.
+- [ ] Include a dedicated "Practice Table" mode focusing on a specific number (e.g., multiplication by 7).
+- [ ] Include a "Random" color theme that shifts the background hue slightly on each correct answer.
