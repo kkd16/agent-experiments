@@ -1,0 +1,133 @@
+.obs-wrap {
+  overflow: auto;
+  max-width: 100%;
+  padding: 4px;
+}
+
+.obs-table {
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: 13px;
+  margin: 0 auto;
+}
+
+.obs-table th,
+.obs-table td {
+  padding: 4px 8px;
+  text-align: center;
+  border-bottom: 1px solid var(--line, #24304a);
+}
+
+.obs-corner {
+  text-align: left;
+  color: var(--muted, #8aa0c0);
+  font-weight: 600;
+  position: relative;
+  min-width: 58px;
+}
+.obs-corner-sub {
+  display: block;
+  font-size: 9px;
+  font-weight: 500;
+  color: var(--muted, #7388a8);
+  letter-spacing: 0.02em;
+}
+
+.obs-exphead {
+  color: #cfe0ff;
+  background: rgba(90, 130, 210, 0.1);
+  border-bottom: 2px solid #3a4d72;
+  font-weight: 600;
+}
+.obs-exphead code {
+  font-size: 12px;
+}
+
+.obs-rowhead {
+  text-align: left;
+  white-space: nowrap;
+  position: relative;
+  padding-left: 16px;
+}
+.obs-rowhead code {
+  font-size: 12.5px;
+  color: #e6eefc;
+}
+
+/* the class-colour chip on the left of each row */
+.obs-chip {
+  position: absolute;
+  left: 4px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--chip, #5b6b8c);
+}
+
+.obs-cell {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  width: 30px;
+}
+.obs-cell.yes {
+  color: #6ee7a8;
+}
+.obs-cell.no {
+  color: #54688c;
+}
+
+.obs-newcol {
+  background: rgba(120, 170, 255, 0.16) !important;
+  animation: obs-pop 0.6s ease;
+}
+@keyframes obs-pop {
+  from {
+    background: rgba(120, 200, 120, 0.4) !important;
+  }
+}
+
+.obs-promoted {
+  background: rgba(110, 231, 168, 0.12);
+  animation: obs-pop 0.6s ease;
+}
+.obs-added-row {
+  background: rgba(110, 231, 168, 0.12);
+}
+
+.obs-flag {
+  color: #ffcf6e;
+  font-weight: 700;
+  margin-left: 6px;
+}
+
+.obs-defect .obs-chip {
+  background: #ff8b6b;
+  box-shadow: 0 0 0 2px rgba(255, 139, 107, 0.25);
+}
+.obs-defect .obs-rowhead code {
+  color: #ffb9a3;
+}
+
+.obs-divider td {
+  padding: 3px 8px;
+  text-align: left;
+  font-size: 10.5px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted, #7e93b4);
+  background: rgba(40, 52, 78, 0.5);
+  border-bottom: 2px solid #34425f;
+  border-top: 2px solid #34425f;
+}
+
+/* eight stable signature colours */
+.obs-c0 .obs-chip { background: #6ea8ff; }
+.obs-c1 .obs-chip { background: #6ee7a8; }
+.obs-c2 .obs-chip { background: #ffcf6e; }
+.obs-c3 .obs-chip { background: #d18bff; }
+.obs-c4 .obs-chip { background: #ff8bbf; }
+.obs-c5 .obs-chip { background: #6ee0e7; }
+.obs-c6 .obs-chip { background: #c0e76e; }
+.obs-c7 .obs-chip { background: #ffa46e; }
