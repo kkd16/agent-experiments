@@ -10,11 +10,12 @@ import GNNLab from './components/gnn/GNNLab';
 import KANLab from './components/kan/KANLab';
 import NodeLab from './components/node/NodeLab';
 import GANLab from './components/gan/GANLab';
+import BayesLab from './components/bayes/BayesLab';
 import './App.css';
 
-type Tab = 'playground' | 'vision' | 'transformer' | 'generative' | 'diffusion' | 'flows' | 'adversarial' | 'control' | 'graph' | 'kan' | 'node';
+type Tab = 'playground' | 'vision' | 'transformer' | 'generative' | 'diffusion' | 'flows' | 'adversarial' | 'control' | 'graph' | 'kan' | 'node' | 'uncertainty';
 
-// Open the lab a shared link points at (#v= vision, #t= transformer, #g= generative, #d= diffusion, #f= flows, #a= GAN, #r= RL, #n= graph, #k= KAN, #o= Neural ODE).
+// Open the lab a shared link points at (#v= vision, #t= transformer, #g= generative, #d= diffusion, #f= flows, #a= GAN, #r= RL, #n= graph, #k= KAN, #o= Neural ODE, #u= uncertainty).
 function initialTab(): Tab {
   try {
     if (/[#&]t=/.test(location.hash)) return 'transformer';
@@ -26,6 +27,7 @@ function initialTab(): Tab {
     if (/[#&]n=/.test(location.hash)) return 'graph';
     if (/[#&]k=/.test(location.hash)) return 'kan';
     if (/[#&]o=/.test(location.hash)) return 'node';
+    if (/[#&]u=/.test(location.hash)) return 'uncertainty';
     return /[#&]v=/.test(location.hash) ? 'vision' : 'playground';
   } catch {
     return 'playground';
@@ -80,6 +82,9 @@ export default function App() {
             <button className={tab === 'node' ? 'on' : ''} onClick={() => setTab('node')}>
               Neural ODE
             </button>
+            <button className={tab === 'uncertainty' ? 'on' : ''} onClick={() => setTab('uncertainty')}>
+              Uncertainty · Bayes
+            </button>
           </nav>
           <div className="kbd-hint">
             <kbd>space</kbd> train · <kbd>s</kbd> step · <kbd>r</kbd> reset · <kbd>g</kbd> gradcheck
@@ -107,8 +112,10 @@ export default function App() {
         <GNNLab />
       ) : tab === 'kan' ? (
         <KANLab />
-      ) : (
+      ) : tab === 'node' ? (
         <NodeLab />
+      ) : (
+        <BayesLab />
       )}
 
       <footer className="foot">

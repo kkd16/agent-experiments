@@ -1792,3 +1792,71 @@ button.ghost.mini {
   border-radius: 10px;
   background: #05080f;
 }
+
+/* ---- Uncertainty · Bayesian lab ---- */
+.uq-canvas {
+  width: 100%;
+  max-width: 720px;
+  border-radius: 10px;
+  background: #0b1220;
+  display: block;
+}
+.uq-cal,
+.uq-chart {
+  border-radius: 10px;
+  background: #0b1220;
+  display: block;
+}
+.uq-legend {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  margin-top: 8px;
+}
+.uq-legend .sw {
+  display: inline-block;
+  width: 14px;
+  height: 10px;
+  border-radius: 2px;
+  vertical-align: middle;
+  margin-right: 3px;
+}
+.uq-legend .sw-epi {
+  background: rgba(96, 165, 250, 0.4);
+}
+.uq-legend .sw-ale {
+  background: rgba(251, 191, 36, 0.5);
+}
+.uq-legend .sw-tot {
+  background: rgba(56, 189, 248, 0.45);
+}
+.uq-legend .sw-mean {
+  background: #38bdf8;
+  height: 3px;
+}
+.uq-legend .sw-true {
+  background: repeating-linear-gradient(90deg, rgba(226, 232, 240, 0.8) 0 4px, transparent 4px 7px);
+  height: 3px;
+}
+.seg.vert {
+  flex-direction: column;
+}
+.stat-row.tight {
+  margin-top: 8px;
+  gap: 6px;
+}
+label.toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--muted, #94a3b8);
+  cursor: pointer;
+  font-weight: 500;
+  margin-top: 4px;
+}
+label.toggle input {
+  accent-color: #38bdf8;
+  cursor: pointer;
+}
