@@ -131,6 +131,17 @@ keep it current.
   each one's syntactic monoid, and asserts the three roads to "aperiodic" agree plus Green's-relation sanity
   (`H = R ∩ L`, full egg-boxes, R,L ⊆ D, J-trivial ⇒ aperiodic, aperiodic ⇔ modulus 1) — reproducible by seed,
   surfacing any counterexample. Drives the panel's "run cross-check" button.
+- `src/engine/omega/` — **the infinite-word studio** (session 15): `ltl.ts` (the LTL parser over infinite traces +
+  **negation-normal form** + the desugaring to the `{X, U, R, ∧, ∨, literal}` core), `nba.ts` (generalized & plain
+  **Büchi automata** over Σ — `lettersSatisfying`, **degeneralization** GBA→NBA by the Baier–Katoen counter,
+  iterative **Tarjan SCC**, ω-**emptiness** with a **lasso** `u·vᵒ` witness, `nbaAcceptsLasso` via the NBA×word
+  product, and graph adapters with a synthetic `ι` init node), `gpvw.ts` (the **Gerth–Peled–Vardi–Wolper** on-the-fly
+  tableau LTL ⇒ generalized Büchi — the recursive `expand` over `New/Old/Next`, the ∨/U/R split, contradiction
+  pruning, one accepting set per Until-subformula), `semantics.ts` (the **brute-force oracle**: LTL on an
+  ultimately-periodic word, each operator a least/greatest fixpoint over the lasso's finitely many position-classes),
+  `index.ts` (`compileOmega` — parse → NNF → GBA → NBA, plus **satisfiability** and **validity** from the emptiness
+  of `NBA(φ)` / `NBA(¬φ)`, the automata-theoretic approach to model checking), and `verify.ts` (the seeded fuzzer —
+  oracle vs automaton + the **complement-duality** partition `NBA(φ) ⊎ NBA(¬φ)`).
 - `src/engine/explain.ts` — AST → plain-English prose. `src/engine/export.ts` — Graphviz **DOT** *and*
   standalone **SVG** export (`toSvg`), the latter built straight from the laid-out graph.
 - `src/components/*` — `AutomatonGraph` (pan/zoom SVG, active-edge highlight), `AstView`,
@@ -141,7 +152,10 @@ keep it current.
   the session-6 `GlushkovPanel`, and the session-7 `ExtendedPanel` (Boolean-derivative DFA + proof badges +
   Boolean-derivative chain + language stats + a "run cross-check" fuzz console), and the session-8 `MonoidPanel`
   (the **Algebra** tab: the star-free/aperiodic verdict with its three-way cross-check, the variety badges, the
-  monoid summary, the **egg-box diagram**, the Cayley table, and the fuzz cross-check).
+  monoid summary, the **egg-box diagram**, the Cayley table, and the fuzz cross-check), and the session-15
+  `OmegaPanel` (the **ω / Büchi** tab: the sat/valid verdict, the **animated lasso** witness on the NBA graph, the
+  generalized & degeneralized Büchi automata, the construction trace, the oracle-vs-automaton truth table, and the
+  cross-check console).
 
 ## Ideas / backlog
 
@@ -1076,4 +1090,121 @@ failures**, observing degrees up to 6 and a healthy spread across all four class
 now documented: the Glushkov automaton is ε-free, so `(a*)*` and `(.*)*` collapse to a *deterministic* self-loop
 and are genuinely **unambiguous** here — their exponential character is a property of the ε-NFA / backtracking
 structure, which is precisely what the **ReDoS** tab analyses. Gate green: scope + conformance + lint + build all
+pass.
+
+### Session 15 plan — crossing into the infinite: ω-automata & LTL → Büchi (the converse on infinite words) (2026-06-24, claude)
+
+The whole studio so far lives on **finite words**. Session 14 closed one loop on that side — logic ⇒ automaton
+(`MSO[<]` = regular, Büchi–Elgot–Trakhtenbrot) and its temporal fragment LTLf via Kamp. But the deepest, most
+famous half of automata theory is the **infinite-word** world it never touched: the **ω-regular** languages, the
+**automata-theoretic approach to model checking** (Vardi–Wolper), and the theorem that mirrors session 14 one
+level up —
+
+> **Büchi (1962):** a language of ω-words is ω-regular **iff** it is definable in `S1S` (monadic second-order
+> logic over ⟨ℕ, <⟩). And **Kamp/Gabbay–Pnueli:** `LTL = FO[<]` on infinite traces too.
+
+This session builds the **infinite-word sibling** of the Logic tab: write a **linear-temporal-logic** spec over
+infinite traces and watch the **Büchi automaton** it denotes get constructed — by the classic **Gerth–Peled–
+Vardi–Wolper (1995) on-the-fly tableau** — then decide it (satisfiability / validity) by the only thing that
+matters for ω-words: a **reachable accepting cycle**, whose witness is a **lasso** `u·vᵒ`. It is self-verifying the
+house way: a brute-force LTL semantics on ultimately-periodic words is the oracle, and `L(φ)` ⊎ `L(¬φ)` partition
+the ω-words (Büchi complementation) — a cross-check no other tab can offer on infinite words.
+
+New `engine/omega/` package (self-contained), lowered onto the studio's own graph layout so the Büchi machines
+flow into the existing pan/zoom / DOT / SVG renderer unchanged, plus a new **ω / Büchi** tab.
+
+- [ ] **LTL AST + parser** (`omega/ltl.ts`) — full LTL on infinite traces: `X` (next) `F` (eventually) `G`
+      (globally) `U` (until) `R` (release) `W` (weak until) `M` (strong release), boolean `~ & | -> <->`, atomic
+      prop = a letter of Σ, with the Unicode spellings (`○ ◇ □ ¬ ∧ ∨ → ↔`). Friendly index-tagged parse errors
+      (mirroring the LTLf parser). **Negation-normal form** (push `¬` to literals; the de-Morgan + temporal
+      duals `¬Xφ=X¬φ`, `¬(φUψ)=¬φ R ¬ψ`, `¬Fφ=G¬φ`) and a desugaring to the `{X, U, R, ∧, ∨, literal}` core
+      the tableau consumes (`Fφ = true U φ`, `Gφ = false R φ`, `W`/`M` via `U`/`R`).
+- [ ] **Büchi automata** (`omega/nba.ts`) — a generalized Büchi automaton (GBA, several accepting sets, each to
+      be hit infinitely often) and a plain NBA (one set) over Σ. `lettersSatisfying` (a set of propositional
+      literals → the Σ-letters consistent with it; two distinct positive literals ⇒ ∅), **degeneralization**
+      GBA→NBA (the Baier–Katoen counter construction `Q×{0..k−1}`), `reachableTrim`, **Tarjan SCC**, the
+      **emptiness** decision (a reachable non-trivial SCC carrying an accepting state) with a **lasso** witness
+      `u·vᵒ` extracted from it, the product `nba × lasso` and `nbaAcceptsLasso` (does a concrete `u·vᵒ` have an
+      accepting run — emptiness of the product), and graph-input adapters (accepting states double-circled,
+      edges labelled by their Σ-letter set).
+- [ ] **The GPVW tableau** (`omega/gpvw.ts`) — the on-the-fly construction LTL(NNF) ⇒ GBA: the recursive
+      `expand` over tableau nodes (`Incoming / New / Old / Next`), splitting `∨`/`U`/`R`, contradiction pruning
+      on literals, the `X`-deferred `Next` field; states = closed nodes, transitions from `Incoming`, edge guards
+      = the literals in the target's `Old`, and **one accepting set per `U`-subformula** (`F_{φUψ} = { node :
+      φUψ ∉ Old ∨ ψ ∈ Old }`). Records a **construction trace** (closure size, GBA states, degeneralization
+      factor, NBA states) and a friendly state-cap blow-up message.
+- [ ] **The brute-force oracle** (`omega/semantics.ts`) — direct LTL semantics on an **ultimately-periodic**
+      word `u·vᵒ`: positions form a finite lasso of classes (stem `0..|u|−1`, loop `|u|..|u|+|v|−1` cycling to
+      `|u|`), so `X` is the successor class, and `F/G/U/R` are least/greatest fixpoints over those classes —
+      the exact ω-truth, computed without unrolling. Plus a seeded **lasso sampler**. The independent ground
+      truth the Büchi automaton is differentially checked against.
+- [ ] **Decision + the validity/satisfiability bridge** (`omega/index.ts`) — `compileOmega(src, Σ)` orchestrates
+      parse → NNF → GBA → NBA, decides **satisfiable** (NBA(φ) non-empty, with a model lasso) and **valid**
+      (NBA(¬φ) empty, else a counterexample lasso) — the automata-theoretic approach to model checking
+      (Vardi–Wolper) in miniature. A `GF p` / `FG p` pair shows the two canonical ω-acceptance shapes, and an
+      unsatisfiable `G a ∧ F ¬a` comes back empty with the contradiction surfaced.
+- [ ] **The proof console** (`omega/verify.ts`) — a seeded fuzzer drawing random LTL formulas over a small Σ:
+      build NBA via GPVW, draw random lassos `u·vᵒ`, and assert `nbaAccepts(u·vᵒ) == oracle(φ, u·vᵒ)`
+      (differential), plus the deep **complement-duality** — for every sampled lasso exactly one of NBA(φ),
+      NBA(¬φ) accepts (the two ω-languages partition the ultimately-periodic words, which are dense, so this is
+      a real test of Büchi complementation). Reproducible by seed; the first counterexample surfaced verbatim.
+- [ ] **The ω / Büchi panel** (`components/OmegaPanel.tsx`) — LTL input + a configurable Σ + a curated gallery
+      (`G F a` infinitely-often, `F G a` eventually-always, `a U b`, request–response `G (a -> F b)`, strong
+      vs weak next, `G(a -> X ¬a)`, the unsatisfiable `G a & F ¬a`), the **generalized** and **degeneralized**
+      Büchi automata as pan/zoom graphs with DOT/SVG export, the **sat/valid verdict** with the **lasso witness**
+      rendered `u·(v)ᵒ` and animated on the graph, a **truth table** over sample lassos (oracle ✓ vs NBA, an
+      agreement badge), the construction trace (the closure → GBA → NBA blow-up), and the seeded cross-check.
+- [ ] Wire the **ω / Büchi** tab into `App.tsx` (persisted source + Σ), refresh the header/footer/`project.json`
+      copy to "…and now across into the infinite — LTL ⇒ Büchi, ω-regular, the lasso", add the ω examples and
+      CSS, and re-run the gate to green.
+
+### Session 15 — LTL ⇒ Büchi: crossing into the infinite (2026-06-24, claude)
+
+Shipped the **infinite-word sibling** of the whole studio. Every prior tab lived on finite words; this one crosses
+into the **ω-regular** languages — infinite traces, liveness, and the **automata-theoretic approach to model
+checking** (Vardi–Wolper). New self-contained `engine/omega/` package + a new **ω / Büchi** tab. It mirrors
+session 14 one level up: `LTL = FO[<]` (Kamp) and ω-regular `= S1S` (Büchi), the studio's MSO theorem for infinite
+words.
+
+- [x] **LTL AST + parser + NNF** (`omega/ltl.ts`) — LTL on infinite traces (`X F G U R W M`, boolean `~ & | -> <->`,
+      atomic prop = a letter of Σ, Unicode spellings), index-tagged parse errors mirroring the LTLf parser.
+      **Negation-normal form** via the temporal duals (`¬Xφ=X¬φ`, `¬(φUψ)=¬φ R ¬ψ`, `¬Fφ=G¬φ`) and a desugaring to
+      the `{X, U, R, ∧, ∨, literal}` core the tableau consumes (`Fφ=⊤Uφ`, `Gφ=⊥Rφ`, `W`/`M` via `U`/`R`).
+- [x] **Büchi automata** (`omega/nba.ts`) — generalized (GBA) and plain (NBA) Büchi automata over Σ;
+      `lettersSatisfying` (literals → consistent Σ-letters, two positives ⇒ ∅), **degeneralization** GBA→NBA (the
+      Baier–Katoen `Q×{0..k−1}` counter), reachable-trim, an **iterative Tarjan SCC**, the ω-**emptiness** decision
+      (a reachable non-trivial SCC carrying an accepting state) with a **lasso** `u·vᵒ` witness extracted by BFS
+      stem + in-component cycle, the `NBA × lasso` product `nbaAcceptsLasso`, and graph adapters (accepting states
+      double-ringed, edges labelled by the source state's guard, a synthetic `ι` init node).
+- [x] **The GPVW tableau** (`omega/gpvw.ts`) — the Gerth–Peled–Vardi–Wolper on-the-fly construction LTL(NNF) ⇒ GBA:
+      the worklist `expand` over tableau nodes (`Incoming/New/Old/Next`), the ∨/U/R split into now-vs-later
+      obligations, literal contradiction pruning, the `X`-deferred `Next`, edges from `Incoming` guarded by the
+      source's `Old`-literals, and **one accepting set per Until** (`{q : φUψ ∉ Old(q) ∨ ψ ∈ Old(q)}`). State cap
+      with a friendly blow-up message.
+- [x] **The brute-force oracle** (`omega/semantics.ts`) — the direct LTL semantics on an ultimately-periodic word
+      `u·vᵒ`: positions form a finite lasso of classes, so `X` is the successor class and `F/G/U/R/W/M` are
+      least/greatest fixpoints iterated to convergence — the exact ω-truth, computed without unrolling, on a code
+      path that never touches the tableau.
+- [x] **Decision + the sat/valid bridge** (`omega/index.ts`) — `compileOmega` orchestrates parse → NNF → GBA → NBA
+      and decides **satisfiable** (`L(NBA(φ)) ≠ ∅`, model lasso) and **valid** (`L(NBA(¬φ)) = ∅`, else a
+      counterexample lasso) — Vardi–Wolper in miniature.
+- [x] **The proof console** (`omega/verify.ts`) — a seeded fuzzer over random LTL: build the NBA, draw random
+      lassos, assert `nbaAccepts(u·vᵒ) == oracle(φ, u·vᵒ)` (differential) and the **complement-duality** (exactly
+      one of `NBA(φ)`, `NBA(¬φ)` accepts every lasso — the two ω-languages partition `Σᵒ`).
+- [x] **The ω / Büchi panel** (`components/OmegaPanel.tsx`) — LTL input + configurable Σ + a curated gallery, the
+      sat/valid verdict, the **lasso witness animated** step-by-step on the NBA graph (a letter ribbon with the
+      stem and the repeating loop, the lit state following the run), the generalized & degeneralized Büchi automata
+      as pan/zoom graphs with DOT/SVG export, the closure → GBA → NBA construction trace, the oracle-vs-NBA truth
+      table, and the seeded cross-check console.
+- [x] Wired the **ω / Büchi** tab into `App.tsx` (persisted source), refreshed the header/footer/`project.json`
+      copy, added the ω CSS, and re-ran the gate to green.
+
+Validated offline before shipping with the typescript-transpile headless harness: **85/85 known-answer cases**
+(satisfiability/validity for `G F a`, `F G a`, `a U b`, `G(a→X b)`, the unsatisfiable `G a ∧ F ¬a`, the valid
+`a ∨ ¬a` and `X true`; oracle-vs-automaton spot checks; every witness re-confirmed to satisfy the oracle), and the
+fuzzer at **420,000+ checks across 30+ seeds over 2- and 3-letter alphabets — random LTL formulas (depth ≤ 4),
+random lassos, oracle agreement AND the complement-duality partition — zero disagreements** (only a handful of
+deep formulas skipped at the honest state cap, surfaced not hidden). So `G F a` compiles to the canonical
+"infinitely often" Büchi automaton with the lasso `(a)ᵒ`, `G(a→F b)` is request–response liveness, and
+`G a ∧ F ¬a` comes back UNSATISFIABLE with an empty automaton. Gate green: scope + conformance + lint + build all
 pass.

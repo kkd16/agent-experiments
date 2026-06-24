@@ -3925,3 +3925,158 @@
   gap: 14px;
   margin: 6px 0;
 }
+
+/* ---------- ω / Büchi panel (session 15) ---------- */
+.omega-opnote {
+  margin-left: 4px;
+}
+.omega-warn code,
+.omega-opnote code {
+  color: var(--accent-2);
+}
+.omega-verdict-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 10px;
+  margin: 12px 0;
+}
+.omega-verdict {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 11px 14px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: linear-gradient(180deg, var(--panel), var(--bg-2));
+}
+.omega-verdict.good { border-color: rgba(52, 211, 153, 0.4); }
+.omega-verdict.bad { border-color: rgba(248, 113, 113, 0.4); }
+.omega-verdict.warn { border-color: rgba(245, 158, 11, 0.4); }
+.omega-verdict.muted { opacity: 0.85; }
+.omega-verdict-k {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+}
+.omega-verdict-v {
+  font-weight: 650;
+  font-size: 14px;
+}
+.omega-verdict.good .omega-verdict-v { color: var(--good); }
+.omega-verdict.bad .omega-verdict-v { color: var(--bad); }
+.omega-verdict.warn .omega-verdict-v { color: var(--warn); }
+.omega-verdict-sub {
+  font-size: 11.5px;
+  color: var(--muted);
+  font-family: var(--mono);
+}
+
+.omega-lasso {
+  margin: 14px 0;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--bg-2);
+}
+.omega-lasso-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.omega-lasso-head h3 { margin: 0; }
+.omega-lasso-ctl {
+  display: flex;
+  gap: 6px;
+}
+.omega-lasso-ctl button {
+  font-family: var(--mono);
+  font-size: 12px;
+  padding: 4px 10px;
+  border-radius: 7px;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  color: var(--text);
+  cursor: pointer;
+}
+.omega-lasso-ctl button:hover { border-color: var(--accent); }
+.omega-ribbon {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px;
+  margin: 8px 0 12px;
+}
+.omega-letter {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 26px;
+  height: 30px;
+  padding: 0 8px;
+  border-radius: 7px;
+  font-family: var(--mono);
+  font-size: 14px;
+  font-weight: 600;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  transition: transform 0.12s ease, box-shadow 0.12s ease;
+}
+.omega-letter.stem {
+  color: var(--muted);
+}
+.omega-letter.loop {
+  color: var(--accent);
+  border-color: rgba(34, 211, 238, 0.35);
+  background: rgba(34, 211, 238, 0.08);
+}
+.omega-letter.active {
+  transform: translateY(-2px);
+  box-shadow: 0 0 0 2px var(--accent);
+  color: var(--bg-2);
+  background: var(--accent);
+}
+.omega-letter.loopmark {
+  color: var(--accent);
+  background: transparent;
+  border-style: dashed;
+  font-size: 12px;
+}
+.omega-lasso-graph {
+  margin-top: 6px;
+}
+
+.omega-trace {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 10px;
+  margin: 10px 0;
+}
+.omega-trace-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--panel);
+}
+.omega-trace-v {
+  font-size: 22px;
+  font-weight: 700;
+  font-family: var(--mono);
+  color: var(--accent);
+}
+.omega-trace-k {
+  font-size: 12.5px;
+  font-weight: 600;
+}
+.omega-trace-note {
+  font-size: 11px;
+  color: var(--muted);
+}
+.omega-truth .logic-cell {
+  font-size: 11.5px;
+}

@@ -23,6 +23,7 @@ import { GlushkovPanel } from './components/GlushkovPanel';
 import { ExtendedPanel } from './components/ExtendedPanel';
 import { MonoidPanel } from './components/MonoidPanel';
 import { LogicPanel } from './components/LogicPanel';
+import { OmegaPanel } from './components/OmegaPanel';
 import { LearnPanel } from './components/LearnPanel';
 import type { LogicMode } from './engine/logic';
 import { CensusPanel } from './components/CensusPanel';
@@ -47,6 +48,7 @@ type Tab =
   | 'ambiguity'
   | 'monoid'
   | 'logic'
+  | 'omega'
   | 'learn'
   | 'compare'
   | 'coalgebra'
@@ -80,6 +82,7 @@ const TAB_GROUPS: { group: string; tabs: { id: Tab; label: string }[] }[] = [
       { id: 'ambiguity', label: 'Ambiguity' },
       { id: 'monoid', label: 'Algebra' },
       { id: 'logic', label: 'Logic' },
+      { id: 'omega', label: 'ω / Büchi' },
       { id: 'learn', label: 'Learn' },
       { id: 'compare', label: 'Compare' },
       { id: 'coalgebra', label: 'Coalgebra' },
@@ -101,10 +104,12 @@ interface Stored {
   extended: string;
   logic: string;
   logicMode: LogicMode;
+  omega: string;
 }
 
 const DEFAULT_EXTENDED = '.*[0-9].*&.*[a-z].*&.{6,}';
 const DEFAULT_LOGIC = 'forall x. (Qa(x) -> exists y. (S(x,y) & Qb(y)))';
+const DEFAULT_OMEGA = 'G (a -> F b)';
 
 function loadStored(): Stored {
   try {
@@ -118,6 +123,7 @@ function loadStored(): Stored {
         extended: parsed.extended ?? DEFAULT_EXTENDED,
         logic: parsed.logic ?? DEFAULT_LOGIC,
         logicMode: parsed.logicMode === 'ltlf' ? 'ltlf' : 'mso',
+        omega: parsed.omega ?? DEFAULT_OMEGA,
       };
     }
   } catch {
@@ -130,6 +136,7 @@ function loadStored(): Stored {
     extended: DEFAULT_EXTENDED,
     logic: DEFAULT_LOGIC,
     logicMode: 'mso',
+    omega: DEFAULT_OMEGA,
   };
 }
 
@@ -141,18 +148,19 @@ export default function App() {
   const [extendedPattern, setExtendedPattern] = useState(initial.extended);
   const [logicSource, setLogicSource] = useState(initial.logic);
   const [logicMode, setLogicMode] = useState<LogicMode>(initial.logicMode);
+  const [omegaSource, setOmegaSource] = useState(initial.omega);
   const [tab, setTab] = useState<Tab>('nfa');
 
   useEffect(() => {
     try {
       localStorage.setItem(
         STORE_KEY,
-        JSON.stringify({ pattern, text, compare: comparePattern, extended: extendedPattern, logic: logicSource, logicMode }),
+        JSON.stringify({ pattern, text, compare: comparePattern, extended: extendedPattern, logic: logicSource, logicMode, omega: omegaSource }),
       );
     } catch {
       /* ignore */
     }
-  }, [pattern, text, comparePattern, extendedPattern, logicSource, logicMode]);
+  }, [pattern, text, comparePattern, extendedPattern, logicSource, logicMode, omegaSource]);
 
   const compiled = useMemo(() => compile(pattern), [pattern]);
   const regular = compiled.features ? compiled.features.regular : false;
@@ -201,7 +209,7 @@ export default function App() {
           <span className="logo">/<span className="logo-star">∗</span>/</span>
           <div>
             <h1>Regex Studio</h1>
-            <p>A regular-expression engine built from scratch — parse, compile four ways, minimise, run six engines, extend to the Boolean closure (&amp; ~ −), read the language's <strong>syntactic monoid</strong> (the variety ladder: piecewise-testable · DA/FO² · star-free? · the named group · the egg-box), speak <strong>Unicode</strong> via <code>\p{'{'}…{'}'}</code> derived live from the host, <strong>learn the minimal DFA back from queries</strong> (Angluin's L* · RPNI), <strong>count the language</strong> (the rational generating function · growth rate · entropy), classify its <strong>ambiguity</strong> — unambiguous · finite · polynomial-degree-d · exponential (Weber–Seidl, EDA/IDA on the squared &amp; cubed automata) — decide equivalence &amp; inclusion <strong>without determinising</strong> (bisimulation up to congruence · antichains), and now run the whole studio <strong>in reverse — compile a logic formula to its automaton</strong> (Büchi–Elgot–Trakhtenbrot: <code>MSO[&lt;]</code> = regular, <code>FO[&lt;]</code> = star-free, LTLf via Kamp), fuzz, compare and synthesise.</p>
+            <p>A regular-expression engine built from scratch — parse, compile four ways, minimise, run six engines, extend to the Boolean closure (&amp; ~ −), read the language's <strong>syntactic monoid</strong> (the variety ladder: piecewise-testable · DA/FO² · star-free? · the named group · the egg-box), speak <strong>Unicode</strong> via <code>\p{'{'}…{'}'}</code> derived live from the host, <strong>learn the minimal DFA back from queries</strong> (Angluin's L* · RPNI), <strong>count the language</strong> (the rational generating function · growth rate · entropy), classify its <strong>ambiguity</strong> — unambiguous · finite · polynomial-degree-d · exponential (Weber–Seidl, EDA/IDA on the squared &amp; cubed automata) — decide equivalence &amp; inclusion <strong>without determinising</strong> (bisimulation up to congruence · antichains), and now run the whole studio <strong>in reverse — compile a logic formula to its automaton</strong> (Büchi–Elgot–Trakhtenbrot: <code>MSO[&lt;]</code> = regular, <code>FO[&lt;]</code> = star-free, LTLf via Kamp), and now <strong>cross into the infinite — compile an LTL spec to its Büchi automaton</strong> (Gerth–Peled–Vardi–Wolper; <code>ω-regular = S1S</code>, decided by a lasso witness u·(v)<sup>ω</sup>), fuzz, compare and synthesise.</p>
           </div>
         </div>
         <a className="repo-link" href="https://en.wikipedia.org/wiki/Thompson%27s_construction" target="_blank" rel="noreferrer">
@@ -384,6 +392,8 @@ export default function App() {
               <LogicPanel source={logicSource} onSourceChange={setLogicSource} mode={logicMode} onModeChange={setLogicMode} />
             )}
 
+            {tab === 'omega' && <OmegaPanel source={omegaSource} onSourceChange={setOmegaSource} />}
+
             {tab === 'learn' && <LearnPanel dfa={compiled.minDfa} notice={automataNotice} />}
 
             {tab === 'compare' && (
@@ -431,7 +441,7 @@ export default function App() {
         position automaton · Pike VM · backtracking VM) cross-checked by a seeded differential fuzzer · product-automaton equivalence — plus the modern road that skips
         determinisation: <strong>bisimulation up to congruence</strong> (Bonchi–Pous, the naïve / up-to-equivalence / up-to-congruence ladder) and
         <strong>antichain</strong> inclusion &amp; universality (De Wulf et al.), every verdict cross-checked against the DFA product · ReDoS
-        analysis · state-elimination synthesis · the <strong>syntactic monoid</strong> with Green's relations (the egg-box) and the full <strong>variety ladder</strong> — piecewise-testable (Simon) ⊂ DA / FO²[&lt;] ⊂ star-free / FO[&lt;] / counter-free (Schützenberger) — with the syntactic <strong>group named</strong> (ℤ/n, Klein four, Dₙ, Q₈…) and every element wired back to the state-map it induces · <strong>grammatical inference</strong> — Angluin's <strong>L*</strong> reconstructs the minimal DFA from membership &amp; equivalence queries (the observation table, Myhill–Nerode made tangible) and <strong>RPNI</strong> infers it passively from labelled data · <strong>enumerative census</strong> — the rational generating function S(x)=P(x)/Q(x) (Chomsky–Schützenberger) from the transfer matrix, exact word counts, and the growth rate λ (Perron root) with topological entropy ln λ, classifying the language finite / polynomial / exponential · <strong>ambiguity analysis</strong> — the <strong>Weber–Seidl</strong> degree-of-ambiguity hierarchy (unambiguous ⊂ finitely ⊂ polynomially-degree-d ⊂ exponentially ambiguous) decided structurally by EDA (the squared automaton's doubled cycle) and IDA (the cubed automaton's <code>(p,p,q)⇝(p,q,q)</code>), every verdict cross-checked against an exact transfer-matrix run count Rₙ=e₀ᵀBⁿf and a brute-force enumeration · <strong>logic ⇒ automaton</strong> — the <strong>Büchi–Elgot–Trakhtenbrot</strong> construction compiles an <strong>MSO[&lt;]</strong> sentence (∧ = product, ¬ = complement-within-validity, ∃ = projection + determinisation) to a finite automaton, lowered into the studio DFA; an FO[&lt;] formula provably lands star-free (McNaughton–Papert, checked against the syntactic monoid) and LTLf desugars to FO (Kamp), every formula differentially checked against a brute-force MSO oracle · DOT/SVG export — all hand-written TypeScript, no regex library.
+        analysis · state-elimination synthesis · the <strong>syntactic monoid</strong> with Green's relations (the egg-box) and the full <strong>variety ladder</strong> — piecewise-testable (Simon) ⊂ DA / FO²[&lt;] ⊂ star-free / FO[&lt;] / counter-free (Schützenberger) — with the syntactic <strong>group named</strong> (ℤ/n, Klein four, Dₙ, Q₈…) and every element wired back to the state-map it induces · <strong>grammatical inference</strong> — Angluin's <strong>L*</strong> reconstructs the minimal DFA from membership &amp; equivalence queries (the observation table, Myhill–Nerode made tangible) and <strong>RPNI</strong> infers it passively from labelled data · <strong>enumerative census</strong> — the rational generating function S(x)=P(x)/Q(x) (Chomsky–Schützenberger) from the transfer matrix, exact word counts, and the growth rate λ (Perron root) with topological entropy ln λ, classifying the language finite / polynomial / exponential · <strong>ambiguity analysis</strong> — the <strong>Weber–Seidl</strong> degree-of-ambiguity hierarchy (unambiguous ⊂ finitely ⊂ polynomially-degree-d ⊂ exponentially ambiguous) decided structurally by EDA (the squared automaton's doubled cycle) and IDA (the cubed automaton's <code>(p,p,q)⇝(p,q,q)</code>), every verdict cross-checked against an exact transfer-matrix run count Rₙ=e₀ᵀBⁿf and a brute-force enumeration · <strong>logic ⇒ automaton</strong> — the <strong>Büchi–Elgot–Trakhtenbrot</strong> construction compiles an <strong>MSO[&lt;]</strong> sentence (∧ = product, ¬ = complement-within-validity, ∃ = projection + determinisation) to a finite automaton, lowered into the studio DFA; an FO[&lt;] formula provably lands star-free (McNaughton–Papert, checked against the syntactic monoid) and LTLf desugars to FO (Kamp), every formula differentially checked against a brute-force MSO oracle · <strong>ω / Büchi — crossing into the infinite</strong>: LTL on infinite traces compiled to a <strong>Büchi automaton</strong> by the <strong>Gerth–Peled–Vardi–Wolper</strong> on-the-fly tableau (NNF, the ∨/U/R split over New/Old/Next, one accepting set per Until eventuality), degeneralized to an NBA (Baier–Katoen), then decided the only way ω-words allow — a reachable accepting cycle (Tarjan SCC) whose witness is a <strong>lasso</strong> u·(v)<sup>ω</sup> — giving satisfiability &amp; validity (the automata-theoretic approach, Vardi–Wolper); ω-regular <code>= S1S</code> (Büchi) and <code>LTL = FO[&lt;]</code> (Kamp), the studio's MSO theorem one level up, every automaton differentially checked against a brute-force ultimately-periodic LTL oracle and against its own complement (<code>NBA(φ)</code> ⊎ <code>NBA(¬φ)</code> partition Σ<sup>ω</sup>) · DOT/SVG export — all hand-written TypeScript, no regex library.
       </footer>
     </div>
   );
