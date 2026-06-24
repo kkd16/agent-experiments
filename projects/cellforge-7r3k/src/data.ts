@@ -198,7 +198,92 @@ function salesDashboard(): WorkbookSnapshot {
   return wb.serialize()
 }
 
+// A single-sheet tour of v3: dynamic arrays that spill, LAMBDA/MAP/REDUCE, the
+// array-query functions (UNIQUE/SORT/FILTER), and a model wired up for Goal Seek.
+function dynamicArrays(): WorkbookSnapshot {
+  const wb = new Workbook()
+  const id = wb.activeSheetId
+  wb.renameSheet(id, 'Arrays')
+  const set = (a1: string, raw: string) => {
+    const ref = parseRef(a1)
+    if (ref) wb.setCell({ row: ref.row, col: ref.col }, raw, id)
+  }
+  const fmt = (a1: string, a2: string, patch: CellFormat) => {
+    const f = parseRef(a1)!
+    const t = parseRef(a2)!
+    wb.applyFormat({ top: f.row, left: f.col, bottom: t.row, right: t.col }, patch, id)
+  }
+
+  set('A1', 'Dynamic arrays — one formula fills a whole region (the blue outline is the spill)')
+  fmt('A1', 'A1', { bold: true })
+
+  // SEQUENCE / MAP / REDUCE — each anchor spills to the right or down.
+  set('A3', 'SEQUENCE(1,8)')
+  set('C3', '=SEQUENCE(1,8)')
+  set('A5', 'n² with MAP + LAMBDA')
+  set('C5', '=MAP(SEQUENCE(1,8), LAMBDA(n, n*n))')
+  set('A7', 'Σ n³ with REDUCE')
+  set('C7', '=REDUCE(0, SEQUENCE(8), LAMBDA(acc, n, acc + n^3))')
+  fmt('A3', 'A7', { color: '#97a0b8' })
+
+  // A little dataset to query with array functions.
+  const rows = [
+    ['North', 'Ana', 64],
+    ['South', 'Ben', 38],
+    ['East', 'Cy', 72],
+    ['West', 'Dee', 45],
+    ['North', 'Eli', 51],
+    ['South', 'Fay', 29],
+    ['East', 'Gus', 58],
+    ['West', 'Hana', 80],
+    ['North', 'Ivy', 47],
+  ]
+  set('A10', 'Region')
+  set('B10', 'Rep')
+  set('C10', 'Sales')
+  rows.forEach((r, i) => {
+    const row = 11 + i
+    set(`A${row}`, String(r[0]))
+    set(`B${row}`, String(r[1]))
+    set(`C${row}`, String(r[2]))
+  })
+  fmt('A10', 'C10', { bold: true, align: 'center' })
+  fmt('C11', 'C19', { nf: 'plain', decimals: 0 })
+
+  set('E10', 'Distinct regions')
+  set('E11', '=UNIQUE(A11:A19)')
+  set('G10', 'Big deals (>50), sorted')
+  set('G11', '=SORT(FILTER(C11:C19, C11:C19>50), 1, -1)')
+  set('I10', 'Total of big deals')
+  set('I11', '=SUM(FILTER(C11:C19, C11:C19>50))')
+  fmt('E10', 'I10', { bold: true })
+  fmt('G11', 'G19', { nf: 'plain', decimals: 0 })
+
+  // A LET expression that names intermediates, and a Goal-Seek-ready model. Placed
+  // below the UNIQUE spill (E11:E14) so the dynamic array has room to grow.
+  set('E17', 'LET summary')
+  set('E18', '=LET(avg, AVERAGE(C11:C19), n, COUNT(C11:C19), "avg " & ROUND(avg,1) & " across " & n & " deals")')
+  fmt('E17', 'E17', { bold: true })
+
+  set('A22', 'Break-even model  ·  try Goal Seek: set B26 to 0 by changing B25')
+  fmt('A22', 'A22', { bold: true })
+  set('A23', 'Price / unit')
+  set('B23', '12')
+  set('A24', 'Fixed cost')
+  set('B24', '500')
+  set('A25', 'Units sold')
+  set('B25', '60')
+  set('A26', 'Profit')
+  set('B26', '=B23*B25 - B24')
+  fmt('A23', 'A26', { color: '#97a0b8' })
+  fmt('B23', 'B26', { nf: 'currency', decimals: 0 })
+
+  wb.setActiveSheet(id)
+  return wb.serialize()
+}
+
 export const DEMOS: Demo[] = [
+  { id: 'arrays', name: 'Dynamic Arrays', blurb: 'SEQUENCE/FILTER/SORT/UNIQUE spilling + LAMBDA/MAP and a Goal-Seek model', snapshot: dynamicArrays },
   { id: 'sales', name: 'Sales Dashboard', blurb: 'Multi-sheet: cross-sheet refs, a named range, formatting & charts', snapshot: salesDashboard },
   { id: 'budget', name: 'Monthly Budget', blurb: 'SUM, percentages, IF and a bar sparkline', build: budget },
   { id: 'fib', name: 'Fibonacci & Stats', blurb: 'Self-referential formula chains and a line sparkline', build: fibonacci },

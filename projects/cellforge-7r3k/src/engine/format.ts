@@ -5,7 +5,7 @@
 // unit-tested without React; the visual styles are applied by the Grid.
 
 import type { RuntimeValue } from './values'
-import { isError, isBlank, isSparkline, isMatrix, formatNumber } from './values'
+import { isError, isBlank, isSparkline, isMatrix, isLambda, formatNumber } from './values'
 import { formatDate, formatTime, formatDateTime } from './dates'
 
 export type NumberFormat =
@@ -99,6 +99,7 @@ export function displayWithFormat(v: RuntimeValue, f: CellFormat | undefined): s
   if (isError(v)) return v.code
   if (isBlank(v)) return ''
   if (isSparkline(v)) return ''
+  if (isLambda(v)) return '#CALC!'
   if (isMatrix(v)) {
     if (v.rows === 1 && v.cols === 1) return displayWithFormat(v.data[0][0], f)
     return '#VALUE!'

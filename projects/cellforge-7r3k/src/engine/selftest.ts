@@ -176,6 +176,41 @@ export function runSelfTests(): TestResult[] {
   eq('format', 'date', displayWithFormat(dateToSerial(2026, 6, 23), { nf: 'date' }), '2026-06-23')
   eq('format', 'negative currency', displayWithFormat(-50, { nf: 'currency', decimals: 0 }), '-$50')
 
+  // --- v3: dynamic arrays (single-cell results from array formulas) ---
+  eq('array', 'SEQUENCE 1x1', ev('SEQUENCE(1,1,7)'), '7')
+  eq('array', 'TRANSPOSE 1x1', ev('TRANSPOSE(SEQUENCE(1))'), '1')
+  eq('array', 'array sum (SEQUENCE)', ev('SUM(SEQUENCE(10))'), '55')
+  eq('array', 'array product over MAP', ev('SUM(MAP(SEQUENCE(5), LAMBDA(n, n*n)))'), '55')
+  eq('array', 'TAKE then SUM', ev('SUM(TAKE(SEQUENCE(10), 3))'), '6')
+  eq('array', 'DROP then SUM', ev('SUM(DROP(SEQUENCE(10), 7))'), '27')
+  eq('array', 'CHOOSECOLS', ev('INDEX(CHOOSECOLS(SEQUENCE(1,4), 4, 1), 1, 1)'), '4')
+  eq('array', 'HSTACK width', ev('COLUMNS(HSTACK(SEQUENCE(2), SEQUENCE(2)))'), '2')
+  eq('array', 'VSTACK height', ev('ROWS(VSTACK(SEQUENCE(2), SEQUENCE(3)))'), '5')
+  eq('array', 'COUNT of UNIQUE', ev('COUNT(UNIQUE(A1:A5))', { A1: '1', A2: '1', A3: '2', A4: '3', A5: '3' }), '3')
+  eq('array', 'FILTER then SUM', ev('SUM(FILTER(A1:A5, A1:A5>2))', { A1: '1', A2: '4', A3: '2', A4: '5', A5: '3' }), '12')
+  eq('array', 'SORT first element', ev('INDEX(SORT(A1:A3, 1, -1), 1, 1)', { A1: '2', A2: '9', A3: '5' }), '9')
+  eq('array', 'broadcast multiply', ev('SUM(SEQUENCE(3) * 2)'), '12')
+  eq('array', 'boolean broadcast count', ev('SUM(SEQUENCE(10) > 5)'), '5')
+  eq('array', 'double-unary coercion', ev('SUM(--(SEQUENCE(10) > 5))'), '5')
+  eq('array', 'unary minus broadcasts', ev('SUM(-SEQUENCE(3))'), '-6')
+  eq('array', 'REDUCE concat-sum', ev('REDUCE(0, SEQUENCE(4), LAMBDA(a, v, a+v))'), '10')
+  eq('array', 'SCAN running total last', ev('INDEX(SCAN(0, SEQUENCE(4), LAMBDA(a,v,a+v)), 4, 1)'), '10')
+  eq('array', 'BYROW sums', ev('SUM(BYROW(SEQUENCE(2,2), LAMBDA(r, SUM(r))))'), '10')
+  eq('array', 'MAKEARRAY diagonal', ev('SUM(MAKEARRAY(3, 3, LAMBDA(r, c, IF(r=c, 1, 0))))'), '3')
+  eq('array', 'FREQUENCY buckets', ev('SUM(FREQUENCY(A1:A5, B1:B2))', { A1: '1', A2: '5', A3: '9', A4: '3', A5: '7', B1: '4', B2: '8' }), '5')
+
+  // --- v3: LAMBDA / LET ---
+  eq('lambda', 'LET binds + uses', ev('LET(x, 5, y, 3, x*y)'), '15')
+  eq('lambda', 'LET chained bindings', ev('LET(a, 2, b, a*3, b+a)'), '8')
+  eq('lambda', 'immediately-applied lambda', ev('LAMBDA(x, y, x+y)(4, 6)'), '10')
+  eq('lambda', 'closure captures LET name', ev('LET(k, 10, f, LAMBDA(x, x+k), f(5))'), '15')
+  eq('lambda', 'naked lambda → #CALC!', ev('LAMBDA(x, x)'), '#CALC!')
+  eq('lambda', 'recursion guard', ev('LET(n, 3, REDUCE(1, SEQUENCE(n), LAMBDA(a, i, a*i)))'), '6')
+
+  // --- v3: engine internals (spill, goal seek) ---
+  r.push(spillTests())
+  r.push(goalSeekTests())
+
   // --- the dependency graph ---
   r.push(depGraphTests())
   r.push(cycleTest())
@@ -188,6 +223,85 @@ export function runSelfTests(): TestResult[] {
   r.push(renameSheetTest())
 
   return r.flat()
+}
+
+// ---- v3: dynamic-array spilling --------------------------------------------
+
+function spillTests(): TestResult[] {
+  const out: TestResult[] = []
+  const ok = (name: string, pass: boolean, detail?: string) => out.push({ group: 'spill', name, pass, detail: pass ? undefined : detail })
+
+  // A vertical SEQUENCE spills down into the cells below its anchor.
+  const wb = new Workbook(40, 20)
+  wb.setCell({ row: 0, col: 0 }, '=SEQUENCE(3)') // A1 spills A1:A3
+  const a1 = wb.getDisplay({ row: 0, col: 0 })
+  const a2 = wb.getDisplay({ row: 1, col: 0 })
+  const a3 = wb.getDisplay({ row: 2, col: 0 })
+  ok('SEQUENCE spills A1:A3', a1 === '1' && a2 === '2' && a3 === '3', `got ${a1}/${a2}/${a3}`)
+
+  // The interior of a spill is readable by another formula (dependency injection).
+  wb.setCell({ row: 0, col: 2 }, '=A2*10') // C1 reads a spilled cell
+  const c1 = wb.getDisplay({ row: 0, col: 2 })
+  ok('interior cell A2 is readable (=A2*10)', c1 === '20', `got ${c1}`)
+
+  // Spill membership metadata.
+  const info = wb.spillInfo({ row: 1, col: 0 })
+  ok('spillInfo reports the anchor', !!info && !info.isAnchor && info.anchor.row === 0 && info.anchor.col === 0, JSON.stringify(info))
+  const anchorInfo = wb.spillInfo({ row: 0, col: 0 })
+  ok('anchor reports isAnchor', !!anchorInfo && anchorInfo.isAnchor, JSON.stringify(anchorInfo))
+
+  // A value in the spill path blocks it → #SPILL!, and removing the block restores it.
+  const wb2 = new Workbook(40, 20)
+  wb2.setCell({ row: 1, col: 0 }, 'X') // A2 occupied
+  wb2.setCell({ row: 0, col: 0 }, '=SEQUENCE(3)') // A1 wants A1:A3
+  ok('blocked spill → #SPILL!', wb2.getDisplay({ row: 0, col: 0 }) === '#SPILL!', wb2.getDisplay({ row: 0, col: 0 }))
+  wb2.setCell({ row: 1, col: 0 }, '') // clear the block
+  const after = [wb2.getDisplay({ row: 0, col: 0 }), wb2.getDisplay({ row: 1, col: 0 }), wb2.getDisplay({ row: 2, col: 0 })].join('/')
+  ok('clearing the block restores the spill', after === '1/2/3', after)
+
+  // Editing the anchor away clears the spilled cells.
+  wb2.setCell({ row: 0, col: 0 }, '5')
+  ok('removing the array clears spilled cells', wb2.getDisplay({ row: 1, col: 0 }) === '' && wb2.getDisplay({ row: 2, col: 0 }) === '', 'spill not cleared')
+
+  // A spill that would run off the sheet errors rather than truncating.
+  const wb3 = new Workbook(3, 3)
+  wb3.setCell({ row: 2, col: 0 }, '=SEQUENCE(5)') // only 1 row of room below
+  ok('spill past the edge → #SPILL!', wb3.getDisplay({ row: 2, col: 0 }) === '#SPILL!', wb3.getDisplay({ row: 2, col: 0 }))
+
+  return out
+}
+
+// ---- v3: Goal Seek ----------------------------------------------------------
+
+function goalSeekTests(): TestResult[] {
+  const out: TestResult[] = []
+  const near = (a: number, b: number, eps = 1e-4) => Math.abs(a - b) <= eps
+
+  // Linear: B1 = 3*A1 + 5, solve for B1 = 20 → A1 = 5.
+  const wb = new Workbook(20, 20)
+  wb.setCell({ row: 0, col: 0 }, '0')
+  wb.setCell({ row: 0, col: 1 }, '=3*A1+5')
+  const lin = wb.goalSeek({ row: 0, col: 1 }, 20, { row: 0, col: 0 })
+  out.push({ group: 'goalseek', name: 'linear 3x+5=20 → x=5', pass: lin.found && near(lin.x, 5), detail: `x=${lin.x}` })
+  // Goal Seek must leave the model untouched until applied.
+  out.push({ group: 'goalseek', name: 'workbook restored after solve', pass: wb.getDisplay({ row: 0, col: 0 }) === '0', detail: wb.getRaw({ row: 0, col: 0 }) })
+
+  // Nonlinear: B1 = A1^2, solve for 2 → √2.
+  const wb2 = new Workbook(20, 20)
+  wb2.setCell({ row: 0, col: 0 }, '1')
+  wb2.setCell({ row: 0, col: 1 }, '=A1^2')
+  const root = wb2.goalSeek({ row: 0, col: 1 }, 2, { row: 0, col: 0 })
+  out.push({ group: 'goalseek', name: 'nonlinear x²=2 → x≈1.41421', pass: root.found && near(Math.abs(root.x), Math.SQRT2), detail: `x=${root.x}` })
+
+  // A target that depends on the changing cell through a chain of formulas.
+  const wb3 = new Workbook(20, 20)
+  wb3.setCell({ row: 0, col: 0 }, '1') // A1
+  wb3.setCell({ row: 1, col: 0 }, '=A1*2') // A2
+  wb3.setCell({ row: 2, col: 0 }, '=A2+10') // A3 = 2*A1 + 10
+  const chain = wb3.goalSeek({ row: 2, col: 0 }, 30, { row: 0, col: 0 })
+  out.push({ group: 'goalseek', name: 'through a 3-cell chain → x=10', pass: chain.found && near(chain.x, 10), detail: `x=${chain.x}` })
+
+  return out
 }
 
 // ---- multi-sheet, names, and rename ----------------------------------------

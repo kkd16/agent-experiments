@@ -9,8 +9,10 @@
 import type { Node } from './ast'
 import type { Coord, RangeBox } from './address'
 import { coordKey, keyToCoord, boxOf } from './address'
-import type { RuntimeValue, Scalar, SparklineValue } from './values'
-import { BLANK, err, isSparkline, asScalar } from './values'
+import type { RuntimeValue, Scalar, SparklineValue, MatrixValue } from './values'
+import { BLANK, err, isSparkline, isMatrix, asScalar } from './values'
+import { solve } from './solver'
+import type { GoalSeekResult } from './solver'
 import { parseFormula, ParseError } from './parser'
 import { renameSheetInFormula } from './rewrite'
 import { evaluate } from './evaluator'
@@ -61,6 +63,16 @@ export interface ResolvedRef {
   coord: Coord
 }
 
+/** Where a cell sits inside a spilled dynamic array, for the UI. */
+export interface SpillInfo {
+  /** Top-left cell of the array (the cell that holds the formula). */
+  anchor: Coord
+  /** True when *this* cell is the anchor; false for the cells it spilled into. */
+  isAnchor: boolean
+  /** The full rectangle the array occupies. */
+  region: RangeBox
+}
+
 const NUMERIC_RE = /^[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?$/
 const SEP = '␟' // global-key separator (a control char that never appears in ids)
 
@@ -82,6 +94,10 @@ export class Workbook {
   private values = new Map<string, Scalar | SparklineValue>() // gkey -> value
   private precedents = new Map<string, Set<string>>() // gkey -> precedent gkeys
   private dependents = new Map<string, Set<string>>() // gkey -> dependent gkeys
+
+  // Dynamic-array spill bookkeeping (rebuilt every recompute, never serialized).
+  private spillOwner = new Map<string, string>() // any covered gkey -> its anchor gkey
+  private spillRegion = new Map<string, RangeBox>() // anchor gkey -> the rectangle it fills
 
   constructor(rows = 200, cols = 52) {
     this.rows = rows
@@ -352,7 +368,27 @@ export class Workbook {
     return this.sheets.find((s) => s.id === sheetId)?.cells.get(cellKey)
   }
 
+  /** Recompute every value in the workbook. Dynamic arrays make this iterative: a
+   *  formula can return a matrix that *spills* into neighbouring cells, and another
+   *  formula may read one of those spilled-into cells. A single topological pass gets
+   *  this right whenever the reader references the array's anchor; the rare case where
+   *  it only touches an interior spilled cell is resolved by re-running with the spill
+   *  ownership discovered last time, which converges in a couple of passes. */
   private recompute(): void {
+    const MAX_PASSES = 8
+    let ownership = new Map<string, string>()
+    for (let pass = 0; pass < MAX_PASSES; pass++) {
+      const next = this.evalPass(ownership)
+      this.spillOwner = next.ownership
+      this.spillRegion = next.regions
+      if (mapsEqual(next.ownership, ownership)) return
+      ownership = next.ownership
+    }
+  }
+
+  /** One full evaluation pass. `priorOwnership` (from the previous pass) lets us add
+   *  the dependency edges that link an array anchor to formulas reading its interior. */
+  private evalPass(priorOwnership: Map<string, string>): { ownership: Map<string, string>; regions: Map<string, RangeBox> } {
     this.values.clear()
     this.precedents.clear()
     this.dependents.clear()
@@ -373,6 +409,14 @@ export class Workbook {
     const indegree = new Map<string, number>()
     const edges = new Map<string, Set<string>>()
     for (const gk of formulaKeys) indegree.set(gk, 0)
+    const addEdge = (from: string, to: string): void => {
+      if (!formulaSet.has(from) || from === to) return
+      if (!edges.has(from)) edges.set(from, new Set())
+      if (!edges.get(from)!.has(to)) {
+        edges.get(from)!.add(to)
+        indegree.set(to, (indegree.get(to) ?? 0) + 1)
+      }
+    }
 
     for (const gk of formulaKeys) {
       const { sheetId } = ungkey(gk)
@@ -383,13 +427,11 @@ export class Workbook {
       for (const p of precedentKeys) {
         if (!this.dependents.has(p)) this.dependents.set(p, new Set())
         this.dependents.get(p)!.add(gk)
-        if (formulaSet.has(p)) {
-          if (!edges.has(p)) edges.set(p, new Set())
-          if (!edges.get(p)!.has(gk)) {
-            edges.get(p)!.add(gk)
-            indegree.set(gk, (indegree.get(gk) ?? 0) + 1)
-          }
-        }
+        addEdge(p, gk)
+        // If `p` was an interior cell of a spilled array last pass, this formula also
+        // depends on that array's anchor — order the anchor first so the value exists.
+        const anchor = priorOwnership.get(p)
+        if (anchor) addEdge(anchor, gk)
       }
     }
 
@@ -413,6 +455,10 @@ export class Workbook {
       if (!ordered.has(gk)) this.values.set(gk, err('#CIRC!', 'circular reference'))
     }
 
+    const ownership = new Map<string, string>()
+    const regions = new Map<string, RangeBox>()
+    const claimed = new Set<string>() // cells claimed by some spill this pass
+
     for (const gk of order) {
       const rec = this.recordAt(gk)!
       const { sheetId, cellKey } = ungkey(gk)
@@ -422,8 +468,87 @@ export class Workbook {
       }
       const ctx = this.contextFor(sheetId, keyToCoord(cellKey))
       const result = evaluate(rec.ast!, ctx)
-      this.values.set(gk, isSparkline(result) ? result : asScalar(result))
+      if (isMatrix(result) && (result.rows > 1 || result.cols > 1)) {
+        this.spillInto(gk, sheetId, keyToCoord(cellKey), result, ownership, regions, claimed)
+      } else {
+        this.values.set(gk, isSparkline(result) ? result : asScalar(result))
+      }
     }
+    return { ownership, regions }
+  }
+
+  /** Attempt to spill a matrix result from its anchor cell. On any obstruction the
+   *  anchor becomes `#SPILL!` and nothing is written; otherwise every cell of the
+   *  rectangle gets its value and is recorded as owned by this anchor. */
+  private spillInto(
+    gk: string,
+    sheetId: string,
+    anchor: Coord,
+    m: MatrixValue,
+    ownership: Map<string, string>,
+    regions: Map<string, RangeBox>,
+    claimed: Set<string>,
+  ): void {
+    const bottom = anchor.row + m.rows - 1
+    const right = anchor.col + m.cols - 1
+    if (bottom >= this.rows || right >= this.cols) {
+      this.values.set(gk, err('#SPILL!', 'the array would extend past the sheet'))
+      return
+    }
+    const sheet = this.sheets.find((s) => s.id === sheetId)!
+    // Obstruction check: any non-anchor cell in the rectangle that already holds its
+    // own content, or that another array already claimed this pass, blocks the spill.
+    for (let r = anchor.row; r <= bottom; r++) {
+      for (let c = anchor.col; c <= right; c++) {
+        if (r === anchor.row && c === anchor.col) continue
+        const ck = coordKey(r, c)
+        if (sheet.cells.has(ck) || claimed.has(gkey(sheetId, ck))) {
+          this.values.set(gk, err('#SPILL!', 'a value is in the way of the array'))
+          return
+        }
+      }
+    }
+    // Commit the spill.
+    for (let r = anchor.row; r <= bottom; r++) {
+      for (let c = anchor.col; c <= right; c++) {
+        const tgk = gkey(sheetId, coordKey(r, c))
+        this.values.set(tgk, m.data[r - anchor.row][c - anchor.col])
+        ownership.set(tgk, gk)
+        claimed.add(tgk)
+      }
+    }
+    regions.set(gk, { top: anchor.row, left: anchor.col, bottom, right })
+  }
+
+  /** Spill membership for a cell, or null if it isn't part of a dynamic array. */
+  spillInfo(coord: Coord, sheetId?: string): SpillInfo | null {
+    const sid = sheetId ?? this.activeId
+    const gk = gkey(sid, coordKey(coord.row, coord.col))
+    const owner = this.spillOwner.get(gk)
+    if (!owner) return null
+    const anchorCoord = keyToCoord(ungkey(owner).cellKey)
+    const region = this.spillRegion.get(owner) ?? boxOf(anchorCoord, anchorCoord)
+    return { anchor: anchorCoord, isAnchor: owner === gk, region }
+  }
+
+  // ---- what-if: Goal Seek ---------------------------------------------------
+
+  /** Find the value of the `changing` cell that drives the `target` cell to
+   *  `targetValue`. The workbook is restored to its original state before returning,
+   *  so the caller decides whether to apply the result (via `setCell`). */
+  goalSeek(target: Coord, targetValue: number, changing: Coord, sheetId?: string): GoalSeekResult & { achieved: number } {
+    const sid = sheetId ?? this.activeId
+    const savedRaw = this.getRaw(changing, sid)
+    const readTarget = (x: number): number => {
+      this.setCell(changing, String(x), sid)
+      const v = this.getValue(target, sid)
+      return typeof v === 'number' ? v : NaN
+    }
+    const cur = this.getValue(changing, sid)
+    const start = typeof cur === 'number' ? cur : 0
+    const res = solve(readTarget, targetValue, start)
+    this.setCell(changing, savedRaw, sid) // leave the model untouched
+    return { ...res, achieved: res.fx }
   }
 
   /** Build an EvalContext for a formula living at (sheetId, coord). */
@@ -487,6 +612,10 @@ export class Workbook {
         this.collectPrecedents(node.right, homeSheetId, into, nameStack)
         break
       case 'call':
+        for (const a of node.args) this.collectPrecedents(a, homeSheetId, into, nameStack)
+        break
+      case 'apply':
+        this.collectPrecedents(node.fn, homeSheetId, into, nameStack)
         for (const a of node.args) this.collectPrecedents(a, homeSheetId, into, nameStack)
         break
       default:
@@ -608,6 +737,12 @@ export interface WorkbookSnapshot {
 
 function inSheet(row: number, col: number, rows: number, cols: number): boolean {
   return row >= 0 && col >= 0 && row < rows && col < cols
+}
+
+function mapsEqual(a: Map<string, string>, b: Map<string, string>): boolean {
+  if (a.size !== b.size) return false
+  for (const [k, v] of a) if (b.get(k) !== v) return false
+  return true
 }
 
 function compile(raw: string): CellRecord {

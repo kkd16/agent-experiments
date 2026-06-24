@@ -20,3 +20,5 @@ export type Node =
   | { type: 'percent'; operand: Node }
   | { type: 'binary'; op: BinaryOp; left: Node; right: Node }
   | { type: 'call'; name: string; args: Node[] }
+  // Postfix application of a computed function value, e.g. `LAMBDA(x, x+1)(5)`.
+  | { type: 'apply'; fn: Node; args: Node[] }

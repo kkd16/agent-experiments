@@ -6,8 +6,8 @@
 
 import type { Node } from './ast'
 import type { FnImpl, FnHelpers } from './evaluator'
-import type { Scalar, ErrorValue, RuntimeValue, SparklineValue, MatrixValue } from './values'
-import { BLANK, err, isError, isBlank, toNumber, toText, toBool, matrix } from './values'
+import type { Scalar, ErrorValue, RuntimeValue, SparklineValue, MatrixValue, LambdaValue } from './values'
+import { BLANK, err, isError, isBlank, asScalar, toNumber, toText, toBool, matrix } from './values'
 import {
   dateToSerial,
   timeToFraction,
@@ -736,6 +736,439 @@ export const FUNCTIONS: Record<string, FnImpl> = {
   REGEXREPLACE: (args, h) => regexOp(args, h, 'replace'),
   UNICHAR: (args, h) => need(numAt(args, 0, h), (n) => (n >= 1 && n <= 0x10ffff ? String.fromCodePoint(Math.floor(n)) : err('#VALUE!'))),
   UNICODE: (args, h) => need(textAt(args, 0, h), (s) => (s.length ? s.codePointAt(0)! : err('#VALUE!'))),
+
+  // ---- dynamic arrays (v3): these return matrices, which the workbook *spills* ----
+  SEQUENCE: (args, h) => {
+    const rows = numAt(args, 0, h, 1)
+    if (isError(rows)) return rows
+    const cols = numAt(args, 1, h, 1)
+    if (isError(cols)) return cols
+    const start = numAt(args, 2, h, 1)
+    if (isError(start)) return start
+    const step = numAt(args, 3, h, 1)
+    if (isError(step)) return step
+    const R = Math.trunc(rows)
+    const C = Math.trunc(cols)
+    if (R < 1 || C < 1) return err('#VALUE!')
+    if (R * C > MAX_ARRAY) return err('#NUM!', 'array too large')
+    const data: Scalar[][] = []
+    let k = 0
+    for (let r = 0; r < R; r++) {
+      const row: Scalar[] = []
+      for (let c = 0; c < C; c++) row.push(start + k++ * step)
+      data.push(row)
+    }
+    return matrix(data)
+  },
+  TRANSPOSE: (args, h) => {
+    const m = h.asMatrix(args[0])
+    if (isError(m)) return m
+    return matrix(transpose(m.data))
+  },
+  ROWS: (args, h) => {
+    const m = h.asMatrix(args[0])
+    return isError(m) ? m : m.rows
+  },
+  COLUMNS: (args, h) => {
+    const m = h.asMatrix(args[0])
+    return isError(m) ? m : m.cols
+  },
+  UNIQUE: (args, h) => {
+    const m = h.asMatrix(args[0])
+    if (isError(m)) return m
+    const byCol = args.length > 1 && truthy(toBool(h.scalarOf(args[1])))
+    const exactlyOnce = args.length > 2 && truthy(toBool(h.scalarOf(args[2])))
+    const lines = byCol ? transpose(m.data) : m.data
+    const counts = new Map<string, number>()
+    for (const line of lines) {
+      const k = lineKey(line)
+      counts.set(k, (counts.get(k) ?? 0) + 1)
+    }
+    const seen = new Set<string>()
+    const kept: Scalar[][] = []
+    for (const line of lines) {
+      const k = lineKey(line)
+      if (seen.has(k)) continue
+      seen.add(k)
+      if (exactlyOnce && counts.get(k) !== 1) continue
+      kept.push(line)
+    }
+    if (!kept.length) return err('#CALC!', 'UNIQUE found nothing')
+    return matrix(byCol ? transpose(kept) : kept)
+  },
+  SORT: (args, h) => {
+    const m = h.asMatrix(args[0])
+    if (isError(m)) return m
+    const idx = numAt(args, 1, h, 1)
+    if (isError(idx)) return idx
+    const order = numAt(args, 2, h, 1)
+    if (isError(order)) return order
+    const byCol = args.length > 3 && truthy(toBool(h.scalarOf(args[3])))
+    const lines = byCol ? transpose(m.data) : m.data
+    const i = Math.trunc(idx) - 1
+    if (i < 0 || i >= (lines[0]?.length ?? 0)) return err('#VALUE!', 'SORT index out of range')
+    const dir = order < 0 ? -1 : 1
+    const sorted = stableSort(lines, (a, b) => {
+      const c = looseCompare(a[i] ?? BLANK, b[i] ?? BLANK)
+      return (c === null ? 0 : c) * dir
+    })
+    return matrix(byCol ? transpose(sorted) : sorted)
+  },
+  SORTBY: (args, h) => {
+    const m = h.asMatrix(args[0])
+    if (isError(m)) return m
+    // SORTBY(array, by_array, [order]) — sort the rows of `array` by `by_array`.
+    const by = h.asMatrix(args[1])
+    if (isError(by)) return by
+    const order = numAt(args, 2, h, 1)
+    if (isError(order)) return order
+    const keys = by.data.flat()
+    if (keys.length !== m.data.length) return err('#VALUE!', 'SORTBY sizes differ')
+    const dir = order < 0 ? -1 : 1
+    const rows = m.data.map((row, r) => ({ row, key: keys[r] ?? BLANK }))
+    const sorted = stableSort(rows, (a, b) => {
+      const c = looseCompare(a.key, b.key)
+      return (c === null ? 0 : c) * dir
+    })
+    return matrix(sorted.map((x) => x.row))
+  },
+  FILTER: (args, h) => {
+    const m = h.asMatrix(args[0])
+    if (isError(m)) return m
+    const inc = h.asMatrix(args[1])
+    if (isError(inc)) return inc
+    const flags = inc.data.flat()
+    if (flags.length === m.data.length) {
+      const kept = m.data.filter((_, r) => truthy(toBool(flags[r] ?? BLANK)))
+      if (!kept.length) return args.length > 2 ? h.eval(args[2]) : err('#CALC!', 'FILTER kept nothing')
+      return matrix(kept)
+    }
+    if (flags.length === (m.data[0]?.length ?? 0)) {
+      const T = transpose(m.data)
+      const kept = T.filter((_, c) => truthy(toBool(flags[c] ?? BLANK)))
+      if (!kept.length) return args.length > 2 ? h.eval(args[2]) : err('#CALC!', 'FILTER kept nothing')
+      return matrix(transpose(kept))
+    }
+    return err('#VALUE!', 'FILTER condition size mismatch')
+  },
+  RANDARRAY: (args, h) => {
+    const rows = numAt(args, 0, h, 1)
+    if (isError(rows)) return rows
+    const cols = numAt(args, 1, h, 1)
+    if (isError(cols)) return cols
+    const lo = numAt(args, 2, h, 0)
+    if (isError(lo)) return lo
+    const hi = numAt(args, 3, h, 1)
+    if (isError(hi)) return hi
+    const whole = args.length > 4 && truthy(toBool(h.scalarOf(args[4])))
+    const R = Math.trunc(rows)
+    const C = Math.trunc(cols)
+    if (R < 1 || C < 1) return err('#VALUE!')
+    if (R * C > MAX_ARRAY) return err('#NUM!', 'array too large')
+    const data: Scalar[][] = []
+    for (let r = 0; r < R; r++) {
+      const row: Scalar[] = []
+      for (let c = 0; c < C; c++) {
+        const x = lo + Math.random() * (hi - lo)
+        row.push(whole ? Math.floor(x) : x)
+      }
+      data.push(row)
+    }
+    return matrix(data)
+  },
+  HSTACK: (args, h) => stack(args, h, 'h'),
+  VSTACK: (args, h) => stack(args, h, 'v'),
+  TOCOL: (args, h) => toVector(args, h, 'col'),
+  TOROW: (args, h) => toVector(args, h, 'row'),
+  TAKE: (args, h) => takeDrop(args, h, 'take'),
+  DROP: (args, h) => takeDrop(args, h, 'drop'),
+  EXPAND: (args, h) => {
+    const m = h.asMatrix(args[0])
+    if (isError(m)) return m
+    const rows = numAt(args, 1, h, m.rows)
+    if (isError(rows)) return rows
+    const cols = numAt(args, 2, h, m.cols)
+    if (isError(cols)) return cols
+    const pad: Scalar = args.length > 3 ? h.scalarOf(args[3]) : err('#N/A')
+    const R = Math.trunc(rows)
+    const C = Math.trunc(cols)
+    if (R < m.rows || C < m.cols) return err('#VALUE!', 'EXPAND cannot shrink')
+    if (R * C > MAX_ARRAY) return err('#NUM!')
+    const data: Scalar[][] = []
+    for (let r = 0; r < R; r++) {
+      const row: Scalar[] = []
+      for (let c = 0; c < C; c++) row.push(r < m.rows && c < m.cols ? m.data[r][c] : pad)
+      data.push(row)
+    }
+    return matrix(data)
+  },
+  CHOOSEROWS: (args, h) => chooseLines(args, h, 'row'),
+  CHOOSECOLS: (args, h) => chooseLines(args, h, 'col'),
+  FREQUENCY: (args, h) => {
+    const data = numbers([args[0]], h)
+    if (isError(data)) return data
+    const bins = numbers([args[1]], h)
+    if (isError(bins)) return bins
+    const sortedBins = [...bins].sort((a, b) => a - b)
+    const counts = new Array(sortedBins.length + 1).fill(0)
+    for (const x of data) {
+      let placed = false
+      for (let i = 0; i < sortedBins.length; i++) {
+        if (x <= sortedBins[i]) {
+          counts[i]++
+          placed = true
+          break
+        }
+      }
+      if (!placed) counts[counts.length - 1]++
+    }
+    return matrix(counts.map((c) => [c]))
+  },
+
+  // ---- LAMBDA & higher-order functions (v3): a real functional layer ----
+  LAMBDA: (args, h) => {
+    if (args.length < 1) return err('#VALUE!', 'LAMBDA needs a body')
+    const params: string[] = []
+    for (let i = 0; i < args.length - 1; i++) {
+      const p = args[i]
+      if (p.type !== 'name') return err('#VALUE!', 'LAMBDA parameters must be plain names')
+      params.push(p.name.toUpperCase())
+    }
+    const closure = new Map<string, RuntimeValue>(h.ctx.locals ?? [])
+    const lam: LambdaValue = { kind: 'lambda', params, body: args[args.length - 1], closure }
+    return lam
+  },
+  LET: (args, h) => {
+    const n = args.length
+    if (n < 3 || n % 2 === 0) return err('#VALUE!', 'LET needs name/value pairs and a final expression')
+    const extra = new Map<string, RuntimeValue>()
+    for (let i = 0; i + 2 <= n - 1; i += 2) {
+      const nameNode = args[i]
+      if (nameNode.type !== 'name') return err('#VALUE!', 'LET names must be identifiers')
+      const value = h.evalWith(args[i + 1], extra)
+      extra.set(nameNode.name.toUpperCase(), value)
+    }
+    return h.evalWith(args[n - 1], extra)
+  },
+  MAP: (args, h) => {
+    if (args.length < 2) return err('#VALUE!', 'MAP needs an array and a lambda')
+    const fn = h.asLambda(args[args.length - 1])
+    if (isError(fn)) return fn
+    const mats: MatrixValue[] = []
+    for (let i = 0; i < args.length - 1; i++) {
+      const m = h.asMatrix(args[i])
+      if (isError(m)) return m
+      mats.push(m)
+    }
+    const rows = mats[0].rows
+    const cols = mats[0].cols
+    for (const m of mats) if (m.rows !== rows || m.cols !== cols) return err('#VALUE!', 'MAP arrays differ in shape')
+    const data: Scalar[][] = []
+    for (let r = 0; r < rows; r++) {
+      const row: Scalar[] = []
+      for (let c = 0; c < cols; c++) {
+        const out = h.applyLambda(fn, mats.map((m) => m.data[r][c]))
+        row.push(asScalar(out))
+      }
+      data.push(row)
+    }
+    return matrix(data)
+  },
+  REDUCE: (args, h) => {
+    if (args.length !== 3) return err('#VALUE!', 'REDUCE(init, array, lambda)')
+    let acc: RuntimeValue = h.eval(args[0])
+    const m = h.asMatrix(args[1])
+    if (isError(m)) return m
+    const fn = h.asLambda(args[2])
+    if (isError(fn)) return fn
+    for (const row of m.data)
+      for (const v of row) {
+        acc = h.applyLambda(fn, [acc, v])
+        if (isError(acc)) return acc
+      }
+    return asScalar(acc)
+  },
+  SCAN: (args, h) => {
+    if (args.length !== 3) return err('#VALUE!', 'SCAN(init, array, lambda)')
+    let acc: RuntimeValue = h.eval(args[0])
+    const m = h.asMatrix(args[1])
+    if (isError(m)) return m
+    const fn = h.asLambda(args[2])
+    if (isError(fn)) return fn
+    const data: Scalar[][] = []
+    for (const row of m.data) {
+      const outRow: Scalar[] = []
+      for (const v of row) {
+        acc = h.applyLambda(fn, [acc, v])
+        if (isError(acc)) return acc
+        outRow.push(asScalar(acc))
+      }
+      data.push(outRow)
+    }
+    return matrix(data)
+  },
+  BYROW: (args, h) => byLine(args, h, 'row'),
+  BYCOL: (args, h) => byLine(args, h, 'col'),
+  MAKEARRAY: (args, h) => {
+    const rows = numAt(args, 0, h)
+    if (isError(rows)) return rows
+    const cols = numAt(args, 1, h)
+    if (isError(cols)) return cols
+    const fn = h.asLambda(args[2])
+    if (isError(fn)) return fn
+    const R = Math.trunc(rows)
+    const C = Math.trunc(cols)
+    if (R < 1 || C < 1) return err('#VALUE!')
+    if (R * C > MAX_ARRAY) return err('#NUM!', 'array too large')
+    const data: Scalar[][] = []
+    for (let r = 0; r < R; r++) {
+      const row: Scalar[] = []
+      for (let c = 0; c < C; c++) row.push(asScalar(h.applyLambda(fn, [r + 1, c + 1])))
+      data.push(row)
+    }
+    return matrix(data)
+  },
+}
+
+/** A hard ceiling on how big a generated array can be, to keep the UI responsive. */
+const MAX_ARRAY = 200_000
+
+// ---- dynamic-array helpers --------------------------------------------------
+
+/** Strict truthiness for array conditions — an error or non-boolean is *not* kept. */
+function truthy(b: boolean | ErrorValue): boolean {
+  return b === true
+}
+
+const numRange = (a: number, b: number): number[] => {
+  const out: number[] = []
+  for (let i = a; i < b; i++) out.push(i)
+  return out
+}
+
+/** A canonical key for a row/column, so UNIQUE can dedupe (text compares case-insensitively). */
+function lineKey(line: Scalar[]): string {
+  return line.map(scalarKey).join('␟')
+}
+function scalarKey(v: Scalar): string {
+  if (typeof v === 'number') return 'n:' + v
+  if (typeof v === 'string') return 's:' + v.toLowerCase()
+  if (typeof v === 'boolean') return 'b:' + v
+  if (isBlank(v)) return 'x'
+  if (isError(v)) return 'e:' + v.code
+  return '?'
+}
+
+/** A guaranteed-stable sort (ties keep their original order) regardless of engine. */
+function stableSort<T>(arr: T[], cmp: (a: T, b: T) => number): T[] {
+  return arr
+    .map((v, i) => [v, i] as const)
+    .sort((a, b) => cmp(a[0], b[0]) || a[1] - b[1])
+    .map((x) => x[0])
+}
+
+function stack(args: Node[], h: FnHelpers, dir: 'h' | 'v'): RuntimeValue {
+  const mats: MatrixValue[] = []
+  for (const a of args) {
+    const m = h.asMatrix(a)
+    if (isError(m)) return m
+    mats.push(m)
+  }
+  if (!mats.length) return err('#VALUE!')
+  if (dir === 'h') {
+    const rows = Math.max(...mats.map((m) => m.rows))
+    const out: Scalar[][] = []
+    for (let r = 0; r < rows; r++) {
+      const row: Scalar[] = []
+      for (const m of mats) for (let c = 0; c < m.cols; c++) row.push(r < m.rows ? m.data[r][c] : err('#N/A'))
+      out.push(row)
+    }
+    return matrix(out)
+  }
+  const cols = Math.max(...mats.map((m) => m.cols))
+  const out: Scalar[][] = []
+  for (const m of mats)
+    for (let r = 0; r < m.rows; r++) {
+      const row: Scalar[] = []
+      for (let c = 0; c < cols; c++) row.push(c < m.cols ? m.data[r][c] : err('#N/A'))
+      out.push(row)
+    }
+  return matrix(out)
+}
+
+function toVector(args: Node[], h: FnHelpers, dir: 'col' | 'row'): RuntimeValue {
+  const m = h.asMatrix(args[0])
+  if (isError(m)) return m
+  const ignore = numAt(args, 1, h, 0)
+  if (isError(ignore)) return ignore
+  const byCol = args.length > 2 && truthy(toBool(h.scalarOf(args[2])))
+  const ig = Math.trunc(ignore)
+  const flat: Scalar[] = []
+  const push = (v: Scalar) => {
+    if ((ig === 1 || ig === 3) && isBlank(v)) return
+    if ((ig === 2 || ig === 3) && isError(v)) return
+    flat.push(v)
+  }
+  if (byCol) for (let c = 0; c < m.cols; c++) for (let r = 0; r < m.rows; r++) push(m.data[r][c])
+  else for (let r = 0; r < m.rows; r++) for (let c = 0; c < m.cols; c++) push(m.data[r][c])
+  if (!flat.length) return err('#CALC!')
+  return dir === 'col' ? matrix(flat.map((v) => [v])) : matrix([flat])
+}
+
+/** Indices to keep for a TAKE/DROP of `count` along an axis of length `len`. */
+function pickEdge(count: number | null, len: number, kind: 'take' | 'drop'): number[] {
+  if (count === null) return numRange(0, len)
+  const k = Math.trunc(count)
+  if (kind === 'take') return k >= 0 ? numRange(0, Math.min(k, len)) : numRange(Math.max(0, len + k), len)
+  return k >= 0 ? numRange(Math.min(k, len), len) : numRange(0, Math.max(0, len + k))
+}
+
+function takeDrop(args: Node[], h: FnHelpers, kind: 'take' | 'drop'): RuntimeValue {
+  const m = h.asMatrix(args[0])
+  if (isError(m)) return m
+  let rCount: number | null = null
+  if (args.length > 1) {
+    const v = numAt(args, 1, h)
+    if (isError(v)) return v
+    rCount = v
+  }
+  let cCount: number | null = null
+  if (args.length > 2) {
+    const v = numAt(args, 2, h)
+    if (isError(v)) return v
+    cCount = v
+  }
+  const rowIdx = pickEdge(rCount, m.rows, kind)
+  const colIdx = pickEdge(cCount, m.cols, kind)
+  if (!rowIdx.length || !colIdx.length) return err('#CALC!')
+  return matrix(rowIdx.map((r) => colIdx.map((c) => m.data[r][c])))
+}
+
+function chooseLines(args: Node[], h: FnHelpers, dir: 'row' | 'col'): RuntimeValue {
+  const m = h.asMatrix(args[0])
+  if (isError(m)) return m
+  const lines = dir === 'row' ? m.data : transpose(m.data)
+  const picked: Scalar[][] = []
+  for (let i = 1; i < args.length; i++) {
+    const idx = numAt(args, i, h)
+    if (isError(idx)) return idx
+    let k = Math.trunc(idx)
+    if (k < 0) k = lines.length + k + 1
+    if (k < 1 || k > lines.length) return err('#VALUE!', 'index out of range')
+    picked.push(lines[k - 1])
+  }
+  if (!picked.length) return err('#VALUE!')
+  return matrix(dir === 'row' ? picked : transpose(picked))
+}
+
+function byLine(args: Node[], h: FnHelpers, dir: 'row' | 'col'): RuntimeValue {
+  const m = h.asMatrix(args[0])
+  if (isError(m)) return m
+  const fn = h.asLambda(args[1])
+  if (isError(fn)) return fn
+  if (dir === 'row') return matrix(m.data.map((row) => [asScalar(h.applyLambda(fn, [matrix([row])]))]))
+  const T = transpose(m.data)
+  return matrix([T.map((col) => asScalar(h.applyLambda(fn, [matrix(col.map((v) => [v]))])))])
 }
 
 // ---- shared implementations -------------------------------------------------
