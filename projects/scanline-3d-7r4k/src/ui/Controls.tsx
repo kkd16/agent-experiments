@@ -323,6 +323,13 @@ export default function Controls(props: Props) {
               onChange={(v) => setRT({ maxBounces: v })} format={(v) => v.toFixed(0)}
             />
           )}
+          {rt.mode === 'path' && (
+            <Toggle
+              label="Multiple importance sampling"
+              value={rt.mis}
+              onChange={(v) => setRT({ mis: v })}
+            />
+          )}
           {rt.mode === 'ao' && (
             <Slider
               label="AO radius" value={rt.aoRadius} min={0.2} max={4} step={0.1}
@@ -346,8 +353,11 @@ export default function Controls(props: Props) {
             onChange={(v) => setRT({ resolutionScale: v })} format={(v) => `${(v * 100).toFixed(0)}%`}
           />
           <p className="blurb">
-            BVH-accelerated Möller–Trumbore tracing, next-event estimation to every light, and the
-            analytic sky as an infinite emitter — drag to orbit and it re-converges.
+            BVH-accelerated Möller–Trumbore tracing, and direct light by <em>multiple importance
+            sampling</em> — next-event estimation and BSDF sampling combined by the power heuristic,
+            so glossy surfaces under area lights converge fast and without double-counting. Toggle
+            MIS off to watch next-event-only fireflies erupt on the same scene. The analytic sky is
+            an infinite emitter — drag to orbit and it re-converges.
           </p>
         </Section>
       )}
@@ -495,7 +505,9 @@ export default function Controls(props: Props) {
             <div className="rt-tests">
               <p className="blurb">
                 {tests.filter((t) => t.pass).length}/{tests.length} checks passed — each re-derives a claim
-                from an independent reference.
+                from an independent reference: ray/triangle &amp; BVH vs brute force, the sampling
+                distributions, two furnace tests (energy conservation), an area-light furnace proving
+                MIS adds no double-count, and MIS cutting variance ~30000× vs next-event-only.
               </p>
               {tests.map((t) => (
                 <p key={t.name} className={`obj-msg ${t.pass ? 'ok' : 'err'}`}>

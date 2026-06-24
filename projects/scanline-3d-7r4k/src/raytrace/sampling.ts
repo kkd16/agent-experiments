@@ -130,3 +130,15 @@ export function fresnelSchlick(cosTheta: number, f0: Vec3): Vec3 {
   const f = Math.pow(clamp01(1 - cosTheta), 5)
   return [f0[0] + (1 - f0[0]) * f, f0[1] + (1 - f0[1]) * f, f0[2] + (1 - f0[2]) * f]
 }
+
+// Veach's power heuristic (β = 2) for combining two Monte-Carlo sampling strategies in
+// multiple importance sampling: the weight given to a sample drawn from strategy A whose
+// densities at that sample are pdfA / pdfB. Squaring sharpens the balance heuristic so the
+// lower-variance strategy dominates; the paired weights w(A)+w(B) sum to 1 by construction.
+// Returns 1 when the other strategy assigns zero density (so no light is ever lost).
+export function powerHeuristic(pdfA: number, pdfB: number): number {
+  const a2 = pdfA * pdfA
+  const b2 = pdfB * pdfB
+  const denom = a2 + b2
+  return denom > 0 ? a2 / denom : 0
+}

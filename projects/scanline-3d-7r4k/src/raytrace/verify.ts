@@ -181,5 +181,77 @@ export function runRTSelfTest(): RTTest[] {
     add('Furnace test (energy conservation)', ok, `mean radiance ${avg.toFixed(4)} of unit environment (white surface, 8 bounces)`)
   }
 
+  // 9 — area-light furnace: a surface fully enclosed by a unit-emissive shell must re-emit
+  // ≈ unit radiance — but here the light is a real emissive triangle mesh, so this exercises
+  // the *area-light* transport (NEE + the MIS-weighted BSDF emitter hits). A glossy surface
+  // that read > 1 would betray the old NEE/BSDF double-count; MIS keeps it energy-exact.
+  {
+    const emissive = (e: number): RTInstance['material'] =>
+      ({ albedo: [0, 0, 0], specular: 0, shininess: 1, rim: 0, metallic: 0, roughness: 1, emission: [e, e, e] })
+    const probe = (metallic: number, roughness: number): number => {
+      const insts: RTInstance[] = [
+        { mesh: buildMesh('sphere'), model: scaling(1, 1, 1), material: white([1, 1, 1], metallic, roughness), texture: null, normalMap: null },
+        { mesh: buildMesh('sphere'), model: scaling(12, 12, 12), material: emissive(1), texture: null, normalMap: null },
+      ]
+      const scene = new RTScene(insts)
+      const bvh = new BVH(scene)
+      const ctx: RTContext = {
+        scene, bvh, lights: [], env: null, ambient: [0, 0, 0],
+        sky: () => [0, 0, 0], maxBounces: 12, sunCosHalf: 1, lightRadius: 0, aoRadius: 1e30, mis: true,
+      }
+      const rng = new Rng(0xa11 ^ ((metallic * 7 + roughness * 13) | 0))
+      let sum = 0; const N = 16000
+      for (let k = 0; k < N; k++) {
+        const ang = rng.next() * Math.PI * 2
+        const r = Math.sqrt(rng.next()) * 0.85
+        const c = tracePath(Math.cos(ang) * r, Math.sin(ang) * r, 4, 0, 0, -1, ctx, rng)
+        sum += (c[0] + c[1] + c[2]) / 3
+      }
+      return sum / N
+    }
+    const diff = probe(0, 0.5)
+    const gloss = probe(1, 0.1)
+    const ok = diff > 0.95 && diff < 1.06 && gloss > 0.95 && gloss < 1.06
+    add('Area-light furnace (MIS, no double-count)', ok, `enclosed in a unit emitter: diffuse ${diff.toFixed(4)}, glossy metal ${gloss.toFixed(4)} (both ≈ 1 — no NEE/BSDF double count)`)
+  }
+
+  // 10 — MIS variance reduction: a glossy surface under a *large* area light is the classic
+  // case where next-event estimation alone is noisy (a random point on the big light rarely
+  // lands in the narrow specular lobe, so the rare hits carry huge weight) while BSDF
+  // sampling nails the lobe. MIS combines both — same mean (unbiased), far lower variance.
+  {
+    const glossy: RTInstance['material'] = { albedo: [1, 0.86, 0.45], specular: 0.5, shininess: 32, rim: 0, metallic: 1, roughness: 0.15 }
+    const emit: RTInstance['material'] = { albedo: [0, 0, 0], specular: 0, shininess: 1, rim: 0, metallic: 0, roughness: 1, emission: [8, 8, 8] }
+    const insts: RTInstance[] = [
+      { mesh: buildMesh('sphere'), model: scaling(1, 1, 1), material: glossy, texture: null, normalMap: null },
+      { mesh: buildMesh('sphere'), model: multiply(translation(0, 5, 0), scaling(3, 3, 3)), material: emit, texture: null, normalMap: null },
+    ]
+    const scene = new RTScene(insts)
+    const bvh = new BVH(scene)
+    const base = { scene, bvh, lights: [], env: null, ambient: [0, 0, 0] as Vec3, sky: (): Vec3 => [0, 0, 0], maxBounces: 2, sunCosHalf: 1, lightRadius: 0, aoRadius: 1e30 }
+    // a single fixed camera ray onto the glossy sphere — pure estimator variance at one pixel
+    const ox = 0, oy = 1, oz = 3.4
+    let dx = 0 - ox, dy = 0.55 - oy, dz = 0 - oz
+    const dl = Math.hypot(dx, dy, dz); dx /= dl; dy /= dl; dz /= dl
+    const measure = (mis: boolean): { mean: number; varr: number } => {
+      const ctx: RTContext = { ...base, mis }
+      const rng = new Rng(0x99)
+      let s = 0, s2 = 0; const N = 30000
+      for (let k = 0; k < N; k++) {
+        const c = tracePath(ox, oy, oz, dx, dy, dz, ctx, rng)
+        const v = (c[0] + c[1] + c[2]) / 3
+        s += v; s2 += v * v
+      }
+      const mean = s / N
+      return { mean, varr: Math.max(0, s2 / N - mean * mean) }
+    }
+    const on = measure(true)
+    const off = measure(false)
+    const ratio = off.varr / Math.max(1e-9, on.varr)
+    const meanErr = Math.abs(on.mean - off.mean) / Math.max(1e-6, off.mean)
+    const ok = ratio > 20 && meanErr < 0.05
+    add('MIS variance reduction vs NEE-only', ok, `same mean (Δ ${(meanErr * 100).toFixed(2)}%), variance ${ratio.toFixed(0)}× lower than next-event-only on a glossy surface under a large light`)
+  }
+
   return tests
 }

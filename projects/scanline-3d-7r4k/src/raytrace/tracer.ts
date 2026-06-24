@@ -11,7 +11,7 @@ import type { Environment } from '../render/environment.ts'
 import type { RTScene, RTMaterial } from './rtscene.ts'
 import type { BVH, ClosestHit } from './bvh.ts'
 import {
-  cosineHemisphere, distributionGGX, orthonormalBasis,
+  cosineHemisphere, distributionGGX, orthonormalBasis, powerHeuristic,
   sampleGGX, toWorld, uniformCone, uniformSphere, type Rng,
 } from './sampling.ts'
 import type { Medium, DistanceSample } from './medium.ts'
@@ -25,7 +25,6 @@ import { sampleFilmLUT } from './thinfilm.ts'
 const PI = Math.PI
 const EPS = 1e-3
 const tmpFilm = new Float64Array(3) // scratch for the thin-film reflectance lookup
-const SPECULAR_ROUGH = 0.1 // ≤ this counts as a "specular" bounce for emitter visibility
 
 // The lighting environment the renderer supplies; the RayTracer pairs it with the
 // scene + BVH it owns to form the full RTContext below.
@@ -39,6 +38,7 @@ export interface RTLighting {
   lightRadius: number // point-light sphere radius for soft shadows
   aoRadius: number // ambient-occlusion ray reach
   medium?: Medium | null // optional participating medium (fog / haze / smoke / nebula)
+  mis?: boolean // combine NEE + BSDF sampling by the power heuristic (default on); off ⇒ NEE-only
 }
 
 export interface RTContext extends RTLighting {
@@ -286,7 +286,14 @@ function directLight(s: Surface, vx: number, vy: number, vz: number, ctx: RTCont
         const G = cosLight / (dist * dist)
         const pdfInv = scene.totalEmissiveArea // 1 / pdfA
         evalBRDF(f, s.nx, s.ny, s.nz, vx, vy, vz, lx, ly, lz, s.mat, s.br, s.bg, s.bb)
-        const k = NoL * G * pdfInv
+        // multiple importance sampling (Veach): weight this light sample down by the chance
+        // the BSDF sampler would also have found this same direction, so the two strategies
+        // don't double-count the emitter on glossy surfaces. pdfL is the light's solid-angle
+        // density (= 1/(G·area)); pdfB is the BSDF's. The matching weight lands on the
+        // BSDF-sampled emitter hit in tracePath, and the pair sums to 1.
+        const pdfL = 1 / (G * pdfInv)
+        const wMIS = ctx.mis === false ? 1 : powerHeuristic(pdfL, bsdfPdf(s, vx, vy, vz, lx, ly, lz))
+        const k = NoL * G * pdfInv * wMIS
         let tr0 = 1, tr1 = 1, tr2 = 1
         if (m) { const tr = mediumTransmittance(m, ogx, ogy, ogz, lx, ly, lz, dist, rng); tr0 = tr[0]; tr1 = tr[1]; tr2 = tr[2] }
         r += f[0] * mat.emission[0] * k * tr0
@@ -398,9 +405,11 @@ function mediumDirectLight(
 }
 
 // Importance-sample the BSDF for the next bounce. Returns the new direction, the
-// throughput multiplier (f·cosθ / pdf) and whether the bounce was specular (for
-// emitter double-count avoidance). Returns false if the sample is invalid.
-interface BSDFSample { wx: number; wy: number; wz: number; wr: number; wg: number; wb: number; specular: boolean; transmitted: boolean }
+// throughput multiplier (f·cosθ / pdf), the solid-angle pdf of the sampled direction (for
+// multiple importance sampling against next-event estimation), whether the bounce is a
+// Dirac-delta specular one (a glass interface — MIS-exempt, counts emitters at weight 1),
+// and whether it transmitted. Returns false if the sample is invalid.
+interface BSDFSample { wx: number; wy: number; wz: number; wr: number; wg: number; wb: number; pdf: number; specular: boolean; transmitted: boolean }
 
 const SMOOTH_DIELECTRIC = 0.04 // roughness ≤ this is treated as a perfectly smooth interface
 const tmpRefract = new Float64Array(3)
@@ -473,25 +482,23 @@ function sampleDielectric(s: Surface, vx: number, vy: number, vz: number, rng: R
   const w = smooth ? 1 : smithG1(nx * wx + ny * wy + nz * wz, a)
   out.wx = wx; out.wy = wy; out.wz = wz
   out.wr = tintR * w; out.wg = tintG * w; out.wb = tintB * w
+  out.pdf = 0 // Dirac-delta lobe — no density to share with NEE (handled at weight 1)
   out.specular = true // a dielectric bounce is specular (or near it) — counts emitters directly
   out.transmitted = transmitted
   return true
 }
 
-function sampleBSDF(s: Surface, vx: number, vy: number, vz: number, rng: Rng, f: Float64Array, out: BSDFSample): boolean {
-  if (s.mat.transmission > 0) return sampleDielectric(s, vx, vy, vz, rng, out)
-  out.transmitted = false
+// The probability the opaque sampler spends on the specular lobe (vs cosine diffuse). A
+// single source of truth shared by `sampleBSDF` (which draws from it) and `bsdfPdf` (which
+// must reproduce the exact same mixture density for MIS) — a thin-film coat reflects far
+// more than the 0.04 dielectric base, so it pulls the specular lobe up.
+function specProb(s: Surface, vx: number, vy: number, vz: number): number {
   const mat = s.mat
   const metallic = mat.metallic
-  const rough = mat.roughness
-  const a = rough * rough
-  const nx = s.nx, ny = s.ny, nz = s.nz
   const diffR = s.br * (1 - metallic), diffG = s.bg * (1 - metallic), diffB = s.bb * (1 - metallic)
-  // representative head-on specular reflectance for lobe selection — a thin-film coat can
-  // reflect far more than the 0.04 dielectric base, so weight the spec lobe by the film.
   let f0 = 0.04 + (Math.max(s.br, s.bg, s.bb) - 0.04) * metallic
   if (mat.filmLut) {
-    const NoV = nx * vx + ny * vy + nz * vz
+    const NoV = s.nx * vx + s.ny * vy + s.nz * vz
     sampleFilmLUT(mat.filmLut, NoV, tmpFilm)
     f0 = Math.max(tmpFilm[0], tmpFilm[1], tmpFilm[2])
   }
@@ -499,6 +506,36 @@ function sampleBSDF(s: Surface, vx: number, vy: number, vz: number, rng: Rng, f:
   let pSpec = maxDiff <= 1e-4 ? 1 : f0 / (f0 + maxDiff)
   if (pSpec < 0.15) pSpec = 0.15
   if (pSpec > 0.95) pSpec = 0.95
+  return pSpec
+}
+
+// Solid-angle pdf of `sampleBSDF` for the opaque BRDF producing direction (wx,wy,wz) — the
+// same pSpec·pdfSpec + (1−pSpec)·pdfDiff mixture the sampler draws from. Used by MIS to
+// weight a next-event light sample by the chance the BSDF sampler would have found it.
+function bsdfPdf(s: Surface, vx: number, vy: number, vz: number, wx: number, wy: number, wz: number): number {
+  const nx = s.nx, ny = s.ny, nz = s.nz
+  const NoL = nx * wx + ny * wy + nz * wz
+  if (NoL <= 0) return 0
+  const a = s.mat.roughness * s.mat.roughness
+  const pSpec = specProb(s, vx, vy, vz)
+  let hx = vx + wx, hy = vy + wy, hz = vz + wz
+  const hl = Math.hypot(hx, hy, hz) || 1
+  hx /= hl; hy /= hl; hz /= hl
+  const NoH = Math.max(0, nx * hx + ny * hy + nz * hz)
+  const VoH = Math.max(0, vx * hx + vy * hy + vz * hz)
+  const pdfDiff = NoL / PI
+  const pdfSpec = VoH > 1e-6 ? (distributionGGX(NoH, a) * NoH) / (4 * VoH) : 0
+  return pSpec * pdfSpec + (1 - pSpec) * pdfDiff
+}
+
+function sampleBSDF(s: Surface, vx: number, vy: number, vz: number, rng: Rng, f: Float64Array, out: BSDFSample): boolean {
+  if (s.mat.transmission > 0) return sampleDielectric(s, vx, vy, vz, rng, out)
+  out.transmitted = false
+  const mat = s.mat
+  const rough = mat.roughness
+  const a = rough * rough
+  const nx = s.nx, ny = s.ny, nz = s.nz
+  const pSpec = specProb(s, vx, vy, vz)
 
   const [t1, t2] = orthonormalBasis([nx, ny, nz])
   let wx: number, wy: number, wz: number
@@ -534,13 +571,14 @@ function sampleBSDF(s: Surface, vx: number, vy: number, vz: number, rng: Rng, f:
   const inv = NoL / pdf
   out.wx = wx; out.wy = wy; out.wz = wz
   out.wr = f[0] * inv; out.wg = f[1] * inv; out.wb = f[2] * inv
-  out.specular = chooseSpec && rough <= SPECULAR_ROUGH
+  out.pdf = pdf // finite density → emitter hits are MIS-weighted against NEE
+  out.specular = false // opaque lobes are never Dirac; a near-mirror's huge pdf wins MIS on its own
   return true
 }
 
 const tmpHit: ClosestHit = { t: 0, tri: -1, u: 0, v: 0 }
 const tmpF = new Float64Array(3)
-const tmpSample: BSDFSample = { wx: 0, wy: 0, wz: 0, wr: 0, wg: 0, wb: 0, specular: false, transmitted: false }
+const tmpSample: BSDFSample = { wx: 0, wy: 0, wz: 0, wr: 0, wg: 0, wb: 0, pdf: 0, specular: false, transmitted: false }
 const tmpSpan = { t0: 0, t1: 0 }
 const tmpDist: DistanceSample = { scatter: false, t: 0, wr: 1, wg: 1, wb: 1 }
 const MAX_PATH = 256 // absolute interaction guard (volume multiple-scattering safety net)
@@ -558,6 +596,10 @@ export function tracePath(
   let Lr = 0, Lg = 0, Lb = 0
   let br = 1, bg = 1, bb = 1
   let countEmis = true
+  // BSDF-sampling density of the bounce that produced the current ray, for MIS against NEE
+  // when this ray lands on an emitter. ≤ 0 means "count at weight 1" — the camera ray and
+  // Dirac-delta (glass) bounces, which next-event estimation cannot sample.
+  let misPdfB = -1
   const m = ctx.medium ?? null
   let surfaceBounces = 0
   // Beer–Lambert absorption of the glass body the ray is currently *inside* (0 = outside).
@@ -620,7 +662,18 @@ export function tracePath(
     const vx = -dx, vy = -dy, vz = -dz
     const em = s.mat.emission
     if (countEmis && (em[0] + em[1] + em[2]) > 0) {
-      Lr += br * em[0]; Lg += bg * em[1]; Lb += bb * em[2]
+      // MIS for the BSDF-sampling strategy: an emitter we reached by BSDF sampling is
+      // weighted by how unlikely NEE was to have sampled this same direction. The matching
+      // light-side weight lives in directLight; together they sum to 1 (no double count).
+      let wMIS = 1
+      if (misPdfB > 0 && ctx.scene.totalEmissiveArea > 1e-9) {
+        const cosLight = Math.abs(s.gx * dx + s.gy * dy + s.gz * dz)
+        if (cosLight > 1e-6) {
+          const pdfL = (tmpHit.t * tmpHit.t) / (cosLight * ctx.scene.totalEmissiveArea)
+          wMIS = powerHeuristic(misPdfB, pdfL)
+        }
+      }
+      Lr += br * em[0] * wMIS; Lg += bg * em[1] * wMIS; Lb += bb * em[2] * wMIS
     }
     // Next-event estimation only makes sense for the opaque (diffuse+glossy) BRDF; a
     // specular dielectric is lit purely through BSDF sampling + the emitter/sky it ends
@@ -635,7 +688,14 @@ export function tracePath(
     surfaceBounces++
     if (!sampleBSDF(s, vx, vy, vz, rng, tmpF, tmpSample)) break
     br *= tmpSample.wr; bg *= tmpSample.wg; bb *= tmpSample.wb
-    countEmis = tmpSample.specular
+    // How the next emitter this ray reaches is counted depends on the bounce. A Dirac glass
+    // bounce (specular) is weight 1 — NEE cannot sample it. An opaque bounce carries its
+    // sampling density for MIS against the emitter's light-sampling pdf; with MIS off it is
+    // instead dropped, leaving the emitter to next-event estimation alone (the classic
+    // NEE-only estimator the A/B toggle compares against).
+    if (tmpSample.specular) { countEmis = true; misPdfB = -1 }
+    else if (ctx.mis === false) { countEmis = false }
+    else { countEmis = true; misPdfB = tmpSample.pdf }
 
     // A refraction that crosses the interface flips which body we are inside: entering a
     // glass body (front face) turns on its Beer–Lambert absorption; exiting clears it.

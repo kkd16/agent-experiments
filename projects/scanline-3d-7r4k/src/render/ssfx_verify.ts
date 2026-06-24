@@ -35,7 +35,7 @@ const baseSettings = (ssfx: Partial<SSFXSettings>): RenderSettings => ({
   ssfx: { ...DEFAULT_SSFX, ssao: false, ssr: false, contactShadows: false, taa: false, ...ssfx },
   transparency: { enabled: false, refraction: 28, thickness: 1.1 },
   rt: {
-    mode: 'path', maxBounces: 4, softShadows: true, sunSoftness: 1.5,
+    mode: 'path', maxBounces: 4, mis: true, softShadows: true, sunSoftness: 1.5,
     lightRadius: 0.25, aoRadius: 1.5, resolutionScale: 0.5, compare: false, splitPos: 0.5,
     denoise: DEFAULT_DENOISE, view: 'denoised',
     medium: { enabled: false, preset: 'haze', density: 1, g: 0.55 },
