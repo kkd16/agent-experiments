@@ -144,6 +144,35 @@ fn main() {
   checks++;
   const stop = vm2.continueToBreakpoints(new Set([7]), 100000);
   if (stop !== 7) { fail++; failures.push(`functional: breakpoint on line 7 stopped on ${stop}`); }
+
+  // step-over: from the call site (line 6 in main) "next line" must land on
+  // line 7 without descending into add().
+  const vm3 = new WasmVM(decoded, 'main', [], comp.debug);
+  for (let i = 0; i < 100000 && !vm3.halted && vm3.currentLine() !== 6; i++) vm3.step();
+  checks++;
+  if (vm3.currentLine() !== 6) {
+    fail++; failures.push(`functional(step-over): never reached call site line 6 (got ${vm3.currentLine()})`);
+  } else {
+    const depthAtCall = vm3.frames.length;
+    vm3.stepSourceLine(undefined, 100000);
+    if (vm3.currentLine() !== 7 || vm3.frames.length !== depthAtCall) {
+      fail++; failures.push(`functional(step-over): expected line 7 at same depth, got line ${vm3.currentLine()} depth ${vm3.frames.length} vs ${depthAtCall}`);
+    }
+  }
+
+  // step-out: from inside add() (line 2) "out" must return to main.
+  const vm4 = new WasmVM(decoded, 'main', [], comp.debug);
+  for (let i = 0; i < 100000 && !vm4.halted && vm4.currentLine() !== 2; i++) vm4.step();
+  checks++;
+  if (vm4.currentLine() !== 2) {
+    fail++; failures.push(`functional(step-out): never entered add() body line 2 (got ${vm4.currentLine()})`);
+  } else {
+    const depthInAdd = vm4.frames.length;
+    vm4.stepOut(undefined, 100000);
+    if (!(vm4.frames.length < depthInAdd)) {
+      fail++; failures.push(`functional(step-out): frame depth did not decrease (${depthInAdd} -> ${vm4.frames.length})`);
+    }
+  }
 }
 
 const coverPct = coverDen ? Math.round((coverNum / coverDen) * 100) : 0;

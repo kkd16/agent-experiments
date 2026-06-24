@@ -246,6 +246,47 @@ export class WasmVM {
     return this.currentLine();
   }
 
+  private hitsBreakpoint(lines?: Set<number>): boolean {
+    if (!lines || lines.size === 0) return false;
+    const ln = this.currentLine();
+    return ln !== undefined && lines.has(ln);
+  }
+
+  /** Source-debugger "step to next line": advance the real bytecode until the
+   *  innermost frame's source line changes — stepping OVER deeper calls (a call
+   *  that pushes a frame runs to completion unless it hits a breakpoint) and
+   *  stopping early if control returns out of the current function. */
+  stepSourceLine(breakpoints?: Set<number>, maxSteps = 50_000_000): void {
+    if (this.halted) return;
+    const startDepth = this.frames.length;
+    const startLine = this.currentLine();
+    let n = 0;
+    while (!this.halted && n++ < maxSteps) {
+      this.step();
+      if (this.halted) break;
+      if (this.hitsBreakpoint(breakpoints)) break;
+      if (this.frames.length < startDepth) break; // returned out of the function
+      if (this.frames.length === startDepth) {
+        const ln = this.currentLine();
+        if (ln !== undefined && ln !== startLine) break; // reached a new source line
+      }
+    }
+  }
+
+  /** Run until the current function returns (frame depth decreases), or a
+   *  breakpoint is hit, or the program halts. */
+  stepOut(breakpoints?: Set<number>, maxSteps = 50_000_000): void {
+    if (this.halted || this.frames.length === 0) return;
+    const depth = this.frames.length;
+    let n = 0;
+    while (!this.halted && n++ < maxSteps) {
+      this.step();
+      if (this.halted) break;
+      if (this.hitsBreakpoint(breakpoints)) break;
+      if (this.frames.length < depth) break;
+    }
+  }
+
   // --- call / return ---
 
   private pushCall(wasmFuncIndex: number, args: Value[]): void {
