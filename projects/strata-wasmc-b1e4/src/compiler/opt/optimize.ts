@@ -53,7 +53,7 @@ function cloneFunc(fn: IRFunc): IRFunc {
       id: b.id,
       preds: [...b.preds],
       phis: b.phis.map((p) => ({ res: p.res, ty: p.ty, incomings: p.incomings.map((i) => ({ pred: i.pred, val: cloneOperand(i.val) })) })),
-      insts: b.insts.map((i) => ({ res: i.res, ty: i.ty, kind: i.kind, sub: i.sub, args: i.args.map(cloneOperand) })),
+      insts: b.insts.map((i) => ({ res: i.res, ty: i.ty, kind: i.kind, sub: i.sub, args: i.args.map(cloneOperand), span: i.span })),
       term: cloneTerm(b.term),
     })),
   };
@@ -63,9 +63,9 @@ function cloneTerm(t: Block['term']): Block['term'] {
     case 'br':
       return { op: 'br', target: t.target };
     case 'condbr':
-      return { op: 'condbr', cond: cloneOperand(t.cond), t: t.t, f: t.f };
+      return { op: 'condbr', cond: cloneOperand(t.cond), t: t.t, f: t.f, span: t.span };
     case 'ret':
-      return { op: 'ret', value: t.value ? cloneOperand(t.value) : null };
+      return { op: 'ret', value: t.value ? cloneOperand(t.value) : null, span: t.span };
     case 'unreachable':
       return { op: 'unreachable' };
   }

@@ -35,6 +35,15 @@ export default function App() {
   const [fnIdx, setFnIdx] = useState(0);
   const [exampleId, setExampleId] = useState(EXAMPLES[0].id);
   const [debugLine, setDebugLine] = useState<number | undefined>(undefined);
+  const [vmLine, setVmLine] = useState<number | undefined>(undefined);
+  const [breakpoints, setBreakpoints] = useState<Set<number>>(() => new Set());
+  const toggleBreakpoint = (line: number) =>
+    setBreakpoints((prev) => {
+      const next = new Set(prev);
+      if (next.has(line)) next.delete(line);
+      else next.add(line);
+      return next;
+    });
 
   useEffect(() => {
     const onHash = () => setStage(stageFromHash());
@@ -105,7 +114,9 @@ export default function App() {
             value={source}
             onChange={setSource}
             errorLine={comp.ok ? undefined : comp.error?.line}
-            activeLine={stage === 'debug' ? debugLine : undefined}
+            activeLine={stage === 'debug' ? debugLine : stage === 'vm' ? vmLine : undefined}
+            breakpoints={stage === 'vm' ? breakpoints : undefined}
+            onToggleBreakpoint={stage === 'vm' ? toggleBreakpoint : undefined}
           />
           {!comp.ok && comp.error && (
             <div className="error-bar">
@@ -141,7 +152,15 @@ export default function App() {
             {stage === 'hex' && <HexPanel comp={comp} />}
             {stage === 'run' && <RunPanel comp={comp} />}
             {stage === 'debug' && <DebugPanel key={`${level}:${source}`} comp={comp} onActiveLine={setDebugLine} />}
-            {stage === 'vm' && <WasmVmPanel key={`${level}:${source}`} comp={comp} />}
+            {stage === 'vm' && (
+              <WasmVmPanel
+                key={`${level}:${source}`}
+                comp={comp}
+                onActiveLine={setVmLine}
+                breakpoints={breakpoints}
+                onToggleBreakpoint={toggleBreakpoint}
+              />
+            )}
             {stage === 'verify' && <VerifyPanel />}
           </div>
         </section>

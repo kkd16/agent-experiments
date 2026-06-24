@@ -581,13 +581,25 @@ function buildVM(comp: Compilation): { mod: ReturnType<typeof decodeModule>; vm:
   if (!comp.ok || !comp.bytes) return null;
   try {
     const mod = decodeModule(comp.bytes);
-    return { mod, vm: new WasmVM(mod) };
+    // Hand the VM the compiler's line table so it can map the real bytecode's
+    // program counter back to a source line — the heart of the source debugger.
+    return { mod, vm: new WasmVM(mod, 'main', [], comp.debug) };
   } catch {
     return null;
   }
 }
 
-export function WasmVmPanel({ comp }: { comp: Compilation }) {
+export function WasmVmPanel({
+  comp,
+  onActiveLine,
+  breakpoints,
+  onToggleBreakpoint,
+}: {
+  comp: Compilation;
+  onActiveLine?: (line: number | undefined) => void;
+  breakpoints?: Set<number>;
+  onToggleBreakpoint?: (line: number) => void;
+}) {
   const [st, setSt] = useState<{ built: ReturnType<typeof buildVM>; snap: VMState | null }>(() => {
     const built = buildVM(comp);
     return { built, snap: built ? built.vm.state() : null };
@@ -600,10 +612,25 @@ export function WasmVmPanel({ comp }: { comp: Compilation }) {
     activeRef.current?.scrollIntoView({ block: 'nearest' });
   }, [snap]);
 
+  // Name of the function the bytecode is currently executing, and whether it's an
+  // injected runtime-library function (whose spans point into prelude source, not
+  // the user's editor) — used to suppress a misleading editor highlight there.
+  const curFn = snap?.frames[snap.frames.length - 1];
+  const curFnName = curFn && comp.debug ? comp.debug.funcs[curFn.defIndex]?.name : undefined;
+  const inRuntime = !!curFnName && curFnName.startsWith('__');
+
+  // Drive the editor's source-line highlight from the *real bytecode's* current
+  // position (not the interpreter's), and clear it on unmount. While inside the
+  // runtime library there is no user line to point at.
+  useEffect(() => {
+    onActiveLine?.(snap && !snap.halted && !inRuntime ? snap.srcLine : undefined);
+  }, [snap, onActiveLine, inRuntime]);
+  useEffect(() => () => onActiveLine?.(undefined), [onActiveLine]);
+
   const refresh = (b: ReturnType<typeof buildVM>) => setSt({ built: b, snap: b ? b.vm.state() : null });
   const rebuildTo = (target: number) => {
     if (!built) return;
-    const vm = new WasmVM(built.mod);
+    const vm = new WasmVM(built.mod, 'main', [], comp.debug);
     let n = 0;
     while (vm.steps < target && !vm.halted && n++ < VM_RUN_CAP) vm.step();
     refresh({ mod: built.mod, vm });
@@ -618,8 +645,19 @@ export function WasmVmPanel({ comp }: { comp: Compilation }) {
     built.vm.runToEnd(VM_RUN_CAP);
     refresh(built);
   };
+  // Continue until the bytecode reaches a line carrying a source breakpoint.
+  const continueToBp = () => {
+    if (!built || !breakpoints || breakpoints.size === 0) return;
+    built.vm.continueToBreakpoints(breakpoints, VM_RUN_CAP);
+    refresh(built);
+  };
   const restart = () => refresh(buildVM(comp));
   const stepBack = () => snap && rebuildTo(Math.max(0, snap.steps - 1));
+  const hasBp = !!breakpoints && breakpoints.size > 0;
+  // The line table for the active function, for annotating the disassembly.
+  const cur0 = snap?.frames[snap.frames.length - 1];
+  const curSpans = cur0 && comp.debug ? comp.debug.funcs[cur0.defIndex]?.spans : undefined;
+  const srcByLine = comp.ok ? comp.source.split('\n') : [];
 
   if (!snap) {
     return (
@@ -636,35 +674,75 @@ export function WasmVmPanel({ comp }: { comp: Compilation }) {
         <button className="primary" onClick={() => step(1)} disabled={snap.halted}>▸ step</button>
         <button onClick={() => step(10)} disabled={snap.halted}>▸▸ 10×</button>
         <button onClick={stepBack} disabled={snap.steps === 0}>◂ back</button>
+        <button onClick={continueToBp} disabled={snap.halted || !hasBp} title={hasBp ? 'run until the bytecode hits a breakpointed source line' : 'click a line number in the editor to set a breakpoint'}>⛒ continue</button>
         <button onClick={run} disabled={snap.halted}>⏩ run</button>
         <button onClick={restart}>↺ restart</button>
         <span className="dim">
           {snap.steps} instr{snap.steps === 1 ? '' : 's'}
           {snap.halted ? ' · halted' : cur ? ` · ${cur.funcName}() pc ${cur.pc}` : ''}
+          {!snap.halted && inRuntime ? ` · in runtime ${curFnName}()` : !snap.halted && snap.srcLine !== undefined ? ` · source line ${snap.srcLine}` : ''}
         </span>
         {snap.halted && snap.result !== undefined && <span className="badge ok">main() → {snap.result}</span>}
         {snap.trap && <span className="badge bad">trap: {snap.trap}</span>}
       </div>
       <p className="dim note vm-blurb">
-        This is the project’s own <b>from-scratch WebAssembly virtual machine</b> — it decodes the bytes on the
-        Bytes tab and executes them one instruction at a time. The same engine cross-checks every Verify run, so
-        V8, the reference interpreter and this VM are proven to agree.
+        This is the project’s own <b>from-scratch WebAssembly virtual machine</b>, now a <b>source-level debugger</b>:
+        the compiler emits a line table (DWARF-lite) mapping every wasm instruction back to the source that produced
+        it, so as you single-step the real bytecode the matching source line lights up on the left. Set breakpoints by
+        clicking line numbers, then <b>⛒ continue</b>. The same engine cross-checks every Verify run — V8, the
+        reference interpreter and this VM are proven to agree.
       </p>
+      {comp.debug && cur && !snap.halted && inRuntime && (
+        <div className="vm-srcnow vm-srcnow-rt">
+          <span className="vm-srcnow-ln">runtime</span>
+          <code className="vm-srcnow-code">executing the from-scratch {curFnName}() library routine — no user source line</code>
+        </div>
+      )}
+      {comp.debug && cur && !snap.halted && !inRuntime && cur.srcLine !== undefined && (
+        <div className="vm-srcnow">
+          <span className="vm-srcnow-ln">line {cur.srcLine}</span>
+          <code className="vm-srcnow-code">{(srcByLine[cur.srcLine - 1] ?? '').trim() || ' '}</code>
+        </div>
+      )}
 
       <div className="vm-grid">
         <div className="vm-disasm">
-          <div className="col-head">{cur ? `${cur.funcName}() — disassembly` : 'disassembly'}</div>
+          <div className="col-head">
+            {cur ? `${cur.funcName}() — disassembly` : 'disassembly'}
+            {curSpans && <span className="dim"> · L = source line</span>}
+          </div>
           <div className="vm-listing">
-            {cur ? cur.lines.map((ln, i) => (
-              <div
-                key={i}
-                ref={i === cur.pc ? activeRef : null}
-                className={'vm-line' + (i === cur.pc ? ' vm-line-cur' : '')}
-              >
-                <span className="vm-pc">{i.toString().padStart(3, ' ')}</span>
-                <span className="vm-code">{ln}</span>
-              </div>
-            )) : <div className="dim note">no active frame</div>}
+            {cur ? cur.lines.map((ln, i) => {
+              const sln = curSpans?.[i]?.line;
+              // Highlight every instruction that came from the current source
+              // line — it shows how one line of source became N wasm instructions.
+              const sameSrc = sln !== undefined && sln === cur.srcLine;
+              const onBp = sln !== undefined && !!breakpoints?.has(sln);
+              return (
+                <div
+                  key={i}
+                  ref={i === cur.pc ? activeRef : null}
+                  className={
+                    'vm-line' +
+                    (i === cur.pc ? ' vm-line-cur' : '') +
+                    (sameSrc && i !== cur.pc ? ' vm-line-srcgroup' : '') +
+                    (onBp ? ' vm-line-bp' : '')
+                  }
+                >
+                  <span className="vm-pc">{i.toString().padStart(3, ' ')}</span>
+                  {curSpans && (
+                    <span
+                      className={'vm-srcln' + (sln && onToggleBreakpoint ? ' vm-srcln-click' : '')}
+                      title={sln ? (onToggleBreakpoint ? `toggle breakpoint on source line ${sln}` : `source line ${sln}`) : 'no source mapping'}
+                      onClick={sln && onToggleBreakpoint ? () => onToggleBreakpoint(sln) : undefined}
+                    >
+                      {sln ? 'L' + sln : '·'}
+                    </span>
+                  )}
+                  <span className="vm-code">{ln}</span>
+                </div>
+              );
+            }) : <div className="dim note">no active frame</div>}
           </div>
         </div>
 

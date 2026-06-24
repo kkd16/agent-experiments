@@ -6,11 +6,13 @@ interface EditorProps {
   onChange: (v: string) => void;
   errorLine?: number;
   activeLine?: number; // current line while single-stepping in the debugger
+  breakpoints?: Set<number>; // 1-based source lines with a debugger breakpoint
+  onToggleBreakpoint?: (line: number) => void; // click a gutter line to toggle
 }
 
 // A lightweight code editor: a transparent <textarea> over a highlighted <pre>,
 // with a synced line-number gutter. No external dependencies.
-export default function Editor({ value, onChange, errorLine, activeLine }: EditorProps) {
+export default function Editor({ value, onChange, errorLine, activeLine, breakpoints, onToggleBreakpoint }: EditorProps) {
   const taRef = useRef<HTMLTextAreaElement>(null);
   const preRef = useRef<HTMLPreElement>(null);
   const gutterRef = useRef<HTMLDivElement>(null);
@@ -46,14 +48,27 @@ export default function Editor({ value, onChange, errorLine, activeLine }: Edito
   return (
     <div className="editor">
       <div className="gutter" ref={gutterRef}>
-        {Array.from({ length: lineCount }, (_, i) => (
-          <div
-            key={i}
-            className={'gln' + (errorLine === i + 1 ? ' gln-err' : '') + (activeLine === i + 1 ? ' gln-active' : '')}
-          >
-            {activeLine === i + 1 ? '▶' : i + 1}
-          </div>
-        ))}
+        {Array.from({ length: lineCount }, (_, i) => {
+          const ln = i + 1;
+          const bp = !!breakpoints?.has(ln);
+          const clickable = !!onToggleBreakpoint;
+          return (
+            <div
+              key={i}
+              className={
+                'gln' +
+                (errorLine === ln ? ' gln-err' : '') +
+                (activeLine === ln ? ' gln-active' : '') +
+                (bp ? ' gln-bp' : '') +
+                (clickable ? ' gln-clickable' : '')
+              }
+              onClick={clickable ? () => onToggleBreakpoint(ln) : undefined}
+              title={clickable ? 'toggle breakpoint' : undefined}
+            >
+              {bp ? '●' : activeLine === ln ? '▶' : ln}
+            </div>
+          );
+        })}
       </div>
       <div className="code-area">
         <pre className="hl" ref={preRef} aria-hidden="true">

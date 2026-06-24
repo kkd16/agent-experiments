@@ -7,6 +7,8 @@
 // `kind` selects the family and `sub` the specific opcode; this keeps the
 // optimizer's rewriting code small and uniform.
 
+import type { Span } from '../diagnostics';
+
 export type IRType = 'i32' | 'i64' | 'f64' | 'f32' | 'v128';
 export type RetType = IRType | 'void';
 
@@ -96,6 +98,11 @@ export interface Inst {
   kind: InstKind;
   sub: string; // opcode within the family (see header)
   args: Operand[];
+  // Source location that produced this instruction, threaded from the AST by the
+  // IR builder. Best-effort: an instruction synthesized by an optimization pass
+  // (rather than lowered from source) carries none. Consumed by the backend to
+  // build the wasm line table that powers the source-level debugger.
+  span?: Span;
 }
 
 export interface Phi {
@@ -106,8 +113,8 @@ export interface Phi {
 
 export type Term =
   | { op: 'br'; target: number }
-  | { op: 'condbr'; cond: Operand; t: number; f: number }
-  | { op: 'ret'; value: Operand | null }
+  | { op: 'condbr'; cond: Operand; t: number; f: number; span?: Span }
+  | { op: 'ret'; value: Operand | null; span?: Span }
   | { op: 'unreachable' };
 
 export interface Block {
