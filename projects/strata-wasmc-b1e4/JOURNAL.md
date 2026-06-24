@@ -503,7 +503,9 @@ pass *synthesizes* simply carry none (→ a `null`/`·` entry — honest about h
       `emitFlow`; `encodeBody` collects one entry per emitted instruction (+ the trailing function
       `end`); exposed as `DebugInfo` on `CodegenResult` and `Compilation`.
 - [x] VM consumes it: `hasDebug()`, `currentLine()`, per-frame `srcLine`/`srcCol` in `state()`,
-      and `continueToBreakpoints(lines)` for source breakpoints.
+      `continueToBreakpoints(lines)` for source breakpoints, and `stepSourceLine`/`stepOut`
+      (source-debugger "next line" that steps OVER calls, and "step out" that runs to the caller —
+      both honour breakpoints, both proven by the functional harness).
 - [x] UI: the VM tab drives the editor's live source highlight from the *real bytecode's* PC;
       clickable breakpoint gutter + disassembly `Lnn` badges; **⛒ continue**; current-source-line
       strip; whole-source-line instruction grouping; runtime-library frames labelled, not
@@ -524,8 +526,6 @@ the right lines and stops a breakpoint on the right line.
 - [ ] **Variable inspection by source name** — map wasm locals back to source variables (the
       post-stackification local space is SSA-value-indexed; needs a name side-table from the
       builder threaded through the local packer).
-- [ ] **Step-over / step-out** — use the call-stack depth to run until it returns to the current
-      frame (step-into already falls out of single-stepping).
 - [ ] **Conditional breakpoints + watch expressions** — evaluate a Strata expression in the live
       VM frame at a breakpoint.
 - [ ] **Inline the source beside the disassembly** — a split gutter showing each source line next

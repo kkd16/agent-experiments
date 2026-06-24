@@ -651,6 +651,18 @@ export function WasmVmPanel({
     built.vm.continueToBreakpoints(breakpoints, VM_RUN_CAP);
     refresh(built);
   };
+  // Source-debugger "next line": step over calls until the source line changes.
+  const stepLine = () => {
+    if (!built) return;
+    built.vm.stepSourceLine(breakpoints, VM_RUN_CAP);
+    refresh(built);
+  };
+  // Run until the current function returns.
+  const stepOut = () => {
+    if (!built) return;
+    built.vm.stepOut(breakpoints, VM_RUN_CAP);
+    refresh(built);
+  };
   const restart = () => refresh(buildVM(comp));
   const stepBack = () => snap && rebuildTo(Math.max(0, snap.steps - 1));
   const hasBp = !!breakpoints && breakpoints.size > 0;
@@ -673,6 +685,8 @@ export function WasmVmPanel({
       <div className="run-controls">
         <button className="primary" onClick={() => step(1)} disabled={snap.halted}>▸ step</button>
         <button onClick={() => step(10)} disabled={snap.halted}>▸▸ 10×</button>
+        {comp.debug && <button onClick={stepLine} disabled={snap.halted} title="step to the next source line, over any calls">↪ next line</button>}
+        {comp.debug && <button onClick={stepOut} disabled={snap.halted} title="run until the current function returns">⤴ out</button>}
         <button onClick={stepBack} disabled={snap.steps === 0}>◂ back</button>
         <button onClick={continueToBp} disabled={snap.halted || !hasBp} title={hasBp ? 'run until the bytecode hits a breakpointed source line' : 'click a line number in the editor to set a breakpoint'}>⛒ continue</button>
         <button onClick={run} disabled={snap.halted}>⏩ run</button>
