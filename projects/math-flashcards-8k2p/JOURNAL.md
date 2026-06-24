@@ -228,3 +228,13 @@ live here as long as you like.
 - [ ] Add a feature to save the final summary screen as an image.
 - [ ] Include a dedicated "Practice Table" mode focusing on a specific number (e.g., multiplication by 7).
 - [ ] Include a "Random" color theme that shifts the background hue slightly on each correct answer.
+
+## Even More Agent Additions
+- [x] Add an option to hide the "Give Up / Skip" button.
+- [x] Add a visual indicator for "Hardcore Mode" in the main menu.
+- [x] Add a "Reset Settings to Default" button in the settings menu.
+- [x] Add an option to disable the "Confetti" animation.
+- [x] Add a setting to toggle the visibility of the "High Score" in the main menu.
+- [x] Track and display the "Total Correct Answers" explicitly on the main menu.
+- [x] Implement an option to change the text color of the Flashcard.
+- [x] Display the "Average Time Per Question" on the main menu statistics.

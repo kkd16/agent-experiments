@@ -49,6 +49,46 @@ function generateRandomProblem(difficulty: Difficulty, allowedOps: Operation[], 
 
 
 
+
+function getInitialHideSkipButton(): boolean {
+  try {
+    return window.localStorage.getItem('mathFlashcardsHideSkipButton') === 'true';
+  } catch (e) {
+    console.error("Local storage error:", e);
+    return false;
+  }
+}
+
+
+
+function getInitialHideHighScore(): boolean {
+  try {
+    return window.localStorage.getItem('mathFlashcardsHideHighScore') === 'true';
+  } catch (e) {
+    console.error("Local storage error:", e);
+    return false;
+  }
+}
+
+
+function getInitialFlashcardTextColor(): string {
+  try {
+    return window.localStorage.getItem('mathFlashcardsTextColor') || '';
+  } catch (e) {
+    console.error("Local storage error:", e);
+    return '';
+  }
+}
+
+function getInitialDisableConfetti(): boolean {
+  try {
+    return window.localStorage.getItem('mathFlashcardsDisableConfetti') === 'true';
+  } catch (e) {
+    console.error("Local storage error:", e);
+    return false;
+  }
+}
+
 function getInitialLowBatteryMode(): boolean {
   try {
     const stored = window.localStorage.getItem('mathFlashcardsLowBatteryMode');
@@ -448,9 +488,19 @@ function App() {
   const [hideStreak, setHideStreak] = useState<boolean>(getInitialHideStreak());
   const [mirrorMode, setMirrorMode] = useState<boolean>(getInitialMirrorMode());
   const [lowBatteryMode, setLowBatteryMode] = useState<boolean>(getInitialLowBatteryMode());
+  const [hideSkipButton, setHideSkipButton] = useState<boolean>(getInitialHideSkipButton());
+  const [disableConfetti, setDisableConfetti] = useState<boolean>(getInitialDisableConfetti());
+  const [hideHighScore, setHideHighScore] = useState<boolean>(getInitialHideHighScore());
+  const [flashcardTextColor, setFlashcardTextColor] = useState<string>(getInitialFlashcardTextColor());
+
 
 
   useEffect(() => { try { window.localStorage.setItem('mathFlashcardsLowBatteryMode', lowBatteryMode.toString()); } catch (e) { console.error(e); } }, [lowBatteryMode]);
+  useEffect(() => { try { window.localStorage.setItem('mathFlashcardsHideSkipButton', hideSkipButton.toString()); } catch (e) { console.error(e); } }, [hideSkipButton]);
+  useEffect(() => { try { window.localStorage.setItem('mathFlashcardsDisableConfetti', disableConfetti.toString()); } catch (e) { console.error(e); } }, [disableConfetti]);
+  useEffect(() => { try { window.localStorage.setItem('mathFlashcardsHideHighScore', hideHighScore.toString()); } catch (e) { console.error(e); } }, [hideHighScore]);
+  useEffect(() => { try { window.localStorage.setItem('mathFlashcardsTextColor', flashcardTextColor); } catch (e) { console.error(e); } }, [flashcardTextColor]);
+
   useEffect(() => { try { window.localStorage.setItem('mathFlashcardsMirrorMode', mirrorMode.toString()); } catch (e) { console.error(e); } }, [mirrorMode]);
   useEffect(() => { try { window.localStorage.setItem('mathFlashcardsHideStreak', hideStreak.toString()); } catch (e) { console.error(e); } }, [hideStreak]);
   useEffect(() => { try { window.localStorage.setItem('mathFlashcardsFontFamily', fontFamily); } catch (e) { console.error(e); } }, [fontFamily]);
@@ -653,6 +703,47 @@ function App() {
       window.localStorage.setItem('mathFlashcardsBgColor', color);
     } catch (err) {
       console.error("Local storage error:", err);
+    }
+  };
+
+
+  const resetSettings = () => {
+    if (window.confirm("Are you sure you want to reset all settings to their default values? (Scores and history will not be affected.)")) {
+      const keysToRemove = [
+        'mathFlashcardsLowBatteryMode', 'mathFlashcardsMirrorMode', 'mathFlashcardsHideStreak',
+        'mathFlashcardsHideTimer', 'mathFlashcardsEnableShake', 'mathFlashcardsAllowNegatives',
+        'mathFlashcardsCustomTimer', 'mathFlashcardsZenMode', 'mathFlashcardsMaxCombo',
+        'mathFlashcardsFontSize', 'mathFlashcardsAutoDarkMode', 'mathFlashcardsFontFamily',
+        'mathFlashcardsStrictMode', 'mathFlashcardsCorrectColor', 'mathFlashcardsIncorrectColor',
+        'mathFlashcardsDailyGoal', 'mathFlashcardsHideStats', 'mathFlashcardsTheme',
+        'mathFlashcardsNumpadLayout', 'mathFlashcardsHapticEnabled', 'mathFlashcardsHideSkipButton'
+      ];
+      keysToRemove.forEach(k => window.localStorage.removeItem(k));
+
+      setLowBatteryMode(false);
+      setMirrorMode(false);
+      setHideStreak(false);
+      setHideTimer(false);
+      setEnableScreenShake(true);
+      setAllowNegatives(false);
+      setCustomTimerDuration(45);
+      setZenMode(false);
+      setMaxComboMultiplier(3);
+      setAccessibilityFontSize('normal');
+      setAutoDarkMode(false);
+      setFontFamily('sans-serif');
+      setStrictMode(false);
+      setCorrectColor('#2ecc71');
+      setIncorrectColor('#e74c3c');
+      setDailyGoal(50);
+      setHideStats(false);
+      setTheme('light');
+      setNumpadLayout('phone');
+      setHapticEnabled(false);
+      setHideSkipButton(false);
+      setDisableConfetti(false);
+      setHideHighScore(false);
+      setFlashcardTextColor('');
     }
   };
 
@@ -951,9 +1042,11 @@ function App() {
           delay: `${Math.random() * 2}s`,
           color: Math.random() > 0.5 ? '#f1c40f' : '#f39c12'
         }));
-        setConfettiPieces(pieces);
-        setShowConfetti(true);
-        setTimeout(() => setShowConfetti(false), 4000);
+        if (!disableConfetti) {
+          setConfettiPieces(pieces);
+          setShowConfetti(true);
+          setTimeout(() => setShowConfetti(false), 4000);
+        }
         setStreakMessage("100 STREAK! GODLIKE!");
       } else if (newStreak > 0 && newStreak % 10 === 0) {
         const pieces = [...Array(30)].map(() => ({
@@ -961,9 +1054,11 @@ function App() {
           delay: `${Math.random() * 0.5}s`,
           color: ['#e74c3c', '#3498db', '#f1c40f', '#2ecc71', '#9b59b6'][Math.floor(Math.random() * 5)]
         }));
-        setConfettiPieces(pieces);
-        setShowConfetti(true);
-        setTimeout(() => setShowConfetti(false), 2000);
+        if (!disableConfetti) {
+          setConfettiPieces(pieces);
+          setShowConfetti(true);
+          setTimeout(() => setShowConfetti(false), 2000);
+        }
       }
 
       if (newStreak > 0 && newStreak % 5 === 0) {
@@ -1100,7 +1195,7 @@ function App() {
     <div className={`app-wrapper ${theme} font-size-${accessibilityFontSize} ${streak >= 5 && !lowBatteryMode ? 'streak-active-bg' : ''} ${graphPaper ? 'graph-paper-bg' : ''}`} style={{ backgroundColor: theme === 'light' && bgColor ? bgColor : undefined, backgroundImage: bgImage && !graphPaper ? `url(${bgImage})` : (graphPaper ? undefined : 'none'), backgroundSize: 'cover', backgroundPosition: 'center' }}>
     <div className={`app-container ${theme}`} style={{ fontFamily }}>
       <div className="header-top">
-        <h1>Math Flashcards {nightOwlUnlocked && <span title="Night Owl">🦉</span>}</h1>
+        <h1>Math Flashcards {nightOwlUnlocked && <span title="Night Owl">🦉</span>}{isHardcoreMode && <span className="badge hardcore">Hardcore</span>}</h1>
         <div>
           <button onClick={toggleTheme} className="theme-toggle" style={{ marginRight: '0.5rem' }} disabled={autoDarkMode}>
             {theme === 'light' ? '🌙 Dark' : '☀️ Light'}
@@ -1121,8 +1216,13 @@ function App() {
 
 
 
+      <button onClick={resetSettings} className="submit-button" style={{marginTop: '1rem', backgroundColor: '#e74c3c'}}>Reset Settings to Default</button>
       <div className="color-picker" style={{ marginBottom: '1rem', display: 'flex', gap: '0.5rem', justifyContent: 'center', flexWrap: 'wrap' }}>
         <label style={{fontSize: '0.8rem', marginRight: '1rem'}}>BG Image: <input type="file" accept="image/*" onChange={handleBgImageUpload} style={{width: '120px'}}/></label>
+        <div className="setting-group">
+          <label htmlFor="flashcardTextColor">Flashcard Text Color (Leave blank for default)</label>
+          <input id="flashcardTextColor" type="text" placeholder="#333333 or black" value={flashcardTextColor} onChange={(e) => setFlashcardTextColor(e.target.value)} />
+        </div>
         <label style={{fontSize: '0.8rem', marginRight: '1rem'}}>Correct: <input type="color" value={correctColor} onChange={(e) => setCorrectColor(e.target.value)} /></label>
         <label style={{fontSize: '0.8rem', marginRight: '1rem'}}>Incorrect: <input type="color" value={incorrectColor} onChange={(e) => setIncorrectColor(e.target.value)} /></label>
       </div>
@@ -1131,7 +1231,10 @@ function App() {
         <label htmlFor="dailyGoal">Daily Goal: <input id="dailyGoal" type="number" min="1" value={dailyGoal} onChange={(e) => setDailyGoal(parseInt(e.target.value, 10) || 50)} style={{ width: '60px' }} /></label>
         <label htmlFor="fontFamily">Font: <select id="fontFamily" value={fontFamily} onChange={(e) => setFontFamily(e.target.value)}><option value="sans-serif">Sans-serif</option><option value="serif">Serif</option><option value="monospace">Monospace</option></select></label>
         <label htmlFor="strictMode"><input id="strictMode" type="checkbox" checked={strictMode} onChange={(e) => setStrictMode(e.target.checked)} disabled={isSpeedRunActive} /> Strict Mode</label>
+                <label htmlFor="disableConfetti"><input id="disableConfetti" type="checkbox" checked={disableConfetti} onChange={(e) => setDisableConfetti(e.target.checked)} /> Disable Confetti</label>
+        <label htmlFor="hideSkipButton"><input id="hideSkipButton" type="checkbox" checked={hideSkipButton} onChange={(e) => setHideSkipButton(e.target.checked)} /> Hide 'Give Up / Skip' Button</label>
         <label htmlFor="hideStats"><input id="hideStats" type="checkbox" checked={hideStats} onChange={(e) => setHideStats(e.target.checked)} /> Hide Stats</label>
+        <label htmlFor="hideHighScore"><input id="hideHighScore" type="checkbox" checked={hideHighScore} onChange={(e) => setHideHighScore(e.target.checked)} /> Hide High Score</label>
         <label htmlFor="hideStreak"><input id="hideStreak" type="checkbox" checked={hideStreak} onChange={(e) => setHideStreak(e.target.checked)} /> Hide Streak</label>
         <label htmlFor="mirrorMode"><input id="mirrorMode" type="checkbox" checked={mirrorMode} onChange={(e) => setMirrorMode(e.target.checked)} /> Mirror Mode</label>
         <label htmlFor="lowBatteryMode"><input id="lowBatteryMode" type="checkbox" checked={lowBatteryMode} onChange={(e) => setLowBatteryMode(e.target.checked)} /> Low Battery Mode</label>
@@ -1171,12 +1274,12 @@ function App() {
             <progress value={streak % 5} max={5} style={{ width: '80px', marginTop: '4px' }} title="Next Milestone"></progress>
           </div>
           )}
-          <div className="stat">
+          {!hideHighScore && (<div className="stat">
             High Score: {highScore}
             <button onClick={resetHighScore} className="reset-btn" title="Reset High Score" disabled={isSpeedRunActive}>↺</button>
-          </div>
-          <div className="stat">Total Questions: {lifetimeQuestions} | Lifetime Acc: {lifetimeQuestions > 0 ? (lifetimeCorrectAnswers / lifetimeQuestions * 100).toFixed(1) : 0}%</div>
-          <div className="stat">Avg Time / Digit: {avgTimePerDigit > 0 ? avgTimePerDigit.toFixed(2) + 's' : 'N/A'}</div>
+          </div>)}
+          <div className="stat">Total Questions: {lifetimeQuestions} | Total Correct: {lifetimeCorrectAnswers} | Acc: {lifetimeQuestions > 0 ? (lifetimeCorrectAnswers / lifetimeQuestions * 100).toFixed(1) : 0}%</div>
+          <div className="stat">Avg Time / Digit: {avgTimePerDigit > 0 ? avgTimePerDigit.toFixed(2) + 's' : 'N/A'} | Avg Time / Question: {(avgTimePerDigit > 0 && lifetimeQuestions > 0) ? (avgTimePerDigit * (totalDigitsAnswered / lifetimeQuestions)).toFixed(2) + 's' : 'N/A'}</div>
         </div>
       </div>
       )}
@@ -1409,7 +1512,7 @@ function App() {
         </div>
       )}
 
-      <div className={`flashcard flashcard-${flashcardSize} ${animationClass} ${mirrorMode ? 'mirror-mode' : ''}`}>
+      <div className={`flashcard flashcard-${flashcardSize} ${animationClass} ${mirrorMode ? 'mirror-mode' : ''}`} style={{color: flashcardTextColor || undefined}}>
 
         <div className="problem" style={{position: 'relative'}}>
           {answerStatus && (
@@ -1499,7 +1602,7 @@ function App() {
       {streakMessage && <div className="message" style={{color: '#9b59b6', animation: 'pulse 1s infinite'}}>{streakMessage}</div>}
       {isPaused && <div className="message info" style={{animation: 'pulse 1.5s infinite'}}>Paused (Press 'P' to resume)</div>}
 
-      <button type="button" onClick={handleGiveUp} className="next-button" disabled={isPaused || (isSpeedRunActive && ((gameMode === 'time' || gameMode === 'timeAttack') ? timeLeft === 0 : (gameMode === 'questions' ? questionsAnswered >= (questionLimit === 0 ? customQuestionLimit : questionLimit) : false)))}>Give Up / Skip</button>
+      {!hideSkipButton && <button type="button" onClick={handleGiveUp} className="next-button" disabled={isPaused || (isSpeedRunActive && ((gameMode === 'time' || gameMode === 'timeAttack') ? timeLeft === 0 : (gameMode === 'questions' ? questionsAnswered >= (questionLimit === 0 ? customQuestionLimit : questionLimit) : false)))}>Give Up / Skip</button>}
       {isSpeedRunActive && <button type="button" onClick={() => setIsPaused(!isPaused)} className="next-button" style={{marginLeft: '0.5rem'}}>{isPaused ? 'Resume (P)' : 'Pause (P)'}</button>}
 
       {showSummary && (
