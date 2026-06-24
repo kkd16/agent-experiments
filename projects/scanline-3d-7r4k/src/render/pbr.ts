@@ -12,9 +12,22 @@ import type { Vec3 } from '../math/vec.ts'
 import { add, dot, length, normalize, reflect, scale, sub } from '../math/vec.ts'
 import type { ShadeComponents, ShadeContext, Material } from './shading.ts'
 import { applyFog } from './shading.ts'
+import { getFilmLUT, sampleFilmLUT } from '../raytrace/thinfilm.ts'
+import type { FilmLUT } from '../raytrace/thinfilm.ts'
 
 const PI = Math.PI
 const DIELECTRIC_F0 = 0.04
+const tmpFilm = new Float64Array(3)
+
+// Microfacet Fresnel at cosine `c`: the thin-film interference reflectance when a coat is
+// present (its grazing limit is already 1, so Schlick is not layered on), else Schlick.
+function microFresnel(c: number, f0: Vec3, film: FilmLUT | null): Vec3 {
+  if (film) {
+    sampleFilmLUT(film, c, tmpFilm)
+    return [tmpFilm[0], tmpFilm[1], tmpFilm[2]]
+  }
+  return fresnel(c, f0)
+}
 
 // GGX normal distribution.
 function distributionGGX(noh: number, a: number): number {
@@ -74,6 +87,11 @@ export function shadePBR(
   ]
   const diffuseColor: Vec3 = [base[0] * (1 - metallic), base[1] * (1 - metallic), base[2] * (1 - metallic)]
 
+  // thin-film coat (v9): its baked reflectance LUT replaces the microfacet Fresnel below.
+  const film: FilmLUT | null = (mat.filmThicknessNm ?? 0) > 0
+    ? getFilmLUT(mat.filmThicknessNm as number, mat.filmIor ?? 1.33, mat.ior ?? 1.5)
+    : null
+
   let r = 0
   let g = 0
   let b = 0
@@ -107,7 +125,7 @@ export function shadePBR(
 
     const D = distributionGGX(noh, a)
     const Vis = visibilitySmith(nov, nol, a)
-    const F = fresnel(voh, f0)
+    const F = microFresnel(voh, f0, film)
 
     // specular = D·Vis·F  (Vis already carries 1/(4·NoV·NoL))
     const specR = D * Vis * F[0]
@@ -133,7 +151,8 @@ export function shadePBR(
   // ── ambient: image-based lighting if available, else a flat ambient term ──
   if (ctx.environment) {
     const env = ctx.environment
-    const ks = fresnelRoughness(nov, f0, rough)
+    // film coat tints the IBL reflection by its structural colour at the view angle
+    const ks = film ? microFresnel(nov, f0, film) : fresnelRoughness(nov, f0, rough)
     const irr = env.irradiance(n)
     // diffuse IBL
     const kdR = (1 - ks[0]) * (1 - metallic)

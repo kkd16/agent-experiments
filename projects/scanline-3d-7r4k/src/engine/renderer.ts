@@ -50,6 +50,7 @@ export interface MediumSettings {
 export interface RTSettings {
   mode: RTMode // 'path' (global illumination) | 'ao' (ambient occlusion)
   maxBounces: number // path-tracer light-bounce depth
+  mis: boolean // multiple importance sampling (NEE + BSDF, power heuristic); off = NEE-only
   softShadows: boolean // cone/area light sampling for penumbrae
   sunSoftness: number // directional-light cone half-angle, degrees
   lightRadius: number // point-light sphere radius (world units)
@@ -376,7 +377,7 @@ export class Renderer {
     const med = rt.medium
     const medKey = med.enabled ? `${med.preset}:${med.density}:${med.g}` : '0'
     const resetKey = [
-      geomKey, e3, f3, rt.mode, rt.maxBounces, rt.softShadows ? 1 : 0,
+      geomKey, e3, f3, rt.mode, rt.maxBounces, rt.mis ? 1 : 0, rt.softShadows ? 1 : 0,
       rt.sunSoftness, rt.lightRadius, rt.aoRadius, settings.environment ? 1 : 0,
       settings.lightBoost, settings.ambientBoost, settings.fog ? 1 : 0, medKey,
     ].join('|')
@@ -500,6 +501,7 @@ export class Renderer {
       lightRadius: rt.softShadows ? rt.lightRadius : 0,
       aoRadius: rt.aoRadius > 0 ? rt.aoRadius : 1e30,
       medium: rt.mode === 'ao' ? null : medium,
+      mis: rt.mis,
     }
   }
 

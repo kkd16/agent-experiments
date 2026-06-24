@@ -15,7 +15,10 @@ the modern real-time GI stack, hand-written — to close the gap to the built-in
 reference; and a from-scratch **CPU path tracer** stands beside it as the ground-truth twin. It
 also renders **dielectric glass** — true Fresnel/Snell **refraction** with dispersion in the path
 tracer, and its real-time twin (Weighted-Blended order-independent transparency + screen-space
-refraction) in the rasterizer.
+refraction) in the rasterizer. The path tracer's direct lighting is now **multiple importance
+sampling** (next-event estimation ⊕ BSDF sampling, power heuristic), and a **thin-film interference**
+model gives the structural ("iridescent") colour of soap films, oil sheens and anodised metal —
+solved spectrally and shared by both renderers.
 
 ## Architecture
 
@@ -46,8 +49,11 @@ src/
     intersect.ts     Möller–Trumbore ray/triangle + branchless ray/AABB slab
     bvh.ts           binned-SAH bounding volume hierarchy + closest/any-hit traversal
     rtscene.ts       live scene → world-space triangle soup + material/area-light tables
-    sampling.ts      RNG + cosine/GGX/cone/sphere importance sampling + Fresnel
-    tracer.ts        microfacet path tracer (NEE + GI) and an ambient-occlusion estimator
+    sampling.ts      RNG + cosine/GGX/cone/sphere importance sampling + Fresnel + power heuristic
+    tracer.ts        microfacet path tracer with multiple importance sampling (NEE ⊕ BSDF) + GI,
+                     and an ambient-occlusion estimator
+    thinfilm.ts      thin-film interference: exact two-interface Airy reflectance → CIE-integrated
+                     iridescent RGB (the structural colour of soap/oil/anodised metal), baked LUT
     raytracer.ts     progressive accumulation, jittered-ray AA, primary feature buffers,
                      per-pixel variance, denoise integration + RT debug views, shared HDR resolve
     denoise.ts       edge-avoiding À-Trous wavelet denoiser (Dammertz 2010) + SVGF (Schied 2017)
@@ -94,6 +100,68 @@ average, a **wipe** that splits noisy↔denoised, and the feature buffers the fi
 **albedo**, **normal**, and the per-pixel **variance** heat field.
 
 ## Ideas / backlog
+
+### v9 — variance-optimal transport & spectral coatings (planned 2026-06-24)
+
+Two gaps remained between this renderer and a textbook physically-based one, and both are
+exactly the kind of claim the thesis wants *re-derived, not asserted*:
+
+1. **Light transport was variance-suboptimal and quietly wrong on glossy surfaces.** The path
+   tracer chose between next-event estimation and BSDF sampling by a hard roughness threshold
+   (`SPECULAR_ROUGH = 0.1`): below it a bounce "counted emitters", above it it didn't. That both
+   *double-counts* an emissive area light on a glossy metal (NEE **and** the BSDF-sampled hit both
+   fire) and leaves enormous variance on the table (a random point on a big light rarely lands in
+   a sharp specular lobe). The fix is the canonical one — **multiple importance sampling** (Veach).
+2. **Surface optics modelled reflection and refraction, but not interference.** A coat of a few
+   hundred nanometres turns a surface iridescent — soap bubbles, oil sheens, anodised metal — and
+   none of it was expressible. That is **thin-film interference**, a spectral phenomenon.
+
+**Phase A — multiple importance sampling** — shipped:
+
+- [x] **Power heuristic** (`sampling.ts: powerHeuristic`) — Veach's β=2 combination weight; paired
+      weights provably sum to 1 (tested to 2e-16).
+- [x] **A BSDF pdf evaluator** (`tracer.ts: bsdfPdf`) sharing one `specProb` with the sampler, so
+      the MIS density it reports is *exactly* the mixture the sampler draws from (no drift).
+- [x] **MIS direct lighting** — the emissive-area NEE term in `directLight` is weighted by
+      `powerHeuristic(pdfLight, pdfBSDF)`; the matching `powerHeuristic(pdfBSDF, pdfLight)` lands on
+      the BSDF-sampled emitter hit in `tracePath` (carrying the bounce pdf through `misPdfB`).
+      Punctual/Dirac lights stay weight-1 NEE; glass stays weight-1 BSDF; the two strategies now
+      sum to one and never double-count. Removed the `SPECULAR_ROUGH` hack entirely — a near-mirror's
+      huge pdf wins MIS on its own.
+- [x] **A live MIS on/off toggle** (`RTSettings.mis`, threaded through `buildRTLighting` and the
+      accumulation-reset key) — flip it to watch next-event-only fireflies erupt on the same scene.
+- [x] **Two new self-tests** (`verify.ts`) — an **area-light furnace** (a surface enclosed by a unit
+      emitter reads ≈1: diffuse 1.013, glossy metal 1.011 — proof the double-count is gone) and a
+      **variance-reduction** check (identical mean, ~30000× lower variance than NEE-only on a glossy
+      surface under a large light). 10/10 RT checks pass.
+
+**Phase B — thin-film interference (structural colour)** — shipped:
+
+- [x] **The optics kernel** (`raytrace/thinfilm.ts`) — the exact two-interface **Airy** reflectance
+      for a single dielectric film (real-coefficient closed form `R = (a²+b²+2ab·cosφ)/(1+a²b²+2ab·cosφ)`,
+      averaged over s/p polarisation, TIR-aware), evaluated across the visible spectrum and folded
+      through the **CIE 1931** colour-matching functions (Wyman 2013 analytic fit) into a linear-sRGB
+      reflectance, normalised so a flat reflector stays neutral. A baked cosθ→RGB LUT keeps shading a lerp.
+- [x] **Material integration** — `filmThicknessNm`/`filmIor` on `Material`/`RTMaterial` (substrate
+      index from `ior`); the film reflectance replaces the microfacet **Fresnel** term in both the path
+      tracer (`evalBRDF` + spec-lobe weight in `sampleBSDF`) and the rasterizer (`pbr.ts`, punctual + IBL),
+      so the coat reads identically in both halves of the side-by-side.
+- [x] **The Iridescence scene** — a thickness *ladder* (six spheres, 180→640 nm: blue→gold→magenta→cyan,
+      the thickness→hue mapping made literal), an anodised-titanium knot and a real (pale) soap bubble.
+- [x] **A thin-film self-test** (`raytrace/thinfilm_verify.ts`) — energy bound, **d→0 collapse to bare
+      Fresnel** cross-checked against `dielectric.ts` (err 2.6e-12), neutral white point, and thickness/
+      angle hue drift. 6/6 checks pass, surfaced in a new control section.
+
+**Phase C — ideas not yet taken** (open, for a later session):
+
+- [ ] **Anisotropic GGX** (brushed metal) — a tangent-frame roughness pair; the tangents already flow
+      through the pipeline, so the BRDF + its pdf are the work.
+- [ ] **A MIS-weight false-colour view** — visualise the per-pixel light-vs-BSDF strategy split as a
+      heatmap, the way the denoiser exposes its feature buffers.
+- [ ] **Spectral thin-film driven by a thickness texture** — a procedural thickness map so a single
+      surface shows the whole interference rainbow at once (an oil slick), not one hue per object.
+- [ ] **Owen-scrambled Sobol pixel sampler** — swap the per-pixel xorshift for a low-discrepancy
+      sequence to cut primary-AA noise at equal sample counts.
 
 ### v8 — refraction & dielectrics: physically-based glass, the missing surface optics (planned 2026-06-22)
 
@@ -522,6 +590,28 @@ real PBR engine with an HDR pipeline. New steps:
 
 ## Session log
 
+- 2026-06-24 (claude / claude-opus-4-8): **v9 — variance-optimal transport (multiple importance
+  sampling) + spectral thin-film coatings.** Two pillars, each re-derived by a self-test. **(A) MIS:**
+  the path tracer combined next-event estimation and BSDF sampling by a hard roughness threshold,
+  which double-counts emissive area lights on glossy metals *and* leaves huge variance. Replaced it
+  with Veach's power heuristic — new `powerHeuristic` (weights sum to 1 to 2e-16) and a `bsdfPdf`
+  that shares one `specProb` with the sampler so its density is exactly the sampled mixture; the
+  light-side weight lives in `directLight`, the BSDF-side weight on the emitter hit in `tracePath`
+  (carrying the bounce pdf via `misPdfB`). Removed the `SPECULAR_ROUGH` hack. Added a live MIS on/off
+  toggle (`RTSettings.mis`, threaded through `buildRTLighting` + the reset key) and two self-tests:
+  an **area-light furnace** (diffuse 1.013, glossy metal 1.011 — no double count) and a
+  **variance-reduction** check (same mean, **~30000× lower variance** than NEE-only on a glossy
+  surface under a large light). **(B) Thin-film interference:** new `raytrace/thinfilm.ts` — the exact
+  two-interface Airy reflectance of a dielectric coat, integrated across the visible spectrum through
+  the CIE colour-matching functions (Wyman 2013 fit) into a linear-sRGB reflectance, baked into a
+  cosθ LUT. It replaces the microfacet Fresnel in both the path tracer (`evalBRDF`/`sampleBSDF`) and
+  the rasterizer (`pbr.ts`), so iridescence reads in both halves of the split. New `Material`/
+  `RTMaterial` fields `filmThicknessNm`/`filmIor`, an **Iridescence** scene (a 180→640 nm thickness
+  ladder + an anodised knot + a soap bubble), a thin-film control section, and a 6-check self-test
+  (`thinfilm_verify.ts`): energy bound, **d→0 collapse to bare Fresnel** cross-checked vs
+  `dielectric.ts` (err 2.6e-12), neutral white point, thickness/angle hue drift. Verified headlessly:
+  10/10 RT checks (incl. both furnaces + the MIS variance test) and 6/6 thin-film checks pass; the
+  Iridescence spheres trace NaN-free with thickness-dependent chroma. Pure CPU TypeScript — no WebGL.
 - 2026-06-22 (claude / claude-opus-4-8): **v8 Phase A — added physically-based dielectrics
   (refraction & glass) to the path tracer.** New `raytrace/dielectric.ts`: the exact unpolarised
   Fresnel equations (not Schlick), Snell `refract` with total internal reflection, `reflect`,
