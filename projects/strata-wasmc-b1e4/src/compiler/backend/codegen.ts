@@ -1,5 +1,6 @@
 import type { Block, Inst, IRFunc, IRModule, IRType, Operand, RetType, Term } from '../ir/ir';
 import { operandType } from '../ir/ir';
+import type { Span } from '../diagnostics';
 import { ByteWriter, VT_F32, VT_F64, VT_I32, VT_I64, VT_V128, WASM_MAGIC, WASM_VERSION, section, vec } from './encoder';
 
 // The WebAssembly backend. Three responsibilities:
@@ -14,8 +15,11 @@ import { ByteWriter, VT_F32, VT_F64, VT_I32, VT_I64, VT_V128, WASM_MAGIC, WASM_V
 //       space. Phi nodes are resolved by parallel copies on predecessor edges.
 //   (3) Emit the module bytes (and a matching WAT listing) from that schedule.
 
-// Structured wasm instruction tree (encoded / pretty-printed below).
-type W =
+// Structured wasm instruction tree (encoded / pretty-printed below). Every node
+// also carries an optional source `s`pan (stamped during emission) so the encoder
+// can build a line table mapping each wasm instruction back to the source that
+// produced it — the debug info behind the source-level VM debugger.
+type WKind =
   | { k: 'block'; body: W[] }
   | { k: 'loop'; body: W[] }
   | { k: 'if'; t: W[]; e: W[] }
@@ -51,6 +55,7 @@ type W =
   | { k: 'select' }
   | { k: 'tselect'; ty: IRType }
   | { k: 'cast'; sub: string };
+type W = WKind & { s?: Span };
 
 // SIMD sub-opcodes (after the 0xfd prefix). Keyed by the full wasm mnemonic so
 // the IR's `sub` string selects directly. Every value here is < 0x80, so its
@@ -383,17 +388,25 @@ class FuncGen {
   private emitFlow(id: number, ctx: Frame[]): W[] {
     const t = this.byId.get(id)!.term;
     switch (t.op) {
-      case 'ret':
-        return t.value ? [...this.pushOperand(t.value), { k: 'ret' }] : [{ k: 'ret' }];
+      case 'ret': {
+        const out: W[] = t.value ? [...this.pushOperand(t.value), { k: 'ret' }] : [{ k: 'ret' }];
+        if (t.span) for (const w of out) if (w.s === undefined) w.s = t.span;
+        return out;
+      }
       case 'unreachable':
         return [{ k: 'unreachable' }];
       case 'br':
         return this.doBranch(id, t.target, ctx);
       case 'condbr': {
         const inner: Frame[] = [...ctx, { kind: 'if', node: -1 }];
+        // Tag the condition's operand pushes + the `if` opener with the branch's
+        // source span; the nested arm bodies keep the spans of their own
+        // statements (set during their emission), so don't overwrite them.
+        const cond = this.pushOperand(t.cond);
+        if (t.span) for (const w of cond) if (w.s === undefined) w.s = t.span;
         return [
-          ...this.pushOperand(t.cond),
-          { k: 'if', t: this.doBranch(id, t.t, inner), e: this.doBranch(id, t.f, inner) },
+          ...cond,
+          { k: 'if', t: this.doBranch(id, t.t, inner), e: this.doBranch(id, t.f, inner), s: t.span },
         ];
       }
     }
@@ -432,6 +445,15 @@ class FuncGen {
   // the operand stack (no local.set). Shared by straight-line emission and by
   // folded-subtree expansion.
   private emitValue(inst: Inst, out: W[]): void {
+    // Record where this instruction's wasm begins, so afterwards we can tag every
+    // node it emitted (that a nested folded sub-expression didn't already tag)
+    // with this instruction's source span — the raw material of the line table.
+    const start = out.length;
+    this.emitValueInner(inst, out);
+    if (inst.span) for (let i = start; i < out.length; i++) if (out[i].s === undefined) out[i].s = inst.span;
+  }
+
+  private emitValueInner(inst: Inst, out: W[]): void {
     switch (inst.kind) {
       case 'ibin': {
         const [c, name] = (operandType(this.fn, inst.args[0]) === 'i64' ? I_BIN64 : I_BIN)[inst.sub];
@@ -542,7 +564,7 @@ class FuncGen {
     for (const inst of this.byId.get(id)!.insts) {
       if (inst.res !== null && this.inlined.has(inst.res)) continue; // folded into its single use
       this.emitValue(inst, out);
-      if (inst.res !== null) out.push({ k: 'lset', i: this.li(inst.res) });
+      if (inst.res !== null) out.push({ k: 'lset', i: this.li(inst.res), s: inst.span });
     }
     return out;
   }
@@ -590,19 +612,33 @@ function succOf(t: Term): number[] {
 
 // --- encoding the structured tree ---
 
-function encodeBody(w: ByteWriter, tree: W[]): void {
+// Encode the instruction tree to bytes. When `spans` is supplied, it is filled
+// with exactly one entry per emitted wasm instruction, in the same order the
+// disassembler reads them back — so `spans[pc]` is the source location of the
+// instruction at index `pc` in the decoded body. Block/loop/if openers, `else`
+// and `end` markers are real instructions in that stream and each gets an entry
+// (`end`/`else` map to nothing, hence null). This 1:1, encoder-is-the-decoder's-
+// inverse alignment is what keeps the line table exact across every opcode.
+function encodeBody(w: ByteWriter, tree: W[], spans?: (Span | null)[]): void {
   for (const n of tree) {
+    if (n.k !== 'block' && n.k !== 'loop' && n.k !== 'if') spans?.push(n.s ?? null);
     switch (n.k) {
       case 'block':
-        w.u8(0x02); w.u8(0x40); encodeBody(w, n.body); w.u8(0x0b);
+        spans?.push(n.s ?? null);
+        w.u8(0x02); w.u8(0x40); encodeBody(w, n.body, spans); w.u8(0x0b);
+        spans?.push(null);
         break;
       case 'loop':
-        w.u8(0x03); w.u8(0x40); encodeBody(w, n.body); w.u8(0x0b);
+        spans?.push(n.s ?? null);
+        w.u8(0x03); w.u8(0x40); encodeBody(w, n.body, spans); w.u8(0x0b);
+        spans?.push(null);
         break;
       case 'if':
-        w.u8(0x04); w.u8(0x40); encodeBody(w, n.t);
-        if (n.e.length) { w.u8(0x05); encodeBody(w, n.e); }
+        spans?.push(n.s ?? null);
+        w.u8(0x04); w.u8(0x40); encodeBody(w, n.t, spans);
+        if (n.e.length) { spans?.push(null); w.u8(0x05); encodeBody(w, n.e, spans); }
         w.u8(0x0b);
+        spans?.push(null);
         break;
       case 'br': w.u8(0x0c); w.u32(n.d); break;
       case 'ret': w.u8(0x0f); break;
@@ -645,12 +681,29 @@ interface PrintImport {
   param: IRType;
 }
 
+// A single source location in the line table.
+export interface LineEntry {
+  line: number; // 1-based source line
+  col: number; // 1-based source column
+}
+
+// The wasm line table: for each defined function (in code-section order, which is
+// the VM's `defIndex` order), one source location per wasm instruction, aligned
+// 1:1 with the disassembled instruction stream. `null` entries are structural
+// instructions (`end`/`else`) or code with no source origin (e.g. injected
+// prelude). This is the project's DWARF-lite — it lets the source-level debugger
+// map the program counter of the real, optimized bytecode back to a source line.
+export interface DebugInfo {
+  funcs: { name: string; spans: (LineEntry | null)[] }[];
+}
+
 export interface CodegenResult {
   bytes: Uint8Array;
   wat: string;
   funcInstrCount: number;
   localCount: number; // total declared locals across all functions (lower = better)
   stackFolded: number; // values kept on the operand stack (no local at all)
+  debug: DebugInfo; // wasm → source line table for the debugger
 }
 
 export function codegen(mod: IRModule): CodegenResult {
@@ -832,6 +885,7 @@ export function codegen(mod: IRModule): CodegenResult {
   let funcInstrCount = 0;
   let localCount = 0;
   let stackFolded = 0;
+  const lineTables: (Span | null)[][] = [];
   const codeItems = gens.map((g) => {
     const body = new ByteWriter();
     const locals = g.localTypes();
@@ -844,8 +898,11 @@ export function codegen(mod: IRModule): CodegenResult {
     }
     body.u32(rle.length);
     for (const r of rle) { body.u32(r.count); body.u8(vt(r.ty)); }
-    encodeBody(body, g.wtree);
+    const fnSpans: (Span | null)[] = [];
+    encodeBody(body, g.wtree, fnSpans);
     body.u8(0x0b);
+    fnSpans.push(null); // the trailing function `end` is one decoded instruction too
+    lineTables.push(fnSpans);
     funcInstrCount += countInstrs(g.wtree);
     localCount += locals.length;
     stackFolded += g.foldedCount;
@@ -875,12 +932,20 @@ export function codegen(mod: IRModule): CodegenResult {
   all.raw(WASM_VERSION);
   for (const s of sections) all.raw(s);
 
+  const debug: DebugInfo = {
+    funcs: mod.funcs.map((fn, i) => ({
+      name: fn.name,
+      spans: lineTables[i].map((s) => (s ? { line: s.line, col: s.col } : null)),
+    })),
+  };
+
   return {
     bytes: new Uint8Array(all.bytes),
     wat: emitWAT(mod, gens, imports),
     funcInstrCount,
     localCount,
     stackFolded,
+    debug,
   };
 }
 

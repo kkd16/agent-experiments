@@ -152,14 +152,14 @@ function ssaFunc(pf: PFunc): IRFunc {
         res = fresh(inst.ty as IRType);
         push(inst.dest, res);
       }
-      out.push({ res, ty: inst.ty, kind: inst.kind, sub: inst.sub, args });
+      out.push({ res, ty: inst.ty, kind: inst.kind, sub: inst.sub, args, span: inst.span });
     }
     renamedInsts.set(id, out);
 
     const t = b.term!;
     let term: Term;
-    if (t.op === 'condbr') term = { op: 'condbr', cond: resolve(t.cond), t: t.t, f: t.f };
-    else if (t.op === 'ret') term = { op: 'ret', value: t.value ? resolve(t.value) : null };
+    if (t.op === 'condbr') term = { op: 'condbr', cond: resolve(t.cond), t: t.t, f: t.f, span: t.span };
+    else if (t.op === 'ret') term = { op: 'ret', value: t.value ? resolve(t.value) : null, span: t.span };
     else if (t.op === 'br') term = { op: 'br', target: t.target };
     else term = { op: 'unreachable' };
     renamedTerm.set(id, term);

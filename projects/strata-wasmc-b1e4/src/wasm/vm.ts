@@ -26,6 +26,7 @@ import type { ValType, WasmModule } from './decode';
 import { decodeModule } from './decode';
 import { disassemble } from './disasm';
 import type { Disasm, Instr } from './disasm';
+import type { DebugInfo, LineEntry } from '../compiler/backend/codegen';
 
 export type Value = number | bigint | Uint8Array;
 
@@ -103,7 +104,19 @@ export interface VMState {
   trap?: string;
   result?: number;
   output: string[];
-  frames: { funcName: string; pc: number; line: number; lines: string[]; locals: SlotView[]; stack: SlotView[] }[];
+  frames: {
+    funcName: string;
+    defIndex: number; // index into the line table (DebugInfo.funcs)
+    pc: number;
+    line: number;
+    lines: string[];
+    srcLine?: number; // current source line (from the line table), if debug info present
+    srcCol?: number;
+    locals: SlotView[];
+    stack: SlotView[];
+  }[];
+  /** Current source line of the innermost frame, if debug info is present. */
+  srcLine?: number;
   globals: SlotView[];
   memory: Uint8Array; // a snapshot view of linear memory
   memUsed: number; // bytes worth showing (high-water mark of non-zero data)
@@ -123,6 +136,10 @@ export class WasmVM {
   private readonly globals: { type: ValType; value: Value }[];
   private readonly table: (number | null)[]; // wasm function index per slot
   private readonly importFields: string[];
+  // Optional line table, indexed by defined-function index (`defIndex`) then by
+  // instruction index (`pc`). Present when the VM was built with the compiler's
+  // debug info; it powers source-line mapping and source breakpoints.
+  private readonly lineTable: ((LineEntry | null)[])[] | null;
 
   frames: Frame[] = [];
   output: string[] = [];
@@ -131,11 +148,14 @@ export class WasmVM {
   trap?: string;
   result?: number;
 
-  constructor(mod: WasmModule, entry = 'main', args: Value[] = []) {
+  constructor(mod: WasmModule, entry = 'main', args: Value[] = [], debug?: DebugInfo) {
     this.mod = mod;
     this.importCount = mod.imports.length;
     this.importFields = mod.imports.map((im) => im.field);
     this.disByDef = mod.codes.map((c) => disassemble(c.body));
+    // The compiler emits one DebugInfo function per defined function, in the same
+    // order as the code section (= `defIndex`), so a positional map is exact.
+    this.lineTable = debug ? debug.funcs.map((f) => f.spans) : null;
 
     // Linear memory + the static data segments (string literals).
     const pages = mod.memory ? mod.memory.min : 0;
@@ -186,6 +206,44 @@ export class WasmVM {
 
   private top(): Frame {
     return this.frames[this.frames.length - 1];
+  }
+
+  /** Whether the VM was built with source debug info. */
+  hasDebug(): boolean {
+    return this.lineTable !== null;
+  }
+
+  /** The source location of a given function/pc — the nearest mapped entry at or
+   *  before `pc`, so structural `end`/`else` instructions still report the line
+   *  of the statement they close. Returns null when no debug info is present or
+   *  nothing maps. */
+  private posAt(defIndex: number, pc: number): LineEntry | null {
+    const table = this.lineTable?.[defIndex];
+    if (!table) return null;
+    for (let i = Math.min(pc, table.length - 1); i >= 0; i--) if (table[i]) return table[i];
+    return null;
+  }
+
+  /** Current source line of the innermost frame (1-based), or undefined. */
+  currentLine(): number | undefined {
+    if (this.lineTable === null || this.frames.length === 0) return undefined;
+    const f = this.top();
+    return this.posAt(f.defIndex, f.pc)?.line;
+  }
+
+  /** Step until the innermost frame's source line is one of `lines` (a source
+   *  breakpoint), or the program halts, or the budget is exhausted. Always makes
+   *  progress (steps at least once) so "continue" doesn't stall on the line it
+   *  is already parked on. Returns the line it stopped on, if any. */
+  continueToBreakpoints(lines: Set<number>, maxSteps = 50_000_000): number | undefined {
+    let n = 0;
+    while (!this.halted && n++ < maxSteps) {
+      this.step();
+      if (this.halted) break;
+      const ln = this.currentLine();
+      if (ln !== undefined && lines.has(ln)) return ln;
+    }
+    return this.currentLine();
   }
 
   // --- call / return ---
@@ -546,14 +604,20 @@ export class WasmVM {
 
   // --- snapshot for the UI ---
   state(): VMState {
-    const frames = this.frames.map((f) => ({
-      funcName: f.funcName,
-      pc: f.pc,
-      line: f.pc,
-      lines: f.dis.lines,
-      locals: f.locals.map((v, i) => ({ name: `local ${i}`, ty: f.localTypes[i], value: fmtValue(v, f.localTypes[i]) })),
-      stack: f.stack.map((v, i) => ({ name: `${i}`, ty: tyOf(v), value: fmtValue(v, tyOf(v)) })),
-    }));
+    const frames = this.frames.map((f) => {
+      const pos = this.posAt(f.defIndex, f.pc);
+      return {
+        funcName: f.funcName,
+        defIndex: f.defIndex,
+        pc: f.pc,
+        line: f.pc,
+        lines: f.dis.lines,
+        srcLine: pos?.line,
+        srcCol: pos?.col,
+        locals: f.locals.map((v, i) => ({ name: `local ${i}`, ty: f.localTypes[i], value: fmtValue(v, f.localTypes[i]) })),
+        stack: f.stack.map((v, i) => ({ name: `${i}`, ty: tyOf(v), value: fmtValue(v, tyOf(v)) })),
+      };
+    });
     let used = 0;
     for (let i = this.mem.length - 1; i >= 0; i--) if (this.mem[i] !== 0) { used = i + 1; break; }
     return {
@@ -563,6 +627,7 @@ export class WasmVM {
       result: this.result,
       output: this.output,
       frames,
+      srcLine: this.currentLine(),
       globals: this.globals.map((g, i) => ({ name: `global ${i}`, ty: g.type, value: fmtValue(g.value, g.type) })),
       memory: this.mem,
       memUsed: used,

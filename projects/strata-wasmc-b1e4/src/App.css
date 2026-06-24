@@ -177,6 +177,13 @@
   font-weight: 700;
   border-radius: 3px;
 }
+.gln-clickable { cursor: pointer; }
+.gln-clickable:hover { color: #8a96ac; }
+.gln-bp {
+  color: var(--red, #e5484d);
+  font-weight: 700;
+}
+.gln-bp.gln-active { color: var(--red, #e5484d); background: transparent; }
 .code-area {
   position: relative;
   flex: 1;
@@ -509,10 +516,55 @@
 }
 .vm-line { display: flex; gap: 10px; padding: 0 10px; white-space: pre; }
 .vm-line-cur { background: #15233f; box-shadow: inset 3px 0 0 var(--accent); }
+/* Other instructions emitted by the same source line as the current one. */
+.vm-line-srcgroup { background: #101a2c; }
+/* An instruction belonging to a breakpointed source line. */
+.vm-line-bp { box-shadow: inset 3px 0 0 var(--red, #e5484d); }
+.vm-line-bp.vm-line-cur { box-shadow: inset 3px 0 0 var(--accent), inset 6px 0 0 var(--red, #e5484d); }
 .vm-pc { color: #44506a; user-select: none; }
 .vm-line-cur .vm-pc { color: var(--accent); }
+.vm-srcln {
+  color: #5b6b86;
+  user-select: none;
+  min-width: 34px;
+  text-align: right;
+}
+.vm-line-cur .vm-srcln { color: var(--accent); font-weight: 600; }
+.vm-srcln-click { cursor: pointer; }
+.vm-srcln-click:hover { color: var(--red, #e5484d); }
+.vm-line-srcgroup .vm-srcln { color: #7d8cab; }
 .vm-code { color: #cdd7ea; }
 .vm-line-cur .vm-code { color: #fff; }
+/* The "current source line" strip above the disassembly. */
+.vm-srcnow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0 0 10px;
+  padding: 6px 12px;
+  background: #0e1626;
+  border: 1px solid #2b4a8c;
+  border-left: 3px solid var(--accent);
+  border-radius: 8px;
+  max-width: 980px;
+}
+.vm-srcnow-rt { border-color: #5c4a24; border-left-color: #b8862b; }
+.vm-srcnow-rt .vm-srcnow-ln { color: #c9952f; }
+.vm-srcnow-rt .vm-srcnow-code { color: #b9c2d2; }
+.vm-srcnow-ln {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--accent);
+  font-weight: 700;
+  white-space: nowrap;
+}
+.vm-srcnow-code {
+  font-family: var(--mono);
+  font-size: 12.5px;
+  color: #e7edf8;
+  white-space: pre;
+  overflow: auto;
+}
 .vm-callstack { display: flex; flex-direction: column; gap: 4px; }
 .vm-csframe { font-size: 12.5px; padding: 3px 8px; border-radius: 6px; background: #0e1422; border: 1px solid var(--border); }
 .vm-csframe-cur { border-color: #2b4a8c; }

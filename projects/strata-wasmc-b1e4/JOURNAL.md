@@ -292,6 +292,24 @@ yet stored in arrays/structs/globals — extract their lanes for that.)
 
 ## Done
 
+- [x] **Source-level debugger for the compiled WebAssembly — a DWARF-lite line table** (the
+      WASM VM tab is now a real source debugger). The compiler threads AST source spans through
+      the IR (`Inst.span`, `condbr`/`ret` spans), preserves them across SSA construction and the
+      optimizer's `cloneModule`, and the backend emits a **line table** — one source location per
+      emitted wasm instruction, built inside `encodeBody` so it is provably 1:1 with the
+      disassembler's instruction stream (the encoder is the decoder's inverse). The from-scratch
+      VM consumes it: stepping the *real, optimized* bytecode reports the current source line, the
+      editor highlights it live, line-number / disassembly-badge clicks set **breakpoints**, and
+      **⛒ continue** runs the machine until it hits one. The disassembly annotates every
+      instruction with its source line (`Lnn`) and highlights the whole group of instructions a
+      single source line compiled to — so you watch one line of source become N instructions, and
+      watch the optimizer delete/merge them as you raise -O. Stepping into the Strata runtime
+      library (`__strcat`, `__exp`, Dragon4 …) is shown as such instead of pointing at a phantom
+      line. Proven by a new headless harness (`tools/check-debuginfo.mjs`): **6459 line-table
+      checks across 4767 functions at -O0…-O3** — alignment, source-bounds, 84% -O0 coverage, plus
+      a functional step/breakpoint test — all green, and the existing **1096 three-engine
+      differential checks still agree byte-for-byte** (the feature is purely additive). See the
+      2026-06-24 plan.
 - [x] **Auto-vectorizer — counted array loops → 4-wide `v128` SIMD** (`opt/vectorize.ts`, -O2+) —
       the optimizer now **discovers** data parallelism instead of only honouring hand-written SIMD:
       a counted loop `for (i…) a[i] = f(a[i], b[i], …)` with every subscript exactly the IV is
@@ -446,6 +464,76 @@ yet stored in arrays/structs/globals — extract their lanes for that.)
       -O0…-O3 **and** an offline fuzz of **≈33,000 random affine + bitwise programs**
       (i32+i64, reassociation firing on ~80%, zero mismatches). **948 → 1024
       differential checks.** See the 2026-06-22 plan.
+
+## 2026-06-24 — plan + shipped: a source-level debugger for the compiled wasm (DWARF-lite line table) (claude / claude-opus-4-8)
+
+Strata already had two steppers that never spoke to each other: a **Debug** tab that single-steps
+the *tree-walking interpreter* at source granularity (call stack, locals, variables), and a **WASM
+VM** tab that single-steps the *real emitted bytecode* (operand stack, locals, linear memory,
+time-travel). The missing link was the one real toolchains spend a section on: **debug info** that
+maps optimized machine code back to source. With it, the VM tab stops being "watch opcodes fly by"
+and becomes "watch *your program* run, on the actual bytes the backend produced." That's the
+showcase: a from-scratch compiler that also ships its own from-scratch source-level debugger.
+
+### Design — a line table that is the decoder's inverse, not a guess
+
+The whole feature rests on one invariant: a table with **exactly one source location per wasm
+instruction, in decode order**. Get that 1:1 alignment wrong by one and every following
+instruction is mis-attributed. Rather than reverse-engineer byte offsets, I build the table where
+the bytes are written. `encodeBody` already walks the structured instruction tree (`W[]`) emitting
+one opcode per node (block/loop/if openers + their `else`/`end` are each one instruction); I made
+it push one span entry alongside every opcode it writes, in the same order. Because the
+disassembler reads back exactly those bytes, `spans[pc]` lines up with `dis.instrs[pc]` **by
+construction** — the encoder is the decoder's inverse, so there is no drift to test for (but I test
+it anyway, 4767 times).
+
+Spans reach the backend by riding the IR. The builder stamps each instruction and each
+`condbr`/`ret` terminator with the span of the statement being lowered (a `curSpan` cursor reset
+per statement → clean line granularity, which is exactly what a line debugger wants). SSA
+construction and the optimizer's `cloneModule`/`cloneTerm` carry the field through; instructions a
+pass *synthesizes* simply carry none (→ a `null`/`·` entry — honest about having no origin). At
+-O0 (the natural "compile with -g, don't optimize" mode) 84% of instructions map; at higher -O you
+*see* the mapping thin out as the optimizer deletes and merges, which is the point.
+
+### Plan — the checklist for this session (all shipped)
+
+- [x] `Inst.span?` + `condbr`/`ret` span on the `Term` (ir.ts); builder stamps via a per-statement
+      `curSpan`; preserved through ssa.ts and optimize.ts clones.
+- [x] Backend line table: `s?: Span` on every `W`, stamped in `emitValue`/`emitStraightLine`/
+      `emitFlow`; `encodeBody` collects one entry per emitted instruction (+ the trailing function
+      `end`); exposed as `DebugInfo` on `CodegenResult` and `Compilation`.
+- [x] VM consumes it: `hasDebug()`, `currentLine()`, per-frame `srcLine`/`srcCol` in `state()`,
+      and `continueToBreakpoints(lines)` for source breakpoints.
+- [x] UI: the VM tab drives the editor's live source highlight from the *real bytecode's* PC;
+      clickable breakpoint gutter + disassembly `Lnn` badges; **⛒ continue**; current-source-line
+      strip; whole-source-line instruction grouping; runtime-library frames labelled, not
+      mis-highlighted.
+- [x] `tools/check-debuginfo.mjs` — alignment + bounds + coverage + functional step/breakpoint.
+
+### Shipped this session (all proven by the oracle — **1096 checks, V8 = interpreter = VM**, plus 6459 line-table checks)
+
+The differential harness is untouched and still green at every level — the line table is pure
+metadata, it changes no emitted byte (`tools/check-vm.mjs`: 1096/1096, 154M instructions retired,
+159 opcodes). The new `tools/check-debuginfo.mjs` proves the table itself: **6459/6459** across
+**4767 functions** at -O0…-O3 — every function's table is exactly as long as its disassembly, every
+mapped entry is an in-bounds source location, -O0 coverage is 84%, and a live step-through reports
+the right lines and stops a breakpoint on the right line.
+
+### Backlog (source debugger) — deliberately deferred, all clean
+
+- [ ] **Variable inspection by source name** — map wasm locals back to source variables (the
+      post-stackification local space is SSA-value-indexed; needs a name side-table from the
+      builder threaded through the local packer).
+- [ ] **Step-over / step-out** — use the call-stack depth to run until it returns to the current
+      frame (step-into already falls out of single-stepping).
+- [ ] **Conditional breakpoints + watch expressions** — evaluate a Strata expression in the live
+      VM frame at a breakpoint.
+- [ ] **Inline the source beside the disassembly** — a split gutter showing each source line next
+      to the instruction group it produced, scroll-synced.
+- [ ] **Column-accurate highlighting** — spans already carry `col`; underline the exact
+      sub-expression, not just the line, for finer stepping inside one statement.
+- [ ] **Persist breakpoints across recompiles by line identity** (today they are line numbers; an
+      edit above shifts them).
 
 ## 2026-06-23 — plan + shipped: code hoisting — very-busy expressions (the third corner of code motion) (claude / claude-opus-4-8)
 

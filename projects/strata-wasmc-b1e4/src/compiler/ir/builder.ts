@@ -1,6 +1,7 @@
 import type { BinaryOp, Block, Expr, Program, Stmt, Ty, VecLanes } from '../ast';
 import { VEC_INFO, VEC_NAME_TO_LANES } from '../ast';
 import type { ConstNum, IRType, RetType } from './ir';
+import type { Span } from '../diagnostics';
 import { parse } from '../parser';
 import { typecheck } from '../types';
 import { STRING_PRELUDE, FLOAT_PRELUDE, MATH_PRELUDE } from './prelude';
@@ -20,12 +21,13 @@ export interface PInst {
   kind: import('./ir').InstKind;
   sub: string;
   args: POperand[];
+  span?: Span;
 }
 
 export type PTerm =
   | { op: 'br'; target: number }
-  | { op: 'condbr'; cond: POperand; t: number; f: number }
-  | { op: 'ret'; value: POperand | null }
+  | { op: 'condbr'; cond: POperand; t: number; f: number; span?: Span }
+  | { op: 'ret'; value: POperand | null; span?: Span }
   | { op: 'unreachable' };
 
 export interface PBlock {
@@ -155,6 +157,11 @@ class FnBuilder {
   usesFloatFmt = false;
   usesMath = false;
   private cur!: PBlock;
+  // Source span of the statement (or sub-expression) currently being lowered, so
+  // every emitted instruction and branch terminator can be tagged with its
+  // origin for the source-level debugger. Best-effort — synthesized prelude code
+  // and optimizer-created instructions carry none.
+  private curSpan?: Span;
   private blockCounter = 0;
   private tempCounter = 0;
   private uniqueCounter = 0;
@@ -213,7 +220,10 @@ class FnBuilder {
     return b;
   }
   private setTerm(t: PTerm): void {
-    if (this.cur.term === null) this.cur.term = t;
+    if (this.cur.term === null) {
+      if ((t.op === 'condbr' || t.op === 'ret') && t.span === undefined) t.span = this.curSpan;
+      this.cur.term = t;
+    }
   }
   private switchTo(b: PBlock): void {
     this.cur = b;
@@ -240,6 +250,7 @@ class FnBuilder {
     return null;
   }
   private emit(inst: PInst): void {
+    if (inst.span === undefined) inst.span = this.curSpan;
     if (this.cur.term !== null) {
       // Unreachable code after a terminator: route it into a dead block.
       this.switchTo(this.newBlock());
@@ -261,6 +272,11 @@ class FnBuilder {
   }
 
   private lowerStmt(s: Stmt): void {
+    // Tag every instruction this statement lowers to with its source span. A
+    // nested block resets `curSpan` per inner statement; the next sibling resets
+    // it again on entry here, so the mapping stays at statement granularity —
+    // exactly the resolution a line debugger wants.
+    this.curSpan = s.span;
     switch (s.node) {
       case 'let': {
         const v = this.lowerExpr(s.init)!;

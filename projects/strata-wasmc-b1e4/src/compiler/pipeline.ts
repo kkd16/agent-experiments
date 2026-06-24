@@ -12,6 +12,7 @@ import { optimize, cloneModule } from './opt/optimize';
 import { inlineModule } from './opt/inline';
 import { tailCallOpt } from './opt/tco';
 import { codegen } from './backend/codegen';
+import type { DebugInfo } from './backend/codegen';
 import { CompileError } from './diagnostics';
 import type { DomInfo } from './ir/cfg';
 import { computeDom, succOfTerm } from './ir/cfg';
@@ -47,6 +48,7 @@ export interface Compilation {
   wat?: string;
   bytes?: Uint8Array;
   metrics?: Metrics;
+  debug?: DebugInfo; // wasm → source line table (for the source-level debugger)
 }
 
 function countIR(mod: IRModule): number {
@@ -96,6 +98,7 @@ export function compile(source: string, level: OptLevel, collectSnapshots = fals
       optSnapshots: snapshots,
       wat: cg.wat,
       bytes: cg.bytes,
+      debug: cg.debug,
       metrics: {
         sourceLines: source.split('\n').length,
         tokens: tokens.length - 1,
