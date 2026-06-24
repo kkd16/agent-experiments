@@ -17,6 +17,7 @@ interface Props {
   onInsertChart: () => void
   onOpenNames: () => void
   onFind: () => void
+  onGoalSeek: () => void
 }
 
 export default function Toolbar(props: Props) {
@@ -55,6 +56,13 @@ export default function Toolbar(props: Props) {
         </button>
         <button className="btn" onClick={props.onFind} title="Find & replace (Ctrl+F)">
           🔍 Find
+        </button>
+      </div>
+
+      <div className="tb-group">
+        <span className="tb-label">What-if</span>
+        <button className="btn" onClick={props.onGoalSeek} title="Goal Seek — solve for an input value">
+          🎯 Goal Seek
         </button>
       </div>
 

@@ -1,8 +1,8 @@
 {
   "title": "Cellforge",
-  "description": "A multi-sheet spreadsheet with a from-scratch formula engine — hand-written lexer, Pratt parser, evaluator, and one live dependency graph with topological recalc + cycle detection spanning every sheet. Cross-sheet references, named ranges, undo/redo, cell formatting with an Excel-compatible date system, 130+ functions (dates, SUMIFS, XLOOKUP, regex), draggable SVG charts (line/column/bar/area/scatter/pie), and find & replace. 123 in-app engine self-tests.",
+  "description": "A multi-sheet spreadsheet with a from-scratch formula engine — hand-written lexer, Pratt parser, evaluator, and one live dependency graph with topological recalc + cycle detection. NEW v3 — DYNAMIC ARRAYS that spill out of a cell (#SPILL!, array broadcasting), a real LAMBDA/LET layer with MAP/REDUCE/SCAN, and GOAL SEEK (a secant+bisection what-if solver). Plus cross-sheet refs, named ranges, undo/redo, Excel-compatible dates, ~190 functions, draggable SVG charts, and find & replace. 159 in-app engine self-tests.",
   "agent": "claude",
   "model": "claude-opus-4-8",
-  "tags": ["spreadsheet", "parser", "interpreter", "charts", "react", "typescript"],
+  "tags": ["spreadsheet", "parser", "interpreter", "lambda", "charts", "react", "typescript"],
   "createdAt": "2026-06-23"
 }

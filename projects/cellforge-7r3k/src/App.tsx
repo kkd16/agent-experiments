@@ -21,6 +21,7 @@ import SheetTabs from './components/SheetTabs'
 import ChartLayer from './components/ChartLayer'
 import NameManager from './components/NameManager'
 import FindReplace from './components/FindReplace'
+import GoalSeek from './components/GoalSeek'
 
 const STORAGE_KEY = 'cellforge.workbook.v2'
 const LEGACY_KEY = 'cellforge.workbook.v1'
@@ -65,6 +66,7 @@ export default function App() {
   const [nameBox, setNameBox] = useState('')
   const [showNames, setShowNames] = useState(false)
   const [showFind, setShowFind] = useState(false)
+  const [showGoalSeek, setShowGoalSeek] = useState(false)
 
   const containerRef = useRef<HTMLDivElement | null>(null)
   const clipRef = useRef<ClipData | null>(null)
@@ -393,6 +395,16 @@ export default function App() {
     bump()
   }
 
+  // ---- what-if: goal seek ----
+  const applyGoalSeek = (changing: Coord, value: number) => {
+    checkpoint()
+    wb.setCell(changing, String(value), sheetId)
+    setActive(changing)
+    setAnchor(changing)
+    bump()
+    refocus()
+  }
+
   // ---- keyboard ----
   const onContainerKeyDown = (e: ReactKeyboardEvent) => {
     if (editing !== null) return
@@ -560,6 +572,7 @@ export default function App() {
   const barValue = editing !== null ? editing : wb.getRaw(active, sheetId)
   const fmt = (n: number) => (Number.isInteger(n) ? String(n) : Number(n.toPrecision(8)).toString())
   const charts = wb.chartsOf(sheetId)
+  const activeSpill = wb.spillInfo(active, sheetId)
 
   return (
     <div className="app">
@@ -587,6 +600,7 @@ export default function App() {
           onInsertChart={insertChart}
           onOpenNames={() => setShowNames(true)}
           onFind={() => setShowFind(true)}
+          onGoalSeek={() => setShowGoalSeek(true)}
         />
       </header>
 
@@ -706,7 +720,13 @@ export default function App() {
                 Cross-sheet: <code>=Summary!B5</code> · names: <code>=SUM(Revenue)</code>
               </li>
               <li>
-                Try <code>=TODAY()</code>, <code>=XLOOKUP(...)</code>, <code>=SUMIFS(...)</code>
+                Arrays <em>spill</em>: <code>=SEQUENCE(5)</code>, <code>=SORT(FILTER(A:A,A:A&gt;0))</code>
+              </li>
+              <li>
+                Lambdas: <code>=MAP(A1:A9, LAMBDA(x, x*x))</code>, <code>=LET(t, SUM(A:A), t/2)</code>
+              </li>
+              <li>
+                What-if: <kbd>🎯 Goal Seek</kbd> solves for an input value
               </li>
             </ul>
           </div>
@@ -740,10 +760,42 @@ export default function App() {
             <span>Count {stats.count}</span>
           </>
         ) : null}
+        {activeSpill && !activeSpill.isAnchor ? (
+          <>
+            <span className="status-sep">·</span>
+            <span className="status-spill">↳ spilled from {coordToA1(activeSpill.anchor.row, activeSpill.anchor.col)}</span>
+          </>
+        ) : null}
+        {activeSpill && activeSpill.isAnchor ? (
+          <>
+            <span className="status-sep">·</span>
+            <span className="status-spill">
+              ⤢ dynamic array {coordToA1(activeSpill.region.top, activeSpill.region.left)}:
+              {coordToA1(activeSpill.region.bottom, activeSpill.region.right)}
+            </span>
+          </>
+        ) : null}
         <span className="spacer" />
         {isError(wb.getValue(active, sheetId)) ? <span className="status-err">{wb.getDisplay(active, sheetId)}</span> : null}
         <span className="muted">{wb.population} non-empty · stored locally</span>
       </footer>
+
+      {showGoalSeek ? (
+        <GoalSeek
+          wb={wb}
+          sheetId={sheetId}
+          initialTarget={coordToA1(active.row, active.col)}
+          onApply={applyGoalSeek}
+          onGoto={(c) => {
+            setActive(c)
+            setAnchor(c)
+          }}
+          onClose={() => {
+            setShowGoalSeek(false)
+            refocus()
+          }}
+        />
+      ) : null}
 
       {showNames ? (
         <NameManager

@@ -1,8 +1,11 @@
 // The typed value lattice the evaluator computes over. A spreadsheet value is one
 // of: a number, a string, a boolean, an error, a "blank" (the value of an empty
 // cell, which behaves like 0 / "" / false depending on context), a matrix (the
-// value of a range), or a sparkline (a tiny inline chart). Coercions follow the
-// conventions users expect from real spreadsheets.
+// value of a range or dynamic array), a sparkline (a tiny inline chart), or — new
+// in v3 — a lambda (a first-class anonymous function the evaluator can apply).
+// Coercions follow the conventions users expect from real spreadsheets.
+
+import type { Node } from './ast'
 
 export type ErrorCode =
   | '#DIV/0!'
@@ -13,6 +16,8 @@ export type ErrorCode =
   | '#NUM!'
   | '#CIRC!'
   | '#PARSE!'
+  | '#SPILL!' // a dynamic array could not spill into the cells it needs
+  | '#CALC!' // a calculation produced something a cell can't hold (e.g. a naked lambda / empty array)
 
 export interface ErrorValue {
   readonly kind: 'error'
@@ -39,7 +44,17 @@ export interface MatrixValue {
   readonly data: Scalar[][]
 }
 
-export type RuntimeValue = Scalar | MatrixValue | SparklineValue
+/** A first-class anonymous function — the value of `LAMBDA(...)`. It captures the
+ *  parameter names, its body AST, and the lexical bindings (LET names / outer
+ *  lambda params) in scope where it was created, so closures behave correctly. */
+export interface LambdaValue {
+  readonly kind: 'lambda'
+  readonly params: string[] // upper-cased parameter names
+  readonly body: Node
+  readonly closure: ReadonlyMap<string, RuntimeValue>
+}
+
+export type RuntimeValue = Scalar | MatrixValue | SparklineValue | LambdaValue
 
 export const BLANK: BlankValue = { kind: 'blank' }
 
@@ -53,6 +68,8 @@ export const isMatrix = (v: RuntimeValue): v is MatrixValue =>
   typeof v === 'object' && v !== null && (v as { kind?: string }).kind === 'matrix'
 export const isSparkline = (v: RuntimeValue): v is SparklineValue =>
   typeof v === 'object' && v !== null && (v as { kind?: string }).kind === 'sparkline'
+export const isLambda = (v: RuntimeValue): v is LambdaValue =>
+  typeof v === 'object' && v !== null && (v as { kind?: string }).kind === 'lambda'
 export const isNumber = (v: RuntimeValue): v is number => typeof v === 'number'
 export const isString = (v: RuntimeValue): v is string => typeof v === 'string'
 export const isBool = (v: RuntimeValue): v is boolean => typeof v === 'boolean'
@@ -114,6 +131,7 @@ export function displayValue(v: RuntimeValue): string {
   if (isError(v)) return v.code
   if (isBlank(v)) return ''
   if (isSparkline(v)) return ''
+  if (isLambda(v)) return '#CALC!'
   if (isMatrix(v)) {
     if (v.rows === 1 && v.cols === 1) return displayValue(v.data[0][0])
     return '#VALUE!'
@@ -123,9 +141,13 @@ export function displayValue(v: RuntimeValue): string {
   return v
 }
 
-/** Reduce a possibly-spilled value down to the single scalar a cell holds. */
+/** Reduce a possibly-spilled value down to the single scalar a cell holds. A matrix
+ *  collapses to its single cell when 1×1; otherwise the caller is responsible for
+ *  spilling it (see Workbook.recompute) — here it degrades to its top-left cell so
+ *  intermediate scalar contexts (the "implicit intersection") still produce a value. */
 export function asScalar(v: RuntimeValue): Scalar {
   if (isSparkline(v)) return err('#VALUE!', 'sparkline used in a scalar context')
+  if (isLambda(v)) return err('#CALC!', 'a lambda must be called, not stored')
   if (isMatrix(v)) return v.rows === 1 && v.cols === 1 ? v.data[0][0] : err('#VALUE!', 'a range cannot collapse to one cell')
   return v
 }

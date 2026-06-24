@@ -39,6 +39,8 @@ const ERROR_CODES: ReadonlySet<string> = new Set([
   '#N/A',
   '#NUM!',
   '#CIRC!',
+  '#SPILL!',
+  '#CALC!',
 ])
 
 class Parser {
@@ -72,7 +74,7 @@ class Parser {
   }
 
   private parseExpr(minBp: number): Node {
-    let left = this.parsePrefix()
+    let left = this.applyCalls(this.parsePrefix())
 
     for (;;) {
       const t = this.peek()
@@ -95,6 +97,26 @@ class Parser {
     }
 
     return left
+  }
+
+  /** Postfix call application: turn `<expr>(a, b)` into an `apply` node. This is what
+   *  lets a lambda be invoked directly, e.g. `LAMBDA(x, x*x)(7)`. */
+  private applyCalls(left: Node): Node {
+    let node = left
+    while (this.peek().type === 'lparen') {
+      this.next()
+      const args: Node[] = []
+      if (this.peek().type !== 'rparen') {
+        args.push(this.parseExpr(0))
+        while (this.peek().type === 'comma') {
+          this.next()
+          args.push(this.parseExpr(0))
+        }
+      }
+      this.expect('rparen')
+      node = { type: 'apply', fn: node, args }
+    }
+    return node
   }
 
   private parsePrefix(): Node {
@@ -230,6 +252,10 @@ export function collectRefs(node: Node, out: CellRef[] = []): CellRef[] {
       collectRefs(node.right, out)
       break
     case 'call':
+      for (const a of node.args) collectRefs(a, out)
+      break
+    case 'apply':
+      collectRefs(node.fn, out)
       for (const a of node.args) collectRefs(a, out)
       break
     default:

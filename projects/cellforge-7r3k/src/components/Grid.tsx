@@ -117,11 +117,13 @@ export default function Grid(props: Props) {
       const err = isError(v)
       const numeric = typeof v === 'number'
       const alignRight = f?.align ? f.align === 'right' : defaultRightAlign(v, f)
+      const spill = wb.spillInfo(coord, sheetId)
       const cls = ['cell']
       if (selected) cls.push('sel')
       if (isActive) cls.push('active')
       if (err) cls.push('err')
       if (numeric || err) cls.push('num')
+      if (spill) cls.push(spill.isAnchor ? 'spill-anchor' : 'spilled')
       if (alignRight) cls.push('right')
       else if (f?.align === 'center') cls.push('center')
 
@@ -212,6 +214,19 @@ export default function Grid(props: Props) {
     )
   }
 
+  // The outline that frames the dynamic array the active cell belongs to.
+  const activeSpill = wb.spillInfo(active, sheetId)
+  const spillOutline = activeSpill ? (
+    <div
+      className="spill-outline"
+      style={{
+        transform: `translate(${activeSpill.region.left * COL_W}px, ${activeSpill.region.top * ROW_H}px)`,
+        width: (activeSpill.region.right - activeSpill.region.left + 1) * COL_W,
+        height: (activeSpill.region.bottom - activeSpill.region.top + 1) * ROW_H,
+      }}
+    />
+  ) : null
+
   const totalW = cols * COL_W
   const totalH = rows * ROW_H
 
@@ -241,6 +256,7 @@ export default function Grid(props: Props) {
       >
         <div className="canvas" style={{ width: totalW, height: totalH }}>
           {cellsOut}
+          {spillOutline}
         </div>
       </div>
     </div>

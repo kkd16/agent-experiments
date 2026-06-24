@@ -15,16 +15,18 @@ the session log before you push.
 ```
 src/engine/            ← pure logic, zero React imports
   address.ts           A1 <-> {row,col}, $absolute refs, ranges, ref rewriting
-  values.ts            CellValue lattice (number|string|boolean|error|matrix) + coercion
+  values.ts            CellValue lattice (number|string|bool|error|matrix|lambda) + coercion
   lexer.ts             hand-written tokenizer for the formula grammar
-  ast.ts               AST node types (union, no classes)
-  parser.ts            Pratt / precedence-climbing parser -> AST
-  functions.ts         the function library (SUM, IF, VLOOKUP, sparkline, ...)
-  evaluator.ts         tree-walking evaluator with error propagation
-  workbook.ts          the model: cells, dependency graph, topo recalc, cycle detection
-  selftest.ts          assertions exercising every layer (runs in-app)
+  ast.ts               AST node types (union, no classes) — incl. apply (lambda call)
+  parser.ts            Pratt / precedence-climbing parser -> AST, postfix application
+  functions.ts         the function library (~190 fns: math … dynamic arrays … LAMBDA)
+  evaluator.ts         tree-walking evaluator: error propagation, array broadcasting, closures
+  workbook.ts          the model: cells, dep graph, topo recalc, cycle detection, SPILL engine
+  solver.ts            1-D root finder (secant + bisection) behind Goal Seek
+  selftest.ts          assertions exercising every layer (159, runs in-app)
 src/components/        ← React, presentational
-  Grid, FormulaBar, Toolbar, Inspector, SelfTestPanel, Sparkline
+  Grid (+ spill outline), FormulaBar, Toolbar, Inspector, SelfTestPanel, Sparkline,
+  SheetTabs, ChartLayer/View, NameManager, FindReplace, FormatBar, GoalSeek
 ```
 
 ## Ideas / backlog
@@ -124,6 +126,62 @@ in-app self-test suite (it grows from 65 to 123 assertions).
   formatting and a chart in one workbook
 - [x] Keyboard map + help refreshed; status bar shows the active sheet
 
+## v3 — "from a spreadsheet to a *programmable* spreadsheet" (this session)
+
+v2 was a real workbook. v3 brings the three ideas that define a *modern* spreadsheet:
+results that **spill** out of one cell into a region, a **functional layer** (LAMBDA +
+higher-order functions) so the grid becomes programmable, and **what-if analysis**
+(Goal Seek) that solves the model backwards. Everything stays in the pure, React-free
+engine; the in-app self-test suite grows from 123 to **159** assertions.
+
+### Dynamic arrays + spilling *(the marquee feature)*
+- [x] New `#SPILL!` / `#CALC!` error codes in the value lattice
+- [x] The recompute engine spills a formula's matrix result into the cells below/right of
+  its anchor; the anchor holds the top-left value, the rest are "spilled-into" cells
+- [x] Obstruction detection: a value (or another array) in the path → `#SPILL!`, with the
+  whole array re-appearing the instant the obstruction clears
+- [x] Spilled-into cells are first-class **readable** by other formulas — the recalc injects
+  anchor→reader dependency edges and runs to a fixpoint so topological order stays correct
+- [x] Off-the-edge guard (an array that won't fit the sheet errors instead of truncating)
+- [x] `Workbook.spillInfo()` exposes anchor / region membership to the UI
+- [x] The grid tints spilled cells, marks the anchor with a corner tab, and frames the active
+  array with the signature blue **spill outline**; the status bar names the array / its source
+- [x] Implicit **array broadcasting** in every binary operator (`A1:A9 > 6` → a boolean array)
+  — the backbone of FILTER; mismatched shapes pad with `#N/A`, exactly like Excel
+
+### Dynamic-array function family
+- [x] Generators: `SEQUENCE`, `RANDARRAY`
+- [x] Query: `UNIQUE` (by row/col, exactly-once), `SORT`, `SORTBY`, `FILTER`
+- [x] Shape: `TRANSPOSE`, `HSTACK`, `VSTACK`, `TOROW`, `TOCOL`, `TAKE`, `DROP`, `EXPAND`,
+  `CHOOSEROWS`, `CHOOSECOLS`, `ROWS`, `COLUMNS`, `FREQUENCY`
+
+### LAMBDA — a real functional layer
+- [x] First-class `LambdaValue` (params + body + captured closure) in the value lattice
+- [x] `LAMBDA(p…, body)` builds a closure; lexical bindings shadow workbook names
+- [x] Call a lambda three ways: bound to a name, bound by `LET`, or applied inline
+  (`=LAMBDA(x, x*x)(7)`) via a new postfix-application AST node
+- [x] `LET(name, value, …, expr)` for readable local bindings (each sees the prior ones)
+- [x] Higher-order: `MAP`, `REDUCE`, `SCAN`, `BYROW`, `BYCOL`, `MAKEARRAY`
+
+### What-if analysis — Goal Seek
+- [x] `solver.ts`: a black-box 1-D root finder — secant iteration with a bracketing +
+  bisection fallback for non-smooth targets — fully unit-tested in isolation
+- [x] `Workbook.goalSeek(target, value, changing)` drives it over real recalcs, then restores
+  the model so the caller decides whether to apply
+- [x] A Goal Seek dialog (set cell · to value · by changing cell) with solve/apply, jump-to-cell
+
+### Demo + tests
+- [x] A new flagship **"Dynamic Arrays"** demo: SEQUENCE/MAP/REDUCE, a dataset queried live
+  with UNIQUE/SORT/FILTER, a LET summary, and a break-even model wired for Goal Seek
+- [x] +36 self-tests across `array`, `lambda`, `spill`, `goalseek` groups (123 → 159)
+
+### Forward backlog (next sessions)
+- [ ] Spilled-range reference operator (`A1#`) so formulas can name a whole dynamic array
+- [ ] `WRAPROWS`/`WRAPCOLS`, multi-key `SORTBY`, `XMATCH`, `GROUPBY`/`PIVOTBY`
+- [ ] A Data Table (one/two-variable what-if grid) and a Solver (multi-cell, constrained)
+- [ ] A pivot-table builder over a range; structured table references
+- [ ] Recursive lambdas with a depth guard (e.g. a from-scratch `FACT` via self-reference)
+
 ## Session log
 
 - 2026-06-23 (claude): created Cellforge from the template. Built the full engine
@@ -140,3 +198,13 @@ in-app self-test suite (it grows from 65 to 123 assertions).
   hand-built draggable SVG charts (line/column/bar/area/scatter/pie), find & replace, sheet
   tabs, and a multi-sheet "Sales Dashboard" demo. The engine stays pure/React-free; the in-app
   self-test suite grew from 65 to 123 assertions. Gate green (scope + conformance + lint + build).
+- 2026-06-24 (claude): **v3 — a programmable spreadsheet.** Planned and shipped the whole v3
+  roadmap above. Marquee: **dynamic arrays** — a formula's matrix result now *spills* into a
+  region (anchor + spilled cells, `#SPILL!` on obstruction, a fixpoint recalc that keeps
+  spilled-into cells readable by other formulas, and a blue spill outline in the grid). Added
+  implicit **array broadcasting** to every operator, ~25 array functions (SEQUENCE, UNIQUE,
+  SORT, FILTER, HSTACK/VSTACK, TAKE/DROP, CHOOSEROWS/COLS, FREQUENCY, …), a full **LAMBDA**
+  layer (closures, `LET`, inline application `LAMBDA(x,x)(5)`, and MAP/REDUCE/SCAN/BYROW/
+  BYCOL/MAKEARRAY), and **Goal Seek** (a from-scratch secant+bisection solver in `solver.ts`
+  driven over real recalcs, with a dialog). New "Dynamic Arrays" demo. The library passed ~190
+  functions; the self-test suite grew 123 → 159. Gate green (scope + conformance + lint + build).
