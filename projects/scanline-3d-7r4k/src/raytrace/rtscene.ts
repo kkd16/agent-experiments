@@ -10,6 +10,8 @@ import type { Vec3 } from '../math/vec.ts'
 import type { Mesh } from '../geometry/mesh.ts'
 import type { Material } from '../render/shading.ts'
 import type { NormalMap, Texture } from '../render/texture.ts'
+import { getFilmLUT } from './thinfilm.ts'
+import type { FilmLUT } from './thinfilm.ts'
 
 export interface RTMaterial {
   albedo: Vec3
@@ -25,6 +27,10 @@ export interface RTMaterial {
   ior: number // index of refraction
   attenuation: Vec3 // Beer–Lambert absorption coeff inside the body (1/world-unit)
   dispersion: number // wavelength IOR spread (prism rainbow)
+  // thin-film interference (v9): a baked cosθ→RGB reflectance LUT, or null when no coat
+  filmThicknessNm: number
+  filmIor: number
+  filmLut: FilmLUT | null
 }
 
 export interface RTInstance {
@@ -49,6 +55,12 @@ function toRTMaterial(m: Material, texture: Texture | null, normalMap: NormalMap
     ior: m.ior ?? 1.5,
     attenuation: m.attenuation ?? [0, 0, 0],
     dispersion: m.dispersion ?? 0,
+    filmThicknessNm: m.filmThicknessNm ?? 0,
+    filmIor: m.filmIor ?? 1.33,
+    // bake the angle LUT once for the (thickness, film IOR, substrate IOR) triple
+    filmLut: (m.filmThicknessNm ?? 0) > 0
+      ? getFilmLUT(m.filmThicknessNm as number, m.filmIor ?? 1.33, m.ior ?? 1.5)
+      : null,
   }
 }
 

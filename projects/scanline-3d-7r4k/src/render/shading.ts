@@ -42,6 +42,13 @@ export interface Material {
   ior?: number // index of refraction (1.0 = air, ~1.5 = glass, ~2.4 = diamond)
   attenuation?: Vec3 // Beer–Lambert absorption per world-unit *inside* the body (tint)
   dispersion?: number // 0 = achromatic; > 0 fans the IOR by wavelength (prism rainbow)
+  // Thin-film interference (v9) — a dielectric coating of `filmThicknessNm` nanometres and
+  // index `filmIor` over this surface. When the thickness is > 0 its spectral interference
+  // reflectance (see raytrace/thinfilm.ts) replaces the microfacet Fresnel term, giving the
+  // structural ("iridescent") colour of soap films, oil sheens and anodised metals. The
+  // substrate index is taken from `ior` (default 1.5). Shared by the path tracer and pbr.ts.
+  filmThicknessNm?: number // 0 = no coat; ~100–800 nm spans the visible interference orders
+  filmIor?: number // film index of refraction (soap ≈ 1.33, oil ≈ 1.45, TiO₂ ≈ 2.3)
 }
 
 export interface ShadowSampler {

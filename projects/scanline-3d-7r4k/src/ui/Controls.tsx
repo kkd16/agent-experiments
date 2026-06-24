@@ -13,6 +13,8 @@ import { runRTSelfTest } from '../raytrace/verify.ts'
 import type { RTTest } from '../raytrace/verify.ts'
 import { runDielectricSelfTest } from '../raytrace/dielectric_verify.ts'
 import type { DielectricTest } from '../raytrace/dielectric_verify.ts'
+import { runThinFilmSelfTest } from '../raytrace/thinfilm_verify.ts'
+import type { ThinFilmTest } from '../raytrace/thinfilm_verify.ts'
 import { MEDIUM_PRESETS } from '../raytrace/medium.ts'
 import { runMediumSelfTest } from '../raytrace/medium_verify.ts'
 import type { MediumTest } from '../raytrace/medium_verify.ts'
@@ -185,6 +187,16 @@ export default function Controls(props: Props) {
     setTimeout(() => {
       setDieTests(runDielectricSelfTest())
       setDieTesting(false)
+    }, 30)
+  }
+  const [filmTests, setFilmTests] = useState<ThinFilmTest[] | null>(null)
+  const [filmTesting, setFilmTesting] = useState(false)
+  const runFilm = (): void => {
+    setFilmTesting(true)
+    setFilmTests(null)
+    setTimeout(() => {
+      setFilmTests(runThinFilmSelfTest())
+      setFilmTesting(false)
     }, 30)
   }
   const [medTests, setMedTests] = useState<MediumTest[] | null>(null)
@@ -517,6 +529,38 @@ export default function Controls(props: Props) {
                 critical angle, Beer–Lambert, Cauchy dispersion ordering, and a clear-glass furnace.
               </p>
               {dieTests.map((t) => (
+                <p key={t.name} className={`obj-msg ${t.pass ? 'ok' : 'err'}`}>
+                  {t.pass ? '✓' : '✗'} {t.name} — {t.detail}
+                </p>
+              ))}
+            </div>
+          )}
+        </Section>
+      )}
+
+      {isRT && rt.mode === 'path' && (
+        <Section title="Thin-film iridescence — structural colour">
+          <p className="blurb">
+            A dielectric coat a few hundred nanometres thick turns a surface <em>iridescent</em>: the
+            wave reflected off its top interface interferes with the one off its bottom, and because
+            the phase gap is a fixed length in nanometres, each wavelength interferes differently —
+            so the reflectance <em>R(λ)</em> is coloured, and the colour drifts with thickness and
+            viewing angle. We solve the exact two-interface <em>Airy</em> reflectance and fold it
+            through the CIE colour-matching functions; it replaces the microfacet Fresnel in both
+            the path tracer and the rasterizer. Open the <em>Iridescence</em> scene: the front row is
+            a thickness ladder (blue→gold→magenta→cyan), behind it an anodised knot and a soap bubble.
+          </p>
+          <button className="reset" onClick={runFilm} type="button" disabled={filmTesting} style={{ width: '100%' }}>
+            {filmTesting ? 'Running…' : 'Run thin-film self-test'}
+          </button>
+          {filmTests && (
+            <div className="rt-tests">
+              <p className="blurb">
+                {filmTests.filter((t) => t.pass).length}/{filmTests.length} checks passed — energy
+                bound (0≤R≤1), a vanishing film collapsing to bare Fresnel (cross-checked vs the
+                dielectric kernel), neutral-grey white point, and thickness/angle hue drift.
+              </p>
+              {filmTests.map((t) => (
                 <p key={t.name} className={`obj-msg ${t.pass ? 'ok' : 'err'}`}>
                   {t.pass ? '✓' : '✗'} {t.name} — {t.detail}
                 </p>

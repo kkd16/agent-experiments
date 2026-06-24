@@ -20,9 +20,11 @@ import {
   sampleHomogeneousDistance, samplePhaseHG,
 } from './medium.ts'
 import { cauchyIor, fresnelDielectric, reflect, refract, smithG1 } from './dielectric.ts'
+import { sampleFilmLUT } from './thinfilm.ts'
 
 const PI = Math.PI
 const EPS = 1e-3
+const tmpFilm = new Float64Array(3) // scratch for the thin-film reflectance lookup
 const SPECULAR_ROUGH = 0.1 // ≤ this counts as a "specular" bounce for emitter visibility
 
 // The lighting environment the renderer supplies; the RayTracer pairs it with the
@@ -151,13 +153,23 @@ function evalBRDF(
   const NoH = Math.max(0, nx * hx + ny * hy + nz * hz)
   const VoH = Math.max(0, vx * hx + vy * hy + vz * hz)
 
-  const f0r = 0.04 + (br - 0.04) * metallic
-  const f0g = 0.04 + (bg - 0.04) * metallic
-  const f0b = 0.04 + (bb - 0.04) * metallic
-  const fc = Math.pow(Math.max(0, 1 - VoH), 5)
-  const Fr = f0r + (1 - f0r) * fc
-  const Fg = f0g + (1 - f0g) * fc
-  const Fb = f0b + (1 - f0b) * fc
+  // Microfacet Fresnel. A thin-film coat replaces Schlick with the exact spectral
+  // interference reflectance at the half-angle (its angle dependence already runs to 1 at
+  // grazing, so no Schlick term is layered on top); otherwise the usual metallic-tinted
+  // Schlick over F0 = 0.04 (dielectric) … albedo (metal).
+  let Fr: number, Fg: number, Fb: number
+  if (mat.filmLut) {
+    sampleFilmLUT(mat.filmLut, VoH, tmpFilm)
+    Fr = tmpFilm[0]; Fg = tmpFilm[1]; Fb = tmpFilm[2]
+  } else {
+    const f0r = 0.04 + (br - 0.04) * metallic
+    const f0g = 0.04 + (bg - 0.04) * metallic
+    const f0b = 0.04 + (bb - 0.04) * metallic
+    const fc = Math.pow(Math.max(0, 1 - VoH), 5)
+    Fr = f0r + (1 - f0r) * fc
+    Fg = f0g + (1 - f0g) * fc
+    Fb = f0b + (1 - f0b) * fc
+  }
 
   const D = distributionGGX(NoH, a)
   // height-correlated Smith visibility (folds 1/(4·NoV·NoL))
@@ -475,7 +487,14 @@ function sampleBSDF(s: Surface, vx: number, vy: number, vz: number, rng: Rng, f:
   const a = rough * rough
   const nx = s.nx, ny = s.ny, nz = s.nz
   const diffR = s.br * (1 - metallic), diffG = s.bg * (1 - metallic), diffB = s.bb * (1 - metallic)
-  const f0 = 0.04 + (Math.max(s.br, s.bg, s.bb) - 0.04) * metallic
+  // representative head-on specular reflectance for lobe selection — a thin-film coat can
+  // reflect far more than the 0.04 dielectric base, so weight the spec lobe by the film.
+  let f0 = 0.04 + (Math.max(s.br, s.bg, s.bb) - 0.04) * metallic
+  if (mat.filmLut) {
+    const NoV = nx * vx + ny * vy + nz * vz
+    sampleFilmLUT(mat.filmLut, NoV, tmpFilm)
+    f0 = Math.max(tmpFilm[0], tmpFilm[1], tmpFilm[2])
+  }
   const maxDiff = Math.max(diffR, diffG, diffB)
   let pSpec = maxDiff <= 1e-4 ? 1 : f0 / (f0 + maxDiff)
   if (pSpec < 0.15) pSpec = 0.15

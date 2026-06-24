@@ -579,6 +579,56 @@ const prism = (): SceneConfig => {
   }
 }
 
+// An iridescence cabinet — the v9 thin-film showcase. The front row is a *thickness
+// ladder*: six identical spheres whose only difference is the nanometre thickness of a
+// high-index (TiO₂-like) coat, so the structural colour marches blue → gold → magenta →
+// cyan across the row as the interference order shifts — the thickness→hue mapping made
+// literal. Behind them sit an anodised-titanium knot (a coat over metal) and a real soap
+// bubble (a pale air│water│air film — physically correct, hence the soft pastels). No
+// textures, no pigment: every colour is wavelength interference solved in `thinfilm.ts`.
+// Reads best under the path tracer (richest reflections), but the rasterizer twin shows
+// the same coat through pbr.ts.
+const iridescence = (): SceneConfig => {
+  // a coat of `dNm` nanometres, index `filmIor`, over a substrate of index `ior`
+  const filmMat = (albedo: Vec3, metallic: number, roughness: number, ior: number, filmIor: number, dNm: number): Material =>
+    ({ albedo, specular: 0.9, shininess: 120, rim: 0, metallic, roughness, ior, filmIor, filmThicknessNm: dNm })
+  const ladder = [180, 260, 340, 430, 520, 640]
+  const objects: SceneObject[] = ladder.map((d, i): SceneObject => ({
+    id: `film${i}`,
+    meshKind: 'sphere',
+    position: [(i - (ladder.length - 1) / 2) * 1.25, 0.62, 1.4],
+    scale: 0.52, spin: 0, tiltSpin: 0, baseRotation: [0, 0, 0],
+    // dark, near-black substrate so the structural colour is the only thing seen
+    material: filmMat([0.02, 0.02, 0.025], 0, 0.06, 1.5, 2.3, d),
+    texture: 'none', normalMap: 'none',
+  }))
+  objects.push(
+    // anodised-titanium knot — a thin oxide coat over a metal substrate (high IOR)
+    { id: 'anodised', meshKind: 'knot', position: [-1.4, 1.05, -0.9], scale: 0.95, spin: 0.35, tiltSpin: 0.1, baseRotation: [0, 0, 0], material: filmMat([0.55, 0.56, 0.58], 1, 0.12, 2.5, 2.4, 300), texture: 'none', normalMap: 'none' },
+    // a real soap bubble — symmetric air│water│air film, so the colours are honestly pale
+    { id: 'bubble', meshKind: 'sphere', position: [1.5, 1.0, -1.0], scale: 0.85, spin: 0, tiltSpin: 0, baseRotation: [0, 0, 0], material: filmMat([0.015, 0.015, 0.02], 0, 0.05, 1.0, 1.33, 460), texture: 'none', normalMap: 'none' },
+  )
+  return {
+    name: 'Iridescence',
+    ground: true,
+    groundTexture: 'none',
+    groundNormalMap: 'none',
+    groundMaterial: mat([0.04, 0.045, 0.05], 0.1, 24, 0, 0, 0.5),
+    objects,
+    lights: [
+      { type: 'dir', direction: normalize([-0.4, -0.82, -0.42]) as Vec3, color: [1, 0.98, 0.95], intensity: 1.7 },
+      { type: 'point', position: [2.6, 2.9, 2.4], color: [0.8, 0.85, 1], intensity: 8, range: 13 },
+    ],
+    ambient: [0.06, 0.07, 0.09],
+    bgTop: [0.05, 0.06, 0.09],
+    bgBottom: [0.09, 0.09, 0.12],
+    fogColor: [0, 0, 0],
+    fogDensity: 0,
+    sky: { ...DEFAULT_SKY, zenith: [0.16, 0.2, 0.32], horizon: [0.28, 0.3, 0.36], ground: [0.04, 0.04, 0.05], sunDir: normalize([-0.4, 0.7, 0.3]) as Vec3, sunColor: [1, 0.97, 0.92], sunIntensity: 3.2, sunAngularSize: 0.03, intensity: 1 },
+    view: { target: [0, 0.8, 0.2], yaw: 0.12, pitch: 0.16, distance: 7.4 },
+  }
+}
+
 export const PRESETS: Record<string, () => SceneConfig> = {
   showcase,
   interior,
@@ -590,6 +640,7 @@ export const PRESETS: Record<string, () => SceneConfig> = {
   reflections,
   glass,
   prism,
+  iridescence,
   cathedral,
   nebula,
   implicit: implicitScene,
@@ -607,6 +658,7 @@ export const PRESET_LABELS: { key: string; label: string }[] = [
   { key: 'reflections', label: 'Reflections' },
   { key: 'glass', label: 'Glass' },
   { key: 'prism', label: 'Prism' },
+  { key: 'iridescence', label: 'Iridescence' },
   { key: 'cathedral', label: 'Cathedral' },
   { key: 'nebula', label: 'Nebula' },
   { key: 'implicit', label: 'Implicit (SDF)' },
