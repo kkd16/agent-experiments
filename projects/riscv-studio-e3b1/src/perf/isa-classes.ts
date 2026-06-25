@@ -7,6 +7,7 @@
 // hazard / forwarding / latency logic in `pipeline.ts` stays correct per instruction class.
 
 import type { DecodedFormat } from '../vm/decode';
+import { vmemSpec } from '../vm/vector';
 
 /** Which register file an operand lives in. */
 export type RegFile = 'x' | 'f';
@@ -84,6 +85,23 @@ export function classify(
     isBranch: unit === 'branch',
     isJump: unit === 'jump',
   });
+
+  // ---- V (vector) extension --------------------------------------------------
+  // The timing model doesn't track the vector register file, so vector ops carry no modelled
+  // vector-register hazards. We still surface the integer-register traffic that matters: a vector
+  // load/store reads the `x` base (so the cache model sees a real address) and the configuration /
+  // element-move ops touch the `x` file as a normal ALU op would.
+  if (format === 'V') {
+    const mem = vmemSpec(mnemonic);
+    if (mem) return base(mem.store ? 'store' : 'load', [x(rs1)], mem.store ? null : null);
+    if (mnemonic === 'vsetvli' || mnemonic === 'vsetvl') return base('alu', [x(rs1)], x(rd));
+    if (mnemonic === 'vsetivli') return base('alu', [], x(rd));
+    if (mnemonic === 'vmv.x.s' || mnemonic === 'vcpop.m' || mnemonic === 'vfirst.m') {
+      return base('alu', [], x(rd));
+    }
+    if (mnemonic === 'vmv.s.x') return base('alu', [x(rs1)], null);
+    return base('alu', [], null);
+  }
 
   switch (mnemonic) {
     // ---- U / control ----

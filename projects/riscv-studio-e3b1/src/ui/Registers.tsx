@@ -10,6 +10,8 @@ import type { Radix } from '../vm/format';
 import { f32FromBits } from '../vm/fp';
 import { ACCESS_FETCH } from '../vm/mmu';
 import type { TranslationTrace } from '../vm/mmu';
+import { decodeVtype, describeVtype, VLEN, VLENB, VTYPE_VILL } from '../vm/vector';
+import { VREG_ROLES } from '../vm/registers';
 
 interface Props {
   cpu: Cpu;
@@ -57,6 +59,61 @@ function TranslationTracer({ trace }: { trace: TranslationTrace }) {
   );
 }
 
+/** Render one vector register as its current-SEW signed lanes (or raw bytes when unconfigured). */
+function vectorLanes(cpu: Cpu, vreg: number, sew: number): string {
+  const eb = sew / 8;
+  const n = VLEN / sew;
+  const lanes: string[] = [];
+  for (let i = 0; i < n; i++) {
+    let u = 0;
+    const off = vreg * VLENB + i * eb;
+    for (let k = 0; k < eb; k++) u |= cpu.vregs[off + k] << (8 * k);
+    const shift = 32 - sew;
+    lanes.push(String((u << shift) >> shift)); // sign-extend the SEW-wide lane
+  }
+  return lanes.join(' ');
+}
+
+/** Render one vector register as raw little-endian 32-bit words (used when vtype is illegal). */
+function vectorWords(cpu: Cpu, vreg: number): string {
+  const words: string[] = [];
+  for (let w = 0; w < VLENB / 4; w++) {
+    let u = 0;
+    const off = vreg * VLENB + w * 4;
+    for (let k = 0; k < 4; k++) u |= cpu.vregs[off + k] << (8 * k);
+    words.push(hexWord(u >>> 0));
+  }
+  return words.join(' ');
+}
+
+/** The vector register file + vtype/vl inspector (RV32V). Shown once vectors are in play. */
+function VectorView({ cpu }: { cpu: Cpu }) {
+  const vt = decodeVtype(cpu.vtype);
+  return (
+    <>
+      <div className="reg-subhead">
+        <span>vector registers (RV32V)</span>
+        <span className="reg-fcsr">
+          vtype={describeVtype(cpu.vtype)} · vl={cpu.vl} · vlenb={VLENB} · vstart={cpu.vstart}
+        </span>
+      </div>
+      <div className="reg-grid vreg-grid">
+        {Array.from({ length: 32 }, (_, i) => (
+          <div key={i} className="reg-cell vreg-cell" title={VREG_ROLES[i]}>
+            <span className="reg-name">
+              v{i}
+              {i === 0 && <span className="reg-x">mask</span>}
+            </span>
+            <span className="reg-val vreg-lanes">
+              {vt.vill ? vectorWords(cpu, i) : vectorLanes(cpu, i, vt.sew)}
+            </span>
+          </div>
+        ))}
+      </div>
+    </>
+  );
+}
+
 /** Compact single-precision rendering: integers keep a `.0`, others ~7 sig-figs. */
 function fmtFloat(bits: number): string {
   const x = f32FromBits(bits);
@@ -74,6 +131,9 @@ export default function Registers({ cpu, prevRegs }: Props) {
 
   const frm = (cpu.fcsr >>> 5) & 7;
   const fflags = cpu.fcsr & 0x1f;
+  // Surface the vector file once a program has configured it (or written any vector register).
+  const vectorActive =
+    (cpu.vtype >>> 0) !== (VTYPE_VILL >>> 0) || cpu.vl !== 0 || cpu.vregs.some((b) => b !== 0);
 
   return (
     <div className="panel regs">
@@ -215,6 +275,7 @@ export default function Registers({ cpu, prevRegs }: Props) {
           )}
         </>
       )}
+      {vectorActive && <VectorView cpu={cpu} />}
       {cpu.error && <div className="reg-error">⚠ {cpu.error}</div>}
     </div>
   );

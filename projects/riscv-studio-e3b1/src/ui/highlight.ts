@@ -4,6 +4,7 @@
 import { REAL_MNEMONICS, AMO_MNEMONICS, CSR_MNEMONICS } from '../vm/isa';
 import { FP_MNEMONICS } from '../vm/fp';
 import { RVC_MNEMONICS } from '../vm/rvc';
+import { V_MNEMONICS } from '../vm/vector';
 import { regIndex, fregIndex } from '../vm/registers';
 
 export type TokenKind =
@@ -40,6 +41,7 @@ const MNEMONICS = new Set<string>([
   ...AMO_MNEMONICS,
   ...CSR_MNEMONICS,
   ...RVC_MNEMONICS,
+  ...V_MNEMONICS,
   ...PSEUDO,
   'mret', 'wfi', // privileged (added with machine-mode traps)
 ]);

@@ -7,6 +7,7 @@
 import { signExtend, u32 } from './format';
 import { OPC } from './isa';
 import { isFpOpcode, decodeFpMnemonic, FP_OPC } from './fp';
+import { isVectorOpcode, decodeVectorMnemonic } from './vector';
 
 export type DecodedFormat =
   | 'R'
@@ -20,6 +21,7 @@ export type DecodedFormat =
   | 'AMO'
   | 'CSR'
   | 'FP'
+  | 'V'
   | 'UNKNOWN';
 
 export interface DecodedInstruction {
@@ -123,6 +125,25 @@ export function decode(word: number): DecodedInstruction {
   const rs3 = bits(w, 31, 27);
   const funct3 = bits(w, 14, 12);
   const funct7 = bits(w, 31, 25);
+
+  // Vector opcodes (OP-V + the vector load/store width-encodings) get their own decode path.
+  // This must run before the FP check because vector loads/stores share the FP load/store
+  // opcodes, disambiguated only by the width field.
+  if (isVectorOpcode(opcode, funct3)) {
+    return {
+      raw: w,
+      opcode,
+      rd,
+      rs1,
+      rs2,
+      rs3,
+      funct3,
+      funct7,
+      imm: 0,
+      format: 'V',
+      mnemonic: decodeVectorMnemonic(w),
+    };
+  }
 
   // Floating-point opcodes get their own decode path (loads/stores carry I/S immediates).
   if (isFpOpcode(opcode)) {

@@ -742,9 +742,68 @@ newline:                       # print a single '\\n' (preserves ra; no nested c
         ret
 `;
 
+const VECTOR = `# The V (vector) extension — RVV 1.0.
+# Strip-mined SAXPY ( y = a*x + y ) over 10 elements, then a strip-mined sum reduction.
+#
+# The headline idea of RVV is *length-agnostic* SIMD: vsetvli asks the machine for as many
+# elements as it can do this iteration (t0 = min(remaining, VLMAX)); the same loop runs
+# unchanged whatever VLEN the hardware has. This studio's VLEN is 128 bits, so e32,m1 → VLMAX 4.
+.data
+x:      .word 1, 2, 3, 4, 5, 6, 7, 8, 9, 10
+y:      .word 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+msg:    .string "sum(3*x) = "
+nl:     .string "\\n"
+.text
+main:
+        la   s0, x
+        la   s1, y
+        li   s2, 10           # n elements remaining
+        li   s3, 3            # the scalar a
+saxpy:
+        vsetvli t0, s2, e32, m1   # t0 = elements this pass (≤ VLMAX = 4)
+        vle32.v  v1, (s0)         # x[i..]
+        vle32.v  v2, (s1)         # y[i..]
+        vmacc.vx v2, s3, v1       # y += a * x   (one fused multiply-add per lane)
+        vse32.v  v2, (s1)
+        slli t1, t0, 2            # advance pointers by vl*4 bytes
+        add  s0, s0, t1
+        add  s1, s1, t1
+        sub  s2, s2, t0
+        bnez s2, saxpy
+
+        # ---- reduce sum(y) with vredsum, strip-mined into a scalar total ----
+        la   s1, y
+        li   s2, 10
+        li   s4, 0                # running total
+redloop:
+        vsetvli t0, s2, e32, m1
+        vle32.v  v1, (s1)
+        vmv.v.i  v2, 0            # reduction identity in element 0
+        vredsum.vs v2, v1, v2     # v2[0] = sum of this strip
+        vmv.x.s  t1, v2           # move element 0 into a scalar register
+        add  s4, s4, t1
+        slli t2, t0, 2
+        add  s1, s1, t2
+        sub  s2, s2, t0
+        bnez s2, redloop
+
+        la   a0, msg
+        li   a7, 4
+        ecall
+        mv   a0, s4               # 3 * (1+2+...+10) = 3*55 = 165
+        li   a7, 1
+        ecall
+        la   a0, nl
+        li   a7, 4
+        ecall
+        li   a7, 10
+        ecall
+`;
+
 export const EXAMPLES: readonly Example[] = [
   { id: 'hello', title: 'Hello, RISC-V', blurb: 'print_string syscall basics', focus: 'console', code: HELLO },
   { id: 'bitmanip', title: 'Bit manipulation (Zb)', blurb: 'Zba/Zbb/Zbc/Zbs: cpop, clz, rev8, ror, clmul', focus: 'console', code: BITMANIP },
+  { id: 'vector', title: 'Vectors (RVV)', blurb: 'vsetvli strip-mining: SAXPY (vmacc) + vredsum reduction', focus: 'console', code: VECTOR },
   { id: 'paging', title: 'Virtual memory (Sv32)', blurb: 'page tables, S-mode, a page-fault handler', focus: 'console', code: PAGING },
   { id: 'rvc', title: 'Compressed (RV32C)', blurb: 'c.* 16-bit ops + .option rvc auto-compress', focus: 'console', code: RVC },
   { id: 'timer', title: 'Timer interrupts', blurb: 'CLINT timer + mtvec/mret machine-mode trap', focus: 'console', code: TIMER_IRQ },

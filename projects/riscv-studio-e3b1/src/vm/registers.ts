@@ -72,6 +72,26 @@ export const FREG_ROLES: readonly string[] = [
   'fp temporary', 'fp temporary', 'fp temporary', 'fp temporary',
 ];
 
+// ---------------------------------------------------------------------------
+// Vector registers (RV32V): v0..v31. v0 doubles as the mask register.
+// ---------------------------------------------------------------------------
+
+/** Display name for each vector register (v0..v31). */
+export const VREG_NAMES: readonly string[] = Array.from({ length: 32 }, (_, i) => `v${i}`);
+
+/** One-line role per vector register, surfaced in the vector inspector. */
+export const VREG_ROLES: readonly string[] = Array.from({ length: 32 }, (_, i) =>
+  i === 0 ? 'mask register / vector data' : 'vector data',
+);
+
+/** Resolve a vector-register token (`v5`) to its index, or -1 if invalid. */
+export function vregIndex(token: string): number {
+  const m = /^v(\d{1,2})$/.exec(token.trim().toLowerCase());
+  if (!m) return -1;
+  const n = Number(m[1]);
+  return n <= 31 ? n : -1;
+}
+
 const FNAME_TO_INDEX: Map<string, number> = (() => {
   const m = new Map<string, number>();
   for (let i = 0; i < REG_COUNT; i++) {

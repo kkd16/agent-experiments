@@ -7,9 +7,10 @@
 import { decode } from './decode';
 import type { DecodedInstruction } from './decode';
 import { ABI_NAMES, FREG_ABI_NAMES } from './registers';
-import { hexWord } from './format';
+import { hexWord, signExtend } from './format';
 import { FP_SPECS, RM_NAMES } from './fp';
 import { CSR_NUMBERS, ZB_UNARY_MNEMONICS, ZB_SHIFT_IMM_MNEMONICS } from './isa';
+import { VEC_SPECS, vmemSpec, vtypeTokens } from './vector';
 import { formatCompressed } from './rvc';
 
 function reg(i: number): string {
@@ -80,6 +81,8 @@ function render(d: DecodedInstruction, pc: number): string {
       return 'fence';
     case 'FP':
       return renderFp(d);
+    case 'V':
+      return renderVector(d);
     case 'AMO':
       return renderAmo(d);
     case 'CSR':
@@ -132,6 +135,71 @@ function renderFp(d: DecodedInstruction): string {
       return `${m} ${freg(d.rd)}, ${reg(d.rs1)}`;
     case 'fma':
       return `${m} ${freg(d.rd)}, ${freg(d.rs1)}, ${freg(d.rs2)}, ${freg(d.rs3)}${rmSuffix(d)}`;
+  }
+}
+
+function renderVector(d: DecodedInstruction): string {
+  const w = d.raw >>> 0;
+  const m = d.mnemonic;
+  const vd = (w >>> 7) & 0x1f;
+  const s1 = (w >>> 15) & 0x1f;
+  const vs2 = (w >>> 20) & 0x1f;
+  const vm = (w >>> 25) & 1;
+  const V = (n: number) => `v${n}`;
+  const tail = vm === 0 ? ', v0.t' : '';
+
+  if (m === 'vsetvli') return `vsetvli ${reg(vd)}, ${reg(s1)}, ${vtypeTokens((w >>> 20) & 0x7ff)}`;
+  if (m === 'vsetivli') return `vsetivli ${reg(vd)}, ${s1}, ${vtypeTokens((w >>> 20) & 0x3ff)}`;
+  if (m === 'vsetvl') return `vsetvl ${reg(vd)}, ${reg(s1)}, ${reg(vs2)}`;
+
+  const mem = vmemSpec(m);
+  if (mem) {
+    if (mem.kind === 'unit' || mem.kind === 'mask') return `${m} ${V(vd)}, (${reg(s1)})${tail}`;
+    if (mem.kind === 'strided') return `${m} ${V(vd)}, (${reg(s1)}), ${reg(vs2)}${tail}`;
+    return `${m} ${V(vd)}, (${reg(s1)}), ${V(vs2)}${tail}`;
+  }
+
+  const spec = VEC_SPECS[m];
+  if (!spec) return `.word ${hexWord(d.raw)}`;
+  const simm = signExtend(s1, 5);
+  switch (spec.form) {
+    case 'vv':
+    case 'vs':
+      return `${m} ${V(vd)}, ${V(vs2)}, ${V(s1)}${tail}`;
+    case 'vx':
+      return `${m} ${V(vd)}, ${V(vs2)}, ${reg(s1)}${tail}`;
+    case 'vi':
+      return `${m} ${V(vd)}, ${V(vs2)}, ${simm}${tail}`;
+    case 'vviu':
+      return `${m} ${V(vd)}, ${V(vs2)}, ${s1}${tail}`;
+    case 'macvv':
+      return `${m} ${V(vd)}, ${V(s1)}, ${V(vs2)}${tail}`;
+    case 'macvx':
+      return `${m} ${V(vd)}, ${reg(s1)}, ${V(vs2)}${tail}`;
+    case 'mm':
+      return `${m} ${V(vd)}, ${V(vs2)}, ${V(s1)}`;
+    case 'vvm':
+      return `${m} ${V(vd)}, ${V(vs2)}, ${V(s1)}, v0`;
+    case 'vxm':
+      return `${m} ${V(vd)}, ${V(vs2)}, ${reg(s1)}, v0`;
+    case 'vim':
+      return `${m} ${V(vd)}, ${V(vs2)}, ${simm}, v0`;
+    case 'movv':
+      return `${m} ${V(vd)}, ${V(s1)}`;
+    case 'movx':
+      return `${m} ${V(vd)}, ${reg(s1)}`;
+    case 'movi':
+      return `${m} ${V(vd)}, ${simm}`;
+    case 'wxs':
+      return `${m} ${reg(vd)}, ${V(vs2)}`;
+    case 'wsx':
+      return `${m} ${V(vd)}, ${reg(s1)}`;
+    case 'pop':
+      return `${m} ${reg(vd)}, ${V(vs2)}${tail}`;
+    case 'vid':
+      return `${m} ${V(vd)}${tail}`;
+    case 'mvs2':
+      return `${m} ${V(vd)}, ${V(vs2)}${tail}`;
   }
 }
 
