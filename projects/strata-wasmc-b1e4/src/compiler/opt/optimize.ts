@@ -3,6 +3,7 @@ import { eachOperand, hasSideEffect, isPureValue, zeroOf } from '../ir/ir';
 import { computeDom, succOfTerm } from '../ir/cfg';
 import { findNaturalLoops } from '../ir/loops';
 import { simplifyCFG } from './simplifycfg';
+import { jumpThread } from './thread';
 import { unrollLoops } from './unroll';
 import { unswitchLoops } from './unswitch';
 import { sinkCode } from './sink';
@@ -923,6 +924,10 @@ export function optimize(mod: IRModule, level: OptLevel, snapshots = false): Opt
     // dominates the other). Runs right after sink so the two are adjacent.
     if (level >= 2) record('hoist' + suffix, hoistCode);
     record('dead-code-elim' + suffix, dce);
+    // Jump threading folds per-edge-constant conditional merges (a materialized
+    // boolean phi feeding a branch) into direct jumps; simplify-cfg then coalesces
+    // the straight-line blocks and forwarders the fold leaves behind.
+    record('jump-thread' + suffix, jumpThread);
     record('simplify-cfg' + suffix, simplifyCFG);
   }
   // Partial loop unrolling runs once, after the fixpoint rounds: the full
@@ -941,6 +946,7 @@ export function optimize(mod: IRModule, level: OptLevel, snapshots = false): Opt
     record('licm (post-unroll)', licm);
     record('algebraic-simplify (post-unroll)', algebraic);
     record('dead-code-elim (post-unroll)', dce);
+    record('jump-thread (post-unroll)', jumpThread);
     record('simplify-cfg (post-unroll)', simplifyCFG);
   }
   // a final cleanup pass that always runs

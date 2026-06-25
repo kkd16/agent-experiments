@@ -99,6 +99,13 @@ reference interpreter at every optimization level.
   coalescing (merge `A —br→ B` when `B`'s only pred is `A`) and branch-to-branch threading
   (splice out empty forwarding blocks), cleaning up after SCCP / if-conversion / inlining /
   unrolling.
+- `src/compiler/opt/thread.ts` — **jump threading** (all levels): a pure merge block (phis only)
+  ending in `condbr c, T, F` with `c` one of its own phis is bypassed on every predecessor whose
+  phi-incoming for `c` is a constant — that edge is rewired straight to the decided arm and the
+  merge is deleted once every edge is decided. The path-sensitive complement to SCCP; collapses
+  materialized booleans and short-circuit `&&`/`||`. Sound by a local SSA-use guard, proven by the
+  three-engine oracle. (The chained-merge CFGs it produces drove the largest-rpo-outermost nesting
+  fix in `backend/codegen.ts`.)
 - `src/compiler/opt/divrem.ts` — **division/remainder by a constant** strength reduction at
   -O1+: a `/ C` or `% C` with a runtime dividend lowers to multiply/shift/add. Power-of-two
   divisors become an arithmetic shift with a round-toward-zero bias (`(x>>w-1)&(2^k-1)`,
@@ -464,6 +471,106 @@ yet stored in arrays/structs/globals — extract their lanes for that.)
       -O0…-O3 **and** an offline fuzz of **≈33,000 random affine + bitwise programs**
       (i32+i64, reassociation firing on ~80%, zero mismatches). **948 → 1024
       differential checks.** See the 2026-06-22 plan.
+- [x] **Jump threading** (`opt/thread.ts`, all levels) — the path-sensitive
+      complement to SCCP. When a pure merge block (phis only) ends in
+      `condbr c, T, F` with `c` one of its own phis, every predecessor whose
+      incoming value for that phi is a **constant** has the branch already
+      decided; the pass routes it straight to the taken arm and deletes the merge
+      when every edge is decided. It collapses the materialized-boolean and
+      short-circuit `&&`/`||` shapes that SCCP (not path-sensitive) leaves behind,
+      under a strict SSA-safety guard (a merge's values may be used only by its own
+      terminator and by `pred = B` incomings in its successors). Exposing it
+      uncovered — and the same session **fixed** — a latent structurizer bug:
+      `codegen.ts` nested sibling merge blocks smallest-rpo-outermost, so it
+      couldn't enclose a forward branch from an earlier merge's body into a later
+      one (the `if (a || b) { … }` chained-merge shape threading produces); the fix
+      nests **largest-rpo outermost**, which also lays merge bodies out in rpo
+      order. Across the battery at -O3 (already fully optimized) the pair removes
+      **120 basic blocks** and **918 wasm bytes**; the pass fires on **46** of the
+      238 corpus programs. Proven by the three-engine oracle (interp = wasm = VM)
+      at -O0…-O3. **1096 → 1112 differential checks.** See the 2026-06-25 plan.
+
+## 2026-06-25 — plan + shipped: jump threading + a structurizer nesting fix for chained sibling merges (claude / claude-opus-4-8)
+
+Strata's mid-end was deep on *value* optimization (SCCP, GVN, reassociation, OSR) but its
+*control-flow* cleanup stopped at the structural rewrites in `simplify-cfg`: coalescing a block
+into its sole successor, and threading an **empty unconditional** forwarder. The missing classic is
+**jump threading** — looking *through a conditional merge whose condition is already decided on some
+incoming edges*. It is the path-sensitive partner to SCCP: SCCP folds a branch only when the
+condition is constant on **every** path; jump threading acts when it is constant on **one** path,
+which is exactly the steady state of a materialized boolean (`let hot = false; if (p()) hot = true;
+if (hot) …`) or a short-circuit chain (`if (p(0) || q()) …`), where one predecessor carries a
+literal `true`/`false` into the merge's phi.
+
+### Design — rewire edges, never duplicate code; let the oracle police the SSA
+
+The pass targets a block `B` that is a *pure merge*: phis only, no instructions, terminating in
+`condbr c, T, F` where `c` is one of `B`'s phis. For each predecessor `P` whose incoming value for
+that phi is a constant, the outcome is known, so `P` is redirected straight to `T` (non-zero) or `F`
+(zero); `T`/`F`'s `pred = B` phi incomings are translated to the value seen from `P` (a `B`-phi
+resolves to its own `P`-incoming; a dominating value carries over). When no predecessor still
+reaches `B`, it is deleted. Crucially the pass **moves no computation** — it only rewires edges —
+which keeps it cheap and makes the safety argument local: because `B` has no instructions, the only
+values it defines are its phis, and a phi result can only be used (a) by `B`'s own terminator and
+(b) as a `pred = B` incoming in `B`'s successors. The pass verifies *exactly that* before touching
+`B`; any other use (an instruction reading the phi, a different-edge incoming) and it declines. The
+triple-differential oracle (the reference interpreter, V8's WebAssembly, and the project's
+from-scratch wasm VM, all agreeing at every opt level) is the proof that the rewiring is sound.
+
+### The bug it surfaced — and the structurizer fix
+
+The first run went green at -O0/-O2/-O3 but threw `codegen: no enclosing block for b16` at -O1 on
+`short-circuit-order`. The cause was **not** the new pass producing invalid IR — it produced a
+perfectly reducible CFG — but a latent limitation in the relooper (`backend/codegen.ts`, the
+"Beyond Relooper" structurizer). When several merge blocks share an immediate dominator, each gets a
+WebAssembly `block` scope opened there, and they must nest. The code nested them
+**smallest-rpo-outermost**. That is harmless for independent join points, but threading turns
+`if (a || b) { X }` into *chained* sibling merges — the then-block `X` becomes a merge that itself
+branches forward into the join — and a forward branch out of the earlier merge's body needs the
+later merge's scope to **enclose** it. The correct nesting is **largest-rpo-outermost** (the
+earliest-closing block innermost), which also emits the merge bodies in rpo order. One line; the
+1112-check oracle confirms it changes no observable behaviour while structuring strictly more
+reducible CFGs. A real instance of an optimization exposing — and paying down — latent debt
+elsewhere in the pipeline.
+
+### Plan — the checklist for this session (all shipped)
+
+- [x] `opt/thread.ts` — the jump-threading pass: pure-merge detection, the SSA-use safety guard,
+      per-edge constant decision, target-phi translation, dead-merge removal, fixpoint with a
+      restart-on-mutation loop. Wired into every fixpoint round (before `simplify-cfg`) and the
+      post-unroll cleanup, so it appears as `jump-thread` in the pass log / Optimizer lab.
+- [x] Structurizer fix in `backend/codegen.ts`: nest dominator-child merge blocks by **descending**
+      rpo (largest outermost) so a forward branch between chained sibling merges always finds an
+      enclosing `block`. Verified to leave all 1112 checks green.
+- [x] Four new adversarial battery programs that exercise threading at -O0…-O3 — pure short-circuit
+      actions (`jump-thread-shortcircuit`), side-effecting short-circuit chains
+      (`jump-thread-call-chain`), a disjunction chain that builds the chained-merge shape
+      (`jump-thread-or-merge`, the structurizer regression guard), and a flag set then re-tested
+      (`jump-thread-flag`). Battery 234 → 238 programs; **1096 → 1112** triple-engine checks.
+- [x] Measured impact (offline, toggling the pass): −120 basic blocks and −918 wasm bytes across the
+      battery at -O3; threading fires on 46/238 programs and 216 edges.
+
+### Next (planned follow-ups for jump threading & control-flow)
+
+- [ ] **Thread through a single pure op over a phi** — generalize the condition from "is a phi" to
+      "is a pure `iunary`/`icmp`/`ibin` whose operands are constants or `B`-phis", folding it
+      per-edge (the boolean-`not` and `cmp-against-constant` cases SCCP can't reach path-sensitively).
+- [ ] **Thread the duplicable-tail case** — when `B` has a *small pure* instruction tail (not just
+      phis), clone it onto the threaded edge instead of declining, so threading reaches blocks that
+      compute a cheap value before branching.
+- [ ] **Correlated-branch threading** — `if (x) …; if (x) …`: thread the second test using the
+      dominating value of the first, not just a phi constant (a dominator-walk of the condition).
+- [ ] **Run a light thread+simplify-cfg pass *before* if-conversion** so a branch that threading can
+      delete outright isn't first turned into a (more expensive, speculative) `select`.
+- [ ] **Cross-jumping / tail merging** (the dual): when several predecessors of a join end in an
+      identical side-effecting tail with operands available at a common dominator, sink one copy into
+      a shared block — a code-size win that complements threading's path-splitting.
+- [ ] **Jump-threading metric in the Optimizer lab** — surface "edges threaded / merges deleted"
+      next to the existing per-pass change counts, and a before/after CFG diff in the CFG view.
+- [ ] **Hoist past / sink into chains of single-pred blocks** (already noted below) now compose with
+      threaded edges — re-check the loop-rotation interaction once correlated-branch threading lands.
+- [ ] **Fuzz the structurizer nesting fix** offline against thousands of random reducible CFGs to
+      cement the largest-rpo-outermost invariant beyond the curated battery.
 
 ## 2026-06-24 — plan + shipped: a source-level debugger for the compiled wasm (DWARF-lite line table) (claude / claude-opus-4-8)
 

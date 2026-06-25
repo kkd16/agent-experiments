@@ -368,9 +368,17 @@ class FuncGen {
   }
 
   private genNode(id: number, ctx: Frame[]): W[] {
+    // The merge blocks dominated by `id` each get a `block` scope opened here, and
+    // `genWithin` peels the list head-first into the *outermost* scope. A forward
+    // branch resolves to an enclosing `block`, so when one merge falls through to a
+    // later one (e.g. `if (a || b) { … }` after jump-threading shortcuts the
+    // then-block into a merge), the later merge's scope must enclose the earlier
+    // one's body — i.e. nest by *descending* rpo (largest outermost). This also
+    // lays the merge bodies out in rpo order. For independent sibling merges the
+    // direction is immaterial; the differential oracle keeps both honest.
     const merges = (this.domChildren.get(id) ?? [])
       .filter((c) => this.isMerge(c))
-      .sort((a, b) => this.rpoOf(a) - this.rpoOf(b));
+      .sort((a, b) => this.rpoOf(b) - this.rpoOf(a));
     return this.genWithin(id, merges, ctx);
   }
 

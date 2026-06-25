@@ -2763,4 +2763,64 @@ fn k(seed: int) -> int {
 }
 fn main(){ print(k(2)); print(k(4)); print(k(7)); print(k(13)); }`,
   },
+  {
+    // Pure short-circuit && / || in the *action* position: `if (a>0 && b>0) { … }`.
+    // The inner `&&` lowers to a boolean phi with a constant short-circuit
+    // incoming; jump-threading decides that edge and routes it past the test.
+    // Sweeps every truth combination of the three inputs.
+    name: 'jump-thread-shortcircuit',
+    source: `fn f(a: int, b: int, c: int) -> int {
+  let s = 0;
+  if (a > 0 && b > 0) { s = s + 1; }
+  if (a > 0 || c > 0) { s = s + 2; }
+  if ((a > 0 && b > 0) || c > 0) { s = s + 4; }
+  if (a > 0 && (b > 0 || c > 0)) { s = s + 8; }
+  return s;
+}
+fn main(){
+  for (let i = 0; i < 8; i = i + 1) {
+    print(f((i & 1) * 2 - 1, (i & 2) - 1, (i & 4) - 2));
+  }
+}`,
+  },
+  {
+    // Short-circuit over *side-effecting* conditions (`p(x)` prints), so the
+    // branches can't be if-converted into selects (you can't speculate a print)
+    // and the boolean-phi-feeding-a-branch shape survives all the way to the
+    // threader. The print order is itself part of the differential check.
+    name: 'jump-thread-call-chain',
+    source: `fn p(x: int) -> bool { print(x); return x > 0; }
+fn main(){
+  if (p(1) && p(2) && p(3)) { print(100); }
+  if (p(0) || p(4) || p(5)) { print(200); } else { print(300); }
+  if ((p(1) && p(0)) || p(7)) { print(400); }
+  if (p(2) && (p(0) || p(9))) { print(500); }
+}`,
+  },
+  {
+    // A disjunction chain over side-effecting calls: threading the decided edges
+    // shortcuts the then-block into a merge, producing the *chained sibling
+    // merge* the structurizer must nest largest-rpo-outermost. A regression
+    // guard for the threader and the relooper together (it threads at -O0…-O3).
+    name: 'jump-thread-or-merge',
+    source: `fn q(x: int) -> bool { print(x); return x % 3 == 0; }
+fn cls(n: int) -> void {
+  if (q(n) || q(n + 1) || q(n + 2)) { print(1); } else { print(2); }
+}
+fn main(){ for (let i = 0; i < 6; i = i + 1) { cls(i); } }`,
+  },
+  {
+    // A boolean flag set inside a side-effecting branch and re-tested later,
+    // including in a further short-circuit (`hot && side(...)`). The flag phi
+    // carries a constant on the not-taken edge, which threading resolves.
+    name: 'jump-thread-flag',
+    source: `fn side(x: int) -> bool { print(x); return x > 5; }
+fn run(n: int) -> void {
+  let hot = false;
+  if (side(n)) { hot = true; print(-1); }
+  if (hot) { print(10); } else { print(20); }
+  if (hot && side(n + 1)) { print(30); }
+}
+fn main(){ run(3); run(8); }`,
+  },
 ];
