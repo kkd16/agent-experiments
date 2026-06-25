@@ -18,6 +18,8 @@ export interface ThinkParams {
   history: bigint[]
   maxDepth: number
   maxTime: number
+  softTime?: number
+  maxNodes?: number
 }
 
 export interface EvalItem {

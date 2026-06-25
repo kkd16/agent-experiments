@@ -25,6 +25,8 @@ export interface SearchRequest {
   history: bigint[]
   maxDepth: number
   maxTime: number
+  softTime?: number
+  maxNodes?: number
 }
 
 export interface AnalyzeRequest {
@@ -111,7 +113,7 @@ self.onmessage = async (e: MessageEvent<WorkerRequest>) => {
     await warmTablebasesFor(msg.fen)
     const result = searcher.search(
       parseFen(msg.fen),
-      { maxDepth: msg.maxDepth, maxTime: msg.maxTime, history: msg.history },
+      { maxDepth: msg.maxDepth, maxTime: msg.maxTime, softTime: msg.softTime, maxNodes: msg.maxNodes, history: msg.history },
       (info) => post({ type: 'info', info }),
     )
     post({ type: 'result', info: result })

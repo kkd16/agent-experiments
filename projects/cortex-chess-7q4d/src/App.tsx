@@ -21,6 +21,9 @@ import {
   toFen,
   bookMove,
   buildPgn,
+  allocateTime,
+  formatClock,
+  TIME_CONTROLS,
 } from './engine'
 import {
   buildView,
@@ -100,6 +103,14 @@ export default function App() {
   const [ponderHit, setPonderHit] = useState(false)
   const [moveTimeIdx, setMoveTimeIdx] = useState(0)
   const [pgnMsg, setPgnMsg] = useState('')
+  // UCI-style time control. When active, the engine manages its own clock
+  // (base + increment) and decides how long to think per move. `engineClockRef`
+  // is the authoritative value (read inside the search effect without retriggering
+  // it); `engineClockMs`/`lastBudget` mirror it for display.
+  const [tcIdx, setTcIdx] = useState(0)
+  const engineClockRef = useRef(0)
+  const [engineClockMs, setEngineClockMs] = useState(0)
+  const [lastBudget, setLastBudget] = useState(0)
 
   const lastSearchedFen = useRef('')
   const lastAnalyzedFen = useRef('')
@@ -113,6 +124,22 @@ export default function App() {
   const sync = useCallback(() => {
     setView(buildView(gameRef.current))
   }, [])
+
+  // Reset the engine's clock to the chosen time control's base time.
+  const resetClock = useCallback((idx: number) => {
+    const tc = TIME_CONTROLS[idx].tc
+    engineClockRef.current = tc ? tc.baseMs : 0
+    setEngineClockMs(tc ? tc.baseMs : 0)
+    setLastBudget(0)
+  }, [])
+
+  // Deduct the time a move consumed from the engine clock and add the increment.
+  const chargeEngineClock = useCallback((elapsedMs: number) => {
+    const tc = TIME_CONTROLS[tcIdx].tc
+    if (!tc) return
+    engineClockRef.current = Math.max(0, engineClockRef.current - elapsedMs) + tc.incMs
+    setEngineClockMs(engineClockRef.current)
+  }, [tcIdx])
 
   const humanControls = useCallback(
     (color: number) => engineSide !== (color === WHITE ? 'white' : 'black'),
@@ -142,11 +169,25 @@ export default function App() {
     const searchFen = view.fen
     const level = LEVELS[levelIndex]
     const history = gameRef.current.keyHistory()
-    // Explicit movetime overrides the level's time budget (and lifts the depth cap
-    // so the clock, not the depth, bounds the search).
+    // Time budget. A time control (clock + increment) takes top precedence and
+    // manages time per move; otherwise an explicit movetime overrides the level's
+    // budget (lifting the depth cap so the clock, not depth, bounds the search);
+    // otherwise the strength level's own budget applies.
+    const tc = TIME_CONTROLS[tcIdx].tc
     const moveTime = MOVE_TIMES[moveTimeIdx].ms
-    const maxTime = moveTime > 0 ? moveTime : level.maxTime
-    const maxDepth = moveTime > 0 ? 30 : level.maxDepth
+    let maxTime: number
+    let maxDepth: number
+    let softTime: number | undefined
+    if (tc) {
+      const b = allocateTime(engineClockRef.current, tc.incMs)
+      maxTime = b.hardMs
+      softTime = b.softMs
+      maxDepth = 30
+      setLastBudget(b.hardMs)
+    } else {
+      maxTime = moveTime > 0 ? moveTime : level.maxTime
+      maxDepth = moveTime > 0 ? 30 : level.maxDepth
+    }
 
     // --- Ponder hit: the human played the move we predicted, so the position is
     // already searched. Play the precomputed move instantly. ---
@@ -164,6 +205,7 @@ export default function App() {
         const id = setTimeout(() => {
           setPonderHit(false)
           if (gameRef.current.fen() !== searchFen) return
+          chargeEngineClock(0) // instant move — credit the increment
           gameRef.current.apply(legal)
           sync()
         }, 250)
@@ -185,6 +227,7 @@ export default function App() {
           const id = setTimeout(() => {
             setThinking(false)
             if (gameRef.current.fen() !== searchFen) return
+            chargeEngineClock(0) // book move is instant — credit the increment
             gameRef.current.apply(legal)
             sync()
           }, 350)
@@ -199,12 +242,13 @@ export default function App() {
     setArrow(null)
 
     engine
-      .think({ fen: searchFen, history, maxDepth, maxTime }, (i) => {
+      .think({ fen: searchFen, history, maxDepth, maxTime, softTime }, (i) => {
         setInfo(i)
         setPvSan(pvToSan(searchFen, i.pv))
       })
       .then((res) => {
         setThinking(false)
+        if (tc) chargeEngineClock(res.timeMs)
         // Bail if the position changed under us (undo / new game / FEN load).
         if (gameRef.current.fen() !== searchFen) return
         setInfo(res)
@@ -227,7 +271,7 @@ export default function App() {
           } else ponderRef.current = null
         }
       })
-  }, [view, engineSide, levelIndex, tab, engine, sync, bookOn, moveTimeIdx, ponderOn])
+  }, [view, engineSide, levelIndex, tab, engine, sync, bookOn, moveTimeIdx, ponderOn, tcIdx, chargeEngineClock])
 
   // Background analysis: while it's the human's move and analysis is on, run the
   // engine to show a live evaluation and the best line — without playing a move.
@@ -379,6 +423,7 @@ export default function App() {
       engine.cancel()
       clearPonder()
       gameRef.current.reset(START_FEN)
+      resetClock(tcIdx)
       lastSearchedFen.current = ''
       lastAnalyzedFen.current = ''
       setSelected(null)
@@ -394,7 +439,7 @@ export default function App() {
       }
       setView(buildView(gameRef.current))
     },
-    [engine, clearPonder],
+    [engine, clearPonder, resetClock, tcIdx],
   )
 
   const undo = useCallback(() => {
@@ -592,6 +637,7 @@ export default function App() {
                   className="movetime-select"
                   value={moveTimeIdx}
                   onChange={(e) => setMoveTimeIdx(Number(e.target.value))}
+                  disabled={tcIdx !== 0}
                 >
                   {MOVE_TIMES.map((t, i) => (
                     <option key={t.label} value={i}>
@@ -600,6 +646,31 @@ export default function App() {
                   ))}
                 </select>
               </div>
+              <div className="movetime-row">
+                <span className="movetime-label">Time control</span>
+                <select
+                  className="movetime-select"
+                  value={tcIdx}
+                  onChange={(e) => {
+                    const idx = Number(e.target.value)
+                    setTcIdx(idx)
+                    resetClock(idx)
+                  }}
+                >
+                  {TIME_CONTROLS.map((t, i) => (
+                    <option key={t.label} value={i}>
+                      {t.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              {tcIdx !== 0 && (
+                <div className="clock-row">
+                  <span className="clock-label">Engine clock</span>
+                  <span className={`clock-time${engineClockMs < 10000 ? ' low' : ''}`}>{formatClock(engineClockMs)}</span>
+                  {lastBudget > 0 && <span className="clock-budget">allotting {(lastBudget / 1000).toFixed(1)}s/move</span>}
+                </div>
+              )}
               <div className="toggles">
                 <label className="toggle">
                   <input type="checkbox" checked={bookOn} onChange={(e) => setBookOn(e.target.checked)} />

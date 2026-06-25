@@ -51,6 +51,8 @@ export {
 } from './gtb'
 export type { TbConfig, GtbStats, GtbVerification } from './gtb'
 export { tbCacheKeys, tbCacheClear } from './tbcache'
+export { allocateTime, formatClock, TIME_CONTROLS } from './clock'
+export type { TimeControl, TimeBudget } from './clock'
 export { TACTICS } from './tactics'
 export type { TacticCase } from './tactics'
 export { EPD_SUITES, parseEpd, parseEpdBlock } from './epd'
