@@ -18,6 +18,7 @@ import {
 import type { Material, Subsurface } from './material'
 import { spectralAt, subsurfacePreset, BSSRDF_MEASUREMENTS, LAMBDA_R, LAMBDA_G, LAMBDA_B } from './subsurface'
 import type { MediumName } from './subsurface'
+import { planck, blackbody } from './blackbody'
 import { makeSphere, makeTriangle, intersectPrim } from './primitive'
 import type { Primitive } from './primitive'
 import { buildLightTree } from './lighttree'
@@ -2976,6 +2977,90 @@ function testLightTreeReceiverVariance(): { pass: boolean; detail: string } {
   }
 }
 
+// ---- 18.0 Physically based light colour: blackbody emitters ----------------
+
+// BB-1 — Planck's law obeys Wien's displacement law. The spectral radiance is
+// strictly positive everywhere, and the wavelength at which it peaks scales as
+// λ_max = b/T with Wien's constant b ≈ 2.8978e6 nm·K. We find the peak by a fine
+// search over a wide band (well past the visible, since hot/cold bodies peak in
+// UV/IR) and check λ_max·T against b for several temperatures — the physics that
+// makes the whole locus correct, pinned independently of the colour pipeline.
+function testPlanckWien(): { pass: boolean; detail: string } {
+  const b = 2.8977719e6 // nm·K
+  let worstRel = 0
+  let positive = true
+  let detail = ''
+  for (const T of [3000, 5000, 6500, 9000]) {
+    let peakL = 0
+    let peakV = -Infinity
+    for (let l = 100; l <= 12000; l += 2) {
+      const p = planck(l, T)
+      if (p <= 0) positive = false
+      if (p > peakV) {
+        peakV = p
+        peakL = l
+      }
+    }
+    const rel = Math.abs(peakL * T - b) / b
+    worstRel = Math.max(worstRel, rel)
+    detail += `T=${T}:λ=${peakL}nm `
+  }
+  return { pass: positive && worstRel < 0.01, detail: `${detail}(worst |λ·T−b|/b=${(worstRel * 100).toFixed(2)}%, +ve=${positive})` }
+}
+
+// BB-2 — Planck's law obeys the Stefan–Boltzmann law: the band-integrated radiance
+// scales as T⁴ (∫₀^∞ B dλ ∝ T⁴), so doubling the temperature multiplies the total
+// emitted power by 2⁴ = 16. We integrate over a wide band at T and 2T and check the
+// ratio is 16 — the energetic counterpart to Wien's spectral check.
+function testPlanckStefanBoltzmann(): { pass: boolean; detail: string } {
+  const integrate = (T: number): number => {
+    let s = 0
+    for (let l = 50; l <= 40000; l += 5) s += planck(l, T) * 5
+    return s
+  }
+  const T = 2000
+  const ratio = integrate(2 * T) / integrate(T)
+  return { pass: Math.abs(ratio - 16) / 16 < 0.02, detail: `∫B(2T)/∫B(T)=${ratio.toFixed(3)} (Stefan–Boltzmann T⁴ ⇒ 16)` }
+}
+
+// BB-3 — The Planckian locus runs warm→neutral→cool. A cool-burning body (3000 K,
+// tungsten) must be red-dominant, a hot one (10000 K, clear north sky) blue-dominant,
+// and the red-to-blue ratio must fall *monotonically* with temperature across the
+// whole range — the colour-temperature sweep, computed from Planck + the CIE CMFs,
+// not tabulated. Every hue stays in [0,1] with a unit peak channel.
+function testBlackbodyLocus(): { pass: boolean; detail: string } {
+  const temps = [2000, 3000, 4000, 5000, 6500, 8000, 10000, 12000]
+  const ratios: number[] = []
+  let bounded = true
+  for (const T of temps) {
+    const c = blackbody(T)
+    if (c.x < 0 || c.y < 0 || c.z < 0 || c.x > 1.0001 || c.y > 1.0001 || c.z > 1.0001) bounded = false
+    if (Math.abs(Math.max(c.x, c.y, c.z) - 1) > 1e-6) bounded = false
+    ratios.push(c.x / Math.max(c.z, 1e-6)) // R/B
+  }
+  let monotone = true
+  for (let i = 1; i < ratios.length; i++) if (ratios[i] >= ratios[i - 1]) monotone = false
+  const warm = blackbody(3000)
+  const cool = blackbody(10000)
+  const warmRed = warm.x > warm.z + 0.2
+  const coolBlue = cool.z > cool.x + 0.2
+  return {
+    pass: bounded && monotone && warmRed && coolBlue,
+    detail: `warm3000=(${warm.x.toFixed(2)},${warm.y.toFixed(2)},${warm.z.toFixed(2)}) cool10000=(${cool.x.toFixed(2)},${cool.y.toFixed(2)},${cool.z.toFixed(2)}) R/B↓=${monotone}, bounded=${bounded}`,
+  }
+}
+
+// BB-4 — Near 6500 K (the D65 daylight white point the sRGB primaries are defined
+// against) a blackbody is close to neutral white: no channel is strongly starved.
+// This is the anchor that the Planck→CMF→XYZ→sRGB pipeline is calibrated correctly
+// (a transcription slip in the matrix or the CMFs would tint the white point).
+function testBlackbodyWhitePoint(): { pass: boolean; detail: string } {
+  const c = blackbody(6500)
+  const lo = Math.min(c.x, c.y, c.z)
+  // All channels reasonably balanced (the warm/cool extremes drive one channel to ~0).
+  return { pass: lo > 0.6, detail: `6500K=(${c.x.toFixed(3)},${c.y.toFixed(3)},${c.z.toFixed(3)}), min channel=${lo.toFixed(3)} (>0.6 ⇒ ~neutral)` }
+}
+
 export function runSelfTests(): TestResult[] {
   return [
     test('Vector algebra identities', testVectorMath),
@@ -3068,5 +3153,9 @@ export function runSelfTests(): TestResult[] {
     test('Light tree — receiver-aware sampler ↔ pdf', testLightTreeReceiverSamplerPdf),
     test('Light tree — receiver term steers to lit hemisphere', testLightTreeReceiverDownweight),
     test('Light tree — receiver-aware same mean, lower variance', testLightTreeReceiverVariance),
+    test('Blackbody — Planck positivity + Wien displacement λ·T=b', testPlanckWien),
+    test('Blackbody — Stefan–Boltzmann ∫B ∝ T⁴', testPlanckStefanBoltzmann),
+    test('Blackbody — Planckian locus warm→cool, R/B↓ monotone', testBlackbodyLocus),
+    test('Blackbody — 6500 K ≈ neutral white point', testBlackbodyWhitePoint),
   ]
 }

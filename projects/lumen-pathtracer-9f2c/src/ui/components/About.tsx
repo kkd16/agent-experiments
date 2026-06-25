@@ -285,6 +285,21 @@ export function About() {
           <em>Rayleigh Haze</em> (a sun reddening through a scattering atmosphere) and{' '}
           <em>Amber Smoke</em> (a plume coloured purely by its chromatic extinction).
         </Card>
+        <Card title="Physically based light colour (blackbody)">
+          A real light source has a <em>temperature</em>, not an RGB colour: a tungsten filament glows
+          warm at ~2700 K, an overcast sky is neutral at ~6500 K, a clear north sky is cold blue at
+          ~10000 K. That warm→cool sweep is the <strong>Planckian locus</strong>, and Lumen 18.0
+          computes it from first principles — <code>planck(λ,T)</code> is Planck's law for spectral
+          radiance, integrated against the <strong>CIE 1931 colour-matching functions</strong> (the
+          analytic Wyman–Sloan–Shirley fit) to get the tristimulus the eye sees, then converted
+          XYZ→linear&nbsp;sRGB. So a scene specifies a light the way a real one is rated —{' '}
+          <code>blackbody(3200)</code> — and gets the physically correct hue. <strong>Verify</strong>{' '}
+          pins it to the textbook laws: Planck's positivity and <em>Wien's displacement</em>{' '}
+          (<code>λ_max·T ≈ 2.9×10⁶ nm·K</code>), <em>Stefan–Boltzmann</em> (<code>∫B ∝ T⁴</code>), the
+          locus running warm→neutral→cool with a monotone red/blue ratio, and 6500 K landing on the
+          neutral white point. See <em>Colour Temperature</em> — a row of panels from 2000 K to
+          12000 K washing neutral spheres.
+        </Card>
         <Card title="Thin-film iridescence">
           The shifting colour of a soap bubble or an oil slick is <em>wave optics</em>, not pigment:
           two reflections off a film only nanometres thick interfere, and their path difference makes

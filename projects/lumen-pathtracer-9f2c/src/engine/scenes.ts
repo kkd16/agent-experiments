@@ -14,6 +14,7 @@ import { conductorF0RGB } from './conductor'
 import type { ConductorName } from './conductor'
 import { subsurfacePreset } from './subsurface'
 import type { MediumName } from './subsurface'
+import { blackbodyEmission } from './blackbody'
 import { CUBE_OBJ, parseObj } from './obj'
 
 // ---- small builders ----------------------------------------------------------
@@ -1682,6 +1683,45 @@ function apothecary(): SceneDef {
   }
 }
 
+// Colour Temperature (18.0) — the Planckian locus, lit. A row of emissive panels
+// climbs from 2000 K (a candle/sodium amber) through ~5500 K (neutral daylight) to
+// 12000 K (a cold blue north sky), each panel's colour computed from Planck's law
+// integrated against the CIE colour-matching functions (see blackbody.ts) — not a
+// hand-picked RGB. Each panel washes a neutral matte sphere and the wall behind it,
+// so the warm→cool sweep reads directly off physically-coloured light. The middle
+// panels are near-white; only the ends are strongly tinted — exactly as the locus
+// predicts.
+function colourTemperature(): SceneDef {
+  const materials: Material[] = [
+    { kind: 'diffuse', albedo: v(0.6, 0.6, 0.6), sigma: 0.3 }, // 0 neutral floor
+    { kind: 'diffuse', albedo: v(0.55, 0.55, 0.56), sigma: 0.4 }, // 1 neutral back wall
+    { kind: 'diffuse', albedo: v(0.82, 0.82, 0.82) }, // 2 matte spheres (read the cast)
+  ]
+  const prims: PrimDef[] = []
+  const W = 22
+  prims.push(...quad(v(-W, 0, -W), v(W, 0, -W), v(W, 0, W), v(-W, 0, W), 0)) // floor
+  prims.push(...quad(v(-W, 0, -6), v(W, 0, -6), v(W, 16, -6), v(-W, 16, -6), 1)) // back wall
+  const temps = [2000, 3000, 4000, 5500, 7000, 9000, 12000]
+  const n = temps.length
+  const spacing = 3.0
+  for (let i = 0; i < n; i++) {
+    const cx = (i - (n - 1) / 2) * spacing
+    // The emissive panel (flush to the back wall), its hue from the blackbody locus.
+    materials.push({ kind: 'emissive', emission: blackbodyEmission(temps[i], 11) })
+    const em = materials.length - 1
+    prims.push(...quad(v(cx - 1.1, 0.4, -5.9), v(cx + 1.1, 0.4, -5.9), v(cx + 1.1, 4.4, -5.9), v(cx - 1.1, 4.4, -5.9), em))
+    // A neutral sphere in front to catch the coloured light.
+    prims.push({ kind: 'sphere', center: v(cx, 1.0, -2.6), radius: 1.0, material: 2 })
+  }
+  return {
+    name: 'Colour Temperature',
+    materials,
+    prims,
+    camera: { eye: v(0, 4.0, 11.5), target: v(0, 1.6, -4), up: v(0, 1, 0), vfovDeg: 55, aperture: 0, focusDist: 12 },
+    env: { kind: 'solid', color: v(0.01, 0.01, 0.012) },
+  }
+}
+
 // The Glowing Orb — a path-guiding showcase. The room's only light is a small,
 // bright *emissive sphere*. Lumen samples lights by next-event estimation only on
 // triangle emitters, so an emissive sphere is INVISIBLE to NEE: every photon the
@@ -1985,6 +2025,7 @@ export const SCENES: ScenePreset[] = [
   { id: 'brushed', label: 'Brushed Metal', build: brushedMetal },
   { id: 'conductors', label: 'Rough Conductors', build: roughConductors },
   { id: 'metals', label: 'Metals of the World', build: metalsOfTheWorld, sky: true },
+  { id: 'colour-temp', label: 'Colour Temperature (blackbody)', build: colourTemperature },
   { id: 'ceramics', label: 'Ceramics & Clay', build: ceramics },
   { id: 'subsurface', label: 'Subsurface Studio', build: subsurfaceStudio },
   { id: 'jade', label: 'Jade Idol', build: jadeIdol },

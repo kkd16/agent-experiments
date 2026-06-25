@@ -42,6 +42,9 @@ photon emitter, so daylight scenes get photon-mapped sun caustics).
   2001) and `subsurfacePreset` that converts σ_s′/σ_a into a spectral `Subsurface` (per-wavelength
   extinction + single-scattering albedo) for the integrator's wavelength-resolved interior walk.
 - `src/engine/spectrum.ts` — Cauchy dispersion IOR + white-point-normalised wavelength→RGB.
+- `src/engine/blackbody.ts` — **(18.0)** physically based light colour: Planck's law `planck(λ,T)`,
+  the CIE 1931 colour-matching functions (Wyman–Sloan–Shirley analytic fit) integrated against it,
+  XYZ→linear-sRGB, and `blackbody(K)`/`blackbodyEmission(K,intensity)` giving the Planckian-locus hue.
 - `src/engine/conductor.ts` — **(11.0)** measured complex refractive indices η(λ),k(λ) for six real
   metals (gold/silver/copper/aluminium/iron/chromium), the exact unpolarised conductor Fresnel, its
   hemispherical average (for Kulla–Conty), and a band-integrated RGB F0 (denoiser/BDPT fallback).
@@ -268,6 +271,39 @@ photon emitter, so daylight scenes get photon-mapped sun caustics).
       collision the path collects `(1−albedo)·Lₑ` of self-radiance, so a heterogeneous field glows
       brightest in its dense core (fire / embers / luminous nebula). New **Ember** scene + a proof
       that an absorbing+emitting volume obeys `(1−e^(−σ_t·chord))·Lₑ`.
+
+## Roadmap — 2026-06-25 Lumen 18.0: physically based light colour — blackbody emitters (claude)
+
+Lumen had grown rigorous about how light *propagates* — five integrators, spectral subsurface, a
+chromatic atmosphere, a receiver-aware light tree — while every light *source* was still typed in by
+hand as a raw RGB radiance. But real sources don't have an RGB colour; they have a **temperature**. A
+tungsten lamp is ~2700 K and warm; daylight is ~6500 K and neutral; a clear north sky is ~10000 K and
+blue. That warm→cool sweep — colour temperature — is the **Planckian locus**, fixed by physics.
+
+18.0 computes it from scratch and hands scenes a temperature dial. `planck(λ,T)` is Planck's law for
+spectral radiance; we integrate it against the **CIE 1931 colour-matching functions** (the analytic
+multi-Gaussian fit of Wyman, Sloan & Shirley 2013 — no 1 nm table to ship) to get the tristimulus the
+eye would see, then convert XYZ→linear sRGB with the standard matrix and normalise to a unit-brightness
+hue. A scene calls `blackbody(3200)` where it used to invent an RGB triple. Crucially it needs **no
+integrator or material change** — it is a colour helper, computed at scene-build time — yet it is as
+physically grounded as the transport it feeds, and the verify suite pins it to the textbook laws.
+
+Plan / steps (all shipped this session):
+
+1. **`blackbody.ts` — the module.** `planck(λ,T)` (∝ λ⁻⁵/expm1(c₂/λT), the leading constant cancels);
+   the CIE CMFs `cieXYZBar(λ)` as the Wyman–Sloan–Shirley Gaussians; a 5 nm Riemann integral
+   `blackbodyXYZ(T)`; the XYZ→linear-sRGB matrix; and `blackbody(K)` (unit-peak hue, out-of-gamut
+   negatives clamped) + `blackbodyEmission(K, intensity)`.
+2. **`scenes.ts` — Colour Temperature.** A row of emissive panels from 2000 K to 12000 K, each its
+   blackbody hue, washing a neutral matte sphere and the wall — the locus read straight off the light.
+3. **`selftest.ts` — four proofs (94 total).** (a) Planck positivity + **Wien's displacement**
+   (numerically located peak λ_max·T ≈ 2.898×10⁶ nm·K to <1%); (b) **Stefan–Boltzmann** (band integral
+   ∝ T⁴ ⇒ ∫B(2T)/∫B(T) ≈ 16); (c) the **Planckian locus** runs warm→neutral→cool with a strictly
+   monotone red/blue ratio, every hue bounded in [0,1]; (d) 6500 K lands on a near-**neutral white
+   point** (the calibration anchor of the whole Planck→CMF→XYZ→sRGB pipeline).
+4. **UI / About.** A "Physically based light colour (blackbody)" card; the scene in the picker.
+   Verified in Node: 94/94 self-tests pass; a smoke render of *Colour Temperature* is finite and lit.
+   `pnpm lint`/`tsc`/`build` green via the CI gate.
 
 ## Roadmap — 2026-06-25 Lumen 17.0: a sharper light tree — SAH splitting + receiver-aware importance (claude)
 
