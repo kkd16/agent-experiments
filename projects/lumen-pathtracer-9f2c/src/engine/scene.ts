@@ -23,6 +23,8 @@ import { makeSky, skyRadiance } from './sky'
 import type { SkyState } from './sky'
 import { makeDensityField } from './volume'
 import type { DensityField } from './volume'
+import { buildLightTree } from './lighttree'
+import type { LightTree } from './lighttree'
 
 // A directional "sun" the environment exposes as a sampled light: a cone of
 // half-angle `size` around `dir` (the direction toward the sun).
@@ -88,6 +90,10 @@ export class Scene {
   readonly hasHeterogeneous: boolean
   // World-space bounding box (the BVH root), exposed for path guiding's spatial tree.
   readonly bounds: Aabb
+  // (14.0) The light BVH over the emissive triangles, used for importance-sampled
+  // many-light NEE when a render opts into it (settings.manyLights). null when the
+  // scene has no triangle lights. The uniform sampler ignores it entirely.
+  readonly lightTree: LightTree | null
 
   constructor(def: SceneDef) {
     const t0 = now()
@@ -115,6 +121,17 @@ export class Scene {
     this.hasMedia = this.media.length > 0
     this.densityFields = this.media.map((m) => makeDensityField(m))
     this.hasHeterogeneous = this.densityFields.some((f) => f !== null)
+    this.lightTree =
+      this.lights.length > 0
+        ? buildLightTree(
+            this.lights.map((li) => {
+              const tri = this.prims[li] as Triangle
+              const mat = this.materials[tri.material]
+              const emission = mat.kind === 'emissive' ? mat.emission : v(0, 0, 0)
+              return { primId: li, tri, emission }
+            }),
+          )
+        : null
     this.buildMs = now() - t0
   }
 
@@ -191,10 +208,15 @@ export class Scene {
 
   // ---- Next-event estimation -------------------------------------------------
 
-  // Pick one of the scene's lights uniformly and sample a direction toward it.
-  // The pool spans the emissive triangles plus, if present, the environment sun;
-  // every returned pdf already folds in the 1/numLights selection probability.
-  sampleLight(ref: Vec3, rng: Rng): LightSampleResult | null {
+  // Pick one of the scene's lights and sample a direction toward it. With
+  // `useTree` (the 14.0 many-light path), the emissive triangles are chosen by the
+  // light BVH's power/distance/orientation importance instead of uniformly; the
+  // environment sun keeps its 1/numLights slot in either mode. Every returned pdf
+  // already folds in the realised selection probability, so the integrator's MIS is
+  // identical and the estimator stays unbiased. `useTree=false` is the verbatim,
+  // byte-for-byte original uniform sampler (the default).
+  sampleLight(ref: Vec3, rng: Rng, useTree = false): LightSampleResult | null {
+    if (useTree && this.lightTree) return this.sampleLightTree(ref, rng)
     const nTri = this.lights.length
     const nL = nTri + (this.envSun ? 1 : 0)
     if (nL === 0) return null
@@ -218,6 +240,36 @@ export class Scene {
     return { wi, dist, radiance, pdf, primId: li }
   }
 
+  // (14.0) Importance-sampled many-light NEE. The environment sun keeps exactly its
+  // uniform 1/numLights selection probability; the remaining nTri/numLights mass
+  // over the emissive triangles is distributed by the light BVH — so this reduces to
+  // the uniform sampler when every cluster's importance is equal. The returned pdf
+  // folds in the realised selection probability (nTri/numLights · p_tree(L)).
+  private sampleLightTree(ref: Vec3, rng: Rng): LightSampleResult | null {
+    const nTri = this.lights.length
+    const nEnv = this.envSun ? 1 : 0
+    const nL = nTri + nEnv
+    if (nL === 0) return null
+    const pTriBranch = nTri / nL
+    // Env sun keeps its 1/nL slot (no rng draw consumed when there is no env sun).
+    if (nEnv > 0 && rng.next() >= pTriBranch) return this.sampleEnvLight(rng, nL)
+    const sel = this.lightTree!.sample(ref, rng)
+    const tri = this.prims[sel.primId] as Triangle
+    const s = sampleTriangle(tri, rng)
+    const toLight = sub(s.p, ref)
+    const dist2 = dot(toLight, toLight)
+    const dist = Math.sqrt(dist2)
+    if (dist < 1e-5) return null
+    const wi = scale(toLight, 1 / dist)
+    const cosLight = dot(s.n, scale(wi, -1))
+    if (cosLight <= 1e-6) return null
+    const pSelect = pTriBranch * sel.prob // nTri/nL · p_tree(L | ref)
+    const pdf = (pSelect * s.pdfArea * dist2) / cosLight // area → solid-angle
+    const mat = this.materials[tri.material]
+    const radiance = mat.kind === 'emissive' ? mat.emission : v(0, 0, 0)
+    return { wi, dist, radiance, pdf, primId: sel.primId }
+  }
+
   // Sample a direction within the sun's cone (uniform in solid angle) and read
   // the environment radiance there. The light is at infinity, so dist = ∞.
   private sampleEnvLight(rng: Rng, nL: number): LightSampleResult | null {
@@ -237,13 +289,20 @@ export class Scene {
 
   // Solid-angle pdf that sampleLight() would have used to generate direction wi
   // toward emissive triangle `primId` — needed to MIS-weight a BSDF hit on it.
-  lightPdf(ref: Vec3, wi: Vec3, primId: number, dist: number): number {
+  // `useTree` must match the value passed to sampleLight so the two stay paired:
+  // under the tree the per-triangle selection probability is nTri/numLights ·
+  // p_tree(L | ref) instead of the uniform 1/numLights.
+  lightPdf(ref: Vec3, wi: Vec3, primId: number, dist: number, useTree = false): number {
     const nL = this.numLights
     if (nL === 0) return 0
     const prim = this.prims[primId]
     if (prim.kind !== 'triangle') return 0
     if (this.materials[prim.material].kind !== 'emissive') return 0
     const pdfTri = triangleDirPdf(prim, ref, wi, dist)
+    if (useTree && this.lightTree) {
+      const pSelect = (this.lights.length / nL) * this.lightTree.prob(ref, primId)
+      return pdfTri * pSelect
+    }
     return pdfTri / nL
   }
 

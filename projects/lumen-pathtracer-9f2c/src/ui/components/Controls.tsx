@@ -133,6 +133,12 @@ export function Controls(props: {
           ]}
           hint="Path Tracer grows paths from the camera (NEE+MIS). Guided is the path tracer that LEARNS: an SD-tree (a spatial k-d tree of directional quadtrees) records where light comes from as it traces and importance-samples that learned distribution, mixed with the BSDF via MIS — so it finds hard indirect light (a room lit only by a bounce) that plain PT stumbles onto by luck. It sharpens over power-of-two iterations and converges to the same image, unbiased. Bidirectional also grows a path from a light and connects the two — cleaner for indirect-lit scenes (try Cove). Metropolis (PSSMLT) runs a Markov chain over the path tracer's random stream, so it locks onto the hardest-to-find light and refines the whole frame at once. Photon Map (SPPM) shoots photons from the lights, refracts them through glass, and gathers them on diffuse surfaces with a shrinking radius — the one estimator that resolves caustics cleanly (try Caustic Room or Caustic Pool). Its photons are spectral (rainbow caustics through dispersive glass — try Spectral Caustic) and the sun is a photon emitter too (daylight caustics — try Daylight Lens). All converge to the same image. For Metropolis the sample target counts mutations-per-pixel; for Photon Map it counts passes."
         />
+        <Toggle
+          label="Many lights (light BVH)"
+          value={state.manyLights}
+          onChange={(v) => set('manyLights', v)}
+          hint="Next-event estimation has to choose WHICH light to connect a shadow ray to. By default it picks uniformly — fine for one light, hopeless for hundreds, where almost every shadow ray lands on a far or occluded emitter. This builds a light BVH (Conty-Kulla 2018): a tree over the emissive triangles, each node caching its power, bounds and a cone of emitter normals, and picks a light by a stochastic walk weighted by power·orientation/distance² — so near, bright, well-oriented lights win. It only reshapes the variance of NEE, never the mean, so it is exactly unbiased (converges to the same image). Dramatic on Star Field and Lantern Hall; affects the Path Tracer / Guided / Metropolis integrators (Bidirectional & Photon Map sample lights their own way)."
+        />
         <Segmented
           label="Resolution"
           value={String(state.resIndex)}

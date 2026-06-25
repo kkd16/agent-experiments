@@ -114,6 +114,11 @@ export interface IntegratorSettings {
   // incident-radiance field online and importance-samples it (mixed with the BSDF
   // via MIS), cutting indirect-light noise. All converge to the same image.
   integrator?: 'pt' | 'bdpt' | 'pssmlt' | 'sppm' | 'guided'
+  // (14.0) Importance-sample which light to next-event-estimate via the light BVH
+  // (power/distance/orientation) instead of uniformly. Affects the unidirectional
+  // path tracer's NEE (so 'pt', 'guided' and 'pssmlt', which reuse it); 'bdpt' and
+  // 'sppm' do their own light sampling and are unaffected. Unbiased either way.
+  manyLights?: boolean
 }
 
 // Tone-mapping operators applied on the UI thread to the accumulated HDR buffer.

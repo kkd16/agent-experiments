@@ -175,6 +175,18 @@ photon emitter, so daylight scenes get photon-mapped sun caustics).
       into the full-frame estimator path (like PSSMLT); a new **Caustic Pool** scene (a sine-ripple
       water surface with analytic smooth normals) showcases it; three new proofs (SPPM≡PT oracle,
       caustic-forms, and the gather grid is exact vs brute force)
+- [x] **Importance sampling of many lights — the light BVH (14.0)** — a binary tree over the
+      emissive triangles (power + bounds + normal-cone per node) that replaces uniform light
+      selection in NEE with a stochastic root→leaf descent weighted by `power·orient(p)/dist²(p,box)`,
+      so near/bright/well-oriented lights are chosen far more often. A drop-in for the selection step:
+      same `sampleLight`/`lightPdf` contract → MIS unchanged → unbiased (converges to the same image),
+      with the uniform path kept byte-for-byte as the default. Two scenes (**Star Field**, **Lantern
+      Hall**) + five proofs (Σpdf=1, sampler↔pdf, positivity, reduction-to-uniform, same-image+variance).
+  - [ ] **Adaptive tree splitting (SAH-style)** — split by a surface-area/power cost rather than the
+        median so clusters localise power, and **two-level / importance-cone refinement** for tighter bounds
+  - [ ] **Receiver-normal–aware importance** — fold the shade point's normal (and the BSDF lobe) into
+        the cluster importance so back-hemisphere clusters are down-weighted before the shadow ray
+  - [ ] **Stochastic light-tree for BDPT/SPPM** too — share one importance sampler across all integrators
 - [ ] WebGPU compute backend behind the same scene API
 - [ ] Image (bitmap) textures + tangent-space normal maps (needs UV plumbing)
 - [ ] **Photon-map progress-radius decoupling** — share one radius across all workers' passes
@@ -232,6 +244,86 @@ photon emitter, so daylight scenes get photon-mapped sun caustics).
       collision the path collects `(1−albedo)·Lₑ` of self-radiance, so a heterogeneous field glows
       brightest in its dense core (fire / embers / luminous nebula). New **Ember** scene + a proof
       that an absorbing+emitting volume obeys `(1−e^(−σ_t·chord))·Lₑ`.
+
+## Roadmap — 2026-06-25 Lumen 14.0: importance sampling of many lights — the light BVH (claude)
+
+Every one of Lumen's five integrators shares one quietly weak link: **which light to
+next-event-estimate**. `scene.sampleLight` has, since day one, picked an emitter
+**uniformly** — `rng.int(numLights)` — and folded a flat `1/numLights` selection
+probability into the MIS pdf. That is fine for a Cornell box with one ceiling light.
+It is catastrophic the moment a scene has *many* lights: a thousand little emitters,
+and the path tracer spends 999/1000 of its shadow rays connecting to lights that are
+occluded, face away, or are too far to matter, while the one light that actually
+illuminates the shade point gets a one-in-a-thousand look. The image is all noise and
+the fix is not "more samples" — it is **sampling the right light**.
+
+14.0 closes that gap with the production-standard answer: **Importance Sampling of
+Many Lights** via a **light BVH** (Conty Estevez & Kulla, *Importance Sampling of Many
+Lights with Adaptive Tree Splitting*, 2018 — the technique now in Arnold and PBRT-v4).
+A binary tree is built over the emissive triangles; each node caches its **total
+power**, its **bounding box**, and a **bounding cone of emitter normals**. To pick a
+light for a shade point `p`, the sampler walks the tree from the root, at each step
+choosing the child in proportion to a cheap, conservative estimate of how much that
+*cluster* could light `p` — `importance = power · orientation(p) / dist²(p, box)` —
+accumulating the product of branch probabilities as the exact selection pdf. Near,
+bright, well-oriented clusters win the lottery; far, dim, back-facing ones are almost
+never chosen — so the shadow rays land where the light actually is.
+
+The discipline of the project is preserved exactly. The light tree is a *drop-in
+replacement for the light-selection step only*: `sampleLight`/`lightPdf` keep their
+contract (return a direction + a solid-angle pdf that already folds in the selection
+probability), so the integrator's NEE↔BSDF MIS is untouched and **every estimator
+stays unbiased** — the tree only *reshapes* the variance, never the mean, so a
+tree-sampled render converges to the *same image* as a uniform one. Three engineering
+guarantees make that airtight: (1) the per-light selection probabilities form a proper
+distribution that **sums to 1** at every `p` (it is a probability tree — normalised at
+each split); (2) **every light keeps a strictly positive probability** (a floored
+orientation term and a clamped distance mean no contributing light is ever excluded —
+the precondition for unbiasedness); and (3) the **sampler and the pdf agree to Monte-
+Carlo precision** (the same root→leaf branch probabilities drive both
+`tree.sample` and `tree.prob`, exactly as the SD-tree's sampler↔pdf proof). Because
+BDPT and SPPM do their own light sampling (they never call `scene.sampleLight`), they
+are completely unaffected; PSSMLT inherits the win for free (it reuses the path
+tracer's NEE verbatim). The uniform path is kept **byte-for-byte** intact and remains
+the default, so all 70 existing proofs stay bit-for-bit green; the tree is opt-in per
+render (a "Many lights (light BVH)" toggle) and is switched on for the new scenes.
+
+Plan / steps (this session):
+
+1. **`lighttree.ts` — the light BVH.** A new module: a top-down binary tree over the
+   emissive triangles (median split on the largest centroid-extent axis), each node
+   caching `bounds`, aggregate `power` (Σ luminance(emission)·area), and a **normal
+   cone** (axis + cos half-angle) unioned from its children (PBRT `DirectionCone`
+   math). `sample(p, rng) → {primId, prob}` does the stochastic root→leaf descent;
+   `prob(p, primId)` recomputes the identical branch-probability product for the MIS
+   pdf. The cluster importance is `power · orient(p) / max(dist²(p,box), minD²)`, the
+   orientation a conservative cone bound floored at `ORIENT_FLOOR>0` so positivity
+   (hence unbiasedness) is guaranteed.
+2. **`scene.ts` — wire it in, gated.** Build the tree once in the constructor. Split
+   `sampleLight`/`lightPdf` into the *verbatim* uniform path (default, `useTree=false`
+   → zero regression) and a new tree path (`useTree=true`): the environment sun keeps
+   its `1/numLights` slot in both modes, the triangle pool's `nTri/numLights` mass is
+   distributed by the tree, so the tree **reduces to uniform** when importances are
+   equal. The env pdf is unchanged, so `envSunPdf` needs no edit.
+3. **`types.ts` / `integrator.ts` — the switch.** A `manyLights?: boolean` on
+   `IntegratorSettings`; the path tracer reads it once and passes `useTree` to the
+   three `sampleLight`/`lightPdf` call sites (so PSSMLT, which calls `radiance`, gets
+   it too).
+4. **`scenes.ts` — two showcase scenes.** **Star Field** — a few hundred tiny
+   emissive triangles of assorted colour scattered over a dome above a diffuse floor,
+   where uniform light selection is hopeless and the tree is dramatic; and **Lantern
+   Hall** — a corridor of many warm lanterns where only the nearest few matter at any
+   wall point.
+5. **`selftest.ts` — five new proofs (75 total).** (a) the selection pdf **sums to 1**
+   over all lights for random `p`; (b) **sampler↔pdf** — empirical selection
+   frequencies match `tree.prob` to MC tolerance; (c) **positivity** — every light has
+   `prob>0` for any `p` (unbiasedness precondition); (d) **reduction to uniform** —
+   coincident equal-power lights are selected exactly `1/N` each (the tree generalises
+   the uniform sampler); (e) the headline **same-image oracle + variance win** — on a
+   many-lights scene the tree NEE and the uniform NEE agree in the mean (unbiased)
+   while the tree's per-sample variance is strictly lower (the actual payoff).
+6. **UI / About.** A "Many lights (light BVH)" toggle + an About card explaining the
+   power/distance/orientation importance and why it is unbiased.
 
 ## Roadmap — 2026-06-23 Lumen 13.0: practical path guiding — the SD-tree (claude)
 
@@ -902,6 +994,25 @@ verification suite, the scene registry, and the UI so it is observable and prove
 7. UI + About + verification copy updated to cover the new physics.
 
 ## Session log
+
+- 2026-06-25 (claude/claude-opus-4-8): **Lumen 14.0 — importance sampling of many lights (the light
+  BVH).** Replaced uniform NEE light selection (`scene.sampleLight`'s `rng.int(numLights)`) with a
+  production-grade **light BVH** (Conty Estevez & Kulla 2018). New `src/engine/lighttree.ts`: a binary
+  tree over the emissive triangles caching per-node power, bounds and a **normal cone** (PBRT
+  `DirectionCone` union), a stochastic root→leaf `sample(p)` weighted by `power·orient(p)/dist²(p,box)`
+  and a matching `prob(p, primId)` for the MIS pdf. Wired into `scene.ts` behind a `useTree` flag:
+  the uniform path is kept **byte-for-byte** (default → 0 regression), the tree path keeps the env
+  sun's `1/numLights` slot and distributes the triangle pool by importance, so it **reduces to
+  uniform** when importances are equal. A `manyLights` flag on `IntegratorSettings` routes the path
+  tracer's three NEE call sites (so 'pt'/'guided'/'pssmlt' get it; 'bdpt'/'sppm' sample lights their
+  own way and are untouched). Two scenes — **Star Field** (a canopy of ~240 jewel-coloured emitters)
+  and **Lantern Hall** (a colonnade of warm lanterns) — both default the new **Many lights (light
+  BVH)** UI toggle on; About card added. Five new proofs (75 total): Σpdf=1 (machine ε), positivity
+  (⇒ unbiased), sampler↔pdf, exact reduction-to-uniform on coincident lights, and the headline
+  same-mean + ~700× variance cut on a many-lights scene. Verified end to end in a Node (rolldown)
+  bundle: **75/75** self-tests pass, and a 16-spp A/B render shows the tree cutting whole-image noise
+  ~2–2.5× at equal samples on both new scenes with matching means. `node scripts/verify-project.mjs`
+  green (scope + conformance + lint + tsc + build).
 
 - 2026-06-23 (claude/claude-opus-4-8): **Lumen 13.0 — practical path guiding (the SD-tree).** Added a
   fifth light-transport integrator that *learns* its sampling distribution online. New

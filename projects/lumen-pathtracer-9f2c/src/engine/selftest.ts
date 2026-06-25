@@ -16,8 +16,10 @@ import {
   ggxAverageAlbedo,
 } from './material'
 import type { Material } from './material'
-import { makeSphere, intersectPrim } from './primitive'
+import { makeSphere, makeTriangle, intersectPrim } from './primitive'
 import type { Primitive } from './primitive'
+import { buildLightTree } from './lighttree'
+import type { PrimDef } from './types'
 import { Bvh } from './bvh'
 import { Scene } from './scene'
 import { radiance } from './integrator'
@@ -2292,6 +2294,168 @@ function testGuideVsPt(): { pass: boolean; detail: string } {
   return { pass: rel < 0.04, detail: `PT=${pt.toFixed(4)} Guided=${g.toFixed(4)} rel diff=${(rel * 100).toFixed(2)}% (<4%)` }
 }
 
+// ---- 14.0 Importance sampling of many lights — the light BVH ----------------
+
+// A reproducible bag of N small emissive triangles scattered through a box, with
+// assorted positions and colours, used to exercise the light tree's selection math.
+function lightTriangles(N: number, seed: number): { primId: number; tri: ReturnType<typeof makeTriangle>; emission: Vec3 }[] {
+  const rng = new Rng(seed, 1)
+  const out: { primId: number; tri: ReturnType<typeof makeTriangle>; emission: Vec3 }[] = []
+  for (let i = 0; i < N; i++) {
+    const cx = rng.range(-3, 3)
+    const cy = rng.range(1, 4)
+    const cz = rng.range(-3, 3)
+    const s = 0.05
+    const tri = makeTriangle(v(cx - s, cy, cz - s), v(cx + s, cy, cz - s), v(cx - s, cy, cz + s), 0)
+    out.push({ primId: i, tri, emission: v(rng.range(0.2, 1), rng.range(0.2, 1), rng.range(0.2, 1)) })
+  }
+  return out
+}
+
+// 66 — The selection pdf is a proper distribution: at any shade point the per-light
+// probabilities the tree assigns must sum to exactly 1 (it is a probability tree,
+// normalised at every split). This is the structural precondition for the MIS pdf
+// to be valid — if the masses did not sum to 1 the estimator would be biased.
+function testLightTreeNormalised(): { pass: boolean; detail: string } {
+  const N = 150
+  const tree = buildLightTree(lightTriangles(N, 7))
+  const rng = new Rng(31, 2)
+  let maxErr = 0
+  for (let t = 0; t < 300; t++) {
+    const p = v(rng.range(-5, 5), rng.range(-2, 3), rng.range(-5, 5))
+    let s = 0
+    for (let i = 0; i < N; i++) s += tree.prob(p, i)
+    maxErr = Math.max(maxErr, Math.abs(s - 1))
+  }
+  return { pass: maxErr < 1e-9, detail: `max|Σₗ p(l)−1|=${maxErr.toExponential(1)} over 300 points (<1e-9)` }
+}
+
+// 67 — Positivity ⇒ unbiasedness: every light must keep a *strictly positive*
+// selection probability from every shade point, so no contributing light is ever
+// excluded (the floored orientation term + clamped distance guarantee it). A zero
+// anywhere would make NEE blind to that light and bias the result.
+function testLightTreePositive(): { pass: boolean; detail: string } {
+  const N = 150
+  const tree = buildLightTree(lightTriangles(N, 7))
+  const rng = new Rng(42, 2)
+  let minP = Infinity
+  for (let t = 0; t < 60; t++) {
+    const p = v(rng.range(-6, 6), rng.range(-3, 4), rng.range(-6, 6))
+    for (let i = 0; i < N; i++) minP = Math.min(minP, tree.prob(p, i))
+  }
+  return { pass: minP > 0, detail: `min selection prob=${minP.toExponential(2)} (>0 ⇒ every light reachable ⇒ unbiased)` }
+}
+
+// 68 — Sampler ↔ pdf consistency: the stochastic root→leaf descent must realise the
+// exact distribution that prob() reports, so the MIS weight is correct. The
+// empirical selection frequencies over many draws match tree.prob to Monte-Carlo
+// precision (the same proof shape as the GGX and SD-tree sampler↔pdf checks).
+function testLightTreeSamplerPdf(): { pass: boolean; detail: string } {
+  const N = 80
+  const tree = buildLightTree(lightTriangles(N, 9))
+  const p = v(0.5, 0.2, -0.3)
+  const rng = new Rng(77, 2)
+  const M = 300000
+  const counts = new Float64Array(N)
+  for (let i = 0; i < M; i++) counts[tree.sample(p, rng).primId]++
+  let maxErr = 0
+  for (let i = 0; i < N; i++) maxErr = Math.max(maxErr, Math.abs(counts[i] / M - tree.prob(p, i)))
+  return { pass: maxErr < 6e-3, detail: `max|freq−pdf|=${maxErr.toExponential(2)} over ${N} lights, ${(M / 1000) | 0}k draws (<6e-3)` }
+}
+
+// 69 — Reduction to the uniform sampler: when the clusters carry equal importance
+// the tree must degrade gracefully to the 1/N selection it generalises. Coincident
+// equal-power lights collapse every box to one point, so the only thing left to
+// weight by is power — equal — and each light is selected exactly 1/N.
+function testLightTreeReducesToUniform(): { pass: boolean; detail: string } {
+  const K = 8
+  const prims = []
+  for (let i = 0; i < K; i++) {
+    prims.push({
+      primId: i,
+      tri: makeTriangle(v(-0.05, 2, -0.05), v(0.05, 2, -0.05), v(-0.05, 2, 0.05), 0),
+      emission: v(0.6, 0.6, 0.6),
+    })
+  }
+  const tree = buildLightTree(prims)
+  const rng = new Rng(5, 2)
+  let maxErr = 0
+  for (let t = 0; t < 40; t++) {
+    const p = v(rng.range(-3, 3), rng.range(-3, 3), rng.range(-3, 3))
+    for (let i = 0; i < K; i++) maxErr = Math.max(maxErr, Math.abs(tree.prob(p, i) - 1 / K))
+  }
+  return { pass: maxErr < 1e-12, detail: `coincident equal-power ⇒ max|p−1/N|=${maxErr.toExponential(1)} (exact uniform reduction)` }
+}
+
+// 70 — The headline payoff (and the unbiasedness oracle): on a many-lights scene —
+// one bright NEAR light over a diffuse point, drowned out by 60 dim FAR ones —
+// the tree-sampled and uniform NEE estimators must agree in the *mean* (so the tree
+// is unbiased) while the tree's per-sample *variance* is far lower (so it is a real
+// win). The means are checked to agree within a few combined standard errors; the
+// variance ratio must be a clear improvement.
+function testManyLightsVariance(): { pass: boolean; detail: string } {
+  const materials: Material[] = [
+    { kind: 'diffuse', albedo: v(0.7, 0.7, 0.7) },
+    { kind: 'emissive', emission: v(12, 12, 12) },
+    { kind: 'emissive', emission: v(4, 4, 4) },
+  ]
+  const prims: PrimDef[] = [
+    { kind: 'tri', p0: v(-50, 0, -50), p1: v(50, 0, -50), p2: v(-50, 0, 50), material: 0 },
+    { kind: 'tri', p0: v(50, 0, -50), p1: v(50, 0, 50), p2: v(-50, 0, 50), material: 0 },
+  ]
+  const down = (cx: number, cy: number, cz: number, s: number, m: number): PrimDef => ({
+    kind: 'tri',
+    p0: v(cx - s, cy, cz - s),
+    p1: v(cx + s, cy, cz - s),
+    p2: v(cx - s, cy, cz + s),
+    material: m,
+  })
+  prims.push(down(0, 2, 0, 0.25, 1)) // the bright near light
+  const r0 = new Rng(11, 1)
+  for (let i = 0; i < 60; i++) prims.push(down(r0.range(-12, 12), r0.range(4, 9), -12, 0.3, 2)) // dim far wall
+  const scene = new Scene({
+    name: 'many-lights',
+    materials,
+    prims,
+    camera: { eye: v(0, 2, 6), target: v(0, 0, 0), up: v(0, 1, 0), vfovDeg: 40, aperture: 0, focusDist: 6 },
+    env: { kind: 'solid', color: v(0, 0, 0) },
+  })
+  const x = v(0, 0.001, 0)
+  const n = v(0, 1, 0)
+  const rho = 0.7
+  // One unbiased direct-lighting NEE sample at the floor point (Lambert BRDF).
+  const estimate = (rng: Rng, useTree: boolean): number => {
+    const ls = scene.sampleLight(x, rng, useTree)
+    if (!ls || ls.pdf <= 0) return 0
+    const cosX = Math.max(0, dot(n, ls.wi))
+    if (cosX <= 0) return 0
+    if (scene.occluded(x, ls.wi, 1e-4, ls.dist - 1e-3)) return 0
+    return ((rho / Math.PI) * luminance(ls.radiance) * cosX) / ls.pdf
+  }
+  const run = (useTree: boolean, seed: number) => {
+    const rng = new Rng(seed, useTree ? 2 : 3)
+    const M = 30000
+    let s = 0
+    let s2 = 0
+    for (let i = 0; i < M; i++) {
+      const e = estimate(rng, useTree)
+      s += e
+      s2 += e * e
+    }
+    const mean = s / M
+    const varr = Math.max(0, s2 / M - mean * mean)
+    return { mean, varr, se: Math.sqrt(varr / M) }
+  }
+  const u = run(false, 123)
+  const t = run(true, 456)
+  const z = Math.abs(u.mean - t.mean) / Math.sqrt(u.se * u.se + t.se * t.se)
+  const ratio = u.varr / Math.max(t.varr, 1e-30)
+  return {
+    pass: z < 4 && ratio > 3,
+    detail: `mean U=${u.mean.toFixed(4)} tree=${t.mean.toFixed(4)} (Δ=${z.toFixed(1)} SE ⇒ unbiased); variance U/tree=${ratio.toFixed(0)}× (>3)`,
+  }
+}
+
 export function runSelfTests(): TestResult[] {
   return [
     test('Vector algebra identities', testVectorMath),
@@ -2364,5 +2528,10 @@ export function runSelfTests(): TestResult[] {
     test('Path guiding — sampler ↔ pdf consistent', testGuideSamplerPdf),
     test('Path guiding — importance sampling cuts variance', testGuideVarianceReduction),
     test('Path guiding ≡ path tracer (diffuse box oracle)', testGuideVsPt),
+    test('Many lights — selection pdf sums to 1', testLightTreeNormalised),
+    test('Many lights — every light has positive prob (unbiased)', testLightTreePositive),
+    test('Many lights — light-tree sampler ↔ pdf', testLightTreeSamplerPdf),
+    test('Many lights — reduces to uniform (coincident lights)', testLightTreeReducesToUniform),
+    test('Many lights — same mean, far lower variance (light BVH)', testManyLightsVariance),
   ]
 }

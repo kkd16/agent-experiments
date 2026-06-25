@@ -48,6 +48,7 @@ const DEFAULTS: ControlState = {
   turbidity: 2.6,
   fogDensity: 1,
   cloudCoverage: 0,
+  manyLights: false,
   objText: '',
 }
 
@@ -134,8 +135,12 @@ export default function App() {
   const set = useCallback(<K extends keyof ControlState>(key: K, value: ControlState[K]) => {
     setCtrl((c) => {
       const next = { ...c, [key]: value }
-      // Switching scenes adopts that scene's intended depth-of-field aperture.
-      if (key === 'sceneId') next.aperture = sceneCamera(value as string).aperture
+      // Switching scenes adopts that scene's intended depth-of-field aperture and
+      // defaults the many-light importance sampler on for scenes that want it.
+      if (key === 'sceneId') {
+        next.aperture = sceneCamera(value as string).aperture
+        next.manyLights = SCENES.find((s) => s.id === value)?.manyLights ?? false
+      }
       return next
     })
     // Switching scenes re-derives the orbit camera from that scene's framing.
@@ -177,6 +182,7 @@ export default function App() {
     tb: ctrl.turbidity,
     fog: ctrl.fogDensity,
     cc: ctrl.cloudCoverage,
+    ml: ctrl.manyLights,
     obj: ctrl.objText,
     o: orbit,
   })
@@ -187,7 +193,7 @@ export default function App() {
     const id = window.setTimeout(() => {
       const res = RES_PRESETS[ctrl.resIndex]
       r.setScene(buildScene(ctrl, orbit))
-      r.setSettings({ maxDepth: ctrl.maxDepth, rrStart: ctrl.rrStart, clampIndirect: ctrl.clampIndirect, integrator: ctrl.integrator })
+      r.setSettings({ maxDepth: ctrl.maxDepth, rrStart: ctrl.rrStart, clampIndirect: ctrl.clampIndirect, integrator: ctrl.integrator, manyLights: ctrl.manyLights })
       r.setResolution(res.w, res.h)
       r.setTarget(ctrl.spp)
       r.start()
@@ -214,7 +220,7 @@ export default function App() {
     if (!r) return
     const res = RES_PRESETS[ctrl.resIndex]
     r.setScene(buildScene(ctrl, orbit))
-    r.setSettings({ maxDepth: ctrl.maxDepth, rrStart: ctrl.rrStart, clampIndirect: ctrl.clampIndirect, integrator: ctrl.integrator })
+    r.setSettings({ maxDepth: ctrl.maxDepth, rrStart: ctrl.rrStart, clampIndirect: ctrl.clampIndirect, integrator: ctrl.integrator, manyLights: ctrl.manyLights })
     r.setResolution(res.w, res.h)
     r.setTarget(ctrl.spp)
     r.start()
