@@ -97,12 +97,17 @@ function splitGames(text: string): { tags: Record<string, string>; movetext: str
     inMoves = false
   }
 
+  const TAG = /\[(\w+)\s+"((?:[^"\\]|\\.)*)"\]/g
   for (const raw of text.replace(/\r\n?/g, '\n').split('\n')) {
     const line = raw.trim()
-    const tagMatch = /^\[(\w+)\s+"((?:[^"\\]|\\.)*)"\]\s*$/.exec(line)
-    if (tagMatch) {
+    if (line.startsWith('[') && /^\[(\w+)\s+"/.test(line)) {
+      // A tag line — may carry several [Tag "value"] pairs.
       if (inMoves) flush() // tags after moves → next game
-      tags[tagMatch[1]] = tagMatch[2].replace(/\\"/g, '"').replace(/\\\\/g, '\\')
+      let m: RegExpExecArray | null
+      TAG.lastIndex = 0
+      while ((m = TAG.exec(line)) !== null) {
+        tags[m[1]] = m[2].replace(/\\"/g, '"').replace(/\\\\/g, '\\')
+      }
     } else if (line.length > 0) {
       inMoves = true
       const semi = line.indexOf(';') // rest-of-line comment

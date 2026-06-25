@@ -6,6 +6,7 @@ import MoveList from './components/MoveList'
 import EnginePanel from './components/EnginePanel'
 import PromotionPicker from './components/PromotionPicker'
 import Lab from './components/Lab'
+import Analysis from './components/Analysis'
 import { useEngine } from './hooks/useEngine'
 import {
   Game,
@@ -32,7 +33,7 @@ import {
   pvToSan,
 } from './view'
 
-type Tab = 'play' | 'lab'
+type Tab = 'play' | 'analyze' | 'lab'
 
 function statusText(view: BoardView): string {
   const sideName = view.turn === WHITE ? 'White' : 'Black'
@@ -410,6 +411,9 @@ export default function App() {
           <button className={tab === 'play' ? 'tab active' : 'tab'} onClick={() => setTab('play')}>
             Play
           </button>
+          <button className={tab === 'analyze' ? 'tab active' : 'tab'} onClick={() => setTab('analyze')}>
+            Analyze
+          </button>
           <button className={tab === 'lab' ? 'tab active' : 'tab'} onClick={() => setTab('lab')}>
             Engine Lab
           </button>
@@ -547,6 +551,10 @@ export default function App() {
               </button>
             </div>
           </aside>
+        </main>
+      ) : tab === 'analyze' ? (
+        <main className="analyze-layout">
+          <Analysis />
         </main>
       ) : (
         <main className="lab-layout">

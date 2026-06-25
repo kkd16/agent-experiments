@@ -1,11 +1,15 @@
-// Manages the search worker. Falls back to a synchronous main-thread search when
+// Manages a search worker. Falls back to a synchronous main-thread search when
 // Web Workers are unavailable (e.g. the sandboxed catalog thumbnail), so the app
 // still works everywhere — just without live streaming in the fallback path.
+//
+// One worker handles one request at a time (search / analyze / evals). When the
+// Analyze board needs live analysis *and* a background eval sweep at once, the
+// component simply mounts two independent useEngine() instances.
 
 import { useCallback, useEffect, useMemo, useRef } from 'react'
-import { parseFen, type SearchInfo } from '../engine'
+import { parseFen, type SearchInfo, type MultiInfo } from '../engine'
 import { Searcher } from '../engine'
-import type { WorkerOut, SearchRequest } from '../engine/engine.worker'
+import type { WorkerOut, WorkerRequest } from '../engine/engine.worker'
 
 export interface ThinkParams {
   fen: string
@@ -14,18 +18,33 @@ export interface ThinkParams {
   maxTime: number
 }
 
+export interface EvalItem {
+  fen: string
+  history: bigint[]
+}
+
 export interface EngineHandle {
   think: (params: ThinkParams, onInfo: (info: SearchInfo) => void) => Promise<SearchInfo>
+  analyze: (
+    params: ThinkParams,
+    multiPv: number,
+    onInfo: (info: MultiInfo) => void,
+  ) => Promise<MultiInfo>
+  evalGame: (
+    items: EvalItem[],
+    opts: { maxDepth: number; maxTime: number },
+    onProgress: (ply: number, score: number, done: number, total: number) => void,
+  ) => Promise<number[]>
   cancel: () => void
 }
 
 export function useEngine(): EngineHandle {
   const workerRef = useRef<Worker | null>(null)
   const fallbackRef = useRef<Searcher | null>(null)
-  const resolveRef = useRef<((info: SearchInfo) => void) | null>(null)
-  const infoRef = useRef<((info: SearchInfo) => void) | null>(null)
+  // A single in-flight operation per worker: one resolver + one progress sink.
+  const resolveRef = useRef<((value: never) => void) | null>(null)
+  const infoRef = useRef<((arg: never) => void) | null>(null)
 
-  // Try to create a worker once. If it throws (sandbox), we use the fallback.
   const ensureWorker = useCallback((): Worker | null => {
     if (workerRef.current) return workerRef.current
     try {
@@ -34,16 +53,32 @@ export function useEngine(): EngineHandle {
       })
       worker.onmessage = (e: MessageEvent<WorkerOut>) => {
         const msg = e.data
-        if (msg.type === 'info') infoRef.current?.(msg.info)
-        else if (msg.type === 'result') {
-          const resolve = resolveRef.current
-          resolveRef.current = null
-          infoRef.current = null
-          resolve?.(msg.info)
+        switch (msg.type) {
+          case 'info':
+          case 'multiinfo':
+            ;(infoRef.current as ((a: unknown) => void) | null)?.(msg.info)
+            break
+          case 'evalprogress':
+            ;(infoRef.current as ((a: unknown) => void) | null)?.(msg)
+            break
+          case 'result':
+          case 'multiresult': {
+            const resolve = resolveRef.current as ((v: unknown) => void) | null
+            resolveRef.current = null
+            infoRef.current = null
+            resolve?.(msg.info)
+            break
+          }
+          case 'evaldone': {
+            const resolve = resolveRef.current as ((v: unknown) => void) | null
+            resolveRef.current = null
+            infoRef.current = null
+            resolve?.(msg.scores)
+            break
+          }
         }
       }
       worker.onerror = () => {
-        // If the worker dies, drop it; the next think() uses the fallback.
         workerRef.current?.terminate()
         workerRef.current = null
       }
@@ -54,40 +89,74 @@ export function useEngine(): EngineHandle {
     }
   }, [])
 
-  const think = useCallback(
-    (params: ThinkParams, onInfo: (info: SearchInfo) => void): Promise<SearchInfo> => {
+  const post = useCallback(
+    <T>(req: WorkerRequest, onInfo: ((arg: never) => void) | null, sync: () => T): Promise<T> => {
       const worker = ensureWorker()
       if (worker) {
         infoRef.current = onInfo
-        return new Promise<SearchInfo>((resolve) => {
-          resolveRef.current = resolve
-          const req: SearchRequest = {
-            type: 'search',
-            fen: params.fen,
-            history: params.history,
-            maxDepth: params.maxDepth,
-            maxTime: params.maxTime,
-          }
+        return new Promise<T>((resolve) => {
+          resolveRef.current = resolve as (value: never) => void
           worker.postMessage(req)
         })
       }
-
-      // Synchronous fallback. Runs on the UI thread, so info callbacks fire but
-      // the page is blocked during the search; we keep the time budget small.
-      if (!fallbackRef.current) fallbackRef.current = new Searcher()
-      const pos = parseFen(params.fen)
-      const result = fallbackRef.current.search(
-        pos,
-        { maxDepth: params.maxDepth, maxTime: params.maxTime, history: params.history },
-        onInfo,
-      )
-      return Promise.resolve(result)
+      return Promise.resolve(sync())
     },
     [ensureWorker],
   )
 
-  // Cancelling means killing the worker mid-search (the search loop is otherwise
-  // uninterruptible). A fresh worker is created lazily on the next think().
+  const think = useCallback(
+    (params: ThinkParams, onInfo: (info: SearchInfo) => void): Promise<SearchInfo> =>
+      post(
+        { type: 'search', ...params },
+        onInfo as (a: never) => void,
+        () => {
+          if (!fallbackRef.current) fallbackRef.current = new Searcher()
+          return fallbackRef.current.search(parseFen(params.fen), params, onInfo)
+        },
+      ),
+    [post],
+  )
+
+  const analyze = useCallback(
+    (params: ThinkParams, multiPv: number, onInfo: (info: MultiInfo) => void): Promise<MultiInfo> =>
+      post(
+        { type: 'analyze', ...params, multiPv },
+        onInfo as (a: never) => void,
+        () => {
+          if (!fallbackRef.current) fallbackRef.current = new Searcher()
+          return fallbackRef.current.searchMultiPv(parseFen(params.fen), params, multiPv, onInfo)
+        },
+      ),
+    [post],
+  )
+
+  const evalGame = useCallback(
+    (
+      items: EvalItem[],
+      opts: { maxDepth: number; maxTime: number },
+      onProgress: (ply: number, score: number, done: number, total: number) => void,
+    ): Promise<number[]> =>
+      post(
+        { type: 'evals', items, ...opts },
+        ((m: { ply: number; score: number; done: number; total: number }) =>
+          onProgress(m.ply, m.score, m.done, m.total)) as (a: never) => void,
+        () => {
+          if (!fallbackRef.current) fallbackRef.current = new Searcher()
+          const scores: number[] = []
+          for (let i = 0; i < items.length; i++) {
+            const r = fallbackRef.current.search(parseFen(items[i].fen), {
+              ...opts,
+              history: items[i].history,
+            })
+            scores.push(r.score)
+            onProgress(i, r.score, i + 1, items.length)
+          }
+          return scores
+        },
+      ),
+    [post],
+  )
+
   const cancel = useCallback(() => {
     if (workerRef.current) {
       workerRef.current.terminate()
@@ -104,5 +173,5 @@ export function useEngine(): EngineHandle {
     }
   }, [])
 
-  return useMemo(() => ({ think, cancel }), [think, cancel])
+  return useMemo(() => ({ think, analyze, evalGame, cancel }), [think, analyze, evalGame, cancel])
 }
