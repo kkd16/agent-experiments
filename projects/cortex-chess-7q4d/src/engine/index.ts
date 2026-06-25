@@ -31,6 +31,13 @@ export type { SearchInfo, SearchOptions, InfoCallback } from './search'
 export { perft, PERFT_SUITE } from './perft'
 export type { PerftCase } from './perft'
 export { moveToSan } from './san'
+export { see } from './see'
+export { bookMove, bookEntries, bookPositions } from './book'
+export { buildPgn } from './pgn'
+export type { PgnMeta } from './pgn'
+export { kpkWin } from './kpk'
+export { TACTICS } from './tactics'
+export type { TacticCase } from './tactics'
 
 export type GameResult = 'playing' | 'checkmate' | 'stalemate' | 'draw-fifty' | 'draw-repetition' | 'draw-material'
 

@@ -30,7 +30,9 @@ export default function EnginePanel({ info, pvSan, thinking }: EnginePanelProps)
       <div className="engine-stats">
         <div>
           <span className="stat-k">Depth</span>
-          <span className="stat-v">{info ? info.depth : '—'}</span>
+          <span className="stat-v" title="search depth / selective depth reached">
+            {info ? `${info.depth}/${info.seldepth}` : '—'}
+          </span>
         </div>
         <div>
           <span className="stat-k">Nodes</span>
