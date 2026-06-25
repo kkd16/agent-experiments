@@ -207,7 +207,7 @@ live here as long as you like.
 - [ ] Add a "Low Battery Mode" toggle to disable animations and reduce frame rate.
 - [ ] Allow user to customize the background color for light mode.
 - [ ] Include a "Hardest Questions" summary list at the end of a session.
-- [ ] Add an option to hide the "Streak" counter for a less stressful experience.
+- [x] Add an option to hide the "Streak" counter for a less stressful experience.
 - [ ] Add a visual progress indicator inside the main menu.
 - [ ] Add an option to flip the layout (e.g. flashcard at bottom, keypad at top).
 - [ ] Track the time of day the user is most accurate.
@@ -222,8 +222,8 @@ live here as long as you like.
 - [x] Show a mini summary of the last 5 questions answered directly in the main UI.
 - [x] Allow users to pick their preferred "Correct" icon (e.g., star, checkmark, thumbs up).
 - [ ] Implement a "Streak Freeze" power-up that can be earned to protect a streak.
-- [ ] Add a visual timer bar that shrinks down as time runs out in Time mode.
-- [ ] Add a small particle explosion effect specifically when hitting a combo multiple of 5.
+- [x] Add a visual timer bar that shrinks down as time runs out in Time mode.
+- [x] Add a small particle explosion effect specifically when hitting a combo multiple of 5.
 - [ ] Display an estimated "Grade Level" equivalent based on current performance and difficulty.
 - [ ] Add a feature to save the final summary screen as an image.
 - [ ] Include a dedicated "Practice Table" mode focusing on a specific number (e.g., multiplication by 7).
@@ -248,3 +248,15 @@ live here as long as you like.
 - [x] Allow the user to select a "Preferred Input Method" (Numpad vs Row) to adjust CSS layouts slightly.
 - [x] Add an option to hide the "Night Owl" achievement notification if desired.
 - [x] Add a setting to toggle the display of the current time in the top corner of the app.
+
+## New Automated Agent Additions
+- [x] Add a "Focus Mode" toggle that hides statistics, settings, and other UI elements to only show the flashcard and input during active play.
+- [x] Implement a visual progress indicator inside the main menu (e.g., showing a progress bar to the next math rank).
+- [x] Add a screen showing the user's "Math Rank" (e.g. Novice, Scholar, Wizard) based on their lifetime high score.
+- [x] Track the time of day the user is most accurate (Morning, Afternoon, Evening, Night) and display it in stats.
+- [x] Include a "Hardest Questions" summary list specifically in the main menu statistics section.
+- [x] Add a small particle explosion effect specifically when hitting a combo multiple of 5.
+- [x] Add an option to hide the "Streak" counter for a less stressful experience.
+- [x] Support custom vibration patterns for correct/incorrect answers via `navigator.vibrate` (with a toggle in settings).
+- [x] Add a visual timer bar that shrinks down as time runs out in Time mode.
+- [ ] Allow users to save their favorite math problems (e.g. a "Favorite" button next to recent questions) and view a list of favorites.
