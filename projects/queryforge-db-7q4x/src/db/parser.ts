@@ -191,6 +191,16 @@ class Parser {
     if (verb === 'RESET') return { kind: 'set', name, value: null }
     if (!this.accept('=') && !this.accept('TO')) throw this.err('expected "=" or "TO" in SET')
     if (this.accept('DEFAULT')) return { kind: 'set', name, value: null }
+    // A bareword value — `SET optimizer = on|off` — or a string literal.
+    const t = this.peek()
+    if (t.kind === 'ident' || t.kind === 'keyword') {
+      this.next()
+      return { kind: 'set', name, value: t.value.toLowerCase() }
+    }
+    if (t.kind === 'string') {
+      this.next()
+      return { kind: 'set', name, value: stringValue(t).toLowerCase() }
+    }
     return { kind: 'set', name, value: this.parseIntValue('a setting value') }
   }
 

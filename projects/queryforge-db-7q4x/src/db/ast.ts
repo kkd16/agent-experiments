@@ -509,8 +509,9 @@ export interface TxnStmt {
 export interface SetStmt {
   kind: 'set'
   name: string
-  /** The new integer value, or null for `RESET` / `SET … TO DEFAULT`. */
-  value: number | null
+  /** The new value — an integer (e.g. `work_mem`) or a bareword like `on`/`off`
+   *  (e.g. `optimizer`), or null for `RESET` / `SET … TO DEFAULT`. */
+  value: number | string | null
 }
 /** `SHOW name` — report the current value of a session setting as a 1×1 result. */
 export interface ShowStmt {

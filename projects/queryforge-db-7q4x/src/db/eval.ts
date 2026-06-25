@@ -1021,6 +1021,81 @@ function genSubscripts(a: SqlValue): TableFunctionResult {
   return { columns, rows: generateSubscripts(a).map((i) => [i]) }
 }
 
+/** A hard cap on how many rows a single `generate_series(…)` call may emit, so a
+ *  runaway range can never freeze the browser tab. Postgres has no such cap; in an
+ *  in-memory engine a guard is the safe, honest choice (and we say so when we hit it). */
+export const GENERATE_SERIES_MAX_ROWS = 1_000_000
+
+/** `generate_series(start, stop[, step])` — the workhorse set-returning function.
+ *  Two flavours, dispatched on the argument types:
+ *   • **numeric** — `generate_series(1, 5)` → 1,2,3,4,5; an explicit `step` (default 1)
+ *     may be negative for a descending series; INTEGER unless any operand is REAL.
+ *   • **timestamp** — `generate_series(ts0, ts1, interval)` walks calendar-aware steps. */
+function generateSeries(args: SqlValue[]): TableFunctionResult {
+  const start = args[0] ?? null
+  const stop = args[1] ?? null
+  const stepArg = args.length >= 3 ? (args[2] ?? null) : undefined
+
+  // --- timestamp flavour: generate_series(timestamp, timestamp, interval) ---
+  if (isTemporal(start) && start.t === 'timestamp') {
+    const cols = [{ name: 'generate_series', type: 'TIMESTAMP' as ColumnType }]
+    if (stop === null || stepArg === null || stepArg === undefined) return { columns: cols, rows: [] }
+    if (!isTemporal(stop) || stop.t !== 'timestamp') {
+      throw new SqlError('generate_series(): a timestamp series needs a timestamp stop bound', 'eval')
+    }
+    if (!isTemporal(stepArg) || stepArg.t !== 'interval') {
+      throw new SqlError('generate_series(): a timestamp series needs an INTERVAL step', 'eval')
+    }
+    const step = stepArg
+    if (step.months === 0 && step.days === 0 && step.ms === 0) {
+      throw new SqlError('generate_series(): step interval cannot be zero', 'eval')
+    }
+    // Direction: does one step advance toward the stop bound? (a calendar-aware probe)
+    const probe = applyIntervalMs(start.ms, step, 1)
+    const ascending = probe >= start.ms
+    const rows: SqlValue[][] = []
+    let cur = start.ms
+    for (;;) {
+      if (ascending ? cur > stop.ms : cur < stop.ms) break
+      rows.push([mkTimestamp(cur)])
+      if (rows.length > GENERATE_SERIES_MAX_ROWS) {
+        throw new SqlError(`generate_series(): exceeded the ${GENERATE_SERIES_MAX_ROWS.toLocaleString()}-row cap`, 'eval')
+      }
+      const nxt = applyIntervalMs(cur, step, 1)
+      if (nxt === cur) break // a months/days-only step that nets zero ms on this calendar instant
+      cur = nxt
+    }
+    return { columns: cols, rows }
+  }
+
+  // --- numeric flavour: generate_series(int|real, int|real[, int|real]) ---
+  if (start === null || typeof start !== 'number') {
+    if (start === null) return { columns: [{ name: 'generate_series', type: 'INTEGER' }], rows: [] }
+    throw new SqlError('generate_series(): start must be a number or timestamp', 'eval')
+  }
+  if (stop === null) return { columns: [{ name: 'generate_series', type: 'INTEGER' }], rows: [] }
+  if (typeof stop !== 'number') throw new SqlError('generate_series(): stop must be a number', 'eval')
+  let step = 1
+  if (stepArg !== undefined) {
+    if (stepArg === null) return { columns: [{ name: 'generate_series', type: 'INTEGER' }], rows: [] }
+    if (typeof stepArg !== 'number') throw new SqlError('generate_series(): step must be a number', 'eval')
+    step = stepArg
+  }
+  if (step === 0) throw new SqlError('generate_series(): step cannot be zero', 'eval')
+  const isInt = Number.isInteger(start) && Number.isInteger(stop) && Number.isInteger(step)
+  const type: ColumnType = isInt ? 'INTEGER' : 'REAL'
+  const rows: SqlValue[][] = []
+  // Count first (closed form) so a huge range fails fast instead of looping a million times.
+  const count = step > 0
+    ? (stop >= start ? Math.floor((stop - start) / step) + 1 : 0)
+    : (stop <= start ? Math.floor((start - stop) / -step) + 1 : 0)
+  if (count > GENERATE_SERIES_MAX_ROWS) {
+    throw new SqlError(`generate_series(): ${count.toLocaleString()} rows exceeds the ${GENERATE_SERIES_MAX_ROWS.toLocaleString()}-row cap`, 'eval')
+  }
+  for (let i = 0; i < count; i++) rows.push([start + i * step])
+  return { columns: [{ name: 'generate_series', type }], rows }
+}
+
 export const TABLE_FUNCTIONS: Record<string, (args: SqlValue[]) => TableFunctionResult> = {
   JSON_ARRAY_ELEMENTS: ([a]) => jsonElements(a ?? null, false),
   JSON_ARRAY_ELEMENTS_TEXT: ([a]) => jsonElements(a ?? null, true),
@@ -1029,6 +1104,7 @@ export const TABLE_FUNCTIONS: Record<string, (args: SqlValue[]) => TableFunction
   JSON_OBJECT_KEYS: ([a]) => jsonKeys(a ?? null),
   UNNEST: ([a]) => unnestArray(a ?? null),
   GENERATE_SUBSCRIPTS: ([a]) => genSubscripts(a ?? null),
+  GENERATE_SERIES: (args) => generateSeries(args),
 }
 
 export const TABLE_FUNCTION_NAMES: ReadonlySet<string> = new Set(Object.keys(TABLE_FUNCTIONS))
