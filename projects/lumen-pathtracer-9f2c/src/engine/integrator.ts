@@ -209,7 +209,15 @@ export function radiance(
     // ---- Participating media: a free-flight collision before the next surface
     // makes the path scatter *inside* a volume rather than reach the surface. ----
     if (scene.hasMedia && !sss) {
-      const ms = scene.sampleMediumScatter(r.o, r.d, tHit, rng)
+      // (16.0) Chromatic media: commit a hero wavelength before tracking, so the
+      // free-flight is drawn against the medium's σ_t(λ) (blue scattered out sooner
+      // than red — a reddening atmosphere). The RGB weight is taken once
+      // (E_λ[w]=(1,1,1) ⇒ unbiased); colour reconstructs over many paths' λ.
+      if (scene.hasSpectralMedia && lambda === 0) {
+        lambda = LAMBDA_MIN + rng.next() * (LAMBDA_MAX - LAMBDA_MIN)
+        beta = mul(beta, wavelengthWeight(lambda))
+      }
+      const ms = scene.sampleMediumScatter(r.o, r.d, tHit, rng, lambda)
       if (ms) {
         const med = ms.medium
         // ---- Volumetric emission (a glowing medium: fire / embers / nebula). ----
@@ -246,7 +254,7 @@ export function radiance(
             stats.rays++
             const maxT = ls.dist === Infinity ? Infinity : ls.dist - 1e-3
             if (!scene.occluded(x, ls.wi, EPS, maxT)) {
-              const tr = scene.mediaTransmittance(x, ls.wi, ls.dist, rng)
+              const tr = scene.mediaTransmittance(x, ls.wi, ls.dist, rng, lambda)
               const w = powerHeuristic(1, ls.pdf, 1, phase)
               let c = scale(mul(beta, ls.radiance), (phase * tr * w) / ls.pdf)
               if (clampI > 0) c = clampContribution(c, clampI)
@@ -358,7 +366,7 @@ export function radiance(
             // β · f · Le · cosθ · w / pdf_light
             let c = mul(mul(beta, f), scale(ls.radiance, (cosX * w) / ls.pdf))
             // Attenuate the light by any media the shadow ray passes through.
-            if (scene.hasMedia) c = scale(c, scene.mediaTransmittance(shadowO, ls.wi, ls.dist, rng))
+            if (scene.hasMedia) c = scale(c, scene.mediaTransmittance(shadowO, ls.wi, ls.dist, rng, lambda))
             if (clampI > 0) c = clampContribution(c, clampI)
             L = add(L, c)
           }

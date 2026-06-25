@@ -10,7 +10,8 @@ sampling, GGX microfacet BSDFs, smooth **and frosted** dielectrics, **spectral d
 mean free path** as of 15.0 — per-wavelength extinction from measured BSSRDF data, so red light
 penetrates skin further than blue),
 **Beer–Lambert volumetric absorption**, **heterogeneous participating media** (procedural fBm
-clouds, smoke & fog traced by **delta/ratio tracking**), **procedural textures**, **adaptive
+clouds, smoke & fog traced by **delta/ratio tracking**, with **chromatic extinction** as of 16.0 —
+a per-wavelength σ_t so blue scatters out of a haze sooner than red, the reason the sky is blue), **procedural textures**, **adaptive
 variance-guided sampling** with a live noise heatmap, a SAH BVH, ACES tone mapping, and an
 edge-avoiding À-Trous denoiser. It carries **four interchangeable light-transport integrators** (a unidirectional path
 tracer, bidirectional PT, primary-sample-space Metropolis, and stochastic progressive photon
@@ -254,12 +255,64 @@ photon emitter, so daylight scenes get photon-mapped sun caustics).
       **delta tracking** (Woodcock null-collision free-flight) for in-volume scatter events
       and **ratio tracking** for the shadow-ray transmittance, both provably unbiased for an
       arbitrary spatially varying extinction. Three showcase scenes + five new proofs.
-- [ ] **Spectral / chromatic majorants for heterogeneous media** — per-channel σ_t fields
-      (today the field is a scalar density × a coloured albedo) with hero-wavelength delta tracking
+- [x] **Spectral / chromatic majorants for media (16.0)** — per-channel σ_t (a `sigmaTSpectral` on
+      `MediumDef`) read as a 3-point spectrum; the path commits a hero λ before tracking and delta/
+      ratio-tracks against σ_t(λ), so blue is scattered out sooner than red. Works for both homogeneous
+      (analytic) and heterogeneous (null-collision) media. Two scenes (**Rayleigh Haze**, **Amber
+      Smoke**) + five proofs (exact per-λ transmittance; ratio tracking unbiased ∀λ; chromatic furnace
+      ≡ 1; absorbing haze ≡ ∫w(λ)e^(−σ(λ)·2r)dλ with R>G>B; achromatic ≡ scalar oracle).
 - [x] **Emissive volumes (9.1)** — a density-modulated emission term in the medium: at a real
       collision the path collects `(1−albedo)·Lₑ` of self-radiance, so a heterogeneous field glows
       brightest in its dense core (fire / embers / luminous nebula). New **Ember** scene + a proof
       that an absorbing+emitting volume obeys `(1−e^(−σ_t·chord))·Lₑ`.
+
+## Roadmap — 2026-06-25 Lumen 16.0: chromatic participating media — a wavelength-dependent atmosphere (claude)
+
+15.0 gave *subsurface* transport a chromatic mean free path. The space *between* surfaces still had
+a **scalar** one: a participating medium carried a single `sigmaT` and a coloured albedo, so a cloud
+or a haze extinguished every wavelength equally and could only be tinted by what it *scattered*, never
+by *how far each colour reached*. But the most familiar optical effect in the sky is exactly the
+chromatic version: **Rayleigh scattering removes blue from a beam far faster than red** (σ_t ∝ ~1/λ⁴),
+which is *why the sky is blue and the setting sun is red*. A scalar σ_t cannot express it.
+
+16.0 adds **chromatic extinction** to media, reusing the very same hero-wavelength machinery 15.0
+used for subsurface (and 8.0/11.0 for photons and metals): a medium may carry a per-channel
+`sigmaTSpectral`, read as a 3-point spectrum (`spectralAt`) at the R/G/B representative wavelengths. A
+path that is about to track through media commits one hero wavelength λ, multiplies its throughput by
+that wavelength's RGB weight **once** (`E_λ[w]=(1,1,1)`, so it stays unbiased — colour is a *spread*
+across λ, never a shift of the mean), and then delta-tracks (free-flight) and ratio-tracks (shadow
+transmittance) against the **wavelength's** extinction `σ_t(λ)`. Because both estimators only ever
+needed a scalar σ_t and a constant majorant, the change is a one-line substitution `σ_t → σ_t(λ)`
+inside each tracker; the heterogeneous *density shape* (∈[0,1]) is untouched, so only the extinction
+*scale* is chromatic. The scalar path is preserved **bit-for-bit** (a medium with no `sigmaTSpectral`,
+or a path with no committed wavelength, uses `m.sigmaT` exactly as before), so all 81 prior proofs
+stay green and only the path tracer (and PSSMLT, which reuses it) sees the new parameter — BDPT and
+SPPM sample media-free light their own way and are unaffected.
+
+Plan / steps (all shipped this session):
+
+1. **`types.ts` — `MediumDef.sigmaTSpectral?: Vec3`.** Per-channel extinction; absent ⇒ scalar medium.
+2. **`scene.ts` — wavelength-aware tracking.** A `mediumSigmaT(m, λ)` helper returns `spectralAt(σ_t,λ)`
+   for a chromatic medium (or the scalar `σ_t` when achromatic / λ=0). `sampleMediumScatter`,
+   `mediaTransmittance`, `deltaTrack` and `ratioTrack` take the path's λ and use that scalar; a
+   `hasSpectralMedia` flag lets the integrator know to commit a wavelength.
+3. **`integrator.ts` — commit the hero λ.** Before the media block, if the scene has spectral media and
+   no wavelength is committed yet, draw one and take its RGB weight; thread λ into the three media calls
+   (free-flight, in-scatter NEE transmittance, surface NEE transmittance).
+4. **`scenes.ts` — two showcases.** **Rayleigh Haze** (a warm sun-disc reddening through a large
+   scattering haze whose blue σ_t is ~6× its red — the sunset, and the blue single-scatter halo around
+   it) and **Amber Smoke** (a heterogeneous fBm plume coloured purely by a chromatic extinction over a
+   neutral-grey albedo, beside the achromatic Smoke Plume for contrast).
+5. **`selftest.ts` — five proofs (86 total).** (a) homogeneous transmittance is *exactly* `e^(−σ_t(λ)L)`
+   per wavelength (red transmits more than blue); (b) ratio tracking through a constant field averages
+   to `e^(−σ_t(λ)L)` at each λ (unbiased null-collision estimator); (c) a chromatic pure-scatter furnace
+   ≡ 1 for *any* spectral σ_t (energy conservation, the unbiasedness oracle for the wavelength-resolved
+   delta-tracking walk); (d) a pure-absorbing haze reconstructs the spectral transmittance integral
+   `(1/Δλ)∫ w(λ)·e^(−σ_t(λ)·2r) dλ` (matched to a fine quadrature) and exits **R>G>B**; (e) an
+   achromatic chromatic-medium agrees in the mean with the scalar medium (reduction oracle).
+6. **UI / About.** A "Chromatic media — why the sky is blue" card; the two scenes appear in the picker.
+   Verified in Node by bundling the engine: 86/86 self-tests pass, and a smoke render of *Rayleigh Haze*
+   reddens end-to-end (mean RGB ≈ (0.57, 0.24, 0.06)). `pnpm lint`/`tsc`/`build` green via the CI gate.
 
 ## Roadmap — 2026-06-25 Lumen 15.0: spectral subsurface scattering — a chromatic mean free path (claude)
 

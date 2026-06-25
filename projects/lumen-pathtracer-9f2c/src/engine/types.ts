@@ -82,6 +82,14 @@ export interface MediumDef {
   sigmaT: number
   albedo: Vec3
   g: number
+  // (16.0) Optional **chromatic extinction**: per-channel σ_t read as a 3-point
+  // spectrum at the R/G/B representative wavelengths (see subsurface.ts/`spectralAt`).
+  // When present the medium's extinction depends on wavelength — blue scattered out
+  // sooner than red (a reddening dusty atmosphere), or a smoke that lets one colour
+  // through — and the path commits a hero wavelength to delta/ratio-track at σ_t(λ).
+  // Absent ⇒ the scalar (achromatic) medium, bit-for-bit. For a heterogeneous field
+  // the normalised density shape is shared; only the extinction *scale* is chromatic.
+  sigmaTSpectral?: Vec3
   density?: DensityDef
   // Optional volumetric emission (a glowing medium: fire, embers, a luminous
   // nebula). At a real collision the path picks up `(σ_a/σ_t)·emission =

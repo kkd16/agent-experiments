@@ -917,6 +917,96 @@ function emberCloud(): SceneDef {
   }
 }
 
+// ---- Scene: Rayleigh Haze — a chromatic atmosphere (16.0) -------------------
+
+// Why the sky is blue and the setting sun is red, in one scene. A bright warm
+// sun-disc sits far behind a large homogeneous scattering haze whose extinction is
+// strongly **chromatic** — blue is scattered out of the beam many times more than
+// red (a Rayleigh-like σ_t ∝ ~1/λ⁴, approximated at the R/G/B wavelengths). Looking
+// straight at the sun *through* the haze, the blue is stripped away and the disc
+// reddens to a deep orange (transmission); everywhere else the haze glows a cool
+// blue from the single-scattered light it stole (in-scatter). One scalar σ_t could
+// never do this — the colour is the wavelength dependence of the extinction itself.
+function rayleighHaze(): SceneDef {
+  const materials: Material[] = [
+    { kind: 'diffuse', albedo: v(0.12, 0.12, 0.14), sigma: 0.5 }, // 0 dim floor
+    { kind: 'emissive', emission: v(34, 30, 24) }, // 1 the sun disc (warm, very bright)
+  ]
+  const prims: PrimDef[] = []
+  const g = 60
+  prims.push(...quad(v(-g, -6, -g), v(g, -6, -g), v(g, -6, g), v(-g, -6, g), 0))
+  // The sun, a large bright panel far behind the haze, facing the camera.
+  prims.push(...quad(v(-6, 1, -22), v(6, 1, -22), v(6, 13, -22), v(-6, 13, -22), 1))
+  return {
+    name: 'Rayleigh Haze',
+    materials,
+    prims,
+    camera: { eye: v(0, 4, 20), target: v(0, 5.5, -22), up: v(0, 1, 0), vfovDeg: 46, aperture: 0, focusDist: 42 },
+    env: { kind: 'gradient', top: v(0.02, 0.03, 0.06), bottom: v(0.02, 0.025, 0.035) },
+    media: [
+      {
+        center: v(0, 5, -4),
+        radius: 17,
+        sigmaT: 0.16, // scalar fallback (channel-mean-ish) for non-spectral integrators
+        // Rayleigh-like: blue scattered far more than red (∝ ~1/λ⁴ at 650/550/450 nm).
+        sigmaTSpectral: v(0.055, 0.13, 0.36),
+        albedo: v(1, 1, 1), // pure scattering — energy only redistributed
+        g: 0.0,
+      },
+    ],
+  }
+}
+
+// ---- Scene: Amber Smoke — a chromatic heterogeneous plume (16.0) ------------
+
+// A rising fBm smoke column whose extinction is chromatic: red passes through it
+// far more freely than blue, so where a grey smoke would read sooty neutral this
+// one glows a warm amber in its lit, thinner reaches and turns teal-shadowed in its
+// dense core — the colour emerging from delta/ratio tracking at the path's hero
+// wavelength, not from a tinted albedo. Lit hard from the right against a dark
+// backdrop, side by side with the achromatic Smoke Plume for contrast.
+function amberSmoke(): SceneDef {
+  const materials: Material[] = [
+    { kind: 'diffuse', albedo: v(0.14, 0.14, 0.15) }, // 0 dim floor
+    { kind: 'emissive', emission: v(70, 58, 40) }, // 1 warm key panel
+    { kind: 'diffuse', albedo: v(0.04, 0.04, 0.05) }, // 2 dark backdrop
+  ]
+  const prims: PrimDef[] = []
+  const g = 30
+  prims.push(...quad(v(-g, 0, -g), v(g, 0, -g), v(g, 0, g), v(-g, 0, g), 0))
+  prims.push(...quad(v(-g, 0, -12), v(g, 0, -12), v(g, 30, -12), v(-g, 30, -12), 2))
+  prims.push(...quad(v(9, 1.5, -3), v(9, 1.5, 3), v(9, 11, 3), v(9, 11, -3), 1))
+  return {
+    name: 'Amber Smoke',
+    materials,
+    prims,
+    camera: { eye: v(-2.5, 6.5, 18), target: v(0, 6.0, 0), up: v(0, 1, 0), vfovDeg: 48, aperture: 0, focusDist: 18 },
+    env: { kind: 'solid', color: v(0.01, 0.011, 0.014) },
+    media: [
+      {
+        center: v(0, 6, 0),
+        radius: 6.5,
+        sigmaT: 4.4, // scalar fallback (channel mean)
+        sigmaTSpectral: v(2.6, 4.6, 6.0), // red penetrates; blue/green scattered & absorbed near the surface
+        albedo: v(0.6, 0.6, 0.6), // neutral grey albedo — the hue is purely the chromatic extinction
+        g: 0.15,
+        density: {
+          kind: 'fbm',
+          frequency: 0.42,
+          octaves: 6,
+          lacunarity: 2.0,
+          gain: 0.55,
+          coverage: 0.42,
+          edge: 0.4,
+          verticalBias: 0.26,
+          warp: 1.4,
+          seed: 23,
+        },
+      },
+    ],
+  }
+}
+
 // ---- Scene: Cove — an indirect-lit room (a BDPT showcase) -------------------
 
 // A neutral room whose only emitter is a small, bright strip tucked *above* a
@@ -1854,6 +1944,8 @@ export const SCENES: ScenePreset[] = [
   { id: 'smoke', label: 'Smoke Plume', build: smokePlume, fog: true, cloud: true },
   { id: 'fog', label: 'Drifting Fog', build: driftingFog, fog: true },
   { id: 'ember', label: 'Ember (glowing)', build: emberCloud, fog: true, cloud: true },
+  { id: 'rayleigh', label: 'Rayleigh Haze (chromatic)', build: rayleighHaze, fog: true },
+  { id: 'amber-smoke', label: 'Amber Smoke (chromatic)', build: amberSmoke, fog: true, cloud: true },
   { id: 'iridescence', label: 'Iridescence', build: iridescence },
   { id: 'nebula', label: 'Nebula', build: nebula, fog: true },
   { id: 'sky', label: 'Sky Studio', build: skyStudio, sky: true },

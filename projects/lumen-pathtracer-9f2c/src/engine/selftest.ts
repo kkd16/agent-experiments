@@ -1060,6 +1060,193 @@ function testEmissiveVolume(): { pass: boolean; detail: string } {
   }
 }
 
+// ---- Chromatic participating media — a wavelength-dependent atmosphere (16.0) -
+
+// Render a bounded medium sphere of radius `radius` head-on in a uniform unit
+// environment and return its mean RGB radiance — the media analogue of the
+// subsurface furnace, used by the chromatic energy/Beer proofs. The medium carries
+// a chromatic extinction, so the integrator commits a hero wavelength and the
+// colour reconstructs over many paths' wavelengths.
+function chromaticMediumRGB(
+  sigmaTSpectral: Vec3,
+  albedo: Vec3,
+  radius: number,
+  settings: { maxDepth: number; rrStart: number; clampIndirect: number },
+  N: number,
+  seed: number,
+): Vec3 {
+  const sigmaTMean = (sigmaTSpectral.x + sigmaTSpectral.y + sigmaTSpectral.z) / 3
+  const scene = new Scene({
+    name: 'chromatic-medium',
+    materials: [],
+    prims: [],
+    camera: { eye: v(0, 0, 5), target: v(0, 0, 0), up: v(0, 1, 0), vfovDeg: 30, aperture: 0, focusDist: 5 },
+    env: { kind: 'solid', color: v(1, 1, 1) },
+    media: [{ center: v(0, 0, 0), radius, sigmaT: sigmaTMean, sigmaTSpectral, albedo, g: 0 }],
+  })
+  const rng = new Rng(seed, 5)
+  const stats: RayStats = { rays: 0 }
+  let sx = 0
+  let sy = 0
+  let sz = 0
+  for (let i = 0; i < N; i++) {
+    const L = radiance(scene, { o: v(0, 0, 5), d: v(0, 0, -1), tMax: Infinity }, settings, rng, stats)
+    sx += L.x
+    sy += L.y
+    sz += L.z
+  }
+  return v(sx / N, sy / N, sz / N)
+}
+
+// CM-1 — Chromatic homogeneous transmittance is exact, per wavelength. The analytic
+// transmittance estimator must return EXACTLY e^(−σ_t(λ)·L) at the path's hero
+// wavelength — and because red has the smaller extinction, red transmits more than
+// blue (the reddening of a sun seen through haze). A deterministic check at three
+// wavelengths, no Monte-Carlo tolerance needed.
+function testChromaticMediumTransmittance(): { pass: boolean; detail: string } {
+  const sigmaTSpectral = v(0.2, 0.5, 0.9) // R, G, B
+  const L = 2.5
+  const scene = new Scene({
+    name: 'cm-tr',
+    materials: [],
+    prims: [],
+    camera: { eye: v(0, 0, 5), target: v(0, 0, 0), up: v(0, 1, 0), vfovDeg: 30, aperture: 0, focusDist: 5 },
+    env: { kind: 'solid', color: v(0, 0, 0) },
+    media: [{ center: v(0, 0, 0), radius: 100, sigmaT: 0.5, sigmaTSpectral, albedo: v(1, 1, 1), g: 0 }],
+  })
+  const rng = new Rng(7, 2)
+  let worst = 0
+  for (const lambda of [LAMBDA_R, LAMBDA_G, LAMBDA_B]) {
+    const tr = scene.mediaTransmittance(v(-50, 0, 0), v(1, 0, 0), L, rng, lambda)
+    const expected = Math.exp(-spectralAt(sigmaTSpectral, lambda) * L)
+    worst = Math.max(worst, Math.abs(tr - expected))
+  }
+  const trR = scene.mediaTransmittance(v(-50, 0, 0), v(1, 0, 0), L, rng, LAMBDA_R)
+  const trB = scene.mediaTransmittance(v(-50, 0, 0), v(1, 0, 0), L, rng, LAMBDA_B)
+  return {
+    pass: worst < 1e-12 && trR > trB,
+    detail: `max|Δ|=${worst.toExponential(1)} (exact), T(red)=${trR.toFixed(3)}>T(blue)=${trB.toFixed(3)}`,
+  }
+}
+
+// CM-2 — Chromatic ratio tracking is unbiased per wavelength. Through a *constant*
+// heterogeneous field (density ≡ 1), the stochastic ratio-tracking transmittance
+// must average to e^(−σ_t(λ)·L) at the committed hero wavelength — the chromatic
+// generalisation of the heterogeneous transmittance proof, confirming the null-
+// collision estimator tracks against the per-wavelength majorant correctly.
+function testChromaticRatioTrack(): { pass: boolean; detail: string } {
+  const sigmaTSpectral = v(0.3, 0.6, 1.0)
+  const L = 2
+  const scene = new Scene({
+    name: 'cm-ratio',
+    materials: [],
+    prims: [],
+    camera: { eye: v(0, 0, 5), target: v(0, 0, 0), up: v(0, 1, 0), vfovDeg: 30, aperture: 0, focusDist: 5 },
+    env: { kind: 'solid', color: v(0, 0, 0) },
+    media: [
+      {
+        center: v(0, 0, 0),
+        radius: 100,
+        sigmaT: 0.6,
+        sigmaTSpectral,
+        albedo: v(1, 1, 1),
+        g: 0,
+        // A constant field along the y=0 ray: base far above, no noise ⇒ density ≡ 1.
+        density: { kind: 'layer', base: 1e9, scaleHeight: 1, noiseAmount: 0 },
+      },
+    ],
+  })
+  const rng = new Rng(8123, 3)
+  let worst = 0
+  for (const lambda of [LAMBDA_R, LAMBDA_G, LAMBDA_B]) {
+    let sum = 0
+    const N = 40000
+    for (let i = 0; i < N; i++) sum += scene.mediaTransmittance(v(-1, 0, 0), v(1, 0, 0), L, rng, lambda)
+    const mean = sum / N
+    const expected = Math.exp(-spectralAt(sigmaTSpectral, lambda) * L)
+    worst = Math.max(worst, Math.abs(mean - expected))
+  }
+  return { pass: worst < 6e-3, detail: `worst|E[T̂]−e^(−σ(λ)L)|=${worst.toFixed(4)}` }
+}
+
+// CM-3 — Chromatic energy conservation: a purely *scattering* bounded volume
+// (albedo 1) is invisible in a unit furnace for ANY chromatic extinction. Even when
+// blue is scattered ten times more than red, scattering only redistributes a
+// uniform field, so a camera ray still measures 1 per channel — the hero-wavelength
+// weight reconstructs to white. The unbiasedness oracle for the wavelength-resolved
+// delta-tracking walk (the media analogue of the spectral subsurface furnace).
+function testChromaticVolumeEnergy(): { pass: boolean; detail: string } {
+  const settings = { maxDepth: 64, rrStart: 48, clampIndirect: 0 }
+  const c = chromaticMediumRGB(v(0.25, 0.6, 1.3), v(1, 1, 1), 1, settings, 40000, 5150)
+  const worst = Math.max(Math.abs(c.x - 1), Math.abs(c.y - 1), Math.abs(c.z - 1))
+  return {
+    pass: worst < 2e-2,
+    detail: `chromatic furnace=(${c.x.toFixed(4)},${c.y.toFixed(4)},${c.z.toFixed(4)}) worst|Δ|=${worst.toFixed(4)} (exp 1 ∀λ)`,
+  }
+}
+
+// CM-4 — The headline, rendered: a chromatic *absorbing* haze reddens what it
+// transmits. A pure-absorbing medium (albedo 0) passes only the unscattered ray,
+// surviving with probability e^(−σ_t(λ)·2r) at its wavelength; averaging the hero-
+// wavelength weight over λ, the rendered RGB equals the spectral transmittance
+// integral (1/Δλ)∫ w(λ)·e^(−σ_t(λ)·2r) dλ (matched to a fine quadrature), and since
+// σ_t,red < σ_t,blue the survivor is reddest: R > G > B. The atmosphere's colour is
+// the wavelength dependence of its extinction, end to end.
+function testChromaticVolumeReddens(): { pass: boolean; detail: string } {
+  const settings = { maxDepth: 8, rrStart: 4, clampIndirect: 0 }
+  const sigmaTSpectral = v(0.3, 0.7, 1.3)
+  const c = chromaticMediumRGB(sigmaTSpectral, v(0, 0, 0), 1, settings, 80000, 6161)
+  const N = 2048
+  let qx = 0
+  let qy = 0
+  let qz = 0
+  for (let i = 0; i < N; i++) {
+    const lambda = LAMBDA_MIN + ((i + 0.5) / N) * (LAMBDA_MAX - LAMBDA_MIN)
+    const w = wavelengthWeight(lambda)
+    const T = Math.exp(-spectralAt(sigmaTSpectral, lambda) * 2) // chord = 2r, r = 1
+    qx += w.x * T
+    qy += w.y * T
+    qz += w.z * T
+  }
+  const ref = v(qx / N, qy / N, qz / N)
+  const err = Math.max(Math.abs(c.x - ref.x), Math.abs(c.y - ref.y), Math.abs(c.z - ref.z))
+  const ordered = c.x > c.y + 0.01 && c.y > c.z + 0.01
+  return {
+    pass: err < 1.5e-2 && ordered,
+    detail: `rendered=(${c.x.toFixed(3)},${c.y.toFixed(3)},${c.z.toFixed(3)}) quad=(${ref.x.toFixed(3)},${ref.y.toFixed(3)},${ref.z.toFixed(3)}) maxΔ=${err.toFixed(4)}, R>G>B=${ordered}`,
+  }
+}
+
+// CM-5 — The chromatic medium generalises the scalar one: with an achromatic
+// extinction (equal σ_t per channel) it must converge to the same image the scalar
+// medium produces. The spectral path still commits a hero wavelength (different RNG
+// stream), so this is an unbiasedness *oracle* — and it licenses shipping chromatic
+// media as a superset that leaves every scalar-media proof untouched.
+function testChromaticReducesToScalar(): { pass: boolean; detail: string } {
+  const settings = { maxDepth: 32, rrStart: 16, clampIndirect: 0 }
+  const sigmaT = 0.6
+  const scalar = new Scene({
+    name: 'cm-scalar',
+    materials: [],
+    prims: [],
+    camera: { eye: v(0, 0, 5), target: v(0, 0, 0), up: v(0, 1, 0), vfovDeg: 30, aperture: 0, focusDist: 5 },
+    env: { kind: 'solid', color: v(1, 1, 1) },
+    media: [{ center: v(0, 0, 0), radius: 1, sigmaT, albedo: v(0.6, 0.6, 0.6), g: 0.2 }],
+  })
+  const rng = new Rng(2718, 4)
+  let ss = 0
+  const N = 30000
+  for (let i = 0; i < N; i++) ss += luminance(radiance(scalar, { o: v(0, 0, 5), d: v(0, 0, -1), tMax: Infinity }, settings, rng, { rays: 0 }))
+  const scalarL = ss / N
+  const chromaticC = chromaticMediumRGB(v(sigmaT, sigmaT, sigmaT), v(0.6, 0.6, 0.6), 1, settings, 30000, 2719)
+  const chromaticL = luminance(chromaticC)
+  const rel = Math.abs(chromaticL - scalarL) / scalarL
+  return {
+    pass: rel < 1.5e-2,
+    detail: `scalar=${scalarL.toFixed(4)}, chromatic(achromatic)=${chromaticL.toFixed(4)}, rel.Δ=${(rel * 100).toFixed(2)}% (oracle)`,
+  }
+}
+
 // 27 — Thin-film reflectance is a physical reflectance: bounded in [0,1] for all
 // angles, wavelengths and thicknesses; as the film thickness → 0 it must collapse
 // to the bare Fresnel reflectance of the air→substrate interface (the film
@@ -2681,6 +2868,11 @@ export function runSelfTests(): TestResult[] {
     test('Delta tracking ≡ e^(−∫σds) (varying layer)', testDeltaTrackVarying),
     test('Heterogeneous scattering volume conserves energy (=1)', testHeteroVolumeEnergy),
     test('Emissive volume (1−e^(−σ·chord))·Lₑ', testEmissiveVolume),
+    test('Chromatic media — homogeneous transmittance exact ∀λ', testChromaticMediumTransmittance),
+    test('Chromatic media — ratio tracking unbiased ∀λ', testChromaticRatioTrack),
+    test('Chromatic media — scattering furnace ≡ 1 (energy ∀λ)', testChromaticVolumeEnergy),
+    test('Chromatic media — absorbing haze reddens (∫w·e^−σ(λ)L)', testChromaticVolumeReddens),
+    test('Chromatic media — achromatic ≡ scalar medium (oracle)', testChromaticReducesToScalar),
     test('Thin-film R∈[0,1], d→0 Fresnel, iridescent', testThinFilm),
     test('Halton L2 discrepancy < random', testQmcDiscrepancy),
     test('BDPT white furnace — diffuse ρ=0.8', testBdptFurnace),

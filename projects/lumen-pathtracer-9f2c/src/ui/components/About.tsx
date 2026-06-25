@@ -252,6 +252,23 @@ export function About() {
           fireball rather than a billboard. Try the <em>Cumulus</em>, <em>Smoke Plume</em>,{' '}
           <em>Drifting Fog</em> and (glowing) <em>Ember</em> scenes.
         </Card>
+        <Card title="Chromatic media — why the sky is blue">
+          A real atmosphere does not extinguish every colour equally: Rayleigh scattering removes blue
+          from a beam far faster than red (roughly <code>σ_t ∝ 1/λ⁴</code>), which is exactly why the
+          sky is blue and the setting sun is red. Lumen 16.0 lets a medium carry a{' '}
+          <strong>chromatic extinction</strong> — a per-wavelength <code>σ_t</code> — and traces it
+          with the same hero-wavelength trick the rest of the renderer uses: a path entering the medium
+          commits to one wavelength λ, takes its RGB weight once (<code>E_λ[w]=(1,1,1)</code>, so the
+          estimator stays unbiased), and delta/ratio-tracks against that wavelength's{' '}
+          <code>σ_t(λ)</code>. The colour then reconstructs over many paths. It rides on both the
+          homogeneous analytic path and the heterogeneous null-collision estimators, so a chromatic
+          extinction works for clouds and smoke too. <strong>Verify</strong> proves the per-wavelength
+          transmittance is exact, ratio tracking stays unbiased at every λ, a chromatic scattering
+          volume still conserves energy (furnace ≡ 1 for any spectral σ_t), and an absorbing haze
+          reconstructs the spectral transmittance integral and reddens (R&gt;G&gt;B). See{' '}
+          <em>Rayleigh Haze</em> (a sun reddening through a scattering atmosphere) and{' '}
+          <em>Amber Smoke</em> (a plume coloured purely by its chromatic extinction).
+        </Card>
         <Card title="Thin-film iridescence">
           The shifting colour of a soap bubble or an oil slick is <em>wave optics</em>, not pigment:
           two reflections off a film only nanometres thick interfere, and their path difference makes
