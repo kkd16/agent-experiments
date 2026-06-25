@@ -2146,6 +2146,42 @@ body {
 .vec-bar-fill { height: 100%; border-radius: 4px 0 0 4px; transition: width 0.3s ease; }
 .vec-bar-fill.volcano { background: linear-gradient(90deg, var(--amber), #ff9a6b); }
 .vec-bar-fill.vector { background: linear-gradient(90deg, var(--accent-2), var(--accent)); }
+.vec-bar-fill.compiled { background: linear-gradient(90deg, var(--accent-2), var(--accent)); }
+
+/* --- Compile Lab: generated-source + fused-pipeline views --- */
+.comp-source-wrap { margin: 0.8rem 0 1rem; }
+.comp-source {
+  margin: 0;
+  max-height: 360px;
+  overflow: auto;
+  background: var(--bg-0, #0c0f14);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0.8rem 0.95rem;
+  tab-size: 2;
+}
+.comp-source code {
+  font-family: var(--mono);
+  font-size: 0.76rem;
+  line-height: 1.5;
+  color: var(--txt);
+  white-space: pre;
+}
+.comp-dim { color: var(--txt-dim); font-weight: 400; }
+.comp-pipeline { margin: 0.7rem 0 0.4rem; }
+.comp-steps {
+  margin: 0.2rem 0 0;
+  padding-left: 1.3rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.28rem;
+}
+.comp-steps li {
+  font-size: 0.82rem;
+  color: var(--txt);
+  font-family: var(--mono);
+}
+.comp-steps li::marker { color: var(--accent-2); font-weight: 700; }
 .vec-bar-num { width: 84px; text-align: right; font-family: var(--mono); font-size: 0.82rem; color: var(--txt); flex-shrink: 0; }
 .vec-metrics {
   display: grid;

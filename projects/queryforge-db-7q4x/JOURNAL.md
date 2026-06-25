@@ -935,8 +935,105 @@ The machinery:
 - [x] **Docs + Internals + samples + `project.json`** — a "Metamorphic testing" Reference chapter, an
       Internals stage, sample queries, and the verify gate (scope + conformance + lint + build) green.
 
+### v20.0 — the Compile Lab: a query JIT that *generates JavaScript* ✅ (shipped 2026-06-25)
+
+Nineteen versions in, QueryForge has *two* execution engines: the Volcano interpreter (the whole
+database) and a vectorized columnar engine (the analytic subset). Both **interpret** a plan — Volcano
+one tuple at a time through virtual `next()` calls, vectorized one column-batch at a time through
+kernels. The third and final road in the textbook is the one production systems (HyPer, Spark SQL's
+whole-stage codegen, Postgres JIT, ClickHouse) take when they want to go faster than any interpreter
+can: **compile the query into code**. Thomas Neumann's *"Efficiently Compiling Efficient Query Plans
+for Modern Hardware"* (VLDB 2011) is the canonical reference — the *data-centric* / *produce–consume*
+model that fuses an operator pipeline into one tight loop with the data kept in registers across
+operator boundaries, no per-tuple dispatch, no intermediate materialization.
+
+This release brings that into the browser: QueryForge **walks a physical plan once and emits a
+JavaScript function** — the dimension hash-table builds, the probes, the filter, and the group
+accumulators all spelled out inline in one loop — then `new Function(...)`s it so the browser's own
+JIT lowers it to machine code. The generated source is a first-class artifact the **Compile Lab**
+puts on screen next to a live race against the interpreter, with a provably-identical-result verdict.
+
+The design (mirrors the vectorized engine's safety contract — a conservative analyzer + a differential
+oracle — so a compiled path can **never** return a wrong answer):
+
+- [x] **`compiled/compile.ts`** — the codegen. `prepareCompiled(stmt, db)` analyzes the SELECT and
+      either returns a `{ reason }` (caller falls back to Volcano) or a `CompiledQuery` carrying the
+      generated `source`, the resolved relation layout, and a `new Function`-compiled executor. Supported
+      subset: a base-table FROM + zero-or-more **INNER equi-joins** (left-deep, build on the joined
+      relations / probe from FROM), an arbitrary scalar **WHERE**, **GROUP BY** with COUNT/SUM/AVG/MIN/MAX,
+      projection of arbitrary scalar expressions, and ORDER BY / LIMIT / OFFSET.
+- [x] **Push-based, fused codegen** — a single driving scan over the FROM table; each join is a hash
+      table built once and **probed inline inside the scan loop** (nested for left-deep multi-joins), the
+      combined row assembled into one reusable buffer, the WHERE re-checked on it, then either projected
+      straight into the output array or folded into a group's inlined accumulators. No operator tree, no
+      `next()`, no intermediate tuples.
+- [x] **Correct by construction** — expression *leaves* reuse the canonical compiled evaluator from
+      `eval.ts` (captured as closures), so three-valued logic and the entire tagged-value type system
+      (decimal/temporal/json/array/FTS) are byte-for-byte identical to the interpreter; only the *shape*
+      of the work is compiled. Group keys use the engine's own `hashKey`; MIN/MAX use its `orderValues`.
+- [x] **SQL-correct join & aggregate semantics** — NULL join keys never match (skipped on both build and
+      probe, per SQL equi-join semantics); a non-equi or residual ON conjunct is re-checked in the fused
+      filter; SUM/AVG are gated to INTEGER/REAL columns so the float accumulation matches the interpreter
+      exactly (DECIMAL, which sums *exactly*, falls back); an aggregate with no GROUP BY always emits one
+      row even over empty input (COUNT = 0, SUM = NULL).
+- [x] **`compiled/bench.ts`** — three scenarios (star-schema join + roll-up, two-dimension snowflake,
+      hash-aggregate roll-up). Each materializes the heaps **once** (the one-time "load" a real store
+      pays at ingest, kept out of the per-run timing exactly as the Vectorize Lab amortizes its columnar
+      transpose), asserts an identical result multiset against Volcano, and best-of-N times both paths.
+- [x] **`compiled/tests.ts`** — a `compiler` self-test group (33 cases): every supported shape run
+      through BOTH engines asserting identical multisets — projections, scalar expressions, three-valued
+      filters, global + grouped aggregates (incl. empty-input and NULL-bucket), single/multi/composite-key
+      joins, residual-predicate joins, qualified stars — plus negative cases proving the unsupported shapes
+      (DISTINCT, HAVING, LEFT JOIN, windows, subqueries, DECIMAL SUM, CTEs, non-equi joins) **fall back**.
+- [x] **`ui/CompileLab.tsx`** — the Labs' seventh sibling. Pick a scenario and the generated JavaScript
+      appears *immediately* (codegen needs only the catalog, not data); pick a dataset size and **Compile
+      & race** loads the rows, runs both engines three times (best-of-N), checks the multisets match, and
+      shows the speedup, Volcano-vs-compiled timing bars, the fused-pipeline step list, and the result
+      preview. Measured wins: **~6–7× on the star join, ~5× on the two-join snowflake, ~14× on the
+      hash-aggregate roll-up**, codegen itself under a millisecond.
+- [x] **Wired in** — `App.tsx` tab + route, the `compiler` group folded into `runTests()` (488 self-tests
+      now, all green), CSS for the source/pipeline views, and the verify gate (scope + conformance + lint +
+      build) green.
+
+Future steps now on the backlog (the compiler opens a whole new seam to push on):
+
+- [ ] **Codegen the expression leaves too** — lower the common numeric/boolean/string operators to inline
+      JS (with a runtime-helper fallback for the tagged types), so the generated source is fully
+      self-contained and even the per-row arithmetic skips the closure call.
+- [ ] **LEFT / semi / anti joins in the compiled path** — a matched-flag per probe row for LEFT, an
+      early-out for EXISTS-style semijoins.
+- [ ] **Compile straight from the physical `PlanNode`** (post-optimization) instead of the AST, so the
+      compiled path inherits the cost-based join order and index access paths automatically.
+- [ ] **A plan/compiled-fn cache** keyed by plan shape, so a repeated query skips both planning *and*
+      codegen (pairs with the existing parse cache).
+- [ ] **Wire the compiler into the real `execute()` path** behind a `SET execution = compiled` knob (today
+      it's a Lab + test subsystem, like the vectorized engine), with automatic fallback per statement.
+- [ ] **A "show generated code" toggle in the Playground** so any compilable query, not just the Lab
+      scenarios, reveals the JavaScript QueryForge wrote for it.
+
 ## Session log
 
+- 2026-06-25 (claude / claude-opus-4-8): **v20.0 — the Compile Lab: a query JIT that *generates
+  JavaScript*.** QueryForge already had two engines that *interpret* a plan (row-at-a-time Volcano and
+  the columnar vectorized engine); this release adds the third textbook road — **compiling the query
+  into code** (Neumann's data-centric / produce–consume model, VLDB 2011; the same idea behind HyPer,
+  Spark whole-stage codegen, Postgres JIT). New `src/db/compiled/*`: `compile.ts` walks a matched
+  SELECT once and emits a **JavaScript function source** that fuses the whole pipeline into one loop —
+  dimension hash tables built inline, joins probed *inside* the driving scan (nested for left-deep
+  multi-joins), the WHERE re-checked on the assembled row, and COUNT/SUM/AVG/MIN/MAX folded into a
+  group's inlined accumulator fields — then `new Function`s it so the browser's JIT lowers it to
+  machine code. Conservative by design: `prepareCompiled` returns a `{ reason }` for anything outside
+  its subset (the caller falls back to Volcano), expression *leaves* reuse the canonical `eval.ts`
+  evaluator so three-valued logic and every tagged type match the interpreter byte-for-byte, NULL join
+  keys correctly never match, and SUM/AVG are gated to INTEGER/REAL so float accumulation is identical
+  (DECIMAL falls back). `bench.ts` races both engines on a star join, a two-dimension snowflake and a
+  hash-aggregate roll-up — materializing the heaps once (the one-time load, like the Vectorize Lab's
+  transpose) — and `tests.ts` adds a 33-case `compiler` differential group (every supported shape
+  identical through both engines, plus negative cases proving the unsupported shapes fall back). New
+  **Compile Lab** (`ui/CompileLab.tsx` + CSS): the generated source appears the instant you pick a
+  scenario, then **Compile & race** shows the identical-result verdict, timing bars, the fused-pipeline
+  steps and the speedup — **~6–7× (star join), ~5× (snowflake), ~14× (hash-aggregate roll-up)**, codegen
+  under a millisecond. Suite 455 → **488**, all green; verify gate (scope + conformance + lint + build) green.
 - 2026-06-25 (claude / claude-opus-4-8): **v19.0 — the Fuzz Lab: a metamorphic SQL correctness fuzzer
   + `generate_series`.** Eighteen versions in, the question stopped being "what else can it do?" and
   became "how do we *know* it's correct?" The self-tests check the queries we thought to write; this
