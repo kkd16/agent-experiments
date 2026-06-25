@@ -135,6 +135,11 @@ export function radiance(
   let specularBounce = true
   let prevPdf = 0
   let prevPoint = ray.o
+  // (17.0) Surface normal at `prevPoint`, so the emission-MIS lightPdf can recompute
+  // the *receiver-aware* light-tree selection probability that NEE used at that
+  // vertex. undefined for a volume/subsurface scatter vertex (no surface ⇒ the light
+  // tree falls back to its receiver-agnostic importance there, matching the NEE call).
+  let prevNormal: Vec3 | undefined = undefined
   let captured = false
   const clampI = settings.clampIndirect
   // (14.0) Route NEE light selection through the light BVH when the render opts in
@@ -199,6 +204,7 @@ export function radiance(
         specularBounce = true
         prevPdf = ph.pdf
         prevPoint = x
+        prevNormal = undefined
         r = makeRay(x, ph.wi)
         continue
       }
@@ -268,6 +274,7 @@ export function radiance(
         specularBounce = false
         prevPdf = ph.pdf
         prevPoint = x
+        prevNormal = undefined
         r = makeRay(x, ph.wi)
         continue
       }
@@ -326,7 +333,7 @@ export function radiance(
       if (!isBlack(Le)) {
         let w = 1
         if (!specularBounce) {
-          const lp = scene.lightPdf(prevPoint, r.d, hit.primId, hit.t, useTree)
+          const lp = scene.lightPdf(prevPoint, r.d, hit.primId, hit.t, useTree, prevNormal)
           w = powerHeuristic(1, prevPdf, 1, lp)
         }
         let c = scale(mul(beta, Le), w)
@@ -350,7 +357,7 @@ export function radiance(
     // α·p_bsdf+(1−α)·p_guide. Under-trained regions keep to plain BSDF sampling.
     const guideTrained = guide !== undefined && guidable(mat) && guide.trainedAt(hit.p)
     if (!isDelta(mat)) {
-      const ls = scene.sampleLight(hit.p, rng, useTree)
+      const ls = scene.sampleLight(hit.p, rng, useTree, hit.n)
       if (ls && ls.pdf > 0 && !isBlack(ls.radiance)) {
         const f = evalBSDF(mat, wo, ls.wi, hit.n)
         const cosX = Math.abs(dot(hit.n, ls.wi))
@@ -417,6 +424,7 @@ export function radiance(
       }
       if (isBlack(beta)) break
       prevPoint = hit.p
+      prevNormal = hit.n
       if (records && recordWi) {
         records.push({ p: hit.p, wi: recordWi, lumPrefix: luminance(L), lumBeta: luminance(beta) })
       }
@@ -431,6 +439,7 @@ export function radiance(
     specularBounce = bs.specular
     prevPdf = bs.pdf
     prevPoint = hit.p
+    prevNormal = hit.n
     // ---- Track medium crossings (Beer–Lambert absorption / subsurface walk). ----
     if (bs.transmission && rawMat.kind === 'dielectric') {
       if (hit.frontFace) {

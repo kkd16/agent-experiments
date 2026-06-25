@@ -85,6 +85,22 @@ export function About() {
           NEE variance by hundreds of times at equal mean. Try <em>Star Field</em> or{' '}
           <em>Lantern Hall</em> and toggle <strong>Many lights</strong>.
         </Card>
+        <Card title="A sharper light tree (SAH + receiver-aware, 17.0)">
+          Two refinements make the light tree pick even better. First, it is built with a{' '}
+          <strong>surface-area heuristic</strong> (the light-transport analogue of the geometry BVH's
+          SAH): instead of cutting each cluster at the median, it chooses the split that minimises{' '}
+          <code>Σ power · surfaceArea</code>, so a lone powerful lamp is isolated from a diffuse halo
+          of dim ones and every descent's importance estimate is sharper. Second, the importance is now{' '}
+          <strong>receiver-aware</strong>: it folds the shade point's <em>surface normal</em> into the
+          cluster weight, so a cluster tucked <em>behind</em> the surface — which can only contribute
+          zero through the cosine term — is heavily down-weighted instead of drawing half the samples.
+          Both stay <strong>unbiased</strong> (the selection pdf is still renormalised at every split,
+          and a floor keeps every light strictly positive), so the image is unchanged — only the noise
+          drops. <strong>Verify</strong> proves the receiver-aware pdf still sums to 1 for any normal,
+          that its sampler matches its pdf, that it steers mass to the lit hemisphere, and that it cuts
+          variance at equal mean. The new <em>Light Cage</em> — a faceted object inside a full sphere
+          of lights, half of them behind any facet — is where it shows most.
+        </Card>
         <Card title="Metropolis light transport (PSSMLT)">
           The path tracer and BDPT both <em>average</em> independent samples. Lumen's third integrator
           instead runs a <strong>Markov chain</strong> through path space. A path tracer is just a

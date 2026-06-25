@@ -199,10 +199,13 @@ photon emitter, so daylight scenes get photon-mapped sun caustics).
       same `sampleLight`/`lightPdf` contract → MIS unchanged → unbiased (converges to the same image),
       with the uniform path kept byte-for-byte as the default. Two scenes (**Star Field**, **Lantern
       Hall**) + five proofs (Σpdf=1, sampler↔pdf, positivity, reduction-to-uniform, same-image+variance).
-  - [ ] **Adaptive tree splitting (SAH-style)** — split by a surface-area/power cost rather than the
-        median so clusters localise power, and **two-level / importance-cone refinement** for tighter bounds
-  - [ ] **Receiver-normal–aware importance** — fold the shade point's normal (and the BSDF lobe) into
-        the cluster importance so back-hemisphere clusters are down-weighted before the shadow ray
+  - [x] **Adaptive tree splitting (SAH-style) (17.0)** — split by a surface-area/power cost
+        (`Σ power·surfaceArea`) rather than the median (prefix/suffix sweep, O(count)), so a powerful
+        lamp is isolated from a dim halo and the importance estimate is sharper
+  - [x] **Receiver-normal–aware importance (17.0)** — fold the shade point's normal into the cluster
+        importance (a floored cone bound on how much of the box lies in the lit hemisphere) so
+        back-hemisphere clusters are down-weighted before the shadow ray; threaded through
+        `sampleLight`/`lightPdf` and kept MIS-consistent via the stored vertex normal
   - [ ] **Stochastic light-tree for BDPT/SPPM** too — share one importance sampler across all integrators
 - [ ] WebGPU compute backend behind the same scene API
 - [ ] Image (bitmap) textures + tangent-space normal maps (needs UV plumbing)
@@ -265,6 +268,62 @@ photon emitter, so daylight scenes get photon-mapped sun caustics).
       collision the path collects `(1−albedo)·Lₑ` of self-radiance, so a heterogeneous field glows
       brightest in its dense core (fire / embers / luminous nebula). New **Ember** scene + a proof
       that an absorbing+emitting volume obeys `(1−e^(−σ_t·chord))·Lₑ`.
+
+## Roadmap — 2026-06-25 Lumen 17.0: a sharper light tree — SAH splitting + receiver-aware importance (claude)
+
+14.0's light BVH turned uniform many-light NEE into a power/distance/orientation importance sampler,
+but it left two refinements on the table that the original paper (Conty Estevez & Kulla 2018) builds
+in, and that the journal explicitly deferred. 17.0 ships both, and proves them.
+
+**1 — SAH-style splitting.** The 14.0 tree split every cluster at the **median** of the widest
+centroid axis. That balances counts but ignores *power* and *spatial tightness*: a single bright lamp
+sitting among a halo of dim ones gets lumped into a fat box with them, so a descent toward that lamp
+carries a loose importance and wastes branch probability on its dim neighbours. 17.0 instead picks the
+split that minimises the **surface-area heuristic** cost `Σ_child power(child)·surfaceArea(bounds)` —
+the light-transport analogue of the geometry BVH's SAH — evaluated over every candidate split by a
+prefix/suffix sweep in O(count). Bright tight clusters localise; a lone powerful light is isolated. The
+tree's *topology* changes but none of its guarantees do (the selection pdf is renormalised at each
+split regardless of how the items are partitioned), so every 14.0 proof still holds.
+
+**2 — Receiver-aware importance.** The 14.0 importance asked only "how much could this cluster light
+the *point* `p`?" — power, distance, and the emitters' own orientation. It never asked which way the
+*surface at* `p` faces. So at a floor point, a cluster of lamps in the basement below counts as much as
+one on the ceiling above, even though the floor's cosine term will zero the basement out — half the
+shadow rays wasted. 17.0 folds the shade normal `n` into the importance: a floored cone bound on the
+largest `cos(n, p→cluster)` achievable over the cluster's box, so a cluster behind the surface scores
+the floor and one in front scores high. It is threaded through `sampleLight`/`lightPdf` (and so the
+integrator passes `hit.n` at NEE and the stored vertex normal `prevNormal` at the emission-MIS pdf, so
+the sampler and its pdf stay paired and the estimate stays unbiased). The floor keeps every light
+strictly positive — the precondition for unbiasedness — so, exactly as before, the tree only reshapes
+the variance of NEE and converges to the same image. A receiver normal is *optional* everywhere, so a
+volume/subsurface scatter vertex (no surface) and every prior proof use the receiver-agnostic path
+**verbatim**.
+
+Plan / steps (all shipped this session):
+
+1. **`lighttree.ts` — SAH split.** Replace the median cut in `build()` with the prefix/suffix
+   surface-area-cost sweep (`surfaceArea` helper added); ties keep the median so coincident-light
+   reduction-to-uniform is preserved.
+2. **`lighttree.ts` — receiver term.** `importance(node, p, nRecv?)` gains a floored receiver-facing
+   cone bound; `sample`/`prob` take an optional `nRecv` and pass it through. `nRecv` undefined ⇒ the
+   14.0 importance bit-for-bit.
+3. **`scene.ts` — plumb the normal.** `sampleLight`/`lightPdf`/`sampleLightTree` take an optional
+   `refNormal` and forward it to the tree.
+4. **`integrator.ts` — supply the normal.** Track `prevNormal` alongside `prevPoint` (the surface
+   normal at the last vertex, undefined for volume/SSS scatters); pass `hit.n` to the surface NEE and
+   `prevNormal` to the emission-MIS `lightPdf`.
+5. **`scenes.ts` — Light Cage.** A faceted icosphere inside a full sphere of ~220 inward-facing lights,
+   so ~half the cage is behind any facet's normal — the regime where the receiver term wins most.
+6. **`selftest.ts` — four proofs (90 total).** (a) the receiver-aware selection pdf still sums to 1 for
+   any point *and any normal*; (b) the receiver-aware sampler matches its pdf to MC precision; (c) the
+   receiver term steers selection mass to the lit hemisphere (a front cluster gets ≫ a coincident,
+   equally-oriented back cluster) while staying normalised and strictly positive; (d) the headline
+   oracle — on a sphere of lights half behind the receiver, the receiver-aware and receiver-agnostic
+   trees agree in the mean (unbiased) while the receiver-aware variance is clearly lower. The five
+   existing 14.0 proofs now exercise the SAH tree and still pass.
+7. **UI / About.** A "sharper light tree" card; *Light Cage* in the picker. Verified in Node: 90/90
+   self-tests pass; a smoke render of *Light Cage* is finite and lit (central-crop peak ≈ 0.39).
+   `pnpm lint`/`tsc`/`build` green via the CI gate.
 
 ## Roadmap — 2026-06-25 Lumen 16.0: chromatic participating media — a wavelength-dependent atmosphere (claude)
 

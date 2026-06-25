@@ -1841,6 +1841,63 @@ function starField(): SceneDef {
   }
 }
 
+// ---- Scene: Light Cage (receiver-aware many lights, 17.0) -------------------
+
+// A faceted object suspended inside a full spherical CAGE of ~200 small inward-
+// facing lights. The point: at any surface point on the object, roughly *half* the
+// cage is behind the local normal and can contribute nothing — so a light tree that
+// ignores the receiver wastes half its shadow rays on the dark hemisphere. The 17.0
+// receiver-aware importance folds the shade normal into the cluster weight, so a
+// facet's samples land on the lights that actually face it. Toggle **Many lights**
+// to compare. (The cage encloses the camera too, lighting the scene from all sides.)
+function lightCage(): SceneDef {
+  const materials: Material[] = [
+    { kind: 'diffuse', albedo: v(0.74, 0.72, 0.68) }, // 0 faceted object
+    { kind: 'metal', albedo: v(0.96, 0.96, 0.98), roughness: 0.12 }, // 1 inner accent
+  ]
+  const palette: Vec3[] = [
+    v(9, 1.4, 1.4), v(1.3, 7.8, 2.2), v(1.5, 2.6, 9.5), v(9, 6.8, 1.4),
+    v(8.5, 1.8, 7.8), v(1.5, 8.8, 8.8), v(9.5, 4.8, 1.4), v(5.8, 1.8, 9.5),
+  ]
+  for (const c of palette) materials.push({ kind: 'emissive', emission: c })
+  const EMIT0 = 2
+  const prims: PrimDef[] = []
+  const C = v(0, 3.2, 0) // cage / object centre
+  const Rc = 9 // cage radius
+  const rng = mulberry(20260626)
+  // ~220 inward-facing emissive triangles spread over the cage sphere (Fibonacci-ish
+  // jittered), each built so its geometric normal points back at the centre.
+  const NLAMP = 220
+  for (let i = 0; i < NLAMP; i++) {
+    const u = 1 - (2 * (i + 0.5)) / NLAMP // cosθ ∈ (−1,1)
+    const r = Math.sqrt(Math.max(0, 1 - u * u))
+    const phi = i * 2.399963 + (rng() - 0.5) * 0.3 // golden angle + jitter
+    const dir = v(Math.cos(phi) * r, u, Math.sin(phi) * r) // outward unit
+    const P = add(C, scale(dir, Rc))
+    const n = scale(dir, -1) // inward (toward C)
+    const ref = Math.abs(n.y) < 0.95 ? v(0, 1, 0) : v(1, 0, 0)
+    const t = normalize(cross(ref, n))
+    const b = cross(n, t) // t × b = n ⇒ the triangle below faces inward
+    const s = 0.17
+    const p0 = P
+    const p1 = add(P, scale(t, s))
+    const p2 = add(P, scale(b, s))
+    const mat = EMIT0 + ((rng() * palette.length) | 0)
+    prims.push({ kind: 'tri', p0, p1, p2, material: mat })
+  }
+  // The faceted object: an icosphere (lots of differently-facing facets) plus a
+  // smaller glossy companion, so the receiver term matters all over the surface.
+  prims.push(...emitMesh(transformMesh(icosphere(1), { scale: 2.2, translate: C }), 0))
+  prims.push(...emitMesh(transformMesh(icosphere(1), { scale: 1.0, translate: v(2.6, 1.4, 2.2) }), 1))
+  return {
+    name: 'Light Cage',
+    materials,
+    prims,
+    camera: { eye: v(0, 3.4, -7.4), target: C, up: v(0, 1, 0), vfovDeg: 60, aperture: 0, focusDist: 7.4 },
+    env: { kind: 'solid', color: v(0.01, 0.011, 0.016) },
+  }
+}
+
 // ---- Scene: Lantern Hall (many lights) ---------------------------------------
 // A long colonnade hung with many warm lanterns. At any point on the floor or walls
 // only the nearest few lanterns matter — the rest are far down the hall — which is
@@ -1921,6 +1978,7 @@ export const SCENES: ScenePreset[] = [
   { id: 'glowing-orb', label: 'Glowing Orb (Guided)', build: glowingOrb },
   { id: 'star-field', label: 'Star Field (many lights)', build: starField, manyLights: true },
   { id: 'lantern-hall', label: 'Lantern Hall (many lights)', build: lanternHall, manyLights: true },
+  { id: 'light-cage', label: 'Light Cage (receiver-aware)', build: lightCage, manyLights: true },
   { id: 'hidden-door', label: 'Hidden Door', build: hiddenDoor },
   { id: 'weekend', label: 'Weekend Daylight', build: weekend },
   { id: 'gallery', label: 'Material Gallery', build: gallery },
