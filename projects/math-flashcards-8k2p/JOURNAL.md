@@ -238,3 +238,13 @@ live here as long as you like.
 - [x] Track and display the "Total Correct Answers" explicitly on the main menu.
 - [x] Implement an option to change the text color of the Flashcard.
 - [x] Display the "Average Time Per Question" on the main menu statistics.
+
+## New Agent Additions
+- [x] Add an option to toggle a "Floating Bubbles" background animation effect.
+- [x] Add a small button to collapse/expand the statistics section on the main menu.
+- [x] Add an option to customize the specific multiplier value required to trigger confetti.
+- [x] Track and display the total number of "Skips" used in the lifetime statistics.
+- [x] Add a visual pulsing effect to the flashcard when the timer is under 5 seconds.
+- [x] Allow the user to select a "Preferred Input Method" (Numpad vs Row) to adjust CSS layouts slightly.
+- [x] Add an option to hide the "Night Owl" achievement notification if desired.
+- [x] Add a setting to toggle the display of the current time in the top corner of the app.

@@ -80,6 +80,60 @@ function getInitialFlashcardTextColor(): string {
   }
 }
 
+function getInitialInputMethod(): 'numpad' | 'row' {
+  try {
+    return (window.localStorage.getItem('mathFlashcardsInputMethod') as 'numpad' | 'row') || 'numpad';
+  } catch (e) {
+    console.error("Local storage error:", e);
+    return 'numpad';
+  }
+}
+
+function getInitialPulsingFlashcard(): boolean {
+  try {
+    return window.localStorage.getItem('mathFlashcardsPulsingFlashcard') === 'true';
+  } catch (e) {
+    console.error("Local storage error:", e);
+    return false;
+  }
+}
+
+function getInitialFloatingBubbles(): boolean {
+  try {
+    return window.localStorage.getItem('mathFlashcardsFloatingBubbles') === 'true';
+  } catch (e) {
+    console.error("Local storage error:", e);
+    return false;
+  }
+}
+
+function getInitialShowCurrentTime(): boolean {
+  try {
+    return window.localStorage.getItem('mathFlashcardsShowCurrentTime') === 'true';
+  } catch (e) {
+    console.error("Local storage error:", e);
+    return false;
+  }
+}
+
+function getInitialHideNightOwl(): boolean {
+  try {
+    return window.localStorage.getItem('mathFlashcardsHideNightOwl') === 'true';
+  } catch (e) {
+    console.error("Local storage error:", e);
+    return false;
+  }
+}
+
+function getInitialConfettiTrigger(): number {
+  try {
+    return parseInt(window.localStorage.getItem('mathFlashcardsConfettiTrigger') || '10', 10);
+  } catch (e) {
+    console.error("Local storage error:", e);
+    return 10;
+  }
+}
+
 function getInitialDisableConfetti(): boolean {
   try {
     return window.localStorage.getItem('mathFlashcardsDisableConfetti') === 'true';
@@ -367,6 +421,15 @@ function getInitialRunScores(): RunScore[] {
 }
 
 
+function getInitialLifetimeSkips(): number {
+  try {
+    return parseInt(window.localStorage.getItem('mathFlashcardsLifetimeSkips') || '0', 10);
+  } catch (e) {
+    console.error("Local storage error:", e);
+    return 0;
+  }
+}
+
 function getInitialLifetimeCorrect(): number {
   try {
     const stored = window.localStorage.getItem('mathFlashcardsLifetimeCorrect');
@@ -490,16 +553,52 @@ function App() {
   const [lowBatteryMode, setLowBatteryMode] = useState<boolean>(getInitialLowBatteryMode());
   const [hideSkipButton, setHideSkipButton] = useState<boolean>(getInitialHideSkipButton());
   const [disableConfetti, setDisableConfetti] = useState<boolean>(getInitialDisableConfetti());
+  const [confettiTrigger, setConfettiTrigger] = useState<number>(getInitialConfettiTrigger());
   const [hideHighScore, setHideHighScore] = useState<boolean>(getInitialHideHighScore());
   const [flashcardTextColor, setFlashcardTextColor] = useState<string>(getInitialFlashcardTextColor());
+  const [hideNightOwl, setHideNightOwl] = useState<boolean>(getInitialHideNightOwl());
+  const [showCurrentTime, setShowCurrentTime] = useState<boolean>(getInitialShowCurrentTime());
+  const [floatingBubbles, setFloatingBubbles] = useState<boolean>(getInitialFloatingBubbles());
+  const [bubbleProps, setBubbleProps] = useState<Array<{left: string, width: string, height: string, animationDelay: string, animationDuration: string}>>([]);
+  useEffect(() => {
+    if (floatingBubbles) {
+      setTimeout(() => {
+        setBubbleProps([...Array(15)].map(() => ({
+          left: `${Math.random() * 100}%`,
+          width: `${Math.random() * 40 + 10}px`,
+          height: `${Math.random() * 40 + 10}px`,
+          animationDelay: `${Math.random() * 5}s`,
+          animationDuration: `${Math.random() * 10 + 5}s`
+        })));
+      }, 0);
+    }
+  }, [floatingBubbles]);
+  const [pulsingFlashcard, setPulsingFlashcard] = useState<boolean>(getInitialPulsingFlashcard());
+  const [inputMethod, setInputMethod] = useState<'numpad' | 'row'>(getInitialInputMethod());
+  const [statsCollapsed, setStatsCollapsed] = useState<boolean>(false);
+  const [currentTimeStr, setCurrentTimeStr] = useState<string>(new Date().toLocaleTimeString());
+
+
+  useEffect(() => {
+    if (!showCurrentTime) return;
+    const interval = setInterval(() => setCurrentTimeStr(new Date().toLocaleTimeString()), 1000);
+    return () => clearInterval(interval);
+  }, [showCurrentTime]);
+
 
 
 
   useEffect(() => { try { window.localStorage.setItem('mathFlashcardsLowBatteryMode', lowBatteryMode.toString()); } catch (e) { console.error(e); } }, [lowBatteryMode]);
   useEffect(() => { try { window.localStorage.setItem('mathFlashcardsHideSkipButton', hideSkipButton.toString()); } catch (e) { console.error(e); } }, [hideSkipButton]);
   useEffect(() => { try { window.localStorage.setItem('mathFlashcardsDisableConfetti', disableConfetti.toString()); } catch (e) { console.error(e); } }, [disableConfetti]);
+  useEffect(() => { try { window.localStorage.setItem('mathFlashcardsConfettiTrigger', confettiTrigger.toString()); } catch (e) { console.error(e); } }, [confettiTrigger]);
   useEffect(() => { try { window.localStorage.setItem('mathFlashcardsHideHighScore', hideHighScore.toString()); } catch (e) { console.error(e); } }, [hideHighScore]);
   useEffect(() => { try { window.localStorage.setItem('mathFlashcardsTextColor', flashcardTextColor); } catch (e) { console.error(e); } }, [flashcardTextColor]);
+  useEffect(() => { try { window.localStorage.setItem('mathFlashcardsHideNightOwl', hideNightOwl.toString()); } catch (e) { console.error(e); } }, [hideNightOwl]);
+  useEffect(() => { try { window.localStorage.setItem('mathFlashcardsShowCurrentTime', showCurrentTime.toString()); } catch (e) { console.error(e); } }, [showCurrentTime]);
+  useEffect(() => { try { window.localStorage.setItem('mathFlashcardsFloatingBubbles', floatingBubbles.toString()); } catch (e) { console.error(e); } }, [floatingBubbles]);
+  useEffect(() => { try { window.localStorage.setItem('mathFlashcardsPulsingFlashcard', pulsingFlashcard.toString()); } catch (e) { console.error(e); } }, [pulsingFlashcard]);
+  useEffect(() => { try { window.localStorage.setItem('mathFlashcardsInputMethod', inputMethod); } catch (e) { console.error(e); } }, [inputMethod]);
 
   useEffect(() => { try { window.localStorage.setItem('mathFlashcardsMirrorMode', mirrorMode.toString()); } catch (e) { console.error(e); } }, [mirrorMode]);
   useEffect(() => { try { window.localStorage.setItem('mathFlashcardsHideStreak', hideStreak.toString()); } catch (e) { console.error(e); } }, [hideStreak]);
@@ -600,6 +699,7 @@ function App() {
   const [startTime, setStartTime] = useState<number | null>(null);
   const [elapsedTime, setElapsedTime] = useState<number>(0);
   const [lifetimeQuestions, setLifetimeQuestions] = useState<number>(getInitialLifetimeQuestions());
+  const [lifetimeSkips, setLifetimeSkips] = useState<number>(getInitialLifetimeSkips());
   const [lifetimeCorrectAnswers, setLifetimeCorrectAnswers] = useState<number>(getInitialLifetimeCorrect());
   const [showSummary, setShowSummary] = useState<boolean>(false);
   const [animationClass, setAnimationClass] = useState<string>('');
@@ -807,6 +907,7 @@ function App() {
   }, [isSpeedRunActive, gameMode, timeLeft, isPaused]);
 
   const handleGiveUp = () => {
+    setLifetimeSkips(prev => prev + 1);
     const correctAns = operation === '+' ? num1 + num2 : operation === '-' ? num1 - num2 : operation === '*' ? num1 * num2 : Math.floor(num1 / num2);
     const newHistoryItem: HistoryItem = { num1, num2, operation, userAnswer: 'Skipped', correctAnswer: correctAns, isCorrect: false };
     setHistory(prev => [newHistoryItem, ...prev].slice(0, 100));
@@ -1048,7 +1149,7 @@ function App() {
           setTimeout(() => setShowConfetti(false), 4000);
         }
         setStreakMessage("100 STREAK! GODLIKE!");
-      } else if (newStreak > 0 && newStreak % 10 === 0) {
+      } else if (newStreak > 0 && newStreak % confettiTrigger === 0) {
         const pieces = [...Array(30)].map(() => ({
           left: `${Math.random() * 100}%`,
           delay: `${Math.random() * 0.5}s`,
@@ -1193,9 +1294,16 @@ function App() {
 
   return (
     <div className={`app-wrapper ${theme} font-size-${accessibilityFontSize} ${streak >= 5 && !lowBatteryMode ? 'streak-active-bg' : ''} ${graphPaper ? 'graph-paper-bg' : ''}`} style={{ backgroundColor: theme === 'light' && bgColor ? bgColor : undefined, backgroundImage: bgImage && !graphPaper ? `url(${bgImage})` : (graphPaper ? undefined : 'none'), backgroundSize: 'cover', backgroundPosition: 'center' }}>
+      {floatingBubbles && !lowBatteryMode && (
+        <div className="bubbles-container">
+          {bubbleProps.map((props, i) => (
+            <div key={i} className="bubble" style={props}></div>
+          ))}
+        </div>
+      )}
     <div className={`app-container ${theme}`} style={{ fontFamily }}>
       <div className="header-top">
-        <h1>Math Flashcards {nightOwlUnlocked && <span title="Night Owl">🦉</span>}{isHardcoreMode && <span className="badge hardcore">Hardcore</span>}</h1>
+        <h1>Math Flashcards {!hideNightOwl && nightOwlUnlocked && <span title="Night Owl">🦉</span>}{isHardcoreMode && <span className="badge hardcore">Hardcore</span>}</h1>
         <div>
           <button onClick={toggleTheme} className="theme-toggle" style={{ marginRight: '0.5rem' }} disabled={autoDarkMode}>
             {theme === 'light' ? '🌙 Dark' : '☀️ Light'}
@@ -1230,14 +1338,20 @@ function App() {
       <div className="difficulty-selector" style={{ marginBottom: '1rem', display: 'flex', gap: '1rem', justifyContent: 'center', flexWrap: 'wrap' }}>
         <label htmlFor="dailyGoal">Daily Goal: <input id="dailyGoal" type="number" min="1" value={dailyGoal} onChange={(e) => setDailyGoal(parseInt(e.target.value, 10) || 50)} style={{ width: '60px' }} /></label>
         <label htmlFor="fontFamily">Font: <select id="fontFamily" value={fontFamily} onChange={(e) => setFontFamily(e.target.value)}><option value="sans-serif">Sans-serif</option><option value="serif">Serif</option><option value="monospace">Monospace</option></select></label>
+        <label htmlFor="inputMethod">Input: <select id="inputMethod" value={inputMethod} onChange={(e) => setInputMethod(e.target.value as 'numpad' | 'row')}><option value="numpad">Numpad</option><option value="row">Row</option></select></label>
         <label htmlFor="strictMode"><input id="strictMode" type="checkbox" checked={strictMode} onChange={(e) => setStrictMode(e.target.checked)} disabled={isSpeedRunActive} /> Strict Mode</label>
                 <label htmlFor="disableConfetti"><input id="disableConfetti" type="checkbox" checked={disableConfetti} onChange={(e) => setDisableConfetti(e.target.checked)} /> Disable Confetti</label>
+        <label htmlFor="confettiTrigger">Confetti Trigger: <input id="confettiTrigger" type="number" min="1" max="100" value={confettiTrigger} onChange={(e) => setConfettiTrigger(parseInt(e.target.value, 10) || 10)} style={{ width: '50px' }} /></label>
         <label htmlFor="hideSkipButton"><input id="hideSkipButton" type="checkbox" checked={hideSkipButton} onChange={(e) => setHideSkipButton(e.target.checked)} /> Hide 'Give Up / Skip' Button</label>
         <label htmlFor="hideStats"><input id="hideStats" type="checkbox" checked={hideStats} onChange={(e) => setHideStats(e.target.checked)} /> Hide Stats</label>
         <label htmlFor="hideHighScore"><input id="hideHighScore" type="checkbox" checked={hideHighScore} onChange={(e) => setHideHighScore(e.target.checked)} /> Hide High Score</label>
         <label htmlFor="hideStreak"><input id="hideStreak" type="checkbox" checked={hideStreak} onChange={(e) => setHideStreak(e.target.checked)} /> Hide Streak</label>
         <label htmlFor="mirrorMode"><input id="mirrorMode" type="checkbox" checked={mirrorMode} onChange={(e) => setMirrorMode(e.target.checked)} /> Mirror Mode</label>
         <label htmlFor="lowBatteryMode"><input id="lowBatteryMode" type="checkbox" checked={lowBatteryMode} onChange={(e) => setLowBatteryMode(e.target.checked)} /> Low Battery Mode</label>
+        <label htmlFor="hideNightOwl"><input id="hideNightOwl" type="checkbox" checked={hideNightOwl} onChange={(e) => setHideNightOwl(e.target.checked)} /> Hide Night Owl</label>
+        <label htmlFor="showCurrentTime"><input id="showCurrentTime" type="checkbox" checked={showCurrentTime} onChange={(e) => setShowCurrentTime(e.target.checked)} /> Show Current Time</label>
+        <label htmlFor="floatingBubbles"><input id="floatingBubbles" type="checkbox" checked={floatingBubbles} onChange={(e) => setFloatingBubbles(e.target.checked)} /> Floating Bubbles</label>
+        <label htmlFor="pulsingFlashcard"><input id="pulsingFlashcard" type="checkbox" checked={pulsingFlashcard} onChange={(e) => setPulsingFlashcard(e.target.checked)} /> Pulsing Flashcard &lt; 5s</label>
       </div>
 
       <div className="color-picker" style={{ marginBottom: '1rem', display: 'flex', gap: '0.5rem', justifyContent: 'center' }}>
@@ -1262,6 +1376,12 @@ function App() {
             <div style={{ width: `${Math.min((dailyQuestions.count / dailyGoal) * 100, 100)}%`, height: '100%', backgroundColor: '#3498db', transition: 'width 0.3s' }}></div>
           </div>
         </div>}
+        <div>
+          <button onClick={() => setStatsCollapsed(!statsCollapsed)} style={{marginBottom: '0.5rem', background: 'none', border: 'none', cursor: 'pointer', fontSize: '0.9rem', color: 'var(--text)'}}>
+            {statsCollapsed ? '▶ Show Stats' : '▼ Hide Stats Info'}
+          </button>
+        </div>
+        {!statsCollapsed && (
         <div className="header-stats">
           <div className="stat">Score: <span className={scoreBump ? "score-bump" : ""}>{score}</span></div>
           {!hideStreak && (
@@ -1278,9 +1398,10 @@ function App() {
             High Score: {highScore}
             <button onClick={resetHighScore} className="reset-btn" title="Reset High Score" disabled={isSpeedRunActive}>↺</button>
           </div>)}
-          <div className="stat">Total Questions: {lifetimeQuestions} | Total Correct: {lifetimeCorrectAnswers} | Acc: {lifetimeQuestions > 0 ? (lifetimeCorrectAnswers / lifetimeQuestions * 100).toFixed(1) : 0}%</div>
+          <div className="stat">Total Questions: {lifetimeQuestions} | Correct: {lifetimeCorrectAnswers} | Skips: {lifetimeSkips} | Acc: {lifetimeQuestions > 0 ? (lifetimeCorrectAnswers / lifetimeQuestions * 100).toFixed(1) : 0}%</div>
           <div className="stat">Avg Time / Digit: {avgTimePerDigit > 0 ? avgTimePerDigit.toFixed(2) + 's' : 'N/A'} | Avg Time / Question: {(avgTimePerDigit > 0 && lifetimeQuestions > 0) ? (avgTimePerDigit * (totalDigitsAnswered / lifetimeQuestions)).toFixed(2) + 's' : 'N/A'}</div>
         </div>
+        )}
       </div>
       )}
 
@@ -1544,7 +1665,7 @@ function App() {
           <button type="submit" className="submit-button" disabled={isPaused || (isSpeedRunActive && ((gameMode === 'time' || gameMode === 'timeAttack') ? timeLeft === 0 : (gameMode === 'questions' ? questionsAnswered >= (questionLimit === 0 ? customQuestionLimit : questionLimit) : false)))}>Check</button>
         </form>
 
-        <div className="numpad">
+        <div className={`numpad ${inputMethod === 'row' ? 'row-layout' : ''}`}>
           {(numpadLayout === 'phone' ? [1, 2, 3, 4, 5, 6, 7, 8, 9] : [7, 8, 9, 4, 5, 6, 1, 2, 3]).map(num => (
             <button
               key={num}
@@ -1598,6 +1719,7 @@ function App() {
       )}
 
       {showHighScoreBanner && <div className="message" style={{color: '#f39c12', animation: 'pulse 0.5s infinite'}}>New High Score! 🏆</div>}
+      {showCurrentTime && <div style={{position: 'absolute', top: '10px', right: '10px', fontSize: '1.2rem', fontWeight: 'bold', zIndex: 100}}>{currentTimeStr}</div>}
       {message && <div className={`message ${message === 'Correct!' ? 'success' : (message.includes('Time') ? 'info' : 'error')}`}>{message}</div>}
       {streakMessage && <div className="message" style={{color: '#9b59b6', animation: 'pulse 1s infinite'}}>{streakMessage}</div>}
       {isPaused && <div className="message info" style={{animation: 'pulse 1.5s infinite'}}>Paused (Press 'P' to resume)</div>}
