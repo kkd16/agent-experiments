@@ -228,8 +228,8 @@ export class Scene {
   // already folds in the realised selection probability, so the integrator's MIS is
   // identical and the estimator stays unbiased. `useTree=false` is the verbatim,
   // byte-for-byte original uniform sampler (the default).
-  sampleLight(ref: Vec3, rng: Rng, useTree = false): LightSampleResult | null {
-    if (useTree && this.lightTree) return this.sampleLightTree(ref, rng)
+  sampleLight(ref: Vec3, rng: Rng, useTree = false, refNormal?: Vec3): LightSampleResult | null {
+    if (useTree && this.lightTree) return this.sampleLightTree(ref, rng, refNormal)
     const nTri = this.lights.length
     const nL = nTri + (this.envSun ? 1 : 0)
     if (nL === 0) return null
@@ -258,7 +258,7 @@ export class Scene {
   // over the emissive triangles is distributed by the light BVH — so this reduces to
   // the uniform sampler when every cluster's importance is equal. The returned pdf
   // folds in the realised selection probability (nTri/numLights · p_tree(L)).
-  private sampleLightTree(ref: Vec3, rng: Rng): LightSampleResult | null {
+  private sampleLightTree(ref: Vec3, rng: Rng, refNormal?: Vec3): LightSampleResult | null {
     const nTri = this.lights.length
     const nEnv = this.envSun ? 1 : 0
     const nL = nTri + nEnv
@@ -266,7 +266,7 @@ export class Scene {
     const pTriBranch = nTri / nL
     // Env sun keeps its 1/nL slot (no rng draw consumed when there is no env sun).
     if (nEnv > 0 && rng.next() >= pTriBranch) return this.sampleEnvLight(rng, nL)
-    const sel = this.lightTree!.sample(ref, rng)
+    const sel = this.lightTree!.sample(ref, rng, refNormal)
     const tri = this.prims[sel.primId] as Triangle
     const s = sampleTriangle(tri, rng)
     const toLight = sub(s.p, ref)
@@ -305,7 +305,7 @@ export class Scene {
   // `useTree` must match the value passed to sampleLight so the two stay paired:
   // under the tree the per-triangle selection probability is nTri/numLights ·
   // p_tree(L | ref) instead of the uniform 1/numLights.
-  lightPdf(ref: Vec3, wi: Vec3, primId: number, dist: number, useTree = false): number {
+  lightPdf(ref: Vec3, wi: Vec3, primId: number, dist: number, useTree = false, refNormal?: Vec3): number {
     const nL = this.numLights
     if (nL === 0) return 0
     const prim = this.prims[primId]
@@ -313,7 +313,7 @@ export class Scene {
     if (this.materials[prim.material].kind !== 'emissive') return 0
     const pdfTri = triangleDirPdf(prim, ref, wi, dist)
     if (useTree && this.lightTree) {
-      const pSelect = (this.lights.length / nL) * this.lightTree.prob(ref, primId)
+      const pSelect = (this.lights.length / nL) * this.lightTree.prob(ref, primId, refNormal)
       return pdfTri * pSelect
     }
     return pdfTri / nL

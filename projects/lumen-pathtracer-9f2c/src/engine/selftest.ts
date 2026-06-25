@@ -2828,6 +2828,154 @@ function testManyLightsVariance(): { pass: boolean; detail: string } {
   }
 }
 
+// ---- 17.0 Light tree: receiver-aware importance + SAH splitting -------------
+
+// LT-1 — Receiver-aware selection is still a proper distribution. Folding the shade
+// point's normal into the cluster importance changes *which* light is favoured, but
+// it must not break normalisation: at any point, for any surface normal, the
+// per-light selection probabilities must still sum to exactly 1 (the tree is
+// renormalised at every split regardless of the importance values fed in). This is
+// the structural precondition that keeps the receiver-aware MIS pdf valid/unbiased.
+function testLightTreeReceiverNormalised(): { pass: boolean; detail: string } {
+  const N = 150
+  const tree = buildLightTree(lightTriangles(N, 7))
+  const rng = new Rng(31, 2)
+  let maxErr = 0
+  for (let t = 0; t < 300; t++) {
+    const p = v(rng.range(-5, 5), rng.range(-2, 3), rng.range(-5, 5))
+    const nRecv = normalize(v(rng.range(-1, 1), rng.range(-1, 1), rng.range(-1, 1)))
+    let s = 0
+    for (let i = 0; i < N; i++) s += tree.prob(p, i, nRecv)
+    maxErr = Math.max(maxErr, Math.abs(s - 1))
+  }
+  return { pass: maxErr < 1e-9, detail: `max|Σₗ p(l|n)−1|=${maxErr.toExponential(1)} over 300 (point,normal) (<1e-9)` }
+}
+
+// LT-2 — Receiver-aware sampler ↔ pdf consistency. The stochastic descent, when
+// given the receiver normal, must realise exactly the distribution prob() reports
+// with that same normal — otherwise the MIS weight on a BSDF-sampled emitter hit
+// (which recomputes prob with the stored vertex normal) would be inconsistent and
+// bias the estimate. Empirical frequencies match prob to Monte-Carlo precision.
+function testLightTreeReceiverSamplerPdf(): { pass: boolean; detail: string } {
+  const N = 80
+  const tree = buildLightTree(lightTriangles(N, 9))
+  const p = v(0.5, 0.2, -0.3)
+  const nRecv = normalize(v(0.2, 1, -0.1))
+  const rng = new Rng(77, 2)
+  const M = 300000
+  const counts = new Float64Array(N)
+  for (let i = 0; i < M; i++) counts[tree.sample(p, rng, nRecv).primId]++
+  let maxErr = 0
+  for (let i = 0; i < N; i++) maxErr = Math.max(maxErr, Math.abs(counts[i] / M - tree.prob(p, i, nRecv)))
+  return { pass: maxErr < 6e-3, detail: `max|freq−pdf|=${maxErr.toExponential(2)} with receiver normal (<6e-3)` }
+}
+
+// LT-3 — The receiver term actually steers samples to the lit hemisphere. With a
+// cluster of lights *in front* of the surface (above the normal) and an equal
+// cluster *behind* it (below the horizon, where they can only contribute zero), the
+// receiver-aware sampler must spend far more of its selection mass on the front
+// cluster than the receiver-agnostic one does — while both still sum to 1 and keep
+// every light strictly positive (so the estimator remains unbiased). This is the win.
+function testLightTreeReceiverDownweight(): { pass: boolean; detail: string } {
+  const lights: { primId: number; tri: ReturnType<typeof makeTriangle>; emission: Vec3 }[] = []
+  const s = 0.1
+  for (let i = 0; i < 20; i++) {
+    const a = (i / 20) * Math.PI * 2
+    const fx = 2 * Math.cos(a)
+    const fz = 2 * Math.sin(a)
+    // Front cluster: above the receiver (+y), facing DOWN (normal −y) toward it.
+    lights.push({ primId: i, tri: makeTriangle(v(fx - s, 4, fz - s), v(fx + s, 4, fz - s), v(fx - s, 4, fz + s), 0), emission: v(0.7, 0.7, 0.7) })
+    // Back cluster: below the receiver (−y), facing UP (normal +y, swapped winding)
+    // *also* toward it — so both clusters are equally well-oriented and equally far,
+    // and ONLY the receiver normal distinguishes them (isolating the new term).
+    lights.push({ primId: 100 + i, tri: makeTriangle(v(fx - s, -4, fz - s), v(fx - s, -4, fz + s), v(fx + s, -4, fz - s), 0), emission: v(0.7, 0.7, 0.7) })
+  }
+  const tree = buildLightTree(lights)
+  const p = v(0, 0, 0)
+  const nRecv = v(0, 1, 0) // surface faces straight up: the −y cluster is behind it
+  let frontAware = 0
+  let frontAgnostic = 0
+  let minP = Infinity
+  let sumAware = 0
+  for (let i = 0; i < 20; i++) {
+    const pa = tree.prob(p, i, nRecv)
+    const pback = tree.prob(p, 100 + i, nRecv)
+    frontAware += pa
+    frontAgnostic += tree.prob(p, i)
+    sumAware += pa + pback
+    minP = Math.min(minP, pa, pback)
+  }
+  // Receiver-aware should put much more mass on the front; agnostic is ~symmetric (½).
+  const ok = frontAware > 0.8 && Math.abs(frontAgnostic - 0.5) < 0.08 && minP > 0 && Math.abs(sumAware - 1) < 1e-9
+  return {
+    pass: ok,
+    detail: `front mass: aware=${frontAware.toFixed(3)} vs agnostic=${frontAgnostic.toFixed(3)}; minP=${minP.toExponential(1)}>0; Σ=${sumAware.toFixed(6)}`,
+  }
+}
+
+// LT-4 — The headline payoff (and unbiasedness oracle): a direct-lighting NEE
+// estimator over a sphere of lights half of which sit *behind* the receiver (they
+// contribute zero through the cosine term). The receiver-aware tree and the
+// receiver-agnostic tree must agree in the *mean* (both unbiased — same true direct
+// illumination) while the receiver-aware sampler's per-sample *variance* is clearly
+// lower, because it stops wasting samples on the dark back hemisphere.
+function testLightTreeReceiverVariance(): { pass: boolean; detail: string } {
+  const materials: Material[] = [
+    { kind: 'diffuse', albedo: v(0.7, 0.7, 0.7) },
+    { kind: 'emissive', emission: v(8, 8, 8) },
+  ]
+  const prims: PrimDef[] = []
+  const up = (cx: number, cy: number, cz: number, sz: number): PrimDef => ({
+    kind: 'tri', p0: v(cx - sz, cy, cz - sz), p1: v(cx - sz, cy, cz + sz), p2: v(cx + sz, cy, cz - sz), material: 1,
+  })
+  const dn = (cx: number, cy: number, cz: number, sz: number): PrimDef => ({
+    kind: 'tri', p0: v(cx - sz, cy, cz - sz), p1: v(cx + sz, cy, cz - sz), p2: v(cx - sz, cy, cz + sz), material: 1,
+  })
+  const r0 = new Rng(17, 1)
+  // 40 useful lights above the receiver (facing down), 40 useless ones below it.
+  for (let i = 0; i < 40; i++) prims.push(dn(r0.range(-3, 3), r0.range(3, 6), r0.range(-3, 3), 0.18))
+  for (let i = 0; i < 40; i++) prims.push(up(r0.range(-3, 3), r0.range(-6, -3), r0.range(-3, 3), 0.18))
+  const scene = new Scene({
+    name: 'recv-variance',
+    materials,
+    prims,
+    camera: { eye: v(0, 0, 8), target: v(0, 0, 0), up: v(0, 1, 0), vfovDeg: 40, aperture: 0, focusDist: 8 },
+    env: { kind: 'solid', color: v(0, 0, 0) },
+  })
+  const x = v(0, 0, 0)
+  const n = v(0, 1, 0)
+  const rho = 0.7
+  const estimate = (rng: Rng, aware: boolean): number => {
+    const ls = scene.sampleLight(x, rng, true, aware ? n : undefined)
+    if (!ls || ls.pdf <= 0) return 0
+    const cosX = Math.max(0, dot(n, ls.wi))
+    if (cosX <= 0) return 0
+    return ((rho / Math.PI) * luminance(ls.radiance) * cosX) / ls.pdf
+  }
+  const run = (aware: boolean, seed: number) => {
+    const rng = new Rng(seed, aware ? 2 : 3)
+    const M = 40000
+    let s = 0
+    let s2 = 0
+    for (let i = 0; i < M; i++) {
+      const e = estimate(rng, aware)
+      s += e
+      s2 += e * e
+    }
+    const mean = s / M
+    const varr = Math.max(0, s2 / M - mean * mean)
+    return { mean, varr, se: Math.sqrt(varr / M) }
+  }
+  const ag = run(false, 321)
+  const aw = run(true, 654)
+  const z = Math.abs(ag.mean - aw.mean) / Math.sqrt(ag.se * ag.se + aw.se * aw.se)
+  const ratio = ag.varr / Math.max(aw.varr, 1e-30)
+  return {
+    pass: z < 4 && ratio > 1.5,
+    detail: `mean agnostic=${ag.mean.toFixed(4)} aware=${aw.mean.toFixed(4)} (Δ=${z.toFixed(1)} SE ⇒ unbiased); variance agnostic/aware=${ratio.toFixed(1)}× (>1.5)`,
+  }
+}
+
 export function runSelfTests(): TestResult[] {
   return [
     test('Vector algebra identities', testVectorMath),
@@ -2916,5 +3064,9 @@ export function runSelfTests(): TestResult[] {
     test('Many lights — light-tree sampler ↔ pdf', testLightTreeSamplerPdf),
     test('Many lights — reduces to uniform (coincident lights)', testLightTreeReducesToUniform),
     test('Many lights — same mean, far lower variance (light BVH)', testManyLightsVariance),
+    test('Light tree — receiver-aware pdf sums to 1 ∀ normal', testLightTreeReceiverNormalised),
+    test('Light tree — receiver-aware sampler ↔ pdf', testLightTreeReceiverSamplerPdf),
+    test('Light tree — receiver term steers to lit hemisphere', testLightTreeReceiverDownweight),
+    test('Light tree — receiver-aware same mean, lower variance', testLightTreeReceiverVariance),
   ]
 }

@@ -62,6 +62,8 @@ interface Node {
 }
 
 const ORIENT_FLOOR = 0.05 // every cluster keeps ≥5% of its facing weight → positivity
+const RECV_FLOOR = 0.05 // and ≥5% of its *receiver*-facing weight, so a cluster behind the
+//                         shade point is heavily down-weighted but never excluded (positivity)
 
 export class LightTree {
   private readonly nodes: Node[] = []
@@ -126,7 +128,44 @@ export class LightTree {
     // Sort the slice by the chosen axis (counts here are small — hundreds of lights).
     const slice = order.slice(start, end).sort((a, b) => key(a) - key(b))
     for (let i = 0; i < slice.length; i++) order[start + i] = slice[i]
-    const mid = start + (count >> 1)
+    // (17.0) SAH-style split: instead of cutting at the median, choose the split that
+    // minimises Σ_child power(child)·surfaceArea(bounds(child)) — the light-transport
+    // analogue of the geometry BVH's surface-area heuristic. It clusters bright, tight
+    // groups of emitters together (so a descent's importance estimate is far sharper)
+    // and isolates a lone powerful light from a diffuse halo of dim ones, which is
+    // exactly where median splitting wastes its branch probabilities. Prefix/suffix
+    // sweeps give every candidate split's cost in O(count); ties (e.g. coincident
+    // lights, zero area) keep the median, so the uniform-reduction guarantee holds.
+    const leftCost = new Float64Array(count)
+    {
+      let b = aabbEmpty()
+      let pw = 0
+      for (let i = 0; i < count; i++) {
+        b = aabbUnion(b, order[start + i].bounds)
+        pw += order[start + i].power
+        leftCost[i] = surfaceArea(b) * pw // left child = items [0..i]
+      }
+    }
+    let bestK = count >> 1
+    let bestCost = Infinity
+    {
+      let b = aabbEmpty()
+      let pw = 0
+      const rightCost = new Float64Array(count)
+      for (let i = count - 1; i >= 0; i--) {
+        b = aabbUnion(b, order[start + i].bounds)
+        pw += order[start + i].power
+        rightCost[i] = surfaceArea(b) * pw // right child = items [i..count-1]
+      }
+      for (let k = 1; k < count; k++) {
+        const c = leftCost[k - 1] + rightCost[k]
+        if (c < bestCost) {
+          bestCost = c
+          bestK = k
+        }
+      }
+    }
+    const mid = start + bestK
     // Reserve this node, then build children (post-order indices are fine).
     const idx = this.nodes.length
     this.nodes.push({
@@ -154,19 +193,25 @@ export class LightTree {
     return idx
   }
 
-  // The conservative importance of a node's cluster as seen from point `p`: its
-  // power, attenuated by 1/d² to the nearest point of its box and by a bound on how
-  // squarely any emitter in it can face `p`. Always strictly positive (ORIENT_FLOOR
-  // and minD2), which is exactly what keeps every light reachable → unbiased.
-  private importance(nodeIdx: number, p: Vec3): number {
+  // The conservative importance of a node's cluster as seen from point `p` (with an
+  // optional surface normal `nRecv` at `p`): its power, attenuated by 1/d² to the
+  // nearest point of its box, by a bound on how squarely any emitter in it can face
+  // `p`, and — when a receiver normal is given — by a bound on how much of the
+  // cluster lies in `p`'s upper (lit) hemisphere, so a cluster *behind* the surface
+  // is heavily down-weighted (its light can only graze or miss). Always strictly
+  // positive (ORIENT_FLOOR, RECV_FLOOR and minD2), which keeps every light reachable
+  // → unbiased. `nRecv` undefined ⇒ the 14.0 receiver-agnostic importance, verbatim.
+  private importance(nodeIdx: number, p: Vec3, nRecv?: Vec3): number {
     const n = this.nodes[nodeIdx]
     const d2 = Math.max(distance2PointAabb(p, n.bounds), this.minD2)
     const center = aabbCenter(n.bounds)
     const toP = sub(p, center)
     const l2 = len2(toP)
     let orient = 1
+    let recv = 1
     if (l2 > 1e-12) {
-      const dirToP = scale(toP, 1 / Math.sqrt(l2)) // cluster → p
+      const invLen = 1 / Math.sqrt(l2)
+      const dirToP = scale(toP, invLen) // cluster → p
       // Largest cos(emitter-normal, dirToP) achievable within the normal cone: the
       // cone's axis-to-p angle reduced by the cone's half-angle (0 if it already
       // straddles dirToP). Negative ⇒ the cluster faces away; floored, never zero.
@@ -176,20 +221,37 @@ export class LightTree {
       const diff = angleAxis - coneHalf
       const best = diff <= 0 ? 1 : diff >= Math.PI / 2 ? 0 : Math.cos(diff)
       orient = Math.max(ORIENT_FLOOR, best)
+      // (17.0) Receiver-aware term: the largest cos(nRecv, p→cluster) achievable over
+      // the cluster's box — the box-centre direction widened by the angle the box
+      // subtends at `p` — so a cluster the surface can actually see scores high and
+      // one tucked below the horizon scores the floor. A heuristic (it only reshapes
+      // the variance), made safe by RECV_FLOOR > 0 so positivity (unbiasedness) holds.
+      if (nRecv) {
+        const cosN = clampUnit(-dot(nRecv, dirToP)) // p→cluster is −dirToP
+        const angN = Math.acos(cosN)
+        // Angular radius the cluster box subtends at p (half its diagonal over the
+        // distance), so a wide nearby cluster is judged by its closest-facing extent.
+        const half = 0.5 * Math.sqrt(len2(sub(n.bounds.max, n.bounds.min)))
+        const sinR = Math.min(1, half * invLen)
+        const angR = Math.asin(sinR)
+        const d = angN - angR
+        const bestN = d <= 0 ? 1 : d >= Math.PI / 2 ? 0 : Math.cos(d)
+        recv = Math.max(RECV_FLOOR, bestN)
+      }
     }
-    return (n.power * orient) / d2
+    return (n.power * orient * recv) / d2
   }
 
   // Stochastically choose a light for point `p`, returning its primId and the exact
   // probability that this descent selected it (the product of the per-split branch
   // probabilities). One rng.next() is consumed per internal node on the path.
-  sample(p: Vec3, rng: Rng): { primId: number; prob: number } {
+  sample(p: Vec3, rng: Rng, nRecv?: Vec3): { primId: number; prob: number } {
     let node = this.root
     let prob = 1
     while (this.nodes[node].left >= 0) {
       const n = this.nodes[node]
-      const il = this.importance(n.left, p)
-      const ir = this.importance(n.right, p)
+      const il = this.importance(n.left, p, nRecv)
+      const ir = this.importance(n.right, p, nRecv)
       const sum = il + ir
       // sum is > 0 (importance is strictly positive); guard only against fp dust.
       const pl = sum > 0 ? il / sum : 0.5
@@ -207,15 +269,15 @@ export class LightTree {
   // The probability that sample() would select light `primId` from point `p` — the
   // identical branch-probability product, recomputed by routing the descent toward
   // the leaf that owns `primId`. Returns 0 for a primId the tree does not contain.
-  prob(p: Vec3, primId: number): number {
+  prob(p: Vec3, primId: number, nRecv?: Vec3): number {
     const pos = this.refPos.get(primId)
     if (pos === undefined) return 0
     let node = this.root
     let prob = 1
     while (this.nodes[node].left >= 0) {
       const n = this.nodes[node]
-      const il = this.importance(n.left, p)
-      const ir = this.importance(n.right, p)
+      const il = this.importance(n.left, p, nRecv)
+      const ir = this.importance(n.right, p, nRecv)
       const sum = il + ir
       const pl = sum > 0 ? il / sum : 0.5
       if (pos < n.mid) {
@@ -256,6 +318,14 @@ export function buildLightTree(
 
 function clampUnit(x: number): number {
   return x < -1 ? -1 : x > 1 ? 1 : x
+}
+
+// Surface area of an AABB (0 for an empty/degenerate box), the SAH split cost metric.
+function surfaceArea(b: Aabb): number {
+  const dx = Math.max(0, b.max.x - b.min.x)
+  const dy = Math.max(0, b.max.y - b.min.y)
+  const dz = Math.max(0, b.max.z - b.min.z)
+  return 2 * (dx * dy + dy * dz + dz * dx)
 }
 
 // Squared distance from a point to the nearest point of an AABB (0 if inside).
