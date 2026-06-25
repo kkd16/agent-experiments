@@ -13,6 +13,8 @@ import ParseView from './views/ParseView'
 import type { ParseTab } from './views/ParseView'
 import LearnView from './views/LearnView'
 import type { LearnTab } from './views/LearnView'
+import LogicView from './views/LogicView'
+import type { LogicTab } from './views/LogicView'
 import type { Strategy } from './engine/learn/lstar'
 import { copyText } from './lib/download'
 import { decodeHash, encodeHash } from './lib/hash'
@@ -22,6 +24,7 @@ import { GRAMMAR_EXAMPLES } from './engine/cfg/examples'
 import { TM_EXAMPLES } from './engine/tm/examples'
 import { PARSE_EXAMPLES } from './engine/parse/examples'
 import { LEARN_EXAMPLES } from './engine/learn/examples'
+import { DEFAULT_FORMULA, DEFAULT_MODEL } from './engine/ltl/examples'
 import { BUILD_TEMPLATES } from './engine/edit'
 
 const VALID_TABS: ExploreTab[] = ['ast', 'nfa', 'dfa', 'min', 'der', 'mn']
@@ -30,6 +33,7 @@ const VALID_GRAMMAR_TABS: GrammarTab[] = ['analyze', 'cnf', 'cyk', 'earley', 'tr
 const VALID_MACHINE_TABS: TuringTab[] = ['run', 'trace', 'table', 'diagram', 'hierarchy']
 const VALID_PARSE_TABS: ParseTab[] = ['class', 'll1', 'automaton', 'table', 'parse']
 const VALID_LEARN_TABS: LearnTab[] = ['table', 'hypothesis', 'target']
+const VALID_LOGIC_TABS: LogicTab[] = ['formula', 'buchi', 'kripke', 'check', 'verify', 'about']
 const VALID_STRATEGIES: Strategy[] = ['angluin', 'rivest-schapire']
 const VALID_OPS = ['union', 'inter', 'diffAB', 'diffBA', 'symdiff']
 
@@ -47,6 +51,7 @@ const DEFAULT_STATE: AppState = {
   machine: { source: TM_EXAMPLES[0].source, tab: 'run', input: TM_EXAMPLES[0].input },
   parse: { text: PARSE_EXAMPLES[1].text, tab: 'class', input: PARSE_EXAMPLES[1].test },
   learn: { regex: LEARN_EXAMPLES[0].regex, tab: 'table', strategy: 'rivest-schapire' },
+  logic: { formula: DEFAULT_FORMULA, model: DEFAULT_MODEL, tab: 'check' },
 }
 
 /** Sanitize a decoded state so a hand-edited URL can never wedge a view. */
@@ -58,6 +63,7 @@ function clean(s: AppState): AppState {
   const mtab = VALID_MACHINE_TABS.includes(s.machine.tab as TuringTab) ? s.machine.tab : 'run'
   const ptab = VALID_PARSE_TABS.includes(s.parse.tab as ParseTab) ? s.parse.tab : 'class'
   const ltab = VALID_LEARN_TABS.includes(s.learn.tab as LearnTab) ? s.learn.tab : 'table'
+  const lgtab = VALID_LOGIC_TABS.includes(s.logic.tab as LogicTab) ? s.logic.tab : 'check'
   const lstrat = VALID_STRATEGIES.includes(s.learn.strategy as Strategy)
     ? s.learn.strategy
     : 'rivest-schapire'
@@ -70,6 +76,7 @@ function clean(s: AppState): AppState {
     machine: { ...s.machine, tab: mtab },
     parse: { ...s.parse, tab: ptab },
     learn: { ...s.learn, tab: ltab, strategy: lstrat },
+    logic: { ...s.logic, tab: lgtab },
   }
 }
 
@@ -121,7 +128,9 @@ export default function App() {
                         ? 'parser generators: LL(1) & LR(0)/SLR/LALR/LR(1) tables, the item automaton & live parses'
                         : state.mode === 'learn'
                           ? 'active learning: Angluin’s L* infers the minimal DFA from membership & equivalence queries'
-                          : 'Turing machines: the top of the hierarchy — run, trace & watch the tape'}
+                          : state.mode === 'logic'
+                            ? 'temporal logic: LTL → Büchi automaton, then model-check a system & get a counterexample'
+                            : 'Turing machines: the top of the hierarchy — run, trace & watch the tape'}
             </p>
           </div>
         </div>
@@ -183,6 +192,14 @@ export default function App() {
             >
               Machine
             </button>
+            <button
+              role="tab"
+              aria-selected={state.mode === 'logic'}
+              className={`mode-btn${state.mode === 'logic' ? ' active' : ''}`}
+              onClick={() => setMode('logic')}
+            >
+              Logic
+            </button>
           </div>
           <button
             className="share-btn"
@@ -201,7 +218,16 @@ export default function App() {
         </div>
       </header>
 
-      {state.mode === 'machine' ? (
+      {state.mode === 'logic' ? (
+        <LogicView
+          formula={state.logic.formula}
+          onFormula={(formula) => setState((s) => ({ ...s, logic: { ...s.logic, formula } }))}
+          model={state.logic.model}
+          onModel={(model) => setState((s) => ({ ...s, logic: { ...s.logic, model } }))}
+          tab={state.logic.tab as LogicTab}
+          onTab={(tab) => setState((s) => ({ ...s, logic: { ...s.logic, tab } }))}
+        />
+      ) : state.mode === 'machine' ? (
         <TuringView
           source={state.machine.source}
           onSource={(source) => setState((s) => ({ ...s, machine: { ...s.machine, source } }))}

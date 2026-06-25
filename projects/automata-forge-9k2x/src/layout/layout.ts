@@ -40,10 +40,15 @@ export function layout(graph: GraphModel, opts: LayoutOptions = {}): Layout {
     inc[e.to].push(e.from)
   }
 
-  // --- 1. BFS ranks from start ----------------------------------------------
+  // --- 1. BFS ranks from the start state(s) ---------------------------------
+  // Most models have a single `start`; automata with several initial states (a Büchi automaton) seed
+  // the BFS from all of them so each lands at rank 0 rather than being treated as unreachable.
   const rank = new Array<number>(n).fill(-1)
-  const queue: number[] = [graph.start]
-  rank[graph.start] = 0
+  const seeds = (graph.initial && graph.initial.length ? graph.initial : [graph.start]).filter(
+    (s) => s >= 0 && s < n,
+  )
+  const queue: number[] = seeds.length ? [...seeds] : [graph.start]
+  for (const s of queue) rank[s] = 0
   while (queue.length) {
     const s = queue.shift()!
     for (const t of out[s]) {

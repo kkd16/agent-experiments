@@ -1,0 +1,404 @@
+/* Logic mode — LTL, Büchi automata & model checking. Reuses the shared workspace/panel/tab/graph
+   styling from App.css and Graph.css; only the LTL-specific pieces live here. */
+
+.logic-formula {
+  font-family: monospace;
+  font-size: 15px;
+}
+
+.logic-rendered {
+  margin-top: 8px;
+  padding: 8px 10px;
+  background: #11152340;
+  border: 1px solid #2a3358;
+  border-radius: 6px;
+  font-family: monospace;
+  font-size: 15px;
+  color: #d7defa;
+  word-break: break-word;
+}
+
+.logic-model {
+  font-family: monospace;
+  font-size: 13px;
+}
+
+.formula-gallery {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.chip {
+  font-size: 12px;
+  padding: 3px 9px;
+  border-radius: 999px;
+  border: 1px solid #34406e;
+  background: #1a2140;
+  color: #c7d0ee;
+  cursor: pointer;
+}
+.chip:hover {
+  background: #243056;
+  border-color: #4a5aa0;
+}
+
+.mc-pill {
+  margin-top: 10px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  text-align: center;
+}
+.mc-pill.yes {
+  background: #103a2a;
+  color: #6ff0b6;
+  border: 1px solid #1f7a54;
+}
+.mc-pill.no {
+  background: #3a1622;
+  color: #ff9bb0;
+  border: 1px solid #7a2540;
+}
+
+/* --- Formula syntax tree -------------------------------------------------- */
+
+.ltl-tree {
+  margin: 12px 0 4px;
+  padding: 12px;
+  background: #0e1220;
+  border: 1px solid #232b4d;
+  border-radius: 8px;
+  overflow-x: auto;
+}
+
+.ltl-node {
+  margin-left: 2px;
+}
+.ltl-children {
+  margin-left: 18px;
+  padding-left: 14px;
+  border-left: 2px solid #2a335866;
+}
+.ltl-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 2px 0;
+}
+.ltl-opnode {
+  font-family: monospace;
+  font-weight: 700;
+  color: #ffd27a;
+}
+.ltl-atom {
+  font-family: monospace;
+  font-weight: 700;
+  color: #7fe0ff;
+}
+.ltl-const {
+  font-family: monospace;
+  font-weight: 700;
+  color: #b6c2ee;
+}
+.ltl-sub {
+  font-family: monospace;
+  font-size: 12px;
+}
+
+.nnf-row {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin: 6px 0;
+  flex-wrap: wrap;
+}
+.nnf-label {
+  font-family: monospace;
+  font-weight: 700;
+  color: #8a94b3;
+  min-width: 24px;
+}
+.nnf-formula {
+  font-family: monospace;
+  font-size: 15px;
+  color: #e2e8ff;
+  padding: 4px 8px;
+  background: #11152340;
+  border: 1px solid #2a3358;
+  border-radius: 6px;
+}
+.until-list {
+  margin: 4px 0 8px 18px;
+}
+.until-list code {
+  font-size: 14px;
+}
+
+/* --- Büchi tab ------------------------------------------------------------ */
+
+.buchi-wrap {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  padding: 10px 12px;
+  gap: 10px;
+  overflow-y: auto;
+}
+.buchi-stats {
+  flex: 0 0 auto;
+}
+.buchi-wrap .graph-wrap {
+  flex: 1 1 360px;
+  min-height: 320px;
+}
+.buchi-note {
+  flex: 0 0 auto;
+}
+.legend-accept {
+  color: #46e0a0;
+  font-weight: 600;
+}
+
+.state-table,
+.word-tracer {
+  flex: 0 0 auto;
+  border: 1px solid #232b4d;
+  border-radius: 8px;
+  background: #0e1220;
+  padding: 6px 10px;
+}
+.state-table summary,
+.word-tracer summary {
+  cursor: pointer;
+  font-weight: 600;
+  color: #c7d0ee;
+  padding: 4px 0;
+}
+.state-table table {
+  width: 100%;
+  margin-top: 6px;
+}
+.old-set {
+  font-family: monospace;
+  font-size: 11px;
+  color: #9aa6cc;
+  max-width: 360px;
+}
+
+.trace-verdicts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+}
+.verdict-chip {
+  font-size: 13px;
+  padding: 4px 10px;
+  border-radius: 6px;
+  font-family: monospace;
+  border: 1px solid #2a3358;
+}
+.verdict-chip.yes {
+  background: #103a2a;
+  color: #6ff0b6;
+  border-color: #1f7a54;
+}
+.verdict-chip.no {
+  background: #3a1622;
+  color: #ff9bb0;
+  border-color: #7a2540;
+}
+.verdict-chip.agree {
+  background: #16294a;
+  color: #8fb8ff;
+  border-color: #2f4d86;
+}
+
+/* --- Kripke tab ----------------------------------------------------------- */
+
+.kripke-wrap {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  padding: 10px 12px;
+  gap: 10px;
+}
+.kripke-wrap .graph-wrap {
+  flex: 1 1 auto;
+  min-height: 360px;
+}
+
+/* --- Model-check tab + lasso --------------------------------------------- */
+
+.check-wrap {
+  display: block;
+}
+.mc-banner {
+  padding: 12px 14px;
+  border-radius: 8px;
+  font-size: 15px;
+  margin-bottom: 14px;
+}
+.mc-banner code {
+  font-size: 14px;
+}
+.mc-banner.yes {
+  background: #103a2a;
+  color: #c8ffe6;
+  border: 1px solid #1f7a54;
+}
+.mc-banner.no {
+  background: #3a1622;
+  color: #ffd7e0;
+  border: 1px solid #7a2540;
+}
+.mc-icon {
+  font-weight: 800;
+  font-size: 18px;
+  margin-right: 6px;
+}
+.mc-steps {
+  margin: 6px 0 10px 20px;
+  line-height: 1.7;
+}
+.mc-steps b {
+  color: #e7ecf7;
+}
+
+.lasso {
+  margin: 4px 0 16px;
+  padding: 12px;
+  background: #0e1220;
+  border: 1px solid #232b4d;
+  border-radius: 8px;
+}
+.lasso-strip {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  overflow-x: auto;
+  padding: 6px 2px 10px;
+}
+.lasso-cellwrap {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.lasso-loopstart {
+  color: #ffcc66;
+  font-size: 18px;
+  font-weight: 700;
+}
+.lasso-cell {
+  min-width: 70px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1.5px solid #34406e;
+  background: #1a2140;
+  text-align: center;
+  cursor: pointer;
+  transition: transform 0.1s;
+}
+.lasso-cell.loop {
+  border-style: dashed;
+  border-color: #b98a2e;
+  background: #241f12;
+}
+.lasso-cell.cur {
+  border-color: #ffe09a;
+  background: #ffcc66;
+  transform: translateY(-2px);
+}
+.lasso-cell.cur .lasso-name,
+.lasso-cell.cur .lasso-props,
+.lasso-cell.cur .lasso-step {
+  color: #1a1300;
+}
+.lasso-name {
+  font-family: monospace;
+  font-weight: 700;
+  color: #e7ecf7;
+}
+.lasso-props {
+  font-family: monospace;
+  font-size: 12px;
+  color: #8fe0c0;
+  margin-top: 2px;
+}
+.lasso-step {
+  font-size: 10px;
+  color: #8a94b3;
+  margin-top: 2px;
+}
+.lasso-ellipsis {
+  color: #b98a2e;
+  font-size: 16px;
+  white-space: nowrap;
+  padding-left: 4px;
+}
+
+/* --- Verify tab ----------------------------------------------------------- */
+
+.verify-summary {
+  display: inline-block;
+  margin: 6px 0 12px;
+  padding: 8px 14px;
+  border-radius: 8px;
+  font-weight: 700;
+  font-size: 15px;
+}
+.verify-summary.ok {
+  background: #103a2a;
+  color: #6ff0b6;
+  border: 1px solid #1f7a54;
+}
+.verify-summary.bad {
+  background: #3a1622;
+  color: #ff9bb0;
+  border: 1px solid #7a2540;
+}
+.verify-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+.verify-list li {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 7px 8px;
+  border-bottom: 1px solid #1c2340;
+  flex-wrap: wrap;
+}
+.verify-mark {
+  font-weight: 800;
+}
+.verify-list li.pass .verify-mark {
+  color: #46e0a0;
+}
+.verify-list li.fail .verify-mark {
+  color: #ff6b8a;
+}
+.verify-name {
+  color: #d7defa;
+  flex: 1 1 240px;
+}
+.verify-detail {
+  font-size: 12px;
+}
+
+/* --- About tab ------------------------------------------------------------ */
+
+.about-list {
+  margin: 4px 0 10px 18px;
+  line-height: 1.65;
+}
+.about-list li {
+  margin-bottom: 8px;
+}
+.about-list b {
+  color: #e7ecf7;
+}
