@@ -70,6 +70,105 @@ export function buildPgn(game: Game, meta: PgnMeta): string {
   return out
 }
 
+// ------------------------ Annotated PGN export ------------------------
+
+export interface AnnotatedPgnInput {
+  startFen: string
+  sans: string[]
+  fens: string[] // length sans.length + 1; fens[i] is the position before ply i+1
+  evals: (number | null)[] // white-POV centipawns per node, length sans.length + 1
+  result: string
+  white?: string
+  black?: string
+  event?: string
+  date?: string
+}
+
+// Move-quality thresholds, in centipawns lost vs. the engine's view of the
+// position before the move (from the mover's perspective).
+const INACCURACY = 70
+const MISTAKE = 150
+const BLUNDER = 300
+
+function evalComment(cp: number): string {
+  const pawns = cp / 100
+  const sign = pawns >= 0 ? '+' : ''
+  return `{ [%eval ${sign}${pawns.toFixed(2)}] }`
+}
+
+// Build a PGN annotated with per-move eval comments and ?!/?/?? glyphs derived
+// from an engine evaluation of every position (e.g. the Analyze board's sweep).
+export function buildAnnotatedPgn(input: AnnotatedPgnInput): string {
+  const fromStart = input.startFen === START_FEN
+  let inacc = 0
+  let mist = 0
+  let blun = 0
+
+  const tokens: string[] = []
+  for (let i = 0; i < input.sans.length; i++) {
+    const parts = input.fens[i].split(/\s+/)
+    const turn = parts[1]
+    const full = parts[5] ?? '1'
+    if (turn === 'w') tokens.push(`${full}.`)
+    else if (i === 0) tokens.push(`${full}...`)
+
+    // Classify the move from the eval swing across it.
+    const before = input.evals[i]
+    const after = input.evals[i + 1]
+    let glyph = ''
+    if (before !== null && after !== null) {
+      const moverWhite = turn === 'w'
+      const loss = moverWhite ? before - after : after - before
+      const moverBefore = moverWhite ? before : -before
+      // Only flag when the move actually mattered (the mover wasn't already lost
+      // and the swing is real), so won positions aren't peppered with '??'.
+      if (moverBefore > -600) {
+        if (loss >= BLUNDER) {
+          glyph = '??'
+          blun++
+        } else if (loss >= MISTAKE) {
+          glyph = '?'
+          mist++
+        } else if (loss >= INACCURACY) {
+          glyph = '?!'
+          inacc++
+        }
+      }
+    }
+    tokens.push(input.sans[i] + glyph)
+    if (after !== null) tokens.push(evalComment(after))
+  }
+  tokens.push(input.result || '*')
+
+  const headers: [string, string][] = [
+    ['Event', input.event ?? 'Cortex Chess — annotated'],
+    ['Site', 'cortex-chess'],
+    ['Date', input.date ?? '????.??.??'],
+    ['White', input.white ?? 'White'],
+    ['Black', input.black ?? 'Black'],
+    ['Result', input.result || '*'],
+    ['Annotator', 'Cortex Chess engine'],
+  ]
+  if (!fromStart) {
+    headers.push(['SetUp', '1'])
+    headers.push(['FEN', input.startFen])
+  }
+
+  let out = headers.map(([k, v]) => `[${k} "${v.replace(/"/g, "'")}"]`).join('\n') + '\n\n'
+  out += `{ Annotated by the Cortex Chess engine — ${blun} blunder(s), ${mist} mistake(s), ${inacc} inaccuracy(ies). }\n`
+
+  let line = ''
+  for (const t of tokens) {
+    if (line.length + t.length + 1 > 80) {
+      out += line.trimEnd() + '\n'
+      line = ''
+    }
+    line += t + ' '
+  }
+  out += line.trimEnd() + '\n'
+  return out
+}
+
 // ----------------------------- PGN import -----------------------------
 
 export interface ParsedGame {

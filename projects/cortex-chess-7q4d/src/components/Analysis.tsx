@@ -21,6 +21,8 @@ import {
   parseFen,
   toFen,
   parsePgn,
+  bookExplorer,
+  buildAnnotatedPgn,
 } from '../engine'
 import {
   buildView,
@@ -339,6 +341,46 @@ export default function Analysis() {
     [loadNav],
   )
 
+  // Opening explorer: the book moves authored from the current position.
+  const bookMoves = useMemo(() => bookExplorer(nav.fens[ply]), [nav.fens, ply])
+
+  // Export an engine-annotated PGN (eval comments + ?!/?/?? glyphs) of the game.
+  const exportAnnotated = useCallback(() => {
+    if (nav.sans.length === 0) {
+      setMsg('Nothing to annotate yet.')
+      return
+    }
+    const pgn = buildAnnotatedPgn({
+      startFen: nav.startFen,
+      sans: nav.sans,
+      fens: nav.fens,
+      evals,
+      result: nav.result,
+      white: nav.white,
+      black: nav.black,
+      event: nav.event,
+    })
+    let copied = false
+    try {
+      navigator.clipboard?.writeText(pgn)
+      copied = true
+    } catch {
+      /* clipboard unavailable (e.g. sandboxed preview) — fall back to download */
+    }
+    try {
+      const blob = new Blob([pgn], { type: 'application/x-chess-pgn' })
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = 'cortex-annotated.pgn'
+      a.click()
+      URL.revokeObjectURL(url)
+    } catch {
+      /* download blocked (e.g. sandboxed preview) — clipboard still works */
+    }
+    setMsg(copied ? 'Annotated PGN copied & downloaded.' : 'Annotated PGN downloaded.')
+  }, [nav, evals])
+
   const arrow = lines && lines.lines[0]?.pv.length ? { from: moveFrom(lines.lines[0].pv[0]), to: moveTo(lines.lines[0].pv[0]) } : null
 
   const topScore = lines?.lines[0]?.score ?? 0
@@ -452,7 +494,36 @@ export default function Analysis() {
         </div>
 
         <div className="panel">
-          <div className="panel-title">{title}</div>
+          <div className="panel-title">
+            Opening explorer
+            {bookMoves.length > 0 && <span className="book-count">· {bookMoves.length} book move{bookMoves.length > 1 ? 's' : ''}</span>}
+          </div>
+          {bookMoves.length === 0 ? (
+            <div className="book-empty">Out of book — the engine is on its own here.</div>
+          ) : (
+            <div className="book-list">
+              {bookMoves.map((b) => (
+                <button key={b.uci} className="book-row" onClick={() => playUserMove(b.move)} title="play this book move">
+                  <span className="book-san">{b.san}</span>
+                  <span className="book-bar">
+                    <span className="book-fill" style={{ width: `${Math.max(4, b.pct)}%` }} />
+                  </span>
+                  <span className="book-pct">{b.pct}%</span>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+
+        <div className="panel">
+          <div className="panel-title">
+            {title}
+            {nav.sans.length > 0 && (
+              <button className="btn small chip ana-export" onClick={exportAnnotated} title="Export an engine-annotated PGN">
+                Annotate ⭢ PGN
+              </button>
+            )}
+          </div>
           <div className="ana-movelist">
             {moveRows.length === 0 && <div className="movelist-empty">No moves — paste a PGN or set a FEN below.</div>}
             {moveRows.map((row) => (
