@@ -38,6 +38,16 @@ export type { PgnMeta, ParsedGame, AnnotatedPgnInput } from './pgn'
 export { kpkWin } from './kpk'
 export { buildKbnk, verifyKbnk, probeKbnk, kbnkReady, kbnkStats } from './kbnk'
 export type { KbnkStats, KbnkVerification } from './kbnk'
+export {
+  buildGtb,
+  verifyGtb,
+  probeGtb,
+  gtbReady,
+  gtbStats,
+  gtbSolvedIds,
+  GTB_CONFIGS,
+} from './gtb'
+export type { TbConfig, GtbStats, GtbVerification } from './gtb'
 export { TACTICS } from './tactics'
 export type { TacticCase } from './tactics'
 export { EPD_SUITES, parseEpd, parseEpdBlock } from './epd'
