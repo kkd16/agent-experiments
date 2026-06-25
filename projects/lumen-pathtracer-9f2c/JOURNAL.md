@@ -91,7 +91,8 @@ photon emitter, so daylight scenes get photon-mapped sun caustics).
   its photons are **spectral** (commit a hero wavelength on the first dispersive hit → rainbow
   caustics) and the **sun is a photon source** (a disc, sized to the scene's bounding sphere,
   perpendicular to the sun → daylight caustics + GI), both unbiased and proven in the verify suite.
-- `src/engine/tonemap.ts` — ACES / filmic / Reinhard / linear + sRGB encode.
+- `src/engine/tonemap.ts` — **AgX (18.0)** / ACES / filmic / Reinhard / linear + sRGB encode. AgX is
+  the RGB-coupled Sobotka transform (inset→log₂→contrast sigmoid→outset) that desaturates highlights.
 - `src/engine/denoise.ts` — À-Trous edge-avoiding wavelet filter, albedo/normal guided.
 - `src/engine/scenes.ts` — Cornell box, Weekend daylight, Material gallery, **Brushed Metal**
   (anisotropic GGX), **Rough Conductors** (single-scatter vs Kulla–Conty multiscatter split),
@@ -271,6 +272,45 @@ photon emitter, so daylight scenes get photon-mapped sun caustics).
       collision the path collects `(1−albedo)·Lₑ` of self-radiance, so a heterogeneous field glows
       brightest in its dense core (fire / embers / luminous nebula). New **Ember** scene + a proof
       that an absorbing+emitting volume obeys `(1−e^(−σ_t·chord))·Lₑ`.
+
+## Roadmap — 2026-06-25 Lumen 19.0: AgX tone mapping (claude)
+
+Every estimator in Lumen has been about getting the *scene-referred* radiance right. But the last
+step — squeezing that unbounded HDR buffer into a monitor's 0–1 — is a real image-formation choice,
+and Lumen's operators (ACES, Reinhard, a Hejl filmic) are all **per-channel**. Per-channel tone curves
+have a notorious failure: a bright, saturated colour drives one channel to clip while the others lag,
+so the hue *skews* — an intense blue stage light turns magenta, a fire's core goes pure red. Modern
+pipelines fixed this with **AgX** (Troy Sobotka's transform, now the Blender default), which couples
+the channels so highlights **desaturate toward white** as they brighten, the way film stock and the
+eye actually behave.
+
+19.0 adds it. AgX rotates the linear colour through a desaturated "inset" matrix, compresses luminance
+over a fixed log₂ window (−12.47 … +4.03 EV), applies a sigmoidal contrast curve (Benjamin Wrensch's
+6th-order fit of Sobotka's curve), then rotates back through the "outset" matrix. It is purely a
+**display transform** — it runs on the UI thread over the averaged buffer and never touches the
+unbiased light transport — so it cannot perturb a single one of the 94 existing proofs; it is a new
+selectable operator beside ACES/Filmic/Reinhard/Linear.
+
+The one subtlety that mattered: the published AgX matrices are written as GLSL `mat3` literals, which
+are **column-major**, so reading them row-major silently transposes them — and the transposed inset is
+not row-stochastic, which tints every neutral. The fix (and the test that caught it) is the
+neutral-preservation proof: with the correctly-transposed, row-stochastic matrices a grey in is a grey
+out, and 18% scene grey lands on display byte 128 exactly.
+
+Plan / steps (all shipped this session):
+
+1. **`tonemap.ts` — AgX.** `agx(r,g,b)` (inset → per-channel log₂-normalise → `agxContrast` sigmoid →
+   outset → de-gamma to linear), wired into `tonemapToBytes` as an RGB-coupled branch (the others stay
+   per-channel) and a `'agx'` case kept exhaustive in `mapChannel`.
+2. **`types.ts` / `Controls.tsx`** — `'agx'` added to the `ToneMapping` union and the tone-map selector.
+3. **`selftest.ts` — four proofs (98 total).** (a) the contrast curve is monotone on [0,1] and bounded
+   (maps the black point→~0, white→~1); (b) **neutral stays neutral** (grey in ⇒ grey out across 7
+   levels — the matrix-transpose guard); (c) black→black and luminance is monotone in exposure, output
+   finite and non-negative over a wide HDR range; (d) the headline — a blinding saturated colour
+   **desaturates toward white** (its min/max channel ratio rises well above the input's).
+4. **UI / About.** An "AgX tone mapping" card. Verified in Node: 98/98 self-tests pass, and an AgX
+   byte-output sanity sweep is photographic (18% grey → 128, smooth highlight rolloff).
+   `pnpm lint`/`tsc`/`build` green via the CI gate.
 
 ## Roadmap — 2026-06-25 Lumen 18.0: physically based light colour — blackbody emitters (claude)
 

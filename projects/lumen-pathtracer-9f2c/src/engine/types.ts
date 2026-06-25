@@ -130,7 +130,7 @@ export interface IntegratorSettings {
 }
 
 // Tone-mapping operators applied on the UI thread to the accumulated HDR buffer.
-export type ToneMapping = 'aces' | 'reinhard' | 'filmic' | 'linear'
+export type ToneMapping = 'agx' | 'aces' | 'reinhard' | 'filmic' | 'linear'
 
 // ---- Worker message protocol -------------------------------------------------
 

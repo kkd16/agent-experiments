@@ -24,6 +24,72 @@ function aces(x: number): number {
   return clamp01((x * (a * x + b)) / (x * (c * x + d) + e))
 }
 
+// ---- AgX (Troy Sobotka) — a modern filmic display transform -----------------
+// Unlike the per-channel operators above, AgX works on the whole RGB triple. It
+// rotates colour into a desaturated "inset" working space, compresses scene
+// luminance over a fixed log2 window, applies a sigmoidal contrast curve, then
+// rotates back ("outset"). The point is its *hue handling*: where ACES/Reinhard
+// let a bright saturated colour clip to a single primary (the infamous blue-light
+// → magenta, fire → pure red), AgX desaturates highlights gracefully toward white,
+// keeping the look photographic. We use the widely-adopted minimal AgX: Benjamin
+// Wrensch's 6th-order fit of Sobotka's contrast curve with the standard inset/
+// outset matrices, returning a *linear* value (the trailing 2.2 de-gamma) so it
+// composes with the shared sRGB encode below — matching the three.js implementation.
+const AGX_MIN_EV = -12.47393
+const AGX_MAX_EV = 4.026069
+
+// 3×3 multiply by the AgX inset matrix. The coefficients are row-stochastic (each
+// row sums to 1), so a neutral grey maps to neutral grey — the matrix only rotates
+// chroma into the desaturated working space, never shifts the white point.
+function agxInset(r: number, g: number, b: number): [number, number, number] {
+  return [
+    0.856627153315983 * r + 0.0951212405381588 * g + 0.0482516061458583 * b,
+    0.137318972929847 * r + 0.761241990602591 * g + 0.101439036467562 * b,
+    0.11189821299995 * r + 0.0767994186031903 * g + 0.811302368396859 * b,
+  ]
+}
+
+// 3×3 multiply by the AgX outset matrix (the inverse rotation; also row-stochastic).
+function agxOutset(r: number, g: number, b: number): [number, number, number] {
+  return [
+    1.1271005818144368 * r - 0.11060664309660323 * g - 0.016493938717834573 * b,
+    -0.1413297634984383 * r + 1.157823702216272 * g - 0.016493938717834257 * b,
+    -0.14132976349843826 * r - 0.11060664309660294 * g + 1.2519364065950405 * b,
+  ]
+}
+
+// Wrensch's 6th-order polynomial fit to the AgX contrast sigmoid, on a [0,1] input.
+export function agxContrast(x: number): number {
+  const x2 = x * x
+  const x4 = x2 * x2
+  return (
+    15.5 * x4 * x2 -
+    40.14 * x4 * x +
+    31.96 * x4 -
+    6.868 * x2 * x +
+    0.4298 * x2 +
+    0.1191 * x -
+    0.00232
+  )
+}
+
+// AgX a single linear-RGB pixel, returning a *linear* RGB triple (apply the sRGB
+// OETF afterwards). Exported for the verify suite.
+export function agx(r: number, g: number, b: number): [number, number, number] {
+  let [ir, ig, ib] = agxInset(Math.max(0, r), Math.max(0, g), Math.max(0, b))
+  const enc = (x: number): number => {
+    const l = Math.log2(Math.max(x, 1e-10))
+    return clamp01((l - AGX_MIN_EV) / (AGX_MAX_EV - AGX_MIN_EV))
+  }
+  ir = agxContrast(enc(ir))
+  ig = agxContrast(enc(ig))
+  ib = agxContrast(enc(ib))
+  const [or_, og, ob] = agxOutset(ir, ig, ib)
+  // The contrast curve targets a ~2.2-gamma display space; de-gamma back to linear
+  // so the shared sRGB encode produces the final display value (the three.js path).
+  return [Math.pow(Math.max(0, or_), 2.2), Math.pow(Math.max(0, og), 2.2), Math.pow(Math.max(0, ob), 2.2)]
+}
+
 // Hejl–Burgess-Dawson filmic — bakes the sRGB gamma into the curve.
 function hejl(x: number): number {
   const t = Math.max(0, x - 0.004)
@@ -41,6 +107,12 @@ function mapChannel(x: number, op: ToneMapping): number {
       return clamp01(hejl(x)) * 255 // gamma already included
     case 'linear':
       return encodeSrgb(clamp01(x)) * 255
+    case 'agx': {
+      // AgX is RGB-coupled and handled in tonemapToBytes; this per-channel fallback
+      // (gray in ⇒ gray out) is here only to keep the switch exhaustive.
+      const [a] = agx(x, x, x)
+      return encodeSrgb(a) * 255
+    }
   }
 }
 
@@ -84,9 +156,18 @@ export function tonemapToBytes(
     const r = hdr[i * 3] * ev
     const g = hdr[i * 3 + 1] * ev
     const b = hdr[i * 3 + 2] * ev
-    out[i * 4] = mapChannel(r, op)
-    out[i * 4 + 1] = mapChannel(g, op)
-    out[i * 4 + 2] = mapChannel(b, op)
+    if (op === 'agx') {
+      // AgX couples the channels (highlight desaturation), so it maps the triple at
+      // once and the result is linear → encode through the shared sRGB curve.
+      const [ar, ag, ab] = agx(r, g, b)
+      out[i * 4] = encodeSrgb(ar) * 255
+      out[i * 4 + 1] = encodeSrgb(ag) * 255
+      out[i * 4 + 2] = encodeSrgb(ab) * 255
+    } else {
+      out[i * 4] = mapChannel(r, op)
+      out[i * 4 + 1] = mapChannel(g, op)
+      out[i * 4 + 2] = mapChannel(b, op)
+    }
     out[i * 4 + 3] = 255
   }
 }

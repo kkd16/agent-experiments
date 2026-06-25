@@ -19,6 +19,7 @@ import type { Material, Subsurface } from './material'
 import { spectralAt, subsurfacePreset, BSSRDF_MEASUREMENTS, LAMBDA_R, LAMBDA_G, LAMBDA_B } from './subsurface'
 import type { MediumName } from './subsurface'
 import { planck, blackbody } from './blackbody'
+import { agx, agxContrast } from './tonemap'
 import { makeSphere, makeTriangle, intersectPrim } from './primitive'
 import type { Primitive } from './primitive'
 import { buildLightTree } from './lighttree'
@@ -3061,6 +3062,81 @@ function testBlackbodyWhitePoint(): { pass: boolean; detail: string } {
   return { pass: lo > 0.6, detail: `6500K=(${c.x.toFixed(3)},${c.y.toFixed(3)},${c.z.toFixed(3)}), min channel=${lo.toFixed(3)} (>0.6 ⇒ ~neutral)` }
 }
 
+// ---- 19.0 AgX tone mapping --------------------------------------------------
+
+// AGX-1 — The AgX contrast curve is a well-behaved sigmoid: strictly increasing on
+// [0,1] (so it never inverts tones) and bounded into ≈[0,1] (it maps the log-encoded
+// black point to ~0 and the white point to ~1). A non-monotone tone curve would
+// produce banding/inversions; this pins the curve's shape independent of the matrices.
+function testAgxContrastCurve(): { pass: boolean; detail: string } {
+  let monotone = true
+  let prev = -Infinity
+  let lo = Infinity
+  let hi = -Infinity
+  for (let i = 0; i <= 200; i++) {
+    const x = i / 200
+    const y = agxContrast(x)
+    if (y < prev - 1e-9) monotone = false
+    prev = y
+    lo = Math.min(lo, y)
+    hi = Math.max(hi, y)
+  }
+  const ends = agxContrast(0) < 0.02 && agxContrast(1) > 0.98
+  return {
+    pass: monotone && ends && lo > -0.02 && hi < 1.02,
+    detail: `monotone=${monotone}, curve(0)=${agxContrast(0).toFixed(3)}, curve(1)=${agxContrast(1).toFixed(3)}, range=[${lo.toFixed(3)},${hi.toFixed(3)}]`,
+  }
+}
+
+// AGX-2 — Neutral stays neutral. AgX rotates colour through its inset/outset spaces,
+// but a grey input (R=G=B) must come out grey — otherwise the transform would tint
+// the whole image. This is the calibration check on the inset/outset matrix pair.
+function testAgxNeutral(): { pass: boolean; detail: string } {
+  let worst = 0
+  for (const x of [0.02, 0.1, 0.18, 0.5, 1, 4, 20]) {
+    const [r, g, b] = agx(x, x, x)
+    worst = Math.max(worst, Math.abs(r - g), Math.abs(g - b), Math.abs(r - b))
+  }
+  return { pass: worst < 5e-3, detail: `worst grey channel spread=${worst.toExponential(2)} over 7 levels (<5e-3)` }
+}
+
+// AGX-3 — Black maps to black and brightness is monotone: agx(0)→0 per channel, and
+// scaling a colour up never darkens its tonemapped luminance. Outputs stay finite and
+// non-negative for a wide HDR range (the display transform must not emit NaN/<0).
+function testAgxBlackMonotone(): { pass: boolean; detail: string } {
+  const [br, bg, bb] = agx(0, 0, 0)
+  const blackOk = br < 1e-3 && bg < 1e-3 && bb < 1e-3
+  let monoLum = true
+  let finite = true
+  let prevLum = -1
+  for (const s of [0.001, 0.01, 0.1, 0.5, 1, 2, 8, 64]) {
+    const [r, g, b] = agx(0.8 * s, 0.9 * s, 1.0 * s)
+    if (!Number.isFinite(r + g + b) || r < 0 || g < 0 || b < 0) finite = false
+    const lum = 0.2126 * r + 0.7152 * g + 0.0722 * b
+    if (lum < prevLum - 1e-6) monoLum = false
+    prevLum = lum
+  }
+  return { pass: blackOk && monoLum && finite, detail: `black→0=${blackOk}, luminance↑ with exposure=${monoLum}, finite&≥0=${finite}` }
+}
+
+// AGX-4 — The headline behaviour: AgX *desaturates highlights* toward white instead
+// of clipping to a primary. A very bright, highly-saturated input (deep blue, tiny
+// red/green) must come out markedly less saturated than a naive per-channel clamp
+// would leave it — i.e. its min/max channel ratio rises well above the input's. This
+// is exactly the "notorious six"/bright-light hue-preservation AgX exists for.
+function testAgxHighlightDesaturation(): { pass: boolean; detail: string } {
+  const inR = 0.2
+  const inG = 0.2
+  const inB = 30 // a blinding blue
+  const inRatio = Math.min(inR, inG, inB) / Math.max(inR, inG, inB) // ≈ 0.0067
+  const [r, g, b] = agx(inR, inG, inB)
+  const outRatio = Math.min(r, g, b) / Math.max(r, g, b)
+  return {
+    pass: outRatio > inRatio + 0.2 && r > 0 && g > 0,
+    detail: `min/max: in=${inRatio.toFixed(3)} → out=${outRatio.toFixed(3)} (desaturated toward white)`,
+  }
+}
+
 export function runSelfTests(): TestResult[] {
   return [
     test('Vector algebra identities', testVectorMath),
@@ -3157,5 +3233,9 @@ export function runSelfTests(): TestResult[] {
     test('Blackbody — Stefan–Boltzmann ∫B ∝ T⁴', testPlanckStefanBoltzmann),
     test('Blackbody — Planckian locus warm→cool, R/B↓ monotone', testBlackbodyLocus),
     test('Blackbody — 6500 K ≈ neutral white point', testBlackbodyWhitePoint),
+    test('AgX — contrast curve monotone, bounded [0,1]', testAgxContrastCurve),
+    test('AgX — neutral stays neutral (grey in ⇒ grey out)', testAgxNeutral),
+    test('AgX — black→black, luminance monotone in exposure', testAgxBlackMonotone),
+    test('AgX — highlights desaturate toward white', testAgxHighlightDesaturation),
   ]
 }

@@ -355,9 +355,23 @@ export function About() {
           main thread accumulates. Sandboxed contexts fall back to a chunked single-thread loop.
         </Card>
         <Card title="Progressive accumulation & denoise">
-          Samples accumulate into an HDR buffer that is ACES tone-mapped every frame. An edge-avoiding
+          Samples accumulate into an HDR buffer that is tone-mapped every frame. An edge-avoiding
           À-Trous wavelet filter, guided by an albedo/normal G-buffer, can clean the remaining noise
           for a crisp still — without touching the underlying samples.
+        </Card>
+        <Card title="AgX tone mapping (18.0)">
+          The HDR buffer has to be squeezed into a display's 0–1 range, and the operator matters: the
+          old per-channel filmics (ACES, Reinhard) clip a bright saturated colour to a single primary,
+          so an intense blue light skews magenta and a fire turns pure red. <strong>AgX</strong> (Troy
+          Sobotka's transform, now the Blender default) fixes that by working on the whole RGB triple —
+          it rotates colour into a desaturated "inset" space, compresses scene luminance over a fixed
+          log₂ window, applies a sigmoidal contrast curve, then rotates back — so highlights{' '}
+          <em>desaturate toward white</em> as they brighten, the way film and the eye do. Lumen ships
+          the widely-adopted minimal AgX (Wrensch's polynomial fit + the standard row-stochastic inset/
+          outset matrices), selectable alongside ACES/Filmic/Reinhard. <strong>Verify</strong> proves
+          the contrast curve is monotone and bounded, that a neutral grey stays neutral (the matrices
+          preserve the white point), that black maps to black with luminance monotone in exposure, and
+          that a blinding saturated colour provably desaturates toward white.
         </Card>
       </div>
 
