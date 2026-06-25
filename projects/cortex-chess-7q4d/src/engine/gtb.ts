@@ -209,6 +209,16 @@ function configById(id: string): TbConfig | undefined {
   return GTB_CONFIGS.find((c) => c.id === id)
 }
 
+// Find the config matching a multiset of strong-piece types (order-insensitive).
+// Returns the config (whose `white` array gives the canonical slot order) or null.
+export function gtbConfigFor(types: number[]): TbConfig | null {
+  const key = [...types].sort((a, b) => a - b).join(',')
+  for (const c of GTB_CONFIGS) {
+    if ([...c.white].sort((a, b) => a - b).join(',') === key) return c
+  }
+  return null
+}
+
 // ---- Indexing ----
 
 function sizeFor(n: number): number {

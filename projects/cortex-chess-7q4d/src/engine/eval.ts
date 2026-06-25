@@ -34,6 +34,7 @@ import {
 import { kpkWin } from './kpk'
 import { probeKxK } from './egtb'
 import { probeKbnk, kbnkReady } from './kbnk'
+import { gtbReady, gtbConfigFor, probeGtb } from './gtb'
 
 // Midgame / endgame base values, indexed by piece type 1..6.
 const MG_VALUE = [0, 82, 337, 365, 477, 1025, 0]
@@ -272,6 +273,18 @@ export function evaluate(p: Position): number {
     // --- The hardest elementary mate: King + Bishop + Knight vs King ---
     if (wNonKing === 2 && bNonKing === 0 && whiteBishops === 1 && whiteKnights === 1) return evalKBNK(p, true)
     if (bNonKing === 2 && wNonKing === 0 && blackBishops === 1 && blackKnights === 1) return evalKBNK(p, false)
+
+    // --- Other K + 2 pieces vs K endings, via the generalized tablebase (gtb.ts).
+    // Only consulted when the table has been built/loaded into this worker; until
+    // then we fall through to the heuristic eval. Covers KBBvK, KNNvK and the major
+    // combinations (KRRvK, KQQvK, KQRvK, KRBvK, KRNvK, KQBvK, KQNvK).
+    if (wNonKing === 2 && bNonKing === 0) {
+      const sc = evalGtb(p, true, whiteKnights, whiteBishops, whiteRooks, whiteQueens)
+      if (sc !== null) return sc
+    } else if (bNonKing === 2 && wNonKing === 0) {
+      const sc = evalGtb(p, false, blackKnights, blackBishops, blackRooks, blackQueens)
+      if (sc !== null) return sc
+    }
   }
 
   if (whiteBishops >= 2) {
@@ -578,6 +591,55 @@ function evalKBNK(p: Position, strongIsWhite: boolean): number {
   // Also reward the knight helping shoulder the king toward the corner.
   const ndist = cheb64(nsq, loneKing)
   const strongRel = 3500 + 170 * (7 - cdist) + 18 * (7 - kdist) + 6 * (7 - ndist)
+  const whiteRel = strongIsWhite ? strongRel : -strongRel
+  return p.turn === WHITE ? whiteRel : -whiteRel
+}
+
+// K + 2 pieces vs a lone king, via the generalized distance-to-mate tablebase
+// (gtb.ts). Returns null when the relevant table isn't resident (the search then
+// uses the heuristic eval); a DTM-graded decisive score when winning; or exactly 0
+// for a proven draw (KNNvK, same-coloured KBBvK, …) that material alone misjudges.
+function evalGtb(
+  p: Position,
+  strongIsWhite: boolean,
+  nKnights: number,
+  nBishops: number,
+  nRooks: number,
+  nQueens: number,
+): number | null {
+  const types: number[] = []
+  for (let i = 0; i < nKnights; i++) types.push(KNIGHT)
+  for (let i = 0; i < nBishops; i++) types.push(BISHOP)
+  for (let i = 0; i < nRooks; i++) types.push(ROOK)
+  for (let i = 0; i < nQueens; i++) types.push(QUEEN)
+  const config = gtbConfigFor(types)
+  if (!config || !gtbReady(config.id)) return null
+
+  const strongColor = strongIsWhite ? WHITE : BLACK
+  const byType: Record<number, number[]> = {}
+  for (let s = 0; s < 128; s++) {
+    if (!isOnBoard(s)) {
+      s += 7
+      continue
+    }
+    const pc = p.board[s]
+    if (pc === EMPTY || pieceColor(pc) !== strongColor) continue
+    const t = pieceType(pc)
+    if (t === KING) continue
+    if (!byType[t]) byType[t] = []
+    byType[t].push(to64(s))
+  }
+  const pieceSqs: number[] = []
+  const used: Record<number, number> = {}
+  for (const t of config.white) {
+    const idx = used[t] ?? 0
+    pieceSqs.push(byType[t][idx])
+    used[t] = idx + 1
+  }
+
+  const r = probeGtb(config.id, to64(p.kings[WHITE]), to64(p.kings[BLACK]), pieceSqs, strongIsWhite, p.turn === WHITE)
+  if (!r.win) return 0 // proven draw
+  const strongRel = 20000 - r.dtm
   const whiteRel = strongIsWhite ? strongRel : -strongRel
   return p.turn === WHITE ? whiteRel : -whiteRel
 }
