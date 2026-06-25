@@ -214,17 +214,19 @@ export default function Graph({ graph, highlight, fitKey, exportName }: Props) {
           </marker>
         </defs>
 
-        {/* start marker: an arrow into the start state from the left */}
-        {(() => {
-          const s = pos(graph.start)
+        {/* start marker(s): an arrow into each initial state from the left. Most automata have a
+            single start (`graph.start`); a Büchi automaton may declare several via `graph.initial`. */}
+        {(graph.initial ?? [graph.start]).map((id) => {
+          const s = pos(id)
           return (
             <path
+              key={`start-${id}`}
               d={`M ${s.x - R - 34} ${s.y} L ${s.x - R - 2} ${s.y}`}
               className="edge-path start-arrow"
               markerEnd="url(#arrow)"
             />
           )
-        })()}
+        })}
 
         {rendered}
 

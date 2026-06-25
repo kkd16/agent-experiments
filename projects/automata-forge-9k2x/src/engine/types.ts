@@ -110,4 +110,10 @@ export interface GraphModel {
   edges: { from: number; to: number; label: string }[]
   /** Optional sub-label shown under the state id (e.g. the subset it represents). */
   stateSub?: (string | undefined)[]
+  /**
+   * Optional set of *all* initial states. Automata with several start states (e.g. a Büchi automaton
+   * from an LTL formula) set this; the renderer draws a start arrow into each. When omitted, the
+   * single `start` is the only initial state — so existing single-start models are unaffected.
+   */
+  initial?: number[]
 }

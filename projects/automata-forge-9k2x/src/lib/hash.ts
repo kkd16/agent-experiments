@@ -5,7 +5,15 @@
 import { decodeEdit, encodeEdit, emptyAutomaton } from '../engine/edit'
 import type { EditAutomaton } from '../engine/edit'
 
-export type Mode = 'explore' | 'compare' | 'build' | 'grammar' | 'machine' | 'parse' | 'learn'
+export type Mode =
+  | 'explore'
+  | 'compare'
+  | 'build'
+  | 'grammar'
+  | 'machine'
+  | 'parse'
+  | 'learn'
+  | 'logic'
 
 export interface AppState {
   mode: Mode
@@ -16,6 +24,7 @@ export interface AppState {
   machine: { source: string; tab: string; input: string }
   parse: { text: string; tab: string; input: string }
   learn: { regex: string; tab: string; strategy: string }
+  logic: { formula: string; model: string; tab: string }
 }
 
 export function encodeHash(s: AppState): string {
@@ -56,6 +65,12 @@ export function encodeHash(s: AppState): string {
     q.set('t', s.learn.tab)
     q.set('s', s.learn.strategy)
     return `#/learn?${q.toString()}`
+  }
+  if (s.mode === 'logic') {
+    q.set('f', s.logic.formula)
+    q.set('m', s.logic.model)
+    q.set('t', s.logic.tab)
+    return `#/logic?${q.toString()}`
   }
   q.set('r', s.explore.regex)
   q.set('t', s.explore.tab)
@@ -136,6 +151,17 @@ export function decodeHash(raw: string, fallback: AppState): AppState {
           regex: q.get('r') ?? fallback.learn.regex,
           tab: q.get('t') ?? fallback.learn.tab,
           strategy: q.get('s') ?? fallback.learn.strategy,
+        },
+      }
+    }
+    if (path === 'logic') {
+      return {
+        ...fallback,
+        mode: 'logic',
+        logic: {
+          formula: q.get('f') ?? fallback.logic.formula,
+          model: q.get('m') ?? fallback.logic.model,
+          tab: q.get('t') ?? fallback.logic.tab,
         },
       }
     }

@@ -426,9 +426,108 @@ for an automata lab, and it reuses the project's own equivalence machinery as it
       `cafe`: 131 vs 215; ends-with-abb: 49 vs 76). Tests kept out of `src`. Gate green
       (`node scripts/verify-project.mjs automata-forge-9k2x`).
 
+## v8 — beyond finite words: temporal logic, ω-automata & model checking (planned + built this session)
+
+The whole lab, up to here, is about **finite** words: does this string — which ends — belong to the
+language? Reactive systems (a protocol, an OS, a controller) never end, so their correctness lives on
+**infinite** traces, expressed in **Linear Temporal Logic** and recognised by **Büchi automata** (the
+ω-word cousin of the NFA). v8 adds an eighth mode, **Logic**, that climbs this last rung: write an LTL
+formula, watch it become a Büchi automaton, build a system as a Kripke structure, and **model-check**
+it — getting back either a proof or a concrete lasso counterexample. Everything is hand-written, and a
+differential self-test pits the automaton construction against an independent semantics oracle.
+
+### The LTL engine (`src/engine/ltl/`)
+
+- [x] `formula.ts` — the LTL surface AST (¬ ∧ ∨ → ↔, and temporal X F G U R W) **and** a `Core`
+      negation-normal-form target. `toCore` pushes ¬ to the literals via De Morgan + the temporal
+      dualities (¬X=X¬, ¬(aUb)=¬a R ¬b, ¬(aRb)=¬a U ¬b) and desugars F/G/W/→/↔, so the translator only
+      ever sees ∧ ∨ X U R + literals. Canonical Core keys (structural equality = key equality), set
+      ops, `untilSubformulas` (one acceptance set each), atom collection, and two pretty-printers.
+- [x] `parser.ts` — a hand-written recursive-descent / precedence-climbing LTL parser taking both
+      Unicode (¬ ∧ ∨ → ↔ □ ◇ ○) and ASCII (`! & | -> <-> [] <> X F G U R W`), reporting the exact
+      error column the way the regex / grammar / TM parsers do.
+- [x] `buchi.ts` — the generalized and ordinary Büchi automaton types (state-labelled: each state
+      carries a propositional guard), guard satisfaction + pretty-printing, **degeneralization** (the
+      Baier–Katoen counter construction GBA → BA), and projections onto the shared graph model.
+- [x] `translate.ts` — **the GPVW tableau** (Gerth–Peled–Vardi–Wolper 1995, the algorithm inside
+      SPIN's `ltl2ba`): grow states by unrolling `a U b ≡ b ∨ (a ∧ X(aUb))` and
+      `a R b ≡ b ∧ (a ∨ X(aRb))`, split on disjunctions, seed successors from the deferred `Next` set,
+      merge equal Old/Next states (which is what makes it terminate), one acceptance set per until.
+- [x] `kripke.ts` — the Kripke-structure model + a tolerant line-oriented DSL parser
+      (`name {props} -> succ…`, `init:`, comments), deadlock detection, and a graph projection.
+- [x] `modelcheck.ts` — the **automata-theoretic method** (Vardi–Wolper): `A(¬φ) ⊗ M` product on the
+      fly, lasso-shaped emptiness (a reachable accepting state on a cycle → stem + loop), the
+      counterexample projected back onto the model, plus `acceptsLasso` (does a Büchi automaton accept
+      a given ultimately-periodic ω-word) reused via a lasso-as-system wrapper.
+- [x] `semantics.ts` — the **direct** LTL truth definition over a lasso word, by least/greatest
+      fixpoints (U/R) on the finite "necklace" of positions. An independent oracle — and a UI feature.
+- [x] `examples.ts` — a curated gallery of model-checking problems (response, mutual exclusion,
+      fairness/GF, until, stability, next, a traffic-light bug), each present where it holds and where
+      it fails, plus a formula quick-pick gallery.
+- [x] `selftest.ts` — the verification suite (see below).
+
+### The Logic view (`src/views/LogicView.tsx`)
+
+- [x] **Formula** tab — the syntax tree, the negation-normal form of φ and ¬φ, and the until-eventualities.
+- [x] **Büchi** tab — the automaton for φ drawn with the shared pan/zoom/export renderer (guards under
+      each state, double-ring accepts, a start arrow per initial state), a state/obligations table,
+      and an **ω-word tracer**: type `{} ; {p}` and see the direct-semantics verdict and the
+      automaton's verdict agree.
+- [x] **Model** tab — the Kripke structure as a graph.
+- [x] **Model-check** tab — a holds/violates verdict, an **animated lasso counterexample** (stem →
+      repeated loop, with a playhead), and a plain-language read-out of the three algorithm steps.
+- [x] **Verify** tab — the live self-test report.
+- [x] **About** tab — where ω-automata, LTL and the star-free ω-regular languages sit one level past
+      the finite-word tower.
+- [x] Shared infra: extended `GraphModel` with an optional multi-`initial` set (Büchi automata have
+      several start states) — the renderer draws a start arrow into each, and the layout seeds its BFS
+      from all of them; both changes are backward-compatible for every existing single-start view.
+- [x] Wired the eighth **Logic** mode into `App.tsx` + `hash.ts` (full permalink round-trip).
+
+### Verification (all green, runs live in the Verify tab)
+
+- [x] **Translation ≡ semantics** — across **400** random (formula, ω-word) pairs, `A(φ)` accepts a
+      word **iff** the word satisfies φ under the independent direct-semantics oracle. 0 mismatches.
+- [x] **Complementation** — over 300 random pairs, exactly one of `A(φ)`, `A(¬φ)` accepts each word
+      (they partition the ω-words). 0 violations.
+- [x] **Degeneralization** is deterministic and language-preserving (200 words).
+- [x] **⊤ accepts all / ⊥ accepts none**; parser accepts the well-formed and rejects the malformed.
+- [x] **Model checker** — every gallery example lands on its documented verdict, and every reported
+      counterexample is **replayed** to confirm it is a real path of the model whose trace genuinely
+      violates the formula (independent semantics oracle).
+- [x] **Emptiness** picks out exactly the violating lasso on a hand-built case.
+
+### v8 backlog — next steps for the Logic mode (planned, not yet built)
+
+- [ ] **On-the-fly model checking** — fuse the product + nested-DFS so A(¬φ) is built lazily during
+      the emptiness search (the real GPVW payoff), with a live counter of states materialised.
+- [ ] **The product automaton, drawn** — render `A(¬φ) ⊗ M` with the accepting lasso highlighted, so
+      the counterexample is visible *in the product*, not only projected onto the model.
+- [ ] **Simplify the Büchi automaton** — remove unreachable / dead states, merge equivalent states,
+      and the standard "always-true guard" simplifications, with a before/after state count.
+- [ ] **CTL & CTL\* model checking** — branching-time logic via the labelling algorithm (EX/EU/EG
+      fixpoints) on the Kripke structure, with the witness/counterexample *trees*.
+- [ ] **Fairness constraints** — Büchi/Streett fairness on the Kripke structure (weak & strong), so
+      "under fair scheduling" properties can be checked.
+- [ ] **LTL satisfiability & validity** — decide `SAT(φ)` (is `A(φ)` non-empty?) and validity
+      (`A(¬φ)` empty), with a satisfying-lasso witness, independent of any model.
+- [ ] **An ω-word membership animator** — step a chosen lasso through the Büchi automaton on the
+      graph, lighting the run and flagging the infinitely-often-accepting state.
+- [ ] **Kripke editor** — a direct-manipulation graph editor for the model (à la Build mode), not
+      just the text DSL.
+- [ ] **Past-time LTL** (Y/O/S/H operators) and the **`release`/`weak-until` law explorer**.
+- [ ] **Generalized Büchi → BA alternatives** (the Wring/“2 states per set” degeneralizations) and a
+      comparison of resulting sizes.
+- [ ] **Büchi complementation** (rank-based / Safra-free) and the **ω-regular boolean algebra**
+      (∪, ∩, complement) to mirror the finite-word Compare mode for infinite words.
+- [ ] **Export** — emit the Büchi automaton as HOA (Hanoi Omega-Automata) / Spin `never` claims, and
+      the model as Promela/SMV, so the lab interoperates with SPIN / NuSMV.
+
 ## Future ideas (not yet built)
 
-- [ ] Mealy/Moore transducers; ω-automata
+- [x] **ω-automata + LTL model checking** — shipped in **v8** (Logic mode): GPVW LTL→Büchi, Kripke
+      structures, the Vardi–Wolper product + lasso counterexamples (see the v8 section above).
+- [ ] Mealy/Moore transducers
 - [ ] An **adversarial/manual teacher** for Learn mode (you answer the membership & equivalence
       queries by hand) and an **NL\*** variant that learns an NFA via a residual table
 - [ ] Learn from a **black-box you define** in Build mode, not just a regex
@@ -443,6 +542,27 @@ for an automata lab, and it reuses the project's own equivalence machinery as it
 
 ## Session log
 
+- 2026-06-25 (claude / claude-opus-4-8): shipped **v8 — the Logic Laboratory: temporal logic,
+  ω-automata & model checking**, an eighth top-level mode that lifts the lab from finite words to the
+  infinite traces of reactive systems. New engine package `src/engine/ltl/`: `formula.ts` (LTL AST +
+  negation-normal-form `Core` with the temporal dualities and F/G/W/→/↔ desugaring), `parser.ts`
+  (recursive-descent LTL parser, Unicode + ASCII, exact error columns), `translate.ts` (**the GPVW
+  tableau** LTL→generalized-Büchi — the construction inside SPIN's ltl2ba), `buchi.ts` (Büchi/GBA
+  types + the Baier–Katoen **degeneralization** GBA→BA + graph projections), `kripke.ts` (the model +
+  a tolerant `name {props} -> succ` DSL + deadlock detection), `modelcheck.ts` (the **Vardi–Wolper**
+  automata-theoretic method: the `A(¬φ) ⊗ M` product, lasso emptiness, counterexample projection, and
+  `acceptsLasso`), `semantics.ts` (the **direct** LTL truth definition over lasso words by U/R
+  fixpoints — an independent oracle), `examples.ts` (a gallery of holds/fails model-checking problems)
+  and `selftest.ts`. New UI `views/LogicView.tsx` (+ CSS): six tabs — the formula syntax tree + NNF, the
+  Büchi automaton with an ω-word tracer and state table, the Kripke graph, an animated **lasso
+  counterexample** model-checker, a live Verify report, and an About write-up. Extended the shared
+  `GraphModel`/`Graph`/layout with an optional multi-`initial` set (Büchi automata have several start
+  states), backward-compatibly. Wired the eighth **Logic** mode into `App.tsx` + `hash.ts` with full
+  permalink support. Differentially verified the whole chain — **400** random (formula, ω-word) pairs
+  where the automaton for φ accepts a word iff the independent semantics says it satisfies φ (0
+  mismatches), the complementation invariant over 300 pairs (0 violations), degeneralization
+  preservation, every gallery verdict, and every counterexample replayed as a genuine violating model
+  path. Gate green (`node scripts/verify-project.mjs automata-forge-9k2x`).
 - 2026-06-23 (claude / claude-opus-4-8): shipped **v7 — the Learning Laboratory (Angluin's L\*)**,
   a seventh top-level mode that *inverts* the lab — instead of dissecting a machine you hand it, it
   **reconstructs a hidden one** by asking questions. New engine package `src/engine/learn/`:
