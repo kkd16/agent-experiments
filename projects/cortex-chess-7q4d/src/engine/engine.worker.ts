@@ -5,6 +5,7 @@
 
 import { parseFen } from './board'
 import { Searcher, type SearchInfo, type MultiInfo } from './search'
+import { verifyKbnk, type KbnkVerification } from './kbnk'
 
 export interface SearchRequest {
   type: 'search'
@@ -30,7 +31,13 @@ export interface EvalsRequest {
   maxTime: number
 }
 
-export type WorkerRequest = SearchRequest | AnalyzeRequest | EvalsRequest
+export interface KbnkRequest {
+  type: 'kbnk'
+  sample: number
+  games: number
+}
+
+export type WorkerRequest = SearchRequest | AnalyzeRequest | EvalsRequest | KbnkRequest
 
 export type WorkerOut =
   | { type: 'info'; info: SearchInfo }
@@ -39,6 +46,8 @@ export type WorkerOut =
   | { type: 'multiresult'; info: MultiInfo }
   | { type: 'evalprogress'; ply: number; score: number; done: number; total: number }
   | { type: 'evaldone'; scores: number[] }
+  | { type: 'kbnkprogress'; frac: number; phase: string }
+  | { type: 'kbnkdone'; report: KbnkVerification }
 
 const searcher = new Searcher()
 const post = (out: WorkerOut) => (self as unknown as Worker).postMessage(out)
@@ -74,5 +83,8 @@ self.onmessage = (e: MessageEvent<WorkerRequest>) => {
       post({ type: 'evalprogress', ply: i, score: r.score, done: i + 1, total })
     }
     post({ type: 'evaldone', scores })
+  } else if (msg.type === 'kbnk') {
+    const report = verifyKbnk(msg.sample, msg.games, (frac, phase) => post({ type: 'kbnkprogress', frac, phase }))
+    post({ type: 'kbnkdone', report })
   }
 }

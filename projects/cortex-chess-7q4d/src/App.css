@@ -686,6 +686,66 @@
   color: #ff6b6b;
 }
 
+/* ---- EPD controls ---- */
+.epd-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+}
+.epd-controls label {
+  font-size: 13px;
+  color: var(--muted);
+}
+.epd-controls select {
+  background: #131a23;
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 6px 8px;
+  font-size: 13px;
+}
+
+/* ---- Tablebase build progress ---- */
+.tb-progress {
+  margin-top: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.tb-bar {
+  height: 10px;
+  background: #131a23;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+}
+.tb-fill {
+  height: 100%;
+  background: linear-gradient(90deg, var(--accent), var(--accent-2));
+  transition: width 0.2s ease;
+}
+.tb-phase {
+  font-size: 12px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.tb-note {
+  margin-top: 14px;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.6;
+}
+.tb-note code {
+  background: #131a23;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 2px 6px;
+  font-size: 12px;
+  color: var(--accent);
+  word-break: break-all;
+}
+
 /* ---- Analyze ---- */
 .analyze-layout {
   width: 100%;

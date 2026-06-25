@@ -36,8 +36,12 @@ export { bookMove, bookEntries, bookPositions } from './book'
 export { buildPgn, parsePgn } from './pgn'
 export type { PgnMeta, ParsedGame } from './pgn'
 export { kpkWin } from './kpk'
+export { buildKbnk, verifyKbnk, probeKbnk, kbnkReady, kbnkStats } from './kbnk'
+export type { KbnkStats, KbnkVerification } from './kbnk'
 export { TACTICS } from './tactics'
 export type { TacticCase } from './tactics'
+export { EPD_SUITES, parseEpd, parseEpdBlock } from './epd'
+export type { EpdCase, EpdSuite } from './epd'
 
 export type GameResult = 'playing' | 'checkmate' | 'stalemate' | 'draw-fifty' | 'draw-repetition' | 'draw-material'
 
