@@ -15,6 +15,8 @@ export type Node =
   | { type: 'error'; code: ErrorCode }
   | { type: 'ref'; ref: CellRef }
   | { type: 'range'; from: CellRef; to: CellRef }
+  // Spilled-range reference (`A1#`): the whole dynamic array anchored at `ref`.
+  | { type: 'spillref'; ref: CellRef }
   | { type: 'name'; name: string }
   | { type: 'unary'; op: UnaryOp; operand: Node }
   | { type: 'percent'; operand: Node }

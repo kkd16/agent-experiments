@@ -207,6 +207,34 @@ export function runSelfTests(): TestResult[] {
   eq('lambda', 'naked lambda → #CALC!', ev('LAMBDA(x, x)'), '#CALC!')
   eq('lambda', 'recursion guard', ev('LET(n, 3, REDUCE(1, SEQUENCE(n), LAMBDA(a, i, a*i)))'), '6')
 
+  // --- v4: GROUPBY / PIVOTBY / XMATCH / WRAP / multi-key SORTBY ---
+  const grp = { A1: 'East', B1: '10', A2: 'West', B2: '20', A3: 'East', B3: '5', A4: 'West', B4: '7', A5: 'East', B5: '3' }
+  eq('groupby', 'GROUPBY sum (East)', ev('INDEX(GROUPBY(A1:A5,B1:B5,SUM),1,2)', grp), '18')
+  eq('groupby', 'GROUPBY collapses to 2 groups', ev('ROWS(GROUPBY(A1:A5,B1:B5,SUM))', grp), '2')
+  eq('groupby', 'GROUPBY descending key', ev('INDEX(GROUPBY(A1:A5,B1:B5,SUM,-1),1,1)', grp), 'West')
+  eq('groupby', 'GROUPBY with a lambda agg', ev('INDEX(GROUPBY(A1:A5,B1:B5,LAMBDA(v,AVERAGE(v))),1,2)', grp), '6')
+  const piv = { A1: 'East', B1: 'Q1', C1: '10', A2: 'West', B2: 'Q1', C2: '20', A3: 'East', B3: 'Q2', C3: '5', A4: 'West', B4: 'Q2', C4: '7' }
+  eq('groupby', 'PIVOTBY header + 2 rows', ev('ROWS(PIVOTBY(A1:A4,B1:B4,C1:C4,SUM))', piv), '3')
+  eq('groupby', 'PIVOTBY East × Q1 cell', ev('INDEX(PIVOTBY(A1:A4,B1:B4,C1:C4,SUM),2,2)', piv), '10')
+  eq('groupby', 'PIVOTBY column header', ev('INDEX(PIVOTBY(A1:A4,B1:B4,C1:C4,SUM),1,2)', piv), 'Q1')
+  const xm = { A1: '10', A2: '20', A3: '30', A4: '40' }
+  eq('xmatch', 'XMATCH exact', ev('XMATCH(30,A1:A4)', xm), '3')
+  eq('xmatch', 'XMATCH next-smaller', ev('XMATCH(25,A1:A4,-1)', xm), '2')
+  eq('xmatch', 'XMATCH next-larger', ev('XMATCH(25,A1:A4,1)', xm), '3')
+  eq('xmatch', 'XMATCH search last→first', ev('XMATCH(20,VSTACK(10,20,20,40),0,-1)'), '3')
+  eq('xmatch', 'XMATCH wildcard', ev('XMATCH("ch*",VSTACK("apple","cherry","plum"),2)'), '2')
+  eq('xmatch', 'XMATCH not found → #N/A', ev('XMATCH(99,A1:A4)', xm), '#N/A')
+  const sb = { A1: 'b', B1: '2', A2: 'a', B2: '2', A3: 'a', B3: '1' }
+  eq('array2', 'SORTBY two keys', ev('INDEX(SORTBY(A1:A3,B1:B3,1,A1:A3,1),1,1)', sb), 'a')
+  eq('array2', 'WRAPROWS last element', ev('INDEX(WRAPROWS(SEQUENCE(5),2,-1),3,1)'), '5')
+  eq('array2', 'WRAPROWS pad fills gap', ev('INDEX(WRAPROWS(SEQUENCE(5),2,0),3,2)'), '0')
+  eq('array2', 'WRAPCOLS column count', ev('COLUMNS(WRAPCOLS(SEQUENCE(5),2))'), '3')
+  eq('array2', 'eta-reduced SUM in BYROW', ev('SUM(BYROW(SEQUENCE(3,3),SUM))'), '45')
+
+  // --- v4: engine internals (spill-range refs, recursive lambdas) ---
+  r.push(spillRefTests())
+  r.push(recursiveLambdaTests())
+
   // --- v3: engine internals (spill, goal seek) ---
   r.push(spillTests())
   r.push(goalSeekTests())
@@ -268,6 +296,54 @@ function spillTests(): TestResult[] {
   wb3.setCell({ row: 2, col: 0 }, '=SEQUENCE(5)') // only 1 row of room below
   ok('spill past the edge → #SPILL!', wb3.getDisplay({ row: 2, col: 0 }) === '#SPILL!', wb3.getDisplay({ row: 2, col: 0 }))
 
+  return out
+}
+
+// ---- v4: spill-range references (`A1#`) -------------------------------------
+
+function spillRefTests(): TestResult[] {
+  const out: TestResult[] = []
+  const ok = (name: string, pass: boolean, detail?: string) => out.push({ group: 'spillref', name, pass, detail: pass ? undefined : detail })
+
+  const wb = new Workbook(40, 20)
+  wb.setCell({ row: 0, col: 0 }, '=SEQUENCE(4)') // A1:A4 = 1..4
+  wb.setCell({ row: 0, col: 2 }, '=SUM(A1#)') // C1 sums the whole array
+  wb.setCell({ row: 1, col: 2 }, '=ROWS(A1#)') // C2 = height of the array
+  ok('SUM(A1#) over a spilled array', wb.getDisplay({ row: 0, col: 2 }) === '10', wb.getDisplay({ row: 0, col: 2 }))
+  ok('ROWS(A1#) tracks the array size', wb.getDisplay({ row: 1, col: 2 }) === '4', wb.getDisplay({ row: 1, col: 2 }))
+
+  // The spill-range reference follows the array when it grows.
+  wb.setCell({ row: 0, col: 0 }, '=SEQUENCE(6)')
+  ok('A1# follows the array when it resizes', wb.getDisplay({ row: 0, col: 2 }) === '21', wb.getDisplay({ row: 0, col: 2 }))
+
+  // `#` on a non-spilling cell is a #REF! (there is no array to take).
+  const wb2 = new Workbook(40, 20)
+  wb2.setCell({ row: 0, col: 5 }, '5')
+  wb2.setCell({ row: 1, col: 5 }, '=F1#')
+  ok('A1# on a plain cell → #REF!', wb2.getDisplay({ row: 1, col: 5 }) === '#REF!', wb2.getDisplay({ row: 1, col: 5 }))
+
+  // A spill-range reference can itself spill (a live alias of the array).
+  wb2.setCell({ row: 0, col: 0 }, '=SEQUENCE(3)*2') // A1:A3 = 2,4,6
+  wb2.setCell({ row: 0, col: 2 }, '=A1#') // C1:C3 mirrors A1:A3
+  const mirror = [wb2.getDisplay({ row: 0, col: 2 }), wb2.getDisplay({ row: 1, col: 2 }), wb2.getDisplay({ row: 2, col: 2 })].join('/')
+  ok('=A1# re-spills the array', mirror === '2/4/6', mirror)
+  return out
+}
+
+// ---- v4: recursive lambdas (defined names) + the depth guard ----------------
+
+function recursiveLambdaTests(): TestResult[] {
+  const out: TestResult[] = []
+  const wb = new Workbook(20, 20)
+  wb.setName('FACT', 'LAMBDA(n, IF(n<=1, 1, n*FACT(n-1)))')
+  wb.setName('FIB', 'LAMBDA(n, IF(n<2, n, FIB(n-1)+FIB(n-2)))')
+  wb.setName('LOOP', 'LAMBDA(n, LOOP(n)+1)') // no base case
+  wb.setCell({ row: 0, col: 0 }, '=FACT(6)')
+  wb.setCell({ row: 1, col: 0 }, '=FIB(10)')
+  wb.setCell({ row: 2, col: 0 }, '=LOOP(1)')
+  out.push({ group: 'recursion', name: 'recursive FACT(6) = 720', pass: wb.getDisplay({ row: 0, col: 0 }) === '720', detail: wb.getDisplay({ row: 0, col: 0 }) })
+  out.push({ group: 'recursion', name: 'recursive FIB(10) = 55', pass: wb.getDisplay({ row: 1, col: 0 }) === '55', detail: wb.getDisplay({ row: 1, col: 0 }) })
+  out.push({ group: 'recursion', name: 'runaway recursion → #NUM! (depth guard)', pass: wb.getDisplay({ row: 2, col: 0 }) === '#NUM!', detail: wb.getDisplay({ row: 2, col: 0 }) })
   return out
 }
 

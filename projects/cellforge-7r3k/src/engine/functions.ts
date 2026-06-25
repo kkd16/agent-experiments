@@ -817,21 +817,66 @@ export const FUNCTIONS: Record<string, FnImpl> = {
   SORTBY: (args, h) => {
     const m = h.asMatrix(args[0])
     if (isError(m)) return m
-    // SORTBY(array, by_array, [order]) — sort the rows of `array` by `by_array`.
-    const by = h.asMatrix(args[1])
-    if (isError(by)) return by
-    const order = numAt(args, 2, h, 1)
-    if (isError(order)) return order
-    const keys = by.data.flat()
-    if (keys.length !== m.data.length) return err('#VALUE!', 'SORTBY sizes differ')
-    const dir = order < 0 ? -1 : 1
-    const rows = m.data.map((row, r) => ({ row, key: keys[r] ?? BLANK }))
-    const sorted = stableSort(rows, (a, b) => {
-      const c = looseCompare(a.key, b.key)
-      return (c === null ? 0 : c) * dir
+    // SORTBY(array, by1, [order1], by2, [order2], …) — sort the rows of `array` by
+    // one or more key columns, each with its own ascending/descending direction.
+    const keyCols: { keys: Scalar[]; dir: number }[] = []
+    for (let i = 1; i < args.length; i += 2) {
+      const by = h.asMatrix(args[i])
+      if (isError(by)) return by
+      const keys = by.data.flat()
+      if (keys.length !== m.data.length) return err('#VALUE!', 'SORTBY sizes differ')
+      const order = i + 1 < args.length ? numAt(args, i + 1, h, 1) : 1
+      if (isError(order)) return order
+      keyCols.push({ keys, dir: order < 0 ? -1 : 1 })
+    }
+    if (!keyCols.length) return err('#VALUE!', 'SORTBY needs at least one key')
+    const idx = m.data.map((_, r) => r)
+    const sorted = stableSort(idx, (a, b) => {
+      for (const kc of keyCols) {
+        const c = looseCompare(kc.keys[a] ?? BLANK, kc.keys[b] ?? BLANK)
+        if (c !== null && c !== 0) return c * kc.dir
+      }
+      return 0
     })
-    return matrix(sorted.map((x) => x.row))
+    return matrix(sorted.map((r) => m.data[r]))
   },
+  XMATCH: (args, h) => {
+    const key = h.scalarOf(args[0])
+    if (isError(key)) return key
+    const m = h.asMatrix(args[1])
+    if (isError(m)) return m
+    const matchMode = args.length > 2 ? numAt(args, 2, h, 0) : 0
+    if (isError(matchMode)) return matchMode
+    const searchMode = args.length > 3 ? numAt(args, 3, h, 1) : 1
+    if (isError(searchMode)) return searchMode
+    const vec = m.data.flat()
+    const order = searchMode < 0 ? [...vec.keys()].reverse() : [...vec.keys()]
+    const wild = matchMode === 2 && typeof key === 'string' ? wildcardToRegExp(key) : null
+    let bestApprox = -1
+    for (const i of order) {
+      const v = vec[i]
+      if (wild) {
+        if (typeof v === 'string' && wild.test(v)) return i + 1
+        continue
+      }
+      const cmp = looseCompare(v, key)
+      if (cmp === 0) return i + 1
+      if (cmp === null) continue
+      // Approximate matches compare candidates against each other (looseCompare only
+      // yields a sign, so closeness to the key must be measured value-to-value).
+      if (matchMode === -1 && cmp < 0) {
+        // next-smaller: keep the largest value still below the key
+        if (bestApprox < 0 || (looseCompare(v, vec[bestApprox]) ?? 0) > 0) bestApprox = i
+      } else if (matchMode === 1 && cmp > 0) {
+        // next-larger: keep the smallest value still above the key
+        if (bestApprox < 0 || (looseCompare(v, vec[bestApprox]) ?? 0) < 0) bestApprox = i
+      }
+    }
+    if ((matchMode === -1 || matchMode === 1) && bestApprox >= 0) return bestApprox + 1
+    return err('#N/A')
+  },
+  WRAPROWS: (args, h) => wrap(args, h, 'rows'),
+  WRAPCOLS: (args, h) => wrap(args, h, 'cols'),
   FILTER: (args, h) => {
     const m = h.asMatrix(args[0])
     if (isError(m)) return m
@@ -1028,6 +1073,93 @@ export const FUNCTIONS: Record<string, FnImpl> = {
     }
     return matrix(data)
   },
+
+  // ---- GROUPBY / PIVOTBY (v4): aggregate a dataset by key fields ----
+  // GROUPBY(row_fields, values, function, [sort_order]) — group the rows of `values`
+  // by the key tuple in `row_fields`, aggregating each group (and each value column)
+  // with `function` (a lambda or an eta-reduced builtin like SUM). The result is one
+  // row per group: the key columns followed by the aggregated value columns. By
+  // default groups are sorted ascending by key; sort_order < 0 sorts descending.
+  GROUPBY: (args, h) => {
+    if (args.length < 3) return err('#VALUE!', 'GROUPBY(row_fields, values, function, [sort_order])')
+    const rowFields = h.asMatrix(args[0])
+    if (isError(rowFields)) return rowFields
+    const values = h.asMatrix(args[1])
+    if (isError(values)) return values
+    const fn = h.asLambda(args[2])
+    if (isError(fn)) return fn
+    if (rowFields.rows !== values.rows) return err('#VALUE!', 'GROUPBY row counts differ')
+    const sortOrder = args.length > 3 ? numAt(args, 3, h, 1) : 1
+    if (isError(sortOrder)) return sortOrder
+
+    const groups = groupRows(rowFields.data)
+    const sorted = sortGroups(groups, sortOrder < 0 ? -1 : 1)
+    const out: Scalar[][] = []
+    for (const g of sorted) {
+      const keyCells = rowFields.data[g.rows[0]]
+      const aggs: Scalar[] = []
+      for (let c = 0; c < values.cols; c++) {
+        const colVals = g.rows.map((r) => values.data[r][c])
+        const agg = h.applyLambda(fn, [matrix(colVals.map((v) => [v]))])
+        if (isError(agg)) return agg
+        aggs.push(asScalar(agg))
+      }
+      out.push([...keyCells, ...aggs])
+    }
+    if (!out.length) return err('#CALC!', 'GROUPBY found no rows')
+    return matrix(out)
+  },
+  // PIVOTBY(row_fields, col_fields, values, function, [sort_order]) — a 2-D pivot:
+  // rows are grouped by `row_fields`, columns by `col_fields`, and each cell holds
+  // the aggregate of the matching values. The result carries a header row of column
+  // keys and a leading column of row keys (top-left corner left blank).
+  PIVOTBY: (args, h) => {
+    if (args.length < 4) return err('#VALUE!', 'PIVOTBY(row_fields, col_fields, values, function, [sort_order])')
+    const rowFields = h.asMatrix(args[0])
+    if (isError(rowFields)) return rowFields
+    const colFields = h.asMatrix(args[1])
+    if (isError(colFields)) return colFields
+    const values = h.asMatrix(args[2])
+    if (isError(values)) return values
+    const fn = h.asLambda(args[3])
+    if (isError(fn)) return fn
+    const n = values.rows
+    if (rowFields.rows !== n || colFields.rows !== n) return err('#VALUE!', 'PIVOTBY row counts differ')
+    const sortOrder = args.length > 4 ? numAt(args, 4, h, 1) : 1
+    if (isError(sortOrder)) return sortOrder
+    const dir = sortOrder < 0 ? -1 : 1
+
+    const rowGroups = sortGroups(groupRows(rowFields.data), dir)
+    const colGroups = sortGroups(groupRows(colFields.data), dir)
+    // Index each row by which (rowGroup, colGroup) cell it belongs to.
+    const rowOf = new Map<string, number>()
+    rowGroups.forEach((g, i) => g.rows.forEach((r) => rowOf.set(`${r}`, i)))
+    const colOf = new Map<string, number>()
+    colGroups.forEach((g, i) => g.rows.forEach((r) => colOf.set(`${r}`, i)))
+    const buckets: number[][][] = rowGroups.map(() => colGroups.map(() => []))
+    for (let r = 0; r < n; r++) buckets[rowOf.get(`${r}`)!][colOf.get(`${r}`)!].push(r)
+
+    const header: Scalar[] = [BLANK, ...colGroups.map((g) => g.key.length === 1 ? g.key[0] : g.key.join(' / '))]
+    const out: Scalar[][] = [header]
+    for (let i = 0; i < rowGroups.length; i++) {
+      const rg = rowGroups[i]
+      const label: Scalar = rg.key.length === 1 ? rg.key[0] : rg.key.join(' / ')
+      const row: Scalar[] = [label]
+      for (let j = 0; j < colGroups.length; j++) {
+        const rows = buckets[i][j]
+        if (!rows.length) {
+          row.push(BLANK)
+          continue
+        }
+        const colVals = rows.map((r) => values.data[r][0])
+        const agg = h.applyLambda(fn, [matrix(colVals.map((v) => [v]))])
+        if (isError(agg)) return agg
+        row.push(asScalar(agg))
+      }
+      out.push(row)
+    }
+    return matrix(out)
+  },
 }
 
 /** A hard ceiling on how big a generated array can be, to keep the UI responsive. */
@@ -1057,6 +1189,82 @@ function scalarKey(v: Scalar): string {
   if (isBlank(v)) return 'x'
   if (isError(v)) return 'e:' + v.code
   return '?'
+}
+
+/** A group of source rows that share the same key tuple, in first-appearance order. */
+interface RowGroup {
+  key: Scalar[] // the key cells of the group's first member row
+  rows: number[] // source row indices belonging to the group
+}
+
+/** Bucket row indices by the tuple formed from each row's key cells. */
+function groupRows(keyData: Scalar[][]): RowGroup[] {
+  const byKey = new Map<string, RowGroup>()
+  const order: RowGroup[] = []
+  keyData.forEach((cells, r) => {
+    const k = lineKey(cells)
+    let g = byKey.get(k)
+    if (!g) {
+      g = { key: cells, rows: [] }
+      byKey.set(k, g)
+      order.push(g)
+    }
+    g.rows.push(r)
+  })
+  return order
+}
+
+/** Sort groups by their key tuple (column by column), ascending or descending. */
+function sortGroups(groups: RowGroup[], dir: number): RowGroup[] {
+  return stableSort(groups, (a, b) => {
+    const n = Math.max(a.key.length, b.key.length)
+    for (let i = 0; i < n; i++) {
+      const c = looseCompare(a.key[i] ?? BLANK, b.key[i] ?? BLANK)
+      if (c !== null && c !== 0) return c * dir
+    }
+    return 0
+  })
+}
+
+/** Translate a spreadsheet wildcard pattern (`*` any run, `?` one char, `~` escapes)
+ *  into an anchored, case-insensitive RegExp for XMATCH's wildcard mode. */
+function wildcardToRegExp(pattern: string): RegExp {
+  let out = '^'
+  for (let i = 0; i < pattern.length; i++) {
+    const ch = pattern[i]
+    if (ch === '~' && i + 1 < pattern.length) {
+      out += pattern[++i].replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    } else if (ch === '*') out += '.*'
+    else if (ch === '?') out += '.'
+    else out += ch.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  }
+  return new RegExp(out + '$', 'i')
+}
+
+/** WRAPROWS / WRAPCOLS: fold a 1-D vector into a 2-D array of a given wrap length,
+ *  padding the final row/column with `pad` (default #N/A) when it doesn't divide. */
+function wrap(args: Node[], h: FnHelpers, dir: 'rows' | 'cols'): RuntimeValue {
+  const m = h.asMatrix(args[0])
+  if (isError(m)) return m
+  const count = numAt(args, 1, h)
+  if (isError(count)) return count
+  const k = Math.trunc(count)
+  if (k < 1) return err('#NUM!', 'wrap count must be at least 1')
+  const pad: Scalar = args.length > 2 ? h.scalarOf(args[2]) : err('#N/A')
+  const flat = m.data.flat()
+  if (!flat.length) return err('#CALC!')
+  const lines = Math.ceil(flat.length / k)
+  if (lines * k > MAX_ARRAY) return err('#NUM!', 'array too large')
+  const grid: Scalar[][] = []
+  for (let i = 0; i < lines; i++) {
+    const line: Scalar[] = []
+    for (let j = 0; j < k; j++) {
+      const idx = i * k + j
+      line.push(idx < flat.length ? flat[idx] : pad)
+    }
+    grid.push(line)
+  }
+  return dir === 'rows' ? matrix(grid) : matrix(transpose(grid))
 }
 
 /** A guaranteed-stable sort (ties keep their original order) regardless of engine. */

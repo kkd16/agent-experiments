@@ -282,7 +282,104 @@ function dynamicArrays(): WorkbookSnapshot {
   return wb.serialize()
 }
 
+// A single-sheet tour of v4: GROUPBY/PIVOTBY pivots, a spill-range reference (`A1#`)
+// that names a whole dynamic array, recursive lambdas via defined names, XMATCH, and
+// a model ready to explore with the Data Table dialog.
+function analysisLab(): WorkbookSnapshot {
+  const wb = new Workbook()
+  const id = wb.activeSheetId
+  wb.renameSheet(id, 'Analysis')
+  const set = (a1: string, raw: string) => {
+    const ref = parseRef(a1)
+    if (ref) wb.setCell({ row: ref.row, col: ref.col }, raw, id)
+  }
+  const fmt = (a1: string, a2: string, patch: CellFormat) => {
+    const f = parseRef(a1)!
+    const t = parseRef(a2)!
+    wb.applyFormat({ top: f.row, left: f.col, bottom: t.row, right: t.col }, patch, id)
+  }
+
+  set('A1', 'Analysis Lab — pivots, spill-range refs (A1#) and recursive lambdas, all live')
+  fmt('A1', 'A1', { bold: true })
+
+  // Source dataset: Region · Quarter · Rep · Sales.
+  const rows: Array<[string, string, string, number]> = [
+    ['North', 'Q1', 'Ana', 40],
+    ['South', 'Q1', 'Ben', 30],
+    ['East', 'Q1', 'Cy', 25],
+    ['North', 'Q2', 'Dee', 55],
+    ['South', 'Q2', 'Eli', 33],
+    ['East', 'Q2', 'Fay', 41],
+    ['North', 'Q1', 'Gus', 20],
+    ['South', 'Q2', 'Hana', 22],
+    ['East', 'Q1', 'Ivy', 30],
+    ['North', 'Q2', 'Jo', 18],
+    ['South', 'Q1', 'Kim', 27],
+    ['East', 'Q2', 'Lee', 19],
+  ]
+  set('A3', 'Region')
+  set('B3', 'Quarter')
+  set('C3', 'Rep')
+  set('D3', 'Sales')
+  rows.forEach((r, i) => {
+    const row = 4 + i
+    set(`A${row}`, r[0])
+    set(`B${row}`, r[1])
+    set(`C${row}`, r[2])
+    set(`D${row}`, String(r[3]))
+  })
+  fmt('A3', 'D3', { bold: true, align: 'center' })
+  fmt('D4', `D${3 + rows.length}`, { nf: 'currency', decimals: 0 })
+
+  // GROUPBY — one spilling formula collapses the rows to a total per region.
+  set('F3', 'GROUPBY region → total')
+  set('F4', '=GROUPBY(A4:A15, D4:D15, SUM)')
+  fmt('F3', 'F3', { bold: true })
+
+  // A spill-range reference (`F4#`) names the WHOLE GROUPBY array — sum its 2nd
+  // column for a grand total that tracks the pivot as the data changes.
+  set('F8', 'Grand total via F4#')
+  set('G8', '=SUM(CHOOSECOLS(F4#, 2))')
+  fmt('F8', 'F8', { bold: true })
+  fmt('G8', 'G8', { nf: 'currency', decimals: 0 })
+
+  // PIVOTBY — a 2-D pivot: regions down, quarters across.
+  set('F11', 'PIVOTBY region × quarter')
+  set('F12', '=PIVOTBY(A4:A15, B4:B15, D4:D15, SUM)')
+  fmt('F11', 'F11', { bold: true })
+
+  // Recursive lambdas, defined as workbook names (the depth guard stops runaways).
+  wb.setName('FACT', 'LAMBDA(n, IF(n<=1, 1, n*FACT(n-1)))', id)
+  wb.setName('FIB', 'LAMBDA(n, IF(n<2, n, FIB(n-1)+FIB(n-2)))', id)
+  set('A18', 'Recursive lambdas (defined names)')
+  fmt('A18', 'A18', { bold: true })
+  set('A19', '="FACT(8) = " & FACT(8)')
+  set('A20', '="FIB(12) = " & FIB(12)')
+  set('A21', '="top rep = " & INDEX(C4:C15, XMATCH(MAX(D4:D15), D4:D15))')
+  fmt('A19', 'A21', { color: '#97a0b8' })
+
+  // A what-if model — open the Data Table dialog to sweep price × units.
+  set('A24', 'Profit model  ·  try Data Table: formula B29, col input B25, row input B28')
+  fmt('A24', 'A24', { bold: true })
+  set('A25', 'Price / unit')
+  set('B25', '14')
+  set('A26', 'Variable cost')
+  set('B26', '6')
+  set('A27', 'Fixed cost')
+  set('B27', '500')
+  set('A28', 'Units sold')
+  set('B28', '90')
+  set('A29', 'Profit')
+  set('B29', '=(B25-B26)*B28 - B27')
+  fmt('A25', 'A29', { color: '#97a0b8' })
+  fmt('B25', 'B29', { nf: 'currency', decimals: 0 })
+
+  wb.setActiveSheet(id)
+  return wb.serialize()
+}
+
 export const DEMOS: Demo[] = [
+  { id: 'analysis', name: 'Analysis Lab', blurb: 'GROUPBY/PIVOTBY pivots, spill-range refs (A1#), recursive lambdas & a Data-Table model', snapshot: analysisLab },
   { id: 'arrays', name: 'Dynamic Arrays', blurb: 'SEQUENCE/FILTER/SORT/UNIQUE spilling + LAMBDA/MAP and a Goal-Seek model', snapshot: dynamicArrays },
   { id: 'sales', name: 'Sales Dashboard', blurb: 'Multi-sheet: cross-sheet refs, a named range, formatting & charts', snapshot: salesDashboard },
   { id: 'budget', name: 'Monthly Budget', blurb: 'SUM, percentages, IF and a bar sparkline', build: budget },

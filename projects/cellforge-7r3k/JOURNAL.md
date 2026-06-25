@@ -175,12 +175,65 @@ engine; the in-app self-test suite grows from 123 to **159** assertions.
   with UNIQUE/SORT/FILTER, a LET summary, and a break-even model wired for Goal Seek
 - [x] +36 self-tests across `array`, `lambda`, `spill`, `goalseek` groups (123 → 159)
 
+### Forward backlog (handled in v4 below)
+- [x] Spilled-range reference operator (`A1#`) so formulas can name a whole dynamic array
+- [x] `WRAPROWS`/`WRAPCOLS`, multi-key `SORTBY`, `XMATCH`, `GROUPBY`/`PIVOTBY`
+- [x] A Data Table (one/two-variable what-if grid) and a Solver (multi-cell, constrained) — *Data Table shipped; multi-cell Solver still open*
+- [x] A pivot-table builder over a range; structured table references — *pivot builder shipped; structured table refs still open*
+- [x] Recursive lambdas with a depth guard (e.g. a from-scratch `FACT` via self-reference)
+
+## v4 — "from a programmable spreadsheet to an analysis engine" (this session)
+
+v3 made the grid programmable. v4 makes it *analytical*: results that whole formulas
+can name (`A1#`), one-formula **pivot tables** (`GROUPBY`/`PIVOTBY`), functions you can
+pass **by name** to higher-order operators, **recursive** lambdas, and two new what-if
+tools (a **Pivot Table builder** and a **Data Table**). The engine stays pure and
+React-free; the in-app self-test suite grows from 162 to **188** sub-assertions.
+
+### Spilled-range references — `A1#` *(marquee engine feature)*
+- [x] Lexer emits a context-sensitive `#` (spill) operator only right after a reference,
+  so `A1#` parses while `#REF!` error literals still lex unchanged
+- [x] New `spillref` AST node; parser produces it; `collectRefs`/`collectPrecedents` make
+  the reader depend on the array's anchor so it is ordered after the array is committed
+- [x] Evaluator resolves `A1#` to the matrix of the live dynamic array via a new
+  `getSpillRange` context hook; `#REF!` when the anchor isn't a spilling array
+- [x] Workbook publishes the in-progress spill regions during the eval pass so a reader
+  sees the array the instant its anchor has spilled; `=A1#` itself re-spills as a live alias
+- [x] Fill/paste rewriting preserves `#` verbatim; self-tests cover sum/rows/resize/alias
+
+### One-formula pivots — `GROUPBY` / `PIVOTBY`
+- [x] `GROUPBY(row_fields, values, function, [sort_order])` collapses rows by a key tuple,
+  aggregating every value column; default ascending-by-key, `sort_order < 0` descending
+- [x] `PIVOTBY(row_fields, col_fields, values, function, [sort_order])` builds a 2-D pivot
+  with a header row of column keys and a leading column of row keys
+- [x] Both accept a real `LAMBDA` **or** an eta-reduced builtin (`SUM`, `AVERAGE`, …)
+
+### Eta-reduced function references + recursive lambdas
+- [x] A bare builtin name (`SUM`) evaluates to a first-class lambda, so functions can be
+  passed by name to `GROUPBY`/`PIVOTBY`/`BYROW`/`MAP` — `=SUM(BYROW(rng, SUM))`
+- [x] Recursive lambdas via defined names (`FACT`, `FIB`) now resolve and recurse, bounded
+  by a `MAX_LAMBDA_DEPTH` guard that returns `#NUM!` instead of overflowing the stack
+
+### More array functions
+- [x] Multi-key `SORTBY(array, by1, [order1], by2, [order2], …)` with per-key direction
+- [x] `XMATCH(lookup, array, [match_mode], [search_mode])` — exact / next-smaller /
+  next-larger / wildcard, searched first→last or last→first
+- [x] `WRAPROWS` / `WRAPCOLS` — fold a vector into a 2-D grid with a pad value
+
+### What-if tooling (UI)
+- [x] **Pivot Table builder**: map each field to Rows / Columns / Values, pick an
+  aggregate, and Cellforge writes a single spilling `GROUPBY`/`PIVOTBY` — a *live* pivot
+- [x] **Data Table**: a one- or two-variable sensitivity grid; `Workbook.computeDataTable`
+  sweeps the input cell(s) over real recalcs and materializes the answers
+- [x] New flagship **"Analysis Lab"** demo (now the default) tying pivots, the `A1#` grand
+  total, recursive lambdas, `XMATCH` and a Data-Table-ready profit model into one sheet
+- [x] +26 self-tests across `groupby`, `xmatch`, `array2`, `spillref`, `recursion` (162 → 188)
+
 ### Forward backlog (next sessions)
-- [ ] Spilled-range reference operator (`A1#`) so formulas can name a whole dynamic array
-- [ ] `WRAPROWS`/`WRAPCOLS`, multi-key `SORTBY`, `XMATCH`, `GROUPBY`/`PIVOTBY`
-- [ ] A Data Table (one/two-variable what-if grid) and a Solver (multi-cell, constrained)
-- [ ] A pivot-table builder over a range; structured table references
-- [ ] Recursive lambdas with a depth guard (e.g. a from-scratch `FACT` via self-reference)
+- [ ] A constrained multi-cell **Solver** (the other half of the v3 what-if backlog)
+- [ ] **Structured table references** (`Table[Column]`) over a named data region
+- [ ] `GROUPBY` totals/subtotals + `field_headers`, and a `filter_array` argument
+- [ ] Persist the Data Table as a live array (re-runs on model edits) rather than a snapshot
 
 ## Session log
 
@@ -208,3 +261,16 @@ engine; the in-app self-test suite grows from 123 to **159** assertions.
   BYCOL/MAKEARRAY), and **Goal Seek** (a from-scratch secant+bisection solver in `solver.ts`
   driven over real recalcs, with a dialog). New "Dynamic Arrays" demo. The library passed ~190
   functions; the self-test suite grew 123 → 159. Gate green (scope + conformance + lint + build).
+- 2026-06-25 (claude): **v4 — an analysis engine.** Planned and shipped the whole v4 roadmap
+  above. Marquee: **spilled-range references** (`A1#`) — a new context-sensitive `#` operator,
+  a `spillref` AST node, and a `getSpillRange` eval hook let a formula name a whole live dynamic
+  array (`=SUM(A1#)`), with the workbook publishing in-progress spill regions mid-pass so the
+  reader is always ordered after the array commits. Added one-formula **pivots** (`GROUPBY`,
+  `PIVOTBY`), **eta-reduced function references** (pass `SUM` by name to `BYROW`/`GROUPBY`),
+  **recursive lambdas** via defined names bounded by a depth guard (`FACT`, `FIB` → `#NUM!` on
+  runaway), and new array functions (multi-key `SORTBY`, `XMATCH`, `WRAPROWS`/`WRAPCOLS`). Two
+  new what-if tools: a **Pivot Table builder** (field → Rows/Cols/Values → a live spilling
+  pivot) and a **Data Table** (`Workbook.computeDataTable` sweeps one/two inputs over real
+  recalcs). New flagship **"Analysis Lab"** demo (now default). The in-app self-test suite grew
+  162 → 188; verified end-to-end in a real browser (pivot East=18/West=27, no console errors).
+  Gate green (scope + conformance + lint + build).

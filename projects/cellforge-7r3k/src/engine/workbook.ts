@@ -10,7 +10,7 @@ import type { Node } from './ast'
 import type { Coord, RangeBox } from './address'
 import { coordKey, keyToCoord, boxOf } from './address'
 import type { RuntimeValue, Scalar, SparklineValue, MatrixValue } from './values'
-import { BLANK, err, isSparkline, isMatrix, asScalar } from './values'
+import { BLANK, err, isSparkline, isMatrix, asScalar, matrix, displayValue } from './values'
 import { solve } from './solver'
 import type { GoalSeekResult } from './solver'
 import { parseFormula, ParseError } from './parser'
@@ -98,6 +98,9 @@ export class Workbook {
   // Dynamic-array spill bookkeeping (rebuilt every recompute, never serialized).
   private spillOwner = new Map<string, string>() // any covered gkey -> its anchor gkey
   private spillRegion = new Map<string, RangeBox>() // anchor gkey -> the rectangle it fills
+  // The regions committed *so far* in the in-progress pass — read by `A1#` spill
+  // references, which are always ordered after their anchor so the region exists.
+  private liveRegions = new Map<string, RangeBox>()
 
   constructor(rows = 200, cols = 52) {
     this.rows = rows
@@ -457,6 +460,7 @@ export class Workbook {
 
     const ownership = new Map<string, string>()
     const regions = new Map<string, RangeBox>()
+    this.liveRegions = regions // `A1#` references read regions as they are committed
     const claimed = new Set<string>() // cells claimed by some spill this pass
 
     for (const gk of order) {
@@ -551,6 +555,42 @@ export class Workbook {
     return { ...res, achieved: res.fx }
   }
 
+  // ---- what-if: Data Table (sensitivity grid) -------------------------------
+
+  /** Evaluate a model formula across a grid of substituted inputs — a one- or
+   *  two-variable "data table". For every column value (and, when given, every row
+   *  value) the input cell(s) are set, the workbook recalculates, and the formula's
+   *  resulting value is captured. The model is fully restored before returning, so
+   *  the caller materializes the grid wherever it likes. Returns unformatted display
+   *  strings (numbers stay numeric when written back as literals). */
+  computeDataTable(
+    formula: Coord,
+    colInput: Coord | null,
+    colValues: string[],
+    rowInput: Coord | null,
+    rowValues: string[],
+    sheetId?: string,
+  ): string[][] {
+    const sid = sheetId ?? this.activeId
+    const savedCol = colInput ? this.getRaw(colInput, sid) : null
+    const savedRow = rowInput ? this.getRaw(rowInput, sid) : null
+    const rows = rowInput ? rowValues : ['']
+    const grid: string[][] = []
+    for (const cv of colValues) {
+      if (colInput) this.setCell(colInput, cv, sid)
+      const line: string[] = []
+      for (const rv of rows) {
+        if (rowInput) this.setCell(rowInput, rv, sid)
+        line.push(displayValue(this.getValue(formula, sid)))
+      }
+      grid.push(line)
+    }
+    // Restore the model exactly as it was.
+    if (colInput && savedCol !== null) this.setCell(colInput, savedCol, sid)
+    if (rowInput && savedRow !== null) this.setCell(rowInput, savedRow, sid)
+    return grid
+  }
+
   /** Build an EvalContext for a formula living at (sheetId, coord). */
   private contextFor(sheetId: string, coord: Coord): EvalContext {
     return {
@@ -562,6 +602,20 @@ export class Workbook {
         const v = this.values.get(gkey(sid, coordKey(c.row, c.col)))
         if (v === undefined) return BLANK
         return isSparkline(v) ? err('#VALUE!') : v
+      },
+      getSpillRange: (sid, c) => {
+        const region = this.liveRegions.get(gkey(sid, coordKey(c.row, c.col)))
+        if (!region) return null
+        const data: Scalar[][] = []
+        for (let r = region.top; r <= region.bottom; r++) {
+          const row: Scalar[] = []
+          for (let col = region.left; col <= region.right; col++) {
+            const v = this.values.get(gkey(sid, coordKey(r, col)))
+            row.push(v === undefined || isSparkline(v) ? BLANK : v)
+          }
+          data.push(row)
+        }
+        return matrix(data)
       },
       resolveSheetId: (name) => this.sheetByName(name)?.id ?? null,
       resolveName: (upper) => {
@@ -576,7 +630,8 @@ export class Workbook {
    *  that refers to itself, directly or transitively. */
   private collectPrecedents(node: Node, homeSheetId: string, into: Set<string>, nameStack: Set<string>): void {
     switch (node.type) {
-      case 'ref': {
+      case 'ref':
+      case 'spillref': {
         const sid = node.ref.sheet ? this.sheetByName(node.ref.sheet)?.id : homeSheetId
         if (sid && inSheet(node.ref.row, node.ref.col, this.rows, this.cols)) into.add(gkey(sid, coordKey(node.ref.row, node.ref.col)))
         break

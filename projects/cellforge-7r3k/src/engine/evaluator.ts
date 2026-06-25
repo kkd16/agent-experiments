@@ -26,6 +26,9 @@ export interface EvalContext {
   readonly currentSheet: string
   /** Current scalar value of a cell on a specific sheet, or BLANK if empty. */
   getCellAt(sheetId: string, coord: Coord): Scalar
+  /** Resolve a spill-range reference (`A1#`): the matrix of the dynamic array
+   *  anchored at `coord`, or null when that cell is not a spilling array anchor. */
+  getSpillRange?(sheetId: string, coord: Coord): MatrixValue | null
   /** Map a sheet name (case-insensitive) to its id, or null when no such sheet exists. */
   resolveSheetId(name: string): string | null
   /** Resolve a defined name (upper-cased) to its binding, or null. */
@@ -35,6 +38,9 @@ export interface EvalContext {
   /** Lexical bindings introduced by LET / LAMBDA parameters (upper-cased → value).
    *  Checked before defined names so a local binding shadows a workbook name. */
   readonly locals?: ReadonlyMap<string, RuntimeValue>
+  /** Lambda-application nesting depth, for the recursion guard (recursive named
+   *  lambdas terminate at #NUM! rather than overflowing the stack). */
+  readonly depth?: number
 }
 
 export interface FnHelpers {
@@ -55,6 +61,10 @@ export type FnImpl = (args: Node[], h: FnHelpers) => RuntimeValue
 
 const inBounds = (c: Coord, ctx: EvalContext): boolean =>
   c.row >= 0 && c.col >= 0 && c.row < ctx.rows && c.col < ctx.cols
+
+/** Hard ceiling on recursive lambda depth — terminates runaway recursion with
+ *  #NUM! instead of a stack overflow. Generous enough for any sane recursion. */
+const MAX_LAMBDA_DEPTH = 600
 
 export function evaluate(node: Node, ctx: EvalContext): RuntimeValue {
   const helpers = makeHelpers(ctx)
@@ -108,9 +118,11 @@ function makeHelpers(ctx: EvalContext): FnHelpers {
     },
     applyLambda(fn, argVals) {
       if (argVals.length > fn.params.length) return err('#N/A', 'too many arguments to the lambda')
+      const depth = (ctx.depth ?? 0) + 1
+      if (depth > MAX_LAMBDA_DEPTH) return err('#NUM!', 'lambda recursion too deep')
       const bound = new Map<string, RuntimeValue>(fn.closure)
       fn.params.forEach((p, i) => bound.set(p, i < argVals.length ? argVals[i] : BLANK))
-      return evaluate(fn.body, { ...ctx, locals: bound })
+      return evaluate(fn.body, { ...ctx, locals: bound, depth })
     },
   }
   return helpers
@@ -151,13 +163,29 @@ function evalNode(node: Node, ctx: EvalContext, h: FnHelpers): RuntimeValue {
       return matrix(data)
     }
 
+    case 'spillref': {
+      const sheetId = node.ref.sheet ? ctx.resolveSheetId(node.ref.sheet) : ctx.currentSheet
+      if (sheetId === null) return err('#REF!', `unknown sheet "${node.ref.sheet}"`)
+      const coord: Coord = { row: node.ref.row, col: node.ref.col }
+      if (!inBounds(coord, ctx)) return err('#REF!', 'reference outside the sheet')
+      const region = ctx.getSpillRange?.(sheetId, coord) ?? null
+      if (region) return region
+      return err('#REF!', 'the # operator needs a spilled array anchor')
+    }
+
     case 'name': {
       const key = node.name.toUpperCase()
       // A lexical binding (LET / lambda parameter) shadows everything else.
       const local = ctx.locals?.get(key)
       if (local !== undefined) return local
       const binding = ctx.resolveName?.(key)
-      if (!binding) return err('#NAME?', `unknown name "${node.name}"`)
+      if (!binding) {
+        // A bare builtin name (`SUM`, `AVERAGE`) is "eta-reduced" to a first-class
+        // lambda, so it can be passed to GROUPBY / BYROW / MAP as a function value.
+        const eta = etaReduce(key)
+        if (eta) return eta
+        return err('#NAME?', `unknown name "${node.name}"`)
+      }
       if (ctx.nameStack?.has(key)) return err('#CIRC!', `name "${node.name}" refers to itself`)
       const sub: EvalContext = {
         ...ctx,
@@ -210,6 +238,24 @@ function evalNode(node: Node, ctx: EvalContext, h: FnHelpers): RuntimeValue {
       return h.applyLambda(fnVal, node.args.map((a) => h.eval(a)))
     }
   }
+}
+
+/** Eta-reduce a bare builtin name to a callable lambda value: `SUM` becomes
+ *  `LAMBDA(_x1,_x2,_x3, SUM(_x1,_x2,_x3))`. This lets aggregators be passed by name
+ *  to higher-order functions (GROUPBY, PIVOTBY, BYROW, MAP). Three parameters cover
+ *  the realistic uses; unsupplied ones bind to BLANK, which aggregators ignore. */
+const ETA_PARAMS = ['_X1', '_X2', '_X3']
+const etaCache = new Map<string, LambdaValue>()
+function etaReduce(upperName: string): LambdaValue | null {
+  if (!(upperName in FUNCTIONS)) return null
+  let lam = etaCache.get(upperName)
+  if (!lam) {
+    const args: Node[] = ETA_PARAMS.map((p) => ({ type: 'name', name: p }))
+    const body: Node = { type: 'call', name: upperName, args }
+    lam = { kind: 'lambda', params: [...ETA_PARAMS], body, closure: new Map() }
+    etaCache.set(upperName, lam)
+  }
+  return lam
 }
 
 /** Resolve a call target that isn't a builtin: a lexical binding or a defined name

@@ -18,6 +18,8 @@ interface Props {
   onOpenNames: () => void
   onFind: () => void
   onGoalSeek: () => void
+  onPivot: () => void
+  onDataTable: () => void
 }
 
 export default function Toolbar(props: Props) {
@@ -51,6 +53,9 @@ export default function Toolbar(props: Props) {
         <button className="btn" onClick={props.onInsertChart} title="Insert a chart from the selection">
           📊 Chart
         </button>
+        <button className="btn" onClick={props.onPivot} title="Build a pivot table over the selection">
+          ⊞ Pivot
+        </button>
         <button className="btn" onClick={props.onOpenNames} title="Named ranges">
           Names
         </button>
@@ -63,6 +68,9 @@ export default function Toolbar(props: Props) {
         <span className="tb-label">What-if</span>
         <button className="btn" onClick={props.onGoalSeek} title="Goal Seek — solve for an input value">
           🎯 Goal Seek
+        </button>
+        <button className="btn" onClick={props.onDataTable} title="Data Table — sensitivity grid over one or two inputs">
+          ▦ Data Table
         </button>
       </div>
 
