@@ -183,6 +183,25 @@ export function About() {
           glow. See <em>Subsurface Studio</em> and <em>Jade Idol</em> — and raise <strong>Max Depth</strong>{' '}
           for a creamier, deeper-penetrating look.
         </Card>
+        <Card title="Spectral subsurface — a chromatic mean free path">
+          The reason a hand held to a torch glows deep red is not that red is absorbed <em>less</em>{' '}
+          per bounce — it is that red light simply <em>travels further</em> inside skin before it is
+          absorbed at all. That is a <strong>chromatic mean free path</strong>: in real flesh, marble
+          and milk the extinction <code>σ_t</code> itself depends on wavelength (red low, blue high),
+          so red reaches the thin edges and blue scatters back out near the surface. Lumen 15.0 renders
+          it by reusing the <strong>hero-wavelength</strong> trick that disperses glass and colours
+          metals: a path that refracts into a spectral interior commits to one wavelength λ, takes its
+          RGB weight once (<code>E_λ[w]=(1,1,1)</code>, so the estimator stays unbiased), then
+          random-walks <em>monochromatically</em> with <code>σ_t(λ)</code> and the single-scattering
+          albedo <code>ϖ(λ)</code> — and the colour reconstructs over many paths' wavelengths. The
+          media are not hand-tuned: <em>Apothecary</em> and <em>Living Skin</em> use the{' '}
+          <strong>measured BSSRDF</strong> coefficients of Jensen et al. 2001 (marble, skin, whole/skim
+          milk, ketchup, cream, apple), converted from their reduced <code>σ_s′</code>/<code>σ_a</code>{' '}
+          to a per-wavelength extinction. <strong>Verify</strong> proves the chromatic furnace still
+          conserves energy for <em>any</em> spectral <code>σ_t</code>, that a pure-absorbing slab
+          reconstructs the spectral Beer integral <code>∫w(λ)e^(−σ(λ)·2r)dλ</code> (with R&gt;G&gt;B), and
+          that an achromatic medium collapses exactly onto the scalar walk.
+        </Card>
         <Card title="Oren–Nayar rough diffuse">
           Real matte surfaces — clay, chalk, the moon, unfinished plaster — are not Lambertian: their
           microscopic roughness makes them <em>flatten</em> and back-scatter toward the light, so a full

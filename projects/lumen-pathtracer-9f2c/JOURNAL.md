@@ -6,7 +6,9 @@ The app's long-lived memory. Read this first when you pick it back up.
 the CPU (no WebGL/WebGPU) across a Web Worker pool, rendering into a `<canvas>` with progressive
 accumulation. It solves the rendering equation with next-event estimation + multiple importance
 sampling, GGX microfacet BSDFs, smooth **and frosted** dielectrics, **spectral dispersion**,
-**subsurface scattering** (random-walk translucency for marble/jade/wax/skin),
+**subsurface scattering** (random-walk translucency for marble/jade/wax/skin, with a **chromatic
+mean free path** as of 15.0 — per-wavelength extinction from measured BSSRDF data, so red light
+penetrates skin further than blue),
 **Beer–Lambert volumetric absorption**, **heterogeneous participating media** (procedural fBm
 clouds, smoke & fog traced by **delta/ratio tracking**), **procedural textures**, **adaptive
 variance-guided sampling** with a live noise heatmap, a SAH BVH, ACES tone mapping, and an
@@ -34,6 +36,10 @@ photon emitter, so daylight scenes get photon-mapped sun caustics).
   `Subsurface { sigmaT, albedo, g }` `interior`, making it a **translucent solid** the integrator
   random-walks inside (marble/jade/wax/skin).
 - `src/engine/texture.ts` — procedural world-space textures (checker / grid / value-noise marble).
+- `src/engine/subsurface.ts` — **(15.0)** chromatic subsurface: `spectralAt` (RGB-as-3-point-spectrum
+  upsampling at the R/G/B representative wavelengths) + the measured BSSRDF library (Jensen et al.
+  2001) and `subsurfacePreset` that converts σ_s′/σ_a into a spectral `Subsurface` (per-wavelength
+  extinction + single-scattering albedo) for the integrator's wavelength-resolved interior walk.
 - `src/engine/spectrum.ts` — Cauchy dispersion IOR + white-point-normalised wavelength→RGB.
 - `src/engine/conductor.ts` — **(11.0)** measured complex refractive indices η(λ),k(λ) for six real
   metals (gold/silver/copper/aluminium/iron/chromium), the exact unpolarised conductor Fresnel, its
@@ -155,8 +161,18 @@ photon emitter, so daylight scenes get photon-mapped sun caustics).
       it (a refracted-shadow connection) to kill the phase-only glow's variance
 - [ ] **Separable BSSRDF / diffusion-dipole fast-path** — for very dense media the random walk samples
       poorly at low depth; a diffusion approximation would converge the deep-scatter look in O(1) bounces
-- [ ] **Spectral (per-channel σ_t) subsurface** — vary the *mean free path* with wavelength via the
-      hero-wavelength machinery (real skin: red penetrates far, blue barely at all), not just the albedo
+- [x] **Spectral (per-channel σ_t) subsurface (15.0)** — vary the *mean free path* with wavelength via the
+      hero-wavelength machinery (real skin: red penetrates far, blue barely at all), not just the albedo.
+      A spectral interior carries per-channel `sigmaTSpectral`/`albedoSpectral` (read as 3-point spectra
+      at R/G/B representative wavelengths); the path commits a hero λ at the boundary and random-walks
+      *monochromatically* with σ_t(λ)/ϖ(λ), colour reconstructing through the committed wavelengthWeight.
+  - [x] **Measured BSSRDF media library** — Jensen et al. 2001 σ_s′/σ_a for marble, skin1/2, whole/skim
+        milk, cream, ketchup, chicken, potato, apple, converted to per-wavelength extinction + albedo
+  - [x] Two scenes (**Living Skin**, **Apothecary**) + six proofs (upsampling contract; measured-media
+        sanity/red-deepest; chromatic furnace ≡ 1; spectral Beer ≡ ∫w(λ)e^(−σ(λ)·2r)dλ with R>G>B;
+        achromatic ≡ scalar oracle; measured skin glows red)
+- [ ] **Spectral subsurface in the photon mapper (SPPM)** — let inner caustics through a translucent
+      solid carry the chromatic mean free path too (today only the path tracer/PSSMLT walk the interior)
 - [x] **Participating media** — bounded homogeneous volumes with Henyey–Greenstein
       scattering, distance sampling, in-scattering NEE + phase-function MIS (fog, smoke, god rays)
 - [x] **Thin-film interference** — spectral Airy reflectance for iridescent coatings
@@ -244,6 +260,70 @@ photon emitter, so daylight scenes get photon-mapped sun caustics).
       collision the path collects `(1−albedo)·Lₑ` of self-radiance, so a heterogeneous field glows
       brightest in its dense core (fire / embers / luminous nebula). New **Ember** scene + a proof
       that an absorbing+emitting volume obeys `(1−e^(−σ_t·chord))·Lₑ`.
+
+## Roadmap — 2026-06-25 Lumen 15.0: spectral subsurface scattering — a chromatic mean free path (claude)
+
+Lumen 12.0 made a dielectric translucent: light refracts into the solid, random-walks among
+microscopic scatterers, and glows back out — marble, jade, wax, skin. But that first model gave the
+interior a **scalar mean free path**: one extinction `σ_t` for every colour, so all the chromatic
+character of the translucency had to be carried by the per-collision single-scattering albedo. Real
+translucent media do not work that way. The reason a hand held over a torch goes deep red at the
+edges is **not** that red is absorbed less per bounce — it is that red light *travels further inside
+the flesh before it is absorbed at all*. In skin, marble and milk the **extinction itself is
+chromatic**: red has a low `σ_t` (a long mean free path, reaching the thin edges), blue a high one
+(scattering back out near the surface). That single fact — a **chromatic mean free path** — is the
+biggest reason these materials look the way they do, and 12.0 could not express it.
+
+15.0 adds it, and (as is the house style) does it by **reusing machinery that was already there**:
+the **hero-wavelength** spectral sampler that already disperses glass and gives real metals their
+hue. A path that refracts into a *spectral* interior commits to one wavelength λ, multiplies its
+throughput by that wavelength's RGB weight **once** (`wavelengthWeight`, with `E_λ[w]=(1,1,1)`, so
+the estimator is unbiased — colour is only a *spread* across λ, never a change of mean), and from
+then on random-walks **monochromatically** with the extinction `σ_t(λ)` and single-scattering albedo
+`ϖ(λ)` resolved at that wavelength. Average over many paths' wavelengths and the chromatic
+translucency reconstructs exactly, energy-conserving by construction. Nothing in the transport loop
+changes except *which* scalar `σ_t`/`ϖ` the interior free-flight uses; the scalar 12.0 walk is kept
+**bit-for-bit** for any non-spectral interior, so all 75 prior proofs stay green.
+
+The media are not hand-tuned. A new **measured BSSRDF library** carries the canonical coefficients of
+Jensen, Marschner, Levoy & Hanrahan (*A Practical Model for Subsurface Light Transport*, SIGGRAPH
+2001, Table 2) — marble, skin1/2, whole & skim milk, cream, ketchup, chicken, potato, apple — and
+converts their reduced scattering `σ_s′` and absorption `σ_a` into the per-wavelength extinction and
+albedo the walk consumes (recovering `σ_s = σ_s′/(1−g)` so the extinction is consistent with the
+phase function actually sampled). So *Living Skin* and *Apothecary* render real measured data, not a
+guess.
+
+Plan / steps (all shipped this session):
+
+1. **`subsurface.ts` — the new module.** `spectralAt(rgb, λ)` reads an RGB triple as a 3-point
+   spectrum at the R/G/B representative wavelengths (650/550/450 nm) — reproducing each channel at
+   its wavelength, staying inside the `[min,max]` envelope (so positivity + a ≤1 bound are inherited),
+   and going *flat* for an achromatic triple (the key to the reduction proof). `BSSRDF_MEASUREMENTS`
+   holds the Jensen 2001 table; `subsurfacePreset(name, scale, g)` converts it to a spectral
+   `Subsurface`, with `scale` mapping the paper's per-mm units into scene units.
+2. **`material.ts` — spectral interior.** `Subsurface` gains optional `sigmaTSpectral`/`albedoSpectral`;
+   a translucent dielectric carrying them is now `isSpectral` (so the integrator commits a hero λ at
+   its boundary). Absent ⇒ the scalar 12.0 material, unchanged.
+3. **`integrator.ts` — the wavelength-aware walk.** When the interior is spectral and a hero λ is
+   committed, the free-flight is drawn against `σ_t(λ)` and the collision applies the scalar `ϖ(λ)`;
+   otherwise the per-channel RGB walk runs exactly as before (one guarded branch, zero regression).
+4. **`scenes.ts` — two showcases.** **Living Skin** (a measured-`skin2` figurine + a marble companion,
+   raked from behind so the thin edges bleed red — the headline image) and **Apothecary** (a shelf of
+   spheres of whole/skim milk, marble, ketchup, cream and apple, each its own measured look).
+5. **`selftest.ts` — six proofs (81 total).** (a) `spectralAt` reproduces the control points, stays in
+   envelope, and is flat for achromatic input; (b) every measured medium decodes to σ_t>0, ϖ∈[0,1],
+   with red the deepest-penetrating for skin/marble, and `scale` linear in σ_t; (c) a chromatic
+   pure-scatter furnace ≡ 1 for *any* spectral σ_t (energy conservation, the unbiasedness oracle for
+   the wavelength-resolved walk); (d) a pure-absorbing slab reconstructs the **spectral Beer integral**
+   `(1/Δλ)∫ w(λ)·e^(−σ_t(λ)·2r) dλ` (matched to a fine deterministic quadrature) and exits **R>G>B**
+   (chromatic penetration, rendered); (e) a spectral interior with achromatic params agrees in the
+   mean with the scalar 12.0 walk (the reduction oracle); (f) a measured `skin2` slab renders
+   red-biased translucency end-to-end (library → conversion → spectral walk → Fresnel boundary →
+   pixels).
+6. **UI / About.** A "Spectral subsurface — a chromatic mean free path" card; the two scenes appear in
+   the picker. Verified in Node by bundling the engine: 81/81 self-tests pass, and a smoke render of
+   *Living Skin*/*Apothecary* is finite, lit and red-biased (mean RGB ≈ (4.89, 3.80, 2.88) on Living
+   Skin). `pnpm lint`/`tsc`/`build` green via the CI gate.
 
 ## Roadmap — 2026-06-25 Lumen 14.0: importance sampling of many lights — the light BVH (claude)
 

@@ -38,6 +38,7 @@ import type { Material, Subsurface } from './material'
 import { evalBSDF, isDelta, isSpectral, pdfBSDF, resolveMaterial, sampleBSDF } from './material'
 import { hgPhase, sampleHG } from './phase'
 import { LAMBDA_MAX, LAMBDA_MIN, wavelengthWeight } from './spectrum'
+import { spectralAt } from './subsurface'
 import type { IntegratorSettings } from './types'
 import { radianceBDPT } from './bdpt'
 import type { Guide } from './guiding'
@@ -170,9 +171,19 @@ export function radiance(
     // boundary, so the surrounding scene's NEE takes over unbiasedly once the path
     // exits. This is unidirectional volumetric transport bounded by real geometry.
     if (sss) {
-      const tColl = -Math.log(1 - rng.next()) / sss.sigmaT
+      // (15.0) Chromatic mean free path: when the interior is spectral and the
+      // path has committed a hero wavelength, draw the free flight against the
+      // *wavelength's* extinction σ_t(λ) and apply the *wavelength's* scalar
+      // single-scattering albedo ϖ(λ) — so red light travels far inside skin/
+      // marble while blue scatters out near the surface. Colour reconstructs
+      // through the committed wavelengthWeight (applied once, on entry); the walk
+      // itself is monochromatic. Without spectral data, the scalar 12.0 walk runs
+      // exactly as before (one mean free path, per-channel RGB albedo).
+      const spectral = sss.sigmaTSpectral !== undefined && sss.albedoSpectral !== undefined && lambda > 0
+      const sigmaT = spectral ? spectralAt(sss.sigmaTSpectral!, lambda) : sss.sigmaT
+      const tColl = sigmaT > 0 ? -Math.log(1 - rng.next()) / sigmaT : Infinity
       if (tColl < tHit) {
-        beta = mul(beta, sss.albedo)
+        beta = spectral ? scale(beta, spectralAt(sss.albedoSpectral!, lambda)) : mul(beta, sss.albedo)
         if (isBlack(beta)) break
         const x = madd(r.o, r.d, tColl)
         const wo = neg(r.d)

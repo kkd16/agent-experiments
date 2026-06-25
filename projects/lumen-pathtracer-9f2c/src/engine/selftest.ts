@@ -15,7 +15,9 @@ import {
   ggxDirectionalAlbedo,
   ggxAverageAlbedo,
 } from './material'
-import type { Material } from './material'
+import type { Material, Subsurface } from './material'
+import { spectralAt, subsurfacePreset, BSSRDF_MEASUREMENTS, LAMBDA_R, LAMBDA_G, LAMBDA_B } from './subsurface'
+import type { MediumName } from './subsurface'
 import { makeSphere, makeTriangle, intersectPrim } from './primitive'
 import type { Primitive } from './primitive'
 import { buildLightTree } from './lighttree'
@@ -2033,7 +2035,7 @@ function testSpectralMetalMultiscatter(): { pass: boolean; detail: string } {
 // environment and return its mean RGB radiance — the workhorse for the subsurface
 // energy/colour proofs (the SSS analogue of the diffuse white furnace).
 function subsurfaceFurnaceRGB(
-  interior: { sigmaT: number; albedo: Vec3; g: number },
+  interior: Subsurface,
   ior: number,
   settings: { maxDepth: number; rrStart: number; clampIndirect: number },
   N: number,
@@ -2147,6 +2149,189 @@ function testSubsurfaceAlbedoMonotone(): { pass: boolean; detail: string } {
   return {
     pass: rising && bounded,
     detail: `reflectance: a=0.3→${r[0].toFixed(3)}, 0.6→${r[1].toFixed(3)}, 0.9→${r[2].toFixed(3)} (rising=${rising}, ≤1=${bounded})`,
+  }
+}
+
+// ---- Spectral subsurface scattering — chromatic mean free path (Lumen 15.0) --
+
+// SSS-6 — The RGB→wavelength upsampling `spectralAt` is the contract every
+// chromatic-SSS proof rests on, so pin its three defining properties directly:
+// (a) it reproduces each channel exactly at that channel's representative
+// wavelength (B@450, G@550, R@650 nm); (b) it never leaves the [min,max] envelope
+// of the three channels (so positivity and an upper bound are inherited from the
+// inputs — the precondition for a valid extinction and a valid albedo ≤ 1); and
+// (c) it is *constant* across the band for an achromatic (equal-channel) triple,
+// which is exactly what makes a chromatic medium with equal σ_t collapse onto the
+// scalar 12.0 walk (proved end-to-end in SSS-10).
+function testSpectralUpsampling(): { pass: boolean; detail: string } {
+  const c = v(0.2, 0.5, 0.9) // R, G, B
+  const atB = spectralAt(c, LAMBDA_B)
+  const atG = spectralAt(c, LAMBDA_G)
+  const atR = spectralAt(c, LAMBDA_R)
+  const reproduces = approx(atB, c.z, 1e-9) && approx(atG, c.y, 1e-9) && approx(atR, c.x, 1e-9)
+  const lo = Math.min(c.x, c.y, c.z)
+  const hi = Math.max(c.x, c.y, c.z)
+  let envelope = true
+  for (let i = 0; i <= 80; i++) {
+    const lambda = 380 + (i / 80) * (720 - 380)
+    const s = spectralAt(c, lambda)
+    if (s < lo - 1e-9 || s > hi + 1e-9) envelope = false
+  }
+  // Below 450 nm holds blue; above 650 nm holds red (no extrapolation blow-up).
+  const clampedEnds = approx(spectralAt(c, 380), c.z, 1e-9) && approx(spectralAt(c, 720), c.x, 1e-9)
+  // Achromatic ⇒ flat spectrum at every wavelength.
+  const flat = v(0.6, 0.6, 0.6)
+  let constant = true
+  for (let i = 0; i <= 40; i++) {
+    const lambda = 380 + (i / 40) * (720 - 380)
+    if (!approx(spectralAt(flat, lambda), 0.6, 1e-12)) constant = false
+  }
+  const pass = reproduces && envelope && clampedEnds && constant
+  return {
+    pass,
+    detail: `reproduce@RGB=${reproduces}, in[${lo},${hi}]=${envelope}, ends-held=${clampedEnds}, achromatic-flat=${constant}`,
+  }
+}
+
+// SSS-7 — The measured BSSRDF library (Jensen et al. 2001) decodes to physically
+// sane media. For every preset: the per-channel extinction σ_t = σ_s′/(1−g)+σ_a is
+// strictly positive, and the single-scattering albedo ϖ = σ_s/σ_t lies in [0,1]
+// (it *is* a survival probability, so a value outside [0,1] would be a transcription
+// or conversion bug the energy tests can't localise). For the organic media whose
+// look is defined by red translucency (skin/marble/milk), red must have the
+// *smallest* extinction — the longest mean free path, the mechanism behind their
+// glow. And `scale` must act linearly on σ_t (a 3× scale triples every channel's
+// extinction) while leaving the albedo — a ratio — invariant.
+function testBssrdfPresets(): { pass: boolean; detail: string } {
+  const names = Object.keys(BSSRDF_MEASUREMENTS) as MediumName[]
+  let positive = true
+  let albedoOk = true
+  for (const n of names) {
+    const s = subsurfacePreset(n, 1)
+    const st = s.sigmaTSpectral!
+    const a = s.albedoSpectral!
+    if (!(st.x > 0 && st.y > 0 && st.z > 0)) positive = false
+    if (a.x < 0 || a.x > 1 || a.y < 0 || a.y > 1 || a.z < 0 || a.z > 1) albedoOk = false
+  }
+  // Red penetrates furthest (lowest σ_t) for the red-translucent media.
+  let redDeepest = true
+  for (const n of ['skin1', 'skin2', 'marble'] as MediumName[]) {
+    const st = subsurfacePreset(n, 1).sigmaTSpectral!
+    if (!(st.x < st.y && st.y < st.z)) redDeepest = false
+  }
+  // Scale is linear in σ_t; albedo (a ratio) is scale-invariant.
+  const s1 = subsurfacePreset('marble', 1)
+  const s3 = subsurfacePreset('marble', 3)
+  const scaleLinear =
+    approx(s3.sigmaTSpectral!.x, 3 * s1.sigmaTSpectral!.x, 1e-9) &&
+    approx(s3.sigmaTSpectral!.z, 3 * s1.sigmaTSpectral!.z, 1e-9) &&
+    approx(s3.albedoSpectral!.x, s1.albedoSpectral!.x, 1e-9)
+  const pass = positive && albedoOk && redDeepest && scaleLinear
+  return {
+    pass,
+    detail: `${names.length} media: σ_t>0=${positive}, ϖ∈[0,1]=${albedoOk}, red-deepest(skin/marble)=${redDeepest}, scale-linear=${scaleLinear}`,
+  }
+}
+
+// SSS-8 — Spectral furnace: energy conservation is independent of the chromatic
+// mean free path. A purely *scattering* interior (albedo 1 at every wavelength)
+// behind an index-matched boundary must leave a uniform unit field unchanged — even
+// when the per-channel extinction is wildly chromatic (here red flies through, blue
+// is dense). Scattering only redistributes directions; the hero-wavelength weight
+// reconstructs to white (E_λ[w]=1). This is the chromatic generalisation of SSS-1
+// and the unbiasedness proof for the wavelength-resolved interior walk.
+function testSpectralSubsurfaceFurnace(): { pass: boolean; detail: string } {
+  const settings = { maxDepth: 64, rrStart: 48, clampIndirect: 0 }
+  const interior: Subsurface = {
+    sigmaT: 0.93,
+    albedo: v(1, 1, 1),
+    g: 0.2,
+    sigmaTSpectral: v(0.4, 0.9, 1.6), // chromatic: red deep, blue shallow
+    albedoSpectral: v(1, 1, 1),
+  }
+  const c = subsurfaceFurnaceRGB(interior, 1, settings, 30000, 4242)
+  const worst = Math.max(Math.abs(c.x - 1), Math.abs(c.y - 1), Math.abs(c.z - 1))
+  return {
+    pass: worst < 2e-2,
+    detail: `spectral furnace=(${c.x.toFixed(4)},${c.y.toFixed(4)},${c.z.toFixed(4)}) worst|Δ|=${worst.toFixed(4)} (exp 1 ∀λ)`,
+  }
+}
+
+// SSS-9 — Spectral Beer's law: the hero-wavelength walk reconstructs the *spectral*
+// transmittance integral, not a naive RGB Beer law. A purely *absorbing* interior
+// (albedo 0, index-matched) kills the path at its first collision, so only the
+// unscattered ray survives — with probability e^(−σ_t(λ)·2r) at the path's
+// wavelength. Averaging the committed wavelengthWeight over uniformly-sampled λ, the
+// rendered RGB equals (1/Δλ)∫ w(λ)·e^(−σ_t(λ)·2r) dλ — which we evaluate by fine
+// deterministic quadrature as the ground truth (mirroring the heterogeneous
+// ratio-tracking proof). And because σ_t,red < σ_t,green < σ_t,blue, the survivor
+// is reddest: R > G > B — chromatic penetration, rendered.
+function testSpectralSubsurfaceBeer(): { pass: boolean; detail: string } {
+  const settings = { maxDepth: 8, rrStart: 4, clampIndirect: 0 }
+  const sigmaTSpectral = v(0.35, 0.8, 1.5) // red travels far, blue is absorbed near the surface
+  const interior: Subsurface = { sigmaT: 0.88, albedo: v(0, 0, 0), g: 0, sigmaTSpectral, albedoSpectral: v(0, 0, 0) }
+  const c = subsurfaceFurnaceRGB(interior, 1, settings, 80000, 9090)
+  // Deterministic spectral quadrature of the same estimator's expectation.
+  const N = 2048
+  let qx = 0
+  let qy = 0
+  let qz = 0
+  for (let i = 0; i < N; i++) {
+    const lambda = LAMBDA_MIN + ((i + 0.5) / N) * (LAMBDA_MAX - LAMBDA_MIN)
+    const w = wavelengthWeight(lambda)
+    const T = Math.exp(-spectralAt(sigmaTSpectral, lambda) * 2) // chord = 2r, r = 1
+    qx += w.x * T
+    qy += w.y * T
+    qz += w.z * T
+  }
+  const ref = v(qx / N, qy / N, qz / N)
+  const err = Math.max(Math.abs(c.x - ref.x), Math.abs(c.y - ref.y), Math.abs(c.z - ref.z))
+  const ordered = c.x > c.y + 0.01 && c.y > c.z + 0.01
+  return {
+    pass: err < 1.5e-2 && ordered,
+    detail: `rendered=(${c.x.toFixed(3)},${c.y.toFixed(3)},${c.z.toFixed(3)}) quad=(${ref.x.toFixed(3)},${ref.y.toFixed(3)},${ref.z.toFixed(3)}) maxΔ=${err.toFixed(4)}, R>G>B=${ordered}`,
+  }
+}
+
+// SSS-10 — The chromatic walk *generalises* the scalar 12.0 walk: feed it an
+// achromatic medium (equal σ_t and equal albedo per channel, behind a real Fresnel
+// ior=1.5 boundary) and it must converge to the same image the scalar walk produces
+// — same Fresnel reflection, same TIR, same multiple scattering. The spectral path
+// still commits a hero wavelength and runs monochromatically, so the RNG streams
+// differ; the agreement is therefore an unbiasedness *oracle* (means match), exactly
+// like the metal k→0 and BDPT≡PT proofs. This is what licenses shipping the spectral
+// path as a superset without touching the scalar one.
+function testSpectralReducesToScalar(): { pass: boolean; detail: string } {
+  const settings = { maxDepth: 48, rrStart: 24, clampIndirect: 0 }
+  const sigmaT = 0.7
+  const albedo = v(0.6, 0.6, 0.6)
+  const scalarC = subsurfaceFurnaceRGB({ sigmaT, albedo, g: 0.3 }, 1.5, settings, 30000, 31337)
+  const spectral: Subsurface = { sigmaT, albedo, g: 0.3, sigmaTSpectral: v(sigmaT, sigmaT, sigmaT), albedoSpectral: albedo }
+  const spectralC = subsurfaceFurnaceRGB(spectral, 1.5, settings, 30000, 31338)
+  const ms = luminance(scalarC)
+  const mp = luminance(spectralC)
+  const rel = Math.abs(mp - ms) / ms
+  return {
+    pass: rel < 1.5e-2,
+    detail: `scalar=${ms.toFixed(4)}, spectral(achromatic)=${mp.toFixed(4)}, rel.Δ=${(rel * 100).toFixed(2)}% (oracle)`,
+  }
+}
+
+// SSS-11 — The headline, rendered from *measured* data: a real medium from the
+// Jensen library, behind a real Fresnel boundary and scattering (not just
+// absorbing), produces red-biased translucency. `skin2`'s measured chromatic
+// extinction alone (no hand-tuned pigment) makes the back-lit slab exit reddest —
+// the look the whole version is for, and a guard that the measured table flows
+// correctly through the conversion, the spectral walk and the boundary into pixels.
+function testMeasuredMediumGlow(): { pass: boolean; detail: string } {
+  const settings = { maxDepth: 48, rrStart: 24, clampIndirect: 0 }
+  const interior = subsurfacePreset('skin2', 1.1, 0.0)
+  const c = subsurfaceFurnaceRGB(interior, 1.4, settings, 30000, 246813)
+  const ordered = c.x > c.y + 0.01 && c.y > c.z + 0.01
+  const bounded = c.x <= 1.01 && c.z >= 0
+  return {
+    pass: ordered && bounded,
+    detail: `skin2 rendered=(${c.x.toFixed(3)},${c.y.toFixed(3)},${c.z.toFixed(3)}) R>G>B=${ordered}, bounded=${bounded}`,
   }
 }
 
@@ -2524,6 +2709,12 @@ export function runSelfTests(): TestResult[] {
     test('Subsurface interface energy ≡ 1 (Fresnel+TIR+scatter)', testSubsurfaceInterfaceEnergy),
     test('Subsurface colour — per-channel albedo tints (R>G>B)', testSubsurfaceColour),
     test('Subsurface reflectance monotone in albedo (≤1)', testSubsurfaceAlbedoMonotone),
+    test('Spectral SSS — RGB→λ upsampling reproduces & bounds', testSpectralUpsampling),
+    test('Spectral SSS — measured BSSRDF media sane (red-deepest)', testBssrdfPresets),
+    test('Spectral SSS — chromatic furnace ≡ 1 (energy ∀λ)', testSpectralSubsurfaceFurnace),
+    test('Spectral SSS — Beer ≡ ∫w(λ)e^(−σ(λ)·2r), R>G>B', testSpectralSubsurfaceBeer),
+    test('Spectral SSS — achromatic ≡ scalar walk (oracle)', testSpectralReducesToScalar),
+    test('Spectral SSS — measured skin glows red (library→render)', testMeasuredMediumGlow),
     test('Path guiding — DTree density integrates to 1', testGuideDensityNormalised),
     test('Path guiding — sampler ↔ pdf consistent', testGuideSamplerPdf),
     test('Path guiding — importance sampling cuts variance', testGuideVarianceReduction),
