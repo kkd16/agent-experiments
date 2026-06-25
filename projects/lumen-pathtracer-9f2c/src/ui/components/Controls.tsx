@@ -236,6 +236,7 @@ export function Controls(props: {
           value={state.tonemap}
           onChange={(v) => set('tonemap', v)}
           options={[
+            { value: 'agx', label: 'AgX' },
             { value: 'aces', label: 'ACES' },
             { value: 'filmic', label: 'Filmic' },
             { value: 'reinhard', label: 'Reinhard' },
