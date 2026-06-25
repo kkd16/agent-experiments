@@ -22,6 +22,8 @@ import ChartLayer from './components/ChartLayer'
 import NameManager from './components/NameManager'
 import FindReplace from './components/FindReplace'
 import GoalSeek from './components/GoalSeek'
+import PivotBuilder from './components/PivotBuilder'
+import DataTableDialog from './components/DataTable'
 
 const STORAGE_KEY = 'cellforge.workbook.v2'
 const LEGACY_KEY = 'cellforge.workbook.v1'
@@ -67,6 +69,8 @@ export default function App() {
   const [showNames, setShowNames] = useState(false)
   const [showFind, setShowFind] = useState(false)
   const [showGoalSeek, setShowGoalSeek] = useState(false)
+  const [showPivot, setShowPivot] = useState(false)
+  const [showDataTable, setShowDataTable] = useState(false)
 
   const containerRef = useRef<HTMLDivElement | null>(null)
   const clipRef = useRef<ClipData | null>(null)
@@ -405,6 +409,36 @@ export default function App() {
     refocus()
   }
 
+  // ---- pivot table: drop a spilling GROUPBY/PIVOTBY formula at the anchor ----
+  const insertPivot = (anchor: Coord, formula: string) => {
+    checkpoint()
+    wb.setCell(anchor, formula, sheetId)
+    setActive(anchor)
+    setAnchor(anchor)
+    bump()
+    refocus()
+  }
+
+  // ---- data table: materialize the computed sensitivity grid ----
+  const applyDataTable = (entries: Array<{ coord: Coord; raw: string }>) => {
+    if (!entries.length) return
+    checkpoint()
+    wb.setMany(entries, sheetId)
+    const first = entries[0].coord
+    setActive(first)
+    setAnchor(first)
+    bump()
+    refocus()
+  }
+
+  /** A1 of a cell a few columns to the right of the selection — a safe default
+   *  anchor for a generated pivot / data table that won't overwrite the source. */
+  const freeAnchorA1 = (): string => {
+    const col = clamp(selection.right + 2, 0, wb.cols - 1)
+    return coordToA1(selection.top, col)
+  }
+  const selectionA1 = (): string => `${coordToA1(selection.top, selection.left)}:${coordToA1(selection.bottom, selection.right)}`
+
   // ---- keyboard ----
   const onContainerKeyDown = (e: ReactKeyboardEvent) => {
     if (editing !== null) return
@@ -601,6 +635,8 @@ export default function App() {
           onOpenNames={() => setShowNames(true)}
           onFind={() => setShowFind(true)}
           onGoalSeek={() => setShowGoalSeek(true)}
+          onPivot={() => setShowPivot(true)}
+          onDataTable={() => setShowDataTable(true)}
         />
       </header>
 
@@ -726,7 +762,16 @@ export default function App() {
                 Lambdas: <code>=MAP(A1:A9, LAMBDA(x, x*x))</code>, <code>=LET(t, SUM(A:A), t/2)</code>
               </li>
               <li>
-                What-if: <kbd>🎯 Goal Seek</kbd> solves for an input value
+                Spill-range: <code>=SUM(A1#)</code> names a whole dynamic array
+              </li>
+              <li>
+                Pivots: <code>=GROUPBY(A:A, B:B, SUM)</code> · or <kbd>⊞ Pivot</kbd>
+              </li>
+              <li>
+                Recursion: name <code>FACT = LAMBDA(n, IF(n&lt;=1,1,n*FACT(n-1)))</code>
+              </li>
+              <li>
+                What-if: <kbd>🎯 Goal Seek</kbd> · <kbd>▦ Data Table</kbd>
               </li>
             </ul>
           </div>
@@ -792,6 +837,34 @@ export default function App() {
           }}
           onClose={() => {
             setShowGoalSeek(false)
+            refocus()
+          }}
+        />
+      ) : null}
+
+      {showPivot ? (
+        <PivotBuilder
+          wb={wb}
+          sheetId={sheetId}
+          initialRange={selectionA1()}
+          initialAnchor={freeAnchorA1()}
+          onInsert={insertPivot}
+          onClose={() => {
+            setShowPivot(false)
+            refocus()
+          }}
+        />
+      ) : null}
+
+      {showDataTable ? (
+        <DataTableDialog
+          wb={wb}
+          sheetId={sheetId}
+          initialFormula={coordToA1(active.row, active.col)}
+          initialAnchor={freeAnchorA1()}
+          onApply={applyDataTable}
+          onClose={() => {
+            setShowDataTable(false)
             refocus()
           }}
         />

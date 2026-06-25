@@ -218,6 +218,11 @@ class Parser {
       const toS: CellRef = sheet === undefined ? to : { ...to, sheet }
       return { type: 'range', from: fromS, to: toS }
     }
+    // Spill-range operator: `A1#` resolves to the whole dynamic array anchored at A1.
+    if (this.peek().type === 'hash') {
+      this.next()
+      return { type: 'spillref', ref: fromS }
+    }
     return { type: 'ref', ref: fromS }
   }
 }
@@ -238,6 +243,7 @@ export function parseFormula(body: string): Node {
 export function collectRefs(node: Node, out: CellRef[] = []): CellRef[] {
   switch (node.type) {
     case 'ref':
+    case 'spillref':
       out.push(node.ref)
       break
     case 'range':

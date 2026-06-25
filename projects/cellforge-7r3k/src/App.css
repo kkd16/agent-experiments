@@ -1115,3 +1115,90 @@ code {
   padding: 0;
   text-decoration: underline;
 }
+
+/* ---- v4: Pivot Table builder & Data Table dialogs ---- */
+.modal.pivot {
+  width: 540px;
+  max-width: 94vw;
+}
+.modal.datatable {
+  width: 480px;
+  max-width: 92vw;
+}
+select.name-in {
+  appearance: none;
+  cursor: pointer;
+}
+.pv-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--ink-dim);
+  font-size: 13px;
+}
+.pv-check input {
+  accent-color: var(--accent);
+}
+.pv-fields {
+  margin: 14px 0 4px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  overflow: hidden;
+  max-height: 270px;
+  overflow-y: auto;
+}
+.pv-field {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--line);
+}
+.pv-field:last-child {
+  border-bottom: none;
+}
+.pv-name {
+  font-size: 13px;
+  color: var(--ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 200px;
+}
+.pv-roles {
+  display: inline-flex;
+  gap: 4px;
+  flex: none;
+}
+.pv-role {
+  background: var(--bg-3);
+  color: var(--ink-dim);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 3px 9px;
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s, border-color 0.12s;
+}
+.pv-role:hover {
+  color: var(--ink);
+  border-color: var(--line-2);
+}
+.pv-role.on {
+  background: var(--accent);
+  color: #0c0e14;
+  border-color: var(--accent);
+  font-weight: 600;
+}
+.pv-preview {
+  margin: 10px 0 2px;
+  padding: 9px 11px;
+  border-radius: 8px;
+  background: var(--bg-2);
+  border: 1px solid var(--line);
+  color: var(--accent-2);
+  font-size: 12.5px;
+  word-break: break-all;
+  line-height: 1.45;
+}

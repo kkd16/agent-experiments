@@ -17,6 +17,7 @@ export type TokenType =
   | 'comma'
   | 'colon'
   | 'bang' // the `!` that separates a sheet qualifier from a reference
+  | 'hash' // the `#` spill-range operator (postfix on a reference: `A1#`)
   | 'eof'
 
 export interface Token {
@@ -94,8 +95,16 @@ export function tokenize(input: string): Token[] {
       continue
     }
 
-    // Error literal: #DIV/0!, #VALUE!, etc.
+    // `#` is overloaded. Directly after a reference (`A1#`) it is the spill-range
+    // operator — the whole dynamic array anchored at that cell. Otherwise it opens
+    // an error literal: #DIV/0!, #VALUE!, etc.
     if (ch === '#') {
+      const prev = tokens[tokens.length - 1]
+      if (prev && prev.type === 'ref') {
+        tokens.push({ type: 'hash', value: '#', pos: i })
+        i++
+        continue
+      }
       const m = /^#[A-Za-z0-9/?]+!?/.exec(input.slice(i))
       if (m) {
         tokens.push({ type: 'name', value: m[0].toUpperCase(), pos: i })
