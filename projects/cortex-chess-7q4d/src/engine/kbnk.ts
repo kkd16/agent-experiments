@@ -23,6 +23,8 @@
 //
 // Squares throughout are plain 0..63 with sq = rank * 8 + file.
 
+import { tbCacheLoad, tbCacheSave } from './tbcache'
+
 const WIN = 0 // strong side (bishop + knight) to move
 const DEF = 1 // defender (lone king) to move
 
@@ -154,6 +156,17 @@ export function kbnkReady(): boolean {
 
 export function kbnkStats(): KbnkStats | null {
   return stats
+}
+
+// Hydrate the table directly (e.g. from the IndexedDB cache) instead of rebuilding.
+export function loadKbnkTable(dtm: Int16Array, s: KbnkStats): void {
+  if (dtm.length === SIZE) {
+    table = dtm
+    stats = s
+  }
+}
+export function kbnkTable(): Int16Array | null {
+  return table
 }
 
 export type ProgressFn = (frac: number, phase: string) => void
@@ -628,6 +641,34 @@ export function verifyKbnk(
     selfPlayMismatch: mismatch,
     verifyMs: Math.round(now() - t0),
   }
+}
+
+// Cache-aware build: prefer the IndexedDB copy, persist on a miss. Used by the Lab
+// so the (~10 s) retrograde build only ever happens once per browser.
+const KBNK_CACHE_KEY = 'kbnk:KBNvK'
+
+export async function ensureKbnk(onProgress?: ProgressFn, now: () => number = () => Date.now()): Promise<KbnkStats> {
+  if (table && stats) return stats
+  const cached = await tbCacheLoad<KbnkStats>(KBNK_CACHE_KEY)
+  if (cached && cached.dtm.length === SIZE) {
+    loadKbnkTable(cached.dtm, cached.meta)
+    onProgress?.(1, 'loaded from cache')
+    return cached.meta
+  }
+  const s = buildKbnk(onProgress, now)
+  if (table) await tbCacheSave(KBNK_CACHE_KEY, table, s)
+  return s
+}
+
+// Hydrate from the cache only (never builds) — for the play worker before a move.
+export async function tryLoadKbnkFromCache(): Promise<boolean> {
+  if (table) return true
+  const cached = await tbCacheLoad<KbnkStats>(KBNK_CACHE_KEY)
+  if (cached && cached.dtm.length === SIZE) {
+    loadKbnkTable(cached.dtm, cached.meta)
+    return true
+  }
+  return false
 }
 
 export { SIZE as KBNK_SIZE, WIN as KBNK_WIN, DEF as KBNK_DEF, index as kbnkIndex }

@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import {
   perft,
   PERFT_SUITE,
@@ -19,10 +19,14 @@ import {
   EPD_SUITES,
   type EpdCase,
   type KbnkVerification,
+  GTB_CONFIGS,
+  tbCacheKeys,
+  tbCacheClear,
+  type GtbVerification,
 } from '../engine'
 import { useEngine } from '../hooks/useEngine'
 
-type Mode = 'perft' | 'tactics' | 'epd' | 'tablebase' | 'checks'
+type Mode = 'perft' | 'tactics' | 'epd' | 'tablebase' | 'gtb' | 'checks'
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))
 
@@ -494,6 +498,175 @@ function TablebaseLab() {
   )
 }
 
+// ---------------- Generalized endgame tablebases ----------------
+
+function EndgamesLab() {
+  const engine = useEngine()
+  const [id, setId] = useState('KBBvK')
+  const [running, setRunning] = useState(false)
+  const [frac, setFrac] = useState(0)
+  const [phase, setPhase] = useState('')
+  const [report, setReport] = useState<GtbVerification | null>(null)
+  const [fromCache, setFromCache] = useState(false)
+  const [cached, setCached] = useState<string[]>([])
+
+  const refreshCache = useCallback(() => {
+    tbCacheKeys().then(setCached)
+  }, [])
+  useEffect(() => {
+    refreshCache()
+  }, [refreshCache])
+
+  const config = GTB_CONFIGS.find((c) => c.id === id)!
+
+  const run = useCallback(async () => {
+    setRunning(true)
+    setReport(null)
+    setFrac(0)
+    setPhase('starting')
+    await sleep(30)
+    const before = await tbCacheKeys()
+    const r = await engine.verifyGtb({ id, sample: 400000, games: 3000 }, (f, ph) => {
+      setFrac(f)
+      setPhase(ph)
+    })
+    setFromCache(before.includes(id))
+    setReport(r)
+    setRunning(false)
+    refreshCache()
+  }, [engine, id, refreshCache])
+
+  const clearOne = useCallback(async () => {
+    await tbCacheClear(id)
+    refreshCache()
+  }, [id, refreshCache])
+
+  const s = report?.stats
+  const isCached = cached.includes(id)
+  const moves = (plies: number) => `${Math.ceil(plies / 2)} moves (${plies} plies)`
+
+  const rows: { name: string; value: string; ok: boolean }[] = report
+    ? [
+        {
+          name: 'Verdict',
+          value: s!.decisive ? `forced win — mate in ≤ ${moves(s!.maxDtm)}` : 'drawn with best play',
+          ok: true,
+        },
+        { name: 'Table size (side · squares⁴)', value: s!.size.toLocaleString() + ' entries', ok: true },
+        { name: 'Winning positions (strong to move)', value: s!.won.toLocaleString(), ok: true },
+        { name: 'Lost positions (defender to move)', value: s!.lost.toLocaleString(), ok: true },
+        { name: 'Drawn / non-winning positions', value: s!.draw.toLocaleString(), ok: true },
+        {
+          name: 'Build time (retrograde analysis)',
+          value: `${(s!.buildMs / 1000).toFixed(1)} s${fromCache ? ' (loaded from cache)' : ''}`,
+          ok: true,
+        },
+        ...(report.oracleName
+          ? [
+              {
+                name: `Bit-for-bit vs hand-rolled ${report.oracleName}`,
+                value: `${(report.oracleChecked - report.oracleBad).toLocaleString()} / ${report.oracleChecked.toLocaleString()} match`,
+                ok: report.oracleBad === 0 && report.oracleChecked > 0,
+              },
+            ]
+          : []),
+        {
+          name: 'Bellman optimality (sampled)',
+          value: `${(report.consChecked - report.consBad).toLocaleString()} / ${report.consChecked.toLocaleString()} hold`,
+          ok: report.consBad === 0,
+        },
+        {
+          name: 'Optimal self-play reaching mate',
+          value: `${report.selfPlayMated.toLocaleString()} / ${report.selfPlayGames.toLocaleString()}`,
+          ok: report.selfPlayMated === report.selfPlayGames,
+        },
+        {
+          name: 'Self-play distance-to-mate mismatches',
+          value: `${report.selfPlayMismatch}`,
+          ok: report.selfPlayMismatch === 0,
+        },
+      ]
+    : []
+  const allOk = rows.length > 0 && rows.every((r) => r.ok)
+
+  return (
+    <div className="lab">
+      <div className="lab-intro">
+        <p>
+          One <strong>material-generic</strong> retrograde solver derives the whole family of pawnless 3–4-man{' '}
+          <strong>distance-to-mate tablebases</strong> in your browser — no embedded data. It reproduces the hand-rolled{' '}
+          <strong>KRvK</strong>, <strong>KQvK</strong> and <strong>KBNvK</strong> tables <em>bit-for-bit</em> (the proof
+          it's correct), and newly solves <strong>KBBvK</strong> (a forced win), <strong>KNNvK</strong> (a draw) and the
+          major-piece combinations. Built tables are <strong>persisted to IndexedDB</strong>, so the engine then plays
+          the ending perfectly with no rebuild. Each build is proven from the inside: Bellman optimality on a random
+          sample and thousands of optimal self-play games that mate in exactly the stored distance.
+        </p>
+        <div className="epd-controls">
+          <label>
+            Ending{' '}
+            <select value={id} onChange={(e) => setId(e.target.value)} disabled={running}>
+              {GTB_CONFIGS.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.label}
+                  {cached.includes(c.id) ? ' ●' : ''}
+                </option>
+              ))}
+            </select>
+          </label>
+          <button className="btn primary" onClick={run} disabled={running}>
+            {running ? 'Solving…' : `Build & verify ${config.id}`}
+          </button>
+          {isCached && (
+            <button className="btn" onClick={clearOne} disabled={running}>
+              Clear cache
+            </button>
+          )}
+          {isCached && <span className="lab-summary">cached ●</span>}
+          {report && <span className={`lab-summary ${allOk ? 'ok' : 'bad'}`}>{allOk ? 'verified ✓' : 'check failed'}</span>}
+        </div>
+      </div>
+      {running && (
+        <div className="tb-progress">
+          <div className="tb-bar">
+            <div className="tb-fill" style={{ width: `${Math.round(frac * 100)}%` }} />
+          </div>
+          <span className="tb-phase">
+            {phase} — {Math.round(frac * 100)}%
+          </span>
+        </div>
+      )}
+      {report && (
+        <>
+          <table className="lab-table">
+            <thead>
+              <tr>
+                <th>Property</th>
+                <th>Value</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((r) => (
+                <tr key={r.name} className={`lab-row ${r.ok ? 'pass' : 'fail'}`}>
+                  <td>{r.name}</td>
+                  <td>{r.value}</td>
+                  <td className="lab-status">{r.ok ? '✓' : '✗'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {s!.decisive && s!.maxDtmFen && (
+            <p className="tb-note">
+              A position realising the longest mate (White = strong, mate in {Math.ceil(s!.maxDtm / 2)}):{' '}
+              <code>{s!.maxDtmFen}</code>
+            </p>
+          )}
+        </>
+      )}
+    </div>
+  )
+}
+
 // ---------------- Correctness self-tests ----------------
 
 interface CheckRow {
@@ -681,6 +854,9 @@ export default function Lab() {
         <button className={mode === 'tablebase' ? 'tab active' : 'tab'} onClick={() => setMode('tablebase')}>
           KBN vs K
         </button>
+        <button className={mode === 'gtb' ? 'tab active' : 'tab'} onClick={() => setMode('gtb')}>
+          Endgame TBs
+        </button>
         <button className={mode === 'perft' ? 'tab active' : 'tab'} onClick={() => setMode('perft')}>
           Perft
         </button>
@@ -692,6 +868,7 @@ export default function Lab() {
       {mode === 'tactics' && <TacticsLab />}
       {mode === 'epd' && <EpdLab />}
       {mode === 'tablebase' && <TablebaseLab />}
+      {mode === 'gtb' && <EndgamesLab />}
       {mode === 'checks' && <ChecksLab />}
     </div>
   )

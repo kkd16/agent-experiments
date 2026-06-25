@@ -33,6 +33,7 @@
 // Squares are plain 0..63 with sq = rank*8 + file throughout.
 
 import { KNIGHT, BISHOP, ROOK, QUEEN } from './board'
+import { tbCacheLoad, tbCacheSave } from './tbcache'
 
 const WIN = 0 // strong side (White) to move
 const DEF = 1 // defender (lone Black king) to move
@@ -529,6 +530,51 @@ export function loadGtbTable(id: string, dtm: Int16Array, stats: GtbStats): void
 }
 export function gtbTable(id: string): Int16Array | null {
   return SOLVED.get(id)?.dtm ?? null
+}
+
+// Build the 3-man sub-tables a config's capture-resolution depends on. Needed after
+// a config is hydrated from cache (which skips its own build, and so its deps).
+function ensureDepsForId(id: string): void {
+  const c = configById(id)
+  if (c) ensureDeps(c.white, () => Date.now())
+}
+
+// ---- Cache-aware orchestration (async; used by the worker) ----
+
+// Make a config resident, preferring the IndexedDB cache; build + persist on a miss.
+export async function ensureGtb(id: string, onProgress?: ProgressFn): Promise<GtbStats> {
+  if (gtbReady(id)) return gtbStats(id)!
+  const cached = await tbCacheLoad<GtbStats>(id)
+  if (cached && cached.meta && cached.meta.id === id && cached.dtm.length === cached.meta.size) {
+    loadGtbTable(id, cached.dtm, cached.meta)
+    ensureDepsForId(id)
+    onProgress?.(1, 'loaded from cache')
+    return cached.meta
+  }
+  const stats = buildGtb(id, onProgress)
+  const dtm = gtbTable(id)
+  if (dtm) await tbCacheSave(id, dtm, stats)
+  return stats
+}
+
+// Persist an already-resident table to the cache (no-op if not built yet).
+export async function persistGtb(id: string): Promise<void> {
+  const s = SOLVED.get(id)
+  if (s) await tbCacheSave(id, s.dtm, s.stats)
+}
+
+// Hydrate a config from the cache *only* (never builds). Returns whether it is now
+// resident. The play worker calls this before searching an endgame so a previously
+// built-and-persisted table is used without a multi-second rebuild mid-move.
+export async function tryLoadGtbFromCache(id: string): Promise<boolean> {
+  if (gtbReady(id)) return true
+  const cached = await tbCacheLoad<GtbStats>(id)
+  if (cached && cached.meta && cached.meta.id === id && cached.dtm.length === cached.meta.size) {
+    loadGtbTable(id, cached.dtm, cached.meta)
+    ensureDepsForId(id)
+    return true
+  }
+  return false
 }
 
 // ---- FEN reconstruction (white = strong) ----
