@@ -32,6 +32,7 @@ import {
   pieceType,
 } from './board'
 import { kpkWin } from './kpk'
+import { probeKxK } from './egtb'
 
 // Midgame / endgame base values, indexed by piece type 1..6.
 const MG_VALUE = [0, 82, 337, 365, 477, 1025, 0]
@@ -259,6 +260,14 @@ export function evaluate(p: Position): number {
   // --- Special endgame: King + Pawn vs King (perfect knowledge) ---
   if (wNonKing + bNonKing === 1 && (wpN + bpN) === 1) {
     return evalKPK(p, wpN === 1)
+  }
+
+  // --- Special endgames: K+R vs K and K+Q vs K (perfect distance-to-mate) ---
+  if (wpN === 0 && bpN === 0) {
+    if (wNonKing === 1 && bNonKing === 0 && whiteRooks === 1) return evalKxK(p, ROOK, true)
+    if (wNonKing === 1 && bNonKing === 0 && whiteQueens === 1) return evalKxK(p, QUEEN, true)
+    if (bNonKing === 1 && wNonKing === 0 && blackRooks === 1) return evalKxK(p, ROOK, false)
+    if (bNonKing === 1 && wNonKing === 0 && blackQueens === 1) return evalKxK(p, QUEEN, false)
   }
 
   if (whiteBishops >= 2) {
@@ -499,6 +508,29 @@ function evalKPK(p: Position, whiteOwnsPawn: boolean): number {
   // Won: queen-up score, sharpened by how advanced the (now canonical) pawn is.
   const base = EG_VALUE[QUEEN] - EG_VALUE[PAWN] + 120 + (psq >> 3) * 16
   const whiteRel = strongIsWhite ? base : -base
+  return p.turn === WHITE ? whiteRel : -whiteRel
+}
+
+// K+R vs K / K+Q vs K with perfect play, via the in-browser retrograde
+// tablebase. Returns a decisive, DTM-graded score (faster mates score higher) or
+// 0 for the rare drawn cases (the lone king can grab an undefended piece, or
+// it's stalemate). Scores stay well under the search's mate threshold.
+function evalKxK(p: Position, piece: number, strongIsWhite: boolean): number {
+  const strongColor = strongIsWhite ? WHITE : BLACK
+  let pieceSq = -1
+  for (let s = 0; s < 128; s++) {
+    if (!isOnBoard(s)) { s += 7; continue }
+    const pc = p.board[s]
+    if (pc === EMPTY) continue
+    if (pieceType(pc) === piece && pieceColor(pc) === strongColor) {
+      pieceSq = to64(s)
+      break
+    }
+  }
+  const r = probeKxK(piece, to64(p.kings[WHITE]), to64(p.kings[BLACK]), pieceSq, strongIsWhite, p.turn === WHITE)
+  if (!r.win) return 0 // drawn (piece hangs) or unreachable
+  const strongRel = 20000 - r.dtm
+  const whiteRel = strongIsWhite ? strongRel : -strongRel
   return p.turn === WHITE ? whiteRel : -whiteRel
 }
 

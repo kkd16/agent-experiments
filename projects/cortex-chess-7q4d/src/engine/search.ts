@@ -78,6 +78,25 @@ export interface SearchOptions {
 
 export type InfoCallback = (info: SearchInfo) => void
 
+// A single principal variation in a multi-PV analysis.
+export interface PvLine {
+  score: number
+  mate: number | null
+  pv: Move[]
+}
+
+export interface MultiInfo {
+  depth: number
+  seldepth: number
+  nodes: number
+  timeMs: number
+  nps: number
+  hashfull: number
+  lines: PvLine[]
+}
+
+export type MultiInfoCallback = (info: MultiInfo) => void
+
 export class Searcher {
   private pos!: Position
   private nodes = 0
@@ -91,6 +110,9 @@ export class Searcher {
   private readonly history = new Int32Array(2 * 128 * 128)
   private readonly keyStack: bigint[] = []
   private readonly lmr = new Int32Array(64 * 64)
+  // Root moves to skip at ply 0 — drives multi-PV (find the best line, then the
+  // best line that doesn't start with any already-found move).
+  private rootExcluded: Move[] = []
 
   // Transposition table (open-addressed, always-replace).
   private readonly ttKey = new BigInt64Array(TT_SIZE)
@@ -146,6 +168,7 @@ export class Searcher {
     this.killers.fill(0)
     this.history.fill(0)
     this.keyStack.length = 0
+    this.rootExcluded = []
     if (options.history) for (const h of options.history) this.keyStack.push(h)
 
     let best: SearchInfo = {
@@ -183,6 +206,69 @@ export class Searcher {
       onInfo?.(best)
 
       if (Math.abs(score) > MATE_THRESHOLD) break
+      if (this.timeLimit > 0 && this.now() - this.startTime > this.timeLimit * 0.5) break
+    }
+
+    return best
+  }
+
+  // Multi-PV analysis: at every depth, find the best line, then the best line
+  // whose first move differs from all earlier ones, up to `multiPv` lines. Each
+  // line is a full-window root search with the earlier root moves excluded; the
+  // shared transposition table keeps the later lines cheap.
+  searchMultiPv(
+    pos: Position,
+    options: SearchOptions,
+    multiPv: number,
+    onInfo?: MultiInfoCallback,
+  ): MultiInfo {
+    this.pos = pos
+    this.nodes = 0
+    this.stop = false
+    this.startTime = this.now()
+    this.timeLimit = options.maxTime
+    this.killers.fill(0)
+    this.history.fill(0)
+    this.keyStack.length = 0
+    this.rootExcluded = []
+    if (options.history) for (const h of options.history) this.keyStack.push(h)
+
+    let best: MultiInfo = { depth: 0, seldepth: 0, nodes: 0, timeMs: 0, nps: 0, hashfull: 0, lines: [] }
+
+    for (let depth = 1; depth <= options.maxDepth; depth++) {
+      this.seldepth = 0
+      this.rootExcluded = []
+      const lines: PvLine[] = []
+      let aborted = false
+
+      for (let pvi = 0; pvi < multiPv; pvi++) {
+        const score = this.negamax(depth, -INF, INF, 0, true)
+        if (this.stop && depth > 1) {
+          aborted = true
+          break
+        }
+        const pv = this.extractPv()
+        if (pv.length === 0) break // no more distinct root moves
+        lines.push({ score, mate: this.mateIn(score), pv })
+        this.rootExcluded.push(pv[0])
+      }
+
+      if (aborted) break
+      if (lines.length === 0) break // mate/stalemate at the root
+
+      const elapsed = Math.max(1, this.now() - this.startTime)
+      best = {
+        depth,
+        seldepth: this.seldepth,
+        nodes: this.nodes,
+        timeMs: Math.round(elapsed),
+        nps: Math.round((this.nodes / elapsed) * 1000),
+        hashfull: Math.min(1000, Math.round((this.ttUsed / TT_SIZE) * 1000)),
+        lines,
+      }
+      onInfo?.(best)
+
+      if (lines[0] && Math.abs(lines[0].score) > MATE_THRESHOLD) break
       if (this.timeLimit > 0 && this.now() - this.startTime > this.timeLimit * 0.5) break
     }
 
@@ -461,6 +547,8 @@ export class Searcher {
     for (let i = 0; i < moves.length; i++) {
       this.pickMove(moves, scores, i)
       const m = moves[i]
+      // Multi-PV: at the root, skip moves already claimed by an earlier line.
+      if (ply === 0 && this.rootExcluded.length > 0 && this.rootExcluded.includes(m)) continue
       const capture = this.isCapture(m)
       const promo = movePromo(m)
       const quiet = !capture && !promo

@@ -6,6 +6,7 @@ import {
   type Move,
   EMPTY,
   PAWN,
+  QUEEN,
   KING,
   FLAG_EP,
   FLAG_CASTLE,
@@ -80,6 +81,61 @@ export function moveToSan(pos: Position, move: Move, legal: Move[]): string {
   unmakeMoveOnBoard(pos, move, undo)
 
   return san
+}
+
+const PIECE_FROM_LETTER: Record<string, number> = { N: 2, B: 3, R: 4, Q: 5, K: 6 }
+
+// Parse a SAN token (e.g. "Nf3", "exd5", "O-O", "e8=Q+", "Qh4xe1#") into the
+// matching legal Move in `pos`, or null if it doesn't resolve. We parse the
+// token *structurally* (piece, optional from-file / from-rank disambiguators,
+// destination, promotion) and then match it against the legal move list, so the
+// parser tolerates the real-world sloppiness that a strict canonical-string
+// compare would reject: missing "=" before a promotion, over-specified
+// disambiguation (e.g. "Qh4e1" where "Qe1" was enough), zeros for castling, and
+// trailing check / annotation glyphs.
+export function sanToMove(pos: Position, san: string): Move | null {
+  const s = san.trim().replace(/e\.p\.?/i, '').replace(/[+#!?]+$/g, '').replace(/0/g, 'O')
+  if (!s) return null
+
+  const legal = generateLegal(pos)
+
+  // Castling.
+  if (s === 'O-O' || s === 'O-O-O') {
+    const kingside = s === 'O-O'
+    for (const m of legal) {
+      if (moveFlag(m) === FLAG_CASTLE && (fileOf(moveTo(m)) === 6) === kingside) return m
+    }
+    return null
+  }
+
+  const match = /^([NBRQK])?([a-h])?([1-8])?x?([a-h][1-8])(?:=?([NBRQ]))?$/.exec(s)
+  if (!match) return null
+  const [, pieceLetter, fromFile, fromRank, destName, promoLetter] = match
+
+  const type = pieceLetter ? PIECE_FROM_LETTER[pieceLetter] : PAWN
+  const dest = (destName.charCodeAt(0) - 97) + (destName.charCodeAt(1) - 49) * 16
+  const ff = fromFile ? fromFile.charCodeAt(0) - 97 : -1
+  const fr = fromRank ? fromRank.charCodeAt(0) - 49 : -1
+  const promo = promoLetter ? PIECE_FROM_LETTER[promoLetter] : 0
+
+  let found: Move | null = null
+  for (const m of legal) {
+    if (moveTo(m) !== dest) continue
+    const from = moveFrom(m)
+    if (pieceType(pos.board[from]) !== type) continue
+    if (ff >= 0 && fileOf(from) !== ff) continue
+    if (fr >= 0 && rankOf(from) !== fr) continue
+    const mp = movePromo(m)
+    if (promo) {
+      if (mp !== promo) continue
+    } else if (mp && mp !== QUEEN) {
+      // Promotion with no piece named in the token → default to a queen.
+      continue
+    }
+    if (found !== null) return null // genuinely ambiguous — refuse rather than guess
+    found = m
+  }
+  return found
 }
 
 export { PIECE_LETTER, KING }
