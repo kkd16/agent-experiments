@@ -33,6 +33,7 @@ import {
 } from './board'
 import { kpkWin } from './kpk'
 import { probeKxK } from './egtb'
+import { probeKbnk, kbnkReady } from './kbnk'
 
 // Midgame / endgame base values, indexed by piece type 1..6.
 const MG_VALUE = [0, 82, 337, 365, 477, 1025, 0]
@@ -268,6 +269,9 @@ export function evaluate(p: Position): number {
     if (wNonKing === 1 && bNonKing === 0 && whiteQueens === 1) return evalKxK(p, QUEEN, true)
     if (bNonKing === 1 && wNonKing === 0 && blackRooks === 1) return evalKxK(p, ROOK, false)
     if (bNonKing === 1 && wNonKing === 0 && blackQueens === 1) return evalKxK(p, QUEEN, false)
+    // --- The hardest elementary mate: King + Bishop + Knight vs King ---
+    if (wNonKing === 2 && bNonKing === 0 && whiteBishops === 1 && whiteKnights === 1) return evalKBNK(p, true)
+    if (bNonKing === 2 && wNonKing === 0 && blackBishops === 1 && blackKnights === 1) return evalKBNK(p, false)
   }
 
   if (whiteBishops >= 2) {
@@ -532,6 +536,55 @@ function evalKxK(p: Position, piece: number, strongIsWhite: boolean): number {
   const strongRel = 20000 - r.dtm
   const whiteRel = strongIsWhite ? strongRel : -strongRel
   return p.turn === WHITE ? whiteRel : -whiteRel
+}
+
+// King + Bishop + Knight vs King. When the perfect retrograde tablebase has been
+// built (see kbnk.ts) we return its exact distance-to-mate so the engine plays
+// the fastest forced win. Otherwise we fall back to a "drive the lone king to a
+// corner of the bishop's colour" heuristic — a known-win score with a gradient
+// the search climbs to the right corner, where it then sees the forced mate.
+function evalKBNK(p: Position, strongIsWhite: boolean): number {
+  const strongColor = strongIsWhite ? WHITE : BLACK
+  let bsq = -1
+  let nsq = -1
+  for (let s = 0; s < 128; s++) {
+    if (!isOnBoard(s)) { s += 7; continue }
+    const pc = p.board[s]
+    if (pc === EMPTY || pieceColor(pc) !== strongColor) continue
+    const t = pieceType(pc)
+    if (t === BISHOP) bsq = to64(s)
+    else if (t === KNIGHT) nsq = to64(s)
+  }
+  const wk = to64(p.kings[WHITE])
+  const bk = to64(p.kings[BLACK])
+
+  if (kbnkReady()) {
+    const r = probeKbnk(wk, bk, bsq, nsq, strongIsWhite, p.turn === WHITE)
+    if (!r.win) return 0 // a genuine draw (the lone king can grab an undefended piece)
+    const strongRel = 20000 - r.dtm
+    const whiteRel = strongIsWhite ? strongRel : -strongRel
+    return p.turn === WHITE ? whiteRel : -whiteRel
+  }
+
+  // Heuristic fallback. Corners of the bishop's colour are the only mating
+  // corners: a dark-squared bishop mates on a1/h8, a light-squared one on h1/a8.
+  const loneKing = strongIsWhite ? bk : wk
+  const strongKing = strongIsWhite ? wk : bk
+  const bishopParity = ((bsq & 7) + (bsq >> 3)) & 1
+  const cornerA = bishopParity === 0 ? 0 : 7 // a1 (dark) or h1 (light)
+  const cornerB = bishopParity === 0 ? 63 : 56 // h8 (dark) or a8 (light)
+  const cdist = Math.min(cheb64(loneKing, cornerA), cheb64(loneKing, cornerB))
+  const kdist = cheb64(strongKing, loneKing)
+  // Also reward the knight helping shoulder the king toward the corner.
+  const ndist = cheb64(nsq, loneKing)
+  const strongRel = 3500 + 170 * (7 - cdist) + 18 * (7 - kdist) + 6 * (7 - ndist)
+  const whiteRel = strongIsWhite ? strongRel : -strongRel
+  return p.turn === WHITE ? whiteRel : -whiteRel
+}
+
+// Chebyshev (king) distance between two 0..63 squares.
+function cheb64(a: number, b: number): number {
+  return Math.max(Math.abs((a & 7) - (b & 7)), Math.abs((a >> 3) - (b >> 3)))
 }
 
 // Reference material so the UI can show a simple material count.

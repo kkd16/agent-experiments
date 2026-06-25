@@ -132,6 +132,31 @@ export function bookEntries(fen: string): { uci: string; weight: number }[] {
     .map((e) => ({ uci: name(moveFrom(e.move)) + name(moveTo(e.move)) + (movePromo(e.move) ? 'q' : ''), weight: e.weight }))
 }
 
+// Full opening-explorer view for a position: every book move with its SAN, the
+// resolved Move (so the UI can play it), its weight and share of the total.
+export function bookExplorer(
+  fen: string,
+): { move: Move; san: string; uci: string; weight: number; pct: number }[] {
+  if (!book) book = compile()
+  const list = book.get(key(fen)) ?? []
+  if (list.length === 0) return []
+  const g = new Game(fen)
+  const legal = g.legalMoves()
+  const files = 'abcdefgh'
+  const name = (s: number) => files[s & 7] + ((s >> 4) + 1)
+  let total = 0
+  for (const e of list) total += e.weight
+  return [...list]
+    .sort((a, b) => b.weight - a.weight)
+    .map((e) => ({
+      move: e.move,
+      san: moveToSan(g.pos, e.move, legal),
+      uci: name(moveFrom(e.move)) + name(moveTo(e.move)) + (movePromo(e.move) ? 'q' : ''),
+      weight: e.weight,
+      pct: Math.round((e.weight / total) * 100),
+    }))
+}
+
 export function bookPositions(): number {
   if (!book) book = compile()
   return book.size

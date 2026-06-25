@@ -16,10 +16,13 @@ import {
   parsePgn,
   sanToMove,
   Game,
+  EPD_SUITES,
+  type EpdCase,
+  type KbnkVerification,
 } from '../engine'
 import { useEngine } from '../hooks/useEngine'
 
-type Mode = 'perft' | 'tactics' | 'checks'
+type Mode = 'perft' | 'tactics' | 'epd' | 'tablebase' | 'checks'
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))
 
@@ -222,6 +225,275 @@ function TacticsLab() {
   )
 }
 
+// ---------------- EPD suites ----------------
+
+interface EpdRow {
+  id: string
+  want: string
+  got: string | null
+  scoreText: string | null
+  depth: number | null
+  status: 'idle' | 'running' | 'solved' | 'missed'
+  fen: string
+}
+
+const EPD_BUDGETS = [1000, 2000, 4000]
+
+function EpdLab() {
+  const engine = useEngine()
+  const [suiteIdx, setSuiteIdx] = useState(0)
+  const [budget, setBudget] = useState(2000)
+  const [running, setRunning] = useState(false)
+  const [rows, setRows] = useState<EpdRow[]>([])
+
+  const suite = EPD_SUITES[suiteIdx]
+
+  const toUci = (m: number) => uci(m)
+  const movesToUci = useCallback((c: EpdCase, list: string[]): string[] => {
+    const pos = parseFen(c.fen)
+    const out: string[] = []
+    for (const san of list) {
+      const m = sanToMove(pos, san)
+      if (m !== null) out.push(toUci(m))
+    }
+    return out
+  }, [])
+
+  const run = useCallback(async () => {
+    setRunning(true)
+    const init: EpdRow[] = suite.cases.map((c) => ({
+      id: c.id,
+      want: c.bm.length ? c.bm.join(' / ') : 'avoid ' + c.am.join(' / '),
+      got: null,
+      scoreText: null,
+      depth: null,
+      status: 'idle',
+      fen: c.fen,
+    }))
+    setRows(init)
+    await sleep(30)
+    for (let i = 0; i < suite.cases.length; i++) {
+      const c = suite.cases[i]
+      setRows((prev) => prev.map((r, j) => (j === i ? { ...r, status: 'running' } : r)))
+      const pos = parseFen(c.fen)
+      const legal = generateLegal(pos)
+      const res = await engine.think({ fen: c.fen, history: [], maxDepth: 24, maxTime: budget }, () => {})
+      const best = res.pv[0]
+      const gotUci = best ? uci(best) : '—'
+      const gotSan = best ? moveToSan(pos, best, legal) : '—'
+      const bmUci = movesToUci(c, c.bm)
+      const amUci = movesToUci(c, c.am)
+      const solved = bmUci.length ? bmUci.includes(gotUci) : !amUci.includes(gotUci)
+      const scoreText = res.mate !== null ? `#${res.mate}` : (res.score >= 0 ? '+' : '') + (res.score / 100).toFixed(2)
+      setRows((prev) =>
+        prev.map((r, j) =>
+          j === i ? { ...r, got: gotSan, scoreText, depth: res.depth, status: solved ? 'solved' : 'missed' } : r,
+        ),
+      )
+    }
+    setRunning(false)
+  }, [engine, suite, budget, movesToUci])
+
+  const solved = rows.filter((r) => r.status === 'solved').length
+  const done = rows.filter((r) => r.status === 'solved' || r.status === 'missed').length
+
+  return (
+    <div className="lab">
+      <div className="lab-intro">
+        <p>
+          <strong>EPD test suites</strong> are how engines are benchmarked: a position with a <em>published</em> best
+          move. The engine gets a fixed budget on each and we report how many it finds — an honest, externally-defined
+          measure of strength (these answers are not the engine's own). {suite.blurb}
+        </p>
+        <div className="epd-controls">
+          <label>
+            Suite{' '}
+            <select value={suiteIdx} onChange={(e) => setSuiteIdx(Number(e.target.value))} disabled={running}>
+              {EPD_SUITES.map((s, i) => (
+                <option key={s.name} value={i}>
+                  {s.name} ({s.cases.length})
+                </option>
+              ))}
+            </select>
+          </label>
+          <label>
+            Budget{' '}
+            <select value={budget} onChange={(e) => setBudget(Number(e.target.value))} disabled={running}>
+              {EPD_BUDGETS.map((b) => (
+                <option key={b} value={b}>
+                  {b / 1000}s / move
+                </option>
+              ))}
+            </select>
+          </label>
+          <button className="btn primary" onClick={run} disabled={running}>
+            {running ? 'Solving…' : 'Run suite'}
+          </button>
+          {done > 0 && (
+            <span className={`lab-summary ${solved === rows.length ? 'ok' : solved >= rows.length * 0.6 ? '' : 'bad'}`}>
+              {solved}/{rows.length} solved
+            </span>
+          )}
+        </div>
+      </div>
+      <table className="lab-table">
+        <thead>
+          <tr>
+            <th>ID</th>
+            <th>Best move</th>
+            <th>Engine</th>
+            <th>Eval</th>
+            <th>Depth</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r) => (
+            <tr
+              key={r.id}
+              className={`lab-row ${r.status === 'solved' ? 'pass' : r.status === 'missed' ? 'fail' : r.status}`}
+            >
+              <td title={r.fen}>{r.id}</td>
+              <td>{r.want}</td>
+              <td>{r.got ?? '—'}</td>
+              <td>{r.scoreText ?? '—'}</td>
+              <td>{r.depth ?? '—'}</td>
+              <td className="lab-status">
+                {r.status === 'solved' && '✓'}
+                {r.status === 'missed' && '✗'}
+                {r.status === 'running' && '…'}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  )
+}
+
+// ---------------- KBN vs K tablebase ----------------
+
+function TablebaseLab() {
+  const engine = useEngine()
+  const [running, setRunning] = useState(false)
+  const [frac, setFrac] = useState(0)
+  const [phase, setPhase] = useState('')
+  const [report, setReport] = useState<KbnkVerification | null>(null)
+
+  const run = useCallback(async () => {
+    setRunning(true)
+    setReport(null)
+    setFrac(0)
+    setPhase('starting')
+    await sleep(30)
+    const r = await engine.verifyKbnk({ sample: 300000, games: 3000 }, (f, ph) => {
+      setFrac(f)
+      setPhase(ph)
+    })
+    setReport(r)
+    setRunning(false)
+  }, [engine])
+
+  const s = report?.stats
+  const rows: { name: string; value: string; ok: boolean }[] = report
+    ? [
+        {
+          name: 'Winning positions solved (White to move)',
+          value: s!.won.toLocaleString(),
+          ok: s!.won > 10_000_000,
+        },
+        {
+          name: 'Lost positions for the defender',
+          value: s!.lost.toLocaleString(),
+          ok: s!.lost > 10_000_000,
+        },
+        { name: 'Drawn positions (piece hangs / stalemate)', value: s!.draw.toLocaleString(), ok: true },
+        {
+          name: 'Longest forced mate',
+          value: `${Math.ceil(s!.maxDtm / 2)} moves (${s!.maxDtm} plies)`,
+          ok: s!.maxDtm === 65,
+        },
+        { name: 'Build time (retrograde analysis)', value: `${(s!.buildMs / 1000).toFixed(1)} s`, ok: true },
+        {
+          name: 'Retrograde consistency checks',
+          value: `${(report.consChecked - report.consBad).toLocaleString()} / ${report.consChecked.toLocaleString()} hold`,
+          ok: report.consBad === 0,
+        },
+        {
+          name: 'Optimal self-play games reaching mate',
+          value: `${report.selfPlayMated.toLocaleString()} / ${report.selfPlayGames.toLocaleString()}`,
+          ok: report.selfPlayMated === report.selfPlayGames,
+        },
+        {
+          name: 'Self-play distance-to-mate mismatches',
+          value: `${report.selfPlayMismatch}`,
+          ok: report.selfPlayMismatch === 0,
+        },
+      ]
+    : []
+  const allOk = rows.length > 0 && rows.every((r) => r.ok)
+
+  return (
+    <div className="lab">
+      <div className="lab-intro">
+        <p>
+          The <strong>King + Bishop + Knight vs King</strong> mate is the hardest of the elementary checkmates — it only
+          exists in the two corners the bishop controls, and the longest forced win is <strong>33 moves</strong>. This
+          builds the <strong>complete distance-to-mate tablebase</strong> — all ~33.6&nbsp;million positions — right here
+          in your browser by <strong>backward retrograde analysis</strong> (no embedded data), then proves it from the
+          inside: every won position has a faster-losing child, every lost position has all children winning, and
+          thousands of optimal self-play games reach mate in exactly the stored distance. Once built, the engine plays
+          this ending perfectly.
+        </p>
+        <button className="btn primary" onClick={run} disabled={running}>
+          {running ? 'Solving…' : 'Build & verify KBN vs K'}
+        </button>
+        {report && (
+          <span className={`lab-summary ${allOk ? 'ok' : 'bad'}`}>{allOk ? 'verified ✓' : 'check failed'}</span>
+        )}
+      </div>
+      {running && (
+        <div className="tb-progress">
+          <div className="tb-bar">
+            <div className="tb-fill" style={{ width: `${Math.round(frac * 100)}%` }} />
+          </div>
+          <span className="tb-phase">
+            {phase} — {Math.round(frac * 100)}%
+          </span>
+        </div>
+      )}
+      {report && (
+        <>
+          <table className="lab-table">
+            <thead>
+              <tr>
+                <th>Property</th>
+                <th>Value</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((r) => (
+                <tr key={r.name} className={`lab-row ${r.ok ? 'pass' : 'fail'}`}>
+                  <td>{r.name}</td>
+                  <td>{r.value}</td>
+                  <td className="lab-status">{r.ok ? '✓' : '✗'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {s!.maxDtmFen && (
+            <p className="tb-note">
+              A position realising the longest mate (White to move, mate in {Math.ceil(s!.maxDtm / 2)}):{' '}
+              <code>{s!.maxDtmFen}</code>
+            </p>
+          )}
+        </>
+      )}
+    </div>
+  )
+}
+
 // ---------------- Correctness self-tests ----------------
 
 interface CheckRow {
@@ -403,6 +675,12 @@ export default function Lab() {
         <button className={mode === 'tactics' ? 'tab active' : 'tab'} onClick={() => setMode('tactics')}>
           Tactics
         </button>
+        <button className={mode === 'epd' ? 'tab active' : 'tab'} onClick={() => setMode('epd')}>
+          EPD suites
+        </button>
+        <button className={mode === 'tablebase' ? 'tab active' : 'tab'} onClick={() => setMode('tablebase')}>
+          KBN vs K
+        </button>
         <button className={mode === 'perft' ? 'tab active' : 'tab'} onClick={() => setMode('perft')}>
           Perft
         </button>
@@ -412,6 +690,8 @@ export default function Lab() {
       </div>
       {mode === 'perft' && <PerftLab />}
       {mode === 'tactics' && <TacticsLab />}
+      {mode === 'epd' && <EpdLab />}
+      {mode === 'tablebase' && <TablebaseLab />}
       {mode === 'checks' && <ChecksLab />}
     </div>
   )

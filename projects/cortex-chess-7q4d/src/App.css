@@ -441,6 +441,32 @@
   margin-top: 2px;
 }
 
+/* Think-time control */
+.movetime-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 12px;
+}
+.movetime-label {
+  font-size: 13px;
+  color: var(--text);
+}
+.movetime-select {
+  background: #131a23;
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 5px 8px;
+  font-size: 13px;
+}
+.ponder-hit {
+  color: var(--accent-2);
+  font-weight: 700;
+  font-size: 12px;
+}
+
 /* Toggles */
 .toggles {
   display: flex;
@@ -686,6 +712,66 @@
   color: #ff6b6b;
 }
 
+/* ---- EPD controls ---- */
+.epd-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+}
+.epd-controls label {
+  font-size: 13px;
+  color: var(--muted);
+}
+.epd-controls select {
+  background: #131a23;
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 6px 8px;
+  font-size: 13px;
+}
+
+/* ---- Tablebase build progress ---- */
+.tb-progress {
+  margin-top: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.tb-bar {
+  height: 10px;
+  background: #131a23;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+}
+.tb-fill {
+  height: 100%;
+  background: linear-gradient(90deg, var(--accent), var(--accent-2));
+  transition: width 0.2s ease;
+}
+.tb-phase {
+  font-size: 12px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.tb-note {
+  margin-top: 14px;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.6;
+}
+.tb-note code {
+  background: #131a23;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 2px 6px;
+  font-size: 12px;
+  color: var(--accent);
+  word-break: break-all;
+}
+
 /* ---- Analyze ---- */
 .analyze-layout {
   width: 100%;
@@ -921,6 +1007,67 @@
   margin-top: 8px;
   font-size: 12px;
   color: var(--muted);
+}
+
+/* ---- Opening explorer ---- */
+.book-count {
+  color: var(--muted);
+  font-weight: 400;
+  font-size: 12px;
+  margin-left: 6px;
+}
+.book-empty {
+  color: var(--muted);
+  font-size: 13px;
+  padding: 4px 0;
+}
+.book-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.book-row {
+  display: grid;
+  grid-template-columns: 56px 1fr 38px;
+  align-items: center;
+  gap: 8px;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  padding: 5px 8px;
+  cursor: pointer;
+  color: var(--text);
+  text-align: left;
+}
+.book-row:hover {
+  background: #6f9cff14;
+  border-color: var(--border);
+}
+.book-san {
+  font-weight: 700;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+.book-bar {
+  height: 8px;
+  background: #131a23;
+  border-radius: 4px;
+  overflow: hidden;
+}
+.book-fill {
+  display: block;
+  height: 100%;
+  background: linear-gradient(90deg, var(--accent), var(--accent-2));
+}
+.book-pct {
+  font-size: 12px;
+  color: var(--muted);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.ana-export {
+  float: right;
+  flex: none;
 }
 
 /* ---- Footer ---- */

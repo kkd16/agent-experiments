@@ -63,9 +63,21 @@ function validateFen(fen: string): boolean {
   }
 }
 
+// Explicit "think time" presets — override the level's time budget so the engine
+// thinks for a fixed amount per move. 0 = use the strength level's own budget.
+const MOVE_TIMES: { label: string; ms: number }[] = [
+  { label: 'Level default', ms: 0 },
+  { label: '0.5s', ms: 500 },
+  { label: '1s', ms: 1000 },
+  { label: '2s', ms: 2000 },
+  { label: '5s', ms: 5000 },
+  { label: '10s', ms: 10000 },
+]
+
 export default function App() {
   const gameRef = useRef<Game>(new Game())
   const engine = useEngine()
+  const ponderEngine = useEngine() // thinks on the opponent's clock
 
   const [view, setView] = useState<BoardView>(() => buildView(new Game()))
   const [whiteOnBottom, setWhiteOnBottom] = useState(true)
@@ -84,10 +96,19 @@ export default function App() {
   const [copied, setCopied] = useState(false)
   const [bookOn, setBookOn] = useState(true)
   const [analysisOn, setAnalysisOn] = useState(false)
+  const [ponderOn, setPonderOn] = useState(false)
+  const [ponderHit, setPonderHit] = useState(false)
+  const [moveTimeIdx, setMoveTimeIdx] = useState(0)
   const [pgnMsg, setPgnMsg] = useState('')
 
   const lastSearchedFen = useRef('')
   const lastAnalyzedFen = useRef('')
+  // Pondering: after the engine moves, it searches the position arising from its
+  // *predicted* reply. If the human then plays that reply, the precomputed result
+  // is used instantly (a "ponder hit").
+  const ponderRef = useRef<{ reply: number; fen: string } | null>(null)
+  const ponderResultRef = useRef<{ fen: string; info: SearchInfo } | null>(null)
+  const ponderingFen = useRef('')
 
   const sync = useCallback(() => {
     setView(buildView(gameRef.current))
@@ -101,6 +122,14 @@ export default function App() {
   const interactive =
     tab === 'play' && view.result === 'playing' && !thinking && humanControls(view.turn)
 
+  const clearPonder = useCallback(() => {
+    ponderEngine.cancel()
+    ponderRef.current = null
+    ponderResultRef.current = null
+    ponderingFen.current = ''
+    setPonderHit(false)
+  }, [ponderEngine])
+
   // Engine auto-move when it is the engine's turn.
   useEffect(() => {
     if (tab !== 'play') return
@@ -113,6 +142,34 @@ export default function App() {
     const searchFen = view.fen
     const level = LEVELS[levelIndex]
     const history = gameRef.current.keyHistory()
+    // Explicit movetime overrides the level's time budget (and lifts the depth cap
+    // so the clock, not the depth, bounds the search).
+    const moveTime = MOVE_TIMES[moveTimeIdx].ms
+    const maxTime = moveTime > 0 ? moveTime : level.maxTime
+    const maxDepth = moveTime > 0 ? 30 : level.maxDepth
+
+    // --- Ponder hit: the human played the move we predicted, so the position is
+    // already searched. Play the precomputed move instantly. ---
+    const pondered = ponderResultRef.current
+    if (pondered && pondered.fen === searchFen && pondered.info.pv.length > 0) {
+      const pv0 = pondered.info.pv[0]
+      const legal = gameRef.current.findMove(moveFrom(pv0), moveTo(pv0), movePromo(pv0))
+      ponderResultRef.current = null
+      ponderRef.current = null
+      if (legal !== null) {
+        setInfo(pondered.info)
+        setPvSan(pvToSan(searchFen, pondered.info.pv))
+        setArrow(null)
+        setPonderHit(true)
+        const id = setTimeout(() => {
+          setPonderHit(false)
+          if (gameRef.current.fen() !== searchFen) return
+          gameRef.current.apply(legal)
+          sync()
+        }, 250)
+        return () => clearTimeout(id)
+      }
+    }
 
     // Opening book: play a weighted book move instantly (with a brief pause so it
     // reads as a move, not a glitch) instead of searching.
@@ -142,7 +199,7 @@ export default function App() {
     setArrow(null)
 
     engine
-      .think({ fen: searchFen, history, maxDepth: level.maxDepth, maxTime: level.maxTime }, (i) => {
+      .think({ fen: searchFen, history, maxDepth, maxTime }, (i) => {
         setInfo(i)
         setPvSan(pvToSan(searchFen, i.pv))
       })
@@ -155,9 +212,22 @@ export default function App() {
         if (res.pv.length > 0) {
           gameRef.current.apply(res.pv[0])
           sync()
+          // Set up pondering: predict the human's reply (the 2nd PV move) and
+          // remember the position it leads to, so the ponder effect can pre-search.
+          ponderResultRef.current = null
+          ponderingFen.current = ''
+          if (ponderOn && res.pv.length > 1) {
+            const reply = res.pv[1]
+            const predicted = gameRef.current.findMove(moveFrom(reply), moveTo(reply), movePromo(reply))
+            if (predicted !== null) {
+              const clone = gameRef.current.clone()
+              clone.apply(predicted)
+              ponderRef.current = { reply: predicted, fen: clone.fen() }
+            } else ponderRef.current = null
+          } else ponderRef.current = null
         }
       })
-  }, [view, engineSide, levelIndex, tab, engine, sync, bookOn])
+  }, [view, engineSide, levelIndex, tab, engine, sync, bookOn, moveTimeIdx, ponderOn])
 
   // Background analysis: while it's the human's move and analysis is on, run the
   // engine to show a live evaluation and the best line — without playing a move.
@@ -188,6 +258,37 @@ export default function App() {
       })
   }, [view, analysisOn, tab, thinking, engine, humanControls])
 
+  // Pondering: on the human's clock, pre-search the position arising from the
+  // engine's predicted reply. Runs on a second worker so it never competes with
+  // the live board, and stays silent (it analyses a *future* position).
+  useEffect(() => {
+    if (tab !== 'play' || !ponderOn) return
+    if (view.result !== 'playing') return
+    if (!humanControls(view.turn)) return
+    if (thinking) return
+    const pr = ponderRef.current
+    if (!pr) return
+    if (ponderingFen.current === pr.fen || ponderResultRef.current?.fen === pr.fen) return
+
+    ponderingFen.current = pr.fen
+    const predFen = pr.fen
+    const clone = gameRef.current.clone()
+    const predicted = clone.findMove(moveFrom(pr.reply), moveTo(pr.reply), movePromo(pr.reply))
+    if (predicted === null) return
+    clone.apply(predicted)
+    const level = LEVELS[levelIndex]
+    const moveTime = MOVE_TIMES[moveTimeIdx].ms
+    const maxTime = moveTime > 0 ? moveTime : level.maxTime
+    const maxDepth = moveTime > 0 ? 30 : level.maxDepth
+    ponderEngine
+      .think({ fen: predFen, history: clone.keyHistory(), maxDepth, maxTime }, () => {})
+      .then((res) => {
+        if (ponderRef.current && ponderRef.current.fen === predFen) {
+          ponderResultRef.current = { fen: predFen, info: res }
+        }
+      })
+  }, [view, ponderOn, tab, thinking, ponderEngine, humanControls, levelIndex, moveTimeIdx])
+
   const targets = useMemo(
     () => (selected !== null ? targetsFrom(view.legal, selected) : []),
     [selected, view.legal],
@@ -199,12 +300,16 @@ export default function App() {
       engine.cancel()
       setAnalyzing(false)
       lastAnalyzedFen.current = ''
+      // Ponder bookkeeping: if the human played the move we predicted, keep the
+      // precomputed result for an instant reply; otherwise discard it.
+      if (!ponderRef.current || ponderRef.current.reply !== move) clearPonder()
+      else ponderEngine.cancel()
       gameRef.current.apply(move)
       setSelected(null)
       setArrow(null)
       sync()
     },
-    [sync, engine],
+    [sync, engine, ponderEngine, clearPonder],
   )
 
   const tryMove = useCallback(
@@ -272,6 +377,7 @@ export default function App() {
   const newGame = useCallback(
     (side?: EngineSide) => {
       engine.cancel()
+      clearPonder()
       gameRef.current.reset(START_FEN)
       lastSearchedFen.current = ''
       lastAnalyzedFen.current = ''
@@ -288,11 +394,12 @@ export default function App() {
       }
       setView(buildView(gameRef.current))
     },
-    [engine],
+    [engine, clearPonder],
   )
 
   const undo = useCallback(() => {
     engine.cancel()
+    clearPonder()
     setThinking(false)
     const g = gameRef.current
     if (g.history.length === 0) return
@@ -309,7 +416,7 @@ export default function App() {
     setPvSan('')
     setAnalyzing(false)
     setView(buildView(g))
-  }, [engine, engineSide])
+  }, [engine, engineSide, clearPonder])
 
   const hint = useCallback(() => {
     if (thinking || view.result !== 'playing') return
@@ -334,6 +441,7 @@ export default function App() {
     const fen = fenInput.trim()
     if (!fen || !validateFen(fen)) return
     engine.cancel()
+    clearPonder()
     gameRef.current.reset(fen)
     lastSearchedFen.current = ''
     lastAnalyzedFen.current = ''
@@ -346,7 +454,7 @@ export default function App() {
     setPgnMsg('')
     setFenInput('')
     setView(buildView(gameRef.current))
-  }, [fenInput, engine])
+  }, [fenInput, engine, clearPonder])
 
   const copyFen = useCallback(() => {
     try {
@@ -478,6 +586,20 @@ export default function App() {
                 className="slider"
               />
               <div className="lvl-blurb">{level.blurb}</div>
+              <div className="movetime-row">
+                <span className="movetime-label">Think time</span>
+                <select
+                  className="movetime-select"
+                  value={moveTimeIdx}
+                  onChange={(e) => setMoveTimeIdx(Number(e.target.value))}
+                >
+                  {MOVE_TIMES.map((t, i) => (
+                    <option key={t.label} value={i}>
+                      {t.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
               <div className="toggles">
                 <label className="toggle">
                   <input type="checkbox" checked={bookOn} onChange={(e) => setBookOn(e.target.checked)} />
@@ -497,6 +619,18 @@ export default function App() {
                     }}
                   />
                   <span>Analyze my moves</span>
+                </label>
+                <label className="toggle">
+                  <input
+                    type="checkbox"
+                    checked={ponderOn}
+                    onChange={(e) => {
+                      const on = e.target.checked
+                      setPonderOn(on)
+                      if (!on) clearPonder()
+                    }}
+                  />
+                  <span>Ponder {ponderHit && <span className="ponder-hit">⚡ hit</span>}</span>
                 </label>
               </div>
             </div>
@@ -567,8 +701,9 @@ export default function App() {
       <footer className="footer">
         <span>
           0x88 board · iterative deepening + PVS · aspiration windows · transposition table · quiescence · SEE ·
-          null-move + late-move reductions · tapered eval (mobility · king safety · pawn structure) · KPK / KRK / KQK
-          tablebases · opening book · multi-PV analysis · PGN import
+          null-move + late-move reductions · internal iterative reduction · countermoves + history · tapered eval
+          (mobility · king safety · pawn structure) · KPK / KRK / KQK / <strong>KBNvK</strong> tablebases · opening book +
+          explorer · multi-PV analysis · PGN import + annotated export · pondering · EPD suites
         </span>
       </footer>
     </div>

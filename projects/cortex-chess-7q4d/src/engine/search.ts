@@ -72,7 +72,9 @@ export interface SearchInfo {
 
 export interface SearchOptions {
   maxDepth: number
-  maxTime: number // milliseconds; 0 = no limit
+  maxTime: number // milliseconds; 0 = no limit (hard ceiling)
+  maxNodes?: number // node ceiling; 0/undefined = no limit
+  softTime?: number // ms after which no new iteration is started; default maxTime/2
   history?: bigint[]
 }
 
@@ -103,11 +105,22 @@ export class Searcher {
   private seldepth = 0
   private startTime = 0
   private timeLimit = 0
+  private softLimit = 0
+  private nodeLimit = 0
   private stop = false
   private now: () => number
 
   private readonly killers = new Int32Array(MAX_PLY * 2)
   private readonly history = new Int32Array(2 * 128 * 128)
+  // Countermove heuristic: the quiet refutation that last cut after a given
+  // (from,to) move by the opponent. Indexed by the previous move's from*128+to.
+  private readonly counter = new Int32Array(128 * 128)
+  // Static eval per ply, so a node can tell whether the side to move is
+  // "improving" (eval higher than two plies ago) and prune accordingly.
+  private readonly evalStack = new Int32Array(MAX_PLY)
+  // Quiet moves tried at each ply, so a beta cutoff can reward the move that cut
+  // and apply a history malus to the ones that didn't.
+  private readonly searchedQuiets = new Int32Array(MAX_PLY * 64)
   private readonly keyStack: bigint[] = []
   private readonly lmr = new Int32Array(64 * 64)
   // Root moves to skip at ply 0 — drives multi-PV (find the best line, then the
@@ -152,6 +165,7 @@ export class Searcher {
     this.ttUsed = 0
     this.killers.fill(0)
     this.history.fill(0)
+    this.counter.fill(0)
   }
 
   private timeUp(): boolean {
@@ -165,8 +179,11 @@ export class Searcher {
     this.stop = false
     this.startTime = this.now()
     this.timeLimit = options.maxTime
+    this.softLimit = options.softTime && options.softTime > 0 ? options.softTime : 0
+    this.nodeLimit = options.maxNodes ?? 0
     this.killers.fill(0)
     this.history.fill(0)
+    this.counter.fill(0)
     this.keyStack.length = 0
     this.rootExcluded = []
     if (options.history) for (const h of options.history) this.keyStack.push(h)
@@ -206,7 +223,8 @@ export class Searcher {
       onInfo?.(best)
 
       if (Math.abs(score) > MATE_THRESHOLD) break
-      if (this.timeLimit > 0 && this.now() - this.startTime > this.timeLimit * 0.5) break
+      const soft = this.softLimit > 0 ? this.softLimit : this.timeLimit * 0.5
+      if (this.timeLimit > 0 && this.now() - this.startTime > soft) break
     }
 
     return best
@@ -227,8 +245,11 @@ export class Searcher {
     this.stop = false
     this.startTime = this.now()
     this.timeLimit = options.maxTime
+    this.softLimit = options.softTime && options.softTime > 0 ? options.softTime : 0
+    this.nodeLimit = options.maxNodes ?? 0
     this.killers.fill(0)
     this.history.fill(0)
+    this.counter.fill(0)
     this.keyStack.length = 0
     this.rootExcluded = []
     if (options.history) for (const h of options.history) this.keyStack.push(h)
@@ -242,7 +263,7 @@ export class Searcher {
       let aborted = false
 
       for (let pvi = 0; pvi < multiPv; pvi++) {
-        const score = this.negamax(depth, -INF, INF, 0, true)
+        const score = this.negamax(depth, -INF, INF, 0, true, 0)
         if (this.stop && depth > 1) {
           aborted = true
           break
@@ -278,13 +299,13 @@ export class Searcher {
   // Root search with aspiration windows: re-use the previous score as the centre
   // of a narrow window, widening on a fail-high/low instead of redoing full width.
   private searchRoot(depth: number, prevScore: number): number {
-    if (depth <= 4) return this.negamax(depth, -INF, INF, 0, true)
+    if (depth <= 4) return this.negamax(depth, -INF, INF, 0, true, 0)
 
     let window = 30
     let alpha = prevScore - window
     let beta = prevScore + window
     for (;;) {
-      const score = this.negamax(depth, alpha, beta, 0, true)
+      const score = this.negamax(depth, alpha, beta, 0, true, 0)
       if (this.stop) return score
       if (score <= alpha) {
         beta = (alpha + beta) >> 1
@@ -363,7 +384,7 @@ export class Searcher {
     return moveFlag(m) === FLAG_EP || this.pos.board[moveTo(m)] !== EMPTY
   }
 
-  private scoreMoves(moves: Move[], ttMove: Move, ply: number): Int32Array {
+  private scoreMoves(moves: Move[], ttMove: Move, ply: number, counterMove: Move): Int32Array {
     const scores = new Int32Array(moves.length)
     const board = this.pos.board
     const colorOffset = this.pos.turn * 128 * 128
@@ -392,6 +413,8 @@ export class Searcher {
         scores[i] = 800_000
       } else if (m === k1) {
         scores[i] = 700_000
+      } else if (m === counterMove) {
+        scores[i] = 600_000
       } else {
         scores[i] = this.history[colorOffset + moveFrom(m) * 128 + to]
       }
@@ -413,7 +436,8 @@ export class Searcher {
   }
 
   private quiescence(alpha: number, beta: number, ply: number): number {
-    if ((this.nodes & 2047) === 0 && this.timeUp()) this.stop = true
+    if ((this.nodes & 2047) === 0 && (this.timeUp() || (this.nodeLimit > 0 && this.nodes >= this.nodeLimit)))
+      this.stop = true
     if (this.stop) return 0
     this.nodes++
     if (ply > this.seldepth) this.seldepth = ply
@@ -425,7 +449,7 @@ export class Searcher {
 
     const moves: Move[] = []
     generatePseudo(this.pos, moves, true)
-    const scores = this.scoreMoves(moves, 0, ply)
+    const scores = this.scoreMoves(moves, 0, ply, 0)
     const undo = this.undos[ply]
     const us = this.pos.turn
 
@@ -458,9 +482,10 @@ export class Searcher {
     return alpha
   }
 
-  private negamax(depth: number, alpha: number, beta: number, ply: number, isPv: boolean): number {
+  private negamax(depth: number, alpha: number, beta: number, ply: number, isPv: boolean, prevMove: Move): number {
     this.pvLen[ply] = 0
-    if ((this.nodes & 2047) === 0 && this.timeUp()) this.stop = true
+    if ((this.nodes & 2047) === 0 && (this.timeUp() || (this.nodeLimit > 0 && this.nodes >= this.nodeLimit)))
+      this.stop = true
     if (this.stop) return 0
 
     if (ply > 0 && (this.isRepetition() || this.pos.halfmove >= 100)) return 0
@@ -502,7 +527,17 @@ export class Searcher {
       }
     }
 
+    // Internal iterative reduction: with no hash move to guide ordering, a deep
+    // search is wasteful — shave a ply and let the shallower result seed the TT.
+    // Kept off the principal variation so forced lines aren't proven any slower.
+    if (ttMove === 0 && !isPv && depth >= 6) depth--
+
     const staticEval = checked ? 0 : evaluate(this.pos)
+    this.evalStack[ply] = staticEval
+    // "Improving": the side to move stands better than it did two plies ago. When
+    // improving we prune less eagerly; when sliding, more.
+    const improving = !checked && ply >= 2 && staticEval > this.evalStack[ply - 2]
+    const impInt = improving ? 1 : 0
 
     // --- Static-eval forward pruning (non-PV, not in check) ---
     if (!isPv && !checked && Math.abs(beta) < MATE_THRESHOLD) {
@@ -521,7 +556,7 @@ export class Searcher {
         makeNullMove(this.pos, undo)
         this.keyStack.push(this.pos.hash)
         const R = 2 + (depth >= 6 ? 1 : 0) + (staticEval - beta >= 200 ? 1 : 0)
-        const score = -this.negamax(depth - 1 - R, -beta, -beta + 1, ply + 1, false)
+        const score = -this.negamax(depth - 1 - R, -beta, -beta + 1, ply + 1, false, 0)
         this.keyStack.pop()
         unmakeNullMove(this.pos, undo)
         if (this.stop) return 0
@@ -529,10 +564,12 @@ export class Searcher {
       }
     }
 
+    const counterMove = prevMove ? this.counter[moveFrom(prevMove) * 128 + moveTo(prevMove)] : 0
     const moves: Move[] = []
     generatePseudo(this.pos, moves, false)
-    const scores = this.scoreMoves(moves, ttMove, ply)
+    const scores = this.scoreMoves(moves, ttMove, ply, counterMove)
     const undo = this.undos[ply]
+    const quietBase = ply * 64
 
     const futile = !isPv && !checked && depth <= 6 && Math.abs(alpha) < MATE_THRESHOLD &&
       staticEval + FUTILITY_MARGIN[depth] <= alpha
@@ -554,9 +591,10 @@ export class Searcher {
       const quiet = !capture && !promo
 
       // Late-move pruning and futility pruning skip hopeless quiet moves, but
-      // only once we already have a real score to fall back on.
+      // only once we already have a real score to fall back on. The LMP threshold
+      // is more generous when the side to move is improving.
       if (quiet && legal > 0 && bestScore > -MATE_THRESHOLD) {
-        if (!isPv && !checked && depth <= 4 && quietCount > LMP_LIMIT[depth]) continue
+        if (!isPv && !checked && depth <= 4 && quietCount > LMP_LIMIT[depth] + impInt * depth) continue
         if (futile) continue
       }
 
@@ -566,28 +604,35 @@ export class Searcher {
         continue
       }
       legal++
-      if (quiet) quietCount++
+      if (quiet) {
+        if (quietCount < 64) this.searchedQuiets[quietBase + quietCount] = m
+        quietCount++
+      }
       const givesCheck = isSquareAttacked(this.pos, this.pos.kings[them], us)
       this.keyStack.push(this.pos.hash)
 
       let score: number
       if (legal === 1) {
-        score = -this.negamax(depth - 1, -beta, -alphaLocal, ply + 1, isPv)
+        score = -this.negamax(depth - 1, -beta, -alphaLocal, ply + 1, isPv, m)
       } else {
         // Late move reductions: search likely-irrelevant quiet moves shallower.
+        // To keep tactics safe, reductions are only pushed up for clearly late
+        // quiets when not improving, and eased for moves with a positive history.
         let r = 0
         if (quiet && depth >= 3 && !givesCheck) {
           r = this.lmr[Math.min(depth, 63) * 64 + Math.min(legal, 63)]
           if (isPv) r--
+          if (!improving && legal > 6) r++
+          if (this.history[us * 128 * 128 + moveFrom(m) * 128 + moveTo(m)] > 0) r--
           if (r < 0) r = 0
           if (r > depth - 2) r = depth - 2
         }
-        score = -this.negamax(depth - 1 - r, -alphaLocal - 1, -alphaLocal, ply + 1, false)
+        score = -this.negamax(depth - 1 - r, -alphaLocal - 1, -alphaLocal, ply + 1, false, m)
         if (r > 0 && score > alphaLocal) {
-          score = -this.negamax(depth - 1, -alphaLocal - 1, -alphaLocal, ply + 1, false)
+          score = -this.negamax(depth - 1, -alphaLocal - 1, -alphaLocal, ply + 1, false, m)
         }
         if (score > alphaLocal && score < beta) {
-          score = -this.negamax(depth - 1, -beta, -alphaLocal, ply + 1, true)
+          score = -this.negamax(depth - 1, -beta, -alphaLocal, ply + 1, true, m)
         }
       }
 
@@ -616,9 +661,19 @@ export class Searcher {
             this.killers[ply * 2 + 1] = this.killers[ply * 2]
             this.killers[ply * 2] = m
           }
+          if (prevMove) this.counter[moveFrom(prevMove) * 128 + moveTo(prevMove)] = m
+          const bonus = depth * depth
           const idx = us * 128 * 128 + moveFrom(m) * 128 + moveTo(m)
-          this.history[idx] += depth * depth
+          this.history[idx] += bonus
           if (this.history[idx] > 1 << 28) this.dampHistory()
+          // History malus: the quiet moves that were tried first but didn't cut
+          // get pushed down so they're ordered later next time.
+          const n = Math.min(quietCount - 1, 64)
+          for (let q = 0; q < n; q++) {
+            const qm = this.searchedQuiets[quietBase + q]
+            if (qm === m) continue
+            this.history[us * 128 * 128 + moveFrom(qm) * 128 + moveTo(qm)] -= bonus
+          }
         }
         flag = TT_LOWER
         this.ttStore(hash, depth, bestScore, flag, bestMove, ply)

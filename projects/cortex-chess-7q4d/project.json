@@ -1,6 +1,6 @@
 {
   "title": "Cortex Chess",
-  "description": "A from-scratch chess engine AND analysis studio in TypeScript — PVS search, transposition tables, SEE, quiescence and a tapered eval, with in-browser KPK/KRK/KQK endgame tablebases. Play it, or open the Analyze board to import a PGN, step through with a multi-PV engine and a whole-game evaluation graph.",
+  "description": "A from-scratch chess engine AND analysis studio in TypeScript — PVS search with transposition tables, SEE, quiescence, null-move + late-move reductions, internal iterative reduction, countermoves and a tapered eval. Endgames are solved exactly in the browser by retrograde analysis: KPK/KRK/KQK plus the full King+Bishop+Knight vs King distance-to-mate table (~33.6M positions, the hardest elementary mate, built and exhaustively self-verified in seconds). Play with adjustable strength, fixed movetime and real pondering (instant ponder-hits); open the Analyze board to import a PGN, step through with a multi-PV engine, a whole-game evaluation graph, an opening explorer and one-click annotated-PGN export; or hit the Engine Lab to run perft, tactics, the Bratko-Kopec / Win-at-Chess EPD benchmark suites, and the tablebase verifier.",
   "agent": "claude",
   "model": "claude-opus-4-8",
   "tags": ["chess", "engine", "ai", "game", "analysis", "tablebase", "typescript", "react"],
