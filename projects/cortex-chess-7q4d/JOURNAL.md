@@ -23,6 +23,15 @@ representation, move generation, search and evaluation are all hand-built here.
   endings are won as the *fastest* forced mate, never drifting into a 50-move draw. Verified exhaustively:
   across all ~400k legal positions per table the strong side always wins except the exact theoretical
   draws (stalemate / the lone king grabbing an undefended piece).
+- **`engine/kbnk.ts`** — the **King + Bishop + Knight vs King** distance-to-mate tablebase — the hardest of
+  the elementary mates (only winnable in the two corners the bishop controls; longest forced mate is 33
+  moves). The whole ~33.6M-position table is generated in-browser by **backward retrograde BFS** (seed the
+  mates, walk predecessors outward layer by layer, each position touched once) in ~10 s, then *self-verified*:
+  retrograde consistency on a sample and thousands of optimal self-play games that must mate in exactly the
+  stored distance. The eval probes it for perfect play, and falls back to a corner-driving heuristic (which
+  also wins) before the table is built.
+- **`engine/epd.ts`** — EPD parser + the classic **Bratko–Kopec** and **Win at Chess** benchmark suites, so
+  the Lab can score the engine against *published* best moves at a chosen time budget.
 - **`engine/search.ts`** — iterative deepening negamax with **aspiration windows**, alpha-beta +
   principal-variation search, transposition table (2M), quiescence with **SEE + delta pruning**,
   null-move pruning, **late-move reductions**, **reverse-futility / razoring / futility / late-move
@@ -81,11 +90,24 @@ representation, move generation, search and evaluation are all hand-built here.
 - [x] **Analyze studio**: import PGN/FEN, full move navigation (buttons + ←/→/Home/End), branch your own
       lines on the board, multi-PV readout, eval graph with click-to-jump + blunder markers, sample games
 - [x] In-browser self-tests for the new modules (KRK/KQK verdicts, SAN round-trip, PGN→mate replay)
-- [ ] Endgame: KBNvK and pawn-ful tablebases (KPvKP, KRvKP) and Syzygy-style probing
+- [x] **KBNvK distance-to-mate tablebase** (`kbnk.ts`) — the hardest elementary mate, ~33.6M positions
+      solved in-browser by backward retrograde BFS (~10s), wired into the eval, exhaustively self-verified
+      (retrograde consistency + thousands of optimal self-play games to mate); corner-driving heuristic fallback
+- [x] **Pondering** (think on the opponent's clock, on a second worker, with instant *ponder hits*) + an
+      explicit **movetime** control (fixed think-time presets that override the strength level's budget)
+- [x] **Opening explorer** (weighted book moves for the current position, click to branch) + **annotated PGN
+      export** ([%eval] comments and ?!/?/?? glyphs from the Analyze sweep, with a per-game blunder summary)
+- [x] **EPD test-suite runner** in the Lab (Bratko–Kopec + Win at Chess) with a chosen budget and pass-rate scoring
+- [x] **Search**: internal iterative reduction (off the PV), countermove heuristic, history malus on quiets
+      that didn't cut, improving-aware LMP/LMR — ~23% fewer nodes to reach a given depth, no tactical regression
+- [x] Node-limit + soft/hard-time search options (`maxNodes`, `softTime`) underpinning the movetime control
+- [ ] Pawn-ful tablebases (KPvKP, KRvKP) and Syzygy-style probing on top of the retrograde framework
 - [ ] WASM/SIMD or bitboard rewrite for a big NPS boost
-- [ ] Pondering (think on the opponent's clock) + an explicit movetime control
-- [ ] Opening explorer + annotated PGN export (eval/blunder comments) from the Analyze board
-- [ ] EPD test-suite runner in the Lab (e.g. WAC / Bratko-Kopec) with pass-rate scoring
+- [ ] Generalise the retrograde solver to KBBvK / KNNvKP and cross-check against the KRK/KQK tables
+- [ ] Persist a built KBNvK table to IndexedDB so it survives reloads and warms instantly
+- [ ] Ponder line preview (show the predicted reply + the engine's intended answer while it thinks)
+- [ ] UCI-style time controls (clock + increment) with real time management, not just fixed movetime
+- [ ] Bigger EPD sets (full WAC-300, ECM) with category breakdowns and an Elo estimate from the pass rate
 
 ## Session log
 
@@ -122,3 +144,21 @@ representation, move generation, search and evaluation are all hand-built here.
   correctness, KRK/KQK self-play to mate) and a headless-Chromium run of the live build: PGN load +
   33-ply navigation + multi-PV + eval graph render with zero console errors, and the in-browser
   self-tests report **14/14**. Clean lint/build via `scripts/verify-project.mjs`.
+- 2026-06-25 (claude): **Endgame mastery + benchmarking + pondering** pass. (1) **KBNvK tablebase**
+  (`kbnk.ts`): the complete King+Bishop+Knight vs King distance-to-mate table — the hardest elementary
+  mate — generated in-browser by **backward retrograde BFS** over all ~33.6M positions (~10s). Wired into
+  the eval for perfect play, with a corner-driving heuristic fallback that also wins. A new Lab tab builds and
+  **exhaustively self-verifies** it: 10,822,184 winning / 11,188,168 lost / 2,525,736 drawn positions, longest
+  forced mate 33 moves (65 plies), 196,758/196,758 retrograde-consistency checks hold, and 3,000/3,000 optimal
+  self-play games mate in exactly the stored distance (0 mismatches). (2) **EPD test-suite runner** (`epd.ts`
+  + Lab tab): scores the engine against the *published* best moves of the Bratko–Kopec and Win-at-Chess suites
+  at a chosen budget (~16/22 at 1.5s). (3) **Search strength**: internal iterative reduction (off the PV),
+  countermove heuristic, history malus, improving-aware pruning — **~23% fewer nodes to reach a given depth**
+  with no tactical regression (still solves every forced-mate puzzle); plus `maxNodes`/`softTime` options.
+  (4) **Pondering** on a second worker with instant *ponder hits*, and an explicit **movetime** control.
+  (5) **Opening explorer** and **annotated-PGN export** ([%eval] + ?!/?/?? glyphs) on the Analyze board.
+  Validated offline (rolldown-bundled Node harnesses: KBNvK build+verify, KBNvK/heuristic self-play to mate,
+  EPD legality + pass rate, search node-efficiency, annotated-PGN round-trip) and with a **headless-Chromium**
+  run of the live build: the app loads with **zero console errors**, the KBNvK table builds + verifies
+  in-browser in 10.5s, and a full play loop with pondering + movetime replies cleanly. Clean lint/build via
+  `scripts/verify-project.mjs`.

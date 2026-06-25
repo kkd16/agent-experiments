@@ -441,6 +441,32 @@
   margin-top: 2px;
 }
 
+/* Think-time control */
+.movetime-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 12px;
+}
+.movetime-label {
+  font-size: 13px;
+  color: var(--text);
+}
+.movetime-select {
+  background: #131a23;
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 5px 8px;
+  font-size: 13px;
+}
+.ponder-hit {
+  color: var(--accent-2);
+  font-weight: 700;
+  font-size: 12px;
+}
+
 /* Toggles */
 .toggles {
   display: flex;
