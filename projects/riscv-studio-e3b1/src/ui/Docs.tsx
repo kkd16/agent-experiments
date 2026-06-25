@@ -80,6 +80,25 @@ const GROUPS: { title: string; items: InsDoc[] }[] = [
     ],
   },
   {
+    title: 'V extension — vectors (RVV 1.0; VLEN=128, e8/e16/e32, LMUL ⅛…8)',
+    items: [
+      { m: 'vsetvli / vsetivli / vsetvl', desc: 'configure vtype {SEW,LMUL,ta,ma}; rd = vl = min(AVL, VLMAX)' },
+      { m: 'vle{8,16,32}.v / vse… .v', desc: 'unit-stride vector load / store (through the MMU)' },
+      { m: 'vlse… / vsse…', desc: 'strided load / store (byte stride in rs2)' },
+      { m: 'vluxei… / vsuxei… / vlm.v / vsm.v', desc: 'indexed gather/scatter + packed-mask load/store' },
+      { m: 'vadd / vsub / vrsub  .vv/.vx/.vi', desc: 'integer add / subtract / reverse-subtract' },
+      { m: 'vand/vor/vxor, vsll/vsrl/vsra, vmin/vmax', desc: 'bitwise, shifts, signed & unsigned min/max' },
+      { m: 'vmul / vmulh{,u,su} / vdiv{,u} / vrem{,u}', desc: 'integer multiply (low/high) and divide / remainder' },
+      { m: 'vmacc / vnmsac / vmadd / vnmsub', desc: 'fused multiply-accumulate (the SAXPY/dot-product kernel)' },
+      { m: 'vmseq…vmsgt  .vv/.vx/.vi', desc: 'compares → a packed mask register (v0)' },
+      { m: 'vmand/vmor/vmxor/… .mm, vcpop.m, vfirst.m', desc: 'mask-register logic + population / first-set' },
+      { m: 'vid.v / viota.m / vmsbf/vmsif/vmsof.m', desc: 'element index, mask prefix-sum, set-before/incl/only-first' },
+      { m: 'vredsum / vredand/or/xor / vredmin/max{,u} .vs', desc: 'reduce a vector to a scalar in element 0' },
+      { m: 'vslideup/down, vslide1up/down, vrgather', desc: 'lane permutes (shift by N, by 1, arbitrary gather)' },
+      { m: 'vmerge.v*m / vmv.v.* / vmv.x.s / vmv.s.x', desc: 'mask-select, broadcast, and scalar ↔ element-0 moves' },
+    ],
+  },
+  {
     title: 'F extension — single-precision float (RV32F)',
     items: [
       { m: 'flw / fsw', desc: 'load / store a 32-bit float  —  flw fd, off(rs1)' },
@@ -191,14 +210,15 @@ export default function Docs() {
   return (
     <div className="panel docs">
       <div className="panel-head">
-        <h2>RV32IMAFC + Zicsr + Zb reference</h2>
+        <h2>RV32IMAFCV + Zicsr + Zb reference</h2>
       </div>
       <div className="docs-scroll">
         <p className="docs-intro">
           This studio implements the <strong>RV32I</strong> base integer ISA plus the{' '}
           <strong>M</strong> (multiply/divide), <strong>A</strong> (atomics),{' '}
-          <strong>F</strong> (single-precision float), <strong>C</strong> (compressed 16-bit) and{' '}
-          <strong>B</strong> (bit manipulation: <code>Zba/Zbb/Zbc/Zbs</code>) extensions, together
+          <strong>F</strong> (single-precision float), <strong>C</strong> (compressed 16-bit),{' '}
+          <strong>B</strong> (bit manipulation: <code>Zba/Zbb/Zbc/Zbs</code>) and <strong>V</strong>{' '}
+          (the vector / SIMD extension, RVV 1.0) extensions, together
           with <strong>Zicsr</strong>, the hardware counters, and a machine-mode{' '}
           <strong>trap &amp; interrupt</strong> architecture — every instruction below executes on
           the built-in interpreter. Float ops take an optional rounding-mode operand
@@ -220,6 +240,41 @@ export default function Docs() {
             opcode space, so the assembler, decoder, disassembler and the pipeline/cache timing
             model all understand them with no special casing. Try the{' '}
             <strong>Bit manipulation (Zb)</strong> example.
+          </p>
+        </section>
+        <section>
+          <h3>The V (vector) extension — RVV 1.0</h3>
+          <p className="docs-intro">
+            <strong>V</strong> is RISC-V's <em>length-agnostic</em> SIMD ISA: instead of a fixed
+            128/256/512-bit width baked into the opcode, a program asks the machine — with{' '}
+            <code>vsetvli rd, rs1, e32, m1</code> — for as many elements as it can process this
+            iteration (<code>vl</code> = <code>min(requested, VLMAX)</code>) and loops until the work
+            is done, so the <em>same binary</em> runs unchanged on wider hardware. This studio
+            implements <strong>VLEN = 128</strong>, <strong>ELEN = 32</strong> (element widths{' '}
+            <code>e8/e16/e32</code>), and <strong>LMUL ∈ {'{'}1,2,4,8, ½,¼,⅛{'}'}</strong> register
+            grouping. <code>vtype</code> ({'{'}SEW, LMUL, ta, ma{'}'}) and <code>vl</code> are live
+            CSRs shown in the register inspector; tail and masked-off (<code>v0.t</code>) elements
+            are left undisturbed.
+          </p>
+          <p className="docs-intro">
+            Implemented end to end (assembler + decoder + disassembler + interpreter + both timing
+            models + time-travel): the <strong>integer arithmetic</strong> core (
+            <code>vadd/vsub/vrsub</code>, <code>vand/vor/vxor</code>, <code>vsll/vsrl/vsra</code>,{' '}
+            <code>vmin/vmax</code>, <code>vmul/vmulh*</code>, <code>vdiv/vrem</code>) in vector-vector,
+            vector-scalar (<code>.vx</code>) and immediate (<code>.vi</code>) forms; fused{' '}
+            <strong>multiply-accumulate</strong> (<code>vmacc/vnmsac/vmadd/vnmsub</code>);{' '}
+            <strong>mask-producing compares</strong> (<code>vmseq…vmsgt</code>) and the full{' '}
+            <strong>mask algebra</strong> (<code>vmand/vmor/vmxor/…</code>, <code>vcpop.m</code>,{' '}
+            <code>vfirst.m</code>, <code>vid.v</code>, <code>viota.m</code>,{' '}
+            <code>vmsbf/vmsif/vmsof.m</code>); <strong>reductions</strong> (
+            <code>vredsum/vredmax/…</code>); <strong>permutes</strong> (<code>vslideup/down</code>,{' '}
+            <code>vslide1up/down</code>, <code>vrgather</code>); the scalar↔element moves{' '}
+            (<code>vmv.x.s</code>/<code>vmv.s.x</code>, <code>vmv.v.*</code>, <code>vmerge</code>); and
+            vector <strong>loads/stores</strong> — unit-stride <code>vle32.v</code>/<code>vse32.v</code>,
+            strided <code>vlse/vsse</code>, <strong>indexed</strong> gather/scatter{' '}
+            <code>vluxei/vsuxei</code>, and the mask <code>vlm.v</code>/<code>vsm.v</code> — all routed
+            through the Sv32 MMU. Try the <strong>Vectors (RVV)</strong> example, a strip-mined SAXPY
+            (<code>vmacc</code>) followed by a <code>vredsum</code> reduction.
           </p>
         </section>
         <section>

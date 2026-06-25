@@ -3,14 +3,16 @@
 The app's long-lived memory. Read this first when you pick the app back up, then keep it
 current as you work.
 
-RISC-V Studio is a complete **RV32IMAFC + Zicsr** development environment with a full
+RISC-V Studio is a complete **RV32IMAFCV + Zicsr + Zb** development environment with a full
 **three-ring privilege architecture (M/S/U)** and a real hardware **Sv32 MMU** that runs
 entirely in the browser: a two-pass assembler (real instruction encodings + a large
 pseudo-instruction set + the **compressed C extension**, hand-written or auto-compressed), a
 register/cycle-accurate interpreter with integer **and IEEE-754 single-precision
-floating-point**, **atomics**, **control/status registers + hardware counters**, a
-machine-mode **trap & interrupt** architecture with a memory-mapped **CLINT timer**, and —
-new — **supervisor mode + virtual memory**: a two-level page-table walker (4 KiB pages and
+floating-point**, **atomics**, the **V (vector / RVV 1.0) extension** — length-agnostic SIMD
+with a 32-register vector file, the `vtype`/`vl` config model, LMUL grouping, masking, reductions,
+gather/scatter and strided/indexed vector memory — **control/status registers + hardware
+counters**, a machine-mode **trap & interrupt** architecture with a memory-mapped **CLINT
+timer**, and **supervisor mode + virtual memory**: a two-level page-table walker (4 KiB pages and
 4 MiB megapages) with V/R/W/X/U/G/A/D permission bits, a TLB, page-fault exceptions and trap
 delegation. It also has a **time-travel** stepping debugger (step forward *and back*, exact
 across page-table walks) with breakpoints and register-diff highlighting, a paged sparse
@@ -24,7 +26,8 @@ testable, and offline.
 
 - `src/vm/` — the machine. `constants`, `registers`, `memory` (paged), `isa` (opcode tables),
   `decode`, `disassembler`, `assembler` (two-pass, pseudo-ops, directives), `cpu` (execute, plus
-  an opt-in `tracer` retire-hook), `syscalls`, `examples`, `selftest`, `format`.
+  an opt-in `tracer` retire-hook), `vector` (the RVV encoding source of truth + assemble/decode
+  helpers; `cpu.executeVector` is the engine), `syscalls`, `examples`, `selftest`, `format`.
 - `src/perf/` — the **microarchitecture timing model** (a pure function of the retired trace,
   never touches execution): `isa-classes` (per-instruction micro-op shape), `predictor` (branch
   predictors + BTB), `cache` (set-associative I$/D$), `pipeline` (the 5-stage scheduler),
@@ -445,7 +448,137 @@ Steps (each fully implemented + self-tested this session):
 The new ops are data in the one `INSTRUCTIONS` table; nothing about the base machine changed, so
 with no Zb instruction in a program the studio is byte-for-byte the RV32IMAFC it always was.
 
+### 2026-06-25 plan — RISC-V Studio 9.0: the **V (vector) extension** (RVV 1.0 subset) — SIMD comes to the studio
+
+The machine has grown from RV32I to RV32**IMAFC** + Zb + Zicsr + the M/S/U privileged stack and a
+real Sv32 MMU, with two microarchitecture timing models on top. But it has never had the one piece
+of modern RISC-V everyone is building silicon for: **V**, the ratified vector extension — the
+*length-agnostic* SIMD ISA where one instruction processes a whole register's worth of elements and
+the *same binary* runs unchanged on a machine with wider vectors. This session adds a faithful,
+genuinely-executing **RVV 1.0 subset** end to end: a 32-register vector file with a configurable
+`VLEN`, the `vtype`/`vl` dynamic configuration model, vector loads/stores (unit-stride, strided,
+**indexed** scatter/gather — through the existing MMU), the integer arithmetic core, mask-producing
+compares + the full mask-register algebra, reductions, slides, register gather, and the
+vector↔scalar moves. Every op is the **genuine RVV encoding** in the `OP-V` (0x57) major opcode and
+the vector width-encoded load/store opcodes (so it coexists with scalar `flw`/`fsw` exactly as real
+hardware does), and the whole thing is woven through the assembler, decoder, disassembler, the
+interpreter, the **time-travel journal**, the two timing models, the syntax highlighter, examples,
+the verification suite and the docs.
+
+Same iron discipline as every prior expansion — **strictly additive**: with no vector instruction
+in a program the machine is byte-for-byte the RV32IMAFC it always was, and the `tracer`/timing
+layer never affects results. The vector engine lives in its own `src/vm/vector.ts` module (the
+encoding/spec source of truth, mirroring `fp.ts`/`mmu.ts`), and `cpu.ts` gains a self-contained
+`executeVector` dispatch plus vector-register/vector-CSR undo so stepping backward through a vector
+op is exact.
+
+Model choices (documented, all legal RVV implementation choices): **VLEN = 128**, **ELEN = 32**
+(SEW ∈ {8,16,32}; SEW=64 ⇒ `vill`). **LMUL ∈ {1,2,4,8, 1/2,1/4,1/8}** with register grouping and
+the `SEW ≤ LMUL·ELEN` legality rule. **Tail and inactive (masked-off) elements are left
+undisturbed** (an always-legal realization of the `ta`/`ma` *agnostic* policy), so behaviour is
+fully deterministic and time-travel stays exact. `vstart` is modelled as always 0 (no mid-vector
+traps in this deterministic core).
+
+Steps (each fully implemented + self-tested this session):
+
+- [x] **`src/vm/vector.ts` — the encoding source of truth.** `VLEN/VLENB/ELEN` constants; `vtype`
+      field helpers (`vsew`/`vlmul`/`vta`/`vma`/`vill`), `SEW`/`LMUL` decode + `VLMAX` and the
+      legality check; a `VEC_SPECS` table mapping every vector mnemonic to its `(funct6, category,
+      operand-form)`; `encodeVector(mnemonic, operands)` → a fully-resolved 32-bit word (vectors
+      reference no labels, so they encode at parse time); `decodeVectorMnemonic(raw)` for the
+      decoder/disassembler; `isVectorOpcode(opcode, funct3)`; and the `V_MNEMONICS` set.
+- [x] **Configuration: `vsetvli` / `vsetivli` / `vsetvl`.** Parse the `e8/e16/e32, mf8…m8, ta/tu,
+      ma/mu` vtype token list; compute `VLMAX`, apply the AVL→`vl` rule (`vl = min(AVL, VLMAX)`,
+      with the `rs1=x0`/`rd=x0` keep-vl and set-max special cases), write `vl` to `rd`, set the
+      `vtype`/`vl`/`vstart` CSRs, and mark `vill` on an unsupported config.
+- [x] **Vector loads / stores (through the MMU).** Unit-stride `vle{8,16,32}.v` / `vse{8,16,32}.v`,
+      strided `vlse…`/`vsse…` (byte stride from `rs2`), **indexed** `vluxei…`/`vsuxei…`/`vloxei…`/
+      `vsoxei…` (gather/scatter; index EEW from the mnemonic, data EEW = SEW), and the mask
+      load/store `vlm.v`/`vsm.v`. All masked (`v0.t`) and all routed through `vmLoad`/`vmStore` so
+      they honour Sv32 translation + page faults.
+- [x] **Integer arithmetic (`OPIVV`/`OPIVX`/`OPIVI`).** `vadd`/`vsub`/`vrsub`, `vand`/`vor`/`vxor`,
+      `vsll`/`vsrl`/`vsra`, `vminu`/`vmin`/`vmaxu`/`vmax`, the `vmerge`/`vmv.v.*` family — all with
+      vector-vector, vector-scalar (`x`), and vector-immediate (5-bit) operand forms and masking.
+- [x] **Multiply / divide / multiply-accumulate (`OPMVV`/`OPMVX`).** `vmul`/`vmulh`/`vmulhu`/
+      `vmulhsu`, `vdivu`/`vdiv`/`vremu`/`vrem`, and the fused `vmacc`/`vnmsac`/`vmadd`/`vnmsub`.
+- [x] **Mask-producing compares + the mask algebra.** `vmseq`/`vmsne`/`vmsltu`/`vmslt`/`vmsleu`/
+      `vmsle`/`vmsgtu`/`vmsgt` (write a packed mask register), and the mask logical ops
+      `vmand`/`vmnand`/`vmandn`/`vmor`/`vmnor`/`vmorn`/`vmxor`/`vmxnor`.
+- [x] **Reductions + mask-population + element moves.** `vredsum`/`vredand`/`vredor`/`vredxor`/
+      `vredminu`/`vredmin`/`vredmaxu`/`vredmax`; `vcpop.m`/`vfirst.m`; `vid.v`/`viota.m`;
+      `vmsbf.m`/`vmsif.m`/`vmsof.m`; and `vmv.x.s`/`vmv.s.x` (scalar ↔ element 0).
+- [x] **Permutes: slides + gather.** `vslideup`/`vslidedown` (`.vx`/`.vi`), `vslide1up`/
+      `vslide1down` (`.vx`), and `vrgather` (`.vv`/`.vx`/`.vi`).
+- [x] **Decoder / disassembler / assembler / highlighter.** Route `OP-V` + vector load/store
+      opcodes to a new `'V'` `DecodedFormat`; render every vector form (incl. the `e32,m1,ta,ma`
+      vtype on `vset*` and `v0.t` mask tails); a `expandVector` path in the assembler emitting the
+      precomputed word; vector mnemonics + `v0.t`/vtype tokens highlighted in the editor.
+- [x] **Vector CSRs + time-travel.** `vstart`(0x008)/`vxsat`(0x009)/`vxrm`(0x00A)/`vcsr`(0x00F)/
+      `vl`(0xC20)/`vtype`(0xC21)/`vlenb`(0xC22) wired into `readCsr`/`writeCsr`; the undo journal
+      snapshots the vector CSRs and records the exact vector-register bytes a vector op overwrites,
+      so `stepBack` reverses a vector instruction byte-for-byte.
+- [x] **Timing model.** Classify `'V'` ops in `isa-classes.ts` (vector loads/stores as `load`/
+      `store` reading the `x` base — so the cache model still sees the address; `vsetvl*` and
+      `vmv.x.s`/`vmv.s.x` as `alu` touching the `x` file; the rest as register-hazard-free `alu`),
+      so both the in-order and OoO models schedule vector programs without aliasing the integer
+      register file.
+- [x] **A Vector register inspector + Docs.** A new inspector panel that renders `vtype`
+      (decoded SEW/LMUL/ta/ma/vill), `vl`/`vlenb`/`vstart`, and each `v0..v31` register laid out as
+      its current-SEW element lanes; an ISA-reference "V (vector) extension" section; RV32IMAFC
+      **+ V** branding on the header/footer + catalog card.
+- [x] **Worked examples.** SAXPY (`y = a·x + y` with `vmacc`/strip-mining over `vsetvli`), a vector
+      dot-product via `vredsum`, a vectorized `memcpy`, a `vrgather` table permute, and a masked
+      `vcompress`-style select — guided, single-steppable living documentation.
+- [x] **Self-tests.** A large battery: `vset*` `vl`/`vtype`/`vill` semantics; arithmetic /
+      multiply / mac results across SEW and LMUL>1 register grouping; compares + mask algebra;
+      reductions; slides + gather; unit-stride / strided / **indexed** load-store round trips
+      through memory; masking (`v0.t`) leaving inactive + tail elements undisturbed; exact
+      `stepBack` reversal of a vector op; and an assemble→decode→disassemble→**re-assemble**
+      round-trip for every vector mnemonic.
+
+#### Design rule (kept, yet again)
+The vector engine is a separate module + a self-contained `executeVector`; the base ISA tables are
+untouched, so with no vector op a program is byte-for-byte the RV32IMAFC it always was. The timing
+models still read only the retired trace and never change an architectural bit.
+
 ## Session log
+
+- 2026-06-25 (claude / claude-opus-4-8): **RISC-V Studio 9.0 — the V (vector) extension (RVV 1.0
+  subset).** Added a faithful, genuinely-executing vector ISA end to end — the single most
+  recognizable piece of modern RISC-V. New `src/vm/vector.ts` is the encoding source of truth (the
+  `VEC_SPECS`/load-store tables, `assembleVector` → a fully-resolved word, `decodeVectorMnemonic`,
+  the `vtype` decode + `VLMAX`/legality helpers, the `e32,m1,ta,ma` vtype-token parser); `cpu.ts`
+  gained a 32-register **vector file** (`Uint8Array`, VLEN=128), the vector CSRs
+  (`vstart/vxsat/vxrm/vcsr/vl/vtype/vlenb`), and a self-contained **`executeVector`** dispatch. The
+  model is **VLEN=128, ELEN=32** (SEW e8/e16/e32; e64⇒vill) with **LMUL ∈ {1,2,4,8,½,¼,⅛}** register
+  grouping and the `SEW ≤ LMUL·ELEN` rule; tail + masked-off elements are left **undisturbed** (a
+  legal ta/ma realization), so it is deterministic and time-travel-exact. Implemented:
+  `vsetvli/vsetivli/vsetvl` (AVL→vl with the x0/x0 keep-vl and set-max cases); vector loads/stores
+  through the **MMU** — unit-stride `vle{8,16,32}.v`/`vse…`, strided `vlse/vsse`, **indexed**
+  gather/scatter `vluxei/vsuxei/vloxei/vsoxei`, and packed-mask `vlm.v`/`vsm.v`; the integer core
+  (`vadd/vsub/vrsub`, `vand/vor/vxor`, `vsll/vsrl/vsra`, `vmin/vmax{,u}`, `vmul/vmulh{,u,su}`,
+  `vdiv{,u}/vrem{,u}`) in `.vv`/`.vx`/`.vi` forms with masking; fused MAC (`vmacc/vnmsac/vmadd/
+  vnmsub`); mask-producing compares (`vmseq…vmsgt`) + the full mask algebra (`vm{and,nand,andn,or,
+  nor,orn,xor,xnor}.mm`, `vcpop.m`, `vfirst.m`, `vid.v`, `viota.m`, `vmsbf/vmsif/vmsof.m`);
+  reductions (`vredsum/and/or/xor/min{,u}/max{,u}.vs`); permutes (`vslideup/down`, `vslide1up/down`,
+  `vrgather.{vv,vx,vi}`); and the moves (`vmv.x.s`/`vmv.s.x`, `vmv.v.{v,x,i}`, `vmerge.v{v,x,i}m`).
+  Every op is the genuine RVV encoding in the `OP-V` (0x57) opcode (vector loads/stores ride the FP
+  load/store opcodes, width-disambiguated so they coexist with scalar `flw`/`fsw` exactly as real
+  hardware does), woven into the decoder (new `'V'` format), disassembler, assembler (a `vecWord`
+  micro carrying the precomputed encoding), the syntax highlighter, and **both** timing models
+  (vector mem reads the `x` base so the cache model sees a real address; the rest carry no spurious
+  integer-register hazards). The **time-travel** journal snapshots the vector CSRs and records the
+  exact vector-register bytes each op overwrites, so `stepBack` reverses a vector instruction
+  byte-for-byte. Shipped a live **vector inspector** (decoded vtype + `vl`/`vlenb`/`vstart` + each
+  `v0..v31` as its current-SEW lanes), a Docs "V extension" section + reference group, a strip-mined
+  **SAXPY + `vredsum`** example, and **22 new self-tests** (vset `vl`/`vtype`/`vill`; arithmetic /
+  multiply / MAC across SEW and LMUL>1 grouping; compares + mask logic; reductions; slides + gather;
+  unit-stride / strided / indexed memory round trips; masking leaving inactive + tail elements
+  undisturbed; exact `stepBack` reversal of a whole vector program; and an assemble→decode→disasm→
+  **re-assemble** round-trip for *every* vector mnemonic). Strictly additive: with no vector op a
+  program is byte-for-byte the RV32IMAFC it always was. Verified headless (**112/112** in-app
+  self-tests — 90 prior + 22 vector — plus the timing models scheduling the vector example cleanly)
+  and via `node scripts/verify-project.mjs riscv-studio-e3b1` (scope + conformance + lint + build).
 
 - 2026-06-23 (claude / claude-opus-4-8): **RISC-V Studio 8.0 — the B (bit-manipulation) extension.**
   Added the full ratified **Zba + Zbb + Zbc + Zbs** instruction set end to end — ~40 new mnemonics —

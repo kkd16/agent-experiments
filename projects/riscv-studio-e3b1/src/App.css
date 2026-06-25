@@ -461,6 +461,24 @@
   background: var(--border);
   border-top: 1px solid var(--border);
 }
+/* Vector register file: one register per row, lanes laid out left-to-right. */
+.vreg-grid {
+  grid-template-columns: 1fr;
+}
+.vreg-cell {
+  justify-content: flex-start;
+  gap: 0.7rem;
+}
+.vreg-cell .reg-name {
+  min-width: 3.2rem;
+}
+.vreg-lanes {
+  text-align: left;
+  color: var(--fg);
+  font-size: 0.78rem;
+  letter-spacing: 0.01em;
+  flex: 1;
+}
 .reg-cell.pc .reg-val {
   color: var(--accent);
 }

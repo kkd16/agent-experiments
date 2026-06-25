@@ -23,6 +23,13 @@ import {
 } from './mmu';
 import { runPerfTests } from '../perf/perf-tests';
 import { runOooTests } from '../perf/ooo-tests';
+import {
+  VEC_SPECS,
+  V_MNEMONICS,
+  VLENB,
+  VTYPE_VILL,
+  vmemSpec,
+} from './vector';
 
 /** Build a CPU with a hand-laid Sv32 page table, parked in supervisor mode with paging on.
  *  root@0x80000: [0] identity megapage for [0,4MiB); [2] → leaf@0x81000.
@@ -77,6 +84,56 @@ function run(src: string, maxSteps = 5_000_000): Cpu {
   cpu.load(result);
   cpu.run(maxSteps);
   return cpu;
+}
+
+/** Assemble + run, returning the halted CPU *and* the symbol table (for reading result buffers). */
+function asmRun(src: string, maxSteps = 2_000_000): { cpu: Cpu; sym: Map<string, number> } {
+  const result = assemble(src);
+  if (!result.ok) {
+    throw new AssertionError(`assembler errors: ${result.errors.map((e) => `L${e.line} ${e.message}`).join('; ')}`);
+  }
+  const cpu = new Cpu();
+  cpu.load(result);
+  cpu.run(maxSteps);
+  return { cpu, sym: result.symbols };
+}
+
+/** Read an unsigned little-endian `eb`-byte vector element directly from the register file. */
+function velem(cpu: Cpu, vreg: number, idx: number, eb: number): number {
+  let v = 0;
+  const off = vreg * VLENB + idx * eb;
+  for (let k = 0; k < eb; k++) v |= cpu.vregs[off + k] << (8 * k);
+  return v >>> 0;
+}
+
+/** A canonical operand string for a vector mnemonic (drives the encode↔decode round-trip test). */
+function vecCanonicalOps(m: string): string {
+  if (m === 'vsetvli') return 't0, t1, e32, m1';
+  if (m === 'vsetivli') return 't0, 4, e32, m1';
+  if (m === 'vsetvl') return 't0, t1, t2';
+  const mem = vmemSpec(m);
+  if (mem) {
+    if (mem.kind === 'unit' || mem.kind === 'mask') return 'v1, (t0)';
+    if (mem.kind === 'strided') return 'v1, (t0), t1';
+    return 'v1, (t0), v2';
+  }
+  switch (VEC_SPECS[m].form) {
+    case 'vv': case 'vs': case 'mm': case 'macvv': return 'v1, v2, v3';
+    case 'vx': return 'v1, v2, t0';
+    case 'vi': case 'vviu': return 'v1, v2, 3';
+    case 'macvx': return 'v1, t0, v3';
+    case 'vvm': return 'v1, v2, v3, v0';
+    case 'vxm': return 'v1, v2, t0, v0';
+    case 'vim': return 'v1, v2, 3, v0';
+    case 'movv': return 'v1, v2';
+    case 'movx': return 'v1, t0';
+    case 'movi': return 'v1, 3';
+    case 'wxs': return 't0, v2';
+    case 'wsx': return 'v1, t0';
+    case 'pop': return 't0, v2';
+    case 'vid': return 'v1';
+    case 'mvs2': return 'v1, v2';
+  }
 }
 
 type Test = { name: string; fn: () => void };
@@ -1268,6 +1325,480 @@ const TESTS: Test[] = [
       eq(cpu.status, 'halted', 'example halts');
       assert(cpu.output.includes('= 24'), `popcount(0xDEADBEEF)=24 printed (got: ${cpu.output})`);
       assert(cpu.output.includes('= 127'), `clmul(0xD,0xB)=127 printed (got: ${cpu.output})`);
+    },
+  },
+
+  // ===========================================================================
+  // V (vector) extension
+  // ===========================================================================
+  {
+    name: 'V: vsetvli sets vl/vtype and writes rd',
+    fn: () => {
+      const { cpu } = asmRun(`
+        main:
+          li a0, 3
+          vsetvli t0, a0, e32, m1
+          li a7, 10
+          ecall
+      `);
+      eq(cpu.regs[5] | 0, 3, 't0 = vl'); // VLMAX (e32,m1) = 4, AVL=3 → vl=3
+      eq(cpu.vl, 3, 'vl');
+      // vtype = e32(vsew=2)<<3 | m1(vlmul=0) = 0x10
+      eq(cpu.vtype & 0xff, 0x10, 'vtype');
+    },
+  },
+  {
+    name: 'V: vsetivli clamps AVL to VLMAX',
+    fn: () => {
+      const { cpu } = asmRun(`main:\n vsetivli t0, 8, e32, m1\n li a7,10\n ecall`);
+      eq(cpu.regs[5] | 0, 4, 't0 = min(8, VLMAX=4)');
+      eq(cpu.vl, 4, 'vl');
+    },
+  },
+  {
+    name: 'V: rs1=x0, rd!=x0 sets vl=VLMAX; e16,m1 → VLMAX=8',
+    fn: () => {
+      const { cpu } = asmRun(`main:\n vsetvli t0, x0, e16, m1\n li a7,10\n ecall`);
+      eq(cpu.regs[5] | 0, 8, 'VLMAX(e16,m1) = 128/16 = 8');
+    },
+  },
+  {
+    name: 'V: unsupported SEW (e64) raises vill, vl=0',
+    fn: () => {
+      const { cpu } = asmRun(`main:\n li a0,4\n vsetvli t0, a0, e64, m1\n li a7,10\n ecall`);
+      eq(cpu.regs[5] | 0, 0, 't0 = 0 on vill');
+      assert((cpu.vtype >>> 0) === (VTYPE_VILL >>> 0), 'vtype has vill set');
+    },
+  },
+  {
+    name: 'V: vadd.vv (e32) over a loaded vector, stored back',
+    fn: () => {
+      const { cpu, sym } = asmRun(`
+        .data
+        a: .word 1, 2, 3, 4
+        b: .word 10, 20, 30, 40
+        r: .word 0, 0, 0, 0
+        .text
+        main:
+          li t0, 4
+          vsetvli x0, t0, e32, m1
+          la s0, a
+          vle32.v v1, (s0)
+          la s1, b
+          vle32.v v2, (s1)
+          vadd.vv v3, v1, v2
+          la s2, r
+          vse32.v v3, (s2)
+          li a7, 10
+          ecall
+      `);
+      const r = sym.get('r')!;
+      eq(cpu.mem.readWord(r + 0) | 0, 11, 'r[0]');
+      eq(cpu.mem.readWord(r + 4) | 0, 22, 'r[1]');
+      eq(cpu.mem.readWord(r + 8) | 0, 33, 'r[2]');
+      eq(cpu.mem.readWord(r + 12) | 0, 44, 'r[3]');
+    },
+  },
+  {
+    name: 'V: vadd.vx + vadd.vi (scalar / immediate broadcast)',
+    fn: () => {
+      const { cpu } = asmRun(`
+        .data
+        a: .word 5, 6, 7, 8
+        .text
+        main:
+          li t0, 4
+          vsetvli x0, t0, e32, m1
+          la s0, a
+          vle32.v v1, (s0)
+          li t1, 100
+          vadd.vx v2, v1, t1      # +100
+          vadd.vi v3, v1, -1      # -1
+          li a7, 10
+          ecall
+      `);
+      eq(velem(cpu, 2, 0, 4) | 0, 105, 'vx[0]');
+      eq(velem(cpu, 2, 3, 4) | 0, 108, 'vx[3]');
+      eq(velem(cpu, 3, 0, 4) | 0, 4, 'vi[0] = 5-1');
+      eq(velem(cpu, 3, 3, 4) | 0, 7, 'vi[3] = 8-1');
+    },
+  },
+  {
+    name: 'V: e16 element width packs two elements per word',
+    fn: () => {
+      const { cpu, sym } = asmRun(`
+        .data
+        a: .half 1, 2, 3, 4, 5, 6, 7, 8
+        r: .space 16
+        .text
+        main:
+          li t0, 8
+          vsetvli x0, t0, e16, m1
+          la s0, a
+          vle16.v v1, (s0)
+          vadd.vx v1, v1, t0      # +8 to each
+          la s1, r
+          vse16.v v1, (s1)
+          li a7, 10
+          ecall
+      `);
+      const r = sym.get('r')!;
+      eq(cpu.mem.readHalf(r + 0), 9, 'r[0]');
+      eq(cpu.mem.readHalf(r + 14), 16, 'r[7]');
+    },
+  },
+  {
+    name: 'V: LMUL=2 groups two registers (vl up to 8 at e32)',
+    fn: () => {
+      const { cpu } = asmRun(`
+        .data
+        a: .word 1,2,3,4,5,6,7,8
+        .text
+        main:
+          li t0, 8
+          vsetvli t3, t0, e32, m2     # VLMAX = 8
+          la s0, a
+          vle32.v v2, (s0)            # group {v2,v3}
+          vadd.vi v2, v2, 1
+          li a7, 10
+          ecall
+      `);
+      eq(cpu.regs[28] | 0, 8, 'vl = 8 with m2');
+      eq(velem(cpu, 2, 0, 4) | 0, 2, 'v2[0]');
+      eq(velem(cpu, 2, 3, 4) | 0, 5, 'v2[3] (still in v2)');
+      eq(velem(cpu, 3, 0, 4) | 0, 6, 'element 4 lives in v3'); // 5th element → v3[0]
+      eq(velem(cpu, 3, 3, 4) | 0, 9, 'v3[3] = 8+1');
+    },
+  },
+  {
+    name: 'V: vmul / vmulh (low + signed high product)',
+    fn: () => {
+      const { cpu } = asmRun(`
+        .data
+        a: .word 0x10000, -3, 7, 100000
+        b: .word 0x10000, 5, 6, 100000
+        .text
+        main:
+          li t0, 4
+          vsetvli x0, t0, e32, m1
+          la s0, a
+          vle32.v v1, (s0)
+          la s1, b
+          vle32.v v2, (s1)
+          vmul.vv v3, v1, v2
+          vmulh.vv v4, v1, v2
+          li a7, 10
+          ecall
+      `);
+      // 0x10000 * 0x10000 = 0x1_0000_0000 → low=0, high=1
+      eq(velem(cpu, 3, 0, 4) | 0, 0, 'vmul low [0]');
+      eq(velem(cpu, 4, 0, 4) | 0, 1, 'vmulh high [0]');
+      eq(velem(cpu, 3, 2, 4) | 0, 42, 'vmul 7*6');
+      // -3 * 5 = -15 → low 0xFFFFFFF1, high = -1
+      eq(velem(cpu, 3, 1, 4) >>> 0, 0xfffffff1, 'vmul -3*5 low');
+      eq(velem(cpu, 4, 1, 4) >>> 0, 0xffffffff, 'vmulh -3*5 high = -1');
+    },
+  },
+  {
+    name: 'V: SAXPY via vmacc.vx (y += a*x)',
+    fn: () => {
+      const { cpu, sym } = asmRun(`
+        .data
+        x: .word 1, 2, 3, 4
+        y: .word 10, 20, 30, 40
+        .text
+        main:
+          li t0, 4
+          vsetvli x0, t0, e32, m1
+          la s0, x
+          vle32.v v1, (s0)
+          la s1, y
+          vle32.v v2, (s1)
+          li t1, 3
+          vmacc.vx v2, t1, v1     # y += 3*x
+          vse32.v v2, (s1)
+          li a7, 10
+          ecall
+      `);
+      const y = sym.get('y')!;
+      eq(cpu.mem.readWord(y + 0) | 0, 13, 'y[0] = 10+3*1');
+      eq(cpu.mem.readWord(y + 12) | 0, 52, 'y[3] = 40+3*4');
+    },
+  },
+  {
+    name: 'V: vredsum reduction + vmv.x.s extraction',
+    fn: () => {
+      const { cpu } = asmRun(`
+        .data
+        a: .word 4, 8, 15, 16
+        .text
+        main:
+          li t0, 4
+          vsetvli x0, t0, e32, m1
+          la s0, a
+          vle32.v v1, (s0)
+          vmv.v.i v2, 0
+          vredsum.vs v3, v1, v2
+          vmv.x.s t1, v3
+          mv a0, t1
+          li a7, 1
+          ecall
+          li a7, 10
+          ecall
+      `);
+      eq(cpu.output, '43', 'sum 4+8+15+16');
+    },
+  },
+  {
+    name: 'V: vmsgt compare → mask, then vcpop.m counts',
+    fn: () => {
+      const { cpu } = asmRun(`
+        .data
+        a: .word 1, 5, 2, 9
+        .text
+        main:
+          li t0, 4
+          vsetvli x0, t0, e32, m1
+          la s0, a
+          vle32.v v1, (s0)
+          li t1, 3
+          vmsgt.vx v0, v1, t1     # a > 3 → mask [0,1,0,1]
+          vcpop.m t2, v0
+          vfirst.m t3, v0
+          mv a0, t2
+          li a7, 1
+          ecall
+          li a7, 10
+          ecall
+      `);
+      eq(cpu.output, '2', 'two elements > 3');
+      eq(cpu.regs[28] | 0, 1, 'vfirst = index 1'); // t3
+      eq(cpu.vregs[0] & 0xf, 0b1010, 'mask bits');
+    },
+  },
+  {
+    name: 'V: masked vadd leaves inactive elements undisturbed',
+    fn: () => {
+      const { cpu } = asmRun(`
+        .data
+        a: .word 1, 2, 3, 4
+        .text
+        main:
+          li t0, 4
+          vsetvli x0, t0, e32, m1
+          la s0, a
+          vle32.v v1, (s0)
+          vmv.v.i v3, 7          # prefill destination with 7s
+          li t1, 0b0101
+          vmv.s.x v0, t1         # mask = elements 0 and 2 active
+          vadd.vi v3, v1, 10, v0.t
+          li a7, 10
+          ecall
+      `);
+      eq(velem(cpu, 3, 0, 4) | 0, 11, 'active [0] = 1+10');
+      eq(velem(cpu, 3, 1, 4) | 0, 7, 'inactive [1] undisturbed');
+      eq(velem(cpu, 3, 2, 4) | 0, 13, 'active [2] = 3+10');
+      eq(velem(cpu, 3, 3, 4) | 0, 7, 'inactive [3] undisturbed');
+    },
+  },
+  {
+    name: 'V: mask logical vmand.mm (a>1 AND a<3)',
+    fn: () => {
+      const { cpu } = asmRun(`
+        .data
+        a: .word 1, 2, 3, 4
+        .text
+        main:
+          li t0, 4
+          vsetvli x0, t0, e32, m1
+          la s0, a
+          vle32.v v1, (s0)
+          li t1, 1
+          vmsgt.vx v2, v1, t1     # a > 1  → [0,1,1,1]
+          li t2, 3
+          vmslt.vx v3, v1, t2     # a < 3  → [1,1,0,0]
+          vmand.mm v4, v2, v3     # AND    → [0,1,0,0]
+          vcpop.m t3, v4
+          li a7, 10
+          ecall
+      `);
+      eq(cpu.regs[28] | 0, 1, 'exactly one element with 1 < a < 3'); // t3
+      eq(cpu.vregs[4 * VLENB] & 0xf, 0b0010, 'v4 mask bits = 0010');
+    },
+  },
+  {
+    name: 'V: vslideup.vi shifts elements up, base undisturbed',
+    fn: () => {
+      const { cpu } = asmRun(`
+        .data
+        a: .word 1, 2, 3, 4
+        .text
+        main:
+          li t0, 4
+          vsetvli x0, t0, e32, m1
+          la s0, a
+          vle32.v v1, (s0)
+          vmv.v.i v2, 9
+          vslideup.vi v2, v1, 1
+          li a7, 10
+          ecall
+      `);
+      eq(velem(cpu, 2, 0, 4) | 0, 9, 'v2[0] undisturbed');
+      eq(velem(cpu, 2, 1, 4) | 0, 1, 'v2[1] = v1[0]');
+      eq(velem(cpu, 2, 3, 4) | 0, 3, 'v2[3] = v1[2]');
+    },
+  },
+  {
+    name: 'V: vrgather.vi broadcasts one element; vid.v writes indices',
+    fn: () => {
+      const { cpu } = asmRun(`
+        .data
+        a: .word 10, 11, 12, 13
+        .text
+        main:
+          li t0, 4
+          vsetvli x0, t0, e32, m1
+          la s0, a
+          vle32.v v1, (s0)
+          vrgather.vi v2, v1, 2     # all = v1[2] = 12
+          vid.v v3                  # 0,1,2,3
+          li a7, 10
+          ecall
+      `);
+      eq(velem(cpu, 2, 0, 4) | 0, 12, 'gather[0]');
+      eq(velem(cpu, 2, 3, 4) | 0, 12, 'gather[3]');
+      eq(velem(cpu, 3, 0, 4) | 0, 0, 'vid[0]');
+      eq(velem(cpu, 3, 3, 4) | 0, 3, 'vid[3]');
+    },
+  },
+  {
+    name: 'V: indexed (gather) load vluxei32 reads scattered addresses',
+    fn: () => {
+      const { cpu, sym } = asmRun(`
+        .data
+        src: .word 100, 101, 102, 103
+        idx: .word 12, 8, 4, 0
+        dst: .word 0, 0, 0, 0
+        .text
+        main:
+          li t0, 4
+          vsetvli x0, t0, e32, m1
+          la s0, idx
+          vle32.v v2, (s0)
+          la s1, src
+          vluxei32.v v1, (s1), v2
+          la s2, dst
+          vse32.v v1, (s2)
+          li a7, 10
+          ecall
+      `);
+      const dst = sym.get('dst')!;
+      eq(cpu.mem.readWord(dst + 0) | 0, 103, 'dst[0] = src[idx0=12/4]');
+      eq(cpu.mem.readWord(dst + 12) | 0, 100, 'dst[3] = src[idx3=0]');
+    },
+  },
+  {
+    name: 'V: strided store writes every other word',
+    fn: () => {
+      const { cpu, sym } = asmRun(`
+        .data
+        a: .word 1, 2, 3, 4
+        r: .word 0,0,0,0,0,0,0,0
+        .text
+        main:
+          li t0, 4
+          vsetvli x0, t0, e32, m1
+          la s0, a
+          vle32.v v1, (s0)
+          la s1, r
+          li t1, 8                # stride = 8 bytes
+          vsse32.v v1, (s1), t1
+          li a7, 10
+          ecall
+      `);
+      const r = sym.get('r')!;
+      eq(cpu.mem.readWord(r + 0) | 0, 1, 'r[0]');
+      eq(cpu.mem.readWord(r + 4) | 0, 0, 'r[1] skipped');
+      eq(cpu.mem.readWord(r + 8) | 0, 2, 'r[2]');
+      eq(cpu.mem.readWord(r + 12) | 0, 0, 'r[3] skipped');
+    },
+  },
+  {
+    name: 'V: time-travel reverses a full vector program byte-for-byte',
+    fn: () => {
+      const result = assemble(`
+        .data
+        a: .word 1, 2, 3, 4
+        b: .word 5, 6, 7, 8
+        .text
+        main:
+          li t0, 4
+          vsetvli x0, t0, e32, m1
+          la s0, a
+          vle32.v v1, (s0)
+          la s1, b
+          vle32.v v2, (s1)
+          vadd.vv v3, v1, v2
+          li a7, 10
+          ecall
+      `);
+      assert(result.ok, 'assembles');
+      const cpu = new Cpu();
+      cpu.load(result);
+      cpu.run(1000);
+      eq(cpu.status, 'halted', 'halts');
+      assert(velem(cpu, 3, 0, 4) === 6, 'v3[0] computed = 6');
+      // Now rewind everything and confirm the vector file + config are back to reset.
+      let steps = 0;
+      while (cpu.stepBack()) steps++;
+      assert(steps > 0, 'stepped back');
+      eq(cpu.vl, 0, 'vl reset');
+      assert((cpu.vtype >>> 0) === (VTYPE_VILL >>> 0), 'vtype reset to vill');
+      let allZero = true;
+      for (let i = 0; i < cpu.vregs.length; i++) if (cpu.vregs[i] !== 0) allZero = false;
+      assert(allZero, 'every vector register byte restored to 0');
+      eq(cpu.pc >>> 0, cpu.entry >>> 0, 'pc back at entry');
+    },
+  },
+  {
+    name: 'V: every vector mnemonic round-trips assemble→decode→disasm→re-assemble',
+    fn: () => {
+      let checked = 0;
+      for (const m of V_MNEMONICS) {
+        const line = `${m} ${vecCanonicalOps(m)}`;
+        const a = assemble(`main:\n ${line}`);
+        if (!a.ok) throw new AssertionError(`assemble '${line}': ${a.errors.map((e) => e.message).join('; ')}`);
+        const word = a.instrs[0].word;
+        const text = disassemble(word);
+        const reMnemonic = text.trim().split(/\s+/)[0];
+        const b = assemble(`main:\n ${text}`);
+        if (!b.ok) throw new AssertionError(`re-assemble '${text}': ${b.errors.map((e) => e.message).join('; ')}`);
+        eq(b.instrs[0].word >>> 0, word >>> 0, `round-trip word for ${m} (disasm: ${text})`);
+        eq(decode(word).mnemonic, m, `decode mnemonic for ${m} (got disasm ${reMnemonic})`);
+        checked++;
+      }
+      assert(checked >= 90, `checked ${checked} vector mnemonics`);
+    },
+  },
+  {
+    name: 'V: the bundled vector example runs (strip-mined SAXPY + reduction)',
+    fn: () => {
+      const ex = EXAMPLES.find((e) => e.id === 'vector');
+      assert(!!ex, 'vector example is registered');
+      const cpu = run(ex!.code);
+      eq(cpu.status, 'halted', 'example halts');
+      assert(cpu.output.includes('= 165'), `sum(3*x) = 165 printed (got: ${cpu.output})`);
+    },
+  },
+  {
+    name: 'V: masked round-trip — v0.t tail survives disassembly',
+    fn: () => {
+      const a = assemble(`main:\n vadd.vv v3, v1, v2, v0.t`);
+      assert(a.ok, 'assembles masked');
+      const text = disassemble(a.instrs[0].word);
+      assert(text.includes('v0.t'), `disasm keeps v0.t (got ${text})`);
+      const b = assemble(`main:\n ${text}`);
+      eq(b.instrs[0].word >>> 0, a.instrs[0].word >>> 0, 'masked round-trip');
     },
   },
 ];

@@ -55,6 +55,17 @@ import {
   vpn,
 } from './mmu';
 import type { Access, TlbEntry, TranslationStep, TranslationTrace } from './mmu';
+import {
+  VLENB,
+  VREG_COUNT,
+  VCSR,
+  VTYPE_VILL,
+  decodeVtype,
+  vlmaxOf,
+  vmemSpec,
+  VEC_SPECS,
+} from './vector';
+import type { VType } from './vector';
 
 export type RunStatus = 'idle' | 'paused' | 'halted' | 'error' | 'ebreak';
 
@@ -104,6 +115,11 @@ interface UndoStep {
    * than once — a paged store updates the datum *and* the PTE's A/D bits — so this is a list.
    */
   mem: { addr: number; prev: number[] }[];
+  /**
+   * Vector-register bytes overwritten this step, oldest first. A vector op can write a whole
+   * register group, so this records the exact `vregs` byte ranges it touched for time-travel.
+   */
+  vmem: { off: number; prev: number[] }[];
 }
 
 const SP = 2;
@@ -246,6 +262,17 @@ export class Cpu {
   readonly fregs = new Uint32Array(32);
   /** Floating-point control & status register: frm = [7:5], fflags = [4:0]. */
   fcsr = 0;
+  /** RV32V vector register file: 32 registers × VLENB bytes, stored as a flat little-endian heap. */
+  readonly vregs = new Uint8Array(VREG_COUNT * VLENB);
+  /** Vector type (SEW/LMUL/ta/ma/vill) set by the most recent `vset*`. */
+  vtype = VTYPE_VILL; // reset state is "no valid configuration"
+  /** Active vector length (elements) the next vector op will process. */
+  vl = 0;
+  /** Element index a vector op resumes from (always 0 in this deterministic core). */
+  vstart = 0;
+  /** Fixed-point saturation flag (vxsat) and rounding mode (vxrm) — tracked, mostly unused. */
+  vxsat = 0;
+  vxrm = 0;
   pc = 0;
   entry = 0;
   readonly mem = new Memory();
@@ -330,6 +357,12 @@ export class Cpu {
     this.regs.fill(0);
     this.fregs.fill(0);
     this.fcsr = 0;
+    this.vregs.fill(0);
+    this.vtype = VTYPE_VILL;
+    this.vl = 0;
+    this.vstart = 0;
+    this.vxsat = 0;
+    this.vxrm = 0;
     this.regs[SP] = STACK_TOP | 0;
     this.regs[GP] = GLOBAL_POINTER | 0;
     this.pc = this.entry >>> 0;
@@ -806,7 +839,16 @@ export class Cpu {
       outLen: this.output.length,
       priv: this.snapshotPriv(),
       mem: [],
+      vmem: [],
     };
+  }
+
+  /** Snapshot the bytes a vector write is about to overwrite, then write them. */
+  private vWriteByte(off: number, value: number): void {
+    if (this.rec) {
+      this.rec.vmem.push({ off, prev: [this.vregs[off]] });
+    }
+    this.vregs[off] = value & 0xff;
   }
 
   /** Bundle the privileged trap + CLINT + paging registers for the undo journal. */
@@ -816,6 +858,7 @@ export class Cpu {
       this.mtval, this.mscratch, this.mtime, this.mtimecmp, this.msip,
       this.medeleg, this.mideleg, this.priv, this.stvec, this.sepc, this.scause,
       this.stval, this.sscratch, this.satp,
+      this.vtype, this.vl, this.vstart, this.vxsat, this.vxrm,
     ];
   }
 
@@ -840,6 +883,11 @@ export class Cpu {
     this.stval = p[17];
     this.sscratch = p[18];
     this.satp = p[19];
+    this.vtype = p[20] >>> 0;
+    this.vl = p[21];
+    this.vstart = p[22];
+    this.vxsat = p[23];
+    this.vxrm = p[24];
     // Translations may have changed under us; drop the cache so a re-step re-walks.
     this.tlb.clear();
   }
@@ -880,6 +928,11 @@ export class Cpu {
       const w = u.mem[m];
       for (let i = 0; i < w.prev.length; i++) this.mem.writeByte(w.addr + i, w.prev[i]);
     }
+    // Vector-register bytes, likewise newest-first.
+    for (let m = u.vmem.length - 1; m >= 0; m--) {
+      const w = u.vmem[m];
+      for (let i = 0; i < w.prev.length; i++) this.vregs[w.off + i] = w.prev[i];
+    }
     this.restorePriv(u.priv);
     this.pc = u.pc >>> 0;
     this.cycles = u.cycles;
@@ -917,6 +970,7 @@ export class Cpu {
    */
   private execute(d: DecodedInstruction, size = 4): boolean {
     if (d.format === 'FP') return this.executeFp(d);
+    if (d.format === 'V') return this.executeVector(d);
     if (d.format === 'AMO') return this.executeAmo(d);
     if (d.format === 'CSR') return this.executeCsr(d);
 
@@ -1523,6 +1577,21 @@ export class Cpu {
         return (this.fcsr >>> 5) & 7; // frm
       case 0x003:
         return this.fcsr & 0xff; // fcsr
+      // Vector CSRs
+      case VCSR.vstart:
+        return this.vstart | 0;
+      case VCSR.vxsat:
+        return this.vxsat & 1;
+      case VCSR.vxrm:
+        return this.vxrm & 3;
+      case VCSR.vcsr:
+        return ((this.vxrm & 3) << 1) | (this.vxsat & 1); // vcsr = {vxrm[2:1], vxsat[0]}
+      case VCSR.vl:
+        return this.vl | 0;
+      case VCSR.vtype:
+        return this.vtype | 0;
+      case VCSR.vlenb:
+        return VLENB;
       case 0xc00: // cycle
       case 0xc01: // time (mirrors cycle here — deterministic)
       case 0xc02: // instret (one retired per cycle)
@@ -1594,6 +1663,20 @@ export class Cpu {
         break;
       case 0x003:
         this.fcsr = v & 0xff;
+        break;
+      // Vector CSRs — vl/vtype/vlenb are read-only (owned by vset*); vstart/vxsat/vxrm/vcsr write.
+      case VCSR.vstart:
+        this.vstart = v;
+        break;
+      case VCSR.vxsat:
+        this.vxsat = v & 1;
+        break;
+      case VCSR.vxrm:
+        this.vxrm = v & 3;
+        break;
+      case VCSR.vcsr:
+        this.vxsat = v & 1;
+        this.vxrm = (v >>> 1) & 3;
         break;
       // Supervisor-mode trap CSRs
       case 0x100: // sstatus — writes only the supervisor-visible bits of mstatus
@@ -1705,6 +1788,388 @@ export class Cpu {
         break;
     }
     return false;
+  }
+
+  // ---- RV32V: the vector extension ----------------------------------------
+  // The functional vector engine. `vset*` configures `vtype`/`vl`; every other vector op reads
+  // those and processes `vl` elements of width SEW, leaving tail + masked-off elements undisturbed
+  // (a legal realization of ta/ma "agnostic"). Vector-register writes go through `vWriteByte`, so
+  // time-travel reverses a vector instruction exactly.
+
+  /** Read an unsigned `eb`-byte element `idx` of vector register `vreg` (little-endian). */
+  private vElemU(vreg: number, idx: number, eb: number): number {
+    const off = vreg * VLENB + idx * eb;
+    let v = 0;
+    for (let k = 0; k < eb; k++) v |= this.vregs[off + k] << (8 * k);
+    return v >>> 0;
+  }
+  /** Read a sign-extended `eb`-byte element. */
+  private vElemS(vreg: number, idx: number, eb: number): number {
+    return signExtend(this.vElemU(vreg, idx, eb), eb * 8);
+  }
+  /** Write the low `eb` bytes of `value` into element `idx` of `vreg`. */
+  private vSetElem(vreg: number, idx: number, eb: number, value: number): void {
+    const off = vreg * VLENB + idx * eb;
+    for (let k = 0; k < eb; k++) this.vWriteByte(off + k, (value >>> (8 * k)) & 0xff);
+  }
+  /** Mask bit `idx` (bit `idx` of register v0). */
+  private vMaskBit(idx: number): number {
+    return (this.vregs[idx >> 3] >> (idx & 7)) & 1;
+  }
+  /** Set/clear mask bit `idx` of register `vreg`. */
+  private vSetMaskBit(vreg: number, idx: number, bit: number): void {
+    const off = vreg * VLENB + (idx >> 3);
+    let byte = this.vregs[off];
+    if (bit) byte |= 1 << (idx & 7);
+    else byte &= ~(1 << (idx & 7));
+    this.vWriteByte(off, byte & 0xff);
+  }
+  /** Snapshot `n` unsigned elements of `vreg` into a JS array (so in-place ops are hazard-free). */
+  private readVec(vreg: number, n: number, eb: number): number[] {
+    const out = new Array<number>(n);
+    for (let i = 0; i < n; i++) out[i] = this.vElemU(vreg, i, eb);
+    return out;
+  }
+
+  private executeVector(d: DecodedInstruction): boolean {
+    const m = d.mnemonic;
+    if (m === 'vsetvli' || m === 'vsetivli' || m === 'vsetvl') return this.doVset(d);
+
+    const vt = decodeVtype(this.vtype);
+    if (vt.vill) {
+      return this.trapException(EXC_ILLEGAL, d.raw, 'vector op with an illegal vtype (run vsetvli first)');
+    }
+
+    const mem = vmemSpec(m);
+    if (mem) return this.execVMem(d, vt, mem);
+
+    const spec = VEC_SPECS[m];
+    if (!spec) return this.trapException(EXC_ILLEGAL, d.raw, `unknown vector instruction '${m}'`);
+    this.execVecArith(d, vt, m, spec);
+    this.vstart = 0;
+    return false;
+  }
+
+  private doVset(d: DecodedInstruction): boolean {
+    const raw = d.raw;
+    let newVtype: number;
+    let avl: number;
+    let avlIsImm = false;
+    let rs1IsZero = false;
+    if (d.mnemonic === 'vsetvli') {
+      newVtype = (raw >>> 20) & 0x7ff;
+      rs1IsZero = d.rs1 === 0;
+      avl = this.regs[d.rs1] >>> 0;
+    } else if (d.mnemonic === 'vsetivli') {
+      newVtype = (raw >>> 20) & 0x3ff;
+      avl = d.rs1 & 0x1f;
+      avlIsImm = true;
+    } else {
+      newVtype = this.regs[d.rs2] >>> 0;
+      rs1IsZero = d.rs1 === 0;
+      avl = this.regs[d.rs1] >>> 0;
+    }
+    const vt = decodeVtype(newVtype);
+    if (vt.vill) {
+      this.vtype = VTYPE_VILL;
+      this.vl = 0;
+      this.set(d.rd, 0);
+      this.vstart = 0;
+      return false;
+    }
+    const vlmax = vlmaxOf(vt);
+    let newVl: number;
+    if (avlIsImm || !rs1IsZero) newVl = Math.min(avl, vlmax);
+    else if (d.rd !== 0) newVl = vlmax; // rs1 = x0, rd ≠ x0  → set vl = VLMAX
+    else newVl = Math.min(this.vl, vlmax); // rs1 = x0, rd = x0  → keep vl (clamped)
+    this.vtype = newVtype;
+    this.vl = newVl;
+    this.set(d.rd, newVl);
+    this.vstart = 0;
+    return false;
+  }
+
+  private execVMem(d: DecodedInstruction, vt: VType, mem: ReturnType<typeof vmemSpec>): boolean {
+    const s = mem!;
+    const raw = d.raw;
+    const vd = d.rd;
+    const vm = (raw >>> 25) & 1;
+    const base = this.regs[d.rs1] >>> 0;
+    const vl = this.vl;
+    const sb = vt.sew / 8;
+
+    if (s.kind === 'mask') {
+      const nbytes = Math.ceil(vl / 8); // evl = vl bits, rounded up to whole bytes
+      for (let k = 0; k < nbytes; k++) {
+        const off = vd * VLENB + k;
+        if (s.store) this.vmStore((base + k) >>> 0, 1, this.vregs[off]);
+        else this.vWriteByte(off, this.vmLoad((base + k) >>> 0, 1) & 0xff);
+      }
+      this.vstart = 0;
+      return false;
+    }
+
+    const eb = s.kind === 'indexed' ? sb : s.eew; // data EEW (= SEW for indexed)
+    for (let i = 0; i < vl; i++) {
+      if (vm === 0 && this.vMaskBit(i) === 0) continue; // inactive: undisturbed
+      let addr: number;
+      if (s.kind === 'unit') addr = (base + i * eb) >>> 0;
+      else if (s.kind === 'strided') addr = (base + i * (this.regs[d.rs2] | 0)) >>> 0;
+      else addr = (base + this.vElemU(d.rs2, i, s.eew)) >>> 0; // indexed: index EEW from mnemonic
+      if (s.store) this.vmStore(addr, eb, this.vElemU(vd, i, eb));
+      else this.vSetElem(vd, i, eb, this.vmLoad(addr, eb) >>> 0);
+    }
+    this.vstart = 0;
+    return false;
+  }
+
+  private execVecArith(d: DecodedInstruction, vt: VType, m: string, spec: typeof VEC_SPECS[string]): void {
+    const { form, cat } = spec;
+    const sew = vt.sew;
+    const sb = sew / 8;
+    const vl = this.vl;
+    const vd = d.rd;
+    const vs2 = d.rs2;
+    const vm = (d.raw >>> 25) & 1;
+    const maskU = sew === 32 ? 0xffffffff : ((1 << sew) >>> 0) - 1;
+    const vlmax = vlmaxOf(vt);
+    const OPV_IVV = 0, OPV_MVV = 2; // categories whose 2nd operand is a vector
+    const isVec = cat === OPV_IVV || cat === OPV_MVV;
+
+    // Scalar / immediate operands (the second source for the .vx / .vi forms).
+    const xRaw = this.regs[d.rs1] | 0; // full XLEN scalar (for x-forms)
+    const scalarU = (xRaw >>> 0) & maskU;
+    const scalarS = signExtend(scalarU, sew);
+    const uimm5 = d.rs1 & 0x1f;
+    const simm5 = signExtend(uimm5, 5);
+    const isUimmForm = form === 'vviu';
+    const immU = (isUimmForm ? uimm5 : simm5 >>> 0) & maskU;
+    const immS = isUimmForm ? uimm5 : simm5;
+
+    const bU = (i: number): number =>
+      isVec ? this.vElemU(d.rs1, i, sb) : cat === 4 || cat === 6 ? scalarU : immU;
+    const bS = (i: number): number =>
+      isVec ? this.vElemS(d.rs1, i, sb) : cat === 4 || cat === 6 ? scalarS : immS;
+    const active = (i: number): boolean => vm === 1 || this.vMaskBit(i) === 1;
+    const lowmul = (x: number, y: number): number => (Math.imul(x, y) >>> 0) & maskU;
+    const writeElem = (i: number, v: number): void => this.vSetElem(vd, i, sb, v >>> 0);
+
+    const base = m.slice(0, m.indexOf('.') === -1 ? m.length : m.indexOf('.'));
+
+    // ---- whole-register-domain ops handled before the elementwise loop -----
+    switch (m) {
+      case 'vmv.x.s':
+        this.set(d.rd, this.vElemS(vs2, 0, sb)); // rd ← sign-extended element 0
+        return;
+      case 'vmv.s.x':
+        if (vl > 0) this.vSetElem(vd, 0, sb, scalarU); // element 0 ← x[rs1]
+        return;
+      case 'vcpop.m': {
+        let c = 0;
+        for (let i = 0; i < vl; i++) if (active(i) && this.vMaskBit2(vs2, i)) c++;
+        this.set(d.rd, c);
+        return;
+      }
+      case 'vfirst.m': {
+        let idx = -1;
+        for (let i = 0; i < vl; i++) if (active(i) && this.vMaskBit2(vs2, i)) { idx = i; break; }
+        this.set(d.rd, idx | 0);
+        return;
+      }
+      case 'vid.v':
+        for (let i = 0; i < vl; i++) if (active(i)) writeElem(i, i & maskU);
+        return;
+      case 'viota.m': {
+        let sum = 0;
+        for (let i = 0; i < vl; i++) {
+          if (active(i)) {
+            writeElem(i, sum & maskU);
+            if (this.vMaskBit2(vs2, i)) sum++;
+          }
+        }
+        return;
+      }
+      case 'vmsbf.m':
+      case 'vmsif.m':
+      case 'vmsof.m': {
+        let seen = false;
+        for (let i = 0; i < vl; i++) {
+          if (!active(i)) continue;
+          const src = this.vMaskBit2(vs2, i) === 1;
+          let out: number;
+          if (m === 'vmsbf.m') out = seen || src ? 0 : 1;
+          else if (m === 'vmsif.m') out = seen ? 0 : 1;
+          else out = !seen && src ? 1 : 0; // vmsof.m
+          this.vSetMaskBit(vd, i, out);
+          seen = seen || src;
+        }
+        return;
+      }
+    }
+
+    if (form === 'mm') {
+      // Mask-register logical: unmasked, one bit per element over [0, vl).
+      for (let i = 0; i < vl; i++) {
+        const a = this.vMaskBit2(vs2, i);
+        const b = this.vMaskBit2(d.rs1, i);
+        let r: number;
+        switch (m) {
+          case 'vmand.mm': r = a & b; break;
+          case 'vmnand.mm': r = (a & b) ^ 1; break;
+          case 'vmandn.mm': r = a & (b ^ 1); break;
+          case 'vmor.mm': r = a | b; break;
+          case 'vmnor.mm': r = (a | b) ^ 1; break;
+          case 'vmorn.mm': r = a | (b ^ 1); break;
+          case 'vmxor.mm': r = a ^ b; break;
+          default: r = (a ^ b) ^ 1; break; // vmxnor.mm
+        }
+        this.vSetMaskBit(vd, i, r & 1);
+      }
+      return;
+    }
+
+    if (form === 'vs') {
+      // Reduction: vd[0] = vs1[0] (op) over active vs2 elements. No update when vl = 0.
+      if (vl === 0) return;
+      const src = this.readVec(vs2, vl, sb);
+      const initU = this.vElemU(d.rs1, 0, sb);
+      const initS = this.vElemS(d.rs1, 0, sb);
+      let accU = initU;
+      let accS = initS;
+      for (let i = 0; i < vl; i++) {
+        if (!active(i)) continue;
+        const eU = src[i] >>> 0;
+        const eS = signExtend(eU, sew);
+        switch (m) {
+          case 'vredsum.vs': accU = (accU + eU) & maskU; break;
+          case 'vredand.vs': accU = accU & eU; break;
+          case 'vredor.vs': accU = accU | eU; break;
+          case 'vredxor.vs': accU = accU ^ eU; break;
+          case 'vredminu.vs': accU = Math.min(accU >>> 0, eU >>> 0); break;
+          case 'vredmaxu.vs': accU = Math.max(accU >>> 0, eU >>> 0); break;
+          case 'vredmin.vs': accS = Math.min(accS, eS); break;
+          case 'vredmax.vs': accS = Math.max(accS, eS); break;
+        }
+      }
+      const res = m === 'vredmin.vs' || m === 'vredmax.vs' ? accS : accU;
+      this.vSetElem(vd, 0, sb, res & maskU);
+      return;
+    }
+
+    if (base === 'vmerge' || form === 'movv' || form === 'movx' || form === 'movi') {
+      // vmerge selects per-mask between vs2 and op2; vmv.v.* copies op2 to every element.
+      const isMv = form === 'movv' || form === 'movx' || form === 'movi';
+      for (let i = 0; i < vl; i++) {
+        let op2: number;
+        if (cat === OPV_IVV) op2 = this.vElemU(d.rs1, i, sb);
+        else if (cat === 4) op2 = scalarU;
+        else op2 = immU;
+        const useOp2 = isMv || this.vMaskBit(i) === 1;
+        writeElem(i, (useOp2 ? op2 : this.vElemU(vs2, i, sb)) & maskU);
+      }
+      return;
+    }
+
+    if (base === 'vslideup' || base === 'vslidedown' || base === 'vslide1up' || base === 'vslide1down') {
+      const src = this.readVec(vs2, vlmax, sb);
+      const off = cat === 3 ? uimm5 : this.regs[d.rs1] >>> 0; // .vi offset is the uimm
+      for (let i = 0; i < vl; i++) {
+        if (!active(i)) continue;
+        if (base === 'vslideup') {
+          if (i >= off) writeElem(i, src[i - off] & maskU);
+        } else if (base === 'vslidedown') {
+          const j = i + off;
+          writeElem(i, (j < vlmax ? src[j] : 0) & maskU);
+        } else if (base === 'vslide1up') {
+          writeElem(i, (i === 0 ? scalarU : src[i - 1]) & maskU);
+        } else {
+          writeElem(i, (i === vl - 1 ? scalarU : src[i + 1]) & maskU);
+        }
+      }
+      return;
+    }
+
+    if (base === 'vrgather') {
+      const src = this.readVec(vs2, vlmax, sb);
+      for (let i = 0; i < vl; i++) {
+        if (!active(i)) continue;
+        const idx = cat === OPV_IVV ? this.vElemU(d.rs1, i, sb) : cat === 4 ? scalarU : uimm5;
+        writeElem(i, (idx < vlmax ? src[idx] : 0) & maskU);
+      }
+      return;
+    }
+
+    // ---- elementwise arithmetic / compares / multiply-accumulate ----------
+    const isCompare = base.startsWith('vms') && base !== 'vmsbf' && base !== 'vmsif' && base !== 'vmsof';
+    // For mac forms the multiplier source is the s1 field (d.rs1) for .vv, the scalar for .vx.
+    const macMul = (i: number): number => (cat === 6 ? scalarU : this.vElemU(d.rs1, i, sb));
+
+    for (let i = 0; i < vl; i++) {
+      if (!active(i)) continue;
+      const aU = this.vElemU(vs2, i, sb);
+      const aS = signExtend(aU, sew);
+      const sh = (isVec ? this.vElemU(d.rs1, i, sb) : cat === 4 ? scalarU : uimm5) & (sew - 1);
+
+      if (isCompare) {
+        const x = bU(i);
+        const xs = bS(i);
+        let c = 0;
+        switch (base) {
+          case 'vmseq': c = aU === x ? 1 : 0; break;
+          case 'vmsne': c = aU !== x ? 1 : 0; break;
+          case 'vmsltu': c = (aU >>> 0) < (x >>> 0) ? 1 : 0; break;
+          case 'vmslt': c = aS < xs ? 1 : 0; break;
+          case 'vmsleu': c = (aU >>> 0) <= (x >>> 0) ? 1 : 0; break;
+          case 'vmsle': c = aS <= xs ? 1 : 0; break;
+          case 'vmsgtu': c = (aU >>> 0) > (x >>> 0) ? 1 : 0; break;
+          case 'vmsgt': c = aS > xs ? 1 : 0; break;
+        }
+        this.vSetMaskBit(vd, i, c);
+        continue;
+      }
+
+      let r: number;
+      switch (base) {
+        case 'vadd': r = aU + bU(i); break;
+        case 'vsub': r = aU - bU(i); break;
+        case 'vrsub': r = bU(i) - aU; break;
+        case 'vand': r = aU & bU(i); break;
+        case 'vor': r = aU | bU(i); break;
+        case 'vxor': r = aU ^ bU(i); break;
+        case 'vsll': r = aU << sh; break;
+        case 'vsrl': r = aU >>> sh; break;
+        case 'vsra': r = aS >> sh; break;
+        case 'vminu': r = (aU >>> 0) < (bU(i) >>> 0) ? aU : bU(i); break;
+        case 'vmin': r = aS < bS(i) ? aS : bS(i); break;
+        case 'vmaxu': r = (aU >>> 0) > (bU(i) >>> 0) ? aU : bU(i); break;
+        case 'vmax': r = aS > bS(i) ? aS : bS(i); break;
+        case 'vmul': r = lowmul(aU, bU(i)); break;
+        case 'vmulhu': r = Number((BigInt(aU >>> 0) * BigInt(bU(i) >>> 0)) >> BigInt(sew)) & maskU; break;
+        case 'vmulh': r = Number((BigInt(aS) * BigInt(bS(i))) >> BigInt(sew)) & maskU; break;
+        case 'vmulhsu': r = Number((BigInt(aS) * BigInt(bU(i) >>> 0)) >> BigInt(sew)) & maskU; break;
+        case 'vdivu': r = (bU(i) >>> 0) === 0 ? maskU : Math.floor((aU >>> 0) / (bU(i) >>> 0)); break;
+        case 'vremu': r = (bU(i) >>> 0) === 0 ? aU : (aU >>> 0) % (bU(i) >>> 0); break;
+        case 'vdiv':
+          r = bS(i) === 0 ? -1 : aS === -(2 ** (sew - 1)) && bS(i) === -1 ? aS : Math.trunc(aS / bS(i));
+          break;
+        case 'vrem':
+          r = bS(i) === 0 ? aS : aS === -(2 ** (sew - 1)) && bS(i) === -1 ? 0 : aS % bS(i);
+          break;
+        case 'vmacc': r = this.vElemU(vd, i, sb) + lowmul(macMul(i), aU); break;
+        case 'vnmsac': r = this.vElemU(vd, i, sb) - lowmul(macMul(i), aU); break;
+        case 'vmadd': r = lowmul(macMul(i), this.vElemU(vd, i, sb)) + aU; break;
+        case 'vnmsub': r = aU - lowmul(macMul(i), this.vElemU(vd, i, sb)); break;
+        default:
+          this.trapException(EXC_ILLEGAL, d.raw, `unhandled vector op '${m}'`);
+          return;
+      }
+      writeElem(i, r & maskU);
+    }
+  }
+
+  /** Mask bit `idx` of an arbitrary mask register `vreg`. */
+  private vMaskBit2(vreg: number, idx: number): number {
+    return (this.vregs[vreg * VLENB + (idx >> 3)] >> (idx & 7)) & 1;
   }
 
   // RISC-V division semantics: defined results for divide-by-zero and signed overflow.

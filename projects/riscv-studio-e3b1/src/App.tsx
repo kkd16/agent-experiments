@@ -99,7 +99,7 @@ export default function App() {
           <span className="logo">RV</span>
           <div>
             <h1>RISC-V Studio</h1>
-            <p>an RV32IMAFC + Zb + Zicsr assembler, emulator &amp; time-travel debugger</p>
+            <p>an RV32IMAFCV + Zb + Zicsr assembler, emulator &amp; time-travel debugger</p>
           </div>
         </div>
         <nav className="tabs">
@@ -214,7 +214,7 @@ export default function App() {
           {vm.historyDepth} undo
         </span>
         <span>
-          {vm.cpu.error ? <span className="err-text">{vm.cpu.error}</span> : 'RV32IMAFC · Zb · Zicsr · machine-mode traps · little-endian'}
+          {vm.cpu.error ? <span className="err-text">{vm.cpu.error}</span> : 'RV32IMAFCV · Zb · Zicsr · machine-mode traps · little-endian'}
         </span>
       </footer>
     </div>

@@ -29,6 +29,8 @@ import {
 import type { InstrSpec } from './isa';
 import { regIndex, fregIndex } from './registers';
 import { FP_SPECS, FP_MNEMONICS, rmFromName } from './fp';
+import { isVectorMnemonic, assembleVector } from './vector';
+import type { VecAsmCtx } from './vector';
 import { parseIntLiteral, signExtend, charCode, u32 } from './format';
 import { RVC_MNEMONICS, encodeCompressed, isCompactReg } from './rvc';
 
@@ -88,6 +90,8 @@ interface MicroInstr {
   amoFunct7?: number;
   /** When set, this micro is an RV32C (compressed) instruction encoded to 2 bytes. */
   compressed?: boolean;
+  /** Fully-resolved 32-bit encoding for a vector (RVV) instruction (no label relocation needed). */
+  vecWord?: number;
 }
 
 type ByteSrc = { kind: 'lit'; values: number[] } | { kind: 'word'; imm: ImmSrc };
@@ -552,6 +556,7 @@ function expandOther(
   source: string,
 ): MicroInstr[] {
   if (RVC_MNEMONICS.has(op)) return [expandRvc(op, ops, consts, line, source)];
+  if (isVectorMnemonic(op)) return [expandVector(op, ops, consts, line, source)];
   if (FP_MNEMONICS.has(op)) return [expandFp(op, ops, consts, line, source)];
   if (CSR_MNEMONICS.has(op)) return [expandCsr(op, ops, consts, line, source)];
   const amoBase = stripAmoSuffix(op).base;
@@ -588,6 +593,28 @@ function expandCsr(op: string, ops: string[], consts: Map<string, number>, line:
     return csrMicro(op, { rd, rs1: parseImmValue(ops[2], consts) & 0x1f, csr }, line, source);
   }
   return csrMicro(op, { rd, rs1: parseReg(ops[2]), csr }, line, source);
+}
+
+/** Assemble a vector (RVV) instruction into a fully-resolved word carried on a `vecWord` micro. */
+function expandVector(op: string, ops: string[], consts: Map<string, number>, line: number, source: string): MicroInstr {
+  const ctx: VecAsmCtx = {
+    xreg: (tok) => parseReg(tok),
+    imm: (tok) => parseImmValue(tok, consts),
+    fail: (msg) => {
+      throw new AsmFault(msg);
+    },
+  };
+  const word = assembleVector(op, ops, ctx);
+  return {
+    mnemonic: op,
+    rd: 0,
+    rs1: 0,
+    rs2: 0,
+    imm: { kind: 'num', value: 0 },
+    vecWord: word >>> 0,
+    line,
+    source,
+  };
 }
 
 function expandFp(op: string, ops: string[], consts: Map<string, number>, line: number, source: string): MicroInstr {
@@ -795,7 +822,7 @@ function expandRvc(op: string, ops: string[], consts: Map<string, number>, line:
  * branch relaxation: every instruction's size is fixed before addresses are assigned.
  */
 function tryCompress(m: MicroInstr): MicroInstr | null {
-  if (m.compressed || m.csr !== undefined || m.amoFunct7 !== undefined) return null;
+  if (m.compressed || m.csr !== undefined || m.amoFunct7 !== undefined || m.vecWord !== undefined) return null;
   if (m.imm.kind !== 'num') return null; // symbol relocations are address-dependent
   const imm = m.imm.value | 0;
   const { rd, rs1, rs2 } = m;
@@ -997,6 +1024,7 @@ function encodeCompressedMicro(m: MicroInstr, addr: number, symbols: Map<string,
 }
 
 function encode(m: MicroInstr, addr: number, symbols: Map<string, number>): number {
+  if (m.vecWord !== undefined) return m.vecWord >>> 0;
   if (m.compressed) return encodeCompressedMicro(m, addr, symbols);
   if (FP_SPECS[m.mnemonic]) return encodeFp(m, addr, symbols);
   if (m.amoFunct7 !== undefined) return encodeAmo(m);
