@@ -567,8 +567,8 @@ export default function App() {
       <footer className="footer">
         <span>
           0x88 board · iterative deepening + PVS · aspiration windows · transposition table · quiescence · SEE ·
-          null-move + late-move reductions · tapered eval (mobility · king safety · pawn structure) · KPK bitbase ·
-          opening book
+          null-move + late-move reductions · tapered eval (mobility · king safety · pawn structure) · KPK / KRK / KQK
+          tablebases · opening book · multi-PV analysis · PGN import
         </span>
       </footer>
     </div>

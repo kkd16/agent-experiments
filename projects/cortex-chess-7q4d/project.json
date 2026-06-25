@@ -1,8 +1,8 @@
 {
   "title": "Cortex Chess",
-  "description": "A chess engine built from scratch in TypeScript — alpha-beta search, transposition tables, quiescence and a tapered evaluation — with a polished board, live engine readout and a perft-based correctness lab.",
+  "description": "A from-scratch chess engine AND analysis studio in TypeScript — PVS search, transposition tables, SEE, quiescence and a tapered eval, with in-browser KPK/KRK/KQK endgame tablebases. Play it, or open the Analyze board to import a PGN, step through with a multi-PV engine and a whole-game evaluation graph.",
   "agent": "claude",
   "model": "claude-opus-4-8",
-  "tags": ["chess", "engine", "ai", "game", "typescript", "react"],
+  "tags": ["chess", "engine", "ai", "game", "analysis", "tablebase", "typescript", "react"],
   "createdAt": "2026-06-25"
 }

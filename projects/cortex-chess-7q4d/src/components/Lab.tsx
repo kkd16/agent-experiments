@@ -13,6 +13,9 @@ import {
   squareName,
   TACTICS,
   type TacticCase,
+  parsePgn,
+  sanToMove,
+  Game,
 } from '../engine'
 import { useEngine } from '../hooks/useEngine'
 
@@ -290,6 +293,54 @@ function runChecks(): CheckRow[] {
   const kDraw = evaluate(parseFen('7k/8/6KP/8/8/8/8/8 b - - 0 1'))
   out.push({ group: 'KPK', name: 'rook-pawn, king in corner → draw', pass: kDraw === 0, detail: String(kDraw) })
 
+  // KRK / KQK tablebases: decisive when winning, exactly 0 in the drawn cases.
+  const krk = evaluate(parseFen('8/8/8/4k3/8/8/8/R3K3 w - - 0 1'))
+  out.push({ group: 'Tablebase', name: 'K+R vs K → decisive win', pass: krk > 15000, detail: String(krk) })
+  const kqk = evaluate(parseFen('8/8/8/5k2/8/8/8/Q3K3 w - - 0 1'))
+  out.push({ group: 'Tablebase', name: 'K+Q vs K → decisive win', pass: kqk > 15000, detail: String(kqk) })
+  const krkDraw = evaluate(parseFen('8/8/8/8/8/8/2R5/K1k5 b - - 0 1'))
+  out.push({ group: 'Tablebase', name: 'K+R vs K, rook hangs → draw', pass: krkDraw === 0, detail: String(krkDraw) })
+
+  // SAN round-trip: every legal move's notation must parse back to that move.
+  const sanFens = [
+    'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1',
+    'r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1',
+    'n1n5/PPPk4/8/8/8/8/4Kppp/5N1N b - - 0 1', // promotions galore
+  ]
+  let sanChecked = 0
+  let sanBad = 0
+  for (const f of sanFens) {
+    const pos = parseFen(f)
+    const legal = generateLegal(pos)
+    for (const m of legal) {
+      sanChecked++
+      if (sanToMove(pos, moveToSan(pos, m, legal)) !== m) sanBad++
+    }
+  }
+  out.push({
+    group: 'SAN',
+    name: `${sanChecked} moves round-trip through the parser`,
+    pass: sanBad === 0,
+    detail: sanBad === 0 ? 'all match' : `${sanBad} failed`,
+  })
+
+  // PGN import: a real master game parses, replays, and ends in checkmate.
+  const opera =
+    '[White "Morphy"] [Black "Allies"] [Result "1-0"]\n' +
+    '1.e4 e5 2.Nf3 d6 3.d4 Bg4 4.dxe5 Bxf3 5.Qxf3 dxe5 6.Bc4 Nf6 7.Qb3 Qe7 ' +
+    '8.Nc3 c6 9.Bg5 b5 10.Nxb5 cxb5 11.Bxb5+ Nbd7 12.O-O-O Rd8 13.Rxd7 Rxd7 ' +
+    '14.Rd1 Qe6 15.Bxd7+ Nxd7 16.Qb8+ Nxb8 17.Rd8# 1-0'
+  const pg = parsePgn(opera)[0]
+  const g = new Game(pg.startFen)
+  for (const m of pg.moves) g.apply(m)
+  const pgnOk = !pg.error && pg.moves.length === 33 && pg.result === '1-0' && g.result() === 'checkmate'
+  out.push({
+    group: 'PGN',
+    name: 'Opera Game imports and ends in mate',
+    pass: pgnOk,
+    detail: `${pg.moves.length} plies, ${g.result()}`,
+  })
+
   return out
 }
 
@@ -303,7 +354,9 @@ function ChecksLab() {
         <p>
           Deterministic correctness checks for the parts you can't eyeball: <strong>SEE</strong> returns the right
           material swing, the <strong>evaluation is exactly symmetric</strong> (mirroring the board and swapping colours
-          negates the score), and the <strong>KPK bitbase</strong> agrees with theory on won and drawn pawn endings.
+          negates the score), the <strong>KPK / KRK / KQK tablebases</strong> agree with theory on won and drawn endings,
+          every move <strong>round-trips through the SAN parser</strong>, and a real master game <strong>imports from
+          PGN</strong> and replays to checkmate.
         </p>
         <button className="btn primary" onClick={() => setRows(runChecks())}>
           Run self-tests
