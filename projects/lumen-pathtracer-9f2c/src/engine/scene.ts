@@ -22,6 +22,7 @@ import type { SceneDef, EnvDef, MediumDef } from './types'
 import { makeSky, skyRadiance } from './sky'
 import type { SkyState } from './sky'
 import { makeDensityField } from './volume'
+import { spectralAt } from './subsurface'
 import type { DensityField } from './volume'
 import { buildLightTree } from './lighttree'
 import type { LightTree } from './lighttree'
@@ -49,6 +50,14 @@ export interface LightSampleResult {
 export interface MediumScatter {
   t: number
   medium: MediumDef
+}
+
+// (16.0) A medium's extinction at the path's hero wavelength. A chromatic medium
+// reads its per-channel σ_t as a 3-point spectrum (`spectralAt`); an achromatic one
+// (or a path that has committed no wavelength, λ=0) returns the scalar σ_t verbatim,
+// so the prior delta/ratio-tracking proofs are untouched.
+function mediumSigmaT(m: MediumDef, lambda: number): number {
+  return m.sigmaTSpectral !== undefined && lambda > 0 ? spectralAt(m.sigmaTSpectral, lambda) : m.sigmaT
 }
 
 // Ray ∩ sphere, returning the (possibly negative) near/far parameters, or null
@@ -88,6 +97,9 @@ export class Scene {
   // tracking against the medium's `sigmaT` as the constant majorant.
   readonly densityFields: (DensityField | null)[]
   readonly hasHeterogeneous: boolean
+  // (16.0) True when any medium carries a chromatic (per-wavelength) extinction, so
+  // the integrator commits a hero wavelength before tracking through it.
+  readonly hasSpectralMedia: boolean
   // World-space bounding box (the BVH root), exposed for path guiding's spatial tree.
   readonly bounds: Aabb
   // (14.0) The light BVH over the emissive triangles, used for importance-sampled
@@ -121,6 +133,7 @@ export class Scene {
     this.hasMedia = this.media.length > 0
     this.densityFields = this.media.map((m) => makeDensityField(m))
     this.hasHeterogeneous = this.densityFields.some((f) => f !== null)
+    this.hasSpectralMedia = this.media.some((m) => m.sigmaTSpectral !== undefined)
     this.lightTree =
       this.lights.length > 0
         ? buildLightTree(
@@ -328,7 +341,7 @@ export class Scene {
   // accepted-collision distribution is then exactly the heterogeneous free-flight
   // law, with no bias and no integral. The smallest collision across all
   // (disjoint) media is the event; null ⇒ the ray reaches the surface at tMax.
-  sampleMediumScatter(o: Vec3, d: Vec3, tMax: number, rng: Rng): MediumScatter | null {
+  sampleMediumScatter(o: Vec3, d: Vec3, tMax: number, rng: Rng, lambda = 0): MediumScatter | null {
     let best: MediumScatter | null = null
     let bestT = tMax
     for (let i = 0; i < this.media.length; i++) {
@@ -338,17 +351,19 @@ export class Scene {
       const t0 = Math.max(iv.t0, 1e-4)
       const t1 = Math.min(iv.t1, bestT)
       if (t1 <= t0) continue
+      // (16.0) Extinction at the path's hero wavelength (scalar σ_t when achromatic).
+      const sigmaT = mediumSigmaT(m, lambda)
       const field = this.densityFields[i]
       if (field === null) {
         // Homogeneous: one analytic exponential flight.
-        const t = t0 - Math.log(1 - rng.next()) / m.sigmaT
+        const t = t0 - Math.log(1 - rng.next()) / sigmaT
         if (t < t1) {
           best = { t, medium: m }
           bestT = t
         }
       } else {
         // Heterogeneous: delta-track to the first *real* collision in [t0, t1).
-        const t = this.deltaTrack(o, d, t0, t1, m, field, rng)
+        const t = this.deltaTrack(o, d, t0, t1, sigmaT, field, rng)
         if (t >= 0 && t < bestT) {
           best = { t, medium: m }
           bestT = t
@@ -367,11 +382,11 @@ export class Scene {
     d: Vec3,
     t0: number,
     t1: number,
-    m: MediumDef,
+    sigmaT: number,
     field: DensityField,
     rng: Rng,
   ): number {
-    const sigmaBar = m.sigmaT * field.majorant
+    const sigmaBar = sigmaT * field.majorant
     let t = t0
     // Bound the loop defensively; with σ̄·(t1−t0) typically O(1–100) this exits
     // almost immediately, and the cap only guards a pathological majorant.
@@ -394,7 +409,7 @@ export class Scene {
   // unbiased Monte-Carlo estimator T̂ = ∏ (1 − σ_t(xᵢ)/σ̄) over majorant flights,
   // whose expectation is e^(−∫σ_t ds) for an arbitrary field (no closed form
   // required). `rng` is only consumed for heterogeneous media.
-  mediaTransmittance(o: Vec3, d: Vec3, dist: number, rng: Rng): number {
+  mediaTransmittance(o: Vec3, d: Vec3, dist: number, rng: Rng, lambda = 0): number {
     if (!this.hasMedia) return 1
     let tau = 0 // analytic optical depth accumulated from homogeneous media
     let tr = 1 // ratio-tracking transmittance from heterogeneous media
@@ -405,11 +420,13 @@ export class Scene {
       const t0 = Math.max(iv.t0, 0)
       const t1 = Math.min(iv.t1, dist)
       if (t1 <= t0) continue
+      // (16.0) Extinction at the path's hero wavelength (scalar σ_t when achromatic).
+      const sigmaT = mediumSigmaT(m, lambda)
       const field = this.densityFields[i]
       if (field === null) {
-        tau += m.sigmaT * (t1 - t0)
+        tau += sigmaT * (t1 - t0)
       } else {
-        tr *= this.ratioTrack(o, d, t0, t1, m, field, rng)
+        tr *= this.ratioTrack(o, d, t0, t1, sigmaT, field, rng)
         if (tr <= 0) return 0
       }
     }
@@ -423,11 +440,11 @@ export class Scene {
     d: Vec3,
     t0: number,
     t1: number,
-    m: MediumDef,
+    sigmaT: number,
     field: DensityField,
     rng: Rng,
   ): number {
-    const sigmaBar = m.sigmaT * field.majorant
+    const sigmaBar = sigmaT * field.majorant
     let t = t0
     let tr = 1
     for (let iter = 0; iter < 10000; iter++) {

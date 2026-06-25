@@ -12,6 +12,8 @@ import { Rng } from './rng'
 import { emitMesh, icosphere, surfaceOfRevolution, torus, transformMesh, uvSphere } from './mesh'
 import { conductorF0RGB } from './conductor'
 import type { ConductorName } from './conductor'
+import { subsurfacePreset } from './subsurface'
+import type { MediumName } from './subsurface'
 import { CUBE_OBJ, parseObj } from './obj'
 
 // ---- small builders ----------------------------------------------------------
@@ -915,6 +917,96 @@ function emberCloud(): SceneDef {
   }
 }
 
+// ---- Scene: Rayleigh Haze — a chromatic atmosphere (16.0) -------------------
+
+// Why the sky is blue and the setting sun is red, in one scene. A bright warm
+// sun-disc sits far behind a large homogeneous scattering haze whose extinction is
+// strongly **chromatic** — blue is scattered out of the beam many times more than
+// red (a Rayleigh-like σ_t ∝ ~1/λ⁴, approximated at the R/G/B wavelengths). Looking
+// straight at the sun *through* the haze, the blue is stripped away and the disc
+// reddens to a deep orange (transmission); everywhere else the haze glows a cool
+// blue from the single-scattered light it stole (in-scatter). One scalar σ_t could
+// never do this — the colour is the wavelength dependence of the extinction itself.
+function rayleighHaze(): SceneDef {
+  const materials: Material[] = [
+    { kind: 'diffuse', albedo: v(0.12, 0.12, 0.14), sigma: 0.5 }, // 0 dim floor
+    { kind: 'emissive', emission: v(34, 30, 24) }, // 1 the sun disc (warm, very bright)
+  ]
+  const prims: PrimDef[] = []
+  const g = 60
+  prims.push(...quad(v(-g, -6, -g), v(g, -6, -g), v(g, -6, g), v(-g, -6, g), 0))
+  // The sun, a large bright panel far behind the haze, facing the camera.
+  prims.push(...quad(v(-6, 1, -22), v(6, 1, -22), v(6, 13, -22), v(-6, 13, -22), 1))
+  return {
+    name: 'Rayleigh Haze',
+    materials,
+    prims,
+    camera: { eye: v(0, 4, 20), target: v(0, 5.5, -22), up: v(0, 1, 0), vfovDeg: 46, aperture: 0, focusDist: 42 },
+    env: { kind: 'gradient', top: v(0.02, 0.03, 0.06), bottom: v(0.02, 0.025, 0.035) },
+    media: [
+      {
+        center: v(0, 5, -4),
+        radius: 17,
+        sigmaT: 0.16, // scalar fallback (channel-mean-ish) for non-spectral integrators
+        // Rayleigh-like: blue scattered far more than red (∝ ~1/λ⁴ at 650/550/450 nm).
+        sigmaTSpectral: v(0.055, 0.13, 0.36),
+        albedo: v(1, 1, 1), // pure scattering — energy only redistributed
+        g: 0.0,
+      },
+    ],
+  }
+}
+
+// ---- Scene: Amber Smoke — a chromatic heterogeneous plume (16.0) ------------
+
+// A rising fBm smoke column whose extinction is chromatic: red passes through it
+// far more freely than blue, so where a grey smoke would read sooty neutral this
+// one glows a warm amber in its lit, thinner reaches and turns teal-shadowed in its
+// dense core — the colour emerging from delta/ratio tracking at the path's hero
+// wavelength, not from a tinted albedo. Lit hard from the right against a dark
+// backdrop, side by side with the achromatic Smoke Plume for contrast.
+function amberSmoke(): SceneDef {
+  const materials: Material[] = [
+    { kind: 'diffuse', albedo: v(0.14, 0.14, 0.15) }, // 0 dim floor
+    { kind: 'emissive', emission: v(70, 58, 40) }, // 1 warm key panel
+    { kind: 'diffuse', albedo: v(0.04, 0.04, 0.05) }, // 2 dark backdrop
+  ]
+  const prims: PrimDef[] = []
+  const g = 30
+  prims.push(...quad(v(-g, 0, -g), v(g, 0, -g), v(g, 0, g), v(-g, 0, g), 0))
+  prims.push(...quad(v(-g, 0, -12), v(g, 0, -12), v(g, 30, -12), v(-g, 30, -12), 2))
+  prims.push(...quad(v(9, 1.5, -3), v(9, 1.5, 3), v(9, 11, 3), v(9, 11, -3), 1))
+  return {
+    name: 'Amber Smoke',
+    materials,
+    prims,
+    camera: { eye: v(-2.5, 6.5, 18), target: v(0, 6.0, 0), up: v(0, 1, 0), vfovDeg: 48, aperture: 0, focusDist: 18 },
+    env: { kind: 'solid', color: v(0.01, 0.011, 0.014) },
+    media: [
+      {
+        center: v(0, 6, 0),
+        radius: 6.5,
+        sigmaT: 4.4, // scalar fallback (channel mean)
+        sigmaTSpectral: v(2.6, 4.6, 6.0), // red penetrates; blue/green scattered & absorbed near the surface
+        albedo: v(0.6, 0.6, 0.6), // neutral grey albedo — the hue is purely the chromatic extinction
+        g: 0.15,
+        density: {
+          kind: 'fbm',
+          frequency: 0.42,
+          octaves: 6,
+          lacunarity: 2.0,
+          gain: 0.55,
+          coverage: 0.42,
+          edge: 0.4,
+          verticalBias: 0.26,
+          warp: 1.4,
+          seed: 23,
+        },
+      },
+    ],
+  }
+}
+
 // ---- Scene: Cove — an indirect-lit room (a BDPT showcase) -------------------
 
 // A neutral room whose only emitter is a small, bright strip tucked *above* a
@@ -1500,6 +1592,96 @@ function jadeIdol(): SceneDef {
   }
 }
 
+// A translucent dielectric filled with a measured (Jensen 2001) BSSRDF medium —
+// its chromatic mean free path (red travels far, blue scatters out near the
+// surface) is baked into `interior.sigmaTSpectral`, so the dielectric is spectral
+// and the path commits a hero wavelength at the boundary (see subsurface.ts /
+// integrator). `tint` stays white; all colour is physical.
+function measured(name: MediumName, scale: number, ior: number, g = 0, roughness = 0): Material {
+  return { kind: 'dielectric', ior, tint: v(1, 1, 1), roughness, interior: subsurfacePreset(name, scale, g) }
+}
+
+// Living Skin (15.0) — the headline for chromatic subsurface. A hand-turned
+// figurine of measured *skin2* and a marble companion are raked by a warm light
+// from behind: where the form is thin (the neck, the lip, the rim) red light —
+// which alone penetrates that far — bleeds straight through and the silhouette
+// lights up a deep flesh red, while the thick body stays pale. That red-edged glow
+// is impossible for the scalar 12.0 walk (one mean free path per colour); it is the
+// chromatic extinction of real skin, rendered. Raise **Max Depth** for a softer,
+// deeper bleed.
+function livingSkin(): SceneDef {
+  const materials: Material[] = [{ kind: 'diffuse', albedo: v(0.07, 0.07, 0.08), sigma: 0.6 }]
+  const prims: PrimDef[] = []
+  const g = 40
+  prims.push(...quad(v(-g, 0, -g), v(g, 0, -g), v(g, 0, g), v(-g, 0, g), 0))
+  // Strong warm back-light low behind the forms → transmission through thin edges.
+  materials.push({ kind: 'emissive', emission: v(9.5, 7.4, 5.6) })
+  prims.push(...quad(v(-9, 0.15, -6), v(9, 0.15, -6), v(9, 7, -6), v(-9, 7, -6), materials.length - 1))
+  // Soft cool key from high front to read the surface form without washing the glow.
+  materials.push({ kind: 'emissive', emission: v(1.5, 1.7, 2.2) })
+  prims.push(...quad(v(-7, 12, 4), v(7, 12, 4), v(7, 12, 11), v(-7, 12, 11), materials.length - 1))
+
+  // The hero: a skin figurine (the same watertight lathe as the Jade Idol).
+  materials.push(measured('skin2', 1.15, 1.4, 0.0))
+  const skin = materials.length - 1
+  prims.push(...emitMesh(transformMesh(surfaceOfRevolution(idolProfile(), 96), { scale: 1.15, translate: v(-1.7, 0, 0) }), skin))
+  // A marble companion sphere — paler, with its own (subtler) red-deepest extinction.
+  materials.push(measured('marble', 0.55, 1.46, 0.0))
+  prims.push({ kind: 'sphere', center: v(2.2, 1.15, 0.3), radius: 1.15, material: materials.length - 1 })
+
+  return {
+    name: 'Living Skin',
+    materials,
+    prims,
+    camera: { eye: v(0.4, 3.2, 10.5), target: v(0, 1.8, -0.5), up: v(0, 1, 0), vfovDeg: 40, aperture: 0.03, focusDist: 10.5 },
+    env: { kind: 'gradient', top: v(0.03, 0.035, 0.045), bottom: v(0.012, 0.012, 0.016) },
+  }
+}
+
+// Apothecary (15.0) — the measured-media library on a shelf. A row of glass
+// spheres, each filled with a different real BSSRDF medium from Jensen et al. 2001
+// — whole milk, skim milk, marble, ketchup, cream, apple — lit from above and the
+// front. No two read alike: skim milk goes faintly blue (it scatters blue most),
+// whole milk is a dense warm white, ketchup is a near-opaque deep red (only red
+// penetrates its measured extinction at all), cream a rich off-white, marble cool
+// and stony. Every colour here is *measured*, not painted.
+function apothecary(): SceneDef {
+  const materials: Material[] = [{ kind: 'diffuse', albedo: v(0.5, 0.49, 0.47), sigma: 0.4 }]
+  const prims: PrimDef[] = []
+  const g = 40
+  prims.push(...quad(v(-g, 0, -g), v(g, 0, -g), v(g, 0, g), v(-g, 0, g), 0))
+  // A back wall to catch shadows and ground the jars.
+  materials.push({ kind: 'diffuse', albedo: v(0.32, 0.31, 0.3), sigma: 0.5 })
+  prims.push(...quad(v(-g, 0, -4.5), v(g, 0, -4.5), v(g, g, -4.5), v(-g, g, -4.5), materials.length - 1))
+  // Broad soft key from above, a gentle warm fill from the front-left.
+  materials.push({ kind: 'emissive', emission: v(5.2, 5.2, 5.4) })
+  prims.push(...quad(v(-8, 11, -3), v(8, 11, -3), v(8, 11, 5), v(-8, 11, 5), materials.length - 1))
+  materials.push({ kind: 'emissive', emission: v(3.0, 2.7, 2.2) })
+  prims.push(...quad(v(-11, 1, 3), v(-11, 1, -3), v(-11, 7, -3), v(-11, 7, 3), materials.length - 1))
+
+  const jars: { name: MediumName; scale: number; g: number }[] = [
+    { name: 'wholemilk', scale: 0.6, g: 0.0 },
+    { name: 'skimmilk', scale: 1.1, g: 0.0 },
+    { name: 'marble', scale: 0.5, g: 0.0 },
+    { name: 'ketchup', scale: 1.0, g: 0.0 },
+    { name: 'cream', scale: 0.32, g: 0.0 },
+    { name: 'apple', scale: 0.6, g: 0.0 },
+  ]
+  const n = jars.length
+  for (let i = 0; i < n; i++) {
+    const j = jars[i]
+    materials.push(measured(j.name, j.scale, 1.45, j.g))
+    prims.push({ kind: 'sphere', center: v((i - (n - 1) / 2) * 2.35, 1.05, 0), radius: 1.05, material: materials.length - 1 })
+  }
+  return {
+    name: 'Apothecary',
+    materials,
+    prims,
+    camera: { eye: v(0, 3.4, 12), target: v(0, 1.0, 0), up: v(0, 1, 0), vfovDeg: 42, aperture: 0.02, focusDist: 12 },
+    env: { kind: 'gradient', top: v(0.05, 0.05, 0.06), bottom: v(0.02, 0.02, 0.025) },
+  }
+}
+
 // The Glowing Orb — a path-guiding showcase. The room's only light is a small,
 // bright *emissive sphere*. Lumen samples lights by next-event estimation only on
 // triangle emitters, so an emissive sphere is INVISIBLE to NEE: every photon the
@@ -1748,6 +1930,8 @@ export const SCENES: ScenePreset[] = [
   { id: 'ceramics', label: 'Ceramics & Clay', build: ceramics },
   { id: 'subsurface', label: 'Subsurface Studio', build: subsurfaceStudio },
   { id: 'jade', label: 'Jade Idol', build: jadeIdol },
+  { id: 'living-skin', label: 'Living Skin (spectral SSS)', build: livingSkin },
+  { id: 'apothecary', label: 'Apothecary (measured SSS)', build: apothecary },
   { id: 'caustic', label: 'Caustic Room', build: causticRoom },
   { id: 'pool', label: 'Caustic Pool', build: causticPool },
   { id: 'spectral-caustic', label: 'Spectral Caustic', build: spectralCaustic },
@@ -1760,6 +1944,8 @@ export const SCENES: ScenePreset[] = [
   { id: 'smoke', label: 'Smoke Plume', build: smokePlume, fog: true, cloud: true },
   { id: 'fog', label: 'Drifting Fog', build: driftingFog, fog: true },
   { id: 'ember', label: 'Ember (glowing)', build: emberCloud, fog: true, cloud: true },
+  { id: 'rayleigh', label: 'Rayleigh Haze (chromatic)', build: rayleighHaze, fog: true },
+  { id: 'amber-smoke', label: 'Amber Smoke (chromatic)', build: amberSmoke, fog: true, cloud: true },
   { id: 'iridescence', label: 'Iridescence', build: iridescence },
   { id: 'nebula', label: 'Nebula', build: nebula, fog: true },
   { id: 'sky', label: 'Sky Studio', build: skyStudio, sky: true },

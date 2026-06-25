@@ -183,6 +183,25 @@ export function About() {
           glow. See <em>Subsurface Studio</em> and <em>Jade Idol</em> — and raise <strong>Max Depth</strong>{' '}
           for a creamier, deeper-penetrating look.
         </Card>
+        <Card title="Spectral subsurface — a chromatic mean free path">
+          The reason a hand held to a torch glows deep red is not that red is absorbed <em>less</em>{' '}
+          per bounce — it is that red light simply <em>travels further</em> inside skin before it is
+          absorbed at all. That is a <strong>chromatic mean free path</strong>: in real flesh, marble
+          and milk the extinction <code>σ_t</code> itself depends on wavelength (red low, blue high),
+          so red reaches the thin edges and blue scatters back out near the surface. Lumen 15.0 renders
+          it by reusing the <strong>hero-wavelength</strong> trick that disperses glass and colours
+          metals: a path that refracts into a spectral interior commits to one wavelength λ, takes its
+          RGB weight once (<code>E_λ[w]=(1,1,1)</code>, so the estimator stays unbiased), then
+          random-walks <em>monochromatically</em> with <code>σ_t(λ)</code> and the single-scattering
+          albedo <code>ϖ(λ)</code> — and the colour reconstructs over many paths' wavelengths. The
+          media are not hand-tuned: <em>Apothecary</em> and <em>Living Skin</em> use the{' '}
+          <strong>measured BSSRDF</strong> coefficients of Jensen et al. 2001 (marble, skin, whole/skim
+          milk, ketchup, cream, apple), converted from their reduced <code>σ_s′</code>/<code>σ_a</code>{' '}
+          to a per-wavelength extinction. <strong>Verify</strong> proves the chromatic furnace still
+          conserves energy for <em>any</em> spectral <code>σ_t</code>, that a pure-absorbing slab
+          reconstructs the spectral Beer integral <code>∫w(λ)e^(−σ(λ)·2r)dλ</code> (with R&gt;G&gt;B), and
+          that an achromatic medium collapses exactly onto the scalar walk.
+        </Card>
         <Card title="Oren–Nayar rough diffuse">
           Real matte surfaces — clay, chalk, the moon, unfinished plaster — are not Lambertian: their
           microscopic roughness makes them <em>flatten</em> and back-scatter toward the light, so a full
@@ -232,6 +251,23 @@ export function About() {
           are density-proportional the glow pools in the dense core — a soft, physically integrated
           fireball rather than a billboard. Try the <em>Cumulus</em>, <em>Smoke Plume</em>,{' '}
           <em>Drifting Fog</em> and (glowing) <em>Ember</em> scenes.
+        </Card>
+        <Card title="Chromatic media — why the sky is blue">
+          A real atmosphere does not extinguish every colour equally: Rayleigh scattering removes blue
+          from a beam far faster than red (roughly <code>σ_t ∝ 1/λ⁴</code>), which is exactly why the
+          sky is blue and the setting sun is red. Lumen 16.0 lets a medium carry a{' '}
+          <strong>chromatic extinction</strong> — a per-wavelength <code>σ_t</code> — and traces it
+          with the same hero-wavelength trick the rest of the renderer uses: a path entering the medium
+          commits to one wavelength λ, takes its RGB weight once (<code>E_λ[w]=(1,1,1)</code>, so the
+          estimator stays unbiased), and delta/ratio-tracks against that wavelength's{' '}
+          <code>σ_t(λ)</code>. The colour then reconstructs over many paths. It rides on both the
+          homogeneous analytic path and the heterogeneous null-collision estimators, so a chromatic
+          extinction works for clouds and smoke too. <strong>Verify</strong> proves the per-wavelength
+          transmittance is exact, ratio tracking stays unbiased at every λ, a chromatic scattering
+          volume still conserves energy (furnace ≡ 1 for any spectral σ_t), and an absorbing haze
+          reconstructs the spectral transmittance integral and reddens (R&gt;G&gt;B). See{' '}
+          <em>Rayleigh Haze</em> (a sun reddening through a scattering atmosphere) and{' '}
+          <em>Amber Smoke</em> (a plume coloured purely by its chromatic extinction).
         </Card>
         <Card title="Thin-film iridescence">
           The shifting colour of a soap bubble or an oil slick is <em>wave optics</em>, not pigment:

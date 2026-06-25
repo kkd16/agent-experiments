@@ -57,6 +57,15 @@ export interface Subsurface {
   sigmaT: number
   albedo: Vec3
   g: number
+  // (15.0) Optional **chromatic mean free path**: per-channel extinction and
+  // single-scattering albedo, read as 3-point spectra at the R/G/B representative
+  // wavelengths (see subsurface.ts). When present the dielectric becomes
+  // `isSpectral`, so the path commits a hero wavelength λ at the boundary and the
+  // interior walk runs *monochromatically* with σ_t(λ)/ϖ(λ) — red light reaching
+  // far while blue scatters out near the surface (real skin/marble/milk). Absent ⇒
+  // the scalar 12.0 walk (one mean free path for every colour), bit-for-bit.
+  sigmaTSpectral?: Vec3
+  albedoSpectral?: Vec3
 }
 
 export type Material =
@@ -165,6 +174,10 @@ export const isDelta = (m: Material): boolean =>
 export const isSpectral = (m: Material): boolean =>
   m.kind === 'thinfilm' ||
   (m.kind === 'dielectric' && m.cauchyB !== undefined && m.cauchyB > 0) ||
+  // (15.0) A translucent dielectric whose interior carries a chromatic mean free
+  // path: the path must commit a hero wavelength at the boundary so the interior
+  // random walk can use the per-wavelength extinction/albedo.
+  (m.kind === 'dielectric' && m.interior?.sigmaTSpectral !== undefined) ||
   (m.kind === 'metal' && m.spectrum !== undefined)
 
 // ---------------------------------------------------------------------------
