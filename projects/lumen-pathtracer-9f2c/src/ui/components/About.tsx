@@ -61,6 +61,30 @@ export function About() {
           the guide learns the orb's direction per region (hitting it ~9 %) and cuts the error. Try it
           and flip between <strong>Path Tracer</strong> and <strong>Guided</strong>.
         </Card>
+        <Card title="Many lights (the light BVH)">
+          Next-event estimation has to make one discrete choice at every shade point:{' '}
+          <strong>which light do I connect a shadow ray to?</strong> Lumen's original answer was to
+          pick one <em>uniformly</em>. That is perfect for a Cornell box and a disaster the moment a
+          scene has hundreds of emitters — almost every shadow ray is spent on a light that is far,
+          occluded, or facing away, while the few lamps that actually illuminate the point are seen
+          one-in-a-hundred of the time. More samples don't fix the <em>distribution</em>; sampling
+          the right light does. So Lumen builds a <strong>light BVH</strong> (Conty Estevez &amp;
+          Kulla 2018): a binary tree over the emissive triangles whose every node caches its total{' '}
+          <strong>power</strong>, its <strong>bounding box</strong>, and a <strong>cone of its
+          emitter normals</strong>. To pick a light for a point <code>p</code>, it walks the tree from
+          the root, at each step choosing the child in proportion to a conservative estimate of how
+          much that cluster could light <code>p</code> —{' '}
+          <code>importance = power · orientation / distance²</code> — so near, bright, well-oriented
+          clusters win and the shadow rays land where the light is. The product of the branch
+          probabilities is the exact selection pdf, which the MIS weight reuses, so the estimator is{' '}
+          <strong>unbiased</strong>: like everything in Lumen, it only reshapes the variance of NEE,
+          never its mean, and converges to the very same image a uniform render does — it just gets
+          there far faster. The <strong>Verify</strong> tab proves the pdf sums to 1, that every light
+          keeps a positive probability (so none is ever missed), that the sampler matches the pdf, that
+          it reduces to uniform when the lights are equal, and that on a many-lights scene it cuts the
+          NEE variance by hundreds of times at equal mean. Try <em>Star Field</em> or{' '}
+          <em>Lantern Hall</em> and toggle <strong>Many lights</strong>.
+        </Card>
         <Card title="Metropolis light transport (PSSMLT)">
           The path tracer and BDPT both <em>average</em> independent samples. Lumen's third integrator
           instead runs a <strong>Markov chain</strong> through path space. A path tracer is just a

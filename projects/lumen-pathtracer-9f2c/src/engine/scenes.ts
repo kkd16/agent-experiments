@@ -1602,6 +1602,126 @@ function hiddenDoor(): SceneDef {
   }
 }
 
+// ---- Scene: Star Field (many lights) -----------------------------------------
+// A wide diffuse plaza under a canopy of hundreds of tiny, jewel-coloured emitters.
+// Each floor point is lit overwhelmingly by the handful of lamps directly above it,
+// so picking a light *uniformly* (Lumen's original NEE) wastes almost every shadow
+// ray on a far, irrelevant lamp and the floor renders as a storm of colour noise;
+// the light BVH (Many lights) finds the local lamps and the colour resolves. This is
+// the scene the 14.0 light tree was built for — flip "Many lights" on and off to see
+// the noise collapse at equal samples.
+function starField(): SceneDef {
+  const materials: Material[] = [
+    { kind: 'diffuse', albedo: v(0.62, 0.62, 0.66) }, // 0 plaza floor
+    { kind: 'metal', albedo: v(0.95, 0.95, 0.97), roughness: 0.18 }, // 1 brushed pillars
+    { kind: 'diffuse', albedo: v(0.78, 0.76, 0.72) }, // 2 matte spheres (catch colour)
+  ]
+  // A palette of saturated emitter colours, all of comparable luminance so the win
+  // comes from *spatial* selection, not just power.
+  const palette: Vec3[] = [
+    v(9, 1.2, 1.2), v(1.2, 7.5, 2.0), v(1.4, 2.4, 9.5), v(9, 6.5, 1.2),
+    v(8.5, 1.6, 7.5), v(1.4, 8.5, 8.5), v(9.5, 4.5, 1.2), v(5.5, 1.6, 9.5),
+  ]
+  for (const c of palette) materials.push({ kind: 'emissive', emission: c })
+  const EMIT0 = 3 // first emissive material index
+  const prims: PrimDef[] = []
+  const R = 26
+  prims.push(...quad(v(-R, 0, -R), v(R, 0, -R), v(R, 0, R), v(-R, 0, R), 0)) // floor
+  // The canopy: a jittered grid of small downward-facing emissive quads at varying
+  // height, each a random palette colour. ~121 lamps ⇒ ~242 emissive triangles.
+  const rng = mulberry(20260625)
+  const downQuad = (cx: number, cz: number, y: number, s: number, mat: number): PrimDef[] => [
+    { kind: 'tri', p0: v(cx - s, y, cz - s), p1: v(cx + s, y, cz - s), p2: v(cx + s, y, cz + s), material: mat },
+    { kind: 'tri', p0: v(cx - s, y, cz - s), p1: v(cx + s, y, cz + s), p2: v(cx - s, y, cz + s), material: mat },
+  ]
+  const G = 11
+  for (let i = 0; i < G; i++) {
+    for (let j = 0; j < G; j++) {
+      const cx = -R + 2 + ((2 * (R - 2)) * (i + 0.5)) / G + (rng() - 0.5) * 2.6
+      const cz = -R + 2 + ((2 * (R - 2)) * (j + 0.5)) / G + (rng() - 0.5) * 2.6
+      const y = 4.5 + rng() * 3.5
+      const mat = EMIT0 + ((rng() * palette.length) | 0)
+      prims.push(...downQuad(cx, cz, y, 0.18, mat))
+    }
+  }
+  // A few matte spheres + brushed pillars to read the coloured pools of light.
+  for (let k = 0; k < 5; k++) {
+    const a = (k / 5) * Math.PI * 2
+    prims.push({ kind: 'sphere', center: v(Math.cos(a) * 7, 1.4, Math.sin(a) * 7 + 1), radius: 1.4, material: 2 })
+    prims.push(...box(v(Math.cos(a + 0.6) * 13, 2.2, Math.sin(a + 0.6) * 13), v(0.5, 2.2, 0.5), 0, 1))
+  }
+  return {
+    name: 'Star Field',
+    materials,
+    prims,
+    camera: { eye: v(0, 4.2, -17), target: v(0, 1.4, 1), up: v(0, 1, 0), vfovDeg: 52, aperture: 0, focusDist: 18 },
+    env: { kind: 'solid', color: v(0.012, 0.014, 0.022) },
+  }
+}
+
+// ---- Scene: Lantern Hall (many lights) ---------------------------------------
+// A long colonnade hung with many warm lanterns. At any point on the floor or walls
+// only the nearest few lanterns matter — the rest are far down the hall — which is
+// exactly the regime where uniform light selection collapses and the distance-aware
+// light tree shines. Warm, architectural, and an unmistakable A/B for "Many lights".
+function lanternHall(): SceneDef {
+  const materials: Material[] = [
+    { kind: 'diffuse', albedo: v(0.34, 0.3, 0.26) }, // 0 stone floor
+    { kind: 'diffuse', albedo: v(0.52, 0.46, 0.4) }, // 1 walls
+    { kind: 'diffuse', albedo: v(0.2, 0.18, 0.16) }, // 2 lantern housing
+    { kind: 'emissive', emission: v(15, 9.5, 4.2) }, // 3 warm lantern flame
+    { kind: 'metal', albedo: v(0.96, 0.86, 0.6), roughness: 0.12 }, // 4 brass sphere
+  ]
+  const prims: PrimDef[] = []
+  const HW = 5 // half-width of the hall
+  const H = 7 // height
+  const L = 60 // length down +z
+  prims.push(...quad(v(-HW, 0, -2), v(HW, 0, -2), v(HW, 0, L), v(-HW, 0, L), 0)) // floor
+  prims.push(...quad(v(-HW, H, -2), v(-HW, H, L), v(HW, H, L), v(HW, H, -2), 0)) // ceiling
+  prims.push(...quad(v(-HW, 0, -2), v(-HW, 0, L), v(-HW, H, L), v(-HW, H, -2), 1)) // left wall
+  prims.push(...quad(v(HW, 0, -2), v(HW, H, -2), v(HW, H, L), v(HW, 0, L), 1)) // right wall
+  prims.push(...quad(v(-HW, 0, L), v(HW, 0, L), v(HW, H, L), v(-HW, H, L), 1)) // far wall
+  // A double row of lanterns down both walls: a small dark housing box with a
+  // downward-facing emissive panel beneath it (the flame). ~2×22 = 44 lanterns.
+  const downQuad = (cx: number, cz: number, y: number, sx: number, sz: number, mat: number): PrimDef[] => [
+    { kind: 'tri', p0: v(cx - sx, y, cz - sz), p1: v(cx + sx, y, cz - sz), p2: v(cx + sx, y, cz + sz), material: mat },
+    { kind: 'tri', p0: v(cx - sx, y, cz - sz), p1: v(cx + sx, y, cz + sz), p2: v(cx - sx, y, cz + sz), material: mat },
+  ]
+  const N = 22
+  for (let i = 0; i < N; i++) {
+    const z = 1.5 + (i / (N - 1)) * (L - 4)
+    for (const sx of [-1, 1]) {
+      const x = sx * (HW - 0.55)
+      prims.push(...box(v(x, H - 0.7, z), v(0.4, 0.45, 0.4), 0, 2)) // housing
+      prims.push(...downQuad(x, z, H - 1.18, 0.32, 0.32, 3)) // flame panel (faces down)
+    }
+  }
+  // A row of brass spheres down the centreline to read the travelling pools of light.
+  for (let i = 0; i < 6; i++) {
+    prims.push({ kind: 'sphere', center: v(0, 1.1, 5 + i * 9), radius: 1.1, material: 4 })
+  }
+  return {
+    name: 'Lantern Hall',
+    materials,
+    prims,
+    camera: { eye: v(0, 2.6, -7), target: v(0, 2.6, 20), up: v(0, 1, 0), vfovDeg: 62, aperture: 0, focusDist: 12 },
+    env: { kind: 'solid', color: v(0.008, 0.006, 0.004) },
+  }
+}
+
+// A tiny deterministic PRNG (mulberry32) for scene-time jitter — kept local so the
+// scene builders stay pure and reproducible without touching the render RNG.
+function mulberry(seed: number): () => number {
+  let a = seed >>> 0
+  return () => {
+    a |= 0
+    a = (a + 0x6d2b79f5) | 0
+    let t = Math.imul(a ^ (a >>> 15), 1 | a)
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296
+  }
+}
+
 export interface ScenePreset {
   id: string
   label: string
@@ -1610,12 +1730,15 @@ export interface ScenePreset {
   obj?: boolean // accepts a pasted OBJ model
   fog?: boolean // contains participating media; exposes a fog-density control
   cloud?: boolean // heterogeneous fBm cloud; also exposes a coverage control
+  manyLights?: boolean // many emitters — defaults the "Many lights (light BVH)" toggle on
 }
 
 export const SCENES: ScenePreset[] = [
   { id: 'cornell', label: 'Cornell Box', build: cornell },
   { id: 'cove', label: 'Cove (BDPT)', build: cove },
   { id: 'glowing-orb', label: 'Glowing Orb (Guided)', build: glowingOrb },
+  { id: 'star-field', label: 'Star Field (many lights)', build: starField, manyLights: true },
+  { id: 'lantern-hall', label: 'Lantern Hall (many lights)', build: lanternHall, manyLights: true },
   { id: 'hidden-door', label: 'Hidden Door', build: hiddenDoor },
   { id: 'weekend', label: 'Weekend Daylight', build: weekend },
   { id: 'gallery', label: 'Material Gallery', build: gallery },

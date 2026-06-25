@@ -136,6 +136,9 @@ export function radiance(
   let prevPoint = ray.o
   let captured = false
   const clampI = settings.clampIndirect
+  // (14.0) Route NEE light selection through the light BVH when the render opts in
+  // and the scene actually has triangle lights to build a tree over.
+  const useTree = settings.manyLights === true && scene.lightTree !== null
   const records: GuideRecord[] | null = guide ? [] : null
   // Beer–Lambert state: the absorption coefficient σ_a of the medium the ray is
   // currently travelling through (null = vacuum). And the path's committed "hero"
@@ -225,7 +228,7 @@ export function radiance(
         }
 
         // ---- In-scattering NEE through the phase function (phase↔light MIS). ----
-        const ls = scene.sampleLight(x, rng)
+        const ls = scene.sampleLight(x, rng, useTree)
         if (ls && ls.pdf > 0 && !isBlack(ls.radiance)) {
           const phase = hgPhase(dot(wo, ls.wi), med.g)
           if (phase > 0) {
@@ -304,7 +307,7 @@ export function radiance(
       if (!isBlack(Le)) {
         let w = 1
         if (!specularBounce) {
-          const lp = scene.lightPdf(prevPoint, r.d, hit.primId, hit.t)
+          const lp = scene.lightPdf(prevPoint, r.d, hit.primId, hit.t, useTree)
           w = powerHeuristic(1, prevPdf, 1, lp)
         }
         let c = scale(mul(beta, Le), w)
@@ -328,7 +331,7 @@ export function radiance(
     // α·p_bsdf+(1−α)·p_guide. Under-trained regions keep to plain BSDF sampling.
     const guideTrained = guide !== undefined && guidable(mat) && guide.trainedAt(hit.p)
     if (!isDelta(mat)) {
-      const ls = scene.sampleLight(hit.p, rng)
+      const ls = scene.sampleLight(hit.p, rng, useTree)
       if (ls && ls.pdf > 0 && !isBlack(ls.radiance)) {
         const f = evalBSDF(mat, wo, ls.wi, hit.n)
         const cosX = Math.abs(dot(hit.n, ls.wi))

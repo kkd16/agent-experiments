@@ -43,6 +43,11 @@ export interface ControlState {
   // Heterogeneous-cloud scenes only: an offset to the fBm coverage threshold
   // (− puffs the cloud up / fills it in, + breaks it into scattered billows).
   cloudCoverage: number
+  // (14.0) Importance-sample which light to next-event-estimate via the light BVH
+  // (power/distance/orientation) instead of uniformly — a large variance win for
+  // many-light scenes. Affects the path tracer's NEE (pt / guided / pssmlt) and is
+  // unbiased either way (it only reshapes the variance, never the mean).
+  manyLights: boolean
   // Custom-OBJ scene only: the pasted model text.
   objText: string
 }
