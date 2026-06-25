@@ -116,6 +116,16 @@ function getInitialShowCurrentTime(): boolean {
   }
 }
 
+
+function getInitialFocusMode(): boolean {
+  try {
+    return window.localStorage.getItem('mathFlashcardsFocusMode') === 'true';
+  } catch (e) {
+    console.error("Local storage error:", e);
+    return false;
+  }
+}
+
 function getInitialHideNightOwl(): boolean {
   try {
     return window.localStorage.getItem('mathFlashcardsHideNightOwl') === 'true';
@@ -440,6 +450,25 @@ function getInitialLifetimeCorrect(): number {
   return 0;
 }
 
+
+type TimeOfDayStats = { correct: number, total: number };
+type TimeOfDayAccuracy = { morning: TimeOfDayStats, afternoon: TimeOfDayStats, evening: TimeOfDayStats, night: TimeOfDayStats };
+
+function getInitialTimeOfDayAccuracy(): TimeOfDayAccuracy {
+  try {
+    const item = window.localStorage.getItem('mathFlashcardsTimeOfDay');
+    if (item) return JSON.parse(item);
+  } catch(e) {
+    console.error(e);
+  }
+  return {
+    morning: { correct: 0, total: 0 },
+    afternoon: { correct: 0, total: 0 },
+    evening: { correct: 0, total: 0 },
+    night: { correct: 0, total: 0 }
+  };
+}
+
 function getInitialLifetimeQuestions(): number {
   try {
     const stored = window.localStorage.getItem('mathFlashcardsLifetimeQuestions');
@@ -556,6 +585,7 @@ function App() {
   const [confettiTrigger, setConfettiTrigger] = useState<number>(getInitialConfettiTrigger());
   const [hideHighScore, setHideHighScore] = useState<boolean>(getInitialHideHighScore());
   const [flashcardTextColor, setFlashcardTextColor] = useState<string>(getInitialFlashcardTextColor());
+    const [focusMode, setFocusMode] = useState<boolean>(getInitialFocusMode());
   const [hideNightOwl, setHideNightOwl] = useState<boolean>(getInitialHideNightOwl());
   const [showCurrentTime, setShowCurrentTime] = useState<boolean>(getInitialShowCurrentTime());
   const [floatingBubbles, setFloatingBubbles] = useState<boolean>(getInitialFloatingBubbles());
@@ -594,6 +624,7 @@ function App() {
   useEffect(() => { try { window.localStorage.setItem('mathFlashcardsConfettiTrigger', confettiTrigger.toString()); } catch (e) { console.error(e); } }, [confettiTrigger]);
   useEffect(() => { try { window.localStorage.setItem('mathFlashcardsHideHighScore', hideHighScore.toString()); } catch (e) { console.error(e); } }, [hideHighScore]);
   useEffect(() => { try { window.localStorage.setItem('mathFlashcardsTextColor', flashcardTextColor); } catch (e) { console.error(e); } }, [flashcardTextColor]);
+    useEffect(() => { try { window.localStorage.setItem('mathFlashcardsFocusMode', focusMode.toString()); } catch (e) { console.error(e); } }, [focusMode]);
   useEffect(() => { try { window.localStorage.setItem('mathFlashcardsHideNightOwl', hideNightOwl.toString()); } catch (e) { console.error(e); } }, [hideNightOwl]);
   useEffect(() => { try { window.localStorage.setItem('mathFlashcardsShowCurrentTime', showCurrentTime.toString()); } catch (e) { console.error(e); } }, [showCurrentTime]);
   useEffect(() => { try { window.localStorage.setItem('mathFlashcardsFloatingBubbles', floatingBubbles.toString()); } catch (e) { console.error(e); } }, [floatingBubbles]);
@@ -698,9 +729,12 @@ function App() {
   const [questionsAnswered, setQuestionsAnswered] = useState<number>(0);
   const [startTime, setStartTime] = useState<number | null>(null);
   const [elapsedTime, setElapsedTime] = useState<number>(0);
+    const [timeOfDayAccuracy, setTimeOfDayAccuracy] = useState<TimeOfDayAccuracy>(getInitialTimeOfDayAccuracy());
   const [lifetimeQuestions, setLifetimeQuestions] = useState<number>(getInitialLifetimeQuestions());
   const [lifetimeSkips, setLifetimeSkips] = useState<number>(getInitialLifetimeSkips());
+    useEffect(() => { try { window.localStorage.setItem('mathFlashcardsTimeOfDay', JSON.stringify(timeOfDayAccuracy)); } catch(e) { console.error(e); } }, [timeOfDayAccuracy]);
   const [lifetimeCorrectAnswers, setLifetimeCorrectAnswers] = useState<number>(getInitialLifetimeCorrect());
+    const [showComboExplosion, setShowComboExplosion] = useState<boolean>(false);
   const [showSummary, setShowSummary] = useState<boolean>(false);
   const [animationClass, setAnimationClass] = useState<string>('');
   const [streakMessage, setStreakMessage] = useState<string>('');
@@ -765,7 +799,7 @@ function App() {
   useEffect(() => { try { window.localStorage.setItem('mathFlashcardsCorrectIcon', correctIcon); } catch (e) { console.error(e); } }, [correctIcon]);
 
   const [history, setHistory] = useState<HistoryItem[]>([]);
-  const [, setFullHistory] = useState<HistoryItem[]>(getInitialFullHistory());
+  const [fullHistory, setFullHistory] = useState<HistoryItem[]>(getInitialFullHistory());
   const [hapticEnabled, setHapticEnabled] = useState(getInitialHapticEnabled());
 
   useEffect(() => {
@@ -964,8 +998,14 @@ function App() {
   }, [isSpeedRunActive, timeLeft, generateProblem, gameMode, questionsAnswered, questionLimit, customQuestionLimit]);
 
 
+
   const updateStreak = (newStreak: number) => {
+    if (newStreak > 0 && newStreak % 5 === 0) {
+      setShowComboExplosion(true);
+      setTimeout(() => setShowComboExplosion(false), 1000);
+    }
     setStreak(newStreak);
+
     if (newStreak > bestHistoricalCombo) {
       setBestHistoricalCombo(newStreak);
     }
@@ -1098,6 +1138,21 @@ function App() {
       return next;
     });
 
+
+    const hour = new Date().getHours();
+    let timeKey: keyof TimeOfDayAccuracy = 'night';
+    if (hour >= 6 && hour < 12) timeKey = 'morning';
+    else if (hour >= 12 && hour < 18) timeKey = 'afternoon';
+    else if (hour >= 18 && hour <= 23) timeKey = 'evening';
+
+    setTimeOfDayAccuracy(prev => ({
+      ...prev,
+      [timeKey]: {
+        correct: prev[timeKey].correct + (isCorrect ? 1 : 0),
+        total: prev[timeKey].total + 1
+      }
+    }));
+
     const newLifetime = lifetimeQuestions + 1;
     setLifetimeQuestions(newLifetime);
     setDailyQuestions(prev => ({ date: prev.date, count: prev.count + 1 }));
@@ -1115,7 +1170,7 @@ function App() {
     if (isCorrect) {
       setMessage("Correct!");
       if (soundEnabled) playSound('correct');
-      if (hapticEnabled && typeof window !== 'undefined' && window.navigator && window.navigator.vibrate) window.navigator.vibrate(50);
+      if (hapticEnabled && typeof window !== 'undefined' && window.navigator && window.navigator.vibrate) window.navigator.vibrate([50, 50, 50]);
       setAnswerStatus('correct');
       setTimeout(() => setAnswerStatus(null), 500);
       setAnimationClass('flash-correct');
@@ -1190,6 +1245,7 @@ function App() {
       if (isSuddenDeathMode) {
         setMessage(`Incorrect! Sudden Death over.`);
         if (soundEnabled) playSound('incorrect');
+      if (hapticEnabled && typeof window !== 'undefined' && window.navigator && window.navigator.vibrate) window.navigator.vibrate([200, 100, 200]);
       setAnswerStatus('incorrect');
       setTimeout(() => setAnswerStatus(null), 500);
       setAnimationClass(enableScreenShake ? 'flash-incorrect shake-animation' : 'flash-incorrect');
@@ -1302,7 +1358,7 @@ function App() {
         </div>
       )}
     <div className={`app-container ${theme}`} style={{ fontFamily }}>
-      <div className="header-top">
+      {!(isSpeedRunActive && focusMode) && (<div className="header-top">
         <h1>Math Flashcards {!hideNightOwl && nightOwlUnlocked && <span title="Night Owl">🦉</span>}{isHardcoreMode && <span className="badge hardcore">Hardcore</span>}</h1>
         <div>
           <button onClick={toggleTheme} className="theme-toggle" style={{ marginRight: '0.5rem' }} disabled={autoDarkMode}>
@@ -1321,9 +1377,11 @@ function App() {
 
         </div>
       </div>
+      )}
 
 
 
+      {!(isSpeedRunActive && focusMode) && (<>
       <button onClick={resetSettings} className="submit-button" style={{marginTop: '1rem', backgroundColor: '#e74c3c'}}>Reset Settings to Default</button>
       <div className="color-picker" style={{ marginBottom: '1rem', display: 'flex', gap: '0.5rem', justifyContent: 'center', flexWrap: 'wrap' }}>
         <label style={{fontSize: '0.8rem', marginRight: '1rem'}}>BG Image: <input type="file" accept="image/*" onChange={handleBgImageUpload} style={{width: '120px'}}/></label>
@@ -1348,6 +1406,7 @@ function App() {
         <label htmlFor="hideStreak"><input id="hideStreak" type="checkbox" checked={hideStreak} onChange={(e) => setHideStreak(e.target.checked)} /> Hide Streak</label>
         <label htmlFor="mirrorMode"><input id="mirrorMode" type="checkbox" checked={mirrorMode} onChange={(e) => setMirrorMode(e.target.checked)} /> Mirror Mode</label>
         <label htmlFor="lowBatteryMode"><input id="lowBatteryMode" type="checkbox" checked={lowBatteryMode} onChange={(e) => setLowBatteryMode(e.target.checked)} /> Low Battery Mode</label>
+        <label htmlFor="focusMode"><input id="focusMode" type="checkbox" checked={focusMode} onChange={(e) => setFocusMode(e.target.checked)} /> Focus Mode</label>
         <label htmlFor="hideNightOwl"><input id="hideNightOwl" type="checkbox" checked={hideNightOwl} onChange={(e) => setHideNightOwl(e.target.checked)} /> Hide Night Owl</label>
         <label htmlFor="showCurrentTime"><input id="showCurrentTime" type="checkbox" checked={showCurrentTime} onChange={(e) => setShowCurrentTime(e.target.checked)} /> Show Current Time</label>
         <label htmlFor="floatingBubbles"><input id="floatingBubbles" type="checkbox" checked={floatingBubbles} onChange={(e) => setFloatingBubbles(e.target.checked)} /> Floating Bubbles</label>
@@ -1362,9 +1421,10 @@ function App() {
         <button className="color-btn" style={{ backgroundColor: '#fff3e0' }} onClick={() => updateBgColor('#fff3e0')} title="Light Orange"></button>
         <button className="color-btn" style={{ backgroundColor: '#e3f2fd' }} onClick={() => updateBgColor('#e3f2fd')} title="Light Blue"></button>
       </div>
+      </>)}
 
 
-      {!zenMode && (
+      {!(isSpeedRunActive && focusMode) && !zenMode && (
       <div className="header-stats-container" style={{ display: hideStats ? 'none' : 'flex' }}>
 
         {!hideStats && <div className="daily-goal-container" style={{ width: '100%', marginBottom: '0.5rem' }}>
@@ -1388,6 +1448,12 @@ function App() {
           <div className="stat" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
             <div>
               Streak: {streak} 🔥 | Today: {todayStreak}
+              {showComboExplosion && (
+                <div style={{ position: 'absolute', top: 0, left: '50%', transform: 'translate(-50%, -50%)', pointerEvents: 'none', zIndex: 50, fontSize: '2rem' }}>
+                  💥
+                </div>
+              )}
+
               {streak >= 10 ? ' (x3)' : (streak >= 5 ? ' (x2)' : '')}
               <button onClick={resetStreak} className="reset-btn" title="Reset Streak" disabled={isSpeedRunActive}>↺</button>
             </div>
@@ -1399,7 +1465,71 @@ function App() {
             <button onClick={resetHighScore} className="reset-btn" title="Reset High Score" disabled={isSpeedRunActive}>↺</button>
           </div>)}
           <div className="stat">Total Questions: {lifetimeQuestions} | Correct: {lifetimeCorrectAnswers} | Skips: {lifetimeSkips} | Acc: {lifetimeQuestions > 0 ? (lifetimeCorrectAnswers / lifetimeQuestions * 100).toFixed(1) : 0}%</div>
+
+          {(() => {
+            let bestTime = 'N/A';
+            let bestAcc = -1;
+            Object.entries(timeOfDayAccuracy).forEach(([key, stats]) => {
+              if (stats.total >= 5) { // Need at least 5 questions for a meaningful stat
+                const acc = stats.correct / stats.total;
+                if (acc > bestAcc) {
+                  bestAcc = acc;
+                  bestTime = key.charAt(0).toUpperCase() + key.slice(1);
+                }
+              }
+            });
+            return <div className="stat">Best Time of Day: {bestTime} {bestAcc >= 0 ? `(${(bestAcc * 100).toFixed(1)}%)` : ''}</div>;
+          })()}
+
           <div className="stat">Avg Time / Digit: {avgTimePerDigit > 0 ? avgTimePerDigit.toFixed(2) + 's' : 'N/A'} | Avg Time / Question: {(avgTimePerDigit > 0 && lifetimeQuestions > 0) ? (avgTimePerDigit * (totalDigitsAnswered / lifetimeQuestions)).toFixed(2) + 's' : 'N/A'}</div>
+
+          {(() => {
+            const missed = fullHistory.filter(h => !h.isCorrect);
+            if (missed.length === 0) return null;
+            const counts: Record<string, { count: number, item: HistoryItem }> = {};
+            missed.forEach(h => {
+              const key = `${h.num1} ${h.operation} ${h.num2}`;
+              if (!counts[key]) counts[key] = { count: 0, item: h };
+              counts[key].count++;
+            });
+            const hardest = Object.values(counts).sort((a, b) => b.count - a.count).slice(0, 3);
+
+            return (
+              <div className="history-container" style={{ marginTop: '0.5rem', marginBottom: '0.5rem', width: '100%', maxWidth: '300px' }}>
+                <h4 style={{margin: '0 0 0.5rem 0', textAlign: 'center'}}>Hardest Questions</h4>
+                <ul className="history-list" style={{fontSize: '0.8rem'}}>
+                  {hardest.map(({ count, item }, index) => (
+                    <li key={index} className="history-incorrect">
+                      {item.num1} {item.operation} {item.num2} = ? <span>(Missed {count}x)</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            );
+          })()}
+
+
+          {(() => {
+            let rank = "Novice";
+            let nextRank = 50;
+            if (lifetimeCorrectAnswers >= 1000) { rank = "Master"; nextRank = lifetimeCorrectAnswers; }
+            else if (lifetimeCorrectAnswers >= 250) { rank = "Wizard"; nextRank = 1000; }
+            else if (lifetimeCorrectAnswers >= 50) { rank = "Scholar"; nextRank = 250; }
+
+            const progressPercent = nextRank === lifetimeCorrectAnswers ? 100 : Math.min((lifetimeCorrectAnswers / nextRank) * 100, 100);
+
+            return (
+              <div className="stat" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+                <div>Math Rank: {rank}</div>
+                {nextRank !== lifetimeCorrectAnswers && (
+                  <div style={{ width: '80px', height: '6px', backgroundColor: '#bdc3c7', borderRadius: '3px', overflow: 'hidden', marginTop: '4px' }} title={`${lifetimeCorrectAnswers} / ${nextRank} to next rank`}>
+                    <div style={{ width: `${progressPercent}%`, height: '100%', backgroundColor: '#f1c40f' }}></div>
+                  </div>
+                )}
+              </div>
+            );
+          })()}
+
         </div>
         )}
       </div>
@@ -1719,7 +1849,7 @@ function App() {
       )}
 
       {showHighScoreBanner && <div className="message" style={{color: '#f39c12', animation: 'pulse 0.5s infinite'}}>New High Score! 🏆</div>}
-      {showCurrentTime && <div style={{position: 'absolute', top: '10px', right: '10px', fontSize: '1.2rem', fontWeight: 'bold', zIndex: 100}}>{currentTimeStr}</div>}
+      {showCurrentTime && !(isSpeedRunActive && focusMode) && <div style={{position: 'absolute', top: '10px', right: '10px', fontSize: '1.2rem', fontWeight: 'bold', zIndex: 100}}>{currentTimeStr}</div>}
       {message && <div className={`message ${message === 'Correct!' ? 'success' : (message.includes('Time') ? 'info' : 'error')}`}>{message}</div>}
       {streakMessage && <div className="message" style={{color: '#9b59b6', animation: 'pulse 1s infinite'}}>{streakMessage}</div>}
       {isPaused && <div className="message info" style={{animation: 'pulse 1.5s infinite'}}>Paused (Press 'P' to resume)</div>}
