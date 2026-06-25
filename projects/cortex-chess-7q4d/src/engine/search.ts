@@ -1,10 +1,16 @@
-// The search: iterative deepening negamax with alpha-beta, principal-variation
-// search (PVS), a transposition table, quiescence search, null-move pruning, and
-// move ordering (TT move, MVV-LVA captures, killer + history heuristics).
+// The search: iterative deepening negamax with alpha-beta and principal-variation
+// search (PVS), wrapped in aspiration windows. On top of the classic spine —
+// transposition table, quiescence, null-move pruning, MVV-LVA + killer + history
+// ordering — it adds the modern selectivity that buys depth:
+//
+//   • Static Exchange Evaluation (SEE) to order captures and prune losing ones,
+//   • late move reductions (LMR) — search likely-irrelevant late moves shallower,
+//   • reverse futility pruning + razoring around the static eval,
+//   • futility pruning and late-move pruning of quiet moves near the frontier,
+//   • check extensions, and mate-distance-aware scoring.
 //
 // The board is mutated in place with make/unmake for speed; an external key stack
-// detects repetitions (including positions from the real game, passed in via
-// options.history).
+// detects repetitions (including positions from the real game, via options.history).
 
 import {
   type Position,
@@ -29,6 +35,7 @@ import {
 } from './board'
 import { generatePseudo, isSquareAttacked } from './movegen'
 import { evaluate } from './eval'
+import { see } from './see'
 
 export const INF = 1_000_000
 export const MATE = 100_000
@@ -45,13 +52,21 @@ const TT_UPPER = 2
 // MVV-LVA victim/attacker values, indexed by piece type 1..6.
 const PIECE_VAL = [0, 100, 320, 330, 500, 900, 20000]
 
+// Margins (centipawns) for the static-eval pruning families.
+const RFP_MARGIN = 80 // reverse futility per ply of depth
+const RAZOR_MARGIN = 220
+const FUTILITY_MARGIN = [0, 120, 220, 320, 420, 520, 620]
+const LMP_LIMIT = [0, 6, 9, 14, 21] // max quiets to try by depth before pruning the rest
+
 export interface SearchInfo {
   depth: number
+  seldepth: number
   score: number
   mate: number | null // signed mate-in-N, or null
   nodes: number
   timeMs: number
   nps: number
+  hashfull: number // permille of the transposition table in use
   pv: Move[]
 }
 
@@ -66,6 +81,7 @@ export type InfoCallback = (info: SearchInfo) => void
 export class Searcher {
   private pos!: Position
   private nodes = 0
+  private seldepth = 0
   private startTime = 0
   private timeLimit = 0
   private stop = false
@@ -74,6 +90,7 @@ export class Searcher {
   private readonly killers = new Int32Array(MAX_PLY * 2)
   private readonly history = new Int32Array(2 * 128 * 128)
   private readonly keyStack: bigint[] = []
+  private readonly lmr = new Int32Array(64 * 64)
 
   // Transposition table (open-addressed, always-replace).
   private readonly ttKey = new BigInt64Array(TT_SIZE)
@@ -82,6 +99,7 @@ export class Searcher {
   private readonly ttFlag = new Int8Array(TT_SIZE)
   private readonly ttMove = new Int32Array(TT_SIZE)
   private ttHasEntry = new Uint8Array(TT_SIZE)
+  private ttUsed = 0
 
   // Triangular PV table.
   private readonly pv = new Int32Array(MAX_PLY * MAX_PLY)
@@ -98,10 +116,18 @@ export class Searcher {
 
   constructor(now: () => number = () => performance.now()) {
     this.now = now
+    // Precompute the late-move-reduction table: reduce more as both depth and
+    // move number grow.
+    for (let d = 1; d < 64; d++) {
+      for (let m = 1; m < 64; m++) {
+        this.lmr[d * 64 + m] = Math.floor(0.75 + (Math.log(d) * Math.log(m)) / 2.25)
+      }
+    }
   }
 
   clearTable(): void {
     this.ttHasEntry = new Uint8Array(TT_SIZE)
+    this.ttUsed = 0
     this.killers.fill(0)
     this.history.fill(0)
   }
@@ -124,37 +150,67 @@ export class Searcher {
 
     let best: SearchInfo = {
       depth: 0,
+      seldepth: 0,
       score: 0,
       mate: null,
       nodes: 0,
       timeMs: 0,
       nps: 0,
+      hashfull: 0,
       pv: [],
     }
 
+    let prevScore = 0
     for (let depth = 1; depth <= options.maxDepth; depth++) {
-      const score = this.negamax(depth, -INF, INF, 0, true)
-      if (this.stop) break
+      this.seldepth = 0
+      const score = this.searchRoot(depth, prevScore)
+      if (this.stop && depth > 1) break
 
+      prevScore = score
       const pvMoves = this.extractPv()
       const elapsed = Math.max(1, this.now() - this.startTime)
       best = {
         depth,
+        seldepth: this.seldepth,
         score,
         mate: this.mateIn(score),
         nodes: this.nodes,
         timeMs: Math.round(elapsed),
         nps: Math.round((this.nodes / elapsed) * 1000),
+        hashfull: Math.min(1000, Math.round((this.ttUsed / TT_SIZE) * 1000)),
         pv: pvMoves,
       }
       onInfo?.(best)
 
-      // Stop early on a forced mate, or if we're unlikely to finish another ply.
       if (Math.abs(score) > MATE_THRESHOLD) break
       if (this.timeLimit > 0 && this.now() - this.startTime > this.timeLimit * 0.5) break
     }
 
     return best
+  }
+
+  // Root search with aspiration windows: re-use the previous score as the centre
+  // of a narrow window, widening on a fail-high/low instead of redoing full width.
+  private searchRoot(depth: number, prevScore: number): number {
+    if (depth <= 4) return this.negamax(depth, -INF, INF, 0, true)
+
+    let window = 30
+    let alpha = prevScore - window
+    let beta = prevScore + window
+    for (;;) {
+      const score = this.negamax(depth, alpha, beta, 0, true)
+      if (this.stop) return score
+      if (score <= alpha) {
+        beta = (alpha + beta) >> 1
+        alpha = Math.max(-INF, score - window)
+        window *= 2
+      } else if (score >= beta) {
+        beta = Math.min(INF, score + window)
+        window *= 2
+      } else {
+        return score
+      }
+    }
   }
 
   private mateIn(score: number): number | null {
@@ -173,7 +229,6 @@ export class Searcher {
   private isRepetition(): boolean {
     const hash = this.pos.hash
     const stack = this.keyStack
-    // Only positions since the last irreversible move can repeat.
     const start = Math.max(0, stack.length - this.pos.halfmove)
     for (let i = stack.length - 2; i >= start; i -= 2) {
       if (stack[i] === hash) return true
@@ -206,16 +261,20 @@ export class Searcher {
 
   private ttStore(hash: bigint, depth: number, score: number, flag: number, move: Move, ply: number): void {
     const idx = Number(hash & TT_MASK)
-    // Adjust mate scores to be relative to the root.
     let s = score
     if (s > MATE_THRESHOLD) s += ply
     else if (s < -MATE_THRESHOLD) s -= ply
+    if (!this.ttHasEntry[idx]) this.ttUsed++
     this.ttKey[idx] = BigInt.asIntN(64, hash)
     this.ttDepth[idx] = depth
     this.ttScore[idx] = s
     this.ttFlag[idx] = flag
     this.ttMove[idx] = move
     this.ttHasEntry[idx] = 1
+  }
+
+  private isCapture(m: Move): boolean {
+    return moveFlag(m) === FLAG_EP || this.pos.board[moveTo(m)] !== EMPTY
   }
 
   private scoreMoves(moves: Move[], ttMove: Move, ply: number): Int32Array {
@@ -236,7 +295,11 @@ export class Searcher {
       const victim = flag === FLAG_EP ? PAWN : board[to] === EMPTY ? 0 : pieceType(board[to])
       if (victim > 0) {
         const attacker = pieceType(board[moveFrom(m)])
-        scores[i] = 1_000_000 + PIECE_VAL[victim] * 16 - PIECE_VAL[attacker]
+        const mvvlva = PIECE_VAL[victim] * 16 - PIECE_VAL[attacker]
+        // Only spend SEE on captures that could be losing (capturing up in value
+        // is virtually always fine); demote losing captures below the quiets.
+        if (victim >= attacker || see(this.pos, m) >= 0) scores[i] = 1_000_000 + mvvlva
+        else scores[i] = -1_000_000 + mvvlva
       } else if (promo) {
         scores[i] = 900_000 + PIECE_VAL[promo]
       } else if (m === k0) {
@@ -250,7 +313,6 @@ export class Searcher {
     return scores
   }
 
-  // Selection-sort step: bring the best-scoring remaining move to position `i`.
   private pickMove(moves: Move[], scores: Int32Array, i: number): void {
     let best = i
     for (let j = i + 1; j < moves.length; j++) if (scores[j] > scores[best]) best = j
@@ -268,6 +330,7 @@ export class Searcher {
     if ((this.nodes & 2047) === 0 && this.timeUp()) this.stop = true
     if (this.stop) return 0
     this.nodes++
+    if (ply > this.seldepth) this.seldepth = ply
 
     const stand = evaluate(this.pos)
     if (stand >= beta) return beta
@@ -283,6 +346,18 @@ export class Searcher {
     for (let i = 0; i < moves.length; i++) {
       this.pickMove(moves, scores, i)
       const m = moves[i]
+
+      // Skip clearly losing captures, and captures that can't reach alpha even
+      // with a generous margin (delta pruning).
+      if (!movePromo(m)) {
+        const to = moveTo(m)
+        const victim = moveFlag(m) === FLAG_EP ? PAWN : this.pos.board[to] === EMPTY ? 0 : pieceType(this.pos.board[to])
+        if (victim > 0) {
+          if (stand + PIECE_VAL[victim] + 200 < alpha) continue
+          if (see(this.pos, m) < 0) continue
+        }
+      }
+
       makeMoveOnBoard(this.pos, m, undo)
       if (isSquareAttacked(this.pos, this.pos.kings[us], (us ^ 1) as Color)) {
         unmakeMoveOnBoard(this.pos, m, undo)
@@ -304,20 +379,33 @@ export class Searcher {
 
     if (ply > 0 && (this.isRepetition() || this.pos.halfmove >= 100)) return 0
 
+    // Hard ply ceiling: with check extensions the search chain can outrun the
+    // nominal depth, so cap it to keep the fixed-size undo/PV stacks in bounds.
+    if (ply >= MAX_PLY - 1) return this.quiescence(alpha, beta, ply)
+
     const us = this.pos.turn
-    const checked = isSquareAttacked(this.pos, this.pos.kings[us], (us ^ 1) as Color)
+    const them = (us ^ 1) as Color
+    const checked = isSquareAttacked(this.pos, this.pos.kings[us], them)
     if (checked) depth++ // check extension
 
     if (depth <= 0) return this.quiescence(alpha, beta, ply)
 
     this.nodes++
+    if (ply > this.seldepth) this.seldepth = ply
+
+    // Mate-distance pruning: never report a mate longer than one already found.
+    if (ply > 0) {
+      alpha = Math.max(alpha, -MATE + ply)
+      beta = Math.min(beta, MATE - ply - 1)
+      if (alpha >= beta) return alpha
+    }
 
     const hash = this.pos.hash
     let ttMove = 0
     const ttIdx = this.ttProbe(hash)
     if (ttIdx >= 0) {
       ttMove = this.ttMove[ttIdx]
-      if (ply > 0 && this.ttDepth[ttIdx] >= depth) {
+      if (ply > 0 && !isPv && this.ttDepth[ttIdx] >= depth) {
         let s = this.ttScore[ttIdx]
         if (s > MATE_THRESHOLD) s -= ply
         else if (s < -MATE_THRESHOLD) s += ply
@@ -328,17 +416,31 @@ export class Searcher {
       }
     }
 
-    // Null-move pruning: if passing the move still beats beta, prune.
-    if (!isPv && !checked && depth >= 3 && this.hasNonPawnMaterial(us) && Math.abs(beta) < MATE_THRESHOLD) {
-      const undo = this.undos[ply]
-      makeNullMove(this.pos, undo)
-      this.keyStack.push(this.pos.hash)
-      const R = 2 + (depth >= 6 ? 1 : 0)
-      const score = -this.negamax(depth - 1 - R, -beta, -beta + 1, ply + 1, false)
-      this.keyStack.pop()
-      unmakeNullMove(this.pos, undo)
-      if (this.stop) return 0
-      if (score >= beta) return beta
+    const staticEval = checked ? 0 : evaluate(this.pos)
+
+    // --- Static-eval forward pruning (non-PV, not in check) ---
+    if (!isPv && !checked && Math.abs(beta) < MATE_THRESHOLD) {
+      // Reverse futility / static null move: a big static lead just gives up.
+      if (depth <= 6 && staticEval - RFP_MARGIN * depth >= beta) return staticEval
+
+      // Razoring: a hopeless static score drops straight to quiescence.
+      if (depth <= 3 && staticEval + RAZOR_MARGIN * depth < alpha) {
+        const q = this.quiescence(alpha, beta, ply)
+        if (q < alpha) return q
+      }
+
+      // Null-move pruning: if passing the move still beats beta, prune.
+      if (depth >= 3 && staticEval >= beta && this.hasNonPawnMaterial(us)) {
+        const undo = this.undos[ply]
+        makeNullMove(this.pos, undo)
+        this.keyStack.push(this.pos.hash)
+        const R = 2 + (depth >= 6 ? 1 : 0) + (staticEval - beta >= 200 ? 1 : 0)
+        const score = -this.negamax(depth - 1 - R, -beta, -beta + 1, ply + 1, false)
+        this.keyStack.pop()
+        unmakeNullMove(this.pos, undo)
+        if (this.stop) return 0
+        if (score >= beta) return beta
+      }
     }
 
     const moves: Move[] = []
@@ -346,29 +448,56 @@ export class Searcher {
     const scores = this.scoreMoves(moves, ttMove, ply)
     const undo = this.undos[ply]
 
+    const futile = !isPv && !checked && depth <= 6 && Math.abs(alpha) < MATE_THRESHOLD &&
+      staticEval + FUTILITY_MARGIN[depth] <= alpha
+
     let bestScore = -INF
     let bestMove = 0
     let legal = 0
+    let quietCount = 0
     let flag = TT_UPPER
     let alphaLocal = alpha
 
     for (let i = 0; i < moves.length; i++) {
       this.pickMove(moves, scores, i)
       const m = moves[i]
+      const capture = this.isCapture(m)
+      const promo = movePromo(m)
+      const quiet = !capture && !promo
+
+      // Late-move pruning and futility pruning skip hopeless quiet moves, but
+      // only once we already have a real score to fall back on.
+      if (quiet && legal > 0 && bestScore > -MATE_THRESHOLD) {
+        if (!isPv && !checked && depth <= 4 && quietCount > LMP_LIMIT[depth]) continue
+        if (futile) continue
+      }
+
       makeMoveOnBoard(this.pos, m, undo)
-      if (isSquareAttacked(this.pos, this.pos.kings[us], (us ^ 1) as Color)) {
+      if (isSquareAttacked(this.pos, this.pos.kings[us], them)) {
         unmakeMoveOnBoard(this.pos, m, undo)
         continue
       }
       legal++
+      if (quiet) quietCount++
+      const givesCheck = isSquareAttacked(this.pos, this.pos.kings[them], us)
       this.keyStack.push(this.pos.hash)
 
       let score: number
       if (legal === 1) {
         score = -this.negamax(depth - 1, -beta, -alphaLocal, ply + 1, isPv)
       } else {
-        // PVS: search later moves with a null window, re-search on a raise.
-        score = -this.negamax(depth - 1, -alphaLocal - 1, -alphaLocal, ply + 1, false)
+        // Late move reductions: search likely-irrelevant quiet moves shallower.
+        let r = 0
+        if (quiet && depth >= 3 && !givesCheck) {
+          r = this.lmr[Math.min(depth, 63) * 64 + Math.min(legal, 63)]
+          if (isPv) r--
+          if (r < 0) r = 0
+          if (r > depth - 2) r = depth - 2
+        }
+        score = -this.negamax(depth - 1 - r, -alphaLocal - 1, -alphaLocal, ply + 1, false)
+        if (r > 0 && score > alphaLocal) {
+          score = -this.negamax(depth - 1, -alphaLocal - 1, -alphaLocal, ply + 1, false)
+        }
         if (score > alphaLocal && score < beta) {
           score = -this.negamax(depth - 1, -beta, -alphaLocal, ply + 1, true)
         }
@@ -384,7 +513,6 @@ export class Searcher {
         if (score > alphaLocal) {
           alphaLocal = score
           flag = TT_EXACT
-          // Update the triangular PV.
           this.pv[ply * MAX_PLY] = m
           const childLen = this.pvLen[ply + 1]
           for (let j = 0; j < childLen; j++) {
@@ -395,9 +523,7 @@ export class Searcher {
       }
 
       if (alphaLocal >= beta) {
-        // Beta cutoff. Reward quiet moves via killer + history heuristics.
-        const isCapture = moveFlag(m) === FLAG_EP || this.pos.board[moveTo(m)] !== EMPTY
-        if (!isCapture && !movePromo(m)) {
+        if (quiet) {
           if (this.killers[ply * 2] !== m) {
             this.killers[ply * 2 + 1] = this.killers[ply * 2]
             this.killers[ply * 2] = m
@@ -413,7 +539,6 @@ export class Searcher {
     }
 
     if (legal === 0) {
-      // No legal moves: checkmate (scaled by ply so shorter mates win) or stalemate.
       return checked ? -MATE + ply : 0
     }
 

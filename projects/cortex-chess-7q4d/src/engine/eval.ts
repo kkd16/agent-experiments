@@ -1,13 +1,23 @@
-// Tapered evaluation using the PeSTO piece-square tables (Rofchade / Chess
-// Programming Wiki). Each piece has separate midgame and endgame tables; the
-// final score interpolates between them by a "game phase" derived from the
-// remaining material, so the engine values pieces correctly from opening to
-// endgame. Scores are returned from the side-to-move's perspective (negamax).
+// Tapered evaluation. The core is the PeSTO piece-square tables (Rofchade /
+// Chess Programming Wiki) — separate midgame/endgame tables interpolated by a
+// "game phase" from the remaining material. On top of that the engine adds the
+// positional understanding that separates a tactician from a player:
+//
+//   • piece mobility (with sane centres so it doesn't just inflate material),
+//   • king safety: pawn-shield holes + a weighted count of attackers on the king,
+//   • pawn structure: passed, isolated and doubled pawns,
+//   • rooks on open / semi-open files and on the 7th rank,
+//   • knight outposts,
+//   • a "mop-up" term that drives the bare king to the corner in won endings,
+//   • and a perfect KPK bitbase probe for King + Pawn vs King.
+//
+// Scores are returned from the side-to-move's perspective (negamax).
 
 import {
   type Position,
   type Color,
   WHITE,
+  BLACK,
   PAWN,
   KNIGHT,
   BISHOP,
@@ -21,6 +31,7 @@ import {
   pieceColor,
   pieceType,
 } from './board'
+import { kpkWin } from './kpk'
 
 // Midgame / endgame base values, indexed by piece type 1..6.
 const MG_VALUE = [0, 82, 337, 365, 477, 1025, 0]
@@ -118,19 +129,82 @@ const TEMPO = 10
 const BISHOP_PAIR_MG = 25
 const BISHOP_PAIR_EG = 45
 
+const KNIGHT_OFFSETS = [-33, -31, -18, -14, 14, 18, 31, 33]
+const BISHOP_DIRS = [-17, -15, 15, 17]
+const ROOK_DIRS = [-16, -1, 1, 16]
+const QUEEN_DIRS = [-17, -15, 15, 17, -16, -1, 1, 16]
+
+// Mobility: bonus = (reachable squares − centre) × weight, kept small. Centres
+// stop a developed piece from looking like free material.
+const KNIGHT_MOB_MG = 4, KNIGHT_MOB_EG = 4, KNIGHT_MOB_CENTER = 4
+const BISHOP_MOB_MG = 4, BISHOP_MOB_EG = 5, BISHOP_MOB_CENTER = 6
+const ROOK_MOB_MG = 2, ROOK_MOB_EG = 4, ROOK_MOB_CENTER = 7
+const QUEEN_MOB_MG = 1, QUEEN_MOB_EG = 2, QUEEN_MOB_CENTER = 14
+
+// Pawn structure (white-relative; mirrored for black).
+const ISOLATED_MG = -12, ISOLATED_EG = -8
+const DOUBLED_MG = -8, DOUBLED_EG = -16
+// Passed-pawn bonus indexed by the pawn's rank from its own side (1..6).
+const PASSED_MG = [0, 0, 8, 16, 32, 60, 110, 0]
+const PASSED_EG = [0, 4, 14, 28, 52, 90, 160, 0]
+
+const ROOK_OPEN_MG = 22, ROOK_OPEN_EG = 10
+const ROOK_SEMI_MG = 11, ROOK_SEMI_EG = 6
+const ROOK_7TH_MG = 18, ROOK_7TH_EG = 24
+const KNIGHT_OUTPOST = 22
+
+// King safety: weighted attackers in the king zone → a capped midgame penalty.
+const KING_ATTACK_WEIGHT = [0, 0, 2, 2, 3, 5, 0] // by piece type
+const SHIELD_PENALTY = 12 // per missing pawn in front of a castled king
+
+// Reusable scratch so evaluate() allocates nothing in the hot path.
+const wPawnSq = new Int32Array(8)
+const bPawnSq = new Int32Array(8)
+const wPawnByFile = new Int32Array(8) // bitmask of ranks (0..7) with a white pawn
+const bPawnByFile = new Int32Array(8)
+
+function centerDistance(s: number): number {
+  const f = fileOf(s)
+  const r = rankOf(s)
+  const fd = f < 4 ? 3 - f : f - 4
+  const rd = r < 4 ? 3 - r : r - 4
+  return fd + rd
+}
+
+function kingDistance(a: number, b: number): number {
+  return Math.max(Math.abs(fileOf(a) - fileOf(b)), Math.abs(rankOf(a) - rankOf(b)))
+}
+
+// Squares 0x88 → 0..63 (rank*8+file) for the KPK probe.
+function to64(s: number): number {
+  return rankOf(s) * 8 + fileOf(s)
+}
+
 export function evaluate(p: Position): number {
+  const board = p.board
   let mg = 0
   let eg = 0
   let phase = 0
   let whiteBishops = 0
   let blackBishops = 0
+  let whiteKnights = 0
+  let blackKnights = 0
+  let whiteRooks = 0
+  let blackRooks = 0
+  let whiteQueens = 0
+  let blackQueens = 0
+  let wpN = 0
+  let bpN = 0
+  wPawnByFile.fill(0)
+  bPawnByFile.fill(0)
 
+  // Pass A — material, PSTs, phase, pawn map.
   for (let s = 0; s < 128; s++) {
     if (!isOnBoard(s)) {
       s += 7
       continue
     }
-    const piece = p.board[s]
+    const piece = board[s]
     if (piece === EMPTY) continue
     const color = pieceColor(piece)
     const type = pieceType(piece)
@@ -140,13 +214,51 @@ export function evaluate(p: Position): number {
     if (color === WHITE) {
       mg += mgVal
       eg += egVal
-      if (type === BISHOP) whiteBishops++
     } else {
       mg -= mgVal
       eg -= egVal
-      if (type === BISHOP) blackBishops++
     }
     phase += PHASE_WEIGHT[type]
+    const white = color === WHITE
+    switch (type) {
+      case PAWN:
+        if (white) {
+          wPawnSq[wpN++] = s
+          wPawnByFile[fileOf(s)] |= 1 << rankOf(s)
+        } else {
+          bPawnSq[bpN++] = s
+          bPawnByFile[fileOf(s)] |= 1 << rankOf(s)
+        }
+        break
+      case KNIGHT:
+        if (white) whiteKnights++
+        else blackKnights++
+        break
+      case BISHOP:
+        if (white) whiteBishops++
+        else blackBishops++
+        break
+      case ROOK:
+        if (white) whiteRooks++
+        else blackRooks++
+        break
+      case QUEEN:
+        if (white) whiteQueens++
+        else blackQueens++
+        break
+    }
+  }
+
+  const wMinor = whiteKnights + whiteBishops
+  const bMinor = blackKnights + blackBishops
+  const wMajor = whiteRooks + whiteQueens
+  const bMajor = blackRooks + blackQueens
+  const wNonKing = wpN + wMinor + wMajor
+  const bNonKing = bpN + bMinor + bMajor
+
+  // --- Special endgame: King + Pawn vs King (perfect knowledge) ---
+  if (wNonKing + bNonKing === 1 && (wpN + bpN) === 1) {
+    return evalKPK(p, wpN === 1)
   }
 
   if (whiteBishops >= 2) {
@@ -158,13 +270,236 @@ export function evaluate(p: Position): number {
     eg -= BISHOP_PAIR_EG
   }
 
+  // --- Pawn structure (white-relative) ---
+  for (let i = 0; i < wpN; i++) {
+    const s = wPawnSq[i]
+    const f = fileOf(s)
+    const r = rankOf(s)
+    const isolated = (f === 0 || wPawnByFile[f - 1] === 0) && (f === 7 || wPawnByFile[f + 1] === 0)
+    if (isolated) {
+      mg += ISOLATED_MG
+      eg += ISOLATED_EG
+    }
+    // Doubled: another white pawn behind on the same file.
+    if (wPawnByFile[f] & ((1 << r) - 1)) {
+      mg += DOUBLED_MG
+      eg += DOUBLED_EG
+    }
+    const ahead = (0xff << (r + 1)) & 0xff
+    const left = f > 0 ? bPawnByFile[f - 1] : 0
+    const right = f < 7 ? bPawnByFile[f + 1] : 0
+    if (((bPawnByFile[f] | left | right) & ahead) === 0) {
+      mg += PASSED_MG[r]
+      eg += PASSED_EG[r]
+    }
+  }
+  for (let i = 0; i < bpN; i++) {
+    const s = bPawnSq[i]
+    const f = fileOf(s)
+    const r = rankOf(s)
+    const isolated = (f === 0 || bPawnByFile[f - 1] === 0) && (f === 7 || bPawnByFile[f + 1] === 0)
+    if (isolated) {
+      mg -= ISOLATED_MG
+      eg -= ISOLATED_EG
+    }
+    if (bPawnByFile[f] & (0xff << (r + 1) & 0xff)) {
+      mg -= DOUBLED_MG
+      eg -= DOUBLED_EG
+    }
+    const behind = (1 << r) - 1
+    const left = f > 0 ? wPawnByFile[f - 1] : 0
+    const right = f < 7 ? wPawnByFile[f + 1] : 0
+    if (((wPawnByFile[f] | left | right) & behind) === 0) {
+      const rel = 7 - r
+      mg -= PASSED_MG[rel]
+      eg -= PASSED_EG[rel]
+    }
+  }
+
+  // --- Pass B — mobility, piece placement, king-zone pressure ---
+  const wKing = p.kings[WHITE]
+  const bKing = p.kings[BLACK]
+  let wKingDanger = 0 // attack units against the WHITE king
+  let bKingDanger = 0
+
+  for (let s = 0; s < 128; s++) {
+    if (!isOnBoard(s)) {
+      s += 7
+      continue
+    }
+    const piece = board[s]
+    if (piece === EMPTY) continue
+    const type = pieceType(piece)
+    if (type === PAWN || type === KING) continue
+    const color = pieceColor(piece)
+    const us = color
+    const enemyKing = us === WHITE ? bKing : wKing
+    const w = KING_ATTACK_WEIGHT[type]
+    let mob = 0
+
+    if (type === KNIGHT) {
+      for (const off of KNIGHT_OFFSETS) {
+        const t = s + off
+        if (!isOnBoard(t)) continue
+        const tp = board[t]
+        if (tp === EMPTY || pieceColor(tp) !== us) mob++
+        if (kingDistance(t, enemyKing) <= 1) {
+          if (us === WHITE) bKingDanger += w
+          else wKingDanger += w
+        }
+      }
+      const mgB = (mob - KNIGHT_MOB_CENTER) * KNIGHT_MOB_MG
+      const egB = (mob - KNIGHT_MOB_CENTER) * KNIGHT_MOB_EG
+      if (us === WHITE) { mg += mgB; eg += egB } else { mg -= mgB; eg -= egB }
+      // Outpost: a knight on the enemy half, defended by a friendly pawn and
+      // unattackable by an enemy pawn on the adjacent files ahead.
+      if (outpost(s, us)) {
+        if (us === WHITE) mg += KNIGHT_OUTPOST
+        else mg -= KNIGHT_OUTPOST
+      }
+    } else if (type === BISHOP || type === ROOK || type === QUEEN) {
+      const list = type === BISHOP ? BISHOP_DIRS : type === ROOK ? ROOK_DIRS : QUEEN_DIRS
+      for (const dir of list) {
+        let t = s + dir
+        while (isOnBoard(t)) {
+          const tp = board[t]
+          if (kingDistance(t, enemyKing) <= 1) {
+            if (us === WHITE) bKingDanger += w
+            else wKingDanger += w
+          }
+          if (tp === EMPTY) {
+            mob++
+          } else {
+            if (pieceColor(tp) !== us) mob++
+            break
+          }
+          t += dir
+        }
+      }
+      let mgW: number, egW: number, center: number
+      if (type === BISHOP) { mgW = BISHOP_MOB_MG; egW = BISHOP_MOB_EG; center = BISHOP_MOB_CENTER }
+      else if (type === ROOK) { mgW = ROOK_MOB_MG; egW = ROOK_MOB_EG; center = ROOK_MOB_CENTER }
+      else { mgW = QUEEN_MOB_MG; egW = QUEEN_MOB_EG; center = QUEEN_MOB_CENTER }
+      const mgB = (mob - center) * mgW
+      const egB = (mob - center) * egW
+      if (us === WHITE) { mg += mgB; eg += egB } else { mg -= mgB; eg -= egB }
+
+      // Rook files + 7th rank.
+      if (type === ROOK) {
+        const f = fileOf(s)
+        const own = us === WHITE ? wPawnByFile[f] : bPawnByFile[f]
+        const opp = us === WHITE ? bPawnByFile[f] : wPawnByFile[f]
+        if (own === 0 && opp === 0) {
+          if (us === WHITE) { mg += ROOK_OPEN_MG; eg += ROOK_OPEN_EG } else { mg -= ROOK_OPEN_MG; eg -= ROOK_OPEN_EG }
+        } else if (own === 0) {
+          if (us === WHITE) { mg += ROOK_SEMI_MG; eg += ROOK_SEMI_EG } else { mg -= ROOK_SEMI_MG; eg -= ROOK_SEMI_EG }
+        }
+        const seventh = us === WHITE ? 6 : 1
+        if (rankOf(s) === seventh) {
+          if (us === WHITE) { mg += ROOK_7TH_MG; eg += ROOK_7TH_EG } else { mg -= ROOK_7TH_MG; eg -= ROOK_7TH_EG }
+        }
+      }
+    }
+  }
+
+  // King safety: pawn-shield holes + a capped attacker penalty (midgame only).
+  wKingDanger += shieldHoles(p, WHITE) * SHIELD_PENALTY
+  bKingDanger += shieldHoles(p, BLACK) * SHIELD_PENALTY
+  mg -= Math.min(wKingDanger * wKingDanger, 600) >> 1
+  mg += Math.min(bKingDanger * bKingDanger, 600) >> 1
+
+  // --- Mop-up: drive the lone enemy king to a corner in won, pawnless endings ---
+  if (bpN === 0 && bNonKing === 0 && wMajor + wMinor >= 1 && mg + eg > 0) {
+    eg += 47 * centerDistance(bKing) + 16 * (14 - kingDistance(wKing, bKing))
+  } else if (wpN === 0 && wNonKing === 0 && bMajor + bMinor >= 1 && mg + eg < 0) {
+    eg -= 47 * centerDistance(wKing) + 16 * (14 - kingDistance(wKing, bKing))
+  }
+
   const mgPhase = Math.min(phase, TOTAL_PHASE)
   const egPhase = TOTAL_PHASE - mgPhase
   let score = (mg * mgPhase + eg * egPhase) / TOTAL_PHASE
 
-  // Side-to-move perspective + a small tempo bonus.
   score = p.turn === WHITE ? score : -score
   return Math.round(score) + TEMPO
+}
+
+// A knight outpost: square on the enemy half, defended by one of our pawns, with
+// no enemy pawn able to challenge it from the adjacent files ahead.
+function outpost(s: number, us: Color): boolean {
+  const r = rankOf(s)
+  const f = fileOf(s)
+  if (us === WHITE) {
+    if (r < 3 || r > 5) return false
+    const defended = (f > 0 && (wPawnByFile[f - 1] & (1 << (r - 1)))) || (f < 7 && (wPawnByFile[f + 1] & (1 << (r - 1))))
+    if (!defended) return false
+    const ahead = (0xff << (r + 1)) & 0xff
+    const left = f > 0 ? bPawnByFile[f - 1] : 0
+    const right = f < 7 ? bPawnByFile[f + 1] : 0
+    return ((left | right) & ahead) === 0
+  } else {
+    if (r < 2 || r > 4) return false
+    const defended = (f > 0 && (bPawnByFile[f - 1] & (1 << (r + 1)))) || (f < 7 && (bPawnByFile[f + 1] & (1 << (r + 1))))
+    if (!defended) return false
+    const behind = (1 << r) - 1
+    const left = f > 0 ? wPawnByFile[f - 1] : 0
+    const right = f < 7 ? wPawnByFile[f + 1] : 0
+    return ((left | right) & behind) === 0
+  }
+}
+
+// Missing pawns directly in front of a king that has castled to the wing.
+function shieldHoles(p: Position, color: Color): number {
+  const k = p.kings[color]
+  const kf = fileOf(k)
+  const kr = rankOf(k)
+  // Only score a shield once the king is on a back-ish rank near a wing.
+  if (color === WHITE) {
+    if (kr > 1 || (kf >= 2 && kf <= 5)) return 0
+  } else {
+    if (kr < 6 || (kf >= 2 && kf <= 5)) return 0
+  }
+  const mask = color === WHITE ? wPawnByFile : bPawnByFile
+  const f0 = Math.max(0, kf - 1)
+  const f1 = Math.min(7, kf + 1)
+  let holes = 0
+  for (let f = f0; f <= f1; f++) {
+    if (mask[f] === 0) holes++
+  }
+  return holes
+}
+
+// KPK with perfect play. `whiteOwnsPawn` says which side has the pawn; we mirror
+// into the canonical "white pawn marching up" frame before probing the bitbase.
+function evalKPK(p: Position, whiteOwnsPawn: boolean): number {
+  const strongIsWhite = whiteOwnsPawn
+  let wk = to64(p.kings[WHITE])
+  let bk = to64(p.kings[BLACK])
+  let psq = -1
+  for (let s = 0; s < 128; s++) {
+    if (!isOnBoard(s)) { s += 7; continue }
+    if (pieceType(p.board[s]) === PAWN) { psq = to64(s); break }
+  }
+
+  let usWhiteStrong: boolean
+  if (strongIsWhite) {
+    usWhiteStrong = p.turn === WHITE
+  } else {
+    // Mirror vertically and swap king roles so the pawn side becomes white.
+    wk ^= 56
+    bk ^= 56
+    psq ^= 56
+    const tmp = wk
+    wk = bk
+    bk = tmp
+    usWhiteStrong = p.turn === BLACK
+  }
+
+  if (!kpkWin(wk, bk, psq, usWhiteStrong)) return 0 // dead draw, side-independent
+
+  // Won: queen-up score, sharpened by how advanced the (now canonical) pawn is.
+  const base = EG_VALUE[QUEEN] - EG_VALUE[PAWN] + 120 + (psq >> 3) * 16
+  const whiteRel = strongIsWhite ? base : -base
+  return p.turn === WHITE ? whiteRel : -whiteRel
 }
 
 // Reference material so the UI can show a simple material count.

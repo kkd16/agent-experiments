@@ -441,6 +441,40 @@
   margin-top: 2px;
 }
 
+/* Toggles */
+.toggles {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 12px;
+}
+.toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--text);
+  cursor: pointer;
+  user-select: none;
+}
+.toggle input {
+  accent-color: var(--accent);
+  width: 15px;
+  height: 15px;
+  cursor: pointer;
+}
+
+/* PGN export */
+.pgn-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-top: 10px;
+}
+.pgn-row .btn.small {
+  margin-top: 0;
+}
+
 /* Controls */
 .controls {
   display: grid;
@@ -578,6 +612,14 @@
 }
 
 /* ---- Lab ---- */
+.lab-shell {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.lab-tabs {
+  align-self: flex-start;
+}
 .lab {
   background: var(--panel);
   border: 1px solid var(--border);

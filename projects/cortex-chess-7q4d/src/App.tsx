@@ -7,7 +7,20 @@ import EnginePanel from './components/EnginePanel'
 import PromotionPicker from './components/PromotionPicker'
 import Lab from './components/Lab'
 import { useEngine } from './hooks/useEngine'
-import { Game, type SearchInfo, type Color, WHITE, START_FEN, moveFrom, moveTo, parseFen, toFen } from './engine'
+import {
+  Game,
+  type SearchInfo,
+  type Color,
+  WHITE,
+  START_FEN,
+  moveFrom,
+  moveTo,
+  movePromo,
+  parseFen,
+  toFen,
+  bookMove,
+  buildPgn,
+} from './engine'
 import {
   buildView,
   type BoardView,
@@ -64,11 +77,16 @@ export default function App() {
   const [info, setInfo] = useState<SearchInfo | null>(null)
   const [pvSan, setPvSan] = useState('')
   const [thinking, setThinking] = useState(false)
+  const [analyzing, setAnalyzing] = useState(false)
   const [arrow, setArrow] = useState<{ from: number; to: number } | null>(null)
   const [fenInput, setFenInput] = useState('')
   const [copied, setCopied] = useState(false)
+  const [bookOn, setBookOn] = useState(true)
+  const [analysisOn, setAnalysisOn] = useState(false)
+  const [pgnMsg, setPgnMsg] = useState('')
 
   const lastSearchedFen = useRef('')
+  const lastAnalyzedFen = useRef('')
 
   const sync = useCallback(() => {
     setView(buildView(gameRef.current))
@@ -94,6 +112,29 @@ export default function App() {
     const searchFen = view.fen
     const level = LEVELS[levelIndex]
     const history = gameRef.current.keyHistory()
+
+    // Opening book: play a weighted book move instantly (with a brief pause so it
+    // reads as a move, not a glitch) instead of searching.
+    if (bookOn) {
+      const bm = bookMove(searchFen)
+      if (bm !== null) {
+        const legal = gameRef.current.findMove(moveFrom(bm), moveTo(bm), movePromo(bm))
+        if (legal !== null) {
+          setThinking(true)
+          setInfo(null)
+          setPvSan('Book move')
+          setArrow(null)
+          const id = setTimeout(() => {
+            setThinking(false)
+            if (gameRef.current.fen() !== searchFen) return
+            gameRef.current.apply(legal)
+            sync()
+          }, 350)
+          return () => clearTimeout(id)
+        }
+      }
+    }
+
     setThinking(true)
     setInfo(null)
     setPvSan('')
@@ -115,7 +156,36 @@ export default function App() {
           sync()
         }
       })
-  }, [view, engineSide, levelIndex, tab, engine, sync])
+  }, [view, engineSide, levelIndex, tab, engine, sync, bookOn])
+
+  // Background analysis: while it's the human's move and analysis is on, run the
+  // engine to show a live evaluation and the best line — without playing a move.
+  useEffect(() => {
+    if (tab !== 'play' || !analysisOn) return
+    if (view.result !== 'playing') return
+    if (!humanControls(view.turn)) return
+    if (thinking) return
+    if (lastAnalyzedFen.current === view.fen) return
+
+    lastAnalyzedFen.current = view.fen
+    const searchFen = view.fen
+    const history = gameRef.current.keyHistory()
+    setAnalyzing(true)
+    engine
+      .think({ fen: searchFen, history, maxDepth: 22, maxTime: 4000 }, (i) => {
+        if (gameRef.current.fen() !== searchFen) return
+        setInfo(i)
+        setPvSan(pvToSan(searchFen, i.pv))
+        if (i.pv.length > 0) setArrow({ from: moveFrom(i.pv[0]), to: moveTo(i.pv[0]) })
+      })
+      .then((res) => {
+        setAnalyzing(false)
+        if (gameRef.current.fen() !== searchFen) return
+        setInfo(res)
+        setPvSan(pvToSan(searchFen, res.pv))
+        if (res.pv.length > 0) setArrow({ from: moveFrom(res.pv[0]), to: moveTo(res.pv[0]) })
+      })
+  }, [view, analysisOn, tab, thinking, engine, humanControls])
 
   const targets = useMemo(
     () => (selected !== null ? targetsFrom(view.legal, selected) : []),
@@ -124,12 +194,16 @@ export default function App() {
 
   const doMove = useCallback(
     (move: number) => {
+      // Stop any background analysis of the position we're leaving.
+      engine.cancel()
+      setAnalyzing(false)
+      lastAnalyzedFen.current = ''
       gameRef.current.apply(move)
       setSelected(null)
       setArrow(null)
       sync()
     },
-    [sync],
+    [sync, engine],
   )
 
   const tryMove = useCallback(
@@ -199,11 +273,14 @@ export default function App() {
       engine.cancel()
       gameRef.current.reset(START_FEN)
       lastSearchedFen.current = ''
+      lastAnalyzedFen.current = ''
       setSelected(null)
       setArrow(null)
       setInfo(null)
       setPvSan('')
       setThinking(false)
+      setAnalyzing(false)
+      setPgnMsg('')
       if (side) {
         setEngineSide(side)
         setWhiteOnBottom(side !== 'white')
@@ -224,10 +301,12 @@ export default function App() {
       while (g.history.length > 0 && (g.turn === WHITE ? 'white' : 'black') !== humanSide) g.undo()
     }
     lastSearchedFen.current = g.fen()
+    lastAnalyzedFen.current = ''
     setSelected(null)
     setArrow(null)
     setInfo(null)
     setPvSan('')
+    setAnalyzing(false)
     setView(buildView(g))
   }, [engine, engineSide])
 
@@ -256,11 +335,14 @@ export default function App() {
     engine.cancel()
     gameRef.current.reset(fen)
     lastSearchedFen.current = ''
+    lastAnalyzedFen.current = ''
     setSelected(null)
     setArrow(null)
     setInfo(null)
     setPvSan('')
     setThinking(false)
+    setAnalyzing(false)
+    setPgnMsg('')
     setFenInput('')
     setView(buildView(gameRef.current))
   }, [fenInput, engine])
@@ -276,6 +358,43 @@ export default function App() {
   }, [view.fen])
 
   const level = LEVELS[levelIndex]
+
+  const makePgn = useCallback((): string => {
+    const engineName = `Cortex (${LEVELS[levelIndex].name})`
+    const white = engineSide === 'white' ? engineName : 'Human'
+    const black = engineSide === 'black' ? engineName : engineSide === 'white' ? 'Human' : 'Human'
+    const d = new Date()
+    const date = `${d.getFullYear()}.${String(d.getMonth() + 1).padStart(2, '0')}.${String(d.getDate()).padStart(2, '0')}`
+    return buildPgn(gameRef.current, { white, black, date })
+  }, [engineSide, levelIndex])
+
+  const copyPgn = useCallback(() => {
+    try {
+      navigator.clipboard?.writeText(makePgn())
+      setPgnMsg('Copied!')
+      setTimeout(() => setPgnMsg(''), 1400)
+    } catch {
+      setPgnMsg('unavailable')
+      setTimeout(() => setPgnMsg(''), 1400)
+    }
+  }, [makePgn])
+
+  const downloadPgn = useCallback(() => {
+    try {
+      const blob = new Blob([makePgn()], { type: 'application/x-chess-pgn' })
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = 'cortex-chess.pgn'
+      document.body.appendChild(a)
+      a.click()
+      document.body.removeChild(a)
+      URL.revokeObjectURL(url)
+    } catch {
+      setPgnMsg('unavailable')
+      setTimeout(() => setPgnMsg(''), 1400)
+    }
+  }, [makePgn])
 
   return (
     <div className="app">
@@ -324,7 +443,7 @@ export default function App() {
           </section>
 
           <aside className="sidebar">
-            <EnginePanel info={info} pvSan={pvSan} thinking={thinking} />
+            <EnginePanel info={info} pvSan={pvSan} thinking={thinking || analyzing} />
 
             <div className="panel">
               <div className="panel-title">Opponent</div>
@@ -355,6 +474,27 @@ export default function App() {
                 className="slider"
               />
               <div className="lvl-blurb">{level.blurb}</div>
+              <div className="toggles">
+                <label className="toggle">
+                  <input type="checkbox" checked={bookOn} onChange={(e) => setBookOn(e.target.checked)} />
+                  <span>Opening book</span>
+                </label>
+                <label className="toggle">
+                  <input
+                    type="checkbox"
+                    checked={analysisOn}
+                    onChange={(e) => {
+                      const on = e.target.checked
+                      setAnalysisOn(on)
+                      if (!on) {
+                        engine.cancel()
+                        setAnalyzing(false)
+                      }
+                    }}
+                  />
+                  <span>Analyze my moves</span>
+                </label>
+              </div>
             </div>
 
             <div className="panel controls">
@@ -375,6 +515,14 @@ export default function App() {
             <div className="panel">
               <div className="panel-title">Moves</div>
               <MoveList sans={view.historySan} />
+              <div className="pgn-row">
+                <button className="btn small" onClick={copyPgn} disabled={view.historySan.length === 0}>
+                  {pgnMsg || 'Copy PGN'}
+                </button>
+                <button className="btn small" onClick={downloadPgn} disabled={view.historySan.length === 0}>
+                  Download PGN
+                </button>
+              </div>
             </div>
 
             <div className="panel">
@@ -410,8 +558,9 @@ export default function App() {
 
       <footer className="footer">
         <span>
-          0x88 board · alpha-beta + PVS · transposition table · quiescence · null-move pruning · tapered PeSTO
-          evaluation
+          0x88 board · iterative deepening + PVS · aspiration windows · transposition table · quiescence · SEE ·
+          null-move + late-move reductions · tapered eval (mobility · king safety · pawn structure) · KPK bitbase ·
+          opening book
         </span>
       </footer>
     </div>
