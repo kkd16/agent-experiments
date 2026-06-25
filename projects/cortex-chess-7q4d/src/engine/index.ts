@@ -36,8 +36,23 @@ export { bookMove, bookEntries, bookPositions, bookExplorer } from './book'
 export { buildPgn, parsePgn, buildAnnotatedPgn } from './pgn'
 export type { PgnMeta, ParsedGame, AnnotatedPgnInput } from './pgn'
 export { kpkWin } from './kpk'
-export { buildKbnk, verifyKbnk, probeKbnk, kbnkReady, kbnkStats } from './kbnk'
+export { buildKbnk, verifyKbnk, probeKbnk, kbnkReady, kbnkStats, ensureKbnk } from './kbnk'
 export type { KbnkStats, KbnkVerification } from './kbnk'
+export {
+  buildGtb,
+  verifyGtb,
+  probeGtb,
+  gtbReady,
+  gtbStats,
+  gtbSolvedIds,
+  ensureGtb,
+  tryLoadGtbFromCache,
+  GTB_CONFIGS,
+} from './gtb'
+export type { TbConfig, GtbStats, GtbVerification } from './gtb'
+export { tbCacheKeys, tbCacheClear } from './tbcache'
+export { allocateTime, formatClock, TIME_CONTROLS } from './clock'
+export type { TimeControl, TimeBudget } from './clock'
 export { TACTICS } from './tactics'
 export type { TacticCase } from './tactics'
 export { EPD_SUITES, parseEpd, parseEpdBlock } from './epd'

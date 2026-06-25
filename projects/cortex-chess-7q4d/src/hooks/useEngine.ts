@@ -10,6 +10,7 @@ import { useCallback, useEffect, useMemo, useRef } from 'react'
 import { parseFen, type SearchInfo, type MultiInfo } from '../engine'
 import { Searcher } from '../engine'
 import { verifyKbnk as verifyKbnkSync, type KbnkVerification } from '../engine/kbnk'
+import { verifyGtb as verifyGtbSync, type GtbVerification } from '../engine/gtb'
 import type { WorkerOut, WorkerRequest } from '../engine/engine.worker'
 
 export interface ThinkParams {
@@ -17,6 +18,8 @@ export interface ThinkParams {
   history: bigint[]
   maxDepth: number
   maxTime: number
+  softTime?: number
+  maxNodes?: number
 }
 
 export interface EvalItem {
@@ -40,6 +43,10 @@ export interface EngineHandle {
     opts: { sample: number; games: number },
     onProgress: (frac: number, phase: string) => void,
   ) => Promise<KbnkVerification>
+  verifyGtb: (
+    opts: { id: string; sample: number; games: number },
+    onProgress: (frac: number, phase: string) => void,
+  ) => Promise<GtbVerification>
   cancel: () => void
 }
 
@@ -65,6 +72,7 @@ export function useEngine(): EngineHandle {
             break
           case 'evalprogress':
           case 'kbnkprogress':
+          case 'gtbprogress':
             ;(infoRef.current as ((a: unknown) => void) | null)?.(msg)
             break
           case 'result':
@@ -82,7 +90,8 @@ export function useEngine(): EngineHandle {
             resolve?.(msg.scores)
             break
           }
-          case 'kbnkdone': {
+          case 'kbnkdone':
+          case 'gtbdone': {
             const resolve = resolveRef.current as ((v: unknown) => void) | null
             resolveRef.current = null
             infoRef.current = null
@@ -183,6 +192,19 @@ export function useEngine(): EngineHandle {
     [post],
   )
 
+  const verifyGtb = useCallback(
+    (
+      opts: { id: string; sample: number; games: number },
+      onProgress: (frac: number, phase: string) => void,
+    ): Promise<GtbVerification> =>
+      post(
+        { type: 'gtb', ...opts },
+        ((m: { frac: number; phase: string }) => onProgress(m.frac, m.phase)) as (a: never) => void,
+        () => verifyGtbSync(opts.id, { sample: opts.sample, games: opts.games }, onProgress),
+      ),
+    [post],
+  )
+
   const cancel = useCallback(() => {
     if (workerRef.current) {
       workerRef.current.terminate()
@@ -200,7 +222,7 @@ export function useEngine(): EngineHandle {
   }, [])
 
   return useMemo(
-    () => ({ think, analyze, evalGame, verifyKbnk, cancel }),
-    [think, analyze, evalGame, verifyKbnk, cancel],
+    () => ({ think, analyze, evalGame, verifyKbnk, verifyGtb, cancel }),
+    [think, analyze, evalGame, verifyKbnk, verifyGtb, cancel],
   )
 }

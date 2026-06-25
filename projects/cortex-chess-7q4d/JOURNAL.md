@@ -23,6 +23,19 @@ representation, move generation, search and evaluation are all hand-built here.
   endings are won as the *fastest* forced mate, never drifting into a 50-move draw. Verified exhaustively:
   across all ~400k legal positions per table the strong side always wins except the exact theoretical
   draws (stalemate / the lone king grabbing an undefended piece).
+- **`engine/gtb.ts`** — a **material-generic retrograde DTM solver**. One code path derives the whole family of
+  pawnless 3–4-man distance-to-mate tablebases (no embedded data, built in-browser): it reproduces KRvK/KQvK
+  (`egtb.ts`) and KBNvK (`kbnk.ts`) **bit-for-bit**, and newly solves **KBBvK** (the two-bishop mate — a forced win),
+  **KNNvK** (proven a draw) and the major combinations (KQRvK, KRRvK, KQQvK, KRBvK, KRNvK, KQBvK, KQNvK). Backward
+  retrograde BFS over a **DTM-keyed bucket queue** (Dial's), with Syzygy-style **sub-table probing** — a defender
+  capture that leaves a still-won residual is scored from the relevant 3-man table. Proven from the inside (Bellman
+  optimality on a random sample + optimal self-play to mate that follows captures across tables).
+- **`engine/tbcache.ts`** — sandbox-safe **IndexedDB** persistence for built DTM tables (main thread *and* worker), so a
+  solved ending survives a reload and re-hydrates instantly instead of rebuilding (~10 s).
+- **`engine/endgames.ts`** — maps a position's material to a tablebase config and **warms the cached table before the
+  search**, so once an ending is solved in the Lab the engine plays it perfectly with no mid-move rebuild.
+- **`engine/clock.ts`** — **UCI-style time management**: `allocateTime` turns a clock (base + increment) into a
+  soft/hard per-move budget (sudden-death horizon + most of the increment, with a hard cap so the engine never flags).
 - **`engine/kbnk.ts`** — the **King + Bishop + Knight vs King** distance-to-mate tablebase — the hardest of
   the elementary mates (only winnable in the two corners the bishop controls; longest forced mate is 33
   moves). The whole ~33.6M-position table is generated in-browser by **backward retrograde BFS** (seed the
@@ -101,12 +114,21 @@ representation, move generation, search and evaluation are all hand-built here.
 - [x] **Search**: internal iterative reduction (off the PV), countermove heuristic, history malus on quiets
       that didn't cut, improving-aware LMP/LMR — ~23% fewer nodes to reach a given depth, no tactical regression
 - [x] Node-limit + soft/hard-time search options (`maxNodes`, `softTime`) underpinning the movetime control
-- [ ] Pawn-ful tablebases (KPvKP, KRvKP) and Syzygy-style probing on top of the retrograde framework
+- [x] **Generalized retrograde tablebase engine** (`gtb.ts`): one material-generic solver derives the whole family of
+      pawnless 3–4-man DTM tables — reproduces KRvK/KQvK/KBNvK **bit-for-bit** and newly solves **KBBvK** (forced win),
+      **KNNvK** (draw) and the major combos (KQRvK, KRRvK, KQQvK, KRBvK, KRNvK, KQBvK, KQNvK) via a DTM bucket queue +
+      Syzygy-style sub-table probing for captures; cross-checked against the hand-rolled tables + Bellman + self-play
+- [x] **Persist built tablebases to IndexedDB** (`tbcache.ts`) — survive reloads, warm instantly; KBNvK + every gtb table
+- [x] **Warm the cached tablebase before the search** (`endgames.ts`) so the engine plays solved endings perfectly in play
+- [x] **Eval probes the generalized tables** — exact DTM-graded wins, true 0 for proven draws (KNNvK, same-coloured KBBvK)
+- [x] **Endgame TBs Lab tab** — pick an ending, build + verify (oracle / Bellman / self-play), see stats, longest-mate FEN, cache state
+- [x] **UCI-style time controls** (`clock.ts`): clock + increment with real per-move time management (1+0 … 10+5), live engine clock
+- [ ] Pawn-ful tablebases (KPvKP, KRvKP, KPvK as exact DTM) — needs un-promotion / en-passant unmoves and a layered
+      dependency on the promoted-material tables (the generic solver is currently pawnless / fixed-material)
+- [ ] Pieces on *both* sides (KQvKR, KRvKB, …) — generalise the lone-king defender assumption
+- [ ] Two-sided game clock with a live countdown and flag-fall (both human and engine), not just the engine's clock
 - [ ] WASM/SIMD or bitboard rewrite for a big NPS boost
-- [ ] Generalise the retrograde solver to KBBvK / KNNvKP and cross-check against the KRK/KQK tables
-- [ ] Persist a built KBNvK table to IndexedDB so it survives reloads and warms instantly
 - [ ] Ponder line preview (show the predicted reply + the engine's intended answer while it thinks)
-- [ ] UCI-style time controls (clock + increment) with real time management, not just fixed movetime
 - [ ] Bigger EPD sets (full WAC-300, ECM) with category breakdowns and an Elo estimate from the pass rate
 
 ## Session log
@@ -162,3 +184,21 @@ representation, move generation, search and evaluation are all hand-built here.
   run of the live build: the app loads with **zero console errors**, the KBNvK table builds + verifies
   in-browser in 10.5s, and a full play loop with pondering + movetime replies cleanly. Clean lint/build via
   `scripts/verify-project.mjs`.
+- 2026-06-25 (claude): **Generalized tablebase engine + persistence + time management** pass.
+  (1) **`gtb.ts`** — one *material-generic* retrograde solver derives the whole family of pawnless 3–4-man
+  distance-to-mate tablebases (backward retrograde BFS over a **DTM-keyed bucket queue**, with Syzygy-style
+  **sub-table probing**: a defender capture leaving a still-won residual is scored from the relevant 3-man table).
+  It **reproduces the hand-rolled KRvK / KQvK (`egtb.ts`) and KBNvK (`kbnk.ts`) tables bit-for-bit** — the proof it's
+  correct — and newly solves **KBBvK** (the two-bishop mate, a forced win, ≤19 moves), **KNNvK** (correctly a draw)
+  and every major combination (KQRvK, KRRvK, KQQvK, KRBvK, KRNvK, KQBvK, KQNvK). (2) **`tbcache.ts`** — sandbox-safe
+  **IndexedDB** persistence so a built table survives a reload and warms instantly; (3) **`endgames.ts`** warms the
+  cached table before the search, and the **eval probes the generic tables** (exact DTM-graded wins, true 0 for proven
+  draws material count misjudges). (4) A new **Endgame TBs** Lab tab builds + verifies any ending with progress, oracle
+  cross-checks, Bellman optimality, self-play to mate, the longest-mate FEN, and cache controls. (5) **`clock.ts`** —
+  real **UCI-style time management** (clock + increment, 1+0 … 10+5) with a live engine clock, replacing fixed movetime.
+  Validated offline (esbuild-bundled Node harnesses): KRvK/KQvK/KBNvK match the oracles with **0 mismatches** across
+  ~1.3M sampled probes, Bellman holds on every sample, and 3,000/3,000 optimal self-play games per ending mate in
+  exactly the stored distance; the engine **checkmates from random KBBvK / KQRvK / KRBvK / KRNvK positions against any
+  defence** (8/8 each) once the table is resident. A **headless-Chromium** run of the live build loads with **zero
+  console errors**, builds + verifies KQvK against the egtb oracle in-browser, and persists it to IndexedDB. Clean
+  lint/build via `scripts/verify-project.mjs`.

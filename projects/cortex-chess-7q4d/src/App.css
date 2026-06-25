@@ -466,6 +466,35 @@
   font-weight: 700;
   font-size: 12px;
 }
+.clock-row {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin-top: 10px;
+  padding: 6px 10px;
+  background: #0e141b;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.clock-label {
+  font-size: 12px;
+  color: var(--muted, #8aa);
+}
+.clock-time {
+  font-variant-numeric: tabular-nums;
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--text);
+  letter-spacing: 0.5px;
+}
+.clock-time.low {
+  color: #ff6b6b;
+}
+.clock-budget {
+  font-size: 11px;
+  color: var(--muted, #8aa);
+  margin-left: auto;
+}
 
 /* Toggles */
 .toggles {
