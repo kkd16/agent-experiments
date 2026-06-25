@@ -307,6 +307,33 @@ SELECT array_agg(x)    AS rebuilt,
 FROM unnest(ARRAY[10,20,30,40]) AS t(x);`,
   },
   {
+    title: 'generate_series — numbers and a calendar',
+    sql: `-- A set-returning table function: an arithmetic series of rows you can
+-- join, filter and aggregate like any table. Here: the first ten squares,
+-- and the running total of an integer series.
+SELECT n, n * n AS square, SUM(n) OVER (ORDER BY n) AS running_total
+FROM generate_series(1, 10) AS t(n);`,
+  },
+  {
+    title: 'generate_series — a month-by-month calendar spine',
+    sql: `-- The timestamp flavour walks calendar-aware INTERVAL steps — perfect for a
+-- date dimension to LEFT JOIN sparse data onto (note Jan 31 + 1 month = Feb 28/29).
+SELECT CAST(d AS DATE) AS month_start
+FROM generate_series(TIMESTAMP '2026-01-31', TIMESTAMP '2026-06-30', INTERVAL '1 month') AS t(d);`,
+  },
+  {
+    title: 'Optimizer is sound — same answer, with or without it',
+    sql: `-- SET optimizer = off disables cost-based join reordering and every index
+-- access path (all scans become sequential). The plan changes; the ANSWER must
+-- not. This invariant is what the Fuzz Lab's OPT-DIFF oracle checks automatically
+-- across thousands of random queries. Compare the two EXPLAINs, then the rows.
+EXPLAIN SELECT * FROM products WHERE price > 100;
+SET optimizer = off;
+EXPLAIN SELECT * FROM products WHERE price > 100;
+SELECT name, price FROM products WHERE price > 100 ORDER BY price DESC;
+SET optimizer = on;`,
+  },
+  {
     title: 'Full-text search — match & rank',
     sql: `-- @@ matches a TSVECTOR against a TSQUERY; ts_rank scores relevance
 -- (the title is weighted 'A', so a title hit outranks a body hit).

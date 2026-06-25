@@ -873,8 +873,106 @@ The design (result-equivalence by construction; safe by a conservative analyzer)
       Internals, a tab in `App.tsx`, and a `project.json` refresh. Verify with `verify-project.mjs`
       (scope + conformance + lint + build) and run the self-tests head-less.
 
+### v19.0 — the Fuzz Lab: a metamorphic SQL correctness fuzzer + `generate_series` ✅ (shipped 2026-06-25)
+
+Eighteen versions in, QueryForge can *do* an enormous amount — but how do we know the optimizer
+hasn't quietly introduced a wrong answer? The self-test suite (438 cases) checks the queries we
+*thought* to write. The state of the art for finding the bugs you *didn't* think of is **metamorphic
+testing**: don't ask "is this the right answer?" (you'd need a second oracle database) — ask "do two
+queries that *must* return the same thing actually agree?" This is exactly how Manuel Rigger's
+**SQLancer** (PQS/NoREC/TLP, 2020) found 450+ real bugs in SQLite, MySQL, PostgreSQL, DuckDB, CockroachDB.
+This release brings that technique *into the database itself*: a from-scratch, fully deterministic,
+seed-reproducible SQL fuzzer with a query generator, three metamorphic oracles, an automatic
+counterexample **shrinker**, and a **Fuzz Lab** that runs thousands of randomized queries live in your
+browser and proves (or refutes) the engine's own correctness.
+
+The oracles (each a *metamorphic relation* — an identity that must hold regardless of the right answer):
+
+- [x] **TLP — Ternary Logic Partitioning** (Rigger & Su, ESEC/FSE 2020). For any predicate `p`, a row
+      satisfies exactly one of `p`, `NOT p`, `p IS NULL` (SQL's three-valued logic partitions the rows).
+      So `SELECT … FROM t` must be the **multiset union** of the same query filtered by each of the three.
+      Variants: partition a `WHERE`; partition the input to an aggregate (`COUNT`/`SUM` over the whole =
+      sum over the parts; `MAX` = max of part-maxes); partition under `DISTINCT`; partition each side of a
+      join. A mismatch means the optimizer mis-evaluated a predicate, a NULL, or an access path.
+- [x] **NoREC — Non-optimizing Reference Engine Construction** (Rigger & Su, ESEC/FSE 2020). The optimizer
+      only fires on a predicate *in a `WHERE`*. So `SELECT COUNT(*) FROM t WHERE p` (optimized — may use an
+      index, reorder, short-circuit) must equal `SELECT SUM(CASE WHEN p THEN 1 ELSE 0 END) FROM t`
+      (the predicate demoted to a projection the optimizer can't touch — a per-row scan). Divergence
+      isolates an *optimization* bug specifically.
+- [x] **Differential (optimizer on/off)** — add a `SET optimizer = on|off` knob that disables cost-based
+      join reordering and index access paths; the **same** query under both settings must return an
+      identical multiset. (Also reuse the existing Volcano-vs-vectorized equivalence as a fourth check
+      where the query is in the vectorized subset.)
+
+The machinery:
+
+- [x] **`fuzz/rng.ts`** — a deterministic PRNG (mulberry32) so a single integer seed reproduces an entire
+      run byte-for-byte (schema, data, every query). No `Math.random()` anywhere.
+- [x] **`fuzz/schema.ts`** — seed → a random schema (1–3 tables, mixed `INTEGER`/`REAL`/`TEXT`/`BOOLEAN`
+      columns, some nullable) populated with random rows including plenty of NULLs and duplicates, plus
+      optional indexes (so the optimizer has access paths to get wrong). Emitted as ordinary DDL/DML.
+- [x] **`fuzz/gen.ts`** — seed → a random but always *valid* SELECT: random conjunctive/disjunctive
+      predicates (comparisons, `BETWEEN`, `IN`, `IS NULL`, `LIKE`, arithmetic, `AND`/`OR`/`NOT`) over the
+      table's columns, optional join, optional GROUP BY / aggregates / DISTINCT / ORDER BY.
+- [x] **`fuzz/oracles.ts`** — the three oracles above; multiset comparison via the engine's own canonical
+      `hashKey`; each returns either `ok` or a structured counterexample (the two queries, the two result
+      multisets, the diff).
+- [x] **`fuzz/shrink.ts`** — on a failure, **delta-debug** the reproducer: drop predicate conjuncts,
+      columns, rows, and tables while the oracle still fails, down to a minimal SQL script anyone can paste.
+- [x] **`fuzz/runner.ts`** — orchestrate: seed → schema → N queries → all oracles → a report (queries run,
+      oracle checks, counterexamples, the minimized repro). Fully reproducible from the seed.
+- [x] **`fuzz/tests.ts`** — a `fuzz` self-test group: run several **fixed** seeds for a fixed iteration
+      count and assert **zero** counterexamples. This is a perpetual, randomized regression guard over the
+      *entire* engine — every future change must keep the fuzzer green.
+- [x] **Fix any real bugs the fuzzer surfaces** — and fold the minimal repro into the deterministic suite.
+- [x] **`generate_series(start, stop[, step])`** — the workhorse set-returning function (integers and
+      `TIMESTAMP`+`INTERVAL`), with a safety row cap; wired into `TABLE_FUNCTIONS`, type inference, the
+      fuzzer's data generator, Reference, and self-tests.
+- [x] **`ui/FuzzLab.tsx`** — pick a seed (or roll a random one) and an iteration budget, Run, and watch a
+      live verdict: queries executed, per-oracle check counts, a green "no counterexamples" banner or, on a
+      failure, the **minimized** reproducing script with the two divergent result sets side by side and the
+      violated relation named. Wired in as the Labs' sixth sibling.
+- [x] **Docs + Internals + samples + `project.json`** — a "Metamorphic testing" Reference chapter, an
+      Internals stage, sample queries, and the verify gate (scope + conformance + lint + build) green.
+
 ## Session log
 
+- 2026-06-25 (claude / claude-opus-4-8): **v19.0 — the Fuzz Lab: a metamorphic SQL correctness fuzzer
+  + `generate_series`.** Eighteen versions in, the question stopped being "what else can it do?" and
+  became "how do we *know* it's correct?" The self-tests check the queries we thought to write; this
+  release adds the technique that finds the bugs we didn't — **metamorphic testing** (Rigger & Su's
+  SQLancer, FSE 2020; 450+ real bugs across SQLite/Postgres/MySQL/DuckDB). New `src/db/fuzz/*`: a
+  deterministic mulberry32 PRNG (`rng.ts` — a single seed replays an entire run byte-for-byte, no
+  `Math.random`), a random schema+data generator (`schema.ts` — small tables, mixed types, lots of NULLs
+  and duplicates, secondary indexes for the optimizer to get wrong), a structured predicate/query
+  generator (`gen.ts`), and five **oracles** (`oracles.ts`) — identities that must hold for any correct
+  engine, no reference database needed: **TLP** (ternary-logic partitioning — a scan equals the
+  multiset-union of its `p` / `NOT p` / `p IS NULL` partitions; aggregates are partition-additive),
+  **NoREC** (`COUNT(*) … WHERE p` must equal `SUM(CASE WHEN p THEN 1 ELSE 0 END)` — the predicate demoted
+  to a projection the optimizer can't touch), **DISTINCT** (vs. a ground-truth dedup), and **OPT-DIFF**
+  (the same query under `SET optimizer = on` vs `off`). Multiset equality uses the engine's own canonical
+  `hashKey`. A delta-debugging **shrinker** (`shrink.ts`) minimizes any failing case — dropping rows,
+  pruning predicate conjuncts, removing indexes — to a paste-able repro; the **runner** (`runner.ts`)
+  drives seed→database→N queries→all oracles into a report. New **Fuzz Lab** (`ui/FuzzLab.tsx` + CSS):
+  pick a seed and a query budget (up to 5,000), Run, and watch a live verdict — queries executed,
+  per-oracle counts, a green "no counterexamples" banner or the minimized repro with the divergent rows.
+  **The fuzzer found three real bugs on its first run, all fixed this session** (`src/db/planner.ts`):
+  (1) an index range scan on `c < v` swept the leading NULL run into the result (NULLs sort first and the
+  open-low range had no lower bound) — fixed by anchoring the missing low bound just past NULL; (2) two
+  range bounds on one indexed column (`c <= 2 AND c < 4.5`) let the last-written overwrite the tighter, so
+  the looser bound won — fixed by intersecting to the most restrictive bound on each side; (3) the same
+  NULL leak through a `BitmapAnd` of single-column indexes (`sargBound` returned an open-low bound for
+  `<`/`<=`) — fixed the same way, plus a guard so a comparison against NULL never uses an index. To enable
+  OPT-DIFF I added a real `SET optimizer = on|off` knob (an `optimize` flag threaded through the planner's
+  `PlanEnv` that disables join reordering and index access paths — the answer is identical, only the plan
+  changes) and extended `SET` to accept barewords. Also shipped **`generate_series(start, stop[, step])`**
+  — the workhorse set-returning function for integer and calendar-aware timestamp ranges, capped at 1M
+  rows. All three bugs are frozen as targeted regression tests, and a new `fuzz` self-test group re-runs
+  seven fixed seeds (~1,750 random queries) every build; over development the fuzzer ran ~720,000 queries
+  across 450 random databases with zero counterexamples after the fixes. Self-tests 438 → **455**, all
+  green head-less. Added a "Metamorphic testing" + "Table functions" Reference chapter, a stage-13
+  Internals entry, three sample queries, the new tab in `App.tsx`, and a `project.json` refresh. Verified
+  with `verify-project.mjs` (scope + conformance + lint + build), all green.
 - 2026-06-22 (claude / claude-opus-4-8): **v18.0 — a vectorized (columnar) execution engine + the
   Vectorize Lab.** Added a *second, independent execution engine*. Every prior version executes one
   model — Volcano, a tree of operators each pulling one row at a time through a virtual `next()` — which

@@ -6,6 +6,7 @@ import { Engine, type RowsResult } from './engine'
 import { mvccCases } from './concurrency/tests'
 import { recoveryCases } from './recovery/tests'
 import { vectorizedCases } from './vectorized/tests'
+import { fuzzCases } from './fuzz/tests'
 import { SEED_SQL, SAMPLE_QUERIES } from './sampleData'
 import { csvToSql, parseCsv } from './csv'
 import { Database } from './catalog'
@@ -2960,6 +2961,44 @@ test('arrays', 'array GIN survives a snapshot round-trip and still plans', () =>
   assert(a.length > 0, 'and still returns rows')
 })
 
+// --- generate_series table function ----------------------------------------
+test('tablefunc', 'generate_series ascending integers', () => {
+  const e = new Engine()
+  assert(eq(rowsOf(e, `SELECT * FROM generate_series(1, 5)`), [[1], [2], [3], [4], [5]]), 'asc')
+  assert(scalar(e, `SELECT SUM(x) FROM generate_series(1, 100) AS t(x)`) === 5050, 'sum 1..100')
+})
+test('tablefunc', 'generate_series with step (incl. descending)', () => {
+  const e = new Engine()
+  assert(eq(rowsOf(e, `SELECT * FROM generate_series(0, 10, 2)`), [[0], [2], [4], [6], [8], [10]]), 'step 2')
+  assert(eq(rowsOf(e, `SELECT * FROM generate_series(5, 1, -2)`), [[5], [3], [1]]), 'descending')
+  assert(eq(rowsOf(e, `SELECT * FROM generate_series(1, 5, -1)`), []), 'wrong-direction step is empty')
+})
+test('tablefunc', 'generate_series REAL when any operand is fractional', () => {
+  const e = new Engine()
+  assert(eq(rowsOf(e, `SELECT * FROM generate_series(0.0, 1.0, 0.25)`), [[0], [0.25], [0.5], [0.75], [1]]), 'real series')
+})
+test('tablefunc', 'generate_series empty + error cases', () => {
+  const e = new Engine()
+  assert(eq(rowsOf(e, `SELECT * FROM generate_series(1, 0)`), []), 'start>stop asc is empty')
+  let threw = false
+  try { e.execute(`SELECT * FROM generate_series(1, 10, 0)`) } catch { threw = true }
+  assert(threw, 'zero step throws')
+})
+test('tablefunc', 'generate_series timestamp + interval is calendar-aware', () => {
+  const e = new Engine()
+  const r = rowsOf(e, `SELECT CAST(generate_series AS TEXT) AS d
+    FROM generate_series(TIMESTAMP '2020-01-31', TIMESTAMP '2020-04-30', INTERVAL '1 month')`)
+  assert(r.length === 4, 'four monthly steps')
+  assert(String(r[1][0]).startsWith('2020-02-29'), 'Jan 31 + 1 month clamps to Feb 29 (leap year)')
+})
+test('tablefunc', 'generate_series composes with WHERE / GROUP BY / joins', () => {
+  const e = new Engine()
+  // odd numbers 1..20
+  assert(scalar(e, `SELECT COUNT(*) FROM generate_series(1, 20) AS t(n) WHERE n % 2 = 1`) === 10, 'filter')
+  // a cross join builds a multiplication grid
+  assert(scalar(e, `SELECT SUM(a*b) FROM generate_series(1,3) AS x(a), generate_series(1,3) AS y(b)`) === 36, 'cross join 6*6=36')
+})
+
 // --- sample queries (catalog showcase) -------------------------------------
 test('samples', 'every shipped sample query runs against the seed', () => {
   for (const q of SAMPLE_QUERIES) {
@@ -3390,7 +3429,7 @@ test('execution', 'the statement parse cache serves repeated read-only queries',
 })
 
 export function runTests(): TestResult[] {
-  return cases.concat(mvccCases).concat(recoveryCases).concat(vectorizedCases).map((c) => {
+  return cases.concat(mvccCases).concat(recoveryCases).concat(vectorizedCases).concat(fuzzCases).map((c) => {
     try {
       c.run()
       return { name: c.name, group: c.group, pass: true, detail: 'ok' }

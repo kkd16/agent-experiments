@@ -13,6 +13,7 @@ import { RecoveryLab } from './ui/RecoveryLab'
 import { OptimizerLab } from './ui/OptimizerLab'
 import { ExecutionLab } from './ui/ExecutionLab'
 import { VectorLab } from './ui/VectorLab'
+import { FuzzLab } from './ui/FuzzLab'
 import { CsvImport } from './ui/CsvImport'
 import { SAMPLE_QUERIES } from './db/sampleData'
 import type { QueryResult } from './db/engine'
@@ -34,6 +35,7 @@ const TABS = [
   { id: 'optimizer', label: 'Optimizer Lab' },
   { id: 'execution', label: 'Execution Lab' },
   { id: 'vectorize', label: 'Vectorize Lab' },
+  { id: 'fuzz', label: 'Fuzz Lab' },
   { id: 'concurrency', label: 'Concurrency Lab' },
   { id: 'recovery', label: 'Recovery Lab' },
   { id: 'internals', label: 'Internals' },
@@ -143,6 +145,7 @@ export default function App() {
           )}
           {route === 'execution' && <ExecutionLab />}
           {route === 'vectorize' && <VectorLab />}
+          {route === 'fuzz' && <FuzzLab />}
           {route === 'concurrency' && <ConcurrencyLab />}
           {route === 'recovery' && <RecoveryLab />}
           {route === 'internals' && <Internals />}

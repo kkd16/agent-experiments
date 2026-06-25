@@ -243,6 +243,24 @@ const SECTIONS: Section[] = [
     ],
   },
   {
+    title: 'Table functions  —  set-returning functions in FROM',
+    entries: [
+      { syntax: 'generate_series(start, stop [, step])', note: 'Rows for an arithmetic series. Integers: generate_series(1, 5) → 1,2,3,4,5; a step may be negative for a descending series and the result is INTEGER unless an operand is fractional (then REAL). Timestamps: generate_series(TIMESTAMP \'2020-01-01\', TIMESTAMP \'2020-04-01\', INTERVAL \'1 month\') walks calendar-aware steps. Capped at 1,000,000 rows so a runaway range can’t hang the tab.' },
+      { syntax: 'unnest(array)  ·  generate_subscripts(array)', note: 'Expand an array into one row per element, or its 1..length index series. Compose them with WHERE / JOIN / GROUP BY like any table.' },
+      { syntax: 'json_each(obj) · json_object_keys(obj) · json_array_elements(arr)', note: 'Unroll a JSON object into key/value rows, its keys, or a JSON array into element rows (… _text variants return TEXT). Use LATERAL to drive one per row of another table.' },
+    ],
+  },
+  {
+    title: 'Metamorphic testing  —  the Fuzz Lab',
+    entries: [
+      { syntax: 'what it is', note: 'A from-scratch SQL fuzzer (src/db/fuzz/*) that builds a random database from a seed and checks thousands of random queries against ORACLES — identities that must hold for any correct engine, with no reference database to compare against. The technique behind SQLancer (Rigger & Su, 2020), which found 450+ real bugs in SQLite, PostgreSQL, MySQL and DuckDB.' },
+      { syntax: 'TLP (Ternary Logic Partitioning)', note: 'SQL’s three-valued logic puts every row in exactly one of { p, NOT p, p IS NULL }, so SELECT … FROM t equals the multiset-union of the three filtered scans — and an aggregate over the whole equals the aggregate summed over the parts.' },
+      { syntax: 'NoREC', note: 'The optimizer fires on a predicate only inside a WHERE, so COUNT(*) … WHERE p (which may use an index) must equal SUM(CASE WHEN p THEN 1 ELSE 0 END) (a plain per-row scan it can’t touch). Divergence pinpoints an optimization bug.' },
+      { syntax: 'DISTINCT & OPT-DIFF', note: 'DISTINCT must equal the engine’s own non-distinct scan, de-duplicated; and the same query under SET optimizer = on vs. off must return an identical multiset. Reproducible from the seed; any counterexample is shrunk to a minimal query. (On its first run the Fuzz Lab found three real NULL/index-range bugs — all now fixed and frozen as regression tests.)' },
+      { syntax: 'SET optimizer = on | off', note: 'Disable cost-based join reordering and all index access paths (every scan becomes sequential). The answer is identical; only the plan changes — which is exactly what the OPT-DIFF oracle exploits. SHOW optimizer reports the current setting.' },
+    ],
+  },
+  {
     title: 'Transactions',
     entries: [
       { syntax: 'BEGIN; … COMMIT;', note: 'Snapshot taken at BEGIN; COMMIT keeps changes.' },

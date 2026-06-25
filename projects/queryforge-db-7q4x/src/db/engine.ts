@@ -67,16 +67,31 @@ const CONST_CTX: CompileCtx = {
 export interface SessionSettings {
   /** `work_mem` — the per-operator in-memory row budget before an operator spills. */
   workMem: number
+  /** `optimizer` — when `false` (`SET optimizer = off`) the planner skips cost-based
+   *  join reordering and all index access paths (every scan is sequential). The
+   *  answer is identical; only the plan changes. The Fuzz Lab's differential oracle
+   *  flips this to prove the optimizer never changes a result. */
+  optimizer: boolean
 }
 
 /** Statement kinds whose parse output is safe to cache: read-only, and never
  *  mutated during planning/execution (stored views already reuse a `SelectStmt`). */
 const CACHEABLE_KINDS = new Set<Statement['kind']>(['select', 'explain', 'show'])
 
+/** Parse a boolean-ish setting value (`on`/`off`/`true`/`false`/`1`/`0`). */
+function parseOnOff(v: number | string): boolean | null {
+  if (typeof v === 'number') return v === 0 ? false : v === 1 ? true : null
+  switch (v.toLowerCase()) {
+    case 'on': case 'true': case 'yes': case '1': return true
+    case 'off': case 'false': case 'no': case '0': return false
+    default: return null
+  }
+}
+
 export class Engine implements PlHost {
   db: Database
   /** Session settings (work_mem, …). Reset only by `RESET`/`SET … TO DEFAULT`. */
-  settings: SessionSettings = { workMem: DEFAULT_WORK_MEM }
+  settings: SessionSettings = { workMem: DEFAULT_WORK_MEM, optimizer: true }
   private txnStack: SerializedDb[] = []
   /** Named savepoints within the current transaction (innermost last). */
   private savepoints: { name: string; snap: SerializedDb }[] = []
@@ -751,7 +766,7 @@ export class Engine implements PlHost {
 
   // --- SELECT / EXPLAIN -----------------------------------------------------
   private select(stmt: SelectStmt, sql: string, t0: number): RowsResult {
-    const op = planSelect(stmt, this.db, this.settings.workMem)
+    const op = planSelect(stmt, this.db, this.settings.workMem, this.settings.optimizer)
     const rows = runOperator(op)
     return {
       kind: 'rows',
@@ -768,7 +783,7 @@ export class Engine implements PlHost {
     if (inner.kind !== 'select') {
       throw new SqlError('EXPLAIN currently supports SELECT statements', 'plan')
     }
-    const op = planSelect(inner, this.db, this.settings.workMem)
+    const op = planSelect(inner, this.db, this.settings.workMem, this.settings.optimizer)
     if (stmt.analyze) runOperator(op)
     return { kind: 'explain', plan: op.plan(), analyze: stmt.analyze, elapsedMs: performance.now() - t0, sql }
   }
@@ -815,7 +830,7 @@ export class Engine implements PlHost {
   }
 
   // --- session settings (SET / SHOW / RESET) --------------------------------
-  /** `SET work_mem = N` / `SET work_mem TO N` / `RESET work_mem`. */
+  /** `SET work_mem = N` / `SET optimizer = on|off` / `RESET …`. */
   private setSetting(stmt: SetStmt, sql: string, t0: number): QueryResult {
     const name = stmt.name.toLowerCase()
     if (name === 'work_mem') {
@@ -823,23 +838,34 @@ export class Engine implements PlHost {
         this.settings.workMem = DEFAULT_WORK_MEM
         return msg(`work_mem reset to ${DEFAULT_WORK_MEM} rows (default)`, sql, t0)
       }
-      if (!Number.isInteger(stmt.value) || stmt.value < 1) {
+      if (typeof stmt.value !== 'number' || !Number.isInteger(stmt.value) || stmt.value < 1) {
         throw new SqlError('work_mem must be a positive whole number of rows', 'eval')
       }
       this.settings.workMem = stmt.value
       return msg(`work_mem set to ${stmt.value} rows`, sql, t0)
     }
-    throw new SqlError(`unknown configuration parameter "${stmt.name}" (supported: work_mem)`, 'eval')
+    if (name === 'optimizer') {
+      if (stmt.value === null) {
+        this.settings.optimizer = true
+        return msg(`optimizer reset to on (default)`, sql, t0)
+      }
+      const on = parseOnOff(stmt.value)
+      if (on === null) throw new SqlError(`optimizer must be on or off (got "${stmt.value}")`, 'eval')
+      this.settings.optimizer = on
+      return msg(`optimizer ${on ? 'on' : 'off'} — cost-based reordering & index access paths ${on ? 'enabled' : 'disabled'}`, sql, t0)
+    }
+    throw new SqlError(`unknown configuration parameter "${stmt.name}" (supported: work_mem, optimizer)`, 'eval')
   }
-  /** `SHOW work_mem` — report a setting as a 1×1 result. */
+  /** `SHOW work_mem` / `SHOW optimizer` — report a setting as a 1×1 result. */
   private showSetting(stmt: ShowStmt, sql: string, t0: number): RowsResult {
     const name = stmt.name.toLowerCase()
     let value: SqlValue
     if (name === 'work_mem') value = this.settings.workMem
-    else throw new SqlError(`unknown configuration parameter "${stmt.name}" (supported: work_mem)`, 'eval')
+    else if (name === 'optimizer') value = this.settings.optimizer ? 'on' : 'off'
+    else throw new SqlError(`unknown configuration parameter "${stmt.name}" (supported: work_mem, optimizer)`, 'eval')
     return {
       kind: 'rows',
-      columns: [{ table: '', name, type: 'INTEGER' }],
+      columns: [{ table: '', name, type: typeof value === 'number' ? 'INTEGER' : 'TEXT' }],
       rows: [[value]],
       rowCount: 1,
       elapsedMs: performance.now() - t0,

@@ -80,6 +80,11 @@ export interface PlanEnv {
   viewTrail?: Set<string>
   /** The session `work_mem` budget (rows) spillable operators plan under. */
   workMem?: number
+  /** When `false`, the planner skips its cost-based rewrites — no join reordering
+   *  and no index access paths (everything is a sequential scan). The answer is
+   *  unchanged; only the *plan* differs. `SET optimizer = off` flips this, which
+   *  the Fuzz Lab's differential oracle uses to prove the optimizer is sound. */
+  optimize?: boolean
 }
 
 /** Run an operator to completion, collecting all rows. */
@@ -597,6 +602,20 @@ interface Sarg {
   value: SqlValue
 }
 
+// Is a candidate lower bound tighter than the current one? A larger value is
+// tighter; on a tie, an exclusive bound is tighter than an inclusive one.
+function tighterLow(value: SqlValue, inclusive: boolean, cur: { value: SqlValue; inclusive: boolean }): boolean {
+  const c = compareValues(value, cur.value) ?? 0
+  if (c !== 0) return c > 0
+  return cur.inclusive && !inclusive
+}
+// Symmetric for an upper bound: a smaller value is tighter; tie → exclusive wins.
+function tighterHigh(value: SqlValue, inclusive: boolean, cur: { value: SqlValue; inclusive: boolean }): boolean {
+  const c = compareValues(value, cur.value) ?? 0
+  if (c !== 0) return c < 0
+  return cur.inclusive && !inclusive
+}
+
 // Match an index against the available sargs: consume a leading run of equality
 // columns, then optionally one trailing range column. Returns the matched key
 // bounds and consumed predicates, or null if the leading column isn't covered.
@@ -620,12 +639,17 @@ function matchIndex(index: IndexHandle, byColumn: Map<string, Sarg[]>): {
       consumed.add(eq.pred)
       continue
     }
-    // No equality on this column — use it as the trailing range, then stop.
+    // No equality on this column — use it as the trailing range, then stop. Several
+    // comparisons on the same column intersect: keep the *most restrictive* bound on
+    // each side (the tightest lower and tightest upper), so `c <= 2 AND c < 4.5`
+    // becomes `c <= 2`, not the last-written `c < 4.5`. (Found by the Fuzz Lab.)
     for (const s of sargs) {
-      if (s.op === '>') rangeLo = { value: s.value, inclusive: false }
-      else if (s.op === '>=') rangeLo = { value: s.value, inclusive: true }
-      else if (s.op === '<') rangeHi = { value: s.value, inclusive: false }
-      else if (s.op === '<=') rangeHi = { value: s.value, inclusive: true }
+      const incl = s.op === '>=' || s.op === '<='
+      if (s.op === '>' || s.op === '>=') {
+        if (!rangeLo || tighterLow(s.value, incl, rangeLo)) rangeLo = { value: s.value, inclusive: incl }
+      } else if (s.op === '<' || s.op === '<=') {
+        if (!rangeHi || tighterHigh(s.value, incl, rangeHi)) rangeHi = { value: s.value, inclusive: incl }
+      }
       consumed.add(s.pred)
       usedRange = true
     }
@@ -636,9 +660,16 @@ function matchIndex(index: IndexHandle, byColumn: Map<string, Sarg[]>): {
   let lo: RangeBound
   let hi: RangeBound
   if (usedRange) {
-    const loKey: IndexKey = rangeLo ? [...eqPrefix, rangeLo.value] : [...eqPrefix]
+    // A comparison range (`<`, `<=`, `>`, `>=`) must EXCLUDE rows whose range-column
+    // key is NULL: in SQL three-valued logic NULL is never < / <= / > / >= a value.
+    // NULLs sort first in the index (orderValues treats NULL as the minimum), so an
+    // explicit lower bound already steps past them; but an open-low range (`c < 4`)
+    // would otherwise sweep the leading NULL run into the result. Anchor the missing
+    // low bound just *after* the NULLs — `[…eqPrefix, NULL]` exclusive — so a one-sided
+    // upper range can never return a NULL key. (Found by the Fuzz Lab's NoREC oracle.)
+    const loKey: IndexKey = rangeLo ? [...eqPrefix, rangeLo.value] : [...eqPrefix, null]
     const hiKey: IndexKey = rangeHi ? [...eqPrefix, rangeHi.value] : [...eqPrefix]
-    lo = { key: loKey, inclusive: rangeLo ? rangeLo.inclusive : true }
+    lo = { key: loKey, inclusive: rangeLo ? rangeLo.inclusive : false }
     hi = { key: hiKey, inclusive: rangeHi ? rangeHi.inclusive : true }
   } else {
     // Pure equality-prefix scan: an exact prefix match on the index.
@@ -666,6 +697,10 @@ function tryIndexScan(
       continue
     }
     if (table.columnIndex(cmp.col.name) < 0) continue
+    // A comparison against NULL (`col = NULL`, `col < NULL`, …) is never sargable:
+    // its result is always unknown, so leave it for the filter (which returns no
+    // rows) rather than turning it into an index probe that could match NULL keys.
+    if (cmp.value === null) continue
     const key = cmp.col.name.toLowerCase()
     const list = byColumn.get(key) ?? []
     list.push({ pred: p, op: cmp.op, value: cmp.value })
@@ -751,10 +786,12 @@ function sargBound(op: '=' | '<' | '<=' | '>' | '>=', value: SqlValue): { lo: Ra
       return { lo: { key: [value], inclusive: false }, hi: null }
     case '>=':
       return { lo: { key: [value], inclusive: true }, hi: null }
+    // An open-low range must still exclude NULL keys (NULL is never `< value`).
+    // NULL sorts first, so anchor the low bound just after it. (See matchIndex.)
     case '<':
-      return { lo: null, hi: { key: [value], inclusive: false } }
+      return { lo: { key: [null], inclusive: false }, hi: { key: [value], inclusive: false } }
     case '<=':
-      return { lo: null, hi: { key: [value], inclusive: true } }
+      return { lo: { key: [null], inclusive: false }, hi: { key: [value], inclusive: true } }
   }
 }
 
@@ -773,6 +810,9 @@ function tryBitmapAnd(table: Table, baseSchema: Schema, preds: Expr[], sc: StatC
     } catch {
       continue
     }
+    // A comparison against NULL is never sargable (always unknown) — leave it to
+    // the filter rather than probing the index for a NULL key.
+    if (cmp.value === null) continue
     const col = cmp.col.name.toLowerCase()
     if (usedCols.has(col)) continue
     const idx = table.indexForColumn(cmp.col.name)
@@ -808,6 +848,10 @@ function tryBitmapOr(table: Table, baseSchema: Schema, preds: Expr[], sc: StatCt
         allConst = false
         break
       }
+      // A NULL in an IN-list never matches by equality (`x = NULL` is unknown), so
+      // it contributes no rows: drop it from the bitmap values rather than probing
+      // for a NULL key. Rows that would be "unknown" are correctly excluded anyway.
+      if (v === null) continue
       values.push(v)
     }
     if (!allConst || values.length === 0) continue
@@ -1264,7 +1308,7 @@ function planJoinOrder(
       (p) => !localConsumed.has(p) && !containsSubquery(p) && resolvableIn(p, sch, env),
     )
     let leaf: Operator
-    const idx = chooseIndexAccess(r.table, sch, applicable, statTables)
+    const idx = env.optimize === false ? null : chooseIndexAccess(r.table, sch, applicable, statTables)
     if (idx) {
       leaf = idx.op
       idx.consumed.forEach((p) => localConsumed.add(p))
@@ -1359,8 +1403,8 @@ function planJoinOrder(
 
 // ============================================================================
 // Public entry point: plan a (possibly compound, possibly WITH-prefixed) query.
-export function planSelect(stmt: SelectStmt, db: Database, workMem?: number): Operator {
-  return planQuery(stmt, { db, relations: new Map(), outer: [], workMem })
+export function planSelect(stmt: SelectStmt, db: Database, workMem?: number, optimize = true): Operator {
+  return planQuery(stmt, { db, relations: new Map(), outer: [], workMem, optimize })
 }
 
 /** Plan a SELECT while recording the join-order DP search, for the Optimizer Lab.
@@ -1503,7 +1547,7 @@ function relationFor(item: FromItem | JoinClause, env: PlanEnv): { table: Table;
     const childTrail = new Set(trail)
     childTrail.add(name.toLowerCase())
     const alias = item.alias ?? view.name
-    const viewEnv: PlanEnv = { db: env.db, relations: new Map(), outer: [], viewTrail: childTrail, workMem: env.workMem }
+    const viewEnv: PlanEnv = { db: env.db, relations: new Map(), outer: [], viewTrail: childTrail, workMem: env.workMem, optimize: env.optimize }
     const t = materialize(view.select, viewEnv, alias, view.columns)
     return { table: t, alias }
   }
@@ -1739,7 +1783,7 @@ function planCore(stmt: SelectStmt, env: PlanEnv, embedOrderLimit: boolean): Ope
   // For a chain of two or more INNER joins, search left-deep join orders with a
   // Selinger-style subset DP and keep the cheapest. Outer joins / CROSS chains
   // aren't freely reorderable, so they fall through to the written-order planner.
-  const reordered = canReorderJoins(stmt) ? planJoinOrder(stmt, env, statTables, wherePreds, consumed) : null
+  const reordered = env.optimize !== false && canReorderJoins(stmt) ? planJoinOrder(stmt, env, statTables, wherePreds, consumed) : null
   if (reordered) {
     op = reordered.op
     schema = reordered.schema
@@ -1754,7 +1798,7 @@ function planCore(stmt: SelectStmt, env: PlanEnv, embedOrderLimit: boolean): Ope
       // Covering-index detection only for a single base table (no joins / derived
       // relation), where every column reference belongs to this table.
       const cover = stmt.joins.length === 0 && !stmt.from!.subquery ? coveringColumns(stmt) : null
-      const idx = chooseIndexAccess(base.table, schema, baseApplicable, statTables, cover?.ok ? cover.names : null)
+      const idx = env.optimize === false ? null : chooseIndexAccess(base.table, schema, baseApplicable, statTables, cover?.ok ? cover.names : null)
       if (idx) {
         op = idx.op
         // A covering (index-only) scan emits only the indexed columns, so adopt
@@ -2157,7 +2201,7 @@ function compileSubqueryExpr(
       s.row = v
     },
   }))
-  const innerEnv: PlanEnv = { db: env.db, relations: env.relations, outer: [...wrappedOuter, scope], workMem: env.workMem }
+  const innerEnv: PlanEnv = { db: env.db, relations: env.relations, outer: [...wrappedOuter, scope], workMem: env.workMem, optimize: env.optimize }
   const innerOp = planQuery(e.select, innerEnv)
 
   if (e.kind === 'subquery' || e.kind === 'in_subquery' || e.kind === 'quantified') {
@@ -2311,7 +2355,7 @@ function materialize(stmt: SelectStmt, env: PlanEnv, name: string, columnNames?:
 // Build a child env with each CTE materialized (earlier CTEs visible to later).
 function withCtes(stmt: SelectStmt, env: PlanEnv): PlanEnv {
   const relations = new Map(env.relations)
-  const childEnv: PlanEnv = { db: env.db, relations, outer: env.outer, workMem: env.workMem }
+  const childEnv: PlanEnv = { db: env.db, relations, outer: env.outer, workMem: env.workMem, optimize: env.optimize }
   for (const cte of stmt.ctes!) {
     const t =
       stmt.recursive && isRecursiveCte(cte)
@@ -2392,7 +2436,7 @@ function materializeRecursive(cte: CteDef, env: PlanEnv): Table {
     for (const r of frontier) wt.insertRawRow(r.slice())
     const childRel = new Map(env.relations)
     childRel.set(cte.name.toLowerCase(), wt)
-    const childEnv: PlanEnv = { db: env.db, relations: childRel, outer: env.outer, workMem: env.workMem }
+    const childEnv: PlanEnv = { db: env.db, relations: childRel, outer: env.outer, workMem: env.workMem, optimize: env.optimize }
     const next: Row[] = []
     for (const b of recursives) {
       const op = planQuery(b, childEnv)
