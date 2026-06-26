@@ -49,6 +49,23 @@ export function About({ onClose }: Props) {
           gravitational wells the bodies are falling into.
         </p>
 
+        <h2>The Fast Multipole Method: O(N) gravity</h2>
+        <p>
+          Barnes–Hut still has every body walk the tree on its own — O(N log N). The{' '}
+          <strong>Fast Multipole Method</strong> (Greengard &amp; Rokhlin, 1987) removes the last log
+          by talking <em>cell-to-cell</em>: a cluster of sources is summarised once as a{' '}
+          <strong>multipole expansion</strong>, and a well-separated cluster of targets receives it
+          once as a <strong>local Taylor expansion</strong> that every body in the cell then merely
+          evaluates. The whole force solve becomes <strong>O(N)</strong>. Helios builds a kernel-exact,
+          2-D Cartesian FMM for its own softened Newtonian law: source clusters become Cartesian
+          moments, and the cell-to-cell transfer convolves them against the kernel's Taylor
+          coefficients, which obey the regularised-Coulomb recurrence of Duan &amp; Krasny (2001) — ε
+          included natively, no special functions. Pick <em>Fast Multipole</em> under <em>Force
+          solver</em> to drive the live simulation with it, and open the <strong>FMM Lab</strong> to
+          watch the error fall geometrically with the expansion order while the cost pulls away from
+          the O(N²) direct sum it accelerates.
+        </p>
+
         <h2>Symplectic integration</h2>
         <p>
           Orbits are a stiff test of numerical integrators. <strong>Velocity Verlet</strong> and{' '}
