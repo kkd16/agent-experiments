@@ -9,6 +9,7 @@
 import { KNIGHT, BISHOP, ROOK, QUEEN } from './board'
 import { GTB_CONFIGS, tryLoadGtbFromCache } from './gtb'
 import { tryLoadKbnkFromCache } from './kbnk'
+import { tryLoadWdlFromCache } from './wdltb'
 
 export interface EndgameMatch {
   id: string // generic config id, e.g. 'KBBvK'
@@ -67,9 +68,29 @@ export function endgameMatch(fen: string): EndgameMatch | null {
   return { id: hit.id, strongIsWhite, pieceTypes: hit.types }
 }
 
+// The WDL (pieces-on-both-sides) tables the engine knows about, by their sorted
+// non-king-piece signature → the canonical id (stronger piece first).
+const WDL_RANK: Record<string, number> = { N: 1, B: 2, R: 3, Q: 4 }
+const WDL_IDS = new Set(['KQvKR', 'KQvKB', 'KQvKN', 'KRvKB', 'KRvKN', 'KRvKR', 'KQvKQ'])
+
+// Identify a supported "K + piece vs K + piece" ending (a piece on both sides, no
+// pawns), returning its canonical WDL table id, or null.
+export function wdlMatch(fen: string): string | null {
+  const { white, black, pawns } = material(fen)
+  if (pawns || white.length !== 1 || black.length !== 1) return null
+  const [a, b] = WDL_RANK[white[0]] >= WDL_RANK[black[0]] ? [white[0], black[0]] : [black[0], white[0]]
+  const id = `K${a}vK${b}`
+  return WDL_IDS.has(id) ? id : null
+}
+
 // Warm any cached tablebase that applies to `fen`. Best-effort and cheap: a no-op
 // when the position isn't a supported ending or nothing is cached.
 export async function warmTablebasesFor(fen: string): Promise<void> {
+  const wdl = wdlMatch(fen)
+  if (wdl) {
+    await tryLoadWdlFromCache(wdl)
+    return
+  }
   const m = endgameMatch(fen)
   if (!m) return
   if (m.id === 'KBNvK') {

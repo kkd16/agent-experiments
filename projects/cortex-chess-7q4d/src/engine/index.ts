@@ -63,6 +63,19 @@ export {
   GTB_CONFIGS,
 } from './gtb'
 export type { TbConfig, GtbStats, GtbVerification } from './gtb'
+export {
+  buildWdl,
+  verifyWdl,
+  probeWdl,
+  wdlReady,
+  wdlStats,
+  wdlSolvedIds,
+  ensureWdl,
+  tryLoadWdlFromCache,
+  WDL_CONFIGS,
+} from './wdltb'
+export type { WdlConfig, WdlStats, WdlVerification, WdlResult, Wdl } from './wdltb'
+export { wdlMatch, endgameMatch } from './endgames'
 export { tbCacheKeys, tbCacheClear } from './tbcache'
 export { allocateTime, formatClock, TIME_CONTROLS } from './clock'
 export type { TimeControl, TimeBudget } from './clock'
