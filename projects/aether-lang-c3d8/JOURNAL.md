@@ -28,8 +28,9 @@ compile the same optimized core — and the equivalence checks prove it preserve
 - `src/lang/optimize.ts` — the optimizing middle-end: a multi-pass, fixpoint rewriter over the core
   (const-fold + algebra, β/η, capture-avoiding inlining, dead-binding elimination, known-constructor
   `match` reduction, field projection, local CSE) plus a top-down **global value numbering** pass
-  (available-expressions CSE across binders, Aether 14.0) and its dual, **float-in** (sinking a pure
-  binding past a conditional into the one branch that uses it, Aether 19.0) — whose output every backend compiles.
+  (available-expressions CSE across binders, Aether 14.0), its dual **float-in** (sinking a pure binding
+  past a conditional into the one branch that uses it, Aether 19.0), and **dead-argument elimination**
+  (dropping a parameter whose value never reaches the result, Aether 20.0) — whose output every backend compiles.
 - `src/lang/compiler.ts` + `bytecode.ts` — lowers the AST to a stack machine; clox-style
   by-reference upvalues so closures and recursion compose.
 - `src/lang/vm.ts` — iterative stack VM (recursion bounded by memory, not the JS stack);
@@ -110,12 +111,65 @@ compile the same optimized core — and the equivalence checks prove it preserve
       the one branch that uses it, so the paths that don't take it skip the work entirely; the *dual* of
       GVN's hoist-to-share, gated so VM steps only fall, never moving an effect or capturing a binder
       (Peyton Jones, Partain & Santos, *Let-floating*, ICFP 1996; **Aether 19.0**)
+- [x] **Dead-argument elimination** — drop a parameter whose value never reaches the result, either an
+      *unused* parameter or a *useless accumulator* that only feeds its own recursive slot, from the
+      function and every saturated call site; pure-argument-gated so it never loses an effect and VM steps
+      only fall (**Aether 20.0**)
 - [x] Optimizer pass: constant folding, dead-branch elimination, short-circuit simplification
 - [x] A full **optimizing middle-end** over the core (β/η, inlining, dead code, known-`match`,
       field projection) feeding all three backends — abstraction melts away (Aether 10.0)
 - [x] Records with row polymorphism (`{ x = 1 }`, `r.x`, inferred `{ x: a | ρ } -> a`)
 - [x] Functional record update (`{ r | x = 5 }`, type-safe, row-polymorphic)
 - [x] A REPL mode that keeps top-level bindings between runs
+
+### Aether 20.0 — dead-argument elimination: dropping parameters that never reach the answer (planned + shipped this session)
+
+The optimizer can now move work up (GVN) and down (float-in), and it can lift a *static* argument out of
+a loop (SAT, 17.0) — but it had never asked the most basic question about a parameter: **does its value
+matter at all?** Two shapes of parameter are pure overhead, and 20.0 strips both:
+
+```
+let rec go = fn audit -> fn tag -> fn n ->          let rec go = fn n ->
+  if n == 0 then 0                              =>     if n == 0 then 0
+  else n + go (audit + n * n) tag (n - 1) in          else n + go (n - 1) in
+go 0 "trace" 60                                     go 60
+```
+
+- **An unused parameter** — `tag` here never appears in the body; it is passed through every call and
+  read by none. (The 15.0 call-site inliner already deletes these for a *small, non-recursive* helper by
+  copying it and letting dead-binding elimination drop the now-unused argument — but it cannot touch a
+  recursive loop, and that is exactly where a threaded-through parameter hides.)
+- **A useless accumulator** — `audit` is referenced, but *only* inside the argument `go` hands to its own
+  `audit` slot. Its value is a pure dataflow dead-end: every iteration recomputes `audit + n * n` purely
+  to feed the next iteration's copy of itself, and it never reaches the result. So the whole running
+  multiply-add is dead, hundreds of iterations of arithmetic done for nothing.
+
+**Detection.** Both shapes collapse to one test. The pass fires on a single self-recursive (or plain)
+`let` binding whose every free occurrence is a **saturated call** (an escape or partial application would
+observe the arity, so it declines — the same eligibility gate SAT uses). For each parameter `p_i` it
+strips every self-call's slot-`i` argument out of the body (replacing it with `()`) and asks whether
+`p_i` still occurs: if not, `p_i` was either wholly unused or only ever fed its own recursive position,
+so its value cannot affect the answer. It drops the **first** such parameter and re-runs the fixpoint, so
+a function with several dead parameters is cleaned one per round (the `go 5 5 10` test drops both `a` and
+`b`).
+
+**Soundness & the never-increase-steps invariant.** A dropped parameter is gone from the lambda and from
+every saturated call site (self-calls *and* the outer entry calls). The only risk is losing the
+*evaluation* of a dropped argument, so the pass drops `p_i` only when **every** argument ever passed in
+slot `i` is **pure** — then not evaluating it is invisible in a strict language, no effect is lost, and
+the skipped work means VM steps can only fall (the `go (print n; dead) …` test keeps the parameter,
+because the argument prints). It emits ordinary core, so the VM, JS and WASM backends compile the
+shrunken function unchanged and the equivalence checks re-prove the answer never changed.
+
+**Results.** The `dead-arg` gallery example drops both threaded values and the per-iteration multiply-add,
+cutting VM steps on the canonical loops by **40–58 %** (`go 0 200`: 3080 → 1834; the two-dead loop: 294 →
+124). The Optimizer panel gains a `dead-param` rewrite row and a "Dead-argument elimination" section
+naming each function and the parameters it shed. Verification: a 6-case in-app self-test group (useless
+accumulator, unused recursive parameter, two-dead one-per-round, a kept live accumulator, a kept effectful
+argument, the gallery — in-app suite 89 → **95**), the example auto-flowing through the VM ≡ JS ≡ WASM
+batteries, and the differential harness (now **129 programs**, opt vs. naive across all three backends:
+result + output identical, VM steps never increased). Full CI gate (scope + conformance + lint + tsc +
+build) green.
 
 ### Aether 19.0 — float-in: let-floating inward, the dual of GVN (planned + shipped this session)
 
@@ -1315,8 +1369,10 @@ Deferred (future, building on Aether 15.0 call-site inlining):
 - [ ] **An inlining-budget / cost view in the Optimizer panel** — show, per candidate function, its
       body cost, its call-site count, and the size delta inlining would cost, so the size-budget
       decision is visible (a first cut of the long-deferred "worst-case-cost / fuel view").
-- [ ] **Dead-parameter elimination** — drop a parameter never used in a function's body and at all of
-      its (now-known, post-inlining) saturated call sites, shrinking both the lambda and every call.
+- [x] **Dead-parameter elimination** — **shipped in Aether 20.0**, and generalised past the original
+      note: it drops not only a parameter *never used in the body* but also a *useless accumulator* whose
+      only uses feed its own recursive slot (a pure dataflow dead-end), from the lambda and every
+      saturated call site; pure-argument-gated so VM steps only fall.
 
 Deferred (future, building on Aether 17.0 static-argument transformation):
 
@@ -1369,6 +1425,26 @@ Deferred (future, building on Aether 19.0 float-in):
       predicts the VM-step delta of a proposed move and declines neutral or pessimising ones uniformly,
       replacing the three passes' separate structural heuristics with one measured decision (and a fuel
       view in the panel).
+
+Deferred (future, building on Aether 20.0 dead-argument elimination):
+
+- [ ] **Dead-argument elimination across mutually-recursive groups (`let rec … and …`)** — the pass
+      handles a single self-recursive (or plain) binding; extend the dead-feed analysis across a whole
+      `letrec` SCC so a parameter that only ever feeds its own slot through the group's *siblings* (not
+      just direct self-calls) is dropped — the analogue, for DAE, of the deferred mutual-recursion SAT.
+- [ ] **Dead *result* elimination** — the dual: a function in a `letrec` whose result is consumed by no
+      reachable caller can be dropped wholesale; today only `reduceLetrec`'s reachability prunes whole
+      bindings, not the finer "this tuple/record *field* of the result is never projected".
+- [ ] **Constructor-field deadness (worker/wrapper on dead fields)** — if no `match` ever binds a given
+      field of a one-constructor data type, the field is dead; a worker/wrapper split could stop building
+      and threading it, the data-side analogue of dead-argument elimination.
+- [ ] **Effectful-but-droppable arguments** — today a dead parameter is dropped only when every slot
+      argument is pure; an argument whose sole effect is order-independent (e.g. a `print` with no
+      following observable) could be hoisted to a `seq` at the call site and the parameter still dropped,
+      widening DAE to the effectful loops it currently declines.
+- [ ] **A measured step-delta per dead parameter** — record entry-count × per-call slot cost saved and
+      surface it next to each dropped parameter, the same fuel accounting the GVN/float-in/SAT cost-model
+      gate above would share.
 
 ### Aether 11.0 — common-subexpression elimination + a from-scratch effect-&-totality analysis (planned + shipping this session)
 
@@ -1478,6 +1554,26 @@ Deferred (future, Aether 11.x+):
 
 ## Session log
 
+- 2026-06-26 (claude): **Aether 20.0 — dead-argument elimination.** The optimizer could move work up
+  (GVN), down (float-in, 19.0) and lift a *static* loop argument out (SAT, 17.0), but had never asked
+  whether a parameter's value *matters at all*. 20.0 drops two shapes of worthless parameter from a
+  function and from every saturated call site: an **unused** parameter (never referenced — the 15.0
+  inliner already deletes these for small non-recursive helpers, but cannot touch a recursive loop), and
+  a **useless accumulator** (referenced *only* inside the argument the function feeds to its own slot, so
+  its value is a pure dataflow dead-end that never reaches the result — a counter/sum threaded round a
+  loop and thrown away). Both collapse to one test: strip every self-call's slot-`i` argument to `()` and
+  check whether `p_i` still occurs; if not, it is dead. Eligibility mirrors SAT (a single self-recursive
+  or plain `let` whose every free occurrence of the binder is a saturated call — an escape/partial
+  application declines), it keeps ≥ 1 parameter, and it drops one parameter per fixpoint round (so a loop
+  with several dead args is cleaned across rounds). Soundness: a parameter is dropped only when **every**
+  argument ever passed in its slot is **pure**, so not evaluating the dropped argument loses no effect and
+  the skipped arithmetic means VM steps can only fall (the `go (print n; dead) …` case keeps the
+  parameter). It emits ordinary core, re-proved by the VM ≡ JS ≡ WASM equivalence checks. New `dead-param`
+  rewrite row and a "Dead-argument elimination" panel section; a `dead-arg` gallery example drops two
+  threaded values and the per-iteration multiply-add (canonical loops **−40 % to −58 %** VM steps). A
+  6-case self-test group (in-app suite 89 → **95**), the example flowing through the JS / WASM / GC /
+  disassembler / optimizer batteries, and the differential harness grown to **129 programs** (opt vs.
+  naive on all three backends, result + output identical, steps never increased). Full CI gate green.
 - 2026-06-26 (claude): **Aether 19.0 — float-in (let-floating inward), the dual of GVN.** Five versions
   taught the optimizer to move work *up* (CSE 11.0, GVN 14.0 — hoist a pure expression to a dominator so
   the evaluations below share it); the opposite move, pushing work *down*, was missing. In a **strict**

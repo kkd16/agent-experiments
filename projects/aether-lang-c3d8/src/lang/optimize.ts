@@ -38,6 +38,10 @@
 //                        on paths that never reach the use the work is skipped — the
 //                        dual of GVN's hoist-to-share (Aether 19.0; Peyton Jones,
 //                        Partain & Santos, "Let-floating", ICFP 1996)
+//   • dead-arg elim    — a parameter whose value never reaches the result (an unused
+//                        parameter, or a useless accumulator that only feeds its own
+//                        recursive position) is dropped from the function and from every
+//                        saturated call site, shedding work per iteration (Aether 20.0)
 //
 // `known-match` + `field projection` + `inline` are what make the abstraction the
 // front end adds — type-class dictionaries, `deriving`, `do`-notation, list
@@ -85,6 +89,9 @@ export interface OptimizeStats {
   /** one entry per pure, non-value `let` binding the float-in pass sank past a
    *  conditional into the one branch that uses it (Aether 19.0) — for the panel. */
   floatIns: { name: string; value: string; into: string }[]
+  /** one entry per function the dead-argument-elimination pass dropped a parameter
+   *  from — one whose value never reaches the result (Aether 20.0). */
+  deadParams: { name: string; dropped: string[]; recursive: boolean }[]
   /** decision-tree compilation statistics (Aether 12.0) */
   dt: DtStats
   /** one entry per `match` rewritten into a decision tree (for the panel) */
@@ -177,6 +184,12 @@ let SATS: { name: string; arity: number; static: string[]; dynamic: string[]; ca
 // the Optimizer panel. Reset per run.
 let FLOATINS: { name: string; value: string; into: string }[] = []
 
+// One entry per function the dead-argument-elimination pass dropped a parameter
+// from this run (Aether 20.0). Module-level for the same reason as `freshCounter`
+// — optimization is synchronous and single-shot — and surfaced in the Optimizer
+// panel. Reset per run.
+let DEADPARAMS: { name: string; dropped: string[]; recursive: boolean }[] = []
+
 // Whether the multi-use call-site inliner is active. It melts *source-level*
 // abstraction, so it runs in the main optimization phase but is switched off for
 // the post-decision-tree cleanup fixpoint — that phase is reserved for copy-
@@ -206,6 +219,7 @@ export function optimizeCore(root: Expr): OptimizeResult {
   INLINES = []
   SATS = []
   FLOATINS = []
+  DEADPARAMS = []
   ALLOW_FN_INLINE = true
   const passes: Record<string, number> = {}
   const bump = (name: string): void => {
@@ -310,6 +324,7 @@ export function optimizeCore(root: Expr): OptimizeResult {
       inlinedFns: INLINES,
       satTransforms: SATS,
       floatIns: FLOATINS,
+      deadParams: DEADPARAMS,
       dt,
       decisionTrees,
       termination: TERMINATION,
@@ -496,6 +511,12 @@ function reduceLet(e: Extract<Expr, { kind: 'let' }>, bump: Bump): Expr | null {
       bump('dead-let')
       return e.body
     }
+    // dead-argument elimination (Aether 20.0): drop a parameter whose value never
+    // reaches the result (an unused param, or a useless accumulator that only feeds
+    // its own recursive slot). Run before SAT so the loop is at its minimum arity
+    // before SAT classifies the survivors static/dynamic.
+    const dpe = deadArgumentElim(e, bump)
+    if (dpe) return dpe
     // static-argument transformation (Aether 17.0): lift a loop-invariant
     // parameter out of the recursive loop, leaving it captured as a free var.
     const sat = staticArgumentTransform(e, bump)
@@ -545,6 +566,14 @@ function reduceLet(e: Extract<Expr, { kind: 'let' }>, bump: Bump): Expr | null {
   ) {
     const inlined = inlineCallSites(e.name, e.value, e.body, e.span, bump)
     if (inlined) return inlined
+  }
+
+  // Dead-argument elimination (Aether 20.0) for a non-recursive function the inliner
+  // declined to copy (too large, or match-bodied): drop an unused parameter from the
+  // lambda and from each saturated call site.
+  if (e.value.kind === 'lambda' && lambdaArity(e.value) >= 2) {
+    const dpe = deadArgumentElim(e, bump)
+    if (dpe) return dpe
   }
 
   // Float-in (Aether 19.0): sink a pure, *non-value* binding past a conditional
@@ -923,6 +952,152 @@ function sinkBinding(
 function replaceScopedChild(host: Expr, idx: number, repl: Expr): Expr {
   let i = 0
   return mapChildrenScoped(host, new Set(), (child) => (i++ === idx ? repl : child))
+}
+
+// ---------------------------------------------------------------------------
+// Dead-argument elimination — Aether 20.0
+// ---------------------------------------------------------------------------
+//
+// A parameter is worth nothing if its value can never affect the answer. Two
+// shapes qualify, and this pass drops both — from the function *and* from every
+// saturated call site, so the closure shrinks and each call (and each loop
+// iteration) passes one fewer argument:
+//
+//   1. an **unused parameter** — `p` never appears in the body at all (the call-
+//      back that ignores an argument, an interface-conformance slot). The 15.0
+//      inliner already melts these for small non-recursive helpers, but it cannot
+//      touch a recursive function — this pass can.
+//
+//   2. a **useless accumulator** — `p` is referenced only inside the argument the
+//      function passes to *its own* slot `p` in a recursive call, and nowhere else.
+//      Its value is a pure dataflow dead-end: it is computed every iteration purely
+//      to be fed back into the next iteration's copy of itself, never reaching the
+//      result. The canonical example is a counter or sum threaded round a loop and
+//      then thrown away:
+//
+//        let rec go = fn dead -> fn n ->                 let rec go = fn n ->
+//          if n == 0 then 100                       =>     if n == 0 then 100
+//          else go (dead + n) (n - 1) in                   else go (n - 1) in
+//        go 0 200                                        go 200
+//
+//      The `dead + n` addition — run once per iteration for nothing — disappears.
+//
+// Both are detected the same way: strip every self-call's slot-`i` argument to a
+// constant and ask whether `p_i` still occurs. If not, `p_i` only ever fed itself
+// (or was wholly unused), so dropping it is sound — provided every dropped argument
+// (at self-calls and at the outer entry calls) is **pure**, so not evaluating it
+// loses no effect. Like SAT, the pass fires only on a single self-recursive (or
+// plain) `let` binding whose every free occurrence is a *saturated* call (an escape
+// or partial application means the arity is observed, so we decline), and it keeps
+// at least one parameter. It emits ordinary core, re-proved by the VM ≡ JS ≡ WASM
+// equivalence checks; dropping a pure computation can only lower the VM step count.
+
+function deadArgumentElim(e: Extract<Expr, { kind: 'let' }>, bump: Bump): Expr | null {
+  const f = e.name
+  const params: string[] = []
+  let cur: Expr = e.value
+  while (cur.kind === 'lambda') {
+    params.push(cur.param)
+    cur = cur.body
+  }
+  const body0 = cur
+  const k = params.length
+  if (k < 2) return null // must retain ≥ 1 parameter after dropping one
+  if (new Set(params).size !== k) return null // duplicate params: bail (rare)
+
+  // Pass 1 — eligibility: every free occurrence of `f` (in the recursive value and
+  // in the let body) must be a *saturated* call, else `f`'s arity is observed and we
+  // cannot change it. Collect, per position, the argument expressions at every call.
+  let eligible = true
+  const argsAt: Expr[][] = params.map(() => [])
+  const scan = (node: Expr, scope: Set<string>): void => {
+    if (!eligible) return
+    if (node.kind === 'var') {
+      if (node.name === f && !scope.has(f)) eligible = false // bare escape
+      return
+    }
+    if (node.kind === 'app') {
+      const sp = spineHead(node)
+      if (sp && sp.name === f && !scope.has(f)) {
+        if (sp.args.length < k) {
+          eligible = false // partial application — arity observed
+          return
+        }
+        for (let i = 0; i < k; i++) argsAt[i].push(sp.args[i])
+        for (const a of sp.args) scan(a, scope)
+        return
+      }
+    }
+    for (const c of scopedChildren(node, true, scope)) scan(c.child, c.bound)
+  }
+  if (e.recursive) scan(body0, new Set())
+  scan(e.body, new Set())
+  if (!eligible) return null
+
+  // Pass 2 — find the first droppable parameter. `p_i` is dead iff, after stripping
+  // every self-call's slot-`i` argument out of the body, `p_i` no longer occurs (so
+  // its only uses, if any, were feeding its own recursive position); and every
+  // argument ever passed in slot `i` is pure (so dropping its evaluation is invisible).
+  let dropIdx = -1
+  for (let i = 0; i < k; i++) {
+    if (!argsAt[i].every(isPure)) continue
+    const stripped = e.recursive ? stripSlot(f, i, k, body0, new Set()) : body0
+    if (countUses(params[i], stripped) === 0) {
+      dropIdx = i
+      break
+    }
+  }
+  if (dropIdx < 0) return null
+
+  // Pass 3 — rewrite: drop param `dropIdx` from the lambda and the matching argument
+  // from every saturated call site.
+  const rw = (node: Expr, scope: Set<string>): Expr => {
+    if (node.kind === 'app') {
+      const sp = spineHead(node)
+      if (sp && sp.name === f && !scope.has(f)) {
+        let call: Expr = { kind: 'var', name: f, span: node.span }
+        sp.args.forEach((a, i) => {
+          if (i === dropIdx) return // drop this argument (proven pure)
+          call = { kind: 'app', fn: call, arg: rw(a, scope), span: node.span }
+        })
+        return call
+      }
+    }
+    return mapChildrenScoped(node, scope, rw)
+  }
+  const newInner = e.recursive ? rw(body0, new Set()) : body0
+  let lam: Expr = newInner
+  for (let i = k - 1; i >= 0; i--) {
+    if (i === dropIdx) continue
+    lam = { kind: 'lambda', param: params[i], body: lam, span: e.span }
+  }
+  const newBody = rw(e.body, new Set())
+
+  bump('dead-param')
+  DEADPARAMS.push({ name: f, dropped: [params[dropIdx]], recursive: e.recursive })
+  // Fresh identities everywhere — later identity-keyed passes (CSE/GVN) stay sound.
+  return cloneExpr({ ...e, value: lam, body: newBody })
+}
+
+/** `body` with every saturated self-call's slot-`i` argument replaced by `unit`,
+ *  so a deadness check can ask whether the parameter occurs *outside* its own
+ *  recursive feedback. Scope-aware: stops at any binder that shadows `f`. */
+function stripSlot(f: string, i: number, k: number, body: Expr, scope: Set<string>): Expr {
+  const rec = (node: Expr, sc: Set<string>): Expr => {
+    if (node.kind === 'app') {
+      const sp = spineHead(node)
+      if (sp && sp.name === f && !sc.has(f) && sp.args.length >= k) {
+        let call: Expr = { kind: 'var', name: f, span: node.span }
+        sp.args.forEach((a, j) => {
+          const arg: Expr = j === i ? { kind: 'unit', span: a.span } : rec(a, sc)
+          call = { kind: 'app', fn: call, arg, span: node.span }
+        })
+        return call
+      }
+    }
+    return mapChildrenScoped(node, sc, rec)
+  }
+  return rec(body, scope)
 }
 
 function reduceLetrec(e: Extract<Expr, { kind: 'letrec' }>, bump: Bump): Expr | null {

@@ -1322,6 +1322,39 @@ match cmd with
   | Audit -> audit      // rare path: float-in sinks the fold to exactly here
 `,
   },
+  {
+    id: 'dead-arg',
+    title: 'Dead-argument elimination',
+    blurb: 'Drop a parameter whose value never reaches the result — even a useless accumulator in a loop.',
+    visual: false,
+    code: `// Aether 20.0 — DEAD-ARGUMENT ELIMINATION (open the "Optimizer" tab).
+//
+// A parameter is worthless if its value can never reach the answer. The 15.0
+// call-site inliner already deletes an unused parameter of a small NON-recursive
+// helper — but it cannot touch a recursive loop. This pass can, and it catches a
+// subtler case too: a "useless accumulator" that every iteration dutifully updates
+// only to feed the NEXT iteration, never returning it.
+//
+// Below, 'go' threads two dead values: 'audit', a running sum-of-squares it never
+// reads, and 'tag', a label passed straight through untouched. The pass proves
+// neither can affect the result and strips both — and with 'audit' goes the
+// per-iteration 'audit + n * n' multiply-add, run hundreds of times for nothing.
+// What remains is a clean one-argument loop.
+//
+// It fires only when every dropped argument is PURE (so skipping it loses no
+// effect) and the function never escapes under-applied, and it emits ordinary core
+// — re-proved by the VM ≡ JS ≡ WASM equivalence checks. Press "Measure VM steps"
+// and watch the work drop; flip "show before" to see 'audit' and 'tag' disappear.
+
+let rec go = fn audit -> fn tag -> fn n ->
+  if n == 0 then 0
+  else n + go (audit + n * n) tag (n - 1) in
+
+// 'audit' (slot 0) only ever feeds its own next value; 'tag' (slot 1) is passed
+// through unread. Both are dead; only 'n' survives.
+go 0 "trace" 60
+`,
+  },
 ]
 
 export const DEFAULT_CODE = EXAMPLES[0].code

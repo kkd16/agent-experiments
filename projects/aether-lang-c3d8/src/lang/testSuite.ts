@@ -788,6 +788,46 @@ let cmd = if n > 0 then Peek else Audit in
 match cmd with Peek -> n | Audit -> audit`,
     expected: '79',
   },
+
+  // ---- dead-argument elimination (Aether 20.0) ----
+  {
+    group: 'dead-arg',
+    name: 'drops a useless accumulator from a loop',
+    code: 'let rec go = fn dead -> fn n -> if n == 0 then 100 else go (dead + n) (n - 1) in go 0 200',
+    expected: '100',
+  },
+  {
+    group: 'dead-arg',
+    name: 'drops an unused recursive parameter',
+    code: 'let rec go = fn junk -> fn n -> if n == 0 then 0 else n + go junk (n - 1) in go 7 50',
+    expected: '1275',
+  },
+  {
+    group: 'dead-arg',
+    name: 'drops two dead parameters (one per round)',
+    code: 'let rec go = fn a -> fn b -> fn n -> if n == 0 then 1 else go (a * 2) (b + 1) (n - 1) in go 5 5 10',
+    expected: '1',
+  },
+  {
+    group: 'dead-arg',
+    name: 'keeps a live accumulator',
+    code: 'let rec go = fn acc -> fn n -> if n == 0 then acc else go (acc + n) (n - 1) in go 0 100',
+    expected: '5050',
+  },
+  {
+    group: 'dead-arg',
+    name: 'never drops an argument with an effect',
+    code: 'let rec go = fn dead -> fn n -> if n == 0 then 0 else go (print n; dead) (n - 1) in go 0 3',
+    expected: '0',
+  },
+  {
+    group: 'dead-arg',
+    name: 'strips two dead threads from a loop (gallery)',
+    code: `let rec go = fn audit -> fn tag -> fn n ->
+  if n == 0 then 0 else n + go (audit + n * n) tag (n - 1) in
+go 0 "trace" 60`,
+    expected: '1830',
+  },
 ]
 
 export function runCase(tc: TestCase): TestResult {
