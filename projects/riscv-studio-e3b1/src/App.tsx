@@ -15,6 +15,7 @@ import Tests from './ui/Tests';
 import Examples from './ui/Examples';
 import Docs from './ui/Docs';
 import CCStudio from './ui/CCStudio';
+import Optimizer from './ui/Optimizer';
 import Perf from './ui/Perf';
 
 const TABS: { id: string; label: string }[] = [
@@ -25,6 +26,7 @@ const TABS: { id: string; label: string }[] = [
   { id: 'console', label: 'Console' },
   { id: 'display', label: 'Display' },
   { id: 'cc', label: 'C Compiler' },
+  { id: 'opt', label: 'Optimizer' },
   { id: 'examples', label: 'Examples' },
   { id: 'verify', label: 'Verify' },
   { id: 'docs', label: 'Docs' },
@@ -111,7 +113,7 @@ export default function App() {
         </nav>
       </header>
 
-      {route !== 'cc' && (
+      {route !== 'cc' && route !== 'opt' && (
       <div className="toolbar">
         <div className="tool-group">
           <button className="run" onClick={vm.running ? vm.stop : vm.run} disabled={hasErrors}>
@@ -168,6 +170,10 @@ export default function App() {
       {route === 'cc' ? (
         <main className="workspace cc-full">
           <CCStudio onSendAsm={onSendAsm} />
+        </main>
+      ) : route === 'opt' ? (
+        <main className="workspace cc-full">
+          <Optimizer onSendAsm={onSendAsm} />
         </main>
       ) : (
         <main className="workspace">

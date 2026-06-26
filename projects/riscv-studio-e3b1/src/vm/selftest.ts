@@ -23,6 +23,7 @@ import {
 } from './mmu';
 import { runPerfTests } from '../perf/perf-tests';
 import { runOooTests } from '../perf/ooo-tests';
+import { runOptTests } from '../opt/opt-tests';
 import {
   VEC_SPECS,
   V_MNEMONICS,
@@ -1813,6 +1814,8 @@ export function runSelfTests(): TestResult[] {
     }
   });
   // The microarchitecture timing models carry their own hand-computed cycle oracles: the in-order
-  // 5-stage pipeline, then the out-of-order superscalar (Tomasulo + ROB) engine.
-  return [...core, ...runPerfTests(), ...runOooTests()];
+  // 5-stage pipeline, then the out-of-order superscalar (Tomasulo + ROB) engine. Finally the
+  // optimizer's suite: per-pass transforms, end-to-end equivalence over every example, and a
+  // randomized differential fuzz.
+  return [...core, ...runPerfTests(), ...runOooTests(), ...runOptTests()];
 }

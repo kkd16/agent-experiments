@@ -422,6 +422,53 @@ export default function Docs() {
           </p>
         </section>
 
+        <section>
+          <h3>The optimizing back end (the Optimizer tab)</h3>
+          <p className="docs-intro">
+            The C compiler&rsquo;s back end is a deliberately naive <strong>stack machine</strong>:
+            every expression lands in <code>a0</code>, and every binary operator spills its left
+            operand to the stack and pops it back. It is correct by construction &mdash; but it
+            leaves a mountain of obviously-removable work behind. <strong>Forge</strong>, the
+            Optimizer tab, is a real optimizing back end that takes the studio&rsquo;s <em>own</em>{' '}
+            assembly, builds a control-flow graph, runs textbook data-flow analyses and a fixpoint of
+            optimization passes, and emits faster code that is <strong>provably equivalent</strong> &mdash;
+            then measures the win through the very same performance model above.
+          </p>
+          <p className="docs-intro">
+            <strong>The passes.</strong> <em>Peephole &amp; algebraic</em> simplification folds
+            identities (<code>addi rd,rs,0 &rarr; mv</code>, <code>x&middot;0</code>, <code>x&amp;-1</code>).{' '}
+            <em>Value propagation</em> tracks each register&rsquo;s constant, copy, or
+            base+offset address within a block, folds constants, copy-propagates, strength-reduces
+            (<code>&times;8 &rarr; shift</code>, <code>%8 &rarr; mask</code>), folds address
+            computations into load/store offsets, and resolves branches with a constant condition.{' '}
+            <em>Common-subexpression elimination</em> value-numbers pure expressions and reuses an
+            already-computed result. <em>Stack forwarding</em> is the headline: it proves the
+            stack-machine&rsquo;s spill slots <strong>private</strong> (their addresses are never taken,
+            and they live below <code>sp</code>, disjoint from the frame and heap), so it forwards
+            each pop by rematerialising the pushed value and deletes the now-dead spill store;{' '}
+            <em>dead stack-slot</em> elimination then reaps the <code>sp</code> adjustments that
+            reserved space nothing uses. <em>Control-flow</em> simplification removes no-op jumps,
+            threads jump chains, and deletes unreachable blocks. Finally <em>dead-code elimination</em>,
+            driven by global <strong>liveness</strong>, removes any pure instruction whose result is
+            never read. The driver iterates the whole pipeline to a <strong>fixpoint</strong>.
+          </p>
+          <p className="docs-intro">
+            <strong>Provable equivalence.</strong> Optimization that changes behaviour is a bug, so
+            every result is checked by a <strong>differential oracle</strong>: the original and
+            optimized programs are run on throwaway CPUs and asserted to produce byte-for-byte
+            identical console output and exit code &mdash; surfaced as the green &ldquo;provably
+            equivalent&rdquo; badge. Loads are treated as potentially-trapping (a page fault under an
+            active MMU is an observable control transfer), so a dead load is never removed. The
+            Verify suite proves it at scale: every pass has a unit test, every bundled C and assembly
+            example is checked end-to-end, and a <strong>randomized differential fuzzer</strong> &mdash;
+            the technique real compilers rely on &mdash; optimizes hundreds of pseudo-random programs
+            (with balanced stack traffic) and confirms each stays equivalent. On the bundled C
+            programs Forge removes roughly <strong>35&ndash;40% of the static instructions</strong> and
+            a comparable share of the dynamic cycle count measured by the pipeline model &mdash; the
+            optimizer and the performance lab, finally meeting.
+          </p>
+        </section>
+
         {GROUPS.map((grp) => (
           <section key={grp.title}>
             <h3>{grp.title}</h3>
