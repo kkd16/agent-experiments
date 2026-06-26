@@ -4424,3 +4424,21 @@
 .twoway-graph {
   margin: 10px 0;
 }
+.twoway-slider {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  margin: 6px 0 4px;
+  font-family: var(--mono);
+  font-size: 13px;
+  color: var(--muted);
+}
+.twoway-slider input[type='range'] {
+  width: 220px;
+  accent-color: var(--accent);
+}
+.twoway-slider strong {
+  color: var(--accent);
+  font-size: 15px;
+  min-width: 16px;
+}

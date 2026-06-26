@@ -577,8 +577,48 @@ export function twoWayToGraph(M: TwoWayDFA): GraphInput {
   return { nodes, edges, start: M.start, accepts: new Set([M.accept]) };
 }
 
+// 4. The textbook SUCCINCTNESS witness: "the n-th symbol from the RIGHT is a".
+//    A two-way machine sweeps to ⊣ and walks back exactly n cells — O(n) states.
+//    Any one-way DFA must remember the last n symbols to know which one will turn
+//    out to be n-th from the end, so its minimal form has **2ⁿ** states. The gap
+//    between `construct`'s output and a hand-count is the whole Sakoda–Sipser
+//    point: two-way DFAs can be exponentially more succinct than one-way ones.
+export function nthFromLast(n: number): TwoWayDFA {
+  if (n < 1) throw new Error('n must be ≥ 1');
+  const states = ['scan'];
+  for (let k = 1; k <= n; k++) states.push(`look${k}`);
+  states.push('acc', 'rej');
+  const rules: Rule[] = [
+    ['scan', LEND, 'scan', 'R'],
+    ['scan', 'a', 'scan', 'R'],
+    ['scan', 'b', 'scan', 'R'],
+    ['scan', REND, 'look1', 'L'], // turn around onto the last (1st-from-right) cell
+  ];
+  for (let k = 1; k < n; k++) {
+    // not yet the target cell — keep stepping left, counting
+    rules.push([`look${k}`, 'a', `look${k + 1}`, 'L']);
+    rules.push([`look${k}`, 'b', `look${k + 1}`, 'L']);
+    rules.push([`look${k}`, LEND, 'rej', 'R']); // word shorter than n
+  }
+  // the n-th cell from the right — check it
+  rules.push([`look${n}`, 'a', 'acc', 'L']);
+  rules.push([`look${n}`, 'b', 'rej', 'L']);
+  rules.push([`look${n}`, LEND, 'rej', 'R']); // word shorter than n
+  return buildMachine({
+    name: `n-th from right is a (n=${n})`,
+    note: `Accepts iff the symbol n=${n} places from the right end is 'a'. The head sweeps to ⊣ and walks back ${n} cells — ${n + 3} states — while the minimal one-way DFA needs 2^${n} = ${2 ** n} states to remember the last ${n} symbols.`,
+    states,
+    start: 'scan',
+    accept: 'acc',
+    reject: 'rej',
+    alphabet: ['a', 'b'],
+    rules,
+  });
+}
+
 export const GALLERY: GalleryEntry[] = [
   { machine: firstEqLast, samples: ['abba', 'abab', 'a', '', 'baab', 'abb'] },
   { machine: evenAevenB, samples: ['aabb', 'aab', 'abab', 'ab', '', 'aabbab'] },
   { machine: beforeLastB, samples: ['abba', 'aba', 'bba', 'aab', 'ab', 'ba'] },
+  { machine: nthFromLast(2), samples: ['ab', 'ba', 'aa', 'bb', 'abab', 'bbab'] },
 ];
