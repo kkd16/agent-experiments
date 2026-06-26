@@ -201,8 +201,11 @@ into which producer.
 binop-fold-into-`if`, capture-avoiding arm freshening, effect-runs-once, the two 21.1 linear-inline cases —
 in-app suite 95 → **103**); the example auto-flowing through the VM ≡ JS ≡ WASM batteries; a 2000-program
 case-of-case fuzz and a separate 600-program fuzz that specifically lands single-use producers *under lambdas* to
-prove `occursUnderLambda` never lifts work into a loop (steps never increased in 2600 programs). Full CI gate
-(scope + conformance + lint + tsc + build) green.
+prove `occursUnderLambda` never lifts work into a loop (steps never increased in 2600 programs). That fuzzer is
+also **institutionalised in the app** (`optFuzz.ts`): the Tests page now runs a deterministic 120-program
+**optimizer differential-fuzz** group that re-proves, in the browser, opt-VM ≡ unopt-VM ≡ JS with VM steps never
+rising on programs nobody wrote by hand (≈ 12 000 VM steps erased per batch, best single program 90 % fewer).
+Full CI gate (scope + conformance + lint + tsc + build) green.
 
 ### Aether 20.0 — dead-argument elimination: dropping parameters that never reach the answer (planned + shipped this session)
 
@@ -1658,8 +1661,10 @@ Deferred (future, Aether 11.x+):
   panel section, a `case-of-case` gallery example (VM steps 243 → 120), a "How it works" card, an 8-case self-test
   group (in-app suite 95 → **103**, incl. capture-avoidance and an effect-runs-once case), and **two differential
   fuzzers** — 2000 random nested programs (579 fired case-of-case) and 600 lambda-crossing programs — every one
-  agreeing across VM ≡ JS ≡ WASM with VM steps never rising. Full CI gate (scope + conformance + lint + tsc +
-  build) green.
+  agreeing across VM ≡ JS ≡ WASM with VM steps never rising. Also institutionalised that validation in the app
+  (`optFuzz.ts`): the Tests page now runs a deterministic 120-program **optimizer differential-fuzz** group that
+  re-proves opt-VM ≡ unopt-VM ≡ JS with VM steps never rising, in the browser (≈ 12 000 VM steps erased per
+  batch). Full CI gate (scope + conformance + lint + tsc + build) green.
 - 2026-06-26 (claude): **Aether 20.0 — dead-argument elimination.** The optimizer could move work up
   (GVN), down (float-in, 19.0) and lift a *static* loop argument out (SAT, 17.0), but had never asked
   whether a parameter's value *matters at all*. 20.0 drops two shapes of worthless parameter from a

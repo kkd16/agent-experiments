@@ -3,10 +3,13 @@ import { TEST_CASES, runSuite } from '../lang/testSuite.ts'
 import type { TestResult } from '../lang/testSuite.ts'
 import { runPropertySuite } from '../lang/propertySuite.ts'
 import type { PropSelfResult } from '../lang/propertySuite.ts'
+import { runOptimizerFuzz } from '../lang/optFuzz.ts'
+import type { OptFuzzResult } from '../lang/optFuzz.ts'
 
 export default function Tests() {
   const [results, setResults] = useState<TestResult[] | null>(null)
   const [propResults, setPropResults] = useState<PropSelfResult[] | null>(null)
+  const [optFuzz, setOptFuzz] = useState<OptFuzzResult | null>(null)
   const [running, setRunning] = useState(false)
 
   const run = (): void => {
@@ -15,6 +18,7 @@ export default function Tests() {
     setTimeout(() => {
       setResults(runSuite())
       setPropResults(runPropertySuite())
+      setOptFuzz(runOptimizerFuzz())
       setRunning(false)
     }, 10)
   }
@@ -110,6 +114,47 @@ export default function Tests() {
                 ))}
               </tbody>
             </table>
+          </div>
+        </div>
+      )}
+
+      {optFuzz && (
+        <div className="tests-results">
+          <div className="tests-group">
+            <h3 className="tests-group-head">
+              Optimizer fuzz — differential soundness{' '}
+              <span
+                className={`tests-group-count ${optFuzz.passed === optFuzz.total ? '' : 'bad'}`}
+              >
+                {optFuzz.passed}/{optFuzz.total}
+              </span>
+            </h3>
+            <p className="panel-note tiny">
+              {optFuzz.total} <em>randomly generated</em> well-typed programs — dense in the nested
+              <code> if</code>/<code>match</code> producers, record projections and arithmetic the
+              middle-end is built to crush. Each one proves the optimizer is sound three ways: the{' '}
+              <strong>optimized VM result equals the unoptimized VM result</strong>, that value{' '}
+              <strong>re-appears on the JavaScript backend</strong>, and the optimized program took{' '}
+              <strong>no more VM steps</strong> than the unoptimized one. {optFuzz.commuted} of them
+              triggered case-of-case; across the batch the optimizer erased{' '}
+              <strong>{optFuzz.stepsSaved.toLocaleString()} VM steps</strong> (best single program:{' '}
+              {optFuzz.bestSavingPct}% fewer). Deterministic, so this badge is stable.
+            </p>
+            {optFuzz.failures.length > 0 && (
+              <table className="tests-table">
+                <tbody>
+                  {optFuzz.failures.map((f, i) => (
+                    <tr key={i} className="fail">
+                      <td className="tests-mark">✗</td>
+                      <td className="tests-detail">
+                        <code>{f.detail}</code>
+                        <div className="tests-type">{f.code}</div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
           </div>
         </div>
       )}
