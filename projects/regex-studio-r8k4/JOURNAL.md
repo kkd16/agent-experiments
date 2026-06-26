@@ -142,6 +142,21 @@ keep it current.
   `index.ts` (`compileOmega` — parse → NNF → GBA → NBA, plus **satisfiability** and **validity** from the emptiness
   of `NBA(φ)` / `NBA(¬φ)`, the automata-theoretic approach to model checking), and `verify.ts` (the seeded fuzzer —
   oracle vs automaton + the **complement-duality** partition `NBA(φ) ⊎ NBA(¬φ)`).
+- `src/engine/weighted/` — **the weighted studio** (session 16): the semiring generalisation of the whole
+  engine. `semiring.ts` (the **semiring zoo** — Boolean (∨,∧), Counting (+,×) on ℕ∪∞, Tropical (min,+),
+  Viterbi (max,×), Probability (+,×) — each with a *total* `star` that saturates to ∞ where the closure
+  diverges), `wfa.ts` (the **weighted finite automaton** over the Glushkov position automaton with a weight κ
+  per state: `wordWeightForward` λ·μ(a₁)…μ(aₙ)·γ, the transposed `wordWeightBackward`, the combined transition
+  matrix, **Lehmann's** closed-form matrix asteration `M*` and an independent iterative `⊕Mᵏ`, `closureValue`
+  `λ·M*·γ`, reachable-trim, `maxAcceptedLength` finiteness, and the `class/κ` graph adapter), `wcompile.ts`
+  (**weighted Glushkov** — lower a position automaton + a weight source to a WFA; uniform / by-letter-table /
+  seeded presets), `woracle.ts` (the brute-force referees — enumerate every accepting run and ⊕ their products;
+  the all-words Σ*-sum), `welim.ts` (**state elimination to a weighted regular expression** — Kleene's theorem
+  graded by a semiring, with smart constructors, the `a↦1̄` augmentation `evalClosure`, and a precedence-aware
+  printer), `index.ts` (`analyzeWeighted` — the panel façade, all K-work sealed inside; per-semiring weight
+  vocabularies + a curated example gallery), and `weighted-verify.ts` (the seeded fuzzer: forward≡backward≡brute
+  per word, Boolean≡DFA, Counting≡the Ambiguity tab's run count, the four closure roads agree, and the semiring
+  laws hold — over 1.18M differential checks at zero disagreements).
 - `src/engine/explain.ts` — AST → plain-English prose. `src/engine/export.ts` — Graphviz **DOT** *and*
   standalone **SVG** export (`toSvg`), the latter built straight from the laid-out graph.
 - `src/components/*` — `AutomatonGraph` (pan/zoom SVG, active-edge highlight), `AstView`,
@@ -155,9 +170,60 @@ keep it current.
   monoid summary, the **egg-box diagram**, the Cayley table, and the fuzz cross-check), and the session-15
   `OmegaPanel` (the **ω / Büchi** tab: the sat/valid verdict, the **animated lasso** witness on the NBA graph, the
   generalized & degeneralized Büchi automata, the construction trace, the oracle-vs-automaton truth table, and the
-  cross-check console).
+  cross-check console), and the session-16 `WeightedPanel` (the **Weighted** tab: the semiring picker with its
+  per-semiring "what the weight means" gloss, the working alphabet Σ, the κ-weighting controls (all-1̄ / by-letter /
+  seeded), a word's weight with the brute-agreement badge, the weighted automaton graph, the per-state weights, the
+  all-words closure beside the eliminated weighted regex, the example gallery and the differential-verification console).
 
 ## Ideas / backlog
+
+### Session 16 — Weighted automata: one machine, every semiring (2026-06-26, claude)
+
+Every tab so far has lived in the **Boolean** world — a run either *exists* or it doesn't. This session
+generalises the whole engine along its most fruitful axis: replace the two-element Boolean algebra with an
+arbitrary **semiring** `(K, ⊕, ⊗, 0̄, 1̄)`, weight each state of the studio's ε-free Glushkov position
+automaton, and a word's weight becomes the ⊕-sum, over its accepting runs, of the ⊗-product along each. That
+is Schützenberger's theory of **rational power series** and Mohri's generic semiring framework — and the
+payoff is that the *same* automaton, under different semirings, computes recognition, ambiguity, shortest
+distance, the most-likely run, and the language's total mass. Two theorems anchor it, mirroring the studio's
+Boolean stories one level up:
+
+> **Schützenberger:** the recognisable (weighted-automaton) series over K are exactly the **rational** ones —
+> a weighted automaton ⇔ a weighted regular expression. **Mohri:** the all-words closure `λ·M*·γ` is the
+> **algebraic path problem** — shortest distance (tropical), total count (counting), language mass (probability).
+
+New self-contained `engine/weighted/` package + a new **Weighted** tab. The plan, all shipped this session:
+
+- [x] **The semiring zoo** (`weighted/semiring.ts`) — Boolean (∨,∧), Counting (+,×) on ℕ∪∞ (BigInt, ∞ for a
+      divergent count), Tropical (min,+), Viterbi (max,×), Probability (+,×). Each carries a *total* `star`
+      (a*=1̄⊕a⊕a²⊕…) that saturates to an explicit ∞ where the series diverges, an ε-tolerant `eq` for the
+      float carriers, an `idempotent` flag, and `fromCount` (the n-fold ⊕ of 1̄).
+- [x] **The weighted finite automaton** (`weighted/wfa.ts`) — a weight κ per state; `wordWeightForward`
+      (λ·μ(a₁)…μ(aₙ)·γ), a transposed `wordWeightBackward`, the combined transition matrix, **Lehmann's**
+      closed-form `M*` (Gauss-Jordan asteration over any closed semiring), an independent iterative `⊕Mᵏ`,
+      `closureValue`, reachable-trim, `maxAcceptedLength` (acyclic ⇒ finite language), and the graph adapter.
+- [x] **Weighted Glushkov** (`weighted/wcompile.ts`) — lower a position automaton + a weight source to a WFA,
+      with uniform / by-letter-table / seeded weight presets.
+- [x] **The brute-force referees** (`weighted/woracle.ts`) — enumerate *every* accepting run and ⊕ the
+      products (the definition, no cleverness); the all-words Σ*-sum.
+- [x] **State elimination → a weighted regex** (`weighted/welim.ts`) — Kleene's theorem graded by a semiring:
+      rip the automaton's states out one at a time into a weighted regular expression, with smart constructors,
+      the `a↦1̄` augmentation `evalClosure` (recovers `λ·M*·γ` independently of Lehmann) and a printer.
+- [x] **The façade** (`weighted/index.ts`) — `analyzeWeighted`, all K-work sealed inside; per-semiring weight
+      vocabularies (parse/menu/defaults) and a curated example gallery.
+- [x] **The differential fuzzer** (`weighted/weighted-verify.ts`) — forward≡backward≡brute per word; the
+      Boolean weight ≡ the DFA's verdict; the Counting weight ≡ the **Ambiguity tab's** run count; the four
+      closure roads (Lehmann · iterative · state-elim regex · brute Σ*-sum) agree; the semiring laws hold.
+- [x] **The Weighted panel + tab** (`components/WeightedPanel.tsx`, wired into `App.tsx`) — semiring picker,
+      Σ, κ controls, a word's weight + agreement badge, the WFA graph (DOT/SVG), per-state weights, the
+      closure beside the eliminated weighted regex, the gallery, and the cross-check console. Persisted, CSS, header copy.
+- [ ] **Weighted Brzozowski/Antimirov derivatives** — a *third* algebraic per-word road (`o(∂_w r)`), aligning
+      coefficients on the source AST with the Glushkov positions, to mirror the Derivatives/Antimirov tabs.
+- [ ] **Weighted determinisation** (the twins of the DFA road) — for the *sequentiable* cases (tropical with the
+      twins property, Viterbi), with the weight-pushing that makes it canonical, and a counterexample where it fails.
+- [ ] **Min-plus shortest-path animation** — light the cheapest run on the graph (a Dijkstra/Bellman-Ford trace
+      over the tropical WFA), and a "best word" search via the closure.
+- [ ] **An ε-removal-over-a-semiring** view, so weighted *Thompson* (ε-laden) can be compared to weighted Glushkov.
 
 - [x] CharSet primitive with union/intersect/negate and pretty labels
 - [x] Recursive-descent regex parser with friendly errors
@@ -1208,3 +1274,37 @@ deep formulas skipped at the honest state cap, surfaced not hidden). So `G F a` 
 "infinitely often" Büchi automaton with the lasso `(a)ᵒ`, `G(a→F b)` is request–response liveness, and
 `G a ∧ F ¬a` comes back UNSATISFIABLE with an empty automaton. Gate green: scope + conformance + lint + build all
 pass.
+
+### Session 16 — Weighted automata: weighing every run (2026-06-26, claude)
+
+Shipped the **semiring generalisation** of the whole studio. Every prior tab decided whether a run *exists*;
+this one weighs it. New self-contained `engine/weighted/` package + a new **Weighted** tab. A weight κ from a
+chosen **semiring** sits on each state of the ε-free Glushkov position automaton, and a word's weight is the
+⊕-sum over its accepting runs of the ⊗-product along each — Schützenberger's rational power series, Mohri's
+generic framework, lowered onto the studio's own machine and graph layout unchanged.
+
+The point is that the *same* automaton, re-read under a different semiring, computes a different thing:
+**Boolean** (∨,∧) is recognition (≡ the DFA); **Counting** (+,×) on ℕ∪∞ is the number of accepting runs —
+literally the **Ambiguity tab's** degree, so `(a|a)(b|b)` weighs **4** on `ab` and state-eliminates to the
+regex `ab + ab + ab + ab`; **Tropical** (min,+) is the cheapest run (Mohri's shortest distance); **Viterbi**
+(max,×) is the single most-likely run (an HMM's MAP path); **Probability** (+,×) is the total mass. A word's
+weight is computed three independent ways that must agree — a forward vector–matrix sweep, a transposed backward
+sweep, and a brute enumeration of every accepting run. The all-words closure `λ·M*·γ` (the total count, the
+shortest distance, the language mass — the algebraic path problem) is computed by **Lehmann's** matrix
+asteration and cross-checked by **eliminating the automaton's states back into a weighted regular expression**
+(Kleene's theorem graded by a semiring — the weighted generalisation of the `DFA→regex` tab), plus an iterative
+`⊕Mᵏ` and a brute Σ*-sum on finite languages.
+
+Proved the house way, and the proof earned its keep. The seeded differential fuzzer surfaced three real bugs as
+I wrote it: (1) **Lehmann double-applied the diagonal star** (pre-scaling both the pivot row *and* column), which
+is invisible in idempotent semirings — `skk²=skk` — but wrong for Probability; fixed with a snapshot-based
+Conway/Kleene relaxation that applies the star exactly once. (2) An IEEE **`∞·0 = NaN`** in the Probability
+product, fixed by honouring 0̄ as the annihilator before multiplying. (3) A **parity-gap convergence trap** in
+the brute Σ*-sum: an accepting cycle over even-length words leaves the odd-length band empty, fooling a
+"last band added nothing" heuristic into declaring a divergent count finite — fixed by gating that referee on
+genuine acyclic finiteness (`maxAcceptedLength`). After the fixes: **1,182,768 differential checks across 24
+seeds × 500 random patterns × all five semirings × weightings × words — zero disagreements**, with the Boolean
+weight matching the DFA and the Counting weight matching the Ambiguity tab's enumerator on every word. The tab
+shows the weighted automaton (edges `class/κ`, DOT/SVG export), a word's weight with its per-semiring meaning and
+the brute-agreement badge, the per-state κ, the closure beside the eliminated weighted regex, a gallery of
+readings and the cross-check console. Gate green: scope + conformance + lint + build all pass.
