@@ -30,6 +30,7 @@ const PASS_LABELS: Record<string, string> = {
   gvn: 'global value numbering (share work across `let` / `λ` / `match` binders)',
   dt: 'pattern matching compiled to a decision tree (test each position once)',
   sat: 'static-argument transformation (lift a loop-invariant argument into a wrapper)',
+  'float-in': 'float-in (sink a pure binding past a conditional into the one branch that uses it)',
   eqsat: 'equality saturation (e-graph superoptimiser over integer-arithmetic islands)',
   fuse: 'short-cut fusion (delete the intermediate list flowing between two combinators)',
 }
@@ -399,6 +400,35 @@ export default function OptimizerPanel({ code }: Props) {
                         <code>{p}</code>
                       </span>
                     ))}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {stats.floatIns.length > 0 && (
+        <div className="opt-passes">
+          <h4>Float-in (Aether 19.0)</h4>
+          <p className="panel-note" style={{ marginTop: 0 }}>
+            The <em>dual</em> of global value numbering. GVN floats a pure expression <em>up</em> to
+            share it across guaranteed evaluations; float-in (Peyton Jones, Partain &amp; Santos,{' '}
+            <em>Let-floating</em>, ICFP 1996) sinks a pure, non-trivial binding <em>down</em> — past a
+            conditional, into the one branch that uses it — so the branches that don&apos;t take it
+            skip the work entirely. Only pure (effect-free, terminating) bindings move, never inside a{' '}
+            <code>λ</code> (which would recompute), so a strict program&apos;s VM step count can only
+            fall:
+          </p>
+          <table className="opt-table">
+            <tbody>
+              {stats.floatIns.map((f, i) => (
+                <tr key={i}>
+                  <td className="opt-pass-name">
+                    <code>{f.name}</code>
+                  </td>
+                  <td className="opt-pass-desc">
+                    <code>{f.value}</code> sunk into a <code>{f.into}</code> branch
                   </td>
                 </tr>
               ))}

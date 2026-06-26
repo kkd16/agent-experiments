@@ -715,6 +715,79 @@ map (fn x -> x * x) [1,2,3,4]`,
     code: 'length (map (fn x -> (print x; x + 1)) (range 1 4))',
     expected: '3',
   },
+
+  // ---- float-in (let-floating inward, Aether 19.0) ----
+  // Each row runs the optimized program on the VM and re-runs the *unoptimized*
+  // core on the JS backend; a green row proves float-in preserved the result.
+  {
+    group: 'float-in',
+    name: 'sinks a pure fold into the taken branch',
+    code: `let rec sumL = fn xs -> match xs with [] -> 0 | h :: t -> h + sumL t in
+let xs = range 1 5 in let ys = range 1 100 in
+let n = sumL xs in let h = sumL ys in
+if n > 1000 then h else n`,
+    expected: '10',
+  },
+  {
+    group: 'float-in',
+    name: 'sinks into one match arm',
+    code: `type T = A | B in
+let rec sumL = fn xs -> match xs with [] -> 0 | h :: t -> h + sumL t in
+let xs = range 1 5 in let ys = range 1 50 in
+let n = sumL xs in let h = sumL ys in
+let tag = if n > 1000 then A else B in
+match tag with A -> h | B -> n`,
+    expected: '10',
+  },
+  {
+    group: 'float-in',
+    name: 'sinks into the right of && (short-circuit)',
+    code: `let rec sumL = fn xs -> match xs with [] -> 0 | h :: t -> h + sumL t in
+let xs = range 1 5 in let ys = range 1 100 in
+let n = sumL xs in let big = sumL ys > 999999 in
+(n > 1000) && big`,
+    expected: 'false',
+  },
+  {
+    group: 'float-in',
+    name: 'declines when used in both branches',
+    code: `let rec sumL = fn xs -> match xs with [] -> 0 | h :: t -> h + sumL t in
+let xs = range 1 5 in let ys = range 1 20 in
+let n = sumL xs in let h = sumL ys in
+if n > 1000 then h + 1 else h + 2`,
+    expected: '192',
+  },
+  {
+    group: 'float-in',
+    name: 'never moves an effect (impure binding stays)',
+    code: `let n = head (range 1 5) in
+let x = (print "side"; 42) in
+if n > 5 then x else 7`,
+    expected: '7',
+  },
+  {
+    group: 'float-in',
+    name: 'never captures a pattern variable',
+    code: `type Box = Box Int in
+let b = 100 in let h = b + b in
+let n = head (range 1 5) in
+let bx = if n > 0 then Box 7 else Box 9 in
+match bx with Box b -> if n > 0 then h else b`,
+    expected: '200',
+  },
+  {
+    group: 'float-in',
+    name: 'common path skips an expensive fold (gallery)',
+    code: `type Cmd = Peek | Audit in
+let rec total = fn xs -> match xs with [] -> 0 | h :: t -> h + total t in
+let rec size = fn xs -> match xs with [] -> 0 | h :: t -> 1 + size t in
+let ledger = range 1 80 in
+let audit = total ledger + total ledger in
+let n = size ledger in
+let cmd = if n > 0 then Peek else Audit in
+match cmd with Peek -> n | Audit -> audit`,
+    expected: '79',
+  },
 ]
 
 export function runCase(tc: TestCase): TestResult {
