@@ -12,7 +12,7 @@
 import type { CNF } from '../sat/cnf'
 import { verifyModel } from '../sat/cnf'
 import { solve, solveAssuming } from '../sat/solver'
-import { decide2Sat } from './twosat'
+import { decide2Sat, binaryCore } from './twosat'
 import { TWO_SAT_EXAMPLES, randomTwoSat, mulberry32, twoColoringCnf, cycleEdges } from './examples'
 
 export interface TwoSatCheckReport {
@@ -31,6 +31,24 @@ function bruteModels(cnf: CNF): boolean[][] {
     if (verifyModel(cnf, model).ok) out.push(model)
   }
   return out
+}
+
+/** A random CNF of mixed clause widths (1..4) — exercises the binary core. */
+function randomGeneralCnf(n: number, m: number, seed: number): CNF {
+  const rng = mulberry32(seed)
+  const clauses: number[][] = []
+  for (let i = 0; i < m; i++) {
+    const k = 1 + Math.floor(rng() * 4) // width 1..4
+    const lits = new Set<number>()
+    let guard = 0
+    while (lits.size < k && guard++ < 20) {
+      const v = 1 + Math.floor(rng() * n)
+      const lit = rng() < 0.5 ? v : -v
+      if (!lits.has(-lit)) lits.add(lit) // skip tautologies
+    }
+    if (lits.size > 0) clauses.push([...lits])
+  }
+  return { numVars: n, clauses }
 }
 
 /** A random 2-CNF with an occasional unit clause, to exercise the unit edge. */
@@ -136,6 +154,22 @@ export function runTwoSatChecks(): TwoSatCheckReport {
     } else {
       check(r.conflictVar != null, 'UNSAT names a conflict variable', `n=${n} m=${m}`)
     }
+  }
+
+  // 3b. Binary-core soundness: for arbitrary-width CNFs, if the 2-SAT core is
+  //     UNSAT then the whole formula must be UNSAT (dropping clauses can only
+  //     weaken). A satisfiable core is allowed to be inconclusive.
+  for (let t = 0; t < 600; t++) {
+    const n = 3 + Math.floor(mulberry32(seed++)() * 6) // 3..8 vars
+    const m = Math.max(2, Math.round((1.5 + mulberry32(seed++)() * 3) * n))
+    const cnf = randomGeneralCnf(n, m, seed++)
+    const core = binaryCore(cnf)
+    const coreRes = decide2Sat(core.cnf)
+    if (!coreRes.sat) {
+      check(solve(cnf).status === 'unsat', 'binary-core UNSAT ⇒ formula UNSAT', `n=${n} m=${m}`)
+    }
+    // The core never contains a wide clause.
+    check(core.cnf.clauses.every((c) => c.length <= 2), 'binary core is a 2-CNF')
   }
 
   // 4. Determinism: the procedure is a pure function of the input.

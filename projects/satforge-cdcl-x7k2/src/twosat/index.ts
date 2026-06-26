@@ -8,11 +8,12 @@ export {
   isSat2,
   is2Cnf,
   wideClauses,
+  binaryCore,
   litToNode,
   nodeToLit,
   negNode,
 } from './twosat'
-export type { TwoSatResult, ImplEdge, Condensation, Backbone } from './twosat'
+export type { TwoSatResult, ImplEdge, Condensation, Backbone, BinaryCore } from './twosat'
 
 export {
   TWO_SAT_EXAMPLES,

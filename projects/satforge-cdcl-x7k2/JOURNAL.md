@@ -1663,7 +1663,15 @@ exhaustive brute-force oracle.
       family, and **1400 random instances** spanning the threshold — agreeing on the verdict, the
       extracted model, the equivalence classes *and* the backbone (matched set-for-set against brute
       force, each forced literal re-confirmed by `solveAssuming(¬ℓ) = UNSAT`), plus determinism and
-      a check that the condensation layering is acyclic. **11,290 assertions, all green.**
+      a check that the condensation layering is acyclic. Plus **binary-core soundness**: over 600
+      arbitrary-width random CNFs, whenever the 2-SAT core is UNSAT the complete CDCL solver confirms
+      the *full* formula is UNSAT. **12,215 assertions, all green.**
+- [x] **Binary core of an arbitrary CNF** (`binaryCore`) — project any formula to its units + binary
+      clauses (the implication-graph skeleton a real solver propagates over) and decide *that*. A
+      one-click toggle in the editor enables it; the studio is explicit that this is a sound *one-way*
+      test (core UNSAT ⇒ formula UNSAT; a satisfiable core is inconclusive), and the CDCL cross-check
+      retargets to the full formula to confirm each core refutation. *(Discharges the open
+      "implication-graph view of an arbitrary CNF's binary core" idea.)*
 - [x] Wired the **2-SAT Studio** tab into `App.tsx`; refreshed `project.json` (description + tags).
       Lint + tsc + build + the full `verify-project.mjs` gate all green.
 
@@ -1676,5 +1684,6 @@ exhaustive brute-force oracle.
       just the linear procedure, across the ratio sweep).
 - [ ] **MAX-2-SAT / weighted 2-SAT** — when a 2-CNF is UNSAT, find the assignment violating the fewest
       clauses (cross-checked against the existing MaxSAT engine).
-- [ ] **Implication-graph view of an arbitrary CNF's binary core** — extract the units + binaries of a
-      general formula and show the 2-SAT skeleton the real solver propagates over.
+- [x] **Implication-graph view of an arbitrary CNF's binary core** — extract the units + binaries of a
+      general formula and show the 2-SAT skeleton the real solver propagates over. *(Done — the
+      "decide the binary core" toggle, with sound one-way semantics.)*

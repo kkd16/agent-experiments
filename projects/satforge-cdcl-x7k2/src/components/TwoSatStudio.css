@@ -327,3 +327,23 @@
   font-size: 0.85rem;
   font-style: italic;
 }
+
+.twosat-coremode {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  margin-top: 0.5rem;
+  font-size: 0.78rem;
+  color: var(--muted, #9aa6b4);
+  cursor: pointer;
+}
+.twosat-coremode input {
+  accent-color: var(--accent, #4f8cff);
+}
+.twosat-coremode strong {
+  color: var(--text, #e6edf6);
+}
+.twosat-inconclusive {
+  color: #f0a33c;
+  font-weight: 600;
+}
