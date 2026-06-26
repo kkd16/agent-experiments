@@ -665,6 +665,56 @@ map (fn x -> x * x) [1,2,3,4]`,
     code: `let rec f = fn a -> if a <= 0 then 0 else (a * 2 + a * 3) + f (a - 1) in f 10`,
     expected: '275',
   },
+  // ---- short-cut fusion (Aether 18.0): the answer is identical with the
+  // intermediate lists deleted; the backends still agree byte-for-byte ----
+  {
+    group: 'fusion',
+    name: 'map/map composes to one pass',
+    code: 'map (fn x -> x + 1) (map (fn y -> y * 2) (range 1 6))',
+    expected: '[3, 5, 7, 9, 11]',
+  },
+  {
+    group: 'fusion',
+    name: 'filter/filter conjoins predicates',
+    code: 'filter (fn x -> x > 3) (filter (fn y -> y < 9) (range 1 12))',
+    expected: '[4, 5, 6, 7, 8]',
+  },
+  {
+    group: 'fusion',
+    name: 'sum over map never builds the list',
+    code: 'sum (map (fn x -> x * x) (range 1 6))',
+    expected: '55',
+  },
+  {
+    group: 'fusion',
+    name: 'five-stage pipeline → one foldl',
+    code: 'sum (map (fn x -> x * x) (filter (fn x -> x > 10) (map (fn y -> y + 1) (range 1 30))))',
+    expected: '9070',
+  },
+  {
+    group: 'fusion',
+    name: 'length/map drops the whole map',
+    code: 'length (map (fn x -> x * x) (range 1 51))',
+    expected: '50',
+  },
+  {
+    group: 'fusion',
+    name: 'reverse/reverse cancels',
+    code: 'reverse (reverse [3, 1, 4, 1, 5, 9])',
+    expected: '[3, 1, 4, 1, 5, 9]',
+  },
+  {
+    group: 'fusion',
+    name: 'take forces only what it keeps',
+    code: 'take 3 (map (fn x -> x * x) (range 1 1000))',
+    expected: '[1, 4, 9]',
+  },
+  {
+    group: 'fusion',
+    name: 'effectful map is never reordered',
+    code: 'length (map (fn x -> (print x; x + 1)) (range 1 4))',
+    expected: '3',
+  },
 ]
 
 export function runCase(tc: TestCase): TestResult {

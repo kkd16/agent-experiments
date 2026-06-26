@@ -510,6 +510,16 @@ function checkOpt(name, src, opts = {}) {
     const pureFns = on.optimization ? on.optimization.pureFns : []
     for (const f of opts.notPure) if (pureFns.includes(f)) problems.push(`'${f}' wrongly proven pure`)
   }
+  const fusions = on.optimization ? (on.optimization.fusions ?? []) : []
+  const fuseTotal = fusions.reduce((n, f) => n + f.count, 0)
+  if (opts.minFuse !== undefined && fuseTotal < opts.minFuse)
+    problems.push(`only ${fuseTotal} fusion(s) (expected >= ${opts.minFuse})`)
+  if (opts.noFuse && fuseTotal !== 0)
+    problems.push(`fusion fired ${fuseTotal}× (expected none — impure or shadowed)`)
+  if (opts.fuseRules !== undefined) {
+    for (const r of opts.fuseRules)
+      if (!fusions.find((f) => f.rule === r)) problems.push(`fusion law '${r}' did not fire (got [${fusions.map((f) => f.rule)}])`)
+  }
   const sats = on.optimization ? (on.optimization.satTransforms ?? []) : []
   if (opts.minSat !== undefined && sats.length < opts.minSat)
     problems.push(`only ${sats.length} static-argument transform(s) (expected >= ${opts.minSat})`)
@@ -561,6 +571,64 @@ checkOpt(
   'type Opt a = None | Some a in let bind = fn m f -> match m with None -> None | Some x -> f x in do { a <- Some 10; b <- Some 20; Some (a + b) }',
   { expect: 'Some 30' },
 )
+
+// — short-cut fusion / deforestation (Aether 18.0) —
+// Each law: assert it fires, the result is unchanged (checkOpt compares
+// optimized vs unoptimized value + output + effects) and VM steps strictly fall.
+checkOpt('fuse map/map', 'map (fn x -> x + 1) (map (fn y -> y * 2) (range 1 9))',
+  { expect: '[3, 5, 7, 9, 11, 13, 15, 17]', fuseRules: ['map/map'], minStepCut: 1 })
+checkOpt('fuse filter/filter', 'filter (fn x -> x > 3) (filter (fn y -> y < 9) (range 1 12))',
+  { expect: '[4, 5, 6, 7, 8]', fuseRules: ['filter/filter'], minStepCut: 1 })
+checkOpt('fuse foldr/map', 'foldr (fn x a -> x :: a) [] (map (fn x -> x + 100) (range 1 6))',
+  { expect: '[101, 102, 103, 104, 105]', fuseRules: ['foldr/map'], minStepCut: 1 })
+checkOpt('fuse foldl/map', 'foldl (fn a x -> a + x) 0 (map (fn x -> x * 3) (range 1 11))',
+  { expect: '165', fuseRules: ['foldl/map'], minStepCut: 1 })
+checkOpt('fuse foldl/filter', 'foldl (fn a x -> a + x) 0 (filter (fn x -> x > 3) (range 1 11))',
+  { expect: '49', fuseRules: ['foldl/filter'], minStepCut: 1 })
+checkOpt('fuse foldr/filter', 'foldr (fn x a -> x :: a) [] (filter (fn x -> x > 3) (range 1 9))',
+  { expect: '[4, 5, 6, 7, 8]', fuseRules: ['foldr/filter'], minStepCut: 1 })
+checkOpt('fuse sum/map', 'sum (map (fn x -> x * x) (range 1 21))',
+  { expect: '2870', fuseRules: ['sum/map'], minStepCut: 1 })
+checkOpt('fuse sum/filter', 'sum (filter (fn x -> x % 2 == 0) (range 1 21))',
+  { expect: '110', fuseRules: ['sum/filter'], minStepCut: 1 })
+checkOpt('fuse all/map', 'all (fn x -> x > 0) (map (fn y -> y + 1) (range 1 11))',
+  { expect: 'true', fuseRules: ['all/map'], minStepCut: 1 })
+checkOpt('fuse any/map', 'any (fn x -> x > 100) (map (fn y -> y * y) (range 1 11))',
+  { expect: 'false', fuseRules: ['any/map'], minStepCut: 1 })
+checkOpt('fuse length/map (whole map dies)', 'length (map (fn x -> x * x) (range 1 51))',
+  { expect: '50', fuseRules: ['length/map'], minStepCut: 1 })
+checkOpt('fuse length/reverse', 'length (reverse (range 1 31))',
+  { expect: '30', fuseRules: ['length/reverse'], minStepCut: 1 })
+checkOpt('fuse reverse/reverse (two traversals vanish)', 'reverse (reverse (range 1 9))',
+  { expect: '[1, 2, 3, 4, 5, 6, 7, 8]', fuseRules: ['reverse/reverse'], minStepCut: 1 })
+checkOpt('fuse take/map (map only what take keeps)', 'take 3 (map (fn x -> x * x) (range 1 1000))',
+  { expect: '[1, 4, 9]', fuseRules: ['take/map'], minStepCut: 1 })
+// A chained map fuses pairwise to a single composed pass.
+checkOpt('fuse map/map/map chain', 'map (fn x -> x + 1) (map (fn x -> x * 2) (map (fn x -> x - 1) (range 1 6)))',
+  { expect: '[1, 3, 5, 7, 9]', minFuse: 2, minStepCut: 1 })
+// The five-combinator pipeline collapses to a single foldl over the range.
+checkOpt('fuse five-stage pipeline to one pass',
+  'sum (map (fn x -> x * x) (filter (fn x -> x > 10) (map (fn y -> y + 1) (range 1 30))))',
+  { fuseRules: ['sum/map', 'foldl/filter', 'foldl/map'], minFuse: 3, minStepCut: 50 })
+// Fusion fires through a named, proven-pure mapped function (not just a lambda).
+checkOpt('fuse named pure function', 'let sq = fn x -> x * x in sum (map sq (range 1 11))',
+  { expect: '385', fuseRules: ['sum/map'], minStepCut: 1 })
+
+// Soundness — fusion must DECLINE when it would change observable behaviour.
+// (1) the inner mapped function PRINTS: fusing map/map would reorder its output,
+// so the law must not fire — checkOpt independently confirms output is unchanged.
+checkOpt('fusion declines on an effectful inner map',
+  'map (fn x -> x + 1) (map (fn y -> (print y; y * 2)) (range 1 4))',
+  { noFuse: true })
+// (2) the consumer's combinator name is SHADOWED by a user binding with different
+// semantics: the rewrite would be wrong, so it must not fire (and stays correct).
+checkOpt('fusion declines on a shadowed combinator',
+  'let map = fn f xs -> [] in map (fn x -> x) (map (fn y -> y) (range 1 5))',
+  { expect: '[]', noFuse: true })
+// (3) length over a *filter* must NOT become length over the list (filter changes
+// the length): there is deliberately no such law, so nothing fuses here.
+checkOpt('no bogus length/filter law', 'length (filter (fn x -> x > 3) (range 1 11))',
+  { expect: '7', noFuse: true })
 
 // Soundness corner cases — the optimizer must NOT change effects, ordering or
 // scoping. checkOpt compares optimized vs unoptimized result *and* printed
@@ -927,6 +995,91 @@ function mulberry32(seed) {
     'sat:differential fuzz',
     fuzzFail === 0,
     `${RUNS} random loops: ${firedWithStatic} fired (correct split, ≡ value, ≤ steps), ${declinedNoStatic} correctly declined, ${fuzzFail} failed`,
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Short-cut fusion (Aether 18.0) — differential fuzz.
+//
+// Build random, well-typed-by-construction list pipelines (a `range` producer,
+// a random stack of map/filter stages, a random consumer), some with an impure
+// (printing) map mixed in, and assert the load-bearing invariants on EVERY one:
+//   • fused value ≡ unfused value         (fusion never changes the answer)
+//   • fused output ≡ unfused output        (effects are never reordered/dropped)
+//   • fused effect count ≡ unfused          (an effectful map is never duplicated)
+//   • fused VM steps ≤ unfused VM steps     (fusion never pessimises)
+// and that the pass actually engaged (a healthy fraction of pure pipelines fuse).
+// ---------------------------------------------------------------------------
+{
+  const rng = mulberry32(0x0defaced)
+  const pick = (xs) => xs[Math.floor(rng() * xs.length)]
+  const PURE_MAPS = ['(fn x -> x + 1)', '(fn x -> x * 2)', '(fn x -> x - 3)', '(fn x -> x * x)']
+  const PREDS = ['(fn x -> x > 5)', '(fn x -> x < 20)', '(fn x -> x % 2 == 0)', '(fn x -> x % 3 == 1)']
+  // an impure map: prints, so any law that would move/drop/reorder its call must decline
+  const IMPURE_MAP = '(fn x -> (print x; x + 1))'
+  const RUNS = 400
+  let fuzzFail = 0
+  let fusedRuns = 0
+  let impureRuns = 0
+  for (let it = 0; it < RUNS; it++) {
+    const lo = 1 + Math.floor(rng() * 4)
+    const hi = lo + 4 + Math.floor(rng() * 10)
+    let expr = `(range ${lo} ${hi})`
+    const stages = 1 + Math.floor(rng() * 3)
+    const impure = rng() < 0.25
+    let usedImpure = false
+    for (let s = 0; s < stages; s++) {
+      const kind = rng() < 0.55 ? 'map' : 'filter'
+      if (kind === 'filter') {
+        expr = `(filter ${pick(PREDS)} ${expr})`
+      } else if (impure && !usedImpure && rng() < 0.6) {
+        expr = `(map ${IMPURE_MAP} ${expr})`
+        usedImpure = true
+      } else {
+        expr = `(map ${pick(PURE_MAPS)} ${expr})`
+      }
+    }
+    // a consumer; some require a list (reverse/take), others reduce to a scalar
+    const consumer = pick([
+      `sum ${expr}`,
+      `length ${expr}`,
+      `reverse ${expr}`,
+      `take ${1 + Math.floor(rng() * 5)} ${expr}`,
+      `foldl (fn a x -> a + x) 0 ${expr}`,
+      `foldr (fn x a -> x :: a) [] ${expr}`,
+      `all (fn x -> x > (0 - 999)) ${expr}`,
+      `any (fn x -> x > 8) ${expr}`,
+    ])
+    const src = consumer
+    const on = runPipeline(src, { execute: true, optimize: true })
+    const off = runPipeline(src, { execute: true, optimize: false })
+    if (on.error || off.error) {
+      fuzzFail++
+      if (fuzzFail <= 3) console.log(`  fusion fuzz pipeline error: ${(on.error || off.error).message} :: ${src}`)
+      continue
+    }
+    const onVal = on.run && on.run.result ? valueToString(on.run.result) : null
+    const offVal = off.run && off.run.result ? valueToString(off.run.result) : null
+    const onOut = on.run ? on.run.output.join('\n') : ''
+    const offOut = off.run ? off.run.output.join('\n') : ''
+    const fuseTotal = on.optimization ? (on.optimization.fusions ?? []).reduce((n, f) => n + f.count, 0) : 0
+    const problems = []
+    if (onVal !== offVal) problems.push(`value ${onVal} != ${offVal}`)
+    if (onOut !== offOut) problems.push('output differs')
+    if (on.run && off.run && on.run.effects.length !== off.run.effects.length) problems.push('effect count differs')
+    if (on.run && off.run && on.run.steps > off.run.steps) problems.push(`steps ${off.run.steps} -> ${on.run.steps}`)
+    if (problems.length) {
+      fuzzFail++
+      if (fuzzFail <= 3) console.log(`  fusion fuzz fail: ${problems.join('; ')} :: ${src}`)
+    } else {
+      if (fuseTotal > 0) fusedRuns++
+      if (usedImpure) impureRuns++
+    }
+  }
+  record(
+    'fusion:differential fuzz',
+    fuzzFail === 0 && fusedRuns > 0,
+    `${RUNS} random pipelines: ${fusedRuns} fused (≡ value, ≡ output, ≤ steps), ${impureRuns} with an effectful map kept correct, ${fuzzFail} failed`,
   )
 }
 

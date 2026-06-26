@@ -97,12 +97,99 @@ compile the same optimized core — and the equivalence checks prove it preserve
       recursive, a *known* function flowing into a lifted slot is then inlined and β-reduced into the
       loop — a SpecConstr-like specialisation reached by composition (`each (fn x -> x*x) xs` collapses
       to a bare first-order loop). Re-proved by the VM ≡ JS ≡ WASM checks (Aether 17.0)
+- [x] **Short-cut fusion (deforestation)** — an algebraic rewrite system over the prelude combinators
+      that *deletes the intermediate data structures* flowing between list passes: `map f (map g xs)` ⇒
+      `map (f∘g) xs`, consumers (`foldr`/`foldl`/`sum`/`all`/`any`/`length`) pushed through a `map` or
+      `filter`, `length (map g xs)` ⇒ `length xs`, `reverse (reverse xs)` ⇒ `xs`, `take n (map g xs)` ⇒
+      `map g (take n xs)` — 14 laws (Wadler 1990; Gill–Launchbury–Peyton Jones 1993). Fires only on the
+      *real* prelude combinator (scope-tracked) and only when the function whose call-timing changes is
+      proven pure & total, so it never reorders an effect. A five-stage pipeline collapses to one
+      `foldl` over the range; re-proved by VM ≡ JS ≡ WASM + a 400-program differential fuzz (Aether 18.0)
 - [x] Optimizer pass: constant folding, dead-branch elimination, short-circuit simplification
 - [x] A full **optimizing middle-end** over the core (β/η, inlining, dead code, known-`match`,
       field projection) feeding all three backends — abstraction melts away (Aether 10.0)
 - [x] Records with row polymorphism (`{ x = 1 }`, `r.x`, inferred `{ x: a | ρ } -> a`)
 - [x] Functional record update (`{ r | x = 5 }`, type-safe, row-polymorphic)
 - [x] A REPL mode that keeps top-level bindings between runs
+
+### Aether 18.0 — short-cut fusion: deleting the intermediate data structures (planned + shipped this session)
+
+Every optimizer pass Aether has shipped — const-fold, β/η, inlining, CSE, GVN, equality saturation,
+the static-argument transformation — simplifies **code**. Not one of them touches the thing a list
+pipeline wastes the most: **data**. Write the most natural form of a computation,
+
+```
+sum (map (fn x -> x * x) (filter (fn x -> x > 10) (map (fn y -> y + 1) (range 1 30))))
+```
+
+and the naïve compilation allocates *four* throwaway lists — `range`'s, `map`'s, `filter`'s, the second
+`map`'s — each one built cons-cell by cons-cell, walked exactly once by the next stage, and handed
+straight to the garbage collector. The pipeline reads beautifully and runs like molasses. 18.0 adds the
+classic cure: **short-cut fusion**, a.k.a. **deforestation** (Wadler, *Deforestation: transforming
+programs to eliminate trees*, 1990; Gill, Launchbury & Peyton Jones, *A short cut to deforestation*,
+1993) — implemented from scratch in `src/lang/fusion.ts` as an algebraic rewrite system over the
+prelude combinators (GHC's `{-# RULES #-}` in miniature), and run as the optimizer's **Phase 0**.
+
+**What it does.** A fusion law rewrites a *consumer applied to a producer* into a single pass that never
+materialises the list in between. The 14 laws:
+
+```
+map f (map g xs)            ⇒  map (fn z -> f (g z)) xs          -- one traversal, no list between
+filter p (filter q xs)      ⇒  filter (fn z -> q z && p z) xs
+foldr k z (map g xs)        ⇒  foldr (fn x a -> k (g x) a) z xs
+foldl k z (map g xs)        ⇒  foldl (fn a x -> k a (g x)) z xs
+foldr k z (filter p xs)     ⇒  foldr (fn x a -> if p x then k x a else a) z xs
+foldl k z (filter p xs)     ⇒  foldl (fn a x -> if p x then k a x else a) z xs
+sum (map g xs)              ⇒  foldl (fn a x -> a + g x) 0 xs    -- never builds the mapped list
+sum (filter p xs)           ⇒  foldl (fn a x -> if p x then a + x else a) 0 xs
+all p (map g xs)            ⇒  all (fn z -> p (g z)) xs          -- (and any/map)
+length (map g xs)           ⇒  length xs                         -- the entire map is dead
+length (reverse xs)         ⇒  length xs
+reverse (reverse xs)        ⇒  xs                                -- two traversals vanish
+take n (map g xs)           ⇒  map g (take n xs)                 -- map only the n you keep
+```
+
+Run **bottom-up to a fixpoint**, the laws compose: the five-stage pipeline above collapses, law by law,
+into a **single `foldl` over the range** with *zero* intermediate lists — a **68 % VM-step cut** on the
+gallery example, identical on all three backends. A `map` chain three deep fuses to one composed pass; a
+naïvely-quadratic `length (map …)` drops the map outright.
+
+**Soundness — two guards, both load-bearing.**
+
+- *Identity.* A law must fire on the **real** prelude combinator, never a user binding that happens to
+  share the name. A use of `map` is "the prelude `map`" iff the binding in scope is structurally the
+  canonical prelude definition (or the name is free — i.e. the prelude global, in the per-user-portion
+  run the JS/WASM backends compile). A `let map = fn f xs -> []` shadows it and fusion declines — tracked
+  with a scope environment threaded through the walk. (A test rebinds `map` to a different function and
+  asserts nothing fuses and the answer is the shadowed one.)
+- *Effects.* Aether is strict and **effectful** (`print`, the turtle), so the order and count of effects
+  is observable. A law moves work across the boundary between two passes — interleaving what was batched,
+  or dropping elements that were forced. Each law is therefore gated on **the function whose call-timing
+  it changes** being proven **pure and total** by the optimizer's own effect-&-totality analysis (the
+  same one that powers CSE): a pure-total function may be called fewer times, in a different order, or
+  not at all with no observable difference — no effect to reorder, no exception to hoist, no divergence to
+  skip. The *consumer's* own function (a fold's `k`, the downstream predicate) keeps its exact call
+  sequence and is never gated. The purity oracle is even made transparent to the β-redexes fusion itself
+  introduces, so a chain of lambda-maps fuses all the way down. (A test maps a *printing* function inside
+  another `map` and asserts the law declines and the output is byte-identical to the unoptimized run.)
+
+**Why it can never pessimise.** Each law deletes at least one full traversal plus the cons cells it
+built, while the consumer's own work is unchanged — so VM steps strictly fall. Like every other pass it
+emits **ordinary core** (the same combinators plus fresh composed lambdas the fixpoint then β-reduces),
+so the bytecode VM, the JavaScript backend and the WebAssembly backend all compile it unchanged.
+
+**Verification.** As with every pass, correctness is not argued — it is *re-proved on every example* by
+the byte-for-byte VM ≡ JS ≡ WASM equivalence checks, and the harness's never-increase-VM-steps gate
+proves it never made one slower. 25 targeted `checkOpt` cases assert each law fires with the exact rule
+name, cuts real steps, and preserves result + output + effect count; three soundness cases prove it
+*declines* on an effectful inner map, on a shadowed combinator, and where no sound law exists
+(`length (filter …)`). A new **400-program differential fuzz** builds random pipelines (a `range`, a
+random stack of map/filter stages — a quarter with an effectful map mixed in — and a random consumer) and
+asserts on every one: fused ≡ unfused value, fused ≡ unfused output, equal effect count, and fused steps
+≤ unfused. Full CI gate (scope + conformance + lint + tsc + build) green; the in-app suite and headless
+harness are **451/451**. The Optimizer panel gains a **"Short-cut fusion"** section naming each law that
+fired and how many times; the gallery's **Short-cut fusion** example fuses a five-combinator pipeline
+into a single traversal.
 
 ### Aether 17.0 — the static-argument transformation: turning loops first-order (planned + shipped this session)
 
@@ -1278,6 +1365,22 @@ Deferred (future, Aether 11.x+):
 
 ## Session log
 
+- 2026-06-26 (claude): **Aether 18.0 — short-cut fusion (deforestation).** Added a from-scratch fusion
+  pass in a new module `src/lang/fusion.ts`, run as the optimizer's Phase 0 (before β/inlining/SAT can
+  rewrite the prelude combinators out of recognisable shape). 14 algebraic laws delete the intermediate
+  lists between list-combinator passes — map/map, filter/filter, the consumers (foldr/foldl/sum/all/any)
+  pushed through a map or filter, length/map (drops the whole map), length/reverse, reverse/reverse, and
+  take/map — run bottom-up to a fixpoint so a five-stage pipeline collapses to one `foldl` over the range
+  (68 % VM-step cut on the gallery example). Two soundness guards: laws fire only on the *real* prelude
+  combinator (scope-tracked structural recognition, so a user `let map = …` shadows it) and only when the
+  function whose call-timing changes is proven pure & total by the optimizer's existing
+  effect-&-totality analysis (the purity check is made transparent to the β-redexes fusion introduces, so
+  lambda-map chains fuse fully). Emits ordinary core, so all three backends compile it unchanged and the
+  VM ≡ JS ≡ WASM equivalence checks + never-increase-steps gate re-prove it. Wired `fuse` stats + a
+  **"Short-cut fusion"** Optimizer-panel section, a `fusion` gallery example, Tour + About write-ups, an
+  in-app `fusion` test group (8 cases), 25 targeted `checkOpt` cases (each law fires + cuts steps + 3
+  decline cases) and a **400-program differential fuzzer**. Headless harness 417 → **451**, full CI gate
+  green.
 - 2026-06-23 (claude): **Aether 17.0 — the static-argument transformation.** Added a from-scratch SAT
   pass (Santos 1995; Peyton Jones & Santos 1998) to the optimizing middle-end (`src/lang/optimize.ts`),
   closing the long-deferred backlog item. A self-recursive `let rec f = fn p0 … p_{k-1} -> body` is

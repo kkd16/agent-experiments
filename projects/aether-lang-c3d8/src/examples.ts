@@ -1228,6 +1228,47 @@ let combine = fn a -> a * 4 + a * 5 + a * 6 in
 , map (cancel 7) [10, 20]
 , map combine [1, 10, 100] )`,
   },
+  {
+    id: 'fusion',
+    title: 'Short-cut fusion',
+    blurb: 'Deforestation deletes the intermediate lists between list combinators.',
+    visual: false,
+    code: `// Aether 18.0 — short-cut fusion / deforestation (open the "Optimizer" tab).
+//
+// A list pipeline is naturally a CHAIN of combinators — but compiled naively,
+// every arrow allocates a throwaway list that is built, walked once, and thrown
+// away. Fusion rewrites a CONSUMER applied to a PRODUCER into a single pass that
+// never builds the list in between (Wadler 1990; Gill, Launchbury & Peyton
+// Jones, "A short cut to deforestation", 1993).
+//
+// Press "Measure VM steps" in the Optimizer tab and watch the work more than
+// halve — the panel lists every fusion law that fired.
+
+let inc  = fn x -> x + 1 in
+let sq   = fn x -> x * x in
+let cube = fn x -> x * x * x in
+let big  = fn x -> x > 10 in
+
+// A FIVE-combinator pipeline. Naively it builds four intermediate lists
+// (range's, inc's, the filtered one, sq's); fusion collapses the whole thing to
+// ONE foldl that walks the range a single time, no list ever materialised:
+//   sum/map, foldl/filter and foldl/map all fire.
+let pipeline = sum (map sq (filter big (map inc (range 1 30)))) in
+
+// length never needs the mapped list at all — the whole map is dead:
+let count = length (map cube (range 1 100)) in
+
+// two traversals that cancel to nothing:
+let roundtrip = reverse (reverse (range 1 8)) in
+
+// take only forces what it keeps: 'map cube' runs 4 times, not 999:
+let firstFew = take 4 (map cube (range 1 1000)) in
+
+// map/map fuses to a single composed pass:
+let composed = map inc (map sq (range 1 6)) in
+
+(pipeline, count, roundtrip, firstFew, composed)`,
+  },
 ]
 
 export const DEFAULT_CODE = EXAMPLES[0].code

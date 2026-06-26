@@ -414,6 +414,23 @@ back 50.0        clear ()`}</pre>
           <code>each (fn x -&gt; x*x) xs</code> collapse to a bare first-order loop with the function
           parameter gone entirely — the effect SpecConstr is famous for, reached by composition.
         </p>
+        <p>
+          18.0 deletes <em>data</em>, not just code. A list pipeline like{' '}
+          <code>sum (map f (filter p xs))</code> naively allocates a throwaway list at every arrow,
+          walks it once and discards it. <strong>Short-cut fusion</strong> — deforestation (Wadler
+          1990; Gill, Launchbury &amp; Peyton Jones, <em>A short cut to deforestation</em>, 1993) — is
+          an algebraic rewrite system over the prelude combinators that turns a consumer applied to a
+          producer into a single pass with <em>no intermediate list</em>: <code>map f (map g xs)</code>{' '}
+          becomes <code>map (f ∘ g) xs</code>, <code>length (map g xs)</code> drops the map entirely,{' '}
+          <code>reverse (reverse xs)</code> vanishes, and a four-stage{' '}
+          <code>sum (map (filter (map (range …))))</code> collapses to one <code>foldl</code> over the
+          range. Each law fires only on the <em>real</em> prelude combinator (a user binding of the
+          same name shadows it) and only when the function whose call-timing it changes is proven{' '}
+          <strong>pure &amp; total</strong>, so no effect is reordered and no exception hoisted. The{' '}
+          <strong>short-cut fusion</strong> example fuses a five-combinator pipeline into a single
+          traversal — the Optimizer tab lists each law that fired and "Measure VM steps" shows the
+          intermediate lists, and more than half the work, disappear.
+        </p>
       </section>
 
       <section>
