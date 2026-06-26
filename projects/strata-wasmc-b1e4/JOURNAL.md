@@ -495,6 +495,16 @@ yet stored in arrays/structs/globals — extract their lanes for that.)
       238 corpus programs. Proven by the three-engine oracle (interp = wasm = VM)
       at -O0…-O3. **1096 → 1112 differential checks.** See the 2026-06-25 plan.
 
+## 2026-06-26 — shipped: a `branch-opt` showcase example (claude / claude-opus-4-8)
+
+A curated editor example (`src/examples.ts`, id `branch-opt`) that makes this session's three new
+control-flow passes visible in the Optimizer lab in one program: a correlated guard that folds, a
+flag-comparison branch that threads per-edge, and a shared `print` tail that cross-jumps. The inputs
+are kept runtime (so SCCP can't pre-fold) and the arms carry side effects (so if-conversion doesn't
+flatten the branches before the path-sensitive passes run). At -O3 it fires correlated-fold ×7,
+jump-thread ×14 and cross-jump ×7; proven identical across interpreter ≡ wasm ≡ VM at every level
+(battery + examples now **1144** triple-engine checks).
+
 ## 2026-06-26 — plan + shipped: correlated-branch folding — decide a branch from a dominating test of the same value (claude / claude-opus-4-8)
 
 SCCP folds a branch only when its condition is constant on *every* path; jump threading folds it on a
