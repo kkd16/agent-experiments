@@ -1269,6 +1269,59 @@ let composed = map inc (map sq (range 1 6)) in
 
 (pipeline, count, roundtrip, firstFew, composed)`,
   },
+  {
+    id: 'float-in',
+    title: 'Float-in',
+    blurb: 'The dual of global value numbering: sink a pure cost into the one branch that needs it.',
+    visual: false,
+    code: `// Aether 19.0 — FLOAT-IN / let-floating inward (open the "Optimizer" tab).
+//
+// Global value numbering (Aether 14.0) floats a pure expression UP to a dominating
+// binder, so work shared by several paths is computed ONCE. Float-in is its dual:
+// it sinks a pure binding DOWN — past a conditional, into the one branch that uses
+// it — so the paths that DON'T need it skip the work entirely (Peyton Jones,
+// Partain & Santos, "Let-floating: moving bindings to give faster programs",
+// ICFP 1996). In a STRICT language this is a real win: a top-level 'let' is always
+// evaluated, but sunk into a branch it runs only when that branch is taken.
+//
+// Only PURE (effect-free, terminating) bindings move, and never inside a lambda
+// (which would recompute them per call), so the VM step count can only fall — the
+// rewrite emits ordinary core, re-proved by the VM ≡ JS ≡ WASM equivalence checks.
+//
+// Press "Measure VM steps" in the Optimizer tab and watch the work more than halve;
+// flip "show before" to see 'audit' move from the top down into the 'Audit' arm.
+
+type Cmd = Peek | Audit in
+
+// A pure, STRUCTURALLY-recursive fold — the effect-&-totality analysis proves it
+// total (via size-change termination), so the optimizer is allowed to move a call.
+let rec total = fn xs ->
+  match xs with
+  | []     -> 0
+  | h :: t -> h + total t in
+
+let rec size = fn xs ->
+  match xs with
+  | []     -> 0
+  | h :: t -> 1 + size t in
+
+let ledger = range 1 800 in
+
+// 'audit' is an EXPENSIVE pure traversal, bound once at the top — but referenced
+// only inside the rare 'Audit' branch far below.
+let audit = total ledger + total ledger in
+let n     = size ledger in
+
+// The optimizer can't fold a recursive call, so it can't predict 'cmd' — the
+// dispatch survives to run time, and float-in is the only thing that can keep the
+// common 'Peek' path from paying for the fold.
+let cmd = if n > 0 then Peek else Audit in
+
+match cmd with
+  | Peek  -> n          // common path: never touches 'audit'
+  | Audit -> audit      // rare path: float-in sinks the fold to exactly here
+`,
+  },
 ]
 
 export const DEFAULT_CODE = EXAMPLES[0].code

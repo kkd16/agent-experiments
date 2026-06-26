@@ -28,7 +28,8 @@ compile the same optimized core — and the equivalence checks prove it preserve
 - `src/lang/optimize.ts` — the optimizing middle-end: a multi-pass, fixpoint rewriter over the core
   (const-fold + algebra, β/η, capture-avoiding inlining, dead-binding elimination, known-constructor
   `match` reduction, field projection, local CSE) plus a top-down **global value numbering** pass
-  (available-expressions CSE across binders, Aether 14.0) whose output every backend compiles.
+  (available-expressions CSE across binders, Aether 14.0) and its dual, **float-in** (sinking a pure
+  binding past a conditional into the one branch that uses it, Aether 19.0) — whose output every backend compiles.
 - `src/lang/compiler.ts` + `bytecode.ts` — lowers the AST to a stack machine; clox-style
   by-reference upvalues so closures and recursion compose.
 - `src/lang/vm.ts` — iterative stack VM (recursion bounded by memory, not the JS stack);
@@ -105,12 +106,95 @@ compile the same optimized core — and the equivalence checks prove it preserve
       *real* prelude combinator (scope-tracked) and only when the function whose call-timing changes is
       proven pure & total, so it never reorders an effect. A five-stage pipeline collapses to one
       `foldl` over the range; re-proved by VM ≡ JS ≡ WASM + a 400-program differential fuzz (Aether 18.0)
+- [x] **Float-in (let-floating inward)** — sink a pure, non-value `let` binding past a conditional into
+      the one branch that uses it, so the paths that don't take it skip the work entirely; the *dual* of
+      GVN's hoist-to-share, gated so VM steps only fall, never moving an effect or capturing a binder
+      (Peyton Jones, Partain & Santos, *Let-floating*, ICFP 1996; **Aether 19.0**)
 - [x] Optimizer pass: constant folding, dead-branch elimination, short-circuit simplification
 - [x] A full **optimizing middle-end** over the core (β/η, inlining, dead code, known-`match`,
       field projection) feeding all three backends — abstraction melts away (Aether 10.0)
 - [x] Records with row polymorphism (`{ x = 1 }`, `r.x`, inferred `{ x: a | ρ } -> a`)
 - [x] Functional record update (`{ r | x = 5 }`, type-safe, row-polymorphic)
 - [x] A REPL mode that keeps top-level bindings between runs
+
+### Aether 19.0 — float-in: let-floating inward, the dual of GVN (planned + shipped this session)
+
+Aether's optimizer has spent five versions learning to move work **up**: common-subexpression
+elimination (11.0) and global value numbering (14.0) both hoist a pure expression to a dominating
+binder so the ≥ 2 evaluations below it share one computation. But the opposite move — pushing work
+**down** — was missing, and it leaves a whole class of waste on the table. Consider a pure cost that is
+bound once but used only on a rare path:
+
+```
+let audit = total ledger + total ledger in   -- an expensive, pure fold
+let n     = size ledger in
+match dispatch with
+  | Peek  -> n            -- the common path: never looks at `audit`
+  | Audit -> audit        -- the rare path: the only use
+```
+
+Aether is a **strict** language, so a top-level `let` is *always* evaluated: every `Peek` pays in full
+for a fold it never reads. None of the existing passes help — `audit` is *used*, so dead-binding
+elimination keeps it; it is computed once, so CSE/GVN have nothing to share; the dispatch is a recursive
+call the optimizer cannot fold, so `if`-folding and known-match cannot collapse it. The fix is the
+classic **let-floating** transformation (Peyton Jones, Partain & Santos, *Let-floating: moving bindings
+to give faster programs*, ICFP 1996): **sink** a binding to the smallest subexpression that dominates
+all of its uses. When that subexpression sits behind a conditional, every run that takes the *other*
+branch skips the work entirely:
+
+```
+match dispatch with
+  | Peek  -> n
+  | Audit -> let audit = total ledger + total ledger in audit   -- evaluated only here
+```
+
+**The dual of GVN.** GVN floats a pure expression *up* to share it across guaranteed evaluations (steps
+fall: no recomputation). Float-in floats a pure binding *down* into the one branch that uses it (steps
+fall: no speculation). Together they place each pure `let` at exactly the scope its uses demand: no
+higher (which would speculate), no lower (which, past a `λ`, would recompute). The two are deliberately
+complementary — GVN's win is sharing, float-in's win is skipping.
+
+**How it works.** A new `reduceLet` rule fires on a non-recursive `let x = e in body` whose value `e` is
+**pure** (effect-free and terminating, via the 11.0/13.0 effect-&-totality analysis) and is *not* a
+syntactic value (atoms and lambdas are copied or dropped by the existing inliners, never sunk). It calls
+`sinkBinding`, which walks `body` through the scope-tracked child enumeration (`scopedChildren`, the same
+machine GVN uses) following the chain of positions where `x` is the *sole* user, and re-binds `x` around
+the deepest such position. It emits ordinary core, so the bytecode VM, the JavaScript backend and the
+WebAssembly backend all compile the result unchanged, and the byte-for-byte equivalence checks re-prove
+the answer never moved.
+
+**Soundness & the never-increase-steps invariant** (all conservative, all reusing proven machinery):
+
+- only a **pure** binding moves — in a strict language, delaying or skipping a computation that has no
+  observable effect and is known to terminate is *invisible*: no effect is lost, no divergence introduced
+  (the `(print "x"; 5)` case stays put, proving effects are never moved);
+- the binding is sunk only through positions evaluated **at most once** per evaluation of the host
+  (`if`/`match` arms & guards, `&&`/`||` right operands, `let`/`seq` sub-positions — every child
+  `scopedChildren` exposes), and **never** inside a `λ` body, whose work would multiply by the call count;
+- it is sunk only to a child that is the binder's **sole** user, so the value is never duplicated and
+  stays evaluated ≤ once on any path;
+- it is committed only when the sink path **crosses a conditional** (lands somewhere `scopedChildren`
+  flags as not-guaranteed), so every float-in is a strict potential win and the pass never churns the
+  AST for a neutral move that GVN would just undo;
+- **capture is impossible**: a descent step into a position that binds a free variable of the moved value
+  (a `λ` param or `match` pattern var) — or that re-binds `x` itself — ends the descent before that
+  binder is crossed (the `match bx with Box b -> … h …` case, where `h`'s free `b` would be captured, is
+  correctly declined).
+
+So `steps(optimized) ≤ steps(unoptimized)` holds by construction, with equality only when the sink target
+is reached on every path.
+
+**Results.** The new `float-in` gallery example — a pure 800-element fold bound at the top but used only
+on the rare `Audit` arm — drops **VM steps 60 883 → 25 645 (−58 %)** as the common `Peek` path stops
+paying for the fold, identical on all three backends. The Optimizer panel gains a `float-in` rewrite row
+and a **"Float-in"** section naming each binding sunk and the branch it landed in (flip *show before* to
+watch `audit` move down into the `Audit` arm). Verification: a 7-case in-app self-test group (sinks into
+an `if` branch / a `match` arm / the right of `&&`; declines when used in both branches; never moves an
+effect; never captures a pattern variable; the gallery dispatch), plus the example auto-flowing through
+the VM ≡ JS ≡ WASM batteries, plus a dev-time **differential harness** (122 programs run optimized vs.
+naive across all three backends, asserting result + output identical and VM steps never increased — float-in
+alone lifts the suite-wide step saving from 519 k to 565 k). Full CI gate (scope + conformance + lint +
+tsc + build) green.
 
 ### Aether 18.0 — short-cut fusion: deleting the intermediate data structures (planned + shipped this session)
 
@@ -1257,6 +1341,35 @@ Deferred (future, building on Aether 17.0 static-argument transformation):
       "called-once, never-recurses" case that SAT could pessimise is visibly declined rather than
       argued away structurally.
 
+Deferred (future, building on Aether 19.0 float-in):
+
+- [ ] **Float-in of *impure but commutable* bindings into a single conditional arm** — today only
+      `isPure` bindings sink. A binding whose only effect is `print` could still be sunk into the *sole*
+      branch that uses it **iff** no other observable effect occurs between its old and new positions
+      (an effect-ordering check, not just purity), widening the pass to the effectful programs it
+      currently leaves alone.
+- [ ] **Float-in past a `λ` when the lambda is *called at most once*** — the pass refuses every `λ`
+      body to avoid multiplying work, but a one-shot continuation (a lambda applied exactly once on
+      every path, e.g. the desugaring of `let`) could safely receive the binding; detecting linear
+      (use-once) lambdas would unlock it without risking recomputation.
+- [ ] **Full-laziness (the *other* let-float)** — its sibling from the same ICFP'96 paper: float a
+      binding *out* of a lambda when it does **not** depend on the lambda's parameter, so a value
+      recomputed on every call is computed once and shared. The dual risk to float-in (it can increase
+      residency / change space behaviour) means it needs the cost-model gate below to fire safely.
+- [ ] **A "scope ribbon" in the Optimizer core view** — draw each pure binding's original vs. final
+      scope as a shrinking bracket so float-in (and GVN's hoist) are legible as *movement*, the way the
+      decision-tree view already renders shared tests.
+- [ ] **Sink into `match` *guards* before arm bodies** — a binding used only inside a `when` guard can
+      sink onto the guard, so arms tested before it never evaluate it; the scope machinery already
+      exposes guards as conditional positions, but the gallery lacks a guard-driven example to prove it.
+- [ ] **A unified placement pass (GVN + float-in to a fixpoint)** — run hoist-to-share and
+      sink-to-skip alternately until neither moves a binding, so a value used twice in one arm and never
+      in another is first sunk into that arm *then* shared within it — the provably-optimal scope.
+- [ ] **Cost-model gate shared by GVN, float-in and SAT** — a single `minCost`-driven oracle that
+      predicts the VM-step delta of a proposed move and declines neutral or pessimising ones uniformly,
+      replacing the three passes' separate structural heuristics with one measured decision (and a fuel
+      view in the panel).
+
 ### Aether 11.0 — common-subexpression elimination + a from-scratch effect-&-totality analysis (planned + shipping this session)
 
 Aether 10.0 made *single-use* abstraction melt: a dictionary used once is inlined, its method
@@ -1365,6 +1478,35 @@ Deferred (future, Aether 11.x+):
 
 ## Session log
 
+- 2026-06-26 (claude): **Aether 19.0 — float-in (let-floating inward), the dual of GVN.** Five versions
+  taught the optimizer to move work *up* (CSE 11.0, GVN 14.0 — hoist a pure expression to a dominator so
+  the evaluations below share it); the opposite move, pushing work *down*, was missing. In a **strict**
+  language a top-level `let` is always evaluated, so a pure-but-expensive binding used only on a rare
+  branch is paid for on every path. 19.0 adds the classic cure (Peyton Jones, Partain & Santos,
+  *Let-floating: moving bindings to give faster programs*, ICFP 1996): a new `reduceLet` rule sinks a
+  **pure, non-value** `let x = e in body` to the smallest subexpression of `body` that dominates all of
+  `x`'s uses, via a `sinkBinding` walk over the existing scope-tracked child enumeration
+  (`scopedChildren`, GVN's own machine). When that subexpression is behind a conditional, the branches
+  that don't take it skip the work entirely. Soundness leans on proven machinery and is gated five ways:
+  only `isPure` bindings move (skipping a pure, terminating computation is invisible in a strict
+  language — the `(print "x"; 5)` case stays put); only positions evaluated ≤ once per host eval are
+  entered, **never** a `λ` body (no work multiplication); only the binder's *sole* user is descended into
+  (no duplication); the move is committed only when it **crosses a conditional** (a strict potential win,
+  no neutral churn for GVN to undo); and a descent that would cross a binder shadowing `x` or capturing a
+  free var of `e` is declined (the `match bx with Box b -> … h …` capture case). So
+  `steps(optimized) ≤ steps(unoptimized)` by construction. Because it emits ordinary core, the VM, the
+  JavaScript backend and the WebAssembly backend all compile it unchanged and the byte-for-byte
+  equivalence checks re-prove the answer never moved. The **Optimizer panel** gained a `float-in` rewrite
+  row and a "Float-in" section naming each binding sunk and the branch it landed in; a new `float-in`
+  gallery example (a pure 800-element fold bound at the top but used only on the rare `Audit` arm) drops
+  VM steps **60 883 → 25 645 (−58 %)** as the common `Peek` path stops paying for the fold, identical on
+  all three backends. Verification: a 7-case in-app self-test group (sinks into an `if` branch / a
+  `match` arm / the right of `&&`; declines when used in both branches; never moves an effect; never
+  captures a pattern variable; the gallery dispatch — in-app suite 82 → **89**), the example
+  auto-flowing through the JS / WASM / GC-stress / disassembler / optimizer batteries, and a dev-time
+  differential harness (122 programs run optimized vs. naive across all three backends, asserting result
+  + output identical and VM steps never increased — float-in lifts the suite-wide step saving from 519 k
+  to 565 k). Full CI gate (scope + conformance + lint + tsc + build) green.
 - 2026-06-26 (claude): **Aether 18.0 — short-cut fusion (deforestation).** Added a from-scratch fusion
   pass in a new module `src/lang/fusion.ts`, run as the optimizer's Phase 0 (before β/inlining/SAT can
   rewrite the prelude combinators out of recognisable shape). 14 algebraic laws delete the intermediate

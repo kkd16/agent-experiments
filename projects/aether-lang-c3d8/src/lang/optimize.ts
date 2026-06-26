@@ -33,6 +33,11 @@
 //   • static-arg xform — a loop-invariant parameter of a recursive function is
 //                        lifted into a thin wrapper so the worker loop recurses on
 //                        only the dynamic arguments (Aether 17.0; Santos 1995)
+//   • float-in         — a pure, non-value `let` binding is *sunk* past a conditional
+//                        to the smallest subexpression that dominates all its uses, so
+//                        on paths that never reach the use the work is skipped — the
+//                        dual of GVN's hoist-to-share (Aether 19.0; Peyton Jones,
+//                        Partain & Santos, "Let-floating", ICFP 1996)
 //
 // `known-match` + `field projection` + `inline` are what make the abstraction the
 // front end adds — type-class dictionaries, `deriving`, `do`-notation, list
@@ -77,6 +82,9 @@ export interface OptimizeStats {
   /** one entry per recursive function the static-argument transformation lifted a
    *  loop-invariant argument out of (Aether 17.0) — for the Optimizer panel. */
   satTransforms: { name: string; arity: number; static: string[]; dynamic: string[]; calls: number }[]
+  /** one entry per pure, non-value `let` binding the float-in pass sank past a
+   *  conditional into the one branch that uses it (Aether 19.0) — for the panel. */
+  floatIns: { name: string; value: string; into: string }[]
   /** decision-tree compilation statistics (Aether 12.0) */
   dt: DtStats
   /** one entry per `match` rewritten into a decision tree (for the panel) */
@@ -163,6 +171,12 @@ let INLINES: { name: string; sites: number; size: number; escaped: boolean }[] =
 // panel. Reset per run.
 let SATS: { name: string; arity: number; static: string[]; dynamic: string[]; calls: number }[] = []
 
+// One entry per pure, non-value `let` binding the float-in pass sank past a
+// conditional this run (Aether 19.0). Module-level for the same reason as
+// `freshCounter` — optimization is synchronous and single-shot — and surfaced in
+// the Optimizer panel. Reset per run.
+let FLOATINS: { name: string; value: string; into: string }[] = []
+
 // Whether the multi-use call-site inliner is active. It melts *source-level*
 // abstraction, so it runs in the main optimization phase but is switched off for
 // the post-decision-tree cleanup fixpoint — that phase is reserved for copy-
@@ -191,6 +205,7 @@ export function optimizeCore(root: Expr): OptimizeResult {
   bodyCostMemo = new Map<string, number>()
   INLINES = []
   SATS = []
+  FLOATINS = []
   ALLOW_FN_INLINE = true
   const passes: Record<string, number> = {}
   const bump = (name: string): void => {
@@ -294,6 +309,7 @@ export function optimizeCore(root: Expr): OptimizeResult {
       gvnHoists,
       inlinedFns: INLINES,
       satTransforms: SATS,
+      floatIns: FLOATINS,
       dt,
       decisionTrees,
       termination: TERMINATION,
@@ -529,6 +545,19 @@ function reduceLet(e: Extract<Expr, { kind: 'let' }>, bump: Bump): Expr | null {
   ) {
     const inlined = inlineCallSites(e.name, e.value, e.body, e.span, bump)
     if (inlined) return inlined
+  }
+
+  // Float-in (Aether 19.0): sink a pure, *non-value* binding past a conditional
+  // into the one branch that uses it, so the other branches skip the work. Tried
+  // after the inliners (a value/atom is copied or dropped, never sunk) and gated on
+  // the move crossing a conditional, so every float-in is a strict potential win.
+  if (isPure(e.value) && !isValue(e.value)) {
+    const sunk = sinkBinding(e.name, e.value, freeVars(e.value), e.body)
+    if (sunk && sunk.crossed) {
+      bump('float-in')
+      FLOATINS.push({ name: e.name, value: truncate(unparse(e.value), 40), into: sunk.landedIn })
+      return cloneExpr(sunk.expr)
+    }
   }
 
   return null
@@ -809,6 +838,91 @@ function staticArgumentTransform(
   })
   // Fresh identities everywhere — later identity-keyed passes (CSE/GVN) stay sound.
   return cloneExpr({ ...e, recursive: false, value: wrapper, body: e.body })
+}
+
+// ---------------------------------------------------------------------------
+// Float-in (let-floating inward) — Aether 19.0
+// ---------------------------------------------------------------------------
+//
+// The dual of the 14.0 global value-numbering pass. GVN floats a pure expression
+// *up* to a dominating binder so it is computed once and *shared* by the ≥ 2
+// guaranteed evaluations below it (steps fall: no recomputation). Float-in floats
+// a pure binding *down* — to the smallest subexpression of its body that dominates
+// all of its uses — so when that subexpression sits behind a conditional, every
+// run that takes the *other* branch skips the binding's work entirely (steps fall:
+// no speculation). Together they place each pure `let` at exactly the scope its
+// uses demand: no higher (which would speculate), no lower (which, past a `λ`,
+// would recompute).
+//
+// Classic motivation (Peyton Jones, Partain & Santos, "Let-floating: moving
+// bindings to give faster programs", ICFP 1996):
+//
+//     let h = <expensive, pure> in       =>     if c then (let h = <expensive> in h + h)
+//     if c then h + h else 0                    else 0
+//
+// In a *strict* language the left form always evaluates `<expensive>`; the right
+// only evaluates it when `c` is true. The win is real and the rewrite emits
+// ordinary core, so the VM, JS and WASM backends compile it unchanged and the
+// byte-for-byte equivalence checks re-prove the answer never moved.
+//
+// Soundness & the never-increase-steps invariant (all conservative):
+//   • only a **pure** binding moves (`isPure`): it has no observable effect and
+//     terminates, so delaying or skipping its evaluation is invisible in a strict
+//     language — no effect is lost, no divergence introduced;
+//   • the binding is sunk only through positions evaluated **at most once** per
+//     evaluation of the host (`if`/`match` arms & guards, `&&`/`||` right operands,
+//     `let`/`seq` sub-positions — every child `scopedChildren` exposes) — it is
+//     **never** pushed inside a `λ` body, whose work would multiply by call count;
+//   • it is sunk only to a child that is the **sole** user of the binder, so the
+//     value is never duplicated (it stays evaluated ≤ once on any path);
+//   • it is committed only when the sink path **crosses a conditional** — i.e. the
+//     binding ends up somewhere not guaranteed to run — so every float-in is a
+//     strict potential win and the pass never churns the AST for a no-op move;
+//   • capture is impossible: a step into a position that binds a free variable of
+//     the moved value (a `λ` param or `match` pattern var), or that re-binds the
+//     binder itself, ends the descent before that binder is crossed.
+// Hence steps(optimized) ≤ steps(unoptimized) by construction.
+
+/** Sink `let name = value in <host>` as deep into `host` as is legal, returning the
+ *  rewritten host, whether the chosen path crossed a conditionally-evaluated
+ *  position (the gate that makes the move a win), and the kind of construct the
+ *  binding finally landed inside. Returns null when the binding cannot move at
+ *  least one level deeper (its uses span >1 child, or the sole user is unenterable). */
+function sinkBinding(
+  name: string,
+  value: Expr,
+  valueFv: Set<string>,
+  host: Expr,
+): { expr: Expr; crossed: boolean; landedIn: string } | null {
+  // Never push a binding inside a `λ` body: it would be re-evaluated per call.
+  if (host.kind === 'lambda') return null
+  const kids = scopedChildren(host, true, new Set())
+  // The binder must be free in exactly one child (its sole dominated user).
+  let idx = -1
+  for (let i = 0; i < kids.length; i++) {
+    if (freeVars(kids[i].child).has(name)) {
+      if (idx >= 0) return null // used in two siblings — `host` itself is the dominator
+      idx = i
+    }
+  }
+  if (idx < 0) return null
+  const p = kids[idx]
+  if (p.bound.has(name)) return null // the sole user re-binds `name` (shadow)
+  for (const fv of valueFv) if (p.bound.has(fv)) return null // would capture a free var
+  const deeper = sinkBinding(name, value, valueFv, p.child)
+  const newChild: Expr = deeper
+    ? deeper.expr
+    : { kind: 'let', name, value, body: p.child, recursive: false, span: value.span }
+  const crossed = (deeper?.crossed ?? false) || !p.guaranteed
+  const landedIn = deeper ? deeper.landedIn : host.kind
+  return { expr: replaceScopedChild(host, idx, newChild), crossed, landedIn }
+}
+
+/** Rebuild `host` with its `idx`-th scoped child (in `scopedChildren` order, which
+ *  `mapChildrenScoped` walks identically) replaced by `repl`. */
+function replaceScopedChild(host: Expr, idx: number, repl: Expr): Expr {
+  let i = 0
+  return mapChildrenScoped(host, new Set(), (child) => (i++ === idx ? repl : child))
 }
 
 function reduceLetrec(e: Extract<Expr, { kind: 'letrec' }>, bump: Bump): Expr | null {
