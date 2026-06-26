@@ -8,6 +8,8 @@ import { unrollLoops } from './unroll';
 import { unswitchLoops } from './unswitch';
 import { sinkCode } from './sink';
 import { hoistCode } from './hoist';
+import { crossJump } from './crossjump';
+import { correlatedFold } from './correlate';
 import { partialUnroll } from './partial-unroll';
 import { divRemByConst } from './divrem';
 import { vectorize } from './vectorize';
@@ -188,6 +190,17 @@ function evalICmp64(sub: string, a: bigint, b: bigint): number {
 }
 
 const C = (ty: IRType, num: ConstNum): Operand => ({ tag: 'const', ty, num: ty === 'i32' ? i32(num as number) : num });
+
+// Fold a pure integer binary or comparison from constant operands, reusing SCCP's
+// exact-wasm-semantics evaluators (i32 wraparound, i64 BigInt, `MIN/-1` → null).
+// `opTy` is the *operand* type (i32/i64); an `icmp` always yields an i32 0/1.
+// Returns null when the op can't be folded (e.g. a `div_s` by zero). Shared with
+// jump threading so it folds a branch condition per-edge the same way SCCP would.
+export function foldIntBinCmp(kind: 'ibin' | 'icmp', sub: string, opTy: IRType, a: ConstNum, b: ConstNum): ConstNum | null {
+  const i64 = opTy === 'i64';
+  if (kind === 'ibin') return i64 ? evalIBin64(sub, a as bigint, b as bigint) : evalIBin(sub, a as number, b as number);
+  return i64 ? evalICmp64(sub, a as bigint, b as bigint) : evalICmp(sub, a as number, b as number);
+}
 
 // =====================================================================
 // SCCP — Sparse Conditional Constant Propagation
@@ -912,6 +925,10 @@ export function optimize(mod: IRModule, level: OptLevel, snapshots = false): Opt
     record('mem-opt' + suffix, memOpt);
     if (level >= 2) record('reassociate' + suffix, reassociate);
     if (level >= 2) record('gvn/cse' + suffix, gvn);
+    // Correlated-branch folding decides a branch whose condition a dominating branch
+    // already tested (the same SSA value, post-GVN) — a runtime branch SCCP can't fold.
+    // Runs right after GVN/CSE has unified the two identical conditions to one value.
+    if (level >= 2) record('correlated-fold' + suffix, correlatedFold);
     if (level >= 2) record('strength-reduce-iv' + suffix, osr);
     record('algebraic-simplify' + suffix, algebraic);
     if (level >= 2) record('licm' + suffix, licm);
@@ -923,6 +940,12 @@ export function optimize(mod: IRModule, level: OptLevel, snapshots = false): Opt
     // same pure value, pull one copy up above the branch (GVN can't — neither arm
     // dominates the other). Runs right after sink so the two are adjacent.
     if (level >= 2) record('hoist' + suffix, hoistCode);
+    // Cross-jumping is hoisting's bottom dual: when every predecessor of a merge
+    // ends in the same instruction tail, keep one shared copy at the merge's front
+    // and drop the per-predecessor copies (side-effecting tails included, which
+    // hoisting can't move). Runs right after hoist so the code-motion trio (sink /
+    // hoist / cross-jump) is contiguous, and before DCE sweeps the collapsed φs.
+    if (level >= 2) record('cross-jump' + suffix, crossJump);
     record('dead-code-elim' + suffix, dce);
     // Jump threading folds per-edge-constant conditional merges (a materialized
     // boolean phi feeding a branch) into direct jumps; simplify-cfg then coalesces
@@ -945,6 +968,7 @@ export function optimize(mod: IRModule, level: OptLevel, snapshots = false): Opt
     record('strength-reduce-iv (post-unroll)', osr);
     record('licm (post-unroll)', licm);
     record('algebraic-simplify (post-unroll)', algebraic);
+    record('cross-jump (post-unroll)', crossJump);
     record('dead-code-elim (post-unroll)', dce);
     record('jump-thread (post-unroll)', jumpThread);
     record('simplify-cfg (post-unroll)', simplifyCFG);

@@ -595,6 +595,54 @@ fn main() {
 `,
   },
   {
+    id: 'branch-opt',
+    title: 'Branch & tail optimization',
+    blurb: 'Flip to -O2/-O3: a correlated guard folds, a flag-comparison branch threads, a shared tail merges.',
+    source: `// Three control-flow optimizations the mid-end runs, each visible in the
+// Optimizer lab's pass log at -O2/-O3 (the inputs are kept *runtime* via the
+// 'g' loop so SCCP can't just constant-fold the whole thing, and the in-arm
+// prints keep the branches from being flattened to a 'select' before these
+// path-sensitive passes get a turn):
+//
+//   * correlated-branch folding -- the inner 'if (x > 0)' is dominated by the
+//     outer one through its sole-predecessor true arm, so 'x > 0' is already
+//     known true there; the inner branch (and its dead else) fold away.
+//   * generalized jump threading -- 'flag' is one of two constants on each
+//     incoming edge, so the comparison 'flag > 1' over it is decided per-edge
+//     and the merge's branch is threaded into a direct jump.
+//   * cross-jumping / tail merging -- both arms of the last 'if' end in the
+//     same 'print(mode)'; one shared copy is kept at the merge instead of two.
+//
+// The reference interpreter, V8's WebAssembly and the from-scratch wasm VM are
+// proven to print identically at every optimization level.
+
+fn step(x: int, mode: int) -> int {
+  let s = x;
+  if (x > 0) {
+    s = s + mode;
+    if (x > 0) { print(7); s = s * 2; } else { print(-7); s = s - 1000; }
+  }
+  let flag = 0;
+  if (mode > 1) { flag = 5; }
+  if (flag > 1) { print(1); s = s + 1; } else { print(2); s = s - 1; }
+  let r = 0;
+  if (s > 10) { r = s + 100; print(mode); } else { r = s - 100; print(mode); }
+  return r;
+}
+
+fn main() {
+  // Build a runtime value so the per-call inputs aren't compile-time constants.
+  let g = 0;
+  for (let k = 0; k < 100; k = k + 1) { g = g + k * 5 - 2; }
+  for (let i = 0; i < 6; i = i + 1) {
+    let x = ((g + i) & 15) - 7;
+    let mode = (g - i) & 3;
+    print(step(x, mode));
+  }
+}
+`,
+  },
+  {
     id: 'text-toolkit-2',
     title: 'String library & str[]',
     blurb: 'split / join / trim / replace / parse_int and first-class arrays of strings.',

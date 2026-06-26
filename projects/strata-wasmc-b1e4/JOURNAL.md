@@ -32,11 +32,16 @@ reference interpreter at every optimization level.
   **if-conversion** (control-flow diamond → branchless `select`), **strength reduction**,
   **SROA** (escape analysis + scalar replacement of aggregates), **memory optimization**,
   **reassociation** (canonicalize integer affine trees → `Σ cᵢ·xᵢ + K`, and bitwise monoids),
-  dominator-scoped **GVN/CSE**, **operator strength reduction on induction variables (OSR)**,
+  dominator-scoped **GVN/CSE**, **correlated-branch folding** (decide a branch whose condition a
+  dominating branch already tested — the same SSA value, post-GVN — see `opt/correlate.ts`),
+  **operator strength reduction on induction variables (OSR)**,
   algebraic simplification, **LICM** (loop-invariant code
   motion), **code sinking** (a pure value used on only one branch arm pushed into it —
   partial dead-code elimination, see `opt/sink.ts`), **code hoisting** (a pure value computed in
   *both* arms pulled up above the branch — very-busy expressions, see `opt/hoist.ts`),
+  **cross-jumping / tail merging** (the bottom dual: when every predecessor of a merge — or both
+  arms before a `return` — ends in the *same* instruction tail, keep one shared copy and drop the
+  per-path ones; side-effecting tails included, which hoisting can't move, see `opt/crossjump.ts`),
   **DCE**, **CFG simplification**, CFG cleanup,
   and whole-module **dead-function elimination**, iterated to a fixed point.
 - `src/compiler/ir/loops.ts` — the **natural-loop forest** (headers, latches, bodies,
@@ -490,6 +495,206 @@ yet stored in arrays/structs/globals — extract their lanes for that.)
       238 corpus programs. Proven by the three-engine oracle (interp = wasm = VM)
       at -O0…-O3. **1096 → 1112 differential checks.** See the 2026-06-25 plan.
 
+## 2026-06-26 — shipped: a `branch-opt` showcase example (claude / claude-opus-4-8)
+
+A curated editor example (`src/examples.ts`, id `branch-opt`) that makes this session's three new
+control-flow passes visible in the Optimizer lab in one program: a correlated guard that folds, a
+flag-comparison branch that threads per-edge, and a shared `print` tail that cross-jumps. The inputs
+are kept runtime (so SCCP can't pre-fold) and the arms carry side effects (so if-conversion doesn't
+flatten the branches before the path-sensitive passes run). At -O3 it fires correlated-fold ×7,
+jump-thread ×14 and cross-jump ×7; proven identical across interpreter ≡ wasm ≡ VM at every level
+(battery + examples now **1144** triple-engine checks).
+
+## 2026-06-26 — plan + shipped: correlated-branch folding — decide a branch from a dominating test of the same value (claude / claude-opus-4-8)
+
+SCCP folds a branch only when its condition is constant on *every* path; jump threading folds it on a
+path where a phi (or now a cone) is constant. Neither touches the case where the condition is a plain
+*runtime* value that a **dominating branch already tested** — the guard-clause idiom
+`if (valid) { … if (valid) { … } }`, or a loop-invariant test re-checked inside the loop body. This
+session adds the third member of that family: correlated-branch folding.
+
+### Design — a dominating same-value test settles this one
+
+After GVN/CSE has unified the two textually-identical conditions to **one SSA value** `c`, a `condbr
+c, T, F` in block `B` is decided whenever some other `condbr c, DT, DF` has an arm that dominates `B`:
+the true arm dominating `B` means `c` was true on every path here, so `B` folds to `br T` (and the
+false arm symmetrically to `br F`). The pass runs right after GVN, only ever rewrites a terminator
+(it moves no computation), and reaches a *runtime* branch SCCP cannot.
+
+### The soundness subtlety the oracle caught — edge vs. block domination
+
+The first cut guarded only on *block* domination (`DT` dominates `B`) — and the triple-differential
+oracle immediately failed `jump-thread-shortcircuit` and `math-transcendentals` at -O2/-O3. The hole:
+if `DT` has another predecessor, control can enter `DT` (and thence `B`) *without* `c` being true, so
+block domination doesn't imply the c-true edge was taken. The fix is to require the taken arm to be
+entered **only** from `D` (`DT.preds == [D]`), so the *edge* `D → DT` — not merely the block —
+dominates `B`. With that, reaching `B` provably traversed the c-true edge, and since `c`'s sole SSA
+definition dominates `D` it is never re-evaluated in between (re-evaluation would force its def block
+strictly between `DT` and `B` while also dominating `D` — a contradiction). A textbook reminder that
+"dominated by the then-block" and "dominated by the then-*edge*" are different, and only the latter
+carries the condition's truth. The differential oracle turned a plausible-but-wrong pass into a
+correct one in one round.
+
+### Plan — the checklist for this session (all shipped)
+
+- [x] `opt/correlate.ts` — the correlated-branch folding pass: for each `condbr c`, search for a
+      dominating `condbr c` whose **sole-predecessor** arm dominates this block, and fold to that arm;
+      drop the dead edge's `pred = B` phi incomings; fixpoint with restart-on-mutation. Wired into
+      every -O2+ fixpoint round right after GVN/CSE (which unifies the conditions), as
+      `correlated-fold` in the pass log.
+- [x] `src/compiler/correlateProbe.ts` + `tools/_correlateentry.js` + `tools/check-correlate.mjs` — an
+      activity probe and a 240-program seeded differential fuzzer over the nested-predicate shape.
+      **8/8 activity checks** (fires on a nested true arm, a nested else arm decided *false*, and a
+      loop-invariant in-body re-test; declines on two *unrelated* conditions) and **960/960 fuzz
+      checks** (correlation fired in 480/480 of the -O2/-O3 compiles), interpreter ≡ wasm ≡ VM.
+- [x] Two adversarial battery programs (`correlated-branch-nested`, `correlated-loop-invariant`)
+      covering then/else nesting and a loop-invariant in-body re-test. Battery 243 → 245 programs;
+      **1132 → 1140** triple-engine checks.
+- [x] Measured impact (offline, at -O3 over the example+battery corpus): correlation fires on 6
+      programs / 20 branches, and each fold cascades — the dead arm and its phis vanish, so the
+      curated firing programs shrink dramatically (e.g. 56 → 7 IR instructions once the redundant
+      in-loop guard and its successors collapse).
+
+## 2026-06-26 — plan + shipped: generalized jump threading — fold a condition *cone* over a flag phi per-edge (claude / claude-opus-4-8)
+
+The 2026-06-25 threader could decide a branch only when its condition `c` was *literally one of the
+merge block's phis* carrying a constant on some edge. But the common boolean idiom puts an operation
+*between* the phi and the branch — `if (flag == 0) …`, `if ((mask & 1) != 0) …`, `if (hot - 1 > 0)
+…` — where `c` is a *comparison or arithmetic over* a per-edge-constant value. SCCP can't fold those
+(the flag is a meet of two constants, so it sees `c` as unknown), and the bare-phi threader declined
+(the merge block now has an instruction). This session generalizes the threader to fold a whole
+**condition cone** per-edge. It was the journal's #1 listed control-flow follow-up.
+
+### Design — the condition is a foldable expression cone, not just a phi
+
+The threader now accepts a merge block `B` whose instructions form a pure **foldable cone**: every
+instruction is an `ibin`/`icmp` whose operands are constants, `B`'s own phis, or earlier cone
+results, and the branch condition `c` names a phi *or* a cone result. On the edge from a predecessor
+`P`, it seeds each phi with its (constant) `P`-incoming and evaluates the cone in program order —
+reusing **SCCP's exact-wasm-semantics evaluators** (`foldIntBinCmp`, newly shared from `optimize.ts`:
+i32 wraparound, i64 BigInt, `MIN/-1` → null) — to obtain `c`'s value, hence the taken successor. The
+bare-phi case is exactly the empty cone, so the previous behaviour is preserved verbatim — the
+generalization only *adds* foldable-cone edges, never removes a phi edge.
+
+### SSA safety — the cone may not escape
+
+The safety guard is tightened in lockstep: `B` may define values only through its phis and its cone
+instructions; each such value may be used *only* by `B`'s own cone, by `B`'s terminator, or — **for a
+phi result only** — as a `pred = B` incoming in a successor. A cone result may never appear outside
+`B` (it cannot be materialized on a threaded edge), and no instruction anywhere else may read a `B`
+value. When any guard is unmet the pass declines, so the triple-differential oracle (interpreter ≡
+V8 wasm ≡ from-scratch VM) proves the rewiring sound at every opt level.
+
+### Plan — the checklist for this session (all shipped)
+
+- [x] `opt/optimize.ts` — export `foldIntBinCmp`, a per-edge integer bin/cmp folder built on SCCP's
+      own evaluators, so threading and SCCP fold a condition the same way (no second source of truth).
+- [x] `opt/thread.ts` — generalize `jumpThread`: cone validation (all insts pure foldable `ibin`/`icmp`
+      over consts/phis/earlier results), a per-edge cone evaluator, and the tightened SSA-escape guard.
+      The bare-phi path is the empty cone, so the 2026-06-25 battery still threads identically.
+- [x] `src/compiler/threadProbe.ts` + `tools/_threadentry.js` + `tools/check-thread.mjs` — the pass's
+      first dedicated headless tool (an activity probe + a 240-program seeded differential fuzzer over
+      the cone shape). **12/12 activity checks** (fires on comparison / arithmetic / two-level cones;
+      declines on a genuinely runtime condition) and **960/960 fuzz checks** (threading fired in 368
+      of the compiles), interpreter ≡ wasm ≡ VM.
+- [x] Two adversarial battery programs (`jump-thread-cone-cmp`, `jump-thread-cone-multi`) covering a
+      comparison cone, a bit-mask cone, a two-level cone, and a three-incoming flag phi. Battery
+      241 → 243 programs; **1124 → 1132** triple-engine checks.
+- [x] Measured impact (offline, at -O3 over the 281-program example+battery corpus): jump threading
+      now fires on **67 programs / 335 edges** — a strict superset of the bare-phi threader's reach,
+      since the cone case only adds edges. Found a subtle truth in testing: at -O2 a `for i in 0..8`
+      loop *unrolls and inlines* `run(i)` with constant `i`, so a "runtime" `if (n == 0)` legitimately
+      becomes per-edge foldable — the threader was right and the first negative test was naive.
+
+### Next (planned follow-ups for jump threading)
+
+- [ ] **`iunary` in the cone** once SCCP grows an `iunary` evaluator (boolean `not`/`eqz`, `neg`,
+      `clz`/`ctz`/`popcnt`) — today the cone is `ibin`/`icmp` only.
+- [ ] **Correlated-branch threading** — `if (x) …; if (x) …`: thread the second test from the
+      dominating value of the first, not just a per-edge phi constant (a dominator walk of the cone).
+- [ ] **Duplicable-tail threading** — when `B`'s cone result also escapes (feeds a `pred = B` successor
+      phi), clone the cone onto the threaded edge instead of declining.
+
+## 2026-06-26 — plan + shipped: cross-jumping / tail merging — the bottom dual of code hoisting (claude / claude-opus-4-8)
+
+Strata's code-motion suite had three of its four corners: **LICM** lifts loop invariants *out*,
+**sinking** pushes a one-arm value *down* into the arm that needs it, **hoisting** pulls a both-arms
+value *up* above the branch. The missing corner is the *bottom* dual of hoisting — **cross-jumping**
+(a.k.a. tail merging): where hoisting factors a redundant computation at the **start** of two arms,
+cross-jumping factors one at the **end**. The journal's 2026-06-25 control-flow backlog named it
+explicitly ("Cross-jumping / tail merging (the dual)"); this session ships it.
+
+### Design — move the shared tail to where every path already runs it, let the oracle police SSA
+
+The pass has two modes, both proven by precondition (it declines whenever a guard is unmet, so the
+triple-differential oracle — reference interpreter ≡ V8 wasm ≡ from-scratch VM — proves it never
+changes a result):
+
+- **Merge-block tail merging.** When a merge block `M` has ≥2 predecessors that *each* end in an
+  unconditional `br M`, and they share a common **instruction suffix**, that suffix runs once per
+  `M`-entry no matter which predecessor is taken — so one copy at the *front* of `M` is exactly
+  equivalent (loops included: `M` is entered once per `Pᵢ → M` traversal either way). The φ in `M`
+  that selected the per-predecessor tail results collapses to the single kept value. This is the
+  shape `if (c) { …; print(e) } else { …; print(e) } rest` — and crucially it merges
+  **side-effecting** tails (`print`/`store`/`vstore`/`gset`) that hoisting, being pure-only, can
+  never touch.
+- **Return-tail merging.** Two arms of a branch that each end in `ret` with the same returned value
+  and the same instruction tail are factored into one fresh shared exit block `R` (both arms `br R`;
+  `R` runs the tail once and returns). This `if (c) { …; return e } else { …; return e }` shape has
+  no common successor — a `ret` has none — so the merge-block scan can't reach it; the exit-side
+  mode does. It is *cleaner* in SSA: the arms have no successors, so no φ anywhere reads their tail
+  results, and the moved suffix travels intact into `R`.
+
+### Soundness — three preconditions make the suffix movable
+
+1. **Identical operands.** Two tail instructions match only when their operands are equal: the same
+   constant, the same SSA id defined *above every arm* (so it dominates the merge and is live at the
+   moved copy), or a matched earlier-suffix result. An operand defined *inside* an arm is rejected —
+   it would differ per path. (Identical SSA ids across siblings already imply a dominating
+   definition; the explicit guard makes the argument local.)
+2. **Mergeable opcodes only.** Pure values (a function of their operands — one evaluation is
+   identical, even a trapping `div_s`, which trapped identically on every path anyway) plus the
+   *write-only* effects `print`/`store`/`vstore`/`gset`. Ops that **read** mutable state —
+   `load`/`gget`/`call`/`callind` — are excluded (their result could differ between paths), and
+   `alloc` is excluded (each must stay a distinct address).
+3. **The merge φ collapses / no dangling use.** A φ over the per-arm tail results becomes uniform and
+   is replaced; any φ that touches a moved/deleted result without collapsing, or any stray use of a
+   deleted result outside the dropped suffix, makes the pass decline that site untouched.
+
+### Plan — the checklist for this session (all shipped)
+
+- [x] `opt/crossjump.ts` — the cross-jumping pass: longest-common-mergeable-suffix matching with an
+      operand-correspondence map, the merge-block mode (φ-collapse + dangling-use guard) and the
+      return-tail mode (fresh shared exit block), a fixpoint with restart-on-mutation. Wired into
+      every -O2+ fixpoint round right after `hoist` (so the code-motion quartet sink/hoist/cross-jump
+      is contiguous) and into the post-unroll cleanup; appears as `cross-jump` in the pass log.
+- [x] `src/compiler/crossjumpProbe.ts` + `tools/_crossjumpentry.js` + `tools/check-crossjump.mjs` — an
+      activity probe and a seeded differential fuzzer (240 random tail-merge programs × -O0…-O3).
+      **16/16 activity checks** (fires on merge-block + return tails across 2- and 3-way joins;
+      correctly *declines* on differing tails and arm-local operands) and **960/960 fuzz checks**
+      (cross-jump fired in 480/480 of the -O2/-O3 compiles), interpreter ≡ wasm ≡ VM.
+- [x] Three adversarial battery programs (`cross-jump-print-tail`, `cross-jump-three-way`,
+      `cross-jump-in-loop`) covering the print tail, a 3-way `store`+`print` join, and a loop body
+      whose arms end identically. Battery 238 → 241 programs; **1112 → 1124** triple-engine checks.
+- [x] Measured impact (offline, at -O3 over the 281-program example+battery corpus): cross-jump fires
+      on 4 programs and merges 9 tail instructions. The number is deliberately honest — the corpus is
+      tail-light because **hoisting already lifts the leading pure redundancy**, so what remains for
+      cross-jumping is the side-effecting and return tails its dual can't reach. Its real value is
+      *completeness*: the code-motion quartet now closes all four corners.
+
+### Next (planned follow-ups for cross-jumping)
+
+- [ ] **Factor a partial-subset common tail into a new shared block** (merge-block mode currently
+      requires *all* predecessors to share the suffix; when only a subset do, redirect that subset
+      through a fresh block instead of declining).
+- [ ] **Cross-jump through a chain of single-pred forwarders** so a tail split across a forwarding
+      block still merges, composing with `simplify-cfg`.
+- [ ] **Chained pure-tail matching** (`t = m·k; ret t`): today bottom-up matching needs the operand's
+      definition matched first, which only happens once hoisting has lifted the pure chain — a
+      two-pass / deferred-correspondence matcher would merge them directly.
+- [ ] **A tail-merge metric in the Optimizer lab** — surface "tails merged / exit blocks shared" next
+      to the per-pass change counts.
+
 ## 2026-06-25 — plan + shipped: jump threading + a structurizer nesting fix for chained sibling merges (claude / claude-opus-4-8)
 
 Strata's mid-end was deep on *value* optimization (SCCP, GVN, reassociation, OSR) but its
@@ -552,19 +757,28 @@ elsewhere in the pipeline.
 
 ### Next (planned follow-ups for jump threading & control-flow)
 
-- [ ] **Thread through a single pure op over a phi** — generalize the condition from "is a phi" to
+- [x] **Thread through a single pure op over a phi** — generalize the condition from "is a phi" to
       "is a pure `iunary`/`icmp`/`ibin` whose operands are constants or `B`-phis", folding it
       per-edge (the boolean-`not` and `cmp-against-constant` cases SCCP can't reach path-sensitively).
+      **Shipped 2026-06-26** as a foldable *cone* (`icmp`/`ibin` over phis + consts, any depth) — see
+      the 2026-06-26 threading entry. (`iunary` deferred: it has no SCCP evaluator yet.)
 - [ ] **Thread the duplicable-tail case** — when `B` has a *small pure* instruction tail (not just
       phis), clone it onto the threaded edge instead of declining, so threading reaches blocks that
       compute a cheap value before branching.
-- [ ] **Correlated-branch threading** — `if (x) …; if (x) …`: thread the second test using the
+- [x] **Correlated-branch threading** — `if (x) …; if (x) …`: thread the second test using the
       dominating value of the first, not just a phi constant (a dominator-walk of the condition).
+      **Shipped 2026-06-26** as correlated-branch *folding* (`opt/correlate.ts`) for the *dominating*
+      case — when a sole-predecessor arm of an earlier `condbr c` dominates a later `condbr c`, the
+      outcome is known and the branch folds. The *sequential* case (`if(x){} if(x){}`, where the arms
+      rejoin before the second test) still needs tail-duplication and remains open. See the
+      2026-06-26 entry.
 - [ ] **Run a light thread+simplify-cfg pass *before* if-conversion** so a branch that threading can
       delete outright isn't first turned into a (more expensive, speculative) `select`.
-- [ ] **Cross-jumping / tail merging** (the dual): when several predecessors of a join end in an
+- [x] **Cross-jumping / tail merging** (the dual): when several predecessors of a join end in an
       identical side-effecting tail with operands available at a common dominator, sink one copy into
-      a shared block — a code-size win that complements threading's path-splitting.
+      a shared block — a code-size win that complements threading's path-splitting. **Shipped
+      2026-06-26** (`opt/crossjump.ts`), with a second exit-side mode that merges identical
+      `return` tails into one shared exit block. See the 2026-06-26 entry.
 - [ ] **Jump-threading metric in the Optimizer lab** — surface "edges threaded / merges deleted"
       next to the existing per-pass change counts, and a before/after CFG diff in the CFG view.
 - [ ] **Hoist past / sink into chains of single-pred blocks** (already noted below) now compose with

@@ -2823,4 +2823,105 @@ fn run(n: int) -> void {
 }
 fn main(){ run(3); run(8); }`,
   },
+  {
+    // Generalized jump threading — the branch condition is a *cone* (a comparison /
+    // arithmetic) over a per-edge-constant flag phi, not the phi itself. The flag is
+    // a meet of two constants, so SCCP sees it as unknown and can't fold `flag == 0`;
+    // but on each incoming edge the flag is a constant, so the threader folds the cone
+    // per-edge and routes the branch directly. The `print`s keep the arms unspeculable.
+    name: 'jump-thread-cone-cmp',
+    source: `fn run(n: int) -> void {
+  let flag = 0;
+  if (n > 5) { flag = 2; print(n); }
+  if (flag == 0) { print(10); } else { print(20); }
+  if ((flag & 1) == 0) { print(30); } else { print(40); }
+}
+fn main(){ for (let i = 0; i < 12; i = i + 1) { run((i * 7) % 11); } }`,
+  },
+  {
+    // A two-level cone (`(flag - 1) > 0`) over a three-way flag merge, re-tested
+    // twice. Exercises chained cone instructions and a phi with three incomings.
+    name: 'jump-thread-cone-multi',
+    source: `fn run(n: int) -> void {
+  let flag = 1;
+  if (n % 3 == 0) { flag = 5; print(n); } else { if (n % 3 == 1) { flag = 8; print(-n); } }
+  if ((flag - 1) > 0) { print(100); } else { print(200); }
+  if ((flag * 2 - 3) > 4) { print(300); } else { print(400); }
+}
+fn main(){ for (let i = 0; i < 9; i = i + 1) { run(i); } }`,
+  },
+  {
+    // Correlated-branch folding — the same runtime predicate is tested twice, the
+    // second nested inside the first's arm, so a dominating branch already settled
+    // it. GVN unifies the two identical comparisons to one value; correlation folds
+    // the inner branch (true inside the then-arm, false inside the else-arm). The
+    // printed values prove the folded-away arm was the unreachable one.
+    name: 'correlated-branch-nested',
+    source: `fn run(a: int, b: int) -> int {
+  let s = a + b;
+  if (a > b) { s = s * 2; if (a > b) { print(a); s = s + 1; } else { print(-1); s = s - 100; } }
+  else { s = s - 5; if (a > b) { print(999); s = s + 100; } else { print(b); s = s - 1; } }
+  return s;
+}
+fn main(){ for (let i = 0; i < 8; i = i + 1) { print(run((i * 5) % 9, 3)); } }`,
+  },
+  {
+    // A loop-invariant condition re-tested in the loop body: the header's true arm
+    // dominates the body, so the in-body `if (flag > 0)` is known true throughout —
+    // correlation strips it without unswitching the loop.
+    name: 'correlated-loop-invariant',
+    source: `fn run(flag: int, n: int) -> int {
+  let s = 0;
+  for (let i = 0; i < n; i = i + 1) {
+    if (flag > 0) { s = s + i; if (flag > 0) { print(i); s = s + 2; } else { print(-1); s = s - 50; } }
+  }
+  return s;
+}
+fn main(){ print(run(1, 6)); print(run(0, 6)); print(run(3, 4)); }`,
+  },
+  {
+    // Cross-jumping / tail merging — the bottom dual of code hoisting. Both arms of
+    // the branch END with the same side-effecting tail (`print` of a value defined
+    // before the branch); cross-jumping keeps one copy at the merge's front and
+    // drops the per-arm copies. Hoisting can't move a `print`, GVN can't (neither
+    // arm dominates the other), and if-conversion declines (a `print` is
+    // unspeculable) — so the shared tail survives to the tail merger. The exact
+    // print order is part of the differential check.
+    name: 'cross-jump-print-tail',
+    source: `fn f(a: int, b: int, cond: int) -> int {
+  let s = a + b;
+  if (cond > 0) { s = s + a; print(a * b - 7); } else { s = s - b; print(a * b - 7); }
+  return s;
+}
+fn main(){ for (let i = -2; i <= 3; i = i + 1) { print(f(i, i * 2 - 1, i % 2)); } }`,
+  },
+  {
+    // A three-way merge: every path into the join ends with the same tail (a `store`
+    // into an array, then a `print`). Cross-jumping merges across all three
+    // predecessors at once. The store + the later read prove the memory effect lands
+    // exactly once and in order.
+    name: 'cross-jump-three-way',
+    source: `fn classify(a: int, b: int) -> int {
+  let arr = int_array(4);
+  if (a > b) { arr[0] = a; print(a + b); }
+  else { if (a == b) { arr[1] = a; print(a + b); } else { arr[2] = b; print(a + b); } }
+  return arr[0] + arr[1] + arr[2];
+}
+fn main(){
+  for (let i = 0; i < 4; i = i + 1) { for (let j = 0; j < 3; j = j + 1) { print(classify(i, j)); } }
+}`,
+  },
+  {
+    // A loop whose body branches and both arms end identically: cross-jumping moves
+    // the shared tail to the loop's join, which runs once per iteration either way.
+    // A regression guard that tail merging respects loop-entry counts.
+    name: 'cross-jump-in-loop',
+    source: `fn main(){
+  let acc = 0;
+  for (let i = 0; i < 12; i = i + 1) {
+    if (i % 3 == 0) { acc = acc + i; print(i * i + 1); } else { acc = acc - 1; print(i * i + 1); }
+  }
+  print(acc);
+}`,
+  },
 ];
