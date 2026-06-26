@@ -6,11 +6,36 @@
 // false alarm on legitimate transient states (e.g. a partitioned stale leader,
 // or an uncommitted entry that will later be overwritten). Crashed nodes are not
 // acting as leaders, so leader-related checks consider only live nodes.
+//
+// All comparisons are by *absolute* log index, so they stay correct once nodes
+// compact their logs into snapshots at independent points (entry arrays then have
+// different offsets). Two extra invariants guard the two newer features:
+// Snapshot Agreement (compacted prefixes never disagree) and Single-Configuration
+// (a membership change never leaves the cluster believing two final configs).
 import type { InvariantResult, NodeView } from '../../sim/types';
-import type { RaftLogEntry, RaftState } from './types';
+import type { ClusterConfig, RaftLogEntry, RaftState } from './types';
 
 const sameEntry = (a: RaftLogEntry, b: RaftLogEntry) =>
   a.term === b.term && JSON.stringify(a.cmd) === JSON.stringify(b.cmd);
+
+const lastIdx = (s: RaftState) => s.snapshotIndex + s.log.length;
+const entryAt = (s: RaftState, index: number): RaftLogEntry | undefined => {
+  const i = index - s.snapshotIndex - 1;
+  return i >= 0 && i < s.log.length ? s.log[i] : undefined;
+};
+const termAt = (s: RaftState, index: number): number => {
+  if (index === s.snapshotIndex) return s.snapshotTerm;
+  return entryAt(s, index)?.term ?? -1;
+};
+const configAsOf = (s: RaftState, upto: number): ClusterConfig => {
+  for (let i = s.log.length - 1; i >= 0; i--) {
+    const absIdx = s.snapshotIndex + i + 1;
+    if (absIdx > upto) continue;
+    const c = s.log[i].cmd;
+    if (c.op === 'config') return { old: c.old, next: c.next };
+  }
+  return s.snapshotIndex > 0 ? s.snapshotConfig : s.bootstrap;
+};
 
 export function raftInvariants(nodes: ReadonlyArray<NodeView<RaftState>>): InvariantResult[] {
   const results: InvariantResult[] = [];
@@ -38,14 +63,18 @@ export function raftInvariants(nodes: ReadonlyArray<NodeView<RaftState>>): Invar
     let violation = '';
     outer: for (let a = 0; a < states.length && !violation; a++) {
       for (let b = a + 1; b < states.length; b++) {
-        const la = states[a].log;
-        const lb = states[b].log;
-        const m = Math.min(la.length, lb.length);
+        const sa = states[a];
+        const sb = states[b];
+        const lo = Math.max(sa.snapshotIndex, sb.snapshotIndex) + 1;
+        const hi = Math.min(lastIdx(sa), lastIdx(sb));
         let diverged = false;
-        for (let i = 0; i < m; i++) {
-          if (!sameEntry(la[i], lb[i])) diverged = true;
-          else if (diverged && la[i].term === lb[i].term) {
-            violation = `nodes ${nodes[a].id}/${nodes[b].id} share term ${la[i].term} at index ${i + 1} but diverge earlier`;
+        for (let idx = lo; idx <= hi; idx++) {
+          const ea = entryAt(sa, idx);
+          const eb = entryAt(sb, idx);
+          if (!ea || !eb) break;
+          if (!sameEntry(ea, eb)) diverged = true;
+          else if (diverged && ea.term === eb.term) {
+            violation = `nodes ${nodes[a].id}/${nodes[b].id} share term ${ea.term} at index ${idx} but diverge earlier`;
             break outer;
           }
         }
@@ -63,10 +92,15 @@ export function raftInvariants(nodes: ReadonlyArray<NodeView<RaftState>>): Invar
     let violation = '';
     outer: for (let a = 0; a < states.length && !violation; a++) {
       for (let b = a + 1; b < states.length; b++) {
-        const commonCommitted = Math.min(states[a].commitIndex, states[b].commitIndex);
-        for (let i = 0; i < commonCommitted; i++) {
-          if (!sameEntry(states[a].log[i], states[b].log[i])) {
-            violation = `committed index ${i + 1} differs between ${nodes[a].id} and ${nodes[b].id}`;
+        const sa = states[a];
+        const sb = states[b];
+        const hi = Math.min(sa.commitIndex, sb.commitIndex);
+        const lo = Math.max(sa.snapshotIndex, sb.snapshotIndex) + 1;
+        for (let idx = lo; idx <= hi; idx++) {
+          const ea = entryAt(sa, idx);
+          const eb = entryAt(sb, idx);
+          if (ea && eb && !sameEntry(ea, eb)) {
+            violation = `committed index ${idx} differs between ${nodes[a].id} and ${nodes[b].id}`;
             break outer;
           }
         }
@@ -87,13 +121,14 @@ export function raftInvariants(nodes: ReadonlyArray<NodeView<RaftState>>): Invar
     let violation = '';
     if (top) {
       const maxCommitted = Math.max(0, ...states.map((s) => s.commitIndex));
-      for (let i = 0; i < maxCommitted; i++) {
-        const committedSomewhere = nodes.find((n) => n.state.commitIndex > i);
-        if (!committedSomewhere) continue;
-        const ref = committedSomewhere.state.log[i];
-        const own = top.state.log[i];
+      for (let idx = 1; idx <= maxCommitted; idx++) {
+        if (idx <= top.state.snapshotIndex) continue; // the leader holds it inside its snapshot
+        const holder = nodes.find((n) => n.state.commitIndex >= idx && entryAt(n.state, idx));
+        if (!holder) continue;
+        const ref = entryAt(holder.state, idx)!;
+        const own = entryAt(top.state, idx);
         if (!own || !sameEntry(own, ref)) {
-          violation = `leader ${top.id} (term ${top.state.currentTerm}) missing committed index ${i + 1}`;
+          violation = `leader ${top.id} (term ${top.state.currentTerm}) missing committed index ${idx}`;
           break;
         }
       }
@@ -102,6 +137,65 @@ export function raftInvariants(nodes: ReadonlyArray<NodeView<RaftState>>): Invar
       name: 'Leader Completeness',
       ok: !violation,
       detail: violation || 'the current leader contains all committed entries',
+    });
+  }
+
+  // 5. Snapshot Agreement — compacted prefixes never disagree. Any two nodes must
+  //    concur on the term at the lower of their two snapshot points, and identical
+  //    snapshot indices must carry identical term and state-machine contents.
+  {
+    let violation = '';
+    outer: for (let a = 0; a < states.length && !violation; a++) {
+      for (let b = a + 1; b < states.length; b++) {
+        const sa = states[a];
+        const sb = states[b];
+        const k = Math.min(sa.snapshotIndex, sb.snapshotIndex);
+        if (k > 0) {
+          const ta = sa.snapshotIndex === k ? sa.snapshotTerm : termAt(sa, k);
+          const tb = sb.snapshotIndex === k ? sb.snapshotTerm : termAt(sb, k);
+          if (ta >= 0 && tb >= 0 && ta !== tb) {
+            violation = `${nodes[a].id}/${nodes[b].id} disagree on term at snapshot index ${k}`;
+            break outer;
+          }
+        }
+        if (sa.snapshotIndex === sb.snapshotIndex && sa.snapshotIndex > 0) {
+          if (sa.snapshotTerm !== sb.snapshotTerm || JSON.stringify(sa.snapshotKv) !== JSON.stringify(sb.snapshotKv)) {
+            violation = `${nodes[a].id}/${nodes[b].id} snapshots at #${sa.snapshotIndex} differ`;
+            break outer;
+          }
+        }
+      }
+    }
+    results.push({
+      name: 'Snapshot Agreement',
+      ok: !violation,
+      detail: violation || 'compacted prefixes are identical wherever they overlap',
+    });
+  }
+
+  // 6. Configuration Agreement — a membership change is replicated through the log
+  //    like any other entry, so two nodes must agree on the active cluster
+  //    configuration at every index they have *both committed*. (Propagation lag —
+  //    one node already on Cnew while a slower one is still on Cold,new — is fine
+  //    and is NOT a violation; we only compare the shared committed prefix.)
+  {
+    const cfgKey = (c: ClusterConfig) => `${[...c.old].sort().join('')}${c.next ? '|' + [...c.next].sort().join('') : ''}`;
+    let violation = '';
+    outer: for (let a = 0; a < states.length && !violation; a++) {
+      for (let b = a + 1; b < states.length; b++) {
+        const k = Math.min(states[a].commitIndex, states[b].commitIndex);
+        const ca = configAsOf(states[a], k);
+        const cb = configAsOf(states[b], k);
+        if (cfgKey(ca) !== cfgKey(cb)) {
+          violation = `${nodes[a].id}/${nodes[b].id} disagree on the configuration committed at #${k}`;
+          break outer;
+        }
+      }
+    }
+    results.push({
+      name: 'Configuration Agreement',
+      ok: !violation,
+      detail: violation || 'all nodes agree on the configuration of every commonly-committed index',
     });
   }
 

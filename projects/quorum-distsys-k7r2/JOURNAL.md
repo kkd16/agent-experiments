@@ -61,16 +61,26 @@ src/lib/        small helpers (formatting, colors, geometry, self-test runner)
 - [x] Live safety invariants (election safety, log matching, leader completeness, SM safety)
 - [x] Network canvas: node ring, states, terms, animated in-flight messages
 - [x] Per-node inspector: log entries, term, votedFor, commit/applied index
-- [ ] Log compaction / snapshots (InstallSnapshot)
-- [ ] Cluster membership changes (joint consensus)
+- [x] Log compaction / snapshots (InstallSnapshot) — opt-in threshold; the leader ships a
+      snapshot to a follower whose nextIndex has fallen below the compacted prefix; the snapshot
+      is persistent (survives a crash and restores the state machine); a new **Snapshot
+      Agreement** invariant; UI badge + inspector section + dedicated self-tests
+- [x] Cluster membership changes (joint consensus) — Cold,new two-phase reconfiguration:
+      add/remove voters live; during the overlap the leader requires a majority in *both* the
+      old and new configurations, then commits Cnew; live **Configuration Agreement** safety
+      invariant; add/remove-server self-tests including a chaos run
 - [x] Pre-vote (opt-in toggle; stops a partitioned node inflating terms) — verified by self-test
-- [ ] Leader lease optimization
+- [x] Leader lease / linearizable ReadIndex reads — the leader confirms it still commands a
+      majority (a heartbeat round) before answering a read, so a partitioned ex-leader can't
+      serve a stale value; self-tested against a deposed leader
 
 ### CRDT lab
 - [x] G-Counter, PN-Counter, OR-Set, LWW-Register, RGA sequence
 - [x] Concurrent-edit playground with anti-entropy sync
 - [x] Convergence (strong eventual consistency) invariant
-- [ ] Collaborative text demo on top of RGA
+- [x] Collaborative text demo on top of RGA — a real multi-replica live text editor: type into
+      any replica, partition the cluster, edit concurrently on both sides, heal, and watch every
+      replica converge to the same document character-for-character (no central server)
 
 ### Gossip / SWIM lab
 - [x] Epidemic rumor spread with configurable fanout
@@ -89,7 +99,10 @@ src/lib/        small helpers (formatting, colors, geometry, self-test runner)
 - [x] Shared control bar (seed, speed, play/step/reset, scrub)
 - [x] Self-test panel surfacing kernel + protocol invariants
 - [x] Keyboard shortcuts (space/step/scrub/reset)
-- [ ] Deep-linkable scenarios / export a run as a seed+scenario URL
+- [x] Deep-linkable scenarios / export a run as a seed+scenario URL — the Raft lab encodes its
+      full configuration (seed, size, network, toggles, snapshot threshold) into the URL hash
+      and offers one-click "Copy link"; curated scenario presets set up classic situations
+      (split vote, leader crash, snapshot catch-up, partition heal) in a single click
 
 ## Session log
 
