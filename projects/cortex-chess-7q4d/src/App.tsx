@@ -25,6 +25,8 @@ import {
   formatClock,
   TIME_CONTROLS,
   nnueLoad,
+  defaultNnueBlob,
+  DEFAULT_NNUE_META,
   type NnueBlob,
   type NnueMeta,
 } from './engine'
@@ -112,6 +114,8 @@ export default function App() {
   const [nnueBlob, setNnueBlob] = useState<NnueBlob | null>(null)
   const [nnueMeta, setNnueMeta] = useState<NnueMeta | null>(null)
   const [nnueOn, setNnueOn] = useState(false)
+  // True when the active net is the shipped default (no net trained in the Lab yet).
+  const [nnueIsDefault, setNnueIsDefault] = useState(true)
   // UCI-style time control. When active, the engine manages its own clock
   // (base + increment) and decides how long to think per move. `engineClockRef`
   // is the authoritative value (read inside the search effect without retriggering
@@ -126,9 +130,18 @@ export default function App() {
   useEffect(() => {
     if (tab !== 'play') return
     nnueLoad().then((r) => {
-      setNnueBlob(r?.blob ?? null)
-      setNnueMeta(r?.meta ?? null)
-      if (!r) setNnueOn(false)
+      if (r) {
+        // A net the user trained in the Lab wins over the shipped default.
+        setNnueBlob(r.blob)
+        setNnueMeta(r.meta)
+        setNnueIsDefault(false)
+      } else {
+        // Ship a pre-trained default so "NNUE" works on a fresh load — no training
+        // required. (Lazily decoded once, then memoised by React state.)
+        setNnueBlob((prev) => prev ?? defaultNnueBlob())
+        setNnueMeta(DEFAULT_NNUE_META)
+        setNnueIsDefault(true)
+      }
     })
   }, [tab])
 
@@ -703,14 +716,23 @@ export default function App() {
                   <input type="checkbox" checked={bookOn} onChange={(e) => setBookOn(e.target.checked)} />
                   <span>Opening book</span>
                 </label>
-                <label className={`toggle${nnueBlob ? '' : ' disabled'}`} title={nnueBlob ? `Trained net: R²=${nnueMeta?.r2.toFixed(2)}` : 'Train and save a network in the Lab → NNUE tab first'}>
+                <label
+                  className={`toggle${nnueBlob ? '' : ' disabled'}`}
+                  title={
+                    nnueIsDefault
+                      ? `Shipped pre-trained net (R²=${nnueMeta?.r2.toFixed(2)}) — train your own in the Lab → NNUE tab`
+                      : `Your trained net: R²=${nnueMeta?.r2.toFixed(2)}`
+                  }
+                >
                   <input
                     type="checkbox"
                     checked={nnueOn}
                     disabled={!nnueBlob}
                     onChange={(e) => setNnueOn(e.target.checked)}
                   />
-                  <span>NNUE eval{nnueBlob && nnueMeta ? ` (R²=${nnueMeta.r2.toFixed(2)})` : ''}</span>
+                  <span>
+                    NNUE eval{nnueMeta ? ` (${nnueIsDefault ? 'shipped' : 'yours'} · R²=${nnueMeta.r2.toFixed(2)})` : ''}
+                  </span>
                 </label>
                 <label className="toggle">
                   <input
