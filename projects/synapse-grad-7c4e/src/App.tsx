@@ -12,13 +12,15 @@ import NodeLab from './components/node/NodeLab';
 import GANLab from './components/gan/GANLab';
 import BayesLab from './components/bayes/BayesLab';
 import MoELab from './components/moe/MoELab';
+import NCALab from './components/nca/NCALab';
 import './App.css';
 
-type Tab = 'playground' | 'vision' | 'transformer' | 'generative' | 'diffusion' | 'flows' | 'adversarial' | 'control' | 'graph' | 'kan' | 'node' | 'uncertainty' | 'moe';
+type Tab = 'playground' | 'vision' | 'transformer' | 'generative' | 'diffusion' | 'flows' | 'adversarial' | 'control' | 'graph' | 'kan' | 'node' | 'uncertainty' | 'moe' | 'morphogenesis';
 
-// Open the lab a shared link points at (#v= vision, #t= transformer, #g= generative, #d= diffusion, #f= flows, #a= GAN, #r= RL, #n= graph, #k= KAN, #o= Neural ODE, #u= uncertainty, #x= MoE).
+// Open the lab a shared link points at (#v= vision, #t= transformer, #g= generative, #d= diffusion, #f= flows, #a= GAN, #r= RL, #n= graph, #k= KAN, #o= Neural ODE, #u= uncertainty, #x= MoE, #m= NCA).
 function initialTab(): Tab {
   try {
+    if (/[#&]m=/.test(location.hash)) return 'morphogenesis';
     if (/[#&]x=/.test(location.hash)) return 'moe';
     if (/[#&]t=/.test(location.hash)) return 'transformer';
     if (/[#&]g=/.test(location.hash)) return 'generative';
@@ -90,6 +92,9 @@ export default function App() {
             <button className={tab === 'uncertainty' ? 'on' : ''} onClick={() => setTab('uncertainty')}>
               Uncertainty · Bayes
             </button>
+            <button className={tab === 'morphogenesis' ? 'on' : ''} onClick={() => setTab('morphogenesis')}>
+              Morphogenesis · NCA
+            </button>
           </nav>
           <div className="kbd-hint">
             <kbd>space</kbd> train · <kbd>s</kbd> step · <kbd>r</kbd> reset · <kbd>g</kbd> gradcheck
@@ -121,6 +126,8 @@ export default function App() {
         <KANLab />
       ) : tab === 'node' ? (
         <NodeLab />
+      ) : tab === 'morphogenesis' ? (
+        <NCALab />
       ) : (
         <BayesLab />
       )}

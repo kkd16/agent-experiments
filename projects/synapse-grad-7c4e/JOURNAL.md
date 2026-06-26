@@ -2,7 +2,7 @@
 
 A tiny **deep-learning framework that runs in your browser**, built from scratch on a real
 reverse-mode **tensor autograd engine** (no TensorFlow.js, no ONNX, no WebGL math libs — every
-gradient is hand-derived and the tape is hand-rolled). Twelve labs share the one engine:
+gradient is hand-derived and the tape is hand-rolled). Fourteen labs share the one engine:
 
 - **2-D Playground** — pick a dataset, sketch an MLP, and watch it learn in real time:
   decision boundary, per-neuron feature maps, loss/accuracy curves, and a live computation graph.
@@ -1443,6 +1443,113 @@ the panel.
 - [ ] **Shared + routed experts** (DeepSeek-style) and **fine-grained experts** (more, smaller).
 - [ ] **Noisy top-k gating** (Shazeer) and a **router-temperature** anneal.
 - [ ] A **dense-vs-sparse race** panel: same active-param budget, both curves on one chart.
+
+## v14 — Morphogenesis · Neural Cellular Automata (the fourteenth lab)
+
+**The idea.** Every other lab maps an input to an output in one shot. This one is different:
+a **Neural Cellular Automaton** (Mordvintsev et al., *Growing Neural Cellular Automata*, Distill
+2020) is a tiny update rule, *shared by every pixel*, applied over and over — and out of that
+purely local rule a global organism **grows from a single seed cell, holds its shape, and
+regrows the bits you cut off**. It is differentiable end-to-end, so we train the rule by
+**back-propagation through time** straight through the engine's own tape. It is the most
+visually alive thing the framework can do, and a genuine showcase of the autograd: the loss is
+on the *final* frame of a 20–40-step rollout, and the gradient flows back through all of them.
+
+### The model (all on the existing engine)
+
+- [x] **State** is a grid of cells, each a `C`-vector (default 12): channels 0–3 are visible
+  **RGBA** (premultiplied), 4…C are hidden "chemical" state the cell uses to coordinate. Stored
+  **cell-major** `[N·H·W, C]` so the per-cell update is plain `matmul`s.
+- [x] **Perception** — a new hand-derived autograd op `perceive(state) → [N·H·W, 3C]`: each cell
+  gathers a fixed **Sobel-x, Sobel-y and identity** filter bank over its 3×3 neighbourhood
+  (depthwise, zero-padded). Forward + vector-Jacobian backward written out and **gradchecked**.
+- [x] **Update rule** — a per-cell MLP `3C → hidden → C` (two 1×1 convs = `matmul`s; ReLU; the
+  **second layer zero-initialised** so the initial CA is the identity — the network starts by
+  doing nothing and learns to grow). Built from `matmul`/`add`/`relu` so backward is automatic.
+- [x] **Stochastic update** — a per-cell Bernoulli(`fireRate=0.5`) mask (cells update
+  asynchronously; breaks global sync). A frozen mask tensor ⇒ differentiable in the update.
+- [x] **Alive masking** — cells with no living (α>0.1) neighbour stay dead: `life = maxpool₃ₓ₃(α)
+  > 0.1`, applied pre **and** post update (Distill's rule), as a stop-gradient mask.
+- [x] **Loss** — a fused `ncaVisibleLoss`: MSE between the rollout's final RGBA and the target,
+  over the 4 visible channels only (backward seeds just those columns).
+
+### Training recipes (the three Distill stages, selectable)
+
+- [x] **Grow** — every batch starts from the seed; loss at exactly `T` steps. Learns to grow,
+  but the pattern then drifts apart if you keep stepping.
+- [x] **Persist** — a **sample pool**: each batch is drawn from a pool of past final states (the
+  highest-loss one replaced by a fresh seed), trained, and written back. Because batches now
+  contain already-grown organisms, the CA learns a *stable* fixed point — it holds its shape.
+- [x] **Regenerate** — Persist + **damage**: a few pool samples get a random disc erased before
+  the rollout, so the rule learns to *regrow*. This is the one that heals when you cut it.
+
+### Targets, seed, interaction
+
+- [x] **Procedural targets** (no bundled assets, per the repo ethos): SDF-rendered emoji-like
+  glyphs — heart, star, smiley, flower, droplet, ring, spiral, and the app's own **∇** — each an
+  anti-aliased premultiplied-RGBA bitmap at the grid resolution.
+- [x] **Seed**: one center cell with α and all hidden channels = 1, RGB = 0.
+- [x] **The headline**: a big canvas that **grows the organism live** from the seed (fast,
+  no-tape inference path so it's buttery even while training is heavy). **Click/drag to damage**
+  it and watch it heal. A channel inspector shows the hidden state and the alive mask.
+
+### Engine / wiring / proof
+
+- [x] **`engine/nca.ts`** — `perceive` op, `NCA` model (taped rollout + fast raw step/rollout),
+  `ncaVisibleLoss`, procedural targets, seed/damage/render helpers, export/import.
+- [x] **`useNCATrainer` hook** — pool management, damage, BPTT train step, Adam, loss history,
+  a live inference rollout for the demo, gradcheck, snapshot/load.
+- [x] **`components/nca/*`** — `Organism` (the live growing/heal canvas), `TargetPicker`,
+  `ChannelInspector`, `PoolStrip`, `NCAChart`, and an `NCAPanel` control surface.
+- [x] **Self-test** grows: `perceive` gradchecked against finite differences, and a **whole CA
+  rollout** gradchecked end-to-end through BPTT (frozen masks) — the proof the tape flows through
+  the simulation. Plus a value identity: the **zero-init update leaves the seed unchanged**.
+- [x] **Wire in** an app tab "Morphogenesis · NCA" + hash route `#m=`, and persistence via a new
+  slot prefix.
+- [x] **Validate** outside the browser first, then the full CI gate via
+  `node scripts/verify-project.mjs synapse-grad-7c4e`.
+
+### Open / future (NCA)
+
+- [ ] **Web-worker training** so heavy BPTT never blocks the live canvas.
+- [ ] **Rotation-invariant** perception (steerable filters) — grow at any angle.
+- [ ] **Texture NCA** (a VGG/Gram style loss) and **classification NCA** (cells vote a label).
+- [ ] **Variable target** (interpolate between two glyphs through the hidden state).
+
+## Session log (v14)
+
+- 2026-06-26 (claude, session 16): added the **fourteenth lab — Morphogenesis · Neural Cellular
+  Automata** (Mordvintsev et al., *Growing Neural Cellular Automata*, Distill 2020), the first
+  lab whose output isn't a one-shot map but an *emergent* one: a single local update rule, shared
+  by every cell, that **grows an organism from one seed cell, holds its shape, and regrows what
+  you cut off** — trained by **back-propagation through time** straight through the engine's tape.
+  New `engine/nca.ts`: one hand-derived autograd op **`perceive`** (a fixed depthwise Sobel-x /
+  Sobel-y / identity filter bank, `[N·H·W,C] → [N·H·W,3C]`, forward + VJP), a fused
+  **`ncaVisibleLoss`** (RGBA-only MSE), and the **`NCA`** model — a per-cell `3C→hidden→C` update
+  MLP (two 1×1 convs = matmuls, ReLU, **second layer zero-initialised** so the CA starts as the
+  identity and must *learn* to grow), a **stochastic fire mask** (async per-cell update) and the
+  Distill **alive mask** (`maxpool₃(α)>0.1`, pre ∧ post, stop-gradient). The whole multi-step
+  rollout runs on the tape so the loss on the *final* frame back-propagates through every step; a
+  separate allocation-light **`rawStep`** (no tape, machine-precision-identical to the taped step:
+  diff 5.6e-17) drives the live demo so it stays smooth even while heavy BPTT training runs.
+  Eight **procedural SDF targets** (heart, star, smiley, flower, droplet, ring, spiral, and the
+  app's own ∇) — no bundled assets. `useNCATrainer` implements the three Distill recipes — **Grow**
+  (seed every batch), **Persist** (a sample pool, worst-replaced-by-seed ⇒ a stable fixed point),
+  and **Regenerate** (pool + random-disc damage ⇒ self-healing) — with Adam, grad-clipping, a
+  log-axis loss curve, a live pool strip, gradcheck and save/load/share. `components/nca/*`: the
+  headline **`Organism`** (a 384px canvas that grows the creature live and lets you **drag to
+  wound it** and watch it heal, plus a hidden-channel inspector and a seed/grow/damage/speed
+  control surface), `TargetPicker`, `PoolStrip`, `NCAChart`, `TargetView`, and `NCAPanel`. Wired
+  an app tab "Morphogenesis · NCA" + hash route `#m=` + a `synapse:mslot:` save prefix. The engine
+  **self-test grew by three checks** — `nca-perceive` (1.0e-9), a **whole CA rollout gradchecked
+  end-to-end through BPTT** with frozen masks (6.2e-7 — the proof the tape flows through the
+  simulation), and a value identity that the **zero-init update leaves the seed unchanged** (0.0)
+  — **77 ops in all**, max rel err 6.5e-5. Validated outside the browser first (vite SSR bundle):
+  220 training steps drove the batch reconstruction MSE **0.178 → 0.036**, after which the rule
+  **grows the heart from a single seed** (MSE 0.022), **persists** it stably to 120 steps (0.028,
+  no blow-up), and after a disc is erased (MSE jumps to 0.090) **regrows it** back to 0.033. Full
+  CI gate (scope + conformance + lint + tsc + vite build) green via
+  `node scripts/verify-project.mjs synapse-grad-7c4e`.
 
 ## Session log (v13)
 
