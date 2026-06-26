@@ -13,6 +13,7 @@ import {
   crossingSequences,
   isSingletonAlphabet,
   liftDFA,
+  nthFromLast,
   simulate,
   twoWayToGraph,
   type TwoWayDFA,
@@ -247,10 +248,55 @@ export function TwoWayPanel({ dfa, notice }: { dfa: DFA | null; notice: string |
         2DFAs can be exponentially more succinct than any DFA.
       </p>
 
+      <Succinctness />
+
       <RoundTrip dfa={dfa} notice={notice} />
 
       <CrossCheck />
     </div>
+  );
+}
+
+// ── succinctness: the exponential gap, made concrete ────────────────────────
+
+function Succinctness() {
+  const [n, setN] = useState(3);
+  const data = useMemo(() => {
+    const machine = nthFromLast(n);
+    const built = construct(machine);
+    const minD = minimizeDFA(built.dfa);
+    return {
+      twoway: machine.states.length,
+      dfa: built.dfa.states.length,
+      min: minD.states.length,
+    };
+  }, [n]);
+
+  return (
+    <>
+      <h3 className="lang-h3">Succinctness — two-way can be exponentially smaller</h3>
+      <p className="muted-note">
+        The textbook witness (Sakoda–Sipser): <strong>“the n-th symbol from the right is <code>a</code>”</strong>. A
+        two-way machine sweeps to <code>⊣</code> and walks back exactly <strong>n</strong> cells — a handful of
+        states. But a one-way DFA cannot look ahead, so it must remember the last <strong>n</strong> symbols to know
+        which one will turn out n-th from the end: its minimal form has <strong>2ⁿ</strong> states. Slide n and watch
+        the constructed one-way DFA blow up while the 2DFA grows by one.
+      </p>
+      <label className="twoway-slider">
+        <span>n =</span>
+        <input type="range" min={1} max={7} value={n} onChange={(e) => setN(Number(e.target.value))} />
+        <strong>{n}</strong>
+      </label>
+      <div className="twoway-stats">
+        <Stat k="two-way states" v={data.twoway} accent />
+        <Stat k="constructed DFA" v={data.dfa} />
+        <Stat k={`minimal DFA (= 2^${n})`} v={data.min} />
+      </div>
+      <div className="graph-badge ok twoway-verdict">
+        2DFA grows like n+3 = {n + 3}; the minimal DFA grows like 2ⁿ = {2 ** n} — an exponential gap, verified live by
+        the studio’s own minimiser.
+      </div>
+    </>
   );
 }
 

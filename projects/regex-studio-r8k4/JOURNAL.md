@@ -220,9 +220,13 @@ shipped this session:
 - [x] **The lift** `liftDFA` — embed any one-way DFA as a right-only 2DFA, so `construct(liftDFA(D)) ≡ D`.
 - [x] **A gallery** — *first = last character* (out-and-back), *even-a-even-b by two passes* (a full leftward
       rewind sweep), *the cell left of the last b* (two reversals). Each genuinely uses two-way motion.
+- [x] **The succinctness witness** `nthFromLast(n)` (Sakoda–Sipser) — *"the n-th symbol from the right is `a`"*:
+      a 2DFA sweeps to `⊣` and walks back n cells in **n+3** states, while the minimal one-way DFA needs **2ⁿ**
+      states. A panel section sweeps n live and shows `construct`'s output blowing up against the 2DFA growing by
+      one — verified exact (2DFA = n+3, min DFA = 2ⁿ) for n = 1..6.
 - [x] **The differential fuzzer** (`twoway-verify.ts`) — random 2DFAs vs the head oracle on random words; the
       DFA→2DFA→DFA round trip equal via `compareDFAs`; the whole gallery checked **exhaustively** over every
-      word to a horizon. **212,000+ checks across 8 seeds, zero disagreements** (offline run).
+      word to a horizon. **228,000+ checks across 8 seeds, zero disagreements** (offline run).
 - [x] **The 2-way DFA panel + tab** (`components/TwoWayPanel.tsx`, wired into `App.tsx`) — gallery picker, an
       animated tape with the bouncing head and its live state, the crossing-sequence strip, the two-way graph
       (head lit), the constructed one-way DFA (DOT/SVG), a 2DFA/DFA/min-DFA state comparison, the pattern-DFA
