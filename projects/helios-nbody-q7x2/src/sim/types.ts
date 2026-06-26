@@ -83,7 +83,12 @@ export interface SimParams {
   collisionScale: number // capture-radius scale: R = collisionScale · mass^(1/3)
   gr: boolean // first post-Newtonian (1PN) relativistic correction about the dominant mass
   c: number // speed of light in simulation units — sets GR strength (ignored when gr is false)
+  forceSolver?: ForceSolver // gravity backend: Barnes–Hut tree (default) or the O(N) Fast Multipole Method
+  fmmOrder?: number // FMM expansion order p when forceSolver === 'fmm' (default 4)
 }
+
+/** Which gravity backend computes the pairwise forces. */
+export type ForceSolver = 'barnes-hut' | 'fmm'
 
 export interface Diagnostics {
   kinetic: number

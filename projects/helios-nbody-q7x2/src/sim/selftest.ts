@@ -9,6 +9,7 @@
 // and reproducible by anyone, in their own browser.
 
 import { Simulation } from './Simulation'
+import { fmmAccel, directAccel, forceError, kernelTaylor } from './fmm'
 import { orbitElements } from './orbit'
 import { jacobiConstant, omegaGradient, solveLagrangeNormalized } from './restricted3body'
 import { accelAndVariational, analyzeChaos } from './chaos'
@@ -1581,6 +1582,162 @@ export function runSelfTest(): SelfTestReport {
   // outside does not.
   {
     add('Agekyan–Anosova region D mask', inRegionD(0.2, 0.3) && !inRegionD(0.45, 0.85), 'inside ✓ / outside ✓')
+  }
+
+  // ---- Fast Multipole Method (fmm.ts) -------------------------------------
+  // A deterministic random plummer-ish blob, reused across the FMM cases.
+  const fmmSystem = (n: number, seed: number) => {
+    let s = seed >>> 0
+    const rng = () => ((s = (s * 1664525 + 1013904223) >>> 0), s / 0xffffffff)
+    const posX = new Float64Array(n)
+    const posY = new Float64Array(n)
+    const mass = new Float64Array(n)
+    for (let i = 0; i < n; i++) {
+      // Two overlapping clusters, so the tree is genuinely adaptive.
+      const off = i < n / 2 ? -60 : 60
+      posX[i] = off + (rng() - 0.5) * 160
+      posY[i] = (rng() - 0.5) * 160
+      mass[i] = 0.4 + rng() * 2
+    }
+    return { posX, posY, mass }
+  }
+
+  // 73 — The kernel's Taylor coefficients (the heart of every cell-to-cell
+  // transfer) reproduce the true derivatives of 1/√(r²+ε²). Checked against
+  // finite differences up to third order, where the stencil is still clean.
+  {
+    const eps2 = 0.7
+    const rx = 1.3
+    const ry = -0.8
+    const p = 3
+    const a = kernelTaylor(rx, ry, eps2, p)
+    const G = (x: number, y: number) => 1 / Math.sqrt(x * x + y * y + eps2)
+    const h = 1e-3
+    const fact = (k: number): number => (k <= 1 ? 1 : k * fact(k - 1))
+    type F2 = (x: number, y: number) => number
+    // Build the (i,j)-th derivative by nested central differences in x then y.
+    const ddx = (g: F2, ord: number): F2 => (ord === 0 ? g : ((gp) => (x: number, y: number) => (gp(x + h, y) - gp(x - h, y)) / (2 * h))(ddx(g, ord - 1)))
+    const ddy = (g: F2, ord: number): F2 => (ord === 0 ? g : ((gp) => (x: number, y: number) => (gp(x, y + h) - gp(x, y - h)) / (2 * h))(ddy(g, ord - 1)))
+    const finiteDiff = (i: number, j: number) => ddy(ddx(G, i), j)(rx, ry)
+    let worst = 0
+    for (let d = 0; d <= p; d++) {
+      for (let i = 0; i <= d; i++) {
+        const j = d - i
+        const raw = a[(d * (d + 1)) / 2 + i] * fact(i) * fact(j)
+        const fd = finiteDiff(i, j)
+        worst = Math.max(worst, Math.abs(raw - fd) / (Math.abs(fd) + 1e-9))
+      }
+    }
+    add('FMM — kernel Taylor recurrence vs finite differences', worst < 5e-3, `worst relative error = ${worst.toExponential(2)} (≤ 5e-3)`)
+  }
+
+  // 74 — The whole O(N) solve reproduces the O(N²) direct sum it accelerates.
+  // At order 6 / θ=0.35 the worst body is within ~1e-3 of the exact force.
+  {
+    const n = 900
+    const eps2 = 4
+    const g = 1
+    const { posX, posY, mass } = fmmSystem(n, 7)
+    const fx = new Float64Array(n)
+    const fy = new Float64Array(n)
+    const dx = new Float64Array(n)
+    const dy = new Float64Array(n)
+    fmmAccel(n, posX, posY, mass, { order: 6, theta: 0.35, eps2, g, ncrit: 16 }, fx, fy)
+    directAccel(n, posX, posY, mass, eps2, g, dx, dy)
+    const e = forceError(n, fx, fy, dx, dy)
+    add('FMM — O(N) force matches direct O(N²) sum', e.max < 5e-3 && e.rms < 5e-4, `max rel err = ${e.max.toExponential(2)}, rms = ${e.rms.toExponential(2)}`)
+  }
+
+  // 75 — Spectral convergence: raising the expansion order strictly sharpens the
+  // approximation. Order 6 must beat order 2 by orders of magnitude.
+  {
+    const n = 700
+    const eps2 = 4
+    const g = 1
+    const { posX, posY, mass } = fmmSystem(n, 99)
+    const dx = new Float64Array(n)
+    const dy = new Float64Array(n)
+    directAccel(n, posX, posY, mass, eps2, g, dx, dy)
+    const errAt = (p: number) => {
+      const fx = new Float64Array(n)
+      const fy = new Float64Array(n)
+      fmmAccel(n, posX, posY, mass, { order: p, theta: 0.4, eps2, g, ncrit: 16 }, fx, fy)
+      return forceError(n, fx, fy, dx, dy).rms
+    }
+    const e2 = errAt(2)
+    const e6 = errAt(6)
+    add('FMM — error falls geometrically with order', e6 < e2 / 30, `rms: p2 = ${e2.toExponential(2)} → p6 = ${e6.toExponential(2)} (${(e2 / e6).toFixed(0)}× sharper)`)
+  }
+
+  // 76 — Momentum is (almost) conserved: Σ mᵢ aᵢ vanishes to the expansion
+  // error, even though the FMM never forms forces symmetrically.
+  {
+    const n = 800
+    const eps2 = 4
+    const g = 1
+    const { posX, posY, mass } = fmmSystem(n, 31)
+    const fx = new Float64Array(n)
+    const fy = new Float64Array(n)
+    fmmAccel(n, posX, posY, mass, { order: 6, theta: 0.35, eps2, g, ncrit: 16 }, fx, fy)
+    let mx = 0
+    let my = 0
+    let scale = 0
+    for (let i = 0; i < n; i++) {
+      mx += mass[i] * fx[i]
+      my += mass[i] * fy[i]
+      scale += Math.abs(mass[i]) * Math.hypot(fx[i], fy[i])
+    }
+    const rel = Math.hypot(mx, my) / scale
+    add('FMM — conserves total momentum (Σ mᵢ aᵢ ≈ 0)', rel < 1e-4, `|Σ m a| / Σ|m a| = ${rel.toExponential(2)}`)
+  }
+
+  // 77 — It really is sub-quadratic: the actual cell-to-cell + near-field work
+  // is a small fraction of the N² a direct sum would pay.
+  {
+    const n = 4000
+    const eps2 = 4
+    const g = 1
+    const { posX, posY, mass } = fmmSystem(n, 5)
+    const fx = new Float64Array(n)
+    const fy = new Float64Array(n)
+    const stats = fmmAccel(n, posX, posY, mass, { order: 4, theta: 0.5, eps2, g, ncrit: 32 }, fx, fy)
+    const work = stats.m2l + stats.p2p
+    const ratio = work / (n * n)
+    add('FMM — interaction work is sub-quadratic', ratio < 0.25, `(M2L + P2P) / N² = ${(ratio * 100).toFixed(1)}% of the direct sum (N=${n})`)
+  }
+
+  // 78 — Driving the *live* integrator with the FMM solver conserves energy just
+  // as the Barnes–Hut backend does: the FMM is a genuine physics engine, not only
+  // a one-shot force probe. Same warm blob, same symplectic integrator, both
+  // backends — the FMM's energy drift tracks Barnes–Hut's to within a small factor.
+  {
+    const n = 300
+    let s = 2024 >>> 0
+    const rng = () => ((s = (s * 1664525 + 1013904223) >>> 0), s / 0xffffffff)
+    const posX = new Float64Array(n)
+    const posY = new Float64Array(n)
+    const velX = new Float64Array(n)
+    const velY = new Float64Array(n)
+    const mass = new Float64Array(n)
+    for (let i = 0; i < n; i++) {
+      const r = 30 * Math.sqrt(rng())
+      const th = rng() * 2 * Math.PI
+      posX[i] = r * Math.cos(th)
+      posY[i] = r * Math.sin(th)
+      velX[i] = (rng() - 0.5) * 0.6
+      velY[i] = (rng() - 0.5) * 0.6
+      mass[i] = 1
+    }
+    const makeSim = (solver: 'barnes-hut' | 'fmm') => {
+      const sim = new Simulation(512)
+      sim.setBodies(n, posX, posY, velX, velY, mass)
+      sim.params = { ...sim.params, g: 1, softening: 4, theta: 0.4, forceSolver: solver, fmmOrder: 6 }
+      return sim
+    }
+    const bhDrift = maxEnergyDrift(makeSim('barnes-hut'), 'velocity-verlet', 0.02, 300)
+    const fmmDrift = maxEnergyDrift(makeSim('fmm'), 'velocity-verlet', 0.02, 300)
+    const ok = Number.isFinite(fmmDrift) && fmmDrift < 5e-3 && fmmDrift < bhDrift * 5 + 1e-4
+    add('FMM — live solver conserves energy like Barnes–Hut', ok, `drift: FMM = ${fmmDrift.toExponential(2)}, Barnes–Hut = ${bhDrift.toExponential(2)} (300 steps)`)
   }
 
   const passed = cases.filter((c) => c.pass).length

@@ -6,6 +6,7 @@
 // angular momentum) are computed on demand to verify integrator quality.
 
 import { Quadtree } from './Quadtree'
+import { fmmAccel } from './fmm'
 import { grAccel } from './relativity'
 import type { Diagnostics, IntegratorId, SimParams } from './types'
 
@@ -170,13 +171,26 @@ export class Simulation {
     const n = this.count
     const { theta2, eps2 } = this.ensureTheta2eps2()
     const g = this.params.g
-    this.tree.build(n, posX, posY, this.mass)
-    const tree = this.tree
-    const stack = this.stack
-    for (let i = 0; i < n; i++) {
-      const [ax, ay] = tree.acceleration(posX[i], posY[i], i, theta2, eps2, g, stack)
-      outX[i] = ax
-      outY[i] = ay
+    if (this.params.forceSolver === 'fmm') {
+      // The O(N) Fast Multipole Method, using the same softened Newtonian kernel
+      // as the Barnes–Hut walk (see fmm.ts). θ here is reused as the FMM
+      // separation parameter, clamped into the convergent (0,1) range.
+      const theta = Math.min(0.9, Math.max(0.2, this.params.theta || 0.5))
+      const order = Math.max(1, Math.min(10, Math.round(this.params.fmmOrder ?? 4)))
+      fmmAccel(n, posX, posY, this.mass, { order, theta, eps2, g, ncrit: 32 }, outX, outY)
+      // Keep the Barnes–Hut tree current too — the renderer reuses it for the
+      // quadtree overlay, the potential heatmap, and camera auto-fit. The forces
+      // above come from the FMM; this build is only for visualisation.
+      this.tree.build(n, posX, posY, this.mass)
+    } else {
+      this.tree.build(n, posX, posY, this.mass)
+      const tree = this.tree
+      const stack = this.stack
+      for (let i = 0; i < n; i++) {
+        const [ax, ay] = tree.acceleration(posX[i], posY[i], i, theta2, eps2, g, stack)
+        outX[i] = ax
+        outY[i] = ay
+      }
     }
     if (this.params.gr) this.addRelativisticAccel(posX, posY, velX, velY, outX, outY)
   }

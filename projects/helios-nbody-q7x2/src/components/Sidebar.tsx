@@ -5,7 +5,7 @@ import type { ColorBy, RenderOptions } from '../render/Renderer'
 import type { ColorMapId } from '../render/colormap'
 import { COLORMAP_IDS } from '../render/colormap'
 import { INTEGRATORS } from '../sim/types'
-import type { IntegratorId, SimParams } from '../sim/types'
+import type { ForceSolver, IntegratorId, SimParams } from '../sim/types'
 import { PRESETS } from '../sim/presets'
 import type { ChaosResult } from '../sim/chaos'
 import type { FreqDiffusion, NaffResult } from '../sim/naff'
@@ -21,6 +21,7 @@ import { GravWavePanel } from './GravWavePanel'
 import { BlackHolePanel } from './BlackHolePanel'
 import { KerrPanel } from './KerrPanel'
 import { SymplecticPanel } from './SymplecticPanel'
+import { FmmPanel } from './FmmPanel'
 import { Section, Segmented, Select, Slider, Toggle } from './primitives'
 
 export interface SidebarProps {
@@ -172,6 +173,27 @@ export function Sidebar(p: SidebarProps) {
           format={(v) => v.toFixed(2)}
           title="Barnes–Hut accuracy: smaller θ is more accurate but slower (θ=0 is exact)"
         />
+        <Select<ForceSolver>
+          label="Force solver"
+          value={p.params.forceSolver ?? 'barnes-hut'}
+          options={[
+            { value: 'barnes-hut', label: 'Barnes–Hut O(N log N)' },
+            { value: 'fmm', label: 'Fast Multipole O(N)' },
+          ]}
+          onChange={(v) => p.onParams({ forceSolver: v })}
+        />
+        {p.params.forceSolver === 'fmm' && (
+          <Slider
+            label="FMM order p"
+            value={p.params.fmmOrder ?? 4}
+            min={1}
+            max={8}
+            step={1}
+            onChange={(v) => p.onParams({ fmmOrder: Math.round(v) })}
+            format={(v) => v.toFixed(0)}
+            title="Multipole expansion order — higher p is more accurate (θ reused as the FMM separation parameter)"
+          />
+        )}
         <Slider
           label="Steps / frame"
           value={p.subSteps}
@@ -322,6 +344,10 @@ export function Sidebar(p: SidebarProps) {
 
       <Section title="Symplectic Lab" defaultOpen={false}>
         <SymplecticPanel />
+      </Section>
+
+      <Section title="FMM Lab" defaultOpen={false}>
+        <FmmPanel />
       </Section>
 
       <Section title="Black Hole Lab" defaultOpen={false}>

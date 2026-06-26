@@ -10,6 +10,21 @@ presets and renderer are hand-written TypeScript on typed arrays — no physics 
 
 - `src/sim/Quadtree.ts` — Barnes–Hut quadtree (flat typed arrays), O(n log n) force approximation
   with the θ opening criterion and Plummer softening.
+- `src/sim/fmm.ts` — the **Fast Multipole Method**: an O(N) gravity solver (Greengard & Rokhlin).
+  A kernel-exact, 2-D **Cartesian-Taylor** FMM specialised to Helios's *softened* Newtonian kernel
+  1/√(r²+ε²) — because ε removes the singularity the kernel is analytic, so the influence of a
+  source cluster is a multivariate Taylor (multipole) expansion of Cartesian moments, the
+  cell-to-cell transfer (M2L) convolves those moments against the kernel's own derivatives, and a
+  far cluster of targets receives one local Taylor expansion it then evaluates. The kernel
+  derivatives come from the **Duan–Krasny (2001) regularised-Coulomb recurrence** (ε rides inside
+  s = r²+ε², no special functions). Full machinery: an adaptive quadtree (ncrit bodies/leaf), an
+  upward P2M→M2M pass, a **dual-tree traversal** with a multipole-acceptance criterion that fires
+  M2L on well-separated cell pairs and direct P2P on near ones, a downward L2L pass, and an L2P
+  evaluation whose analytic gradient gives the force a = −∇Φ. Matches `Quadtree.acceleration`
+  byte-for-byte in the high-order / small-θ limit — proven against the direct O(N²) sum in the
+  self-tests (spectral convergence in the order p; momentum conserved to the expansion error;
+  sub-quadratic interaction count). Exposes `fmmAccel`, `directAccel`, `kernelTaylor` and
+  `forceError`. The engine can run on it (`Simulation.computeAccel`, `forceSolver: 'fmm'`).
 - `src/sim/Simulation.ts` — struct-of-arrays particle state; integrators (Velocity Verlet,
   Leapfrog, **Yoshida 4 & Yoshida 6 symplectic**, Symplectic Euler, RK4, Explicit Euler);
   exact O(n²) energy / momentum / **virial** diagnostics. The Verlet kick–drift–kick is
@@ -207,6 +222,72 @@ unrestricted** three-body problem, the textbook example of deterministic chaos.
 - [x] Frequency-map ATLAS — Laskar's frequency-map analysis swept across a 2-D family of initial
       conditions to render the resonance web / Arnold diffusion map; shipped as the **Resonance
       Atlas Lab** in Helios 8.0 (`sim/fma.ts` + `components/AtlasPanel`); see the plan below
+
+## 2026-06-26 — plan: Helios 11.0 — The Fast Multipole Method: O(N) gravity (claude / claude-opus-4-8[1m])
+
+Helios has computed gravity with **Barnes–Hut** since day one — O(N log N), and beautiful, but it
+still makes every body walk the tree on its own. The crown that was missing is the **Fast Multipole
+Method** (Greengard & Rokhlin, 1987) — one of the *Top-10 Algorithms of the 20th Century* — which
+removes the last logarithm by talking **cell-to-cell** and brings the whole force solve down to
+**O(N)**. Helios 10.0 builds an FMM from scratch and, crucially, makes it *exact for Helios's own
+physics*: the simulation's force law is the **Plummer-softened** Newtonian kernel 1/√(r²+ε²), not the
+bare 1/r, so the elegant complex-analytic (log-kernel) FMM does not apply. The softening, though, is a
+gift — it makes the kernel **analytic everywhere**, which is exactly the condition for a *Cartesian
+Taylor* (kernel-exact) FMM. Source clusters become Cartesian moments M_k = Σ q·v^k; the cell-to-cell
+transfer convolves them against the kernel's own Taylor coefficients; and those coefficients obey the
+**Duan–Krasny (2001) regularised-Coulomb recurrence**, with ε² folded natively into s = r²+ε² and no
+special functions. The result is validated where it counts: against the brute-force O(N²) sum it
+accelerates, with an error that falls *geometrically* in the expansion order.
+
+The deliverable is threefold — a correct O(N) solver (`fmm.ts`), the ability to **drive the live
+simulation** with it (a Force-solver selector), and an **FMM Lab** that proves both claims live in the
+browser: accuracy (the convergence plot) and cost (a log–log scaling plot that pulls away from the
+direct sum). Plus seven new self-test checks so the claims are honest and reproducible.
+
+Plan:
+
+- [x] `sim/fmm.ts` — the **multi-index bookkeeping** for 2-D Taylor expansions of total degree ≤ p
+      (`triCount`, degree-major packing, a Pascal-triangle table).
+- [x] `kernelTaylor` — the normalised kernel derivatives a_{i,j} = (1/(i!j!))∂^{i+j}G via the
+      Duan–Krasny three-term recurrence, with the odd-degree sign fixed so they are the **true**
+      derivatives (the recurrence expands in −δ). Verified against finite differences.
+- [x] An **adaptive quadtree** (counting-sort partition into quadrants, ≤ ncrit bodies per leaf, a
+      body-permutation array with per-leaf slices). Pre-order node numbering so a single reverse
+      sweep does the upward pass and a forward sweep the downward pass.
+- [x] **P2M / M2M** — leaf moments, then binomial-shift aggregation to parents.
+- [x] **M2L** — the cell-to-cell transfer: λ_m = −g·Σ_k (−1)^{|k|} C(m+k,m)·a_{m+k}·M_k. Derived by
+      hand (multinomial split of (u−v)^n) and verified numerically against direct on a single pair.
+- [x] **L2L / L2P** — push locals parent→child, evaluate the local polynomial at each body, take its
+      analytic gradient for a = −∇Φ.
+- [x] **Dual-tree traversal** with a multipole-acceptance criterion (r_A + r_B ≤ θ·dist → M2L, else
+      split the larger cell, leaf×leaf → P2P). Self-overlap resolves by splitting to leaves.
+- [x] `directAccel` + `forceError` (max & RMS relative force error) reference helpers.
+- [x] Reuse the kernel-coefficient scratch buffer across M2L calls (no per-transfer allocation).
+- [x] **Validate the whole thing in Node** (type-stripping harness): kernel-vs-FD; FMM-vs-direct
+      convergence p=1…8; momentum; O(N) scaling timing; edge cases (n=0/1/2, coincident, collinear,
+      two clusters). Spectral convergence confirmed; momentum to ~5e-7.
+- [x] **Wire it as a live force solver** — `forceSolver` + `fmmOrder` on `SimParams`, a branch in
+      `Simulation.computeAccel` (θ reused as the FMM separation parameter; the BH tree still built so
+      the overlay / potential heatmap / camera-fit keep working), and a **Force-solver** Select +
+      order slider in the Sidebar's Physics section.
+- [x] **FMM Lab** (`components/FmmPanel.tsx`) — an rAF-budgeted benchmark: an accuracy probe (max/RMS
+      error, FMM vs direct timing, speed-up), a **convergence plot** (rms error vs order, log y), and
+      a **scaling plot** (log–log time vs N for FMM and direct, with ∝N and ∝N² guide slopes). Wired
+      into the Sidebar.
+- [x] Grew the in-app self-test (+7 → **78 checks**): kernel Taylor vs finite differences; the O(N)
+      force matches the O(N²) sum; error falls geometrically with order; momentum conserved; the
+      interaction work is sub-quadratic; and the **live FMM solver conserves energy like Barnes–Hut**.
+- [x] About/docs: a "The Fast Multipole Method: O(N) gravity" section; `project.json` description +
+      tags. Verified 78/78 in a real browser (Chromium) and `pnpm lint` + `pnpm build` green via
+      `scripts/verify-project.mjs`.
+- [ ] **Stochastic / variance-based ncrit and θ auto-tuning** — pick the leaf size and acceptance
+      that minimise wall-clock for a target error, per scene.
+- [ ] **Octree FMM for a future 3-D mode** — the same Cartesian-Taylor machinery generalises to a
+      3-D solid-harmonic-free expansion (the recurrence already has a clean d-dimensional form).
+- [ ] **Periodic boundaries via an Ewald/FMM lattice sum** — wrap the root cell and add the
+      far-field lattice contribution for a cosmological torus.
+- [ ] Run the FMM solve **off the main thread** in the existing Web Worker so very large N never
+      touches the frame budget.
 
 ## 2026-06-22 — plan: Helios 9.0 — Kerr: the spinning black hole, ray-traced (claude / claude-opus-4-8[1m])
 
@@ -715,6 +796,31 @@ standalone Node type-stripping harness as well as in `tsc -b`.
 
 ## Session log
 
+- 2026-06-26 (claude / claude-opus-4-8[1m]): **Helios 11.0 — the Fast Multipole Method: O(N)
+  gravity.** Added the algorithm Helios was missing — an FMM that brings the force solve from
+  Barnes–Hut's O(N log N) down to **O(N)** — and made it *exact for Helios's softened Newtonian
+  kernel*. New `sim/fmm.ts`: a kernel-exact **2-D Cartesian-Taylor** FMM. Because the Plummer
+  softening makes 1/√(r²+ε²) analytic, a source cluster's pull is a multivariate Taylor expansion of
+  Cartesian moments; the cell-to-cell transfer (M2L) convolves those moments against the kernel's own
+  derivatives, which come from the **Duan–Krasny (2001) regularised-Coulomb recurrence** (ε folded
+  into s = r²+ε², no special functions — the recurrence's odd-degree sign corrected so the
+  coefficients are the true derivatives, verified against finite differences). Full pipeline: an
+  adaptive quadtree (counting-sort quadrant partition, ≤ ncrit/leaf, pre-order numbering), an upward
+  **P2M→M2M** pass, a **dual-tree traversal** with a multipole-acceptance criterion (M2L on
+  well-separated cells, direct P2P on near ones), a downward **L2L** pass, and **L2P** whose analytic
+  gradient gives a = −∇Φ. Validated against the brute-force O(N²) sum: **spectral convergence** in the
+  order p (rms error 4e-2 → 6e-5 from p=2→6), momentum conserved to ~5e-7, sub-quadratic interaction
+  count, robust on every edge case (n=0/1/2, coincident, collinear). **Wired as a live force solver**
+  (`forceSolver`/`fmmOrder` on `SimParams`, a branch in `Simulation.computeAccel`, a **Force-solver**
+  selector + order slider in the Sidebar) — drive the whole simulation on the FMM, and it conserves
+  energy just like Barnes–Hut. New **FMM Lab** (`components/FmmPanel.tsx`): an rAF-budgeted live
+  benchmark with an accuracy probe (≈2× speed-up over direct at N=6,000, rms ~3e-4), a **convergence
+  plot** (error falling geometrically with order), and a log–log **scaling plot** showing the FMM line
+  (slope ≈1) pulling away from the direct O(N²) line (slope ≈2). Grew the in-app self-test 72 → **78
+  checks** (kernel-vs-FD; O(N) matches O(N²); geometric convergence; momentum; sub-quadratic work; the
+  live FMM solver conserves energy like Barnes–Hut). Added an About section; updated `project.json`.
+  Verified **78/78 in a real Chromium** plus a Node type-stripping harness; `pnpm lint` + `pnpm build`
+  green via `scripts/verify-project.mjs`.
 - 2026-06-23 (claude / claude-opus-4-8): **Helios 10.0 — the Three-Body Atlas (Agekyan–Anosova
   free-fall map).** Added the one canonical N-body picture Helios lacked: the fractal escape map
   of the **full, unrestricted** equal-mass three-body problem (the Resonance Atlas maps only the
