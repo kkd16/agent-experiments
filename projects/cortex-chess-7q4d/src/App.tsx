@@ -7,12 +7,14 @@ import EnginePanel from './components/EnginePanel'
 import PromotionPicker from './components/PromotionPicker'
 import Lab from './components/Lab'
 import Analysis from './components/Analysis'
+import Review from './components/Review'
 import { useEngine } from './hooks/useEngine'
 import {
   Game,
   type SearchInfo,
   type Color,
   WHITE,
+  BLACK,
   START_FEN,
   moveFrom,
   moveTo,
@@ -46,7 +48,7 @@ import {
   pvToSan,
 } from './view'
 
-type Tab = 'play' | 'analyze' | 'lab'
+type Tab = 'play' | 'analyze' | 'review' | 'lab'
 
 function statusText(view: BoardView): string {
   const sideName = view.turn === WHITE ? 'White' : 'Black'
@@ -132,9 +134,14 @@ export default function App() {
   // is the authoritative value (read inside the search effect without retriggering
   // it); `engineClockMs`/`lastBudget` mirror it for display.
   const [tcIdx, setTcIdx] = useState(0)
-  const engineClockRef = useRef(0)
-  const [engineClockMs, setEngineClockMs] = useState(0)
+  // Two-sided clock: [white, black] milliseconds. `clockRef` is the authoritative
+  // value (read by the engine's time allocation without retriggering its effect);
+  // the live ticker below decrements the side-to-move's clock in real time, and
+  // `flagged` records the colour that ran out (flag-fall).
+  const clockRef = useRef<[number, number]>([0, 0])
+  const [clockMs, setClockMs] = useState<[number, number]>([0, 0])
   const [lastBudget, setLastBudget] = useState(0)
+  const [flagged, setFlagged] = useState<Color | null>(null)
 
   // Refresh the saved NNUE whenever the Play tab is shown (the user may have just
   // trained and saved one in the Lab).
@@ -176,21 +183,29 @@ export default function App() {
     setView(buildView(gameRef.current))
   }, [])
 
-  // Reset the engine's clock to the chosen time control's base time.
+  // Reset both clocks to the chosen time control's base time and clear any flag.
   const resetClock = useCallback((idx: number) => {
     const tc = TIME_CONTROLS[idx].tc
-    engineClockRef.current = tc ? tc.baseMs : 0
-    setEngineClockMs(tc ? tc.baseMs : 0)
+    const base = tc ? tc.baseMs : 0
+    clockRef.current = [base, base]
+    setClockMs([base, base])
     setLastBudget(0)
+    setFlagged(null)
   }, [])
 
-  // Deduct the time a move consumed from the engine clock and add the increment.
-  const chargeEngineClock = useCallback((elapsedMs: number) => {
-    const tc = TIME_CONTROLS[tcIdx].tc
-    if (!tc) return
-    engineClockRef.current = Math.max(0, engineClockRef.current - elapsedMs) + tc.incMs
-    setEngineClockMs(engineClockRef.current)
-  }, [tcIdx])
+  // Credit a side with the increment after it has moved. The live ticker is the
+  // single source of truth for elapsed time, so this only adds the increment.
+  const chargeIncrement = useCallback(
+    (color: Color) => {
+      const tc = TIME_CONTROLS[tcIdx].tc
+      if (!tc) return
+      const next: [number, number] = [clockRef.current[0], clockRef.current[1]]
+      next[color] = next[color] + tc.incMs
+      clockRef.current = next
+      setClockMs(next)
+    },
+    [tcIdx],
+  )
 
   const humanControls = useCallback(
     (color: number) => engineSide !== (color === WHITE ? 'white' : 'black'),
@@ -198,7 +213,7 @@ export default function App() {
   )
 
   const interactive =
-    tab === 'play' && view.result === 'playing' && !thinking && humanControls(view.turn)
+    tab === 'play' && view.result === 'playing' && flagged === null && !thinking && humanControls(view.turn)
 
   const clearPonder = useCallback(() => {
     ponderEngine.cancel()
@@ -212,12 +227,14 @@ export default function App() {
   useEffect(() => {
     if (tab !== 'play') return
     if (view.result !== 'playing') return
+    if (flagged !== null) return
     const sideToMove: EngineSide = view.turn === WHITE ? 'white' : 'black'
     if (engineSide !== sideToMove) return
     if (lastSearchedFen.current === view.fen) return
 
     lastSearchedFen.current = view.fen
     const searchFen = view.fen
+    const moverColor = view.turn
     const level = LEVELS[levelIndex]
     const history = gameRef.current.keyHistory()
     // Time budget. A time control (clock + increment) takes top precedence and
@@ -230,7 +247,7 @@ export default function App() {
     let maxDepth: number
     let softTime: number | undefined
     if (tc) {
-      const b = allocateTime(engineClockRef.current, tc.incMs)
+      const b = allocateTime(clockRef.current[moverColor], tc.incMs)
       maxTime = b.hardMs
       softTime = b.softMs
       maxDepth = 30
@@ -256,7 +273,7 @@ export default function App() {
         const id = setTimeout(() => {
           setPonderHit(false)
           if (gameRef.current.fen() !== searchFen) return
-          chargeEngineClock(0) // instant move — credit the increment
+          chargeIncrement(moverColor) // instant move — credit the increment
           gameRef.current.apply(legal)
           sync()
         }, 250)
@@ -278,7 +295,7 @@ export default function App() {
           const id = setTimeout(() => {
             setThinking(false)
             if (gameRef.current.fen() !== searchFen) return
-            chargeEngineClock(0) // book move is instant — credit the increment
+            chargeIncrement(moverColor) // book move is instant — credit the increment
             gameRef.current.apply(legal)
             sync()
           }, 350)
@@ -299,7 +316,7 @@ export default function App() {
       })
       .then((res) => {
         setThinking(false)
-        if (tc) chargeEngineClock(res.timeMs)
+        if (tc) chargeIncrement(moverColor)
         // Bail if the position changed under us (undo / new game / FEN load).
         if (gameRef.current.fen() !== searchFen) return
         setInfo(res)
@@ -322,7 +339,28 @@ export default function App() {
           } else ponderRef.current = null
         }
       })
-  }, [view, engineSide, levelIndex, tab, engine, sync, bookOn, moveTimeIdx, ponderOn, tcIdx, chargeEngineClock])
+  }, [view, engineSide, levelIndex, tab, engine, sync, bookOn, moveTimeIdx, ponderOn, tcIdx, flagged, chargeIncrement])
+
+  // Live two-sided countdown: decrement the side-to-move's clock in real time and
+  // flag the side that runs out. Active only under a time control while playing.
+  useEffect(() => {
+    if (tab !== 'play') return
+    if (!TIME_CONTROLS[tcIdx].tc) return
+    if (view.result !== 'playing' || flagged !== null) return
+    const mover = view.turn
+    let last = performance.now()
+    const id = setInterval(() => {
+      const now = performance.now()
+      const delta = now - last
+      last = now
+      const next: [number, number] = [clockRef.current[0], clockRef.current[1]]
+      next[mover] = Math.max(0, next[mover] - delta)
+      clockRef.current = next
+      setClockMs(next)
+      if (next[mover] <= 0) setFlagged(mover)
+    }, 200)
+    return () => clearInterval(id)
+  }, [tab, tcIdx, view.turn, view.result, flagged])
 
   // Background analysis: while it's the human's move and analysis is on, run the
   // engine to show a live evaluation and the best line — without playing a move.
@@ -399,12 +437,14 @@ export default function App() {
       // precomputed result for an instant reply; otherwise discard it.
       if (!ponderRef.current || ponderRef.current.reply !== move) clearPonder()
       else ponderEngine.cancel()
+      const moverColor = gameRef.current.turn
       gameRef.current.apply(move)
+      chargeIncrement(moverColor) // the ticker charged the think time; add the increment
       setSelected(null)
       setArrow(null)
       sync()
     },
-    [sync, engine, ponderEngine, clearPonder],
+    [sync, engine, ponderEngine, clearPonder, chargeIncrement],
   )
 
   const tryMove = useCallback(
@@ -545,6 +585,7 @@ export default function App() {
     engine.cancel()
     clearPonder()
     setThinking(false)
+    setFlagged(null)
     const g = gameRef.current
     if (g.history.length === 0) return
     g.undo()
@@ -586,6 +627,7 @@ export default function App() {
     if (!fen || !validateFen(fen)) return
     engine.cancel()
     clearPonder()
+    resetClock(tcIdx)
     gameRef.current.reset(fen)
     // Flag the variant: if the loaded position uses 960 castling, try to recover
     // its SP-ID from the white back rank (only meaningful for a full start rank).
@@ -612,7 +654,7 @@ export default function App() {
     setPgnMsg('')
     setFenInput('')
     setView(buildView(gameRef.current))
-  }, [fenInput, engine, clearPonder])
+  }, [fenInput, engine, clearPonder, resetClock, tcIdx])
 
   const copyFen = useCallback(() => {
     try {
@@ -680,6 +722,9 @@ export default function App() {
           <button className={tab === 'analyze' ? 'tab active' : 'tab'} onClick={() => setTab('analyze')}>
             Analyze
           </button>
+          <button className={tab === 'review' ? 'tab active' : 'tab'} onClick={() => setTab('review')}>
+            Review
+          </button>
           <button className={tab === 'lab' ? 'tab active' : 'tab'} onClick={() => setTab('lab')}>
             Engine Lab
           </button>
@@ -708,7 +753,11 @@ export default function App() {
                 onDragStartSquare={onDragStartSquare}
                 onDropSquare={onDropSquare}
               />
-              <div className={`status ${view.result !== 'playing' ? 'over' : ''}`}>{statusText(view)}</div>
+              <div className={`status ${view.result !== 'playing' || flagged !== null ? 'over' : ''}`}>
+                {flagged !== null
+                  ? `${flagged === WHITE ? 'White' : 'Black'} lost on time — ${flagged === WHITE ? 'Black' : 'White'} wins`
+                  : statusText(view)}
+              </div>
             </div>
           </section>
 
@@ -778,11 +827,25 @@ export default function App() {
                 </select>
               </div>
               {tcIdx !== 0 && (
-                <div className="clock-row">
-                  <span className="clock-label">Engine clock</span>
-                  <span className={`clock-time${engineClockMs < 10000 ? ' low' : ''}`}>{formatClock(engineClockMs)}</span>
-                  {lastBudget > 0 && <span className="clock-budget">allotting {(lastBudget / 1000).toFixed(1)}s/move</span>}
+                <div className="clocks">
+                  {[WHITE, BLACK].map((c) => {
+                    const isEngine = engineSide === (c === WHITE ? 'white' : 'black')
+                    const active = view.turn === c && view.result === 'playing' && flagged === null
+                    return (
+                      <div key={c} className={`clock-box${active ? ' active' : ''}${flagged === c ? ' flagged' : ''}`}>
+                        <span className="clock-who">
+                          <span className={`clock-disc ${c === WHITE ? 'w' : 'b'}`} />
+                          {c === WHITE ? 'White' : 'Black'}
+                          {isEngine ? ' · engine' : ''}
+                        </span>
+                        <span className={`clock-time${clockMs[c] < 10000 ? ' low' : ''}`}>{formatClock(clockMs[c])}</span>
+                      </div>
+                    )
+                  })}
                 </div>
+              )}
+              {tcIdx !== 0 && lastBudget > 0 && (
+                <div className="clock-budget">engine allotting {(lastBudget / 1000).toFixed(1)}s/move</div>
               )}
               <div className="toggles">
                 <label className="toggle">
@@ -931,6 +994,10 @@ export default function App() {
         <main className="analyze-layout">
           <Analysis />
         </main>
+      ) : tab === 'review' ? (
+        <main className="analyze-layout">
+          <Review />
+        </main>
       ) : (
         <main className="lab-layout">
           <Lab />
@@ -944,7 +1011,8 @@ export default function App() {
           0x88 board · iterative deepening + PVS · aspiration windows · transposition table · quiescence · SEE ·
           null-move + late-move reductions · internal iterative reduction · countermoves + history · tapered eval
           (mobility · king safety · pawn structure) · KPK / KRK / KQK / <strong>KBNvK</strong> tablebases · opening book +
-          explorer · multi-PV analysis · PGN import + annotated export · pondering · EPD suites
+          explorer · multi-PV analysis · PGN import + annotated export · pondering · EPD suites · <strong>game review</strong>
+          (accuracy + coach) · <strong>engine arena</strong> (Elo) · two-sided clock
         </span>
       </footer>
     </div>

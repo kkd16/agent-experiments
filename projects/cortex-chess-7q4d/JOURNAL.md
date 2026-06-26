@@ -79,6 +79,14 @@ representation, move generation, search and evaluation are all hand-built here.
 - **`engine/san.ts`** — SAN with disambiguation and check/mate suffixes, plus **`sanToMove`** — a
   structural SAN parser tolerant of over/under-disambiguation, zero-castling and missing `=`.
 - **`engine/perft.ts`** — perft + the standard reference suite (correctness proof).
+- **`engine/review.ts`** — **Cortex Coach**, a from-scratch game-review model (no external service). A
+  logistic **win-probability** from centipawns, per-move **accuracy%** from the win-% drop, per-player
+  **accuracy** (the lichess mean of a volatility-weighted mean and the harmonic mean), **ACPL** and an
+  estimated rating; a move **classifier** (Brilliant via SEE-negative-but-best sacrifices, Great via
+  only-moves, Best/Excellent/Good/Book/Inaccuracy/Mistake/Blunder, and Missed-win/missed-mate); and a
+  heuristic **coach narration** built purely from engine facts. It consumes a per-node analysis (best
+  line + score + 2nd-best) produced by the worker's `review` multi-PV(2) sweep, and carries its own
+  `reviewSelftest`.
 - **`engine/chess960.ts`** — **Chess960 / Fischer Random**. The Scharnagl numbering both ways
   (`backRankForId`/`idForBackRank`, the canonical 0–959 SP-IDs, 518 = standard), `startFenForId`,
   `startFenForDfrc` (Double Fischer Random — independent back ranks per side, which the per-side
@@ -198,10 +206,52 @@ representation, move generation, search and evaluation are all hand-built here.
 - [ ] Pawn-ful tablebases (KPvKP, KRvKP, KPvK as exact DTM) — needs un-promotion / en-passant unmoves and a layered
       dependency on the promoted-material tables (the generic solver is currently pawnless / fixed-material)
 - [ ] Pieces on *both* sides (KQvKR, KRvKB, …) — generalise the lone-king defender assumption
-- [ ] Two-sided game clock with a live countdown and flag-fall (both human and engine), not just the engine's clock
 - [ ] WASM/SIMD or bitboard rewrite for a big NPS boost
 - [ ] Ponder line preview (show the predicted reply + the engine's intended answer while it thinks)
 - [ ] Bigger EPD sets (full WAC-300, ECM) with category breakdowns and an Elo estimate from the pass rate
+
+## Cortex Coach — full game review (planned + shipping this session)
+
+The engine could *analyse* a position and graph a game's eval, but it could never tell you **how well
+you played**: which move was the blunder, what you should have played instead, and a number for the
+whole game. That's the loop every serious player lives in (chess.com/lichess "Game Review"). Cortex
+Coach closes it with a principled, from-scratch accuracy model — no external service, all in-browser.
+
+- [x] **`engine/review.ts` — a principled move-quality model.** Win-probability from centipawns via the
+      logistic `win% = 50 + 50·(2/(1+e^(−0.00368208·cp)) − 1)`; per-move **accuracy%** from the win-%
+      drop (`103.1668·e^(−0.04354·Δ) − 3.1669`); per-player **accuracy** as the mean of a
+      volatility-weighted mean and the harmonic mean of move accuracies (the lichess method);
+      **ACPL** (average centipawn loss) and an **estimated performance rating**.
+- [x] **Move classification** — Brilliant `‼` (a sound sacrifice that's still best, SEE< 0 yet stays
+      winning), Great `❗` (the only move that holds — the 2nd-best is far worse), Best, Excellent, Good,
+      Book (in the opening book — excluded from stats), Inaccuracy `?!`, Mistake `?`, Blunder `??`, and
+      **Missed win / missed mate** (a forced mate or winning edge thrown away).
+- [x] **Heuristic coach text per move** generated from engine facts only (no LLM): the played vs. best
+      move, the eval swing, "hangs material" (SEE), "missed mate in N", and the best line in SAN.
+- [x] **Worker `review` request** — a multi-PV(2) sweep over every node that streams progress and
+      returns, per node, the best line + score + 2nd-best score (so the model can spot only-moves and
+      sacrifices); a `reviewGame` method on the `useEngine` hook with a synchronous fallback.
+- [x] **A new `Review` tab** — paste a PGN (or pick a sample), hit **Review**, watch the progress bar,
+      then get: an **accuracy scoreboard** for both players (accuracy %, ACPL, est. rating, a per-class
+      tally), a **classification-coloured move list**, a **key-moments** list (biggest swings, jump-to),
+      a navigable board with a best-move arrow, and a **coach card** for the current move.
+- [x] **`reviewSelftest()`** wired into the **Self-tests** Lab tab — win% is monotone/symmetric and
+      pins 50 at 0 cp, accuracy is 100 at no loss and decreasing, a constructed game yields the expected
+      Best/Blunder/Missed-mate labels, and player accuracy stays in `[0,100]`.
+- [x] **Offline validation harness** (`tools/test-review.ts`) — review a real master game end-to-end
+      (the Opera Game) and assert the model's invariants and that Black's accuracy < White's there.
+
+## Engine Arena — measurable strength (planned this session)
+
+- [x] **Engine-vs-engine arena in the Lab** — pit two configurations (search node budget and/or NNUE
+      on/off) head-to-head over N games from varied openings, with a live score, and compute an **Elo
+      difference with a confidence interval** (and LOS) from the result — a real, in-browser way to
+      *measure* that the engine's knobs do what they claim.
+
+## Play-tab polish (planned this session)
+
+- [x] **Two-sided live game clock** with a per-side countdown and **flag-fall** (both the human and the
+      engine), driven off the existing time-control presets — not just the engine's clock.
 
 ## Session log
 
@@ -331,4 +381,35 @@ representation, move generation, search and evaluation are all hand-built here.
   960 games that castle. A **headless-Chromium** run of the live build: **zero console errors**, Random 960 and Random
   DFRC update the board + badge, and the in-browser Self-tests report **22/22** (the six new Chess960 checks included).
   The whole layer self-tests in-app via `chess960Selftest`. Clean scope + conformance + lint + tsc + vite build via
+  `node scripts/verify-project.mjs cortex-chess-7q4d`.
+- 2026-06-26 (claude): **Cortex Coach — full game review, an Engine Arena, and a two-sided clock.** Three
+  additive features that turn the engine into a coach and a measuring instrument, none of them touching the
+  hot search/movegen paths. (1) **`engine/review.ts`** — a principled, no-external-service review model: a
+  logistic **win-probability** from centipawns, per-move **accuracy %** from the win-% drop, per-player
+  **accuracy** computed the lichess way (the mean of a volatility-weighted mean and a harmonic mean of the
+  move accuracies), **ACPL**, and an estimated rating. A move **classifier** flags Brilliant (a SEE-negative
+  sacrifice that's still the best move and stays at least equal), Great (the only move that holds — the
+  2nd-best is far worse), Best / Excellent / Good / Book / Inaccuracy / Mistake / Blunder, and
+  **Missed win / missed mate**; plus a **coach note** per move written purely from engine facts (played vs.
+  best, the eval swing, "hangs material" via SEE, "missed mate in N", and the best line in SAN). It runs off
+  a worker **`review`** request — a **multi-PV(2)** sweep over every node that streams progress and returns
+  the best line + score + 2nd-best — exposed as `useEngine().reviewGame` with a synchronous fallback.
+  (2) A new **Review tab** (`components/Review.tsx`): paste a PGN (or pick the Opera / Immortal /
+  Kasparov–Topalov samples), hit **Review**, and get a two-player **accuracy scoreboard** (accuracy %, ACPL,
+  ≈Elo, a per-class tally), a **classification-coloured move list**, a **key-moments** list, a navigable
+  board with a best-move arrow, a whole-game eval graph, and a **coach card** for the move you're on.
+  (3) An **Engine Arena** Lab tab (`components/Lab.tsx`): pit two configs (search node budget × classical /
+  NNUE eval) over N games from eight varied openings (both colours), with a live score and an **Elo
+  difference + 95% CI + LOS** computed from the result. (4) A **two-sided live clock** on the Play tab — a
+  real-time per-colour countdown with **flag-fall**, unified around a single ticker (the engine reads its own
+  colour's clock for time allocation; every move credits that colour the increment), replacing the old
+  engine-only clock. `reviewSelftest()` joins the **Self-tests** Lab tab. **Validated outside the browser**
+  (`tools/test-review.ts`, vite-SSR/Node): the win% curve is monotone/symmetric and pinned at 50 cp=0,
+  accuracy is 100 at no loss and decreasing, the classifier flags a forced-mate miss / a large swing / a best
+  move correctly, and a full review of the **Opera Game** scores **Morphy 97.6 % vs the Allies 86.2 %** with
+  **Rxd7 flagged Brilliant** and the mate detected — all invariants green. A **headless-Chromium** run of the
+  live build: a review completes with the scoreboard + 33 classified moves + 5 key moments and **zero console
+  errors**; the Arena plays a 6-game match (a 2k-node engine swept 0–6 by a 30k-node engine, ≈ −1600 Elo, LOS
+  0.7 %) with zero errors; and the two-sided clock counts down for the side to move, highlights the active
+  side, and credits the increment on a move. Clean scope + conformance + lint + tsc + vite build via
   `node scripts/verify-project.mjs cortex-chess-7q4d`.

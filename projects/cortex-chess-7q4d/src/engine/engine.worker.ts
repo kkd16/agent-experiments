@@ -5,8 +5,10 @@
 // tablebase build/verify — each streaming progress as it goes.
 
 import { parseFen } from './board'
-import { Searcher, type SearchInfo, type MultiInfo } from './search'
+import { generateLegal, inCheck } from './movegen'
+import { Searcher, MATE, type SearchInfo, type MultiInfo } from './search'
 import { deserializeNnue, type NnueBlob } from './nnue'
+import type { NodeAnalysis } from './review'
 import { verifyKbnk, type KbnkVerification } from './kbnk'
 import { probeKxK } from './egtb'
 import { probeKbnk, buildKbnk } from './kbnk'
@@ -59,6 +61,13 @@ export interface GtbRequest {
   games: number
 }
 
+export interface ReviewRequest {
+  type: 'review'
+  items: { fen: string; history: bigint[] }[]
+  maxDepth: number
+  maxTime: number
+}
+
 // Fire-and-forget config: install (or remove) the NNUE evaluation on the persistent
 // searcher. No reply — it just changes how subsequent searches evaluate.
 export interface SetNnueRequest {
@@ -72,6 +81,7 @@ export type WorkerRequest =
   | EvalsRequest
   | KbnkRequest
   | GtbRequest
+  | ReviewRequest
   | SetNnueRequest
 
 export type WorkerOut =
@@ -85,9 +95,43 @@ export type WorkerOut =
   | { type: 'kbnkdone'; report: KbnkVerification }
   | { type: 'gtbprogress'; frac: number; phase: string }
   | { type: 'gtbdone'; report: GtbVerification; cached: boolean }
+  | { type: 'reviewprogress'; done: number; total: number }
+  | { type: 'reviewdone'; nodes: NodeAnalysis[] }
 
 const searcher = new Searcher()
 const post = (out: WorkerOut) => (self as unknown as Worker).postMessage(out)
+
+// Analyse one position to top-2 lines for the game-review model. A terminal node
+// (no legal moves) yields a synthetic read: a mated side-to-move scores −MATE, a
+// stalemate scores 0 — both with empty lines.
+function analyseNode(
+  fen: string,
+  history: bigint[],
+  maxDepth: number,
+  maxTime: number,
+): NodeAnalysis {
+  const pos = parseFen(fen)
+  if (generateLegal(pos).length === 0) {
+    const mated = inCheck(pos, pos.turn)
+    return {
+      score: mated ? -MATE : 0,
+      mate: mated ? -1 : null,
+      bestPv: [],
+      secondScore: null,
+      secondMate: null,
+    }
+  }
+  const r = searcher.searchMultiPv(pos, { maxDepth, maxTime, history }, 2)
+  const l0 = r.lines[0]
+  const l1 = r.lines[1]
+  return {
+    score: l0?.score ?? 0,
+    mate: l0?.mate ?? null,
+    bestPv: l0?.pv ?? [],
+    secondScore: l1?.score ?? null,
+    secondMate: l1?.mate ?? null,
+  }
+}
 
 // Hand-rolled-table oracles, attached to the matching generic config so the Lab can
 // prove the generic engine reproduces the bespoke tablebases bit-for-bit.
@@ -172,5 +216,14 @@ self.onmessage = async (e: MessageEvent<WorkerRequest>) => {
     )
     if (!cached) await persistGtb(msg.id)
     post({ type: 'gtbdone', report, cached })
+  } else if (msg.type === 'review') {
+    const total = msg.items.length
+    const nodes: NodeAnalysis[] = []
+    for (let i = 0; i < total; i++) {
+      const it = msg.items[i]
+      nodes.push(analyseNode(it.fen, it.history, msg.maxDepth, msg.maxTime))
+      post({ type: 'reviewprogress', done: i + 1, total })
+    }
+    post({ type: 'reviewdone', nodes })
   }
 }

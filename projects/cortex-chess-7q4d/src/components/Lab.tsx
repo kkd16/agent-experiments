@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   perft,
   PERFT_SUITE,
@@ -32,12 +32,19 @@ import {
   gradCheck,
   mulberry32,
   START_FEN,
+  WHITE,
   chess960Selftest,
+  reviewSelftest,
+  Searcher,
+  deserializeNnue,
+  defaultNnueBlob,
+  nnueLoad,
+  type NnueWeights,
 } from '../engine'
 import { useEngine } from '../hooks/useEngine'
 import NnueLab from './NnueLab'
 
-type Mode = 'perft' | 'tactics' | 'epd' | 'tablebase' | 'gtb' | 'nnue' | 'checks'
+type Mode = 'perft' | 'tactics' | 'epd' | 'tablebase' | 'gtb' | 'nnue' | 'arena' | 'checks'
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))
 
@@ -848,6 +855,11 @@ function runChecks(): CheckRow[] {
   // an independent oracle confirms every castle move, and perft is colour-symmetric.
   for (const c of chess960Selftest()) out.push({ group: 'Chess960', name: c.name, pass: c.pass, detail: c.detail })
 
+  // Cortex Coach review model: win% is monotone/symmetric and pinned at 50 cp=0,
+  // accuracy is 100 at no loss and decreasing, and the classifier flags a forced
+  // mate / a large swing / a best move correctly.
+  for (const c of reviewSelftest().checks) out.push({ group: 'Review', name: c.name, pass: c.ok, detail: c.detail })
+
   return out
 }
 
@@ -901,6 +913,292 @@ function ChecksLab() {
   )
 }
 
+// ---------------- Engine Arena ----------------
+
+// A node budget per move — the engine's binding constraint here, so the ladder is
+// deterministic and the games stay fast. More nodes ⇒ deeper search ⇒ stronger.
+interface ArenaLevel {
+  label: string
+  nodes: number
+}
+const ARENA_LEVELS: ArenaLevel[] = [
+  { label: '2k nodes', nodes: 2000 },
+  { label: '8k nodes', nodes: 8000 },
+  { label: '30k nodes', nodes: 30000 },
+  { label: '100k nodes', nodes: 100000 },
+]
+
+type ArenaEval = 'classical' | 'nnue'
+
+interface ArenaConfig {
+  level: number
+  eval: ArenaEval
+}
+
+// Balanced, varied opening positions so the games aren't carbon copies. Each is
+// played from both sides as the match alternates colours.
+const ARENA_OPENINGS: { name: string; fen: string }[] = [
+  { name: 'Ruy Lopez', fen: 'r1bqkbnr/1ppp1ppp/p1n5/1B2p3/4P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 0 4' },
+  { name: 'Italian', fen: 'r1bqkbnr/pppp1ppp/2n5/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R b KQkq - 4 3' },
+  { name: 'Sicilian', fen: 'rnbqkbnr/pp1ppppp/8/2p5/4P3/8/PPPP1PPP/RNBQKBNR w KQkq c6 0 2' },
+  { name: 'French', fen: 'rnbqkbnr/pppp1ppp/4p3/8/3PP3/8/PPP2PPP/RNBQKBNR b KQkq d3 0 2' },
+  { name: 'Caro-Kann', fen: 'rnbqkbnr/pp1ppppp/2p5/8/3PP3/8/PPP2PPP/RNBQKBNR b KQkq d3 0 2' },
+  { name: 'Queen’s Gambit', fen: 'rnbqkbnr/ppp1pppp/8/3p4/2PP4/8/PP2PPPP/RNBQKBNR b KQkq - 0 2' },
+  { name: 'King’s Indian', fen: 'rnbqkb1r/pppppp1p/5np1/8/3P4/8/PPP1PPPP/RNBQKBNR w KQkq - 0 3' },
+  { name: 'English', fen: 'rnbqkbnr/pppp1ppp/8/4p3/2P5/8/PP1PPPPP/RNBQKBNR w KQkq - 0 2' },
+]
+
+interface ArenaGame {
+  opening: string
+  aWhite: boolean
+  result: 'a' | 'b' | 'draw'
+  reason: string
+  plies: number
+}
+
+interface ArenaState {
+  running: boolean
+  done: number
+  total: number
+  games: ArenaGame[]
+}
+
+// numeric erf for the likelihood-of-superiority calculation.
+function erf(x: number): number {
+  const t = 1 / (1 + 0.3275911 * Math.abs(x))
+  const y =
+    1 -
+    ((((1.061405429 * t - 1.453152027) * t + 1.421413741) * t - 0.284496736) * t + 0.254829592) *
+      t *
+      Math.exp(-x * x)
+  return x >= 0 ? y : -y
+}
+
+function eloFromScore(score: number): number {
+  const s = Math.max(1e-4, Math.min(1 - 1e-4, score))
+  return -400 * Math.log10(1 / s - 1)
+}
+
+function ArenaConfigPicker({
+  label,
+  cfg,
+  set,
+}: {
+  label: string
+  cfg: ArenaConfig
+  set: (c: ArenaConfig) => void
+}) {
+  return (
+    <div className="arena-cfg">
+      <div className="arena-cfg-label">{label}</div>
+      <div className="mpv-seg arena-seg">
+        {ARENA_LEVELS.map((lv, i) => (
+          <button key={lv.label} className={cfg.level === i ? 'mpv-btn active' : 'mpv-btn'} onClick={() => set({ ...cfg, level: i })}>
+            {lv.label}
+          </button>
+        ))}
+      </div>
+      <div className="mpv-seg arena-seg">
+        {(['classical', 'nnue'] as ArenaEval[]).map((e) => (
+          <button key={e} className={cfg.eval === e ? 'mpv-btn active' : 'mpv-btn'} onClick={() => set({ ...cfg, eval: e })}>
+            {e === 'nnue' ? 'NNUE' : 'classical'}
+          </button>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+function ArenaLab() {
+  const [a, setA] = useState<ArenaConfig>({ level: 0, eval: 'classical' })
+  const [b, setB] = useState<ArenaConfig>({ level: 2, eval: 'classical' })
+  const [gamesN, setGamesN] = useState(12)
+  const [state, setState] = useState<ArenaState | null>(null)
+  const netRef = useRef<NnueWeights | null>(null)
+  const cancelRef = useRef(false)
+
+  // Lazily load a net (a Lab-trained one if present, else the shipped default).
+  const ensureNet = useCallback(async (): Promise<NnueWeights> => {
+    if (netRef.current) return netRef.current
+    const saved = await nnueLoad().catch(() => null)
+    const blob = saved?.blob ?? defaultNnueBlob()
+    netRef.current = deserializeNnue(blob)
+    return netRef.current
+  }, [])
+
+  const run = useCallback(async () => {
+    cancelRef.current = false
+    const net = a.eval === 'nnue' || b.eval === 'nnue' ? await ensureNet() : null
+    const sA = new Searcher()
+    sA.setEvaluator(a.eval === 'nnue' ? net : null)
+    const sB = new Searcher()
+    sB.setEvaluator(b.eval === 'nnue' ? net : null)
+    const nodesA = ARENA_LEVELS[a.level].nodes
+    const nodesB = ARENA_LEVELS[b.level].nodes
+
+    const st: ArenaState = { running: true, done: 0, total: gamesN, games: [] }
+    setState({ ...st, games: [] })
+
+    for (let game = 0; game < gamesN && !cancelRef.current; game++) {
+      const opening = ARENA_OPENINGS[game % ARENA_OPENINGS.length]
+      const aWhite = game % 2 === 0
+      const g = new Game(opening.fen)
+      let ply = 0
+      const maxPly = 200
+      for (; ply < maxPly && g.result() === 'playing'; ply++) {
+        const useA = (g.pos.turn === WHITE) === aWhite
+        const s = useA ? sA : sB
+        const r = s.search(g.pos, {
+          maxDepth: 30,
+          maxTime: 0,
+          maxNodes: useA ? nodesA : nodesB,
+          history: g.keyHistory(),
+        })
+        if (!r.pv[0]) break
+        g.apply(r.pv[0])
+        if (ply % 3 === 0) await sleep(0)
+      }
+      const res = g.result()
+      let result: ArenaGame['result'] = 'draw'
+      let reason = res === 'playing' ? 'adjudicated draw (200 plies)' : res
+      if (res === 'checkmate') {
+        const loserWhite = g.pos.turn === WHITE
+        const aLost = loserWhite === aWhite
+        result = aLost ? 'b' : 'a'
+        reason = 'checkmate'
+      }
+      st.games.push({ opening: opening.name, aWhite, result, reason, plies: ply })
+      st.done = game + 1
+      setState({ ...st, games: st.games.slice() })
+      await sleep(0)
+    }
+    st.running = false
+    setState({ ...st, games: st.games.slice() })
+  }, [a, b, gamesN, ensureNet])
+
+  const stop = useCallback(() => {
+    cancelRef.current = true
+  }, [])
+
+  // Tallies + Elo.
+  const stats = (() => {
+    if (!state || state.games.length === 0) return null
+    let aw = 0
+    let bw = 0
+    let dr = 0
+    for (const gm of state.games) {
+      if (gm.result === 'a') aw++
+      else if (gm.result === 'b') bw++
+      else dr++
+    }
+    const n = state.games.length
+    const pointsA = aw + dr / 2
+    const score = pointsA / n
+    const elo = eloFromScore(score)
+    // 95% CI on the score → asymmetric Elo bounds.
+    const xs: number[] = state.games.map((gm) => (gm.result === 'a' ? 1 : gm.result === 'draw' ? 0.5 : 0))
+    const mean = score
+    const variance = n > 1 ? xs.reduce((acc, x) => acc + (x - mean) * (x - mean), 0) / (n - 1) : 0
+    const se = Math.sqrt(variance / n)
+    const margin = 1.96 * se
+    const eloLow = eloFromScore(mean - margin)
+    const eloHigh = eloFromScore(mean + margin)
+    const decisive = aw + bw
+    const los = decisive > 0 ? 0.5 * (1 + erf((aw - bw) / Math.sqrt(2 * decisive))) : 0.5
+    return { aw, bw, dr, n, pointsA, score, elo, eloLow, eloHigh, los }
+  })()
+
+  const cfgLabel = (c: ArenaConfig) => `${ARENA_LEVELS[c.level].label} · ${c.eval === 'nnue' ? 'NNUE' : 'classical'}`
+
+  const running = state?.running ?? false
+
+  return (
+    <div className="lab arena-lab">
+      <div className="lab-intro">
+        <p>
+          <strong>Engine Arena.</strong> Pit two configurations of the same engine head-to-head over a set of varied
+          openings (each played from both colours), then read off the result as an <strong>Elo difference</strong> with
+          a 95% confidence interval and the likelihood one side is genuinely stronger (LOS). A real, in-browser way to
+          measure that more search — or the neural eval — actually buys strength.
+        </p>
+      </div>
+
+      <div className="arena-configs">
+        <ArenaConfigPicker label="Engine A" cfg={a} set={setA} />
+        <span className="arena-vs">vs</span>
+        <ArenaConfigPicker label="Engine B" cfg={b} set={setB} />
+      </div>
+
+      <div className="arena-controls">
+        <div className="arena-games">
+          <span className="movetime-label">Games</span>
+          <div className="mpv-seg">
+            {[6, 12, 20, 40].map((n) => (
+              <button key={n} className={gamesN === n ? 'mpv-btn active' : 'mpv-btn'} onClick={() => setGamesN(n)} disabled={running}>
+                {n}
+              </button>
+            ))}
+          </div>
+        </div>
+        {running ? (
+          <button className="btn" onClick={stop}>Stop</button>
+        ) : (
+          <button className="btn primary" onClick={run}>Play match</button>
+        )}
+      </div>
+
+      {state && (
+        <>
+          <div className="arena-score">
+            <div className="arena-side a">
+              <div className="arena-side-name">A · {cfgLabel(a)}</div>
+              <div className="arena-side-pts">{stats ? stats.pointsA.toFixed(1) : '0'}</div>
+            </div>
+            <div className="arena-mid">
+              <div className="arena-progress-text">{state.done}/{state.total}{running ? ' · playing…' : ''}</div>
+              {stats && (
+                <div className="arena-wdl">
+                  +{stats.aw} ={stats.dr} −{stats.bw}
+                </div>
+              )}
+            </div>
+            <div className="arena-side b">
+              <div className="arena-side-name">B · {cfgLabel(b)}</div>
+              <div className="arena-side-pts">{stats ? (stats.n - stats.pointsA).toFixed(1) : '0'}</div>
+            </div>
+          </div>
+
+          {stats && (
+            <div className="arena-elo">
+              <div className="arena-elo-main">
+                A − B: <strong>{stats.elo >= 0 ? '+' : ''}{stats.elo.toFixed(0)}</strong> Elo
+                <span className="arena-elo-ci">
+                  {' '}[{stats.eloLow.toFixed(0)}, {stats.eloHigh.toFixed(0)}] · 95% CI
+                </span>
+              </div>
+              <div className="arena-los">
+                LOS (A stronger): <strong>{(stats.los * 100).toFixed(1)}%</strong>
+              </div>
+            </div>
+          )}
+
+          <div className="arena-games-strip">
+            {state.games.map((gm, i) => (
+              <span
+                key={i}
+                className={`arena-dot ${gm.result}`}
+                title={`Game ${i + 1}: ${gm.opening} — A played ${gm.aWhite ? 'White' : 'Black'} — ${
+                  gm.result === 'a' ? 'A won' : gm.result === 'b' ? 'B won' : 'draw'
+                } (${gm.reason}, ${gm.plies} plies)`}
+              />
+            ))}
+          </div>
+        </>
+      )}
+    </div>
+  )
+}
+
 // ---------------- Shell ----------------
 
 export default function Lab() {
@@ -923,6 +1221,9 @@ export default function Lab() {
         <button className={mode === 'nnue' ? 'tab active' : 'tab'} onClick={() => setMode('nnue')}>
           NNUE
         </button>
+        <button className={mode === 'arena' ? 'tab active' : 'tab'} onClick={() => setMode('arena')}>
+          Arena
+        </button>
         <button className={mode === 'perft' ? 'tab active' : 'tab'} onClick={() => setMode('perft')}>
           Perft
         </button>
@@ -936,6 +1237,7 @@ export default function Lab() {
       {mode === 'tablebase' && <TablebaseLab />}
       {mode === 'gtb' && <EndgamesLab />}
       {mode === 'nnue' && <NnueLab />}
+      {mode === 'arena' && <ArenaLab />}
       {mode === 'checks' && <ChecksLab />}
     </div>
   )

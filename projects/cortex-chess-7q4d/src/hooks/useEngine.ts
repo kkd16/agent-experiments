@@ -7,10 +7,11 @@
 // component simply mounts two independent useEngine() instances.
 
 import { useCallback, useEffect, useMemo, useRef } from 'react'
-import { parseFen, type SearchInfo, type MultiInfo } from '../engine'
+import { parseFen, generateLegal, inCheck, MATE, type SearchInfo, type MultiInfo } from '../engine'
 import { Searcher, deserializeNnue, type NnueBlob } from '../engine'
 import { verifyKbnk as verifyKbnkSync, type KbnkVerification } from '../engine/kbnk'
 import { verifyGtb as verifyGtbSync, type GtbVerification } from '../engine/gtb'
+import type { NodeAnalysis } from '../engine/review'
 import type { WorkerOut, WorkerRequest } from '../engine/engine.worker'
 
 export interface ThinkParams {
@@ -47,6 +48,12 @@ export interface EngineHandle {
     opts: { id: string; sample: number; games: number },
     onProgress: (frac: number, phase: string) => void,
   ) => Promise<GtbVerification>
+  // Analyse every node of a game (top-2 lines per position) for the review model.
+  reviewGame: (
+    items: EvalItem[],
+    opts: { maxDepth: number; maxTime: number },
+    onProgress: (done: number, total: number) => void,
+  ) => Promise<NodeAnalysis[]>
   // Install (blob) or remove (null) the NNUE evaluation for subsequent searches.
   setNnue: (blob: NnueBlob | null) => void
   cancel: () => void
@@ -100,6 +107,16 @@ export function useEngine(): EngineHandle {
             resolveRef.current = null
             infoRef.current = null
             resolve?.(msg.report)
+            break
+          }
+          case 'reviewprogress':
+            ;(infoRef.current as ((a: unknown) => void) | null)?.(msg)
+            break
+          case 'reviewdone': {
+            const resolve = resolveRef.current as ((v: unknown) => void) | null
+            resolveRef.current = null
+            infoRef.current = null
+            resolve?.(msg.nodes)
             break
           }
         }
@@ -185,6 +202,44 @@ export function useEngine(): EngineHandle {
     [post],
   )
 
+  const reviewGame = useCallback(
+    (
+      items: EvalItem[],
+      opts: { maxDepth: number; maxTime: number },
+      onProgress: (done: number, total: number) => void,
+    ): Promise<NodeAnalysis[]> =>
+      post(
+        { type: 'review', items, ...opts },
+        ((m: { done: number; total: number }) => onProgress(m.done, m.total)) as (a: never) => void,
+        () => {
+          if (!fallbackRef.current) fallbackRef.current = new Searcher()
+          const s = fallbackRef.current
+          const out: NodeAnalysis[] = []
+          for (let i = 0; i < items.length; i++) {
+            const pos = parseFen(items[i].fen)
+            if (generateLegal(pos).length === 0) {
+              const mated = inCheck(pos, pos.turn)
+              out.push({ score: mated ? -MATE : 0, mate: mated ? -1 : null, bestPv: [], secondScore: null, secondMate: null })
+            } else {
+              const r = s.searchMultiPv(pos, { ...opts, history: items[i].history }, 2)
+              const l0 = r.lines[0]
+              const l1 = r.lines[1]
+              out.push({
+                score: l0?.score ?? 0,
+                mate: l0?.mate ?? null,
+                bestPv: l0?.pv ?? [],
+                secondScore: l1?.score ?? null,
+                secondMate: l1?.mate ?? null,
+              })
+            }
+            onProgress(i + 1, items.length)
+          }
+          return out
+        },
+      ),
+    [post],
+  )
+
   const verifyKbnk = useCallback(
     (
       opts: { sample: number; games: number },
@@ -240,7 +295,7 @@ export function useEngine(): EngineHandle {
   }, [])
 
   return useMemo(
-    () => ({ think, analyze, evalGame, verifyKbnk, verifyGtb, setNnue, cancel }),
-    [think, analyze, evalGame, verifyKbnk, verifyGtb, setNnue, cancel],
+    () => ({ think, analyze, evalGame, reviewGame, verifyKbnk, verifyGtb, setNnue, cancel }),
+    [think, analyze, evalGame, reviewGame, verifyKbnk, verifyGtb, setNnue, cancel],
   )
 }
