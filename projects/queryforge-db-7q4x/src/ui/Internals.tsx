@@ -70,9 +70,9 @@ const STAGES: Stage[] = [
   },
   {
     n: 7,
-    name: 'Storage',
-    file: 'db/storage/btree.ts',
-    body: 'Tables are heaps keyed by rowid; secondary indexes are real B+Trees with internal/leaf nodes, node splitting, and a chained leaf list for range scans. Keys are tuples, so one structure backs both single-column and composite indexes — a shorter bound is treated as a key prefix. EXPLAIN reports each tree’s height and node count.',
+    name: 'Storage — a self-balancing B+Tree',
+    file: 'db/storage/btree.ts · ui/StorageLab.tsx',
+    body: 'Tables are heaps keyed by rowid; secondary indexes are real B+Trees with internal/leaf nodes and a doubly-chained leaf list for range scans. Keys are tuples, so one structure backs both single-column and composite indexes — a shorter bound is treated as a key prefix. The tree is balanced on the way *down and up*: an insert splits a full leaf and grows the root; a delete that drops a node below ⌈order/2⌉ slots borrows a key from a fuller sibling, or merges with one and pulls the separator down, collapsing the root when it is left with a single child — so a tree that grew to height 4 under load returns to height 1 when emptied, and every non-root node stays at least half full (no lazy tombstones). A bottom-up bulkLoad packs a sorted run into leaves at a target fill factor (how a real CREATE INDEX builds), and checkInvariants() verifies the whole structure — balance, key order, separator routing, equal leaf depth and a sorted leaf chain — after every mutation. The Storage Lab makes it visible: insert, delete, bulk-load and range-scan a live tree and watch it split, borrow, merge and collapse, each step narrated from the tree’s own structural trace and re-proven valid. The differential self-tests run thousands of seeded random insert/delete operations against a brute-force reference, checking both the answers and the invariants at every step. EXPLAIN reports each tree’s height and node count.',
   },
   {
     n: 7.5,

@@ -8,6 +8,7 @@ import { recoveryCases } from './recovery/tests'
 import { vectorizedCases } from './vectorized/tests'
 import { compiledCases } from './compiled/tests'
 import { fuzzCases } from './fuzz/tests'
+import { storageCases } from './storage/tests'
 import { SEED_SQL, SAMPLE_QUERIES } from './sampleData'
 import { csvToSql, parseCsv } from './csv'
 import { Database } from './catalog'
@@ -3430,7 +3431,7 @@ test('execution', 'the statement parse cache serves repeated read-only queries',
 })
 
 export function runTests(): TestResult[] {
-  return cases.concat(mvccCases).concat(recoveryCases).concat(vectorizedCases).concat(compiledCases).concat(fuzzCases).map((c) => {
+  return cases.concat(storageCases).concat(mvccCases).concat(recoveryCases).concat(vectorizedCases).concat(compiledCases).concat(fuzzCases).map((c) => {
     try {
       c.run()
       return { name: c.name, group: c.group, pass: true, detail: 'ok' }

@@ -15,6 +15,7 @@ import { ExecutionLab } from './ui/ExecutionLab'
 import { VectorLab } from './ui/VectorLab'
 import { CompileLab } from './ui/CompileLab'
 import { FuzzLab } from './ui/FuzzLab'
+import { StorageLab } from './ui/StorageLab'
 import { CsvImport } from './ui/CsvImport'
 import { SAMPLE_QUERIES } from './db/sampleData'
 import type { QueryResult } from './db/engine'
@@ -33,6 +34,7 @@ const TABS = [
   { id: 'playground', label: 'Playground' },
   { id: 'import', label: 'Import CSV' },
   { id: 'reference', label: 'Reference' },
+  { id: 'storage', label: 'Storage Lab' },
   { id: 'optimizer', label: 'Optimizer Lab' },
   { id: 'execution', label: 'Execution Lab' },
   { id: 'vectorize', label: 'Vectorize Lab' },
@@ -142,6 +144,7 @@ export default function App() {
         <div className="doc-layout">
           {route === 'import' && <CsvImport onRun={run} onPreview={previewQuery} />}
           {route === 'reference' && <Reference />}
+          {route === 'storage' && <StorageLab />}
           {route === 'optimizer' && (
             <OptimizerLab engine={engine} version={version} onApply={(ddl) => run(ddl)} />
           )}

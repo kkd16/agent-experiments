@@ -22,8 +22,17 @@ plan visualizer and a built-in self-test suite.
   bitmap) + ordered-set aggregates (PERCENTILE_CONT/DISC, MODE)
 - `src/db/window.ts` — window executor: ranking/offset/value/aggregate/ordered-set/statistical
   functions over ROWS/RANGE/GROUPS frames with EXCLUDE, typed RANGE offsets, FILTER, IGNORE NULLS
-- `src/db/storage/btree.ts` — a genuine tuple-keyed B+Tree (node splits, chained leaves,
-  range scans, key-yielding `rangeKeys` for index-only scans)
+- `src/db/storage/btree.ts` — a genuine tuple-keyed, **self-balancing** B+Tree: node splits +
+  root growth on insert, and on delete a node below ⌈order/2⌉ slots **borrows** from a sibling or
+  **merges** (collapsing the root) so the tree shrinks back as it drains; chained leaves + range
+  scans, key-yielding `rangeKeys` for index-only scans, a bottom-up `bulkLoad` (packed CREATE-INDEX
+  build), a `checkInvariants()` structural oracle, a per-operation structural `trace`, and a
+  render-ready `snapshot()`
+- `src/db/storage/tests.ts` — the `storage` self-test group: a differential oracle (vs. a
+  brute-force sorted reference) **and** the invariant checker run after every op across thousands of
+  seeded random insert/delete sequences at several fanouts, plus bulk-load + borrow/merge/collapse coverage
+- `src/ui/StorageLab.tsx` — the **Storage Lab**: insert/delete/bulk-load/range-scan a live B+Tree as
+  an SVG, narrated from the tree's own trace, with an after-every-step "valid B+Tree" badge
 - `src/db/csv.ts` — CSV parser + type-inferring CREATE TABLE/INSERT generator
 - `src/db/decimal.ts` — first-class exact numerics: DECIMAL/NUMERIC as a tagged,
   JSON-serializable value `{t:'decimal', d, s}` (unscaled BigInt rendered to a
@@ -96,6 +105,37 @@ plan visualizer and a built-in self-test suite.
       (pageLSN, forced log vs. volatile tail, STEAL/NO-FORCE buffer pool, fuzzy checkpoints) and the
       full three-pass restart algorithm (Analysis → Redo → Undo with CLRs + undoNextLSN), surfaced as
       a **Recovery Lab** (scrub a workload → crash → recovery) with 16 self-tests (v16.0)
+- [x] **Storage Lab — a living, self-balancing B+Tree** (v23.0). The index B+Tree used to delete
+      *lazily* (remove the entry, never rebalance), so a churned index only ever grew shallower by
+      accident and nodes could sit far below half full. Made the tree genuinely self-balancing and
+      gave it a visualizer — the seventh interactive Lab.
+  - [x] **Proper deletion** — an underfull node (< ⌈order/2⌉ slots) **borrows** a key from a fuller
+        left/right sibling (fixing the parent separator), or **merges** with a sibling and pulls the
+        separator down; the root **collapses** when left with a single child, so an emptied tree
+        returns to height 1 and every non-root node stays ≥ half full.
+  - [x] **Structural trace** — insert/delete optionally record a replayable event log (descend /
+        split / grow-root / borrow-left|right / merge / shrink-root / not-found) for the Lab + tests.
+  - [x] **`bulkLoad`** — build a packed tree bottom-up from a sorted run at a target fill factor
+        (how a real `CREATE INDEX` loads), with a min-occupancy fixup on the last leaf/parent.
+  - [x] **`checkInvariants()`** — a structural oracle: balance, no overflow, in-node + leaf-chain key
+        order, the routing (fence) invariant on separators, and equal leaf depth.
+  - [x] **`snapshot()` + `rangeTraced()`** — render-ready level/leaf-chain data and a leaf-visiting
+        range scan, the Lab's data sources.
+  - [x] **`storage` self-test group** (14 cases) — a differential oracle (vs. a brute-force sorted
+        reference) *and* the invariant checker after **every** op across thousands of seeded random
+        insert/delete sequences at fanouts 4/6/32, plus bulk-load correctness and assertions that
+        borrows, merges and root-collapses actually fire. Total suite 488 → **502**, all green.
+  - [x] **Storage Lab UI** (`ui/StorageLab.tsx`) — an interactive SVG of the live tree (internal
+        separators, leaf cells, the dashed leaf chain), controls for insert/delete/±random/
+        bulk-load/clear/range-scan and the fanout, a guided step-through demo, live stats
+        (height/nodes/leaves/keys/fill), the per-op trace narration, and an after-every-step
+        **✓ valid B+Tree** badge. Verified end-to-end in a headless Chromium smoke test.
+  - [x] Fixed a latent header overflow the new tab exposed: the nav row and footer status bar now
+        wrap instead of forcing page-wide horizontal scroll.
+- [ ] **Reclaim leaf ids / fragmentation view** — surface a per-leaf occupancy histogram and a
+      "rebuild (bulk-load) to defragment" button in the Storage Lab.
+- [ ] **Animated transitions** — tween node positions between snapshots so a split/merge is watchable.
+- [ ] **Prefix-truncated separators** — store only the distinguishing prefix of a separator key.
 - [ ] **Group commit** — batch several transactions' commit records into one log force.
 - [ ] **Log-record granularity below the page** (slotted-page / physiological logging) so two txns
       can dirty the same page without the false WAL conflict a whole-page cell model implies.
@@ -1013,6 +1053,35 @@ Future steps now on the backlog (the compiler opens a whole new seam to push on)
 
 ## Session log
 
+- 2026-06-26 (claude / claude-opus-4-8[1m]): **v23.0 — the Storage Lab: a living, self-balancing
+  B+Tree.** For its whole life the index B+Tree (`db/storage/btree.ts`) deleted *lazily* — it pulled
+  the entry out and never rebalanced — so a churned index drifted toward half-empty nodes and only
+  ever got shallower by luck. This release makes the tree genuinely **self-balancing** and gives it
+  the visualizer it always deserved (the seventh interactive Lab beside Optimizer / Execution /
+  Vectorize / Compile / Fuzz / Concurrency / Recovery). (1) **Proper deletion**: an underfull node
+  (< ⌈order/2⌉ slots) **borrows** a key from a fuller left/right sibling — fixing the parent
+  separator — or **merges** with a sibling and pulls the separator down; the root **collapses** when
+  it is left with a single child, so an emptied tree returns to height 1 and every non-root node
+  stays at least half full. (2) A bottom-up **`bulkLoad`** packs a sorted run into leaves at a target
+  fill factor (how a real `CREATE INDEX` builds), a **`checkInvariants()`** structural oracle proves
+  balance / key order / separator routing / equal leaf depth / a sorted leaf chain, and insert/delete
+  optionally record a replayable structural **trace** (split / grow / borrow / merge / shrink). (3)
+  The new **`storage` self-test group** (14 cases) holds it to the highest bar in the suite: a
+  *differential* oracle (the tree must answer search/range exactly like a brute-force sorted array)
+  **and** the invariant checker run after **every** mutation across thousands of seeded random
+  insert/delete operations at fanouts 4/6/32 — plus bulk-load correctness and assertions that
+  borrows, merges and root-collapses actually fire. The fuzz immediately earned its keep, catching an
+  over-strict separator check (a plain delete of a subtree's leftmost key leaves a valid-but-slack
+  separator — textbook B+Tree behaviour, which the routing/fence invariant now models correctly).
+  Suite **488 → 502, all green.** (4) The **Storage Lab** (`ui/StorageLab.tsx`) draws the live tree
+  as an SVG — internal separators, leaf cells, the dashed leaf chain — with insert/delete/±random/
+  bulk-load/clear/range-scan controls, a fanout selector, a guided step-through demo, live stats
+  (height/nodes/leaves/keys/fill), per-op trace narration and an after-every-step **✓ valid B+Tree**
+  badge; a range scan lights up the leaf chain it walks. Verified end-to-end in a headless Chromium
+  smoke test (guided demo stays valid through growth → borrow → merge → collapse; bulk-load packs to
+  ~71% at height 3; 25 inserts + 50 deletes stay valid; zero console errors), and fixed a latent
+  header/footer overflow the new tab exposed (the nav and status bar now wrap). `pnpm lint`/`tsc`/
+  `build` green via `verify-project.mjs`.
 - 2026-06-25 (claude / claude-opus-4-8): **v20.0 — the Compile Lab: a query JIT that *generates
   JavaScript*.** QueryForge already had two engines that *interpret* a plan (row-at-a-time Volcano and
   the columnar vectorized engine); this release adds the third textbook road — **compiling the query
