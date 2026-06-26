@@ -198,10 +198,52 @@ representation, move generation, search and evaluation are all hand-built here.
 - [ ] Pawn-ful tablebases (KPvKP, KRvKP, KPvK as exact DTM) — needs un-promotion / en-passant unmoves and a layered
       dependency on the promoted-material tables (the generic solver is currently pawnless / fixed-material)
 - [ ] Pieces on *both* sides (KQvKR, KRvKB, …) — generalise the lone-king defender assumption
-- [ ] Two-sided game clock with a live countdown and flag-fall (both human and engine), not just the engine's clock
 - [ ] WASM/SIMD or bitboard rewrite for a big NPS boost
 - [ ] Ponder line preview (show the predicted reply + the engine's intended answer while it thinks)
 - [ ] Bigger EPD sets (full WAC-300, ECM) with category breakdowns and an Elo estimate from the pass rate
+
+## Cortex Coach — full game review (planned + shipping this session)
+
+The engine could *analyse* a position and graph a game's eval, but it could never tell you **how well
+you played**: which move was the blunder, what you should have played instead, and a number for the
+whole game. That's the loop every serious player lives in (chess.com/lichess "Game Review"). Cortex
+Coach closes it with a principled, from-scratch accuracy model — no external service, all in-browser.
+
+- [ ] **`engine/review.ts` — a principled move-quality model.** Win-probability from centipawns via the
+      logistic `win% = 50 + 50·(2/(1+e^(−0.00368208·cp)) − 1)`; per-move **accuracy%** from the win-%
+      drop (`103.1668·e^(−0.04354·Δ) − 3.1669`); per-player **accuracy** as the mean of a
+      volatility-weighted mean and the harmonic mean of move accuracies (the lichess method);
+      **ACPL** (average centipawn loss) and an **estimated performance rating**.
+- [ ] **Move classification** — Brilliant `‼` (a sound sacrifice that's still best, SEE< 0 yet stays
+      winning), Great `❗` (the only move that holds — the 2nd-best is far worse), Best, Excellent, Good,
+      Book (in the opening book — excluded from stats), Inaccuracy `?!`, Mistake `?`, Blunder `??`, and
+      **Missed win / missed mate** (a forced mate or winning edge thrown away).
+- [ ] **Heuristic coach text per move** generated from engine facts only (no LLM): the played vs. best
+      move, the eval swing, "hangs material" (SEE), "missed mate in N", and the best line in SAN.
+- [ ] **Worker `review` request** — a multi-PV(2) sweep over every node that streams progress and
+      returns, per node, the best line + score + 2nd-best score (so the model can spot only-moves and
+      sacrifices); a `reviewGame` method on the `useEngine` hook with a synchronous fallback.
+- [ ] **A new `Review` tab** — paste a PGN (or pick a sample), hit **Review**, watch the progress bar,
+      then get: an **accuracy scoreboard** for both players (accuracy %, ACPL, est. rating, a per-class
+      tally), a **classification-coloured move list**, a **key-moments** list (biggest swings, jump-to),
+      a navigable board with a best-move arrow, and a **coach card** for the current move.
+- [ ] **`reviewSelftest()`** wired into the **Self-tests** Lab tab — win% is monotone/symmetric and
+      pins 50 at 0 cp, accuracy is 100 at no loss and decreasing, a constructed game yields the expected
+      Best/Blunder/Missed-mate labels, and player accuracy stays in `[0,100]`.
+- [ ] **Offline validation harness** (`tools/test-review.ts`) — review a real master game end-to-end
+      (the Opera Game) and assert the model's invariants and that Black's accuracy < White's there.
+
+## Engine Arena — measurable strength (planned this session)
+
+- [ ] **Engine-vs-engine arena in the Lab** — pit two configurations (strength level and/or NNUE
+      on/off) head-to-head over N games from varied openings, with a live score, and compute an **Elo
+      difference with a confidence interval** (and LOS) from the result — a real, in-browser way to
+      *measure* that the engine's knobs do what they claim.
+
+## Play-tab polish (planned this session)
+
+- [ ] **Two-sided live game clock** with a per-side countdown and **flag-fall** (both the human and the
+      engine), driven off the existing time-control presets — not just the engine's clock.
 
 ## Session log
 

@@ -33,6 +33,7 @@ import {
   mulberry32,
   START_FEN,
   chess960Selftest,
+  reviewSelftest,
 } from '../engine'
 import { useEngine } from '../hooks/useEngine'
 import NnueLab from './NnueLab'
@@ -847,6 +848,11 @@ function runChecks(): CheckRow[] {
   // reference perft, make/unmake + hashing stay exact across random 960 trees,
   // an independent oracle confirms every castle move, and perft is colour-symmetric.
   for (const c of chess960Selftest()) out.push({ group: 'Chess960', name: c.name, pass: c.pass, detail: c.detail })
+
+  // Cortex Coach review model: win% is monotone/symmetric and pinned at 50 cp=0,
+  // accuracy is 100 at no loss and decreasing, and the classifier flags a forced
+  // mate / a large swing / a best move correctly.
+  for (const c of reviewSelftest().checks) out.push({ group: 'Review', name: c.name, pass: c.ok, detail: c.detail })
 
   return out
 }
