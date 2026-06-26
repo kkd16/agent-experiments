@@ -1,6 +1,7 @@
 import type { JSX } from 'react';
 import { RaftLab } from './RaftLab';
 import { CrdtLab } from './CrdtLab';
+import { CoeditLab } from './CoeditLab';
 import { GossipLab } from './GossipLab';
 import { VClockLab } from './VClockLab';
 import { CommitLab } from './CommitLab';
@@ -33,6 +34,15 @@ export const LABS: LabDef[] = [
     icon: '⌬',
     tag: 'replication',
     Component: CrdtLab,
+  },
+  {
+    id: 'coedit',
+    title: 'Collaborative text',
+    blurb:
+      'A live, server-less collaborative editor on a Replicated Growable Array (RGA) — the sequence CRDT behind Yjs and Automerge. Type into any replica, partition the network, edit both sides at once, heal, and watch every replica converge to the same document character-for-character.',
+    icon: '✎',
+    tag: 'crdt · editor',
+    Component: CoeditLab,
   },
   {
     id: 'gossip',

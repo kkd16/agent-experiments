@@ -13,6 +13,7 @@ import { createCrdtProtocol, crdtSpec, type CrdtNodeState } from '../protocols/c
 import type { CrdtOp } from '../protocols/crdt/crdts';
 import { createTwoPC, type TwoPCCmd, type TwoPCState } from '../protocols/commit/twopc';
 import { createVClock, type VcCmd, type VcState } from '../protocols/vclock/vclock';
+import { createCoedit, docText, visibleCells, type CoeditOp, type CoeditState } from '../protocols/coedit/coedit';
 
 export interface TestResult {
   group: string;
@@ -461,6 +462,54 @@ export function runSelfTests(): TestResult[] {
     const vals = k.views().map((v) => spec.value(v.state.data));
     const ok = vals.every((v) => v === vals[0]) && vals[0].includes('x');
     return [ok, ok ? `converged with add-wins: ${vals[0]}` : `unexpected: ${vals.join(' / ')}`];
+  });
+
+  // ---- Collaborative text (RGA) ----
+  t('CoEdit', 'Concurrent edits across a partition converge to one document', () => {
+    const k = new Kernel<CoeditState, CoeditOp>({
+      seed: 6,
+      protocol: createCoedit(),
+      nodeIds: ['A', 'B', 'C'],
+    });
+    const typeInto = (id: string, str: string) => {
+      const node = k.views().find((v) => v.id === id)!;
+      let base = visibleCells(node.state.doc).length;
+      for (const ch of str) k.command(id, { t: 'ins', index: base++, ch });
+    };
+    typeInto('A', 'hello world');
+    for (let i = 0; i < 60; i++) k.advance(30); // replicate the shared base everywhere
+    k.partition([['A'], ['B', 'C']]);
+    typeInto('A', '!!!'); // concurrent edit on the isolated side
+    typeInto('B', '???'); // and on the majority side
+    for (let i = 0; i < 30; i++) k.advance(30);
+    k.healNetwork();
+    for (let i = 0; i < 300; i++) k.advance(30);
+    const texts = k.views().map((v) => docText(v.state.doc));
+    const converged = texts.every((tx) => tx === texts[0]);
+    const keptBoth = texts[0].includes('!!!') && texts[0].includes('???') && texts[0].includes('hello world');
+    const ok = converged && keptBoth;
+    return [ok, ok ? `all replicas converged to ${JSON.stringify(texts[0])}` : `texts: ${texts.map((x) => JSON.stringify(x)).join(' / ')}`];
+  });
+
+  t('CoEdit', 'Insert/delete on an RGA is order-independent (commutative merge)', () => {
+    const k = new Kernel<CoeditState, CoeditOp>({
+      seed: 12,
+      protocol: createCoedit(),
+      nodeIds: ['A', 'B', 'C', 'D'],
+    });
+    const chaos = new Rng(55);
+    for (let r = 0; r < 40; r++) {
+      const id = chaos.pick(k.nodeOrder)!;
+      const node = k.views().find((v) => v.id === id)!;
+      const len = visibleCells(node.state.doc).length;
+      if (len > 2 && chaos.next() < 0.3) k.command(id, { t: 'del', index: chaos.int(0, len - 1) });
+      else k.command(id, { t: 'ins', index: chaos.int(0, len), ch: 'abcdefgh'[chaos.int(0, 7)] });
+      k.advance(chaos.int(5, 50));
+    }
+    for (let i = 0; i < 400; i++) k.advance(30);
+    const texts = k.views().map((v) => docText(v.state.doc));
+    const ok = texts.every((tx) => tx === texts[0]);
+    return [ok, ok ? `40 interleaved edits converged to ${JSON.stringify(texts[0])}` : `diverged: ${texts.map((x) => JSON.stringify(x)).join(' / ')}`];
   });
 
   // ---- 2PC ----

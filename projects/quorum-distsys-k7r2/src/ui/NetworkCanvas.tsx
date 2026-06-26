@@ -14,6 +14,8 @@ export interface NodeVisual {
   badge?: string;
   glow?: boolean;
   down?: boolean;
+  /** Render faded (e.g. a non-voting member during a membership change). */
+  dim?: boolean;
 }
 
 interface Props<S> {
@@ -152,6 +154,7 @@ export function NetworkCanvas<S>({
       const i = nodeIndex.get(node.id) ?? 0;
       const v = visual(node, i);
       const r = 26;
+      ctx.globalAlpha = v.dim && !v.down ? 0.4 : 1;
       if (v.glow && !v.down) {
         ctx.beginPath();
         ctx.arc(p.x, p.y, r + 7, 0, Math.PI * 2);
@@ -199,6 +202,7 @@ export function NetworkCanvas<S>({
         ctx.font = '700 9px ui-monospace, monospace';
         ctx.fillText(v.badge, p.x + r - 2, p.y - r + 3);
       }
+      ctx.globalAlpha = 1;
     }
   }, [snapshot, width, height, nodeOrder, visual, messageColor, messageGlyph, selected, layout]);
 
