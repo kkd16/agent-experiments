@@ -43,6 +43,7 @@ export function createRaft(config: RaftConfig = DEFAULT_RAFT_CONFIG): Protocol<R
     }
     s.role = 'follower';
     s.leaderId = leader;
+    if (leader !== null) s.lastLeaderContact = ctx.now;
     if (wasLeader) ctx.clearTimer('heartbeat');
     armElection(ctx, s);
   };
@@ -91,6 +92,26 @@ export function createRaft(config: RaftConfig = DEFAULT_RAFT_CONFIG): Protocol<R
     ctx.setTimer('heartbeat', config.heartbeat);
   };
 
+  // Pre-vote: canvass for a would-be term WITHOUT bumping our own term or
+  // persisting a vote. Only if a majority say "yes, I'd vote for you right now"
+  // do we start a real, term-incrementing election. This stops a node that has
+  // been partitioned away (and keeps timing out) from rejoining with a wildly
+  // inflated term and forcing the healthy leader to step down.
+  const startPreVote = (ctx: NodeContext, s: RaftState) => {
+    s.preVoteTerm = s.currentTerm + 1;
+    s.preVotes = { [ctx.self]: true };
+    s.role = 'follower';
+    armElection(ctx, s);
+    ctx.log('state', `pre-vote for term ${s.preVoteTerm}`);
+    const rv: RequestVote = {
+      term: s.preVoteTerm,
+      candidateId: ctx.self,
+      lastLogIndex: lastIndex(s),
+      lastLogTerm: lastTerm(s),
+    };
+    ctx.broadcast('PreVote', () => rv);
+  };
+
   const startElection = (ctx: NodeContext, s: RaftState) => {
     s.currentTerm++;
     s.role = 'candidate';
@@ -137,6 +158,9 @@ export function createRaft(config: RaftConfig = DEFAULT_RAFT_CONFIG): Protocol<R
         nextIndex: {},
         matchIndex: {},
         votesGranted: {},
+        lastLeaderContact: 0,
+        preVoteTerm: 0,
+        preVotes: {},
         electionTimeout: config.electionMin,
       };
       armElection(ctx, s);
@@ -153,6 +177,9 @@ export function createRaft(config: RaftConfig = DEFAULT_RAFT_CONFIG): Protocol<R
       s.nextIndex = {};
       s.matchIndex = {};
       s.votesGranted = {};
+      s.lastLeaderContact = 0;
+      s.preVoteTerm = 0;
+      s.preVotes = {};
       armElection(ctx, s);
       ctx.log('state', 'restarted as follower; replaying log from leader');
     },
@@ -169,7 +196,10 @@ export function createRaft(config: RaftConfig = DEFAULT_RAFT_CONFIG): Protocol<R
 
     onTimer(ctx, s, name) {
       if (name === 'election') {
-        if (s.role !== 'leader') startElection(ctx, s);
+        if (s.role !== 'leader') {
+          if (config.preVote) startPreVote(ctx, s);
+          else startElection(ctx, s);
+        }
       } else if (name === 'heartbeat') {
         if (s.role === 'leader') {
           broadcastAppend(ctx, s);
@@ -180,6 +210,24 @@ export function createRaft(config: RaftConfig = DEFAULT_RAFT_CONFIG): Protocol<R
 
     onMessage(ctx, s, msg: Message) {
       switch (msg.type) {
+        case 'PreVote': {
+          const rv = msg.payload as RequestVote;
+          const upToDate =
+            rv.lastLogTerm > lastTerm(s) || (rv.lastLogTerm === lastTerm(s) && rv.lastLogIndex >= lastIndex(s));
+          const recentLeader = s.lastLeaderContact > 0 && ctx.now - s.lastLeaderContact < config.electionMin;
+          const granted = rv.term >= s.currentTerm && upToDate && !recentLeader;
+          // NB: pre-vote never mutates currentTerm or votedFor.
+          ctx.send(rv.candidateId, 'PreVoteResp', { term: s.preVoteTerm, voteGranted: granted, from: ctx.self });
+          break;
+        }
+        case 'PreVoteResp': {
+          const r = msg.payload as RequestVoteResp;
+          if (s.role === 'follower' && s.preVoteTerm === s.currentTerm + 1 && r.voteGranted) {
+            s.preVotes[r.from] = true;
+            if (Object.values(s.preVotes).filter(Boolean).length >= majority(ctx)) startElection(ctx, s);
+          }
+          break;
+        }
         case 'RequestVote':
           handleRequestVote(ctx, s, msg.payload as RequestVote, becomeFollower, armElection);
           break;

@@ -8,7 +8,7 @@ import { PriorityQueue } from '../sim/pqueue';
 import { Kernel } from '../sim/kernel';
 import { createRaft } from '../protocols/raft/raft';
 import { raftInvariants } from '../protocols/raft/invariants';
-import type { RaftCommand, RaftState } from '../protocols/raft/types';
+import { DEFAULT_RAFT_CONFIG, type RaftCommand, type RaftState } from '../protocols/raft/types';
 import { createCrdtProtocol, crdtSpec, type CrdtNodeState } from '../protocols/crdt/crdt';
 import type { CrdtOp } from '../protocols/crdt/crdts';
 import { createTwoPC, type TwoPCCmd, type TwoPCState } from '../protocols/commit/twopc';
@@ -21,8 +21,12 @@ export interface TestResult {
   detail: string;
 }
 
-function raftKernel(seed: number, ids: string[]) {
-  return new Kernel<RaftState, RaftCommand>({ seed, protocol: createRaft(), nodeIds: ids });
+function raftKernel(seed: number, ids: string[], preVote = false) {
+  return new Kernel<RaftState, RaftCommand>({
+    seed,
+    protocol: createRaft({ ...DEFAULT_RAFT_CONFIG, preVote }),
+    nodeIds: ids,
+  });
 }
 
 export function runSelfTests(): TestResult[] {
@@ -120,8 +124,8 @@ export function runSelfTests(): TestResult[] {
     return [ok, `${committed}/5 replicas applied the latest committed value`];
   });
 
-  t('Raft', 'Never violates safety under 1,200 chaos steps', () => {
-    const k = raftKernel(2026, ['A', 'B', 'C', 'D', 'E']);
+  const chaosRun = (preVote: boolean): [boolean, string] => {
+    const k = raftKernel(2026, ['A', 'B', 'C', 'D', 'E'], preVote);
     const chaos = new Rng(31337);
     const ids = k.nodeOrder;
     let cmd = 0;
@@ -146,6 +150,23 @@ export function runSelfTests(): TestResult[] {
       if (bad) firstBreak = `${bad.name}: ${bad.detail}`;
     }
     return [!firstBreak, firstBreak || 'all four Raft invariants held through 1,200 randomized faults'];
+  };
+
+  t('Raft', 'Never violates safety under 1,200 chaos steps', () => chaosRun(false));
+  t('Raft', 'Stays safe under 1,200 chaos steps with pre-vote', () => chaosRun(true));
+
+  t('Raft', 'Pre-vote stops a partitioned node from inflating terms', () => {
+    const termWhenIsolated = (preVote: boolean) => {
+      const k = raftKernel(7, ['A', 'B', 'C', 'D', 'E'], preVote);
+      for (let i = 0; i < 80; i++) k.advance(25); // settle on a leader
+      k.partition([['A', 'B', 'C', 'D'], ['E']]); // isolate E
+      for (let i = 0; i < 300; i++) k.advance(25); // let E keep timing out
+      return k.views().find((v) => v.id === 'E')!.state.currentTerm;
+    };
+    const off = termWhenIsolated(false);
+    const on = termWhenIsolated(true);
+    const ok = on < off && on <= 2;
+    return [ok, `isolated node's term: ${off} without pre-vote vs ${on} with pre-vote`];
   });
 
   // ---- CRDT ----

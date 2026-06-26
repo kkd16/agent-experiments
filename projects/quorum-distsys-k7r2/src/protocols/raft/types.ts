@@ -34,6 +34,11 @@ export interface RaftState {
   // --- candidate-only volatile ---
   votesGranted: Record<NodeId, boolean>;
 
+  // --- pre-vote (volatile) ---
+  lastLeaderContact: number; // virtual time we last heard from a valid leader
+  preVoteTerm: number; // the would-be term we are currently canvassing for
+  preVotes: Record<NodeId, boolean>;
+
   // --- for the UI ---
   electionTimeout: number; // the most recently chosen randomized timeout (ms)
 }
@@ -42,12 +47,15 @@ export interface RaftConfig {
   electionMin: number;
   electionMax: number;
   heartbeat: number;
+  /** Run an extra pre-vote round so a partitioned node can't inflate terms. */
+  preVote: boolean;
 }
 
 export const DEFAULT_RAFT_CONFIG: RaftConfig = {
   electionMin: 300,
   electionMax: 600,
   heartbeat: 120,
+  preVote: false,
 };
 
 // --- message payloads ---
