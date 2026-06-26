@@ -250,6 +250,9 @@ export function runSelfTests(): TestResult[] {
   r.push(nameCycleTest())
   r.push(renameSheetTest())
 
+  // --- the Solver (v5: constrained multi-cell optimization) ---
+  r.push(solverTests())
+
   return r.flat()
 }
 
@@ -502,6 +505,116 @@ function transitiveTest(): TestResult[] {
   wb.setCell({ row: 0, col: 0 }, '3') // ripple through the chain
   const pass = wb.getDisplay({ row: 3, col: 0 }) === '24'
   return [{ group: 'graph', name: 'transitive recalc (A1→A2→A3→A4)', pass, detail: pass ? undefined : `got ${wb.getDisplay({ row: 3, col: 0 })}` }]
+}
+
+function solverTests(): TestResult[] {
+  const out: TestResult[] = []
+  const A = (row: number, col: number): Coord => ({ row, col })
+  const near = (a: number, b: number, tol = 1e-2): boolean => Math.abs(a - b) <= tol
+  const add = (name: string, pass: boolean, detail?: string) => out.push({ group: 'solver', name, pass, detail: pass ? undefined : detail })
+
+  // 1) Linear product-mix LP — auto-detected linear, solved exactly with simplex.
+  //    max 45c + 80t  s.t.  5c+20t ≤ 400,  10c+15t ≤ 450  ⇒  (24, 14), profit 2200.
+  {
+    const wb = new Workbook(40, 20)
+    wb.setMany([
+      { coord: A(0, 0), raw: '0' }, // A1 = chairs
+      { coord: A(1, 0), raw: '0' }, // A2 = tables
+      { coord: A(0, 1), raw: '=45*A1+80*A2' }, // B1 profit (objective)
+      { coord: A(0, 2), raw: '=5*A1+20*A2' }, // C1 wood
+      { coord: A(1, 2), raw: '=10*A1+15*A2' }, // C2 labor
+    ])
+    const res = wb.solve({
+      objective: A(0, 1),
+      sense: 'max',
+      variables: [A(0, 0), A(1, 0)],
+      nonNegative: true,
+      constraints: [
+        { lhs: A(0, 2), rel: '<=', rhs: { kind: 'num', value: 400 } },
+        { lhs: A(1, 2), rel: '<=', rhs: { kind: 'num', value: 450 } },
+      ],
+    })
+    add('LP product-mix uses simplex', res.method === 'simplex', `method ${res.method}`)
+    add('LP product-mix objective = 2200', near(res.objective, 2200), `got ${res.objective}`)
+    add('LP product-mix (chairs, tables) = (24, 14)', near(res.variables[0].value, 24) && near(res.variables[1].value, 14), JSON.stringify(res.variables.map((v) => v.value)))
+    add('LP product-mix all constraints satisfied', res.constraints.every((c) => c.satisfied))
+    add('Solver restores the model (A1 back to 0)', wb.getRaw(A(0, 0)) === '0', `A1 = ${wb.getRaw(A(0, 0))}`)
+  }
+
+  // 2) Nonlinear constrained — Nelder–Mead: min (x−3)²+(y−2)² s.t. x+y ≤ 4 ⇒ (2.5, 1.5).
+  {
+    const wb = new Workbook(40, 20)
+    wb.setMany([
+      { coord: A(0, 0), raw: '0' },
+      { coord: A(1, 0), raw: '0' },
+      { coord: A(0, 1), raw: '=(A1-3)^2+(A2-2)^2' },
+      { coord: A(0, 2), raw: '=A1+A2' },
+    ])
+    const res = wb.solve({
+      objective: A(0, 1),
+      sense: 'min',
+      variables: [A(0, 0), A(1, 0)],
+      nonNegative: false,
+      constraints: [{ lhs: A(0, 2), rel: '<=', rhs: { kind: 'num', value: 4 } }],
+    })
+    add('nonlinear model uses Nelder–Mead', res.method === 'nelder-mead', `method ${res.method}`)
+    add('nonlinear solution is feasible', res.feasible)
+    add('nonlinear optimum ≈ (2.5, 1.5)', near(res.variables[0].value, 2.5, 3e-2) && near(res.variables[1].value, 1.5, 3e-2), JSON.stringify(res.variables.map((v) => v.value)))
+  }
+
+  // 3) Value goal — drive x² to 9 over x ∈ [0, ∞) ⇒ x = 3.
+  {
+    const wb = new Workbook(40, 20)
+    wb.setMany([{ coord: A(0, 0), raw: '1' }, { coord: A(0, 1), raw: '=A1*A1' }])
+    const res = wb.solve({ objective: A(0, 1), sense: 'value', target: 9, variables: [A(0, 0)], nonNegative: true, constraints: [] })
+    add('value goal x² = 9 ⇒ x = 3', near(res.variables[0].value, 3, 2e-2), `got ${res.variables[0]?.value}`)
+  }
+
+  // 4) Infeasible model is reported, not silently mis-solved.
+  {
+    const wb = new Workbook(40, 20)
+    wb.setMany([{ coord: A(0, 0), raw: '0' }, { coord: A(0, 1), raw: '=A1' }])
+    const res = wb.solve({
+      objective: A(0, 1),
+      sense: 'max',
+      variables: [A(0, 0)],
+      nonNegative: true,
+      constraints: [
+        { lhs: A(0, 0), rel: '>=', rhs: { kind: 'num', value: 5 } },
+        { lhs: A(0, 0), rel: '<=', rhs: { kind: 'num', value: 2 } },
+      ],
+    })
+    add('infeasible model reported as infeasible', res.status === 'infeasible', `status ${res.status}`)
+  }
+
+  // 5) Blend LP with an equality + a ≥ and a per-variable floor; constraints must hold.
+  //    min 2a+3b+1c  s.t.  a+b+c = 10,  a ≥ 2,  a+2b+3c ≥ 18.
+  {
+    const wb = new Workbook(40, 20)
+    wb.setMany([
+      { coord: A(0, 0), raw: '0' },
+      { coord: A(1, 0), raw: '0' },
+      { coord: A(2, 0), raw: '0' },
+      { coord: A(0, 1), raw: '=2*A1+3*A2+1*A3' },
+      { coord: A(1, 1), raw: '=A1+A2+A3' },
+      { coord: A(2, 1), raw: '=A1+2*A2+3*A3' },
+    ])
+    const res = wb.solve({
+      objective: A(0, 1),
+      sense: 'min',
+      variables: [A(0, 0), A(1, 0), A(2, 0)],
+      nonNegative: true,
+      constraints: [
+        { lhs: A(1, 1), rel: '=', rhs: { kind: 'num', value: 10 } },
+        { lhs: A(0, 0), rel: '>=', rhs: { kind: 'num', value: 2 } },
+        { lhs: A(2, 1), rel: '>=', rhs: { kind: 'num', value: 18 } },
+      ],
+    })
+    add('blend LP is feasible', res.feasible)
+    add('blend LP satisfies every constraint', res.constraints.every((c) => c.satisfied), JSON.stringify(res.constraints))
+  }
+
+  return out
 }
 
 function fillRewriteTest(): TestResult[] {

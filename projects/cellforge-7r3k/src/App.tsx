@@ -24,6 +24,7 @@ import FindReplace from './components/FindReplace'
 import GoalSeek from './components/GoalSeek'
 import PivotBuilder from './components/PivotBuilder'
 import DataTableDialog from './components/DataTable'
+import Solver from './components/Solver'
 
 const STORAGE_KEY = 'cellforge.workbook.v2'
 const LEGACY_KEY = 'cellforge.workbook.v1'
@@ -71,6 +72,7 @@ export default function App() {
   const [showGoalSeek, setShowGoalSeek] = useState(false)
   const [showPivot, setShowPivot] = useState(false)
   const [showDataTable, setShowDataTable] = useState(false)
+  const [showSolver, setShowSolver] = useState(false)
 
   const containerRef = useRef<HTMLDivElement | null>(null)
   const clipRef = useRef<ClipData | null>(null)
@@ -431,6 +433,17 @@ export default function App() {
     refocus()
   }
 
+  // ---- solver: write the optimized changing-cell values back into the model ----
+  const applySolver = (entries: Array<{ coord: Coord; raw: string }>, focus: Coord) => {
+    if (!entries.length) return
+    checkpoint()
+    wb.setMany(entries, sheetId)
+    setActive(focus)
+    setAnchor(focus)
+    bump()
+    refocus()
+  }
+
   /** A1 of a cell a few columns to the right of the selection — a safe default
    *  anchor for a generated pivot / data table that won't overwrite the source. */
   const freeAnchorA1 = (): string => {
@@ -637,6 +650,7 @@ export default function App() {
           onGoalSeek={() => setShowGoalSeek(true)}
           onPivot={() => setShowPivot(true)}
           onDataTable={() => setShowDataTable(true)}
+          onSolver={() => setShowSolver(true)}
         />
       </header>
 
@@ -865,6 +879,24 @@ export default function App() {
           onApply={applyDataTable}
           onClose={() => {
             setShowDataTable(false)
+            refocus()
+          }}
+        />
+      ) : null}
+
+      {showSolver ? (
+        <Solver
+          wb={wb}
+          sheetId={sheetId}
+          initialObjective={coordToA1(active.row, active.col)}
+          initialVariables={selectionA1()}
+          onApply={applySolver}
+          onGoto={(c) => {
+            setActive(c)
+            setAnchor(c)
+          }}
+          onClose={() => {
+            setShowSolver(false)
             refocus()
           }}
         />

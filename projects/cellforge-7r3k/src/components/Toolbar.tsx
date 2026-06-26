@@ -20,6 +20,7 @@ interface Props {
   onGoalSeek: () => void
   onPivot: () => void
   onDataTable: () => void
+  onSolver: () => void
 }
 
 export default function Toolbar(props: Props) {
@@ -71,6 +72,9 @@ export default function Toolbar(props: Props) {
         </button>
         <button className="btn" onClick={props.onDataTable} title="Data Table — sensitivity grid over one or two inputs">
           ▦ Data Table
+        </button>
+        <button className="btn" onClick={props.onSolver} title="Solver — optimize changing cells subject to constraints (simplex LP + nonlinear)">
+          ⚖ Solver
         </button>
       </div>
 

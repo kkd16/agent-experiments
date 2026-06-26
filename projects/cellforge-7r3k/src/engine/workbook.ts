@@ -13,6 +13,8 @@ import type { RuntimeValue, Scalar, SparklineValue, MatrixValue } from './values
 import { BLANK, err, isSparkline, isMatrix, asScalar, matrix, displayValue } from './values'
 import { solve } from './solver'
 import type { GoalSeekResult } from './solver'
+import { optimize } from './optimizer'
+import type { Relation, VarBound, Constraint, OptStatus, OptMethod } from './optimizer'
 import { parseFormula, ParseError } from './parser'
 import { renameSheetInFormula } from './rewrite'
 import { evaluate } from './evaluator'
@@ -591,6 +593,166 @@ export class Workbook {
     return grid
   }
 
+  // ---- what-if: the Solver (constrained multi-cell optimization) ------------
+
+  /**
+   * Optimize a model: find values for the `variables` (changing) cells that maximize,
+   * minimize, or drive the `objective` cell to a target, subject to `constraints`. The
+   * model is treated as a black box — each candidate point sets the variable cells,
+   * recomputes the whole workbook, and reads the objective + constraint cells back. The
+   * engine auto-detects whether the model is *linear* (by probing) and, if so, solves it
+   * to the exact vertex optimum with the simplex method; otherwise it runs the nonlinear
+   * penalty/Nelder–Mead search. The workbook is fully restored before returning, so the
+   * caller decides whether to apply the solution (via `setMany`).
+   */
+  solve(spec: SolverSpec): SolverResult {
+    const sid = spec.sheetId ?? this.activeId
+    const vars = spec.variables
+    const n = vars.length
+    if (n === 0) return solverError('No changing cells were given.')
+    if (spec.objective && this.cellInList(spec.objective, vars))
+      return solverError('The objective cell cannot also be a changing cell.')
+
+    // Save the raw text of every variable cell so we can restore the model exactly.
+    const savedVars = vars.map((c) => this.getRaw(c, sid))
+
+    // Coordinates we read out of each recompute: the objective + every constraint's
+    // LHS and (when the RHS is a cell rather than a literal) its RHS.
+    const readCoords: Coord[] = []
+    const addRead = (c: Coord): number => {
+      const idx = readCoords.findIndex((r) => r.row === c.row && r.col === c.col)
+      if (idx >= 0) return idx
+      readCoords.push(c)
+      return readCoords.length - 1
+    }
+    const objIdx = spec.objective ? addRead(spec.objective) : -1
+    const consMeta = spec.constraints.map((c) => ({
+      lhsIdx: addRead(c.lhs),
+      rhsIdx: c.rhs.kind === 'cell' ? addRead(c.rhs.coord) : -1,
+      rhsConst: c.rhs.kind === 'num' ? c.rhs.value : 0,
+      rel: c.rel,
+    }))
+
+    // A memoized sampler: set the variable cells, recompute once, read every coord.
+    let memoX: number[] | null = null
+    let memoVals: number[] = []
+    const sampleAt = (x: number[]): number[] => {
+      if (memoX && memoX.length === x.length && memoX.every((v, i) => v === x[i])) return memoVals
+      this.setMany(vars.map((c, i) => ({ coord: c, raw: numToRaw(x[i]) })), sid)
+      memoVals = readCoords.map((c) => {
+        const v = this.getValue(c, sid)
+        return typeof v === 'number' && Number.isFinite(v) ? v : NaN
+      })
+      memoX = x.slice()
+      return memoVals
+    }
+
+    const objAt = (x: number[]): number => (objIdx < 0 ? 0 : sampleAt(x)[objIdx])
+    const constraints: Constraint[] = consMeta.map((m) => ({
+      rel: m.rel,
+      rhs: m.rhsIdx < 0 ? m.rhsConst : 0,
+      fn: (x: number[]) => {
+        const vals = sampleAt(x)
+        const lhs = vals[m.lhsIdx]
+        return m.rhsIdx < 0 ? lhs : lhs - vals[m.rhsIdx]
+      },
+    }))
+
+    const bounds: VarBound[] = vars.map(() => ({ lo: spec.nonNegative ? 0 : -Infinity, hi: Infinity }))
+    const x0 = vars.map((c) => {
+      const v = this.getValue(c, sid)
+      return typeof v === 'number' && Number.isFinite(v) ? v : 0
+    })
+
+    // Try to extract a linear model (skipped for the 'value' goal, which is nonlinear).
+    const linear = spec.sense === 'value' ? null : this.extractLinear(objAt, constraints, n)
+
+    const result = optimize({
+      objective: objAt,
+      sense: spec.sense,
+      target: spec.target,
+      x0,
+      bounds,
+      constraints,
+      linear: linear ?? undefined,
+    })
+
+    // Read the constraint LHS/RHS at the solution for the report, then restore the model.
+    const finalVals = sampleAt(result.x)
+    const report: SolverConstraintReport[] = consMeta.map((m) => {
+      const lhs = finalVals[m.lhsIdx]
+      const rhs = m.rhsIdx < 0 ? m.rhsConst : finalVals[m.rhsIdx]
+      const satisfied =
+        m.rel === '<=' ? lhs <= rhs + 1e-6 : m.rel === '>=' ? lhs >= rhs - 1e-6 : Math.abs(lhs - rhs) <= 1e-6
+      return { lhs, rel: m.rel, rhs, satisfied }
+    })
+    this.setMany(vars.map((c, i) => ({ coord: c, raw: savedVars[i] })), sid)
+
+    return {
+      status: result.status,
+      method: result.method,
+      variables: vars.map((c, i) => ({ coord: c, value: result.x[i] })),
+      objective: result.fx,
+      feasible: result.feasible,
+      maxViolation: result.maxViolation,
+      iterations: result.iterations,
+      constraints: report,
+    }
+  }
+
+  private cellInList(c: Coord, list: Coord[]): boolean {
+    return list.some((v) => v.row === c.row && v.col === c.col)
+  }
+
+  /**
+   * Probe a black-box model to decide whether it is linear, and if so return its exact
+   * coefficients. We sample the objective and every constraint at the origin and at each
+   * unit vector (so coefficient_j = f(eⱼ) − f(0)), then verify the affine prediction at a
+   * fresh test point. Any non-finite reading, or a prediction that misses, means "treat
+   * it as nonlinear" — we lose nothing, since the nonlinear solver still handles it.
+   */
+  private extractLinear(
+    objAt: (x: number[]) => number,
+    constraints: Constraint[],
+    n: number,
+  ): { c: number[]; c0: number; A: number[][]; rel: Relation[]; b: number[] } | null {
+    const zero = Array(n).fill(0)
+    const obj0 = objAt(zero)
+    const g0 = constraints.map((c) => c.fn(zero))
+    if (!Number.isFinite(obj0) || g0.some((g) => !Number.isFinite(g))) return null
+
+    const cObj = Array(n).fill(0)
+    const A: number[][] = constraints.map(() => Array(n).fill(0))
+    for (let j = 0; j < n; j++) {
+      const e = Array(n).fill(0)
+      e[j] = 1
+      const objE = objAt(e)
+      if (!Number.isFinite(objE)) return null
+      cObj[j] = objE - obj0
+      for (let k = 0; k < constraints.length; k++) {
+        const gE = constraints[k].fn(e)
+        if (!Number.isFinite(gE)) return null
+        A[k][j] = gE - g0[k]
+      }
+    }
+
+    // Verify affinity at a non-trivial test point.
+    const test = Array.from({ length: n }, (_, j) => (j % 2 === 0 ? 1 : -1) * (1 + 0.37 * j) + 0.5)
+    const predObj = obj0 + cObj.reduce((s, a, j) => s + a * test[j], 0)
+    const actObj = objAt(test)
+    if (!Number.isFinite(actObj) || Math.abs(predObj - actObj) > 1e-6 * (1 + Math.abs(actObj))) return null
+    for (let k = 0; k < constraints.length; k++) {
+      const predG = g0[k] + A[k].reduce((s, a, j) => s + a * test[j], 0)
+      const actG = constraints[k].fn(test)
+      if (!Number.isFinite(actG) || Math.abs(predG - actG) > 1e-6 * (1 + Math.abs(actG))) return null
+    }
+
+    // Constraint k: g(x) rel rhs ⇒ A·x rel (rhs − g0). Objective constant is obj0.
+    const rel = constraints.map((c) => c.rel)
+    const b = constraints.map((c, k) => c.rhs - g0[k])
+    return { c: cObj, c0: obj0, A, rel, b }
+  }
+
   /** Build an EvalContext for a formula living at (sheetId, coord). */
   private contextFor(sheetId: string, coord: Coord): EvalContext {
     return {
@@ -786,6 +948,64 @@ export interface WorkbookSnapshot {
     charts: ChartSpec[]
   }>
   names: Array<{ name: string; formula: string; scopeSheetId: string }>
+}
+
+// ---- Solver public types -----------------------------------------------------
+
+/** The right-hand side of a Solver constraint: a literal or another cell. */
+export type SolverRhs = { kind: 'num'; value: number } | { kind: 'cell'; coord: Coord }
+
+export interface SolverConstraintInput {
+  /** The cell whose value forms the left-hand side (usually a formula). */
+  lhs: Coord
+  rel: Relation
+  rhs: SolverRhs
+}
+
+export interface SolverSpec {
+  /** The cell to optimize. */
+  objective: Coord
+  sense: 'max' | 'min' | 'value'
+  /** Target value when `sense === 'value'`. */
+  target?: number
+  /** The changing cells. */
+  variables: Coord[]
+  /** Constrain changing cells to be ≥ 0 (Excel's "make unconstrained variables non-negative"). */
+  nonNegative: boolean
+  constraints: SolverConstraintInput[]
+  sheetId?: string
+}
+
+export interface SolverConstraintReport {
+  lhs: number
+  rel: Relation
+  rhs: number
+  satisfied: boolean
+}
+
+export interface SolverResult {
+  status: OptStatus
+  method: OptMethod
+  variables: Array<{ coord: Coord; value: number }>
+  objective: number
+  feasible: boolean
+  maxViolation: number
+  iterations: number
+  constraints: SolverConstraintReport[]
+  message?: string
+}
+
+function solverError(message: string): SolverResult {
+  return { status: 'error', method: 'nelder-mead', variables: [], objective: NaN, feasible: false, maxViolation: Infinity, iterations: 0, constraints: [], message }
+}
+
+/** Render a solved numeric variable value as cell input, rounding away float noise and
+ *  snapping values that are within tolerance of an integer (the common Solver outcome). */
+function numToRaw(x: number): string {
+  if (!Number.isFinite(x)) return '0'
+  const r = Math.round(x)
+  if (Math.abs(x - r) < 1e-7) return String(r)
+  return String(Number(x.toPrecision(12)))
 }
 
 // ---- module-level helpers ---------------------------------------------------
