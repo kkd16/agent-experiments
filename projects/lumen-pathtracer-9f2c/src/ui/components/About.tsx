@@ -28,6 +28,21 @@ export function About() {
           lights) and sampling the BSDF lobe (great for glossy surfaces and broad skies). The{' '}
           <em>power heuristic</em> blends them, so neither one’s variance dominates.
         </Card>
+        <Card title="Sphere lights (cone NEE)">
+          Sampling a light directly only worked for <em>triangle</em> emitters — a flat triangle has an
+          exact solid-angle pdf <code>d²/(cosθ·A)</code>. An emissive <em>sphere</em> had no such pdf,
+          so it was left to BSDF sampling alone: a small bright orb is struck by a stray scattered ray
+          well under 1 % of the time, so a sphere-lit room was a <em>storm of fireflies</em>. Lumen now
+          samples a sphere by the exact <strong>cone of directions it subtends</strong> (PBRT{' '}
+          <em>Sampling Spheres</em>): <code>cosθ_max=√(1−R²/d²)</code>, drawn uniformly, with density{' '}
+          <code>1/Ω</code>, <code>Ω=2π(1−cosθ_max)</code> — so every shadow ray lands <em>on</em> the
+          orb. The same Ω drives the MIS weight when a BSDF ray instead hits the sphere, so it is
+          exactly <strong>unbiased</strong> — only the variance collapses. The <strong>Verify</strong>{' '}
+          tab pins it against the analytic sphere form factor{' '}
+          <code>ρ·L·sin²θ_max·cosθ_c</code> and measures a <strong>{'>'}100,000×</strong> per-sample
+          variance drop over naive sampling. Flip <strong>Sphere lights</strong> on in{' '}
+          <em>Plasma Lamps</em> or <em>Firefly Swarm</em> and watch the noise vanish.
+        </Card>
         <Card title="Bidirectional path tracing">
           The path tracer only grows paths from the camera, so it struggles when the light that
           matters is hard to reach — a bulb hidden in a cove, a room lit only by bounced light.{' '}

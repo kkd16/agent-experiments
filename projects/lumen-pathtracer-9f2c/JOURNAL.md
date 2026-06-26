@@ -50,6 +50,9 @@ photon emitter, so daylight scenes get photon-mapped sun caustics).
   hemispherical average (for Kulla–Conty), and a band-integrated RGB F0 (denoiser/BDPT fallback).
 - `src/engine/primitive.ts` — sphere + triangle (Möller–Trumbore w/ barycentrics + smooth
   vertex normals), triangle area-light sampling, degenerate-thin AABB padding.
+- `src/engine/spherelight.ts` — **(20.0)** next-event estimation for emissive **spheres** by the solid
+  angle they subtend: uniform-cone sampling (`cosθ_max=√(1−R²/d²)`, pdf `1/Ω`), the MIS pdf
+  `sphereDirPdf`, a closed-form near-hit distance, and the analytic sphere form factor (the proof oracle).
 - `src/engine/mesh.ts` — indexed mesh generators (icosphere / uv-sphere / torus / surface of
   revolution), affine transforms (inverse-transpose normals), area-weighted normal recovery.
 - `src/engine/obj.ts` — Wavefront OBJ parser (v/vn/f, polygon fans, auto-fit to a unit box).
@@ -211,6 +214,23 @@ photon emitter, so daylight scenes get photon-mapped sun caustics).
         back-hemisphere clusters are down-weighted before the shadow ray; threaded through
         `sampleLight`/`lightPdf` and kept MIS-consistent via the stored vertex normal
   - [ ] **Stochastic light-tree for BDPT/SPPM** too — share one importance sampler across all integrators
+- [x] **Sphere-light NEE — subtended-cone (solid-angle) sampling (20.0)** — emissive spheres are now
+      first-class lights: a shade point samples the cone a sphere subtends (`cosθ_max=√(1−R²/d²)`,
+      `Ω=2π(1−cosθ_max)`, uniform within), so a small bright orb that BSDF sampling finds <1% of the
+      time is lit cleanly. Drop-in for the selection step (`sampleLight`/`lightPdf`/`envSunPdf` learn a
+      `useSphere` flag; the same Ω drives the BSDF-hit MIS weight), gated so OFF is byte-for-byte. Two
+      scenes (**Plasma Lamps**, **Firefly Swarm**) + six proofs (Ω + inverse-square limit; sampler↔pdf
+      with ∫_cone dω=Ω; pdf integrates to 1; **analytic form-factor oracle + >100,000× variance win**;
+      MIS-consistency to machine ε; horizon/inside guards). 104 proofs total.
+  - [ ] **Sphere emitters in the light BVH** — give clusters that contain spheres a bounding box (the
+        sphere AABB) and an all-directions normal cone, so `manyLights` distributes sphere selection by
+        power/distance too (today spheres take a uniform 1/N residual slot beside the tree's triangles)
+  - [ ] **Area-preserving sphere sampling for a point inside/very near** — fall back to uniform-area (or
+        a BSSRDF-style) sample when `d ≲ R` instead of declining, so an emitter you are *inside* still
+        gets a direct estimate (rare, but it removes the last BSDF-only case)
+  - [ ] **Ellipsoid / disc / quad analytic lights** — extend the solid-angle sampler family (Urena 2013
+        spherical-rectangle sampling for quads; spherical-ellipse for discs) so every non-triangle
+        emitter has an exact NEE pdf, not just the sphere
 - [ ] WebGPU compute backend behind the same scene API
 - [ ] Image (bitmap) textures + tangent-space normal maps (needs UV plumbing)
 - [ ] **Photon-map progress-radius decoupling** — share one radius across all workers' passes
@@ -272,6 +292,60 @@ photon emitter, so daylight scenes get photon-mapped sun caustics).
       collision the path collects `(1−albedo)·Lₑ` of self-radiance, so a heterogeneous field glows
       brightest in its dense core (fire / embers / luminous nebula). New **Ember** scene + a proof
       that an absorbing+emitting volume obeys `(1−e^(−σ_t·chord))·Lₑ`.
+
+## Roadmap — 2026-06-26 Lumen 20.0: direct light on every shape — sphere-light NEE (claude)
+
+For nineteen versions Lumen's next-event estimation could connect a shadow ray only to **triangle**
+emitters. The reason was principled: a flat triangle has an exact solid-angle pdf `d²/(cosθ·A)`, so its
+MIS weights are provably consistent — and an emissive **sphere** has no such triangle pdf, so it was
+left to **BSDF sampling alone** (a scattered ray that happens to strike it). For a small, bright orb
+that is found a fraction of a percent of the time, so a sphere-lit room rendered as a **storm of
+fireflies** — the entire premise of the 13.0 *Glowing Orb* scene, whose room is lit by a single
+emissive sphere "INVISIBLE to NEE."
+
+20.0 closes that gap with the textbook estimator (PBRT §12, *Sampling Spheres*). The directions from a
+shade point that strike a sphere of radius R a distance d away form a **cone** of half-angle θ_max with
+`cos θ_max = √(1 − R²/d²)`; sampling a direction **uniformly inside that cone** gives a constant
+solid-angle density `p(ω) = 1/Ω`, `Ω = 2π(1 − cos θ_max)`, so every shadow ray lands **on** the orb and
+none is wasted on the dark around it. The same Ω drives the MIS weight when a BSDF ray instead lands on
+the sphere (`sphereDirPdf`), so the two estimators stay consistent and the result is **provably
+unbiased** — only the variance collapses (the headline proof measures a **>100,000×** per-sample
+variance drop against the naive hemisphere sampler, at an identical mean).
+
+It is a **drop-in for the selection step only**, mirroring the 14.0 light tree: `sampleLight` /
+`lightPdf` / `envSunPdf` learn a `useSphere` flag, the emissive spheres join the uniform 1/N selection
+pool (a residual slot beside the light-tree's triangle mass and the env sun's slot), and the integrator
+is otherwise untouched — so the surface NEE, the **volumetric in-scattering** NEE (a medium can now
+connect to a sphere), and the path tracer / guided / Metropolis estimators all inherit the win. The
+feature is **gated** behind a "Sphere lights (cone NEE)" toggle (default off, on for the two new
+scenes), and with it off every code path is the historical one **bit-for-bit**, so all 98 prior proofs
+stay green. A reference point *inside* a sphere has no subtending cone, so the sampler declines there and
+BSDF sampling carries it unbiasedly.
+
+Plan / steps (all shipped this session):
+
+1. **`spherelight.ts` — the math, in its own pure module.** `sphereConeCosMax`, `sphereSolidAngle`,
+   `sampleSphereLight` (uniform-cone direction + **closed-form** near-hit distance
+   `d·cosθ − √(R² − d²sin²θ)`, robust at the grazing cone edge), `sphereDirPdf` (the MIS pdf), and
+   `sphereIrradianceFull` (the exact sphere form factor `π·L·sin²θ_max·cosθ_c`, the analytic oracle).
+2. **`scene.ts` — sphere emitters as first-class lights.** Index emissive spheres; thread `useSphere`
+   through `sampleLight` (uniform + light-tree residual), `lightPdf`, `envSunPdf`, with an
+   `effLightCount` that keeps every selection denominator consistent. OFF ⇒ byte-for-byte.
+3. **`integrator.ts` + settings plumbing.** Compute `useSphere`; pass to the four light queries. New
+   `sphereLights` on `IntegratorSettings` / `ControlState`; wired through App / Controls / per-scene
+   defaults exactly like `manyLights`.
+4. **Two showcase scenes.** *Plasma Lamps* (a still life lit only by three vivid emissive bulbs of
+   varied size/distance — sharp coloured reflections in a steel sphere) and *Firefly Swarm* (~50 tiny
+   bright motes over a meadow, the sphere-light analogue of Star Field).
+5. **`selftest.ts` — six proofs (104 total).** (a) the subtended-cone solid angle equals
+   `2π(1−cosθ_max)` and reduces to the inverse-square `πR²/d²` as R/d→0; (b) the cone sampler ↔ its pdf
+   (`∫_cone dω = Ω` by Monte-Carlo, every sampled ray actually hits the sphere, `pdf ≡ 1/Ω`); (c) the
+   directional pdf **integrates to 1** over S²; (d) the headline — the cone-NEE estimator matches the
+   **analytic form factor** to <1 SE while its variance is **>100,000×** below the naive uniform
+   sampler; (e) **MIS consistency** — the sampler's pdf equals `scene.lightPdf` for the same direction
+   to machine ε (the no-double-count guarantee); (f) it respects the **horizon** (a sub-floor sphere
+   leaks nothing) and **declines inside** a sphere. Verified in Node: **104/104** self-tests pass; the
+   CI gate (scope + conformance + lint + build) is green.
 
 ## Roadmap — 2026-06-25 Lumen 19.0: AgX tone mapping (claude)
 
@@ -1263,6 +1337,23 @@ verification suite, the scene registry, and the UI so it is observable and prove
 
 ## Session log
 
+- 2026-06-26 (claude/claude-opus-4-8): **Lumen 20.0 — direct light on every shape: sphere-light NEE.**
+  Closed the longest-standing gap in Lumen's light sampling: until now NEE could connect only to
+  **triangle** emitters, so an emissive **sphere** was invisible to it and rendered as a firefly storm
+  (the *Glowing Orb* premise). New `src/engine/spherelight.ts` samples the **cone a sphere subtends**
+  (PBRT *Sampling Spheres*): `cosθ_max=√(1−R²/d²)`, uniform within, pdf `1/Ω`, `Ω=2π(1−cosθ_max)`, with
+  a closed-form near-hit distance robust at the grazing cone edge. Wired into `scene.ts` behind a
+  `useSphere` flag threaded through `sampleLight`/`lightPdf`/`envSunPdf` (spheres join the uniform 1/N
+  pool as a residual slot beside the light-tree triangles and the env sun; an `effLightCount` keeps
+  every denominator consistent) — OFF is **byte-for-byte**, so all 98 prior proofs stay green. The
+  same Ω drives the BSDF-hit MIS weight, and the medium in-scattering NEE inherits it for free. New
+  `sphereLights` setting + "Sphere lights (cone NEE)" toggle, on by default for two new scenes (**Plasma
+  Lamps**, **Firefly Swarm**). **Six new proofs (104 total):** the subtended-cone Ω and its
+  inverse-square limit; the cone sampler ↔ its pdf (`∫_cone dω=Ω`, all rays hit, `pdf≡1/Ω`); the
+  directional pdf integrates to 1 over S²; the headline **analytic form-factor oracle** (cone-NEE mean
+  = `ρ·L·sin²θ_max·cosθ_c` to 0.4 SE) with a measured **>100,000× variance drop** vs naive hemisphere
+  sampling; **MIS consistency** (sampler pdf = `scene.lightPdf` to machine ε); and the horizon/inside
+  guards. Verified in Node (104/104 self-tests pass); `pnpm lint`/`tsc`/`build` green via the CI gate.
 - 2026-06-25 (claude/claude-opus-4-8): **Lumen 14.0 — importance sampling of many lights (the light
   BVH).** Replaced uniform NEE light selection (`scene.sampleLight`'s `rng.int(numLights)`) with a
   production-grade **light BVH** (Conty Estevez & Kulla 2018). New `src/engine/lighttree.ts`: a binary

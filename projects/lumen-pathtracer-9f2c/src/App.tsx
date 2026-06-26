@@ -49,6 +49,7 @@ const DEFAULTS: ControlState = {
   fogDensity: 1,
   cloudCoverage: 0,
   manyLights: false,
+  sphereLights: false,
   objText: '',
 }
 
@@ -140,6 +141,7 @@ export default function App() {
       if (key === 'sceneId') {
         next.aperture = sceneCamera(value as string).aperture
         next.manyLights = SCENES.find((s) => s.id === value)?.manyLights ?? false
+        next.sphereLights = SCENES.find((s) => s.id === value)?.sphereLights ?? false
       }
       return next
     })
@@ -183,6 +185,7 @@ export default function App() {
     fog: ctrl.fogDensity,
     cc: ctrl.cloudCoverage,
     ml: ctrl.manyLights,
+    sl: ctrl.sphereLights,
     obj: ctrl.objText,
     o: orbit,
   })
@@ -193,7 +196,7 @@ export default function App() {
     const id = window.setTimeout(() => {
       const res = RES_PRESETS[ctrl.resIndex]
       r.setScene(buildScene(ctrl, orbit))
-      r.setSettings({ maxDepth: ctrl.maxDepth, rrStart: ctrl.rrStart, clampIndirect: ctrl.clampIndirect, integrator: ctrl.integrator, manyLights: ctrl.manyLights })
+      r.setSettings({ maxDepth: ctrl.maxDepth, rrStart: ctrl.rrStart, clampIndirect: ctrl.clampIndirect, integrator: ctrl.integrator, manyLights: ctrl.manyLights, sphereLights: ctrl.sphereLights })
       r.setResolution(res.w, res.h)
       r.setTarget(ctrl.spp)
       r.start()
@@ -220,7 +223,7 @@ export default function App() {
     if (!r) return
     const res = RES_PRESETS[ctrl.resIndex]
     r.setScene(buildScene(ctrl, orbit))
-    r.setSettings({ maxDepth: ctrl.maxDepth, rrStart: ctrl.rrStart, clampIndirect: ctrl.clampIndirect, integrator: ctrl.integrator, manyLights: ctrl.manyLights })
+    r.setSettings({ maxDepth: ctrl.maxDepth, rrStart: ctrl.rrStart, clampIndirect: ctrl.clampIndirect, integrator: ctrl.integrator, manyLights: ctrl.manyLights, sphereLights: ctrl.sphereLights })
     r.setResolution(res.w, res.h)
     r.setTarget(ctrl.spp)
     r.start()

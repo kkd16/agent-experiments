@@ -139,6 +139,12 @@ export function Controls(props: {
           onChange={(v) => set('manyLights', v)}
           hint="Next-event estimation has to choose WHICH light to connect a shadow ray to. By default it picks uniformly — fine for one light, hopeless for hundreds, where almost every shadow ray lands on a far or occluded emitter. This builds a light BVH (Conty-Kulla 2018): a tree over the emissive triangles, each node caching its power, bounds and a cone of emitter normals, and picks a light by a stochastic walk weighted by power·orientation/distance² — so near, bright, well-oriented lights win. It only reshapes the variance of NEE, never the mean, so it is exactly unbiased (converges to the same image). Dramatic on Star Field and Lantern Hall; affects the Path Tracer / Guided / Metropolis integrators (Bidirectional & Photon Map sample lights their own way)."
         />
+        <Toggle
+          label="Sphere lights (cone NEE)"
+          value={state.sphereLights}
+          onChange={(v) => set('sphereLights', v)}
+          hint="By default next-event estimation samples only TRIANGLE emitters; an emissive SPHERE is invisible to it, found only by a stray scattered ray that happens to strike it (a small orb is hit well under 1% of the time, so a sphere-lit room is a storm of fireflies — see Glowing Orb). This samples a sphere by the exact CONE of directions it subtends (PBRT uniform-cone sampling): cosθmax=√(1−R²/d²), pdf 1/Ω with Ω=2π(1−cosθmax), so every shadow ray lands ON the orb. The same Ω drives the MIS weight when a BSDF ray instead hits the sphere, so it is exactly unbiased — only the variance collapses. Dramatic on Plasma Lamps and Firefly Swarm; affects the Path Tracer / Guided / Metropolis integrators."
+        />
         <Segmented
           label="Resolution"
           value={String(state.resIndex)}

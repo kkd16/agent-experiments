@@ -127,6 +127,13 @@ export interface IntegratorSettings {
   // path tracer's NEE (so 'pt', 'guided' and 'pssmlt', which reuse it); 'bdpt' and
   // 'sppm' do their own light sampling and are unaffected. Unbiased either way.
   manyLights?: boolean
+  // (20.0) Next-event-estimate emissive *spheres* by the solid angle they subtend
+  // (a uniform-cone sampler — see spherelight.ts) instead of leaving them to BSDF
+  // sampling alone. A small bright orb is otherwise found only by a stray scattered
+  // ray (a storm of fireflies); cone sampling lands every shadow ray on it. Affects
+  // the path tracer's NEE ('pt', 'guided', 'pssmlt'); unbiased either way — only the
+  // variance drops. 'bdpt'/'sppm' sample lights their own way and are unaffected.
+  sphereLights?: boolean
 }
 
 // Tone-mapping operators applied on the UI thread to the accumulated HDR buffer.

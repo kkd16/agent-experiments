@@ -48,6 +48,10 @@ export interface ControlState {
   // many-light scenes. Affects the path tracer's NEE (pt / guided / pssmlt) and is
   // unbiased either way (it only reshapes the variance, never the mean).
   manyLights: boolean
+  // (20.0) Next-event-estimate emissive *spheres* by the solid angle they subtend
+  // (uniform-cone sampling) rather than leaving them to BSDF sampling alone — the
+  // difference between a firefly storm and a clean sphere-lit room. Unbiased.
+  sphereLights: boolean
   // Custom-OBJ scene only: the pasted model text.
   objText: string
 }
