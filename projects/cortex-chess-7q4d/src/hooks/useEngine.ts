@@ -8,7 +8,7 @@
 
 import { useCallback, useEffect, useMemo, useRef } from 'react'
 import { parseFen, type SearchInfo, type MultiInfo } from '../engine'
-import { Searcher } from '../engine'
+import { Searcher, deserializeNnue, type NnueBlob } from '../engine'
 import { verifyKbnk as verifyKbnkSync, type KbnkVerification } from '../engine/kbnk'
 import { verifyGtb as verifyGtbSync, type GtbVerification } from '../engine/gtb'
 import type { WorkerOut, WorkerRequest } from '../engine/engine.worker'
@@ -47,6 +47,8 @@ export interface EngineHandle {
     opts: { id: string; sample: number; games: number },
     onProgress: (frac: number, phase: string) => void,
   ) => Promise<GtbVerification>
+  // Install (blob) or remove (null) the NNUE evaluation for subsequent searches.
+  setNnue: (blob: NnueBlob | null) => void
   cancel: () => void
 }
 
@@ -56,6 +58,8 @@ export function useEngine(): EngineHandle {
   // A single in-flight operation per worker: one resolver + one progress sink.
   const resolveRef = useRef<((value: never) => void) | null>(null)
   const infoRef = useRef<((arg: never) => void) | null>(null)
+  // The currently-installed NNUE (if any), reapplied whenever a worker is created.
+  const nnueRef = useRef<NnueBlob | null>(null)
 
   const ensureWorker = useCallback((): Worker | null => {
     if (workerRef.current) return workerRef.current
@@ -105,6 +109,8 @@ export function useEngine(): EngineHandle {
         workerRef.current = null
       }
       workerRef.current = worker
+      // Reapply any installed NNUE to the freshly-created worker.
+      if (nnueRef.current) worker.postMessage({ type: 'setnnue', blob: nnueRef.current })
       return worker
     } catch {
       return null
@@ -205,6 +211,18 @@ export function useEngine(): EngineHandle {
     [post],
   )
 
+  const setNnue = useCallback(
+    (blob: NnueBlob | null) => {
+      nnueRef.current = blob
+      const worker = ensureWorker()
+      if (worker) worker.postMessage({ type: 'setnnue', blob })
+      // Keep the synchronous fallback in sync too.
+      if (!fallbackRef.current) fallbackRef.current = new Searcher()
+      fallbackRef.current.setEvaluator(blob ? deserializeNnue(blob) : null)
+    },
+    [ensureWorker],
+  )
+
   const cancel = useCallback(() => {
     if (workerRef.current) {
       workerRef.current.terminate()
@@ -222,7 +240,7 @@ export function useEngine(): EngineHandle {
   }, [])
 
   return useMemo(
-    () => ({ think, analyze, evalGame, verifyKbnk, verifyGtb, cancel }),
-    [think, analyze, evalGame, verifyKbnk, verifyGtb, cancel],
+    () => ({ think, analyze, evalGame, verifyKbnk, verifyGtb, setNnue, cancel }),
+    [think, analyze, evalGame, verifyKbnk, verifyGtb, setNnue, cancel],
   )
 }

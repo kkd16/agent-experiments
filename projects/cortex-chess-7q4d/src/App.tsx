@@ -24,6 +24,9 @@ import {
   allocateTime,
   formatClock,
   TIME_CONTROLS,
+  nnueLoad,
+  type NnueBlob,
+  type NnueMeta,
 } from './engine'
 import {
   buildView,
@@ -103,6 +106,12 @@ export default function App() {
   const [ponderHit, setPonderHit] = useState(false)
   const [moveTimeIdx, setMoveTimeIdx] = useState(0)
   const [pgnMsg, setPgnMsg] = useState('')
+  // NNUE evaluation: a trained net (from the Lab, persisted to IndexedDB) can
+  // replace the classical eval in play. `nnueBlob` is the loaded net, `nnueOn`
+  // whether it's active.
+  const [nnueBlob, setNnueBlob] = useState<NnueBlob | null>(null)
+  const [nnueMeta, setNnueMeta] = useState<NnueMeta | null>(null)
+  const [nnueOn, setNnueOn] = useState(false)
   // UCI-style time control. When active, the engine manages its own clock
   // (base + increment) and decides how long to think per move. `engineClockRef`
   // is the authoritative value (read inside the search effect without retriggering
@@ -111,6 +120,24 @@ export default function App() {
   const engineClockRef = useRef(0)
   const [engineClockMs, setEngineClockMs] = useState(0)
   const [lastBudget, setLastBudget] = useState(0)
+
+  // Refresh the saved NNUE whenever the Play tab is shown (the user may have just
+  // trained and saved one in the Lab).
+  useEffect(() => {
+    if (tab !== 'play') return
+    nnueLoad().then((r) => {
+      setNnueBlob(r?.blob ?? null)
+      setNnueMeta(r?.meta ?? null)
+      if (!r) setNnueOn(false)
+    })
+  }, [tab])
+
+  // Install (or remove) the NNUE evaluation on both the play and ponder engines.
+  useEffect(() => {
+    const blob = nnueOn ? nnueBlob : null
+    engine.setNnue(blob)
+    ponderEngine.setNnue(blob)
+  }, [nnueOn, nnueBlob, engine, ponderEngine])
 
   const lastSearchedFen = useRef('')
   const lastAnalyzedFen = useRef('')
@@ -675,6 +702,15 @@ export default function App() {
                 <label className="toggle">
                   <input type="checkbox" checked={bookOn} onChange={(e) => setBookOn(e.target.checked)} />
                   <span>Opening book</span>
+                </label>
+                <label className={`toggle${nnueBlob ? '' : ' disabled'}`} title={nnueBlob ? `Trained net: R²=${nnueMeta?.r2.toFixed(2)}` : 'Train and save a network in the Lab → NNUE tab first'}>
+                  <input
+                    type="checkbox"
+                    checked={nnueOn}
+                    disabled={!nnueBlob}
+                    onChange={(e) => setNnueOn(e.target.checked)}
+                  />
+                  <span>NNUE eval{nnueBlob && nnueMeta ? ` (R²=${nnueMeta.r2.toFixed(2)})` : ''}</span>
                 </label>
                 <label className="toggle">
                   <input

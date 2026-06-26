@@ -6,6 +6,7 @@
 
 import { parseFen } from './board'
 import { Searcher, type SearchInfo, type MultiInfo } from './search'
+import { deserializeNnue, type NnueBlob } from './nnue'
 import { verifyKbnk, type KbnkVerification } from './kbnk'
 import { probeKxK } from './egtb'
 import { probeKbnk, buildKbnk } from './kbnk'
@@ -58,7 +59,20 @@ export interface GtbRequest {
   games: number
 }
 
-export type WorkerRequest = SearchRequest | AnalyzeRequest | EvalsRequest | KbnkRequest | GtbRequest
+// Fire-and-forget config: install (or remove) the NNUE evaluation on the persistent
+// searcher. No reply — it just changes how subsequent searches evaluate.
+export interface SetNnueRequest {
+  type: 'setnnue'
+  blob: NnueBlob | null
+}
+
+export type WorkerRequest =
+  | SearchRequest
+  | AnalyzeRequest
+  | EvalsRequest
+  | KbnkRequest
+  | GtbRequest
+  | SetNnueRequest
 
 export type WorkerOut =
   | { type: 'info'; info: SearchInfo }
@@ -107,6 +121,10 @@ function oracleFor(id: string): { oracle: Oracle; name: string } | null {
 
 self.onmessage = async (e: MessageEvent<WorkerRequest>) => {
   const msg = e.data
+  if (msg.type === 'setnnue') {
+    searcher.setEvaluator(msg.blob ? deserializeNnue(msg.blob) : null)
+    return
+  }
   if (msg.type === 'search') {
     // Warm any cached endgame tablebase that applies to this position, so the
     // engine plays the ending perfectly without a multi-second rebuild mid-move.
