@@ -8,6 +8,7 @@ import { parseFen } from './board'
 import { generateLegal, inCheck } from './movegen'
 import { Searcher, MATE, type SearchInfo, type MultiInfo } from './search'
 import { deserializeNnue, type NnueBlob } from './nnue'
+import { quantize } from './nnue-quant'
 import type { NodeAnalysis } from './review'
 import { verifyKbnk, type KbnkVerification } from './kbnk'
 import { probeKxK } from './egtb'
@@ -81,6 +82,8 @@ export interface ReviewRequest {
 export interface SetNnueRequest {
   type: 'setnnue'
   blob: NnueBlob | null
+  /** When set, the net is quantized to int16/int8 and the search runs the integer eval. */
+  quantize?: boolean
 }
 
 export type WorkerRequest =
@@ -177,7 +180,11 @@ function oracleFor(id: string): { oracle: Oracle; name: string } | null {
 self.onmessage = async (e: MessageEvent<WorkerRequest>) => {
   const msg = e.data
   if (msg.type === 'setnnue') {
-    searcher.setEvaluator(msg.blob ? deserializeNnue(msg.blob) : null)
+    if (msg.blob && msg.quantize) {
+      searcher.setQuantEvaluator(quantize(deserializeNnue(msg.blob)))
+    } else {
+      searcher.setEvaluator(msg.blob ? deserializeNnue(msg.blob) : null)
+    }
     return
   }
   if (msg.type === 'search') {
