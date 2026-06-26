@@ -23,10 +23,17 @@ import {
   tbCacheKeys,
   tbCacheClear,
   type GtbVerification,
+  Accumulator,
+  nnueEvalFresh,
+  NnueTrainer,
+  gradCheck,
+  mulberry32,
+  START_FEN,
 } from '../engine'
 import { useEngine } from '../hooks/useEngine'
+import NnueLab from './NnueLab'
 
-type Mode = 'perft' | 'tactics' | 'epd' | 'tablebase' | 'gtb' | 'checks'
+type Mode = 'perft' | 'tactics' | 'epd' | 'tablebase' | 'gtb' | 'nnue' | 'checks'
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))
 
@@ -786,6 +793,50 @@ function runChecks(): CheckRow[] {
     detail: `${pg.moves.length} plies, ${g.result()}`,
   })
 
+  // NNUE: the incrementally-updated accumulator must stay bit-for-bit identical to
+  // a from-scratch refresh across a sequence of make/unmake (the defining property
+  // that makes the net cheap to run in search), and the hand-derived gradients must
+  // agree with finite differences.
+  {
+    const w = new NnueTrainer({ h: 32, seed: 0x42, weightInit: 0.3 }).w
+    const rng = mulberry32(7)
+    const acc = new Accumulator(w)
+    const gg = new Game(START_FEN)
+    acc.refresh(gg.pos)
+    let maxDiff = 0
+    let mismatch = 0
+    let n = 0
+    for (let ply = 0; ply < 40; ply++) {
+      const moves = generateLegal(gg.pos)
+      if (moves.length === 0) break
+      const m = moves[Math.floor(rng() * moves.length)]
+      acc.applyMove(gg.pos, m, 1)
+      gg.apply(m)
+      n++
+      const fresh = new Accumulator(w)
+      fresh.refresh(gg.pos)
+      for (let j = 0; j < w.h; j++) {
+        maxDiff = Math.max(maxDiff, Math.abs(acc.white[j] - fresh.white[j]), Math.abs(acc.black[j] - fresh.black[j]))
+      }
+      if (acc.evalScore(gg.pos.turn) !== nnueEvalFresh(w, gg.pos)) mismatch++
+    }
+    out.push({
+      group: 'NNUE',
+      name: 'incremental accumulator == full refresh',
+      pass: maxDiff < 1e-3 && mismatch === 0,
+      detail: `max Δ ${maxDiff.toExponential(2)}, ${mismatch}/${n} eval mismatches`,
+    })
+  }
+  {
+    const gc = gradCheck(11, 16)
+    out.push({
+      group: 'NNUE',
+      name: 'hand-derived gradients vs finite differences',
+      pass: gc.maxRelErr < 1e-2,
+      detail: `max rel err ${gc.maxRelErr.toExponential(2)} over ${gc.checked} params`,
+    })
+  }
+
   return out
 }
 
@@ -857,6 +908,9 @@ export default function Lab() {
         <button className={mode === 'gtb' ? 'tab active' : 'tab'} onClick={() => setMode('gtb')}>
           Endgame TBs
         </button>
+        <button className={mode === 'nnue' ? 'tab active' : 'tab'} onClick={() => setMode('nnue')}>
+          NNUE
+        </button>
         <button className={mode === 'perft' ? 'tab active' : 'tab'} onClick={() => setMode('perft')}>
           Perft
         </button>
@@ -869,6 +923,7 @@ export default function Lab() {
       {mode === 'epd' && <EpdLab />}
       {mode === 'tablebase' && <TablebaseLab />}
       {mode === 'gtb' && <EndgamesLab />}
+      {mode === 'nnue' && <NnueLab />}
       {mode === 'checks' && <ChecksLab />}
     </div>
   )

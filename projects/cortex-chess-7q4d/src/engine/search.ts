@@ -36,6 +36,7 @@ import {
 import { generatePseudo, isSquareAttacked } from './movegen'
 import { evaluate } from './eval'
 import { see } from './see'
+import { Accumulator, type NnueWeights } from './nnue'
 
 export const INF = 1_000_000
 export const MATE = 100_000
@@ -110,6 +111,14 @@ export class Searcher {
   private stop = false
   private now: () => number
 
+  // Optional NNUE evaluation. When a network is set, the search keeps a persistent
+  // accumulator in sync across make/unmake (an incremental update per move) and the
+  // static eval reads it instead of the hand-crafted `evaluate`. A null move never
+  // touches the accumulator (the feature set is colour-indexed, not side-to-move),
+  // so its only effect is which half is read as "own" at the leaf.
+  private nnueAcc: Accumulator | null = null
+  private useNnue = false
+
   private readonly killers = new Int32Array(MAX_PLY * 2)
   private readonly history = new Int32Array(2 * 128 * 128)
   // Countermove heuristic: the quiet refutation that last cut after a given
@@ -168,6 +177,35 @@ export class Searcher {
     this.counter.fill(0)
   }
 
+  // Swap the evaluation function. Pass NNUE weights to use the learned net (with an
+  // incrementally-updated accumulator), or null to revert to the classical eval.
+  setEvaluator(w: NnueWeights | null): void {
+    this.useNnue = w !== null
+    this.nnueAcc = w ? new Accumulator(w) : null
+  }
+
+  usesNnue(): boolean {
+    return this.useNnue
+  }
+
+  // Static evaluation at a leaf — NNUE (from the live accumulator) or classical.
+  private staticEvaluate(): number {
+    return this.useNnue && this.nnueAcc ? this.nnueAcc.evalScore(this.pos.turn) : evaluate(this.pos)
+  }
+
+  // make/unmake wrappers that also fold the move into the NNUE accumulator. The
+  // accumulator delta is read from the pre-move position in both directions, so the
+  // incremental state stays bit-for-bit identical to a from-scratch refresh.
+  private doMake(m: Move, undo: Undo): void {
+    if (this.useNnue && this.nnueAcc) this.nnueAcc.applyMove(this.pos, m, 1)
+    makeMoveOnBoard(this.pos, m, undo)
+  }
+
+  private doUnmake(m: Move, undo: Undo): void {
+    unmakeMoveOnBoard(this.pos, m, undo)
+    if (this.useNnue && this.nnueAcc) this.nnueAcc.applyMove(this.pos, m, -1)
+  }
+
   private timeUp(): boolean {
     if (this.timeLimit <= 0) return false
     return this.now() - this.startTime >= this.timeLimit
@@ -175,6 +213,7 @@ export class Searcher {
 
   search(pos: Position, options: SearchOptions, onInfo?: InfoCallback): SearchInfo {
     this.pos = pos
+    if (this.useNnue && this.nnueAcc) this.nnueAcc.refresh(pos)
     this.nodes = 0
     this.stop = false
     this.startTime = this.now()
@@ -241,6 +280,7 @@ export class Searcher {
     onInfo?: MultiInfoCallback,
   ): MultiInfo {
     this.pos = pos
+    if (this.useNnue && this.nnueAcc) this.nnueAcc.refresh(pos)
     this.nodes = 0
     this.stop = false
     this.startTime = this.now()
@@ -442,7 +482,7 @@ export class Searcher {
     this.nodes++
     if (ply > this.seldepth) this.seldepth = ply
 
-    const stand = evaluate(this.pos)
+    const stand = this.staticEvaluate()
     if (stand >= beta) return beta
     if (stand > alpha) alpha = stand
     if (ply >= MAX_PLY - 1) return stand
@@ -468,13 +508,13 @@ export class Searcher {
         }
       }
 
-      makeMoveOnBoard(this.pos, m, undo)
+      this.doMake(m, undo)
       if (isSquareAttacked(this.pos, this.pos.kings[us], (us ^ 1) as Color)) {
-        unmakeMoveOnBoard(this.pos, m, undo)
+        this.doUnmake(m, undo)
         continue
       }
       const score = -this.quiescence(-beta, -alpha, ply + 1)
-      unmakeMoveOnBoard(this.pos, m, undo)
+      this.doUnmake(m, undo)
       if (this.stop) return 0
       if (score >= beta) return beta
       if (score > alpha) alpha = score
@@ -532,7 +572,7 @@ export class Searcher {
     // Kept off the principal variation so forced lines aren't proven any slower.
     if (ttMove === 0 && !isPv && depth >= 6) depth--
 
-    const staticEval = checked ? 0 : evaluate(this.pos)
+    const staticEval = checked ? 0 : this.staticEvaluate()
     this.evalStack[ply] = staticEval
     // "Improving": the side to move stands better than it did two plies ago. When
     // improving we prune less eagerly; when sliding, more.
@@ -598,9 +638,9 @@ export class Searcher {
         if (futile) continue
       }
 
-      makeMoveOnBoard(this.pos, m, undo)
+      this.doMake(m, undo)
       if (isSquareAttacked(this.pos, this.pos.kings[us], them)) {
-        unmakeMoveOnBoard(this.pos, m, undo)
+        this.doUnmake(m, undo)
         continue
       }
       legal++
@@ -637,7 +677,7 @@ export class Searcher {
       }
 
       this.keyStack.pop()
-      unmakeMoveOnBoard(this.pos, m, undo)
+      this.doUnmake(m, undo)
       if (this.stop) return 0
 
       if (score > bestScore) {

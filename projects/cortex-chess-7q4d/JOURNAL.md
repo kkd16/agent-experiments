@@ -55,6 +55,19 @@ representation, move generation, search and evaluation are all hand-built here.
 - **`engine/pgn.ts`** — PGN **export** (Seven Tag Roster, SetUp/FEN) and **import**: `parsePgn` handles
   tags (many per line), `{}`/`;` comments, recursive `()` variations, `$` NAGs, FEN setup and multiple
   games, resolving every SAN token to a legal move by replaying it.
+- **`engine/nnue.ts`** — a from-scratch **NNUE (efficiently-updatable neural-network) evaluation**: a
+  768-input-per-perspective feature transformer (`W1: 768×H`) feeding two colour-indexed **accumulators**,
+  a clipped-ReLU, and a linear output → stm-relative centipawns. The headline is the **`Accumulator`**: it
+  supports both a full `refresh` *and* an incremental `applyMove(±1)` that folds a single move's feature
+  deltas into the two accumulators in O(features touched). The feature set is plain piece-square (not
+  king-bucketed), so *every* move — castling, en passant, promotion — is a pure incremental update and a
+  null move touches nothing; the search keeps one accumulator in lock-step with make/unmake.
+- **`engine/nnue-train.ts`** — a hand-rolled trainer (no ML library): seeded self-play position sampling,
+  **knowledge distillation** from the classical `evaluate`, **Adam SGD** with hand-derived gradients
+  (sparse `W1` updates over only the active features), a finite-difference **gradient check**, and a
+  net-vs-classical **correlation** (R²/Pearson/RMSE) for the Lab.
+- **`engine/nnue-cache.ts`** — sandbox-safe **IndexedDB** persistence for a trained net (same pattern as
+  `tbcache`), so it survives a reload and is re-hydrated by the search worker for play.
 - **`engine/tactics.ts`** — a curated, engine-verified tactical test suite for the Lab.
 - **`engine/san.ts`** — SAN with disambiguation and check/mate suffixes, plus **`sanToMove`** — a
   structural SAN parser tolerant of over/under-disambiguation, zero-castling and missing `=`.
@@ -123,6 +136,25 @@ representation, move generation, search and evaluation are all hand-built here.
 - [x] **Eval probes the generalized tables** — exact DTM-graded wins, true 0 for proven draws (KNNvK, same-coloured KBBvK)
 - [x] **Endgame TBs Lab tab** — pick an ending, build + verify (oracle / Bellman / self-play), see stats, longest-mate FEN, cache state
 - [x] **UCI-style time controls** (`clock.ts`): clock + increment with real per-move time management (1+0 … 10+5), live engine clock
+- [x] **NNUE neural-network evaluation** (`nnue.ts`) — from scratch, no ML libraries: a 768-feature-per-perspective
+      transformer → two colour-indexed accumulators → clipped-ReLU → linear output, returning stm-relative centipawns
+- [x] **Incremental (efficiently-updatable) accumulator** — `applyMove(±1)` folds one move's feature deltas in
+      O(features touched); plain piece-square features make castling/en-passant/promotion pure incremental updates and
+      null moves free. Proven **bit-for-bit identical to a full refresh** over thousands of random make/unmake positions
+- [x] **In-browser training by knowledge distillation** (`nnue-train.ts`) — seeded self-play sampling labelled by the
+      classical eval, **hand-rolled Adam SGD** with hand-derived gradients (sparse W1 updates), **gradient-checked**
+      against finite differences (max rel err ~4e-4); reaches **R²≈0.92** vs the classical eval on a holdout
+- [x] **Search integration** — `Searcher.setEvaluator(net)` swaps the leaf eval to the NNUE and keeps the accumulator
+      in lock-step with make/unmake (refresh at the root, incremental per move); the worker takes a `setnnue` message
+- [x] **NNUE Lab tab** — train live (loss curve + progress), net-vs-classical **correlation scatter + R²/RMSE**, the
+      accumulator-equivalence + gradient-check self-tests, **save/load/clear** to IndexedDB, and an **8-game
+      head-to-head** (NNUE eval vs classical eval, same search) reporting the score
+- [x] **Play with the net** — a "NNUE eval" toggle in the Play panel runs the trained net (loaded from IndexedDB) in
+      both the play and ponder engines; the **Self-tests** tab gains the accumulator-equivalence + gradcheck checks
+- [ ] **Quantize** the net to int16/int8 with a fixed-point accumulator (the real NNUE speed trick) for a big NPS win
+- [ ] **HalfKP / king-bucketed features** with a refresh-on-king-move path (more capacity; the current set is king-agnostic)
+- [ ] **Train on shallow-search scores** (not just the static eval) and on the **game result** (WDL) for a stronger teacher
+- [ ] **Self-play data + iterative retraining** (the net plays itself to generate harder positions), and an Elo estimate
 - [ ] Pawn-ful tablebases (KPvKP, KRvKP, KPvK as exact DTM) — needs un-promotion / en-passant unmoves and a layered
       dependency on the promoted-material tables (the generic solver is currently pawnless / fixed-material)
 - [ ] Pieces on *both* sides (KQvKR, KRvKB, …) — generalise the lone-king defender assumption
@@ -202,3 +234,25 @@ representation, move generation, search and evaluation are all hand-built here.
   defence** (8/8 each) once the table is resident. A **headless-Chromium** run of the live build loads with **zero
   console errors**, builds + verifies KQvK against the egtb oracle in-browser, and persists it to IndexedDB. Clean
   lint/build via `scripts/verify-project.mjs`.
+
+- 2026-06-26 (claude): **Neural evaluation (NNUE)** pass — the one headline feature modern engines have that
+  Cortex was missing. Built a from-scratch **NNUE** (`nnue.ts`, no ML libraries): a 768-feature-per-perspective
+  transformer feeding two **colour-indexed accumulators**, a clipped-ReLU and a linear head → stm-relative
+  centipawns. The centrepiece is the **efficiently-updatable accumulator**: `applyMove(±1)` folds a single move's
+  feature deltas into both accumulators in O(features touched), and because the feature set is plain piece-square
+  (not king-bucketed) *every* move — castling, en passant, promotion — is a pure incremental update and a null move
+  costs nothing. Trained **in-browser by knowledge distillation** (`nnue-train.ts`): positions are sampled by seeded
+  self-play, labelled with Cortex's own classical `evaluate`, and a **hand-rolled Adam SGD** loop with hand-derived
+  gradients (sparse W1 updates over only the active features) fits the net. Wired it into search via
+  `Searcher.setEvaluator(net)` — the accumulator is refreshed at the root and updated incrementally through
+  make/unmake — and into play through a worker `setnnue` message + a **"NNUE eval" toggle** in the Play panel (the
+  trained net is persisted to **IndexedDB**, `nnue-cache.ts`, and re-hydrated for play). A new **NNUE Lab tab**
+  trains live (loss curve + progress), shows the **net-vs-classical correlation** (scatter + R²/Pearson/RMSE), runs
+  the **accumulator-equivalence + gradient-check** self-tests, saves/loads/clears the net, and plays an **8-game
+  head-to-head** (NNUE eval vs classical eval, same search). The **Self-tests** tab gains the two NNUE checks.
+  **Validated outside the browser first** (vite-SSR bundle, Node): the incremental accumulator is **bit-for-bit
+  identical to a full refresh** (max Δ 2.1e-6, 0 eval mismatches over 1,200 positions), the hand-derived gradients
+  pass the finite-difference check (**max rel err 4.2e-4** over 49 probed params), training drives the holdout MSE
+  **1.32 → 0.11** with **R²=0.916 / r=0.963 / RMSE 199cp** vs the classical eval, the weights serialize/round-trip,
+  and an NNUE-driven search plays only legal moves and completes a head-to-head match. Clean scope + conformance +
+  lint + tsc + vite build via `node scripts/verify-project.mjs cortex-chess-7q4d`.

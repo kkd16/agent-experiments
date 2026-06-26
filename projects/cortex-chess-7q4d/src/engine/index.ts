@@ -57,6 +57,32 @@ export { TACTICS } from './tactics'
 export type { TacticCase } from './tactics'
 export { EPD_SUITES, parseEpd, parseEpdBlock } from './epd'
 export type { EpdCase, EpdSuite } from './epd'
+export {
+  Accumulator,
+  zeroWeights,
+  featureIndex,
+  to64,
+  nnueEvalFresh,
+  makeFreshEvaluator,
+  serializeNnue,
+  deserializeNnue,
+  DEFAULT_H,
+  OUT_SCALE,
+  FEATURES,
+} from './nnue'
+export type { NnueWeights, NnueBlob } from './nnue'
+export {
+  NnueTrainer,
+  generatePositions,
+  featuresOf,
+  datasetLoss,
+  correlation,
+  gradCheck,
+  mulberry32,
+} from './nnue-train'
+export type { Example, TrainOpts, Correlation } from './nnue-train'
+export { nnueSave, nnueLoad, nnueClear, NNUE_KEY } from './nnue-cache'
+export type { NnueMeta } from './nnue-cache'
 
 export type GameResult = 'playing' | 'checkmate' | 'stalemate' | 'draw-fifty' | 'draw-repetition' | 'draw-material'
 
