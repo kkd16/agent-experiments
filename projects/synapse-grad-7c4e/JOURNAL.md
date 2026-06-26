@@ -1538,8 +1538,10 @@ on the *final* frame of a 20–40-step rollout, and the gradient flows back thro
   and **Regenerate** (pool + random-disc damage ⇒ self-healing) — with Adam, grad-clipping, a
   log-axis loss curve, a live pool strip, gradcheck and save/load/share. `components/nca/*`: the
   headline **`Organism`** (a 384px canvas that grows the creature live and lets you **drag to
-  wound it** and watch it heal, plus a hidden-channel inspector and a seed/grow/damage/speed
-  control surface), `TargetPicker`, `PoolStrip`, `NCAChart`, `TargetView`, and `NCAPanel`. Wired
+  wound it** and watch it heal — plus an **auto-heal** mode that periodically wounds it on its own
+  so an unattended page shows the regeneration, a hidden-channel inspector and a
+  seed/grow/damage/speed control surface), `TargetPicker`, `PoolStrip`, `NCAChart`, `TargetView`,
+  and `NCAPanel`. Wired
   an app tab "Morphogenesis · NCA" + hash route `#m=` + a `synapse:mslot:` save prefix. The engine
   **self-test grew by three checks** — `nca-perceive` (1.0e-9), a **whole CA rollout gradchecked
   end-to-end through BPTT** with frozen masks (6.2e-7 — the proof the tape flows through the
