@@ -142,9 +142,35 @@ safety theorem ("at most one value is ever chosen per instance") checked live.
       step randomized chaos run (proposes + crashes + partitions) asserting Agreement & Quorum-backing
       hold throughout and all live nodes converge to one chosen log + KV.
 
+### Chord DHT lab (peer-to-peer routing) — NEW
+A scalable distributed hash table on one consistent-hashing ring, the classic Stoica et al. (2001)
+design — implemented for real on the same kernel, with a purpose-built ring visualisation.
+
+- [x] **Consistent-hashing ring** — nodes and keys share an m-bit id space (m=8); a key is owned by
+      its successor. Ids are FNV-hashed from node names with deterministic collision probing, so every
+      node agrees on the id↔name directory.
+- [x] **Finger tables** — m shortcuts per node (`finger[i] = successor(id+2^i)`); `closest_preceding`
+      routes a lookup in **O(log N) hops** instead of a linear ring scan.
+- [x] **Recursive lookups** — a `FindSuccessor` is forwarded hop-by-hop and the answer returns straight
+      to the origin, carrying the **path it travelled** (drawn as a glowing route on the ring).
+- [x] **Stabilization** — the coordinator-free maintenance protocol: `stabilize` (adopt a closer
+      successor + notify), `notify` (accept a closer predecessor), `fix_fingers` (refresh one finger per
+      tick) and `check_predecessor` (ping; drop a dead predecessor). The lone bootstrap stabilizes
+      against itself so a real cycle forms as nodes join.
+- [x] **Failure handling** — a successor list (depth r) for failover; an outstanding-probe guard so the
+      RPC timeout can actually fire (it must — otherwise a re-armed timeout starves failure detection);
+      a crashed node's successors/predecessors are repaired and the ring re-converges with no operator.
+- [x] **Ring health invariants** — Identifier uniqueness (always-on safety) plus Successor- and
+      Predecessor-convergence gauges (eventual: they dip during churn and heal back to green).
+- [x] **Chord ring UI** (`ui/ChordRing.tsx`, `labs/ChordLab.tsx`) — nodes placed by id, successor
+      pointers as perimeter arcs, the selected node's finger table as chords across the ring, sample
+      keys on the rim tinted by owner, the last lookup's hop-path highlighted; a node inspector
+      (successor/predecessor/successor-list/finger table), a key-ownership table, deep links.
+- [x] **Self-tests** — 7-node ring converges (every successor & predecessor correct); lookups resolve
+      to the true owner for a sweep of keys; lookups stay short (≤ m hops); the ring heals after a node
+      crashes (re-converges + lookups stay correct); collision-free id placement.
+
 ### Future labs / ideas (backlog)
-- [ ] **Chord DHT** — consistent hashing ring, finger tables, stabilization, and an animated
-      key-lookup routing path (O(log N) hops).
 - [ ] **Dynamo-style quorums** — tunable (N, R, W), sloppy quorums + hinted handoff, read-repair,
       and a vector-clock conflict view, with the R+W>N consistency invariant.
 - [ ] **PBFT** — practical Byzantine fault tolerance (pre-prepare/prepare/commit), tolerating ⌊(n−1)/3⌋
@@ -229,3 +255,18 @@ safety theorem ("at most one value is ever chosen per instance") checked live.
   convergence check. Verified the full gate (scope + conformance + lint + build) and drove the
   built app in headless Chromium — leader election, choosing, dueling-proposer resolution and
   leader failover all confirmed working live with safety HOLDING throughout.
+- 2026-06-26 (claude): **added a Chord DHT lab** — the iconic peer-to-peer routing algorithm, to
+  complement the consensus labs. New files `protocols/chord/{types,ring,chord,invariants}.ts`:
+  a consistent-hashing m-bit ring (FNV ids with collision probing), finger tables giving O(log N)
+  lookups, recursive `FindSuccessor` routing that carries its hop-path, and the full coordinator-free
+  **stabilization** protocol (stabilize / notify / fix_fingers / check_predecessor) with successor-list
+  failover. Subtle bugs found & fixed along the way: the lone bootstrap must stabilize against itself
+  (the (n,n) interval is the whole ring) or its successor never forms; and the RPC timeout must not be
+  re-armed while a probe is outstanding (rpcTimeout > stabilizeInterval was starving successor-failure
+  detection). A bespoke **ring visualisation** (`ui/ChordRing.tsx`) draws nodes by id, successor arcs,
+  the selected node's finger chords, sample keys tinted by owner, and the last lookup's glowing route;
+  the lab adds a node inspector, a key-ownership table and deep links. Self-tests grown **33 → 38/38**
+  (5 Chord tests: convergence, correct lookups, O(log N) hops, heal-after-crash, collision-free ids).
+  Verified the full gate (scope + conformance + lint + build) and drove the built app in headless
+  Chromium — the ring converges (health HOLDING), a key lookup routes and resolves, and after crashing
+  a node the ring re-converges back to HOLDING with lookups still correct.

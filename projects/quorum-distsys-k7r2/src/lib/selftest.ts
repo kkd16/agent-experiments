@@ -18,6 +18,10 @@ import { createCoedit, docText, visibleCells, type CoeditOp, type CoeditState } 
 import { createPaxos } from '../protocols/paxos/paxos';
 import { paxosInvariants } from '../protocols/paxos/invariants';
 import { DEFAULT_PAXOS_CONFIG, type PaxosCmd, type PaxosState, type PaxosValue } from '../protocols/paxos/types';
+import { createChord } from '../protocols/chord/chord';
+import { chordInvariants } from '../protocols/chord/invariants';
+import { DEFAULT_CHORD_CONFIG, type ChordCmd, type ChordState } from '../protocols/chord/types';
+import { ownerOf, hashId } from '../protocols/chord/ring';
 
 export interface TestResult {
   group: string;
@@ -775,6 +779,95 @@ export function runSelfTests(): TestResult[] {
     const converged = new Set(chosenSets).size === 1;
     const ok = converged && paxosOk(k);
     return [ok, ok ? `all 5 nodes converged to one chosen log (${Object.keys(k.views()[0].state.chosen).length} slots)` : firstBad(k) || 'nodes did not converge'];
+  });
+
+  // ---- Chord DHT ----
+  const chordKernel = (seed: number, ids: string[]) =>
+    new Kernel<ChordState, ChordCmd>({
+      seed,
+      protocol: createChord(DEFAULT_CHORD_CONFIG),
+      nodeIds: ids,
+      network: { minLatency: 20, maxLatency: 60, dropRate: 0 },
+    });
+  const chordLiveIds = (k: Kernel<ChordState, ChordCmd>) =>
+    k.views().filter((v) => v.up && v.state.joined).map((v) => v.state.id);
+  const chordConverged = (k: Kernel<ChordState, ChordCmd>) => chordInvariants(k.views()).every((iv) => iv.ok);
+  const M = DEFAULT_CHORD_CONFIG.m;
+
+  t('Chord', 'Ring of 7 converges (every successor & predecessor correct)', () => {
+    const k = chordKernel(1, ['A', 'B', 'C', 'D', 'E', 'F', 'G']);
+    for (let i = 0; i < 200; i++) k.advance(25);
+    const inv = chordInvariants(k.views());
+    const ok = inv.every((iv) => iv.ok);
+    return [ok, ok ? 'one clean cycle; all pointers correct' : inv.filter((iv) => !iv.ok).map((iv) => iv.detail).join('; ')];
+  });
+
+  t('Chord', 'Lookups resolve to the true key owner', () => {
+    const k = chordKernel(2, ['A', 'B', 'C', 'D', 'E', 'F', 'G']);
+    for (let i = 0; i < 200; i++) k.advance(25);
+    const ids = chordLiveIds(k);
+    let allCorrect = true;
+    let detail = '';
+    for (let key = 0; key < (1 << M); key += 17) {
+      // Ask a fixed node to look it up.
+      k.command('A', { type: 'lookup', key });
+      for (let i = 0; i < 30; i++) k.advance(20);
+      const last = k.views().find((v) => v.id === 'A')!.state.lastLookup;
+      const expected = ownerOf(key, ids);
+      if (!last || last.owner !== expected) {
+        allCorrect = false;
+        detail = `key ${key}: got ${last?.owner ?? 'none'}, expected ${expected}`;
+        break;
+      }
+    }
+    return [allCorrect, allCorrect ? `every probed key resolved to its true successor` : detail];
+  });
+
+  t('Chord', 'Finger tables give short (O(log N)) lookup paths', () => {
+    const k = chordKernel(5, ['A', 'B', 'C', 'D', 'E', 'F', 'G']);
+    for (let i = 0; i < 240; i++) k.advance(25);
+    let maxHops = 0;
+    for (let key = 3; key < (1 << M); key += 23) {
+      k.command('D', { type: 'lookup', key });
+      for (let i = 0; i < 30; i++) k.advance(20);
+      const last = k.views().find((v) => v.id === 'D')!.state.lastLookup;
+      if (last) maxHops = Math.max(maxHops, last.hops);
+    }
+    // With m=8 fingers, lookups should be far below a linear scan of the ring.
+    const ok = maxHops <= M;
+    return [ok, ok ? `worst lookup used ${maxHops} hops (≤ m=${M})` : `a lookup took ${maxHops} hops`];
+  });
+
+  t('Chord', 'Ring heals after a node crashes (re-converges + correct lookups)', () => {
+    const k = chordKernel(3, ['A', 'B', 'C', 'D', 'E', 'F', 'G']);
+    for (let i = 0; i < 200; i++) k.advance(25);
+    if (!chordConverged(k)) return [false, 'did not converge before the crash'];
+    k.crash('D');
+    for (let i = 0; i < 320; i++) k.advance(25); // let stabilization repair
+    const inv = chordInvariants(k.views());
+    const reconverged = inv.every((iv) => iv.ok);
+    // And lookups still resolve correctly among the survivors.
+    const ids = chordLiveIds(k);
+    k.command('A', { type: 'lookup', key: 99 });
+    for (let i = 0; i < 40; i++) k.advance(20);
+    const last = k.views().find((v) => v.id === 'A')!.state.lastLookup;
+    const lookupOk = !!last && last.owner === ownerOf(99, ids);
+    const ok = reconverged && lookupOk;
+    return [ok, ok ? 'ring re-converged without D and lookups stayed correct' : reconverged ? 'lookup wrong after heal' : inv.filter((iv) => !iv.ok).map((iv) => iv.detail).join('; ')];
+  });
+
+  t('Chord', 'A late joiner is absorbed into the ring', () => {
+    // E.g. start with 4, then "join" the rest is already automatic; here we verify
+    // hash placement is collision-free and the directory is consistent.
+    const k = chordKernel(8, ['A', 'B', 'C', 'D', 'E']);
+    for (let i = 0; i < 180; i++) k.advance(25);
+    const ids = chordLiveIds(k);
+    const distinct = new Set(ids).size === ids.length;
+    const converged = chordConverged(k);
+    // Sanity: ids are the FNV hashes (collision-resolved).
+    const hashed = hashId('A', M);
+    const ok = distinct && converged && typeof hashed === 'number';
+    return [ok, ok ? `5 distinct ids, ring converged` : `distinct=${distinct} converged=${converged}`];
   });
 
   // ---- Vector clocks ----

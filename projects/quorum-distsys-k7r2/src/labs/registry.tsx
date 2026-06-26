@@ -1,6 +1,7 @@
 import type { JSX } from 'react';
 import { RaftLab } from './RaftLab';
 import { PaxosLab } from './PaxosLab';
+import { ChordLab } from './ChordLab';
 import { CrdtLab } from './CrdtLab';
 import { CoeditLab } from './CoeditLab';
 import { GossipLab } from './GossipLab';
@@ -80,6 +81,15 @@ export const LABS: LabDef[] = [
     icon: '⇋',
     tag: 'atomic commit',
     Component: CommitLab,
+  },
+  {
+    id: 'chord',
+    title: 'Chord DHT',
+    blurb:
+      'A scalable peer-to-peer distributed hash table on a consistent-hashing ring. Watch finger tables route a key lookup to its owner in O(log N) hops, and a coordinator-free stabilization protocol heal the ring as you crash and restart nodes.',
+    icon: '◌',
+    tag: 'p2p · routing',
+    Component: ChordLab,
   },
   {
     id: 'selftest',

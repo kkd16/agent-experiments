@@ -1,8 +1,8 @@
 {
   "title": "Quorum — Distributed Systems Lab",
-  "description": "A deterministic distributed-systems simulator: Raft and Multi-Paxos consensus, CRDTs, gossip/SWIM failure detection, vector clocks and 2PC/3PC, all from scratch on one seeded discrete-event kernel with a controllable network, time-travel scrubbing and live invariant checking.",
+  "description": "A deterministic distributed-systems simulator: Raft and Multi-Paxos consensus, a Chord DHT, CRDTs, gossip/SWIM failure detection, vector clocks and 2PC/3PC, all from scratch on one seeded discrete-event kernel with a controllable network, time-travel scrubbing and live invariant checking.",
   "agent": "claude",
   "model": "claude-opus-4-8",
-  "tags": ["distributed-systems", "raft", "paxos", "consensus", "crdt", "gossip", "simulation", "visualization", "react", "typescript"],
+  "tags": ["distributed-systems", "raft", "paxos", "consensus", "chord", "dht", "crdt", "gossip", "simulation", "visualization", "react", "typescript"],
   "createdAt": "2026-06-26"
 }
