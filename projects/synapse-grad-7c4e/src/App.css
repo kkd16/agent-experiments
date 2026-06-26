@@ -2005,3 +2005,132 @@ label.toggle input {
   text-align: right;
   font-family: ui-monospace, monospace;
 }
+
+/* ===== Morphogenesis · Neural Cellular Automata lab ===== */
+.seg.three {
+  grid-template-columns: 1fr 1fr 1fr;
+}
+
+/* target gallery in the panel */
+.target-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.target-thumb {
+  display: grid;
+  place-items: center;
+  padding: 3px;
+  background: var(--bg-soft);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  cursor: pointer;
+}
+.target-thumb canvas {
+  border-radius: 6px;
+  display: block;
+}
+.target-thumb.on {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+.target-thumb:hover:not(.on) {
+  border-color: var(--border-strong);
+}
+
+/* the headline organism */
+.organism-layout {
+  display: flex;
+  gap: 18px;
+  align-items: flex-start;
+  flex-wrap: wrap;
+}
+.organism {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  flex: 1 1 384px;
+  min-width: 0;
+}
+.organism-main {
+  position: relative;
+}
+.organism-canvas {
+  width: 100%;
+  max-width: 384px;
+  aspect-ratio: 1 / 1;
+  height: auto;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: #0a0d14;
+  cursor: crosshair;
+  touch-action: none;
+  display: block;
+}
+.organism-hint {
+  margin-top: 6px;
+}
+.organism-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.organism-sliders {
+  display: flex;
+  gap: 14px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.field.tight {
+  margin-bottom: 0;
+  min-width: 130px;
+}
+.channel-strip {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 8px 0;
+}
+.channel-view {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+}
+.channel-view canvas {
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  image-rendering: pixelated;
+}
+
+/* target reference next to the organism */
+.target-ref {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+}
+.target-view {
+  width: 128px;
+  height: 128px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  image-rendering: pixelated;
+}
+
+/* sample pool strip */
+.pool-strip {
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
+  gap: 5px;
+}
+.pool-cell {
+  width: 100%;
+  height: auto;
+  aspect-ratio: 1 / 1;
+  border-radius: 5px;
+  border: 1px solid var(--border);
+  image-rendering: pixelated;
+}

@@ -27,6 +27,7 @@ import { GNN, buildAdj, type ConvKind } from './gnn';
 import { KAN, KANLayer, makeGrid, evalSplineBasis } from './kan';
 import { NeuralODE, ODEFunc, odeIntegrate, adjointDynamicsGrad, terminalAdjointCE, makeNodeDataset } from './node-ode';
 import { gaussianNLL, gaussianKL, BayesLinear, BayesMLP, mixtureMoments } from './bayes';
+import { perceive, NCA, ncaVisibleLoss, makeSeed, renderTarget } from './nca';
 
 export interface OpCheck {
   name: string;
@@ -955,6 +956,53 @@ export function runSelfTest(seed = 7): SelfTestReport {
       pairs.push([pm.aleatoric[g] + pm.epistemic[g], brute]);
     }
     ops.push(relCheck('bayes-total-variance', pairs));
+  }
+
+  // ---- Neural Cellular Automata (morphogenesis lab) ---------------------------------
+  //
+  // The one new hand-derived op is `perceive` (a fixed depthwise Sobel/identity filter bank);
+  // the update rule is plain matmul/add/relu, so the real proof is that the gradient flows
+  // back through a WHOLE multi-step CA rollout (back-prop through time). Masks are frozen
+  // (stop-gradient, as in Distill) so the finite-difference check sees a smooth function.
+  {
+    // (1) perceive: forward + VJP against finite differences.
+    const meta = { N: 1, H: 4, W: 4, C: 3 };
+    const x = leaf(rng, meta.N * meta.H * meta.W, meta.C);
+    ops.push(checkOp('nca-perceive', [x], () => perceive(x, meta), rng));
+  }
+  {
+    // (2) a whole CA rollout gradchecked end-to-end through BPTT.
+    const meta = { N: 2, H: 6, W: 6, C: 6 };
+    const model = new NCA({ channels: meta.C, hidden: 8, fireRate: 0.5 }, rngFrom(seed ^ 0xca));
+    for (let i = 0; i < model.W2.size; i++) model.W2.data[i] = (rng() * 2 - 1) * 0.2; // wake up the update
+    const cells = meta.H * meta.W;
+    const seedArr = makeSeed(meta);
+    const buf = new Float64Array(meta.N * cells * meta.C);
+    for (let g = 0; g < meta.N; g++) buf.set(seedArr, g * cells * meta.C);
+    const seedT = Tensor.fromFlat(buf, meta.N * cells, meta.C, false);
+    const target = renderTarget('heart', meta);
+    const T = 6;
+    const captured = model.rollout(seedT, T, meta, rngFrom(0x5eed)).masks; // freeze the masks
+    ops.push(
+      checkOp(
+        'nca-rollout (BPTT e2e)',
+        model.parameters(),
+        () => ncaVisibleLoss(model.rollout(seedT, T, meta, rngFrom(0x5eed), captured).state, target, meta),
+        rng,
+      ),
+    );
+  }
+  {
+    // (3) value identity: with the second update layer zero-initialised, one CA step is the
+    // identity on the seed (the network starts by doing nothing — it must *learn* to grow).
+    const meta = { N: 1, H: 5, W: 5, C: 6 };
+    const model = new NCA({ channels: meta.C, hidden: 8, fireRate: 1 }, rngFrom(seed ^ 0xceca));
+    const seedArr = makeSeed(meta);
+    const seedT = Tensor.fromFlat(seedArr.slice(), meta.H * meta.W, meta.C, false);
+    const after = model.rollout(seedT, 1, meta, rngFrom(1)).state;
+    const pairs: [number, number][] = [];
+    for (let i = 0; i < seedArr.length; i++) pairs.push([after.data[i], seedArr[i]]);
+    ops.push(relCheck('nca-zero-init-identity', pairs));
   }
 
   const maxRelError = ops.reduce((m, o) => Math.max(m, o.maxRelError), 0);
