@@ -31,6 +31,7 @@ const PASS_LABELS: Record<string, string> = {
   dt: 'pattern matching compiled to a decision tree (test each position once)',
   sat: 'static-argument transformation (lift a loop-invariant argument into a wrapper)',
   'float-in': 'float-in (sink a pure binding past a conditional into the one branch that uses it)',
+  'dead-param': 'dead-argument elimination (drop a parameter whose value never reaches the result)',
   eqsat: 'equality saturation (e-graph superoptimiser over integer-arithmetic islands)',
   fuse: 'short-cut fusion (delete the intermediate list flowing between two combinators)',
 }
@@ -429,6 +430,40 @@ export default function OptimizerPanel({ code }: Props) {
                   </td>
                   <td className="opt-pass-desc">
                     <code>{f.value}</code> sunk into a <code>{f.into}</code> branch
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {stats.deadParams.length > 0 && (
+        <div className="opt-passes">
+          <h4>Dead-argument elimination (Aether 20.0)</h4>
+          <p className="panel-note" style={{ marginTop: 0 }}>
+            A parameter whose value can never reach the result is dropped from the function and from
+            every saturated call site — both an <em>unused</em> parameter and a <em>useless
+            accumulator</em> that only ever feeds its own recursive slot (its per-iteration update runs
+            for nothing). Fires only when every dropped argument is pure, so no effect is lost and the VM
+            step count can only fall:
+          </p>
+          <table className="opt-table">
+            <tbody>
+              {stats.deadParams.map((d, i) => (
+                <tr key={i}>
+                  <td className="opt-pass-name">
+                    <code>{d.name}</code>
+                  </td>
+                  <td className="opt-pass-desc">
+                    dropped{' '}
+                    {d.dropped.map((p, j) => (
+                      <span key={p}>
+                        {j > 0 ? ', ' : ''}
+                        <code>{p}</code>
+                      </span>
+                    ))}{' '}
+                    {d.recursive ? '(a dead loop argument)' : '(an unused parameter)'}
                   </td>
                 </tr>
               ))}
