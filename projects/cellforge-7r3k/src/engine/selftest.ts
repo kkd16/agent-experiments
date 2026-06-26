@@ -817,6 +817,38 @@ function solverTests(): TestResult[] {
     add('non-binding constraint shadow price = 0', near(sc[2]?.shadowPrice, 0, 1e-6), `got ${sc[2]?.shadowPrice}`)
   }
 
+  // 11) The Solver report sheet: solving then writing carries the answer + shadow prices into cells.
+  {
+    const wb = new Workbook(40, 20)
+    wb.setMany([
+      { coord: A(0, 0), raw: '0' },
+      { coord: A(1, 0), raw: '0' },
+      { coord: A(0, 1), raw: '=45*A1+80*A2' },
+      { coord: A(0, 2), raw: '=5*A1+20*A2' },
+      { coord: A(1, 2), raw: '=10*A1+15*A2' },
+    ])
+    const res = wb.solve({
+      objective: A(0, 1),
+      sense: 'max',
+      variables: [A(0, 0), A(1, 0)],
+      nonNegative: true,
+      constraints: [
+        { lhs: A(0, 2), rel: '<=', rhs: { kind: 'num', value: 400 } },
+        { lhs: A(1, 2), rel: '<=', rhs: { kind: 'num', value: 450 } },
+      ],
+    })
+    const sid = wb.writeSolverReport({ objective: A(0, 1), sense: 'max', result: res, constraintCells: [A(0, 2), A(1, 2)] })
+    const nums = new Set<number>()
+    for (let r = 0; r < 40; r++) for (let c = 0; c < 8; c++) {
+      const v = wb.getValue({ row: r, col: c }, sid)
+      if (typeof v === 'number') nums.add(Math.round(v * 1e6) / 1e6)
+    }
+    add('report sheet is named "Sensitivity Report"', wb.sheetName(sid).includes('Sensitivity'), wb.sheetName(sid))
+    add('report carries the objective 2200', nums.has(2200))
+    add('report carries the decision values 24 & 14', nums.has(24) && nums.has(14))
+    add('report carries the shadow prices 1 & 4', nums.has(1) && nums.has(4))
+  }
+
   return out
 }
 

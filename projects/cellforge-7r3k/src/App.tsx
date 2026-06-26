@@ -477,6 +477,19 @@ export default function App() {
     refocus()
   }
 
+  // ---- solver: write an Answer + Sensitivity report to a brand-new sheet ----
+  const solverReport = (input: Parameters<typeof wb.writeSolverReport>[0]) => {
+    checkpoint()
+    const id = wb.writeSolverReport(input)
+    wb.setActiveSheet(id)
+    setSheetId(id)
+    setActive({ row: 0, col: 0 })
+    setAnchor({ row: 0, col: 0 })
+    setHeatmap(null)
+    bump()
+    refocus()
+  }
+
   /** A1 of a cell a few columns to the right of the selection — a safe default
    *  anchor for a generated pivot / data table that won't overwrite the source. */
   const freeAnchorA1 = (): string => {
@@ -925,6 +938,7 @@ export default function App() {
           initialObjective={coordToA1(active.row, active.col)}
           initialVariables={selectionA1()}
           onApply={applySolver}
+          onReport={solverReport}
           onGoto={(c) => {
             setActive(c)
             setAnchor(c)

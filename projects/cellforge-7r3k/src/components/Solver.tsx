@@ -14,6 +14,7 @@ interface Props {
   initialVariables: string
   onApply: (entries: Array<{ coord: Coord; raw: string }>, focus: Coord) => void
   onGoto: (c: Coord) => void
+  onReport: (input: { objective: Coord; sense: 'max' | 'min' | 'value'; result: SolverResult; constraintCells: Coord[] }) => void
   onClose: () => void
 }
 
@@ -96,7 +97,7 @@ function fmtRange(lo: number, hi: number): string {
  * a linear model and solves it *exactly* with the simplex method; otherwise it runs a
  * nonlinear penalty / Nelder–Mead search. All over real workbook recalculations.
  */
-export default function Solver({ wb, sheetId, initialObjective, initialVariables, onApply, onGoto, onClose }: Props) {
+export default function Solver({ wb, sheetId, initialObjective, initialVariables, onApply, onGoto, onReport, onClose }: Props) {
   const [objective, setObjective] = useState(initialObjective)
   const [sense, setSense] = useState<'max' | 'min' | 'value'>('max')
   const [target, setTarget] = useState('0')
@@ -105,6 +106,7 @@ export default function Solver({ wb, sheetId, initialObjective, initialVariables
   const [constraints, setConstraints] = useState<ConstraintRow[]>([{ lhs: '', rel: '<=', rhs: '' }])
   const [error, setError] = useState<string | null>(null)
   const [result, setResult] = useState<SolverResult | null>(null)
+  const [model, setModel] = useState<{ objective: Coord; sense: 'max' | 'min' | 'value'; constraintCells: Coord[] } | null>(null)
 
   const setRow = (i: number, patch: Partial<ConstraintRow>) =>
     setConstraints((rows) => rows.map((r, k) => (k === i ? { ...r, ...patch } : r)))
@@ -155,6 +157,13 @@ export default function Solver({ wb, sheetId, initialObjective, initialVariables
     })
     if (res.status === 'error') return setError(res.message ?? 'The model could not be solved.')
     setResult(res)
+    setModel({ objective: { row: obj.row, col: obj.col }, sense, constraintCells: parsed.map((p) => p.lhs) })
+  }
+
+  const writeReport = () => {
+    if (!result || !model) return
+    onReport({ ...model, result })
+    onClose()
   }
 
   const apply = () => {
@@ -391,6 +400,9 @@ export default function Solver({ wb, sheetId, initialObjective, initialVariables
           </button>
           <button className="btn primary" onClick={apply} disabled={!ok}>
             Keep solution
+          </button>
+          <button className="btn" onClick={writeReport} disabled={!ok} title="Write an Answer + Sensitivity report to a new sheet">
+            Report ▸ sheet
           </button>
           <button className="btn ghost" onClick={onClose}>
             Cancel
