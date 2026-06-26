@@ -14,8 +14,9 @@ import type { Hit, Aabb } from './ray'
 import { makeRay } from './ray'
 import type { Ray } from './ray'
 import type { Material } from './material'
-import type { Primitive, Triangle } from './primitive'
+import type { Primitive, Sphere, Triangle } from './primitive'
 import { makeSphere, makeTriangle, sampleTriangle, triangleDirPdf } from './primitive'
+import { sampleSphereLight, sphereDirPdf } from './spherelight'
 import { Bvh } from './bvh'
 import type { Rng } from './rng'
 import type { SceneDef, EnvDef, MediumDef } from './types'
@@ -84,6 +85,10 @@ export class Scene {
   readonly prims: Primitive[]
   readonly bvh: Bvh
   readonly lights: number[] // indices into prims of emissive triangles
+  // (20.0) Indices into prims of emissive *spheres*. NEE samples them by the
+  // solid angle they subtend (see spherelight.ts) when a render opts in via
+  // settings.sphereLights; otherwise they keep to BSDF sampling, byte-for-byte.
+  readonly sphereLights: number[]
   readonly env: EnvDef
   readonly cameraDef: SceneDef['camera']
   readonly buildMs: number
@@ -120,11 +125,12 @@ export class Scene {
     this.bvh = new Bvh(this.prims)
     this.bounds = this.bvh.rootBounds
     this.lights = []
+    this.sphereLights = []
     for (let i = 0; i < this.prims.length; i++) {
       const prim = this.prims[i]
-      if (prim.kind === 'triangle' && this.materials[prim.material].kind === 'emissive') {
-        this.lights.push(i)
-      }
+      if (this.materials[prim.material].kind !== 'emissive') continue
+      if (prim.kind === 'triangle') this.lights.push(i)
+      else if (prim.kind === 'sphere') this.sphereLights.push(i)
     }
     this.sky = def.env.kind === 'sky' ? makeSky(def.env) : null
     this.envSun = deriveEnvSun(def.env)
@@ -151,6 +157,15 @@ export class Scene {
   // Number of explicitly sampled lights = emissive triangles + the sun, if any.
   get numLights(): number {
     return this.lights.length + (this.envSun ? 1 : 0)
+  }
+
+  // (20.0) The size of the NEE selection pool. With `useSphere` the emissive
+  // spheres join the pool (each a uniform 1/N slot), so the per-light selection
+  // probabilities — and hence the MIS-paired triangle/env/sphere pdfs — all share
+  // the same denominator. Without it the count is the historical triangles+sun,
+  // so every prior estimate is reproduced bit-for-bit.
+  private effLightCount(useSphere: boolean): number {
+    return this.lights.length + (useSphere ? this.sphereLights.length : 0) + (this.envSun ? 1 : 0)
   }
 
   get triangleCount(): number {
@@ -228,13 +243,18 @@ export class Scene {
   // already folds in the realised selection probability, so the integrator's MIS is
   // identical and the estimator stays unbiased. `useTree=false` is the verbatim,
   // byte-for-byte original uniform sampler (the default).
-  sampleLight(ref: Vec3, rng: Rng, useTree = false, refNormal?: Vec3): LightSampleResult | null {
-    if (useTree && this.lightTree) return this.sampleLightTree(ref, rng, refNormal)
+  sampleLight(ref: Vec3, rng: Rng, useTree = false, refNormal?: Vec3, useSphere = false): LightSampleResult | null {
+    if (useTree && this.lightTree) return this.sampleLightTree(ref, rng, refNormal, useSphere)
     const nTri = this.lights.length
-    const nL = nTri + (this.envSun ? 1 : 0)
+    const nSph = useSphere ? this.sphereLights.length : 0
+    const nL = nTri + nSph + (this.envSun ? 1 : 0)
     if (nL === 0) return null
     const k = rng.int(nL)
-    if (k >= nTri) return this.sampleEnvLight(rng, nL)
+    // [0,nTri) triangle · [nTri,nTri+nSph) sphere · [nTri+nSph,nL) env. With
+    // useSphere off nSph=0, so the sphere band is empty and the draw sequence —
+    // and every returned pdf — is identical to the original uniform sampler.
+    if (k >= nTri + nSph) return this.sampleEnvLight(rng, nL)
+    if (k >= nTri) return this.sampleSphereLightSel(ref, this.sphereLights[k - nTri], rng, nL)
     const li = this.lights[k]
     const tri = this.prims[li] as Triangle
     const s = sampleTriangle(tri, rng)
@@ -258,14 +278,23 @@ export class Scene {
   // over the emissive triangles is distributed by the light BVH — so this reduces to
   // the uniform sampler when every cluster's importance is equal. The returned pdf
   // folds in the realised selection probability (nTri/numLights · p_tree(L)).
-  private sampleLightTree(ref: Vec3, rng: Rng, refNormal?: Vec3): LightSampleResult | null {
+  private sampleLightTree(ref: Vec3, rng: Rng, refNormal?: Vec3, useSphere = false): LightSampleResult | null {
     const nTri = this.lights.length
+    const nSph = useSphere ? this.sphereLights.length : 0
     const nEnv = this.envSun ? 1 : 0
-    const nL = nTri + nEnv
+    const nL = nTri + nSph + nEnv
     if (nL === 0) return null
     const pTriBranch = nTri / nL
-    // Env sun keeps its 1/nL slot (no rng draw consumed when there is no env sun).
-    if (nEnv > 0 && rng.next() >= pTriBranch) return this.sampleEnvLight(rng, nL)
+    // The residual (nSph+nEnv)/nL mass — the lights the tree does not distribute —
+    // is split uniformly among the spheres and the sun. With useSphere off this is
+    // exactly the original "env sun keeps its 1/nL slot" path (no extra rng draw),
+    // so the tree-sampled estimate is reproduced bit-for-bit.
+    if (nSph + nEnv > 0 && rng.next() >= pTriBranch) {
+      if (nSph === 0) return this.sampleEnvLight(rng, nL)
+      const idx = Math.min(nSph + nEnv - 1, (rng.next() * (nSph + nEnv)) | 0)
+      if (idx < nSph) return this.sampleSphereLightSel(ref, this.sphereLights[idx], rng, nL)
+      return this.sampleEnvLight(rng, nL)
+    }
     const sel = this.lightTree!.sample(ref, rng, refNormal)
     const tri = this.prims[sel.primId] as Triangle
     const s = sampleTriangle(tri, rng)
@@ -300,17 +329,40 @@ export class Scene {
     return { wi, dist: Infinity, radiance: this.envRadiance(wi), pdf, primId: ENV_PRIM_ID }
   }
 
+  // (20.0) Sample one emissive sphere by the solid angle it subtends. `nL` is the
+  // selection-pool size, so the returned pdf folds the uniform 1/nL selection
+  // probability into the cone's directional density 1/Ω — exactly the convention
+  // the triangle and env samplers use, keeping the integrator's MIS untouched.
+  // Returns null when the shade point lies inside the sphere (no subtending cone);
+  // the surrounding BSDF sampling then carries that direction unbiasedly.
+  private sampleSphereLightSel(ref: Vec3, sphereIdx: number, rng: Rng, nL: number): LightSampleResult | null {
+    const sph = this.prims[sphereIdx] as Sphere
+    const s = sampleSphereLight(ref, sph.center, sph.radius, rng)
+    if (!s || s.pdf <= 0) return null
+    const mat = this.materials[sph.material]
+    const radiance = mat.kind === 'emissive' ? mat.emission : v(0, 0, 0)
+    return { wi: s.wi, dist: s.dist, radiance, pdf: s.pdf / nL, primId: sphereIdx }
+  }
+
   // Solid-angle pdf that sampleLight() would have used to generate direction wi
   // toward emissive triangle `primId` — needed to MIS-weight a BSDF hit on it.
   // `useTree` must match the value passed to sampleLight so the two stay paired:
   // under the tree the per-triangle selection probability is nTri/numLights ·
   // p_tree(L | ref) instead of the uniform 1/numLights.
-  lightPdf(ref: Vec3, wi: Vec3, primId: number, dist: number, useTree = false, refNormal?: Vec3): number {
-    const nL = this.numLights
+  lightPdf(ref: Vec3, wi: Vec3, primId: number, dist: number, useTree = false, refNormal?: Vec3, useSphere = false): number {
+    const nL = this.effLightCount(useSphere)
     if (nL === 0) return 0
     const prim = this.prims[primId]
-    if (prim.kind !== 'triangle') return 0
     if (this.materials[prim.material].kind !== 'emissive') return 0
+    // (20.0) An emissive sphere hit by a BSDF ray: its MIS pdf is the uniform
+    // 1/nL selection times the cone's directional density 1/Ω. Zero when sphere
+    // NEE is off (then a sphere hit takes full weight, byte-for-byte) or when the
+    // shade point is inside the sphere (no cone — the sampler declined there).
+    if (prim.kind === 'sphere') {
+      if (!useSphere) return 0
+      return sphereDirPdf(ref, prim.center, prim.radius) / nL
+    }
+    if (prim.kind !== 'triangle') return 0
     const pdfTri = triangleDirPdf(prim, ref, wi, dist)
     if (useTree && this.lightTree) {
       const pSelect = (this.lights.length / nL) * this.lightTree.prob(ref, primId, refNormal)
@@ -321,11 +373,11 @@ export class Scene {
 
   // Solid-angle pdf that the env-light sampler assigns to direction wi: uniform
   // inside the sun cone, zero outside. Used to MIS-weight an escaped BSDF ray.
-  envSunPdf(wi: Vec3): number {
+  envSunPdf(wi: Vec3, useSphere = false): number {
     const sun = this.envSun
     if (!sun) return 0
     if (dot(wi, sun.dir) < sun.cosSize) return 0
-    return 1 / sun.solidAngle / this.numLights
+    return 1 / sun.solidAngle / this.effLightCount(useSphere)
   }
 
   // ---- Participating media -------------------------------------------------

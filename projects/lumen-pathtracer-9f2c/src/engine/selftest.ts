@@ -23,6 +23,13 @@ import { agx, agxContrast } from './tonemap'
 import { makeSphere, makeTriangle, intersectPrim } from './primitive'
 import type { Primitive } from './primitive'
 import { buildLightTree } from './lighttree'
+import {
+  sampleSphereLight,
+  sphereDirPdf,
+  sphereConeCosMax,
+  sphereSolidAngle,
+  sphereIrradianceFull,
+} from './spherelight'
 import type { PrimDef } from './types'
 import { Bvh } from './bvh'
 import { Scene } from './scene'
@@ -2978,6 +2985,252 @@ function testLightTreeReceiverVariance(): { pass: boolean; detail: string } {
   }
 }
 
+// ---- 20.0 Sphere-light NEE: subtended-cone (solid-angle) sampling ----------
+
+// Uniform direction over the hemisphere about `n` (pdf = 1/2π), for the naive
+// baseline estimator the cone sampler is compared against.
+function uniformHemisphere(n: Vec3, rng: Rng): Vec3 {
+  const u1 = rng.next()
+  const u2 = rng.next()
+  const cosT = u1 // uniform in cosθ over [0,1]
+  const sinT = Math.sqrt(Math.max(0, 1 - cosT * cosT))
+  const phi = 2 * Math.PI * u2
+  const { t, b } = onb(n)
+  return normalize(
+    add(add(scale(t, Math.cos(phi) * sinT), scale(b, Math.sin(phi) * sinT)), scale(n, cosT)),
+  )
+}
+
+// SL-1 — The subtended-cone solid angle, and its inverse-square (point-light)
+// limit. The directions from a point that strike a sphere of radius R a distance
+// d away form a cone of half-angle θ_max with cosθ_max=√(1−R²/d²); its solid
+// angle is Ω=2π(1−cosθ_max). As R/d→0 the cone must shrink to the projected solid
+// angle of a flat disc of area πR² at distance d — Ω→πR²/d² — which is exactly the
+// 1/d² falloff a point light obeys. Both are checked against closed forms.
+function testSphereSolidAngle(): { pass: boolean; detail: string } {
+  let worst = 0
+  for (const [d, R] of [[5, 0.8], [2, 0.5], [10, 2], [3, 0.05]] as const) {
+    const cosMax = sphereConeCosMax(d * d, R * R)!
+    const expectCos = Math.sqrt(1 - (R * R) / (d * d))
+    const omega = sphereSolidAngle(cosMax)
+    const expectOmega = 2 * Math.PI * (1 - expectCos)
+    worst = Math.max(worst, Math.abs(cosMax - expectCos), Math.abs(omega - expectOmega))
+  }
+  // Inverse-square / projected-area limit: Ω·d²/(πR²) → 1 as R/d → 0.
+  const d = 1
+  const R = 1e-3
+  const omega = sphereSolidAngle(sphereConeCosMax(d * d, R * R)!)
+  const ratio = (omega * d * d) / (Math.PI * R * R)
+  return {
+    pass: worst < 1e-12 && Math.abs(ratio - 1) < 1e-4,
+    detail: `max|Ω−2π(1−cosθmax)|=${worst.toExponential(1)}; inverse-square limit Ω·d²/(πR²)=${ratio.toFixed(6)}→1`,
+  }
+}
+
+// SL-2 — The cone sampler ↔ its pdf. Drawing N directions uniformly in the cone,
+// (1) the Monte-Carlo estimate of ∫_cone 1 dω = E[1/pdf] must equal the analytic
+// Ω; (2) every sampled direction must actually intersect the sphere (it lies in
+// the cone by construction) and its reported point must sit on the surface
+// (|p−c|=R); and (3) sphereDirPdf must return that same constant 1/Ω for each —
+// the precondition for a consistent MIS weight on a BSDF-sampled hit.
+function testSphereSamplerPdf(): { pass: boolean; detail: string } {
+  const ref = v(0, 0, 0)
+  const c = v(1.4, 2.2, 0.7)
+  const R = 0.75
+  const sph = makeSphere(c, R, 0)
+  const rng = new Rng(9001, 2)
+  const cosMax = sphereConeCosMax(distance2(c, ref), R * R)!
+  const omega = sphereSolidAngle(cosMax)
+  const M = 200000
+  let invPdfSum = 0
+  let maxOnSurface = 0
+  let maxPdfErr = 0
+  let allHit = true
+  for (let i = 0; i < M; i++) {
+    const s = sampleSphereLight(ref, c, R, rng)!
+    invPdfSum += 1 / s.pdf
+    maxPdfErr = Math.max(maxPdfErr, Math.abs(s.pdf - 1 / omega))
+    const onSurf = Math.abs(len(sub(s.n, v(0, 0, 0))) - 1) // |n| should be 1
+    maxOnSurface = Math.max(maxOnSurface, onSurf)
+    if (!intersectPrim(sph, ref, s.wi, 1e-4, 1e9)) allHit = false
+  }
+  const omegaMC = invPdfSum / M
+  const relOmega = Math.abs(omegaMC - omega) / omega
+  return {
+    pass: relOmega < 3e-3 && maxPdfErr < 1e-12 && maxOnSurface < 1e-9 && allHit,
+    detail: `∫_cone dω MC=${omegaMC.toFixed(5)} vs Ω=${omega.toFixed(5)} (rel ${(relOmega * 100).toFixed(2)}%); pdf≡1/Ω err=${maxPdfErr.toExponential(1)}; all rays hit=${allHit}`,
+  }
+}
+
+// SL-3 — The directional pdf integrates to 1 over the whole sphere of directions.
+// Sampling directions UNIFORMLY over the full sphere (pdf 1/4π) and averaging the
+// sphere-light pdf (which is 1/Ω inside the subtended cone, 0 outside) must give
+// ∫ p(ω) dω = 4π·E[p] = 1 — the structural guarantee that the NEE sampler is a
+// genuine probability distribution (and hence unbiased).
+function testSpherePdfIntegratesToOne(): { pass: boolean; detail: string } {
+  const ref = v(0, 0, 0)
+  const c = v(0.6, 1.8, -0.4)
+  const R = 0.9
+  const cosMax = sphereConeCosMax(distance2(c, ref), R * R)!
+  const omega = sphereSolidAngle(cosMax)
+  const w = normalize(sub(c, ref))
+  const rng = new Rng(4242, 3)
+  const M = 400000
+  let acc = 0
+  for (let i = 0; i < M; i++) {
+    // Uniform direction over the full sphere.
+    const z = 1 - 2 * rng.next()
+    const r = Math.sqrt(Math.max(0, 1 - z * z))
+    const phi = 2 * Math.PI * rng.next()
+    const dir = v(r * Math.cos(phi), r * Math.sin(phi), z)
+    const p = dot(dir, w) >= cosMax ? 1 / omega : 0 // in cone ⇒ constant 1/Ω
+    acc += p
+  }
+  const integral = 4 * Math.PI * (acc / M)
+  return {
+    pass: Math.abs(integral - 1) < 5e-3,
+    detail: `∫_S² p(ω)dω = 4π·E[p] = ${integral.toFixed(5)} (→ 1; the cone covers Ω=${omega.toFixed(4)})`,
+  }
+}
+
+// SL-4 — The headline payoff (and the unbiasedness oracle). A Lambertian point lit
+// only by an emissive sphere fully above its horizon has a CLOSED-FORM reflected
+// radiance ρ·L·sin²θ_max·cosθ_c (the sphere's exact form factor). The cone-sampled
+// NEE estimator must converge to that analytic value (so it is exactly unbiased),
+// and its per-sample variance must be FAR below the naive estimator that samples
+// the hemisphere uniformly and hopes to hit the sphere — the firefly-storm regime
+// the whole feature removes. Both estimators are unbiased (same mean); only the
+// cone sampler is usable.
+function testSphereNeeOracle(): { pass: boolean; detail: string } {
+  const p = v(0, 0, 0)
+  const n = v(0, 1, 0)
+  const rho = 0.8
+  const L = 5
+  const c = v(1.5, 5, 1.0) // high enough that the whole cone clears the horizon
+  const R = 0.8
+  const sph = makeSphere(c, R, 0)
+  const E = sphereIrradianceFull(p, n, c, R, L)
+  const analytic = (rho / Math.PI) * E // Lambert reflected radiance (view-independent)
+
+  const cone = (rng: Rng): number => {
+    const s = sampleSphereLight(p, c, R, rng)!
+    const cosX = dot(n, s.wi)
+    if (cosX <= 0) return 0
+    return ((rho / Math.PI) * L * cosX) / s.pdf
+  }
+  const uniform = (rng: Rng): number => {
+    const wi = uniformHemisphere(n, rng)
+    if (!intersectPrim(sph, p, wi, 1e-4, 1e9)) return 0
+    const cosX = dot(n, wi)
+    if (cosX <= 0) return 0
+    return (rho / Math.PI) * L * cosX * (2 * Math.PI) // /(1/2π)
+  }
+  const run = (fn: (r: Rng) => number, seed: number) => {
+    const rng = new Rng(seed, 2)
+    const M = 60000
+    let s = 0
+    let s2 = 0
+    for (let i = 0; i < M; i++) {
+      const e = fn(rng)
+      s += e
+      s2 += e * e
+    }
+    const mean = s / M
+    const varr = Math.max(0, s2 / M - mean * mean)
+    return { mean, varr, se: Math.sqrt(varr / M) }
+  }
+  const a = run(cone, 7)
+  const b = run(uniform, 99)
+  const zCone = Math.abs(a.mean - analytic) / Math.max(a.se, 1e-12)
+  const zUnif = Math.abs(b.mean - analytic) / Math.max(b.se, 1e-12)
+  const ratio = b.varr / Math.max(a.varr, 1e-30)
+  return {
+    pass: zCone < 4 && zUnif < 4 && ratio > 20,
+    detail: `analytic=${analytic.toFixed(4)}; cone=${a.mean.toFixed(4)} (${zCone.toFixed(1)}SE) uniform=${b.mean.toFixed(4)} (${zUnif.toFixed(1)}SE); variance uniform/cone=${ratio.toFixed(0)}× (>20)`,
+  }
+}
+
+// SL-5 — NEE ↔ MIS consistency through the Scene. The pdf the cone sampler reports
+// for a drawn direction must EXACTLY equal the pdf scene.lightPdf reconstructs for
+// that same direction (the value the integrator's power heuristic uses when a BSDF
+// ray instead lands on the sphere). Any mismatch would mis-weight the two
+// estimators and bias the image; here it agrees to machine precision. The reported
+// hit distance must also match the true sphere intersection, and the radiance the
+// emitter's emission.
+function testSphereNeeMisConsistency(): { pass: boolean; detail: string } {
+  const materials: Material[] = [
+    { kind: 'diffuse', albedo: v(0.5, 0.5, 0.5) },
+    { kind: 'emissive', emission: v(6, 5, 4) },
+  ]
+  const prims: PrimDef[] = [{ kind: 'sphere', center: v(2, 3, 1), radius: 0.8, material: 1 }]
+  const scene = new Scene({
+    name: 'sphere-nee',
+    materials,
+    prims,
+    camera: { eye: v(0, 0, -6), target: v(0, 0, 0), up: v(0, 1, 0), vfovDeg: 40, aperture: 0, focusDist: 6 },
+    env: { kind: 'solid', color: v(0, 0, 0) },
+  })
+  const ref = v(0, 0, 0)
+  const sph = makeSphere(v(2, 3, 1), 0.8, 1)
+  const rng = new Rng(1337, 2)
+  let maxPdfErr = 0
+  let maxDistErr = 0
+  let radOk = true
+  const M = 50000
+  for (let i = 0; i < M; i++) {
+    const ls = scene.sampleLight(ref, rng, false, undefined, true)
+    if (!ls) continue
+    const lp = scene.lightPdf(ref, ls.wi, ls.primId, ls.dist, false, undefined, true)
+    maxPdfErr = Math.max(maxPdfErr, Math.abs(ls.pdf - lp))
+    const ph = intersectPrim(sph, ref, ls.wi, 1e-4, 1e9)
+    if (ph) maxDistErr = Math.max(maxDistErr, Math.abs(ph.t - ls.dist))
+    if (Math.abs(ls.radiance.x - 6) > 1e-9) radOk = false
+  }
+  return {
+    pass: maxPdfErr < 1e-12 && maxDistErr < 1e-6 && radOk,
+    detail: `max|pdf_sample − lightPdf|=${maxPdfErr.toExponential(1)} (MIS-consistent); max|dist−hit|=${maxDistErr.toExponential(1)}; radiance ok=${radOk}`,
+  }
+}
+
+// SL-6 — The sampler respects geometry: a sphere entirely BELOW the surface's
+// horizon contributes ~nothing (every cone direction is back-facing, killed by the
+// cosine term), and a shade point INSIDE the sphere is declined (no subtending
+// cone) so the surrounding BSDF sampling carries it unbiasedly. Both are the
+// guards that keep the estimator from leaking light or dividing by a degenerate Ω.
+function testSphereNeeHorizonAndInside(): { pass: boolean; detail: string } {
+  const p = v(0, 0, 0)
+  const n = v(0, 1, 0)
+  const cBelow = v(1, -5, 1) // fully under the floor
+  const R = 0.5
+  const rng = new Rng(555, 2)
+  let belowSum = 0
+  const M = 20000
+  for (let i = 0; i < M; i++) {
+    const s = sampleSphereLight(p, cBelow, R, rng)
+    if (!s) continue
+    const cosX = dot(n, s.wi)
+    if (cosX > 0) belowSum += cosX / s.pdf // would-be (unclamped) contribution
+  }
+  const belowMean = belowSum / M
+  // Inside the sphere: the sampler and the directional pdf both decline.
+  const cIn = v(0.1, 0.1, 0.1)
+  const inside = sampleSphereLight(p, cIn, 1.0, rng)
+  const insidePdf = sphereDirPdf(p, cIn, 1.0)
+  const irr = sphereIrradianceFull(p, n, cBelow, R, 5)
+  return {
+    pass: belowMean < 1e-9 && inside === null && insidePdf === 0 && irr === 0,
+    detail: `below-horizon contribution=${belowMean.toExponential(1)} (→0); inside ⇒ sample=${inside === null ? 'null' : 'set'}, pdf=${insidePdf}; analytic E=${irr}`,
+  }
+}
+
+// Squared distance helper for the sphere-light proofs.
+function distance2(a: Vec3, b: Vec3): number {
+  const dx = a.x - b.x
+  const dy = a.y - b.y
+  const dz = a.z - b.z
+  return dx * dx + dy * dy + dz * dz
+}
+
 // ---- 18.0 Physically based light colour: blackbody emitters ----------------
 
 // BB-1 — Planck's law obeys Wien's displacement law. The spectral radiance is
@@ -3229,6 +3482,12 @@ export function runSelfTests(): TestResult[] {
     test('Light tree — receiver-aware sampler ↔ pdf', testLightTreeReceiverSamplerPdf),
     test('Light tree — receiver term steers to lit hemisphere', testLightTreeReceiverDownweight),
     test('Light tree — receiver-aware same mean, lower variance', testLightTreeReceiverVariance),
+    test('Sphere light — subtended-cone Ω + inverse-square limit', testSphereSolidAngle),
+    test('Sphere light — cone sampler ↔ pdf (∫_cone dω=Ω, all hit)', testSphereSamplerPdf),
+    test('Sphere light — directional pdf integrates to 1 over S²', testSpherePdfIntegratesToOne),
+    test('Sphere light — analytic form-factor oracle + variance win', testSphereNeeOracle),
+    test('Sphere light — NEE sampler ↔ lightPdf (MIS-consistent)', testSphereNeeMisConsistency),
+    test('Sphere light — respects horizon + declines inside', testSphereNeeHorizonAndInside),
     test('Blackbody — Planck positivity + Wien displacement λ·T=b', testPlanckWien),
     test('Blackbody — Stefan–Boltzmann ∫B ∝ T⁴', testPlanckStefanBoltzmann),
     test('Blackbody — Planckian locus warm→cool, R/B↓ monotone', testBlackbodyLocus),

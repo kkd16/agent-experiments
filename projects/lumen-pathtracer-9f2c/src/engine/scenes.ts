@@ -1988,6 +1988,105 @@ function lanternHall(): SceneDef {
   }
 }
 
+// ---- Scene: Plasma Lamps (sphere-light NEE, 20.0) ---------------------------
+// A still life lit ENTIRELY by emissive spheres — three vivid glass-bulb "plasma
+// lamps" of different size and distance hanging over a dark plinth. Until 20.0
+// Lumen's NEE could only sample triangle lights, so these spheres were invisible
+// to it: every photon the camera saw had to be found by a scattered ray that
+// happened to strike a bulb, which cosine BSDF sampling does a fraction of a
+// percent of the time — a firefly storm. Flip "Sphere lights (cone NEE)" on and
+// each shadow ray lands directly on a bulb (the cone it subtends is sampled
+// exactly), and the coloured pools of light resolve in a handful of samples. It
+// converges to the very same image either way — only the noise collapses.
+function plasmaLamps(): SceneDef {
+  const materials: Material[] = [
+    { kind: 'diffuse', albedo: v(0.32, 0.31, 0.3) }, // 0 dark stone floor
+    { kind: 'diffuse', albedo: v(0.7, 0.68, 0.64) }, // 1 neutral plinth top
+    { kind: 'metal', albedo: v(0.96, 0.95, 0.92), roughness: 0.08 }, // 2 polished steel sphere
+    { kind: 'metal', albedo: v(0.95, 0.78, 0.4), roughness: 0.22 }, // 3 brushed brass sphere
+    { kind: 'diffuse', albedo: v(0.82, 0.8, 0.76) }, // 4 matte catcher
+    { kind: 'emissive', emission: v(22, 4.5, 5.5) }, // 5 ruby bulb (large, high)
+    { kind: 'emissive', emission: v(4.0, 9.5, 26) }, // 6 sapphire bulb (small, near)
+    { kind: 'emissive', emission: v(7.0, 24, 9.0) }, // 7 emerald bulb (mid)
+  ]
+  const prims: PrimDef[] = []
+  const W = 14
+  prims.push(...quad(v(-W, 0, -W), v(W, 0, -W), v(W, 0, W), v(-W, 0, W), 0)) // floor
+  // A low plinth the objects sit on.
+  prims.push(...box(v(0, 0.5, 1.5), v(3.2, 0.5, 2.4), 0, 1))
+  // Catcher objects on the plinth — a polished steel sphere (sharp coloured
+  // reflections of the bulbs), a brass sphere, and a matte ball + box for soft
+  // diffuse pools.
+  prims.push({ kind: 'sphere', center: v(-1.7, 2.1, 1.4), radius: 1.1, material: 2 })
+  prims.push({ kind: 'sphere', center: v(1.9, 1.85, 1.9), radius: 0.85, material: 3 })
+  prims.push({ kind: 'sphere', center: v(0.3, 1.55, 0.0), radius: 0.55, material: 4 })
+  prims.push(...box(v(2.0, 1.45, 0.0), v(0.6, 0.45, 0.6), 0.5, 4))
+  // The three emissive bulbs (the only light), varied in radius and distance so
+  // their subtended cones — and thus the cone sampler's win — differ markedly.
+  prims.push({ kind: 'sphere', center: v(-3.6, 6.4, 2.2), radius: 0.9, material: 5 }) // ruby, large/high
+  prims.push({ kind: 'sphere', center: v(2.9, 3.5, -1.6), radius: 0.42, material: 6 }) // sapphire, small/near
+  prims.push({ kind: 'sphere', center: v(0.6, 5.2, 4.6), radius: 0.62, material: 7 }) // emerald, mid
+  return {
+    name: 'Plasma Lamps',
+    materials,
+    prims,
+    camera: { eye: v(0.4, 4.3, -8.6), target: v(0.2, 2.0, 1.4), up: v(0, 1, 0), vfovDeg: 46, aperture: 0, focusDist: 11 },
+    env: { kind: 'solid', color: v(0.004, 0.005, 0.008) },
+  }
+}
+
+// ---- Scene: Firefly Swarm (many sphere lights, 20.0) ------------------------
+// A wide diffuse meadow under a swarm of ~50 tiny, bright emissive spheres — warm
+// motes drifting at varied height. Each is a vanishingly small target for a
+// scattered ray, so without sphere NEE the ground is pure firefly noise; the cone
+// sampler lands a shadow ray on a chosen mote every time, and the soft overlapping
+// pools of warm light read cleanly. It is the sphere-light analogue of Star Field
+// (whose hundreds of TRIANGLE lamps motivated the light BVH) — here the win comes
+// from being able to sample the spheres at all. Combine with "Many lights" off
+// (the spheres take a uniform 1/N selection slot) to isolate the cone-sampling win.
+function fireflySwarm(): SceneDef {
+  const materials: Material[] = [
+    { kind: 'diffuse', albedo: v(0.4, 0.42, 0.38) }, // 0 meadow floor
+    { kind: 'diffuse', albedo: v(0.78, 0.76, 0.72) }, // 1 matte catcher spheres
+    { kind: 'metal', albedo: v(0.95, 0.95, 0.97), roughness: 0.16 }, // 2 glossy pillar
+  ]
+  // A few warm-to-cool mote colours, all comparable luminance.
+  const palette: Vec3[] = [
+    v(34, 24, 10), v(30, 26, 14), v(26, 22, 28), v(18, 26, 30), v(34, 18, 14),
+  ]
+  const EMIT0 = 3
+  for (const c of palette) materials.push({ kind: 'emissive', emission: c })
+  const prims: PrimDef[] = []
+  const R = 24
+  prims.push(...quad(v(-R, 0, -R), v(R, 0, -R), v(R, 0, R), v(-R, 0, R), 0)) // floor
+  // The swarm: ~50 tiny emissive spheres on a jittered dome of positions.
+  const rng = mulberry(0x5eed20)
+  const N = 50
+  for (let i = 0; i < N; i++) {
+    const a = rng() * Math.PI * 2
+    const rad = 3 + rng() * 15
+    const cx = Math.cos(a) * rad + (rng() - 0.5) * 3
+    const cz = Math.sin(a) * rad + 2 + (rng() - 0.5) * 3
+    const cy = 1.4 + rng() * 5.5
+    const r = 0.06 + rng() * 0.12 // tiny — a hard BSDF-sampling target
+    const mat = EMIT0 + ((rng() * palette.length) | 0)
+    prims.push({ kind: 'sphere', center: v(cx, cy, cz), radius: r, material: mat })
+  }
+  // Catchers to read the pooled light: a ring of matte spheres + a glossy pillar.
+  for (let k = 0; k < 5; k++) {
+    const a = (k / 5) * Math.PI * 2
+    prims.push({ kind: 'sphere', center: v(Math.cos(a) * 6, 1.2, Math.sin(a) * 6 + 2), radius: 1.2, material: 1 })
+  }
+  prims.push(...box(v(0, 2.6, 2), v(0.6, 2.6, 0.6), 0, 2))
+  return {
+    name: 'Firefly Swarm',
+    materials,
+    prims,
+    camera: { eye: v(0, 3.4, -15), target: v(0, 1.6, 2), up: v(0, 1, 0), vfovDeg: 54, aperture: 0, focusDist: 17 },
+    env: { kind: 'solid', color: v(0.01, 0.011, 0.016) },
+  }
+}
+
 // A tiny deterministic PRNG (mulberry32) for scene-time jitter — kept local so the
 // scene builders stay pure and reproducible without touching the render RNG.
 function mulberry(seed: number): () => number {
@@ -2010,12 +2109,15 @@ export interface ScenePreset {
   fog?: boolean // contains participating media; exposes a fog-density control
   cloud?: boolean // heterogeneous fBm cloud; also exposes a coverage control
   manyLights?: boolean // many emitters — defaults the "Many lights (light BVH)" toggle on
+  sphereLights?: boolean // (20.0) sphere emitters — defaults the "Sphere lights (cone NEE)" toggle on
 }
 
 export const SCENES: ScenePreset[] = [
   { id: 'cornell', label: 'Cornell Box', build: cornell },
   { id: 'cove', label: 'Cove (BDPT)', build: cove },
   { id: 'glowing-orb', label: 'Glowing Orb (Guided)', build: glowingOrb },
+  { id: 'plasma-lamps', label: 'Plasma Lamps (sphere lights)', build: plasmaLamps, sphereLights: true },
+  { id: 'fireflies', label: 'Firefly Swarm (sphere lights)', build: fireflySwarm, sphereLights: true },
   { id: 'star-field', label: 'Star Field (many lights)', build: starField, manyLights: true },
   { id: 'lantern-hall', label: 'Lantern Hall (many lights)', build: lanternHall, manyLights: true },
   { id: 'light-cage', label: 'Light Cage (receiver-aware)', build: lightCage, manyLights: true },
