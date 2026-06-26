@@ -20,6 +20,10 @@ import {
   CR_WQ,
   CR_BK,
   CR_BQ,
+  CR_IDX_WK,
+  CR_IDX_WQ,
+  CR_IDX_BK,
+  CR_IDX_BQ,
   FLAG_NORMAL,
   FLAG_DOUBLE,
   FLAG_EP,
@@ -28,6 +32,7 @@ import {
   pieceColor,
   pieceType,
   rankOf,
+  fileOf,
   isOnBoard,
   sq,
   makeMoveOnBoard,
@@ -223,38 +228,68 @@ export function generatePseudo(p: Position, moves: Move[], capturesOnly = false)
   }
 }
 
+// Every square on `rank` between squares `a` and `b` (inclusive) is empty,
+// ignoring the king's own origin and the castling rook's origin (those two are
+// allowed to sit anywhere on the path).
+function castlePathClear(board: Int8Array, a: number, b: number, kingFrom: number, rookFrom: number): boolean {
+  const rank = rankOf(a)
+  const loF = Math.min(fileOf(a), fileOf(b))
+  const hiF = Math.max(fileOf(a), fileOf(b))
+  for (let f = loF; f <= hiF; f++) {
+    const s = sq(f, rank)
+    if (s === kingFrom || s === rookFrom) continue
+    if (board[s] !== EMPTY) return false
+  }
+  return true
+}
+
+// No square the king passes over — start, every step, and destination — may be
+// attacked (you may not castle out of, through, or into check).
+function kingPathSafe(p: Position, from: number, to: number, them: Color): boolean {
+  const rank = rankOf(from)
+  const loF = Math.min(fileOf(from), fileOf(to))
+  const hiF = Math.max(fileOf(from), fileOf(to))
+  for (let f = loF; f <= hiF; f++) {
+    if (isSquareAttacked(p, sq(f, rank), them)) return false
+  }
+  return true
+}
+
+// Chess960-general castling: king and rooks may start on arbitrary files. A
+// castle is encoded as "king captures own rook" (the move's `to` is the rook's
+// origin). The king always lands on the g-/c-file and the rook on the f-/d-file.
 function generateCastles(p: Position, moves: Move[]): void {
   const us = p.turn
   const them = (us ^ 1) as Color
+  const rights = us === WHITE ? CR_WK | CR_WQ : CR_BK | CR_BQ
+  if ((p.castling & rights) === 0) return
+
   const board = p.board
-  const rank = us === WHITE ? 0 : 7
-  const e = sq(4, rank)
-  if (board[e] === EMPTY || pieceColor(board[e]) !== us || pieceType(board[e]) !== KING) return
-  if (isSquareAttacked(p, e, them)) return // cannot castle out of check
+  const kingFrom = p.kings[us]
+  const rank = rankOf(kingFrom)
+  if (isSquareAttacked(p, kingFrom, them)) return // cannot castle out of check
 
-  const kingRight = us === WHITE ? CR_WK : CR_BK
-  const queenRight = us === WHITE ? CR_WQ : CR_BQ
+  const sides: [number, number, boolean][] =
+    us === WHITE
+      ? [
+          [CR_WK, CR_IDX_WK, true],
+          [CR_WQ, CR_IDX_WQ, false],
+        ]
+      : [
+          [CR_BK, CR_IDX_BK, true],
+          [CR_BQ, CR_IDX_BQ, false],
+        ]
 
-  if (p.castling & kingRight) {
-    const f = sq(5, rank)
-    const g = sq(6, rank)
-    if (board[f] === EMPTY && board[g] === EMPTY && !isSquareAttacked(p, f, them) && !isSquareAttacked(p, g, them)) {
-      moves.push(makeMove(e, g, 0, FLAG_CASTLE))
-    }
-  }
-  if (p.castling & queenRight) {
-    const d = sq(3, rank)
-    const c = sq(2, rank)
-    const b = sq(1, rank)
-    if (
-      board[d] === EMPTY &&
-      board[c] === EMPTY &&
-      board[b] === EMPTY &&
-      !isSquareAttacked(p, d, them) &&
-      !isSquareAttacked(p, c, them)
-    ) {
-      moves.push(makeMove(e, c, 0, FLAG_CASTLE))
-    }
+  for (const [rightBit, idx, kingside] of sides) {
+    if ((p.castling & rightBit) === 0) continue
+    const rookFrom = p.crook[idx]
+    if (rookFrom < 0) continue
+    const kingTo = sq(kingside ? 6 : 2, rank)
+    const rookTo = sq(kingside ? 5 : 3, rank)
+    if (!castlePathClear(board, kingFrom, kingTo, kingFrom, rookFrom)) continue
+    if (!castlePathClear(board, rookFrom, rookTo, kingFrom, rookFrom)) continue
+    if (!kingPathSafe(p, kingFrom, kingTo, them)) continue
+    moves.push(makeMove(kingFrom, rookFrom, 0, FLAG_CASTLE))
   }
 }
 

@@ -32,6 +32,7 @@ import {
   EMPTY,
   PAWN,
   ROOK,
+  KING,
   type Color,
   fileOf,
   rankOf,
@@ -162,6 +163,21 @@ export class Accumulator {
     const them = (us ^ 1) as Color
     const mt = pieceType(moving)
 
+    // Castling — "king captures own rook" encoding (`to` is the rook origin).
+    // Move both king and rook to their fixed g/c and f/d destinations; there is
+    // no capture, so handle it whole and return.
+    if (flag === FLAG_CASTLE) {
+      const rank = rankOf(from)
+      const kingside = fileOf(to) > fileOf(from)
+      const kingTo = sq(kingside ? 6 : 2, rank)
+      const rookTo = sq(kingside ? 5 : 3, rank)
+      this.addColumn(us, KING, to64(from), -sign)
+      this.addColumn(us, KING, to64(kingTo), sign)
+      this.addColumn(us, ROOK, to64(to), -sign)
+      this.addColumn(us, ROOK, to64(rookTo), sign)
+      return
+    }
+
     // Piece leaves `from`, (possibly promoted) piece lands on `to`.
     this.addColumn(us, mt, to64(from), -sign)
     this.addColumn(us, promo ? promo : mt, to64(to), sign)
@@ -172,16 +188,6 @@ export class Accumulator {
       this.addColumn(them, PAWN, to64(capSq), -sign)
     } else if (board[to] !== EMPTY) {
       this.addColumn(them, pieceType(board[to]), to64(to), -sign)
-    }
-
-    // Castling moves the rook too.
-    if (flag === FLAG_CASTLE) {
-      const rank = us === WHITE ? 0 : 7
-      const kingside = fileOf(to) === 6
-      const rookFrom = sq(kingside ? 7 : 0, rank)
-      const rookTo = sq(kingside ? 5 : 3, rank)
-      this.addColumn(us, ROOK, to64(rookFrom), -sign)
-      this.addColumn(us, ROOK, to64(rookTo), sign)
     }
   }
 

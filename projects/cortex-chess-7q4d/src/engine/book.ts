@@ -7,7 +7,7 @@
 // without any search.
 
 import { Game } from './index'
-import { type Move, moveFrom, moveTo, movePromo } from './board'
+import { type Move, moveFrom, moveTo, movePromo, moveFlag, FLAG_CASTLE, castleKingDest } from './board'
 import { moveToSan } from './san'
 
 // Main-line repertoire for both colours. Kept broad rather than deep — the search
@@ -127,9 +127,11 @@ export function bookEntries(fen: string): { uci: string; weight: number }[] {
   const list = book.get(key(fen)) ?? []
   const files = 'abcdefgh'
   const name = (s: number) => files[s & 7] + ((s >> 4) + 1)
-  return [...list]
-    .sort((a, b) => b.weight - a.weight)
-    .map((e) => ({ uci: name(moveFrom(e.move)) + name(moveTo(e.move)) + (movePromo(e.move) ? 'q' : ''), weight: e.weight }))
+  const toUci = (m: Move): string =>
+    moveFlag(m) === FLAG_CASTLE
+      ? name(moveFrom(m)) + name(castleKingDest(moveFrom(m), moveTo(m)))
+      : name(moveFrom(m)) + name(moveTo(m)) + (movePromo(m) ? 'q' : '')
+  return [...list].sort((a, b) => b.weight - a.weight).map((e) => ({ uci: toUci(e.move), weight: e.weight }))
 }
 
 // Full opening-explorer view for a position: every book move with its SAN, the

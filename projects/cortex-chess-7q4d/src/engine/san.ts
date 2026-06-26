@@ -41,7 +41,9 @@ export function moveToSan(pos: Position, move: Move, legal: Move[]): string {
 
   let san: string
   if (flag === FLAG_CASTLE) {
-    san = fileOf(to) === 6 ? 'O-O' : 'O-O-O'
+    // King-captures-rook encoding: `to` is the rook origin, so the side is the
+    // rook's file relative to the king's.
+    san = fileOf(to) > fileOf(from) ? 'O-O' : 'O-O-O'
   } else {
     const isCapture = flag === FLAG_EP || pos.board[to] !== EMPTY
     if (type === PAWN) {
@@ -103,7 +105,8 @@ export function sanToMove(pos: Position, san: string): Move | null {
   if (s === 'O-O' || s === 'O-O-O') {
     const kingside = s === 'O-O'
     for (const m of legal) {
-      if (moveFlag(m) === FLAG_CASTLE && (fileOf(moveTo(m)) === 6) === kingside) return m
+      const ms = fileOf(moveTo(m)) > fileOf(moveFrom(m))
+      if (moveFlag(m) === FLAG_CASTLE && ms === kingside) return m
     }
     return null
   }

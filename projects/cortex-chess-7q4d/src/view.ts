@@ -10,6 +10,9 @@ import {
   KING,
   moveFrom,
   moveTo,
+  moveFlag,
+  FLAG_CASTLE,
+  castleKingDest,
   isOnBoard,
   pieceType,
   isSquareAttacked,
@@ -67,8 +70,29 @@ export function buildView(game: Game): BoardView {
 }
 
 // Squares (0x88) a piece on `from` can legally move to, given the legal move list.
+// For castles (king-captures-rook encoding) we surface the king's g/c destination
+// square so the move indicator matches the familiar "drop the king two squares"
+// gesture; when that square is already a normal target (or the king doesn't move),
+// we fall back to the rook square — the Chess960 "click your rook" gesture.
 export function targetsFrom(legal: Move[], from: number): number[] {
-  return legal.filter((m) => moveFrom(m) === from).map((m) => moveTo(m))
+  const out: number[] = []
+  const normal = new Set<number>()
+  for (const m of legal) {
+    if (moveFrom(m) === from && moveFlag(m) !== FLAG_CASTLE) {
+      const t = moveTo(m)
+      if (!normal.has(t)) {
+        normal.add(t)
+        out.push(t)
+      }
+    }
+  }
+  for (const m of legal) {
+    if (moveFrom(m) === from && moveFlag(m) === FLAG_CASTLE) {
+      const dest = castleKingDest(from, moveTo(m))
+      out.push(dest !== from && !normal.has(dest) ? dest : moveTo(m))
+    }
+  }
+  return out
 }
 
 export function isPromotionMove(legal: Move[], from: number, to: number): boolean {

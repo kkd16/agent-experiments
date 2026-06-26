@@ -9,7 +9,10 @@ import {
   moveToSan,
   moveFrom,
   moveTo,
+  moveFlag,
   movePromo,
+  FLAG_CASTLE,
+  castleKingDest,
   squareName,
   TACTICS,
   type TacticCase,
@@ -29,6 +32,7 @@ import {
   gradCheck,
   mulberry32,
   START_FEN,
+  chess960Selftest,
 } from '../engine'
 import { useEngine } from '../hooks/useEngine'
 import NnueLab from './NnueLab'
@@ -38,6 +42,7 @@ type Mode = 'perft' | 'tactics' | 'epd' | 'tablebase' | 'gtb' | 'nnue' | 'checks
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))
 
 function uci(m: number): string {
+  if (moveFlag(m) === FLAG_CASTLE) return squareName(moveFrom(m)) + squareName(castleKingDest(moveFrom(m), moveTo(m)))
   return squareName(moveFrom(m)) + squareName(moveTo(m)) + (movePromo(m) ? 'nbrq'[movePromo(m) - 2] : '')
 }
 
@@ -837,6 +842,12 @@ function runChecks(): CheckRow[] {
     })
   }
 
+  // Chess960 (Fischer Random): the whole layer self-verifies — id⇄position
+  // bijection, the standard position routed through the 960 castle code matches
+  // reference perft, make/unmake + hashing stay exact across random 960 trees,
+  // an independent oracle confirms every castle move, and perft is colour-symmetric.
+  for (const c of chess960Selftest()) out.push({ group: 'Chess960', name: c.name, pass: c.pass, detail: c.detail })
+
   return out
 }
 
@@ -851,8 +862,9 @@ function ChecksLab() {
           Deterministic correctness checks for the parts you can't eyeball: <strong>SEE</strong> returns the right
           material swing, the <strong>evaluation is exactly symmetric</strong> (mirroring the board and swapping colours
           negates the score), the <strong>KPK / KRK / KQK tablebases</strong> agree with theory on won and drawn endings,
-          every move <strong>round-trips through the SAN parser</strong>, and a real master game <strong>imports from
-          PGN</strong> and replays to checkmate.
+          every move <strong>round-trips through the SAN parser</strong>, a real master game <strong>imports from
+          PGN</strong> and replays to checkmate, and the entire <strong>Chess960</strong> layer self-verifies (id⇄position
+          bijection, an exact perft anchor, hash/make-unmake integrity, and an independent castle-move oracle).
         </p>
         <button className="btn primary" onClick={() => setRows(runChecks())}>
           Run self-tests

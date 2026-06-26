@@ -1318,3 +1318,43 @@
     grid-template-columns: 1fr;
   }
 }
+
+/* Chess960 panel */
+.badge-960 {
+  margin-left: 8px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: rgba(111, 156, 255, 0.16);
+  color: var(--accent);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: none;
+  vertical-align: middle;
+}
+.panel-note {
+  font-size: 12px;
+  color: var(--muted);
+  line-height: 1.5;
+  margin: 0 0 10px;
+}
+.controls-960 {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+.id-input {
+  width: 64px;
+  padding: 6px 8px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: #0f141c;
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+}
+.id-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
