@@ -1,6 +1,6 @@
 // The shared transport: play/pause, single-step (one event), reset, a speed
 // dial, the seed, and the time-travel scrubber over the recorded history.
-import type { ReactNode } from 'react';
+import { useEffect, type ReactNode } from 'react';
 import type { SimController } from '../lib/useSimulation';
 import { fmtTime } from '../lib/format';
 
@@ -15,6 +15,29 @@ interface Props<S, Cmd> {
 
 export function ControlBar<S, Cmd>({ ctrl, seed, onSeed, right }: Props<S, Cmd>) {
   const time = ctrl.snapshot?.time ?? 0;
+
+  // Global keyboard shortcuts (ignored while typing in a form field).
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const el = e.target as HTMLElement | null;
+      if (el && /^(INPUT|SELECT|TEXTAREA)$/.test(el.tagName)) return;
+      if (e.key === ' ') {
+        e.preventDefault();
+        ctrl.toggle();
+      } else if (e.key === 'ArrowRight') {
+        e.preventDefault();
+        if (e.shiftKey) ctrl.scrub(Math.min(ctrl.historyLength - 1, ctrl.cursor + 1));
+        else ctrl.stepEvent();
+      } else if (e.key === 'ArrowLeft') {
+        e.preventDefault();
+        ctrl.scrub(Math.max(0, ctrl.cursor - 1));
+      } else if (e.key === 'r' || e.key === 'R') {
+        ctrl.reset();
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [ctrl]);
   return (
     <div className="controlbar">
       <div className="controlbar-row">
@@ -69,6 +92,9 @@ export function ControlBar<S, Cmd>({ ctrl, seed, onSeed, right }: Props<S, Cmd>)
         />
         <span className="scrub-count">
           {ctrl.cursor + 1}/{ctrl.historyLength}
+        </span>
+        <span className="kbd-hint" title="Space play/pause · → step · ←/→ scrub · R reset">
+          <kbd>space</kbd> <kbd>←</kbd> <kbd>→</kbd> <kbd>R</kbd>
         </span>
       </div>
     </div>

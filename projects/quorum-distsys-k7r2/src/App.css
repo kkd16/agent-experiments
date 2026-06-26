@@ -707,3 +707,127 @@ input[type='text'] {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+/* ---- gossip lab ---- */
+.legend {
+  display: flex;
+  gap: 0.8rem;
+  align-items: center;
+  font-size: 0.78rem;
+  color: var(--tx-dim);
+}
+.legend span {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+.legend i {
+  width: 11px;
+  height: 11px;
+  border-radius: 3px;
+  display: inline-block;
+}
+.member-matrix {
+  border-collapse: collapse;
+  font-size: 0.72rem;
+}
+.member-matrix th {
+  font-family: ui-monospace, monospace;
+  color: var(--tx-dim);
+  padding: 0.15rem 0.3rem;
+  font-weight: 700;
+}
+.member-matrix th.down {
+  color: var(--bad);
+  text-decoration: line-through;
+}
+.member-matrix td {
+  padding: 2px;
+}
+.mm-cell {
+  display: block;
+  width: 16px;
+  height: 16px;
+  border-radius: 4px;
+}
+
+/* ---- vector clock lab ---- */
+.stdiagram {
+  background: radial-gradient(circle at 50% 30%, #14171f, #0b0c10 75%);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  overflow: hidden;
+  padding: 0.3rem 0;
+}
+.relation-panel {
+  background: var(--bg-1);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 0.6rem 0.8rem;
+  min-height: 2.4rem;
+  display: flex;
+  align-items: center;
+}
+.relation-result {
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  flex-wrap: wrap;
+}
+.ev-tag {
+  font-family: ui-monospace, monospace;
+  font-size: 0.82rem;
+  color: var(--tx-dim);
+}
+.rel-badge {
+  font-weight: 800;
+  font-size: 0.82rem;
+  padding: 0.2rem 0.7rem;
+  border-radius: 999px;
+}
+.rel-badge.before,
+.rel-badge.after {
+  background: rgba(124, 156, 255, 0.18);
+  color: var(--accent);
+}
+.rel-badge.concurrent {
+  background: rgba(255, 212, 121, 0.18);
+  color: var(--warn);
+}
+.rel-badge.same {
+  background: var(--bg-3);
+  color: var(--tx-dim);
+}
+
+/* ---- self-test lab ---- */
+.selftest-summary {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+}
+.selftest-groups {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(420px, 1fr));
+  gap: 0.8rem;
+}
+.st-name {
+  font-weight: 600;
+  font-size: 0.82rem;
+}
+
+/* ---- keyboard hint ---- */
+.kbd-hint {
+  display: flex;
+  gap: 0.2rem;
+  align-items: center;
+}
+.kbd-hint kbd {
+  font-family: ui-monospace, monospace;
+  font-size: 0.65rem;
+  color: var(--tx-faint);
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-bottom-width: 2px;
+  border-radius: 4px;
+  padding: 0.05rem 0.3rem;
+}
