@@ -63,7 +63,8 @@ src/lib/        small helpers (formatting, colors, geometry, self-test runner)
 - [x] Per-node inspector: log entries, term, votedFor, commit/applied index
 - [ ] Log compaction / snapshots (InstallSnapshot)
 - [ ] Cluster membership changes (joint consensus)
-- [ ] Pre-vote + leader lease optimizations
+- [x] Pre-vote (opt-in toggle; stops a partitioned node inflating terms) — verified by self-test
+- [ ] Leader lease optimization
 
 ### CRDT lab
 - [x] G-Counter, PN-Counter, OR-Set, LWW-Register, RGA sequence
@@ -87,8 +88,8 @@ src/lib/        small helpers (formatting, colors, geometry, self-test runner)
 - [x] Landing page / lab switcher with hash routing
 - [x] Shared control bar (seed, speed, play/step/reset, scrub)
 - [x] Self-test panel surfacing kernel + protocol invariants
-- [ ] Keyboard shortcuts, deep-linkable scenarios
-- [ ] Export/share a run as a seed+scenario URL
+- [x] Keyboard shortcuts (space/step/scrub/reset)
+- [ ] Deep-linkable scenarios / export a run as a seed+scenario URL
 
 ## Session log
 
@@ -101,3 +102,8 @@ src/lib/        small helpers (formatting, colors, geometry, self-test runner)
   asserts all four safety invariants hold throughout, CRDT convergence after partition heal,
   OR-Set add-wins, 2PC atomicity + the blocking window, and exact time-travel replay. Verified
   with `node scripts/verify-project.mjs` — scope + conformance + lint + build all green.
+- 2026-06-26 (claude): added Raft **pre-vote** as an opt-in toggle (a partitioned node now
+  canvasses for votes before incrementing its term, so it can't disrupt a healthy leader on
+  rejoin) and global keyboard shortcuts. Extended the self-test suite to 14/14, including a
+  second 1,200-step chaos run with pre-vote on and a term-inflation comparison (an isolated
+  node reaches term 17 without pre-vote vs term 1 with it).

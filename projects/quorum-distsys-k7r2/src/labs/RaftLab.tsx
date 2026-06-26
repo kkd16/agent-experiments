@@ -2,7 +2,7 @@ import { useCallback, useMemo, useState } from 'react';
 import { Kernel } from '../sim/kernel';
 import { createRaft } from '../protocols/raft/raft';
 import { raftInvariants } from '../protocols/raft/invariants';
-import type { RaftCommand, RaftState } from '../protocols/raft/types';
+import { DEFAULT_RAFT_CONFIG, type RaftCommand, type RaftState } from '../protocols/raft/types';
 import { useSimulation } from '../lib/useSimulation';
 import { NetworkCanvas, type NodeVisual } from '../ui/NetworkCanvas';
 import { ControlBar } from '../ui/ControlBar';
@@ -37,13 +37,14 @@ export function RaftLab() {
   const [seed, setSeed] = useState(42);
   const [count, setCount] = useState(5);
   const [net, setNet] = useState(0);
+  const [preVote, setPreVote] = useState(false);
   const [selected, setSelected] = useState<string | null>(null);
   const [propCounter, setPropCounter] = useState(1);
 
   const nodeIds = useMemo(() => NAMES.slice(0, count), [count]);
 
   const makeKernel = useCallback(() => {
-    const proto = createRaft();
+    const proto = createRaft({ ...DEFAULT_RAFT_CONFIG, preVote });
     proto.invariants = raftInvariants as (n: ReadonlyArray<NodeView<RaftState>>) => ReturnType<typeof raftInvariants>;
     const preset = NET_PRESETS[net];
     return new Kernel<RaftState, RaftCommand>({
@@ -52,7 +53,7 @@ export function RaftLab() {
       nodeIds,
       network: { minLatency: preset.min, maxLatency: preset.max, dropRate: preset.drop },
     });
-  }, [seed, nodeIds, net]);
+  }, [seed, nodeIds, net, preVote]);
 
   const ctrl = useSimulation(makeKernel);
   const snap = ctrl.snapshot;
@@ -154,6 +155,16 @@ export function RaftLab() {
                   {p.name}
                 </button>
               ))}
+            </div>
+            <div className="ctl-group">
+              <label>Pre-vote</label>
+              <button
+                className={`btn tiny ${preVote ? 'on' : ''}`}
+                onClick={() => setPreVote((v) => !v)}
+                title="Add a pre-vote round so a partitioned node can't inflate terms"
+              >
+                {preVote ? 'on' : 'off'}
+              </button>
             </div>
           </div>
 
