@@ -31,6 +31,25 @@ const PASS_LABELS: Record<string, string> = {
   dt: 'pattern matching compiled to a decision tree (test each position once)',
   sat: 'static-argument transformation (lift a loop-invariant argument into a wrapper)',
   eqsat: 'equality saturation (e-graph superoptimiser over integer-arithmetic islands)',
+  fuse: 'short-cut fusion (delete the intermediate list flowing between two combinators)',
+}
+
+// A friendly description for each fusion law, keyed by `consumer/producer`.
+const FUSION_LABELS: Record<string, string> = {
+  'map/map': 'map f (map g xs) ⇒ map (f ∘ g) xs — one pass, no list in between',
+  'filter/filter': 'filter p (filter q xs) ⇒ filter (q ⋀ p) xs',
+  'foldr/map': 'foldr k z (map g xs) ⇒ foldr (k ∘ g) z xs',
+  'foldl/map': 'foldl k z (map g xs) ⇒ foldl (k ∘ g) z xs',
+  'foldr/filter': 'foldr k z (filter p xs) ⇒ foldr (guard p k) z xs',
+  'foldl/filter': 'foldl k z (filter p xs) ⇒ foldl (guard p k) z xs',
+  'sum/map': 'sum (map g xs) ⇒ foldl (+∘g) 0 xs — never builds the mapped list',
+  'sum/filter': 'sum (filter p xs) ⇒ foldl (if p then +) 0 xs',
+  'all/map': 'all p (map g xs) ⇒ all (p ∘ g) xs',
+  'any/map': 'any p (map g xs) ⇒ any (p ∘ g) xs',
+  'length/map': 'length (map g xs) ⇒ length xs — the whole map is dead',
+  'length/reverse': 'length (reverse xs) ⇒ length xs',
+  'reverse/reverse': 'reverse (reverse xs) ⇒ xs — two traversals vanish',
+  'take/map': 'take n (map g xs) ⇒ map g (take n xs) — map only n elements',
 }
 
 /** Render one decision-tree node as an indented tree. */
@@ -227,6 +246,35 @@ export default function OptimizerPanel({ code }: Props) {
         <p className="panel-note">
           Nothing to optimize here — this program is already in its simplest form.
         </p>
+      )}
+
+      {stats.fusions.length > 0 && (
+        <div className="opt-passes">
+          <h4>Short-cut fusion (Aether 18.0)</h4>
+          <p className="panel-note" style={{ marginTop: 0 }}>
+            Every other pass simplifies code; this one deletes <em>data</em>. A pipeline like{' '}
+            <code>sum (map f (filter p xs))</code> naively builds a throwaway list at each arrow, only
+            to walk it once and discard it. <strong>Deforestation</strong> (Wadler 1990; Gill,
+            Launchbury &amp; Peyton Jones 1993) rewrites a consumer applied to a producer into a single
+            pass that never materialises the list in between. Each law fires only when the function
+            whose call-timing it changes is proven <strong>pure &amp; total</strong>, so no effect is
+            reordered and no exception hoisted — the equivalence checks re-prove it, and the VM step
+            count only falls:
+          </p>
+          <table className="opt-table">
+            <tbody>
+              {stats.fusions.map((f, i) => (
+                <tr key={i}>
+                  <td className="opt-pass-count">{f.count}×</td>
+                  <td className="opt-pass-name">
+                    <code>{f.rule}</code>
+                  </td>
+                  <td className="opt-pass-desc">{FUSION_LABELS[f.rule] ?? ''}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       )}
 
       {stats.trace.length > 1 && (

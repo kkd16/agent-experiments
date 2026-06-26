@@ -49,6 +49,8 @@ import { analyzeTermination } from './termination.ts'
 import type { TerminationResult } from './termination.ts'
 import { equalitySaturate } from './egraph.ts'
 import type { EqSatStats } from './egraph.ts'
+import { fuseLists } from './fusion.ts'
+import type { FusionStat } from './fusion.ts'
 
 export interface OptimizeStats {
   /** fixpoint rounds run */
@@ -85,6 +87,9 @@ export interface OptimizeStats {
   /** equality-saturation superoptimizer over the integer-arithmetic islands
    *  (Aether 16.0) — the islands found and the ones it improved. */
   eqsat: EqSatStats | null
+  /** short-cut fusion (Aether 18.0) — one entry per fusion law that fired,
+   *  with how many intermediate-list-deleting rewrites it performed. */
+  fusions: FusionStat[]
 }
 
 export interface OptimizeResult {
@@ -207,6 +212,24 @@ export function optimizeCore(root: Expr): OptimizeResult {
     }
   }
 
+  // Phase 0: short-cut fusion (Aether 18.0). Run *first*, on the pristine core,
+  // before the fixpoint's β/inlining/SAT can rewrite the prelude combinators out
+  // of their recognisable shape. It deletes the intermediate lists that flow
+  // between combinator passes (`map f (map g xs)` ⇒ one pass, no list in between),
+  // emitting ordinary core the fixpoint below then cleans up (β-reducing the
+  // composed lambdas, inlining, folding what the merge exposed).
+  let fusions: FusionStat[] = []
+  {
+    const isPureFnName = (name: string): boolean =>
+      PURE_FNS.has(name) || (TOTAL_NATIVES.has(name) && !SHADOWED.has(name))
+    const f = fuseLists(expr, { isPureTotal: isPure, isPureFnName })
+    if (f.count > 0) {
+      expr = f.expr
+      fusions = f.fusions
+      passes['fuse'] = (passes['fuse'] ?? 0) + f.count
+    }
+  }
+
   // Phase 1: rewrite to a fixpoint (folds, inlining, known-match, CSE, …) so the
   // abstraction the front end adds has already melted before we touch matching.
   fixpoint()
@@ -275,6 +298,7 @@ export function optimizeCore(root: Expr): OptimizeResult {
       decisionTrees,
       termination: TERMINATION,
       eqsat,
+      fusions,
     },
   }
 }
