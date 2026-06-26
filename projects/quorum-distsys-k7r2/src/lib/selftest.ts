@@ -12,6 +12,7 @@ import { DEFAULT_RAFT_CONFIG, type RaftCommand, type RaftState } from '../protoc
 import { createCrdtProtocol, crdtSpec, type CrdtNodeState } from '../protocols/crdt/crdt';
 import type { CrdtOp } from '../protocols/crdt/crdts';
 import { createTwoPC, type TwoPCCmd, type TwoPCState } from '../protocols/commit/twopc';
+import { createThreePC, type ThreePCCmd, type ThreePCState } from '../protocols/commit/threepc';
 import { createVClock, type VcCmd, type VcState } from '../protocols/vclock/vclock';
 import { createCoedit, docText, visibleCells, type CoeditOp, type CoeditState } from '../protocols/coedit/coedit';
 
@@ -539,6 +540,59 @@ export function runSelfTests(): TestResult[] {
     const blocked = parts.some((p) => p.state.pstate === 'uncertain');
     const safe = k.protocol.invariants!(k.views()).every((iv) => iv.ok);
     return [blocked && safe, blocked ? 'participants blocked (as expected) while safety held' : 'expected blocking did not occur'];
+  });
+
+  // ---- 3PC (non-blocking atomic commit) ----
+  const threePC = (seed: number) =>
+    new Kernel<ThreePCState, ThreePCCmd>({ seed, protocol: createThreePC(), nodeIds: ['C', 'P1', 'P2', 'P3'] });
+
+  t('3PC', 'Commits atomically when all vote yes', () => {
+    const k = threePC(1);
+    k.command('C', { type: 'begin' });
+    for (let i = 0; i < 60; i++) k.advance(30);
+    const parts = k.views().filter((v) => v.state.role === 'participant');
+    const allCommitted = parts.every((p) => p.state.pstate === 'committed');
+    const safe = k.protocol.invariants!(k.views()).every((iv) => iv.ok);
+    return [allCommitted && safe, allCommitted ? 'every participant committed; invariants held' : 'did not all commit'];
+  });
+
+  t('3PC', 'Coordinator crash after PRE-COMMIT: participants commit themselves (no block)', () => {
+    const k = threePC(2);
+    k.command('C', { type: 'begin', stall: 'docommit' });
+    for (let i = 0; i < 30; i++) k.advance(30); // reach the stall (all pre-committed)
+    k.crash('C');
+    for (let i = 0; i < 120; i++) k.advance(30); // termination timers fire
+    const parts = k.views().filter((v) => v.state.role === 'participant');
+    const committed = parts.every((p) => p.state.pstate === 'committed');
+    const noneStuck = parts.every((p) => p.state.pstate !== 'terminating' && p.state.pstate !== 'prepared');
+    const safe = k.protocol.invariants!(k.views()).every((iv) => iv.ok);
+    const ok = committed && noneStuck && safe;
+    return [ok, ok ? 'all participants terminated to COMMIT without the coordinator — non-blocking & atomic' : `states: ${parts.map((p) => p.state.pstate).join('/')}`];
+  });
+
+  t('3PC', 'Coordinator crash before PRE-COMMIT: participants abort themselves (no block)', () => {
+    const k = threePC(3);
+    k.command('C', { type: 'begin', stall: 'precommit' });
+    for (let i = 0; i < 20; i++) k.advance(30); // reach the stall (all prepared, no pre-commit)
+    k.crash('C');
+    for (let i = 0; i < 140; i++) k.advance(30);
+    const parts = k.views().filter((v) => v.state.role === 'participant');
+    const aborted = parts.every((p) => p.state.pstate === 'aborted');
+    const noneStuck = parts.every((p) => p.state.pstate !== 'terminating');
+    const safe = k.protocol.invariants!(k.views()).every((iv) => iv.ok);
+    const ok = aborted && noneStuck && safe;
+    return [ok, ok ? 'all participants terminated to ABORT without the coordinator — non-blocking & atomic' : `states: ${parts.map((p) => p.state.pstate).join('/')}`];
+  });
+
+  t('3PC', 'A single no vote aborts everyone', () => {
+    const k = threePC(4);
+    k.command('P2', { type: 'setvote', vote: 'no' });
+    k.command('C', { type: 'begin' });
+    for (let i = 0; i < 60; i++) k.advance(30);
+    const parts = k.views().filter((v) => v.state.role === 'participant');
+    const aborted = parts.every((p) => p.state.pstate === 'aborted');
+    const safe = k.protocol.invariants!(k.views()).every((iv) => iv.ok);
+    return [aborted && safe, aborted ? 'the no vote forced a uniform abort' : `states: ${parts.map((p) => p.state.pstate).join('/')}`];
   });
 
   // ---- Vector clocks ----

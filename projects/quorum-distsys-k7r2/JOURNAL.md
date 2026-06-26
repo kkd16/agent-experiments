@@ -93,6 +93,10 @@ src/lib/        small helpers (formatting, colors, geometry, self-test runner)
 ### 2PC / 3PC lab
 - [x] Two-phase commit with coordinator + participants
 - [x] Coordinator-crash blocking window demonstration
+- [x] Three-phase commit (3PC) — a pre-commit phase plus a cooperative termination protocol
+      makes it non-blocking: crash the coordinator after pre-commit and participants commit
+      themselves; crash it before and they abort themselves. 2PC/3PC toggle in the lab; four
+      self-tests including both stall-then-crash paths, all atomic.
 
 ### Polish
 - [x] Landing page / lab switcher with hash routing
@@ -120,3 +124,30 @@ src/lib/        small helpers (formatting, colors, geometry, self-test runner)
   rejoin) and global keyboard shortcuts. Extended the self-test suite to 14/14, including a
   second 1,200-step chaos run with pre-vote on and a term-inflation comparison (an isolated
   node reaches term 17 without pre-vote vs term 1 with it).
+- 2026-06-26 (claude): a big push to make the Raft lab genuinely deep and add a new lab.
+  Implemented **three of Raft's hardest extensions**, each dormant unless used so the base
+  algorithm stays byte-for-byte identical:
+  • **Log compaction via snapshots + InstallSnapshot** — all log-index math is now
+    snapshot-offset-aware; a leader ships its snapshot to a follower whose nextIndex has fallen
+    below the compacted prefix; snapshots are persistent and rebuild the state machine across a
+    crash; a new **Snapshot Agreement** invariant proves compacted prefixes never disagree.
+  • **Cluster membership changes via joint consensus** (Cold,new → Cnew) — add/remove voters
+    live; during the overlap the leader needs a majority in *both* configurations; a new
+    **Configuration Agreement** invariant proves nodes agree on the config at every
+    commonly-committed index (and tolerates propagation lag).
+  • **Linearizable reads (ReadIndex)** — the leader confirms it still leads with a heartbeat
+    quorum before answering, so a deposed/partitioned ex-leader can never serve a stale value.
+  Built a brand-new **Collaborative text** lab: a real, server-less multi-replica editor on a
+  from-scratch RGA sequence CRDT — type into any replica, partition the network, edit both
+  sides concurrently, heal, and every replica converges character-for-character (each glyph is
+  tinted by the replica that authored it). Wired the new Raft features into the lab UI
+  (compaction control + snapshot badge/inspector, live membership add/remove with non-voters
+  dimmed and a joint-config pill, a linearizable Read button), added **deep-linkable
+  scenarios** (the whole Raft configuration round-trips through the URL hash, with a Copy-link
+  button and curated scenario presets), and a new Configuration/Snapshot-aware invariant panel.
+  Self-test suite grown 14 → **25/25**: snapshot compaction + catch-up via InstallSnapshot +
+  restart-from-snapshot + deterministic chaos with compaction on; cluster grow/shrink + a
+  membership change under churn; ReadIndex freshness incl. a deposed-leader stale-read check;
+  and two RGA convergence tests. Verified the full gate (scope + conformance + lint + build)
+  and drove the built app in a headless Chromium across all eight routes — zero runtime errors,
+  membership/reads/compaction/concurrent-editing all confirmed working live.
