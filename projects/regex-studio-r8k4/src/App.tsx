@@ -20,6 +20,7 @@ import { PikePanel } from './components/PikePanel';
 import { DerivativesPanel } from './components/DerivativesPanel';
 import { AntimirovPanel } from './components/AntimirovPanel';
 import { GlushkovPanel } from './components/GlushkovPanel';
+import { TwoWayPanel } from './components/TwoWayPanel';
 import { WeightedPanel } from './components/WeightedPanel';
 import { ExtendedPanel } from './components/ExtendedPanel';
 import { MonoidPanel } from './components/MonoidPanel';
@@ -41,6 +42,7 @@ type Tab =
   | 'deriv'
   | 'antimirov'
   | 'glushkov'
+  | 'twoway'
   | 'extended'
   | 'debug'
   | 'pike'
@@ -71,6 +73,7 @@ const TAB_GROUPS: { group: string; tabs: { id: Tab; label: string }[] }[] = [
       { id: 'deriv', label: 'Derivatives' },
       { id: 'antimirov', label: 'Antimirov' },
       { id: 'glushkov', label: 'Glushkov' },
+      { id: 'twoway', label: '2-way DFA' },
       { id: 'extended', label: 'Extended &~' },
       { id: 'debug', label: 'Debugger' },
       { id: 'pike', label: 'Pike VM' },
@@ -212,7 +215,7 @@ export default function App() {
           <span className="logo">/<span className="logo-star">∗</span>/</span>
           <div>
             <h1>Regex Studio</h1>
-            <p>A regular-expression engine built from scratch — parse, compile four ways, minimise, run six engines, extend to the Boolean closure (&amp; ~ −), read the language's <strong>syntactic monoid</strong> (the variety ladder: piecewise-testable · DA/FO² · star-free? · the named group · the egg-box), speak <strong>Unicode</strong> via <code>\p{'{'}…{'}'}</code> derived live from the host, <strong>learn the minimal DFA back from queries</strong> (Angluin's L* · RPNI), <strong>count the language</strong> (the rational generating function · growth rate · entropy), classify its <strong>ambiguity</strong> — unambiguous · finite · polynomial-degree-d · exponential (Weber–Seidl, EDA/IDA on the squared &amp; cubed automata) — decide equivalence &amp; inclusion <strong>without determinising</strong> (bisimulation up to congruence · antichains), and now run the whole studio <strong>in reverse — compile a logic formula to its automaton</strong> (Büchi–Elgot–Trakhtenbrot: <code>MSO[&lt;]</code> = regular, <code>FO[&lt;]</code> = star-free, LTLf via Kamp), and now <strong>cross into the infinite — compile an LTL spec to its Büchi automaton</strong> (Gerth–Peled–Vardi–Wolper; <code>ω-regular = S1S</code>, decided by a lasso witness u·(v)<sup>ω</sup>), and now <strong>weigh every run over a semiring</strong> — a weighted automaton (Boolean=recognition · counting=ambiguity · tropical=shortest-distance · Viterbi · probability), Schützenberger's rational power series with the all-words closure read back as a weighted regex, fuzz, compare and synthesise.</p>
+            <p>A regular-expression engine built from scratch — parse, compile four ways, minimise, run six engines, extend to the Boolean closure (&amp; ~ −), read the language's <strong>syntactic monoid</strong> (the variety ladder: piecewise-testable · DA/FO² · star-free? · the named group · the egg-box), speak <strong>Unicode</strong> via <code>\p{'{'}…{'}'}</code> derived live from the host, <strong>learn the minimal DFA back from queries</strong> (Angluin's L* · RPNI), <strong>count the language</strong> (the rational generating function · growth rate · entropy), classify its <strong>ambiguity</strong> — unambiguous · finite · polynomial-degree-d · exponential (Weber–Seidl, EDA/IDA on the squared &amp; cubed automata) — decide equivalence &amp; inclusion <strong>without determinising</strong> (bisimulation up to congruence · antichains), and now run the whole studio <strong>in reverse — compile a logic formula to its automaton</strong> (Büchi–Elgot–Trakhtenbrot: <code>MSO[&lt;]</code> = regular, <code>FO[&lt;]</code> = star-free, LTLf via Kamp), and now <strong>cross into the infinite — compile an LTL spec to its Büchi automaton</strong> (Gerth–Peled–Vardi–Wolper; <code>ω-regular = S1S</code>, decided by a lasso witness u·(v)<sup>ω</sup>), and now <strong>weigh every run over a semiring</strong> — a weighted automaton (Boolean=recognition · counting=ambiguity · tropical=shortest-distance · Viterbi · probability), Schützenberger's rational power series with the all-words closure read back as a weighted regex, and now <strong>turn the head around — a two-way DFA</strong> compiled to a one-way DFA by Shepherdson's crossing-sequence construction (Rabin–Scott: two-way = regular), fuzz, compare and synthesise.</p>
           </div>
         </div>
         <a className="repo-link" href="https://en.wikipedia.org/wiki/Thompson%27s_construction" target="_blank" rel="noreferrer">
@@ -372,6 +375,8 @@ export default function App() {
             {tab === 'antimirov' && <AntimirovPanel compiled={compiled} text={text} />}
 
             {tab === 'glushkov' && <GlushkovPanel compiled={compiled} text={text} />}
+
+            {tab === 'twoway' && <TwoWayPanel dfa={compiled.minDfa} notice={automataNotice} />}
 
             {tab === 'extended' && (
               <ExtendedPanel pattern={extendedPattern} onPatternChange={setExtendedPattern} text={text} />

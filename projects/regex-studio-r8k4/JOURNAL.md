@@ -173,9 +173,65 @@ keep it current.
   cross-check console), and the session-16 `WeightedPanel` (the **Weighted** tab: the semiring picker with its
   per-semiring "what the weight means" gloss, the working alphabet Σ, the κ-weighting controls (all-1̄ / by-letter /
   seeded), a word's weight with the brute-agreement badge, the weighted automaton graph, the per-state weights, the
-  all-words closure beside the eliminated weighted regex, the example gallery and the differential-verification console).
+  all-words closure beside the eliminated weighted regex, the example gallery and the differential-verification console),
+  and the session-17 `TwoWayPanel` (the **2-way DFA** tab: the gallery picker, the animated tape with the
+  bouncing head, the crossing-sequence strip, the two-way graph with the live head state, the constructed
+  one-way DFA, the 2DFA/DFA/min-DFA state comparison, the pattern-DFA round trip, and the cross-check console).
+- `src/engine/twoway.ts` — **two-way DFA** (session 17): the 2DFA model over a tape `⊢ w ⊣`; a
+  trivially-correct `simulate` (exact loop detection via a visited `(pos,state)` set) with the configuration
+  trace; `crossingSequences`; **Shepherdson's transition-profile construction** `construct` (2DFA → an
+  equivalent one-way `DFA`, a DFA state per prefix *behaviour table* — built from the `crossCell` primitive
+  with `baseTable`/`finalRun`, collapsing to a shared accept/dead sink); the right-only `liftDFA` (any DFA *is*
+  a 2DFA that only moves right); a `twoWayToGraph` adapter; and a hand-built gallery. `src/engine/twoway-verify.ts`
+  — the seeded cross-check: differential vs the head oracle, the DFA→2DFA→DFA round trip (via `compareDFAs`),
+  and an exhaustive gallery sweep.
 
 ## Ideas / backlog
+
+### Session 17 — Two-way DFA: the head turns around (2026-06-26, claude)
+
+Every road in the studio so far scans the input **once, left to right**. This session adds the first machine
+whose head moves **both ways** — a **two-way DFA**, reading a tape framed by end-markers `⊢ w ⊣`, free to
+re-scan the word as often as it likes. The classic **Rabin–Scott / Shepherdson** theorem says this buys *no
+extra power* (every 2DFA is regular), and the proof is a construction you can watch — exactly the studio's
+spirit of *many roads to one regular language*.
+
+> **Shepherdson (1959):** a 2DFA is equivalent to a one-way DFA whose state, after a prefix `u`, is the
+> **behaviour table** of `⊢u` — for each state in which the head could re-enter `u` from the right, where (or
+> whether) it comes back out. Finitely many tables ⇒ a finite DFA (Myhill–Nerode). The summary the table
+> distils is precisely the **crossing sequence** at that cut.
+
+New self-contained `engine/twoway.ts` + `engine/twoway-verify.ts` + a new **2-way DFA** tab. The plan, all
+shipped this session:
+
+- [x] **The 2DFA model** (`twoway.ts`) — states with a halting `accept`/`reject`, a total move function
+      `δ: Q×(Σ∪{⊢,⊣}) → Q×{L,R}`, a compact `buildMachine` authoring helper, and well-formedness conventions
+      (Right on `⊢`, never Right off `⊣`).
+- [x] **The trivially-correct oracle** `simulate` — runs the real head step by step over `⊢ w ⊣`, decides a
+      looping machine *exactly* with a visited-`(pos,state)` set (a deterministic 2DFA either halts or repeats
+      a configuration), and records the full configuration trace for the animation.
+- [x] **Crossing sequences** `crossingSequences` — the ordered states in which the head crosses each tape
+      boundary, read straight off the trace.
+- [x] **Shepherdson's construction** `construct` — the equivalent one-way DFA by the **transition-profile**
+      method: a DFA state is `(behaviour table T, real-run crossing state s)`; reading a symbol advances both
+      with the single `crossCell` primitive; acceptance is decided by `finalRun` (what happens if `⊣` comes
+      now); absorbing outcomes collapse to a shared accept sink or the implicit dead sink. Emits a real `DFA`
+      so the result flows into the existing DFA/Language/Compare machinery.
+- [x] **The lift** `liftDFA` — embed any one-way DFA as a right-only 2DFA, so `construct(liftDFA(D)) ≡ D`.
+- [x] **A gallery** — *first = last character* (out-and-back), *even-a-even-b by two passes* (a full leftward
+      rewind sweep), *the cell left of the last b* (two reversals). Each genuinely uses two-way motion.
+- [x] **The differential fuzzer** (`twoway-verify.ts`) — random 2DFAs vs the head oracle on random words; the
+      DFA→2DFA→DFA round trip equal via `compareDFAs`; the whole gallery checked **exhaustively** over every
+      word to a horizon. **212,000+ checks across 8 seeds, zero disagreements** (offline run).
+- [x] **The 2-way DFA panel + tab** (`components/TwoWayPanel.tsx`, wired into `App.tsx`) — gallery picker, an
+      animated tape with the bouncing head and its live state, the crossing-sequence strip, the two-way graph
+      (head lit), the constructed one-way DFA (DOT/SVG), a 2DFA/DFA/min-DFA state comparison, the pattern-DFA
+      round trip, and the seeded cross-check console. New CSS, header + `project.json` copy.
+- [ ] **Two-way NFA (2NFA)** and the inductive `2NFA = NFA` (Vardi) construction, to sit beside this one.
+- [ ] **Sweeping automata** as a restricted middle ground, with the crossing-sequence lower bound that proves a
+      genuine succinctness gap (a language family where every DFA is exponentially larger than its 2DFA).
+- [ ] **Animate the construction** — light the behaviour-table entries as the one-way DFA is built, so the
+      crossing-sequence → DFA-state correspondence is watchable cell by cell.
 
 ### Session 16 — Weighted automata: one machine, every semiring (2026-06-26, claude)
 
