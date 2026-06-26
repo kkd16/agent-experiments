@@ -96,7 +96,16 @@ export {
   OUT_SCALE,
   FEATURES,
 } from './nnue'
-export type { NnueWeights, NnueBlob } from './nnue'
+export type { NnueWeights, NnueBlob, EvalAccumulator } from './nnue'
+export {
+  quantize,
+  QuantAccumulator,
+  quantEvalFresh,
+  makeQuantEvaluator,
+  verifyQuantization,
+  QA,
+} from './nnue-quant'
+export type { QuantNet, QuantDiag, QuantReport } from './nnue-quant'
 export {
   NnueTrainer,
   generatePositions,

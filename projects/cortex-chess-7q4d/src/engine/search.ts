@@ -36,7 +36,8 @@ import {
 import { generatePseudo, isSquareAttacked } from './movegen'
 import { evaluate } from './eval'
 import { see } from './see'
-import { Accumulator, type NnueWeights } from './nnue'
+import { Accumulator, type NnueWeights, type EvalAccumulator } from './nnue'
+import { QuantAccumulator, type QuantNet } from './nnue-quant'
 
 export const INF = 1_000_000
 export const MATE = 100_000
@@ -116,7 +117,9 @@ export class Searcher {
   // static eval reads it instead of the hand-crafted `evaluate`. A null move never
   // touches the accumulator (the feature set is colour-indexed, not side-to-move),
   // so its only effect is which half is read as "own" at the leaf.
-  private nnueAcc: Accumulator | null = null
+  // Either a float `Accumulator` or an integer `QuantAccumulator` — the search
+  // drives both through the shared `EvalAccumulator` interface.
+  private nnueAcc: EvalAccumulator | null = null
   private useNnue = false
 
   private readonly killers = new Int32Array(MAX_PLY * 2)
@@ -182,6 +185,14 @@ export class Searcher {
   setEvaluator(w: NnueWeights | null): void {
     this.useNnue = w !== null
     this.nnueAcc = w ? new Accumulator(w) : null
+  }
+
+  // Use the *quantized* (integer) network instead of the float one. Same
+  // incremental accumulator contract, so the rest of the search is unchanged —
+  // this is how the engine actually plays with the int8/int16 net.
+  setQuantEvaluator(q: QuantNet | null): void {
+    this.useNnue = q !== null
+    this.nnueAcc = q ? new QuantAccumulator(q) : null
   }
 
   usesNnue(): boolean {
