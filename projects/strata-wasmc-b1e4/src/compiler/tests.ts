@@ -2851,6 +2851,35 @@ fn main(){ for (let i = 0; i < 12; i = i + 1) { run((i * 7) % 11); } }`,
 fn main(){ for (let i = 0; i < 9; i = i + 1) { run(i); } }`,
   },
   {
+    // Correlated-branch folding — the same runtime predicate is tested twice, the
+    // second nested inside the first's arm, so a dominating branch already settled
+    // it. GVN unifies the two identical comparisons to one value; correlation folds
+    // the inner branch (true inside the then-arm, false inside the else-arm). The
+    // printed values prove the folded-away arm was the unreachable one.
+    name: 'correlated-branch-nested',
+    source: `fn run(a: int, b: int) -> int {
+  let s = a + b;
+  if (a > b) { s = s * 2; if (a > b) { print(a); s = s + 1; } else { print(-1); s = s - 100; } }
+  else { s = s - 5; if (a > b) { print(999); s = s + 100; } else { print(b); s = s - 1; } }
+  return s;
+}
+fn main(){ for (let i = 0; i < 8; i = i + 1) { print(run((i * 5) % 9, 3)); } }`,
+  },
+  {
+    // A loop-invariant condition re-tested in the loop body: the header's true arm
+    // dominates the body, so the in-body `if (flag > 0)` is known true throughout —
+    // correlation strips it without unswitching the loop.
+    name: 'correlated-loop-invariant',
+    source: `fn run(flag: int, n: int) -> int {
+  let s = 0;
+  for (let i = 0; i < n; i = i + 1) {
+    if (flag > 0) { s = s + i; if (flag > 0) { print(i); s = s + 2; } else { print(-1); s = s - 50; } }
+  }
+  return s;
+}
+fn main(){ print(run(1, 6)); print(run(0, 6)); print(run(3, 4)); }`,
+  },
+  {
     // Cross-jumping / tail merging — the bottom dual of code hoisting. Both arms of
     // the branch END with the same side-effecting tail (`print` of a value defined
     // before the branch); cross-jumping keeps one copy at the merge's front and

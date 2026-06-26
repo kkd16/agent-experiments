@@ -9,6 +9,7 @@ import { unswitchLoops } from './unswitch';
 import { sinkCode } from './sink';
 import { hoistCode } from './hoist';
 import { crossJump } from './crossjump';
+import { correlatedFold } from './correlate';
 import { partialUnroll } from './partial-unroll';
 import { divRemByConst } from './divrem';
 import { vectorize } from './vectorize';
@@ -924,6 +925,10 @@ export function optimize(mod: IRModule, level: OptLevel, snapshots = false): Opt
     record('mem-opt' + suffix, memOpt);
     if (level >= 2) record('reassociate' + suffix, reassociate);
     if (level >= 2) record('gvn/cse' + suffix, gvn);
+    // Correlated-branch folding decides a branch whose condition a dominating branch
+    // already tested (the same SSA value, post-GVN) — a runtime branch SCCP can't fold.
+    // Runs right after GVN/CSE has unified the two identical conditions to one value.
+    if (level >= 2) record('correlated-fold' + suffix, correlatedFold);
     if (level >= 2) record('strength-reduce-iv' + suffix, osr);
     record('algebraic-simplify' + suffix, algebraic);
     if (level >= 2) record('licm' + suffix, licm);

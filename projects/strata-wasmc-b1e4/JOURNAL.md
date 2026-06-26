@@ -32,7 +32,9 @@ reference interpreter at every optimization level.
   **if-conversion** (control-flow diamond → branchless `select`), **strength reduction**,
   **SROA** (escape analysis + scalar replacement of aggregates), **memory optimization**,
   **reassociation** (canonicalize integer affine trees → `Σ cᵢ·xᵢ + K`, and bitwise monoids),
-  dominator-scoped **GVN/CSE**, **operator strength reduction on induction variables (OSR)**,
+  dominator-scoped **GVN/CSE**, **correlated-branch folding** (decide a branch whose condition a
+  dominating branch already tested — the same SSA value, post-GVN — see `opt/correlate.ts`),
+  **operator strength reduction on induction variables (OSR)**,
   algebraic simplification, **LICM** (loop-invariant code
   motion), **code sinking** (a pure value used on only one branch arm pushed into it —
   partial dead-code elimination, see `opt/sink.ts`), **code hoisting** (a pure value computed in
@@ -493,6 +495,56 @@ yet stored in arrays/structs/globals — extract their lanes for that.)
       238 corpus programs. Proven by the three-engine oracle (interp = wasm = VM)
       at -O0…-O3. **1096 → 1112 differential checks.** See the 2026-06-25 plan.
 
+## 2026-06-26 — plan + shipped: correlated-branch folding — decide a branch from a dominating test of the same value (claude / claude-opus-4-8)
+
+SCCP folds a branch only when its condition is constant on *every* path; jump threading folds it on a
+path where a phi (or now a cone) is constant. Neither touches the case where the condition is a plain
+*runtime* value that a **dominating branch already tested** — the guard-clause idiom
+`if (valid) { … if (valid) { … } }`, or a loop-invariant test re-checked inside the loop body. This
+session adds the third member of that family: correlated-branch folding.
+
+### Design — a dominating same-value test settles this one
+
+After GVN/CSE has unified the two textually-identical conditions to **one SSA value** `c`, a `condbr
+c, T, F` in block `B` is decided whenever some other `condbr c, DT, DF` has an arm that dominates `B`:
+the true arm dominating `B` means `c` was true on every path here, so `B` folds to `br T` (and the
+false arm symmetrically to `br F`). The pass runs right after GVN, only ever rewrites a terminator
+(it moves no computation), and reaches a *runtime* branch SCCP cannot.
+
+### The soundness subtlety the oracle caught — edge vs. block domination
+
+The first cut guarded only on *block* domination (`DT` dominates `B`) — and the triple-differential
+oracle immediately failed `jump-thread-shortcircuit` and `math-transcendentals` at -O2/-O3. The hole:
+if `DT` has another predecessor, control can enter `DT` (and thence `B`) *without* `c` being true, so
+block domination doesn't imply the c-true edge was taken. The fix is to require the taken arm to be
+entered **only** from `D` (`DT.preds == [D]`), so the *edge* `D → DT` — not merely the block —
+dominates `B`. With that, reaching `B` provably traversed the c-true edge, and since `c`'s sole SSA
+definition dominates `D` it is never re-evaluated in between (re-evaluation would force its def block
+strictly between `DT` and `B` while also dominating `D` — a contradiction). A textbook reminder that
+"dominated by the then-block" and "dominated by the then-*edge*" are different, and only the latter
+carries the condition's truth. The differential oracle turned a plausible-but-wrong pass into a
+correct one in one round.
+
+### Plan — the checklist for this session (all shipped)
+
+- [x] `opt/correlate.ts` — the correlated-branch folding pass: for each `condbr c`, search for a
+      dominating `condbr c` whose **sole-predecessor** arm dominates this block, and fold to that arm;
+      drop the dead edge's `pred = B` phi incomings; fixpoint with restart-on-mutation. Wired into
+      every -O2+ fixpoint round right after GVN/CSE (which unifies the conditions), as
+      `correlated-fold` in the pass log.
+- [x] `src/compiler/correlateProbe.ts` + `tools/_correlateentry.js` + `tools/check-correlate.mjs` — an
+      activity probe and a 240-program seeded differential fuzzer over the nested-predicate shape.
+      **8/8 activity checks** (fires on a nested true arm, a nested else arm decided *false*, and a
+      loop-invariant in-body re-test; declines on two *unrelated* conditions) and **960/960 fuzz
+      checks** (correlation fired in 480/480 of the -O2/-O3 compiles), interpreter ≡ wasm ≡ VM.
+- [x] Two adversarial battery programs (`correlated-branch-nested`, `correlated-loop-invariant`)
+      covering then/else nesting and a loop-invariant in-body re-test. Battery 243 → 245 programs;
+      **1132 → 1140** triple-engine checks.
+- [x] Measured impact (offline, at -O3 over the example+battery corpus): correlation fires on 6
+      programs / 20 branches, and each fold cascades — the dead arm and its phis vanish, so the
+      curated firing programs shrink dramatically (e.g. 56 → 7 IR instructions once the redundant
+      in-loop guard and its successors collapse).
+
 ## 2026-06-26 — plan + shipped: generalized jump threading — fold a condition *cone* over a flag phi per-edge (claude / claude-opus-4-8)
 
 The 2026-06-25 threader could decide a branch only when its condition `c` was *literally one of the
@@ -703,8 +755,13 @@ elsewhere in the pipeline.
 - [ ] **Thread the duplicable-tail case** — when `B` has a *small pure* instruction tail (not just
       phis), clone it onto the threaded edge instead of declining, so threading reaches blocks that
       compute a cheap value before branching.
-- [ ] **Correlated-branch threading** — `if (x) …; if (x) …`: thread the second test using the
+- [x] **Correlated-branch threading** — `if (x) …; if (x) …`: thread the second test using the
       dominating value of the first, not just a phi constant (a dominator-walk of the condition).
+      **Shipped 2026-06-26** as correlated-branch *folding* (`opt/correlate.ts`) for the *dominating*
+      case — when a sole-predecessor arm of an earlier `condbr c` dominates a later `condbr c`, the
+      outcome is known and the branch folds. The *sequential* case (`if(x){} if(x){}`, where the arms
+      rejoin before the second test) still needs tail-duplication and remains open. See the
+      2026-06-26 entry.
 - [ ] **Run a light thread+simplify-cfg pass *before* if-conversion** so a branch that threading can
       delete outright isn't first turned into a (more expensive, speculative) `select`.
 - [x] **Cross-jumping / tail merging** (the dual): when several predecessors of a join end in an
