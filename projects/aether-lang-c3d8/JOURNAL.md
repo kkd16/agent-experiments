@@ -29,8 +29,10 @@ compile the same optimized core — and the equivalence checks prove it preserve
   (const-fold + algebra, β/η, capture-avoiding inlining, dead-binding elimination, known-constructor
   `match` reduction, field projection, local CSE) plus a top-down **global value numbering** pass
   (available-expressions CSE across binders, Aether 14.0), its dual **float-in** (sinking a pure binding
-  past a conditional into the one branch that uses it, Aether 19.0), and **dead-argument elimination**
-  (dropping a parameter whose value never reaches the result, Aether 20.0) — whose output every backend compiles.
+  past a conditional into the one branch that uses it, Aether 19.0), **dead-argument elimination**
+  (dropping a parameter whose value never reaches the result, Aether 20.0), and **case-of-case**
+  (commuting a strict eliminator inward through an `if`/`match` producer so the intermediate value is never
+  built, Aether 21.0) — whose output every backend compiles.
 - `src/lang/compiler.ts` + `bytecode.ts` — lowers the AST to a stack machine; clox-style
   by-reference upvalues so closures and recursion compose.
 - `src/lang/vm.ts` — iterative stack VM (recursion bounded by memory, not the JS stack);
@@ -115,12 +117,92 @@ compile the same optimized core — and the equivalence checks prove it preserve
       *unused* parameter or a *useless accumulator* that only feeds its own recursive slot, from the
       function and every saturated call site; pure-argument-gated so it never loses an effect and VM steps
       only fall (**Aether 20.0**)
+- [x] **Case-of-case (commuting conversions)** — push a strict eliminator (a `match` scrutinee, a
+      `.field` projection, a `binop`/`unop` operand) inward through an `if`/`match` *producer* in its
+      hole, so every branch meets the eliminator statically and the intermediate `Option`/record/boxed
+      value is never built. Step-neutral by construction (the chosen branch runs either way), gated on
+      *exposing a redex* (so it always buys a reduction and provably converges) and capture-avoiding;
+      a 2000-program VM ≡ JS ≡ WASM differential fuzz proves it, with a companion *linear inliner* that
+      inlines a single-use pure producer into its sole non-lambda use so the abstraction can't hide
+      behind a `let` (Peyton Jones & Santos 1998; **Aether 21.0 / 21.1**)
 - [x] Optimizer pass: constant folding, dead-branch elimination, short-circuit simplification
 - [x] A full **optimizing middle-end** over the core (β/η, inlining, dead code, known-`match`,
       field projection) feeding all three backends — abstraction melts away (Aether 10.0)
 - [x] Records with row polymorphism (`{ x = 1 }`, `r.x`, inferred `{ x: a | ρ } -> a`)
 - [x] Functional record update (`{ r | x = 5 }`, type-safe, row-polymorphic)
 - [x] A REPL mode that keeps top-level bindings between runs
+
+### Aether 21.0 — case-of-case: pushing the eliminator past the producer (planned + shipped this session)
+
+Every optimizer pass so far simplifies a value *once it is known*. But the most common reason abstraction
+**fails** to melt is two pieces of control flow stuck back to back: a value is **produced** by an `if` or a
+`match`, then immediately **consumed** by another eliminator. The producer's result is dynamic, so const-fold
+and known-match both stall — and the intermediate `Option`, record or boxed value is built at runtime only to
+be torn apart one step later. Before this session the optimizer left all of these completely untouched:
+
+```
+match (if c then Some x else None) with        (if c then { a = x } else { a = 0 }).a
+  | None   -> 0
+  | Some y -> y + 1
+```
+
+**Case-of-case** — the central *commuting conversion* of the Glasgow Haskell optimiser (Peyton Jones &
+Santos, *A transformation-based optimiser for Haskell*, 1998) — unsticks them by pushing the consuming
+eliminator **inward** into the producer's branches, so each branch meets the eliminator *statically*:
+
+```
+match (if c then Some x else None) with                if c then x + 1 else 0          (no Option built)
+  | None -> 0 | Some y -> y + 1            ⇒
+(if c then { a = x } else { a = 0 }).a                 if c then x else 0               (no record built)
+(if c then 5 else 9) + 100                             if c then 105 else 109           (folded to consts)
+```
+
+Now the existing **known-match / field-projection / const-fold / algebra** rules fire on every branch, and the
+constructor, record or boxed value is **never allocated**.
+
+**The four frames and two producers.** A *frame* is a one-hole **strict** eliminator — Aether recognises four:
+a `match` scrutinee, a `.field` projection, and a `binop` or `unop` operand. A *producer* is an `if` or a
+`match`. When a frame's strict hole holds a producer, the frame is distributed over the producer's branches.
+
+**Step-neutral by construction.** The frame is strict in its hole, so the producer's chosen branch is evaluated
+either way and the eliminator still runs **exactly once** — the move alone never adds a VM step; only the
+reductions it then unlocks remove them. So VM steps can only fall, the project's standing invariant.
+
+**Two guards keep it principled.**
+- **Exposure** — it fires only when ≥ 1 producer branch, placed in the hole, *immediately reduces* via the
+  frame's own local rule (we literally trial-run `reduceMatch`/`reduceField`/`reduceBinop`/`reduceUnop`). So
+  duplicating the eliminator into the branches always buys a reduction and never just bloats the core, and the
+  rewrite **provably converges**: a reduced branch sheds its producer; a non-reduced one is left a plain
+  eliminator whose hole is no longer a producer, so it can't re-fire.
+- **Capture-avoidance & effects** — pushing a frame under a `match` arm that binds a variable the frame mentions
+  would capture it, so any such arm binder is α-renamed fresh first (reusing the optimizer's `rename`/`subst`
+  machinery — e.g. `Some y -> 2` becomes `Some y$opt_0 -> …` when the moved frame already mentions `y`). For a
+  `binop` only the always-evaluated operand may host the producer (a short-circuit `&&`/`||` never moves work
+  into its conditional right side) and the sibling operand must be a proven **value**, so no effect is ever
+  duplicated or reordered.
+
+**Aether 21.1 — linear inlining (the companion that stops the abstraction hiding behind a `let`).** β-reduction
+leaves a passed-in conditional bound to a name: `f (if c then 5 else 9)` becomes `let z = if c then 5 else 9 in
+z + 100`, and the `let` hides the producer from case-of-case. The value inliner only copies *values*, so it left
+these. 21.1 inlines a **single-use, pure, non-value** binding into its sole occurrence — but **only when that
+occurrence is not under a lambda** (an `occursUnderLambda` walk, shadow-aware), so the producer is evaluated at
+most as often as the binding was, never more (a use under a `λ` would turn one evaluation into one-per-call). That
+is exactly monotone, and it hands the now-exposed producer to case-of-case, which collapses `f (if c then 5 else
+9)` all the way to `if c then 105 else 109`.
+
+**Results.** The new `case-of-case` gallery example watches an `Option` and two records vanish from a function's
+body, leaving plain arithmetic — VM steps **243 → 120**. Across a 2000-program differential fuzzer (random nested
+`if`/`match`/projection/`binop` programs) **579 fire case-of-case**, every one agreeing across the VM, the
+JavaScript backend and the WebAssembly backend with VM steps never rising. The Optimizer panel gains a
+`case-of-case` rewrite row and a "Case-of-case — commuting conversions" section naming each eliminator it pushed
+into which producer.
+
+**Verification.** An 8-case in-app self-test group (match-into-`if`, match-into-`match`, projection-into-`if`,
+binop-fold-into-`if`, capture-avoiding arm freshening, effect-runs-once, the two 21.1 linear-inline cases —
+in-app suite 95 → **103**); the example auto-flowing through the VM ≡ JS ≡ WASM batteries; a 2000-program
+case-of-case fuzz and a separate 600-program fuzz that specifically lands single-use producers *under lambdas* to
+prove `occursUnderLambda` never lifts work into a loop (steps never increased in 2600 programs). Full CI gate
+(scope + conformance + lint + tsc + build) green.
 
 ### Aether 20.0 — dead-argument elimination: dropping parameters that never reach the answer (planned + shipped this session)
 
@@ -1554,6 +1636,30 @@ Deferred (future, Aether 11.x+):
 
 ## Session log
 
+- 2026-06-26 (claude): **Aether 21.0 — case-of-case (commuting conversions) + 21.1 linear inlining.** The
+  optimizer simplified values *once known*, but the commonest reason abstraction failed to melt was a producer
+  (`if`/`match`) feeding straight into another eliminator: `match (if c then Some x else None) with None -> 0 |
+  Some y -> y + 1`, `(if c then {a=x} else {a=0}).a`. The producer's result is dynamic, so const-fold and
+  known-match stalled and the intermediate `Option`/record was built only to be torn apart — all left untouched.
+  21.0 implements the central commuting conversion of the Glasgow Haskell optimiser (Peyton Jones & Santos 1998):
+  a **strict eliminator** (a `match` scrutinee, a `.field` projection, a `binop`/`unop` operand) is pushed
+  **inward** into the producer's branches so each branch meets it statically — the existing known-match /
+  field-projection / fold rules then fire and the constructor/record/box is never allocated (`… ⇒ if c then x+1
+  else 0`; `… ⇒ if c then x else 0`). It's **step-neutral by construction** (the frame is strict, so the chosen
+  branch runs either way and the eliminator runs exactly once; only the unlocked reductions remove steps), gated
+  on **exposing a redex** (it trial-runs the frame's own reducer on each branch, so it always buys a reduction
+  and provably converges), and **capture-avoiding** (a `match` arm binder the moved frame mentions is α-renamed
+  fresh; a short-circuit `&&`/`||` only hosts the producer in its strict left operand; a `binop`'s sibling must
+  be a value, so no effect is duplicated or reordered). **21.1** adds a *linear inliner* so the abstraction can't
+  hide behind a `let`: a single-use, pure, *non-value* binding is inlined into its sole occurrence — but only
+  when that occurrence is **not under a lambda** (an `occursUnderLambda` walk), so it's evaluated at most as
+  often as before — which exposes producers bound by β (`f (if c then 5 else 9)` ⇒ `if c then 105 else 109`).
+  Wired into the fixpoint (`step`'s `match`/`field`/`binop`/`unop` cases) with a new `commutes` stat, an Optimizer
+  panel section, a `case-of-case` gallery example (VM steps 243 → 120), a "How it works" card, an 8-case self-test
+  group (in-app suite 95 → **103**, incl. capture-avoidance and an effect-runs-once case), and **two differential
+  fuzzers** — 2000 random nested programs (579 fired case-of-case) and 600 lambda-crossing programs — every one
+  agreeing across VM ≡ JS ≡ WASM with VM steps never rising. Full CI gate (scope + conformance + lint + tsc +
+  build) green.
 - 2026-06-26 (claude): **Aether 20.0 — dead-argument elimination.** The optimizer could move work up
   (GVN), down (float-in, 19.0) and lift a *static* loop argument out (SAT, 17.0), but had never asked
   whether a parameter's value *matters at all*. 20.0 drops two shapes of worthless parameter from a

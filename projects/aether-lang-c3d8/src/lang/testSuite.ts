@@ -828,6 +828,78 @@ match cmd with Peek -> n | Audit -> audit`,
 go 0 "trace" 60`,
     expected: '1830',
   },
+
+  // ---- case-of-case / commuting conversions (Aether 21.0) ----
+  // Each row pushes a strict eliminator into an if/match producer so the
+  // intermediate value never gets built; the optimized VM is re-checked against
+  // the unoptimized JS backend (a green row proves the rewrite kept the answer).
+  {
+    group: 'case-of-case',
+    name: 'match pushed into an if (no Option built)',
+    code: `type Opt a = None | Some a in
+let f = fn c -> fn x ->
+  match (if c then Some x else None) with None -> 0 | Some y -> y + 1 in
+(f true 41, f false 41)`,
+    expected: '(42, 0)',
+  },
+  {
+    group: 'case-of-case',
+    name: 'match pushed through a match (nested)',
+    code: `type Opt a = None | Some a in
+type T = A | B in
+let f = fn t -> fn x ->
+  match (match t with A -> Some x | B -> None) with None -> 0 | Some y -> y * 2 in
+(f A 21, f B 21)`,
+    expected: '(42, 0)',
+  },
+  {
+    group: 'case-of-case',
+    name: 'projection pushed into an if (no record built)',
+    code: `let f = fn c -> fn x ->
+  (if c then { a = x, b = 1 } else { a = 0, b = x }).a in
+(f true 42, f false 42)`,
+    expected: '(42, 0)',
+  },
+  {
+    group: 'case-of-case',
+    name: 'binop pushed into an if folds the branches',
+    code: `let f = fn c -> (if c then 5 else 9) + 100 in (f true, f false)`,
+    expected: '(105, 109)',
+  },
+  {
+    group: 'case-of-case',
+    name: 'capture-avoiding: arm binder is freshened',
+    code: `type Opt a = None | Some a in
+let f = fn t -> fn y ->
+  match (match t with None -> Some 1 | Some y -> Some 2) with Some z -> z + y | None -> 0 in
+(f None 100, f (Some 7) 100)`,
+    expected: '(101, 102)',
+  },
+  {
+    group: 'case-of-case',
+    name: 'never duplicates an effect (cond runs once)',
+    code: `type Opt a = None | Some a in
+let f = fn x ->
+  match (if (print x; x > 0) then Some x else None) with None -> 0 | Some y -> y + 1 in
+f 5`,
+    expected: '6',
+  },
+  {
+    group: 'case-of-case',
+    name: 'linear inlining unblocks case-of-case behind a let',
+    code: `let f = fn c -> let z = (if c then 5 else 9) in z + 100 in (f true, f false)`,
+    expected: '(105, 109)',
+  },
+  {
+    group: 'case-of-case',
+    name: 'linear inlining never lifts work into a lambda',
+    code: `let g = fn k ->
+  let z = (if k > 0 then k * k else 0 - k) in
+  let h = fn m -> z + m in
+  h 1 + h 2 + h 3 in
+(g 3, g (0 - 4))`,
+    expected: '(33, 18)',
+  },
 ]
 
 export function runCase(tc: TestCase): TestResult {
