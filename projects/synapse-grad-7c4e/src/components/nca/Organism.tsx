@@ -46,12 +46,20 @@ export default function Organism({ model, meta, rebuildKey, tick }: Props) {
   const rafRef = useRef<number | null>(null);
   const playingRef = useRef(false);
   const speedRef = useRef(2);
+  const autoHealRef = useRef(false);
+  const nextHealRef = useRef(120);
 
   const [playing, setPlaying] = useState(true);
   const [speed, setSpeed] = useState(2);
   const [showChannels, setShowChannels] = useState(false);
   const [stepDisplay, setStepDisplay] = useState(0);
   const [brush, setBrush] = useState(0.18); // damage radius as a fraction of grid
+  const [autoHeal, setAutoHeal] = useState(false);
+
+  useEffect(() => {
+    autoHealRef.current = autoHeal;
+    if (autoHeal) nextHealRef.current = stepRef.current + 70;
+  }, [autoHeal]);
 
   useEffect(() => {
     speedRef.current = speed;
@@ -104,6 +112,13 @@ export default function Organism({ model, meta, rebuildKey, tick }: Props) {
           stateRef.current = out.slice(); // commit the new state for the next inner step / render
         }
         stepRef.current += n;
+        // unattended self-repair demo: periodically wound the organism and let it regrow
+        if (autoHealRef.current && stepRef.current >= nextHealRef.current) {
+          const cx = (0.25 + 0.5 * rngRef.current()) * meta.W;
+          const cy = (0.25 + 0.5 * rngRef.current()) * meta.H;
+          damage(stateRef.current, meta, cx, cy, (0.15 + 0.12 * rngRef.current()) * meta.W);
+          nextHealRef.current = stepRef.current + 80 + Math.floor(rngRef.current() * 80);
+        }
         renderMain();
         if (stepRef.current % 8 < n) setStepDisplay(stepRef.current);
       }
@@ -196,6 +211,9 @@ export default function Organism({ model, meta, rebuildKey, tick }: Props) {
         </label>
         <label className="toggle">
           <input type="checkbox" checked={showChannels} onChange={(e) => setShowChannels(e.target.checked)} /> hidden channels
+        </label>
+        <label className="toggle">
+          <input type="checkbox" checked={autoHeal} onChange={(e) => setAutoHeal(e.target.checked)} /> auto-heal
         </label>
       </div>
 
