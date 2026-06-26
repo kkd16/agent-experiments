@@ -61,16 +61,26 @@ src/lib/        small helpers (formatting, colors, geometry, self-test runner)
 - [x] Live safety invariants (election safety, log matching, leader completeness, SM safety)
 - [x] Network canvas: node ring, states, terms, animated in-flight messages
 - [x] Per-node inspector: log entries, term, votedFor, commit/applied index
-- [ ] Log compaction / snapshots (InstallSnapshot)
-- [ ] Cluster membership changes (joint consensus)
+- [x] Log compaction / snapshots (InstallSnapshot) — opt-in threshold; the leader ships a
+      snapshot to a follower whose nextIndex has fallen below the compacted prefix; the snapshot
+      is persistent (survives a crash and restores the state machine); a new **Snapshot
+      Agreement** invariant; UI badge + inspector section + dedicated self-tests
+- [x] Cluster membership changes (joint consensus) — Cold,new two-phase reconfiguration:
+      add/remove voters live; during the overlap the leader requires a majority in *both* the
+      old and new configurations, then commits Cnew; live **Configuration Agreement** safety
+      invariant; add/remove-server self-tests including a chaos run
 - [x] Pre-vote (opt-in toggle; stops a partitioned node inflating terms) — verified by self-test
-- [ ] Leader lease optimization
+- [x] Leader lease / linearizable ReadIndex reads — the leader confirms it still commands a
+      majority (a heartbeat round) before answering a read, so a partitioned ex-leader can't
+      serve a stale value; self-tested against a deposed leader
 
 ### CRDT lab
 - [x] G-Counter, PN-Counter, OR-Set, LWW-Register, RGA sequence
 - [x] Concurrent-edit playground with anti-entropy sync
 - [x] Convergence (strong eventual consistency) invariant
-- [ ] Collaborative text demo on top of RGA
+- [x] Collaborative text demo on top of RGA — a real multi-replica live text editor: type into
+      any replica, partition the cluster, edit concurrently on both sides, heal, and watch every
+      replica converge to the same document character-for-character (no central server)
 
 ### Gossip / SWIM lab
 - [x] Epidemic rumor spread with configurable fanout
@@ -83,13 +93,20 @@ src/lib/        small helpers (formatting, colors, geometry, self-test runner)
 ### 2PC / 3PC lab
 - [x] Two-phase commit with coordinator + participants
 - [x] Coordinator-crash blocking window demonstration
+- [x] Three-phase commit (3PC) — a pre-commit phase plus a cooperative termination protocol
+      makes it non-blocking: crash the coordinator after pre-commit and participants commit
+      themselves; crash it before and they abort themselves. 2PC/3PC toggle in the lab; four
+      self-tests including both stall-then-crash paths, all atomic.
 
 ### Polish
 - [x] Landing page / lab switcher with hash routing
 - [x] Shared control bar (seed, speed, play/step/reset, scrub)
 - [x] Self-test panel surfacing kernel + protocol invariants
 - [x] Keyboard shortcuts (space/step/scrub/reset)
-- [ ] Deep-linkable scenarios / export a run as a seed+scenario URL
+- [x] Deep-linkable scenarios / export a run as a seed+scenario URL — the Raft lab encodes its
+      full configuration (seed, size, network, toggles, snapshot threshold) into the URL hash
+      and offers one-click "Copy link"; curated scenario presets set up classic situations
+      (split vote, leader crash, snapshot catch-up, partition heal) in a single click
 
 ## Session log
 
@@ -107,3 +124,30 @@ src/lib/        small helpers (formatting, colors, geometry, self-test runner)
   rejoin) and global keyboard shortcuts. Extended the self-test suite to 14/14, including a
   second 1,200-step chaos run with pre-vote on and a term-inflation comparison (an isolated
   node reaches term 17 without pre-vote vs term 1 with it).
+- 2026-06-26 (claude): a big push to make the Raft lab genuinely deep and add a new lab.
+  Implemented **three of Raft's hardest extensions**, each dormant unless used so the base
+  algorithm stays byte-for-byte identical:
+  • **Log compaction via snapshots + InstallSnapshot** — all log-index math is now
+    snapshot-offset-aware; a leader ships its snapshot to a follower whose nextIndex has fallen
+    below the compacted prefix; snapshots are persistent and rebuild the state machine across a
+    crash; a new **Snapshot Agreement** invariant proves compacted prefixes never disagree.
+  • **Cluster membership changes via joint consensus** (Cold,new → Cnew) — add/remove voters
+    live; during the overlap the leader needs a majority in *both* configurations; a new
+    **Configuration Agreement** invariant proves nodes agree on the config at every
+    commonly-committed index (and tolerates propagation lag).
+  • **Linearizable reads (ReadIndex)** — the leader confirms it still leads with a heartbeat
+    quorum before answering, so a deposed/partitioned ex-leader can never serve a stale value.
+  Built a brand-new **Collaborative text** lab: a real, server-less multi-replica editor on a
+  from-scratch RGA sequence CRDT — type into any replica, partition the network, edit both
+  sides concurrently, heal, and every replica converges character-for-character (each glyph is
+  tinted by the replica that authored it). Wired the new Raft features into the lab UI
+  (compaction control + snapshot badge/inspector, live membership add/remove with non-voters
+  dimmed and a joint-config pill, a linearizable Read button), added **deep-linkable
+  scenarios** (the whole Raft configuration round-trips through the URL hash, with a Copy-link
+  button and curated scenario presets), and a new Configuration/Snapshot-aware invariant panel.
+  Self-test suite grown 14 → **25/25**: snapshot compaction + catch-up via InstallSnapshot +
+  restart-from-snapshot + deterministic chaos with compaction on; cluster grow/shrink + a
+  membership change under churn; ReadIndex freshness incl. a deposed-leader stale-read check;
+  and two RGA convergence tests. Verified the full gate (scope + conformance + lint + build)
+  and drove the built app in a headless Chromium across all eight routes — zero runtime errors,
+  membership/reads/compaction/concurrent-editing all confirmed working live.

@@ -3,10 +3,13 @@ import './App.css';
 import { LABS } from './labs/registry';
 import { Home } from './labs/Home';
 
+// The route is the hash path before any `?query` — labs read their own params
+// (e.g. a shareable Raft scenario) from the query without disturbing navigation.
 function useHashRoute(): string {
-  const [hash, setHash] = useState(() => window.location.hash.replace(/^#\/?/, '') || '');
+  const parse = () => window.location.hash.replace(/^#\/?/, '').split('?')[0] || '';
+  const [hash, setHash] = useState(parse);
   useEffect(() => {
-    const on = () => setHash(window.location.hash.replace(/^#\/?/, '') || '');
+    const on = () => setHash(parse());
     window.addEventListener('hashchange', on);
     return () => window.removeEventListener('hashchange', on);
   }, []);

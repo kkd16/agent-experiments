@@ -1,6 +1,7 @@
 import type { JSX } from 'react';
 import { RaftLab } from './RaftLab';
 import { CrdtLab } from './CrdtLab';
+import { CoeditLab } from './CoeditLab';
 import { GossipLab } from './GossipLab';
 import { VClockLab } from './VClockLab';
 import { CommitLab } from './CommitLab';
@@ -35,6 +36,15 @@ export const LABS: LabDef[] = [
     Component: CrdtLab,
   },
   {
+    id: 'coedit',
+    title: 'Collaborative text',
+    blurb:
+      'A live, server-less collaborative editor on a Replicated Growable Array (RGA) — the sequence CRDT behind Yjs and Automerge. Type into any replica, partition the network, edit both sides at once, heal, and watch every replica converge to the same document character-for-character.',
+    icon: '✎',
+    tag: 'crdt · editor',
+    Component: CoeditLab,
+  },
+  {
     id: 'gossip',
     title: 'Gossip / SWIM',
     blurb:
@@ -54,9 +64,9 @@ export const LABS: LabDef[] = [
   },
   {
     id: 'commit',
-    title: '2PC commit',
+    title: '2PC / 3PC commit',
     blurb:
-      'Two-phase commit and its blocking problem: stall the coordinator after the yes votes and watch prepared participants block forever, while the safety invariants stay green.',
+      'Atomic commit, two ways. 2PC blocks if the coordinator stalls after the yes votes; 3PC adds a pre-commit phase and a cooperative termination protocol so participants finish on their own. Toggle between them and crash the coordinator to see the difference.',
     icon: '⇋',
     tag: 'atomic commit',
     Component: CommitLab,
