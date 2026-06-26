@@ -8,7 +8,7 @@
 
 import { useCallback, useEffect, useMemo, useRef } from 'react'
 import { parseFen, generateLegal, inCheck, MATE, type SearchInfo, type MultiInfo } from '../engine'
-import { Searcher, deserializeNnue, type NnueBlob } from '../engine'
+import { Searcher, deserializeNnue, quantize, type NnueBlob } from '../engine'
 import { verifyKbnk as verifyKbnkSync, type KbnkVerification } from '../engine/kbnk'
 import { verifyGtb as verifyGtbSync, type GtbVerification } from '../engine/gtb'
 import { verifyWdl as verifyWdlSync, type WdlVerification } from '../engine/wdltb'
@@ -60,7 +60,8 @@ export interface EngineHandle {
     onProgress: (done: number, total: number) => void,
   ) => Promise<NodeAnalysis[]>
   // Install (blob) or remove (null) the NNUE evaluation for subsequent searches.
-  setNnue: (blob: NnueBlob | null) => void
+  // Pass `useQuant` to run the net quantized (int16/int8) in play.
+  setNnue: (blob: NnueBlob | null, useQuant?: boolean) => void
   cancel: () => void
 }
 
@@ -72,6 +73,8 @@ export function useEngine(): EngineHandle {
   const infoRef = useRef<((arg: never) => void) | null>(null)
   // The currently-installed NNUE (if any), reapplied whenever a worker is created.
   const nnueRef = useRef<NnueBlob | null>(null)
+  // Whether the installed NNUE should run quantized (int16/int8) in play.
+  const nnueQuantRef = useRef<boolean>(false)
 
   const ensureWorker = useCallback((): Worker | null => {
     if (workerRef.current) return workerRef.current
@@ -134,7 +137,8 @@ export function useEngine(): EngineHandle {
       }
       workerRef.current = worker
       // Reapply any installed NNUE to the freshly-created worker.
-      if (nnueRef.current) worker.postMessage({ type: 'setnnue', blob: nnueRef.current })
+      if (nnueRef.current)
+        worker.postMessage({ type: 'setnnue', blob: nnueRef.current, quantize: nnueQuantRef.current })
       return worker
     } catch {
       return null
@@ -287,13 +291,15 @@ export function useEngine(): EngineHandle {
   )
 
   const setNnue = useCallback(
-    (blob: NnueBlob | null) => {
+    (blob: NnueBlob | null, useQuant = false) => {
       nnueRef.current = blob
+      nnueQuantRef.current = useQuant
       const worker = ensureWorker()
-      if (worker) worker.postMessage({ type: 'setnnue', blob })
+      if (worker) worker.postMessage({ type: 'setnnue', blob, quantize: useQuant })
       // Keep the synchronous fallback in sync too.
       if (!fallbackRef.current) fallbackRef.current = new Searcher()
-      fallbackRef.current.setEvaluator(blob ? deserializeNnue(blob) : null)
+      if (blob && useQuant) fallbackRef.current.setQuantEvaluator(quantize(deserializeNnue(blob)))
+      else fallbackRef.current.setEvaluator(blob ? deserializeNnue(blob) : null)
     },
     [ensureWorker],
   )

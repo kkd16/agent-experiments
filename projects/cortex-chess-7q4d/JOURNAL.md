@@ -224,10 +224,12 @@ representation, move generation, search and evaluation are all hand-built here.
       accumulator; measured ≤ a-priori cp bound; 98.7% move agreement; 2× smaller. New **Quantization** Lab card +
       `Searcher.setQuantEvaluator` [→ see "Session — NNUE quantization" below]
 - [ ] **HalfKP / king-bucketed features** with a refresh-on-king-move path (more capacity; the current set is king-agnostic)
-- [ ] **Quantization, next steps** — (a) persist the quantized blob to IndexedDB and let the **Play** panel run the int8
-      net directly (today the Lab quantizes on demand); (b) a real **NPS A/B** in a worker once a SIMD-ish int path lands;
-      (c) **per-feature accumulator scaling** (per-column QA) to shave the residual cp-error further; (d) fold the
-      quantized eval into the worker `setnnue` path so search-from-saved uses integers
+- [x] **Play with the int8 net** — the worker `setnnue` request takes a `quantize` flag; when set it quantizes the
+      net and calls `Searcher.setQuantEvaluator`, so the Play panel's new **"int8 quantized"** toggle makes the engine
+      *play* on the integer eval (verified end-to-end headlessly: legal search + a full int8-vs-float game).
+- [ ] **Quantization, next steps** — (a) a real **NPS A/B** in a worker once a SIMD-ish int path lands;
+      (b) **per-feature accumulator scaling** (per-column QA) to shave the residual cp-error further; (c) persist the
+      quantized blob itself to IndexedDB (today it's re-quantized from the stored float net on toggle — cheap, ~1 ms)
 - [ ] **Train on shallow-search scores** (not just the static eval) and on the **game result** (WDL) for a stronger teacher
 - [ ] **Self-play data + iterative retraining** (the net plays itself to generate harder positions), and an Elo estimate
 - [ ] Pawn-ful tablebases (KPvKP, KRvKP, KPvK as exact DTM) — needs un-promotion / en-passant unmoves and a layered
@@ -550,6 +552,9 @@ int8 [−119, 127], QB = 657). A new **Quantization** card in the NNUE Lab quant
 scales / sizes / compression and the three-row verification table, and runs an **int8-vs-float head-to-head** (same
 search, same node budget) — a score near 4/8 being the visible proof that quantization cost essentially nothing in
 strength. **Validated outside the browser** (esbuild-bundled Node harness over the shipped default net): all five
-assertions green. Additive only — new module + one Lab card + a one-line searcher hook; the float path is untouched and
-stays the default. Clean scope + conformance + lint + tsc + vite build via `node scripts/verify-project.mjs
-cortex-chess-7q4d`.
+assertions green. And it's wired **end-to-end into play**: the worker `setnnue` request gained a `quantize` flag
+(quantize → `Searcher.setQuantEvaluator`), and a new **"int8 quantized"** toggle on the Play panel runs the engine on
+the integer eval — a second headless harness confirms the quantized search returns legal moves and plays a full
+int8-vs-float game cleanly. Additive only — new module + one Lab card + an opt-in Play toggle + a one-line searcher
+hook; the float path is untouched and stays the default. Clean scope + conformance + lint + tsc + vite build via
+`node scripts/verify-project.mjs cortex-chess-7q4d`.

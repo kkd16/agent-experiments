@@ -127,6 +127,8 @@ export default function App() {
   const [nnueBlob, setNnueBlob] = useState<NnueBlob | null>(null)
   const [nnueMeta, setNnueMeta] = useState<NnueMeta | null>(null)
   const [nnueOn, setNnueOn] = useState(false)
+  // Whether the active net runs quantized (int16/int8) in play.
+  const [nnueQuantOn, setNnueQuantOn] = useState(false)
   // True when the active net is the shipped default (no net trained in the Lab yet).
   const [nnueIsDefault, setNnueIsDefault] = useState(true)
   // UCI-style time control. When active, the engine manages its own clock
@@ -166,9 +168,9 @@ export default function App() {
   // Install (or remove) the NNUE evaluation on both the play and ponder engines.
   useEffect(() => {
     const blob = nnueOn ? nnueBlob : null
-    engine.setNnue(blob)
-    ponderEngine.setNnue(blob)
-  }, [nnueOn, nnueBlob, engine, ponderEngine])
+    engine.setNnue(blob, nnueQuantOn)
+    ponderEngine.setNnue(blob, nnueQuantOn)
+  }, [nnueOn, nnueQuantOn, nnueBlob, engine, ponderEngine])
 
   const lastSearchedFen = useRef('')
   const lastAnalyzedFen = useRef('')
@@ -869,6 +871,18 @@ export default function App() {
                   <span>
                     NNUE eval{nnueMeta ? ` (${nnueIsDefault ? 'shipped' : 'yours'} · R²=${nnueMeta.r2.toFixed(2)})` : ''}
                   </span>
+                </label>
+                <label
+                  className={`toggle${nnueBlob && nnueOn ? '' : ' disabled'}`}
+                  title="Run the net quantized — int16 feature transformer, uint8 activations, int8 output dot. ~2× smaller, within a few cp of float (see Lab → NNUE → Quantization)."
+                >
+                  <input
+                    type="checkbox"
+                    checked={nnueQuantOn}
+                    disabled={!nnueBlob || !nnueOn}
+                    onChange={(e) => setNnueQuantOn(e.target.checked)}
+                  />
+                  <span>int8 quantized</span>
                 </label>
                 <label className="toggle">
                   <input
