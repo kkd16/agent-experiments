@@ -96,4 +96,8 @@ src/lib/        small helpers (formatting, colors, geometry, self-test runner)
   queue, network model, timers, crash/restart, snapshot time-travel), the full Raft lab
   (election + replication + KV state machine + live safety invariants + animated network
   canvas + node inspector), plus CRDT, gossip/SWIM, vector-clock and 2PC labs, the shared UI
-  shell with hash routing and a self-test panel. Verified lint + build green.
+  shell with hash routing, and a live self-test lab. The self-test suite passes 12/12 —
+  including a randomized chaos run that hits Raft with 1,200 crashes/restarts/partitions and
+  asserts all four safety invariants hold throughout, CRDT convergence after partition heal,
+  OR-Set add-wins, 2PC atomicity + the blocking window, and exact time-travel replay. Verified
+  with `node scripts/verify-project.mjs` — scope + conformance + lint + build all green.
