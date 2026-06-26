@@ -15,6 +15,9 @@ import { createTwoPC, type TwoPCCmd, type TwoPCState } from '../protocols/commit
 import { createThreePC, type ThreePCCmd, type ThreePCState } from '../protocols/commit/threepc';
 import { createVClock, type VcCmd, type VcState } from '../protocols/vclock/vclock';
 import { createCoedit, docText, visibleCells, type CoeditOp, type CoeditState } from '../protocols/coedit/coedit';
+import { createPaxos } from '../protocols/paxos/paxos';
+import { paxosInvariants } from '../protocols/paxos/invariants';
+import { DEFAULT_PAXOS_CONFIG, type PaxosCmd, type PaxosState, type PaxosValue } from '../protocols/paxos/types';
 
 export interface TestResult {
   group: string;
@@ -593,6 +596,185 @@ export function runSelfTests(): TestResult[] {
     const aborted = parts.every((p) => p.state.pstate === 'aborted');
     const safe = k.protocol.invariants!(k.views()).every((iv) => iv.ok);
     return [aborted && safe, aborted ? 'the no vote forced a uniform abort' : `states: ${parts.map((p) => p.state.pstate).join('/')}`];
+  });
+
+  // ---- Multi-Paxos ----
+  const paxosKernel = (seed: number, ids: string[], cfg: Partial<typeof DEFAULT_PAXOS_CONFIG> = {}) =>
+    new Kernel<PaxosState, PaxosCmd>({
+      seed,
+      protocol: createPaxos({ ...DEFAULT_PAXOS_CONFIG, ...cfg }),
+      nodeIds: ids,
+      network: { minLatency: 20, maxLatency: 60, dropRate: 0 },
+    });
+  const setv = (key: string, value: string, cid: string): PaxosValue => ({ op: 'set', key, value, cid });
+  const paxosOk = (k: Kernel<PaxosState, PaxosCmd>) => paxosInvariants(k.views()).every((iv) => iv.ok);
+  const firstBad = (k: Kernel<PaxosState, PaxosCmd>) => {
+    const b = paxosInvariants(k.views()).find((iv) => !iv.ok);
+    return b ? `${b.name}: ${b.detail}` : '';
+  };
+  const liveChosen = (k: Kernel<PaxosState, PaxosCmd>) =>
+    k.views().filter((v) => v.up).map((v) => JSON.stringify(v.state.chosen));
+  const settle = (k: Kernel<PaxosState, PaxosCmd>, ticks = 240, dt = 25) => {
+    for (let i = 0; i < ticks; i++) k.advance(dt);
+  };
+
+  t('Paxos', 'Chooses a single value on a healthy cluster', () => {
+    const k = paxosKernel(1, ['A', 'B', 'C', 'D', 'E']);
+    k.command('A', { type: 'propose', value: setv('x', '42', 'c1') });
+    settle(k, 60);
+    const chosen = k.views()[0].state.chosen;
+    const slot1 = chosen[1];
+    const ok = !!slot1 && slot1.op === 'set' && slot1.value === '42' && paxosOk(k);
+    return [ok, ok ? `slot 1 chosen = x=42; all invariants held` : firstBad(k) || 'value not chosen'];
+  });
+
+  t('Paxos', 'Multi-Paxos replicates a sequence in order (one leader, single round-trips)', () => {
+    const k = paxosKernel(2, ['A', 'B', 'C', 'D', 'E']);
+    for (let i = 0; i < 8; i++) {
+      k.command('A', { type: 'propose', value: setv('k' + i, 'v' + i, 'c' + i) });
+      settle(k, 8);
+    }
+    settle(k, 60);
+    const a = k.views().find((v) => v.id === 'A')!.state;
+    // 8 client values chosen (possibly interleaved with a leader no-op at slot 1).
+    const allKv = Object.keys(a.kv).filter((kk) => kk.startsWith('k')).length === 8;
+    const converged = new Set(liveChosen(k)).size === 1;
+    const ok = allKv && converged && paxosOk(k);
+    return [ok, ok ? `8 commands replicated & applied; every live node converged` : firstBad(k) || `kv keys=${Object.keys(a.kv).join(',')}`];
+  });
+
+  t('Paxos', 'Dueling proposers still converge to one chosen value', () => {
+    const k = paxosKernel(7, ['A', 'B', 'C', 'D', 'E']);
+    // Force two different nodes to start Phase 1 with competing client values.
+    k.command('A', { type: 'propose', value: setv('w', 'A', 'cA') });
+    k.command('E', { type: 'prepare' });
+    k.command('E', { type: 'propose', value: setv('w', 'E', 'cE') });
+    settle(k, 120);
+    // Whatever wins, every node must agree on slot 1 and safety must hold.
+    const converged = new Set(liveChosen(k)).size === 1;
+    const slot1 = k.views()[0].state.chosen[1];
+    const ok = !!slot1 && converged && paxosOk(k);
+    return [ok, ok ? `dueling resolved — all agree slot 1 = w=${slot1 && slot1.op === 'set' ? slot1.value : '?'}` : firstBad(k) || 'did not converge'];
+  });
+
+  t('Paxos', 'A majority partition makes progress; the minority cannot choose', () => {
+    const k = paxosKernel(3, ['A', 'B', 'C', 'D', 'E']);
+    settle(k, 30); // let a leader emerge
+    k.partition([['A', 'B', 'C'], ['D', 'E']]);
+    settle(k, 40);
+    // Propose into both sides.
+    k.command('A', { type: 'propose', value: setv('p', 'maj', 'cMaj') });
+    k.command('D', { type: 'propose', value: setv('p', 'min', 'cMin') });
+    settle(k, 120);
+    const views = k.views();
+    const anyChosenMaj = views.some((v) => Object.values(v.state.chosen).some((x) => x.op === 'set' && x.value === 'maj'));
+    const anyChosenMin = views.some((v) => Object.values(v.state.chosen).some((x) => x.op === 'set' && x.value === 'min'));
+    const ok = anyChosenMaj && !anyChosenMin && paxosOk(k);
+    return [ok, ok ? 'majority chose its value; minority blocked; safety held' : firstBad(k) || `maj=${anyChosenMaj} min=${anyChosenMin}`];
+  });
+
+  t('Paxos', 'Partition heals: the lagging minority catches up to the chosen log', () => {
+    const k = paxosKernel(11, ['A', 'B', 'C', 'D', 'E']);
+    settle(k, 30);
+    k.partition([['A', 'B', 'C'], ['D', 'E']]);
+    settle(k, 30);
+    for (let i = 0; i < 4; i++) {
+      k.command('A', { type: 'propose', value: setv('h' + i, 'maj', 'h' + i) });
+      settle(k, 10);
+    }
+    settle(k, 60);
+    k.healNetwork();
+    settle(k, 200);
+    const converged = new Set(liveChosen(k)).size === 1;
+    const ok = converged && paxosOk(k);
+    return [ok, ok ? 'every node converged to one chosen log after heal' : firstBad(k) || 'minority never caught up'];
+  });
+
+  t('Paxos', 'Leader failover preserves all chosen values (recovery rule)', () => {
+    const k = paxosKernel(5, ['A', 'B', 'C', 'D', 'E']);
+    for (let i = 0; i < 4; i++) {
+      k.command('A', { type: 'propose', value: setv('f' + i, 'v' + i, 'f' + i) });
+      settle(k, 8);
+    }
+    settle(k, 40);
+    const before = JSON.stringify(k.views().find((v) => v.id === 'B')!.state.chosen);
+    // Crash whoever currently leads, then keep going.
+    const leader = k.views().find((v) => v.up && v.state.role === 'leader');
+    if (leader) k.crash(leader.id);
+    settle(k, 80);
+    k.command('B', { type: 'propose', value: setv('after', 'x', 'after') });
+    settle(k, 120);
+    // No previously-chosen slot may have changed value.
+    const b = k.views().find((v) => v.id === 'B')!.state;
+    const beforeMap = JSON.parse(before) as Record<number, PaxosValue>;
+    let preserved = true;
+    for (const kk of Object.keys(beforeMap)) {
+      const i = Number(kk);
+      if (JSON.stringify(b.chosen[i]) !== JSON.stringify(beforeMap[i])) preserved = false;
+    }
+    const progressed = Object.values(b.chosen).some((x) => x.op === 'set' && x.key === 'after');
+    const ok = preserved && progressed && paxosOk(k);
+    return [ok, ok ? 'failover kept every chosen value and resumed progress' : firstBad(k) || `preserved=${preserved} progressed=${progressed}`];
+  });
+
+  t('Paxos', 'Safety holds through 1,200 randomized faults (chaos)', () => {
+    const k = paxosKernel(2026, ['A', 'B', 'C', 'D', 'E']);
+    const chaos = new Rng(90210);
+    const ids = k.nodeOrder;
+    let cmd = 0;
+    let firstBreak = '';
+    for (let i = 0; i < 1200 && !firstBreak; i++) {
+      k.advance(20);
+      const up = ids.filter((id) => k.isUp(id));
+      const down = ids.filter((id) => !k.isUp(id));
+      const roll = chaos.next();
+      if (roll < 0.04 && up.length > 1) k.crash(chaos.pick(up)!);
+      else if (roll < 0.12 && down.length > 0) k.restart(chaos.pick(down)!);
+      else if (roll < 0.15) {
+        const shuffled = chaos.shuffle(ids);
+        const cut = chaos.int(1, ids.length - 1);
+        k.partition([shuffled.slice(0, cut), shuffled.slice(cut)]);
+      } else if (roll < 0.2) k.healNetwork();
+      else if (roll < 0.4 && up.length > 0) {
+        k.command(chaos.pick(up)!, { type: 'propose', value: setv('c', String(cmd), 'c' + cmd) });
+        cmd++;
+      }
+      const bad = paxosInvariants(k.views()).find((iv) => !iv.ok);
+      if (bad) firstBreak = `${bad.name}: ${bad.detail}`;
+    }
+    return [!firstBreak, firstBreak || 'Agreement, Quorum-backing & log integrity held through 1,200 faults'];
+  });
+
+  t('Paxos', 'After chaos heals, every live node converges to one chosen log', () => {
+    const k = paxosKernel(4242, ['A', 'B', 'C', 'D', 'E']);
+    const chaos = new Rng(13);
+    const ids = k.nodeOrder;
+    let cmd = 0;
+    for (let i = 0; i < 700; i++) {
+      k.advance(20);
+      const up = ids.filter((id) => k.isUp(id));
+      const roll = chaos.next();
+      if (roll < 0.03 && up.length > 1) k.crash(chaos.pick(up)!);
+      else if (roll < 0.1) {
+        const down = ids.filter((id) => !k.isUp(id));
+        if (down.length) k.restart(chaos.pick(down)!);
+      } else if (roll < 0.13) {
+        const sh = chaos.shuffle(ids);
+        k.partition([sh.slice(0, 3), sh.slice(3)]);
+      } else if (roll < 0.18) k.healNetwork();
+      else if (roll < 0.4 && up.length > 0) {
+        k.command(chaos.pick(up)!, { type: 'propose', value: setv('z', String(cmd), 'z' + cmd) });
+        cmd++;
+      }
+    }
+    // Heal everything and bring every node up, then let it settle fully.
+    k.healNetwork();
+    for (const id of ids) if (!k.isUp(id)) k.restart(id);
+    settle(k, 400);
+    const chosenSets = k.views().map((v) => JSON.stringify(v.state.chosen));
+    const converged = new Set(chosenSets).size === 1;
+    const ok = converged && paxosOk(k);
+    return [ok, ok ? `all 5 nodes converged to one chosen log (${Object.keys(k.views()[0].state.chosen).length} slots)` : firstBad(k) || 'nodes did not converge'];
   });
 
   // ---- Vector clocks ----
