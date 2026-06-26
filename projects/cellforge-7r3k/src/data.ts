@@ -348,6 +348,14 @@ function analysisLab(): WorkbookSnapshot {
   set('F12', '=PIVOTBY(A4:A15, B4:B15, D4:D15, SUM)')
   fmt('F11', 'F11', { bold: true })
 
+  // A structured table over the dataset — reference columns by name, no A1 ranges.
+  wb.defineTable('Deals', { top: 2, left: 0, bottom: 3 + rows.length - 1, right: 3 }, id)
+  set('F16', 'Structured table refs over Deals[…]')
+  fmt('F16', 'F16', { bold: true })
+  set('F17', '="Σ Deals[Sales] = " & SUM(Deals[Sales])')
+  set('F18', '="rows = " & ROWS(Deals[#Data]) & " · avg = " & ROUND(AVERAGE(Deals[Sales]),1)')
+  fmt('F17', 'F18', { color: '#97a0b8' })
+
   // Recursive lambdas, defined as workbook names (the depth guard stops runaways).
   wb.setName('FACT', 'LAMBDA(n, IF(n<=1, 1, n*FACT(n-1)))', id)
   wb.setName('FIB', 'LAMBDA(n, IF(n<2, n, FIB(n-1)+FIB(n-2)))', id)

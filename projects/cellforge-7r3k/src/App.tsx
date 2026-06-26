@@ -25,6 +25,7 @@ import GoalSeek from './components/GoalSeek'
 import PivotBuilder from './components/PivotBuilder'
 import DataTableDialog from './components/DataTable'
 import Solver from './components/Solver'
+import TableManager from './components/TableManager'
 
 const STORAGE_KEY = 'cellforge.workbook.v2'
 const LEGACY_KEY = 'cellforge.workbook.v1'
@@ -73,6 +74,7 @@ export default function App() {
   const [showPivot, setShowPivot] = useState(false)
   const [showDataTable, setShowDataTable] = useState(false)
   const [showSolver, setShowSolver] = useState(false)
+  const [showTables, setShowTables] = useState(false)
 
   const containerRef = useRef<HTMLDivElement | null>(null)
   const clipRef = useRef<ClipData | null>(null)
@@ -393,6 +395,37 @@ export default function App() {
     bump()
   }
 
+  // ---- structured tables ----
+  const defineTable = (name: string, range: string): boolean => {
+    const m = /^([A-Za-z]+\d+)\s*:\s*([A-Za-z]+\d+)$/.exec(range.trim())
+    if (!m) return false
+    const a = parseRef(m[1])
+    const b = parseRef(m[2])
+    if (!a || !b) return false
+    checkpoint()
+    const ok = wb.defineTable(
+      name,
+      { top: Math.min(a.row, b.row), left: Math.min(a.col, b.col), bottom: Math.max(a.row, b.row), right: Math.max(a.col, b.col) },
+      sheetId,
+    )
+    bump()
+    return ok
+  }
+  const deleteTable = (name: string) => {
+    checkpoint()
+    wb.deleteTable(name)
+    bump()
+  }
+  const gotoRange = (range: string) => {
+    const m = /^([A-Za-z]+\d+)\s*:\s*([A-Za-z]+\d+)$/.exec(range.trim())
+    if (!m) return
+    const a = parseRef(m[1])
+    const b = parseRef(m[2])
+    if (!a || !b) return
+    setAnchor({ row: a.row, col: a.col })
+    setActive({ row: b.row, col: b.col })
+  }
+
   // ---- find & replace ----
   const applyReplacements = (entries: Array<{ coord: Coord; raw: string }>) => {
     if (!entries.length) return
@@ -651,6 +684,7 @@ export default function App() {
           onPivot={() => setShowPivot(true)}
           onDataTable={() => setShowDataTable(true)}
           onSolver={() => setShowSolver(true)}
+          onTables={() => setShowTables(true)}
         />
       </header>
 
@@ -897,6 +931,21 @@ export default function App() {
           }}
           onClose={() => {
             setShowSolver(false)
+            refocus()
+          }}
+        />
+      ) : null}
+
+      {showTables ? (
+        <TableManager
+          tables={wb.listTables()}
+          sheets={wb.sheetList()}
+          initialRange={selectionA1()}
+          onDefine={defineTable}
+          onDelete={deleteTable}
+          onGoto={gotoRange}
+          onClose={() => {
+            setShowTables(false)
             refocus()
           }}
         />

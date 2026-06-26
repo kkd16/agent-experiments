@@ -1292,3 +1292,9 @@ select.name-in {
 .sv-creport.bad {
   color: #ff8a8a;
 }
+
+/* ---- v5: Structured tables manager -------------------------------------- */
+.tbl-row .linkref {
+  justify-self: start;
+  text-align: left;
+}

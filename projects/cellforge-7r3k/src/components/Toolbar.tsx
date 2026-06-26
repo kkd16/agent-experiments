@@ -21,6 +21,7 @@ interface Props {
   onPivot: () => void
   onDataTable: () => void
   onSolver: () => void
+  onTables: () => void
 }
 
 export default function Toolbar(props: Props) {
@@ -56,6 +57,9 @@ export default function Toolbar(props: Props) {
         </button>
         <button className="btn" onClick={props.onPivot} title="Build a pivot table over the selection">
           ⊞ Pivot
+        </button>
+        <button className="btn" onClick={props.onTables} title="Define a structured table (Table[Column] references)">
+          ▤ Tables
         </button>
         <button className="btn" onClick={props.onOpenNames} title="Named ranges">
           Names

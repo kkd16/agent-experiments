@@ -8,6 +8,9 @@ import type { ErrorCode } from './values'
 export type BinaryOp = '+' | '-' | '*' | '/' | '^' | '&' | '=' | '<>' | '<' | '>' | '<=' | '>='
 export type UnaryOp = '-' | '+'
 
+/** Which part of a structured table a `Table[…]` reference selects. */
+export type TableSelector = 'column' | 'thisrow' | 'all' | 'data' | 'headers' | 'totals'
+
 export type Node =
   | { type: 'num'; value: number }
   | { type: 'str'; value: string }
@@ -18,6 +21,8 @@ export type Node =
   // Spilled-range reference (`A1#`): the whole dynamic array anchored at `ref`.
   | { type: 'spillref'; ref: CellRef }
   | { type: 'name'; name: string }
+  // Structured table reference: `Table[Column]`, `Table[#All]`, `Table[@Column]`, …
+  | { type: 'table'; table: string; selector: TableSelector; column?: string }
   | { type: 'unary'; op: UnaryOp; operand: Node }
   | { type: 'percent'; operand: Node }
   | { type: 'binary'; op: BinaryOp; left: Node; right: Node }

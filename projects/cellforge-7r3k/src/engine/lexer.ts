@@ -10,6 +10,7 @@ export type TokenType =
   | 'ref'
   | 'func'
   | 'name' // TRUE/FALSE, error literals, defined names, anything alphabetic that isn't a ref or call
+  | 'tableref' // a structured table reference, e.g. Sales[Amount] — value carries the whole text
   | 'sheetname' // a quoted sheet name, e.g. 'Q3 Data' (always followed by `!`)
   | 'op'
   | 'lparen'
@@ -128,6 +129,27 @@ export function tokenize(input: string): Token[] {
       if (!m) throw new LexError(`unexpected character "${ch}" at ${i}`)
       const word = m[0]
       const next = peekNonSpace(i + word.length)
+      // A structured table reference: `Name[…]` with the `[` immediately after the name.
+      // Read the balanced bracket group (one level of nesting, so `Sales[[Net Amount]]`
+      // and `Sales[@Region]` both lex) and carry the whole text on one token.
+      if (input[i + word.length] === '[' && !REF_SHAPE.test(word)) {
+        let j = i + word.length
+        let depth = 0
+        for (; j < n; j++) {
+          if (input[j] === '[') depth++
+          else if (input[j] === ']') {
+            depth--
+            if (depth === 0) {
+              j++
+              break
+            }
+          }
+        }
+        if (depth !== 0) throw new LexError('unbalanced [ ] in a table reference')
+        tokens.push({ type: 'tableref', value: input.slice(i, j), pos: i })
+        i = j
+        continue
+      }
       if (next === '(') {
         tokens.push({ type: 'func', value: word.toUpperCase(), pos: i })
       } else if (REF_SHAPE.test(word)) {

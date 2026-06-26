@@ -39,6 +39,14 @@ export interface SheetMeta {
   name: string
 }
 
+/** A structured table: a named rectangular region whose first row is the header. */
+export interface TableDef {
+  /** Display name (original case). */
+  name: string
+  sheetId: string
+  region: RangeBox
+}
+
 export interface DefinedName {
   /** Display name (original case). */
   name: string
@@ -92,6 +100,7 @@ export class Workbook {
   private nextSheetNum = 1
   private nextChartNum = 1
   private names = new Map<string, DefinedName>() // UPPERCASE name -> definition
+  private tables = new Map<string, TableDef>() // UPPERCASE name -> table region
 
   private values = new Map<string, Scalar | SparklineValue>() // gkey -> value
   private precedents = new Map<string, Set<string>>() // gkey -> precedent gkeys
@@ -192,6 +201,7 @@ export class Workbook {
     const at = this.sheets.findIndex((s) => s.id === id)
     if (at < 0) return false
     this.sheets.splice(at, 1)
+    for (const [k, t] of this.tables) if (t.sheetId === id) this.tables.delete(k)
     if (this.activeId === id) this.activeId = this.sheets[Math.max(0, at - 1)].id
     this.recompute()
     return true
@@ -366,6 +376,49 @@ export class Workbook {
     this.recompute()
   }
 
+  // ---- structured tables ----------------------------------------------------
+
+  listTables(): TableDef[] {
+    return [...this.tables.values()].sort((a, b) => a.name.localeCompare(b.name))
+  }
+
+  /** Define (or redefine) a table over a region whose first row holds the headers.
+   *  The name must be a legal identifier and not collide with a defined name. */
+  defineTable(name: string, region: RangeBox, sheetId?: string): boolean {
+    if (!Workbook.isValidName(name)) return false
+    if (this.names.has(name.toUpperCase())) return false
+    this.tables.set(name.toUpperCase(), { name, sheetId: sheetId ?? this.activeId, region })
+    this.recompute()
+    return true
+  }
+
+  deleteTable(name: string): void {
+    this.tables.delete(name.toUpperCase())
+    this.recompute()
+  }
+
+  private tableByName(upper: string): TableDef | undefined {
+    return this.tables.get(upper)
+  }
+
+  /** The header label of a cell, read from its raw text (headers are literals) — used to
+   *  map a table column name to its position both when building the graph and at eval. */
+  private headerLabel(sheetId: string, row: number, col: number): string {
+    const rec = this.sheets.find((s) => s.id === sheetId)?.cells.get(coordKey(row, col))
+    if (!rec) return ''
+    const raw = rec.raw.startsWith("'") ? rec.raw.slice(1) : rec.raw
+    return raw.trim()
+  }
+
+  /** 0-based offset of a column within a table, matching its header case-insensitively. */
+  private tableColumnIndex(def: TableDef, label: string): number {
+    const want = label.trim().toLowerCase()
+    for (let c = def.region.left; c <= def.region.right; c++) {
+      if (this.headerLabel(def.sheetId, def.region.top, c).toLowerCase() === want) return c - def.region.left
+    }
+    return -1
+  }
+
   // ---- the recompute engine -------------------------------------------------
 
   private recordAt(gk: string): CellRecord | undefined {
@@ -427,7 +480,7 @@ export class Workbook {
       const { sheetId } = ungkey(gk)
       const rec = this.recordAt(gk)!
       const precedentKeys = new Set<string>()
-      this.collectPrecedents(rec.ast!, sheetId, precedentKeys, new Set())
+      this.collectPrecedents(rec.ast!, sheetId, precedentKeys, new Set(), keyToCoord(ungkey(gk).cellKey))
       this.precedents.set(gk, precedentKeys)
       for (const p of precedentKeys) {
         if (!this.dependents.has(p)) this.dependents.set(p, new Set())
@@ -784,14 +837,50 @@ export class Workbook {
         const dn = this.names.get(upper)
         return dn?.ast ? { ast: dn.ast, scopeSheet: dn.scopeSheetId } : null
       },
+      resolveTable: (upper) => {
+        const def = this.tableByName(upper)
+        if (!def) return null
+        return {
+          sheetId: def.sheetId,
+          top: def.region.top,
+          left: def.region.left,
+          bottom: def.region.bottom,
+          right: def.region.right,
+          columnIndex: (label: string) => this.tableColumnIndex(def, label),
+        }
+      },
     }
   }
 
   /** Walk an AST, resolving every reference (sheet qualifiers + defined names) into
    *  the global-key set of cells it depends on. `nameStack` guards against a name
    *  that refers to itself, directly or transitively. */
-  private collectPrecedents(node: Node, homeSheetId: string, into: Set<string>, nameStack: Set<string>): void {
+  private collectPrecedents(node: Node, homeSheetId: string, into: Set<string>, nameStack: Set<string>, homeCoord?: Coord): void {
     switch (node.type) {
+      case 'table': {
+        const def = this.tableByName(node.table.toUpperCase())
+        if (!def) break
+        const { region, sheetId } = def
+        const dataTop = region.top + 1
+        const addCells = (top: number, bottom: number, left: number, right: number) => {
+          for (let r = Math.max(0, top); r <= Math.min(this.rows - 1, bottom); r++)
+            for (let c = Math.max(0, left); c <= Math.min(this.cols - 1, right); c++) into.add(gkey(sheetId, coordKey(r, c)))
+        }
+        if (node.selector === 'all') addCells(region.top, region.bottom, region.left, region.right)
+        else if (node.selector === 'headers') addCells(region.top, region.top, region.left, region.right)
+        else if (node.selector === 'data' || node.selector === 'totals') addCells(dataTop, region.bottom, region.left, region.right)
+        else {
+          const off = this.tableColumnIndex(def, node.column ?? '')
+          if (off < 0) break
+          const col = region.left + off
+          if (node.selector === 'thisrow') {
+            const r = homeCoord?.row
+            if (r !== undefined && r >= dataTop && r <= region.bottom) addCells(r, r, col, col)
+            else addCells(dataTop, region.bottom, col, col)
+          } else addCells(dataTop, region.bottom, col, col)
+        }
+        break
+      }
       case 'ref':
       case 'spillref': {
         const sid = node.ref.sheet ? this.sheetByName(node.ref.sheet)?.id : homeSheetId
@@ -816,24 +905,24 @@ export class Workbook {
         if (dn?.ast) {
           const next = new Set(nameStack)
           next.add(upper)
-          this.collectPrecedents(dn.ast, dn.scopeSheetId, into, next)
+          this.collectPrecedents(dn.ast, dn.scopeSheetId, into, next, homeCoord)
         }
         break
       }
       case 'unary':
       case 'percent':
-        this.collectPrecedents(node.operand, homeSheetId, into, nameStack)
+        this.collectPrecedents(node.operand, homeSheetId, into, nameStack, homeCoord)
         break
       case 'binary':
-        this.collectPrecedents(node.left, homeSheetId, into, nameStack)
-        this.collectPrecedents(node.right, homeSheetId, into, nameStack)
+        this.collectPrecedents(node.left, homeSheetId, into, nameStack, homeCoord)
+        this.collectPrecedents(node.right, homeSheetId, into, nameStack, homeCoord)
         break
       case 'call':
-        for (const a of node.args) this.collectPrecedents(a, homeSheetId, into, nameStack)
+        for (const a of node.args) this.collectPrecedents(a, homeSheetId, into, nameStack, homeCoord)
         break
       case 'apply':
-        this.collectPrecedents(node.fn, homeSheetId, into, nameStack)
-        for (const a of node.args) this.collectPrecedents(a, homeSheetId, into, nameStack)
+        this.collectPrecedents(node.fn, homeSheetId, into, nameStack, homeCoord)
+        for (const a of node.args) this.collectPrecedents(a, homeSheetId, into, nameStack, homeCoord)
         break
       default:
         break
@@ -876,6 +965,7 @@ export class Workbook {
         charts: s.charts.map((c) => ({ ...c })),
       })),
       names: [...this.names.values()].map((n) => ({ name: n.name, formula: n.formula, scopeSheetId: n.scopeSheetId })),
+      tables: [...this.tables.values()].map((t) => ({ name: t.name, sheetId: t.sheetId, region: { ...t.region } })),
     }
   }
 
@@ -897,6 +987,7 @@ export class Workbook {
         return [n.name.toUpperCase(), { name: n.name, scopeSheetId: n.scopeSheetId, ...dn }]
       }),
     )
+    this.tables = new Map((snap.tables ?? []).map((t) => [t.name.toUpperCase(), { name: t.name, sheetId: t.sheetId, region: { ...t.region } }]))
     this.recompute()
   }
 
@@ -948,6 +1039,7 @@ export interface WorkbookSnapshot {
     charts: ChartSpec[]
   }>
   names: Array<{ name: string; formula: string; scopeSheetId: string }>
+  tables?: Array<{ name: string; sheetId: string; region: RangeBox }>
 }
 
 // ---- Solver public types -----------------------------------------------------
