@@ -22,6 +22,17 @@ import { createChord } from '../protocols/chord/chord';
 import { chordInvariants } from '../protocols/chord/invariants';
 import { DEFAULT_CHORD_CONFIG, type ChordCmd, type ChordState } from '../protocols/chord/types';
 import { ownerOf, hashId } from '../protocols/chord/ring';
+import { createPbft } from '../protocols/pbft/pbft';
+import { pbftInvariants } from '../protocols/pbft/invariants';
+import {
+  DEFAULT_PBFT_CONFIG,
+  faultBudget,
+  quorum,
+  type PbftCmd,
+  type PbftState,
+  type ClientRequest,
+  type FaultMode,
+} from '../protocols/pbft/types';
 
 export interface TestResult {
   group: string;
@@ -868,6 +879,188 @@ export function runSelfTests(): TestResult[] {
     const hashed = hashId('A', M);
     const ok = distinct && converged && typeof hashed === 'number';
     return [ok, ok ? `5 distinct ids, ring converged` : `distinct=${distinct} converged=${converged}`];
+  });
+
+  // ---- PBFT (Byzantine fault tolerance) ----
+  const pbftKernel = (seed: number, ids: string[], drop = 0) =>
+    new Kernel<PbftState, PbftCmd>({
+      seed,
+      protocol: createPbft(DEFAULT_PBFT_CONFIG),
+      nodeIds: ids,
+      network: { minLatency: 20, maxLatency: 60, dropRate: drop },
+    });
+  const setReq = (key: string, value: string, cid: string): ClientRequest => ({ cid, op: { op: 'set', key, value } });
+  const clientReq = (k: Kernel<PbftState, PbftCmd>, r: ClientRequest) => {
+    for (const id of k.nodeOrder) if (k.isUp(id)) k.command(id, { type: 'request', request: r });
+  };
+  const faulty = (k: Kernel<PbftState, PbftCmd>, id: string, mode: FaultMode) => k.command(id, { type: 'set-fault', mode });
+  const pbftSettle = (k: Kernel<PbftState, PbftCmd>, ticks = 200, dt = 20) => {
+    for (let i = 0; i < ticks; i++) k.advance(dt);
+  };
+  const honestViews = (k: Kernel<PbftState, PbftCmd>) => k.views().filter((v) => v.state.fault === 'honest');
+  const pbftOk = (k: Kernel<PbftState, PbftCmd>) => pbftInvariants(k.views()).every((iv) => iv.ok);
+  const pbftBad = (k: Kernel<PbftState, PbftCmd>) =>
+    pbftInvariants(k.views()).filter((iv) => !iv.ok).map((iv) => `${iv.name}: ${iv.detail}`).join(' | ');
+
+  t('PBFT', 'Quorum sizes: N=3f+1 with 2f+1 quorums', () => {
+    const ok = faultBudget(4) === 1 && quorum(4) === 3 && faultBudget(7) === 2 && quorum(7) === 5 && faultBudget(10) === 3 && quorum(10) === 7;
+    return [ok, ok ? 'f=⌊(N-1)/3⌋ and quorum=2f+1 for N=4,7,10' : 'quorum arithmetic wrong'];
+  });
+
+  t('PBFT', 'Healthy 4-node cluster executes & every replica agrees', () => {
+    const k = pbftKernel(1, ['A', 'B', 'C', 'D']);
+    for (let i = 0; i < 5; i++) {
+      clientReq(k, setReq('k' + i, 'v' + i, 'c' + i));
+      pbftSettle(k, 30);
+    }
+    pbftSettle(k, 80);
+    const exec = honestViews(k).map((v) => v.state.lastExec);
+    const kvs = honestViews(k).map((v) => JSON.stringify(v.state.kv));
+    const ok = exec.every((e) => e === 5) && new Set(kvs).size === 1 && pbftOk(k);
+    return [ok, ok ? `5 requests committed & applied; all replicas agree` : pbftBad(k) || `exec=${exec.join(',')}`];
+  });
+
+  t('PBFT', 'A silent primary triggers a view change and the cluster recovers', () => {
+    const k = pbftKernel(3, ['A', 'B', 'C', 'D']);
+    faulty(k, 'A', 'silent'); // A is the primary of view 0
+    clientReq(k, setReq('y', '9', 'cy'));
+    pbftSettle(k, 200);
+    const honest = honestViews(k);
+    const exec = honest.map((v) => v.state.lastExec);
+    const newView = honest[0].state.view > 0;
+    const ok = exec.every((e) => e === 1) && newView && pbftOk(k);
+    return [ok, ok ? `view changed to v${honest[0].state.view}; request executed despite the dead primary` : pbftBad(k) || `exec=${exec.join(',')}`];
+  });
+
+  t('PBFT', 'An EQUIVOCATING primary cannot break agreement', () => {
+    const k = pbftKernel(7, ['A', 'B', 'C', 'D']);
+    faulty(k, 'A', 'equivocate'); // sends conflicting orders for the same seq
+    clientReq(k, setReq('w', 'real', 'cw'));
+    pbftSettle(k, 300);
+    const honest = honestViews(k);
+    const kvs = honest.map((v) => JSON.stringify(v.state.kv));
+    // No honest replica may have executed the forged value, and all must agree.
+    const noForgery = honest.every((v) => Object.values(v.state.kv).every((val) => !val.includes('✗')));
+    const ok = new Set(kvs).size === 1 && noForgery && pbftOk(k);
+    return [ok, ok ? `honest replicas ignored the equivocation and converged to ${kvs[0]}` : pbftBad(k) || `kvs=${kvs.join(' / ')}`];
+  });
+
+  t('PBFT', 'A lying (conflicting) backup is ignored', () => {
+    const k = pbftKernel(11, ['A', 'B', 'C', 'D']);
+    faulty(k, 'D', 'conflict'); // votes for a corrupted digest
+    for (let i = 0; i < 4; i++) {
+      clientReq(k, setReq('k' + i, 'v' + i, 'c' + i));
+      pbftSettle(k, 30);
+    }
+    pbftSettle(k, 80);
+    const exec = honestViews(k).map((v) => v.state.lastExec);
+    const ok = exec.every((e) => e === 4) && pbftOk(k);
+    return [ok, ok ? `the lying backup's votes never counted; honest replicas committed all 4` : pbftBad(k) || `exec=${exec.join(',')}`];
+  });
+
+  t('PBFT', '7-node cluster tolerates 2 simultaneous Byzantine faults', () => {
+    const k = pbftKernel(13, ['A', 'B', 'C', 'D', 'E', 'F', 'G']);
+    faulty(k, 'A', 'silent');
+    faulty(k, 'G', 'conflict');
+    for (let i = 0; i < 3; i++) {
+      clientReq(k, setReq('k' + i, 'v' + i, 'c' + i));
+      pbftSettle(k, 40);
+    }
+    pbftSettle(k, 200);
+    const honest = honestViews(k);
+    const kvs = honest.map((v) => JSON.stringify(v.state.kv));
+    const allKeys = honest.every((v) => Object.keys(v.state.kv).length === 3);
+    const ok = new Set(kvs).size === 1 && allKeys && pbftOk(k);
+    return [ok, ok ? `f=2 faults tolerated; all honest replicas converged with 3 keys` : pbftBad(k) || `kvs=${new Set(kvs).size}`];
+  });
+
+  t('PBFT', 'A restarted replica catches up via state gossip', () => {
+    const k = pbftKernel(31, ['A', 'B', 'C', 'D']);
+    k.crash('D');
+    for (let i = 0; i < 6; i++) {
+      clientReq(k, setReq('k' + i, 'v' + i, 'c' + i));
+      pbftSettle(k, 30);
+    }
+    pbftSettle(k, 60);
+    k.restart('D');
+    pbftSettle(k, 200);
+    const D = k.views().find((v) => v.id === 'D')!.state;
+    const other = k.views().find((v) => v.id === 'A')!.state;
+    const ok = JSON.stringify(D.kv) === JSON.stringify(other.kv) && D.lastExec === other.lastExec && pbftOk(k);
+    return [ok, ok ? `the restarted replica rebuilt its state to #${D.lastExec} from f+1 matching reports` : pbftBad(k) || `D@${D.lastExec} vs A@${other.lastExec}`];
+  });
+
+  t('PBFT', 'Agreement holds through 1,500 faults with an equivocating primary', () => {
+    const k = pbftKernel(2026, ['A', 'B', 'C', 'D']);
+    faulty(k, 'A', 'equivocate'); // 1 Byzantine = f for N=4
+    const chaos = new Rng(90210);
+    let cmd = 0;
+    let firstBreak = '';
+    for (let i = 0; i < 1500 && !firstBreak; i++) {
+      k.advance(20);
+      const roll = chaos.next();
+      const up = k.nodeOrder.filter((id) => k.isUp(id) && id !== 'A');
+      const down = k.nodeOrder.filter((id) => !k.isUp(id));
+      if (roll < 0.03 && up.length > 2) k.crash(chaos.pick(up)!);
+      else if (roll < 0.09 && down.length > 0) k.restart(chaos.pick(down)!);
+      else if (roll < 0.12) {
+        const sh = chaos.shuffle(k.nodeOrder);
+        k.partition([sh.slice(0, 2), sh.slice(2)]);
+      } else if (roll < 0.16) k.healNetwork();
+      else if (roll < 0.4) {
+        clientReq(k, setReq('c', String(cmd), 'c' + cmd));
+        cmd++;
+      }
+      // Only the genuine safety invariants must hold (Progress is informational).
+      const bad = pbftInvariants(k.views()).filter((iv) => iv.name !== 'Progress').find((iv) => !iv.ok);
+      if (bad) firstBreak = `${bad.name}: ${bad.detail}`;
+    }
+    return [!firstBreak, firstBreak || 'Agreement, total-order, certified-execution & fault-budget held through 1,500 Byzantine faults'];
+  });
+
+  t('PBFT', 'After chaos heals, honest replicas converge to one log', () => {
+    const k = pbftKernel(555, ['A', 'B', 'C', 'D']);
+    faulty(k, 'B', 'conflict'); // a fixed Byzantine backup (= f)
+    const chaos = new Rng(424242);
+    let cmd = 0;
+    for (let i = 0; i < 900; i++) {
+      k.advance(20);
+      const roll = chaos.next();
+      const up = k.nodeOrder.filter((id) => k.isUp(id) && id !== 'B');
+      const down = k.nodeOrder.filter((id) => !k.isUp(id));
+      if (roll < 0.03 && up.length > 2) k.crash(chaos.pick(up)!);
+      else if (roll < 0.1 && down.length > 0) k.restart(chaos.pick(down)!);
+      else if (roll < 0.13) {
+        const sh = chaos.shuffle(k.nodeOrder);
+        k.partition([sh.slice(0, 2), sh.slice(2)]);
+      } else if (roll < 0.17) k.healNetwork();
+      else if (roll < 0.4) {
+        clientReq(k, setReq('z', String(cmd), 'z' + cmd));
+        cmd++;
+      }
+    }
+    k.healNetwork();
+    for (const id of k.nodeOrder) if (!k.isUp(id)) k.restart(id);
+    pbftSettle(k, 500);
+    const honest = honestViews(k).filter((v) => v.up);
+    const kvs = honest.map((v) => JSON.stringify(v.state.kv));
+    const ok = new Set(kvs).size === 1 && pbftOk(k);
+    return [ok, ok ? `all live honest replicas converged after the churn (≤ #${Math.max(...honest.map((v) => v.state.lastExec))})` : pbftBad(k) || `sets=${new Set(kvs).size}`];
+  });
+
+  t('PBFT', 'Determinism: same seed & schedule ⇒ byte-identical run', () => {
+    const run = () => {
+      const k = pbftKernel(99, ['A', 'B', 'C', 'D']);
+      faulty(k, 'A', 'equivocate');
+      for (let i = 0; i < 6; i++) {
+        clientReq(k, setReq('k' + i, 'v' + i, 'c' + i));
+        pbftSettle(k, 25);
+      }
+      pbftSettle(k, 80);
+      return k.serialize();
+    };
+    const ok = run() === run();
+    return [ok, ok ? 'two independent Byzantine runs produced identical serialized state' : 'runs diverged'];
   });
 
   // ---- Vector clocks ----

@@ -37,7 +37,7 @@ src/sim/        the protocol-agnostic kernel
   kernel.ts      the engine: schedule, deliver, timers, crash, snapshots, replay
   network.ts     latency/jitter/drop/partition model
 src/protocols/  one folder per protocol, each implementing Protocol<S,Cmd>
-  raft/  crdt/  gossip/  vclock/  commit/
+  raft/  paxos/  pbft/  chord/  crdt/  coedit/  gossip/  vclock/  commit/
 src/ui/         shared visual components (network canvas, timeline, panels, controls)
 src/labs/       one lab screen per protocol, wired to the kernel via a React hook
 src/lib/        small helpers (formatting, colors, geometry, self-test runner)
@@ -170,11 +170,59 @@ design — implemented for real on the same kernel, with a purpose-built ring vi
       to the true owner for a sweep of keys; lookups stay short (≤ m hops); the ring heals after a node
       crashes (re-converges + lookups stay correct); collision-free id placement.
 
+### PBFT lab (Byzantine fault tolerance) — NEW
+The first lab to drop the crash-fault assumption: up to **f** replicas can be *Byzantine* (silent,
+two-faced, or actively lying) and a cluster of **N = 3f+1** still agrees on one total order. Three
+new files (`protocols/pbft/{types,pbft,invariants}.ts`) plus a lab.
+- [x] **Three-phase agreement** — `PRE-PREPARE` (the primary orders a request at a sequence number),
+      `PREPARE` (backups echo their acceptance), `COMMIT` (irrevocable once 2f+1 agree); *prepared*
+      (pre-prepare + 2f matching prepares) gives order **within** a view, *committed* (2f+1 commits)
+      gives order **across** views. Votes are stored as `from → digest`, so out-of-order arrivals and
+      Byzantine digest mismatches are both handled by simply counting matches.
+- [x] **Quorum intersection** — the whole safety argument: two 2f+1 quorums share an honest replica
+      that never vouches for two digests at one (view, seq), so two conflicting requests can't both
+      gather a quorum. The lab makes this *visible*.
+- [x] **In-order execution** to a replicated KV state machine, with a durable `executed` log.
+- [x] **View change / NEW-VIEW** — when the primary is faulty, backups time out, broadcast
+      `VIEW-CHANGE` with their prepared certificates, and the next primary's `NEW-VIEW` re-proposes
+      the highest-view prepared request per slot (no-op for gaps) so nothing any honest replica may
+      have executed is lost. Pending requests are folded into NEW-VIEW so re-establishing service is
+      atomic (no pre-prepare can race ahead of the view and be dropped). An f+1 "early join" speeds up
+      Byzantine-liveness, and a `newview` timer escalates if a new primary is also faulty.
+- [x] **Byzantine fault modes** (toggled live per node): `silent` (a dead-looking node — a silent
+      primary forces a view change), `equivocate` (a malicious primary that sends conflicting requests
+      for the same sequence number — the canonical ordering attack), and `conflict` (a backup that
+      votes for a corrupted digest — its votes never count). Messages are authenticated (the kernel
+      stamps `from`), so a faulty node can lie about its own messages' content but never forge another
+      node's — exactly PBFT's model.
+- [x] **Safe state catch-up** — a lagging or restarted replica rejoins via Status/Catchup gossip:
+      it adopts a decision once f+1 distinct replicas report the same (seq, digest) — at least one is
+      honest, so the digest is the agreed one. No full state copy needed.
+- [x] **Live safety invariants** (evaluated over the *honest* replicas — a Byzantine replica's state
+      is untrustworthy by definition): **Fault budget** (faulty ≤ f, the precondition), **Agreement**
+      (no two honest replicas execute different requests at one sequence number — the headline),
+      **Total-order execution** (gap-free prefix; KV = prefix replayed) and **Certified execution**
+      (every execution backed by a 2f+1 commit quorum *or* an f+1 catch-up certificate). Plus a
+      friendly Progress line.
+- [x] **PBFT lab UI** (`labs/PbftLab.tsx`) — network canvas coloured by role (primary/backup) and
+      fault (Byzantine nodes glow red/orange), each node showing its view / view-change state / exec
+      watermark; a one-click "Corrupt primary" button; a per-node fault-mode switch + crash/restart;
+      an executed-log panel, KV view and replica inspector (per-slot phase: pre-prepared → prepared →
+      committed); curated scenarios incl. **"Beyond f (unsafe!)"** that deliberately exceeds the fault
+      budget so you can watch the boundary of the theorem; deep links.
+- [x] **Self-tests** (10) — quorum arithmetic; healthy execution + convergence; a silent primary
+      recovering via view change; an **equivocating primary that cannot break agreement**; a lying
+      backup ignored; a 7-node cluster tolerating 2 simultaneous faults; a restarted replica catching
+      up via gossip; **Agreement holding through 1,500 faults with an equivocating primary**;
+      post-chaos convergence; and determinism (same seed ⇒ byte-identical Byzantine run).
+
 ### Future labs / ideas (backlog)
 - [ ] **Dynamo-style quorums** — tunable (N, R, W), sloppy quorums + hinted handoff, read-repair,
       and a vector-clock conflict view, with the R+W>N consistency invariant.
-- [ ] **PBFT** — practical Byzantine fault tolerance (pre-prepare/prepare/commit), tolerating ⌊(n−1)/3⌋
-      liars, with equivocation visualised.
+- [ ] **PBFT checkpoints + garbage collection** — stable 2f+1-certified checkpoints to bound the log
+      and give Byzantine-robust state transfer (the current catch-up is f+1-report gossip).
+- [ ] **PBFT view-change attacks** — extend the Byzantine modes to forge view-change certificates,
+      then add the NEW-VIEW validation that defeats them.
 - [ ] **Hybrid Logical Clocks** in the vector-clock lab — one-line causal timestamps that stay close
       to physical time.
 - [ ] **EPaxos / leaderless Paxos** — dependency graphs and out-of-order commit.
@@ -270,3 +318,32 @@ design — implemented for real on the same kernel, with a purpose-built ring vi
   Verified the full gate (scope + conformance + lint + build) and drove the built app in headless
   Chromium — the ring converges (health HOLDING), a key lookup routes and resolves, and after crashing
   a node the ring re-converges back to HOLDING with lookups still correct.
+- 2026-06-26 (claude): **added a full PBFT (Practical Byzantine Fault Tolerance) lab** — the headline
+  new capability and the first lab to abandon the crash-fault model: replicas can now be *Byzantine*
+  (malicious). Three new files (`protocols/pbft/{types,pbft,invariants}.ts`) + `labs/PbftLab.tsx`,
+  all on the existing kernel. Implemented the real protocol: the three-phase agreement
+  (PRE-PREPARE → PREPARE → COMMIT) with *prepared* (pre-prepare + 2f prepares) and *committed* (2f+1
+  commits) certificates; in-order execution to a replicated KV; and the **VIEW-CHANGE / NEW-VIEW**
+  sub-protocol that rotates away from a faulty primary while carrying every honest replica's prepared
+  certificates forward so safety is preserved. Three **Byzantine fault modes** togglable live per
+  node — `silent`, `equivocate` (a primary sending conflicting orders for one sequence number — the
+  canonical ordering attack) and `conflict` (a backup voting for a bogus digest) — modelled under
+  PBFT's authentication assumption (the kernel stamps `from`, so a node can lie about its own
+  messages but never forge another's). Four live safety invariants evaluated **over the honest
+  replicas only**: Fault budget (≤ f), **Agreement** (the headline — no two honest replicas execute
+  different requests at one sequence number), Total-order execution and Certified execution. Two real
+  PBFT bugs found & fixed while bringing it up on a strong test harness: (1) stale per-view slots
+  leaked old-view prepares into a new view (must clear unexecuted slots on view change), and (2) a
+  new primary's separate PRE-PREPARE could race ahead of its NEW-VIEW and be dropped as "wrong view"
+  (fold pending requests into NEW-VIEW so view re-establishment is atomic). Added a safe **f+1-report
+  state catch-up** gossip so a lagging/restarted replica rejoins without a full state copy. The
+  **lab UI** colours nodes by role and fault (Byzantine glow red/orange), has a one-click "Corrupt
+  primary" button + per-node fault switch, an executed-log/KV/per-slot-phase inspector, and curated
+  scenarios including **"Beyond f (unsafe!)"** that deliberately exceeds the budget to show the
+  theorem's boundary. Self-test suite grown **42 → 52/52** (10 PBFT tests incl. an equivocating
+  primary that cannot break agreement and a **1,500-step chaos run with a Byzantine primary** asserting
+  Agreement throughout; stress-tested separately across 30 adversarial runs with partitions + 3% drops
+  + crashes + active equivocation: **zero agreement violations**). Verified the full gate (scope +
+  conformance + lint + build) and drove the built app in headless Chromium across the PBFT scenarios:
+  the equivocating-primary and 7-node/2-faulty runs both stay **HOLDING**, "Beyond f" correctly flips
+  the fault-budget invariant to **VIOLATED**, and the in-browser self-tests report **52/52 passing**.

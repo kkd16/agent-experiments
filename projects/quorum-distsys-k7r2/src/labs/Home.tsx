@@ -15,8 +15,9 @@ export function Home() {
         </p>
         <p className="lede">
           The hard algorithms are implemented for real, not faked: Raft <em>and</em> Multi-Paxos
-          consensus, a Chord DHT, CRDTs, gossip / SWIM failure detection, vector clocks and atomic
-          commit. Crash nodes, drop links, partition the cluster — and watch the safety invariants
+          consensus, <b>PBFT</b> Byzantine fault tolerance that survives actively-malicious replicas,
+          a Chord DHT, CRDTs, gossip / SWIM failure detection, vector clocks and atomic commit. Crash
+          nodes, corrupt them, drop links, partition the cluster — and watch the safety invariants
           either hold or break, live.
         </p>
       </section>

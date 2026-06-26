@@ -1,6 +1,7 @@
 import type { JSX } from 'react';
 import { RaftLab } from './RaftLab';
 import { PaxosLab } from './PaxosLab';
+import { PbftLab } from './PbftLab';
 import { ChordLab } from './ChordLab';
 import { CrdtLab } from './CrdtLab';
 import { CoeditLab } from './CoeditLab';
@@ -36,6 +37,15 @@ export const LABS: LabDef[] = [
     icon: '▦',
     tag: 'consensus',
     Component: PaxosLab,
+  },
+  {
+    id: 'pbft',
+    title: 'PBFT (Byzantine)',
+    blurb:
+      'Practical Byzantine Fault Tolerance: state-machine replication that survives up to f traitor replicas out of N=3f+1 — silent, equivocating or actively lying. Run the three-phase agreement (pre-prepare / prepare / commit), corrupt the primary so it sends conflicting orders, and watch the Agreement invariant hold by quorum intersection — then push past f and watch it break.',
+    icon: '⚔',
+    tag: 'byzantine consensus',
+    Component: PbftLab,
   },
   {
     id: 'crdt',

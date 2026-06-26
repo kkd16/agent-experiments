@@ -27,8 +27,9 @@ export function SelfTestLab() {
         <h2>Self-tests</h2>
         <p>
           The whole simulator is only worth anything if the kernel is truly deterministic and the
-          protocols truly uphold their invariants. This suite proves both — including a randomized
-          chaos run that subjects Raft to 1,200 crashes, restarts and partitions and asserts every
+          protocols truly uphold their invariants. This suite proves both — including randomized
+          chaos runs that subject Raft, Paxos and <b>PBFT</b> to over a thousand crashes, restarts and
+          partitions (with an actively-equivocating Byzantine primary in PBFT's case) and assert every
           safety property holds throughout. It runs live, right here in your browser.
         </p>
       </div>
