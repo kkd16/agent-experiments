@@ -17,9 +17,13 @@ interface Props {
   onClose: () => void
 }
 
+/** A row in the constraint editor. `int` / `bin` declare changing cells as integer /
+ *  binary (their RHS box is ignored); the rest are ordinary ≤ / = / ≥ constraints. */
+type ConstraintRel = Relation | 'int' | 'bin'
+
 interface ConstraintRow {
   lhs: string
-  rel: Relation
+  rel: ConstraintRel
   rhs: string
 }
 
@@ -67,6 +71,25 @@ function parseRhs(text: string): SolverRhs | null {
   return null
 }
 
+/** Snap the parametric-ranging output (good to ~1e-7) to a clean number for display. */
+function clean(x: number): number {
+  const r = Math.round(x)
+  if (Math.abs(x - r) < 1e-4) return r
+  return Number(x.toPrecision(8))
+}
+
+/** A single allowable-increase / decrease number, showing ∞ for an unbounded direction. */
+function fmtBound(x: number): string {
+  return Number.isFinite(x) ? formatNumber(clean(x)) : '∞'
+}
+
+/** An allowable [low, high] range, with ±∞ for open ends. */
+function fmtRange(lo: number, hi: number): string {
+  const l = Number.isFinite(lo) ? formatNumber(clean(lo)) : '−∞'
+  const h = Number.isFinite(hi) ? formatNumber(clean(hi)) : '∞'
+  return `${l} … ${h}`
+}
+
 /**
  * The multi-cell **Solver**. Find values for the changing cells that maximize, minimize,
  * or drive the objective cell to a target, subject to constraints. The engine auto-detects
@@ -99,7 +122,16 @@ export default function Solver({ wb, sheetId, initialObjective, initialVariables
     if (sense === 'value' && !Number.isFinite(goal)) return setError('Target value must be a number.')
 
     const parsed: SolverConstraintInput[] = []
+    const integers: Coord[] = []
+    const binaries: Coord[] = []
     for (const row of constraints) {
+      if (row.rel === 'int' || row.rel === 'bin') {
+        if (!row.lhs.trim()) continue // skip blank integrality rows
+        const cells = parseCellList(row.lhs)
+        if (!cells) return setError(`Integer/binary cells "${row.lhs}" should be references or ranges.`)
+        ;(row.rel === 'int' ? integers : binaries).push(...cells)
+        continue
+      }
       const hasAny = row.lhs.trim() || row.rhs.trim()
       if (!hasAny) continue // skip blank rows
       const lhs = parseRef(row.lhs.trim())
@@ -117,6 +149,8 @@ export default function Solver({ wb, sheetId, initialObjective, initialVariables
       variables: vars,
       nonNegative,
       constraints: parsed,
+      integers,
+      binaries,
       sheetId,
     })
     if (res.status === 'error') return setError(res.message ?? 'The model could not be solved.')
@@ -153,8 +187,10 @@ export default function Solver({ wb, sheetId, initialObjective, initialVariables
         <p className="modal-hint">
           Optimize a model: find the changing cells that <strong>maximize</strong>, <strong>minimize</strong>, or
           drive the objective to a <strong>target</strong>, subject to constraints. A linear model is solved{' '}
-          <em>exactly</em> with the simplex method; anything nonlinear falls back to a derivative-free search — all over
-          real recalculations.
+          <em>exactly</em> with the simplex method (with a <strong>sensitivity report</strong> of shadow prices);
+          mark cells <span className="mono">int</span> / <span className="mono">bin</span> for{' '}
+          <strong>integer programming</strong> (branch &amp; bound); anything nonlinear falls back to a
+          derivative-free search — all over real recalculations.
         </p>
 
         <div className="gs-grid">
@@ -197,10 +233,12 @@ export default function Solver({ wb, sheetId, initialObjective, initialVariables
                 spellCheck={false}
                 placeholder="C2"
               />
-              <select className="name-in mono sv-rel" value={row.rel} onChange={(e) => setRow(i, { rel: e.target.value as Relation })}>
+              <select className="name-in mono sv-rel" value={row.rel} onChange={(e) => setRow(i, { rel: e.target.value as ConstraintRel })}>
                 <option value="<=">≤</option>
                 <option value="=">=</option>
                 <option value=">=">≥</option>
+                <option value="int">int</option>
+                <option value="bin">bin</option>
               </select>
               <input
                 className="name-in mono"
@@ -208,7 +246,8 @@ export default function Solver({ wb, sheetId, initialObjective, initialVariables
                 onChange={(e) => setRow(i, { rhs: e.target.value })}
                 onKeyDown={(e) => e.key === 'Enter' && run()}
                 spellCheck={false}
-                placeholder="10 or D2"
+                disabled={row.rel === 'int' || row.rel === 'bin'}
+                placeholder={row.rel === 'int' ? 'whole number' : row.rel === 'bin' ? '0 or 1' : '10 or D2'}
               />
               <button className="sv-del" title="Remove" onClick={() => removeRow(i)}>
                 ✕
@@ -229,7 +268,13 @@ export default function Solver({ wb, sheetId, initialObjective, initialVariables
               <strong>{statusLabel[result.status]}</strong>
               <span className="muted">
                 {' '}
-                · {result.method === 'simplex' ? 'simplex (exact)' : 'nonlinear search'} · {result.iterations} iters
+                ·{' '}
+                {result.method === 'simplex'
+                  ? 'simplex (exact)'
+                  : result.method === 'branch-and-bound'
+                    ? 'branch & bound (exact MILP)'
+                    : 'nonlinear search'}
+                {result.method === 'branch-and-bound' && result.nodes != null ? ` · ${result.nodes} nodes` : ''} · {result.iterations} iters
               </span>
             </div>
             {ok ? (
@@ -255,6 +300,79 @@ export default function Solver({ wb, sheetId, initialObjective, initialVariables
                       </span>
                     ))}
                   </div>
+                ) : null}
+                {result.method === 'branch-and-bound' ? (
+                  <div className="muted sv-note">
+                    Integer solution via branch &amp; bound — sensitivity (shadow prices) is only reported for
+                    purely continuous models.
+                  </div>
+                ) : null}
+                {result.sensitivity ? (
+                  <details className="sv-sens">
+                    <summary>Sensitivity report</summary>
+                    <div className="sv-sens-body">
+                      <table className="sv-sens-tbl">
+                        <thead>
+                          <tr>
+                            <th>Variable</th>
+                            <th>Value</th>
+                            <th>Reduced cost</th>
+                            <th>Obj. coef</th>
+                            <th>Allowable range</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {result.sensitivity.variables.map((v) => (
+                            <tr key={`${v.coord.row},${v.coord.col}`}>
+                              <td>
+                                <button className="linkref" onClick={() => onGoto(v.coord)}>
+                                  {coordToA1(v.coord.row, v.coord.col)}
+                                </button>
+                              </td>
+                              <td className="mono">{formatNumber(v.value)}</td>
+                              <td className="mono">{formatNumber(v.reducedCost)}</td>
+                              <td className="mono">{formatNumber(v.objCoef)}</td>
+                              <td className="mono">
+                                {fmtRange(v.objLow, v.objHigh)}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                      {result.sensitivity.constraints.length ? (
+                        <table className="sv-sens-tbl">
+                          <thead>
+                            <tr>
+                              <th>Constraint</th>
+                              <th>Shadow price</th>
+                              <th>Allow. increase</th>
+                              <th>Allow. decrease</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {result.sensitivity.constraints.map((c, i) => (
+                              <tr key={i}>
+                                <td>
+                                  <button className="linkref" onClick={() => onGoto(c.lhs)}>
+                                    {coordToA1(c.lhs.row, c.lhs.col)}
+                                  </button>
+                                </td>
+                                <td className="mono">{formatNumber(c.shadowPrice)}</td>
+                                <td className="mono">{fmtBound(c.allowableIncrease)}</td>
+                                <td className="mono">{fmtBound(c.allowableDecrease)}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      ) : null}
+                      <p className="muted sv-sens-help">
+                        The <strong>shadow price</strong> is the objective gain per unit you relax a binding
+                        constraint — valid while its RHS stays in the allowable range. A nonzero{' '}
+                        <strong>reduced cost</strong> is how much a variable's objective coefficient must improve
+                        before it enters the solution.
+                      </p>
+                    </div>
+                  </details>
                 ) : null}
               </>
             ) : (

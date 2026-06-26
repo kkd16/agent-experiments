@@ -1293,6 +1293,50 @@ select.name-in {
   color: #ff8a8a;
 }
 
+/* ---- v6: integer programming + sensitivity report ---------------------- */
+.sv-note {
+  margin-top: 6px;
+  font-size: 12px;
+}
+.sv-sens {
+  margin-top: 8px;
+}
+.sv-sens > summary {
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--accent);
+  user-select: none;
+}
+.sv-sens-body {
+  margin-top: 8px;
+}
+.sv-sens-tbl {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+  margin-bottom: 8px;
+}
+.sv-sens-tbl th,
+.sv-sens-tbl td {
+  text-align: right;
+  padding: 3px 8px;
+  border-bottom: 1px solid var(--border, #2a3142);
+  white-space: nowrap;
+}
+.sv-sens-tbl th:first-child,
+.sv-sens-tbl td:first-child {
+  text-align: left;
+}
+.sv-sens-tbl th {
+  color: #97a0b8;
+  font-weight: 600;
+}
+.sv-sens-help {
+  font-size: 11px;
+  line-height: 1.45;
+}
+
 /* ---- v5: Structured tables manager -------------------------------------- */
 .tbl-row .linkref {
   justify-self: start;

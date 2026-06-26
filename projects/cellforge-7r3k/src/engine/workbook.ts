@@ -711,7 +711,27 @@ export class Workbook {
       },
     }))
 
-    const bounds: VarBound[] = vars.map(() => ({ lo: spec.nonNegative ? 0 : -Infinity, hi: Infinity }))
+    // Integrality: map the integer / binary changing cells onto variable indices.
+    const idxOf = (c: Coord): number => vars.findIndex((v) => v.row === c.row && v.col === c.col)
+    const integerFlags = vars.map(() => false)
+    for (const c of spec.integers ?? []) {
+      const i = idxOf(c)
+      if (i >= 0) integerFlags[i] = true
+    }
+    const binaryFlags = vars.map(() => false)
+    for (const c of spec.binaries ?? []) {
+      const i = idxOf(c)
+      if (i >= 0) {
+        binaryFlags[i] = true
+        integerFlags[i] = true
+      }
+    }
+    const anyInteger = integerFlags.some(Boolean)
+
+    // Binary variables get a [0, 1] box; everything else honours the non-negativity toggle.
+    const bounds: VarBound[] = vars.map((_, i) =>
+      binaryFlags[i] ? { lo: 0, hi: 1 } : { lo: spec.nonNegative ? 0 : -Infinity, hi: Infinity },
+    )
     const x0 = vars.map((c) => {
       const v = this.getValue(c, sid)
       return typeof v === 'number' && Number.isFinite(v) ? v : 0
@@ -728,6 +748,7 @@ export class Workbook {
       bounds,
       constraints,
       linear: linear ?? undefined,
+      integer: anyInteger ? integerFlags : undefined,
     })
 
     // Read the constraint LHS/RHS at the solution for the report, then restore the model.
@@ -741,6 +762,35 @@ export class Workbook {
     })
     this.setMany(vars.map((c, i) => ({ coord: c, raw: savedVars[i] })), sid)
 
+    // Map the LP sensitivity report (if any) back onto cell coordinates. Only present for
+    // pure-continuous linear models — it is undefined for integer (branch & bound) models.
+    let sensitivity: SolverSensitivity | undefined
+    if (result.sensitivity && linear) {
+      const s = result.sensitivity
+      sensitivity = {
+        constraints: spec.constraints.map((c, k) => ({
+          lhs: c.lhs,
+          shadowPrice: s.constraints[k].shadowPrice,
+          allowableIncrease: s.constraints[k].rhsHigh - s.constraints[k].rhs,
+          allowableDecrease: s.constraints[k].rhs - s.constraints[k].rhsLow,
+        })),
+        variables: vars.map((coord, j) => ({
+          coord,
+          value: s.variables[j].value,
+          reducedCost: s.variables[j].reducedCost,
+          objCoef: linear.c[j],
+          objLow: s.variables[j].objLow,
+          objHigh: s.variables[j].objHigh,
+        })),
+      }
+    }
+
+    // Honesty: integer constraints are only enforced when the model is linear (the MILP
+    // path). A nonlinear model with integer cells is solved continuously — flag that.
+    const message = anyInteger && !linear && spec.sense !== 'value'
+      ? 'Integer constraints need a linear model; this one was solved continuously.'
+      : undefined
+
     return {
       status: result.status,
       method: result.method,
@@ -750,6 +800,10 @@ export class Workbook {
       maxViolation: result.maxViolation,
       iterations: result.iterations,
       constraints: report,
+      nodes: result.nodes,
+      integer: result.integer,
+      sensitivity,
+      message,
     }
   }
 
@@ -1065,6 +1119,10 @@ export interface SolverSpec {
   /** Constrain changing cells to be ≥ 0 (Excel's "make unconstrained variables non-negative"). */
   nonNegative: boolean
   constraints: SolverConstraintInput[]
+  /** Changing cells constrained to whole numbers (mixed-integer programming). */
+  integers?: Coord[]
+  /** Changing cells constrained to {0, 1} (binary / yes-no decisions). */
+  binaries?: Coord[]
   sheetId?: string
 }
 
@@ -1073,6 +1131,30 @@ export interface SolverConstraintReport {
   rel: Relation
   rhs: number
   satisfied: boolean
+}
+
+/** Per-constraint shadow-price report (only for pure-continuous linear models). */
+export interface SolverConstraintSensitivity {
+  lhs: Coord
+  shadowPrice: number
+  /** How far the RHS may rise / fall before the shadow price changes (may be ∞). */
+  allowableIncrease: number
+  allowableDecrease: number
+}
+
+/** Per-variable reduced-cost report (only for pure-continuous linear models). */
+export interface SolverVariableSensitivity {
+  coord: Coord
+  value: number
+  reducedCost: number
+  objCoef: number
+  objLow: number
+  objHigh: number
+}
+
+export interface SolverSensitivity {
+  constraints: SolverConstraintSensitivity[]
+  variables: SolverVariableSensitivity[]
 }
 
 export interface SolverResult {
@@ -1084,6 +1166,12 @@ export interface SolverResult {
   maxViolation: number
   iterations: number
   constraints: SolverConstraintReport[]
+  /** Branch-and-bound nodes explored (integer models only). */
+  nodes?: number
+  /** Per-variable integrality echoed back (integer models only). */
+  integer?: boolean[]
+  /** Post-optimal sensitivity report (pure-continuous linear models only). */
+  sensitivity?: SolverSensitivity
   message?: string
 }
 
