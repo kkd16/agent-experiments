@@ -570,7 +570,8 @@ function transitiveTest(): TestResult[] {
 function solverTests(): TestResult[] {
   const out: TestResult[] = []
   const A = (row: number, col: number): Coord => ({ row, col })
-  const near = (a: number, b: number, tol = 1e-2): boolean => Math.abs(a - b) <= tol
+  const near = (a: number | undefined, b: number | undefined, tol = 1e-2): boolean =>
+    a !== undefined && b !== undefined && Math.abs(a - b) <= tol
   const add = (name: string, pass: boolean, detail?: string) => out.push({ group: 'solver', name, pass, detail: pass ? undefined : detail })
 
   // 1) Linear product-mix LP — auto-detected linear, solved exactly with simplex.
@@ -672,6 +673,148 @@ function solverTests(): TestResult[] {
     })
     add('blend LP is feasible', res.feasible)
     add('blend LP satisfies every constraint', res.constraints.every((c) => c.satisfied), JSON.stringify(res.constraints))
+  }
+
+  // ===== v6: mixed-integer programming (branch & bound) =====
+
+  // 6) 0/1 knapsack. values 60/100/120, weights 10/20/30, capacity 50 ⇒ pick items 2 & 3 = 220.
+  {
+    const wb = new Workbook(40, 20)
+    wb.setMany([
+      { coord: A(0, 0), raw: '0' },
+      { coord: A(1, 0), raw: '0' },
+      { coord: A(2, 0), raw: '0' },
+      { coord: A(0, 1), raw: '=60*A1+100*A2+120*A3' }, // B1 value (objective)
+      { coord: A(0, 2), raw: '=10*A1+20*A2+30*A3' }, // C1 weight
+    ])
+    const res = wb.solve({
+      objective: A(0, 1),
+      sense: 'max',
+      variables: [A(0, 0), A(1, 0), A(2, 0)],
+      nonNegative: true,
+      binaries: [A(0, 0), A(1, 0), A(2, 0)],
+      constraints: [{ lhs: A(0, 2), rel: '<=', rhs: { kind: 'num', value: 50 } }],
+    })
+    add('knapsack uses branch & bound', res.method === 'branch-and-bound', `method ${res.method}`)
+    add('knapsack optimum = 220', near(res.objective, 220), `got ${res.objective}`)
+    add('knapsack picks items 2 & 3', near(res.variables[0].value, 0) && near(res.variables[1].value, 1) && near(res.variables[2].value, 1), JSON.stringify(res.variables.map((v) => v.value)))
+    add('knapsack solution is integral', res.variables.every((v) => near(v.value, Math.round(v.value), 1e-6)))
+    add('knapsack explored ≥ 1 node', (res.nodes ?? 0) >= 1, `nodes ${res.nodes}`)
+    add('knapsack reports feasible', res.feasible)
+  }
+
+  // 7) Integer optimum ≠ rounding the LP relaxation. max 21a+11b s.t. 7a+4b ≤ 13, a,b ∈ ℤ₊.
+  //    LP relaxation: a=13/7≈1.857, z≈39. Rounding a→1 gives z=21. True integer optimum is (0,3), z=33.
+  {
+    const wb = new Workbook(40, 20)
+    wb.setMany([
+      { coord: A(0, 0), raw: '0' },
+      { coord: A(1, 0), raw: '0' },
+      { coord: A(0, 1), raw: '=21*A1+11*A2' },
+      { coord: A(0, 2), raw: '=7*A1+4*A2' },
+    ])
+    const res = wb.solve({
+      objective: A(0, 1),
+      sense: 'max',
+      variables: [A(0, 0), A(1, 0)],
+      nonNegative: true,
+      integers: [A(0, 0), A(1, 0)],
+      constraints: [{ lhs: A(0, 2), rel: '<=', rhs: { kind: 'num', value: 13 } }],
+    })
+    add('ILP optimum = 33 (not rounded LP)', near(res.objective, 33), `got ${res.objective}`)
+    add('ILP solution = (0, 3)', near(res.variables[0].value, 0) && near(res.variables[1].value, 3), JSON.stringify(res.variables.map((v) => v.value)))
+  }
+
+  // 8) Integer-infeasible: 2a = 3 has no integer root (the LP relaxation a=1.5 is feasible).
+  {
+    const wb = new Workbook(40, 20)
+    wb.setMany([{ coord: A(0, 0), raw: '0' }, { coord: A(0, 1), raw: '=2*A1' }])
+    const res = wb.solve({
+      objective: A(0, 1),
+      sense: 'max',
+      variables: [A(0, 0)],
+      nonNegative: true,
+      integers: [A(0, 0)],
+      constraints: [
+        { lhs: A(0, 1), rel: '=', rhs: { kind: 'num', value: 3 } },
+        { lhs: A(0, 0), rel: '<=', rhs: { kind: 'num', value: 5 } },
+      ],
+    })
+    add('integer-infeasible model reported', res.status === 'infeasible', `status ${res.status}`)
+  }
+
+  // ===== v6: post-optimal sensitivity (the shadow-price report) =====
+
+  // 9) The carpenter LP: shadow prices, strong duality, reduced costs, and a finite-difference cross-check.
+  {
+    const carpenter = (woodAvail: number) => {
+      const wb = new Workbook(40, 20)
+      wb.setMany([
+        { coord: A(0, 0), raw: '0' },
+        { coord: A(1, 0), raw: '0' },
+        { coord: A(0, 1), raw: '=45*A1+80*A2' }, // B1 profit (objective)
+        { coord: A(0, 2), raw: '=5*A1+20*A2' }, // C1 wood used
+        { coord: A(1, 2), raw: '=10*A1+15*A2' }, // C2 labor used
+      ])
+      return wb.solve({
+        objective: A(0, 1),
+        sense: 'max',
+        variables: [A(0, 0), A(1, 0)],
+        nonNegative: true,
+        constraints: [
+          { lhs: A(0, 2), rel: '<=', rhs: { kind: 'num', value: woodAvail } },
+          { lhs: A(1, 2), rel: '<=', rhs: { kind: 'num', value: 450 } },
+        ],
+      })
+    }
+    const res = carpenter(400)
+    add('LP produces a sensitivity report', !!res.sensitivity)
+    const sc = res.sensitivity?.constraints ?? []
+    const sv = res.sensitivity?.variables ?? []
+    add('wood shadow price = 1', near(sc[0]?.shadowPrice, 1, 1e-3), `got ${sc[0]?.shadowPrice}`)
+    add('labor shadow price = 4', near(sc[1]?.shadowPrice, 4, 1e-3), `got ${sc[1]?.shadowPrice}`)
+    add('both products basic ⇒ reduced cost 0', sv.every((v) => near(v.reducedCost, 0, 1e-4)), JSON.stringify(sv.map((v) => v.reducedCost)))
+    // Strong duality: optimum = Σ rhsₖ · shadowₖ for this all-≤ model.
+    const dualObj = 400 * (sc[0]?.shadowPrice ?? 0) + 450 * (sc[1]?.shadowPrice ?? 0)
+    add('strong duality: z = b·y', near(res.objective, dualObj, 1e-2), `z=${res.objective} b·y=${dualObj}`)
+    // Finite-difference: +1 board-ft of wood should add exactly the wood shadow price to the optimum.
+    const res2 = carpenter(401)
+    add('shadow price = ∂z/∂b (finite diff)', near(res2.objective - res.objective, sc[0]?.shadowPrice, 1e-2), `Δz=${res2.objective - res.objective}`)
+    // RHS ranging is sane: the increase is positive and finite for a binding resource.
+    add('wood RHS allowable increase > 0', (sc[0]?.allowableIncrease ?? 0) > 0, `inc ${sc[0]?.allowableIncrease}`)
+    // The shadow price holds across the reported allowable increase.
+    const within = carpenter(400 + 0.5 * (sc[0]?.allowableIncrease ?? 0))
+    add('shadow price holds within RHS range', near(within.sensitivity?.constraints[0]?.shadowPrice, sc[0]?.shadowPrice, 1e-3))
+  }
+
+  // 10) An unprofitable product stays out, with a negative reduced cost; a non-binding limit has shadow price 0.
+  //     max 45c+80t+5g  s.t. 5c+20t+40g ≤ 400, 10c+15t+5g ≤ 450, chairs ≤ 100 (slack). Gizmos are too costly ⇒ g*=0.
+  {
+    const wb = new Workbook(40, 20)
+    wb.setMany([
+      { coord: A(0, 0), raw: '0' }, // chairs
+      { coord: A(1, 0), raw: '0' }, // tables
+      { coord: A(2, 0), raw: '0' }, // gizmos
+      { coord: A(0, 1), raw: '=45*A1+80*A2+5*A3' },
+      { coord: A(0, 2), raw: '=5*A1+20*A2+40*A3' },
+      { coord: A(1, 2), raw: '=10*A1+15*A2+5*A3' },
+    ])
+    const res = wb.solve({
+      objective: A(0, 1),
+      sense: 'max',
+      variables: [A(0, 0), A(1, 0), A(2, 0)],
+      nonNegative: true,
+      constraints: [
+        { lhs: A(0, 2), rel: '<=', rhs: { kind: 'num', value: 400 } },
+        { lhs: A(1, 2), rel: '<=', rhs: { kind: 'num', value: 450 } },
+        { lhs: A(0, 0), rel: '<=', rhs: { kind: 'num', value: 100 } },
+      ],
+    })
+    const sv = res.sensitivity?.variables ?? []
+    const sc = res.sensitivity?.constraints ?? []
+    add('idle product value = 0', near(sv[2]?.value, 0, 1e-4), `g=${sv[2]?.value}`)
+    add('idle product reduced cost ≤ 0', (sv[2]?.reducedCost ?? 1) <= 1e-6, `rc=${sv[2]?.reducedCost}`)
+    add('non-binding constraint shadow price = 0', near(sc[2]?.shadowPrice, 0, 1e-6), `got ${sc[2]?.shadowPrice}`)
   }
 
   return out

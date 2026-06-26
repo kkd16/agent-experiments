@@ -480,7 +480,104 @@ function optimizationLab(): WorkbookSnapshot {
   return wb.serialize()
 }
 
+// A single-sheet showcase of v6: mixed-integer programming + sensitivity. The headline
+// is a 0/1 **capital-budgeting knapsack** — pick which projects to fund so total value is
+// maximised without blowing the budget; each "Fund?" cell is a binary (0/1) decision the
+// Solver's branch & bound nails exactly (the continuous relaxation would fund a *fraction*
+// of a project — meaningless in the real world). A second block is the classic carpenter LP
+// whose Solver "Sensitivity report" prints the shadow prices of the two binding resources.
+function integerLab(): WorkbookSnapshot {
+  const wb = new Workbook()
+  const id = wb.activeSheetId
+  wb.renameSheet(id, 'Integer Lab')
+  const set = (a1: string, raw: string) => {
+    const ref = parseRef(a1)
+    if (ref) wb.setCell({ row: ref.row, col: ref.col }, raw, id)
+  }
+  const fmt = (a1: string, a2: string, patch: CellFormat) => {
+    const f = parseRef(a1)!
+    const t = parseRef(a2)!
+    wb.applyFormat({ top: f.row, left: f.col, bottom: t.row, right: t.col }, patch, id)
+  }
+
+  // ---- 0/1 capital-budgeting knapsack (header row 2, projects rows 3..8) ----
+  set('A1', 'Integer Programming Lab — open  ⚖ Solver, maximize B9 by changing C3:C8, with  C3:C8 bin  and  D9 ≤ G2')
+  fmt('A1', 'A1', { bold: true })
+  set('A2', 'Project')
+  set('B2', 'Value ($M)')
+  set('C2', 'Fund? (0/1)')
+  set('D2', 'Used cost')
+  fmt('A2', 'D2', { bold: true, align: 'center' })
+
+  const projects: Array<[string, number, number]> = [
+    ['Solar farm', 0.6, 4],
+    ['Data center', 0.5, 3],
+    ['Bridge retrofit', 0.4, 2],
+    ['Fibre rollout', 0.35, 2.5],
+    ['Desalination', 0.3, 2],
+    ['Wind turbines', 0.45, 3.5],
+  ]
+  projects.forEach(([name, value, cost], i) => {
+    const row = 3 + i
+    set(`A${row}`, name)
+    set(`B${row}`, String(value))
+    set(`C${row}`, '0') // ← a binary changing cell
+    set(`D${row}`, `=C${row}*${cost}`) // cost only counts if the project is funded
+  })
+  set('A9', 'TOTAL')
+  set('B9', '=SUMPRODUCT(B3:B8,C3:C8)') // value funded — the objective
+  set('D9', '=SUM(D3:D8)') // total cost used
+  fmt('A9', 'D9', { bold: true })
+
+  set('F2', 'Budget ($M)')
+  set('G2', '8')
+  fmt('F2', 'F2', { bold: true })
+  set('F4', 'Solver setup → max B9 · change C3:C8 · constraints  C3:C8 bin  and  D9 ≤ G2')
+  fmt('F4', 'F4', { color: '#97a0b8' })
+  set('F5', 'Branch & bound finds the exact best subset of projects — not the fractional LP relaxation.')
+  fmt('F5', 'F5', { color: '#97a0b8' })
+
+  // ---- A continuous LP with a shadow-price story (the sensitivity report) ----
+  set('A12', 'Carpenter LP — maximize profit, then read the Sensitivity report for shadow prices')
+  fmt('A12', 'A12', { color: '#97a0b8' })
+  set('A13', 'Product')
+  set('B13', 'Make')
+  set('C13', 'Profit/unit')
+  set('D13', 'Profit')
+  fmt('A13', 'D13', { bold: true, align: 'center' })
+  set('A14', 'Chairs')
+  set('B14', '0') // changing cell
+  set('C14', '45')
+  set('D14', '=B14*C14')
+  set('A15', 'Tables')
+  set('B15', '0') // changing cell
+  set('C15', '80')
+  set('D15', '=B15*C15')
+  set('A16', 'TOTAL')
+  set('D16', '=SUM(D14:D15)') // objective
+  fmt('A16', 'D16', { bold: true })
+  fmt('C14', 'D16', { nf: 'currency', decimals: 0 })
+  set('A18', 'Resource')
+  set('B18', 'Used')
+  set('C18', 'Available')
+  fmt('A18', 'C18', { bold: true, align: 'center' })
+  set('A19', 'Wood')
+  set('B19', '=5*B14+20*B15')
+  set('C19', '400')
+  set('A20', 'Labor')
+  set('B20', '=10*B14+15*B15')
+  set('C20', '450')
+  set('A22', 'Solver: max D16 · change B14:B15 · constraints  B19 ≤ C19  and  B20 ≤ C20 → open Sensitivity report')
+  fmt('A22', 'A22', { color: '#97a0b8' })
+  set('A23', 'Shadow prices: wood $1/board-ft, labor $4/hour. The exact value of one more unit of each resource.')
+  fmt('A23', 'A23', { color: '#97a0b8' })
+
+  wb.setActiveSheet(id)
+  return wb.serialize()
+}
+
 export const DEMOS: Demo[] = [
+  { id: 'integer', name: 'Integer Programming Lab', blurb: 'A 0/1 capital-budgeting knapsack solved by branch & bound, plus an LP with a shadow-price sensitivity report', snapshot: integerLab },
   { id: 'optimize', name: 'Optimization Lab', blurb: 'A linear program + a nonlinear fit, both solved by the ⚖ Solver (exact simplex & Nelder–Mead)', snapshot: optimizationLab },
   { id: 'analysis', name: 'Analysis Lab', blurb: 'GROUPBY/PIVOTBY pivots, spill-range refs (A1#), recursive lambdas & a Data-Table model', snapshot: analysisLab },
   { id: 'arrays', name: 'Dynamic Arrays', blurb: 'SEQUENCE/FILTER/SORT/UNIQUE spilling + LAMBDA/MAP and a Goal-Seek model', snapshot: dynamicArrays },
