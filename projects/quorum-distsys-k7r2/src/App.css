@@ -922,3 +922,28 @@ input[type='text'] {
   border-color: transparent;
   font-weight: 600;
 }
+
+/* ---- Chord DHT ring ---- */
+.chord-ring {
+  display: flex;
+  justify-content: center;
+  background: radial-gradient(circle at 50% 45%, rgba(124, 156, 255, 0.06), rgba(0, 0, 0, 0) 60%);
+  border: 1px solid var(--border, rgba(255, 255, 255, 0.08));
+  border-radius: 12px;
+  padding: 6px;
+}
+.chord-ring svg {
+  display: block;
+}
+.chord-ring text {
+  user-select: none;
+  pointer-events: none;
+  font-family: var(--mono, ui-monospace, monospace);
+}
+.finger-head {
+  margin: 8px 2px 4px;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.4);
+}

@@ -14,9 +14,10 @@ export function Home() {
           perfectly reproducible and <b>scrubbable backwards and forwards in time</b>.
         </p>
         <p className="lede">
-          The hard algorithms are implemented for real, not faked: Raft consensus, CRDTs, gossip /
-          SWIM failure detection, vector clocks and atomic commit. Crash nodes, drop links, partition
-          the cluster — and watch the safety invariants either hold or break, live.
+          The hard algorithms are implemented for real, not faked: Raft <em>and</em> Multi-Paxos
+          consensus, a Chord DHT, CRDTs, gossip / SWIM failure detection, vector clocks and atomic
+          commit. Crash nodes, drop links, partition the cluster — and watch the safety invariants
+          either hold or break, live.
         </p>
       </section>
 
