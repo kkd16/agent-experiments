@@ -115,6 +115,12 @@ conflict teaches the solver a new clause that prunes an exponential swath of the
   model of the simplified formula reconstructs to a model of the original, that simplification is
   equisatisfiable (vs. CDCL and brute force), and that subsumption/strengthening preserve the model
   set bit-for-bit.
+- `src/twosat/*` — the **2-SAT subsystem**: `twosat.ts` decides a 2-CNF in linear time on the
+  binary implication graph (iterative Tarjan SCC), extracts a model from the component order, and
+  reports the equivalent-literal classes, the backbone (forced literals with implication-path
+  witnesses) and the condensation DAG; `layout.ts` lays out the literal graph and the condensation
+  for drawing; `examples.ts` carries a curated gallery + seeded generators; `selfcheck.ts`
+  cross-checks every facet against the CDCL solver *and* exhaustive brute force.
 - `src/worker/solver.worker.ts` + `src/useSolver.ts` — runs the solver off the main thread.
 - `src/components/*` — Solution boards, statistics + search-dynamics chart, implication-graph
   view, step-through trace, CNF/DIMACS inspector, the #SAT Count view, the **Compile** view
@@ -1609,5 +1615,66 @@ machinery is the heart of this session, and the thing the harness hammers hardes
       machine-verify the whole preprocessing transcript.
 - [ ] **Preprocess-then-solve in the SAT Studio** — run the simplifier as a front-end to the main
       CDCL solver and reconstruct the model transparently, showing the end-to-end speedup.
-- [ ] **Animate the equivalence SCCs** — draw the binary implication graph and highlight each
-      strongly-connected component as it collapses.
+- [x] **Animate the equivalence SCCs** — draw the binary implication graph and highlight each
+      strongly-connected component as it collapses. *(Done in Session 20 — the 2-SAT Studio draws the
+      whole implication graph coloured by SCC, plus the condensation DAG.)*
+
+### Session 20 — from a *buried subroutine* to a *first-class procedure*: the 2-SAT Studio (a ninth studio)
+
+The equivalent-literal rule in the preprocessor already contains, almost in passing, one of the
+prettiest results in the field: **2-SAT is decidable in linear time** by reading the strongly-connected
+components of the binary implication graph (Aspvall–Plass–Tarjan, 1979). Session 19 noted that the
+SCC condensation *is* the 2-SAT decision procedure but kept it invisible, folded inside `equivSubst`.
+This session promotes it to a **first-class, fully visual studio** — the decision, a model read off the
+component order, the equivalent-literal classes, the **backbone** (literals forced in every model)
+with implication-path witnesses, the **condensation DAG**, and a live **satisfiability phase
+transition** — every verdict cross-checked against the project's own complete CDCL solver and an
+exhaustive brute-force oracle.
+
+- [x] **`src/twosat/twosat.ts` — the linear-time core.** Build the implication graph over `2n` literal
+      nodes (a clause `(a∨b)` ⇒ `¬a→b`, `¬b→a`; a unit `(a)` ⇒ `¬a→a`), run an **iterative,
+      stack-safe Tarjan SCC** (component ids in reverse-topological order), and decide: UNSAT iff some
+      variable shares an SCC with its negation; otherwise extract a model by the standard rule (a
+      literal is true when its SCC is nearer a sink than its negation's). All O(n + m).
+- [x] **Equivalent-literal classes** — the non-trivial SCCs, reported as lists of provably-equal
+      literals (the same collapse the preprocessor performs to shrink a formula).
+- [x] **The backbone** — literals forced in *every* model, computed exactly: `ℓ` is forced iff the
+      graph has a path `¬ℓ →* ℓ`, found by reachability over the condensation, with a concrete
+      **implication-path witness** (`¬ℓ → … → ℓ`) reconstructed by BFS for each.
+- [x] **The condensation DAG + longest-path layering** (`src/twosat/layout.ts`) — collapse each SCC
+      to a point and lay the resulting DAG out left→right in topological order; plus a two-row,
+      column-per-variable layout of the literal graph (x on top, ¬x directly below) for legibility.
+- [x] **`src/twosat/examples.ts` — a curated gallery + generators.** An implication chain, an
+      equivalence triangle, the four-clause contradiction, graph-2-colouring as 2-SAT (bipartite SAT
+      vs. odd-cycle UNSAT), a forced-backbone instance; a seeded random 2-CNF generator and a cycle
+      2-colouring builder.
+- [x] **`src/components/TwoSatStudio.tsx` — the ninth studio.** A DIMACS editor that rejects any
+      clause wider than two literals with a clear message, live decision, verdict pill, a CDCL
+      cross-check card, a verified model, the **SVG implication graph coloured by SCC** (the
+      contradictory component ringed in red on UNSAT), the **condensation DAG**, the equivalence-class
+      and backbone panels, and an on-demand self-test badge.
+- [x] **Phase-transition explorer** — sweep the clause/variable ratio and plot `P(sat)` as an
+      inline-SVG curve, with the `m/n = 1` threshold (Chvátal–Reed / Goerdt) marked; thousands of
+      instances decided by the linear-time procedure in a blink, making the sharp 2-SAT threshold
+      visible.
+- [x] **`src/twosat/selfcheck.ts` — three independent oracles.** `runTwoSatChecks()` cross-checks
+      `decide2Sat` against (1) the complete CDCL `solve`/`solveAssuming` and (2) exhaustive brute
+      force over all `2ⁿ` assignments, on the curated gallery, the bipartite/odd-cycle colouring
+      family, and **1400 random instances** spanning the threshold — agreeing on the verdict, the
+      extracted model, the equivalence classes *and* the backbone (matched set-for-set against brute
+      force, each forced literal re-confirmed by `solveAssuming(¬ℓ) = UNSAT`), plus determinism and
+      a check that the condensation layering is acyclic. **11,290 assertions, all green.**
+- [x] Wired the **2-SAT Studio** tab into `App.tsx`; refreshed `project.json` (description + tags).
+      Lint + tsc + build + the full `verify-project.mjs` gate all green.
+
+**Ideas for next time (open):**
+- [ ] **Step the SCC discovery** — animate Tarjan's DFS pushing/popping the stack and crystallising
+      each component, the way the CDCL studio animates the implication graph.
+- [ ] **Highlight the chosen model on the condensation** — light the sink-ward component picked for
+      each variable, and let the user flip a free variable to see the model move.
+- [ ] **Show the *easy–hard–easy* effort peak** beside the phase transition (time the CDCL solver, not
+      just the linear procedure, across the ratio sweep).
+- [ ] **MAX-2-SAT / weighted 2-SAT** — when a 2-CNF is UNSAT, find the assignment violating the fewest
+      clauses (cross-checked against the existing MaxSAT engine).
+- [ ] **Implication-graph view of an arbitrary CNF's binary core** — extract the units + binaries of a
+      general formula and show the 2-SAT skeleton the real solver propagates over.

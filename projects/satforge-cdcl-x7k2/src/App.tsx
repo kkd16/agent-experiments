@@ -22,9 +22,10 @@ import { BddStudio } from './components/BddStudio'
 import { PbStudio } from './components/PbStudio'
 import { PhysStudio } from './components/PhysStudio'
 import { SimplifyStudio } from './components/SimplifyStudio'
+import { TwoSatStudio } from './components/TwoSatStudio'
 
 type Tab = 'solution' | 'stats' | 'count' | 'compile' | 'graph' | 'trace' | 'proof' | 'cnf'
-type Mode = 'sat' | 'smt' | 'qbf' | 'imc' | 'bdd' | 'pb' | 'phys' | 'simplify' | 'lab'
+type Mode = 'sat' | 'smt' | 'qbf' | 'imc' | 'bdd' | 'pb' | 'phys' | 'simplify' | 'twosat' | 'lab'
 
 export default function App() {
   const [mode, setMode] = useState<Mode>('sat')
@@ -135,6 +136,9 @@ export default function App() {
           <button className={mode === 'simplify' ? 'active' : ''} onClick={() => setMode('simplify')}>
             Simplify Studio
           </button>
+          <button className={mode === 'twosat' ? 'active' : ''} onClick={() => setMode('twosat')}>
+            2-SAT Studio
+          </button>
           <button className={mode === 'lab' ? 'active' : ''} onClick={() => setMode('lab')}>
             Solver Lab
           </button>
@@ -148,6 +152,7 @@ export default function App() {
       {mode === 'pb' && <PbStudio />}
       {mode === 'phys' && <PhysStudio />}
       {mode === 'simplify' && <SimplifyStudio />}
+      {mode === 'twosat' && <TwoSatStudio />}
       {mode === 'lab' && <SolverLab />}
 
       {mode === 'sat' && (

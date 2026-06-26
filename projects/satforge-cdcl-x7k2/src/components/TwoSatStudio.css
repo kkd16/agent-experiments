@@ -1,0 +1,329 @@
+/* 2-SAT Studio — implication-graph visualization + phase-transition explorer. */
+
+.twosat-side .twosat-random,
+.twosat-side .twosat-selftest {
+  margin-top: 1.1rem;
+}
+.twosat-random h3,
+.twosat-selftest h3 {
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted, #8b97a8);
+  margin: 0 0 0.5rem;
+}
+.twosat-rand-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.5rem;
+}
+.twosat-rand-grid label {
+  display: flex;
+  flex-direction: column;
+  font-size: 0.72rem;
+  color: var(--muted, #8b97a8);
+  gap: 0.2rem;
+}
+.twosat-rand-grid input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 0.3rem 0.4rem;
+  background: var(--panel-2, #11161f);
+  color: var(--text, #e6edf6);
+  border: 1px solid var(--border, #283142);
+  border-radius: 6px;
+  font: inherit;
+  font-size: 0.85rem;
+}
+.twosat-reroll,
+.twosat-selftest button,
+.twosat-phase-controls button {
+  grid-column: 1 / -1;
+  padding: 0.4rem 0.6rem;
+  background: var(--panel-2, #161c27);
+  color: var(--text, #e6edf6);
+  border: 1px solid var(--border, #2c3648);
+  border-radius: 6px;
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.82rem;
+}
+.twosat-reroll:hover,
+.twosat-selftest button:hover:not(:disabled),
+.twosat-phase-controls button:hover:not(:disabled) {
+  border-color: var(--accent, #4f8cff);
+  color: var(--accent, #7ab0ff);
+}
+.twosat-selftest button:disabled,
+.twosat-phase-controls button:disabled {
+  opacity: 0.6;
+  cursor: progress;
+}
+.twosat-selftest p {
+  font-size: 0.74rem;
+  color: var(--muted, #8b97a8);
+  margin: 0 0 0.5rem;
+  line-height: 1.45;
+}
+.twosat-check {
+  margin-top: 0.6rem;
+  font-size: 0.8rem;
+  border-radius: 6px;
+  padding: 0.5rem 0.6rem;
+  line-height: 1.4;
+}
+.twosat-check.ok {
+  background: rgba(46, 160, 67, 0.14);
+  color: #6fe39a;
+  border: 1px solid rgba(46, 160, 67, 0.4);
+}
+.twosat-check.bad {
+  background: rgba(248, 81, 73, 0.14);
+  color: #ff9d96;
+  border: 1px solid rgba(248, 81, 73, 0.4);
+}
+.twosat-check ul {
+  margin: 0.35rem 0 0;
+  padding-left: 1rem;
+  font-size: 0.72rem;
+}
+
+.twosat-editor {
+  margin-bottom: 1rem;
+}
+.twosat-editor label {
+  display: block;
+  font-size: 0.74rem;
+  color: var(--muted, #8b97a8);
+  margin-bottom: 0.3rem;
+}
+.twosat-editor textarea {
+  width: 100%;
+  box-sizing: border-box;
+  background: var(--panel-2, #0d121b);
+  color: var(--text, #e6edf6);
+  border: 1px solid var(--border, #283142);
+  border-radius: 8px;
+  padding: 0.6rem 0.7rem;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 0.85rem;
+  line-height: 1.5;
+  resize: vertical;
+}
+
+.twosat-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.9rem;
+}
+.twosat-stats > div {
+  display: flex;
+  flex-direction: column;
+  font-size: 0.68rem;
+  color: var(--muted, #8b97a8);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.twosat-stats span {
+  font-size: 1.25rem;
+  font-weight: 700;
+  color: var(--text, #e6edf6);
+  font-variant-numeric: tabular-nums;
+}
+
+.twosat-chips,
+.twosat-equiv li,
+.twosat-backbone li {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  align-items: center;
+}
+.twosat-chip {
+  padding: 0.22rem 0.5rem;
+  border-radius: 6px;
+  font-family: ui-monospace, Menlo, monospace;
+  font-size: 0.82rem;
+  font-weight: 600;
+}
+.twosat-chip.true {
+  background: rgba(46, 160, 67, 0.18);
+  color: #76e6a0;
+  border: 1px solid rgba(46, 160, 67, 0.45);
+}
+.twosat-chip.false {
+  background: rgba(110, 118, 129, 0.16);
+  color: #b6c0cc;
+  border: 1px solid rgba(110, 118, 129, 0.4);
+}
+
+.twosat-equiv,
+.twosat-backbone {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+}
+.twosat-equiv code,
+.twosat-backbone code {
+  font-family: ui-monospace, Menlo, monospace;
+  font-size: 0.82rem;
+}
+.twosat-equiv-eq,
+.twosat-arrow {
+  color: var(--accent, #7ab0ff);
+  font-weight: 700;
+}
+.twosat-backbone li {
+  align-items: baseline;
+}
+.twosat-forced {
+  background: rgba(79, 140, 255, 0.16);
+  border: 1px solid rgba(79, 140, 255, 0.45);
+  color: #9cc2ff;
+  padding: 0.18rem 0.45rem;
+  border-radius: 6px;
+  min-width: 2.4rem;
+  text-align: center;
+}
+.twosat-path {
+  color: var(--muted, #9aa6b4);
+}
+
+/* --- SVG views --- */
+.twosat-svgwrap {
+  overflow-x: auto;
+  border: 1px solid var(--border, #222a38);
+  border-radius: 8px;
+  background: var(--panel-2, #0b0f16);
+  padding: 6px;
+}
+.twosat-graph,
+.twosat-cond,
+.twosat-chart {
+  display: block;
+}
+.ts-edge {
+  fill: none;
+  stroke: #586374;
+  stroke-width: 1.4;
+  opacity: 0.85;
+}
+.ts-edge.internal {
+  stroke-dasharray: 4 3;
+  opacity: 0.55;
+}
+.ts-arrowhead {
+  fill: #586374;
+}
+.ts-node {
+  stroke: #0b0f16;
+  stroke-width: 2;
+}
+.ts-node.conflict {
+  stroke: #ff5d52;
+  stroke-width: 3;
+}
+.ts-label {
+  fill: #0b0f16;
+  font-family: ui-monospace, Menlo, monospace;
+  font-size: 11px;
+  font-weight: 700;
+  pointer-events: none;
+}
+.ts-cond-edge,
+.ts-curve {
+  fill: none;
+}
+.ts-cond-edge {
+  stroke: #586374;
+  stroke-width: 1.6;
+}
+.ts-cond-box {
+  fill: rgba(20, 27, 38, 0.92);
+  stroke-width: 2.2;
+}
+.ts-cond-box.conflict {
+  stroke: #ff5d52 !important;
+  fill: rgba(60, 22, 22, 0.85);
+}
+.ts-cond-label {
+  fill: #d7e0ec;
+  font-family: ui-monospace, Menlo, monospace;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+/* --- phase-transition chart --- */
+.twosat-phase {
+  margin-top: 1.2rem;
+}
+.twosat-phase-controls {
+  display: flex;
+  align-items: flex-end;
+  gap: 0.8rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.8rem;
+}
+.twosat-phase-controls label {
+  display: flex;
+  flex-direction: column;
+  font-size: 0.72rem;
+  color: var(--muted, #8b97a8);
+  gap: 0.2rem;
+}
+.twosat-phase-controls input {
+  width: 6rem;
+  box-sizing: border-box;
+  padding: 0.3rem 0.4rem;
+  background: var(--panel-2, #11161f);
+  color: var(--text, #e6edf6);
+  border: 1px solid var(--border, #283142);
+  border-radius: 6px;
+  font: inherit;
+  font-size: 0.85rem;
+}
+.twosat-phase-controls button {
+  grid-column: auto;
+  align-self: flex-end;
+  width: auto;
+}
+.ts-grid {
+  stroke: #1d2532;
+  stroke-width: 1;
+}
+.ts-axis {
+  fill: #7e8a99;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+.ts-axis-title {
+  fill: #9aa6b4;
+  font-size: 11px;
+}
+.ts-threshold {
+  stroke: #f0a33c;
+  stroke-width: 1.2;
+  stroke-dasharray: 5 4;
+  opacity: 0.85;
+}
+.ts-threshold-label {
+  fill: #f0a33c;
+  font-size: 10px;
+  font-weight: 600;
+}
+.ts-curve {
+  stroke: #4f8cff;
+  stroke-width: 2.4;
+}
+.ts-dot {
+  fill: #9cc2ff;
+}
+
+.twosat-toobig {
+  color: var(--muted, #8b97a8);
+  font-size: 0.85rem;
+  font-style: italic;
+}
