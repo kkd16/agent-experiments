@@ -6,6 +6,7 @@ import {
   decide2Sat,
   is2Cnf,
   wideClauses,
+  binaryCore,
   layoutImplication,
   layoutCondensation,
   compColor,
@@ -28,7 +29,12 @@ const DEFAULT_RANDOM: RandomParams = { n: 7, ratio: 1.0, seed: 7 }
 
 interface ParseOk {
   ok: true
+  /** The 2-CNF actually decided (the binary core when wider clauses were dropped). */
   cnf: CNF
+  /** The full formula as parsed (== cnf unless wider clauses were dropped). */
+  original: CNF
+  /** How many wider clauses were dropped to form the binary core. */
+  dropped: number
   warnings: string[]
 }
 interface ParseFail {
@@ -36,18 +42,24 @@ interface ParseFail {
   error: string
 }
 
-function parse(src: string): ParseOk | ParseFail {
+function parse(src: string, coreMode: boolean): ParseOk | ParseFail {
   try {
     const { cnf, warnings } = parseDimacs(src)
     if (cnf.numVars === 0) return { ok: false, error: 'No variables — add some clauses.' }
     if (!is2Cnf(cnf)) {
       const wide = wideClauses(cnf)
-      return {
-        ok: false,
-        error: `Not a 2-CNF: ${wide.length} clause${wide.length === 1 ? '' : 's'} have more than two literals. The implication-graph method needs every clause to be a unit or a pair.`,
+      if (!coreMode) {
+        return {
+          ok: false,
+          error: `Not a 2-CNF: ${wide.length} clause${wide.length === 1 ? '' : 's'} have more than two literals. Enable "decide the binary core" below to project to the implication-graph skeleton, or edit the formula.`,
+        }
       }
+      const core = binaryCore(cnf)
+      if (core.cnf.clauses.length === 0)
+        return { ok: false, error: 'The binary core is empty — no unit or binary clauses to build a graph from.' }
+      return { ok: true, cnf: core.cnf, original: cnf, dropped: core.dropped, warnings }
     }
-    return { ok: true, cnf, warnings }
+    return { ok: true, cnf, original: cnf, dropped: 0, warnings }
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : 'parse error' }
   }
@@ -57,17 +69,19 @@ export function TwoSatStudio() {
   const [source, setSource] = useState<Source>({ kind: 'example', index: 0 })
   const [src, setSrc] = useState<string>(() => toDimacs(TWO_SAT_EXAMPLES[0].cnf))
   const [rand, setRand] = useState<RandomParams>(DEFAULT_RANDOM)
+  const [coreMode, setCoreMode] = useState(false)
   const [checks, setChecks] = useState<TwoSatCheckReport | null>(null)
   const [checking, setChecking] = useState(false)
 
-  const parsed = useMemo(() => parse(src), [src])
+  const parsed = useMemo(() => parse(src, coreMode), [src, coreMode])
   const result = useMemo<TwoSatResult | null>(
     () => (parsed.ok ? decide2Sat(parsed.cnf) : null),
     [parsed],
   )
-  // Cross-check against the project's complete CDCL solver.
+  // Cross-check against the project's complete CDCL solver — always on the FULL
+  // formula, so in binary-core mode it judges what the core can only bound.
   const cdcl = useMemo(
-    () => (parsed.ok ? solve(parsed.cnf).status : null),
+    () => (parsed.ok ? solve(parsed.original).status : null),
     [parsed],
   )
 
@@ -207,7 +221,18 @@ export function TwoSatStudio() {
         <div className="twosat-editor">
           <label>DIMACS — every clause a unit or a pair, terminated by 0</label>
           <textarea value={src} onChange={(e) => onEdit(e.target.value)} spellCheck={false} rows={7} />
+          <label className="twosat-coremode">
+            <input type="checkbox" checked={coreMode} onChange={(e) => setCoreMode(e.target.checked)} />
+            decide the <strong>binary core</strong> of wider clauses (units + pairs only)
+          </label>
           {!parsed.ok && <div className="banner error">⚠ {parsed.error}</div>}
+          {parsed.ok && parsed.dropped > 0 && (
+            <div className="banner warn">
+              Binary core: {parsed.dropped} wider clause{parsed.dropped === 1 ? '' : 's'} dropped.
+              The core is a <em>one-way</em> test — if it is UNSAT the whole formula is UNSAT; if it
+              is satisfiable the result is inconclusive for the full formula.
+            </div>
+          )}
           {parsed.ok &&
             parsed.warnings.map((w, i) => (
               <div key={i} className="banner warn">
@@ -217,7 +242,7 @@ export function TwoSatStudio() {
         </div>
 
         {result && parsed.ok && (
-          <Results result={result} cnf={parsed.cnf} cdcl={cdcl} />
+          <Results result={result} cnf={parsed.cnf} cdcl={cdcl} dropped={parsed.dropped} />
         )}
         {!result && (
           <div className="placeholder">
@@ -240,13 +265,20 @@ function Results({
   result,
   cnf,
   cdcl,
+  dropped,
 }: {
   result: TwoSatResult
   cnf: CNF
   cdcl: 'sat' | 'unsat' | 'unknown' | null
+  dropped: number
 }) {
   const modelOk = result.model ? verifyModel(cnf, result.model).ok : false
-  const cdclAgrees = cdcl == null ? null : (cdcl === 'sat') === result.sat
+  const coreMode = dropped > 0
+  // In strict mode the core IS the formula, so the verdicts must agree. In
+  // binary-core mode they need only agree when the core is UNSAT (a sound
+  // refutation of the full formula); a satisfiable core is inconclusive.
+  const cdclAgrees =
+    cdcl == null ? null : coreMode ? (result.sat ? null : cdcl === 'unsat') : (cdcl === 'sat') === result.sat
   const conflictComp =
     result.conflictVar != null ? result.comp[2 * (result.conflictVar - 1)] : -1
 
@@ -271,10 +303,15 @@ function Results({
         <div className="imc-card oracle">
           <h3>CDCL cross-check</h3>
           <p>
-            The complete CDCL solver reports <strong>{cdcl?.toUpperCase()}</strong>.{' '}
-            <span className={cdclAgrees ? 'check-ok' : 'check-bad'}>
-              {cdclAgrees ? '✓ agrees' : '✗ MISMATCH'}
-            </span>
+            The complete CDCL solver reports <strong>{cdcl?.toUpperCase()}</strong> on the{' '}
+            {coreMode ? 'full formula' : 'formula'}.{' '}
+            {coreMode && result.sat ? (
+              <span className="twosat-inconclusive">satisfiable core — inconclusive</span>
+            ) : (
+              <span className={cdclAgrees ? 'check-ok' : 'check-bad'}>
+                {cdclAgrees ? (coreMode ? '✓ core refutation confirmed' : '✓ agrees') : '✗ MISMATCH'}
+              </span>
+            )}
           </p>
         </div>
         <div className="imc-card">

@@ -353,3 +353,27 @@ function condReachability(count: number, adj: number[][]): Set<number>[] {
 export function isSat2(cnf: CNF): boolean {
   return decide2Sat(cnf).sat
 }
+
+export interface BinaryCore {
+  /** The 2-CNF of all unit and binary clauses (the implication-graph skeleton). */
+  cnf: CNF
+  /** How many wider clauses (width > 2) were dropped. */
+  dropped: number
+}
+
+/**
+ * The BINARY CORE of an arbitrary CNF: keep every unit and binary clause, drop
+ * the wider ones. This is the sub-formula the implication graph is built from
+ * even for general SAT, and it is a sound *one-way* test: if the binary core is
+ * UNSAT then the whole formula is UNSAT (dropping clauses only weakens), but a
+ * satisfiable core says nothing — the dropped clauses may still kill it.
+ */
+export function binaryCore(cnf: CNF): BinaryCore {
+  const clauses: number[][] = []
+  let dropped = 0
+  for (const c of cnf.clauses) {
+    if (c.length <= 2) clauses.push(c)
+    else dropped++
+  }
+  return { cnf: { numVars: cnf.numVars, clauses }, dropped }
+}
