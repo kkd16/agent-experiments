@@ -23,9 +23,17 @@ import {
   type EpdCase,
   type KbnkVerification,
   GTB_CONFIGS,
+  WDL_CONFIGS,
+  wdlMatch,
+  wdlReady,
+  probeWdl,
+  wdlStats,
+  ROOK,
+  QUEEN,
   tbCacheKeys,
   tbCacheClear,
   type GtbVerification,
+  type WdlVerification,
   Accumulator,
   nnueEvalFresh,
   NnueTrainer,
@@ -44,7 +52,7 @@ import {
 import { useEngine } from '../hooks/useEngine'
 import NnueLab from './NnueLab'
 
-type Mode = 'perft' | 'tactics' | 'epd' | 'tablebase' | 'gtb' | 'nnue' | 'arena' | 'checks'
+type Mode = 'perft' | 'tactics' | 'epd' | 'tablebase' | 'gtb' | 'wdl' | 'nnue' | 'arena' | 'checks'
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))
 
@@ -686,6 +694,174 @@ function EndgamesLab() {
   )
 }
 
+// ---------------- WDL tablebases (a piece on both sides) ----------------
+
+function WdlLab() {
+  const engine = useEngine()
+  const [id, setId] = useState('KQvKR')
+  const [running, setRunning] = useState(false)
+  const [frac, setFrac] = useState(0)
+  const [phase, setPhase] = useState('')
+  const [report, setReport] = useState<WdlVerification | null>(null)
+  const [fromCache, setFromCache] = useState(false)
+  const [cached, setCached] = useState<string[]>([])
+
+  const refreshCache = useCallback(() => {
+    tbCacheKeys().then((ks) => setCached(ks.filter((k) => k.startsWith('WDL:')).map((k) => k.slice(4))))
+  }, [])
+  useEffect(() => {
+    refreshCache()
+  }, [refreshCache])
+
+  const config = WDL_CONFIGS.find((c) => c.id === id)!
+
+  const run = useCallback(async () => {
+    setRunning(true)
+    setReport(null)
+    setFrac(0)
+    setPhase('starting')
+    await sleep(30)
+    const before = await tbCacheKeys()
+    const r = await engine.verifyWdl({ id, sample: 400000, games: 3000 }, (f, ph) => {
+      setFrac(f)
+      setPhase(ph)
+    })
+    setFromCache(before.includes('WDL:' + id))
+    setReport(r)
+    setRunning(false)
+    refreshCache()
+  }, [engine, id, refreshCache])
+
+  const clearOne = useCallback(async () => {
+    await tbCacheClear('WDL:' + id)
+    refreshCache()
+  }, [id, refreshCache])
+
+  const s = report?.stats
+  const isCached = cached.includes(id)
+  const moves = (plies: number) => `${Math.ceil(plies / 2)} moves (${plies} plies)`
+  const pct = (n: number) => (s && s.legal > 0 ? ((n / s.legal) * 100).toFixed(1) + '%' : '')
+
+  const verdict =
+    s &&
+    (report!.theoryExpectDecisive
+      ? `a forced win for the stronger side — longest mate in ${moves(s.maxDtm)}`
+      : config.white === config.black
+        ? 'a draw with best play (a perfectly symmetric balance)'
+        : `a draw with best play — the rook converts only ${pct(s.whiteWin)} of positions, the minor never wins`)
+
+  const rows: { name: string; value: string; ok: boolean }[] = report
+    ? [
+        { name: 'Verdict (perfect play)', value: verdict!, ok: true },
+        { name: 'Table size (stm · squares⁴)', value: s!.size.toLocaleString() + ' entries', ok: true },
+        { name: 'Legal positions', value: s!.legal.toLocaleString(), ok: true },
+        { name: `Wins for the ${config.white === config.black ? 'first' : 'stronger'} side`, value: `${s!.whiteWin.toLocaleString()} (${pct(s!.whiteWin)})`, ok: true },
+        { name: 'Wins for the defender (it snaps off a hanging piece)', value: `${s!.blackWin.toLocaleString()} (${pct(s!.blackWin)})`, ok: true },
+        { name: 'Drawn positions', value: `${s!.draw.toLocaleString()} (${pct(s!.draw)})`, ok: true },
+        {
+          name: 'Build time (WDL retrograde analysis)',
+          value: `${(s!.buildMs / 1000).toFixed(1)} s${fromCache ? ' (loaded from cache)' : ''}`,
+          ok: true,
+        },
+        {
+          name: 'Bellman optimality (sampled)',
+          value: `${(report.consChecked - report.consBad).toLocaleString()} / ${report.consChecked.toLocaleString()} hold`,
+          ok: report.consBad === 0,
+        },
+        {
+          name: 'Optimal self-play matches the stored DTM',
+          value: `${report.selfPlayOk.toLocaleString()} / ${report.selfPlayGames.toLocaleString()}`,
+          ok: report.selfPlayMismatch === 0 && report.selfPlayOk > 0,
+        },
+        {
+          name: 'Endgame-theory cross-check',
+          value: report.theoryExpectDecisive ? 'decisive (queen wins)' : 'drawn / balanced',
+          ok: report.theoryPass,
+        },
+      ]
+    : []
+  const allOk = rows.length > 0 && rows.every((r) => r.ok)
+
+  return (
+    <div className="lab">
+      <div className="lab-intro">
+        <p>
+          Every other tablebase here assumes the defender is a <em>lone king</em>. These solve the genuinely{' '}
+          <strong>three-valued</strong> endings with a <strong>piece on both sides</strong> — where the side to move can{' '}
+          <strong>win, lose, or draw</strong>. A from-scratch <strong>Win/Draw/Loss + distance-to-mate</strong> retrograde
+          solver builds the whole ~33.5-million-position table in your browser (no embedded data); captures leave the table
+          to the 3-man KQvK/KRvK sub-tables. The headline <strong>KQvKR</strong> is a win (the famous mate-in-35), while{' '}
+          <strong>KRvKB</strong>/<strong>KRvKN</strong> are draws — the defender escaping with …Bxr into a drawn K+minor
+          ending. Each build is proven from the inside: <strong>Bellman optimality</strong> on a random sample and thousands
+          of <strong>optimal self-play</strong> games that mate in exactly the stored distance.
+        </p>
+        <div className="epd-controls">
+          <label>
+            Ending{' '}
+            <select value={id} onChange={(e) => setId(e.target.value)} disabled={running}>
+              {WDL_CONFIGS.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.label}
+                  {cached.includes(c.id) ? ' ●' : ''}
+                </option>
+              ))}
+            </select>
+          </label>
+          <button className="btn primary" onClick={run} disabled={running}>
+            {running ? 'Solving…' : `Build & verify ${config.id}`}
+          </button>
+          {isCached && (
+            <button className="btn" onClick={clearOne} disabled={running}>
+              Clear cache
+            </button>
+          )}
+          {isCached && <span className="lab-summary">cached ●</span>}
+          {report && <span className={`lab-summary ${allOk ? 'ok' : 'bad'}`}>{allOk ? 'verified ✓' : 'check failed'}</span>}
+        </div>
+        <p className="tb-note">Heads-up: a full build runs ~20–55 s of retrograde analysis the first time; it is then cached.</p>
+      </div>
+      {running && (
+        <div className="tb-progress">
+          <div className="tb-bar">
+            <div className="tb-fill" style={{ width: `${Math.round(frac * 100)}%` }} />
+          </div>
+          <span className="tb-phase">
+            {phase} — {Math.round(frac * 100)}%
+          </span>
+        </div>
+      )}
+      {report && (
+        <>
+          <table className="lab-table">
+            <thead>
+              <tr>
+                <th>Property</th>
+                <th>Value</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((r) => (
+                <tr key={r.name} className={`lab-row ${r.ok ? 'pass' : 'fail'}`}>
+                  <td>{r.name}</td>
+                  <td>{r.value}</td>
+                  <td className="lab-status">{r.ok ? '✓' : '✗'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {s!.maxDtm > 0 && s!.maxDtmFen && (
+            <p className="tb-note">
+              A position realising the longest mate (White holds the {config.label.split(' ')[0].slice(2)}, mate in{' '}
+              {Math.ceil(s!.maxDtm / 2)}): <code>{s!.maxDtmFen}</code>
+            </p>
+          )}
+        </>
+      )}
+    </div>
+  )
+}
+
 // ---------------- Correctness self-tests ----------------
 
 interface CheckRow {
@@ -764,6 +940,44 @@ function runChecks(): CheckRow[] {
   out.push({ group: 'Tablebase', name: 'K+Q vs K → decisive win', pass: kqk > 15000, detail: String(kqk) })
   const krkDraw = evaluate(parseFen('8/8/8/8/8/8/2R5/K1k5 b - - 0 1'))
   out.push({ group: 'Tablebase', name: 'K+R vs K, rook hangs → draw', pass: krkDraw === 0, detail: String(krkDraw) })
+
+  // WDL (pieces-on-both-sides) routing + probe. The big tables build in the WDL TBs
+  // tab; here we check the classification is correct and — when a table is resident —
+  // that the probe + colour-canonicalisation agree on a known win.
+  const wm1 = wdlMatch('8/8/8/4k3/8/8/8/Q2K1r2 w - - 0 1')
+  out.push({ group: 'WDL', name: 'K+Q vs K+R routes to the KQvKR table', pass: wm1 === 'KQvKR', detail: String(wm1) })
+  const wm2 = wdlMatch('8/8/8/4k3/8/8/4r3/3K1b2 w - - 0 1') // R vs B → stronger piece first
+  out.push({ group: 'WDL', name: 'K+R vs K+B routes to the KRvKB table', pass: wm2 === 'KRvKB', detail: String(wm2) })
+  const wm3 = wdlMatch('8/8/8/4k3/4p3/8/8/Q2K1r2 w - - 0 1') // pawns present → not a WDL ending
+  out.push({ group: 'WDL', name: 'a position with pawns is not a WDL ending', pass: wm3 === null, detail: String(wm3) })
+  const kqvkrStats = wdlReady('KQvKR') ? wdlStats('KQvKR') : null
+  if (kqvkrStats && kqvkrStats.maxDtmFen) {
+    // The stored longest-win position (White holds the Q) must probe as that exact win,
+    // and a vertical colour-mirror (real Black holds the Q) must recover it identically.
+    const sqOf: Record<string, number> = {}
+    const [place, stm] = kqvkrStats.maxDtmFen.split(/\s+/)
+    place.split('/').forEach((row, r) => {
+      const rank = 7 - r
+      let f = 0
+      for (const ch of row) {
+        if (ch >= '1' && ch <= '8') f += +ch
+        else {
+          sqOf[ch] = rank * 8 + f
+          f++
+        }
+      }
+    })
+    const a = probeWdl('KQvKR', sqOf['K'], sqOf['k'], QUEEN, sqOf['Q'], ROOK, sqOf['r'], stm === 'w')
+    const b = probeWdl('KQvKR', sqOf['k'] ^ 56, sqOf['K'] ^ 56, ROOK, sqOf['r'] ^ 56, QUEEN, sqOf['Q'] ^ 56, stm !== 'w')
+    out.push({
+      group: 'WDL',
+      name: 'KQvKR longest-win probe + colour-mirror agree',
+      pass: a.wdl === 'win' && a.dtm === kqvkrStats.maxDtm && b.wdl === 'win' && b.dtm === a.dtm,
+      detail: `${a.wdl} ${a.dtm} / ${b.wdl} ${b.dtm}`,
+    })
+  } else {
+    out.push({ group: 'WDL', name: 'KQvKR table resident (build it in the WDL TBs tab)', pass: true, detail: 'not built — optional' })
+  }
 
   // SAN round-trip: every legal move's notation must parse back to that move.
   const sanFens = [
@@ -1218,6 +1432,9 @@ export default function Lab() {
         <button className={mode === 'gtb' ? 'tab active' : 'tab'} onClick={() => setMode('gtb')}>
           Endgame TBs
         </button>
+        <button className={mode === 'wdl' ? 'tab active' : 'tab'} onClick={() => setMode('wdl')}>
+          WDL TBs
+        </button>
         <button className={mode === 'nnue' ? 'tab active' : 'tab'} onClick={() => setMode('nnue')}>
           NNUE
         </button>
@@ -1236,6 +1453,7 @@ export default function Lab() {
       {mode === 'epd' && <EpdLab />}
       {mode === 'tablebase' && <TablebaseLab />}
       {mode === 'gtb' && <EndgamesLab />}
+      {mode === 'wdl' && <WdlLab />}
       {mode === 'nnue' && <NnueLab />}
       {mode === 'arena' && <ArenaLab />}
       {mode === 'checks' && <ChecksLab />}

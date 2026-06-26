@@ -20,6 +20,7 @@ import {
   type GtbVerification,
   type Oracle,
 } from './gtb'
+import { verifyWdl, tryLoadWdlFromCache, persistWdl, type WdlVerification } from './wdltb'
 import { warmTablebasesFor } from './endgames'
 
 export interface SearchRequest {
@@ -61,6 +62,13 @@ export interface GtbRequest {
   games: number
 }
 
+export interface WdlRequest {
+  type: 'wdl'
+  id: string
+  sample: number
+  games: number
+}
+
 export interface ReviewRequest {
   type: 'review'
   items: { fen: string; history: bigint[] }[]
@@ -81,6 +89,7 @@ export type WorkerRequest =
   | EvalsRequest
   | KbnkRequest
   | GtbRequest
+  | WdlRequest
   | ReviewRequest
   | SetNnueRequest
 
@@ -95,6 +104,8 @@ export type WorkerOut =
   | { type: 'kbnkdone'; report: KbnkVerification }
   | { type: 'gtbprogress'; frac: number; phase: string }
   | { type: 'gtbdone'; report: GtbVerification; cached: boolean }
+  | { type: 'wdlprogress'; frac: number; phase: string }
+  | { type: 'wdldone'; report: WdlVerification; cached: boolean }
   | { type: 'reviewprogress'; done: number; total: number }
   | { type: 'reviewdone'; nodes: NodeAnalysis[] }
 
@@ -216,6 +227,15 @@ self.onmessage = async (e: MessageEvent<WorkerRequest>) => {
     )
     if (!cached) await persistGtb(msg.id)
     post({ type: 'gtbdone', report, cached })
+  } else if (msg.type === 'wdl') {
+    const cached = await tryLoadWdlFromCache(msg.id)
+    const report = verifyWdl(
+      msg.id,
+      { sample: msg.sample, games: msg.games },
+      (frac, phase) => post({ type: 'wdlprogress', frac, phase }),
+    )
+    if (!cached) await persistWdl(msg.id)
+    post({ type: 'wdldone', report, cached })
   } else if (msg.type === 'review') {
     const total = msg.items.length
     const nodes: NodeAnalysis[] = []

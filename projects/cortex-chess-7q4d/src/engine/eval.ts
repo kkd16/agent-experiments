@@ -35,6 +35,7 @@ import { kpkWin } from './kpk'
 import { probeKxK } from './egtb'
 import { probeKbnk, kbnkReady } from './kbnk'
 import { gtbReady, gtbConfigFor, probeGtb } from './gtb'
+import { wdlReady, probeWdl } from './wdltb'
 
 // Midgame / endgame base values, indexed by piece type 1..6.
 const MG_VALUE = [0, 82, 337, 365, 477, 1025, 0]
@@ -283,6 +284,12 @@ export function evaluate(p: Position): number {
       if (sc !== null) return sc
     } else if (bNonKing === 2 && wNonKing === 0) {
       const sc = evalGtb(p, false, blackKnights, blackBishops, blackRooks, blackQueens)
+      if (sc !== null) return sc
+    } else if (wNonKing === 1 && bNonKing === 1) {
+      // --- A piece on *both* sides (KQvKR, KRvKB, …) via the WDL tablebase (wdltb.ts).
+      // Returns a DTM-graded decisive score for the winner, or exactly 0 for a proven
+      // draw (e.g. KRvKB) that material alone misjudges.
+      const sc = evalWdl(p)
       if (sc !== null) return sc
     }
   }
@@ -642,6 +649,48 @@ function evalGtb(
   const strongRel = 20000 - r.dtm
   const whiteRel = strongIsWhite ? strongRel : -strongRel
   return p.turn === WHITE ? whiteRel : -whiteRel
+}
+
+// K + piece vs K + piece (a piece on both sides), via the WDL distance-to-mate
+// tablebase (wdltb.ts). Returns null when the relevant table isn't resident (the
+// search then uses the heuristic eval), a DTM-graded decisive score relative to the
+// side to move when the position is won/lost, or exactly 0 for a proven draw.
+const WDL_LETTER: Record<number, string> = { [KNIGHT]: 'N', [BISHOP]: 'B', [ROOK]: 'R', [QUEEN]: 'Q' }
+const WDL_RANK: Record<number, number> = { [KNIGHT]: 1, [BISHOP]: 2, [ROOK]: 3, [QUEEN]: 4 }
+
+function evalWdl(p: Position): number | null {
+  let wType = -1
+  let wSq = -1
+  let bType = -1
+  let bSq = -1
+  for (let s = 0; s < 128; s++) {
+    if (!isOnBoard(s)) {
+      s += 7
+      continue
+    }
+    const pc = p.board[s]
+    if (pc === EMPTY) continue
+    const t = pieceType(pc)
+    if (t === KING) continue
+    if (pieceColor(pc) === WHITE) {
+      wType = t
+      wSq = to64(s)
+    } else {
+      bType = t
+      bSq = to64(s)
+    }
+  }
+  if (wType < 0 || bType < 0) return null
+  // The config id always lists the stronger piece first (symmetric ids list it twice).
+  const id =
+    WDL_RANK[wType] >= WDL_RANK[bType]
+      ? `K${WDL_LETTER[wType]}vK${WDL_LETTER[bType]}`
+      : `K${WDL_LETTER[bType]}vK${WDL_LETTER[wType]}`
+  if (!wdlReady(id)) return null
+  const r = probeWdl(id, to64(p.kings[WHITE]), to64(p.kings[BLACK]), wType, wSq, bType, bSq, p.turn === WHITE)
+  if (r.wdl === 'draw') return 0
+  const mag = 20000 - r.dtm
+  return r.wdl === 'win' ? mag : -mag
 }
 
 // Chebyshev (king) distance between two 0..63 squares.

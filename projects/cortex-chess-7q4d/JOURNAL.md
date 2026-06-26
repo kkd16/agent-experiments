@@ -37,6 +37,16 @@ representation, move generation, search and evaluation are all hand-built here.
   retrograde BFS over a **DTM-keyed bucket queue** (Dial's), with Syzygy-style **sub-table probing** — a defender
   capture that leaves a still-won residual is scored from the relevant 3-man table. Proven from the inside (Bellman
   optimality on a random sample + optimal self-play to mate that follows captures across tables).
+- **`engine/wdltb.ts`** — a from-scratch **Win/Draw/Loss + distance-to-mate** retrograde solver for the endings with a
+  **piece on both sides** (KQvKR, KQvKB, KQvKN, KRvKB, KRvKN, and the symmetric KRvKR/KQvKQ). Unlike every other table
+  here, the defender is *not* a lone king, so the game is genuinely three-valued — the side to move can win, lose, or
+  draw. The solve is the symmetric retrograde over a **DTM bucket queue**: LOSS nodes push predecessors to WIN (1 + min),
+  WIN nodes decrement an "all my moves lose" counter that fires LOSS (1 + max), unresolved nodes are DRAW. Captures leave
+  the fixed material to a 3-man residual where the capturer is the strong side, so a capture is always opp-LOSS (keeps a
+  major → length from `gtb`'s KQvK/KRvK) or opp-DRAW (keeps a minor) — the reason KRvKB is drawn (…Bxr) and KQvKR is a
+  win (the textbook **mate-in-35**). Built in-browser (~33.5 M positions, no embedded data), persisted to IndexedDB,
+  probed by the eval for perfect play, and proven from the inside (Bellman optimality + optimal self-play to the exact
+  DTM, cross-checked against endgame theory).
 - **`engine/tbcache.ts`** — sandbox-safe **IndexedDB** persistence for built DTM tables (main thread *and* worker), so a
   solved ending survives a reload and re-hydrates instantly instead of rebuilding (~10 s).
 - **`engine/endgames.ts`** — maps a position's material to a tablebase config and **warms the cached table before the
@@ -205,10 +215,72 @@ representation, move generation, search and evaluation are all hand-built here.
 - [ ] **Self-play data + iterative retraining** (the net plays itself to generate harder positions), and an Elo estimate
 - [ ] Pawn-ful tablebases (KPvKP, KRvKP, KPvK as exact DTM) — needs un-promotion / en-passant unmoves and a layered
       dependency on the promoted-material tables (the generic solver is currently pawnless / fixed-material)
-- [ ] Pieces on *both* sides (KQvKR, KRvKB, …) — generalise the lone-king defender assumption
+- [x] **Pieces on *both* sides (KQvKR, KRvKB, …)** — a full **Win/Draw/Loss + DTM** retrograde solver
+      (`wdltb.ts`), wired into the eval, the warmer, IndexedDB, and a new **WDL TBs** Lab tab. KQvKR is the
+      textbook mate-in-35; KRvKB/KRvKN are draws. Bellman-optimal + 2500/2500 self-play + 160 k-position
+      eval-agreement, all verified outside the browser [→ see "WDL tablebases" below]
 - [ ] WASM/SIMD or bitboard rewrite for a big NPS boost
 - [ ] Ponder line preview (show the predicted reply + the engine's intended answer while it thinks)
 - [ ] Bigger EPD sets (full WAC-300, ECM) with category breakdowns and an Elo estimate from the pass rate
+
+## WDL tablebases — pieces on *both* sides (planned + shipping this session)
+
+Every retrograde table the engine has ever built — `egtb.ts` (KRvK/KQvK), `kbnk.ts` (KBNvK), and the
+material-generic `gtb.ts` (KBBvK … KQNvK) — shares one simplifying assumption: the **defender is a lone
+king**. That makes the game two-valued (the strong side *always* wins or it's a known draw) and the
+retrograde a single backward BFS over "is this won for the strong side?". The whole famous middle of
+endgame theory lives where that assumption breaks: **a piece on both sides**. There the outcome is
+genuinely **three-valued** — the side to move can *win*, *lose*, or *draw* — and the canonical drawing
+resource is the defender **capturing into a drawn minor ending** (KRvKB is a draw precisely because
+…Bxr reaches K+B vs K). You cannot model any of that with a win-only table.
+
+`wdltb.ts` is a from-scratch **Win/Draw/Loss + distance-to-mate** retrograde solver for the 4-piece,
+one-piece-each-side endings (same ~33.5 M-position scale as KBNvK, built in-browser, no embedded data):
+
+- [x] **A real WDL/DTM retrograde engine** (`engine/wdltb.ts`). Position space `(stm, wk, bk, wp, bp)` →
+      2^25 entries. Both sides are now mobile, so the solve is the *symmetric* retrograde: a Dial bucket
+      queue keyed on DTM where **LOSS** nodes push their predecessors to **WIN** (1 + min), and **WIN**
+      nodes decrement a per-node "all my moves lose" counter that fires **LOSS** (1 + max) — for *every*
+      position, not just the strong side's. Unresolved nodes settle as **DRAW**. (A subtle bug found in
+      bring-up: pre-stating mate seeds in pass 1 made pass 2's `state !== UNKNOWN` guard *skip* them, so
+      they never propagated and short mates fell back to their slow capture-win length — fixed by seeding
+      mates into the bucket queue unstated, like every other seed. After the fix KQvKR tops out at the
+      textbook **mate-in-35**.)
+- [x] **Captures as typed terminal edges.** Within fixed material every legal move is quiet; a capture
+      removes the opponent's only piece and **leaves the table** to a 3-man residual where the *capturer*
+      is the strong side. So a capture is *always* opp-LOSS (capturer keeps a major → probe `gtb`'s
+      KQvK/KRvK for the exact continuation length) or opp-DRAW (capturer keeps a minor → K+minor vs K).
+      That single fact is what makes KRvKB / KRvKN draws and KQvKR a win, and it means **no loss-floor is
+      ever needed** (you can never capture *into* a still-lost position).
+- [x] **Exact legality, including pins.** Full pseudo-legal generation with king-step "can't walk the
+      check ray" and piece-move "don't expose your king" (a pinned piece may only move along the pin or
+      capture the pinner) — all via a 2-blocker ray-attack primitive, no scratch board in the hot loop.
+- [x] **The config set** (`WDL_CONFIGS`): the headline **KQvKR** (a win, the hardest of the elementary
+      "piece vs piece" wins), **KQvKB** / **KQvKN** (wins), **KRvKB** / **KRvKN** (the celebrated draws),
+      and the symmetric **KRvKR** / **KQvKQ** (draws). Built lazily; KQvK/KRvK sub-tables auto-built first.
+- [x] **Proven from the inside** (`verifyWdl`): (1) **Bellman optimality** on a large random sample — every
+      resolved node's value equals the negamax of its children's stored values (quiet children read from
+      the table, capture children re-derived from the residual sub-tables); (2) **optimal self-play** —
+      from won/lost roots the winner mates and the loser resists for *exactly* the stored DTM, following
+      captures into the sub-tables; (3) **theory cross-checks** — KQvKR is overwhelmingly decisive for the
+      queen yet has the known fortress draws (and the rook wins only the positions where it snaps off a
+      hanging queen), while KRvKB/KRvKN are overwhelmingly drawn and the minor side can *never* win.
+- [x] **IndexedDB persistence** (reuse `tbcache.ts`, `WDL:` key namespace) so a solved ending survives a
+      reload, and **warm-before-search** wiring (`endgames.ts`, `wdlMatch`) so once solved in the Lab the
+      engine plays the ending perfectly in real games.
+- [x] **Exact eval probe** (`eval.ts`, `evalWdl`): when the material is K+piece vs K+piece (no pawns) and
+      the table is resident, return a DTM-graded decisive score for the winner / exactly 0 for a proven
+      draw — so the engine *wins* KQvKR by the fastest mate and correctly *holds* KRvKB instead of
+      blundering for a "win".
+- [x] **A new Lab surface**: a **WDL TBs** tab (build + verify, the full WDL split with percentages, the
+      longest-win FEN, cached badge) and WDL routing/probe spot-checks in the **Self-tests** tab.
+- [x] **Validated outside the browser** before it shipped. `tools/test-wdltb.ts`: KQvKR / KRvKB / KRvKR
+      each **Bellman-optimal on ~180–200 k sampled positions (0 bad)**, **2500/2500 optimal self-play
+      games matching the stored DTM**, theory-consistent, and the longest KQvKR win is **mate-in-35**
+      (69 plies) — with the probe + colour-mirror canonicalisation recovering the same win + DTM.
+      `tools/test-wdl-eval.ts`: **160 000 random positions, evaluate() agrees with the probe with 0
+      mismatches** (decisive scores for wins/losses, exactly 0 for draws, both colours). Full gate green
+      via `node scripts/verify-project.mjs cortex-chess-7q4d`.
 
 ## Cortex Coach — full game review (planned + shipping this session)
 
@@ -255,6 +327,23 @@ Coach closes it with a principled, from-scratch accuracy model — no external s
 
 ## Session log
 
+- 2026-06-26 (claude): **WDL tablebases — a piece on both sides.** Shipped `engine/wdltb.ts`, a
+  from-scratch **Win/Draw/Loss + distance-to-mate** retrograde solver that breaks every previous
+  table's "defender is a lone king" assumption: the endings KQvKR / KQvKB / KQvKN / KRvKB / KRvKN /
+  KRvKR / KQvKQ are genuinely three-valued and are solved by a symmetric retrograde over a DTM bucket
+  queue (LOSS→WIN at 1+min, a per-node counter firing LOSS at 1+max), with captures handled as typed
+  terminal edges into `gtb`'s 3-man KQvK/KRvK sub-tables (always opp-LOSS for a kept major, opp-DRAW
+  for a kept minor — which is exactly why KRvKB draws and KQvKR wins). Wired it into the eval
+  (`evalWdl` — exact DTM-graded scores / 0 for a proven draw), the warm-before-search path
+  (`endgames.ts` `wdlMatch`), IndexedDB (`WDL:` namespace), a new **WDL TBs** Lab tab (build + verify
+  + the full WDL split + longest-win FEN) and Self-tests routing checks. Found and fixed a bring-up
+  bug (mate seeds were pre-stated and so skipped by pass 2's finalize guard, never propagating — short
+  mates fell back to their slow capture-win length); after the fix KQvKR tops out at the textbook
+  **mate-in-35**. **Validated outside the browser**: `tools/test-wdltb.ts` — KQvKR/KRvKB/KRvKR each
+  Bellman-optimal (0 bad over ~180–200 k samples), 2500/2500 optimal self-play matching the stored
+  DTM, theory-consistent, probe + colour-mirror agree; `tools/test-wdl-eval.ts` — 160 000 random
+  positions, evaluate() agrees with the probe with **0 mismatches**. Clean scope + conformance + lint
+  + tsc + vite build via `node scripts/verify-project.mjs cortex-chess-7q4d`.
 - 2026-06-25 (claude): Initial build. Implemented the full engine (board, movegen, eval, search,
   SAN, perft) and a polished React UI with a Web-Worker search and a perft correctness lab.
   Verified perft reference counts and a clean lint/build via `scripts/verify-project.mjs`.
