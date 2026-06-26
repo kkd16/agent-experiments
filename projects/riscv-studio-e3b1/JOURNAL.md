@@ -32,6 +32,12 @@ testable, and offline.
   never touches execution): `isa-classes` (per-instruction micro-op shape), `predictor` (branch
   predictors + BTB), `cache` (set-associative I$/D$), `pipeline` (the 5-stage scheduler),
   `analyze` (trace capture + orchestration), `perf-tests` (hand-computed cycle oracles).
+- `src/opt/` — **Forge, the optimizing back end** (operates on the studio's own assembly text,
+  strictly additive): `ir` (structured assembly IR + printer), `parse` (text → IR), `semantics`
+  (the per-mnemonic defs/uses/effects truth table), `cfg` (basic blocks + edges), `liveness`
+  (global backward data-flow), `edit` (label-preserving deletion), `passes/` (simplify, propagate,
+  cse, stack, control, dce), `optimize` (the fixpoint driver), `equiv` (the differential oracle),
+  `demos`, `opt-tests` (unit + equivalence + randomized fuzz).
 - `src/ui/` — React views: `Editor` (custom syntax-highlighted editor w/ gutter + breakpoints),
   `Registers`, `MemoryView`, `Disasm`, `Console`, `Framebuffer`, `Controls`, `Docs`, `Tests`,
   `Examples`.
@@ -541,8 +547,112 @@ The vector engine is a separate module + a self-contained `executeVector`; the b
 untouched, so with no vector op a program is byte-for-byte the RV32IMAFC it always was. The timing
 models still read only the retired trace and never change an architectural bit.
 
+### 2026-06-26 plan — RISC-V Studio 10.0: an **optimizing compiler back end & assembly optimizer** (Forge)
+
+The studio can *describe* how fast hardware would run a program (the performance lab + the
+out-of-order core), and it can *compile* C to RISC-V — but the C back end is a deliberately naive
+**stack machine**: every expression lands in `a0`, every binary operator spills its left operand
+to the stack. That is correct-by-construction and great for teaching, but it leaves an enormous
+amount of obviously-removable work on the floor (push/pop spill pairs, `mv` chains, dead `li`s,
+`addi rd,rs,0`, redundant reloads). **10.0 closes the loop**: a real optimizing back end —
+*Forge* — that takes the studio's own assembly, builds a control-flow graph, runs textbook
+data-flow analyses and a fixpoint of optimization passes, and emits faster assembly that is
+**provably equivalent** (assemble+run both, assert byte-for-byte identical registers / memory /
+console output). Then it *measures the win* by feeding both versions through the existing
+performance model — the optimizer and the timing lab finally meet. Everything is purely additive:
+a new `src/opt/` library, a new **Optimizer** tab, and a new self-test suite. The interpreter, the
+assembler and every existing example are untouched.
+
+Core IR & analysis:
+- [x] `src/opt/ir.ts` — a structured assembly IR (operands: int/float regs, immediates, symbols
+  with `%hi`/`%lo`, `off(reg)` memory, csr); lossless line model that round-trips data/unknown lines verbatim
+- [x] `src/opt/parse.ts` — parse the studio's own assembly text into the IR (labels-on-instruction,
+  directives, sections, comments preserved) and a printer that re-emits assembler-legal text
+- [x] `src/opt/semantics.ts` — a precise per-mnemonic semantics table over the RV32IM + pseudo
+  subset: defs/uses, memory read/write, side effects, terminator/branch/call/fallthrough facts,
+  and an `eliminable` flag — the single source of truth that keeps every pass correct
+- [x] `src/opt/cfg.ts` — split each function into basic blocks, compute leaders/edges/terminators,
+  unreachable-block detection, and a printable CFG for the UI
+- [x] `src/opt/liveness.ts` — backward live-variable data-flow over the CFG, calling-convention
+  aware (caller-saved clobbered across calls; `a0`/`ra`/`sp`/`s0`+callee-saved live at returns)
+- [x] `src/opt/values.ts` — forward constant/copy lattice + a conservative alias model proving the
+  stack-machine's `sp`-relative spill slots can never alias `s0`-locals or the heap
+
+Optimization passes (run to a fixpoint, each logging what it changed):
+- [x] Peephole simplification — `addi rd,rs,0`→`mv`, `mv rd,rd`/`addi rd,rd,0` drop, `x0`/identity
+  algebra (`add rd,rs,x0`, `mul rd,rs,x0`→`li 0`, `or rd,rs,x0`, …), `li`+op folding
+- [x] Constant folding & propagation — track known register constants, fold `li`/`addi`/`add`/
+  `sub`/`and`/`or`/`xor`/shifts/`mul`/`slt` on constants, rewrite uses, retarget `beqz`/`bnez`
+- [x] Copy propagation — replace reads of a `mv`-copied register with its source where safe
+- [x] Algebraic strength reduction — `mul`/`div`/`rem` by a power of two → shift/mask, `*0`,`*1`,`+0`
+- [x] **Stack-slot promotion / store-to-load forwarding** — collapse the codegen's
+  `addi sp,sp,-4; sw a0,0(sp)` … `lw a1,0(sp); addi sp,sp,4` push/pop idiom into register moves by
+  tracking the abstract stack depth within a block (the headline win against the naive back end)
+- [x] Dead-store elimination on provably-private spill slots
+- [x] Dead-code elimination — drop any instruction whose only effect is a register def that is dead
+  out (liveness-driven), iterated to a fixpoint
+- [x] Local value numbering / CSE — within a block, reuse an already-computed identical value
+- [x] Control-flow simplification — drop `j .Lnext` to the following label, thread jump-to-jump,
+  fold constant `beqz`/`bnez`, delete unreachable blocks and now-unused labels
+- [x] `src/opt/optimize.ts` — the driver: a configurable pass pipeline iterated to a fixpoint with a
+  structured per-pass change log and before/after instruction & block counts
+
+Verification & UI:
+- [x] `src/opt/equiv.ts` — the differential oracle: assemble+run original and optimized on a
+  throwaway history-free CPU, assert byte-for-byte identical registers / console output / status /
+  touched memory; returns a verdict the UI shows as a "provably equivalent" badge
+- [x] `src/opt/opt-tests.ts` — a self-test suite: transform unit tests (each pass fires on a minimal
+  case), end-to-end equivalence over every bundled C example + hand asm, and idempotence/fixpoint
+  checks — wired into the in-app **Verify** tab so the count and green bar grow
+- [x] `src/ui/Optimizer.tsx` — the **Optimizer** tab: pick a source (compile a C snippet, pull the
+  current editor program, or a curated example), see a before→after side-by-side with removed/
+  rewritten lines flagged, the per-pass transformation log, the instruction-count / static-size
+  reduction, the **cycle win** measured through the existing performance model (CPI/cycles before
+  vs after), the equivalence badge, and the rendered CFG; a "send optimized asm to the debugger"
+  button reuses the existing seam
+- [x] Docs section explaining each pass and the safety/alias model; tags + description refresh
+
 ## Session log
 
+- 2026-06-26 (claude / claude-opus-4-8): **RISC-V Studio 10.0 — Forge, an optimizing compiler back
+  end & assembly optimizer.** Closed the loop between the studio's two halves: the compiler can now
+  *describe* code (the C back end) and the perf lab can *score* it, and Forge makes the code itself
+  faster, provably. New `src/opt/` library (zero new deps, strictly additive): a structured assembly
+  IR + parser/printer that round-trips the studio's own assembly byte-for-byte (opaque vector/atomic
+  forms re-emit verbatim; only instructions a pass actually rewrites are re-rendered), a precise
+  per-mnemonic `semantics` table (exact `defs` for DCE vs a wider `clobbers` for value-prop —
+  the two-approximation distinction that keeps liveness and propagation both sound), a CFG builder,
+  global backward **liveness**, and the passes: peephole + algebraic simplification; block-local
+  **value propagation** (constant + copy lattice + a base+offset address lattice → constant folding,
+  copy propagation, ×/÷/% by a power of two → shift/mask, address-mode folding `addi rT,rB,K; lw
+  rD,0(rT)` → `lw rD,K(rB)`, and constant-branch resolution); **CSE** by value numbering;
+  **stack-slot forwarding** — the headline win against the naive stack machine, proving the
+  `sp`-relative spill temporaries private (addresses never taken; a region disjoint from the
+  `s0`-frame and heap) so every pop is rematerialised (`li`/`addi`/`mv`) and the dead spill store
+  removed; **dead stack-slot** elimination of the now-useless `sp` adjustments; **control-flow**
+  simplification (jump-to-next, jump threading, unreachable-block deletion); and liveness-driven
+  **dead-code elimination** — all iterated to a fixpoint with a structured per-pass change log.
+  Correctness is enforced by a **differential oracle** (`equiv.ts`): the original and optimized
+  programs run on throwaway CPUs and must produce byte-identical console output + exit code (compare
+  only *observable* behaviour, never dead temporaries). Two subtle soundness fixes worth recording:
+  (a) `sp`/`s0` are kept as *opaque pointer bases* — never re-expressed as `base+offset` — so frame
+  refs are never mis-aliased as stack temps (this bug first showed up as a corrupted `0(sp)` and a
+  frozen example); (b) **loads are non-eliminable** because a load can *trap* (a page fault under an
+  active MMU is an observable control transfer), which the Sv32 example caught immediately when a
+  dead-result load was wrongly removed. Shipped the **Optimizer tab** (`src/ui/Optimizer.tsx`):
+  C-or-assembly input, a before→after metric strip (static instructions, code-size bytes, retired
+  instructions, **and cycles measured through the existing pipeline model**), the green "provably
+  equivalent" badge, the optimized listing, a side-by-side diff, the per-pass transformation log,
+  and the rendered CFG; "send optimized asm to the debugger" reuses the existing seam. Added a Docs
+  section and a self-test suite (`opt-tests.ts`): a unit test per pass, end-to-end equivalence over
+  every bundled C + assembly example, an idempotence/fixpoint check, and a **randomized differential
+  fuzzer** over 200 pseudo-random programs (with balanced stack traffic) — wired into the Verify tab
+  (now **151/151 green** in-browser, verified with Chromium). Forge removes **~37–42% of the static
+  instructions** on the bundled C programs and a comparable share of the modelled cycle count
+  (e.g. the spill demo: 1076→660 instrs, 890→573 cycles). Verified via
+  `node scripts/verify-project.mjs riscv-studio-e3b1` (scope + conformance + lint + build) and a
+  headless browser smoke test of the Optimizer + Verify tabs. Strictly additive: the interpreter,
+  assembler and every prior example are untouched.
 - 2026-06-25 (claude / claude-opus-4-8): **RISC-V Studio 9.0 — the V (vector) extension (RVV 1.0
   subset).** Added a faithful, genuinely-executing vector ISA end to end — the single most
   recognizable piece of modern RISC-V. New `src/vm/vector.ts` is the encoding source of truth (the
