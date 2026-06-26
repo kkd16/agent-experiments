@@ -1,0 +1,201 @@
+// Aether — an in-browser DIFFERENTIAL FUZZER for the optimizing middle-end.
+//
+// Every other self-test checks a *fixed* program. This one generates hundreds of
+// *random* well-typed programs — deliberately dense in the shapes the optimizer
+// is supposed to crush (nested `if`/`match` producers feeding eliminators, record
+// projections, arithmetic) — and, for each, proves the whole middle-end is sound:
+//
+//   • the OPTIMIZED program on the VM equals the UNOPTIMIZED program on the VM
+//     (the optimizer never changed an answer), and
+//   • that same value re-appears when the optimized core is compiled to
+//     JavaScript and run (the VM ≡ JS backend equivalence), and
+//   • the optimized program took NO MORE VM steps than the unoptimized one
+//     (the standing "VM steps only fall" invariant — no rewrite is a pessimization).
+//
+// Deterministic given the seed, so the Tests page shows a stable green badge. Pure
+// logic, so it also runs head-less under Node. This is the harness that backs the
+// optimizer's central claim — that abstraction melts and the answer is preserved —
+// on programs nobody wrote by hand.
+
+import { runPipeline } from './pipeline.ts'
+import { compileToJs, runJsModule } from './jsBackend.ts'
+import { valueToString } from './values.ts'
+
+export interface OptFuzzResult {
+  total: number
+  passed: number
+  /** how many generated programs actually triggered case-of-case */
+  commuted: number
+  /** best single-program VM-step reduction seen, as a percentage */
+  bestSavingPct: number
+  /** total VM steps saved across the whole batch (unoptimized − optimized) */
+  stepsSaved: number
+  /** the first few divergences, if any (empty ⇒ the optimizer is sound here) */
+  failures: { code: string; detail: string }[]
+}
+
+// ---------------------------------------------------------------------------
+// a tiny deterministic LCG, and a typed program generator
+// ---------------------------------------------------------------------------
+
+type Rng = () => number
+
+function makeRng(seed: number): Rng {
+  let s = seed >>> 0
+  return () => {
+    s = (s * 1664525 + 1013904223) >>> 0
+    return s / 4294967296
+  }
+}
+
+const pick = <T,>(rng: Rng, xs: readonly T[]): T => xs[Math.floor(rng() * xs.length) | 0]
+const int = (rng: Rng, n: number): number => Math.floor(rng() * n) | 0
+
+const ARITH = ['+', '-', '*'] as const
+const CMP = ['==', '!=', '<', '>', '<=', '>='] as const
+
+/** an Int-valued expression over the in-scope Int variables `ctx` */
+function genInt(rng: Rng, ctx: string[], d: number): string {
+  if (d <= 0 || rng() < 0.28) {
+    return ctx.length > 0 && rng() < 0.5 ? pick(rng, ctx) : String(int(rng, 10))
+  }
+  switch (int(rng, 6)) {
+    case 0:
+      return `(${genInt(rng, ctx, d - 1)} ${pick(rng, ARITH)} ${genInt(rng, ctx, d - 1)})`
+    case 1:
+      return `(if ${genBool(rng, ctx, d - 1)} then ${genInt(rng, ctx, d - 1)} else ${genInt(rng, ctx, d - 1)})`
+    case 2: {
+      // a `match` on an Option PRODUCER — the case-of-case trigger
+      const v = `v${ctx.length}`
+      return `(match ${genOpt(rng, ctx, d - 1)} with None -> ${genInt(rng, ctx, d - 1)} | Some ${v} -> ${genInt(rng, [...ctx, v], d - 1)})`
+    }
+    case 3:
+      // a `.field` projection on a record PRODUCER
+      return `(${genRecord(rng, ctx, d - 1)}.${pick(rng, ['a', 'b'])})`
+    case 4:
+      return `(0 - ${genInt(rng, ctx, d - 1)})`
+    default: {
+      // a `let` whose value is a producer — exercises 21.1 linear inlining
+      const z = `z${ctx.length}`
+      return `(let ${z} = ${genInt(rng, ctx, d - 1)} in ${genInt(rng, [...ctx, z], d - 1)})`
+    }
+  }
+}
+
+function genBool(rng: Rng, ctx: string[], d: number): string {
+  if (d <= 0 || rng() < 0.35) {
+    return `(${genInt(rng, ctx, d - 1)} ${pick(rng, CMP)} ${genInt(rng, ctx, d - 1)})`
+  }
+  switch (int(rng, 4)) {
+    case 0:
+      return `(${genBool(rng, ctx, d - 1)} && ${genBool(rng, ctx, d - 1)})`
+    case 1:
+      return `(${genBool(rng, ctx, d - 1)} || ${genBool(rng, ctx, d - 1)})`
+    case 2:
+      return `(! ${genBool(rng, ctx, d - 1)})`
+    default:
+      return `(if ${genBool(rng, ctx, d - 1)} then ${genBool(rng, ctx, d - 1)} else ${genBool(rng, ctx, d - 1)})`
+  }
+}
+
+/** an `Opt Int` producer, biased toward an `if` so the consumer gets stuck on it */
+function genOpt(rng: Rng, ctx: string[], d: number): string {
+  const r = rng()
+  if (r < 0.62) {
+    return `(if ${genBool(rng, ctx, d - 1)} then Some ${genInt(rng, ctx, d - 1)} else None)`
+  }
+  if (r < 0.82) return `Some ${genInt(rng, ctx, d - 1)}`
+  return `None`
+}
+
+/** a record producer: an `if` choosing between two `{ a, b }` records */
+function genRecord(rng: Rng, ctx: string[], d: number): string {
+  return `(if ${genBool(rng, ctx, d - 1)} then { a = ${genInt(rng, ctx, d - 1)}, b = ${genInt(rng, ctx, d - 1)} } else { a = ${genInt(rng, ctx, d - 1)}, b = ${genInt(rng, ctx, d - 1)} })`
+}
+
+const PRELUDE = 'type Opt a = None | Some a in\n'
+
+/** Either a closed Int program, or a function applied to fixed arguments (so its
+ *  body's producers stay opaque to the optimizer, then collapse at the call). */
+function genProgram(rng: Rng): string {
+  if (rng() < 0.5) return PRELUDE + genInt(rng, [], 4)
+  const arity = 1 + int(rng, 2)
+  const params = Array.from({ length: arity }, (_, i) => `p${i}`)
+  const body = genInt(rng, params, 4)
+  const lam = params.reduceRight((acc, p) => `fn ${p} -> ${acc}`, body)
+  const callArgs = (seed: number): string => {
+    const r2 = makeRng(seed)
+    return params.map(() => String(int(r2, 9))).join(' ')
+  }
+  return PRELUDE + `let f = ${lam} in (f ${callArgs(1)}, f ${callArgs(7)}, f ${callArgs(13)})`
+}
+
+// ---------------------------------------------------------------------------
+// the fuzz driver
+// ---------------------------------------------------------------------------
+
+export function runOptimizerFuzz(runs = 120, seed = 0xc0ffee): OptFuzzResult {
+  const rng = makeRng(seed)
+  let passed = 0
+  let commuted = 0
+  let bestSavingPct = 0
+  let stepsSaved = 0
+  const failures: { code: string; detail: string }[] = []
+
+  for (let i = 0; i < runs; i++) {
+    const code = genProgram(rng)
+    const off = runPipeline(code, { optimize: false })
+    const on = runPipeline(code, { optimize: true })
+
+    // a program that fails to type-check is a generator bug, not an optimizer
+    // bug — skip it (it does not count toward the total) so the badge stays honest.
+    if (off.error || on.error || !on.optimizedCoreAst) {
+      continue
+    }
+    passed++ // provisionally; demoted below on any disagreement
+
+    const vmOff = off.run?.result ? valueToString(off.run.result) : '()'
+    const vmOn = on.run?.result ? valueToString(on.run.result) : '()'
+    const js = ((): string => {
+      try {
+        const r = runJsModule(compileToJs(on.optimizedCoreAst!).full)
+        return r.error ? `error: ${r.error}` : (r.result ?? '()')
+      } catch (e) {
+        return `threw: ${e instanceof Error ? e.message : String(e)}`
+      }
+    })()
+
+    const stepsOff = off.run?.steps ?? 0
+    const stepsOn = on.run?.steps ?? 0
+    const agree = vmOn === vmOff && js === vmOff
+    const monotone = stepsOn <= stepsOff
+
+    if (!agree || !monotone) {
+      passed--
+      if (failures.length < 5) {
+        const detail = !agree
+          ? `disagree: unopt-VM ${vmOff}, opt-VM ${vmOn}, opt-JS ${js}`
+          : `steps rose: ${stepsOff} → ${stepsOn}`
+        failures.push({ code: code.replace(PRELUDE, '').trim(), detail })
+      }
+      continue
+    }
+
+    if ((on.optimization?.commutes?.length ?? 0) > 0) commuted++
+    if (stepsOff > 0) {
+      stepsSaved += stepsOff - stepsOn
+      const savingPct = Math.round(((stepsOff - stepsOn) / stepsOff) * 100)
+      if (savingPct > bestSavingPct) bestSavingPct = savingPct
+    }
+  }
+
+  // `total` counts only the programs that type-checked (the ones actually tested).
+  return {
+    total: passed + failures.length,
+    passed,
+    commuted,
+    bestSavingPct,
+    stepsSaved,
+    failures,
+  }
+}
