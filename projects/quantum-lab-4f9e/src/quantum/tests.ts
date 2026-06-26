@@ -79,6 +79,12 @@ import {
   magicSquareAlgebra, magicClassicalMax, magicQuantumWin, MAGIC_CLASSICAL,
   merminQuantumValue, merminQuantumBound, merminClassicalMax, MERMIN_CLASSICAL_BOUND,
 } from './nonlocality';
+import { maximizeElliptope, minimizeDual, minEigenvalue } from './sdp';
+import { npaLevel1, chshSOSCertificate, complementarySlackness, TSIRELSON, bellCostMatrix, CHSH_FUNCTIONAL } from './npa';
+import { certifiedMinEntropy, guessingProbability } from './randomness';
+import { wernerData, pureData, cjwrSteering, steeringEllipsoid, criticalVisibility, correlationSingularValues } from './steering';
+import { detectionThreshold, CHSH_THRESHOLD } from './detection';
+import { prBox, whiteNoiseBox, chshOf, signallingDeviation, gameWinProbability, ceilings, NO_SIGNALLING_BOUND } from './nosignaling';
 
 export interface TestResult {
   group: string;
@@ -1416,6 +1422,107 @@ export function runTests(): TestResult[] {
       const ratio8 = merminQuantumBound(8) / MERMIN_CLASSICAL_BOUND;
       add('Nonlocality', `Mermin–Klyshko: the LHV bound is 1 for all n (brute-forced n = 2…7), so the violation 2^{(n−1)/2} grows exponentially — ${ratio8.toFixed(1)}× at n = 8`,
         classicalOk && ratio8 > 11, `classical bound = 1 ✓, ratio at n=8 = ${ratio8.toFixed(2)}×`);
+    }
+  }
+
+  // --- Device-Independent Quantum Information (16.0): NPA SDP, SOS, randomness, steering, Eberhard, PR box ---
+  {
+    // (1) The from-scratch SDP solver: maximise ⟨C,X⟩ over the elliptope reproduces 2√2 (CHSH NPA level 1).
+    {
+      const C = bellCostMatrix(CHSH_FUNCTIONAL);
+      const p = maximizeElliptope(C, { restarts: 8, seed: 3 });
+      add('Device-Independent', `SDP primal (Burer–Monteiro over the elliptope) reaches the NPA level-1 optimum S = ${p.value.toFixed(5)} = 2√2`,
+        close(p.value, TSIRELSON, 1e-4), `primal ${p.value.toFixed(6)} vs 2√2 = ${TSIRELSON.toFixed(6)}`);
+      // The witness X is genuinely PSD with unit diagonal.
+      let diagOk = true;
+      for (let i = 0; i < p.X.length; i++) if (!close(p.X[i][i], 1, 1e-6)) diagOk = false;
+      add('Device-Independent', 'SDP primal witness X = VVᵀ is PSD with unit diagonal (a valid moment matrix)',
+        diagOk && minEigenvalue(p.X) > -1e-6, `λ_min(X) = ${minEigenvalue(p.X).toExponential(1)}, diag=1 ${diagOk}`);
+    }
+
+    // (2) The dual certificate proves 2√2 as a rigorous UPPER bound, with a vanishing duality gap.
+    {
+      const C = bellCostMatrix(CHSH_FUNCTIONAL);
+      const d = minimizeDual(C);
+      add('Device-Independent', `SDP dual certificate proves S ≤ ${d.value.toFixed(5)} = 2√2 for EVERY quantum strategy (Diag(y) − C ⪰ 0)`,
+        close(d.value, TSIRELSON, 1e-3) && d.slackMinEig > -1e-5, `dual ${d.value.toFixed(6)}, slack λ_min ${d.slackMinEig.toExponential(1)}`);
+    }
+
+    // (3) End-to-end NPA: primal = dual = 2√2, gap → 0, unbiased marginals.
+    {
+      const npa = npaLevel1();
+      const marg = Math.max(...npa.marginalsA.map(Math.abs), ...npa.marginalsB.map(Math.abs));
+      add('Device-Independent', `NPA level 1: primal = dual = ${npa.value.toFixed(5)} = 2√2 with duality gap ${npa.gap.toExponential(1)} — the certified Tsirelson bound`,
+        close(npa.value, TSIRELSON, 1e-3) && npa.gap < 1e-2, `gap ${npa.gap.toExponential(1)}, |marginals| ${marg.toExponential(1)}`);
+      add('Device-Independent', 'NPA complementary slackness ⟨Diag(y) − C, X⟩ ≈ 0 (primal/dual optimal pair)',
+        complementarySlackness(npa) < 1e-2, `⟨slack, X⟩ = ${complementarySlackness(npa).toExponential(1)}`);
+    }
+
+    // (4) The independent operator SOS certificate: 2√2·I − S = (1/√2)(u²+v²) is the exact zero matrix.
+    {
+      const sos = chshSOSCertificate();
+      add('Device-Independent', 'Operator SOS certificate 2√2·I − S = (1/√2)(u² + v²) is the exact zero matrix (a basis-independent proof of Tsirelson)',
+        sos.residual < 1e-12 && sos.squaresPSD && close(sos.expectation, TSIRELSON, 1e-9),
+        `residual ${sos.residual.toExponential(1)}, ⟨Φ⁺|S|Φ⁺⟩ ${sos.expectation.toFixed(6)}, squares PSD ${sos.squaresPSD}`);
+    }
+
+    // (5) Device-independent randomness from CHSH: 0 bits at S=2, exactly 1 bit at S=2√2.
+    {
+      const h2 = certifiedMinEntropy(2), hT = certifiedMinEntropy(TSIRELSON), hMid = certifiedMinEntropy(2.6);
+      add('Device-Independent', `DI randomness H_min(S): 0 bits at S=2 (predictable) → 1 bit at S=2√2 (P_guess ${guessingProbability(TSIRELSON).toFixed(3)} = ½) — certified vs any adversary`,
+        close(h2, 0, 1e-9) && close(hT, 1, 1e-9) && hMid > 0 && hMid < 1, `H(2)=${h2.toFixed(4)}, H(2.6)=${hMid.toFixed(4)}, H(2√2)=${hT.toFixed(4)}`);
+    }
+
+    // (6) EPR steering — CJWR: singlet gives S₂=√2, S₃=√3; Werner critical visibility 1/√n.
+    {
+      const sing = wernerData(1);
+      const s2 = cjwrSteering(sing, 2).value, s3 = cjwrSteering(sing, 3).value;
+      add('Device-Independent', `EPR steering (CJWR): the singlet violates the LHS bound 1 with S₂ = ${s2.toFixed(4)} = √2 and S₃ = ${s3.toFixed(4)} = √3`,
+        close(s2, Math.SQRT2, 1e-9) && close(s3, Math.sqrt(3), 1e-9), `S₂ ${s2.toFixed(5)}, S₃ ${s3.toFixed(5)}`);
+      // Werner critical visibility: steerable iff w > 1/√n.
+      const wc = criticalVisibility(3);
+      const justAbove = cjwrSteering(wernerData(wc + 0.01), 3).steerable;
+      const justBelow = cjwrSteering(wernerData(wc - 0.01), 3).steerable;
+      add('Device-Independent', `Werner 3-setting steering threshold w > 1/√3 ≈ ${wc.toFixed(4)} (steerable above, unsteerable below)`,
+        justAbove && !justBelow, `w=${(wc + 0.01).toFixed(3)} steerable ${justAbove}, w=${(wc - 0.01).toFixed(3)} steerable ${justBelow}`);
+    }
+
+    // (7) The steering ellipsoid: the maximally-entangled state fills the Bloch ball (radius 1).
+    {
+      const e = steeringEllipsoid(wernerData(1));
+      const w05 = steeringEllipsoid(wernerData(0.5));
+      add('Device-Independent', 'Steering ellipsoid (Jevtic et al.): the singlet fills the whole Bloch ball (semi-axes 1,1,1); a w=0.5 Werner state shrinks it to radius 0.5',
+        close(e.semiAxes[0], 1, 1e-6) && close(e.semiAxes[2], 1, 1e-6) && close(w05.semiAxes[0], 0.5, 1e-6),
+        `singlet axes [${e.semiAxes.map((x) => x.toFixed(2)).join(',')}], w=0.5 axes [${w05.semiAxes.map((x) => x.toFixed(2)).join(',')}]`);
+      // Singular values of the singlet's T = −I are all 1.
+      const sv = correlationSingularValues(pureData(Math.PI / 4).T);
+      add('Device-Independent', 'Correlation singular values of the maximally-entangled state are (1,1,1) (computed via the symmetric eigensolver)',
+        sv.every((x) => close(x, 1, 1e-6)), `σ = [${sv.map((x) => x.toFixed(3)).join(', ')}]`);
+    }
+
+    // (8) The detection loophole / Eberhard: max-entangled threshold = 2(√2−1) ≈ 0.828; non-maximal states do better.
+    {
+      const maxEnt = detectionThreshold(Math.PI / 4);
+      const partial = detectionThreshold(0.3);
+      const okMax = maxEnt !== null && close(maxEnt.eta, CHSH_THRESHOLD, 2e-3);
+      const okPartial = partial !== null && partial.eta < CHSH_THRESHOLD - 0.05;
+      add('Device-Independent', `Detection loophole: the maximally-entangled CH threshold is η > ${maxEnt ? maxEnt.eta.toFixed(4) : '—'} = 2(√2−1) ≈ 0.828`,
+        okMax, `η*(π/4) = ${maxEnt ? maxEnt.eta.toFixed(5) : 'fail'}`);
+      add('Device-Independent', `Eberhard's advantage: a less-entangled state |ψ(0.3)⟩ tolerates η > ${partial ? partial.eta.toFixed(4) : '—'} < 0.828, heading toward the analytic limit 2/3`,
+        okPartial, `η*(0.3) = ${partial ? partial.eta.toFixed(5) : 'fail'}`);
+    }
+
+    // (9) The PR box: S = 4 (algebraic max), no-signalling, perfect CHSH-game win — quantum's 2√2 sits strictly between 2 and 4.
+    {
+      const pr = prBox();
+      const S = chshOf(pr), sig = signallingDeviation(pr), win = gameWinProbability(pr);
+      add('Device-Independent', `Popescu–Rohrlich box: CHSH S = ${S.toFixed(1)} = 4 (the algebraic max) while exactly no-signalling (deviation ${sig.toExponential(0)}), winning the CHSH game with certainty`,
+        close(S, NO_SIGNALLING_BOUND, 1e-9) && sig < 1e-12 && close(win, 1, 1e-9), `S=${S}, signalling=${sig.toExponential(1)}, win=${win}`);
+      // The white-noise box is no-signalling with S=0, confirming the no-signalling check both ways.
+      const wn = whiteNoiseBox();
+      add('Device-Independent', 'The three CHSH ceilings: local 2  <  quantum 2√2 ≈ 2.828 (NPA-proven)  <  no-signalling 4 (PR box) — quantum is more nonlocal than classical, less than causality allows',
+        close(chshOf(wn), 0, 1e-9) && ceilings()[1].chsh > 2 && ceilings()[1].chsh < ceilings()[2].chsh,
+        `ceilings: ${ceilings().map((c) => c.chsh.toFixed(3)).join(' < ')}`);
     }
   }
 

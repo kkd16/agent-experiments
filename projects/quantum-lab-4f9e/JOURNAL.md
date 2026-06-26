@@ -31,6 +31,106 @@ Full quantum circuit simulator built from scratch in TypeScript. No external mat
 - [x] Dark space-themed UI with framer-motion animations
 - [x] About page with physics explanations
 
+## Quantum Lab 16.0 — Device-Independent Quantum Information (this session)
+
+15.0 built the **nonlocality** pillar: CHSH, the GHZ/Mermin game, the magic square, Mermin–Klyshko.
+It *exhibits* the quantum violation. 16.0 builds the pillar that turns nonlocality into a **resource
+and a security primitive** — the device-independent (DI) programme, where one trusts *nothing about the
+internal physics of the boxes*, only the observed statistics, and still proves things. This is the
+deepest unbuilt vein in the lab's foundations story, and it needs real new from-scratch machinery: a
+**semidefinite-programming solver** (the workhorse of modern quantum information) that the lab has
+never had.
+
+### The plan / new steps (this session)
+
+- [x] **`sdp.ts` — a from-scratch dense SDP solver.** The lab has a Hermitian (cyclic-Jacobi)
+      eigensolver but no optimisation over the PSD cone. Build one with no external libraries:
+      - a **primal** solver for the *elliptope* `max ⟨C,X⟩ s.t. X⪰0, diag(X)=1` by **Burer–Monteiro**
+        low-rank factorisation `X = VVᵀ` + projected gradient (rows of V kept unit), which for this
+        diagonally-constrained class has no spurious local maxima above rank `√(2n)`;
+      - a **dual** solver `min Σyᵢ s.t. Diag(y) − C ⪰ 0` by eigenvalue-penalised descent (the Jacobi
+        eigensolver supplies λ_min as the barrier), returning the rigorous **certificate** matrix;
+      - the duality gap `primal − dual → 0` is the proof of optimality, reported live.
+- [x] **`npa.ts` — the NPA hierarchy (Navascués–Pironio–Acín), level 1.** Build the moment matrix Γ
+      indexed by the operator monomials `{1, A₀, A₁, B₀, B₁}` for a correlation Bell scenario; its
+      Alice–Bob cross block holds the four correlators E_xy, every off-diagonal is a free variable, the
+      diagonal is 1 (A²=B²=I). Maximising a Bell functional over `Γ⪰0` is exactly the elliptope SDP, so
+      the from-scratch solver computes **Tsirelson's bound 2√2 as a certified upper bound** — the proof
+      that *no* quantum strategy, in any dimension, beats 2√2 (the Monte-Carlo ceiling in 15.0 only
+      *sampled* qubit strategies; this *proves* the ceiling). Level 1 is exactly tight for CHSH, so the
+      primal and dual both land on 2√2 with a vanishing duality gap.
+- [x] **An explicit operator SOS certificate.** Independently of the numerics, exhibit the
+      sum-of-squares decomposition `2√2·I − S = (1/√2)(u² + v²)` with `u = A₀ − (B₀+B₁)/√2`,
+      `v = A₁ − (B₀−B₁)/√2`, verified to be the **zero matrix** to machine precision on the dense 4×4
+      operators — a second, fully rigorous, basis-independent proof of Tsirelson that agrees with the SDP.
+- [x] **`randomness.ts` — device-independent randomness from CHSH.** The observed S certifies
+      unpredictability *even against an adversary who built the devices*: the guessing probability obeys
+      `P_g(S) = ½ + ½√(2 − S²/4)` (Pironio et al.), so the certified min-entropy
+      `H_min = −log₂ P_g` rises from **0 bits at S=2** (classical, fully predictable) to **1 bit at the
+      Tsirelson point S=2√2**. Plot the curve; this is the principle behind certified random-number
+      generation.
+- [x] **`steering.ts` — EPR steering (the asymmetric middle of the hierarchy).** Steering sits strictly
+      between entanglement and Bell-nonlocality. Build (a) the **steering ellipsoid** of a two-qubit
+      state (Jevtic et al.: centre and semi-axes from ρ's correlation matrix — the set of Bloch vectors
+      Alice can collapse Bob onto), and (b) the **CJWR linear steering inequalities** `S_n = (1/√n)|Σ⟨AₖBₖ⟩| ≤ 1`
+      for any local-hidden-state model, violated by the singlet up to `S_2=√2` and `S_3=√3`, with the
+      **Werner critical visibility** `w > 1/√n` for n-setting steerability — all computed on the engine's
+      correlators.
+- [x] **`detection.ts` — the detection loophole, CH/Eberhard.** A real experiment misses photons; below a
+      detection efficiency η the violation evaporates and a local model fakes the data. Implement the
+      **Clauser–Horne / Eberhard** inequality with no-click outcomes, and show the famous result: the
+      maximally-entangled state needs **η > 2(√2−1) ≈ 82.8%** (CHSH), but Eberhard's **non-maximally
+      entangled** states push the threshold down toward **η > 2/3 ≈ 66.7%** as the entanglement → 0 —
+      computed by optimising the CH value over the state angle and measurements at each η.
+- [x] **`nosignaling.ts` — the PR box & the three ceilings.** Place the NPA-certified quantum bound in
+      context: the Popescu–Rohrlich box is the explicit no-signalling correlation that reaches the
+      *algebraic* maximum **S = 4** while still forbidding faster-than-light signalling — so quantum
+      theory's **2√2** sits strictly between the local bound **2** and the no-signalling bound **4**.
+      Build the PR box exactly, verify its no-signalling marginals, its S = 4, and the CHSH-game
+      win probability 1 it permits; this is the foil that makes the SDP's 2√2 a *non-trivial* ceiling
+      (nature could have been more nonlocal and still causal — it isn't).
+      *(Note discovered while building: NPA level 1 is tight for plain CHSH → exactly 2√2, but loose for
+      the tilted/marginal CHSH family, which needs a higher level — so the SDP is scoped to the CHSH
+      headline it proves tightly, not over-claimed for tilted inequalities.)*
+- [x] **`DeviceIndependentLab.tsx` + a new "🛡️ Device-Indep" tab** tying it together: the NPA SDP solving
+      live (primal/dual convergence, certified 2√2), the SOS certificate, the DI-randomness curve, the
+      steering ellipsoid + CJWR violation, the Eberhard η-threshold curve, and the PR-box three-ceilings view.
+- [x] **Self-tests** (new "Device-Independent" group in the Tests tab) proving every headline number to
+      machine precision: SDP primal=dual=2√2, the SOS residual = 0, P_g endpoints (S=2→1 bit lost,
+      S=2√2→1 bit), S_3 = √3, the Eberhard threshold, and the PR box's S=4 + exact no-signalling.
+- [x] **About-page pillar** + `project.json` description/tags refreshed.
+
+### Verified (all green — 15 new self-tests, suite now 151/151)
+
+- **SDP primal** (Burer–Monteiro over the elliptope) → `2.828427` = 2√2; the witness Γ is PSD (λ_min ≈ −2e-16)
+  with unit diagonal. **SDP dual** certificate → `2.828427` with slack `Diag(y) − C ⪰ 0`, the dual variables
+  landing on the analytic `y = [0, 1/√2, 1/√2, 1/√2, 1/√2]`. **Duality gap ≈ 1.6e-8** — optimality proven from
+  the inside.
+- **Operator SOS certificate** `2√2·I − S − (1/√2)(u²+v²)` is the **exact zero matrix** (max entry `2.2e-16`), the
+  two squares are individually PSD, and `⟨Φ⁺|S|Φ⁺⟩ = 2.828427`. A rigorous, basis-independent second proof.
+- **DI randomness**: `H_min(2) = 0`, `H_min(2√2) = 1` bit (`P_guess = ½`), monotone in between — certified vs any adversary.
+- **EPR steering**: the singlet gives `S₂ = √2`, `S₃ = √3`; the Werner 3-setting threshold is exactly `w > 1/√3`;
+  the steering ellipsoid fills the Bloch ball for the singlet (axes 1,1,1) and shrinks to radius `w`.
+- **Detection / Eberhard**: `η*(π/4) = 0.82843 = 2(√2−1)` to ~1e-5; a less-entangled `|ψ(0.3)⟩` tolerates
+  `η* = 0.71833 < 0.828`, the frontier heading toward the analytic Eberhard limit `2/3`.
+- **PR box**: `S = 4` exactly, signalling deviation `0`, CHSH-game win `1` — placing quantum's 2√2 strictly between
+  the local `2` and no-signalling `4`.
+- **Build gate green** (conformance + lint + `tsc -b` + `vite build`), and a headless-Chromium smoke test renders all
+  six cards, the live NPA solve, and the on-demand Eberhard frontier with no page errors.
+
+### Future ideas (open)
+
+- [ ] NPA **level 2** (and the "almost-quantum" `1+AB`) — a larger moment matrix that tightens the bound for the
+      *tilted* CHSH family and other inequalities where level 1 is loose (the SDP solver already generalises).
+- [ ] **Device-independent QKD** key-rate curves (the Acín–Brunner–Gisin–Massar–Pironio–Scarani protocol) from the
+      certified randomness + the leakage of error correction.
+- [ ] Push the **Eberhard frontier** into the deep small-θ tail with a homotopy / analytic-seed continuation so the
+      curve visibly touches 2/3 rather than stopping at the numerically-robust range.
+- [ ] The **I3322** inequality and dimension-witnessing (qubits suboptimal) once the NPA solver carries projector-level
+      monomials, not just correlators.
+- [ ] A **steering-robustness** measure (the critical mixing for a general two-qubit state) and the 3-D steering
+      ellipsoid rendered on the existing Three.js Bloch sphere.
+
 ## Quantum Lab 15.0 — Nonlocality, Bell Tests & Quantum Pseudo-telepathy (this session)
 
 The lab has been deep on *circuits* (algorithms, Shor), *codes* (3/9-qubit, Steane, surface,

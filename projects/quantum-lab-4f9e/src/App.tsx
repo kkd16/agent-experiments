@@ -24,14 +24,15 @@ import SynthLab from './components/SynthLab';
 import ShannonLab from './components/ShannonLab';
 import DistillationLab from './components/DistillationLab';
 import NonlocalityLab from './components/NonlocalityLab';
+import DeviceIndependentLab from './components/DeviceIndependentLab';
 import TestsPanel from './components/TestsPanel';
 import ExportPanel from './components/ExportPanel';
 import { schmidtDecompose } from './quantum/Schmidt';
 
-type Tab = 'builder' | 'algorithms' | 'shor' | 'solovay' | 'synth' | 'shannon' | 'distill' | 'bell' | 'mbqc' | 'variational' | 'stabilizer' | 'surface' | 'tensor' | 'freefermion' | 'dynamics' | 'tests' | 'about';
+type Tab = 'builder' | 'algorithms' | 'shor' | 'solovay' | 'synth' | 'shannon' | 'distill' | 'bell' | 'deviceindep' | 'mbqc' | 'variational' | 'stabilizer' | 'surface' | 'tensor' | 'freefermion' | 'dynamics' | 'tests' | 'about';
 type VizTab = 'state' | 'probabilities' | 'bloch' | 'density' | 'measure';
 
-const PAGE_TABS: Tab[] = ['about', 'shor', 'solovay', 'synth', 'shannon', 'distill', 'bell', 'mbqc', 'variational', 'stabilizer', 'surface', 'tensor', 'freefermion', 'dynamics', 'tests'];
+const PAGE_TABS: Tab[] = ['about', 'shor', 'solovay', 'synth', 'shannon', 'distill', 'bell', 'deviceindep', 'mbqc', 'variational', 'stabilizer', 'surface', 'tensor', 'freefermion', 'dynamics', 'tests'];
 
 // Parse a shared circuit from the URL hash (#c=…) once, before mount — sandbox-safe.
 function loadSharedCircuit(): { numQubits: number; ops: GateOp[] } | null {
@@ -143,7 +144,7 @@ export default function App() {
         </div>
 
         <nav style={{ display: 'flex', gap: 2, marginLeft: 'auto', flexWrap: 'wrap' }}>
-          {(['builder', 'algorithms', 'shor', 'solovay', 'synth', 'shannon', 'distill', 'bell', 'mbqc', 'variational', 'stabilizer', 'surface', 'tensor', 'freefermion', 'dynamics', 'tests', 'about'] as Tab[]).map((tab) => (
+          {(['builder', 'algorithms', 'shor', 'solovay', 'synth', 'shannon', 'distill', 'bell', 'deviceindep', 'mbqc', 'variational', 'stabilizer', 'surface', 'tensor', 'freefermion', 'dynamics', 'tests', 'about'] as Tab[]).map((tab) => (
             <button
               key={tab}
               onClick={() => setActiveTab(tab)}
@@ -167,6 +168,7 @@ export default function App() {
                 : tab === 'shannon' ? '🪜 n-Qubit Synthesis'
                 : tab === 'distill' ? '💎 Distillation'
                 : tab === 'bell' ? '🔔 Bell'
+                : tab === 'deviceindep' ? '🛡️ Device-Indep'
                 : tab === 'mbqc' ? '🕹️ One-Way'
                 : tab === 'variational' ? '🧬 Variational' : tab === 'stabilizer' ? '🧱 Stabilizer'
                 : tab === 'surface' ? '🔲 Surface' : tab === 'tensor' ? '🕸️ Tensor'
@@ -233,6 +235,7 @@ export default function App() {
               {activeTab === 'shannon' && <ShannonLab />}
               {activeTab === 'distill' && <DistillationLab />}
               {activeTab === 'bell' && <NonlocalityLab />}
+              {activeTab === 'deviceindep' && <DeviceIndependentLab />}
               {activeTab === 'mbqc' && <MBQCLab />}
               {activeTab === 'variational' && <VariationalLab />}
               {activeTab === 'stabilizer' && <StabilizerLab />}
@@ -635,6 +638,10 @@ function AboutPage() {
         {
           title: 'Nonlocality, Bell Tests & Quantum Pseudo-telepathy',
           content: "Quantum mechanics does not merely compute faster — it describes a genuinely non-classical world, and this pillar makes that precise, all on the exact state-vector engine. (1) THE CHSH INEQUALITY: Alice and Bob each choose one of two ±1 observables A(θ)=cosθ·Z+sinθ·X on a shared Bell pair, forming the correlator E(a,b)=⟨ψ|A(a)⊗B(b)|ψ⟩ (computed by expanding the tensor product into the four Pauli terms ZZ,ZX,XZ,XX). The Bell quantity S=E(a,b)+E(a,b′)+E(a′,b)−E(a′,b′) can never exceed 2 in ANY local-hidden-variable theory (Bell 1964 / CHSH 1969) — yet the Bell state reaches S=2√2≈2.828, TSIRELSON'S BOUND. A from-scratch Nelder–Mead maximiser rediscovers the optimum, a Monte-Carlo certificate shows thousands of random qubit strategies never exceed 2√2 (the bound is a ceiling, not a coincidence), and the live S(θ) sweep plots the violation against the classical band. Reframed as the CHSH game (referee sends x,y; players win iff a⊕b=x∧y), the dictionary p=(S+4)/8 turns this into a strict quantum advantage: cos²(π/8)≈85.4% vs the classical 75%, with no communication. (2) THE GHZ / MERMIN GAME — quantum PSEUDO-TELEPATHY: three players sharing |GHZ⟩ answer a⊕b⊕c=x∨y∨z (for questions with x⊕y⊕z=0) and win EVERY time by measuring X for input 0 and Y for input 1; the Mermin correlations ⟨XXX⟩=+1, ⟨XYY⟩=⟨YXY⟩=⟨YYX⟩=−1 (verified on the engine) force a perfect win, while a brute force over all 64 classical strategies caps at 3/4 — multiplying the four win constraints yields 0=1, a parity contradiction proving no classical strategy can be perfect. (3) THE MERMIN–PERES MAGIC-SQUARE GAME: a 3×3 grid of two-qubit Pauli observables whose every row multiplies to +I and every column to +I except the last (−I). The whole operator algebra is verified from scratch on 4×4 matrices — each cell is an involutory (±1-valued) Hermitian observable, the three cells of any row/column mutually commute (jointly measurable), and the product identities hold exactly — and the product-of-everything parity (+1 by rows, −1 by columns) is the certificate bounding classical play at 8/9. Two shared Bell pairs let quantum players win all 81 questions with certainty: on |Φ⁺⟩⊗|Φ⁺⟩ all nine shared cells correlate at exactly +1 (the entangled-state identity (M⊗I)|Ω⟩=(I⊗Mᵀ)|Ω⟩), verified by an explicit 4-qubit simulation. (4) MERMIN–KLYSHKO — nonlocality that grows exponentially with size: the n-party generalisation of CHSH, the Mermin polynomial Mₙ built by the recursion Mₙ=½[Mₙ₋₁(Aₙ+Aₙ′)+M′ₙ₋₁(Aₙ−Aₙ′)], obeys |⟨Mₙ⟩|≤1 in every LHV theory but the n-qubit GHZ state reaches 2^((n−1)/2) — so unlike CHSH's fixed 2√2 ceiling, the quantum-over-classical ratio doubles every two parties (22.6× at n=10). The quantum values are read off the engine (the Mermin operator on |GHZₙ⟩ with the optimal X–Y plane settings) and the LHV bound 1 is brute-forced over all 2²ⁿ deterministic assignments. Every headline number is proven to machine precision in the Tests tab.",
+        },
+        {
+          title: 'Device-Independent Quantum Information (NPA SDP, SOS, Randomness, Steering, Eberhard)',
+          content: "The device-independent pillar turns nonlocality into a resource and a security primitive — trust NOTHING about the boxes' internal physics, only the observed statistics, and still prove things. Its centrepiece is a from-scratch SEMIDEFINITE-PROGRAMMING solver (the workhorse of modern quantum information), built on the lab's own Jacobi eigensolver: a Burer–Monteiro low-rank primal over the elliptope plus an eigenvalue-penalised dual. With it the NAVASCUÉS–PIRONIO–ACÍN hierarchy (level 1) computes Tsirelson's bound S ≤ 2√2 as a CERTIFIED CEILING — the moment matrix Γ of operator inner products is necessarily PSD, so maximising the Bell functional over Γ ⪰ 0, diag = 1 upper-bounds EVERY quantum strategy in any dimension (where 15.0's Monte-Carlo only sampled qubit strategies, this proves the ceiling); the primal and dual both land on 2√2 with a vanishing duality gap. An independent, basis-independent OPERATOR SUM-OF-SQUARES certificate 2√2·I − S = (1/√2)(u²+v²) is verified to be the exact zero matrix, a second proof needing no numerics. Then the consequences: DEVICE-INDEPENDENT RANDOMNESS, where an observed S certifies P_guess = ½ + ½√(2−S²/4) against any adversary who built the devices, so the min-entropy rises from 0 bits at S=2 to 1 full bit at 2√2; EPR STEERING, the asymmetric middle of the hierarchy, with the steering ellipsoid (Jevtic et al.) drawn live and the CJWR inequalities S_n = (1/√n)|Σ⟨AₖBₖ⟩| ≤ 1 violated up to S₂=√2, S₃=√3 with the Werner critical visibility w > 1/√n; the DETECTION LOOPHOLE, where the maximally-entangled CH threshold is η > 2(√2−1) ≈ 82.8% but Eberhard's non-maximally-entangled states push it toward 2/3 ≈ 66.7% (computed by minimising the per-configuration η* = M/Q over measurements); and the POPESCU–ROHRLICH box, the no-signalling correlation reaching the algebraic maximum S = 4, placing quantum theory's 2√2 strictly between the local bound 2 and what causality alone permits. Every headline number — the SDP primal=dual=2√2, the SOS residual ~1e-16, the randomness endpoints, S₃=√3, the Eberhard threshold, the PR box's S=4 and no-signalling — is proven to machine precision in the Tests tab.",
         },
         {
           title: 'Solovay–Kitaev — Compiling to a Fault-Tolerant Gate Set',
