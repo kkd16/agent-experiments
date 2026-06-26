@@ -33,6 +33,18 @@ import {
   type ClientRequest,
   type FaultMode,
 } from '../protocols/pbft/types';
+import { createHotStuff } from '../protocols/hotstuff/hotstuff';
+import { hotstuffInvariants } from '../protocols/hotstuff/invariants';
+import {
+  DEFAULT_HOTSTUFF_CONFIG,
+  faultBudget as hsFaultBudget,
+  quorum as hsQuorum,
+  leaderOf as hsLeaderOf,
+  type HsCmd,
+  type HsState,
+  type Command as HsCommand,
+  type FaultMode as HsFaultMode,
+} from '../protocols/hotstuff/types';
 
 export interface TestResult {
   group: string;
@@ -1057,6 +1069,210 @@ export function runSelfTests(): TestResult[] {
         pbftSettle(k, 25);
       }
       pbftSettle(k, 80);
+      return k.serialize();
+    };
+    const ok = run() === run();
+    return [ok, ok ? 'two independent Byzantine runs produced identical serialized state' : 'runs diverged'];
+  });
+
+  // ---- HotStuff (chained BFT consensus) ----
+  const hsKernel = (seed: number, ids: string[], drop = 0) =>
+    new Kernel<HsState, HsCmd>({
+      seed,
+      protocol: createHotStuff(DEFAULT_HOTSTUFF_CONFIG),
+      nodeIds: ids,
+      network: { minLatency: 20, maxLatency: 60, dropRate: drop },
+    });
+  const hsSet = (key: string, value: string, cid: string): HsCommand => ({ cid, op: { op: 'set', key, value } });
+  const hsClient = (k: Kernel<HsState, HsCmd>, c: HsCommand) => {
+    for (const id of k.nodeOrder) if (k.isUp(id)) k.command(id, { type: 'request', command: c });
+  };
+  const hsFaulty = (k: Kernel<HsState, HsCmd>, id: string, mode: HsFaultMode) => k.command(id, { type: 'set-fault', mode });
+  const hsSettle = (k: Kernel<HsState, HsCmd>, ticks = 200, dt = 20) => {
+    for (let i = 0; i < ticks; i++) k.advance(dt);
+  };
+  const hsHonest = (k: Kernel<HsState, HsCmd>) => k.views().filter((v) => v.state.fault === 'honest');
+  const hsOk = (k: Kernel<HsState, HsCmd>) => hotstuffInvariants(k.views()).every((iv) => iv.ok);
+  const hsBad = (k: Kernel<HsState, HsCmd>) =>
+    hotstuffInvariants(k.views())
+      .filter((iv) => !iv.ok)
+      .map((iv) => `${iv.name}: ${iv.detail}`)
+      .join(' | ');
+
+  t('HotStuff', 'Quorum sizes: N=3f+1 with 2f+1 certificates & rotating leaders', () => {
+    const ok =
+      hsFaultBudget(4) === 1 && hsQuorum(4) === 3 && hsFaultBudget(7) === 2 && hsQuorum(7) === 5 && hsFaultBudget(10) === 3 && hsQuorum(10) === 7;
+    const ids = ['A', 'B', 'C', 'D'];
+    const rotates = hsLeaderOf(ids, 0) === 'A' && hsLeaderOf(ids, 1) === 'B' && hsLeaderOf(ids, 5) === 'B';
+    return [ok && rotates, ok && rotates ? 'f=⌊(N-1)/3⌋, quorum=2f+1, leader=all[view%N] rotates every view' : 'quorum/leader arithmetic wrong'];
+  });
+
+  t('HotStuff', 'Healthy 4-node cluster commits via 3-chain & every replica agrees', () => {
+    const k = hsKernel(1, ['A', 'B', 'C', 'D']);
+    for (let i = 0; i < 5; i++) {
+      hsClient(k, hsSet('k' + i, 'v' + i, 'c' + i));
+      hsSettle(k, 40);
+    }
+    hsSettle(k, 120);
+    const kvs = hsHonest(k).map((v) => JSON.stringify(v.state.kv));
+    const allFive = hsHonest(k).every((v) => Object.keys(v.state.kv).length === 5);
+    const ok = allFive && new Set(kvs).size === 1 && hsOk(k);
+    return [ok, ok ? `5 commands committed through the pipeline; all replicas agree` : hsBad(k) || `kvs=${kvs.join(' / ')}`];
+  });
+
+  t('HotStuff', 'Leaders rotate: many distinct proposers commit blocks', () => {
+    const k = hsKernel(8, ['A', 'B', 'C', 'D']);
+    for (let i = 0; i < 8; i++) {
+      hsClient(k, hsSet('r', String(i), 'r' + i));
+      hsSettle(k, 30);
+    }
+    hsSettle(k, 120);
+    const lead = hsHonest(k).reduce((a, b) => (a.state.bExecHeight >= b.state.bExecHeight ? a : b));
+    // Count distinct proposers among the committed blocks we still retain.
+    const ps = new Set<string>();
+    for (const e of lead.state.committed) {
+      const blk = lead.state.blocks[e.hash];
+      if (blk) ps.add(blk.proposer);
+    }
+    const ok = ps.size >= 2 && hsOk(k);
+    return [ok, ok ? `${ps.size} distinct leaders proposed committed blocks (round-robin rotation)` : hsBad(k) || `proposers=${ps.size}`];
+  });
+
+  t('HotStuff', 'A silent leader is rotated out by the pacemaker (timeout → next view)', () => {
+    const k = hsKernel(3, ['A', 'B', 'C', 'D']);
+    hsFaulty(k, 'B', 'silent'); // B is the leader of view 1
+    hsClient(k, hsSet('y', '9', 'cy'));
+    hsSettle(k, 600);
+    const honest = hsHonest(k);
+    const committed = honest.every((v) => v.state.kv['y'] === '9');
+    const advanced = honest.some((v) => v.state.curView > 1);
+    const ok = committed && advanced && hsOk(k);
+    return [ok, ok ? `pacemaker timed out the silent leader and a later view committed the request` : hsBad(k) || `views=${honest.map((v) => v.state.curView).join(',')}`];
+  });
+
+  t('HotStuff', 'An EQUIVOCATING leader cannot break agreement', () => {
+    const k = hsKernel(7, ['A', 'B', 'C', 'D']);
+    hsFaulty(k, 'B', 'equivocate'); // B forges conflicting blocks at its view
+    hsClient(k, hsSet('w', 'real', 'cw'));
+    hsSettle(k, 400);
+    const honest = hsHonest(k);
+    const kvs = honest.map((v) => JSON.stringify(v.state.kv));
+    const noForgery = honest.every((v) => Object.values(v.state.kv).every((val) => !val.includes('✗')));
+    const ok = new Set(kvs).size === 1 && noForgery && hsOk(k);
+    return [ok, ok ? `honest replicas never committed a forged block and stayed consistent` : hsBad(k) || `kvs=${kvs.join(' / ')}`];
+  });
+
+  t('HotStuff', 'A lying (conflicting) backup is ignored', () => {
+    const k = hsKernel(11, ['A', 'B', 'C', 'D']);
+    hsFaulty(k, 'D', 'conflict'); // votes for a corrupted hash
+    for (let i = 0; i < 4; i++) {
+      hsClient(k, hsSet('k' + i, 'v' + i, 'c' + i));
+      hsSettle(k, 40);
+    }
+    hsSettle(k, 120);
+    const allFour = hsHonest(k).every((v) => Object.keys(v.state.kv).length === 4);
+    const ok = allFour && hsOk(k);
+    return [ok, ok ? `the lying backup's votes never counted; honest replicas committed all 4` : hsBad(k) || hsHonest(k).map((v) => v.state.bExecHeight).join(',')];
+  });
+
+  t('HotStuff', '7-node cluster tolerates 2 simultaneous Byzantine faults', () => {
+    const k = hsKernel(13, ['A', 'B', 'C', 'D', 'E', 'F', 'G']);
+    hsFaulty(k, 'B', 'silent');
+    hsFaulty(k, 'G', 'conflict');
+    for (let i = 0; i < 3; i++) {
+      hsClient(k, hsSet('k' + i, 'v' + i, 'c' + i));
+      hsSettle(k, 90);
+    }
+    hsSettle(k, 500);
+    const honest = hsHonest(k);
+    const kvs = honest.map((v) => JSON.stringify(v.state.kv));
+    const allKeys = honest.every((v) => Object.keys(v.state.kv).length === 3);
+    const ok = new Set(kvs).size === 1 && allKeys && hsOk(k);
+    return [ok, ok ? `f=2 faults tolerated; all honest replicas converged with 3 keys` : hsBad(k) || `kvs=${new Set(kvs).size}`];
+  });
+
+  t('HotStuff', 'A restarted replica catches up via committed-block gossip', () => {
+    const k = hsKernel(31, ['A', 'B', 'C', 'D']);
+    k.crash('D');
+    for (let i = 0; i < 6; i++) {
+      hsClient(k, hsSet('k' + i, 'v' + i, 'c' + i));
+      hsSettle(k, 40);
+    }
+    hsSettle(k, 80);
+    k.restart('D');
+    hsSettle(k, 300);
+    const D = k.views().find((v) => v.id === 'D')!.state;
+    const A = k.views().find((v) => v.id === 'A')!.state;
+    const ok = JSON.stringify(D.kv) === JSON.stringify(A.kv) && D.bExecHeight === A.bExecHeight && hsOk(k);
+    return [ok, ok ? `the restarted replica rebuilt its state to #${D.bExecHeight} from f+1 matching reports` : hsBad(k) || `D@${D.bExecHeight} vs A@${A.bExecHeight}`];
+  });
+
+  t('HotStuff', 'Agreement holds through 1,500 faults with an equivocating leader', () => {
+    const k = hsKernel(2026, ['A', 'B', 'C', 'D']);
+    hsFaulty(k, 'B', 'equivocate'); // 1 Byzantine = f for N=4
+    const chaos = new Rng(70707);
+    let cmd = 0;
+    let firstBreak = '';
+    for (let i = 0; i < 1500 && !firstBreak; i++) {
+      k.advance(20);
+      const roll = chaos.next();
+      const up = k.nodeOrder.filter((id) => k.isUp(id) && id !== 'B');
+      const down = k.nodeOrder.filter((id) => !k.isUp(id));
+      if (roll < 0.03 && up.length > 2) k.crash(chaos.pick(up)!);
+      else if (roll < 0.09 && down.length > 0) k.restart(chaos.pick(down)!);
+      else if (roll < 0.12) {
+        const sh = chaos.shuffle(k.nodeOrder);
+        k.partition([sh.slice(0, 2), sh.slice(2)]);
+      } else if (roll < 0.16) k.healNetwork();
+      else if (roll < 0.4) {
+        hsClient(k, hsSet('c', String(cmd), 'c' + cmd));
+        cmd++;
+      }
+      const bad = hotstuffInvariants(k.views()).filter((iv) => iv.name !== 'Progress').find((iv) => !iv.ok);
+      if (bad) firstBreak = `${bad.name}: ${bad.detail}`;
+    }
+    return [!firstBreak, firstBreak || 'Agreement, chain-integrity, state-machine safety & fault-budget held through 1,500 Byzantine faults'];
+  });
+
+  t('HotStuff', 'After chaos heals, honest replicas converge to one chain', () => {
+    const k = hsKernel(555, ['A', 'B', 'C', 'D']);
+    hsFaulty(k, 'C', 'conflict'); // a fixed Byzantine backup (= f)
+    const chaos = new Rng(31337);
+    let cmd = 0;
+    for (let i = 0; i < 1000; i++) {
+      k.advance(20);
+      const roll = chaos.next();
+      const up = k.nodeOrder.filter((id) => k.isUp(id) && id !== 'C');
+      const down = k.nodeOrder.filter((id) => !k.isUp(id));
+      if (roll < 0.03 && up.length > 2) k.crash(chaos.pick(up)!);
+      else if (roll < 0.1 && down.length > 0) k.restart(chaos.pick(down)!);
+      else if (roll < 0.13) {
+        const sh = chaos.shuffle(k.nodeOrder);
+        k.partition([sh.slice(0, 2), sh.slice(2)]);
+      } else if (roll < 0.17) k.healNetwork();
+      else if (roll < 0.4) {
+        hsClient(k, hsSet('z', String(cmd), 'z' + cmd));
+        cmd++;
+      }
+    }
+    k.healNetwork();
+    for (const id of k.nodeOrder) if (!k.isUp(id)) k.restart(id);
+    hsSettle(k, 700);
+    const honest = hsHonest(k).filter((v) => v.up);
+    const kvs = honest.map((v) => JSON.stringify(v.state.kv));
+    const ok = new Set(kvs).size === 1 && hsOk(k);
+    return [ok, ok ? `all live honest replicas converged after the churn (≤ #${Math.max(...honest.map((v) => v.state.bExecHeight))})` : hsBad(k) || `sets=${new Set(kvs).size}`];
+  });
+
+  t('HotStuff', 'Determinism: same seed & schedule ⇒ byte-identical run', () => {
+    const run = () => {
+      const k = hsKernel(99, ['A', 'B', 'C', 'D']);
+      hsFaulty(k, 'B', 'equivocate');
+      for (let i = 0; i < 6; i++) {
+        hsClient(k, hsSet('k' + i, 'v' + i, 'c' + i));
+        hsSettle(k, 25);
+      }
+      hsSettle(k, 100);
       return k.serialize();
     };
     const ok = run() === run();

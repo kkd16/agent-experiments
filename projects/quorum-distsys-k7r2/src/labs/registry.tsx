@@ -2,6 +2,7 @@ import type { JSX } from 'react';
 import { RaftLab } from './RaftLab';
 import { PaxosLab } from './PaxosLab';
 import { PbftLab } from './PbftLab';
+import { HotStuffLab } from './HotStuffLab';
 import { ChordLab } from './ChordLab';
 import { CrdtLab } from './CrdtLab';
 import { CoeditLab } from './CoeditLab';
@@ -46,6 +47,15 @@ export const LABS: LabDef[] = [
     icon: '⚔',
     tag: 'byzantine consensus',
     Component: PbftLab,
+  },
+  {
+    id: 'hotstuff',
+    title: 'HotStuff (modern BFT)',
+    blurb:
+      'The Byzantine-fault-tolerant engine behind Diem and a generation of BFT blockchains. Same N=3f+1 fault model as PBFT, but with rotating leaders, linear communication (votes funnel into one quorum certificate, no all-to-all chatter) and a pipelined 3-chain commit rule — watch blocks march from proposed → certified → locked → committed. Corrupt the leader and watch Agreement hold as the pacemaker rotates it out.',
+    icon: '⬡',
+    tag: 'byzantine consensus',
+    Component: HotStuffLab,
   },
   {
     id: 'crdt',

@@ -947,3 +947,81 @@ input[type='text'] {
   text-transform: uppercase;
   color: rgba(255, 255, 255, 0.4);
 }
+
+/* ---- HotStuff block-chain view ---- */
+.chainview {
+  margin: 10px 0 4px;
+  border: 1px solid var(--border, rgba(255, 255, 255, 0.08));
+  border-radius: 12px;
+  background: linear-gradient(180deg, rgba(176, 139, 255, 0.05), rgba(0, 0, 0, 0) 70%);
+  padding: 8px 10px 6px;
+}
+.chainview.empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 64px;
+}
+.chainview-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.45);
+  margin-bottom: 4px;
+}
+.chain-legend {
+  display: flex;
+  gap: 12px;
+  text-transform: none;
+  letter-spacing: 0;
+  font-size: 11px;
+}
+.chain-legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: rgba(255, 255, 255, 0.6);
+}
+.chain-legend i {
+  width: 10px;
+  height: 10px;
+  border-radius: 3px;
+  display: inline-block;
+}
+.chainview-scroll {
+  overflow-x: auto;
+  padding-bottom: 2px;
+}
+.chain-svg {
+  display: block;
+}
+.chain-svg text {
+  user-select: none;
+  pointer-events: none;
+  font-family: var(--mono, ui-monospace, monospace);
+}
+.chain-h {
+  font-size: 11px;
+  fill: rgba(255, 255, 255, 0.55);
+}
+.chain-cmd {
+  font-size: 13px;
+  font-weight: 600;
+}
+.chain-meta {
+  font-size: 10px;
+  fill: rgba(255, 255, 255, 0.4);
+}
+.chain-bracket {
+  font-size: 10px;
+  fill: #73e08a;
+  letter-spacing: 0.03em;
+}
+.chainview-foot {
+  font-size: 11px;
+  margin-top: 2px;
+  font-family: var(--mono, ui-monospace, monospace);
+}

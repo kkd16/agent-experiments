@@ -216,6 +216,71 @@ new files (`protocols/pbft/{types,pbft,invariants}.ts`) plus a lab.
       up via gossip; **Agreement holding through 1,500 faults with an equivocating primary**;
       post-chaos convergence; and determinism (same seed ⇒ byte-identical Byzantine run).
 
+### HotStuff lab (modern BFT consensus) — NEW
+The headline complement to PBFT, and the second Byzantine lab: **HotStuff** (Yin et al., PODC 2019) —
+the BFT engine behind Diem/Libra and a generation of BFT blockchains. Same fault model as PBFT (up to
+**f** Byzantine of **N = 3f+1**, safety by quorum intersection) but built the *modern* way, and the
+contrast is the whole point. Three new files (`protocols/hotstuff/{types,hotstuff,invariants}.ts`),
+a lab (`labs/HotStuffLab.tsx`) and a bespoke chain visualiser (`ui/ChainView.tsx`).
+- [x] **Block tree + quorum certificates** — agreement runs over a chain of blocks; a **QC** is the
+      counted proof that 2f+1 replicas voted for a block in a view. Every block carries a `justify` QC
+      for an earlier block — the object that threads the pipeline and makes communication linear.
+- [x] **Rotating leaders** — `leader(view) = all[view % N]`, round-robin, so a faulty leader costs
+      exactly one view (PBFT keeps a primary until suspected). Verified by a self-test.
+- [x] **Linear hand-off** — votes funnel to a single leader who packs 2f+1 into one QC and disseminates
+      it (O(N) per view), versus PBFT's all-to-all PREPARE/COMMIT (O(N²)). We collect at the block's
+      *own* leader (Tendermint/Casper-style) rather than the *next* leader (original HotStuff): the
+      original shaves a message delay but couples two consecutive views to each leader, which stalls a
+      round-robin N=4 cluster under a single persistent fault — collecting-at-the-proposer keeps
+      liveness with f faults at N=3f+1. (This subtlety is documented in the protocol header.)
+- [x] **Pipelined 3-chain commit rule** — each block plays one phase for each of its three
+      predecessors. Walk back three `justify` links from a new block b\*: b″=b\*.justify, b′=b″.justify,
+      b=b′.justify; if those are linked by *direct, consecutive* parent edges, **b commits**. Two QCs
+      lock the chain (safety), the third makes it irrevocable.
+- [x] **The voting rule (safety crux)** — a replica votes for a block iff it is past its last-voted
+      height *and* the block either extends its `lockedQC` (safety) or carries a strictly-newer QC
+      (liveness). Quorum intersection then guarantees two conflicting blocks can never both be certified.
+- [x] **A real pacemaker** — a view timer (armed only while work is outstanding, with exponential
+      backoff) suspects a stalled leader; 2f+1 `TIMEOUT`s (each carrying the sender's highest QC) form a
+      **timeout certificate** that jumps every honest replica to the next view, where the new leader
+      proposes on top of the highest QC any of those 2f+1 reported — so nothing committable is lost. A
+      TC also *forces* the new leader to propose (a no-op if idle) to flush laggards' chains, and a
+      replica re-synchronises its view from any QC it learns (curing the timed-out-on-different-views
+      deadlock that exact-quorum clusters can hit).
+- [x] **Byzantine fault modes** (toggled live per node): `silent` (rotated out by the pacemaker),
+      `equivocate` (a leader proposing conflicting blocks at one view — cannot break agreement, only
+      burns a view) and `conflict` (a backup voting for a corrupted block hash — never counted).
+- [x] **Safe catch-up** — Status/Catchup gossip ships committed block bodies; a replica adopts a height
+      once f+1 distinct replicas report the same (height, hash). Restarted/lagging replicas reconverge
+      without a full state copy. Durable state (block tree, the three safety variables, the KV) survives
+      a crash; volatile vote/timeout collection is rebuilt.
+- [x] **Live safety invariants** (over the honest replicas): **Fault budget** (≤ f), **Agreement** (no
+      two honest replicas commit different blocks at one height — the headline), **Chain integrity** (a
+      gap-free, parent-linked committed chain) and **State-machine safety** (KV = committed log replayed),
+      plus a Progress line.
+- [x] **Bespoke chain visualiser** (`ui/ChainView.tsx`) — the signature picture: the tail of the chain
+      as a row of blocks linked to their parents, with the dashed gold QC "justify" arcs overlaid, each
+      block tinted by how far agreement carried it (**proposed → certified → locked → committed**) and a
+      "3-chain ⇒ commit" bracket over the block the rule just decided. Watching a block march through the
+      four colours *is* the protocol.
+- [x] **HotStuff lab UI** (`labs/HotStuffLab.tsx`) — network canvas coloured by role (leader/backup) and
+      fault, the chain view, a one-click "Corrupt leader" button + per-node fault switch + crash/restart,
+      a committed-log panel, KV view, replica inspector (view / locked / qcHigh / per-block phase),
+      curated scenarios incl. **"Beyond f (unsafe!)"**, and deep links.
+- [x] **Self-tests** (11) — quorum/leader-rotation arithmetic; healthy 3-chain commit + convergence;
+      many distinct leaders committing blocks; a silent leader rotated out by the pacemaker; an
+      **equivocating leader that cannot break agreement**; a lying backup ignored; a 7-node cluster
+      tolerating 2 simultaneous faults; a restarted replica catching up via gossip; **Agreement holding
+      through 1,500 faults with an equivocating leader**; post-chaos convergence; and determinism.
+- [ ] **Original-HotStuff vote routing as a toggle** — offer the "vote to the *next* leader" variant
+      side-by-side to show the latency/liveness trade-off in the same lab.
+- [ ] **Pacemaker view-synchronisation animation** — draw the TC assembling and the view counter ticking
+      over on the canvas, so a silent-leader rotation is watchable step by step.
+- [ ] **Threshold-signature QCs** — model a (k, n) threshold signature so a QC is one O(1) object rather
+      than a list of voters, the real reason HotStuff is linear in *bandwidth* too.
+- [ ] **Forensics / accountability** — when faulty > f and agreement breaks, identify the ≥ f+1 replicas
+      that signed two conflicting QCs (the culprit-exposure HotStuff enables).
+
 ### Future labs / ideas (backlog)
 - [ ] **Dynamo-style quorums** — tunable (N, R, W), sloppy quorums + hinted handoff, read-repair,
       and a vector-clock conflict view, with the R+W>N consistency invariant.
@@ -347,3 +412,36 @@ new files (`protocols/pbft/{types,pbft,invariants}.ts`) plus a lab.
   conformance + lint + build) and drove the built app in headless Chromium across the PBFT scenarios:
   the equivocating-primary and 7-node/2-faulty runs both stay **HOLDING**, "Beyond f" correctly flips
   the fault-budget invariant to **VIOLATED**, and the in-browser self-tests report **52/52 passing**.
+- 2026-06-26 (claude): **added a full HotStuff lab** — the *modern* BFT consensus protocol (Yin et al.,
+  PODC 2019; the engine behind Diem/Libra and many BFT blockchains) and the second Byzantine lab, a
+  deliberate counterpoint to PBFT. Three new files (`protocols/hotstuff/{types,hotstuff,invariants}.ts`),
+  a lab (`labs/HotStuffLab.tsx`) and a bespoke **chain visualiser** (`ui/ChainView.tsx`), all on the
+  existing kernel. Implemented **chained/pipelined** HotStuff for real: a block tree where every block
+  carries a **quorum certificate** (`justify`) for an earlier block; **round-robin rotating leaders**
+  (a faulty leader costs exactly one view); **linear** vote aggregation into a single QC that the
+  leader disseminates (O(N) vs PBFT's O(N²)); and the **3-chain commit rule** (a block commits the
+  instant a run of three QCs with consecutive direct-parent edges forms on top of it). Safety is the
+  one-line HotStuff voting rule (extend the locked QC *or* carry a strictly-newer QC) + quorum
+  intersection. Built a real **pacemaker**: a backoff view timer, 2f+1 `TIMEOUT`s forming a timeout
+  certificate that rotates a stalled leader, view re-synchronisation from any learned QC, and a
+  forced flush-proposal on a TC so laggards' chains close. The same three Byzantine fault modes as
+  PBFT, togglable live (`silent` / `equivocate` / `conflict`). Three genuine design issues found &
+  fixed while bringing it up on a strong test harness: (1) **the vote-routing trap** — routing votes to
+  the *next* leader (original HotStuff) couples two consecutive views to each leader, which provably
+  stalls a round-robin N=4 cluster under one persistent fault (you need 3 consecutive clean views and a
+  single fault poisons two); switched to collecting at the block's own leader (Tendermint/Casper-style),
+  restoring liveness with f faults at N=3f+1, and documented the trade-off; (2) **a view-desync
+  deadlock** — with exactly 2f+1 honest replicas, one racing ahead made them time out on *different*
+  views so no 2f+1 timeout certificate could ever form; fixed by re-syncing a replica's view from any
+  QC carried in a TIMEOUT; (3) **a flush stall** — a caught-up leader went idle while a follower still
+  lagged, so the follower never got its deciding block; fixed by forcing the post-TC leader to propose.
+  Four live safety invariants over the honest replicas (Fault budget, **Agreement**, Chain integrity,
+  State-machine safety) plus Progress, and curated scenarios incl. **"Beyond f (unsafe!)"** that flips
+  the boundary. Self-tests grown **52 → 63/63** (11 HotStuff tests incl. an equivocating leader that
+  cannot break agreement and a **1,500-step chaos run with a Byzantine leader** asserting Agreement
+  throughout). Stress-tested separately across **180 randomised chaos runs** (N=4/7/10, partitions +
+  drops + crashes + up to f Byzantine of every kind): **zero safety violations**, and "beyond f"
+  detected 30/30. Verified the full gate (scope + conformance + lint + build) and drove the built app
+  in headless Chromium: the HotStuff lab commits blocks through the pipeline (invariants **HOLDING**),
+  the equivocating-leader scenario stays **HOLDING**, "Beyond f" flips to **VIOLATED**, and the in-app
+  self-tests report **63/63 passing**.
