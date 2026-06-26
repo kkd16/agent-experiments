@@ -20,6 +20,11 @@ import {
   parseFen,
   toFen,
   bookMove,
+  startFenForId,
+  startFenForDfrc,
+  randomStartId,
+  idForBackRank,
+  STANDARD_ID,
   buildPgn,
   allocateTime,
   formatClock,
@@ -102,6 +107,12 @@ export default function App() {
   const [arrow, setArrow] = useState<{ from: number; to: number } | null>(null)
   const [fenInput, setFenInput] = useState('')
   const [copied, setCopied] = useState(false)
+  // Chess960 / Fischer-random: the current game's Scharnagl SP-ID, or null for
+  // ordinary chess (-1 means a 960 position whose id we can't recover, e.g. one
+  // loaded mid-game from a FEN).
+  const [spId, setSpId] = useState<number | null>(null)
+  const [dfrc, setDfrc] = useState(false)
+  const [idInput, setIdInput] = useState('')
   const [bookOn, setBookOn] = useState(true)
   const [analysisOn, setAnalysisOn] = useState(false)
   const [ponderOn, setPonderOn] = useState(false)
@@ -463,6 +474,8 @@ export default function App() {
       engine.cancel()
       clearPonder()
       gameRef.current.reset(START_FEN)
+      setSpId(null)
+      setDfrc(false)
       resetClock(tcIdx)
       lastSearchedFen.current = ''
       lastAnalyzedFen.current = ''
@@ -481,6 +494,52 @@ export default function App() {
     },
     [engine, clearPonder, resetClock, tcIdx],
   )
+
+  // Start a Chess960 game. With no argument a random one of the 960 positions is
+  // rolled; otherwise the given Scharnagl SP-ID (0–959) is used.
+  const newGame960 = useCallback(
+    (id?: number) => {
+      const chosen = id === undefined ? randomStartId() : ((id % 960) + 960) % 960
+      engine.cancel()
+      clearPonder()
+      gameRef.current.reset(startFenForId(chosen))
+      setSpId(chosen)
+      setDfrc(false)
+      resetClock(tcIdx)
+      lastSearchedFen.current = ''
+      lastAnalyzedFen.current = ''
+      setSelected(null)
+      setArrow(null)
+      setInfo(null)
+      setPvSan('')
+      setThinking(false)
+      setAnalyzing(false)
+      setPgnMsg('')
+      setView(buildView(gameRef.current))
+    },
+    [engine, clearPonder, resetClock, tcIdx],
+  )
+
+  // Start a Double Fischer Random game — white and black get independent random
+  // back ranks (so the position is no longer mirror-symmetric).
+  const newGameDfrc = useCallback(() => {
+    engine.cancel()
+    clearPonder()
+    gameRef.current.reset(startFenForDfrc(randomStartId(), randomStartId()))
+    setSpId(-1)
+    setDfrc(true)
+    resetClock(tcIdx)
+    lastSearchedFen.current = ''
+    lastAnalyzedFen.current = ''
+    setSelected(null)
+    setArrow(null)
+    setInfo(null)
+    setPvSan('')
+    setThinking(false)
+    setAnalyzing(false)
+    setPgnMsg('')
+    setView(buildView(gameRef.current))
+  }, [engine, clearPonder, resetClock, tcIdx])
 
   const undo = useCallback(() => {
     engine.cancel()
@@ -528,6 +587,20 @@ export default function App() {
     engine.cancel()
     clearPonder()
     gameRef.current.reset(fen)
+    // Flag the variant: if the loaded position uses 960 castling, try to recover
+    // its SP-ID from the white back rank (only meaningful for a full start rank).
+    if (gameRef.current.pos.chess960) {
+      const ranks = fen.split(/\s+/)[0].split('/')
+      const whiteRank = ranks[7] ?? ''
+      const blackRank = (ranks[0] ?? '').toUpperCase()
+      const recovered = /^[A-Z]{8}$/.test(whiteRank) ? idForBackRank(whiteRank) : -1
+      setSpId(recovered >= 0 ? recovered : -1)
+      // A different black back rank means a Double-Fischer-Random position.
+      setDfrc(/^[A-Z]{8}$/.test(blackRank) && blackRank !== whiteRank)
+    } else {
+      setSpId(null)
+      setDfrc(false)
+    }
     lastSearchedFen.current = ''
     lastAnalyzedFen.current = ''
     setSelected(null)
@@ -777,6 +850,45 @@ export default function App() {
               <button className="btn" onClick={() => setWhiteOnBottom((v) => !v)}>
                 Flip Board
               </button>
+            </div>
+
+            <div className="panel">
+              <div className="panel-title">
+                Chess960
+                {spId !== null && (
+                  <span className="badge-960">
+                    {dfrc ? 'Double Fischer Random' : spId >= 0 ? `Fischer Random · #${spId}` : 'Fischer Random'}
+                  </span>
+                )}
+              </div>
+              <p className="panel-note">
+                Fischer Random — the back rank is shuffled into one of 960 set-ups (king between the rooks, bishops on
+                opposite colours). Castling still works: drop the king on its g/c square or click your own rook.
+              </p>
+              <div className="controls-960">
+                <button className="btn small" onClick={() => newGame960()}>
+                  Random 960
+                </button>
+                <input
+                  className="id-input"
+                  inputMode="numeric"
+                  placeholder="0–959"
+                  value={idInput}
+                  onChange={(e) => setIdInput(e.target.value.replace(/[^0-9]/g, '').slice(0, 3))}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && idInput !== '') newGame960(Number(idInput))
+                  }}
+                />
+                <button className="btn small" onClick={() => newGame960(Number(idInput))} disabled={idInput === ''}>
+                  Start #
+                </button>
+                <button className="btn small" onClick={() => newGame960(STANDARD_ID)} title="The standard set-up is SP-ID 518">
+                  #518 (standard)
+                </button>
+                <button className="btn small" onClick={newGameDfrc} title="Double Fischer Random — each side gets its own random back rank">
+                  Random DFRC
+                </button>
+              </div>
             </div>
 
             <div className="panel">

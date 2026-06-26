@@ -87,6 +87,19 @@ export function moveFlag(m: Move): number {
   return (m >> 17) & 7
 }
 
+// The square the king lands on for a castle move (king-captures-rook encoding):
+// always the g-file (kingside) or c-file (queenside) of the king's rank.
+export function castleKingDest(kingFrom: number, rookFrom: number): number {
+  const kingside = fileOf(rookFrom) > fileOf(kingFrom)
+  return sq(kingside ? 6 : 2, rankOf(kingFrom))
+}
+
+// Index of each castling right inside `crook` (and the bit position in `castling`).
+export const CR_IDX_WK = 0
+export const CR_IDX_WQ = 1
+export const CR_IDX_BK = 2
+export const CR_IDX_BQ = 3
+
 export interface Position {
   board: Int8Array // 128 entries, 0x88 layout
   turn: Color
@@ -96,6 +109,14 @@ export interface Position {
   fullmove: number
   kings: [number, number] // king square per color
   hash: bigint
+  // Chess960 support. Castling is encoded as "king captures own rook" (a castle
+  // move's `to` is the rook's origin square), which works uniformly for standard
+  // chess and for the 960 starting positions where king and rooks sit on arbitrary
+  // files. These three fields are game-constants — set once by `parseFen`, copied
+  // by `clonePosition`, and never touched by make/unmake.
+  chess960: boolean
+  crook: Int8Array // rook origin square per right index (CR_IDX_*), or -1
+  castleMask: Int8Array // per-square AND-mask that clears the rights a move at that square voids
 }
 
 // Stored on the undo stack so make/unmake is allocation-free during search.
@@ -118,6 +139,9 @@ export function emptyPosition(): Position {
     fullmove: 1,
     kings: [-1, -1],
     hash: 0n,
+    chess960: false,
+    crook: Int8Array.of(-1, -1, -1, -1),
+    castleMask: new Int8Array(128).fill(15),
   }
 }
 
@@ -131,6 +155,9 @@ export function clonePosition(p: Position): Position {
     fullmove: p.fullmove,
     kings: [p.kings[0], p.kings[1]],
     hash: p.hash,
+    chess960: p.chess960,
+    crook: Int8Array.from(p.crook),
+    castleMask: Int8Array.from(p.castleMask),
   }
 }
 
@@ -190,16 +217,72 @@ export function parseFen(fen: string): Position {
   }
 
   pos.turn = turn === 'b' ? BLACK : WHITE
-  pos.castling =
-    (castling.includes('K') ? CR_WK : 0) |
-    (castling.includes('Q') ? CR_WQ : 0) |
-    (castling.includes('k') ? CR_BK : 0) |
-    (castling.includes('q') ? CR_BQ : 0)
+  parseCastling(pos, castling)
   pos.ep = ep && ep !== '-' ? parseSquare(ep) : -1
   pos.halfmove = half ? parseInt(half, 10) : 0
   pos.fullmove = full ? parseInt(full, 10) : 1
   pos.hash = computeHash(pos)
   return pos
+}
+
+const RIGHT_BIT = [CR_WK, CR_WQ, CR_BK, CR_BQ]
+
+// Parse the castling field, tolerant of standard letters (KQkq, the X-FEN form
+// where K/Q name the *outermost* rook on the king's right/left) and Shredder-FEN
+// file letters (e.g. "HAha", which name the rook file directly). Fills
+// `pos.crook` (rook origin per right), `pos.castling`, `pos.chess960`, and the
+// per-square `pos.castleMask` used by make/unmake to void rights.
+function parseCastling(pos: Position, field: string | undefined): void {
+  pos.crook = Int8Array.of(-1, -1, -1, -1)
+  pos.castling = 0
+  let is960 = false
+
+  if (field && field !== '-') {
+    for (const ch of field) {
+      const color: Color = ch === ch.toUpperCase() ? WHITE : BLACK
+      const rank = color === WHITE ? 0 : 7
+      const kingSq = pos.kings[color]
+      if (kingSq < 0) continue
+      const kingFile = fileOf(kingSq)
+      const ourRook = makePiece(color, ROOK)
+      let rookFile = -1
+      const up = ch.toUpperCase()
+      if (up === 'K') {
+        for (let f = 7; f > kingFile; f--) if (pos.board[sq(f, rank)] === ourRook) { rookFile = f; break }
+      } else if (up === 'Q') {
+        for (let f = 0; f < kingFile; f++) if (pos.board[sq(f, rank)] === ourRook) { rookFile = f; break }
+      } else if (up >= 'A' && up <= 'H') {
+        rookFile = up.charCodeAt(0) - 65
+        is960 = true
+      }
+      if (rookFile < 0) continue
+      const kingside = rookFile > kingFile
+      const idx = color === WHITE ? (kingside ? CR_IDX_WK : CR_IDX_WQ) : (kingside ? CR_IDX_BK : CR_IDX_BQ)
+      pos.crook[idx] = sq(rookFile, rank)
+      pos.castling |= RIGHT_BIT[idx]
+    }
+  }
+
+  // A non-standard king or castling-rook placement means we must round-trip the
+  // castling field as Shredder-FEN file letters.
+  if (pos.kings[WHITE] !== sq(4, 0) || pos.kings[BLACK] !== sq(4, 7)) is960 = true
+  const stdRook = [sq(7, 0), sq(0, 0), sq(7, 7), sq(0, 7)]
+  for (let i = 0; i < 4; i++) if (pos.crook[i] >= 0 && pos.crook[i] !== stdRook[i]) is960 = true
+  pos.chess960 = is960
+
+  buildCastleMask(pos)
+}
+
+// A move that touches a king's home square (king moves) voids both that side's
+// rights; a move that touches a castling rook's home square (the rook moves, or
+// it is captured) voids that single right. Encoded as a per-square AND-mask so
+// make/unmake stays branch-light: `castling &= mask[from] & mask[to]`.
+function buildCastleMask(pos: Position): void {
+  const mask = new Int8Array(128).fill(15)
+  if (pos.kings[WHITE] >= 0) mask[pos.kings[WHITE]] &= ~(CR_WK | CR_WQ) & 15
+  if (pos.kings[BLACK] >= 0) mask[pos.kings[BLACK]] &= ~(CR_BK | CR_BQ) & 15
+  for (let i = 0; i < 4; i++) if (pos.crook[i] >= 0) mask[pos.crook[i]] &= ~RIGHT_BIT[i] & 15
+  pos.castleMask = mask
 }
 
 export function toFen(p: Position): string {
@@ -223,24 +306,22 @@ export function toFen(p: Position): string {
   }
   const turn = p.turn === WHITE ? 'w' : 'b'
   let castling = ''
-  if (p.castling & CR_WK) castling += 'K'
-  if (p.castling & CR_WQ) castling += 'Q'
-  if (p.castling & CR_BK) castling += 'k'
-  if (p.castling & CR_BQ) castling += 'q'
+  if (p.chess960) {
+    // Shredder-FEN: name each castling rook by its file (upper = white).
+    if (p.castling & CR_WK) castling += FILES[fileOf(p.crook[CR_IDX_WK])].toUpperCase()
+    if (p.castling & CR_WQ) castling += FILES[fileOf(p.crook[CR_IDX_WQ])].toUpperCase()
+    if (p.castling & CR_BK) castling += FILES[fileOf(p.crook[CR_IDX_BK])]
+    if (p.castling & CR_BQ) castling += FILES[fileOf(p.crook[CR_IDX_BQ])]
+  } else {
+    if (p.castling & CR_WK) castling += 'K'
+    if (p.castling & CR_WQ) castling += 'Q'
+    if (p.castling & CR_BK) castling += 'k'
+    if (p.castling & CR_BQ) castling += 'q'
+  }
   if (!castling) castling = '-'
   const ep = p.ep >= 0 ? squareName(p.ep) : '-'
   return `${placement} ${turn} ${castling} ${ep} ${p.halfmove} ${p.fullmove}`
 }
-
-// Castling rights are cleared when a king or rook leaves its home square (or a
-// home rook is captured). This lookup zeroes the relevant bits by from/to square.
-const CASTLE_MASK = new Int8Array(128).fill(15)
-CASTLE_MASK[sq(4, 0)] = ~(CR_WK | CR_WQ) & 15 // e1
-CASTLE_MASK[sq(0, 0)] = ~CR_WQ & 15 // a1
-CASTLE_MASK[sq(7, 0)] = ~CR_WK & 15 // h1
-CASTLE_MASK[sq(4, 7)] = ~(CR_BK | CR_BQ) & 15 // e8
-CASTLE_MASK[sq(0, 7)] = ~CR_BQ & 15 // a8
-CASTLE_MASK[sq(7, 7)] = ~CR_BK & 15 // h8
 
 export function makeMoveOnBoard(p: Position, m: Move, undo: Undo): void {
   const from = moveFrom(m)
@@ -262,6 +343,39 @@ export function makeMoveOnBoard(p: Position, m: Move, undo: Undo): void {
 
   // Clear the previous en-passant file from the hash.
   if (p.ep >= 0) h ^= EP_FILE_KEYS[fileOf(p.ep)]
+
+  // Castling — encoded as "king captures own rook" (`to` is the rook's origin),
+  // so it handles the standard squares and every 960 layout uniformly. Both home
+  // squares are vacated before the destinations are filled, which is correct even
+  // when a destination coincides with the other piece's origin.
+  if (flag === FLAG_CASTLE) {
+    const rank = rankOf(from)
+    const kingside = fileOf(to) > fileOf(from)
+    const kingTo = sq(kingside ? 6 : 2, rank)
+    const rookTo = sq(kingside ? 5 : 3, rank)
+    const rook = p.board[to]
+    h ^= PIECE_KEYS[piece][from]
+    h ^= PIECE_KEYS[rook][to]
+    p.board[from] = EMPTY
+    p.board[to] = EMPTY
+    p.board[kingTo] = piece
+    p.board[rookTo] = rook
+    h ^= PIECE_KEYS[piece][kingTo]
+    h ^= PIECE_KEYS[rook][rookTo]
+    p.kings[us] = kingTo
+
+    h ^= CASTLE_KEYS[p.castling]
+    p.castling &= p.castleMask[from] & p.castleMask[to]
+    h ^= CASTLE_KEYS[p.castling]
+
+    p.ep = -1
+    p.halfmove++
+    if (us === BLACK) p.fullmove++
+    p.turn = them
+    h ^= SIDE_KEY
+    p.hash = h
+    return
+  }
 
   // Remove a captured piece (en passant captures behind the target square).
   if (flag === FLAG_EP) {
@@ -285,22 +399,9 @@ export function makeMoveOnBoard(p: Position, m: Move, undo: Undo): void {
 
   if (pieceType(piece) === KING) p.kings[us] = to
 
-  // Move the rook when castling.
-  if (flag === FLAG_CASTLE) {
-    const rank = us === WHITE ? 0 : 7
-    const kingside = fileOf(to) === 6
-    const rookFrom = sq(kingside ? 7 : 0, rank)
-    const rookTo = sq(kingside ? 5 : 3, rank)
-    const rook = p.board[rookFrom]
-    p.board[rookFrom] = EMPTY
-    p.board[rookTo] = rook
-    h ^= PIECE_KEYS[rook][rookFrom]
-    h ^= PIECE_KEYS[rook][rookTo]
-  }
-
   // Update castling rights.
   h ^= CASTLE_KEYS[p.castling]
-  p.castling &= CASTLE_MASK[from] & CASTLE_MASK[to]
+  p.castling &= p.castleMask[from] & p.castleMask[to]
   h ^= CASTLE_KEYS[p.castling]
 
   // Set a new en-passant target on a double pawn push.
@@ -333,6 +434,26 @@ export function unmakeMoveOnBoard(p: Position, m: Move, undo: Undo): void {
   p.turn = us
   if (us === BLACK) p.fullmove--
 
+  if (flag === FLAG_CASTLE) {
+    // `from` = king origin, `to` = rook origin; reverse the relocation.
+    const rank = rankOf(from)
+    const kingside = fileOf(to) > fileOf(from)
+    const kingTo = sq(kingside ? 6 : 2, rank)
+    const rookTo = sq(kingside ? 5 : 3, rank)
+    const king = p.board[kingTo]
+    const rook = p.board[rookTo]
+    p.board[kingTo] = EMPTY
+    p.board[rookTo] = EMPTY
+    p.board[from] = king
+    p.board[to] = rook
+    p.kings[us] = from
+    p.castling = undo.castling
+    p.ep = undo.ep
+    p.halfmove = undo.halfmove
+    p.hash = undo.hash
+    return
+  }
+
   // Restore the moving piece (un-promote if needed).
   const moved = p.board[to]
   const original = promo ? makePiece(us, PAWN) : moved
@@ -340,16 +461,6 @@ export function unmakeMoveOnBoard(p: Position, m: Move, undo: Undo): void {
   p.board[to] = EMPTY
 
   if (pieceType(original) === KING) p.kings[us] = from
-
-  // Restore the rook on castling.
-  if (flag === FLAG_CASTLE) {
-    const rank = us === WHITE ? 0 : 7
-    const kingside = fileOf(to) === 6
-    const rookFrom = sq(kingside ? 7 : 0, rank)
-    const rookTo = sq(kingside ? 5 : 3, rank)
-    p.board[rookFrom] = p.board[rookTo]
-    p.board[rookTo] = EMPTY
-  }
 
   // Restore a captured piece.
   if (undo.captured !== EMPTY) p.board[undo.capturedSq] = undo.captured

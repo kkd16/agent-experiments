@@ -17,6 +17,9 @@ import {
   moveFrom,
   moveTo,
   movePromo,
+  moveFlag,
+  FLAG_CASTLE,
+  castleKingDest,
   makeMoveOnBoard,
   unmakeMoveOnBoard,
 } from './board'
@@ -30,6 +33,16 @@ export { Searcher, INF, MATE, MATE_THRESHOLD } from './search'
 export type { SearchInfo, SearchOptions, InfoCallback, MultiInfo, PvLine, MultiInfoCallback } from './search'
 export { perft, PERFT_SUITE } from './perft'
 export type { PerftCase } from './perft'
+export {
+  backRankForId,
+  idForBackRank,
+  startFenForId,
+  startFenForDfrc,
+  randomStartId,
+  STANDARD_ID,
+  chess960Selftest,
+} from './chess960'
+export type { Chess960Check } from './chess960'
 export { moveToSan, sanToMove } from './san'
 export { see } from './see'
 export { bookMove, bookEntries, bookPositions, bookExplorer } from './book'
@@ -127,11 +140,18 @@ export class Game {
   }
 
   // Find a legal move matching the given squares (and promotion piece, if any).
+  // Castling is encoded king-captures-rook, but the UI lets you express it either
+  // by dropping the king on its g/c destination *or* by clicking your own rook —
+  // so we also match a castle by its king-destination square.
   findMove(from: number, to: number, promo = 0): Move | null {
-    for (const m of this.legalMoves()) {
+    const legal = this.legalMoves()
+    for (const m of legal) {
       if (moveFrom(m) === from && moveTo(m) === to) {
         if (promo === 0 || movePromo(m) === promo) return m
       }
+    }
+    for (const m of legal) {
+      if (moveFlag(m) === FLAG_CASTLE && moveFrom(m) === from && castleKingDest(from, moveTo(m)) === to) return m
     }
     return null
   }

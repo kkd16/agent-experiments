@@ -7,10 +7,17 @@ representation, move generation, search and evaluation are all hand-built here.
 ## Architecture
 
 - **`engine/board.ts`** — 0x88 mailbox board, piece encoding, FEN parse/serialize, incremental
-  Zobrist hashing, allocation-free `make`/`unmake` (plus null moves for pruning).
+  Zobrist hashing, allocation-free `make`/`unmake` (plus null moves for pruning). Castling is encoded
+  **king-captures-rook** (a castle move's `to` is the rook's origin square) and the rights-voiding mask
+  is a **per-position** square table, so the same code path serves standard chess *and* every Chess960
+  layout (king and rooks on arbitrary files). FEN reads/writes X-FEN (`KQkq`) and **Shredder-FEN** file
+  letters; the king/rook may overlap destinations and make/unmake vacates both home squares before
+  filling the g/c and f/d targets.
 - **`engine/zobrist.ts`** — deterministic splitmix64-seeded 64-bit hash keys.
-- **`engine/movegen.ts`** — pseudo-legal generation (incl. castling, en passant, promotion),
-  attack detection, and a make/unmake legality filter.
+- **`engine/movegen.ts`** — pseudo-legal generation (incl. **Chess960-general castling**, en passant,
+  promotion), attack detection, and a make/unmake legality filter. Castling validates the king's path
+  (out-of/through/into-check), and that the king-span and rook-span are clear except for the two movers,
+  for arbitrary king/rook files.
 - **`engine/eval.ts`** — tapered PeSTO evaluation (mg/eg PST interpolation) plus a full positional
   layer: piece **mobility** (sane centres), **king safety** (pawn-shield holes + a weighted attacker
   count), **pawn structure** (passed / isolated / doubled), **rooks** on open/semi-open files and the
@@ -72,12 +79,23 @@ representation, move generation, search and evaluation are all hand-built here.
 - **`engine/san.ts`** — SAN with disambiguation and check/mate suffixes, plus **`sanToMove`** — a
   structural SAN parser tolerant of over/under-disambiguation, zero-castling and missing `=`.
 - **`engine/perft.ts`** — perft + the standard reference suite (correctness proof).
+- **`engine/chess960.ts`** — **Chess960 / Fischer Random**. The Scharnagl numbering both ways
+  (`backRankForId`/`idForBackRank`, the canonical 0–959 SP-IDs, 518 = standard), `startFenForId`,
+  `startFenForDfrc` (Double Fischer Random — independent back ranks per side, which the per-side
+  castling code supports for free), and `randomStartId`. It carries its **own exact-oracle self-test**
+  (`chess960Selftest`): the id⇄position bijection over all 960, the standard position routed through the
+  960 castle path matching reference perft, make/unmake + hashing integrity over random 960 trees, an
+  **independent castle-move oracle** (a from-scratch re-derivation) cross-checked node-for-node across
+  perft trees, colour-flip perft symmetry, and a DFRC pass — no external reference tables needed.
 - **`engine/engine.worker.ts`** + **`hooks/useEngine.ts`** — worker transport (search / multi-PV
   analyze / batch-eval sweep) with a synchronous fallback for sandboxed thumbnails.
 - **`components/`** — board (click + drag, highlights, check glow, best-move arrow), eval bar,
-  move list, live engine panel, promotion picker, a three-tab Engine Lab (Tactics / Perft / Self-tests),
+  move list, live engine panel, promotion picker, a **Chess960 panel** (Random 960 / start a chosen
+  SP-ID / #518 standard / Random DFRC, with the live SP-ID badge), the Engine Lab (Tactics / EPD /
+  tablebases / NNUE / Perft / Self-tests — the Self-tests tab now includes the six Chess960 checks),
   and the **Analyze studio** (`Analysis.tsx` + `EvalGraph.tsx`): PGN/FEN import, full game navigation,
   a multi-PV engine readout, and a whole-game evaluation graph with click-to-jump and blunder markers.
+  Castling input is variant-aware: drop the king on its g/c square *or* click your own rook.
 
 ## Ideas / backlog
 
@@ -153,6 +171,26 @@ representation, move generation, search and evaluation are all hand-built here.
       both the play and ponder engines; the **Self-tests** tab gains the accumulator-equivalence + gradcheck checks
 - [x] **Ship a pre-trained default net** (`nnue-weights.ts`, built by `tools/train-default-nnue.ts`) so "NNUE eval"
       works on a fresh load with no training — holdout **R²=0.9939 / RMSE 55 cp**; a net trained in the Lab overrides it
+- [x] **Chess960 / Fischer Random** (`chess960.ts`) — full support for all 960 Scharnagl start positions, played
+      from the Play panel (Random 960 / a chosen SP-ID / #518 standard), with the SP-ID shown as a live badge
+- [x] **Scharnagl SP-ID numbering both ways** — `backRankForId`/`idForBackRank` (a verified bijection over all 960,
+      id 518 = the standard set-up), `startFenForId`, and `randomStartId`
+- [x] **General king-captures-rook castling** — re-encoded castling so king and rooks can start on arbitrary files;
+      make/unmake vacates both home squares before filling the fixed g/c (king) and f/d (rook) targets, handling
+      every destination overlap; the rights-voiding mask is now a per-position square table built at `parseFen`
+- [x] **X-FEN + Shredder-FEN castling fields** — parse `KQkq` (outermost-rook reading) *and* file letters (`HAha`),
+      and emit Shredder-FEN for 960 positions so FEN round-trips exactly
+- [x] **960-aware SAN, move input, and NNUE** — `O-O`/`O-O-O` by rook-vs-king file; the UI accepts a castle by the
+      king's g/c square *or* by clicking your own rook; the NNUE accumulator folds the king+rook deltas as one update
+- [x] **Double Fischer Random (DFRC)** — independent back ranks per side (`startFenForDfrc`, a "Random DFRC" button);
+      falls straight out of the per-side castling code with no special-casing
+- [x] **Exact-oracle Chess960 self-test** (`chess960Selftest`, surfaced in the Self-tests Lab tab): id⇄position
+      bijection over all 960, the standard position via the 960 castle path matching reference perft, make/unmake +
+      hashing integrity over random 960 trees, an **independent castle-move oracle** cross-checked node-for-node
+      across perft trees (tens of thousands of castles), colour-flip perft symmetry, and a DFRC pass
+- [ ] **A Chess960 opening principles / start-position browser** in the Lab (mini-board per SP-ID, side-to-side compare)
+- [ ] **960-aware king-safety eval** — the pawn-shield term currently assumes a king castled to g/c; generalise it
+- [ ] **Persist the last 960 SP-ID** and add a "copy SP-ID / share position" affordance
 - [ ] **Quantize** the net to int16/int8 with a fixed-point accumulator (the real NNUE speed trick) for a big NPS win
 - [ ] **HalfKP / king-bucketed features** with a refresh-on-king-move path (more capacity; the current set is king-agnostic)
 - [ ] **Train on shallow-search scores** (not just the static eval) and on the **game result** (WDL) for a stronger teacher
@@ -271,3 +309,26 @@ representation, move generation, search and evaluation are all hand-built here.
   **headless-Chromium** run of the live build: the app loads with **zero console errors** and the neural engine plays.
   Additive only — reuses #336's NNUE wholesale, adds the trainer harness + the weights module + a one-line default in
   `App`. Clean lint + tsc + vite build via `node scripts/verify-project.mjs cortex-chess-7q4d`.
+- 2026-06-26 (claude): **Chess960 / Fischer Random — a whole new variant, played and proven.** Re-encoded castling
+  as **king-captures-rook** (a castle's `to` is the rook's origin) with a **per-position rights-mask**, so one code
+  path serves standard chess *and* every 960 layout where the king and rooks start on arbitrary files. Rewrote
+  make/unmake to vacate both home squares before filling the fixed g/c (king) and f/d (rook) targets — correct even
+  when a destination square coincides with the other piece's origin — and generalised castle generation (king-path
+  out-of/through/into-check + king-span/rook-span clear, for any files). FEN now reads **X-FEN** (`KQkq`, outermost-rook
+  reading) *and* **Shredder-FEN** file letters and emits Shredder for 960 so FENs round-trip. Added `chess960.ts`: the
+  **Scharnagl SP-ID** numbering both ways (`backRankForId`/`idForBackRank`, all 960, 518 = standard), `startFenForId`,
+  `randomStartId`, and **`startFenForDfrc`** — Double Fischer Random falls out for free because castling rights are
+  tracked per side. SAN (`O-O`/`O-O-O` by rook-vs-king file), the **NNUE accumulator** (king+rook folded as one update,
+  no false capture), and **move input** (drop the king on g/c *or* click your own rook) are all 960-aware. New Play-panel
+  **Chess960 controls** (Random 960 / a chosen SP-ID / #518 standard / Random DFRC, with a live SP-ID badge) and a FEN
+  loader that auto-detects the variant. **Verified to the hilt outside the browser** (vite-SSR Node harness): standard
+  perft (all 5 reference positions) is **bit-for-bit unchanged** through the new castle path; the SP-ID↔position map is a
+  bijection over all 960 (id 518 = `RNBQKBNR`); SP-518 routed through the 960 path matches reference perft 20/400/8902/197281;
+  make/unmake + incremental hashing are exact and FENs restore over random 960 *and* DFRC perft trees; an **independent
+  castle-move oracle** (a from-scratch re-derivation) agrees node-for-node across perft trees — **31,312** castle moves
+  cross-checked with zero mismatches; perft is colour-flip symmetric; engine **self-play from random 960 starts** plays
+  only legal moves (144 plies, 10 castles, no hash drift) and the NNUE accumulator stays equal to a full refresh across
+  960 games that castle. A **headless-Chromium** run of the live build: **zero console errors**, Random 960 and Random
+  DFRC update the board + badge, and the in-browser Self-tests report **22/22** (the six new Chess960 checks included).
+  The whole layer self-tests in-app via `chess960Selftest`. Clean scope + conformance + lint + tsc + vite build via
+  `node scripts/verify-project.mjs cortex-chess-7q4d`.
