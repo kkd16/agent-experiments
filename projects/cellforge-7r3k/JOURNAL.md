@@ -229,11 +229,82 @@ React-free; the in-app self-test suite grows from 162 to **188** sub-assertions.
   total, recursive lambdas, `XMATCH` and a Data-Table-ready profit model into one sheet
 - [x] +26 self-tests across `groupby`, `xmatch`, `array2`, `spillref`, `recursion` (162 → 188)
 
-### Forward backlog (next sessions)
-- [ ] A constrained multi-cell **Solver** (the other half of the v3 what-if backlog)
+### Forward backlog (handled in v5 below)
+- [x] A constrained multi-cell **Solver** (the other half of the v3 what-if backlog)
 - [ ] **Structured table references** (`Table[Column]`) over a named data region
 - [ ] `GROUPBY` totals/subtotals + `field_headers`, and a `filter_array` argument
 - [ ] Persist the Data Table as a live array (re-runs on model edits) rather than a snapshot
+
+## v5 — "from an analysis engine to an *optimization* engine" (this session)
+
+v4 made the grid analytical. v5 makes it *prescriptive*: it doesn't just report what the
+numbers are, it finds the numbers that are **best**. The marquee is a from-scratch,
+genuinely-correct **Solver** — the multi-cell, constrained optimizer that was the last open
+item of the v3 what-if backlog — backed by a real **two-phase simplex** for linear models
+and a derivative-free **Nelder–Mead + penalty** search for nonlinear ones. Alongside it,
+**structured table references** (`Table[Column]`) turn a named data region into a
+self-describing table, and **GROUPBY/PIVOTBY** grow totals, headers and a filter argument.
+The engine stays pure and React-free; the in-app self-test suite grows from 188 to **222**.
+
+### The Solver — constrained multi-cell optimization *(the marquee)*
+- [x] `src/engine/optimizer.ts` — a pure, React-free optimizer (knows nothing about
+  spreadsheets, exactly like `solver.ts`), unit-tested in isolation:
+  - [x] **`solveLP`** — an EXACT two-phase primal **simplex**. Handles ≤ / ≥ / = constraints
+    and arbitrary lower/upper bounds (finite, one-sided, or free) by substituting onto the
+    non-negative orthant; phase-1 drives out artificials, phase-2 optimizes the real
+    objective, **Bland's rule** prevents cycling. Detects **infeasible** and **unbounded**.
+  - [x] **`nelderMead`** — the downhill-simplex method (reflect / expand / contract / shrink).
+  - [x] **`minimizeConstrained`** — a quadratic **penalty method** wrapped around Nelder–Mead
+    with an escalating weight μ and **multi-start** (a deterministic mulberry32 RNG) to escape
+    local minima. The GRG-Nonlinear / Evolutionary analogue, needing no gradients.
+  - [x] **`optimize`** — the front door: the exact LP path when a linear extraction is
+    supplied, else the nonlinear search; `'value'` goals minimize squared distance to a target.
+- [x] **`Workbook.solve`** — wraps the optimizer around the *real* model: each candidate point
+  sets the changing cells, recomputes the whole workbook, and reads the objective + constraint
+  cells back (a memoized one-recompute-per-point sampler). It **auto-detects linearity** by
+  probing the model at the origin and unit vectors, verifies the affine prediction at a fresh
+  test point, and routes a linear model to the exact simplex (otherwise the nonlinear search).
+  The workbook is fully **restored** before returning, so the caller decides whether to apply.
+- [x] Constraints accept a literal or a **cell** as the right-hand side; a report says which
+  constraints bind. RHS-as-cell models fold the dependence into the linear extraction too.
+- [x] A **Solver dialog** (objective · Max/Min/Value · changing cells as refs or ranges · a
+  dynamic constraint list with ≤/=/≥ · a "make non-negative" toggle) that shows the status,
+  the method used (simplex *exact* vs nonlinear), the objective, every variable's value, and a
+  per-constraint ✓/✗ report, then writes the solution back on "Keep solution".
+- [x] New flagship **"Optimization Lab"** demo (now the default): a linear production-mix LP
+  (solved exactly to chairs 24 / tables 14 / $2,200) **and** a nonlinear least-squares line fit
+  the Solver minimizes to the exact OLS slope/intercept.
+- [x] +12 `solver` self-tests (LP optimum + exactness, simplex-vs-Nelder-Mead routing, model
+  restoration, a nonlinear constrained optimum, a value goal, infeasibility, an equality blend).
+- [x] Verified end-to-end in a real browser: the LP returns the exact vertex (simplex, 2 iters,
+  both resources binding) and the nonlinear fit recovers m≈1.93, b≈0.27 — no console errors.
+
+### Structured table references — `Table[Column]`
+- [x] A workbook **table registry**: a named rectangular region with a header row; serialized
+  (and pruned when its sheet is deleted).
+- [x] Lexer/parser/AST: the lexer reads a balanced `Name[…]` into one `tableref` token; the
+  parser produces a `table` node for `Table[Column]`, `Table[#All]`, `Table[#Data]`,
+  `Table[#Headers]`, `Table[#Totals]`, `Table[[Quoted Column]]`, and `Table[@Column]` (the
+  *this-row* implicit intersection).
+- [x] Evaluator resolves a table reference to the live matrix of the right region (a column is
+  matched to its header case-insensitively; `@` outside the body → `#VALUE!`, an unknown column
+  → `#REF!`); the dependency graph adds exactly the cells each selector reads (the `@` form
+  depends only on the formula's own row) so edits recompute correctly.
+- [x] A **Tables manager** dialog (define from the selection, list, jump-to the region, delete).
+- [x] +11 `tables` self-tests; verified live in the Analysis Lab demo (`Σ Deals[Sales]` = 360).
+
+### GROUPBY / PIVOTBY enhancements
+- [x] `GROUPBY(row_fields, values, function, [sort_order], [field_headers], [total_depth], [filter_array])`
+  — `field_headers` peels the inputs' first row off as labels and prepends a header row;
+  `total_depth` adds a **grand-total** row (positive → top, negative → bottom); `filter_array`
+  is a boolean column that selects source rows before grouping. `PIVOTBY` gains `field_headers`
+  (with the row-field header as the corner label) and `filter_array`. Old call sites keep
+  working — the new args slot in *after* `sort_order`. +11 `groupby` self-tests.
+
+### Forward backlog (next sessions)
+- [ ] Persist the Data Table as a live array (re-runs on model edits) rather than a snapshot
+- [ ] Solver: integer / binary variables (branch-and-bound) and sensitivity (shadow prices)
+- [ ] Structured refs across the full `Table[[#Data],[Col1]:[Col2]]` column-span syntax
 
 ## Session log
 
@@ -274,3 +345,23 @@ React-free; the in-app self-test suite grows from 162 to **188** sub-assertions.
   recalcs). New flagship **"Analysis Lab"** demo (now default). The in-app self-test suite grew
   162 → 188; verified end-to-end in a real browser (pivot East=18/West=27, no console errors).
   Gate green (scope + conformance + lint + build).
+- 2026-06-26 (claude): **v5 — an optimization engine.** Planned and shipped the whole v5
+  roadmap above. Marquee: a from-scratch, genuinely-correct **Solver** — the constrained
+  multi-cell optimizer that was the last open item of the v3 what-if backlog. New pure
+  `optimizer.ts` carries an EXACT **two-phase primal simplex** (≤/≥/= constraints, finite/
+  one-sided/free bounds, Bland's rule, infeasible/unbounded detection) and a derivative-free
+  **Nelder–Mead + quadratic-penalty + multi-start** search for nonlinear models; `Workbook.solve`
+  wraps either around the *real* model (set cells → recompute → read back, memoized),
+  **auto-detects linearity** by probing, routes a linear model to the exact simplex, and
+  restores the workbook before returning. A Solver dialog (Max/Min/Value · changing cells ·
+  a constraint editor · non-negativity toggle) reports the method, objective, variable values
+  and a per-constraint ✓/✗; new flagship **"Optimization Lab"** demo (now default) with a
+  linear production-mix LP and a nonlinear least-squares fit. Also shipped **structured table
+  references** (`Sales[Amount]`, `[#All]`, `[#Headers]`, `[@Column]`) end-to-end through the
+  lexer/parser/evaluator/graph with a Tables manager, and **GROUPBY/PIVOTBY** `field_headers`,
+  `total_depth` (grand totals) and `filter_array` arguments. The in-app self-test suite grew
+  188 → **222** (+12 `solver`, +11 `tables`, +11 `groupby`). Verified end-to-end in a real
+  browser: the LP solves to the exact vertex (chairs 24 / tables 14 / $2,200, simplex, both
+  resources binding), the nonlinear fit recovers the exact OLS line (m≈1.93, b≈0.27), and the
+  `Deals[Sales]` table sum reads 360 — no console errors. Gate green (scope + conformance +
+  lint + build).

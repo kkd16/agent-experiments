@@ -5,7 +5,7 @@
 // quirky-but-correct consequence is that `-2^2` parses as `(-2)^2 = 4`, matching
 // every mainstream spreadsheet.
 
-import type { Node, BinaryOp } from './ast'
+import type { Node, BinaryOp, TableSelector } from './ast'
 import type { CellRef } from './address'
 import { parseRef } from './address'
 import type { ErrorCode } from './values'
@@ -161,6 +161,11 @@ class Parser {
       return { type: 'name', name: t.value }
     }
 
+    if (t.type === 'tableref') {
+      this.next()
+      return parseTableRef(t.value)
+    }
+
     if (t.type === 'ref') {
       this.next()
       return this.parseRefOrRange(undefined, t.value)
@@ -225,6 +230,32 @@ class Parser {
     }
     return { type: 'ref', ref: fromS }
   }
+}
+
+const TABLE_RE = /^([A-Za-z_][\w.]*)\[([\s\S]*)\]$/
+
+/** Parse a structured table reference's raw text (`Sales[Amount]`, `Sales[#Data]`,
+ *  `Sales[@Region]`, `Sales[[Net Amount]]`) into a `table` AST node. */
+function parseTableRef(text: string): Node {
+  const m = TABLE_RE.exec(text)
+  if (!m) throw new ParseError(`invalid table reference "${text}"`)
+  const table = m[1]
+  let inner = m[2].trim()
+  let thisRow = false
+  if (inner.startsWith('@')) {
+    thisRow = true
+    inner = inner.slice(1).trim()
+  }
+  // Strip one optional bracket layer so `[Net Amount]` (a quoted column) works.
+  if (inner.startsWith('[') && inner.endsWith(']')) inner = inner.slice(1, -1).trim()
+
+  if (!thisRow) {
+    const upper = inner.toUpperCase()
+    const special: Record<string, TableSelector> = { '#ALL': 'all', '#DATA': 'data', '#HEADERS': 'headers', '#TOTALS': 'totals' }
+    if (upper in special) return { type: 'table', table, selector: special[upper] }
+  }
+  if (inner === '') throw new ParseError(`table reference "${text}" needs a column`)
+  return { type: 'table', table, selector: thisRow ? 'thisrow' : 'column', column: inner }
 }
 
 /** Parse a formula body (the text after the leading `=`) into an AST. */

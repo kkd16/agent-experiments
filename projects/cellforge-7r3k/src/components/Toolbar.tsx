@@ -20,6 +20,8 @@ interface Props {
   onGoalSeek: () => void
   onPivot: () => void
   onDataTable: () => void
+  onSolver: () => void
+  onTables: () => void
 }
 
 export default function Toolbar(props: Props) {
@@ -56,6 +58,9 @@ export default function Toolbar(props: Props) {
         <button className="btn" onClick={props.onPivot} title="Build a pivot table over the selection">
           ⊞ Pivot
         </button>
+        <button className="btn" onClick={props.onTables} title="Define a structured table (Table[Column] references)">
+          ▤ Tables
+        </button>
         <button className="btn" onClick={props.onOpenNames} title="Named ranges">
           Names
         </button>
@@ -71,6 +76,9 @@ export default function Toolbar(props: Props) {
         </button>
         <button className="btn" onClick={props.onDataTable} title="Data Table — sensitivity grid over one or two inputs">
           ▦ Data Table
+        </button>
+        <button className="btn" onClick={props.onSolver} title="Solver — optimize changing cells subject to constraints (simplex LP + nonlinear)">
+          ⚖ Solver
         </button>
       </div>
 

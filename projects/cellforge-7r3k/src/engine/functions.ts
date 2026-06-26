@@ -35,6 +35,23 @@ function textAt(args: Node[], i: number, h: FnHelpers, dflt = ''): string | Erro
   return toText(h.scalarOf(args[i]))
 }
 
+function boolAt(args: Node[], i: number, h: FnHelpers, dflt = false): boolean | ErrorValue {
+  if (i >= args.length) return dflt
+  return toBool(h.scalarOf(args[i]))
+}
+
+/** Evaluate a node to a length-`n` boolean vector (for GROUPBY/PIVOTBY filter_array).
+ *  A cell is kept when it is TRUE or a non-zero number; everything else drops it. */
+function boolVector(node: Node, h: FnHelpers, n: number): boolean[] | ErrorValue {
+  const m = h.asMatrix(node)
+  if (isError(m)) return m
+  const flat: Scalar[] = []
+  for (const row of m.data) for (const c of row) flat.push(c)
+  if (flat.length !== n) return err('#VALUE!', `filter array length ${flat.length} ≠ ${n} rows`)
+  for (const v of flat) if (isError(v)) return v
+  return flat.map((v) => v === true || (typeof v === 'number' && v !== 0))
+}
+
 /** Gather numeric values from a list of args, flattening ranges, ignoring text and
  *  blanks, treating booleans as 1/0, and propagating the first error encountered. */
 function numbers(args: Node[], h: FnHelpers): number[] | ErrorValue {
@@ -1080,8 +1097,13 @@ export const FUNCTIONS: Record<string, FnImpl> = {
   // with `function` (a lambda or an eta-reduced builtin like SUM). The result is one
   // row per group: the key columns followed by the aggregated value columns. By
   // default groups are sorted ascending by key; sort_order < 0 sorts descending.
+  // Optional args (after `function`): [sort_order], [field_headers], [total_depth],
+  // [filter_array]. `field_headers` TRUE treats the first row of the inputs as headers
+  // (used to label the output, excluded from the data). `total_depth` adds a grand-total
+  // row — positive at the top, negative at the bottom. `filter_array` is a boolean column
+  // selecting which source rows take part.
   GROUPBY: (args, h) => {
-    if (args.length < 3) return err('#VALUE!', 'GROUPBY(row_fields, values, function, [sort_order])')
+    if (args.length < 3) return err('#VALUE!', 'GROUPBY(row_fields, values, function, [sort_order], [field_headers], [total_depth], [filter_array])')
     const rowFields = h.asMatrix(args[0])
     if (isError(rowFields)) return rowFields
     const values = h.asMatrix(args[1])
@@ -1091,22 +1113,69 @@ export const FUNCTIONS: Record<string, FnImpl> = {
     if (rowFields.rows !== values.rows) return err('#VALUE!', 'GROUPBY row counts differ')
     const sortOrder = args.length > 3 ? numAt(args, 3, h, 1) : 1
     if (isError(sortOrder)) return sortOrder
+    const fieldHeaders = args.length > 4 ? boolAt(args, 4, h) : false
+    if (isError(fieldHeaders)) return fieldHeaders
+    const totalDepth = args.length > 5 ? numAt(args, 5, h, 0) : 0
+    if (isError(totalDepth)) return totalDepth
 
-    const groups = groupRows(rowFields.data)
-    const sorted = sortGroups(groups, sortOrder < 0 ? -1 : 1)
-    const out: Scalar[][] = []
-    for (const g of sorted) {
-      const keyCells = rowFields.data[g.rows[0]]
-      const aggs: Scalar[] = []
-      for (let c = 0; c < values.cols; c++) {
-        const colVals = g.rows.map((r) => values.data[r][c])
-        const agg = h.applyLambda(fn, [matrix(colVals.map((v) => [v]))])
-        if (isError(agg)) return agg
-        aggs.push(asScalar(agg))
-      }
-      out.push([...keyCells, ...aggs])
+    // Peel off a header row if asked.
+    let rowData = rowFields.data
+    let valData = values.data
+    let keyHeaders: Scalar[] | null = null
+    let valHeaders: Scalar[] | null = null
+    if (fieldHeaders) {
+      if (rowData.length < 1) return err('#CALC!', 'GROUPBY found no rows')
+      keyHeaders = rowData[0]
+      valHeaders = valData[0]
+      rowData = rowData.slice(1)
+      valData = valData.slice(1)
     }
-    if (!out.length) return err('#CALC!', 'GROUPBY found no rows')
+    // Apply the row filter, if any.
+    if (args.length > 6) {
+      const keep = boolVector(args[6], h, rowData.length)
+      if (isError(keep)) return keep
+      rowData = rowData.filter((_, i) => keep[i])
+      valData = valData.filter((_, i) => keep[i])
+    }
+    if (!rowData.length) return err('#CALC!', 'GROUPBY found no rows')
+
+    const keyWidth = rowData[0].length
+    const valWidth = valData[0].length
+    const aggregate = (rows: number[], c: number): Scalar | ErrorValue => {
+      const colVals = rows.map((r) => valData[r][c])
+      const agg = h.applyLambda(fn, [matrix(colVals.map((v) => [v]))])
+      return isError(agg) ? agg : asScalar(agg)
+    }
+
+    const groups = sortGroups(groupRows(rowData), sortOrder < 0 ? -1 : 1)
+    const body: Scalar[][] = []
+    for (const g of groups) {
+      const aggs: Scalar[] = []
+      for (let c = 0; c < valWidth; c++) {
+        const a = aggregate(g.rows, c)
+        if (isError(a)) return a
+        aggs.push(a)
+      }
+      body.push([...rowData[g.rows[0]], ...aggs])
+    }
+
+    let totalRow: Scalar[] | null = null
+    if (totalDepth !== 0) {
+      const allRows = valData.map((_, i) => i)
+      const aggs: Scalar[] = []
+      for (let c = 0; c < valWidth; c++) {
+        const a = aggregate(allRows, c)
+        if (isError(a)) return a
+        aggs.push(a)
+      }
+      totalRow = ['Total', ...Array(Math.max(0, keyWidth - 1)).fill(BLANK), ...aggs]
+    }
+
+    const out: Scalar[][] = []
+    if (keyHeaders) out.push([...keyHeaders, ...(valHeaders ?? [])])
+    if (totalDepth > 0 && totalRow) out.push(totalRow)
+    out.push(...body)
+    if (totalDepth < 0 && totalRow) out.push(totalRow)
     return matrix(out)
   },
   // PIVOTBY(row_fields, col_fields, values, function, [sort_order]) — a 2-D pivot:
@@ -1114,7 +1183,7 @@ export const FUNCTIONS: Record<string, FnImpl> = {
   // the aggregate of the matching values. The result carries a header row of column
   // keys and a leading column of row keys (top-left corner left blank).
   PIVOTBY: (args, h) => {
-    if (args.length < 4) return err('#VALUE!', 'PIVOTBY(row_fields, col_fields, values, function, [sort_order])')
+    if (args.length < 4) return err('#VALUE!', 'PIVOTBY(row_fields, col_fields, values, function, [sort_order], [field_headers], [filter_array])')
     const rowFields = h.asMatrix(args[0])
     if (isError(rowFields)) return rowFields
     const colFields = h.asMatrix(args[1])
@@ -1123,14 +1192,37 @@ export const FUNCTIONS: Record<string, FnImpl> = {
     if (isError(values)) return values
     const fn = h.asLambda(args[3])
     if (isError(fn)) return fn
-    const n = values.rows
-    if (rowFields.rows !== n || colFields.rows !== n) return err('#VALUE!', 'PIVOTBY row counts differ')
+    if (rowFields.rows !== values.rows || colFields.rows !== values.rows) return err('#VALUE!', 'PIVOTBY row counts differ')
     const sortOrder = args.length > 4 ? numAt(args, 4, h, 1) : 1
     if (isError(sortOrder)) return sortOrder
+    const fieldHeaders = args.length > 5 ? boolAt(args, 5, h) : false
+    if (isError(fieldHeaders)) return fieldHeaders
     const dir = sortOrder < 0 ? -1 : 1
 
-    const rowGroups = sortGroups(groupRows(rowFields.data), dir)
-    const colGroups = sortGroups(groupRows(colFields.data), dir)
+    // Peel off the header row if asked, then apply the row filter.
+    let rowData = rowFields.data
+    let colData = colFields.data
+    let valData = values.data
+    let corner: Scalar = BLANK
+    if (fieldHeaders) {
+      if (rowData.length < 1) return err('#CALC!', 'PIVOTBY found no rows')
+      corner = rowData[0][0] ?? BLANK
+      rowData = rowData.slice(1)
+      colData = colData.slice(1)
+      valData = valData.slice(1)
+    }
+    if (args.length > 6) {
+      const keep = boolVector(args[6], h, rowData.length)
+      if (isError(keep)) return keep
+      rowData = rowData.filter((_, i) => keep[i])
+      colData = colData.filter((_, i) => keep[i])
+      valData = valData.filter((_, i) => keep[i])
+    }
+    const n = valData.length
+    if (!n) return err('#CALC!', 'PIVOTBY found no rows')
+
+    const rowGroups = sortGroups(groupRows(rowData), dir)
+    const colGroups = sortGroups(groupRows(colData), dir)
     // Index each row by which (rowGroup, colGroup) cell it belongs to.
     const rowOf = new Map<string, number>()
     rowGroups.forEach((g, i) => g.rows.forEach((r) => rowOf.set(`${r}`, i)))
@@ -1139,7 +1231,7 @@ export const FUNCTIONS: Record<string, FnImpl> = {
     const buckets: number[][][] = rowGroups.map(() => colGroups.map(() => []))
     for (let r = 0; r < n; r++) buckets[rowOf.get(`${r}`)!][colOf.get(`${r}`)!].push(r)
 
-    const header: Scalar[] = [BLANK, ...colGroups.map((g) => g.key.length === 1 ? g.key[0] : g.key.join(' / '))]
+    const header: Scalar[] = [corner, ...colGroups.map((g) => g.key.length === 1 ? g.key[0] : g.key.join(' / '))]
     const out: Scalar[][] = [header]
     for (let i = 0; i < rowGroups.length; i++) {
       const rg = rowGroups[i]
@@ -1151,7 +1243,7 @@ export const FUNCTIONS: Record<string, FnImpl> = {
           row.push(BLANK)
           continue
         }
-        const colVals = rows.map((r) => values.data[r][0])
+        const colVals = rows.map((r) => valData[r][0])
         const agg = h.applyLambda(fn, [matrix(colVals.map((v) => [v]))])
         if (isError(agg)) return agg
         row.push(asScalar(agg))

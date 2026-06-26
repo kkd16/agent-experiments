@@ -17,6 +17,18 @@ export interface NameBinding {
   readonly scopeSheet: string
 }
 
+/** A structured table resolved to a concrete region (header row included) on a sheet,
+ *  plus a way to map a column label to its 0-based offset within the table. */
+export interface TableResolved {
+  readonly sheetId: string
+  readonly top: number
+  readonly left: number
+  readonly bottom: number
+  readonly right: number
+  /** Column offset (0-based, within the table) for a header label, or -1 if absent. */
+  columnIndex(label: string): number
+}
+
 export interface EvalContext {
   readonly rows: number
   readonly cols: number
@@ -33,6 +45,9 @@ export interface EvalContext {
   resolveSheetId(name: string): string | null
   /** Resolve a defined name (upper-cased) to its binding, or null. */
   resolveName?(name: string): NameBinding | null
+  /** Resolve a structured table (by name, case-insensitive) to its region + a column
+   *  lookup, or null when no such table exists. */
+  resolveTable?(name: string): TableResolved | null
   /** Names currently being expanded — guards against self-referential definitions. */
   readonly nameStack?: ReadonlySet<string>
   /** Lexical bindings introduced by LET / LAMBDA parameters (upper-cased → value).
@@ -194,6 +209,45 @@ function evalNode(node: Node, ctx: EvalContext, h: FnHelpers): RuntimeValue {
         locals: undefined, // a workbook name is its own scope — caller locals don't leak in
       }
       return evaluate(binding.ast, sub)
+    }
+
+    case 'table': {
+      const def = ctx.resolveTable?.(node.table.toUpperCase()) ?? null
+      if (!def) return err('#REF!', `unknown table "${node.table}"`)
+      const dataTop = def.top + 1 // the header row is always the table's first row
+      const read = (r: number, c: number): Scalar => ctx.getCellAt(def.sheetId, { row: r, col: c })
+      const rect = (top: number, bottom: number, left: number, right: number): RuntimeValue => {
+        if (bottom < top || right < left) return err('#REF!', 'the table region is empty')
+        const data: Scalar[][] = []
+        for (let r = top; r <= bottom; r++) {
+          const row: Scalar[] = []
+          for (let c = left; c <= right; c++) row.push(read(r, c))
+          data.push(row)
+        }
+        return matrix(data)
+      }
+      switch (node.selector) {
+        case 'all':
+          return rect(def.top, def.bottom, def.left, def.right)
+        case 'headers':
+          return rect(def.top, def.top, def.left, def.right)
+        case 'data':
+        case 'totals': // no dedicated totals row in this model → the data body
+          return rect(dataTop, def.bottom, def.left, def.right)
+        case 'column':
+        case 'thisrow': {
+          const off = def.columnIndex(node.column ?? '')
+          if (off < 0) return err('#REF!', `table "${node.table}" has no column "${node.column}"`)
+          const col = def.left + off
+          if (node.selector === 'thisrow') {
+            const row = ctx.current?.row
+            if (row === undefined || row < dataTop || row > def.bottom) return err('#VALUE!', '@ is only valid inside the table body')
+            return read(row, col)
+          }
+          return rect(dataTop, def.bottom, col, col)
+        }
+      }
+      return err('#REF!')
     }
 
     case 'unary': {

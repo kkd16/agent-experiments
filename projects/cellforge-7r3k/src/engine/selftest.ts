@@ -217,6 +217,21 @@ export function runSelfTests(): TestResult[] {
   eq('groupby', 'PIVOTBY header + 2 rows', ev('ROWS(PIVOTBY(A1:A4,B1:B4,C1:C4,SUM))', piv), '3')
   eq('groupby', 'PIVOTBY East × Q1 cell', ev('INDEX(PIVOTBY(A1:A4,B1:B4,C1:C4,SUM),2,2)', piv), '10')
   eq('groupby', 'PIVOTBY column header', ev('INDEX(PIVOTBY(A1:A4,B1:B4,C1:C4,SUM),1,2)', piv), 'Q1')
+
+  // --- v5: GROUPBY/PIVOTBY field_headers, total_depth, filter_array ---
+  const grph = { A1: 'Region', B1: 'Sales', A2: 'East', B2: '10', A3: 'West', B3: '20', A4: 'East', B4: '5', A5: 'West', B5: '7', A6: 'East', B6: '3' }
+  eq('groupby', 'GROUPBY field_headers key label', ev('INDEX(GROUPBY(A1:A6,B1:B6,SUM,1,TRUE),1,1)', grph), 'Region')
+  eq('groupby', 'GROUPBY field_headers value label', ev('INDEX(GROUPBY(A1:A6,B1:B6,SUM,1,TRUE),1,2)', grph), 'Sales')
+  eq('groupby', 'GROUPBY field_headers East sum below header', ev('INDEX(GROUPBY(A1:A6,B1:B6,SUM,1,TRUE),2,2)', grph), '18')
+  eq('groupby', 'GROUPBY grand total at bottom (label)', ev('INDEX(GROUPBY(A1:A5,B1:B5,SUM,1,FALSE,-1),3,1)', grp), 'Total')
+  eq('groupby', 'GROUPBY grand total at bottom (value)', ev('INDEX(GROUPBY(A1:A5,B1:B5,SUM,1,FALSE,-1),3,2)', grp), '45')
+  eq('groupby', 'GROUPBY grand total at top', ev('INDEX(GROUPBY(A1:A5,B1:B5,SUM,1,FALSE,1),1,1)', grp), 'Total')
+  eq('groupby', 'GROUPBY filter_array → one group', ev('ROWS(GROUPBY(A1:A5,B1:B5,SUM,1,FALSE,0,A1:A5="East"))', grp), '1')
+  eq('groupby', 'GROUPBY filter_array sum', ev('INDEX(GROUPBY(A1:A5,B1:B5,SUM,1,FALSE,0,A1:A5="East"),1,2)', grp), '18')
+  const pivh = { A1: 'R', B1: 'Q', C1: 'V', A2: 'East', B2: 'Q1', C2: '10', A3: 'West', B3: 'Q1', C3: '20', A4: 'East', B4: 'Q2', C4: '5', A5: 'West', B5: 'Q2', C5: '7' }
+  eq('groupby', 'PIVOTBY field_headers corner label', ev('INDEX(PIVOTBY(A1:A5,B1:B5,C1:C5,SUM,1,TRUE),1,1)', pivh), 'R')
+  eq('groupby', 'PIVOTBY field_headers East×Q1', ev('INDEX(PIVOTBY(A1:A5,B1:B5,C1:C5,SUM,1,TRUE),2,2)', pivh), '10')
+  eq('groupby', 'PIVOTBY filter_array narrows columns', ev('COLUMNS(PIVOTBY(A1:A4,B1:B4,C1:C4,SUM,1,FALSE,B1:B4="Q1"))', piv), '2')
   const xm = { A1: '10', A2: '20', A3: '30', A4: '40' }
   eq('xmatch', 'XMATCH exact', ev('XMATCH(30,A1:A4)', xm), '3')
   eq('xmatch', 'XMATCH next-smaller', ev('XMATCH(25,A1:A4,-1)', xm), '2')
@@ -250,7 +265,55 @@ export function runSelfTests(): TestResult[] {
   r.push(nameCycleTest())
   r.push(renameSheetTest())
 
+  // --- the Solver (v5: constrained multi-cell optimization) ---
+  r.push(solverTests())
+  // --- structured table references (v5) ---
+  r.push(tableTests())
+
   return r.flat()
+}
+
+function tableTests(): TestResult[] {
+  const out: TestResult[] = []
+  const A = (row: number, col: number): Coord => ({ row, col })
+  const add = (name: string, pass: boolean, detail?: string) => out.push({ group: 'tables', name, pass, detail: pass ? undefined : detail })
+  const wb = new Workbook(40, 20)
+  wb.setMany([
+    { coord: A(0, 0), raw: 'Region' }, { coord: A(0, 1), raw: 'Rep' }, { coord: A(0, 2), raw: 'Amount' },
+    { coord: A(1, 0), raw: 'North' }, { coord: A(1, 1), raw: 'Ana' }, { coord: A(1, 2), raw: '40' },
+    { coord: A(2, 0), raw: 'South' }, { coord: A(2, 1), raw: 'Ben' }, { coord: A(2, 2), raw: '30' },
+    { coord: A(3, 0), raw: 'East' }, { coord: A(3, 1), raw: 'Cy' }, { coord: A(3, 2), raw: '25' },
+  ])
+  wb.defineTable('Sales', { top: 0, left: 0, bottom: 3, right: 2 })
+
+  wb.setCell(A(0, 5), '=SUM(Sales[Amount])')
+  add('SUM(Sales[Amount]) = 95', wb.getDisplay(A(0, 5)) === '95', wb.getDisplay(A(0, 5)))
+  wb.setCell(A(1, 5), '=COUNTA(Sales[Rep])')
+  add('COUNTA(Sales[Rep]) = 3', wb.getDisplay(A(1, 5)) === '3', wb.getDisplay(A(1, 5)))
+  wb.setCell(A(2, 5), '=SUM(Sales[amount])')
+  add('column match is case-insensitive', wb.getDisplay(A(2, 5)) === '95', wb.getDisplay(A(2, 5)))
+  wb.setCell(A(3, 5), '=Sales[#Headers]')
+  add('Sales[#Headers] spills the labels', wb.getDisplay(A(3, 5)) === 'Region' && wb.getDisplay(A(3, 7)) === 'Amount')
+  wb.setCell(A(4, 5), '=ROWS(Sales[#All])&"x"&COLUMNS(Sales[#All])')
+  add('Sales[#All] is 4×3', wb.getDisplay(A(4, 5)) === '4x3', wb.getDisplay(A(4, 5)))
+  wb.setCell(A(5, 5), '=ROWS(Sales[#Data])')
+  add('Sales[#Data] has 3 rows', wb.getDisplay(A(5, 5)) === '3', wb.getDisplay(A(5, 5)))
+  wb.setCell(A(6, 5), '=SUM(Sales[Nope])')
+  add('unknown column → #REF!', wb.getDisplay(A(6, 5)) === '#REF!', wb.getDisplay(A(6, 5)))
+  // @ this-row: a formula sitting in a body row reads that row's cell.
+  wb.setCell(A(1, 3), '=Sales[@Amount]*0.1')
+  add('Sales[@Amount] this-row = 4', wb.getDisplay(A(1, 3)) === '4', wb.getDisplay(A(1, 3)))
+  wb.setCell(A(10, 3), '=Sales[@Amount]')
+  add('@ outside the body → #VALUE!', wb.getDisplay(A(10, 3)) === '#VALUE!', wb.getDisplay(A(10, 3)))
+  // Live recalc as the data changes.
+  wb.setCell(A(1, 2), '100')
+  add('column re-aggregates on edit (SUM = 155)', wb.getDisplay(A(0, 5)) === '155', wb.getDisplay(A(0, 5)))
+  // Serialize/restore keeps the table.
+  const wb2 = new Workbook(40, 20)
+  wb2.restore(wb.serialize())
+  wb2.setCell(A(8, 5), '=SUM(Sales[Amount])')
+  add('table survives serialize/restore', wb2.getDisplay(A(8, 5)) === '155', wb2.getDisplay(A(8, 5)))
+  return out
 }
 
 // ---- v3: dynamic-array spilling --------------------------------------------
@@ -502,6 +565,116 @@ function transitiveTest(): TestResult[] {
   wb.setCell({ row: 0, col: 0 }, '3') // ripple through the chain
   const pass = wb.getDisplay({ row: 3, col: 0 }) === '24'
   return [{ group: 'graph', name: 'transitive recalc (A1→A2→A3→A4)', pass, detail: pass ? undefined : `got ${wb.getDisplay({ row: 3, col: 0 })}` }]
+}
+
+function solverTests(): TestResult[] {
+  const out: TestResult[] = []
+  const A = (row: number, col: number): Coord => ({ row, col })
+  const near = (a: number, b: number, tol = 1e-2): boolean => Math.abs(a - b) <= tol
+  const add = (name: string, pass: boolean, detail?: string) => out.push({ group: 'solver', name, pass, detail: pass ? undefined : detail })
+
+  // 1) Linear product-mix LP — auto-detected linear, solved exactly with simplex.
+  //    max 45c + 80t  s.t.  5c+20t ≤ 400,  10c+15t ≤ 450  ⇒  (24, 14), profit 2200.
+  {
+    const wb = new Workbook(40, 20)
+    wb.setMany([
+      { coord: A(0, 0), raw: '0' }, // A1 = chairs
+      { coord: A(1, 0), raw: '0' }, // A2 = tables
+      { coord: A(0, 1), raw: '=45*A1+80*A2' }, // B1 profit (objective)
+      { coord: A(0, 2), raw: '=5*A1+20*A2' }, // C1 wood
+      { coord: A(1, 2), raw: '=10*A1+15*A2' }, // C2 labor
+    ])
+    const res = wb.solve({
+      objective: A(0, 1),
+      sense: 'max',
+      variables: [A(0, 0), A(1, 0)],
+      nonNegative: true,
+      constraints: [
+        { lhs: A(0, 2), rel: '<=', rhs: { kind: 'num', value: 400 } },
+        { lhs: A(1, 2), rel: '<=', rhs: { kind: 'num', value: 450 } },
+      ],
+    })
+    add('LP product-mix uses simplex', res.method === 'simplex', `method ${res.method}`)
+    add('LP product-mix objective = 2200', near(res.objective, 2200), `got ${res.objective}`)
+    add('LP product-mix (chairs, tables) = (24, 14)', near(res.variables[0].value, 24) && near(res.variables[1].value, 14), JSON.stringify(res.variables.map((v) => v.value)))
+    add('LP product-mix all constraints satisfied', res.constraints.every((c) => c.satisfied))
+    add('Solver restores the model (A1 back to 0)', wb.getRaw(A(0, 0)) === '0', `A1 = ${wb.getRaw(A(0, 0))}`)
+  }
+
+  // 2) Nonlinear constrained — Nelder–Mead: min (x−3)²+(y−2)² s.t. x+y ≤ 4 ⇒ (2.5, 1.5).
+  {
+    const wb = new Workbook(40, 20)
+    wb.setMany([
+      { coord: A(0, 0), raw: '0' },
+      { coord: A(1, 0), raw: '0' },
+      { coord: A(0, 1), raw: '=(A1-3)^2+(A2-2)^2' },
+      { coord: A(0, 2), raw: '=A1+A2' },
+    ])
+    const res = wb.solve({
+      objective: A(0, 1),
+      sense: 'min',
+      variables: [A(0, 0), A(1, 0)],
+      nonNegative: false,
+      constraints: [{ lhs: A(0, 2), rel: '<=', rhs: { kind: 'num', value: 4 } }],
+    })
+    add('nonlinear model uses Nelder–Mead', res.method === 'nelder-mead', `method ${res.method}`)
+    add('nonlinear solution is feasible', res.feasible)
+    add('nonlinear optimum ≈ (2.5, 1.5)', near(res.variables[0].value, 2.5, 3e-2) && near(res.variables[1].value, 1.5, 3e-2), JSON.stringify(res.variables.map((v) => v.value)))
+  }
+
+  // 3) Value goal — drive x² to 9 over x ∈ [0, ∞) ⇒ x = 3.
+  {
+    const wb = new Workbook(40, 20)
+    wb.setMany([{ coord: A(0, 0), raw: '1' }, { coord: A(0, 1), raw: '=A1*A1' }])
+    const res = wb.solve({ objective: A(0, 1), sense: 'value', target: 9, variables: [A(0, 0)], nonNegative: true, constraints: [] })
+    add('value goal x² = 9 ⇒ x = 3', near(res.variables[0].value, 3, 2e-2), `got ${res.variables[0]?.value}`)
+  }
+
+  // 4) Infeasible model is reported, not silently mis-solved.
+  {
+    const wb = new Workbook(40, 20)
+    wb.setMany([{ coord: A(0, 0), raw: '0' }, { coord: A(0, 1), raw: '=A1' }])
+    const res = wb.solve({
+      objective: A(0, 1),
+      sense: 'max',
+      variables: [A(0, 0)],
+      nonNegative: true,
+      constraints: [
+        { lhs: A(0, 0), rel: '>=', rhs: { kind: 'num', value: 5 } },
+        { lhs: A(0, 0), rel: '<=', rhs: { kind: 'num', value: 2 } },
+      ],
+    })
+    add('infeasible model reported as infeasible', res.status === 'infeasible', `status ${res.status}`)
+  }
+
+  // 5) Blend LP with an equality + a ≥ and a per-variable floor; constraints must hold.
+  //    min 2a+3b+1c  s.t.  a+b+c = 10,  a ≥ 2,  a+2b+3c ≥ 18.
+  {
+    const wb = new Workbook(40, 20)
+    wb.setMany([
+      { coord: A(0, 0), raw: '0' },
+      { coord: A(1, 0), raw: '0' },
+      { coord: A(2, 0), raw: '0' },
+      { coord: A(0, 1), raw: '=2*A1+3*A2+1*A3' },
+      { coord: A(1, 1), raw: '=A1+A2+A3' },
+      { coord: A(2, 1), raw: '=A1+2*A2+3*A3' },
+    ])
+    const res = wb.solve({
+      objective: A(0, 1),
+      sense: 'min',
+      variables: [A(0, 0), A(1, 0), A(2, 0)],
+      nonNegative: true,
+      constraints: [
+        { lhs: A(1, 1), rel: '=', rhs: { kind: 'num', value: 10 } },
+        { lhs: A(0, 0), rel: '>=', rhs: { kind: 'num', value: 2 } },
+        { lhs: A(2, 1), rel: '>=', rhs: { kind: 'num', value: 18 } },
+      ],
+    })
+    add('blend LP is feasible', res.feasible)
+    add('blend LP satisfies every constraint', res.constraints.every((c) => c.satisfied), JSON.stringify(res.constraints))
+  }
+
+  return out
 }
 
 function fillRewriteTest(): TestResult[] {

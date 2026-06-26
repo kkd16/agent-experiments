@@ -348,6 +348,14 @@ function analysisLab(): WorkbookSnapshot {
   set('F12', '=PIVOTBY(A4:A15, B4:B15, D4:D15, SUM)')
   fmt('F11', 'F11', { bold: true })
 
+  // A structured table over the dataset — reference columns by name, no A1 ranges.
+  wb.defineTable('Deals', { top: 2, left: 0, bottom: 3 + rows.length - 1, right: 3 }, id)
+  set('F16', 'Structured table refs over Deals[…]')
+  fmt('F16', 'F16', { bold: true })
+  set('F17', '="Σ Deals[Sales] = " & SUM(Deals[Sales])')
+  set('F18', '="rows = " & ROWS(Deals[#Data]) & " · avg = " & ROUND(AVERAGE(Deals[Sales]),1)')
+  fmt('F17', 'F18', { color: '#97a0b8' })
+
   // Recursive lambdas, defined as workbook names (the depth guard stops runaways).
   wb.setName('FACT', 'LAMBDA(n, IF(n<=1, 1, n*FACT(n-1)))', id)
   wb.setName('FIB', 'LAMBDA(n, IF(n<2, n, FIB(n-1)+FIB(n-2)))', id)
@@ -378,7 +386,102 @@ function analysisLab(): WorkbookSnapshot {
   return wb.serialize()
 }
 
+// A single-sheet tour of v5: a linear program wired for the Solver. A small factory
+// chooses how many of two products to make to maximize profit, limited by two shared
+// resources. The Solver auto-detects the model is linear and finds the exact optimum
+// (chairs = 24, tables = 14, profit = $2,200) with the simplex method. A second block
+// is a nonlinear least-squares fit the Solver minimizes with its Nelder–Mead engine.
+function optimizationLab(): WorkbookSnapshot {
+  const wb = new Workbook()
+  const id = wb.activeSheetId
+  wb.renameSheet(id, 'Optimize')
+  const set = (a1: string, raw: string) => {
+    const ref = parseRef(a1)
+    if (ref) wb.setCell({ row: ref.row, col: ref.col }, raw, id)
+  }
+  const fmt = (a1: string, a2: string, patch: CellFormat) => {
+    const f = parseRef(a1)!
+    const t = parseRef(a2)!
+    wb.applyFormat({ top: f.row, left: f.col, bottom: t.row, right: t.col }, patch, id)
+  }
+
+  set('A1', 'Optimization Lab — open  ⚖ Solver  and maximize D7 by changing B5:B6, subject to the resource rows')
+  fmt('A1', 'A1', { bold: true })
+
+  // ---- A linear production-mix model (the headline LP) ----
+  set('A3', 'Production plan — how many of each product to make for the most profit')
+  fmt('A3', 'A3', { color: '#97a0b8' })
+  set('A4', 'Product')
+  set('B4', 'Make')
+  set('C4', 'Profit / unit')
+  set('D4', 'Profit')
+  set('A5', 'Chairs')
+  set('B5', '0') // ← a changing cell
+  set('C5', '45')
+  set('D5', '=B5*C5')
+  set('A6', 'Tables')
+  set('B6', '0') // ← a changing cell
+  set('C6', '80')
+  set('D6', '=B6*C6')
+  set('A7', 'TOTAL')
+  set('D7', '=SUM(D5:D6)') // ← the objective
+  fmt('A4', 'D4', { bold: true, align: 'center' })
+  fmt('A7', 'D7', { bold: true })
+  fmt('C5', 'D7', { nf: 'currency', decimals: 0 })
+
+  set('A9', 'Resource')
+  set('B9', 'Used')
+  set('C9', 'Available')
+  set('D9', 'Slack')
+  set('A10', 'Wood (board-ft)')
+  set('B10', '=5*B5+20*B6') // chairs use 5, tables 20
+  set('C10', '400')
+  set('D10', '=C10-B10')
+  set('A11', 'Labor (hours)')
+  set('B11', '=10*B5+15*B6') // chairs use 10, tables 15
+  set('C11', '450')
+  set('D11', '=C11-B11')
+  fmt('A9', 'D9', { bold: true, align: 'center' })
+
+  set('A13', 'Solver setup → objective D7 · Max · changing B5:B6 · constraints  B10 ≤ C10  and  B11 ≤ C11')
+  fmt('A13', 'A13', { color: '#97a0b8' })
+  set('A14', 'Exact optimum (simplex): Chairs 24, Tables 14 → $2,200 profit. Both resources bind.')
+  fmt('A14', 'A14', { color: '#97a0b8' })
+
+  // ---- A nonlinear model: least-squares line fit, minimized by the Solver ----
+  set('F3', 'Nonlinear fit — find slope & intercept that minimize squared error (J3)')
+  fmt('F3', 'F3', { color: '#97a0b8' })
+  set('F4', 'x')
+  set('G4', 'y')
+  set('H4', 'ŷ = m·x + b')
+  set('I4', 'error²')
+  const xs = [1, 2, 3, 4, 5]
+  const ys = [2.1, 4.3, 5.9, 8.2, 9.8]
+  xs.forEach((x, i) => {
+    const row = 5 + i
+    set(`F${row}`, String(x))
+    set(`G${row}`, String(ys[i]))
+    set(`H${row}`, `=$I$1*F${row}+$I$2`)
+    set(`I${row}`, `=(G${row}-H${row})^2`)
+  })
+  fmt('F4', 'I4', { bold: true, align: 'center' })
+  set('H1', 'slope m')
+  set('I1', '0') // ← changing cell
+  set('H2', 'intercept b')
+  set('I2', '0') // ← changing cell
+  set('F11', 'SSE (minimize)')
+  set('I11', '=SUM(I5:I9)') // ← the objective for the nonlinear solve
+  fmt('F11', 'I11', { bold: true })
+  set('F12', 'Solver setup → objective I11 · Min · changing I1:I2 · no constraints, uncheck non-negative')
+  fmt('F12', 'F12', { color: '#97a0b8' })
+  fmt('H1', 'H2', { color: '#97a0b8' })
+
+  wb.setActiveSheet(id)
+  return wb.serialize()
+}
+
 export const DEMOS: Demo[] = [
+  { id: 'optimize', name: 'Optimization Lab', blurb: 'A linear program + a nonlinear fit, both solved by the ⚖ Solver (exact simplex & Nelder–Mead)', snapshot: optimizationLab },
   { id: 'analysis', name: 'Analysis Lab', blurb: 'GROUPBY/PIVOTBY pivots, spill-range refs (A1#), recursive lambdas & a Data-Table model', snapshot: analysisLab },
   { id: 'arrays', name: 'Dynamic Arrays', blurb: 'SEQUENCE/FILTER/SORT/UNIQUE spilling + LAMBDA/MAP and a Goal-Seek model', snapshot: dynamicArrays },
   { id: 'sales', name: 'Sales Dashboard', blurb: 'Multi-sheet: cross-sheet refs, a named range, formatting & charts', snapshot: salesDashboard },
