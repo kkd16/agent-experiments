@@ -8,7 +8,7 @@
 
 import type { Node } from './ast'
 import type { Coord, RangeBox } from './address'
-import { coordKey, keyToCoord, boxOf } from './address'
+import { coordKey, keyToCoord, boxOf, coordToA1 } from './address'
 import type { RuntimeValue, Scalar, SparklineValue, MatrixValue } from './values'
 import { BLANK, err, isSparkline, isMatrix, asScalar, matrix, displayValue } from './values'
 import { solve } from './solver'
@@ -805,6 +805,75 @@ export class Workbook {
       sensitivity,
       message,
     }
+  }
+
+  /**
+   * Write an Excel-style **Solver report** to a brand-new sheet: the objective and its
+   * value, every decision cell, a per-constraint status table, and — for a pure-continuous
+   * linear model — the full sensitivity report (shadow prices + RHS / objective ranges).
+   * Returns the new sheet's id (the caller switches to it). Everything is written as a
+   * literal, so the report is a static snapshot independent of later edits.
+   */
+  writeSolverReport(input: {
+    objective: Coord
+    sense: 'max' | 'min' | 'value'
+    result: SolverResult
+    constraintCells: Coord[]
+  }): string {
+    const { objective, sense, result, constraintCells } = input
+    const sid = this.addSheet(result.sensitivity ? 'Sensitivity Report' : 'Solver Report')
+    const entries: Array<{ coord: Coord; raw: string }> = []
+    const bolds: RangeBox[] = []
+    let row = 0
+    const line = (cells: string[]) => {
+      cells.forEach((c, i) => entries.push({ coord: { row, col: i }, raw: c }))
+      row++
+    }
+    const head = (cells: string[]) => {
+      bolds.push({ top: row, left: 0, bottom: row, right: Math.max(0, cells.length - 1) })
+      line(cells)
+    }
+    const num = (x: number): string => (Number.isFinite(x) ? String(Number(x.toPrecision(12))) : x > 0 ? '∞' : '−∞')
+    const a1 = (c: Coord): string => coordToA1(c.row, c.col)
+
+    const senseWord = sense === 'value' ? 'reach a target in' : sense === 'max' ? 'maximize' : 'minimize'
+    head([`Solver report — ${senseWord} ${a1(objective)}`])
+    line([`Status: ${result.status}`, `Method: ${result.method}`].concat(result.nodes != null ? [`Nodes: ${String(result.nodes)}`] : [], [`Iterations: ${String(result.iterations)}`]))
+    line(['Objective value', num(result.objective)])
+    row++
+
+    head(['Decision cell', 'Final value', 'Integer?'])
+    result.variables.forEach((v, j) => line([a1(v.coord), num(v.value), result.integer?.[j] ? 'yes' : 'no']))
+    row++
+
+    if (result.constraints.length) {
+      head(['Constraint', 'Value', 'Rel', 'RHS', 'Status', 'Slack'])
+      result.constraints.forEach((c, k) => {
+        const cell = constraintCells[k]
+        line([cell ? a1(cell) : `#${k + 1}`, num(c.lhs), c.rel, num(c.rhs), c.satisfied ? 'OK' : 'violated', num(c.rhs - c.lhs)])
+      })
+      row++
+    }
+
+    if (result.sensitivity) {
+      head(['Variable sensitivity', '', '', '', ''])
+      head(['Cell', 'Final', 'Reduced cost', 'Obj coef', 'Allowable low', 'Allowable high'])
+      result.sensitivity.variables.forEach((v) =>
+        line([a1(v.coord), num(v.value), num(v.reducedCost), num(v.objCoef), num(v.objLow), num(v.objHigh)]),
+      )
+      row++
+      if (result.sensitivity.constraints.length) {
+        head(['Constraint sensitivity', '', '', ''])
+        head(['Cell', 'Shadow price', 'Allow. increase', 'Allow. decrease'])
+        result.sensitivity.constraints.forEach((c) =>
+          line([a1(c.lhs), num(c.shadowPrice), num(c.allowableIncrease), num(c.allowableDecrease)]),
+        )
+      }
+    }
+
+    this.setMany(entries, sid)
+    for (const b of bolds) this.applyFormat(b, { bold: true }, sid)
+    return sid
   }
 
   private cellInList(c: Coord, list: Coord[]): boolean {

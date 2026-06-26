@@ -312,8 +312,9 @@ v5 gave the grid a Solver that finds the *best* continuous answer. But two thing
 operations-research model needs were still missing. First, the world is **discrete**: you fund a
 project or you don't, you build 3 trucks not 2.7. Second, an optimum is only half the story — a
 decision-maker wants the **shadow prices**: *what is one more hour of labour actually worth?*
-v6 ships both, building straight on the existing two-phase simplex, and the engine stays pure /
-React-free with every claim re-derived in the in-app suite (222 → **242**).
+v6 ships both — plus an Excel-style report writer — building straight on the existing two-phase
+simplex, and the engine stays pure / React-free with every claim re-derived in the in-app suite
+(222 → **246**).
 
 ### Mixed-integer programming — branch & bound *(marquee #1)*
 - [x] **`solveMILP(p, integer[])`** in `optimizer.ts` — classic LP-based **branch & bound**:
@@ -348,15 +349,19 @@ React-free with every claim re-derived in the in-app suite (222 → **242**).
   dialog renders a collapsible **Sensitivity report**: per-variable (value · reduced cost · obj
   coefficient · allowable range) and per-constraint (shadow price · allowable increase/decrease),
   with `∞` for open directions. Only shown for pure-continuous models (Excel disables it for MILP).
+- [x] **`Workbook.writeSolverReport`** — a "Report ▸ sheet" button spills an Excel-style **Answer +
+  Sensitivity report** into a brand-new sheet (status/method/nodes, the decision cells, a
+  per-constraint status table with slacks, and the full sensitivity tables), as static literals.
 
 ### Proving it — the house way
-- [x] +20 self-tests (`solver` 17 → **37**): a 0/1 knapsack to its exact optimum (220, integral,
+- [x] +24 self-tests (`solver` 12 → **36**): a 0/1 knapsack to its exact optimum (220, integral,
   branch & bound, nodes counted); an ILP whose integer optimum (33 at `(0,3)`) is **not** the
   rounded LP relaxation; an integer-infeasible model; the carpenter LP's shadow prices
   (wood = 1, labour = 4) with **strong duality** (`z = b·y`), zero reduced cost for basic
   variables, a **finite-difference cross-check** of the shadow price, and a check the shadow price
   holds across its reported RHS range; an unprofitable product staying out with a **negative
-  reduced cost** and a non-binding constraint reading **shadow price 0**.
+  reduced cost** and a non-binding constraint reading **shadow price 0**; and the report writer
+  carrying the objective, decision values and shadow prices into a new sheet's cells.
 - [x] Validated outside the browser too: an isolated harness over `solveLP`/`solveLPFull`/`solveMILP`
   cross-checked shadow prices vs finite differences, strong duality, and **40 random MILPs against
   brute-force enumeration** (all matched). Then verified end-to-end in a **real browser** (Playwright):
@@ -366,7 +371,8 @@ React-free with every claim re-derived in the in-app suite (222 → **242**).
 ### Forward backlog (next sessions)
 - [ ] **Gomory fractional cuts** / branch-and-**cut** to tighten the relaxation before branching
 - [ ] **Objective ranging for basic variables** read exactly off the tableau (alongside the re-solve)
-- [ ] A **written-to-sheet** sensitivity report (spill the dual table into the grid like a pivot)
+- [x] A **written-to-sheet** sensitivity report (spill the dual table into the grid like a pivot) → shipped
+- [ ] Let the report **link back** to the model with live formulas (today it's a static snapshot)
 - [ ] **Special-ordered-set** (SOS1/SOS2) and **semi-continuous** variable branching rules
 - [ ] **Integer Data Table** / scenario sweep that re-runs the MILP across a parameter
 - [ ] **Warm-start** the child LPs from the parent basis (dual simplex) for far fewer iterations
@@ -444,13 +450,16 @@ React-free with every claim re-derived in the in-app suite (222 → **242**).
   of the variables, and **RHS / objective-coefficient ranges** by a robust parametric re-solve
   (walk-out + bisect the kink). `Workbook.solve` maps it onto cells; the Solver dialog renders a
   collapsible **Sensitivity report** (per-variable value/reduced-cost/coef/range, per-constraint
-  shadow-price/allowable-increase/decrease) — shown only for pure-continuous models. New flagship
+  shadow-price/allowable-increase/decrease) — shown only for pure-continuous models. A
+  "Report ▸ sheet" button (`writeSolverReport`) spills an Excel-style Answer + Sensitivity report
+  into a brand-new sheet. New flagship
   **"Integer Programming Lab"** demo (now default): a 0/1 capital-budgeting knapsack beside the
-  carpenter LP. The suite grew 222 → **242** (`solver` 17 → 37): a knapsack to its exact integral
+  carpenter LP. The suite grew 222 → **246** (`solver` 12 → 36): a knapsack to its exact integral
   optimum, an ILP whose integer optimum ≠ the rounded relaxation, integer-infeasibility, the
   carpenter shadow prices (wood 1 / labour 4) with strong duality `z=b·y`, a finite-difference
-  cross-check, zero reduced cost for basic vars, a negative reduced cost for an idle product, and
-  a non-binding constraint reading shadow price 0. Validated in an isolated Node harness (shadow
+  cross-check, zero reduced cost for basic vars, a negative reduced cost for an idle product, a
+  non-binding constraint reading shadow price 0, and the report writer carrying answers into a
+  sheet. Validated in an isolated Node harness (shadow
   prices vs finite differences, strong duality, **40 random MILPs vs brute force**) and end-to-end
   in a real browser (Playwright): the knapsack solves to $1.3M via branch & bound (21 nodes) and
   the carpenter Sensitivity report prints the exact textbook shadow prices and ranges — no console
