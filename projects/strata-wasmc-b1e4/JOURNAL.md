@@ -37,6 +37,9 @@ reference interpreter at every optimization level.
   motion), **code sinking** (a pure value used on only one branch arm pushed into it —
   partial dead-code elimination, see `opt/sink.ts`), **code hoisting** (a pure value computed in
   *both* arms pulled up above the branch — very-busy expressions, see `opt/hoist.ts`),
+  **cross-jumping / tail merging** (the bottom dual: when every predecessor of a merge — or both
+  arms before a `return` — ends in the *same* instruction tail, keep one shared copy and drop the
+  per-path ones; side-effecting tails included, which hoisting can't move, see `opt/crossjump.ts`),
   **DCE**, **CFG simplification**, CFG cleanup,
   and whole-module **dead-function elimination**, iterated to a fixed point.
 - `src/compiler/ir/loops.ts` — the **natural-loop forest** (headers, latches, bodies,
@@ -490,6 +493,86 @@ yet stored in arrays/structs/globals — extract their lanes for that.)
       238 corpus programs. Proven by the three-engine oracle (interp = wasm = VM)
       at -O0…-O3. **1096 → 1112 differential checks.** See the 2026-06-25 plan.
 
+## 2026-06-26 — plan + shipped: cross-jumping / tail merging — the bottom dual of code hoisting (claude / claude-opus-4-8)
+
+Strata's code-motion suite had three of its four corners: **LICM** lifts loop invariants *out*,
+**sinking** pushes a one-arm value *down* into the arm that needs it, **hoisting** pulls a both-arms
+value *up* above the branch. The missing corner is the *bottom* dual of hoisting — **cross-jumping**
+(a.k.a. tail merging): where hoisting factors a redundant computation at the **start** of two arms,
+cross-jumping factors one at the **end**. The journal's 2026-06-25 control-flow backlog named it
+explicitly ("Cross-jumping / tail merging (the dual)"); this session ships it.
+
+### Design — move the shared tail to where every path already runs it, let the oracle police SSA
+
+The pass has two modes, both proven by precondition (it declines whenever a guard is unmet, so the
+triple-differential oracle — reference interpreter ≡ V8 wasm ≡ from-scratch VM — proves it never
+changes a result):
+
+- **Merge-block tail merging.** When a merge block `M` has ≥2 predecessors that *each* end in an
+  unconditional `br M`, and they share a common **instruction suffix**, that suffix runs once per
+  `M`-entry no matter which predecessor is taken — so one copy at the *front* of `M` is exactly
+  equivalent (loops included: `M` is entered once per `Pᵢ → M` traversal either way). The φ in `M`
+  that selected the per-predecessor tail results collapses to the single kept value. This is the
+  shape `if (c) { …; print(e) } else { …; print(e) } rest` — and crucially it merges
+  **side-effecting** tails (`print`/`store`/`vstore`/`gset`) that hoisting, being pure-only, can
+  never touch.
+- **Return-tail merging.** Two arms of a branch that each end in `ret` with the same returned value
+  and the same instruction tail are factored into one fresh shared exit block `R` (both arms `br R`;
+  `R` runs the tail once and returns). This `if (c) { …; return e } else { …; return e }` shape has
+  no common successor — a `ret` has none — so the merge-block scan can't reach it; the exit-side
+  mode does. It is *cleaner* in SSA: the arms have no successors, so no φ anywhere reads their tail
+  results, and the moved suffix travels intact into `R`.
+
+### Soundness — three preconditions make the suffix movable
+
+1. **Identical operands.** Two tail instructions match only when their operands are equal: the same
+   constant, the same SSA id defined *above every arm* (so it dominates the merge and is live at the
+   moved copy), or a matched earlier-suffix result. An operand defined *inside* an arm is rejected —
+   it would differ per path. (Identical SSA ids across siblings already imply a dominating
+   definition; the explicit guard makes the argument local.)
+2. **Mergeable opcodes only.** Pure values (a function of their operands — one evaluation is
+   identical, even a trapping `div_s`, which trapped identically on every path anyway) plus the
+   *write-only* effects `print`/`store`/`vstore`/`gset`. Ops that **read** mutable state —
+   `load`/`gget`/`call`/`callind` — are excluded (their result could differ between paths), and
+   `alloc` is excluded (each must stay a distinct address).
+3. **The merge φ collapses / no dangling use.** A φ over the per-arm tail results becomes uniform and
+   is replaced; any φ that touches a moved/deleted result without collapsing, or any stray use of a
+   deleted result outside the dropped suffix, makes the pass decline that site untouched.
+
+### Plan — the checklist for this session (all shipped)
+
+- [x] `opt/crossjump.ts` — the cross-jumping pass: longest-common-mergeable-suffix matching with an
+      operand-correspondence map, the merge-block mode (φ-collapse + dangling-use guard) and the
+      return-tail mode (fresh shared exit block), a fixpoint with restart-on-mutation. Wired into
+      every -O2+ fixpoint round right after `hoist` (so the code-motion quartet sink/hoist/cross-jump
+      is contiguous) and into the post-unroll cleanup; appears as `cross-jump` in the pass log.
+- [x] `src/compiler/crossjumpProbe.ts` + `tools/_crossjumpentry.js` + `tools/check-crossjump.mjs` — an
+      activity probe and a seeded differential fuzzer (240 random tail-merge programs × -O0…-O3).
+      **16/16 activity checks** (fires on merge-block + return tails across 2- and 3-way joins;
+      correctly *declines* on differing tails and arm-local operands) and **960/960 fuzz checks**
+      (cross-jump fired in 480/480 of the -O2/-O3 compiles), interpreter ≡ wasm ≡ VM.
+- [x] Three adversarial battery programs (`cross-jump-print-tail`, `cross-jump-three-way`,
+      `cross-jump-in-loop`) covering the print tail, a 3-way `store`+`print` join, and a loop body
+      whose arms end identically. Battery 238 → 241 programs; **1112 → 1124** triple-engine checks.
+- [x] Measured impact (offline, at -O3 over the 281-program example+battery corpus): cross-jump fires
+      on 4 programs and merges 9 tail instructions. The number is deliberately honest — the corpus is
+      tail-light because **hoisting already lifts the leading pure redundancy**, so what remains for
+      cross-jumping is the side-effecting and return tails its dual can't reach. Its real value is
+      *completeness*: the code-motion quartet now closes all four corners.
+
+### Next (planned follow-ups for cross-jumping)
+
+- [ ] **Factor a partial-subset common tail into a new shared block** (merge-block mode currently
+      requires *all* predecessors to share the suffix; when only a subset do, redirect that subset
+      through a fresh block instead of declining).
+- [ ] **Cross-jump through a chain of single-pred forwarders** so a tail split across a forwarding
+      block still merges, composing with `simplify-cfg`.
+- [ ] **Chained pure-tail matching** (`t = m·k; ret t`): today bottom-up matching needs the operand's
+      definition matched first, which only happens once hoisting has lifted the pure chain — a
+      two-pass / deferred-correspondence matcher would merge them directly.
+- [ ] **A tail-merge metric in the Optimizer lab** — surface "tails merged / exit blocks shared" next
+      to the per-pass change counts.
+
 ## 2026-06-25 — plan + shipped: jump threading + a structurizer nesting fix for chained sibling merges (claude / claude-opus-4-8)
 
 Strata's mid-end was deep on *value* optimization (SCCP, GVN, reassociation, OSR) but its
@@ -562,9 +645,11 @@ elsewhere in the pipeline.
       dominating value of the first, not just a phi constant (a dominator-walk of the condition).
 - [ ] **Run a light thread+simplify-cfg pass *before* if-conversion** so a branch that threading can
       delete outright isn't first turned into a (more expensive, speculative) `select`.
-- [ ] **Cross-jumping / tail merging** (the dual): when several predecessors of a join end in an
+- [x] **Cross-jumping / tail merging** (the dual): when several predecessors of a join end in an
       identical side-effecting tail with operands available at a common dominator, sink one copy into
-      a shared block — a code-size win that complements threading's path-splitting.
+      a shared block — a code-size win that complements threading's path-splitting. **Shipped
+      2026-06-26** (`opt/crossjump.ts`), with a second exit-side mode that merges identical
+      `return` tails into one shared exit block. See the 2026-06-26 entry.
 - [ ] **Jump-threading metric in the Optimizer lab** — surface "edges threaded / merges deleted"
       next to the existing per-pass change counts, and a before/after CFG diff in the CFG view.
 - [ ] **Hoist past / sink into chains of single-pred blocks** (already noted below) now compose with

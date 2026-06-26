@@ -8,6 +8,7 @@ import { unrollLoops } from './unroll';
 import { unswitchLoops } from './unswitch';
 import { sinkCode } from './sink';
 import { hoistCode } from './hoist';
+import { crossJump } from './crossjump';
 import { partialUnroll } from './partial-unroll';
 import { divRemByConst } from './divrem';
 import { vectorize } from './vectorize';
@@ -923,6 +924,12 @@ export function optimize(mod: IRModule, level: OptLevel, snapshots = false): Opt
     // same pure value, pull one copy up above the branch (GVN can't — neither arm
     // dominates the other). Runs right after sink so the two are adjacent.
     if (level >= 2) record('hoist' + suffix, hoistCode);
+    // Cross-jumping is hoisting's bottom dual: when every predecessor of a merge
+    // ends in the same instruction tail, keep one shared copy at the merge's front
+    // and drop the per-predecessor copies (side-effecting tails included, which
+    // hoisting can't move). Runs right after hoist so the code-motion trio (sink /
+    // hoist / cross-jump) is contiguous, and before DCE sweeps the collapsed φs.
+    if (level >= 2) record('cross-jump' + suffix, crossJump);
     record('dead-code-elim' + suffix, dce);
     // Jump threading folds per-edge-constant conditional merges (a materialized
     // boolean phi feeding a branch) into direct jumps; simplify-cfg then coalesces
@@ -945,6 +952,7 @@ export function optimize(mod: IRModule, level: OptLevel, snapshots = false): Opt
     record('strength-reduce-iv (post-unroll)', osr);
     record('licm (post-unroll)', licm);
     record('algebraic-simplify (post-unroll)', algebraic);
+    record('cross-jump (post-unroll)', crossJump);
     record('dead-code-elim (post-unroll)', dce);
     record('jump-thread (post-unroll)', jumpThread);
     record('simplify-cfg (post-unroll)', simplifyCFG);

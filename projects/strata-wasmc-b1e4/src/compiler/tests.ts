@@ -2823,4 +2823,49 @@ fn run(n: int) -> void {
 }
 fn main(){ run(3); run(8); }`,
   },
+  {
+    // Cross-jumping / tail merging — the bottom dual of code hoisting. Both arms of
+    // the branch END with the same side-effecting tail (`print` of a value defined
+    // before the branch); cross-jumping keeps one copy at the merge's front and
+    // drops the per-arm copies. Hoisting can't move a `print`, GVN can't (neither
+    // arm dominates the other), and if-conversion declines (a `print` is
+    // unspeculable) — so the shared tail survives to the tail merger. The exact
+    // print order is part of the differential check.
+    name: 'cross-jump-print-tail',
+    source: `fn f(a: int, b: int, cond: int) -> int {
+  let s = a + b;
+  if (cond > 0) { s = s + a; print(a * b - 7); } else { s = s - b; print(a * b - 7); }
+  return s;
+}
+fn main(){ for (let i = -2; i <= 3; i = i + 1) { print(f(i, i * 2 - 1, i % 2)); } }`,
+  },
+  {
+    // A three-way merge: every path into the join ends with the same tail (a `store`
+    // into an array, then a `print`). Cross-jumping merges across all three
+    // predecessors at once. The store + the later read prove the memory effect lands
+    // exactly once and in order.
+    name: 'cross-jump-three-way',
+    source: `fn classify(a: int, b: int) -> int {
+  let arr = int_array(4);
+  if (a > b) { arr[0] = a; print(a + b); }
+  else { if (a == b) { arr[1] = a; print(a + b); } else { arr[2] = b; print(a + b); } }
+  return arr[0] + arr[1] + arr[2];
+}
+fn main(){
+  for (let i = 0; i < 4; i = i + 1) { for (let j = 0; j < 3; j = j + 1) { print(classify(i, j)); } }
+}`,
+  },
+  {
+    // A loop whose body branches and both arms end identically: cross-jumping moves
+    // the shared tail to the loop's join, which runs once per iteration either way.
+    // A regression guard that tail merging respects loop-entry counts.
+    name: 'cross-jump-in-loop',
+    source: `fn main(){
+  let acc = 0;
+  for (let i = 0; i < 12; i = i + 1) {
+    if (i % 3 == 0) { acc = acc + i; print(i * i + 1); } else { acc = acc - 1; print(i * i + 1); }
+  }
+  print(acc);
+}`,
+  },
 ];
