@@ -83,6 +83,7 @@ export {
 export type { Example, TrainOpts, Correlation } from './nnue-train'
 export { nnueSave, nnueLoad, nnueClear, NNUE_KEY } from './nnue-cache'
 export type { NnueMeta } from './nnue-cache'
+export { defaultNnueBlob, DEFAULT_NNUE_META } from './nnue-weights'
 
 export type GameResult = 'playing' | 'checkmate' | 'stalemate' | 'draw-fifty' | 'draw-repetition' | 'draw-material'
 

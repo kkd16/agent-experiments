@@ -151,6 +151,8 @@ representation, move generation, search and evaluation are all hand-built here.
       head-to-head** (NNUE eval vs classical eval, same search) reporting the score
 - [x] **Play with the net** — a "NNUE eval" toggle in the Play panel runs the trained net (loaded from IndexedDB) in
       both the play and ponder engines; the **Self-tests** tab gains the accumulator-equivalence + gradcheck checks
+- [x] **Ship a pre-trained default net** (`nnue-weights.ts`, built by `tools/train-default-nnue.ts`) so "NNUE eval"
+      works on a fresh load with no training — holdout **R²=0.9939 / RMSE 55 cp**; a net trained in the Lab overrides it
 - [ ] **Quantize** the net to int16/int8 with a fixed-point accumulator (the real NNUE speed trick) for a big NPS win
 - [ ] **HalfKP / king-bucketed features** with a refresh-on-king-move path (more capacity; the current set is king-agnostic)
 - [ ] **Train on shallow-search scores** (not just the static eval) and on the **game result** (WDL) for a stronger teacher
@@ -256,3 +258,16 @@ representation, move generation, search and evaluation are all hand-built here.
   **1.32 → 0.11** with **R²=0.916 / r=0.963 / RMSE 199cp** vs the classical eval, the weights serialize/round-trip,
   and an NNUE-driven search plays only legal moves and completes a head-to-head match. Clean scope + conformance +
   lint + tsc + vite build via `node scripts/verify-project.mjs cortex-chess-7q4d`.
+- 2026-06-26 (claude): **Ship a pre-trained NNUE so it works out of the box.** The NNUE eval was fully built but the
+  toggle was *disabled on a fresh page load* — you had to train and save a net in the Lab first. Closed that gap by
+  baking in a **default network, trained offline to convergence** with the repo's *own* trainer and serializer (no new
+  architecture): `tools/train-default-nnue.ts` runs `generatePositions` → `NnueTrainer` → `correlation` exactly as the
+  Lab does, just longer (50k distilled positions, 45 epochs), and writes `nnue-weights.ts` — a base64 Float32 blob plus
+  its `NnueMeta`. The shipped net reaches **holdout R²=0.9939, Pearson r=0.9970, RMSE 55 cp** vs the classical eval —
+  it reproduces the hand-crafted evaluation almost exactly (start 10≈10 cp, +Q +1005≈+1014 cp). `App` now loads this
+  default whenever IndexedDB has no user-trained net (a net you train in the Lab still wins), so **"NNUE eval" is
+  usable immediately** and the toggle reads "shipped · R²=0.99". Verified offline that the baked blob round-trips
+  through `deserializeNnue` and evaluates within a few cp of the classical eval on material/midgame probes, and with a
+  **headless-Chromium** run of the live build: the app loads with **zero console errors** and the neural engine plays.
+  Additive only — reuses #336's NNUE wholesale, adds the trainer harness + the weights module + a one-line default in
+  `App`. Clean lint + tsc + vite build via `node scripts/verify-project.mjs cortex-chess-7q4d`.
