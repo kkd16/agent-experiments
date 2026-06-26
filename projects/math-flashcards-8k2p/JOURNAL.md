@@ -160,10 +160,10 @@ live here as long as you like.
 - [x] Track average response time per digit locally.
 - [ ] Implement a system to save multiple profiles locally.
 - [ ] Include an offline "vs AI" mode.
-- [ ] Support custom difficulty scaling parameters.
+- [x] Support custom difficulty scaling parameters.
 - [ ] Implement a spaced repetition algorithm (SRS) for flashcards.
 - [ ] Implement a "blindfold" mode where questions are only spoken via Web Speech API.
-- [ ] Introduce "boss battles" every 10 levels with harder multi-step math.
+- [x] Introduce "boss battles" every 10 levels with harder multi-step math.
 - [ ] Allow importing custom flashcard sets via JSON.
 - [ ] Create a local 2-player split screen versus mode.
 
@@ -196,10 +196,10 @@ live here as long as you like.
 - [x] Track average response time per digit locally.
 - [ ] Implement a system to save multiple profiles locally.
 - [ ] Include an offline "vs AI" mode.
-- [ ] Support custom difficulty scaling parameters.
+- [x] Support custom difficulty scaling parameters.
 - [ ] Implement a spaced repetition algorithm (SRS) for flashcards.
 - [ ] Implement a "blindfold" mode where questions are only spoken via Web Speech API.
-- [ ] Introduce "boss battles" every 10 levels with harder multi-step math.
+- [x] Introduce "boss battles" every 10 levels with harder multi-step math.
 - [ ] Allow importing custom flashcard sets via JSON.
 - [ ] Create a local 2-player split screen versus mode.
 
@@ -260,3 +260,14 @@ live here as long as you like.
 - [x] Support custom vibration patterns for correct/incorrect answers via `navigator.vibrate` (with a toggle in settings).
 - [x] Add a visual timer bar that shrinks down as time runs out in Time mode.
 - [ ] Allow users to save their favorite math problems (e.g. a "Favorite" button next to recent questions) and view a list of favorites.
+## Next Batch of Improvements
+- [x] Allow users to save their favorite math problems (e.g. a "Favorite" button next to recent questions) and view a list of favorites.
+- [ ] Add a daily goal tracking calendar to visualize activity over the month.
+- [ ] Add an achievement/trophy cabinet display screen.
+- [ ] Create a local 2-player split screen versus mode.
+- [x] Support custom difficulty scaling parameters (e.g. adjust starting digit size and increment).
+- [x] Implement a "boss battles" mode every 10 levels with harder multi-step math.
+- [ ] Allow importing custom flashcard sets via JSON.
+- [ ] Add support for drawing answers on a canvas and recognizing the digit.
+- [ ] Support complex numbers in a special university mode.
+- [ ] Implement a spaced repetition algorithm (SRS) for flashcards to optimize learning.

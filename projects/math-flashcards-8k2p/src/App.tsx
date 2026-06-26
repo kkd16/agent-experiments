@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import './App.css';
 
 type Operation = '+' | '-' | '*' | '/';
-type Difficulty = 'easy' | 'medium' | 'hard';
+type Difficulty = 'easy' | 'medium' | 'hard' | 'custom';
 
 
 type RunScore = {
@@ -20,16 +20,25 @@ type HistoryItem = {
 };
 
 
-function generateRandomProblem(difficulty: Difficulty, allowedOps: Operation[], allowNegativesParam: boolean = false) {
+function generateRandomProblem(difficulty: Difficulty, allowedOps: Operation[], allowNegativesParam: boolean = false, customMin: number = 1, customMax: number = 10, isBossBattle: boolean = false) {
   const ops = allowedOps.length > 0 ? allowedOps : ['+'] as Operation[];
   const selectedOp = ops[Math.floor(Math.random() * ops.length)];
 
   let maxNum = 12;
+  let minNum = 1;
   if (difficulty === 'medium') maxNum = 50;
   if (difficulty === 'hard') maxNum = 100;
+  if (difficulty === 'custom') {
+    maxNum = customMax;
+    minNum = customMin;
+  }
 
-  let n1 = Math.floor(Math.random() * maxNum) + 1;
-  let n2 = Math.floor(Math.random() * maxNum) + 1;
+  if (isBossBattle) {
+    maxNum *= 2; // Double the maximum number for boss battles
+  }
+
+  let n1 = Math.floor(Math.random() * (maxNum - minNum + 1)) + minNum;
+  let n2 = Math.floor(Math.random() * (maxNum - minNum + 1)) + minNum;
 
   if (selectedOp === '-') {
     if (!allowNegativesParam && difficulty !== 'hard' && n2 > n1) {
@@ -37,8 +46,8 @@ function generateRandomProblem(difficulty: Difficulty, allowedOps: Operation[], 
     }
   } else if (selectedOp === '/') {
     // Ensure integer division
-    const result = Math.floor(Math.random() * maxNum) + 1;
-    const divisor = Math.floor(Math.random() * (maxNum > 12 ? 12 : maxNum)) + 1;
+    const result = Math.floor(Math.random() * (maxNum - minNum + 1)) + minNum;
+    const divisor = Math.floor(Math.random() * (maxNum > 12 ? 12 : (maxNum - minNum + 1))) + minNum;
     n1 = result * divisor;
     n2 = divisor;
   }
@@ -56,6 +65,33 @@ function getInitialHideSkipButton(): boolean {
   } catch (e) {
     console.error("Local storage error:", e);
     return false;
+  }
+}
+
+function getInitialFavorites(): HistoryItem[] {
+  try {
+    const data = window.localStorage.getItem('mathFlashcardsFavorites');
+    return data ? JSON.parse(data) : [];
+  } catch {
+    return [];
+  }
+}
+
+function getInitialCustomMin(): number {
+  try {
+    const v = window.localStorage.getItem('mathFlashcardsCustomMin');
+    return v ? parseInt(v, 10) : 1;
+  } catch {
+    return 1;
+  }
+}
+
+function getInitialCustomMax(): number {
+  try {
+    const v = window.localStorage.getItem('mathFlashcardsCustomMax');
+    return v ? parseInt(v, 10) : 10;
+  } catch {
+    return 10;
   }
 }
 
@@ -545,6 +581,23 @@ const STREAK_MESSAGES = [
 ];
 
 function App() {
+  const [customMinNumber, setCustomMinNumber] = useState<number>(getInitialCustomMin());
+  const [customMaxNumber, setCustomMaxNumber] = useState<number>(getInitialCustomMax());
+  const [favorites, setFavorites] = useState<HistoryItem[]>(getInitialFavorites());
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem('mathFlashcardsFavorites', JSON.stringify(favorites));
+    } catch (e) { console.error(e); }
+  }, [favorites]);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem('mathFlashcardsCustomMin', customMinNumber.toString());
+      window.localStorage.setItem('mathFlashcardsCustomMax', customMaxNumber.toString());
+    } catch (e) { console.error(e); }
+  }, [customMinNumber, customMaxNumber]);
+
   const [theme, setTheme] = useState<'light' | 'dark'>(getInitialTheme());
   const [autoDarkMode, setAutoDarkMode] = useState<boolean>(getInitialAutoDarkMode());
 
@@ -953,8 +1006,12 @@ function App() {
     setTimeout(() => { generateProblem(); setAnswerStatus(null); }, 1000);
   };
 
+  const [isBossActive, setIsBossActive] = useState(false);
+
   const generateProblem = useCallback(() => {
-    const { n1, n2, selectedOp } = generateRandomProblem(difficulty, allowedOperations, allowNegatives);
+    const isBoss = gameMode === 'endless' && questionsAnswered > 0 && (questionsAnswered % 10 === 0);
+    setIsBossActive(isBoss);
+    const { n1, n2, selectedOp } = generateRandomProblem(difficulty, allowedOperations, allowNegatives, customMinNumber, customMaxNumber, isBoss);
     setNum1(n1);
     setNum2(n2);
     setOperation(selectedOp);
@@ -972,7 +1029,7 @@ function App() {
       setMessage('');
     }
     inputRef.current?.focus();
-  }, [difficulty, isSpeedRunActive, timeLeft, allowedOperations, gameMode, questionsAnswered, questionLimit, customQuestionLimit, isHardcoreMode, allowNegatives]);
+  }, [difficulty, isSpeedRunActive, timeLeft, allowedOperations, gameMode, questionsAnswered, questionLimit, customQuestionLimit, isHardcoreMode, allowNegatives, customMinNumber, customMaxNumber]);
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -1560,8 +1617,18 @@ function App() {
             <option value="easy">Easy</option>
             <option value="medium">Medium</option>
             <option value="hard">Hard</option>
+            <option value="custom">Custom</option>
           </select>
         </div>
+
+        {difficulty === 'custom' && (
+          <div className="difficulty-selector" style={{display: 'flex', gap: '0.5rem', alignItems: 'center'}}>
+            <label>Min:</label>
+            <input type="number" value={customMinNumber} onChange={(e) => setCustomMinNumber(parseInt(e.target.value) || 1)} style={{width: '60px'}} disabled={isSpeedRunActive} />
+            <label>Max:</label>
+            <input type="number" value={customMaxNumber} onChange={(e) => setCustomMaxNumber(parseInt(e.target.value) || 10)} style={{width: '60px'}} disabled={isSpeedRunActive} />
+          </div>
+        )}
 
         <div className="difficulty-selector">
           <label htmlFor="accessibilityFontSize">Font Size:</label>
@@ -1766,6 +1833,7 @@ function App() {
       <div className={`flashcard flashcard-${flashcardSize} ${animationClass} ${mirrorMode ? 'mirror-mode' : ''}`} style={{color: flashcardTextColor || undefined}}>
 
         <div className="problem" style={{position: 'relative'}}>
+          {isBossActive && <div className="boss-indicator" style={{position: 'absolute', top: '-15px', right: '-15px', fontSize: '2rem', animation: 'shake 0.5s infinite'}} title="Boss Battle! Numbers are doubled.">👾</div>}
           {answerStatus && (
             <div className={`answer-feedback ${answerStatus}`} style={{ color: answerStatus === 'correct' ? correctColor : incorrectColor }}>
               {answerStatus === 'correct' ? correctIcon : '✗'}
@@ -1957,6 +2025,20 @@ function App() {
             })()}
 
             <div className="history-container">
+              {favorites.length > 0 && (
+                <div style={{ marginBottom: '1rem' }}>
+                  <h3 style={{margin: '0 0 0.5rem 0'}}>Favorites</h3>
+                  <ul className="history-list">
+                    {favorites.map((item, index) => (
+                      <li key={index} style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0.5rem', borderBottom: '1px solid #ccc'}}>
+                        <span>{item.num1} {item.operation} {item.num2} = {item.correctAnswer}</span>
+                        <button onClick={() => setFavorites(f => f.filter((_, i) => i !== index))} style={{background: 'transparent', border: 'none', cursor: 'pointer', fontSize: '1.2rem'}}>❌</button>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+
               <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem'}}>
                 <h3 style={{margin: 0}}>History</h3>
                 {history.length > 0 && (
@@ -1964,12 +2046,25 @@ function App() {
                 )}
               </div>
               <ul className="history-list">
-                {history.map((item, index) => (
-                  <li key={index} className={item.isCorrect ? 'history-correct' : 'history-incorrect'}>
-                    {item.num1} {item.operation} {item.num2} = {item.userAnswer}
-                    {!item.isCorrect && <span> (Correct: {item.correctAnswer})</span>}
+                {history.slice().reverse().map((item, index) => {
+                  const isFav = favorites.some(f => f.num1 === item.num1 && f.num2 === item.num2 && f.operation === item.operation);
+                  return (
+                  <li key={index} className={item.isCorrect ? 'history-correct' : 'history-incorrect'} style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center'}}>
+                    <span>
+                      {item.num1} {item.operation} {item.num2} = {item.userAnswer || '?'}
+                      {!item.isCorrect && <span> (Correct: {item.correctAnswer})</span>}
+                    </span>
+                    <button onClick={() => {
+                      if (isFav) {
+                        setFavorites(f => f.filter(fav => !(fav.num1 === item.num1 && fav.num2 === item.num2 && fav.operation === item.operation)));
+                      } else {
+                        setFavorites(f => [...f, item]);
+                      }
+                    }} style={{background: 'transparent', border: 'none', cursor: 'pointer', opacity: isFav ? 1 : 0.5}} title={isFav ? "Unfavorite" : "Favorite"}>
+                      ⭐
+                    </button>
                   </li>
-                ))}
+                )})}
               </ul>
             </div>
 
