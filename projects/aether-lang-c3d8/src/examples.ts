@@ -991,6 +991,52 @@ let e = Mul (Add (Mul (Lit 1) (Lit 7)) (Mul (Lit 0) (Lit 9)))
 (render e, render (simp e), eval (simp e))`,
   },
   {
+    id: 'case-of-case',
+    title: 'Case-of-case (commuting conversions)',
+    blurb: 'Open the Optimizer tab: watch an Option and two records vanish as the eliminator slides inside.',
+    visual: false,
+    code: `// Aether 21.0 — CASE-OF-CASE / commuting conversions
+// (Peyton Jones & Santos, "A transformation-based optimiser for Haskell", 1998).
+//
+// A strict eliminator — a 'match' scrutinee, a '.field' projection, a strict
+// 'binop'/'unop' operand — sitting on an 'if'/'match' PRODUCER is pushed inward
+// into the producer's branches. Each branch then meets the eliminator
+// *statically*, so the existing known-match / field-projection / fold rules fire
+// on it and the intermediate Option, record or boxed value is NEVER BUILT.
+//
+// The eliminator is strict in its hole, so the chosen branch runs either way and
+// the eliminator still runs exactly once — the move alone never adds a VM step,
+// and the reductions it unlocks only remove them. It fires only when a branch is
+// thereby exposed to a redex (so it never just bloats the core), and it freshens
+// any 'match'-arm binder it would otherwise capture. Because it emits ordinary
+// core, the VM, the JavaScript backend AND the WebAssembly backend all run the
+// result — and the equivalence checks re-prove the answer never changed.
+//
+// Open the "Optimizer" tab: the rewrite table lists 'case-of-case', a new section
+// names each eliminator it pushed in, and "Measure VM steps" shows the saving.
+// Flip the core view to "after": classify's whole body collapses to plain
+// arithmetic on its argument — no Option, no records, no dispatch left.
+
+type Opt a = None | Some a in
+
+// 'classify' is opaque in its parameters, so the producers below survive to the
+// optimizer instead of being constant-folded away up front.
+let classify = fn flag -> fn x ->
+  // (1) a 'match' on an 'if' that produces an Option
+  let tagged = match (if flag then Some x else None) with
+    | None   -> 0
+    | Some y -> y + 1 in
+  // (2) a '.field' projection on an 'if' that produces a record
+  let picked = (if x > 0 then { lo = 0, hi = x } else { lo = x, hi = 0 }).hi in
+  // (3) a 'binop' on an 'if' whose branches are literals -> folds to constants
+  let scaled = (if flag then 5 else 9) * 10 in
+  tagged + picked + scaled in
+
+( classify true 41      // 42 + 41 + 50 = 133
+, classify false 41     // 0  + 41 + 90 = 131
+, classify true 0 )     // 1  + 0  + 50 = 51`,
+  },
+  {
     id: 'termination',
     title: 'Size-change termination',
     blurb: 'Open the Termination tab: see recursive functions PROVEN to halt — then watch CSE share them.',

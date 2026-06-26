@@ -472,6 +472,36 @@ export default function OptimizerPanel({ code }: Props) {
         </div>
       )}
 
+      {stats.commutes.length > 0 && (
+        <div className="opt-passes">
+          <h4>Case-of-case — commuting conversions (Aether 21.0)</h4>
+          <p className="panel-note" style={{ marginTop: 0 }}>
+            A strict eliminator (a <code>match</code> scrutinee, a <code>.field</code> projection, a{' '}
+            <code>binop</code>/<code>unop</code> operand) sitting on an <code>if</code>/<code>match</code>{' '}
+            <em>producer</em> is pushed inward into the producer's branches, so each branch meets the
+            eliminator <em>statically</em> — the intermediate constructor, record or boxed value is never
+            built. It fires only when a branch is thereby <em>exposed to a redex</em>, so a known-match,
+            field-projection or fold always follows and the VM step count can only fall
+            (Peyton&nbsp;Jones &amp; Santos 1998):
+          </p>
+          <table className="opt-table">
+            <tbody>
+              {stats.commutes.map((c, i) => (
+                <tr key={i}>
+                  <td className="opt-pass-name">
+                    <code>{c.frame}</code>
+                  </td>
+                  <td className="opt-pass-desc">
+                    pushed into a <code>{c.producer}</code> ({c.branches} branch
+                    {c.branches === 1 ? '' : 'es'}, {c.exposed} exposed a redex)
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
       {stats.decisionTrees.length > 0 && <DecisionTrees trees={stats.decisionTrees} />}
 
       {stats.pureFns.length > 0 && (

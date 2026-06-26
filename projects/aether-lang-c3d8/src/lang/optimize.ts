@@ -92,6 +92,9 @@ export interface OptimizeStats {
   /** one entry per function the dead-argument-elimination pass dropped a parameter
    *  from — one whose value never reaches the result (Aether 20.0). */
   deadParams: { name: string; dropped: string[]; recursive: boolean }[]
+  /** one entry per eliminator the case-of-case pass pushed into an `if`/`match`
+   *  producer's branches (Aether 21.0) — for the Optimizer panel. */
+  commutes: { frame: string; producer: string; branches: number; exposed: number }[]
   /** decision-tree compilation statistics (Aether 12.0) */
   dt: DtStats
   /** one entry per `match` rewritten into a decision tree (for the panel) */
@@ -190,6 +193,12 @@ let FLOATINS: { name: string; value: string; into: string }[] = []
 // panel. Reset per run.
 let DEADPARAMS: { name: string; dropped: string[]; recursive: boolean }[] = []
 
+// One entry per eliminator the case-of-case pass pushed into an `if`/`match`
+// producer this run (Aether 21.0). Module-level for the same reason as
+// `freshCounter` — optimization is synchronous and single-shot — and surfaced in
+// the Optimizer panel. Reset per run.
+let COMMUTES: { frame: string; producer: string; branches: number; exposed: number }[] = []
+
 // Whether the multi-use call-site inliner is active. It melts *source-level*
 // abstraction, so it runs in the main optimization phase but is switched off for
 // the post-decision-tree cleanup fixpoint — that phase is reserved for copy-
@@ -220,6 +229,7 @@ export function optimizeCore(root: Expr): OptimizeResult {
   SATS = []
   FLOATINS = []
   DEADPARAMS = []
+  COMMUTES = []
   ALLOW_FN_INLINE = true
   const passes: Record<string, number> = {}
   const bump = (name: string): void => {
@@ -325,6 +335,7 @@ export function optimizeCore(root: Expr): OptimizeResult {
       satTransforms: SATS,
       floatIns: FLOATINS,
       deadParams: DEADPARAMS,
+      commutes: COMMUTES,
       dt,
       decisionTrees,
       termination: TERMINATION,
@@ -389,11 +400,11 @@ function step(e: Expr, bump: Bump): Expr {
     }
     case 'binop': {
       const n = { ...e, left: rec(e.left), right: rec(e.right) }
-      return reduceBinop(n, bump) ?? tryCse(n, bump) ?? n
+      return reduceBinop(n, bump) ?? commute(n, bump) ?? tryCse(n, bump) ?? n
     }
     case 'unop': {
       const n = { ...e, operand: rec(e.operand) }
-      return reduceUnop(n, bump) ?? tryCse(n, bump) ?? n
+      return reduceUnop(n, bump) ?? commute(n, bump) ?? tryCse(n, bump) ?? n
     }
     case 'seq': {
       const n = { ...e, first: rec(e.first), rest: rec(e.rest) }
@@ -417,7 +428,12 @@ function step(e: Expr, bump: Bump): Expr {
           body: rec(c.body),
         })),
       }
-      return reduceMatch(n as Extract<Expr, { kind: 'match' }>, bump) ?? tryCse(n, bump) ?? n
+      return (
+        reduceMatch(n as Extract<Expr, { kind: 'match' }>, bump) ??
+        commute(n, bump) ??
+        tryCse(n, bump) ??
+        n
+      )
     }
     case 'record': {
       const n = { ...e, fields: e.fields.map((f) => ({ label: f.label, value: rec(f.value) })) }
@@ -425,7 +441,7 @@ function step(e: Expr, bump: Bump): Expr {
     }
     case 'field': {
       const n = { ...e, record: rec(e.record) }
-      return reduceField(n, bump) ?? tryCse(n, bump) ?? n
+      return reduceField(n, bump) ?? commute(n, bump) ?? tryCse(n, bump) ?? n
     }
     case 'recordUpdate': {
       const n = {
@@ -589,7 +605,85 @@ function reduceLet(e: Extract<Expr, { kind: 'let' }>, bump: Bump): Expr | null {
     }
   }
 
+  // Linear inlining of a single-use *producer* (Aether 21.1). The value inliner
+  // above copies a single-use *value*; this inlines a single-use, pure, *non-value*
+  // binding (an `if`/`match`/projection — anything that does work) into its sole
+  // occurrence, *provided that occurrence is not under a lambda* (so it is evaluated
+  // at most as often as the binding was — never more, so VM steps can only fall).
+  // It exists to feed case-of-case: `let z = if c then a else b in <strict use of z>`
+  // becomes the eliminator sitting directly on the producer, which the commuting
+  // pass then distributes into the branches (otherwise the `let` hides the producer
+  // and the abstraction never melts).
+  if (uses === 1 && isPure(e.value) && !isValue(e.value) && !occursUnderLambda(e.name, e.body)) {
+    bump('inline-linear')
+    return subst(e.name, e.value, e.body)
+  }
+
   return null
+}
+
+// Does a *free* occurrence of `name` in `e` sit under a lambda (so it could be
+// evaluated more than once, once per call)? Used to keep linear inlining of a
+// single-use non-value binding from turning one evaluation into many. Shadowing
+// binders (a nested λ/let/letrec/match arm that rebinds `name`) cut the search.
+function occursUnderLambda(name: string, e: Expr): boolean {
+  const go = (x: Expr, under: boolean): boolean => {
+    switch (x.kind) {
+      case 'var':
+        return under && x.name === name
+      case 'int':
+      case 'float':
+      case 'bool':
+      case 'str':
+      case 'unit':
+        return false
+      case 'lambda':
+        return x.param === name ? false : go(x.body, true)
+      case 'app':
+        return go(x.fn, under) || go(x.arg, under)
+      case 'let': {
+        const valueShadowed = x.recursive && x.name === name
+        if (!valueShadowed && go(x.value, under)) return true
+        return x.name === name ? false : go(x.body, under)
+      }
+      case 'letrec':
+        if (x.bindings.some((b) => b.name === name)) return false
+        return x.bindings.some((b) => go(b.value, under)) || go(x.body, under)
+      case 'if':
+        return go(x.cond, under) || go(x.then, under) || go(x.else, under)
+      case 'binop':
+        return go(x.left, under) || go(x.right, under)
+      case 'unop':
+        return go(x.operand, under)
+      case 'seq':
+        return go(x.first, under) || go(x.rest, under)
+      case 'list':
+      case 'tuple':
+        return x.elements.some((el) => go(el, under))
+      case 'record':
+        return x.fields.some((f) => go(f.value, under))
+      case 'field':
+        return go(x.record, under)
+      case 'recordUpdate':
+        return go(x.record, under) || x.fields.some((f) => go(f.value, under))
+      case 'match': {
+        if (go(x.scrutinee, under)) return true
+        return x.cases.some((c) => {
+          const bound = new Set<string>()
+          patternVars(c.pattern, bound)
+          if (bound.has(name)) return false
+          return (c.guard ? go(c.guard, under) : false) || go(c.body, under)
+        })
+      }
+      case 'typedecl':
+        return go(x.body, under)
+      case 'classdecl':
+        return go(x.body, under)
+      case 'instancedecl':
+        return x.methods.some((m) => go(m.value, under)) || go(x.body, under)
+    }
+  }
+  return go(e, false)
 }
 
 // ---------------------------------------------------------------------------
@@ -1360,6 +1454,172 @@ function reduceMatch(e: Extract<Expr, { kind: 'match' }>, bump: Bump): Expr | nu
     return { ...e, cases: survivors }
   }
   return null
+}
+
+// ---------------------------------------------------------------------------
+// Case-of-case — commuting conversions (Aether 21.0)
+//
+// Push a *strict eliminator* (a `match` scrutinee, a record `.field`
+// projection, a strict `binop`/`unop` operand) inward through an `if`/`match`
+// *producer* sitting in its evaluated position:
+//
+//     match (if c then Some x else None) with         if c then x + 1   (Some x reduced)
+//       | None   -> 0                          ⇒            else 0       (None    reduced)
+//       | Some y -> y + 1
+//
+// The eliminator is *strict* in its hole, so the producer's chosen branch is
+// evaluated either way and the eliminator still runs exactly once — the VM-step
+// count is unchanged by the move itself. But every branch now meets the
+// eliminator *statically*, so the existing known-match / field-projection /
+// const-fold / algebra rules fire on it and the intermediate constructor,
+// record or boxed value is never built at all (Peyton Jones & Santos, "A
+// transformation-based optimiser for Haskell", 1998 — the case-of-case law).
+//
+// Two guards keep it sound and profitable:
+//   • exposure — it fires only when ≥ 1 producer branch, placed in the hole,
+//     immediately reduces via the frame's own local rule, so duplicating the
+//     eliminator into the branches always buys a reduction (and the result
+//     converges: a reduced branch sheds its producer, a non-reduced one keeps a
+//     plain eliminator whose hole is no longer a producer).
+//   • capture-avoidance — a `match` producer whose arm binds a variable the
+//     eliminator's other parts mention has that binder freshened before the
+//     eliminator is moved under the arm (the same freshening `subst` uses).
+// Effects are never duplicated or reordered: the eliminator's non-hole parts are
+// inert (`match` arms run only when chosen) or proven values (a `binop`'s
+// sibling operand), and a short-circuit `&&`/`||` only ever hosts the producer
+// in its always-evaluated left operand.
+
+const NOP_BUMP: Bump = () => {}
+
+interface ElimFrame {
+  /** the strict, evaluated sub-expression that may hold a producer */
+  hole: Expr
+  /** rebuild the eliminator with `b` in the hole */
+  rebuild: (b: Expr) => Expr
+  /** the eliminator's own local reducer — the redex we want each branch to hit */
+  reduce: (x: Expr) => Expr | null
+  /** free variables of the eliminator's *other* parts (capture set) */
+  fv: Set<string>
+  /** a short label for the Optimizer panel */
+  label: string
+}
+
+/** View `e` as a one-hole strict eliminator frame, or null if it isn't one. */
+function elimFrame(e: Expr): ElimFrame | null {
+  switch (e.kind) {
+    case 'match':
+      return {
+        hole: e.scrutinee,
+        rebuild: (b) => ({ ...e, scrutinee: b }),
+        reduce: (x) => reduceMatch(x as Extract<Expr, { kind: 'match' }>, NOP_BUMP),
+        fv: freeVars({ ...e, scrutinee: { kind: 'unit', span: e.span } }),
+        label: 'match',
+      }
+    case 'field':
+      return {
+        hole: e.record,
+        rebuild: (b) => ({ ...e, record: b }),
+        reduce: (x) => reduceField(x as Extract<Expr, { kind: 'field' }>, NOP_BUMP),
+        fv: new Set(),
+        label: `.${e.label}`,
+      }
+    case 'unop':
+      return {
+        hole: e.operand,
+        rebuild: (b) => ({ ...e, operand: b }),
+        reduce: (x) => reduceUnop(x as Extract<Expr, { kind: 'unop' }>, NOP_BUMP),
+        fv: new Set(),
+        label: `${e.op}_`,
+      }
+    case 'binop': {
+      // Pick a producer-holding operand whose *sibling* operand is a value, so
+      // moving the op under the producer duplicates no work and reorders no
+      // effect. For the short-circuit ops `&&`/`||` only the left operand is
+      // strict, so only it may host the producer.
+      const isProd = (x: Expr): boolean => x.kind === 'if' || x.kind === 'match'
+      const rightStrict = e.op !== '&&' && e.op !== '||'
+      if (isProd(e.left) && isValue(e.right)) {
+        return {
+          hole: e.left,
+          rebuild: (b) => ({ ...e, left: b }),
+          reduce: (x) => reduceBinop(x as Extract<Expr, { kind: 'binop' }>, NOP_BUMP),
+          fv: freeVars(e.right),
+          label: `_${e.op}`,
+        }
+      }
+      if (isProd(e.right) && rightStrict && isValue(e.left)) {
+        return {
+          hole: e.right,
+          rebuild: (b) => ({ ...e, right: b }),
+          reduce: (x) => reduceBinop(x as Extract<Expr, { kind: 'binop' }>, NOP_BUMP),
+          fv: freeVars(e.left),
+          label: `${e.op}_`,
+        }
+      }
+      return null
+    }
+    default:
+      return null
+  }
+}
+
+function commute(e: Expr, bump: Bump): Expr | null {
+  const frame = elimFrame(e)
+  if (!frame) return null
+  const prod = frame.hole
+  if (prod.kind !== 'if' && prod.kind !== 'match') return null
+  const branches = prod.kind === 'if' ? [prod.then, prod.else] : prod.cases.map((c) => c.body)
+  if (branches.length === 0) return null
+
+  // exposure gate: at least one branch, in the hole, must immediately reduce.
+  let exposed = 0
+  for (const b of branches) {
+    if (frame.reduce(frame.rebuild(b)) !== null) exposed++
+  }
+  if (exposed === 0) return null
+
+  const wrap = (b: Expr): Expr => cloneExpr(frame.rebuild(b))
+  const out = distributeProducer(prod, frame.fv, wrap)
+  bump('case-of-case')
+  COMMUTES.push({ frame: frame.label, producer: prod.kind, branches: branches.length, exposed })
+  return out
+}
+
+/** Rebuild a producer (`if`/`match`) with `wrap` applied to each branch body,
+ *  freshening any `match`-arm binder that would capture a free var of the
+ *  eliminator (`fv`) being moved under it. */
+function distributeProducer(prod: Expr, fv: Set<string>, wrap: (b: Expr) => Expr): Expr {
+  if (prod.kind === 'if') {
+    return {
+      kind: 'if',
+      cond: prod.cond,
+      then: wrap(prod.then),
+      else: wrap(prod.else),
+      span: prod.span,
+    }
+  }
+  if (prod.kind === 'match') {
+    return {
+      ...prod,
+      cases: prod.cases.map((c) => {
+        let pattern = c.pattern
+        let guard = c.guard
+        let body = c.body
+        const bound = new Set<string>()
+        patternVars(c.pattern, bound)
+        for (const b of bound) {
+          if (fv.has(b)) {
+            const fresh = gensym(b)
+            pattern = renamePattern(b, fresh, pattern)
+            if (guard) guard = rename(b, fresh, guard)
+            body = rename(b, fresh, body)
+          }
+        }
+        return { pattern, guard, body: wrap(body) }
+      }),
+    }
+  }
+  return prod
 }
 
 // Is `e` a value whose top constructor we can read off statically?
