@@ -22,7 +22,10 @@ import {
   nnueSave,
   nnueLoad,
   nnueClear,
+  verifyQuantization,
   type NnueWeights,
+  type QuantNet,
+  type QuantReport,
   type Correlation,
   type Example,
   type NnueMeta,
@@ -49,6 +52,11 @@ interface MatchState {
   wins: number
   draws: number
   losses: number
+}
+
+interface QuantState {
+  q: QuantNet
+  report: QuantReport
 }
 
 // ---- tiny inline charts ----
@@ -126,6 +134,8 @@ export default function NnueLab() {
   const [selfTest, setSelfTest] = useState<SelfTest | null>(null)
   const [savedMeta, setSavedMeta] = useState<NnueMeta | null>(null)
   const [match, setMatch] = useState<MatchState | null>(null)
+  const [quant, setQuant] = useState<QuantState | null>(null)
+  const [quantMatch, setQuantMatch] = useState<MatchState | null>(null)
   const [status, setStatus] = useState('')
   const [hasWeights, setHasWeights] = useState(false)
 
@@ -149,6 +159,8 @@ export default function NnueLab() {
     setCorr(null)
     setFinalLoss(null)
     setSelfTest(null)
+    setQuant(null)
+    setQuantMatch(null)
     setStatus('Sampling positions by self-play and labelling with the classical eval…')
     await sleep(20)
 
@@ -238,6 +250,8 @@ export default function NnueLab() {
     setHasWeights(true)
     setStatus(`Loaded saved network (H=${w.h}, R²=${r.meta.r2.toFixed(3)}). Re-run the self-tests or a match below.`)
     setSelfTest(runSelfTests(w))
+    setQuant(null)
+    setQuantMatch(null)
   }, [])
 
   const clear = useCallback(async () => {
@@ -286,7 +300,70 @@ export default function NnueLab() {
     setMatch({ ...ms })
   }, [])
 
+  // Quantize the current network to integers and run the full verification sweep
+  // (bit-exact incremental accumulator + cp-error vs float + 1-ply move agreement).
+  const runQuantize = useCallback(() => {
+    const w = weightsRef.current
+    if (!w) return
+    setStatus('Quantizing to int16/int8 and verifying against the float net…')
+    setQuantMatch(null)
+    // Defer so the status paints before the (synchronous) sweep runs.
+    setTimeout(() => {
+      const { q, report } = verifyQuantization(w, { games: 20, plies: 34, seed: 0x5eed })
+      setQuant({ q, report })
+      setStatus(
+        `Quantized H=${w.h}: mean ${report.evalMeanErr.toFixed(1)}cp / max ${report.evalMaxErr}cp off the float net, ` +
+          `${((100 * report.moveAgree) / Math.max(1, report.moveTotal)).toFixed(1)}% move agreement, ` +
+          `${q.diag.compression.toFixed(2)}× smaller.`,
+      )
+    }, 20)
+  }, [])
+
+  // Head-to-head: the float net vs its own quantized self, same search and budget.
+  // A score near 4/8 means quantization cost essentially nothing in playing strength.
+  const runQuantMatch = useCallback(async () => {
+    const w = weightsRef.current
+    const qn = quant?.q
+    if (!w || !qn) return
+    const games = 8
+    const nodes = 8000
+    const ms: MatchState = { running: true, done: 0, total: games, wins: 0, draws: 0, losses: 0 }
+    setQuantMatch({ ...ms })
+    const sQ = new Searcher()
+    sQ.setQuantEvaluator(qn)
+    const sF = new Searcher()
+    sF.setEvaluator(w)
+    for (let game = 0; game < games; game++) {
+      const quantWhite = game % 2 === 0
+      const g = new Game(START_FEN)
+      for (let ply = 0; ply < 120 && g.result() === 'playing'; ply++) {
+        const whiteToMove = g.pos.turn === 0
+        const useQuant = whiteToMove === quantWhite
+        const s = useQuant ? sQ : sF
+        const r = s.search(g.pos, { maxDepth: 10, maxTime: 0, maxNodes: nodes, history: g.keyHistory() })
+        if (!r.pv[0]) break
+        g.apply(r.pv[0])
+        if (ply % 4 === 0) await sleep(0)
+      }
+      const res = g.result()
+      if (res === 'checkmate') {
+        const loserWhite = g.pos.turn === 0
+        const quantLost = loserWhite === quantWhite
+        if (quantLost) ms.losses++
+        else ms.wins++
+      } else {
+        ms.draws++
+      }
+      ms.done = game + 1
+      setQuantMatch({ ...ms })
+      await sleep(0)
+    }
+    ms.running = false
+    setQuantMatch({ ...ms })
+  }, [quant])
+
   const score = match ? (match.wins + match.draws / 2).toFixed(1) : '0'
+  const qScore = quantMatch ? (quantMatch.wins + quantMatch.draws / 2).toFixed(1) : '0'
 
   return (
     <div className="lab">
@@ -461,6 +538,100 @@ export default function NnueLab() {
               NNUE: {match.wins}W · {match.draws}D · {match.losses}L
             </span>
           </div>
+        )}
+      </div>
+
+      <div className="nnue-match nnue-quant">
+        <h4>Quantization — the int16/int8 network that real engines ship</h4>
+        <p className="nnue-empty">
+          A float forward pass is the slow shape every engine sheds before release. The speed trick that made NNUE
+          practical is doing the whole evaluation in <strong>small integers</strong>: the feature transformer in{' '}
+          <strong>int16</strong>, its clipped-ReLU output as a <strong>uint8</strong>, and the output layer as an{' '}
+          <strong>int8·uint8</strong> dot product accumulated in int32 — exactly what a CPU's SIMD lanes (VNNI) are
+          built to chew through. This quantizes the trained net with a per-layer fixed-point scale, keeps the
+          accumulator incrementally updatable (addition is exact in integers, so refresh stays bit-for-bit), and proves
+          the integer eval tracks the float one to within a few centipawns.
+        </p>
+        <button className="btn primary" onClick={runQuantize} disabled={!hasWeights || running}>
+          Quantize &amp; verify
+        </button>
+        {!hasWeights && <span className="nnue-saved">train or load a network first</span>}
+
+        {quant && (
+          <>
+            <div className="nnue-quant-stats">
+              <div className="qstat">
+                <span className="big">{quant.q.diag.compression.toFixed(2)}×</span>
+                <span className="lbl">smaller ({(quant.q.diag.floatBytes / 1024).toFixed(0)}→{(quant.q.diag.quantBytes / 1024).toFixed(0)} KB)</span>
+              </div>
+              <div className="qstat">
+                <span className="big">{quant.report.evalMeanErr.toFixed(1)}</span>
+                <span className="lbl">mean cp error</span>
+              </div>
+              <div className="qstat">
+                <span className="big">{quant.report.evalMaxErr}</span>
+                <span className="lbl">max cp error</span>
+              </div>
+              <div className="qstat">
+                <span className="big">{((100 * quant.report.moveAgree) / Math.max(1, quant.report.moveTotal)).toFixed(1)}%</span>
+                <span className="lbl">1-ply move agreement</span>
+              </div>
+            </div>
+
+            <table className="lab-table">
+              <thead>
+                <tr>
+                  <th>Quantization check</th>
+                  <th>Result</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr className={`lab-row ${quant.report.accMaxDiff === 0 && quant.report.accMismatch === 0 ? 'pass' : 'fail'}`}>
+                  <td>Integer incremental accumulator == full integer refresh</td>
+                  <td>
+                    max Δ {quant.report.accMaxDiff}, {quant.report.accMismatch} eval mismatches over{' '}
+                    {quant.report.positions} positions
+                  </td>
+                  <td className="lab-status">{quant.report.accMaxDiff === 0 && quant.report.accMismatch === 0 ? '✓' : '✗'}</td>
+                </tr>
+                <tr className={`lab-row ${quant.report.evalMaxErr <= quant.report.predictedMaxErr ? 'pass' : 'fail'}`}>
+                  <td>Measured error within the a-priori quantization bound</td>
+                  <td>
+                    max {quant.report.evalMaxErr} cp ≤ predicted {quant.report.predictedMaxErr} cp; RMSE{' '}
+                    {quant.report.evalRmse.toFixed(1)} cp
+                  </td>
+                  <td className="lab-status">{quant.report.evalMaxErr <= quant.report.predictedMaxErr ? '✓' : '✗'}</td>
+                </tr>
+                <tr className={`lab-row ${quant.q.diag.w1Clamped === 0 && quant.q.diag.w2Clamped === 0 ? 'pass' : 'fail'}`}>
+                  <td>Weights fit their integer types (no saturation)</td>
+                  <td>
+                    QA={quant.q.qa}, QB={quant.q.qb}; W1∈int16 [{quant.q.diag.w1Range[0]}, {quant.q.diag.w1Range[1]}],
+                    W2∈int8 [{quant.q.diag.w2Range[0]}, {quant.q.diag.w2Range[1]}]
+                  </td>
+                  <td className="lab-status">{quant.q.diag.w1Clamped === 0 && quant.q.diag.w2Clamped === 0 ? '✓' : '✗'}</td>
+                </tr>
+              </tbody>
+            </table>
+
+            <p className="nnue-empty">
+              The float net and its quantized self, on the same search at a fixed node budget — a score near 4/8 means
+              quantization cost essentially nothing in strength.
+            </p>
+            <button className="btn primary" onClick={runQuantMatch} disabled={quantMatch?.running ?? false}>
+              {quantMatch?.running ? `Playing… ${quantMatch.done}/${quantMatch.total}` : 'Play int8 vs float (8 games)'}
+            </button>
+            {quantMatch && (
+              <div className="nnue-match-result">
+                <span className="big">
+                  {qScore}/{quantMatch.total}
+                </span>
+                <span className="lbl">
+                  int8: {quantMatch.wins}W · {quantMatch.draws}D · {quantMatch.losses}L
+                </span>
+              </div>
+            )}
+          </>
         )}
       </div>
     </div>

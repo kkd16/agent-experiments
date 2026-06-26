@@ -57,7 +57,7 @@ export const OUT_SCALE = 600
 // tablebase mate scores don't blow up the regression target.
 export const LABEL_CLAMP = 1800
 // Hard clamp on the eval the net is allowed to emit, well inside the mate window.
-const EVAL_CLAMP = 3000
+export const EVAL_CLAMP = 3000
 
 export interface NnueWeights {
   h: number // hidden width H
@@ -68,6 +68,16 @@ export interface NnueWeights {
 }
 
 export const FEATURES = 768 // 12 piece-classes * 64 squares
+
+// The structural contract the search relies on: a thing that can be refreshed from
+// a position, folded forward/back across a move, and read as a stm-relative score.
+// Both the float `Accumulator` (below) and the integer `QuantAccumulator`
+// (`nnue-quant.ts`) satisfy it, so the search can drive either through one field.
+export interface EvalAccumulator {
+  refresh(p: Position): void
+  applyMove(p: Position, m: Move, sign: number): void
+  evalScore(stm: Color): number
+}
 
 // 0x88 square -> 0..63 (rank*8 + file).
 export function to64(s: number): number {
