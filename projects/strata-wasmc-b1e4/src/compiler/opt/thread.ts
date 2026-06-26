@@ -1,36 +1,42 @@
-import type { IRFunc, Operand, Term } from '../ir/ir';
+import type { ConstNum, IRFunc, IRType, Operand, Term } from '../ir/ir';
 import { succOfTerm } from '../ir/cfg';
+import { foldIntBinCmp } from './optimize';
 
 // Jump threading
 // ==============
 //
-// When a block `B` is a pure control-flow *merge* — only phi nodes, no
-// instructions — and it ends in `condbr c, T, F` where `c` is one of `B`'s own
-// phis, then on any incoming edge whose value for that phi is a **constant** the
-// branch's outcome is already decided. We route that predecessor straight to the
-// taken successor (`T` when the constant is non-zero, else `F`), skipping the
-// test entirely. When *every* predecessor is decided this way, `B` itself
-// evaporates.
+// When a block `B` is a control-flow *merge* whose terminator `condbr c, T, F`
+// branches on a value that is **decided per-incoming-edge**, we route each such
+// predecessor straight to the successor it would have taken, skipping the test.
+// When *every* predecessor is decided this way, `B` itself evaporates.
 //
-// This is the optimization that collapses materialized booleans and
-// short-circuit logic. `let t = a ? true : false; if (t) { … }` and
-// `if (p || q) { … }` both lower to a boolean phi feeding a branch; threading
-// turns the second test into a direct jump with no branch at all — and the dead
-// arms the fold exposes are then swept by SCCP/DCE/simplify-cfg. It generalizes
-// `simplify-cfg`'s branch-to-branch rule (which only threads *empty unconditional*
-// forwarders) to *conditional* merges whose condition is known per edge.
+// The condition `c` need not be a bare phi. `B` may carry a small **pure foldable
+// expression cone** — `ibin`/`icmp` instructions whose operands are constants,
+// `B`'s own phis, or earlier cone results — rooted at `c`. On an incoming edge
+// where every phi the cone reads is a constant, the cone folds (with SCCP's exact
+// wasm-semantics evaluators, shared as `foldIntBinCmp`) to a known `c`, so the
+// branch outcome is settled for that edge. This is the path-sensitive partner to
+// SCCP: SCCP folds a branch only when `c` is constant on **every** path; threading
+// acts when it is constant on **one** — the steady state of a materialized boolean
+// (`let hot=false; if (p()) hot=true; if (hot) …`), a short-circuit chain
+// (`if (p||q) …`), or now a *comparison/arithmetic over* such a value
+// (`if (flag == 0) …`, `if ((mask & 1) != 0) …`) that earlier rounds left as a
+// per-edge-constant cone feeding the branch.
 //
 // ## SSA safety
 //
-// Because `B` carries no instructions, the only values it defines are its phis,
-// and we only ever rewire a predecessor `P` (and translate `T`/`F`'s `pred = B`
-// phi incomings to the value seen from `P`). That is sound precisely when a
-// `B`-phi is used *only* by `B`'s terminator and by `pred = B` phi incomings in
-// `B`'s successors — i.e. never read by an instruction that a threaded edge would
-// now bypass. We verify that before touching `B`; if any other use exists we
-// leave `B` alone and let the rest of the pipeline handle it. The differential
-// oracle (interpreter ≡ wasm ≡ from-scratch VM, at every opt level) proves the
-// rest.
+// `B` may define values only through its phis and its cone instructions, and we
+// only ever rewire a predecessor `P` (translating `T`/`F`'s `pred = B` phi
+// incomings to the value seen from `P`). That is sound precisely when (a) every
+// instruction in `B` is a pure foldable `ibin`/`icmp` over constants / `B`-phis /
+// earlier cone results — so bypassing `B` re-computes nothing observable — and (b)
+// each value `B` defines is used *only* by `B`'s own cone, by `B`'s terminator, or,
+// for a **phi** result, as a `pred = B` incoming in `B`'s successors. A cone result
+// may never escape `B` (it cannot be materialized on a threaded edge), and no
+// instruction outside `B` may read any `B` value. We verify exactly that before
+// touching `B`; otherwise we decline. The triple-differential oracle (the reference
+// interpreter, V8's WebAssembly, and the project's from-scratch wasm VM, all
+// agreeing at every opt level) is the proof that the rewiring is sound.
 
 function cloneOperand(o: Operand): Operand {
   return o.tag === 'const' ? { tag: 'const', ty: o.ty, num: o.num } : { tag: 'val', id: o.id };
@@ -60,35 +66,53 @@ export function jumpThread(fn: IRFunc): number {
 
     for (const B of fn.blocks) {
       if (B.id === fn.entry) continue;
-      if (B.insts.length !== 0) continue; // only pure merge blocks
       if (B.term.op !== 'condbr') continue;
       const cond = B.term.cond;
       if (cond.tag !== 'val') continue; // a constant condition is SCCP/simplify-cfg's job
-      const cPhi = B.phis.find((p) => p.res === cond.id);
-      if (!cPhi || cPhi.ty !== 'i32') continue; // condition must be one of B's i32 phis
+      const cId = cond.id;
       const T = B.term.t;
       const F = B.term.f;
-      if (T === B.id || F === B.id) continue; // never thread into B itself
+      if (T === B.id || F === B.id || T === F) continue; // never thread into B itself / degenerate
 
-      // Safety: every value B defines (its phis) may only be used by B's own
-      // terminator condition and by `pred = B` phi incomings in T/F. Any other
-      // use — an instruction, a ret/condbr in another block, or an incoming on a
-      // different edge — would observe a value a threaded edge no longer produces.
-      const bIds = new Set(B.phis.map((p) => p.res));
+      // `B`'s condition cone: every instruction must be a pure foldable `ibin`/`icmp`
+      // over constants, `B`-phis, or earlier cone results — nothing else (no side
+      // effects, no loads, no external operands). `c` must name a phi or a cone result.
+      const bPhiIds = new Set<number>(B.phis.map((p) => p.res));
+      const bInstIds = new Set<number>();
+      for (const inst of B.insts) if (inst.res !== null) bInstIds.add(inst.res);
+      let coneOk = true;
+      for (const inst of B.insts) {
+        if ((inst.kind !== 'ibin' && inst.kind !== 'icmp') || inst.res === null) { coneOk = false; break; }
+        for (const a of inst.args) {
+          if (a.tag === 'const') continue;
+          if (!bPhiIds.has(a.id) && !bInstIds.has(a.id)) { coneOk = false; break; }
+        }
+        if (!coneOk) break;
+      }
+      if (!coneOk) continue;
+      if (!bPhiIds.has(cId) && !bInstIds.has(cId)) continue; // condition is external — can't fold per-edge
+
+      // Safety: every value `B` defines may be used only by `B`'s own cone, by `B`'s
+      // terminator condition, or — for a *phi* — as a `pred = B` incoming in T/F. A
+      // cone result must never appear outside `B`.
+      const bIds = new Set<number>([...bPhiIds, ...bInstIds]);
       let safe = true;
       for (const X of fn.blocks) {
-        for (const inst of X.insts) {
-          for (const a of inst.args) if (a.tag === 'val' && bIds.has(a.id)) { safe = false; break; }
+        if (X.id !== B.id) {
+          for (const inst of X.insts) {
+            for (const a of inst.args) if (a.tag === 'val' && bIds.has(a.id)) { safe = false; break; }
+            if (!safe) break;
+          }
           if (!safe) break;
+          const t = X.term;
+          if (t.op === 'condbr' && t.cond.tag === 'val' && bIds.has(t.cond.id)) { safe = false; break; }
+          if (t.op === 'ret' && t.value && t.value.tag === 'val' && bIds.has(t.value.id)) { safe = false; break; }
         }
-        if (!safe) break;
-        const t = X.term;
-        if (X.id !== B.id && t.op === 'condbr' && t.cond.tag === 'val' && bIds.has(t.cond.id)) { safe = false; break; }
-        if (t.op === 'ret' && t.value && t.value.tag === 'val' && bIds.has(t.value.id)) { safe = false; break; }
         for (const phi of X.phis) {
           for (const inc of phi.incomings) {
             if (inc.val.tag === 'val' && bIds.has(inc.val.id)) {
-              const allowed = (X.id === T || X.id === F) && inc.pred === B.id;
+              // Only a phi result may flow out, and only along T/F's `pred = B` edge.
+              const allowed = (X.id === T || X.id === F) && inc.pred === B.id && bPhiIds.has(inc.val.id);
               if (!allowed) { safe = false; break; }
             }
           }
@@ -98,14 +122,43 @@ export function jumpThread(fn: IRFunc): number {
       }
       if (!safe) continue;
 
-      // Collect the predecessors whose condition value is a known constant.
+      // Fold the cone on the edge from `P`: seed each phi with its (constant)
+      // `P`-incoming, evaluate the cone in order, and read off `c`. Returns the
+      // taken target, or null when the edge does not decide the branch.
+      const decideEdge = (P: number): number | null => {
+        const env = new Map<number, { ty: IRType; num: ConstNum }>();
+        for (const phi of B.phis) {
+          const inc = phi.incomings.find((i) => i.pred === P);
+          if (inc && inc.val.tag === 'const') env.set(phi.res, { ty: inc.val.ty, num: inc.val.num });
+        }
+        for (const inst of B.insts) {
+          const ops: { ty: IRType; num: ConstNum }[] = [];
+          let ok = true;
+          for (const a of inst.args) {
+            if (a.tag === 'const') ops.push({ ty: a.ty, num: a.num });
+            else {
+              const v = env.get(a.id);
+              if (!v) { ok = false; break; }
+              ops.push(v);
+            }
+          }
+          if (!ok || ops.length !== 2) continue; // result stays unknown
+          const r = foldIntBinCmp(inst.kind as 'ibin' | 'icmp', inst.sub, ops[0].ty, ops[0].num, ops[1].num);
+          if (r === null) continue; // unfoldable (e.g. div by zero) — leave unknown
+          env.set(inst.res!, { ty: inst.kind === 'icmp' ? 'i32' : ops[0].ty, num: r });
+        }
+        const cv = env.get(cId);
+        if (!cv) return null;
+        const truthy = typeof cv.num === 'bigint' ? cv.num !== 0n : cv.num !== 0;
+        return truthy ? T : F;
+      };
+
+      // Collect the predecessors whose edge decides the branch.
       const jobs: { pred: number; target: number }[] = [];
-      for (const inc of cPhi.incomings) {
-        const P = inc.pred;
+      for (const P of new Set(B.preds)) {
         if (P === B.id) continue; // a self/back edge — leave it
-        if (inc.val.tag !== 'const') continue;
-        const target = Number(inc.val.num) !== 0 ? T : F;
-        if (target === B.id) continue;
+        const target = decideEdge(P);
+        if (target === null || target === B.id) continue;
         const pb = byId.get(P);
         if (!pb) continue;
         if (succOfTerm(pb.term).includes(target)) continue; // would duplicate an edge P already has
@@ -123,7 +176,7 @@ export function jumpThread(fn: IRFunc): number {
         for (const tphi of tb.phis) {
           const fromB = tphi.incomings.find((i) => i.pred === B.id);
           let v: Operand = fromB ? fromB.val : { tag: 'const', ty: tphi.ty, num: 0 };
-          if (v.tag === 'val' && bIds.has(v.id)) {
+          if (v.tag === 'val' && bPhiIds.has(v.id)) {
             const bphi = B.phis.find((p) => p.res === (v as { id: number }).id)!;
             const w = bphi.incomings.find((i) => i.pred === pred);
             v = w ? w.val : v;

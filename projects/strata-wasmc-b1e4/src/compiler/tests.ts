@@ -2824,6 +2824,33 @@ fn run(n: int) -> void {
 fn main(){ run(3); run(8); }`,
   },
   {
+    // Generalized jump threading — the branch condition is a *cone* (a comparison /
+    // arithmetic) over a per-edge-constant flag phi, not the phi itself. The flag is
+    // a meet of two constants, so SCCP sees it as unknown and can't fold `flag == 0`;
+    // but on each incoming edge the flag is a constant, so the threader folds the cone
+    // per-edge and routes the branch directly. The `print`s keep the arms unspeculable.
+    name: 'jump-thread-cone-cmp',
+    source: `fn run(n: int) -> void {
+  let flag = 0;
+  if (n > 5) { flag = 2; print(n); }
+  if (flag == 0) { print(10); } else { print(20); }
+  if ((flag & 1) == 0) { print(30); } else { print(40); }
+}
+fn main(){ for (let i = 0; i < 12; i = i + 1) { run((i * 7) % 11); } }`,
+  },
+  {
+    // A two-level cone (`(flag - 1) > 0`) over a three-way flag merge, re-tested
+    // twice. Exercises chained cone instructions and a phi with three incomings.
+    name: 'jump-thread-cone-multi',
+    source: `fn run(n: int) -> void {
+  let flag = 1;
+  if (n % 3 == 0) { flag = 5; print(n); } else { if (n % 3 == 1) { flag = 8; print(-n); } }
+  if ((flag - 1) > 0) { print(100); } else { print(200); }
+  if ((flag * 2 - 3) > 4) { print(300); } else { print(400); }
+}
+fn main(){ for (let i = 0; i < 9; i = i + 1) { run(i); } }`,
+  },
+  {
     // Cross-jumping / tail merging — the bottom dual of code hoisting. Both arms of
     // the branch END with the same side-effecting tail (`print` of a value defined
     // before the branch); cross-jumping keeps one copy at the merge's front and

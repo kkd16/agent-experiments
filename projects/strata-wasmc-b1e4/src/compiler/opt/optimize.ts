@@ -190,6 +190,17 @@ function evalICmp64(sub: string, a: bigint, b: bigint): number {
 
 const C = (ty: IRType, num: ConstNum): Operand => ({ tag: 'const', ty, num: ty === 'i32' ? i32(num as number) : num });
 
+// Fold a pure integer binary or comparison from constant operands, reusing SCCP's
+// exact-wasm-semantics evaluators (i32 wraparound, i64 BigInt, `MIN/-1` → null).
+// `opTy` is the *operand* type (i32/i64); an `icmp` always yields an i32 0/1.
+// Returns null when the op can't be folded (e.g. a `div_s` by zero). Shared with
+// jump threading so it folds a branch condition per-edge the same way SCCP would.
+export function foldIntBinCmp(kind: 'ibin' | 'icmp', sub: string, opTy: IRType, a: ConstNum, b: ConstNum): ConstNum | null {
+  const i64 = opTy === 'i64';
+  if (kind === 'ibin') return i64 ? evalIBin64(sub, a as bigint, b as bigint) : evalIBin(sub, a as number, b as number);
+  return i64 ? evalICmp64(sub, a as bigint, b as bigint) : evalICmp(sub, a as number, b as number);
+}
+
 // =====================================================================
 // SCCP — Sparse Conditional Constant Propagation
 // =====================================================================

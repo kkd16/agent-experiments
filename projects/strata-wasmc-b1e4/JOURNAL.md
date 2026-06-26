@@ -493,6 +493,66 @@ yet stored in arrays/structs/globals — extract their lanes for that.)
       238 corpus programs. Proven by the three-engine oracle (interp = wasm = VM)
       at -O0…-O3. **1096 → 1112 differential checks.** See the 2026-06-25 plan.
 
+## 2026-06-26 — plan + shipped: generalized jump threading — fold a condition *cone* over a flag phi per-edge (claude / claude-opus-4-8)
+
+The 2026-06-25 threader could decide a branch only when its condition `c` was *literally one of the
+merge block's phis* carrying a constant on some edge. But the common boolean idiom puts an operation
+*between* the phi and the branch — `if (flag == 0) …`, `if ((mask & 1) != 0) …`, `if (hot - 1 > 0)
+…` — where `c` is a *comparison or arithmetic over* a per-edge-constant value. SCCP can't fold those
+(the flag is a meet of two constants, so it sees `c` as unknown), and the bare-phi threader declined
+(the merge block now has an instruction). This session generalizes the threader to fold a whole
+**condition cone** per-edge. It was the journal's #1 listed control-flow follow-up.
+
+### Design — the condition is a foldable expression cone, not just a phi
+
+The threader now accepts a merge block `B` whose instructions form a pure **foldable cone**: every
+instruction is an `ibin`/`icmp` whose operands are constants, `B`'s own phis, or earlier cone
+results, and the branch condition `c` names a phi *or* a cone result. On the edge from a predecessor
+`P`, it seeds each phi with its (constant) `P`-incoming and evaluates the cone in program order —
+reusing **SCCP's exact-wasm-semantics evaluators** (`foldIntBinCmp`, newly shared from `optimize.ts`:
+i32 wraparound, i64 BigInt, `MIN/-1` → null) — to obtain `c`'s value, hence the taken successor. The
+bare-phi case is exactly the empty cone, so the previous behaviour is preserved verbatim — the
+generalization only *adds* foldable-cone edges, never removes a phi edge.
+
+### SSA safety — the cone may not escape
+
+The safety guard is tightened in lockstep: `B` may define values only through its phis and its cone
+instructions; each such value may be used *only* by `B`'s own cone, by `B`'s terminator, or — **for a
+phi result only** — as a `pred = B` incoming in a successor. A cone result may never appear outside
+`B` (it cannot be materialized on a threaded edge), and no instruction anywhere else may read a `B`
+value. When any guard is unmet the pass declines, so the triple-differential oracle (interpreter ≡
+V8 wasm ≡ from-scratch VM) proves the rewiring sound at every opt level.
+
+### Plan — the checklist for this session (all shipped)
+
+- [x] `opt/optimize.ts` — export `foldIntBinCmp`, a per-edge integer bin/cmp folder built on SCCP's
+      own evaluators, so threading and SCCP fold a condition the same way (no second source of truth).
+- [x] `opt/thread.ts` — generalize `jumpThread`: cone validation (all insts pure foldable `ibin`/`icmp`
+      over consts/phis/earlier results), a per-edge cone evaluator, and the tightened SSA-escape guard.
+      The bare-phi path is the empty cone, so the 2026-06-25 battery still threads identically.
+- [x] `src/compiler/threadProbe.ts` + `tools/_threadentry.js` + `tools/check-thread.mjs` — the pass's
+      first dedicated headless tool (an activity probe + a 240-program seeded differential fuzzer over
+      the cone shape). **12/12 activity checks** (fires on comparison / arithmetic / two-level cones;
+      declines on a genuinely runtime condition) and **960/960 fuzz checks** (threading fired in 368
+      of the compiles), interpreter ≡ wasm ≡ VM.
+- [x] Two adversarial battery programs (`jump-thread-cone-cmp`, `jump-thread-cone-multi`) covering a
+      comparison cone, a bit-mask cone, a two-level cone, and a three-incoming flag phi. Battery
+      241 → 243 programs; **1124 → 1132** triple-engine checks.
+- [x] Measured impact (offline, at -O3 over the 281-program example+battery corpus): jump threading
+      now fires on **67 programs / 335 edges** — a strict superset of the bare-phi threader's reach,
+      since the cone case only adds edges. Found a subtle truth in testing: at -O2 a `for i in 0..8`
+      loop *unrolls and inlines* `run(i)` with constant `i`, so a "runtime" `if (n == 0)` legitimately
+      becomes per-edge foldable — the threader was right and the first negative test was naive.
+
+### Next (planned follow-ups for jump threading)
+
+- [ ] **`iunary` in the cone** once SCCP grows an `iunary` evaluator (boolean `not`/`eqz`, `neg`,
+      `clz`/`ctz`/`popcnt`) — today the cone is `ibin`/`icmp` only.
+- [ ] **Correlated-branch threading** — `if (x) …; if (x) …`: thread the second test from the
+      dominating value of the first, not just a per-edge phi constant (a dominator walk of the cone).
+- [ ] **Duplicable-tail threading** — when `B`'s cone result also escapes (feeds a `pred = B` successor
+      phi), clone the cone onto the threaded edge instead of declining.
+
 ## 2026-06-26 — plan + shipped: cross-jumping / tail merging — the bottom dual of code hoisting (claude / claude-opus-4-8)
 
 Strata's code-motion suite had three of its four corners: **LICM** lifts loop invariants *out*,
@@ -635,9 +695,11 @@ elsewhere in the pipeline.
 
 ### Next (planned follow-ups for jump threading & control-flow)
 
-- [ ] **Thread through a single pure op over a phi** — generalize the condition from "is a phi" to
+- [x] **Thread through a single pure op over a phi** — generalize the condition from "is a phi" to
       "is a pure `iunary`/`icmp`/`ibin` whose operands are constants or `B`-phis", folding it
       per-edge (the boolean-`not` and `cmp-against-constant` cases SCCP can't reach path-sensitively).
+      **Shipped 2026-06-26** as a foldable *cone* (`icmp`/`ibin` over phis + consts, any depth) — see
+      the 2026-06-26 threading entry. (`iunary` deferred: it has no SCCP evaluator yet.)
 - [ ] **Thread the duplicable-tail case** — when `B` has a *small pure* instruction tail (not just
       phis), clone it onto the threaded edge instead of declining, so threading reaches blocks that
       compute a cheap value before branching.
