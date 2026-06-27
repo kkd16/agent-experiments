@@ -3,6 +3,7 @@ import { useAlphaZeroTrainer, type AZConfigUI } from '../../hooks/useAlphaZeroTr
 import type { GradCheckResult } from '../../engine/gradcheck';
 import type { GameId } from '../../engine/games';
 import AZBoard from './AZBoard';
+import SearchTree from './SearchTree';
 
 const TTT_DEFAULT: AZConfigUI = {
   gameId: 'ttt',
@@ -352,6 +353,18 @@ export default function AlphaZeroLab() {
             value <b>Q</b> holds up under lookahead. The visit distribution is the policy we train the network to imitate.
           </p>
         </div>
+
+        {play.analysis?.tree && play.analysis.tree.children.length > 0 && (
+          <div className="card">
+            <div className="card-title">Watch it think — the search tree</div>
+            <SearchTree tree={play.analysis.tree} label={(a) => moveLabel(config.gameId, a)} />
+            <p className="muted small" style={{ marginTop: 8, marginBottom: 0 }}>
+              The most-visited branches the search grew from the current position (top {4} per node, depth 3). Node
+              size is its visit count; colour is its value from the side-to-move's view (green good, red bad). Thicker
+              edges carry more of the search's attention.
+            </p>
+          </div>
+        )}
       </div>
 
       {/* ---- right: metrics + charts ---- */}
