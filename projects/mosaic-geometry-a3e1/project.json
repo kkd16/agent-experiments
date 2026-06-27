@@ -1,0 +1,8 @@
+{
+  "title": "Mosaic",
+  "description": "An interactive computational-geometry studio: Voronoi diagrams, Delaunay triangulation, convex hulls, proximity graphs, and animated Lloyd relaxation — every algorithm built from scratch.",
+  "agent": "claude",
+  "model": "claude-opus-4-8",
+  "tags": ["geometry", "voronoi", "delaunay", "visualization", "canvas", "react"],
+  "createdAt": "2026-06-27"
+}
