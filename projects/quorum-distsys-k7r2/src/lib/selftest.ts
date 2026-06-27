@@ -46,6 +46,9 @@ import {
   type Version,
 } from '../protocols/dynamo/types';
 import { buildRing, preferenceList } from '../protocols/dynamo/ring';
+import { createAbd } from '../protocols/abd/abd';
+import { abdInvariants } from '../protocols/abd/invariants';
+import { DEFAULT_ABD_CONFIG, type AbdCmd, type AbdState } from '../protocols/abd/types';
 import { createHotStuff } from '../protocols/hotstuff/hotstuff';
 import { hotstuffInvariants } from '../protocols/hotstuff/invariants';
 import {
@@ -1718,6 +1721,124 @@ export function runSelfTests(): TestResult[] {
     if (a.firstBreak) return [false, a.firstBreak];
     const ok = a.k.serialize() === b.k.serialize();
     return [ok, ok ? 'two independent chaotic runs produced identical serialized state' : 'runs diverged'];
+  });
+
+  // ---- ABD (linearizable register, no consensus) ----
+  const abdKernel = (seed: number, ids: string[], drop = 0) =>
+    new Kernel<AbdState, AbdCmd>({
+      seed,
+      protocol: createAbd(DEFAULT_ABD_CONFIG),
+      nodeIds: ids,
+      network: { minLatency: 20, maxLatency: 60, dropRate: drop },
+    });
+  const abdOk = (k: Kernel<AbdState, AbdCmd>) => abdInvariants(k.views()).every((iv) => iv.ok);
+  const abdBad = (k: Kernel<AbdState, AbdCmd>) => {
+    const b = abdInvariants(k.views()).find((iv) => !iv.ok);
+    return b ? `${b.name}: ${b.detail}` : '';
+  };
+  const abdSettle = (k: Kernel<AbdState, AbdCmd>, n = 200, dt = 20) => {
+    for (let i = 0; i < n; i++) k.advance(dt);
+  };
+  const abdHistory = (k: Kernel<AbdState, AbdCmd>) => k.views().flatMap((v) => v.state.history);
+
+  t('ABD', 'A write is read back by another replica (no leader involved)', () => {
+    const k = abdKernel(1, ['A', 'B', 'C']);
+    k.command('A', { type: 'write', key: 'x', value: 'hello' });
+    abdSettle(k, 40);
+    k.command('B', { type: 'read', key: 'x' });
+    abdSettle(k, 40);
+    const reads = abdHistory(k).filter((o) => o.kind === 'read' && o.key === 'x');
+    const got = reads[reads.length - 1]?.value;
+    const ok = got === 'hello' && abdOk(k);
+    return [ok, ok ? 'a read on a different replica returned the written value' : abdBad(k) || `got ${got}`];
+  });
+
+  t('ABD', 'A read returns the latest of several writes; durability holds', () => {
+    const k = abdKernel(2, ['A', 'B', 'C', 'D', 'E']);
+    for (let i = 0; i < 5; i++) {
+      k.command(k.nodeOrder[i % 5], { type: 'write', key: 'k', value: 'v' + i });
+      abdSettle(k, 30);
+    }
+    k.command('C', { type: 'read', key: 'k' });
+    abdSettle(k, 40);
+    const reads = abdHistory(k).filter((o) => o.kind === 'read');
+    const got = reads[reads.length - 1]?.value;
+    const ok = got === 'v4' && abdOk(k);
+    return [ok, ok ? 'the read observed the most recent write v4' : abdBad(k) || `got ${got}`];
+  });
+
+  t('ABD', "Read write-back lets a value survive losing its writer", () => {
+    const k = abdKernel(5, ['A', 'B', 'C', 'D', 'E']);
+    k.command('A', { type: 'write', key: 'x', value: 'durable' });
+    abdSettle(k, 60);
+    k.crash('A'); // the writer is gone
+    k.command('B', { type: 'read', key: 'x' });
+    abdSettle(k, 60);
+    const reads = abdHistory(k).filter((o) => o.kind === 'read' && o.key === 'x');
+    const got = reads[reads.length - 1]?.value;
+    const ok = got === 'durable' && abdOk(k);
+    return [ok, ok ? 'the value survived the writer crashing — no consensus needed' : abdBad(k) || `got ${got}`];
+  });
+
+  t('ABD', 'A minority partition cannot complete an operation (safety over liveness)', () => {
+    const k = abdKernel(3, ['A', 'B', 'C', 'D', 'E']);
+    k.command('A', { type: 'write', key: 'k', value: 'maj' });
+    abdSettle(k, 40);
+    k.partition([['A', 'B', 'C'], ['D', 'E']]);
+    k.command('D', { type: 'write', key: 'k', value: 'min' });
+    abdSettle(k, 60);
+    const minorityDone = abdHistory(k).some((o) => o.value === 'min');
+    k.command('A', { type: 'write', key: 'k', value: 'maj2' });
+    abdSettle(k, 60);
+    const majorityDone = abdHistory(k).some((o) => o.value === 'maj2');
+    const ok = !minorityDone && majorityDone && abdOk(k);
+    return [ok, ok ? 'minority side blocked, majority progressed, linearizability held' : abdBad(k) || `min=${minorityDone} maj=${majorityDone}`];
+  });
+
+  t('ABD', 'Linearizability holds through 1,500 randomized faults (chaos)', () => {
+    const k = abdKernel(2026, ['A', 'B', 'C', 'D', 'E']);
+    const chaos = new Rng(424242);
+    const ids = k.nodeOrder;
+    let n = 0, firstBreak = '';
+    for (let i = 0; i < 1500 && !firstBreak; i++) {
+      k.advance(20);
+      const up = ids.filter((id) => k.isUp(id));
+      const down = ids.filter((id) => !k.isUp(id));
+      const roll = chaos.next();
+      if (roll < 0.04 && up.length > 1) k.crash(chaos.pick(up)!);
+      else if (roll < 0.12 && down.length > 0) k.restart(chaos.pick(down)!);
+      else if (roll < 0.15) {
+        const sh = chaos.shuffle(ids);
+        const cut = chaos.int(1, ids.length - 1);
+        k.partition([sh.slice(0, cut), sh.slice(cut)]);
+      } else if (roll < 0.2) k.healNetwork();
+      else if (roll < 0.45 && up.length > 0) {
+        k.command(chaos.pick(up)!, { type: 'write', key: ['a', 'b'][n % 2], value: 'w' + n });
+        n++;
+      } else if (roll < 0.6 && up.length > 0) {
+        k.command(chaos.pick(up)!, { type: 'read', key: ['a', 'b'][chaos.int(0, 1)] });
+      }
+      const b = abdInvariants(k.views()).find((iv) => !iv.ok);
+      if (b) firstBreak = `${b.name}: ${b.detail}`;
+    }
+    return [!firstBreak, firstBreak || `real-time atomicity, read integrity & durability held through 1,500 faults (${n} writes)`];
+  });
+
+  t('ABD', 'Determinism: same seed ⇒ byte-identical run', () => {
+    const run = () => {
+      const k = abdKernel(99, ['A', 'B', 'C', 'D', 'E']);
+      const chaos = new Rng(55);
+      let n = 0;
+      for (let i = 0; i < 300; i++) {
+        k.advance(20);
+        const r = chaos.next();
+        if (r < 0.25) k.command(chaos.pick(k.nodeOrder)!, { type: 'write', key: 'k', value: 'v' + n++ });
+        else if (r < 0.4) k.command(chaos.pick(k.nodeOrder)!, { type: 'read', key: 'k' });
+      }
+      return k.serialize();
+    };
+    const ok = run() === run();
+    return [ok, ok ? 'two independent runs produced byte-identical state' : 'runs diverged'];
   });
 
   return out;

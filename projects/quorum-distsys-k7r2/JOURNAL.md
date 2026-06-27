@@ -407,7 +407,53 @@ invariants}.ts`) + `labs/DynamoLab.tsx`.
 - [ ] **Quorum-state machine view** — animate a single PUT's W-ack collection and a GET's R-reply
       reconciliation step by step on the canvas.
 
+### ABD lab (linearizable register · no consensus) — NEW
+The conceptual foil to every consensus lab here. Raft, Paxos, EPaxos, PBFT and HotStuff all agree on a
+*total order of commands*; **ABD** (Attiya, Bar-Noy & Dolev, JACM 1995) shows that if you only need a
+**linearizable read/write register**, you don't need consensus at all — just **majority quorums** and two
+round trips, with no leader and no log. Built from scratch on the same kernel: three new files
+(`protocols/abd/{types,abd,invariants}.ts`) + `labs/AbdLab.tsx`.
+
+- [x] **Tagged multi-writer/multi-reader register** — each replica stores one `(value, tag)` per key,
+      where a **tag** `(seq, writer)` totally orders writes. `types.ts` defines tags, the register, the
+      operation history, and the messages.
+- [x] **Two-phase write** — the coordinator queries a majority for the latest tag, then writes the value
+      under a **strictly newer** tag `(maxSeq+1, self)` to a majority. A per-node monotonic seq floor
+      stops two operations a node coordinates concurrently from colliding on the same tag (the subtle bug
+      a naive implementation hits the moment writes overlap).
+- [x] **Two-phase read with write-back** — the coordinator finds the newest `(tag, value)` in a majority
+      and **writes it back** to a majority before returning it. That write-back is the whole trick: it
+      makes the returned value durable at a majority so no later read can go backwards in time.
+- [x] **Leaderless coordination + retry** — any replica coordinates any operation; a per-operation retry
+      timer re-drives a phase whose messages were lost to a partition, so a stalled op finishes after a
+      heal instead of hanging. A minority partition simply cannot complete an op (the CP behaviour).
+- [x] **A live linearizability proof** (`invariants.ts`) — the lab records the real-time operation
+      history and checks Lamport's atomic-register conditions every render: **Real-time atomicity** (for
+      non-overlapping ops A≺B, `tag(B) ≥ tag(A)`, strict when B is a write — the no-stale-read /
+      writes-globally-ordered property), **Read integrity** (a read returns exactly the value written at
+      the tag it carries), and **Write durability** (the newest acknowledged write is still held by a
+      majority). All three stay green under chaos.
+- [x] **ABD lab UI** (`labs/AbdLab.tsx`) — a ring canvas showing each replica's stored `value @ tag` for
+      the selected register, a per-key **register table**, and the signature visual: a **Jepsen-style
+      linearizability history** — every completed operation drawn as a real-time bar (read vs write,
+      labelled with value and tag) so you can *see* that the tag never goes backwards across
+      non-overlapping operations. Buttons for write / read / **concurrent writers** / **crash the writer
+      mid-flight**, plus crash / partition / time-travel and deep links.
+- [x] **Self-tests** (6) — write-then-read across replicas; read-the-latest-of-many + durability; the
+      write-back surviving a writer crash; a minority partition blocking while the majority progresses; a
+      **1,500-fault randomized chaos run** asserting all three linearizability invariants throughout; and
+      determinism. The full suite is **91/91**.
+- [ ] **Single-writer (SWMR) mode toggle** — the simpler ABD where the writer owns the seq, to contrast
+      one-phase writes with the multi-writer query phase.
+- [ ] **A read-impossibility demo** — show that a *one-phase* read (skip the write-back) breaks
+      linearizability, with the invariant going red, then turn the write-back back on.
+- [ ] **Linearization-point overlay** — draw the chosen serialization point inside each operation's bar so
+      the equivalent sequential history is explicit.
+- [ ] **Fast reads (quorum-leases / 1-phase reads when safe)** and an "ABD vs Raft read latency" panel.
+
 ### Future labs / ideas (backlog)
+- [x] **ABD linearizable registers** — shipped; see the ABD lab section above (tagged MWMR register,
+      two-phase read/write with write-back, leaderless coordination, and a live linearizability proof).
 - [x] **Dynamo-style quorums** — shipped; see the Dynamo lab section above (tunable N/R/W, sloppy
       quorums + hinted handoff, read repair, vector-clock siblings, R+W>N consistency pill).
 - [ ] **PBFT checkpoints + garbage collection** — stable 2f+1-certified checkpoints to bound the log
@@ -638,3 +684,17 @@ invariants}.ts`) + `labs/DynamoLab.tsx`.
   headless Chromium: proposing + a conflict burst commits 21 commands across 5 replicas (**fast 16 ·
   slow 5**), every replica converges, the dependency graph fills in with a live SCC cycle box, and the
   in-app self-tests report **85/85 passing** with zero runtime errors.
+- 2026-06-27 (claude): shipped the **ABD lab** — a linearizable read/write register *without consensus*,
+  the conceptual foil to all the consensus labs. Built three from-scratch modules
+  (`protocols/abd/{types,abd,invariants}.ts`) and `labs/AbdLab.tsx`: a tagged multi-writer/multi-reader
+  register, two-phase writes (query a majority for the latest tag, then write under a strictly newer one)
+  and two-phase reads with the **write-back** that makes ABD linearizable, leaderless coordination with a
+  per-op retry timer, and a per-node monotonic seq floor that fixes the real tag-collision bug concurrent
+  writers hit. The headline is a **live linearizability proof**: the lab records the real-time operation
+  history and checks Lamport's atomic-register conditions (real-time atomicity, read integrity, write
+  durability) on every render, plus a **Jepsen-style history timeline** that shows the tag never going
+  backwards across non-overlapping operations. Added 6 ABD self-tests incl. a 1,500-fault chaos run; the
+  suite is now **91/91**. (Context: another session merged its own EPaxos lab to `main` first, so this
+  session pivoted from a duplicate EPaxos to ABD — a distinct, non-overlapping addition rather than
+  overwriting a peer's work.) Verified the full gate — scope + conformance + `pnpm lint` + `pnpm build`
+  all green.
