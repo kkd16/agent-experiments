@@ -49,6 +49,9 @@ import { buildRing, preferenceList } from '../protocols/dynamo/ring';
 import { createAbd } from '../protocols/abd/abd';
 import { abdInvariants } from '../protocols/abd/invariants';
 import { DEFAULT_ABD_CONFIG, type AbdCmd, type AbdState } from '../protocols/abd/types';
+import { createSnow } from '../protocols/snow/snow';
+import { snowInvariants, snowGauge } from '../protocols/snow/invariants';
+import { DEFAULT_SNOW_CONFIG, type SnowCmd, type SnowState, type Variant, type Colour } from '../protocols/snow/types';
 import { createHotStuff } from '../protocols/hotstuff/hotstuff';
 import { hotstuffInvariants } from '../protocols/hotstuff/invariants';
 import {
@@ -1839,6 +1842,153 @@ export function runSelfTests(): TestResult[] {
     };
     const ok = run() === run();
     return [ok, ok ? 'two independent runs produced byte-identical state' : 'runs diverged'];
+  });
+
+  // ---- Snow* (metastable consensus by random subsampling) ----
+  const snowIds = (n: number) => 'ABCDEFGHIJKLMNOPQRST'.split('').slice(0, n);
+  const snowKernel = (
+    seed: number,
+    n: number,
+    cfg: Partial<typeof DEFAULT_SNOW_CONFIG> = {},
+  ) =>
+    new Kernel<SnowState, SnowCmd>({
+      seed,
+      protocol: createSnow({ ...DEFAULT_SNOW_CONFIG, ...cfg }),
+      nodeIds: snowIds(n),
+      network: { minLatency: 10, maxLatency: 30, dropRate: 0 },
+    });
+  const seedEvenSplit = (k: Kernel<SnowState, SnowCmd>, palette: Colour[] = ['R', 'B'], byz: string[] = []) => {
+    for (const id of byz) k.command(id, { type: 'byzantine', on: true, adversary: palette[0] });
+    const honest = k.nodeOrder.filter((id) => !byz.includes(id));
+    honest.forEach((id, i) => k.command(id, { type: 'seed', colour: palette[i % palette.length] }));
+  };
+  const snowSettle = (k: Kernel<SnowState, SnowCmd>, ticks = 600, dt = 20) => {
+    for (let i = 0; i < ticks; i++) k.advance(dt);
+  };
+  const snowOk = (k: Kernel<SnowState, SnowCmd>) => snowInvariants(k.views()).every((iv) => iv.ok);
+  const snowFirstBad = (k: Kernel<SnowState, SnowCmd>) => {
+    const b = snowInvariants(k.views()).find((iv) => !iv.ok);
+    return b ? `${b.name}: ${b.detail}` : '';
+  };
+
+  t('Snow', 'Determinism: same seed ⇒ byte-identical run', () => {
+    const run = () => {
+      const k = snowKernel(123, 15);
+      seedEvenSplit(k);
+      snowSettle(k, 400);
+      return k.serialize();
+    };
+    const ok = run() === run();
+    return [ok, ok ? 'two independent runs produced byte-identical state' : 'runs diverged'];
+  });
+
+  t('Snow', 'Slush tips an even split to unanimity', () => {
+    let tipped = 0;
+    for (const seed of [1, 2, 3, 7, 13]) {
+      const k = snowKernel(seed, 15, { variant: 'slush' });
+      seedEvenSplit(k);
+      snowSettle(k, 600);
+      if (snowGauge(k.views()).unanimous && snowOk(k)) tipped++;
+    }
+    return [tipped === 5, `${tipped}/5 seeds tipped to a single colour (Slush has no finality — it only tips)`];
+  });
+
+  const finalisesOne = (variant: Variant): [boolean, string] => {
+    let good = 0;
+    const seeds = [1, 2, 3, 7, 13, 42, 99];
+    for (const seed of seeds) {
+      const k = snowKernel(seed, 15, { variant });
+      seedEvenSplit(k);
+      snowSettle(k, 700);
+      const decided = new Set(k.views().filter((v) => v.state.decided != null).map((v) => v.state.decided));
+      const allFinal = k.views().every((v) => v.state.decided != null);
+      if (allFinal && decided.size === 1 && snowGauge(k.views()).unanimous && snowOk(k)) good++;
+    }
+    return [good === seeds.length, good === seeds.length ? `every node finalised one colour across all ${seeds.length} seeds; Agreement held` : `${good}/${seeds.length} seeds cleanly finalised`];
+  };
+
+  t('Snow', 'Snowflake finalises a single colour from an even split', () => finalisesOne('snowflake'));
+  t('Snow', 'Snowball finalises a single colour from an even split', () => finalisesOne('snowball'));
+
+  t('Snow', 'Knife-edge 50/50 still resolves (symmetry breaks both ways)', () => {
+    const outcomes = new Set<Colour>();
+    let allOk = true;
+    for (const seed of [1, 2, 3, 4, 5, 6, 7, 8]) {
+      const k = snowKernel(seed, 20, { variant: 'snowball', k: 8, alpha: 5, beta: 6 });
+      seedEvenSplit(k); // 10 R / 10 B exactly
+      snowSettle(k, 800);
+      const g = snowGauge(k.views());
+      if (!g.unanimous || !snowOk(k) || g.plurality == null) allOk = false;
+      else outcomes.add(g.plurality);
+    }
+    // A correct metastable protocol breaks the perfect tie *both* ways across seeds.
+    const ok = allOk && outcomes.size === 2;
+    return [ok, ok ? 'all 8 seeds reached unanimity, and the tie broke both ways (R and B each won)' : `resolved=${allOk} distinct-outcomes=${outcomes.size}`];
+  });
+
+  t('Snow', 'Snowball survives a Byzantine minority (honest nodes still converge)', () => {
+    let good = 0;
+    const seeds = [1, 2, 3, 7, 13];
+    for (const seed of seeds) {
+      const k = snowKernel(seed, 16, { variant: 'snowball', k: 6, alpha: 4, beta: 5 });
+      seedEvenSplit(k, ['R', 'B'], ['A', 'B', 'C', 'D']); // 4/16 = 25% liars
+      snowSettle(k, 900);
+      const honest = k.views().filter((v) => !v.state.byzantine);
+      const decided = new Set(honest.filter((v) => v.state.decided != null).map((v) => v.state.decided));
+      const allFinal = honest.every((v) => v.state.decided != null);
+      if (allFinal && decided.size === 1 && snowOk(k)) good++;
+    }
+    return [good === seeds.length, good === seeds.length ? `honest nodes converged to one colour despite 25% Byzantine liars across all ${seeds.length} seeds` : `${good}/${seeds.length} seeds converged under a Byzantine minority`];
+  });
+
+  t('Snow', 'Agreement never violated through 1,000 chaos steps', () => {
+    const k = snowKernel(2026, 17, { variant: 'snowball' });
+    seedEvenSplit(k);
+    const chaos = new Rng(31337);
+    const ids = k.nodeOrder;
+    let firstBreak = '';
+    for (let i = 0; i < 1000 && !firstBreak; i++) {
+      k.advance(20);
+      const up = ids.filter((id) => k.isUp(id));
+      const down = ids.filter((id) => !k.isUp(id));
+      const roll = chaos.next();
+      if (roll < 0.03 && up.length > 2) k.crash(chaos.pick(up)!);
+      else if (roll < 0.1 && down.length > 0) k.restart(chaos.pick(down)!);
+      else if (roll < 0.13) {
+        const sh = chaos.shuffle(ids);
+        const cut = chaos.int(1, ids.length - 1);
+        k.partition([sh.slice(0, cut), sh.slice(cut)]);
+      } else if (roll < 0.2) k.healNetwork();
+      else if (roll < 0.24) k.command(chaos.pick(up.length ? up : ids)!, { type: 'seed', colour: chaos.next() < 0.5 ? 'R' : 'B' });
+      const bad = snowInvariants(k.views()).find((iv) => !iv.ok);
+      if (bad) firstBreak = `${bad.name}: ${bad.detail}`;
+    }
+    return [!firstBreak, firstBreak || 'Agreement, Finality & Validity held through 1,000 randomized faults'];
+  });
+
+  t('Snow', 'After chaos heals, the whole cluster converges to one colour', () => {
+    const k = snowKernel(4242, 15, { variant: 'snowball' });
+    seedEvenSplit(k);
+    const chaos = new Rng(909);
+    const ids = k.nodeOrder;
+    for (let i = 0; i < 600; i++) {
+      k.advance(20);
+      const roll = chaos.next();
+      const up = ids.filter((id) => k.isUp(id));
+      const down = ids.filter((id) => !k.isUp(id));
+      if (roll < 0.03 && up.length > 2) k.crash(chaos.pick(up)!);
+      else if (roll < 0.1 && down.length > 0) k.restart(chaos.pick(down)!);
+      else if (roll < 0.13) {
+        const sh = chaos.shuffle(ids);
+        k.partition([sh.slice(0, 8), sh.slice(8)]);
+      } else if (roll < 0.18) k.healNetwork();
+    }
+    k.healNetwork();
+    for (const id of ids) if (!k.isUp(id)) k.restart(id);
+    snowSettle(k, 700);
+    const g = snowGauge(k.views());
+    const ok = g.unanimous && snowOk(k);
+    return [ok, ok ? `every live node converged to ${g.plurality} after the network healed` : snowFirstBad(k) || `not unanimous (plurality ${g.plurality} ${g.pluralityCount}/${g.liveHonest})`];
   });
 
   return out;
